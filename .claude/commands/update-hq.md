@@ -51,7 +51,7 @@ If `OVERRIDE_VERSION` is set, use it. Otherwise:
 3. If found → `CURRENT_VERSION={match}`.
 4. If CHANGELOG.md missing or no match, use structural markers:
    - `workers/dev-team/codex-*` dirs exist → `>= v5.3.0`
-   - `workers/sample-worker/` exists → `>= v5.0.0`
+   - `workers/dev-team/` exists → `>= v5.0.0`
    - `settings/pure-ralph.json` exists → `>= v3.0.0`
    - `workspace/content-ideas/` exists → `>= v2.0.0`
    - None → `unknown`

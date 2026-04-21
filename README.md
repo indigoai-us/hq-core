@@ -194,7 +194,7 @@ Workers learn from and contribute to shared knowledge:
 - `knowledge/workers/` — Worker patterns & templates
 - `knowledge/ai-security-framework/` — Security best practices
 - `knowledge/dev-team/` — Development patterns
-- `knowledge/design-styles/` — Design guidelines
+- `packages/hq-pack-design-styles/` — Optional design style packs (install via `hq install @indigoai-us/hq-pack-design-styles`)
 
 ### Commands
 Slash commands orchestrate everything:
@@ -310,7 +310,7 @@ Start from the included sample worker:
 /newworker
 
 # Option 2: Manual
-cp -r workers/sample-worker workers/my-worker
+cp -r workers/public/dev-team/frontend-dev workers/public/my-worker
 # Edit workers/my-worker/worker.yaml
 ```
 
@@ -497,7 +497,7 @@ my-hq/
 │   ├── workers/               # Worker framework + templates
 │   ├── ai-security-framework/ # Security practices
 │   ├── dev-team/              # Development patterns
-│   ├── design-styles/         # Design guidelines
+│   ├── (design-styles/)       # Optional — installed by hq-pack-design-styles
 │   ├── hq-core/               # Thread schema, INDEX spec
 │   ├── loom/                  # Agent patterns
 │   └── projects/              # Project guidelines
@@ -508,7 +508,7 @@ my-hq/
 │   └── audit-log.sh           # Audit log append/query/summary
 ├── workers/
 │   ├── registry.yaml          # Worker index
-│   ├── sample-worker/         # Example (copy + customize)
+│   ├── dev-team/              # Shared workers you can copy + customize
 │   ├── accessibility-auditor/ # WCAG 2.2 AA auditing
 │   ├── exec-summary/          # Executive summaries
 │   ├── performance-benchmarker/ # Core Web Vitals + load testing

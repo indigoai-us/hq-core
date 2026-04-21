@@ -76,7 +76,7 @@ social-shared, social-strategist, social-reviewer, social-publisher, social-veri
 garden-scout, garden-auditor, garden-curator
 
 **Gemini Team (3):** `workers/public/gemini-*/`
-gemini-coder, gemini-reviewer, gemini-frontend
+(gemini-coder, gemini-reviewer, gemini-frontend — install via @indigoai-us/hq-pack-gemini)
 
 **Company Workers:** Located at `companies/{co}/workers/`. See manifest.yaml for full list per company.
 
@@ -107,7 +107,7 @@ Every command exists as `.claude/commands/{name}.md` (the slash-command entry po
 
 ## Knowledge Bases
 
-**Public** (`knowledge/public/`): Ralph, ai-security-framework, agent-browser, curious-minds, design-styles, dev-team, gemini-cli, hq-core, loom, projects, workers
+**Public** (`knowledge/public/`): Ralph, ai-security-framework, agent-browser, curious-minds, dev-team, hq-core, loom, projects, workers. Optional packs (install via `hq install @indigoai-us/hq-pack-*`) add: design-styles, design-quality, gemini-cli.
 
 **Private** (`knowledge/private/`): linear
 

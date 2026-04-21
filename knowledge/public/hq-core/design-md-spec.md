@@ -3,7 +3,7 @@
 `design.md` is the per-repo design context file used across HQ. It gives design workers (and any agent performing visual or UX work) the brand, product, and aesthetic context they need to produce output that is on-brand rather than generic.
 
 **Canonical filename:** `design.md` (placed in the repo root)
-**Consumed by:** `impeccable-designer`, company-scoped design workers (e.g. `hpo-designer`), and any agent running design-adjacent skills (`frontend-design`, `polish`, `typeset`, `colorize`, `audit`)
+**Consumed by:** `dev-team/frontend-dev`, company-scoped design workers (e.g. `hpo-designer`), and any agent running design-adjacent skills (`frontend-design`, `polish`, `typeset`, `colorize`, `audit`)
 **Format:** Markdown with no YAML frontmatter
 
 ---
@@ -137,7 +137,7 @@ When `style-pack:` is present, workers that support pack resolution look up `<pa
 
 **Required.**
 
-**Purpose:** The explicit deny list. Workers and humans should treat these as hard rules, not suggestions. Audit skills (`hpo-designer audit`, `impeccable-designer audit`) scan for violations of this section.
+**Purpose:** The explicit deny list. Workers and humans should treat these as hard rules, not suggestions. Audit skills (`hpo-designer audit`, `dev-team/frontend-dev audit`) scan for violations of this section.
 
 **What to include:**
 
@@ -211,7 +211,7 @@ The following is the canonical real-world `design.md` for the HPO chart-renderer
 
 <!--
   Design context for the HPO chart renderer. Consumed by `hpo-designer` and
-  the shared `impeccable-designer` worker.
+  the shared `dev-team/frontend-dev` worker.
 
   Source of truth: companies/hpo/knowledge/brand/brand-guidelines.md
 -->

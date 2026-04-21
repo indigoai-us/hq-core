@@ -124,7 +124,7 @@ social-shared (library), social-strategist, social-reviewer, social-publisher, s
 garden-scout, garden-auditor, garden-curator
 
 **Gemini Team (3):** `workers/public/gemini-*/`
-gemini-coder, gemini-reviewer, gemini-frontend
+(gemini-coder, gemini-reviewer, gemini-frontend — install via @indigoai-us/hq-pack-gemini)
 
 **Company Workers** (`companies/{co}/workers/`):
 
@@ -216,13 +216,13 @@ HQ/
 - `workers/` - worker framework
 - `hq-core/` - thread schema, HQ patterns
 - `dev-team/` - dev team patterns
-- `design-styles/` - image generation style guides
+- `design-styles/` - image generation style guides (installed via @indigoai-us/hq-pack-design-styles)
 - `projects/` - project templates
 - `loom/` - Loom agent patterns (reference)
 - `ai-security-framework/` - security practices
 - `agent-browser/` - browser automation patterns
 - `curious-minds/` - book/learning content
-- `gemini-cli/` - Gemini CLI patterns
+- `gemini-cli/` - Gemini CLI patterns (installed via @indigoai-us/hq-pack-gemini)
 
 **Private** (in `knowledge/private/`):
 - `linear/` - Linear integration knowledge

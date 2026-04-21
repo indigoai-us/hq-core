@@ -45,7 +45,7 @@ Present in every fresh `hq-starter-kit` clone. Desktop should expect these and r
 | `docs/images/` | dir | Banner SVG, assets | Decorative |
 | `knowledge/Ralph/` | dir | Ralph methodology (10 chapters) | Core knowledge |
 | `knowledge/ai-security-framework/` | dir | Security best practices | Core knowledge |
-| `knowledge/design-styles/` | dir | Design guidelines + swipes | Core knowledge |
+| `packages/hq-pack-design-styles/` | dir | Design guidelines + swipes | Optional pack (install via `hq install @indigoai-us/hq-pack-design-styles`) |
 | `knowledge/dev-team/` | dir | Development patterns | Core knowledge |
 | `knowledge/hq-core/` | dir | Thread schema, INDEX spec, quick-ref | Core knowledge |
 | `knowledge/loom/` | dir | Agent architecture patterns | Core knowledge |
@@ -58,7 +58,7 @@ Present in every fresh `hq-starter-kit` clone. Desktop should expect these and r
 | `settings/` | dir | Credentials (gitignored contents) | .gitkeep only |
 | `settings/pure-ralph.json` | file | Ralph loop config | Non-secret |
 | `social-content/drafts/` | dir | Content drafts (x/, linkedin/) | INDEX.md + .gitkeep |
-| `workers/sample-worker/` | dir | Example worker template | Copy + customize |
+| `workers/public/dev-team/` | dir | Shared dev-team workers | Copy + customize to author company-scoped workers |
 | `workspace/checkpoints/` | dir | Manual saves | .gitkeep |
 | `workspace/content-ideas/` | dir | Idea capture | inbox.jsonl |
 | `workspace/drafts/` | dir | General drafts | .gitkeep |
@@ -123,7 +123,7 @@ Present in {your-name}'s production HQ but NOT in the starter-kit. These represe
 | Feature Area | Starter-Kit | Personal HQ | Delta |
 |-------------|------------|-------------|-------|
 | **Commands** | 18 in `.claude/commands/` | 22+ (added checkemail, email, generateimage, post-now, pr, preview-post, social-setup, contentidea, suggestposts, scheduleposts, digest) | +10-12 custom commands |
-| **Workers** | 1 (sample-worker) | 40+ (10 private, 30 public across dev-team, content-team, pr-team) | Full worker ecosystem |
+| **Workers** | baseline dev-team | 40+ (10 private, 30 public across dev-team, content-team, pr-team) | Full worker ecosystem |
 | **Worker Layout** | Flat `workers/` | Split `workers/public/` + `workers/private/` | Visibility separation |
 | **Knowledge** | Flat `knowledge/` (8 dirs) | Split `knowledge/public/` + `knowledge/private/`, symlinked to git repos | Repo-backed, visibility-split |
 | **Companies** | Not present (optional) | 4 companies ({company}, {company}, personal, golden-thread) + manifest.yaml | Multi-company isolation |
@@ -311,7 +311,7 @@ function detectHQInstance(path: string): HQDetectionResult {
 
     // Detect custom extensions
     customCommands: countFiles(path, '.claude/commands', '*.md') - 18,  // 18 = starter baseline
-    customWorkers:  features.workerCount - 1,  // 1 = sample-worker baseline
+    customWorkers:  features.workerCount - 10,  // ~10 = dev-team baseline in hq-core seed
     customKBs:      features.knowledgeFlatCount - 8,  // 8 = starter baseline KBs
   }
 

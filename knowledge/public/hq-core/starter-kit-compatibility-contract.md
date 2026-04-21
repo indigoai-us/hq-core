@@ -204,7 +204,7 @@ Algorithm:
 **Fallback if no CHANGELOG.md:** Check for structural markers:
 - Has `workers/dev-team/codex-*` -> >= v5.3
 - Has `settings/pure-ralph.json` -> >= v3.0
-- Has `workers/sample-worker/` -> >= v5.0
+- Has `workers/public/dev-team/` -> >= v5.0
 - Has `workspace/content-ideas/` -> >= v2.0
 - None of above -> pre-v2.0 or custom
 

@@ -153,7 +153,7 @@ Knowledge folders use three patterns — all valid, none being migrated:
 
 1. **Embedded standalone `.git` dir** (most company knowledge): e.g. `companies/{company}/knowledge/`, `companies/personal/knowledge/`. HQ tracks these as orphan `160000` gitlinks — the inner repo is opaque to HQ, commits happen inside. To capture advancement: commit inside the inner repo, then `git add companies/{co}/knowledge && git commit` in HQ to bump the pointer. (HQ has no `.gitmodules` file — this is intentional, not a bug.)
 2. **Symlink to `repos/private/knowledge-{co}/`** (e.g. `companies/{company}/knowledge`): tracked as `120000` symlink; edits land in the target repo.
-3. **Inline files tracked by HQ git** (e.g. `knowledge/public/gemini-cli/`, `knowledge/public/getting-started/`, `companies/{company}/knowledge/`): simplest; no inner repo, just regular files.
+3. **Inline files tracked by HQ git** (e.g. `knowledge/public/getting-started/`, `knowledge/public/hq-core/`, `companies/{company}/knowledge/`): simplest; no inner repo, just regular files.
 
 When adding new knowledge: pick pattern 1 for company knowledge that will grow, pattern 2 if you want a shared clone, pattern 3 for small/shared content. Register in `modules/modules.yaml`. Taxonomy: `knowledge/public/hq-core/knowledge-taxonomy.md`.
 
