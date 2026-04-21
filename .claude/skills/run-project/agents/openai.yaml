@@ -1,0 +1,3 @@
+interface:
+  display_name: "Run Project"
+  short_description: "Execute a multi-story PRD project through sequential inline story execution (Ralph loop)."

@@ -1,0 +1,27 @@
+{
+  "name": "@hq/task-executor",
+  "version": "1.0.0",
+  "description": "Execute issues by routing to workers and managing execution loop",
+  "main": "dist/index.js",
+  "bin": {
+    "task-executor": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "ts-node src/index.ts",
+    "mcp": "node dist/mcp-server.js"
+  },
+  "keywords": ["hq", "worker", "task-executor", "orchestration"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2",
+    "ts-node": "^10.9.2"
+  }
+}

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Brainstorm"
+  short_description: "Explore approaches and tradeoffs before committing to a PRD."

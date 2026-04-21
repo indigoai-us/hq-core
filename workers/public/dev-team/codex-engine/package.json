@@ -1,0 +1,35 @@
+{
+  "name": "@hq/codex-engine",
+  "version": "1.0.0",
+  "description": "MCP server wrapping @openai/codex-sdk — available for standalone use. Pipeline workers now use codex CLI directly.",
+  "main": "dist/index.js",
+  "bin": {
+    "codex-engine": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "ts-node src/index.ts",
+    "mcp": "node dist/mcp-server.js"
+  },
+  "keywords": [
+    "hq",
+    "worker",
+    "codex",
+    "mcp",
+    "openai"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@openai/codex-sdk": "^0.104.0",
+    "commander": "^12.1.0",
+    "dotenv": "^17.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  }
+}

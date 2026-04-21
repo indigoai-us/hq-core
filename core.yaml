@@ -1,0 +1,53 @@
+version: 1
+hqVersion: "12.0.0"
+updatedAt: "2026-04-21T00:00:00Z"
+
+# hq-core is the minimal scaffold seed. Rich add-ons ship as `@indigoai-us/hq-pack-*`
+# npm packages installed into `packages/` via `hq install`. See `packages/README.md`.
+
+rules:
+  locked:
+    - .claude/CLAUDE.md
+    - .claude/settings.json
+    - .claude/hooks/
+    - .claude/policies/
+    - modules/
+    - companies/manifest.yaml
+    - companies/_template/
+    - workers/registry.yaml
+    - scripts/
+    - core.yaml
+    - CHANGELOG.md
+    - MIGRATION.md
+  reviewable:
+    - workspace/
+    - .claude/commands/
+    - .claude/skills/
+    - packages/
+  open:
+    - "**"
+
+# Packs recommended for a full batteries-included experience. `npx create-hq`
+# prompts to install these on first run; `--full` installs unconditionally;
+# `--minimal` skips. `conditional` predicates (bash -c evaluated) let a pack
+# opt out when the host lacks prerequisites — e.g. skip gemini-pack when the
+# `gemini` binary is not on PATH.
+recommended_packages:
+  - name: '@indigoai-us/hq-pack-design-styles'
+    version: '^1.0.0'
+    description: 'Curated style packs (registry + pack schema + reference MDCs)'
+  - name: '@indigoai-us/hq-pack-design-quality'
+    version: '^1.0.0'
+    description: 'Typography, color, spatial, motion quality references for design-audit skills'
+  - name: '@indigoai-us/hq-pack-gemini'
+    version: '^1.0.0'
+    description: 'Gemini CLI workers (coder, reviewer, frontend, designer, stylist, ux-auditor) + gemini-cli knowledge'
+    conditional: 'command -v gemini >/dev/null 2>&1'
+  - name: '@indigoai-us/hq-pack-gstack'
+    version: '^1.0.0'
+    description: 'gstack-team workers (26 g-* skills) + scripts/gstack-bridge.sh'
+
+# checksums are recomputed by scripts/build-policy-digest.sh + related tooling
+# on the hq-core side. Intentionally omitted on first commit; regenerated on
+# the first publish that runs checksum tooling.
+checksums: {}

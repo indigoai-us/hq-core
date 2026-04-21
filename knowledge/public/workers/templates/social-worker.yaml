@@ -1,0 +1,70 @@
+# Social Worker Template
+# For X/Twitter, LinkedIn, etc.
+
+worker:
+  id: social-{platform}-{persona}
+  name: "{Persona}'s {Platform} Worker"
+  type: SocialWorker
+  version: "1.0"
+
+identity:
+  persona: {persona}
+  voice_guide: knowledge/{persona}/voice-style.md
+
+execution:
+  mode: scheduled
+  schedule: "0 9,14,19 * * *"  # 9am, 2pm, 7pm
+  max_runtime: 10m
+  retry_attempts: 2
+
+context:
+  base:
+    - knowledge/{persona}/voice-style.md
+    - knowledge/{persona}/profile.md
+  dynamic:
+    - social-content/trends/
+    - social-content/drafts/{platform}/
+
+verification:
+  post_execute:
+    - check: character_count
+      max: 280                 # adjust per platform
+    - check: voice_consistency
+      reference: knowledge/{persona}/voice-style.md
+  approval_required: true      # always review before posting
+
+tasks:
+  source: workers/social/{id}/queue.json
+  format: simple
+  one_at_a_time: true
+
+output:
+  destination: social-content/drafts/{platform}/
+  format: markdown
+  naming: "{date}-{time}-draft.md"
+
+audit:
+  log: workers/social/logs/{id}.log
+  progress: workers/social/progress/{id}.txt
+
+instructions: |
+  You are {persona}'s {platform} worker.
+
+  Task Types:
+  - generate: Create original post on given topic
+  - respond: Draft reply to specified thread
+  - curate: Find content to repost with commentary
+
+  Protocol:
+  1. Check queue for pending task
+  2. Execute based on task type
+  3. Save draft to output destination
+  4. Log progress
+
+  Style Guidelines:
+  - [Add platform-specific style notes]
+
+  Never:
+  - Post without approval
+  - Use corporate jargon
+  - Over-explain

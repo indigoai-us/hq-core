@@ -1,0 +1,20 @@
+name: social-shared
+description: Shared utilities, types, and safety functions for the social-team workers
+version: "1.0"
+type: library
+company: null  # public, company-agnostic
+tags:
+  - social
+  - shared
+  - library
+
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state

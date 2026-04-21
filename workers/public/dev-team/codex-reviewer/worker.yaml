@@ -1,0 +1,151 @@
+worker:
+  id: codex-reviewer
+  name: "Codex Reviewer"
+  description: "AI-powered code review and improvement via OpenAI Codex SDK — second-opinion reviewer complementing Claude-based code-reviewer"
+  type: CodeWorker
+  version: "1.0"
+  team: dev-team
+
+execution:
+  mode: on_demand
+  max_runtime: 15m
+  retry_attempts: 1
+  spawn_method: task_tool
+  model: opus
+  codex_model: gpt-5.4
+  codex_flags: --reasoning high --fast
+
+context:
+  base:
+    - workers/public/dev-team/codex-reviewer/skills/
+    - knowledge/public/dev-team/patterns/
+  dynamic:
+    - pattern: "{target_repo}/src/"
+      when: always
+    - pattern: "{target_repo}/package.json"
+      when: always
+    - pattern: "{target_repo}/tsconfig.json"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+    - "*.lock"
+
+skills:
+  - id: review-code
+    file: skills/review-code.md
+  - id: improve-code
+    file: skills/improve-code.md
+  - id: apply-best-practices
+    file: skills/apply-best-practices.md
+
+verification:
+  post_execute:
+    - check: typescript
+      command: npm run typecheck
+    - check: lint
+      command: npm run lint
+    - check: test
+      command: npm test
+  approval_required: true
+  human_checkpoints:
+    - before_applying_improvements
+    - on_breaking_changes
+
+# CLI-based: Skills use `codex review` and `codex exec` via Bash directly.
+# MCP server (codex-engine) no longer required for pipeline execution.
+# Kept for reference — codex-engine remains available for standalone /run invocations.
+cli:
+  binary: /opt/homebrew/bin/codex
+  commands:
+    - codex review --uncommitted -c model="gpt-5.4" --reasoning high --fast
+    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+
+# State Machine (Loom pattern)
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+reporting:
+  on_complete:
+    - log_review
+    - extract_learnings
+  metrics:
+    - review_time
+    - issues_found
+    - improvements_applied
+    - back_pressure_pass_rate
+
+instructions: |
+  # Codex Reviewer
+
+  AI-powered code review and improvement using OpenAI Codex CLI (`codex review`, `codex exec`).
+
+  ## Role in Pipeline
+
+  Codex Reviewer is a **second-opinion reviewer** that complements the Claude-based code-reviewer worker. In the dev-team pipeline, codex-reviewer sits **AFTER** code-reviewer:
+
+  ```
+  ... -> code-reviewer (Claude) -> codex-reviewer (Codex) -> qa-tester -> ...
+  ```
+
+  This dual-review approach provides:
+  - **Diverse perspectives**: Two different AI models catch different classes of issues
+  - **Cross-validation**: Issues flagged by both reviewers are high-confidence
+  - **Broader coverage**: Codex excels at pattern-matching across large codebases; Claude excels at reasoning about logic
+
+  ## When to Use
+
+  - **review-code**: Analyze files for quality issues. Best for focused review of specific files or changes with severity-grouped findings.
+  - **improve-code**: Apply targeted improvements to files. Best when you know what goals to optimize for (e.g., "add error handling", "improve types").
+  - **apply-best-practices**: Run a standard improvement pass with predefined goals. Best as a final polish step before PR.
+
+  Use codex-reviewer when:
+  - Code has already passed code-reviewer (Claude) and you want a second opinion
+  - You want Codex-specific pattern analysis (large-scale codebase patterns)
+  - You want automated improvements with before/after diffs
+  - A standard best-practices pass is needed before merge
+
+  Do NOT use codex-reviewer when:
+  - Code hasn't been written yet (use codex-coder instead)
+  - You're debugging a specific error (use codex-debugger instead)
+  - You only need a quick single-reviewer pass (use code-reviewer instead)
+
+  ## Skills
+
+  | Skill | Description |
+  |-------|-------------|
+  | review-code | Review files via codex_review, output severity-grouped findings |
+  | improve-code | Improve files via codex_improve, show before/after diffs |
+  | apply-best-practices | Standard improvement pass with predefined quality goals |
+
+  ## CLI Usage
+
+  ```bash
+  /run codex-reviewer review-code --files src/auth/*.ts --focus security
+  /run codex-reviewer improve-code --files src/services/billing.ts --goals "error handling, type safety"
+  /run codex-reviewer apply-best-practices --files src/api/routes/*.ts
+  ```
+
+  ## Patterns
+
+  - Always run review-code before improve-code (understand issues before fixing)
+  - Use --focus to narrow review scope for faster, more relevant results
+  - Review output is grouped by severity: critical > high > medium > low > info
+  - Improvements show before/after diffs for human review
+  - apply-best-practices is idempotent — safe to run multiple times
+  - On improvement failure (back-pressure), revert and report rather than iterate
+
+  ## Human-in-the-loop
+
+  - Review severity-grouped findings before applying fixes
+  - Approve before/after diffs from improve-code
+  - Confirm scope of apply-best-practices before execution

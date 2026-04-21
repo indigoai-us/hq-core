@@ -1,0 +1,55 @@
+# People File — Example
+# One folder per person at companies/{company}/people/{slug}/
+# This meta.yaml holds basic contact + role info for the person.
+# Additional files (notes, meeting transcripts, contracts, etc.) can live
+# alongside this file inside the same folder.
+#
+# Required: name, type
+#   type: "internal" | "external"
+#     - internal: HQ team member (employee, co-founder, core staff)
+#     - external: client, vendor, partner, prospect, contractor, advisor, etc.
+#
+# Everything else is optional and added as discovered or provided.
+
+name: Jane Smith
+slug: jane-smith
+type: internal                 # "internal" | "external"
+
+# Role/title inside the company
+role: Head of Engineering
+
+# External-only fields — uncomment and fill when type: external
+# relationship: client         # client | vendor | partner | prospect | contractor | advisor
+# organization: Acme Corp      # the external party's company
+# primary_contact: true        # is this the main point-of-contact at their org?
+
+# Basic contact info
+email: jane@example.com
+phone: "+1XXXXXXXXXX"
+location: "San Francisco, CA"
+timezone: America/Los_Angeles
+
+# Service handles — used by integrations (Slack, Linear, GitHub, Cognito, etc.)
+# Added automatically on first interaction or manually.
+handles:
+  slack: U08EXAMPLE1
+  linear: abc123-def456
+  github: janesmith
+  linkedin: jane-smith-123
+  # x: janesmith
+  cognito_sub: "a1b2c3d4-5678-90ab-cdef-1234567890ab"   # internal only — Cognito subject UUID (immutable, not the email)
+
+# Tags — for quick filtering and search
+tags: [engineering, leadership]
+
+# Timestamps
+added: "2026-01-15"
+updated: "2026-01-20"
+
+# Notes — freeform, append-only, newest first.
+# The agent adds notes when it learns something useful about this person.
+notes:
+  - date: "2026-01-20"
+    text: "Prefers Slack over email. Usually responds within an hour during business hours."
+  - date: "2026-01-15"
+    text: "Met at kickoff meeting. Leading the platform migration project."

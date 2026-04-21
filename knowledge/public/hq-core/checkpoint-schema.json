@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "hq-checkpoint-schema",
+  "title": "HQ Checkpoint Schema",
+  "description": "Canonical checkpoint format for HQ task progress tracking",
+  "type": "object",
+  "required": ["task_id", "completed_at", "summary"],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "description": "Unique identifier for the task (e.g., US-001, feature-name)"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO8601 timestamp when checkpoint was created"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Brief description of work completed"
+    },
+    "files_touched": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of files modified during this work"
+    },
+    "build_passed": {
+      "type": "boolean",
+      "description": "Whether build/tests passed after this work"
+    },
+    "commit": {
+      "type": "string",
+      "description": "Git commit hash if code was committed"
+    },
+    "next_steps": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Suggested next actions for future sessions"
+    },
+    "notes": {
+      "type": "string",
+      "description": "Additional context or observations"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Arbitrary additional data",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

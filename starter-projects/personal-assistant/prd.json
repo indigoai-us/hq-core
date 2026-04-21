@@ -1,0 +1,43 @@
+{
+  "project": "personal-assistant-setup",
+  "goal": "Set up email digest and task management workers",
+  "success_criteria": "Daily email digest running automatically, classifying emails correctly",
+  "features": [
+    {
+      "id": "email-config",
+      "title": "Configure email accounts",
+      "description": "Add email accounts to settings/email/accounts.json for the digest worker to access",
+      "acceptance_criteria": [
+        "accounts.json exists with at least one account",
+        "Account has name, email, and provider fields",
+        "Provider is one of: gmail, outlook, imap"
+      ],
+      "files": ["settings/email/accounts.json"],
+      "passes": false
+    },
+    {
+      "id": "email-worker",
+      "title": "Customize email worker",
+      "description": "Update email worker settings to match your schedule and preferences",
+      "acceptance_criteria": [
+        "worker.yaml has correct schedule (morning or evening)",
+        "Digest format matches preferences",
+        "Output destination is set correctly"
+      ],
+      "files": ["workers/assistant/email/worker.yaml"],
+      "passes": false
+    },
+    {
+      "id": "first-digest",
+      "title": "Run first email digest",
+      "description": "Execute email worker manually and generate first digest to verify setup",
+      "acceptance_criteria": [
+        "Digest generated in workspace/digests/",
+        "Classification working (urgent/actionable/fyi/archive)",
+        "HTML opens correctly in browser"
+      ],
+      "files": [],
+      "passes": false
+    }
+  ]
+}

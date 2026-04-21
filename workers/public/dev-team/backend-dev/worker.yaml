@@ -1,0 +1,158 @@
+worker:
+  id: backend-dev
+  name: "Backend Developer"
+  type: CodeWorker
+  version: "1.0"
+
+execution:
+  mode: on_demand
+  max_runtime: 20m
+  retry_attempts: 2
+  model: opus
+  codex_model: gpt-5.4
+  codex_flags: --reasoning high --fast
+
+context:
+  base:
+    - workers/public/dev-team/backend-dev/
+    - workers/public/dev-team/backend-dev/skills/
+    - knowledge/public/dev-team/patterns/backend/
+    - knowledge/public/testing/templates/
+    - knowledge/public/testing/e2e-cloud.md
+  dynamic:
+    - pattern: "{target_repo}/src/"
+      when: always
+    - pattern: "{target_repo}/package.json"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+    - frontend/
+    - components/
+
+verification:
+  post_execute:
+    - check: typescript
+      command: npm run typecheck
+    - check: lint
+      command: npm run lint
+    - check: test
+      command: npm test
+  approval_required: true
+
+external_skills:
+  # Vercel React Best Practices - Server-side sections
+  - vercel/react-best-practices  # Server-side performance rules
+  # Key areas for backend:
+  # - Prevent waterfall chains in API routes
+  # - Authenticate Server Actions like API routes
+  # - Cross-request LRU caching
+  # - Use after() for non-blocking operations
+
+output:
+  destination: workspace/reports/dev-team/
+  format: both
+  naming: "{date}-backend-dev-{task}.{ext}"
+
+cli:
+  binary: /opt/homebrew/bin/codex
+  commands:
+    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+
+mcp:
+  server:
+    command: node
+    args:
+      - dist/mcp-server.js
+    cwd: workers/public/dev-team/backend-dev
+  tools:
+    - implement_endpoint
+    - implement_service
+    - add_middleware
+    - fix_backend_bug
+    - e2e_testing
+
+# State Machine (Loom pattern)
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+instructions: |
+  # Backend Developer
+
+  API implementation, business logic, and server-side integrations.
+
+  ## Skills
+
+  | Skill | Description |
+  |-------|-------------|
+  | implement-endpoint | Create new API endpoint |
+  | implement-service | Create service/business logic layer |
+  | add-middleware | Add Express/Next.js middleware |
+  | fix-backend-bug | Fix server-side bug |
+  | e2e-testing | Write, run, and debug E2E tests |
+
+  ## Codex Execution
+
+  All code-writing skills delegate to Codex CLI. Opus orchestrates (reads repo, analyzes patterns, runs back-pressure). Codex generates the code.
+
+  ```bash
+  # implement-endpoint
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Create API endpoint: {spec}. Follow existing patterns in this repo. Use TypeScript strict mode." 2>&1
+
+  # implement-service
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Create service: {name}. Follow existing service patterns. Add error handling and input validation." 2>&1
+
+  # add-middleware
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Add middleware: {description}. Follow existing middleware patterns." 2>&1
+
+  # fix-backend-bug
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Diagnose and fix: {issue}. Error: {error_output}. Apply the fix directly." 2>&1
+
+  # e2e-testing
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Write E2E tests for: {feature}. Follow existing test patterns. Use Playwright." 2>&1
+  ```
+
+  ## Patterns
+
+  - Follow existing code patterns in repo
+  - Use TypeScript strict mode
+  - Add proper error handling
+  - Include input validation
+  - Write unit tests for new code
+
+  ## Server-Side Best Practices (Vercel)
+
+  CRITICAL - Prevent Waterfalls:
+  - Never chain awaits sequentially for independent operations
+  - Use Promise.all() for parallel data fetching
+  - Dependency-based parallelization
+
+  HIGH - Server Actions & API Routes:
+  - Authenticate Server Actions like API routes
+  - Cross-request LRU caching for expensive operations
+  - Use after() for non-blocking post-response work
+
+  HIGH - Data Fetching:
+  - Avoid duplicate serialization in RSC props
+  - Minimize serialization at RSC boundaries
+  - Use React.cache() for per-request deduplication
+
+  ## Human-in-the-loop
+
+  - Show implementation plan before coding
+  - Surface breaking changes
+  - Get approval for new dependencies

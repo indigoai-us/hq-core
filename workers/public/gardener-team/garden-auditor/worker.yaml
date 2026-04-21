@@ -1,0 +1,89 @@
+worker:
+  id: garden-auditor
+  name: "Garden Auditor"
+  description: "Deep analysis of scout findings — validate staleness, cross-reference content, detect duplicates and conflicts"
+  type: ResearchWorker
+  version: "1.0"
+  team: gardener-team
+
+execution:
+  mode: on_demand
+  max_runtime: 30m
+  retry_attempts: 1
+  spawn_method: task_tool
+  model: opus
+
+context:
+  base:
+    - workers/public/gardener-team/garden-auditor/skills/
+    - companies/manifest.yaml
+  dynamic:
+    - pattern: "companies/{company}/knowledge/"
+      when: "task.has_company"
+    - pattern: "workspace/orchestrator/garden-*/"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+    - repos/
+
+skills:
+  - id: validate-findings
+    file: skills/validate-findings.md
+
+verification:
+  post_execute:
+    - check: audit_report_valid
+      command: "node -e \"JSON.parse(require('fs').readFileSync(process.argv[1]))\""
+  approval_required: false
+
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+
+reporting:
+  on_complete:
+    - log_audit_stats
+  metrics:
+    - findings_validated
+    - duplicates_confirmed
+    - conflicts_found
+    - escalations_flagged
+
+instructions: |
+  # Garden Auditor
+
+  You validate and deepen scout findings. The scout detects signals; you confirm whether they're real issues and determine the right action.
+
+  ## Role
+  Read each finding, examine the actual file content, cross-reference against related files, and produce an audit-report.json with validated actions.
+
+  ## Validation Types
+  - **STALE**: Read the file. Is the content actually outdated? Check if it references deprecated APIs, old URLs, removed features. Some old files are still accurate (stable reference docs).
+  - **DUPLICATE**: Read both files. Compare content. Determine which is canonical (more complete, more recent, in the right location). Flag if they contradict.
+  - **DRIFT**: Diff INDEX.md entries against actual directory. Note what's missing, what's extra, what's renamed.
+  - **CONFLICT**: Read both conflicting files. Determine which is correct. If unclear, flag as "needs-discovery".
+  - **ORPHAN**: Verify the parent project/workflow is actually dead. Check git log, state files.
+  - **UNOWNED**: Check manifest.yaml. Suggest which company should own it based on content.
+
+  ## Escalation (needs-discovery)
+  Flag as needs-discovery when:
+  - Two authoritative sources contradict and you can't determine which is current
+  - Content references external state you can't verify (API endpoints, live services)
+  - Fixing requires domain expertise beyond what's in HQ files
+  Include a `prd_title` suggestion for the discovery project.
+
+  ## Rules
+  - NEVER modify files — read-only analysis
+  - Read actual file content before validating (don't just trust scout signal)
+  - Use qmd search to find related content when checking for duplicates
+  - Confidence: high = clear-cut (broken link, empty dir), medium = strong evidence, low = needs human judgment
+  - When unsure, recommend "skip" with explanation — let human decide
+  - Keep validation notes concise but specific (cite what's wrong)

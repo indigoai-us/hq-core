@@ -1,0 +1,89 @@
+worker:
+  id: code-reviewer
+  name: "Code Reviewer"
+  description: "PR review, merge management, and code quality gating"
+  type: CodeWorker
+  version: "1.0"
+  team: dev-team
+
+execution:
+  mode: on_demand
+  max_runtime: 15m
+  retry_attempts: 1
+  spawn_method: task_tool
+  model: opus
+  codex_model: gpt-5.4
+  codex_flags: --reasoning high --fast
+
+context:
+  base:
+    - workers/public/dev-team/code-reviewer/skills/
+    - knowledge/public/dev-team/patterns/
+    - knowledge/public/dev-team/workflows/code-review.md
+  dynamic:
+    - pattern: "{target_repo}/src/"
+      when: always
+    - pattern: "{target_repo}/.github/CODEOWNERS"
+      when: always
+    - pattern: "{target_repo}/CONTRIBUTING.md"
+      when: always
+    - pattern: "{target_repo}/package.json"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+    - "*.lock"
+
+skills:
+  - id: review-pr
+    file: skills/review-pr.md
+  - id: merge-to-staging
+    file: skills/merge-to-staging.md
+  - id: merge-to-production
+    file: skills/merge-to-production.md
+  - id: request-changes
+    file: skills/request-changes.md
+
+verification:
+  post_execute:
+    - check: pr_checks_passed
+      command: gh pr checks {pr_number}
+  approval_required: true
+  human_checkpoints:
+    - before_merge_staging
+    - before_merge_production
+    - on_breaking_changes
+
+external_skills:
+  - vercel/code-review-excellence
+  - vercel/systematic-debugging
+
+# CLI-based: Skills use `codex review` and `codex exec` via Bash directly.
+# Replaces previous Node.js MCP server (dist/mcp-server.js).
+cli:
+  binary: /opt/homebrew/bin/codex
+  commands:
+    - codex review --uncommitted -c model="gpt-5.4" --reasoning high --fast
+    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+
+# State Machine (Loom pattern)
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+reporting:
+  on_complete:
+    - log_review
+    - extract_learnings
+  metrics:
+    - review_time
+    - issues_found
+    - merge_success_rate

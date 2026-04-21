@@ -1,0 +1,537 @@
+# Workers Registry
+# Index of all workers in this HQ
+
+version: "4.0"
+updated: "2026-04-11"
+
+workers:
+  # Company Workers (scoped to companies/{co}/workers/)
+  - id: {company}-analyst
+    path: companies/{company}/workers/analyst/
+    type: ResearchWorker
+    visibility: private
+    company: {company}
+    status: active
+    description: "{company}/{company} data analysis - reports, anomaly detection"
+
+  - id: cfo-{company}
+    path: companies/{company}/workers/cfo/
+    type: OpsWorker
+    visibility: private
+    company: {company}
+    status: active
+    description: "CFO worker - financial reporting (Stripe, Gusto, Deel, Shopify)"
+
+  - id: infobip-admin
+    path: companies/{company}/workers/infobip-admin/
+    type: OpsWorker
+    visibility: private
+    company: {company}
+    status: active
+    description: "Infobip API admin - brands, numbers, RCS senders, account (read-only)"
+
+  - id: {company}-health-dashboard
+    path: companies/{company}/workers/health-dashboard/
+    type: OpsWorker
+    visibility: private
+    company: {company}
+    status: active
+    description: "Full-stack health dashboard - business metrics, pipeline speed, API latency, frontend load"
+
+  - id: {company}-gtm
+    path: companies/{company}/workers/gtm/
+    type: OpsWorker
+    visibility: private
+    company: {company}
+    status: active
+    description: "GTM/CAPI ops - Meta Pixel, GTM tags, campaign monitoring, dashboard deploy"
+
+  - id: cmo-{company}
+    path: companies/{company}/workers/cmo/
+    type: OpsWorker
+    visibility: private
+    company: {company}
+    status: active
+    description: "CMO worker - {company} social/content (X, LinkedIn)"
+
+  - id: x-{your-name}
+    path: companies/personal/workers/x-{your-name}/
+    type: SocialWorker
+    visibility: private
+    company: personal
+    status: active
+    description: "X/Twitter posting for {your-name}"
+
+  - id: invoices
+    path: companies/personal/workers/invoices/
+    type: OpsWorker
+    visibility: private
+    company: personal
+    status: active
+    description: "Personal invoices for invoices.{your-name}.com"
+
+  - id: lr-qa
+    path: companies/{company}/workers/qa/
+    type: OpsWorker
+    visibility: private
+    company: {company}
+    status: active
+    description: "{company} QA - smoke tests, store audits, funnel exploration, Playwright suites"
+
+  - id: {company}-deploy
+    path: companies/{company}/workers/deploy/
+    type: OpsWorker
+    visibility: private
+    status: active
+    company: {company}
+    description: "{company} deployment - GitHub Actions, SST, ECS, Pulumi"
+
+  - id: {company}-site-builder
+    path: companies/{company}/workers/site-builder/
+    type: OpsWorker
+    visibility: private
+    company: {company}
+    status: active
+    description: "{company} template creation, audit, and motion injection for {company}-site"
+
+  - id: {company}-research-agent
+    path: companies/{company}/workers/research-agent/
+    type: ResearchWorker
+    visibility: private
+    company: {company}
+    status: active
+    description: "Business research for {company} website engine — web search, social discovery, structured output"
+
+  - id: social-council
+    path: companies/personal/workers/social-council/
+    type: StrategicWorker
+    visibility: private
+    company: personal
+    status: active
+    description: "Strategic gate for personal social accounts — evaluates posts against {company} board, {company} investor, and story arc before any post can be approved"
+
+
+  - id: hq-growth
+    path: companies/personal/workers/hq-growth/
+    type: ResearchWorker
+    visibility: private
+    company: personal
+    status: active
+    description: "HQ growth metrics — npm installs, GitHub stars, release cadence"
+
+  - id: bootcamp
+    path: companies/personal/workers/bootcamp/
+    type: OpsWorker
+    visibility: private
+    company: personal
+    status: active
+    description: "AGI bootcamp student flow"
+
+  - id: launch
+    path: companies/personal/workers/launch/
+    type: OpsWorker
+    visibility: private
+    company: personal
+    status: active
+    description: "DTC brand launch playbook — scaffold, brief, assets, GTM"
+
+  - id: {company}-analytics
+    path: companies/{company}/workers/analytics/
+    type: ResearchWorker
+    visibility: private
+    company: {company}
+    status: active
+    description: "{company} platform analytics — usage, retention, funnel metrics"
+
+  - id: {company}-designer
+    path: companies/{company}/workers/{company}-designer/
+    type: OpsWorker
+    visibility: private
+    company: {company}
+    status: active
+    description: "{company} rebrand-aware design worker — audits, applies, and reviews visual work against the pastel/serif rebrand system (Libre Caslon Display + Barlow Condensed + Inter, six-pastel palette, 135° gradient)"
+
+  # Public Workers (generic, shareable)
+  - id: paper-designer
+    path: workers/public/paper-designer/
+    type: OpsWorker
+    visibility: public
+    status: active
+    description: "Bidirectional Paper Desktop design bridge — extract specs, preview components, edit designs via MCP"
+
+  - id: frontend-designer
+    path: workers/public/frontend-designer/
+    type: OpsWorker
+    visibility: public
+    status: active
+    description: "Bold UI generation using Anthropic skill"
+
+  - id: qa-tester
+    path: workers/public/qa-tester/
+    type: OpsWorker
+    visibility: public
+    status: active
+    description: "Automated website testing with Playwright + agent-browser smoke tests"
+
+  - id: security-scanner
+    path: workers/public/security-scanner/
+    type: OpsWorker
+    visibility: public
+    status: active
+    description: "Security scanning and vulnerability detection"
+
+  - id: pretty-mermaid
+    path: workers/public/pretty-mermaid/
+    type: OpsWorker
+    visibility: public
+    status: active
+    description: "Mermaid diagram rendering — SVG/ASCII with 14 themes"
+
+  # Dev Team Workers (public)
+  - id: project-manager
+    path: workers/public/dev-team/project-manager/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "PRD lifecycle, issue selection, learning aggregation"
+
+  - id: task-executor
+    path: workers/public/dev-team/task-executor/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "Analyze issue, route to workers, validate completion"
+
+  - id: architect
+    path: workers/public/dev-team/architect/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "System design, API design, architecture decisions"
+
+  - id: backend-dev
+    path: workers/public/dev-team/backend-dev/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "API endpoints, business logic, backend implementation"
+
+  - id: database-dev
+    path: workers/public/dev-team/database-dev/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "Schema design, migrations, query optimization"
+
+  - id: dev-qa-tester
+    path: workers/public/dev-team/qa-tester/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "Testing, browser automation, accessibility, demo accounts"
+
+  - id: frontend-dev
+    path: workers/public/dev-team/frontend-dev/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "React/Next components, pages, UI implementation"
+
+  - id: motion-designer
+    path: workers/public/dev-team/motion-designer/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "Animations, transitions, visual polish, image generation"
+
+  - id: infra-dev
+    path: workers/public/dev-team/infra-dev/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "CI/CD pipelines, deployment, monitoring"
+
+  - id: code-reviewer
+    path: workers/public/dev-team/code-reviewer/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "PR review, merge management, code quality gating"
+
+  - id: knowledge-curator
+    path: workers/public/dev-team/knowledge-curator/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "Process learnings, update knowledge bases, documentation"
+
+  - id: product-planner
+    path: workers/public/dev-team/product-planner/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "PRD creation, technical specs, API contracts"
+
+  - id: codex-engine
+    path: workers/public/dev-team/codex-engine/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "MCP server wrapping @openai/codex-sdk — shared by codex-coder, codex-reviewer, codex-debugger"
+
+  - id: codex-coder
+    path: workers/public/dev-team/codex-coder/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "Codex-powered code generation — scaffolding, features, components"
+
+  - id: codex-reviewer
+    path: workers/public/dev-team/codex-reviewer/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "Codex-powered code review — second opinion after Claude code-reviewer"
+
+  - id: codex-debugger
+    path: workers/public/dev-team/codex-debugger/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "Codex-powered debugging — auto-invoked on back-pressure failures"
+
+  # Gstack Team (public) — gstack CLI integration, 26 g-* skills
+  - id: content-brand
+    path: workers/public/content-brand/
+    type: ContentWorker
+    visibility: public
+    team: content-team
+    status: active
+    description: "Brand voice, messaging, tone analysis"
+
+  - id: content-sales
+    path: workers/public/content-sales/
+    type: ContentWorker
+    visibility: public
+    team: content-team
+    status: active
+    description: "Conversion copy, CTAs, value props"
+
+  - id: content-product
+    path: workers/public/content-product/
+    type: ContentWorker
+    visibility: public
+    team: content-team
+    status: active
+    description: "Feature accuracy, technical claims verification"
+
+  - id: content-legal
+    path: workers/public/content-legal/
+    type: ContentWorker
+    visibility: public
+    team: content-team
+    status: active
+    description: "Regulatory compliance, claim verification"
+
+  # Content Shared Library (public)
+  - id: content-shared
+    path: workers/public/content-shared/
+    type: Library
+    visibility: public
+    team: content-team
+    status: active
+    description: "Shared utilities for content analysis workers (types, parser, scorer, reporter)"
+
+  # Social Team Workers (public)
+  - id: social-shared
+    path: workers/public/social-shared/
+    type: Library
+    visibility: public
+    team: social-team
+    status: active
+    description: "Shared utilities for social team (safety checks, queue ops, Post-Bridge client, verification)"
+
+  - id: social-strategist
+    path: workers/public/social-strategist/
+    type: ContentWorker
+    visibility: public
+    team: social-team
+    status: active
+    description: "Content planning and draft creation — wraps /contentidea and /suggestposts with profile awareness"
+
+  - id: social-reviewer
+    path: workers/public/social-reviewer/
+    type: ContentWorker
+    visibility: public
+    team: social-team
+    status: active
+    description: "Quality gate — reviews drafts, validates safety, only worker that can set status to approved"
+
+  - id: social-publisher
+    path: workers/public/social-publisher/
+    type: OpsWorker
+    visibility: public
+    team: social-team
+    status: active
+    description: "Posts approved content via Post-Bridge API — only worker authorized to call posting API"
+
+  - id: social-verifier
+    path: workers/public/social-verifier/
+    type: OpsWorker
+    visibility: public
+    team: social-team
+    status: active
+    description: "Delivery verification — confirms posts are live via agent-browser and Post-Bridge API"
+
+  # Gardener Team Workers (public) — HQ content audit & cleanup
+  - id: garden-scout
+    path: workers/public/gardener-team/garden-scout/
+    type: ResearchWorker
+    visibility: public
+    team: gardener-team
+    status: active
+    description: "Fast scan — detect stale content, orphans, broken links, duplicates, INDEX drift"
+
+  - id: garden-auditor
+    path: workers/public/gardener-team/garden-auditor/
+    type: ResearchWorker
+    visibility: public
+    team: gardener-team
+    status: active
+    description: "Deep validation — cross-reference content accuracy, confirm findings, flag conflicts"
+
+  - id: garden-curator
+    path: workers/public/gardener-team/garden-curator/
+    type: OpsWorker
+    visibility: public
+    team: gardener-team
+    status: active
+    description: "Execute approved actions — archive, deduplicate, update INDEX, create escalation PRDs"
+
+  # {company} PR Team (scoped to companies/{company}/workers/)
+  - id: pr-shared
+    path: companies/{company}/workers/pr-shared/
+    type: Library
+    visibility: private
+    team: pr-team
+    company: {company}
+    status: active
+    description: "Shared utilities for PR team (types, media DB, pitch/coverage tracking, templates)"
+
+  - id: pr-strategist
+    path: companies/{company}/workers/pr-strategist/
+    type: OpsWorker
+    visibility: private
+    team: pr-team
+    company: {company}
+    status: active
+    description: "PR strategy, campaign planning, messaging frameworks, competitive intel"
+
+  - id: pr-writer
+    path: companies/{company}/workers/pr-writer/
+    type: ContentWorker
+    visibility: private
+    team: pr-team
+    company: {company}
+    status: active
+    description: "Press releases, pitches, talking points, op-eds, media alerts, crisis statements"
+
+  - id: pr-outreach
+    path: companies/{company}/workers/pr-outreach/
+    type: OpsWorker
+    visibility: private
+    team: pr-team
+    company: {company}
+    status: active
+    description: "Journalist research, media list building, pitch personalization, outreach"
+
+  - id: pr-monitor
+    path: companies/{company}/workers/pr-monitor/
+    type: ResearchWorker
+    visibility: private
+    team: pr-team
+    company: {company}
+    status: active
+    description: "Media monitoring, coverage tracking, sentiment analysis, competitive PR intel"
+
+  - id: pr-coordinator
+    path: companies/{company}/workers/pr-coordinator/
+    type: OpsWorker
+    visibility: private
+    team: pr-team
+    company: {company}
+    status: active
+    description: "End-to-end PR campaign orchestration, dashboard, content team coordination"
+
+  # Gemini CLI Workers (public) — Google Gemini CLI shell-out workers
+  - id: knowledge-tagger
+    path: workers/public/knowledge-tagger/
+    type: OpsWorker
+    visibility: public
+    status: active
+    description: "Auto-classify knowledge docs against ontology, prepend YAML frontmatter"
+
+  # ASCII Artist (public) — ASCII block-art banners
+  - id: ascii-artist
+    path: workers/public/ascii-artist/
+    type: OpsWorker
+    visibility: public
+    status: active
+    description: "ASCII block-art banner images — dark midnight aesthetic, font-based rendering for social/OG"
+
+  # Sample Worker (public) — Template with worked example
+  - id: site-builder
+    path: workers/public/site-builder/
+    type: OpsWorker
+    visibility: public
+    status: active
+    description: "Build and deploy local business websites from template + config"
+
+  # Reality Checker (dev-team) — Final quality gate, cross-validates QA
+  - id: reality-checker
+    path: workers/public/dev-team/reality-checker/
+    type: CodeWorker
+    visibility: public
+    team: dev-team
+    status: active
+    description: "Final quality gate — cross-validates QA findings independently, defaults to NEEDS WORK"
+
+  # Accessibility Auditor (public) — WCAG 2.2 AA auditing
+  - id: accessibility-auditor
+    path: workers/public/accessibility-auditor/
+    type: OpsWorker
+    visibility: public
+    status: active
+    description: "WCAG 2.2 AA auditing — keyboard nav, screen reader, zoom, reduced motion, contrast"
+
+  # Performance Benchmarker (public) — Core Web Vitals + load testing
+  - id: performance-benchmarker
+    path: workers/public/performance-benchmarker/
+    type: OpsWorker
+    visibility: public
+    status: active
+    description: "Core Web Vitals, k6 load testing, capacity planning, stress/endurance testing"
+
+  # Executive Summary Generator (public) — SCQA format exec summaries
+  - id: exec-summary
+    path: workers/public/exec-summary/
+    type: OpsWorker
+    visibility: public
+    status: active
+    description: "McKinsey SCQA executive summaries — strict word limits, quantified findings, actionable recommendations"

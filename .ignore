@@ -1,0 +1,20 @@
+# Ripgrep ignore — makes Grep fast in HQ (Glob is NOT protected; use hook)
+# Respected even with --no-ignore-vcs (unlike .gitignore)
+# Without this: 1.38M files, 3.5s. With this: ~3,769 files, 0.27s.
+
+# Heavy dirs (70GB repos, node_modules)
+repos/
+node_modules/
+
+# Build artifacts
+dist/
+.next/
+.nx/
+
+# Git internals in nested repos (companies/*/knowledge/.git)
+**/.git/
+
+# Credentials (defense in depth)
+**/browser-state/
+**/credentials.json
+**/token.json

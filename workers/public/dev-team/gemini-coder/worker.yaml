@@ -1,0 +1,131 @@
+worker:
+  id: gemini-coder
+  name: "Gemini Coder"
+  description: "AI-powered code generation via Google Gemini CLI — scaffolding, feature implementation, and component creation"
+  type: CodeWorker
+  version: "1.0"
+  team: dev-team
+
+execution:
+  mode: on_demand
+  max_runtime: 20m
+  retry_attempts: 2
+  spawn_method: task_tool
+  model: sonnet
+
+context:
+  base:
+    - workers/public/dev-team/gemini-coder/skills/
+    - knowledge/public/dev-team/patterns/
+  dynamic:
+    - pattern: "{target_repo}/src/"
+      when: always
+    - pattern: "{target_repo}/package.json"
+      when: always
+    - pattern: "{target_repo}/tsconfig.json"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+    - "*.lock"
+
+skills:
+  - id: generate-code
+    file: skills/generate-code.md
+  - id: implement-feature
+    file: skills/implement-feature.md
+  - id: scaffold-component
+    file: skills/scaffold-component.md
+
+verification:
+  post_execute:
+    - check: typescript
+      command: npm run typecheck
+    - check: lint
+      command: npm run lint
+    - check: test
+      command: npm test
+  approval_required: true
+  human_checkpoints:
+    - before_feature_implementation
+    - on_breaking_changes
+
+cli:
+  binary: npx
+  package: "@google/gemini-cli"
+  commands:
+    - npx @google/gemini-cli --full-auto
+
+# State Machine (Loom pattern)
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+reporting:
+  on_complete:
+    - log_generation
+    - extract_learnings
+  metrics:
+    - generation_time
+    - files_created
+    - back_pressure_pass_rate
+
+instructions: |
+  # Gemini Coder
+
+  AI-powered code generation using Google Gemini CLI (`npx @google/gemini-cli`).
+
+  ## When to Use
+
+  - **generate-code**: Quick code generation from a task description. Best for single-file or small, well-defined outputs.
+  - **implement-feature**: Multi-step feature implementation with back-pressure loop. Best for user stories requiring analysis, generation, and validation.
+  - **scaffold-component**: Component scaffolding with test stubs. Best for creating new React/UI components or API route modules from templates.
+
+  Use gemini-coder when:
+  - Task is well-defined and can be expressed as a prompt
+  - You want an alternative AI perspective to Codex for generation
+  - Cost optimization is a priority (Gemini pricing)
+  - You want parallel generation with different AI models for comparison
+
+  Do NOT use gemini-coder when:
+  - Task requires deep understanding of existing codebase context (use backend-dev/frontend-dev instead)
+  - Task is a bug fix with error output (use codex-debugger or gemini-reviewer instead)
+  - Task is a code review (use gemini-reviewer instead)
+
+  ## Skills
+
+  | Skill | Description |
+  |-------|-------------|
+  | generate-code | Generate code from a task description via Gemini CLI |
+  | implement-feature | Multi-step: analyze -> generate -> back-pressure -> iterate |
+  | scaffold-component | Detect component type -> scaffold -> add tests |
+
+  ## CLI Usage
+
+  ```bash
+  /run gemini-coder generate-code --task "Create a rate limiter middleware" --cwd repos/private/{product}
+  /run gemini-coder implement-feature --story US-001 --repo repos/private/{product}
+  /run gemini-coder scaffold-component --name UserProfile --type react --cwd repos/private/{product}
+  ```
+
+  ## Patterns
+
+  - Always run back-pressure checks (typecheck, lint, test) after generation
+  - Provide context files when possible for better output quality
+  - Use implement-feature for anything more than a single file
+  - On back-pressure failure, iterate with error context (max 2 retries)
+  - Preserve existing code patterns in target repo
+
+  ## Human-in-the-loop
+
+  - Show generation plan before executing
+  - Surface breaking changes or new dependencies
+  - Get approval before writing to repo

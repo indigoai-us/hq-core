@@ -1,0 +1,3 @@
+interface:
+  display_name: "Handoff"
+  short_description: "Prepare session handoff — commit changes, write thread, ensure continuity."

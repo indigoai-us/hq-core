@@ -1,0 +1,51 @@
+{
+  "name": "@hq/content-shared",
+  "version": "1.0.0",
+  "description": "Shared utilities for content analysis workers",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "content-analyze": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./parser": "./dist/lib/parser.js",
+    "./scorer": "./dist/lib/scorer.js",
+    "./reporter": "./dist/lib/reporter.js",
+    "./types": "./dist/lib/types.js",
+    "./brand-analyzer": "./dist/lib/brand-analyzer.js",
+    "./conversion-analyzer": "./dist/lib/conversion-analyzer.js",
+    "./accuracy-analyzer": "./dist/lib/accuracy-analyzer.js",
+    "./compliance-analyzer": "./dist/lib/compliance-analyzer.js",
+    "./analyze": "./dist/lib/analyze.js",
+    "./recommendations": "./dist/lib/recommendations.js",
+    "./priority": "./dist/lib/priority.js",
+    "./variants": "./dist/lib/variants.js",
+    "./restructure": "./dist/lib/restructure.js",
+    "./github-integration": "./dist/lib/github-integration.js",
+    "./cms-integration": "./dist/lib/cms-integration.js",
+    "./output": "./dist/lib/output.js",
+    "./cli": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "content",
+    "analysis",
+    "worker",
+    "shared",
+    "typescript"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

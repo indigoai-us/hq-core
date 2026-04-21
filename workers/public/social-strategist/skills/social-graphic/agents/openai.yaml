@@ -1,0 +1,3 @@
+interface:
+  display_name: "Social Graphic"
+  short_description: "Generate 1080x1080 HTML social graphics for HQ update posts."

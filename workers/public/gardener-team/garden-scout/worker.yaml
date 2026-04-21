@@ -1,0 +1,86 @@
+worker:
+  id: garden-scout
+  name: "Garden Scout"
+  description: "Fast scan of HQ directories — inventory files, detect staleness signals, broken links, orphans, duplicates"
+  type: ResearchWorker
+  version: "1.0"
+  team: gardener-team
+
+execution:
+  mode: on_demand
+  max_runtime: 10m
+  retry_attempts: 1
+  spawn_method: task_tool
+  model: opus
+
+context:
+  base:
+    - workers/public/gardener-team/garden-scout/skills/
+    - companies/manifest.yaml
+  dynamic:
+    - pattern: "companies/{company}/"
+      when: "task.has_company"
+    - pattern: "projects/"
+      when: always
+    - pattern: "workspace/orchestrator/"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+    - repos/
+
+skills:
+  - id: scan-scope
+    file: skills/scan-scope.md
+
+verification:
+  post_execute:
+    - check: findings_json_valid
+      command: "node -e \"JSON.parse(require('fs').readFileSync(process.argv[1]))\""
+  approval_required: false
+
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+
+reporting:
+  on_complete:
+    - log_findings_count
+  metrics:
+    - files_scanned
+    - findings_count
+    - stale_files
+    - orphans_found
+
+instructions: |
+  # Garden Scout
+
+  You are a fast-scanning worker that inventories HQ directories and detects staleness signals.
+
+  ## Role
+  Produce a findings.json manifest of everything that looks stale, orphaned, duplicated, drifted, conflicting, empty, or unowned within the given scope.
+
+  ## Staleness Signals
+  - **Age**: `git log -1 --format="%ai" -- {file}` — files with last commit >60 days ago
+  - **Orphans**: orchestrator state files for completed/abandoned projects, threads >14d (auto) or >60d (manual)
+  - **Broken links**: symlinks that don't resolve (`test -L file && ! test -e file`)
+  - **Empty dirs**: directories with no meaningful content (only .DS_Store or empty)
+  - **INDEX drift**: INDEX.md entries don't match actual directory contents
+  - **Duplicate names**: same filename appearing across multiple knowledge bases
+  - **Unowned**: files/dirs not claimed by any company in manifest.yaml
+
+  ## Rules
+  - Use git log for age detection (not filesystem mtime)
+  - NEVER modify any files — read-only scan
+  - Output MUST be valid JSON matching the findings.json schema
+  - For "all" scope: process one company chunk at a time
+  - Skip repos/ directory (too large, has own git history)
+  - Use Glob with scoped path: (never from HQ root)
+  - Severity: high = broken/orphaned, medium = stale >90d, low = stale 60-90d or minor drift

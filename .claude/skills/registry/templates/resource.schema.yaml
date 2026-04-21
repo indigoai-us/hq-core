@@ -1,0 +1,264 @@
+# schema/resource.schema.yaml
+# Resource schema for a company resource registry.
+# Defines the structure, types, required/optional markers, and constraints
+# for all resource files in resources/*.yaml.
+#
+# VERSION: 1.0.0
+# Every resource file must conform to this schema.
+
+# ---------------------------------------------------------------------------
+# SECURITY EXCLUSIONS
+# ---------------------------------------------------------------------------
+# The following fields are EXPLICITLY EXCLUDED from this schema and must
+# NEVER appear in any resource file:
+#
+#   - credential references    (op:// URIs, secret IDs, vault paths)
+#   - API keys / tokens        (bearer tokens, service account keys, PATs)
+#   - connection strings       (postgres://, mysql://, mongodb:// with auth)
+#   - internal IP addresses    (10.x.x.x, 172.16.x.x, 192.168.x.x with port)
+#   - port numbers             (standalone port assignments for services)
+#   - passwords / secrets      (any key whose value is a credential)
+#   - environment variables    (.env values or resolved secret values)
+#   - certificate data         (PEM blocks, private keys, certificates)
+#
+# This registry describes TOPOLOGY (what exists, why, who owns it, what
+# it connects to by name). Access and connectivity details live in your
+# secret store (1Password, AWS Secrets Manager, etc.) and runtime
+# configuration only.
+# ---------------------------------------------------------------------------
+
+schema_version: "1.0.0"
+
+# ---------------------------------------------------------------------------
+# FIELD DEFINITIONS
+# ---------------------------------------------------------------------------
+# Each field definition includes:
+#   type        - YAML scalar or collection type
+#   required    - whether the field must be present
+#   description - human-readable explanation
+#   enum        - allowed values (when applicable)
+#   example     - one or more example values
+# ---------------------------------------------------------------------------
+
+fields:
+
+  # ── Identity ──────────────────────────────────────────────────────────────
+
+  id:
+    type: string
+    required: true
+    description: >
+      Unique, stable identifier for this resource. Use kebab-case.
+      Must be unique across all resources in the registry.
+      Once set, do not change — other resources reference this id in
+      dependencies[] and used_by[].
+    pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+    example: "api-server"
+
+  name:
+    type: string
+    required: true
+    description: >
+      Human-readable display name for this resource. May include spaces,
+      mixed case, and punctuation. Used in dashboards and reports.
+    example: "API Server"
+
+  type:
+    type: string
+    required: true
+    description: >
+      Resource category. Determines which fields are relevant and how
+      the resource appears in topology views.
+    enum:
+      - repo       # Git repository (source code, config, IaC)
+      - app        # Deployed application or web service
+      - service    # Backend service, API, or daemon
+      - infra      # Infrastructure component (load balancer, CDN, VPC, etc.)
+      - database   # Persistent data store (SQL, NoSQL, object storage)
+      - ai         # AI/ML model, embedding pipeline, or inference service
+      - package    # Reusable library or installable package
+    example: "service"
+
+  # ── Description ───────────────────────────────────────────────────────────
+
+  purpose:
+    type: string
+    required: true
+    description: >
+      One or two sentences explaining what this resource does and why it
+      exists. Write for a new engineer reading the registry for the first time.
+    example: "Handles authentication and session management for all
+      platform clients. Issues JWTs and validates tokens on every API request."
+
+  owner:
+    type: string
+    required: true
+    description: >
+      Team or person responsible for this resource. Used for incident routing
+      and change notifications. Use a team slug or a GitHub username.
+    example: "platform-team"
+
+  # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+  status:
+    type: string
+    required: true
+    description: >
+      Current lifecycle state of the resource.
+    enum:
+      - active      # In production use
+      - deprecated  # Scheduled for removal; avoid new dependencies
+      - planned     # Not yet built; reserved for upcoming work
+    example: "active"
+
+  created_at:
+    type: string
+    required: true
+    description: >
+      ISO 8601 date when this resource was first created or registered.
+      Date-only format (YYYY-MM-DD) is acceptable.
+    format: "YYYY-MM-DD"
+    example: "2024-09-15"
+
+  updated_at:
+    type: string
+    required: true
+    description: >
+      ISO 8601 date when this resource file was last updated.
+      Update this field whenever any other field changes.
+    format: "YYYY-MM-DD"
+    example: "2025-03-20"
+
+  # ── Topology ──────────────────────────────────────────────────────────────
+
+  dependencies:
+    type: sequence
+    items: string
+    required: false
+    default: []
+    description: >
+      List of resource ids that this resource depends on. Only reference ids
+      that exist in the registry (resources/*.yaml). This resource cannot
+      function without each listed dependency.
+    example:
+      - postgres-primary
+      - redis-cache
+
+  used_by:
+    type: sequence
+    items: string
+    required: false
+    default: []
+    description: >
+      List of resource ids that depend on this resource. The inverse of
+      dependencies. Maintained to support impact analysis (e.g. "what breaks
+      if I take this down?").
+    example:
+      - web-app
+      - worker-queue
+
+  # ── Operational ───────────────────────────────────────────────────────────
+
+  constraints:
+    type: sequence
+    items: string
+    required: false
+    default: []
+    description: >
+      Non-credential operational notes: region lock, compliance requirements,
+      retention policies, SLA expectations, data classification, or scaling
+      limits. Plain English sentences. Do NOT include IP addresses, port
+      numbers, passwords, or connection strings here.
+    example:
+      - "Must remain in us-east-1 for data residency compliance."
+      - "Contains PII — all writes must be audit-logged."
+      - "Stateless — safe to scale horizontally without coordination."
+
+  # ── Discovery ─────────────────────────────────────────────────────────────
+
+  tags:
+    type: sequence
+    items: string
+    required: false
+    default: []
+    description: >
+      Free-form labels for filtering and grouping in dashboards and search.
+      Use lowercase kebab-case. Common tags: platform, auth, data, ml,
+      customer-facing, internal, critical, experimental.
+    example:
+      - platform
+      - auth
+      - critical
+
+  # ── Optional Supplemental Fields ──────────────────────────────────────────
+  # The fields below are optional and type-specific. Include them when they
+  # add meaningful topology information. Omit when not applicable.
+
+  repo_url:
+    type: string
+    required: false
+    description: >
+      Public or internal GitHub URL for the source repository.
+      Only for type: repo and type: app/service where source is known.
+      Do NOT include authentication tokens in the URL.
+    example: "https://github.com/my-org/my-api"
+
+  language:
+    type: string
+    required: false
+    description: >
+      Primary programming language or runtime. For type: repo and type: package.
+    example: "TypeScript"
+
+  runtime:
+    type: string
+    required: false
+    description: >
+      Execution environment or compute platform. For type: app and type: service.
+      Describes where the code runs, not how to access it.
+    example: "AWS App Runner"
+
+  # ---------------------------------------------------------------------------
+  # NOTE: The following fields are intentionally absent from this schema:
+  #
+  #   host / endpoint / url_with_auth  — reveals internal topology + access path
+  #   port                             — internal networking detail
+  #   connection_string                — contains embedded credentials
+  #   api_key / token / secret         — never stored here; use a secret store
+  #   ip_address                       — internal IP ranges are infra-sensitive
+  #   credentials_ref / op_path        — op:// paths are credential references
+  #   password / passwd                — obvious exclusion
+  #   environment_variables            — resolved env values are secrets
+  #   certificate / private_key        — cryptographic material
+  # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# EXAMPLE RESOURCE FILE (full)
+# ---------------------------------------------------------------------------
+# A complete, valid example is shown below. Copy this template when adding
+# a new resource to resources/.
+#
+# ---
+# id: my-new-service
+# name: My New Service
+# type: service
+# purpose: >
+#   Processes incoming webhook events from third-party integrations and
+#   routes them to the appropriate internal handler queues.
+# owner: platform-team
+# status: active
+# created_at: "2025-01-10"
+# updated_at: "2025-03-15"
+# dependencies:
+#   - postgres-primary
+#   - redis-cache
+# used_by:
+#   - web-app
+# constraints:
+#   - "Idempotent — duplicate events are safe to replay."
+#   - "Must not store raw webhook payloads longer than 24 hours."
+# tags:
+#   - platform
+#   - integrations
+# runtime: "AWS App Runner"
+# ---------------------------------------------------------------------------

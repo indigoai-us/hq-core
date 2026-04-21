@@ -1,0 +1,105 @@
+<svg width="900" height="320" viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap');
+      .title { font-family: 'Inter', system-ui, sans-serif; font-weight: 900; }
+      .subtitle { font-family: 'Inter', system-ui, sans-serif; font-weight: 700; }
+      .body { font-family: 'Inter', system-ui, sans-serif; font-weight: 400; }
+      .mono { font-family: 'JetBrains Mono', monospace; font-weight: 500; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="320" fill="#0A0A0A"/>
+
+  <!-- Corner Brackets -->
+  <g stroke="#F0F0F0" stroke-width="2" fill="none">
+    <!-- Top Left -->
+    <path d="M 30 30 L 30 60" />
+    <path d="M 30 30 L 60 30" />
+    <!-- Top Right -->
+    <path d="M 870 30 L 870 60" />
+    <path d="M 870 30 L 840 30" />
+    <!-- Bottom Left -->
+    <path d="M 30 290 L 30 260" />
+    <path d="M 30 290 L 60 290" />
+    <!-- Bottom Right -->
+    <path d="M 870 290 L 870 260" />
+    <path d="M 870 290 L 840 290" />
+  </g>
+
+  <!-- Orbital Glyph - Node Network -->
+  <g transform="translate(160, 160)">
+    <!-- Outer orbit -->
+    <ellipse cx="0" cy="0" rx="90" ry="50" fill="none" stroke="#333333" stroke-width="1" transform="rotate(-20)"/>
+    <!-- Middle orbit -->
+    <ellipse cx="0" cy="0" rx="70" ry="35" fill="none" stroke="#444444" stroke-width="1" transform="rotate(25)"/>
+    <!-- Inner orbit -->
+    <circle cx="0" cy="0" r="40" fill="none" stroke="#555555" stroke-width="1" stroke-dasharray="4 4"/>
+
+    <!-- Crosshair -->
+    <line x1="-100" y1="0" x2="100" y2="0" stroke="#333333" stroke-width="1"/>
+    <line x1="0" y1="-70" x2="0" y2="70" stroke="#333333" stroke-width="1"/>
+
+    <!-- Central node -->
+    <circle cx="0" cy="0" r="8" fill="#F0F0F0"/>
+
+    <!-- Orbiting nodes (workers) -->
+    <circle cx="65" cy="-30" r="5" fill="#F0F0F0"/>
+    <circle cx="-70" cy="20" r="5" fill="#F0F0F0"/>
+    <circle cx="20" cy="45" r="5" fill="#F0F0F0"/>
+    <circle cx="-40" cy="-40" r="5" fill="#666666"/>
+    <circle cx="50" cy="35" r="4" fill="#666666"/>
+
+    <!-- Connection lines -->
+    <line x1="0" y1="0" x2="65" y2="-30" stroke="#F0F0F0" stroke-width="1" opacity="0.5"/>
+    <line x1="0" y1="0" x2="-70" y2="20" stroke="#F0F0F0" stroke-width="1" opacity="0.5"/>
+    <line x1="0" y1="0" x2="20" y2="45" stroke="#F0F0F0" stroke-width="1" opacity="0.5"/>
+  </g>
+
+  <!-- Title Block -->
+  <g transform="translate(320, 100)">
+    <!-- HQ -->
+    <text x="0" y="0" class="title" fill="#F0F0F0" font-size="72" letter-spacing="-2">HQ</text>
+    <!-- Registered symbol -->
+    <circle cx="155" cy="-45" r="14" fill="none" stroke="#F0F0F0" stroke-width="2"/>
+    <text x="155" y="-38" class="body" fill="#F0F0F0" font-size="18" text-anchor="middle">R</text>
+
+    <!-- STARTER KIT -->
+    <text x="0" y="35" class="subtitle" fill="#F0F0F0" font-size="28" letter-spacing="8">STARTER KIT</text>
+
+    <!-- Divider line -->
+    <line x1="0" y1="55" x2="280" y2="55" stroke="#333333" stroke-width="2"/>
+
+    <!-- Tagline -->
+    <text x="0" y="85" class="body" fill="#666666" font-size="14" letter-spacing="2">PERSONAL OS FOR AI WORKERS</text>
+  </g>
+
+  <!-- Status Bar -->
+  <g transform="translate(320, 240)">
+    <text class="mono" fill="#666666" font-size="12" letter-spacing="1">
+      <tspan x="0">STATUS</tspan>
+      <tspan x="55" fill="#F0F0F0">DEPLOYED</tspan>
+      <tspan x="150" fill="#333333">/</tspan>
+      <tspan x="170">WORKERS</tspan>
+      <tspan x="245" fill="#F0F0F0">18</tspan>
+      <tspan x="280" fill="#333333">/</tspan>
+      <tspan x="300">COMMANDS</tspan>
+      <tspan x="395" fill="#F0F0F0">22</tspan>
+      <tspan x="430" fill="#333333">/</tspan>
+      <tspan x="450">KNOWLEDGE</tspan>
+      <tspan x="555" fill="#F0F0F0">5</tspan>
+    </text>
+  </g>
+
+  <!-- Unit ID (bottom right) -->
+  <text x="830" y="280" class="mono" fill="#333333" font-size="10" text-anchor="end" letter-spacing="1">HQ-SK-V2.0</text>
+
+  <!-- Small decorative elements -->
+  <!-- Top status indicator -->
+  <g transform="translate(750, 50)">
+    <circle cx="0" cy="0" r="4" fill="#F0F0F0"/>
+    <text x="12" y="4" class="mono" fill="#666666" font-size="10" letter-spacing="1">ACTIVE</text>
+  </g>
+
+</svg>

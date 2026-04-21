@@ -1,0 +1,3 @@
+interface:
+  display_name: "Retro"
+  short_description: "Project or session retrospective — review what happened, surface patterns, and feed learnings back to /learn."

@@ -1,0 +1,52 @@
+# Contact File — Example
+# One file per person at contacts/{slug}.yaml
+# The agent decides what's worth storing based on context.
+#
+# Required: name, slug
+# Everything else: optional, added as discovered or provided
+#
+# Contacts are global to HQ (not company-scoped).
+# Company-specific context goes under the `companies` key.
+# Handles map to service-specific IDs for routing (Slack, Linear, etc).
+
+name: Jane Smith
+slug: jane-smith
+added: "2026-01-15"
+updated: "2026-01-20"
+
+# Role/title — can be general or company-specific (see companies below)
+role: Head of Engineering
+
+# Service handles — used by /slack, /imessage, Linear integration, etc.
+# Added automatically on first interaction or manually.
+handles:
+  email: jane@example.com
+  # phone: "+1XXXXXXXXXX"        # used by /imessage
+  # github: janesmith
+  # linkedin: jane-smith-123
+
+# Company-specific context — one block per company this person is relevant to.
+# Handles here are company-scoped (e.g. different Slack workspaces).
+companies:
+  acme-corp:
+    role: VP Engineering
+    slack:
+      user_id: "U08EXAMPLE1"
+      display_name: "jane.smith"
+      workspace: acme
+    linear:
+      user_id: "abc123-def456"
+    # Freeform company-specific context
+    context: "Reports to CEO. Owns platform team. Decision-maker on infra spend."
+
+# Tags — for quick filtering and search
+tags: [engineering, leadership]
+
+# Notes — freeform, append-only, newest first.
+# The agent adds notes when it learns something useful about this person.
+# Notes are context the agent can use in future interactions.
+notes:
+  - date: "2026-01-20"
+    text: "Prefers Slack over email. Usually responds within an hour during business hours."
+  - date: "2026-01-15"
+    text: "Met at kickoff meeting. Leading the platform migration project."

@@ -1,0 +1,24 @@
+{
+  "name": "@hq/qa-tester",
+  "version": "1.0.0",
+  "description": "Testing, browser automation, and accessibility verification",
+  "main": "dist/index.js",
+  "bin": { "qa-tester": "dist/index.js" },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "ts-node src/index.ts",
+    "mcp": "node dist/mcp-server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@playwright/test": "^1.57.0",
+    "@axe-core/playwright": "^4.10.0",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2",
+    "ts-node": "^10.9.2"
+  }
+}

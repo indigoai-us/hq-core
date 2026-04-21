@@ -1,0 +1,261 @@
+{
+  "_variables": {
+    "brand_name": "Display name of the brand (e.g. TONAL)",
+    "brand_slug": "Lowercase slug used in directories and URLs (e.g. tonal)",
+    "brand_description": "One-sentence brand positioning statement",
+    "product_category": "Primary product category (e.g. clothing, accessories, home goods, beauty)",
+    "aesthetic_refs": "Comma-separated aesthetic references (e.g. COS, Aesop, Everlane)",
+    "fulfillment_provider": "Print-on-demand or fulfillment partner (e.g. TapStitch, Printful, custom warehouse)",
+    "shopify_store_slug": "Shopify myshopify.com subdomain (e.g. tonal-8)",
+    "domain": "Production domain for the storefront (e.g. weartonal.com)",
+    "github_org": "GitHub organization or user for the repo (e.g. {your-name})",
+    "vercel_org": "Vercel org/scope for deployment (e.g. {your-name}s-projects)",
+    "color_primary": "Primary brand color hex (e.g. #2C2C2C)",
+    "color_secondary": "Secondary brand color hex (e.g. #FAF8F5)",
+    "color_accent": "Accent brand color hex (e.g. #A8A29E)",
+    "font_heading": "Heading font family (e.g. DM Sans)",
+    "font_body": "Body font family (e.g. Work Sans)",
+    "product_types": "Comma-separated product types (e.g. tees, hoodies, sweaters, bombers)",
+    "size_range": "Available size range (e.g. S-3XL)",
+    "pricing_position": "Pricing strategy description (e.g. premium basics, 60-70% margin over fulfillment cost)"
+  },
+  "name": "{{brand_slug}}",
+  "description": "Launch {{brand_name}} — a DTC {{product_category}} brand on headless Shopify (Next.js + Storefront API) with {{fulfillment_provider}} fulfillment",
+  "branchName": "main",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Brand Identity",
+      "description": "As a founder, I want a cohesive brand identity for {{brand_name}} so that the store has a professional, memorable presence",
+      "acceptanceCriteria": [
+        "Color palette defined: primary ({{color_primary}}), secondary ({{color_secondary}}), accent ({{color_accent}}), neutrals — inspired by {{aesthetic_refs}}",
+        "Typography selected: heading ({{font_heading}}) + body ({{font_body}}) from Google Fonts or similar",
+        "Simple wordmark/logo created (SVG + PNG formats)",
+        "Brand guidelines document written and committed to companies/{{brand_slug}}/knowledge/brand-guidelines.md",
+        "Domain {{domain}} confirmed available and purchase instructions documented"
+      ],
+      "priority": 1,
+      "passes": false,
+      "labels": ["brand", "design"],
+      "dependsOn": [],
+      "notes": "Use frontend-designer worker. Aesthetic direction: {{aesthetic_refs}}. {{brand_name}} = {{brand_description}}. For non-clothing brands: replace 'wordmark' with appropriate logo type (icon, monogram, emblem) based on product category.",
+      "model_hint": "opus"
+    },
+    {
+      "id": "US-002",
+      "title": "Product Strategy + Catalog JSON",
+      "description": "As a store owner, I want a product catalog defined so that all items, pricing, and variants are documented before Shopify setup",
+      "acceptanceCriteria": [
+        "Product catalog JSON created at companies/{{brand_slug}}/data/product-catalog.json",
+        "Catalog follows playbook schema: metadata, collections, products array",
+        "All product types covered: {{product_types}}",
+        "Pricing set with {{pricing_position}} margins (target 60-70% gross margin for POD)",
+        "Size options configured: {{size_range}} per product type",
+        "Collections defined with handles, titles, descriptions, sort orders",
+        "Product descriptions written in {{brand_name}} brand voice",
+        "SKU format documented: {handle}-{color-slug}-{size}"
+      ],
+      "priority": 2,
+      "passes": false,
+      "labels": ["content", "shopify"],
+      "dependsOn": ["US-001"],
+      "notes": "Single source-of-truth catalog file drives both Shopify product push (US-003) and storefront display. See playbook section 3 (Catalog Pipeline) for schema. For non-clothing brands: adapt variant matrix (e.g. scent+size for candles, material+finish for home goods) — the 2-option variant pattern (Color x Size) is clothing-specific. Inventory policy: 'continue' for print-on-demand (no stock tracking).",
+      "model_hint": "sonnet"
+    },
+    {
+      "id": "US-003",
+      "title": "Shopify Setup + Product Push",
+      "description": "As a store owner, I want a Shopify store configured with all products pushed so that the headless backend is ready",
+      "acceptanceCriteria": [
+        "Shopify store created at {{shopify_store_slug}}.myshopify.com (Basic plan, $39/mo)",
+        "{{fulfillment_provider}} app installed and connected",
+        "Custom app created in Shopify Dev Dashboard with required API scopes",
+        "Credentials stored in companies/{{brand_slug}}/settings/shopify/.env (client_id, client_secret/shpss_, shpat_, storefront token)",
+        "Product push script created at companies/{{brand_slug}}/data/setup-products.ts",
+        "All products from catalog JSON pushed to Shopify via Admin REST API",
+        "Collections created and products linked via Collects API",
+        "All products verified active in Shopify admin"
+      ],
+      "priority": 3,
+      "passes": false,
+      "labels": ["infra", "shopify"],
+      "dependsOn": ["US-002"],
+      "notes": "MANUAL PREREQUISITE: User must create the Shopify store and Dev Dashboard app before this story executes. See playbook section 1 (Auth Flow) for 2026 auth model: client_credentials grant, 24h token expiry, shpss_ dual-purpose token. Required scopes: write_products, read_products, write_inventory, read_inventory, read_product_images, write_product_images, read_orders. Rate limiting: 500ms between collections, 1000ms between products. Use --dry-run flag for testing.",
+      "model_hint": "sonnet"
+    },
+    {
+      "id": "US-004",
+      "title": "Product Imagery",
+      "description": "As a shopper, I want clean product images so that I can see what I am buying before purchase",
+      "acceptanceCriteria": [
+        "At least 2 images per product (front view + detail/lifestyle shot)",
+        "Consistent styling: white/light background, flat lay or on-model, matching {{aesthetic_refs}} aesthetic",
+        "Source PNGs generated via AI (Gemini Imagen 3) or provided by user",
+        "WebP optimization script created at companies/{{brand_slug}}/data/optimize-images.sh",
+        "Images converted to 3 responsive sizes: 400w, 800w, 1200w WebP",
+        "All product images uploaded to Shopify CDN via Admin API",
+        "Hero/lifestyle images created for homepage (16:9 aspect ratio)",
+        "Variant-image associations set for color-specific shots"
+      ],
+      "priority": 4,
+      "passes": false,
+      "labels": ["design", "content"],
+      "dependsOn": ["US-003"],
+      "notes": "See playbook section 4 (Imagery Pipeline) for WebP optimization script and directory structure. For non-clothing brands: adapt image types (e.g. product-in-use shots for home goods, ingredient/texture shots for beauty, detail/packaging shots for accessories). AI generation via gnb CLI (Gemini 3 Pro) works well for flat-lay product shots. Admin API token must be regenerated (24h expiry) before upload session.",
+      "model_hint": "opus"
+    },
+    {
+      "id": "US-005",
+      "title": "Scaffold Storefront",
+      "description": "As a developer, I want the storefront repo initialized from a template so that we can build the store quickly",
+      "acceptanceCriteria": [
+        "Repo created at repos/private/{{brand_slug}}-store from Vercel Commerce template",
+        "pnpm install succeeds with no errors",
+        "TypeScript + Tailwind CSS configured",
+        "Shopify Storefront API connected via .env.local",
+        "Products load from Shopify and render on dev server",
+        "GitHub repo created (private) under {{github_org}}",
+        "Repo added to companies/{{brand_slug}} manifest entry",
+        "qmd collection created for {{brand_slug}}-store"
+      ],
+      "priority": 5,
+      "passes": false,
+      "labels": ["dev", "infra"],
+      "dependsOn": ["US-003"],
+      "notes": "Scaffold from Vercel Commerce template (https://vercel.com/templates/next.js/nextjs-commerce). Provides: product grid, PDP, cart, Shopify integration, Tailwind, TypeScript. The Storefront API token is the shpss_ token (same as client_secret). See playbook section 5 (Storefront Architecture) for file structure reference.",
+      "model_hint": "sonnet"
+    },
+    {
+      "id": "US-006",
+      "title": "Brand Design + All Pages",
+      "description": "As a shopper, I want the store to reflect the {{brand_name}} brand identity with all content pages so that it feels cohesive and premium",
+      "acceptanceCriteria": [
+        "Brand colors applied to Tailwind theme config (primary: {{color_primary}}, secondary: {{color_secondary}}, accent: {{color_accent}})",
+        "Typography loaded and applied: {{font_heading}} (headings) + {{font_body}} (body)",
+        "Logo/wordmark placed in header and footer",
+        "Homepage customized: hero section, featured products grid, brand story snippet, lifestyle imagery",
+        "About page created with brand story, values, and mission",
+        "Consistent component styling (buttons, cards, navigation) matches brand guidelines",
+        "Mobile-first responsive design verified on 3 breakpoints (375px, 768px, 1280px)",
+        "Navigation links to all pages in header and footer"
+      ],
+      "priority": 6,
+      "passes": false,
+      "labels": ["design", "dev", "content"],
+      "dependsOn": ["US-001", "US-005"],
+      "notes": "Merges brand design customization + about/brand story page into one story (was 2 stories in TONAL). Use frontend-designer worker for creative direction, frontend-dev for implementation. Brand guidelines from companies/{{brand_slug}}/knowledge/brand-guidelines.md drive all design decisions. For non-clothing brands: adapt homepage sections (e.g. 'How It Works' for beauty, 'Materials' for home goods, 'Ingredients' for food).",
+      "model_hint": "opus"
+    },
+    {
+      "id": "US-007",
+      "title": "Product Pages (PLP + PDP)",
+      "description": "As a shopper, I want to browse and view products so that I can decide what to buy",
+      "acceptanceCriteria": [
+        "Product listing page (PLP) with grid layout showing all products",
+        "Filter by collection on PLP",
+        "Color swatches shown on PLP product cards",
+        "Product detail page (PDP) with image gallery",
+        "Color and size selector on PDP",
+        "Add to cart button on PDP",
+        "Size chart/guide accessible from PDP",
+        "SEO meta tags and Product JSON-LD structured data on PDP",
+        "Loading skeletons and error boundaries for API calls"
+      ],
+      "priority": 7,
+      "passes": false,
+      "labels": ["dev"],
+      "dependsOn": ["US-003", "US-005"],
+      "notes": "PLP and PDP are the core shopping experience. Use Server Components for SEO (product pages need full SSR with meta tags and JSON-LD). Client components for interactivity (color/size selectors, add-to-cart). For non-clothing brands: adapt variant selectors (e.g. scent picker for candles, material selector for furniture) and size guide (e.g. dimensions guide for home goods, usage guide for beauty).",
+      "model_hint": "sonnet"
+    },
+    {
+      "id": "US-008",
+      "title": "Cart + Checkout",
+      "description": "As a shopper, I want to add items to cart and checkout so that I can purchase products",
+      "acceptanceCriteria": [
+        "Slide-out cart or dedicated cart page implemented",
+        "Cart shows line items with thumbnail, name, variant details, quantity, price",
+        "Update quantity and remove items from cart",
+        "Cart total updates in real-time",
+        "Checkout button redirects to Shopify hosted checkout via cart permalink",
+        "Cart state persists across page navigation via localStorage + React context",
+        "Cart icon in header shows item count badge",
+        "Graceful error handling for checkout redirect failures"
+      ],
+      "priority": 8,
+      "passes": false,
+      "labels": ["dev"],
+      "dependsOn": ["US-005"],
+      "notes": "Use cart permalink pattern (NOT Draft Order API) — see playbook section 2 (Checkout Strategy) for rationale. Cart permalink: https://{{shopify_store_slug}}.myshopify.com/cart/{variant_id}:{quantity}. localStorage-backed React context for cart state (avoids Storefront API cart token dependency). For non-clothing brands: same cart pattern applies regardless of product type.",
+      "model_hint": "sonnet"
+    },
+    {
+      "id": "US-009",
+      "title": "Deploy + SEO",
+      "description": "As a store owner, I want the store live on {{domain}} with SEO configured so that customers can find and access it",
+      "acceptanceCriteria": [
+        "Vercel project created under {{vercel_org}}",
+        "GitHub repo connected for auto-deploy on push to main",
+        "All environment variables set in Vercel production",
+        "Custom domain {{domain}} connected with DNS configured and SSL active",
+        "Framework set to nextjs (NOT null — see playbook section 7 for 404 gotcha)",
+        "sitemap.xml auto-generated via Next.js app/sitemap.ts",
+        "robots.txt configured via app/robots.ts",
+        "OpenGraph and Twitter/X card meta tags on all pages",
+        "Canonical URLs set on all pages",
+        "Favicon and app icons generated from brand identity",
+        "Page titles follow pattern: {Page} | {{brand_name}}",
+        "Production build succeeds with no errors and all routes return 200"
+      ],
+      "priority": 9,
+      "passes": false,
+      "labels": ["infra", "deploy", "seo"],
+      "dependsOn": ["US-006", "US-007", "US-008"],
+      "notes": "Merges deployment + SEO/analytics into one story (was 2 in TONAL). See playbook section 7 (Vercel Deployment) for framework:null gotcha and domain team move issue. See playbook section 8 (SEO Checklist) for full SEO requirements. MANUAL PREREQUISITE: domain must be purchased before DNS configuration. Vercel org mapping: check companies/manifest.yaml for correct scope.",
+      "model_hint": "sonnet"
+    },
+    {
+      "id": "US-010",
+      "title": "Launch QA",
+      "description": "As a store owner, I want everything tested before launch so that customers have a smooth experience",
+      "acceptanceCriteria": [
+        "Full purchase flow tested: browse > PLP > PDP > add to cart > checkout redirect works",
+        "Mobile responsiveness verified on 3 breakpoints (375px, 768px, 1280px)",
+        "Cross-browser check: Chrome, Safari, Firefox",
+        "Lighthouse audit: Performance > 90, Accessibility > 90, SEO = 100, Best Practices = 100",
+        "No console errors in production build",
+        "Shopify store password protection disabled",
+        "Test order placed through full checkout flow and confirmed in Shopify admin",
+        "{{fulfillment_provider}} receives test order and fulfillment flow confirmed",
+        "Shipping notification email fires when fulfilled",
+        "Custom domain resolves with valid SSL",
+        "All critical issues from QA fixed before go-live"
+      ],
+      "priority": 10,
+      "passes": false,
+      "labels": ["qa", "launch"],
+      "dependsOn": ["US-009"],
+      "notes": "See playbook section 9 (QA Checklist) for comprehensive checklist. Use qa-tester worker. MANUAL PREREQUISITES: Shopify store password protection must be disabled in Settings > Online Store > Preferences before test orders can be placed. For non-clothing brands: adapt QA scenarios to product type (e.g. verify subscription flow for consumables, verify customization options for personalized products).",
+      "model_hint": "sonnet"
+    }
+  ],
+  "metadata": {
+    "createdAt": "{{_generated_at}}",
+    "goal": "Launch {{brand_name}} as a DTC {{product_category}} brand on {{domain}} with headless Shopify + {{fulfillment_provider}} fulfillment",
+    "successCriteria": "Store live at {{domain}} with full product catalog, working checkout, and at least one test order fulfilled via {{fulfillment_provider}}",
+    "qualityGates": [
+      "pnpm typecheck && pnpm lint"
+    ],
+    "repoPath": "repos/private/{{brand_slug}}-store",
+    "relatedWorkers": [
+      "frontend-designer",
+      "qa-tester"
+    ],
+    "knowledge": [
+      "companies/{{brand_slug}}/knowledge/brand-guidelines.md",
+      "knowledge/public/hq-core/shopify-launch-playbook.md"
+    ],
+    "company": "{{brand_slug}}",
+    "docsPath": "none"
+  }
+}

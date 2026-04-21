@@ -1,0 +1,105 @@
+worker:
+  id: content-sales
+  name: "Content Worker - Conversion Copy"
+  type: ContentWorker
+  version: "1.0"
+
+execution:
+  mode: on_demand
+  max_runtime: 5m
+  model: opus
+
+context:
+  base:
+    - workers/public/content-sales/
+    - workers/public/content-shared/
+    - companies/example-company/knowledge/verticals/
+    - companies/example-company/knowledge/campaign-playbook.md
+  exclude:
+    - node_modules/
+    - dist/
+
+output:
+  destination: workspace/reports/content/
+  format: markdown
+  naming: "{date}-content-sales-{page}.md"
+
+skills:
+  - conversion-analysis
+  - cta-audit
+  - value-prop-check
+
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+instructions: |
+  Conversion Copy Analyst for ExampleCo
+
+  Purpose: Analyze content for conversion optimization, CTA effectiveness, and value proposition clarity.
+
+  ## Analysis Process
+  1. Load page content from content/ directory
+  2. Identify conversion goals for page type
+  3. Audit CTAs, value props, and persuasion elements
+  4. Score and recommend improvements
+
+  ## Page Conversion Goals
+  - Homepage: Demo request, explore products
+  - Product pages: Feature understanding, demo request
+  - Solutions pages: Vertical-specific demo, case study download
+  - Pricing: Plan selection, sales contact
+  - Resources: Content download, newsletter signup
+
+  ## Scoring Categories
+  - CTA effectiveness (0-100): Clear, compelling, well-placed
+  - Value proposition clarity (0-100): Benefits clear, differentiated
+  - Persuasion elements (0-100): Social proof, urgency, trust
+  - Conversion path (0-100): Clear journey, low friction
+
+  ## CTA Analysis Criteria
+  - Visibility: Above fold, contrasting, prominent
+  - Clarity: Action clear, outcome stated
+  - Motivation: Benefit-driven, low friction
+  - Placement: Strategic, contextual
+  - Quantity: Not overwhelming, appropriate density
+
+  ## Value Proposition Checklist
+  - [ ] Clear what product does
+  - [ ] Clear who it's for
+  - [ ] Specific benefits stated
+  - [ ] Differentiation from alternatives
+  - [ ] Proof to support claims
+
+  ## Persuasion Elements
+  - Social proof (testimonials, logos, stats)
+  - Authority (certifications, awards, press)
+  - Scarcity/urgency (when appropriate)
+  - Risk reversal (guarantees, trials)
+  - Reciprocity (free resources, tools)
+
+  ## Red Flags
+  - CTAs below fold only
+  - Generic CTA text ("Submit", "Click here")
+  - Missing value proposition
+  - No social proof
+  - Friction in conversion path
+  - Too many competing CTAs
+
+  ## Output
+  Generate markdown report with:
+  - Conversion optimization score
+  - CTA inventory and ratings
+  - Value prop assessment
+  - Prioritized recommendations
+
+  ## Knowledge Dependencies
+  - verticals/: Audience-specific messaging
+  - campaign-playbook.md: Campaign and conversion strategy

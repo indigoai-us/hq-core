@@ -1,0 +1,147 @@
+worker:
+  id: gemini-reviewer
+  name: "Gemini Reviewer"
+  description: "AI-powered code review and improvement via Google Gemini CLI — third-opinion reviewer complementing Claude and Codex reviewers"
+  type: CodeWorker
+  version: "1.0"
+  team: dev-team
+
+execution:
+  mode: on_demand
+  max_runtime: 15m
+  retry_attempts: 1
+  spawn_method: task_tool
+  model: sonnet
+
+context:
+  base:
+    - workers/public/dev-team/gemini-reviewer/skills/
+    - knowledge/public/dev-team/patterns/
+  dynamic:
+    - pattern: "{target_repo}/src/"
+      when: always
+    - pattern: "{target_repo}/package.json"
+      when: always
+    - pattern: "{target_repo}/tsconfig.json"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+    - "*.lock"
+
+skills:
+  - id: review-code
+    file: skills/review-code.md
+  - id: improve-code
+    file: skills/improve-code.md
+  - id: apply-best-practices
+    file: skills/apply-best-practices.md
+
+verification:
+  post_execute:
+    - check: typescript
+      command: npm run typecheck
+    - check: lint
+      command: npm run lint
+    - check: test
+      command: npm test
+  approval_required: true
+  human_checkpoints:
+    - before_applying_improvements
+    - on_breaking_changes
+
+cli:
+  binary: npx
+  package: "@google/gemini-cli"
+  commands:
+    - npx @google/gemini-cli --full-auto
+
+# State Machine (Loom pattern)
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+reporting:
+  on_complete:
+    - log_review
+    - extract_learnings
+  metrics:
+    - review_time
+    - issues_found
+    - improvements_applied
+    - back_pressure_pass_rate
+
+instructions: |
+  # Gemini Reviewer
+
+  AI-powered code review and improvement using Google Gemini CLI (`npx @google/gemini-cli`).
+
+  ## Role in Pipeline
+
+  Gemini Reviewer is a **third-opinion reviewer** that complements Claude code-reviewer and Codex code-reviewer. In the dev-team pipeline:
+
+  ```
+  ... -> code-reviewer (Claude) -> codex-reviewer (Codex) -> gemini-reviewer (Gemini) -> qa-tester -> ...
+  ```
+
+  This triple-review approach provides:
+  - **Diverse perspectives**: Three different AI models catch different classes of issues
+  - **Cross-validation**: Issues flagged by multiple reviewers are high-confidence
+  - **Broader coverage**: Each model has unique strengths in different code analysis areas
+  - **Cost optimization**: Gemini pricing can be more favorable for review passes
+
+  ## When to Use
+
+  - **review-code**: Analyze files for quality issues. Best for focused review of specific files or changes with severity-grouped findings.
+  - **improve-code**: Apply targeted improvements to files. Best when you know what goals to optimize for.
+  - **apply-best-practices**: Run a standard improvement pass with predefined goals. Best as a final polish step.
+
+  Use gemini-reviewer when:
+  - Code has already passed code-reviewer (Claude) and you want additional perspective
+  - You want Gemini-specific analysis alongside Codex review
+  - You want cost-effective review passes
+  - A comprehensive multi-model review is needed before merge
+
+  Do NOT use gemini-reviewer when:
+  - Code hasn't been written yet (use gemini-coder instead)
+  - You're debugging a specific error (use codex-debugger instead)
+  - You only need a quick single-reviewer pass (use code-reviewer instead)
+
+  ## Skills
+
+  | Skill | Description |
+  |-------|-------------|
+  | review-code | Review files via Gemini CLI, output severity-grouped findings |
+  | improve-code | Improve files via Gemini CLI, show before/after diffs |
+  | apply-best-practices | Standard improvement pass with predefined quality goals |
+
+  ## CLI Usage
+
+  ```bash
+  /run gemini-reviewer review-code --files src/auth/*.ts --focus security
+  /run gemini-reviewer improve-code --files src/services/billing.ts --goals "error handling, type safety"
+  /run gemini-reviewer apply-best-practices --files src/api/routes/*.ts
+  ```
+
+  ## Patterns
+
+  - Always run review-code before improve-code (understand issues before fixing)
+  - Use --focus to narrow review scope for faster, more relevant results
+  - Review output is grouped by severity: critical > high > medium > low > info
+  - Improvements show before/after diffs for human review
+  - apply-best-practices is idempotent — safe to run multiple times
+  - On improvement failure (back-pressure), revert and report rather than iterate
+
+  ## Human-in-the-loop
+
+  - Review findings before taking action
+  - Decide which issues to address vs. accept as-is
+  - Approve before/after diffs from improve-code

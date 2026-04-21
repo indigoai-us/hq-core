@@ -1,0 +1,45 @@
+{
+  "project": "code-worker-setup",
+  "goal": "Set up Ralph loop for autonomous code implementation on a project",
+  "success_criteria": "Code worker running Ralph loops, back pressure passing, features being committed automatically",
+  "features": [
+    {
+      "id": "repo-setup",
+      "title": "Configure repository connection",
+      "description": "Link code worker to your project repository with proper verification commands",
+      "acceptance_criteria": [
+        "worker.yaml has correct repo/project path",
+        "Back pressure commands defined (typecheck, build, test)",
+        "Verification passes when run locally"
+      ],
+      "files": ["workers/code/{project}/worker.yaml"],
+      "passes": false
+    },
+    {
+      "id": "first-prd",
+      "title": "Create first PRD",
+      "description": "Define features for Ralph loop to implement",
+      "acceptance_criteria": [
+        "prd.json has project name and goal",
+        "At least 3 features defined",
+        "Each feature has acceptance_criteria array",
+        "All features start with passes: false"
+      ],
+      "files": ["projects/{project}/prd.json"],
+      "passes": false
+    },
+    {
+      "id": "first-loop",
+      "title": "Run first Ralph loop",
+      "description": "Execute /ralph-loop and complete one feature",
+      "acceptance_criteria": [
+        "Sub-agent spawned successfully",
+        "Back pressure checks pass",
+        "Checkpoint written to workspace/checkpoints/",
+        "Feature marked passes: true in PRD"
+      ],
+      "files": [],
+      "passes": false
+    }
+  ]
+}

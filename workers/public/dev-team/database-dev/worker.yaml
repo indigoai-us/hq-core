@@ -1,0 +1,120 @@
+worker:
+  id: database-dev
+  name: "Database Developer"
+  type: CodeWorker
+  version: "1.0"
+
+execution:
+  mode: on_demand
+  max_runtime: 15m
+  retry_attempts: 1
+  model: opus
+  codex_model: gpt-5.4
+  codex_flags: --reasoning high --fast
+
+context:
+  base:
+    - workers/public/dev-team/database-dev/
+    - workers/public/dev-team/database-dev/skills/
+    - knowledge/public/dev-team/patterns/database/
+  dynamic:
+    - pattern: "{target_repo}/prisma/"
+      when: "db.type == 'prisma'"
+    - pattern: "{target_repo}/drizzle/"
+      when: "db.type == 'drizzle'"
+    - pattern: "{target_repo}/migrations/"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+
+verification:
+  post_execute:
+    - check: typescript
+      command: npm run typecheck
+    - check: migration
+      command: npm run db:generate
+  approval_required: true
+
+output:
+  destination: workspace/reports/dev-team/
+  format: both
+  naming: "{date}-database-dev-{task}.{ext}"
+
+cli:
+  binary: /opt/homebrew/bin/codex
+  commands:
+    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+
+mcp:
+  server:
+    command: node
+    args:
+      - dist/mcp-server.js
+    cwd: workers/public/dev-team/database-dev
+  tools:
+    - create_schema
+    - create_migration
+    - optimize_query
+    - add_indexes
+
+# State Machine (Loom pattern)
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+instructions: |
+  # Database Developer
+
+  Schema design, migrations, and query optimization.
+
+  ## Skills
+
+  | Skill | Description |
+  |-------|-------------|
+  | create-schema | Design database schema for feature |
+  | create-migration | Create database migration |
+  | optimize-query | Optimize slow query |
+  | add-indexes | Add database indexes |
+
+  ## Codex Execution
+
+  All code-writing skills delegate to Codex CLI. Opus orchestrates (reads repo, analyzes patterns, runs back-pressure). Codex generates the code.
+
+  ```bash
+  # create-schema
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Design database schema for: {feature}. Use {orm}. Follow existing schema patterns." 2>&1
+
+  # create-migration
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Create database migration for: {change}. Use {orm}. Ensure reversibility." 2>&1
+
+  # optimize-query
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Optimize this query: {query_description}. Analyze execution plan and improve." 2>&1
+
+  # add-indexes
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Add indexes for: {table/query}. Analyze query patterns and add appropriate indexes." 2>&1
+  ```
+
+  ## Supported ORMs
+
+  - Prisma
+  - Drizzle
+  - Raw SQL
+
+  ## Human-in-the-loop
+
+  - Approve schema changes
+  - Review migration before running
+  - Confirm destructive operations

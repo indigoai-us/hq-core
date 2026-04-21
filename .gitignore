@@ -1,0 +1,79 @@
+# Credentials and secrets
+settings/**/*.json
+!settings/.gitkeep
+!settings/pure-ralph.json
+*.credentials.json
+*.secret.*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Node
+node_modules/
+dist/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.scratch/
+
+# Generated digests (keep structure, not content)
+workspace/digests/*.html
+workspace/digests/*.md
+
+# Draft content (personal)
+social-content/drafts/**/*.md
+!social-content/drafts/INDEX.md
+
+# Checkpoints (session-specific)
+workspace/checkpoints/*.json
+
+# Context warnings (ephemeral per-session state)
+workspace/.context-warnings/
+
+# Journal entries (personal)
+data/journal/*.jsonl
+
+# Synced modules (cloned repos)
+modules/.synced/
+
+# Obsidian runtime (workspace.json IS committed as default template)
+.obsidian/workspace-mobile.json
+.obsidian/plugins/
+.obsidian/themes/
+.obsidian/community-plugins.json
+
+# Added by ggshield
+.cache_ggshield
+
+# Vercel / Next build output
+.vercel/
+.next/
+
+# Pack install artifacts
+packages/*/node_modules/
+packages/*/dist/
+packages/*/.turbo/

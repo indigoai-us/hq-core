@@ -1,0 +1,26 @@
+{
+  "outputStyle": "Explanatory",
+  "permissions": {
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/credentials)",
+      "Read(~/.aws/config)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.env)",
+      "Read(~/.netrc)",
+      "Read(~/.zshrc)",
+      "Read(~/.zprofile)",
+      "Read(~/.zshenv)",
+      "Read(~/.bashrc)",
+      "Read(~/.bash_profile)"
+    ]
+  },
+  "env": {
+    "PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "MAX_THINKING_TOKENS": "31999",
+    "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
+    "CLAUDE_CODE_NO_FLICKER": "1"
+  }
+}

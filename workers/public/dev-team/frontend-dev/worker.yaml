@@ -1,0 +1,183 @@
+worker:
+  id: frontend-dev
+  name: "Frontend Developer"
+  type: CodeWorker
+  version: "1.0"
+
+execution:
+  mode: on_demand
+  max_runtime: 20m
+  retry_attempts: 2
+  model: opus
+  codex_model: gpt-5.4
+  codex_flags: --reasoning high --fast
+
+context:
+  base:
+    - workers/public/dev-team/frontend-dev/
+    - workers/public/dev-team/frontend-dev/skills/
+    - knowledge/public/dev-team/patterns/frontend/
+    - knowledge/public/testing/templates/
+    - knowledge/public/testing/e2e-cloud.md
+    - knowledge/public/design-styles/styles/
+    - knowledge/public/design-styles/formulas/web/
+    - knowledge/public/design-styles/resources/
+    - knowledge/public/design-styles/foundations/
+  dynamic:
+    - pattern: "{target_repo}/src/components/"
+      when: always
+    - pattern: "{target_repo}/src/app/"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - api/
+    - server/
+
+verification:
+  post_execute:
+    - check: typescript
+      command: npm run typecheck
+    - check: lint
+      command: npm run lint
+  approval_required: true
+
+external_skills:
+  # Vercel React Best Practices (https://github.com/vercel-labs/agent-skills)
+  - vercel/react-best-practices  # Full skill set
+  # Key areas:
+  # - Eliminating waterfalls (defer await, parallel fetching, Suspense)
+  # - Bundle optimization (dynamic imports, avoid barrel files)
+  # - Server-side performance (RSC serialization, React.cache)
+  # - Re-render optimization (useMemo patterns, state management)
+  # - Rendering performance (hydration, CSS content-visibility)
+
+output:
+  destination: workspace/reports/dev-team/
+  format: both
+  naming: "{date}-frontend-dev-{task}.{ext}"
+
+cli:
+  binary: /opt/homebrew/bin/codex
+  commands:
+    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+
+mcp:
+  server:
+    command: node
+    args:
+      - dist/mcp-server.js
+    cwd: workers/public/dev-team/frontend-dev
+  tools:
+    - create_component
+    - create_page
+    - fix_ui_bug
+    - add_form
+    - e2e_testing
+
+# State Machine (Loom pattern)
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+instructions: |
+  # Frontend Developer
+
+  React/Next.js components and pages.
+
+  ## Skills
+
+  | Skill | Description |
+  |-------|-------------|
+  | create-component | Create new React component |
+  | create-page | Create new page/route |
+  | fix-ui-bug | Fix frontend bug |
+  | add-form | Add form with validation |
+  | e2e-testing | Write, run, and debug E2E tests |
+  | audit | Design quality audit — systematic scan with prioritized issue list |
+  | polish | Final quality pass before shipping — alignment, spacing, states, copy |
+  | typeset | Typography refinement — type scale, font pairing, loading strategy |
+  | harden | Edge case hardening — i18n, overflow, empty states, error handling |
+
+  ## Codex Execution
+
+  All code-writing skills delegate to Codex CLI. Opus orchestrates (reads repo, analyzes patterns, runs back-pressure). Codex generates the code.
+
+  ```bash
+  # create-component
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Create React component: {name}. Follow existing component patterns. TypeScript strict, accessible, responsive." 2>&1
+
+  # create-page
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Create page/route: {path}. Follow existing page patterns. Include SEO metadata." 2>&1
+
+  # fix-ui-bug
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Fix UI bug: {issue}. Error: {error_output}. Apply the fix directly." 2>&1
+
+  # add-form
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Add form: {description}. Include validation, error states, and accessibility." 2>&1
+
+  # e2e-testing
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Write E2E tests for: {feature}. Follow existing test patterns. Use Playwright." 2>&1
+  ```
+
+  ## Patterns
+
+  - Follow existing component structure
+  - Use TypeScript strict mode
+  - Include accessibility attributes
+  - Add responsive styles
+
+  ## React Best Practices (Vercel)
+
+  CRITICAL - Eliminating Waterfalls:
+  - Defer await until needed (don't await at top of function)
+  - Use Promise.all() for independent operations
+  - Strategic Suspense boundaries
+
+  CRITICAL - Bundle Optimization:
+  - Avoid barrel file imports (import from specific files)
+  - Dynamic imports for heavy components
+  - Preload based on user intent
+
+  HIGH - Server Components:
+  - Minimize serialization at RSC boundaries
+  - Use React.cache() for per-request deduplication
+  - Parallel data fetching with component composition
+
+  MEDIUM - Re-render Optimization:
+  - Don't wrap simple expressions in useMemo
+  - Extract to memoized components for isolation
+  - Use functional setState updates
+  - Use Transitions for non-urgent updates
+
+  ## {Company-2} Site E2E Requirements
+
+  When working in `repos/private/{company-2}-site`:
+  - Every new or modified page MUST have a corresponding E2E spec in `tests/e2e/pages/`
+  - After adding or modifying specs, run: `npm run generate-manifest`
+  - Commit the updated `tests/e2e/manifest.json` alongside your changes
+  - Run `npm run check-coverage` to verify no routes are uncovered
+  - Test categories: page-load, navigation, forms, components, accessibility, responsive, performance, visual
+
+  ## Learned Rules
+
+  - **Vercel OG images**: Always create `opengraph-image.tsx` with `ImageResponse`. Add to Clerk public routes if auth present
+  - **Next.js App Router layout scope**: A `layout.tsx` in `app/foo/` wraps ALL pages under that path including `app/foo/login/`. NEVER put auth redirect logic in a layout that also covers the login page. Use a route group (e.g. `app/foo/(protected)/`) so the auth layout only wraps protected pages.
+
+  ## Human-in-the-loop
+
+  - Approve component design
+  - Review styling approach
+  - Confirm accessibility compliance

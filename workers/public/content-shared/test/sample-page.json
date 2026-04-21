@@ -1,0 +1,115 @@
+{
+  "url": "/enterprise-platform",
+  "title": "Enterprise Document Management Platform",
+  "meta": {
+    "description": "Secure, compliant document management for enterprises. SOC 2 certified with HIPAA-ready infrastructure.",
+    "keywords": ["document management", "enterprise", "SOC 2", "compliance"],
+    "ogTitle": "Enterprise Document Management | ExampleCo",
+    "ogDescription": "Join 10,000+ companies using our leading document platform"
+  },
+  "sections": [
+    {
+      "id": "hero",
+      "type": "hero",
+      "heading": "The Leading Document Management Platform",
+      "subheading": "Trusted by enterprise teams worldwide",
+      "paragraphs": [
+        "Streamline your document workflows with our industry-leading platform. Save up to 40% on document processing time and reduce errors by 85%.",
+        "Our platform is SOC 2 Type II certified and HIPAA compliant, ensuring your sensitive data is always protected."
+      ]
+    },
+    {
+      "id": "features",
+      "type": "features",
+      "heading": "Enterprise-Grade Features",
+      "paragraphs": [
+        "Built for teams that need powerful, secure document management.",
+        "Integrates with Salesforce, HubSpot, and 100+ other tools."
+      ],
+      "bulletPoints": [
+        "Advanced version control",
+        "Real-time collaboration",
+        "Automated workflows",
+        "Custom approval chains",
+        "AI-powered search"
+      ]
+    },
+    {
+      "id": "testimonials",
+      "type": "testimonials",
+      "heading": "Trusted by Industry Leaders",
+      "paragraphs": [
+        "Over 10,000 companies trust our platform for their document needs.",
+        "See how leading enterprises transformed their workflows."
+      ]
+    },
+    {
+      "id": "stats",
+      "type": "content",
+      "heading": "Results That Speak for Themselves",
+      "paragraphs": [
+        "Our customers see an average 40% reduction in document processing time.",
+        "99.9% uptime guaranteed with our enterprise SLA.",
+        "Join the 500+ Fortune 500 companies using our platform."
+      ]
+    },
+    {
+      "id": "security",
+      "type": "content",
+      "heading": "Enterprise Security You Can Trust",
+      "paragraphs": [
+        "Bank-level encryption protects your data at rest and in transit.",
+        "Our platform is the only document solution with both SOC 2 and HIPAA certifications.",
+        "Zero downtime deployments ensure your team is never interrupted."
+      ]
+    },
+    {
+      "id": "cta-section",
+      "type": "cta",
+      "heading": "Ready to Transform Your Workflows?",
+      "paragraphs": [
+        "Get started today and see results in just 15 minutes.",
+        "No credit card required for your free trial."
+      ]
+    }
+  ],
+  "ctas": [
+    {
+      "text": "Start Free Trial",
+      "href": "/signup",
+      "type": "primary",
+      "location": "hero"
+    },
+    {
+      "text": "Request Demo",
+      "href": "/demo",
+      "type": "primary",
+      "location": "hero"
+    },
+    {
+      "text": "Learn More",
+      "href": "/features",
+      "type": "secondary",
+      "location": "features"
+    },
+    {
+      "text": "Contact Sales",
+      "href": "/contact",
+      "type": "primary",
+      "location": "cta-section"
+    }
+  ],
+  "images": [
+    {
+      "src": "/images/hero-dashboard.png",
+      "alt": "Example dashboard showing document workflows",
+      "context": "hero"
+    },
+    {
+      "src": "/images/security-badges.png",
+      "alt": "SOC 2 and HIPAA certification badges",
+      "context": "security"
+    }
+  ],
+  "extractedAt": "2026-01-25T12:00:00Z"
+}

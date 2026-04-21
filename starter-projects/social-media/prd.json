@@ -1,0 +1,43 @@
+{
+  "project": "social-presence-setup",
+  "goal": "Set up social media content worker for consistent posting with your authentic voice",
+  "success_criteria": "Content queue established, voice guide documented, first draft generated matching your style",
+  "features": [
+    {
+      "id": "voice-guide",
+      "title": "Create voice style guide",
+      "description": "Document your writing voice so content stays consistent and authentic",
+      "acceptance_criteria": [
+        "voice-style.md has tone section",
+        "Includes 3+ example phrases that sound like you",
+        "Lists things to avoid in your writing"
+      ],
+      "files": ["knowledge/{your-name}/voice-style.md"],
+      "passes": false
+    },
+    {
+      "id": "content-queue",
+      "title": "Seed content queue",
+      "description": "Add initial content ideas to the queue to get started",
+      "acceptance_criteria": [
+        "queue.json has at least 3 content ideas",
+        "Each idea has topic, type (post/thread/article), and notes",
+        "Ideas span different themes/topics"
+      ],
+      "files": ["workers/social/{platform}/queue.json"],
+      "passes": false
+    },
+    {
+      "id": "first-draft",
+      "title": "Generate first content draft",
+      "description": "Run social worker or /contentidea to create first draft",
+      "acceptance_criteria": [
+        "Draft saved to workspace/drafts/social/",
+        "Matches voice style guide",
+        "Within platform character limits"
+      ],
+      "files": [],
+      "passes": false
+    }
+  ]
+}

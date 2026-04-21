@@ -1,0 +1,13 @@
+# HQ Company Manifest
+# Single source of truth for company -> resource mapping
+# Run /newcompany to add entries, or edit manually.
+
+companies:
+  personal:
+    name: "Personal"
+    goal: ""
+    path: "companies/personal"
+    sources: []
+    repos: []
+    knowledge: companies/personal/knowledge/
+    qmd_collections: [personal]

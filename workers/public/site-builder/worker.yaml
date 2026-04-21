@@ -1,0 +1,100 @@
+worker:
+  id: site-builder
+  name: "Site Builder"
+  type: OpsWorker
+  version: "1.0"
+
+execution:
+  mode: on-demand
+  max_runtime: 15m
+  retry_attempts: 1
+  model: opus
+
+context:
+  base:
+    - repos/public/local-biz-sites/
+    - knowledge/public/design-styles/styles/
+    - knowledge/public/design-styles/formulas/web/local-business.md
+    - companies/keptwork/knowledge/template-design-system.md
+  dynamic:
+    - "{target_dir}/"
+  exclude:
+    - node_modules/
+    - .next/
+    - "*.log"
+
+verification:
+  post_execute:
+    - check: typescript
+      command: npm run build
+    - check: validate
+      command: npm run validate
+  approval_required: false
+
+tasks:
+  source: workers/public/site-builder/queue.json
+  format: simple
+  one_at_a_time: true
+
+output:
+  destination: "{target_dir}/"
+  format: typescript
+
+skills:
+  - id: build-site
+    name: "Build Site"
+    description: "Takes a business config and produces a deployed spec site"
+
+instructions: |
+  # Site Builder Worker
+
+  You build and deploy local business websites using the local-biz-sites template.
+  Each site is a Kept Work spec site -- built proactively for a business, then pitched to the owner.
+
+  ## Template Location
+  `repos/public/local-biz-sites/` -- the Next.js template with config-driven business sites.
+
+  ## Skill: build-site
+
+  ### Input
+  A business config JSON object or a target business to research. May come from:
+  - The Google Maps finder script output (`scripts/find-businesses.ts`)
+  - A manual business config
+  - A business name + location to research
+
+  ### Process
+  1. **Research** (if no config provided): Look up the business on Google Maps, Yelp, and social media. Gather: name, address, phone, hours, services, reviews.
+  2. **Create config**: Write a complete `BusinessConfig` object in `src/config/site.ts`. Follow the TypeScript interface in `src/config/business.ts`. Use realistic, accurate data.
+  3. **Choose theme**: Pick the best theme for the business category (see `formulas/web/local-business.md` for style pairings):
+     - `warm` -- restaurants, cafes, bakeries, spas, salons (Retro Analog style)
+     - `modern` -- contractors, law offices, medical, professional services (Corporate Clean style)
+     - `clean` -- any category, minimal aesthetic (Minimalist Swiss style)
+  4. **Validate**: Run `npm run validate` to check config completeness.
+  5. **Build**: Run `npm run build` to verify the site compiles.
+  6. **Deploy**: Run `npx vercel deploy` to get a preview URL. If approved, run `npx vercel deploy --prod`.
+  7. **Record**: Save the live URL and business info for outreach.
+
+  ### Output
+  - A deployed site at a Vercel URL
+  - The business config file used
+  - Recommended outreach email (use templates in `outreach/`)
+
+  ## Rules
+  - NEVER use placeholder/dummy data. Every field must be realistic and accurate for the business.
+  - ALWAYS include at least 4 services and 3 testimonials.
+  - Testimonials should be realistic but clearly generated (use first name + last initial format).
+  - ALWAYS run validate before build.
+  - ALWAYS verify the build passes before deploying.
+  - The footer includes "Website by Kept Work" -- do not remove this.
+  - Pricing in outreach: $500 one-time setup + $50/month hosting.
+
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state

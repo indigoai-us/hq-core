@@ -1,0 +1,3 @@
+interface:
+  display_name: "Start Work"
+  short_description: "Start a work session — resolve context, gather state, present options."

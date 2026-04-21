@@ -1,0 +1,49 @@
+# Skill Template
+# Use as YAML frontmatter in .md skill files, or inline in worker.yaml
+
+skill:
+  id: my-skill               # unique within worker
+  name: "My Skill"           # human-readable name
+  description: "What this skill does"
+
+  interface:
+    inputs:
+      - name: param1
+        type: string         # string, number, boolean, array, date, path
+        required: false
+        default: "default-value"
+        description: "Parameter description"
+
+      - name: param2
+        type: number
+        required: false
+        default: 1
+
+    outputs:
+      - name: report
+        type: markdown       # markdown, json, file, git_commit, console
+        destination: "workspace/reports/{name}.md"  # path pattern
+
+  verification:
+    - command: "test -f {output}"
+      description: "Output file exists"
+      must_pass: true
+
+  # Triggers PostToolsHook (auto-checkpoint, metrics) if true
+  mutating: false
+
+# --- Below this line goes in the .md file body ---
+#
+# # My Skill
+#
+# ## Purpose
+# What this skill accomplishes.
+#
+# ## Process
+# 1. First step
+# 2. Second step
+# 3. Third step
+#
+# ## Notes
+# - Important consideration
+# - Another note

@@ -1,0 +1,111 @@
+worker:
+  id: qa-tester
+  name: "QA Tester"
+  type: CodeWorker
+  version: "1.0"
+
+execution:
+  mode: on_demand
+  max_runtime: 30m
+  retry_attempts: 2
+  model: opus
+  codex_model: gpt-5.4
+  codex_flags: --reasoning high --fast
+
+context:
+  base:
+    - workers/public/dev-team/qa-tester/
+    - workers/public/dev-team/qa-tester/skills/
+    - knowledge/public/dev-team/patterns/testing/
+  dynamic:
+    - pattern: "{target_repo}/tests/"
+      when: always
+    - pattern: "{target_repo}/playwright.config.ts"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - test-results/
+
+verification:
+  post_execute:
+    - check: typescript
+      command: npm run typecheck
+  approval_required: true
+
+output:
+  destination: workspace/reports/dev-team/qa/
+  format: both
+  naming: "{date}-qa-{task}.{ext}"
+
+cli:
+  binary: /opt/homebrew/bin/codex
+  commands:
+    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+
+mcp:
+  server:
+    command: node
+    args:
+      - dist/mcp-server.js
+    cwd: workers/public/dev-team/qa-tester
+  tools:
+    - run_tests
+    - write_test
+    - visual_regression
+    - accessibility_scan
+    - create_demo_account
+
+# State Machine (Loom pattern)
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+instructions: |
+  # QA Tester
+
+  Testing, browser automation, and accessibility verification.
+
+  ## Skills
+
+  | Skill | Description |
+  |-------|-------------|
+  | run-tests | Run test suite |
+  | write-test | Write new test for feature |
+  | visual-regression | Run visual regression tests |
+  | accessibility-scan | Run accessibility audit |
+  | create-demo-account | Create demo account for testing |
+  | electron-e2e | MCP-driven E2E tests for the {company} NX Electron app via CDP |
+
+  ## Codex Execution
+
+  Code-writing skills (write-test, create-demo-account) delegate to Codex CLI. Test execution skills (run-tests, visual-regression, accessibility-scan) run directly — no Codex needed.
+
+  ```bash
+  # write-test
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Write tests for: {feature}. Follow existing test patterns. Use Playwright for E2E, Jest/Vitest for unit." 2>&1
+
+  # create-demo-account
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Create demo account setup for: {scenario}. Follow existing fixture/seed patterns." 2>&1
+  ```
+
+  ## Tools
+
+  - Playwright for browser automation
+  - axe-core for accessibility
+  - Jest/Vitest for unit tests
+
+  ## Human-in-the-loop
+
+  - Report test failures with context
+  - Get approval before creating demo accounts
+  - Surface flaky tests

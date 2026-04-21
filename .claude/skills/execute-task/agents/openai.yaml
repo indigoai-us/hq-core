@@ -1,0 +1,3 @@
+interface:
+  display_name: "Execute Task"
+  short_description: "Execute a single PRD story through coordinated inline worker phases (Ralph pattern)."

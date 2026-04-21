@@ -1,0 +1,130 @@
+worker:
+  id: content-legal
+  name: "Content Worker - Regulatory Compliance"
+  type: ContentWorker
+  version: "1.0"
+
+execution:
+  mode: on_demand
+  max_runtime: 5m
+  model: opus
+
+context:
+  base:
+    - workers/public/content-legal/
+    - workers/public/content-shared/
+  exclude:
+    - node_modules/
+    - dist/
+
+output:
+  destination: workspace/reports/content/
+  format: markdown
+  naming: "{date}-content-legal-{page}.md"
+
+skills:
+  - compliance-scan
+  - disclaimer-check
+  - claim-substantiation
+
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+instructions: |
+  Regulatory Compliance Analyst
+
+  Purpose: Flag regulated terms, verify claim substantiation, and identify missing disclaimers.
+
+  ## Analysis Process
+  1. Load page content from content/ directory
+  2. Scan for regulated terms and claims
+  3. Check for required disclaimers
+  4. Verify claim substantiation
+  5. Flag compliance issues
+
+  ## Scoring Categories
+  - Regulated terms (0-100): Proper use of regulated language
+  - Disclaimers (0-100): Required disclaimers present
+  - Substantiation (0-100): Claims properly supported
+  - Risk language (0-100): Appropriate risk disclosure
+
+  ## Regulated Terms (Financial Services)
+
+  ### High-Risk Terms (Require Substantiation)
+  - "Guaranteed"
+  - "Risk-free"
+  - "Secure" / "Security"
+  - "Compliant" / "Compliance"
+  - "FDIC" / "NCUA"
+  - "SOC 2" / "SOC2"
+  - "HIPAA"
+  - "PCI DSS" / "PCI"
+  - "GDPR"
+  - "ISO 27001"
+
+  ### Claim Terms (Need Proof)
+  - "Best" / "Leading" / "#1"
+  - "Fastest" / "Most efficient"
+  - "Proven" / "Trusted"
+  - "Award-winning"
+  - Specific percentages
+  - ROI claims
+  - Time savings claims
+
+  ### Prohibited/Restricted Terms
+  - "Guarantee" (without conditions)
+  - "No risk" (for financial products)
+  - "Always" / "Never" (absolute claims)
+  - Competitor names (in comparisons)
+
+  ## Required Disclaimers
+
+  ### Security Claims
+  - Link to security/trust page
+  - Certification details available
+  - Date of last audit
+
+  ### Performance Claims
+  - "Results may vary"
+  - Sample size/methodology
+  - Time period specified
+
+  ### Financial Claims
+  - Not financial advice
+  - Past performance disclaimer
+  - Risk acknowledgment
+
+  ## Compliance Checklist
+  - [ ] No unsubstantiated guarantees
+  - [ ] Security claims link to documentation
+  - [ ] Compliance certifications verifiable
+  - [ ] Performance claims have context
+  - [ ] Required disclaimers present
+  - [ ] No misleading comparisons
+  - [ ] Testimonials have disclosure
+
+  ## Red Flags
+  - Absolute guarantees without conditions
+  - Security claims without certification proof
+  - Compliance claims without documentation
+  - Missing privacy policy links
+  - Testimonials without disclosure
+  - Competitor disparagement
+
+  ## Output
+  Generate markdown report with:
+  - Compliance score by category
+  - Flagged terms with context
+  - Missing disclaimers
+  - Recommendations for compliance
+
+  ## Note
+  This is content guidance, not legal advice. All flagged items should be reviewed by legal counsel.

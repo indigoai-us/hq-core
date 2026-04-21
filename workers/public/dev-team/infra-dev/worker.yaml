@@ -1,0 +1,100 @@
+worker:
+  id: infra-dev
+  name: "Infrastructure Developer"
+  description: "CI/CD pipelines, deployment configurations, and monitoring setup"
+  type: CodeWorker
+  version: "1.0"
+  team: dev-team
+
+execution:
+  mode: on_demand
+  max_runtime: 20m
+  retry_attempts: 2
+  spawn_method: task_tool
+  model: opus
+  codex_model: gpt-5.4
+  codex_flags: --reasoning high --fast
+
+context:
+  base:
+    - workers/public/dev-team/infra-dev/skills/
+    - knowledge/public/dev-team/patterns/infra/
+    - knowledge/public/dev-team/workflows/deployment.md
+  dynamic:
+    - pattern: "{target_repo}/.github/"
+      when: always
+    - pattern: "{target_repo}/docker*"
+      when: "task.involves_docker"
+    - pattern: "{target_repo}/terraform/"
+      when: "task.involves_terraform"
+    - pattern: "{target_repo}/k8s/"
+      when: "task.involves_kubernetes"
+    - pattern: "{target_repo}/package.json"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+    - src/
+    - tests/
+
+skills:
+  - id: setup-cicd
+    file: skills/setup-cicd.md
+  - id: create-dockerfile
+    file: skills/create-dockerfile.md
+  - id: add-monitoring
+    file: skills/add-monitoring.md
+  - id: configure-deployment
+    file: skills/configure-deployment.md
+
+verification:
+  post_execute:
+    - check: yaml_lint
+      command: npx yaml-lint .github/workflows/*.yml
+    - check: dockerfile_lint
+      command: docker run --rm -i hadolint/hadolint < Dockerfile
+  approval_required: true
+  human_checkpoints:
+    - before_deploy
+    - on_production_change
+
+external_skills:
+  - vercel/github-actions-templates
+  - vercel/terraform-module-library
+  - vercel/monitoring
+
+cli:
+  binary: /opt/homebrew/bin/codex
+  commands:
+    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+
+mcp:
+  server:
+    command: node
+    args: [dist/mcp-server.js]
+  tools:
+    - setup_cicd
+    - create_dockerfile
+    - add_monitoring
+    - configure_deployment
+
+# State Machine (Loom pattern)
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+reporting:
+  on_complete:
+    - log_changes
+    - extract_learnings
+  metrics:
+    - pipeline_execution_time
+    - deployment_success_rate

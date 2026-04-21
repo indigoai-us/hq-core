@@ -1,0 +1,24 @@
+{
+  "name": "@hq/knowledge-curator",
+  "version": "1.0.0",
+  "description": "Knowledge curator worker - process learnings, maintain documentation",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "knowledge-curator": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js",
+    "mcp": "node dist/mcp-server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}

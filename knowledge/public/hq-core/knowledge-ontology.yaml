@@ -1,0 +1,75 @@
+# Knowledge Document Ontology
+# Auto-applied as YAML frontmatter to all knowledge docs
+# Schema for classifying and connecting HQ knowledge documents
+
+version: 1
+
+dimensions:
+  type:
+    description: "What kind of document is this?"
+    required: true
+    cardinality: single
+    values:
+      - strategy      # Positioning, roadmaps, competitive analysis, narratives
+      - reference      # API docs, schemas, specs, architecture, constants
+      - guide          # How-to, setup, runbooks, procedures, onboarding
+      - analysis       # Case studies, research, metrics, benchmarks, audits
+      - brand          # Voice, visual identity, messaging frameworks, guidelines
+      - overview       # Product/company/system overviews, summaries
+
+  domain:
+    description: "What subject area does this cover?"
+    required: true
+    cardinality: multi
+    values:
+      - product        # Features, capabilities, pricing, roadmap
+      - engineering    # Systems, architecture, APIs, databases, infra
+      - data           # Metrics, analytics, reporting, tracking
+      - brand          # Voice, visual, positioning, messaging
+      - market         # Competitive, segments, verticals, ICP
+      - growth         # Channels, campaigns, partnerships, acquisition
+      - operations     # Workflows, tools, compliance, team processes
+
+    # Maps each domain value to its canonical knowledge/ subdir
+    # Used by workers, gardeners, and taxonomy tools to route files correctly
+    canonical_subdir:
+      product: product/
+      engineering: engineering/
+      data: data/
+      brand: brand/
+      market: market/
+      growth: growth/
+      operations: operations/
+
+  status:
+    description: "Content maturity"
+    required: true
+    cardinality: single
+    values:
+      - canonical      # Stable, authoritative, actively maintained
+      - draft          # Incomplete or unreviewed
+      - stale          # Likely outdated, needs review
+
+  tags:
+    description: "Free-form topic keywords (emergent, not from fixed list)"
+    required: true
+    cardinality: multi
+    type: free-form
+
+  relates_to:
+    description: "Relative paths to related docs (knowledge graph edges)"
+    required: false
+    cardinality: multi
+    type: path-list
+
+# Frontmatter format applied to each doc:
+#
+# ---
+# type: reference
+# domain: [engineering, product]
+# status: canonical
+# tags: [supabase, auth, edge-functions]
+# relates_to:
+#   - systems/attio/overview.md
+#   - ../{company}/knowledge/products/signals.md
+# ---

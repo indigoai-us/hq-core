@@ -1,0 +1,70 @@
+# Dev Team Worker Template
+# Copy and customize for each new worker
+
+worker:
+  id: worker-id
+  name: "Worker Name"
+  type: CodeWorker  # CodeWorker for dev, OpsWorker for orchestration
+  version: "1.0"
+
+execution:
+  mode: on_demand
+  max_runtime: 15m
+  retry_attempts: 2
+
+context:
+  base:
+    - workers/public/dev-team/{worker-id}/
+    - workers/public/dev-team/{worker-id}/skills/
+    - knowledge/public/dev-team/patterns/{category}/
+  dynamic:
+    - pattern: "{target_repo}/"
+      when: "task.type == 'implementation'"
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+    - ".git/"
+
+verification:
+  post_execute:
+    - check: typescript
+      command: npm run typecheck
+    - check: lint
+      command: npm run lint
+  approval_required: true  # Human-in-the-loop
+
+output:
+  destination: workspace/reports/dev-team/
+  format: both
+  naming: "{date}-{worker-id}-{task}.{ext}"
+
+mcp:
+  server:
+    command: node
+    args:
+      - dist/mcp-server.js
+    cwd: workers/public/dev-team/{worker-id}
+  tools: []  # Add worker-specific tools
+
+instructions: |
+  # {Worker Name}
+
+  ## Purpose
+  {Description of what this worker does}
+
+  ## Skills
+  | Skill | Description |
+  |-------|-------------|
+
+  ## CLI Usage
+  ```bash
+  cd workers/public/dev-team/{worker-id}
+  node dist/index.js <skill> [options]
+  ```
+
+  ## Human-in-the-loop
+  This worker surfaces decisions to human before proceeding.
+  - Before: Show planned actions
+  - After: Show changes made, request approval
+  - On ambiguity: Escalate, never auto-decide

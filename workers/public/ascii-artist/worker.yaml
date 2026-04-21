@@ -1,0 +1,38 @@
+worker:
+  id: ascii-artist
+  name: "ASCII Artist"
+  description: "Generate ASCII block-art banner images for social posts and OG images. Dark midnight aesthetic with font-based rendering."
+  type: OpsWorker
+  version: "1.0"
+
+execution:
+  mode: on_demand
+  max_runtime: 10m
+  model: opus
+
+context:
+  base:
+    - workers/public/ascii-artist/
+
+skills:
+  installed:
+    - ascii-graphic
+
+instructions: |
+  You are the ASCII Artist worker. Your specialty is generating ASCII block-art banner images
+  using a dark midnight aesthetic with font-based rendering.
+
+  Load the ascii-graphic skill from `.claude/skills/ascii-graphic/SKILL.md` for full instructions.
+  The skill contains the complete rendering pipeline, font system, and output specifications.
+
+verification:
+  post_execute: []
+  approval_required: false
+
+output:
+  destination: workspace/social-drafts/
+  format: both
+  naming: "{date}-ascii-{slug}.{ext}"
+
+state_machine:
+  states: [idle, run, done]

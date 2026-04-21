@@ -1,0 +1,20 @@
+{
+  "name": "frontend-designer",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Frontend Designer Worker - Bold, production-grade UI generation",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "mcp": "node dist/mcp-server.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

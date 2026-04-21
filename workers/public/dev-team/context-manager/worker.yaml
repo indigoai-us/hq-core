@@ -1,0 +1,70 @@
+worker:
+  id: context-manager
+  name: "Context Manager"
+  description: "Discover, maintain, and audit project context so workers can understand projects deeply"
+  type: CodeWorker
+  version: "1.0"
+  team: dev-team
+
+execution:
+  mode: on_demand
+  max_runtime: 15m
+  retry_attempts: 1
+  spawn_method: task_tool
+
+context:
+  base:
+    - workers/dev-team/context-manager/skills/
+    - knowledge/project-context/
+  dynamic:
+    - pattern: "projects/{project}/context/"
+      when: "task.has_project"
+    - pattern: "projects/{project}/prd.json"
+      when: "task.has_project"
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+    - repos/
+
+skills:
+  - id: discover
+    file: skills/discover.md
+    description: "Extract project context from repos, docs, or conversation"
+  - id: audit
+    file: skills/audit.md
+    description: "Check context freshness and completeness"
+  - id: update
+    file: skills/update.md
+    description: "Update specific context files with new information"
+  - id: learn
+    file: skills/learn.md
+    description: "Append learnings to project context as insights are discovered"
+
+verification:
+  post_execute:
+    - check: context_schema
+      command: npx ajv validate -s knowledge/project-context/context-schema.json -d context.yaml
+      when: "has_context_yaml"
+
+# State Machine (Loom pattern)
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+reporting:
+  on_complete:
+    - log_updates
+  metrics:
+    - context_files_created
+    - context_files_updated
+    - stale_files_found
+    - coverage_score
+    - learnings_added

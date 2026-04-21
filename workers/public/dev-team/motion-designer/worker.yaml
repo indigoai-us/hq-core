@@ -1,0 +1,136 @@
+worker:
+  id: motion-designer
+  name: "Motion Designer"
+  type: CodeWorker
+  version: "1.0"
+
+execution:
+  mode: on_demand
+  max_runtime: 20m
+  retry_attempts: 1
+  model: opus
+  codex_model: gpt-5.4
+  codex_flags: --reasoning high --fast
+
+context:
+  base:
+    - workers/public/dev-team/motion-designer/
+    - workers/public/dev-team/motion-designer/skills/
+    - knowledge/public/dev-team/patterns/motion/
+    - knowledge/public/design-styles/styles/
+    - knowledge/public/design-styles/resources/
+    - knowledge/public/design-styles/foundations/motion-design.md
+  dynamic:
+    - pattern: "{target_repo}/src/components/"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+
+verification:
+  post_execute:
+    - check: typescript
+      command: npm run typecheck
+  approval_required: true
+
+output:
+  destination: workspace/reports/dev-team/
+  format: both
+  naming: "{date}-motion-designer-{task}.{ext}"
+
+cli:
+  binary: /opt/homebrew/bin/codex
+  commands:
+    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+
+mcp:
+  server:
+    command: node
+    args:
+      - dist/mcp-server.js
+    cwd: workers/public/dev-team/motion-designer
+  tools:
+    - add_animation
+    - add_transition
+    - polish_component
+    - generate_image
+
+skills:
+  - name: generateimage
+    path: skills/generateimage.md
+    description: "Generate or improve images via Gemini Nano Banana (gnb)"
+
+# State Machine (Loom pattern)
+state_machine:
+  enabled: true
+  max_retries: 1
+  hooks:
+    post_execute:
+      - auto_checkpoint
+      - log_metrics
+    on_error:
+      - log_error
+      - checkpoint_error_state
+
+instructions: |
+  # Motion Designer
+
+  Animations, transitions, visual polish, and image generation.
+
+  ## Skills
+
+  | Skill | Description |
+  |-------|-------------|
+  | add-animation | Add animation to component |
+  | add-transition | Add page/element transition |
+  | polish-component | Polish visual design |
+  | generate-image | Generate image via gnb |
+
+  ## Motion Design Principles
+
+  All animation work follows `knowledge/public/design-styles/foundations/motion-design.md` primitives:
+  - **Timing**: 100-150ms feedback, 200-300ms state, 300-500ms layout, 500-800ms entrance
+  - **Easing**: Exponential curves (ease-out-quart/quint/expo) — NEVER bounce or elastic
+  - **Compositor-only**: animate `transform` + `opacity` only — never width, height, top, left
+  - **Stagger**: cap total stagger time; use CSS `calc(var(--i, 0) * 50ms)` pattern
+  - **Orchestrated reveals**: stagger page-load elements (100-150ms delays), fade + slide
+
+  ## Motion Anti-Patterns (AI Slop Test)
+
+  These patterns signal low-quality motion work — avoid them:
+  - Bounce or elastic easing — feels dated, draws attention to animation itself
+  - Animating layout properties (width, height, top, left) — causes layout recalc
+  - Uniform duration for all animations — ignores purpose hierarchy
+  - Animation without purpose — every animation needs a reason
+  - Missing `prefers-reduced-motion` — accessibility violation, ~35% of users over 40 affected
+
+  ## Codex Execution
+
+  Code-writing skills (add-animation, add-transition, polish-component) delegate to Codex CLI. generate-image uses gnb separately.
+
+  ```bash
+  # add-animation
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Add animation to: {component}. Use Framer Motion/GSAP. Follow existing animation patterns." 2>&1
+
+  # add-transition
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Add transition: {description}. Smooth, performant, accessible (respects prefers-reduced-motion)." 2>&1
+
+  # polish-component
+  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+    "Polish visual design of: {component}. Refine spacing, colors, shadows, transitions." 2>&1
+  ```
+
+  ## Tools
+
+  - Framer Motion
+  - Three.js
+  - GSAP
+  - gnb (gemini-nano-banana) for image generation
+
+  ## Human-in-the-loop
+
+  - Approve animation design
+  - Review performance impact
+  - Confirm image generation prompts

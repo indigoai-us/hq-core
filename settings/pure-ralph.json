@@ -1,0 +1,42 @@
+{
+  "terminal": {
+    "type": "powershell",
+    "configured_at": "2026-01-26T17:15:00Z"
+  },
+  "supported_terminals": {
+    "powershell": {
+      "name": "PowerShell",
+      "platform": ["windows"],
+      "command": "powershell.exe",
+      "description": "Windows PowerShell (default on Windows)"
+    },
+    "windows-terminal": {
+      "name": "Windows Terminal",
+      "platform": ["windows"],
+      "command": "wt.exe",
+      "description": "Modern Windows Terminal with tabs"
+    },
+    "bash": {
+      "name": "Bash",
+      "platform": ["macos", "linux"],
+      "command": "bash",
+      "description": "Default shell on Mac/Linux"
+    },
+    "iterm": {
+      "name": "iTerm",
+      "platform": ["macos"],
+      "command": "open -a iTerm",
+      "description": "Advanced terminal for macOS"
+    }
+  },
+  "_meta": {
+    "version": "1.0.0",
+    "description": "Terminal settings for pure-ralph orchestrator",
+    "schema": {
+      "terminal.type": "One of: powershell, windows-terminal, bash, iterm (null if not configured)",
+      "terminal.configured_at": "ISO timestamp of when terminal was set",
+      "supported_terminals": "Reference of available terminal options by platform"
+    },
+    "first_run_behavior": "When terminal.type is null, the /pure-ralph command should prompt user to select a terminal from supported_terminals matching their platform, then persist the choice"
+  }
+}
