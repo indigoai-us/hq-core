@@ -12,11 +12,10 @@
 | `content-shared/` | Shared library (CLI, types, test harness) for content workers |
 | `dev-team/` | 20 sub-workers -- PM, task executor, architect, devs, QA, Codex, Gemini |
 | `exec-summary/` | McKinsey SCQA executive summaries -- strict word limits, quantified findings |
-| `frontend-designer/` | UI generation with v0/design tools |
+| `frontend-designer/` | UI generation with v0/design tools (requires `@indigoai-us/hq-pack-design-styles` + `hq-pack-design-quality`) |
 | `gardener-team/` | 3 sub-workers -- garden-auditor, garden-curator, garden-scout |
-| `gstack-sprint/` | gstack sprint runner for batch code operations |
 | `knowledge-tagger/` | Knowledge file tagging using ontology-aligned taxonomy |
-| `paper-designer/` | Paper design tool worker using design-styles knowledge |
+| `paper-designer/` | Paper design tool worker using design-styles knowledge (requires `@indigoai-us/hq-pack-design-styles`) |
 | `performance-benchmarker/` | Core Web Vitals, load testing, capacity planning -- k6, Lighthouse |
 | `pretty-mermaid/` | Renders Mermaid diagrams to SVG or ASCII with 14 professional themes |
 | `qa-tester/` | Adversarial website testing -- defaults to FAIL, requires screenshot evidence |
