@@ -32,19 +32,22 @@ rules:
 # `--minimal` skips. `conditional` predicates (bash -c evaluated) let a pack
 # opt out when the host lacks prerequisites — e.g. skip gemini-pack when the
 # `gemini` binary is not on PATH.
+#
+# `source` is consumed verbatim by `hq install` and supports all three
+# transports: `@scope/name[@version]` (npm), `github:owner/repo#<subpath>@<ref>`
+# or any git URL (git), `./path | /abs | file:...` (local). We point at the
+# hq monorepo via `github:` shorthand + subpath so no npm registry auth is
+# required on first run. When packs publish to npm later, swap each `source:`
+# to its `@indigoai-us/hq-pack-*` form — no other wiring changes.
 recommended_packages:
-  - name: '@indigoai-us/hq-pack-design-styles'
-    version: '^1.0.0'
+  - source: 'github:indigoai-us/hq#packages/hq-pack-design-styles'
     description: 'Curated style packs (registry + pack schema + reference MDCs)'
-  - name: '@indigoai-us/hq-pack-design-quality'
-    version: '^1.0.0'
+  - source: 'github:indigoai-us/hq#packages/hq-pack-design-quality'
     description: 'Typography, color, spatial, motion quality references for design-audit skills'
-  - name: '@indigoai-us/hq-pack-gemini'
-    version: '^1.0.0'
+  - source: 'github:indigoai-us/hq#packages/hq-pack-gemini'
     description: 'Gemini CLI workers (coder, reviewer, frontend, designer, stylist, ux-auditor) + gemini-cli knowledge'
     conditional: 'command -v gemini >/dev/null 2>&1'
-  - name: '@indigoai-us/hq-pack-gstack'
-    version: '^1.0.0'
+  - source: 'github:indigoai-us/hq#packages/hq-pack-gstack'
     description: 'gstack-team workers (26 g-* skills) + scripts/gstack-bridge.sh'
 
 # checksums are recomputed by scripts/build-policy-digest.sh + related tooling
