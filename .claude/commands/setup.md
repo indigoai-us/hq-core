@@ -228,6 +228,72 @@ knowledge/*/
 qmd update 2>/dev/null || qmd index . 2>/dev/null || true
 ```
 
+## Phase 2.5: Recommended Content Packs
+
+hq-core ships minimal. Batteries-included UX comes from content packs declared in `core.yaml:recommended_packages`. This phase offers each missing pack to the user — non-destructive, any pack can be declined and re-prompted later via `./setup.sh`, `/update-hq`, or `/setup --resume`.
+
+### Read recommended packs
+
+```bash
+# Parse recommended_packages from core.yaml → TSV of source\tconditional\tdescription
+awk '
+  BEGIN { in_block = 0; cur_src = ""; cur_cond = ""; cur_desc = "" }
+  /^recommended_packages\s*:\s*$/ { in_block = 1; next }
+  in_block && /^[A-Za-z_][A-Za-z0-9_-]*\s*:/ { in_block = 0 }
+  in_block && /^\s*-\s+source\s*:\s*/ {
+    if (cur_src != "") { print cur_src "\t" cur_cond "\t" cur_desc }
+    sub(/^\s*-\s+source\s*:\s*/, ""); gsub(/^["\x27]|["\x27]$/, "")
+    cur_src = $0; cur_cond = ""; cur_desc = ""; next
+  }
+  in_block && /^\s+conditional\s*:\s*/ { sub(/^\s+conditional\s*:\s*/, ""); gsub(/^["\x27]|["\x27]$/, ""); cur_cond = $0 }
+  in_block && /^\s+description\s*:\s*/ { sub(/^\s+description\s*:\s*/, ""); gsub(/^["\x27]|["\x27]$/, ""); cur_desc = $0 }
+  END { if (cur_src != "") { print cur_src "\t" cur_cond "\t" cur_desc } }
+' core.yaml
+```
+
+### Diff against installed packs
+
+```bash
+# Sources already registered in modules.yaml (either location)
+for modfile in modules/modules.yaml modules.yaml; do
+  [[ -f "$modfile" ]] || continue
+  grep -E "^\s+source\s*:" "$modfile" | sed -E "s/^\s+source\s*:\s*[\"']?([^\"'\r\n]+)[\"']?\s*$/\1/"
+done | sort -u
+```
+
+### Prompt per missing pack
+
+For each entry not already installed:
+
+1. If `conditional` is set, evaluate: `bash -c "<conditional>" &>/dev/null`. If it exits non-zero, **skip silently** (host lacks prerequisite). Report: `"• skipped {source} (conditional not met)"`.
+2. Otherwise use AskUserQuestion:
+   ```
+   Install recommended pack?
+
+   {source}
+   {description}
+
+   1. Install
+   2. Skip (can install later via `hq install {source}`)
+   ```
+3. If install, run `npx --yes @indigoai-us/hq-cli install "{source}"`.
+4. On failure: treat as warning, not fatal — continue to next pack. Note in summary:
+   ```
+   ! failed  {source} — retry later: hq install "{source}"
+   ```
+
+### Summary
+
+After processing all packs, display:
+```
+Recommended packs:
+  ✓ installed: {N}
+  • skipped:   {M}
+  ! failed:    {F}
+```
+
+If any failed, print retry hints with `hq install <source>`.
+
 ## Phase 3: Summary
 
 ```
@@ -253,11 +319,15 @@ Your knowledge bases can be independent git repos symlinked into knowledge/.
 This lets you version, share, and publish each knowledge base separately.
 See "Knowledge Repos" in CLAUDE.md for details.
 
+Content packs:
+{list of installed packs from Phase 2.5, or "none — run `hq install <source>` anytime"}
+
 Next steps:
 1. Run /personal-interview — deep interview to build your voice + profile
 2. Run /newworker — create your first worker
 3. Run /plan — plan your first project
 4. Run /search <topic> — find relevant knowledge in HQ
+5. Run `hq install <source>` to add more content packs later
 ```
 
 ## Rules
@@ -268,3 +338,6 @@ Next steps:
 - Create parent directories as needed
 - For CLI tools (gh, vercel): inform but don't block setup if missing. These are "recommended" not "required" (except claude itself)
 - Always use relative paths for symlinks (../../repos/... not absolute paths)
+- Pack install failures are warnings, never fatal — setup always completes
+- Never silently install packs — always prompt (unless `--full` flag was passed at the create-hq layer)
+- Honor `conditional` predicates — skip a pack silently when its prerequisite is missing (e.g. gemini pack when no `gemini` on PATH)

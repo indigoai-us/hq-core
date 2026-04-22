@@ -232,6 +232,81 @@ qmd update 2>/dev/null || true
 qmd embed 2>/dev/null || true
 ok "qmd index built"
 
+# ── 7. Recommended content packs (hq-core v12+) ──────────────────────────────
+# hq-core ships as a minimal scaffold; batteries-included UX comes from packs
+# declared in `core.yaml:recommended_packages`. This phase reads that list,
+# diffs against already-installed packs in `modules/modules.yaml`, and prompts
+# to install each missing pack via `hq install <source>`.
+#
+# Non-destructive: user can decline any pack. Failures are warnings — re-run
+# `./setup.sh` or `/update-hq` to retry. Honored by `HQ_SKIP_PACKAGES=1`.
+
+echo ""
+echo "Recommended content packs…"
+
+if [[ "${HQ_SKIP_PACKAGES:-}" == "1" ]]; then
+  skip "recommended packs (HQ_SKIP_PACKAGES=1)"
+elif [[ ! -f "$REPO_ROOT/core.yaml" ]]; then
+  skip "recommended packs (no core.yaml)"
+else
+  # Collect already-installed pack sources from modules.yaml (either location).
+  INSTALLED_SOURCES=""
+  for modfile in "$REPO_ROOT/modules/modules.yaml" "$REPO_ROOT/modules.yaml"; do
+    [[ -f "$modfile" ]] || continue
+    INSTALLED_SOURCES="$INSTALLED_SOURCES
+$(grep -E "^\s+source\s*:" "$modfile" 2>/dev/null | sed -E "s/^\s+source\s*:\s*[\"']?([^\"'\r\n]+)[\"']?\s*$/\1/")"
+  done
+
+  # Parse recommended_packages from core.yaml using awk (pair source with
+  # optional conditional per entry). Emits TSV lines: source\tconditional.
+  RECS="$(awk '
+    BEGIN { in_block = 0; cur_source = ""; cur_cond = "" }
+    /^recommended_packages\s*:\s*$/ { in_block = 1; next }
+    in_block && /^[A-Za-z_][A-Za-z0-9_-]*\s*:/ { in_block = 0 }
+    in_block && /^\s*-\s+source\s*:\s*/ {
+      if (cur_source != "") { print cur_source "\t" cur_cond }
+      sub(/^\s*-\s+source\s*:\s*/, "")
+      gsub(/^["\x27]|["\x27]$/, "")
+      cur_source = $0; cur_cond = ""; next
+    }
+    in_block && /^\s+conditional\s*:\s*/ {
+      sub(/^\s+conditional\s*:\s*/, "")
+      gsub(/^["\x27]|["\x27]$/, "")
+      cur_cond = $0
+    }
+    END { if (cur_source != "") { print cur_source "\t" cur_cond } }
+  ' "$REPO_ROOT/core.yaml")"
+
+  if [[ -z "$RECS" ]]; then
+    skip "no recommended_packages declared in core.yaml"
+  else
+    # Iterate: skip already-installed, evaluate conditional, prompt, install.
+    # Use a here-string so `read` inside the loop still reads stdin for `ask`.
+    while IFS=$'\t' read -r src cond; do
+      [[ -z "$src" ]] && continue
+      if echo "$INSTALLED_SOURCES" | grep -Fqx "$src"; then
+        ok "$src (already installed)"
+        continue
+      fi
+      if [[ -n "$cond" ]]; then
+        if ! bash -c "$cond" &>/dev/null; then
+          skip "$src (conditional not met: $cond)"
+          continue
+        fi
+      fi
+      if ask "Install recommended pack: $src ?"; then
+        if npx --yes @indigoai-us/hq-cli install "$src" </dev/tty; then
+          ok "$src installed"
+        else
+          fail "$src — install failed (retry: hq install \"$src\")"
+        fi
+      else
+        skip "$src"
+      fi
+    done <<< "$RECS"
+  fi
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -242,4 +317,5 @@ echo "  Next steps:"
 echo "    1. Run 'claude' to start a session"
 echo "    2. Run /setup for interactive personalization"
 echo "    3. Run /learn after each session to grow your knowledge base"
+echo "    4. Run 'hq install <source>' anytime to add content packs"
 echo "════════════════════════════════════════"

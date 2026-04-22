@@ -1,5 +1,5 @@
 ---
-description: Upgrade HQ from the latest indigoai-us/hq release
+description: Upgrade HQ from the latest indigoai-us/hq-core release
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion
 argument-hint: [--check | --from v{X.Y.Z} | v{target}]
 visibility: public
@@ -7,7 +7,7 @@ visibility: public
 
 # /update-hq - HQ Upgrade
 
-Upgrade your HQ installation from the latest indigoai-us/hq release on GitHub.
+Upgrade your HQ installation from the latest indigoai-us/hq-core release on GitHub.
 
 **User's input:** $ARGUMENTS
 
@@ -71,12 +71,12 @@ If structural fallback was used, note: `"(detected via structural markers — no
 If `TARGET_OVERRIDE` is set, use it. Otherwise:
 
 ```bash
-gh api repos/indigoai-us/hq/releases/latest --jq '.tag_name' 2>/dev/null
+gh api repos/indigoai-us/hq-core/releases/latest --jq '.tag_name' 2>/dev/null
 ```
 
 If that fails (no releases):
 ```bash
-gh api repos/indigoai-us/hq/tags --jq '.[0].name' 2>/dev/null
+gh api repos/indigoai-us/hq-core/tags --jq '.[0].name' 2>/dev/null
 ```
 
 Set `TARGET_VERSION` from result (strip leading `v` for comparison, keep for display).
@@ -95,7 +95,7 @@ Stop.
 
 Fetch CHANGELOG.md from target:
 ```bash
-gh api repos/indigoai-us/hq/contents/template/CHANGELOG.md?ref=v{TARGET_VERSION} --jq '.content' | base64 -d
+gh api repos/indigoai-us/hq-core/contents/CHANGELOG.md?ref=v{TARGET_VERSION} --jq '.content' | base64 -d
 ```
 
 Extract all version headings (`## v{X.Y.Z}`) between CURRENT and TARGET. Display:
@@ -109,7 +109,7 @@ Upgrade path: v{CURRENT} → v{intermediate1} → ... → v{TARGET}
 
 Fetch MIGRATION.md from target:
 ```bash
-gh api repos/indigoai-us/hq/contents/template/MIGRATION.md?ref=v{TARGET_VERSION} --jq '.content' | base64 -d
+gh api repos/indigoai-us/hq-core/contents/MIGRATION.md?ref=v{TARGET_VERSION} --jq '.content' | base64 -d
 ```
 
 ### Parse sections
@@ -202,7 +202,7 @@ Actions:
 
 Process in order: **new files → updated files → breaking changes → removals**.
 
-Track counters: `created=0, auto_updated=0, user_updated=0, skipped=0, deleted=0, failed=0`.
+Track counters: `created=0, auto_updated=0, user_updated=0, skipped=0, deleted=0, failed=0, pack_upgraded=0, pack_installed=0, pack_failed=0`.
 Track list: `skipped_files=[]` (for summary).
 
 ### 5a. New Files
@@ -214,12 +214,12 @@ For each path in `new_files`:
 3. If not exists:
    - For directories: list contents first:
      ```bash
-     gh api "repos/indigoai-us/hq/contents/template/{dir_path}?ref=v{TARGET}" --jq '.[].path'
+     gh api "repos/indigoai-us/hq-core/contents/{dir_path}?ref=v{TARGET}" --jq '.[].path'
      ```
      Then process each file in the directory.
    - Fetch content:
      ```bash
-     gh api "repos/indigoai-us/hq/contents/template/{path}?ref=v{TARGET}" --jq '.content' | base64 -d
+     gh api "repos/indigoai-us/hq-core/contents/{path}?ref=v{TARGET}" --jq '.content' | base64 -d
      ```
    - If `DRY_RUN`: report `"Would create: {path}"`. Do not write.
    - Otherwise: create parent dirs (`mkdir -p`), write file, increment `created`.
@@ -244,7 +244,7 @@ For each path in `updated_files`:
 7. **Three-way merge for all other files:**
    - Fetch **base** content (from CURRENT version tag):
      ```bash
-     gh api "repos/indigoai-us/hq/contents/template/{path}?ref=v{CURRENT}" --jq '.content' | base64 -d
+     gh api "repos/indigoai-us/hq-core/contents/{path}?ref=v{CURRENT}" --jq '.content' | base64 -d
      ```
    - If base fetch fails (file didn't exist in that version): treat as conflict, go to step 7b.
    - **7a. If local == base** (user never customized): auto-update.
@@ -389,6 +389,41 @@ For each path in `removed_files`:
 5. If no: note in summary.
 6. If `DRY_RUN`: report `"Would prompt to delete: {path}"`.
 
+### 5e. Content Packs (hq-core v12+)
+
+hq-core v12 split batteries-included content out into installable packs (`@indigoai-us/hq-pack-*`). `/update-hq` handles packs on two axes:
+
+**(i) Upgrade currently-installed packs.**
+
+Read `modules/modules.yaml` (or `modules.yaml`). For every entry with `strategy: package` and a resolvable `source:` field:
+
+1. Run `npx --yes @indigoai-us/hq-cli update "{source}"` (non-destructive: the CLI compares manifest version → fetches → re-extracts only if upstream moved).
+2. On success: increment `pack_upgraded`. Report `"✓ Upgraded pack: {source}"`.
+3. On failure: increment `pack_failed`. Report `"! Pack upgrade failed: {source} — retry: hq install \"{source}\""`. Continue — never abort the whole migration for a pack failure.
+4. If `DRY_RUN`: report `"Would upgrade pack: {source}"`, no write.
+
+**(ii) Offer newly-recommended packs.**
+
+Re-read `recommended_packages` from the **upgraded** `core.yaml` (if `core.yaml` was itself touched by this migration, use the local post-update copy; otherwise use current local copy). Diff against already-installed pack sources.
+
+For each recommended pack that is (a) not installed locally and (b) passes its `conditional` predicate (if declared):
+
+1. Use AskUserQuestion:
+   ```
+   v{TARGET} recommends a new pack:
+
+   {source}
+   {description}
+
+   1. Install now
+   2. Skip (install later via `hq install {source}`)
+   ```
+2. If install and not dry run: `npx --yes @indigoai-us/hq-cli install "{source}"`. Increment `pack_installed` on success, `pack_failed` on failure.
+3. If a pack's conditional exits non-zero: skip silently, note in summary.
+4. If `DRY_RUN`: report `"Would prompt: new pack {source}"`.
+
+Pack failures are warnings — the scaffold upgrade still succeeds. Every failed pack gets a retry line in the summary.
+
 ---
 
 ## Phase 6: Post-Migration
@@ -465,6 +500,10 @@ Migration Complete: v{CURRENT} → v{TARGET}
   Deleted:        {deleted} files
   Failed:         {failed} files (fetch errors)
 
+  Packs upgraded: {pack_upgraded}
+  Packs installed: {pack_installed} (newly recommended)
+  Pack failures:  {pack_failed} (warnings only — retry with hq install)
+
 {if skipped > 0:}
 Files needing manual merge:
   {list of skipped_files}
@@ -507,3 +546,6 @@ Run `/migrate` without --check to apply.
 - **CHANGELOG is version source of truth** — update it last to reflect successful migration
 - **Dry run must never write** — `--check` only reports, touches no files
 - **One file at a time** — never batch-overwrite without showing what changed
+- **Pack failures never abort migration** — content packs are best-effort; log failures, continue scaffold upgrade
+- **Never silently install recommended packs** — always prompt per-pack; skip silently only on failed `conditional`
+- **Pack updates are idempotent** — `hq install`/`hq update` compares manifest version, no-op when already current
