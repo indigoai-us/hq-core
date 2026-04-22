@@ -44,25 +44,34 @@ If not authenticated: hard stop with `"Run: gh auth login"`.
 
 ### 1b. Detect version
 
-If `OVERRIDE_VERSION` is set, use it. Otherwise:
+If `OVERRIDE_VERSION` is set, use it. Otherwise detect in this order (stop at first hit):
 
-1. Read `CHANGELOG.md` from HQ root.
-2. Scan for first heading matching `## v{X.Y.Z}` (regex: `/^## v(\d+\.\d+\.\d+)/`).
-3. If found → `CURRENT_VERSION={match}`.
-4. If CHANGELOG.md missing or no match, use structural markers:
+1. **Primary — `core.yaml:hqVersion`** (v12.0.0+, the canonical version source of truth post-`hq-core-split`).
+   - Read `core.yaml` from HQ root.
+   - Extract `hqVersion` value (regex on a YAML scalar: `/^hqVersion:\s*["']?(\d+\.\d+\.\d+)["']?/m`).
+   - If found → `CURRENT_VERSION={match}`, `DETECTION_SOURCE="core.yaml"`.
+2. **Fallback 1 — `CHANGELOG.md` heading scan** (pre-v12 installs, or v12+ without core.yaml).
+   - Read `CHANGELOG.md` from HQ root.
+   - Scan for first heading matching `## v{X.Y.Z}` or `## [{X.Y.Z}]` (regex: `/^##\s*\[?v?(\d+\.\d+\.\d+)/`).
+   - If found → `CURRENT_VERSION={match}`, `DETECTION_SOURCE="CHANGELOG.md"`.
+3. **Fallback 2 — structural markers** (pre-v12 installs with neither core.yaml nor a conforming CHANGELOG — last-resort heuristics).
    - `workers/dev-team/codex-*` dirs exist → `>= v5.3.0`
-   - `workers/dev-team/` exists → `>= v5.0.0`
+   - `workers/sample-worker/` exists → `>= v5.0.0`
    - `settings/pure-ralph.json` exists → `>= v3.0.0`
    - `workspace/content-ideas/` exists → `>= v2.0.0`
    - None → `unknown`
-5. If `unknown`: ask user with AskUserQuestion — cannot proceed without a baseline.
+   - If matched → `DETECTION_SOURCE="structural-markers"`.
+4. If `unknown`: ask user with AskUserQuestion — cannot proceed without a baseline.
 
 Display:
 ```
 Current HQ version: v{CURRENT_VERSION}
 ```
 
-If structural fallback was used, note: `"(detected via structural markers — no CHANGELOG.md found)"`
+Annotate by `DETECTION_SOURCE`:
+- `"core.yaml"` → no annotation (expected path on v12+)
+- `"CHANGELOG.md"` → `"(detected via CHANGELOG.md — no core.yaml found; pre-v12 install)"`
+- `"structural-markers"` → `"(detected via structural markers — no core.yaml or CHANGELOG.md found)"`
 
 ---
 
