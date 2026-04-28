@@ -1,15 +1,154 @@
-# Migration — v12.0.0 → v12.1.0
+## Migrating to v12.1.0 — 2026-04-28
 
-## What changed
+### Headline
 
-Iteration release on top of the v12.0.0 hq-core split. All changes are additive — new commands, a new skill, and a `/plan` refactor that splits the heavy interview path into a separate `/deep-plan`. No locked-file structural changes; existing HQ instances upgrade cleanly with no manual steps required.
+Iteration release on top of the v12.0.0 hq-core split. All changes are additive — new commands, a new skill, a `/plan` refactor that splits the heavy interview path into a separate `/deep-plan`, and a batch of new policies that consolidate scattered git/bash/vercel rules into discipline-pack policies. No locked-file structural changes; existing HQ instances upgrade cleanly with no breaking changes.
 
-## Upgrading an existing HQ instance
+### New Commands
 
-```bash
-cd ~/path/to/your/hq    # wherever your HQ lives
-/update-hq              # pulls latest hq-core; reports any newly-locked files
-```
+- `.claude/commands/deep-plan.md`
+- `.claude/commands/designate-team.md`
+- `.claude/commands/hq-login.md`
+- `.claude/commands/hq-logout.md`
+- `.claude/commands/hq-sync.md`
+- `.claude/commands/hq-whoami.md`
+- `.claude/commands/import-claude.md`
+- `.claude/commands/resolve-conflicts.md`
+
+### New Skills
+
+- `.claude/skills/deep-plan/`
+- `.claude/skills/designate-team/`
+- `.claude/skills/hq-login/`
+- `.claude/skills/hq-logout/`
+- `.claude/skills/hq-secrets/`
+- `.claude/skills/hq-whoami/`
+- `.claude/skills/import-claude/`
+
+### New File
+
+- `.claude/stack.yaml`
+- `.claude/policies/hq-bash-discipline.md`
+- `.claude/policies/hq-bash-no-gnu-coreutils-date-timeout.md`
+- `.claude/policies/hq-classifier-own-labels-single-source.md`
+- `.claude/policies/hq-cli-version-read-from-package-json.md`
+- `.claude/policies/hq-cmd-handoff-no-discovery-rerun.md`
+- `.claude/policies/hq-cmd-publish-kit-python-yaml-free.md`
+- `.claude/policies/hq-cmd-publish-kit-rerun-diff-on-scope-narrow.md`
+- `.claude/policies/hq-cmd-run-project-ralph-hard-pause-procedure.md`
+- `.claude/policies/hq-cmd-stage-kit-settings-json-direct-edit.md`
+- `.claude/policies/hq-compiled-ts-rebuild-after-src-edits.md`
+- `.claude/policies/hq-cross-repo-privilege-tier-surface-scope.md`
+- `.claude/policies/hq-deploy-default-style-goclaw-admin.md`
+- `.claude/policies/hq-destructive-scripts-default-dry-run.md`
+- `.claude/policies/hq-git-diff-three-dot-for-pr-review.md`
+- `.claude/policies/hq-git-discipline.md`
+- `.claude/policies/hq-git-large-diff-audit-before-panic.md`
+- `.claude/policies/hq-git-merge-ff-only-trunk.md`
+- `.claude/policies/hq-git-squash-merge-branch-ahead-expected.md`
+- `.claude/policies/hq-git-staged-deletion-verify-blob-before-reset.md`
+- `.claude/policies/hq-github-app-over-pat-for-bot-repo-creation.md`
+- `.claude/policies/hq-migration-independent-grep-verify.md`
+- `.claude/policies/hq-nextjs-host-redirect-requires-domain-attachment.md`
+- `.claude/policies/hq-no-parent-import-from-child-component.md`
+- `.claude/policies/hq-nodejs-promisify-scrypt-options-wrap-manual.md`
+- `.claude/policies/hq-oidc-access-denied-diagnose-via-cloudtrail.md`
+- `.claude/policies/hq-oidc-migration-plan-both-subject-shapes.md`
+- `.claude/policies/hq-orthogonal-filters-over-overlapping-presets.md`
+- `.claude/policies/hq-plan-combined-story-edit-locality.md`
+- `.claude/policies/hq-prd-verify-passes-vs-artifact-registry.md`
+- `.claude/policies/hq-pre-push-gate-probes-prod-not-localhost.md`
+- `.claude/policies/hq-publish-pipeline-two-stop.md`
+- `.claude/policies/hq-session-resume-git-status-reverify.md`
+- `.claude/policies/hq-settings-local-for-personal-allows.md`
+- `.claude/policies/hq-slack-verify-scopes-beyond-auth-test.md`
+- `.claude/policies/hq-static-regression-anchor-forbidden-pattern.md`
+- `.claude/policies/hq-vercel-discipline.md`
+- `.claude/policies/hq-vercel-wildcard-single-subdomain-level.md`
+- `.claude/policies/hq-zsh-status-readonly-loop-var.md`
+- `.claude/policies/no-headless-browser-in-vercel-lambda.md`
+- `.claude/policies/no-relative-symlinks-from-worktree.md`
+- `.claude/policies/no-shared-skill-extraction-touching-5-files.md`
+- `.claude/policies/publish-kit-source-is-strict-allowlist.md`
+
+### Updated Files
+
+- `.claude/CLAUDE.md`
+- `.claude/commands/plan.md`
+- `.claude/commands/update-hq.md`
+- `.claude/hooks/load-policies-for-session.sh`
+- `.claude/policies/_digest.md`
+- `.claude/policies/ascii-art-character-verify.md`
+- `.claude/policies/blog-post-x-draft.md`
+- `.claude/policies/deconflict-postbridge-schedule.md`
+- `.claude/policies/distributed-join-partial-failure-diagnosis.md`
+- `.claude/policies/dual-codex-review-pattern.md`
+- `.claude/policies/dual-repo-prd-routing.md`
+- `.claude/policies/email-humanize.md`
+- `.claude/policies/git-stash-build-artifacts-conflict.md`
+- `.claude/policies/hq-cmd-handoff-must-complete.md`
+- `.claude/policies/hq-cmd-run-project-pid-tracking.md`
+- `.claude/policies/hq-cmd-run-project-process-cleanup.md`
+- `.claude/policies/hq-figma-token-account-scope.md`
+- `.claude/policies/hq-nested-repo-git-status-check.md`
+- `.claude/policies/hq-permissions-fan-out-edit-write-multiedit.md`
+- `.claude/policies/hq-swarm-pr-branch.md`
+- `.claude/policies/hq-swarm-rust-hub-files.md`
+- `.claude/policies/hq-tmux-plan-approval-dance.md`
+- `.claude/policies/idb-install.md`
+- `.claude/policies/linear-scan-check-existing-prds.md`
+- `.claude/policies/no-threaded-posts.md`
+- `.claude/policies/npm-subpackage-hydration.md`
+- `.claude/policies/og-image-twitter-cache.md`
+- `.claude/policies/orchestrator-competing-processes.md`
+- `.claude/policies/orchestrator-lockfile-sync.md`
+- `.claude/policies/post-bridge-media-upload.md`
+- `.claude/policies/post-bridge-media-workflow.md`
+- `.claude/policies/post-bridge-unicode-payload.md`
+- `.claude/policies/prd-content-sources.md`
+- `.claude/policies/prd-files-match-acs-for-swarm.md`
+- `.claude/policies/prd-json-schema.md`
+- `.claude/policies/prd-json-validation-post-task.md`
+- `.claude/policies/prd-no-execute.md`
+- `.claude/policies/prd-no-implement.md`
+- `.claude/policies/prd-story-sizing.md`
+- `.claude/policies/prd-userstories-key.md`
+- `.claude/policies/preview-start-launch-registry-is-global.md`
+- `.claude/policies/regression-gate-lint-fix.md`
+- `.claude/policies/reskin-separate-orchestration-from-visual.md`
+- `.claude/policies/run-project-conflict-marker-guard.md`
+- `.claude/policies/run-project-dry-run-branch-leak.md`
+- `.claude/policies/run-project-file-locks-stale.md`
+- `.claude/policies/run-project-local-keyword.md`
+- `.claude/policies/run-project-monitor-spawn-keystroke-race.md`
+- `.claude/policies/run-project-name-matches-dir.md`
+- `.claude/policies/run-project-no-permissions-required.md`
+- `.claude/policies/run-project-progress-txt-no-commit-misleading.md`
+- `.claude/policies/run-project-repo-bootstrap.md`
+- `.claude/policies/run-project-sigkill-retry.md`
+- `.claude/policies/run-project-swarm-branch-validation.md`
+- `.claude/policies/run-project-swarm-merge-conflict-tombstone.md`
+- `.claude/policies/run-project-verification-story-false-negative.md`
+- `.claude/policies/run-project-worktree-heal-orphan.md`
+- `.claude/policies/session-data-for-product-accuracy.md`
+- `.claude/policies/swarm-orphan-recovery.md`
+- `.claude/policies/swarm-post-execution-review.md`
+- `.claude/policies/vercel-domain-transfer-reissues-verification.md`
+- `.claude/policies/verify-routes-after-parallel-execution.md`
+- `.claude/skills/plan/SKILL.md`
+- `CHANGELOG.md`
+- `MIGRATION.md`
+- `README.md`
+- `core.yaml`
+
+### Removed
+
+- `.claude/policies/git-add-explicit-paths-no-drift.md`
+- `.claude/policies/git-branch-verify.md`
+
+_Both removed policies had their rules consolidated into `.claude/policies/hq-git-discipline.md` (in the New File list above)._
+
+### Migration Steps
 
 After update, the new commands become available immediately:
 
@@ -18,9 +157,11 @@ After update, the new commands become available immediately:
 - **Onboarding / planning:** `/import-claude`, `/deep-plan`
 - **Team provisioning:** `/designate-team`
 
-The `hq-secrets` skill auto-loads on next session start; the new `## Secrets` block lands in `.claude/CLAUDE.md`.
+The `hq-secrets` skill auto-loads on next session start; the new `## Secrets` block in `.claude/CLAUDE.md` is offered via section-level merge.
 
-## Optional: `hq` CLI dependency
+`/plan` is now lightweight; the previous heavy interview + research path moved to `/deep-plan`. Existing call sites continue to work — choose the depth that fits.
+
+### Optional `hq` CLI dependency
 
 `/designate-team` and `/hq-sync` delegate to the `@indigoai-us/hq-cli` binary (`hq …`). If you don't already have it on `PATH`:
 
@@ -31,11 +172,7 @@ hq whoami    # verify
 
 If the binary is missing, both commands surface a clear error pointing at install instructions — no silent fallback.
 
-## `/plan` behaviour change
-
-`/plan` is now the lightweight planner. The previous heavy interview + research path moved to a new `/deep-plan` command. Existing call sites continue to work unchanged; choose the depth that fits the scope of the project at hand.
-
-## Breaking changes
+### Breaking Changes
 
 None.
 
