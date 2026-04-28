@@ -5,6 +5,7 @@ scope: command
 trigger: /run-project, /prd
 enforcement: soft
 created: "2026-04-02"
+public: true
 ---
 
 ## Rule

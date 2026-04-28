@@ -8,6 +8,7 @@ enforcement: soft
 version: 1
 created: 2026-04-10
 updated: 2026-04-10
+public: true
 ---
 
 ## Rule

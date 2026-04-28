@@ -5,6 +5,7 @@ scope: command
 trigger: /email, /checkemail, mcp__gmail__send_email, mcp__gmail__draft_email
 enforcement: hard
 created: 2026-03-04
+public: true
 ---
 
 ## Rule

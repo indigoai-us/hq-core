@@ -4,6 +4,7 @@ title: Fix lint regressions on feature branch before resuming
 scope: command
 trigger: /run-project
 enforcement: soft
+public: true
 ---
 
 ## Rule

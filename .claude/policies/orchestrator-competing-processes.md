@@ -4,6 +4,7 @@ title: Kill stale orchestrator PIDs before resuming
 scope: command
 trigger: /run-project --resume
 enforcement: soft
+public: true
 ---
 
 ## Rule

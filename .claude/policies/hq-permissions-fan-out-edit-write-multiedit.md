@@ -23,3 +23,6 @@ MultiEdit(<pattern>)
 
 If you only add `Edit(...)`, a session that uses Write for the first touch of a file still fires a permission prompt — silently undoing the intent of the allowlist.
 
+## Rationale
+
+Discovered while implementing meta-file pre-approval across `settings.local.json` and the HQ template. Adding only `Edit(...)` left ~40% of assistant write paths still prompting, because `Write` is used for new files and `MultiEdit` is used when multiple hunks target one file. Fanning out to all three tools was the minimum viable pattern that actually eliminated prompts for the 7 common commands (/startwork, /brainstorm, /plan, /run-project, /checkpoint, /handoff, /learn).

@@ -8,6 +8,7 @@ version: 1
 created: 2026-03-19
 updated: 2026-03-19
 source: back-pressure-failure
+public: true
 ---
 
 ## Rule

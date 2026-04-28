@@ -4,6 +4,7 @@ title: Verify ANSI Shadow block art characters against reference map
 scope: command
 trigger: composing block art for /ascii-graphic or social graphics
 enforcement: soft
+public: true
 ---
 
 ## Rule

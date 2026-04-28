@@ -9,6 +9,7 @@ created: 2026-02-22
 updated: 2026-02-22
 source: user-correction
 command: prd
+public: true
 ---
 
 ## Rule

@@ -21,6 +21,10 @@ Before running `preview_start`:
 2. If the server is absent, either (a) start it manually with the appropriate `bun nx run {app}:dev` / `bun run --filter {app} dev` command, or (b) add it via the Claude Preview settings UI at the user level — editing repo-local JSON is a no-op.
 3. If you can't register it and the feature requires authentication (e.g. admin dashboard), explicitly tell the user you can't verify in-browser, and fall back to type-check + lint + targeted grep as coverage. Do NOT claim visual verification you didn't perform.
 
+## Rationale
+
+It failed because the registry lives outside the repo. The repo-local `launch.json` is read by VS Code's Run/Debug UI, not by the Claude Preview MCP. Conflating the two wastes a verification cycle and can lead to fake-success reports if the agent claims "preview started" when it didn't.
+
 ## Examples
 
 **Correct:** run `preview_list` first. If the server isn't registered and can't be added, tell the user: "Can't drive the authenticated super-admin screen in preview — relying on TypeScript + lint + grep for coverage instead."

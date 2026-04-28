@@ -26,3 +26,6 @@ The `postinstall` covers fresh clones. The `pretest` guard covers the case where
 
 Never assume `npm install` at the repo root traverses sub-directories. It does not. Workspaces (`workspaces:` in `package.json`) are the idiomatic solution when the tree is designed for it, but they require buy-in from every sub-package and may conflict with independent versioning. For retrofits onto an existing layout, the postinstall+pretest pair is strictly additive and carries no workspace semantics.
 
+## Rationale
+
+In hq-deploy, 27 of 29 pre-existing test failures traced to `ENOENT` errors on `cli/node_modules/.bin/tsx`. The `cli/` directory had its own `package.json` but the root `npm install` had never touched it. Adding the two hooks above made a fresh clone green on the first `npm test` — zero instructions needed in a CONTRIBUTING file, zero follow-up questions from anyone cloning the repo for the first time. The fix is two lines and eliminates an entire class of "works on my machine" reports.

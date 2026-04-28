@@ -1,3 +1,46 @@
+# Migration — v12.0.0 → v12.1.0
+
+## What changed
+
+Iteration release on top of the v12.0.0 hq-core split. All changes are additive — new commands, a new skill, and a `/plan` refactor that splits the heavy interview path into a separate `/deep-plan`. No locked-file structural changes; existing HQ instances upgrade cleanly with no manual steps required.
+
+## Upgrading an existing HQ instance
+
+```bash
+cd ~/path/to/your/hq    # wherever your HQ lives
+/update-hq              # pulls latest hq-core; reports any newly-locked files
+```
+
+After update, the new commands become available immediately:
+
+- **Identity:** `/hq-login`, `/hq-logout`, `/hq-whoami`
+- **Sync:** `/hq-sync`, `/resolve-conflicts`
+- **Onboarding / planning:** `/import-claude`, `/deep-plan`
+- **Team provisioning:** `/designate-team`
+
+The `hq-secrets` skill auto-loads on next session start; the new `## Secrets` block lands in `.claude/CLAUDE.md`.
+
+## Optional: `hq` CLI dependency
+
+`/designate-team` and `/hq-sync` delegate to the `@indigoai-us/hq-cli` binary (`hq …`). If you don't already have it on `PATH`:
+
+```bash
+npm install -g @indigoai-us/hq-cli
+hq whoami    # verify
+```
+
+If the binary is missing, both commands surface a clear error pointing at install instructions — no silent fallback.
+
+## `/plan` behaviour change
+
+`/plan` is now the lightweight planner. The previous heavy interview + research path moved to a new `/deep-plan` command. Existing call sites continue to work unchanged; choose the depth that fits the scope of the project at hand.
+
+## Breaking changes
+
+None.
+
+---
+
 # Migration — v11.x → v12.0.0
 
 ## What changed

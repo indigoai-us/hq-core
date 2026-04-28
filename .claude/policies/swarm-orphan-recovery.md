@@ -8,6 +8,7 @@ version: 1
 created: 2026-03-12
 updated: 2026-03-12
 source: workflow-improvement
+public: true
 ---
 
 ## Rule

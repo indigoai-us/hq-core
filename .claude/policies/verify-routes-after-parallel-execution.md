@@ -4,6 +4,7 @@ title: Verify nav routes exist after parallel story execution
 scope: command
 trigger: /run-project, /execute-task
 enforcement: soft
+public: true
 ---
 
 ## Rule

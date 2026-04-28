@@ -5,6 +5,7 @@ scope: command
 trigger: /run-project
 enforcement: hard
 created: "2026-04-02"
+public: true
 ---
 
 ## Rule

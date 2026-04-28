@@ -4,6 +4,7 @@ title: "run-project.sh: no `local` in top-level loop bodies"
 scope: command
 trigger: editing scripts/run-project.sh
 enforcement: hard
+public: true
 ---
 
 ## Rule

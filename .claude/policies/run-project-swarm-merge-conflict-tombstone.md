@@ -9,6 +9,7 @@ version: 1
 created: 2026-04-14
 updated: 2026-04-14
 source: session-learning
+public: true
 ---
 
 ## Rule

@@ -4,6 +4,7 @@ title: Use temp file for Post-Bridge JSON payloads with unicode
 scope: command
 trigger: posting via /post with em dashes or other unicode in caption
 enforcement: hard
+public: true
 ---
 
 ## Rule

@@ -20,3 +20,6 @@ ALWAYS either:
 - Explicitly `git checkout -- {artifact_path}` before `git stash pop` to reset the regenerated file
 - Or use `git worktree add` for a clean parallel checkout if the comparison is non-trivial
 
+## Rationale
+
+Observed during a {repo} typecheck comparison: stashed edits to middleware.ts + client.tsx, ran `npm run type-check` (which rewrote `tsconfig.tsbuildinfo`), then `git stash pop` aborted. Recovery required `git checkout -- tsconfig.tsbuildinfo && git stash pop stash@{0}`. Committing first would have avoided the whole round trip.

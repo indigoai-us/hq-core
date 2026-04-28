@@ -1,12 +1,12 @@
 ---
-name: prd
-description: Plan a project and generate PRD for execution. Creates prd.json + README.md with full HQ context awareness. Runtime-agnostic — executes identically in Claude Code and Codex. Adapts interview depth to brainstorm context if available.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(scripts/read-policy-frontmatter.sh:*), Bash(scripts/build-policy-digest.sh:*), Bash(npx:*)
+name: plan
+description: Plan a project and generate PRD for execution. Creates prd.json + README.md with full HQ context awareness. Runtime-agnostic — executes identically in Claude Code and Codex. Lightweight by default — uses batched questions and adapts interview depth to brainstorm context if available. For deep research subagents + 3-tier 15-question interview, use /deep-plan instead.
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(scripts/read-policy-frontmatter.sh:*), Bash(scripts/build-policy-digest.sh:*), Bash(npx:*)
 ---
 
-# PRD — Project Planning & PRD Generation
+# Plan — Project Planning & PRD Generation
 
-Create execution-ready PRDs with full HQ context awareness.
+Create execution-ready PRDs with full HQ context awareness. Lightweight flow — batched questions, fast capture, no research subagents. For deep planning on large or strategically important PRDs, use `/deep-plan` instead. For adversarial spec review of an already-generated PRD, use `/review-plan`.
 
 **Important:** Do NOT implement. Just create the PRD.
 
@@ -20,7 +20,7 @@ Check if the **first word** of the user's input matches a company slug in `compa
 2. **Announce:** "Anchored on **{co}**"
 3. **Load policies (frontmatter-only)** — For each file in `companies/{co}/policies/` (skip `example-policy.md`), run `bash scripts/read-policy-frontmatter.sh {file}`. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. The SessionStart hook also injects the company policy digest at `companies/{co}/policies/_digest.md` — prefer that if present. Apply as constraints throughout the PRD
 4. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}` for all `qmd` calls
-5. **Pre-load repos** — Extract `{co}.repos[]` from manifest. Present as repo options in the Architecture tier repo question
+5. **Pre-load repos** — Extract `{co}.repos[]` from manifest. Present as repo options in Batch 3 Q10
 6. **Scope workers** — Filter to company workers (`companies/{co}/workers/`) + public workers (`workers/public/`)
 7. **Scope projects** — Only search `companies/{co}/projects/` for existing project collision check
 
@@ -68,7 +68,7 @@ If `{co}` is anchored, scope all searches to that company.
 
 **Target Repo (if repo specified or discovered):**
 - If anchored: company repos already pre-loaded from manifest. Present as options
-- If target repo has a qmd collection (e.g. `{product}`): `qmd query "<description keywords>" -c {collection} --json -n 10` — hybrid search for related code, patterns, existing implementations
+- If target repo has a qmd collection (e.g. `vyg`): `qmd query "<description keywords>" -c {collection} --json -n 10` — hybrid search for related code, patterns, existing implementations
 - Present: "Found related code: {list of relevant files}"
 
 Present:
@@ -115,341 +115,224 @@ companies/{co}/projects/{slug}/brainstorm.md
 **If found:**
 1. Read it. Extract YAML frontmatter (`status`, `source_idea_id`)
 2. If `status: "promoted"` — warn the user: "This brainstorm was already promoted to a PRD. Open existing prd.json instead?"
-3. **Extract brainstorm context** for use in Step 3.7 (Research) and Step 4 (Interview):
-   - `brainstorm.context` — from `## Context` section (problem description, pain points)
-   - `brainstorm.recommendation` — from `## Recommendation` section (approach, rationale)
-   - `brainstorm.rejectedApproaches` — from rejected/discarded options (anti-patterns to avoid)
-   - `brainstorm.unknowns` — from `## What We Don't Know` section (open questions, risks)
-   - `brainstorm.techChoices` — any mentioned tech stack, data models, architecture preferences
-   - `brainstorm.integrations` — identified external services
-   - `brainstorm.workers` — identified relevant workers, repos
+3. **Pre-load brainstorm content** into interview context for Step 4:
+   - **Batch 1** (Problem/Success): pre-fill from brainstorm's `## Context`, `## Recommendation`. Present as confirmations ("Based on brainstorm: {X}. Confirm or modify?") instead of open-ended questions
+   - **Batch 2** (Users/Current State): pre-fill audience and current solution from brainstorm context if mentioned
+   - **Batch 3** (Scope/Constraints): pre-fill from `## What We Don't Know` + any constraints mentioned. Surface unknowns as explicit questions to resolve. Pre-fill non-goals from brainstorm's rejected approaches
+   - **Batch 4** (Data/Architecture): pre-fill from brainstorm's recommended approach's tech choices, data model mentions
+   - **Batch 5** (Integrations): pre-fill from brainstorm's identified external services
+   - **Batch 6** (Quality/Shipping): pre-fill from brainstorm's identified workers, repos
+   - **Batch 7** (E2E): unchanged — brainstorm doesn't cover testing specifics
+4. **Effect**: interview batches collapse to confirmations rather than open-ended questions. User answers faster, stories are better anchored to the evaluated approach
 
-4. **Enrich interview questions (NOT collapse to confirmations).** Brainstorm context is added to each question as additional context, but the full question is still asked one-at-a-time:
-   - Each question in Step 4 gets a "Brainstorm suggested: {relevant finding}" line added to the question text, alongside the standard options
-   - The user still answers the full question — brainstorm context informs their answer, it doesn't replace the question
-   - Example: STRATEGIC-1 (Demand Reality) shows "Brainstorm suggested: {brainstorm.context pain points}" but still asks the full question and expects a specific answer
+**If not found:** proceed normally (no change to existing behavior).
 
-5. **Mandatory questions from brainstorm unknowns.** Items from `brainstorm.unknowns` ("What We Don't Know") become **mandatory interview questions that cannot be smart-skipped**, regardless of research findings. These represent gaps the brainstorm session explicitly identified as unresolved. For each unknown:
-   - Map to the closest Question Bank question (e.g., an unknown about auth → ARCHITECTURE-2)
-   - If no close match, add as an ad-hoc question in the relevant tier
-   - Mark as `mandatory: true` in the question tracking — smart-skip logic is bypassed
+## Step 4: Discovery Interview
 
-6. **Higher smart-skip threshold with brainstorm.** When brainstorm.md exists, the smart-skip condition for any question requires **both** brainstorm AND research to clearly answer the question with consistent, unambiguous findings. If brainstorm says one thing and research says another, the question must be asked to resolve the conflict.
+Ask questions in batches. Users respond with shorthand: "1a A, 1b: build a dashboard, 1c B"
 
-7. **Research agents incorporate brainstorm.** Step 3.7's Agent 2 (HQ Context Scanner) already includes brainstorm enrichment in its prompt (see `{brainstorm_context}` variable). When brainstorm.md is detected here, that variable is populated with the brainstorm's recommended approach, rejected approaches, and open questions — so the research brief reflects brainstorm context.
+Each question has lettered options for fast answers + free text override. Present one batch at a time, wait for response, then present next batch.
 
-**Effect:** Interview depth is preserved even with brainstorm. Questions are richer (pre-loaded with brainstorm context as suggested answers) but still asked in full. The brainstorm's explicit unknowns become mandatory deep-dives. This prevents the "brainstorm answered everything → shallow PRD" failure mode.
+**Before Batch 4:** Classify project type from description + Batch 1-3 answers:
+- **Code project** (has repoPath, or code/app/API/feature keywords) — ask all batches
+- **Content/knowledge/report** — skip Batches 4, 5; skip 6g/6h. Note: "(Batch 4 skipped — non-code project)"
+- **Personal/HQ tooling** — skip 5b, 5c, 6g, 6h
 
-**If not found:** proceed normally (no change to existing behavior). All smart-skip thresholds use the default (research-only) conditions.
+### Dynamic Question Enrichment
 
-## Step 3.7: Research Phase (Phase 1 — Subagents)
+Use the context gathered in Step 2 (company policies, repo policies, manifest, repo scan) to **enrich questions with specific details** rather than asking generic versions. This makes questions faster to answer and surfaces constraints the user might forget.
 
-Before asking interview questions, gather context via parallel research subagents. Research artifacts persist to disk (not chat) so they survive session handoffs and are available to execution workers.
+**From company policies** (`companies/{co}/policies/`):
+- Policy mentions feature flags / rollout — pre-fill 5c with the required approach, present as confirmation
+- Policy mentions PII / GDPR / compliance — always surface 5b regardless of keywords, note the policy
+- Policy mentions brand voice / design system — pre-fill 2c option C with the specific system name
+- Policy mentions specific deploy procedures — add context to 6a (quality gates)
+- Any `enforcement: hard` policy that constrains architecture, auth, or integrations — surface as a constraint in the relevant batch header (e.g. "Note: company policy requires Clerk auth for all new features")
 
-**Output directory:** `{project_dir}/research/` (alongside `brainstorm.md` and `prd.json`). Where `{project_dir}` = `companies/{co}/projects/{slug}/` or `projects/{slug}/` for personal/HQ projects.
+**From repo scan** (target repo's CLAUDE.md, package.json, existing patterns):
+- Repo uses specific auth (Clerk, NextAuth, Supabase Auth) — pre-fill 4b option A with: "Uses existing auth ({system}) — no changes needed"
+- Repo uses specific ORM/DB (Prisma, pgClient, Supabase) — add hint to 4a: "This repo uses {ORM}. Describe entities in those terms"
+- Repo has analytics/tracking (PostHog, Segment, Mixpanel, GA) — pre-fill 6g option B with the system name
+- Repo has monitoring (Sentry, Datadog, CloudWatch) — pre-fill 6h option B/D with the service name
+- Repo has existing test commands — pre-fill 6a with detected commands
+- Repo has existing design system / component library — mention in 2c option C
 
-```bash
-mkdir -p {project_dir}/research
+**From manifest** (`companies/manifest.yaml`):
+- Company has `services: [stripe, ...]` — if project might involve payments, surface in 5a as a hint
+- Company has `vercel_team` — enrich 5c with "deploys via Vercel to {team}"
+- Company has existing integrations — list them as option B context in 5a
+
+**Presentation:** Weave enrichments into the question text naturally. Don't add a separate "detected context" dump — make each question smarter:
+```
+// Generic (bad):
+4b. Auth / permissions model?
+    A. Uses existing auth — no changes needed
+
+// Enriched (good):
+4b. Auth / permissions model? (repo uses Clerk via @clerk/nextjs)
+    A. Uses existing Clerk auth — no changes needed
 ```
 
-### Agent Dispatch
-
-Spawn agents in parallel using the Agent tool. Each agent writes its findings to a specific file. The main session waits for all agents to complete before proceeding.
-
-**Resolve `{repoPath}`** from Step 2 context (company manifest repos, user input, or brainstorm references). If no repo is identifiable, set `{repoPath} = null`.
-
-| Agent | Condition | Output |
-|-------|-----------|--------|
-| Codebase Scanner | `{repoPath}` exists | `research/codebase-scan.md` |
-| HQ Context Scanner | Always | `research/hq-context.md` |
-| Repo Deep-Read | `{repoPath}` exists | `research/repo-analysis.md` |
-
-**If `{repoPath}` is null** (non-code project): only spawn Agent 2 (HQ Context). Skip Agents 1 and 3.
+If a policy or repo context **fully answers** a question, present it as a confirmation rather than an open question:
+```
+5c. Rollout strategy? → Company policy requires feature flags for all new features.
+    Confirming: B. Feature flag (env var)  [Y/n]
+```
 
 ---
 
-#### Agent 1 — Codebase Scanner
+**Batch 1 — Problem & Success**
+1a. Core problem or goal?
+1b. What does success look like? (measurable metric or verifiable state)
+1c. Who benefits? (list all beneficiaries)
+
+---
+
+**Batch 2 — Users & Current State**
+2a. Who are the primary users?
+    A. Internal / admin only
+    B. External customers / end users
+    C. Both internal and external
+    D. Developer tooling / no direct end user
+    (free text to specify roles and technical level, e.g. "Geoff — CEO, non-technical")
+
+2b. What exists today? (current solution, even if it's a spreadsheet or nothing)
+    A. Nothing — greenfield
+    B. Existing feature being replaced or upgraded
+    C. Manual process being automated
+    D. Third-party tool being replaced
+    (free text to describe what's being replaced and why it's insufficient)
+
+2c. Are there reference designs, mockups, or brand constraints? *(skip if non-UI)*
+    A. Figma file exists (provide file/node ID)
+    B. Visual reference / screenshot (describe or link)
+    C. Follow existing design system exactly (name which one)
+    D. No design constraints — AI chooses
+    E. Not a UI project (skip)
+    *Conditional: auto-skip with E for pure backend/CLI/data projects*
+
+---
+
+**Batch 3 — Scope & Constraints**
+3a. What's in scope for MVP?
+3b. Hard constraints (time, tech, budget)?
+3c. Dependencies on other projects?
+3d. What is explicitly NOT in scope? (non-goals — things users might ask for but we won't build)
+    (free text list, or "none")
+
+---
+
+**Batch 4 — Data & Architecture** *(conditional: code projects only)*
+*Trigger: project has repoPath or description contains DB/schema/API/model keywords. Auto-skip for content/knowledge/reports/social.*
+
+4a. Key data entities? (tables, columns, domain objects this project touches)
+    (free text, e.g. "new `depletions` table, adds `sku_id` FK to `line_items`" — or "no DB changes")
+
+4b. Auth / permissions model?
+    A. Uses existing auth — no changes needed
+    B. New role or permission level needed (describe)
+    C. New auth provider or login method
+    D. No auth (public or internal tool)
+
+4c. Architecture approach?
+    A. Follow existing patterns in the repo exactly
+    B. New pattern needed (describe)
+    C. No opinion — let workers decide
+
+4d. Performance requirements? *(conditional: only if real-time/scale/latency/throughput keywords in description)*
+    A. Standard — no special requirements
+    B. Latency target: [specify, e.g. "< 2s page load"]
+    C. Throughput target: [specify, e.g. "1000 req/s"]
+    D. Mobile / low-bandwidth optimization needed
+    *Default: A*
+
+---
+
+**Batch 5 — Integrations & Security** *(conditional: projects with external service interaction)*
+*Trigger: description contains API/webhook/OAuth/third-party/Stripe/Slack/integration keywords. Auto-skip for fully internal projects.*
+
+5a. External integrations or third-party APIs?
+    A. None — fully self-contained
+    B. Existing integrations (already wired up, just using them)
+    C. New integration needed — list: which service, what data flows, are credentials already set up?
+
+5b. Sensitive data or security considerations? *(conditional: only if user/payment/PII/customer keywords)*
+    A. No PII or sensitive data
+    B. PII handled (email, name, payment info) — existing compliance approach applies
+    C. New compliance requirement (HIPAA, GDPR, etc.)
+    D. Rate limiting or abuse protection needed
+    E. User-generated content with moderation needs
+
+5c. Rollout strategy? *(conditional: only for production-deployed projects with real users)*
+    A. Ship to all users immediately
+    B. Feature flag (specify: env var, LaunchDarkly, user segment)
+    C. Staged rollout (% of users or specific cohort)
+    D. Internal only first, then broader rollout
+    *Default: A*
+
+---
+
+**Batch 6 — Quality & Shipping**
+6a. Quality gates? (detect repo from scan, suggest commands)
+    A. `pnpm typecheck && pnpm lint`
+    B. `npm run typecheck && npm run lint`
+    C. None (no automated checks)
+    D. Other: [specify]
+
+6b. Based on scan: "Should this use {relevant workers}?"
+6c. Does this need a new worker or skill?
+6d. Repo path? (e.g. `repos/private/{name}`, or "none" if non-code)
+6e. Branch name? (default: `feature/{project-name}`)
+6f. Base branch? (default: `main`, or `staging` for {your-repo}, etc.) — Pure Ralph creates feature branch from this
 
-```
-Spawn Agent (subagent_type: Explore) with prompt:
+6g. Analytics / event tracking needed? *(conditional: deployable UI projects only)*
+    A. No — not a user-facing feature
+    B. Yes — use existing tracking system (name it)
+    C. Yes — new tracking events needed (list key events, e.g. "depletion.filter.applied")
+    D. Not sure — include tracking stub only
+    *Default: A*
 
-"Scan the repository at {repoPath} to understand its architecture for a new project: '{description}'.
+6h. How do we know it's working in production? *(conditional: production-deployed projects only)*
+    A. Manual testing only
+    B. Existing monitoring covers it (no changes needed)
+    C. New health check or monitoring alert needed (describe)
+    D. Success metric visible in existing dashboard (name it)
+    *Default: B for existing repos, A for greenfield*
 
-Search for and document:
-1. **Project structure**: Read CLAUDE.md (if exists), package.json/Cargo.toml/go.mod, and top-level directory layout
-2. **Tech stack**: Framework, language version, ORM/DB client, auth system, CSS approach, test framework
-3. **Existing patterns**: How are routes/endpoints structured? How are components organized? What naming conventions are used?
-4. **Data models**: Read schema files, migration directories, or type definitions for existing entities
-5. **Auth system**: How is authentication handled? What middleware/guards exist? What roles are defined?
-6. **Key integrations**: External services already wired up (Stripe, SendGrid, analytics, etc.)
+---
 
-Write a structured markdown report to: {project_dir}/research/codebase-scan.md
+**Batch 7 — E2E Testing** *(recommended for deployable projects)*
+For each user story targeting a deployable repo, specify E2E tests:
 
-Format:
-# Codebase Scan: {repo name}
+7a. What E2E tests should verify each story works?
+    - For UI: "Page loads", "User can complete [action]", "Form shows validation errors"
+    - For API: "Endpoint returns expected response", "Error cases handled"
+    - For CLI: "Command runs successfully", "Opens correct URL"
+    - For integration: "Full flow from [A] to [B] works"
+    - Leave empty for non-deployable projects (knowledge, content, data)
 
-## Tech Stack
-- Framework: ...
-- Language: ...
-- Database: ...
-- Auth: ...
-- Testing: ...
+### Live Path Watch hook
 
-## Architecture Patterns
-(describe routing, component, and data patterns)
+Before generating the PRD, detect whether this project plausibly replaces, hardens, or builds alongside an existing **live production surface**. Purpose: prevent silent regressions on routes that already serve real users.
 
-## Existing Data Models
-(list entities with key fields and relationships)
+Trigger the hook when ANY of the following match:
 
-## Integrations
-(list external services with how they're connected)
+- Project description contains a full URL (`https://...`) or a known production hostname (check `companies/{co}/manifest.yaml` `dns_zones` and any existing project's `metadata.replacementFor.liveUrls`)
+- `repoPath` matches a repo that has prior PRDs declaring `metadata.replacementFor` (grep `companies/{co}/projects/*/prd.json` for `replacementFor`)
+- Description matches replacement/hardening language: `rebuild`, `replace`, `harden`, `v[0-9]+`, `migration`, `rewrite`, `safeguard`, `regression`, `silent`, `prevent` + live noun
 
-## Relevant Existing Code
-(files/patterns directly relevant to: '{description}')
+On match, ask via AskUserQuestion:
 
-Keep the report factual and concise — no recommendations, just findings."
-```
+- `question`: "This PRD looks like it touches a live surface. Declare it so heartbeats and canaries can protect it from silent regression?"
+- `header`: `"Live Path Watch"`
+- `options`:
+  - `label: "Yes — declare live URL(s)"` — follow up with a free-text prompt for the URL list (one per line), then set `metadata.replacementFor = { liveUrls, description, detectedFrom: "hook" }` and add `livePathWatch` to any story whose `acceptanceCriteria` mention the matched URLs
+  - `label: "No — not a live-surface project"` — record the dismissal in `metadata.openQuestions` as `"LivePathWatch hook fired but was dismissed: {reason}"` (free text)
+  - `label: "User already answered"` — skip (user populated `replacementFor` earlier in interview)
 
-#### Agent 2 — HQ Context Scanner
+If user picks "Yes": also add a canary E2E test to the highest-priority story: `"curl -sS <liveUrl> returns 200 and contains none of {forbiddenTokens}"`.
 
-```
-Spawn Agent (subagent_type: Explore) with prompt:
-
-"Scan HQ context for a new project '{slug}' ({description}) for company '{co}'.
-
-Search for:
-1. **Existing projects**: Read companies/{co}/projects/ — list any related or overlapping projects with their status
-2. **Company workers**: Read companies/{co}/workers/ (if exists) + workers/registry.yaml — list workers relevant to this project's domain
-3. **Company knowledge**: Search companies/{co}/knowledge/ for documents related to '{description keywords}'
-4. **Company policies**: List companies/{co}/policies/ — note any hard-enforcement policies that constrain this project
-5. **Related repos**: Check companies/manifest.yaml for {co}'s repos — note which might be relevant
-{brainstorm_context}
-
-Write a structured markdown report to: {project_dir}/research/hq-context.md
-
-Format:
-# HQ Context: {slug}
-
-## Related Projects
-(list with status and overlap description, or 'None found')
-
-## Relevant Workers
-(list with skills that apply)
-
-## Knowledge Base Findings
-(relevant docs with paths)
-
-## Applicable Policies
-(hard-enforcement policies with rule summaries)
-
-## Available Repos
-(company repos from manifest)
-
-## Brainstorm Findings
-(if brainstorm.md exists: recommended approach, rejected approaches, open questions — otherwise 'No brainstorm')
-
-Keep the report factual and concise — no recommendations, just findings."
-```
-
-**Brainstorm enrichment:** If brainstorm.md was detected in Step 3.5, append to the Agent 2 prompt:
-```
-{brainstorm_context} = "
-6. **Brainstorm context**: Read {project_dir}/brainstorm.md — extract:
-   - Recommended approach and its rationale
-   - Rejected approaches and why
-   - 'What We Don't Know' items (open questions)
-   - Any mentioned tech choices, data models, or architecture preferences
-"
-```
-If no brainstorm: `{brainstorm_context} = ""`
-
-#### Agent 3 — Repo Deep-Read
-
-```
-Spawn Agent (subagent_type: Explore) with prompt:
-
-"Deep-read the repository at {repoPath} for recent activity and test patterns relevant to: '{description}'.
-
-Search for:
-1. **Recent git history**: Run `git log --oneline -30` — summarize recent development themes and active areas
-2. **Test structure**: Find test directories, test file patterns, test commands in package.json/scripts. Note coverage configuration if present
-3. **Recent changes**: Run `git diff --stat HEAD~10` — what files are actively being modified?
-4. **CI/CD**: Check .github/workflows/, vercel.json, Dockerfile, deploy scripts — document the deployment pipeline
-5. **Open issues/branches**: Run `git branch -r --list 'origin/feature/*'` — note active feature work that might conflict
-
-Write a structured markdown report to: {project_dir}/research/repo-analysis.md
-
-Format:
-# Repo Analysis: {repo name}
-
-## Recent Development
-(themes from last 30 commits)
-
-## Active Areas
-(files/directories with most recent changes)
-
-## Test Infrastructure
-- Framework: ...
-- Test command: ...
-- Coverage: ...
-- Test directories: ...
-
-## CI/CD Pipeline
-(deployment pipeline description)
-
-## Active Branches
-(feature branches that might overlap with this project)
-
-Keep the report factual and concise — no recommendations, just findings."
-```
-
-### Synthesis — Research Brief
-
-After all agents complete, the main session reads the research files and writes a compact synthesis:
-
-1. Read all files in `{project_dir}/research/` that were written by agents
-2. Synthesize into `{project_dir}/research/research-brief.md`:
-
-```markdown
-# Research Brief: {slug}
-
-## Key Findings
-- {3-5 bullet points of most important discoveries across all agents}
-
-## Pre-Answered Questions
-(questions from the Question Bank that research already answers — list question ID + finding)
-
-## Open Questions Surfaced
-(new questions raised by research that should be asked during interview)
-
-## Constraints Discovered
-(hard policies, existing patterns, or technical constraints that limit options)
-
-## Brainstorm Alignment
-(if brainstorm exists: how research findings align/conflict with brainstorm's recommendation — otherwise omit)
-```
-
-3. Display to user: "Research complete. {N} findings across {agent count} scans. Key constraints: {list}."
-
-**The research brief is the primary input for smart-skip logic in Step 4.** When a question's smart-skip condition references "research," it means checking `research-brief.md` for pre-answered questions.
-
-## Step 4: Deep Interview (Phase 2 — One-at-a-Time)
-
-Sequential one-at-a-time questioning using the Question Bank (see bottom of this file). Each question is asked via **AskUserQuestion** with 2-4 concrete options + a free text override. Questions are asked one at a time — never batched.
-
-**Minimum:** 10 questions asked (including smart-skip confirmations). **Target:** 15. Track count throughout.
-
-### Interview Rules
-
-1. **One question at a time.** Ask a single question via AskUserQuestion. Wait for the response. Process it. Then ask the next question. Never combine multiple questions into one AskUserQuestion call.
-
-2. **Pushback on vague answers.** If the user's response matches the question's pushback pattern (vague, category-level, non-specific), push back **once** with the defined follow-up. After the pushback response, accept whatever the user provides — never push more than once per question.
-
-3. **Anti-sycophancy.** Never say "that's interesting," "great idea," "love that," or similar flattery. Instead, **take a position** on every answer: "That narrows scope well," "I'd challenge that — {reason}," "Strong signal — the pain is quantified." React substantively or move on silently.
-
-4. **Smart-skip logic.** Before asking each question, check its smart-skip condition against:
-   - `{project_dir}/research/research-brief.md` (from Step 3.7)
-   - `{project_dir}/brainstorm.md` (from Step 3.5, if exists)
-   - Prior answers from earlier questions in this interview
-   If the smart-skip condition is met, present the question's **confirmation format** instead of the full question. Confirmations still count toward the question minimum. Use AskUserQuestion with options: `["Confirm", "Modify — {free text}"]`.
-
-5. **CEO cognitive patterns as evaluation lenses.** Do NOT ask these as explicit questions. Instead, apply them silently when evaluating answers and formulating follow-ups:
-   - **Bezos one-way vs two-way doors**: When the user describes architecture or rollout, classify the reversibility internally. Surface it in QUALITY-4 if the user proposes a one-way door without a rollback plan.
-   - **Inversion reflex**: When evaluating scope answers, silently ask "what would make this fail?" Use the inversion to inform pushback — e.g., "You've described the happy path. What's the most likely failure mode?"
-   - **Focus as subtraction**: When scope seems broad, apply "the primary value of this project is what it does NOT do." Push toward narrower scope in STRATEGIC-4.
-   - **Speed calibration**: For two-way door decisions, don't over-question. Accept 70% confidence and move on. Reserve deep questioning for irreversible choices.
-
-### Context Enrichment
-
-Use context gathered in Step 2 (company policies, repo policies, manifest) and Step 3.7 (research) to **enrich each question** with specific details. Weave enrichments into the question text naturally — don't dump detected context separately.
-
-**Enrichment sources:**
-- **Research brief** (`research/research-brief.md`): tech stack findings, existing patterns, data models → enrich ARCHITECTURE-1 through ARCHITECTURE-5 with specific repo details
-- **Company policies** (`companies/{co}/policies/`): hard-enforcement constraints → surface as "Note: company policy requires {X}" in relevant questions
-- **Repo scan** (from research agents): auth system, ORM, test framework, CI → pre-fill options with detected specifics (e.g., "Uses existing Clerk auth via @clerk/nextjs")
-- **Manifest** (`companies/manifest.yaml`): services, Vercel team, integrations → enrich integration and deployment questions
-
-If enrichment **fully answers** a question, present as confirmation (same as smart-skip): "Research found {X}. Confirm or modify?"
-
-### Project Type Classification
-
-After the Strategic tier (questions 1-5), classify the project type to determine which Architecture and Quality questions to ask:
-
-- **Code project** (has repoPath, or code/app/API/feature keywords) — ask all tiers
-- **Content/knowledge/report** — skip ARCHITECTURE-1 through ARCHITECTURE-5; skip QUALITY-2, QUALITY-3, QUALITY-4. Ask QUALITY-1 and QUALITY-5 only
-- **Personal/HQ tooling** — skip ARCHITECTURE-2 (auth), ARCHITECTURE-5 (scale); ask rest
-
-Note skips: "(Skipping {question} — {reason})"
-
-### Interview Sequence
-
-#### Tier 1 — Strategic (5 questions)
-
-Ask questions STRATEGIC-1 through STRATEGIC-5 from the Question Bank, in order. Each via AskUserQuestion.
-
-**After STRATEGIC-5 (Premise Challenge):** This question generates 2-4 premises. Present each premise via AskUserQuestion with options: `["Agree", "Disagree", "Not sure — needs investigation"]`. Premises flagged as "not sure" become mandatory investigation items surfaced in metadata.openQuestions.
-
-**After Strategic tier completes:** Classify project type (see above). Announce: "Strategic tier complete ({N}/10 minimum). Moving to Architecture."
-
-#### Tier 2 — Architecture (5 questions, conditional)
-
-Ask questions ARCHITECTURE-1 through ARCHITECTURE-5, skipping per project type classification. Each via AskUserQuestion.
-
-**After Architecture tier completes:** Announce: "Architecture tier complete ({N}/10 minimum). Moving to Quality."
-
-#### Tier 3 — Quality (5 questions, conditional)
-
-Ask questions QUALITY-1 through QUALITY-5, skipping per project type classification. Each via AskUserQuestion.
-
-### Escape Hatch
-
-**After question 10** (regardless of which tier you're in), present an escape hatch via AskUserQuestion:
-
-```
-"10 questions answered — minimum met. {remaining} questions remain in the bank."
-Options:
-A. "Continue to remaining questions" (recommended for code projects)
-B. "Generate PRD now — enough context gathered"
-```
-
-If user chooses B, skip remaining questions and proceed to Step 4.5. If A, continue through remaining questions. Present the escape hatch again after question 13 if questions remain.
-
-### Step 4.5: Metadata Extraction + Operational Questions
-
-After the Question Bank interview completes (or user escapes), extract prd.json metadata from the answers and ask remaining operational questions not covered by the Question Bank.
-
-**Metadata extraction** — Map interview answers to prd.json fields. This is done automatically by the skill (no user interaction needed):
-
-| Interview Source | prd.json Field |
-|-----------------|----------------|
-| STRATEGIC-1 (Demand Reality) | `metadata.goal` |
-| STRATEGIC-2 (Status Quo Teardown) | `metadata.currentSolution` |
-| STRATEGIC-3 (Desperate Specificity) | `metadata.audiences` |
-| STRATEGIC-4 (Narrowest Wedge) | `metadata.nonGoals` (from excluded scope) |
-| STRATEGIC-5 (Premise Challenge) | `metadata.openQuestions` (from "not sure" premises) |
-| ARCHITECTURE-1 (Data Model) | `metadata.dataModel` |
-| ARCHITECTURE-2 (Auth) | `metadata.authModel` |
-| ARCHITECTURE-3 (Error Handling) | `metadata.architectureNotes` (append) |
-| ARCHITECTURE-4 (Component Boundaries) | `metadata.architectureNotes` (append) |
-| ARCHITECTURE-5 (Performance) | `metadata.performanceRequirements` |
-| QUALITY-1 (Testing) | drives `e2eTests` per story |
-| QUALITY-2 (Quality Gates) | `metadata.qualityGates` |
-| QUALITY-3 (Monitoring) | `metadata.monitoringNotes` |
-| QUALITY-4 (Rollout) | `metadata.rolloutStrategy` |
-| QUALITY-5 (Success Criteria) | `metadata.successCriteria` |
-
-**Operational questions** — Ask these via AskUserQuestion only if not already answered by research or interview context. Skip any that research or prior answers already resolve:
-
-1. **Repo path** (if not yet resolved): "Which repo does this target?" Options: list from manifest + "None — non-code project" + free text
-2. **Branch name**: "Branch name?" Default: `feature/{slug}`. Options: `["feature/{slug}", "Custom — {free text}"]`
-3. **Base branch**: "Base branch?" Default: `main`. Options from repo's branches if known
-4. **Workers**: "Research found these relevant workers: {list}. Use them?" Options: `["Yes — use suggested workers", "Modify list — {free text}", "No workers — direct execution"]`
-5. **Design reference** (UI projects only): "Any design reference?" Options: `["Figma file (provide ID)", "Visual reference", "Follow existing design system", "No constraints", "Not a UI project"]`
-6. **Integrations** (if not covered by ARCHITECTURE questions): "External integrations?" Options: `["None", "Existing — {list from research}", "New — {free text}"]`
-7. **Analytics** (deployable UI only): "Analytics tracking needed?" Options: `["No", "Use existing {system}", "New events needed — {free text}"]`
-8. **E2E tests**: "What E2E tests should verify each story?" For each planned story, ask for Given/When/Then assertions. Options: `["Define tests per story", "Skip — non-deployable project"]`
-
-Display: "Interview complete. {N} questions asked across {tiers answered} tiers. Generating PRD..."
+Policy `.claude/policies/hq-live-path-watch-on-replacement-prds.md` (hard enforcement) blocks PRD generation when the hook matches but the user neither declared `replacementFor` nor explicitly dismissed. The hook MUST run before Step 5.
 
 ## Step 5: Generate PRD
 
@@ -477,38 +360,43 @@ This is the **source of truth**. `/run-project` and `/execute-task` consume this
       "labels": [],
       "dependsOn": [],
       "notes": "",
-      "model_hint": ""
+      "model_hint": "",
+      "worker_preference": [],
+      "livePathWatch": []
     }
   ],
   "metadata": {
     "createdAt": "{ISO8601}",
     "goal": "{Overall project goal}",
     "successCriteria": "{Measurable outcome}",
-    "qualityGates": ["{from QUALITY-2 — gate commands}"],
+    "qualityGates": ["{commands from Batch 6a}"],
     "repoPath": "{repos/private/repo-name or empty}",
     "baseBranch": "{main or staging or master}",
     "relatedWorkers": ["{worker-ids from scan}"],
     "knowledge": ["{relevant knowledge paths}"],
-    "audiences": ["{from STRATEGIC-3 — user roles + technical level}"],
-    "currentSolution": "{from STRATEGIC-2 — what exists today}",
-    "designRef": "{from operational questions — Figma ID, reference, or empty}",
-    "nonGoals": ["{from STRATEGIC-4 — explicit out-of-scope items}"],
-    "dataModel": "{from ARCHITECTURE-1 — key entities/tables or empty}",
-    "authModel": "{from ARCHITECTURE-2 — auth approach or empty}",
-    "architectureNotes": "{from ARCHITECTURE-3/4 — approach or empty}",
-    "performanceRequirements": "{from ARCHITECTURE-5 — targets or empty}",
-    "integrations": ["{from operational questions — service name, type, credentialsReady}"],
-    "securityNotes": "{from ARCHITECTURE-2/3 — PII/compliance notes or empty}",
-    "rolloutStrategy": "{from QUALITY-4 — ship strategy or empty}",
-    "analyticsEvents": ["{from operational questions — event names or empty}"],
-    "monitoringNotes": "{from QUALITY-3 — prod monitoring plan or empty}",
+    "audiences": ["{from Batch 2a — user roles + technical level}"],
+    "currentSolution": "{from Batch 2b — what exists today}",
+    "designRef": "{from Batch 2c — Figma ID, reference, or empty}",
+    "nonGoals": ["{from Batch 3d — explicit out-of-scope items}"],
+    "dataModel": "{from Batch 4a — key entities/tables or empty}",
+    "authModel": "{from Batch 4b — auth approach or empty}",
+    "architectureNotes": "{from Batch 4c — approach or empty}",
+    "performanceRequirements": "{from Batch 4d — targets or empty}",
+    "integrations": ["{from Batch 5a — service name, type, credentialsReady}"],
+    "securityNotes": "{from Batch 5b — PII/compliance notes or empty}",
+    "rolloutStrategy": "{from Batch 5c — ship strategy or empty}",
+    "analyticsEvents": ["{from Batch 6g — event names or empty}"],
+    "monitoringNotes": "{from Batch 6h — prod monitoring plan or empty}",
     "openQuestions": ["{remaining unresolved questions — Step 8.5 resolves these before Step 9}"],
-    "decisions": []
+    "decisions": [],
+    "replacementFor": null
   }
 }
 ```
 
 **`decisions[]` schema:** Appended by Step 8.5 as `{question, answer, decidedAt, decidedBy}`. Optional — absent means empty. Additive and backwards-compatible; existing PRDs without the field are unaffected.
+
+**`worker_preference[]` schema:** Optional ordered list of preferred worker IDs (strings) per story. Used by `/execute-task` Layer 2 worker selection (`settings/orchestrator.yaml → worker_selection`). When non-empty AND any pinned worker can fill a role slot in the resolved sequence, that worker wins and the LLM picker is skipped. Default: empty array — fully auto-select. Example: `["holler-backend", "lr-qa"]`.
 
 **Populating `files`:** For each story, infer file paths from the description + acceptance criteria + target repo structure. If `repoPath` is set, search the repo (via qmd or Glob) to find existing files the story will modify, and predict new files it will create. Paths are repo-relative (e.g. `src/middleware/auth.ts`, not absolute). Best-effort — empty is fine for stories with unclear scope.
 
@@ -549,7 +437,7 @@ Generate FROM the prd.json data. Human-friendly view.
 - [ ] {e2eTest 2}
 
 ## Non-Goals
-{metadata.nonGoals — from STRATEGIC-4 excluded scope. If empty, state "None defined"}
+{metadata.nonGoals — from Batch 3d answers. If empty, state "None defined"}
 
 ## Technical Considerations
 {Enriched from interview answers:}
@@ -574,83 +462,6 @@ Generate FROM the prd.json data. Human-friendly view.
 ## Open Questions
 {Remaining unresolved questions from metadata.openQuestions[]. If all were resolved in Step 8.5, write "None — all resolved in decision mode (see Decisions above)." If any were deferred, list each with its deferredReason and link to the generated pre-flight story.}
 ```
-
-## Step 5.1: Spec Review (Phase 3 — Adversarial Review Loop)
-
-After prd.json and README.md are generated, spawn an adversarial spec review subagent to catch completeness and consistency issues before finalization. This is the quality gate between generation and publication.
-
-### Review Subagent
-
-Spawn a single Agent subagent with the following prompt:
-
-```
-Spawn Agent with prompt:
-
-"You are an adversarial spec reviewer. Your job is to find problems, not praise.
-
-Read the PRD at: {project_dir}/prd.json
-Also read: {project_dir}/README.md
-
-Review on 5 dimensions. For each, score 1-10 and list specific issues:
-
-1. **Completeness** — Are all requirements from the interview addressed in stories? Are there gaps between metadata fields and story ACs? Does every story have testable ACs?
-
-2. **Consistency** — Do stories agree with each other? Do ACs contradict metadata? Does the dependency graph make sense (no circular deps, no missing deps)? Do file lists overlap in conflicting ways?
-
-3. **Clarity** — Could a developer implement each story without asking questions? Are ACs specific enough to verify? Is the metadata unambiguous?
-
-4. **Scope (YAGNI)** — Are there stories that go beyond the stated goal? Are there ACs that add unnecessary complexity? Is the MVP actually minimal?
-
-5. **Feasibility** — Is each story completable in one AI session? Are complexity scores (AC count × 1 + file count × 2) under 20? Are there stories that assume capabilities that don't exist?
-
-Return a JSON object:
-{
-  \"qualityScore\": <1-10 overall>,
-  \"dimensions\": {
-    \"completeness\": { \"score\": <1-10>, \"issues\": [\"...\"] },
-    \"consistency\": { \"score\": <1-10>, \"issues\": [\"...\"] },
-    \"clarity\": { \"score\": <1-10>, \"issues\": [\"...\"] },
-    \"scope\": { \"score\": <1-10>, \"issues\": [\"...\"] },
-    \"feasibility\": { \"score\": <1-10>, \"issues\": [\"...\"] }
-  },
-  \"suggestedFixes\": [
-    { \"dimension\": \"...\", \"issue\": \"...\", \"fix\": \"...\" }
-  ]
-}
-
-Be harsh. A quality PRD should score 8+. Common failure modes:
-- Stories with 'works correctly' ACs (not testable)
-- Missing error handling stories for critical paths
-- Scope creep disguised as 'nice to have' ACs
-- Dependency chains that force serial execution when parallel is possible
-- Stories that modify 10+ files (should be split)
-"
-```
-
-### Review Loop
-
-1. **Parse response.** Extract qualityScore, issues, and suggestedFixes from the subagent's return.
-
-2. **If issues found (suggestedFixes is non-empty):**
-   - Apply each fix to prd.json (edit ACs, add missing stories, fix dependencies, etc.)
-   - Re-derive README.md from the updated prd.json
-   - Re-dispatch the review subagent with the updated files
-   - **Maximum 3 iterations.** Track iteration count.
-
-3. **Convergence guard.** If the same issues persist across 2+ iterations (same dimension + similar issue text), stop iterating. Persist unresolved issues as a **"Reviewer Concerns"** section appended to README.md:
-   ```markdown
-   ## Reviewer Concerns
-   The following issues were flagged during spec review but could not be auto-resolved:
-   - [{dimension}] {issue description}
-   ```
-
-4. **On subagent failure** (error, timeout, malformed response): Skip review entirely. Tell the user: "Spec review unavailable — presenting unreviewed PRD." Do NOT block PRD creation on review failure. No artificial timeout — let the subagent run to completion.
-
-5. **Display summary to user:**
-   ```
-   PRD survived {N} round(s) of review. {M} issues caught and fixed. Quality score: {X}/10.
-   ```
-   If issues were persisted as Reviewer Concerns: "({K} unresolved concerns noted in README.md)"
 
 ## Step 5.5: Update Brainstorm (if exists)
 
@@ -769,7 +580,7 @@ spawn_task(
     caller: prd
     qmd_collection: {qmd_collections[0] from manifest, or omit if none}
     search_results_summary: {condensed list of qmd hits from Step 2, max 10 items — path + title per hit}
-    discovered_facts: {new facts from interview answers — especially ARCHITECTURE-1 data model, operational integrations, any architecture or capability info learned about the company}
+    discovered_facts: {new facts from interview answers — especially Batch 4a data model, 5a integrations, any architecture or capability info learned about the company}
     doc_scout_gaps: {postImplementation items from Step 7.6, or 'none'}
     Read the skill file for full instructions."
 )
@@ -785,7 +596,7 @@ If `{co}` is `{product}`, attempt Linear sync. If credentials are unavailable or
 
 1. Read `companies/{product}/settings/linear/credentials.json` and `config.json`
 2. Validate `workspace: "voyage"` in config
-3. Create Linear project linked to best-fit initiative, with `leadId` (default: {your-name}) and `targetDate` (default: today+1d)
+3. Create Linear project linked to best-fit initiative, with `leadId` (default: corey) and `targetDate` (default: today+1d)
 4. Create issue per story with `assigneeId` (resolved by team routing) and `dueDate` (matches project targetDate)
 5. Store all IDs in prd.json: `metadata.linearProjectId`, `metadata.linearCredentials`, per-story `linearIssueId`, `linearAssigneeId`
 
@@ -803,7 +614,7 @@ Read `metadata.openQuestions[]` from the prd.json just written. **If empty**, sk
 2. **Batch up to 4 questions per AskUserQuestion call.** For each question, infer **2–3 concrete candidate options** from:
    - The PRD's own metadata (`integrations`, `architectureNotes`, `authModel`, `dataModel`, `rolloutStrategy`, etc.)
    - Prior `metadata.decisions[]` already captured (if re-running)
-   - Anchored company policies (e.g. `{company}-aws-credentials-safety` → "{company} aws_profile (804849608251, us-east-1)")
+   - Anchored company policies (e.g. `indigo-aws-credentials-safety` → "Indigo aws_profile (804849608251, us-east-1)")
    - Common-sense defaults ("existing cert" when signing, "existing pool" when auth)
 3. **Always append a `"Defer — track as pre-flight story"` option LAST** to every question. Users must be able to opt out of answering any single question without abandoning decision mode entirely.
 4. **Write results back to prd.json:**
@@ -878,7 +689,7 @@ Splitting heuristics:
 ## Rules
 
 - Scan HQ first, ask questions second
-- One question at a time (don't overwhelm)
+- Batch questions (don't overwhelm)
 - **prd.json is the source of truth** — README.md is derived from it, never the reverse
 - **All stories start with `passes: false`** — `/run-project` marks them true
 - **Planning, not execution** — this skill IS planning for everything except Step 8.5, which uses plan mode + AskUserQuestion to force resolution of open questions before PRD completion
@@ -890,150 +701,3 @@ Splitting heuristics:
 - **Every story MUST have testable acceptance criteria** — "works correctly" is not acceptable
 - **Include testing stories** — For deployable projects, at least one story should be dedicated to E2E test infrastructure
 - **ALWAYS: Verify board.json write in Step 5.6** — After upserting the board entry, re-read board.json and confirm the new project ID exists. If the write failed silently (file parse error, missing board, manifest lookup miss), log the error and retry once. Silent failure leaves projects invisible in the HQ app — the orphan scanner catches them with an "Unregistered" badge, but proper registration is required
-
-## Question Bank
-
-Structured question definitions organized into three tiers: Strategic (problem validation + scope control), Architecture (technical design decisions), and Quality (testing, monitoring, shipping). Each question includes pushback patterns, smart-skip conditions, and confirmation formats for brainstorm-aware interviews.
-
-Total: 15 questions (5 Strategic + 5 Architecture + 5 Quality).
-
----
-
-### STRATEGIC-1: Demand Reality
-
-- **Question:** "What is the strongest evidence this project needs to exist? Point to specific pain — time wasted, money lost, errors caused, users blocked."
-- **Pushback pattern:**
-  - Vague answer: "It would be nice to have" / "People have been asking for it" / "The market is moving this way"
-  - Push: "Name one person who lost time or money because this didn't exist last week. What did it cost them? If you can't point to a specific incident, what makes you confident the pain is real?"
-- **Smart-skip condition:** Brainstorm `## Context` contains quantified pain (hours lost, error rates, revenue impact, support tickets). Skip if evidence is concrete and sourced.
-- **Confirmation format:** "Based on brainstorm: {extracted pain point with numbers}. Confirm or modify?"
-
-### STRATEGIC-2: Status Quo Teardown
-
-- **Question:** "What do users do today to solve this — even badly? Walk me through the current workflow step by step, including the duct tape."
-- **Pushback pattern:**
-  - Vague answer: "Nothing exists" / "They don't have a solution" / "They use spreadsheets"
-  - Push: "If truly nothing exists, the pain might not be acute enough to act on. If they use spreadsheets, show me the spreadsheet — what columns, how many rows, how often do they touch it? The current hack reveals what the solution must beat."
-- **Smart-skip condition:** Brainstorm documents a specific current workflow with named tools, steps, and failure modes. Skip if the teardown is already thorough.
-- **Confirmation format:** "Based on brainstorm: current workflow is {steps using tools X, Y, Z — breaks when W}. Confirm or modify?"
-
-### STRATEGIC-3: Desperate Specificity
-
-- **Question:** "Who is the single most desperate user for this? Not a category — a specific person, role, and the consequence they face without it."
-- **Pushback pattern:**
-  - Vague answer: "Marketing teams" / "SMBs" / "Enterprise customers" / "Internal users"
-  - Push: "Give me a name or a job title with a day-in-the-life. What does this person do at 9 AM Monday that this project changes? Category-level answers hide whether anyone actually needs this urgently."
-- **Smart-skip condition:** Brainstorm `## Context` or a prior STRATEGIC answer already names a specific role with described workflow impact. Skip if a concrete persona is established.
-- **Confirmation format:** "Based on brainstorm: primary user is {role/name} who currently {painful workflow}. Confirm or modify?"
-
-### STRATEGIC-4: Narrowest Wedge
-
-- **Question:** "What is the absolute smallest version that delivers real value? One feature, one workflow, one screen — what's the wedge?"
-- **Pushback pattern:**
-  - Vague answer: "We need the full platform to be useful" / "It won't be differentiated without X, Y, and Z" / "Users expect a complete solution"
-  - Push: "If you can't ship value with one feature, the scope is hiding unclear priorities. Which single capability, if it worked perfectly, would make someone switch from their current duct-tape solution? That's the wedge — everything else is Phase 2."
-- **Smart-skip condition:** Brainstorm `## Recommendation` already defines a scoped MVP with explicit cut lines, or a prior STRATEGIC answer produced a tight scope with non-goals. Skip if scope is already minimal and justified.
-- **Confirmation format:** "Based on brainstorm: MVP is {scoped feature/workflow}. Non-goals: {list}. Confirm or modify?"
-
-### STRATEGIC-5: Premise Challenge
-
-- **Question:** "I'm going to state 2-4 premises this project assumes. For each, tell me: agree, disagree, or 'not sure — needs investigation.'"
-- **Pushback pattern:**
-  - Vague answer: "Yeah, those all sound right" (blanket agreement without engagement)
-  - Push: "Blanket agreement worries me — at least one of these should feel uncomfortable or uncertain. Which premise are you least confident about? That's where the risk lives. If all premises are obviously true, we might be solving a problem that's already solved."
-- **Smart-skip condition:** Brainstorm `## What We Don't Know` already surfaces key assumptions with risk assessments. Skip only if the brainstorm explicitly validated or invalidated the core premises. Otherwise, always run — premises shift between brainstorm and PRD scoping.
-- **Confirmation format:** "Premises from brainstorm analysis: (1) {premise — status}. (2) {premise — status}. Confirm each or flag for investigation."
-
----
-
-### ARCHITECTURE-1: Data Model + Shadow Paths
-
-- **Question:** "What are the key data entities this project introduces or modifies? For each entity, trace the data path: INPUT (where does it enter?) -> VALIDATE (what can go wrong?) -> TRANSFORM (what changes?) -> PERSIST (where does it land?) -> OUTPUT (who sees it and how?)."
-- **Pushback pattern:**
-  - Vague answer: "We'll have a users table and a settings table" / "Standard CRUD" / "We'll figure out the schema later"
-  - Push: "Walk me through one concrete record. A user submits X — what happens at each stage? Where can it fail silently? What happens to orphaned records if a step fails halfway? The shadow paths (partial writes, race conditions, cascading deletes) are where production bugs hide."
-- **Smart-skip condition:** Brainstorm or research-brief already provides entity definitions with relationships, and the project modifies an existing well-documented schema. Skip if entities + relationships are clear and the repo already has migration patterns.
-- **Confirmation format:** "Based on brainstorm/interview: key entities are {list with relationships}. Data flow: {INPUT->OUTPUT summary}. Confirm or modify?"
-
-### ARCHITECTURE-2: Auth + Permissions Model
-
-- **Question:** "Who can do what, and how do you enforce it? Map every user role to its allowed actions. What happens when someone tries something they shouldn't?"
-- **Pushback pattern:**
-  - Vague answer: "We'll use the existing auth" / "Admin and regular users" / "We'll add permissions later"
-  - Push: "Using existing auth is fine — but does this project introduce new resources that need new permission checks? List every action this project adds and mark who can perform it. 'Admin and regular users' isn't a model — it's a sketch. What's the third role you haven't thought of yet (support staff, API consumers, automated systems)?"
-- **Smart-skip condition:** Project uses existing auth with no new resources/actions (confirmed in research-brief or prior answer), or project has no auth. Skip if no new permission boundaries are introduced.
-- **Confirmation format:** "Based on interview: {auth system} handles auth. New actions: {list or 'none — existing coverage sufficient'}. Confirm or modify?"
-
-### ARCHITECTURE-3: Error Handling + Failure Modes
-
-- **Question:** "For every operation that can fail (API calls, DB writes, external services, user input), what's the rescue action? What does the user see? What gets logged? What gets retried?"
-- **Pushback pattern:**
-  - Vague answer: "We'll show error messages" / "Standard error handling" / "We'll add try-catch blocks"
-  - Push: "Pick the most critical operation in this project. Now: network times out mid-operation — what state is the data in? User refreshes — do they see a broken half-state or a clean recovery? 'Standard error handling' means 'I haven't thought about failures yet.' Every external call needs an explicit rescue plan."
-- **Smart-skip condition:** Project is purely UI/content with no external service calls, no DB writes, and no async operations. Skip if the project cannot produce partial-failure states.
-- **Confirmation format:** "Based on architecture: critical failure points are {list}. Rescue strategy: {retry/rollback/user notification pattern}. Confirm or modify?"
-
-### ARCHITECTURE-4: Component Boundaries + Coupling
-
-- **Question:** "Draw the component boundaries. What talks to what? Where are the coupling points that would force cascade changes if one component evolves? Are there single points of failure?"
-- **Pushback pattern:**
-  - Vague answer: "Frontend talks to backend talks to database" / "Microservices" / "We'll follow existing patterns"
-  - Push: "Following existing patterns is a fine starting point — name the pattern. Now: if requirement X changes next month, which files change? If the answer is 'everything,' the boundaries are wrong. Identify the one component that, if it goes down, takes the whole feature with it — that's your single point of failure. What's the mitigation?"
-- **Smart-skip condition:** Project is a small addition to an existing well-structured codebase (< 3 new files), confirmed by research-brief codebase scan, with no new service boundaries. Skip if it's purely additive within established patterns.
-- **Confirmation format:** "Based on interview: follows {existing pattern} in {repo}. New components: {list or 'none — fits existing structure'}. Confirm or modify?"
-
-### ARCHITECTURE-5: Performance + Scale Considerations
-
-- **Question:** "What are the realistic performance constraints? Expected data volume (rows, requests/sec, payload sizes), latency requirements, and the operation most likely to become a bottleneck at 10x current scale."
-- **Pushback pattern:**
-  - Vague answer: "It needs to be fast" / "Performance isn't a concern right now" / "We'll optimize later"
-  - Push: "Name the heaviest query or operation this project introduces. How many rows does it scan? Does it run on every page load or once per session? 'Optimize later' is fine for premature optimization, but N+1 queries and missing indexes are architecture decisions — not optimizations. What's the one thing that will break first at 10x scale?"
-- **Smart-skip condition:** Project is internal tooling with < 10 users and no real-time requirements (confirmed by STRATEGIC-3 audience answer and project type classification). Skip if scale is genuinely not a factor.
-- **Confirmation format:** "Based on interview: {standard perf / specific targets}. Expected volume: {estimate}. Likely bottleneck: {operation or 'none identified'}. Confirm or modify?"
-
----
-
-### QUALITY-1: Testing Strategy
-
-- **Question:** "What's the testing plan? For each story, what test type covers it (unit, integration, E2E)? What's the coverage target for critical paths? What framework and runner will you use?"
-- **Pushback pattern:**
-  - Vague answer: "We'll write tests" / "100% coverage" / "We'll add tests at the end"
-  - Push: "100% coverage is a vanity metric — what's the critical path that MUST have coverage? Name the one user flow that, if broken in production, causes the most damage. That flow gets E2E coverage first. 'Add tests at the end' means 'no tests' — testing strategy is decided now, not after the code is written."
-- **Smart-skip condition:** Operational question 8 (E2E tests) already produced specific test definitions per story, and the repo has an established test framework (detected in research-brief). Skip if test infrastructure + story-level tests are already defined.
-- **Confirmation format:** "Based on interview: E2E tests defined for {N} stories using {framework}. Critical path: {flow}. Confirm or modify?"
-
-### QUALITY-2: Quality Gates + CI
-
-- **Question:** "What commands must pass before code merges? Typecheck, lint, test suite, build verification — list every gate. What's the CI pipeline?"
-- **Pushback pattern:**
-  - Vague answer: "We'll use CI" / "Standard checks" / "GitHub Actions"
-  - Push: "Name the exact commands. `pnpm typecheck && pnpm lint && pnpm test` — or what? 'Standard checks' means different things in every repo. If the repo already has CI, confirm the existing gates are sufficient for this project's new code. If not, what's missing?"
-- **Smart-skip condition:** Research-brief already detected CI config (`.github/workflows/`, `vercel.json`, etc.) with exact gate commands. Skip if gates are explicitly defined and repo has existing CI.
-- **Confirmation format:** "Based on interview: quality gates are `{commands}`. CI: {existing pipeline or 'needs setup'}. Confirm or modify?"
-
-### QUALITY-3: Monitoring + Observability
-
-- **Question:** "Once this ships, how do you know it's working? What gets logged, what triggers an alert, and what dashboard do you check Monday morning?"
-- **Pushback pattern:**
-  - Vague answer: "We'll monitor it" / "We have logging" / "We'll check the logs if something breaks"
-  - Push: "If a user hits an error at 3 AM, how long until you know? 'Check the logs if something breaks' means you find out when a user complains. Name the specific metric or log pattern that tells you this feature is healthy — and what threshold triggers a human looking at it."
-- **Smart-skip condition:** Research-brief detected existing observability (Sentry, Datadog, etc.) in the repo, and the project doesn't introduce new failure surfaces beyond existing monitoring coverage. Skip if monitoring plan is concrete.
-- **Confirmation format:** "Based on interview: monitoring via {system}. Key health signal: {metric/log pattern}. Alert threshold: {condition or 'existing coverage sufficient'}. Confirm or modify?"
-
-### QUALITY-4: Rollout + Risk Mitigation
-
-- **Question:** "What's the rollout plan? Ship to everyone at once, feature flag, staged rollout, internal-first? If it goes wrong, what's the rollback plan — and how fast can you execute it?"
-- **Pushback pattern:**
-  - Vague answer: "We'll just deploy it" / "Feature flag" (without specifics) / "We can always revert"
-  - Push: "Feature flag how — env var, LaunchDarkly, database toggle, user segment? 'We can always revert' — how long does a revert take? 60 seconds or 60 minutes? If this touches database migrations, revert isn't simple — what's the data migration rollback plan? For two-way-door decisions, ship fast. For one-way doors (schema changes, data migrations, external API contracts), spell out the rollback."
-- **Smart-skip condition:** Research-brief or brainstorm already specified a concrete rollout strategy with mechanism details, or the project is internal tooling with no production users. Skip if rollout is fully specified or risk is negligible.
-- **Confirmation format:** "Based on interview: rollout via {strategy}. Rollback plan: {mechanism, estimated time}. Decision type: {one-way/two-way door}. Confirm or modify?"
-
-### QUALITY-5: Success Criteria + Definition of Done
-
-- **Question:** "How do you know this project succeeded — not 'shipped,' but actually worked? What metric moves, what behavior changes, or what becomes possible that wasn't before? Define the measurement and the timeframe."
-- **Pushback pattern:**
-  - Vague answer: "Users like it" / "It works" / "We hit our deadline" / "No bugs reported"
-  - Push: "Shipping on time with zero bugs is necessary but not sufficient — it means the code works, not that the project succeeded. What changes in the real world? Fewer support tickets? Faster workflow completion? Higher conversion? Pick one metric you'll check 30 days after launch. If you can't name one, the project's value proposition might be unclear."
-- **Smart-skip condition:** STRATEGIC-4 (Success Criteria) already defined a measurable success metric with a target value and timeframe. Skip if success criteria are quantified and time-bound.
-- **Confirmation format:** "Based on interview: success = {metric} reaching {target} within {timeframe}. Measurement method: {how you'll check}. Confirm or modify?"

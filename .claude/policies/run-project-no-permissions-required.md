@@ -7,6 +7,7 @@ enforcement: hard
 version: 1
 created: 2026-03-27
 source: session-learning
+public: true
 ---
 
 ## Rule

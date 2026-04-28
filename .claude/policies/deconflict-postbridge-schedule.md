@@ -5,6 +5,7 @@ scope: command
 trigger: social-publisher, schedule-batch, post
 enforcement: hard
 created: 2026-03-31
+public: true
 ---
 
 ## Rule

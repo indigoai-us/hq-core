@@ -26,3 +26,6 @@ git -C /Users/{your-name}/Documents/HQ/repos/public/hq diff template/
 
 Same pattern applies to pattern-1 embedded knowledge repos (`companies/*/knowledge/.git`) and pattern-2 symlinked repos whose target lives in `repos/private/knowledge-*/`.
 
+## Rationale
+
+HQ tracks `repos/public/hq/` as plain ignored content — there's no gitlink and no submodule wiring. This is intentional (keeps HQ clones fast and avoids submodule init friction) but it means `git status` from HQ root cannot report the template's working-tree state. Forgetting this leads to "where did my edit go?" confusion during `/stage-kit` and `/publish-kit` flows, where the change is real but invisible from the wrong cwd.

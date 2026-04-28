@@ -46,7 +46,7 @@ while [ "$search" != "/" ]; do
 done
 
 # Fall back to canonical path if not found via walk-up
-[ -z "$HQ_ROOT" ] && HQ_ROOT="${HOME}/Documents/HQ"
+[ -z "$HQ_ROOT" ] && HQ_ROOT="/Users/{your-name}/Documents/HQ"
 
 GLOBAL_DIGEST="$HQ_ROOT/.claude/policies/_digest.md"
 
@@ -68,65 +68,127 @@ if echo "$CWD" | grep -qE 'repos/(public|private)/'; then
   if [ -z "$ACTIVE_CO" ] && [ -n "$ACTIVE_REPO" ]; then
     MANIFEST="$HQ_ROOT/companies/manifest.yaml"
     if [ -f "$MANIFEST" ]; then
-      # Match any line containing the repo name, find preceding company key
+      # Match any line containing the repo name, find preceding company key.
+      # Company keys are 2-space-indented under the `companies:` wrapper.
       ACTIVE_CO=$(awk -v repo="$ACTIVE_REPO" '
-        /^[a-z][a-z0-9_-]*:/ { company = $0; sub(/:.*/, "", company) }
+        /^  [a-z][a-z0-9_-]*:/ { company = $0; sub(/:.*/, "", company); sub(/^[[:space:]]+/, "", company) }
         $0 ~ repo { print company; exit }
       ' "$MANIFEST" 2>/dev/null || true)
     fi
   fi
 fi
 
-# Resolve active service set (space-separated). Empty -> no filtering.
-# Primary: companies/manifest.yaml block for $ACTIVE_CO (services + inferred
-# vercel from vercel_team: + aws from aws_profile:).
-# Fallback: .claude/stack.yaml services: array.
+# Resolve active service set (space-separated) AND opt-in flag.
+#
+# Sources, in priority order:
+#   1. companies/manifest.yaml block for $ACTIVE_CO — supports both
+#      inline `services: [a, b]` and block `services:\n  - a\n  - b`
+#      formats. Plus inferred vercel from `vercel_team:`, aws from
+#      `aws_profile:`.
+#   2. .claude/stack.yaml `services: [...]` (HQ-root or repo-root
+#      fallback). Used when no active company.
+#
+# HQ_HAS_EXPLICIT_SERVICES=1 if ≥1 service was declared via an explicit
+# `services:` key. Empty `services: []` and inferred-only
+# (vercel_team/aws_profile) do NOT flip it — those are weaker / ambiguous
+# signals. Companies that haven't audited their service list keep legacy
+# fail-open behavior.
+#
 # Normalization: each service added verbatim AND its first `-`-segment, so
-# manifest "shopify-partner" matches policy tags "shopify" or "shopify-partner".
+# manifest "shopify-partner" matches policy tags "shopify" or
+# "shopify-partner".
 HQ_ACTIVE_SERVICES=""
+HQ_HAS_EXPLICIT_SERVICES=0
 resolve_active_services() {
   local raw=""
   if [ -n "$ACTIVE_CO" ]; then
     local co_manifest="$HQ_ROOT/companies/manifest.yaml"
     if [ -f "$co_manifest" ]; then
       raw=$(awk -v co="$ACTIVE_CO" '
-        $0 ~ "^" co ":" { in_co = 1; next }
-        in_co && /^[a-z][a-z0-9_-]*:/ { exit }
+        $0 ~ "^  " co ":" { in_co = 1; in_block_svc = 0; next }
+        in_co && /^  [a-z][a-z0-9_-]*:/ { exit }
+        # Inline: services: [a, b, c]
         in_co && /^[[:space:]]*services:[[:space:]]*\[/ {
           line = $0
           sub(/.*services:[[:space:]]*\[/, "", line)
           sub(/\].*/, "", line)
           gsub(/,/, " ", line)
           print "SERVICES:" line
+          in_block_svc = 0
+          next
         }
+        # Block opener: services:
+        in_co && /^[[:space:]]*services:[[:space:]]*$/ {
+          in_block_svc = 1
+          next
+        }
+        # Block item: starts with `-` at deeper indent
+        in_co && in_block_svc && /^[[:space:]]+-[[:space:]]+[^[:space:]#]/ {
+          line = $0
+          sub(/^[[:space:]]+-[[:space:]]+/, "", line)
+          sub(/[[:space:]]+#.*/, "", line)
+          gsub(/[[:space:]]/, "", line)
+          if (line != "") print "SERVICES:" line
+          next
+        }
+        # Block exits when we see a non-`-` line at field depth
+        in_co && in_block_svc && /^[[:space:]]*[A-Za-z_]/ { in_block_svc = 0 }
         in_co && /^[[:space:]]*vercel_team:[[:space:]]*[^[:space:]#]/ { print "VERCEL:1" }
         in_co && /^[[:space:]]*aws_profile:[[:space:]]*[^[:space:]#]/ { print "AWS:1" }
       ' "$co_manifest" 2>/dev/null || true)
     fi
   fi
-  if [ -z "$raw" ]; then
+  if [ -z "$ACTIVE_CO" ]; then
     local stack_yaml="$HQ_ROOT/.claude/stack.yaml"
     if [ -f "$stack_yaml" ]; then
-      raw=$(awk '
+      local stack_raw
+      stack_raw=$(awk '
         /^[[:space:]]*services:[[:space:]]*\[/ {
           line = $0
           sub(/.*services:[[:space:]]*\[/, "", line)
           sub(/\].*/, "", line)
           gsub(/,/, " ", line)
           print "SERVICES:" line
+          in_block_svc = 0
+          next
         }
+        /^[[:space:]]*services:[[:space:]]*$/ { in_block_svc = 1; next }
+        in_block_svc && /^[[:space:]]+-[[:space:]]+[^[:space:]#]/ {
+          line = $0
+          sub(/^[[:space:]]+-[[:space:]]+/, "", line)
+          sub(/[[:space:]]+#.*/, "", line)
+          gsub(/[[:space:]]/, "", line)
+          if (line != "") print "SERVICES:" line
+          next
+        }
+        in_block_svc && /^[[:space:]]*[A-Za-z_]/ { in_block_svc = 0 }
       ' "$stack_yaml" 2>/dev/null || true)
+      raw="$stack_raw"
+      # stack.yaml existence + services key declaration is itself the
+      # explicit opt-in even if list is empty (HQ-root user wrote it on purpose)
+      if grep -qE '^[[:space:]]*services:' "$stack_yaml" 2>/dev/null; then
+        HQ_HAS_EXPLICIT_SERVICES=1
+      fi
     fi
   fi
 
   local services="" has_vercel=0 has_aws=0
   while IFS= read -r line; do
     case "$line" in
-      SERVICES:*) services="${line#SERVICES:}" ;;
+      SERVICES:*) services="$services ${line#SERVICES:}" ;;
       VERCEL:1) has_vercel=1 ;;
       AWS:1) has_aws=1 ;;
     esac
   done <<< "$raw"
+
+  # Manifest opt-in: at least one service from explicit `services:` key
+  # (inline non-empty or block with items). vercel_team/aws_profile
+  # inference doesn't count.
+  local trimmed
+  trimmed=$(echo "$services" | tr -s ' ' | sed 's/^ *//;s/ *$//')
+  if [ -n "$trimmed" ] && [ -n "$ACTIVE_CO" ]; then
+    HQ_HAS_EXPLICIT_SERVICES=1
+  fi
 
   local set=""
   local svc head
@@ -142,20 +204,39 @@ resolve_active_services() {
   HQ_ACTIVE_SERVICES=$(printf '%s\n' $set | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
 
-# Filter digest lines by HQ_ACTIVE_SERVICES. Lines without an `<!-- applies_to: -->`
-# suffix always pass. Lines with one pass only if at least one tag is in the
-# active set. Empty active set -> fail-open (pass everything).
+# Filter digest lines by HQ_ACTIVE_SERVICES + flow-tag whitelist.
+#
+# Lines without an `<!-- applies_to: -->` HTML-comment suffix always pass
+# (cross-cutting policies). Lines with one pass only if at least one tag
+# matches HQ_ACTIVE_SERVICES or HQ_FLOW_TAGS.
+#
+# Strict mode (HQ_HAS_EXPLICIT_SERVICES=1) — drop tagged lines whose tags
+# aren't in the active set (modulo flow-tag whitelist). Engaged when:
+#   - HQ root has `.claude/stack.yaml` with a `services:` key, OR
+#   - active company manifest has a non-empty `services:` array
+#
+# Legacy mode (HQ_HAS_EXPLICIT_SERVICES=0) — fail open. Companies that
+# haven't audited their manifest don't lose policies they actually use.
+#
+# Indentation-aware: when a `- [hard] **slug**` header is dropped, its
+# indented `*Rationale*`/`*Provenance*` continuation lines drop too. The
+# skip flag resets on the next `- [` header or `## ` section boundary.
+HQ_FLOW_TAGS="hq run-project execute-task task-execution social"
 filter_by_stack() {
-  if [ -z "$HQ_ACTIVE_SERVICES" ]; then
+  if [ "$HQ_HAS_EXPLICIT_SERVICES" != "1" ]; then
     cat
     return
   fi
-  awk -v active="$HQ_ACTIVE_SERVICES" '
+  awk -v active="$HQ_ACTIVE_SERVICES" -v flow="$HQ_FLOW_TAGS" '
     BEGIN {
       n = split(active, parts, /[ ,]+/)
       for (i = 1; i <= n; i++) if (parts[i] != "") act[parts[i]] = 1
+      n = split(flow, parts, /[ ,]+/)
+      for (i = 1; i <= n; i++) if (parts[i] != "") flowt[parts[i]] = 1
     }
-    {
+    /^## / { skip = 0; print; next }
+    /^- \[/ {
+      skip = 0
       line = $0
       if (match(line, /<!-- applies_to:[[:space:]]*[^>]*-->/)) {
         tagstr = substr(line, RSTART, RLENGTH)
@@ -165,14 +246,19 @@ filter_by_stack() {
         n2 = split(tagstr, tags, ",")
         keep = 0
         for (i = 1; i <= n2; i++) {
-          if (tags[i] != "" && act[tags[i]]) { keep = 1; break }
+          if (tags[i] != "" && (act[tags[i]] || flowt[tags[i]])) { keep = 1; break }
         }
-        if (!keep) next
+        if (!keep) skip = 1
       }
+      if (skip) next
       print
+      next
     }
+    skip { next }
+    { print }
   '
 }
+
 
 # Extract only the ## Hard-enforcement section from a digest file.
 extract_hard_section() {
@@ -183,9 +269,59 @@ extract_hard_section() {
   ' "$1"
 }
 
+# Extract ## Hard-enforcement section, omitting command-scoped policies
+# (slug prefix `hq-cmd-`). Used only for the global cold-start digest:
+# command-scoped rules are loaded on-demand by their command's auto-loader,
+# so they don't need to inject at every session start. Drops the policy
+# header line plus its indented Rationale/Provenance continuations until
+# the next policy or section. Saves ~9-10KB per cold-start.
+extract_hard_section_global() {
+  awk '
+    /^## Hard-enforcement/ { in_hard = 1; skip_cmd = 0; print; next }
+    /^## Soft-enforcement/ { in_hard = 0; skip_cmd = 0 }
+    !in_hard { next }
+    /^- \[hard\] \*\*hq-cmd-/ { skip_cmd = 1; next }
+    /^- \[/ { skip_cmd = 0 }
+    /^## / { skip_cmd = 0 }
+    skip_cmd { next }
+    { print }
+  ' "$1"
+}
+
+# Slug + rule-summary global render (Change 5, Variant A). Same as
+# extract_hard_section_global but additionally drops indented continuation
+# lines (`*Rationale*`, `*Provenance*`). Each policy collapses to its
+# `- [hard] **slug**: rule summary <!-- applies_to: tag -->` header line.
+# Cuts global cold-start from ~70KB to ~36KB while preserving the slug
+# and one-line rule summary that the model needs to know each rule
+# exists and roughly what it requires. Full text remains at
+# `.claude/policies/{slug}.md`. Override with HQ_GLOBAL_FULL=1.
+extract_hard_section_global_slug() {
+  awk '
+    /^## Hard-enforcement/ { in_hard = 1; skip_cmd = 0; print; next }
+    /^## Soft-enforcement/ { in_hard = 0; skip_cmd = 0 }
+    !in_hard { next }
+    /^- \[hard\] \*\*hq-cmd-/ { skip_cmd = 1; next }
+    /^- \[/ { skip_cmd = 0; print; next }
+    /^## / { skip_cmd = 0 }
+    skip_cmd { next }
+    /^[[:space:]]/ { next }
+    { print }
+  ' "$1"
+}
+
 # Count hard policies in a digest file (for header metadata).
 count_hard() {
   grep -c '^- \[hard\]' "$1" 2>/dev/null || echo 0
+}
+
+# Count hard policies excluding command-scoped slugs (matches
+# extract_hard_section_global's filter).
+count_hard_global() {
+  local total cmd
+  total=$(grep -c '^- \[hard\]' "$1" 2>/dev/null || echo 0)
+  cmd=$(grep -c '^- \[hard\] \*\*hq-cmd-' "$1" 2>/dev/null || echo 0)
+  echo $((total - cmd))
 }
 
 # Count total policies in a digest file.
@@ -198,18 +334,28 @@ emit_block() {
   printf '<policy-digest>\n'
   printf '# Applicable Policies (auto-loaded at session start)\n\n'
   printf '> Injected by `.claude/hooks/load-policies-for-session.sh` | Rebuild digests: `bash scripts/build-policy-digest.sh`\n'
-  if [ -n "$HQ_ACTIVE_SERVICES" ]; then
-    printf '> Active stack filter: `%s` — stack-specific policies outside this set are hidden\n' "$HQ_ACTIVE_SERVICES"
+  if [ "$HQ_HAS_EXPLICIT_SERVICES" = "1" ]; then
+    if [ -n "$HQ_ACTIVE_SERVICES" ]; then
+      printf '> Active stack filter: `%s` — integration policies outside this set are hidden (flow tags always pass)\n' "$HQ_ACTIVE_SERVICES"
+    else
+      printf '> Active stack filter: `<empty>` — all integration-tagged policies hidden (flow tags always pass)\n'
+    fi
   fi
 
-  # Global (hard-enforcement only)
+  # Global (hard-enforcement only, excluding command-scoped policies)
   if [ -f "$GLOBAL_DIGEST" ]; then
     local hard_count total_count
-    hard_count=$(count_hard "$GLOBAL_DIGEST")
+    hard_count=$(count_hard_global "$GLOBAL_DIGEST")
     total_count=$(count_total "$GLOBAL_DIGEST")
-    printf '\n## Global (hard-enforcement only — %d of %d policies)\n\n' "$hard_count" "$total_count"
-    printf '> Full global digest (hard + soft): `.claude/policies/_digest.md`\n\n'
-    extract_hard_section "$GLOBAL_DIGEST" | filter_by_stack
+    printf '\n## Global (hard-enforcement, non-command-scoped — %d of %d policies)\n\n' "$hard_count" "$total_count"
+    if [ "${HQ_GLOBAL_FULL:-0}" = "1" ]; then
+      printf '> Full global digest (hard + soft, includes command-scoped): `.claude/policies/_digest.md`\n'
+      printf '> Render mode: **full** (HQ_GLOBAL_FULL=1) — rationale + provenance included\n\n'
+      extract_hard_section_global "$GLOBAL_DIGEST" | filter_by_stack
+    else
+      printf '> Slug + rule-summary only — full text per policy: `.claude/policies/{slug}.md` (or `qmd get -c hq {slug}`). Override: `HQ_GLOBAL_FULL=1`\n\n'
+      extract_hard_section_global_slug "$GLOBAL_DIGEST" | filter_by_stack
+    fi
   fi
 
   # Company digest (full)

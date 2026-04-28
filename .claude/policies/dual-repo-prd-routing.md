@@ -4,6 +4,7 @@ title: Dual-repo PRD routing via story notes
 scope: command
 trigger: /run-project, /execute-task, /plan
 enforcement: soft
+public: true
 ---
 
 ## Rule

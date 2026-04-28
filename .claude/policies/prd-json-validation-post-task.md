@@ -5,6 +5,7 @@ scope: command
 trigger: run-project, execute-task
 enforcement: hard
 created: 2026-03-26
+public: true
 ---
 
 ## Rule

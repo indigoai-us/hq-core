@@ -8,6 +8,7 @@ version: 1
 created: 2026-03-11
 updated: 2026-03-11
 source: success-pattern
+public: true
 ---
 
 ## Rule

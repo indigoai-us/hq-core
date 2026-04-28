@@ -4,6 +4,7 @@ title: Facebook idb Installation
 scope: command
 trigger: installing idb for iOS simulator control
 enforcement: soft
+public: true
 ---
 
 ## Rule

@@ -4,6 +4,7 @@ title: PRD content extraction stories should reference all HQ source locations
 scope: command
 trigger: /prd, content-extraction stories
 enforcement: soft
+public: true
 ---
 
 ## Rule

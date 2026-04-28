@@ -79,7 +79,7 @@ Credential access: policy `credential-access-protocol.md`. Hook: `warn-cross-com
 
 ## Sensitive Path Deny Lists
 
-Sensitive system paths are blocked from Read access via `settings.json` deny rules: `~/.ssh/**`, `~/.aws/credentials`, `~/.aws/config`, `~/.gnupg/**`, `~/.env`, `~/.netrc`, `~/.zshrc`, `~/.zprofile`, `~/.zshenv`, `~/.bashrc`, `~/.bash_profile`. These protect SSH keys, AWS credentials, GPG secrets, local environment files, and shell rc files (which may contain hardcoded API keys — see company policies for details). User can override with explicit approval when prompted. For rc-file mutations, use append-only (`printf >> file`) or pattern-delete (`sed '/pattern/d' file`) rather than Read+Edit — both avoid pulling file contents into context. Company credential isolation is handled separately by hooks (see Company Isolation section).
+Sensitive paths (SSH/AWS/GPG/env/shell-rc) are Read-blocked by `settings.json` deny rules. For rc-file mutations use append-only (`printf >> file`) or pattern-delete (`sed '/pattern/d' file`) — never Read+Edit. Full list lives in `.claude/settings.json` `permissions.deny`.
 
 ## Infrastructure-First
 
@@ -107,12 +107,10 @@ When work implies new infrastructure, scaffold it BEFORE doing the work:
 
 ## Workers
 
-**Shared** (`workers/public/`): frontend-designer, qa-tester, security-scanner, pretty-mermaid, exec-summary, accessibility-auditor, performance-benchmarker, dev-team (frontend-dev, motion-designer, context-manager, reality-checker, backend-dev) + content-team (5) + social-team (5) + gardener-team (3) + knowledge-tagger + site-builder + ascii-artist + paper-designer.
+**Shared** (`workers/public/`): frontend-designer, impeccable-designer (**deprecated 2026-04-15** — use dev-team/frontend-dev + design-styles knowledge), qa-tester, security-scanner, pretty-mermaid, exec-summary, accessibility-auditor, performance-benchmarker, gstack-team (26 g-* skills) + dev-team (frontend-dev: +4 design quality skills audit/polish/typeset/harden, full design-styles context; motion-designer: style-coherent animation via design-styles) + content-team (5) + social-team (5) + gardener-team (3) + gemini-team (6) + knowledge-tagger + site-builder.
 **Company** (`companies/{co}/workers/`): per-company workers listed in `workers/registry.yaml`.
 
-**Optional packs** (install via `hq install @indigoai-us/hq-pack-*`): design-styles (curated style packs), design-quality (typography/color/spatial/motion references), gemini (6 gemini-* workers + gemini-cli knowledge — requires `gemini` on PATH), gstack (gstack-team + 26 g-* skills). See `packages/README.md`.
-
-**Per-repo design context:** `design.md` at repo root. Declares `style-pack: <id>` in the Design Direction section. Workers resolve the pack via `knowledge/public/design-styles/registry.yaml` (shipped by the `design-styles` pack) → pack directory → `context_paths.required`. Pack schema: `knowledge/public/design-styles/PACK-SCHEMA.md`. Design quality references live in `knowledge/public/design-quality/` (shipped by the `design-quality` pack).
+**Per-repo design context:** `design.md` at repo root (renamed from `.impeccable.md`). Declares `style-pack: <id>` in the Design Direction section. Workers resolve the pack via `knowledge/public/design-styles/registry.yaml` → pack directory → `context_paths.required`. Pack schema: `knowledge/public/design-styles/PACK-SCHEMA.md`. Design quality references (typography, color, spatial, etc.) live in `knowledge/public/design-quality/`.
 
 **Worker-first rule:** Before specialized tasks (design, content writing, security, data analysis, deployment), check `workers/registry.yaml` for a matching worker. Use `/run {worker} {skill}` — workers carry domain instructions + learned rules. Only work directly if no suitable worker exists.
 
@@ -131,13 +129,16 @@ When spawning Task agents for story/task completion: each sub-agent MUST commit 
 
 ## Image Context Isolation
 
-Parent session should never accumulate >10 images. When reading/verifying image files (.png/.jpg/.jpeg/.gif/.webp), delegate to a sub-agent: spawn agent with "Read {path} and describe: dimensions, content, visual quality, issues. Return text only." Mandatory for batch image verification and images >1500px. Full rules: `.claude/policies/image-context-isolation.md`
+Never accumulate >10 images in parent session; delegate image reads/verifications to a sub-agent that returns text only. Full rules: `.claude/policies/image-context-isolation.md`
 
 ## File Locking
 
-Story-scoped file flags prevent concurrent edit conflicts. Config: `settings/orchestrator.yaml`. Stories declare `files: []` in prd.json. `/execute-task` acquires locks in `{repo}/.file-locks.json` + state.json `checkedOutFiles` on start, releases on completion/failure. `/run-project` skips conflicting stories during task selection (configurable: `hard_block`, `soft_block`, `read_only_fallback`). Stale locks (dead PID + timeout) auto-cleaned.
+Two coordination layers, both configured in `settings/orchestrator.yaml`:
 
-**Repo Coordination (cross-session):** Repo-level active-run registry at `workspace/orchestrator/active-runs.json` prevents sibling sessions from editing a repo while `/run-project` owns it. Enforced by `scripts/repo-run-registry.sh` + SessionStart banner (`check-repo-active-runs.sh`) + PreToolUse hard block (`block-on-active-run.sh`). Blocks Edit/Write/destructive-Bash against owned repos with exit code 2; Read/Grep/Glob/`git status` always allowed. Config: `settings/orchestrator.yaml` → `repo_coordination:`. Bypass (emergency only): `HQ_IGNORE_ACTIVE_RUNS=1` — audit to `workspace/learnings/active-run-bypasses.jsonl`. Policy: `.claude/policies/repo-run-coordination.md`. Composes above story-level `.file-locks.json` without regression.
+1. **Story-scoped** — `/execute-task` acquires `{repo}/.file-locks.json` from `prd.json` `files: []`; `/run-project` skips conflicting stories.
+2. **Repo-scoped (cross-session)** — `workspace/orchestrator/active-runs.json` blocks Edit/Write/destructive-Bash against owned repos. Bypass (emergency only): `HQ_IGNORE_ACTIVE_RUNS=1` — auto-audited.
+
+Full policy: `.claude/policies/repo-run-coordination.md`.
 
 ## Commands
 
@@ -149,67 +150,17 @@ Public: listed in `modules/modules.yaml` (filter `access: public`). Company-leve
 
 ## Knowledge Repos
 
-Knowledge folders use three patterns — all valid, none being migrated:
-
-1. **Embedded standalone `.git` dir** (most company knowledge): e.g. `companies/{company}/knowledge/`, `companies/personal/knowledge/`. HQ tracks these as orphan `160000` gitlinks — the inner repo is opaque to HQ, commits happen inside. To capture advancement: commit inside the inner repo, then `git add companies/{co}/knowledge && git commit` in HQ to bump the pointer. (HQ has no `.gitmodules` file — this is intentional, not a bug.)
-2. **Symlink to `repos/private/knowledge-{co}/`** (e.g. `companies/{company}/knowledge`): tracked as `120000` symlink; edits land in the target repo.
-3. **Inline files tracked by HQ git** (e.g. `knowledge/public/getting-started/`, `knowledge/public/hq-core/`, `companies/{company}/knowledge/`): simplest; no inner repo, just regular files.
-
-When adding new knowledge: pick pattern 1 for company knowledge that will grow, pattern 2 if you want a shared clone, pattern 3 for small/shared content. Register in `modules/modules.yaml`. Taxonomy: `knowledge/public/hq-core/knowledge-taxonomy.md`.
-
-## Resource Registry
-
-Some companies maintain a **resource registry** — a plain folder inside the company directory (`companies/{co}/registry/`) holding YAML topology files, one per persistent resource (repos, apps, services, databases, infra, packages). The registry is declared by setting `registry: companies/{co}/registry` on the company's entry in `companies/manifest.yaml`.
-
-**Detection:** Check `companies.{co}.registry` in `manifest.yaml`. If set, the company has a registry.
-
-**Before creating** a new repo/app/service/DB, consult the registry first:
-```bash
-yq '.resources[] | "  " + .id + " - " + .name + " (" + .type + ")"' companies/{co}/registry/registry.yaml
-```
-If a matching resource exists, reuse it rather than silently duplicating.
-
-**After creating/renaming/deprecating** a resource, update the registry:
-- Add/edit `companies/{co}/registry/resources/{id}.yaml`
-- Regenerate the index: `cd companies/{co}/registry && bash scripts/generate-index.sh` (or `/sync-registry {co}`)
-
-**Credentials never go in the shared topology** — they live in `companies/{co}/settings/resource-overrides/` (gitignored). The `resources/*.yaml` files carry topology only — no `op://` refs, no API keys, no endpoints.
-
-**Sync across machines** is handled by `hq-sync`, not by git. The registry is not a standalone repo — it's part of the company filesystem and rides the same reconciliation path as everything else under `companies/{co}/`.
-
-**Skill:** `.claude/skills/registry/SKILL.md` — full protocol (detect, list, pre-flight, update, deprecate, bootstrap).
-**Bootstrap templates:** `.claude/skills/registry/templates/` — schema + generate-index script + README, copied into `companies/{co}/registry/` when a new registry is created.
-**Command:** `/sync-registry [company]` — regenerates `registry.yaml` from `resources/*.yaml`. Runs no git actions.
-**Hook (optional):** `.claude/hooks/auto-capture-registry.sh` — when `HQ_HOOK_PROFILE=standard`, writes stub resources on `gh repo create` (matched by `companies.{co}.github_org`) and `vercel deploy` (matched by `companies.{co}.vercel_team`). No-op for companies without a `registry:` declaration.
+Three valid patterns: (1) embedded `.git` dir tracked as `160000` gitlink (most company knowledge), (2) symlink to `repos/private/knowledge-{co}/` tracked as `120000`, (3) inline files tracked by HQ git. All three coexist; none are being migrated. Register new knowledge in `modules/modules.yaml`. Pattern selection + commit semantics: `knowledge/public/hq-core/knowledge-taxonomy.md`.
 
 ## Skills
 
-`.claude/skills/` is the canonical skill tree. Codex bridge: `scripts/codex-skill-bridge.sh install`. Dual-format: `command.md` (Claude Code) + `SKILL.md` (Codex). 12 promoted skills (Codex-ready). Coverage: `bash scripts/codex-skill-bridge.sh status`. Full pattern: `knowledge/public/hq-core/codex-skill-pattern.md`.
+`.claude/skills/` is the canonical skill tree. Codex bridge: `scripts/codex-skill-bridge.sh install`. Dual-format: `.claude/commands/{name}.md` (Claude Code source) + `.claude/skills/{name}/SKILL.md` (Codex adaptation). All user-facing Claude commands should have a matching Codex skill. Coverage: `bash scripts/codex-skill-bridge.sh status`. Full pattern: `knowledge/public/hq-core/codex-skill-pattern.md`.
 
 ## Search (qmd)
 
-HQ and codebases indexed with [qmd](https://github.com/tobi/qmd) for semantic + full-text search (v1.0.0).
+HQ + codebases indexed with [qmd](https://github.com/tobi/qmd) (v1.0.0). Modes: `search` (BM25), `vsearch` (semantic), `query` (hybrid+rerank), `get`/`multi-get`. Scope with `-c {collection}`. Collection list + command reference: `knowledge/public/hq-core/quick-reference.md`.
 
-**Collections:** `hq-infra` (commands/skills/policies), `hq-workers` (worker defs), `hq-knowledge` (shared knowledge), `hq-projects` (PRDs) + one per company (derived from `companies/manifest.yaml`). Use `-c {collection}` to scope. Omit `-c` to search all collections.
-
-**Commands:**
-- `qmd search "<query>" --json -n 10` — BM25 keyword (fast, default)
-- `qmd vsearch "<query>" --json -n 10` — semantic/conceptual
-- `qmd query "<query>" --json -n 10` — hybrid BM25 + vector + re-ranking (best quality)
-- `qmd get "<path>"` / `qmd multi-get "<pattern>"` — retrieve by path/glob
-- Add `-c {collection}` to scope to a specific collection
-
-**Search rules:**
-
-| Need | Tool |
-|------|------|
-| HQ content by topic | `qmd search` or `qmd vsearch` |
-| Code by concept | `qmd vsearch -c {collection}` |
-| Project PRD / worker yaml | `qmd search` or direct Read (registry/manifest) |
-| Files by path pattern | `Glob` with scoped `path:` |
-| Exact pattern in code | `Grep` |
-
-**Hard rules:** Never Glob for `prd.json`/`worker.yaml` (hook blocked). Always pass `path:` to Glob (never from HQ root). Prefer qmd for codebase exploration; Grep for exact matching. `.ignore` protects Grep from HQ root but NOT Glob. Parallel Glob calls: if one times out, ALL sibling calls die.
+**Hard rules:** Never Glob for `prd.json`/`worker.yaml` (hook blocked). Always pass `path:` to Glob (never from HQ root). Prefer qmd for codebase exploration; Grep for exact matching. `.ignore` protects Grep but NOT Glob. Parallel Glob calls: if one times out, ALL sibling calls die.
 
 ## Learning System
 
@@ -232,39 +183,13 @@ Educational insights persist at `workspace/insights/`. Captured via `/learn`, au
 - Confirm framework detection is correct before deploying.
 - If preview deploys are behind SSO, fall back to local testing immediately rather than debugging SSO.
 
-## Learned Rules
+## Auto-Checkpoint
 
-- **NEVER**: Run Playwright/Puppeteer/Chromium in a Vercel Lambda — the 250 MB unzipped cap makes it architecturally impossible. Use ingest-only endpoints that accept pre-captured payloads from client-side callers (extensions, local scripts). <!-- back-pressure-failure | 2026-04-15 -->
-- **NEVER**: Extract shared skills that require editing 5+ existing files to wire up. When extending behavior across multiple commands/skills, prefer layered independent additions (policy + command + skill edit) over shared extraction. Accept duplicated pattern tables as simpler than shared dependencies. <!-- user-correction | 2026-04-15 -->
-- **NEVER**: Use relative symlinks to access pattern-2 knowledge repos from a git worktree — `../../repos/` resolves against worktree root, not HQ root. Use the canonical absolute path (`$HOME/Documents/HQ/repos/public/knowledge-{name}/`). <!-- user-correction | 2026-04-16 -->
+When `AUTO-CHECKPOINT REQUIRED` is injected by a PostToolUse hook (after git-commit/push, deploys, publishes, file-edit, etc.), write a lightweight thread file and continue. Do NOT rebuild INDEX, update `recent.md`, run `qmd update`, or write legacy checkpoint files. Knowledge edits commit to the knowledge repo, not HQ git.
 
-## Auto-Checkpoint (PostToolUse Hook)
+When the **60% Stop banner** or **75% PreCompact banner** fires, present the 3 options (checkpoint / handoff / continue) and wait for the user — never auto-run `/checkpoint`. If context feels heavy outside those banners, proactively suggest `/checkpoint` or `/handoff`.
 
-PostToolUse hooks detect checkpoint-worthy events and inject `AUTO-CHECKPOINT REQUIRED`. When you see this, write a lightweight thread file immediately and continue.
-
-| Tool | Pattern | Trigger | Debounce |
-|------|---------|---------|----------|
-| Bash | `git commit` / `git push` | `git-commit` / `git-push` | NO |
-| Bash | `gh pr create/merge` | `pr-operation` | 5min |
-| Bash | `vercel deploy/--prod` | `deployment` | 5min |
-| Bash | `npm/bun publish` | `package-publish` | 5min |
-| Bash | `bun run test/npm test/bun test` | `test-run` | 5min |
-| Bash | `curl -X POST/PUT/DELETE` | `api-mutation` | 5min |
-| Edit | any file (excl. `workspace/threads/`) | `file-edit` | 5min |
-| Write | `workspace/reports/`, `social-drafts/`, `companies/*/data/` | `file-generation` | 5min |
-
-Also checkpoint after worker skill completion. Schema: `knowledge/public/hq-core/thread-schema.md`. Do NOT rebuild INDEX, update `recent.md`, run `qmd update`, or write legacy checkpoint files on auto-checkpoints. When edits touch knowledge files, commit to the knowledge repo — not HQ git.
-
-## Auto-Checkpoint (Two-Stage Advisory)
-
-Context-usage advisories run in two stages. Both present the same three options (checkpoint, handoff, or continue) — neither forces action.
-
-1. **60% advisory (Stop hook).** `.claude/hooks/context-warning-60.sh` fires after an assistant turn when the transcript size crosses ~60% of the context window. Prints once per session (gated via `workspace/.context-warnings/{session_id}`). Purely informational — runway still exists before autocompact.
-2. **75% advisory (PreCompact hook).** `.claude/hooks/auto-checkpoint-precompact.sh` fires immediately before autocompact runs (threshold set by `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=75`). Autocompact cannot be blocked in Claude Code, so the banner surfaces options right before compaction proceeds.
-
-**When either banner appears**, present the 3 options to the user and wait for their decision. Do not auto-run `/checkpoint`; let the user pick.
-
-**Fallback (instruction-based):** If context feels heavy (many long turns, lots of file reads), proactively suggest `/checkpoint` or `/handoff`. For end-of-session wrap-up, run `/handoff` manually.
+Trigger table + thresholds spec: `knowledge/public/hq-core/auto-checkpoint-spec.md`.
 
 ## Core Principles
 
@@ -288,3 +213,13 @@ For deployable projects (web, API, CLI):
 - Workers use `e2e-testing` skill for writing/running tests
 
 **Full guide:** `knowledge/public/testing/e2e-cloud.md`
+
+## Secrets
+
+Use `/hq-secrets` for the full playbook. Core rules:
+
+- **Inject via exec:** `hq secrets exec --only KEY1,KEY2 -- <command>` — values become env vars in the child process, never stdout.
+- **Get redacts by default:** `hq secrets get <NAME>` shows metadata only; `--reveal` is an explicit escape hatch.
+- **Never capture exec output:** do not wrap `exec` in `$(...)`, pipe it, or echo `process.env.SECRET` — secret values may appear in subprocess output. This is a prompt-level guardrail, not technical enforcement.
+- **Discover with list:** `hq secrets list` shows available secrets (metadata only).
+- **Human-supplied values:** `hq secrets generate-link <NAME>` produces a URL for a human to enter a value you should not see.

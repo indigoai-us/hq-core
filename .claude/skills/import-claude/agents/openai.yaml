@@ -1,0 +1,3 @@
+interface:
+  display_name: "Import Claude"
+  short_description: "Scan prior Claude artifacts and selectively import them into HQ."

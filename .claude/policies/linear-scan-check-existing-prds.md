@@ -5,6 +5,7 @@ scope: command
 trigger: /check-linear-voyage, voyage-linear-scan scheduled task
 enforcement: hard
 applies_to: [linear]
+public: true
 ---
 
 ## Rule

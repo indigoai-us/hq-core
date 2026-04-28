@@ -1,3 +1,34 @@
+## [12.1.0] — 2026-04-28
+
+### Headline
+**Iteration release on top of v12.0.0's hq-core split.** Adds the auth/identity command set (`/hq-login`, `/hq-logout`, `/hq-whoami`), the `/hq-sync` CLI-driven full-sync command, an interactive `/resolve-conflicts` flow for HQ Sync conflicts, a heavy-duty `/deep-plan` separated from the now-lightweight `/plan`, the `/import-claude` migration command for hydrating an existing machine into HQ, and the `hq-secrets` skill that codifies the secret-injection playbook (`hq secrets exec --only … -- <command>`). `/designate-team` is now shipped publicly and gains an end-to-end self-check via `/membership/me`. Background: trimming session cold-start to ~36KB (was ~93KB) and a policy-rationale leak-scan word-boundary fix.
+
+### Added — Commands
+- **`/hq-login`, `/hq-logout`, `/hq-whoami`** — Cognito identity flow (status → refresh → browser fallback).
+- **`/hq-sync`** — Full HQ sync from CLI (same engine as the AppBar HQ Sync button).
+- **`/resolve-conflicts`** — Interactive walk-through of HQ Sync conflicts (keep local | take cloud | discard).
+- **`/import-claude`** — Scan the machine for Claude artifacts (sessions, MCPs, commands, skills, hooks, policies, knowledge, repos, plans) and guide a selective import into HQ.
+- **`/deep-plan`** — Heavy planning split from `/plan`: research subagents (codebase / HQ / repo) + a 3-tier 15-question interview (Strategic / Architecture / Quality), with smart-skip and pushback. Use for large or strategically important PRDs; `/plan` remains lightweight for everyday work.
+- **`/designate-team`** — Mark an HQ company directory as cloud-backed and run company sync. Now public; delegates to `hq cloud provision company` under the hood.
+
+### Added — Skills
+- **`hq-secrets`** — Playbook for the `hq secrets` CLI: inject via `exec --only … -- <cmd>` so values become env vars in the child process and never reach stdout; `get` redacts by default; `--reveal` is the only escape hatch; never wrap `exec` in `$(…)`. New `## Secrets` section in `.claude/CLAUDE.md` summarises the core rules.
+
+### Changed
+- **`/plan`** — Reverted to lightweight scope. Heavy interview + research moved to new `/deep-plan`. Existing call sites unchanged; choose the depth that fits.
+- **`/designate-team`** — Now delegates to `hq cloud provision company`. Adds an env echo (vault URL, Cognito pool domain, `hq whoami`) before provisioning and a post-provision `/membership/me` self-check (audit JSONL gains a `membership_visible` field; new exit code `4` = entity created but operator can't see it — usually a userpool/token mismatch).
+- **Session cold-start trim** — Default cold-start size dropped from ~93KB to ~36KB by trimming session-context defaults (still expandable on demand).
+- **Public-policy gate** — Backfilled `public: true` on all 64 existing policies that should ship with hq-core; replayed the post-hardening promotion sweep.
+
+### Fixed
+- **`/hq-sync`** — Portable bash + arg parsing (was bash-4.x-only); renamed `status` → `cli_status` to avoid zsh's reserved-word collision.
+- **leak-scan** — Word-boundary regex on policy-rationale scan (was matching substrings inside larger tokens).
+
+### Provenance
+14 PRs merged onto `indigoai-us/hq-core-staging` since the v12.0.0 seed (`b616522`). Promoted to public `indigoai-us/hq-core` from staging `main`. Internal staging-repo CI (`.github/workflows/leak-scan.yml`, `.leak-scan/`) is intentionally not promoted.
+
+---
+
 ## [12.0.0] — 2026-04-21
 
 ### Headline

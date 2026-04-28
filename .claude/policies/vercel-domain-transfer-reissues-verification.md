@@ -22,3 +22,14 @@ ALWAYS: Ship the `next.config.mjs` host-matched redirect commit to the destinati
 
 NEVER: Assume `vercel domains add {domain} --force` can transfer a domain across projects via the CLI — it returns 403 when the domain is claimed by another project. Use the REST API (`/v9/projects/{id}/domains/{domain}`) with the CLI's auth token directly.
 
+## Rationale
+
+Discovered during `hq.{your-domain}.ai → www.{your-domain}.ai` consolidation (apr 2026):
+
+1. `vercel domains add hq.{your-domain}.ai --force` → 403 Not authorized — CLI doesn't cross the project boundary
+2. `DELETE /v9/projects/{source-project}/domains/hq.{your-domain}.ai` → 409 `domain_is_redirect` because `{shim}.{your-domain}.ai` was a redirect shim pointing to it; had to delete the shim first
+3. `POST /v9/projects/{destination-project}/domains` succeeded but returned `verified:false` with a fresh pending TXT token (`a628900f063c4f5739b3`), even though the previous project's token (`3e91f0fc6eb7a5d29a3e`) was still in DNS. Vercel treats the transfer as a fresh ownership claim
+4. Route53 UPSERT had to submit the ENTIRE existing RRset (4 prior tokens for sibling subdomains) plus the new token, because UPSERT replaces the full set — dropping values would have broken unrelated subdomain verifications
+5. `POST /verify` then returned `verified:true` and the 308 redirect went live immediately
+
+The pre-flight `next.config.mjs` redirect commit ensured there was no window during which `hq.{your-domain}.ai` served content directly from the destination project — the redirect rule was live before Vercel even routed traffic there.

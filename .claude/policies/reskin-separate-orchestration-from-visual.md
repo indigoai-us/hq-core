@@ -20,3 +20,6 @@ When adapting a reference implementation (another site, app, or codebase) into a
 
 Record the split as a translation table in the plan/PRD (columns: "Reference element" → "Our execution"). Acceptance criteria then reference the orchestration pattern by name and the visual treatment by token, making it legible which decisions are borrowed vs. owned.
 
+## Rationale
+
+The cinematic PRD fused a reference site's BootOverlay + WebGL crossfade orchestration with a new spectrum-on-navy palette. Without the explicit split, a swarm worker implementing a finale PhaseMachine could easily pull in the reference's scanlines + CRT grain visuals alongside the phase-machine pattern, contaminating the target aesthetic with cyberpunk residue. Making the split explicit — and documenting the rejected visual elements in the plan's translation table — gave downstream workers an unambiguous contract: copy the timing, not the paint.

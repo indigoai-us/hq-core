@@ -4,6 +4,7 @@ title: No threaded social posts
 scope: command
 trigger: /post, /contentidea, /suggestposts, /preview-post, social-strategist
 enforcement: hard
+public: true
 ---
 
 ## Rule

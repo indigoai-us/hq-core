@@ -9,6 +9,7 @@ created: 2026-04-16
 updated: 2026-04-16
 source: user-correction
 command: run-project
+public: true
 ---
 
 ## Rule

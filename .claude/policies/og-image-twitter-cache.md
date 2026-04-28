@@ -4,6 +4,7 @@ title: Deploy OG images before sharing URLs on social
 scope: command
 trigger: blog publishing, /post, social posting
 enforcement: soft
+public: true
 ---
 
 ## Rule

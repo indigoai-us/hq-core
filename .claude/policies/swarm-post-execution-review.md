@@ -6,6 +6,7 @@ trigger: "/run-project swarm, parallel agent execution, batch orchestration"
 enforcement: soft
 version: 1
 created: 2026-03-26
+public: true
 ---
 
 ## Rule

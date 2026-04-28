@@ -5,6 +5,7 @@ scope: command
 trigger: "/prd, prd.json creation"
 enforcement: hard
 created: 2026-03-24
+public: true
 ---
 
 ## Rule

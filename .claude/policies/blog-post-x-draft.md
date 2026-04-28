@@ -4,6 +4,7 @@ title: Publish blog before sharing on X or LinkedIn
 scope: command
 trigger: /post, /contentidea, daily-social, blog publishing, personal-website deploy, article sharing
 enforcement: hard
+public: true
 ---
 
 ## Rule

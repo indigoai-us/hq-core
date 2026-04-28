@@ -8,6 +8,7 @@ version: 1
 created: 2026-03-29
 updated: 2026-03-29
 source: user-correction
+public: true
 ---
 
 ## Rule

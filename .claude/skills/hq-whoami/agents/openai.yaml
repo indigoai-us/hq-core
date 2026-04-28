@@ -1,0 +1,3 @@
+interface:
+  display_name: "HQ Whoami"
+  short_description: "Show HQ Cognito identity and session expiry (read-only)."

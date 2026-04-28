@@ -1,0 +1,16 @@
+# HQ-root active-stack declaration
+#
+# Read by .claude/hooks/load-policies-for-session.sh to filter the
+# cold-start policy digest. Lines tagged with `<!-- applies_to: TAG -->`
+# in `.claude/policies/_digest.md` are kept only if TAG is in `services:`
+# below or in the hook's HQ_FLOW_TAGS whitelist.
+#
+# Applies only when there is no active company (i.e. cwd is not inside
+# `companies/{co}/`). In a company context, the manifest's `services:`
+# field for that company takes precedence.
+#
+# Empty `services: []` is still an explicit opt-in: only flow-tagged and
+# untagged policies inject at HQ root. To allow specific integrations,
+# add them here (e.g. `services: [vercel, aws]`).
+
+services: []
