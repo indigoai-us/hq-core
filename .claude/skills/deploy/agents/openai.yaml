@@ -1,0 +1,3 @@
+interface:
+  display_name: "Deploy"
+  short_description: "Ships HQ web artifacts to hq-deploy. User-invokable or auto-triggered."

@@ -1,14 +1,17 @@
 ---
 name: deploy
-description: Internal deploy engine — auto-deploys web artifacts to hq-deploy. Invoked by policy, not by user command.
-allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Edit, Write
+description: Deploy engine — ships HQ web artifacts (decks, reports, dashboards, sites) to hq-deploy. May be invoked by user OR auto-triggered by share-intent / build-completion policies.
+allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(/Users/*/Documents/HQ/.claude/skills/deploy/scripts/password-helper.sh:*), Bash(pbcopy), Edit, Write
 ---
 
 # Deploy Engine
 
-Internal skill for deploying web artifacts to hq-deploy infrastructure. This is NOT a user-facing command — it is triggered automatically by the `auto-deploy-on-create` policy when HQ produces a deployable artifact.
+The deploy engine ships HQ web artifacts (decks, reports, dashboards, web builds) to the hq-deploy infrastructure. It is **both** a first-class user-invokable command (`/deploy`) and the engine called by the `auto-deploy-on-create` and `hq-deploy-reinforcement` policies.
 
-**Guiding principle:** The user never asked you to deploy. You noticed something deployable and are giving them a link as a bonus. Keep it quick, quiet, and casual.
+**Two invocation paths:**
+
+- **User-invoked** (`/deploy`, or share-intent keywords like "share this", "send to <person>") — announce briefly; the user expects a link in the response.
+- **Auto-triggered** (post-build, post-`/execute-task`, post-`/run-project`) — quiet, casual, weave the link into the response as a bonus.
 
 **Seven-step flow:**
 
@@ -358,6 +361,81 @@ touch "$UPSOLD_FILE"
 ```
 
 Move on. The user got their preview URL; deploy is a bonus, not a blocker.
+
+---
+
+## Step 4.5 — Sensitivity & Auto-Password Protection
+
+After identity is established but before guardrails, decide whether this artifact must be password-protected. The hq-deploy backend supports password gating server-side (Argon2id hashing, Lambda@Edge enforcement); this step wires it on automatically for artifacts that should not be publicly indexed.
+
+Reinforced by `.claude/policies/hq-deploy-reinforcement.md`.
+
+### 4.5a. Sensitivity detection
+
+Set `IS_SENSITIVE=1` if ANY of these match:
+
+```bash
+IS_SENSITIVE=0
+TRIGGER=""
+
+# Rule 1: artifact path under companies/*/data/
+case "$ARTIFACT_PATH" in
+  */companies/*/data/*) IS_SENSITIVE=1; TRIGGER="companies-data-path" ;;
+esac
+
+# Rule 2: inside a private repo
+case "$ARTIFACT_PATH" in
+  */repos/private/*) IS_SENSITIVE=1; TRIGGER="${TRIGGER:-private-repo}" ;;
+esac
+
+# Rule 3: filename matches financial terms
+case "$(basename "$ARTIFACT_PATH" | tr '[:upper:]' '[:lower:]')" in
+  *revenue*|*mrr*|*arr*|*payroll*|*salary*|*pnl*|*forecast*|*runway*|*burn*)
+    IS_SENSITIVE=1; TRIGGER="${TRIGGER:-financial-filename}" ;;
+esac
+
+# Rule 4: content contains PII fields (cheap heuristic — email regex)
+if [ -f "$ARTIFACT_PATH" ] && grep -qE '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' "$ARTIFACT_PATH" 2>/dev/null; then
+  IS_SENSITIVE=1; TRIGGER="${TRIGGER:-pii-fields}"
+fi
+```
+
+If `IS_SENSITIVE=0`, skip 4.5b and proceed to Step 5.
+
+### 4.5b. Generate, announce, persist (sensitive only)
+
+Use the password helper at `.claude/skills/deploy/scripts/password-helper.sh`:
+
+```bash
+HELPER="$CLAUDE_PROJECT_DIR/.claude/skills/deploy/scripts/password-helper.sh"
+[ -x "$HELPER" ] || HELPER="$HOME/Documents/HQ/.claude/skills/deploy/scripts/password-helper.sh"
+
+DEPLOY_PASSWORD=$("$HELPER" gen)
+"$HELPER" announce "$APP_SUBDOMAIN" "$DEPLOY_PASSWORD"
+"$HELPER" persist  "$APP_SUBDOMAIN" "$DEPLOY_PASSWORD" "$TRIGGER"
+```
+
+After Step 6 (Upload) succeeds, set the password on the app via the API:
+
+```bash
+if [ "$IS_SENSITIVE" = "1" ] && [ -n "$DEPLOY_PASSWORD" ]; then
+  curl -s -X POST \
+    -H "Authorization: Bearer $JWT" \
+    -H "Content-Type: application/json" \
+    -d "{\"passwordProtected\": true, \"password\": \"$DEPLOY_PASSWORD\"}" \
+    "$API/api/apps/$APP_ID/access" > /dev/null
+fi
+```
+
+The API hashes the plaintext server-side via Argon2id; never send a pre-hashed password. Endpoint reference: `repos/private/hq-deploy/src/api/routes/access.ts`.
+
+### 4.5c. NEVER re-emit the password
+
+Once announced in Step 4.5b, the password is in the user's clipboard and persisted to `~/.hq/deploy-passwords.json` (mode `0600`). Do NOT echo it again in any subsequent response in this session. If the user asks for it later, instruct them to run:
+
+```
+jq -r '."<slug>".password' ~/.hq/deploy-passwords.json
+```
 
 ---
 

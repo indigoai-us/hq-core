@@ -61,6 +61,10 @@ Personal OS for orchestrating work across companies, workers, and AI.
 ### Deploy & Ops
 | Command | What it does |
 |---------|--------------|
+| `/deploy` | Ship any HQ artifact (deck, report, dashboard, web app) to a shareable URL via hq-deploy. Auto-handles auth, build, and (when sensitive) password protection. **Default sharing path** for HQ artifacts |
+| `/hq-login` | Sign into HQ Cognito (browser flow) — auto-queued by `/deploy` on token miss/expiry |
+| `/hq-whoami` | Show HQ Cognito identity, expiry, refresh status |
+| `/hq-logout` | Sign out of HQ Cognito locally |
 | `/pr` | {company} operations |
 
 ### Company & Infrastructure
