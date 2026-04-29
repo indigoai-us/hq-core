@@ -1,3 +1,22 @@
+## [12.1.1] — 2026-04-29
+
+### Headline
+**Hotfix on top of v12.1.0** — finishes the dev→prod Cognito cutover by flipping the last user-visible dev-pool reference and codifies the no-bandaid principle that drove the cleanup.
+
+### Fixed
+- **`/designate-team`** — the env-echo block (`HQ environment for designation:`) printed `Cognito domain: hq-vault-dev` whenever the operator hadn't set `HQ_COGNITO_DOMAIN`. Misleading post-2026-04-25 cutover, since the running CLI defaults to `vault-indigo-hq-prod`. Now the displayed default mirrors the canonical pool, so operators can sanity-check at a glance.
+
+### Added — Policies
+- **`prefer-systemic-fix-over-user-bandaid`** (hard, global) — codifies the rule that bug fixes ship as systemic patches (default change + version bump + release), not as per-operator env exports. Banned framings: "Layer A: unblock <user> today", "tell <user> to set HQ_FOO=…", "quick fix vs proper fix". Compounds with `hq-fix-root-cause-not-symptoms`. Source: 2026-04-29 user correction during the create-hq cognito cutover.
+
+### Provenance
+Single-issue hotfix. Companion releases:
+- `@indigoai-us/hq-cloud@5.9.0` — adds `decodeAccessTokenClientId` + stale-pool self-evict in `getValidAccessToken` so cached pre-cutover dev tokens stop wedging users.
+- `@indigoai-us/hq-cli@5.7.1` — picks up hq-cloud@5.9.0 via `^5.x`.
+- `create-hq@10.12.0` — `DEFAULT_COGNITO` flipped to `vault-indigo-hq-prod` / `7acei2c8v870enheptb1j5foln`.
+
+---
+
 ## [12.1.0] — 2026-04-28
 
 ### Headline

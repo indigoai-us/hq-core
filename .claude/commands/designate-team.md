@@ -116,7 +116,7 @@ fi
 # falls back to the CLI defaults. Operator identity comes from `hq whoami`
 # when available — this is informational only, never blocking.
 hq_vault_api_url_env="${HQ_VAULT_API_URL:-}"
-hq_cognito_domain_env="${HQ_COGNITO_DOMAIN:-hq-vault-dev}"
+hq_cognito_domain_env="${HQ_COGNITO_DOMAIN:-vault-indigo-hq-prod}"
 hq_whoami_line=""
 if hq whoami >/dev/null 2>&1; then
   hq_whoami_line="$(hq whoami 2>/dev/null | head -1 || true)"

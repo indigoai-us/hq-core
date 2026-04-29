@@ -1,3 +1,31 @@
+## Migrating to v12.1.1 — 2026-04-29
+
+### Headline
+
+Hotfix that finishes the dev→prod Cognito cutover. Two file-level changes to existing operators' HQ trees, plus one new global policy. Fully additive on top of v12.1.0 — no breaking changes.
+
+### Changed Commands
+
+- `.claude/commands/designate-team.md` — env-echo default flipped from `hq-vault-dev` to `vault-indigo-hq-prod` (single-line change, line 119). Behavior of `hq cloud provision company` is unchanged; only the on-screen sanity-check banner now reflects the canonical post-cutover pool.
+
+### New Policies
+
+- `.claude/policies/prefer-systemic-fix-over-user-bandaid.md` — hard, global. New rule: bug fixes ship as systemic patches, not per-user env exports. See CHANGELOG for the banned/required framings.
+
+### Companion package upgrades (recommended same-day)
+
+- `@indigoai-us/hq-cloud@5.9.0` — adds stale-pool detection so pre-cutover dev tokens stop producing 401s against the prod vault API. No action required from operators; cached tokens with mismatched `client_id` claim are silently re-authed on next CLI invocation.
+- `@indigoai-us/hq-cli@5.7.1` — `bun install -g @indigoai-us/hq-cli@5.7.1` to pick up hq-cloud@5.9.0.
+- `create-hq@10.12.0` — only matters for new HQs created after 2026-04-29; existing HQs are unaffected.
+
+### Verification
+
+- `cat .claude/commands/designate-team.md | grep "Cognito domain"` should print no `hq-vault-dev` substring.
+- `ls .claude/policies/prefer-systemic-fix-over-user-bandaid.md` should exist after `/update-hq`.
+- `bash scripts/build-policy-digest.sh` regenerates `.claude/policies/_digest.md` with 105+ policies, hard-enforcement section now contains a `prefer-systemic-fix-over-user-bandaid` line.
+
+---
+
 ## Migrating to v12.1.0 — 2026-04-28
 
 ### Headline

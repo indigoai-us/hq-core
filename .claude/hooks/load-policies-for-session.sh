@@ -46,7 +46,7 @@ while [ "$search" != "/" ]; do
 done
 
 # Fall back to canonical path if not found via walk-up
-[ -z "$HQ_ROOT" ] && HQ_ROOT="/Users/{your-name}/Documents/HQ"
+[ -z "$HQ_ROOT" ] && HQ_ROOT="$HOME/Documents/HQ"
 
 GLOBAL_DIGEST="$HQ_ROOT/.claude/policies/_digest.md"
 
