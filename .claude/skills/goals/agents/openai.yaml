@@ -1,0 +1,3 @@
+interface:
+  display_name: "Goals"
+  short_description: "View and manage OKR structure (objectives, key results) on company boards"

@@ -1,0 +1,3 @@
+interface:
+  display_name: "hq secrets"
+  short_description: "Use hq CLI secrets commands safely — inject via exec, never handle raw values, generate links for human-supplied credentials."

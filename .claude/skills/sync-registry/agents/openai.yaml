@@ -1,0 +1,3 @@
+interface:
+  display_name: "Sync Registry"
+  short_description: "Regenerate a company's resource-registry index (registry.yaml) from its resources/*.yaml files"

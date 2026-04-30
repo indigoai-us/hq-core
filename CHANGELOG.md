@@ -1,3 +1,45 @@
+## [12.2.0] — 2026-04-30
+
+### Headline
+**Codex parity** — HQ becomes a first-class environment for both Claude Code and OpenAI Codex. Adds `AGENTS.md`, the `.codex/` entrypoint tree, an `.agents/skills` exposure for Codex skill discovery, the `/convert-codex` repair command, and `agents/openai.yaml` metadata for every shipped skill — bringing Codex skill metadata coverage to 48/48 and command-skill coverage to 39/39.
+
+Fully additive. No Claude Code behavior changes. Existing operators on v12.1.x can stay on Claude Code without doing anything; users wanting to invoke HQ from Codex run `/convert-codex --apply` once and gain the new entrypoints.
+
+### Added — Commands
+- **`/convert-codex`** — Additive conversion for older Claude-first HQ roots. Dry-run by default. Adds missing `AGENTS.md`, `.codex/config.toml`, `.codex/claude` and `.codex/prompts` bridges, `.agents/skills` exposure, and missing `agents/openai.yaml` metadata. Never overwrites existing files; refuses to replace a real `.agents/skills` directory with a symlink.
+
+### Added — Codex Entrypoints
+- **`AGENTS.md`** at HQ root — 20-line orientation doc that points Codex at `.claude/`, `.agents/skills`, and `.codex/`. Mirrors the role `CLAUDE.md` plays for Claude Code.
+- **`.codex/config.toml`** — Codex sandbox + model settings (`workspace-write`, `network_access = true` for HQ workflows that need outbound calls).
+- **`.codex/claude`** → symlink to `.claude/` (Codex sees the same instructions Claude does).
+- **`.codex/prompts`** → symlink to `.claude/commands/` (Codex prompt library mirrors Claude commands).
+- **`.agents/skills`** → symlink to `.claude/skills/` (Codex skill discovery without duplication).
+
+### Added — Codex-Adapter Skills (18 new SKILL.md files + 30 new openai.yaml files)
+- New SKILL.md adapters: `checkpoint`, `cleanup`, `convert-codex`, `garden`, `goals`, `harness-audit`, `hq-sync`, `idea`, `newcompany`, `newworker`, `personal-interview`, `quality-gate`, `recover-session`, `resolve-conflicts`, `run-pipeline`, `setup`, `strategize`, `sync-registry`, `tdd`, `update-hq`.
+- Each adapter delegates to its source `.claude/commands/{name}.md` for the canonical workflow — single source of truth, no duplicate maintenance.
+- Adds `agents/openai.yaml` metadata (`display_name` + `short_description`) for skill discovery: now 48/48 covered.
+- Bumps Codex command coverage to 39/39 commands with paired adapters.
+
+### Added — Tooling
+- **`scripts/convert-codex.sh`** (446 lines) — set-euo-pipefail, dry-run-first, create-only repair script. Validates symlink targets before touching them, refuses to overwrite, and prints a compact parity audit on exit.
+- **`scripts/codex-preflight.sh`** (216 lines) — explicit Codex-side preflight checks for `search`, `bash`, and `edit` operations. Routes through hardcoded hook filenames; pipes sanitized JSON via `jq --arg` (no injection vectors).
+- **`docs/codex-hook-porting.md`** — 70-line decision record mapping each of HQ's 20 Claude hooks to a Codex strategy.
+
+### Changed — Policies
+Path renames in 4 policy files to reflect the staging-to-public model — `repos/public/hq/template/` is no longer the contributor target, `repos/private/hq-core-staging/` is. Enforcement levels unchanged.
+
+- `hq-cmd-stage-kit-settings-json-direct-edit.md`
+- `hq-nested-repo-git-status-check.md`
+- `hq-settings-local-for-personal-allows.md`
+- `run-project-conflict-marker-guard.md` (propagation list updated)
+- `_digest.md` regenerated.
+
+### Provenance
+Codex-authored PR (#30) — reviewed and merged 2026-04-30. Full review notes in PR body. No companion package releases required; `hq-cli` and `hq-cloud` are unaffected.
+
+---
+
 ## [12.1.1] — 2026-04-29
 
 ### Headline

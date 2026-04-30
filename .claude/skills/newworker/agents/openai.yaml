@@ -1,0 +1,3 @@
+interface:
+  display_name: "Newworker"
+  short_description: "Scaffold a new worker with skills, tools, and knowledge"

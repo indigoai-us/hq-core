@@ -1,0 +1,3 @@
+interface:
+  display_name: "deploy"
+  short_description: "Internal deploy engine — auto-deploys web artifacts to hq-deploy."

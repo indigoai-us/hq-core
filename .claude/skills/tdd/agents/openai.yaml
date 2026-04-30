@@ -1,0 +1,3 @@
+interface:
+  display_name: "TDD"
+  short_description: "Enforce test-driven development with RED→GREEN→REFACTOR cycle and coverage validation"

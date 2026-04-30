@@ -45,8 +45,8 @@ The regex's trailing `([^<=>]|$)` disambiguates real 7-char Git markers (`<<<<<<
 ## Propagation
 
 - `scripts/run-project.sh` (main HQ)
-- `repos/public/hq/template/scripts/run-project.sh`
-- `repos/public/hq/template/.claude/scripts/run-project.sh`
+- `repos/private/hq-core-staging/scripts/run-project.sh`
+- `repos/private/hq-core-staging/.claude/scripts/run-project.sh`
 - `repos/public/hq-starter-kit/.claude/scripts/run-project.sh`
 - Audit swarm-merge commit sites (currently lines ~3281-3298 in `run-project.sh`) and apply the same guard before their `git commit` calls.
 

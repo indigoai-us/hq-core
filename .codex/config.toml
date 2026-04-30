@@ -1,0 +1,7 @@
+sandbox_mode = "workspace-write"
+
+[shell_environment_policy]
+inherit = "core"
+
+[sandbox_workspace_write]
+network_access = true

@@ -1,3 +1,52 @@
+## Migrating to v12.2.0 — 2026-04-30
+
+### Headline
+
+Codex parity. Existing Claude Code users on v12.1.x can stay where they are — nothing breaks. Operators who also want to invoke HQ from OpenAI Codex run one command and gain a parallel Codex entrypoint tree.
+
+Fully additive. No breaking changes. No file deletions. No policy enforcement weakened.
+
+### New Files (added at HQ root)
+
+- `AGENTS.md` — Codex orientation doc (mirrors `CLAUDE.md` for Claude Code).
+- `.codex/config.toml` — Codex sandbox + model settings.
+- `.codex/claude` — symlink to `.claude/`.
+- `.codex/prompts` — symlink to `.claude/commands/`.
+- `.agents/skills` — symlink to `.claude/skills/`.
+
+### New Commands
+
+- `/convert-codex` — One-command repair for older Claude-first HQ roots. Dry-run by default. Adds the new entrypoints listed above plus missing `agents/openai.yaml` metadata for shipped skills.
+
+### New Skills (Codex adapters)
+
+18 new `SKILL.md` adapters in `.claude/skills/{name}/`, each pointing back to its sibling `.claude/commands/{name}.md` as source of truth. Plus 30 new `agents/openai.yaml` metadata files. No duplication of command bodies — adapters delegate.
+
+### Changed Files
+
+- 4 policy files have path renames (`repos/public/hq/template/` → `repos/private/hq-core-staging/`). Enforcement unchanged.
+- `_digest.md` regenerated.
+- `core.yaml` version + checksums updated.
+
+### Migration Steps
+
+**For Claude Code-only users:** No action required. Update HQ via `hq update` (or your usual flow) when convenient. Nothing in your day-to-day Claude Code workflow changes.
+
+**For users who also want Codex:**
+```bash
+cd <your HQ root>
+bash scripts/convert-codex.sh --dry-run   # preview
+bash scripts/convert-codex.sh --apply     # add Codex entrypoints
+```
+
+The script is create-only. It will skip any path that already exists and report blocked items so you can review before approving more invasive changes.
+
+### Companion package upgrades
+
+None. `@indigoai-us/hq-cli` and `@indigoai-us/hq-cloud` are unaffected.
+
+---
+
 ## Migrating to v12.1.1 — 2026-04-29
 
 ### Headline

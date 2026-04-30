@@ -1,0 +1,3 @@
+interface:
+  display_name: "Convert Codex"
+  short_description: "Add Codex parity to older Claude-first HQ roots without overwriting existing behavior."
