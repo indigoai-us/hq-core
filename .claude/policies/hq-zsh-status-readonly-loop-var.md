@@ -3,7 +3,7 @@ id: hq-zsh-status-readonly-loop-var
 title: Never use $status as a loop variable in zsh scripts
 scope: global
 trigger: writing a shell for/while loop in a script that may run under zsh (the default macOS login shell)
-enforcement: hard
+enforcement: soft
 public: true
 version: 1
 created: 2026-04-21
@@ -54,4 +54,3 @@ The enclosing script's shebang was bash, but a caller had `source`d it from a zs
 Root cause: zsh reserves `status` as a synonym for `?` (exit status). Bash does not. Any cross-shell script that assigns to `status` is a time bomb: it works on Linux CI (bash default), works when run with `./script.sh` on macOS (shebang honored), and fails silently when `source`d from the user's zsh shell — which is the default macOS login shell and therefore the most common HQ runtime.
 
 Universal fix: don't use shell-reserved names as locals. `pstatus` or `run_status` are one keystroke away and portable everywhere.
-

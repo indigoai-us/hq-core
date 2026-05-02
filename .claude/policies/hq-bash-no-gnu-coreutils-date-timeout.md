@@ -4,6 +4,7 @@ title: No GNU-only coreutils in HQ scripts — macOS ships BSD userland
 scope: global
 trigger: when writing or editing any shell script in scripts/, .claude/hooks/, workers/, or companies/*/ that may run on a developer Mac
 enforcement: hard
+tier: 1
 public: true
 version: 1
 created: 2026-04-23
@@ -67,4 +68,3 @@ Scripts must be valid on *both* axes to run reliably on a fresh Mac.
 In the same session, a `timeout 60 pnpm playwright test` line died on `command not found: timeout` before the test runner even started — obscuring a more interesting failure and wasting a debug cycle.
 
 These are silent-success failures on Linux CI (where both features work) and noisy, late-binding failures on Mac (where scripts fail after some work has already happened). Keeping the scripts portable eliminates an entire category of "works on CI, fails on developer laptop" drift.
-

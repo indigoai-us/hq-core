@@ -1,6 +1,6 @@
 version: 1
-hqVersion: "12.2.0"
-updatedAt: "2026-04-30T14:32:49Z"
+hqVersion: "12.3.0"
+updatedAt: "2026-05-02T20:29:54Z"
 # hq-core is the minimal scaffold seed. Rich add-ons ship as `@indigoai-us/hq-pack-*`
 # npm packages installed into `packages/` via `hq install`. See `packages/README.md`.
 rules:
@@ -50,14 +50,14 @@ recommended_packages:
 # on the hq-core side. Intentionally omitted on first commit; regenerated on
 # the first publish that runs checksum tooling.
 checksums:
-  .claude/CLAUDE.md: 7277264e2c6449762a987ea452c97e4ab0d311c6be81b5c1f133070fb8f7cc59
-  .claude/hooks: 3476257cac542e4daf138593a7722c1f58fdd281176b341eb9cb6ce18f50bb8d
-  .claude/policies: 964879a8f178f3c8171257000b5a3304c42e42d13506df137d7f96ed6b212cb2
+  .claude/CLAUDE.md: a3bccc20762af5f3db5d3d0884a1c8a5278716e3f114e795e81a8b1f5af6df51
+  .claude/hooks: 951c1f1d0a9ccdeb6a0140e726b7ecf145ad513341f301d23db05f4ed138f20c
+  .claude/policies: 77f02747676dcccf57531360d7646cf819aa74890ee98a5bbe8b5f046dc9e91f
   .claude/settings.json: 2ea665d7dc3e8ea68cc053f90c690887b8c31b85445ede3f0d08e18743ac566e
-  CHANGELOG.md: 4f2aa929502e6e1bfd79c3719ba4565669cf7b20de13876721f00906b2d28fd9
-  MIGRATION.md: 9e1f2e08108783e8c9aaf9c2434f92b328fcd5dc061d4d0c5d92fb7529e0f8ac
+  CHANGELOG.md: be894c75caa821170a92869dad99f53bc247d2acce76fb6499f2b1cf8b67d145
+  MIGRATION.md: 62572180c07d3a0347d8aeb83697fb192ee98426fa9c9f39fdb1f6f6556aaba5
   companies/_template: 8deef4a26252d0aad84b4164725ce5d0e34b13559e794a75d440992dc049f123
   companies/manifest.yaml: 61b9cc98d7f3f80361f59affc3f50dab3d2dfe2da332ee5d6d44e948ae75802c
   modules: 61a98034d1bbddbb18b0b850749f2505ebce7b4b9c16f6ecdf69dfef4968f00e
-  scripts: e2b53c581d7e5440379e84fa1e392e131ef486e3e07e33c5df370326ba22a149
+  scripts: 7001f93fb3da73e839f74fb776b10655f16eef4ea1bed389917d03c363c45959
   workers/registry.yaml: 60b875c5aa9eb49d4e9c5b5be88692f7a169a625daaede0a96744705313e10f6

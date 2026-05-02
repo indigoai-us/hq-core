@@ -21,3 +21,6 @@ Do NOT use `brew install --cask companion` — that installs Bitfocus Companion 
 
 The `ios-simulator-mcp` MCP server wraps `idb_companion`. After installing and adding the MCP server (`claude mcp add ios-simulator npx ios-simulator-mcp`), restart the Claude Code session for the MCP server to connect.
 
+## Rationale
+
+`companion` is an ambiguous name in Homebrew. The cask is Bitfocus Companion. The formula from facebook/fb tap is idb-companion.

@@ -4,7 +4,8 @@ title: Always pull latest main before starting repo work
 scope: global
 public: true
 trigger: Starting any coding session on a repo
-enforcement: hard
+enforcement: soft
+tier: 1
 version: 1
 created: 2026-03-21
 updated: 2026-03-21

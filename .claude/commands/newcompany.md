@@ -53,6 +53,7 @@ ln -s ../../repos/private/knowledge-{slug} companies/{slug}/knowledge
 **manifest.yaml**: Add entry with ALL fields populated (no nulls):
 ```yaml
 {slug}:
+  prefix: {auto-computed}
   github_org: {org or omit}
   repos: [{repo paths or empty array}]
   settings: [{setting names or empty array}]
@@ -62,6 +63,13 @@ ln -s ../../repos/private/knowledge-{slug} companies/{slug}/knowledge
   vercel_projects: []
   qmd_collections: [{slug}]
 ```
+
+**Compute `prefix`** before writing the entry:
+1. Strip hyphens from `{slug}`, lowercase, take first 3 chars (e.g. `golden-thread` → `gol`).
+2. Read existing prefixes: `python3 -c "import yaml; d=yaml.safe_load(open('companies/manifest.yaml')); print('\n'.join(v.get('prefix','') for v in d['companies'].values()))"`.
+3. If your candidate collides, fall back to first 4 chars (no hyphens). If still collides, append `-2`, `-3`, ….
+4. Surface the chosen prefix in the final report so the user notices any non-default fallback.
+5. The `auto-mirror-company-skill` PostToolUse hook uses this prefix to bridge top-level skills/commands at `.claude/skills/{prefix}-{name}/` and `.claude/commands/{prefix}-{name}.md` — see `.claude/policies/company-skill-bridge.md`.
 
 **modules.yaml**: Add knowledge module entry:
 ```yaml
@@ -100,7 +108,7 @@ Report:
 Company {slug} scaffolded:
   Directory: companies/{slug}/
   Knowledge: companies/{slug}/knowledge/ → repos/private/knowledge-{slug}
-  Manifest: updated
+  Manifest: updated (prefix: {chosen-prefix})
   Modules: updated
   qmd: collection "{slug}" created
 ```

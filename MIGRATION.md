@@ -1,3 +1,35 @@
+## Migrating to v12.3.0 — 2026-05-02
+
+### Headline
+
+No migration steps required — all changes are backward-compatible.
+
+### What changed
+
+- **Codex policy + hook bridges** are additive — they install symlinks/adapters in `.codex/` without touching anything in `.claude/`. Operators who use Claude Code only see no change.
+- **`/deploy` Phase A speed refactor** keeps the same external interface; only internal sub-agent fan-out was replaced with inline parallel scripts.
+- **`CLAUDE.md` charter restructure + `AGENTS.md` symlink** preserve all instruction content. The symlink unifies Claude + Codex on the same source. Operators who customized `AGENTS.md` directly should reapply their customizations to `.claude/CLAUDE.md` (the symlink target) — note that `AGENTS.md` is now a regular symlink and writes go through to `CLAUDE.md`.
+- **Policy enforcement rebalance** moves ~140 policies from `hard` to `soft`. Soft-enforcement policies note deviations rather than blocking. If your workflows depended on a specific policy blocking on violation, check `.claude/policies/_digest.md` and re-promote any that you want to remain hard via `/learn --hard`.
+
+### Optional: pick up the new commands
+
+Three new slash commands ship with v12.3.0. They auto-register on next session start. If you want a quick tour:
+
+- `/discover <repo-url-or-path>` — pull a repo into HQ and synthesize knowledge
+- `/land-batch` — triage and merge multiple open PRs
+- `/sync-registry [company]` — regenerate a company's resource-registry index
+
+### Optional: enable Codex bridges
+
+If you use OpenAI Codex alongside Claude Code:
+
+```bash
+bash scripts/codex-skill-bridge.sh install            # symlinks .claude/skills → .codex/, .agents/
+bash scripts/codex-skill-bridge.sh install-policies   # NEW in v12.3.0 — symlinks .claude/policies/
+```
+
+The hook bridge (`.codex/hooks/hq-codex-hook-adapter.sh`) is install-time only — no runtime opt-in needed once the file is present. Codex sessions automatically route hooks through the existing `hook-gate.sh`.
+
 ## Migrating to v12.2.0 — 2026-04-30
 
 ### Headline

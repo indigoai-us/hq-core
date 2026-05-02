@@ -3,7 +3,7 @@ id: hq-cli-version-read-from-package-json
 title: Read CLI version from package.json at runtime, never hardcode
 scope: global
 trigger: Building or publishing a CLI package to npm that exposes `--version` / `-v`
-enforcement: hard
+enforcement: soft
 public: true
 version: 1
 created: 2026-04-23

@@ -13,3 +13,6 @@ When adding or changing OG images for a site, always deploy and verify the OG im
 
 **Workflow:** Deploy site → verify OG endpoint with `curl -sI` → then post to social.
 
+## Rationale
+
+Discovered 2026-03-11: Posted blog article to X immediately after deploying OG image support. X crawled the URL before Vercel propagated the deploy, caching a broken image card. Had to delete the tweet and repost via Post-Bridge API to get a fresh crawl.

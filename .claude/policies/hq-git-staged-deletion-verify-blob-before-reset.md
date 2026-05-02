@@ -4,6 +4,7 @@ title: Verify on-disk blob hash matches HEAD before resetting a staged-deletion-
 scope: global
 trigger: git status shows `D <path>` (staged deletion) AND `?? <path>` (untracked) for the same file
 enforcement: hard
+tier: 1
 public: true
 version: 1
 created: 2026-04-22

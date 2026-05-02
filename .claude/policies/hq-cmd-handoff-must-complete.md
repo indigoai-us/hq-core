@@ -3,7 +3,7 @@ id: hq-cmd-handoff-must-complete
 title: /handoff must complete every step — verify handoff.json pointer was actually written
 scope: command
 trigger: when the /handoff skill runs, specifically at and after Step 7 (writing workspace/threads/handoff.json)
-enforcement: hard
+enforcement: soft
 public: true
 version: 2
 created: 2026-04-16
@@ -26,8 +26,3 @@ Specifically at Step 7 (write `workspace/threads/handoff.json`):
 
 If any step (commit, INDEX update, qmd reindex launch, handoff.json write) cannot complete, surface the failure to the user in the Step 8 report — do not hide it.
 
-## Rationale
-
-Discovered 2026-04-16 when a `/handoff` session reported success but left `handoff.json` pointing at the previous session's thread (the super-admin/vyg session from earlier the same day), because the Step 7 Write hit a stale-read error that was silently swallowed. The following startwork invocation would have resumed the wrong thread. Detected only when the user asked "did we finish /handoff" and manual inspection showed the pointer mismatch.
-
-The failure mode is hard to notice from inside the skill: `git commit` can succeed with 1-file/14-deletions stats that look exactly like a normal handoff commit, even though the deletion was only to `workspace/threads/recent.md` and `handoff.json` was untouched. Read-back verification is the only reliable proof.

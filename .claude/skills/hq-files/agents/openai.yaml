@@ -1,0 +1,3 @@
+interface:
+  display_name: "hq files"
+  short_description: "Manage file access controls in HQ vault — share prefixes, revoke grants, inspect ACLs, and orchestrate access for individuals or groups."

@@ -8,6 +8,8 @@ allowed-tools: Bash(hq:*), Bash(source:*), Bash(bash:*)
 
 Manage secrets stored in AWS SSM Parameter Store via the `hq secrets` CLI. Secrets are scoped per company and accessed through Cognito-authenticated API calls. Secrets now support per-secret ACLs with `read`/`write`/`admin` permissions; access can be granted to individuals or groups.
 
+See also [`hq-files`](../hq-files/SKILL.md) for managing file-prefix access controls in the HQ vault — same groups model, different ACL domain.
+
 ## Commands
 
 | Command | Purpose |

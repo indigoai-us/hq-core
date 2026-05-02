@@ -29,4 +29,3 @@ Correct setup for a redirect-only shim `old.example.com → new.example.com`:
 A subdomain had DNS pointing at `cname.vercel-dns.com` and a `next.config.mjs` host-matched redirect in what was believed to be the serving project — but every request returned `DEPLOYMENT_NOT_FOUND`. Vercel's edge routing layer resolves incoming hosts against the team's attached-domains table *before* dispatching to any project's runtime; unknown hosts never reach Next.js. Once the domain was formally attached to the destination project, the redirect fired immediately.
 
 Mental model: Vercel domain attachment is request-admission. Next.js redirects are request-shaping. You cannot shape what was never admitted.
-

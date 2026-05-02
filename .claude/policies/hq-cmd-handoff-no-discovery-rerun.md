@@ -3,7 +3,7 @@ id: hq-cmd-handoff-no-discovery-rerun
 title: Never re-run handoff-finalize.sh just to discover the thread path
 scope: command
 trigger: "/handoff or any caller of scripts/handoff-finalize.sh that needs the thread file path"
-enforcement: hard
+enforcement: soft
 public: true
 version: 1
 created: 2026-04-21

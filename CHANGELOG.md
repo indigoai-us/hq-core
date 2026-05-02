@@ -1,3 +1,40 @@
+## [12.3.0] — 2026-05-02
+
+### Headline
+**Codex bridges go end-to-end + deploy refactor + charter restructure.** Two new bridges (policy + hook) close the Codex parity loop. `/deploy` Phase A is 250× faster and now the default sharing path. `CLAUDE.md` is reorganized as Purpose / Rules / Map. Policy enforcement is rebalanced (hard→soft) based on four weeks of friction data, cutting cold-start context injection from ~50KB to ~20KB. Codex parity now 50/50 skills + 41/41 commands.
+
+Fully additive. No breaking changes. No migration required.
+
+### Added — Commands
+- **`/discover`** — Pull a repo into HQ at latest main, fan out parallel exploration sub-agents, and synthesize structured knowledge + (gated) policies under the owning company.
+- **`/land-batch`** — Triage, review, and sequentially merge multiple open PRs. Handles CI monitoring, conflict resolution between PRs, Codex-style review, and post-merge deploy verification.
+- **`/sync-registry`** — Regenerate a company's resource-registry index (`registry.yaml`) from per-resource YAMLs in `companies/{co}/registry/resources/`.
+
+### Added — Codex Bridges
+- **Codex policy bridge** (`scripts/codex-skill-bridge.sh install-policies`) — symlinks `.claude/policies/` to `.codex/policies/` so HQ policies are visible to Codex sessions.
+- **Codex hook bridge** (`.codex/hooks/hq-codex-hook-adapter.sh`) — normalizes Codex `apply_patch` payloads into Claude-shaped hook payloads, routing through the existing `hook-gate.sh` so `protect-core`, `detect-secrets`, and other guardrails work unchanged for Codex.
+- **Company skill auto-mirror** (`.claude/hooks/auto-mirror-company-skill.sh`, `route-company-skill-creation.sh`) — Writes to `companies/{co}/skills/{name}/SKILL.md` automatically symlink to `.claude/skills/{prefix}-{name}` (where `prefix` is the company's 3-char manifest key). Reverse hook blocks direct writes to `.claude/skills/{prefix}-*` and routes the author back to the canonical company-folder path.
+- **Codex-native `/run-project`** — replaces Claude-only primitives (`Task`, `ExitPlanMode`, `/checkpoint`) with a router that offers interactive vs Ralph/headless execution, plus `scripts/run-project.sh` wrapper.
+
+### Added — Tooling & Policies
+- **Changeset-aware handoff** — `scripts/handoff-finalize.sh` validates session scope against `workspace/baseline/hq-local-baseline.json` so noisy local repos don't bleed into handoff records. Smoke-test coverage at `scripts/tests/handoff-finalize-smoke.sh`. Hard-enforcement policy `hq-handoff-changeset-scope.md`.
+- **Codex decision-gate fallback policy** (`hq-codex-decision-gate-fallback.md`) — preserves command decision gates even when `AskUserQuestion` is unavailable to the Codex runtime.
+
+### Changed — Deploy
+- **`/deploy` Phase A is 250× faster** — three serial Task sub-agents replaced with inline parallel scripts (~15s → ~58ms). Wire-password 401 bug fixed (was hitting wrong endpoint).
+- **`/deploy` reinforced as default sharing path** — first-class user surface (no longer silent auto-trigger). Auto-password protection for sensitive artifacts (PII, financial filenames, paths under `companies/*/data/` or `repos/private/**`). Lazy `/hq-login` when Cognito tokens missing. Full rules: `.claude/policies/hq-deploy-reinforcement.md`.
+
+### Changed — Charter
+- **`CLAUDE.md` restructured** — three sections (Purpose / Rules / Map). ~45-line net reduction by removing content that auto-loads via SessionStart-injected policies. Charter rule prevents future sprawl.
+- **`AGENTS.md` is now a symlink** to `.claude/CLAUDE.md` — Claude Code and Codex sessions read identical instructions from a single source.
+
+### Changed — Policy Enforcement
+- **~140 policies rebalanced from hard to soft enforcement** based on four weeks of friction data. Soft-enforcement policies note deviations rather than blocking, dramatically reducing cold-start context injection (~50KB → ~20KB).
+
+### Changed — Codex Parity
+- **50/50 skills now have `agents/openai.yaml`** (was 48/48 in v12.2.0). Added missing metadata for `/discover` and `/hq-files`.
+- **41/41 commands have paired Codex skills** (was 39/39 in v12.2.0).
+
 ## [12.2.0] — 2026-04-30
 
 ### Headline
