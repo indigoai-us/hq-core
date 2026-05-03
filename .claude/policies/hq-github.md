@@ -27,10 +27,10 @@ NEVER trust any `gh` resource-scoped command without an explicit `-R {owner}/{re
 ALWAYS specify the target repo:
 
 ```bash
-gh pr merge <N> --repo voyagemobile/{company}-gtm-hq --squash
+gh pr merge <N> --repo {org}/{company}-gtm-hq --squash
 gh pr view  <N> --repo indigoai-us/hq
-gh run view <run-id>      -R holler-mgmt/holler-comms
-gh api      repos/holler-mgmt/holler-comms/actions/runs/<id>
+gh run view <run-id>      -R acme-org/acme-repo
+gh api      repos/acme-org/acme-repo/actions/runs/<id>
 ```
 
 Applies to (non-exhaustive):
@@ -60,7 +60,7 @@ gh pr view "$PR" --repo "$REPO" \
 
 `-R <owner>/<name>` (or a fully-qualified `gh api` path) removes the ambiguity and makes the intent auditable in shell history. Critical for scripted / multi-step verification flows where a 404 might be mistaken for "the deploy failed" rather than "we queried the wrong repo." Mitigation: per-clone `gh repo set-default <owner>/<repo>` once, AND always pass `--repo` explicitly — defense in depth, since `set-default` doesn't help when cwd is HQ.
 
-**Provenance.** HQ's git remote is `indigoai-us/hq`. Recurrences observed 2026-04-25 (artist-manager PR-α merge), 2026-04-28 (hq-console PR #19 phantom check failure), 2026-04-28 later (hq-console PR #26 from a worktree whose origin chained back to HQ). Four-times-in-ten-days cadence justifies treating bare `gh pr <N>` as a hard error in shell history reviews; consider a shell wrapper that refuses any `gh pr/run/issue/release` invocation lacking `--repo`/`-R`.
+**Provenance.** HQ's git remote is `indigoai-us/hq`. Recurrences observed multiple times within a short window, including an unrelated repo PR-merge against HQ origin and two phantom check failures from worktrees whose origin chained back to HQ. Multi-recurrence cadence justifies treating bare `gh pr <N>` as a hard error in shell history reviews; consider a shell wrapper that refuses any `gh pr/run/issue/release` invocation lacking `--repo`/`-R`.
 
 ## PR review & merge workflow
 

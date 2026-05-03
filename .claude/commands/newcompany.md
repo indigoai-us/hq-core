@@ -65,7 +65,7 @@ ln -s ../../repos/private/knowledge-{slug} companies/{slug}/knowledge
 ```
 
 **Compute `prefix`** before writing the entry:
-1. Strip hyphens from `{slug}`, lowercase, take first 3 chars (e.g. `golden-thread` → `gol`).
+1. Strip hyphens from `{slug}`, lowercase, take first 3 chars (e.g. `acme-corp` → `acm`).
 2. Read existing prefixes: `python3 -c "import yaml; d=yaml.safe_load(open('companies/manifest.yaml')); print('\n'.join(v.get('prefix','') for v in d['companies'].values()))"`.
 3. If your candidate collides, fall back to first 4 chars (no hyphens). If still collides, append `-2`, `-3`, ….
 4. Surface the chosen prefix in the final report so the user notices any non-default fallback.

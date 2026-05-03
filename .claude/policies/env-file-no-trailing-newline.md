@@ -39,15 +39,15 @@ Root cause chain:
 1. Someone pasted `API_SECRET="…\n"` (quoted, trailing `\n`) into Vercel/Railway/AWS Secrets Manager.
 2. The server read the literal 9-char sequence `…\n` into `env.API_SECRET`.
 3. Clients sent a clean `Bearer …secret…` header (HTTP strips CR/LF from header values per RFC 7230 — the `\n` could not survive transport even if anyone tried).
-4. The artist-manager auth middleware compares byte-exactly (`token !== env.API_SECRET`) → mismatch → 401 forever. No hint in the error.
+4. The auth middleware compares byte-exactly (`token !== env.API_SECRET`) → mismatch → 401 forever. No hint in the error.
 
 This hook stops the bug at source: at Write/Edit time, before the file is ever created on disk or pasted into a secret store.
 
 Related defense in depth (installed the same day):
 
-- `repos/private/artist-manager/apps/api/src/config/env.ts` — Zod schema enforces `/^\S+$/` on `API_SECRET` so a contaminated value fails at boot, not silently at request time.
-- `repos/private/artist-manager/apps/api/src/router.test.ts` — regression test pins the byte-exact compare.
-- `repos/private/holler-comms/.github/workflows/smoke-crm-auth.yml` — nightly smoke test hitting `/api/agent/health` with the real `AGENT_API_KEY` from AWS SM.
+- `repos/private/acme-platform/apps/api/src/config/env.ts` — Zod schema enforces `/^\S+$/` on `API_SECRET` so a contaminated value fails at boot, not silently at request time.
+- `repos/private/acme-platform/apps/api/src/router.test.ts` — regression test pins the byte-exact compare.
+- `repos/private/acme-comms/.github/workflows/smoke-crm-auth.yml` — nightly smoke test hitting `/api/agent/health` with the real `AGENT_API_KEY` from AWS SM.
 
 ## Examples
 
@@ -58,5 +58,5 @@ Related defense in depth (installed the same day):
 ## Related artifacts
 
 - Hook: `.claude/hooks/env-file-no-trailing-newline.sh`
-- Runbook: `companies/holler-mgmt/knowledge/runbooks/credential-sync-crm-api.md`
-- Incident: `hollermgmt/holler-comms` PR #13 (April 2026).
+- Runbook: `companies/acme-mgmt/knowledge/runbooks/credential-sync-crm-api.md`
+- Incident reference omitted.

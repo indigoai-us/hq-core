@@ -148,7 +148,6 @@ Iteration release on top of the v12.0.0 hq-core split. All changes are additive 
 - `.claude/policies/hq-cmd-stage-kit-settings-json-direct-edit.md`
 - `.claude/policies/hq-compiled-ts-rebuild-after-src-edits.md`
 - `.claude/policies/hq-cross-repo-privilege-tier-surface-scope.md`
-- `.claude/policies/hq-deploy-default-style-goclaw-admin.md`
 - `.claude/policies/hq-destructive-scripts-default-dry-run.md`
 - `.claude/policies/hq-git-diff-three-dot-for-pr-review.md`
 - `.claude/policies/hq-git-discipline.md`

@@ -46,7 +46,7 @@ The 5-step procedure addresses each tier in dependency order: cron first (so it 
 
 ## Provenance
 
-Captured 2026-04-26 during the curriculum-expansion hard-pause (new-american-codex, ~18 of 32 stories complete). First attempt skipped step 3; orphaned `claude` workers continued committing to worktree branches for ~5 minutes after the parent died.
+Captured during a curriculum-expansion hard-pause (~18 of 32 stories complete). First attempt skipped step 3; orphaned `claude` workers continued committing to worktree branches for ~5 minutes after the parent died.
 
 ## Related
 

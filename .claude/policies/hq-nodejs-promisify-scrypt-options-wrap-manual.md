@@ -32,4 +32,4 @@ function scryptAsync(password: string, salt: Buffer, keylen: number, options: Sc
 
 ## Rationale
 
-`util.promisify` picks a single overload at type-inference time. For `crypto.scrypt`, it resolves to the 3-arg signature, which silently drops the `options` parameter (or fails typecheck under stricter configs). Manual Promise wrapping lets the closure capture the options object, preserves the intended scrypt parameters, and keeps the call typesafe. Encountered during the artist-manager password-reset implementation.
+`util.promisify` picks a single overload at type-inference time. For `crypto.scrypt`, it resolves to the 3-arg signature, which silently drops the `options` parameter (or fails typecheck under stricter configs). Manual Promise wrapping lets the closure capture the options object, preserves the intended scrypt parameters, and keeps the call typesafe. Encountered during a password-reset implementation.

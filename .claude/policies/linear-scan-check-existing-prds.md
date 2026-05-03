@@ -2,7 +2,7 @@
 id: linear-scan-check-existing-prds
 title: Linear scan must check existing PRDs before recommending new ones
 scope: command
-trigger: /check-linear-voyage, voyage-linear-scan scheduled task
+trigger: /check-linear, company-linear-scan scheduled task
 enforcement: hard
 applies_to: [linear]
 public: true

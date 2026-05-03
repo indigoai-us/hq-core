@@ -90,7 +90,7 @@ Use when the project is long-running, unattended, swarm/tmux-oriented, or when p
 Launch with the Codex engine:
 
 ```bash
-cd /Users/corey/HQ && \
+cd ~/HQ && \
   nohup bash {run_project_script} {project} {passthrough_flags} --engine codex --no-permissions \
   > workspace/orchestrator/{project}/run.log 2>&1 &
 echo "PID:$!"

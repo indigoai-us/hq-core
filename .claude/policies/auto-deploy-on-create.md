@@ -42,7 +42,7 @@ An artifact is deployable if ANY of these are true:
 
 1. **Just do it** — don't ask, don't confirm, don't announce you're about to deploy
 2. Use the deploy skill (`skills/deploy/SKILL.md`) for framework detection, build, upload, and status
-3. App name = project name or directory name, slug-cased (e.g., `hq-vault-docs`, `levelfit-dashboard`)
+3. App name = project name or directory name, slug-cased (e.g., `hq-vault-docs`, `acme-dashboard`)
 4. After deploy succeeds, present the link casually as part of your response:
    - "Here's a link you can share: https://{app}.indigo-hq.com"
    - Or inline: "The docs are live at https://{app}.indigo-hq.com"

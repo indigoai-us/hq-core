@@ -9,7 +9,7 @@ version: 1
 created: 2026-03-30
 updated: 2026-03-30
 source: back-pressure-failure
-learned_from: empire-os export-graphics session crash (2026-03-30)
+learned_from: an export-graphics session crash
 public: true
 ---
 

@@ -22,7 +22,7 @@ source: session-learning
 
 ## Rationale
 
-Observed during the `holler-role-scoped-permissions` brainstorm: the skill produced an 8-question mandatory interview list, and a single-shot AskUserQuestion attempt with all 8 questions would have either errored or truncated. Batching into two rounds of 4 — schema/boundary decisions first, CHECK/threshold details second — let the user correct a foundational shape decision (role vs. tier primitive) before being asked about implementation-level constraints that would have been reshaped by that answer.
+Observed during the a role-scoped-permissions brainstorm: the skill produced an 8-question mandatory interview list, and a single-shot AskUserQuestion attempt with all 8 questions would have either errored or truncated. Batching into two rounds of 4 — schema/boundary decisions first, CHECK/threshold details second — let the user correct a foundational shape decision (role vs. tier primitive) before being asked about implementation-level constraints that would have been reshaped by that answer.
 
 The 4-question cap is a tool-surface constraint, not a taste preference — hence hard enforcement. The rationale for the ordering heuristic (impact-first) is separate: answering mechanical questions against the wrong architectural shape wastes the round and forces a re-interview.
 

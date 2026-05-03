@@ -51,7 +51,7 @@ A suggestive commit message (e.g. one that touches the suspected subsystem) is *
 
 ## Rationale
 
-Observed 2026-04-24 during a holler-comms migration recovery. A merged PR with auto-deleted source branch left the impression that recent work had vanished — `git log main` did not show the commits, `git branch -a` did not list the branch. The reflexive read was "the branch is missing." `git merge-base --is-ancestor` against the dangling commit SHA confirmed it was NOT on main, but `git cat-file -t` confirmed the object still existed locally. A single `git cherry-pick` recovered the file onto the current working branch.
+Observed during a backend-service migration recovery. A merged PR with auto-deleted source branch left the impression that recent work had vanished — `git log main` did not show the commits, `git branch -a` did not list the branch. The reflexive read was "the branch is missing." `git merge-base --is-ancestor` against the dangling commit SHA confirmed it was NOT on main, but `git cat-file -t` confirmed the object still existed locally. A single `git cherry-pick` recovered the file onto the current working branch.
 
 The deeper principle: branch deletion ≠ commit deletion. Commits live in the object database keyed by SHA; branches are just refs pointing into that database. Deleting a ref orphans its tip commit (and any unmerged ancestors), making them dangling but not destroyed. The recoverable window is bounded by reflog expiry and `git gc`, but during that window cherry-pick is the cleanest recovery path.
 

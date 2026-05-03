@@ -396,7 +396,7 @@ This is the **source of truth**. `/run-project` and `/execute-task` consume this
 
 **`decisions[]` schema:** Appended by Step 8.5 as `{question, answer, decidedAt, decidedBy}`. Optional — absent means empty. Additive and backwards-compatible; existing PRDs without the field are unaffected.
 
-**`worker_preference[]` schema:** Optional ordered list of preferred worker IDs (strings) per story. Used by `/execute-task` Layer 2 worker selection (`settings/orchestrator.yaml → worker_selection`). When non-empty AND any pinned worker can fill a role slot in the resolved sequence, that worker wins and the LLM picker is skipped. Default: empty array — fully auto-select. Example: `["holler-backend", "lr-qa"]`.
+**`worker_preference[]` schema:** Optional ordered list of preferred worker IDs (strings) per story. Used by `/execute-task` Layer 2 worker selection (`settings/orchestrator.yaml → worker_selection`). When non-empty AND any pinned worker can fill a role slot in the resolved sequence, that worker wins and the LLM picker is skipped. Default: empty array — fully auto-select. Example: `["acme-backend", "acme-qa"]`.
 
 **Populating `files`:** For each story, infer file paths from the description + acceptance criteria + target repo structure. If `repoPath` is set, search the repo (via qmd or Glob) to find existing files the story will modify, and predict new files it will create. Paths are repo-relative (e.g. `src/middleware/auth.ts`, not absolute). Best-effort — empty is fine for stories with unclear scope.
 
@@ -595,7 +595,7 @@ Do NOT wait for the pulse to complete — continue immediately to Step 8.
 If `{co}` is `{product}`, attempt Linear sync. If credentials are unavailable or API fails, skip silently — Linear sync never blocks PRD creation.
 
 1. Read `companies/{product}/settings/linear/credentials.json` and `config.json`
-2. Validate `workspace: "voyage"` in config
+2. Validate `workspace: "{your-tenant}"` in config
 3. Create Linear project linked to best-fit initiative, with `leadId` (default: corey) and `targetDate` (default: today+1d)
 4. Create issue per story with `assigneeId` (resolved by team routing) and `dueDate` (matches project targetDate)
 5. Store all IDs in prd.json: `metadata.linearProjectId`, `metadata.linearCredentials`, per-story `linearIssueId`, `linearAssigneeId`

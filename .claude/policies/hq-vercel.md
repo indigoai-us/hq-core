@@ -52,7 +52,7 @@ NEVER use `npx vercel ...`. In a repo whose `package.json` defines its own npm s
 
 The Vercel CLI silently uses `.vercel/project.json` from the current working directory. Two failure modes converge on the same mitigation:
 
-- **`--scope` flag is silently overridden by the local link.** `vercel --scope amass-brands blob store add ...` from HQ root created the store in the wrong team because HQ root has a stale `.vercel/project.json`. Stop relying on `--scope` from a foreign cwd.
+- **`--scope` flag is silently overridden by the local link.** `vercel --scope acme-team blob store add ...` from HQ root created the store in the wrong team because HQ root has a stale `.vercel/project.json`. Stop relying on `--scope` from a foreign cwd.
 - **`vercel git disconnect` / `vercel link` operate on cwd.** Running from HQ root will disconnect/link the WRONG project.
 
 ALWAYS: `cd {repo-path} && vercel {cmd}`. Applies to: `vercel deploy`, `vercel env ls/add/rm`, `vercel blob store add/get/remove/list`, `vercel project inspect`, `vercel alias set`, `vercel git disconnect`, `vercel link`. After any `vercel blob store add` or `env add`, confirm the resource landed in the expected team:

@@ -24,7 +24,7 @@ NEVER assume a domain referenced in a PRD is registered or owned by the caller â
 Pre-flight check (add one line per domain listed in the PRD):
 
 ```bash
-for d in hollersites.com otherdomain.com; do
+for d in example.com otherdomain.com; do
   echo "=== $d ==="
   whois "$d" | grep -iE '^(Domain Name:|Registrar:|Registry Expiry Date:|Name Server:|No match|NOT FOUND)' | head -20
 done
@@ -41,7 +41,7 @@ Interpret the result:
 
 ## Rationale
 
-Observed 2026-04-23 during a multi-PRD session where `hollersites.com` appeared in three places (PRD body, README, DNS plan) and the orchestrator proceeded to design a DNS + Vercel topology around it. The domain had never been registered. A single WHOIS earlier would have caught it and avoided sunk cost on DNS wiring that could not be satisfied.
+Observed during a multi-PRD session where an aspirational domain appeared in three places (PRD body, README, DNS plan) and the orchestrator proceeded to design a DNS + Vercel topology around it. The domain had never been registered. A single WHOIS earlier would have caught it and avoided sunk cost on DNS wiring that could not be satisfied.
 
 PRDs are drafted from ideas, not ownership manifests â€” the authoring step has no hook that validates domain registration. The execution step must.
 

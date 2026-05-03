@@ -74,7 +74,7 @@ Before any `vercel deploy` or `vercel link`, check `settings/deploy-registry.yam
 
 The Vercel CLI silently uses `.vercel/project.json` from the current working directory. Two failure modes converge on the same mitigation:
 
-- **`--scope` flag is silently overridden by the local link.** `vercel --scope amass-brands blob store add ...` from HQ root created the store in the wrong team because HQ root has a stale `.vercel/project.json`. Stop relying on `--scope` from a foreign cwd.
+- **`--scope` flag is silently overridden by the local link.** `vercel --scope acme-team blob store add ...` from HQ root created the store in the wrong team because HQ root has a stale `.vercel/project.json`. Stop relying on `--scope` from a foreign cwd.
 - **`vercel git disconnect` / `vercel link` operate on cwd.** Running from HQ root will disconnect/link the WRONG project.
 
 ALWAYS: `cd {repo-path} && vercel {cmd}`. After any `vercel blob store add` or `env add`, confirm the resource landed in the expected team:
@@ -172,6 +172,6 @@ Captured 2026-04-27 during the trim-session-context plan. The 11 soft-enforcemen
 
 ## Related
 
-- `companies/amass/policies/vercel-project-drift.md` — company-scoped CLI-deploy policy that depends on rule 5
+- `companies/{co}/policies/vercel-project-drift.md` — company-scoped CLI-deploy policy that depends on rule 5
 - `.claude/policies/hq-dns-wildcard-shadows-deleted-subdomain.md` — adjacent DNS-layer wildcard gotcha
 - `.claude/CLAUDE.md` — "Vercel Deployments" section (top-level summary)
