@@ -38,7 +38,7 @@ Each company directory contains a knowledge subdirectory that is its own git rep
 | {company} | `companies/{company}/knowledge/` | Own repo (has `.git/`) | ~40 files across 8 subdirs |
 | {company} | `companies/{company}/knowledge/` | Own repo (has `.git/`) | ~12 files across 3 subdirs |
 | personal | `companies/personal/knowledge/` | Own repo (has `.git/`) | ~8 files |
-| golden-thread | N/A | No knowledge dir | 0 |
+| acmestudio | N/A | No knowledge dir | 0 |
 
 ### Tier 3: Worker-Embedded Knowledge
 
@@ -311,7 +311,7 @@ Knowledge Browser
 │   ├── Database Schema
 │   ├── Infrastructure
 │   ├── {PRODUCT}/
-│   ├── Voyage SMS/
+│   ├── Acme-Recover SMS/
 │   ├── CDP/
 │   ├── GTM/
 │   └── ...

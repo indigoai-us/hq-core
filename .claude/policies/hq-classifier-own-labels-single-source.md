@@ -3,7 +3,7 @@ id: hq-classifier-own-labels-single-source
 title: Classifiers own their labels — never duplicate bucketing logic in the display shell
 scope: global
 trigger: UI refactor, dashboards, data-layer + component refactors, bucketing/tier/status logic
-enforcement: hard
+enforcement: soft
 public: true
 version: 1
 created: 2026-04-20
@@ -28,4 +28,3 @@ When you discover duplicated classification logic, delete the shell copy and mak
 Duplicated classifiers drift silently. Two threshold sets (14/30/60 in data, 30/60/90 in shell) produce contradictory UI: the data layer says "active," the pill says "at-risk," and neither log line nor test catches it because both are internally consistent.
 
 The root cause is almost always that the shell was built first (with its own ad-hoc thresholds), the data layer grew a proper classifier later, and nobody deleted the shell copy. The fix is cheap (delete + re-import) but requires discipline: when you see duplicate bucketing, fix it then, not "next sprint."
-

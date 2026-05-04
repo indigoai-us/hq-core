@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/credentials)",
+      "Read(~/.aws/config)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.env)",
+      "Read(~/.netrc)",
+      "Read(~/.zshrc)",
+      "Read(~/.zprofile)",
+      "Read(~/.zshenv)",
+      "Read(~/.bashrc)",
+      "Read(~/.bash_profile)"
+    ]
+  }
+}

@@ -1,3 +1,102 @@
+## [12.4.0] — 2026-05-02
+
+### Headline
+**Per-company workspace mirror.** HQ session history (checkpoints, handoffs) now appears inside the company folder it touched, so each company has its own audit trail at `companies/{co}/workspace/`. The canonical session store at `workspace/threads/` remains the source of truth — mirroring is purely additive via hardlinks (zero disk overhead) plus a committed `index.jsonl` audit log per company. Cloud durability rides the existing `hq-sync` infrastructure with no server-side change required.
+
+Fully additive. No breaking changes. Migration is one settings.json edit + one backfill command — see MIGRATION.md.
+
+### Added — Hooks & Scripts
+- **`.claude/hooks/mirror-thread-to-company.sh`** — PostToolUse(Write|Edit) hook. When a `workspace/threads/T-*.json` is written and has `metadata.company`, hardlinks the file into `companies/{co}/workspace/sessions/{thread-id}.json` and appends a row to `companies/{co}/workspace/index.jsonl`. Idempotent (deduped by `(thread_id, ts, kind)`), silent no-op when company is missing, ~10ms on negative path. Multi-company arrays in `metadata.company` mirror to all touched companies.
+- **`scripts/backfill-workspace-mirror.sh`** — One-time script that walks `workspace/threads/*.json` and replays the mirror logic for every existing thread. Idempotent — safe to re-run.
+
+### Added — Policy
+- **`.claude/policies/co-workspace-mirror.md`** — Documents the rule, mechanics, multi-company semantics, retention (forever, no pruning), and append-only conflict resolution for `index.jsonl`.
+
+### Changed — Hooks
+- **`.claude/hooks/hook-gate.sh`** — Adds `mirror-thread-to-company` to standard + strict profiles.
+- **`.claude/hooks/auto-checkpoint-trigger.sh`** — Extends the workspace-loop exclusion regex to skip `companies/*/workspace/(sessions/|index.jsonl|.gitignore)` writes, preventing checkpoint-triggers-checkpoint feedback loops on mirror writes.
+
+### Changed — Commands
+- **`/newcompany`** — Scaffolds `companies/{slug}/workspace/sessions/`, an empty `index.jsonl`, and the per-company `.gitignore` so newly-created companies are mirror-ready from day one.
+
+---
+
+## [12.3.0] — 2026-05-02
+
+### Headline
+**Codex bridges go end-to-end + deploy refactor + charter restructure.** Two new bridges (policy + hook) close the Codex parity loop. `/deploy` Phase A is 250× faster and now the default sharing path. `CLAUDE.md` is reorganized as Purpose / Rules / Map. Policy enforcement is rebalanced (hard→soft) based on four weeks of friction data, cutting cold-start context injection from ~50KB to ~20KB. Codex parity now 50/50 skills + 41/41 commands.
+
+Fully additive. No breaking changes. No migration required.
+
+### Added — Commands
+- **`/discover`** — Pull a repo into HQ at latest main, fan out parallel exploration sub-agents, and synthesize structured knowledge + (gated) policies under the owning company.
+- **`/land-batch`** — Triage, review, and sequentially merge multiple open PRs. Handles CI monitoring, conflict resolution between PRs, Codex-style review, and post-merge deploy verification.
+- **`/sync-registry`** — Regenerate a company's resource-registry index (`registry.yaml`) from per-resource YAMLs in `companies/{co}/registry/resources/`.
+
+### Added — Codex Bridges
+- **Codex policy bridge** (`scripts/codex-skill-bridge.sh install-policies`) — symlinks `.claude/policies/` to `.codex/policies/` so HQ policies are visible to Codex sessions.
+- **Codex hook bridge** (`.codex/hooks/hq-codex-hook-adapter.sh`) — normalizes Codex `apply_patch` payloads into Claude-shaped hook payloads, routing through the existing `hook-gate.sh` so `protect-core`, `detect-secrets`, and other guardrails work unchanged for Codex.
+- **Company skill auto-mirror** (`.claude/hooks/auto-mirror-company-skill.sh`, `route-company-skill-creation.sh`) — Writes to `companies/{co}/skills/{name}/SKILL.md` automatically symlink to `.claude/skills/{prefix}-{name}` (where `prefix` is the company's 3-char manifest key). Reverse hook blocks direct writes to `.claude/skills/{prefix}-*` and routes the author back to the canonical company-folder path.
+- **Codex-native `/run-project`** — replaces Claude-only primitives (`Task`, `ExitPlanMode`, `/checkpoint`) with a router that offers interactive vs Ralph/headless execution, plus `scripts/run-project.sh` wrapper.
+
+### Added — Tooling & Policies
+- **Changeset-aware handoff** — `scripts/handoff-finalize.sh` validates session scope against `workspace/baseline/hq-local-baseline.json` so noisy local repos don't bleed into handoff records. Smoke-test coverage at `scripts/tests/handoff-finalize-smoke.sh`. Hard-enforcement policy `hq-handoff-changeset-scope.md`.
+- **Codex decision-gate fallback policy** (`hq-codex-decision-gate-fallback.md`) — preserves command decision gates even when `AskUserQuestion` is unavailable to the Codex runtime.
+
+### Changed — Deploy
+- **`/deploy` Phase A is 250× faster** — three serial Task sub-agents replaced with inline parallel scripts (~15s → ~58ms). Wire-password 401 bug fixed (was hitting wrong endpoint).
+- **`/deploy` reinforced as default sharing path** — first-class user surface (no longer silent auto-trigger). Auto-password protection for sensitive artifacts (PII, financial filenames, paths under `companies/*/data/` or `repos/private/**`). Lazy `/hq-login` when Cognito tokens missing. Full rules: `.claude/policies/hq-deploy-reinforcement.md`.
+
+### Changed — Charter
+- **`CLAUDE.md` restructured** — three sections (Purpose / Rules / Map). ~45-line net reduction by removing content that auto-loads via SessionStart-injected policies. Charter rule prevents future sprawl.
+- **`AGENTS.md` is now a symlink** to `.claude/CLAUDE.md` — Claude Code and Codex sessions read identical instructions from a single source.
+
+### Changed — Policy Enforcement
+- **~140 policies rebalanced from hard to soft enforcement** based on four weeks of friction data. Soft-enforcement policies note deviations rather than blocking, dramatically reducing cold-start context injection (~50KB → ~20KB).
+
+### Changed — Codex Parity
+- **50/50 skills now have `agents/openai.yaml`** (was 48/48 in v12.2.0). Added missing metadata for `/discover` and `/hq-files`.
+- **41/41 commands have paired Codex skills** (was 39/39 in v12.2.0).
+
+## [12.2.0] — 2026-04-30
+
+### Headline
+**Codex parity** — HQ becomes a first-class environment for both Claude Code and OpenAI Codex. Adds `AGENTS.md`, the `.codex/` entrypoint tree, an `.agents/skills` exposure for Codex skill discovery, the `/convert-codex` repair command, and `agents/openai.yaml` metadata for every shipped skill — bringing Codex skill metadata coverage to 48/48 and command-skill coverage to 39/39.
+
+Fully additive. No Claude Code behavior changes. Existing operators on v12.1.x can stay on Claude Code without doing anything; users wanting to invoke HQ from Codex run `/convert-codex --apply` once and gain the new entrypoints.
+
+### Added — Commands
+- **`/convert-codex`** — Additive conversion for older Claude-first HQ roots. Dry-run by default. Adds missing `AGENTS.md`, `.codex/config.toml`, `.codex/claude` and `.codex/prompts` bridges, `.agents/skills` exposure, and missing `agents/openai.yaml` metadata. Never overwrites existing files; refuses to replace a real `.agents/skills` directory with a symlink.
+
+### Added — Codex Entrypoints
+- **`AGENTS.md`** at HQ root — 20-line orientation doc that points Codex at `.claude/`, `.agents/skills`, and `.codex/`. Mirrors the role `CLAUDE.md` plays for Claude Code.
+- **`.codex/config.toml`** — Codex sandbox + model settings (`workspace-write`, `network_access = true` for HQ workflows that need outbound calls).
+- **`.codex/claude`** → symlink to `.claude/` (Codex sees the same instructions Claude does).
+- **`.codex/prompts`** → symlink to `.claude/commands/` (Codex prompt library mirrors Claude commands).
+- **`.agents/skills`** → symlink to `.claude/skills/` (Codex skill discovery without duplication).
+
+### Added — Codex-Adapter Skills (18 new SKILL.md files + 30 new openai.yaml files)
+- New SKILL.md adapters: `checkpoint`, `cleanup`, `convert-codex`, `garden`, `goals`, `harness-audit`, `hq-sync`, `idea`, `newcompany`, `newworker`, `personal-interview`, `quality-gate`, `recover-session`, `resolve-conflicts`, `run-pipeline`, `setup`, `strategize`, `sync-registry`, `tdd`, `update-hq`.
+- Each adapter delegates to its source `.claude/commands/{name}.md` for the canonical workflow — single source of truth, no duplicate maintenance.
+- Adds `agents/openai.yaml` metadata (`display_name` + `short_description`) for skill discovery: now 48/48 covered.
+- Bumps Codex command coverage to 39/39 commands with paired adapters.
+
+### Added — Tooling
+- **`scripts/convert-codex.sh`** (446 lines) — set-euo-pipefail, dry-run-first, create-only repair script. Validates symlink targets before touching them, refuses to overwrite, and prints a compact parity audit on exit.
+- **`scripts/codex-preflight.sh`** (216 lines) — explicit Codex-side preflight checks for `search`, `bash`, and `edit` operations. Routes through hardcoded hook filenames; pipes sanitized JSON via `jq --arg` (no injection vectors).
+- **`docs/codex-hook-porting.md`** — 70-line decision record mapping each of HQ's 20 Claude hooks to a Codex strategy.
+
+### Changed — Policies
+Path renames in 4 policy files to reflect the current contributor layout. Enforcement levels unchanged.
+
+- `hq-cmd-stage-kit-settings-json-direct-edit.md`
+- `hq-nested-repo-git-status-check.md`
+- `hq-settings-local-for-personal-allows.md`
+- `run-project-conflict-marker-guard.md` (propagation list updated)
+- `_digest.md` regenerated.
+
+---
+
 ## [12.1.1] — 2026-04-29
 
 ### Headline
@@ -8,12 +107,6 @@
 
 ### Added — Policies
 - **`prefer-systemic-fix-over-user-bandaid`** (hard, global) — codifies the rule that bug fixes ship as systemic patches (default change + version bump + release), not as per-operator env exports. Banned framings: "Layer A: unblock <user> today", "tell <user> to set HQ_FOO=…", "quick fix vs proper fix". Compounds with `hq-fix-root-cause-not-symptoms`. Source: 2026-04-29 user correction during the create-hq cognito cutover.
-
-### Provenance
-Single-issue hotfix. Companion releases:
-- `@indigoai-us/hq-cloud@5.9.0` — adds `decodeAccessTokenClientId` + stale-pool self-evict in `getValidAccessToken` so cached pre-cutover dev tokens stop wedging users.
-- `@indigoai-us/hq-cli@5.7.1` — picks up hq-cloud@5.9.0 via `^5.x`.
-- `create-hq@10.12.0` — `DEFAULT_COGNITO` flipped to `vault-indigo-hq-prod` / `7acei2c8v870enheptb1j5foln`.
 
 ---
 
@@ -42,9 +135,6 @@ Single-issue hotfix. Companion releases:
 ### Fixed
 - **`/hq-sync`** — Portable bash + arg parsing (was bash-4.x-only); renamed `status` → `cli_status` to avoid zsh's reserved-word collision.
 - **leak-scan** — Word-boundary regex on policy-rationale scan (was matching substrings inside larger tokens).
-
-### Provenance
-14 PRs merged onto `indigoai-us/hq-core-staging` since the v12.0.0 seed (`b616522`). Promoted to public `indigoai-us/hq-core` from staging `main`. Internal staging-repo CI (`.github/workflows/leak-scan.yml`, `.leak-scan/`) is intentionally not promoted.
 
 ---
 
@@ -76,9 +166,6 @@ Single-issue hotfix. Companion releases:
 - `modules/modules.yaml` — trimmed entries for extracted knowledge bases.
 - `workers/public/INDEX.md` / `knowledge/public/INDEX.md` — rebuilt to reflect the trimmed set.
 
-### Provenance
-Shallow snapshot from `indigoai-us/hq@main` → `template/` at commit `f3022a887` (2026-04-21). Not a filter-repo split — no pre-v12 git history is carried. See `MIGRATION.md` for upgrade steps.
-
 ---
 
 ## [11.2.0] — 2026-04-18
@@ -97,7 +184,7 @@ publish-kit scope discipline — the release walker is now a **strict allowlist*
 - **New policies (13):** `publish-kit-source-is-strict-allowlist`, `hq-cmd-publish-kit-python-yaml-free`, `hq-cmd-publish-kit-rerun-diff-on-scope-narrow`, `hq-cmd-stage-kit-settings-json-direct-edit`, `hq-publish-target-is-hq-template`, `hq-nested-repo-git-status-check`, `hq-permissions-fan-out-edit-write-multiedit`, `hq-settings-local-for-personal-allows`, `hq-figma-token-account-scope`, `preview-start-launch-registry-is-global`, `distributed-join-partial-failure-diagnosis`, `git-stash-build-artifacts-conflict`, `npm-subpackage-hydration`.
 - **New skills (2 dirs):** `tutorial/` (full skill), plus `knowledge-pulse/agents/openai.yaml` + `tutorial/agents/openai.yaml` (Codex dual-format).
 - **New worker scaffolds (44 files):** `dev-team/context-manager/` (audit/discover/learn/update skills), `dev-team/motion-designer/` (add-animation/add-transition/generateimage skills), `dev-team/reality-checker/` (cross-validate/final-gate), `dev-team/backend-dev/skills/e2e-testing.md`, `dev-team/frontend-dev/skills/{audit,polish,typeset,harden}/command.md` + `e2e-testing.md`, `dev-team/qa-tester/skills/electron-e2e.md`, `dev-team/gemini-coder/skills/{implement-feature,scaffold-component}.md`, `dev-team/gemini-reviewer/skills/{apply-best-practices,improve-code,review-code}.md`, `workers/public/INDEX.md`, `gemini-frontend/skills/{design-to-code,refactor-component}.md`, `pretty-mermaid/{assets,references,scripts,package.json}`, `social-publisher/skills/post.md`, `social-verifier/skills/post-results.md`, worker.yaml updates for `ascii-artist`, `frontend-designer`, `gstack-team`.
-- **New knowledge (29 files):** Three new design-styles packs — `hq-cinematic/` (cinematic navy-void motion pack), `goclaw-admin/` (admin console reference), `moonflow-editorial-v2/` (warm editorial brand). Plus `getting-started/tutorials/INDEX.md` and `impeccable/README.md`.
+- **New knowledge (29 files):** New `getting-started/tutorials/INDEX.md` and `getting-started/tutorials/INDEX.md` and `impeccable/README.md`.
 
 ### Changed — Content (this release)
 - **Commands modified (14):** `.claude/CLAUDE.md`, `brainstorm`, `cleanup`, `garden`, `harness-audit`, `idea`, `newworker`, `personal-interview`, `plan`, `run-project`, `run`, `setup`, `strategize`, `update-hq`.
@@ -176,13 +263,7 @@ qmd sub-collection refactor — the monolithic `hq` collection is split into 4 f
 - `vercel-domain-transfer-reissues-verification.md` — domain transfer verification checks
 
 ### Removed — Policies (7)
-- `hq-paper-mcp-sequential-agents.md` — company-specific (Paper MCP)
-- `hq-slack-channel-indigo-workspace.md` — company-specific (Indigo workspace)
-- `indigo-hq-app-release.md` — company-specific (Indigo releases)
-- `indigo-signals-mcp-queries.md` — company-specific (Indigo Signals)
-- `paper-flex-column-reorder.md` — product-specific (Paper)
-- `paper-text-width.md` — product-specific (Paper)
-- `paper-text-wrapping.md` — product-specific (Paper)
+Seven company- or product-specific policies were dropped from the public surface; they remain in the originating private repos.
 
 ### Changed
 - **qmd collections** — `setup.sh` now creates 4 sub-collections (`hq-infra`, `hq-workers`, `hq-knowledge`, `hq-projects`) instead of one monolithic `hq` collection. Dramatically reduces noise in semantic search.
@@ -366,7 +447,7 @@ Performance Audit Complete — ~50% session-start context reduction via pre-buil
 - HQ root session start: **−53% context** (37.2 KB → 17.3 KB)
 - personal cwd: **−58% context** (45.5 KB → 19.1 KB)
 - {company}-class cwd: **−61% context** (58.7 KB → 22.8 KB)
-- vyg-class cwd: **−62% context** (67.1 KB → 25.5 KB)
+- code-repo cwd: **−62% context** (67.1 KB → 25.5 KB)
 
 ### Removed
 - `.claude/commands/audit.md` — orphan (renamed to `audit-log.md`)

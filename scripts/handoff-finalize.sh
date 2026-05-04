@@ -50,6 +50,78 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# -------- changeset path extraction / validation --------
+SKIPPED_PATHS_JSON="[]"
+SAFE_STAGE_PATHS=()
+
+record_skip() {
+  local path="$1"
+  local reason="$2"
+  SKIPPED_PATHS_JSON=$(jq -c --arg path "$path" --arg reason "$reason" \
+    '. + [{path: $path, reason: $reason}]' <<<"$SKIPPED_PATHS_JSON")
+}
+
+is_sensitive_path() {
+  local p="$1"
+  case "$p" in
+    .git|.git/*|.env|.env.*|*.credentials.json|*.secret.*|.hq/deploy-passwords.json|.hq/cognito-tokens.json|.claude/settings.local.json|.claude/settings.local.*|companies/*/settings/*|settings/*.json|settings/**/*.json)
+      return 0
+      ;;
+    settings/.gitkeep|settings/pure-ralph.json)
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+normalize_rel_path() {
+  local raw="$1"
+  local rel="$raw"
+  if [[ "$raw" == "$HQ_ROOT/"* ]]; then
+    rel="${raw#"$HQ_ROOT/"}"
+  elif [[ "$raw" == /* ]]; then
+    return 1
+  fi
+  rel="${rel#./}"
+  [[ -z "$rel" ]] && return 1
+  [[ "$rel" == -* || "$rel" == ".." || "$rel" == ../* || "$rel" == */../* || "$rel" == .git || "$rel" == .git/* ]] && return 1
+  printf '%s\n' "$rel"
+}
+
+while IFS=$'\t' read -r raw_path deleted_flag; do
+  [[ -z "${raw_path:-}" ]] && continue
+  if ! rel_path=$(normalize_rel_path "$raw_path"); then
+    record_skip "$raw_path" "unsafe-path"
+    continue
+  fi
+  if is_sensitive_path "$rel_path"; then
+    record_skip "$rel_path" "sensitive-path"
+    continue
+  fi
+  if [[ ! -e "$rel_path" ]]; then
+    if [[ "$deleted_flag" == "true" ]] && git ls-files --error-unmatch "$rel_path" >/dev/null 2>&1; then
+      SAFE_STAGE_PATHS+=("$rel_path")
+    else
+      record_skip "$rel_path" "missing"
+    fi
+    continue
+  fi
+  SAFE_STAGE_PATHS+=("$rel_path")
+done < <(
+  printf '%s' "$FILES_TOUCHED_JSON" | jq -r '
+    if type != "array" then empty else
+      .[] |
+      if type == "string" then
+        [., "false"]
+      else
+        [(.path // ""), (((.deleted == true) or (.status == "deleted")) | tostring)]
+      end | @tsv
+    end
+  ' 2>/dev/null || true
+)
+
 # -------- bg git reap (if launched by caller) --------
 GIT_BG_ERRORS=""
 if [[ -f /tmp/handoff-git-bg.pid ]]; then
@@ -69,11 +141,19 @@ DAY=$(date +%Y%m%d)
 HM=$(date +%H%M%S)
 THREAD_ID="T-${DAY}-${HM}-${SLUG}"
 THREAD_PATH="workspace/threads/${THREAD_ID}.json"
+CHANGESET_PATH="workspace/threads/${THREAD_ID}.changeset.json"
 
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "DETACHED")
-COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+START_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DIRTY="false"
 [[ -n "$(git status --porcelain 2>/dev/null)" ]] && DIRTY="true"
+
+STATUS_SUMMARY_JSON="{}"
+if [[ -f scripts/hq-status-summary.sh ]]; then
+  STATUS_SUMMARY_JSON=$(bash scripts/hq-status-summary.sh --session-files-json "$FILES_TOUCHED_JSON" --json 2>/dev/null || echo '{}')
+fi
+BASELINE_NOISE_COUNT=$(jq -r '.counts.baseline_noise // 0' <<<"$STATUS_SUMMARY_JSON" 2>/dev/null || echo 0)
+SAFE_STAGE_PATHS_JSON=$(printf '%s\n' "${SAFE_STAGE_PATHS[@]:-}" | jq -R -s 'split("\n") | map(select(length > 0))')
 
 mkdir -p workspace/threads
 jq -n \
@@ -82,7 +162,8 @@ jq -n \
   --arg root "$HQ_ROOT" \
   --arg cwd "$(pwd)" \
   --arg branch "$BRANCH" \
-  --arg commit "$COMMIT" \
+  --arg commit "$START_COMMIT" \
+  --arg changeset_path "$CHANGESET_PATH" \
   --argjson dirty "$DIRTY" \
   --arg summary "$SUMMARY" \
   --arg title "$TITLE" \
@@ -99,12 +180,44 @@ jq -n \
     workspace_root: $root,
     cwd: $cwd,
     git: { branch: $branch, current_commit: $commit, dirty: $dirty },
+    changeset_path: $changeset_path,
     conversation_summary: $summary,
     next_steps: $next_steps,
     files_touched: $files_touched,
     learnings: $learnings,
     metadata: { title: $title, tags: $tags }
   }' > "$THREAD_PATH"
+
+jq -n \
+  --arg thread_id "$THREAD_ID" \
+  --arg thread_path "$THREAD_PATH" \
+  --arg ts "$TS" \
+  --arg title "$TITLE" \
+  --arg summary "$SUMMARY" \
+  --arg branch "$BRANCH" \
+  --arg started_commit "$START_COMMIT" \
+  --arg finalized_commit_note "The exact handoff commit is emitted by handoff-finalize.sh as commit_after_finalize; a file cannot contain the hash of the commit that contains itself." \
+  --argjson files_touched "$FILES_TOUCHED_JSON" \
+  --argjson staged_paths "$SAFE_STAGE_PATHS_JSON" \
+  --argjson skipped_paths "$SKIPPED_PATHS_JSON" \
+  --argjson status_summary "$STATUS_SUMMARY_JSON" \
+  '{
+    thread_id: $thread_id,
+    thread_path: $thread_path,
+    created_at: $ts,
+    intent: { title: $title, summary: $summary },
+    git: {
+      branch: $branch,
+      started_commit: $started_commit,
+      finalized_commit: null,
+      finalized_commit_note: $finalized_commit_note
+    },
+    files_touched: $files_touched,
+    staged_paths: $staged_paths,
+    skipped_paths: $skipped_paths,
+    verification: { notes: [], upstream_refs_compared: [] },
+    status_summary: $status_summary
+  }' > "$CHANGESET_PATH"
 
 # -------- handoff.json pointer --------
 jq -n \
@@ -141,7 +254,9 @@ fi
 # -------- HQ commit (explicit paths only — never git add -A) --------
 HQ_COMMITTED="false"
 EXPLICIT_PATHS=(
+  "${SAFE_STAGE_PATHS[@]}"
   "workspace/threads/${THREAD_ID}.json"
+  "workspace/threads/${THREAD_ID}.changeset.json"
   "workspace/threads/handoff.json"
   "workspace/threads/recent.md"
   "workspace/threads/INDEX.md"
@@ -150,15 +265,18 @@ EXPLICIT_PATHS=(
 )
 STAGED=0
 for p in "${EXPLICIT_PATHS[@]}"; do
-  if [[ -e "$p" ]]; then
-    git add "$p" 2>/dev/null && STAGED=$((STAGED+1)) || true
+  if [[ -e "$p" || -n "$(git status --porcelain -- "$p" 2>/dev/null)" ]]; then
+    git add -- "$p" 2>/dev/null && STAGED=$((STAGED+1)) || true
   fi
 done
+COMMITTED_PATHS_JSON="[]"
 if [[ $STAGED -gt 0 ]] && [[ -n "$(git diff --cached --name-only 2>/dev/null)" ]]; then
+  COMMITTED_PATHS_JSON=$(git diff --cached --name-only | jq -R -s 'split("\n") | map(select(length > 0))')
   if git commit -m "checkpoint: handoff ${THREAD_ID}" >/dev/null 2>&1; then
     HQ_COMMITTED="true"
   fi
 fi
+COMMIT_AFTER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 # -------- qmd reindex fire-and-forget --------
 QMD_PID=""
@@ -177,11 +295,21 @@ jq -n \
   --argjson indexes_regen "true" \
   --arg qmd_pid "${QMD_PID:-}" \
   --arg git_bg_errors "$GIT_BG_ERRORS" \
+  --arg changeset_path "$CHANGESET_PATH" \
+  --argjson committed_paths "$COMMITTED_PATHS_JSON" \
+  --argjson skipped_paths "$SKIPPED_PATHS_JSON" \
+  --argjson baseline_noise_count "$BASELINE_NOISE_COUNT" \
+  --arg commit_after_finalize "$COMMIT_AFTER" \
   '{
     thread_id: $thread_id,
     thread_path: $thread_path,
+    changeset_path: $changeset_path,
     handoff_path: $handoff_path,
     hq_committed: $hq_committed,
+    commit_after_finalize: $commit_after_finalize,
+    committed_paths: $committed_paths,
+    skipped_paths: $skipped_paths,
+    baseline_noise_count: $baseline_noise_count,
     indexes_regen: $indexes_regen,
     qmd_pid: $qmd_pid,
     git_bg_errors: $git_bg_errors

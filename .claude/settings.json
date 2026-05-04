@@ -1,20 +1,4 @@
 {
-  "outputStyle": "Explanatory",
-  "permissions": {
-    "deny": [
-      "Read(~/.ssh/**)",
-      "Read(~/.aws/credentials)",
-      "Read(~/.aws/config)",
-      "Read(~/.gnupg/**)",
-      "Read(~/.env)",
-      "Read(~/.netrc)",
-      "Read(~/.zshrc)",
-      "Read(~/.zprofile)",
-      "Read(~/.zshenv)",
-      "Read(~/.bashrc)",
-      "Read(~/.bash_profile)"
-    ]
-  },
   "env": {
     "PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     "MAX_THINKING_TOKENS": "31999",
@@ -22,5 +6,356 @@
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75",
     "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
     "CLAUDE_CODE_NO_FLICKER": "1"
-  }
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-hq-glob $CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-glob.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-hq-grep $CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-grep.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh warn-cross-company-settings $CLAUDE_PROJECT_DIR/.claude/hooks/warn-cross-company-settings.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh detect-secrets $CLAUDE_PROJECT_DIR/.claude/hooks/detect-secrets.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-on-active-run $CLAUDE_PROJECT_DIR/.claude/hooks/block-on-active-run.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh protect-core $CLAUDE_PROJECT_DIR/.claude/hooks/protect-core.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-inline-story-impl $CLAUDE_PROJECT_DIR/.claude/hooks/block-inline-story-impl.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-on-active-run $CLAUDE_PROJECT_DIR/.claude/hooks/block-on-active-run.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh env-file-no-trailing-newline $CLAUDE_PROJECT_DIR/.claude/hooks/env-file-no-trailing-newline.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh protect-core $CLAUDE_PROJECT_DIR/.claude/hooks/protect-core.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-inline-story-impl $CLAUDE_PROJECT_DIR/.claude/hooks/block-inline-story-impl.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-on-active-run $CLAUDE_PROJECT_DIR/.claude/hooks/block-on-active-run.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh env-file-no-trailing-newline $CLAUDE_PROJECT_DIR/.claude/hooks/env-file-no-trailing-newline.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh route-company-skill-creation $CLAUDE_PROJECT_DIR/.claude/hooks/route-company-skill-creation.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/master-hook.sh PreToolUse",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh auto-checkpoint-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/auto-checkpoint-trigger.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh screenshot-resize-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/screenshot-resize-trigger.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh auto-checkpoint-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/auto-checkpoint-trigger.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh auto-mirror-company-skill $CLAUDE_PROJECT_DIR/.claude/hooks/auto-mirror-company-skill.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh auto-checkpoint-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/auto-checkpoint-trigger.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/master-hook.sh PostToolUse",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh auto-checkpoint-precompact $CLAUDE_PROJECT_DIR/.claude/hooks/auto-checkpoint-precompact.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/master-hook.sh PreCompact",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh observe-patterns $CLAUDE_PROJECT_DIR/.claude/hooks/observe-patterns.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh cleanup-mcp-processes $CLAUDE_PROJECT_DIR/.claude/hooks/cleanup-mcp-processes.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh context-warning-60 $CLAUDE_PROJECT_DIR/.claude/hooks/context-warning-60.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh capture-estimates $CLAUDE_PROJECT_DIR/.claude/hooks/capture-estimates.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/master-hook.sh Stop",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/master-sync.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh load-policies $CLAUDE_PROJECT_DIR/.claude/hooks/load-policies-for-session.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh check-bridge-health $CLAUDE_PROJECT_DIR/.claude/hooks/check-claude-desktop-bridge-health.sh",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh check-repo-active-runs $CLAUDE_PROJECT_DIR/.claude/hooks/check-repo-active-runs.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-local-context $CLAUDE_PROJECT_DIR/.claude/hooks/inject-local-context.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh check-core-yaml-parity $CLAUDE_PROJECT_DIR/.claude/hooks/check-core-yaml-parity.sh",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/master-hook.sh SessionStart",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh rewrite-resume-sentinel $CLAUDE_PROJECT_DIR/.claude/hooks/rewrite-resume-sentinel.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/master-hook.sh UserPromptSubmit",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/master-hook.sh Notification",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/master-hook.sh SubagentStop",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/master-hook.sh SessionEnd",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+  "outputStyle": "Explanatory"
 }

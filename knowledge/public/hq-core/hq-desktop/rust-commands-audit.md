@@ -229,7 +229,7 @@ struct CompanyEntry {
 ```yaml
 {company}:
   repos: [...]
-  settings: [stripe, gusto, deel, quickbooks, shopify-partner, linear-voyage]
+  settings: [stripe, gusto, deel, quickbooks, shopify-partner, linear-acme-recover]
   workers: [cfo-{company}, {company}-analyst, {product}-deploy]
   knowledge: companies/{company}/knowledge/
   deploy: [...]
@@ -368,8 +368,8 @@ All mock data lives in `src/lib/tauri.ts` and `src/hooks/use-empire-data.ts`. Us
 ```
 
 **Issues:**
-- Lists `band-tbd` which doesn't exist (actual: golden-thread)
-- Missing `golden-thread` company
+- Lists `band-tbd` which doesn't exist (actual: acmestudio)
+- Missing `acmestudio` company
 - Incomplete: no manifest data
 
 ### 4.4 mockProjects (use-empire-data.ts)

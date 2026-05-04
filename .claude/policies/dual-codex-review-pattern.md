@@ -26,3 +26,6 @@ codex review --base origin/main &
 wait
 ```
 
+## Rationale
+
+Session 2026-03-27: {your-project}-v4 post-merge review. Claude review found 7 P1s (all security). gpt-5.4 Codex found 3 additional P1s Claude missed: recipient email never stored at enrollment (sequences silently fail), only day-0 steps queued (multi-step sequences die after first touch), queue API filtered wrong status (approval queue always empty). Neither reviewer was sufficient alone.

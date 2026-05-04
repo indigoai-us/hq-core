@@ -46,7 +46,7 @@ while [ "$search" != "/" ]; do
 done
 
 # Fall back to canonical path if not found via walk-up
-[ -z "$HQ_ROOT" ] && HQ_ROOT="$HOME/Documents/HQ"
+[ -z "$HQ_ROOT" ] && HQ_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 GLOBAL_DIGEST="$HQ_ROOT/.claude/policies/_digest.md"
 

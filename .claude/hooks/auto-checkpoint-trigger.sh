@@ -48,8 +48,8 @@ case "$TOOL_NAME" in
     ;;
   Edit)
     FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
-    # Exclude workspace/threads/ to prevent checkpoint-triggers-checkpoint loops
-    if echo "$FILE_PATH" | grep -qE 'workspace/threads/'; then
+    # Exclude workspace/threads/ + companies/*/workspace/ mirror writes to prevent checkpoint loops
+    if echo "$FILE_PATH" | grep -qE 'workspace/threads/|companies/.*/workspace/(sessions/|index\.jsonl|\.gitignore)'; then
       should_checkpoint=false
     else
       should_checkpoint=true
@@ -58,8 +58,8 @@ case "$TOOL_NAME" in
     ;;
   Write)
     FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
-    # Exclude workspace/threads/ to prevent checkpoint-triggers-checkpoint loops
-    if echo "$FILE_PATH" | grep -qE 'workspace/threads/'; then
+    # Exclude workspace/threads/ + companies/*/workspace/ mirror writes to prevent checkpoint loops
+    if echo "$FILE_PATH" | grep -qE 'workspace/threads/|companies/.*/workspace/(sessions/|index\.jsonl|\.gitignore)'; then
       should_checkpoint=false
     # Match report/social-draft/company-data generation
     elif echo "$FILE_PATH" | grep -qE '(workspace/reports/|workspace/social-drafts/|companies/.*/data/)'; then

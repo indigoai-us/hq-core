@@ -25,16 +25,16 @@ How `manifest.yaml` maps to Desktop routing, credential visibility rules, knowle
   qmd_collections: [list of names]       # Semantic search collections
 ```
 
-Nullable fields: `knowledge` (golden-thread has `null`), `settings` (can be empty array), `qmd_collections` (can be empty array).
+Nullable fields: `knowledge` (acmestudio has `null`), `settings` (can be empty array), `qmd_collections` (can be empty array).
 
 ### Current Companies
 
 | Company | Repos | Settings Dirs | Workers | Knowledge | qmd Collections |
 |---------|-------|--------------|---------|-----------|-----------------|
-| {company} | {product}, {product}-popup-builder, agent-ops-hq, {product}-cx | stripe, gusto, deel, quickbooks, shopify-partner, linear-voyage + (on disk: attio, browser-state, gmail, google-cloud, infobip, meta, stripe-voyage) | cfo-{company}, {company}-analyst, {product}-deploy | yes | {company}, {product} |
+| {company} | {product}, {product}-popup-builder, agent-ops-hq, {product}-cx | stripe, gusto, deel, quickbooks, shopify-partner, linear-acme-recover + (on disk: attio, browser-state, gmail, google-cloud, infobip, meta, stripe-acme-recover) | cfo-{company}, {company}-analyst, {product}-deploy | yes | {company}, {product} |
 | {company} | {company}-advisory | (on disk: linkedin, loops, meta, x) | cmo-brand | yes | {company} |
 | personal | (none) | slack + (on disk: gmail, linkedin, x) | x-user, invoices | yes | personal |
-| golden-thread | golden-thread-portal | (none) | (none) | null | (none) |
+| acmestudio | acmestudio-portal | (none) | (none) | null | (none) |
 
 Note: The manifest `settings` list does not always match the on-disk contents of `companies/{id}/settings/`. Desktop must discover settings from the filesystem, but the manifest defines which are "declared" vs which are incidental.
 
@@ -226,7 +226,7 @@ const companyColors: Record<string, string> = {
   {company}: '#00ff88',   // green (matches brand)
   {company}: '#6366f1',        // {company} (matches brand name)
   personal: '#a855f7',      // purple
-  'golden-thread': '#ffd700' // gold (matches brand name)
+  'acmestudio': '#ffd700' // gold (matches brand name)
 }
 ```
 
@@ -237,7 +237,7 @@ When a company is active, the top bar or sidebar should show a subtle color acce
 1. **Resources owned by multiple companies** -- Not currently possible in manifest schema. Each resource belongs to exactly one company.
 2. **Public workers in company context** -- Always show public workers, but badge them as "Shared" to distinguish from company-owned workers.
 3. **Cross-company projects** -- If a project's `repoPath` is not in any company's manifest `repos`, show it only in "All" view.
-4. **Company with no resources** -- golden-thread has no workers, no settings, no knowledge. Show it in the company list but display an empty state: "No resources configured."
+4. **Company with no resources** -- acmestudio has no workers, no settings, no knowledge. Show it in the company list but display an empty state: "No resources configured."
 5. **Manifest out of sync** -- Desktop should reload manifest on file change (add `manifest.yaml` to file watcher). If manifest parse fails, fall back to no filtering with a warning toast.
 
 ## Implementation Priority

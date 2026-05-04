@@ -1,0 +1,3 @@
+interface:
+  display_name: "HQ Sync"
+  short_description: "Run a full HQ sync (all cloud-backed companies, bidirectional) — same engine as AppBar HQ Sync"

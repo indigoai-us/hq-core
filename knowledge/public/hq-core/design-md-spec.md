@@ -3,7 +3,7 @@
 `design.md` is the per-repo design context file used across HQ. It gives design workers (and any agent performing visual or UX work) the brand, product, and aesthetic context they need to produce output that is on-brand rather than generic.
 
 **Canonical filename:** `design.md` (placed in the repo root)
-**Consumed by:** `dev-team/frontend-dev`, company-scoped design workers (e.g. `hpo-designer`), and any agent running design-adjacent skills (`frontend-design`, `polish`, `typeset`, `colorize`, `audit`)
+**Consumed by:** `dev-team/frontend-dev`, company-scoped design workers (e.g. `acme-rebrand-designer`), and any agent running design-adjacent skills (`frontend-design`, `polish`, `typeset`, `colorize`, `audit`)
 **Format:** Markdown with no YAML frontmatter
 
 ---
@@ -82,7 +82,7 @@ A `design.md` file MUST contain all seven sections listed below, in the order li
 
 **Required.**
 
-**Purpose:** Defines how the product speaks. Prevents copy that is technically correct but tonally off-brand.
+**Purpose:** Defines how the product speaks. Prevents copy that is technically correct but acmebrandly off-brand.
 
 **What to include:**
 
@@ -137,7 +137,7 @@ When `style-pack:` is present, workers that support pack resolution look up `<pa
 
 **Required.**
 
-**Purpose:** The explicit deny list. Workers and humans should treat these as hard rules, not suggestions. Audit skills (`hpo-designer audit`, `dev-team/frontend-dev audit`) scan for violations of this section.
+**Purpose:** The explicit deny list. Workers and humans should treat these as hard rules, not suggestions. Audit skills (`acme-rebrand-designer audit`, `dev-team/frontend-dev audit`) scan for violations of this section.
 
 **What to include:**
 
@@ -149,7 +149,7 @@ When `style-pack:` is present, workers that support pack resolution look up `<pa
 
 - Use `###` headers for each category
 - Use `❌` prefix on every bullet (not `- [ ]`, not `- ⛔`)
-- Be concrete: `❌ Geist (create-next-app default — not HPO)` is better than `❌ wrong font`
+- Be concrete: `❌ Geist (create-next-app default — not ACME-REBRAND)` is better than `❌ wrong font`
 - A "Known Violations" sub-section may follow Anti-Patterns to track migration targets (Optional)
 
 **Optional: `## Known Violations (Migration Targets)`**
@@ -202,28 +202,28 @@ When legacy anti-patterns exist in the codebase and have not yet been removed, l
 
 ## Complete Example
 
-The following is the canonical real-world `design.md` for the HPO chart-renderer repo. It is the reference implementation of this spec.
+The following is the canonical real-world `design.md` for the ACME-REBRAND chart-renderer repo. It is the reference implementation of this spec.
 
 ---
 
 ```markdown
-# design.md — HPO Chart Renderer
+# design.md — ACME-REBRAND Chart Renderer
 
 <!--
-  Design context for the HPO chart renderer. Consumed by `hpo-designer` and
+  Design context for the ACME-REBRAND chart renderer. Consumed by `acme-rebrand-designer` and
   the shared `dev-team/frontend-dev` worker.
 
-  Source of truth: companies/hpo/knowledge/brand/brand-guidelines.md
+  Source of truth: companies/acme-rebrand/knowledge/brand/brand-guidelines.md
 -->
 
 ## Brand
 
-**HPO** — sparkling protein water. Functional nutrition meets elevated lifestyle. Think Aesop or Le Labo, not Gatorade or Quest. Editorial, warm, quietly confident.
+**ACME-REBRAND** — sparkling protein water. Functional nutrition meets elevated lifestyle. Think Aesop or Le Labo, not Gatorade or Quest. Editorial, warm, quietly confident.
 
 ## Product Context
 
-- **What this repo does:** Next.js app that renders a fixed set of data visualizations for HPO blog articles. Each chart route renders at an exact pixel size (800×400 or 800×500) so the content team can screenshot the output and drop the PNG into a CMS post.
-- **Primary users:** HPO content / marketing team. Internal only, never customer-facing directly — the output (PNG) is what customers see in blog posts.
+- **What this repo does:** Next.js app that renders a fixed set of data visualizations for ACME-REBRAND blog articles. Each chart route renders at an exact pixel size (800×400 or 800×500) so the content team can screenshot the output and drop the PNG into a CMS post.
+- **Primary users:** ACME-REBRAND content / marketing team. Internal only, never customer-facing directly — the output (PNG) is what customers see in blog posts.
 - **Surface area:** `app/page.tsx` index + `app/charts/{slug}` routes (~8 charts today). Desktop-only, no mobile, no forms, no interactive drilldowns. A chart is a single static composition.
 - **Critical flows:**
   1. Content editor opens `/` to find the chart index
@@ -241,9 +241,9 @@ The following is the canonical real-world `design.md` for the HPO chart-renderer
 
 ## Design Direction
 
-style-pack: hpo-brand  <!-- optional: links to registry.yaml for resource resolution -->
+style-pack: acme-rebrand-brand  <!-- optional: links to registry.yaml for resource resolution -->
 
-This repo commits to the **HPO rebrand editorial pastel/serif system**. Charts must be legible when extracted from context (i.e., sitting alone in a blog post) and should read as unmistakably HPO. Specifically:
+This repo commits to the **ACME-REBRAND rebrand editorial pastel/serif system**. Charts must be legible when extracted from context (i.e., sitting alone in a blog post) and should read as unmistakably ACME-REBRAND. Specifically:
 
 - **Serif display** (Libre Caslon Display) for chart titles and editorial moments.
 - **Condensed sans** (Barlow Condensed, uppercase, expanded tracking) for axis labels, legends, source lines, unit labels.
@@ -259,7 +259,7 @@ This repo commits to the **HPO rebrand editorial pastel/serif system**. Charts m
 - **Background:** `var(--light-bg)` (`#FAFAFA`), never white.
 - **Gridlines:** `rgba(0,0,0,0.08)` (hairline divider), never solid black or gray.
 - **Bars / lines:** solid pastels from the six-color palette, rotated in order (lavender, lilac, pink, peach, yellow, mint). One pastel per data series.
-- **HPO-as-hero:** when comparing HPO to competitors, HPO gets lavender or the primary gradient accent; competitors get neutral gray (`#C8C8C8`) to visually de-emphasize.
+- **ACME-REBRAND-as-hero:** when comparing ACME-REBRAND to competitors, ACME-REBRAND gets lavender or the primary gradient accent; competitors get neutral gray (`#C8C8C8`) to visually de-emphasize.
 - **Axis labels:** Barlow Condensed uppercase, `0.25em` tracking, `clamp(10px, 0.8vw, 13px)`, `#888888`.
 - **Chart title:** Libre Caslon Display 400, mixed case (never uppercase), `clamp(24px, 3vw, 36px)`, `#1a1a1a`.
 - **Source line:** Inter 300, 10–12px, `#888888`, lowercase.
@@ -269,12 +269,12 @@ This repo commits to the **HPO rebrand editorial pastel/serif system**. Charts m
 
 ## Anti-Patterns
 
-The following are **never** acceptable in this repo. `hpo-designer audit` will flag each.
+The following are **never** acceptable in this repo. `acme-rebrand-designer audit` will flag each.
 
 ### Typography
 
 - ❌ Montserrat (legacy brand only)
-- ❌ Geist (create-next-app default — not HPO)
+- ❌ Geist (create-next-app default — not ACME-REBRAND)
 - ❌ Inter used as a display/chart-title face
 - ❌ All-caps chart titles (mixed case Libre Caslon Display only)
 - ❌ Letter-spacing on body annotations
@@ -321,7 +321,7 @@ The following are **never** acceptable in this repo. `hpo-designer audit` will f
 
 ## Known Violations (Migration Targets)
 
-The following files contain legacy tokens and need to be rebranded. Run `/run hpo-designer apply-rebrand` to convert:
+The following files contain legacy tokens and need to be rebranded. Run `/run acme-rebrand-designer apply-rebrand` to convert:
 
 - `lib/chart-config.ts` — **color source of truth**. Hardcodes all five legacy hex values. Replace with design token imports.
 
@@ -330,17 +330,17 @@ The following files contain legacy tokens and need to be rebranded. Run `/run hp
 Before shipping any visual change from this repo, apply **both** tests:
 
 1. **AI Slop Test:** "If I showed this chart to someone and said 'AI made this,' would they believe me immediately?" If yes, keep working.
-2. **HPO Rebrand Check:** "Could this chart sit on a slide in hpo-rebrand-deck.vercel.app without looking out of place?" If no, keep working.
+2. **ACME-REBRAND Rebrand Check:** "Could this chart sit on a slide in acme-rebrand-deck.example.com without looking out of place?" If no, keep working.
 
-Use `/run hpo-designer review` to get specific violations. Use `frontend-design`, `polish`, `typeset`, or `colorize` skills via `hpo-designer` to remediate.
+Use `/run acme-rebrand-designer review` to get specific violations. Use `frontend-design`, `polish`, `typeset`, or `colorize` skills via `acme-rebrand-designer` to remediate.
 
 ## References
 
-- `companies/hpo/knowledge/brand/brand-guidelines.md` — full style guide
-- `companies/hpo/knowledge/brand/design-tokens.css` — import these custom properties directly into `app/globals.css`
-- `companies/hpo/knowledge/brand/design-tokens.json` — DTCG format for tooling
-- `companies/hpo/workers/hpo-designer/worker.yaml` — the design worker that operates on this repo
-- https://hpo-rebrand-deck.vercel.app/ — live design reference deck (source of truth)
+- `companies/acme-rebrand/knowledge/brand/brand-guidelines.md` — full style guide
+- `companies/acme-rebrand/knowledge/brand/design-tokens.css` — import these custom properties directly into `app/globals.css`
+- `companies/acme-rebrand/knowledge/brand/design-tokens.json` — DTCG format for tooling
+- `companies/acme-rebrand/workers/acme-rebrand-designer/worker.yaml` — the design worker that operates on this repo
+- https://acme-rebrand-deck.example.com/ — live design reference deck (source of truth)
 ```
 
 ---

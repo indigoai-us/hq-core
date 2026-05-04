@@ -1,0 +1,45 @@
+sandbox_mode = "workspace-write"
+
+[shell_environment_policy]
+inherit = "core"
+
+[sandbox_workspace_write]
+network_access = true
+
+[features]
+codex_hooks = true
+
+[[hooks.SessionStart]]
+matcher = "startup|resume|clear"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = '/bin/bash "$(git rev-parse --show-toplevel)/.codex/hooks/hq-codex-hook-adapter.sh"'
+timeout = 30
+statusMessage = "Loading HQ policy context"
+
+[[hooks.PreToolUse]]
+matcher = "Bash|apply_patch|Edit|Write"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = '/bin/bash "$(git rev-parse --show-toplevel)/.codex/hooks/hq-codex-hook-adapter.sh"'
+timeout = 30
+statusMessage = "Checking HQ guardrails"
+
+[[hooks.PostToolUse]]
+matcher = "Bash|apply_patch|Edit|Write"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = '/bin/bash "$(git rev-parse --show-toplevel)/.codex/hooks/hq-codex-hook-adapter.sh"'
+timeout = 30
+statusMessage = "Reviewing HQ post-action hooks"
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = '/bin/bash "$(git rev-parse --show-toplevel)/.codex/hooks/hq-codex-hook-adapter.sh"'
+timeout = 30
+statusMessage = "Checking HQ session wrap-up"

@@ -8,7 +8,7 @@ relates_to: []
 
 # Shopify DTC Brand Launch Playbook
 
-A comprehensive reference for launching direct-to-consumer brands on headless Shopify (Next.js + Storefront API). Based on the TONAL launch (Feb 2026) -- all patterns are battle-tested, not hypothetical.
+A comprehensive reference for launching direct-to-consumer brands on headless Shopify (Next.js + Storefront API). Based on the ACMEBRAND launch (Feb 2026) -- all patterns are battle-tested, not hypothetical.
 
 ---
 
@@ -37,7 +37,7 @@ curl -s -X POST "https://{store}.myshopify.com/admin/oauth/access_token" \
   | jq -r '.access_token'
 ```
 
-In scripts (TypeScript pattern from TONAL `setup-products.ts`):
+In scripts (TypeScript pattern from ACMEBRAND `setup-products.ts`):
 
 ```typescript
 const envPath = resolve(__dirname, "../settings/shopify/.env");
@@ -88,7 +88,7 @@ https://{store}.myshopify.com/cart/{variant_id}:{quantity},{variant_id}:{quantit
 
 Example:
 ```
-https://tonal-8.myshopify.com/cart/49012345678:1,49012345679:2
+https://acmebrand.myshopify.com/cart/49012345678:1,49012345679:2
 ```
 
 #### Why Cart Permalink Over Draft Order API
@@ -187,7 +187,7 @@ Use a TypeScript script (`setup-products.ts`) to push the catalog to Shopify via
 4. **Link products to collections** via the Collects API
 5. **Rate limiting**: 500ms between collections, 1000ms between products, retry on 429
 
-Key implementation details from TONAL:
+Key implementation details from ACMEBRAND:
 - SKU format: `{handle}-{color-slug}-{size}` (e.g., `heavyweight-tee-white-xl`)
 - Inventory policy: `continue` for print-on-demand fulfillment (never track stock)
 - Metafields: store material, fit, care, base cost in `{brand}` namespace
@@ -195,9 +195,9 @@ Key implementation details from TONAL:
 - Variant options: always `[{name: "Color"}, {name: "Size"}]`
 - Use `--dry-run` flag for testing without API calls
 
-#### TONAL Scale Reference
+#### ACMEBRAND Scale Reference
 
-TONAL launched with: 6 products, 186 variants, 3 custom collections, 9 collection links. Setup time: ~5 minutes (including rate limiting pauses).
+ACMEBRAND launched with: 6 products, 186 variants, 3 custom collections, 9 collection links. Setup time: ~5 minutes (including rate limiting pauses).
 
 ---
 
@@ -212,7 +212,7 @@ Use Google Gemini (Imagen 3 via `gnb` CLI or API) for product imagery when studi
 3. **Two images minimum per product**: front view + detail/texture shot
 4. **Hero/lifestyle images**: 16:9 aspect ratio for homepage sections
 
-#### TONAL Image Counts
+#### ACMEBRAND Image Counts
 
 | Category | Images | Notes |
 |----------|--------|-------|
@@ -569,7 +569,7 @@ Use the catalog JSON to track margins:
 Retail price - Base cost = Gross margin per unit
 ```
 
-TONAL reference margins:
+ACMEBRAND reference margins:
 - Tees: $48 retail / $15 cost = 69% margin
 - Hoodies: $85 retail / $30 cost = 65% margin
 - Bombers: $120 retail / $40 cost = 67% margin
@@ -578,9 +578,9 @@ Target: 60-70% gross margin for print-on-demand DTC. Factor in Shopify transacti
 
 ---
 
-## Appendix: TONAL Launch Timeline
+## Appendix: ACMEBRAND Launch Timeline
 
-For reference, the TONAL launch followed this sequence across 13 user stories:
+For reference, the ACMEBRAND launch followed this sequence across 13 user stories:
 
 1. Brand Identity (creative -- opus model)
 2. Company Scaffold in HQ

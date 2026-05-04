@@ -3,7 +3,7 @@ id: hq-prd-verify-passes-vs-artifact-registry
 title: Verify PRD story passes against the artifact registry, not just the PR
 scope: global
 trigger: Marking a PRD story `passes: true` when the acceptance criteria references a published artifact (npm version, Docker image tag, Vercel deployment URL, GitHub release, APK/IPA build)
-enforcement: hard
+enforcement: soft
 public: true
 version: 1
 created: 2026-04-23

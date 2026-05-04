@@ -1,0 +1,3 @@
+interface:
+  display_name: "designate team"
+  short_description: "Mark an HQ company directory as cloud-backed, run company sync, and write an audit row for HQ Pro team designation."

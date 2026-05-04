@@ -3,7 +3,7 @@ id: hq-plan-combined-story-edit-locality
 title: "'One combined, minimum story plan' overrides brainstorm P1/P2 split — group by edit locality"
 scope: global
 trigger: /plan after /brainstorm, user requests combined/minimum story plan
-enforcement: hard
+enforcement: soft
 public: true
 version: 1
 created: 2026-04-23

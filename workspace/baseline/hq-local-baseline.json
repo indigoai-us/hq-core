@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "description": "Expected local-only HQ baseline categories. This file helps tooling separate persistent personal HQ state from the current session changeset; it is not a gitignore.",
+  "categories": [
+    {
+      "id": "company-state",
+      "description": "Company folders, company knowledge repos, projects, settings, data, and workers are user-owned local state.",
+      "patterns": [
+        "companies/*",
+        "contacts/*"
+      ]
+    },
+    {
+      "id": "workspace-state",
+      "description": "Thread, learning, report, checkpoint, scratch, and orchestrator state created by HQ sessions.",
+      "patterns": [
+        "workspace/*"
+      ]
+    },
+    {
+      "id": "repo-clones",
+      "description": "Canonical local clones and symlinks managed by HQ.",
+      "patterns": [
+        "repos/*"
+      ]
+    },
+    {
+      "id": "settings-and-local-runtime",
+      "description": "Local settings, generated local sync journals, app runtime state, and non-secret machine config.",
+      "patterns": [
+        "settings/*",
+        ".hq/*",
+        ".hq-conflicts/*",
+        ".hq-sync-journal.json",
+        ".hq-embeddings-pending.json"
+      ]
+    },
+    {
+      "id": "installed-packs-and-generated-assets",
+      "description": "Installed HQ packs, generated social assets, and local package payloads.",
+      "patterns": [
+        "packages/*",
+        "social-content/*",
+        "starter-projects/*"
+      ]
+    },
+    {
+      "id": "core-scaffold-untracked-baseline",
+      "description": "Core scaffold files may be untracked on installer-created HQ roots until a baseline normalization pass is performed.",
+      "patterns": [
+        ".agents/*",
+        ".claude/*",
+        ".codex/*",
+        ".github/*",
+        ".leak-scan/*",
+        "knowledge/*",
+        "modules/*",
+        "prompts/*",
+        "scripts/*",
+        "tools/*",
+        "workers/*",
+        "docs/*",
+        "projects/*",
+        "data/*",
+        "*.md",
+        "*.yaml",
+        "*.yml",
+        "setup.sh",
+        ".gitignore",
+        ".ignore",
+        "LICENSE"
+      ]
+    }
+  ]
+}

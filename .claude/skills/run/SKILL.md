@@ -1,6 +1,6 @@
 ---
 name: run
-description: Run a worker or list available workers. Executes worker skills inline — no sub-agent isolation.
+description: Run a worker or list available workers. Prefer isolated Codex sub-agents with filesystem memory; fall back to inline execution only when delegation is unavailable.
 allowed-tools: Read, Grep, Bash(qmd:*), Bash(grep:*), Bash(ls:*), Bash(git:*), Bash(cat:*), Bash(which:*), Bash(wc:*), Edit, Write
 argument-hint: "[worker-id] [skill] [args]"
 ---
@@ -9,15 +9,11 @@ argument-hint: "[worker-id] [skill] [args]"
 
 Unified interface to run workers and their skills in Codex sessions.
 
-> **⚠️ Codex Adaptation Note — No Context Isolation**
+> **Codex Delegation Note**
 >
-> In Claude Code, `/run` spawns an isolated Task sub-agent per worker. Worker context (instructions, knowledge, policies) lives in a separate context window and does not bleed into the parent session.
+> In Codex, `/run` should prefer an isolated worker sub-agent when the runtime exposes sub-agent delegation. Worker instructions, knowledge, and policies live in that sub-agent context and return as a compact handoff.
 >
-> In Codex, workers execute **inline** in the current context window. This means:
-> - Worker instructions, knowledge, and policies are loaded into **your** active context
-> - Worker state and outputs are visible to the rest of the session
-> - Long-running workers or knowledge-heavy workers will consume your context budget
-> - Consider using `$handoff` between workers for large multi-worker sessions
+> The parent session stays responsible for user communication, integration, verification, commits, and durable memory. If delegation is unavailable, execute inline and write the same memory files.
 
 **Usage:**
 ```
@@ -80,7 +76,7 @@ Usage: run x-{your-handle} {skill}
 
 Stop here.
 
-### Worker + Skill (+ Args) → Execute Inline
+### Worker + Skill (+ Args) → Execute Worker
 
 Proceed to the full execution pipeline below.
 
@@ -169,17 +165,44 @@ Or read knowledge files directly via Read tool if paths are specified in worker.
 
 ---
 
-## Step 6 — Execute Skill Inline
+## Step 6 — Execute Skill
 
-With all context loaded (worker instructions, skill file, policies, knowledge):
+### Preferred: isolated Codex worker
 
-1. **Understand the skill** — re-read `{skill}.md` instructions
-2. **Apply worker constraints** — only use tools listed in `worker.yaml` `tools:` section
-3. **Execute** — follow the skill's instructions step by step
-4. **Pass arguments** — `$ARGUMENTS` in the skill file refers to the args from `$ARGUMENTS` (tokens after `{worker_id} {skill}`)
-5. **Verify** — run any verification steps defined in the skill file
+When sub-agents are available, spawn a bounded worker agent:
 
-> **Context reminder:** You are executing inline. Keep responses focused. If the skill involves large knowledge loads or multi-step research, note the context cost at the start of execution.
+```text
+role: worker
+model: omit to inherit parent for implementation; use "gpt-5.3-codex-spark" for read-only/simple work
+ownership: files or directories this worker may change
+prompt:
+  - worker.yaml instructions
+  - selected skill file
+  - task args
+  - applicable policies
+  - minimal memory files from workspace/orchestrator/{project}/memory/
+  - output JSON return contract
+```
+
+Tell the worker it is not alone in the codebase. It must not revert edits made by others and must adapt to existing concurrent changes. For code edits, assign a clear write scope and require the worker to list changed paths.
+
+Model note: worker configs may contain legacy labels such as `opus` or `sonnet`. Do not pass those as Codex sub-agent model ids. For implementation agents, omit the model override unless the task or worker provides a real Codex model id. For bounded sidecars, use `gpt-5.3-codex-spark`.
+
+### Fallback: inline execution
+
+If sub-agents are unavailable, execute in the parent session:
+
+1. Understand the skill — re-read `{skill}.md` instructions
+2. Apply worker constraints — only use tools listed in `worker.yaml` `tools:` section
+3. Execute — follow the skill's instructions step by step
+4. Pass arguments — `$ARGUMENTS` in the skill file refers to args after `{worker_id} {skill}`
+5. Verify — run any verification steps defined in the skill file
+
+### Memory write
+
+After either path, write the compact handoff to:
+
+`workspace/orchestrator/{project-or-session}/memory/agents/{timestamp}-{worker_id}-{skill}.json`
 
 ---
 
@@ -234,14 +257,3 @@ run x-user contentidea "AI workforce"  # Run with topic arg
 run cfo-{product} mrr          # Run MRR report
 run {product}-analyst weekly   # Run weekly analysis
 ```
-
----
-
-## Notes
-
-- **No isolation** — worker context bleeds into your session. This is the key difference from Claude Code.
-- **Tool constraints** — only use tools listed in `worker.yaml` `tools:` while executing the skill.
-- **Knowledge loading** — load only knowledge relevant to the skill; don't load everything.
-- **Context budget** — for heavy workers (large knowledge bases, complex skills), warn the user upfront. Suggest `$handoff` before and after if context budget is a concern.
-- **Worker path lookup** — always read `workers/registry.yaml` first. Never Glob for `worker.yaml`.
-- **Skill args** — `$ARGUMENTS` in skill files is replaced by everything after `{worker_id} {skill}` in the user's input.

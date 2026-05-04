@@ -97,7 +97,7 @@ interface TerminalSession {
 
 - `TerminalTab`: Status dot (green pulse=running, gray=exited), company color bar, title, close button
 - `TerminalContextBar`: Shows workerId:skillId, company, projectName, or cwd fallback
-- Company colors: {company}=#74c0fc, {company}=#da77f2, personal=#ffd43b, golden-thread=#ff922b
+- Company colors: {company}=#74c0fc, {company}=#da77f2, personal=#ffd43b, acmestudio=#ff922b
 
 ### session-launcher.tsx
 

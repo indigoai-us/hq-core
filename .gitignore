@@ -2,6 +2,7 @@
 settings/**/*.json
 !settings/.gitkeep
 !settings/pure-ralph.json
+!.claude/settings.local.json
 *.credentials.json
 *.secret.*
 
@@ -77,3 +78,6 @@ modules/.synced/
 packages/*/node_modules/
 packages/*/dist/
 packages/*/.turbo/
+
+# Per-machine session metadata (written by .claude/hooks/master-hook.sh)
+workspace/sessions/

@@ -8,7 +8,7 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion, Task
 
 Hydrate a fresh HQ install from the user's existing Claude Code footprint. Discovers artifacts on disk, infers work ontology from prior `/plan` outputs, and guides a per-category import — creating missing companies and synthesizing workers on demand.
 
-**Ships public.** Targets `repos/public/hq-core/` via `/publish-kit`.
+**Ships via hq-core-staging.** Contribute changes in `repos/private/hq-core-staging/`; public `indigoai-us/hq-core` receives them through promotion.
 
 ## Preflight
 

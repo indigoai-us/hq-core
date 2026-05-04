@@ -5,9 +5,9 @@ scope: global
 trigger: when a `git diff`, PR review, or release commit touches a suspiciously large number of files (e.g. 500+, 1000+)
 enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-04-18
-updated: 2026-04-18
+updated: 2026-04-29
 source: session-learning
 ---
 
@@ -47,6 +47,6 @@ Report the breakdown to the user before claiming the release is too noisy to mer
 
 Raw file counts from `git diff --stat` or the GitHub PR UI conflate renames, deletes, and edits into a single "files changed" number. In repos that undergo tree reshuffles (e.g. allowlist pivots, folder reorganizations, scaffold rebuilds), pure renames can dominate the count while the actual edit surface is small.
 
-publish-kit v11.2.0 produced a release commit with 1,421 changed files. Initial instinct was to narrow scope and split into smaller releases. The `--name-status` decomposition showed ~900 were `R100` renames (folder reorganization) and ~370 were `D` (allowlist pivot pruning owner-private dirs that had previously leaked in). The substantive edits (A + M) totaled ~150 files — a reasonable review surface for a minor-version release.
+A prior HQ publish run produced a release commit with 1,421 changed files. Initial instinct was to narrow scope and split into smaller releases. The `--name-status` decomposition showed ~900 were `R100` renames (folder reorganization) and ~370 were `D` (allowlist pivot pruning owner-private dirs that had previously leaked in). The substantive edits (A + M) totaled ~150 files — a reasonable review surface for a minor-version release.
 
 The audit takes <1s and prevents two expensive failure modes: (1) unnecessary scope narrowing that creates multi-commit drift, and (2) panicked reviewers blocking a release that is actually well-scoped. It also catches the opposite case — a "small" 30-file diff where 25 are `M` with deep semantic changes is *more* review-worthy than a 1000-file diff that's 90% renames.

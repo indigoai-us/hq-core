@@ -58,7 +58,7 @@ Optional. Concrete examples of correct and incorrect behavior under this policy.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | Unique identifier: `{prefix}-{slug}` (e.g. `moonflow-docs-update`, `hq-git-branch-verify`, `{product}-staging-first`) |
+| `id` | string | Unique identifier: `{prefix}-{slug}` (e.g. `acmeflow-docs-update`, `hq-git-branch-verify`, `{product}-staging-first`) |
 | `title` | string | Human-readable title |
 | `scope` | enum | `company`, `repo`, `command`, `global`, `team`, `worker`, `project` |
 | `trigger` | string | When the policy applies (e.g. "before any task execution", "when deploying", "before any git commit") |
@@ -118,7 +118,7 @@ applies_to: [vercel, clerk]   # OR semantics — loads if ANY tag matches active
 
 | Scope | Prefix | Example |
 |-------|--------|---------|
-| Company | `{company}-` | `moonflow-docs-update` |
+| Company | `{company}-` | `acmeflow-docs-update` |
 | Repo | `{repo-slug}-` | `{product}-staging-first` |
 | Command | `hq-cmd-{name}-` | `hq-cmd-prd-question-batching` |
 | Global | `hq-` | `hq-git-branch-verify` |

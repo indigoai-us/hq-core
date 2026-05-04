@@ -3,6 +3,7 @@ id: no-relative-symlinks-from-worktree
 enforcement: hard
 scope: global
 tags: [git, worktree, symlinks, knowledge-repos]
+public: true
 created: 2026-04-16
 provenance: user-correction
 ---

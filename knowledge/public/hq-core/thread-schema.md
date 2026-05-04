@@ -55,6 +55,23 @@ Example: `T-20260123-143052-mrr-report`
     "completed_at": "2026-01-23T14:35:00.000Z"
   },
 
+  "sub_agents": [
+    {
+      "id": "agent-123",
+      "role": "explorer",
+      "model": "gpt-5.3-codex-spark",
+      "task": "Map billing calculation files",
+      "status": "completed",
+      "memory_path": "workspace/orchestrator/mrr-report/memory/agents/01-explorer.json"
+    }
+  ],
+
+  "memory": {
+    "plan_path": "workspace/orchestrator/mrr-report/codex-session-plan.md",
+    "session_path": "workspace/orchestrator/mrr-report/memory/session.md",
+    "agent_handoffs_dir": "workspace/orchestrator/mrr-report/memory/agents"
+  },
+
   "conversation_summary": "Generated MRR report showing $45,230 current MRR with 3.2% growth",
   "files_touched": [
     "workspace/reports/finance/2026-01-23-mrr.md"
@@ -141,6 +158,20 @@ Auto-checkpoints are created automatically by PostToolUse hooks after git commit
 | `worker.state` | enum | `idle`, `loading`, `executing`, `verifying`, `completed`, `error` |
 | `worker.started_at` | ISO8601 | Execution start |
 | `worker.completed_at` | ISO8601 | Execution end |
+
+### Delegation State
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sub_agents[].id` | string | Runtime agent identifier, if available |
+| `sub_agents[].role` | string | Explorer, worker, reviewer, QA, debugger, or other bounded role |
+| `sub_agents[].model` | string | Model used for the delegated task |
+| `sub_agents[].task` | string | Short delegated task description |
+| `sub_agents[].status` | enum | `running`, `completed`, `failed`, `cancelled` |
+| `sub_agents[].memory_path` | string | Durable handoff path written for this agent |
+| `memory.plan_path` | string | Parent-owned project/session plan |
+| `memory.session_path` | string | Human-readable running memory |
+| `memory.agent_handoffs_dir` | string | Directory containing sub-agent handoff JSON files |
 
 ### Results
 

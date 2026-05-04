@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/images/hq-banner.svg" alt="HQ - Your Personal Operating System" width="600">
-</p>
-
 <h1 align="center">HQ by Indigo — Personal OS for AI Workers</h1>
 
 <p align="center">
@@ -10,7 +6,7 @@
 
 <p align="center">
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://github.com/{your-name}/hq-cli"><img src="https://img.shields.io/badge/CLI-hq--cli-green.svg" alt="HQ CLI"></a>
+  <a href="https://github.com/indigoai-us/hq-cli"><img src="https://img.shields.io/badge/CLI-hq--cli-green.svg" alt="HQ CLI"></a>
 </p>
 
 <p align="center">
@@ -94,7 +90,7 @@ This enables a pre-commit hook across all repos that blocks commits containing s
 
 ```bash
 # 1. Clone
-git clone https://github.com/{your-name}/hq-starter-kit.git my-hq
+git clone https://github.com/indigoai-us/hq-core.git my-hq
 cd my-hq
 
 # 2. Open in Claude Code
@@ -487,7 +483,7 @@ ln -s ../../repos/public/knowledge-ralph knowledge/Ralph
 my-hq/
 ├── .claude/
 │   ├── CLAUDE.md              # Session protocol + Context Diet
-│   ├── commands/              # 35+ slash commands
+│   ├── commands/              # 40+ slash commands
 │   ├── hooks/                 # hook-gate, detect-secrets, observe-patterns
 │   └── scripts/
 │       └── run-project.sh     # Ralph loop orchestrator
@@ -530,8 +526,8 @@ my-hq/
 
 | Component | Purpose |
 |-----------|---------|
-| **hq-starter-kit** | This repo — personal OS template |
-| **[hq-cli](https://github.com/{your-name}/hq-cli)** | Module management CLI |
+| **hq-core** | This repo — personal OS template |
+| **[hq-cli](https://github.com/indigoai-us/hq-cli)** | Module management CLI |
 
 ---
 

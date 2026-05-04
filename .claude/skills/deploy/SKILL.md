@@ -1,30 +1,51 @@
 ---
 name: deploy
-description: Internal deploy engine — auto-deploys web artifacts to hq-deploy. Invoked by policy, not by user command.
-allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Edit, Write
+description: Deploy engine for hq-deploy — invoked directly via /deploy, or auto-triggered by the auto-deploy-on-create / hq-deploy-reinforcement policies when HQ produces a deployable artifact.
+allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(pbcopy:*), Bash(chmod:*), Bash(node:*), Bash(lsof:*), Bash(mkdir:*), Bash(echo:*), Bash(wait:*), Bash(disown:*), Bash(test:*), Bash(touch:*), Bash(rm:*), Bash(.claude/skills/deploy/scripts/identity-resolve.sh:*), Bash(.claude/skills/deploy/scripts/sensitivity-check.sh:*), Bash(.claude/skills/deploy/scripts/guardrails-check.sh:*), Bash(.claude/skills/deploy/scripts/password-helper.sh:*), Edit, Write
 ---
 
 # Deploy Engine
 
-Internal skill for deploying web artifacts to hq-deploy infrastructure. This is NOT a user-facing command — it is triggered automatically by the `auto-deploy-on-create` policy when HQ produces a deployable artifact.
+Skill for deploying web artifacts to hq-deploy infrastructure. Invoked directly via `/deploy`, or auto-triggered by `auto-deploy-on-create` (silent post-build) and `hq-deploy-reinforcement` (intent-to-share, deliverable PRDs) policies. The two paths share this same engine.
 
-**Guiding principle:** The user never asked you to deploy. You noticed something deployable and are giving them a link as a bonus. Keep it quick, quiet, and casual.
+**Guiding principle:** quick casual handoff — preview, upload, link. Sensitive artifacts get a password without ceremony.
 
-**Seven-step flow:**
+---
 
-1. **Preferences** — honor `~/.hq/config.json`, project opt-outs, and exclusions
-2. **Build** — framework detection + install + build
-3. **Localhost preview** — always serves, signed in or not
-4. **Identity check** — read Cognito session; if absent, spawn `hq auth login` via npx (browser popup); if that fails, upsell
-5. **Guardrails** — size / file-count / complexity caps
-6. **Upload** — presigned URL (static) or ECR push (SSR), with `Authorization: Bearer $JWT`
-7. **Present the link** — one casual line, weave it into your response
+## Architecture: Three Phases, Inline Parallel Scripts
+
+The engine is **three phases**, structured by data-dependency. Independent work runs in parallel via bash background jobs; I/O-heavy decisions live in inline scripts (no Task sub-agents — they cost 3–5s of spawn overhead each and the JWT/verdicts have to flow back to main anyway).
+
+| Phase | What runs | Parallelism |
+|-------|-----------|-------------|
+| **Step 1** | Preferences + exclusions (gate) | inline, sequential |
+| **Phase A** | Build (inline) ‖ Identity (script) ‖ Sensitivity (script) | 3-way parallel via `&` + `wait` |
+| **Phase B** | Localhost preview (inline-bg) ‖ Guardrails (script) | 2-way parallel via `&` + `wait` |
+| **Phase C** | Password gen → upload → wire password → announce → present link | sequential, hard-gated |
+
+**Hard ordering constraints (preserved from `.claude/policies/hq-deploy-reinforcement.md`):**
+
+- Identity (Phase A) MUST complete before Upload (Phase C)
+- Guardrails (Phase B) MUST gate Upload (Phase C)
+- Upload (Phase C) returns `appId` which MUST exist before password persist + announce
+- Localhost preview (Phase B) is NEVER gated by identity — always runs
+
+**Inline helper scripts** (each is self-contained, returns one JSON line on stdout):
+
+| Script | Purpose | Returns |
+|--------|---------|---------|
+| `.claude/skills/deploy/scripts/identity-resolve.sh` | Resolves Cognito JWT (cache → refresh → login) | `{"status":"ok"\|"login_required",...}` |
+| `.claude/skills/deploy/scripts/sensitivity-check.sh <path> [user_msg]` | Classifies artifact sensitivity (filename-list grep, no content surfaces) | `{"sensitive":bool,"trigger":string\|null}` |
+| `.claude/skills/deploy/scripts/guardrails-check.sh <output_dir>` | Caps + builds tarball | `{"pass":bool,"reason":string\|null,"tarball_path":string,...}` |
+| `.claude/skills/deploy/scripts/password-helper.sh` | `gen` / `announce` / `persist` / `lookup` | password text, or persisted entry |
+
+All scripts are deterministic, run in 0.3–0.5s, and never echo JWTs / artifact contents / matched PII.
 
 ---
 
 ## Step 1 — Preferences and Exclusions
 
-Before doing any work, respect the user's stated preference and rule out projects that shouldn't deploy. Auto-deploy is opt-out.
+Auto-deploy is opt-out. Honor user preference and rule out projects that shouldn't deploy.
 
 ### 1a. Read user preference
 
@@ -33,15 +54,13 @@ PREF_FILE="$HOME/.hq/config.json"
 if [ -f "$PREF_FILE" ]; then
   DEPLOY_PREF=$(jq -r '.deploy.preference // "hq-deploy"' "$PREF_FILE" 2>/dev/null)
 else
-  DEPLOY_PREF="hq-deploy"   # default for greenfield HQ
+  DEPLOY_PREF="hq-deploy"
 fi
 ```
 
 **Valid values:** `hq-deploy` (default), `vercel`, `netlify`, `custom`, `none`.
 
-### 1b. Read per-project override
-
-If the active project has a `prd.json` with `metadata.deploy: false`, treat it as `none`:
+### 1b. Per-project override
 
 ```bash
 if [ -f "prd.json" ]; then
@@ -52,32 +71,74 @@ fi
 
 ### 1c. Honor the preference
 
-- `hq-deploy` → continue through the full flow
-- `vercel`, `netlify`, `custom` → **silently stop** — the user has their own pipeline
-- `none` → **silently stop** — skip the entire deploy flow including localhost preview
+- `hq-deploy` → continue
+- `vercel`, `netlify`, `custom` → silently stop (user has their own pipeline)
+- `none` → silently stop, skip even localhost preview
 
-Do not mention that you considered deploying. Deploy is a bonus; silently abstaining is correct.
+### 1d. Exclusions
 
-### 1d. Check Exclusions
-
-Before proceeding, verify this artifact should be deployed:
-- **Not a Vercel project**: check `manifest.yaml` `vercel_projects[]` — if the current project is listed, skip deploy (Vercel handles it)
-- **Not a backend service**: no Dockerfile at root, no serverless.yml, no sst.config.*
-- **Build is clean**: if tests or typecheck just ran and failed, skip
-
-If any exclusion matches: silently skip. Do not tell the user you considered deploying.
+- **Vercel-managed**: `manifest.yaml` `vercel_projects[]` lists this project → skip
+- **Backend service**: Dockerfile / serverless.yml / sst.config.* at root → skip (Phase B guardrails will also catch these)
+- **Build is dirty**: a recent test/typecheck failed → skip
 
 ### 1e. Resolve Context
 
 | Thing | How |
 |-------|-----|
-| Company | cwd → `companies/manifest.yaml` lookup → default `indigo` |
+| Org (`$ORG_SLUG`) | Resolution chain below — never default to a hardcoded org |
 | API endpoint | manifest `services.hq-deploy.endpoint` → `$HQ_DEPLOY_API` → `https://api.indigo-hq.com` |
 | App name | `package.json` `name` → current directory name, slug-cased |
 
+#### Org resolution chain
+
+The org the deploy targets MUST be resolved — never fall back to a hardcoded slug. Walk these priorities in order until one produces `$ORG_SLUG`. Priorities 1–4 don't need a JWT and run here; Priority 5 needs `$JWT` and runs in **A.5** after the Phase A barrier. Priority 6 is the state-aware CTA path when nothing resolves.
+
+| Priority | Source | Notes |
+|---|---|---|
+| 1 | `--org=<slug>` arg or `HQ_ORG` env | Explicit one-off override |
+| 2 | Agent-supplied via session context | Agent sets `HQ_ORG` before invoking when conversation clearly implies a company |
+| 3 | cwd → `companies/{slug}/…` segment | Running inside HQ tree |
+| 4 | `~/.hq/config.json` `defaultOrg` field | Persisted choice |
+| 5 | Single active vault membership | Auto-resolved + auto-written to `defaultOrg` (runs in A.5) |
+| 6 | State-aware CTA (A/B/C — see C.5) | Preview already shown; skip upload |
+
+Pre-JWT block (Priorities 1–4):
+
+```bash
+ORG_SLUG="${HQ_ORG:-}"
+
+# Priority 3: cwd → companies/{slug}/...
+if [ -z "$ORG_SLUG" ]; then
+  PWD_REAL="$(pwd -P)"
+  HQ_ROOT=""
+  D="$PWD_REAL"
+  while [ "$D" != "/" ] && [ -n "$D" ]; do
+    if [ -f "$D/companies/manifest.yaml" ]; then HQ_ROOT="$D"; break; fi
+    D="$(dirname "$D")"
+  done
+  if [ -n "$HQ_ROOT" ]; then
+    REL="${PWD_REAL#$HQ_ROOT/companies/}"
+    if [ "$REL" != "$PWD_REAL" ]; then
+      CAND="${REL%%/*}"
+      # Reject non-company paths like _template or stray files
+      if [ -d "$HQ_ROOT/companies/$CAND" ] && [[ "$CAND" != _* ]]; then
+        ORG_SLUG="$CAND"
+      fi
+    fi
+  fi
+fi
+
+# Priority 4: ~/.hq/config.json defaultOrg
+if [ -z "$ORG_SLUG" ] && [ -f "$HOME/.hq/config.json" ]; then
+  ORG_SLUG=$(jq -r '.defaultOrg // empty' "$HOME/.hq/config.json" 2>/dev/null)
+fi
+```
+
+Priorities 5 and 6 run in **A.5** once `$JWT` is in scope.
+
 ### 1f. Writing a preference on request
 
-When the user says "I use Vercel", "I deploy with Netlify", "don't deploy my stuff", or similar, write the preference and acknowledge once:
+When the user says "I use Vercel", "don't deploy my stuff":
 
 ```bash
 mkdir -p "$HOME/.hq"
@@ -88,72 +149,181 @@ else
 fi
 ```
 
-Then say once (never twice):
+Then say once:
 > Got it — I won't offer auto-deploy. You can change this in `~/.hq/config.json`.
 
 ---
 
-## Step 2 — Build
+## Phase A — Fan-out (3-way parallel)
 
-### 2a. Framework detection
+After Step 1 resolves preferences, kick three workstreams off **in the same shell command**: Build inline, Identity script, Sensitivity script. Phase A completes when all three have returned.
 
-| Priority | Framework | Config Files | Default Type |
-|----------|-----------|-------------|--------------|
-| 1 | Next.js | `next.config.{js,mjs,ts}` | SSR |
-| 2 | Remix | `remix.config.{js,ts}`, `app/root.tsx` | SSR |
-| 3 | Astro | `astro.config.{js,mjs,ts}` | Static (SSR if `output: 'server'`) |
-| 4 | Vite | `vite.config.{js,ts,mjs}` | Static |
-| 5 | Static HTML | `index.html` in output dir | Static |
-| 6 | Fallback | — | Static |
-
-### 2b. Install + Build
-
-If the project was just built by the calling workflow (e.g., `/execute-task` already ran `npm run build`), skip — use existing output.
+### A.1 — Framework detection (sync, fast)
 
 ```bash
+# Skip rebuild if dist/index.html newer than newest source file
+if [ -f "dist/index.html" ] || [ -f "out/index.html" ] || [ -f "build/client/index.html" ]; then
+  SKIP_BUILD=1
+fi
+
+# Detect framework + output dir + deploy type
+if   [ -f "next.config.js" ] || [ -f "next.config.mjs" ] || [ -f "next.config.ts" ]; then
+  FRAMEWORK="nextjs"; OUTPUT_DIR="out"; DEPLOY_TYPE="static"
+elif [ -f "remix.config.js" ] || [ -f "remix.config.ts" ]; then
+  FRAMEWORK="remix"; OUTPUT_DIR="build/client"; DEPLOY_TYPE="ssr"
+elif [ -f "astro.config.js" ] || [ -f "astro.config.mjs" ] || [ -f "astro.config.ts" ]; then
+  FRAMEWORK="astro"; OUTPUT_DIR="dist"; DEPLOY_TYPE="static"
+elif [ -f "vite.config.js" ] || [ -f "vite.config.ts" ] || [ -f "vite.config.mjs" ]; then
+  FRAMEWORK="vite"; OUTPUT_DIR="dist"; DEPLOY_TYPE="static"
+else
+  FRAMEWORK="static"; DEPLOY_TYPE="static"
+  for d in dist build out public .; do [ -f "$d/index.html" ] && OUTPUT_DIR="$d" && break; done
+fi
+
+# Package manager
 if   [ -f "bun.lockb" ] || [ -f "bun.lock" ]; then PM="bun"
 elif [ -f "pnpm-lock.yaml" ]; then PM="pnpm"
 elif [ -f "yarn.lock" ]; then PM="yarn"
 else PM="npm"; fi
-
-$PM install && $PM run build
 ```
 
-If build fails: skip deploy silently. The calling workflow already handles build failures.
+### A.2 — Spawn three workstreams in parallel
 
-### 2c. Output Directory
+Launch Build (if needed), Identity, and Sensitivity simultaneously — each writes to its own tmp file, then `wait` syncs the barrier.
 
-| Framework | Static Output | SSR Output |
-|-----------|--------------|------------|
-| Next.js | `out/` (if `output: 'export'`) | `.next/` |
-| Remix | `build/client/` | `build/` |
-| Astro | `dist/` | `dist/` |
-| Vite | `dist/` | — |
-| Static | `dist/`, `build/`, `out/`, `public/`, `.` | — |
+```bash
+T_IDENTITY=$(mktemp -t hq-deploy-identity.XXXXXX)
+T_SENSITIVITY=$(mktemp -t hq-deploy-sensitivity.XXXXXX)
+T_BUILD=$(mktemp -t hq-deploy-build.XXXXXX)
+
+# A.2.1 — Identity in background (script self-resolves cache/refresh/login)
+.claude/skills/deploy/scripts/identity-resolve.sh > "$T_IDENTITY" 2>/dev/null &
+IDENTITY_PID=$!
+
+# A.2.2 — Sensitivity in background ($LATEST_USER_MSG = excerpt of latest user message, ≤200 chars)
+.claude/skills/deploy/scripts/sensitivity-check.sh "$PWD" "$LATEST_USER_MSG" > "$T_SENSITIVITY" 2>/dev/null &
+SENSITIVITY_PID=$!
+
+# A.2.3 — Build in background (skipped if SKIP_BUILD)
+if [ -z "$SKIP_BUILD" ]; then
+  ( $PM install >/dev/null 2>&1 && $PM run build >/dev/null 2>&1 \
+      && echo '{"status":"ok"}' || echo '{"status":"fail"}' ) > "$T_BUILD" &
+  BUILD_PID=$!
+else
+  echo '{"status":"ok","skipped":true}' > "$T_BUILD"
+  BUILD_PID=""
+fi
+
+# Barrier — wait for all three
+wait $IDENTITY_PID $SENSITIVITY_PID $BUILD_PID 2>/dev/null
+```
+
+### A.3 — Parse the three verdicts
+
+```bash
+IDENTITY_JSON=$(cat "$T_IDENTITY")
+SENSITIVITY_JSON=$(cat "$T_SENSITIVITY")
+BUILD_JSON=$(cat "$T_BUILD")
+rm -f "$T_IDENTITY" "$T_SENSITIVITY" "$T_BUILD"
+
+IDENTITY_STATUS=$(echo "$IDENTITY_JSON" | jq -r '.status')
+JWT=$(echo "$IDENTITY_JSON" | jq -r '.jwt // empty')
+LOGIN_REASON=$(echo "$IDENTITY_JSON" | jq -r '.reason // empty')
+
+SENSITIVE=$(echo "$SENSITIVITY_JSON" | jq -r '.sensitive')
+SENSITIVITY_TRIGGER=$(echo "$SENSITIVITY_JSON" | jq -r '.trigger // empty')
+
+BUILD_STATUS=$(echo "$BUILD_JSON" | jq -r '.status')
+```
+
+### A.4 — Phase A barrier rules
+
+- `BUILD_STATUS == "fail"` → abort the deploy entirely (silent skip). Localhost preview also skipped.
+- `IDENTITY_STATUS == "login_required"` → mark Phase C upload as no-op; Phase B preview still runs.
+- `SENSITIVE == "true"` → set the password-protection flag for Phase C.
+
+The Identity script owns the one-shot login attempt internally (`/tmp/hq-deploy-login-attempted-$USER`); the main agent does NOT re-trigger login mid-deploy.
+
+### A.5 — Resolve org via vault (Priority 5) and flag CTA state (Priority 6)
+
+If `$ORG_SLUG` is still empty after Step 1e (Priorities 1–4) AND identity returned `ok` (`$JWT` is in scope), ask vault directly. The same person/membership endpoints the API middleware uses are publicly callable with the user's JWT.
+
+This block is no-op when:
+- `$ORG_SLUG` already resolved in Step 1e (the common path — no extra round-trip)
+- `IDENTITY_STATUS != "ok"` (no JWT — Phase C is already a no-op; State A handled at C.5)
+
+```bash
+VAULT_API="${VAULT_API_URL:-https://4nfy67z28h.execute-api.us-east-1.amazonaws.com}"
+ORG_RESOLUTION_STATE=""
+ACTIVE_SLUGS=""
+
+if [ -z "$ORG_SLUG" ] && [ "$IDENTITY_STATUS" = "ok" ] && [ -n "$JWT" ]; then
+  PERSON_UID=$(curl -s -H "Authorization: Bearer $JWT" \
+    "$VAULT_API/entity/by-type/person" \
+    | jq -r '.entities[0].uid // empty' 2>/dev/null)
+
+  if [ -n "$PERSON_UID" ]; then
+    MEMBERSHIPS_JSON=$(curl -s -H "Authorization: Bearer $JWT" \
+      "$VAULT_API/membership/person/$PERSON_UID")
+    ACTIVE=$(echo "$MEMBERSHIPS_JSON" \
+      | jq -r '[.memberships[]? | select(.status=="active")]' 2>/dev/null)
+    COUNT=$(echo "$ACTIVE" | jq 'length' 2>/dev/null)
+
+    case "$COUNT" in
+      1)
+        COMPANY_UID=$(echo "$ACTIVE" | jq -r '.[0].companyUid')
+        ORG_SLUG=$(curl -s -H "Authorization: Bearer $JWT" \
+          "$VAULT_API/entity/$COMPANY_UID" \
+          | jq -r '.entity.slug // empty' 2>/dev/null)
+        # Persist as defaultOrg so future deploys skip the vault round-trip.
+        if [ -n "$ORG_SLUG" ]; then
+          mkdir -p "$HOME/.hq"
+          if [ -f "$HOME/.hq/config.json" ]; then
+            jq --arg slug "$ORG_SLUG" '.defaultOrg = $slug' \
+              "$HOME/.hq/config.json" > "$HOME/.hq/config.json.tmp" \
+              && mv "$HOME/.hq/config.json.tmp" "$HOME/.hq/config.json"
+          else
+            printf '{"defaultOrg":"%s"}\n' "$ORG_SLUG" > "$HOME/.hq/config.json"
+          fi
+        fi
+        ;;
+      0)
+        ORG_RESOLUTION_STATE="no-orgs"
+        ;;
+      *)
+        ORG_RESOLUTION_STATE="multi-org"
+        # Best-effort: collect company slugs for the CTA, capped at 5 in
+        # the user-facing message so it stays readable.
+        for uid in $(echo "$ACTIVE" | jq -r '.[].companyUid'); do
+          SLUG=$(curl -s -H "Authorization: Bearer $JWT" \
+            "$VAULT_API/entity/$uid" | jq -r '.entity.slug // empty' 2>/dev/null)
+          [ -n "$SLUG" ] && ACTIVE_SLUGS="${ACTIVE_SLUGS:+$ACTIVE_SLUGS, }$SLUG"
+        done
+        ;;
+    esac
+  fi
+fi
+```
+
+After A.5, Phase C upload is gated additionally by `ORG_SLUG` being set — never silently fall back to a hardcoded org. The CTA at C.5 reads `$ORG_RESOLUTION_STATE` to pick the right copy.
 
 ---
 
-## Step 3 — Localhost Preview (always runs)
+## Phase B — Preview + Guardrails (2-way parallel)
 
-After build, spin up a local HTTP server serving the static output directory. This runs **before the identity check and before guardrails** — everyone gets a preview URL, signed-in or not.
+Once Build returns `OUTPUT_DIR`, kick off localhost preview (inline backgrounded server) and Guardrails (inline script) in parallel. Phase B completes when both return.
 
-### 3a. Pick a port
+### B.1 — Localhost preview (always runs, never gated)
 
-Default 4321. If occupied, scan upward (4321 → 4322 → 4323 ...) to the next available port.
+Pick a port, start a Node http server backgrounded with `disown`, write PID + URL to `/tmp/hq-deploy-preview-$$.{pid,url}`.
 
 ```bash
 PORT=4321
 while lsof -iTCP:"$PORT" -sTCP:LISTEN -Pn >/dev/null 2>&1; do
   PORT=$((PORT + 1))
-  [ "$PORT" -gt 4400 ] && break   # sane upper bound
+  [ "$PORT" -gt 4400 ] && break
 done
-```
 
-### 3b. Start the server (backgrounded, tracked)
-
-Use Node's built-in `http` module — no extra install needed. Serve the framework-detected output directory (`$OUTPUT_DIR` from Step 2c).
-
-```bash
 PIDFILE="/tmp/hq-deploy-preview-$$.pid"
 URLFILE="/tmp/hq-deploy-preview-$$.url"
 
@@ -180,278 +350,102 @@ node -e "
 
 echo $! > "$PIDFILE"
 echo "http://localhost:$PORT" > "$URLFILE"
-disown   # detach from shell so it survives tool call boundaries
+disown
 ```
 
-### 3c. Announce the preview URL
+**Persistence:** server stays open until session end. On re-deploy in the same session, kill the old PID and re-use the port. Never accumulate orphans.
 
-Always print this — it's the guaranteed-working user feedback:
+### B.2 — Guardrails (inline, backgrounded)
 
+Walks `$OUTPUT_DIR`, applies caps, builds tarball, returns path + size + sha256.
+
+```bash
+T_GUARDRAILS=$(mktemp -t hq-deploy-guardrails.XXXXXX)
+.claude/skills/deploy/scripts/guardrails-check.sh "$OUTPUT_DIR" > "$T_GUARDRAILS" 2>/dev/null &
+GUARDRAILS_PID=$!
+
+# Preview server is already disowned and serving — nothing to wait on for it.
+wait $GUARDRAILS_PID 2>/dev/null
+
+GUARDRAILS_JSON=$(cat "$T_GUARDRAILS")
+rm -f "$T_GUARDRAILS"
+
+GUARDRAILS_PASS=$(echo "$GUARDRAILS_JSON" | jq -r '.pass')
+GUARDRAILS_REASON=$(echo "$GUARDRAILS_JSON" | jq -r '.reason // empty')
+TARBALL_PATH=$(echo "$GUARDRAILS_JSON" | jq -r '.tarball_path // empty')
+TARBALL_SIZE=$(echo "$GUARDRAILS_JSON" | jq -r '.size_bytes // 0')
+TARBALL_SHA256=$(echo "$GUARDRAILS_JSON" | jq -r '.sha256 // empty')
+FILE_COUNT=$(echo "$GUARDRAILS_JSON" | jq -r '.file_count // 0')
+```
+
+**Caps (encoded in script):** project-root disqualifiers (Dockerfile, serverless.yml, sst.config.*, prisma/, migrations/, knex/drizzle configs); >100 files → fail; tarball >10MB gzipped → fail.
+
+If `GUARDRAILS_PASS=false`, skip Phase C entirely. Localhost preview already served the user.
+
+### B.3 — Announce preview URL
+
+Always print this — it's the guaranteed-working feedback:
 > Preview: http://localhost:{port}
 
-Keep it in a visible line of your response. This is the user's instant feedback regardless of what happens next.
-
-### 3d. Persistence + cleanup
-
-- Server **stays open** until the session ends or the user explicitly stops it. Do NOT kill it after deploy.
-- PID is tracked in `/tmp/hq-deploy-preview-$$.pid` so cleanup on session exit can find it (`kill $(cat /tmp/hq-deploy-preview-*.pid) 2>/dev/null`).
-- If the user runs deploy again in the same session with a new build: re-use the port by killing the old PID, then restart on the same port. Do not accumulate orphan servers.
-
 ---
 
-## Step 4 — Identity Check
+## Phase C — Upload + Password + Link (sequential, hard-gated)
 
-The hq-deploy API is locked down (US-003): anonymous `/api/*` requests return 401. Before attempting any upload, read the local Cognito session. If it's valid, use the JWT. If it's expired, refresh it. If it's missing entirely, trigger an agent-spawned browser login via `npx hq auth login` (Step 4d) — the user never opens a terminal, just signs in to the browser popup and the deploy continues. Only if that fails do we serve the localhost preview and upsell the free HQ account.
+Every API call carries `Authorization: Bearer $JWT`.
 
-**Localhost preview (Step 3) is NOT gated by identity — it always runs.** The identity gate only applies to the web deploy (Steps 5–7).
+**Pre-conditions:**
+- Phase A: `BUILD_STATUS="ok"`, `IDENTITY_STATUS="ok"` (otherwise skip upload, jump to C.5 with preview-only outcome)
+- A.5: `$ORG_SLUG` is non-empty (otherwise skip upload, jump to C.5 with the appropriate state-aware CTA — see C.5)
+- Phase B: `GUARDRAILS_PASS=true` (otherwise abort silently)
 
-### 4a. Locate the session file
-
-The `hq-cli` (and hq-cloud onboarding helper) write Cognito tokens on sign-in. The canonical path is `~/.hq/cognito-tokens.json` — that's what `saveCachedTokens()` in `@indigoai-us/hq-cloud` produces and what `hq auth refresh` / `hq-auth-refresh` reads. Some forks or pre-release installs may use `~/.hq/auth/session.json`; check both, prefer the canonical path.
-
-```bash
-SESSION_FILE=""
-for candidate in "$HOME/.hq/cognito-tokens.json" "$HOME/.hq/auth/session.json"; do
-  if [ -f "$candidate" ]; then SESSION_FILE="$candidate"; break; fi
-done
-```
-
-Expected schema (either path):
-```json
-{
-  "accessToken": "eyJraWQi...",
-  "idToken":     "eyJraWQi...",
-  "refreshToken": "eyJjdHki...",
-  "expiresAt":   "2026-04-17T01:29:05.472Z",
-  "tokenType":   "Bearer"
-}
-```
-
-`accessToken` is what hq-deploy verifies (it runs `tokenUse: "access"` in `aws-jwt-verify`).
-
-### 4b. Validate the session
+### C.1 — Generate password (sensitive only)
 
 ```bash
-if [ -z "$SESSION_FILE" ]; then
-  JWT=""
-else
-  JWT=$(jq -r '.accessToken // empty' "$SESSION_FILE" 2>/dev/null)
-  EXPIRES_AT=$(jq -r '.expiresAt // empty' "$SESSION_FILE" 2>/dev/null)
-
-  if [ -n "$EXPIRES_AT" ]; then
-    EXP_EPOCH=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${EXPIRES_AT%.*}" +%s 2>/dev/null \
-                || date -d "$EXPIRES_AT" +%s 2>/dev/null)
-    NOW=$(date +%s)
-    if [ -n "$EXP_EPOCH" ] && [ "$EXP_EPOCH" -le "$NOW" ]; then
-      JWT=""   # expired — attempt refresh below
-    fi
-  fi
+if [ "$SENSITIVE" = "true" ]; then
+  PW=$(.claude/skills/deploy/scripts/password-helper.sh gen)
+  # Format: adjective-noun-NN, e.g. foxtrot-river-92
 fi
 ```
 
-### 4c. Attempt refresh on expiry
+### C.2 — Upload
 
-If the access token is expired but a `refreshToken` is present, shell out to `hq-auth-refresh` (provided by `@indigoai-us/hq-cli` ≥5.4). It calls the shared Cognito pool's `/oauth2/token` endpoint with grant_type=refresh_token and rewrites `~/.hq/cognito-tokens.json`. Never implement the Cognito client inline.
-
-**Agents must not require the CLI to be pre-installed.** Prefer a local bin if present; otherwise fall back to `npx` so any Node-enabled environment can invoke the refresh on demand without the user having run `npm install -g` beforehand.
+#### Ensure app exists
 
 ```bash
-if [ -z "$JWT" ] && [ -f "$SESSION_FILE" ]; then
-  REFRESH=$(jq -r '.refreshToken // empty' "$SESSION_FILE" 2>/dev/null)
-  if [ -n "$REFRESH" ]; then
-    REFRESH_CMD=""
-    if command -v hq-auth-refresh >/dev/null 2>&1; then
-      REFRESH_CMD="hq-auth-refresh"
-    elif command -v npx >/dev/null 2>&1; then
-      # First-run downloads the package into npm cache (~10s);
-      # subsequent runs hit the cache.
-      REFRESH_CMD="npx -y --package=@indigoai-us/hq-cli hq-auth-refresh"
-    fi
-    if [ -n "$REFRESH_CMD" ]; then
-      $REFRESH_CMD >/dev/null 2>&1 && JWT=$(jq -r '.accessToken // empty' "$SESSION_FILE" 2>/dev/null)
-    fi
-  fi
-fi
-```
-
-If neither a local bin nor `npx` is available, silently fall through to the upsell. Do not prompt the user for credentials — sign-in is owned by `onboarding.indigo-hq.com`.
-
-### 4d. Attempt interactive login (agent-triggered, once per session)
-
-If refresh failed or no session exists at all, **try interactive login before falling back to the upsell**. Spawning `hq auth login` via `npx` opens Cognito's Hosted UI in the user's default browser — they sign in once, the token gets cached to `~/.hq/cognito-tokens.json`, and deploy continues on the same turn.
-
-This is the "user never touched a terminal" path:
-
-```
-User:  "Deploy my dashboard to indigo-hq.com"
-Agent: [runs deploy skill → hits Step 4d with no session]
-       → tells the user "Opening HQ sign-in in your browser…"
-       → spawns: npx -y --package=@indigoai-us/hq-cli hq auth login
-       → browser pops open (Cognito Hosted UI)
-       → user signs in (one-time, cached 30 days)
-       → token file written → re-read → deploy continues
-```
-
-**Gate rules:**
-
-- Only trigger once per session — record in `/tmp/hq-deploy-login-attempted-$USER`
-- Only trigger if `npx` is available (almost always on a dev box; silently skip to upsell if not)
-- Announce to the user BEFORE spawning: `"Opening HQ sign-in in your browser — one moment..."`
-- Cap the wait at ~180s (background PID + killer) so a user who closes the browser doesn't hang the tool call. `hq auth login` has its own 15-min hard limit, but we don't want the deploy flow to wait that long.
-- After the spawn returns, re-read `$HOME/.hq/cognito-tokens.json` and re-populate `$JWT`.
-
-> ⚠️ Do NOT use `timeout 180 ...` — the `timeout` command is not available on macOS by default (it's GNU coreutils). Use the background-and-killer pattern below, which is portable across macOS and Linux.
-
-```bash
-LOGIN_ATTEMPTED_FILE="/tmp/hq-deploy-login-attempted-$USER"
-
-if [ -z "$JWT" ] && [ ! -f "$LOGIN_ATTEMPTED_FILE" ] && command -v npx >/dev/null 2>&1; then
-  touch "$LOGIN_ATTEMPTED_FILE"
-
-  # Tell the user what's about to happen so the browser popup isn't unexpected.
-  echo "Opening HQ sign-in in your browser — one moment..."
-
-  # Spawn hq auth login as a background job; kill it after 180s if it hasn't exited.
-  npx -y --package=@indigoai-us/hq-cli hq auth login &
-  LOGIN_PID=$!
-
-  ( sleep 180 && kill "$LOGIN_PID" 2>/dev/null ) &
-  KILLER_PID=$!
-
-  wait "$LOGIN_PID" 2>/dev/null || true
-  kill "$KILLER_PID" 2>/dev/null; wait "$KILLER_PID" 2>/dev/null || true
-
-  # Re-read session after login attempt — browserLogin() writes this file on success.
-  if [ -f "$HOME/.hq/cognito-tokens.json" ]; then
-    SESSION_FILE="$HOME/.hq/cognito-tokens.json"
-    JWT=$(jq -r '.accessToken // empty' "$SESSION_FILE" 2>/dev/null)
-  fi
-fi
-```
-
-**Why `npx -y --package=...`:** the agent does NOT require the user to have previously run `npm install -g @indigoai-us/hq-cli`. `npx` downloads on first use (~10s) and caches, subsequent invocations are instant. The `--package=` flag is needed because the binary name (`hq`) differs from the package name (`@indigoai-us/hq-cli`).
-
-### 4e. Branch on identity
-
-| State | Action |
-|-------|--------|
-| Valid `$JWT` in scope | Continue to Step 5 (Guardrails). Carry `Authorization: Bearer $JWT` through all `/api/*` calls. |
-| No `$JWT` after login attempt, user hasn't been upsold this session | Skip Steps 5–6. Emit the upsell message once. Present preview URL only. |
-| No `$JWT`, already upsold this session | Skip Steps 5–6 silently. Present preview URL only. |
-
-Track "already upsold" in a tmp file so it survives tool-call boundaries:
-
-```bash
-UPSOLD_FILE="/tmp/hq-deploy-upsold-$USER"
-```
-
-### 4f. Upsell copy (once per session, only if login didn't succeed)
-
-When `$JWT` is still absent after 4d and `$UPSOLD_FILE` does not exist, emit exactly once — friendly, not blocking, not a nag. Phrase it as "create an account" (not "sign in") because reaching this branch means login failed — most likely the user doesn't have an account yet:
-
-> Looks like you don't have an HQ account yet. Create one free at https://onboarding.indigo-hq.com and I'll deploy this to the web next time.
-
-Then touch the upsold file so subsequent runs in the same session stay quiet:
-
-```bash
-touch "$UPSOLD_FILE"
-```
-
-Move on. The user got their preview URL; deploy is a bonus, not a blocker.
-
----
-
-## Step 5 — Guardrails
-
-Run these checks **before tarball creation** to fail fast on unsuitable artifacts. All rejections are silent — no error message, just skip. Deploy is a bonus.
-
-### 5a. Detect full-app disqualifiers
-
-These should already be caught in Step 1d exclusions, but re-verify at project root:
-
-- **SSR framework:** if framework detection in Step 2a returned an SSR type (Next.js SSR, Remix SSR, Astro `output: 'server'`) → skip
-- **Backend service files at project root:** `Dockerfile`, `serverless.yml`, `serverless.ts`, `sst.config.ts`, `sst.config.js`, `docker-compose.yml`, `docker-compose.yaml` → skip
-- **Database tooling:** `prisma/` directory, `drizzle.config.ts`, `drizzle.config.js`, `knexfile.ts`, `knexfile.js`, `migrations/` directory → skip
-
-```bash
-for f in Dockerfile serverless.yml serverless.ts sst.config.ts sst.config.js \
-         docker-compose.yml docker-compose.yaml \
-         drizzle.config.ts drizzle.config.js knexfile.ts knexfile.js; do
-  [ -f "$f" ] && exit 0    # silent skip
-done
-for d in prisma migrations; do
-  [ -d "$d" ] && exit 0    # silent skip
-done
-```
-
-### 5b. File count limit (post-build, pre-tarball)
-
-```bash
-FILE_COUNT=$(find "$OUTPUT_DIR" -type f | wc -l | tr -d ' ')
-if [ "$FILE_COUNT" -gt 100 ]; then exit 0; fi   # silent skip
-```
-
-**Limit: 100 files max** (excluding directories). If exceeded, the artifact is a full app, not a static page — skip.
-
-### 5c. Size limit (tarball-gzip)
-
-```bash
-tar -czf /tmp/hq-deploy-upload.tar.gz -C "$OUTPUT_DIR" .
-TARBALL_SIZE=$(stat -f%z /tmp/hq-deploy-upload.tar.gz 2>/dev/null \
-               || stat -c%s /tmp/hq-deploy-upload.tar.gz)
-if [ "$TARBALL_SIZE" -gt 10485760 ]; then
-  rm -f /tmp/hq-deploy-upload.tar.gz
-  exit 0    # silent skip — over 10MB gzipped
-fi
-```
-
-**Limit: 10MB max (gzip compressed).**
-
-### 5d. Existing exclusions preserved
-
-The Step 1d exclusions still apply:
-- Vercel-managed projects (`manifest.yaml` `vercel_projects[]`)
-- Projects with `metadata.deploy: false` in prd.json
-
----
-
-## Step 6 — Upload
-
-Every request carries `Authorization: Bearer $JWT` — verified against the shared HQ Identity Cognito pool by hq-deploy's `resolveAuth` resolver.
-
-### 6a. Ensure App Exists
-
-```bash
+# GET /api/apps returns {apps: [...]}
 APP_ID=$(curl -s -H "Authorization: Bearer $JWT" \
-  "$API/api/apps" | jq -r '.[] | select(.name == "'"$APP_NAME"'") | .id')
+  "$API/api/apps" | jq -r --arg name "$APP_NAME" '.apps[] | select(.name == $name) | .id' | head -1)
 
 if [ -z "$APP_ID" ]; then
-  APP_ID=$(curl -s -X POST \
+  # POST /api/apps requires {name, type}
+  APP_RESPONSE=$(curl -s -X POST \
     -H "Authorization: Bearer $JWT" \
     -H "Content-Type: application/json" \
-    -d '{"name": "'"$APP_NAME"'"}' \
-    "$API/api/apps" | jq -r '.id')
+    -d "{\"name\": \"$APP_NAME\", \"type\": \"$DEPLOY_TYPE\"}" \
+    "$API/api/apps")
+  APP_ID=$(echo "$APP_RESPONSE" | jq -r '.id')
+  APP_SUBDOMAIN=$(echo "$APP_RESPONSE" | jq -r '.subdomain')
 fi
 ```
 
-### 6b. Upload — Static (presigned URL)
+#### Static upload (presigned URL)
+
+The Guardrails script already produced `$TARBALL_PATH`, `$TARBALL_SIZE`, `$TARBALL_SHA256` — reuse them, do not re-tar:
 
 ```bash
-TARBALL_SHA256=$(shasum -a 256 /tmp/hq-deploy-upload.tar.gz | cut -d' ' -f1)
-
 DEPLOY_RESPONSE=$(curl -s -X POST \
   -H "Authorization: Bearer $JWT" \
   -H "Content-Type: application/json" \
-  -d "{\"appSlug\": \"$APP_SUBDOMAIN\", \"org\": \"indigo\", \"manifest\": {\"files\": [], \"size\": $TARBALL_SIZE, \"sha256\": \"$TARBALL_SHA256\"}}" \
+  -d "{\"appSlug\": \"$APP_SUBDOMAIN\", \"org\": \"$ORG_SLUG\", \"manifest\": {\"files\": [], \"size\": $TARBALL_SIZE, \"sha256\": \"$TARBALL_SHA256\"}}" \
   "$API/api/deploys")
 
 DEPLOY_ID=$(echo "$DEPLOY_RESPONSE" | jq -r '.deployId')
 PRESIGNED_URL=$(echo "$DEPLOY_RESPONSE" | jq -r '.presignedUrl')
 
-# Upload is directly to S3 — no Authorization header on this PUT (presigned URL carries its own signature)
+# Direct S3 PUT — presigned URL carries its own signature, no Authorization header
 curl -s -X PUT \
   -H "Content-Type: application/gzip" \
-  --data-binary @/tmp/hq-deploy-upload.tar.gz \
+  --data-binary @"$TARBALL_PATH" \
   "$PRESIGNED_URL"
 
 COMPLETE_RESPONSE=$(curl -s -X POST \
@@ -461,10 +455,10 @@ COMPLETE_RESPONSE=$(curl -s -X POST \
   "$API/api/deploys/$DEPLOY_ID/complete")
 
 LIVE_URL=$(echo "$COMPLETE_RESPONSE" | jq -r '.url')
-rm -f /tmp/hq-deploy-upload.tar.gz
+rm -f "$TARBALL_PATH"
 ```
 
-### 6c. Upload — SSR (ECR image)
+#### SSR upload (ECR image)
 
 ```bash
 aws ecr get-login-password --region us-east-1 \
@@ -476,40 +470,133 @@ docker push "$ECR_URI/$APP_NAME:$VERSION"
 curl -s -X POST \
   -H "Authorization: Bearer $JWT" \
   -H "Content-Type: application/json" \
-  -d '{"image_tag": "'"$VERSION"'", "deploy_type": "ssr"}' \
+  -d "{\"image_tag\": \"$VERSION\", \"deploy_type\": \"ssr\"}" \
   "$API/api/apps/$APP_ID/deploy"
 ```
 
-### 6d. 401 handling
+#### 401 handling
 
-If any `/api/*` call returns 401, the session is stale (expired between Step 4 check and now). Fall back to the "no JWT" branch of Step 4e — present the preview, upsell if not already shown, and stop. Do not re-trigger `hq auth login` mid-deploy (we already attempted it in 4d) and do not retry uploads indefinitely.
+If any `/api/*` call returns 401, the JWT went stale between Phase A and now. Fall back to the no-upload branch — present preview, upsell if not already shown, stop. Do NOT re-trigger login mid-deploy.
 
----
+### C.3 — Wire password (sensitive only)
 
-## Step 7 — Present the Link
+After upload, with `appId` in hand. **Endpoint is `PATCH /api/apps/:id`** (not `/access`); the server hashes via Argon2id.
 
-This is the only user-visible output from the entire deploy. Keep it casual and brief.
+```bash
+if [ "$SENSITIVE" = "true" ]; then
+  curl -sS -X PATCH "$API/api/apps/$APP_ID" \
+    -H "Authorization: Bearer $JWT" \
+    -H "Content-Type: application/json" \
+    -d "{\"passwordProtected\": true, \"password\": \"$PW\"}" >/dev/null
+fi
+```
 
-**On success** — weave the URL naturally into your response:
+#### Auth-gate verify (sensitive only)
+
+```bash
+if [ "$SENSITIVE" = "true" ]; then
+  GATE_CHECK=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $JWT" \
+    "$API/api/apps/$APP_ID")
+  PROTECTED=$(curl -sS -H "Authorization: Bearer $JWT" "$API/api/apps/$APP_ID" \
+    | jq -r '.passwordProtected // false')
+  if [ "$GATE_CHECK" != "200" ] || [ "$PROTECTED" != "true" ]; then
+    echo "[deploy] auth-gate verify: status=$GATE_CHECK protected=$PROTECTED for $APP_ID — re-run /deploy if this artifact must stay private." >&2
+  fi
+fi
+```
+
+Failure handling: log to stderr, continue. Never auto-delete the deploy.
+
+### C.4 — Announce password (sensitive only)
+
+```bash
+if [ "$SENSITIVE" = "true" ]; then
+  .claude/skills/deploy/scripts/password-helper.sh announce \
+    "$APP_SUBDOMAIN" "$PW" "$SENSITIVITY_TRIGGER"
+  # announce: prints once to stderr, copies to clipboard via pbcopy,
+  # persists to ~/.hq/deploy-passwords.json (mode 0600), keyed by slug.
+fi
+```
+
+### C.5 — Present the link
+
+The only user-visible output. Keep it casual.
+
+**On success (non-sensitive):** weave naturally:
 - "Here's a link you can share: https://{app}.indigo-hq.com"
 - "The docs are live at https://{app}.indigo-hq.com"
-- "Deployed to https://{app}.indigo-hq.com"
 
-Do NOT print a deploy report, duration, file count, version, or status block. Just the link.
+**On success (sensitive):** mention password ONCE:
+> Live at `https://$APP_SUBDOMAIN.indigo-hq.com` — password copied to your clipboard (also saved to `~/.hq/deploy-passwords.json`).
 
-**On upload failure** (after auth worked) — one line, no drama:
+If the user asks "what was the password?" later, do NOT re-emit. Tell them:
+> Run `jq -r '."$APP_SUBDOMAIN".password' ~/.hq/deploy-passwords.json` to retrieve it.
+
+The `~/.hq/deploy-passwords.json` path is in `.claude/settings.json` Read deny list — the session can't pull it back into context.
+
+**On no-identity path** (Phase A returned `login_required`) — **State A**: preview URL was already emitted in Phase B; emit upsell once if `/tmp/hq-deploy-upsold-$USER` doesn't exist:
+
+```bash
+UPSOLD_FILE="/tmp/hq-deploy-upsold-$USER"
+if [ ! -f "$UPSOLD_FILE" ]; then
+  echo "Looks like you don't have an HQ account yet. Create one free at https://onboarding.indigo-hq.com and I'll deploy this to the web next time."
+  touch "$UPSOLD_FILE"
+fi
+```
+
+**On signed-in-but-org-unresolved path** (`IDENTITY_STATUS=ok` but `$ORG_SLUG` is empty after A.5): emit the appropriate state-aware CTA. Preview URL was already shown in Phase B, so the CTA pairs with that, not in place of it:
+
+```bash
+PREVIEW_URL=$(cat "$URLFILE" 2>/dev/null || echo "http://localhost:$PORT")
+case "$ORG_RESOLUTION_STATE" in
+  no-orgs)
+    # State B — signed in, no companies yet
+    echo "You're signed in but don't have any companies yet. Create or sync one (\`hq onboard\` or push your local companies/ folder) and I'll deploy this next time. Preview: $PREVIEW_URL"
+    ;;
+  multi-org)
+    # State C — multiple memberships, no default
+    echo "You're a member of multiple companies (${ACTIVE_SLUGS:-multiple}). Tell me which one to deploy to (\"deploy this to <slug>\") or set a default (\"make <slug> my default org\"). Preview: $PREVIEW_URL"
+    ;;
+  *)
+    # Defensive — JWT was valid but vault was unreachable. Don't silently
+    # default to indigo; surface a recoverable next step.
+    echo "Couldn't resolve a deploy target right now. Set HQ_ORG=<slug> for this run, or \"make <slug> my default org\" to persist. Preview: $PREVIEW_URL"
+    ;;
+esac
+```
+
+Skip the rest of Phase C (no upload, no password, no link) — local preview is already up.
+
+**On upload failure** (after Phase A passed but Phase C failed):
 - "Deploy to hq-deploy didn't go through, but everything else is done."
-
-**On no-identity path** — you already emitted the preview URL in Step 3c and either triggered login (4d) or upsold (4f). Nothing to add here.
 
 Then move on. Deploy is never the main event.
 
 ---
 
+## Inline-script reference
+
+| Script | Input | Returns |
+|--------|-------|---------|
+| `identity-resolve.sh` | (none — reads `~/.hq/cognito-tokens.json`) | `{"status":"ok","jwt":"...","expires_at":<epoch-ms>,"source":"cache\|refresh\|login"}` or `{"status":"login_required","reason":"..."}` |
+| `sensitivity-check.sh <path> [user_msg]` | artifact path + latest user message excerpt | `{"sensitive":bool,"trigger":"companies-data-path\|private-repo\|pii-detected\|financial-filename\|user-stated-private"\|null}` |
+| `guardrails-check.sh <output_dir>` | build output directory | `{"pass":bool,"reason":string\|null,"tarball_path":string,"size_bytes":int,"sha256":string,"file_count":int}` |
+| `password-helper.sh gen` | — | `<adjective-noun-NN>` on stdout |
+| `password-helper.sh announce <slug> <pw> [trigger]` | slug + password | stderr message + pbcopy + writes `~/.hq/deploy-passwords.json` |
+
+All scripts:
+- Are deterministic and run in 0.3–0.5s
+- Return exactly ONE line of JSON to stdout (except password-helper subcommands)
+- Never echo JWTs, artifact contents, or matched PII
+- Are forbidden by harness deny rules from being read directly — invocation is via Bash only
+
+---
+
 ## Notes
 
-- Auth tokens are never displayed in output — pipe to files or use env vars
-- The CLI at `repos/public/hq-deploy/cli/` remains for CI/CD pipelines (uses its own auth flow)
-- For Vercel-managed projects, skip entirely (Vercel handles those)
-- Respects company isolation — credentials resolved from active company context
-- Shared HQ Identity pool (US-002) means one onboarding.indigo-hq.com sign-in works across hq-deploy, hq-pro, hq-onboarding
+- Auth tokens are never displayed in output — script returns JWT in JSON, main agent uses it in `Authorization: Bearer` headers only.
+- The CLI at `repos/public/hq-deploy/cli/` remains for CI/CD pipelines (uses its own auth flow).
+- For Vercel-managed projects, skip entirely.
+- Respects company isolation — credentials resolved from active company context.
+- Shared HQ Identity pool means one onboarding.indigo-hq.com sign-in works across hq-deploy, hq-pro, hq-onboarding.

@@ -32,4 +32,3 @@ Heuristics:
 All four were ranked by the same composite score (`0.4 * daysSinceTouch + 0.3 * depletionPressure + 0.3 * vipValue`). Rep users couldn't tell them apart — each preset surfaced the same top 20 accounts in a slightly different order. Replacing the 4 presets with a 3×3 matrix of **action cohort × status facet** gave reps distinguishable, actionable cells and cut confused support requests to zero.
 
 The underlying pattern: a composite score collapses a high-dimensional space to one axis. N presets on that axis are N arbitrary slices of the same line — they look different on paper and feel identical in use. Orthogonal filters expose dimensions the user can reason about independently.
-

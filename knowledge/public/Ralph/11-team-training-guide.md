@@ -130,13 +130,13 @@ echo "Remaining: $(grep -c '"passes": false' plans/prd.json)"
 
 The `passes` field is critical -- it tells the loop whether the feature has been verified. The PRD serves dual purpose: specification AND test harness.
 
-**From the team** (Jan 14): Yousuf created a PRD for the Daily Brief feature using Ralph, demonstrating the spec-first approach.
+**From the team** (Jan 14): team-member-1 created a PRD for the Daily Brief feature using Ralph, demonstrating the spec-first approach.
 
 ### 2. Progress File (progress.txt) -- The Audit Trail
 
 Running log with timestamps showing: which feature was started, tests passed/failed, git commit hashes, PRD updates. Provides audit trail for human review, context for subsequent runs, and handoff capability.
 
-**From the team** (Jan 21): Yousuf's Ralph session logged progress as it cleaned 300+ files from the Electron app, enabling review of what was changed.
+**From the team** (Jan 21): team-member-1's Ralph session logged progress as it cleaned 300+ files from the Electron app, enabling review of what was changed.
 
 ### 3. agents.md / CLAUDE.md -- The Brain
 
@@ -175,7 +175,7 @@ What makes autonomous coding reliable. Without it, hallucinations compound, bugs
 
 **From the team** (Jan 16): {your-name} emphasized speed optimization for testing -- *"start... maybe have a small one so it's a little bit faster, but speed is another thing that we should try and optimize."*
 
-**From the team** (Jan 16): Yousuf integrated Playwright MCP server for browser automation testing -- *"Your cloud will use the same Playwright MCP server that I have integrated in the application."*
+**From the team** (Jan 16): team-member-1 integrated Playwright MCP server for browser automation testing -- *"Your cloud will use the same Playwright MCP server that I have integrated in the application."*
 
 ---
 
@@ -196,11 +196,11 @@ What makes autonomous coding reliable. Without it, hallucinations compound, bugs
 - Containerization needed as security measure and prerequisite for cloud deployment
 - Creates containerized agent with proper permissions
 
-**Stefan's agent performing well** in development environment -- early validation of the AI agent approach.
+**team-member-2's agent performing well** in development environment -- early validation of the AI agent approach.
 
 ### Jan 14 Standup: First Ralph Implementations
 
-**Yousuf: Auth flow implemented with Ralph**
+**team-member-1: Auth flow implemented with Ralph**
 - All tests passing, no bugs
 - Set up Ubuntu Server sandbox for Ralph testing
 - Created PRD for the Daily Brief feature using Ralph
@@ -214,8 +214,8 @@ What makes autonomous coding reliable. Without it, hallucinations compound, bugs
 
 ### Jan 15 Standup: Workflow Crystallizes
 
-**Yousuf completed auth in 1 day vs 3-4 days** -- the breakthrough moment.
-- *"Yousuf completed authentication implementation in 1 day using Ralph, compared to 3-4 days it would have taken previously"*
+**team-member-1 completed auth in 1 day vs 3-4 days** -- the breakthrough moment.
+- *"team-member-1 completed authentication implementation in 1 day using Ralph, compared to 3-4 days it would have taken previously"*
 - 3-4x faster development speed demonstrated with real production code
 
 **Decision: Ralph for features, Kurtzer for bugs**
@@ -231,12 +231,12 @@ This was the richest training session. {your-name} laid out the approach for the
 
 **Decision: Start with a single feature per dev**
 - {your-name}: *"For devs, the best way to do that with an active project is to choose a single feature and build a Ralph pipeline just for that feature."*
-- *"Kind of what Yousuf did with Auth."* -- referencing the proof of concept
+- *"Kind of what team-member-1 did with Auth."* -- referencing the proof of concept
 
 **Action: End-to-end testing with Ralph Loop**
 - {your-name}: *"Get the Ralph Loop on this. Get a loop on end-to-end agent testing. Find some... start... maybe have a small one so it's a little bit faster, but speed is another thing that we should try and optimize."*
 
-**Stefan's learning approach**
+**team-member-2's learning approach**
 - *"I'm using it as a quick, safe sandbox to tune in... start using the screwdriver on Ralph, and learn the principles, and set up my own workflow."*
 - Then diving into RDF/ontological changes for insights
 - *"I think once I get that in... I think we're gonna start seeing better results on bookmarks."*
@@ -247,7 +247,7 @@ This was the richest training session. {your-name} laid out the approach for the
 **Decision: Fix deep agent issues before new features**
 - {your-name}: *"That's what I need you focused on now"* -- prioritizing stability over new features
 
-**Yousuf: Playwright MCP integration completed**
+**team-member-1: Playwright MCP integration completed**
 - Browser automation testing now available for the agent pipeline
 
 ### Jan 19 Standup: Architecture Decisions
@@ -258,46 +258,46 @@ This was the richest training session. {your-name} laid out the approach for the
 
 **Decision: Single environment architecture**
 - {your-name}: *"I really like the no staging and potentially even no dev environment complications. Move towards feature flagging or alpha-beta releases, and just have single environment, single set of keys."*
-- Yousuf: *"Yeah, I think we can start from cleaning up staging for now."*
+- team-member-1: *"Yeah, I think we can start from cleaning up staging for now."*
 - Eliminate unnecessary intermediate environments to reduce key management complexity
 
 **Accomplishments this session:**
-- New beta version released with citation feature (developed by Stefan)
+- New beta version released with citation feature (developed by team-member-2)
 - Fixed prompt issue in follow-up messages to deep agent
-- Stefan at 70-80% completion on his development branch
+- team-member-2 at 70-80% completion on his development branch
 
 ### Jan 20 Standup: HQ Adoption
 
-**Decision: Yousuf should implement HQ system**
-- {your-name} recommended HQ for managing projects and tasks since Yousuf was working solo
-- *"{your-name} recommended that Yousuf implement the HQ system to manage projects and tasks since he's working solo"*
+**Decision: team-member-1 should implement HQ system**
+- {your-name} recommended HQ for managing projects and tasks since team-member-1 was working solo
+- *"{your-name} recommended that team-member-1 implement the HQ system to manage projects and tasks since he's working solo"*
 
 **Action items:**
 - Install and set up HQ locally
 - Contribute to HQ Starter Kit repo after accepting GitHub invite
 - HQ Starter Kit had already generated $900 in token fees
 
-**Yousuf decided to manually clean up code** rather than using an agent -- *"He knows what is redundant and what is not, making manual cleanup more effective than automated approaches"*. This is an important nuance: Ralph is for building, but sometimes human judgment is faster for targeted cleanup.
+**team-member-1 decided to manually clean up code** rather than using an agent -- *"He knows what is redundant and what is not, making manual cleanup more effective than automated approaches"*. This is an important nuance: Ralph is for building, but sometimes human judgment is faster for targeted cleanup.
 
 ### Jan 21 Standup: Scaling Results
 
 **Ralph cleaned 300+ files in one hour**
-- Yousuf used Ralph to clean up the Electron app
+- team-member-1 used Ralph to clean up the Electron app
 - Removed old configs and code from previous systems
 - Context: *"using Ralph AI tool which completed the task in one hour with changes to 300+ files"*
 - Previously would have been a multi-day effort
 
-**Yousuf reran Ralph on planning mode** feature after cleanup was complete -- demonstrating the iterative pattern
+**team-member-1 reran Ralph on planning mode** feature after cleanup was complete -- demonstrating the iterative pattern
 
 **Decision: Use HQ as central system**
 - {your-name} pushed team to adopt HQ setup repo for project tracking
-- Both Stefan and Yousuf to start using it, even beyond work projects
+- Both team-member-2 and team-member-1 to start using it, even beyond work projects
 
-**Stefan: Developed system for launching terminals** with predefined context for Claude Code sessions -- workflow optimization
+**team-member-2: Developed system for launching terminals** with predefined context for Claude Code sessions -- workflow optimization
 
 ### Jan 22 Standup: Infrastructure & Tooling
 
-**Yousuf: Claude Max account + HQ in cloud**
+**team-member-1: Claude Max account + HQ in cloud**
 - Cloud-based HQ setup enables working from anywhere
 
 **Docker configuration for team**
@@ -338,7 +338,7 @@ This was the richest training session. {your-name} laid out the approach for the
 
 **Phase 1: Learn (Day 1-2)**
 1. Read HQ Ralph knowledge base: `knowledge/public/Ralph/` (10 chapters)
-2. Set up a sandbox environment (Stefan's approach -- safe place to experiment)
+2. Set up a sandbox environment (team-member-2's approach -- safe place to experiment)
 3. Watch Geoffrey Huntley's "Ralph Wiggum Loop from 1st principles" video
 4. Get Claude Max account and set up HQ locally
 
@@ -486,11 +486,11 @@ Running 24/7: ~$250/day or ~$7,500/month
 
 ## Part 8: Key Principles (Distilled from Training)
 
-1. **Start small, one feature at a time** -- Yousuf proved this with auth. Don't try to Ralph everything on day 1.
+1. **Start small, one feature at a time** -- team-member-1 proved this with auth. Don't try to Ralph everything on day 1.
 
 2. **Clean codebase = faster Ralph** -- Messy code slows everything 10x. Cleanup is investment, not waste.
 
-3. **Use a sandbox to learn** -- Stefan's approach: safe sandbox first to learn principles and set up personal workflow, then apply to real work.
+3. **Use a sandbox to learn** -- team-member-2's approach: safe sandbox first to learn principles and set up personal workflow, then apply to real work.
 
 4. **Back pressure is non-negotiable** -- Tests, linting, type checking must all pass. This is what prevents hallucination from compounding.
 
@@ -512,9 +512,9 @@ Running 24/7: ~$250/day or ~$7,500/month
 
 | Person | Ralph Stage | Key Achievements | Next Steps |
 |--------|-------------|-----------------|------------|
-| **Yousuf** | Production user | Auth in 1 day (3-4x), 300+ file cleanup in 1hr, sandbox setup, Playwright MCP, Claude Max + cloud HQ | Separate bug Ralph instance, Daily Brief PRD |
-| **Stefan** | Active learner | Sandbox workflow setup, RDF/ontological changes, agent-runnable testing framework, citation feature, terminal context system | Complete sandbox learning, apply to insights work |
-| **Hassaan** | Setting up | Claude Max + HQ, deep agent work, cloud setup | Test HQ, Docker setup |
+| **team-member-1** | Production user | Auth in 1 day (3-4x), 300+ file cleanup in 1hr, sandbox setup, Playwright MCP, Claude Max + cloud HQ | Separate bug Ralph instance, Daily Brief PRD |
+| **team-member-2** | Active learner | Sandbox workflow setup, RDF/ontological changes, agent-runnable testing framework, citation feature, terminal context system | Complete sandbox learning, apply to insights work |
+| **team-member-3** | Setting up | Claude Max + HQ, deep agent work, cloud setup | Test HQ, Docker setup |
 | **Shawon** | Building agents | Insights Agent as sub-agent with deep agent capabilities | Integration with main system |
 
 ---

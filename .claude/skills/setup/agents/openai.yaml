@@ -1,0 +1,3 @@
+interface:
+  display_name: "Setup"
+  short_description: "Interactive setup wizard for HQ Starter Kit"

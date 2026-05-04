@@ -4,7 +4,8 @@ title: Create .gitignore before first commit in new projects
 scope: global
 public: true
 trigger: scaffolding a new project with git init
-enforcement: hard
+enforcement: soft
+tier: 1
 version: 1
 created: 2026-02-23
 updated: 2026-02-23

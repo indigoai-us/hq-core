@@ -5,9 +5,9 @@ scope: global
 trigger: after-build, after-execute-task, after-run-project, after-prd
 enforcement: soft
 public: true
-version: 2
+version: 3
 created: 2026-04-05
-updated: 2026-04-20
+updated: 2026-04-28
 ---
 
 ## Rule
@@ -25,6 +25,11 @@ The deploy skill runs a seven-step flow: **Preferences → Build → Localhost p
 3. **After `/execute-task`** completes a story in a project that has a web-servable output
 4. **After `/run-project`** finishes all stories in a deployable project
 5. **After a worker** generates an HTML report or dashboard to `workspace/reports/` or `companies/{co}/data/`
+6. **Intent-to-share keywords** in the user message: `share`, `send`, `send to <person>`, `present`, `show <person>`, `link for` — combined with an artifact in context
+7. **Deck / presentation creation** — `.pptx`, slide HTML, or any artifact under `companies/*/data/decks/**` or `workspace/reports/decks/**`
+8. **PRD-marked deliverable** — `prd.json` story with `metadata.deliverable: true`
+
+When triggered by signals 6–8 (vs. signals 1–5), `/deploy` is no longer "silent bonus" — announce the deploy briefly so the user understands the link came from their share intent. See `.claude/policies/hq-deploy-reinforcement.md` for the user-facing reinforcement rules and the auto-password-protection logic.
 
 ### How to detect deployable output
 
@@ -37,7 +42,7 @@ An artifact is deployable if ANY of these are true:
 
 1. **Just do it** — don't ask, don't confirm, don't announce you're about to deploy
 2. Use the deploy skill (`skills/deploy/SKILL.md`) for framework detection, build, upload, and status
-3. App name = project name or directory name, slug-cased (e.g., `hq-vault-docs`, `levelfit-dashboard`)
+3. App name = project name or directory name, slug-cased (e.g., `hq-vault-docs`, `acme-dashboard`)
 4. After deploy succeeds, present the link casually as part of your response:
    - "Here's a link you can share: https://{app}.indigo-hq.com"
    - Or inline: "The docs are live at https://{app}.indigo-hq.com"
@@ -121,7 +126,3 @@ Per-project override: set `metadata.deploy: false` in `prd.json` to force-skip d
 
 When the user casually states a preference in conversation ("I use Vercel", "don't deploy my stuff"), the deploy skill writes the preference to `~/.hq/config.json` and acknowledges once:
 > Got it — I won't offer auto-deploy. You can change this in `~/.hq/config.json`.
-
-## Rationale
-
-The user shouldn't have to remember to deploy. When HQ builds something that could be shared via a URL, it should just appear. Every creation becomes a shareable artifact with zero friction. The link is a gift, not a task.

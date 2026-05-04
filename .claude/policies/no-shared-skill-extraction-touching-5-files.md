@@ -3,6 +3,7 @@ id: no-shared-skill-extraction-touching-5-files
 enforcement: hard
 scope: global
 tags: [skills, refactor, abstraction]
+public: true
 created: 2026-04-15
 provenance: user-correction
 ---

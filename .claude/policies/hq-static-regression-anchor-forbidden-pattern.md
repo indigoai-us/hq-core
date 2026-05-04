@@ -3,7 +3,7 @@ id: hq-static-regression-anchor-forbidden-pattern
 title: Anchor forbidden patterns to their invocation context in static regression harnesses
 scope: global
 trigger: authoring or modifying a static regression harness (grep/regex-based test) that forbids a URL path, flag, or command substring
-enforcement: hard
+enforcement: soft
 public: true
 version: 1
 created: 2026-04-22
