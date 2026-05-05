@@ -4,6 +4,7 @@ title: HQ git discipline — branch hygiene, focused commits, safe probes, histo
 scope: global
 trigger: any git operation in HQ working tree, repos/, or knowledge repos — commits, pushes, merges, rebases, history rewrites, stash, reflog, gc
 enforcement: hard
+tier: 1
 public: true
 version: 1
 created: 2026-04-27
@@ -26,7 +27,7 @@ merged_at: 2026-04-27
 
 ## Rule
 
-Eleven independent hard rules covering day-to-day git hygiene, focused commits, safe inspection, history-preserving moves, chip-safe pushes, and stash/reflog protection. Each is a real failure mode with its own remedy; do not collapse them when reading. Soft-enforcement git policies live in their own files (see Related).
+Verify branch + pull before commit; explicit paths (no `git add -A` with drift); `git checkout -- .` is destructive (not a probe); never push HQ; preserve WIP before reflog gc. Thirteen hard rules below; soft-enforcement git policies live in separate files (see Related).
 
 ### 1. Verify branch before committing
 
@@ -38,7 +39,7 @@ ALWAYS `git fetch origin` then check `git rev-list --count HEAD..origin/<branch>
 
 ### 3. Create `.gitignore` before first commit in new projects
 
-ALWAYS create `.gitignore` (with `node_modules/`, `.next/`, `.vercel/`, build artifacts) BEFORE running `git init && git add -A && git commit`. If build artifacts enter git history, GitHub rejects pushes for files >100 MB and the only fix is nuking `.git` and reinitializing. During `vyg-competitive-intel` scaffolding, `npm install` ran before `git init` and the first commit captured `next-swc.darwin-arm64.node` (100.35 MB), forcing full repo reinitialization.
+ALWAYS create `.gitignore` (with `node_modules/`, `.next/`, `.vercel/`, build artifacts) BEFORE running `git init && git add -A && git commit`. If build artifacts enter git history, GitHub rejects pushes for files >100 MB and the only fix is nuking `.git` and reinitializing. On a research project, `npm install` ran before `git init` and the first commit captured `next-swc.darwin-arm64.node` (100.35 MB), forcing full repo reinitialization.
 
 ### 4. Never push HQ to a remote
 
@@ -208,10 +209,6 @@ All eleven rules share the same failure shape: **a routine git command does the 
 - Rule 13 — hq-desktop jsdom 28 + vitest 4 upgrade where a focused single-file PR needed to land while ~25 unrelated test files were mid-edit.
 
 Keeping the rules on one page rather than eleven separate files preserves cross-references (rule 1 underlies rule 10's branch verify; rule 5 composes with rule 13's stash; rules 6 and 12 share the verify-before-write principle) and reduces cold-start digest weight without losing any failure mode.
-
-## Provenance
-
-Consolidated 2026-04-27 from eleven prior policy files (see `merged_from`). The earlier `git-workflow.md` consolidation (2026-04-13) had folded `git-branch-verify.md`, `hq-pull-before-work.md`, `hq-gitignore-before-first-commit.md`, and `no-hq-remote-push.md` but left `git-branch-verify.md` on disk as a duplicate; this merge completes that cleanup. Eleven soft-enforcement git policies (`hq-git-stash-build-artifacts-conflict`, `hq-git-branch-delete-reverify-current`, `hq-git-diff-three-dot-for-pr-review`, `hq-git-divergence-check-both-directions`, `hq-git-fsck-stash-recovery`, `hq-git-large-diff-audit-before-panic`, `hq-git-merge-ff-only-trunk`, `hq-git-server-side-push-multi-phase-migration`, `hq-git-squash-merge-branch-ahead-expected`, `hq-git-stage-then-reset-submodule-pointer`, `hq-git-verify-ancestry-before-claiming-on-main`) remain separate to preserve their soft status — they are not auto-injected at session start.
 
 ## Related
 

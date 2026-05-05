@@ -31,7 +31,7 @@ delegating cloud provisioning to the canonical CLI subcommand
   and exit 0 (company.yaml has been written; remaining work is recoverable).
 - Echo the active HQ environment (vault URL, Cognito pool domain, current
   operator) before calling the CLI. This catches "wrong userpool" / "wrong
-  vault" surprises early and works for every HQ user — no Corey-specific paths.
+  vault" surprises early and works for every HQ user — no owner-specific paths.
 - After the CLI succeeds, run a `GET /membership/me` self-check against the
   vault API the CLI just used. If the new `cloud_uid` is present in the
   response, the company will appear in the HQ console for the current operator.

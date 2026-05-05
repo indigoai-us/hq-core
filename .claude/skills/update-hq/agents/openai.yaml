@@ -1,0 +1,3 @@
+interface:
+  display_name: "Update HQ"
+  short_description: "Upgrade HQ from the latest indigoai-us/hq-core release"

@@ -311,7 +311,7 @@ Company-specific colors appear in two places with different values:
 | {company} | `#74c0fc` | N/A |
 | {company} | `#da77f2` | N/A |
 | personal | `#ffd43b` | N/A |
-| golden-thread | `#ff922b` | N/A |
+| acmestudio | `#ff922b` | N/A |
 | projects folder | N/A | `text-blue-400/60` |
 | workers folder | N/A | `text-green-400/60` |
 | knowledge folder | N/A | `text-purple-400/60` |

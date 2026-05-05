@@ -13,16 +13,16 @@ source: user-correction
 
 ## Rule
 
-`.claude/settings.json` (HQ root) is core.yaml-locked and is the committed public kernel — it must not accumulate personal allow entries, absolute user paths, or entries tied to one owner's machine. Personal pre-approvals go in `.claude/settings.local.json` (gitignored, not core.yaml-tracked). Public defaults go in `repos/public/hq/template/.claude/settings.json` (shipped via `/publish-kit`).
+`.claude/settings.json` (HQ root) is core.yaml-locked and is the committed public kernel — it must not accumulate personal allow entries, absolute user paths, or entries tied to one owner's machine. Personal pre-approvals go in `.claude/settings.local.json` (gitignored, not core.yaml-tracked). Public defaults are contributed through `repos/private/hq-core-staging/.claude/settings.json` and then promoted to `indigoai-us/hq-core`.
 
 Routing table:
 
 | Audience | File | Notes |
 |----------|------|-------|
 | Only you | `.claude/settings.local.json` | Gitignored; safe for absolute paths and company-specific patterns |
-| Every HQ user | `repos/public/hq/template/.claude/settings.json` | Use `{your-name}` placeholder; scrubbed by `/publish-kit` |
+| Every HQ user | `repos/private/hq-core-staging/.claude/settings.json` | Use `{your-name}` placeholder; scrubbed before public promotion |
 | HQ kernel | `.claude/settings.json` | Read-only — `protect-core.sh` blocks Edit/Write |
 
 ## Rationale
 
-The root `.claude/settings.json` is locked to keep the committed kernel deterministic — if personal allows crept in, every fresh clone would inherit one user's workflow preferences. Meanwhile the template is the public default shipped to other HQ users; it needs the same allowlist logic but expressed with portable placeholders. Splitting by audience keeps all three files small, review-friendly, and scrub-clean.
+The root `.claude/settings.json` is locked to keep the committed kernel deterministic — if personal allows crept in, every fresh clone would inherit one user's workflow preferences. Meanwhile the hq-core-staging copy is the reviewed default that later ships to other HQ users; it needs the same allowlist logic but expressed with portable placeholders. Splitting by audience keeps all three files small, review-friendly, and scrub-clean.

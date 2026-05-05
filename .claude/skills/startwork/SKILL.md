@@ -1,7 +1,7 @@
 ---
 name: startwork
 description: Start a work session — resolve company, project, or repo context, gather state from handoff.json and manifest.yaml, present smart options. Lightweight session entry point that replaces ad-hoc orientation.
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*)
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(scripts/hq-session.sh:*)
 ---
 
 # Start Work Session
@@ -79,6 +79,31 @@ Determine mode from the user's argument (first match wins):
    - Primary: `qmd search "{repo-name} prd.json" --json -n 10` via shell
    - Fallback: use Grep to find prd.json files referencing this repo
    - For each match (max 5), read the prd.json and extract `name` + count incomplete stories
+
+### 2.4 Persist Session Metadata
+
+Once company `{co}` is resolved (from any mode), write it into the current
+session's metadata so per-company hooks and other context-aware skills can
+find it:
+
+```bash
+bash scripts/hq-session.sh set company_slug "{co}"
+# Optional, when applicable:
+bash scripts/hq-session.sh set project "{project_name}"
+bash scripts/hq-session.sh set repo    "{repo_name}"
+bash scripts/hq-session.sh set mode    "{Resume|Company|Project|Repo|Task}"
+```
+
+This file lives at `workspace/sessions/<session_id>/meta.yaml`. The current
+session_id is bootstrapped by `.claude/hooks/master-hook.sh` on the first
+hook event of every session and tracked in `workspace/sessions/.current`.
+
+**Important:** until `company_slug` is set, the master hook runs no
+per-company hooks (fail-closed for tenant isolation). Setting it from
+startwork is what activates the per-company harness for the rest of the
+session.
+
+**Skip if:** no company resolved (resume mode with no company context).
 
 ### 2.5 Load Applicable Policies
 

@@ -1,12 +1,62 @@
 ---
 name: hq-secrets
-description: Use hq CLI secrets commands safely — inject via exec, never handle raw values, generate links for human-supplied credentials.
+description: "Use hq CLI secrets safely — prefer 'hq run' for repos with .env.schema (schema-driven, batch-fetched, never printed); use 'hq secrets exec' for one-off invocations; generate links for human-supplied credentials."
 allowed-tools: Bash(hq:*), Bash(source:*), Bash(bash:*)
 ---
 
 # HQ Secrets
 
 Manage secrets stored in AWS SSM Parameter Store via the `hq secrets` CLI. Secrets are scoped per company and accessed through Cognito-authenticated API calls. Secrets now support per-secret ACLs with `read`/`write`/`admin` permissions; access can be granted to individuals or groups.
+
+See also [`hq-files`](../hq-files/SKILL.md) for managing file-prefix access controls in the HQ vault — same groups model, different ACL domain.
+
+## Schema-driven dev workflow: `hq run`
+
+For repos that commit a `.env.schema` file, `hq run` is the recommended dev-workflow path. It discovers `.env.schema` by walking up from the current working directory to the first ancestor containing a `.git/` directory (or the filesystem root if there is none), fetches all `hq()`-declared secrets in a single API request to the vault, and spawns the command with secrets injected as env vars — no `--only` list needed, and the CLI itself never prints values.
+
+```dotenv
+# .env.schema
+# Committed to the repo. Read by `hq run`. Authored by anyone with secret-write
+# permission; consumed by anyone with secret-read permission per the standard
+# per-secret ACL.
+
+# @hqCompany("indigo")
+
+# Non-sensitive defaults — passed straight through to the child process.
+# These don't touch the vault.
+NODE_ENV=development
+LOG_LEVEL=info
+
+# Sensitive: var name == secret name (the common case)
+# @required
+DATABASE_URL=hq()
+
+# Sensitive: explicit override — fetches from secret INDIGO_NX/DB_URL even
+# though the env var the child process sees is DB_URL
+# @required
+DB_URL=hq("INDIGO_NX/DB_URL")
+
+# Optional: hq run will still succeed if this secret is missing or the dev
+# does not have ACL access; the var simply is not set in the child env.
+# @optional
+SENTRY_DSN=hq()
+```
+
+A sibling `.env.local` (gitignored) overrides any schema value, including `hq()`-resolved ones:
+
+```dotenv
+# .env.local — DO NOT COMMIT
+# Local override that wins over hq() resolution
+DATABASE_URL=postgres://localhost:5432/indigo_dev
+```
+
+Use `hq run` instead of `hq secrets exec` when your repo has a `.env.schema`. Use `hq secrets exec` for one-off or scripted invocations where a schema file is not appropriate.
+
+| Command | Purpose |
+|---------|---------|
+| `hq run -- <cmd>` | Run a command with all `.env.schema`-declared secrets injected (recommended for schema-driven repos) |
+| `hq run --check` | Resolve and report all secrets without spawning a child process |
+| `hq run --company <slug> -- <cmd>` | Override the company slug at runtime |
 
 ## Commands
 
@@ -38,9 +88,19 @@ All commands accept `--company <slug>` to target a specific company. If omitted,
 
 Secret names must match `^[A-Z][A-Z0-9_]*(/[A-Z][A-Z0-9_]+)*$`. Each `/`-separated segment follows the original naming rule. Examples: `MY_API_KEY`, `STRIPE_SECRET`, `PROD/DB_PASSWORD`, `BACKEND/SERVICE/TOKEN`.
 
-## Safe Pattern: `exec`
+## Safe Patterns: `hq run` and `hq secrets exec`
 
-`hq secrets exec` is the primary way to use secrets. It fetches values server-side, injects them as environment variables into the child process, and never writes values to its own stdout or stderr.
+**For repos with a committed `.env.schema`**, `hq run` is the recommended path. It auto-discovers the schema by walking up from the current directory to the repo root, batch-fetches all `hq()`-declared secrets in one call, and spawns the command with them injected as env vars. No `--only` list to maintain; the schema is the source of truth.
+
+```bash
+hq run -- npm run dev
+hq run -- npm test
+hq run --company indigo -- node script.js
+```
+
+**For one-off or scripted invocations** without a schema file, use `hq secrets exec`:
+
+`hq secrets exec` fetches values server-side, injects them as environment variables into the child process, and never writes values to its own stdout or stderr.
 
 ```bash
 hq secrets exec --only DATABASE_URL,API_KEY -- npm run migrate
@@ -133,7 +193,7 @@ To onboard a new hire, add them to the group — they inherit all group-level se
 
 5. **Do not use `get --reveal` in agent workflows** unless the human has explicitly asked you to display a secret value. This is an escape hatch for human-in-the-loop steps, not for agent automation.
 
-6. **Use `generate-link` for human-supplied credentials.** When a workflow needs a secret that the agent should not see (vendor API keys, personal tokens, third-party credentials), generate a one-time submission link and give it to the human:
+6. **Use `generate-link` for human-supplied credentials.** `hq run` does NOT replace `hq secrets generate-link` — they serve different purposes. When a workflow needs a secret that the agent should not see (vendor API keys, personal tokens, third-party credentials), generate a one-time submission link and give it to the human:
 
    ```bash
    hq secrets generate-link VENDOR_API_KEY --expires 1h
@@ -151,9 +211,9 @@ To onboard a new hire, add them to the group — they inherit all group-level se
 
 ## Honest Guardrail Framing
 
-The `exec` command makes the safe path the easy path: secrets are injected as env vars into a child process, and the CLI itself never prints values. The `get` command redacts values by default.
+The `hq run` and `hq secrets exec` commands both make the safe path the easy path: secrets are injected as env vars into a child process, and the CLI itself never prints values. The `get` command redacts values by default.
 
-However, these are prompt-level guidelines, not technical enforcement. If the child process run via `exec` is designed to print its environment variables (e.g. `env`, `printenv`), those values will appear in subprocess output that the agent can see. The CLI cannot prevent this — it relies on you, the agent, not running such commands and not capturing subprocess output for the purpose of extracting secrets.
+However, these are prompt-level guidelines, not technical enforcement. If the child process run via `hq run` or `hq secrets exec` is designed to print its environment variables (e.g. `env`, `printenv`), those values will appear in subprocess output that the agent can see. The CLI cannot prevent this — it relies on you, the agent, not running such commands and not capturing subprocess output for the purpose of extracting secrets.
 
 The design makes accidental exposure unlikely. Intentional circumvention is possible but violates the contract.
 
@@ -161,12 +221,24 @@ The design makes accidental exposure unlikely. Intentional circumvention is poss
 
 ### Deploy with secrets
 
+For repos with a `.env.schema` (recommended):
+```bash
+hq run -- npm run deploy
+```
+
+For one-off or schema-less invocations:
 ```bash
 hq secrets exec --only DATABASE_URL,REDIS_URL -- npm run deploy
 ```
 
 ### Run tests against a staging API
 
+For repos with a `.env.schema` (recommended):
+```bash
+hq run -- npm test
+```
+
+For one-off or schema-less invocations:
 ```bash
 hq secrets exec --only STAGING_API_KEY -- npm test
 ```

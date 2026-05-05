@@ -61,11 +61,11 @@ Root files that always stay at root:
 A subdir is created when **2+ docs** belong to the same domain. Single documents may stay at root until a second related doc is added.
 
 ### Lean Company Rule
-Small companies (≤5 docs total) may omit most subdirs and organize minimally. Only create the subdirs that have content. Example: `dominion` has only `engineering/` and `product/` because it has 3 docs total.
+Small companies (≤5 docs total) may omit most subdirs and organize minimally. Only create the subdirs that have content. Example: `acmedom` has only `engineering/` and `product/` because it has 3 docs total.
 
 ### Escape Hatch
 Domain-specific content that doesn't fit the 8-subdir model may use a named subdir as an "escape hatch":
-- `wildcat/` in keptwork — client deliverable archive, specific to the Wildcat brand engagement
+- `wildcat/` in acmework — client deliverable archive, specific to the Wildcat brand engagement
 
 Escape hatch subdirs must be documented in the company's README.md.
 
@@ -106,14 +106,14 @@ Files that **move to subdirs**:
 |---------|-------------|
 | {company} | `engineering/`, `product/`, `data/` |
 | {company} | `brand/`, `engineering/`, `product/`, `growth/`, `market/`, `operations/`, `assets/` |
-| brandstage | `engineering/`, `product/`, `growth/`, `market/`, `operations/`, `data/` |
-| keptwork | `engineering/`, `operations/`, `wildcat/` (escape hatch) |
-| moonflow | `brand/`, `product/`, `growth/`, `operations/`, `assets/` |
-| holler-mgmt | `brand/`, `engineering/`, `market/`, `operations/` |
-| hpo | `brand/`, `product/`, `growth/` |
+| acmebrands | `engineering/`, `product/`, `growth/`, `market/`, `operations/`, `data/` |
+| acmework | `engineering/`, `operations/`, `wildcat/` (escape hatch) |
+| acmeflow | `brand/`, `product/`, `growth/`, `operations/`, `assets/` |
+| acme-mgmt | `brand/`, `engineering/`, `market/`, `operations/` |
+| acme-rebrand | `brand/`, `product/`, `growth/` |
 | personal | `brand/`, `growth/`, `operations/`, `data/` |
-| golden-thread | `brand/`, `growth/`, `operations/` |
-| dominion | `engineering/`, `product/` |
+| acmestudio | `brand/`, `growth/`, `operations/` |
+| acmedom | `engineering/`, `product/` |
 
 ---
 

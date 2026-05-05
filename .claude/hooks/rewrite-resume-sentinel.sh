@@ -34,7 +34,7 @@ SENTINEL="continuefromwhereyouleftoff"
 
 if [ "$NORMALIZED" = "$SENTINEL" ]; then
   # Telemetry — fire-and-forget append to learnings log
-  HQ_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$HOME/Documents/HQ")"
+  HQ_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}")"
   LOG_DIR="$HQ_ROOT/workspace/learnings"
   mkdir -p "$LOG_DIR" 2>/dev/null || true
   TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

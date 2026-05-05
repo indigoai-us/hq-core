@@ -1,0 +1,3 @@
+interface:
+  display_name: "Garden"
+  short_description: "Audit and clean HQ content — detect stale, duplicate, and inaccurate information"

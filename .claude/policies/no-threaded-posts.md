@@ -13,3 +13,6 @@ Never generate, suggest, queue, or post content with type "thread" (multi-part X
 
 Thread posting via agent-browser is unreliable — threads get collapsed into a single post. If content is too long for a single post, use "article" format or split into standalone posts published on different days.
 
+## Rationale
+
+A 5-part thread was approved and posted but delivered as one combined post instead of individual threaded tweets. Agent-browser thread composition (Step 5c) is fragile and cannot be trusted. Removed entirely rather than attempting to fix.

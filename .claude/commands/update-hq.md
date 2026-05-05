@@ -116,6 +116,28 @@ Upgrade path: v{CURRENT} → v{intermediate1} → ... → v{TARGET}
 
 ## Phase 3: Parse Migration Data
 
+### Generated artifacts (always ignored)
+
+These paths are tracked in the repo but regenerated locally by build scripts. `/update-hq` never fetches, compares, or overwrites them — comparing them produces spurious conflicts on every run.
+
+```
+.claude/policies/_digest.md      # built by scripts/build-policy-digest.sh
+knowledge/public/INDEX.md         # auto-generated knowledge index
+workers/public/INDEX.md           # auto-generated workers index
+```
+
+Apply this filter to `new_files`, `updated_files`, and `removed_files` immediately after parsing, before any fetch or compare. When a directory is expanded via the directory-listing path (Phase 5a), filter the listed children too.
+
+If a path is dropped by this filter, do not count it under `created`/`auto_updated`/`user_updated`/`skipped`/`deleted` — these files are out of scope for the migration. Mention the filter once in the Phase 3 summary if any matches were dropped:
+
+```
+Ignored {N} generated artifacts (regenerated locally; see "Generated artifacts" section).
+```
+
+When the local working tree is checked in Phase 4 (git status), exclude these paths from the dirty-state evaluation as well — a regenerated `_digest.md` is not a real uncommitted change for migration purposes.
+
+### Fetch MIGRATION.md
+
 Fetch MIGRATION.md from target:
 ```bash
 gh api repos/indigoai-us/hq-core/contents/MIGRATION.md?ref=v{TARGET_VERSION} --jq '.content' | base64 -d
@@ -558,3 +580,4 @@ Run `/migrate` without --check to apply.
 - **Pack failures never abort migration** — content packs are best-effort; log failures, continue scaffold upgrade
 - **Never silently install recommended packs** — always prompt per-pack; skip silently only on failed `conditional`
 - **Pack updates are idempotent** — `hq install`/`hq update` compares manifest version, no-op when already current
+- **Generated artifacts are out of scope** — paths in the "Generated artifacts" list (Phase 3) are filtered from every list before fetch/compare, including directory expansions and the Phase 4 git-status dirty check

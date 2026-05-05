@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-HQ="${HOME}/Documents/HQ"
+HQ="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 RESIZE="$HQ/scripts/resize-screenshot.sh"
 COUNT_FILE="/tmp/hq-screenshot-count-${PPID}"
 WARN_THRESHOLD=30

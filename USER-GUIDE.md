@@ -61,22 +61,17 @@ Personal OS for orchestrating work across companies, workers, and AI.
 ### Deploy & Ops
 | Command | What it does |
 |---------|--------------|
-| `/pr` | {company} operations |
+| `/deploy` | Ship any HQ artifact (deck, report, dashboard, web build) to a shareable URL via hq-deploy. Auto-handles auth, build, and password protection for sensitive content |
+| `/hq-login` | Sign in to hq-deploy / hq-pro (Cognito browser flow) |
+| `/hq-whoami` | Show current HQ identity + token expiry |
+| `/hq-logout` | Clear local Cognito session |
 
 ### Company & Infrastructure
 | Command | What it does |
 |---------|--------------|
 | `/newcompany` | Scaffold new company with full infrastructure |
-| `/launch-brand` | Launch new DTC brand end-to-end |
 | `/pb-connect` | Connect Post-Bridge social accounts |
-| `/bootcamp-student` | Onboard AGI bootcamp student |
 | `/personal-interview` | Deep interview to populate profile/voice |
-
-### Linear
-| Command | What it does |
-|---------|--------------|
-| `/check-linear-voyage` | Interactive triage for Voyage workspace |
-| `/{product}-prd` | Research {PRODUCT} codebase, generate PRD |
 
 ### System
 | Command | What it does |
@@ -93,8 +88,8 @@ Personal OS for orchestrating work across companies, workers, and AI.
 
 ```
 /run                    # see all
-/run cfo-{product} mrr
-/run x-user contentidea "AI"
+/run frontend-designer build
+/run content-brand "tone analysis"
 ```
 
 **Public (`workers/public/`):**
@@ -128,22 +123,9 @@ garden-scout, garden-auditor, garden-curator
 
 **Company Workers** (`companies/{co}/workers/`):
 
-| Worker | Company | Purpose |
-|--------|---------|---------|
-| cfo-{product} | {Product} | Financial reporting (Stripe, Gusto, Deel, Shopify) |
-| {product}-analyst | {Product} | Data analysis |
-| infobip-admin | {Product} | Infobip channel management |
-| {product}-gtm | {Product} | GTM operations |
-| lr-qa | {Product} | QA testing |
-| {product}-deploy | {Product} | Deployment automation |
-| cmo-brand | {company} | Social/content (X, LinkedIn) |
-| x-user | Personal | X/Twitter posting |
-| invoices | Personal | Invoice generation |
-| social-council | Personal | Social strategy council |
-| keptwork-site-builder | Keptwork | Site generation |
-| keptwork-research-agent | Keptwork | Research automation |
+Each company can scaffold its own private workers via `/newworker`. They live under `companies/{co}/workers/` and stay isolated from other companies. Use `/run {worker-id} {skill}` to invoke them.
 
-## Companies (14)
+## Companies
 
 Each company owns its settings, data, and knowledge.
 
@@ -228,4 +210,4 @@ HQ/
 - `linear/` - Linear integration knowledge
 
 **Company-level** (in `companies/{co}/knowledge/`):
-- All 14 companies have embedded git repos
+- Each company has an embedded git repo

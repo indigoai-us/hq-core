@@ -1,0 +1,3 @@
+interface:
+  display_name: "Checkpoint"
+  short_description: "Save checkpoint and check context status"

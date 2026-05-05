@@ -1,0 +1,3 @@
+interface:
+  display_name: "Harness Audit"
+  short_description: "Score HQ setup quality across 7 categories (hooks, context, gates, persistence, search, security, cost)"

@@ -3,6 +3,7 @@ id: no-headless-browser-in-vercel-lambda
 enforcement: hard
 scope: global
 tags: [vercel, lambda, playwright, puppeteer, chromium]
+public: true
 created: 2026-04-15
 provenance: back-pressure-failure
 ---

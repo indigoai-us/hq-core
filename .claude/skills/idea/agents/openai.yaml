@@ -1,0 +1,3 @@
+interface:
+  display_name: "Idea"
+  short_description: "Capture a project idea on the board without a full PRD"

@@ -3,7 +3,7 @@ id: hq-pre-push-gate-probes-prod-not-localhost
 title: Pre-push E2E gates probe production, not localhost
 scope: global
 trigger: when designing or editing git pre-push hooks, pre-merge checks, or any "blocking" gate that guards against regressions before code lands
-enforcement: hard
+enforcement: soft
 public: true
 version: 1
 created: 2026-04-23
@@ -35,4 +35,3 @@ Developers started routinely using `git push --no-verify` to get work out the do
 The charter reframe ("don't push onto broken prod" vs. "prove local renders") is the fix. Prod is the single source of truth, requires no local bootstrapping, and produces true-positive signals. A 5-second curl against `https://{prod}/api/health` is strictly better back-pressure than a 45-second local Playwright run that flakes on missing secrets.
 
 Scheduled heartbeats close the temporal gap between pushes: a canary that runs every 60 minutes bounds MTTD at ≤1 hour regardless of how long the release window is.
-

@@ -24,3 +24,6 @@ When `run-project.sh` swarm mode reports "passes not set" despite a sub-agent ex
    ```
 5. Only after checking worktree history should work be considered lost and re-executed
 
+## Rationale
+
+During {company}-{your-project}-v4 swarm execution (Mar 2026), sub-agents completed work and exited 0, but the orchestrator reported "passes not set" — a state machine failure that left commits stranded in the worktree rather than merged into the main branch. Cherry-picking recovered the work without re-running the sub-agent. Assuming work was lost and re-running wastes compute and risks duplicate commits.

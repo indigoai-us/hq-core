@@ -66,7 +66,7 @@ Before proceeding, if posting a queued draft (not composing fresh):
 ## Step 0.6: Pre-Post Page Check
 
 Before posting, use agent-browser to check the target social page:
-1. Navigate to the profile page (e.g., `x.com/getindigo` or `linkedin.com/company/getindigo/posts/`)
+1. Navigate to the profile page (e.g., `x.com/{your-handle}` or `linkedin.com/company/{your-org}/posts/`)
 2. Screenshot the page
 3. Verify the new post makes sense alongside existing content (no duplicates, appropriate context)
 4. If issues found, warn user before proceeding
@@ -441,7 +441,7 @@ Connect the account in Post-Bridge dashboard and run setup.
 - **CRITICAL: Never send raw draft file content as a post.** Always strip the markdown metadata header (# Title, **Status:**, **Type:**, ---) before posting. If the caption contains `#`, `**Status:**`, or `---` separators, something is wrong — abort and fix.
 - For multi-option drafts (## Option A / B / C), extract only the recommended option's text. Never include option labels or code fences in the post.
 - **CRITICAL: NEVER send test/exploratory API calls to production social accounts.** When discovering API field names or debugging endpoints, never use real account IDs. Build the full request locally first, verify field names from docs, and only hit the API once with the real post content. A test payload like `{"caption":"test"}` sent to a live account publishes immediately and cannot be deleted.
-- **CRITICAL: ALWAYS verify delivery with agent-browser after posting.** Post-Bridge `status: "posted"` is unreliable — posts can show "posted" but never appear on the platform. After every post, use agent-browser to navigate to the actual social page (e.g. `x.com/getindigo`) and visually confirm the post is live. Never trust the API status alone.
+- **CRITICAL: ALWAYS verify delivery with agent-browser after posting.** Post-Bridge `status: "posted"` is unreliable — posts can show "posted" but never appear on the platform. After every post, use agent-browser to navigate to the actual social page (e.g. `x.com/{your-handle}`) and visually confirm the post is live. Never trust the API status alone.
 - **ALWAYS check the target social page before posting.** Use agent-browser to view the current state of the profile page before sending a new post. This confirms context, avoids duplicate posts, and ensures the new post makes sense alongside what's already there.
 - **CRITICAL: Post-Bridge splits content on `---` into multiple tweets/posts.** When posting X articles with `---` section breaks via Post-Bridge API, the `---` characters cause the API to split the content into a thread of multiple tweets instead of posting as a single long post. MUST strip or replace ALL `---` section breaks with double line breaks (`\n\n`) before sending the caption to Post-Bridge. This caused 6+ tweets to be posted from a single article.
 - **CRITICAL: Post-Bridge media requires 2-step upload.** NEVER pass raw URLs in the `media` array — they silently fail (post shows "posted" but never delivers, post-results returns empty). ALWAYS use: 1) `POST /v1/media/create-upload-url` with `{mime_type, size_bytes, name}` → get `media_id` + `upload_url`, 2) `PUT` binary to `upload_url`, 3) pass `media_id` in the `media` array. The endpoint is `/v1/media/create-upload-url`, NOT `/v1/media/upload-url`.

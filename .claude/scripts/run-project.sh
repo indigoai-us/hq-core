@@ -1650,7 +1650,7 @@ validate_git_state() {
     # Guard (policy: run-project-conflict-marker-guard): refuse to commit if any
     # staged file contains unresolved merge-conflict markers. Pre-existing
     # garbage in the worktree must never be swept into the branch — doing so
-    # broke the moonflow-redesign run on 2026-04-16 (94 tsc TS1185 errors).
+    # broke a redesign run (94 tsc TS1185 errors).
     local _marker_files
     _marker_files=$(git -C "$REPO_PATH" diff --cached --name-only 2>/dev/null | while IFS= read -r _f; do
       [[ -f "$REPO_PATH/$_f" ]] && grep -lE '^(<{7}|={7}|>{7})([^<=>]|$)' "$REPO_PATH/$_f" 2>/dev/null

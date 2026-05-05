@@ -15,7 +15,6 @@ context:
     - repos/public/local-biz-sites/
     - knowledge/public/design-styles/styles/
     - knowledge/public/design-styles/formulas/web/local-business.md
-    - companies/keptwork/knowledge/template-design-system.md
   dynamic:
     - "{target_dir}/"
   exclude:

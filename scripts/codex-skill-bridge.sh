@@ -7,21 +7,26 @@ HQ_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SKILLS_SOURCE_DIR="${HQ_ROOT}/.claude/skills"
 CLAUDE_SOURCE_DIR="${HQ_ROOT}/.claude"
 COMMANDS_SOURCE_DIR="${CLAUDE_SOURCE_DIR}/commands"
+POLICIES_SOURCE_DIR="${CLAUDE_SOURCE_DIR}/policies"
 GLOBAL_SKILLS_TARGET_DIR="${HOME}/.codex/skills/hq"
 GLOBAL_AGENTS_SKILLS_TARGET_DIR="${HOME}/.agents/skills/hq"
 REPO_AGENTS_SKILLS_TARGET_DIR="${HQ_ROOT}/.agents/skills"
 PROJECT_CODEX_DIR="${HQ_ROOT}/.codex"
 PROJECT_CLAUDE_TARGET_DIR="${PROJECT_CODEX_DIR}/claude"
 PROJECT_PROMPTS_TARGET_DIR="${PROJECT_CODEX_DIR}/prompts"
+PROJECT_POLICIES_TARGET_DIR="${PROJECT_CODEX_DIR}/policies"
 
 usage() {
   cat <<'EOF'
 Usage:
   scripts/codex-skill-bridge.sh install
+  scripts/codex-skill-bridge.sh install-policies
   scripts/codex-skill-bridge.sh status
 
 Commands:
-  install  Install the HQ Claude -> Codex bridges for skills, commands, and runtime docs.
+  install  Install the HQ Claude -> Codex bridges for skills, commands, policies, and runtime docs.
+  install-policies
+           Install only the policy bridges from .claude/policies into Codex-visible paths.
   status   Show whether each bridge is installed and where it points.
 EOF
 }
@@ -40,7 +45,7 @@ hook_count() {
 }
 
 policy_count() {
-  find "${CLAUDE_SOURCE_DIR}/policies" -mindepth 1 -maxdepth 1 -type f -name '*.md' | wc -l | tr -d '[:space:]'
+  find "${POLICIES_SOURCE_DIR}" -mindepth 1 -maxdepth 1 -type f -name '*.md' | wc -l | tr -d '[:space:]'
 }
 
 openai_yaml_count() {
@@ -171,15 +176,17 @@ print_status() {
   print_coverage_report
   echo
 
-  print_link_status "Global skills bridge (legacy)" "${SKILLS_SOURCE_DIR}" "${GLOBAL_SKILLS_TARGET_DIR}"
+  print_link_status "Global skills bridge (legacy)" "${SKILLS_SOURCE_DIR}" "${GLOBAL_SKILLS_TARGET_DIR}" || true
   echo
-  print_link_status "Global agents skills bridge" "${SKILLS_SOURCE_DIR}" "${GLOBAL_AGENTS_SKILLS_TARGET_DIR}"
+  print_link_status "Global agents skills bridge" "${SKILLS_SOURCE_DIR}" "${GLOBAL_AGENTS_SKILLS_TARGET_DIR}" || true
   echo
-  print_link_status "Repo agents skills bridge" "${SKILLS_SOURCE_DIR}" "${REPO_AGENTS_SKILLS_TARGET_DIR}"
+  print_link_status "Repo agents skills bridge" "${SKILLS_SOURCE_DIR}" "${REPO_AGENTS_SKILLS_TARGET_DIR}" || true
   echo
-  print_link_status "Project Claude mirror" "${CLAUDE_SOURCE_DIR}" "${PROJECT_CLAUDE_TARGET_DIR}"
+  print_link_status "Project Claude mirror" "${CLAUDE_SOURCE_DIR}" "${PROJECT_CLAUDE_TARGET_DIR}" || true
   echo
-  print_link_status "Project command bridge" "${COMMANDS_SOURCE_DIR}" "${PROJECT_PROMPTS_TARGET_DIR}"
+  print_link_status "Project command bridge" "${COMMANDS_SOURCE_DIR}" "${PROJECT_PROMPTS_TARGET_DIR}" || true
+  echo
+  print_link_status "Project policy bridge" "${POLICIES_SOURCE_DIR}" "${PROJECT_POLICIES_TARGET_DIR}" || true
 }
 
 install_bridge() {
@@ -198,14 +205,29 @@ install_bridge() {
     exit 1
   fi
 
+  if [[ ! -d "${POLICIES_SOURCE_DIR}" ]]; then
+    echo "Missing policies source directory: ${POLICIES_SOURCE_DIR}" >&2
+    exit 1
+  fi
+
   ensure_dir_symlink "global Codex skill bridge (legacy)" "${SKILLS_SOURCE_DIR}" "${GLOBAL_SKILLS_TARGET_DIR}"
   ensure_dir_symlink "global agents skill bridge" "${SKILLS_SOURCE_DIR}" "${GLOBAL_AGENTS_SKILLS_TARGET_DIR}"
   ensure_dir_symlink "repo agents skill bridge" "${SKILLS_SOURCE_DIR}" "${REPO_AGENTS_SKILLS_TARGET_DIR}"
   ensure_dir_symlink "project Codex Claude mirror" "${CLAUDE_SOURCE_DIR}" "${PROJECT_CLAUDE_TARGET_DIR}"
   ensure_dir_symlink "project Codex command bridge" "${COMMANDS_SOURCE_DIR}" "${PROJECT_PROMPTS_TARGET_DIR}"
+  ensure_dir_symlink "project Codex policy bridge" "${POLICIES_SOURCE_DIR}" "${PROJECT_POLICIES_TARGET_DIR}"
 
   echo
   print_status
+}
+
+install_policy_bridge() {
+  if [[ ! -d "${POLICIES_SOURCE_DIR}" ]]; then
+    echo "Missing policies source directory: ${POLICIES_SOURCE_DIR}" >&2
+    exit 1
+  fi
+
+  ensure_dir_symlink "project Codex policy bridge" "${POLICIES_SOURCE_DIR}" "${PROJECT_POLICIES_TARGET_DIR}"
 }
 
 main() {
@@ -214,6 +236,9 @@ main() {
   case "${command}" in
     install)
       install_bridge
+      ;;
+    install-policies)
+      install_policy_bridge
       ;;
     status)
       print_status

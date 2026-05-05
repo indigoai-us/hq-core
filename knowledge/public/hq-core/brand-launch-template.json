@@ -1,13 +1,13 @@
 {
   "_variables": {
-    "brand_name": "Display name of the brand (e.g. TONAL)",
-    "brand_slug": "Lowercase slug used in directories and URLs (e.g. tonal)",
+    "brand_name": "Display name of the brand (e.g. ACMEBRAND)",
+    "brand_slug": "Lowercase slug used in directories and URLs (e.g. acmebrand)",
     "brand_description": "One-sentence brand positioning statement",
     "product_category": "Primary product category (e.g. clothing, accessories, home goods, beauty)",
     "aesthetic_refs": "Comma-separated aesthetic references (e.g. COS, Aesop, Everlane)",
     "fulfillment_provider": "Print-on-demand or fulfillment partner (e.g. TapStitch, Printful, custom warehouse)",
-    "shopify_store_slug": "Shopify myshopify.com subdomain (e.g. tonal-8)",
-    "domain": "Production domain for the storefront (e.g. weartonal.com)",
+    "shopify_store_slug": "Shopify myshopify.com subdomain (e.g. acmebrand-8)",
+    "domain": "Production domain for the storefront (e.g. wearacmebrand.com)",
     "github_org": "GitHub organization or user for the repo (e.g. {your-name})",
     "vercel_org": "Vercel org/scope for deployment (e.g. {your-name}s-projects)",
     "color_primary": "Primary brand color hex (e.g. #2C2C2C)",
@@ -143,7 +143,7 @@
       "passes": false,
       "labels": ["design", "dev", "content"],
       "dependsOn": ["US-001", "US-005"],
-      "notes": "Merges brand design customization + about/brand story page into one story (was 2 stories in TONAL). Use frontend-designer worker for creative direction, frontend-dev for implementation. Brand guidelines from companies/{{brand_slug}}/knowledge/brand-guidelines.md drive all design decisions. For non-clothing brands: adapt homepage sections (e.g. 'How It Works' for beauty, 'Materials' for home goods, 'Ingredients' for food).",
+      "notes": "Merges brand design customization + about/brand story page into one story (was 2 stories in ACMEBRAND). Use frontend-designer worker for creative direction, frontend-dev for implementation. Brand guidelines from companies/{{brand_slug}}/knowledge/brand-guidelines.md drive all design decisions. For non-clothing brands: adapt homepage sections (e.g. 'How It Works' for beauty, 'Materials' for home goods, 'Ingredients' for food).",
       "model_hint": "opus"
     },
     {
@@ -211,7 +211,7 @@
       "passes": false,
       "labels": ["infra", "deploy", "seo"],
       "dependsOn": ["US-006", "US-007", "US-008"],
-      "notes": "Merges deployment + SEO/analytics into one story (was 2 in TONAL). See playbook section 7 (Vercel Deployment) for framework:null gotcha and domain team move issue. See playbook section 8 (SEO Checklist) for full SEO requirements. MANUAL PREREQUISITE: domain must be purchased before DNS configuration. Vercel org mapping: check companies/manifest.yaml for correct scope.",
+      "notes": "Merges deployment + SEO/analytics into one story (was 2 in ACMEBRAND). See playbook section 7 (Vercel Deployment) for framework:null gotcha and domain team move issue. See playbook section 8 (SEO Checklist) for full SEO requirements. MANUAL PREREQUISITE: domain must be purchased before DNS configuration. Vercel org mapping: check companies/manifest.yaml for correct scope.",
       "model_hint": "sonnet"
     },
     {

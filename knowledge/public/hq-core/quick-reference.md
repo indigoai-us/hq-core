@@ -45,19 +45,19 @@ HQ/
 
 | Company | Workers | Key Resources |
 |---------|---------|---------------|
-| {company} | cfo, analyst, infobip-admin, gtm, qa, deploy | Stripe, Gusto, Deel, QB, Shopify, Linear (voyage) |
+| {company} | cfo, analyst, infobip-admin, gtm, qa, deploy | Stripe, Gusto, Deel, QB, Shopify, Linear ({linear-workspace}) |
 | {company} | cmo | AWS (Route 53), Linear, LinkedIn, Loops |
 | personal | x-user, invoices, social-council | Slack, Gmail, LinkedIn, X |
-| keptwork | site-builder, research-agent | Stripe |
-| golden-thread | — | Band/music |
-| haven-slay | — | Artist site + admin |
-| holler-mgmt | — | Artist manager monorepo |
-| brandstage | — | BrandStage AI |
-| estate-manager | — | Estate platform |
-| tonal | — | Shopify store |
-| moonflow | — | Expo mobile app |
-| dominion | — | Domain management |
-| hpo | — | GTM/growth |
+| acmework | site-builder, research-agent | Stripe |
+| acmestudio | — | Band/music |
+| acme-haven | — | Artist site + admin |
+| acme-mgmt | — | Artist manager monorepo |
+| acmebrands | — | AcmeBrands AI |
+| acme-estate | — | Estate platform |
+| acmebrand | — | Shopify store |
+| acmeflow | — | Expo mobile app |
+| acmedom | — | Domain management |
+| acme-rebrand | — | GTM/growth |
 
 ## Workers
 
@@ -90,7 +90,7 @@ garden-scout, garden-auditor, garden-curator
 **Design:** `/generateimage`
 **System:** `/cleanup`, `/garden`, `/search`, `/search-reindex`, `/harness-audit`, `/model-route`, `/update-hq`
 **Company:** `/newcompany`, `/launch-brand`, `/pb-connect`, `/bootcamp-student`, `/personal-interview`
-**Linear:** `/check-linear-voyage`, `/{product}-prd`
+**Linear:** `/check-linear-{linear-workspace}`, `/{product}-prd`
 **Deploy:** `/pr`
 
 ## Command ↔ Skill Shapes

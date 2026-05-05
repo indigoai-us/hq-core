@@ -1,0 +1,3 @@
+interface:
+  display_name: "Resolve Conflicts"
+  short_description: "Walk through HQ Sync conflicts and resolve them interactively (keep local | take cloud | discard)."

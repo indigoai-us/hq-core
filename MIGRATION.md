@@ -1,3 +1,156 @@
+## Migrating to v12.4.0 — 2026-05-02
+
+### Headline
+
+Two manual steps after `/update-hq` lands the new files: wire the mirror hook into `.claude/settings.json`, then run the backfill script once. About 60 seconds total.
+
+### What changed
+
+- **Per-company workspace mirror is live.** A new PostToolUse(Write|Edit) hook automatically hardlinks each `workspace/threads/T-*.json` into `companies/{co}/workspace/sessions/{thread-id}.json` and appends a row to `companies/{co}/workspace/index.jsonl` whenever the thread file has `metadata.company`. Threads with no `metadata.company` (HQ-infra-only sessions) are silently skipped.
+- **Canonical session store unchanged.** `workspace/threads/` remains the source of truth. The mirror is purely additive — hardlinks share inodes with the canonical thread file, so disk overhead is zero.
+- **Auto-checkpoint exclusion extended** to skip `companies/*/workspace/(sessions/|index.jsonl|.gitignore)` writes — prevents the mirror from triggering its own checkpoint loop.
+
+### Step 1 — Wire the hook in `.claude/settings.json`
+
+Add this single hook entry to **both** the `PostToolUse` `Write` and `PostToolUse` `Edit` matcher blocks in `.claude/settings.json`:
+
+```json
+{ "type": "command", "command": ".claude/hooks/hook-gate.sh mirror-thread-to-company .claude/hooks/mirror-thread-to-company.sh", "timeout": 5 }
+```
+
+Append it to the `hooks` array of each existing block — do **not** replace what's already there. After the edit, each block should look like:
+
+```json
+{
+  "matcher": "Write",
+  "hooks": [
+    { "type": "command", "command": ".claude/hooks/hook-gate.sh auto-checkpoint-trigger .claude/hooks/auto-checkpoint-trigger.sh", "timeout": 5 },
+    { "type": "command", "command": ".claude/hooks/hook-gate.sh mirror-thread-to-company .claude/hooks/mirror-thread-to-company.sh", "timeout": 5 }
+  ]
+}
+```
+
+(The same shape applies to the `"matcher": "Edit"` block.)
+
+If you have no `PostToolUse` hooks configured at all (rare — a harness-audit warning), create both `Write` and `Edit` blocks using the shape above with just the `mirror-thread-to-company` entry as the only hook in the array. You can omit the `auto-checkpoint-trigger` line if you don't already have it configured elsewhere.
+
+### Step 2 — Backfill existing threads
+
+After updating, run the one-time backfill so historical sessions appear inside their companies:
+
+```bash
+bash scripts/backfill-workspace-mirror.sh
+```
+
+The script is idempotent — safe to re-run if interrupted. It only mirrors threads that have `metadata.company` set; threads without it are correctly skipped (HQ-infra sessions). Expect output similar to:
+
+```
+Backfill complete:
+  Total threads:   {N}
+  Mirrored:        {M}
+  Skipped (no co): {N-M}
+```
+
+### Step 3 — (Optional) Verify
+
+```bash
+ls -d companies/*/workspace 2>/dev/null
+wc -l companies/*/workspace/index.jsonl 2>/dev/null
+```
+
+Each company you have ever logged work for should now have its own `workspace/` directory with an `index.jsonl` audit log and a `sessions/` directory of hardlinked thread snapshots.
+
+### Cloud durability
+
+If you sync via `/hq-sync` or the AppBar HQ Sync menubar, the new `companies/{co}/workspace/` paths are picked up automatically — the existing `@indigoai-us/hq-cloud` sync layer is permissive by default (gitignore-style deny list) and `workspace/` is not in any default-ignored pattern. No server-side change required.
+
+### Conflict semantics for `index.jsonl`
+
+`index.jsonl` is append-only. If the same thread updates from two machines while offline, both sides may have rows the other lacks. Standard `hq-sync --on-conflict keep` will produce a `.conflict-*` sidecar handled by `/resolve-conflicts`. The dedup tuple is `(thread_id, ts, kind)` — manual reconciliation should union both sides, not pick a winner.
+
+---
+
+## Migrating to v12.3.0 — 2026-05-02
+
+### Headline
+
+No migration steps required — all changes are backward-compatible.
+
+### What changed
+
+- **Codex policy + hook bridges** are additive — they install symlinks/adapters in `.codex/` without touching anything in `.claude/`. Operators who use Claude Code only see no change.
+- **`/deploy` Phase A speed refactor** keeps the same external interface; only internal sub-agent fan-out was replaced with inline parallel scripts.
+- **`CLAUDE.md` charter restructure + `AGENTS.md` symlink** preserve all instruction content. The symlink unifies Claude + Codex on the same source. Operators who customized `AGENTS.md` directly should reapply their customizations to `.claude/CLAUDE.md` (the symlink target) — note that `AGENTS.md` is now a regular symlink and writes go through to `CLAUDE.md`.
+- **Policy enforcement rebalance** moves ~140 policies from `hard` to `soft`. Soft-enforcement policies note deviations rather than blocking. If your workflows depended on a specific policy blocking on violation, check `.claude/policies/_digest.md` and re-promote any that you want to remain hard via `/learn --hard`.
+
+### Optional: pick up the new commands
+
+Three new slash commands ship with v12.3.0. They auto-register on next session start. If you want a quick tour:
+
+- `/discover <repo-url-or-path>` — pull a repo into HQ and synthesize knowledge
+- `/land-batch` — triage and merge multiple open PRs
+- `/sync-registry [company]` — regenerate a company's resource-registry index
+
+### Optional: enable Codex bridges
+
+If you use OpenAI Codex alongside Claude Code:
+
+```bash
+bash scripts/codex-skill-bridge.sh install            # symlinks .claude/skills → .codex/, .agents/
+bash scripts/codex-skill-bridge.sh install-policies   # NEW in v12.3.0 — symlinks .claude/policies/
+```
+
+The hook bridge (`.codex/hooks/hq-codex-hook-adapter.sh`) is install-time only — no runtime opt-in needed once the file is present. Codex sessions automatically route hooks through the existing `hook-gate.sh`.
+
+## Migrating to v12.2.0 — 2026-04-30
+
+### Headline
+
+Codex parity. Existing Claude Code users on v12.1.x can stay where they are — nothing breaks. Operators who also want to invoke HQ from OpenAI Codex run one command and gain a parallel Codex entrypoint tree.
+
+Fully additive. No breaking changes. No file deletions. No policy enforcement weakened.
+
+### New Files (added at HQ root)
+
+- `AGENTS.md` — Codex orientation doc (mirrors `CLAUDE.md` for Claude Code).
+- `.codex/config.toml` — Codex sandbox + model settings.
+- `.codex/claude` — symlink to `.claude/`.
+- `.codex/prompts` — symlink to `.claude/commands/`.
+- `.agents/skills` — symlink to `.claude/skills/`.
+
+### New Commands
+
+- `/convert-codex` — One-command repair for older Claude-first HQ roots. Dry-run by default. Adds the new entrypoints listed above plus missing `agents/openai.yaml` metadata for shipped skills.
+
+### New Skills (Codex adapters)
+
+18 new `SKILL.md` adapters in `.claude/skills/{name}/`, each pointing back to its sibling `.claude/commands/{name}.md` as source of truth. Plus 30 new `agents/openai.yaml` metadata files. No duplication of command bodies — adapters delegate.
+
+### Changed Files
+
+- 4 policy files have path renames (`repos/public/hq/template/` → `repos/private/hq-core-staging/`). Enforcement unchanged.
+- `_digest.md` regenerated.
+- `core.yaml` version + checksums updated.
+
+### Migration Steps
+
+**For Claude Code-only users:** No action required. Update HQ via `hq update` (or your usual flow) when convenient. Nothing in your day-to-day Claude Code workflow changes.
+
+**For users who also want Codex:**
+```bash
+cd <your HQ root>
+bash scripts/convert-codex.sh --dry-run   # preview
+bash scripts/convert-codex.sh --apply     # add Codex entrypoints
+```
+
+The script is create-only. It will skip any path that already exists and report blocked items so you can review before approving more invasive changes.
+
+### Companion package upgrades
+
+None. `@indigoai-us/hq-cli` and `@indigoai-us/hq-cloud` are unaffected.
+
+---
+
 ## Migrating to v12.1.1 — 2026-04-29
 
 ### Headline
@@ -67,7 +220,6 @@ Iteration release on top of the v12.0.0 hq-core split. All changes are additive 
 - `.claude/policies/hq-cmd-stage-kit-settings-json-direct-edit.md`
 - `.claude/policies/hq-compiled-ts-rebuild-after-src-edits.md`
 - `.claude/policies/hq-cross-repo-privilege-tier-surface-scope.md`
-- `.claude/policies/hq-deploy-default-style-goclaw-admin.md`
 - `.claude/policies/hq-destructive-scripts-default-dry-run.md`
 - `.claude/policies/hq-git-diff-three-dot-for-pr-review.md`
 - `.claude/policies/hq-git-discipline.md`
@@ -567,7 +719,7 @@ The pre-commit hook from Step 2 will keep this in sync going forward.
 
 ### What you get after migrating
 
-- **−50% session-start context** on most cwds (HQ root, personal, vyg-class)
+- **−50% session-start context** on most cwds (HQ root, personal, code-repo)
 - **Faster orientation** — the policy digest lands in the first turn instead of
   burning a tool round-trip
 - **Auto-maintained digests** — no manual rebuild required after the pre-commit

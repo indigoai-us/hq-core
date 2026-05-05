@@ -88,7 +88,7 @@ Execute the 5-phase lesson flow for the selected topic. Each phase is described 
 
 ### Phase 1: Concept (synthesize, don't paste)
 
-1. **Attempt to read book chapter.** Check if the book exists at `repos/private/knowledge-empire-os/book/build-your-own-agi.md`. If yes, read ONLY the line range for this topic's chapter (see Topic Registry below). If the file does not exist, use fallback sources.
+1. **Attempt to read book chapter.** Check if the book exists at `repos/private/knowledge-curriculum/book/handbook.md`. If yes, read ONLY the line range for this topic's chapter (see Topic Registry below). If the file does not exist, use fallback sources.
 2. **Read the HQ reference file(s)** listed in the topic's `hq_refs` field.
 3. **Synthesize a 200-300 word explanation** of the core concept in your own words. Do NOT paste paragraphs from the book.
 4. **Surface the key quote** defined for this topic — attribute it to the book.
@@ -302,7 +302,7 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 ## Book Reference Protocol
 
-The book at `repos/private/knowledge-empire-os/book/build-your-own-agi.md` is the source material.
+The book at `repos/private/knowledge-curriculum/book/handbook.md` is the source material.
 
 **Rules:**
 1. Read ONLY the line range mapped to the current topic's chapter — never the full book

@@ -4,6 +4,7 @@ title: HQ bash discipline — IFS, BSD/GNU portability, pgrep validation, set -e
 scope: global
 trigger: when writing or editing any shell script in scripts/, .claude/hooks/, workers/, companies/*, or any HQ-targeted shell code that may run on a developer Mac
 enforcement: hard
+tier: 1
 public: true
 version: 1
 created: 2026-04-27
@@ -22,7 +23,7 @@ merged_at: 2026-04-27
 
 ## Rule
 
-Seven independent hard rules covering bash hygiene on macOS+BSD userland. Each one is a real failure mode with its own remedy; do not collapse the failure modes when reading.
+Use `IFS=$'\t'` (not `$"\t"`); never `IFS=":" read` over paths; no GNU coreutils or Bash 4+ on macOS BSD; rediscover pgrep PIDs and validate with `ps`; use `|| result=$?` under `set -e`. Seven hard rules below.
 
 ### 1. IFS — use ANSI-C `$'\t'`, never locale-translation `$"\t"`
 
@@ -137,10 +138,6 @@ All seven rules share the same failure shape: **silent success on the developer'
 - `set -e` returns: `run-project.sh` silently terminating instead of retrying — direct `handle_failure` call without `|| result=$?`.
 
 Keeping the rules on one page rather than seven separate files preserves the cross-references (rules 5 and 6 only work together; rule 4 is invalid without rule 3) and reduces cold-start digest weight without losing any failure mode.
-
-## Provenance
-
-Consolidated 2026-04-27 from seven prior policy files (see `merged_from`). Soft-enforcement counterpart `hq-bash-set-a-source-env-before-subprocess-heredoc` remains separate to preserve its soft status.
 
 ## Related
 

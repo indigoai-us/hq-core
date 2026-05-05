@@ -90,7 +90,6 @@ echo ""
 echo "Setting permissions…"
 
 find "$REPO_ROOT/.claude/hooks" -name '*.sh' -exec chmod +x {} \;
-find "$REPO_ROOT/tools" -name '*.sh' -exec chmod +x {} \;
 find "$REPO_ROOT/scripts" -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
 ok "scripts marked executable"
 
@@ -123,10 +122,12 @@ mkdir -p companies/personal/data
 mkdir -p companies/personal/knowledge
 ok "companies/personal/ created"
 
-# ── 5. Indigo MCP Setup (optional) ──────────────────────────────────────────
+# ── 5. Indigo MCP Setup (opt-in via HQ_INDIGO_MCP=1) ───────────────────────
 
 echo ""
-if check_cmd indigo; then
+if [[ "${HQ_INDIGO_MCP:-0}" != "1" ]]; then
+  skip "Indigo MCP setup (re-run with HQ_INDIGO_MCP=1 to enable)"
+elif check_cmd indigo; then
   ok "indigo CLI found"
   if ask "Would you like to set up Indigo MCP for AI-powered meeting intelligence?"; then
     echo "  Configuring Indigo MCP…"
@@ -208,7 +209,7 @@ for dir in "$REPO_ROOT"/companies/*/knowledge; do
   if find "$dir" -name "*.md" -not -name "INDEX.md" | head -1 | grep -q .; then
     company="$(basename "$(dirname "$dir")")"
     echo "  Indexing $company…"
-    npx tsx "$REPO_ROOT/tools/reindex.ts" -c "$company" 2>/dev/null || true
+    # Per-company reindex covered by the global `qmd update` call below.
   fi
 done
 

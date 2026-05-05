@@ -1,0 +1,3 @@
+interface:
+  display_name: "Recover Session"
+  short_description: "Recover dead sessions that hit context limits without running /handoff"

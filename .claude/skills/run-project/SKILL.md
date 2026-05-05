@@ -1,95 +1,135 @@
 ---
 name: run-project
-description: "Default: inline execution of PRD stories in-session (per-story Task sub-agents). Use --ralph-mode for the background orchestrator (nohup scripts/run-project.sh + state-file polling). Use --session-mode for plan-file-anchored inline execution."
-allowed-tools: Read, Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(nohup:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*)
-argument-hint: "{project} [--status] [--resume] [--dry-run] [--inline] [--ralph-mode] [--session-mode]"
+description: "Codex-native router for executing HQ PRD stories. Uses an honest runtime choice: interactive session execution for small projects, or Ralph/headless execution through the shell orchestrator with the Codex engine."
+allowed-tools: Read, Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(nohup:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*)
+argument-hint: "{project} [--status] [--resume] [--dry-run] [--interactive] [--ralph-mode] [--engine codex|claude]"
 ---
 
-# Run Project — Dispatch Shim
+# Run Project — Codex Router
 
-**Default is inline.** A bare `/run-project {project}` invocation executes stories in-session via per-story Task sub-agents — it does NOT launch `scripts/run-project.sh`. Pass `--ralph-mode` to opt into the background orchestrator.
-
-Policy: `.claude/policies/run-project-default-is-inline.md` (hard). For full execution details, flags, swarm mode, and worked examples: `.claude/commands/run-project.md`.
+Codex does not have the same runtime primitives as Claude Code. Do not route this skill by pretending `Task`, `Plan` sub-agents, `ExitPlanMode`, `/checkpoint`, or `/compact` are available. Pick an execution mode that maps to real Codex capabilities.
 
 **User's input:** $ARGUMENTS
 
----
+## Script Resolution
 
-## Step 1 — Parse Arguments & Route
+Resolve the shell orchestrator before any shell delegation:
+
+1. Prefer `scripts/run-project.sh` if it exists.
+2. Otherwise use `.claude/scripts/run-project.sh`.
+3. If neither exists, stop with a clear error.
+
+Store the chosen path as `{run_project_script}`. In this HQ workspace today, the expected path is `.claude/scripts/run-project.sh`.
+
+## Step 1 — Parse Arguments
 
 Extract from `$ARGUMENTS`:
 
-- `{project}` — project name (required unless `--status`)
-- `--status` → run `bash scripts/run-project.sh --status` synchronously, display output, stop
-- `--dry-run` → run `bash scripts/run-project.sh --dry-run {project}` synchronously, display output, stop
-- `--help` → display flags from `.claude/commands/run-project.md`, stop
-- `--session-mode` → **route to session-mode execution** per `.claude/commands/run-project.md` "Session-Mode Execution" section. Load that section and follow it. Error immediately if combined with `--inline`, `--ralph-mode`, `--tmux`, `--swarm`, `--codex-autofix`, `--dry-run`, or `--status`. Governed by `.claude/policies/run-project-session-mode.md` (hard).
-- `--ralph-mode` → **route to background orchestrator** (Steps R1–R5 below). Error immediately if combined with `--inline` or `--session-mode`.
-- `--inline` → **silent alias for default** — route to Inline Execution (see below). No warning, no error.
-- Default (no execution-mode flag) → **route to Inline Execution** per `.claude/commands/run-project.md` "Inline Execution" section. Load that section and follow it.
+- `{project}` — project name, required unless `--status` or `--help`
+- `--status` — show orchestrator status, then stop
+- `--dry-run` — show story order, then stop
+- `--resume` — pass through to the chosen execution path
+- `--interactive` or `--session-mode` — parent-driven Codex execution
+- `--ralph-mode` — background/headless shell orchestrator
+- `--engine codex|claude` — engine for Ralph/headless execution; default to `codex` in Codex sessions
+- `--builder codex|claude` — backward-compatible alias for `--engine`
+- Other shell-orchestrator flags (`--swarm`, `--tmux`, `--timeout`, `--retry-failed`, `--in-place`, `--checkin-interval`, `--codex-autofix`, `--no-monitor`) pass through only to Ralph/headless mode
 
-If no arguments: error — project name required.
+If no execution mode is supplied, run an interactive preflight and recommend one:
 
-## Step 2 — Inline Execution (Default)
+- 1-2 incomplete stories: recommend `--interactive`
+- 3-6 incomplete stories: recommend `--interactive` if user steering matters, otherwise `--ralph-mode --engine codex`
+- 7+ incomplete stories, `--swarm`, `--tmux`, or unattended language: recommend `--ralph-mode --engine codex`
 
-Hand off to `.claude/commands/run-project.md` "Inline Execution" section. Steps:
+Ask before changing execution semantics. If structured question tooling is unavailable, use the plain-text fallback required by `.claude/policies/hq-codex-decision-gate-fallback.md`.
 
-1. Preflight delegation (single Plan sub-agent) — produces markdown plan + JSON state.
-2. `ExitPlanMode` approval.
-3. Warm-start (`/checkpoint` + `/compact`).
-4. Per-story loop: each story runs inside ONE fresh `general-purpose` Task sub-agent that invokes `/execute-task` internally.
-5. Regression gates every 3 stories.
-6. Completion flow.
+## Step 2 — Status, Help, and Dry Run
 
-Plan-mode preflight MUST obey `.claude/policies/plan-mode-preflight-delegation.md` — parent reads nothing heavy before `ExitPlanMode`.
-
----
-
-## Ralph Mode (--ralph-mode) — Background Orchestrator
-
-Legacy shape: `nohup bash scripts/run-project.sh ...` runs each story as an isolated `claude -p` subprocess; parent session polls state files.
-
-### Step R1 — Validate PRD
-
-1. Resolve PRD: `companies/{co}/projects/{project}/prd.json` (use `qmd search` if needed)
-2. Read prd.json → display: project name, company, total stories, completed, remaining
-3. `mkdir -p workspace/orchestrator/{project}`
-
-Under Claude Code plan mode, delegate the read to a Plan sub-agent per `.claude/policies/plan-mode-preflight-delegation.md` — do NOT read prd.json directly in the parent.
-
-### Step R2 — Launch Background
+Use `{run_project_script}`:
 
 ```bash
-cd /Users/{your-name}/Documents/HQ && \
-  nohup bash scripts/run-project.sh {project} {passthrough_flags} --no-permissions \
+bash {run_project_script} --status
+bash {run_project_script} --help
+bash {run_project_script} --dry-run {project}
+```
+
+Display the important output to the user and stop.
+
+## Step 3 — Interactive Codex Execution
+
+Interactive mode is parent-driven. It replaces Claude session-mode for Codex.
+
+Use when the project is small enough for the parent session and the user may want to steer implementation decisions.
+
+Process:
+
+1. Resolve and read `prd.json`.
+2. Read only applicable policy frontmatter first; read full rule text only for hard rules that apply to the project.
+3. Write a durable plan file to `workspace/orchestrator/{project}/codex-session-plan.md` containing:
+   - project, company, repo path, branch base, resume state
+   - incomplete story order
+   - acceptance criteria and declared files
+   - applicable policy rules
+   - quality gates
+   - chosen mode: `interactive`
+4. Ask the user to approve, adjust, or switch to Ralph/headless mode.
+5. Execute one story at a time in the parent session:
+   - make edits directly
+   - run back-pressure checks
+   - commit per story
+   - mark `passes: true` only after verification
+   - update `workspace/orchestrator/{project}/state.json`
+6. Pause between stories and ask continue / adjust / stop.
+
+Do not spawn an end-to-end `/execute-task` sub-agent in Codex interactive mode unless the user explicitly asks for delegated agent work. Bounded helper agents are okay only when explicitly requested or clearly available, and they must return compact structured output.
+
+## Step 4 — Ralph/Headless Codex Execution
+
+Use when the project is long-running, unattended, swarm/tmux-oriented, or when process isolation matters more than per-edit steering.
+
+Launch with the Codex engine:
+
+```bash
+cd ~/HQ && \
+  nohup bash {run_project_script} {project} {passthrough_flags} --engine codex --no-permissions \
   > workspace/orchestrator/{project}/run.log 2>&1 &
 echo "PID:$!"
 ```
 
-Capture PID. Announce: `Launched run-project.sh for {project} (PID {pid}, --ralph-mode). Monitoring progress...`
+If `{run_project_script}` does not support `--engine`, use the legacy equivalent:
 
-### Step R3 — Poll Loop
+```bash
+bash {run_project_script} {project} {passthrough_flags} --builder codex --no-permissions
+```
 
-Every ~30 seconds:
+Monitor progress from:
 
-1. Read state: `jq -r '.status' workspace/orchestrator/{project}/state.json`
-2. Read new progress: `tail -n +{last_line} workspace/orchestrator/{project}/progress.txt`
-3. Check PID: `kill -0 {pid} 2>/dev/null && echo "ALIVE" || echo "DEAD"`
-4. Print new progress lines
-5. Branch:
-   - `in_progress` + alive → continue polling
-   - `paused` → surface pause reason from `run.log`, prompt user: resume / abort
-   - `completed` → exit loop → Step R4
-   - PID dead + not completed → tail `run.log`, report error
+- `workspace/orchestrator/{project}/state.json`
+- `workspace/orchestrator/{project}/progress.txt`
+- `workspace/orchestrator/{project}/run.log`
 
-Poll ceiling: 4 hours. After that, offer to detach.
+Every poll:
 
-### Step R4 — Completion Summary
+1. Read state with `jq -r '.status'`.
+2. Tail only new progress lines.
+3. Check PID with `kill -0`.
+4. If paused, surface the reason and ask resume / abort / detach.
+5. If completed, summarize state, report path, commits, and failed/skipped stories.
 
-1. Read final `state.json` + `progress.txt`
-2. Read `workspace/reports/{project}-summary.md` if exists
-3. Display formatted summary
+## Step 5 — Completion
 
-### Step R5 — Reindex
+After either mode completes:
 
-Run `qmd update 2>/dev/null || true` after completion.
+1. Confirm all intended stories have `passes: true`.
+2. Confirm commits exist for completed stories.
+3. Run project quality gates or report why they were skipped.
+4. Run `qmd update 2>/dev/null || true`.
+5. Ask whether to document release, run a retrospective, or end here.
+
+## Rules
+
+- **Do not reference `.Codex/commands/run-project.md` as required source** — that file may not exist. This skill is the Codex router.
+- **Do not assume Claude-only primitives** — `Task`, `ExitPlanMode`, `/checkpoint`, and `/compact` are not Codex requirements.
+- **Default engine in Codex is Codex** — Ralph/headless mode should pass `--engine codex` or legacy `--builder codex`.
+- **Preserve HQ invariants** — PRD `userStories[].passes`, file locks, active-run coordination, commits per story, and quality gates remain required regardless of engine.
+- **Ask before mode changes** — interactive vs Ralph/headless is a user-facing execution semantic. Preserve the decision gate with text fallback if needed.

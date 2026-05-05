@@ -1,0 +1,3 @@
+interface:
+  display_name: "Cleanup"
+  short_description: "Audit and clean HQ to enforce current policies and migrate outdated structures"

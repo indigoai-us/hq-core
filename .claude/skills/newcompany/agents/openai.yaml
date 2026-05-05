@@ -1,0 +1,3 @@
+interface:
+  display_name: "Newcompany"
+  short_description: "Scaffold a new company with full infrastructure"
