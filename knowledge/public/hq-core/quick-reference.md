@@ -45,7 +45,7 @@ HQ/
 
 | Company | Workers | Key Resources |
 |---------|---------|---------------|
-| {company} | cfo, analyst, infobip-admin, gtm, qa, deploy | Stripe, Gusto, Deel, QB, Shopify, Linear (acme-recover) |
+| {company} | cfo, analyst, infobip-admin, gtm, qa, deploy | Stripe, Gusto, Deel, QB, Shopify, Linear ({linear-workspace}) |
 | {company} | cmo | AWS (Route 53), Linear, LinkedIn, Loops |
 | personal | x-user, invoices, social-council | Slack, Gmail, LinkedIn, X |
 | acmework | site-builder, research-agent | Stripe |
@@ -90,7 +90,7 @@ garden-scout, garden-auditor, garden-curator
 **Design:** `/generateimage`
 **System:** `/cleanup`, `/garden`, `/search`, `/search-reindex`, `/harness-audit`, `/model-route`, `/update-hq`
 **Company:** `/newcompany`, `/launch-brand`, `/pb-connect`, `/bootcamp-student`, `/personal-interview`
-**Linear:** `/check-linear-acme-recover`, `/{product}-prd`
+**Linear:** `/check-linear-{linear-workspace}`, `/{product}-prd`
 **Deploy:** `/pr`
 
 ## Command ↔ Skill Shapes

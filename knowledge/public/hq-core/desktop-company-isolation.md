@@ -31,7 +31,7 @@ Nullable fields: `knowledge` (acmestudio has `null`), `settings` (can be empty a
 
 | Company | Repos | Settings Dirs | Workers | Knowledge | qmd Collections |
 |---------|-------|--------------|---------|-----------|-----------------|
-| {company} | {product}, {product}-popup-builder, agent-ops-hq, {product}-cx | stripe, gusto, deel, quickbooks, shopify-partner, linear-acme-recover + (on disk: attio, browser-state, gmail, google-cloud, infobip, meta, stripe-acme-recover) | cfo-{company}, {company}-analyst, {product}-deploy | yes | {company}, {product} |
+| {company} | {product}, {product}-popup-builder, agent-ops-hq, {product}-cx | stripe, gusto, deel, quickbooks, shopify-partner, linear-{linear-workspace} + (on disk: attio, browser-state, gmail, google-cloud, infobip, meta, stripe-{linear-workspace}) | cfo-{company}, {company}-analyst, {product}-deploy | yes | {company}, {product} |
 | {company} | {company}-advisory | (on disk: linkedin, loops, meta, x) | cmo-brand | yes | {company} |
 | personal | (none) | slack + (on disk: gmail, linkedin, x) | x-user, invoices | yes | personal |
 | acmestudio | acmestudio-portal | (none) | (none) | null | (none) |

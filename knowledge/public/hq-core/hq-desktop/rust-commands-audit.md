@@ -229,7 +229,7 @@ struct CompanyEntry {
 ```yaml
 {company}:
   repos: [...]
-  settings: [stripe, gusto, deel, quickbooks, shopify-partner, linear-acme-recover]
+  settings: [stripe, gusto, deel, quickbooks, shopify-partner, linear-{linear-workspace}]
   workers: [cfo-{company}, {company}-analyst, {product}-deploy]
   knowledge: companies/{company}/knowledge/
   deploy: [...]
