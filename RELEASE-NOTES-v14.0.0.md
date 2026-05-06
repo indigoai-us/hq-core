@@ -1,10 +1,10 @@
-# hq-core v14.0.0-beta
+# hq-core v14.0.0
 
-**Type**: Prerelease (beta)
-**Published from**: `indigoai-us/hq-core-staging` @ `9d1b5be`
-**Date**: 2026-05-04
+**Type**: Stable
+**Promoted from**: `v14.0.0-beta` (2026-05-04) — same tree, no functional changes
+**Date**: 2026-05-06
 
-This is a major version bump (v12.x → v14) representing roughly six months of HQ core evolution. Promoted via the staging buffer pattern documented in `hq-cmd-publish-kit-staging-flow-not-direct`. `-beta` denotes that 25 NEEDS_REVIEW items from the staging audit are deferred for v14.0.0 GA.
+Promoting v14.0.0-beta to stable. Major version v12.x → v14 represents roughly six months of HQ core evolution; promoted via the staging buffer pattern (`hq-cmd-publish-kit-staging-flow-not-direct`). The 25 NEEDS_REVIEW items previously deferred to GA remain on the v14.x roadmap and will land in subsequent point releases.
 
 ## Highlights
 
