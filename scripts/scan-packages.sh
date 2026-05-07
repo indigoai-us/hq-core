@@ -6,7 +6,7 @@
 # a no-op when the symlinks already match. Warns and skips on collisions instead
 # of clobbering.
 #
-# Mapping (see knowledge/public/hq-core/package-yaml-spec.md):
+# Mapping (see https://github.com/indigoai-us/hq/blob/main/docs/hq-package-spec.md):
 #   contributes.workers[name]    packages/{pkg}/workers/{name}/       -> workers/public/{name}
 #   contributes.knowledge[name]  packages/{pkg}/knowledge/{name}/     -> knowledge/public/{name}
 #   contributes.skills[name]     packages/{pkg}/skills/{name}/        -> .claude/skills/{name}

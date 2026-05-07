@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://github.com/indigoai-us/hq-cli"><img src="https://img.shields.io/badge/CLI-hq--cli-green.svg" alt="HQ CLI"></a>
+  <a href="https://github.com/indigoai-us/hq/tree/main/packages/hq-cli"><img src="https://img.shields.io/badge/CLI-hq--cli-green.svg" alt="HQ CLI"></a>
 </p>
 
 <p align="center">
@@ -60,7 +60,7 @@ Not just files. Active systems that:
 | [qmd](https://github.com/tobi/qmd) | Recommended | `brew install tobi/tap/qmd` |
 | [OpenAI Codex](https://openai.com/codex) | Optional | `npm install -g @openai/codex` then `codex login` |
 | [Vercel CLI](https://vercel.com/docs/cli) | Optional | `npm install -g vercel` then `vercel login` |
-| [ggshield](https://docs.gitguardian.com/ggshield-docs/getting-started/installation) | Recommended | `brew install ggshield` then `ggshield auth login` |
+| [ggshield](https://docs.gitguardian.com/ggshield-docs/getting-started) | Recommended | `brew install ggshield` then `ggshield auth login` |
 
 ### LSP (Language Server Protocol)
 
@@ -527,7 +527,7 @@ my-hq/
 | Component | Purpose |
 |-----------|---------|
 | **hq-core** | This repo — personal OS template |
-| **[hq-cli](https://github.com/indigoai-us/hq-cli)** | Module management CLI |
+| **[hq-cli](https://github.com/indigoai-us/hq/tree/main/packages/hq-cli)** | Module management CLI |
 
 ---
 
