@@ -51,7 +51,7 @@ contributes:
   commands: []
 ```
 
-Schema: `knowledge/public/hq-core/package-yaml-spec.md` (authoritative; shipped with hq-core).
+Schema: see the [hq package spec](https://github.com/indigoai-us/hq/blob/main/docs/hq-package-spec.md). The canonical JSON Schema lives at [`packages/hq-cli/src/schemas/hq-package.schema.json`](https://github.com/indigoai-us/hq/blob/main/packages/hq-cli/src/schemas/hq-package.schema.json).
 
 ## Backwards compatibility
 

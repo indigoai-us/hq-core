@@ -168,7 +168,7 @@ Hotfix that finishes the dev→prod Cognito cutover. Two file-level changes to e
 ### Companion package upgrades (recommended same-day)
 
 - `@indigoai-us/hq-cloud@5.9.0` — adds stale-pool detection so pre-cutover dev tokens stop producing 401s against the prod vault API. No action required from operators; cached tokens with mismatched `client_id` claim are silently re-authed on next CLI invocation.
-- `@indigoai-us/hq-cli@5.7.1` — `bun install -g @indigoai-us/hq-cli@5.7.1` to pick up hq-cloud@5.9.0.
+- `@indigoai-us/hq-cli@5.9.0` — `bun install -g @indigoai-us/hq-cli@5.9.0` to pick up hq-cloud@5.9.0.
 - `create-hq@10.12.0` — only matters for new HQs created after 2026-04-29; existing HQs are unaffected.
 
 ### Verification
