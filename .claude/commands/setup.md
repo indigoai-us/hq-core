@@ -8,72 +8,87 @@ visibility: public
 
 Quick setup to get your HQ running. Takes ~5 minutes.
 
-## Phase 0: Dependencies
+## Phase 0a: Install Manifest Recovery
 
-Check silently. Only prompt if missing.
+Before anything else, check if the HQ Installer left a manifest.
 
-**Claude Code CLI**:
 ```bash
-which claude
-```
-If missing:
-```
-Claude Code CLI not found. Required to run HQ.
-
-Install: npm install -g @anthropic-ai/claude-code
+cat .hq/install-manifest.json 2>/dev/null
 ```
 
-**qmd** (search):
-```bash
-which qmd
-```
-If missing:
-```
-qmd not found. HQ uses qmd for semantic search across knowledge, workers, and code.
+If no manifest exists, skip to Phase 0b — the user installed manually or is running setup for the first time.
 
-Install: cargo install qmd
-  OR: brew install tobi/tap/qmd
+If a manifest exists, this phase becomes the primary driver of setup. The manifest is a journal of everything the installer attempted — successes, failures, and skips. Your job is to triage and actively remediate each issue, not just list them.
 
-After install, index HQ: qmd index .
+### Triage priority (handle in this order)
+
+**P0 — Blocking (fix these first, setup can't proceed without them):**
+- `steps.directory` failed or missing → HQ directory doesn't exist; abort setup and tell user to re-run installer
+- `steps.templates` failed → HQ template not fetched; attempt `npx --package=@indigoai-us/hq-cli hq init .`
+- `dependencies.node` failed → nothing works; guide user through Node install
+- `steps.git-init` failed → no git repo; run `git init && git add . && git commit -m "init"`
+
+**P1 — Required (HQ works poorly without these):**
+- `dependencies.qmd` failed → no semantic search; install with `cargo install qmd` or `brew install tobi/tap/qmd`, then `qmd index .`
+- `dependencies.claude-code` failed → can't run workers; `npm install -g @anthropic-ai/claude-code`
+- `dependencies.yq` failed → can't parse YAML configs; `brew install yq` or download binary
+- `dependencies.hq-cli` failed → can't install packs or sync; `npm install -g @indigoai-us/hq-cli`
+- `steps.indexing` failed → search won't work; run `qmd index .` directly
+- `packs` with status `"failed"` or `"running"` (interrupted) → retry each: `npx --package=@indigoai-us/hq-cli hq install {pack-name}`
+
+**P2 — Recommended (HQ works but some features limited):**
+- `dependencies.gh` failed/skipped → no PR workflows; explain benefit and offer: `brew install gh && gh auth login`
+- `dependencies.homebrew` skipped → limits future installs; explain benefit and offer install
+- `steps.personalize` failed → profile not set up; Phase 1 below will cover this
+
+### Remediation flow
+
+For each issue found (in priority order):
+
+1. **Explain what it is and why it matters** — one sentence, tied to what the user loses without it.
+   - Example: "GitHub CLI wasn't installed during setup. This means you won't be able to create PRs or manage repos from HQ. Would you like me to install it now?"
+   - Example: "The search index wasn't built during install. Without it, `/search` and knowledge lookups won't work. Let me set that up."
+2. **For P0/P1 items: fix them directly.** Run the install command, verify it worked, move on. Only ask if there's a real choice (e.g. install method).
+3. **For P2 items: offer with context.** Explain what the user gains, ask if they want it. Accept "skip" gracefully.
+4. **After each fix: verify.** Run `which {tool}` or equivalent. If it failed, try an alternative approach. Don't move on until it's resolved or the user explicitly skips.
+
+### After remediation
+
+Once all issues are addressed, show a summary:
+
+```
+Install recovery complete.
+
+Fixed:
+  ✓ {item} — {what was done}
+  ...
+
+Skipped (optional):
+  ○ {item} — {why it's optional}
+  ...
+
+Still needs attention:
+  ✗ {item} — {what went wrong, what user can do}
+  ...
 ```
 
-**GitHub CLI** (`gh`):
-```bash
-which gh
-```
-If missing:
-```
-GitHub CLI not found. Required for PRs, repo management, and worker deployments.
+Skip items already `"ok"` in the manifest — don't re-check things the installer already handled successfully. Then continue to Phase 0b only for dependencies the manifest doesn't cover (e.g. vercel).
 
-Install: brew install gh
-Then authenticate: gh auth login
-```
-If installed but not authenticated (`gh auth status` exits non-zero):
-```
-GitHub CLI installed but not authenticated.
+## Phase 0b: Dependencies (non-manifest)
 
-Run: gh auth login
-```
+If Phase 0a ran, skip any deps already checked there. This phase only handles tools the manifest doesn't track.
 
-**Vercel CLI**:
+**Vercel CLI** (not tracked by installer manifest):
 ```bash
 which vercel
 ```
-If missing:
-```
-Vercel CLI not found. Needed if you deploy sites or previews from HQ.
+If missing: explain it's needed for site/preview deploys, offer to install (`npm install -g vercel`). Accept "skip" — it's optional.
 
-Install: npm install -g vercel
-Then authenticate: vercel login
+If installed but not authenticated (`vercel whoami` exits non-zero): offer `vercel login`.
 
-Skip if you don't use Vercel.
-```
-If installed but not authenticated (`vercel whoami` exits non-zero):
-```
-Vercel CLI installed but not authenticated.
-
-Run: vercel login
-```
+**Auth checks** (not tracked by manifest):
+- `gh auth status` — if gh is installed but not authenticated, offer `gh auth login`
+- `vercel whoami` — if vercel is installed but not authenticated, offer `vercel login`
 
 Post-install: run `qmd index .` if qmd was just installed or no index exists.
 
@@ -228,72 +243,6 @@ knowledge/*/
 qmd update 2>/dev/null || qmd index . 2>/dev/null || true
 ```
 
-## Phase 2.5: Recommended Content Packs
-
-hq-core ships minimal. Batteries-included UX comes from content packs declared in `core.yaml:recommended_packages`. This phase offers each missing pack to the user — non-destructive, any pack can be declined and re-prompted later via `./setup.sh`, `/update-hq`, or `/setup --resume`.
-
-### Read recommended packs
-
-```bash
-# Parse recommended_packages from core.yaml → TSV of source\tconditional\tdescription
-awk '
-  BEGIN { in_block = 0; cur_src = ""; cur_cond = ""; cur_desc = "" }
-  /^recommended_packages\s*:\s*$/ { in_block = 1; next }
-  in_block && /^[A-Za-z_][A-Za-z0-9_-]*\s*:/ { in_block = 0 }
-  in_block && /^\s*-\s+source\s*:\s*/ {
-    if (cur_src != "") { print cur_src "\t" cur_cond "\t" cur_desc }
-    sub(/^\s*-\s+source\s*:\s*/, ""); gsub(/^["\x27]|["\x27]$/, "")
-    cur_src = $0; cur_cond = ""; cur_desc = ""; next
-  }
-  in_block && /^\s+conditional\s*:\s*/ { sub(/^\s+conditional\s*:\s*/, ""); gsub(/^["\x27]|["\x27]$/, ""); cur_cond = $0 }
-  in_block && /^\s+description\s*:\s*/ { sub(/^\s+description\s*:\s*/, ""); gsub(/^["\x27]|["\x27]$/, ""); cur_desc = $0 }
-  END { if (cur_src != "") { print cur_src "\t" cur_cond "\t" cur_desc } }
-' core.yaml
-```
-
-### Diff against installed packs
-
-```bash
-# Sources already registered in modules.yaml (either location)
-for modfile in modules/modules.yaml modules.yaml; do
-  [[ -f "$modfile" ]] || continue
-  grep -E "^\s+source\s*:" "$modfile" | sed -E "s/^\s+source\s*:\s*[\"']?([^\"'\r\n]+)[\"']?\s*$/\1/"
-done | sort -u
-```
-
-### Prompt per missing pack
-
-For each entry not already installed:
-
-1. If `conditional` is set, evaluate: `bash -c "<conditional>" &>/dev/null`. If it exits non-zero, **skip silently** (host lacks prerequisite). Report: `"• skipped {source} (conditional not met)"`.
-2. Otherwise use AskUserQuestion:
-   ```
-   Install recommended pack?
-
-   {source}
-   {description}
-
-   1. Install
-   2. Skip (can install later via `hq install {source}`)
-   ```
-3. If install, run `npx --yes @indigoai-us/hq-cli install "{source}"`.
-4. On failure: treat as warning, not fatal — continue to next pack. Note in summary:
-   ```
-   ! failed  {source} — retry later: hq install "{source}"
-   ```
-
-### Summary
-
-After processing all packs, display:
-```
-Recommended packs:
-  ✓ installed: {N}
-  • skipped:   {M}
-  ! failed:    {F}
-```
-
-If any failed, print retry hints with `hq install <source>`.
-
 ## Phase 3: Summary
 
 ```
@@ -319,15 +268,11 @@ Your knowledge bases can be independent git repos symlinked into knowledge/.
 This lets you version, share, and publish each knowledge base separately.
 See "Knowledge Repos" in CLAUDE.md for details.
 
-Content packs:
-{list of installed packs from Phase 2.5, or "none — run `hq install <source>` anytime"}
-
 Next steps:
 1. Run /personal-interview — deep interview to build your voice + profile
 2. Run /newworker — create your first worker
-3. Run /plan — plan your first project
+3. Run /prd — plan your first project
 4. Run /search <topic> — find relevant knowledge in HQ
-5. Run `hq install <source>` to add more content packs later
 ```
 
 ## Rules
@@ -338,6 +283,3 @@ Next steps:
 - Create parent directories as needed
 - For CLI tools (gh, vercel): inform but don't block setup if missing. These are "recommended" not "required" (except claude itself)
 - Always use relative paths for symlinks (../../repos/... not absolute paths)
-- Pack install failures are warnings, never fatal — setup always completes
-- Never silently install packs — always prompt (unless `--full` flag was passed at the create-hq layer)
-- Honor `conditional` predicates — skip a pack silently when its prerequisite is missing (e.g. gemini pack when no `gemini` on PATH)

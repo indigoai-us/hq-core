@@ -30,7 +30,7 @@ Promoting v14.0.0-beta to stable. Major version v12.x → v14 represents roughly
 
 ### Policy system
 
-- New consolidated `_digest.md` rebuilt by `scripts/build-policy-digest.sh`
+- New consolidated `_digest.md` rebuilt by `core/scripts/build-policy-digest.sh`
 - Policies now self-classify with `public:` frontmatter; promotion respects it
 - 9 vendor-/internal-scoped policies stripped from this release (codex-pii-rubric advisory)
 - 25 additional policies remain `NEEDS_REVIEW` for GA — see "Deferred" below

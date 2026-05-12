@@ -22,9 +22,9 @@ Called programmatically by `/execute-task` and `/run-project` after task complet
 |-------|-----------------|--------|
 | Company | `companies/{co}/policies/{slug}.md` | Policy file (YAML frontmatter + Rule + Rationale) |
 | Repo | `repos/{pub\|priv}/{repo}/.claude/policies/{slug}.md` | Policy file |
-| Command | `.claude/policies/{slug}.md` (scope: command) | Policy file |
-| Global | `.claude/policies/{slug}.md` | Policy file |
-| Worker (legacy) | `workers/*/{id}/worker.yaml` | Instructions block `## Learnings` |
+| Command | `core/policies/{slug}.md` (scope: command) | Policy file |
+| Global | `core/policies/{slug}.md` | Policy file |
+| Worker (legacy) | `core/workers/*/{id}/worker.yaml` | Instructions block `## Learnings` |
 
 ### Insights → Insight files (educational understanding)
 
@@ -35,7 +35,7 @@ Called programmatically by `/execute-task` and `/run-project` after task complet
 | Tool | `workspace/insights/tools/{slug}.md` | Insight file |
 | Conceptual | `workspace/insights/concepts/{slug}.md` | Insight file |
 
-See `knowledge/public/hq-core/insights-spec.md` for the insight file format.
+See `core/knowledge/public/hq-core/insights-spec.md` for the insight file format.
 
 **Before creating:** always scan existing policies/insights for updates (Step 4.5). Update > duplicate.
 
@@ -43,8 +43,8 @@ See `knowledge/public/hq-core/insights-spec.md` for the insight file format.
 
 Before processing, load applicable policies with minimal context burn:
 
-1. Prefer the SessionStart-injected digest at `.claude/policies/_digest.md` if present — it already contains frontmatter for all global and command-scoped policies
-2. Otherwise, for each file in `.claude/policies/` (skip `_digest.md` and `example-policy.md`), run `bash scripts/read-policy-frontmatter.sh {file}` to get frontmatter-only
+1. Prefer the SessionStart-injected digest at `core/policies/_digest.md` if present — it already contains frontmatter for all global and command-scoped policies
+2. Otherwise, for each file in `core/policies/` (skip `_digest.md` and `example-policy.md`), run `bash core/scripts/read-policy-frontmatter.sh {file}` to get frontmatter-only
 3. Note `enforcement: hard` titles. Only Read the `## Rule` section of hard-enforcement policies if one looks relevant to the current learning
 
 Skip full policy body loads — the digest and frontmatter contain enough metadata for the learn pipeline.
@@ -133,7 +133,7 @@ If the input starts with `[` (JSON array), enter batch mode:
 1. **Detect batch input:** if the input is a JSON array (starts with `[`), enter batch mode
 2. **Run qmd vsearch dedup ONCE for all items:** concatenate all item `content` fields as a single query string for a single `qmd vsearch` call, then match results against each item individually
 3. **Process each item through Steps 2–6 normally:** extract rules, classify scope, create/update policy files — one item at a time using the shared dedup results
-4. **Run `bash scripts/build-policy-digest.sh` ONCE at the end** (not per-item) — only if any item produced a policy file write
+4. **Run `bash core/scripts/build-policy-digest.sh` ONCE at the end** (not per-item) — only if any item produced a policy file write
 5. **Write a single event log entry** covering all items processed in the batch
 6. **Backward compatibility:** all existing modes (1, 2, 3) work exactly as before — batch is a new detection branch only
 
@@ -177,18 +177,18 @@ For each extracted rule, determine scope (most specific wins):
 |--------|-------|------------------|
 | Related to specific company | `company` | `companies/{co}/policies/` |
 | Related to specific repo | `repo` | `repos/{pub\|priv}/{repo}/.claude/policies/` |
-| Error in specific command | `command` | `.claude/policies/` (with `scope: command`) |
-| Failure in specific worker | `worker` | `workers/*/{id}/worker.yaml` instructions block (legacy, still supported) |
-| Universal pattern | `global` | `.claude/policies/` |
+| Error in specific command | `command` | `core/policies/` (with `scope: command`) |
+| Failure in specific worker | `worker` | `core/workers/*/{id}/worker.yaml` instructions block (legacy, still supported) |
+| Universal pattern | `global` | `core/policies/` |
 | User correction via /learn --hard | From context, default global | Detected scope directory |
 
-**Primary output = policy files.** The canonical format for persistent rules is structured policy files (per `knowledge/public/hq-core/policies-spec.md`). Worker.yaml injection is still supported for worker-specific learnings.
+**Primary output = policy files.** The canonical format for persistent rules is structured policy files (per `core/knowledge/public/hq-core/policies-spec.md`). Worker.yaml injection is still supported for worker-specific learnings.
 
 **Resolve company/repo context:**
 - From `prd.json` metadata if in project context
 - From `companies/manifest.yaml` repo lookup if in repo context
 - From worker path if worker-scoped (`companies/{co}/workers/` → `{co}`)
-- Fall back to `.claude/policies/` (global scope)
+- Fall back to `core/policies/` (global scope)
 
 ## Step 4: Dedup Check
 
@@ -205,7 +205,7 @@ Check results for similarity to the new rule:
 **Fallback (if qmd unavailable):**
 Use Grep to search for key terms from the rule across the policy directories:
 - Pattern: key terms from the rule (2-3 significant words)
-- Files: `*.md` in `companies/*/policies/`, `.claude/policies/`, and any repo policy dirs
+- Files: `*.md` in `companies/*/policies/`, `core/policies/`, and any repo policy dirs
 - If matching content found → review and decide whether to merge or skip
 
 Report dedup action taken.
@@ -217,7 +217,7 @@ Before creating a new rule, check if an existing policy file already covers this
 1. **Resolve policy directories** based on scope:
    - Company scope → scan `companies/{co}/policies/` (skip `example-policy.md`)
    - Repo scope → scan `{repoPath}/.claude/policies/`
-   - Global/command scope → scan `.claude/policies/`
+   - Global/command scope → scan `core/policies/`
 
 2. **Search for matching policies:**
    ```bash
@@ -234,7 +234,7 @@ Before creating a new rule, check if an existing policy file already covers this
 
 4. **If no matching policy found:**
    - Proceed to Step 5 (create new rule)
-   - For company/repo/global scoped rules, prefer creating a **policy file** (per `knowledge/public/hq-core/policies-spec.md`) over injecting into worker.yaml or CLAUDE.md. Policy files are the canonical format for persistent rules
+   - For company/repo/global scoped rules, prefer creating a **policy file** (per `core/knowledge/public/hq-core/policies-spec.md`) over injecting into worker.yaml or CLAUDE.md. Policy files are the canonical format for persistent rules
 
 ## Step 5: Create or Update Policy File (rule content type)
 
@@ -245,15 +245,15 @@ If Step 4.5 found a matching policy → update was already handled. Otherwise, c
 **Target directory:**
 - Company scope → `companies/{co}/policies/{slug}.md`
 - Repo scope → `repos/{pub|priv}/{repo}/.claude/policies/{slug}.md`
-- Command scope → `.claude/policies/{slug}.md`
-- Global scope → `.claude/policies/{slug}.md`
+- Command scope → `core/policies/{slug}.md`
+- Global scope → `core/policies/{slug}.md`
 
 **Create the directory if needed:**
 ```bash
 mkdir -p {target_directory}
 ```
 
-**Policy file format** (per `knowledge/public/hq-core/policies-spec.md`):
+**Policy file format** (per `core/knowledge/public/hq-core/policies-spec.md`):
 
 ```markdown
 ---
@@ -290,14 +290,14 @@ source: {back-pressure-failure|user-correction|success-pattern|task-completion|h
   - Rule spanning two stacks (e.g. Clerk edge runtime on Vercel) → `applies_to: [clerk, vercel]`
   - Generic git/bash/HQ hygiene rule, or a rule that merely *mentions* Vercel as one example → omit the field entirely (loads everywhere)
 - OR semantics: `[clerk, vercel]` means "load if workspace has clerk OR vercel." Omit the field for the 89%+ cross-cutting case.
-- Lint with `bash scripts/validate-policy-tags.sh` after write (it fails on unknown tags — prevents typos that would silently filter everywhere).
-- Full spec: `knowledge/public/hq-core/policies-spec.md` → "Applicability Tagging (`applies_to`)" section.
+- Lint with `bash core/scripts/validate-policy-tags.sh` after write (it fails on unknown tags — prevents typos that would silently filter everywhere).
+- Full spec: `core/knowledge/public/hq-core/policies-spec.md` → "Applicability Tagging (`applies_to`)" section.
 
 **Slug generation:** lowercase, hyphens, from rule keywords. Prefix: `{co}-` for company, `{repo}-` for repo, `hq-cmd-{name}-` for command, `hq-` for global.
 
 ### Fallback: Worker.yaml (worker-scoped learnings)
 
-For worker-specific learnings, still inject into `workers/*/{id}/worker.yaml` instructions block:
+For worker-specific learnings, still inject into `core/workers/*/{id}/worker.yaml` instructions block:
 
 ```yaml
 instructions: |
@@ -325,7 +325,7 @@ If Step 1.5 classified content as **insight**, skip Step 5 (policy creation) and
 - Tool-specific → `workspace/insights/tools/{slug}.md`
 - Conceptual/theoretical → `workspace/insights/concepts/{slug}.md`
 
-**Insight file format** (per `knowledge/public/hq-core/insights-spec.md`):
+**Insight file format** (per `core/knowledge/public/hq-core/insights-spec.md`):
 
 ```markdown
 ---
@@ -398,7 +398,7 @@ Write `workspace/learnings/learn-{YYYYMMDD-HHMMSS}.json`:
     {
       "rule": "NEVER: ...",
       "scope": "worker:frontend-dev",
-      "target_file": "workers/public/dev-team/frontend-dev/worker.yaml",
+      "target_file": "core/workers/public/dev-team/frontend-dev/worker.yaml",
       "severity": "high"
     }
   ],
@@ -419,10 +419,10 @@ The event log write is mandatory for every invocation (even skipped/trivial ones
 qmd update 2>/dev/null || true
 ```
 
-**If the learning created or updated a policy file** (content_type: rule, and Step 5 created or modified a file under `companies/{co}/policies/`, `repos/*/.claude/policies/`, or `.claude/policies/`), rebuild the policy digest so SessionStart hooks pick up the change on the next session:
+**If the learning created or updated a policy file** (content_type: rule, and Step 5 created or modified a file under `companies/{co}/policies/`, `repos/*/.claude/policies/`, or `core/policies/`), rebuild the policy digest so SessionStart hooks pick up the change on the next session:
 
 ```bash
-bash scripts/build-policy-digest.sh
+bash core/scripts/build-policy-digest.sh
 ```
 
 This is load-bearing for the Phase 2.4 SessionStart policy digest loop — skipping it causes new policies to silently fail to load in future sessions. The full rebuild is idempotent and fast (~15s over all scopes). If perf matters later, extend `build-policy-digest.sh` to accept a `--scope` arg.
@@ -470,7 +470,7 @@ If multiple rules/insights were extracted, report each.
 - **Dedup is mandatory** — always check before injecting (qmd first, Grep fallback)
 - **Global cap is hard** — never exceed 20 rules in CLAUDE.md `## Learned Rules`
 - **Reindex after every injection** — keeps qmd search current
-- **Rebuild digest after policy write** — `bash scripts/build-policy-digest.sh` is required after any policy file create/update (Step 8). SessionStart hooks depend on it
+- **Rebuild digest after policy write** — `bash core/scripts/build-policy-digest.sh` is required after any policy file create/update (Step 8). SessionStart hooks depend on it
 - **Event log is always written** — `workspace/learnings/learn-{timestamp}.json` is non-optional
 - **Preserve existing rules** — append only, never overwrite existing rules
 - **User corrections always promote** — /learn --hard delegations go to both target file AND CLAUDE.md

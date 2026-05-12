@@ -78,7 +78,7 @@ _orphans chunk = everything not claimed by any company:
   workspace/insights/ (global/tools/concepts — not company-scoped)
   workspace/orchestrator/ (runs not tied to a company)
   projects/ (projects not matching any company repo)
-  workers/public/ (non-team, non-company workers)
+  core/workers/public/ (non-team, non-company workers)
 ```
 
 **`projects/`** or other HQ-level dir:
@@ -120,8 +120,8 @@ Task(
   model: "haiku",
   prompt: """
   You are garden-scout. Read your worker config and scan-scope skill:
-  - workers/public/gardener-team/garden-scout/worker.yaml
-  - workers/public/gardener-team/garden-scout/skills/scan-scope.md
+  - core/workers/public/gardener-team/garden-scout/worker.yaml
+  - core/workers/public/gardener-team/garden-scout/skills/scan-scope.md
 
   Context:
   - run_id: {run_id}
@@ -161,8 +161,8 @@ Task(
   model: "sonnet",
   prompt: """
   You are garden-auditor. Read your worker config and validate-findings skill:
-  - workers/public/gardener-team/garden-auditor/worker.yaml
-  - workers/public/gardener-team/garden-auditor/skills/validate-findings.md
+  - core/workers/public/gardener-team/garden-auditor/worker.yaml
+  - core/workers/public/gardener-team/garden-auditor/skills/validate-findings.md
 
   Context:
   - run_id: {run_id}
@@ -203,8 +203,8 @@ Task(
   model: "sonnet",
   prompt: """
   You are garden-curator. Read your worker config and execute-actions skill:
-  - workers/public/gardener-team/garden-curator/worker.yaml
-  - workers/public/gardener-team/garden-curator/skills/execute-actions.md
+  - core/workers/public/gardener-team/garden-curator/worker.yaml
+  - core/workers/public/gardener-team/garden-curator/skills/execute-actions.md
 
   Context:
   - run_id: {run_id}

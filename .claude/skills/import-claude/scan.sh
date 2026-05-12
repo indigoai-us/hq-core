@@ -264,7 +264,7 @@ emit_claude_tree_artifacts() {
     # policies
     if [[ -d "$d/policies" ]]; then
       while IFS= read -r -d '' f; do
-        pols+=("$(entry_json policies "$f" ".claude/policies/$(basename "$f")")")
+        pols+=("$(entry_json policies "$f" "core/policies/$(basename "$f")")")
       done < <(find "$d/policies" -maxdepth 2 -type f -name "*.md" -print0 2>/dev/null)
     fi
     # agents

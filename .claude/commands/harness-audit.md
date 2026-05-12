@@ -130,8 +130,8 @@ Total score: **70 points** (10 points × 7 categories). Grade: A (63-70), B (56-
 **What we check:**
 - `warn-cross-company-settings.sh` exists (company isolation)
 - `detect-secrets.sh` exists (secret detection)
-- `.claude/policies/` directory exists with policies (company-isolation, credential-access-protocol, etc.)
-- `.gitignore` covers `.env*`, `credentials.json`, `tokens/`, `settings/`
+- `core/policies/` directory exists with policies (company-isolation, credential-access-protocol, etc.)
+- `.gitignore` covers `.env*`, `credentials.json`, `tokens/`, `core/settings/`
 - `companies/manifest.yaml` exists
 
 **Scoring:**
@@ -194,7 +194,7 @@ TOTAL: 63/70 (A grade)
 
 TOP 3 IMPROVEMENTS:
 1. Add missing hook: /Users/{your-name}/Documents/HQ/.claude/hooks/observe-patterns.sh (S)
-2. Write security policy: /Users/{your-name}/Documents/HQ/.claude/policies/company-isolation-validation.md (M)
+2. Write security policy: /Users/{your-name}/Documents/HQ/core/policies/company-isolation-validation.md (M)
 3. Add /tdd command to .claude/commands/ (S)
 
 NOTES:
@@ -283,9 +283,9 @@ TOTAL: 58/70 (B grade)
 
 TOP IMPROVEMENTS:
 1. Compress CLAUDE.md from 436 → <200 lines
-   - Extract "Knowledge Bases" section to knowledge/public/hq-core/quick-reference.md
+   - Extract "Knowledge Bases" section to core/knowledge/public/hq-core/quick-reference.md
    - Replace inline company list with pointer to companies/manifest.yaml
-   - Replace inline worker list with pointer to workers/registry.yaml
+   - Replace inline worker list with pointer to core/workers/registry.yaml
    Impact: Saves ~200 lines, improves context efficiency score from 0 → 10
 
 2. Expand search collections from 15 → 20+ (if planning new repos)

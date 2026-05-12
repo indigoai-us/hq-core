@@ -6,7 +6,7 @@ allowed-tools: Bash(hq:*), Bash(source:*), Bash(bash:*)
 
 # HQ Secrets
 
-Manage secrets stored in AWS SSM Parameter Store via the `hq secrets` CLI. Secrets are scoped per company and accessed through Cognito-authenticated API calls. Secrets now support per-secret ACLs with `read`/`write`/`admin` permissions; access can be granted to individuals or groups.
+Manage secrets stored in AWS SSM Parameter Store via the `hq secrets` CLI. Secrets are scoped to either a **company** (shared, with per-secret ACLs and groups) or the **calling person** (`--personal`, owner-only with no sharing). Access happens through Cognito-authenticated API calls. Company secrets support per-secret ACLs with `read`/`write`/`admin` permissions, granted to individuals or groups; personal secrets have no sharing surface in v1.
 
 See also [`hq-files`](../hq-files/SKILL.md) for managing file-prefix access controls in the HQ vault — same groups model, different ACL domain.
 
@@ -84,7 +84,7 @@ Use `hq run` instead of `hq secrets exec` when your repo has a `.env.schema`. Us
 | `hq groups list` | List all groups in the company |
 | `hq groups members <groupId>` | List members of a group |
 
-All commands accept `--company <slug>` to target a specific company. If omitted, the CLI resolves your company from your membership.
+All commands accept `--company <slug>` to target a specific company; if omitted, the CLI resolves your company from your membership. Pass `--personal` instead to operate on your **personal vault** — secrets scoped to your `prs_*` person entity, owner-only, no sharing. `--personal` and `--company` are mutually exclusive. Sharing-related subcommands (`share`, `unshare`, `acl`, `generate-link`) reject when `--personal` is set.
 
 Secret names must match `^[A-Z][A-Z0-9_]*(/[A-Z][A-Z0-9_]+)*$`. Each `/`-separated segment follows the original naming rule. Examples: `MY_API_KEY`, `STRIPE_SECRET`, `PROD/DB_PASSWORD`, `BACKEND/SERVICE/TOKEN`.
 
@@ -154,6 +154,43 @@ hq secrets unshare PROD/DB_PASSWORD --from alice@example.com
 ```
 
 You must have `admin` permission on the secret to call `share` or `unshare`.
+
+## Personal vault (`--personal`)
+
+`--personal` swaps the scope from a company (`cmp_*`) to the caller's canonical person entity (`prs_*`). Use it for credentials that aren't tied to any company — your own GitHub PAT, a personal OpenAI key, a shared-with-you-only vendor token. Secrets stored under `--personal` are visible only to you; there is no sharing, no ACL surface, no groups.
+
+```bash
+# Store a personal secret (interactive prompt)
+hq secrets --personal set MY_GITHUB_PAT
+
+# Or from stdin
+echo "$VALUE" | hq secrets --personal set MY_GITHUB_PAT --from-stdin
+
+# List your personal secrets
+hq secrets --personal list
+
+# Inject into a command
+hq secrets --personal exec --only MY_GITHUB_PAT -- gh auth refresh
+
+# Reveal (be deliberate; same redact-by-default rules as company scope)
+hq secrets --personal get MY_GITHUB_PAT --reveal
+
+# Delete
+hq secrets --personal delete MY_GITHUB_PAT
+```
+
+Subcommands disabled under `--personal`:
+
+| Subcommand | Behaviour |
+|------------|-----------|
+| `share` | Errors: "share is not supported with --personal." |
+| `unshare` | Errors: "unshare is not supported with --personal." |
+| `acl` | Errors: "acl is not supported with --personal." |
+| `generate-link` | Errors: "generate-link is not supported with --personal." |
+
+If a teammate needs access to a secret, store it in a company scope and `share` it. `--personal` is for credentials that are genuinely yours alone.
+
+`hq run` resolves a company from your `.env.schema`'s `@hqCompany(...)` annotation; it does NOT currently support personal scope. If a workload needs personal secrets, use `hq secrets --personal exec --only KEY -- <cmd>` instead of `hq run`.
 
 ## Groups
 
@@ -292,4 +329,11 @@ hq secrets share PROD/DB_PASSWORD --with grp_backend-team --permission read
 
 ```bash
 hq secrets unshare PROD/DB_PASSWORD --from alice@example.com
+```
+
+### Store a credential that's yours alone (personal vault)
+
+```bash
+hq secrets --personal set MY_GITHUB_PAT
+hq secrets --personal exec --only MY_GITHUB_PAT -- gh auth refresh
 ```

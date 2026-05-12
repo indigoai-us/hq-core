@@ -1,0 +1,14 @@
+{
+  "types": {
+    "type": "text",
+    "domain": "multitext",
+    "status": "text",
+    "tags": "multitext",
+    "relates_to": "multitext",
+    "description": "text",
+    "visibility": "text",
+    "scope": "text",
+    "enforcement": "text",
+    "trigger": "text"
+  }
+}

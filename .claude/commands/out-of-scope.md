@@ -30,7 +30,7 @@ Record *what we decided not to build, and why.* Different from `/adr`:
 3. Pick target directory:
    - `repo` → `<repo>/.out-of-scope/`
    - `co` → `companies/{co}/knowledge/out-of-scope/`
-   - `hq` → `knowledge/public/out-of-scope/`
+   - `hq` → `core/knowledge/public/out-of-scope/`
 4. Compute slug from the request title.
 5. Walk the user through: what was rejected, why it's out of scope, what escape hatches exist instead, prior request links if any.
 6. Write the markdown file. Cross-link to relevant ADRs.

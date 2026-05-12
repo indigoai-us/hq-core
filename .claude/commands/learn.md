@@ -19,7 +19,7 @@ Run the `/learn` skill to capture a learning, classify it as rule or insight, de
 
 ## After Learn
 
-- If a policy file was created/updated, `bash scripts/build-policy-digest.sh` must run (Step 8) so SessionStart hooks pick up the change
+- If a policy file was created/updated, `bash core/scripts/build-policy-digest.sh` must run (Step 8) so SessionStart hooks pick up the change
 - The event log at `workspace/learnings/learn-{timestamp}.json` is always written
 - `--hard` / `--enforce` flag: equivalent to the old `/remember` command — creates learnings with `enforcement: hard`
 - `/handoff` and `/checkpoint` delegate here for session insights

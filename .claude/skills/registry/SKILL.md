@@ -27,7 +27,7 @@ companies/{co}/registry/
 ├── schema/resource.schema.yaml     # Field spec, version 1.0.0
 ├── resources/{id}.yaml             # One file per resource (source of truth)
 ├── registry.yaml                   # Auto-generated flat index (don't edit by hand)
-├── scripts/generate-index.sh       # Regenerates registry.yaml
+├── core/scripts/generate-index.sh       # Regenerates registry.yaml
 └── README.md                       # Registry-level notes
 ```
 
@@ -59,7 +59,7 @@ Outcomes:
 If the folder exists, verify the index is present:
 
 ```bash
-[ -f companies/{co}/registry/registry.yaml ] || echo "MISSING_INDEX — regenerate with: cd companies/{co}/registry && bash scripts/generate-index.sh"
+[ -f companies/{co}/registry/registry.yaml ] || echo "MISSING_INDEX — regenerate with: cd companies/{co}/registry && bash core/scripts/generate-index.sh"
 ```
 
 ---
@@ -138,7 +138,7 @@ When the user asks you to create a new repo, app, service, database, or infra co
 5. **Update cross-refs** on related resources — add this id to their `used_by` or `dependencies` list.
 6. **Regenerate the index:**
    ```bash
-   cd companies/{co}/registry && bash scripts/generate-index.sh
+   cd companies/{co}/registry && bash core/scripts/generate-index.sh
    ```
 7. **That's it.** The file sits in the company filesystem; `hq-sync` reconciles it across teammates' machines on the next sync cycle. No git commit, no push — the registry is not a standalone repo.
 
@@ -193,7 +193,7 @@ If the active company has no registry and the user wants one, use the templates 
 4. **Populate initial resources** — one YAML under `resources/` per existing repo/app/service the company operates.
 5. **Generate the index:**
    ```bash
-   cd companies/{co}/registry && bash scripts/generate-index.sh
+   cd companies/{co}/registry && bash core/scripts/generate-index.sh
    ```
 6. **(Optional) Add a qmd collection** for semantic search — add `{co}-registry` to the company's `qmd_collections` list in `companies/manifest.yaml`, then run `qmd update`.
 
@@ -234,7 +234,7 @@ Hooks are gated to `HQ_HOOK_PROFILE=standard` (not minimal). Failures are non-bl
 - **Never write secrets into the shared topology.** Credentials, endpoints, and local paths live only in `companies/{co}/settings/resource-overrides/` (gitignored). Mixing them into `resources/*.yaml` is the failure mode the topology/overrides split is designed to prevent.
 - **One file per resource.** Never merge multiple resources into one YAML (breaks cross-references, makes diffs noisy, causes sync conflicts).
 - **Kebab-case ids, globally unique.** Never change an id after creation — downstream resources reference it.
-- **`registry.yaml` is derived.** Don't edit it by hand — always regenerate via `scripts/generate-index.sh`.
+- **`registry.yaml` is derived.** Don't edit it by hand — always regenerate via `core/scripts/generate-index.sh`.
 - **No git in this skill.** The registry is a folder synced by `hq-sync`, not a standalone repo. Don't `git add`, `git commit`, `git push`, or run `/sync-registry` from this skill — they don't apply.
 - **Registry is authoritative over manifest for resource detail.** If `manifest.yaml` says a repo exists but the registry doesn't, either the registry is stale (register it) or the manifest is stale (remove it). Resolve the gap, don't ignore it.
 - **When a company has no registry, say so.** Don't invent one or fall back to manifest as a substitute.

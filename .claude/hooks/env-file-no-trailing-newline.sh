@@ -4,7 +4,7 @@
 # quotes. Prevents the April 2026 Maggie 401 class of bug where a pasted
 # `API_SECRET="…\n"` silently broke byte-exact bearer-token compares.
 #
-# Policy: .claude/policies/env-file-no-trailing-newline.md
+# Policy: core/policies/env-file-no-trailing-newline.md
 # Exit codes: 0 = allow, 2 = hard block (exit 2 stops the tool call).
 
 set -euo pipefail
@@ -65,7 +65,7 @@ Fix: remove the trailing whitespace / \\n from inside the quotes. Either
   KEY=value
   KEY="value"     # no trailing whitespace before the closing quote
 
-Policy: .claude/policies/env-file-no-trailing-newline.md
+Policy: core/policies/env-file-no-trailing-newline.md
 EOF
   exit 2
 fi

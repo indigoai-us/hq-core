@@ -43,7 +43,7 @@ Key heuristics:
 
 - Read `<repo>/CONTEXT.md` if present (domain glossary)
 - Read `<repo>/docs/adr/` if present (architectural decisions)
-- Read `<repo>/.claude/policies/` for any soft architecture rules
+- Read `<repo>/core/policies/` for any soft architecture rules
 
 If `CONTEXT.md` exists, **always** use its vocabulary in candidate descriptions. ADRs record decisions the skill should not re-litigate; mark candidates that contradict an ADR with `_contradicts ADR-NNNN — but worth reopening because…_` and only when friction is real.
 

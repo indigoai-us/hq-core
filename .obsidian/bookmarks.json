@@ -1,0 +1,40 @@
+{
+  "items": [
+    {
+      "type": "file",
+      "ctime": 1711900800000,
+      "path": "INDEX.md",
+      "title": "HQ Directory Map"
+    },
+    {
+      "type": "file",
+      "ctime": 1711900800000,
+      "path": "USER-GUIDE.md",
+      "title": "User Guide"
+    },
+    {
+      "type": "folder",
+      "ctime": 1711900800000,
+      "path": "knowledge/public",
+      "title": "Knowledge Bases"
+    },
+    {
+      "type": "folder",
+      "ctime": 1711900800000,
+      "path": "companies",
+      "title": "Companies"
+    },
+    {
+      "type": "folder",
+      "ctime": 1711900800000,
+      "path": "workers/public",
+      "title": "Workers"
+    },
+    {
+      "type": "folder",
+      "ctime": 1711900800000,
+      "path": "projects",
+      "title": "Projects"
+    }
+  ]
+}

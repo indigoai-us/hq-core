@@ -1,7 +1,7 @@
 #!/bin/bash
 # check-core-yaml-parity.sh — SessionStart hook (non-blocking)
 #
-# Warns at session start if HQ root core.yaml:hqVersion has drifted from
+# Warns at session start if HQ root core/core.yaml:hqVersion has drifted from
 # repos/public/hq-core/core.yaml:hqVersion. Policy: core-yaml-parity
 # (The /promote-hq-core manifest-bump step is the primary enforcement;
 # this hook is belt-and-suspenders that catches drift from hand-edits or
@@ -15,7 +15,7 @@ set -euo pipefail
 cat >/dev/null 2>&1 || true
 
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
-HQ_CORE="$HQ_ROOT/core.yaml"
+HQ_CORE="$HQ_ROOT/core/core.yaml"
 HQ_CORE_TARGET="$HQ_ROOT/repos/public/hq-core/core.yaml"
 
 # Silent if either file is missing — this hook's job is parity detection,
@@ -34,7 +34,7 @@ CORE_V="$(extract_version "$HQ_CORE_TARGET")"
 
 if [[ "$HQ_V" != "$CORE_V" ]]; then
   cat <<EOF
-⚠️  core.yaml hqVersion drift detected
+⚠️  core/core.yaml hqVersion drift detected
 
   HQ root:  $HQ_V    ($HQ_CORE)
   hq-core:  $CORE_V    ($HQ_CORE_TARGET)
@@ -47,9 +47,9 @@ Resolve via /promote-hq-core (manifest-bump step), or manually:
   HQ_BYPASS_CORE_PROTECT=1 sed -i '' \\
     -e "s/^hqVersion: \".*\"\$/hqVersion: \"\${VERSION}\"/" \\
     -e "s/^updatedAt: \".*\"\$/updatedAt: \"\${NOW}\"/" \\
-    core.yaml repos/public/hq-core/core.yaml
+    core/core.yaml repos/public/hq-core/core.yaml
 
-Policy: .claude/policies/core-yaml-parity.md
+Policy: core/policies/core-yaml-parity.md
 EOF
 fi
 

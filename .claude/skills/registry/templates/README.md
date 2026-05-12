@@ -9,7 +9,7 @@ registry/
 ├── schema/resource.schema.yaml     Field spec (v1.0.0 — do not edit lightly)
 ├── resources/{id}.yaml             One file per resource (source of truth)
 ├── registry.yaml                   Auto-generated flat index — do NOT edit by hand
-├── scripts/generate-index.sh       Regenerates registry.yaml
+├── core/scripts/generate-index.sh       Regenerates registry.yaml
 └── README.md                       This file
 ```
 
@@ -20,7 +20,7 @@ registry/
 3. Update cross-references — add this id to the `used_by` or `dependencies` field of any related resource.
 4. Regenerate the index:
    ```bash
-   bash scripts/generate-index.sh
+   bash core/scripts/generate-index.sh
    ```
 
 ## Do not put here

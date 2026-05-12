@@ -1,0 +1,58 @@
+{
+  "collapse-filter": false,
+  "search": "",
+  "showTags": true,
+  "showAttachments": false,
+  "hideUnresolved": false,
+  "showOrphans": false,
+  "collapse-color-groups": true,
+  "colorGroups": [
+    {
+      "query": "path:companies/",
+      "color": {
+        "a": 1,
+        "rgb": 4890367
+      }
+    },
+    {
+      "query": "path:knowledge/",
+      "color": {
+        "a": 1,
+        "rgb": 4905600
+      }
+    },
+    {
+      "query": "path:workers/",
+      "color": {
+        "a": 1,
+        "rgb": 16486460
+      }
+    },
+    {
+      "query": "path:projects/",
+      "color": {
+        "a": 1,
+        "rgb": 16498436
+      }
+    },
+    {
+      "query": "path:workspace/",
+      "color": {
+        "a": 1,
+        "rgb": 9740984
+      }
+    }
+  ],
+  "collapse-display": false,
+  "showArrow": true,
+  "textFadeMultiplier": 0,
+  "nodeSizeMultiplier": 1,
+  "lineSizeMultiplier": 1,
+  "collapse-forces": true,
+  "centerStrength": 0.5,
+  "repelStrength": 10,
+  "linkStrength": 1,
+  "linkDistance": 250,
+  "scale": 0.11660891579457316,
+  "close": true
+}

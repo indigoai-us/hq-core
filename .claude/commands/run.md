@@ -23,7 +23,7 @@ Unified interface to run workers and their skills.
 
 ### No Arguments → List Workers
 
-If no arguments provided, read `workers/registry.yaml` and display:
+If no arguments provided, read `core/workers/registry.yaml` and display:
 
 ```
 Available Workers:
@@ -40,7 +40,7 @@ Usage: /run {worker-id} to see skills
 
 If only worker-id provided:
 1. Find worker in registry
-2. Read `workers/{worker-path}/worker.yaml`
+2. Read `core/workers/{worker-path}/worker.yaml`
 3. List available skills
 
 ```
@@ -57,8 +57,8 @@ Usage: /run x-{your-handle} {skill}
 
 ### Worker + Skill → Execute
 
-1. Load worker context from `workers/{path}/`
-2. Load skill definition from `workers/{path}/skills/{skill}.md`
+1. Load worker context from `core/workers/{path}/`
+2. Load skill definition from `core/workers/{path}/skills/{skill}.md`
 3. Execute the skill instructions
 4. Write checkpoint after completion
 

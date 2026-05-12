@@ -28,7 +28,7 @@ If scope is ambiguous, ask via `AskUserQuestion`:
 | `repo` | `<repo>/docs/adr/` | Decision is bound to specific code; reviewers will read it alongside the code |
 | `hq` | `companies/{co}/knowledge/adrs/` | Decision is org-level (e.g. "we use Linear, not Jira"; "all auth via Cognito") |
 
-If no company resolves and scope is `hq`, default to `knowledge/public/adrs/` (rare — most ADRs have a tenant).
+If no company resolves and scope is `hq`, default to `core/knowledge/public/adrs/` (rare — most ADRs have a tenant).
 
 ## Step 1 — Three-condition gate (HARD BLOCK)
 

@@ -19,7 +19,7 @@ set -euo pipefail
 # Read and discard stdin
 cat >/dev/null 2>&1 || true
 
-HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+HQ_ROOT="${HQ_ROOT:-${HOME}/Documents/HQ}"
 REGISTRY="$HQ_ROOT/scripts/repo-run-registry.sh"
 
 [[ ! -x "$REGISTRY" ]] && exit 0
@@ -64,7 +64,7 @@ Recommended options:
      or pass --ignore-active-runs to /run-project.
 
 Registry: workspace/orchestrator/active-runs.json
-Policy:   .claude/policies/repo-run-coordination.md
+Policy:   core/policies/repo-run-coordination.md
 </active-runs-warning>
 BANNER
 fi

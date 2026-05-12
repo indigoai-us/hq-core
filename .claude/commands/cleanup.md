@@ -52,13 +52,13 @@ find companies apps -name "prd.json" 2>/dev/null
 
 ### 2. Worker Registry
 
-**Policy**: All workers indexed in `workers/registry.yaml`
+**Policy**: All workers indexed in `core/workers/registry.yaml`
 
 ```bash
 # Find workers not in registry
-for dir in workers/public/*/ workers/private/*/; do
+for dir in core/workers/public/*/ core/workers/private/*/; do
   worker=$(basename "$dir")
-  if ! grep -q "id: $worker" workers/registry.yaml; then
+  if ! grep -q "id: $worker" core/workers/registry.yaml; then
     echo "UNINDEXED: $worker"
   fi
 done
@@ -66,7 +66,7 @@ done
 
 ### 3. Deprecated Directories
 
-**Policy**: No apps/ directory (use projects/ or workers/)
+**Policy**: No apps/ directory (use projects/ or core/workers/)
 
 ```bash
 # Check if apps/ still exists
@@ -131,7 +131,7 @@ find workspace/checkpoints -name "*.json" -mtime +30 2>/dev/null
 
 ```bash
 # Find workers without state_machine
-for f in workers/*/worker.yaml workers/public/dev-team/*/worker.yaml; do
+for f in core/workers/*/worker.yaml core/workers/public/dev-team/*/worker.yaml; do
   if [[ -f "$f" ]] && ! grep -q "state_machine:" "$f"; then
     echo "MISSING: $f lacks state_machine section"
   fi
@@ -149,15 +149,15 @@ find . -name "SKILL.md" -not -path "./repos/*"
 
 ### 8. Stale INDEX.md Files
 
-**Policy**: INDEX.md files should exist and match directory contents. See `knowledge/public/hq-core/index-md-spec.md` for spec.
+**Policy**: INDEX.md files should exist and match directory contents. See `core/knowledge/public/hq-core/index-md-spec.md` for spec.
 
 **Expected locations:**
 - `projects/INDEX.md`
 - `companies/{product}/knowledge/INDEX.md`
 - `companies/{company}/knowledge/INDEX.md`
-- `knowledge/public/INDEX.md`
-- `workers/public/INDEX.md`
-- `workers/private/INDEX.md`
+- `core/knowledge/public/INDEX.md`
+- `core/workers/public/INDEX.md`
+- `core/workers/private/INDEX.md`
 - `workspace/orchestrator/INDEX.md`
 - `workspace/reports/INDEX.md`
 - `workspace/social-drafts/INDEX.md`
@@ -183,23 +183,23 @@ grep -n "null" companies/manifest.yaml
 1. Create knowledge repo: `repos/private/knowledge-{company}/` → `git init` → initial README
 2. Create symlink: `companies/{company}/knowledge → ../../repos/private/knowledge-{company}`
 3. Update manifest.yaml: replace `null` with `companies/{company}/knowledge/`
-4. Add to `modules/modules.yaml`
+4. Add to `core/modules/modules.yaml`
 
 ### 10. Modules Registry Completeness
 
-**Policy**: Every knowledge symlink should have a corresponding entry in `modules/modules.yaml`.
+**Policy**: Every knowledge symlink should have a corresponding entry in `core/modules/modules.yaml`.
 
 ```bash
 for symlink in knowledge/public/* knowledge/private/* companies/*/knowledge; do
   [ -L "$symlink" ] || continue
   name=$(basename $(readlink "$symlink"))
-  if ! grep -q "$name" modules/modules.yaml 2>/dev/null; then
+  if ! grep -q "$name" core/modules/modules.yaml 2>/dev/null; then
     echo "UNREGISTERED: $symlink not in modules.yaml"
   fi
 done
 ```
 
-**With --fix**: Add missing module entries to `modules/modules.yaml`.
+**With --fix**: Add missing module entries to `core/modules/modules.yaml`.
 
 ### 11. qmd Collection Completeness
 
@@ -214,7 +214,7 @@ for c in hq-infra hq-workers hq-knowledge hq-projects; do
 done
 ```
 
-**With --fix**: Create qmd collection for each missing company. If any `hq-*` sub-collection is missing, run `scripts/migrate-qmd-collections.sh`.
+**With --fix**: Create qmd collection for each missing company. If any `hq-*` sub-collection is missing, run `core/scripts/migrate-qmd-collections.sh`.
 
 ---
 
@@ -293,11 +293,13 @@ mv apps/{name}/prd.json projects/{name}/
 
 ### Regenerate INDEX.md Files (--reindex)
 
-For each expected INDEX.md location (see Audit Check #8):
-1. List all files and subdirectories (skip INDEX.md, .DS_Store, node_modules, dotfiles)
-2. Extract description per spec: `.md` → first `#` heading, `.yaml` → `description:`, `.json` → `name`/`description`, dirs → file count + purpose
-3. Write INDEX.md using template from `knowledge/public/hq-core/index-md-spec.md`
-4. Directories first, then files, alphabetical within each group
+Delegate to the umbrella regenerator — same script the handoff pipeline uses.
+
+```bash
+bash core/scripts/rebuild-all-indexes.sh
+```
+
+Covers all 9 INDEX classes: threads, orchestrator, companies, projects, company-knowledge, public-knowledge, workers, reports, social-drafts. Per-class scripts live at `core/scripts/rebuild-{class}-index.sh` — each is pure bash + jq (zero Claude context), writes its `Generated: {TS}` header per `core/knowledge/public/hq-core/index-md-spec.md`, and logs `wrote {path} (N entries)` to stderr. Umbrella emits JSON array of regenerated paths on stdout.
 
 ---
 
@@ -352,7 +354,7 @@ Scan these locations and extract every rule:
 | Location | How to find |
 |----------|-------------|
 | `.claude/CLAUDE.md` `## Learned Rules` | Read section, parse `- **{name}**:` entries |
-| Worker yamls `## Learnings` | `grep -rl "## Learnings" workers/` → read each |
+| Worker yamls `## Learnings` | `grep -rl "## Learnings" core/workers/` → read each |
 | Command mds `## Rules` | `grep -rl "## Rules" .claude/commands/` → read each |
 | Learning event log | `ls workspace/learnings/*.json` → read rules[] from each |
 
@@ -373,7 +375,7 @@ Flag:
 ### Step 3: Deprecate stale rules
 
 For each rule, check if its references still exist:
-- Rule mentions a worker → does that worker exist in `workers/registry.yaml`?
+- Rule mentions a worker → does that worker exist in `core/workers/registry.yaml`?
 - Rule mentions a command → does `.claude/commands/{name}.md` exist?
 - Rule mentions a tool/API → is it still in use? (best effort)
 
@@ -518,9 +520,9 @@ Reference for what we're enforcing:
 |------|--------|
 | Projects | Live in `projects/{name}/` with `README.md` |
 | PRD format | Markdown README.md (not prd.json) |
-| Workers | Indexed in `workers/registry.yaml` |
+| Workers | Indexed in `core/workers/registry.yaml` |
 | Worker FSM | `state_machine:` section in worker.yaml (Loom pattern) |
-| Apps | Deprecated - migrate to projects/ or workers/ |
+| Apps | Deprecated - migrate to projects/ or core/workers/ |
 | Skills | `.claude/commands/*.md` format |
 | Threads | Primary session persistence (`workspace/threads/`) |
 | Auto-checkpoints | Lightweight, purge after 14 days (`T-*-auto-*.json`) |
@@ -530,6 +532,6 @@ Reference for what we're enforcing:
 | Knowledge repos | Symlinks in `knowledge/` and `companies/*/knowledge/` point to repos; all repos committed |
 | INDEX.md | Exist at 10 key dirs, match contents (see spec) |
 | Manifest | All companies have non-null knowledge, settings, repos |
-| Modules | All knowledge repos registered in `modules/modules.yaml` |
+| Modules | All knowledge repos registered in `core/modules/modules.yaml` |
 | qmd | All companies with knowledge have a qmd collection |
 | Learnings | No cross-file duplicates, stale rules flagged, scoped > global |

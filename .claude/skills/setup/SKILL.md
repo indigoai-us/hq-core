@@ -28,7 +28,7 @@ Execute the command workflow inline from the HQ root with the user's requested a
 
 ## Command-Specific Notes
 
-- Prefer the repository `setup.sh` for executable setup behavior, and use the command document for the interactive flow.
+- Prefer the repository `core/scripts/setup.sh` for executable setup behavior, and use the command document for the interactive flow.
 - For Codex-only setup, do not block solely because Claude Code CLI is absent; clearly label Claude-specific steps as optional when Codex parity files are present.
 
 ## Completion

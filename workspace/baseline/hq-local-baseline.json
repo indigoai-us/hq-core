@@ -28,7 +28,7 @@
       "id": "settings-and-local-runtime",
       "description": "Local settings, generated local sync journals, app runtime state, and non-secret machine config.",
       "patterns": [
-        "settings/*",
+        "core/settings/*",
         ".hq/*",
         ".hq-conflicts/*",
         ".hq-sync-journal.json",
@@ -39,9 +39,8 @@
       "id": "installed-packs-and-generated-assets",
       "description": "Installed HQ packs, generated social assets, and local package payloads.",
       "patterns": [
-        "packages/*",
-        "social-content/*",
-        "starter-projects/*"
+        "core/packages/*",
+        "social-content/*"
       ]
     },
     {
@@ -53,19 +52,19 @@
         ".codex/*",
         ".github/*",
         ".leak-scan/*",
-        "knowledge/*",
-        "modules/*",
+        "core/knowledge/*",
+        "core/modules/*",
         "prompts/*",
-        "scripts/*",
+        "core/scripts/*",
         "tools/*",
-        "workers/*",
+        "core/workers/*",
         "docs/*",
         "projects/*",
         "data/*",
         "*.md",
         "*.yaml",
         "*.yml",
-        "setup.sh",
+        "core/scripts/setup.sh",
         ".gitignore",
         ".ignore",
         "LICENSE"

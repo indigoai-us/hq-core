@@ -59,7 +59,7 @@ Resolve owning company in priority order:
 | 2 | Active session: `workspace/threads/handoff.json` `.company`, or `$HQ_ACTIVE_COMPANY` | Use if non-empty and present in `companies/manifest.yaml` |
 | 3 | GitHub org match: owner login → `companies/{co}.github_org` in manifest | Single match auto-uses; multiple → AskUserQuestion |
 | 4 | Path heuristic: target lives under `companies/<co>/repos/...` | Infer that company |
-| 5 | Standalone | Knowledge writes to `knowledge/public/repos/<name>/`; manifest gets `unaffiliated_repos[]` append |
+| 5 | Standalone | Knowledge writes to `core/knowledge/public/repos/<name>/`; manifest gets `unaffiliated_repos[]` append |
 
 Then:
 
@@ -85,7 +85,7 @@ Spawn these IN A SINGLE MESSAGE so they run concurrently. Each returns ≤500 wo
 
 **Target dir:**
 - Company-owned: `companies/<co>/knowledge/repos/<name>/`
-- Standalone: `knowledge/public/repos/<name>/`
+- Standalone: `core/knowledge/public/repos/<name>/`
 
 Write four files (overwrite on re-run; they're regenerated artifacts):
 
@@ -132,7 +132,7 @@ relates_to: []
 
 **For each candidate**, present via `AskUserQuestion` with options: **Write**, **Edit then write**, **Skip**. Never auto-write without confirmation.
 
-**Policy frontmatter** (per `knowledge/public/hq-core/policies-spec.md`):
+**Policy frontmatter** (per `core/knowledge/public/hq-core/policies-spec.md`):
 
 ```yaml
 ---
@@ -153,7 +153,7 @@ learned_from: discover/<repo>@<head_sha_short>
 If ≥1 policy was written, run:
 
 ```bash
-bash scripts/build-policy-digest.sh
+bash core/scripts/build-policy-digest.sh
 ```
 
 …so the next session loads it.

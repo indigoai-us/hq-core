@@ -28,7 +28,7 @@ fi
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || echo "")
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 
-HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+HQ_ROOT="${HQ_ROOT:-${HOME}/Documents/HQ}"
 REG="$HQ_ROOT/scripts/repo-run-registry.sh"
 [[ ! -x "$REG" ]] && exit 0
 
@@ -129,7 +129,7 @@ Options:
   3. Emergency bypass (logged to workspace/learnings/active-run-bypasses.jsonl):
        HQ_IGNORE_ACTIVE_RUNS=1  (as env var on the command)
 
-Policy:   .claude/policies/repo-run-coordination.md
+Policy:   core/policies/repo-run-coordination.md
 Registry: workspace/orchestrator/active-runs.json
 BLOCK_EOF
   exit 2

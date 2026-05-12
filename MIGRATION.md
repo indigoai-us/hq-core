@@ -1,3 +1,78 @@
+## Migrating to v14.1.0-beta.1 — 2026-05-12
+
+### TL;DR
+
+**No manual migration required.** `/update-hq` pulls all new files and you're done. The `scripts/` → `core/scripts/` relocation is handled transparently — existing references in CLAUDE.md and hook-gate already point to the new paths.
+
+### What changed
+
+- **Scripts relocated** from root `scripts/` to `core/scripts/`. All internal references (CLAUDE.md, hooks, codex bridge) already point to `core/scripts/`. If you have custom hooks or scripts referencing `scripts/compute-checksums.sh` or similar, update the path to `core/scripts/compute-checksums.sh`.
+- **27 new policies** added to `core/policies/`. Auto-loaded by SessionStart — no settings.json edits needed.
+- **Journal subsystem** — New shared skill at `.claude/skills/_shared/journal.sh`, auto-capture hook at `.claude/hooks/journal-autocapture.sh`, and spec at `core/knowledge/public/hq-core/journal-spec.md`. All wired in `.claude/settings.json` already.
+- **Core-write protection** — Two new hooks (`block-core-writes.sh`, `block-core-writes-bash.sh`) prevent direct edits to `core/`. Already wired in settings.json.
+- **Precompact thrashing detector** — New hook at `.claude/hooks/precompact-thrashing-detector.sh`. Already wired.
+- **Context warning threshold** — Lowered from 60% to 50%. File renamed from `context-warning-60.sh` to `context-warning-50.sh`. Already wired.
+- **Personal pack scaffold** — New `personal/` directory with empty `.gitkeep` stubs. No action needed.
+- **Obsidian config** — `.obsidian/` directory added. Ignored by git if not using Obsidian.
+- **8 INDEX rebuild scripts** — New scripts at `core/scripts/rebuild-*.sh`. Available immediately.
+- **Paper designer worker** — New worker added to `core/workers/public/dev-team/`.
+
+### What does NOT need migrating
+
+- No `.claude/settings.json` manual edits — all hook wiring ships in the updated settings.json.
+- No backfill scripts to run.
+- No company-level changes required.
+- Existing custom scripts referencing `scripts/` paths will still work if you haven't overridden `core/scripts/` — but update references when convenient.
+
+### Compatibility
+
+- All changes are additive. Existing HQ installations continue to work without modification.
+- The `personal/` directory is new scaffold — it contains only `.gitkeep` files and imposes no behavior until populated.
+- Obsidian config (`.obsidian/`) is optional — users without Obsidian can safely ignore or delete it.
+
+---
+
+## Migrating to v14.0.1 — 2026-05-11
+
+### TL;DR
+
+**No manual migration required.** `/update-hq` pulls four files and you're done. Verify the new `journal.sh attach` verb works with a quick smoke test if you want.
+
+### What changed
+
+- **New hard-enforcement policy** at `core/policies/journal-project-scoped-writes.md`. Auto-loaded by SessionStart for `brainstorm`, `deep-plan`, `prd`, `plan`, `startwork`, `handoff`, `checkpoint`.
+- **New `attach` subcommand** in `.claude/skills/_shared/journal.sh`. Existing `open`/`append`/`close`/`path` verbs are unchanged — `attach` is additive.
+- **Overflow spill** in `.claude/hooks/journal-autocapture.sh`. Triggered when an Agent result, WebFetch body, or WebSearch payload exceeds 1024 bytes. Previously these were truncated to ~200 chars and the rest was lost; now the full content lives at `{project_dir}/journal/attachments/{ts}-{tool}-{hash6}.txt` and the inline digest references it via a `(full: ...)` suffix.
+- **Spec update** at `core/knowledge/public/hq-core/journal-spec.md` documents the new `## Reference material` section.
+
+### Smoke test (optional, ~30 seconds)
+
+If you want to confirm the helper roundtrips correctly after pulling:
+
+```bash
+# Inside a project dir with an active journal:
+echo "scratch content for verification" | \
+  .claude/skills/_shared/journal.sh attach research --ext md
+
+# Expected output: absolute path to the new file.
+ls research/                # should contain {ts}-research-{hash6}.md
+grep -A1 'Findings' journal/*-*.md | tail -3
+                            # should show a "- {iso} attached: research/..." bullet
+```
+
+### What does NOT need migrating
+
+- No `.claude/settings.json` edits.
+- No backfill — historical journals continue to work; the new `attach` verb and overflow spill only affect captures going forward.
+- No changes to the seven calling skills (`brainstorm`, `deep-plan`, `prd`, `plan`, `startwork`, `handoff`, `checkpoint`) — they pick up the new behavior transparently when they invoke `journal.sh`.
+
+### Compatibility
+
+- `journal.sh` retains its fail-soft contract: malformed inputs print one-line warnings to stderr and exit 0 — the journal subsystem will never block a calling skill.
+- The runtime pointer at `.claude/state/active-journal` remains the only journal artifact outside `{project_dir}/`, and the new policy explicitly exempts it (it's a session-runtime pointer, not journal content).
+
+---
+
 ## Migrating to v12.4.0 — 2026-05-02
 
 ### Headline
@@ -39,7 +114,7 @@ If you have no `PostToolUse` hooks configured at all (rare — a harness-audit w
 After updating, run the one-time backfill so historical sessions appear inside their companies:
 
 ```bash
-bash scripts/backfill-workspace-mirror.sh
+bash core/scripts/backfill-workspace-mirror.sh
 ```
 
 The script is idempotent — safe to re-run if interrupted. It only mirrors threads that have `metadata.company` set; threads without it are correctly skipped (HQ-infra sessions). Expect output similar to:
@@ -81,7 +156,7 @@ No migration steps required — all changes are backward-compatible.
 - **Codex policy + hook bridges** are additive — they install symlinks/adapters in `.codex/` without touching anything in `.claude/`. Operators who use Claude Code only see no change.
 - **`/deploy` Phase A speed refactor** keeps the same external interface; only internal sub-agent fan-out was replaced with inline parallel scripts.
 - **`CLAUDE.md` charter restructure + `AGENTS.md` symlink** preserve all instruction content. The symlink unifies Claude + Codex on the same source. Operators who customized `AGENTS.md` directly should reapply their customizations to `.claude/CLAUDE.md` (the symlink target) — note that `AGENTS.md` is now a regular symlink and writes go through to `CLAUDE.md`.
-- **Policy enforcement rebalance** moves ~140 policies from `hard` to `soft`. Soft-enforcement policies note deviations rather than blocking. If your workflows depended on a specific policy blocking on violation, check `.claude/policies/_digest.md` and re-promote any that you want to remain hard via `/learn --hard`.
+- **Policy enforcement rebalance** moves ~140 policies from `hard` to `soft`. Soft-enforcement policies note deviations rather than blocking. If your workflows depended on a specific policy blocking on violation, check `core/policies/_digest.md` and re-promote any that you want to remain hard via `/learn --hard`.
 
 ### Optional: pick up the new commands
 
@@ -96,8 +171,8 @@ Three new slash commands ship with v12.3.0. They auto-register on next session s
 If you use OpenAI Codex alongside Claude Code:
 
 ```bash
-bash scripts/codex-skill-bridge.sh install            # symlinks .claude/skills → .codex/, .agents/
-bash scripts/codex-skill-bridge.sh install-policies   # NEW in v12.3.0 — symlinks .claude/policies/
+bash core/scripts/codex-skill-bridge.sh install            # symlinks .claude/skills → .codex/, .agents/
+bash core/scripts/codex-skill-bridge.sh install-policies   # NEW in v12.3.0 — symlinks core/policies/
 ```
 
 The hook bridge (`.codex/hooks/hq-codex-hook-adapter.sh`) is install-time only — no runtime opt-in needed once the file is present. Codex sessions automatically route hooks through the existing `hook-gate.sh`.
@@ -130,7 +205,7 @@ Fully additive. No breaking changes. No file deletions. No policy enforcement we
 
 - 4 policy files have path renames (`repos/public/hq/template/` → `repos/private/hq-core-staging/`). Enforcement unchanged.
 - `_digest.md` regenerated.
-- `core.yaml` version + checksums updated.
+- `core/core.yaml` version + checksums updated.
 
 ### Migration Steps
 
@@ -139,8 +214,8 @@ Fully additive. No breaking changes. No file deletions. No policy enforcement we
 **For users who also want Codex:**
 ```bash
 cd <your HQ root>
-bash scripts/convert-codex.sh --dry-run   # preview
-bash scripts/convert-codex.sh --apply     # add Codex entrypoints
+bash core/scripts/convert-codex.sh --dry-run   # preview
+bash core/scripts/convert-codex.sh --apply     # add Codex entrypoints
 ```
 
 The script is create-only. It will skip any path that already exists and report blocked items so you can review before approving more invasive changes.
@@ -163,7 +238,7 @@ Hotfix that finishes the dev→prod Cognito cutover. Two file-level changes to e
 
 ### New Policies
 
-- `.claude/policies/prefer-systemic-fix-over-user-bandaid.md` — hard, global. New rule: bug fixes ship as systemic patches, not per-user env exports. See CHANGELOG for the banned/required framings.
+- `core/policies/prefer-systemic-fix-over-user-bandaid.md` — hard, global. New rule: bug fixes ship as systemic patches, not per-user env exports. See CHANGELOG for the banned/required framings.
 
 ### Companion package upgrades (recommended same-day)
 
@@ -174,8 +249,8 @@ Hotfix that finishes the dev→prod Cognito cutover. Two file-level changes to e
 ### Verification
 
 - `cat .claude/commands/designate-team.md | grep "Cognito domain"` should print no `hq-vault-dev` substring.
-- `ls .claude/policies/prefer-systemic-fix-over-user-bandaid.md` should exist after `/update-hq`.
-- `bash scripts/build-policy-digest.sh` regenerates `.claude/policies/_digest.md` with 105+ policies, hard-enforcement section now contains a `prefer-systemic-fix-over-user-bandaid` line.
+- `ls core/policies/prefer-systemic-fix-over-user-bandaid.md` should exist after `/update-hq`.
+- `bash core/scripts/build-policy-digest.sh` regenerates `core/policies/_digest.md` with 105+ policies, hard-enforcement section now contains a `prefer-systemic-fix-over-user-bandaid` line.
 
 ---
 
@@ -209,47 +284,47 @@ Iteration release on top of the v12.0.0 hq-core split. All changes are additive 
 ### New File
 
 - `.claude/stack.yaml`
-- `.claude/policies/hq-bash-discipline.md`
-- `.claude/policies/hq-bash-no-gnu-coreutils-date-timeout.md`
-- `.claude/policies/hq-classifier-own-labels-single-source.md`
-- `.claude/policies/hq-cli-version-read-from-package-json.md`
-- `.claude/policies/hq-cmd-handoff-no-discovery-rerun.md`
-- `.claude/policies/hq-cmd-publish-kit-python-yaml-free.md`
-- `.claude/policies/hq-cmd-publish-kit-rerun-diff-on-scope-narrow.md`
-- `.claude/policies/hq-cmd-run-project-ralph-hard-pause-procedure.md`
-- `.claude/policies/hq-cmd-stage-kit-settings-json-direct-edit.md`
-- `.claude/policies/hq-compiled-ts-rebuild-after-src-edits.md`
-- `.claude/policies/hq-cross-repo-privilege-tier-surface-scope.md`
-- `.claude/policies/hq-destructive-scripts-default-dry-run.md`
-- `.claude/policies/hq-git-diff-three-dot-for-pr-review.md`
-- `.claude/policies/hq-git-discipline.md`
-- `.claude/policies/hq-git-large-diff-audit-before-panic.md`
-- `.claude/policies/hq-git-merge-ff-only-trunk.md`
-- `.claude/policies/hq-git-squash-merge-branch-ahead-expected.md`
-- `.claude/policies/hq-git-staged-deletion-verify-blob-before-reset.md`
-- `.claude/policies/hq-github-app-over-pat-for-bot-repo-creation.md`
-- `.claude/policies/hq-migration-independent-grep-verify.md`
-- `.claude/policies/hq-nextjs-host-redirect-requires-domain-attachment.md`
-- `.claude/policies/hq-no-parent-import-from-child-component.md`
-- `.claude/policies/hq-nodejs-promisify-scrypt-options-wrap-manual.md`
-- `.claude/policies/hq-oidc-access-denied-diagnose-via-cloudtrail.md`
-- `.claude/policies/hq-oidc-migration-plan-both-subject-shapes.md`
-- `.claude/policies/hq-orthogonal-filters-over-overlapping-presets.md`
-- `.claude/policies/hq-plan-combined-story-edit-locality.md`
-- `.claude/policies/hq-prd-verify-passes-vs-artifact-registry.md`
-- `.claude/policies/hq-pre-push-gate-probes-prod-not-localhost.md`
-- `.claude/policies/hq-publish-pipeline-two-stop.md`
-- `.claude/policies/hq-session-resume-git-status-reverify.md`
-- `.claude/policies/hq-settings-local-for-personal-allows.md`
-- `.claude/policies/hq-slack-verify-scopes-beyond-auth-test.md`
-- `.claude/policies/hq-static-regression-anchor-forbidden-pattern.md`
-- `.claude/policies/hq-vercel-discipline.md`
-- `.claude/policies/hq-vercel-wildcard-single-subdomain-level.md`
-- `.claude/policies/hq-zsh-status-readonly-loop-var.md`
-- `.claude/policies/no-headless-browser-in-vercel-lambda.md`
-- `.claude/policies/no-relative-symlinks-from-worktree.md`
-- `.claude/policies/no-shared-skill-extraction-touching-5-files.md`
-- `.claude/policies/publish-kit-source-is-strict-allowlist.md`
+- `core/policies/hq-bash-discipline.md`
+- `core/policies/hq-bash-no-gnu-coreutils-date-timeout.md`
+- `core/policies/hq-classifier-own-labels-single-source.md`
+- `core/policies/hq-cli-version-read-from-package-json.md`
+- `core/policies/hq-cmd-handoff-no-discovery-rerun.md`
+- `core/policies/hq-cmd-publish-kit-python-yaml-free.md`
+- `core/policies/hq-cmd-publish-kit-rerun-diff-on-scope-narrow.md`
+- `core/policies/hq-cmd-run-project-ralph-hard-pause-procedure.md`
+- `core/policies/hq-cmd-stage-kit-settings-json-direct-edit.md`
+- `core/policies/hq-compiled-ts-rebuild-after-src-edits.md`
+- `core/policies/hq-cross-repo-privilege-tier-surface-scope.md`
+- `core/policies/hq-destructive-scripts-default-dry-run.md`
+- `core/policies/hq-git-diff-three-dot-for-pr-review.md`
+- `core/policies/hq-git-discipline.md`
+- `core/policies/hq-git-large-diff-audit-before-panic.md`
+- `core/policies/hq-git-merge-ff-only-trunk.md`
+- `core/policies/hq-git-squash-merge-branch-ahead-expected.md`
+- `core/policies/hq-git-staged-deletion-verify-blob-before-reset.md`
+- `core/policies/hq-github-app-over-pat-for-bot-repo-creation.md`
+- `core/policies/hq-migration-independent-grep-verify.md`
+- `core/policies/hq-nextjs-host-redirect-requires-domain-attachment.md`
+- `core/policies/hq-no-parent-import-from-child-component.md`
+- `core/policies/hq-nodejs-promisify-scrypt-options-wrap-manual.md`
+- `core/policies/hq-oidc-access-denied-diagnose-via-cloudtrail.md`
+- `core/policies/hq-oidc-migration-plan-both-subject-shapes.md`
+- `core/policies/hq-orthogonal-filters-over-overlapping-presets.md`
+- `core/policies/hq-plan-combined-story-edit-locality.md`
+- `core/policies/hq-prd-verify-passes-vs-artifact-registry.md`
+- `core/policies/hq-pre-push-gate-probes-prod-not-localhost.md`
+- `core/policies/hq-publish-pipeline-two-stop.md`
+- `core/policies/hq-session-resume-git-status-reverify.md`
+- `core/policies/hq-settings-local-for-personal-allows.md`
+- `core/policies/hq-slack-verify-scopes-beyond-auth-test.md`
+- `core/policies/hq-static-regression-anchor-forbidden-pattern.md`
+- `core/policies/hq-vercel-discipline.md`
+- `core/policies/hq-vercel-wildcard-single-subdomain-level.md`
+- `core/policies/hq-zsh-status-readonly-loop-var.md`
+- `core/policies/no-headless-browser-in-vercel-lambda.md`
+- `core/policies/no-relative-symlinks-from-worktree.md`
+- `core/policies/no-shared-skill-extraction-touching-5-files.md`
+- `core/policies/publish-kit-source-is-strict-allowlist.md`
 
 ### Updated Files
 
@@ -257,76 +332,76 @@ Iteration release on top of the v12.0.0 hq-core split. All changes are additive 
 - `.claude/commands/plan.md`
 - `.claude/commands/update-hq.md`
 - `.claude/hooks/load-policies-for-session.sh`
-- `.claude/policies/_digest.md`
-- `.claude/policies/ascii-art-character-verify.md`
-- `.claude/policies/blog-post-x-draft.md`
-- `.claude/policies/deconflict-postbridge-schedule.md`
-- `.claude/policies/distributed-join-partial-failure-diagnosis.md`
-- `.claude/policies/dual-codex-review-pattern.md`
-- `.claude/policies/dual-repo-prd-routing.md`
-- `.claude/policies/email-humanize.md`
-- `.claude/policies/git-stash-build-artifacts-conflict.md`
-- `.claude/policies/hq-cmd-handoff-must-complete.md`
-- `.claude/policies/hq-cmd-run-project-pid-tracking.md`
-- `.claude/policies/hq-cmd-run-project-process-cleanup.md`
-- `.claude/policies/hq-figma-token-account-scope.md`
-- `.claude/policies/hq-nested-repo-git-status-check.md`
-- `.claude/policies/hq-permissions-fan-out-edit-write-multiedit.md`
-- `.claude/policies/hq-swarm-pr-branch.md`
-- `.claude/policies/hq-swarm-rust-hub-files.md`
-- `.claude/policies/hq-tmux-plan-approval-dance.md`
-- `.claude/policies/idb-install.md`
-- `.claude/policies/linear-scan-check-existing-prds.md`
-- `.claude/policies/no-threaded-posts.md`
-- `.claude/policies/npm-subpackage-hydration.md`
-- `.claude/policies/og-image-twitter-cache.md`
-- `.claude/policies/orchestrator-competing-processes.md`
-- `.claude/policies/orchestrator-lockfile-sync.md`
-- `.claude/policies/post-bridge-media-upload.md`
-- `.claude/policies/post-bridge-media-workflow.md`
-- `.claude/policies/post-bridge-unicode-payload.md`
-- `.claude/policies/prd-content-sources.md`
-- `.claude/policies/prd-files-match-acs-for-swarm.md`
-- `.claude/policies/prd-json-schema.md`
-- `.claude/policies/prd-json-validation-post-task.md`
-- `.claude/policies/prd-no-execute.md`
-- `.claude/policies/prd-no-implement.md`
-- `.claude/policies/prd-story-sizing.md`
-- `.claude/policies/prd-userstories-key.md`
-- `.claude/policies/preview-start-launch-registry-is-global.md`
-- `.claude/policies/regression-gate-lint-fix.md`
-- `.claude/policies/reskin-separate-orchestration-from-visual.md`
-- `.claude/policies/run-project-conflict-marker-guard.md`
-- `.claude/policies/run-project-dry-run-branch-leak.md`
-- `.claude/policies/run-project-file-locks-stale.md`
-- `.claude/policies/run-project-local-keyword.md`
-- `.claude/policies/run-project-monitor-spawn-keystroke-race.md`
-- `.claude/policies/run-project-name-matches-dir.md`
-- `.claude/policies/run-project-no-permissions-required.md`
-- `.claude/policies/run-project-progress-txt-no-commit-misleading.md`
-- `.claude/policies/run-project-repo-bootstrap.md`
-- `.claude/policies/run-project-sigkill-retry.md`
-- `.claude/policies/run-project-swarm-branch-validation.md`
-- `.claude/policies/run-project-swarm-merge-conflict-tombstone.md`
-- `.claude/policies/run-project-verification-story-false-negative.md`
-- `.claude/policies/run-project-worktree-heal-orphan.md`
-- `.claude/policies/session-data-for-product-accuracy.md`
-- `.claude/policies/swarm-orphan-recovery.md`
-- `.claude/policies/swarm-post-execution-review.md`
-- `.claude/policies/vercel-domain-transfer-reissues-verification.md`
-- `.claude/policies/verify-routes-after-parallel-execution.md`
+- `core/policies/_digest.md`
+- `core/policies/ascii-art-character-verify.md`
+- `core/policies/blog-post-x-draft.md`
+- `core/policies/deconflict-postbridge-schedule.md`
+- `core/policies/distributed-join-partial-failure-diagnosis.md`
+- `core/policies/dual-codex-review-pattern.md`
+- `core/policies/dual-repo-prd-routing.md`
+- `core/policies/email-humanize.md`
+- `core/policies/git-stash-build-artifacts-conflict.md`
+- `core/policies/hq-cmd-handoff-must-complete.md`
+- `core/policies/hq-cmd-run-project-pid-tracking.md`
+- `core/policies/hq-cmd-run-project-process-cleanup.md`
+- `core/policies/hq-figma-token-account-scope.md`
+- `core/policies/hq-nested-repo-git-status-check.md`
+- `core/policies/hq-permissions-fan-out-edit-write-multiedit.md`
+- `core/policies/hq-swarm-pr-branch.md`
+- `core/policies/hq-swarm-rust-hub-files.md`
+- `core/policies/hq-tmux-plan-approval-dance.md`
+- `core/policies/idb-install.md`
+- `core/policies/linear-scan-check-existing-prds.md`
+- `core/policies/no-threaded-posts.md`
+- `core/policies/npm-subpackage-hydration.md`
+- `core/policies/og-image-twitter-cache.md`
+- `core/policies/orchestrator-competing-processes.md`
+- `core/policies/orchestrator-lockfile-sync.md`
+- `core/policies/post-bridge-media-upload.md`
+- `core/policies/post-bridge-media-workflow.md`
+- `core/policies/post-bridge-unicode-payload.md`
+- `core/policies/prd-content-sources.md`
+- `core/policies/prd-files-match-acs-for-swarm.md`
+- `core/policies/prd-json-schema.md`
+- `core/policies/prd-json-validation-post-task.md`
+- `core/policies/prd-no-execute.md`
+- `core/policies/prd-no-implement.md`
+- `core/policies/prd-story-sizing.md`
+- `core/policies/prd-userstories-key.md`
+- `core/policies/preview-start-launch-registry-is-global.md`
+- `core/policies/regression-gate-lint-fix.md`
+- `core/policies/reskin-separate-orchestration-from-visual.md`
+- `core/policies/run-project-conflict-marker-guard.md`
+- `core/policies/run-project-dry-run-branch-leak.md`
+- `core/policies/run-project-file-locks-stale.md`
+- `core/policies/run-project-local-keyword.md`
+- `core/policies/run-project-monitor-spawn-keystroke-race.md`
+- `core/policies/run-project-name-matches-dir.md`
+- `core/policies/run-project-no-permissions-required.md`
+- `core/policies/run-project-progress-txt-no-commit-misleading.md`
+- `core/policies/run-project-repo-bootstrap.md`
+- `core/policies/run-project-sigkill-retry.md`
+- `core/policies/run-project-swarm-branch-validation.md`
+- `core/policies/run-project-swarm-merge-conflict-tombstone.md`
+- `core/policies/run-project-verification-story-false-negative.md`
+- `core/policies/run-project-worktree-heal-orphan.md`
+- `core/policies/session-data-for-product-accuracy.md`
+- `core/policies/swarm-orphan-recovery.md`
+- `core/policies/swarm-post-execution-review.md`
+- `core/policies/vercel-domain-transfer-reissues-verification.md`
+- `core/policies/verify-routes-after-parallel-execution.md`
 - `.claude/skills/plan/SKILL.md`
 - `CHANGELOG.md`
 - `MIGRATION.md`
 - `README.md`
-- `core.yaml`
+- `core/core.yaml`
 
 ### Removed
 
-- `.claude/policies/git-add-explicit-paths-no-drift.md`
-- `.claude/policies/git-branch-verify.md`
+- `core/policies/git-add-explicit-paths-no-drift.md`
+- `core/policies/git-branch-verify.md`
 
-_Both removed policies had their rules consolidated into `.claude/policies/hq-git-discipline.md` (in the New File list above)._
+_Both removed policies had their rules consolidated into `core/policies/hq-git-discipline.md` (in the New File list above)._
 
 ### Migration Steps
 
@@ -368,12 +443,12 @@ Rich content that previously shipped inline with the template moved to four opt-
 
 | Removed from hq-core | New home |
 |---|---|
-| `knowledge/public/design-styles/` | `@indigoai-us/hq-pack-design-styles` |
-| `knowledge/public/design-quality/` | `@indigoai-us/hq-pack-design-quality` |
-| `knowledge/public/gemini-cli/` + 6 `workers/public/gemini-*/` | `@indigoai-us/hq-pack-gemini` |
-| `workers/public/gstack-team/` + `scripts/gstack-bridge.sh` | `@indigoai-us/hq-pack-gstack` |
-| `workers/public/impeccable-designer/` (deprecated) | — use `dev-team/frontend-dev` + `hq-pack-design-styles` |
-| `workers/public/sample-worker/`, `knowledge/public/impeccable/` | — deleted |
+| `core/knowledge/public/design-styles/` | `@indigoai-us/hq-pack-design-styles` |
+| `core/knowledge/public/design-quality/` | `@indigoai-us/hq-pack-design-quality` |
+| `core/knowledge/public/gemini-cli/` + 6 `core/workers/public/gemini-*/` | `@indigoai-us/hq-pack-gemini` |
+| `core/workers/public/gstack-team/` + `core/scripts/gstack-bridge.sh` | `@indigoai-us/hq-pack-gstack` |
+| `core/workers/public/impeccable-designer/` (deprecated) | — use `dev-team/frontend-dev` + `hq-pack-design-styles` |
+| `core/workers/public/sample-worker/`, `core/knowledge/public/impeccable/` | — deleted |
 
 ## Upgrading an existing HQ instance
 
@@ -401,16 +476,10 @@ hq install ./local-pack                                     # local path
 
 ## Compatibility notes
 
-- **`modules/modules.yaml` entries with `strategy: link`, `strategy: merge`, `strategy: embedded`** continue to resolve unchanged. `strategy: package` is additive.
+- **`core/modules/modules.yaml` entries with `strategy: link`, `strategy: merge`, `strategy: embedded`** continue to resolve unchanged. `strategy: package` is additive.
 - **`hq install` writes** a `strategy: package` entry automatically — you do not hand-edit `modules.yaml` for packs.
 - **Hooks shipped by a pack** (`contributes.hooks`) auto-run on tool events. `hq install` surfaces this and prompts for confirmation — or pass `--allow-hooks` for non-interactive installs.
 - **Publish pipeline** (`/publish-kit`, `/stage-kit`) retargeted from `repos/public/hq/template/` to `repos/public/hq-core/` as part of the split. Same commands, new target.
-
-## Provenance
-
-v12.0.0 starts with a fresh git history in `indigoai-us/hq-core`. Pre-v12 history lives at `indigoai-us/hq@pre-split` (the `hq/template/` tree in the monorepo). Git log for scaffold changes before v12.0.0 lives there — not here.
-
----
 
 ## Migrating to 11.2.0 — 2026-04-18
 
@@ -420,7 +489,7 @@ If you maintain a downstream publish-kit or a fork that mirrors HQ, read below.
 
 ### Step 1 — Review the new allowlist
 
-The walker now refuses to emit anything outside `.claude/policies/publish-kit-source-is-strict-allowlist.md` (ALLOW_ROOTS, REMAPS, STARTER_SCAFFOLDS, NEVER_TRAVERSE). If your fork publishes paths that aren't on the allowlist, add them to the policy and the walker explicitly — silent drift is no longer possible.
+The walker now refuses to emit anything outside `core/policies/publish-kit-source-is-strict-allowlist.md` (ALLOW_ROOTS, REMAPS, STARTER_SCAFFOLDS, NEVER_TRAVERSE). If your fork publishes paths that aren't on the allowlist, add them to the policy and the walker explicitly — silent drift is no longer possible.
 
 ### Step 2 — Expect deletions on first 11.2.0 publish
 
@@ -450,14 +519,14 @@ Instructions for updating existing HQ installations to new versions.
 
 ### Headline
 
-qmd sub-collection refactor + design system knowledge sync. Non-breaking — run `setup.sh` to create new collections.
+qmd sub-collection refactor + design system knowledge sync. Non-breaking — run `core/scripts/setup.sh` to create new collections.
 
-### Step 1 — Re-run setup.sh for qmd sub-collections
+### Step 1 — Re-run core/scripts/setup.sh for qmd sub-collections
 
 The monolithic `hq` qmd collection is now split into 4 focused collections. Re-run setup to create them:
 
 ```bash
-bash setup.sh
+bash core/scripts/setup.sh
 ```
 
 This creates `hq-infra`, `hq-workers`, `hq-knowledge`, and `hq-projects` collections with scoped include paths. Your existing `hq` collection is not removed — you can delete it manually with `qmd collection remove hq` if desired.
@@ -471,17 +540,17 @@ If any of your repos have an `.impeccable.md` file, rename it:
 mv .impeccable.md design.md
 ```
 
-The `style:` field is now `style-pack:` in the Design Direction section. Workers auto-resolve via `knowledge/design-styles/registry.yaml`.
+The `style:` field is now `style-pack:` in the Design Direction section. Workers auto-resolve via `core/knowledge/design-styles/registry.yaml`.
 
 ### Step 3 — Verify knowledge bases synced
 
 New knowledge bases were added. Verify they exist:
 
 ```bash
-ls knowledge/design-styles/registry.yaml
-ls knowledge/design-quality/
-ls knowledge/hq-core/design-md-spec.md
-ls knowledge/hq-core/insights-spec.md
+ls core/knowledge/design-styles/registry.yaml
+ls core/knowledge/design-quality/
+ls core/knowledge/hq-core/design-md-spec.md
+ls core/knowledge/hq-core/insights-spec.md
 ```
 
 ### Step 4 — (Optional) Clean removed policies
@@ -507,53 +576,53 @@ Design worker consolidation: 6 design workers → 2 (`frontend-designer` + `ux-a
 ### Step 1 — Create ux-auditor and move audit skills
 
 ```bash
-mkdir -p workers/ux-auditor/skills
+mkdir -p core/workers/ux-auditor/skills
 # From impeccable-designer (directory-based)
 for skill in audit critique harden normalize; do
-  mv "workers/impeccable-designer/skills/$skill" "workers/ux-auditor/skills/$skill"
+  mv "core/workers/impeccable-designer/skills/$skill" "core/workers/ux-auditor/skills/$skill"
 done
 # From gemini-ux-auditor (flat files)
 for skill in ux-audit.md flow-review.md copy-review.md competitive-scan.md; do
-  mv "workers/gemini-ux-auditor/skills/$skill" "workers/ux-auditor/skills/$skill"
+  mv "core/workers/gemini-ux-auditor/skills/$skill" "core/workers/ux-auditor/skills/$skill"
 done
 # From gemini-designer (flat files)
 for skill in design-audit.md design-system-check.md visual-diff.md; do
-  mv "workers/gemini-designer/skills/$skill" "workers/ux-auditor/skills/$skill"
+  mv "core/workers/gemini-designer/skills/$skill" "core/workers/ux-auditor/skills/$skill"
 done
 ```
 
 ### Step 2 — Move build/refine skills to frontend-designer
 
 ```bash
-mkdir -p workers/frontend-designer/skills
+mkdir -p core/workers/frontend-designer/skills
 # From impeccable-designer (18 directory-based skills)
 for skill in adapt animate arrange bolder clarify colorize consolidate delight distill extract frontend-design onboard optimize overdrive polish quieter teach-impeccable typeset; do
-  mv "workers/impeccable-designer/skills/$skill" "workers/frontend-designer/skills/$skill"
+  mv "core/workers/impeccable-designer/skills/$skill" "core/workers/frontend-designer/skills/$skill"
 done
 # From gemini-stylist (4 flat files)
 for skill in add-animation.md responsive-polish.md dark-mode.md css-refactor.md; do
-  mv "workers/gemini-stylist/skills/$skill" "workers/frontend-designer/skills/$skill"
+  mv "core/workers/gemini-stylist/skills/$skill" "core/workers/frontend-designer/skills/$skill"
 done
 # From gemini-frontend (4 flat files)
 for skill in build-component.md style-component.md responsive-check.md a11y-audit.md; do
-  mv "workers/gemini-frontend/skills/$skill" "workers/frontend-designer/skills/$skill"
+  mv "core/workers/gemini-frontend/skills/$skill" "core/workers/frontend-designer/skills/$skill"
 done
 # From gemini-designer (1 flat file)
-mv "workers/gemini-designer/skills/design-tokens.md" "workers/frontend-designer/skills/design-tokens.md"
+mv "core/workers/gemini-designer/skills/design-tokens.md" "core/workers/frontend-designer/skills/design-tokens.md"
 ```
 
 ### Step 3 — Copy new worker.yamls
 
-Copy `workers/frontend-designer/worker.yaml` and `workers/ux-auditor/worker.yaml` from the release. These contain the merged skill blocks, instructions, and model configuration.
+Copy `core/workers/frontend-designer/worker.yaml` and `core/workers/ux-auditor/worker.yaml` from the release. These contain the merged skill blocks, instructions, and model configuration.
 
 ### Step 4 — Delete absorbed workers
 
 ```bash
-rm -rf workers/impeccable-designer/
-rm -rf workers/gemini-designer/
-rm -rf workers/gemini-stylist/
-rm -rf workers/gemini-frontend/
-rm -rf workers/gemini-ux-auditor/
+rm -rf core/workers/impeccable-designer/
+rm -rf core/workers/gemini-designer/
+rm -rf core/workers/gemini-stylist/
+rm -rf core/workers/gemini-frontend/
+rm -rf core/workers/gemini-ux-auditor/
 ```
 
 ### Step 5 — Update registry.yaml
@@ -595,10 +664,10 @@ Or re-run `teach-impeccable` to go through the style selection flow.
 ### Step 8 — Verify
 
 ```bash
-ls workers/frontend-designer/skills/ | wc -l  # 27
-ls workers/ux-auditor/skills/ | wc -l          # 11
+ls core/workers/frontend-designer/skills/ | wc -l  # 27
+ls core/workers/ux-auditor/skills/ | wc -l          # 11
 # Ensure no stale references
-grep -r "impeccable-designer\|gemini-designer\|gemini-stylist\|gemini-frontend\|gemini-ux-auditor" workers/ --include="*.yaml" | grep -v CHANGELOG
+grep -r "impeccable-designer\|gemini-designer\|gemini-stylist\|gemini-frontend\|gemini-ux-auditor" core/workers/ --include="*.yaml" | grep -v CHANGELOG
 ```
 
 ---
@@ -607,7 +676,7 @@ grep -r "impeccable-designer\|gemini-designer\|gemini-stylist\|gemini-frontend\|
 
 ### Headline
 
-Core cleanup — 22 design skills moved from `.claude/skills/` to `workers/impeccable-designer/skills/`, 2 niche commands removed, `social-graphic` moved to `social-strategist`.
+Core cleanup — 22 design skills moved from `.claude/skills/` to `core/workers/impeccable-designer/skills/`, 2 niche commands removed, `social-graphic` moved to `social-strategist`.
 
 ### Step 1 — Remove deleted commands
 
@@ -618,29 +687,29 @@ rm -f .claude/commands/pr.md .claude/commands/hq-growth-dashboard.md
 ### Step 2 — Move design skills to impeccable-designer
 
 ```bash
-mkdir -p workers/impeccable-designer/skills
+mkdir -p core/workers/impeccable-designer/skills
 for skill in adapt animate arrange audit bolder clarify colorize consolidate critique delight distill extract frontend-design harden normalize onboard optimize overdrive polish quieter teach-impeccable typeset; do
-  mv ".claude/skills/$skill" "workers/impeccable-designer/skills/$skill"
+  mv ".claude/skills/$skill" "core/workers/impeccable-designer/skills/$skill"
 done
 ```
 
 ### Step 3 — Move social-graphic to social-strategist
 
 ```bash
-mkdir -p workers/social-strategist/skills
-mv .claude/skills/social-graphic workers/social-strategist/skills/social-graphic
+mkdir -p core/workers/social-strategist/skills
+mv .claude/skills/social-graphic core/workers/social-strategist/skills/social-graphic
 ```
 
 ### Step 4 — Update worker.yamls
 
-Copy the updated `workers/impeccable-designer/worker.yaml` and `workers/social-strategist/worker.yaml` from the release, or manually add the new `skills:` blocks.
+Copy the updated `core/workers/impeccable-designer/worker.yaml` and `core/workers/social-strategist/worker.yaml` from the release, or manually add the new `skills:` blocks.
 
 ### Step 5 — Verify
 
 ```bash
 ls .claude/commands/*.md | wc -l    # Should be 36
 ls .claude/skills/ | wc -l          # Should be ~18 (core skills only)
-ls workers/impeccable-designer/skills/ | wc -l  # Should be 22
+ls core/workers/impeccable-designer/skills/ | wc -l  # Should be 22
 ```
 
 ---
@@ -658,24 +727,24 @@ context burn via pre-built policy digests, plus 8 commands consolidated to the n
 ```bash
 git pull
 ls .claude/hooks/load-policies-for-session.sh
-ls .claude/policies/_digest.md
-ls scripts/build-policy-digest.sh scripts/git-hooks/pre-commit
+ls core/policies/_digest.md
+ls core/scripts/build-policy-digest.sh core/scripts/git-hooks/pre-commit
 ```
 
 If any of those four are missing, your pull is incomplete — re-run.
 
 ### Step 2 — Wire the auto-rebuild pre-commit hook
 
-The new `scripts/git-hooks/pre-commit` rebuilds `_digest.md` whenever you commit
+The new `core/scripts/git-hooks/pre-commit` rebuilds `_digest.md` whenever you commit
 policy changes. Install it:
 
 ```bash
-chmod +x scripts/git-hooks/pre-commit
+chmod +x core/scripts/git-hooks/pre-commit
 ln -sf ../../scripts/git-hooks/pre-commit .git/hooks/pre-commit
 ```
 
 If you already have a `.git/hooks/pre-commit` wrapper, append a call to
-`scripts/git-hooks/pre-commit` rather than overwriting.
+`core/scripts/git-hooks/pre-commit` rather than overwriting.
 
 ### Step 3 — Verify the SessionStart hook fires
 
@@ -712,7 +781,7 @@ into the SKILL, and let the stub remain as a thin delegator.
 If you've modified policies locally, regenerate `_digest.md`:
 
 ```bash
-bash scripts/build-policy-digest.sh
+bash core/scripts/build-policy-digest.sh
 ```
 
 The pre-commit hook from Step 2 will keep this in sync going forward.
@@ -768,7 +837,7 @@ Then add the Stop hook entry to your `.claude/settings.json` hooks section:
 
 Sync 154 scope-filtered policies:
 ```bash
-diff -rq template/.claude/policies/ your-hq/.claude/policies/
+diff -rq template/core/policies/ your-hq/core/policies/
 ```
 
 ### Breaking Changes
@@ -811,7 +880,7 @@ diff -rq template/.claude/skills/ your-hq/.claude/skills/
 Copy new policies:
 ```bash
 for p in hq-bugfix-requires-tests hq-data-collection-isolation hq-github-review-thread-resolution hq-no-test-shortcuts hq-no-worktree-for-repo-work paper-text-wrapping; do
-  cp template/.claude/policies/${p}.md your-hq/.claude/policies/
+  cp template/core/policies/${p}.md your-hq/core/policies/
 done
 ```
 
@@ -831,7 +900,7 @@ Add `PATH` to your `.claude/settings.json` env block:
 
 ### Updated modules.yaml
 
-The `hq-core` module now points to `indigoai-us/hq` instead of the archived `hq-starter-kit`. Update your `modules/modules.yaml` accordingly.
+The `hq-core` module now points to `indigoai-us/hq` instead of the archived `hq-starter-kit`. Update your `core/modules/modules.yaml` accordingly.
 
 ### Knowledge Bases
 
@@ -885,7 +954,7 @@ exceptions:
 
 154 policies synced. Run a diff to merge new/changed policies:
 ```bash
-diff -rq template/.claude/policies/ your-hq/.claude/policies/
+diff -rq template/core/policies/ your-hq/core/policies/
 ```
 
 ### Breaking Changes
@@ -907,11 +976,11 @@ cp -r template/.claude/skills/land/ your-hq/.claude/skills/land/
 
 ### New Policies
 
-Copy these 12 policies from `template/.claude/policies/`:
+Copy these 12 policies from `template/core/policies/`:
 
 ```bash
 for p in hq-alert-baseline-calibration hq-announce-before-irreversible hq-confirm-creative-direction hq-fix-root-cause-not-symptoms hq-never-swallow-errors hq-no-production-testing hq-post-parallel-build-verify hq-pr-single-concern prd-files-match-acs-for-swarm run-project-name-matches-dir run-project-sigkill-retry scrub-hook-no-denylist-in-template; do
-  cp "template/.claude/policies/${p}.md" "your-hq/.claude/policies/${p}.md"
+  cp "template/core/policies/${p}.md" "your-hq/core/policies/${p}.md"
 done
 ```
 
@@ -1001,7 +1070,7 @@ Copy these 4 new policies:
 
 ```bash
 for p in bun-overrides chunked-reads clipboard-file-protocol deconflict-postbridge-schedule; do
-  cp "starter-kit/.claude/policies/${p}.md" "your-hq/.claude/policies/${p}.md"
+  cp "starter-kit/core/policies/${p}.md" "your-hq/core/policies/${p}.md"
 done
 ```
 
@@ -1018,7 +1087,7 @@ Run `/update-hq` or manually merge changes to:
 Minor release. No breaking changes.
 
 ### New: Obsidian Vault
-Copy `.obsidian/` to your HQ root. Open in Obsidian — works out of the box. See `knowledge/public/hq-core/obsidian-setup.md` for details.
+Copy `.obsidian/` to your HQ root. Open in Obsidian — works out of the box. See `core/knowledge/public/hq-core/obsidian-setup.md` for details.
 
 Add to your `.gitignore`:
 ```
@@ -1041,7 +1110,7 @@ Run `/update-hq` or manually merge changes to:
 - `CLAUDE.md`, `USER-GUIDE.md`, `modules.yaml`
 
 ### Removed
-- Delete `.claude/policies/qa-screenshot-isolation.md` (replaced by `image-context-isolation.md`)
+- Delete `core/policies/qa-screenshot-isolation.md` (replaced by `image-context-isolation.md`)
 
 ---
 
@@ -1057,12 +1126,12 @@ Copy the entire `.claude/skills/` directory from the starter-kit. This adds 30 d
 cp -R starter-kit/.claude/skills/ your-hq/.claude/skills/
 ```
 
-### New: Policies (`.claude/policies/`)
+### New: Policies (`core/policies/`)
 
-Copy the entire `.claude/policies/` directory. These are 89 structured workflow rules covering git safety, Vercel gotchas, Supabase patterns, orchestrator guardrails, and more.
+Copy the entire `core/policies/` directory. These are 89 structured workflow rules covering git safety, Vercel gotchas, Supabase patterns, orchestrator guardrails, and more.
 
 ```bash
-cp -R starter-kit/.claude/policies/ your-hq/.claude/policies/
+cp -R starter-kit/core/policies/ your-hq/core/policies/
 ```
 
 ### New: Infrastructure Files
@@ -1072,12 +1141,12 @@ Copy these files to your HQ root:
 | File | Purpose |
 |------|---------|
 | `.ignore` | Ripgrep config — blocks `repos/`, `node_modules/` from Grep |
-| `settings/orchestrator.yaml` | Swarm/file-locking config for `/run-project` |
+| `core/settings/orchestrator.yaml` | Swarm/file-locking config for `/run-project` |
 | `USER-GUIDE.md` | Command reference + worker guide |
-| `modules/modules.yaml` | Knowledge module registry |
-| `scripts/codex-skill-bridge.sh` | Codex ↔ Claude skill bridge |
-| `scripts/audit-log.sh` | Structured audit log utility |
-| `scripts/resize-screenshot.sh` | Screenshot resize (used by hook) |
+| `core/modules/modules.yaml` | Knowledge module registry |
+| `core/scripts/codex-skill-bridge.sh` | Codex ↔ Claude skill bridge |
+| `core/scripts/audit-log.sh` | Structured audit log utility |
+| `core/scripts/resize-screenshot.sh` | Screenshot resize (used by hook) |
 
 ### Updated Files
 
@@ -1086,8 +1155,8 @@ Review and merge changes to all existing commands, workers, and knowledge. The e
 ```bash
 # From your HQ root, with starter-kit cloned alongside:
 rsync -avL --ignore-existing starter-kit/.claude/commands/ .claude/commands/
-rsync -avL --ignore-existing starter-kit/workers/public/ workers/public/
-rsync -avL --ignore-existing starter-kit/knowledge/ knowledge/public/
+rsync -avL --ignore-existing starter-kit/workers/public/ core/workers/public/
+rsync -avL --ignore-existing starter-kit/knowledge/ core/knowledge/public/
 ```
 
 ### Breaking Changes
@@ -1125,19 +1194,19 @@ Replace:
 - `.claude/scripts/run-project.sh` — adds story test runner + codex model hints
 
 ### New Workers
-Copy these directories to `workers/`:
-- `workers/impeccable-designer/`
-- `workers/paper-designer/`
+Copy these directories to `core/workers/`:
+- `core/workers/impeccable-designer/`
+- `core/workers/paper-designer/`
 
-Update `workers/registry.yaml` — version bumped to v10.0 with 45 public workers.
+Update `core/workers/registry.yaml` — version bumped to v10.0 with 45 public workers.
 
 ### New Knowledge
-Copy these to `knowledge/`:
-- `knowledge/impeccable/` (new knowledge base)
-- `knowledge/design-styles/formulas/` (new subtree)
-- `knowledge/agent-browser/tauri-testing.md`
-- `knowledge/hq/handoff-templates.md`
-- `knowledge/hq/knowledge-taxonomy.md`
+Copy these to `core/knowledge/`:
+- `core/knowledge/impeccable/` (new knowledge base)
+- `core/knowledge/design-styles/formulas/` (new subtree)
+- `core/knowledge/agent-browser/tauri-testing.md`
+- `core/knowledge/hq/handoff-templates.md`
+- `core/knowledge/hq/knowledge-taxonomy.md`
 
 ### Removed
 - Delete `.claude/commands/imessage.md` if present (personal command, removed from starter-kit)
@@ -1185,7 +1254,7 @@ Replace these files:
 Major upgrade: 3-layer passes detection, swarm retry tracking, per-story branch isolation, project reanchor, codex autofix, macOS timeout fallback.
 ```bash
 cp starter-kit/.claude/scripts/run-project.sh .claude/scripts/run-project.sh
-# or if you keep it at scripts/run-project.sh:
+# or if you keep it at core/scripts/run-project.sh:
 cp starter-kit/.claude/scripts/run-project.sh scripts/run-project.sh
 chmod +x .claude/scripts/run-project.sh  # or scripts/run-project.sh
 ```
@@ -1245,9 +1314,9 @@ Key addition: 5-step protocol for commands to load company → repo → global p
 Major upgrade: swarm mode (parallel story execution), worktree isolation, signal trapping, headless doc sweep, budget caps removed. Copy:
 ```bash
 cp starter-kit/.claude/scripts/run-project.sh .claude/scripts/run-project.sh
-# or if you keep it at scripts/run-project.sh:
+# or if you keep it at core/scripts/run-project.sh:
 cp starter-kit/.claude/scripts/run-project.sh scripts/run-project.sh
-chmod +x scripts/run-project.sh
+chmod +x core/scripts/run-project.sh
 ```
 
 ### Updated execute-task.md
@@ -1256,14 +1325,14 @@ Self-owned lock skip for swarm mode + single-writer pattern (orchestrator writes
 ### New: orchestrator.yaml
 Swarm configuration. Copy to your settings dir:
 ```bash
-cp starter-kit/settings/orchestrator.yaml settings/orchestrator.yaml
+cp starter-kit/settings/orchestrator.yaml core/settings/orchestrator.yaml
 ```
 
 ### `/learn` — Breaking Behavioral Change
 `/learn` now creates **policy files** (structured markdown with YAML frontmatter) as its primary output instead of injecting rules into `worker.yaml` or `CLAUDE.md`. Existing learned rules in worker.yaml files still work but new learnings will be written as policy files in:
 - `companies/{co}/policies/` (company scope)
 - `repos/{repo}/.claude/policies/` (repo scope)
-- `.claude/policies/` (global/command scope)
+- `core/policies/` (global/command scope)
 
 No action needed — old rules remain valid. New rules will be policy files.
 
@@ -1299,9 +1368,9 @@ Copy the full `settings.json` from starter-kit, or manually rewire each hook thr
 
 ### New Script
 ```bash
-mkdir -p scripts/
-cp starter-kit/scripts/audit-log.sh scripts/
-chmod +x scripts/audit-log.sh
+mkdir -p core/scripts/
+cp starter-kit/scripts/audit-log.sh core/scripts/
+chmod +x core/scripts/audit-log.sh
 ```
 
 ### Updated Script
@@ -1318,22 +1387,22 @@ Review and merge:
 - `run-project.md` — Worked example, `--tmux` flag
 
 ### New Workers (4 dirs)
-Copy to `workers/`:
+Copy to `core/workers/`:
 - `accessibility-auditor/` — WCAG 2.2 AA auditing
 - `exec-summary/` — McKinsey SCQA executive summaries
 - `performance-benchmarker/` — Core Web Vitals + k6 load testing
 - `dev-team/reality-checker/` — Final quality gate
 
 ### Registry Update
-Replace `workers/registry.yaml`. Version 8.0 → 9.0. If you have custom workers, merge them into the `# Add your workers below` section.
+Replace `core/workers/registry.yaml`. Version 8.0 → 9.0. If you have custom workers, merge them into the `# Add your workers below` section.
 
 ### Removed Workers
 Delete these directories if present (were private/company-specific, leaked in v6.0.0):
-- `workers/pr-shared/`, `pr-strategist/`, `pr-writer/`, `pr-outreach/`, `pr-monitor/`, `pr-coordinator/`
+- `core/workers/pr-shared/`, `pr-strategist/`, `pr-writer/`, `pr-outreach/`, `pr-monitor/`, `pr-coordinator/`
 
 ### Knowledge Cleanup
-- Delete `knowledge/hq/` if present (duplicate of `knowledge/hq-core/`)
-- Copy `knowledge/hq-core/handoff-templates.md` from starter-kit
+- Delete `core/knowledge/hq/` if present (duplicate of `core/knowledge/hq-core/`)
+- Copy `core/knowledge/hq-core/handoff-templates.md` from starter-kit
 
 ### CLAUDE.md Updates
 
@@ -1348,21 +1417,21 @@ Delete these directories if present (were private/company-specific, leaked in v6
 ### Migration Steps
 1. Copy 3 new hooks and `chmod +x`
 2. Update `settings.json` (hook-gate rewiring)
-3. Copy `scripts/audit-log.sh` and `chmod +x`
+3. Copy `core/scripts/audit-log.sh` and `chmod +x`
 4. Replace `.claude/scripts/run-project.sh`
 5. Copy 9 new commands
 6. Merge 3 updated commands
 7. Copy 4 new worker directories
 8. Delete 6 PR team worker directories
-9. Update `workers/registry.yaml` (merge custom workers)
-10. Delete `knowledge/hq/` duplicate
+9. Update `core/workers/registry.yaml` (merge custom workers)
+10. Delete `core/knowledge/hq/` duplicate
 11. Merge CLAUDE.md sections (Token Optimization, Hook Profiles)
 12. Run `/search-reindex`
 
 ### Breaking Changes
 - `settings.json` hooks now route through `hook-gate.sh` — direct hook commands no longer work without the gate
 - PR team workers removed — if you use them, keep your local copies
-- `knowledge/hq/` deleted — use `knowledge/hq-core/` instead
+- `core/knowledge/hq/` deleted — use `core/knowledge/hq-core/` instead
 
 ---
 
@@ -1371,7 +1440,7 @@ Delete these directories if present (were private/company-specific, leaked in v6
 ### New Files
 - `.claude/hooks/block-hq-grep.sh` — Grep safety hook
 - `.claude/hooks/warn-cross-company-settings.sh` — Cross-company settings warning
-- `workers/dev-team/context-manager/` — Context management worker (4 skills)
+- `core/workers/dev-team/context-manager/` — Context management worker (4 skills)
 
 ### Updated Files
 - `.claude/CLAUDE.md` — New LSP section
@@ -1410,18 +1479,18 @@ If you use these commands, keep your local copies. They are no longer part of th
 ## Migrating to v6.5.0 (from v6.4.0)
 
 ### New Workers
-Copy these directories from starter-kit to your HQ `workers/public/`:
-- `workers/gemini-coder/` — Gemini CLI code generation
-- `workers/gemini-reviewer/` — Gemini CLI code review
-- `workers/gemini-frontend/` — Gemini CLI frontend generation
-- `workers/knowledge-tagger/` — Knowledge document classification
-- `workers/site-builder/` — Local business website builder
+Copy these directories from starter-kit to your HQ `core/workers/public/`:
+- `core/workers/gemini-coder/` — Gemini CLI code generation
+- `core/workers/gemini-reviewer/` — Gemini CLI code review
+- `core/workers/gemini-frontend/` — Gemini CLI frontend generation
+- `core/workers/knowledge-tagger/` — Knowledge document classification
+- `core/workers/site-builder/` — Local business website builder
 
-Update `workers/registry.yaml` to include the new entries.
+Update `core/workers/registry.yaml` to include the new entries.
 
 ### New Knowledge Bases
-Copy from starter-kit to your HQ `knowledge/public/`:
-- `knowledge/gemini-cli/` — Gemini CLI integration docs
+Copy from starter-kit to your HQ `core/knowledge/public/`:
+- `core/knowledge/gemini-cli/` — Gemini CLI integration docs
 
 ### Updated Commands
 Review and merge changes to:
@@ -1451,7 +1520,7 @@ Review and merge changes to:
 - **Commands count** — Update to 35+
 
 ### Breaking Changes
-- `/run-project` now delegates to `scripts/run-project.sh`. If you don't have this script, the command falls back to in-session execution.
+- `/run-project` now delegates to `core/scripts/run-project.sh`. If you don't have this script, the command falls back to in-session execution.
 
 ---
 
@@ -1476,7 +1545,7 @@ Review and merge changes to:
 Before executing tasks, load applicable policies from all three directories:
 1. companies/{co}/policies/ — company-scoped rules
 2. repos/{repo}/.claude/policies/ — repo-scoped rules
-3. .claude/policies/ — cross-cutting + command-scoped rules
+3. core/policies/ — cross-cutting + command-scoped rules
 Precedence: company > repo > command > global
 ```
 
@@ -1602,7 +1671,7 @@ Replace in `.claude/commands/`:
 - `execute-task.md` — New inline Codex review step + pre-flight check
 
 ### Updated Workers
-Replace these directories in `workers/dev-team/`:
+Replace these directories in `core/workers/dev-team/`:
 - `codex-reviewer/` — Skills rewritten from MCP to CLI
 - `codex-coder/` — Skills rewritten from MCP to CLI
 - `codex-debugger/` — Skills rewritten from MCP to CLI
@@ -1630,22 +1699,22 @@ Review and merge changes to all existing commands — 22 commands were refreshed
 - `prd.md` — Enhanced discovery flow
 
 ### New Worker Teams
-Copy these directories to `workers/`:
-- `workers/dev-team/` — Full 16-worker development team (architect, backend-dev, frontend-dev, database-dev, QA, etc.)
-- `workers/content-brand/`, `content-sales/`, `content-product/`, `content-legal/`, `content-shared/` — Content pipeline
-- `workers/social-shared/`, `social-strategist/`, `social-reviewer/`, `social-publisher/`, `social-verifier/` — Social pipeline
-- `workers/pr-shared/`, `pr-strategist/`, `pr-writer/`, `pr-outreach/`, `pr-monitor/`, `pr-coordinator/` — PR pipeline
-- `workers/gardener-team/` — Content audit team (garden-scout, garden-auditor, garden-curator)
-- `workers/frontend-designer/`, `qa-tester/`, `security-scanner/`, `pretty-mermaid/` — Standalone workers
+Copy these directories to `core/workers/`:
+- `core/workers/dev-team/` — Full 16-worker development team (architect, backend-dev, frontend-dev, database-dev, QA, etc.)
+- `core/workers/content-brand/`, `content-sales/`, `content-product/`, `content-legal/`, `content-shared/` — Content pipeline
+- `core/workers/social-shared/`, `social-strategist/`, `social-reviewer/`, `social-publisher/`, `social-verifier/` — Social pipeline
+- `core/workers/pr-shared/`, `pr-strategist/`, `pr-writer/`, `pr-outreach/`, `pr-monitor/`, `pr-coordinator/` — PR pipeline
+- `core/workers/gardener-team/` — Content audit team (garden-scout, garden-auditor, garden-curator)
+- `core/workers/frontend-designer/`, `qa-tester/`, `security-scanner/`, `pretty-mermaid/` — Standalone workers
 
 ### Registry Update
-Replace `workers/registry.yaml` with the new v7.0 version. If you have custom workers, merge them into the `# Add your workers below` section at the bottom.
+Replace `core/workers/registry.yaml` with the new v7.0 version. If you have custom workers, merge them into the `# Add your workers below` section at the bottom.
 
 ### Knowledge Updates
 Copy updated knowledge directories:
-- `knowledge/agent-browser/` (new)
-- `knowledge/pr/` (new)
-- `knowledge/curious-minds/` (new)
+- `core/knowledge/agent-browser/` (new)
+- `core/knowledge/pr/` (new)
+- `core/knowledge/curious-minds/` (new)
 - All existing knowledge dirs refreshed
 
 ### CLAUDE.md Update
@@ -1715,26 +1784,26 @@ Review and merge changes to these 12 commands:
 
 ### New Knowledge
 Copy the new knowledge files:
-- `knowledge/hq-core/quick-reference.md`
-- `knowledge/hq-core/starter-kit-compatibility-contract.md`
-- `knowledge/hq-core/desktop-claude-code-integration.md`
-- `knowledge/hq-core/desktop-company-isolation.md`
-- `knowledge/hq-core/hq-structure-detection.md`
-- `knowledge/hq-core/hq-desktop/` (entire directory — 12 spec files for HQ Desktop)
+- `core/knowledge/hq-core/quick-reference.md`
+- `core/knowledge/hq-core/starter-kit-compatibility-contract.md`
+- `core/knowledge/hq-core/desktop-claude-code-integration.md`
+- `core/knowledge/hq-core/desktop-company-isolation.md`
+- `core/knowledge/hq-core/hq-structure-detection.md`
+- `core/knowledge/hq-core/hq-desktop/` (entire directory — 12 spec files for HQ Desktop)
 
 ### Updated Knowledge
 Review and merge:
-- `knowledge/hq-core/index-md-spec.md`
-- `knowledge/hq-core/thread-schema.md`
-- `knowledge/workers/skill-schema.md`
-- `knowledge/workers/state-machine.md`
-- `knowledge/workers/README.md`
-- `knowledge/projects/README.md`
+- `core/knowledge/hq-core/index-md-spec.md`
+- `core/knowledge/hq-core/thread-schema.md`
+- `core/knowledge/workers/skill-schema.md`
+- `core/knowledge/workers/state-machine.md`
+- `core/knowledge/workers/README.md`
+- `core/knowledge/projects/README.md`
 
 ### Updated Workers
-- `workers/dev-team/codex-coder/worker.yaml`
-- `workers/dev-team/codex-debugger/worker.yaml` + `skills/debug-issue.md`
-- `workers/dev-team/codex-reviewer/worker.yaml` + `skills/apply-best-practices.md` + `skills/improve-code.md`
+- `core/workers/dev-team/codex-coder/worker.yaml`
+- `core/workers/dev-team/codex-debugger/worker.yaml` + `skills/debug-issue.md`
+- `core/workers/dev-team/codex-reviewer/worker.yaml` + `skills/apply-best-practices.md` + `skills/improve-code.md`
 
 ### Breaking Changes
 - (none this release)
@@ -1788,11 +1857,11 @@ Copy from starter kit:
 - `.claude/commands/reanchor.md` — New "When to Use" section
 
 Updated knowledge:
-- `knowledge/Ralph/11-team-training-guide.md`
-- `knowledge/hq-core/index-md-spec.md`
-- `knowledge/hq-core/thread-schema.md`
-- `knowledge/workers/README.md`, `skill-schema.md`, `state-machine.md`, `templates/base-worker.yaml`
-- `knowledge/projects/README.md`
+- `core/knowledge/Ralph/11-team-training-guide.md`
+- `core/knowledge/hq-core/index-md-spec.md`
+- `core/knowledge/hq-core/thread-schema.md`
+- `core/knowledge/workers/README.md`, `skill-schema.md`, `state-machine.md`, `templates/base-worker.yaml`
+- `core/knowledge/projects/README.md`
 
 ### New File
 Create `workspace/threads/recent.md` — this is where `/checkpoint` and `/handoff` now write the recent threads table.
@@ -1822,14 +1891,14 @@ Copy to `.claude/commands/`:
 - `personal-interview.md` — Deep interview to populate profile + voice style
 
 ### New Worker Structure
-- `workers/sample-worker/` — Example worker to copy and customize
-- `workers/registry.yaml` — Now contains only the sample worker + commented template
+- `core/workers/sample-worker/` — Example worker to copy and customize
+- `core/workers/registry.yaml` — Now contains only the sample worker + commented template
 
 ### Removed (from starter kit)
 These directories are deleted in v5.0.0. **If you use them, keep your existing copies**:
-- `workers/dev-team/` (12 workers)
-- `workers/content-brand/`, `content-sales/`, `content-product/`, `content-legal/`, `content-shared/`
-- `workers/security-scanner/`
+- `core/workers/dev-team/` (12 workers)
+- `core/workers/content-brand/`, `content-sales/`, `content-product/`, `content-legal/`, `content-shared/`
+- `core/workers/security-scanner/`
 - `starter-projects/` (personal-assistant, social-media, code-worker)
 
 ### Updated Files
@@ -1844,21 +1913,21 @@ Copy from starter kit:
 - `.claude/commands/cleanup.md` — Genericized INDEX paths
 - `.claude/commands/reanchor.md` — Genericized company paths
 - `.claude/CLAUDE.md` — Merge carefully: new structure, 18 commands, sample-worker
-- `workers/registry.yaml` — v5.0
+- `core/workers/registry.yaml` — v5.0
 
 Updated knowledge:
-- `knowledge/Ralph/11-team-training-guide.md`
-- `knowledge/hq-core/index-md-spec.md`
-- `knowledge/projects/README.md`
-- `knowledge/workers/README.md`, `skill-schema.md`
+- `core/knowledge/Ralph/11-team-training-guide.md`
+- `core/knowledge/hq-core/index-md-spec.md`
+- `core/knowledge/projects/README.md`
+- `core/knowledge/workers/README.md`, `skill-schema.md`
 
 ### Migration Steps
 1. Copy `.claude/commands/personal-interview.md` (new)
 2. Copy updated commands (setup, execute-task, handoff, prd, run-project, search, search-reindex, cleanup, reanchor)
-3. Copy `workers/sample-worker/` directory (new example worker)
+3. Copy `core/workers/sample-worker/` directory (new example worker)
 4. Merge `.claude/CLAUDE.md` — update structure tree, commands table, workers section
-5. **If using bundled workers**: keep your existing `workers/dev-team/`, `workers/content-*/` directories — they still work
-6. **If NOT using bundled workers**: delete old worker directories, copy new `workers/registry.yaml`
+5. **If using bundled workers**: keep your existing `core/workers/dev-team/`, `core/workers/content-*/` directories — they still work
+6. **If NOT using bundled workers**: delete old worker directories, copy new `core/workers/registry.yaml`
 7. Copy updated knowledge files
 8. Delete `starter-projects/` if present
 9. Run `/search-reindex`
@@ -1866,7 +1935,7 @@ Updated knowledge:
 ### Breaking Changes
 - All bundled workers removed from starter kit. Existing copies in your HQ still work.
 - `/setup` no longer offers starter project selection. Use `/prd` + `/newworker`.
-- `workers/registry.yaml` format unchanged but contents stripped to sample-worker only.
+- `core/workers/registry.yaml` format unchanged but contents stripped to sample-worker only.
 
 ---
 
@@ -1880,7 +1949,7 @@ Copy to `.claude/commands/`:
 - `learn.md` — Automated learning pipeline (captures learnings, injects rules into source files, deduplicates)
 
 ### New Knowledge Files
-Copy to `knowledge/`:
+Copy to `core/knowledge/`:
 - `Ralph/11-team-training-guide.md` — Team training guide
 - `hq-core/checkpoint-schema.json` — Checkpoint data format
 - `hq-core/index-md-spec.md` — INDEX.md specification
@@ -1889,27 +1958,27 @@ Copy to `knowledge/`:
 All 13 existing public commands have been refreshed. Copy from starter kit:
 - `.claude/commands/*.md` (all public commands)
 - `.claude/CLAUDE.md` (major rewrite — merge carefully with your customizations)
-- `workers/registry.yaml` (v4.0)
+- `core/workers/registry.yaml` (v4.0)
 
 Updated workers:
-- `workers/dev-team/code-reviewer/skills/review-pr.md`
-- `workers/dev-team/frontend-dev/worker.yaml`
-- `workers/dev-team/qa-tester/worker.yaml`
-- `workers/dev-team/task-executor/skills/validate-completion.md`
+- `core/workers/dev-team/code-reviewer/skills/review-pr.md`
+- `core/workers/dev-team/frontend-dev/worker.yaml`
+- `core/workers/dev-team/qa-tester/worker.yaml`
+- `core/workers/dev-team/task-executor/skills/validate-completion.md`
 
 Updated knowledge:
-- `knowledge/hq-core/thread-schema.md`
-- `knowledge/workers/README.md`
-- `knowledge/workers/skill-schema.md`
-- `knowledge/workers/state-machine.md`
-- `knowledge/projects/README.md`
+- `core/knowledge/hq-core/thread-schema.md`
+- `core/knowledge/workers/README.md`
+- `core/knowledge/workers/skill-schema.md`
+- `core/knowledge/workers/state-machine.md`
+- `core/knowledge/projects/README.md`
 
 ### Removed
-- `knowledge/pure-ralph/` — Delete this directory. Pure Ralph patterns have been merged into the Ralph methodology core.
+- `core/knowledge/pure-ralph/` — Delete this directory. Pure Ralph patterns have been merged into the Ralph methodology core.
 
 ### New Features to Adopt
 
-**INDEX.md System:** Create INDEX.md files at key directories. See `knowledge/hq-core/index-md-spec.md` for spec. Commands like `/checkpoint`, `/handoff`, `/prd` auto-update them.
+**INDEX.md System:** Create INDEX.md files at key directories. See `core/knowledge/hq-core/index-md-spec.md` for spec. Commands like `/checkpoint`, `/handoff`, `/prd` auto-update them.
 
 **Knowledge Repos (Optional):** Knowledge folders can be independent git repos symlinked into HQ. See "Knowledge Repos" section in CLAUDE.md.
 
@@ -1919,15 +1988,15 @@ Updated knowledge:
 1. Copy `.claude/commands/learn.md` (new command)
 2. Copy all updated `.claude/commands/*.md`
 3. Merge `.claude/CLAUDE.md` — add INDEX.md System, Knowledge Repos, Learning System, Auto-Learn, and Search rules sections
-4. Copy `workers/registry.yaml`
+4. Copy `core/workers/registry.yaml`
 5. Copy new knowledge files (`Ralph/11-team-training-guide.md`, `hq-core/checkpoint-schema.json`, `hq-core/index-md-spec.md`)
 6. Copy updated knowledge and worker files
-7. Delete `knowledge/pure-ralph/`
+7. Delete `core/knowledge/pure-ralph/`
 8. Run `/search-reindex`
 9. Run `/cleanup --reindex` to generate INDEX.md files
 
 ### Breaking Changes
-- `knowledge/pure-ralph/` removed — if you reference it, update to `knowledge/Ralph/`
+- `core/knowledge/pure-ralph/` removed — if you reference it, update to `core/knowledge/Ralph/`
 
 ---
 
@@ -1948,7 +2017,7 @@ If you use any of these, keep your existing copies — they just won't be in fut
 ### Migration Steps
 1. Copy `.claude/CLAUDE.md` from starter kit (or merge the Auto-Handoff section into yours)
 2. Copy refreshed `.claude/commands/*.md` for the 16 public commands
-3. Copy `workers/registry.yaml`
+3. Copy `core/workers/registry.yaml`
 4. Run `/search-reindex`
 
 ### Breaking Changes
@@ -1966,7 +2035,7 @@ Copy this file to `.claude/commands/`:
 All 28 existing commands have been refreshed. Copy from starter kit to your HQ:
 - `.claude/commands/*.md` (all public commands)
 - `.claude/CLAUDE.md`
-- `workers/registry.yaml`
+- `core/workers/registry.yaml`
 
 ### Breaking Changes
 - (none)
@@ -2018,7 +2087,7 @@ The following skills have significant updates. Review and merge:
 - `execute-task.md` - Worker names aligned with dev-team IDs (`backend-dev`, `frontend-dev`, `dev-qa-tester`, etc.); added `content` task type
 
 ### New Knowledge
-Copy these directories to your `knowledge/`:
+Copy these directories to your `core/knowledge/`:
 - `pure-ralph/` - Branch workflow, learnings
 - `hq/` - Checkpoint schema
 - `projects/` - Project creation guidelines and templates
@@ -2098,21 +2167,21 @@ social-content/
 Copy all files from `.claude/commands/`.
 
 ### New Workers
-Copy `workers/dev-team/` and `workers/content-*/` directories.
+Copy `core/workers/dev-team/` and `core/workers/content-*/` directories.
 
 ### Knowledge Bases
 Copy new knowledge directories:
-- `knowledge/hq-core/`
-- `knowledge/ai-security-framework/`
-- `knowledge/design-styles/`
-- `knowledge/dev-team/`
+- `core/knowledge/hq-core/`
+- `core/knowledge/ai-security-framework/`
+- `core/knowledge/design-styles/`
+- `core/knowledge/dev-team/`
 
 ### Registry Update
-Replace `workers/registry.yaml` with the new v2.0 format.
+Replace `core/workers/registry.yaml` with the new v2.0 format.
 
 ### Breaking Changes
 - Registry format changed (version: "2.0")
-- Thread format changed (see `knowledge/hq-core/thread-schema.md`)
+- Thread format changed (see `core/knowledge/hq-core/thread-schema.md`)
 - `/ralph-loop` renamed to `/run-project`
 
 ---

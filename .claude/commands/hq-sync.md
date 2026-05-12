@@ -23,10 +23,10 @@ The same 4-tier resolver AppBar uses:
 
 1. `~/.hq/menubar.json` `hqPath` (canonical, written by hq-installer ≥0.1.28)
 2. `~/.hq/config.json` `hqFolderPath` (legacy installer path)
-3. Discovery via `core.yaml` signature in `~/HQ`, `~/hq`, `~/Documents/HQ`, `~/Documents/hq`, `~/Desktop/HQ`, `~/Desktop/hq` (first match wins)
+3. Discovery via `core/core.yaml` signature in `~/HQ`, `~/hq`, `~/Documents/HQ`, `~/Documents/hq`, `~/Desktop/HQ`, `~/Desktop/hq` (first match wins)
 4. `~/HQ` (last-resort default)
 
-Fast path: if cwd contains a `core.yaml`, use cwd. Otherwise read `~/.hq/menubar.json`.
+Fast path: if cwd contains a `core/core.yaml`, use cwd. Otherwise read `~/.hq/menubar.json`.
 
 ### Step 2 — Auth check
 
@@ -81,7 +81,7 @@ set -euo pipefail
 
 # Step 1: resolve HQ root
 hq_root=""
-if [ -f "$PWD/core.yaml" ]; then
+if [ -f "$PWD/core/core.yaml" ]; then
   hq_root="$PWD"
 elif [ -f "$HOME/.hq/menubar.json" ]; then
   hq_root="$(jq -r '.hqPath // empty' "$HOME/.hq/menubar.json" 2>/dev/null || true)"
@@ -91,7 +91,7 @@ if [ -z "$hq_root" ] && [ -f "$HOME/.hq/config.json" ]; then
 fi
 if [ -z "$hq_root" ]; then
   for d in "$HOME/HQ" "$HOME/hq" "$HOME/Documents/HQ" "$HOME/Documents/hq" "$HOME/Desktop/HQ" "$HOME/Desktop/hq"; do
-    if [ -f "$d/core.yaml" ]; then hq_root="$d"; break; fi
+    if [ -f "$d/core/core.yaml" ]; then hq_root="$d"; break; fi
   done
 fi
 if [ -z "$hq_root" ]; then

@@ -6,7 +6,7 @@ allowed-tools: Read, Glob, Grep, Bash, AskUserQuestion
 
 # Tutorial — Learn HQ by Doing
 
-Interactive, modular lessons teaching HQ principles through hands-on exercises against the user's real HQ. Each topic follows a 5-phase flow: Concept, Show, Exercise, Verify, Takeaway. Content sources include *Build Your Own AGI* (where available) and the `knowledge/public/getting-started/` docs — the book is a supporting reference, not a prerequisite.
+Interactive, modular lessons teaching HQ principles through hands-on exercises against the user's real HQ. Each topic follows a 5-phase flow: Concept, Show, Exercise, Verify, Takeaway. Content sources include *Build Your Own AGI* (where available) and the `core/knowledge/public/getting-started/` docs — the book is a supporting reference, not a prerequisite.
 
 **Ordering rationale:** Lead with *principles* and *daily workflow* — most users won't run `/run-project` orchestration until they've lived in HQ. Ralph-loop orchestration (Topic 8) and worker authoring (Topic 9) come last, where users have enough context to appreciate them.
 
@@ -38,14 +38,14 @@ If empty: proceed to Step 1.
 
 Silently assess HQ state:
 
-1. Check `workers/registry.yaml` — count company-specific workers (type: `company`)
+1. Check `core/workers/registry.yaml` — count company-specific workers (type: `company`)
 2. Check for any `prd.json` files in `companies/*/projects/` or `projects/`
 3. Count companies in `companies/manifest.yaml`
 
 Classify:
 - **FRESH**: 0 custom workers AND 0 projects
 - **ACTIVE**: has workers OR projects
-- **ADVANCED**: 3+ companies with workers/projects
+- **ADVANCED**: 3+ companies with core/workers/projects
 
 ### Present Menu
 
@@ -119,7 +119,7 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 ### Phase 5: Takeaway
 
 1. State the **one principle** from this topic (defined in `takeaway` field).
-2. Reference existing docs: "Quick reference: `knowledge/public/getting-started/cheatsheet.md`"
+2. Reference existing docs: "Quick reference: `core/knowledge/public/getting-started/cheatsheet.md`"
 3. Suggest next topic: "Next: try `/tutorial {next_topic}` or pick another from `/tutorial`"
 4. Book link: "Deeper dive: Ch {N} in *Build Your Own AGI* — [{your-book-site}](https://{your-book-site})"
 
@@ -131,8 +131,8 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 - **Chapter:** 3 — "The Loop That Changed Everything" *(mindset/philosophy portions only — not orchestrator mechanics)*
 - **Book lines:** 243-336
-- **Fallback:** `knowledge/public/getting-started/quick-start-guide.md` (Core Loop section), `knowledge/public/getting-started/learning-path.md` (Module 1-2)
-- **HQ refs:** `knowledge/public/getting-started/quick-start-guide.md`
+- **Fallback:** `core/knowledge/public/getting-started/quick-start-guide.md` (Core Loop section), `core/knowledge/public/getting-started/learning-path.md` (Module 1-2)
+- **HQ refs:** `core/knowledge/public/getting-started/quick-start-guide.md`
 - **Key quote:** "AI in ask mode is not AGI. AI in plan mode can be."
 - **Focus discipline:** This topic teaches the *mindset* — plan mode, fresh context, back pressure — NOT `/run-project` mechanics. Do not reference `/run-project`, sub-agents, or file locking here. Those live in Topic 8 (`ralph-loop`). If the user asks about orchestration, say: "That's Topic 8 — come back after you internalize the three principles."
 - **Show:**
@@ -149,13 +149,13 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 - **Chapter:** 4 — "Building Your HQ — The Operating System Nobody Gave You"
 - **Book lines:** 337-448
-- **Fallback:** `knowledge/public/getting-started/quick-start-guide.md` (Daily Workflow section), `knowledge/public/getting-started/cheatsheet.md`
-- **HQ refs:** `knowledge/public/getting-started/quick-start-guide.md`, `knowledge/public/getting-started/cheatsheet.md`
+- **Fallback:** `core/knowledge/public/getting-started/quick-start-guide.md` (Daily Workflow section), `core/knowledge/public/getting-started/cheatsheet.md`
+- **HQ refs:** `core/knowledge/public/getting-started/quick-start-guide.md`, `core/knowledge/public/getting-started/cheatsheet.md`
 - **Key quote:** "HQ is a filesystem with opinions." *(If no exact match in Ch 4, synthesize an equivalent from the chapter's opening framing and attribute as paraphrase.)*
 - **Focus discipline:** Daily workflow arc (`/startwork` → work → `/handoff`) + folder orientation. Do NOT teach `/run-project` here (Topic 8) or worker authoring (Topic 9). The goal: a user should know where to look and which command to run next on day one.
 - **Show:**
-  - List top-level HQ dirs: `ls -1 $HOME/Documents/HQ/` (filter hidden). For each of `.claude/`, `companies/`, `knowledge/`, `workers/`, `workspace/`, `repos/` — explain in one line what it holds
-  - Read `knowledge/public/getting-started/cheatsheet.md` — show the daily cadence table/section
+  - List top-level HQ dirs: `ls -1 $HOME/Documents/HQ/` (filter hidden). For each of `.claude/`, `companies/`, `core/knowledge/`, `core/workers/`, `workspace/`, `repos/` — explain in one line what it holds
+  - Read `core/knowledge/public/getting-started/cheatsheet.md` — show the daily cadence table/section
   - Show the typical command sequence from the book: `/startwork` → (work happens) → `/checkpoint` (mid-session) → `/handoff` (end)
 - **Exercise (Tier 1):**
   1. From `companies/manifest.yaml`, pick a company the user works in. Locate one file in each of: `companies/{co}/settings/`, `companies/{co}/knowledge/`, `companies/{co}/workers/`. Show the user what each holds
@@ -168,11 +168,11 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 - **Chapter:** 6 — "The Knowledge Problem"
 - **Book lines:** 545-636
-- **Fallback:** `knowledge/public/getting-started/quick-start-guide.md` (Knowledge section), `knowledge/public/getting-started/learning-path.md` (Module 5)
-- **HQ refs:** `knowledge/public/getting-started/quick-start-guide.md`
+- **Fallback:** `core/knowledge/public/getting-started/quick-start-guide.md` (Knowledge section), `core/knowledge/public/getting-started/learning-path.md` (Module 5)
+- **HQ refs:** `core/knowledge/public/getting-started/quick-start-guide.md`
 - **Key quote:** "HQ without knowledge is a library with empty shelves."
 - **Show:**
-  - List `knowledge/public/` directories — show what knowledge bases exist
+  - List `core/knowledge/public/` directories — show what knowledge bases exist
   - Count total knowledge files: `ls knowledge/public/` and any `companies/*/knowledge/`
   - Show the three knowledge repo patterns (inline, embedded git, symlink) with examples from the user's HQ
 - **Exercise (Tier 1):**
@@ -188,8 +188,8 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 - **Chapter:** 8 — "Session Hygiene — Why Your AI Gets Dumber Over Time"
 - **Book lines:** 739-828
-- **Fallback:** `knowledge/public/getting-started/cheatsheet.md`, `knowledge/public/getting-started/learning-path.md` (Module 8)
-- **HQ refs:** `knowledge/public/getting-started/cheatsheet.md`
+- **Fallback:** `core/knowledge/public/getting-started/cheatsheet.md`, `core/knowledge/public/getting-started/learning-path.md` (Module 8)
+- **HQ refs:** `core/knowledge/public/getting-started/cheatsheet.md`
 - **Key quote:** "Close early, close often. /handoff is your end-of-day save button."
 - **Show:**
   - Check `workspace/threads/handoff.json` — if exists, read and explain its structure (what gets preserved between sessions)
@@ -207,7 +207,7 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 - **Chapter:** 4 + 8 — "Building Your HQ" + "Session Hygiene"
 - **Book lines:** 337-448 (Ch 4), 739-828 (Ch 8) — read Ch 4 only, reference Ch 8 from session-hygiene
-- **Fallback:** `knowledge/public/getting-started/learning-path.md` (Module 8)
+- **Fallback:** `core/knowledge/public/getting-started/learning-path.md` (Module 8)
 - **HQ refs:** `.claude/CLAUDE.md` (Context Diet and Token Optimization sections only — do NOT read the full file)
 - **Key quote:** "Your AI goes from genius to mass-hallucinator the further into the context window you get."
 - **Show:**
@@ -226,8 +226,8 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 - **Chapter:** 7 — "How to Run a Project at Machine Speed"
 - **Book lines:** 637-738
-- **Fallback:** `knowledge/public/getting-started/quick-start-guide.md` (PRDs section), `knowledge/public/getting-started/learning-path.md` (Module 6)
-- **HQ refs:** `knowledge/public/getting-started/quick-start-guide.md`
+- **Fallback:** `core/knowledge/public/getting-started/quick-start-guide.md` (PRDs section), `core/knowledge/public/getting-started/learning-path.md` (Module 6)
+- **HQ refs:** `core/knowledge/public/getting-started/quick-start-guide.md`
 - **Key quote:** "Don't over-specify. State outcomes, not methods. Let the system discover the best approach."
 - **Show:**
   - Search for existing prd.json files: `qmd search "prd.json userStories" --json -n 5`
@@ -244,7 +244,7 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 - **Chapter:** 9 — "Scaling to Many — Running 6-8 Agents in Parallel"
 - **Book lines:** 829-936
-- **Fallback:** `knowledge/public/getting-started/learning-path.md` (Modules 9-10)
+- **Fallback:** `core/knowledge/public/getting-started/learning-path.md` (Modules 9-10)
 - **HQ refs:** `companies/manifest.yaml`
 - **Key quote:** "This is not multitasking. This is multiplying."
 - **Show:**
@@ -263,13 +263,13 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 - **Chapter:** 3 + 7 — orchestrator mechanics, not principles
 - **Book lines:** 243-336 (Ch 3, quickly re-read for loop diagram), 637-738 (Ch 7 for `/run-project` mechanics)
-- **Fallback:** `knowledge/public/getting-started/learning-path.md` (Module 3 + 7), `knowledge/public/hq-core/policies-spec.md`
-- **HQ refs:** `.claude/commands/run-project.md`, `settings/orchestrator.yaml`, `workspace/orchestrator/active-runs.json`
+- **Fallback:** `core/knowledge/public/getting-started/learning-path.md` (Module 3 + 7), `core/knowledge/public/hq-core/policies-spec.md`
+- **HQ refs:** `.claude/commands/run-project.md`, `core/settings/orchestrator.yaml`, `workspace/orchestrator/active-runs.json`
 - **Key quote:** "A loop with back pressure runs forever. A loop without it runs off a cliff."
 - **Focus discipline:** This is the *mechanics* topic. Assume the user already knows the three principles from Topic 1. Teach how HQ instantiates them: `/run-project` as the loop runner, sub-agents as fresh-context carriers, `passes: true/false` + file locking as back pressure, autonomous overnight runs as the payoff. Do NOT re-teach plan mode or fresh context here.
 - **Show:**
   - Read `.claude/commands/run-project.md` — walk through the orchestrator's task-selection loop
-  - Read `settings/orchestrator.yaml` — show file locking config, repo coordination rules
+  - Read `core/settings/orchestrator.yaml` — show file locking config, repo coordination rules
   - Read `workspace/orchestrator/active-runs.json` (if any runs exist) — show the cross-session coordination artifact
   - Annotate: where does each of the three principles live in the orchestrator code? (plan mode = sub-agent kickoff, fresh context = new Task per story, back pressure = `passes` field + file locks)
 - **Exercise (Tier 1):**
@@ -284,13 +284,13 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 - **Chapter:** 5 — "Workers, Not Agents"
 - **Book lines:** 449-544
-- **Fallback:** `knowledge/public/getting-started/quick-start-guide.md` (Workers section), `knowledge/public/getting-started/learning-path.md` (Module 4)
-- **HQ refs:** `workers/registry.yaml`
+- **Fallback:** `core/knowledge/public/getting-started/quick-start-guide.md` (Workers section), `core/knowledge/public/getting-started/learning-path.md` (Module 4)
+- **HQ refs:** `core/workers/registry.yaml`
 - **Key quote:** "Start with one. Build it right. Add the next one when the first is running reliably."
 - **Show:**
-  - Read `workers/registry.yaml` — count and categorize workers (shared vs company)
+  - Read `core/workers/registry.yaml` — count and categorize workers (shared vs company)
   - If user has company workers: pick one, read its `worker.yaml`, and annotate the four components (identity, context, skills, permissions)
-  - If no company workers: read one shared worker (e.g., `workers/public/qa-tester/worker.yaml`) as an example
+  - If no company workers: read one shared worker (e.g., `core/workers/public/qa-tester/worker.yaml`) as an example
 - **Exercise (Tier 1 + Tier 3 suggestion):**
   1. Read a worker.yaml and identify the four components: identity (name, role), context (knowledge paths), skills (what it can do), permissions (tool access)
   2. Suggest: "After this tutorial, try `/newworker` to create your first domain-specific worker. Use `/learn` to teach it as you go."

@@ -37,9 +37,9 @@ Pick scope via `AskUserQuestion` if ambiguous:
 |---|---|---|
 | `repo` | `<repo>/.out-of-scope/` | Rejection only applies to that codebase |
 | `co` | `companies/{co}/knowledge/out-of-scope/` | Rejection applies across the company's repos |
-| `hq` | `knowledge/public/out-of-scope/` | Rejection is HQ-wide policy ("we will never adopt X") |
+| `hq` | `core/knowledge/public/out-of-scope/` | Rejection is HQ-wide policy ("we will never adopt X") |
 
-Hidden `.out-of-scope/` (with leading dot) for repo scope mirrors Matt's convention. The plain `out-of-scope/` for `co` and `hq` because those are inside `knowledge/`, not at repo root, and hiddenness is unnecessary.
+Hidden `.out-of-scope/` (with leading dot) for repo scope mirrors Matt's convention. The plain `out-of-scope/` for `co` and `hq` because those are inside `core/knowledge/`, not at repo root, and hiddenness is unnecessary.
 
 ## Step 1 — Check for duplicates
 
@@ -134,7 +134,7 @@ When `/brainstorm`, `/prd`, or any feature-triage skill receives a feature reque
 grep -li "<keyword>" \
   <repo>/.out-of-scope/*.md \
   companies/{co}/knowledge/out-of-scope/*.md \
-  knowledge/public/out-of-scope/*.md \
+  core/knowledge/public/out-of-scope/*.md \
   2>/dev/null
 ```
 

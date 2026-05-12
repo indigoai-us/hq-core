@@ -2,7 +2,7 @@
 #
 # Read by .claude/hooks/load-policies-for-session.sh to filter the
 # cold-start policy digest. Lines tagged with `<!-- applies_to: TAG -->`
-# in `.claude/policies/_digest.md` are kept only if TAG is in `services:`
+# in `core/policies/_digest.md` are kept only if TAG is in `services:`
 # below or in the hook's HQ_FLOW_TAGS whitelist.
 #
 # Applies only when there is no active company (i.e. cwd is not inside

@@ -23,7 +23,7 @@ The engine is **three phases**, structured by data-dependency. Independent work 
 | **Phase B** | Localhost preview (inline-bg) ‖ Guardrails (script) | 2-way parallel via `&` + `wait` |
 | **Phase C** | Password gen → upload → wire password → announce → present link | sequential, hard-gated |
 
-**Hard ordering constraints (preserved from `.claude/policies/hq-deploy-reinforcement.md`):**
+**Hard ordering constraints (preserved from `core/policies/hq-deploy-reinforcement.md`):**
 
 - Identity (Phase A) MUST complete before Upload (Phase C)
 - Guardrails (Phase B) MUST gate Upload (Phase C)

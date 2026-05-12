@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/generate-index.sh
+# core/scripts/generate-index.sh
 # Reads all resources/*.yaml files and produces registry.yaml at the repo root.
 #
 # Usage:
@@ -11,7 +11,7 @@
 # Requirements:
 #   yq v4+ (https://github.com/mikefarah/yq) — brew install yq
 #
-# The registry.yaml follows the same pattern as workers/registry.yaml in HQ:
+# The registry.yaml follows the same pattern as core/workers/registry.yaml in HQ:
 # a flat list of lightweight index entries, each pointing to the full resource
 # file for detailed fields.
 

@@ -9,9 +9,9 @@ visibility: public
 
 # /run-project — Project Executor
 
-Executes PRD stories for a project. **Default mode is inline** — each incomplete story runs inside a fresh per-story Task sub-agent in the current Claude session. Pass `--ralph-mode` to run the legacy background orchestrator (`scripts/run-project.sh`) that spawns `claude -p` subprocesses for each story and polls state files from the parent. Pass `--session-mode` to use the plan-file-anchored inline shape.
+Executes PRD stories for a project. **Default mode is inline** — each incomplete story runs inside a fresh per-story Task sub-agent in the current Claude session. Pass `--ralph-mode` to run the legacy background orchestrator (`core/scripts/run-project.sh`) that spawns `claude -p` subprocesses for each story and polls state files from the parent. Pass `--session-mode` to use the plan-file-anchored inline shape.
 
-Policy: `.claude/policies/run-project-default-is-inline.md` (hard).
+Policy: `core/policies/run-project-default-is-inline.md` (hard).
 
 **Arguments:** $ARGUMENTS
 
@@ -30,17 +30,17 @@ Policy: `.claude/policies/run-project-default-is-inline.md` (hard).
 |------|------|-----|
 | **Default (inline)** | `/run-project {project}` with no execution-mode flag | Plan from PRD → user approves → execute each story in a per-story Task sub-agent (fresh context) that invokes `/execute-task` internally. See `## Inline Execution (Default)` below. |
 | **inline (explicit)** | `--inline` flag | Silent alias for default. Same behavior as bare invocation. |
-| **ralph-mode** | `--ralph-mode` flag | `nohup bash scripts/run-project.sh {project}` runs in background; each story spawns as an isolated `claude -p` subprocess; parent session polls `state.json`. Best for long unattended runs. See `## Ralph-Mode Execution (--ralph-mode)` below. |
+| **ralph-mode** | `--ralph-mode` flag | `nohup bash core/scripts/run-project.sh {project}` runs in background; each story spawns as an isolated `claude -p` subprocess; parent session polls `state.json`. Best for long unattended runs. See `## Ralph-Mode Execution (--ralph-mode)` below. |
 | **session-mode** | `--session-mode` flag | Plan distilled into Claude Code plan file (with full policy rule text) → `ExitPlanMode` approval → parent session executes each story directly (Edit/Write/Bash); bounded helper sub-agents only (review, QA, E2E, design audit). No `/execute-task` wrapper. See `## Session-Mode Execution` below. |
 | **tmux** | `--tmux` flag (implies `--ralph-mode`) | `run-project.sh` in tmux session (observe from phone) |
-| **direct** | `bash scripts/run-project.sh` (CI/nohup/cron) | Direct shell execution, outside `/run-project` scope |
+| **direct** | `bash core/scripts/run-project.sh` (CI/nohup/cron) | Direct shell execution, outside `/run-project` scope |
 
 **Dispatch (Step 1 — applies to every invocation):**
 
 Parse `$ARGUMENTS` into project name + passthrough flags:
 
-- `--status`: delegate synchronously via `bash scripts/run-project.sh --status` (display + exit)
-- `--dry-run`: delegate synchronously via `bash scripts/run-project.sh --dry-run {project}` (display + exit)
+- `--status`: delegate synchronously via `bash core/scripts/run-project.sh --status` (display + exit)
+- `--dry-run`: delegate synchronously via `bash core/scripts/run-project.sh --dry-run {project}` (display + exit)
 - `--help`: display flags table + exit
 - `--session-mode`: route to **Session-Mode Execution** flow (see below). Incompatible with `--inline`, `--ralph-mode`, `--tmux`, `--swarm`, `--codex-autofix`, `--dry-run`, `--status` (error immediately on conflict).
 - `--ralph-mode`: route to **Ralph-Mode Execution** flow (see below). Incompatible with `--inline` and `--session-mode` (error immediately on conflict).
@@ -49,11 +49,11 @@ Parse `$ARGUMENTS` into project name + passthrough flags:
 - Empty (no project name): error — project name required
 - All other flags pass through verbatim to the chosen execution path
 
-**Hard policy:** `.claude/policies/run-project-default-is-inline.md` — a bare `/run-project {project}` MUST NOT launch `nohup bash scripts/run-project.sh ...`. That path requires `--ralph-mode`.
+**Hard policy:** `core/policies/run-project-default-is-inline.md` — a bare `/run-project {project}` MUST NOT launch `nohup bash core/scripts/run-project.sh ...`. That path requires `--ralph-mode`.
 
 ## Ralph-Mode Execution (--ralph-mode)
 
-Opt-in background orchestrator. When `--ralph-mode` is passed, `/run-project` launches `scripts/run-project.sh` as a `nohup` background OS process and monitors progress via state file polling from the parent Claude session. Each story runs as an isolated `claude -p` subprocess (fresh context per story). Best for long unattended runs (8+ stories), CI-like execution, or when the user wants progress surfaced from a phone via `--tmux`.
+Opt-in background orchestrator. When `--ralph-mode` is passed, `/run-project` launches `core/scripts/run-project.sh` as a `nohup` background OS process and monitors progress via state file polling from the parent Claude session. Each story runs as an isolated `claude -p` subprocess (fresh context per story). Best for long unattended runs (8+ stories), CI-like execution, or when the user wants progress surfaced from a phone via `--tmux`.
 
 ### Step R2 — Validate PRD + Display Summary
 
@@ -74,11 +74,11 @@ The normal branch reads ~5K tokens into the parent, but warm-start (Step 2.5) dr
 ### Step R2.4 — Repo-Run Preflight (active-run coordination)
 
 **Why:** Prevents colliding with another live `/run-project` on the same repo.
-Policy: `.claude/policies/repo-run-coordination.md`. Registry:
+Policy: `core/policies/repo-run-coordination.md`. Registry:
 `workspace/orchestrator/active-runs.json`.
 
 1. Resolve `$REPO_PATH` from prd.json (`repoPath` or manifest reverse lookup).
-2. Run `bash scripts/repo-run-registry.sh check "$REPO_PATH"`.
+2. Run `bash core/scripts/repo-run-registry.sh check "$REPO_PATH"`.
 3. On exit 0: proceed to Step 2.5.
 4. On exit 2 (foreign owner found):
    - The registry prints the owner row(s) to stderr: command, project, PID, started_at.
@@ -110,7 +110,7 @@ Policy: `.claude/policies/repo-run-coordination.md`. Registry:
 ```bash
 # Bash tool with run_in_background: true
 cd /Users/{your-name}/Documents/HQ && \
-  nohup bash scripts/run-project.sh {project} {passthrough_flags} --no-permissions \
+  nohup bash core/scripts/run-project.sh {project} {passthrough_flags} --no-permissions \
   > workspace/orchestrator/{project}/run.log 2>&1 &
 echo "PID:$!"
 ```
@@ -128,7 +128,7 @@ Execute sequential Bash calls every ~30 seconds. Each poll:
 4. **Print new progress lines** to user (only lines not yet shown)
 5. **Branch on status**:
    - `in_progress` + PID alive → sleep 30, continue polling
-   - `paused` → read last 20 lines of `run.log`, surface pause reason. Prompt user: **resume** (`bash scripts/run-project.sh --resume {project} --no-permissions`) / **abort** (kill PID)
+   - `paused` → read last 20 lines of `run.log`, surface pause reason. Prompt user: **resume** (`bash core/scripts/run-project.sh --resume {project} --no-permissions`) / **abort** (kill PID)
    - `completed` → exit poll loop → Step 5
    - PID dead + status not `completed` → tail `run.log` for error context, report to user
 
@@ -185,7 +185,7 @@ Interactive, plan-first execution in the current session — **this is the defau
        2. Read prd.json fully — all userStories, metadata, qualityGates
        3. Filter incomplete stories (passes: false), sort by: dependsOn resolved → priority asc → array order
        4. For each story, classify task type using /execute-task's rules and determine worker sequence
-       5. Read applicable policies (companies/{co}/policies/*, repos/{repoPath}/.claude/policies/*, .claude/policies/*) — hard-enforcement only, frontmatter + rule
+       5. Read applicable policies (companies/{co}/policies/*, repos/{repoPath}/.claude/policies/*, core/policies/*) — hard-enforcement only, frontmatter + rule
        6. Read workspace/orchestrator/{project}/state.json if it exists (for resume context)
 
        RETURN CONTRACT — your FINAL message MUST be EXACTLY this format (markdown block followed by JSON block, nothing else):
@@ -342,7 +342,7 @@ Interactive, **plan-file-anchored** execution. The parent session executes each 
 
 **Use when:** you want hands-on steering of story execution with a durable policy context lock. Mid-complexity projects (2-6 stories) where intra-story decisions benefit from in-session reasoning.
 
-**Governing policy:** `.claude/policies/run-project-session-mode.md` (hard-enforcement). Preflight delegation governed by `.claude/policies/plan-mode-preflight-delegation.md`.
+**Governing policy:** `core/policies/run-project-session-mode.md` (hard-enforcement). Preflight delegation governed by `core/policies/plan-mode-preflight-delegation.md`.
 
 ### Step S1 — Incompatibility Check
 
@@ -363,7 +363,7 @@ Task({
     1. companies/{co}/projects/{project}/prd.json (use qmd search if path ambiguous)
     2. companies/{co}/policies/*.md — hard + soft (skip _digest.md, example-policy.md, README.md)
     3. {repoPath}/.claude/policies/*.md — hard + soft (if repoPath present)
-    4. .claude/policies/*.md — hard-enforcement ONLY, filtered to applies_to: [run-project, execute-task, task-execution, deploy, commit]
+    4. core/policies/*.md — hard-enforcement ONLY, filtered to applies_to: [run-project, execute-task, task-execution, deploy, commit]
     5. workspace/orchestrator/{project}/state.json (if present, for resume context)
     6. companies/manifest.yaml — extract entry for {co}: vercel_team, aws_profile, dns_zones, services
 
@@ -503,19 +503,19 @@ Launch the bash orchestrator directly for long-running, unattended execution:
 
 ```bash
 # Start or resume (auto-detected)
-bash scripts/run-project.sh {project} --no-permissions
+bash core/scripts/run-project.sh {project} --no-permissions
 
 # Explicit resume
-bash scripts/run-project.sh --resume {project} --no-permissions
+bash core/scripts/run-project.sh --resume {project} --no-permissions
 
 # Dry run — show story order without executing
-bash scripts/run-project.sh --dry-run {project}
+bash core/scripts/run-project.sh --dry-run {project}
 
 # With options
-bash scripts/run-project.sh {project} --model sonnet --no-permissions --verbose
+bash core/scripts/run-project.sh {project} --model sonnet --no-permissions --verbose
 
 # Check all project statuses
-bash scripts/run-project.sh --status
+bash core/scripts/run-project.sh --status
 ```
 
 ## Flags
@@ -535,7 +535,7 @@ bash scripts/run-project.sh --status
 | `--checkin-interval N` | 180 | Seconds between check-in status prints |
 | `--codex-autofix` | off | Auto-fix P1/P2 codex review findings (opt-in) |
 | `--inline` | (default) | **Silent alias for default** — `/run-project {project}` and `/run-project {project} --inline` behave identically. Kept for back-compat |
-| `--ralph-mode` | off | Opt into background orchestrator: `nohup bash scripts/run-project.sh {project}` + state-file polling. Each story runs as an isolated `claude -p` subprocess. Incompatible with `--inline` and `--session-mode` |
+| `--ralph-mode` | off | Opt into background orchestrator: `nohup bash core/scripts/run-project.sh {project}` + state-file polling. Each story runs as an isolated `claude -p` subprocess. Incompatible with `--inline` and `--session-mode` |
 | `--session-mode` | off | Plan-file-anchored inline execution with full policy rule text distilled into `~/.claude/plans/{slug}.md`. Parent executes stories directly (no `/execute-task` sub-agent wrapper) |
 
 ## How It Works (Ralph Loop)
@@ -547,7 +547,7 @@ Before entering the Ralph loop:
 1. Read prd.json → extract `metadata.company` (or resolve from `metadata.repoPath` via manifest)
 2. Load `companies/{co}/policies/` (skip `example-policy.md`) — read all
 3. If `metadata.repoPath` set, check `{repoPath}/.claude/policies/` — read all
-4. Load `.claude/policies/` — filter to policies with triggers relevant to "task execution", "deployment", "commit"
+4. Load `core/policies/` — filter to policies with triggers relevant to "task execution", "deployment", "commit"
 5. Pass applicable policy summaries to each `claude -p "/execute-task ..."` invocation context
 
 Ensures orchestrator respects hard constraints (deploy safety, credential isolation) before delegating to execute-task.
@@ -624,7 +624,7 @@ Falls back to sequential for single candidates or stories without `files[]` decl
 
 **Check-ins**: Both swarm and sequential modes print periodic status (story IDs, PIDs, elapsed time, output sizes).
 
-**Config** (`settings/orchestrator.yaml`):
+**Config** (`core/settings/orchestrator.yaml`):
 ```yaml
 swarm:
   max_concurrency: 4
@@ -678,7 +678,7 @@ State: `workspace/orchestrator/{project}/state.json` + `progress.txt`
 ## --status (in-session)
 
 If $ARGUMENTS is `--status`:
-1. Run `bash scripts/run-project.sh --status`
+1. Run `bash core/scripts/run-project.sh --status`
 2. Display formatted output
 
 ## Rules
@@ -695,13 +695,13 @@ If $ARGUMENTS is `--status`:
 - **Back pressure** — enforced inside `/execute-task`, not by orchestrator
 - **Policy-aware** — load company + repo + global policies before first task. Hard-enforcement policies block the loop if violated
 - **ALWAYS**: Use `"userStories"` key in prd.json (not `"stories"`) — `run-project.sh` greps for this exact key name
-- **Default is inline (hard)** — a bare `/run-project {project}` executes stories in-session via per-story Task sub-agents. It does NOT launch `scripts/run-project.sh`. That requires `--ralph-mode`. Policy: `.claude/policies/run-project-default-is-inline.md`.
+- **Default is inline (hard)** — a bare `/run-project {project}` executes stories in-session via per-story Task sub-agents. It does NOT launch `core/scripts/run-project.sh`. That requires `--ralph-mode`. Policy: `core/policies/run-project-default-is-inline.md`.
 - **`--inline` is a silent alias for default** — no warning, no error, identical behavior
 - **Default/inline isolation** — incompatible with `--ralph-mode`, `--session-mode`, `--swarm`, `--tmux`, `--codex-autofix` (error if combined)
 - **Default/inline respects `--resume`** — skips completed stories, picks up from next incomplete
 - **Default/inline uses Task/Agent tool** — worker sub-agents via Task tool (in-process), not `claude -p` (process isolation)
 - **Default/inline preserves progress** — user can stop between stories; partial progress saved in prd.json + state.json
-- **`--ralph-mode` launches `scripts/run-project.sh`** — the only execution path that spawns the background orchestrator. Stories run as isolated `claude -p` subprocesses; parent session polls `state.json`. Incompatible with `--inline` and `--session-mode`.
+- **`--ralph-mode` launches `core/scripts/run-project.sh`** — the only execution path that spawns the background orchestrator. Stories run as isolated `claude -p` subprocesses; parent session polls `state.json`. Incompatible with `--inline` and `--session-mode`.
 - **`--ralph-mode` implied by `--tmux`** — observing from phone requires the background orchestrator
 - **Plan-mode preflight delegation (hard)** — when `/run-project` is invoked under Claude Code plan mode, the parent MUST NOT read prd.json, policies, or state.json directly. Spawn a `Plan` sub-agent to do the reads and return a condensed plan + JSON. Parent only ever holds the summary. This applies to all modes (default/inline, `--ralph-mode`, `--session-mode`). Rationale: plan mode defers compaction until after `ExitPlanMode` approval, so direct reads accumulate 10K+ tokens that linger across the entire execution run.
 
@@ -758,7 +758,7 @@ This example shows `/run-project campaign-migration` executing through multiple 
 ### Start Execution
 
 ```bash
-bash scripts/run-project.sh campaign-migration --no-permissions
+bash core/scripts/run-project.sh campaign-migration --no-permissions
 ```
 
 ### Iteration 1: CM-001 (Database Schema)

@@ -1,0 +1,34 @@
+# hq-core-staging — Per-repo audit overrides
+# This file is deep-merged with org defaults at workflow runtime.
+# Only include fields you want to override.
+
+remediation:
+  # Graduation path: report-only (Phase 1) → review-required (Phase 2) → auto-merge (Phase 3)
+  # Phase 2: full Ralph loop runs (audit → fix → push → re-audit → ...) on an
+  # audit branch. When loop terminates clean, the audit PR stays as a DRAFT
+  # for human review and merge — bot never merges anything itself.
+  mode: review-required
+  iteration_cap: 5     # max bot iterations per audit loop (org default)
+
+scanners:
+  pii:
+    enabled: true
+  denylist:
+    enabled: true
+  domains:
+    enabled: true
+  slugs:
+    enabled: true
+
+notifications:
+  # Slack notifications. Bot posts a Block Kit summary to the channel below
+  # at each terminal action (clean / fixed / stuck / merged).
+  # Requires the SLACK_BOT_TOKEN repo secret with chat:write scope.
+  slack:
+    enabled: true
+    channel: "#hq-core"
+    events:
+      - findings_clean
+      - findings_fixed
+      - findings_stuck
+      - audit_merged

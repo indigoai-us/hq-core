@@ -11,11 +11,14 @@
 #     workspace/sessions/.current to point at it.
 #   - Read company_slug from meta.yaml. If unset, run NO company hooks.
 #     This is intentional — startwork (or any skill) is responsible for
-#     calling `scripts/hq-session.sh set company <slug>` once context is
+#     calling `core/scripts/hq-session.sh set company <slug>` once context is
 #     resolved. Until that happens, only top-level .claude/hooks fire.
 #
-# Discovery (active company only):
-#   companies/<active-slug>/hooks/<event-name>/*.sh
+# Discovery (in dispatch order):
+#   core/hooks/<event-name>/*.sh                  — always-on repo defaults
+#   personal/hooks/<event-name>/*.sh              — always-on user-global
+#   core/packages/*/hooks/<event-name>/*.sh       — always-on per installed pack
+#   companies/<active-slug>/hooks/<event-name>/*.sh — active-company only
 #
 # Filename convention:
 #   <NN>-<matcher>--<name>.sh   tool-scoped (PreToolUse/PostToolUse only)
@@ -107,24 +110,62 @@ if [ -n "$SESSION_ID" ]; then
   ACTIVE_COMPANY="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META_FILE")"
 fi
 
+collect_from_dir() {
+  local dir="$1"
+  [ -d "$dir" ] || return 0
+  local f
+  for f in "$dir"/*.sh; do
+    [ -e "$f" ] || continue
+    hooks+=("$f")
+  done
+}
+
+# Collect within each source, sorted alphabetically by basename. Sources are
+# concatenated in order so that core → personal → packs → active-company is the
+# dispatch sequence.
+sort_group() {
+  local -a group=("$@")
+  [ ${#group[@]} -gt 0 ] || return 0
+  printf '%s\n' "${group[@]}" | awk -F/ '{print $NF"\t"$0}' | sort | cut -f2-
+}
+
 hooks=()
-if [ -n "$ACTIVE_COMPANY" ]; then
-  hook_dir="$REPO_ROOT/companies/$ACTIVE_COMPANY/hooks/$EVENT"
-  if [ -d "$hook_dir" ]; then
-    for f in "$hook_dir"/*.sh; do
-      [ -e "$f" ] || continue
-      hooks+=("$f")
-    done
-  fi
+ordered_hooks=()
+
+# 1. core/hooks/<event>
+hooks=()
+collect_from_dir "$REPO_ROOT/core/hooks/$EVENT"
+if [ ${#hooks[@]} -gt 0 ]; then
+  while IFS= read -r line; do ordered_hooks+=("$line"); done < <(sort_group "${hooks[@]}")
 fi
 
+# 2. personal/hooks/<event>
+hooks=()
+collect_from_dir "$REPO_ROOT/personal/hooks/$EVENT"
 if [ ${#hooks[@]} -gt 0 ]; then
-  sorted=()
-  while IFS= read -r line; do
-    sorted+=("$line")
-  done < <(printf '%s\n' "${hooks[@]}" | awk -F/ '{print $NF"\t"$0}' | sort | cut -f2-)
-  hooks=("${sorted[@]}")
+  while IFS= read -r line; do ordered_hooks+=("$line"); done < <(sort_group "${hooks[@]}")
 fi
+
+# 3. core/packages/*/hooks/<event>  (always-on per installed pack)
+hooks=()
+for pack_dir in "$REPO_ROOT"/core/packages/*/; do
+  [ -d "$pack_dir" ] || continue
+  collect_from_dir "${pack_dir}hooks/$EVENT"
+done
+if [ ${#hooks[@]} -gt 0 ]; then
+  while IFS= read -r line; do ordered_hooks+=("$line"); done < <(sort_group "${hooks[@]}")
+fi
+
+# 4. companies/<active-slug>/hooks/<event>  (active-company only)
+hooks=()
+if [ -n "$ACTIVE_COMPANY" ]; then
+  collect_from_dir "$REPO_ROOT/companies/$ACTIVE_COMPANY/hooks/$EVENT"
+fi
+if [ ${#hooks[@]} -gt 0 ]; then
+  while IFS= read -r line; do ordered_hooks+=("$line"); done < <(sort_group "${hooks[@]}")
+fi
+
+hooks=("${ordered_hooks[@]+${ordered_hooks[@]}}")
 
 exit_code=0
 plain_buf=""

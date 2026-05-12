@@ -18,7 +18,7 @@ Before any scan, verify all gates. Each is a hard stop.
 
 If the session is in Plan Mode (active instructions restrict edits to a single `~/.claude/plans/*.md` file), STOP and print verbatim:
 
-> `/import-claude` writes to `workspace/imports/`, `companies/`, `workers/`, and `modules/` — paths Plan Mode forbids. Exit plan mode (Shift+Tab) and re-run, or review the approved plan at `~/.claude/plans/` first.
+> `/import-claude` writes to `workspace/imports/`, `companies/`, `core/workers/`, and `core/modules/` — paths Plan Mode forbids. Exit plan mode (Shift+Tab) and re-run, or review the approved plan at `~/.claude/plans/` first.
 
 Do not degrade. Do not redirect writes. Exit the skill.
 
@@ -140,7 +140,7 @@ Otherwise, spawn a Task sub-agent:
    - `question`: "Create HQ company `{slug}`? ({signal_strength} signal — {rationale})"
    - `header`: "Ontology"
    - `options`:
-     - `Create {slug}` — "Runs /newcompany {slug} and seeds knowledge/context.md"
+     - `Create {slug}` — "Runs /newcompany {slug} and seeds core/knowledge/context.md"
      - `Adjust slug` — "Rename before creating" *(follow-up free-text prompt)*
      - `Defer` — "Skip for now; revisit later"
      - `Reject` — "Don't create; ontology call was wrong"
@@ -214,10 +214,10 @@ Update registries immediately after each category finishes — limits blast radi
 | commands | File-presence only |
 | skills | Copy to `.claude/skills/{name}/`; if `worker.yaml` sibling exists → route to worker synthesis (Phase 6) |
 | hooks | Copy to `.claude/hooks/`; add matcher to `settings.json#hooks[]`; verify `hook-gate.sh --list` shows it |
-| policies | Validate frontmatter against `knowledge/public/hq-core/policies-spec.md`; place at `.claude/policies/` or `companies/{co}/policies/` |
+| policies | Validate frontmatter against `core/knowledge/public/hq-core/policies-spec.md`; place at `core/policies/` or `companies/{co}/policies/` |
 | agents | Copy to `.claude/agents/` |
 | claude_md | Merge into nearest-root CLAUDE.md (show diff, confirm before write) |
-| knowledge_dirs | Create repo symlink per pattern choice; append entry to `modules/modules.yaml` with `strategy/access/paths` |
+| knowledge_dirs | Create repo symlink per pattern choice; append entry to `core/modules/modules.yaml` with `strategy/access/paths` |
 | claude_repos | Per-repo prompt: `Symlink / Move / Skip`; update `manifest.yaml` company `repos:` array on adoption |
 
 **No null fields** — every registry write must include every required field from the schema. If a field is unknown, ask before writing.
@@ -250,19 +250,19 @@ For each detected cluster, **AskUserQuestion**:
 
 Registration order is strict — violate this and the worker's knowledge pointers won't resolve:
 
-1. Register knowledge dirs in `modules/modules.yaml` (already done in Phase 5 — verify)
+1. Register knowledge dirs in `core/modules/modules.yaml` (already done in Phase 5 — verify)
 2. Inline-invoke `/newworker` with pre-filled fields:
    - `name`: inferred from dominant keyword
-   - `scope`: company-scoped if cluster maps to a known slug, else `workers/public/`
+   - `scope`: company-scoped if cluster maps to a known slug, else `core/workers/public/`
    - `skills`: paths of imported skill dirs
    - `knowledge`: paths of imported knowledge dirs (must already be registered)
    - `description`: synthesized from SKILL.md frontmatter (user edits in the /newworker flow)
-3. `/newworker` writes `worker.yaml`, appends to `workers/registry.yaml`, and returns.
+3. `/newworker` writes `worker.yaml`, appends to `core/workers/registry.yaml`, and returns.
 4. Record the cluster in `$SCAN_DIR/synthesized-workers.json`.
 
 ### Shared vs company default
 
-If the cluster has no clear company anchor and the user picks `Create worker` without specifying scope: default to **loose skills** (do not auto-promote to `workers/public/`). Synthesis into shared scope requires explicit accept. This is the conservative default per the approved plan's unresolved-question #5.
+If the cluster has no clear company anchor and the user picks `Create worker` without specifying scope: default to **loose skills** (do not auto-promote to `core/workers/public/`). Synthesis into shared scope requires explicit accept. This is the conservative default per the approved plan's unresolved-question #5.
 
 ## Phase 7: Reindex & Summary
 
@@ -321,7 +321,7 @@ Print the summary path + `git status` diff preview (not commit — user commits)
 - **Conflict decision required** — `conflict.exists && !hash_match` cannot be auto-resolved. User picks.
 - **AskUserQuestion only** — every user-facing choice goes through AskUserQuestion. Never markdown numbered lists.
 - **Inline scaffolding** — unknown company slugs invoke `/newcompany` inline; worker clusters invoke `/newworker` inline. No deferred "you should run X later" hand-waves.
-- **Registry completeness** — every write to `manifest.yaml` / `workers/registry.yaml` / `modules/modules.yaml` fills all required schema fields. No nulls. If a field is unknown, ask.
+- **Registry completeness** — every write to `manifest.yaml` / `core/workers/registry.yaml` / `core/modules/modules.yaml` fills all required schema fields. No nulls. If a field is unknown, ask.
 - **Generic-user safety** — report.json and summary.md substitute literal `$HOME` for `$HOME/` prefixes. Scanner's `sub_home()` enforces this.
 - **Plans are never imported** — they stay at `~/.claude/plans/`. Only feed ontology inference.
 - **Per-repo prompt** — every claude-bearing repo gets its own prompt. No batch-adopt.
@@ -331,9 +331,9 @@ Print the summary path + `git status` diff preview (not commit — user commits)
 
 ## Files this skill touches
 
-**Reads:** `companies/manifest.yaml`, `workers/registry.yaml`, `modules/modules.yaml`, `workspace/imports/index.json`, user's disk (per scope).
+**Reads:** `companies/manifest.yaml`, `core/workers/registry.yaml`, `core/modules/modules.yaml`, `workspace/imports/index.json`, user's disk (per scope).
 
-**Writes:** `workspace/imports/{scan_id}/` (report, ontology, summary, synthesized-workers), `workspace/imports/index.json`, `.claude/{commands,skills,hooks,policies,agents}/`, `.claude/settings.json`, `companies/{co}/{knowledge,policies,repos}/`, `companies/manifest.yaml`, `workers/registry.yaml`, `modules/modules.yaml`, `CLAUDE.md` (on user confirm).
+**Writes:** `workspace/imports/{scan_id}/` (report, ontology, summary, synthesized-workers), `workspace/imports/index.json`, `.claude/{commands,skills,hooks,policies,agents}/`, `.claude/settings.json`, `companies/{co}/{knowledge,policies,repos}/`, `companies/manifest.yaml`, `core/workers/registry.yaml`, `core/modules/modules.yaml`, `CLAUDE.md` (on user confirm).
 
 **Never touches:** `~/.claude/plans/` (read-only for ontology), `~/.ssh/`, `~/.aws/`, `~/.gnupg/`, `.env`, any shell rc file (per HQ deny lists).
 

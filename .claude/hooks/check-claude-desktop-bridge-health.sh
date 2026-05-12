@@ -13,7 +13,7 @@
 # policy claude-desktop-bridge-state-zombie.md.
 #
 # Always exits 0 — this is advisory, not a blocker.
-# Policy reference: .claude/policies/claude-desktop-bridge-state-zombie.md
+# Policy reference: core/policies/claude-desktop-bridge-state-zombie.md
 
 set -euo pipefail
 
@@ -112,7 +112,7 @@ Mitigation (from policy claude-desktop-bridge-state-zombie):
 
 File: $BRIDGE_STATE
 Logs: $LOG_DIR/main*.log
-Full policy: .claude/policies/claude-desktop-bridge-state-zombie.md
+Full policy: core/policies/claude-desktop-bridge-state-zombie.md
 </bridge-health-warning>
 EOF
 

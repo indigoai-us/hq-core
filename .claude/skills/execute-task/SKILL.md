@@ -141,7 +141,7 @@ This enables graceful degradation — the pipeline continues without Codex but l
 
 Guard against concurrent execution of the same story.
 
-1. **Load config**: Read `settings/orchestrator.yaml` → `checkout.enabled` and `checkout.stale_timeout_minutes` (defaults: `true`, `30`).
+1. **Load config**: Read `core/settings/orchestrator.yaml` → `checkout.enabled` and `checkout.stale_timeout_minutes` (defaults: `true`, `30`).
 2. **Skip if disabled**: If `checkout.enabled: false`, skip this step entirely and proceed to step 3.
 3. **Read state.json**: Read `workspace/orchestrator/{project}/state.json`. If missing, skip — no checkout to check.
 4. **Check for existing checkout**: If `current_task.id` matches this story AND `current_task.checkedOutBy` is not null:
@@ -290,7 +290,7 @@ enhancement:
 
 - **Skip product-planner** if the story already has detailed acceptance criteria.
 - **Skip acceptance-test-writer** if `e2eTests` is empty or absent.
-- **Filter by active workers** — check `workers/registry.yaml` and skip any worker whose `status` is not `active`.
+- **Filter by active workers** — check `core/workers/registry.yaml` and skip any worker whose `status` is not `active`.
 
 **Worker phase descriptions** (for execution plan display):
 
@@ -352,7 +352,7 @@ Write to `workspace/orchestrator/{project}/executions/{task-id}.json`:
 
 ### 5.0.5 Acquire Story Checkout
 
-If `checkout.enabled: true` (from `settings/orchestrator.yaml`):
+If `checkout.enabled: true` (from `core/settings/orchestrator.yaml`):
 
 1. **Read state.json**: Read `workspace/orchestrator/{project}/state.json`. If missing, create with minimal structure: `{"version":1,"current_task":{},"updated_at":"{ISO8601}"}`.
 
@@ -377,7 +377,7 @@ If `checkout.enabled: false`: skip this step silently.
 ### 5.1 Audit: Task Started
 
 ```bash
-scripts/audit-log.sh append \
+core/scripts/audit-log.sh append \
   --event task_started \
   --project {project} \
   --story-id {task.id} \
@@ -390,7 +390,7 @@ scripts/audit-log.sh append \
 
 If the story has a non-empty `files` array and prd metadata has `repoPath`:
 
-1. **Load config**: Read `settings/orchestrator.yaml` → `file_locking`.
+1. **Load config**: Read `core/settings/orchestrator.yaml` → `file_locking`.
 2. **Skip if disabled**: If `file_locking.enabled: false`, skip this step entirely.
 3. **Read existing locks**: Read `{repoPath}/.file-locks.json` (create if missing: `{"version":1,"locks":[]}`).
 4. **Stale lock cleanup**: For each existing lock, check if owner PID is running via `kill -0 {pid} 2>/dev/null`. If not running AND lock is older than `stale_lock_timeout_minutes`, remove it.
@@ -439,13 +439,13 @@ Skip silently if no `linearIssueId` or no credentials configured. Never block ex
 
 ### 5.6 Load Applicable Policies
 
-Load policies via frontmatter-only gate. Use `bash scripts/read-policy-frontmatter.sh {file}` for each policy file — this reads frontmatter only (not full body), keeping context lean.
+Load policies via frontmatter-only gate. Use `bash core/scripts/read-policy-frontmatter.sh {file}` for each policy file — this reads frontmatter only (not full body), keeping context lean.
 
 1. **Company policies**: Determine the active company from `prd.metadata.company` or manifest repo lookup. Read frontmatter for each file in `companies/{co}/policies/` (skip `example-policy.md`). For any policy with `enforcement: hard` whose `trigger` matches the current task, additionally read its `## Rule` section via targeted Read + range.
 
 2. **Repo policies**: If working inside a repo, check `{repoPath}/.claude/policies/` if it exists. Same frontmatter-only pattern.
 
-3. **Global policies**: Prefer the compiled digest at `.claude/policies/_digest.md` if present (auto-loaded by SessionStart hook). If no digest, filter policies in `.claude/policies/` by `trigger` — don't load all.
+3. **Global policies**: Prefer the compiled digest at `core/policies/_digest.md` if present (auto-loaded by SessionStart hook). If no digest, filter policies in `core/policies/` by `trigger` — don't load all.
 
 Include applicable policy rules in worker prompts (step 6b) under `### Applicable Policies`.
 
@@ -460,9 +460,9 @@ For each worker in the sequence, spawn a sub-agent via the Task tool. Each sub-a
 
 #### 6a. Load Worker Config
 
-1. Read `workers/registry.yaml` to find the worker path:
+1. Read `core/workers/registry.yaml` to find the worker path:
    ```bash
-   grep -A 4 "  - id: {worker-id}$" workers/registry.yaml | grep "path:"
+   grep -A 4 "  - id: {worker-id}$" core/workers/registry.yaml | grep "path:"
    ```
    Extract the `path:` value. This may resolve to `workers/public/dev-team/{worker-id}/`, `workers/public/{worker-id}/`, or `companies/{co}/workers/{worker-id}/`.
 
@@ -753,7 +753,7 @@ After each phase, update `workspace/orchestrator/{project}/executions/{task-id}.
 #### 6e.5 Audit: Phase Completed
 
 ```bash
-scripts/audit-log.sh append \
+core/scripts/audit-log.sh append \
   --event phase_completed \
   --project {project} \
   --story-id {task.id} \
@@ -986,7 +986,7 @@ Best-effort — never block task completion. Log and continue on failure.
 #### 7c.0 Audit: Task Completed
 
 ```bash
-scripts/audit-log.sh append \
+core/scripts/audit-log.sh append \
   --event task_completed \
   --project {project} \
   --story-id {task.id} \
@@ -1017,7 +1017,7 @@ PRD updated: passes: true
 
 #### 7c.5 iMessage Notify (if configured)
 
-Check `settings/contacts.yaml` for contacts whose `context` list includes the current project name. For each matching contact, send a brief completion update via iMessage:
+Check `core/settings/contacts.yaml` for contacts whose `context` list includes the current project name. For each matching contact, send a brief completion update via iMessage:
 
 ```bash
 # Count completed vs total stories
@@ -1080,7 +1080,7 @@ This ensures the failure becomes a rule BEFORE asking the user what to do.
 #### 8.0.6 Audit: Task Failed
 
 ```bash
-scripts/audit-log.sh append \
+core/scripts/audit-log.sh append \
   --event task_failed \
   --project {project} \
   --story-id {task.id} \

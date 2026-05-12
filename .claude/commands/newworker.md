@@ -16,9 +16,9 @@ Create a new worker with proper structure, skills, and verification.
 
 ## Context to Load First
 
-1. `knowledge/public/workers/README.md` - Worker framework
-2. `knowledge/public/workers/templates/` - Worker templates
-3. `workers/registry.yaml` - Existing workers
+1. `core/knowledge/public/workers/README.md` - Worker framework
+2. `core/knowledge/public/workers/templates/` - Worker templates
+3. `core/workers/registry.yaml` - Existing workers
 
 ## Interactive Setup
 
@@ -45,10 +45,10 @@ Ask these questions (can batch related ones):
 
 ### 5. Context Needs
 - **What project context does this worker need?** (overview, architecture, domain, decisions, stakeholders, learnings)
-- **Does it need more or less than its type's defaults?** (see `knowledge/context-needs/registry.yaml`)
+- **Does it need more or less than its type's defaults?** (see `core/knowledge/context-needs/registry.yaml`)
 - **Any external context required?** (brand guidelines, API specs, voice guides, etc.)
 
-**Tip:** Reference `knowledge/context-needs/README.md` for context file descriptions. Most workers can use their type's defaults.
+**Tip:** Reference `core/knowledge/context-needs/README.md` for context file descriptions. Most workers can use their type's defaults.
 
 ### 6. Verification
 - **What checks ensure quality?** (type checks, character limits, voice consistency)
@@ -91,7 +91,7 @@ verification:
   approval_required: {true|false}
 
 context_needs:
-  # Reference knowledge/context-needs/registry.yaml for type defaults
+  # Reference core/knowledge/context-needs/registry.yaml for type defaults
   # Only include if overriding type defaults
   extends: {WorkerType}  # Inherit type defaults
   overrides:  # Optional: override specific needs
@@ -113,7 +113,7 @@ instructions: |
 
 ### Update Registry
 
-Add to `workers/registry.yaml`:
+Add to `core/workers/registry.yaml`:
 
 ```yaml
   - id: {worker-id}
@@ -125,7 +125,7 @@ Add to `workers/registry.yaml`:
 
 ### Update Context Needs Registry (if overriding defaults)
 
-If the worker has context needs different from its type's defaults, add to `knowledge/context-needs/registry.yaml`:
+If the worker has context needs different from its type's defaults, add to `core/knowledge/context-needs/registry.yaml`:
 
 ```yaml
 workers:
@@ -176,10 +176,10 @@ Workers can get tasks from:
 
 ### Register Worker (Mandatory)
 
-1. **registry.yaml**: Append entry to `workers/registry.yaml`:
+1. **registry.yaml**: Append entry to `core/workers/registry.yaml`:
    ```yaml
    - id: {worker-id}
-     path: workers/public/{worker-id}/               # shared workers
+     path: core/workers/public/{worker-id}/               # shared workers
      # OR
      path: companies/{company}/workers/{worker-id}/  # company workers
      type: {WorkerType}
@@ -192,7 +192,7 @@ Workers can get tasks from:
 
 2. **manifest.yaml**: If worker has `company:`, append worker id to that company's `workers:` array in `companies/manifest.yaml`.
 
-3. **modules.yaml**: If worker has a dedicated knowledge repo, add entry to `modules/modules.yaml`.
+3. **modules.yaml**: If worker has a dedicated knowledge repo, add entry to `core/modules/modules.yaml`.
 
 ### Capture Learning (Auto-Learn)
 
@@ -210,7 +210,7 @@ Run `/learn` to register the new worker in the learning system:
 ### Reindex + Update INDEX
 
 1. `qmd update 2>/dev/null || true`
-2. Regenerate `workers/public/INDEX.md` (shared workers) or `companies/{company}/workers/INDEX.md` (company workers) per `knowledge/public/hq-core/index-md-spec.md`.
+2. Regenerate `workers/public/INDEX.md` (shared workers) or `companies/{company}/workers/INDEX.md` (company workers) per `core/knowledge/public/hq-core/index-md-spec.md`.
 
 ### Report to User
 
