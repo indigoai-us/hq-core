@@ -1,9 +1,9 @@
 #!/bin/bash
 # protect-core.sh — PreToolUse hook for Edit and Write
 #
-# Blocks edits to files in core.yaml locked list.
-# Warns (but allows) edits to core.yaml reviewable list.
-# Fails open (logs + allows) if core.yaml is missing or malformed.
+# Blocks edits to files in core/core.yaml locked list.
+# Warns (but allows) edits to core/core.yaml reviewable list.
+# Fails open (logs + allows) if core/core.yaml is missing or malformed.
 #
 # Environment:
 #   HQ_BYPASS_CORE_PROTECT=1 — bypass all checks (used by /update-hq)
@@ -44,11 +44,11 @@ if [[ -z "$HQ_ROOT" ]]; then
   exit 0
 fi
 
-CORE_YAML="$HQ_ROOT/core.yaml"
+CORE_YAML="$HQ_ROOT/core/core.yaml"
 
-# Fail open if core.yaml is missing
+# Fail open if core/core.yaml is missing
 if [[ ! -f "$CORE_YAML" ]]; then
-  echo "WARNING: protect-core.sh: core.yaml not found at $CORE_YAML. Skipping check." >&2
+  echo "WARNING: protect-core.sh: core/core.yaml not found at $CORE_YAML. Skipping check." >&2
   exit 0
 fi
 
@@ -61,7 +61,7 @@ fi
 
 # Parse locked paths — fail open if yq fails
 LOCKED_PATHS=$(yq eval '.rules.locked[]' "$CORE_YAML" 2>/dev/null) || {
-  echo "WARNING: protect-core.sh: failed to parse core.yaml (malformed?). Skipping check." >&2
+  echo "WARNING: protect-core.sh: failed to parse core/core.yaml (malformed?). Skipping check." >&2
   exit 0
 }
 
@@ -89,7 +89,7 @@ done <<< "$LOCKED_PATHS"
 
 # Parse reviewable paths — fail open if yq fails
 REVIEWABLE_PATHS=$(yq eval '.rules.reviewable[]' "$CORE_YAML" 2>/dev/null) || {
-  echo "WARNING: protect-core.sh: failed to parse reviewable paths from core.yaml. Skipping warning check." >&2
+  echo "WARNING: protect-core.sh: failed to parse reviewable paths from core/core.yaml. Skipping warning check." >&2
   exit 0
 }
 

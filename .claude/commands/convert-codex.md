@@ -16,7 +16,7 @@ Add Codex-facing files and bridges to an existing HQ that was originally built a
 Run a dry-run unless the user explicitly passes `--apply`:
 
 ```bash
-bash scripts/convert-codex.sh $ARGUMENTS
+bash core/scripts/convert-codex.sh $ARGUMENTS
 ```
 
 ## What It Adds
@@ -40,17 +40,17 @@ bash scripts/convert-codex.sh $ARGUMENTS
 Preview:
 
 ```bash
-bash scripts/convert-codex.sh --dry-run
+bash core/scripts/convert-codex.sh --dry-run
 ```
 
 Repair current root:
 
 ```bash
-bash scripts/convert-codex.sh --apply
+bash core/scripts/convert-codex.sh --apply
 ```
 
 Repair another HQ root:
 
 ```bash
-bash scripts/convert-codex.sh --root=/path/to/hq --apply
+bash core/scripts/convert-codex.sh --root=/path/to/hq --apply
 ```

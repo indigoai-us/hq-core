@@ -28,7 +28,7 @@ Execute the command workflow inline from the HQ root with the user's requested a
 
 ## Command-Specific Notes
 
-- This command delegates execution to `scripts/run-pipeline.sh`. If that script is absent in a scaffold, report the missing backbone as a blocked runtime dependency instead of simulating the pipeline.
+- This command delegates execution to `core/scripts/run-pipeline.sh`. If that script is absent in a scaffold, report the missing backbone as a blocked runtime dependency instead of simulating the pipeline.
 - Preserve dry-run, resume, and status modes before launching any long-running pipeline.
 
 ## Completion

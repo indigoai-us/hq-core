@@ -61,6 +61,13 @@ Save current work state as a thread to survive context loss.
    - List files touched
    - Identify next steps
 
+5.5. **Close active session journal** (if any)
+   Spec: `knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, `/prd`, or `/plan`, close it now:
+   ```bash
+   .claude/skills/_shared/journal.sh close "{one-line synthesis, ≤120 chars}"
+   ```
+   Fail-soft: no-op if no active journal pointer exists. Use the same one-line summary you used for `conversation_summary` below.
+
 6. **Write thread** to `workspace/threads/{thread_id}.json` (include knowledge_repos from step 3):
    ```json
    {

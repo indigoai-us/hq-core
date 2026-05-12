@@ -11,7 +11,6 @@
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
-  <a href="#whats-new">What's New</a> •
   <a href="#core-concepts">Core Concepts</a> •
   <a href="#commands">Commands</a> •
   <a href="#workers">Workers</a>
@@ -34,11 +33,11 @@ Not just files. Active systems that:
 │                           YOUR HQ                               │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
-│   │   WORKERS   │    │  KNOWLEDGE  │    │  COMMANDS   │        │
-│   │  Do things  │    │   Learn &   │    │ Orchestrate │        │
-│   │ autonomously│    │   remember  │    │  workflows  │        │
-│   └─────────────┘    └─────────────┘    └─────────────┘        │
+│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐         │
+│   │   WORKERS   │    │  KNOWLEDGE  │    │  COMMANDS   │         │
+│   │  Do things  │    │   Learn &   │    │ Orchestrate │         │
+│   │ autonomously│    │   remember  │    │  workflows  │         │
+│   └─────────────┘    └─────────────┘    └─────────────┘         │
 │          │                  │                  │                │
 │          └──────────────────┼──────────────────┘                │
 │                             ▼                                   │
@@ -89,7 +88,7 @@ This enables a pre-commit hook across all repos that blocks commits containing s
 ## Quick Start
 
 ```bash
-# 1. Clone
+# 1. Clone the HQ template
 git clone https://github.com/indigoai-us/hq-core.git my-hq
 cd my-hq
 
@@ -103,72 +102,7 @@ claude
 /personal-interview
 ```
 
-Setup asks your name, work, and goals. It also scaffolds your first knowledge repo as a symlinked git repo (see [Knowledge Repos](#knowledge-repos) below). The personal interview goes deeper — 18 questions to build your voice, preferences, and working style.
-
-## What's New
-
-### Hook Profiles + Secret Detection (v7.0)
-Runtime-configurable hook system with three profiles — no `settings.json` edits needed:
-
-```bash
-# Minimal: safety hooks only (fastest)
-HQ_HOOK_PROFILE=minimal claude
-
-# Standard (default): all hooks active
-HQ_HOOK_PROFILE=standard claude
-
-# Disable specific hooks
-HQ_DISABLED_HOOKS=auto-checkpoint-trigger claude
-```
-
-All hooks route through `hook-gate.sh`. New `detect-secrets` hook blocks API keys in bash commands. New `observe-patterns` hook captures session insights on stop.
-
-### Audit Log (v7.0)
-Track every task execution across projects and workers:
-
-```bash
-/audit                              # Summary: last 7 days
-/audit --project my-app             # All events for a project
-/audit --failures                   # Show only failures with error details
-/audit --since 2026-03-01           # Custom date range
-```
-
-Populated automatically by `/run-project` and `/execute-task`. Stored as JSONL at `workspace/metrics/audit-log.jsonl`.
-
-### 9 New Commands (v7.0)
-| Command | Purpose |
-|---------|---------|
-| `/audit` | Query audit log events |
-| `/brainstorm` | Explore approaches before committing to a PRD |
-| `/dashboard` | Generate visual HTML goals dashboard |
-| `/goals` | View and manage OKR structure |
-| `/harness-audit` | Score HQ setup quality across 7 categories |
-| `/idea` | Capture a project idea without a full PRD |
-| `/model-route` | Recommend optimal Claude model for a task |
-| `/quality-gate` | Universal pre-commit checks (typecheck, lint, test) |
-| `/tdd` | RED→GREEN→REFACTOR cycle with coverage validation |
-
-### 4 New Workers (v7.0)
-| Worker | Type | Purpose |
-|--------|------|---------|
-| **accessibility-auditor** | OpsWorker | WCAG 2.2 AA auditing with remediation plans |
-| **exec-summary** | OpsWorker | McKinsey SCQA executive summaries |
-| **performance-benchmarker** | OpsWorker | Core Web Vitals + k6 load testing |
-| **reality-checker** | CodeWorker | Final quality gate — verifies impl matches spec |
-
-### Full Ralph Orchestrator (v7.0)
-`run-project.sh` now includes audit log integration, `--tmux` mode for parallel execution, session ID tracking, and checkout guards in `/execute-task`.
-
-### Codex Workers + MCP Integration (v5.3)
-Three production workers powered by OpenAI Codex SDK via MCP. Workers connect via **Model Context Protocol** — a shared `codex-engine` MCP server wraps the Codex SDK.
-
-### Context Diet (v5.1)
-Sessions lazy-load only what the task needs. No pre-loading INDEX.md or agents.md.
-
-### Learning System (v5.0)
-Rules get injected directly into the files they govern via `/learn` and `/remember`.
-
----
+`/setup` asks your name, work, and goals, then scaffolds your first knowledge repo as a symlinked git repo (see [Knowledge Repos](#knowledge-repos) below). `/personal-interview` goes deeper — a tiered interview that builds your voice, preferences, and working style.
 
 ## Core Concepts
 
@@ -177,112 +111,150 @@ Autonomous agents with defined skills. They *do things*.
 
 | Type | Purpose | Examples |
 |------|---------|----------|
-| **CodeWorker** | Implement features, fix bugs | codex-coder, backend-dev |
-| **ContentWorker** | Draft content, maintain voice | brand-writer, copywriter |
-| **SocialWorker** | Post to platforms | x-worker, linkedin-poster |
-| **ResearchWorker** | Analyze data, markets | analyst, researcher |
-| **OpsWorker** | Reports, automation | cfo-worker, monitor |
+| **CodeWorker** | Implement features, fix bugs | codex-coder, backend-dev, frontend-dev |
+| **ContentWorker** | Draft content, maintain voice | content-brand, content-sales, content-product |
+| **SocialWorker** | Compose, review, publish posts | social-strategist, social-publisher, social-verifier |
+| **ResearchWorker** | Analyze data, surface insights | reality-checker, knowledge-curator |
+| **OpsWorker** | Reports, automation, audits | accessibility-auditor, exec-summary, performance-benchmarker |
+| **Library** | Shared utilities (no skills) | content-shared, social-shared |
 
 ### Knowledge Bases
 Workers learn from and contribute to shared knowledge:
 
-- `knowledge/Ralph/` — Autonomous coding methodology
-- `knowledge/workers/` — Worker patterns & templates
-- `knowledge/ai-security-framework/` — Security best practices
-- `knowledge/dev-team/` — Development patterns
-- `packages/hq-pack-design-styles/` — Optional design style packs (install via `hq install @indigoai-us/hq-pack-design-styles`)
+- `core/knowledge/public/Ralph/` — Autonomous coding methodology
+- `core/knowledge/public/workers/` — Worker patterns & templates
+- `core/knowledge/public/ai-security-framework/` — Security best practices
+- `core/knowledge/public/dev-team/` — Development patterns
+- `core/knowledge/public/hq-core/` — Thread schema, INDEX spec
+- `core/knowledge/public/agent-browser/` — Browser automation patterns
+- `core/knowledge/public/loom/` — Loom agent patterns (reference)
+- `core/knowledge/public/projects/` — Project templates
+- `core/knowledge/public/getting-started/` — Onboarding material
+
+Optional packs (e.g. `@indigoai-us/hq-pack-design-styles`, `@indigoai-us/hq-pack-gemini`) install additional knowledge bases.
 
 ### Commands
 Slash commands orchestrate everything:
 
 ```bash
 /run worker-name skill    # Execute a worker skill
-/checkpoint my-work       # Save session state
+/checkpoint               # Save session state
 /handoff                  # Prepare for fresh session
 ```
 
 ### Threads
-Work survives context limits:
+Work survives context limits via `workspace/threads/` — checkpoints, handoffs, and resumable session state.
 
 ```bash
-/checkpoint feature-x     # Save state
+/checkpoint               # Save state
 # ... context fills up → auto-handoff triggers ...
-/nexttask                 # Finds thread, continues work
+/recover-session          # Resume from a dead session
 ```
 
 ---
 
 ## Commands
 
+The repo ships **53 slash commands** in `.claude/commands/`. The most-used are listed below; see `USER-GUIDE.md` for the full reference.
+
 ### Session
 | Command | What it does |
 |---------|--------------|
-| `/checkpoint` | Save progress to thread |
+| `/startwork` | Pick company/project/repo, gather context |
+| `/checkpoint` | Save progress to `workspace/checkpoints/` |
 | `/handoff` | Prepare handoff for fresh session |
-| `/reanchor` | Pause, show state, realign |
-| `/nexttask` | Find next thing to work on |
-
-### Learning
-| Command | What it does |
-|---------|--------------|
+| `/recover-session` | Recover dead sessions that hit context limits |
 | `/learn` | Auto-capture learnings from task execution |
-| `/remember` | Manual correction → injects rule into source file |
 
 ### Workers
 | Command | What it does |
 |---------|--------------|
-| `/run` | List all workers |
-| `/run {worker} {skill}` | Execute a skill |
+| `/run` | List workers / show skills / execute skill |
 | `/newworker` | Create a new worker |
-| `/metrics` | View worker execution metrics |
 
-### Projects
-| Command | What it does |
-|---------|--------------|
-| `/prd` | Generate PRD through discovery |
-| `/run-project` | Execute project via Ralph loop |
-| `/execute-task` | Run single task with workers |
-
-### Quality & Analysis
-| Command | What it does |
-|---------|--------------|
-| `/audit` | Query and display audit log events |
-| `/harness-audit` | Score HQ setup quality (7 categories) |
-| `/quality-gate` | Pre-commit checks (typecheck, lint, test) |
-| `/tdd` | RED→GREEN→REFACTOR with coverage validation |
-| `/model-route` | Recommend optimal Claude model for a task |
-| `/dashboard` | Generate visual HTML goals dashboard |
-
-### Planning
+### Planning & Projects
 | Command | What it does |
 |---------|--------------|
 | `/brainstorm` | Explore approaches before committing to a PRD |
-| `/idea` | Capture a project idea without a full PRD |
+| `/prd` | Create an execution-ready PRD |
+| `/deep-plan` | Deep planning with research subagents and tiered interview |
+| `/idea` | Capture a project idea on the board without a full PRD |
 | `/goals` | View and manage OKR structure |
+| `/strategize` | Strategic prioritization |
+| `/run-project` | Execute a PRD via Ralph loop / Codex |
+| `/run-pipeline` | Multi-project pipeline orchestrator |
+| `/execute-task` | Execute a single PRD story |
+| `/architect` | Surface architectural friction |
+| `/review-plan` | Stress-test a plan or PRD |
+
+### Quality, Debugging & Review
+| Command | What it does |
+|---------|--------------|
+| `/tdd` | RED→GREEN→REFACTOR with coverage validation |
+| `/quality-gate` | Pre-commit checks (typecheck, lint, test, coverage) |
+| `/investigate` | Iron Law debugging — root-cause investigation before fixes |
+| `/diagnose` | Disciplined diagnosis loop for hard / intermittent bugs |
+| `/review` | Review a pull request |
+| `/retro` | Project or session retrospective |
+| `/document-release` | Post-ship documentation sync |
+| `/calibration-report`, `/track-estimate`, `/finish-estimate` | Estimate calibration |
+
+### Land & Ship
+| Command | What it does |
+|---------|--------------|
+| `/land` | Land a PR — monitor CI, resolve review issues, merge, monitor production |
+| `/land-batch` | Triage, review, and sequentially merge multiple open PRs |
+
+### Knowledge & Decisions
+| Command | What it does |
+|---------|--------------|
+| `/adr` | Capture an Architectural Decision Record |
+| `/out-of-scope` | Record what was deliberately rejected and why |
+| `/search` | Search across HQ and indexed repos (qmd-powered) |
+| `/garden` | Detect stale, duplicate, inaccurate content |
+
+### HQ Services & Sync
+| Command | What it does |
+|---------|--------------|
+| `/hq-login`, `/hq-logout`, `/hq-whoami` | Cognito identity flows |
+| `/hq-sync` | Run a full HQ sync across cloud-backed companies |
+| `/resolve-conflicts` | Walk through HQ Sync conflicts interactively |
 
 ### System
 | Command | What it does |
 |---------|--------------|
-| `/search` | Semantic + full-text search across HQ |
-| `/search-reindex` | Rebuild search index |
-| `/cleanup` | Audit and clean HQ |
 | `/setup` | Interactive setup wizard |
+| `/cleanup` | Audit and clean HQ |
+| `/harness-audit` | Score HQ setup quality |
+| `/update-hq` | Upgrade HQ from latest hq-core release |
+| `/convert-codex` | Make Codex first-class alongside Claude Code |
 | `/personal-interview` | Deep interview to build profile + voice |
-| `/exit-plan` | Force exit from plan mode |
+| `/tutorial` | Interactive hands-on tutorial |
+| `/ascii-graphic` | ASCII block-art generator |
 
 ---
 
 ## Workers
 
-### Bundled: Codex Workers
+The repo ships **44 bundled workers** under `core/workers/public/`:
 
-Three production workers that use OpenAI Codex SDK via MCP:
+- **11 standalone**: `frontend-designer`, `qa-tester`, `security-scanner`, `pretty-mermaid`, `site-builder`, `knowledge-tagger`, `exec-summary`, `accessibility-auditor`, `performance-benchmarker`, `ascii-artist`, `paper-designer`
+- **Dev Team (20)** in `dev-team/`: `project-manager`, `task-executor`, `architect`, `backend-dev`, `database-dev`, `frontend-dev`, `infra-dev`, `motion-designer`, `code-reviewer`, `knowledge-curator`, `product-planner`, `qa-tester`, `reality-checker`, `context-manager`, `codex-engine`, `codex-coder`, `codex-reviewer`, `codex-debugger`, `gemini-coder`, `gemini-reviewer`
+- **Content Team (5)** in `content-*/`: `content-brand`, `content-sales`, `content-product`, `content-legal`, `content-shared` (library)
+- **Social Team (5)** in `social-*/`: `social-strategist`, `social-reviewer`, `social-publisher`, `social-verifier`, `social-shared` (library)
+- **Gardener Team (3)** in `gardener-team/`: `garden-scout`, `garden-auditor`, `garden-curator`
 
-| Worker | Skills | Purpose |
-|--------|--------|---------|
-| **codex-coder** | generate-code, implement-feature, scaffold-component | Code generation in Codex sandbox |
-| **codex-reviewer** | review-code, improve-code, apply-best-practices | Second-opinion review + automated improvements |
-| **codex-debugger** | debug-issue, root-cause-analysis, fix-bug | Auto-escalation on back-pressure failure |
+### Codex workers
+
+Three production workers powered by the OpenAI Codex SDK via MCP:
+
+| Worker | Purpose |
+|--------|---------|
+| **codex-coder** | Code generation in Codex sandbox |
+| **codex-reviewer** | Second-opinion review + automated improvements |
+| **codex-debugger** | Auto-escalation on back-pressure failure |
+
+They share a `codex-engine` MCP server (also under `dev-team/`) that wraps the Codex SDK. To use them, sign in via `codex login` (the CLI manages credentials).
 
 ```bash
 # Generate code
@@ -295,19 +267,17 @@ Three production workers that use OpenAI Codex SDK via MCP:
 /run codex-debugger debug-issue --issue "TS2345 type error" --error-output "$(cat errors.txt)"
 ```
 
-These workers share a **codex-engine** MCP server. To use them, you'll need a Codex API key (`CODEX_API_KEY` env var). See `workers/dev-team/codex-coder/worker.yaml` for the full pattern.
+See `core/workers/public/dev-team/codex-coder/worker.yaml` for the full pattern.
 
-### Build Your Own
-
-Start from the included sample worker:
+### Build your own
 
 ```bash
 # Option 1: Interactive scaffold
 /newworker
 
-# Option 2: Manual
-cp -r workers/public/dev-team/frontend-dev workers/public/my-worker
-# Edit workers/my-worker/worker.yaml
+# Option 2: Manual — copy a template
+cp -r core/workers/public/dev-team/frontend-dev core/workers/public/my-worker
+# Edit core/workers/public/my-worker/worker.yaml
 ```
 
 Worker YAML structure (with modern patterns):
@@ -353,18 +323,7 @@ state_machine:
     on_error: [log_error, checkpoint_error_state]
 ```
 
-### Worker Types
-
-| Type | Purpose |
-|------|---------|
-| **CodeWorker** | Features, bugs, refactors |
-| **ContentWorker** | Writing, voice, messaging |
-| **SocialWorker** | Platform posting |
-| **ResearchWorker** | Analysis, data, markets |
-| **OpsWorker** | Reports, automation, ops |
-| **Library** | Shared utilities (no skills) |
-
-See `knowledge/workers/` for the full framework, templates, and patterns.
+See `core/knowledge/public/workers/` for the full framework, templates, and patterns.
 
 ---
 
@@ -398,7 +357,7 @@ HQ uses the **Ralph Methodology** for autonomous coding.
 # 1. Create PRD
 /prd "Build user authentication"
 
-# 2. Execute via Ralph loop (uses .claude/scripts/run-project.sh)
+# 2. Execute via Ralph loop
 /run-project auth-system
 
 # 3. Monitor progress
@@ -411,27 +370,27 @@ HQ uses the **Ralph Methodology** for autonomous coding.
 /run-project auth-system --retry-failed
 ```
 
-The orchestrator script (`.claude/scripts/run-project.sh`) can also be run directly:
+The orchestrator script lives at `core/scripts/run-project.sh` and can also be run directly:
 
 ```bash
-.claude/scripts/run-project.sh my-project --dry-run     # Preview without executing
-.claude/scripts/run-project.sh my-project --verbose      # Detailed output
-.claude/scripts/run-project.sh my-project --max-budget 5 # Cap at $5
+core/scripts/run-project.sh my-project --dry-run     # Preview without executing
+core/scripts/run-project.sh my-project --verbose     # Detailed output
+core/scripts/run-project.sh my-project --timeout 30  # Per-story timeout (minutes)
 ```
 
 ---
 
 ## Knowledge Repos
 
-Knowledge bases in HQ are **independent git repos**, symlinked into the `knowledge/` directory. This lets you version, share, and publish each knowledge base separately from HQ itself.
+Knowledge bases in HQ are **independent git repos**, symlinked into `core/knowledge/`. This lets you version, share, and publish each knowledge base separately from HQ itself.
 
 ### How it works
 
 ```
-repos/private/knowledge-personal/    ← actual git repo
+repos/private/knowledge-personal/                                  ← actual git repo
     └── README.md, notes.md, ...
 
-knowledge/personal → ../../repos/private/knowledge-personal   ← symlink
+core/knowledge/public/personal → ../../../repos/private/knowledge-personal   ← symlink
 ```
 
 HQ git tracks the symlink. The repo contents are tracked by their own git. Tools (`qmd`, `Glob`, `Read`) follow symlinks transparently.
@@ -448,7 +407,7 @@ git add . && git commit -m "init knowledge repo"
 cd -
 
 # 2. Symlink into HQ
-ln -s ../../repos/public/knowledge-my-topic knowledge/my-topic
+ln -s ../../../repos/public/knowledge-my-topic core/knowledge/public/my-topic
 ```
 
 For company-scoped knowledge:
@@ -459,6 +418,7 @@ ln -s ../../../repos/private/knowledge-acme companies/acme/knowledge/acme
 ### Committing knowledge changes
 
 Changes appear in `git status` of the *target repo*, not HQ:
+
 ```bash
 cd repos/public/knowledge-my-topic
 git add . && git commit -m "update notes" && git push
@@ -466,13 +426,13 @@ git add . && git commit -m "update notes" && git push
 
 ### Bundled knowledge
 
-The starter kit ships Ralph, workers, security framework, etc. as plain directories. These work as-is. To convert one to a versioned repo later:
+The starter kit ships Ralph, workers, security framework, etc. as plain directories under `core/knowledge/public/`. These work as-is. To convert one to a versioned repo later:
 
 ```bash
-mv knowledge/Ralph repos/public/knowledge-ralph
+mv core/knowledge/public/Ralph repos/public/knowledge-ralph
 cd repos/public/knowledge-ralph && git init && git add . && git commit -m "init"
 cd -
-ln -s ../../repos/public/knowledge-ralph knowledge/Ralph
+ln -s ../../../repos/public/knowledge-ralph core/knowledge/public/Ralph
 ```
 
 ---
@@ -481,43 +441,53 @@ ln -s ../../repos/public/knowledge-ralph knowledge/Ralph
 
 ```
 my-hq/
+├── AGENTS.md                  # Charter for Claude / Codex sessions
+├── README.md
+├── CHANGELOG.md
+├── MIGRATION.md
+├── RELEASE-NOTES-*.md
+├── USER-GUIDE.md
 ├── .claude/
 │   ├── CLAUDE.md              # Session protocol + Context Diet
-│   ├── commands/              # 40+ slash commands
-│   ├── hooks/                 # hook-gate, detect-secrets, observe-patterns
-│   └── scripts/
-│       └── run-project.sh     # Ralph loop orchestrator
-├── agents.md                  # Your profile
-├── knowledge/                 # Symlinks → repos/ (or plain dirs)
-│   ├── Ralph/                 # Coding methodology
-│   ├── workers/               # Worker framework + templates
-│   ├── ai-security-framework/ # Security practices
-│   ├── dev-team/              # Development patterns
-│   ├── (design-styles/)       # Optional — installed by hq-pack-design-styles
-│   ├── hq-core/               # Thread schema, INDEX spec
-│   ├── loom/                  # Agent patterns
-│   └── projects/              # Project guidelines
+│   ├── commands/              # 53 slash commands
+│   ├── hooks/                 # 32 lifecycle hooks (master-hook, detect-secrets, observe-patterns, …)
+│   ├── skills/                # 55 skill definitions
+│   ├── output-styles/         # Output styles (e.g. Cavebro)
+│   ├── scripts/               # Claude-scoped helpers (run-project.sh, monitor-project.sh, …)
+│   ├── stack.yaml
+│   └── settings.json / settings.local.json
+├── core/
+│   ├── core.yaml              # Core manifest
+│   ├── knowledge/
+│   │   ├── public/            # Bundled public knowledge bases
+│   │   └── private/           # Private knowledge bases (populated via packs / sync)
+│   ├── modules/               # Pluggable modules (modules.yaml)
+│   ├── packages/              # Packaged extensions
+│   ├── policies/              # Cross-cutting rules (~259), with `_digest.md`
+│   ├── scripts/               # Shared shell utilities (run-project.sh, audit-log.sh, …)
+│   ├── settings/              # Orchestrator config
+│   └── workers/
+│       ├── public/            # Bundled workers (44 across dev-team, content-*, social-*, gardener-team, …)
+│       └── registry.yaml
+├── companies/
+│   ├── _template/             # Skeleton for new companies
+│   ├── manifest.yaml
+│   └── {co}/                  # One directory per company (created via /newcompany)
+├── data/
+│   └── journal/               # Cross-company journal
+├── projects/                  # Top-level project scratch
 ├── repos/
-│   ├── public/                # Public repos + knowledge repos
+│   ├── public/                # Open-source repos + knowledge repos
 │   └── private/               # Private repos + knowledge repos
-├── scripts/
-│   └── audit-log.sh           # Audit log append/query/summary
-├── workers/
-│   ├── registry.yaml          # Worker index
-│   ├── dev-team/              # Shared workers you can copy + customize
-│   ├── accessibility-auditor/ # WCAG 2.2 AA auditing
-│   ├── exec-summary/          # Executive summaries
-│   ├── performance-benchmarker/ # Core Web Vitals + load testing
-│   └── dev-team/              # Codex workers, reality-checker, + more
-├── prompts/
-│   └── pure-ralph-base.md     # Ralph loop prompt template
-├── projects/                  # Your PRDs
-├── workspace/
-│   ├── threads/               # Auto-saved sessions
-│   │   └── recent.md          # Recent thread index
-│   ├── orchestrator/          # Project state
-│   └── learnings/             # Captured insights
-└── companies/                 # Multi-company setup (optional)
+└── workspace/
+    ├── baseline/              # Reference baselines
+    ├── checkpoints/           # Session saves
+    ├── drafts/                # In-flight drafts
+    ├── learnings/             # Captured insights
+    ├── orchestrator/          # Ralph loop workflow state
+    ├── reports/               # Generated reports
+    ├── scratch/               # Free-form scratch
+    └── threads/               # Auto-saved sessions + handoff.json
 ```
 
 ---
@@ -552,4 +522,3 @@ This is a **template**. Make it yours:
 ## License
 
 MIT — Do whatever you want with it.
-

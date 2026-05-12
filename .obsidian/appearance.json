@@ -1,0 +1,11 @@
+{
+  "theme": "system",
+  "cssTheme": "",
+  "baseFontSize": 16,
+  "enabledCssSnippets": [
+    "hq-reading"
+  ],
+  "interfaceFontFamily": "",
+  "textFontFamily": "",
+  "monospaceFontFamily": ""
+}

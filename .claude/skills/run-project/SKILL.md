@@ -15,7 +15,7 @@ Codex does not have the same runtime primitives as Claude Code. Do not route thi
 
 Resolve the shell orchestrator before any shell delegation:
 
-1. Prefer `scripts/run-project.sh` if it exists.
+1. Prefer `core/scripts/run-project.sh` if it exists.
 2. Otherwise use `.claude/scripts/run-project.sh`.
 3. If neither exists, stop with a clear error.
 
@@ -41,7 +41,7 @@ If no execution mode is supplied, run an interactive preflight and recommend one
 - 3-6 incomplete stories: recommend `--interactive` if user steering matters, otherwise `--ralph-mode --engine codex`
 - 7+ incomplete stories, `--swarm`, `--tmux`, or unattended language: recommend `--ralph-mode --engine codex`
 
-Ask before changing execution semantics. If structured question tooling is unavailable, use the plain-text fallback required by `.claude/policies/hq-codex-decision-gate-fallback.md`.
+Ask before changing execution semantics. If structured question tooling is unavailable, use the plain-text fallback required by `core/policies/hq-codex-decision-gate-fallback.md`.
 
 ## Step 2 — Status, Help, and Dry Run
 

@@ -13,7 +13,7 @@ BLOCKED: Never use Grep for prd.json or worker.yaml discovery.
 
 For discovery:  qmd search "{name} prd.json" --json -n 5
 For known path: Read companies/{co}/projects/{name}/prd.json
-For workers:    Read workers/registry.yaml → find path → Read worker.yaml
+For workers:    Read core/workers/registry.yaml → find path → Read worker.yaml
 EOF
   exit 2
 fi

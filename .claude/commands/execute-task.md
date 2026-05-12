@@ -15,7 +15,7 @@ Run the `/execute-task` skill to execute a single user story through coordinated
 
 1. Load the execute-task skill from `.claude/skills/execute-task/SKILL.md`
 2. Parse `$ARGUMENTS` as `{project}/{task-id}` (or interactive picker if missing)
-3. **Repo-run preflight:** Resolve `$REPO_PATH` from the task's prd.json, then run `bash scripts/repo-run-registry.sh check "$REPO_PATH"`. On exit 2, the registry has found a live foreign owner (another `/run-project` sweeping the repo). Display the owner row(s) and abort unless the user passes `--ignore-active-runs`. Never bypass silently. Policy: `.claude/policies/repo-run-coordination.md`.
+3. **Repo-run preflight:** Resolve `$REPO_PATH` from the task's prd.json, then run `bash core/scripts/repo-run-registry.sh check "$REPO_PATH"`. On exit 2, the registry has found a live foreign owner (another `/run-project` sweeping the repo). Display the owner row(s) and abort unless the user passes `--ignore-active-runs`. Never bypass silently. Policy: `core/policies/repo-run-coordination.md`.
 4. Execute the 9-step pipeline: parse args → load task spec + codex check → classify story + build worker sequence → init state + acquire checkout + file locks + load policies → run phases (acceptance-test-writer → dev → codex-reviewer → dev-qa-tester) with inline codex review + back-pressure auto-recovery → verify sub-agent commits → run quality gates → complete or fail task → auto-checkpoint thread file
 
 ## After Execute-Task

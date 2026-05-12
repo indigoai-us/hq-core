@@ -2,14 +2,19 @@
 settings/**/*.json
 !settings/.gitkeep
 !settings/pure-ralph.json
-!.claude/settings.local.json
 *.credentials.json
 *.secret.*
+.mcp.json
+.env.*-token
 
 # Environment files
 .env
 .env.local
 .env.*.local
+workspace/charlie-envs/
+
+# Cloned repos (independent git repos, symlinked into HQ)
+repos/
 
 # Node
 node_modules/
@@ -52,16 +57,25 @@ social-content/drafts/**/*.md
 # Checkpoints (session-specific)
 workspace/checkpoints/*.json
 
-# Context warnings (ephemeral per-session state)
-workspace/.context-warnings/
-
 # Journal entries (personal)
 data/journal/*.jsonl
 
 # Synced modules (cloned repos)
 modules/.synced/
+.claude/settings.local.json
+.vercel
+.env*.local
 
-# Obsidian runtime (workspace.json IS committed as default template)
+# Defense-in-depth: any *.env file under company settings (covers names that
+# don't start with `.env`, e.g. coding-agent.env). The .env*.local pattern
+# above only matches files that BEGIN with .env — so a bare `coding-agent.env`
+# would slip through if a future Claude or human placed credentials there.
+companies/*/settings/*.env
+companies/*/settings/*.env.*
+companies/*/settings/secrets/
+
+# Obsidian runtime (keep shipped config, ignore personal state)
+.obsidian/workspace.json
 .obsidian/workspace-mobile.json
 .obsidian/plugins/
 .obsidian/themes/
@@ -70,14 +84,26 @@ modules/.synced/
 # Added by ggshield
 .cache_ggshield
 
-# Vercel / Next build output
-.vercel/
+# Ephemeral hook state (per-session, 0-byte touch files)
+workspace/.context-warnings/
+
+# hq-kit-app engine state (SQLite WAL, release tarball cache, engine logs).
+# Belt-and-suspenders: the repos/ line above already excludes the whole clone,
+# but hq-kit-app is referenced enough in HQ flows (orchestrator, /kit) that
+# calling out .data/ here prevents accidental `git add -f` mistakes.
+repos/private/hq-kit-app/.data/
+
+# Build artifacts / caches that should never be committed
 .next/
+.nx/
+test-results/
 
-# Pack install artifacts
-packages/*/node_modules/
-packages/*/dist/
-packages/*/.turbo/
+# rtk (Rust Token Killer) trial — root CLAUDE.md is rtk's legacy-mode
+# instruction file (rtk init regenerates it), we don't want it tracked.
+# .rtk/ is rtk's project-filter dir; we re-enable + commit if we adopt
+# custom filters during the trial.
+/CLAUDE.md
+.rtk/
 
-# Per-machine session metadata (written by .claude/hooks/master-hook.sh)
-workspace/sessions/
+# Local VS Code launch config (may contain inline secrets — keep ignored)
+.claude/launch.json

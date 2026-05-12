@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# rebuild-workers-index.sh — regenerate workers/public/INDEX.md (and workers/INDEX.md
+# at the top level if it exists).
+#
+# Pure bash + yq. Each worker subdir has worker.yaml — extract .worker.description
+# for the table row.
+
+set -euo pipefail
+
+HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+cd "$HQ_ROOT"
+
+DATE=$(date -u +%Y-%m-%d)
+
+sanitize_cell() {
+  printf '%s' "$1" | tr '\n' ' ' | sed -e 's/|/\\|/g' -e 's/  */ /g' -e 's/^ *//' -e 's/ *$//'
+}
+trunc() {
+  local s="$1" n="$2"
+  if [[ ${#s} -le $n ]]; then printf '%s' "$s"; else printf '%s…' "${s:0:$((n-1))}"; fi
+}
+
+worker_desc() {
+  local yaml="$1"
+  [[ -f "$yaml" ]] || { echo ""; return; }
+  if command -v yq >/dev/null 2>&1; then
+    yq -r '.worker.description // .worker.bio.role // ""' "$yaml" 2>/dev/null || echo ""
+  else
+    # Fallback: first-line description grep
+    awk -F: '/^[[:space:]]+description:/ { sub(/^[^:]+: */, ""); gsub(/^["\x27]|["\x27]$/, ""); print; exit }' "$yaml" 2>/dev/null || echo ""
+  fi
+}
+
+write_workers_subindex() {
+  local subdir="$1"
+  local label="$2"
+  local out="${subdir}/INDEX.md"
+  [[ -d "$subdir" ]] || return 0
+  {
+    echo "# ${label}"
+    echo ""
+    echo "> Auto-generated. Updated: ${DATE}"
+    echo ""
+    echo "| Name | Description |"
+    echo "|------|-------------|"
+    while IFS= read -r d; do
+      name=$(basename "$d")
+      [[ "$name" == .* ]] && continue
+      desc=$(worker_desc "${d}/worker.yaml")
+      desc=$(sanitize_cell "$desc")
+      desc=$(trunc "$desc" 100)
+      [[ -z "$desc" ]] && desc="—"
+      printf '| `%s/` | %s |\n' "$name" "$desc"
+    done < <(find "$subdir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  } > "$out"
+  echo "rebuild-workers-index: wrote ${out}" >&2
+}
+
+write_workers_root() {
+  local root="workers"
+  local out="${root}/INDEX.md"
+  [[ -d "$root" ]] || return 0
+  {
+    echo "# Workers"
+    echo ""
+    echo "> Auto-generated. Updated: ${DATE}"
+    echo ""
+    echo "Shared workers live under \`public/\`. Private PR workers live at the top level (\`pr-*\`). See \`registry.yaml\` for the canonical worker index."
+    echo ""
+    echo "| Name | Description |"
+    echo "|------|-------------|"
+    while IFS= read -r d; do
+      name=$(basename "$d")
+      [[ "$name" == .* ]] && continue
+      [[ "$name" == "public" ]] && { printf '| `public/` | Shared public workers (see public/INDEX.md) |\n'; continue; }
+      desc=$(worker_desc "${d}/worker.yaml")
+      desc=$(sanitize_cell "$desc")
+      desc=$(trunc "$desc" 100)
+      [[ -z "$desc" ]] && desc="—"
+      printf '| `%s/` | %s |\n' "$name" "$desc"
+    done < <(find "$root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  } > "$out"
+  echo "rebuild-workers-index: wrote ${out}" >&2
+}
+
+# Public workers (always present)
+write_workers_subindex "workers/public" "Public Workers"
+
+# Private workers (only if dir exists)
+if [[ -d "workers/private" ]]; then
+  write_workers_subindex "workers/private" "Private Workers"
+fi
+
+# Root workers INDEX (covers top-level pr-* workers + public/ pointer)
+write_workers_root
+
+echo "rebuild-workers-index: done" >&2

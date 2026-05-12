@@ -20,8 +20,8 @@ The index schema:
   "conflicts": [
     {
       "id": "...",
-      "originalPath": "knowledge/notes.md",
-      "conflictPath": "knowledge/notes.md.conflict-2026-04-27T22-05-14Z-abc123.md",
+      "originalPath": "core/knowledge/notes.md",
+      "conflictPath": "core/knowledge/notes.md.conflict-2026-04-27T22-05-14Z-abc123.md",
       "detectedAt": "2026-04-27T22:05:14Z",
       "side": "pull" | "push",
       "machineId": "abc123",
@@ -40,7 +40,7 @@ Tell the user how many conflicts are pending, grouped by top-level folder. Examp
 
 ```
 3 conflicts pending:
-  knowledge/  (2 files)
+  core/knowledge/  (2 files)
   projects/foo/  (1 file)
 
 Walking through them oldest-first.

@@ -4,13 +4,13 @@ set -euo pipefail
 # =============================================================================
 # run-project.sh — Externalized Self-Healing Project Orchestrator
 #
-# Runs each story as an independent `claude -p` headless invocation.
+# Runs each story as an independent headless builder invocation.
 # No context ceiling. Git validation after each story. Retry queue.
 # Regression gates every N stories.
 #
 # Usage:
-#   scripts/run-project.sh <project> [flags]
-#   scripts/run-project.sh --status
+#   core/scripts/run-project.sh <project> [flags]
+#   core/scripts/run-project.sh --status
 #
 # Flags:
 #   --resume            Resume from next incomplete story (auto-detected)
@@ -274,7 +274,8 @@ RESUME=false
 STATUS=false
 DRY_RUN=false
 MODEL=""
-BUILDER=""  # "" = claude (default), "codex" = use `codex exec` for build phase
+BUILDER=""  # "" = runtime default, "codex" = use `codex exec` for build phase
+BUILDER_EXPLICIT=false
 NO_PERMISSIONS=false
 RETRY_FAILED=false
 TIMEOUT=""
@@ -297,6 +298,9 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
+# shellcheck source=../../core/scripts/lib/detect-codex.sh
+__RP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; source "${__RP_DIR}/../../core/scripts/lib/detect-codex.sh"; unset __RP_DIR
+
 # =============================================================================
 # Capture raw args for --tmux passthrough (before parsing consumes them)
 # =============================================================================
@@ -316,7 +320,20 @@ while [[ $# -gt 0 ]]; do
     --status)       STATUS=true; shift ;;
     --dry-run)      DRY_RUN=true; shift ;;
     --model)        MODEL="$2"; shift 2 ;;
-    --builder)      BUILDER="$2"; shift 2 ;;
+    --builder)
+      if [[ $# -lt 2 ]]; then
+        echo -e "${RED}--builder requires a value: claude or codex${NC}" >&2
+        exit 1
+      fi
+      BUILDER="$2"; BUILDER_EXPLICIT=true; shift 2 ;;
+    --builder=*)    BUILDER="${1#--builder=}"; BUILDER_EXPLICIT=true; shift ;;
+    --engine)
+      if [[ $# -lt 2 ]]; then
+        echo -e "${RED}--engine requires a value: claude or codex${NC}" >&2
+        exit 1
+      fi
+      BUILDER="$2"; BUILDER_EXPLICIT=true; shift 2 ;;
+    --engine=*)     BUILDER="${1#--engine=}"; BUILDER_EXPLICIT=true; shift ;;
     --no-permissions) NO_PERMISSIONS=true; shift ;;
     --retry-failed) RETRY_FAILED=true; shift ;;
     --timeout)      TIMEOUT="$2"; shift 2 ;;
@@ -335,18 +352,20 @@ while [[ $# -gt 0 ]]; do
     --no-monitor)     MONITOR=false; shift ;;
     --help|-h)
       cat <<'HELP'
-Usage: scripts/run-project.sh <project> [flags]
-       scripts/run-project.sh --status
+Usage: core/scripts/run-project.sh <project> [flags]
+       core/scripts/run-project.sh --status
 
 Flags:
   --resume            Resume from next incomplete story (auto-detected)
   --status            Show all project statuses, exit
   --dry-run           Show story order without executing
   --model MODEL       Override model for all stories (claude builder only)
-  --builder BUILDER   Build agent: "claude" (default) or "codex" — when "codex",
+  --builder BUILDER   Build agent: "claude" or "codex" — when "codex",
                       each story is executed via `codex exec` instead of `claude -p`.
                       Completion is detected via the same 3-layer parser (termination
                       JSON on any line → git commit heuristic fallback).
+                      Defaults to "codex" when run from Codex, otherwise "claude".
+  --engine ENGINE     Alias for --builder.
   --no-permissions    Pass --dangerously-skip-permissions to claude
   --retry-failed      Re-run previously failed stories only
   --timeout N         Per-story wall-clock timeout in minutes
@@ -368,6 +387,11 @@ HELP
       PROJECT="$1"; shift ;;
   esac
 done
+
+if [[ "$BUILDER_EXPLICIT" == false && -z "$BUILDER" ]] && running_from_codex; then
+  BUILDER="codex"
+  PASSTHROUGH_ARGS="${PASSTHROUGH_ARGS:+$PASSTHROUGH_ARGS }--builder codex"
+fi
 
 # Headless detection: non-interactive when permissions bypassed (pipeline mode)
 if [[ "$NO_PERMISSIONS" == true ]]; then
@@ -455,10 +479,10 @@ fi
 # =============================================================================
 
 if [[ -z "$PROJECT" ]]; then
-  echo "Usage: scripts/run-project.sh <project> [flags]"
-  echo "       scripts/run-project.sh --status"
+  echo "Usage: core/scripts/run-project.sh <project> [flags]"
+  echo "       core/scripts/run-project.sh --status"
   echo ""
-  echo "Run scripts/run-project.sh --help for all options."
+  echo "Run core/scripts/run-project.sh --help for all options."
   exit 1
 fi
 
@@ -2159,7 +2183,7 @@ run_story_tests() {
       3)
         jq --arg ts "$(ts)" '.status = "paused" | .updated_at = $ts' "$STATE_FILE" > "$STATE_FILE.tmp" \
           && mv "$STATE_FILE.tmp" "$STATE_FILE"
-        log_warn "Paused. Resume: scripts/run-project.sh --resume $PROJECT"
+        log_warn "Paused. Resume: core/scripts/run-project.sh --resume $PROJECT"
         exit 0
         ;;
     esac
@@ -2380,7 +2404,7 @@ run_regression_gate() {
         1) return 0 ;;
         2) jq --arg ts "$(ts)" '.status = "paused" | .updated_at = $ts' "$STATE_FILE" > "$STATE_FILE.tmp" \
              && mv "$STATE_FILE.tmp" "$STATE_FILE"
-           log_warn "Paused. Resume with: scripts/run-project.sh --resume $PROJECT"
+           log_warn "Paused. Resume with: core/scripts/run-project.sh --resume $PROJECT"
            exit 0 ;;
         *) exit 1 ;;
       esac
@@ -2745,9 +2769,29 @@ orchestrator_write_passes() {
   local status_from_output=""
   local detection_layer=""
 
+  # --- Layer 0: Termination protocol JSON line ---
+  # Sub-agents are mandated to emit {"task_id":"US-XXX","status":"completed|failed|blocked", ...}
+  # as their final message line. .result is markdown-with-trailing-JSON in newer Claude Code
+  # versions, so extract the last task_id-bearing line and parse that.
+  if [[ -f "$output_file" ]]; then
+    local term_json
+    term_json=$(jq -r '.result // ""' "$output_file" 2>/dev/null \
+                | grep -F '"task_id"' \
+                | tail -n 1)
+    if [[ -n "$term_json" ]] && echo "$term_json" | jq -e . >/dev/null 2>&1; then
+      local term_task_id term_status
+      term_task_id=$(echo "$term_json" | jq -r '.task_id // empty' 2>/dev/null)
+      term_status=$(echo "$term_json" | jq -r '.status // empty' 2>/dev/null)
+      if [[ "$term_task_id" == "$story_id" && "$term_status" == "completed" ]]; then
+        status_from_output="completed"
+        detection_layer="Layer 0 (termination protocol JSON in .result)"
+      fi
+    fi
+  fi
+
   # --- Layer 1: Parse structured JSON from claude -p output ---
   # claude --output-format json puts the final response text in .result
-  if [[ -f "$output_file" ]]; then
+  if [[ -z "$status_from_output" && -f "$output_file" ]]; then
     status_from_output=$(jq -r '
       if .status then .status
       elif .result then (.result | if type == "string" then (fromjson? // {}) else . end | .status // empty)
@@ -2781,10 +2825,19 @@ orchestrator_write_passes() {
   fi
 
   # --- Layer 3: Git heuristic — commits + declared files touched ---
-  # If the sub-agent committed work touching declared files, the story likely completed
-  if [[ -z "$status_from_output" && -n "$checkout_started_at" && -n "$REPO_PATH" ]] && is_git_repo "$REPO_PATH"; then
+  # If the sub-agent committed work touching declared files, the story likely completed.
+  # When REPO_PATH isn't a valid git repo (e.g. multi-repo projects where the target
+  # repo is created mid-project), fall back to HQ_ROOT — sub-agent commits to
+  # companies/{co}/projects/... files live there.
+  local git_root="$REPO_PATH"
+  if [[ -z "$git_root" ]] || ! is_git_repo "$git_root"; then
+    if is_git_repo "$HQ_ROOT"; then
+      git_root="$HQ_ROOT"
+    fi
+  fi
+  if [[ -z "$status_from_output" && -n "$checkout_started_at" && -n "$git_root" ]] && is_git_repo "$git_root"; then
     local recent_commits=0
-    recent_commits=$(git -C "$REPO_PATH" log --oneline --after="$checkout_started_at" 2>/dev/null | wc -l | tr -d ' ') || true
+    recent_commits=$(git -C "$git_root" log --oneline --after="$checkout_started_at" 2>/dev/null | wc -l | tr -d ' ') || true
 
     if [[ "${recent_commits:-0}" -gt 0 ]]; then
       local story_files_json
@@ -2796,7 +2849,7 @@ orchestrator_write_passes() {
         local touched_count=0
         while IFS= read -r f; do
           [[ -z "$f" ]] && continue
-          if git -C "$REPO_PATH" log --oneline --after="$checkout_started_at" -- "$f" 2>/dev/null | grep -q .; then
+          if git -C "$git_root" log --oneline --after="$checkout_started_at" -- "$f" 2>/dev/null | grep -q .; then
             touched_count=$((touched_count + 1))
           fi
         done < <(echo "$story_files_json" | jq -r '.[]' 2>/dev/null)
@@ -3836,7 +3889,7 @@ else
               --duration-ms $(( duration * 1000 )) \
               --error "paused by user after attempt $attempt (exit=$exit_code)" \
               --session-id "$SESSION_ID" || true
-            log_warn "Paused. Resume: scripts/run-project.sh --resume $PROJECT"
+            log_warn "Paused. Resume: core/scripts/run-project.sh --resume $PROJECT"
             exit 0
             ;;
         esac
@@ -4090,7 +4143,7 @@ if [[ "$REMAINING" -eq 0 ]]; then
 
 else
   echo -e "\n${YELLOW}$REMAINING stories remaining.${NC}"
-  echo -e "Resume: ${DIM}scripts/run-project.sh --resume $PROJECT${NC}"
+  echo -e "Resume: ${DIM}core/scripts/run-project.sh --resume $PROJECT${NC}"
 fi
 
 echo ""

@@ -20,7 +20,7 @@ Check if the **first word** of the user's input matches a company slug in `compa
 
 1. **Set `{co}`** = matched slug. Strip from input — remaining text is the description
 2. **Announce:** "Anchored on **{co}**"
-3. **Load policies (frontmatter-only)** — For each file in `companies/{co}/policies/` (skip `example-policy.md`), run `bash scripts/read-policy-frontmatter.sh {file}`. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally Read the `## Rule` section with a targeted range. The SessionStart hook also injects the company policy digest at `companies/{co}/policies/_digest.md` — prefer that if present
+3. **Load policies (frontmatter-only)** — For each file in `companies/{co}/policies/` (skip `example-policy.md`), run `bash core/scripts/read-policy-frontmatter.sh {file}`. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally Read the `## Rule` section with a targeted range. The SessionStart hook also injects the company policy digest at `companies/{co}/policies/_digest.md` — prefer that if present
 4. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}`
 
 **If no match** -- full input is the description text. Company resolved later.
@@ -63,7 +63,7 @@ Do not ask questions yet. Build context from HQ first.
 - Read top 2-3 match metadata (name, description, status) to check for overlap
 
 **Workers:**
-- Read `workers/registry.yaml` — identify workers with skills matching the description
+- Read `core/workers/registry.yaml` — identify workers with skills matching the description
 
 **Policies (anchored only):**
 - Already loaded in Step 0. Note any constraints that affect approach selection
@@ -280,6 +280,24 @@ Read `companies/{co}/board.json`.
   ```
 
 Write updated `board.json`.
+
+## Step 6.4: Open Session Journal
+
+Spec: `core/knowledge/public/hq-core/journal-spec.md`. Open a session journal at the project_dir so research, decisions, and dead ends survive context compaction:
+
+```bash
+.claude/skills/_shared/journal.sh open brainstorm "{project_dir}"
+```
+
+Where `{project_dir}` is `companies/{co}/projects/{slug}/` (or `projects/{slug}/` for personal/HQ). The helper:
+
+- Creates `{project_dir}/journal/{ISO8601}-brainstorm.md` with frontmatter (`status: active`, `skill: brainstorm`, `summary: ""`)
+- Writes a pointer at `.claude/state/active-journal` so subsequent skill steps and the autocapture hook append to this file
+- Stays open across `/prd`, `/deep-plan`, `/plan` handoffs — only `/handoff` and `/checkpoint` close it
+
+After the helper returns, append a curated entry summarizing the brainstorm outcome (preferred approach, biggest risk, open questions) to the journal's `## Decisions` section. The autocapture hook will append a `## Auto-capture` line for any subsequent Agent / WebFetch / WebSearch / AskUserQuestion calls in this session.
+
+**Skip if:** journal helper is unavailable (fail-soft, don't error).
 
 ## Step 6.5: Spawn Knowledge Pulse (Background)
 

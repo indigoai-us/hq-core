@@ -1,3 +1,89 @@
+## [14.1.0-beta.1] — 2026-05-12
+
+### Headline
+**Journal system, policy sweep, and core consolidation.** Per-project session journals land as a first-class subsystem with shared `journal.sh` skill, auto-capture hook, and hard-enforcement policy. 27 new platform policies codify guardrails for AWS, GitHub, Linear, Slack, Supabase, Vercel, Expo/EAS, and internal tooling. Scripts relocate from root to `core/scripts/`, 8 new INDEX rebuild scripts enable deterministic regeneration, and a personal pack scaffold prepares the `personal/` namespace for user-scoped customization. Core-write protection hooks, a precompact thrashing detector, and Obsidian integration round out the release.
+
+Fully additive. No breaking changes. No migration required.
+
+### Added — Skills
+- **`.claude/skills/_shared/journal.sh`** — Shared journal helper with `open`/`append`/`close`/`path`/`attach` subcommands. Powers per-project session journals across 7 skills (brainstorm, deep-plan, prd, plan, startwork, handoff, checkpoint). `attach` persists research and overflow material under the active journal's project tree.
+- **`hq-files` skill expanded** — Documents browser flow, `@all` grants, and capability-URL policy for HQ vault file sharing.
+
+### Added — Hooks
+- **`block-core-writes.sh` + `block-core-writes-bash.sh`** — Hard block on direct writes to `core/` directory. Prevents accidental mutation of locked core files.
+- **`journal-autocapture.sh`** — PostToolUse hook. Tool output exceeding 1 KB (Agent results, WebFetch, WebSearch) spills to `{project_dir}/journal/attachments/` instead of being truncated.
+- **`precompact-thrashing-detector.sh`** — Detects repeated autocompact cycles and surfaces checkpoint/handoff options.
+- **`context-warning-50.sh`** — Context advisory threshold lowered from 60% to 50% (renamed from `context-warning-60.sh`).
+
+### Added — Policies (27 new)
+- **Platform guardrails:** `hq-aws.md`, `hq-github.md`, `hq-linear.md`, `hq-slack.md`, `hq-supabase.md`, `hq-vercel.md`, `hq-vercel-discipline.md`, `hq-eas-expo.md`
+- **Security & revenue:** `hq-revenue-critical-three-gate-defense.md`, `hq-share-session-urls-are-capabilities.md`, `hq-slack-verify-scopes-beyond-auth-test.md`, `hq-auth-middleware-whitelist-password-flow.md`
+- **Tooling:** `publish-kit-allowlist-and-stage0.md`, `publish-kit-diff-and-reconcile.md`, `publish-kit-source-is-strict-allowlist.md`, `hq-cmd-publish-kit-python-yaml-free.md`, `hq-cmd-publish-kit-rerun-diff-on-scope-narrow.md`, `hq-cmd-stage-kit-settings-json-direct-edit.md`
+- **Behavioral:** `decision-queue-one-at-a-time.md`, `e2e-testing-standards.md`, `hq-cmd-brainstorm-deep-mode-suspends-batching.md`, `journal-project-scoped-writes.md`, `paper-mcp-context-isolation.md`
+- **Infrastructure:** `hq-deploy-default-style-goclaw-admin.md`, `hq-nextjs-host-redirect-requires-domain-attachment.md`, `hq-oidc-trust-subject-shape-ref-vs-environment.md`, `vercel-deploy-checks.md`
+
+### Added — Scripts
+- **8 INDEX rebuild scripts** — `rebuild-all-indexes.sh` (umbrella) + per-domain: `rebuild-companies-index.sh`, `rebuild-company-knowledge-index.sh`, `rebuild-projects-index.sh`, `rebuild-public-knowledge-index.sh`, `rebuild-reports-index.sh`, `rebuild-social-drafts-index.sh`, `rebuild-workers-index.sh`
+
+### Added — Infrastructure
+- **Personal pack scaffold** — `personal/` directory with `.gitkeep` stubs for hooks, knowledge, policies, settings, skills, workers
+- **Design-styles template** — `companies/_template/knowledge/design-styles/` with README + packs
+- **`.claudeignore` + `.gitattributes`** — Repo hygiene files from GHQ
+- **Obsidian integration** — `.obsidian/` config (app, appearance, bookmarks, core-plugins, graph, hotkeys, snippets, types)
+- **Knowledge docs** — `journal-spec.md` and `auto-checkpoint-spec.md` at `core/knowledge/public/hq-core/`
+- **Paper designer worker** — New worker in `core/workers/public/dev-team/`
+- **Audit workflow** — Slack notifications (#hq-core), per-repo extensions, review-required remediation loop
+
+### Changed
+- **Scripts relocated** — Root `scripts/` moved to `core/scripts/` for consolidation under the core directory
+- **Setup command rewritten** — Reads install manifest and actively remediates issues (simplified)
+- **Codex skill bridge expanded** — Significant additions to `core/scripts/codex-skill-bridge.sh` (406 lines, +250)
+- **Skills/hooks namespacing** — Extended to core, personal, and packs via `master-hook.sh` + `master-sync.sh`
+- **`.claude/settings.json`** — 94 lines of new hook wiring and permissions
+- **CLAUDE.md** — Major update reflecting journal system, personal packs, core consolidation, and updated thresholds
+- **11 dev-team workers updated** — backend-dev, code-reviewer, codex-coder, codex-debugger, codex-reviewer, database-dev, frontend-dev, infra-dev, motion-designer, qa-tester, frontend-designer
+- **Multiple existing policies** — Frontmatter fixes, enforcement rebalancing, scope corrections
+
+### Fixed
+- **master-sync** — Preserve mispointed namespace symlinks instead of repointing them
+- **Audit workflow** — Permission prompt bypass, max-turns raised to 50, OIDC id-token:write, App token minting at runtime
+- **run-project** — Termination protocol JSON detection + HQ_ROOT git fallback
+- **Auto-checkpoint** — Threshold fixes and missing spec added
+
+### Removed
+- **`run-project-repo-bootstrap.md`** — Policy deleted (superseded by updated run-project logic)
+
+---
+
+## [14.0.1] — 2026-05-11
+
+### Headline
+**Journal writes stay project-scoped.** Reference material captured during a journal session — research excerpts, agent overflow, WebFetch bodies — now lands under `{project_dir}/` via `journal.sh attach`. The auto-capture hook spills tool output larger than 1 KB into `journal/attachments/` instead of truncating-and-discarding. A new hard-enforcement policy makes the invariant explicit across the seven journal-using skills.
+
+Fully additive. No breaking changes. No migration required — `journal.sh attach` is a new verb, the overflow spill is internal to the hook, and the new policy formalizes behavior that callers already follow.
+
+### Added — Policy
+- **`core/policies/journal-project-scoped-writes.md`** — Hard policy. Every file written *because of* a journal capture lives under `{project_dir}/`: the journal itself (`journal/{ts}-{skill}-{thread}.md`), auto-capture overflow (`journal/attachments/{ts}-{tool}-{hash6}.{ext}`), or curated research (`research/{ts}-research-{hash6}.{ext}`). Forbidden destinations: `/tmp`, `workspace/*`, or any HQ-root path that isn't `.claude/state/active-journal` (the runtime pointer). Auto-loaded for `brainstorm`, `deep-plan`, `prd`, `plan`, `startwork`, `handoff`, `checkpoint`.
+
+### Added — Skills
+- **`.claude/skills/_shared/journal.sh attach <kind> [<source_path>] [--ext <ext>]`** — New subcommand alongside `open`/`append`/`close`/`path`. Persists reference material under the active journal's project tree:
+  - `attach research [src]` → `{project_dir}/research/{ts}-research-{hash6}.{ext}` + cross-ref bullet under `## Findings`.
+  - `attach attachment [src]` → `{project_dir}/journal/attachments/{ts}-attachment-{hash6}.{ext}` + cross-ref under `## Auto-capture`.
+  - Reads `project:` from active journal frontmatter — callers stay dumb.
+  - Stdin supported (omit source path or pass `-`); `--ext` overrides inferred extension.
+  - Fail-soft contract preserved: warns to stderr, exits 0 — never blocks the calling skill.
+
+### Changed — Hooks
+- **`.claude/hooks/journal-autocapture.sh`** — Tool output larger than `OVERFLOW_BYTES=1024` (Agent results, WebFetch bodies, WebSearch results) is now spilled to `{project_dir}/journal/attachments/{ts}-{tool}-{hash6}.txt` instead of being truncated-and-discarded. The inline digest line in `## Auto-capture` gains a `(full: journal/attachments/...)` suffix so the journal cross-references the spilled file. Truncation under the threshold is unchanged; spill is silent on failure (no behavior change to the journal contract).
+
+### Changed — Spec
+- **`core/knowledge/public/hq-core/journal-spec.md`** — Promoted the reference-material rule from a parenthetical inside section invariants to a top-level `## Reference material` section. Documents the permitted/forbidden destinations table, the `attach` API, the overflow-spill mechanic, and cross-links to the new hard policy.
+
+### Why this matters
+Project folders travel with HQ Sync; `workspace/` and `/tmp` don't. Seven skills participate in the journal subsystem — without a single helper + a hard policy, drift across them was inevitable. The invariant now lives in three reinforcing places: the spec teaches it, `journal.sh attach` is the one-line path that does the right thing, and the policy hard-blocks violations during review.
+
+---
+
 ## [12.4.0] — 2026-05-02
 
 ### Headline
@@ -7,10 +93,10 @@ Fully additive. No breaking changes. Migration is one settings.json edit + one b
 
 ### Added — Hooks & Scripts
 - **`.claude/hooks/mirror-thread-to-company.sh`** — PostToolUse(Write|Edit) hook. When a `workspace/threads/T-*.json` is written and has `metadata.company`, hardlinks the file into `companies/{co}/workspace/sessions/{thread-id}.json` and appends a row to `companies/{co}/workspace/index.jsonl`. Idempotent (deduped by `(thread_id, ts, kind)`), silent no-op when company is missing, ~10ms on negative path. Multi-company arrays in `metadata.company` mirror to all touched companies.
-- **`scripts/backfill-workspace-mirror.sh`** — One-time script that walks `workspace/threads/*.json` and replays the mirror logic for every existing thread. Idempotent — safe to re-run.
+- **`core/scripts/backfill-workspace-mirror.sh`** — One-time script that walks `workspace/threads/*.json` and replays the mirror logic for every existing thread. Idempotent — safe to re-run.
 
 ### Added — Policy
-- **`.claude/policies/co-workspace-mirror.md`** — Documents the rule, mechanics, multi-company semantics, retention (forever, no pruning), and append-only conflict resolution for `index.jsonl`.
+- **`core/policies/co-workspace-mirror.md`** — Documents the rule, mechanics, multi-company semantics, retention (forever, no pruning), and append-only conflict resolution for `index.jsonl`.
 
 ### Changed — Hooks
 - **`.claude/hooks/hook-gate.sh`** — Adds `mirror-thread-to-company` to standard + strict profiles.
@@ -34,18 +120,18 @@ Fully additive. No breaking changes. No migration required.
 - **`/sync-registry`** — Regenerate a company's resource-registry index (`registry.yaml`) from per-resource YAMLs in `companies/{co}/registry/resources/`.
 
 ### Added — Codex Bridges
-- **Codex policy bridge** (`scripts/codex-skill-bridge.sh install-policies`) — symlinks `.claude/policies/` to `.codex/policies/` so HQ policies are visible to Codex sessions.
+- **Codex policy bridge** (`core/scripts/codex-skill-bridge.sh install-policies`) — symlinks `core/policies/` to `.codex/policies/` so HQ policies are visible to Codex sessions.
 - **Codex hook bridge** (`.codex/hooks/hq-codex-hook-adapter.sh`) — normalizes Codex `apply_patch` payloads into Claude-shaped hook payloads, routing through the existing `hook-gate.sh` so `protect-core`, `detect-secrets`, and other guardrails work unchanged for Codex.
 - **Company skill auto-mirror** (`.claude/hooks/auto-mirror-company-skill.sh`, `route-company-skill-creation.sh`) — Writes to `companies/{co}/skills/{name}/SKILL.md` automatically symlink to `.claude/skills/{prefix}-{name}` (where `prefix` is the company's 3-char manifest key). Reverse hook blocks direct writes to `.claude/skills/{prefix}-*` and routes the author back to the canonical company-folder path.
-- **Codex-native `/run-project`** — replaces Claude-only primitives (`Task`, `ExitPlanMode`, `/checkpoint`) with a router that offers interactive vs Ralph/headless execution, plus `scripts/run-project.sh` wrapper.
+- **Codex-native `/run-project`** — replaces Claude-only primitives (`Task`, `ExitPlanMode`, `/checkpoint`) with a router that offers interactive vs Ralph/headless execution, plus `core/scripts/run-project.sh` wrapper.
 
 ### Added — Tooling & Policies
-- **Changeset-aware handoff** — `scripts/handoff-finalize.sh` validates session scope against `workspace/baseline/hq-local-baseline.json` so noisy local repos don't bleed into handoff records. Smoke-test coverage at `scripts/tests/handoff-finalize-smoke.sh`. Hard-enforcement policy `hq-handoff-changeset-scope.md`.
+- **Changeset-aware handoff** — `core/scripts/handoff-finalize.sh` validates session scope against `workspace/baseline/hq-local-baseline.json` so noisy local repos don't bleed into handoff records. Smoke-test coverage at `core/scripts/tests/handoff-finalize-smoke.sh`. Hard-enforcement policy `hq-handoff-changeset-scope.md`.
 - **Codex decision-gate fallback policy** (`hq-codex-decision-gate-fallback.md`) — preserves command decision gates even when `AskUserQuestion` is unavailable to the Codex runtime.
 
 ### Changed — Deploy
 - **`/deploy` Phase A is 250× faster** — three serial Task sub-agents replaced with inline parallel scripts (~15s → ~58ms). Wire-password 401 bug fixed (was hitting wrong endpoint).
-- **`/deploy` reinforced as default sharing path** — first-class user surface (no longer silent auto-trigger). Auto-password protection for sensitive artifacts (PII, financial filenames, paths under `companies/*/data/` or `repos/private/**`). Lazy `/hq-login` when Cognito tokens missing. Full rules: `.claude/policies/hq-deploy-reinforcement.md`.
+- **`/deploy` reinforced as default sharing path** — first-class user surface (no longer silent auto-trigger). Auto-password protection for sensitive artifacts (PII, financial filenames, paths under `companies/*/data/` or `repos/private/**`). Lazy `/hq-login` when Cognito tokens missing. Full rules: `core/policies/hq-deploy-reinforcement.md`.
 
 ### Changed — Charter
 - **`CLAUDE.md` restructured** — three sections (Purpose / Rules / Map). ~45-line net reduction by removing content that auto-loads via SessionStart-injected policies. Charter rule prevents future sprawl.
@@ -82,8 +168,8 @@ Fully additive. No Claude Code behavior changes. Existing operators on v12.1.x c
 - Bumps Codex command coverage to 39/39 commands with paired adapters.
 
 ### Added — Tooling
-- **`scripts/convert-codex.sh`** (446 lines) — set-euo-pipefail, dry-run-first, create-only repair script. Validates symlink targets before touching them, refuses to overwrite, and prints a compact parity audit on exit.
-- **`scripts/codex-preflight.sh`** (216 lines) — explicit Codex-side preflight checks for `search`, `bash`, and `edit` operations. Routes through hardcoded hook filenames; pipes sanitized JSON via `jq --arg` (no injection vectors).
+- **`core/scripts/convert-codex.sh`** (446 lines) — set-euo-pipefail, dry-run-first, create-only repair script. Validates symlink targets before touching them, refuses to overwrite, and prints a compact parity audit on exit.
+- **`core/scripts/codex-preflight.sh`** (216 lines) — explicit Codex-side preflight checks for `search`, `bash`, and `edit` operations. Routes through hardcoded hook filenames; pipes sanitized JSON via `jq --arg` (no injection vectors).
 - **`docs/codex-hook-porting.md`** — 70-line decision record mapping each of HQ's 20 Claude hooks to a Codex strategy.
 
 ### Changed — Policies
@@ -141,30 +227,30 @@ Path renames in 4 policy files to reflect the current contributor layout. Enforc
 ## [12.0.0] — 2026-04-21
 
 ### Headline
-**hq-core split.** `hq-core` is now a standalone repository (`indigoai-us/hq-core`) carrying the minimal scaffold seed — the lean monorepo template that `npx create-hq` clones to bootstrap a new personal OS. Rich add-ons (design style packs, design quality references, Gemini CLI workers, gstack-team) are extracted into four `@indigoai-us/hq-pack-*` npm packages (published separately) and install into `packages/` via `hq install`. Batteries-included UX preserved: a default `create-hq` run prompts to install everything in `core.yaml:recommended_packages`.
+**hq-core split.** `hq-core` is now a standalone repository (`indigoai-us/hq-core`) carrying the minimal scaffold seed — the lean monorepo template that `npx create-hq` clones to bootstrap a new personal OS. Rich add-ons (design style packs, design quality references, Gemini CLI workers, gstack-team) are extracted into four `@indigoai-us/hq-pack-*` npm packages (published separately) and install into `core/packages/` via `hq install`. Batteries-included UX preserved: a default `create-hq` run prompts to install everything in `core/core.yaml:recommended_packages`.
 
 ### Added
-- `packages/` directory + `packages/README.md` — documents the pack convention, install flow, schema pointer, and the four recommended packs.
-- `core.yaml:recommended_packages` — declarative list consumed by `create-hq`, `setup.sh`, and `update-hq.md`. Supports a `conditional` bash predicate per entry (gemini pack skips when `gemini` is not on `PATH`).
-- `.gitignore` additions: `.vercel/`, `.next/`, `packages/*/node_modules/`.
+- `core/packages/` directory + `core/packages/README.md` — documents the pack convention, install flow, schema pointer, and the four recommended packs.
+- `core/core.yaml:recommended_packages` — declarative list consumed by `create-hq`, `core/scripts/setup.sh`, and `update-hq.md`. Supports a `conditional` bash predicate per entry (gemini pack skips when `gemini` is not on `PATH`).
+- `.gitignore` additions: `.vercel/`, `.next/`, `core/packages/*/node_modules/`.
 
 ### Removed (extracted to packages)
-- `knowledge/public/design-styles/` → `@indigoai-us/hq-pack-design-styles`
-- `knowledge/public/design-quality/` → `@indigoai-us/hq-pack-design-quality`
-- `knowledge/public/gemini-cli/` → `@indigoai-us/hq-pack-gemini`
-- `workers/public/gemini-{coder,designer,frontend,reviewer,stylist,ux-auditor}/` → `@indigoai-us/hq-pack-gemini`
-- `workers/public/gstack-team/` → `@indigoai-us/hq-pack-gstack` (plus `scripts/gstack-bridge.sh` which ships with the gstack pack, not the seed)
+- `core/knowledge/public/design-styles/` → `@indigoai-us/hq-pack-design-styles`
+- `core/knowledge/public/design-quality/` → `@indigoai-us/hq-pack-design-quality`
+- `core/knowledge/public/gemini-cli/` → `@indigoai-us/hq-pack-gemini`
+- `core/workers/public/gemini-{coder,designer,frontend,reviewer,stylist,ux-auditor}/` → `@indigoai-us/hq-pack-gemini`
+- `core/workers/public/gstack-team/` → `@indigoai-us/hq-pack-gstack` (plus `core/scripts/gstack-bridge.sh` which ships with the gstack pack, not the seed)
 
 ### Removed (deprecated)
-- `workers/public/impeccable-designer/` — superseded by `dev-team/frontend-dev` + `design-styles` pack (2026-04-15).
-- `workers/public/sample-worker/` — template-only, not useful at runtime.
-- `knowledge/public/impeccable/` — empty stub.
+- `core/workers/public/impeccable-designer/` — superseded by `dev-team/frontend-dev` + `design-styles` pack (2026-04-15).
+- `core/workers/public/sample-worker/` — template-only, not useful at runtime.
+- `core/knowledge/public/impeccable/` — empty stub.
 
 ### Changed
 - `hqVersion: "12.0.0"` (was `11.2.0`).
-- `workers/registry.yaml` — trimmed entries for removed/extracted workers.
-- `modules/modules.yaml` — trimmed entries for extracted knowledge bases.
-- `workers/public/INDEX.md` / `knowledge/public/INDEX.md` — rebuilt to reflect the trimmed set.
+- `core/workers/registry.yaml` — trimmed entries for removed/extracted workers.
+- `core/modules/modules.yaml` — trimmed entries for extracted knowledge bases.
+- `core/workers/public/INDEX.md` / `core/knowledge/public/INDEX.md` — rebuilt to reflect the trimmed set.
 
 ---
 
@@ -174,7 +260,7 @@ Path renames in 4 policy files to reflect the current contributor layout. Enforc
 publish-kit scope discipline — the release walker is now a **strict allowlist** that never traverses owner-private directories, and the publish target `template/` is **rebuilt from scratch** on every full release. Root-cause fix for the class of leaks that put owner content (company folders, project PRDs, workspace threads, `.obsidian/` vault state, owner-local settings) into prior publishes. PII-at-source scanning for publish-kit becomes structurally unnecessary: paths outside the allowlist cannot be reached by the walker, and anything no longer emitted is deleted naturally by the Stage R rebuild.
 
 ### Added — Policy
-- **`.claude/policies/publish-kit-source-is-strict-allowlist.md`** (`scope: command`, `enforcement: hard`, `public: true`) — hard allowlist, starter-scaffold carve-outs, never-traverse denylist.
+- **`core/policies/publish-kit-source-is-strict-allowlist.md`** (`scope: command`, `enforcement: hard`, `public: true`) — hard allowlist, starter-scaffold carve-outs, never-traverse denylist.
 
 ### Changed — Commands
 - **`.claude/commands/publish-kit.md`** — Step 0.5 Source Allowlist Assertion (ALLOW_ROOTS / REMAPS / STARTER_SCAFFOLDS / NEVER_TRAVERSE); Step 4 renamed "Rebuild Target + Copy Files" with Stage R (`rm -rf template/`) + Stage E (emit); What-to-Sync table expanded with starter-scaffold rows and never-sync patterns.
@@ -183,7 +269,7 @@ publish-kit scope discipline — the release walker is now a **strict allowlist*
 - **New commands (1):** `tutorial.md` — interactive HQ tutorial skill.
 - **New policies (13):** `publish-kit-source-is-strict-allowlist`, `hq-cmd-publish-kit-python-yaml-free`, `hq-cmd-publish-kit-rerun-diff-on-scope-narrow`, `hq-cmd-stage-kit-settings-json-direct-edit`, `hq-publish-target-is-hq-template`, `hq-nested-repo-git-status-check`, `hq-permissions-fan-out-edit-write-multiedit`, `hq-settings-local-for-personal-allows`, `hq-figma-token-account-scope`, `preview-start-launch-registry-is-global`, `distributed-join-partial-failure-diagnosis`, `git-stash-build-artifacts-conflict`, `npm-subpackage-hydration`.
 - **New skills (2 dirs):** `tutorial/` (full skill), plus `knowledge-pulse/agents/openai.yaml` + `tutorial/agents/openai.yaml` (Codex dual-format).
-- **New worker scaffolds (44 files):** `dev-team/context-manager/` (audit/discover/learn/update skills), `dev-team/motion-designer/` (add-animation/add-transition/generateimage skills), `dev-team/reality-checker/` (cross-validate/final-gate), `dev-team/backend-dev/skills/e2e-testing.md`, `dev-team/frontend-dev/skills/{audit,polish,typeset,harden}/command.md` + `e2e-testing.md`, `dev-team/qa-tester/skills/electron-e2e.md`, `dev-team/gemini-coder/skills/{implement-feature,scaffold-component}.md`, `dev-team/gemini-reviewer/skills/{apply-best-practices,improve-code,review-code}.md`, `workers/public/INDEX.md`, `gemini-frontend/skills/{design-to-code,refactor-component}.md`, `pretty-mermaid/{assets,references,scripts,package.json}`, `social-publisher/skills/post.md`, `social-verifier/skills/post-results.md`, worker.yaml updates for `ascii-artist`, `frontend-designer`, `gstack-team`.
+- **New worker scaffolds (44 files):** `dev-team/context-manager/` (audit/discover/learn/update skills), `dev-team/motion-designer/` (add-animation/add-transition/generateimage skills), `dev-team/reality-checker/` (cross-validate/final-gate), `dev-team/backend-dev/skills/e2e-testing.md`, `dev-team/frontend-dev/skills/{audit,polish,typeset,harden}/command.md` + `e2e-testing.md`, `dev-team/qa-tester/skills/electron-e2e.md`, `dev-team/gemini-coder/skills/{implement-feature,scaffold-component}.md`, `dev-team/gemini-reviewer/skills/{apply-best-practices,improve-code,review-code}.md`, `core/workers/public/INDEX.md`, `gemini-frontend/skills/{design-to-code,refactor-component}.md`, `pretty-mermaid/{assets,references,scripts,package.json}`, `social-publisher/skills/post.md`, `social-verifier/skills/post-results.md`, worker.yaml updates for `ascii-artist`, `frontend-designer`, `gstack-team`.
 - **New knowledge (29 files):** New `getting-started/tutorials/INDEX.md` and `getting-started/tutorials/INDEX.md` and `impeccable/README.md`.
 
 ### Changed — Content (this release)
@@ -194,13 +280,13 @@ publish-kit scope discipline — the release walker is now a **strict allowlist*
 - **Infra modified (1):** `.claude/CLAUDE.md` re-scrubbed + reformatted.
 
 ### Removed — Content (this release)
-- **Skills removed (2):** `prd/` (renamed to `plan/`), `deploy/` (demoted to worker scope), `agent-browser/` (moved to `workers/public/qa-tester/skills/agent-browser/`).
+- **Skills removed (2):** `prd/` (renamed to `plan/`), `deploy/` (demoted to worker scope), `agent-browser/` (moved to `core/workers/public/qa-tester/skills/agent-browser/`).
 - **Commands removed (20):** Private/company-scoped commands that should never have shipped — `approve-submission`, `assign-pack`, `audit-log`, `audit`, `dashboard`, `list-shared`, `list-submissions`, `model-route`, `prd` (renamed), `reanchor`, `remember` (now `/learn --hard`), `review-plan`, `review-submission`, `review`, `search-reindex`, `search`, `share`, `submit`, `sync-team`, `understand-project`. Most were owner/team workflow commands surfaced from earlier permissive walks.
 - **Hooks removed (2):** `auto-handoff-trigger.sh`, `context-meter.sh` (neither is part of the public hook set).
 - **Policies removed (123):** Policies that fail the new opt-in gate — either `public: false`, `scope: global` without `public: true`, or otherwise owner-workflow-specific (incident-narrative, company-name prefixes). Notable removals include pricing/vendor-verify rules, company-context verification, debugging session policies, editor/IDE policies, repo-specific rules, and SOC-specific guardrails.
 - **Workers removed (394 files, from prior over-publish):** Large portions of `dev-team/` internal skills, `frontend-designer/` design-system refs, `impeccable-designer/` (deprecated worker), `content-shared/` team workflows, `ux-auditor/`, `gemini-ux-auditor/` — all filtered back out by the allowlist + per-worker `worker.yaml` public surface.
 - **Knowledge removed (304 files):** `curious-minds/` book drafts (110 files — owner-only reading list), `design-styles/` internal pack variants (92), `hq-core/` owner runbooks (30), `Ralph/` team-training internals (12), `loom/` internal ops notes (9), etc. The public-eligible subset of each knowledge repo survives.
-- **Other (8 files):** Owner-local `settings/` overrides, private `tools/` utilities, owner `data/` scaffolds, private `contacts/` sample data — all now blocked at the walker level.
+- **Other (8 files):** Owner-local `core/settings/` overrides, private `tools/` utilities, owner `data/` scaffolds, private `contacts/` sample data — all now blocked at the walker level.
 
 ### Migrating to v11.2.0
 Non-breaking for HQ consumers. Downstream publish-kit authors should re-read the new allowlist policy — the walker now refuses to emit outside the allowlist, which may surface previously-silent bad paths. See `MIGRATION.md` for details.
@@ -248,11 +334,11 @@ The default model bump pins both Claude Code's main loop and `CLAUDE_CODE_SUBAGE
 qmd sub-collection refactor — the monolithic `hq` collection is split into 4 focused collections (`hq-infra`, `hq-workers`, `hq-knowledge`, `hq-projects`), cutting indexed files from ~16K to ~1K per collection. Also: `design.md` replaces `.impeccable.md` as the per-repo design context file, 54 policies refreshed, 23 commands updated, `knowledge-pulse` skill added, and design-styles/design-quality knowledge bases synced.
 
 ### Added — Knowledge
-- **`knowledge/design-styles/`** — full style pack system with 9 packs, foundations references, `_template/` scaffold, and `registry.yaml`. 52 new files including `PACK-SCHEMA.md`.
-- **`knowledge/design-quality/`** — design quality references (typography, color, spatial, etc.)
-- **`knowledge/hq-core/design-md-spec.md`** — spec for the new `design.md` repo context file
-- **`knowledge/hq-core/insights-spec.md`** — spec for the `workspace/insights/` educational insights system
-- **`knowledge/Ralph/11-team-training-guide.md`** — training guide for the Ralph orchestration pattern
+- **`core/knowledge/design-styles/`** — full style pack system with 9 packs, foundations references, `_template/` scaffold, and `registry.yaml`. 52 new files including `PACK-SCHEMA.md`.
+- **`core/knowledge/design-quality/`** — design quality references (typography, color, spatial, etc.)
+- **`core/knowledge/hq-core/design-md-spec.md`** — spec for the new `design.md` repo context file
+- **`core/knowledge/hq-core/insights-spec.md`** — spec for the `workspace/insights/` educational insights system
+- **`core/knowledge/Ralph/11-team-training-guide.md`** — training guide for the Ralph orchestration pattern
 
 ### Added — Skills
 - **`knowledge-pulse`** — lightweight background gardening pass for a company's knowledge base and policies
@@ -266,33 +352,33 @@ qmd sub-collection refactor — the monolithic `hq` collection is split into 4 f
 Seven company- or product-specific policies were dropped from the public surface; they remain in the originating private repos.
 
 ### Changed
-- **qmd collections** — `setup.sh` now creates 4 sub-collections (`hq-infra`, `hq-workers`, `hq-knowledge`, `hq-projects`) instead of one monolithic `hq` collection. Dramatically reduces noise in semantic search.
-- **`design.md` replaces `.impeccable.md`** — per-repo design context file renamed. Workers resolve style packs via `knowledge/design-styles/registry.yaml`.
+- **qmd collections** — `core/scripts/setup.sh` now creates 4 sub-collections (`hq-infra`, `hq-workers`, `hq-knowledge`, `hq-projects`) instead of one monolithic `hq` collection. Dramatically reduces noise in semantic search.
+- **`design.md` replaces `.impeccable.md`** — per-repo design context file renamed. Workers resolve style packs via `core/knowledge/design-styles/registry.yaml`.
 - **54 policies refreshed** — context-stripped, narrative-cleaned, and re-digested
 - **23 commands updated** — synced from upstream with latest improvements
 - **9 skills updated** — brainstorm, execute-task, handoff, investigate, land, learn, prd, run, startwork
 - **8 hooks refreshed** — all `.sh` files synced from upstream
 - **CLAUDE.md** — updated with qmd sub-collection docs, `design.md` references, new workers section, insights system
 - **USER-GUIDE.md** — refreshed with current command catalog and workflow examples
-- **`modules/modules.yaml`** — updated collection references
-- **`workers/registry.yaml`** — refreshed worker descriptions
+- **`core/modules/modules.yaml`** — updated collection references
+- **`core/workers/registry.yaml`** — refreshed worker descriptions
 - **Policy digest** — regenerated with current 187 policies
 
 ### Migration
-See migration steps below in `MIGRATION.md` — non-breaking, but `setup.sh` should be re-run to create the new qmd sub-collections.
+See migration steps below in `MIGRATION.md` — non-breaking, but `core/scripts/setup.sh` should be re-run to create the new qmd sub-collections.
 
 ## [11.0.0] — 2026-04-15
 
 ### Headline
-**BREAKING:** Orchestrator externalized. `/run-project` is now a thin router around `scripts/run-project.sh`. Kits pulling this release must ensure the script exists and is executable — inline-run kits will stop working until the script is present. Also: cross-session repo-level active-run coordination, PII-free SessionStart context injection via `inject-local-context.sh`, two-stage context advisories (60% Stop + 75% PreCompact), hook profile system via `HQ_HOOK_PROFILE`, and a desktop bridge health check for the 260 GB leak class.
+**BREAKING:** Orchestrator externalized. `/run-project` is now a thin router around `core/scripts/run-project.sh`. Kits pulling this release must ensure the script exists and is executable — inline-run kits will stop working until the script is present. Also: cross-session repo-level active-run coordination, PII-free SessionStart context injection via `inject-local-context.sh`, two-stage context advisories (60% Stop + 75% PreCompact), hook profile system via `HQ_HOOK_PROFILE`, and a desktop bridge health check for the 260 GB leak class.
 
 ### Breaking
-- **`/run-project` is a router.** The Ralph loop now lives in `scripts/run-project.sh` (worktree auto-create, per-story heartbeats, cmux monitor, stale PID detection). See `MIGRATION-v11.md` for the exact upgrade steps.
+- **`/run-project` is a router.** The Ralph loop now lives in `core/scripts/run-project.sh` (worktree auto-create, per-story heartbeats, cmux monitor, stale PID detection). See `MIGRATION-v11.md` for the exact upgrade steps.
 - **Repo-level active-run coordination.** A second session attempting to Edit/Write/destructive-Bash against a repo that another session's `/run-project` currently owns will be blocked with exit code 2. Emergency bypass: `HQ_IGNORE_ACTIVE_RUNS=1` (audited to `workspace/learnings/active-run-bypasses.jsonl`). Read/Grep/Glob/`git status` always allowed. Composes above the existing story-level `.file-locks.json` without regression.
 
 ### Added — Scripts
-- **`scripts/run-project.sh`** — externalized Ralph loop. Worktree auto-create, per-story heartbeats, cmux monitor, stale PID detection.
-- **`scripts/repo-run-registry.sh`** — cross-session repo lock registry at `workspace/orchestrator/active-runs.json`.
+- **`core/scripts/run-project.sh`** — externalized Ralph loop. Worktree auto-create, per-story heartbeats, cmux monitor, stale PID detection.
+- **`core/scripts/repo-run-registry.sh`** — cross-session repo lock registry at `workspace/orchestrator/active-runs.json`.
 - **`.claude/scripts/monitor-project.sh`** — 552-line TUI refresh with 24-bit color palette, Unicode glyphs, ANSI Shadow banner. Walk-up root resolution is portable across kits.
 
 ### Added — Commands
@@ -380,9 +466,9 @@ Design worker consolidation: 6 design workers → 2. Style pack system via `.imp
 
 ### Changed
 - **`frontend-designer`** — expanded from 0 to 27 skills. Now the single build+refine worker. Model: gemini (opus for frontend-design/overdrive/bolder/delight). MCP server preserved.
-- `workers/registry.yaml` — version 10.8.0, Standalone Workers 11→9, Gemini Team 6→2
+- `core/workers/registry.yaml` — version 10.8.0, Standalone Workers 11→9, Gemini Team 6→2
 - `.claude/CLAUDE.md` — workers section updated
-- `core.yaml` — version bump to 10.8.0
+- `core/core.yaml` — version bump to 10.8.0
 
 ### Migration
 See MIGRATION.md for step-by-step upgrade instructions.
@@ -397,15 +483,15 @@ Core cleanup: design skills moved to impeccable-designer worker, niche commands 
 - `/hq-growth-dashboard` — personal/niche metrics
 
 ### Breaking — Skills Moved to Workers
-- **22 design skills** moved from `.claude/skills/` to `workers/impeccable-designer/skills/`. Invoke via `/run impeccable-designer {skill}`.
+- **22 design skills** moved from `.claude/skills/` to `core/workers/impeccable-designer/skills/`. Invoke via `/run impeccable-designer {skill}`.
   - adapt, animate, arrange, audit, bolder, clarify, colorize, consolidate, critique, delight, distill, extract, frontend-design, harden, normalize, onboard, optimize, overdrive, polish, quieter, teach-impeccable, typeset
-- **social-graphic** moved from `.claude/skills/` to `workers/social-strategist/skills/`.
+- **social-graphic** moved from `.claude/skills/` to `core/workers/social-strategist/skills/`.
 
 ### Changed
-- `workers/impeccable-designer/worker.yaml` — added full `skills:` block (22 entries)
-- `workers/social-strategist/worker.yaml` — added `social-graphic` skill entry
+- `core/workers/impeccable-designer/worker.yaml` — added full `skills:` block (22 entries)
+- `core/workers/social-strategist/worker.yaml` — added `social-graphic` skill entry
 - `.claude/CLAUDE.md` — command count updated (44→36), workers section updated
-- `workers/registry.yaml` — version bump to 10.7.1
+- `core/workers/registry.yaml` — version bump to 10.7.1
 
 ## [10.7.0] — 2026-04-09
 
@@ -414,13 +500,13 @@ Performance Audit Complete — ~50% session-start context reduction via pre-buil
 
 ### Added
 - `.claude/hooks/load-policies-for-session.sh` — SessionStart digest loader
-- `scripts/build-policy-digest.sh` — builds `_digest.md` from policy frontmatter
-- `scripts/read-policy-frontmatter.sh` — YAML frontmatter parser helper
-- `scripts/git-hooks/pre-commit` — auto-rebuilds digests on policy commits
-- `.claude/policies/_digest.md` — pre-built global digest (94 hard + 78 soft)
-- `.claude/policies/qmd-collection-masks.md` — qmd collection scoping policy
+- `core/scripts/build-policy-digest.sh` — builds `_digest.md` from policy frontmatter
+- `core/scripts/read-policy-frontmatter.sh` — YAML frontmatter parser helper
+- `core/scripts/git-hooks/pre-commit` — auto-rebuilds digests on policy commits
+- `core/policies/_digest.md` — pre-built global digest (94 hard + 78 soft)
+- `core/policies/qmd-collection-masks.md` — qmd collection scoping policy
 - `.claude/commands/audit-log.md` — renamed from `audit.md`, expanded to 208 lines
-- `knowledge/hq-core/quick-reference.md` — new `## Command ↔ Skill Shapes` section (Archetype A/C docs)
+- `core/knowledge/hq-core/quick-reference.md` — new `## Command ↔ Skill Shapes` section (Archetype A/C docs)
 - `workspace/orchestrator/monitor-project.sh` — single-project TUI dashboard (state.json
   + executions + progress.txt) now shipped with the template so `run-project.sh`'s
   auto-spawned monitor window has something to run
@@ -459,7 +545,7 @@ Performance Audit Complete — ~50% session-start context reduction via pre-buil
 
 ### Migration (v10.6.0 → v10.7.0)
 1. Pull latest kit
-2. `chmod +x scripts/git-hooks/pre-commit`
+2. `chmod +x core/scripts/git-hooks/pre-commit`
 3. `ln -sf ../../scripts/git-hooks/pre-commit .git/hooks/pre-commit`
    (or merge into existing pre-commit wrapper)
 4. Verify SessionStart hook fires: start a new Claude Code session in the project
@@ -509,8 +595,8 @@ Performance Audit Complete — ~50% session-start context reduction via pre-buil
 - **41 skills** — all Codex-ready with `agents/openai.yaml` (100% coverage)
 
 ### Removed
-- `knowledge/Ralph/11-team-training-guide.md` (private content)
-- `workers/dev-team/qa-tester/skills/electron-e2e.md` (deprecated)
+- `core/knowledge/Ralph/11-team-training-guide.md` (private content)
+- `core/workers/dev-team/qa-tester/skills/electron-e2e.md` (deprecated)
 
 ## [10.4.0] — 2026-04-03
 
@@ -521,8 +607,8 @@ Performance Audit Complete — ~50% session-start context reduction via pre-buil
 - **Codex conversion step** in `/publish-kit` — Step 4.5 verifies all synced skills have `agents/openai.yaml`
 
 ### Changed
-- `scripts/codex-skill-bridge.sh` — enhanced with `commands_with_skills_count()`, `print_coverage_report()`, and symlink support in `openai_yaml_count()`
-- `scripts/run-project.sh` — refreshed with latest orchestrator improvements
+- `core/scripts/codex-skill-bridge.sh` — enhanced with `commands_with_skills_count()`, `print_coverage_report()`, and symlink support in `openai_yaml_count()`
+- `core/scripts/run-project.sh` — refreshed with latest orchestrator improvements
 - 154 policies synced (scope-filtered: global, command, cross-cutting only)
 - Skill coverage: 39/40 skills now Codex-ready (97%)
 
@@ -545,7 +631,7 @@ Performance Audit Complete — ~50% session-start context reduction via pre-buil
 
 ### Changed
 - template/ canonicalized as single source of truth for HQ content (hq-starter-kit archived)
-- core.yaml version bumped to 10.2.0
+- core/core.yaml version bumped to 10.2.0
 
 ## v10.2.0 (2026-04-01)
 
@@ -553,12 +639,12 @@ Codex app compatibility — all 30 HQ skills now discoverable from OpenAI Codex 
 
 ### Added
 - **`agents/openai.yaml` for all 30 skills** — Codex app can now render skill names and descriptions in its UI. Each file contains `display_name` + `short_description` extracted from SKILL.md frontmatter
-- **`scripts/generate-openai-yaml.sh`** — batch generator to create `agents/openai.yaml` from SKILL.md for any new skills. Supports `--dry-run` and `--force` flags
+- **`core/scripts/generate-openai-yaml.sh`** — batch generator to create `agents/openai.yaml` from SKILL.md for any new skills. Supports `--dry-run` and `--force` flags
 - **`.agents/skills/` bridge path** — Codex's primary discovery path (`~/.agents/skills/hq`) now supported alongside legacy `~/.codex/skills/hq`
 - **Repo-level `.agents/skills/` bridge** — skills discoverable when running Codex from within HQ directory
 
 ### Changed
-- **`scripts/codex-skill-bridge.sh`** — now manages 5 bridges (added global `.agents/skills/`, repo `.agents/skills/`). Status output shows openai.yaml coverage count
+- **`core/scripts/codex-skill-bridge.sh`** — now manages 5 bridges (added global `.agents/skills/`, repo `.agents/skills/`). Status output shows openai.yaml coverage count
 - Updated commands, policies, hooks, knowledge bases, and CLAUDE.md
 - Worker configs refreshed
 
@@ -570,7 +656,7 @@ Codex app compatibility — all 30 HQ skills now discoverable from OpenAI Codex 
 Onboarding education kit + setup command overhaul. New users now get training materials and a guided first week.
 
 ### Added
-- **Getting Started education kit** (`knowledge/public/getting-started/`) — 3 guides that ship with every HQ install:
+- **Getting Started education kit** (`core/knowledge/public/getting-started/`) — 3 guides that ship with every HQ install:
   - `quick-start-guide.md` — What HQ is, the Core Loop, daily workflow, key concepts, rules of thumb
   - `cheatsheet.md` — One-page daily reference card (commands, cadence, troubleshooting)
   - `learning-path.md` — 11-module self-paced progression from beginner to advanced
@@ -621,14 +707,14 @@ Major expansion: skills, policies, and infrastructure blueprints now included in
 ### Added
 - **30 skills** in `.claude/skills/` — `adapt`, `agent-browser`, `animate`, `arrange`, `ascii-graphic`, `audit`, `bolder`, `clarify`, `colorize`, `consolidate`, `critique`, `delight`, `distill`, `document-release`, `extract`, `frontend-design`, `harden`, `investigate`, `normalize`, `onboard`, `optimize`, `overdrive`, `polish`, `quieter`, `retro`, `review`, `review-plan`, `social-graphic`, `teach-impeccable`, `typeset`
 - **26 gstack skills** — `g-autoplan`, `g-benchmark`, `g-canary`, `g-careful`, `g-codex`, `g-cso`, `g-design-consultation`, `g-design-review`, `g-document-release`, `g-freeze`, `g-gstack-upgrade`, `g-guard`, `g-investigate`, `g-land-and-deploy`, `g-office-hours`, `g-plan-ceo-review`, `g-plan-design-review`, `g-plan-eng-review`, `g-qa`, `g-qa-only`, `g-retro`, `g-review`, `g-setup-browser-cookies`, `g-setup-deploy`, `g-ship`, `g-unfreeze`. Credit: [Garry Tan](https://github.com/garrytan/gstack) (Y Combinator)
-- **89 policies** in `.claude/policies/` — workflow rules, safety guards, tool-specific gotchas (git, Vercel, Supabase, Linear, Clerk, Expo, orchestrator, and more)
+- **89 policies** in `core/policies/` — workflow rules, safety guards, tool-specific gotchas (git, Vercel, Supabase, Linear, Clerk, Expo, orchestrator, and more)
 - `.ignore` — ripgrep ignore config, critical for Grep hygiene in HQ
-- `settings/orchestrator.yaml` — swarm/file-locking/state-machine config for `/run-project`
+- `core/settings/orchestrator.yaml` — swarm/file-locking/state-machine config for `/run-project`
 - `USER-GUIDE.md` — command reference, worker guide, and typical session walkthrough
-- `modules/modules.yaml` — knowledge module registry for `qmd` search integration
-- `scripts/codex-skill-bridge.sh` — Codex ↔ Claude skill bridge installer
-- `scripts/audit-log.sh` — structured audit log utility
-- `scripts/resize-screenshot.sh` — screenshot resize utility (used by `screenshot-resize-trigger.sh` hook)
+- `core/modules/modules.yaml` — knowledge module registry for `qmd` search integration
+- `core/scripts/codex-skill-bridge.sh` — Codex ↔ Claude skill bridge installer
+- `core/scripts/audit-log.sh` — structured audit log utility
+- `core/scripts/resize-screenshot.sh` — screenshot resize utility (used by `screenshot-resize-trigger.sh` hook)
 
 ### Changed
 - Updated all existing commands, workers, knowledge, hooks to latest HQ state
@@ -645,10 +731,10 @@ New commands, workers, knowledge, and a comprehensive PII/company scrub across a
 - `block-inline-story-impl.sh` hook — prevents inline story implementation outside `/execute-task`
 - `impeccable-designer` worker — quality-obsessed design with full Impeccable skill chain
 - `paper-designer` worker — bidirectional Paper Desktop design bridge via MCP
-- `knowledge/impeccable/` — Impeccable design system knowledge base
-- `knowledge/design-styles/formulas/` — design formula templates (app, print, slides, social)
-- `knowledge/hq/handoff-templates.md` + `knowledge-taxonomy.md`
-- `knowledge/agent-browser/tauri-testing.md` — Tauri app testing guide
+- `core/knowledge/impeccable/` — Impeccable design system knowledge base
+- `core/knowledge/design-styles/formulas/` — design formula templates (app, print, slides, social)
+- `core/knowledge/hq/handoff-templates.md` + `knowledge-taxonomy.md`
+- `core/knowledge/agent-browser/tauri-testing.md` — Tauri app testing guide
 - Story test runner in `run-project.sh` — cumulative regression guard after each story
 
 ### Changed
@@ -676,7 +762,7 @@ Fix missing scaffold directories — new installs now get the full canonical HQ 
 
 ### Fixed
 
-- **Installer template** — Added missing directories: `repos/{public,private}`, `companies/`, `settings/`, `data/`, `modules/`, `scripts/`, `workspace/{learnings,reports}`
+- **Installer template** — Added missing directories: `repos/{public,private}`, `companies/`, `core/settings/`, `data/`, `core/modules/`, `core/scripts/`, `workspace/{learnings,reports}`
 - **macOS .pkg builder** — `prepare_payload()` now creates all canonical directories (was missing 9)
 - **`.ignore` file** — New installs now include ripgrep ignore for `repos/`, `node_modules/`, `**/.git/` (prevents Grep slowdowns)
 
@@ -752,7 +838,7 @@ Policy-first system — all major commands now scan and enforce policies. `/lear
 - **`run-project.sh` — Swarm mode** (`--swarm [N]`) — Parallel story execution via git worktrees. Pre-acquires file locks, dispatches eligible stories as background `claude -p` processes, monitors PIDs with periodic check-ins, cherry-picks commits sequentially. Stories without `files[]` are never swarmed.
 - **`run-project.sh` — Signal trapping** — `cleanup_on_signal()` catches SIGINT/SIGTERM, kills swarm children, releases locks/checkouts, sets state to "paused".
 - **`run-project.sh` — Worktree isolation** — Each project gets its own git worktree for branch isolation. `check_repo_conflict()` detects concurrent orchestrators on the same repo. `ensure_worktree()` / `cleanup_worktree()` manage lifecycle.
-- **`settings/orchestrator.yaml` — Swarm config** — New `swarm:` section with `max_concurrency`, `checkin_interval_seconds`, `require_files_declared`.
+- **`core/settings/orchestrator.yaml` — Swarm config** — New `swarm:` section with `max_concurrency`, `checkin_interval_seconds`, `require_files_declared`.
 - **New command** — `/strategize` for strategic prioritization with optional deep review.
 
 ### Changed
@@ -780,7 +866,7 @@ Hook profiles, audit logging, 9 new commands, 4 new workers, full Ralph orchestr
 - **`hook-gate.sh`** — Profile routing hub for all hooks. Reads `HQ_HOOK_PROFILE` and `HQ_DISABLED_HOOKS` before delegating.
 - **`detect-secrets.sh`** — PreToolUse hook blocks API keys, tokens, and credentials in bash commands.
 - **`observe-patterns.sh`** — Stop hook captures session pattern analysis on conversation end.
-- **`scripts/audit-log.sh`** — Audit log engine: append, query, summary. JSONL storage at `workspace/metrics/audit-log.jsonl`.
+- **`core/scripts/audit-log.sh`** — Audit log engine: append, query, summary. JSONL storage at `workspace/metrics/audit-log.jsonl`.
 - **9 new commands** — `/audit`, `/brainstorm`, `/dashboard`, `/goals`, `/harness-audit`, `/idea`, `/model-route`, `/quality-gate`, `/tdd`.
 - **4 new workers** — `accessibility-auditor` (WCAG 2.2 AA), `exec-summary` (McKinsey SCQA), `performance-benchmarker` (Core Web Vitals + k6), `reality-checker` (final quality gate).
 
@@ -792,13 +878,13 @@ Hook profiles, audit logging, 9 new commands, 4 new workers, full Ralph orchestr
 - **`/prd`** — Brainstorm detection (steps 3.5 + 5.5) redirects to `/brainstorm` when appropriate.
 - **`/run-project`** — Worked example, `--tmux` flag documentation.
 - **CLAUDE.md** — Added Token Optimization + Hook Profiles sections. Updated workers section (+4 workers). Updated command count to 35+.
-- **`workers/registry.yaml`** — Version 8.0 → 9.0. Added 4 new workers. Updated counts: Standalone 6→9, Dev Team 16→17.
+- **`core/workers/registry.yaml`** — Version 8.0 → 9.0. Added 4 new workers. Updated counts: Standalone 6→9, Dev Team 16→17.
 - **README.md** — Updated What's New to v7.0.0, command count 18→35+, new directory structure with hooks/.
 
 ### Removed
 
 - **PR team workers (6)** — `pr-shared`, `pr-strategist`, `pr-writer`, `pr-outreach`, `pr-monitor`, `pr-coordinator` removed (private/company-specific).
-- **`knowledge/hq/`** — Duplicate of `knowledge/hq-core/`, deleted.
+- **`core/knowledge/hq/`** — Duplicate of `core/knowledge/hq-core/`, deleted.
 
 ---
 
@@ -843,7 +929,7 @@ Enhanced company isolation, new worker teams, expanded knowledge, and command up
 - **Commands count** (CLAUDE.md) — Updated from 24 to 35+.
 - **/execute-task** — Refined codex-reviewer inline pattern, improved back-pressure error handling.
 - **/prd** — Company Anchor (Step 0) for automatic company scoping from arguments. Beads sync (Step 7).
-- **/run-project** — Externalized to `scripts/run-project.sh` bash orchestrator with CLI flags (--max-budget, --model, --timeout, --retry-failed, --verbose). Process-level isolation via `claude -p`.
+- **/run-project** — Externalized to `core/scripts/run-project.sh` bash orchestrator with CLI flags (--max-budget, --model, --timeout, --retry-failed, --verbose). Process-level isolation via `claude -p`.
 - **/handoff** — Added knowledge update step (0b) for documenting domain knowledge in company knowledge bases.
 - **/learn** — Updated to inject rules into target files (worker.yaml, command .md, knowledge files, CLAUDE.md) with cap enforcement and global promotion.
 - **/startwork** — Enhanced with company knowledge loading and Vercel project context.
@@ -891,7 +977,7 @@ Policies, file locking, Glob safety hook, and safe settings.json migration.
 ### Added
 
 - **CLAUDE.md — Policies** — Company-scoped standing rules (`companies/{co}/policies/`) with hard/soft enforcement. Proactive directives that override default behavior. Template at `companies/_template/policies/example-policy.md`.
-- **CLAUDE.md — File Locking** — Story-scoped file flags prevent concurrent edit conflicts in multi-agent projects. Config via `settings/orchestrator.yaml`, locks in `.file-locks.json`.
+- **CLAUDE.md — File Locking** — Story-scoped file flags prevent concurrent edit conflicts in multi-agent projects. Config via `core/settings/orchestrator.yaml`, locks in `.file-locks.json`.
 - **Glob safety hook** — PreToolUse hook (`block-hq-glob.sh`) blocks Glob from HQ root, preventing 20s+ timeouts from symlinked repos. Suggests scoped paths instead.
 - **companies/_template/policies/** — Policy template for `/newcompany` scaffolding. YAML frontmatter (id, title, scope, trigger, enforcement) + markdown body.
 - **/update-hq — settings.json merge** — New 5b-SETTINGS section with JSON-aware hook merging. Preserves user permissions and custom hooks, adds new hook entries from upstream without overwriting.
@@ -967,7 +1053,7 @@ Major release: 5 worker teams (39 workers), gardener audit system, new commands.
 
 ### Changed
 
-- **`workers/registry.yaml`** — Version 7.0. Now includes all 39 public workers across 5 teams plus 4 standalone workers.
+- **`core/workers/registry.yaml`** — Version 7.0. Now includes all 39 public workers across 5 teams plus 4 standalone workers.
 - **`.claude/CLAUDE.md`** — Updated with gardener-team, company manifest, knowledge repo patterns, learned rules system, auto-checkpoint/handoff hooks.
 - **22 existing commands refreshed** — Various improvements to `/checkemail`, `/checkpoint`, `/cleanup`, `/decide`, `/email`, `/execute-task`, `/handoff`, `/learn`, `/metrics`, `/newworker`, `/nexttask`, `/prd`, `/reanchor`, `/recover-session`, `/remember`, `/run`, `/run-project`, `/search`, `/search-reindex`.
 - **Knowledge bases expanded** — New: agent-browser specs, PR knowledge, curious-minds. Updated: Ralph, hq-core, dev-team, design-styles, loom, workers, projects.
@@ -992,7 +1078,7 @@ Major release: 5 worker teams (39 workers), gardener audit system, new commands.
 - `/checkpoint` — New step 1: checks for recent auto-checkpoint (<5 min) and upgrades it to full checkpoint instead of duplicating
 - `/cleanup` — Added 14-day auto-checkpoint purge (separate from 30-day manual thread archival)
 - `CLAUDE.md` — Replaced aspirational Auto-Checkpoint/Auto-Handoff sections with concrete hook-backed procedures
-- `knowledge/hq-core/thread-schema.md` — Added `type` field (`checkpoint` | `auto-checkpoint` | `handoff`) and lightweight auto-checkpoint schema variant
+- `core/knowledge/hq-core/thread-schema.md` — Added `type` field (`checkpoint` | `auto-checkpoint` | `handoff`) and lightweight auto-checkpoint schema variant
 
 ---
 
@@ -1039,7 +1125,7 @@ Major release: 5 worker teams (39 workers), gardener audit system, new commands.
 - `/execute-task` — Added anti-plan rule to Rules section (defense-in-depth)
 - `/checkpoint`, `/cleanup`, `/handoff`, `/metrics`, `/newworker`, `/reanchor`, `/remember`, `/run`, `/search`, `/search-reindex` — Various improvements and refinements
 - Codex workers (codex-coder, codex-reviewer, codex-debugger) — Updated worker configs and skills
-- Knowledge files updated: `index-md-spec.md`, `thread-schema.md`, `skill-schema.md`, `state-machine.md`, `projects/README.md`, `workers/README.md`
+- Knowledge files updated: `index-md-spec.md`, `thread-schema.md`, `skill-schema.md`, `state-machine.md`, `projects/README.md`, `core/workers/README.md`
 
 ### Fixed
 - Scrubbed remaining PII from prior releases (company names in examples, absolute paths)
@@ -1058,8 +1144,8 @@ Major release: 5 worker teams (39 workers), gardener audit system, new commands.
 - **README — OpenAI Codex** added to prerequisites table (optional).
 
 ### Changed
-- **`workers/sample-worker/worker.yaml`** — Enhanced with modern patterns: MCP integration (commented-out template), reporting section, spawn_method, retry_attempts, dynamic context loading, verification with back-pressure commands, human checkpoints.
-- **`workers/registry.yaml`** — Version 5.0 → 6.0. Added dev-team section with 3 codex workers.
+- **`core/workers/sample-worker/worker.yaml`** — Enhanced with modern patterns: MCP integration (commented-out template), reporting section, spawn_method, retry_attempts, dynamic context loading, verification with back-pressure commands, human checkpoints.
+- **`core/workers/registry.yaml`** — Version 5.0 → 6.0. Added dev-team section with 3 codex workers.
 - **`.claude/CLAUDE.md`** — Added MCP Integration section, updated Workers section with bundled worker listings, updated structure tree with dev-team directory.
 - **README** — Updated "What's New" to lead with Codex Workers + MCP (v5.3). Worker YAML example updated to show modern patterns (execution, verification, MCP, state_machine). Updated worker type examples.
 
@@ -1090,7 +1176,7 @@ Major release: 5 worker teams (39 workers), gardener audit system, new commands.
 - **`/checkpoint`** — Recent threads now written to `workspace/threads/recent.md` (not embedded in INDEX.md). INDEX.md gets timestamp-only updates.
 - **`/handoff`** — Same change: threads to `recent.md`, slim INDEX.md updates
 - **`/reanchor`** — Added "When to Use" guidance: only run when explicitly called or disoriented, never auto-trigger
-- Knowledge files refreshed: `Ralph/11-team-training-guide.md`, `hq-core/index-md-spec.md`, `hq-core/thread-schema.md`, `workers/README.md`, `workers/skill-schema.md`, `workers/state-machine.md`, `workers/templates/base-worker.yaml`, `projects/README.md`
+- Knowledge files refreshed: `Ralph/11-team-training-guide.md`, `hq-core/index-md-spec.md`, `hq-core/thread-schema.md`, `core/workers/README.md`, `core/workers/skill-schema.md`, `core/workers/state-machine.md`, `core/workers/templates/base-worker.yaml`, `projects/README.md`
 
 ---
 
@@ -1098,7 +1184,7 @@ Major release: 5 worker teams (39 workers), gardener audit system, new commands.
 
 ### Added
 - **`/personal-interview`** — Deep conversational interview to build your profile and social voice. Populates `profile.md`, `voice-style.md`, and `agents.md` from ~18 thoughtful questions.
-- **`workers/sample-worker/`** — Example worker with `worker.yaml` and `skills/example.md`. Copy and customize to build your own.
+- **`core/workers/sample-worker/`** — Example worker with `worker.yaml` and `skills/example.md`. Copy and customize to build your own.
 
 ### Changed
 - **`/setup`** — Simplified from 5 phases to 3. Now asks just name, work, and goals. Recommends `/personal-interview` for deeper profile building.
@@ -1110,14 +1196,14 @@ Major release: 5 worker teams (39 workers), gardener audit system, new commands.
 - **`/search`** — Added company auto-detection from context (cwd, active worker, recent files), enhanced collection scoping
 - **`/search-reindex`** — Multi-collection architecture docs, instructions for adding new repo collections
 - **`/cleanup`**, **`/reanchor`** — Genericized company INDEX paths
-- `workers/registry.yaml` — Version 5.0, sample-worker only
-- `knowledge/Ralph/11-team-training-guide.md` — Expanded with week-by-week team training insights
-- `knowledge/hq-core/index-md-spec.md` — Genericized company references
-- `knowledge/workers/README.md`, `skill-schema.md` — Updated examples
-- `knowledge/projects/README.md` — Updated project examples
+- `core/workers/registry.yaml` — Version 5.0, sample-worker only
+- `core/knowledge/Ralph/11-team-training-guide.md` — Expanded with week-by-week team training insights
+- `core/knowledge/hq-core/index-md-spec.md` — Genericized company references
+- `core/knowledge/workers/README.md`, `skill-schema.md` — Updated examples
+- `core/knowledge/projects/README.md` — Updated project examples
 
 ### Removed
-- **All bundled workers** — `workers/dev-team/` (12 workers), `workers/content-*/` (5 workers), `workers/security-scanner/` removed. Build your own with `/newworker` using `sample-worker/` as reference.
+- **All bundled workers** — `core/workers/dev-team/` (12 workers), `core/workers/content-*/` (5 workers), `core/workers/security-scanner/` removed. Build your own with `/newworker` using `sample-worker/` as reference.
 - **`starter-projects/`** — Removed. Use `/prd` to create projects.
 
 ### Breaking
@@ -1130,29 +1216,29 @@ Major release: 5 worker teams (39 workers), gardener audit system, new commands.
 
 ### Added
 - **`/learn`** — Automated learning pipeline: captures learnings from task execution/failure and injects rules directly into the files they govern (worker.yaml, command .md, knowledge files, or CLAUDE.md). Deduplicates via qmd, supports global promotion, event logging.
-- **INDEX.md System** — Hierarchical INDEX.md files provide navigable maps of HQ. Auto-updated by `/checkpoint`, `/handoff`, `/reanchor`, `/prd`, `/run-project`, `/newworker`. Spec at `knowledge/hq-core/index-md-spec.md`
+- **INDEX.md System** — Hierarchical INDEX.md files provide navigable maps of HQ. Auto-updated by `/checkpoint`, `/handoff`, `/reanchor`, `/prd`, `/run-project`, `/newworker`. Spec at `core/knowledge/hq-core/index-md-spec.md`
 - **Knowledge Repos** — Knowledge folders can now be independent git repos, symlinked into HQ for versioning and sharing
 - **Learning System** — Rules injected directly into source files (worker.yaml, commands, knowledge, CLAUDE.md). `/learn` + `/remember` pipeline with dedup, event logging, and global cap (20 rules)
-- **Auto-Learn (Build Activities)** — `/newworker`, `/prd`, new knowledge/commands auto-register themselves via `/learn`
+- **Auto-Learn (Build Activities)** — `/newworker`, `/prd`, new core/knowledge/commands auto-register themselves via `/learn`
 - **Search rules** — Formal policy: use qmd for HQ content search, never Grep/Glob for topic search
-- `knowledge/Ralph/11-team-training-guide.md` — Team training guide for Ralph methodology
-- `knowledge/hq-core/checkpoint-schema.json` — Checkpoint data format
-- `knowledge/hq-core/index-md-spec.md` — INDEX.md specification
+- `core/knowledge/Ralph/11-team-training-guide.md` — Team training guide for Ralph methodology
+- `core/knowledge/hq-core/checkpoint-schema.json` — Checkpoint data format
+- `core/knowledge/hq-core/index-md-spec.md` — INDEX.md specification
 
 ### Changed
 - **`.claude/CLAUDE.md`** — Major rewrite: added INDEX.md System, Knowledge Repos, Learning System, Auto-Learn, Search rules sections. Command count 16 → 17
 - **All 14 public commands refreshed** — `/checkpoint` (knowledge repo state), `/cleanup` (INDEX.md audit + knowledge repo checks), `/execute-task` (learnings integration, orchestrator output), `/handoff` (knowledge repo commits, INDEX.md regen), `/metrics`, `/newworker` (auto-learn + INDEX updates), `/prd` (auto-learn + INDEX updates), `/reanchor` (INDEX-based context loading), `/remember` (delegates to /learn), `/run-project` (fresh-context sub-agent pattern, auto-reanchor between tasks), `/run` (learnings loading), `/search-reindex`, `/search`
-- `workers/registry.yaml` — Version 3.0 → 4.0, dev team count 13 → 12
-- `knowledge/hq-core/thread-schema.md` — Added knowledge repo tracking
-- `knowledge/workers/README.md`, `skill-schema.md`, `state-machine.md` — Updated
-- `knowledge/projects/README.md` — Updated
-- `workers/dev-team/code-reviewer/skills/review-pr.md` — Generalized E2E checks
-- `workers/dev-team/frontend-dev/worker.yaml` — Generalized E2E requirements
-- `workers/dev-team/qa-tester/worker.yaml` — Generalized E2E testing
-- `workers/dev-team/task-executor/skills/validate-completion.md` — Added E2E manifest validation
+- `core/workers/registry.yaml` — Version 3.0 → 4.0, dev team count 13 → 12
+- `core/knowledge/hq-core/thread-schema.md` — Added knowledge repo tracking
+- `core/knowledge/workers/README.md`, `skill-schema.md`, `state-machine.md` — Updated
+- `core/knowledge/projects/README.md` — Updated
+- `core/workers/dev-team/code-reviewer/skills/review-pr.md` — Generalized E2E checks
+- `core/workers/dev-team/frontend-dev/worker.yaml` — Generalized E2E requirements
+- `core/workers/dev-team/qa-tester/worker.yaml` — Generalized E2E testing
+- `core/workers/dev-team/task-executor/skills/validate-completion.md` — Added E2E manifest validation
 
 ### Removed
-- `knowledge/pure-ralph/` — Removed (pure-ralph patterns merged into Ralph methodology core)
+- `core/knowledge/pure-ralph/` — Removed (pure-ralph patterns merged into Ralph methodology core)
 
 ---
 
@@ -1166,7 +1252,7 @@ Major release: 5 worker teams (39 workers), gardener audit system, new commands.
 - **Command visibility overhaul** — 16 public commands (down from 29). Content, design, and company-specific commands moved to private
 - All 16 public commands refreshed with latest improvements
 - `.claude/CLAUDE.md` — Updated command tables, added Auto-Handoff section, count 29 → 16
-- `workers/registry.yaml` — Paths updated to flat structure (`workers/` not `workers/public/`)
+- `core/workers/registry.yaml` — Paths updated to flat structure (`core/workers/` not `core/workers/public/`)
 - Knowledge files PII-scrubbed
 
 ### Removed
@@ -1182,12 +1268,12 @@ Major release: 5 worker teams (39 workers), gardener audit system, new commands.
 
 ### Added
 - **`/remember`** - Capture learnings when things don't work right. Injects rules directly into relevant files (worker.yaml, commands, CLAUDE.md, skills) instead of a separate database. Supports deduplication via qmd search and Ralph integration for auto-capture on back-pressure failures.
-- `workers/registry.yaml` - Added `frontend-designer` and `qa-tester` standalone workers
+- `core/workers/registry.yaml` - Added `frontend-designer` and `qa-tester` standalone workers
 
 ### Changed
 - All 28 existing public commands refreshed with latest improvements
 - `.claude/CLAUDE.md` - Command count 28 → 29, added `/remember` to session management
-- `workers/registry.yaml` - Version 2.0 → 3.0
+- `core/workers/registry.yaml` - Version 2.0 → 3.0
 
 ---
 
@@ -1217,11 +1303,11 @@ Major release: 5 worker teams (39 workers), gardener audit system, new commands.
 - **`/pure-ralph`** - External terminal orchestrator for autonomous PRD execution
 - **`/svg`** - Generate minimalist abstract white line SVG graphics
 - **`/search-reindex`** - Reindex and re-embed HQ for qmd search
-- `knowledge/pure-ralph/` - Pure Ralph loop patterns, branch workflow, and learnings
-- `knowledge/design-styles/ethereal-abstract.md` - Ethereal abstract style guide
-- `knowledge/design-styles/liminal-portal.md` - Liminal portal style guide
-- `knowledge/hq/checkpoint-schema.json` - Checkpoint data format
-- `knowledge/projects/` - Project creation guidelines and templates
+- `core/knowledge/pure-ralph/` - Pure Ralph loop patterns, branch workflow, and learnings
+- `core/knowledge/design-styles/ethereal-abstract.md` - Ethereal abstract style guide
+- `core/knowledge/design-styles/liminal-portal.md` - Liminal portal style guide
+- `core/knowledge/hq/checkpoint-schema.json` - Checkpoint data format
+- `core/knowledge/projects/` - Project creation guidelines and templates
 
 ### Changed
 - **`/search`** - Upgraded to qmd-powered semantic + full-text search (BM25, vector, hybrid modes)
@@ -1316,12 +1402,12 @@ Specialized content analysis workers:
 - Never lose work to context limits
 
 ### Knowledge Bases
-- `knowledge/hq-core/` - Thread schema, workspace patterns
-- `knowledge/ai-security-framework/` - Security best practices
-- `knowledge/design-styles/` - Design guidelines + swipes
-- `knowledge/dev-team/` - Development patterns
-- `knowledge/loom/` - Agent patterns reference
-- Updated `knowledge/workers/` with templates
+- `core/knowledge/hq-core/` - Thread schema, workspace patterns
+- `core/knowledge/ai-security-framework/` - Security best practices
+- `core/knowledge/design-styles/` - Design guidelines + swipes
+- `core/knowledge/dev-team/` - Development patterns
+- `core/knowledge/loom/` - Agent patterns reference
+- Updated `core/knowledge/workers/` with templates
 
 ### Registry
 - Upgraded to version 2.0 format

@@ -95,7 +95,7 @@ done <<< "$TRIGGERS"
 printf '%s\n' "$matched_slug" >> "$DEDUPE_FILE"
 printf '<policy-reminder>\n'
 printf '> Policy `%s` applies here: %s\n' "$matched_slug" "$matched_rule"
-printf '> Read the full rule at `.claude/policies/%s.md` if you need rationale.\n' "$matched_slug"
+printf '> Read the full rule at `core/policies/%s.md` if you need rationale.\n' "$matched_slug"
 printf '</policy-reminder>\n'
 
 exit 0

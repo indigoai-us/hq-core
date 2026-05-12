@@ -167,7 +167,7 @@ For each detected pattern:
 2. **Classify scope:**
    - Project-specific → note it but don't create a policy (too narrow)
    - Company-scoped → `companies/{co}/policies/`
-   - Global → `.claude/policies/`
+   - Global → `core/policies/`
 
 3. **Check for duplicates** — grep existing policies for similar rules
 

@@ -1,7 +1,7 @@
 ---
 name: knowledge-pulse
 description: Lightweight background gardening pass for a company's knowledge base and policies. Spawned by startwork/brainstorm/plan after company resolution. Never run directly by users.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(scripts/build-policy-digest.sh:*), Bash(scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/build-policy-digest.sh:*), Bash(core/scripts/read-policy-frontmatter.sh:*)
 ---
 
 # Knowledge Pulse — Background Gardening
@@ -57,7 +57,7 @@ Determine the knowledge directory pattern to choose the right commit strategy:
 if [ -L "{knowledge_path}" ]; then
   repo_type="symlink"      # Pattern 2: symlink to repos/
 elif [ -d "{knowledge_path}/.git" ]; then
-  repo_type="embedded"     # Pattern 1: standalone .git inside knowledge/
+  repo_type="embedded"     # Pattern 1: standalone .git inside core/knowledge/
 else
   repo_type="inline"       # Pattern 3: tracked by HQ git
 fi
@@ -83,7 +83,7 @@ fi
 For each `.md` file in `{knowledge_path}/` (skip `INDEX.md`, `README.md`):
 
 1. Read first 10 lines — check for YAML frontmatter (`---` delimiters)
-2. If **no frontmatter**: classify per `knowledge/public/hq-core/knowledge-ontology.yaml`:
+2. If **no frontmatter**: classify per `core/knowledge/public/hq-core/knowledge-ontology.yaml`:
    - `type`: infer from content (strategy/reference/guide/analysis/brand/overview)
    - `domain`: infer from content and subdirectory location
    - `status`: default `draft` for untagged docs
@@ -147,7 +147,7 @@ For each policy file:
 1. Read the `## Rule` section
 2. Check for references to specific file paths — verify those paths still exist via `ls`
 3. Check for references to repo names — verify against `companies/manifest.yaml` repos list
-4. Check for references to worker names — verify against `workers/registry.yaml`
+4. Check for references to worker names — verify against `core/workers/registry.yaml`
 5. If broken references found: log as "Policy {filename} references missing {type}: {path/name}"
 6. Track: `policies_stale_refs` count
 
@@ -156,7 +156,7 @@ For each policy file:
 **Skip if caller is `startwork`.**
 
 1. Read company policies from `{policies_path}/`
-2. Read global policies from `.claude/policies/` (frontmatter only — use `scripts/read-policy-frontmatter.sh`)
+2. Read global policies from `core/policies/` (frontmatter only — use `core/scripts/read-policy-frontmatter.sh`)
 3. For each company policy: check if a global policy with similar `trigger` exists
 4. If both are `enforcement: hard` with potentially conflicting rules: log as "Potential conflict: company {title} vs global {title}"
 5. Track: `policy_conflicts` count
@@ -175,7 +175,7 @@ For each policy file:
 If **any** policy was modified in Steps 3a-3d (currently none are modified — all report-only), OR if `{policies_path}/_digest.md` does not exist:
 
 ```bash
-bash scripts/build-policy-digest.sh
+bash core/scripts/build-policy-digest.sh
 ```
 
 Track: `digest_rebuilt = true/false`

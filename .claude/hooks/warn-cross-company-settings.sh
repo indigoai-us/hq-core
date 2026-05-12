@@ -1,5 +1,5 @@
 #!/bin/bash
-# Warn when reading a company's settings/ while cwd suggests a different company context.
+# Warn when reading a company's core/settings/ while cwd suggests a different company context.
 # PreToolUse hook for Read tool — warns but does not block (too many legitimate cross-reads).
 
 INPUT=$(cat)

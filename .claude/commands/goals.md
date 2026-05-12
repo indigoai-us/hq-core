@@ -29,7 +29,7 @@ If no subcommand → **view mode** (Step 3).
 4. Default to asking user
 
 Read `companies/manifest.yaml`. Validate company slug exists.
-Read `companies/{co}/board.json`. If `schema_version` is missing or < 2, warn: "Board needs migration. Run `npx tsx scripts/migrate-board-v2.ts` first."
+Read `companies/{co}/board.json`. If `schema_version` is missing or < 2, warn: "Board needs migration. Run `npx tsx core/scripts/migrate-board-v2.ts` first."
 
 ## Step 3: View Mode (no subcommand)
 

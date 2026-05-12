@@ -20,7 +20,7 @@ This skill is additive only.
 
 ## Procedure
 
-1. Resolve the HQ root. Default to the current repository when `.claude/` and `core.yaml` are present.
+1. Resolve the HQ root. Default to the current repository when `.claude/` and `core/core.yaml` are present.
 2. Run the dry-run first unless the user explicitly requested `--apply`.
 3. Review blocked items. Blocked means an existing path prevented a create-only repair.
 4. Apply only when the plan contains create-only actions or the user has approved the blocked behavior.
@@ -30,19 +30,19 @@ This skill is additive only.
 Preview the current root:
 
 ```bash
-bash scripts/convert-codex.sh --dry-run
+bash core/scripts/convert-codex.sh --dry-run
 ```
 
 Repair the current root:
 
 ```bash
-bash scripts/convert-codex.sh --apply
+bash core/scripts/convert-codex.sh --apply
 ```
 
 Repair a separate HQ root:
 
 ```bash
-bash scripts/convert-codex.sh --root=/path/to/hq --apply
+bash core/scripts/convert-codex.sh --root=/path/to/hq --apply
 ```
 
 ## Output

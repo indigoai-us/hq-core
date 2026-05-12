@@ -1,0 +1,106 @@
+/* HQ Reading Mode — clean doc viewer styling
+ * Works in both light and dark themes via Obsidian CSS variables
+ */
+
+/* ─── Tables (INDEX.md files are table-heavy) ─── */
+.markdown-preview-view table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.markdown-preview-view th {
+  background-color: var(--background-modifier-hover);
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--background-modifier-border);
+}
+
+.markdown-preview-view td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  vertical-align: top;
+}
+
+.markdown-preview-view tr:hover td {
+  background-color: var(--background-modifier-hover);
+}
+
+/* Inline code in tables (file/folder names) */
+.markdown-preview-view td code,
+.markdown-preview-view th code {
+  font-size: 0.88em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background-color: var(--code-background);
+}
+
+/* ─── Frontmatter Properties ─── */
+.metadata-container {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 16px;
+  background-color: var(--background-secondary);
+}
+
+.metadata-property-key {
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+/* ─── Tag pills ─── */
+.tag {
+  background-color: var(--background-modifier-hover);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 0.82em;
+}
+
+/* ─── Code blocks ─── */
+.markdown-preview-view pre {
+  border-radius: 6px;
+  padding: 12px 16px;
+  font-size: 0.88em;
+  line-height: 1.5;
+}
+
+/* ─── Blockquotes (used for auto-generated notices) ─── */
+.markdown-preview-view blockquote {
+  border-left: 3px solid var(--interactive-accent);
+  padding: 4px 16px;
+  margin: 12px 0;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ─── Headings ─── */
+.markdown-preview-view h1 {
+  margin-top: 1.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.markdown-preview-view h2 {
+  margin-top: 1.3em;
+}
+
+/* ─── Links (standard markdown links) ─── */
+.markdown-preview-view .internal-link {
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.markdown-preview-view .internal-link:hover {
+  text-decoration-style: solid;
+}
+
+/* ─── Reading width ─── */
+.markdown-preview-view.is-readable-line-width .markdown-preview-sizer {
+  max-width: 850px;
+}

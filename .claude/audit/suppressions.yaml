@@ -1,0 +1,34 @@
+# hq-core-staging — Path-based suppressions for hq-audit-bot
+#
+# Each entry suppresses findings whose file path matches `path` (gitignore
+# glob semantics) AND meets one of:
+#   - the scanner is in `scanners`, OR
+#   - the rule_id is in `rules`, OR
+#   - neither field is specified (path-only — suppresses ALL findings on
+#     matching files).
+#
+# Suppressions are evaluated AFTER scanning, so the bot logs each dropped
+# finding for the run summary but never includes them in the PR comment.
+
+- path: "audit-fixtures/**"
+  reason: "Test fixtures for hq-audit-bot itself. Patterns here are deliberately constructed to exercise scanners; all values are fake (RFC-5733 phone, Visa test card, all-zero SSN, etc)."
+
+- path: ".claude/policies/**"
+  scanners: [pii, denylist]
+  reason: "HQ policy markdown files document scanner rules; they may quote example regexes or denylist-shaped strings as documentation, not violations."
+
+- path: "core/policies/**"
+  scanners: [pii, denylist]
+  reason: "Same as .claude/policies/. Core HQ policy definitions for the public scaffold."
+
+- path: "companies/_template/**"
+  scanners: [pii, denylist, slugs]
+  reason: "Starter scaffold for new HQ companies. Placeholder names (Acme, Voyage, etc.) are scaffolding examples, not real org references."
+
+- path: "companies/_setup-examples/**"
+  scanners: [pii, denylist, slugs]
+  reason: "Onboarding example companies. Same rationale as _template."
+
+- path: "**/*.snapshot.json"
+  scanners: [pii]
+  reason: "Vitest/Jest snapshot files; not human-authored content. Re-running tests regenerates them."

@@ -11,7 +11,9 @@
       "Read(~/.zprofile)",
       "Read(~/.zshenv)",
       "Read(~/.bashrc)",
-      "Read(~/.bash_profile)"
+      "Read(~/.bash_profile)",
+      "Edit(./core/**)",
+      "Write(./core/**)"
     ]
   }
 }

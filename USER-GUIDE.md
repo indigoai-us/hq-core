@@ -8,12 +8,40 @@ Personal OS for orchestrating work across companies, workers, and AI.
 | Command | What it does |
 |---------|--------------|
 | `/startwork` | Pick company/project/repo, gather context |
-| `/reanchor` | Show recent state, ask what to focus on |
 | `/checkpoint` | Save progress to `workspace/checkpoints/` |
 | `/handoff` | Prepare handoff for fresh session |
 | `/recover-session` | Recover dead sessions that hit context limits |
-| `/remember` | Capture learnings (delegates to `/learn`) |
 | `/learn` | Auto-capture learnings from task execution |
+
+### Planning & Projects
+| Command | What it does |
+|---------|--------------|
+| `/brainstorm` | Explore approaches and tradeoffs before committing to a PRD |
+| `/plan` | Lightweight plan for a new project |
+| `/prd` | Create an execution-ready PRD (`prd.json` + `README.md`) |
+| `/deep-plan` | Deep planning with research subagents and tiered interview |
+| `/idea` | Capture a project idea on the board without a full PRD |
+| `/strategize` | Strategic prioritization — "what should I work on next?" |
+| `/goals` | View and manage OKR structure |
+| `/run-project` | Execute a PRD via Ralph loop / Codex runtime |
+| `/run-pipeline` | Multi-project pipeline orchestrator |
+| `/execute-task` | Execute a single PRD story through coordinated workers |
+| `/architect` | Surface architectural friction and propose deepening opportunities |
+| `/review-plan` | Stress-test a plan or PRD (EXPANSION / HOLD / REDUCTION modes) |
+
+### Quality, Debugging & Review
+| Command | What it does |
+|---------|--------------|
+| `/tdd` | Enforce test-driven development cycle |
+| `/quality-gate` | Pre-commit quality checks (typecheck, lint, test, coverage) |
+| `/investigate` | Iron Law debugging — root-cause investigation before fixes |
+| `/diagnose` | Disciplined diagnosis loop for hard / intermittent bugs |
+| `/review` | Review a pull request |
+| `/retro` | Project or session retrospective |
+| `/document-release` | Post-ship documentation sync |
+| `/calibration-report` | Estimation calibration vs. actuals |
+| `/track-estimate` | Record an estimate for a task |
+| `/finish-estimate` | Close out an estimate with actuals |
 
 ### Workers
 | Command | What it does |
@@ -23,76 +51,73 @@ Personal OS for orchestrating work across companies, workers, and AI.
 | `/run {worker} {skill}` | Execute skill |
 | `/newworker` | Create new worker |
 
-### Projects
+### Knowledge & Decisions
 | Command | What it does |
 |---------|--------------|
-| `/plan` | Plan new project, create PRD |
-| `/run-project` | Execute project via Ralph loop |
-| `/execute-task` | Execute single task with worker coordination |
-| `/understand-project` | Deep-dive project understanding |
-| `/idea` | Capture project idea without full PRD |
-| `/goals` | View and manage OKR structure |
-| `/dashboard` | Generate visual goals dashboard |
-| `/tdd` | Enforce test-driven development cycle |
-| `/quality-gate` | Pre-commit quality checks (typecheck, lint, test) |
+| `/adr` | Capture an Architectural Decision Record |
+| `/out-of-scope` | Record what was deliberately rejected and why |
+| `/search` | Search across HQ and indexed repos (qmd-powered) |
+| `/garden` | Detect stale, duplicate, inaccurate content |
 
-### Content & Social
+### Land & Ship
 | Command | What it does |
 |---------|--------------|
-| `/contentidea` | Build content ideas |
-| `/suggestposts` | Research post ideas |
-| `/post` | Post or schedule content to X/LinkedIn via Post-Bridge |
-| `/post-results` | Check post delivery status |
-| `/preview-post` | Preview social post drafts, select images |
-| `/social-setup` | Configure voice, accounts, queue, worker |
+| `/land` | Land a PR — monitor CI, resolve review issues, merge, monitor production |
+| `/land-batch` | Triage, review, and sequentially merge multiple open PRs |
 
-### Communication
+### HQ Services & Sync
 | Command | What it does |
 |---------|--------------|
-| `/email` | Manage email across Gmail accounts |
-| `/checkemail` | Quick inbox cleanup and triage |
-| `/imessage` | Send iMessage to saved contact |
-
-### Design & Assets
-| Command | What it does |
-|---------|--------------|
-| `/generateimage` | Generate images via Gemini |
-
-### Deploy & Ops
-| Command | What it does |
-|---------|--------------|
-| `/deploy` | Ship any HQ artifact (deck, report, dashboard, web build) to a shareable URL via hq-deploy. Auto-handles auth, build, and password protection for sensitive content |
-| `/hq-login` | Sign in to hq-deploy / hq-pro (Cognito browser flow) |
-| `/hq-whoami` | Show current HQ identity + token expiry |
+| `/hq-login` | Sign in to HQ Cognito (browser flow) |
 | `/hq-logout` | Clear local Cognito session |
+| `/hq-whoami` | Show current HQ identity + token expiry |
+| `/hq-sync` | Run a full HQ sync across cloud-backed companies |
+| `/resolve-conflicts` | Walk through HQ Sync conflicts interactively |
+
+### HQ CLI: Files (vault sharing)
+
+These are CLI commands (not slash commands) — direct surface for HQ vault access control. Full reference: `.claude/skills/hq-files/SKILL.md`.
+
+| Command | What it does |
+|---------|--------------|
+| `hq files share <prefix>...` | **Browser flow** — opens a share-session page where you batch-pick recipients (members, groups, "Share with All") with per-recipient read/write. Add `--no-open` to print the URL only. |
+| `hq files share <prefix> --with <email\|grp_*\|@all> --permission <read\|write>` | **Direct grant** — single recipient (or `@all` for company-wide) without leaving the terminal |
+| `hq files unshare <prefix> --with <principal>` | Revoke a grant (idempotent — exits 0 if already absent) |
+| `hq files acl <prefix>` | Show ACL entries, creator, and your effective permission |
+
+Share-session URLs are encrypted single-use 15-minute capabilities — never paste them into commits, threads, or logs. See policy `core/policies/hq-share-session-urls-are-capabilities.md`.
 
 ### Company & Infrastructure
 | Command | What it does |
 |---------|--------------|
 | `/newcompany` | Scaffold new company with full infrastructure |
-| `/pb-connect` | Connect Post-Bridge social accounts |
-| `/personal-interview` | Deep interview to populate profile/voice |
+| `/designate-team` | Mark a company directory as cloud-backed |
+| `/sync-registry` | Regenerate a company's resource registry index |
+| `/discover` | Pull a repo into HQ and synthesize structured knowledge |
+| `/import-claude` | Scan the machine for Claude artifacts and import into HQ |
+| `/setup` | Interactive setup wizard for HQ Starter Kit |
+| `/update-hq` | Upgrade HQ from latest hq-core release |
+| `/convert-codex` | Additive conversion so Codex has first-class AGENTS.md guidance |
+| `/tutorial` | Interactive hands-on tutorial on HQ principles and workflow |
+| `/harness-audit` | Score HQ setup quality across categories |
+| `/cleanup` | Audit and clean HQ to enforce current policies |
 
-### System
+### Misc
 | Command | What it does |
 |---------|--------------|
-| `/cleanup` | Audit and clean HQ |
-| `/garden` | Detect stale, duplicate, inaccurate content |
-| `/search` | Search across HQ and indexed repos |
-| `/search-reindex` | Reindex qmd collections |
-| `/harness-audit` | Score HQ setup quality |
-| `/model-route` | Recommend optimal Claude model |
-| `/update-hq` | Upgrade HQ from latest starter kit |
+| `/personal-interview` | Deep interview to populate profile / voice |
+| `/ascii-graphic` | Generate ASCII block-art banners for posts and OG images |
 
 ## Workers
 
 ```
-/run                    # see all
+/run                                   # see all
+/run frontend-designer
 /run frontend-designer build
 /run content-brand "tone analysis"
 ```
 
-**Public (`workers/public/`):**
+**Standalone public workers** (`core/workers/public/`):
 
 | Worker | Purpose |
 |--------|---------|
@@ -105,21 +130,20 @@ Personal OS for orchestrating work across companies, workers, and AI.
 | exec-summary | Executive summary generation |
 | accessibility-auditor | Accessibility checks |
 | performance-benchmarker | Performance analysis |
+| ascii-artist | ASCII block-art generation |
+| paper-designer | Document / paper layout |
 
-**Dev Team (17):** `workers/public/dev-team/`
-project-manager, task-executor, architect, backend-dev, database-dev, frontend-dev, infra-dev, motion-designer, code-reviewer, knowledge-curator, product-planner, dev-qa-tester, codex-engine, codex-coder, codex-reviewer, codex-debugger, reality-checker
+**Dev Team (20)** — `core/workers/public/dev-team/`:
+project-manager, task-executor, architect, backend-dev, database-dev, frontend-dev, infra-dev, motion-designer, code-reviewer, knowledge-curator, product-planner, qa-tester, reality-checker, context-manager, codex-engine, codex-coder, codex-reviewer, codex-debugger, gemini-coder, gemini-reviewer
 
-**Content Team (5):** `workers/public/content-*/`
+**Content Team (5)** — `core/workers/public/content-*/`:
 content-brand, content-sales, content-product, content-legal, content-shared (library)
 
-**Social Team (5):** `workers/public/social-*/`
+**Social Team (5)** — `core/workers/public/social-*/`:
 social-shared (library), social-strategist, social-reviewer, social-publisher, social-verifier
 
-**Gardener Team (3):** `workers/public/gardener-team/`
+**Gardener Team (3)** — `core/workers/public/gardener-team/`:
 garden-scout, garden-auditor, garden-curator
-
-**Gemini Team (3):** `workers/public/gemini-*/`
-(gemini-coder, gemini-reviewer, gemini-frontend — install via @indigoai-us/hq-pack-gemini)
 
 **Company Workers** (`companies/{co}/workers/`):
 
@@ -131,10 +155,26 @@ Each company owns its settings, data, and knowledge.
 
 ```
 companies/
-├── {company-a}/   # e.g. a product company
-├── {company-b}/   # e.g. a services company
-├── personal/      # Personal tools + social
-└── {company-n}/   # Add one directory per company you manage
+├── _template/      # Skeleton copied when scaffolding a new company
+├── manifest.yaml   # Company registry
+└── {company}/      # Add one directory per company you manage (via /newcompany)
+```
+
+A scaffolded company contains:
+
+```
+companies/{co}/
+├── data/           # Exports, reports, journal entries
+├── hooks/          # Company-scoped hooks
+├── knowledge/      # Company knowledge base (embedded git repo)
+├── people/         # Contact / personnel records
+├── policies/       # Company-scoped rules
+├── projects/       # PRDs and project state
+├── repos/          # Symlinks → repos/{public|private}/
+├── settings/       # Credentials & config
+├── skills/         # Company-scoped skills
+├── workers/        # Company-scoped workers
+└── workspace/      # Company-scoped scratch / drafts
 ```
 
 ## Projects
@@ -142,72 +182,85 @@ companies/
 PRDs live at `companies/{co}/projects/{name}/prd.json` (source of truth) with `README.md` (human-readable).
 
 ```
-/plan "Build dashboard"         # creates PRD
-/run-project customer-cube      # execute via Ralph loop
+/prd "Build dashboard"          # creates PRD
+/run-project customer-cube      # execute via Ralph loop / Codex
 ```
 
 ## Directory Structure
 
 ```
 HQ/
+├── AGENTS.md                  # Charter for Claude / Codex sessions
+├── README.md
+├── CHANGELOG.md
+├── MIGRATION.md
+├── RELEASE-NOTES-*.md
+├── USER-GUIDE.md
 ├── .claude/
-│   ├── commands/      # Slash commands (44)
-│   ├── hooks/         # Lifecycle hooks (8)
-│   ├── policies/      # Cross-cutting rules (47)
-│   └── skills/        # Skill definitions (3)
-├── agents-profile.md  # Owner's profile
-├── agents-companies.md # Company contexts
-├── companies/         # Company-scoped resources (14)
-│   └── {co}/
-│       ├── knowledge/ # Embedded git repo
-│       ├── policies/  # Company rules
-│       ├── settings/  # Credentials & config
-│       ├── workers/   # Company-scoped workers
-│       ├── data/      # Exports, reports
-│       ├── repos/     # Symlinks → repos/{pub|priv}/
-│       ├── projects/  # PRDs
-│       └── board.json # OKR board
-├── knowledge/
-│   ├── public/        # Symlinks → repos/public/knowledge-*
-│   └── private/       # Symlinks → repos/private/knowledge-*
+│   ├── CLAUDE.md
+│   ├── commands/              # Slash commands (53)
+│   ├── hooks/                 # Lifecycle hooks (32)
+│   ├── skills/                # Skill definitions (55)
+│   ├── output-styles/
+│   ├── scripts/
+│   ├── stack.yaml
+│   └── settings.json / settings.local.json
+├── core/
+│   ├── core.yaml              # Core manifest
+│   ├── knowledge/
+│   │   ├── public/            # Bundled public knowledge bases
+│   │   └── private/           # Private knowledge bases (populated via packs / sync)
+│   ├── modules/               # Pluggable modules (modules.yaml)
+│   ├── packages/              # Packaged extensions
+│   ├── policies/              # Cross-cutting rules (~259)
+│   ├── scripts/               # Shared shell utilities
+│   ├── settings/              # Orchestrator config
+│   └── workers/
+│       ├── public/            # Bundled workers (dev-team, content-*, social-*, gardener-team, …)
+│       └── registry.yaml
+├── companies/
+│   ├── _template/             # Skeleton for new companies
+│   ├── manifest.yaml
+│   └── {co}/                  # One directory per company
+├── data/
+│   └── journal/               # Cross-company journal
+├── projects/                  # Top-level project scratch
 ├── repos/
-│   ├── public/        # Open-source repos
-│   └── private/       # Private repos
-├── settings/          # Orchestrator config, contacts
-├── workers/
-│   └── public/        # Shareable workers (dev-team, content-*, social-*, gardener-*, gemini-*, etc.)
+│   ├── public/                # Open-source repos
+│   └── private/               # Private repos
 └── workspace/
-    ├── checkpoints/   # Session saves
-    ├── orchestrator/  # Ralph loop workflow state
-    ├── reports/       # Generated reports
-    ├── social-drafts/ # Social content pipeline
-    └── threads/       # Session threads + handoff.json
+    ├── baseline/              # Reference baselines
+    ├── checkpoints/           # Session saves
+    ├── drafts/                # In-flight drafts
+    ├── learnings/             # Captured learnings
+    ├── orchestrator/          # Ralph loop workflow state
+    ├── reports/               # Generated reports
+    ├── scratch/               # Free-form scratch
+    └── threads/               # Session threads + handoff.json
 ```
 
 ## Typical Session
 
-1. `/startwork` or `/reanchor` - see state, pick focus
+1. `/startwork` — pick company/project/repo, gather context
 2. Do work
-3. `/checkpoint` - save progress
-4. `/handoff` - prep for next session
+3. `/checkpoint` — save progress
+4. `/handoff` — prep for next session
 
 ## Knowledge Bases
 
-**Public** (in `knowledge/public/`):
-- `Ralph/` - coding methodology
-- `workers/` - worker framework
-- `hq-core/` - thread schema, HQ patterns
-- `dev-team/` - dev team patterns
-- `design-styles/` - image generation style guides (installed via @indigoai-us/hq-pack-design-styles)
-- `projects/` - project templates
-- `loom/` - Loom agent patterns (reference)
-- `ai-security-framework/` - security practices
-- `agent-browser/` - browser automation patterns
-- `curious-minds/` - book/learning content
-- `gemini-cli/` - Gemini CLI patterns (installed via @indigoai-us/hq-pack-gemini)
+**Public** (in `core/knowledge/public/`):
+- `Ralph/` — coding methodology
+- `agent-browser/` — browser automation patterns
+- `ai-security-framework/` — security practices
+- `dev-team/` — dev team patterns
+- `getting-started/` — onboarding material
+- `hq-core/` — thread schema, HQ patterns
+- `loom/` — Loom agent patterns (reference)
+- `projects/` — project templates
+- `workers/` — worker framework reference
 
-**Private** (in `knowledge/private/`):
-- `linear/` - Linear integration knowledge
+**Private** (in `core/knowledge/private/`):
+- Empty by default — populated via packs (e.g. `@indigoai-us/hq-pack-*`) or sync.
 
 **Company-level** (in `companies/{co}/knowledge/`):
-- Each company has an embedded git repo
+- Each company has an embedded git repo populated through use.

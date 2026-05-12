@@ -17,7 +17,7 @@ BLOCKED: Never use Glob for prd.json or worker.yaml.
 
 For discovery:  qmd search "{name} prd.json" --json -n 5
 For known path: Read companies/{co}/projects/{name}/prd.json
-For workers:    Read workers/registry.yaml → find path → Read worker.yaml
+For workers:    Read core/workers/registry.yaml → find path → Read worker.yaml
 EOF
   exit 2
 fi
@@ -36,7 +36,7 @@ BLOCKED: Glob from HQ root causes timeouts (1.38M files via symlinked repos).
 
 Fix: Add path: scoped to a subdirectory:
   Glob pattern="$PATTERN" path="companies/"
-  Glob pattern="$PATTERN" path="workers/"
+  Glob pattern="$PATTERN" path="core/workers/"
   Glob pattern="$PATTERN" path="workspace/"
 
 Or use: qmd search "query" --json -n 10

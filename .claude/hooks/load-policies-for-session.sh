@@ -4,12 +4,12 @@
 #
 # Detects cwd → active company (companies/{co}) and/or active repo
 # (repos/{scope}/{name}). Emits a <policy-digest> block containing:
-#   1. Hard-enforcement global policies (.claude/policies/_digest.md hard section)
+#   1. Hard-enforcement global policies (core/policies/_digest.md hard section)
 #   2. Full company digest if in company context
 #   3. Full repo digest if in repo context
 #
 # Soft-enforcement globals are NOT auto-loaded (budget reasons). Read
-# `.claude/policies/_digest.md` manually if you need them.
+# `core/policies/_digest.md` manually if you need them.
 #
 # Usage: invoked by hook-gate.sh from settings.json SessionStart hook entry.
 #
@@ -27,14 +27,14 @@ STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
 SOURCE="$(printf '%s' "$STDIN_JSON" | sed -nE 's/.*"source"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -1)"
 [ -z "$SOURCE" ] && SOURCE="startup"
 
-# Determine HQ_ROOT by walking up until we find .claude/policies + companies/
+# Determine HQ_ROOT by walking up until we find core/policies + companies/
 # with at least one real company (not just the _template scaffold — that would
 # catch hq-starter-kit and treat it as an independent HQ).
 HQ_ROOT=""
 CWD="$(pwd)"
 search="$CWD"
 while [ "$search" != "/" ]; do
-  if [ -d "$search/.claude/policies" ] && [ -d "$search/companies" ]; then
+  if [ -d "$search/core/policies" ] && [ -d "$search/companies" ]; then
     # Count real company dirs (exclude _template, manifest.yaml, etc.)
     real_count=$(find "$search/companies" -mindepth 1 -maxdepth 1 -type d ! -name '_template' 2>/dev/null | head -1 | wc -l)
     if [ "$real_count" -gt 0 ]; then
@@ -48,7 +48,7 @@ done
 # Fall back to canonical path if not found via walk-up
 [ -z "$HQ_ROOT" ] && HQ_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
-GLOBAL_DIGEST="$HQ_ROOT/.claude/policies/_digest.md"
+GLOBAL_DIGEST="$HQ_ROOT/core/policies/_digest.md"
 
 # Detect active company from cwd (regex pattern from warn-cross-company-settings.sh)
 # Note: BSD sed (macOS) needs -E + non-pipe delimiter for alternation to work.
@@ -295,7 +295,7 @@ extract_hard_section_global() {
 # Cuts global cold-start from ~70KB to ~36KB while preserving the slug
 # and one-line rule summary that the model needs to know each rule
 # exists and roughly what it requires. Full text remains at
-# `.claude/policies/{slug}.md`. Override with HQ_GLOBAL_FULL=1.
+# `core/policies/{slug}.md`. Override with HQ_GLOBAL_FULL=1.
 extract_hard_section_global_slug() {
   awk '
     /^## Hard-enforcement/ { in_hard = 1; skip_cmd = 0; print; next }
@@ -333,7 +333,7 @@ count_total() {
 emit_block() {
   printf '<policy-digest>\n'
   printf '# Applicable Policies (auto-loaded at session start)\n\n'
-  printf '> Injected by `.claude/hooks/load-policies-for-session.sh` | Rebuild digests: `bash scripts/build-policy-digest.sh`\n'
+  printf '> Injected by `.claude/hooks/load-policies-for-session.sh` | Rebuild digests: `bash core/scripts/build-policy-digest.sh`\n'
   if [ "$HQ_HAS_EXPLICIT_SERVICES" = "1" ]; then
     if [ -n "$HQ_ACTIVE_SERVICES" ]; then
       printf '> Active stack filter: `%s` — integration policies outside this set are hidden (flow tags always pass)\n' "$HQ_ACTIVE_SERVICES"
@@ -349,11 +349,11 @@ emit_block() {
     total_count=$(count_total "$GLOBAL_DIGEST")
     printf '\n## Global (hard-enforcement, non-command-scoped — %d of %d policies)\n\n' "$hard_count" "$total_count"
     if [ "${HQ_GLOBAL_FULL:-0}" = "1" ]; then
-      printf '> Full global digest (hard + soft, includes command-scoped): `.claude/policies/_digest.md`\n'
+      printf '> Full global digest (hard + soft, includes command-scoped): `core/policies/_digest.md`\n'
       printf '> Render mode: **full** (HQ_GLOBAL_FULL=1) — rationale + provenance included\n\n'
       extract_hard_section_global "$GLOBAL_DIGEST" | filter_by_stack
     else
-      printf '> Slug + rule-summary only — full text per policy: `.claude/policies/{slug}.md` (or `qmd get -c hq {slug}`). Override: `HQ_GLOBAL_FULL=1`\n\n'
+      printf '> Slug + rule-summary only — full text per policy: `core/policies/{slug}.md` (or `qmd get -c hq {slug}`). Override: `HQ_GLOBAL_FULL=1`\n\n'
       extract_hard_section_global_slug "$GLOBAL_DIGEST" | filter_by_stack
     fi
   fi
@@ -384,7 +384,7 @@ emit_block() {
 emit_slim() {
   printf '<policy-digest>\n'
   printf '# Session resume — policies loaded via prior context\n\n'
-  printf '> Full digest: `.claude/policies/_digest.md` | Rebuild: `bash scripts/build-policy-digest.sh`\n'
+  printf '> Full digest: `core/policies/_digest.md` | Rebuild: `bash core/scripts/build-policy-digest.sh`\n'
   if [ -n "$ACTIVE_CO" ]; then
     printf '> Active company: **%s** — policies at `companies/%s/policies/`\n' "$ACTIVE_CO" "$ACTIVE_CO"
   fi

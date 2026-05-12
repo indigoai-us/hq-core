@@ -7,7 +7,7 @@ visibility: public
 
 # /run-pipeline - Multi-Project Pipeline Orchestrator
 
-Orchestrate multiple PRD projects through the full lifecycle: triage, build, PR, review, merge, deploy, canary, done. Wraps `scripts/run-pipeline.sh` — the bash backbone does all heavy lifting. This command provides the intelligent UI: triage presentation, gate interaction, progress display, and dynamic reordering.
+Orchestrate multiple PRD projects through the full lifecycle: triage, build, PR, review, merge, deploy, canary, done. Wraps `core/scripts/run-pipeline.sh` — the bash backbone does all heavy lifting. This command provides the intelligent UI: triage presentation, gate interaction, progress display, and dynamic reordering.
 
 **Arguments:** $ARGUMENTS
 
@@ -38,7 +38,7 @@ Parse `$ARGUMENTS` into:
 Standard policy loading protocol:
 
 1. Read all files in `companies/{company}/policies/` (skip `example-policy.md`)
-2. Read relevant files in `.claude/policies/`
+2. Read relevant files in `core/policies/`
 3. Count hard vs soft enforcement
 
 Display: `Loaded N policies (H hard, S soft)`
@@ -48,7 +48,7 @@ Display: `Loaded N policies (H hard, S soft)`
 Run triage via the bash script in dry-run mode:
 
 ```bash
-cd /Users/{your-name}/Documents/HQ && bash scripts/run-pipeline.sh {company} {prd1} [prd2...] --dry-run
+cd /Users/{your-name}/Documents/HQ && bash core/scripts/run-pipeline.sh {company} {prd1} [prd2...] --dry-run
 ```
 
 Display the triage table output to the user. This shows: project sequence, risk levels, story counts, repo grouping, dependency order.
@@ -66,7 +66,7 @@ Run the bash script in background:
 
 ```bash
 cd /Users/{your-name}/Documents/HQ && \
-  nohup bash scripts/run-pipeline.sh {company} {prd1} [prd2...] {passthrough_flags} \
+  nohup bash core/scripts/run-pipeline.sh {company} {prd1} [prd2...] {passthrough_flags} \
   > workspace/orchestrator/_pipeline/{pipeline_id}/claude-session.log 2>&1 &
 echo "PID:$!"
 ```
@@ -194,7 +194,7 @@ When `--resume <pipeline_id>` is provided:
    - PID dead + status `in_progress` → offer to relaunch:
      ```bash
      cd /Users/{your-name}/Documents/HQ && \
-       nohup bash scripts/run-pipeline.sh --resume {pipeline_id} \
+       nohup bash core/scripts/run-pipeline.sh --resume {pipeline_id} \
        > workspace/orchestrator/_pipeline/{pipeline_id}/claude-session.log 2>&1 &
      ```
    - PID dead + status `paused`/`failed` → display error context, ask user for next action
@@ -204,7 +204,7 @@ When `--resume <pipeline_id>` is provided:
 When `--status` is provided:
 
 ```bash
-cd /Users/{your-name}/Documents/HQ && bash scripts/run-pipeline.sh --status
+cd /Users/{your-name}/Documents/HQ && bash core/scripts/run-pipeline.sh --status
 ```
 
 Display the formatted output and stop.
@@ -216,6 +216,6 @@ Display the formatted output and stop.
 - **`pre_deploy_prod` and `canary_failure` gates are always gated** — cannot be overridden even in autonomous mode
 - **Never kill the bash script** unless user explicitly asks to abort
 - **Pipeline isolation** — one company per pipeline. Never mix PRDs from different companies
-- **Passthrough flags** — flags not consumed by this command pass through to `scripts/run-pipeline.sh` verbatim
-- **Config source** — `settings/pipeline.yaml` controls gate defaults, polling intervals, deploy behavior. The bash script reads it; this command does not need to parse it directly
+- **Passthrough flags** — flags not consumed by this command pass through to `core/scripts/run-pipeline.sh` verbatim
+- **Config source** — `core/settings/pipeline.yaml` controls gate defaults, polling intervals, deploy behavior. The bash script reads it; this command does not need to parse it directly
 - **State dir** — `workspace/orchestrator/_pipeline/{pipeline_id}/` contains `pipeline-state.json` and logs

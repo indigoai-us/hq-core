@@ -10,7 +10,7 @@
 #   lookup <slug>             Print persisted password for a slug (no echo to subsequent agent output)
 #
 # Used by .claude/skills/deploy/SKILL.md Step 4.5 (sensitivity & password) and Step 6 (post-upload).
-# Reinforced by .claude/policies/hq-deploy-reinforcement.md.
+# Reinforced by core/policies/hq-deploy-reinforcement.md.
 
 set -euo pipefail
 

@@ -1,0 +1,15 @@
+# Credentials and secrets - hidden from Claude
+companies/*/settings/**
+core/settings/.env*
+core/settings/*credentials*
+core/settings/*secret*
+core/settings/*.key
+core/settings/*.pem
+personal/settings/.env*
+personal/settings/*credentials*
+personal/settings/*secret*
+personal/settings/*.key
+personal/settings/*.pem
+.env
+*.pem
+*.key

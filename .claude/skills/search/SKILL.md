@@ -67,13 +67,13 @@ Parse JSON output. Display:
 Search: "{query}" (mode: {mode}, collection: {collection or "all"})
 
 Results:
-  1. [0.92] hq: knowledge/public/Ralph/02-core-concepts.md
+  1. [0.92] hq: core/knowledge/public/Ralph/02-core-concepts.md
      "Ralph methodology emphasizes small loops with human checkpoints..."
 
   2. [0.84] {product}: libs/core/src/auth/middleware.ts
      "export function authMiddleware..."
 
-  3. [0.71] hq: workers/public/dev-team/architect/skills/design-review.md
+  3. [0.71] hq: core/workers/public/dev-team/architect/skills/design-review.md
      "Architecture review following Ralph back-pressure patterns..."
 
 {n} results. Use --full to show top result content.
@@ -93,7 +93,7 @@ If qmd is unavailable or errors:
 
 Use the Grep tool to search file contents:
 - Search pattern: the query text
-- Search directories: `knowledge/`, `companies/`, `workers/`, `.claude/commands/`, `workspace/`
+- Search directories: `core/knowledge/`, `companies/`, `core/workers/`, `.claude/commands/`, `workspace/`
 - Show matching file paths
 
 Display: "qmd unavailable, falling back to Grep"

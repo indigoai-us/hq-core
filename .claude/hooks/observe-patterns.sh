@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-HQ="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+HQ="${HOME}/Documents/HQ"
 INPUT=$(cat)
 
 # Ensure learnings directory exists

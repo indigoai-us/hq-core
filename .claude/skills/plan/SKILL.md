@@ -1,7 +1,7 @@
 ---
 name: plan
 description: Plan a project and generate PRD for execution. Creates prd.json + README.md with full HQ context awareness. Runtime-agnostic — executes identically in Claude Code and Codex. Lightweight by default — uses batched questions and adapts interview depth to brainstorm context if available. For deep research subagents + 3-tier 15-question interview, use /deep-plan instead.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(scripts/read-policy-frontmatter.sh:*), Bash(scripts/build-policy-digest.sh:*), Bash(npx:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(core/scripts/build-policy-digest.sh:*), Bash(npx:*)
 ---
 
 # Plan — Project Planning & PRD Generation
@@ -18,7 +18,7 @@ Check if the **first word** of the user's input matches a company slug in `compa
 
 1. **Set `{co}`** = matched slug for the entire flow. Strip the slug — the remaining text is the project description
 2. **Announce:** "Anchored on **{co}**"
-3. **Load policies (frontmatter-only)** — For each file in `companies/{co}/policies/` (skip `example-policy.md`), run `bash scripts/read-policy-frontmatter.sh {file}`. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. The SessionStart hook also injects the company policy digest at `companies/{co}/policies/_digest.md` — prefer that if present. Apply as constraints throughout the PRD
+3. **Load policies (frontmatter-only)** — For each file in `companies/{co}/policies/` (skip `example-policy.md`), run `bash core/scripts/read-policy-frontmatter.sh {file}`. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. The SessionStart hook also injects the company policy digest at `companies/{co}/policies/_digest.md` — prefer that if present. Apply as constraints throughout the PRD
 4. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}` for all `qmd` calls
 5. **Pre-load repos** — Extract `{co}.repos[]` from manifest. Present as repo options in Batch 3 Q10
 6. **Scope workers** — Filter to company workers (`companies/{co}/workers/`) + public workers (`workers/public/`)
@@ -48,7 +48,7 @@ If `{co}` is anchored, scope all searches to that company.
 - **Skip entirely for personal/HQ mode**: no company routing needed, no repo to map
 
 **Workers (only if `mode in (company, repo)` AND the description plausibly needs a worker — otherwise skip):**
-- Read `workers/registry.yaml` (workers already indexed there — never Glob for worker discovery). Skip if the description is clearly code/infra work not matching a worker skill
+- Read `core/workers/registry.yaml` (workers already indexed there — never Glob for worker discovery). Skip if the description is clearly code/infra work not matching a worker skill
 - If anchored: filter to company workers (`companies/{co}/workers/`) + public workers (`workers/public/`)
 - **Skip entirely for personal/HQ mode**
 
@@ -64,7 +64,7 @@ If `{co}` is anchored, scope all searches to that company.
 - Already loaded in Step 0 (frontmatter-only). Do NOT re-read here. Note constraints from that scan
 
 **Repo Policies (if repo resolved):**
-- If target repo identified, list files in `{repoPath}/.claude/policies/` (if dir exists), then for each run `bash scripts/read-policy-frontmatter.sh {file}`. Prefer the repo digest at `{repoPath}/.claude/policies/_digest.md` if present (SessionStart hook injects it). For hard-enforcement policies, additionally read the `## Rule` section
+- If target repo identified, list files in `{repoPath}/.claude/policies/` (if dir exists), then for each run `bash core/scripts/read-policy-frontmatter.sh {file}`. Prefer the repo digest at `{repoPath}/.claude/policies/_digest.md` if present (SessionStart hook injects it). For hard-enforcement policies, additionally read the `## Rule` section
 
 **Target Repo (if repo specified or discovered):**
 - If anchored: company repos already pre-loaded from manifest. Present as options
@@ -126,6 +126,24 @@ companies/{co}/projects/{slug}/brainstorm.md
 4. **Effect**: interview batches collapse to confirmations rather than open-ended questions. User answers faster, stories are better anchored to the evaluated approach
 
 **If not found:** proceed normally (no change to existing behavior).
+
+## Step 3.6: Open Session Journal
+
+Spec: `core/knowledge/public/hq-core/journal-spec.md`. Open a session journal at the project_dir so research, decisions, and dead ends survive context compaction:
+
+```bash
+.claude/skills/_shared/journal.sh open plan "{project_dir}"
+```
+
+Where `{project_dir}` = `companies/{co}/projects/{slug}/` or `projects/{slug}/` for personal/HQ. The helper:
+
+- Creates `{project_dir}/journal/{ISO8601}-plan.md` with frontmatter (`status: active`, `skill: plan`)
+- Writes `.claude/state/active-journal` so the autocapture hook + later steps append to this file
+- Stays open across `/handoff` boundaries — only `/handoff` and `/checkpoint` close it
+
+The autocapture PostToolUse hook appends `## Auto-capture` lines for any Agent / WebFetch / WebSearch / AskUserQuestion calls. Step 4 (interview decisions) and Step 8.5 (resolved/deferred questions) append curated entries via the same helper.
+
+**Skip if:** journal helper unavailable (fail-soft).
 
 ## Step 4: Discovery Interview
 
@@ -311,6 +329,14 @@ For each user story targeting a deployable repo, specify E2E tests:
     - For integration: "Full flow from [A] to [B] works"
     - Leave empty for non-deployable projects (knowledge, content, data)
 
+### Append interview decisions to journal
+
+After the interview batches complete:
+
+```bash
+.claude/skills/_shared/journal.sh append decisions "Interview decisions: project type — {classification}; scope — {what's in / what's out}; notable answers — {2-3 bullets}"
+```
+
 ### Live Path Watch hook
 
 Before generating the PRD, detect whether this project plausibly replaces, hardens, or builds alongside an existing **live production surface**. Purpose: prevent silent regressions on routes that already serve real users.
@@ -332,7 +358,7 @@ On match, ask via AskUserQuestion:
 
 If user picks "Yes": also add a canary E2E test to the highest-priority story: `"curl -sS <liveUrl> returns 200 and contains none of {forbiddenTokens}"`.
 
-Policy `.claude/policies/hq-live-path-watch-on-replacement-prds.md` (hard enforcement) blocks PRD generation when the hook matches but the user neither declared `replacementFor` nor explicitly dismissed. The hook MUST run before Step 5.
+Policy `core/policies/hq-live-path-watch-on-replacement-prds.md` (hard enforcement) blocks PRD generation when the hook matches but the user neither declared `replacementFor` nor explicitly dismissed. The hook MUST run before Step 5.
 
 ## Step 5: Generate PRD
 
@@ -396,7 +422,7 @@ This is the **source of truth**. `/run-project` and `/execute-task` consume this
 
 **`decisions[]` schema:** Appended by Step 8.5 as `{question, answer, decidedAt, decidedBy}`. Optional — absent means empty. Additive and backwards-compatible; existing PRDs without the field are unaffected.
 
-**`worker_preference[]` schema:** Optional ordered list of preferred worker IDs (strings) per story. Used by `/execute-task` Layer 2 worker selection (`settings/orchestrator.yaml → worker_selection`). When non-empty AND any pinned worker can fill a role slot in the resolved sequence, that worker wins and the LLM picker is skipped. Default: empty array — fully auto-select. Example: `["acme-backend", "acme-qa"]`.
+**`worker_preference[]` schema:** Optional ordered list of preferred worker IDs (strings) per story. Used by `/execute-task` Layer 2 worker selection (`core/settings/orchestrator.yaml → worker_selection`). When non-empty AND any pinned worker can fill a role slot in the resolved sequence, that worker wins and the LLM picker is skipped. Default: empty array — fully auto-select. Example: `["acme-backend", "acme-qa"]`.
 
 **Populating `files`:** For each story, infer file paths from the description + acceptance criteria + target repo structure. If `repoPath` is set, search the repo (via qmd or Glob) to find existing files the story will modify, and predict new files it will create. Paths are repo-relative (e.g. `src/middleware/auth.ts`, not absolute). Best-effort — empty is fine for stories with unclear scope.
 
@@ -519,7 +545,7 @@ If project already exists in state.json, update it instead of duplicating.
 ## Step 7: Sync to Beads
 
 ```bash
-npx tsx scripts/prd-to-beads.ts --project={name}
+npx tsx core/scripts/prd-to-beads.ts --project={name}
 ```
 
 Silent — just log success/failure.
@@ -540,7 +566,7 @@ Run the `learn` skill (or `/learn` in Claude Code) to register the new project i
 
 Also reindex: `qmd update 2>/dev/null || true`
 
-**Update INDEX.md:** Regenerate `companies/{co}/projects/INDEX.md` per `knowledge/public/hq-core/index-md-spec.md`.
+**Update INDEX.md:** Regenerate `companies/{co}/projects/INDEX.md` per `core/knowledge/public/hq-core/index-md-spec.md`.
 
 ## Step 7.6: Doc Scout (read-only)
 
@@ -629,7 +655,13 @@ Read `metadata.openQuestions[]` from the prd.json just written. **If empty**, sk
 5. **Re-derive README.md** from the updated prd.json so the human-readable view reflects the Decisions section + new investigation stories + updated dependencies.
 6. **Re-sync orchestrator state** — update `workspace/orchestrator/state.json` for this project: `storiesTotal += <number of new investigation stories>`, bump `updatedAt`.
 7. **Re-sync board.json** — bump `companies/{co}/board.json` entry's `updated_at` timestamp (no field changes needed; investigation stories ride under the same project).
-8. Only after Step 8.5 completes may Step 9 run.
+8. **Append decision-mode results to journal:**
+
+```bash
+.claude/skills/_shared/journal.sh append decisions "Open question resolution: resolved {N} → metadata.decisions[]; deferred {M} → investigation stories; key decisions — {2-3 bullet summary}"
+```
+
+9. Only after Step 8.5 completes may Step 9 run.
 
 **Rationale:** Open questions historically drifted into `metadata.openQuestions[]` and were forgotten. Forcing resolution at PRD creation (in plan mode, via AskUserQuestion) catches cost/timeline implications while context is rich, not in the executing agent's downstream session where context is thinner. The "Defer — track as pre-flight story" escape hatch preserves the option to punt without losing traceability.
 

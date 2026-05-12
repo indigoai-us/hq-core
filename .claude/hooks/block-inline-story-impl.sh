@@ -44,6 +44,6 @@ fi
 # Repo file edited outside sub-agent context — warn
 echo "WARNING: Direct repo edit outside run-project.sh context." >&2
 echo "  File: $FILE_PATH" >&2
-echo "  If executing a PRD project, use \`scripts/run-project.sh\`." >&2
+echo "  If executing a PRD project, use \`core/scripts/run-project.sh\`." >&2
 echo "  If this is ad-hoc work (hotfix, exploration), ignore this warning." >&2
 exit 0

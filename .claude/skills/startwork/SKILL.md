@@ -1,7 +1,7 @@
 ---
 name: startwork
 description: Start a work session — resolve company, project, or repo context, gather state from handoff.json and manifest.yaml, present smart options. Lightweight session entry point that replaces ad-hoc orientation.
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(scripts/hq-session.sh:*)
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*)
 ---
 
 # Start Work Session
@@ -15,6 +15,18 @@ Beginning of every session. Replaces ad-hoc orientation.
 ## Process
 
 ### 1. Resolve Argument
+
+**1.0 Slash-command short-circuit (HARD RULE — check FIRST):**
+
+If the argument contains a slash-command token (whitespace-delimited substring matching `/<name>` for any `<name>` that is a valid slash command in `.claude/commands/`), abort the normal classification flow and route to that command. Specifically:
+
+- **`/deep-plan` token present** → STOP. Do not classify, do not enter Task Mode, do not pick a worker pipeline. Announce: *"`/deep-plan` detected in args — routing to deep-plan skill."* Then load `.claude/skills/deep-plan/SKILL.md` and execute it end-to-end with the remaining args (everything after `/deep-plan`) as the project description. The deep-plan skill produces `companies/{co}/projects/{name}/prd.json` + board entry and HARD STOPS at `/handoff`. Implementation MUST NOT happen in this session.
+- **`/plan` token present** → route to `.claude/skills/plan/SKILL.md` similarly.
+- **Other `/foo` tokens** → check `.claude/commands/foo.md`; if present, route to that command's skill (if any) or invoke the command directly.
+
+This rule supersedes the classification table below. The reason it exists: prior failure where `/startwork {company} vyg /deep-plan apps/...` was treated as free-text task description, causing the agent to enter Claude Code's built-in plan mode and start implementing instead of running the deep-plan questionnaire. Policy: `core/policies/deep-plan-skill-routing.md`.
+
+**1.1 Mode resolution** (only if no slash-command short-circuit fired):
 
 Determine mode from the user's argument (first match wins):
 
@@ -37,6 +49,7 @@ Determine mode from the user's argument (first match wins):
    - Primary: `qmd search "prd.json" --json -n 10` via shell
    - Fallback (if qmd unavailable): `grep -rl '"passes"' projects/ companies/ --include='prd.json'`
    - Filter results for `projects/` paths and `companies/*/projects/` paths (skip `_archive`). For each (max 5), read the prd.json and extract `name` + count stories where `passes !== true`. Collect projects with remaining work.
+5. **If the resumed thread references a project_dir** (extract from thread `files_touched` or `conversation_summary`): read the most-recent journal file from `{project_dir}/journal/*.md` (frontmatter + `## Open threads` only). Surface its `summary` + open threads in orientation. See Project Mode step 4 for the read pattern.
 
 #### Company Mode (arg = company slug)
 
@@ -54,6 +67,11 @@ Determine mode from the user's argument (first match wins):
 1. Read `projects/{name}/prd.json` — extract: `name`, `description`, `branchName`, incomplete stories (where `passes !== true`) with id + title + priority
 2. Extract `metadata.repoPath` — identify company by matching against manifest repos
 3. If repoPath exists: `git -C {repoPath} branch --show-current` and `git -C {repoPath} status --short`
+4. **Read session journals** (spec: `core/knowledge/public/hq-core/journal-spec.md`). If `{project_dir}/journal/` exists:
+   - `ls -t {project_dir}/journal/*.md 2>/dev/null | head -2` — most recent 2 files
+   - For each: read frontmatter (`status`, `summary`) + `## Open threads` section only — skip `## Auto-capture` (reference material, too noisy for orientation)
+   - If most-recent file has `status: active` and mtime > 24h, treat as abandoned (visually flag in orientation block)
+   - Surface in orientation: latest file's `summary` + any unresolved `## Open threads` bullets
 
 #### Task Mode (arg = free-text task description)
 
@@ -87,11 +105,11 @@ session's metadata so per-company hooks and other context-aware skills can
 find it:
 
 ```bash
-bash scripts/hq-session.sh set company_slug "{co}"
+bash core/scripts/hq-session.sh set company_slug "{co}"
 # Optional, when applicable:
-bash scripts/hq-session.sh set project "{project_name}"
-bash scripts/hq-session.sh set repo    "{repo_name}"
-bash scripts/hq-session.sh set mode    "{Resume|Company|Project|Repo|Task}"
+bash core/scripts/hq-session.sh set project "{project_name}"
+bash core/scripts/hq-session.sh set repo    "{repo_name}"
+bash core/scripts/hq-session.sh set mode    "{Resume|Company|Project|Repo|Task}"
 ```
 
 This file lives at `workspace/sessions/<session_id>/meta.yaml`. The current
@@ -109,9 +127,9 @@ session.
 
 Once company `{co}` is resolved (from any mode):
 
-1. **Company policies**: If `{co}` known, read frontmatter-only for each policy in `companies/{co}/policies/` via `bash scripts/read-policy-frontmatter.sh {file}` (skip `example-policy.md`). Note count + titles of any `enforcement: hard` rules. For hard-enforcement policies only, additionally read the `## Rule` section with targeted Read + range.
+1. **Company policies**: If `{co}` known, read frontmatter-only for each policy in `companies/{co}/policies/` via `bash core/scripts/read-policy-frontmatter.sh {file}` (skip `example-policy.md`). Note count + titles of any `enforcement: hard` rules. For hard-enforcement policies only, additionally read the `## Rule` section with targeted Read + range.
 2. **Repo policies**: If repo context resolved, check `{repoPath}/.claude/policies/` (if dir exists). Same frontmatter-only pattern.
-3. **Global policies**: Count files in `.claude/policies/`. Prefer the compiled digest at `.claude/policies/_digest.md` if present (auto-loaded by SessionStart hook — this step becomes a no-op when digest is available). If no digest, filter to policies whose `trigger` matches current context — don't load all.
+3. **Global policies**: Count files in `core/policies/`. Prefer the compiled digest at `core/policies/_digest.md` if present (auto-loaded by SessionStart hook — this step becomes a no-op when digest is available). If no digest, filter to policies whose `trigger` matches current context — don't load all.
 
 Display in orientation block:
 ```
@@ -188,7 +206,7 @@ Output the numbered list and wait for user input. After user picks, proceed dire
 
 - NEVER read INDEX.md, agents files, or company knowledge dirs during startup
 - NEVER run exploratory searches to orient — this skill replaces exploration with targeted reads
-- Max file reads: handoff.json + 1 thread + manifest + up to 5 prd.json (headers only)
+- Max file reads: handoff.json + 1 thread + manifest + up to 5 prd.json (headers only) + up to 2 journal files per resolved project (frontmatter + Open threads section only — never load Auto-capture)
 - If >5 active projects found, show top 5 by most recent file modification
 - Always verify git branch with `git branch --show-current` before displaying git state
 - Context diet: every read must serve the orientation summary. No speculative loading

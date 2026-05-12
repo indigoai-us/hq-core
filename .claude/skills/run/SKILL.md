@@ -40,7 +40,7 @@ Extract from `$ARGUMENTS`:
 
 ### No Arguments → List Workers
 
-Read `workers/registry.yaml` and display all workers:
+Read `core/workers/registry.yaml` and display all workers:
 
 ```
 Available Workers:
@@ -57,7 +57,7 @@ Stop here.
 
 ### Worker ID Only → Show Skills
 
-1. Read `workers/registry.yaml`
+1. Read `core/workers/registry.yaml`
 2. Find the entry matching `{worker_id}`
 3. Read `{worker_path}/worker.yaml`
 4. List skills from the `skills:` section
@@ -86,7 +86,7 @@ Proceed to the full execution pipeline below.
 
 ### 3a. Find Worker Registry Entry
 
-Use the Read tool to read `workers/registry.yaml`. The registry stores workers as a YAML list under the `workers:` key, with each entry shaped like:
+Use the Read tool to read `core/workers/registry.yaml`. The registry stores workers as a YAML list under the `workers:` key, with each entry shaped like:
 
 ```yaml
 workers:
@@ -98,7 +98,7 @@ workers:
 Scan the list for the entry where `id:` matches `{worker_id}` and extract its `path:` field. If needed, use Grep with the correct pattern to find the path:
 
 ```bash
-grep -A 4 "  - id: {worker_id}$" workers/registry.yaml | grep "path:"
+grep -A 4 "  - id: {worker_id}$" core/workers/registry.yaml | grep "path:"
 ```
 
 Extract the `path:` value (strip the `path: ` prefix). If no matching entry found, display:

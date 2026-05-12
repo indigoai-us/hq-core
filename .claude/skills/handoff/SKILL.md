@@ -44,20 +44,30 @@ Format:
 
 Write the array to `/tmp/handoff-learnings-$$.json` (shell expands `$$` to the PID). Empty array is fine. **Do not call `/learn` here — `handoff-post.sh` dispatches it headless.**
 
+### 2.5 Close active session journal (if any)
+
+Spec: `core/knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, `/prd`, or `/plan`, close it now so its frontmatter records `status: closed` + a one-line summary.
+
+```bash
+.claude/skills/_shared/journal.sh close "{one-line synthesis of session, ≤120 chars}"
+```
+
+The helper is fail-soft (no-op if no active journal pointer exists). The summary should mirror what you write into `--summary` for `handoff-finalize.sh`. Helper clears `.claude/state/active-journal` on success.
+
 ### 3. Call handoff-finalize.sh (synchronous, one tool call)
 
-`scripts/handoff-finalize.sh` handles everything that must be durable before session end:
+`core/scripts/handoff-finalize.sh` handles everything that must be durable before session end:
 - Waits for bg git loop (Step 1)
 - Writes thread file + `handoff.json` + `workspace/threads/{thread}.changeset.json`
 - Regenerates thread INDEX + recent.md + orchestrator INDEX via dedicated bash scripts (`rebuild-threads-index.sh`, `rebuild-orchestrator-index.sh`) — zero Claude context
 - Commits HQ via explicit paths: thread/index files plus the validated `--files-touched-json` paths (never `git add -A`)
-- Classifies noisy HQ root status via `scripts/hq-status-summary.sh` so baseline local files do not become accidental handoff scope
+- Classifies noisy HQ root status via `core/scripts/hq-status-summary.sh` so baseline local files do not become accidental handoff scope
 - Launches qmd reindex fire-and-forget
 
 Invoke with flags matching what this session accomplished:
 
 ```bash
-scripts/handoff-finalize.sh \
+core/scripts/handoff-finalize.sh \
   --title "Handoff: {one-line title}" \
   --summary "{one-paragraph summary of what changed}" \
   --message "{user's handoff message, or echo of the summary}" \
@@ -72,7 +82,7 @@ scripts/handoff-finalize.sh \
 
 ```json
 [
-  "scripts/handoff-finalize.sh",
+  "core/scripts/handoff-finalize.sh",
   {"path":"docs/architecture.md","reason":"updated diagram for new flow"},
   {"path":"old/file.md","deleted":true,"reason":"removed obsolete file"}
 ]
@@ -94,7 +104,7 @@ The script emits a single JSON line to stdout:
 ### 4. Launch handoff-post.sh detached (heavy work, fresh contexts)
 
 ```bash
-nohup bash scripts/handoff-post.sh \
+nohup bash core/scripts/handoff-post.sh \
   "{thread_path from Step 3}" \
   "/tmp/handoff-learnings-$$.json" \
   > /tmp/handoff-post.log 2>&1 &
@@ -125,7 +135,7 @@ for sf in workspace/orchestrator/_pipeline/*/pipeline-state.json; do
 done
 ```
 
-If any active pipelines surface, mention them in the report and suggest `scripts/run-pipeline.sh --resume {pipeline_id}`.
+If any active pipelines surface, mention them in the report and suggest `core/scripts/run-pipeline.sh --resume {pipeline_id}`.
 
 ### 6. Report
 

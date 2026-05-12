@@ -1,0 +1,32 @@
+{
+  "useMarkdownLinks": true,
+  "defaultViewMode": "preview",
+  "readableLineLength": true,
+  "showFrontmatter": false,
+  "foldHeading": true,
+  "foldIndent": true,
+  "showLineNumber": false,
+  "strictLineBreaks": false,
+  "attachmentFolderPath": "workspace/scratch",
+  "newFileLocation": "folder",
+  "newFileFolderPath": "workspace/scratch",
+  "userIgnoreFilters": [
+    "repos/",
+    "node_modules/",
+    "dist/",
+    "build/",
+    ".claude/",
+    ".cache_ggshield/",
+    "modules/.synced/",
+    "workspace/threads/",
+    "workspace/checkpoints/",
+    "workspace/orchestrator/",
+    "workspace/metrics/",
+    "workspace/learnings/",
+    "settings/",
+    "prompts/"
+  ],
+  "alwaysUpdateLinks": true,
+  "showUnsupportedFiles": false,
+  "promptDelete": false
+}
