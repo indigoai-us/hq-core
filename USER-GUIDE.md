@@ -1,6 +1,6 @@
 # HQ User Guide
 
-Personal OS for orchestrating work across companies, workers, and AI.
+The AI operating system for your company. A shared context layer on top of Claude Code, Cursor, and Codex — syncs knowledge, skills, and capabilities across your team. Scales from solopreneur to enterprise.
 
 ## Commands
 
