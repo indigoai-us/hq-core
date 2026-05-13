@@ -582,7 +582,7 @@ bash core/scripts/run-project.sh --status
 | `--status` | — | Show all project statuses, exit |
 | `--dry-run` | — | Show story order without executing |
 | `--model MODEL` | (worker default) | Override model for all stories |
-| `--builder BUILDER` | auto | Headless builder for Ralph mode: `auto`, `claude`, or `codex`. Auto uses `codex exec` in Codex sessions and `claude -p` otherwise |
+| `--builder BUILDER` | auto | Headless builder for Ralph mode: `auto`, `claude`, or `codex`. Auto resolves to worker-authoritative `claude`; `codex` requires `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1` |
 | `--engine ENGINE` | auto | Alias for `--builder` |
 | `--no-permissions` | off | Pass the builder's non-interactive permission bypass (`claude` or `codex`) |
 | `--retry-failed` | off | Re-run previously failed stories only |
@@ -627,7 +627,7 @@ For each selected story:
 1. **PRE-TASK**: Branch setup (create/checkout `branchName` from `baseBranch`)
 2. **PRE-TASK**: Linear sync → In Progress + comment (if `linearIssueId` configured)
 3. **PRE-TASK**: Update `state.json` current_task
-4. **EXECUTE**: independent headless builder process (`codex exec` from Codex, `claude -p` from Claude unless `--builder` overrides)
+4. **EXECUTE**: independent headless builder process (`claude -p` by default; `codex exec` only when `--builder codex` is explicitly requested with `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1`)
    - Model resolution: `--model` CLI flag > story `model_hint` > default
    - `/execute-task` handles: classification, worker selection, worker pipeline, PRD update, back pressure, learning capture
 5. **POST-TASK**: Validate git state (auto-commit if sub-agent forgot)
@@ -759,7 +759,7 @@ If $ARGUMENTS is `--status`:
 - **Default/inline respects `--resume`** — skips completed stories, picks up from next incomplete
 - **Default/inline uses runtime sub-agents** — worker sub-agents via `Task` in Claude Code or `spawn_agent` in Codex, not `claude -p` (process isolation)
 - **Default/inline preserves progress** — user can stop between stories; partial progress saved in prd.json + state.json
-- **`--ralph-mode` launches `core/scripts/run-project.sh`** — the only execution path that spawns the background orchestrator. Stories run as isolated builder subprocesses (`codex exec` from Codex, `claude -p` from Claude unless overridden); parent session polls `state.json`. Incompatible with `--inline` and `--session-mode`.
+- **`--ralph-mode` launches `core/scripts/run-project.sh`** — the only execution path that spawns the background orchestrator. Stories run as isolated builder subprocesses (`claude -p` by default; `codex exec` only when explicitly requested with `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1`); parent session polls `state.json`. Incompatible with `--inline` and `--session-mode`.
 - **`--ralph-mode` implied by `--tmux`** — observing from phone requires the background orchestrator
 - **Plan-mode preflight delegation (hard)** — when `/run-project` is invoked under Claude Code plan mode, the parent MUST NOT read prd.json, policies, or state.json directly. Spawn a `Plan` sub-agent to do the reads and return a condensed plan + JSON. Parent only ever holds the summary. This applies to all modes (default/inline, `--ralph-mode`, `--session-mode`). Rationale: plan mode defers compaction until after `ExitPlanMode` approval, so direct reads accumulate 10K+ tokens that linger across the entire execution run.
 

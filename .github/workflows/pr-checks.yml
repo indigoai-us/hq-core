@@ -195,13 +195,14 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_MODEL: gpt-5
+          POLICY_FILE: ${{ matrix.file }}
         run: |
           set -euo pipefail
-          out="$(bash .leak-scan/codex-rubric.sh "${{ matrix.file }}")"
+          out="$(bash .leak-scan/codex-rubric.sh "$POLICY_FILE")"
           echo "$out"
           # Append to job summary so reviewers see verdicts collated
           {
-            echo "## Rubric: ${{ matrix.file }}"
+            echo "## Rubric: $POLICY_FILE"
             echo '```json'
             echo "$out"
             echo '```'
