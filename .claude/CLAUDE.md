@@ -109,7 +109,7 @@ Env vars and `.claude/settings.json` control cost/style defaults:
 
 Toggle thinking with Option+T.
 
-Top-level: `.claude/commands/` (exposed to Codex through `.codex/prompts`), `agents-profile.md`, `agents-companies.md`, `companies/`, `knowledge/{public,private}/`, `projects/` (personal/HQ only), `repos/{public,private}/`, `settings/` (shared only — post-bridge, orchestrator), `workers/public/`, `workspace/{checkpoints,orchestrator,reports,social-drafts}/`. Each company is self-contained: `companies/{co}/{knowledge,settings,data,workers,repos,projects}/`. Full tree: `knowledge/public/hq-core/quick-reference.md`
+Top-level: `.claude/commands/` (exposed to Codex through `.codex/prompts`), `agents-profile.md`, `agents-companies.md`, `companies/`, `core/knowledge/{public,private}/`, `projects/` (personal/HQ only), `repos/{public,private}/`, `core/settings/`, `core/workers/public/`, `workspace/{checkpoints,orchestrator,reports,social-drafts}/`. Each company is self-contained: `companies/{co}/{knowledge,settings,data,workers,repos,projects}/`. Full tree: `core/knowledge/public/hq-core/quick-reference.md`
 
 - Verify which branch you're on before committing.
 - Prefer merge over rebase when a branch is significantly behind (50+ commits).
@@ -176,7 +176,7 @@ Three scopes, precedence highest→lowest: `companies/{co}/policies/`, `repos/{r
 
 ### Workers
 
-Worker-first rule: before specialized tasks (design, content, security, data, deploy), check `core/workers/registry.yaml` and use `/run {worker} {skill}`. Per-repo design: `design.md` declares `style-pack: <id>` resolved via `core/knowledge/public/design-styles/registry.yaml`. Company-scoped brand packs (`scope: company`) live at `companies/{co}/knowledge/design-styles/packs/{id}/` and auto-load via the worker's `dynamic` context when a target company is bound. Roster + design quality refs: `core/knowledge/public/hq-core/quick-reference.md`.
+Worker-first rule: before specialized tasks (design, content, security, data, deploy), check `core/workers/registry.yaml` and use `/run {worker} {skill}`. Per-repo design: `design.md` can declare `style-pack: <id>` when the optional design-styles pack is installed. Company-scoped brand packs (`scope: company`) live at `companies/{co}/knowledge/design-styles/packs/{id}/` and auto-load via the worker's `dynamic` context when a target company is bound. Roster + design quality refs: `core/knowledge/public/hq-core/quick-reference.md`.
 
 ### Commands & Skill Bridge
 
@@ -184,15 +184,15 @@ Core commands in `.claude/commands/`; company/niche commands live on their ownin
 
 ### Knowledge Bases & Repos
 
-Public list: `core/modules/modules.yaml` (filter `access: public`). Company knowledge: `companies/{co}/knowledge/`. Three valid repo patterns (embedded git, symlink, inline): `knowledge/public/hq-core/knowledge-taxonomy.md`.
+Public list: `core/modules/modules.yaml` (filter `access: public`). Company knowledge: `companies/{co}/knowledge/`. Three valid repo patterns (embedded git, symlink, inline): `core/knowledge/public/hq-core/knowledge-taxonomy.md`.
 
 ### Learning System & Insights
 
-30 commands in `.claude/commands/` (core only), exposed to Codex through `.codex/prompts`. Company/niche commands live on their owning workers. Full catalog: `knowledge/public/hq-core/quick-reference.md`
+`/learn` captures persistent rules as policy files and educational insights. Policy format: `core/knowledge/public/hq-core/policies-spec.md`. Insight format: `core/knowledge/public/hq-core/insights-spec.md`.
 
 ### E2E Testing
 
-E2E tests verify the product works, not just the code. PRDs include optional `e2eTests` per story. Workers use the `e2e-testing` skill. Templates + infra guides: `core/knowledge/public/testing/`. Full guide: `core/knowledge/public/testing/e2e-cloud.md`.
+E2E tests verify the product works, not just the code. PRDs include optional `e2eTests` per story. Use the optional testing knowledge pack for templates and cloud/browser guides when it is installed.
 
 ### Skills Index
 
@@ -200,9 +200,9 @@ Frequently-used skills — invoke via `/<name>`. Full help lives in each skill's
 
 1. **Embedded standalone `.git` dir** (most company knowledge): e.g. `companies/{company}/knowledge/`, `companies/personal/knowledge/`. HQ tracks these as orphan `160000` gitlinks — the inner repo is opaque to HQ, commits happen inside. To capture advancement: commit inside the inner repo, then `git add companies/{co}/knowledge && git commit` in HQ to bump the pointer. (HQ has no `.gitmodules` file — this is intentional, not a bug.)
 2. **Symlink to `repos/private/knowledge-{co}/`** (e.g. `companies/{company}/knowledge`): tracked as `120000` symlink; edits land in the target repo.
-3. **Inline files tracked by HQ git** (e.g. `knowledge/public/getting-started/`, `knowledge/public/hq-core/`, `companies/{company}/knowledge/`): simplest; no inner repo, just regular files.
+3. **Inline files tracked by HQ git** (e.g. `core/knowledge/public/getting-started/`, `core/knowledge/public/hq-core/`, `companies/{company}/knowledge/`): simplest; no inner repo, just regular files.
 
-When adding new knowledge: pick pattern 1 for company knowledge that will grow, pattern 2 if you want a shared clone, pattern 3 for small/shared content. Register in `modules/modules.yaml`. Taxonomy: `knowledge/public/hq-core/knowledge-taxonomy.md`.
+When adding new knowledge: pick pattern 1 for company knowledge that will grow, pattern 2 if you want a shared clone, pattern 3 for small/shared content. Register in `core/modules/modules.yaml`. Taxonomy: `core/knowledge/public/hq-core/knowledge-taxonomy.md`.
 
 ## Resource Registry
 
@@ -231,7 +231,7 @@ If a matching resource exists, reuse it rather than silently duplicating.
 
 ## Skills
 
-`.claude/skills/` is the canonical skill tree and is exposed to Codex through `.agents/skills` plus the global skill bridge. Dual-format: `command.md` (Claude Code) + `SKILL.md` (Codex). Coverage: `bash core/scripts/codex-skill-bridge.sh status`. Full pattern: `knowledge/public/hq-core/codex-skill-pattern.md`.
+`.claude/skills/` is the canonical skill tree and is exposed to Codex through `.agents/skills` plus the global skill bridge. Dual-format: `command.md` (Claude Code) + `SKILL.md` (Codex). Coverage: `bash core/scripts/codex-skill-bridge.sh status`. Full pattern: `core/knowledge/public/hq-core/codex-skill-pattern.md`.
 
 ## Search (qmd)
 
@@ -264,7 +264,7 @@ Learnings captured as policy files via `/learn` (scoped to company/repo/command/
 
 ## Insights
 
-Educational insights persist at `workspace/insights/`. Captured via `/learn`, auto-triggered by `/handoff` and `/checkpoint`. Spec: `knowledge/public/hq-core/insights-spec.md`.
+Educational insights persist at `workspace/insights/`. Captured via `/learn`, auto-triggered by `/handoff` and `/checkpoint`. Spec: `core/knowledge/public/hq-core/insights-spec.md`.
 
 ## Git Workflow Rules
 
@@ -300,7 +300,7 @@ PostToolUse hooks detect checkpoint-worthy events and inject `AUTO-CHECKPOINT RE
 | Edit | any file (excl. `workspace/threads/`) | `file-edit` | 5min |
 | Write | `workspace/reports/`, `social-drafts/`, `companies/*/data/` | `file-generation` | 5min |
 
-Also checkpoint after worker skill completion. Schema: `knowledge/public/hq-core/thread-schema.md`. Do NOT rebuild INDEX, update `recent.md`, run `qmd update`, or write legacy checkpoint files on auto-checkpoints. When edits touch knowledge files, commit to the knowledge repo — not HQ git.
+Also checkpoint after worker skill completion. Schema: `core/knowledge/public/hq-core/thread-schema.md`. Do NOT rebuild INDEX, update `recent.md`, run `qmd update`, or write legacy checkpoint files on auto-checkpoints. When edits touch knowledge files, commit to the knowledge repo — not HQ git.
 
 ## Auto-Checkpoint (Two-Stage Advisory)
 

@@ -19,7 +19,7 @@ Read `.claude/commands/journal.md` first. Treat it as the source of truth for th
 
 ## Spec
 
-`knowledge/public/hq-core/journal-spec.md` — full spec covering the two-pattern coexistence with the task journal (`.claude/skills/_shared/journal.sh`).
+`core/knowledge/public/hq-core/session-journal-spec.md` — full spec covering the two-pattern coexistence with the task journal (`.claude/skills/_shared/journal.sh`).
 
 ## Constraints
 

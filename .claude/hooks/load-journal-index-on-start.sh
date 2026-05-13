@@ -37,7 +37,7 @@ if [ -f "$yesterday_idx" ] && [ ! -f "$today_idx" ]; then
 fi
 echo
 echo "Load specific entries via:  /journal --read <NNN>"
-echo "Full spec:  knowledge/public/hq-core/journal-spec.md"
+echo "Full spec:  core/knowledge/public/hq-core/session-journal-spec.md"
 echo "</journal-index>"
 
 exit 0

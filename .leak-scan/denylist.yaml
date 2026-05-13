@@ -5,8 +5,7 @@
 # any of them appear in a file touched by a PR (outside of `exceptions`), the
 # denylist-scan CI job fails.
 #
-# Sync source (one-time snapshot on 2026-04-22):
-#   HQ private: .claude/scrub-denylist.yaml
+# Sync source (one-time snapshot on 2026-04-22): HQ private scrub denylist.
 # Drift policy: manual for now — re-sync when the sibling pipeline project
 # lands a source-of-truth decision. See CONTRIBUTING.md.
 

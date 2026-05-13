@@ -4,7 +4,7 @@
 # Modes (mechanical — no LLM):
 #   denylist          fail if any denylist key appears in PR-changed files
 #                     (outside of documented exceptions). Body-wide; ports
-#                     HQ core/scripts/verify-promotion-clean.sh logic.
+#                     HQ promotion-clean verification logic.
 #   policy-rationale  fail if a policies/**/*.md file's ## Rationale section
 #                     references non-public context (heuristic regex list).
 #                     Additional to denylist, NOT a replacement.

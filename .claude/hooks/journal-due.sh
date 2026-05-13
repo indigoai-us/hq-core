@@ -83,7 +83,7 @@ the raw tool-results currently in the prefix.
 
   /journal "<title>"
 
-Spec: knowledge/public/hq-core/journal-spec.md
+Spec: core/knowledge/public/hq-core/session-journal-spec.md
 EOF
 fi
 

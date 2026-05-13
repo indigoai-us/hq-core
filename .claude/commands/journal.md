@@ -9,7 +9,7 @@ visibility: public
 
 Write a structured working-memory entry for the current Claude session. Entries land at `workspace/threads/journal/<YYYY-MM-DD>/<NNN>-<slug>.md` and the day's `INDEX.md` is auto-updated.
 
-**Spec:** `knowledge/public/hq-core/journal-spec.md`.
+**Spec:** `core/knowledge/public/hq-core/session-journal-spec.md`.
 
 ## Usage
 
@@ -102,7 +102,7 @@ You don't need to wait for the auto-trigger hook. Write proactively after:
 
 ## Related
 
-- `knowledge/public/hq-core/journal-spec.md` — full spec, two-pattern coexistence with task journals
+- `core/knowledge/public/hq-core/session-journal-spec.md` — full spec, two-pattern coexistence with task journals
 - `.claude/hooks/journal-due.sh` — PostToolUse auto-trigger
 - `.claude/hooks/journal-precompact.sh` — PreCompact reminder
 - `.claude/hooks/load-journal-index-on-start.sh` — SessionStart auto-load
