@@ -1,7 +1,7 @@
 #!/bin/bash
 # block-unsafe-package-install.sh — PreToolUse hard block.
 #
-# Enforces .claude/policies/hq-pnpm-min-release-age-supply-chain.md.
+# Enforces core/policies/hq-pnpm-min-release-age-supply-chain.md.
 #
 # Blocks:
 #   - npm install <pkg>     (any positional package arg)
@@ -104,7 +104,7 @@ emit_block() {
   local pm="$1" sub="$2" reason="$3"
   cat >&2 <<EOF
 
-BLOCKED — supply-chain guard (.claude/policies/hq-pnpm-min-release-age-supply-chain.md)
+BLOCKED — supply-chain guard (core/policies/hq-pnpm-min-release-age-supply-chain.md)
 
   Command:  $pm $sub ...
   Why:      $reason

@@ -75,4 +75,4 @@ The fanout audit script (`scripts/fanout-audit.sh`, planned follow-up) can run p
 - `workspace/reports/fanout-audit-2026-05.md` — most recent audit
 - `projects/hq-token-economy/prd.json` US-014 — origin of this policy
 - `~/.claude/projects/-Users-{user}-Documents-HQ/memory/feedback-no-haiku-subagents.md` — why "just use Haiku" is the wrong response to high subagent counts
-- `.claude/policies/model-context-window.md` — sibling policy on context-window defaults
+- `core/policies/model-context-window.md` — sibling policy on context-window defaults

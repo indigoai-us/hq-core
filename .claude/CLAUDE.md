@@ -95,7 +95,7 @@ Never accumulate >10 images in parent session; delegate image reads/verification
 
 ### Token Optimization
 
-Use the runtime's clickable/structured question UI for user-facing questions with selectable answers. Claude Code uses `AskUserQuestion`; Codex uses `request_user_input` when it is callable. Ask exactly one question per call, wait for the answer, update working state, then ask the next. If no structured picker is available, ask the same options as concise plain text. Full rules: `.claude/policies/decision-queue-one-at-a-time.md` and `.claude/policies/hq-codex-decision-gate-fallback.md`.
+Use the runtime's clickable/structured question UI for user-facing questions with selectable answers. Claude Code uses `AskUserQuestion`; Codex uses `request_user_input` when it is callable. Ask exactly one question per call, wait for the answer, update working state, then ask the next. If no structured picker is available, ask the same options as concise plain text. Full rules: `core/policies/decision-queue-one-at-a-time.md` and `core/policies/hq-codex-decision-gate-fallback.md`.
 
 Env vars and `.claude/settings.json` control cost/style defaults:
 
@@ -138,7 +138,7 @@ Sensitive system paths are blocked from Read access via `settings.json` deny rul
 
 `/hq-share <path>...` mints an encrypted single-use share-session URL via `hq files share` and opens the browser picker for multi-recipient ACL grants. **Default behavior is to print the full URL inline in the assistant reply** — that's the minting turn and the one surface where the unredacted token is permitted. For single-recipient/scripted grants, use direct grant instead: `hq files share <prefix> --with <principal> --permission <level>`.
 
-**Hard rule:** A share-session URL is a live, encrypted, single-use, 15-minute capability — any holder can redeem it to write ACLs in the issuer's name. After the minting turn, NEVER paste the URL into subsequent assistant turns, summaries, thread files (`workspace/threads/`), journals, learnings, commit messages, PR descriptions, Slack/email, or worker handoff payloads. Use the redacted form `https://hq.{co}.com/share-session/<TOKEN_REDACTED>` in any persisted or follow-up context. Full constraint set: `.claude/policies/hq-share-session-urls-are-capabilities.md` (enforcement: hard). Command/skill details: `.claude/commands/hq-share.md`, `.claude/skills/hq-share/SKILL.md`, `.claude/skills/hq-files/SKILL.md` § "Rules for Agent Workflows" #10.
+**Hard rule:** A share-session URL is a live, encrypted, single-use, 15-minute capability — any holder can redeem it to write ACLs in the issuer's name. After the minting turn, NEVER paste the URL into subsequent assistant turns, summaries, thread files (`workspace/threads/`), journals, learnings, commit messages, PR descriptions, Slack/email, or worker handoff payloads. Use the redacted form `https://hq.{co}.com/share-session/<TOKEN_REDACTED>` in any persisted or follow-up context. Full constraint set: `core/policies/hq-share-session-urls-are-capabilities.md` (enforcement: hard). Command/skill details: `.claude/commands/hq-share.md`, `.claude/skills/hq-share/SKILL.md`, `.claude/skills/hq-files/SKILL.md` § "Rules for Agent Workflows" #10.
 
 ### Infrastructure-First
 

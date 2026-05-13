@@ -96,7 +96,7 @@ You don't need to wait for the auto-trigger hook. Write proactively after:
 
 ## Constraints
 
-- **Never** include secrets, share-session URLs, or other capabilities in entries (per `.claude/policies/hq-share-session-urls-are-capabilities.md` and the rest of the credential-isolation rule set).
+- **Never** include secrets, share-session URLs, or other capabilities in entries (per `core/policies/hq-share-session-urls-are-capabilities.md` and the rest of the credential-isolation rule set).
 - Don't write trivial entries ("read a file"). The bar is: *would future-me want this back after compaction?*
 - One entry per coherent slice. If you have three unrelated findings, write three entries.
 
