@@ -17,7 +17,7 @@
 set -uo pipefail
 
 HQ_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-JOURNAL_HELPER="$HQ_ROOT/scripts/session-journal.sh"
+JOURNAL_HELPER="$HQ_ROOT/core/scripts/session-journal.sh"
 
 # Where is today's INDEX?
 index_path=$("$JOURNAL_HELPER" index-path 2>/dev/null || echo "")

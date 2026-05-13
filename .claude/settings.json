@@ -207,6 +207,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh screenshot-resize-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/screenshot-resize-trigger.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh journal-due $CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh",
+            "timeout": 5
           }
         ]
       },
@@ -227,6 +232,11 @@
             "type": "command",
             "command": ".claude/hooks/master-sync.sh",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh journal-due $CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh",
+            "timeout": 5
           }
         ]
       },
@@ -242,6 +252,11 @@
             "type": "command",
             "command": ".claude/hooks/master-sync.sh",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh journal-due $CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh",
+            "timeout": 5
           }
         ]
       },
@@ -252,6 +267,11 @@
             "type": "command",
             "command": ".claude/hooks/master-sync.sh",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh journal-due $CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh",
+            "timeout": 5
           }
         ]
       },
@@ -322,6 +342,11 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh auto-checkpoint-precompact $CLAUDE_PROJECT_DIR/.claude/hooks/auto-checkpoint-precompact.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh journal-precompact $CLAUDE_PROJECT_DIR/.claude/hooks/journal-precompact.sh",
             "timeout": 5
           }
         ]
@@ -409,6 +434,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh check-core-yaml-parity $CLAUDE_PROJECT_DIR/.claude/hooks/check-core-yaml-parity.sh",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh load-journal-index-on-start $CLAUDE_PROJECT_DIR/.claude/hooks/load-journal-index-on-start.sh",
+            "timeout": 5
           }
         ]
       },

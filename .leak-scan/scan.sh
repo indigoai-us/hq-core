@@ -61,17 +61,19 @@ base_ref="${GITHUB_BASE_REF:-main}"
 git fetch origin "$base_ref" --depth=1 >/dev/null 2>&1 || true
 
 if git rev-parse --verify "origin/$base_ref" >/dev/null 2>&1; then
-  changed="$(git diff --name-only "origin/$base_ref"...HEAD 2>/dev/null || true)"
+  if git merge-base "origin/$base_ref" HEAD >/dev/null 2>&1; then
+    changed="$(git diff --name-only "origin/$base_ref"...HEAD 2>/dev/null || true)"
+  else
+    changed="$(git diff --name-only "origin/$base_ref" HEAD 2>/dev/null || true)"
+  fi
 else
   changed="$(git diff --name-only HEAD~1...HEAD 2>/dev/null || true)"
 fi
 
-# If no changed files detected, scan the whole tree (safe fallback).
-if [[ -z "$changed" ]]; then
-  changed="$(git ls-files)"
-fi
-
-mapfile -t files <<< "$changed"
+files=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] && files+=("$f")
+done <<< "$changed"
 
 # Helper: yaml_keys <file> <top_level_key>
 # Extracts keys (bare tokens before ":") under a given top-level section.

@@ -4,6 +4,8 @@ description: Commands that spawn Task subagents must batch, pre-filter determini
 enforcement: soft
 scope: hq-core
 applies_to: claude-code
+vendor_public_ok: true
+public: true
 ---
 
 ## Rule

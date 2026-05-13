@@ -3,6 +3,8 @@ name: model-context-window
 description: Default Opus model uses 200K context; the [1m] (1M context) variant is opt-in per command, not the global default
 enforcement: soft
 applies_to: [hq, run-project, deep-plan, discover, diagnose]
+vendor_public_ok: true
+public: true
 created: 2026-05-12
 ---
 

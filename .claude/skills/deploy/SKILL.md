@@ -17,8 +17,8 @@ Every deployed app has exactly one of three access modes. The modes are **mutual
 | Mode | When to pick it | What it does |
 |---|---|---|
 | `public` | Default. Casual handoff, anyone with the link. | No gate. App serves immediately. |
-| `password` | Sensitive content, casual share over Slack/email, recipients unknown ahead of time. | App owner sets a password (Argon2id-hashed). Visitors land on `hq.getindigo.ai/__access`, enter the password, get a 24h `hq-access` JWT cookie scoped to `.indigo-hq.com`. |
-| `private` | Sensitive content, **known recipients by email/domain**, want individual revocation. | Visitors must be signed in to hq-auth (`auth.getindigo.ai`) AND their email must be on the app's allowlist. Lands on `hq.getindigo.ai/__private`, which checks the session + allowlist and mints the same `hq-access` JWT. |
+| `password` | Sensitive content, casual share over Slack/email, recipients unknown ahead of time. | App owner sets a password (Argon2id-hashed). Visitors land on `hq.{your-domain}.com/__access`, enter the password, get a 24h `hq-access` JWT cookie scoped to `.{your-domain}.com`. |
+| `private` | Sensitive content, **known recipients by email/domain**, want individual revocation. | Visitors must be signed in to hq-auth (`auth.{your-domain}.com`) AND their email must be on the app's allowlist. Lands on `hq.{your-domain}.com/__private`, which checks the session + allowlist and mints the same `hq-access` JWT. |
 
 Pick `private` over `password` when the user gives you concrete recipients (`"share with alice@foo.com and the @indigo.ai team"`). Pick `password` when sensitivity is detected but recipients are unspecified — it's the lowest-friction shareable form.
 
@@ -570,7 +570,7 @@ No password to announce. Surface who got access so the user can sanity-check bef
 ```bash
 if [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "private" ]; then
   PATTERN_LIST=$(echo "$ALLOW_PATTERNS" | paste -sd ', ' -)
-  echo "[deploy] private mode: $PATTERN_LIST can sign in via auth.getindigo.ai to view." >&2
+  echo "[deploy] private mode: $PATTERN_LIST can sign in via auth.{your-domain}.com to view." >&2
 fi
 ```
 
@@ -589,7 +589,7 @@ If the user asks "what was the password?" later, do NOT re-emit. Tell them:
 > Run `jq -r '."$APP_SUBDOMAIN".password' ~/.hq/deploy-passwords.json` to retrieve it.
 
 **On success (sensitive, private mode):** name the allowlist once, no password mention:
-> Live at `https://$APP_SUBDOMAIN.indigo-hq.com` — gated to {alice@indigo.ai, @indigo.ai}. They'll sign in via auth.getindigo.ai on first visit.
+> Live at `https://$APP_SUBDOMAIN.{your-domain}.com` — gated to {alice@example.com, @example.com}. They'll sign in via auth.{your-domain}.com on first visit.
 
 For changes after the fact, point at the CLI rather than re-orchestrating from this skill:
 > Run `hq-deploy access share $APP_SUBDOMAIN <email|@domain>` to add a teammate, or `… unshare …` to revoke.

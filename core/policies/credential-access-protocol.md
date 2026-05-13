@@ -9,6 +9,7 @@ created: 2026-03-05
 updated: 2026-05-13
 source: policy-slimming
 applies_to: [aws]
+vendor_public_ok: true
 tags: [deployment, data-handling, infrastructure]
 public: true
 ---

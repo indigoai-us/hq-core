@@ -18,7 +18,7 @@
 set -uo pipefail
 
 HQ_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-JOURNAL_HELPER="$HQ_ROOT/scripts/session-journal.sh"
+JOURNAL_HELPER="$HQ_ROOT/core/scripts/session-journal.sh"
 
 # Read stdin JSON (fail-soft if absent or invalid).
 stdin_json=""

@@ -132,7 +132,7 @@ Error: AWS credentials not found
 ```
 
 YES:
-> Missing AWS credentials for liverecover. Need `AWS_PROFILE=liverecover` set, or run `hq login` and `/run liverecover-deploy aws-creds`.
+> Missing AWS credentials for {company}. Need `AWS_PROFILE={company}` set, or run `hq login` and `/run {company}-deploy aws-creds`.
 > Pick:
 >   1. I'll set the env var
 >   2. Run the credential fetch skill

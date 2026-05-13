@@ -30,7 +30,7 @@ Policy: `core/policies/run-project-default-is-inline.md` (hard).
 |------|------|-----|
 | **Default (inline)** | `/run-project {project}` with no execution-mode flag | Plan from PRD → user approves → execute each story in a per-story sub-agent (fresh context) that invokes `/execute-task` internally. See `## Inline Execution (Default)` below. |
 | **inline (explicit)** | `--inline` flag | Silent alias for default. Same behavior as bare invocation. |
-| **ralph-mode** | `--ralph-mode` flag | `nohup bash core/scripts/run-project.sh {project}` runs in background; each story spawns as an isolated builder subprocess (`codex exec` from Codex, `claude -p` from Claude unless overridden); parent session polls `state.json`. Best for long unattended runs. See `## Ralph-Mode Execution (--ralph-mode)` below. |
+| **ralph-mode** | `--ralph-mode` flag | `nohup bash core/scripts/run-project.sh {project}` runs in background; each story spawns as an isolated builder subprocess (`claude -p` by default; `codex exec` only with explicit opt-in); parent session polls `state.json`. Best for long unattended runs. See `## Ralph-Mode Execution (--ralph-mode)` below. |
 | **session-mode** | `--session-mode` flag | Plan distilled into Claude Code plan file (with full policy rule text) → `ExitPlanMode` approval → parent session executes each story directly (Edit/Write/Bash); bounded helper sub-agents only (review, QA, E2E, design audit). No `/execute-task` wrapper. See `## Session-Mode Execution` below. |
 | **tmux** | `--tmux` flag (implies `--ralph-mode`) | `run-project.sh` in tmux session (observe from phone) |
 | **direct** | `bash core/scripts/run-project.sh` (CI/nohup/cron) | Direct shell execution, outside `/run-project` scope |
@@ -44,7 +44,7 @@ Parse `$ARGUMENTS` into project name + passthrough flags:
 - `--help`: display flags table + exit
 - `--session-mode`: route to **Session-Mode Execution** flow (see below). Incompatible with `--inline`, `--ralph-mode`, `--tmux`, `--swarm`, `--codex-autofix`, `--dry-run`, `--status` (error immediately on conflict).
 - `--ralph-mode`: route to **Ralph-Mode Execution** flow (see below). Incompatible with `--inline` and `--session-mode` (error immediately on conflict).
-- `--builder claude|codex|auto` / `--engine claude|codex|auto`: pass through to the background orchestrator. If omitted or `auto`, `core/scripts/run-project.sh` chooses `codex` when launched from Codex (`CODEX_*` runtime env present) and `claude` otherwise.
+- `--builder claude|codex|auto` / `--engine claude|codex|auto`: pass through to the background orchestrator. If omitted or `auto`, `core/scripts/run-project.sh` uses `claude`; `codex` requires `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1`.
 - `--inline`: silent alias for default — route to **Inline Execution** (see below). Do NOT error or warn.
 - No execution-mode flag present: route to **Inline Execution** (default).
 - Empty (no project name): error — project name required
@@ -54,7 +54,7 @@ Parse `$ARGUMENTS` into project name + passthrough flags:
 
 ## Ralph-Mode Execution (--ralph-mode)
 
-Opt-in background orchestrator. When `--ralph-mode` is passed, `/run-project` launches `core/scripts/run-project.sh` as a `nohup` background OS process and monitors progress via state file polling from the parent session. Each story runs as an isolated headless builder subprocess (fresh context per story). Builder selection is runtime-aware: Codex sessions default to `codex exec`, Claude sessions default to `claude -p`, and `--builder` / `--engine` overrides both. Best for long unattended runs (8+ stories), CI-like execution, or when the user wants progress surfaced from a phone via `--tmux`.
+Opt-in background orchestrator. When `--ralph-mode` is passed, `/run-project` launches `core/scripts/run-project.sh` as a `nohup` background OS process and monitors progress via state file polling from the parent session. Each story runs as an isolated headless builder subprocess (fresh context per story). Builder selection defaults to `claude -p`; `codex exec` is available only when explicitly requested and `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1` is set. Best for long unattended runs (8+ stories), CI-like execution, or when the user wants progress surfaced from a phone via `--tmux`.
 
 ### Step R2 — Validate PRD + Display Summary
 

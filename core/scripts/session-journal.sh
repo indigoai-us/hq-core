@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # session-journal.sh — minimal helper for session-level journal entries.
-# Spec: knowledge/public/hq-core/journal-spec.md
+# Spec: core/knowledge/public/hq-core/session-journal-spec.md
 #
 # Usage:
 #   session-journal.sh write "<title>" [--files f1,f2,...] [--body-file PATH]
@@ -16,7 +16,7 @@
 
 set -uo pipefail
 
-HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
+HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 
 today() { date -u +%Y-%m-%d; }
 now_iso_z() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -46,7 +46,7 @@ next_seq() {
     | sed -E 's/^([0-9]+)-.*/\1/' \
     | sort -n \
     | tail -1)
-  if [ -z "$hi" ]; then printf '000'; else printf '%03d' $((10#$hi + 1)); fi
+  if [ -z "$hi" ]; then printf '001'; else printf '%03d' $((10#$hi + 1)); fi
 }
 
 cmd="${1:-}"; shift || true
@@ -83,8 +83,11 @@ case "$cmd" in
       printf 'slug: %s\n' "$slug"
       if [ -n "$files_csv" ]; then
         printf 'files:\n'
-        IFS=',' read -ra arr <<< "$files_csv"
-        for f in "${arr[@]}"; do
+        old_ifs="$IFS"
+        IFS=','
+        set -- $files_csv
+        IFS="$old_ifs"
+        for f in "$@"; do
           [ -n "$f" ] && printf '  - %s\n' "$f"
         done
       fi

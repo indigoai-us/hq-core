@@ -111,7 +111,7 @@ For sensitive artifacts, pick an access mode based on whether the user named rec
    ```
    Idempotent; server lowercases.
 3. Tell the user once, in the same response as the deploy link:
-   > Live at https://{slug}.{your-domain}.com — gated to {comma-separated patterns}. They'll sign in via auth.getindigo.ai on first visit.
+   > Live at https://{slug}.{your-domain}.com — gated to {comma-separated patterns}. They'll sign in via auth.{your-domain}.com on first visit.
 4. For follow-up changes, point at the CLI rather than re-orchestrating from this skill:
    > Run `hq-deploy access share {slug} <email|@domain>` to add a teammate, or `… unshare …` to revoke.
 5. No password persists for private apps — `~/.hq/deploy-passwords.json` is not used in this branch.

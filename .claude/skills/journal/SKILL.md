@@ -13,9 +13,9 @@ Read `.claude/commands/journal.md` first. Treat it as the source of truth for th
 
 ## Codex Adaptation
 
-- **Write**: shell out to `scripts/session-journal.sh write "<title>" --body-file <tmpfile>` after synthesizing the body in the entry template (Goal / Findings / Decisions / Next).
-- **List**: `scripts/session-journal.sh list` prints today's INDEX. Pass `--date YYYY-MM-DD` for other days.
-- **Read**: `scripts/session-journal.sh read <NNN>` prints a specific entry.
+- **Write**: shell out to `core/scripts/session-journal.sh write "<title>" --body-file <tmpfile>` after synthesizing the body in the entry template (Goal / Findings / Decisions / Next).
+- **List**: `core/scripts/session-journal.sh list` prints today's INDEX. Pass `--date YYYY-MM-DD` for other days.
+- **Read**: `core/scripts/session-journal.sh read <NNN>` prints a specific entry.
 
 ## Spec
 

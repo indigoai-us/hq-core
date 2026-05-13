@@ -40,7 +40,7 @@ Write a structured working-memory entry for the current Claude session. Entries 
 <what the next entry will pick up: story id, file, or open question>
 ```
 
-3. Pass the synthesized body via `--body-file` to `scripts/session-journal.sh write`:
+3. Pass the synthesized body via `--body-file` to `core/scripts/session-journal.sh write`:
 
 ```bash
 mktemp_body=$(mktemp -t journal-body.XXXXXX.md)
@@ -58,7 +58,7 @@ cat > "$mktemp_body" <<'EOF'
 ...
 EOF
 
-scripts/session-journal.sh write "<title>" \
+core/scripts/session-journal.sh write "<title>" \
   --files "<comma-separated relative paths touched, optional>" \
   --body-file "$mktemp_body"
 
@@ -70,7 +70,7 @@ rm -f "$mktemp_body"
 ### `--list`
 
 ```bash
-scripts/session-journal.sh list
+core/scripts/session-journal.sh list
 ```
 
 Prints today's `INDEX.md`. If the user wants a different day, pass `--date YYYY-MM-DD` through.
@@ -78,7 +78,7 @@ Prints today's `INDEX.md`. If the user wants a different day, pass `--date YYYY-
 ### `--read <NNN>`
 
 ```bash
-scripts/session-journal.sh read <NNN>
+core/scripts/session-journal.sh read <NNN>
 ```
 
 Prints a specific entry. Useful after `/handoff` continuation when the SessionStart hook surfaced the INDEX and you need a specific entry's detail.
@@ -106,5 +106,5 @@ You don't need to wait for the auto-trigger hook. Write proactively after:
 - `.claude/hooks/journal-due.sh` — PostToolUse auto-trigger
 - `.claude/hooks/journal-precompact.sh` — PreCompact reminder
 - `.claude/hooks/load-journal-index-on-start.sh` — SessionStart auto-load
-- `scripts/session-journal.sh` — helper script
+- `core/scripts/session-journal.sh` — helper script
 - `.claude/skills/_shared/journal.sh` — task journal (different pattern, doesn't conflict)
