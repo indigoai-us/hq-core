@@ -30,8 +30,16 @@ jobs:
     # Dynamic value from config is available only after merge-settings runs,
     # so we use the static default here. Override in repo .claude/audit/config.yaml if needed.
     timeout-minutes: 35
+    env:
+      HQ_AUDIT_BOT_APP_ID: ${{ vars.HQ_AUDIT_BOT_APP_ID || secrets.HQ_AUDIT_BOT_APP_ID }}
+      HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
 
     steps:
+      - name: Audit credentials unavailable
+        if: env.HQ_AUDIT_BOT_APP_ID == '' || env.HQ_AUDIT_BOT_PRIVATE_KEY == ''
+        run: |
+          echo "::warning::HQ audit bot credentials are not configured; skipping PR Audit"
+
       # ── 1. Mint hq-audit-bot installation token ─────────────────────────
       #
       # The default GITHUB_TOKEN only has access to the current repo, but we
@@ -44,10 +52,11 @@ jobs:
       #   HQ_AUDIT_BOT_PRIVATE_KEY  — PEM-encoded private key
       - name: Generate hq-audit-bot token
         id: app-token
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ vars.HQ_AUDIT_BOT_APP_ID || secrets.HQ_AUDIT_BOT_APP_ID }}
-          private-key: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: |
             hq-pr-review-settings
@@ -56,6 +65,7 @@ jobs:
       # ── 2. Checkout the PR (with bot token so subsequent commits/pushes
       # are authored as the App, not as github-actions[bot]) ──────────────
       - name: Checkout PR
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -63,6 +73,7 @@ jobs:
 
       # ── 3. Install yq (required by merge-settings.sh) ──────────────────
       - name: Install yq
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
         uses: mikefarah/yq@v4.44.3
 
       # ── 4. Sparse-checkout settings repo (defaults + scripts) ───────────
@@ -72,6 +83,7 @@ jobs:
       # repos; scripts are always sourced from the central settings repo at
       # runtime so they stay in sync without requiring a re-install.
       - name: Fetch org audit settings and scripts
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/hq-pr-review-settings
@@ -92,6 +104,7 @@ jobs:
       # recover the original source branch name for loop mode.
       - name: Detect audit mode
         id: mode
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
         env:
           BRANCH_NAME: ${{ github.head_ref }}
         run: |
@@ -105,6 +118,7 @@ jobs:
       # accidentally including it in any audit/ branch commits.
       - name: Merge audit config
         id: config
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
         run: |
           bash .audit-settings/workflow-template/scripts/merge-settings.sh \
             ".audit-settings/defaults/config.yaml" \
@@ -119,13 +133,14 @@ jobs:
       # always 0 and cap is never reached on the very first scan).
       - name: Count iterations
         id: iterations
-        if: steps.mode.outputs.mode == 'loop'
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != '' && steps.mode.outputs.mode == 'loop'
         run: |
           bash .audit-settings/workflow-template/scripts/count-iterations.sh \
             "${{ steps.config.outputs.iteration_cap }}"
 
       # ── 6. Run Claude Code audit ─────────────────────────────────────────
       - name: Claude Code Audit
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
         uses: anthropics/claude-code-action@v1
         env:
           # Iteration state from count-iterations.sh (loop mode only).
