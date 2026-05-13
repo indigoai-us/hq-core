@@ -22,7 +22,7 @@
 
 set -euo pipefail
 
-HQ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HQ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 AUDIT_LOG="$HQ_ROOT/workspace/metrics/audit-log.jsonl"
 
 VALID_EVENTS="task_started phase_completed task_completed task_failed project_started project_completed story_dispatched story_completed story_failed pipeline_started pipeline_completed pipeline_paused pipeline_failed project_pr_created project_reviewed project_merged project_deployed project_canary_pass project_canary_fail gate_requested gate_resolved"
