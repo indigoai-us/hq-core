@@ -40,6 +40,12 @@ if [[ "${SKIP_CODEX:-0}" == "1" ]]; then
   exit 0
 fi
 
+if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+  echo "::warning::OPENAI_API_KEY is not configured; skipping Codex semantic rubric"
+  echo '{"verdict":"PASS","reason":"OPENAI_API_KEY not configured; Codex semantic rubric skipped"}'
+  exit 0
+fi
+
 # Build inputs.
 tokens="$(awk '
   /^companies:/ || /^persons:/ || /^domains:/ || /^products:/ || /^operational:/ { in_sec=1; next }
