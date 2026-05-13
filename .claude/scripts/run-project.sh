@@ -274,7 +274,7 @@ RESUME=false
 STATUS=false
 DRY_RUN=false
 MODEL=""
-BUILDER=""  # "" = runtime default, "codex" = use `codex exec` for build phase
+BUILDER=""  # ""/auto = worker-authoritative claude; "codex" requires explicit env opt-in
 BUILDER_EXPLICIT=false
 NO_PERMISSIONS=false
 RETRY_FAILED=false
@@ -322,14 +322,14 @@ while [[ $# -gt 0 ]]; do
     --model)        MODEL="$2"; shift 2 ;;
     --builder)
       if [[ $# -lt 2 ]]; then
-        echo -e "${RED}--builder requires a value: claude or codex${NC}" >&2
+        echo -e "${RED}--builder requires a value: auto, claude, or codex${NC}" >&2
         exit 1
       fi
       BUILDER="$2"; BUILDER_EXPLICIT=true; shift 2 ;;
     --builder=*)    BUILDER="${1#--builder=}"; BUILDER_EXPLICIT=true; shift ;;
     --engine)
       if [[ $# -lt 2 ]]; then
-        echo -e "${RED}--engine requires a value: claude or codex${NC}" >&2
+        echo -e "${RED}--engine requires a value: auto, claude, or codex${NC}" >&2
         exit 1
       fi
       BUILDER="$2"; BUILDER_EXPLICIT=true; shift 2 ;;
@@ -360,13 +360,14 @@ Flags:
   --status            Show all project statuses, exit
   --dry-run           Show story order without executing
   --model MODEL       Override model for all stories (claude builder only)
-  --builder BUILDER   Build agent: "claude" or "codex" — when "codex",
+  --builder BUILDER   Build agent: "auto", "claude", or "codex" — auto uses claude.
+                      When "codex",
                       each story is executed via `codex exec` instead of `claude -p`.
                       Completion is detected via the same 3-layer parser (termination
                       JSON on any line → git commit heuristic fallback).
-                      Defaults to "codex" when run from Codex, otherwise "claude".
+                      "codex" requires HQ_ALLOW_CODEX_OPAQUE_BUILDER=1.
   --engine ENGINE     Alias for --builder.
-  --no-permissions    Pass --dangerously-skip-permissions to claude
+  --no-permissions    Pass the builder's non-interactive permission bypass
   --retry-failed      Re-run previously failed stories only
   --timeout N         Per-story wall-clock timeout in minutes
   --verbose           Show full claude output
@@ -388,9 +389,23 @@ HELP
   esac
 done
 
-if [[ "$BUILDER_EXPLICIT" == false && -z "$BUILDER" ]] && running_from_codex; then
-  BUILDER="codex"
-  PASSTHROUGH_ARGS="${PASSTHROUGH_ARGS:+$PASSTHROUGH_ARGS }--builder codex"
+if [[ -z "$BUILDER" || "$BUILDER" == "auto" ]]; then
+  BUILDER="claude"
+fi
+
+case "$BUILDER" in
+  claude|codex) ;;
+  *)
+    echo -e "${RED}Unknown builder: $BUILDER${NC}" >&2
+    echo -e "${DIM}Expected one of: auto, claude, codex${NC}" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$BUILDER" == "codex" && "${HQ_ALLOW_CODEX_OPAQUE_BUILDER:-}" != "1" ]]; then
+  echo -e "${RED}Codex builder is not worker-authoritative yet.${NC}" >&2
+  echo -e "${DIM}Use --builder claude, or set HQ_ALLOW_CODEX_OPAQUE_BUILDER=1 to opt into opaque codex exec.${NC}" >&2
+  exit 2
 fi
 
 # Headless detection: non-interactive when permissions bypassed (pipeline mode)
@@ -1671,7 +1686,7 @@ validate_git_state() {
   if [[ -n "$dirty" ]]; then
     log_warn "Sub-agent left uncommitted changes. Auto-committing..."
     git -C "$REPO_PATH" add -A
-    # Guard (policy: run-project-conflict-marker-guard): refuse to commit if any
+    # Guard: refuse to commit if any
     # staged file contains unresolved merge-conflict markers. Pre-existing
     # garbage in the worktree must never be swept into the branch — doing so
     # broke a redesign run (94 tsc TS1185 errors).

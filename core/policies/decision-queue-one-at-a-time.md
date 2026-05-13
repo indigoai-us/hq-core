@@ -2,20 +2,26 @@
 id: decision-queue-one-at-a-time
 title: Present decisions one question at a time, never batched
 scope: global
-trigger: when surfacing 2+ user-facing decisions via AskUserQuestion (any skill or ad-hoc)
+trigger: when surfacing user-facing questions or decisions via AskUserQuestion, Codex request_user_input, or any structured picker (any skill or ad-hoc)
 enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-05-08
-updated: 2026-05-08
-source: session-learning
+updated: 2026-05-12
+source: session-learning; user-correction
 ---
 
 ## Rule
 
-When a skill or session surfaces multiple decisions for the user, present them as a **sequential queue** — one `AskUserQuestion` call per decision, wait for the answer, update working state (plan file, brainstorm.md, etc.), then ask the next.
+When a skill or session surfaces user-facing questions or decisions, prefer a clickable/structured picker whenever the runtime exposes one:
 
-**Never** batch 2+ decisions into a single `AskUserQuestion` call (the tool accepts up to 4 questions per invocation — do not use that capacity).
+- Claude Code: use `AskUserQuestion`.
+- Codex: use `request_user_input` when callable and the question can be expressed as 2-3 selectable choices.
+- Other runtimes: use the closest structured interactive picker available.
+
+When there are multiple questions or decisions, present them as a **sequential queue** — one structured question call per decision, wait for the answer, update working state (plan file, brainstorm.md, etc.), then ask the next.
+
+**Never** batch 2+ questions into a single `AskUserQuestion`, `request_user_input`, or equivalent call, even if the tool supports multiple questions per invocation.
 
 Applies to: `/brainstorm`, `/plan`, `/deep-plan`, `/architect`, `/diagnose`, `/run-project`, `/execute-task`, `/strategize`, `/review-plan`, and any other skill or ad-hoc moment where the model needs user input on multiple separable choices.
 
@@ -34,13 +40,24 @@ AskUserQuestion(questions=[Q2])
 ...
 ```
 
+Codex equivalent:
+
+```
+request_user_input(questions=[Q1])
+→ user answers
+[Update state]
+request_user_input(questions=[Q2])
+→ user answers
+```
+
 **Incorrect:**
 
 ```
 AskUserQuestion(questions=[Q1, Q2, Q3, Q4])
+request_user_input(questions=[Q1, Q2])
 ```
 
-(Tool allows 1–4 questions per call. Hard cap at 1 in HQ.)
+Some tools allow multiple questions per call. Hard cap at 1 in HQ.
 
 ## Rationale
 
@@ -60,9 +77,9 @@ Sequential one-at-a-time questioning is slower per-decision but produces decisiv
 This policy is **additive** to [brainstorm-use-decision-mode](brainstorm-use-decision-mode.md):
 
 - That policy says: `/brainstorm` MUST use `AskUserQuestion` (not markdown numbered lists).
-- This policy says: `AskUserQuestion` MUST be invoked one question per call (not batched), in any skill.
+- This policy says: `AskUserQuestion`, Codex `request_user_input`, or any equivalent picker MUST be invoked one question per call (not batched), in any skill.
 
-Together: the harness's interactive picker is the canonical input surface, and it's always used one decision at a time.
+Together: the harness's interactive picker is the canonical input surface, and it's always used one question at a time.
 
 ## Hook gating
 

@@ -100,7 +100,7 @@ Ask these 3 questions. One at a time.
 2. **What do you do?** (1-2 sentences — your roles, work, domain)
 3. **What are your goals for using HQ?** (what do you want AI workers to help with?)
 
-Use "personal" as the company/context name.
+Personal scope lives at the top-level `personal/` directory (peer of `core/`), not as a company. Workers, knowledge, policies, and skills you create for yourself live under `personal/{type}/...` — `master-sync.sh` mirrors them into `core/<type>/<entry>` symlinks automatically.
 
 ## Phase 2: Generate Files
 
@@ -112,10 +112,17 @@ All repos — code, knowledge, company projects — live under `repos/`. This is
 mkdir -p repos/public repos/private
 ```
 
-### Company structure
+### Personal scaffold
 ```bash
-mkdir -p companies/personal/settings companies/personal/data companies/personal/knowledge
+mkdir -p personal/{knowledge,policies,workers,settings,skills,hooks}
 ```
+
+### Company structure (only when adding a real company — use `/newcompany {slug}` instead)
+For reference, a company directory looks like:
+```
+companies/{slug}/{settings,data,knowledge,workers,policies}
+```
+The schema and a fillable template live at `companies/_template/`.
 
 ### Knowledge repos
 
@@ -138,7 +145,7 @@ cd -
 ln -s ../../repos/public/knowledge-{name} knowledge/{name}
 ```
 
-**At minimum, create one knowledge repo for the user's personal/company context:**
+**Optional: turn `personal/knowledge/` into its own git repo so you can sync it across machines.**
 ```bash
 # Personal knowledge repo
 mkdir -p repos/private/knowledge-personal
@@ -148,9 +155,11 @@ echo "# Personal Knowledge Base" > README.md
 git add . && git commit -m "init knowledge repo"
 cd -
 
-# Symlink into company knowledge
-ln -s ../../../repos/private/knowledge-personal companies/personal/knowledge/personal
+# Replace the empty personal/knowledge/ dir with a symlink to the canonical clone
+rm -rf personal/knowledge
+ln -s ../repos/private/knowledge-personal personal/knowledge
 ```
+If you skip this, `personal/knowledge/` is just a plain directory tracked by HQ git — fine for single-machine setups.
 
 **The starter kit's bundled knowledge (Ralph, workers, ai-security-framework, etc.) ships as plain directories. Explain to the user:**
 ```
@@ -167,7 +176,7 @@ This is optional — plain directories work fine for read-only knowledge.
 
 ### Profile files
 
-**companies/personal/knowledge/profile.md:**
+**personal/knowledge/profile.md:**
 ```markdown
 # {Name}'s Profile
 
@@ -182,7 +191,7 @@ This is optional — plain directories work fine for read-only knowledge.
 - Autonomy level: [to be filled by /personal-interview]
 ```
 
-**companies/personal/knowledge/voice-style.md:**
+**personal/knowledge/voice-style.md:**
 ```markdown
 # {Name}'s Voice Style
 
@@ -250,12 +259,12 @@ HQ Setup Complete!
 
 Created:
 - repos/public/, repos/private/ (ALL repos — code, knowledge, projects)
-- companies/personal/ (settings, data, knowledge)
-- companies/personal/knowledge/profile.md
-- companies/personal/knowledge/voice-style.md
+- personal/ scaffold (knowledge, policies, workers, settings, skills, hooks)
+- personal/knowledge/profile.md
+- personal/knowledge/voice-style.md
 - agents-profile.md
 - agents-companies.md
-- Knowledge repo: repos/private/knowledge-personal/ → companies/personal/knowledge/personal
+- Optional knowledge repo: repos/private/knowledge-personal/ → personal/knowledge (symlink)
 
 Dependencies:
 ✓ claude (Claude Code CLI)

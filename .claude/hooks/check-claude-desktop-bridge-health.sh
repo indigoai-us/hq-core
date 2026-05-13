@@ -9,11 +9,10 @@
 #
 # Tightened 2026-04-15: the file signature alone is the normal resting state of
 # a healthy bridge, so the original hook produced a false positive every session.
-# Gating on log evidence restores signal-to-noise and matches the 3-of-4 rule in
-# policy claude-desktop-bridge-state-zombie.md.
+# Gating on log evidence restores signal-to-noise and avoids warning on a
+# healthy bridge's resting state.
 #
 # Always exits 0 — this is advisory, not a blocker.
-# Policy reference: core/policies/claude-desktop-bridge-state-zombie.md
 
 set -euo pipefail
 
@@ -104,7 +103,7 @@ Correlated evidence:
 
 This is the pattern that caused a 260 GB memory leak on 2026-04-10.
 
-Mitigation (from policy claude-desktop-bridge-state-zombie):
+Mitigation:
   1. Quit Claude desktop: osascript -e 'tell application "Claude" to quit'
   2. Backup: cp "$BRIDGE_STATE" "${BRIDGE_STATE}.bak-\$(date +%s)"
   3. Delete: rm "$BRIDGE_STATE"
@@ -112,7 +111,6 @@ Mitigation (from policy claude-desktop-bridge-state-zombie):
 
 File: $BRIDGE_STATE
 Logs: $LOG_DIR/main*.log
-Full policy: core/policies/claude-desktop-bridge-state-zombie.md
 </bridge-health-warning>
 EOF
 

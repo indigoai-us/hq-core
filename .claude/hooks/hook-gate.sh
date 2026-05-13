@@ -39,7 +39,7 @@ DISABLED_HOOKS="${HQ_DISABLED_HOOKS:-}"
 # Minimal: critical safety hooks
 is_in_minimal_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes|block-unsafe-package-install)
       return 0
       ;;
     *)
@@ -51,7 +51,7 @@ is_in_minimal_profile() {
 # Standard: minimal + checkpoint/handoff + pattern learning + core governance + policy loading
 is_in_standard_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|auto-checkpoint-trigger|auto-checkpoint-precompact|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes|load-policies|check-bridge-health|check-repo-active-runs|block-on-active-run|context-warning-50|inject-local-context|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|auto-checkpoint-trigger|auto-checkpoint-precompact|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes|load-policies|check-bridge-health|check-repo-active-runs|block-on-active-run|context-warning-50|inject-local-context|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|block-unsafe-package-install)
       return 0
       ;;
     *)
@@ -63,7 +63,7 @@ is_in_standard_profile() {
 # Strict: standard + future quality hooks (reserved for expansion)
 is_in_strict_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|auto-checkpoint-trigger|auto-checkpoint-precompact|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes|load-policies|check-bridge-health|check-repo-active-runs|block-on-active-run|context-warning-50|inject-local-context|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|auto-checkpoint-trigger|auto-checkpoint-precompact|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes|load-policies|check-bridge-health|check-repo-active-runs|block-on-active-run|context-warning-50|inject-local-context|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|block-unsafe-package-install)
       return 0
       ;;
     *)

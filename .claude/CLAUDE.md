@@ -1,28 +1,75 @@
-# HQ
+# HQ — Charter for Claude Sessions
 
-Personal OS for orchestrating work across companies, workers, and AI.
+HQ is a personal operating system for orchestrating work across many companies, repos, workers, and AI sessions from one root directory. You are not in a single repo or product — you are in the orchestration layer that scaffolds, runs, and supervises work elsewhere. HQ is *not* a single-repo coding assistant, a one-shot workspace, or a knowledge dump.
 
-## Key Files
+## Purpose
 
-- `INDEX.md` - Directory map (load only for HQ infra tasks or when disoriented)
-- `agents-profile.md` - Owner profile + style (load only for writing/comms tasks)
-- `agents-companies.md` - Company contexts + roles (load only when company routing needed)
-- `USER-GUIDE.md` - Commands, workers, typical session
-- `workers/registry.yaml` - Worker index
+### What Lives in HQ
 
-## Context Diet
+- **companies/** — isolated tenants. Each has its own credentials, policies, knowledge, projects. Cross-company contamination is a category-1 bug.
+- **repos/** — code (`repos/public/`, `repos/private/` — never elsewhere). HQ orchestrates; repos are where code actually lives.
+- **projects/** — PRDs, brainstorms, and plans for work that may span repos and companies.
+- **core/workers/** — specialized agents with skills (design, content, security, deploy, …). Use them before generic Claude.
+- **workspace/** — session and orchestrator state (threads, locks, drafts, reports).
+- **core/knowledge/** — reusable facts, specs, playbooks. Indexed by qmd.
+- **policies/** — auto-enforced rules. Loaded at session start by hooks; do not duplicate them in this file.
+
+### Charter Rule for This File
+
+CLAUDE.md contains exactly three things: **Purpose** (what HQ is and your role inside it) · **Rules** (always-on rules with no policy home of their own) · **Map** (pointers to commands, skills, knowledge, and the policy system).
+
+It does NOT contain rules that have a policy home — those auto-load via SessionStart.
+It does NOT contain skill help — that lives in the skill file.
+It does NOT contain reference data — that lives in core/knowledge/.
+
+When adding something here, ask first: should this be a policy, a skill, or a knowledge file? If yes, put it there.
+
+---
+
+## Rules
+
+### Core Principles
+
+1. **Infrastructure scales, effort doesn't** — Build reusable systems
+2. **Workers should grow smarter** — Capture learnings in knowledge bases
+3. **Context is precious** — Checkpoint often, don't let work evaporate
+4. **Test before ship** — If you can't verify it works, you can't ship it
+5. **E2E tests prove it works** — Unit tests check code; E2E tests check the product
+6. **Completeness is near-zero cost** — AI makes the marginal cost of doing the complete thing close to zero. Always do the complete thing when achievable (a "lake"), not the shortcut. Reserve shortcuts for genuinely unbounded scope (an "ocean")
+7. **Never skip failing tests** — Always fix tests properly. Never use test.skip, never create false positives, never loosen assertions as a workaround. Investigate root cause and fix it — unit, integration, and E2E equally <!-- user-correction | 2026-04-04 -->
+8. **Bugfixes require tests** — Every bug fix must include test or E2E coverage that catches the regression. Ask user if unsure about test type/scope. A fix without a regression test is incomplete <!-- user-correction | 2026-04-05 -->
+9. **Vague → Verifiable** — When a request lacks clear success criteria ("fix the bug", "make it faster", "clean this up"), define what "done" looks like before starting. A test that passes, a metric that improves, a behavior that changes — something observable
+
+### Corrections & Accuracy
+
+When the user corrects factual content (pricing, session descriptions, product details), apply the correction exactly as stated. Do not re-interpret or paraphrase. If unsure, quote back what you'll write and confirm before committing.
+
+### User-Facing Messages
+
+Quiet by default. Silent on routine ops (install, lint, build, test, fmt) and recoverable failures — fix and continue without narrating. Surface only: user decisions, irreversible/destructive actions, security signals, blockers Claude can't self-resolve, substantive results / insights / reports. Verbose narration allowed inside `/run-project`, `/execute-task`, `/diagnose`, `/investigate`, `/tdd`, `/architect`, `/deep-plan`, `/review`, `/security-review`, `/discover`. Carveouts (URLs that must surface): `/hq-share` minting turn, `/deploy` preview. Full filter + decision tree: `.claude/policies/quiet-by-default-narration.md`.
+
+### Sensitive Path Deny Lists
+
+Sensitive paths (SSH/AWS/GPG/env/shell-rc) are Read-blocked by `.claude/settings.json` deny rules. For rc-file mutations: append-only (`printf >> file`) or pattern-delete (`sed '/pattern/d' file`) — never Read+Edit.
+
+### Sub-Agent Rules
+
+When spawning Task agents for story/task completion: each sub-agent MUST commit its own work before completing. The orchestrator should verify uncommitted changes after each sub-agent returns and commit them if the sub-agent failed to do so.
+
+### Context Diet
 
 Minimize context burn on session start:
+
 - Do NOT read INDEX.md, agents files, or company knowledge unless task requires it
 - Do NOT run qmd searches "to orient" — search only with a specific question
 - For repo coding tasks: go directly to repo. HQ context rarely needed
 - For worker execution: load only worker.yaml — it has its own knowledge pointers
-- When unsure what to load: ask user, don't explore
+- When unsure what to load: ask the user, don't explore
 - Prefer `workspace/threads/handoff.json` (7 lines) over INDEX.md for session state
 
 ## Token Optimization
 
-Env vars and settings in `.claude/settings.json` control cost/style defaults:
+Claude Code defaults live in `.claude/settings.json`; Codex sandboxing and hook wiring live in `.codex/config.toml`.
 
 | Setting | Value | Why |
 |---------|-------|-----|
@@ -36,124 +83,120 @@ Toggle thinking with Option+T.
 
 ## Hook Profiles
 
-Runtime profiles via `HQ_HOOK_PROFILE` env var: `minimal` (safety only), `standard` (default, all hooks), `strict` (reserved). Disable individual hooks: `HQ_DISABLED_HOOKS=hook1,hook2`. All hooks route through `.claude/hooks/hook-gate.sh`.
+Runtime profiles via `HQ_HOOK_PROFILE` env var: `minimal` (safety only), `standard` (default, all hooks), `strict` (reserved). Disable individual hooks: `HQ_DISABLED_HOOKS=hook1,hook2`. Canonical hooks route through `.claude/hooks/hook-gate.sh`; Codex uses `.codex/hooks/hq-codex-hook-adapter.sh` when lifecycle hooks are wired, and `core/scripts/codex-preflight.sh` for explicit safety checks.
 
-## Session Handoffs
+### Cross-Company Credential Isolation
 
-When preparing a session handoff: always commit all pending changes first, write a handoff.json with current progress state (completed stories, remaining work, blockers), update INDEX files, and create a thread file. Never enter plan mode during handoff — execute steps directly.
+Never fall back to another company's credentials. If the right ones fail, stop and ask. Manifest `companies/manifest.yaml` is source of truth for company-scoped fields. Full rules: `core/policies/credential-access-protocol.md` (auto-loaded).
 
-## Corrections & Accuracy
+### Image Context Isolation
 
-When the user corrects factual content (pricing, session descriptions, product details), apply the correction exactly as stated. Do not re-interpret or paraphrase the user's correction. If unsure, quote back what you'll write and confirm before committing.
+Never accumulate >10 images in parent session; delegate image reads/verifications to a sub-agent that returns text only. Full rules: `core/policies/image-context-isolation.md`.
 
-## Interaction Style
+### Token Optimization
 
-When surfacing 2+ user-facing decisions, present them as a sequential queue — one `AskUserQuestion` call per decision, with an insight block scaffolding *why* the question matters. Never batch decisions into a single call (the tool allows 1-4; HQ caps at 1). Applies to `/brainstorm`, `/plan`, `/architect`, `/diagnose`, `/run-project`, and any ad-hoc moment with multiple separable choices. Full rule: `.claude/policies/decision-queue-one-at-a-time.md`.
+Use the runtime's clickable/structured question UI for user-facing questions with selectable answers. Claude Code uses `AskUserQuestion`; Codex uses `request_user_input` when it is callable. Ask exactly one question per call, wait for the answer, update working state, then ask the next. If no structured picker is available, ask the same options as concise plain text. Full rules: `.claude/policies/decision-queue-one-at-a-time.md` and `.claude/policies/hq-codex-decision-gate-fallback.md`.
 
-## INDEX.md System
+Env vars and `.claude/settings.json` control cost/style defaults:
 
-Hierarchical INDEX.md files provide navigable directory maps. Spec: `knowledge/public/hq-core/index-md-spec.md`. Rebuild all: `/cleanup --reindex`. Auto-updated by checkpoint/handoff/plan/run-project commands.
+| Setting | Value | Why |
+|---------|-------|-----|
+| `outputStyle` | `Explanatory` | Insight blocks + educational explanations |
+| `MAX_THINKING_TOKENS` | `31999` | Full fixed-budget thinking |
+| `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` | `1` | Disable adaptive; use fixed budget |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | `75` | Autocompact at 75%; ~60% Stop-hook advisory |
+| `CLAUDE_CODE_SUBAGENT_MODEL` | `opus` | Subagents (Task tool) use Opus |
 
-## Structure
+Toggle thinking with Option+T.
 
-Top-level: `.claude/commands/`, `agents-profile.md`, `agents-companies.md`, `companies/`, `knowledge/{public,private}/`, `projects/` (personal/HQ only), `repos/{public,private}/`, `settings/` (shared only — post-bridge, orchestrator), `workers/public/`, `workspace/{checkpoints,orchestrator,reports,social-drafts}/`. Each company is self-contained: `companies/{co}/{knowledge,settings,data,workers,repos,projects}/`. Full tree: `knowledge/public/hq-core/quick-reference.md`
+Top-level: `.claude/commands/` (exposed to Codex through `.codex/prompts`), `agents-profile.md`, `agents-companies.md`, `companies/`, `knowledge/{public,private}/`, `projects/` (personal/HQ only), `repos/{public,private}/`, `settings/` (shared only — post-bridge, orchestrator), `workers/public/`, `workspace/{checkpoints,orchestrator,reports,social-drafts}/`. Each company is self-contained: `companies/{co}/{knowledge,settings,data,workers,repos,projects}/`. Full tree: `knowledge/public/hq-core/quick-reference.md`
 
-## Companies
+- Verify which branch you're on before committing.
+- Prefer merge over rebase when a branch is significantly behind (50+ commits).
+- `--no-verify` is for hook fights only — never on main.
+- Never commit to local main when intending to work on a feature branch.
 
-Listed in `companies/manifest.yaml` (source of truth). Each is self-contained: `settings/` (creds), `data/` (exports), `knowledge/` (embedded git repo), `workers/` (company-scoped), `repos/` (symlinks to canonical clones), `projects/` (PRDs). Details: `knowledge/public/hq-core/quick-reference.md`
+---
 
-## Company Isolation
+## Map
 
-Manifest: `companies/manifest.yaml` — maps companies to repos, workers, knowledge, deploy targets. Fields: `services`, `vercel_team`, `aws_profile`, `dns_zones`.
+### Key Files (load on demand)
 
-**Before company-scoped operations:** identify company from context → read `companies/{co}/policies/` → use manifest infrastructure fields (don't guess).
+`INDEX.md`, `agents-profile.md`, `agents-companies.md`, `USER-GUIDE.md`, `core/workers/registry.yaml`, `companies/manifest.yaml`. Full catalog: `core/knowledge/public/hq-core/quick-reference.md`.
 
-**Hard rules:**
-- NEVER read/use credentials from a different company's settings
-- NEVER try another company's credentials as "fallback" — if the right company's creds fail, stop and ask
-- NEVER paste secrets inline in bash commands — use `AWS_PROFILE=`, env files, or config refs
-- NEVER deploy to a company's Vercel project / GitHub repo from a different company's context
-- NEVER mix company knowledge in outputs
-- NEVER use Linear credentials from a different company's settings
-- Before any Linear API call, validate: config.json `workspace` field matches expected company
-- If prd.json `linearCredentials` path doesn't match active company per manifest, ABORT and warn
-- When task spans multiple companies (rare), explicitly acknowledge cross-company scope
+### Structure
 
-Credential access: policy `credential-access-protocol.md`. Hook: `warn-cross-company-settings.sh`.
+Top-level: `.claude/`, `agents-*.md`, `companies/`, `core/knowledge/{public,private}/`, `projects/` (personal/HQ only), `repos/{public,private}/`, `core/settings/`, `core/workers/public/`, `workspace/`. Each company is self-contained: `companies/{co}/{knowledge,settings,data,workers,repos,projects}/`. Full tree: `core/knowledge/public/hq-core/quick-reference.md`.
 
-## Sensitive Path Deny Lists
+### Companies
+
+Source of truth: `companies/manifest.yaml`. Each company is self-contained. Details: `core/knowledge/public/hq-core/quick-reference.md`.
 
 Sensitive system paths are blocked from Read access via `settings.json` deny rules: `~/.ssh/**`, `~/.aws/credentials`, `~/.aws/config`, `~/.gnupg/**`, `~/.env`, `~/.netrc`, `~/.zshrc`, `~/.zprofile`, `~/.zshenv`, `~/.bashrc`, `~/.bash_profile`. These protect SSH keys, AWS credentials, GPG secrets, local environment files, and shell rc files (which may contain hardcoded API keys — see company policies for details). User can override with explicit approval when prompted. For rc-file mutations, use append-only (`printf >> file`) or pattern-delete (`sed '/pattern/d' file`) rather than Read+Edit — both avoid pulling file contents into context. Company credential isolation is handled separately by hooks (see Company Isolation section).
 
-## Infrastructure-First
+## Vault Share Capabilities
+
+`/hq-share <path>...` mints an encrypted single-use share-session URL via `hq files share` and opens the browser picker for multi-recipient ACL grants. **Default behavior is to print the full URL inline in the assistant reply** — that's the minting turn and the one surface where the unredacted token is permitted. For single-recipient/scripted grants, use direct grant instead: `hq files share <prefix> --with <principal> --permission <level>`.
+
+**Hard rule:** A share-session URL is a live, encrypted, single-use, 15-minute capability — any holder can redeem it to write ACLs in the issuer's name. After the minting turn, NEVER paste the URL into subsequent assistant turns, summaries, thread files (`workspace/threads/`), journals, learnings, commit messages, PR descriptions, Slack/email, or worker handoff payloads. Use the redacted form `https://hq.{co}.com/share-session/<TOKEN_REDACTED>` in any persisted or follow-up context. Full constraint set: `.claude/policies/hq-share-session-urls-are-capabilities.md` (enforcement: hard). Command/skill details: `.claude/commands/hq-share.md`, `.claude/skills/hq-share/SKILL.md`, `.claude/skills/hq-files/SKILL.md` § "Rules for Agent Workflows" #10.
+
+### Infrastructure-First
 
 When work implies new infrastructure, scaffold it BEFORE doing the work:
 
 | Signal | Action |
 |--------|--------|
-| New company | `/newcompany {slug}` — creates dir, manifest, knowledge repo, qmd collection |
-| New worker needed | `/newworker` — scaffolds worker.yaml in `companies/{co}/workers/`, registers in registry + manifest |
-| New knowledge base | For company: `git init` in `companies/{co}/knowledge/`. For shared: create repo in `repos/public/knowledge-{name}` → symlink to `knowledge/public/`. Add to `modules/modules.yaml` |
-| New project | `/plan` — creates `companies/{co}/projects/{name}/` with prd.json + README |
-| New repo | Clone to `repos/{pub|priv}/` → add to `manifest.yaml` → add qmd collection |
+| New company | `/newcompany {slug}` |
+| New worker | `/newworker` |
+| New knowledge base | `git init` (company) or `repos/public/knowledge-{name}` + symlink (shared) |
+| New project | `/plan` |
+| New repo | Clone to `repos/{pub\|priv}/` → manifest.yaml → qmd collection |
 
-**Post-infrastructure checklist (mandatory after ANY creation):**
-1. `manifest.yaml` — verify no `null` values for company entry
-2. `workers/registry.yaml` — verify new workers registered
-3. `modules/modules.yaml` — verify new knowledge repos registered
-4. `qmd update 2>/dev/null || true` — reindex search
-5. Regenerate affected INDEX.md files
+Post-creation: verify `manifest.yaml`, `core/workers/registry.yaml`, `core/modules/modules.yaml`; run `qmd update 2>/dev/null || true`; regen affected INDEX.md.
 
-**Always reindex (`qmd update 2>/dev/null || true`) after:**
-- Creating/modifying workers, knowledge, commands, projects
-- Completion of `/newworker`, `/plan`, `/learn`, `/cleanup`, `/handoff`, `/execute-task`, `/run-project`
-- Git commits touching `knowledge/`, `workers/`, `.claude/commands/`, `projects/`
+### INDEX.md System
 
-## Workers
+Hierarchical INDEX.md files provide navigable directory maps. Spec: `core/knowledge/public/hq-core/index-md-spec.md`. Rebuild all: `/cleanup --reindex`. Auto-updated by checkpoint/handoff/plan/run-project.
 
-**Shared** (`workers/public/`): frontend-designer, qa-tester, security-scanner, pretty-mermaid, exec-summary, accessibility-auditor, performance-benchmarker, dev-team (frontend-dev, motion-designer, context-manager, reality-checker, backend-dev) + content-team (5) + social-team (5) + gardener-team (3) + knowledge-tagger + site-builder + ascii-artist + paper-designer.
-**Company** (`companies/{co}/workers/`): per-company workers listed in `workers/registry.yaml`.
+### Search (qmd)
 
-**Optional packs** (install via `hq install @indigoai-us/hq-pack-*`): design-styles (curated style packs), design-quality (typography/color/spatial/motion references), gemini (6 gemini-* workers + gemini-cli knowledge — requires `gemini` on PATH), gstack (gstack-team + 26 g-* skills). See `packages/README.md`.
+HQ + codebases indexed with [qmd](https://github.com/tobi/qmd). Modes: `search` (BM25), `vsearch` (semantic), `query` (hybrid+rerank), `get`/`multi-get`. Scope with `-c {collection}`. Hard rules: never Glob `prd.json`/`worker.yaml`; always pass `path:` to Glob. Full reference: `core/knowledge/public/hq-core/quick-reference.md`.
 
-**Per-repo design context:** `design.md` at repo root. Declares `style-pack: <id>` in the Design Direction section. Workers resolve the pack via `knowledge/public/design-styles/registry.yaml` (shipped by the `design-styles` pack) → pack directory → `context_paths.required`. Pack schema: `knowledge/public/design-styles/PACK-SCHEMA.md`. Design quality references live in `knowledge/public/design-quality/` (shipped by the `design-quality` pack).
+### Auto-Checkpoint
 
-**Worker-first rule:** Before specialized tasks (design, content writing, security, data analysis, deployment), check `workers/registry.yaml` for a matching worker. Use `/run {worker} {skill}` — workers carry domain instructions + learned rules. Only work directly if no suitable worker exists.
+When `AUTO-CHECKPOINT REQUIRED` is injected by a PostToolUse hook, write a lightweight thread file and continue. Do NOT rebuild INDEX, run `qmd update`, or write legacy checkpoint files. When the **60% Stop banner** or **75% PreCompact banner** fires, present the 3 options (checkpoint / handoff / continue) and wait for the user — never auto-run `/checkpoint`. Trigger table: `core/knowledge/public/hq-core/auto-checkpoint-spec.md`.
 
-## Policies
+### Session Handoffs
 
-Rules stored as policy files (YAML frontmatter + `## Rule` + `## Rationale`). Three directories, checked in precedence:
-1. `companies/{co}/policies/` — company-scoped (highest)
-2. `repos/{repo}/.claude/policies/` — repo-scoped
-3. `.claude/policies/` — cross-cutting + command-scoped (lowest)
+When preparing a session handoff: commit pending changes, write `handoff.json`, update INDEX files, create a thread file. Never enter plan mode during handoff — execute steps directly.
 
-Hard enforcement blocks on violation; soft notes deviations. Commands auto-load applicable policies (`/startwork`, `/run-project`, `/execute-task`, `/plan`, `/run`, `/learn`). Spec: `knowledge/public/hq-core/policies-spec.md`. Template: `companies/_template/policies/example-policy.md`.
+### Policies
 
-## Sub-Agent Rules
+Three scopes, precedence highest→lowest: `companies/{co}/policies/`, `repos/{repo}/.claude/policies/`, `core/policies/`. Auto-loaded by SessionStart hook + slash commands. Spec: `core/knowledge/public/hq-core/policies-spec.md`. Template: `companies/_template/policies/example-policy.md`.
 
-When spawning Task agents for story/task completion: each sub-agent MUST commit its own work before completing. The orchestrator should verify uncommitted changes after each sub-agent returns and commit them if the sub-agent failed to do so.
+### Workers
 
-## Image Context Isolation
+Worker-first rule: before specialized tasks (design, content, security, data, deploy), check `core/workers/registry.yaml` and use `/run {worker} {skill}`. Per-repo design: `design.md` declares `style-pack: <id>` resolved via `core/knowledge/public/design-styles/registry.yaml`. Company-scoped brand packs (`scope: company`) live at `companies/{co}/knowledge/design-styles/packs/{id}/` and auto-load via the worker's `dynamic` context when a target company is bound. Roster + design quality refs: `core/knowledge/public/hq-core/quick-reference.md`.
 
-Parent session should never accumulate >10 images. When reading/verifying image files (.png/.jpg/.jpeg/.gif/.webp), delegate to a sub-agent: spawn agent with "Read {path} and describe: dimensions, content, visual quality, issues. Return text only." Mandatory for batch image verification and images >1500px. Full rules: `.claude/policies/image-context-isolation.md`
+### Commands & Skill Bridge
 
-## File Locking
+Core commands in `.claude/commands/`; company/niche commands live on their owning workers. Codex bridge: `.claude/skills/{name}/SKILL.md` mirrors each command. Coverage: `bash core/scripts/codex-skill-bridge.sh status`. Pattern: `core/knowledge/public/hq-core/codex-skill-pattern.md`.
 
-Story-scoped file flags prevent concurrent edit conflicts. Config: `settings/orchestrator.yaml`. Stories declare `files: []` in prd.json. `/execute-task` acquires locks in `{repo}/.file-locks.json` + state.json `checkedOutFiles` on start, releases on completion/failure. `/run-project` skips conflicting stories during task selection (configurable: `hard_block`, `soft_block`, `read_only_fallback`). Stale locks (dead PID + timeout) auto-cleaned.
+### Knowledge Bases & Repos
 
-**Repo Coordination (cross-session):** Repo-level active-run registry at `workspace/orchestrator/active-runs.json` prevents sibling sessions from editing a repo while `/run-project` owns it. Enforced by `core/scripts/repo-run-registry.sh` + SessionStart banner (`check-repo-active-runs.sh`) + PreToolUse hard block (`block-on-active-run.sh`). Blocks Edit/Write/destructive-Bash against owned repos with exit code 2; Read/Grep/Glob/`git status` always allowed. Config: `settings/orchestrator.yaml` → `repo_coordination:`. Bypass (emergency only): `HQ_IGNORE_ACTIVE_RUNS=1` — audit to `workspace/learnings/active-run-bypasses.jsonl`. Policy: `.claude/policies/repo-run-coordination.md`. Composes above story-level `.file-locks.json` without regression.
+Public list: `core/modules/modules.yaml` (filter `access: public`). Company knowledge: `companies/{co}/knowledge/`. Three valid repo patterns (embedded git, symlink, inline): `knowledge/public/hq-core/knowledge-taxonomy.md`.
 
-## Commands
+### Learning System & Insights
 
-30 commands in `.claude/commands/` (core only). Company/niche commands live on their owning workers. Full catalog: `knowledge/public/hq-core/quick-reference.md`
+30 commands in `.claude/commands/` (core only), exposed to Codex through `.codex/prompts`. Company/niche commands live on their owning workers. Full catalog: `knowledge/public/hq-core/quick-reference.md`
 
-## Knowledge Bases
+### E2E Testing
 
-Public: listed in `modules/modules.yaml` (filter `access: public`). Company-level: each at `companies/{co}/knowledge/`. Full list: `knowledge/public/hq-core/quick-reference.md`
+E2E tests verify the product works, not just the code. PRDs include optional `e2eTests` per story. Workers use the `e2e-testing` skill. Templates + infra guides: `core/knowledge/public/testing/`. Full guide: `core/knowledge/public/testing/e2e-cloud.md`.
 
-## Knowledge Repos
+### Skills Index
 
-Knowledge folders use three patterns — all valid, none being migrated:
+Frequently-used skills — invoke via `/<name>`. Full help lives in each skill's file.
 
 1. **Embedded standalone `.git` dir** (most company knowledge): e.g. `companies/{company}/knowledge/`, `companies/personal/knowledge/`. HQ tracks these as orphan `160000` gitlinks — the inner repo is opaque to HQ, commits happen inside. To capture advancement: commit inside the inner repo, then `git add companies/{co}/knowledge && git commit` in HQ to bump the pointer. (HQ has no `.gitmodules` file — this is intentional, not a bug.)
 2. **Symlink to `repos/private/knowledge-{co}/`** (e.g. `companies/{company}/knowledge`): tracked as `120000` symlink; edits land in the target repo.
@@ -184,11 +227,11 @@ If a matching resource exists, reuse it rather than silently duplicating.
 **Skill:** `.claude/skills/registry/SKILL.md` — full protocol (detect, list, pre-flight, update, deprecate, bootstrap).
 **Bootstrap templates:** `.claude/skills/registry/templates/` — schema + generate-index script + README, copied into `companies/{co}/registry/` when a new registry is created.
 **Command:** `/sync-registry [company]` — regenerates `registry.yaml` from `resources/*.yaml`. Runs no git actions.
-**Hook (optional):** `.claude/hooks/auto-capture-registry.sh` — when `HQ_HOOK_PROFILE=standard`, writes stub resources on `gh repo create` (matched by `companies.{co}.github_org`) and `vercel deploy` (matched by `companies.{co}.vercel_team`). No-op for companies without a `registry:` declaration.
+**Hook (optional):** `.claude/hooks/auto-capture-registry.sh` — when `HQ_HOOK_PROFILE=standard`, writes stub resources on `gh repo create` (matched by `companies.{co}.github_org`) and `vercel deploy` (matched by `companies.{co}.vercel_team`). No-op for companies without a `registry:` declaration. In Codex, run the relevant `core/scripts/codex-preflight.sh` checks explicitly unless the hook adapter is active.
 
 ## Skills
 
-`.claude/skills/` is the canonical skill tree. Codex bridge: `core/scripts/codex-skill-bridge.sh install`. Dual-format: `command.md` (Claude Code) + `SKILL.md` (Codex). 12 promoted skills (Codex-ready). Coverage: `bash core/scripts/codex-skill-bridge.sh status`. Full pattern: `knowledge/public/hq-core/codex-skill-pattern.md`.
+`.claude/skills/` is the canonical skill tree and is exposed to Codex through `.agents/skills` plus the global skill bridge. Dual-format: `command.md` (Claude Code) + `SKILL.md` (Codex). Coverage: `bash core/scripts/codex-skill-bridge.sh status`. Full pattern: `knowledge/public/hq-core/codex-skill-pattern.md`.
 
 ## Search (qmd)
 

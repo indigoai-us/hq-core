@@ -10,16 +10,13 @@ if [[ ! -f "$TARGET" ]]; then
   exit 1
 fi
 
-# shellcheck source=lib/detect-codex.sh
-source "${SCRIPT_DIR}/lib/detect-codex.sh"
-
 args=()
 engine_explicit=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --engine)
       if [[ $# -lt 2 ]]; then
-        echo "ERROR: --engine requires a value: claude or codex" >&2
+        echo "ERROR: --engine requires a value: auto, claude, or codex" >&2
         exit 1
       fi
       args+=(--builder "$2")
@@ -33,7 +30,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --builder)
       if [[ $# -lt 2 ]]; then
-        echo "ERROR: --builder requires a value: claude or codex" >&2
+        echo "ERROR: --builder requires a value: auto, claude, or codex" >&2
         exit 1
       fi
       args+=(--builder "$2")
@@ -52,8 +49,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$engine_explicit" == false ]] && running_from_codex; then
-  args+=(--builder codex)
+if [[ "$engine_explicit" == true ]]; then
+  builder=""
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == "--builder" ]]; then
+      builder="${args[$((i + 1))]:-}"
+      break
+    fi
+  done
+
+  case "$builder" in
+    claude|auto|"") ;;
+    codex)
+      if [[ "${HQ_ALLOW_CODEX_OPAQUE_BUILDER:-}" != "1" ]]; then
+        echo "ERROR: Codex builder is not worker-authoritative yet." >&2
+        echo "Use --builder claude, or set HQ_ALLOW_CODEX_OPAQUE_BUILDER=1 to opt into opaque codex exec." >&2
+        exit 2
+      fi
+      ;;
+    *)
+      echo "ERROR: unknown builder: $builder" >&2
+      echo "Expected one of: auto, claude, codex" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 exec bash "$TARGET" "${args[@]}"

@@ -1,6 +1,6 @@
 ---
 name: startwork
-description: Start a work session — resolve company, project, or repo context, gather state from handoff.json and manifest.yaml, present smart options. Lightweight session entry point that replaces ad-hoc orientation.
+description: Start a work session — resolve company, project, or repo context, gather state from handoff.json and manifest.yaml, surface worker routes, and present smart options. Lightweight session entry point that replaces ad-hoc orientation.
 allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*)
 ---
 
@@ -144,6 +144,33 @@ Rules:
 - If no company resolved (resume mode with no company context), skip company policies
 - Precedence: company > repo > global
 
+### 2.6 Worker Routing & Skill Readiness
+
+After policies are known, build a compact Worker Packet for the resolved context.
+
+1. Read `core/workers/registry.yaml` once and keep only entries relevant to the current company, project, repo, or task intent.
+2. If company `{co}` is resolved, include company workers listed in `companies/manifest.yaml` plus any registry entries whose path starts with `companies/{co}/workers/`.
+3. If project mode and `prd.json` story metadata includes declared workers or worker hints, include those first.
+4. If task mode, map the classified intent to a worker route before offering direct execution:
+   - `design`, `ui_component` → design/frontend workers
+   - `content` → content workers
+   - `ops`, deploy/CI/infrastructure → ops/deploy workers
+   - `api_development`, `schema_change`, `full_stack`, `enhancement` → implementation workers plus QA/review workers when available
+5. Do not read every worker.yaml. Read a worker.yaml only when:
+   - it is the selected/recommended worker, or
+   - you need its skill list to present a concrete option.
+
+Display in orientation block:
+```
+Worker route: {primary worker/skill or "none matched"} ({N} candidates)
+```
+
+Rules:
+- Worker-backed paths should appear before direct parent-session execution whenever a relevant worker exists.
+- Direct execution remains available, but label it as direct/no-worker so the user can make an informed choice.
+- If no worker matches, say so and proceed normally.
+- If the selected path needs worker execution, route through `/run {worker} {skill}` or `/execute-task` rather than reimplementing the worker inline.
+
 ### 2.7 Spawn Knowledge Pulse (Background)
 
 Once `{co}` is resolved (from any mode except resume-with-no-company):
@@ -185,6 +212,7 @@ Session Start
 {If task: "Task: {description}" + "Intent: {classified_intent}" + "Pipeline: {worker count} workers"}
 
 Git: {branch} @ {short-hash} {" (dirty)" if dirty}
+Worker route: {primary worker/skill or "none matched"} ({N} candidates)
 Knowledge pulse: {summary line from workspace/reports/knowledge-pulse/{co}-{today}.md if exists, e.g. "3 docs tagged, 2 flagged stale" — or omit line if no recent pulse}
 
 Active work:
@@ -195,10 +223,10 @@ Active work:
 Then present numbered options built from context:
 
 - **Resume mode**: next_steps items (up to 3) + "Pick a project" + "Something else"
-- **Company mode**: active projects for that company (up to 3) + "Run a worker" + "Something else"
-- **Project mode**: top 3 incomplete stories by priority + "Something else"
+- **Company mode**: worker-recommended next actions + active projects for that company (up to 3) + "Run a worker" + "Something else"
+- **Project mode**: top 3 incomplete stories by priority via `/execute-task` + matching worker route + "Something else"
 - **Repo mode**: related projects with incomplete work (up to 3) + "Open repo (no project)" + "Something else"
-- **Task mode**: proposed pipeline phases (up to 5) + "Run this pipeline" + "Modify pipeline" + "Skip workers — do it directly" + "Run /plan for full options" + "Something else"
+- **Task mode**: proposed worker pipeline phases (up to 5) + "Run this worker pipeline" + "Modify pipeline" + "Do it directly (no worker)" + "Run /plan for full options" + "Something else"
 
 Output the numbered list and wait for user input. After user picks, proceed directly into the work.
 
@@ -212,3 +240,4 @@ Output the numbered list and wait for user input. After user picks, proceed dire
 - Context diet: every read must serve the orientation summary. No speculative loading
 - If handoff.json doesn't exist, skip resume context — go straight to asking what to work on
 - Use `qmd search` via shell command — if qmd unavailable, fall back to Grep to scan for prd.json files
+- Before specialized work, prefer the relevant worker route surfaced by the Worker Packet

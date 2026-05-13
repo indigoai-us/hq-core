@@ -112,15 +112,18 @@ else
   skip "settings.json not found — PATH not configured"
 fi
 
-# ── 4. Create company structure ──────────────────────────────────────────────
+# ── 4. Create personal scaffold ─────────────────────────────────────────────
 
 echo ""
 echo "Setting up directory structure…"
 
-mkdir -p companies/personal/settings
-mkdir -p companies/personal/data
-mkdir -p companies/personal/knowledge
-ok "companies/personal/ created"
+mkdir -p personal/knowledge
+mkdir -p personal/policies
+mkdir -p personal/workers
+mkdir -p personal/settings
+mkdir -p personal/skills
+mkdir -p personal/hooks
+ok "personal/ scaffold created (knowledge, policies, workers, settings, skills, hooks)"
 
 # ── 5. Indigo MCP Setup (opt-in via HQ_INDIGO_MCP=1) ───────────────────────
 

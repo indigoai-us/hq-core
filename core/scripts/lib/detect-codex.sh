@@ -5,7 +5,8 @@
 #   running_from_codex   — returns 0 if invoked from inside a Codex session, 1 otherwise.
 #
 # Detection order:
-#   1. Codex/OpenAI runtime env vars (fast path, set by the Codex agent runtime).
+#   1. Codex/OpenAI runtime env vars (fast path, set by the Codex agent runtime
+#      and Codex Desktop).
 #   2. Walk ancestor processes via `ps`, matching `Codex*`, `codex`, or `codex-*`
 #      in either the executable name or full args. Bounded to 15 hops to avoid
 #      runaway in deep process trees (tmux -> shell -> shell -> ...).
@@ -17,7 +18,15 @@ running_from_codex() {
      || -n "${CODEX_SESSION_ID:-}" \
      || -n "${CODEX_EXECUTION_ID:-}" \
      || -n "${CODEX_AGENT_ID:-}" \
+     || -n "${CODEX_THREAD_ID:-}" \
+     || -n "${CODEX_SHELL:-}" \
+     || -n "${CODEX_CI:-}" \
+     || -n "${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-}" \
      || -n "${OPENAI_CODEX:-}" ]]; then
+    return 0
+  fi
+
+  if [[ "${__CFBundleIdentifier:-}" == "com.openai.codex" ]]; then
     return 0
   fi
 

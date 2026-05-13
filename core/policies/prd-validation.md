@@ -5,7 +5,6 @@ scope: global
 trigger: "/plan, /prd, /run-project, /execute-task, PRD drafting, AC writing"
 enforcement: hard
 created: 2026-04-28
-supersedes: prd-json-validation-post-task, prd-verify-source-files
 public: true
 tags: [design, infrastructure]
 ---

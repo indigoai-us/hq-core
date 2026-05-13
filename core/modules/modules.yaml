@@ -130,14 +130,6 @@ modules:
     paths:
       .: companies/{company}/knowledge
 
-  - name: knowledge-personal
-    repo: https://github.com/{your-name}/knowledge-personal.git
-    branch: main
-    strategy: embedded
-    access: team
-    paths:
-      .: companies/personal/knowledge
-
   # Add one entry per company knowledge repo you maintain.
   # `strategy: embedded` for a private repo sync; `strategy: link` for a local clone.
 

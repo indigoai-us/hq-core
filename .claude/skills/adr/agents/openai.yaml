@@ -1,0 +1,3 @@
+interface:
+  display_name: "adr"
+  short_description: "Capture an Architectural Decision Record when the decision is durable, surprising, and trade-off driven."

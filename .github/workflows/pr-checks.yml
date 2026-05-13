@@ -1,0 +1,208 @@
+name: pr-checks
+
+# Ports the /promote-hq-core local rule set to PR-time CI. Each job maps to
+# a named HQ policy — failure annotations include the policy slug so the
+# contributor can find the rule. See:
+#   core/policies/hq-cmd-promote-hq-core-*.md (in HQ)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── Mechanical checks (no LLM) ─────────────────────────────────────
+
+  denylist-scan:
+    name: denylist-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run denylist scan
+        run: bash .leak-scan/scan.sh denylist
+
+  policy-rationale-scan:
+    name: policy-rationale-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run policy-rationale scan
+        run: bash .leak-scan/scan.sh policy-rationale
+
+  users-path-tripwire:
+    name: users-path-tripwire
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: /Users/ absolute-path tripwire
+        run: bash .leak-scan/scan.sh users-path
+
+  provenance-stripped:
+    name: provenance-stripped
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: ## Provenance section must not be present
+        run: bash .leak-scan/scan.sh provenance
+
+  vendor-public-ok:
+    name: vendor-public-ok
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Vendor-scoped policies need vendor_public_ok
+        run: bash .leak-scan/scan.sh vendor-public-ok
+
+  public-frontmatter-revalidate:
+    name: public-frontmatter-revalidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Re-validate public:true frontmatter
+        run: bash .leak-scan/scan.sh public-frontmatter
+
+  denylist-drift:
+    name: denylist-drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Denylist must mirror HQ manifest snapshot
+        run: bash .leak-scan/scan.sh denylist-drift
+
+  settings-local-not-ignored:
+    name: settings-local-not-ignored
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: .claude/settings.local.json must not be gitignored
+        run: bash .leak-scan/scan.sh settings-local-not-ignored
+
+  # ─── Label-gated checks ────────────────────────────────────────────
+  # These read PR labels to allow intentional overrides.
+
+  commands-skills-tripwire:
+    name: commands-skills-tripwire
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: commands/skills require manual-copy label
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
+        run: bash .leak-scan/scan.sh commands-skills-tripwire
+
+  core-yaml-locked:
+    name: core-yaml-locked
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: core/core.yaml requires version-bump label
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
+        run: bash .leak-scan/scan.sh core-yaml-locked
+
+  special-case-files:
+    name: special-case-files
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: CHANGELOG/MIGRATION/CLAUDE.md require special-case-confirmed
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
+        run: bash .leak-scan/scan.sh special-case-files
+
+  # ─── Codex-augmented semantic check ────────────────────────────────
+  # Per-file PASS/EDIT/DROP rubric, mirroring /promote-hq-core Phase 3.
+  # Dynamic matrix over changed policy files; capped at 10 in parallel
+  # to match the local batching rule.
+
+  collect-policy-changes:
+    name: collect-policy-changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      files: ${{ steps.collect.outputs.files }}
+      count: ${{ steps.collect.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: collect
+        name: List changed core/policies/*.md files
+        run: |
+          set -euo pipefail
+          base="${{ github.base_ref }}"
+          git fetch origin "$base" --depth=1
+          mapfile -t changed < <(git diff --name-only --diff-filter=AM "origin/$base"...HEAD \
+            | grep -E '^\core/policies/[^/]+\.md$' \
+            | grep -v '/_digest\.md$' || true)
+          if [[ ${#changed[@]} -eq 0 ]]; then
+            echo "files=[]" >> "$GITHUB_OUTPUT"
+            echo "count=0"  >> "$GITHUB_OUTPUT"
+          else
+            json="$(printf '%s\n' "${changed[@]}" | jq -R . | jq -sc .)"
+            echo "files=$json" >> "$GITHUB_OUTPUT"
+            echo "count=${#changed[@]}" >> "$GITHUB_OUTPUT"
+          fi
+
+  codex-pii-rubric:
+    name: codex-pii-rubric
+    needs: collect-policy-changes
+    if: |
+      github.event_name == 'pull_request' &&
+      needs.collect-policy-changes.outputs.count != '0' &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-codex-rubric')
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 10
+      fail-fast: false
+      matrix:
+        file: ${{ fromJson(needs.collect-policy-changes.outputs.files) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install codex CLI
+        run: npm i -g @openai/codex
+      - name: Run rubric on ${{ matrix.file }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_MODEL: gpt-5
+        run: |
+          set -euo pipefail
+          out="$(bash .leak-scan/codex-rubric.sh "${{ matrix.file }}")"
+          echo "$out"
+          # Append to job summary so reviewers see verdicts collated
+          {
+            echo "## Rubric: ${{ matrix.file }}"
+            echo '```json'
+            echo "$out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

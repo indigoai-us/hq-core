@@ -23,7 +23,7 @@
 
 set -euo pipefail
 
-HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 VERBOSE=0
 IF_CHANGED=0
 for arg in "$@"; do

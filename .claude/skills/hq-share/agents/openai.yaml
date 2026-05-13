@@ -1,0 +1,3 @@
+interface:
+  display_name: "HQ Share"
+  short_description: "Mint a single-use share-session link for HQ vault paths — browser picker for multi-recipient batch grants."

@@ -117,42 +117,48 @@ Failure modes (operator-visible):
 
 2. **Prefixes are bucket-relative — never include the company name or `companies/<slug>/`.** The vault bucket is already scoped to the company; prepending the slug points the grant at a path that doesn't exist. If the user asks you to "share `companies/myco/reports/` with X", translate that to `reports/` before calling `hq files share`.
 
-3. **Always confirm the target company.** Run `hq files acl <prefix> --company <slug>` to inspect before mutating. A grant on the wrong company uid is hard to clean up.
+3. **Push local files before sharing them.** `hq files share` only creates an ACL row or share-session token; it does not upload local files. If the requested path exists under `companies/{company}/`, run `hq sync push <local-path> --hq-root <hq-root> --company <slug> --on-conflict keep` first, then verify the plan/upload count. Treat `0 files to upload` on a newly-created folder as a blocker: the path is probably excluded by `.hqinclude` / `.hqignore`, or the local path does not map to the bucket-relative prefix you plan to grant.
 
-4. **Verify after sharing.** Immediately after `hq files share`, run `hq files acl <prefix> --company <slug>` and confirm the displayed pattern ends in `/*` (for folder grants) or matches the exact key you intended. If it shows a bare prefix without `/*`, the grant only covers a literal key match and almost certainly does nothing — `unshare` and re-grant with the correct pattern.
+4. **Always confirm the target company.** Run `hq files acl <prefix> --company <slug>` to inspect before mutating. A grant on the wrong company uid is hard to clean up.
 
-5. **To share everything in a vault, prefer one grant on `*` over many per-folder grants.** Every vault is provisioned with a `*` ACL row; granting the principal `read` on `*` covers all current and future keys. Per-folder fan-out is fragile (easy to miss new top-level folders) and harder to audit.
+5. **Verify after sharing.** Immediately after `hq files share`, run `hq files acl <prefix> --company <slug>` and confirm the displayed pattern ends in `/*` (for folder grants) or matches the exact key you intended. If it shows a bare prefix without `/*`, the grant only covers a literal key match and almost certainly does nothing — `unshare` and re-grant with the correct pattern.
 
-6. **Prefer group grants for teams.** Share `reports/*` with `grp_finance` rather than granting each person individually. Membership changes automatically adjust access.
+6. **To share everything in a vault, prefer one grant on `*` over many per-folder grants.** Every vault is provisioned with a `*` ACL row; granting the principal `read` on `*` covers all current and future keys. Per-folder fan-out is fragile (easy to miss new top-level folders) and harder to audit.
 
-7. **Do not widen ACLs without explicit human approval.** Granting `write` on a prefix is a privilege escalation. Always confirm with the human before making these changes.
+7. **Prefer group grants for teams.** Share `reports/*` with `grp_finance` rather than granting each person individually. Membership changes automatically adjust access.
 
-8. **Check your effective permission before attempting mutation.** `hq files acl <prefix>` shows `Your effective permission:` in the output. Attempting `share`/`unshare` without the authority to mutate this ACL (creator or company owner/admin) returns 403.
+8. **Do not widen ACLs without explicit human approval.** Granting `write` on a prefix is a privilege escalation. Always confirm with the human before making these changes.
 
-9. **Do not share exact keys when a folder-level grant is intended.** `reports/q3/summary.pdf` only covers that one file; `reports/q3/` (normalized to `reports/q3/*`) covers the whole folder.
+9. **Check your effective permission before attempting mutation.** `hq files acl <prefix>` shows `Your effective permission:` in the output. Attempting `share`/`unshare` without the authority to mutate this ACL (creator or company owner/admin) returns 403.
 
-10. **Carve-out awareness.** If a broad prefix (`reports/*`) is open and you also need to restrict `reports/q3/*` for a subset of members, that narrowing is expressed as a more-specific ACL with fewer grants — the vend layer automatically denies the sub-tree for callers without a matching entry. Do not attempt to revoke a broad grant to achieve narrowing; instead, ensure the more-specific prefix has the right entries.
+10. **Do not share exact keys when a folder-level grant is intended.** `reports/q3/summary.pdf` only covers that one file; `reports/q3/` (normalized to `reports/q3/*`) covers the whole folder.
 
-11. **Use the browser flow for 2+ recipients or 2+ paths.** A single share-session page handles N×M grants in one human action — N CLI calls is friction, error-prone, and produces a noisy ACL audit trail. Reserve direct `--with` grants for single-recipient/single-path or scripted automation.
+11. **Carve-out awareness.** If a broad prefix (`reports/*`) is open and you also need to restrict `reports/q3/*` for a subset of members, that narrowing is expressed as a more-specific ACL with fewer grants — the vend layer automatically denies the sub-tree for callers without a matching entry. Do not attempt to revoke a broad grant to achieve narrowing; instead, ensure the more-specific prefix has the right entries.
 
-12. **Prefer `@all` over the legacy `open` flag for new company-wide intent.** Explicit `granteeType: 'company-wide'` rows are auditable, individually revocable, and don't conflate "everyone has read" with "this folder is public." See "Company-wide vs `open` Flag" above.
+12. **Use the browser flow for 2+ recipients or 2+ paths.** A single share-session page handles N×M grants in one human action — N CLI calls is friction, error-prone, and produces a noisy ACL audit trail. Reserve direct `--with` grants for single-recipient/single-path or scripted automation.
 
-13. **Treat share-session URLs as live capabilities — never persist them.** A share-session URL is an encrypted, single-use, 15-minute capability that any holder can redeem to write ACLs in the issuer's name. Do **not** paste share-session URLs into:
+13. **Prefer `@all` over the legacy `open` flag for new company-wide intent.** Explicit `granteeType: 'company-wide'` rows are auditable, individually revocable, and don't conflate "everyone has read" with "this folder is public." See "Company-wide vs `open` Flag" above.
+
+14. **Treat share-session URLs as live capabilities — never persist them.** A share-session URL is an encrypted, single-use, 15-minute capability that any holder can redeem to write ACLs in the issuer's name. Do **not** paste share-session URLs into:
     - Auto-checkpoint thread files (`workspace/threads/`)
     - Journal entries, learnings, or session logs
     - Git commit messages or PR descriptions
     - Slack, email, or any chat surface other than the intended human recipient
     - Worker handoff payloads
+    - Any *subsequent* assistant turn that summarizes or revisits the action
 
-    When demonstrating the flow, redact the token segment as `https://hq.{co}.com/share-session/<TOKEN_REDACTED>`. The 15-minute TTL is a defense in depth, not a license to log them.
+    When demonstrating the flow in documentation, redact the token segment as `https://hq.{co}.com/share-session/<TOKEN_REDACTED>`. The 15-minute TTL is a defense in depth, not a license to log them.
 
-14. **Mint fresh URLs rather than re-sending stale ones.** If a recipient says "the link doesn't work," mint a new one — do not extend TTLs server-side or attempt to debug an expired token. Mint cost is one round-trip; a stale token can mask scope drift if the issuer's permissions changed since mint.
+15. **Mint fresh URLs rather than re-sending stale ones.** If a recipient says "the link doesn't work," mint a new one — do not extend TTLs server-side or attempt to debug an expired token. Mint cost is one round-trip; a stale token can mask scope drift if the issuer's permissions changed since mint.
 
 ## Common Workflows
 
 ### Share via the browser (multi-recipient or multi-path)
 
 ```bash
+# If the folder was created locally, upload it first; sharing only writes ACLs.
+hq sync push companies/myco/reports/q3/ --hq-root ~/HQ --company myco --on-conflict keep
+
 # Opens default browser to a share-session page; pick recipients + permissions, click Submit
 hq files share reports/q3/ docs/handbook/ --company myco
 

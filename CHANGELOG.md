@@ -1,3 +1,69 @@
+## [Unreleased]
+
+_Nothing yet._
+
+## [14.1.0] — 2026-05-13
+
+### Headline
+**Team AI OS reframe, session journals, Codex parity, and public policy sweep.** HQ's product description shifts from "personal OS" to "team AI OS." Six new commands land (`accept`, `decision-queue`, `hq-share`, `journal`, `onboard`, `promote`), four new hooks enforce session journal lifecycle and supply-chain safety, and 13 Codex skill bridges close the dual-runtime gap. A narration policy (`quiet-by-default`) silences routine ops. The public policy set is slimmed by 165 files — distilled to the guardrails that matter for distribution. Codex pets arrive with the Indigo Gem mascot.
+
+Fully additive over beta.1. No breaking changes. No migration required beyond `/update-hq`.
+
+### Added — Commands
+- **`accept`** — Accept a pending decision from the decision queue
+- **`decision-queue`** — Interactive decision queue for batched user decisions
+- **`hq-share`** — Mint encrypted share-session URLs via `hq files share` with browser-based ACL picker
+- **`journal`** — Manual journal management (open/close/status) for session journals
+- **`onboard`** — Guided onboarding flow for new HQ installations
+- **`promote`** — Change a member's role on a company (admin+ only, via VaultClient)
+
+### Added — Skills & Codex Bridges
+- **13 new Codex skill bridges** — `accept`, `adr`, `architect`, `calibration-report`, `decision-queue`, `diagnose`, `finish-estimate`, `hq-bug`, `hq-share`, `onboard`, `out-of-scope`, `promote`, `track-estimate` — each with `SKILL.md` + `agents/openai.yaml`
+- **`journal` skill** — Codex-adapted SKILL.md for session journal management
+
+### Added — Hooks
+- **`block-unsafe-package-install.sh`** — PreToolUse hook hard-blocks raw `npm install`/`yarn add`/`bun add` without version pinning; enforces minimum release age for supply-chain safety
+- **`journal-due.sh`** — Surfaces journal deadline reminders during active sessions
+- **`journal-precompact.sh`** — Captures journal state before autocompact fires
+- **`load-journal-index-on-start.sh`** — SessionStart hook indexes active journals for quick lookup
+
+### Added — Policies
+- **`quiet-by-default-narration.md`** — Soft policy. Silent on routine ops (install, lint, build, test, fmt), surface only user decisions, irreversible actions, security signals, and blockers
+- **`credential-access-protocol.md`** — Hard policy. Manifest lookup → company policies → company settings; never guess credentials
+- **`hq-pnpm-min-release-age-supply-chain.md`** — Hard policy. Package installs must respect minimum release age
+- **`model-context-window.md`** — Documents context window sizes for model selection
+- **`subagent-fanout-budget.md`** — Limits concurrent sub-agent spawning to prevent context explosion
+
+### Added — Scripts & Specs
+- **`session-journal.sh`** — Shared session journal helper (194 lines) powering journal lifecycle across skills
+- **`token-usage-report.sh`** — Token usage telemetry and reporting (237 lines)
+- **`session-journal-spec.md`** — Formal spec for the session journal subsystem at `core/knowledge/public/hq-core/`
+
+### Added — Codex Pets
+- **Indigo Gem** — Codex pet mascot with contact sheet, spritesheet, and metadata at `.codex/pets/indigo-gem/`
+
+### Changed
+- **Product description reframed** — HQ described as "team AI OS" rather than "personal OS" across CLAUDE.md and core docs
+- **`companies/personal/` removed** — Personal namespace relocated to root `personal/` directory
+- **`master-sync` expanded** — Now surfaces skills as commands under `.claude/commands/<ns>/`, closing the gap between skill and command discovery
+- **Inline nested project workers** — `run-project` builder supports nested worker definitions within project scope
+- **`deploy` skill** — Taught about hq-deploy's new third access mode (`private`) with email allowlist seeding and `409 ACCESS_MODE_CONFLICT` handling
+- **`hq-share` default behavior** — Share link now surfaces directly in chat by default
+- **`update-hq` command** — Recommends smart merge for upstream changes
+- **`feedback` skill renamed** — Now `hq-bug` with updated wiring
+- **`hq-files` skill** — Documents browser flow, `@all` grants, and capability-URL policy
+- **Codex parity** — Default `run-project` builder set to Codex in Codex sessions; clickable question UI preferred; hardened worker-backed routing
+- **`.hqignore`** — Removed ignored paths; `.claude/settings.local.json` un-ignored with CI tripwire
+- **`companies/_template/`** — Edits now denied by hook
+
+### Removed
+- **165 policies removed** — Public policy set slimmed from ~200 to ~35 core guardrails. Removed policies were overly specific, session-scoped, or duplicated by specs/skills. Retained: platform guardrails, security, credential isolation, testing standards, and behavioral fundamentals
+
+### Fixed
+- **`manifest.yaml` YAML form** — Switched to block form so `HQ_INDIGO_MCP=1` env append produces valid YAML (was breaking inline flow style)
+
+---
+
 ## [14.1.0-beta.1] — 2026-05-12
 
 ### Headline

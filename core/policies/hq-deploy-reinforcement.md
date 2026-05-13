@@ -81,10 +81,19 @@ An artifact is **sensitive** if ANY of these match:
 | Filename matches financial terms | `revenue`, `mrr`, `arr`, `payroll`, `salary`, `pnl`, `forecast`, `runway`, `burn` |
 | User explicitly says "private", "confidential", "sensitive", "internal-only" | n/a |
 
-For sensitive artifacts:
+For sensitive artifacts, pick an access mode based on whether the user named recipients:
+
+| User signal | Access mode | Why |
+|---|---|---|
+| Sensitivity detected but no recipients named (filename match, path under `companies/*/data/`, "private/confidential/sensitive") | `password` | Casual share; recipient list unknown. Default. |
+| User names emails or domains (`"share with alice@…"`, `"@indigo.ai team"`, `"private to design"`) | `private` | Identifiable recipients; each one can be revoked individually; no password to leak in a Slack screenshot. |
+
+**Canonical mutation endpoint:** `POST /api/apps/{appId}/access-mode {mode, password?}`. Atomic switch; clears fields that don't belong to the chosen mode; wipes EmailGrant rows when leaving `private`. Use this in place of legacy PATCH for any mode transition — legacy `PATCH /api/apps/{appId} {passwordProtected: true, password: …}` on an app already in `private` mode returns `409 ACCESS_MODE_CONFLICT`.
+
+#### Password mode (default sensitive path)
 
 1. Auto-generate a memorable 3-word password via `.claude/skills/deploy/scripts/password-helper.sh gen` (e.g., `foxtrot-river-92`)
-2. After the upload completes, PATCH `$API/api/apps/{appId}` with `{passwordProtected: true, password: "<plaintext>"}` — the server hashes via Argon2id. (The earlier `POST /access` route requires a service token, not Cognito JWT, and is NOT the right endpoint for this step.)
+2. After the upload completes, `POST $API/api/apps/{appId}/access-mode` with `{mode: "password", password: "<plaintext>"}` — the server hashes via Argon2id. (The earlier `POST /access` route requires a service token, not Cognito JWT, and is NOT the right endpoint for this step.)
 3. Surface the password via the helper:
    - **Print once to stderr** so it's not piped/captured: `echo "Password: $PW" >&2`
    - **Copy to clipboard** via `pbcopy` (macOS) — fall through silently on non-macOS
@@ -92,6 +101,20 @@ For sensitive artifacts:
 4. Tell the user once, in the same response as the deploy link:
    > Live at https://{slug}.{your-domain}.com — password copied to your clipboard (also saved at `~/.hq/deploy-passwords.json`).
 5. **NEVER echo the password again in a later response.** If the user asks "what was the password?", instruct them to run `jq -r '."<slug>".password' ~/.hq/deploy-passwords.json` rather than re-printing it.
+
+#### Private mode (named recipients)
+
+1. After the upload completes, `POST $API/api/apps/{appId}/access-mode` with `{mode: "private"}` — no password needed; access is gated by the user's hq-auth identity.
+2. For each pattern the user named (exact `foo@bar.com` or domain `@bar.com`):
+   ```
+   POST $API/api/apps/{appId}/allowed-emails  {email: "<pattern>"}
+   ```
+   Idempotent; server lowercases.
+3. Tell the user once, in the same response as the deploy link:
+   > Live at https://{slug}.{your-domain}.com — gated to {comma-separated patterns}. They'll sign in via auth.getindigo.ai on first visit.
+4. For follow-up changes, point at the CLI rather than re-orchestrating from this skill:
+   > Run `hq-deploy access share {slug} <email|@domain>` to add a teammate, or `… unshare …` to revoke.
+5. No password persists for private apps — `~/.hq/deploy-passwords.json` is not used in this branch.
 
 ### When to skip password protection
 

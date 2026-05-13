@@ -1,6 +1,6 @@
 version: 1
-hqVersion: "14.1.0-beta.1"
-updatedAt: "2026-05-12T15:35:21Z"
+hqVersion: "14.1.0"
+updatedAt: "2026-05-13T16:56:12Z"
 # hq-core is the minimal scaffold seed. Rich add-ons ship as `@indigoai-us/hq-pack-*`
 # npm packages installed into `core/packages/` via `hq install`. See `core/packages/README.md`.
 rules:
@@ -49,15 +49,4 @@ recommended_packages:
 # checksums are recomputed by core/scripts/build-policy-digest.sh + related tooling
 # on the hq-core side. Intentionally omitted on first commit; regenerated on
 # the first publish that runs checksum tooling.
-checksums:
-  .claude/CLAUDE.md: e7e13423a6fae2982f34574f4a2fff076ae21310821e4f8b61ce400a95879e55
-  .claude/hooks: 24cd1561383530f6d4cdf0d3e2aaa8788780963111be90384dea28cd78c576bd
-  core/policies: 7060363fd767780ca247b90e45feb25c562f1fef3cdfd3e06fba13a5d0319b90
-  .claude/settings.json: ae625c4693696ba68187ab10d3de0660890739c0cc47dd191798a79231c01f6c
-  CHANGELOG.md: ef2bcb7f41d97b41435dfb39daf24431449252129fb33d64d1e63c75e2e6bad2
-  MIGRATION.md: e6ac41da6fbb97492cfdc889e7e4a1700151f5286e79356ff6f7fa88a5346132
-  companies/_template: b2e0f7e637668c0965e9116300d2a3522ce2253b3fafd1314348f3718cb326ad
-  companies/manifest.yaml: 61b9cc98d7f3f80361f59affc3f50dab3d2dfe2da332ee5d6d44e948ae75802c
-  modules: 387f896b4352dca46ac27c008bcef06395d3ba0621de152f83a419777f4ce9b0
-  scripts: 83451cedeacac6bbf4ce4462bc30029b6fbfd0a2468c97fc6b5d24bb5738860b
-  core/workers/registry.yaml: 99639ad35319121bcb73ca5ecc751e1dd16ba83ba6849ef437468017e843a795
+checksums: {}

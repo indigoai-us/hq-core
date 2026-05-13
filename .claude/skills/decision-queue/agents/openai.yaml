@@ -1,0 +1,3 @@
+interface:
+  display_name: "decision queue"
+  short_description: "Walk through pending decisions one at a time, updating state between answers."

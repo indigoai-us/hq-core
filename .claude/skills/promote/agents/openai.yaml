@@ -1,0 +1,3 @@
+interface:
+  display_name: "promote"
+  short_description: "Change an HQ company member's role with optional guest path scoping."

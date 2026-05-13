@@ -1,0 +1,3 @@
+interface:
+  display_name: "finish estimate"
+  short_description: "Mark a pending time estimate complete with an actual duration."
