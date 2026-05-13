@@ -5,8 +5,8 @@
 # changed policy file. Returns:
 #
 #   exit 0 + verdict=PASS  → silent success
-#   exit 0 + verdict=EDIT  → posts a PR comment with redactions, job stays
-#                            green (advisory)
+#   exit 0 + verdict=EDIT  → writes an advisory to the workflow summary, job
+#                            stays green
 #   exit 1 + verdict=DROP  → fails the job, contributor must remove the file
 #                            (or flip frontmatter and re-promote)
 #
@@ -132,7 +132,7 @@ printf '%s\n' "$verdict_json"
 case "$verdict" in
   PASS) exit 0 ;;
   EDIT)
-    # Workflow will turn EDIT into a PR comment via the captured stdout.
+    # Workflow writes EDIT details to the job summary via the captured stdout.
     echo "::warning file=$file::codex rubric returned EDIT (see job summary)" >&2
     exit 0
     ;;
