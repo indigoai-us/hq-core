@@ -75,7 +75,5 @@ Soft enforcement does not justify those odds.
 ## References
 
 - pnpm `minimumReleaseAge` setting: https://pnpm.io/settings#minimumreleaseage
-- Related policies:
-  - `.claude/policies/package-manager-per-repo.md` — per-repo manager pin (broader rule about which manager each repo uses)
-  - `.claude/policies/vercel-pnpm-version-pin.md` — pinning the pnpm version itself
+- Related internal HQ policies cover per-repo package-manager pins and Vercel pnpm version pinning.
 - 2026-05-12 incident reference: workspace/learnings (incident notes), captured this policy

@@ -38,6 +38,16 @@ jobs:
       - name: Run policy-rationale scan
         run: bash .leak-scan/scan.sh policy-rationale
 
+  slug-scan:
+    name: slug-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run private tenant slug scan
+        run: bash .leak-scan/scan.sh slugs
+
   users-path-tripwire:
     name: users-path-tripwire
     runs-on: ubuntu-latest

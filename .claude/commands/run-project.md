@@ -11,7 +11,7 @@ visibility: public
 
 Executes PRD stories for a project. **Default mode is inline** — each incomplete story runs inside a fresh per-story sub-agent in the current session (`Task` in Claude Code, `spawn_agent` in Codex). Pass `--ralph-mode` to run the background orchestrator (`core/scripts/run-project.sh`) that spawns one fresh headless builder per story and polls state files from the parent. Pass `--session-mode` to use the plan-file-anchored inline shape.
 
-Policy: `core/policies/run-project-default-is-inline.md` (hard).
+Policy: internal HQ `run-project-default-is-inline` rule (hard).
 
 **Arguments:** $ARGUMENTS
 
@@ -50,7 +50,7 @@ Parse `$ARGUMENTS` into project name + passthrough flags:
 - Empty (no project name): error — project name required
 - All other flags pass through verbatim to the chosen execution path
 
-**Hard policy:** `core/policies/run-project-default-is-inline.md` — a bare `/run-project {project}` MUST NOT launch `nohup bash core/scripts/run-project.sh ...`. That path requires `--ralph-mode`.
+**Hard policy:** internal HQ `run-project-default-is-inline` rule — a bare `/run-project {project}` MUST NOT launch `nohup bash core/scripts/run-project.sh ...`. That path requires `--ralph-mode`.
 
 ## Ralph-Mode Execution (--ralph-mode)
 
@@ -753,7 +753,7 @@ If $ARGUMENTS is `--status`:
 - **Back pressure** — enforced inside `/execute-task`, not by orchestrator
 - **Policy-aware** — load company + repo + global policies before first task. Hard-enforcement policies block the loop if violated
 - **ALWAYS**: Use `"userStories"` key in prd.json (not `"stories"`) — `run-project.sh` greps for this exact key name
-- **Default is inline (hard)** — a bare `/run-project {project}` executes stories in-session via per-story sub-agents (`Task` in Claude Code, `spawn_agent` in Codex). It does NOT launch `core/scripts/run-project.sh`. That requires `--ralph-mode`. Policy: `core/policies/run-project-default-is-inline.md`.
+- **Default is inline (hard)** — a bare `/run-project {project}` executes stories in-session via per-story sub-agents (`Task` in Claude Code, `spawn_agent` in Codex). It does NOT launch `core/scripts/run-project.sh`. That requires `--ralph-mode`.
 - **`--inline` is a silent alias for default** — no warning, no error, identical behavior
 - **Default/inline isolation** — incompatible with `--ralph-mode`, `--session-mode`, `--swarm`, `--tmux`, `--codex-autofix` (error if combined)
 - **Default/inline respects `--resume`** — skips completed stories, picks up from next incomplete

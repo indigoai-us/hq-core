@@ -1,8 +1,8 @@
 # manifest-snapshot.yaml — frozen view of HQ companies/manifest.yaml tenant slugs.
 #
 # Used by `.leak-scan/scan.sh denylist-drift` to verify the staging denylist
-# stays in sync with the HQ manifest. See policy:
-#   core/policies/hq-cmd-promote-hq-core-denylist-source-from-manifest.md
+# stays in sync with the HQ manifest. This mirrors the internal HQ
+# `hq-cmd-promote-hq-core-denylist-source-from-manifest` promotion rule.
 #
 # Lifecycle:
 #   - HQ /promote-hq-core Phase 4 rewrites this file from companies/manifest.yaml
