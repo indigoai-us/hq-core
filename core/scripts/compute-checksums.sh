@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-HQ_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HQ_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CORE_YAML="${1:-$HQ_ROOT/core/core.yaml}"
 
 if [ ! -f "$CORE_YAML" ]; then
