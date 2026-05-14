@@ -1,5 +1,5 @@
 version: 1
-hqVersion: "14.1.0"
+hqVersion: "14.1.1"
 updatedAt: "2026-05-13T16:56:12Z"
 # hq-core is the minimal scaffold seed. Rich add-ons ship as `@indigoai-us/hq-pack-*`
 # npm packages installed into `core/packages/` via `hq install`. See `core/packages/README.md`.

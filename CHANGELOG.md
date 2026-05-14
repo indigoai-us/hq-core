@@ -2,7 +2,7 @@
 
 _Nothing yet._
 
-## [14.1.0] — 2026-05-13
+## [14.1.1] — 2026-05-13
 
 ### Headline
 **Team AI OS reframe, session journals, Codex parity, and public policy sweep.** HQ's product description shifts from "personal OS" to "team AI OS." Six new commands land (`accept`, `decision-queue`, `hq-share`, `journal`, `onboard`, `promote`), four new hooks enforce session journal lifecycle and supply-chain safety, and 13 Codex skill bridges close the dual-runtime gap. A narration policy (`quiet-by-default`) silences routine ops. The public policy set is slimmed by 165 files — distilled to the guardrails that matter for distribution. Codex pets arrive with the Indigo Gem mascot.
