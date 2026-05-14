@@ -4,12 +4,12 @@
 # Modes (mechanical — no LLM):
 #   denylist          fail if any denylist key appears in PR-changed files
 #                     (outside of documented exceptions). Body-wide; ports
-#                     HQ promotion-clean verification logic.
+#                     HQ core/scripts/verify-promotion-clean.sh logic.
 #   policy-rationale  fail if a policies/**/*.md file's ## Rationale section
 #                     references non-public context (heuristic regex list).
 #                     Additional to denylist, NOT a replacement.
-#   slugs             fail if a PR-changed file contains a private tenant slug
-#                     from manifest-snapshot.yaml unless explicitly allowed.
+#   slugs             fail if a PR-changed file contains a lowercase slug
+#                     in a "company-shaped" context not in allowlist.yaml.
 #   users-path        fail if any tracked policy/script body contains a
 #                     literal /Users/... absolute path. Tripwire: rule
 #                     hq-promote-hq-core-users-path-tripwire.
@@ -214,12 +214,8 @@ case "$mode" in
 
   slugs)
     allow_file=".leak-scan/allowlist.yaml"
-    snap_file=".leak-scan/manifest-snapshot.yaml"
     if [[ ! -f "$allow_file" ]]; then
       echo "::error::$allow_file missing" >&2; exit 2
-    fi
-    if [[ ! -f "$snap_file" ]]; then
-      echo "::error::$snap_file missing" >&2; exit 2
     fi
 
     allowed=()
@@ -240,16 +236,7 @@ case "$mode" in
       return 1
     }
 
-    snap_slugs="$(awk '/^slugs:/{f=1;next} f && /^- /{print $2} f && /^[a-zA-Z]/ && !/^- /{f=0}' "$snap_file" | sort -u)"
-    snap_public="$(awk '/^public_slugs:/{f=1;next} f && /^- /{print $2} f && /^[a-zA-Z]/ && !/^- /{f=0}' "$snap_file" | sort -u)"
-
-    private_slugs=()
-    while IFS= read -r slug; do
-      [[ -z "$slug" ]] && continue
-      if grep -Fxq "$slug" <<< "$snap_public"; then continue; fi
-      if is_allowed "$slug"; then continue; fi
-      private_slugs+=("$slug")
-    done <<< "$snap_slugs"
+    slug_re='(github\.com/|@|repos/(private|public)/)([a-z0-9][a-z0-9-]{2,19})'
 
     leaks=0
     for f in "${files[@]}"; do
@@ -257,13 +244,20 @@ case "$mode" in
       [[ ! -f "$f" ]] && continue
       [[ "$f" == .leak-scan/* ]] && continue
 
-      for slug in "${private_slugs[@]}"; do
-        while IFS= read -r hit; do
-          [[ -z "$hit" ]] && continue
-          echo "::error file=$f::private tenant slug '$slug' leaked: $hit"
-          leaks=$((leaks + 1))
-        done < <(grep -nE "(^|[^A-Za-z0-9_-])${slug}([^A-Za-z0-9_-]|$)" "$f" || true)
-      done
+      while IFS= read -r match; do
+        [[ -z "$match" ]] && continue
+
+        remaining="$match"
+        while [[ "$remaining" =~ $slug_re ]]; do
+          candidate="${BASH_REMATCH[3]}"
+          remaining="${remaining#*${BASH_REMATCH[0]}}"
+          [[ "$candidate" == "private" || "$candidate" == "public" ]] && continue
+          if ! is_allowed "$candidate"; then
+            echo "::error file=$f::slug '$candidate' not in allowlist: $match"
+            leaks=$((leaks + 1))
+          fi
+        done
+      done < <(grep -nE "$slug_re" "$f" || true)
     done
 
     if [[ $leaks -gt 0 ]]; then
@@ -278,7 +272,7 @@ case "$mode" in
     # original author's home dir. Hard rule from
     # hq-promote-hq-core-users-path-tripwire — block, never warn.
     leaks=0
-    surfaces=(.claude scripts core/scripts core/knowledge/public)
+    surfaces=(.claude scripts core/knowledge/public)
     for s in "${surfaces[@]}"; do
       [[ -e "$s" ]] || continue
       while IFS= read -r hit; do

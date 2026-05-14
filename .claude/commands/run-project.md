@@ -11,7 +11,7 @@ visibility: public
 
 Executes PRD stories for a project. **Default mode is inline** — each incomplete story runs inside a fresh per-story sub-agent in the current session (`Task` in Claude Code, `spawn_agent` in Codex). Pass `--ralph-mode` to run the background orchestrator (`core/scripts/run-project.sh`) that spawns one fresh headless builder per story and polls state files from the parent. Pass `--session-mode` to use the plan-file-anchored inline shape.
 
-Policy: internal HQ `run-project-default-is-inline` rule (hard).
+Policy: `core/policies/run-project-default-is-inline.md` (hard).
 
 **Arguments:** $ARGUMENTS
 
@@ -50,7 +50,7 @@ Parse `$ARGUMENTS` into project name + passthrough flags:
 - Empty (no project name): error — project name required
 - All other flags pass through verbatim to the chosen execution path
 
-**Hard policy:** internal HQ `run-project-default-is-inline` rule — a bare `/run-project {project}` MUST NOT launch `nohup bash core/scripts/run-project.sh ...`. That path requires `--ralph-mode`.
+**Hard policy:** `core/policies/run-project-default-is-inline.md` — a bare `/run-project {project}` MUST NOT launch `nohup bash core/scripts/run-project.sh ...`. That path requires `--ralph-mode`.
 
 ## Ralph-Mode Execution (--ralph-mode)
 
@@ -582,7 +582,7 @@ bash core/scripts/run-project.sh --status
 | `--status` | — | Show all project statuses, exit |
 | `--dry-run` | — | Show story order without executing |
 | `--model MODEL` | (worker default) | Override model for all stories |
-| `--builder BUILDER` | auto | Headless builder for Ralph mode: `auto`, `claude`, or `codex`. Auto resolves to worker-authoritative `claude`; `codex` requires `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1` |
+| `--builder BUILDER` | auto | Headless builder for Ralph mode: `auto`, `claude`, or `codex`. Auto uses `codex exec` in Codex sessions and `claude -p` otherwise |
 | `--engine ENGINE` | auto | Alias for `--builder` |
 | `--no-permissions` | off | Pass the builder's non-interactive permission bypass (`claude` or `codex`) |
 | `--retry-failed` | off | Re-run previously failed stories only |
@@ -595,6 +595,32 @@ bash core/scripts/run-project.sh --status
 | `--inline` | (default) | **Silent alias for default** — `/run-project {project}` and `/run-project {project} --inline` behave identically. Kept for back-compat |
 | `--ralph-mode` | off | Opt into background orchestrator: `nohup bash core/scripts/run-project.sh {project}` + state-file polling. Each story runs as an isolated runtime-selected builder subprocess. Incompatible with `--inline` and `--session-mode` |
 | `--session-mode` | off | Plan-file-anchored inline execution with full policy rule text distilled into `~/.claude/plans/{slug}.md`. Parent executes stories directly (no `/execute-task` sub-agent wrapper) |
+
+## Canonical Ralph (purist mode, subscription-friendly)
+
+The cheapest fresh-context-per-story path is **inline mode** — the parent Claude Code session iterates through stories one at a time, spawning a fresh `Task` sub-agent (or Codex `spawn_agent`) per story. No background subprocess, no `claude -p` cost, no outer-loop wrapping required:
+
+```
+/run-project {project}
+```
+
+Per-story loop (handled inside the skill, not by the user):
+
+1. Read `workspace/orchestrator/{project}/state.json` to find the next incomplete story.
+2. Spawn one sub-agent with `RETURN CONTRACT: json` (mandatory per [ralph-orchestrator-context-discipline](../../core/policies/ralph-orchestrator-context-discipline.md)).
+3. Validate the JSON return with `jq -e .`, retry once on parse failure, mark `blocked` with `INVALID_RETURN_FORMAT` if persistently malformed.
+4. Narrate one line to the user: `[story_id] status · N files · commit_sha`.
+5. Update state, advance to next story.
+
+The parent context grows by ~80 tokens per story — bounded for 20-50 story PRDs without compaction pressure. The story loop runs to completion in a single `/run-project` invocation.
+
+### When to wrap in `/loop`
+
+Only for **very long runs** (100+ stories, or any run where you expect the parent session to hit autocompact mid-iteration). `/loop /run-project {project}` re-enters the skill on each tick — the skill picks up from `state.json` where it left off, so iteration survives top-level agent turn boundaries.
+
+### When to use `--ralph-mode` instead
+
+Switch to `--ralph-mode` only when you specifically need a background OS process that survives terminal close (overnight grinds, tmux monitoring from a phone, CI-like runs detached from any session). Purist inline covers ~95% of cases.
 
 ## How It Works (Ralph Loop)
 
@@ -627,7 +653,7 @@ For each selected story:
 1. **PRE-TASK**: Branch setup (create/checkout `branchName` from `baseBranch`)
 2. **PRE-TASK**: Linear sync → In Progress + comment (if `linearIssueId` configured)
 3. **PRE-TASK**: Update `state.json` current_task
-4. **EXECUTE**: independent headless builder process (`claude -p` by default; `codex exec` only when `--builder codex` is explicitly requested with `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1`)
+4. **EXECUTE**: independent headless builder process (`codex exec` from Codex, `claude -p` from Claude unless `--builder` overrides)
    - Model resolution: `--model` CLI flag > story `model_hint` > default
    - `/execute-task` handles: classification, worker selection, worker pipeline, PRD update, back pressure, learning capture
 5. **POST-TASK**: Validate git state (auto-commit if sub-agent forgot)
@@ -753,13 +779,13 @@ If $ARGUMENTS is `--status`:
 - **Back pressure** — enforced inside `/execute-task`, not by orchestrator
 - **Policy-aware** — load company + repo + global policies before first task. Hard-enforcement policies block the loop if violated
 - **ALWAYS**: Use `"userStories"` key in prd.json (not `"stories"`) — `run-project.sh` greps for this exact key name
-- **Default is inline (hard)** — a bare `/run-project {project}` executes stories in-session via per-story sub-agents (`Task` in Claude Code, `spawn_agent` in Codex). It does NOT launch `core/scripts/run-project.sh`. That requires `--ralph-mode`.
+- **Default is inline (hard)** — a bare `/run-project {project}` executes stories in-session via per-story sub-agents (`Task` in Claude Code, `spawn_agent` in Codex). It does NOT launch `core/scripts/run-project.sh`. That requires `--ralph-mode`. Policy: `core/policies/run-project-default-is-inline.md`.
 - **`--inline` is a silent alias for default** — no warning, no error, identical behavior
 - **Default/inline isolation** — incompatible with `--ralph-mode`, `--session-mode`, `--swarm`, `--tmux`, `--codex-autofix` (error if combined)
 - **Default/inline respects `--resume`** — skips completed stories, picks up from next incomplete
 - **Default/inline uses runtime sub-agents** — worker sub-agents via `Task` in Claude Code or `spawn_agent` in Codex, not `claude -p` (process isolation)
 - **Default/inline preserves progress** — user can stop between stories; partial progress saved in prd.json + state.json
-- **`--ralph-mode` launches `core/scripts/run-project.sh`** — the only execution path that spawns the background orchestrator. Stories run as isolated builder subprocesses (`claude -p` by default; `codex exec` only when explicitly requested with `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1`); parent session polls `state.json`. Incompatible with `--inline` and `--session-mode`.
+- **`--ralph-mode` launches `core/scripts/run-project.sh`** — the only execution path that spawns the background orchestrator. Stories run as isolated builder subprocesses (`codex exec` from Codex, `claude -p` from Claude unless overridden); parent session polls `state.json`. Incompatible with `--inline` and `--session-mode`.
 - **`--ralph-mode` implied by `--tmux`** — observing from phone requires the background orchestrator
 - **Plan-mode preflight delegation (hard)** — when `/run-project` is invoked under Claude Code plan mode, the parent MUST NOT read prd.json, policies, or state.json directly. Spawn a `Plan` sub-agent to do the reads and return a condensed plan + JSON. Parent only ever holds the summary. This applies to all modes (default/inline, `--ralph-mode`, `--session-mode`). Rationale: plan mode defers compaction until after `ExitPlanMode` approval, so direct reads accumulate 10K+ tokens that linger across the entire execution run.
 

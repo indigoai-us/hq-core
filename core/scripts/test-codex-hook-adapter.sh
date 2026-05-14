@@ -82,6 +82,12 @@ cat >/dev/null
 echo "LOCAL"
 SH
 
+cat > "$TMP/.claude/hooks/auto-startwork.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+echo "AUTO-STARTWORK"
+SH
+
 cat > "$TMP/.claude/hooks/observe-patterns.sh" <<'SH'
 #!/bin/bash
 cat >/dev/null
@@ -113,6 +119,7 @@ payload_session='{"hook_event_name":"SessionStart","source":"startup","cwd":"'"$
 out="$(run_adapter "$payload_session")"
 assert_contains "$out" "POLICY"
 assert_contains "$out" "LOCAL"
+assert_contains "$out" "AUTO-STARTWORK"
 
 payload_secret='{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"'"$TMP"'","tool_input":{"command":"echo sk-testSECRET1234567890"}}'
 if err="$(run_adapter "$payload_secret" 2>&1 >/dev/null)"; then

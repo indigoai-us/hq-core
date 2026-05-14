@@ -24,13 +24,13 @@ set -euo pipefail
 #   --tmux              Launch in tmux session with Remote Control
 # =============================================================================
 
-HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 ORCH_DIR="$HQ_ROOT/workspace/orchestrator"
 REGRESSION_INTERVAL=3
 SESSION_ID="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 RUN_START_EPOCH=$(date +%s)
-AUDIT_SCRIPT="$HQ_ROOT/scripts/audit-log.sh"
+AUDIT_SCRIPT="$HQ_ROOT/core/scripts/audit-log.sh"
 
 # --- Git helpers (worktree-compatible) ---
 is_git_repo() {
@@ -212,7 +212,7 @@ cleanup_on_signal() {
 }
 
 # --- repo-run-registry integration (added by HQ repo-run-coordination) ---
-REPO_RUN_REGISTRY="$HQ_ROOT/scripts/repo-run-registry.sh"
+REPO_RUN_REGISTRY="$HQ_ROOT/core/scripts/repo-run-registry.sh"
 REPO_RUN_ID=""
 HEARTBEAT_PID=""
 
@@ -513,6 +513,10 @@ resolve_prd_path() {
   if [[ -f "$state_path" ]]; then
     local known
     known=$(jq -r '.prd_path // empty' "$state_path")
+    if [[ "$known" == projects/* && -f "$HQ_ROOT/personal/$known" ]]; then
+      echo "$HQ_ROOT/personal/$known"
+      return 0
+    fi
     if [[ -n "$known" && -f "$HQ_ROOT/$known" ]]; then
       echo "$HQ_ROOT/$known"
       return 0
@@ -527,9 +531,9 @@ resolve_prd_path() {
     fi
   done
 
-  # 3. HQ-level: projects/$project/prd.json
-  if [[ -f "$HQ_ROOT/projects/$project/prd.json" ]]; then
-    echo "$HQ_ROOT/projects/$project/prd.json"
+  # 3. HQ-level personal project: personal/projects/$project/prd.json
+  if [[ -f "$HQ_ROOT/personal/projects/$project/prd.json" ]]; then
+    echo "$HQ_ROOT/personal/projects/$project/prd.json"
     return 0
   fi
 
@@ -618,7 +622,7 @@ fi
 # Branch Setup (always-worktree for isolation)
 # =============================================================================
 
-WORKTREE_ENABLED=$(yq e '.worktree.enabled // true' "$HQ_ROOT/settings/orchestrator.yaml" 2>/dev/null || echo "true")
+WORKTREE_ENABLED=$(yq e '.worktree.enabled // true' "$HQ_ROOT/core/settings/orchestrator.yaml" 2>/dev/null || echo "true")
 BRANCH_NAME=$(jq -r '.branchName // empty' "$PRD_PATH")
 BASE_BRANCH=$(jq -r '.metadata.baseBranch // "main"' "$PRD_PATH")
 
@@ -826,15 +830,15 @@ migrate_state_schema
 # Checkout Config (from orchestrator.yaml)
 # =============================================================================
 
-CHECKOUT_ENABLED=$(yq e '.checkout.enabled // true' "$HQ_ROOT/settings/orchestrator.yaml" 2>/dev/null || echo "true")
-CHECKOUT_STALE_MINUTES=$(yq e '.checkout.stale_timeout_minutes // 30' "$HQ_ROOT/settings/orchestrator.yaml" 2>/dev/null || echo "30")
+CHECKOUT_ENABLED=$(yq e '.checkout.enabled // true' "$HQ_ROOT/core/settings/orchestrator.yaml" 2>/dev/null || echo "true")
+CHECKOUT_STALE_MINUTES=$(yq e '.checkout.stale_timeout_minutes // 30' "$HQ_ROOT/core/settings/orchestrator.yaml" 2>/dev/null || echo "30")
 
 # Swarm config (CLI flags override yaml)
 if [[ "$SWARM_MAX" -eq 4 ]]; then
-  SWARM_MAX=$(yq e '.swarm.max_concurrency // 4' "$HQ_ROOT/settings/orchestrator.yaml" 2>/dev/null || echo "4")
+  SWARM_MAX=$(yq e '.swarm.max_concurrency // 4' "$HQ_ROOT/core/settings/orchestrator.yaml" 2>/dev/null || echo "4")
 fi
 if [[ "$CHECKIN_INTERVAL" -eq 180 ]]; then
-  CHECKIN_INTERVAL=$(yq e '.swarm.checkin_interval_seconds // 180' "$HQ_ROOT/settings/orchestrator.yaml" 2>/dev/null || echo "180")
+  CHECKIN_INTERVAL=$(yq e '.swarm.checkin_interval_seconds // 180' "$HQ_ROOT/core/settings/orchestrator.yaml" 2>/dev/null || echo "180")
 fi
 
 # =============================================================================

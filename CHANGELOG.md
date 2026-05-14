@@ -2,6 +2,26 @@
 
 _Nothing yet._
 
+## [14.1.2] — 2026-05-14
+
+### Headline
+**Staging PR rollup: native session capture, hook suggestions, Ralph context discipline, master-sync wrappers, and handoff hardening.** This release promotes the current `hq-core-staging` main plus open PRs #121-#124 into public `hq-core`.
+
+### Added
+- **Native session project capture** — Adds prompt-time project reuse/creation, native plan archival, policy docs, helper script, and smoke coverage.
+- **Single-company auto-startwork** — Adds a SessionStart hook that suggests `/startwork <company>` for single-company installs.
+- **After-turn suggestions** — Adds a Stop hook for lightweight HQ next-move suggestions with opt-outs.
+- **Ralph JSON return discipline** — Adds a hard policy and updates `run-project` / `execute-task` instructions for compact JSON-only story worker returns.
+- **Regression coverage** — Adds smoke tests for native session capture, auto-startwork, after-turn suggestions, and empty handoff changesets.
+
+### Changed
+- **`master-sync` wrapper model** — Namespaced skills now surface as `.claude/skills/<ns>:<skill>/` wrappers with helper files available beside `SKILL.md`; legacy command symlinks are pruned.
+- **Hook wiring** — Registers the new auto-startwork, native session project, native plan sync, and after-turn suggestion hooks in Claude/Codex settings.
+- **Core write block messages** — Points surprising core-write blocks at `/hq-bug`.
+
+### Fixed
+- **Handoff finalization** — Empty `--files-touched-json '[]'` no longer trips `set -u`; smoke fixture now matches the `core/scripts` layout and keeps sensitive `core/settings/*.json` out of handoff commits.
+
 ## [14.1.1] — 2026-05-13
 
 ### Headline

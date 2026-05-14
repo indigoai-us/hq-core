@@ -129,6 +129,7 @@ Workers learn from and contribute to shared knowledge:
 - `core/knowledge/public/loom/` — Loom agent patterns (reference)
 - `core/knowledge/public/projects/` — Project templates
 - `core/knowledge/public/getting-started/` — Onboarding material
+- `personal/knowledge/` — Your user-personal knowledge overlay. Entries here are symlinked into `core/knowledge/` by master-sync, so they appear inside core without changing precedence.
 
 Optional packs (e.g. `@indigoai-us/hq-pack-design-styles`, `@indigoai-us/hq-pack-gemini`) install additional knowledge bases.
 

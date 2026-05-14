@@ -82,21 +82,25 @@ Write-Host "YAML Syntax:" -ForegroundColor Yellow
 $pythonAvailable = Get-Command python -ErrorAction SilentlyContinue
 if ($pythonAvailable) {
     # Worker files
-    Get-ChildItem "$HqPath/workers" -Recurse -Filter "*.yaml" | ForEach-Object {
+    @("$HqPath/core/workers", "$HqPath/personal/workers") | Where-Object { Test-Path $_ } | ForEach-Object {
+      Get-ChildItem $_ -Recurse -Filter "*.yaml" | ForEach-Object {
         $relativePath = $_.FullName.Replace("$HqPath/", "").Replace("\", "/")
         Test-Check $relativePath {
             $result = python -c "import yaml; yaml.safe_load(open(r'$($_.FullName)'))" 2>&1
             $LASTEXITCODE -eq 0
         }
+      }
     }
 
     # Knowledge YAML files
-    Get-ChildItem "$HqPath/knowledge" -Recurse -Filter "*.yaml" | ForEach-Object {
+    @("$HqPath/core/knowledge", "$HqPath/personal/knowledge") | Where-Object { Test-Path $_ } | ForEach-Object {
+      Get-ChildItem $_ -Recurse -Filter "*.yaml" | ForEach-Object {
         $relativePath = $_.FullName.Replace("$HqPath/", "").Replace("\", "/")
         Test-Check $relativePath {
             $result = python -c "import yaml; yaml.safe_load(open(r'$($_.FullName)'))" 2>&1
             $LASTEXITCODE -eq 0
         }
+      }
     }
 } else {
     Write-Host "  SKIP: Python not available for YAML validation" -ForegroundColor Gray
@@ -110,7 +114,7 @@ Write-Host "JSON Syntax:" -ForegroundColor Yellow
 
 if ($pythonAvailable) {
     # PRD files
-    Get-ChildItem "$HqPath/projects" -Recurse -Filter "*.json" | ForEach-Object {
+    Get-ChildItem "$HqPath/personal/projects" -Recurse -Filter "*.json" -ErrorAction SilentlyContinue | ForEach-Object {
         $relativePath = $_.FullName.Replace("$HqPath/", "").Replace("\", "/")
         Test-Check $relativePath {
             $result = python -c "import json; json.load(open(r'$($_.FullName)'))" 2>&1
@@ -119,12 +123,14 @@ if ($pythonAvailable) {
     }
 
     # Settings files
-    Get-ChildItem "$HqPath/settings" -Recurse -Filter "*.json" -ErrorAction SilentlyContinue | ForEach-Object {
+    @("$HqPath/core/settings", "$HqPath/personal/settings") | Where-Object { Test-Path $_ } | ForEach-Object {
+      Get-ChildItem $_ -Recurse -Filter "*.json" -ErrorAction SilentlyContinue | ForEach-Object {
         $relativePath = $_.FullName.Replace("$HqPath/", "").Replace("\", "/")
         Test-Check $relativePath {
             $result = python -c "import json; json.load(open(r'$($_.FullName)'))" 2>&1
             $LASTEXITCODE -eq 0
         }
+      }
     }
 } else {
     Write-Host "  SKIP: Python not available for JSON validation" -ForegroundColor Gray
@@ -136,12 +142,12 @@ if ($pythonAvailable) {
 Write-Host ""
 Write-Host "Worker Registry:" -ForegroundColor Yellow
 
-$registryPath = "$HqPath/workers/registry.yaml"
+$registryPath = "$HqPath/core/workers/registry.yaml"
 if (Test-Path $registryPath) {
     $registryContent = Get-Content $registryPath -Raw
 
     # Check dev-team workers exist
-    $devTeamWorkers = Get-ChildItem "$HqPath/workers/dev-team" -Directory -ErrorAction SilentlyContinue
+    $devTeamWorkers = Get-ChildItem "$HqPath/core/workers/public/dev-team" -Directory -ErrorAction SilentlyContinue
     foreach ($worker in $devTeamWorkers) {
         $workerYaml = Join-Path $worker.FullName "worker.yaml"
         Test-Check "dev-team/$($worker.Name) has worker.yaml" {
@@ -162,7 +168,7 @@ if ($Project) {
     Write-Host ""
     Write-Host "PRD Files ($Project):" -ForegroundColor Yellow
 
-    $prdPath = "$HqPath/projects/$Project/prd.json"
+    $prdPath = "$HqPath/personal/projects/$Project/prd.json"
     if (Test-Path $prdPath) {
         $prd = Get-Content $prdPath -Raw | ConvertFrom-Json
 

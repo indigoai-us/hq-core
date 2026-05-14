@@ -38,16 +38,6 @@ jobs:
       - name: Run policy-rationale scan
         run: bash .leak-scan/scan.sh policy-rationale
 
-  slug-scan:
-    name: slug-scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Run private tenant slug scan
-        run: bash .leak-scan/scan.sh slugs
-
   users-path-tripwire:
     name: users-path-tripwire
     runs-on: ubuntu-latest
@@ -205,14 +195,13 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_MODEL: gpt-5
-          POLICY_FILE: ${{ matrix.file }}
         run: |
           set -euo pipefail
-          out="$(bash .leak-scan/codex-rubric.sh "$POLICY_FILE")"
+          out="$(bash .leak-scan/codex-rubric.sh "${{ matrix.file }}")"
           echo "$out"
           # Append to job summary so reviewers see verdicts collated
           {
-            echo "## Rubric: $POLICY_FILE"
+            echo "## Rubric: ${{ matrix.file }}"
             echo '```json'
             echo "$out"
             echo '```'

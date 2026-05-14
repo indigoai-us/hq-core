@@ -9,7 +9,7 @@ visibility: public
 
 Write a structured working-memory entry for the current Claude session. Entries land at `workspace/threads/journal/<YYYY-MM-DD>/<NNN>-<slug>.md` and the day's `INDEX.md` is auto-updated.
 
-**Spec:** `core/knowledge/public/hq-core/session-journal-spec.md`.
+**Spec:** `knowledge/public/hq-core/journal-spec.md`.
 
 ## Usage
 
@@ -96,13 +96,13 @@ You don't need to wait for the auto-trigger hook. Write proactively after:
 
 ## Constraints
 
-- **Never** include secrets, share-session URLs, or other capabilities in entries (per `core/policies/hq-share-session-urls-are-capabilities.md` and the rest of the credential-isolation rule set).
+- **Never** include secrets, share-session URLs, or other capabilities in entries (per `.claude/policies/hq-share-session-urls-are-capabilities.md` and the rest of the credential-isolation rule set).
 - Don't write trivial entries ("read a file"). The bar is: *would future-me want this back after compaction?*
 - One entry per coherent slice. If you have three unrelated findings, write three entries.
 
 ## Related
 
-- `core/knowledge/public/hq-core/session-journal-spec.md` — full spec, two-pattern coexistence with task journals
+- `knowledge/public/hq-core/journal-spec.md` — full spec, two-pattern coexistence with task journals
 - `.claude/hooks/journal-due.sh` — PostToolUse auto-trigger
 - `.claude/hooks/journal-precompact.sh` — PreCompact reminder
 - `.claude/hooks/load-journal-index-on-start.sh` — SessionStart auto-load

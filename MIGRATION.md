@@ -1,3 +1,26 @@
+## Migrating to v14.1.2 — 2026-05-14
+
+### TL;DR
+
+**No manual migration required.** `/update-hq` pulls the new hooks, policies, scripts, and tests. Existing installs continue to work without manual settings edits.
+
+### What changed since v14.1.1
+
+- **Native session project capture** — Native Claude/Codex sessions can reuse or create thin project records even when they do not start through `/startwork`, `/plan`, `/prd`, or `/run-project`.
+- **Single-company auto-startwork** — Single-company installs get a SessionStart suggestion to run `/startwork <company>`.
+- **After-turn suggestions** — A Stop hook can surface lightweight next moves; disable with `HQ_AFTER_TURN_SUGGESTIONS=0`, `HQ_DISABLED_HOOKS=after-turn-suggestions`, or `.claude/state/after-turn-suggestions.disabled`.
+- **Ralph JSON return discipline** — Story workers now have tighter JSON return contracts to keep parent sessions compact.
+- **Master-sync wrappers** — Namespaced skills now surface through `.claude/skills/<ns>:<skill>/` wrapper directories instead of legacy `.claude/commands/<ns>/<skill>.md` symlinks.
+- **Handoff hardening** — Empty changesets no longer crash under older Bash, and sensitive `core/settings/*.json` files are excluded from handoff commits unless explicitly allowed.
+
+### Compatibility
+
+- Existing legacy command symlinks created by earlier `master-sync` runs are pruned automatically when the hook runs.
+- No company-level migration is required.
+- No `.claude/settings.json` manual edits are required; hook wiring ships with the release.
+
+---
+
 ## Migrating to v14.1.1 — 2026-05-13
 
 ### TL;DR

@@ -589,7 +589,7 @@ If the user asks "what was the password?" later, do NOT re-emit. Tell them:
 > Run `jq -r '."$APP_SUBDOMAIN".password' ~/.hq/deploy-passwords.json` to retrieve it.
 
 **On success (sensitive, private mode):** name the allowlist once, no password mention:
-> Live at `https://$APP_SUBDOMAIN.{your-domain}.com` — gated to {alice@example.com, @example.com}. They'll sign in via auth.{your-domain}.com on first visit.
+> Live at `https://$APP_SUBDOMAIN.{your-domain}.com` — gated to {[EMAIL], @example.com}. They'll sign in via auth.{your-domain}.com on first visit.
 
 For changes after the fact, point at the CLI rather than re-orchestrating from this skill:
 > Run `hq-deploy access share $APP_SUBDOMAIN <email|@domain>` to add a teammate, or `… unshare …` to revoke.

@@ -94,7 +94,9 @@ Commit your story work before returning. If your runtime returns an integration
 patch instead of a parent-visible commit, say so in notes and list every changed
 path.
 
-Return ONLY this JSON:
+RETURN CONTRACT: json
+
+Return ONLY this JSON object — no prose, no markdown fences, nothing before or after:
 {
   "status": "passed" | "failed" | "blocked",
   "story_id": "{story-id}",
@@ -114,12 +116,13 @@ PROMPT
 wait_agent(...)
 ```
 
-4. Parse the JSON. Retry once if the worker returns non-JSON.
+4. Validate the reply as JSON with `jq -e .` (or equivalent). If invalid, retry exactly once with this stricter prompt addition: `Your previous reply was not valid JSON. Emit ONLY the JSON object specified above. No prose, no fences, no trailing newline.` If still invalid, mark the story `blocked` with reason `INVALID_RETURN_FORMAT`, surface to user, do NOT advance to the next story. (Enforced by [ralph-orchestrator-context-discipline](../../../core/policies/ralph-orchestrator-context-discipline.md).)
 5. Enforce the worker proof gate: passed stories must include at least one real HQ worker ID in `workers_run`; reject placeholder-only values like `codex`, `worker`, `general-purpose`, or `commit`.
 6. Verify commits are parent-visible with `git log --oneline -n {len(commits)}`. If the worker produced an integration patch instead of a visible commit, review/integrate it in the parent and create the story commit before continuing.
 7. Mark `passes: true` only after status is `passed`, worker proof passes, back-pressure is acceptable, and commit verification succeeds.
 8. Update `workspace/orchestrator/{project}/state.json`.
-9. Pause between stories for continue / adjust / stop.
+9. Narrate one line per story to the user: `[{story_id}] {status} · {files_changed} files · {first_commit_short_sha}`. Anything longer goes to `workspace/threads/journal/<date>/<story-id>.md`, not the parent transcript.
+10. Pause between stories for continue / adjust / stop.
 
 ### 3c. Regression Gates
 

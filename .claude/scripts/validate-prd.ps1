@@ -3,7 +3,7 @@
     Validate PRD files for e2eTests presence and schema compliance
 
 .DESCRIPTION
-    Checks PRD files against the schema defined in knowledge/hq-core/prd-schema.md:
+    Checks PRD files against the schema defined in core/knowledge/public/hq-core/prd-schema.md:
     - JSON syntax validation
     - Required fields presence (name, description, branchName, userStories, metadata)
     - e2eTests array presence for EVERY user story (REQUIRED)
@@ -67,20 +67,20 @@ function Test-Check {
 
 Write-Host ""
 Write-Host "=== PRD Validation ===" -ForegroundColor Cyan
-Write-Host "Schema: knowledge/hq-core/prd-schema.md" -ForegroundColor Gray
+Write-Host "Schema: core/knowledge/public/hq-core/prd-schema.md" -ForegroundColor Gray
 Write-Host ""
 
 # Find PRD files to validate
 if ($Project) {
-    $prdFiles = @(Get-Item "$HqPath/projects/$Project/prd.json" -ErrorAction SilentlyContinue)
+    $prdFiles = @(Get-Item "$HqPath/personal/projects/$Project/prd.json" -ErrorAction SilentlyContinue)
     if ($prdFiles.Count -eq 0) {
-        Write-Host "ERROR: PRD not found at projects/$Project/prd.json" -ForegroundColor Red
+        Write-Host "ERROR: PRD not found at personal/projects/$Project/prd.json" -ForegroundColor Red
         exit 1
     }
 } else {
-    $prdFiles = Get-ChildItem "$HqPath/projects" -Recurse -Filter "prd.json" -ErrorAction SilentlyContinue
+    $prdFiles = Get-ChildItem "$HqPath/personal/projects" -Recurse -Filter "prd.json" -ErrorAction SilentlyContinue
     if ($prdFiles.Count -eq 0) {
-        Write-Host "No PRD files found in projects/" -ForegroundColor Yellow
+        Write-Host "No PRD files found in personal/projects/" -ForegroundColor Yellow
         exit 0
     }
 }
@@ -218,7 +218,7 @@ if ($failed -gt 0) {
     Write-Host "  - Use US-XXX format for story IDs" -ForegroundColor Gray
     Write-Host "  - Ensure branchName starts with 'feature/'" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "Schema reference: knowledge/hq-core/prd-schema.md" -ForegroundColor Gray
+    Write-Host "Schema reference: core/knowledge/public/hq-core/prd-schema.md" -ForegroundColor Gray
     exit 1
 } elseif ($warnings -gt 0) {
     Write-Host "VALIDATION PASSED WITH WARNINGS" -ForegroundColor Yellow
