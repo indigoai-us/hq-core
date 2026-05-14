@@ -179,7 +179,7 @@ companies/{co}/
 
 ## Projects
 
-PRDs live at `companies/{co}/projects/{name}/prd.json` (source of truth) with `README.md` (human-readable).
+PRDs live at `companies/{co}/projects/{name}/prd.json` for company work, or `personal/projects/{name}/prd.json` for personal/HQ work, with `README.md` as the human-readable view.
 
 ```
 /prd "Build dashboard"          # creates PRD
@@ -191,11 +191,6 @@ PRDs live at `companies/{co}/projects/{name}/prd.json` (source of truth) with `R
 ```
 HQ/
 ├── AGENTS.md                  # Charter for Claude / Codex sessions
-├── README.md
-├── CHANGELOG.md
-├── MIGRATION.md
-├── RELEASE-NOTES-*.md
-├── USER-GUIDE.md
 ├── .claude/
 │   ├── CLAUDE.md
 │   ├── commands/              # Slash commands (53)
@@ -207,6 +202,7 @@ HQ/
 │   └── settings.json / settings.local.json
 ├── core/
 │   ├── core.yaml              # Core manifest
+│   ├── docs/hq/               # README, CHANGELOG, MIGRATION, USER-GUIDE
 │   ├── knowledge/
 │   │   ├── public/            # Bundled public knowledge bases
 │   │   └── private/           # Private knowledge bases (populated via packs / sync)
@@ -222,9 +218,15 @@ HQ/
 │   ├── _template/             # Skeleton for new companies
 │   ├── manifest.yaml
 │   └── {co}/                  # One directory per company
-├── data/
-│   └── journal/               # Cross-company journal
-├── projects/                  # Top-level project scratch
+├── personal/
+│   ├── agents-profile.md
+│   ├── agents-companies.md
+│   ├── knowledge/
+│   ├── projects/              # Personal/HQ project scratch
+│   ├── policies/
+│   ├── settings/
+│   ├── skills/
+│   └── workers/
 ├── repos/
 │   ├── public/                # Open-source repos
 │   └── private/               # Private repos

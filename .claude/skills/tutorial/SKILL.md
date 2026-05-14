@@ -39,7 +39,7 @@ If empty: proceed to Step 1.
 Silently assess HQ state:
 
 1. Check `core/workers/registry.yaml` — count company-specific workers (type: `company`)
-2. Check for any `prd.json` files in `companies/*/projects/` or `projects/`
+2. Check for any `prd.json` files in `companies/*/projects/` or `personal/projects/`
 3. Count companies in `companies/manifest.yaml`
 
 Classify:
@@ -173,7 +173,7 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 - **Key quote:** "HQ without knowledge is a library with empty shelves."
 - **Show:**
   - List `core/knowledge/public/` directories — show what knowledge bases exist
-  - Count total knowledge files: `ls knowledge/public/` and any `companies/*/knowledge/`
+  - Count total knowledge files: `ls core/knowledge/public/` and any `companies/*/knowledge/`
   - Show the three knowledge repo patterns (inline, embedded git, symlink) with examples from the user's HQ
 - **Exercise (Tier 1):**
   1. Pick a keyword relevant to the user's work (ask them for one via AskUserQuestion)
@@ -213,7 +213,7 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 - **Show:**
   - Read the Context Diet section of CLAUDE.md (the bullet list of rules)
   - Show the Token Optimization table (env vars and their purpose)
-  - Show the two-stage context advisory system (60% warning + 75% pre-compact)
+  - Show the context-threshold checkpoint system (50% checkpoint + pre-compact backup)
 - **Exercise (Tier 1):**
   1. Read the Context Diet rules in CLAUDE.md — count the "do NOT" rules
   2. Run `wc -l .claude/CLAUDE.md` — show the instruction file size as an example of keeping context tight

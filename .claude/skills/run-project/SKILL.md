@@ -1,13 +1,13 @@
 ---
 name: run-project
-description: "Codex-native router for executing HQ PRD stories. Default inline uses story-level spawn_agent workers; explicit interactive mode runs directly in the parent; Ralph/headless uses the shell orchestrator."
+description: "Codex-native router for executing HQ PRD stories. Default inline uses filesystem-mediated worker-phase spawn_agent workers; explicit interactive mode runs directly in the parent; Ralph/headless uses the shell orchestrator."
 allowed-tools: Read, spawn_agent, wait_agent, Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(nohup:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*)
-argument-hint: "{project} [--status] [--resume] [--dry-run] [--inline] [--interactive] [--ralph-mode] [--engine codex|claude]"
+argument-hint: "{project} [--status] [--resume] [--dry-run] [--inline] [--interactive] [--ralph-mode] [--engine codex|auto]"
 ---
 
 # Run Project — Codex Router
 
-Codex does not use Claude Code's `Task`, `Plan` sub-agents, `ExitPlanMode`, `/checkpoint`, or `/compact` primitives. It does have `spawn_agent` / `wait_agent`, so the default inline path maps Claude's per-story `Task` boundary to a Codex `worker` agent and maps read-only plan preflight to a Codex `explorer` agent.
+Codex does not use Claude Code's `Task`, `Plan` sub-agents, `ExitPlanMode`, `/checkpoint`, or `/compact` primitives. It does have `spawn_agent` / `wait_agent`, so the default inline path maps Claude's per-story `Task` boundary to filesystem-mediated Codex worker phases: the parent writes small phase envelopes under `workspace/orchestrator/{project}/executions/{story-id}/`, spawns one fresh worker agent per phase, and absorbs compact JSON only. Read-only plan preflight maps to a Codex `explorer` agent.
 
 **User's input:** $ARGUMENTS
 
@@ -29,11 +29,11 @@ Extract from `$ARGUMENTS`:
 - `--status` — show orchestrator status, then stop
 - `--dry-run` — show story order, then stop
 - `--resume` — pass through to the chosen execution path
-- `--inline` — story-level Codex sub-agent execution (default)
+- `--inline` — filesystem-mediated Codex worker-phase execution (default)
 - `--interactive` or `--session-mode` — parent-driven Codex execution
 - `--ralph-mode` — background/headless shell orchestrator
-- `--engine codex|claude` — engine for Ralph/headless execution; default to `claude` for worker-authoritative runs
-- `--builder codex|claude` — backward-compatible alias for `--engine`
+- `--engine codex|auto` — engine for Ralph/headless execution; defaults to `codex`
+- `--builder codex|auto` — backward-compatible alias for `--engine`
 - Other shell-orchestrator flags (`--swarm`, `--tmux`, `--timeout`, `--retry-failed`, `--in-place`, `--checkin-interval`, `--codex-autofix`, `--no-monitor`) pass through only to Ralph/headless mode
 
 If no execution mode is supplied, route to `--inline`. This is the default because it preserves the Ralph story loop and keeps implementation context out of the parent session.
@@ -54,7 +54,7 @@ Display the important output to the user and stop.
 
 ## Step 3 — Default Inline Codex Execution
 
-Inline mode is story-delegated. The Codex parent session plans and coordinates; each story runs in one fresh `worker` agent that invokes `/execute-task {project}/{story-id}` internally. `/execute-task` then maps its worker phases to nested Codex `spawn_agent` calls via `.claude/skills/execute-task/SKILL.md`.
+Inline mode is phase-delegated. The Codex parent session plans and coordinates; each story runs through fresh top-level worker agents, one per planned worker phase. Do not spawn a story-level worker that invokes `/execute-task {project}/{story-id}` internally; Codex sub-agents cannot spawn the nested worker phases. Use the filesystem as the handoff surface so the parent context stays small.
 
 ### 3a. Preflight Plan
 
@@ -75,51 +75,60 @@ Display the plan and ask the user to approve, adjust, switch to `--interactive`,
 For each approved incomplete story:
 
 1. Announce story ID, title, and planned worker sequence.
-2. Perform only lightweight parent orchestration: branch setup, state file update, and best-effort Linear sync.
-3. Spawn exactly one story worker:
+2. Perform only lightweight parent orchestration: branch setup, state file update, lock setup, and best-effort Linear sync. Do not load full PRD stories, worker.yaml bodies, policy bodies, implementation diffs, or test logs into the parent unless blocked.
+3. For each worker ID in the planned sequence, write a small phase envelope to `workspace/orchestrator/{project}/executions/{story-id}/phase-{n}-{worker-id}.input.md` with paths to the PRD, project folder, repo, worker config, previous phase output, and expected output path.
+4. Spawn exactly one fresh phase worker:
 
 ```
 spawn_agent({
   agent_type: "worker",
   message: <<PROMPT
-Execute story {project}/{story-id} by running /execute-task {project}/{story-id}.
+Execute worker phase {worker-id} for {project}/{story-id}.
 
-You are not alone in the codebase. Own only this story and its declared files;
+You are not alone in the codebase. Own only this worker phase and the story's declared files;
 do not revert edits made by others; adapt to existing changes you encounter.
 
-When /execute-task asks for a Task sub-agent, use its Codex runtime adapter so
-the nested HQ worker phases run as isolated Codex agents.
+Do NOT run /execute-task and do NOT try to spawn nested agents. Read your phase
+envelope from:
+workspace/orchestrator/{project}/executions/{story-id}/phase-{n}-{worker-id}.input.md
 
-Commit your story work before returning. If your runtime returns an integration
-patch instead of a parent-visible commit, say so in notes and list every changed
-path.
+Load PRD/project/worker/policy/repo context from the paths in that envelope.
+Write detailed handoff output to the envelope's output path. Commit only your
+phase work before returning.
 
-Return ONLY this JSON:
+RETURN CONTRACT: json
+
+Return ONLY this JSON object — no prose, no markdown fences, nothing before or after:
 {
   "status": "passed" | "failed" | "blocked",
-  "story_id": "{story-id}",
+  "worker": "{worker-id}",
   "commits": ["<short-sha>", ...],
-  "files_changed": <int>,
+  "files_created": ["paths"],
+  "files_modified": ["paths"],
+  "handoff_path": "workspace/orchestrator/{project}/executions/{story-id}/phase-{n}-{worker-id}.output.json",
+  "key_decisions": ["brief decision"],
   "back_pressure": {
     "tests": "pass" | "fail" | "skip",
     "lint": "pass" | "fail" | "skip",
     "typecheck": "pass" | "fail" | "skip",
     "build": "pass" | "fail" | "skip"
   },
-  "workers_run": ["architect", "backend-dev", ...],
-  "notes": "<1-2 sentence summary; include blocker description if status != passed>"
+  "context_for_next": "<=600 chars",
+  "issues": ["blocking issue, if any"]
 }
 PROMPT
 })
 wait_agent(...)
 ```
 
-4. Parse the JSON. Retry once if the worker returns non-JSON.
-5. Enforce the worker proof gate: passed stories must include at least one real HQ worker ID in `workers_run`; reject placeholder-only values like `codex`, `worker`, `general-purpose`, or `commit`.
-6. Verify commits are parent-visible with `git log --oneline -n {len(commits)}`. If the worker produced an integration patch instead of a visible commit, review/integrate it in the parent and create the story commit before continuing.
-7. Mark `passes: true` only after status is `passed`, worker proof passes, back-pressure is acceptable, and commit verification succeeds.
-8. Update `workspace/orchestrator/{project}/state.json`.
-9. Pause between stories for continue / adjust / stop.
+5. Validate the reply as JSON with `jq -e .` (or equivalent). If invalid, retry exactly once with this stricter prompt addition: `Your previous reply was not valid JSON. Emit ONLY the JSON object specified above. No prose, no fences, no trailing newline.` If still invalid, mark the story `blocked` with reason `INVALID_RETURN_FORMAT`, surface to user, do NOT advance to the next story. (Enforced by [ralph-orchestrator-context-discipline](../../../core/policies/ralph-orchestrator-context-discipline.md).)
+6. Verify commits are parent-visible with `git log --oneline -n {len(commits)}`. If the worker produced an integration patch instead of a visible commit, review/integrate only the listed files and create the phase/story commit before continuing.
+7. Update the phase state with the compact JSON and pass only `handoff_path` plus compact `context_for_next` to the next phase.
+8. After all phases pass, synthesize the story result: `workers_run` is the ordered list of real worker IDs, commits are phase commits, files_changed is the unique listed files, and back-pressure is aggregate.
+9. Mark `passes: true` only after status is `passed`, worker proof passes, back-pressure is acceptable, and commit verification succeeds.
+10. Update `workspace/orchestrator/{project}/state.json`.
+11. Narrate one line per story to the user: `[{story_id}] {status} · {files_changed} files · {first_commit_short_sha}`. Anything longer goes to `workspace/threads/journal/<date>/<story-id>.md` or the execution folder, not the parent transcript.
+12. Pause between stories for continue / adjust / stop.
 
 ### 3c. Regression Gates
 
@@ -137,7 +146,7 @@ Interactive mode is parent-driven. It replaces Claude session-mode for Codex.
 
 Use when the project is small enough for the parent session and the user may want to steer implementation decisions.
 
-Codex interactive mode is direct parent execution, not proof that the HQ worker pipeline ran. If the user asks for worker-backed execution, or if a PRD/story requires `workers_run`, worker handoffs, or `/execute-task` semantics, stop and route to Ralph/headless with `--engine claude`.
+Codex interactive mode is direct parent execution, not proof that the HQ worker pipeline ran. If the user asks for worker-backed execution, or if a PRD/story requires `workers_run`, worker handoffs, or `/execute-task` semantics, stop and route to the Codex-backed Ralph/headless path. Do not route through the Claude headless builder.
 
 Process:
 
@@ -166,11 +175,11 @@ Do not spawn an end-to-end `/execute-task` sub-agent in Codex interactive mode u
 
 Use when the project is long-running, unattended, swarm/tmux-oriented, requires worker-backed story execution, or when process isolation matters more than per-edit steering.
 
-Launch with the worker-authoritative Claude engine:
+Launch with the worker-authoritative Codex engine:
 
 ```bash
 cd ~/HQ && \
-  nohup bash {run_project_script} {project} {passthrough_flags} --engine claude --no-permissions \
+  nohup bash {run_project_script} {project} {passthrough_flags} --engine codex --no-permissions \
   > workspace/orchestrator/{project}/run.log 2>&1 &
 echo "PID:$!"
 ```
@@ -178,10 +187,10 @@ echo "PID:$!"
 If `{run_project_script}` does not support `--engine`, use the legacy equivalent:
 
 ```bash
-bash {run_project_script} {project} {passthrough_flags} --builder claude --no-permissions
+bash {run_project_script} {project} {passthrough_flags} --builder codex --no-permissions
 ```
 
-`--engine codex` is an explicit opaque-builder opt-in, not the default worker path. It requires `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1` and must not be described as worker-authoritative until Codex can prove worker participation.
+Do not route Codex-triggered project execution through the Claude headless builder. Claude headless builders are not supported.
 
 Monitor progress from:
 

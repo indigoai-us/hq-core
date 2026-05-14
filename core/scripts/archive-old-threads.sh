@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$HQ_ROOT"
 
 CUTOFF_DAYS=60

@@ -63,7 +63,7 @@ Some tools allow multiple questions per call. Hard cap at 1 in HQ.
 
 Stated explicitly by the user during a deep planning brainstorm session on 2026-05-08, then promoted to a global HQ setting at user request later in the same session.
 
-The user's reasoning, as observed: each decision benefits from a focused educational insight block in context (per `Explanatory` output style) and from seeing the *previous* decisions land before evaluating the next. Batching forces the user to weigh 4 unrelated choices simultaneously, which:
+The user's reasoning, as observed: each decision benefits from a focused educational insight block in context (kept by HQ's active output style) and from seeing the *previous* decisions land before evaluating the next. Batching forces the user to weigh 4 unrelated choices simultaneously, which:
 
 1. Loses the per-decision insight-block scaffolding (you can only fit one short rationale into a batched form, or it bloats unmanageable).
 2. Prevents cascading clarifications — Q3's right answer often shifts based on what was decided at Q1 and Q2; batching freezes that interaction.

@@ -15,7 +15,7 @@ This skill is additive only.
 - Create missing Codex-facing files and bridges.
 - Leave existing files, directories, and symlinks untouched.
 - Never replace `.agents/skills` when it already exists as a real directory.
-- Never edit an existing `AGENTS.md` or `.codex/config.toml`.
+- Never edit an existing `AGENTS.md`, `.codex/config.toml`, or `.codex/output-style.md`.
 - Pause for review if the user asks for a repair that requires modifying existing content.
 
 ## Procedure

@@ -3,19 +3,19 @@
     {
       "type": "file",
       "ctime": 1711900800000,
-      "path": "INDEX.md",
+      "path": "core/docs/hq/INDEX.md",
       "title": "HQ Directory Map"
     },
     {
       "type": "file",
       "ctime": 1711900800000,
-      "path": "USER-GUIDE.md",
+      "path": "core/docs/hq/USER-GUIDE.md",
       "title": "User Guide"
     },
     {
       "type": "folder",
       "ctime": 1711900800000,
-      "path": "knowledge/public",
+      "path": "core/knowledge/public",
       "title": "Knowledge Bases"
     },
     {
@@ -27,13 +27,13 @@
     {
       "type": "folder",
       "ctime": 1711900800000,
-      "path": "workers/public",
+      "path": "core/workers/public",
       "title": "Workers"
     },
     {
       "type": "folder",
       "ctime": 1711900800000,
-      "path": "projects",
+      "path": "personal/projects",
       "title": "Projects"
     }
   ]

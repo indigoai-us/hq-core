@@ -147,7 +147,7 @@ Before searching: announce what you'll search for and why. Proceed only after im
 
 **Derive slug** from title (lowercase, hyphens, no special chars).
 
-**Create** `companies/{co}/projects/{slug}/brainstorm.md` (or `projects/{slug}/brainstorm.md` for personal/HQ):
+**Create** `companies/{co}/projects/{slug}/brainstorm.md` (or `personal/projects/{slug}/brainstorm.md` for personal/HQ):
 
 ```markdown
 ---
@@ -289,7 +289,7 @@ Spec: `core/knowledge/public/hq-core/journal-spec.md`. Open a session journal at
 .claude/skills/_shared/journal.sh open brainstorm "{project_dir}"
 ```
 
-Where `{project_dir}` is `companies/{co}/projects/{slug}/` (or `projects/{slug}/` for personal/HQ). The helper:
+Where `{project_dir}` is `companies/{co}/projects/{slug}/` (or `personal/projects/{slug}/` for personal/HQ). The helper:
 
 - Creates `{project_dir}/journal/{ISO8601}-brainstorm.md` with frontmatter (`status: active`, `skill: brainstorm`, `summary: ""`)
 - Writes a pointer at `.claude/state/active-journal` so subsequent skill steps and the autocapture hook append to this file

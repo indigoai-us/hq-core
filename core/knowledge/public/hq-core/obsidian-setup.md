@@ -14,7 +14,7 @@ HQ ships with a pre-configured `.obsidian/` vault. Open the HQ folder in Obsidia
 
 1. Install [Obsidian](https://obsidian.md)
 2. Open vault → select your HQ directory
-3. Done — INDEX.md opens in reading mode
+3. Done — core/docs/hq/INDEX.md opens in reading mode
 
 ## What's Visible
 
@@ -23,10 +23,10 @@ HQ ships with a pre-configured `.obsidian/` vault. Open the HQ folder in Obsidia
 | `companies/` | Company knowledge, projects, data, workers |
 | `core/knowledge/` | Public + private knowledge bases |
 | `core/workers/` | Worker definitions and skills |
-| `projects/` | Personal/HQ projects |
+| `personal/projects/` | Personal/HQ projects |
 | `workspace/reports/` | Generated reports |
 | `workspace/social-drafts/` | Content pipeline |
-| Root | INDEX.md, USER-GUIDE.md, CHANGELOG.md |
+| `core/docs/hq/` | INDEX.md, USER-GUIDE.md, CHANGELOG.md, MIGRATION.md |
 
 ## What's Excluded
 
@@ -53,7 +53,7 @@ Color-coded by folder:
 - **Blue** — `companies/` (company knowledge)
 - **Green** — `core/knowledge/` (shared knowledge bases)
 - **Orange** — `core/workers/` (worker definitions)
-- **Amber** — `projects/` (project docs)
+- **Amber** — `personal/projects/` (project docs)
 - **Gray** — `workspace/` (reports, drafts)
 
 Orphan nodes hidden by default. Open via Ctrl/Cmd+G.
@@ -64,7 +64,7 @@ HQ knowledge files use YAML frontmatter (`type`, `domain`, `status`, `tags`, `re
 
 ### Bookmarks
 
-Six default bookmarks: INDEX.md, USER-GUIDE.md, and folders for knowledge, companies, workers, projects. Access via the bookmark icon in the left sidebar.
+Default bookmarks point at core/docs/hq/INDEX.md, core/docs/hq/USER-GUIDE.md, and folders for knowledge, companies, workers, and personal projects. Access via the bookmark icon in the left sidebar.
 
 ### CSS Theme
 

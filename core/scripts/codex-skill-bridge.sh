@@ -24,7 +24,7 @@ Usage:
   scripts/codex-skill-bridge.sh doctor [--root <path>] [--old-root <path>] [--dry-run]
 
 Commands:
-  status   Show bridge health and stale HQ roots without changing files.
+  status   Show bridge health, output-style bridge health, and stale HQ roots without changing files.
   install  Install or repair HQ-owned Claude -> Codex bridges.
   doctor   Repair bridges and rewrite local machine config from old HQ roots to this root.
 
@@ -53,15 +53,19 @@ configure_paths() {
   COMMANDS_SOURCE_DIR="${CLAUDE_SOURCE_DIR}/commands"
   HOOKS_SOURCE_DIR="${CLAUDE_SOURCE_DIR}/hooks"
   POLICIES_SOURCE_DIR="${CLAUDE_SOURCE_DIR}/policies"
+  SETTINGS_SOURCE_FILE="${CLAUDE_SOURCE_DIR}/settings.json"
+  OUTPUT_STYLES_SOURCE_DIR="${CLAUDE_SOURCE_DIR}/output-styles"
   GLOBAL_SKILLS_TARGET_DIR="${HOME}/.codex/skills/hq"
   GLOBAL_AGENTS_SKILLS_TARGET_DIR="${HOME}/.agents/skills/hq"
   REPO_AGENTS_SKILLS_TARGET_DIR="${HQ_ROOT}/.agents/skills"
   PROJECT_CODEX_DIR="${HQ_ROOT}/.codex"
   PROJECT_CLAUDE_TARGET_DIR="${PROJECT_CODEX_DIR}/claude"
   PROJECT_PROMPTS_TARGET_DIR="${PROJECT_CODEX_DIR}/prompts"
+  PROJECT_OUTPUT_STYLE_TARGET_FILE="${PROJECT_CODEX_DIR}/output-style.md"
   LEGACY_CODEX_DIR="${HQ_ROOT}/.Codex"
   LEGACY_CLAUDE_TARGET_DIR="${LEGACY_CODEX_DIR}/claude"
   LEGACY_PROMPTS_TARGET_DIR="${LEGACY_CODEX_DIR}/prompts"
+  LEGACY_OUTPUT_STYLE_TARGET_FILE="${LEGACY_CODEX_DIR}/output-style.md"
 }
 
 parse_args() {
@@ -184,7 +188,14 @@ normalize_link_target() {
   resolved_path="${target_dir}/${link_target}"
 
   if [[ -e "${resolved_path}" ]]; then
-    (cd "${resolved_path}" && pwd)
+    if [[ -d "${resolved_path}" ]]; then
+      (cd "${resolved_path}" && pwd)
+    else
+      local resolved_dir resolved_base
+      resolved_dir="$(cd "$(dirname "${resolved_path}")" && pwd)"
+      resolved_base="$(basename "${resolved_path}")"
+      printf '%s/%s\n' "${resolved_dir}" "${resolved_base}"
+    fi
     return
   fi
 
@@ -195,11 +206,53 @@ strip_known_hq_subpath() {
   local path="$1"
 
   case "${path}" in
+    */.claude/output-styles/*.md) printf '%s\n' "${path%%/.claude/output-styles/*}" ;;
     */.claude/skills) printf '%s\n' "${path%/.claude/skills}" ;;
     */.claude/commands) printf '%s\n' "${path%/.claude/commands}" ;;
     */.claude) printf '%s\n' "${path%/.claude}" ;;
     *) return 1 ;;
   esac
+}
+
+active_output_style_name() {
+  [[ -f "${SETTINGS_SOURCE_FILE}" ]] || return 1
+  sed -n 's/.*"outputStyle"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${SETTINGS_SOURCE_FILE}" | tail -n 1
+}
+
+output_style_slug() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed 's/[[:space:]_]\+/-/g; s/[^a-z0-9.-]/-/g; s/-\+/-/g; s/^-//; s/-$//'
+}
+
+resolve_output_style_source_file() {
+  local style_name slug source
+  style_name="$(active_output_style_name || true)"
+  [[ -n "${style_name}" ]] || return 1
+  slug="$(output_style_slug "${style_name}")"
+  source="${OUTPUT_STYLES_SOURCE_DIR}/${slug}.md"
+  [[ -f "${source}" ]] || return 1
+  printf '%s\n' "${source}"
+}
+
+print_output_style_status() {
+  local style_name source
+  style_name="$(active_output_style_name || true)"
+  echo "Active output style: ${style_name:-not configured}"
+
+  if source="$(resolve_output_style_source_file)"; then
+    print_link_status "Project Codex output-style bridge" "${source}" "${PROJECT_OUTPUT_STYLE_TARGET_FILE}"
+    if [[ -e "${LEGACY_CODEX_DIR}" || -L "${LEGACY_OUTPUT_STYLE_TARGET_FILE}" ]]; then
+      echo
+      print_link_status "Legacy .Codex output-style bridge" "${source}" "${LEGACY_OUTPUT_STYLE_TARGET_FILE}"
+    fi
+  else
+    echo "Project Codex output-style bridge:"
+    echo "  source: unavailable"
+    echo "  target: ${PROJECT_OUTPUT_STYLE_TARGET_FILE}"
+    echo "  status: active output style has no .claude/output-styles/*.md bridge source"
+    STATUS_FAILURES=$(( STATUS_FAILURES + 1 ))
+  fi
 }
 
 is_hq_root_like() {
@@ -335,8 +388,10 @@ collect_stale_roots() {
     "${REPO_AGENTS_SKILLS_TARGET_DIR}" \
     "${PROJECT_CLAUDE_TARGET_DIR}" \
     "${PROJECT_PROMPTS_TARGET_DIR}" \
+    "${PROJECT_OUTPUT_STYLE_TARGET_FILE}" \
     "${LEGACY_CLAUDE_TARGET_DIR}" \
-    "${LEGACY_PROMPTS_TARGET_DIR}"
+    "${LEGACY_PROMPTS_TARGET_DIR}" \
+    "${LEGACY_OUTPUT_STYLE_TARGET_FILE}"
   do
     if [[ -L "${target}" ]]; then
       strip_known_hq_subpath "$(normalize_link_target "${target}")" 2>/dev/null >> "${roots_file}" || true
@@ -429,6 +484,8 @@ print_status() {
   print_link_status "Project Claude mirror" "${CLAUDE_SOURCE_DIR}" "${PROJECT_CLAUDE_TARGET_DIR}"
   echo
   print_link_status "Project command bridge" "${COMMANDS_SOURCE_DIR}" "${PROJECT_PROMPTS_TARGET_DIR}"
+  echo
+  print_output_style_status
 
   if [[ -e "${LEGACY_CODEX_DIR}" || -L "${LEGACY_CLAUDE_TARGET_DIR}" || -L "${LEGACY_PROMPTS_TARGET_DIR}" ]]; then
     echo
@@ -450,17 +507,22 @@ validate_sources() {
 }
 
 install_bridge() {
+  local output_style_source
+
   validate_sources
+  output_style_source="$(resolve_output_style_source_file)" || fail "Active outputStyle must have a matching ${OUTPUT_STYLES_SOURCE_DIR}/<style>.md file."
 
   repair_or_create_symlink "global Codex skill bridge (legacy)" "${SKILLS_SOURCE_DIR}" "${GLOBAL_SKILLS_TARGET_DIR}"
   repair_or_create_symlink "global agents skill bridge" "${SKILLS_SOURCE_DIR}" "${GLOBAL_AGENTS_SKILLS_TARGET_DIR}"
   repair_or_create_symlink "repo agents skill bridge" "${SKILLS_SOURCE_DIR}" "${REPO_AGENTS_SKILLS_TARGET_DIR}"
   repair_or_create_symlink "project Codex Claude mirror" "${CLAUDE_SOURCE_DIR}" "${PROJECT_CLAUDE_TARGET_DIR}"
   repair_or_create_symlink "project Codex command bridge" "${COMMANDS_SOURCE_DIR}" "${PROJECT_PROMPTS_TARGET_DIR}"
+  repair_or_create_symlink "project Codex output-style bridge" "${output_style_source}" "${PROJECT_OUTPUT_STYLE_TARGET_FILE}"
 
   if [[ -e "${LEGACY_CODEX_DIR}" || -L "${LEGACY_CLAUDE_TARGET_DIR}" || -L "${LEGACY_PROMPTS_TARGET_DIR}" ]]; then
     repair_or_create_symlink "legacy .Codex Claude mirror" "${CLAUDE_SOURCE_DIR}" "${LEGACY_CLAUDE_TARGET_DIR}"
     repair_or_create_symlink "legacy .Codex command bridge" "${COMMANDS_SOURCE_DIR}" "${LEGACY_PROMPTS_TARGET_DIR}"
+    repair_or_create_symlink "legacy .Codex output-style bridge" "${output_style_source}" "${LEGACY_OUTPUT_STYLE_TARGET_FILE}"
   fi
 
   if (( REPAIR_LOCAL_CONFIG )); then

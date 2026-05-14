@@ -126,7 +126,7 @@ The schema and a fillable template live at `companies/_template/`.
 
 ### Knowledge repos
 
-HQ knowledge bases are independent git repos symlinked into `knowledge/`. This keeps each knowledge base versioned separately and shareable.
+Personal knowledge bases can be independent git repos symlinked into `personal/knowledge/`. Shared starter-kit knowledge ships under `core/knowledge/`.
 
 For each knowledge base the user wants to create:
 
@@ -142,7 +142,8 @@ cd -
 
 2. Symlink into HQ:
 ```bash
-ln -s ../../repos/public/knowledge-{name} knowledge/{name}
+mkdir -p personal/knowledge
+ln -s ../../repos/public/knowledge-{name} personal/knowledge/{name}
 ```
 
 **Optional: turn `personal/knowledge/` into its own git repo so you can sync it across machines.**
@@ -166,10 +167,10 @@ If you skip this, `personal/knowledge/` is just a plain directory tracked by HQ 
 Bundled knowledge (Ralph, workers, security framework) ships as plain directories.
 To version them independently, you can convert any to a repo later:
 
-  1. Move: mv knowledge/Ralph repos/public/knowledge-ralph
+  1. Move: mv core/knowledge/public/Ralph repos/public/knowledge-ralph
   2. Init: cd repos/public/knowledge-ralph && git init && git add . && git commit -m "init"
-  3. Symlink: ln -s ../../repos/public/knowledge-ralph knowledge/Ralph
-  4. Add to .gitignore: knowledge/Ralph
+  3. Symlink: ln -s ../../../repos/public/knowledge-ralph core/knowledge/public/Ralph
+  4. Add to .gitignore: core/knowledge/public/Ralph
 
 This is optional — plain directories work fine for read-only knowledge.
 ```
@@ -217,7 +218,7 @@ Run `/personal-interview` to populate the autonomy matrix and communication styl
 Full company/role context lives in `agents-companies.md` (three tiers: Operate / Client / Portfolio).
 ```
 
-**agents-companies.md** (root level — created empty, populated by `/personal-interview` or manually):
+**personal/agents-companies.md** (created empty, populated by `/personal-interview` or manually):
 ```markdown
 # {Name} — Company Contexts
 
@@ -235,16 +236,8 @@ _Run `/personal-interview` or edit manually to populate._
 
 Add to `.gitignore` if not already present:
 ```
-# Knowledge repo contents (tracked by their own git)
-knowledge/*/
-!knowledge/Ralph/
-!knowledge/workers/
-!knowledge/ai-security-framework/
-!knowledge/dev-team/
-!knowledge/design-styles/
-!knowledge/hq-core/
-!knowledge/loom/
-!knowledge/projects/
+# Personal knowledge repo contents (tracked by their own git when symlinked)
+personal/knowledge/
 ```
 
 ### Index
@@ -273,7 +266,7 @@ Dependencies:
 ✓ vercel (Vercel CLI) — or skipped
 
 Knowledge Repos:
-Your knowledge bases can be independent git repos symlinked into knowledge/.
+Your personal knowledge bases can be independent git repos symlinked into personal/knowledge/.
 This lets you version, share, and publish each knowledge base separately.
 See "Knowledge Repos" in CLAUDE.md for details.
 

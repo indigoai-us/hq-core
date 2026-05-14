@@ -32,23 +32,23 @@ Audit HQ for policy violations, migrate outdated structures, and fix inconsisten
 
 ### 1. Project Structure
 
-**Policy**: All projects in `projects/` folder with `README.md`
+**Policy**: Personal/HQ projects live in `personal/projects/`; company projects live in `companies/{co}/projects/`. Each project should have a `README.md`.
 
 ```bash
 # Find projects with only prd.json (no README)
-for dir in projects/*/; do
+for dir in personal/projects/*/ companies/*/projects/*/; do
   if [[ -f "${dir}prd.json" && ! -f "${dir}README.md" ]]; then
     echo "MIGRATE: $dir has prd.json but no README.md"
   fi
 done
 
-# Find projects outside projects/ folder
-find companies apps -name "prd.json" 2>/dev/null
+# Find projects outside approved project folders
+find . -path './.git' -prune -o -name "prd.json" -print 2>/dev/null | grep -vE '^\./(personal/projects|companies/[^/]+/projects)/'
 ```
 
 **Violations**:
 - prd.json without README.md → needs migration
-- prd.json in companies/ or apps/ → needs relocation
+- prd.json outside `personal/projects/` or `companies/{co}/projects/` → needs relocation
 
 ### 2. Worker Registry
 
@@ -66,7 +66,7 @@ done
 
 ### 3. Deprecated Directories
 
-**Policy**: No apps/ directory (use projects/ or core/workers/)
+**Policy**: No apps/ directory (use `personal/projects/`, `companies/{co}/projects/`, or `core/workers/`)
 
 ```bash
 # Check if apps/ still exists
@@ -96,7 +96,7 @@ git status --short
 **Policy**: Knowledge repos should be clean (committed)
 
 ```bash
-for symlink in knowledge/public/* knowledge/private/* companies/*/knowledge; do
+for symlink in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
   [ -L "$symlink" ] || continue
   repo_dir=$(cd "$symlink" && git rev-parse --show-toplevel 2>/dev/null) || continue
   dirty=$(cd "$repo_dir" && git status --porcelain)
@@ -152,7 +152,7 @@ find . -name "SKILL.md" -not -path "./repos/*"
 **Policy**: INDEX.md files should exist and match directory contents. See `core/knowledge/public/hq-core/index-md-spec.md` for spec.
 
 **Expected locations:**
-- `projects/INDEX.md`
+- `personal/projects/INDEX.md`
 - `companies/{product}/knowledge/INDEX.md`
 - `companies/{company}/knowledge/INDEX.md`
 - `core/knowledge/public/INDEX.md`
@@ -190,7 +190,7 @@ grep -n "null" companies/manifest.yaml
 **Policy**: Every knowledge symlink should have a corresponding entry in `core/modules/modules.yaml`.
 
 ```bash
-for symlink in knowledge/public/* knowledge/private/* companies/*/knowledge; do
+for symlink in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
   [ -L "$symlink" ] || continue
   name=$(basename $(readlink "$symlink"))
   if ! grep -q "$name" core/modules/modules.yaml 2>/dev/null; then
@@ -286,9 +286,9 @@ find workspace/checkpoints -name "*.json" -mtime +30 -exec mv {} archives/checkp
 
 ### Relocate Misplaced Projects
 ```bash
-# Move apps/{name}/prd.json to projects/{name}/
-mkdir -p projects/{name}
-mv apps/{name}/prd.json projects/{name}/
+# Move apps/{name}/prd.json to personal/projects/{name}/
+mkdir -p personal/projects/{name}
+mv apps/{name}/prd.json personal/projects/{name}/
 ```
 
 ### Regenerate INDEX.md Files (--reindex)
@@ -312,14 +312,14 @@ HQ Cleanup Audit
 
 ✓ Worker registry: 15 workers indexed
 ✗ Project structure: 8 issues
-  - projects/customer-cube: prd.json without README.md
-  - projects/deel-analytics: prd.json without README.md
+  - personal/projects/customer-cube: prd.json without README.md
+  - personal/projects/deel-analytics: prd.json without README.md
   ...
 ✗ Deprecated directories: apps/ still exists (4 items)
 ✗ Git status: 3 uncommitted changes
 ✓ Checkpoints: all recent
 ✗ INDEX.md: 2 stale, 1 missing
-  - projects/INDEX.md: 30 entries vs 33 actual (stale)
+  - personal/projects/INDEX.md: 30 entries vs 33 actual (stale)
   - workspace/reports/INDEX.md: missing
 
 Summary: 14 issues found
@@ -333,8 +333,8 @@ Run `/cleanup --consolidate-insights` to dedup and flag stale insights
 ### After Migration
 ```
 Migrated 8 projects to README.md format:
-- projects/customer-cube/README.md (created)
-- projects/deel-analytics/README.md (created)
+- personal/projects/customer-cube/README.md (created)
+- personal/projects/deel-analytics/README.md (created)
 ...
 
 Original prd.json files renamed to prd.json.bak
@@ -518,11 +518,11 @@ Reference for what we're enforcing:
 
 | Area | Policy |
 |------|--------|
-| Projects | Live in `projects/{name}/` with `README.md` |
+| Projects | Live in `personal/projects/{name}/` or `companies/{co}/projects/{name}/` with `README.md` |
 | PRD format | Markdown README.md (not prd.json) |
 | Workers | Indexed in `core/workers/registry.yaml` |
 | Worker FSM | `state_machine:` section in worker.yaml (Loom pattern) |
-| Apps | Deprecated - migrate to projects/ or core/workers/ |
+| Apps | Deprecated - migrate to `personal/projects/`, `companies/{co}/projects/`, or `core/workers/` |
 | Skills | `.claude/commands/*.md` format |
 | Threads | Primary session persistence (`workspace/threads/`) |
 | Auto-checkpoints | Lightweight, purge after 14 days (`T-*-auto-*.json`) |

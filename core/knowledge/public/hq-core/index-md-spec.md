@@ -37,7 +37,7 @@ Max 80 chars per description. If no metadata extractable, use filename.
 
 ## Variants
 
-- `projects/INDEX.md` → add `Status` column (active/completed/archived)
+- `personal/projects/INDEX.md` and `companies/*/projects/INDEX.md` → add `Status` column (active/completed/archived)
 - `workspace/orchestrator/INDEX.md` → add `Progress` column (e.g. "5/11 45%")
 - `workspace/reports/INDEX.md` → add `Date` column
 - `companies/*/INDEX.md` → add `Projects` table (Project/Status/Description) + `Deployments` table (Service/URL/Repo/Platform)
@@ -46,7 +46,7 @@ Max 80 chars per description. If no metadata extractable, use filename.
 
 ### Core (10 directories)
 
-1. `projects/`
+1. `personal/projects/`
 2. `companies/{company}/knowledge/`
 3. `companies/{company}/knowledge/`
 4. `companies/{company}/knowledge/`
@@ -65,7 +65,7 @@ All `companies/*/INDEX.md` — inventory of settings, data, knowledge + project/
 
 All `companies/*/knowledge/INDEX.md` — contents of each company's knowledge repo.
 
-Root `INDEX.md` and `workspace/threads/INDEX.md` also exist but follow their own formats.
+`core/docs/hq/INDEX.md` and `workspace/threads/INDEX.md` also exist but follow their own formats.
 
 ## Regeneration Rules
 
@@ -78,12 +78,12 @@ Root `INDEX.md` and `workspace/threads/INDEX.md` also exist but follow their own
 
 | Command | INDEX.md files updated |
 |---------|----------------------|
-| `/checkpoint` | Root, threads/, + touched company knowledge dirs |
-| `/handoff` | Root, threads/, orchestrator/, + touched company knowledge dirs |
+| `/checkpoint` | core/docs/hq/, threads/, + touched company knowledge dirs |
+| `/handoff` | core/docs/hq/, threads/, orchestrator/, + touched company knowledge dirs |
 | `/reanchor` | Validates freshness, reads indexes for context |
 | `/cleanup --reindex` | ALL INDEX.md files (full rebuild) |
-| `/plan` | `projects/` |
-| `/run-project` | `projects/`, `workspace/orchestrator/` |
+| `/plan` | `personal/projects/` or `companies/{co}/projects/` |
+| `/run-project` | `personal/projects/`, `companies/{co}/projects/`, `workspace/orchestrator/` |
 | `/newworker` | `core/workers/public/` or `core/workers/private/` |
 | `/contentidea`, `/suggestposts`, `/post-now` | `workspace/social-drafts/` |
 | Report generation | `workspace/reports/` |

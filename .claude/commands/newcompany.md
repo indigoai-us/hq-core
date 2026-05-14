@@ -56,7 +56,7 @@ mkdir -p design-styles/packs
 git add -A && git commit -m "init: knowledge base"
 ```
 
-The `design-styles/packs/` subdirectory is where company-scoped brand packs (`type: brand`, `scope: company`) live. When the optional design-styles pack is installed, pack-aware workers auto-load this path via their `dynamic` context when this company is the target.
+The `design-styles/packs/` subdirectory is where company-scoped brand packs (`type: brand`, `scope: company`) live — one directory per pack, registered in `core/knowledge/public/design-styles/registry.yaml`. Pack-aware workers auto-load this path via their `dynamic` context when this company is the target.
 
 Create symlink:
 ```bash

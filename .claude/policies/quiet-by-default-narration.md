@@ -58,7 +58,7 @@ If unsure, lean silent — but always at least confirm task completion in one li
 
 ### Capability and convention preserved
 
-- **`/hq-share` minting turn** — the unredacted share-session URL MUST print inline on the minting turn. This is a hard-enforcement capability policy: see `core/policies/hq-share-session-urls-are-capabilities.md`. The visibility filter does not override that.
+- **`/hq-share` minting turn** — the unredacted share-session URL MUST print inline on the minting turn. This is a hard-enforcement capability policy: see `.claude/policies/hq-share-session-urls-are-capabilities.md`. The visibility filter does not override that.
 - **`/deploy` preview** — the deployed URL must surface as a one-line casual note (e.g. "Deployed to https://…"). Per `.claude/skills/deploy/SKILL.md` § "Reporting back to the user" this is the only user-visible deploy output; don't drop it.
 
 ### Verbose narration allowed (user wants play-by-play)
@@ -87,7 +87,7 @@ Cavebro's Auto-Clarity blocks (security warnings, irreversible actions, plan-mod
 |---|---|
 | Default "state one sentence before first tool call" | **Overridden** for routine operational tool calls. Preserved for substantive ones. |
 | `.claude/output-styles/cavebro.md` voice rules | **Orthogonal layer.** This policy governs *whether* to surface text; cavebro governs *how* (terseness, warmth tokens) when surfacing. They compose: silent stays silent; surfaced text follows the active style. |
-| `.claude/output-styles/Explanatory` insight blocks | **Surfaced** — insights are substantive. The policy does not suppress them. |
+| Active output-style insight blocks | **Surfaced** — insights are substantive. The policy does not suppress them. |
 | Auto-checkpoint `AUTO-CHECKPOINT REQUIRED` hook injection | The injection is system-to-agent. Silently write the thread file; no chat narration about checkpointing. |
 
 ## Examples
@@ -174,7 +174,7 @@ After this policy lands, the following session behavior holds (run as observatio
 5. **`/deploy` carveout.** One-line "Deployed to {url}" surfaces.
 6. **`/run-project` verbose.** Per-story narration unchanged.
 7. **Auto-checkpoint silent.** Thread file lands in git, no chat narration about it.
-8. **Digest entry.** `grep quiet-by-default-narration .claude/policies/quiet-by-default-narration.md` returns a hit.
+8. **Digest entry.** `grep quiet-by-default-narration .claude/policies/_digest.md` returns a hit after the auto-rebuild.
 
 ## Promotion
 

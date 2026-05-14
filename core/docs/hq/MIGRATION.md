@@ -1,4 +1,53 @@
-## Migrating to v14.1.1 — 2026-05-13
+## Migrating to v14.1.1 — 2026-05-14
+
+### TL;DR
+
+Run `/update-hq`. After the update, the visible HQ root should be:
+
+- `AGENTS.md`
+- `companies/`
+- `core/`
+- `personal/`
+- `repos/`
+- `workspace/`
+
+Hidden runtime directories such as `.claude/`, `.agents/`, `.codex/`, `.github/`, and tool metadata may still exist at the root. That is expected.
+
+### Moved paths
+
+- `CHANGELOG.md` → `core/docs/hq/CHANGELOG.md`
+- `LICENSE` → `core/docs/hq/LICENSE`
+- `MIGRATION.md` → `core/docs/hq/MIGRATION.md`
+- `README.md` → `core/docs/hq/README.md`
+- `RELEASE-NOTES-v14.0.0.md` → `core/docs/hq/RELEASE-NOTES-v14.0.0.md`
+- `USER-GUIDE.md` → `core/docs/hq/USER-GUIDE.md`
+
+### Removed legacy paths
+
+- `data/`
+- root `projects/` for personal/HQ projects; use `personal/projects/`
+- root `core.yaml`; use `core/core.yaml`
+
+### Sync and multi-machine cleanup
+
+This migration matters for HQ Sync because a file move can look like "delete old path + add new path" to a second machine that has not yet received the same cleanup. The safe sequence is:
+
+1. Update one machine and let it commit the moved paths plus deletions.
+2. Run HQ Sync from that machine so the cloud receives the new layout.
+3. Run HQ Sync on the other machine. If stale root files reappear as conflicts, keep the cleaned layout and archive/delete the legacy root copies.
+
+If `/update-hq` cannot remove stale root paths automatically, run this from the HQ root after confirming no personal content lives there:
+
+```bash
+rm -rf data projects
+rm -f CHANGELOG.md CONTRIBUTING.md GEMINI.md INDEX.md LICENSE MIGRATION.md README.md RELEASE-NOTES-v14.0.0.md USER-GUIDE.md core.yaml setup.sh
+```
+
+Do not remove `AGENTS.md`, `.claude/`, `.agents/`, `.codex/`, `companies/`, `core/`, `personal/`, `repos/`, or `workspace/`.
+
+---
+
+## Migrating to v14.1.0 — 2026-05-13
 
 ### TL;DR
 

@@ -19,7 +19,7 @@ Desktop MUST function with this absolute minimum. If any item is missing, Deskto
 | 1 | `.claude/CLAUDE.md` | file | Exists, non-empty | Core identity of an HQ instance |
 | 2 | `.claude/commands/` | dir | Contains >= 1 `.md` file | Commands panel needs at least one entry |
 | 3 | `core/workers/registry.yaml` | file | Valid YAML, has `workers:` key (array) | Worker browser needs a parseable registry |
-| 4 | `projects/` | dir | Exists (may be empty) | Project dashboard mount point |
+| 4 | `personal/projects/` | dir | Exists (may be empty) | Personal/HQ project dashboard mount point |
 | 5 | `workspace/` | dir | Exists | Runtime state container |
 | 6 | `workspace/threads/` | dir | Exists (may be empty) | Thread browser mount point |
 | 7 | `core/knowledge/` | dir | Exists (may have subdirs or be empty) | Knowledge browser mount point |
@@ -38,7 +38,7 @@ Desktop classifies every valid HQ into one of three levels. The level determines
 
 **Structural fingerprint:**
 - `core/workers/registry.yaml` has <= 4 workers (sample + 3 codex)
-- `projects/` contains no `prd.json` files
+- `personal/projects/` contains no `prd.json` files
 - `workspace/threads/` is empty or has only `.gitkeep`
 - No `companies/` directory
 - No `workspace/orchestrator/state.json`
@@ -51,7 +51,7 @@ Desktop classifies every valid HQ into one of three levels. The level determines
 
 **Structural fingerprint (any of):**
 - `core/workers/registry.yaml` has > 4 workers
-- At least one `projects/*/plan.json` exists
+- At least one `personal/projects/*/plan.json` or `companies/*/projects/*/plan.json` exists
 - `workspace/threads/` has >= 1 `.json` file
 - `workspace/orchestrator/state.json` exists
 
@@ -78,7 +78,7 @@ Each Desktop feature is available at specific instance levels. Features degrade 
 | **Worker browser** | Shows sample + codex | Shows all workers | Shows all + private/public split | Parse `registry.yaml` |
 | **Worker detail** | Basic info | Full skills + learnings | Full + company ownership | Read `worker.yaml` per worker |
 | **Worker skill runner** | Available | Available | Available | Always enabled if workers exist |
-| **Project dashboard** | "Create your first project" CTA | Project list with progress | Full project list + state badges | Scan `projects/*/plan.json` |
+| **Project dashboard** | "Create your first project" CTA | Project list with progress | Full project list + state badges | Scan `personal/projects/*/plan.json` and `companies/*/projects/*/plan.json` |
 | **Project detail (PRD viewer)** | N/A | Render prd.json | Render prd.json + orchestrator state | Read `prd.json` + execution state |
 | **Story kanban board** | N/A | Available | Available + cross-project view | Parse `userStories` array |
 | **Orchestrator state** | Hidden | Available if state.json exists | Full execution monitor | Check `workspace/orchestrator/state.json` |
@@ -95,7 +95,7 @@ Each Desktop feature is available at specific instance levels. Features degrade 
 | **Reports browser** | Hidden | Available if reports exist | Available | Check non-gitkeep files in `workspace/reports/` |
 | **INDEX.md navigation** | Use dir listing | Use dir listing or INDEX if present | INDEX-based tree | Check for `INDEX.md` files |
 | **Terminal** | Available | Available | Available | Always enabled |
-| **User profile** | "Run /personal-interview" CTA | Available if agents.md exists | Available + companies profile | Check `agents.md` or `agents-profile.md` |
+| **User profile** | "Run /personal-interview" CTA | Available if `personal/agents-profile.md` exists | Available + companies profile | Check `personal/agents-profile.md` and `personal/agents-companies.md` |
 
 ## 4. Graceful Degradation Rules
 
@@ -133,8 +133,8 @@ Desktop MUST follow these rules when encountering missing structures. The princi
 | `companies/manifest.yaml` | Skip company isolation enforcement. Show companies as basic directories. |
 | `.mcp.json` | Hide MCP integration panel. |
 | `social-kit.yaml` | Hide social publishing controls. |
-| `agents.md` / `agents-profile.md` | Show "Run /personal-interview" CTA in profile section. |
-| `agents-companies.md` | No company context in profile (single-company users). |
+| `personal/agents-profile.md` | Show "Run /personal-interview" CTA in profile section. |
+| `personal/agents-companies.md` | No company context in profile (single-company users). |
 | `core/modules/modules.yaml` | Hide module manager panel. |
 | `core/settings/pure-ralph.json` | No Ralph loop configuration in settings view. |
 
@@ -154,7 +154,7 @@ Desktop MUST follow these rules when encountering missing structures. The princi
 
 | Condition | Desktop Behavior |
 |-----------|-----------------|
-| `projects/` dir is empty | Show "Create your first project" with link to `/plan`. |
+| `personal/projects/` dir is empty | Show "Create your first project" with link to `/plan`. |
 | `prd.json` missing `userStories` | Show project as "legacy format" with migration prompt. |
 | `prd.json` has `features` instead of `userStories` | Same as above -- legacy format. |
 | Story missing `passes` field | Treat as `passes: false`. |
@@ -178,11 +178,16 @@ Desktop needs to identify the HQ template version and detect custom extensions t
 
 ### 5.1 Template Version Detection
 
-**Primary method: CHANGELOG.md parsing**
+**Primary method: core/core.yaml parsing**
+
+1. Read `core/core.yaml`
+2. Parse `hqVersion`
+
+**Fallback: core/docs/hq/CHANGELOG.md parsing**
 
 ```
 Algorithm:
-1. Read CHANGELOG.md from HQ root
+1. Read `core/docs/hq/CHANGELOG.md`
 2. Scan for first heading matching /^## v(\d+\.\d+\.\d+)/
 3. Extract version string
 4. If no match, version = "unknown"
@@ -201,7 +206,7 @@ Algorithm:
 | v3.0.0 | qmd search, `/pure-ralph` | Search integration possible |
 | v2.0.0 | Project orchestration, dev-team workers | Full dev-team, content-team (later removed in v5) |
 
-**Fallback if no CHANGELOG.md:** Check for structural markers:
+**Fallback if no changelog:** Check for structural markers:
 - Has `core/workers/dev-team/codex-*` -> >= v5.3
 - Has `core/settings/pure-ralph.json` -> >= v3.0
 - Has `core/workers/public/dev-team/` -> >= v5.0
@@ -232,7 +237,7 @@ Desktop counts extensions beyond the template baseline to show users how much th
 | Custom commands | 18 | `count(.claude/commands/*.md) - 18` |
 | Custom workers | 4 | `registry.workers.length - 4` (sample + 3 codex) |
 | Knowledge bases | 9 | `count(core/knowledge/*/`) - 9` (Ralph, hq-core, hq, dev-team, workers, projects, loom, ai-security-framework, design-styles) |
-| Projects | 0 | `count(projects/*/plan.json)` |
+| Projects | 0 | `count(personal/projects/*/plan.json) + count(companies/*/projects/*/plan.json)` |
 | Threads | 0 | `count(workspace/threads/*.json)` |
 | Companies | 0 | `count(companies/*/` subdirs) |
 
@@ -247,7 +252,7 @@ Desktop should detect when a user has evolved their HQ template beyond the defau
 | Fresh clone | Only `.gitkeep` files in workspace dirs | Just cloned, nothing done |
 | Post-setup | `agents.md` exists | Ran `/setup` |
 | First worker | registry has > 4 workers | Created custom worker via `/newworker` |
-| First project | `projects/*/plan.json` exists | Created PRD via `/plan` |
+| First project | `personal/projects/*/plan.json` or `companies/*/projects/*/plan.json` exists | Created PRD via `/plan` |
 | Active use | `workspace/threads/*.json` count > 5 | Regular session use |
 | Multi-company | `companies/` exists with manifest | Set up company isolation |
 | Knowledge repos | Symlinks in `core/knowledge/` pointing to `repos/` | Graduated to repo-backed knowledge |
@@ -266,7 +271,7 @@ This section is the formal contract that Desktop code MUST adhere to.
 5. Desktop MUST parse `core/workers/registry.yaml` from the HQ root, never assume a path like `core/workers/public/` or `core/workers/private/`.
 6. Desktop MUST support both flat `core/knowledge/` and split `core/knowledge/public/` + `core/knowledge/private/` layouts.
 7. Desktop MUST support both flat `core/workers/` and split `core/workers/public/` + `core/workers/private/` layouts.
-8. Desktop MUST read `CHANGELOG.md` for version detection and fall back to structural markers if absent.
+8. Desktop MUST read `core/core.yaml` for version detection, then `core/docs/hq/CHANGELOG.md`, then fall back to structural markers if absent.
 9. Desktop MUST display file/directory absence as empty states with help text, never as errors.
 10. Desktop MUST handle `prd.json` with either `userStories` (current) or `features` (legacy) array key.
 
@@ -302,7 +307,7 @@ The current Rust backend (see US-001, Section 5) needs these changes to comply w
 
 3. **Feature detection command:** Add a `detect_hq_features(path: String)` Tauri command that returns the full feature flags, instance level, and version info.
 
-4. **Conditional watchers:** Only start `prd_watcher` if `projects/` has content. Only start `threads_watcher` if `workspace/threads/` exists. Add watchers for new directories only when they are detected.
+4. **Conditional watchers:** Only start `prd_watcher` if `personal/projects/` or `companies/*/projects/` has content. Only start `threads_watcher` if `workspace/threads/` exists. Add watchers for new directories only when they are detected.
 
 5. **Worker path resolution:** `list_workers()` and `get_worker_detail()` must read paths from `registry.yaml` rather than assuming directory structure. Support both `core/workers/{id}/` and `core/workers/public/{id}/` patterns.
 

@@ -5,7 +5,7 @@
 # Does NOT block — warns only (exit 0 with stderr message).
 #
 # Environment:
-#   HQ_EXECUTING_STORY=1 — set by run-project.sh when spawning claude -p sub-agents.
+#   HQ_EXECUTING_STORY=1 — set by run-project.sh when spawning story workers.
 #                          Suppresses the warning (legitimate story execution context).
 #
 # Trigger: PreToolUse on Edit and Write

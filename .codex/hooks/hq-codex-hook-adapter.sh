@@ -145,7 +145,7 @@ emit_context() {
         }
       }'
       ;;
-    Stop)
+    Stop|PreCompact)
       jq -n --arg msg "$STDOUT_ACCUM" '{systemMessage: $msg}'
       ;;
   esac
@@ -187,6 +187,9 @@ run_post_tool_use() {
         run_hook "auto-checkpoint-trigger" "$HOOK_DIR/auto-checkpoint-trigger.sh" "$payload" "advisory"
       done <<< "$paths"
       ;;
+    update_plan|ExitPlanMode)
+      run_hook "native-plan-project-sync" "$HOOK_DIR/native-plan-project-sync.sh" "$INPUT" "advisory"
+      ;;
   esac
 }
 
@@ -194,6 +197,12 @@ case "$HOOK_EVENT" in
   SessionStart)
     run_hook "load-policies" "$HOOK_DIR/load-policies-for-session.sh" "$INPUT" "advisory"
     run_hook "inject-local-context" "$HOOK_DIR/inject-local-context.sh" "$INPUT" "advisory"
+    run_hook "auto-startwork" "$HOOK_DIR/auto-startwork.sh" "$INPUT" "advisory"
+    ;;
+  UserPromptSubmit)
+    run_hook "rewrite-resume-sentinel" "$HOOK_DIR/rewrite-resume-sentinel.sh" "$INPUT" "advisory"
+    run_hook "route-deep-plan-to-skill" "$HOOK_DIR/route-deep-plan-to-skill.sh" "$INPUT" "advisory"
+    run_hook "auto-session-project" "$HOOK_DIR/auto-session-project.sh" "$INPUT" "advisory"
     ;;
   PreToolUse)
     run_pre_tool_use
@@ -203,6 +212,14 @@ case "$HOOK_EVENT" in
     ;;
   Stop)
     run_hook "observe-patterns" "$HOOK_DIR/observe-patterns.sh" "$INPUT" "advisory"
+    run_hook "cleanup-mcp-processes" "$HOOK_DIR/cleanup-mcp-processes.sh" "$INPUT" "advisory"
+    run_hook "context-warning-50" "$HOOK_DIR/context-warning-50.sh" "$INPUT" "advisory"
+    run_hook "capture-estimates" "$HOOK_DIR/capture-estimates.sh" "$INPUT" "advisory"
+    ;;
+  PreCompact)
+    run_hook "precompact-thrashing-detector" "$HOOK_DIR/precompact-thrashing-detector.sh" "$INPUT" "advisory"
+    run_hook "auto-checkpoint-precompact" "$HOOK_DIR/auto-checkpoint-precompact.sh" "$INPUT" "advisory"
+    run_hook "journal-precompact" "$HOOK_DIR/journal-precompact.sh" "$INPUT" "advisory"
     ;;
 esac
 

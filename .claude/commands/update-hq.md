@@ -59,11 +59,15 @@ If `OVERRIDE_VERSION` is set, use it. Otherwise detect in this order (stop at fi
    - Read `core/core.yaml` from HQ root.
    - Extract `hqVersion` value (regex on a YAML scalar: `/^hqVersion:\s*["']?(\d+\.\d+\.\d+)["']?/m`).
    - If found → `CURRENT_VERSION={match}`, `DETECTION_SOURCE="core/core.yaml"`.
-2. **Fallback 1 — `CHANGELOG.md` heading scan** (pre-v12 installs, or v12+ without core/core.yaml).
-   - Read `CHANGELOG.md` from HQ root.
+2. **Fallback 1 — `core/docs/hq/CHANGELOG.md` heading scan** (v14.1.1+ installs without core/core.yaml).
+   - Read `core/docs/hq/CHANGELOG.md` from HQ root.
    - Scan for first heading matching `## v{X.Y.Z}` or `## [{X.Y.Z}]` (regex: `/^##\s*\[?v?(\d+\.\d+\.\d+)/`).
+   - If found → `CURRENT_VERSION={match}`, `DETECTION_SOURCE="core/docs/hq/CHANGELOG.md"`.
+3. **Fallback 2 — legacy `CHANGELOG.md` heading scan** (pre-v14.1.1 installs).
+   - Read `CHANGELOG.md` from HQ root.
+   - Scan for first heading matching `## v{X.Y.Z}` or `## [{X.Y.Z}]`.
    - If found → `CURRENT_VERSION={match}`, `DETECTION_SOURCE="CHANGELOG.md"`.
-3. **Fallback 2 — structural markers** (pre-v12 installs with neither core/core.yaml nor a conforming CHANGELOG — last-resort heuristics).
+4. **Fallback 3 — structural markers** (pre-v12 installs with neither core/core.yaml nor a conforming CHANGELOG — last-resort heuristics).
    - `core/workers/dev-team/codex-*` dirs exist → `>= v5.3.0`
    - `core/workers/sample-worker/` exists → `>= v5.0.0`
    - `core/settings/pure-ralph.json` exists → `>= v3.0.0`
@@ -79,7 +83,8 @@ Current HQ version: v{CURRENT_VERSION}
 
 Annotate by `DETECTION_SOURCE`:
 - `"core/core.yaml"` → no annotation (expected path on v12+)
-- `"CHANGELOG.md"` → `"(detected via CHANGELOG.md — no core/core.yaml found; pre-v12 install)"`
+- `"core/docs/hq/CHANGELOG.md"` → `"(detected via core/docs/hq/CHANGELOG.md — no core/core.yaml found)"`
+- `"CHANGELOG.md"` → `"(detected via legacy root CHANGELOG.md — pre-v14.1.1 install)"`
 - `"structural-markers"` → `"(detected via structural markers — no core/core.yaml or CHANGELOG.md found)"`
 
 ---
@@ -113,7 +118,7 @@ Stop.
 
 Fetch CHANGELOG.md from target:
 ```bash
-gh api repos/indigoai-us/hq-core/contents/CHANGELOG.md?ref=v{TARGET_VERSION} --jq '.content' | base64 -d
+gh api repos/indigoai-us/hq-core/contents/core/docs/hq/CHANGELOG.md?ref=v{TARGET_VERSION} --jq '.content' | base64 -d
 ```
 
 Extract all version headings (`## v{X.Y.Z}`) between CURRENT and TARGET. Display:
@@ -145,11 +150,30 @@ Ignored {N} generated artifacts (regenerated locally; see "Generated artifacts" 
 
 When the local working tree is checked in Phase 4 (git status), exclude these paths from the dirty-state evaluation as well — a regenerated `_digest.md` is not a real uncommitted change for migration purposes.
 
+### Infrastructure files (force upstream)
+
+These paths are pure HQ-owned dispatch and build infrastructure with no user-customization surface. They are **never** three-way merged — they are always taken verbatim from upstream.
+
+```
+.claude/hooks/**/*.sh        # hook dispatcher + every hook script
+.claude/scripts/**/*.sh      # command-side dispatch helpers
+.leak-scan/**/*.sh           # leak-scan tooling
+core/scripts/**/*.sh         # HQ core scripts (build, audit, codex bridge)
+core/scripts/lib/**/*.sh
+.github/workflows/**/*.yml   # CI workflows
+```
+
+**Why force-upstream and not smart-merge:** a three-way merge on a dispatch script can produce conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) inside the file. Those markers are invalid bash, invalid JSON, and invalid in every executable language. If the file is then executed during normal session operation, it fails. The catastrophic case is `.claude/hooks/hook-gate.sh` — the central PreToolUse / PostToolUse dispatcher. When it has a syntax error, every tool call (Bash, Read, Write, Edit, Agent) fails its hook check, and Claude Code interprets that as a hard tool block. **No in-session recovery is possible** — every tool needed to repair the file is itself gated by the broken file. The user must repair from a fresh terminal.
+
+The protection: list these paths up front, skip the merge logic entirely, write upstream content directly. A user who has genuinely hand-edited one of these (rare and unsupported) can recover their version from `git` after migration. Protecting the session is the right default.
+
+This filter is **additive** to the "Generated artifacts" filter. Generated artifacts are dropped from every list (never compared, never written). Force-upstream files are kept in `updated_files` but bypass the smart-merge branch in Phase 5b. User-owned files that ride alongside (`companies/{co}/hooks/`, `personal/hooks/`, `repos/{repo}/.claude/hooks/`) are **never** force-upstream — only `core/`, `.claude/`, `.leak-scan/`, and `.github/workflows/` paths owned by hq-core itself.
+
 ### Fetch MIGRATION.md
 
 Fetch MIGRATION.md from target:
 ```bash
-gh api repos/indigoai-us/hq-core/contents/MIGRATION.md?ref=v{TARGET_VERSION} --jq '.content' | base64 -d
+gh api repos/indigoai-us/hq-core/contents/core/docs/hq/MIGRATION.md?ref=v{TARGET_VERSION} --jq '.content' | base64 -d
 ```
 
 ### Parse sections
@@ -271,6 +295,8 @@ If fetch fails for any file: report error, increment `failed`, continue.
 
 For each path in `updated_files`:
 
+**Pre-check — infrastructure file force-upstream.** If `{path}` matches any pattern in the "Infrastructure files (force upstream)" list defined in Phase 3, write upstream content directly: skip the three-way merge entirely, increment `auto_updated`, report `"✓ Force-upstream: {path} (infrastructure file)"`, and continue to the next path. Do NOT proceed to steps 1–7 below for force-upstream paths. If `DRY_RUN`: report `"Would force-upstream: {path}"`, no write.
+
 1. **Fetch upstream** content from TARGET tag (same gh api + base64 as above).
 2. **Read local** file. If file doesn't exist locally:
    - Ask: `"{path} doesn't exist locally. Create from upstream? [Y/n]"`
@@ -304,15 +330,22 @@ For each path in `updated_files`:
        ```
      - If **Smart merge**:
        - Write base, local, upstream to three temp files. Run `git merge-file --diff3 -p {local} {base} {upstream} > {merged}` (3-way merge).
-       - If `git merge-file` exits 0 (clean merge): write `merged` to the path, increment `auto_updated`, report `"✓ Smart-merged: {path} (clean)"`.
-       - If it exits non-zero (conflict markers present): show the conflicted file content and re-prompt with:
-         ```
-         1. Write merged file with conflict markers (resolve manually after migration)
-         2. Skip (keep local, merge later)
-         3. Overwrite with upstream
-         ```
-         If write-with-markers: write merged file, increment `user_updated`, add to `skipped_files` with note `"has conflict markers"`.
-         If `DRY_RUN`: report `"Would smart-merge: {path}"`, no write.
+       - **Validate the merged buffer before writing** per section 5b-VALIDATE below. Validation outcome controls the next branch:
+         - **Clean merge AND validation passes** (`git merge-file` exit 0 + validator OK): write `merged` to the path, increment `auto_updated`, report `"✓ Smart-merged: {path} (clean)"`.
+         - **Conflict markers AND file is free-text** (`.md`, `.txt`, `.rst`, etc. — validation passes because markers are tolerable in text): show the conflicted file content and re-prompt with the original 3-option menu:
+           ```
+           1. Write merged file with conflict markers (resolve manually after migration)
+           2. Skip (keep local, merge later)
+           3. Overwrite with upstream
+           ```
+           If write-with-markers: write merged file, increment `user_updated`, add to `skipped_files` with note `"has conflict markers"`.
+         - **Validation fails** (executable or structured file where markers corrupt syntax — `.sh`, `.json`, `.yaml`, `.yml`, `.js`, `.ts`, `.py`, etc.): **never write the merged file with markers**. Show the conflicted file content and re-prompt with a restricted 2-option menu:
+           ```
+           1. Skip (keep local — merge manually after migration)
+           2. Overwrite with upstream (recommended for executable files — markers would break parsing)
+           ```
+           Add `{path}` to `skipped_files` with note `"executable file with unmergeable conflict; resolved by {choice}"`.
+         - If `DRY_RUN`: report `"Would smart-merge: {path}"` (or `"Would prompt with restricted menu: {path}"` for validation-fail cases), no write.
      - If **Skip**: increment `skipped`, add to `skipped_files`.
      - If **Show**: display full upstream content, then re-ask (smart-merge / skip / overwrite).
      - If **Overwrite** and not dry run: write upstream, increment `user_updated`.
@@ -410,6 +443,33 @@ Never auto-overwrite — user has custom permissions and hooks.
 5. If `DRY_RUN`: report what would change, no write.
 6. If skipped: add `settings.json` to `skipped_files`.
 
+### 5b-VALIDATE: Pre-write Validation
+
+Before writing any merged buffer produced by `git merge-file` to disk, validate that the buffer is still parseable for its file type. The goal is to catch corruption from conflict markers landing inside executable / structured files BEFORE they hit disk, where they would corrupt the script and (for hook scripts) potentially brick the session.
+
+Dispatch by file extension:
+
+| Extension | Validator command | Pass criterion |
+|---|---|---|
+| `.sh`, `.bash` | `bash -n {merged}` | exit 0 |
+| `.json` | `jq -e . {merged} > /dev/null` | exit 0 |
+| `.yaml`, `.yml` | `yq -e '.' {merged} > /dev/null` (fallback: `python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' {merged}`) | exit 0 |
+| `.js`, `.mjs`, `.cjs` | `node --check {merged}` | exit 0 |
+| `.ts`, `.tsx` | `node --check` is not available — fall back to grep for conflict markers (`grep -qE '^(<<<<<<<\|=======\|>>>>>>>)' {merged}` → presence means fail) | no markers |
+| `.py` | `python3 -m py_compile {merged}` | exit 0 |
+| `.md`, `.txt`, `.rst` and other free-text | always pass | n/a |
+| Anything else | grep for conflict markers (fail if any present) | no markers |
+
+**Validation outcome — pass.** Continue with the original Phase 5b step 7b branch (write clean merge OR offer markers/skip/overwrite for free-text conflicts).
+
+**Validation outcome — fail.** The merged buffer would corrupt the file if written. The user gets a **restricted 2-option menu** — never the "write with markers" option. Choices: `Skip (keep local)` or `Overwrite with upstream` (recommended for HQ-owned infrastructure where markers would break execution).
+
+**Why validators come AFTER `git merge-file`, not instead of it.** A clean three-way merge is the goal whenever possible — it preserves local customizations. Validation is a safety net for the conflict-marker case, not a replacement for merging. Files where `git merge-file` exits 0 always pass validation (markers only appear on non-zero exit).
+
+**Why force-upstream files (Phase 3) bypass this entirely.** They are never merged in the first place — they take upstream verbatim. Validation is for files where smart-merge is attempted.
+
+**Recovery if validation is missing or fails in a future hq-core version.** Phase 6b.5 (Hook Sanity Check) runs after the migration completes and will auto-recover any `.claude/hooks/*.sh` that fails `bash -n`.
+
 ### 5c. Breaking Changes
 
 For each breaking change parsed from MIGRATION.md:
@@ -494,24 +554,24 @@ Pack failures are warnings — the scaffold upgrade still succeeds. Every failed
 
 ## Phase 6: Post-Migration
 
-### 6a. Update CHANGELOG.md
+### 6a. Update core/docs/hq/CHANGELOG.md
 
 Ask first:
 ```
-Update your CHANGELOG.md with version entries from v{CURRENT} to v{TARGET}? [Y/n]
+Update your core/docs/hq/CHANGELOG.md with version entries from v{CURRENT} to v{TARGET}? [Y/n]
 ```
 
 If yes and not dry run:
-- Read local CHANGELOG.md.
+- Read local `core/docs/hq/CHANGELOG.md`.
 - Prepend migration marker at top (after any existing header):
   ```markdown
   ## v{TARGET} (migrated {YYYY-MM-DD})
 
   Migrated from v{CURRENT} via `/migrate`.
   ```
-- Fetch all changelog entries from the upstream CHANGELOG.md between CURRENT and TARGET.
+- Fetch all changelog entries from the upstream `core/docs/hq/CHANGELOG.md` between CURRENT and TARGET.
 - Append those entries after the migration marker.
-- Write updated CHANGELOG.md.
+- Write updated `core/docs/hq/CHANGELOG.md`.
 
 ### 6b. Write Migration Log
 
@@ -547,6 +607,33 @@ If not dry run, write to `workspace/migrate-v{TARGET}.md`:
 
 {list of breaking changes that were acknowledged}
 ```
+
+### 6b.5. Hook Sanity Check (auto-recovery)
+
+After all writes complete, before any further session work, verify every shell script under `.claude/hooks/` parses cleanly. A corrupted hook script (especially `hook-gate.sh`) would freeze the session by failing every PreToolUse / PostToolUse check.
+
+```bash
+broken=()
+for f in .claude/hooks/*.sh .claude/hooks/**/*.sh 2>/dev/null; do
+  [ -f "$f" ] || continue
+  if ! bash -n "$f" 2>/dev/null; then
+    broken+=("$f")
+  fi
+done
+```
+
+For each broken file (if any):
+
+1. Report: `"⚠ Broken script after migration: {path} — auto-recovering from upstream v{TARGET}"`.
+2. Re-fetch upstream content: `gh api "repos/indigoai-us/hq-core/contents/{path}?ref=v{TARGET}" --jq '.content' | base64 -d > {path}`
+3. `chmod +x {path}` if it lives in `.claude/hooks/` or `core/scripts/`.
+4. Re-verify with `bash -n`. If still broken, add to `failed_files` with note `"hook sanity check failed; manual repair required from terminal"` and surface in the final summary with a copy-pasteable recovery one-liner.
+
+If `DRY_RUN`: skip this step entirely (no writes happened, nothing can be broken).
+
+Apply the same sanity check to `.claude/settings.json` (`jq -e . .claude/settings.json > /dev/null`). If it fails, auto-recover from upstream the same way.
+
+This is the last line of defense. The pre-write validation in 5b-VALIDATE should catch corruption before write; the force-upstream filter in Phase 3 should prevent merging infrastructure files at all. 6b.5 exists for the case where a future migration introduces a new infrastructure file that isn't yet on the force-upstream list — a self-healing safety net.
 
 ### 6c. Update Search Index
 
@@ -617,3 +704,8 @@ Run `/migrate` without --check to apply.
 - **Never silently install recommended packs** — always prompt per-pack; skip silently only on failed `conditional`
 - **Pack updates are idempotent** — `hq install`/`hq update` compares manifest version, no-op when already current
 - **Generated artifacts are out of scope** — paths in the "Generated artifacts" list (Phase 3) are filtered from every list before fetch/compare, including directory expansions and the Phase 4 git-status dirty check
+- **Infrastructure files are force-upstream** — paths in the "Infrastructure files (force upstream)" list (Phase 3) are NEVER three-way merged. They take upstream verbatim. This protects `hook-gate.sh` and similar dispatch scripts from session-bricking corruption via conflict markers.
+- **Never write conflict markers into executable or structured files** — `.sh`, `.json`, `.js`, `.ts`, `.mjs`, `.cjs`, `.py`, `.bash` and similar files MUST NOT receive a merged buffer containing `<<<<<<<` / `=======` / `>>>>>>>` markers. The "write merged file with conflict markers" option is reserved for free-text files (`.md`, `.txt`, `.rst`, and `.yaml` data files). For executable / structured files where validation fails, the user gets `Skip` or `Overwrite with upstream` only.
+- **Validate merged buffers before writing** — every `git merge-file` output passes through 5b-VALIDATE (extension-dispatched: `bash -n`, `jq -e`, `yq`, `node --check`, `python3 -m py_compile`, or marker-grep) before hitting disk. Validation failure forces the restricted 2-option menu — never write-with-markers.
+- **Post-migration hook sanity check (6b.5)** — after writes complete, run `bash -n` on every `.claude/hooks/*.sh` and `jq -e .` on `.claude/settings.json`. Auto-recover any broken file by re-fetching from upstream v{TARGET}. This is the self-healing safety net for the case where a new infrastructure file slipped through the force-upstream filter.
+- **A broken hook-gate.sh has no in-session recovery** — every PreToolUse and PostToolUse hook dispatches through `.claude/hooks/hook-gate.sh`. If it has a bash syntax error, every tool call (Bash, Read, Write, Edit, Agent) fails its hook check and is blocked. The user must repair from a fresh terminal. This is why force-upstream + pre-write validation + post-migration sanity check are all hard rules, not merely recommendations.

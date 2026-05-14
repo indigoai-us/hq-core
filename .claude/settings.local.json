@@ -12,8 +12,6 @@
       "Read(~/.zshenv)",
       "Read(~/.bashrc)",
       "Read(~/.bash_profile)",
-      "Edit(./core/**)",
-      "Write(./core/**)",
       "Edit(./companies/_template/**)",
       "Write(./companies/_template/**)"
     ]

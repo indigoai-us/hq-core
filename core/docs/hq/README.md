@@ -129,6 +129,7 @@ Workers learn from and contribute to shared knowledge:
 - `core/knowledge/public/loom/` — Loom agent patterns (reference)
 - `core/knowledge/public/projects/` — Project templates
 - `core/knowledge/public/getting-started/` — Onboarding material
+- `personal/knowledge/` — Your user-personal knowledge overlay. Entries here are symlinked into `core/knowledge/` by master-sync, so they appear inside core without changing precedence.
 
 Optional packs (e.g. `@indigoai-us/hq-pack-design-styles`, `@indigoai-us/hq-pack-gemini`) install additional knowledge bases.
 
@@ -389,7 +390,7 @@ Knowledge bases in HQ are **independent git repos**, symlinked into `core/knowle
 repos/private/knowledge-personal/                                  ← actual git repo
     └── README.md, notes.md, ...
 
-core/knowledge/public/personal → ../../../repos/private/knowledge-personal   ← symlink
+personal/knowledge → ../repos/private/knowledge-personal                     ← symlink
 ```
 
 HQ git tracks the symlink. The repo contents are tracked by their own git. Tools (`qmd`, `Glob`, `Read`) follow symlinks transparently.
@@ -441,11 +442,6 @@ ln -s ../../../repos/public/knowledge-ralph core/knowledge/public/Ralph
 ```
 my-hq/
 ├── AGENTS.md                  # Charter for Claude / Codex sessions
-├── README.md
-├── CHANGELOG.md
-├── MIGRATION.md
-├── RELEASE-NOTES-*.md
-├── USER-GUIDE.md
 ├── .claude/
 │   ├── CLAUDE.md              # Session protocol + Context Diet
 │   ├── commands/              # 53 slash commands
@@ -457,6 +453,7 @@ my-hq/
 │   └── settings.json / settings.local.json
 ├── core/
 │   ├── core.yaml              # Core manifest
+│   ├── docs/hq/               # README, CHANGELOG, MIGRATION, USER-GUIDE
 │   ├── knowledge/
 │   │   ├── public/            # Bundled public knowledge bases
 │   │   └── private/           # Private knowledge bases (populated via packs / sync)
@@ -472,9 +469,15 @@ my-hq/
 │   ├── _template/             # Skeleton for new companies
 │   ├── manifest.yaml
 │   └── {co}/                  # One directory per company (created via /newcompany)
-├── data/
-│   └── journal/               # Cross-company journal
-├── projects/                  # Top-level project scratch
+├── personal/
+│   ├── agents-profile.md      # Owner profile and style
+│   ├── agents-companies.md    # Company contexts and roles
+│   ├── knowledge/             # Personal knowledge overlay
+│   ├── projects/              # Personal/HQ project scratch
+│   ├── policies/
+│   ├── settings/
+│   ├── skills/
+│   └── workers/
 ├── repos/
 │   ├── public/                # Open-source repos + knowledge repos
 │   └── private/               # Private repos + knowledge repos

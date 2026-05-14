@@ -10,7 +10,7 @@ created: 2026-05-11
 updated: 2026-05-11
 source: hardening
 introduced_in: hq-core 14.0.1
-spec: knowledge/public/hq-core/journal-spec.md
+spec: core/knowledge/public/hq-core/journal-spec.md
 public: true
 ---
 

@@ -3,7 +3,7 @@
 # (Agent, AskUserQuestion, WebFetch, WebSearch) to the active session journal's
 # `## Auto-capture` section.
 #
-# Spec: knowledge/public/hq-core/journal-spec.md
+# Spec: core/knowledge/public/hq-core/journal-spec.md
 #
 # Activation:
 #   Reads `.claude/state/active-journal` (single-line absolute path) to find target.

@@ -19,7 +19,7 @@ Read `.claude/commands/journal.md` first. Treat it as the source of truth for th
 
 ## Spec
 
-`core/knowledge/public/hq-core/session-journal-spec.md` — full spec covering the two-pattern coexistence with the task journal (`.claude/skills/_shared/journal.sh`).
+`core/knowledge/public/hq-core/journal-spec.md` — full spec covering the two-pattern coexistence with the task journal (`.claude/skills/_shared/journal.sh`).
 
 ## Constraints
 
@@ -33,4 +33,4 @@ Read `.claude/commands/journal.md` first. Treat it as the source of truth for th
 - `.claude/hooks/journal-due.sh` — PostToolUse trigger (after every 10 edits, after git commit, after test pass)
 - `.claude/hooks/journal-precompact.sh` — PreCompact reminder
 - `.claude/hooks/load-journal-index-on-start.sh` — SessionStart INDEX injector
-- `projects/hq-token-economy/prd.json` US-007 (this), US-008/009/010 (the surrounding hooks)
+- `personal/projects/hq-token-economy/prd.json` US-007 (this), US-008/009/010 (the surrounding hooks)
