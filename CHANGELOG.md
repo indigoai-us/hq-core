@@ -2,6 +2,14 @@
 
 _Nothing yet._
 
+## [14.1.2-beta.2] — 2026-05-14
+
+### Headline
+**Minimal beta cut from `main` containing the `companies/manifest.yaml` lock-list fix.** Distinct lineage from `v14.1.2-beta.1`, which was cut from `hq-core-staging` and never merged into `hq-core/main` — this beta is what `main` actually contains today.
+
+### Fixed
+- **`companies/manifest.yaml` no longer in `core/core.yaml` `rules.locked`** (#15) — `protect-core.sh` and `block-core-writes-bash.sh` were rejecting every Edit/Write to the manifest, even though it's a per-user mutable config that `/newcompany`, `hq-sync`, and direct user edits write to routinely. Operations no longer need `HQ_BYPASS_CORE_PROTECT=1` to touch manifest.yaml.
+
 ## [14.1.1] — 2026-05-13
 
 ### Headline
