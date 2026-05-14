@@ -1,0 +1,3 @@
+interface:
+  display_name: "accept"
+  short_description: "Accept a vault-backed HQ membership invite from a magic link or raw token."

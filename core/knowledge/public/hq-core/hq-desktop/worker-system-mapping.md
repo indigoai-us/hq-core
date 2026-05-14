@@ -156,7 +156,7 @@ state_machine:
 integrations:
   x:
     client: core/workers/private/x-user/src/x-client.ts
-    config: companies/personal/settings/x/config.json
+    config: personal/settings/x/config.json
 ```
 
 ### 1.10 Output Block
@@ -695,11 +695,12 @@ companies/manifest.yaml
   ├─ {company}:
   │     workers: [cmo-brand]
   │
-  ├─ personal:
-  │     workers: [x-user, invoices]
-  │
   └─ (public workers: dev-team/*, content-team/*, qa-tester, etc.)
        → company-agnostic, inherit active company from invocation
+
+  Personal workers (e.g. x-user, invoices) live at top-level `personal/workers/`,
+  alongside `personal/{knowledge,policies,settings,skills,hooks}/` — peer to `core/`,
+  not a company. master-sync.sh mirrors them into `core/workers/<entry>` symlinks.
 ```
 
 ---

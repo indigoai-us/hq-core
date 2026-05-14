@@ -11,6 +11,15 @@ Upgrade your HQ installation from the latest indigoai-us/hq-core release on GitH
 
 **User's input:** $ARGUMENTS
 
+## Default policy: smart merge for upstream changes
+
+When any user-customized file has upstream changes, **always recommend "Smart merge"** — never lead with overwrite. CLAUDE.md, registry.yaml, settings.json, and any three-way conflict get the same default: preserve local customizations and layer upstream changes on top.
+
+- **Smart merge for structured files** (CLAUDE.md, settings.json, registry.yaml): section/key-level merge with per-change approval. Local-only sections and keys are preserved silently; new upstream sections are offered for append; changed sections show a diff and ask before replacing just that section.
+- **Smart merge for plain files**: 3-way merge using `git merge-file --diff3 -p local base upstream > merged` (or equivalent). If the merge completes cleanly, write it. If it produces conflict markers, show the marked file and ask the user to (1) accept the markers and resolve manually, (2) accept upstream, or (3) skip.
+- **Overwrite is never the default option** in any conflict prompt. List Smart merge first, marked as `(recommended)`. Overwrite is offered only as a fallback.
+- **Skip is always available** so the user can defer any individual file.
+
 ## Argument Parsing
 
 Parse `$ARGUMENTS` for:
@@ -284,67 +293,93 @@ For each path in `updated_files`:
    - **7b. If local != base** (user customized): **CONFLICT**.
      - Show unified diff of upstream changes (base → upstream).
      - Show note that local file has been customized from the base version.
-     - Use AskUserQuestion:
+     - Use AskUserQuestion (Smart merge is always the recommended default):
        ```
        {path} has local customizations AND upstream changes.
 
-       1. Overwrite with upstream (lose your customizations)
+       1. Smart merge (recommended — layer upstream changes onto your file, preserve customizations)
        2. Skip (keep your version, merge manually later)
        3. Show full upstream file content
+       4. Overwrite with upstream (lose your customizations — fallback only)
        ```
-     - If overwrite and not dry run: write upstream, increment `user_updated`.
-     - If skip: increment `skipped`, add to `skipped_files`.
-     - If show: display full upstream content, then re-ask overwrite/skip.
-     - If `DRY_RUN`: report `"Would prompt: {path} (has local customizations)"`.
+     - If **Smart merge**:
+       - Write base, local, upstream to three temp files. Run `git merge-file --diff3 -p {local} {base} {upstream} > {merged}` (3-way merge).
+       - If `git merge-file` exits 0 (clean merge): write `merged` to the path, increment `auto_updated`, report `"✓ Smart-merged: {path} (clean)"`.
+       - If it exits non-zero (conflict markers present): show the conflicted file content and re-prompt with:
+         ```
+         1. Write merged file with conflict markers (resolve manually after migration)
+         2. Skip (keep local, merge later)
+         3. Overwrite with upstream
+         ```
+         If write-with-markers: write merged file, increment `user_updated`, add to `skipped_files` with note `"has conflict markers"`.
+         If `DRY_RUN`: report `"Would smart-merge: {path}"`, no write.
+     - If **Skip**: increment `skipped`, add to `skipped_files`.
+     - If **Show**: display full upstream content, then re-ask (smart-merge / skip / overwrite).
+     - If **Overwrite** and not dry run: write upstream, increment `user_updated`.
+     - If `DRY_RUN`: report `"Would prompt: {path} (has local customizations — smart-merge recommended)"`.
 
-### 5b-CLAUDE: CLAUDE.md Section-Level Merge
+### 5b-CLAUDE: CLAUDE.md Smart Merge (section-level)
 
-CLAUDE.md is the most customized file. Never auto-overwrite.
+CLAUDE.md is the most customized file. **Always smart-merge — never auto-overwrite, never present overwrite as the default.** Smart merge here means section-by-section integration: upstream additions are appended, upstream changes are offered per-section, and local-only sections are preserved silently.
+
+Announce up front:
+```
+Smart-merging CLAUDE.md (section-level) — your customizations will be preserved.
+```
 
 1. Parse both local and upstream CLAUDE.md into sections by `## ` headings.
    - Each section = heading text + all content until next `## ` heading or EOF.
 2. Compare section lists:
-   - **New sections** (in upstream, not in local): offer to append each individually.
+   - **New sections** (in upstream, not in local): offer to append each individually (recommended yes).
      ```
-     New section found in upstream CLAUDE.md:
+     New section in upstream CLAUDE.md:
 
      ## {Section Heading}
      {first ~10 lines of content...}
 
-     Append this section to your CLAUDE.md? [Y/n]
+     Append to your CLAUDE.md? [Y/n] (recommended: Y)
      ```
      If yes and not dry run: append section to end of local CLAUDE.md.
-   - **Changed sections** (heading exists in both, content differs): show diff of that section.
+   - **Changed sections** (heading exists in both, content differs): show diff of that section. Smart merge is the recommended path; overwrite is fallback.
      ```
      Section "## {Heading}" has upstream changes.
 
      {unified diff of just this section}
 
-     1. Replace this section with upstream version
+     1. Smart merge this section (recommended — 3-way merge: keep your edits, layer upstream changes)
      2. Skip (keep your version)
      3. Show full upstream section
+     4. Replace this section with upstream version (fallback)
      ```
+     If **Smart merge**: run `git merge-file --diff3 -p {local_section} {base_section} {upstream_section}` where `base_section` is the corresponding section from the CURRENT-version CLAUDE.md (fetched via `gh api ... ?ref=v{CURRENT}`). On clean merge: splice merged content back in place of the local section. On conflict: write the section with markers and add `CLAUDE.md` to `skipped_files` with note `"section '{Heading}' has conflict markers"`.
+     If base CLAUDE.md fetch fails (e.g., pre-v12), fall back to a 2-way prompt: show diff and ask `Replace this section / Skip / Show upstream`.
    - **Removed sections** (in local, not in upstream): leave alone (user's custom sections).
    - **Identical sections**: skip silently.
-3. If `DRY_RUN`: report which sections would be added/changed, write nothing.
-4. Track: if ANY section was skipped, add `CLAUDE.md` to `skipped_files`.
+3. If `DRY_RUN`: report which sections would be added/smart-merged/replaced, write nothing.
+4. Track: if ANY section was skipped or written with conflict markers, add `CLAUDE.md` to `skipped_files`.
 
-### 5b-REGISTRY: registry.yaml Special Handling
+### 5b-REGISTRY: registry.yaml Smart Merge
 
-Never auto-overwrite — user has custom workers.
+Never auto-overwrite — user has custom workers. Smart merge is the recommended default.
 
 1. Show diff between local and upstream.
 2. Always ask via AskUserQuestion:
    ```
    core/workers/registry.yaml has upstream changes (new workers, version bump).
-   Your local registry has custom workers that will be preserved.
 
-   1. Show diff
-   2. Overwrite (will lose custom worker entries)
+   1. Smart merge (recommended — add upstream workers + bump version, preserve your custom worker entries)
+   2. Show diff
    3. Skip (merge manually later)
+   4. Overwrite (will lose custom worker entries — fallback only)
    ```
-3. If `DRY_RUN`: report `"Would prompt: core/workers/registry.yaml"`.
-4. If skipped: add to `skipped_files`.
+3. If **Smart merge**:
+   - Parse local and upstream as YAML.
+   - For top-level scalars (version, etc.): take upstream.
+   - For list of worker entries: union by worker `id`/`name` — keep all local entries, add upstream entries whose id is not already present locally. If an entry exists in both with different content, prefer local but report the conflict for follow-up.
+   - Write merged YAML, increment `auto_updated`. Report `"✓ Smart-merged: core/workers/registry.yaml"`.
+   - If parse fails: fall back to 3-way `git merge-file` (see step 7b).
+4. If `DRY_RUN`: report `"Would smart-merge: core/workers/registry.yaml"`, no write.
+5. If skipped: add to `skipped_files`.
 
 ### 5b-SETTINGS: settings.json Special Handling
 
@@ -564,8 +599,9 @@ Run `/migrate` without --check to apply.
 
 ## Rules
 
-- **NEVER auto-overwrite CLAUDE.md** — always section-level merge with per-section approval
-- **NEVER auto-overwrite registry.yaml** — user has custom workers, always ask
+- **Smart merge is always the recommended default** for files with both local customizations and upstream changes. Overwrite is offered only as a fallback option, never as the recommendation. This applies to CLAUDE.md, settings.json, registry.yaml, and any plain-file three-way conflict.
+- **NEVER auto-overwrite CLAUDE.md** — always smart-merge at the section level with per-section approval
+- **NEVER auto-overwrite registry.yaml** — smart-merge by worker id (union local + upstream), preserve custom workers
 - **NEVER auto-overwrite settings.json** — merge hooks by event type, preserve user permissions and custom hooks
 - **Always offer skip** — user can decline any individual file update
 - **Idempotent** — content-based comparison, no external state. Running twice is safe

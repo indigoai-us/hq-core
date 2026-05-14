@@ -91,7 +91,7 @@ Use the Read tool to read `core/workers/registry.yaml`. The registry stores work
 ```yaml
 workers:
   - id: x-user
-    path: companies/personal/workers/x-user/
+    path: companies/_template/workers/x-user/
     description: "..."
 ```
 

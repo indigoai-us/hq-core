@@ -9,9 +9,9 @@ visibility: public
 
 # /run-project — Project Executor
 
-Executes PRD stories for a project. **Default mode is inline** — each incomplete story runs inside a fresh per-story Task sub-agent in the current Claude session. Pass `--ralph-mode` to run the legacy background orchestrator (`core/scripts/run-project.sh`) that spawns `claude -p` subprocesses for each story and polls state files from the parent. Pass `--session-mode` to use the plan-file-anchored inline shape.
+Executes PRD stories for a project. **Default mode is inline** — each incomplete story runs inside a fresh per-story sub-agent in the current session (`Task` in Claude Code, `spawn_agent` in Codex). Pass `--ralph-mode` to run the background orchestrator (`core/scripts/run-project.sh`) that spawns one fresh headless builder per story and polls state files from the parent. Pass `--session-mode` to use the plan-file-anchored inline shape.
 
-Policy: `core/policies/run-project-default-is-inline.md` (hard).
+Policy: internal HQ `run-project-default-is-inline` rule (hard).
 
 **Arguments:** $ARGUMENTS
 
@@ -19,7 +19,7 @@ Policy: `core/policies/run-project-default-is-inline.md` (hard).
 
 "Pick a task, complete it, commit it."
 
-- Fresh context per task (per-story Task sub-agent in default/inline mode; `claude -p` subprocess in `--ralph-mode`)
+- Fresh context per task (per-story sub-agent in default/inline mode; headless builder subprocess in `--ralph-mode`)
 - Sub-agents do heavy lifting via `/execute-task`
 - Back pressure keeps code on rails
 - Handoffs preserve context between workers
@@ -28,9 +28,9 @@ Policy: `core/policies/run-project-default-is-inline.md` (hard).
 
 | Mode | When | How |
 |------|------|-----|
-| **Default (inline)** | `/run-project {project}` with no execution-mode flag | Plan from PRD → user approves → execute each story in a per-story Task sub-agent (fresh context) that invokes `/execute-task` internally. See `## Inline Execution (Default)` below. |
+| **Default (inline)** | `/run-project {project}` with no execution-mode flag | Plan from PRD → user approves → execute each story in a per-story sub-agent (fresh context) that invokes `/execute-task` internally. See `## Inline Execution (Default)` below. |
 | **inline (explicit)** | `--inline` flag | Silent alias for default. Same behavior as bare invocation. |
-| **ralph-mode** | `--ralph-mode` flag | `nohup bash core/scripts/run-project.sh {project}` runs in background; each story spawns as an isolated `claude -p` subprocess; parent session polls `state.json`. Best for long unattended runs. See `## Ralph-Mode Execution (--ralph-mode)` below. |
+| **ralph-mode** | `--ralph-mode` flag | `nohup bash core/scripts/run-project.sh {project}` runs in background; each story spawns as an isolated builder subprocess (`claude -p` by default; `codex exec` only with explicit opt-in); parent session polls `state.json`. Best for long unattended runs. See `## Ralph-Mode Execution (--ralph-mode)` below. |
 | **session-mode** | `--session-mode` flag | Plan distilled into Claude Code plan file (with full policy rule text) → `ExitPlanMode` approval → parent session executes each story directly (Edit/Write/Bash); bounded helper sub-agents only (review, QA, E2E, design audit). No `/execute-task` wrapper. See `## Session-Mode Execution` below. |
 | **tmux** | `--tmux` flag (implies `--ralph-mode`) | `run-project.sh` in tmux session (observe from phone) |
 | **direct** | `bash core/scripts/run-project.sh` (CI/nohup/cron) | Direct shell execution, outside `/run-project` scope |
@@ -44,16 +44,17 @@ Parse `$ARGUMENTS` into project name + passthrough flags:
 - `--help`: display flags table + exit
 - `--session-mode`: route to **Session-Mode Execution** flow (see below). Incompatible with `--inline`, `--ralph-mode`, `--tmux`, `--swarm`, `--codex-autofix`, `--dry-run`, `--status` (error immediately on conflict).
 - `--ralph-mode`: route to **Ralph-Mode Execution** flow (see below). Incompatible with `--inline` and `--session-mode` (error immediately on conflict).
+- `--builder claude|codex|auto` / `--engine claude|codex|auto`: pass through to the background orchestrator. If omitted or `auto`, `core/scripts/run-project.sh` uses `claude`; `codex` requires `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1`.
 - `--inline`: silent alias for default — route to **Inline Execution** (see below). Do NOT error or warn.
 - No execution-mode flag present: route to **Inline Execution** (default).
 - Empty (no project name): error — project name required
 - All other flags pass through verbatim to the chosen execution path
 
-**Hard policy:** `core/policies/run-project-default-is-inline.md` — a bare `/run-project {project}` MUST NOT launch `nohup bash core/scripts/run-project.sh ...`. That path requires `--ralph-mode`.
+**Hard policy:** internal HQ `run-project-default-is-inline` rule — a bare `/run-project {project}` MUST NOT launch `nohup bash core/scripts/run-project.sh ...`. That path requires `--ralph-mode`.
 
 ## Ralph-Mode Execution (--ralph-mode)
 
-Opt-in background orchestrator. When `--ralph-mode` is passed, `/run-project` launches `core/scripts/run-project.sh` as a `nohup` background OS process and monitors progress via state file polling from the parent Claude session. Each story runs as an isolated `claude -p` subprocess (fresh context per story). Best for long unattended runs (8+ stories), CI-like execution, or when the user wants progress surfaced from a phone via `--tmux`.
+Opt-in background orchestrator. When `--ralph-mode` is passed, `/run-project` launches `core/scripts/run-project.sh` as a `nohup` background OS process and monitors progress via state file polling from the parent session. Each story runs as an isolated headless builder subprocess (fresh context per story). Builder selection defaults to `claude -p`; `codex exec` is available only when explicitly requested and `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1` is set. Best for long unattended runs (8+ stories), CI-like execution, or when the user wants progress surfaced from a phone via `--tmux`.
 
 ### Step R2 — Validate PRD + Display Summary
 
@@ -152,7 +153,23 @@ The script runs headless (no tty) — it takes non-interactive paths automatical
 
 Interactive, plan-first execution in the current session — **this is the default shape** when `/run-project {project}` is called with no execution-mode flag. Best for small-to-medium projects (3-8 stories) where user input is valuable — ambiguous specs, design decisions, creative work. `--inline` is accepted as a silent alias for back-compat (no warning, no error).
 
-**Isolation model (per-story sub-agent):** Each story executes inside a single `general-purpose` Task sub-agent (not per-worker). The sub-agent invokes `/execute-task` internally, which in turn spawns the usual per-worker sub-agents. The parent session holds only approved-plan state plus a compact JSON summary per story — raw worker output never enters the parent context. This matches Ralph's "pick task, complete, commit, repeat" at the story level and keeps the parent session usable across long runs (5+ stories).
+**Isolation model (per-story sub-agent):** Each story executes inside a single story-level sub-agent (not per-worker). Claude Code uses `Task({subagent_type: "general-purpose"})`; Codex uses `spawn_agent(agent_type: "worker")`. The sub-agent invokes `/execute-task` internally, which in turn spawns the usual per-worker sub-agents through the runtime adapter in `.claude/skills/execute-task/SKILL.md`. The parent session holds only approved-plan state plus a compact JSON summary per story — raw worker output never enters the parent context. This matches Ralph's "pick task, complete, commit, repeat" at the story level and keeps the parent session usable across long runs (5+ stories).
+
+**Codex runtime adapter:** If `/run-project` is being executed from Codex and the selected mode is default/inline, use Codex's `spawn_agent` / `wait_agent` tools in the same places this document says `Task`. The mapping is:
+
+| Claude Code shape | Codex shape | Notes |
+|---|---|---|
+| `Task({subagent_type: "Plan", ...})` | `spawn_agent({agent_type: "explorer", ...})` then `wait_agent` | Read-only preflight. Return the exact markdown + JSON contract. |
+| Story `Task({subagent_type: "general-purpose", ...})` | `spawn_agent({agent_type: "worker", ...})` then `wait_agent` | Owns one story. Must invoke `/execute-task {project}/{story-id}` internally. |
+| Regression-gate `Task(...)` | `spawn_agent({agent_type: "worker", ...})` then `wait_agent` | Runs commands and returns compact JSON only. |
+
+Codex parent-session rules:
+
+1. Do NOT execute story implementation directly in the parent unless the user explicitly chose `--session-mode`.
+2. Tell every Codex `worker` agent: "You are not alone in the codebase; do not revert edits made by others; own only `{story-id}` and its declared files; adapt to existing changes; commit your story work before returning."
+3. The story worker must run `/execute-task {project}/{story-id}` internally and allow that skill to use its own Codex adapter for worker phases.
+4. If Codex returns changes as an integration patch instead of a parent-visible commit, the parent must review/integrate those changes and create the story commit before marking the story passed.
+5. The worker proof gate remains mandatory: `workers_run` must include at least one real HQ worker ID from the approved plan / registry, and commit verification must pass before `passes:true`.
 
 ### Step 1 — Parse + Validate
 
@@ -171,7 +188,7 @@ Interactive, plan-first execution in the current session — **this is the defau
 
 **Isolation goal:** The parent session must NOT read prd.json, policies, or state.json directly. Those reads accumulate 10K+ tokens that are dead weight after plan approval. Delegate to a single Plan sub-agent; the parent only sees the rendered plan.
 
-1. Spawn exactly ONE Task sub-agent to do the heavy preflight read:
+1. Spawn exactly ONE sub-agent to do the heavy preflight read. In Claude Code, use `Task`:
 
    ```
    Task({
@@ -220,6 +237,17 @@ Interactive, plan-first execution in the current session — **this is the defau
    })
    ```
 
+   In Codex, use the same prompt with:
+
+   ```
+   spawn_agent({
+     agent_type: "explorer",
+     message: "<same prompt>",
+     reasoning_effort: "medium"
+   })
+   wait_agent(...)
+   ```
+
 2. Parent displays the markdown plan verbatim (no re-reading PRD), stores the JSON as the approved-plan state for later steps.
 
 3. **Enter plan mode** — user reviews, can request reordering or story adjustments (parent edits the JSON in place if needed; does not re-read PRD).
@@ -253,7 +281,7 @@ For each incomplete story in approved plan order, the parent session performs on
 2. **Branch setup**: create/checkout `branchName` from `baseBranch` (if specified in PRD)
 3. **Linear sync**: set In Progress (best-effort, non-blocking)
 
-**Delegate to story sub-agent (Task tool):**
+**Delegate to story sub-agent (Task / Codex adapter):**
 
 4. Spawn exactly ONE Task sub-agent for the story:
 
@@ -296,24 +324,52 @@ For each incomplete story in approved plan order, the parent session performs on
    })
    ```
 
+   In Codex, use a single `worker` agent instead:
+
+   ```
+   spawn_agent({
+     agent_type: "worker",
+     message: <<PROMPT
+       Execute story {project}/{story-id} by running the /execute-task skill.
+
+       You are not alone in the codebase. Own only this story and its declared
+       files, do not revert edits made by others, and adapt to any existing
+       changes you encounter.
+
+       Follow the same /execute-task behavior and RETURN CONTRACT below.
+       When /execute-task asks for a Task sub-agent, use the Codex runtime
+       adapter in .claude/skills/execute-task/SKILL.md so the nested worker
+       phases still run as isolated Codex agents.
+
+       Commit your story work before returning. If your runtime returns an
+       integration patch instead of a parent-visible commit, say so in notes
+       and list every changed path.
+
+       {same RETURN CONTRACT as the Claude Code prompt}
+     PROMPT
+   })
+   wait_agent(...)
+   ```
+
 **Parent absorbs the JSON result (≤~300 tokens):**
 
 5. Parse JSON. On parse failure, retry once with the same prompt + "Your last output was not valid JSON. Return ONLY the JSON object specified in the return contract." If retry fails, treat as `status: "blocked"` and surface the raw tail to the user.
-6. **Render one line** per story, e.g.:
+6. **Worker proof gate**: if `status == "passed"`, require `workers_run` to contain at least one real HQ worker ID from the approved plan / registry. Reject empty arrays, `["codex-exec"]`, `["commit"]`, `["general-purpose"]`, or any placeholder-only list. If the proof gate fails, treat the story as `blocked`, do NOT mark `passes: true`, and surface: `Worker proof missing; story did not prove HQ worker pipeline execution.`
+7. **Render one line** per story, e.g.:
    `✓ US-007 · architect → backend-dev → code-reviewer · 12 files · tests ✓ lint ✓ typecheck ✓ · commit abc1234`
-7. **Commit verification** (cheap, parent-side): `git log --oneline -n {len(commits)}` to confirm commits landed on current branch. Auto-commit any stragglers if sub-agent forgot (per CLAUDE.md "Sub-Agent Rules").
-8. **User checkpoint**: from the JSON `status` + `notes`, ask:
+8. **Commit verification** (cheap, parent-side): `git log --oneline -n {len(commits)}` to confirm commits landed on current branch. Auto-commit any stragglers if sub-agent forgot (per CLAUDE.md "Sub-Agent Rules").
+9. **User checkpoint**: from the JSON `status` + `notes`, ask:
    - **Continue** → proceed to next story (default if `status == "passed"`)
    - **Adjust** → user modifies next story's approach/ACs before execution
    - **Stop** → pause execution, preserve progress (resume later with `--inline --resume`)
-9. **Mark complete**: set `passes: true` in prd.json (only if `status == "passed"`), update `state.json` with story result + commits
-10. **Linear sync**: set Done + comment (best-effort, non-blocking)
+10. **Mark complete**: set `passes: true` in prd.json (only if `status == "passed"`), update `state.json` with story result + commits
+11. **Linear sync**: set Done + comment (best-effort, non-blocking)
 
 **Context-preservation note:** The parent session gains only ~300-500 tokens per completed story (announce lines + JSON summary + one-line render). Compared to the previous per-worker-inline model, which could accumulate several thousand tokens per story from worker output, this preserves the parent context window across 5-8 story runs without hitting the 60% advisory.
 
 ### Step 5 — Regression Gates
 
-Every 3 completed stories, run full `metadata.qualityGates` in a **one-shot Task sub-agent** so raw test output stays out of the parent context:
+Every 3 completed stories, run full `metadata.qualityGates` in a **one-shot sub-agent** so raw test output stays out of the parent context. Use `Task` in Claude Code or `spawn_agent(agent_type: "worker")` in Codex:
 
 ```
 Task({
@@ -526,7 +582,9 @@ bash core/scripts/run-project.sh --status
 | `--status` | — | Show all project statuses, exit |
 | `--dry-run` | — | Show story order without executing |
 | `--model MODEL` | (worker default) | Override model for all stories |
-| `--no-permissions` | off | Pass `--dangerously-skip-permissions` to claude (auto-set in-session) |
+| `--builder BUILDER` | auto | Headless builder for Ralph mode: `auto`, `claude`, or `codex`. Auto resolves to worker-authoritative `claude`; `codex` requires `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1` |
+| `--engine ENGINE` | auto | Alias for `--builder` |
+| `--no-permissions` | off | Pass the builder's non-interactive permission bypass (`claude` or `codex`) |
 | `--retry-failed` | off | Re-run previously failed stories only |
 | `--timeout N` | none | Per-story wall-clock timeout in minutes |
 | `--verbose` | off | Show full claude output |
@@ -535,7 +593,7 @@ bash core/scripts/run-project.sh --status
 | `--checkin-interval N` | 180 | Seconds between check-in status prints |
 | `--codex-autofix` | off | Auto-fix P1/P2 codex review findings (opt-in) |
 | `--inline` | (default) | **Silent alias for default** — `/run-project {project}` and `/run-project {project} --inline` behave identically. Kept for back-compat |
-| `--ralph-mode` | off | Opt into background orchestrator: `nohup bash core/scripts/run-project.sh {project}` + state-file polling. Each story runs as an isolated `claude -p` subprocess. Incompatible with `--inline` and `--session-mode` |
+| `--ralph-mode` | off | Opt into background orchestrator: `nohup bash core/scripts/run-project.sh {project}` + state-file polling. Each story runs as an isolated runtime-selected builder subprocess. Incompatible with `--inline` and `--session-mode` |
 | `--session-mode` | off | Plan-file-anchored inline execution with full policy rule text distilled into `~/.claude/plans/{slug}.md`. Parent executes stories directly (no `/execute-task` sub-agent wrapper) |
 
 ## How It Works (Ralph Loop)
@@ -548,7 +606,7 @@ Before entering the Ralph loop:
 2. Load `companies/{co}/policies/` (skip `example-policy.md`) — read all
 3. If `metadata.repoPath` set, check `{repoPath}/.claude/policies/` — read all
 4. Load `core/policies/` — filter to policies with triggers relevant to "task execution", "deployment", "commit"
-5. Pass applicable policy summaries to each `claude -p "/execute-task ..."` invocation context
+5. Pass applicable policy summaries to each headless builder invocation context
 
 Ensures orchestrator respects hard constraints (deploy safety, credential isolation) before delegating to execute-task.
 
@@ -569,7 +627,7 @@ For each selected story:
 1. **PRE-TASK**: Branch setup (create/checkout `branchName` from `baseBranch`)
 2. **PRE-TASK**: Linear sync → In Progress + comment (if `linearIssueId` configured)
 3. **PRE-TASK**: Update `state.json` current_task
-4. **EXECUTE**: `claude -p "/execute-task {project}/{story-id}"` as independent process
+4. **EXECUTE**: independent headless builder process (`claude -p` by default; `codex exec` only when `--builder codex` is explicitly requested with `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1`)
    - Model resolution: `--model` CLI flag > story `model_hint` > default
    - `/execute-task` handles: classification, worker selection, worker pipeline, PRD update, back pressure, learning capture
 5. **POST-TASK**: Validate git state (auto-commit if sub-agent forgot)
@@ -603,7 +661,7 @@ Every 3 completed stories (same cadence as regression gates), **after** the gate
 
 **Integration:**
 - In-session loop: after regression gate block, read reanchor report, present to user
-- Bash script: `run_project_reanchor()` spawns `claude -p` with reanchor prompt after `run_regression_gate()`
+- Bash script: `run_project_reanchor()` spawns a headless analysis agent with the reanchor prompt after `run_regression_gate()`
 
 ### Swarm Mode (`--swarm`)
 
@@ -612,7 +670,7 @@ When `--swarm [N]` is passed, the orchestrator dispatches eligible stories in pa
 1. **Candidate selection**: `get_swarm_candidates()` finds stories with resolved deps, declared `files[]`, no file lock conflicts, and no pairwise file overlap
 2. **Pre-acquire locks**: Orchestrator writes file locks BEFORE launching background processes (prevents race between concurrent execute-task lock acquisitions)
 3. **Per-story worktrees**: Each story gets its own git worktree for branch isolation
-4. **Background dispatch**: Each story launches as `claude -p` with `&`, tracked by PID
+4. **Background dispatch**: Each story launches as the selected headless builder with `&`, tracked by PID
 5. **Monitor loop**: Polls every 15s (`kill -0`), prints check-in status every `--checkin-interval` seconds
 6. **Completion processing**: When a PID exits — validate git, codex review, orchestrator writes `passes`, update state
 7. **Sequential merge**: Cherry-pick each worktree's commits into main project worktree (no conflicts since files don't overlap)
@@ -644,7 +702,7 @@ When all stories have `passes: true`:
 
 1. **Board sync** → `done`
 2. **Summary report** → `workspace/reports/{project}-summary.md`
-3. **Doc sweep** — headless `claude -p` invocation updates 4 doc layers:
+3. **Doc sweep** — headless agent invocation updates 4 doc layers:
 
    a. **Internal docs** (team-facing: tech guides, SOPs, manuals, ontology, taxonomy)
       - `{repoPath}/docs/` or similar MDX dirs
@@ -664,7 +722,7 @@ When all stories have `passes: true`:
 
    Output: `{execDir}/doc-sweep.output.json`. Non-blocking on failure.
 
-3b. **Document release** — run `/document-release {company} {project}` (or headless `claude -p` with document-release skill).
+3b. **Document release** — run `/document-release {company} {project}` (or a headless agent with document-release skill).
     Runs the full document-release pipeline (diff analysis → doc audit → apply updates → consistency check → cleanup).
     Non-blocking on failure — log output to `{execDir}/doc-release.output.json`.
 
@@ -695,13 +753,13 @@ If $ARGUMENTS is `--status`:
 - **Back pressure** — enforced inside `/execute-task`, not by orchestrator
 - **Policy-aware** — load company + repo + global policies before first task. Hard-enforcement policies block the loop if violated
 - **ALWAYS**: Use `"userStories"` key in prd.json (not `"stories"`) — `run-project.sh` greps for this exact key name
-- **Default is inline (hard)** — a bare `/run-project {project}` executes stories in-session via per-story Task sub-agents. It does NOT launch `core/scripts/run-project.sh`. That requires `--ralph-mode`. Policy: `core/policies/run-project-default-is-inline.md`.
+- **Default is inline (hard)** — a bare `/run-project {project}` executes stories in-session via per-story sub-agents (`Task` in Claude Code, `spawn_agent` in Codex). It does NOT launch `core/scripts/run-project.sh`. That requires `--ralph-mode`.
 - **`--inline` is a silent alias for default** — no warning, no error, identical behavior
 - **Default/inline isolation** — incompatible with `--ralph-mode`, `--session-mode`, `--swarm`, `--tmux`, `--codex-autofix` (error if combined)
 - **Default/inline respects `--resume`** — skips completed stories, picks up from next incomplete
-- **Default/inline uses Task/Agent tool** — worker sub-agents via Task tool (in-process), not `claude -p` (process isolation)
+- **Default/inline uses runtime sub-agents** — worker sub-agents via `Task` in Claude Code or `spawn_agent` in Codex, not `claude -p` (process isolation)
 - **Default/inline preserves progress** — user can stop between stories; partial progress saved in prd.json + state.json
-- **`--ralph-mode` launches `core/scripts/run-project.sh`** — the only execution path that spawns the background orchestrator. Stories run as isolated `claude -p` subprocesses; parent session polls `state.json`. Incompatible with `--inline` and `--session-mode`.
+- **`--ralph-mode` launches `core/scripts/run-project.sh`** — the only execution path that spawns the background orchestrator. Stories run as isolated builder subprocesses (`claude -p` by default; `codex exec` only when explicitly requested with `HQ_ALLOW_CODEX_OPAQUE_BUILDER=1`); parent session polls `state.json`. Incompatible with `--inline` and `--session-mode`.
 - **`--ralph-mode` implied by `--tmux`** — observing from phone requires the background orchestrator
 - **Plan-mode preflight delegation (hard)** — when `/run-project` is invoked under Claude Code plan mode, the parent MUST NOT read prd.json, policies, or state.json directly. Spawn a `Plan` sub-agent to do the reads and return a condensed plan + JSON. Parent only ever holds the summary. This applies to all modes (default/inline, `--ralph-mode`, `--session-mode`). Rationale: plan mode defers compaction until after `ExitPlanMode` approval, so direct reads accumulate 10K+ tokens that linger across the entire execution run.
 

@@ -35,6 +35,8 @@ mkdir -p companies/{slug}/workspace/sessions
 printf '# HQ workspace mirror — sessions are gitignored, index.jsonl is committed\nsessions/\n' \
   > companies/{slug}/workspace/.gitignore
 : > companies/{slug}/workspace/index.jsonl
+# Copy Obsidian vault config (dereference symlink in template)
+[ -e companies/_template/.obsidian ] && cp -rL companies/_template/.obsidian companies/{slug}/.obsidian
 ```
 
 The `workspace/` directory is the per-company audit trail of HQ sessions that
@@ -54,7 +56,7 @@ mkdir -p design-styles/packs
 git add -A && git commit -m "init: knowledge base"
 ```
 
-The `design-styles/packs/` subdirectory is where company-scoped brand packs (`type: brand`, `scope: company`) live — one directory per pack, registered in `core/knowledge/public/design-styles/registry.yaml`. Pack-aware workers auto-load this path via their `dynamic` context when this company is the target.
+The `design-styles/packs/` subdirectory is where company-scoped brand packs (`type: brand`, `scope: company`) live. When the optional design-styles pack is installed, pack-aware workers auto-load this path via their `dynamic` context when this company is the target.
 
 Create symlink:
 ```bash
@@ -82,7 +84,7 @@ ln -s ../../repos/private/knowledge-{slug} companies/{slug}/knowledge
 2. Read existing prefixes: `python3 -c "import yaml; d=yaml.safe_load(open('companies/manifest.yaml')); print('\n'.join(v.get('prefix','') for v in d['companies'].values()))"`.
 3. If your candidate collides, fall back to first 4 chars (no hyphens). If still collides, append `-2`, `-3`, ….
 4. Surface the chosen prefix in the final report so the user notices any non-default fallback.
-5. The `auto-mirror-company-skill` PostToolUse hook uses this prefix to bridge top-level skills/commands at `.claude/skills/{prefix}-{name}/` and `.claude/commands/{prefix}-{name}.md` — see `core/policies/company-skill-bridge.md`.
+5. The `auto-mirror-company-skill` PostToolUse hook uses this prefix to bridge top-level skills/commands at `.claude/skills/{prefix}-{name}/` and `.claude/commands/{prefix}-{name}.md`.
 
 **modules.yaml**: Add knowledge module entry:
 ```yaml

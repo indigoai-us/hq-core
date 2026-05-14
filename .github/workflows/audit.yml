@@ -1,0 +1,201 @@
+# hq-pr-review-settings — Canonical Audit Workflow Template
+# Pushed to enrolled repos by the installer (hq-pr-review-installer).
+# Do not edit in target repos — changes will be overwritten on next install sync.
+#
+# Shell scripts (detect-mode.sh, merge-settings.sh) are NOT bundled with this
+# file by the installer. They are fetched at runtime via sparse-checkout of the
+# settings repo (step 2 below) and executed from .audit-settings/.
+
+name: PR Audit
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+concurrency:
+  group: audit-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: write
+  id-token: write   # required by anthropics/claude-code-action@v1 for OIDC
+
+jobs:
+  audit:
+    name: PR Audit
+    runs-on: ubuntu-latest
+    # timeout: wall_clock_minutes (30 default) + 5 buffer = 35
+    # Dynamic value from config is available only after merge-settings runs,
+    # so we use the static default here. Override in repo .claude/audit/config.yaml if needed.
+    timeout-minutes: 35
+    env:
+      HQ_AUDIT_BOT_APP_ID: ${{ vars.HQ_AUDIT_BOT_APP_ID || secrets.HQ_AUDIT_BOT_APP_ID }}
+      HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+
+    steps:
+      - name: Audit credentials unavailable
+        if: env.HQ_AUDIT_BOT_APP_ID == '' || env.HQ_AUDIT_BOT_PRIVATE_KEY == ''
+        run: |
+          echo "::warning::HQ audit bot credentials are not configured; skipping PR Audit"
+
+      # ── 1. Mint hq-audit-bot installation token ─────────────────────────
+      #
+      # The default GITHUB_TOKEN only has access to the current repo, but we
+      # need to read the private hq-pr-review-settings repo (and push to
+      # audit/* branches with bot-author identity). Mint a short-lived
+      # installation token from the App's credentials.
+      #
+      # Required secrets/vars on the enrolled repo (or org-level):
+      #   HQ_AUDIT_BOT_APP_ID       — App ID (public; can also be a `vars.`)
+      #   HQ_AUDIT_BOT_PRIVATE_KEY  — PEM-encoded private key
+      - name: Generate hq-audit-bot token
+        id: app-token
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            hq-pr-review-settings
+            ${{ github.event.repository.name }}
+
+      # ── 2. Checkout the PR (with bot token so subsequent commits/pushes
+      # are authored as the App, not as github-actions[bot]) ──────────────
+      - name: Checkout PR
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      # ── 3. Install yq (required by merge-settings.sh) ──────────────────
+      - name: Install yq
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        uses: mikefarah/yq@v4.44.3
+
+      # ── 4. Sparse-checkout settings repo (defaults + scripts) ───────────
+      #
+      # Fetches both the org defaults config AND the shell scripts used by
+      # subsequent steps. The installer only distributes audit.yml to target
+      # repos; scripts are always sourced from the central settings repo at
+      # runtime so they stay in sync without requiring a re-install.
+      - name: Fetch org audit settings and scripts
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/hq-pr-review-settings
+          path: .audit-settings
+          sparse-checkout: |
+            defaults/
+            prompts/
+            workflow-template/scripts/
+          sparse-checkout-cone-mode: true
+          token: ${{ steps.app-token.outputs.token }}
+
+      # ── 4. Detect audit mode (entry vs remediation loop) ────────────────
+      #
+      # Reads the PR branch name:
+      #   audit/* branch  → mode=loop  (remediation pass already in progress)
+      #   any other branch → mode=entry (first-pass audit)
+      # Also strips the "audit/" prefix and trailing "-<hexsha>" suffix to
+      # recover the original source branch name for loop mode.
+      - name: Detect audit mode
+        id: mode
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        env:
+          BRANCH_NAME: ${{ github.head_ref }}
+        run: |
+          bash .audit-settings/workflow-template/scripts/detect-mode.sh "$BRANCH_NAME"
+
+      # ── 5. Merge settings (org defaults + optional repo overrides) ───────
+      #
+      # Deep-merges .audit-settings/defaults/config.yaml with the target
+      # repo's .claude/audit/config.yaml (if present). Repo values win.
+      # Writes the result to $RUNNER_TEMP (not the working dir) to avoid
+      # accidentally including it in any audit/ branch commits.
+      - name: Merge audit config
+        id: config
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        run: |
+          bash .audit-settings/workflow-template/scripts/merge-settings.sh \
+            ".audit-settings/defaults/config.yaml" \
+            ".claude/audit/config.yaml" \
+            "${RUNNER_TEMP}/audit-config.yaml"
+
+      # ── 5b. Count iterations (loop mode only) ────────────────────────────
+      #
+      # Counts bot-authored commits on the audit branch since diverging from
+      # origin/main. This tells the prompt which iteration we are on without
+      # requiring Claude to re-run git log. Skipped in entry mode (count is
+      # always 0 and cap is never reached on the very first scan).
+      - name: Count iterations
+        id: iterations
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != '' && steps.mode.outputs.mode == 'loop'
+        run: |
+          bash .audit-settings/workflow-template/scripts/count-iterations.sh \
+            "${{ steps.config.outputs.iteration_cap }}"
+
+      # ── 6. Run Claude Code audit ─────────────────────────────────────────
+      - name: Claude Code Audit
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        uses: anthropics/claude-code-action@v1
+        env:
+          # Iteration state from count-iterations.sh (loop mode only).
+          # In entry mode these are empty strings; the prompt defaults them to 0 / false.
+          AUDIT_ITERATION_COUNT: ${{ steps.iterations.outputs.iteration_count || '0' }}
+          AUDIT_CAP_REACHED: ${{ steps.iterations.outputs.cap_reached || 'false' }}
+          # Slack bot token for posting audit summaries. Optional —
+          # if the secret is unset, the prompt's bash conditionals
+          # detect this and silently skip the Slack post.
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        with:
+          # Providing `prompt:` puts the action in autonomous mode (skips
+          # the @claude-mention trigger gate). model/max-turns are passed
+          # via claude_args (the action's CLI passthrough) — they are NOT
+          # direct inputs in v1.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token }}
+          # --dangerously-skip-permissions: this bot runs unattended in CI on a
+          #   private PR audit task; interactive permission prompts would just
+          #   rack up denials (we saw 15 in our first real run) and burn turns.
+          # --max-turns 50: scanner sweep + minimal-diff fixes + git operations
+          #   for entry-mode runs typically need 30-40 turns; 25 is too tight.
+          claude_args: --model ${{ steps.config.outputs.model }} --max-turns 50 --dangerously-skip-permissions
+          prompt: |
+            Read and follow the full audit prompt at .audit-settings/prompts/audit.md
+
+            Substitute these runtime parameters in the prompt:
+            - {{MODE}} = ${{ steps.mode.outputs.mode }}
+            - {{REMEDIATION_MODE}} = ${{ steps.config.outputs.remediation_mode }}
+            - {{ITERATION_CAP}} = ${{ steps.config.outputs.iteration_cap }}
+            - {{CONFIG_PATH}} = ${{ runner.temp }}/audit-config.yaml
+            - {{POLICIES_BUNDLE_DIR}} = ${{ steps.config.outputs.policies_bundle_dir }}
+            - {{INSTRUCTIONS_PATH}} = ${{ steps.config.outputs.instructions_path }}
+            - {{SUPPRESSIONS_PATH}} = ${{ steps.config.outputs.suppressions_path }}
+            - {{SLACK_ENABLED}} = ${{ steps.config.outputs.slack_enabled }}
+            - {{SLACK_CHANNEL}} = ${{ steps.config.outputs.slack_channel }}
+            - {{SLACK_EVENTS}} = ${{ steps.config.outputs.slack_events }}
+            - {{REPO_FULL_NAME}} = ${{ github.repository }}
+            - {{PR_NUMBER}} = ${{ github.event.pull_request.number }}
+            - {{PR_TITLE}} = ${{ github.event.pull_request.title }}
+            - {{PR_URL}} = ${{ github.event.pull_request.html_url }}
+
+            Also read .audit-settings/prompts/scanner-instructions.md for scanner details.
+
+            Execute the prompt step by step. Do not skip any steps. Critically:
+            STEP 1.5 reads the per-repo extension files at the paths above
+            (instructions / policies bundle / suppressions). These give you
+            repo-specific context that overrides default scanner behavior.
+
+            STEP 8 posts a Slack notification at each terminal action if
+            SLACK_ENABLED is "true" and SLACK_BOT_TOKEN is set in env.
+
+      # ── 7. Cleanup ────────────────────────────────────────────────────────
+      - name: Cleanup settings
+        if: always()
+        run: |
+          rm -rf .audit-settings "${RUNNER_TEMP}/audit-config.yaml" \
+                 "${RUNNER_TEMP}/audit-policies"

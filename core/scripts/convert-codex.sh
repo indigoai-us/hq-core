@@ -372,20 +372,38 @@ commands_with_skills_count() {
   }
   while IFS= read -r cmd_file; do
     cmd_name="$(basename "${cmd_file}" .md)"
-    if [[ -d "${CLAUDE_SKILLS_DIR}/${cmd_name}" || -L "${CLAUDE_SKILLS_DIR}/${cmd_name}" ]]; then
+    if [[ -f "${CLAUDE_SKILLS_DIR}/${cmd_name}/SKILL.md" ]]; then
       count=$((count + 1))
     fi
   done < <(find "${COMMANDS_DIR}" -mindepth 1 -maxdepth 1 -type f -name '*.md' | sort)
   printf '%s\n' "${count}"
 }
 
+skill_dir_count() {
+  local root="$1"
+  [[ -d "${root}" || -L "${root}" ]] || {
+    printf '0\n'
+    return
+  }
+  find -H "${root}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -exec test -f '{}/SKILL.md' \; -print 2>/dev/null | wc -l | tr -d '[:space:]'
+}
+
+skill_openai_count() {
+  local root="$1"
+  [[ -d "${root}" || -L "${root}" ]] || {
+    printf '0\n'
+    return
+  }
+  find -H "${root}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -exec sh -c 'test -f "$1/SKILL.md" && test -f "$1/agents/openai.yaml"' _ '{}' \; -print 2>/dev/null | wc -l | tr -d '[:space:]'
+}
+
 print_audit() {
   local command_total skill_total skill_openai command_skills agent_skill_total
   command_total="$(count_paths "${COMMANDS_DIR}" -mindepth 1 -maxdepth 1 -type f -name '*.md')"
-  skill_total="$(count_paths "${CLAUDE_SKILLS_DIR}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \))"
-  skill_openai="$(count_paths "${CLAUDE_SKILLS_DIR}" -mindepth 3 -maxdepth 3 -path '*/agents/openai.yaml')"
+  skill_total="$(skill_dir_count "${CLAUDE_SKILLS_DIR}")"
+  skill_openai="$(skill_openai_count "${CLAUDE_SKILLS_DIR}")"
   command_skills="$(commands_with_skills_count)"
-  agent_skill_total="$(count_paths "${AGENTS_SKILLS_DIR}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \))"
+  agent_skill_total="$(skill_dir_count "${AGENTS_SKILLS_DIR}")"
 
   echo
   echo "Codex parity audit:"

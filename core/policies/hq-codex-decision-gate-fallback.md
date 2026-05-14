@@ -2,11 +2,11 @@
 id: hq-codex-decision-gate-fallback
 title: Codex planning skills must preserve decision gates with a text fallback
 scope: global
-trigger: Codex skill adaptation; brainstorm/prd/review-plan/run-project user decision gate; AskUserQuestion unavailable
+trigger: Codex skill adaptation; brainstorm/prd/review-plan/run-project user question or decision gate; AskUserQuestion unavailable; request_user_input available
 enforcement: soft
-version: 1
+version: 2
 created: 2026-05-01
-updated: 2026-05-01
+updated: 2026-05-12
 source: user-correction
 public: false
 skip-promotion: true
@@ -14,13 +14,16 @@ skip-promotion: true
 
 ## Rule
 
-When a Claude-origin HQ command or skill requires a user decision through `AskUserQuestion`, the Codex adaptation must preserve the decision gate even if Codex cannot call that exact primitive.
+When a Claude-origin HQ command or skill requires a user question or decision through `AskUserQuestion`, the Codex adaptation must preserve the gate even if Codex cannot call that exact primitive.
 
 Codex adaptation order:
 
-1. Use a structured interactive question tool when one is actually callable in the current runtime.
-2. If no structured question tool is callable, ask a concise plain-text question with the same options and wait for the user's answer.
-3. Never replace a required gate with a passive summary like "Next: promote to PRD, edit, or park" and then end the turn.
+1. Use Codex `request_user_input` when it is actually callable in the current runtime and the question can be expressed as 2-3 selectable choices. Present exactly one question per call.
+2. If Codex `request_user_input` is not callable, use any other structured interactive question tool that is actually callable in the current runtime, still exactly one question per call.
+3. If no structured question tool is callable, ask a concise plain-text question with the same options and wait for the user's answer.
+4. Never replace a required gate with a passive summary like "Next: promote to PRD, edit, or park" and then end the turn.
+
+This preference applies to all user-facing HQ questions with enumerated choices, not only formal lifecycle gates. Free-form discovery questions may remain plain text when forcing them into choices would lose useful information.
 
 This especially applies to artifact lifecycle gates:
 

@@ -1,0 +1,3 @@
+interface:
+  display_name: "onboard"
+  short_description: "Run the HQ company onboarding flow for creating or joining a company."

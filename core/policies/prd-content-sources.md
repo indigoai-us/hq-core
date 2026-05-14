@@ -16,7 +16,7 @@ When creating PRD stories that involve content extraction or analysis of a perso
 - `workspace/social-drafts/x/*-article.md` — article drafts (20+ files)
 - `workspace/social-drafts/linkedin/` — LinkedIn posts (67+ files)
 - `companies/{co}/knowledge/` — strategic docs, voice guides
-- `companies/personal/knowledge/brand/` — personal voice guide, story arc
+- `personal/knowledge/brand/` — personal voice guide, story arc
 
 List specific glob paths in the story's `acceptanceCriteria` so the execute-task sub-agent can find them without searching.
 

@@ -16,7 +16,7 @@ Execute a single user story from a PRD through coordinated worker phases. Each w
 "Pick a task, complete it, commit it."
 
 - Fresh context per task
-- Sub-agents do heavy lifting (spawned via Task tool)
+- Sub-agents do heavy lifting (Claude Code `Task`, Codex `spawn_agent`)
 - Back pressure keeps code on rails
 - Handoffs preserve context between workers
 - Each sub-agent commits its own work before returning
@@ -33,6 +33,25 @@ When the prompt invoking this skill explicitly includes a `RETURN CONTRACT` dire
 - `notes` = 1-2 sentences; on non-`passed` status, describe the blocker concisely enough for the parent orchestrator to surface to the user.
 
 When invoked **without** a `RETURN CONTRACT` directive (default, e.g. `claude -p /execute-task ...` from `run-project.sh`), use the normal human-readable completion summary as before. This dual mode keeps the skill backward-compatible with headless mode.
+
+## Runtime Adapter: Claude Code Task vs Codex spawn_agent
+
+This skill is runtime-agnostic. Whenever a step says to spawn a worker with the `Task` tool:
+
+- **Claude Code:** use `Task({subagent_type: "general-purpose", ...})` exactly as written.
+- **Codex:** use `spawn_agent({agent_type: "worker", ...})`, then `wait_agent(...)`, with the same prompt and output contract. Use `agent_type: "explorer"` only for read-only discovery/planning phases.
+
+Codex worker prompts MUST include this coordination block:
+
+```markdown
+You are not alone in the codebase. Own only this worker phase for {task.id};
+do not revert edits made by others; adapt to any existing changes you find.
+Commit your phase work before returning. If your runtime returns an integration
+patch instead of a parent-visible commit, say so and list every changed path.
+Return only the requested JSON.
+```
+
+The orchestrator still enforces the same proof gates in both runtimes: parseable JSON, real worker IDs in the handoff/summary, back-pressure status, parent-visible commits or parent-created integration commits, lock release, and `passes:true` only after a successful story. If Codex `spawn_agent` / `wait_agent` are unavailable, do not fake the worker sequence in the parent; stop and ask the user to use `--session-mode` for direct parent execution or `--ralph-mode --builder claude` for worker-authoritative headless execution.
 
 ## Process
 
@@ -552,7 +571,9 @@ When complete, provide JSON:
 
 #### 6c. Spawn Worker Sub-Agent
 
-Use the Task tool:
+Use the runtime sub-agent tool.
+
+Claude Code:
 
 ```
 Task({
@@ -561,6 +582,17 @@ Task({
   prompt: {built prompt above},
   description: "{worker.id} for {task.id}"
 })
+```
+
+Codex:
+
+```
+spawn_agent({
+  agent_type: "worker",
+  message: "{built prompt above, plus the Codex coordination block from Runtime Adapter}",
+  reasoning_effort: "medium"
+})
+wait_agent(...)
 ```
 
 Each sub-agent runs in its own context window and returns structured JSON output.
@@ -685,7 +717,7 @@ Parse the worker's JSON output.
      cd {target_repo_path} && codex exec --full-auto -c model="{codex_model}" --cd {target_repo_path} \
        "Diagnose and fix back-pressure failure. Check: {failed_check_name}. Error: {stdout_stderr_from_failed_check}. Then re-run: {verification.post_execute commands}" 2>&1
      ```
-   - **If `codex_available == false`:** Spawn Claude-based debugger sub-agent:
+   - **If `codex_available == false`:** Spawn a debugger sub-agent with the runtime adapter:
      ```
      Task({
        subagent_type: "general-purpose",

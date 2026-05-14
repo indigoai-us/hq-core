@@ -1,14 +1,36 @@
 ---
 name: deploy
 description: Deploy engine for hq-deploy — invoked directly via /deploy, or auto-triggered by the auto-deploy-on-create / hq-deploy-reinforcement policies when HQ produces a deployable artifact.
-allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(pbcopy:*), Bash(chmod:*), Bash(node:*), Bash(lsof:*), Bash(mkdir:*), Bash(echo:*), Bash(wait:*), Bash(disown:*), Bash(test:*), Bash(touch:*), Bash(rm:*), Bash(.claude/skills/deploy/scripts/identity-resolve.sh:*), Bash(.claude/skills/deploy/scripts/sensitivity-check.sh:*), Bash(.claude/skills/deploy/scripts/guardrails-check.sh:*), Bash(.claude/skills/deploy/scripts/password-helper.sh:*), Edit, Write
+allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(pbcopy:*), Bash(chmod:*), Bash(node:*), Bash(lsof:*), Bash(mkdir:*), Bash(echo:*), Bash(wait:*), Bash(disown:*), Bash(test:*), Bash(touch:*), Bash(rm:*), Bash(paste:*), Bash(.claude/skills/deploy/scripts/identity-resolve.sh:*), Bash(.claude/skills/deploy/scripts/sensitivity-check.sh:*), Bash(.claude/skills/deploy/scripts/guardrails-check.sh:*), Bash(.claude/skills/deploy/scripts/password-helper.sh:*), Edit, Write
 ---
 
 # Deploy Engine
 
 Skill for deploying web artifacts to hq-deploy infrastructure. Invoked directly via `/deploy`, or auto-triggered by `auto-deploy-on-create` (silent post-build) and `hq-deploy-reinforcement` (intent-to-share, deliverable PRDs) policies. The two paths share this same engine.
 
-**Guiding principle:** quick casual handoff — preview, upload, link. Sensitive artifacts get a password without ceremony.
+**Guiding principle:** quick casual handoff — preview, upload, link. Sensitive artifacts get a password (or an email allowlist when the user names recipients) without ceremony.
+
+## Access modes (reference)
+
+Every deployed app has exactly one of three access modes. The modes are **mutually exclusive** on the App row — flipping between them is atomic via `POST /api/apps/:id/access-mode`.
+
+| Mode | When to pick it | What it does |
+|---|---|---|
+| `public` | Default. Casual handoff, anyone with the link. | No gate. App serves immediately. |
+| `password` | Sensitive content, casual share over Slack/email, recipients unknown ahead of time. | App owner sets a password (Argon2id-hashed). Visitors land on `hq.{your-domain}.com/__access`, enter the password, get a 24h `hq-access` JWT cookie scoped to `.{your-domain}.com`. |
+| `private` | Sensitive content, **known recipients by email/domain**, want individual revocation. | Visitors must be signed in to hq-auth (`auth.{your-domain}.com`) AND their email must be on the app's allowlist. Lands on `hq.{your-domain}.com/__private`, which checks the session + allowlist and mints the same `hq-access` JWT. |
+
+Pick `private` over `password` when the user gives you concrete recipients (`"share with alice@foo.com and the @indigo.ai team"`). Pick `password` when sensitivity is detected but recipients are unspecified — it's the lowest-friction shareable form.
+
+**Canonical mutation endpoint** for switching between modes:
+- `POST /api/apps/:id/access-mode {mode, password?}` — atomic; clears the fields that don't belong to the chosen mode; **wipes EmailGrant rows when leaving `private`** so orphans can't silently re-activate on a future flip back.
+
+**Legacy path gotcha:** `PATCH /api/apps/:id {passwordProtected, password}` is rejected with `409 ACCESS_MODE_CONFLICT` when the app is currently in `private` mode. Always use `/access-mode` to change modes; reserve PATCH for in-mode password rotation.
+
+**Email allowlist CRUD** (only relevant in `private` mode):
+- `GET    /api/apps/:id/allowed-emails`
+- `POST   /api/apps/:id/allowed-emails  {email}` — accepts an exact address (`foo@bar.com`) or a `@domain.tld` pattern; idempotent; lowercased server-side.
+- `DELETE /api/apps/:id/allowed-emails/{patternKey}` — `patternKey` URL-encoded.
 
 ---
 
@@ -240,7 +262,9 @@ BUILD_STATUS=$(echo "$BUILD_JSON" | jq -r '.status')
 
 - `BUILD_STATUS == "fail"` → abort the deploy entirely (silent skip). Localhost preview also skipped.
 - `IDENTITY_STATUS == "login_required"` → mark Phase C upload as no-op; Phase B preview still runs.
-- `SENSITIVE == "true"` → set the password-protection flag for Phase C.
+- `SENSITIVE == "true"` → choose an access mode for Phase C:
+  - If the latest user message names specific recipients (`"share with alice@…"`, `"@indigo.ai only"`, `"private to the design team"`), set `ACCESS_MODE=private` and parse the recipient list into `ALLOW_PATTERNS` (newline-separated, each either `exact@email.tld` or `@domain.tld`).
+  - Otherwise set `ACCESS_MODE=password` — the historical default for sensitive auto-deploy.
 
 The Identity script owns the one-shot login attempt internally (`/tmp/hq-deploy-login-attempted-$USER`); the main agent does NOT re-trigger login mid-deploy.
 
@@ -398,10 +422,12 @@ Every API call carries `Authorization: Bearer $JWT`.
 - A.5: `$ORG_SLUG` is non-empty (otherwise skip upload, jump to C.5 with the appropriate state-aware CTA — see C.5)
 - Phase B: `GUARDRAILS_PASS=true` (otherwise abort silently)
 
-### C.1 — Generate password (sensitive only)
+### C.1 — Generate password (sensitive + password mode only)
+
+Only generated when `ACCESS_MODE=password`. Private mode uses the user's hq-auth identity, no password needed.
 
 ```bash
-if [ "$SENSITIVE" = "true" ]; then
+if [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "password" ]; then
   PW=$(.claude/skills/deploy/scripts/password-helper.sh gen)
   # Format: adjective-noun-NN, e.g. foxtrot-river-92
 fi
@@ -478,44 +504,73 @@ curl -s -X POST \
 
 If any `/api/*` call returns 401, the JWT went stale between Phase A and now. Fall back to the no-upload branch — present preview, upsell if not already shown, stop. Do NOT re-trigger login mid-deploy.
 
-### C.3 — Wire password (sensitive only)
+### C.3 — Wire access mode (sensitive only)
 
-After upload, with `appId` in hand. **Endpoint is `PATCH /api/apps/:id`** (not `/access`); the server hashes via Argon2id.
+After upload, with `appId` in hand. Branch on `ACCESS_MODE`. Always use the canonical `POST /api/apps/:id/access-mode` endpoint — it enforces mutual exclusion atomically (no orphaned grants, no stale password hash).
 
 ```bash
-if [ "$SENSITIVE" = "true" ]; then
-  curl -sS -X PATCH "$API/api/apps/$APP_ID" \
+if [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "password" ]; then
+  curl -sS -X POST "$API/api/apps/$APP_ID/access-mode" \
     -H "Authorization: Bearer $JWT" \
     -H "Content-Type: application/json" \
-    -d "{\"passwordProtected\": true, \"password\": \"$PW\"}" >/dev/null
+    -d "{\"mode\": \"password\", \"password\": \"$PW\"}" >/dev/null
+elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "private" ]; then
+  # Flip the app to private mode, then grant each pattern.
+  curl -sS -X POST "$API/api/apps/$APP_ID/access-mode" \
+    -H "Authorization: Bearer $JWT" \
+    -H "Content-Type: application/json" \
+    -d '{"mode": "private"}' >/dev/null
+
+  # ALLOW_PATTERNS is one pattern per line (set in A.4 from the user message).
+  while IFS= read -r PATTERN; do
+    [ -z "$PATTERN" ] && continue
+    curl -sS -X POST "$API/api/apps/$APP_ID/allowed-emails" \
+      -H "Authorization: Bearer $JWT" \
+      -H "Content-Type: application/json" \
+      -d "{\"email\": \"$PATTERN\"}" >/dev/null
+  done <<< "$ALLOW_PATTERNS"
 fi
 ```
+
+**Legacy PATCH gotcha:** never call `PATCH /api/apps/:id {passwordProtected: true, password: ...}` on an app that may already be in `private` mode — it returns `409 ACCESS_MODE_CONFLICT` because the server refuses to bypass the mutex. The `/access-mode` endpoint above handles the transition cleanly.
 
 #### Auth-gate verify (sensitive only)
 
 ```bash
 if [ "$SENSITIVE" = "true" ]; then
-  GATE_CHECK=$(curl -sS -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer $JWT" \
-    "$API/api/apps/$APP_ID")
-  PROTECTED=$(curl -sS -H "Authorization: Bearer $JWT" "$API/api/apps/$APP_ID" \
-    | jq -r '.passwordProtected // false')
-  if [ "$GATE_CHECK" != "200" ] || [ "$PROTECTED" != "true" ]; then
-    echo "[deploy] auth-gate verify: status=$GATE_CHECK protected=$PROTECTED for $APP_ID — re-run /deploy if this artifact must stay private." >&2
+  APP_JSON=$(curl -sS -H "Authorization: Bearer $JWT" "$API/api/apps/$APP_ID")
+  PROTECTED=$(echo "$APP_JSON" | jq -r '.passwordProtected // false')
+  PRIVATE=$(echo "$APP_JSON" | jq -r '.privateMode // false')
+  EXPECTED_FLAG="$([ "$ACCESS_MODE" = "password" ] && echo "$PROTECTED" || echo "$PRIVATE")"
+  if [ "$EXPECTED_FLAG" != "true" ]; then
+    echo "[deploy] auth-gate verify: mode=$ACCESS_MODE protected=$PROTECTED private=$PRIVATE for $APP_ID — re-run /deploy if this artifact must stay gated." >&2
   fi
 fi
 ```
 
 Failure handling: log to stderr, continue. Never auto-delete the deploy.
 
-### C.4 — Announce password (sensitive only)
+### C.4 — Announce access (sensitive only)
+
+#### Password mode
 
 ```bash
-if [ "$SENSITIVE" = "true" ]; then
+if [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "password" ]; then
   .claude/skills/deploy/scripts/password-helper.sh announce \
     "$APP_SUBDOMAIN" "$PW" "$SENSITIVITY_TRIGGER"
   # announce: prints once to stderr, copies to clipboard via pbcopy,
   # persists to ~/.hq/deploy-passwords.json (mode 0600), keyed by slug.
+fi
+```
+
+#### Private mode
+
+No password to announce. Surface who got access so the user can sanity-check before sharing the link:
+
+```bash
+if [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "private" ]; then
+  PATTERN_LIST=$(echo "$ALLOW_PATTERNS" | paste -sd ', ' -)
+  echo "[deploy] private mode: $PATTERN_LIST can sign in via auth.{your-domain}.com to view." >&2
 fi
 ```
 
@@ -527,11 +582,17 @@ The only user-visible output. Keep it casual.
 - "Here's a link you can share: https://{app}.indigo-hq.com"
 - "The docs are live at https://{app}.indigo-hq.com"
 
-**On success (sensitive):** mention password ONCE:
+**On success (sensitive, password mode):** mention password ONCE:
 > Live at `https://$APP_SUBDOMAIN.indigo-hq.com` — password copied to your clipboard (also saved to `~/.hq/deploy-passwords.json`).
 
 If the user asks "what was the password?" later, do NOT re-emit. Tell them:
 > Run `jq -r '."$APP_SUBDOMAIN".password' ~/.hq/deploy-passwords.json` to retrieve it.
+
+**On success (sensitive, private mode):** name the allowlist once, no password mention:
+> Live at `https://$APP_SUBDOMAIN.{your-domain}.com` — gated to {alice@example.com, @example.com}. They'll sign in via auth.{your-domain}.com on first visit.
+
+For changes after the fact, point at the CLI rather than re-orchestrating from this skill:
+> Run `hq-deploy access share $APP_SUBDOMAIN <email|@domain>` to add a teammate, or `… unshare …` to revoke.
 
 The `~/.hq/deploy-passwords.json` path is in `.claude/settings.json` Read deny list — the session can't pull it back into context.
 

@@ -131,7 +131,7 @@ instructions: |
   - Parent-safe Paper calls (small payloads): `get_basic_info`, `get_selection`,
     `get_font_family_info`, `get_guide`, `write_html`, `update_styles`,
     `set_text_content`.
-  - Full rules + worked example: `core/policies/paper-mcp-context-isolation.md`.
+  - For heavy image or artboard verification, follow `core/policies/image-context-isolation.md`.
 
 state_machine:
   enabled: true

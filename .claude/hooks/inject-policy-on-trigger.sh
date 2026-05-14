@@ -55,16 +55,17 @@ esac
 # Keep rule lines under 120 chars. Add new triggers here; one per line.
 TAB=$'\t'
 TRIGGERS=$(printf '%s\n' \
-  "Bash${TAB}(^|[[:space:]])find[[:space:]]${TAB}hq-no-glob-discovery${TAB}\`find\` is unrestricted but Glob is hook-blocked. Prefer qmd/Grep over \`find\`; scope \`find\` to a known sub-tree." \
+  "Bash${TAB}(^|[[:space:]])find[[:space:]]${TAB}hq-glob-scoped-path${TAB}\`find\` is unrestricted but Glob is hook-blocked. Prefer qmd/Grep over \`find\`; scope \`find\` to a known sub-tree." \
   "Bash${TAB}(^|[[:space:]])git[[:space:]]+checkout[[:space:]].*[[:space:]]--[[:space:]]*\\.${TAB}git-checkout-not-a-probe${TAB}\`git checkout {ref} -- .\` is NOT a read-only probe — it overwrites your working tree with that ref's files." \
   "Bash${TAB}(^|[[:space:]])git[[:space:]]+push[[:space:]]${TAB}hq-always-pr-shared-state-repos${TAB}Never push directly to \`main\` on shared-state repos. Open a PR or push a feature branch." \
-  "Bash${TAB}(^|[[:space:]])pgrep[[:space:]]${TAB}hq-bash-pgrep-no-hardcode-pids${TAB}Never hardcode a \`pgrep\`-discovered PID into a follow-up command — re-discover and validate with \`ps\` each invocation." \
-  "Bash${TAB}(^|[[:space:]])git[[:space:]]+filter-repo[[:space:]]${TAB}git-filter-repo-case-variants${TAB}\`git filter-repo --path\` is case-sensitive. Run separate passes for case variants (e.g. \`Foo\` and \`foo\`)." \
-  "Bash${TAB}(^|[[:space:]])git[[:space:]]+reflog[[:space:]]+expire[[:space:]]${TAB}hq-git-reflog-expire-all-destroys-stash${TAB}\`git reflog expire --all --expire=now\` permanently destroys stashes too. Stash explicitly first or filter the expire." \
-  "Bash${TAB}IFS=\":\"${TAB}hq-bash-no-ifs-colon-read-path-corruption${TAB}\`IFS=\":\" read\` corrupts paths. Use \`IFS=\$'\\''\\\\t'\\''\` or read fields by index instead." \
+  "Bash${TAB}(^|[[:space:]])pgrep[[:space:]]${TAB}hq-bash-discipline${TAB}Never hardcode a \`pgrep\`-discovered PID into a follow-up command — re-discover and validate with \`ps\` each invocation." \
+  "Bash${TAB}(^|[[:space:]])git[[:space:]]+filter-repo[[:space:]]${TAB}hq-git-discipline${TAB}\`git filter-repo --path\` is case-sensitive. Run separate passes for case variants (e.g. \`Foo\` and \`foo\`)." \
+  "Bash${TAB}(^|[[:space:]])git[[:space:]]+reflog[[:space:]]+expire[[:space:]]${TAB}hq-git-discipline${TAB}\`git reflog expire --all --expire=now\` permanently destroys stashes too. Stash explicitly first or filter the expire." \
+  "Bash${TAB}IFS=\":\"${TAB}hq-bash-discipline${TAB}\`IFS=\":\" read\` corrupts paths. Use \`IFS=\$'\\''\\\\t'\\''\` or read fields by index instead." \
   "Edit${TAB}companies/[^/]+/settings/${TAB}credential-access-protocol${TAB}Editing inside \`companies/{co}/settings/\` — never read or use credentials from a different company. If unsure, stop and ask." \
   "Write${TAB}companies/[^/]+/settings/${TAB}credential-access-protocol${TAB}Writing inside \`companies/{co}/settings/\` — never read or use credentials from a different company. If unsure, stop and ask." \
-  "MultiEdit${TAB}companies/[^/]+/settings/${TAB}credential-access-protocol${TAB}Editing inside \`companies/{co}/settings/\` — never read or use credentials from a different company. If unsure, stop and ask.")
+  "MultiEdit${TAB}companies/[^/]+/settings/${TAB}credential-access-protocol${TAB}Editing inside \`companies/{co}/settings/\` — never read or use credentials from a different company. If unsure, stop and ask." \
+  "Bash${TAB}(^|[[:space:]])(npm|yarn|bun|pnpm)[[:space:]]+(install|i|add)[[:space:]]+[^-]${TAB}hq-pnpm-min-release-age-supply-chain${TAB}Supply-chain guard: prefer \`pnpm\` with \`minimum-release-age=1440\` (24h). Raw \`npm/yarn/bun install <pkg>\` is hard-blocked by block-unsafe-package-install.sh.")
 
 # Per-session dedupe file. Falls back to 'default' if session_id missing.
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"

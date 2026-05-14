@@ -37,8 +37,9 @@ Each company directory contains a knowledge subdirectory that is its own git rep
 |---------|---------------|----------|------------|
 | {company} | `companies/{company}/knowledge/` | Own repo (has `.git/`) | ~40 files across 8 subdirs |
 | {company} | `companies/{company}/knowledge/` | Own repo (has `.git/`) | ~12 files across 3 subdirs |
-| personal | `companies/personal/knowledge/` | Own repo (has `.git/`) | ~8 files |
 | acmestudio | N/A | No knowledge dir | 0 |
+
+> **Personal scope is not a company.** Personal knowledge lives at top-level `personal/knowledge/` (peer of `core/knowledge/`), surfaced via the `master-sync.sh` mirror. Desktop should treat it like HQ-level public knowledge, not as a company entry.
 
 ### Tier 3: Worker-Embedded Knowledge
 
@@ -170,7 +171,7 @@ INDEX.md files are auto-generated navigation indexes placed at key directory lev
 | `core/knowledge/private/INDEX.md` | No | Missing -- only 1 entry (linear) |
 | `companies/{company}/knowledge/INDEX.md` | Yes | Lists LR knowledge files/dirs |
 | `companies/{company}/knowledge/INDEX.md` | Yes | Lists {company} knowledge files/dirs |
-| `companies/personal/knowledge/INDEX.md` | Yes | Lists personal knowledge files |
+| `personal/knowledge/INDEX.md` | Yes | Lists personal knowledge files |
 
 ### Navigation Pattern for Desktop
 
@@ -267,11 +268,9 @@ Per `manifest.yaml`, each company owns its knowledge:
 {company}:
   knowledge: companies/{company}/knowledge/
   qmd_collections: [{company}]
-
-personal:
-  knowledge: companies/personal/knowledge/
-  qmd_collections: [personal]
 ```
+
+(Personal knowledge is not a manifest entry — it lives at top-level `personal/knowledge/` and is mirrored by `master-sync.sh`.)
 
 ### Desktop Isolation Rules
 
@@ -334,7 +333,7 @@ Knowledge Browser
 | `{product}` | {PRODUCT} monorepo | `**/*.{ts,tsx,js,jsx,md,json,yaml,yml,sql,css,prisma}` | 3,078 | 3 | {PRODUCT} codebase |
 | `{company}` | LR knowledge | `**/*.md` | 121 | 1 | LR company knowledge |
 | `{company}` | {company} knowledge | `**/*.md` | 15 | 1 | {company} company knowledge |
-| `personal` | Personal knowledge | `**/*.md` | 8 | 1 | Personal knowledge |
+| `personal` | Personal knowledge (mirrored from top-level `personal/knowledge/`) | `**/*.md` | 8 | 1 | Personal knowledge |
 
 ### Collection Contexts
 

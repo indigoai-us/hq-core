@@ -3,7 +3,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_HQ_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [[ -d "${SCRIPT_DIR}/../.claude" ]]; then
+  DEFAULT_HQ_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+  DEFAULT_HQ_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
 
 HQ_ROOT="${HQ_ROOT:-${DEFAULT_HQ_ROOT}}"
 COMMAND=""
@@ -111,7 +115,7 @@ parse_args() {
 }
 
 skill_count() {
-  find "${SKILLS_SOURCE_DIR}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) 2>/dev/null | wc -l | tr -d '[:space:]'
+  find "${SKILLS_SOURCE_DIR}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -exec test -f '{}/SKILL.md' \; -print 2>/dev/null | wc -l | tr -d '[:space:]'
 }
 
 command_count() {
@@ -127,7 +131,7 @@ policy_count() {
 }
 
 openai_yaml_count() {
-  find "${SKILLS_SOURCE_DIR}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -exec test -f '{}/agents/openai.yaml' \; -print 2>/dev/null | wc -l | tr -d '[:space:]'
+  find "${SKILLS_SOURCE_DIR}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -exec sh -c 'test -f "$1/SKILL.md" && test -f "$1/agents/openai.yaml"' _ '{}' \; -print 2>/dev/null | wc -l | tr -d '[:space:]'
 }
 
 commands_with_skills_count() {
@@ -135,7 +139,7 @@ commands_with_skills_count() {
   while IFS= read -r cmd_file; do
     local cmd_name
     cmd_name="$(basename "${cmd_file}" .md)"
-    if [[ -d "${SKILLS_SOURCE_DIR}/${cmd_name}" ]]; then
+    if [[ -f "${SKILLS_SOURCE_DIR}/${cmd_name}/SKILL.md" ]]; then
       (( count++ )) || true
     fi
   done < <(find "${COMMANDS_SOURCE_DIR}" -mindepth 1 -maxdepth 1 -type f -name '*.md' 2>/dev/null)
@@ -175,7 +179,16 @@ normalize_link_target() {
     return
   fi
 
-  printf '%s/%s\n' "$(cd "$(dirname "${target}")" && pwd)" "${link_target}"
+  local target_dir resolved_path
+  target_dir="$(cd "$(dirname "${target}")" && pwd)"
+  resolved_path="${target_dir}/${link_target}"
+
+  if [[ -e "${resolved_path}" ]]; then
+    (cd "${resolved_path}" && pwd)
+    return
+  fi
+
+  printf '%s\n' "${resolved_path}"
 }
 
 strip_known_hq_subpath() {

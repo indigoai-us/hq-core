@@ -3,11 +3,5 @@
 # Run /newcompany to add entries, or edit manually.
 
 companies:
-  personal:
-    name: "Personal"
-    goal: ""
-    path: "companies/personal"
-    sources: []
-    repos: []
-    knowledge: companies/personal/knowledge/
-    qmd_collections: [personal]
+  # Empty by default. The opt-in HQ_INDIGO_MCP=1 path in core/scripts/setup.sh
+  # and /newcompany append entries here as `<slug>:` blocks at this indent.

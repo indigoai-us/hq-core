@@ -1,0 +1,3 @@
+interface:
+  display_name: "out of scope"
+  short_description: "Record rejected ideas so future sessions do not re-litigate the same direction."

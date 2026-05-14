@@ -1,3 +1,37 @@
+## Migrating to v14.1.1 — 2026-05-13
+
+### TL;DR
+
+**No manual migration required.** `/update-hq` pulls all new files and you're done. This release promotes beta.1 to stable with additional commands, skills, and a major policy cleanup.
+
+### What changed since v14.1.0-beta.1
+
+- **6 new commands** — `accept`, `decision-queue`, `hq-share`, `journal`, `onboard`, `promote`. All wired in `.claude/settings.json` already.
+- **4 new hooks** — `block-unsafe-package-install.sh` (supply-chain safety), `journal-due.sh`, `journal-precompact.sh`, `load-journal-index-on-start.sh`. Already wired.
+- **13 Codex skill bridges** — New `SKILL.md` + `agents/openai.yaml` for `accept`, `adr`, `architect`, `calibration-report`, `decision-queue`, `diagnose`, `finish-estimate`, `hq-bug`, `hq-share`, `onboard`, `out-of-scope`, `promote`, `track-estimate`.
+- **Session journal system** — `session-journal.sh` script, `session-journal-spec.md` knowledge doc, and 3 lifecycle hooks.
+- **`quiet-by-default-narration.md` policy** — Silences routine ops (install, lint, build, test, fmt).
+- **Product description reframed** — "personal OS" → "team AI OS" across CLAUDE.md and core docs.
+- **`companies/personal/` removed** — Personal namespace moved to root `personal/`.
+- **165 policies removed** — Public policy set slimmed to ~35 core guardrails. If you had custom references to removed policy filenames, update them.
+- **`manifest.yaml` format fix** — Block YAML form prevents `HQ_INDIGO_MCP=1` append from corrupting inline flow.
+- **Codex pets** — Indigo Gem mascot at `.codex/pets/indigo-gem/`.
+
+### What does NOT need migrating
+
+- No `.claude/settings.json` manual edits — all hook wiring ships in the updated settings.json.
+- No backfill scripts to run.
+- No company-level changes required.
+- The 165 removed policies were all session-scoped or overly specific — core guardrails are retained.
+
+### Compatibility
+
+- All changes are additive over beta.1. Existing HQ installations on beta.1 or v14.0.x continue to work without modification.
+- The personal namespace move is transparent — `personal/` at root replaces `companies/personal/`.
+- Codex skill bridges are purely additive — no behavior change for Claude Code users.
+
+---
+
 ## Migrating to v14.1.0-beta.1 — 2026-05-12
 
 ### TL;DR

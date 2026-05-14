@@ -112,15 +112,18 @@ else
   skip "settings.json not found — PATH not configured"
 fi
 
-# ── 4. Create company structure ──────────────────────────────────────────────
+# ── 4. Create personal scaffold ─────────────────────────────────────────────
 
 echo ""
 echo "Setting up directory structure…"
 
-mkdir -p companies/personal/settings
-mkdir -p companies/personal/data
-mkdir -p companies/personal/knowledge
-ok "companies/personal/ created"
+mkdir -p personal/knowledge
+mkdir -p personal/policies
+mkdir -p personal/workers
+mkdir -p personal/settings
+mkdir -p personal/skills
+mkdir -p personal/hooks
+ok "personal/ scaffold created (knowledge, policies, workers, settings, skills, hooks)"
 
 # ── 5. Indigo MCP Setup (opt-in via HQ_INDIGO_MCP=1) ───────────────────────
 
@@ -218,10 +221,10 @@ if command -v qmd &>/dev/null; then
   qmd collection add "$REPO_ROOT/.claude" --name hq-infra --mask "**/*.{md,yaml,yml,json,sh}" 2>/dev/null || true
   qmd context add qmd://hq-infra "HQ infrastructure: commands, skills, policies, hooks, scripts." 2>/dev/null || true
 
-  qmd collection add "$REPO_ROOT/workers" --name hq-workers --mask "**/*.{md,yaml,yml,json}" 2>/dev/null || true
+  qmd collection add "$REPO_ROOT/core/workers" --name hq-workers --mask "**/*.{md,yaml,yml,json}" 2>/dev/null || true
   qmd context add qmd://hq-workers "AI worker definitions and skill files." 2>/dev/null || true
 
-  qmd collection add "$REPO_ROOT/knowledge" --name hq-knowledge --mask "**/*.{md,yaml,yml}" 2>/dev/null || true
+  qmd collection add "$REPO_ROOT/core/knowledge" --name hq-knowledge --mask "**/*.{md,yaml,yml}" 2>/dev/null || true
   qmd context add qmd://hq-knowledge "Shared knowledge bases: methodology, design, testing, security." 2>/dev/null || true
 
   qmd collection add "$REPO_ROOT/projects" --name hq-projects --mask "**/*.{md,json}" 2>/dev/null || true
@@ -252,7 +255,7 @@ elif [[ ! -f "$REPO_ROOT/core/core.yaml" ]]; then
 else
   # Collect already-installed pack sources from modules.yaml (either location).
   INSTALLED_SOURCES=""
-  for modfile in "$REPO_ROOT/modules/modules.yaml" "$REPO_ROOT/modules.yaml"; do
+  for modfile in "$REPO_ROOT/core/modules/modules.yaml" "$REPO_ROOT/modules/modules.yaml" "$REPO_ROOT/modules.yaml"; do
     [[ -f "$modfile" ]] || continue
     INSTALLED_SOURCES="$INSTALLED_SOURCES
 $(grep -E "^\s+source\s*:" "$modfile" 2>/dev/null | sed -E "s/^\s+source\s*:\s*[\"']?([^\"'\r\n]+)[\"']?\s*$/\1/")"

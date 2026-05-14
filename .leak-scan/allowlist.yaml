@@ -1,0 +1,19 @@
+# Slug allowlist for hq-core-staging CI slug-scan
+#
+# The slug-scan job reads private tenant slugs from manifest-snapshot.yaml and
+# fails if any appear in PR-changed files. Slugs listed here are explicit
+# public exceptions.
+#
+# Keep this list tight. Adding a slug here implies it is safe to appear in
+# public hq-core content.
+
+version: 1
+
+allowed:
+  - indigoai-us       # GitHub org that owns hq-core + staging
+  - indigo            # parent brand; allowed because hq-core docs reference it
+  - hq-core
+  - hq-core-staging
+  - hq                # monorepo sibling
+  - hq-cloud
+  - hq-hello

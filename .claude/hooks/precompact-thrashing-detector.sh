@@ -125,8 +125,8 @@ STATE_DIR="$HQ/workspace/.compact-history"
 ║    • /clear    — start a new conversation in this terminal           ║
 ║    • Delegate  — spawn an Explore sub-agent and return text only     ║
 ║                                                                      ║
-║  See: core/policies/paper-mcp-context-isolation.md for the           ║
-║  delegation pattern.                                                 ║
+║  See: core/policies/image-context-isolation.md for the               ║
+║  delegation pattern for heavy visual context.                        ║
 ╚══════════════════════════════════════════════════════════════════════╝
 BANNER_EOF
   fi

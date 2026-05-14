@@ -1,0 +1,3 @@
+interface:
+  display_name: "calibration report"
+  short_description: "Summarize assistant time-estimate accuracy by category from the estimate log."
