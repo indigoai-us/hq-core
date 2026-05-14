@@ -10,7 +10,6 @@ rules:
     - .claude/hooks/
     - core/policies/
     - core/modules/
-    - companies/manifest.yaml
     - companies/_template/
     - core/workers/registry.yaml
     - core/scripts/
