@@ -29,11 +29,12 @@ If a manifest exists, this phase becomes the primary driver of setup. The manife
 - `steps.git-init` failed → no git repo; run `git init && git add . && git commit -m "init"`
 
 **P1 — Required (HQ works poorly without these):**
-- `dependencies.qmd` failed → no semantic search; install with `cargo install qmd` or `brew install tobi/tap/qmd`, then `qmd index .`
+- `dependencies.qmd` failed → no search; install with `npm install -g @tobilu/qmd`, then run `qmd update`
+- `dependencies.qmd` installed but search/index commands fail → Node likely changed after install; rerun `core/scripts/setup.sh` or reinstall with `npm install -g @tobilu/qmd`
 - `dependencies.claude-code` failed → can't run workers; `npm install -g @anthropic-ai/claude-code`
 - `dependencies.yq` failed → can't parse YAML configs; `brew install yq` or download binary
 - `dependencies.hq-cli` failed → can't install packs or sync; `npm install -g @indigoai-us/hq-cli`
-- `steps.indexing` failed → search won't work; run `qmd index .` directly
+- `steps.indexing` failed → search won't work; run `qmd update` directly
 - `packs` with status `"failed"` or `"running"` (interrupted) → retry each: `npx --package=@indigoai-us/hq-cli hq install {pack-name}`
 
 **P2 — Recommended (HQ works but some features limited):**
@@ -90,7 +91,7 @@ If installed but not authenticated (`vercel whoami` exits non-zero): offer `verc
 - `gh auth status` — if gh is installed but not authenticated, offer `gh auth login`
 - `vercel whoami` — if vercel is installed but not authenticated, offer `vercel login`
 
-Post-install: run `qmd index .` if qmd was just installed or no index exists.
+Post-install: run `qmd update` if qmd was just installed or no index exists. Embeddings may download a large local model; run `HQ_SETUP_QMD_EMBED=1 core/scripts/setup.sh` when you explicitly want semantic/vector setup.
 
 ## Phase 1: Identity
 
@@ -249,7 +250,7 @@ knowledge/*/
 
 ### Index
 ```bash
-qmd update 2>/dev/null || qmd index . 2>/dev/null || true
+qmd update 2>/dev/null || true
 ```
 
 ## Phase 3: Summary

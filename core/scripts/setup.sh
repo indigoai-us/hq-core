@@ -17,6 +17,41 @@ check_cmd() {
   command -v "$1" &>/dev/null
 }
 
+qmd_healthcheck() {
+  command -v qmd &>/dev/null && qmd collection list >/dev/null 2>&1
+}
+
+rebuild_qmd_native_deps() {
+  local npm_root qmd_dir
+
+  npm_root="$(npm root -g 2>/dev/null || true)"
+  [[ -n "$npm_root" ]] || return 1
+
+  qmd_dir="$npm_root/@tobilu/qmd"
+  [[ -d "$qmd_dir/node_modules/better-sqlite3" ]] || return 1
+
+  (
+    cd "$qmd_dir"
+    npm_config_build_from_source=true npm rebuild better-sqlite3 >/dev/null 2>&1
+  )
+}
+
+ensure_qmd_healthy() {
+  if qmd_healthcheck; then
+    return 0
+  fi
+
+  echo "  qmd is installed but index commands failed; rebuilding native dependencies…"
+  if rebuild_qmd_native_deps && qmd_healthcheck; then
+    ok "qmd native dependencies rebuilt"
+    return 0
+  fi
+
+  echo "  Reinstalling @tobilu/qmd@$QMD_VERSION…"
+  npm install -g "@tobilu/qmd@$QMD_VERSION"
+  qmd_healthcheck
+}
+
 # ── 1. Prerequisites ────────────────────────────────────────────────────────
 
 echo "╔══════════════════════════════════════╗"
@@ -82,6 +117,14 @@ else
   fi
   npm install -g "@tobilu/qmd@$QMD_VERSION"
   ok "qmd $QMD_VERSION installed"
+fi
+
+if ensure_qmd_healthy; then
+  ok "qmd search/index commands ready"
+else
+  fail "qmd is installed but search/index commands still fail"
+  fail "Try: npm install -g @tobilu/qmd@$QMD_VERSION"
+  exit 1
 fi
 
 # ── 3. Make scripts executable ───────────────────────────────────────────────
@@ -231,10 +274,17 @@ if command -v qmd &>/dev/null; then
   qmd context add qmd://hq-projects "Project PRDs and documentation." 2>/dev/null || true
 fi
 
-# Update qmd search index and build embeddings
+# Update the keyword/search index. Embeddings can download a large local model,
+# so keep them explicit instead of surprising fresh installs.
 qmd update 2>/dev/null || true
-qmd embed 2>/dev/null || true
-ok "qmd index built"
+ok "qmd keyword index built"
+
+if [[ "${HQ_SETUP_QMD_EMBED:-0}" == "1" ]]; then
+  qmd embed 2>/dev/null || true
+  ok "qmd embeddings built"
+else
+  skip "qmd embeddings not built — set HQ_SETUP_QMD_EMBED=1 to download semantic model"
+fi
 
 # ── 7. Recommended content packs (hq-core v12+) ──────────────────────────────
 # hq-core ships as a minimal scaffold; batteries-included UX comes from packs

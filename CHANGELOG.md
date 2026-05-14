@@ -1,6 +1,10 @@
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+- **`core/scripts/setup.sh` validates qmd search/index health, not just `qmd --version`** — setup now catches stale native npm dependencies after Node upgrades, rebuilds `better-sqlite3` when possible, and reinstalls qmd if needed.
+
+### Changed
+- **qmd embeddings are opt-in during setup** — setup still builds the keyword index, but only runs the large semantic embedding/model step when `HQ_SETUP_QMD_EMBED=1` is set.
 
 ## [14.1.2-beta.2] — 2026-05-14
 
