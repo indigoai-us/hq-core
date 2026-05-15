@@ -165,6 +165,24 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
+          # Canonical location; the root MIGRATION.md is a symlink.
+          MIG="core/docs/hq/MIGRATION.md"
+
+          # hq-core only sees promote PRs (bulk staging→hq-core rsync), so
+          # "file must change in this PR" carries no human signal — every
+          # promote changes the file by construction. The thing that
+          # matters here is that the TBD marker is present so release.yml
+          # can substitute the version on tag push. Staging keeps the full
+          # "file changed AND added section includes TBD" rule below.
+          if [ "${GITHUB_REPOSITORY:-}" = "indigoai-us/hq-core" ]; then
+            if grep -qE '^##[[:space:]]+Release:[[:space:]]+TBD' "$MIG"; then
+              echo "✓ ${MIG} contains '## Release: TBD' marker"
+              exit 0
+            fi
+            echo "::error file=${MIG}::${MIG} is missing the '## Release: TBD' header. release.yml needs it as a placeholder to substitute on tag push."
+            exit 1
+          fi
+
           # Fetch base ref without forcing a shallow depth. A shallow
           # `--depth=1` fetch combined with the PR branch's full history
           # (from checkout@v4 fetch-depth: 0) leaves no common ancestor
@@ -172,8 +190,6 @@ jobs:
           # out with "no merge base" and the `|| true` below silently
           # turns the error into an empty ADDED string.
           git fetch origin "$BASE_REF"
-          # Canonical location; the root MIGRATION.md is a symlink.
-          MIG="core/docs/hq/MIGRATION.md"
           # Two-dot diff: just "what HEAD has that origin/${BASE_REF}
           # does not". Three-dot would be more precise (changes on this
           # branch's history only) but requires a reachable merge-base,
