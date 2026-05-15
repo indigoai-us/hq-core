@@ -1,0 +1,211 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    env:
+      HQ_AUDIT_BOT_APP_ID: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
+      HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+    outputs:
+      stamp_committed: ${{ steps.stamp.outputs.committed }}
+      stamp_sha: ${{ steps.stamp.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag and prerelease flag
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          NAME="hq-core-${TAG}"
+          case "$TAG" in
+            *-alpha*|*-beta*|*-rc*) PRERELEASE=true ;;
+            *) PRERELEASE=false ;;
+          esac
+          {
+            echo "tag=${TAG}"
+            echo "name=${NAME}"
+            echo "prerelease=${PRERELEASE}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Mint App token (for MIGRATION.md TBD swap commit)
+        id: app-token
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+
+      - name: Stamp MIGRATION.md TBD and core/core.yaml with release version
+        id: stamp
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          GH_PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          # Strip leading 'v' from TAG to get bare semver for core.yaml.
+          VERSION="${TAG#v}"
+          NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Track which files we actually mutated so the commit/staging logic
+          # below knows what to git-add. Empty means "nothing to do".
+          STAMPED_FILES=()
+
+          # --- 1) MIGRATION.md TBD swap (legacy behavior) ---
+          MIG=""
+          for candidate in core/docs/hq/MIGRATION.md MIGRATION.md; do
+            if [ -f "$candidate" ] && [ ! -L "$candidate" ]; then
+              MIG="$candidate"
+              break
+            fi
+          done
+          if [ -z "$MIG" ]; then
+            echo "::notice::No non-symlink MIGRATION.md found; skipping TBD swap"
+          elif ! grep -qE '^## Release: TBD' "$MIG"; then
+            echo "::notice::No '## Release: TBD' marker in $MIG; nothing to stamp"
+          else
+            # Apply swap to working tree — the tarball-staging step below picks
+            # this up whether or not the commit/push to main succeeds.
+            sed -E -i.bak "s/^## Release: TBD/## Release: ${TAG}/" "$MIG"
+            rm -f "${MIG}.bak"
+            echo "----- MIGRATION.md diff -----"
+            git --no-pager diff -- "$MIG" | head -40
+            STAMPED_FILES+=("$MIG")
+          fi
+
+          # --- 2) core/core.yaml hqVersion + updatedAt bump ---
+          # Idempotent: only mutates if the existing value differs. Pre-v12
+          # releases (no core/core.yaml) are skipped silently.
+          CORE_YAML="core/core.yaml"
+          if [ ! -f "$CORE_YAML" ] || [ -L "$CORE_YAML" ]; then
+            echo "::notice::No non-symlink core/core.yaml found; skipping hqVersion stamp"
+          elif ! grep -qE '^hqVersion:' "$CORE_YAML"; then
+            echo "::notice::No 'hqVersion:' key in $CORE_YAML; skipping stamp"
+          else
+            CURRENT=$(grep -E '^hqVersion:' "$CORE_YAML" | head -1 \
+              | sed -E 's/^hqVersion:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+)"?.*/\1/')
+            if [ "$CURRENT" = "$VERSION" ]; then
+              echo "::notice::core/core.yaml already at hqVersion ${VERSION}; skipping stamp"
+            else
+              # Replace hqVersion value (keep quoted style) and updatedAt value.
+              sed -E -i.bak \
+                -e "s|^hqVersion:.*|hqVersion: \"${VERSION}\"|" \
+                -e "s|^updatedAt:.*|updatedAt: \"${NOW_ISO}\"|" \
+                "$CORE_YAML"
+              rm -f "${CORE_YAML}.bak"
+              # If updatedAt key is absent (older core.yaml schema), insert it
+              # immediately after hqVersion. Use awk (single-line, portable
+              # across BSD/GNU; multi-line `sed a\` breaks YAML block-scalar
+              # parsing of this workflow file).
+              if ! grep -qE '^updatedAt:' "$CORE_YAML"; then
+                awk -v line="updatedAt: \"${NOW_ISO}\"" '{ print } /^hqVersion:/ && !done { print line; done=1 }' "$CORE_YAML" > "${CORE_YAML}.new"
+                mv "${CORE_YAML}.new" "$CORE_YAML"
+              fi
+              echo "----- core/core.yaml diff -----"
+              git --no-pager diff -- "$CORE_YAML" | head -40
+              STAMPED_FILES+=("$CORE_YAML")
+            fi
+          fi
+
+          # --- 3) Commit + push (best-effort) ---
+          if [ "${#STAMPED_FILES[@]}" -eq 0 ]; then
+            echo "::notice::Nothing to stamp; skipping commit"
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Commit to main if we have an App token. Best-effort: a push failure
+          # (branch protection, non-FF) is logged but does not fail the release.
+          if [ -z "${GH_PUSH_TOKEN:-}" ]; then
+            echo "::notice::No App token available; tarball reflects stamps but main branch is not updated"
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name  "hq-audit-bot[bot]"
+          git config user.email "hq-audit-bot[bot]@users.noreply.github.com"
+          git add "${STAMPED_FILES[@]}"
+          git commit -m "chore(release): stamp ${TAG} on MIGRATION.md and core.yaml"
+          NEW_SHA="$(git rev-parse HEAD)"
+          PUSH_URL="https://x-access-token:${GH_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # HEAD must descend from main (the tag was typically pushed at main HEAD).
+          if git push "$PUSH_URL" "HEAD:refs/heads/main"; then
+            echo "✓ Pushed stamp commit ${NEW_SHA} to main"
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+            echo "sha=${NEW_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Failed to push stamp commit to main (branch protection or non-fast-forward). Tarball still reflects the stamps."
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stage release tree
+        run: |
+          set -euo pipefail
+          STAGE="/tmp/stage/${{ steps.meta.outputs.name }}"
+          mkdir -p "$STAGE"
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.leak-scan' \
+            ./ "$STAGE/"
+
+      - name: Create tarball and checksum
+        run: |
+          set -euo pipefail
+          NAME="${{ steps.meta.outputs.name }}"
+          tar -czf "${NAME}.tar.gz" -C /tmp/stage "${NAME}"
+          sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+
+      - name: Resolve release notes body
+        id: notes
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Check both the staging convention (core/docs/hq/) and the
+          # legacy hq-core convention (repo root). First match wins.
+          for candidate in \
+            "core/docs/hq/RELEASE-NOTES-${TAG}.md" \
+            "RELEASE-NOTES-${TAG}.md"; do
+            if [ -f "$candidate" ]; then
+              echo "file=${candidate}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "file=" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          NAME="${{ steps.meta.outputs.name }}"
+          PRERELEASE_FLAG=""
+          if [ "${{ steps.meta.outputs.prerelease }}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          NOTES_FLAG="--generate-notes"
+          if [ -n "${{ steps.notes.outputs.file }}" ]; then
+            NOTES_FLAG="--notes-file ${{ steps.notes.outputs.file }}"
+          fi
+          gh release create "$TAG" \
+            --title "$TAG" \
+            $PRERELEASE_FLAG \
+            $NOTES_FLAG \
+            "${NAME}.tar.gz" \
+            "${NAME}.tar.gz.sha256"

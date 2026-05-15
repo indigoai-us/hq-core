@@ -8,11 +8,12 @@ HQ is a personal operating system for orchestrating work across many companies, 
 
 - **companies/** — isolated tenants. Each has its own credentials, policies, knowledge, projects. Cross-company contamination is a category-1 bug.
 - **repos/** — code (`repos/public/`, `repos/private/` — never elsewhere). HQ orchestrates; repos are where code actually lives.
-- **projects/** — PRDs, brainstorms, and plans for work that may span repos and companies.
+- **personal/projects/** — personal/HQ PRDs, brainstorms, and plans that are not owned by a company.
+- **companies/{co}/projects/** — company-owned PRDs, brainstorms, and plans.
 - **core/workers/** — specialized agents with skills (design, content, security, deploy, …). Use them before generic Claude.
 - **workspace/** — session and orchestrator state (threads, locks, drafts, reports).
 - **core/knowledge/** — reusable facts, specs, playbooks. Indexed by qmd.
-- **policies/** — auto-enforced rules. Loaded at session start by hooks; do not duplicate them in this file.
+- **core/policies/** — auto-enforced shared rules. Loaded at session start by hooks; do not duplicate them in this file.
 
 ### Charter Rule for This File
 
@@ -48,6 +49,8 @@ When the user corrects factual content (pricing, session descriptions, product d
 
 Quiet by default. Silent on routine ops (install, lint, build, test, fmt) and recoverable failures — fix and continue without narrating. Surface only: user decisions, irreversible/destructive actions, security signals, blockers Claude can't self-resolve, substantive results / insights / reports. Verbose narration allowed inside `/run-project`, `/execute-task`, `/diagnose`, `/investigate`, `/tdd`, `/architect`, `/deep-plan`, `/review`, `/security-review`, `/discover`. Carveouts (URLs that must surface): `/hq-share` minting turn, `/deploy` preview. Full filter + decision tree: `.claude/policies/quiet-by-default-narration.md`.
 
+Default chat voice is Cavebro for Claude Code and Codex: terse, warm, technically exact. Claude Code loads it from `.claude/settings.json`; Codex receives the same source through `.codex/output-style.md` plus this AGENTS.md bridge. Apply Cavebro to chat only. Files written to disk, security warnings, irreversible-action confirmations, plans, handoffs, checkpoints, policies, ADRs, deploy previews, and outbound drafts stay full prose.
+
 ### Sensitive Path Deny Lists
 
 Sensitive paths (SSH/AWS/GPG/env/shell-rc) are Read-blocked by `.claude/settings.json` deny rules. For rc-file mutations: append-only (`printf >> file`) or pattern-delete (`sed '/pattern/d' file`) — never Read+Edit.
@@ -60,7 +63,7 @@ When spawning Task agents for story/task completion: each sub-agent MUST commit 
 
 Minimize context burn on session start:
 
-- Do NOT read INDEX.md, agents files, or company knowledge unless task requires it
+- Do NOT read core/docs/hq/INDEX.md, agents files, or company knowledge unless task requires it
 - Do NOT run qmd searches "to orient" — search only with a specific question
 - For repo coding tasks: go directly to repo. HQ context rarely needed
 - For worker execution: load only worker.yaml — it has its own knowledge pointers
@@ -73,10 +76,10 @@ Claude Code defaults live in `.claude/settings.json`; Codex sandboxing and hook 
 
 | Setting | Value | Why |
 |---------|-------|-----|
-| `outputStyle` | `Explanatory` | Enables Insight blocks + educational explanations. Synced to starter-kit |
+| `outputStyle` | `Cavebro` | Warm terse chat voice; keeps insights and auto-clarity carveouts. Synced to starter-kit and Codex bridge |
 | `MAX_THINKING_TOKENS` | `31999` | Full fixed-budget thinking (adaptive disabled separately) |
 | `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` | `1` | Disables adaptive thinking on Opus/Sonnet 4.6 — uses fixed budget instead |
-| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | `60` | Autocompact fires at 60%; a separate Stop-hook advisory warns once at ~50% |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | `60` | Autocompact fires at 60%; a separate Stop-hook directive requires `/checkpoint` once at ~50% |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | `opus` | Subagents (Task tool) use Opus — all Claude work runs on Opus 4.6 |
 
 Toggle thinking with Option+T.
@@ -93,23 +96,11 @@ Never fall back to another company's credentials. If the right ones fail, stop a
 
 Never accumulate >10 images in parent session; delegate image reads/verifications to a sub-agent that returns text only. Full rules: `core/policies/image-context-isolation.md`.
 
-### Token Optimization
+### User-Facing Decisions
 
-Use the runtime's clickable/structured question UI for user-facing questions with selectable answers. Claude Code uses `AskUserQuestion`; Codex uses `request_user_input` when it is callable. Ask exactly one question per call, wait for the answer, update working state, then ask the next. If no structured picker is available, ask the same options as concise plain text. Full rules: `core/policies/decision-queue-one-at-a-time.md` and `core/policies/hq-codex-decision-gate-fallback.md`.
+Use the runtime's clickable/structured question UI for user-facing questions with selectable answers. Claude Code uses `AskUserQuestion`; Codex uses `request_user_input` when it is callable. Ask exactly one question per call, wait for the answer, update working state, then ask the next. If no structured picker is available, ask the same options as concise plain text. Full rules: `.claude/policies/decision-queue-one-at-a-time.md` and `.claude/policies/hq-codex-decision-gate-fallback.md`.
 
-Env vars and `.claude/settings.json` control cost/style defaults:
-
-| Setting | Value | Why |
-|---------|-------|-----|
-| `outputStyle` | `Explanatory` | Insight blocks + educational explanations |
-| `MAX_THINKING_TOKENS` | `31999` | Full fixed-budget thinking |
-| `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` | `1` | Disable adaptive; use fixed budget |
-| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | `75` | Autocompact at 75%; ~60% Stop-hook advisory |
-| `CLAUDE_CODE_SUBAGENT_MODEL` | `opus` | Subagents (Task tool) use Opus |
-
-Toggle thinking with Option+T.
-
-Top-level: `.claude/commands/` (exposed to Codex through `.codex/prompts`), `agents-profile.md`, `agents-companies.md`, `companies/`, `core/knowledge/{public,private}/`, `projects/` (personal/HQ only), `repos/{public,private}/`, `core/settings/`, `core/workers/public/`, `workspace/{checkpoints,orchestrator,reports,social-drafts}/`. Each company is self-contained: `companies/{co}/{knowledge,settings,data,workers,repos,projects}/`. Full tree: `core/knowledge/public/hq-core/quick-reference.md`
+Top-level visible directories: `companies/`, `core/`, `personal/`, `repos/`, `workspace/`. Root `AGENTS.md` points at this file; `.claude/`, `.agents/`, and `.codex/` are hidden runtime entrypoints. Public HQ docs live in `core/docs/hq/`. Personal profile files and personal/HQ projects live under `personal/`. Each company is self-contained: `companies/{co}/{knowledge,settings,data,workers,repos,projects}/`. Full tree: `core/knowledge/public/hq-core/quick-reference.md`
 
 - Verify which branch you're on before committing.
 - Prefer merge over rebase when a branch is significantly behind (50+ commits).
@@ -122,11 +113,13 @@ Top-level: `.claude/commands/` (exposed to Codex through `.codex/prompts`), `age
 
 ### Key Files (load on demand)
 
-`INDEX.md`, `agents-profile.md`, `agents-companies.md`, `USER-GUIDE.md`, `core/workers/registry.yaml`, `companies/manifest.yaml`. Full catalog: `core/knowledge/public/hq-core/quick-reference.md`.
+`core/docs/hq/INDEX.md`, `core/docs/hq/USER-GUIDE.md`, `personal/agents-profile.md`, `personal/agents-companies.md`, `core/workers/registry.yaml`, `companies/manifest.yaml`. Full catalog: `core/knowledge/public/hq-core/quick-reference.md`.
 
 ### Structure
 
-Top-level: `.claude/`, `agents-*.md`, `companies/`, `core/knowledge/{public,private}/`, `projects/` (personal/HQ only), `repos/{public,private}/`, `core/settings/`, `core/workers/public/`, `workspace/`. Each company is self-contained: `companies/{co}/{knowledge,settings,data,workers,repos,projects}/`. Full tree: `core/knowledge/public/hq-core/quick-reference.md`.
+Top-level: `.claude/`, `.agents/`, `.codex/`, `AGENTS.md`, `companies/`, `core/{docs,hooks,knowledge,policies,settings,skills,workers}/` (system tree, shipped with HQ), `personal/{agents-profile.md,agents-companies.md,hooks,knowledge,policies,projects,settings,skills,workers}/` (user-personal overlay — see below), `repos/{public,private}/`, `workspace/`. Each company is self-contained: `companies/{co}/{knowledge,settings,data,workers,repos,projects}/`. Full tree: `core/knowledge/public/hq-core/quick-reference.md`.
+
+**Personal overlay (`personal/`).** Mirrors the shape of `core/` but is user-personal. `master-sync.sh` (Stop/PostToolUse) symlinks `personal/{policies,knowledge,workers,settings}/<entry>` into `core/<type>/<entry>` — personal entries appear inside core and do *not* form a separate precedence layer. Exceptions: `personal/hooks/<event>/` is loaded as its own ordered hook layer (after `core/hooks/`, before packs), and `personal/skills/<skill>/` surfaces as `/<skill>` (the same flat command name as a core skill; Claude Code tags it with a `(project:personal)` description, the subdirectory does not become part of the command).
 
 ### Companies
 
@@ -138,7 +131,7 @@ Sensitive system paths are blocked from Read access via `settings.json` deny rul
 
 `/hq-share <path>...` mints an encrypted single-use share-session URL via `hq files share` and opens the browser picker for multi-recipient ACL grants. **Default behavior is to print the full URL inline in the assistant reply** — that's the minting turn and the one surface where the unredacted token is permitted. For single-recipient/scripted grants, use direct grant instead: `hq files share <prefix> --with <principal> --permission <level>`.
 
-**Hard rule:** A share-session URL is a live, encrypted, single-use, 15-minute capability — any holder can redeem it to write ACLs in the issuer's name. After the minting turn, NEVER paste the URL into subsequent assistant turns, summaries, thread files (`workspace/threads/`), journals, learnings, commit messages, PR descriptions, Slack/email, or worker handoff payloads. Use the redacted form `https://hq.{co}.com/share-session/<TOKEN_REDACTED>` in any persisted or follow-up context. Full constraint set: `core/policies/hq-share-session-urls-are-capabilities.md` (enforcement: hard). Command/skill details: `.claude/commands/hq-share.md`, `.claude/skills/hq-share/SKILL.md`, `.claude/skills/hq-files/SKILL.md` § "Rules for Agent Workflows" #10.
+**Hard rule:** A share-session URL is a live, encrypted, single-use, 15-minute capability — any holder can redeem it to write ACLs in the issuer's name. After the minting turn, NEVER paste the URL into subsequent assistant turns, summaries, thread files (`workspace/threads/`), journals, learnings, commit messages, PR descriptions, Slack/email, or worker handoff payloads. Use the redacted form `https://hq.{co}.com/share-session/<TOKEN_REDACTED>` in any persisted or follow-up context. Full constraint set: `.claude/policies/hq-share-session-urls-are-capabilities.md` (enforcement: hard). Skill details: `.claude/skills/hq-share/SKILL.md`, `.claude/skills/hq-files/SKILL.md` § "Rules for Agent Workflows" #10.
 
 ### Infrastructure-First
 
@@ -152,7 +145,7 @@ When work implies new infrastructure, scaffold it BEFORE doing the work:
 | New project | `/plan` |
 | New repo | Clone to `repos/{pub\|priv}/` → manifest.yaml → qmd collection |
 
-Post-creation: verify `manifest.yaml`, `core/workers/registry.yaml`, `core/modules/modules.yaml`; run `qmd update 2>/dev/null || true`; regen affected INDEX.md.
+Post-creation: verify `manifest.yaml` and the newly-created `worker.yaml` (registry.yaml auto-regenerates via `core/scripts/generate-workers-registry.sh` on next master-sync); run `qmd update 2>/dev/null || true`; regen affected INDEX.md.
 
 ### INDEX.md System
 
@@ -164,7 +157,7 @@ HQ + codebases indexed with [qmd](https://github.com/tobi/qmd). Modes: `search` 
 
 ### Auto-Checkpoint
 
-When `AUTO-CHECKPOINT REQUIRED` is injected by a PostToolUse hook, write a lightweight thread file and continue. Do NOT rebuild INDEX, run `qmd update`, or write legacy checkpoint files. When the **60% Stop banner** or **75% PreCompact banner** fires, present the 3 options (checkpoint / handoff / continue) and wait for the user — never auto-run `/checkpoint`. Trigger table: `core/knowledge/public/hq-core/auto-checkpoint-spec.md`.
+When `AUTO-CHECKPOINT REQUIRED` is injected by a PostToolUse hook, write a lightweight thread file and continue. Do NOT rebuild INDEX, run `qmd update`, or write legacy checkpoint files. When the **50% Stop banner** or **PreCompact backup** fires, run `/checkpoint` immediately without asking first. Trigger table: `core/knowledge/public/hq-core/auto-checkpoint-spec.md`.
 
 ### Session Handoffs
 
@@ -172,27 +165,27 @@ When preparing a session handoff: commit pending changes, write `handoff.json`, 
 
 ### Policies
 
-Three scopes, precedence highest→lowest: `companies/{co}/policies/`, `repos/{repo}/.claude/policies/`, `core/policies/`. Auto-loaded by SessionStart hook + slash commands. Spec: `core/knowledge/public/hq-core/policies-spec.md`. Template: `companies/_template/policies/example-policy.md`.
+Three scopes, precedence highest→lowest: `companies/{co}/policies/`, `repos/{repo}/.claude/policies/`, `core/policies/`. Auto-loaded by SessionStart hook + slash commands. Author user-personal policies in `personal/policies/` — master-sync symlinks them into `core/policies/`, so they ride the global scope (not a separate precedence layer). Spec: `core/knowledge/public/hq-core/policies-spec.md`. Template: `companies/_template/policies/example-policy.md`.
 
 ### Workers
 
-Worker-first rule: before specialized tasks (design, content, security, data, deploy), check `core/workers/registry.yaml` and use `/run {worker} {skill}`. Per-repo design: `design.md` can declare `style-pack: <id>` when the optional design-styles pack is installed. Company-scoped brand packs (`scope: company`) live at `companies/{co}/knowledge/design-styles/packs/{id}/` and auto-load via the worker's `dynamic` context when a target company is bound. Roster + design quality refs: `core/knowledge/public/hq-core/quick-reference.md`.
+Worker-first rule: before specialized tasks (design, content, security, data, deploy), check `core/workers/registry.yaml` (auto-generated from each `worker.yaml` by `core/scripts/generate-workers-registry.sh` on every master-sync run — do not hand-edit) and use `/run {worker} {skill}`. Per-repo design: `design.md` declares `style-pack: <id>` resolved via `core/knowledge/public/design-styles/registry.yaml`. Company-scoped brand packs (`scope: company`) live at `companies/{co}/knowledge/design-styles/packs/{id}/` and auto-load via the worker's `dynamic` context when a target company is bound. Roster + design quality refs: `core/knowledge/public/hq-core/quick-reference.md`.
 
 ### Commands & Skill Bridge
 
-Core commands in `.claude/commands/`; company/niche commands live on their owning workers. Codex bridge: `.claude/skills/{name}/SKILL.md` mirrors each command. Coverage: `bash core/scripts/codex-skill-bridge.sh status`. Pattern: `core/knowledge/public/hq-core/codex-skill-pattern.md`.
+Skills are the single source of truth for slash invocations: `.claude/skills/{name}/SKILL.md` is read by Claude Code and Codex alike (Codex via `.agents/skills`). The active output style is mirrored to Codex through `.codex/output-style.md`. Coverage: `bash core/scripts/codex-skill-bridge.sh status`. Pattern: `core/knowledge/public/hq-core/codex-skill-pattern.md`.
 
 ### Knowledge Bases & Repos
 
-Public list: `core/modules/modules.yaml` (filter `access: public`). Company knowledge: `companies/{co}/knowledge/`. Three valid repo patterns (embedded git, symlink, inline): `core/knowledge/public/hq-core/knowledge-taxonomy.md`.
+Company knowledge: `companies/{co}/knowledge/`. Three valid repo patterns (embedded git, symlink, inline): `core/knowledge/public/hq-core/knowledge-taxonomy.md`.
 
 ### Learning System & Insights
 
-`/learn` captures persistent rules as policy files and educational insights. Policy format: `core/knowledge/public/hq-core/policies-spec.md`. Insight format: `core/knowledge/public/hq-core/insights-spec.md`.
+60 skills in `.claude/skills/` (core only). Company/niche skills live on their owning workers. Full catalog: `core/knowledge/public/hq-core/quick-reference.md`
 
 ### E2E Testing
 
-E2E tests verify the product works, not just the code. PRDs include optional `e2eTests` per story. Use the optional testing knowledge pack for templates and cloud/browser guides when it is installed.
+E2E tests verify the product works, not just the code. PRDs include optional `e2eTests` per story. Workers use the `e2e-testing` skill. Templates + infra guides: `core/knowledge/public/testing/`. Full guide: `core/knowledge/public/testing/e2e-cloud.md`.
 
 ### Skills Index
 
@@ -202,7 +195,7 @@ Frequently-used skills — invoke via `/<name>`. Full help lives in each skill's
 2. **Symlink to `repos/private/knowledge-{co}/`** (e.g. `companies/{company}/knowledge`): tracked as `120000` symlink; edits land in the target repo.
 3. **Inline files tracked by HQ git** (e.g. `core/knowledge/public/getting-started/`, `core/knowledge/public/hq-core/`, `companies/{company}/knowledge/`): simplest; no inner repo, just regular files.
 
-When adding new knowledge: pick pattern 1 for company knowledge that will grow, pattern 2 if you want a shared clone, pattern 3 for small/shared content. Register in `core/modules/modules.yaml`. Taxonomy: `core/knowledge/public/hq-core/knowledge-taxonomy.md`.
+When adding new knowledge: pick pattern 1 for company knowledge that will grow, pattern 2 if you want a shared clone, pattern 3 for small/shared content. Taxonomy: `core/knowledge/public/hq-core/knowledge-taxonomy.md`.
 
 ## Resource Registry
 
@@ -231,7 +224,7 @@ If a matching resource exists, reuse it rather than silently duplicating.
 
 ## Skills
 
-`.claude/skills/` is the canonical skill tree and is exposed to Codex through `.agents/skills` plus the global skill bridge. Dual-format: `command.md` (Claude Code) + `SKILL.md` (Codex). Coverage: `bash core/scripts/codex-skill-bridge.sh status`. Full pattern: `core/knowledge/public/hq-core/codex-skill-pattern.md`.
+`.claude/skills/` is the canonical skill tree and is exposed to Codex through `.agents/skills` plus the global skill bridge. Single source: `.claude/skills/<name>/SKILL.md` (used by both Claude Code and Codex). The active output style is exposed to Codex through `.codex/output-style.md`. Coverage: `bash core/scripts/codex-skill-bridge.sh status`. Full pattern: `core/knowledge/public/hq-core/codex-skill-pattern.md`.
 
 ## Search (qmd)
 
@@ -268,6 +261,7 @@ Educational insights persist at `workspace/insights/`. Captured via `/learn`, au
 
 ## Git Workflow Rules
 
+- For local HQ non-repo edits, users should not see or manage dirty HQ files. Silently autosave with `.claude/hooks/hq-autocommit.sh` after Claude Write/Edit/MultiEdit or Codex apply_patch/Edit/Write work. Skip `repos/`, embedded/symlinked knowledge repos, and specific repo work; those keep normal commit discipline.
 - Always verify which branch you're on before committing.
 - Prefer merge over rebase when a branch is significantly behind (50+ commits).
 - If lint-staged or git hooks cause issues during merge/rebase, disable them temporarily with `--no-verify` rather than fighting through repeated failures.
@@ -284,6 +278,7 @@ Educational insights persist at `workspace/insights/`. Captured via `/learn`, au
 - **NEVER**: Run Playwright/Puppeteer/Chromium in a Vercel Lambda — the 250 MB unzipped cap makes it architecturally impossible. Use ingest-only endpoints that accept pre-captured payloads from client-side callers (extensions, local scripts). <!-- back-pressure-failure | 2026-04-15 -->
 - **NEVER**: Extract shared skills that require editing 5+ existing files to wire up. When extending behavior across multiple commands/skills, prefer layered independent additions (policy + command + skill edit) over shared extraction. Accept duplicated pattern tables as simpler than shared dependencies. <!-- user-correction | 2026-04-15 -->
 - **NEVER**: Use relative symlinks to access pattern-2 knowledge repos from a git worktree — `../../repos/` resolves against worktree root, not HQ root. Use the canonical absolute path (`$HOME/Documents/HQ/repos/public/knowledge-{name}/`). <!-- user-correction | 2026-04-16 -->
+- **ALWAYS**: Use `qmd` first for HQ search across content, indexed repos, projects, workers, policies, and knowledge. Fall back to Grep or shell search only when `qmd` is unavailable, errors, or the task is exact pattern matching in already-scoped code. <!-- user-correction | 2026-05-14 -->
 
 ## Auto-Checkpoint (PostToolUse Hook)
 
@@ -302,16 +297,16 @@ PostToolUse hooks detect checkpoint-worthy events and inject `AUTO-CHECKPOINT RE
 
 Also checkpoint after worker skill completion. Schema: `core/knowledge/public/hq-core/thread-schema.md`. Do NOT rebuild INDEX, update `recent.md`, run `qmd update`, or write legacy checkpoint files on auto-checkpoints. When edits touch knowledge files, commit to the knowledge repo — not HQ git.
 
-## Auto-Checkpoint (Two-Stage Advisory)
+## Auto-Checkpoint (Context Thresholds)
 
-Context-usage advisories run in two stages. Both present the same three options (checkpoint, handoff, or continue) — neither forces action.
+Context-usage checkpoints run in two stages. Both are mandatory checkpoint directives, not user-choice prompts.
 
-1. **50% advisory (Stop hook).** `.claude/hooks/context-warning-50.sh` fires after an assistant turn when the transcript size crosses ~50% of the context window. Prints once per session (gated via `workspace/.context-warnings/{session_id}`). Purely informational — runway still exists before autocompact.
-2. **60% advisory (PreCompact hook).** `.claude/hooks/auto-checkpoint-precompact.sh` fires immediately before autocompact runs (threshold set by `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=60`). Autocompact cannot be blocked in Claude Code, so the banner surfaces options right before compaction proceeds.
+1. **50% checkpoint (Stop hook).** `.claude/hooks/context-warning-50.sh` fires after an assistant turn when the transcript size crosses ~50% of the context window. Prints once per session (gated via `workspace/.context-warnings/{session_id}`). This intentionally leaves enough context to run `/checkpoint`, preserve state, and still orchestrate subagents for follow-up work.
+2. **PreCompact backup.** `.claude/hooks/auto-checkpoint-precompact.sh` fires immediately before autocompact runs (threshold set by `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`). Autocompact cannot be blocked in Claude Code or Codex, so the banner tells the next assistant turn to run `/checkpoint` before continuing.
 
-**When either banner appears**, present the 3 options to the user and wait for their decision. Do not auto-run `/checkpoint`; let the user pick.
+**When either banner appears**, run `/checkpoint` immediately. Do not ask the user first, and do not continue normal task work until the checkpoint is complete.
 
-**Fallback (instruction-based):** If context feels heavy (many long turns, lots of file reads), proactively suggest `/checkpoint` or `/handoff`. For end-of-session wrap-up, run `/handoff` manually.
+**Fallback (instruction-based):** If context feels heavy before either hook fires (many long turns, lots of file reads), proactively run `/checkpoint`. For end-of-session wrap-up, run `/handoff` manually.
 
 ## Core Principles
 

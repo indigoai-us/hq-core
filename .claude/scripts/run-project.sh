@@ -17,20 +17,28 @@ set -euo pipefail
 #   --status            Show all project statuses, exit
 #   --dry-run           Show story order without executing
 #   --model MODEL       Override model for all stories
-#   --no-permissions    Pass --dangerously-skip-permissions to claude
+#   --no-permissions    Pass the builder's non-interactive permission bypass
 #   --retry-failed      Re-run previously failed stories only
 #   --timeout N         Per-story wall-clock timeout in minutes (default: none)
-#   --verbose           Show full claude output
+#   --verbose           Show full builder output
 #   --tmux              Launch in tmux session with Remote Control
 # =============================================================================
 
-HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 ORCH_DIR="$HQ_ROOT/workspace/orchestrator"
 REGRESSION_INTERVAL=3
 SESSION_ID="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 RUN_START_EPOCH=$(date +%s)
-AUDIT_SCRIPT="$HQ_ROOT/scripts/audit-log.sh"
+AUDIT_SCRIPT="$HQ_ROOT/core/scripts/audit-log.sh"
+DETECT_CODEX="$HQ_ROOT/core/scripts/lib/detect-codex.sh"
+
+if [[ -f "$DETECT_CODEX" ]]; then
+  # shellcheck source=core/scripts/lib/detect-codex.sh
+  source "$DETECT_CODEX"
+else
+  running_from_codex() { return 1; }
+fi
 
 # --- Git helpers (worktree-compatible) ---
 is_git_repo() {
@@ -212,7 +220,7 @@ cleanup_on_signal() {
 }
 
 # --- repo-run-registry integration (added by HQ repo-run-coordination) ---
-REPO_RUN_REGISTRY="$HQ_ROOT/scripts/repo-run-registry.sh"
+REPO_RUN_REGISTRY="$HQ_ROOT/core/scripts/repo-run-registry.sh"
 REPO_RUN_ID=""
 HEARTBEAT_PID=""
 
@@ -274,7 +282,7 @@ RESUME=false
 STATUS=false
 DRY_RUN=false
 MODEL=""
-BUILDER=""  # ""/auto = worker-authoritative claude; "codex" requires explicit env opt-in
+BUILDER=""  # ""/auto = codex headless builder
 BUILDER_EXPLICIT=false
 NO_PERMISSIONS=false
 RETRY_FAILED=false
@@ -322,14 +330,14 @@ while [[ $# -gt 0 ]]; do
     --model)        MODEL="$2"; shift 2 ;;
     --builder)
       if [[ $# -lt 2 ]]; then
-        echo -e "${RED}--builder requires a value: auto, claude, or codex${NC}" >&2
+        echo -e "${RED}--builder requires a value: auto or codex${NC}" >&2
         exit 1
       fi
       BUILDER="$2"; BUILDER_EXPLICIT=true; shift 2 ;;
     --builder=*)    BUILDER="${1#--builder=}"; BUILDER_EXPLICIT=true; shift ;;
     --engine)
       if [[ $# -lt 2 ]]; then
-        echo -e "${RED}--engine requires a value: auto, claude, or codex${NC}" >&2
+        echo -e "${RED}--engine requires a value: auto or codex${NC}" >&2
         exit 1
       fi
       BUILDER="$2"; BUILDER_EXPLICIT=true; shift 2 ;;
@@ -359,18 +367,17 @@ Flags:
   --resume            Resume from next incomplete story (auto-detected)
   --status            Show all project statuses, exit
   --dry-run           Show story order without executing
-  --model MODEL       Override model for all stories (claude builder only)
-  --builder BUILDER   Build agent: "auto", "claude", or "codex" — auto uses claude.
-                      When "codex",
-                      each story is executed via `codex exec` instead of `claude -p`.
+  --model MODEL       Override model for all stories
+  --builder BUILDER   Build agent: "auto" or "codex".
+                      Auto uses codex.
+                      When "codex", each story is executed via `codex exec`.
                       Completion is detected via the same 3-layer parser (termination
                       JSON on any line → git commit heuristic fallback).
-                      "codex" requires HQ_ALLOW_CODEX_OPAQUE_BUILDER=1.
   --engine ENGINE     Alias for --builder.
   --no-permissions    Pass the builder's non-interactive permission bypass
   --retry-failed      Re-run previously failed stories only
   --timeout N         Per-story wall-clock timeout in minutes
-  --verbose           Show full claude output
+  --verbose           Show full builder output
   --tmux              Launch in tmux session with Remote Control
   --in-place          Skip worktree creation, work directly on repo checkout
   --swarm [N]         Run eligible stories in parallel (max N concurrent, default 4)
@@ -390,23 +397,17 @@ HELP
 done
 
 if [[ -z "$BUILDER" || "$BUILDER" == "auto" ]]; then
-  BUILDER="claude"
+  BUILDER="codex"
 fi
 
 case "$BUILDER" in
-  claude|codex) ;;
+  codex) ;;
   *)
     echo -e "${RED}Unknown builder: $BUILDER${NC}" >&2
-    echo -e "${DIM}Expected one of: auto, claude, codex${NC}" >&2
+    echo -e "${DIM}Expected one of: auto, codex${NC}" >&2
     exit 1
     ;;
 esac
-
-if [[ "$BUILDER" == "codex" && "${HQ_ALLOW_CODEX_OPAQUE_BUILDER:-}" != "1" ]]; then
-  echo -e "${RED}Codex builder is not worker-authoritative yet.${NC}" >&2
-  echo -e "${DIM}Use --builder claude, or set HQ_ALLOW_CODEX_OPAQUE_BUILDER=1 to opt into opaque codex exec.${NC}" >&2
-  exit 2
-fi
 
 # Headless detection: non-interactive when permissions bypassed (pipeline mode)
 if [[ "$NO_PERMISSIONS" == true ]]; then
@@ -513,6 +514,10 @@ resolve_prd_path() {
   if [[ -f "$state_path" ]]; then
     local known
     known=$(jq -r '.prd_path // empty' "$state_path")
+    if [[ "$known" == projects/* && -f "$HQ_ROOT/personal/$known" ]]; then
+      echo "$HQ_ROOT/personal/$known"
+      return 0
+    fi
     if [[ -n "$known" && -f "$HQ_ROOT/$known" ]]; then
       echo "$HQ_ROOT/$known"
       return 0
@@ -527,9 +532,9 @@ resolve_prd_path() {
     fi
   done
 
-  # 3. HQ-level: projects/$project/prd.json
-  if [[ -f "$HQ_ROOT/projects/$project/prd.json" ]]; then
-    echo "$HQ_ROOT/projects/$project/prd.json"
+  # 3. HQ-level personal project: personal/projects/$project/prd.json
+  if [[ -f "$HQ_ROOT/personal/projects/$project/prd.json" ]]; then
+    echo "$HQ_ROOT/personal/projects/$project/prd.json"
     return 0
   fi
 
@@ -618,7 +623,7 @@ fi
 # Branch Setup (always-worktree for isolation)
 # =============================================================================
 
-WORKTREE_ENABLED=$(yq e '.worktree.enabled // true' "$HQ_ROOT/settings/orchestrator.yaml" 2>/dev/null || echo "true")
+WORKTREE_ENABLED=$(yq e '.worktree.enabled // true' "$HQ_ROOT/core/settings/orchestrator.yaml" 2>/dev/null || echo "true")
 BRANCH_NAME=$(jq -r '.branchName // empty' "$PRD_PATH")
 BASE_BRANCH=$(jq -r '.metadata.baseBranch // "main"' "$PRD_PATH")
 
@@ -826,15 +831,15 @@ migrate_state_schema
 # Checkout Config (from orchestrator.yaml)
 # =============================================================================
 
-CHECKOUT_ENABLED=$(yq e '.checkout.enabled // true' "$HQ_ROOT/settings/orchestrator.yaml" 2>/dev/null || echo "true")
-CHECKOUT_STALE_MINUTES=$(yq e '.checkout.stale_timeout_minutes // 30' "$HQ_ROOT/settings/orchestrator.yaml" 2>/dev/null || echo "30")
+CHECKOUT_ENABLED=$(yq e '.checkout.enabled // true' "$HQ_ROOT/core/settings/orchestrator.yaml" 2>/dev/null || echo "true")
+CHECKOUT_STALE_MINUTES=$(yq e '.checkout.stale_timeout_minutes // 30' "$HQ_ROOT/core/settings/orchestrator.yaml" 2>/dev/null || echo "30")
 
 # Swarm config (CLI flags override yaml)
 if [[ "$SWARM_MAX" -eq 4 ]]; then
-  SWARM_MAX=$(yq e '.swarm.max_concurrency // 4' "$HQ_ROOT/settings/orchestrator.yaml" 2>/dev/null || echo "4")
+  SWARM_MAX=$(yq e '.swarm.max_concurrency // 4' "$HQ_ROOT/core/settings/orchestrator.yaml" 2>/dev/null || echo "4")
 fi
 if [[ "$CHECKIN_INTERVAL" -eq 180 ]]; then
-  CHECKIN_INTERVAL=$(yq e '.swarm.checkin_interval_seconds // 180' "$HQ_ROOT/settings/orchestrator.yaml" 2>/dev/null || echo "180")
+  CHECKIN_INTERVAL=$(yq e '.swarm.checkin_interval_seconds // 180' "$HQ_ROOT/core/settings/orchestrator.yaml" 2>/dev/null || echo "180")
 fi
 
 # =============================================================================
@@ -1362,11 +1367,13 @@ Do NOT skip worker phases. Do NOT use EnterPlanMode or TodoWrite.
 Do NOT implement directly — delegate to workers via the execute-task pipeline.
 ISOLATION: Only modify files within your assigned repo and this project's PRD. Do NOT read, modify, pause, or interfere with other projects' state files in workspace/orchestrator/. Other orchestrators may be running concurrently — ignore them.
 
-=== MANDATORY TERMINATION PROTOCOL ===
-Your ABSOLUTE FINAL message must be ONLY this JSON on its own line, with nothing after it:
-{\"task_id\": \"${story_id}\", \"status\": \"completed|failed|blocked\", \"summary\": \"1-sentence\", \"workers_used\": [\"list\"]}
+=== RETURN CONTRACT: json ===
+Your ABSOLUTE FINAL message must be ONLY this JSON object on its own line, with nothing after it:
+{\"status\":\"passed|failed|blocked\",\"story_id\":\"${story_id}\",\"commits\":[\"short-sha\"],\"files_changed\":0,\"back_pressure\":{\"tests\":\"pass|fail|skip\",\"lint\":\"pass|fail|skip\",\"typecheck\":\"pass|fail|skip\",\"build\":\"pass|fail|skip\"},\"workers_run\":[\"worker-id\"],\"notes\":\"<=240 chars; blocker if status != passed\"}
 RULES:
 - This JSON must be your LAST output. No prose before or after.
+- No markdown fences. No commentary. No trailing newline after the JSON object.
+- notes_max_chars: 240.
 - Do NOT answer questions about this JSON.
 - Do NOT include this JSON mid-task and then continue talking.
 - Wrong format = task marked FAILED by orchestrator."
@@ -1375,41 +1382,20 @@ RULES:
   local stderr_file="$EXEC_DIR/${story_id}.stderr"
   local exit_code=0
 
-  local cmd=()
-  if [[ "$BUILDER" == "codex" ]]; then
-    # Codex CLI builder — invokes `codex exec` with the same prompt payload.
-    # Completion detection: Layer 2 (grep for task_id+status on the raw file)
-    # and Layer 3 (git heuristic) both work on codex's plain-text output.
-    local codex_flags=(exec --skip-git-repo-check)
-    if [[ "$NO_PERMISSIONS" == true ]]; then
-      codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
-    else
-      codex_flags+=(--full-auto)
-    fi
-    # Codex ignores claude's --model hints; only pass --model if explicitly set.
-    if [[ -n "$MODEL" ]]; then
-      codex_flags+=(-m "$MODEL")
-    fi
-    log_info "Builder: codex exec (story $story_id)"
-    cmd=(codex "${codex_flags[@]}" "$prompt")
+  # Codex CLI builder — invokes `codex exec` with the same prompt payload.
+  # Completion detection: Layer 2 (grep for story_id/task_id+status on the raw file)
+  # and Layer 3 (git heuristic) both work on codex's plain-text output.
+  local codex_flags=(exec --skip-git-repo-check)
+  if [[ "$NO_PERMISSIONS" == true ]]; then
+    codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
   else
-    # Default: claude -p headless invocation
-    local flags=(-p --output-format json)
-
-    if [[ "$NO_PERMISSIONS" == true ]]; then
-      flags+=(--dangerously-skip-permissions --permission-mode bypassPermissions)
-    fi
-
-    # Model resolution: CLI flag > story model_hint > default
-    if [[ -n "$MODEL" ]]; then
-      flags+=(--model "$MODEL")
-    elif [[ -n "$model_hint" ]]; then
-      flags+=(--model "$model_hint")
-      log_info "Using model hint: $model_hint (from story $story_id)"
-    fi
-
-    cmd=(claude "${flags[@]}" "$prompt")
+    codex_flags+=(--full-auto)
   fi
+  if [[ -n "$MODEL" ]]; then
+    codex_flags+=(-m "$MODEL")
+  fi
+  log_info "Builder: codex exec (story $story_id)"
+  local cmd=(codex "${codex_flags[@]}" "$prompt")
 
   if [[ -n "$TIMEOUT" ]]; then
     # macOS doesn't ship GNU timeout — try gtimeout (coreutils), then perl fallback
@@ -1435,9 +1421,9 @@ RULES:
     ' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
   fi
 
-  # Execute (unset CLAUDECODE to allow nested claude sessions)
+  # Execute story builder in the target repo.
   # HQ_EXECUTING_STORY=1 signals to block-inline-story-impl hook that this is a legitimate sub-agent context
-  # Run the builder from REPO_PATH (worktree) so codex/claude edit the right tree.
+  # Run the builder from REPO_PATH (worktree) so codex edits the right tree.
   # Fall back to HQ_ROOT only when REPO_PATH is missing or not a git repo.
   local _build_cwd="$HQ_ROOT"
   if [[ -n "${REPO_PATH:-}" && -d "$REPO_PATH" ]] && is_git_repo "$REPO_PATH"; then
@@ -1478,7 +1464,7 @@ RULES:
 # =============================================================================
 # Builder contamination cleanup
 # =============================================================================
-# Downstream builders (codex/claude) are spawned with cwd=REPO_PATH so their
+# Downstream builders are spawned with cwd=REPO_PATH so their
 # edits land in the worktree. But some skill prompts tell workers to append to
 # relative paths like `workspace/metrics/model-usage.jsonl` or write task state
 # under `workspace/orchestrator/<project>/`. Those relative writes land inside
@@ -1517,9 +1503,9 @@ cleanup_builder_contamination() {
 }
 
 # =============================================================================
-# Codex builder heartbeat (observability parity with Claude builder)
+# Codex builder heartbeat
 # =============================================================================
-# The Claude builder delegates stories to /execute-task, whose SKILL.md
+# The Codex builder delegates stories to /execute-task, whose SKILL.md
 # instructs sub-agents to write phase state to executions/{story}.json at
 # each worker handoff. The Codex builder bypasses that skill entirely —
 # `codex exec <prompt>` is one opaque LLM call that never learns the HQ
@@ -2088,10 +2074,7 @@ Do NOT modify the PRD. Do NOT run unrelated changes."
 
   local fix_output="$EXEC_DIR/${story_id}.codex-fix.json"
 
-  timeout 300 claude -p "$fix_prompt" \
-    --output-format json \
-    --max-turns 15 \
-    ${NO_PERMISSIONS:+--dangerously-skip-permissions --permission-mode bypassPermissions} \
+  timeout 300 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$fix_prompt" \
     > "$fix_output" 2>&1 || {
     log_warn "Codex fix agent failed or timed out for $story_id (non-blocking)"
     return 0
@@ -2267,23 +2250,23 @@ Rules:
 - Do NOT use EnterPlanMode or TodoWrite
 - Output JSON: {\"layers_updated\": [\"internal\",\"external\",\"repo_knowledge\",\"company_knowledge\"], \"files_touched\": [], \"summary\": \"1-sentence\"}"
 
-  local flags=(-p --output-format json)
-
+  local codex_flags=(exec --skip-git-repo-check)
   if [[ "$NO_PERMISSIONS" == true ]]; then
-    flags+=(--dangerously-skip-permissions --permission-mode bypassPermissions)
+    codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
+  else
+    codex_flags+=(--full-auto)
   fi
-
   if [[ -n "$MODEL" ]]; then
-    flags+=(--model "$MODEL")
+    codex_flags+=(-m "$MODEL")
   fi
 
   local output_file="$EXEC_DIR/doc-sweep.output.json"
   local stderr_file="$EXEC_DIR/doc-sweep.stderr"
 
-  local cmd=(claude "${flags[@]}" "$prompt")
+  local cmd=(codex "${codex_flags[@]}" "$prompt")
   local exit_code=0
 
-  cd "$HQ_ROOT" && env -u CLAUDECODE "${cmd[@]}" >"$output_file" 2>"$stderr_file" || exit_code=$?
+  cd "$HQ_ROOT" && "${cmd[@]}" >"$output_file" 2>"$stderr_file" || exit_code=$?
 
   if [[ $exit_code -eq 0 ]]; then
     log_ok "Doc sweep completed — see $output_file"
@@ -2475,9 +2458,7 @@ IMPORTANT: Do NOT modify the PRD. Only write your analysis report.
 Write your report to: ${reanchor_file}"
 
   # Best-effort, non-blocking — don't fail the loop
-  timeout 300 claude -p "$reanchor_prompt" \
-    --output-format json \
-    --max-turns 10 \
+  timeout 300 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$reanchor_prompt" \
     > "$EXEC_DIR/reanchor-${reanchor_num}.output.json" 2>&1 || {
     log_warn "Project reanchor #${reanchor_num} failed or timed out (non-blocking)"
     return 0
@@ -2765,7 +2746,7 @@ sync_linear_done() {
 # Orchestrator Writes Passes (replaces execute-task's prd.json write)
 # =============================================================================
 
-# Parse the claude -p output JSON to determine pass/fail, then write passes: true
+# Parse the headless builder output JSON to determine pass/fail, then write passes: true
 orchestrator_write_passes() {
   local story_id="$1"
   local checkout_started_at="${2:-}"  # ISO8601 timestamp when story execution began
@@ -2784,57 +2765,56 @@ orchestrator_write_passes() {
   local status_from_output=""
   local detection_layer=""
 
-  # --- Layer 0: Termination protocol JSON line ---
-  # Sub-agents are mandated to emit {"task_id":"US-XXX","status":"completed|failed|blocked", ...}
-  # as their final message line. .result is markdown-with-trailing-JSON in newer Claude Code
-  # versions, so extract the last task_id-bearing line and parse that.
+  # --- Layer 0: Return-contract JSON line ---
+  # Story workers are mandated to emit {"story_id":"US-XXX","status":"passed|failed|blocked", ...}
+  # as their final message line. Keep legacy task_id/completed recognition during migration.
   if [[ -f "$output_file" ]]; then
     local term_json
     term_json=$(jq -r '.result // ""' "$output_file" 2>/dev/null \
-                | grep -F '"task_id"' \
+                | grep -E '"story_id"|"task_id"' \
                 | tail -n 1)
     if [[ -n "$term_json" ]] && echo "$term_json" | jq -e . >/dev/null 2>&1; then
       local term_task_id term_status
-      term_task_id=$(echo "$term_json" | jq -r '.task_id // empty' 2>/dev/null)
+      term_task_id=$(echo "$term_json" | jq -r '.story_id // .task_id // empty' 2>/dev/null)
       term_status=$(echo "$term_json" | jq -r '.status // empty' 2>/dev/null)
-      if [[ "$term_task_id" == "$story_id" && "$term_status" == "completed" ]]; then
+      if [[ "$term_task_id" == "$story_id" && ( "$term_status" == "passed" || "$term_status" == "completed" ) ]]; then
         status_from_output="completed"
-        detection_layer="Layer 0 (termination protocol JSON in .result)"
+        detection_layer="Layer 0 (return-contract JSON in .result)"
       fi
     fi
   fi
 
-  # --- Layer 1: Parse structured JSON from claude -p output ---
-  # claude --output-format json puts the final response text in .result
+  # --- Layer 1: Parse structured JSON from headless builder output ---
+  # Claude --output-format json puts the final response text in .result.
   if [[ -z "$status_from_output" && -f "$output_file" ]]; then
     status_from_output=$(jq -r '
       if .status then .status
       elif .result then (.result | if type == "string" then (fromjson? // {}) else . end | .status // empty)
       else empty end
     ' "$output_file" 2>/dev/null) || true
+    [[ "$status_from_output" == "passed" ]] && status_from_output="completed"
     [[ -n "$status_from_output" ]] && detection_layer="Layer 1 (.result JSON parse)"
   fi
 
   # --- Layer 2: Full-file scan for task_id + status pair ---
   # The structured JSON may have been emitted mid-conversation inside a content[].text block
   # but not in the final .result field. Search the raw file for both markers.
-  # Note: claude -p --output-format json produces an array of conversation messages, and
-  # the task completion JSON is often inside escaped text within a message content block.
+  # Note: Claude headless JSON output may contain an array of conversation messages, and
+  # the story completion JSON is often inside escaped text within a message content block.
   if [[ -z "$status_from_output" && -f "$output_file" ]]; then
-    # Search for task_id matching this story paired with completed status anywhere in the file
-    # The JSON may be inside escaped strings (e.g. \"task_id\": \"US-003\")
-    if grep -q "task_id.*${story_id}" "$output_file" 2>/dev/null \
-       && grep -q "\"status\".*\"completed\"\|status.*completed" "$output_file" 2>/dev/null; then
+    # Search for story_id/task_id matching this story paired with passed/completed status anywhere in the file.
+    if grep -Eq "(story_id|task_id).*${story_id}" "$output_file" 2>/dev/null \
+       && grep -Eq '"status".*"passed"|"status".*"completed"|status.*passed|status.*completed' "$output_file" 2>/dev/null; then
       # Verify the pair appears in the same text block (within 500 chars)
       # Extract all text content and look for the JSON object
       local found_pair
       found_pair=$(jq -r '
         [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] |
-        .[] | select(test("task_id.*'"$story_id"'")) | select(test("\"status\".*\"completed\""))
+        .[] | select(test("(story_id|task_id).*'"$story_id"'")) | select(test("\"status\".*\"(passed|completed)\""))
       ' "$output_file" 2>/dev/null | head -1) || true
       if [[ -n "$found_pair" ]]; then
         status_from_output="completed"
-        detection_layer="Layer 2 (full-file scan: task_id + status in assistant message text)"
+        detection_layer="Layer 2 (full-file scan: story_id/task_id + status in assistant message text)"
       fi
     fi
   fi
@@ -3018,31 +2998,17 @@ RULES:
 
   local output_file="$EXEC_DIR/${story_id}.output.json"
   local stderr_file="$EXEC_DIR/${story_id}.stderr"
-  local cmd=()
-  if [[ "$BUILDER" == "codex" ]]; then
-    # Swarm mode codex builder — same invocation shape as sequential mode.
-    local codex_flags=(exec --skip-git-repo-check)
-    if [[ "$NO_PERMISSIONS" == true ]]; then
-      codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
-    else
-      codex_flags+=(--full-auto)
-    fi
-    if [[ -n "$MODEL" ]]; then
-      codex_flags+=(-m "$MODEL")
-    fi
-    cmd=(codex "${codex_flags[@]}" "$prompt")
+  # Swarm mode codex builder — same invocation shape as sequential mode.
+  local codex_flags=(exec --skip-git-repo-check)
+  if [[ "$NO_PERMISSIONS" == true ]]; then
+    codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
   else
-    local flags=(-p --output-format json)
-    [[ "$NO_PERMISSIONS" == true ]] && flags+=(--dangerously-skip-permissions --permission-mode bypassPermissions)
-
-    if [[ -n "$MODEL" ]]; then
-      flags+=(--model "$MODEL")
-    elif [[ -n "$model_hint" ]]; then
-      flags+=(--model "$model_hint")
-    fi
-
-    cmd=(claude "${flags[@]}" "$prompt")
+    codex_flags+=(--full-auto)
   fi
+  if [[ -n "$MODEL" ]]; then
+    codex_flags+=(-m "$MODEL")
+  fi
+  local cmd=(codex "${codex_flags[@]}" "$prompt")
   # macOS doesn't ship GNU timeout — mirror the sequential fallback chain
   if [[ -n "$TIMEOUT" ]]; then
     if command -v timeout &>/dev/null; then
@@ -3194,7 +3160,7 @@ process_swarm_completion() {
   [[ -n "$worktree_path" && -d "$worktree_path" ]] && REPO_PATH="$worktree_path"
 
   # Finalize codex phase file if this story was run under the codex builder.
-  # No-op for Claude builder (owner check guards the file).
+  # No-op unless codex heartbeat metadata exists.
   codex_heartbeat_finalize "$story_id" "$exit_code"
 
   validate_git_state "$story_id"

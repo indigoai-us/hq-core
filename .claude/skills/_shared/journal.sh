@@ -1,6 +1,6 @@
 #!/bin/bash
 # Session journal helper — open/append/close for the per-session thinking trail.
-# Spec: knowledge/public/hq-core/journal-spec.md
+# Spec: core/knowledge/public/hq-core/journal-spec.md
 #
 # Usage:
 #   journal.sh open <skill_name> <project_dir> [thread_id]
@@ -30,7 +30,7 @@
 #     If --ext is omitted, inferred from source extension (file) or 'txt' (stdin).
 #     Project dir is read from the active journal's frontmatter — caller does
 #     not need to know it. Prints the absolute path of the written file.
-#     Spec: knowledge/public/hq-core/journal-spec.md (## Reference material)
+#     Spec: core/knowledge/public/hq-core/journal-spec.md (## Reference material)
 #
 # All commands fail-soft: on any unexpected error, print a one-line warning to
 # stderr and exit 0 — the journal must never block the calling skill.

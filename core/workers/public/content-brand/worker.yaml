@@ -1,8 +1,10 @@
 worker:
   id: content-brand
   name: "Content Worker - Brand Voice"
+  description: "Brand voice, messaging, tone analysis"
   type: ContentWorker
   version: "1.0"
+  team: content-team
 
 execution:
   mode: on_demand

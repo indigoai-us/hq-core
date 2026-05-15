@@ -1,8 +1,11 @@
-name: social-strategist
-description: Content planning and draft creation for social posts. Wraps /contentidea and /suggestposts with profile awareness and company isolation.
-version: "1.0"
-type: content
-company: null
+worker:
+  id: social-strategist
+  name: "Social Strategist"
+  description: "Content planning and draft creation for social posts. Wraps /contentidea and /suggestposts with profile awareness and company isolation."
+  type: ContentWorker
+  version: "1.0"
+  team: social-team
+
 tags:
   - social
   - content

@@ -1,8 +1,7 @@
 ---
 name: run
 description: Run a worker or list available workers. Prefer isolated Codex sub-agents with filesystem memory; fall back to inline execution only when delegation is unavailable.
-allowed-tools: Read, Grep, Bash(qmd:*), Bash(grep:*), Bash(ls:*), Bash(git:*), Bash(cat:*), Bash(which:*), Bash(wc:*), Edit, Write
-argument-hint: "[worker-id] [skill] [args]"
+allowed-tools: Read, Grep, Bash(qmd:*), Bash(grep:*), Bash(ls:*), Bash(git:*), Bash(cat:*), Bash(which:*), Bash(wc:*), Edit, Write, Task, Glob, Bash, WebSearch, WebFetch, AskUserQuestion
 ---
 
 # Run - Worker Execution
@@ -86,7 +85,7 @@ Proceed to the full execution pipeline below.
 
 ### 3a. Find Worker Registry Entry
 
-Use the Read tool to read `core/workers/registry.yaml`. The registry stores workers as a YAML list under the `workers:` key, with each entry shaped like:
+Use the Read tool to read `core/workers/registry.yaml` — an **auto-generated, read-only index** (regenerated from `worker.yaml` files by master-sync). It stores workers as a YAML list under the `workers:` key, with each entry shaped like:
 
 ```yaml
 workers:

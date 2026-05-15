@@ -1,40 +1,32 @@
 ---
 name: hq-whoami
 description: Show HQ Cognito identity, email, and session expiry (read-only)
+allowed-tools: Bash(hq:*), Bash(jq:*), Bash(cat:*), Bash(date:*), Bash(test:*)
 ---
 
-# HQ Cognito identity
+# /hq-whoami — HQ Cognito identity
 
-Read-only status check on the cached Cognito session at
-`~/.hq/cognito-tokens.json`. Does not refresh or mutate anything.
+One-liner status: who is signed into the local HQ Cognito session, and how
+long the cached access token has left. Read-only — touches nothing.
 
-## Process
+## Steps
 
-### 1. Probe
+1. **Probe** — `test -f ~/.hq/cognito-tokens.json`. If absent, print
+   "Not signed in. Run `/hq-login`." and exit 0.
 
-```bash
-test -f ~/.hq/cognito-tokens.json
-```
+2. **Status** — `hq auth status` for cached identity + expiry. If the CLI
+   reports expired, hint that `/hq-login` will silently refresh.
 
-If absent, report `Not signed in. Run /hq-login.` and stop.
+3. **Identity** — `hq whoami` for canonical sub/email (Cognito userInfo).
 
-### 2. Status + identity
-
-```bash
-hq auth status
-hq whoami
-```
-
-### 3. Format
-
-Collapse to one line:
-
-- Active: `signed in as <email> (sub <id-prefix>…) — expires in <Xh Ym>`
-- Expired: `signed in as <email> — token EXPIRED, run /hq-login`
+4. **Format** — collapse to one line:
+   `signed in as <email> (sub <id-prefix>…) — expires in <Xh Ym>`.
+   If expired: `signed in as <email> — token EXPIRED, run /hq-login`.
 
 ## Notes
 
-- Read-only. To refresh, use `/hq-login` (it silently refreshes when the
-  refresh token is still valid, falling back to the browser flow).
-- Same token file consumed by `/deploy`, `/hq-login`, `/hq-logout`.
-- HQ Identity pool: `us-east-1_IksCYBcBr` (Google IdP).
+- Reads `~/.hq/cognito-tokens.json` only — same file as `/deploy`,
+  `/hq-login`, `/hq-logout`.
+- Pool: shared HQ Identity (`us-east-1_IksCYBcBr`).
+- Does not refresh the token; for that, run `/hq-login` (it auto-refreshes
+  if expired).

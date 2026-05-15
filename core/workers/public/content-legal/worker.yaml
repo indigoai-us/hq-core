@@ -1,8 +1,10 @@
 worker:
   id: content-legal
   name: "Content Worker - Regulatory Compliance"
+  description: "Regulatory compliance, claim verification"
   type: ContentWorker
   version: "1.0"
+  team: content-team
 
 execution:
   mode: on_demand

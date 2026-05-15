@@ -1,7 +1,7 @@
 ---
 name: handoff
 description: Prepare for a new session to continue this work. Minimal foreground — writes thread file, handoff.json, and HQ commit via handoff-finalize.sh; defers INDEX regen, /learn, document-release, and qmd reindex to handoff-post.sh (detached, headless). Designed to survive mid-handoff context compaction.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(nohup:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(nohup:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash, AskUserQuestion
 ---
 
 # Fresh Session Continuity
@@ -18,7 +18,7 @@ Write a thread file + `handoff.json` with minimal foreground token cost, then de
 
 ```bash
 nohup bash -c '
-for symlink in knowledge/public/* knowledge/private/* companies/*/knowledge; do
+for symlink in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
   [ -L "$symlink" ] || [ -d "$symlink/.git" ] || continue
   repo_dir=$(cd "$symlink" && git rev-parse --show-toplevel 2>/dev/null) || continue
   dirty=$(cd "$repo_dir" && git status --porcelain)
@@ -113,7 +113,7 @@ nohup bash core/scripts/handoff-post.sh \
 `handoff-post.sh` runs detached and:
 1. Archives threads older than 60 days into `workspace/threads/archive/YYYY-MM/` (gated once per 24h)
 2. Regenerates INDEX files again (captures any archive moves)
-3. Dispatches `/learn` in a fresh headless `claude -p` session — learnings get processed without touching this foreground context
+3. Dispatches `/learn` in a fresh headless `codex exec` session — learnings get processed without touching this foreground context
 4. Dispatches `/document-release` headless if `files_touched` includes `companies/` or `repos/` paths
 5. Launches qmd reindex (qmd cleanup/update/embed)
 

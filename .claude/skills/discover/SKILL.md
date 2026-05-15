@@ -6,7 +6,6 @@ description: |
   Use when the user says "discover this repo", "ingest <repo>", "pull <repo>
   into HQ", or asks to learn a codebase HQ doesn't yet know.
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion, Agent
-public: true
 ---
 
 # Discover

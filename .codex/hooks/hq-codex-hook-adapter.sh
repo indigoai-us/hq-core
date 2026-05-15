@@ -85,6 +85,36 @@ run_hook() {
   exit "$status"
 }
 
+run_script() {
+  local script="$1"
+  local payload="$2"
+  local mode="${3:-advisory}"
+
+  [ -x "$script" ] || return 0
+
+  local out err status
+  out="$(mktemp)"
+  err="$(mktemp)"
+  printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" "$script" >"$out" 2>"$err"
+  status=$?
+
+  append_stdout "$(cat "$out" 2>/dev/null || true)"
+  append_stderr "$(cat "$err" 2>/dev/null || true)"
+  rm -f "$out" "$err"
+
+  if [ "$status" -eq 0 ]; then
+    return 0
+  fi
+
+  if [ "$mode" = "advisory" ]; then
+    append_stderr "WARNING: advisory script '$(basename "$script")' exited $status; continuing."
+    return 0
+  fi
+
+  [ -n "$STDERR_ACCUM" ] && printf '%s\n' "$STDERR_ACCUM" >&2
+  exit "$status"
+}
+
 patch_paths() {
   printf '%s' "$INPUT" | python3 -c '
 import json
@@ -145,7 +175,7 @@ emit_context() {
         }
       }'
       ;;
-    Stop)
+    Stop|PreCompact)
       jq -n --arg msg "$STDOUT_ACCUM" '{systemMessage: $msg}'
       ;;
   esac
@@ -186,6 +216,15 @@ run_post_tool_use() {
         payload="$(payload_for_path "$path")"
         run_hook "auto-checkpoint-trigger" "$HOOK_DIR/auto-checkpoint-trigger.sh" "$payload" "advisory"
       done <<< "$paths"
+      run_script "$HOOK_DIR/master-sync.sh" "$INPUT" "advisory"
+      while IFS= read -r path; do
+        [ -z "$path" ] && continue
+        payload="$(payload_for_path "$path")"
+        run_hook "hq-autocommit" "$HOOK_DIR/hq-autocommit.sh" "$payload" "advisory"
+      done <<< "$paths"
+      ;;
+    update_plan|ExitPlanMode)
+      run_hook "native-plan-project-sync" "$HOOK_DIR/native-plan-project-sync.sh" "$INPUT" "advisory"
       ;;
   esac
 }
@@ -194,6 +233,12 @@ case "$HOOK_EVENT" in
   SessionStart)
     run_hook "load-policies" "$HOOK_DIR/load-policies-for-session.sh" "$INPUT" "advisory"
     run_hook "inject-local-context" "$HOOK_DIR/inject-local-context.sh" "$INPUT" "advisory"
+    run_hook "auto-startwork" "$HOOK_DIR/auto-startwork.sh" "$INPUT" "advisory"
+    ;;
+  UserPromptSubmit)
+    run_hook "rewrite-resume-sentinel" "$HOOK_DIR/rewrite-resume-sentinel.sh" "$INPUT" "advisory"
+    run_hook "route-deep-plan-to-skill" "$HOOK_DIR/route-deep-plan-to-skill.sh" "$INPUT" "advisory"
+    run_hook "auto-session-project" "$HOOK_DIR/auto-session-project.sh" "$INPUT" "advisory"
     ;;
   PreToolUse)
     run_pre_tool_use
@@ -203,6 +248,14 @@ case "$HOOK_EVENT" in
     ;;
   Stop)
     run_hook "observe-patterns" "$HOOK_DIR/observe-patterns.sh" "$INPUT" "advisory"
+    run_hook "cleanup-mcp-processes" "$HOOK_DIR/cleanup-mcp-processes.sh" "$INPUT" "advisory"
+    run_hook "context-warning-50" "$HOOK_DIR/context-warning-50.sh" "$INPUT" "advisory"
+    run_hook "capture-estimates" "$HOOK_DIR/capture-estimates.sh" "$INPUT" "advisory"
+    ;;
+  PreCompact)
+    run_hook "precompact-thrashing-detector" "$HOOK_DIR/precompact-thrashing-detector.sh" "$INPUT" "advisory"
+    run_hook "auto-checkpoint-precompact" "$HOOK_DIR/auto-checkpoint-precompact.sh" "$INPUT" "advisory"
+    run_hook "journal-precompact" "$HOOK_DIR/journal-precompact.sh" "$INPUT" "advisory"
     ;;
 esac
 

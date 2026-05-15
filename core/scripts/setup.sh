@@ -95,7 +95,7 @@ ok "scripts marked executable"
 
 # ── 3b. Snapshot user's PATH into settings.json ────────────────────────────
 # Claude Code's env block does literal assignment (no $PATH expansion).
-# Subagents (claude -p) run non-interactive bash that never sources .zshrc,
+# Headless story workers run non-interactive bash that never sources .zshrc,
 # so they'd only see the system PATH. We snapshot the user's current PATH
 # (which includes nvm, bun, pnpm, pyenv, ~/.local/bin, etc.) at install time.
 
@@ -221,10 +221,10 @@ if command -v qmd &>/dev/null; then
   qmd collection add "$REPO_ROOT/.claude" --name hq-infra --mask "**/*.{md,yaml,yml,json,sh}" 2>/dev/null || true
   qmd context add qmd://hq-infra "HQ infrastructure: commands, skills, policies, hooks, scripts." 2>/dev/null || true
 
-  qmd collection add "$REPO_ROOT/core/workers" --name hq-workers --mask "**/*.{md,yaml,yml,json}" 2>/dev/null || true
+  qmd collection add "$REPO_ROOT/workers" --name hq-workers --mask "**/*.{md,yaml,yml,json}" 2>/dev/null || true
   qmd context add qmd://hq-workers "AI worker definitions and skill files." 2>/dev/null || true
 
-  qmd collection add "$REPO_ROOT/core/knowledge" --name hq-knowledge --mask "**/*.{md,yaml,yml}" 2>/dev/null || true
+  qmd collection add "$REPO_ROOT/knowledge" --name hq-knowledge --mask "**/*.{md,yaml,yml}" 2>/dev/null || true
   qmd context add qmd://hq-knowledge "Shared knowledge bases: methodology, design, testing, security." 2>/dev/null || true
 
   qmd collection add "$REPO_ROOT/projects" --name hq-projects --mask "**/*.{md,json}" 2>/dev/null || true
@@ -239,8 +239,8 @@ ok "qmd index built"
 # ── 7. Recommended content packs (hq-core v12+) ──────────────────────────────
 # hq-core ships as a minimal scaffold; batteries-included UX comes from packs
 # declared in `core/core.yaml:recommended_packages`. This phase reads that list,
-# diffs against already-installed packs in `core/modules/modules.yaml`, and prompts
-# to install each missing pack via `hq install <source>`.
+# diffs against already-installed packs in `core/packages/*/package.yaml`, and
+# prompts to install each missing pack via `hq install <source>`.
 #
 # Non-destructive: user can decline any pack. Failures are warnings — re-run
 # `./scripts/setup.sh` or `/update-hq` to retry. Honored by `HQ_SKIP_PACKAGES=1`.
@@ -253,13 +253,18 @@ if [[ "${HQ_SKIP_PACKAGES:-}" == "1" ]]; then
 elif [[ ! -f "$REPO_ROOT/core/core.yaml" ]]; then
   skip "recommended packs (no core/core.yaml)"
 else
-  # Collect already-installed pack sources from modules.yaml (either location).
+  # Collect already-installed pack sources by scanning each installed pack's
+  # package.yaml in core/packages/ for its `source:` field. Used to dedup
+  # against recommended_packages entries declared in core/core.yaml.
   INSTALLED_SOURCES=""
-  for modfile in "$REPO_ROOT/core/modules/modules.yaml" "$REPO_ROOT/modules/modules.yaml" "$REPO_ROOT/modules.yaml"; do
-    [[ -f "$modfile" ]] || continue
-    INSTALLED_SOURCES="$INSTALLED_SOURCES
-$(grep -E "^\s+source\s*:" "$modfile" 2>/dev/null | sed -E "s/^\s+source\s*:\s*[\"']?([^\"'\r\n]+)[\"']?\s*$/\1/")"
-  done
+  if [[ -d "$REPO_ROOT/core/packages" ]]; then
+    while IFS= read -r pkgfile; do
+      [[ -f "$pkgfile" ]] || continue
+      src=$(grep -E "^source\s*:" "$pkgfile" 2>/dev/null | head -1 | sed -E "s/^source\s*:\s*[\"']?([^\"'\r\n]+)[\"']?\s*$/\1/")
+      [[ -n "$src" ]] && INSTALLED_SOURCES="$INSTALLED_SOURCES
+$src"
+    done < <(find "$REPO_ROOT/core/packages" -maxdepth 2 -name package.yaml 2>/dev/null)
+  fi
 
   # Parse recommended_packages from core/core.yaml using awk (pair source with
   # optional conditional per entry). Emits TSV lines: source\tconditional.

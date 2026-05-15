@@ -62,7 +62,7 @@ schedule:
 
 ```
 core/workers/
-├── registry.yaml           # Index of all workers
+├── registry.yaml           # AUTO-GENERATED index — do not edit (regenerated from worker.yaml files by master-sync)
 ├── {category}/
 │   └── {worker-id}/
 │       ├── worker.yaml     # Definition
@@ -72,11 +72,10 @@ core/workers/
 
 ### Build Checklist
 
-1. Add entry to `core/workers/registry.yaml`
-2. Create `core/workers/{category}/{id}/worker.yaml`
-3. Define skills with clear inputs/outputs/verification
-4. Test with on-demand execution first
-5. Document in this knowledge base if patterns emerge
+1. Create `core/workers/{category}/{id}/worker.yaml` with required fields (`worker.id`, `worker.type`, `worker.description`). Registry regenerates automatically on next master-sync run.
+2. Define skills with clear inputs/outputs/verification
+3. Test with on-demand execution first
+4. Document in this knowledge base if patterns emerge
 
 ## Running Workers (Work Mode)
 
@@ -173,7 +172,7 @@ Every worker skill should define verification checks:
 
 ## Registry
 
-All workers are indexed in `core/workers/registry.yaml`:
+All workers are indexed in `core/workers/registry.yaml` (auto-generated from each worker.yaml — do not hand-edit):
 
 ```yaml
 workers:

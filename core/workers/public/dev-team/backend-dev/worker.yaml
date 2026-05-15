@@ -1,8 +1,10 @@
 worker:
   id: backend-dev
   name: "Backend Developer"
+  description: "API endpoints, business logic, backend implementation"
   type: CodeWorker
   version: "1.0"
+  team: dev-team
 
 execution:
   mode: on_demand

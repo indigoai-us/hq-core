@@ -1,6 +1,7 @@
 worker:
   id: frontend-designer
   name: "Frontend Designer"
+  description: "Bold UI generation using Anthropic skill"
   type: OpsWorker
   version: "1.0"
 

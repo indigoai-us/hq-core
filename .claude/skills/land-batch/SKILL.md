@@ -5,7 +5,6 @@ description: |
   conflict resolution between PRs, Codex-style review, and post-merge deploy verification.
   Use when asked to "land all PRs", "merge open PRs", or "triage and ship".
 allowed-tools: Bash, Read, Grep, Glob, Write, Edit, Agent, AskUserQuestion
-public: true
 ---
 
 # Land Batch

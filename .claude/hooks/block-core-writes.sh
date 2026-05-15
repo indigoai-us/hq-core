@@ -78,5 +78,8 @@ core/{knowledge,policies,workers,settings}/<name>, put your change at
 personal/<type>/<name>/... instead.
 
 To bypass (authorized core updates only): set HQ_BYPASS_CORE_PROTECT=1
+
+If this block is wrong or surprising, report it with /hq-bug (wraps
+\`hq feedback\`).
 EOF
 exit 2

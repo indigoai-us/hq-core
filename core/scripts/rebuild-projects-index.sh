@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# rebuild-projects-index.sh — regenerate the HQ-root projects/INDEX.md.
+# rebuild-projects-index.sh — regenerate the personal projects INDEX.md.
 #
-# Pure bash + jq. Reads projects/*/prd.json for the Personal/HQ Projects table
-# and lists companies/*/projects directories for cross-reference. Status comes
-# from workspace/orchestrator/{name}/state.json (fallback: passes-all → complete).
+# Pure bash + jq. Reads personal/projects/*/prd.json for the Personal/HQ
+# Projects table and lists companies/*/projects directories for cross-reference.
+# Status comes from workspace/orchestrator/{name}/state.json (fallback:
+# passes-all → complete).
 
 set -euo pipefail
 
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$HQ_ROOT"
 
-OUT="projects/INDEX.md"
+PROJECTS_DIR="personal/projects"
+OUT="${PROJECTS_DIR}/INDEX.md"
 DATE=$(date -u +%Y-%m-%d)
 
-[[ -d projects ]] || { echo "rebuild-projects-index: projects/ missing, skipping" >&2; exit 0; }
+[[ -d "$PROJECTS_DIR" ]] || { echo "rebuild-projects-index: ${PROJECTS_DIR}/ missing, skipping" >&2; exit 0; }
 
 sanitize_cell() {
   printf '%s' "$1" | tr '\n' ' ' | sed -e 's/|/\\|/g' -e 's/  */ /g' -e 's/^ *//' -e 's/ *$//'
@@ -96,8 +98,8 @@ project_status() {
     desc=$(trunc "$desc" 110)
     [[ -z "$desc" ]] && desc="—"
     printf '| `%s/` | %s | %s | %s |\n' "$name" "$stories" "$status" "$desc"
-  done < <(find projects -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  done < <(find "$PROJECTS_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
 } > "$OUT"
 
-count=$(find projects -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+count=$(find "$PROJECTS_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
 echo "rebuild-projects-index: wrote ${OUT} (${count} HQ project(s))" >&2

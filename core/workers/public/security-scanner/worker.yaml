@@ -1,6 +1,7 @@
 worker:
   id: security-scanner
   name: "Security Scanner"
+  description: "Security scanning and vulnerability detection"
   type: OpsWorker
   status: active
 

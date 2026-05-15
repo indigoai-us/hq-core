@@ -214,6 +214,6 @@ Keeping the rules on one page rather than eleven separate files preserves cross-
 
 - `.claude/policies/repo-run-coordination.md` — cross-session repo ownership locks (composes with rules 1, 5, 10).
 - `.claude/policies/hq-swarm-pr-branch.md` — swarm-mode branch handling after `/run-project --swarm` (composes with rule 10).
-- `.claude/policies/hq-task-chip-worktree-isolation.md` — task chip isolation; rule 10 is the last-line safety net if isolation fails.
-- `.claude/policies/hq-bash-discipline.md` — broader shell discipline (chip-safe push idiom from rule 10 is bash-specific).
+- `core/policies/hq-task-chip-worktree-isolation.md` — task chip isolation; rule 10 is the last-line safety net if isolation fails.
+- `core/policies/hq-bash-discipline.md` — broader shell discipline (chip-safe push idiom from rule 10 is bash-specific).
 - Eleven soft git policies listed in Provenance — soft-enforcement nuance for less-common scenarios.

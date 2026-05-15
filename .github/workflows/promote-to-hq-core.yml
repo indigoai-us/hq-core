@@ -1,0 +1,313 @@
+name: Promote to hq-core
+
+# Manually-triggered workflow that opens a PR against indigoai-us/hq-core
+# carrying the current staging tree. Models the shape of past hq-core PRs:
+#   - branch:  release/v<version>   or   fix/<slug>
+#   - title:   release: v<version>   or   fix(core): <slug>
+#   - labels:  version-bump, special-case-confirmed (release type)
+#   - body:    ## Summary / ## Lineage note / ## Test plan
+#
+# Authentication: reuses the hq-audit-bot GitHub App. The App must be
+# installed on indigoai-us/hq-core with Contents:write + Pull-requests:write.
+# Required secrets on this repo (or org-level):
+#   HQ_AUDIT_BOT_APP_ID       — App ID
+#   HQ_AUDIT_BOT_PRIVATE_KEY  — PEM private key
+#
+# Tree sync: rsync from this repo into a fresh hq-core clone, excluding
+# staging-local trees (companies/, personal/, repos/, workspace/, .obsidian/,
+# .git/). The .github/ and .leak-scan/ directories ARE promoted — hq-core
+# uses both. PII filtering (public: frontmatter, ## Provenance stripping) is
+# NOT performed here; hq-core's pr-checks.yml is the gate that catches leaks.
+#
+# Security: every `workflow_dispatch` input is passed to `run:` blocks via
+# `env:` rather than direct ${{ }} interpolation, so values cannot break out
+# of the shell context. Inputs are also regex-validated before any other
+# step runs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semver without v-prefix (e.g. 14.1.3 or 14.1.3-beta.1)'
+        required: true
+        type: string
+      pr_type:
+        description: 'Release PR (release/v<ver>) or fix PR (fix/<slug>)'
+        required: true
+        type: choice
+        default: release
+        options:
+          - release
+          - fix
+      slug:
+        description: 'Slug for fix PRs (lowercase letters, digits, hyphens). Ignored for release.'
+        required: false
+        type: string
+      extra_summary:
+        description: 'Optional extra markdown to inject into the Summary section'
+        required: false
+        type: string
+      dry_run:
+        description: 'Print plan, do not push or open PR'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: Open PR on hq-core
+    runs-on: ubuntu-latest
+    env:
+      HQ_AUDIT_BOT_APP_ID: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
+      HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+      TARGET_REPO: indigoai-us/hq-core
+    steps:
+      - name: Validate inputs
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TYPE: ${{ inputs.pr_type }}
+          INPUT_SLUG: ${{ inputs.slug }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$INPUT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$'; then
+            echo "::error::version is not a valid semver"
+            exit 1
+          fi
+          if [ "$INPUT_TYPE" = "fix" ]; then
+            if [ -z "$INPUT_SLUG" ]; then
+              echo "::error::slug is required when pr_type=fix"
+              exit 1
+            fi
+            if ! printf '%s' "$INPUT_SLUG" | grep -Eq '^[a-z0-9][a-z0-9-]{0,63}$'; then
+              echo "::error::slug must be lowercase letters/digits/hyphens (max 64 chars)"
+              exit 1
+            fi
+          fi
+
+      - name: Fail fast if App credentials missing
+        if: env.HQ_AUDIT_BOT_APP_ID == '' || env.HQ_AUDIT_BOT_PRIVATE_KEY == ''
+        run: |
+          echo "::error::HQ_AUDIT_BOT_APP_ID or HQ_AUDIT_BOT_PRIVATE_KEY not set on this repo. Configure them, and ensure the App is installed on $TARGET_REPO with Contents:write + Pull-requests:write."
+          exit 1
+
+      - name: Mint installation token for hq-core
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          owner: indigoai-us
+          repositories: |
+            hq-core
+
+      - name: Checkout staging (source)
+        uses: actions/checkout@v4
+        with:
+          path: staging
+          fetch-depth: 1
+
+      - name: Capture staging SHA
+        id: staging
+        run: |
+          SHA="$(git -C staging rev-parse HEAD)"
+          SHORT="$(git -C staging rev-parse --short HEAD)"
+          {
+            echo "sha=${SHA}"
+            echo "short=${SHORT}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve branch/title metadata
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TYPE: ${{ inputs.pr_type }}
+          INPUT_SLUG: ${{ inputs.slug }}
+        run: |
+          set -euo pipefail
+          if [ "$INPUT_TYPE" = "release" ]; then
+            BRANCH="release/v${INPUT_VERSION}"
+            TITLE="release: v${INPUT_VERSION}"
+            LABELS="version-bump,special-case-confirmed"
+            COMMIT_MSG="release: v${INPUT_VERSION}"
+          else
+            BRANCH="fix/${INPUT_SLUG}"
+            TITLE="fix(core): ${INPUT_SLUG}"
+            LABELS=""
+            COMMIT_MSG="fix(core): ${INPUT_SLUG}"
+          fi
+          {
+            echo "branch=${BRANCH}"
+            echo "title=${TITLE}"
+            echo "labels=${LABELS}"
+            echo "commit_msg=${COMMIT_MSG}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Clone hq-core (target)
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.meta.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git clone --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" target
+          cd target
+          git config user.name  "hq-audit-bot[bot]"
+          git config user.email "hq-audit-bot[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+      - name: Sync staging tree into hq-core
+        run: |
+          set -euo pipefail
+          # NB: hq-core keeps its own .git from the clone — that's preserved
+          # because we sync INTO target/ without --delete on target/.git.
+          # Excludes: staging-local trees that never belong in the public kit.
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='workspace/' \
+            --exclude='companies/' \
+            --exclude='personal/' \
+            --exclude='repos/' \
+            --exclude='.obsidian/' \
+            staging/ target/
+
+      - name: Diff summary
+        id: diff
+        run: |
+          set -euo pipefail
+          cd target
+          git add -A
+          CHANGED=$(git diff --cached --stat | tail -1 || echo "no changes")
+          FILES=$(git diff --cached --name-only | wc -l)
+          {
+            echo "stat<<EOF"
+            git diff --cached --stat | tail -20
+            echo "EOF"
+            echo "files=${FILES}"
+          } >> "$GITHUB_OUTPUT"
+          echo "----- diff stat -----"
+          echo "$CHANGED"
+          echo "$FILES files would change"
+
+      - name: Abort if no changes
+        if: steps.diff.outputs.files == '0'
+        run: |
+          echo "::error::No tree differences between staging and hq-core — nothing to promote."
+          exit 1
+
+      - name: Build PR body
+        id: body
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TYPE: ${{ inputs.pr_type }}
+          INPUT_EXTRA: ${{ inputs.extra_summary }}
+          STAGING_SHA: ${{ steps.staging.outputs.sha }}
+          STAGING_SHORT: ${{ steps.staging.outputs.short }}
+          DIFF_STAT: ${{ steps.diff.outputs.stat }}
+          DIFF_FILES: ${{ steps.diff.outputs.files }}
+        run: |
+          set -euo pipefail
+          BODY_FILE="$(mktemp)"
+          if [ "$INPUT_TYPE" = "release" ]; then
+            {
+              echo "## Summary"
+              echo "- Promotes \`hq-core-staging@${STAGING_SHORT}\` → \`hq-core\` for **v${INPUT_VERSION}**"
+              echo "- ${DIFF_FILES} file(s) changed in this promotion"
+            } > "$BODY_FILE"
+          else
+            {
+              echo "## Summary"
+              echo "- Promotes fix from \`hq-core-staging@${STAGING_SHORT}\` → \`hq-core\`"
+              echo "- ${DIFF_FILES} file(s) changed in this promotion"
+            } > "$BODY_FILE"
+          fi
+          if [ -n "${INPUT_EXTRA}" ]; then
+            printf '\n%s\n' "${INPUT_EXTRA}" >> "$BODY_FILE"
+          fi
+          {
+            echo
+            echo "## Lineage note"
+            echo "Opened automatically by \`promote-to-hq-core.yml\` from"
+            echo "\`indigoai-us/hq-core-staging@${STAGING_SHA}\`."
+            echo
+            echo "<details><summary>Diff stat</summary>"
+            echo
+            echo '```'
+            printf '%s\n' "${DIFF_STAT}"
+            echo '```'
+            echo "</details>"
+          } >> "$BODY_FILE"
+          if [ "$INPUT_TYPE" = "release" ]; then
+            {
+              echo
+              echo "## Test plan"
+              echo "- [ ] \`denylist-scan\` / \`provenance-stripped\` / \`public-frontmatter-revalidate\` pass on this PR"
+              echo "- [ ] \`core-yaml-locked\` CI passes (label: \`version-bump\`)"
+              echo "- [ ] \`special-case-files\` CI passes (label: \`special-case-confirmed\`)"
+              echo "- [ ] After merge, tag \`v${INPUT_VERSION}\` on the squash commit"
+              echo "- [ ] \`release.yml\` workflow runs and creates the GitHub release"
+            } >> "$BODY_FILE"
+          else
+            {
+              echo
+              echo "## Test plan"
+              echo "- [ ] \`denylist-scan\` / \`provenance-stripped\` / \`public-frontmatter-revalidate\` pass on this PR"
+              echo "- [ ] Manual smoke test of the affected area"
+            } >> "$BODY_FILE"
+          fi
+          echo "file=${BODY_FILE}" >> "$GITHUB_OUTPUT"
+          echo "----- PR body preview -----"
+          cat "$BODY_FILE"
+
+      - name: Dry run — stop here
+        if: inputs.dry_run == true
+        env:
+          BRANCH: ${{ steps.meta.outputs.branch }}
+        run: |
+          echo "::notice::dry_run=true — branch '$BRANCH' built locally but NOT pushed; no PR opened."
+
+      - name: Commit
+        if: inputs.dry_run != true
+        env:
+          COMMIT_MSG: ${{ steps.meta.outputs.commit_msg }}
+        run: |
+          set -euo pipefail
+          cd target
+          git commit -m "$COMMIT_MSG"
+
+      - name: Push branch to hq-core
+        if: inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.meta.outputs.branch }}
+        run: |
+          set -euo pipefail
+          cd target
+          git push --set-upstream origin "$BRANCH"
+
+      - name: Open PR on hq-core
+        if: inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.meta.outputs.branch }}
+          TITLE: ${{ steps.meta.outputs.title }}
+          LABELS: ${{ steps.meta.outputs.labels }}
+          BODY_FILE: ${{ steps.body.outputs.file }}
+        run: |
+          set -euo pipefail
+          cd target
+          LABEL_ARGS=()
+          if [ -n "$LABELS" ]; then
+            IFS=',' read -ra LABEL_LIST <<< "$LABELS"
+            for L in "${LABEL_LIST[@]}"; do
+              LABEL_ARGS+=(--label "$L")
+            done
+          fi
+          gh pr create \
+            --repo "$TARGET_REPO" \
+            --base main \
+            --head "$BRANCH" \
+            --title "$TITLE" \
+            --body-file "$BODY_FILE" \
+            "${LABEL_ARGS[@]}"

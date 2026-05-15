@@ -1,0 +1,3 @@
+interface:
+  display_name: "Journal"
+  short_description: "Write a session-level journal entry to workspace/threads/journal/<today>/. Helps autocompact discard raw tool-results by leaving structured working memory behind."

@@ -1,6 +1,7 @@
 ---
 name: hq-share
 description: Mint a single-use share-session link for HQ vault paths — opens the picker page in your browser to grant multiple recipients in one batch
+allowed-tools: Bash(hq:*), Bash(test:*), Bash(jq:*)
 ---
 
 # HQ Share — Create vault share link
@@ -83,7 +84,7 @@ Do **not** echo the URL again in any *subsequent* assistant turn, summary,
 journal, thread file, commit message, PR body, learning, or other persisted
 artifact — in those contexts use the redacted form
 `https://hq.{co}.com/share-session/<TOKEN_REDACTED>`. Full constraint set:
-[`hq-share-session-urls-are-capabilities`](../../../core/policies/hq-share-session-urls-are-capabilities.md).
+[`hq-share-session-urls-are-capabilities`](../../policies/hq-share-session-urls-are-capabilities.md).
 
 ## Rules
 
@@ -98,7 +99,7 @@ artifact — in those contexts use the redacted form
    — any holder can redeem it to write ACLs in the issuer's name. The TTL
    is defense in depth, not a license to log it. Full rules:
    [`hq-files`](../hq-files/SKILL.md) → "Rules for Agent Workflows" #10 and
-   [`hq-share-session-urls-are-capabilities`](../../../core/policies/hq-share-session-urls-are-capabilities.md).
+   [`hq-share-session-urls-are-capabilities`](../../policies/hq-share-session-urls-are-capabilities.md).
 
 2. **Mint a fresh URL when an old one fails.** Tokens are single-use by
    design. If the recipient reports an `expired` (403) or

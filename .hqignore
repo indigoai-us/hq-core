@@ -1,1 +1,11 @@
+# HQ cloud sync ignores.
+#
+# The sync engine is permissive by default: company data folders are meant to
+# travel with the company's vault-backed workspace. Do not add
+# `companies/*/data/` here unless a company has made an explicit local-only
+# data decision.
 
+# Company settings contain credentials and local tokens. These must never leave
+# the machine, even when a sync run walks an entire company directory.
+companies/*/settings/
+companies/*/settings/**

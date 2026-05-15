@@ -1,8 +1,10 @@
 worker:
   id: product-planner
   name: "Product Planner"
+  description: "PRD creation, technical specs, API contracts"
   type: CodeWorker
   version: "1.0"
+  team: dev-team
   created: "2026-01-24"
 
 identity:

@@ -20,25 +20,31 @@ assert_eq() {
 cp "$SRC_ROOT/scripts/handoff-finalize.sh" "$TMP_ROOT/handoff-finalize.sh"
 cp "$SRC_ROOT/scripts/hq-status-summary.sh" "$TMP_ROOT/hq-status-summary.sh"
 
-mkdir -p "$TMP_ROOT/repo/scripts" "$TMP_ROOT/repo/workspace/baseline" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/orchestrator"
-cp "$TMP_ROOT/handoff-finalize.sh" "$TMP_ROOT/repo/scripts/handoff-finalize.sh"
-cp "$TMP_ROOT/hq-status-summary.sh" "$TMP_ROOT/repo/scripts/hq-status-summary.sh"
-chmod +x "$TMP_ROOT/repo/scripts/"*.sh
+mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/workspace/baseline" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/orchestrator"
+cp "$TMP_ROOT/handoff-finalize.sh" "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh"
+cp "$TMP_ROOT/hq-status-summary.sh" "$TMP_ROOT/repo/core/scripts/hq-status-summary.sh"
+chmod +x "$TMP_ROOT/repo/core/scripts/"*.sh
 
-cat > "$TMP_ROOT/repo/scripts/rebuild-threads-index.sh" <<'SH'
+cat > "$TMP_ROOT/repo/core/scripts/rebuild-threads-index.sh" <<'SH'
 #!/usr/bin/env bash
 mkdir -p workspace/threads
 echo "# Threads" > workspace/threads/INDEX.md
 echo "- recent" > workspace/threads/recent.md
 SH
-cat > "$TMP_ROOT/repo/scripts/rebuild-orchestrator-index.sh" <<'SH'
+cat > "$TMP_ROOT/repo/core/scripts/rebuild-orchestrator-index.sh" <<'SH'
 #!/usr/bin/env bash
 mkdir -p workspace/orchestrator
 echo "# Orchestrator" > workspace/orchestrator/INDEX.md
 SH
-chmod +x "$TMP_ROOT/repo/scripts/rebuild-threads-index.sh" "$TMP_ROOT/repo/scripts/rebuild-orchestrator-index.sh"
+chmod +x "$TMP_ROOT/repo/core/scripts/rebuild-threads-index.sh" "$TMP_ROOT/repo/core/scripts/rebuild-orchestrator-index.sh"
 
-cp "$SRC_ROOT/workspace/baseline/hq-local-baseline.json" "$TMP_ROOT/repo/workspace/baseline/hq-local-baseline.json"
+if [[ -f "$SRC_ROOT/workspace/baseline/hq-local-baseline.json" ]]; then
+  cp "$SRC_ROOT/workspace/baseline/hq-local-baseline.json" "$TMP_ROOT/repo/workspace/baseline/hq-local-baseline.json"
+else
+  cat > "$TMP_ROOT/repo/workspace/baseline/hq-local-baseline.json" <<'JSON'
+{"categories":[{"name":"baseline","patterns":["companies/*","workspace/*","repos/*","core/settings/*",".hq/*"]}]}
+JSON
+fi
 
 cd "$TMP_ROOT/repo"
 git init -q
@@ -46,11 +52,11 @@ git config user.email test@example.com
 git config user.name "Handoff Test"
 
 echo "base" > tracked.txt
-git add tracked.txt scripts workspace/baseline/hq-local-baseline.json
+git add tracked.txt core/scripts workspace/baseline/hq-local-baseline.json
 git commit -qm "base"
 
 echo "changed" > tracked.txt
-mkdir -p notes companies/acme settings
+mkdir -p notes companies/acme settings core/settings
 echo "new" > notes/new.md
 echo "baseline" > companies/acme/local.md
 echo "secret" > core/settings/secret.json
@@ -127,5 +133,23 @@ assert_eq "$(jq -r '.counts.session_touched_untracked' <<<"$summary")" "1" "sess
 assert_eq "$(jq -r '.counts.baseline_untracked' <<<"$summary")" "1" "baseline untracked count"
 assert_eq "$(jq -r '.counts.unrelated_untracked' <<<"$summary")" "1" "unrelated untracked count"
 assert_eq "$(jq -r '.counts.ignored' <<<"$summary")" "1" "ignored count"
+
+# Regression: empty --files-touched-json '[]' must not crash under `set -u`.
+# Previously the bare "${SAFE_STAGE_PATHS[@]}" expansion in EXPLICIT_PATHS
+# tripped nounset when no foreground file edits occurred (empty array case).
+empty_out=$(bash core/scripts/handoff-finalize.sh \
+  --title "Handoff: empty smoke" \
+  --summary "Empty changeset smoke test" \
+  --message "Empty changeset smoke test" \
+  --next-steps-json '[]' \
+  --files-touched-json '[]' \
+  --learnings-json '[]' \
+  --tags-json '["test"]' \
+  --slug "empty-smoke") || fail "handoff-finalize crashed on empty --files-touched-json (SAFE_STAGE_PATHS unbound regression)"
+
+empty_changeset=$(jq -r '.changeset_path' <<<"$empty_out")
+[[ -f "$empty_changeset" ]] || fail "empty changeset file missing"
+assert_eq "$(jq -r '.staged_paths | length' "$empty_changeset")" "0" "empty changeset has zero staged_paths"
+
 
 echo "handoff-finalize smoke: ok"

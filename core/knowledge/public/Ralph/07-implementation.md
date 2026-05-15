@@ -41,7 +41,7 @@ ITERATIONS=${1:-10}  # Default 10 iterations
 for i in $(seq 1 $ITERATIONS); do
     echo "=== Ralph Loop Iteration $i ==="
 
-    claude --print "Read plans/prd.json and find the first feature where passes is false.
+    codex exec "Read plans/prd.json and find the first feature where passes is false.
 
     Implement ONLY that feature.
 
@@ -222,7 +222,7 @@ CHROME_PID=$!
 sleep 3
 
 for i in $(seq 1 $ITERATIONS); do
-    claude --print "Read plans/prd.json, find first incomplete feature.
+    codex exec "Read plans/prd.json, find first incomplete feature.
 
     Implement the feature, then:
     1. Run npm test, lint, typecheck

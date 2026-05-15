@@ -230,7 +230,8 @@ struct CompanyEntry {
 {company}:
   repos: [...]
   settings: [stripe, gusto, deel, quickbooks, shopify-partner, linear-acme-recover]
-  workers: [cfo-{company}, {company}-analyst, {product}-deploy]
+  # workers are NOT in manifest — they are discovered from worker.yaml files
+  # via core/workers/registry.yaml (auto-generated) with `company: {company}` set.
   knowledge: companies/{company}/knowledge/
   deploy: [...]
   vercel_projects: [...]
@@ -239,9 +240,10 @@ struct CompanyEntry {
 
 **Missing data:**
 - `repos` list (which repos belong to this company)
-- `workers` list (which workers serve this company)
 - `settings` list (named settings, not just boolean)
 - `deploy` targets
+
+> Note: workers are not a manifest field. The Rust `list_workers()` command parses `core/workers/registry.yaml` (auto-generated) and can filter by `company:` to get workers for a company.
 - `vercel_projects`
 - `qmd_collections`
 

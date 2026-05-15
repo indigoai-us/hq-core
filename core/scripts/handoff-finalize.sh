@@ -64,11 +64,11 @@ record_skip() {
 is_sensitive_path() {
   local p="$1"
   case "$p" in
-    .git|.git/*|.env|.env.*|*.credentials.json|*.secret.*|.hq/deploy-passwords.json|.hq/cognito-tokens.json|.claude/settings.local.json|.claude/settings.local.*|companies/*/settings/*|settings/*.json|settings/**/*.json)
-      return 0
-      ;;
     core/settings/.gitkeep|core/settings/pure-ralph.json)
       return 1
+      ;;
+    .git|.git/*|.env|.env.*|*.credentials.json|*.secret.*|.hq/deploy-passwords.json|.hq/cognito-tokens.json|.claude/settings.local.json|.claude/settings.local.*|companies/*/settings/*|settings/*.json|settings/**/*.json|core/settings/*.json|core/settings/**/*.json)
+      return 0
       ;;
     *)
       return 1
@@ -254,7 +254,7 @@ fi
 # -------- HQ commit (explicit paths only — never git add -A) --------
 HQ_COMMITTED="false"
 EXPLICIT_PATHS=(
-  "${SAFE_STAGE_PATHS[@]}"
+  "${SAFE_STAGE_PATHS[@]:-}"
   "workspace/threads/${THREAD_ID}.json"
   "workspace/threads/${THREAD_ID}.changeset.json"
   "workspace/threads/handoff.json"

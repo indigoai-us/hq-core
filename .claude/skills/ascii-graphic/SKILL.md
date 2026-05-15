@@ -1,7 +1,7 @@
 ---
 name: ascii-graphic
 description: Generate ASCII block-art banner images for social posts and OG images. Dark midnight aesthetic with faded {company} text on near-black background. Two sizes — 1080x1080 (social) and 1200x630 (OG). Use for product announcements, project launches, concept visuals, and repo OG images.
-allowed-tools: Read, Write, Edit, Bash(open:*), Bash(agent-browser:*)
+allowed-tools: Read, Write, Edit, Bash(open:*), Bash(agent-browser:*), Bash
 ---
 
 # ASCII Graphic Generator

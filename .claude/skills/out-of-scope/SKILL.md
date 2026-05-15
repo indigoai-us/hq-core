@@ -111,7 +111,7 @@ If no prior requests yet, the section can read `(this is the first time we've co
 
 If the rejection relates to an accepted ADR, add a link in the ADR's `Considered Options` or `Consequences` section pointing to this out-of-scope file.
 
-If the rejection emerged from a `/brainstorm` session, link the brainstorm artifact (`projects/{slug}/brainstorm.md`) in the rejection's "Prior requests" section.
+If the rejection emerged from a `/brainstorm` session, link the brainstorm artifact (`personal/projects/{slug}/brainstorm.md` or `companies/{co}/projects/{slug}/brainstorm.md`) in the rejection's "Prior requests" section.
 
 ## Step 6 — Report
 

@@ -4,7 +4,7 @@ How to promote an HQ command to Codex so it appears in Codex sessions.
 
 ## Overview
 
-HQ uses a **dual-format approach**: `command.md` is the Claude Code source of truth; `SKILL.md` is the Codex-adapted derivative. Both live in `.claude/skills/{name}/`. The filesystem bridge (`core/scripts/codex-skill-bridge.sh install`) symlinks `.claude/skills/` into `~/.codex/skills/hq`, so all skills are auto-discovered by Codex without duplication.
+HQ uses a **dual-format approach**: `command.md` is the Claude Code source of truth; `SKILL.md` is the Codex-adapted derivative. Both live in `.claude/skills/{name}/`. The filesystem bridge (`core/scripts/codex-skill-bridge.sh install`) symlinks `.claude/skills/` into `~/.codex/skills/hq`, so all skills are auto-discovered by Codex without duplication. The same bridge exposes the active Claude output style at `.codex/output-style.md` so Codex users get the shipped HQ chat voice too.
 
 ## Codex-Ready Skill Structure
 
@@ -120,7 +120,7 @@ bash core/scripts/codex-skill-bridge.sh status
 Shows:
 - Total skills / skills with `agents/openai.yaml`
 - Commands without corresponding skills (coverage gaps)
-- Bridge symlink health for all targets
+- Bridge symlink health for all targets, including `.codex/output-style.md`
 
 Run after adding new skills or commands to identify gaps.
 
@@ -134,6 +134,7 @@ Run after adding new skills or commands to identify gaps.
 ## Related Files
 
 - `.claude/skills/` — all skills
+- `.codex/output-style.md` — active output style bridge for Codex
 - `core/scripts/codex-skill-bridge.sh` — bridge install + status + coverage report
 - `.claude/CLAUDE.md` → `## Skills` — integration rules
-- `projects/codex-command-discovery/prd.json` — origin project
+- `personal/projects/codex-command-discovery/prd.json` — origin project

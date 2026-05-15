@@ -686,16 +686,14 @@ core/workers/registry.yaml
 ### 7.2 Company → Workers Mapping
 
 ```
-companies/manifest.yaml
+core/workers/registry.yaml  (auto-generated from worker.yaml files)
   │
-  ├─ {company}:
-  │     workers: [cfo-{company}, {company}-analyst, {product}-deploy, infobip-admin, lr-qa, {company}-gtm]
+  ├─ entries with company: {company}   (e.g. cfo-{company}, {company}-analyst, {product}-deploy)
+  │     → discovered from companies/{company}/workers/*/worker.yaml
   │
+  ├─ entries with company: {other}     (e.g. cmo-brand)
   │
-  ├─ {company}:
-  │     workers: [cmo-brand]
-  │
-  └─ (public workers: dev-team/*, content-team/*, qa-tester, etc.)
+  └─ public workers (dev-team/*, content-team/*, qa-tester, etc.)
        → company-agnostic, inherit active company from invocation
 
   Personal workers (e.g. x-user, invoices) live at top-level `personal/workers/`,

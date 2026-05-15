@@ -1,8 +1,10 @@
 worker:
   id: project-manager
   name: "Project Manager"
+  description: "PRD lifecycle, issue selection, learning aggregation"
   type: OpsWorker
   version: "1.0"
+  team: dev-team
 
 execution:
   mode: on_demand
