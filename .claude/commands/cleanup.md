@@ -32,41 +32,49 @@ Audit HQ for policy violations, migrate outdated structures, and fix inconsisten
 
 ### 1. Project Structure
 
-**Policy**: All projects in `projects/` folder with `README.md`
+**Policy**: Personal/HQ projects live in `personal/projects/`; company projects live in `companies/{co}/projects/`. Each project should have a `README.md`.
 
 ```bash
 # Find projects with only prd.json (no README)
-for dir in projects/*/; do
+for dir in personal/projects/*/ companies/*/projects/*/; do
   if [[ -f "${dir}prd.json" && ! -f "${dir}README.md" ]]; then
     echo "MIGRATE: $dir has prd.json but no README.md"
   fi
 done
 
-# Find projects outside projects/ folder
-find companies apps -name "prd.json" 2>/dev/null
+# Find projects outside approved project folders
+find . -path './.git' -prune -o -name "prd.json" -print 2>/dev/null | grep -vE '^\./(personal/projects|companies/[^/]+/projects)/'
 ```
 
 **Violations**:
 - prd.json without README.md → needs migration
-- prd.json in companies/ or apps/ → needs relocation
+- prd.json outside `personal/projects/` or `companies/{co}/projects/` → needs relocation
 
 ### 2. Worker Registry
 
-**Policy**: All workers indexed in `core/workers/registry.yaml`
+**Policy**: Each worker directory has a `worker.yaml` with required fields (`worker.id`, `worker.type`, `worker.description`). `core/workers/registry.yaml` is auto-generated from these — no need to check for "unindexed" workers, but DO check that every worker dir has a valid `worker.yaml`.
 
 ```bash
-# Find workers not in registry
-for dir in core/workers/public/*/ core/workers/private/*/; do
-  worker=$(basename "$dir")
-  if ! grep -q "id: $worker" core/workers/registry.yaml; then
-    echo "UNINDEXED: $worker"
+# Find worker dirs missing worker.yaml or required fields
+for dir in core/workers/public/*/ companies/*/workers/*/; do
+  [[ -d "$dir" ]] || continue
+  yaml="${dir}worker.yaml"
+  if [[ ! -f "$yaml" ]]; then
+    echo "MISSING worker.yaml: $dir"; continue
   fi
+  for field in id type description; do
+    val=$(yq -r ".worker.${field} // \"\"" "$yaml" 2>/dev/null)
+    [[ -z "$val" ]] && echo "MISSING worker.${field}: $yaml"
+  done
 done
+
+# Force a fresh registry regen
+bash core/scripts/generate-workers-registry.sh
 ```
 
 ### 3. Deprecated Directories
 
-**Policy**: No apps/ directory (use projects/ or core/workers/)
+**Policy**: No apps/ directory (use `personal/projects/`, `companies/{co}/projects/`, or `core/workers/`)
 
 ```bash
 # Check if apps/ still exists
@@ -96,7 +104,7 @@ git status --short
 **Policy**: Knowledge repos should be clean (committed)
 
 ```bash
-for symlink in knowledge/public/* knowledge/private/* companies/*/knowledge; do
+for symlink in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
   [ -L "$symlink" ] || continue
   repo_dir=$(cd "$symlink" && git rev-parse --show-toplevel 2>/dev/null) || continue
   dirty=$(cd "$repo_dir" && git status --porcelain)
@@ -152,7 +160,7 @@ find . -name "SKILL.md" -not -path "./repos/*"
 **Policy**: INDEX.md files should exist and match directory contents. See `core/knowledge/public/hq-core/index-md-spec.md` for spec.
 
 **Expected locations:**
-- `projects/INDEX.md`
+- `personal/projects/INDEX.md`
 - `companies/{product}/knowledge/INDEX.md`
 - `companies/{company}/knowledge/INDEX.md`
 - `core/knowledge/public/INDEX.md`
@@ -183,25 +191,8 @@ grep -n "null" companies/manifest.yaml
 1. Create knowledge repo: `repos/private/knowledge-{company}/` → `git init` → initial README
 2. Create symlink: `companies/{company}/knowledge → ../../repos/private/knowledge-{company}`
 3. Update manifest.yaml: replace `null` with `companies/{company}/knowledge/`
-4. Add to `core/modules/modules.yaml`
 
-### 10. Modules Registry Completeness
-
-**Policy**: Every knowledge symlink should have a corresponding entry in `core/modules/modules.yaml`.
-
-```bash
-for symlink in knowledge/public/* knowledge/private/* companies/*/knowledge; do
-  [ -L "$symlink" ] || continue
-  name=$(basename $(readlink "$symlink"))
-  if ! grep -q "$name" core/modules/modules.yaml 2>/dev/null; then
-    echo "UNREGISTERED: $symlink not in modules.yaml"
-  fi
-done
-```
-
-**With --fix**: Add missing module entries to `core/modules/modules.yaml`.
-
-### 11. qmd Collection Completeness
+### 10. qmd Collection Completeness
 
 **Policy**: Every company with a knowledge symlink should have a qmd collection. HQ itself should have 4 sub-collections: `hq-infra`, `hq-workers`, `hq-knowledge`, `hq-projects` (not a monolithic `hq`).
 
@@ -286,9 +277,9 @@ find workspace/checkpoints -name "*.json" -mtime +30 -exec mv {} archives/checkp
 
 ### Relocate Misplaced Projects
 ```bash
-# Move apps/{name}/prd.json to projects/{name}/
-mkdir -p projects/{name}
-mv apps/{name}/prd.json projects/{name}/
+# Move apps/{name}/prd.json to personal/projects/{name}/
+mkdir -p personal/projects/{name}
+mv apps/{name}/prd.json personal/projects/{name}/
 ```
 
 ### Regenerate INDEX.md Files (--reindex)
@@ -312,14 +303,14 @@ HQ Cleanup Audit
 
 ✓ Worker registry: 15 workers indexed
 ✗ Project structure: 8 issues
-  - projects/customer-cube: prd.json without README.md
-  - projects/deel-analytics: prd.json without README.md
+  - personal/projects/customer-cube: prd.json without README.md
+  - personal/projects/deel-analytics: prd.json without README.md
   ...
 ✗ Deprecated directories: apps/ still exists (4 items)
 ✗ Git status: 3 uncommitted changes
 ✓ Checkpoints: all recent
 ✗ INDEX.md: 2 stale, 1 missing
-  - projects/INDEX.md: 30 entries vs 33 actual (stale)
+  - personal/projects/INDEX.md: 30 entries vs 33 actual (stale)
   - workspace/reports/INDEX.md: missing
 
 Summary: 14 issues found
@@ -333,8 +324,8 @@ Run `/cleanup --consolidate-insights` to dedup and flag stale insights
 ### After Migration
 ```
 Migrated 8 projects to README.md format:
-- projects/customer-cube/README.md (created)
-- projects/deel-analytics/README.md (created)
+- personal/projects/customer-cube/README.md (created)
+- personal/projects/deel-analytics/README.md (created)
 ...
 
 Original prd.json files renamed to prd.json.bak
@@ -375,7 +366,7 @@ Flag:
 ### Step 3: Deprecate stale rules
 
 For each rule, check if its references still exist:
-- Rule mentions a worker → does that worker exist in `core/workers/registry.yaml`?
+- Rule mentions a worker → does `core/workers/public/{id}/worker.yaml` or `companies/{co}/workers/{id}/worker.yaml` exist?
 - Rule mentions a command → does `.claude/commands/{name}.md` exist?
 - Rule mentions a tool/API → is it still in use? (best effort)
 
@@ -518,11 +509,11 @@ Reference for what we're enforcing:
 
 | Area | Policy |
 |------|--------|
-| Projects | Live in `projects/{name}/` with `README.md` |
+| Projects | Live in `personal/projects/{name}/` or `companies/{co}/projects/{name}/` with `README.md` |
 | PRD format | Markdown README.md (not prd.json) |
-| Workers | Indexed in `core/workers/registry.yaml` |
+| Workers | Each has `worker.yaml` with `worker.id/type/description`; registry auto-generates |
 | Worker FSM | `state_machine:` section in worker.yaml (Loom pattern) |
-| Apps | Deprecated - migrate to projects/ or core/workers/ |
+| Apps | Deprecated - migrate to `personal/projects/`, `companies/{co}/projects/`, or `core/workers/` |
 | Skills | `.claude/commands/*.md` format |
 | Threads | Primary session persistence (`workspace/threads/`) |
 | Auto-checkpoints | Lightweight, purge after 14 days (`T-*-auto-*.json`) |
@@ -532,6 +523,5 @@ Reference for what we're enforcing:
 | Knowledge repos | Symlinks in `knowledge/` and `companies/*/knowledge/` point to repos; all repos committed |
 | INDEX.md | Exist at 10 key dirs, match contents (see spec) |
 | Manifest | All companies have non-null knowledge, settings, repos |
-| Modules | All knowledge repos registered in `core/modules/modules.yaml` |
 | qmd | All companies with knowledge have a qmd collection |
 | Learnings | No cross-file duplicates, stale rules flagged, scoped > global |

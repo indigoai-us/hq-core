@@ -1,16 +1,15 @@
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+- Root structure now keeps user-visible top-level directories to `companies/`, `core/`, `personal/`, `repos/`, and `workspace/`; public HQ docs moved to `core/docs/hq/`.
+- Personal/HQ project instructions now point to `personal/projects/`; company projects remain under `companies/{co}/projects/`.
+- `core/core.yaml` is the only shipped version manifest; legacy root `core.yaml` is no longer part of the scaffold.
+- `/update-hq` now reads public changelog and migration docs from `core/docs/hq/`, with a legacy fallback for older installs.
 
-## [14.1.2-beta.2] — 2026-05-14
+### Removed
+- Removed legacy root `data/` scaffold and root copies of public HQ docs.
 
-### Headline
-**Minimal beta cut from `main` containing the `companies/manifest.yaml` lock-list fix.** Distinct lineage from `v14.1.2-beta.1`, which was cut from `hq-core-staging` and never merged into `hq-core/main` — this beta is what `main` actually contains today.
-
-### Fixed
-- **`companies/manifest.yaml` no longer in `core/core.yaml` `rules.locked`** (#15) — `protect-core.sh` and `block-core-writes-bash.sh` were rejecting every Edit/Write to the manifest, even though it's a per-user mutable config that `/newcompany`, `hq-sync`, and direct user edits write to routinely. Operations no longer need `HQ_BYPASS_CORE_PROTECT=1` to touch manifest.yaml.
-
-## [14.1.1] — 2026-05-13
+## [14.1.0] — 2026-05-13
 
 ### Headline
 **Team AI OS reframe, session journals, Codex parity, and public policy sweep.** HQ's product description shifts from "personal OS" to "team AI OS." Six new commands land (`accept`, `decision-queue`, `hq-share`, `journal`, `onboard`, `promote`), four new hooks enforce session journal lifecycle and supply-chain safety, and 13 Codex skill bridges close the dual-runtime gap. A narration policy (`quiet-by-default`) silences routine ops. The public policy set is slimmed by 165 files — distilled to the guardrails that matter for distribution. Codex pets arrive with the Indigo Gem mascot.
@@ -859,7 +858,7 @@ Ralph loop reliability — in-session mode default, 3-layer passes detection, sw
 ### Added
 
 - **`/run-project` — In-session mode default** — Stories run as Task() sub-agents within the current Claude session (faster, no process overhead). Headless bash mode via `--bash` flag.
-- **`/run-project` — `--codex-autofix` flag** — Auto-fix P1/P2 codex review findings via targeted `claude -p` agent with 300s timeout.
+- **`/run-project` — `--codex-autofix` flag** — Auto-fix P1/P2 codex review findings via targeted `codex exec` agent with 300s timeout.
 - **`/run-project` — Context safety limits** — Auto-handoff after 6 stories or 70% context ceiling.
 - **`/run-project` — Project Reanchor** — Every 3 completed stories, evaluates remaining stories for spec drift. Writes reanchor report.
 - **`run-project.sh` — 3-layer passes detection** — Layer 1 (JSON parse) → Layer 2 (full-file scan for task_id+status pairs) → Layer 3 (git heuristic: commits after checkout + declared files touched). Replaces simple grep fallback.
@@ -908,8 +907,8 @@ Policy-first system — all major commands now scan and enforce policies. `/lear
 - **`/learn` — Scan existing policies** (Step 4.5) — Before creating new rules, scans existing policy files for updates. Prevents duplicate policies.
 - **`/learn` — Policy file output** — Primary output is now structured policy files (YAML frontmatter + Rule + Rationale) in scope-appropriate directories. Worker.yaml injection retained as fallback for worker-specific learnings only.
 - **`run-project.sh` — Regression baseline** — Captures pre-existing error counts on first gate run. Only flags errors above baseline as regressions, preventing false positives in repos with pre-existing issues.
-- **`run-project.sh` — Headless doc sweep** — `run_doc_sweep()` runs `claude -p` to update 4 documentation layers (internal docs, external docs, repo knowledge, company knowledge) after project completion. Replaces interactive doc-sweep-flag.json.
-- **`run-project.sh` — Swarm mode** (`--swarm [N]`) — Parallel story execution via git worktrees. Pre-acquires file locks, dispatches eligible stories as background `claude -p` processes, monitors PIDs with periodic check-ins, cherry-picks commits sequentially. Stories without `files[]` are never swarmed.
+- **`run-project.sh` — Headless doc sweep** — `run_doc_sweep()` runs `codex exec` to update 4 documentation layers (internal docs, external docs, repo knowledge, company knowledge) after project completion. Replaces interactive doc-sweep-flag.json.
+- **`run-project.sh` — Swarm mode** (`--swarm [N]`) — Parallel story execution via git worktrees. Pre-acquires file locks, dispatches eligible stories as background `codex exec` processes, monitors PIDs with periodic check-ins, cherry-picks commits sequentially. Stories without `files[]` are never swarmed.
 - **`run-project.sh` — Signal trapping** — `cleanup_on_signal()` catches SIGINT/SIGTERM, kills swarm children, releases locks/checkouts, sets state to "paused".
 - **`run-project.sh` — Worktree isolation** — Each project gets its own git worktree for branch isolation. `check_repo_conflict()` detects concurrent orchestrators on the same repo. `ensure_worktree()` / `cleanup_worktree()` manage lifecycle.
 - **`core/settings/orchestrator.yaml` — Swarm config** — New `swarm:` section with `max_concurrency`, `checkin_interval_seconds`, `require_files_declared`.
@@ -1003,7 +1002,7 @@ Enhanced company isolation, new worker teams, expanded knowledge, and command up
 - **Commands count** (CLAUDE.md) — Updated from 24 to 35+.
 - **/execute-task** — Refined codex-reviewer inline pattern, improved back-pressure error handling.
 - **/prd** — Company Anchor (Step 0) for automatic company scoping from arguments. Beads sync (Step 7).
-- **/run-project** — Externalized to `core/scripts/run-project.sh` bash orchestrator with CLI flags (--max-budget, --model, --timeout, --retry-failed, --verbose). Process-level isolation via `claude -p`.
+- **/run-project** — Externalized to `core/scripts/run-project.sh` bash orchestrator with CLI flags (--max-budget, --model, --timeout, --retry-failed, --verbose). Process-level isolation via `codex exec`.
 - **/handoff** — Added knowledge update step (0b) for documenting domain knowledge in company knowledge bases.
 - **/learn** — Updated to inject rules into target files (worker.yaml, command .md, knowledge files, CLAUDE.md) with cap enforcement and global promotion.
 - **/startwork** — Enhanced with company knowledge loading and Vercel project context.

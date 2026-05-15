@@ -13,26 +13,38 @@ relates_to: []
 ```
 HQ/
 ├── .claude/commands/   # Slash commands (44)
-├── agents.md           # {your-name}'s profile
+├── AGENTS.md           # Runtime entrypoint (symlink to .claude/CLAUDE.md)
 ├── companies/          # Company-scoped resources (14 companies)
 │   └── {co}/
-│       ├── core/knowledge/  # Embedded git repo (company knowledge)
+│       ├── knowledge/  # Embedded git repo (company knowledge)
 │       ├── policies/   # Standing operational rules
 │       ├── repos/      # Symlinks → repos/{pub|priv}/
-│       ├── core/settings/   # Credentials & config
-│       ├── core/workers/    # Company-scoped workers
+│       ├── settings/   # Credentials & config
+│       ├── workers/    # Company-scoped workers
 │       ├── data/       # Exports, reports
 │       └── board.json  # OKR board
-├── core/knowledge/
-│   ├── public/         # Symlinks → repos/public/knowledge-*
-│   └── private/        # Symlinks → repos/private/knowledge-*
-├── projects/           # Project PRDs
+├── core/               # System tree (canonical, shipped with HQ)
+│   ├── hooks/          # Always-on system hooks (loaded first)
+│   ├── docs/hq/        # Public HQ docs (README, CHANGELOG, MIGRATION, USER-GUIDE)
+│   ├── knowledge/
+│   │   ├── public/     # Symlinks → repos/public/knowledge-*
+│   │   └── private/    # Symlinks → repos/private/knowledge-*
+│   ├── policies/       # Cross-cutting + command-scoped policies
+│   ├── settings/       # Orchestrator config
+│   ├── skills/         # Core skills (surface as /<skill>)
+│   └── workers/
+│       └── public/     # Shareable workers (dev-team, content-*, social-*, gardener-*, gemini-*, etc.)
+├── personal/           # User-personal overlay (mirrors core/ shape)
+│   ├── hooks/          # Always-on user-global hooks (loaded AFTER core/hooks)
+│   ├── projects/       # Personal/HQ project PRDs and brainstorms
+│   ├── knowledge/      # Symlinked into core/knowledge/ by master-sync
+│   ├── policies/       # Symlinked into core/policies/ by master-sync
+│   ├── settings/       # Symlinked into core/settings/ by master-sync
+│   ├── skills/         # Surface as /<skill> with (project:personal) tag
+│   └── workers/        # Symlinked into core/workers/ by master-sync
 ├── repos/
 │   ├── public/         # Open-source repos
 │   └── private/        # Private repos
-├── core/settings/           # Orchestrator config
-├── core/workers/
-│   └── public/         # Shareable workers (dev-team, content-*, social-*, gardener-*, gemini-*, etc.)
 └── workspace/
     ├── checkpoints/    # Session saves
     ├── orchestrator/   # Ralph loop workflow state
@@ -40,6 +52,19 @@ HQ/
     ├── social-drafts/  # Social content pipeline
     └── threads/        # Session threads + handoff.json
 ```
+
+**Personal overlay semantics.** `personal/` mirrors the shape of `core/` but is user-personal authoring space. Master-sync (a Stop/PostToolUse hook in `.claude/hooks/master-sync.sh`) keeps the two in sync:
+
+| Subdir | Runtime behavior |
+|---|---|
+| `personal/hooks/<event>/*.sh` | **Loaded as a separate ordered layer** — runs after `core/hooks/<event>/` and before `core/packages/*/hooks/<event>/` |
+| `personal/skills/<skill>/SKILL.md` | Surfaces as `/<skill>` — same flat command name as a core skill. Claude Code's `.claude/commands/<subdir>/<name>.md` surfacing puts the subdirectory in the command *description* (`(project:personal)`), not the command name. Collisions with a core skill of the same name are won by whichever ordering Claude Code resolves first; rename your personal skill to disambiguate. |
+| `personal/knowledge/<entry>` | Symlinked into `core/knowledge/<entry>` — appears inside core |
+| `personal/policies/<entry>` | Symlinked into `core/policies/<entry>` — appears inside core; NOT a separate precedence layer |
+| `personal/workers/<entry>` | Symlinked into `core/workers/<entry>` — appears inside core |
+| `personal/settings/<entry>` | Symlinked into `core/settings/<entry>` — appears inside core |
+
+Collision rule: if a real file/dir already sits at the link path, master-sync logs and skips — personal never silently overwrites core.
 
 ## Companies (14)
 

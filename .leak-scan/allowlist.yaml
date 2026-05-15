@@ -1,8 +1,10 @@
 # Slug allowlist for hq-core-staging CI slug-scan
 #
-# The slug-scan job reads private tenant slugs from manifest-snapshot.yaml and
-# fails if any appear in PR-changed files. Slugs listed here are explicit
-# public exceptions.
+# Slugs are short ASCII identifiers found in file paths, package names, repo
+# references. The slug-scan job scans PR-changed files for any *lowercase
+# slug-shaped token* that is NOT in this allowlist and fails if it finds one
+# that looks like a company name (heuristic: 3-20 chars, lowercase, referenced
+# near "company" / "repos/" / "org" context).
 #
 # Keep this list tight. Adding a slug here implies it is safe to appear in
 # public hq-core content.

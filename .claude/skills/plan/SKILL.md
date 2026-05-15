@@ -21,7 +21,7 @@ Check if the **first word** of the user's input matches a company slug in `compa
 3. **Load policies (frontmatter-only)** — For each file in `companies/{co}/policies/` (skip `example-policy.md`), run `bash core/scripts/read-policy-frontmatter.sh {file}`. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. The SessionStart hook also injects the company policy digest at `companies/{co}/policies/_digest.md` — prefer that if present. Apply as constraints throughout the PRD
 4. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}` for all `qmd` calls
 5. **Pre-load repos** — Extract `{co}.repos[]` from manifest. Present as repo options in Batch 3 Q10
-6. **Scope workers** — Filter to company workers (`companies/{co}/workers/`) + public workers (`workers/public/`)
+6. **Scope workers** — Filter to company workers (`companies/{co}/workers/`) + public workers (`core/workers/public/`)
 7. **Scope projects** — Only search `companies/{co}/projects/` for existing project collision check
 
 **If no match** (first word is not a company slug) — proceed normally. The full input text is the project description.
@@ -49,7 +49,7 @@ If `{co}` is anchored, scope all searches to that company.
 
 **Workers (only if `mode in (company, repo)` AND the description plausibly needs a worker — otherwise skip):**
 - Read `core/workers/registry.yaml` (workers already indexed there — never Glob for worker discovery). Skip if the description is clearly code/infra work not matching a worker skill
-- If anchored: filter to company workers (`companies/{co}/workers/`) + public workers (`workers/public/`)
+- If anchored: filter to company workers (`companies/{co}/workers/`) + public workers (`core/workers/public/`)
 - **Skip entirely for personal/HQ mode**
 
 **Existing Projects:**
@@ -87,7 +87,7 @@ Scanned HQ:
 
 Before generating the PRD, verify infrastructure exists for the target company/repo:
 
-1. **Company**: If project targets a company, read `companies/manifest.yaml`. If company has `knowledge: null`, flag: "Company {co} has no knowledge repo. Create one? [Y/n]" — if yes, create embedded repo at `companies/{co}/knowledge/` with `git init`, update manifest + modules.yaml.
+1. **Company**: If project targets a company, read `companies/manifest.yaml`. If company has `knowledge: null`, flag: "Company {co} has no knowledge repo. Create one? [Y/n]" — if yes, create embedded repo at `companies/{co}/knowledge/` with `git init`, and update manifest.yaml.
 
 2. **Repo**: If `repoPath` specified and doesn't exist locally, flag: "Repo not found at {path}. Clone it or create new?" Add to `manifest.yaml` if missing.
 
@@ -100,7 +100,7 @@ Fix any gaps before proceeding.
 Ask the user for project slug (or infer from description). Then:
 1. If `{co}` already set by Step 0: use it directly (skip company detection)
    If NOT set: determine company from context (infer from description, repo, or ask the user)
-2. Check if `companies/{co}/projects/{name}/` exists (also check root `projects/{name}/` for personal/HQ)
+2. Check if `companies/{co}/projects/{name}/` exists (also check `personal/projects/{name}/` for personal/HQ)
    - If exists: ask the user "Project exists. Continue editing or choose different name?"
 3. Validate slug format (lowercase, hyphens only)
 
@@ -135,7 +135,7 @@ Spec: `core/knowledge/public/hq-core/journal-spec.md`. Open a session journal at
 .claude/skills/_shared/journal.sh open plan "{project_dir}"
 ```
 
-Where `{project_dir}` = `companies/{co}/projects/{slug}/` or `projects/{slug}/` for personal/HQ. The helper:
+Where `{project_dir}` = `companies/{co}/projects/{slug}/` or `personal/projects/{slug}/` for personal/HQ. The helper:
 
 - Creates `{project_dir}/journal/{ISO8601}-plan.md` with frontmatter (`status: active`, `skill: plan`)
 - Writes `.claude/state/active-journal` so the autocapture hook + later steps append to this file
@@ -362,7 +362,7 @@ Policy `core/policies/hq-live-path-watch-on-replacement-prds.md` (hard enforceme
 
 ## Step 5: Generate PRD
 
-Create `companies/{co}/projects/{name}/` folder with two files. Use root `projects/{name}/` only for personal/HQ projects.
+Create `companies/{co}/projects/{name}/` folder with two files. Use `personal/projects/{name}/` only for personal/HQ projects.
 
 ### Primary: companies/{co}/projects/{name}/prd.json
 

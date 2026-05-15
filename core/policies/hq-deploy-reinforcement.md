@@ -99,7 +99,7 @@ For sensitive artifacts, pick an access mode based on whether the user named rec
    - **Copy to clipboard** via `pbcopy` (macOS) — fall through silently on non-macOS
    - **Persist** to `~/.hq/deploy-passwords.json` (mode `0600`, jq merge keyed by app slug)
 4. Tell the user once, in the same response as the deploy link:
-   > Live at https://{slug}.{your-domain}.com — password copied to your clipboard (also saved at `~/.hq/deploy-passwords.json`).
+   > Live at https://{slug}.indigo-hq.com — password copied to your clipboard (also saved at `~/.hq/deploy-passwords.json`).
 5. **NEVER echo the password again in a later response.** If the user asks "what was the password?", instruct them to run `jq -r '."<slug>".password' ~/.hq/deploy-passwords.json` rather than re-printing it.
 
 #### Private mode (named recipients)
@@ -111,7 +111,7 @@ For sensitive artifacts, pick an access mode based on whether the user named rec
    ```
    Idempotent; server lowercases.
 3. Tell the user once, in the same response as the deploy link:
-   > Live at https://{slug}.{your-domain}.com — gated to {comma-separated patterns}. They'll sign in via auth.{your-domain}.com on first visit.
+   > Live at https://{slug}.indigo-hq.com — gated to {comma-separated patterns}. They'll sign in via auth.indigo-hq.com on first visit.
 4. For follow-up changes, point at the CLI rather than re-orchestrating from this skill:
    > Run `hq-deploy access share {slug} <email|@domain>` to add a teammate, or `… unshare …` to revoke.
 5. No password persists for private apps — `~/.hq/deploy-passwords.json` is not used in this branch.

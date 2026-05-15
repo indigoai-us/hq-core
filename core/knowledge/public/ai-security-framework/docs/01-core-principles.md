@@ -141,7 +141,7 @@ for i in {1..N}; do
     # Each iteration starts fresh
     # No accumulated sensitive data
     # No context rot leaking information
-    claude --print "Pick ONE task..."
+    codex exec "Pick ONE task..."
 done
 ```
 

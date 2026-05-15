@@ -1,28 +1,17 @@
 #!/usr/bin/env bash
 # token-usage-report.sh — Daily effective-token totals + top burners from Claude Code session JSONLs.
 # Usage:
-#   core/scripts/token-usage-report.sh                # last 7 days, table
-#   core/scripts/token-usage-report.sh --last 14      # last 14 days
-#   core/scripts/token-usage-report.sh --since 2026-05-01
-#   core/scripts/token-usage-report.sh --json         # machine-readable
+#   scripts/token-usage-report.sh                # last 7 days, table
+#   scripts/token-usage-report.sh --last 14      # last 14 days
+#   scripts/token-usage-report.sh --since 2026-05-01
+#   scripts/token-usage-report.sh --json         # machine-readable
 #
 # Effective tokens weighting (matches weekly rate-limit volume):
 #   input + 5×output + 1.25×cache_creation + 0.1×cache_read
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HQ_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-if [[ -n "${CLAUDE_PROJECTS_DIR:-}" ]]; then
-  PROJECT_DIR="$CLAUDE_PROJECTS_DIR"
-else
-  PROJECT_SLUG="$(python3 - "$HQ_ROOT" <<'PY'
-import sys
-print(sys.argv[1].rstrip("/").replace("/", "-"))
-PY
-)"
-  PROJECT_DIR="$HOME/.claude/projects/$PROJECT_SLUG"
-fi
+PROJECT_DIR="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects/-Users-{your-name}-Documents-HQ}"
 LAST_DAYS=7
 SINCE=""
 JSON_MODE=0

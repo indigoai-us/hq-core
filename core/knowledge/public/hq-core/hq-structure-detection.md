@@ -21,7 +21,7 @@ These must exist for Desktop to recognize a directory as an HQ instance:
 | `.claude/CLAUDE.md` | file | Session protocol, context diet, learned rules | Must exist, non-empty |
 | `.claude/commands/` | dir | Slash commands (at least 1 `.md` file) | Dir exists |
 | `core/workers/registry.yaml` | file | Worker index | Valid YAML with `workers:` array |
-| `projects/` | dir | Project PRDs | Dir exists |
+| `personal/projects/` | dir | Personal/HQ project PRDs | Dir exists |
 | `workspace/` | dir | Runtime state container | Dir exists |
 | `workspace/threads/` | dir | Auto-saved sessions | Dir exists |
 | `core/knowledge/` | dir | Knowledge bases | Dir exists |
@@ -35,10 +35,10 @@ Present in every fresh `hq-starter-kit` clone. Desktop should expect these and r
 | `.claude/commands/*.md` | files | 18 slash commands (v5) | checkpoint, cleanup, execute-task, exit-plan, handoff, learn, metrics, newworker, nexttask, personal-interview, prd, reanchor, remember, run-project, run, search-reindex, search, setup |
 | `.claude/scripts/` | dir | Shell scripts (pure-ralph-loop) | Optional but shipped |
 | `.claude/settings.json` | file | Claude Code settings | JSON |
-| `README.md` | file | Instance README | Informational |
-| `CHANGELOG.md` | file | Version history | Informational |
-| `LICENSE` | file | MIT license | Informational |
-| `MIGRATION.md` | file | Upgrade guide | Informational |
+| `core/docs/hq/README.md` | file | Instance README | Informational |
+| `core/docs/hq/CHANGELOG.md` | file | Version history | Informational |
+| `core/docs/hq/LICENSE` | file | MIT license | Informational |
+| `core/docs/hq/MIGRATION.md` | file | Upgrade guide | Informational |
 | `.gitignore` | file | Git ignore rules | Standard |
 | `agents.md` | file | User profile + preferences | Created by /personal-interview or /setup |
 | `data/journal/` | dir | Journal entries | .gitkeep in starter |
@@ -49,11 +49,9 @@ Present in every fresh `hq-starter-kit` clone. Desktop should expect these and r
 | `core/knowledge/dev-team/` | dir | Development patterns | Core knowledge |
 | `core/knowledge/hq-core/` | dir | Thread schema, INDEX spec, quick-ref | Core knowledge |
 | `core/knowledge/loom/` | dir | Agent architecture patterns | Core knowledge |
-| `core/knowledge/projects/` | dir | Project guidelines + templates | Core knowledge |
+| `core/knowledge/public/projects/` | dir | Project guidelines + templates | Core knowledge |
 | `core/knowledge/workers/` | dir | Worker framework, templates, patterns | Core knowledge |
-| `core/modules/modules.yaml` | file | Module manifest | Declares external modules |
-| `core/modules/cli/` | dir | HQ CLI tool (TypeScript) | npm package |
-| `projects/.gitkeep` | file | Placeholder | Empty starter |
+| `personal/projects/.gitkeep` | file | Placeholder | Empty starter |
 | `prompts/` | dir | Prompt templates | pure-ralph-base.md |
 | `core/settings/` | dir | Credentials (gitignored contents) | .gitkeep only |
 | `core/settings/pure-ralph.json` | file | Ralph loop config | Non-secret |
@@ -74,10 +72,10 @@ Present in {your-name}'s production HQ but NOT in the starter-kit. These represe
 
 | Path | Type | Purpose | Starter Equivalent |
 |------|------|---------|-------------------|
-| `INDEX.md` | file | Root directory map | Not in starter |
-| `USER-GUIDE.md` | file | Commands, workers, session guide | Not in starter |
-| `agents-profile.md` | file | Profile + style (split from agents.md) | `agents.md` (single file) |
-| `agents-companies.md` | file | Company contexts + roles | Not in starter |
+| `core/docs/hq/INDEX.md` | file | Directory map | Not in starter |
+| `core/docs/hq/USER-GUIDE.md` | file | Commands, workers, session guide | Not in starter |
+| `personal/agents-profile.md` | file | Profile + style | Not in starter |
+| `personal/agents-companies.md` | file | Company contexts + roles | Not in starter |
 | `.claude/settings.local.json` | file | Local permission overrides | Not in starter |
 | `.claude/skills/` | dir | Agent skills (agent-browser) | Not in starter |
 | `.claude/plans/` | dir | Plan mode artifacts | Not in starter |
@@ -133,7 +131,6 @@ Present in {your-name}'s production HQ but NOT in the starter-kit. These represe
 | **Learnings** | .gitkeep | 10+ learning JSONs | Accumulated rules |
 | **Settings** | .gitkeep + pure-ralph.json | 12+ service credential dirs (stripe, gusto, deel, etc.) | Credential management |
 | **Repos** | Not present | `repos/public/` + `repos/private/` (25+ repos) | Git repo management |
-| **Modules** | modules.yaml (hq-core only) | modules.yaml (16 modules: hq-core + 10 knowledge repos + social-kit) | Module ecosystem |
 | **MCP** | Not present | `.mcp.json` with server configs | MCP integration |
 | **Agent Skills** | Not present | `.agents/skills/` (8 Anthropic skills) + `.claude/skills/` | Skill library |
 | **Social Content** | Drafts structure only | drafts + queue.json + social-kit.yaml | Publishing pipeline |
@@ -149,7 +146,7 @@ Each feature below is optional but, when present, unlocks additional Desktop cap
 | Feature | Detection | Desktop Capability Unlocked |
 |---------|-----------|---------------------------|
 | `core/workers/registry.yaml` with entries | Parse YAML, count workers > 1 | Worker browser, skill runner, worker detail panels |
-| `projects/*/prd.json` files | Scan for valid prd.json | Project dashboard, story tracker, kanban board |
+| `personal/projects/*/prd.json` and `companies/*/projects/*/prd.json` files | Scan for valid prd.json | Project dashboard, story tracker, kanban board |
 | `workspace/threads/*.json` | Count JSON files > 0 | Thread browser, session history, thread inspector |
 | `workspace/orchestrator/state.json` | File exists, valid JSON | Project execution monitor, progress bars, state badges |
 | `workspace/checkpoints/*.json` | Count JSON files > 0 | Checkpoint browser, restore capability |
@@ -170,7 +167,6 @@ Each feature below is optional but, when present, unlocks additional Desktop cap
 |---------|-----------|---------------------------|
 | `core/knowledge/public/` + `core/knowledge/private/` split | Both dirs exist | Visibility-aware knowledge browser |
 | Symlinked knowledge dirs | `fs.readlink()` resolves to `repos/` | Knowledge repo status, git state per KB |
-| `core/modules/modules.yaml` with entries | Parse, count modules > 1 | Module manager, sync status |
 | `INDEX.md` files | Present in key dirs | INDEX-based navigation tree |
 | qmd installed (`which qmd`) | Binary on PATH | Search bar integration (keyword, semantic, hybrid) |
 
@@ -251,10 +247,6 @@ function detectHQInstance(path: string): HQDetectionResult {
     knowledgeFlatCount:  countSubdirs(path, 'knowledge'),
     hasSymlinkedKB:      anySymlinks(path, 'knowledge'),
 
-    // Modules
-    hasModules:          exists(path, 'core/modules/modules.yaml'),
-    moduleCount:         parseYaml(path, 'core/modules/modules.yaml').modules?.length ?? 0,
-
     // Search
     hasQmd:              commandExists('qmd'),
 
@@ -279,8 +271,8 @@ function detectHQInstance(path: string): HQDetectionResult {
     hasReports:          countNonGitkeepFiles(path, 'workspace/reports') > 0,
 
     // User Profile
-    hasProfile:          exists(path, 'agents.md') || exists(path, 'agents-profile.md'),
-    hasCompanyAgents:    exists(path, 'agents-companies.md'),
+    hasProfile:          exists(path, 'personal/agents-profile.md'),
+    hasCompanyAgents:    exists(path, 'personal/agents-companies.md'),
   }
 
   // ────────────────────────────────────
@@ -305,8 +297,8 @@ function detectHQInstance(path: string): HQDetectionResult {
     // Check if this is a starter-kit clone vs custom HQ
     isStarterKit:   !features.hasCompanies && !features.workerVisibility,
 
-    // Detect starter-kit version from CHANGELOG.md
-    starterVersion: parseChangelogVersion(path, 'CHANGELOG.md'),
+    // Detect starter-kit version from core/core.yaml, then core/docs/hq/CHANGELOG.md
+    starterVersion: parseCoreYamlVersion(path, 'core/core.yaml') || parseChangelogVersion(path, 'core/docs/hq/CHANGELOG.md'),
 
     // Detect custom extensions
     customCommands: countFiles(path, '.claude/commands', '*.md') - 18,  // 18 = starter baseline
@@ -409,7 +401,7 @@ The current HQ Desktop Rust backend (`files.rs`, `orchestrator.rs`) hardcodes th
 | `get_hq_stats()` | `~/Documents/HQ` (multiple sub-paths) |
 | `get_worker_detail()` | `~/Documents/HQ/workers/{id}` (flat, not public/private split) |
 | `get_company_detail()` | `~/Documents/HQ/companies/{id}` |
-| `get_project_detail()` | `~/Documents/HQ/projects/{name}` |
+| `get_project_detail()` | `~/Documents/HQ/personal/projects/{name}` or `~/Documents/HQ/companies/{co}/projects/{name}` |
 | `spawn_worker_skill()` | `~/Documents/HQ` |
 | `open_terminal_in_hq()` | `~/Documents/HQ` |
 | `get_orchestrator_state()` | `~/Documents/HQ/workspace/orchestrator/state.json` |

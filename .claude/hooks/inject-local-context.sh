@@ -6,7 +6,7 @@
 #
 # Sources:
 #   companies/manifest.yaml → company slugs + qmd collections
-#   core/workers/registry.yaml   → company worker counts
+#   core/workers/registry.yaml → company worker counts
 #   agents-profile.md       → owner name
 #
 # Falls back gracefully if files are missing (fresh install).
@@ -16,7 +16,7 @@ set -euo pipefail
 HQ_ROOT="${CLAUDE_PROJECT_DIR:-.}"
 
 MANIFEST="$HQ_ROOT/companies/manifest.yaml"
-REGISTRY="$HQ_ROOT/workers/registry.yaml"
+REGISTRY="$HQ_ROOT/core/workers/registry.yaml"
 PROFILE="$HQ_ROOT/agents-profile.md"
 
 # --- Owner name ---
@@ -43,7 +43,7 @@ if [ -f "$REGISTRY" ]; then
   # Filter out template-placeholder company values ({product}, {company}) that
   # leak in from core/workers/public/ entries imported from the starter kit without
   # per-company substitution. Don't surface noise in the local-context banner.
-  WORKER_COUNTS=$(grep -E '^\s+company:' "$REGISTRY" | sed 's/.*company: *//' | grep -v '{' | sort | uniq -c | sort -rn | awk '{printf "%s (%d), ", $2, $1}' | sed 's/, $//')
+  WORKER_COUNTS=$(grep -E '^\s+company:' "$REGISTRY" | sed 's/.*company: *//' | grep -v '{' | sort | uniq -c | sort -rn | awk '{printf "%s (%d), ", $2, $1}' | sed 's/, $//' || true)
 fi
 
 # --- QMD collections ---

@@ -1,7 +1,7 @@
 #!/bin/bash
 # block-unsafe-package-install.sh — PreToolUse hard block.
 #
-# Enforces core/policies/hq-pnpm-min-release-age-supply-chain.md.
+# Enforces .claude/policies/hq-pnpm-min-release-age-supply-chain.md.
 #
 # Blocks:
 #   - npm install <pkg>     (any positional package arg)
@@ -58,33 +58,8 @@ TOOL_NAME="$(extract tool_name)"
 CMD="$(extract tool_input.command)"
 [ -z "$CMD" ] && exit 0
 
-# Honor explicit bypass — audit it. The bypass may be set on the hook process
-# or as a leading env assignment on the command being checked:
-#   HQ_ALLOW_UNSAFE_INSTALL=1 pnpm add package
-bypass_requested() {
-  [ "${HQ_ALLOW_UNSAFE_INSTALL:-0}" = "1" ] && return 0
-
-  local normalized remaining seg assignment key val
-  normalized=$(printf '%s' "$CMD" | sed -E 's/[[:space:]]*(&&|\|\||;|\|)[[:space:]]*/\
-/g')
-  remaining="$normalized"
-  while IFS= read -r seg; do
-    seg="${seg#"${seg%%[![:space:]]*}"}"
-    while [[ "$seg" =~ ^([A-Za-z_][A-Za-z0-9_]*)=([^[:space:]]*)[[:space:]] ]]; do
-      assignment="${BASH_REMATCH[0]}"
-      key="${BASH_REMATCH[1]}"
-      val="${BASH_REMATCH[2]}"
-      if [[ "$key" == "HQ_ALLOW_UNSAFE_INSTALL" && "$val" == "1" ]]; then
-        return 0
-      fi
-      seg="${seg#"$assignment"}"
-    done
-  done <<< "$remaining"
-
-  return 1
-}
-
-if bypass_requested; then
+# Honor explicit bypass — audit it.
+if [ "${HQ_ALLOW_UNSAFE_INSTALL:-0}" = "1" ]; then
   HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
   AUDIT_DIR="$HQ_ROOT/workspace/learnings"
   mkdir -p "$AUDIT_DIR" 2>/dev/null || true
@@ -104,7 +79,7 @@ emit_block() {
   local pm="$1" sub="$2" reason="$3"
   cat >&2 <<EOF
 
-BLOCKED — supply-chain guard (core/policies/hq-pnpm-min-release-age-supply-chain.md)
+BLOCKED — supply-chain guard (.claude/policies/hq-pnpm-min-release-age-supply-chain.md)
 
   Command:  $pm $sub ...
   Why:      $reason

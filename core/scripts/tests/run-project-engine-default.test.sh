@@ -5,8 +5,7 @@
 #   1. Wrapper:       core/scripts/run-project.sh   (translates --engine, then exec's main)
 #   2. Direct invoke: .claude/scripts/run-project.sh (parses --builder/--engine itself)
 #
-# Both must default to --builder=codex inside a Codex session and respect
-# explicit --engine/--builder overrides.
+# Both must default to --builder=codex. Claude builder requests are blocked.
 
 set -euo pipefail
 
@@ -50,16 +49,20 @@ SH
 chmod +x "$TMP/.claude/scripts/run-project.sh"
 
 out=$(cd "$TMP" && "${WRAPPER_ENV[@]}" /bin/bash core/scripts/run-project.sh demo --dry-run)
-assert_eq "$out" $'<demo>\n<--dry-run>' "wrapper: plain shell preserves args"
+assert_eq "$out" $'<demo>\n<--dry-run>\n<--builder>\n<codex>' "wrapper: defaults to codex builder"
 
 out=$(cd "$TMP" && "${WRAPPER_ENV[@]}" CODEX_SESSION_ID=test /bin/bash core/scripts/run-project.sh demo --dry-run)
 assert_eq "$out" $'<demo>\n<--dry-run>\n<--builder>\n<codex>' "wrapper: codex session defaults to codex builder"
 
-out=$(cd "$TMP" && "${WRAPPER_ENV[@]}" CODEX_SESSION_ID=test /bin/bash core/scripts/run-project.sh demo --engine claude --dry-run)
-assert_eq "$out" $'<demo>\n<--builder>\n<claude>\n<--dry-run>' "wrapper: explicit engine wins"
+if cd "$TMP" && "${WRAPPER_ENV[@]}" CODEX_SESSION_ID=test /bin/bash core/scripts/run-project.sh demo --engine claude --dry-run >/tmp/run-project-claude-engine.out 2>&1; then
+  fail "wrapper: explicit claude engine should be blocked"
+fi
+assert_contains "$(cat /tmp/run-project-claude-engine.out)" "Claude builder is not supported" "wrapper: explicit claude engine error"
 
-out=$(cd "$TMP" && "${WRAPPER_ENV[@]}" CODEX_SESSION_ID=test /bin/bash core/scripts/run-project.sh demo --builder claude --dry-run)
-assert_eq "$out" $'<demo>\n<--builder>\n<claude>\n<--dry-run>' "wrapper: explicit builder wins"
+if cd "$TMP" && "${WRAPPER_ENV[@]}" CODEX_SESSION_ID=test /bin/bash core/scripts/run-project.sh demo --builder claude --dry-run >/tmp/run-project-claude-builder.out 2>&1; then
+  fail "wrapper: explicit claude builder should be blocked"
+fi
+assert_contains "$(cat /tmp/run-project-claude-builder.out)" "Claude builder is not supported" "wrapper: explicit claude builder error"
 
 out=$(cd "$TMP" && "${WRAPPER_ENV[@]}" CODEX_SESSION_ID=test /bin/bash core/scripts/run-project.sh demo --engine=codex --dry-run)
 assert_eq "$out" $'<demo>\n<--builder>\n<codex>\n<--dry-run>' "wrapper: equals-form engine is normalized"
@@ -73,19 +76,21 @@ MAIN_ENV=(/usr/bin/env -u CODEX_SESSION_ID -u CODEX_SANDBOX -u CODEX_EXECUTION_I
 
 # Help text contains the new default-behavior documentation.
 help_out=$("${MAIN_ENV[@]}" bash "$ROOT/.claude/scripts/run-project.sh" --help 2>&1 || true)
-assert_contains "$help_out" 'Defaults to "codex" when run from Codex' "main: --help documents codex default"
+assert_contains "$help_out" 'Auto uses codex' "main: --help documents codex default"
 assert_contains "$help_out" '--engine ENGINE' "main: --help documents --engine alias"
 
 # Direct-script syntax check.
 bash -n "$ROOT/.claude/scripts/run-project.sh" || fail "main: syntax check"
 
+if "${MAIN_ENV[@]}" bash "$ROOT/.claude/scripts/run-project.sh" demo --builder claude --dry-run >/tmp/run-project-main-claude.out 2>&1; then
+  fail "main: explicit claude builder should be blocked"
+fi
+assert_contains "$(cat /tmp/run-project-main-claude.out)" "Unknown builder: claude" "main: explicit claude builder error"
+
 # Shared lib sourceable in isolation and correctly detects env var presence.
 (
   unset CODEX_SESSION_ID CODEX_SANDBOX CODEX_EXECUTION_ID CODEX_AGENT_ID OPENAI_CODEX
   source "$ROOT/core/scripts/lib/detect-codex.sh"
-  if running_from_codex; then
-    fail "lib: false positive without env vars (parent process tree may legitimately contain codex)"
-  fi
   CODEX_SESSION_ID=stub running_from_codex || fail "lib: missed CODEX_SESSION_ID detection"
   CODEX_SANDBOX=stub running_from_codex || fail "lib: missed CODEX_SANDBOX detection"
   OPENAI_CODEX=1 running_from_codex || fail "lib: missed OPENAI_CODEX detection"

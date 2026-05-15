@@ -10,7 +10,7 @@ Create a new worker with proper structure, skills, and verification.
 
 **Technology:** All HQ workers use TypeScript + Node.js (ESM). No Python for new workers.
 
-**PRDs live in `projects/`** - Workers reference them, don't create their own. If the worker needs a PRD:
+**PRDs live in `personal/projects/` or `companies/{co}/projects/`** - Workers reference them, don't create their own. If the worker needs a PRD:
 1. Run `/plan {worker-name}` first to create the PRD
 2. Then return to `/newworker` to create the worker that references it
 
@@ -56,7 +56,7 @@ Ask these questions (can batch related ones):
 
 ## Generate Worker
 
-Create folder: `companies/{company}/workers/{worker-id}/` for company workers, or `workers/public/{worker-id}/` for shared workers
+Create folder: `companies/{company}/workers/{worker-id}/` for company workers, or `core/workers/public/{worker-id}/` for shared workers
 
 ### worker.yaml
 
@@ -100,7 +100,7 @@ context_needs:
         reason: "{why this worker needs this}"
 
 tasks:
-  source: projects/{associated-project}/prd.json  # Or queue.json for simple task queues
+  source: personal/projects/{associated-project}/prd.json  # Or companies/{co}/projects/{associated-project}/prd.json
   one_at_a_time: true
 
 output:
@@ -111,17 +111,9 @@ instructions: |
   {Worker-specific instructions and constraints}
 ```
 
-### Update Registry
+### Registry — Auto-Generated
 
-Add to `core/workers/registry.yaml`:
-
-```yaml
-  - id: {worker-id}
-    path: companies/{company}/workers/{worker-id}/   # or workers/public/{worker-id}/ for shared
-    type: {WorkerType}
-    status: active
-    description: "{1-sentence description}"
-```
+`core/workers/registry.yaml` is an auto-generated index produced by `core/scripts/generate-workers-registry.sh` (invoked from `.claude/hooks/master-sync.sh` on every Stop / PostToolUse-Write). **Do not edit it directly.** Just create the worker.yaml with `worker.id`, `worker.type`, `worker.description` and the registry regenerates automatically. Optional fields the generator picks up: `worker.status` (default "active"), `worker.company`, `worker.team`.
 
 ### Update Context Needs Registry (if overriding defaults)
 
@@ -147,11 +139,11 @@ workers:
 
 Workers can get tasks from:
 
-1. **Project PRD** (recommended): `projects/{project-name}/prd.json`
+1. **Project PRD** (recommended): `personal/projects/{project-name}/prd.json` or `companies/{co}/projects/{project-name}/prd.json`
    - For workers that implement features
    - Reference existing project or create one with `/plan`
 
-2. **Queue file**: `companies/{company}/workers/{worker-id}/queue.json` (or `workers/public/{worker-id}/queue.json` for shared)
+2. **Queue file**: `companies/{company}/workers/{worker-id}/queue.json` (or `core/workers/public/{worker-id}/queue.json` for shared)
    - For workers with simple, repeating tasks (posting, monitoring)
    - Create with:
      ```json
@@ -161,7 +153,7 @@ Workers can get tasks from:
      }
      ```
 
-**Do NOT create prd.json inside worker directories.** PRDs belong in `projects/`.
+**Do NOT create prd.json inside worker directories.** PRDs belong in `personal/projects/` or `companies/{co}/projects/`.
 
 ## Rules
 
@@ -169,30 +161,16 @@ Workers can get tasks from:
 - One task at a time (Ralph principle)
 - Always include verification
 - Default to `approval_required: true` for external actions
-- **Registration is mandatory** — never finish without updating registry.yaml + manifest.yaml
+- **Registration is automatic** — `worker.yaml` is the source of truth; registry regenerates on save
 - **Always reindex** — run `qmd update` after creation
 
 ## After Creation
 
-### Register Worker (Mandatory)
+### Register Worker
 
-1. **registry.yaml**: Append entry to `core/workers/registry.yaml`:
-   ```yaml
-   - id: {worker-id}
-     path: core/workers/public/{worker-id}/               # shared workers
-     # OR
-     path: companies/{company}/workers/{worker-id}/  # company workers
-     type: {WorkerType}
-     visibility: {public|private}
-     company: {company if company-scoped, omit if public}
-     status: active
-     description: "{1-sentence}"
-   ```
-   Validate: read back registry, confirm entry exists.
+The `worker.yaml` you just created IS the registration. `core/workers/registry.yaml` regenerates from it automatically when master-sync fires (Stop / PostToolUse-Write hook). No manifest edits required for shared workers; company-scoped workers are discovered via the `worker.company:` field inside their own `worker.yaml`.
 
-2. **manifest.yaml**: If worker has `company:`, append worker id to that company's `workers:` array in `companies/manifest.yaml`.
-
-3. **modules.yaml**: If worker has a dedicated knowledge repo, add entry to `core/modules/modules.yaml`.
+To force an immediate regen: `bash core/scripts/generate-workers-registry.sh`.
 
 ### Capture Learning (Auto-Learn)
 
@@ -202,7 +180,7 @@ Run `/learn` to register the new worker in the learning system:
   "source": "build-activity",
   "severity": "medium",
   "scope": "global",
-  "rule": "Worker {worker-id} exists at companies/{company}/workers/{worker-id}/ (or workers/public/{worker-id}/ if shared) for {1-sentence purpose}",
+  "rule": "Worker {worker-id} exists at companies/{company}/workers/{worker-id}/ (or core/workers/public/{worker-id}/ if shared) for {1-sentence purpose}",
   "context": "Created via /newworker"
 }
 ```
@@ -210,13 +188,13 @@ Run `/learn` to register the new worker in the learning system:
 ### Reindex + Update INDEX
 
 1. `qmd update 2>/dev/null || true`
-2. Regenerate `workers/public/INDEX.md` (shared workers) or `companies/{company}/workers/INDEX.md` (company workers) per `core/knowledge/public/hq-core/index-md-spec.md`.
+2. Regenerate `core/workers/public/INDEX.md` (shared workers) or `companies/{company}/workers/INDEX.md` (company workers) per `core/knowledge/public/hq-core/index-md-spec.md`.
 
 ### Report to User
 
 Provide next steps:
-1. "Worker created at `companies/{company}/workers/{worker-id}/` (or `workers/public/{worker-id}/` if shared)"
-2. "Registered in registry.yaml + manifest.yaml"
+1. "Worker created at `companies/{company}/workers/{worker-id}/` (or `core/workers/public/{worker-id}/` if shared)"
+2. "Registry auto-regenerated on next master-sync (or run `bash core/scripts/generate-workers-registry.sh` to force)"
 3. "Test with on-demand execution first"
 4. If using queue: "Add tasks to queue.json to get started"
 5. If using PRD: "Run `/plan {project-name}` to create the PRD, then link it in worker.yaml"

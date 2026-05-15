@@ -25,7 +25,7 @@ Discover Claude-related artifacts scattered across disk, classify them, and walk
 4. **Guides import** via `AskUserQuestion` — per-category triage, per-item decide (keep / merge / skip / rename / assign-to-company), credential-redaction prompts, per-repo adoption prompts.
 5. **Synthesizes workers** when discovered skills + knowledge form a cluster (inline-invokes `/newworker`).
 6. **Creates missing companies** inline via `/newcompany {slug}` when an artifact implies an unknown company.
-7. **Registers** everything in `companies/manifest.yaml`, `core/workers/registry.yaml`, `core/modules/modules.yaml` (no null fields).
+7. **Registers** companies in `companies/manifest.yaml` and creates `worker.yaml` files in canonical locations (no null fields). `core/workers/registry.yaml` is auto-generated from the new worker.yaml files by master-sync.
 8. **Reindexes** with `qmd update` and writes `workspace/imports/{scan_id}/summary.md`.
 
 ## Safety

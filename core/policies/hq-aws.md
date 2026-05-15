@@ -47,7 +47,7 @@ Same endpoint the console calls ⇒ deterministic visibility check. Pool mismatc
 ### hq-deploy API 401 AUTH_FAILED — Cognito pool mismatch, use direct S3 workaround
 [from hq-deploy-cognito-pool-mismatch.md]
 
-WHEN: `POST https://api.{your-domain}.com/api/deploys` with a valid Bearer JWT (from `hq auth login`) returns `401 AUTH_FAILED` — the cause is a Cognito pool mismatch:
+WHEN: `POST https://api.indigo-hq.com/api/deploys` with a valid Bearer JWT (from `hq auth login`) returns `401 AUTH_FAILED` — the cause is a Cognito pool mismatch:
 
 - `hq auth login` issues tokens for the **canonical HQ Identity pool** per `auth-strategy.md`
 - The hq-deploy production CloudFormation template (`src/infra/cloudformation/template.yaml`) may default to a **different pool**
@@ -56,7 +56,7 @@ The deploy skill calls these "the shared HQ Identity pool" but they may NOT be t
 
 **Workaround (requires explicit user authorization):** bypass the API and deploy directly:
 1. Upload build artifacts: `COPYFILE_DISABLE=1 tar -czf - {dir} | aws s3 cp - s3://hq-deploy-{company}-assets/{slug}/bundle.tgz`
-2. Invalidate CloudFront: `aws cloudfront create-invalidation --distribution-id {DISTRIBUTION_ID} --paths "/{slug}/*"` (Distribution aliases: `{your-domain}.com`, `*.{your-domain}.com`)
+2. Invalidate CloudFront: `aws cloudfront create-invalidation --distribution-id {DISTRIBUTION_ID} --paths "/{slug}/*"` (Distribution aliases: `indigo-hq.com`, `*.indigo-hq.com`)
 3. The DynamoDB table `hq-deploy-{company}` APP# rows (keyed `ORG#{slug}`) with `passwordHash` and `subdomain` are preserved across direct-S3 pushes. Only DEPLOY# audit history rows are skipped.
 
 **Long-term fix:** update `src/infra/cloudformation/template.yaml` to use the canonical HQ Identity pool (matching `hq auth login`). The 401 looks identical to an expired-token error because both SDK and server-side logs report "invalid token" rather than "wrong pool."

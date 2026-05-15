@@ -285,7 +285,7 @@ TOP IMPROVEMENTS:
 1. Compress CLAUDE.md from 436 → <200 lines
    - Extract "Knowledge Bases" section to core/knowledge/public/hq-core/quick-reference.md
    - Replace inline company list with pointer to companies/manifest.yaml
-   - Replace inline worker list with pointer to core/workers/registry.yaml
+   - Replace inline worker list with pointer to core/workers/registry.yaml (auto-generated from each worker.yaml)
    Impact: Saves ~200 lines, improves context efficiency score from 0 → 10
 
 2. Expand search collections from 15 → 20+ (if planning new repos)

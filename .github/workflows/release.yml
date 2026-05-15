@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag and prerelease flag
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          NAME="hq-core-${TAG}"
+          case "$TAG" in
+            *-alpha*|*-beta*|*-rc*) PRERELEASE=true ;;
+            *) PRERELEASE=false ;;
+          esac
+          {
+            echo "tag=${TAG}"
+            echo "name=${NAME}"
+            echo "prerelease=${PRERELEASE}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Stage release tree
+        run: |
+          set -euo pipefail
+          STAGE="/tmp/stage/${{ steps.meta.outputs.name }}"
+          mkdir -p "$STAGE"
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.leak-scan' \
+            ./ "$STAGE/"
+
+      - name: Create tarball and checksum
+        run: |
+          set -euo pipefail
+          NAME="${{ steps.meta.outputs.name }}"
+          tar -czf "${NAME}.tar.gz" -C /tmp/stage "${NAME}"
+          sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+
+      - name: Resolve release notes body
+        id: notes
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Check both the staging convention (core/docs/hq/) and the
+          # legacy hq-core convention (repo root). First match wins.
+          for candidate in \
+            "core/docs/hq/RELEASE-NOTES-${TAG}.md" \
+            "RELEASE-NOTES-${TAG}.md"; do
+            if [ -f "$candidate" ]; then
+              echo "file=${candidate}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "file=" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          NAME="${{ steps.meta.outputs.name }}"
+          PRERELEASE_FLAG=""
+          if [ "${{ steps.meta.outputs.prerelease }}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          NOTES_FLAG="--generate-notes"
+          if [ -n "${{ steps.notes.outputs.file }}" ]; then
+            NOTES_FLAG="--notes-file ${{ steps.notes.outputs.file }}"
+          fi
+          gh release create "$TAG" \
+            --title "$TAG" \
+            $PRERELEASE_FLAG \
+            $NOTES_FLAG \
+            "${NAME}.tar.gz" \
+            "${NAME}.tar.gz.sha256"

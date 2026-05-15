@@ -1,8 +1,10 @@
 worker:
   id: database-dev
   name: "Database Developer"
+  description: "Schema design, migrations, query optimization"
   type: CodeWorker
   version: "1.0"
+  team: dev-team
 
 execution:
   mode: on_demand

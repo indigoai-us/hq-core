@@ -25,6 +25,7 @@ bash core/scripts/convert-codex.sh $ARGUMENTS
 - `.codex/config.toml` when missing.
 - `.codex/claude` bridge to `.claude/`.
 - `.codex/prompts` bridge to `.claude/commands/`.
+- `.codex/output-style.md` bridge to the active `.claude/output-styles/` file.
 - `.agents/skills` exposure for Codex skills.
 - Missing `agents/openai.yaml` metadata for existing skills.
 

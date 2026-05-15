@@ -82,6 +82,9 @@ If you genuinely need to write into core/ (e.g. an authorized core update or
 a write that lands through an existing master-sync symlink), either prefix
 the command with HQ_BYPASS_CORE_PROTECT=1, or set HQ_BYPASS_CORE_PROTECT=1
 in the hook environment.
+
+If this block is wrong or surprising, report it with /hq-bug (wraps
+\`hq feedback\`).
 EOF
   exit 2
 fi

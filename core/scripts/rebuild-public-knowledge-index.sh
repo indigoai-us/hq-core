@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rebuild-public-knowledge-index.sh — regenerate knowledge/public/INDEX.md.
+# rebuild-public-knowledge-index.sh — regenerate core/knowledge/public/INDEX.md.
 #
 # Pure bash + jq. Lists each public-knowledge subdir with a file count.
 # Description: prefer the subdir's README.md first heading, else first
@@ -10,10 +10,11 @@ set -euo pipefail
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$HQ_ROOT"
 
-OUT="knowledge/public/INDEX.md"
+KNOWLEDGE_DIR="core/knowledge/public"
+OUT="${KNOWLEDGE_DIR}/INDEX.md"
 DATE=$(date -u +%Y-%m-%d)
 
-[[ -d knowledge/public ]] || { echo "rebuild-public-knowledge-index: knowledge/public/ missing, skipping" >&2; exit 0; }
+[[ -d "$KNOWLEDGE_DIR" ]] || { echo "rebuild-public-knowledge-index: ${KNOWLEDGE_DIR}/ missing, skipping" >&2; exit 0; }
 
 sanitize_cell() {
   printf '%s' "$1" | tr '\n' ' ' | sed -e 's/|/\\|/g' -e 's/  */ /g' -e 's/^ *//' -e 's/ *$//'
@@ -63,7 +64,7 @@ describe_subdir() {
     desc=$(sanitize_cell "$desc")
     desc=$(trunc "$desc" 100)
     printf '| `%s/` | %s |\n' "$name" "$desc"
-  done < <(find knowledge/public -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  done < <(find "$KNOWLEDGE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
 
   # Loose top-level .md files
   while IFS= read -r f; do
@@ -75,8 +76,8 @@ describe_subdir() {
     desc=$(sanitize_cell "$desc")
     desc=$(trunc "$desc" 100)
     printf '| `%s` | %s |\n' "$name" "$desc"
-  done < <(find knowledge/public -mindepth 1 -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
+  done < <(find "$KNOWLEDGE_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
 } > "$OUT"
 
-n=$(find knowledge/public -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+n=$(find "$KNOWLEDGE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
 echo "rebuild-public-knowledge-index: wrote ${OUT} (${n} subdir(s))" >&2

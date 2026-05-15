@@ -56,7 +56,7 @@ mkdir -p design-styles/packs
 git add -A && git commit -m "init: knowledge base"
 ```
 
-The `design-styles/packs/` subdirectory is where company-scoped brand packs (`type: brand`, `scope: company`) live. When the optional design-styles pack is installed, pack-aware workers auto-load this path via their `dynamic` context when this company is the target.
+The `design-styles/packs/` subdirectory is where company-scoped brand packs (`type: brand`, `scope: company`) live — one directory per pack, registered in `core/knowledge/public/design-styles/registry.yaml`. Pack-aware workers auto-load this path via their `dynamic` context when this company is the target.
 
 Create symlink:
 ```bash
@@ -72,12 +72,13 @@ ln -s ../../repos/private/knowledge-{slug} companies/{slug}/knowledge
   github_org: {org or omit}
   repos: [{repo paths or empty array}]
   settings: [{setting names or empty array}]
-  workers: [{worker ids or empty array}]
   knowledge: companies/{slug}/knowledge/
   deploy: []
   vercel_projects: []
   qmd_collections: [{slug}]
 ```
+
+> Note: company workers are discovered automatically from `worker.company:` inside each `companies/{slug}/workers/*/worker.yaml`. There is no `workers:` array in the manifest — `core/workers/registry.yaml` is the regenerated index.
 
 **Compute `prefix`** before writing the entry:
 1. Strip hyphens from `{slug}`, lowercase, take first 3 chars (e.g. `acme-corp` → `acm`).
@@ -85,17 +86,6 @@ ln -s ../../repos/private/knowledge-{slug} companies/{slug}/knowledge
 3. If your candidate collides, fall back to first 4 chars (no hyphens). If still collides, append `-2`, `-3`, ….
 4. Surface the chosen prefix in the final report so the user notices any non-default fallback.
 5. The `auto-mirror-company-skill` PostToolUse hook uses this prefix to bridge top-level skills/commands at `.claude/skills/{prefix}-{name}/` and `.claude/commands/{prefix}-{name}.md`.
-
-**modules.yaml**: Add knowledge module entry:
-```yaml
-- name: knowledge-{slug}
-  repo: local
-  branch: main
-  strategy: link
-  access: team
-  paths:
-    .: companies/{slug}/knowledge
-```
 
 ### 6. Create qmd Collection
 
@@ -124,7 +114,6 @@ Company {slug} scaffolded:
   Directory: companies/{slug}/
   Knowledge: companies/{slug}/knowledge/ → repos/private/knowledge-{slug}
   Manifest: updated (prefix: {chosen-prefix})
-  Modules: updated
   qmd: collection "{slug}" created
 ```
 
@@ -132,6 +121,6 @@ Company {slug} scaffolded:
 
 - All fields in manifest.yaml must be non-null (use empty arrays `[]`, not `null`)
 - Knowledge repo is mandatory — always create one
-- Always update manifest.yaml, modules.yaml, and qmd in same operation
+- Always update manifest.yaml and qmd in same operation
 - Never create a company that already exists in manifest
 - Validate slug: lowercase, hyphens only, no spaces

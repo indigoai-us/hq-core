@@ -1,4 +1,5 @@
 #!/bin/bash
+# hq-core: public
 # Focused regression tests for .codex/hooks/hq-codex-hook-adapter.sh.
 
 set -euo pipefail
@@ -64,6 +65,21 @@ cat >/dev/null
 echo "AUTO-CHECKPOINT REQUIRED"
 SH
 
+cat > "$TMP/.claude/hooks/hq-autocommit.sh" <<'SH'
+#!/bin/bash
+input="$(cat)"
+path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
+echo "autosave:$path" >> "$TEST_LOG"
+exit 0
+SH
+
+cat > "$TMP/.claude/hooks/master-sync.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+echo "master-sync" >> "$TEST_LOG"
+exit 0
+SH
+
 cat > "$TMP/.claude/hooks/auto-capture-registry.sh" <<'SH'
 #!/bin/bash
 cat >/dev/null
@@ -82,10 +98,52 @@ cat >/dev/null
 echo "LOCAL"
 SH
 
+cat > "$TMP/.claude/hooks/auto-startwork.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+echo "AUTO-STARTWORK"
+SH
+
 cat > "$TMP/.claude/hooks/observe-patterns.sh" <<'SH'
 #!/bin/bash
 cat >/dev/null
 echo "OBSERVE"
+SH
+
+cat > "$TMP/.claude/hooks/cleanup-mcp-processes.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+exit 0
+SH
+
+cat > "$TMP/.claude/hooks/context-warning-50.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+exit 0
+SH
+
+cat > "$TMP/.claude/hooks/capture-estimates.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+exit 0
+SH
+
+cat > "$TMP/.claude/hooks/precompact-thrashing-detector.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+exit 0
+SH
+
+cat > "$TMP/.claude/hooks/auto-checkpoint-precompact.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+echo "PRECOMPACT CHECKPOINT"
+SH
+
+cat > "$TMP/.claude/hooks/journal-precompact.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+exit 0
 SH
 
 chmod +x "$TMP/.claude/hooks/"*.sh
@@ -113,6 +171,7 @@ payload_session='{"hook_event_name":"SessionStart","source":"startup","cwd":"'"$
 out="$(run_adapter "$payload_session")"
 assert_contains "$out" "POLICY"
 assert_contains "$out" "LOCAL"
+assert_contains "$out" "AUTO-STARTWORK"
 
 payload_secret='{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"'"$TMP"'","tool_input":{"command":"echo sk-testSECRET1234567890"}}'
 if err="$(run_adapter "$payload_secret" 2>&1 >/dev/null)"; then
@@ -133,10 +192,18 @@ payload_post_patch='{"hook_event_name":"PostToolUse","tool_name":"apply_patch","
 out="$(run_adapter "$payload_post_patch")"
 printf '%s' "$out" | python3 -m json.tool >/dev/null
 assert_contains "$out" "AUTO-CHECKPOINT REQUIRED"
+assert_contains "$(cat "$TEST_LOG")" "master-sync"
+assert_contains "$(cat "$TEST_LOG")" "autosave:docs/test.md"
 
 payload_stop='{"hook_event_name":"Stop","cwd":"'"$TMP"'","last_assistant_message":"done"}'
 out="$(run_adapter "$payload_stop")"
 printf '%s' "$out" | python3 -m json.tool >/dev/null
 assert_contains "$out" "OBSERVE"
+assert_contains "$(cat "$TEST_LOG")" "context-warning-50"
+
+payload_precompact='{"hook_event_name":"PreCompact","cwd":"'"$TMP"'","session_id":"s1"}'
+out="$(run_adapter "$payload_precompact")"
+printf '%s' "$out" | python3 -m json.tool >/dev/null
+assert_contains "$out" "PRECOMPACT CHECKPOINT"
 
 echo "codex hook adapter tests passed"

@@ -1,8 +1,11 @@
-name: social-verifier
-description: Delivery confirmation worker. Verifies posts are actually live on platforms using agent-browser and Post-Bridge API. Closes the delivery loop.
-version: "1.0"
-type: ops
-company: null
+worker:
+  id: social-verifier
+  name: "Social Verifier"
+  description: "Delivery confirmation worker. Verifies posts are actually live on platforms using agent-browser and Post-Bridge API. Closes the delivery loop."
+  type: OpsWorker
+  version: "1.0"
+  team: social-team
+
 tags:
   - social
   - verification

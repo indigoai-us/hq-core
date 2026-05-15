@@ -5,12 +5,12 @@
 # that used to burn foreground-session tokens:
 #   1. Archive old threads (60d), then regen thread INDEX.md + recent.md (bash)
 #   2. Regen orchestrator INDEX.md (bash)
-#   3. Dispatch /learn in a fresh headless Claude session if learnings provided
-#   4. Dispatch /document-release in a fresh headless Claude session if session
+#   3. Dispatch /learn in a fresh headless Codex session if learnings provided
+#   4. Dispatch /document-release in a fresh headless Codex session if session
 #      scope includes company/repo files
 #   5. Background qmd cleanup + update + embed (unchanged)
 #
-# Each headless `claude -p` invocation gets its own fresh context — zero impact
+# Each headless Codex invocation gets its own fresh context — zero impact
 # on the foreground session that spawned this script.
 #
 # Usage (called by handoff skill as `nohup handoff-post.sh ... &`):
@@ -59,39 +59,33 @@ else
 fi
 
 # --- 4. Headless /learn (if learnings captured) ---
-if [[ -n "$LEARNINGS_FILE" && -s "$LEARNINGS_FILE" ]] && command -v claude >/dev/null 2>&1; then
+if [[ -n "$LEARNINGS_FILE" && -s "$LEARNINGS_FILE" ]] && command -v codex >/dev/null 2>&1; then
   log "learn: dispatching headless"
   learnings_content=$(cat "$LEARNINGS_FILE")
   prompt="/learn ${learnings_content}"
   # Run with its own fresh context, don't persist session.
-  CLAUDE_HEADLESS=1 claude -p "$prompt" \
-    --no-session-persistence \
-    --permission-mode auto \
-    --output-format text \
+  CLAUDE_HEADLESS=1 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$prompt" \
     > "$LOG_LEARN" 2>&1 || log "learn: exited non-zero (see $LOG_LEARN)"
   log "learn: done"
 else
-  log "learn: skipped (no learnings or claude CLI unavailable)"
+  log "learn: skipped (no learnings or codex CLI unavailable)"
 fi
 
 # --- 5. Headless /document-release (if scope matches) ---
-if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v claude >/dev/null 2>&1; then
+if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v codex >/dev/null 2>&1; then
   scope_match=$(jq -r '
     [.files_touched[]? // empty] | map(select(test("^(companies|repos)/"))) | length
   ' "$THREAD_PATH" 2>/dev/null || echo 0)
   if [[ "${scope_match:-0}" -gt 0 ]]; then
     log "document-release: dispatching headless (${scope_match} scoped files)"
-    CLAUDE_HEADLESS=1 claude -p "/document-release" \
-      --no-session-persistence \
-      --permission-mode auto \
-      --output-format text \
+    CLAUDE_HEADLESS=1 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "/document-release" \
       > "$LOG_DOCREL" 2>&1 || log "document-release: exited non-zero (see $LOG_DOCREL)"
     log "document-release: done"
   else
     log "document-release: skipped (no company/repo files in files_touched)"
   fi
 else
-  log "document-release: skipped (no thread path or claude CLI unavailable)"
+  log "document-release: skipped (no thread path or codex CLI unavailable)"
 fi
 
 # --- 6. qmd reindex (background, fire-and-forget) ---

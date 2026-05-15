@@ -1,8 +1,10 @@
 worker:
-  id: qa-tester
+  id: dev-qa-tester
   name: "QA Tester"
+  description: "Testing, browser automation, accessibility, demo accounts"
   type: CodeWorker
   version: "1.0"
+  team: dev-team
 
 execution:
   mode: on_demand

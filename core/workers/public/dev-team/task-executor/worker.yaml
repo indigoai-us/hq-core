@@ -1,8 +1,10 @@
 worker:
   id: task-executor
   name: "Task Executor"
+  description: "Analyze issue, route to workers, validate completion"
   type: OpsWorker
   version: "1.0"
+  team: dev-team
 
 execution:
   mode: on_demand

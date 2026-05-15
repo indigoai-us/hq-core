@@ -26,6 +26,8 @@ core/policies/*.md              # Cross-cutting + command-scoped (lowest)
 
 Each directory can have zero or more policy files. Policies are plain Markdown files with YAML frontmatter.
 
+**Personal overlay (`personal/policies/`).** Files in `personal/policies/<slug>.md` are user-personal authoring locations. The `master-sync.sh` Stop/PostToolUse hook symlinks each entry into `core/policies/<slug>.md`, so personal entries become indistinguishable from core at load time — they are *not* a separate precedence layer. Author user-global policies here; they will be picked up by `build-policy-digest.sh` and surface through the global scope.
+
 ## File Format
 
 ```markdown

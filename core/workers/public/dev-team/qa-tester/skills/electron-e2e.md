@@ -73,7 +73,7 @@ Always call `login` before any test that requires an authenticated session. The 
 ```json
 // login — authenticate with default test user
 {
-  "email": "devin@{your-domain}"
+  "email": "[EMAIL]"
 }
 ```
 
@@ -202,7 +202,7 @@ Fetches a JWT from the backend API, injects it into the app via IPC, and waits f
 **Inputs:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `email` | string | no | Test user email. Defaults to `devin@{your-domain}` |
+| `email` | string | no | Test user email. Defaults to `[EMAIL]` |
 
 **Output:**
 ```json
@@ -399,7 +399,7 @@ Assert: `data` has at least one window.
 **Step 2 — Log in**
 ```json
 // login
-{ "email": "devin@{your-domain}" }
+{ "email": "[EMAIL]" }
 ```
 Assert: `success: true`
 
@@ -437,7 +437,7 @@ Log in, navigate to the chat view, type a message, send it, and assert it appear
 **Step 1 — Log in**
 ```json
 // login
-{ "email": "devin@{your-domain}" }
+{ "email": "[EMAIL]" }
 ```
 
 **Step 2 — Navigate to chat**
@@ -497,7 +497,7 @@ Log in, trigger the command palette with Alt+I, verify the palette window appear
 **Step 1 — Log in**
 ```json
 // login
-{ "email": "devin@{your-domain}" }
+{ "email": "[EMAIL]" }
 ```
 
 **Step 2 — Capture baseline window count**

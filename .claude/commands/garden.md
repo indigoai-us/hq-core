@@ -16,7 +16,7 @@ Multi-worker audit pipeline: Scout → Auditor → Curator. Detects stale conten
 ```
 /garden {product}                    # Audit one company (all its dirs)
 /garden companies/{company}/knowledge/    # Audit specific directory
-/garden projects/                      # Audit all projects
+/garden personal/projects/             # Audit personal/HQ projects
 /garden all                            # Full HQ sweep (chunked by company + orphan sweep)
 /garden --resume {run-id}              # Resume interrupted run
 /garden --status                       # Show active/past garden runs
@@ -55,7 +55,7 @@ Read companies/manifest.yaml
 For company = {scope}:
   paths = [
     companies/{scope}/               # company dir + knowledge
-    workers matching company:{scope}  # from registry.yaml
+    workers matching company:{scope}  # from worker.company field in each worker.yaml (registry surfaces this)
     projects matching manifest repos  # project dirs related to company
     workspace/orchestrator/*{scope}*  # orchestrator state for company projects
   ]
@@ -77,11 +77,11 @@ _orphans chunk = everything not claimed by any company:
   workspace/reports/
   workspace/insights/ (global/tools/concepts — not company-scoped)
   workspace/orchestrator/ (runs not tied to a company)
-  projects/ (projects not matching any company repo)
+  personal/projects/ (personal/HQ projects)
   core/workers/public/ (non-team, non-company workers)
 ```
 
-**`projects/`** or other HQ-level dir:
+**`personal/projects/`** or other HQ-level dir:
 ```
 paths = [{scope}]
 ```

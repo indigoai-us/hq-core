@@ -1,31 +1,29 @@
 # Public Workers
 
-> Auto-generated. Updated: 2026-05-07
+> Auto-generated. Updated: 2026-05-14
 
 | Name | Description |
 |------|-------------|
-| `accessibility-auditor/` | WCAG 2.2 AA auditing -- keyboard nav, screen reader, zoom, contrast |
-| `ascii-artist/` | ASCII block-art banners for social posts and OG images -- dark midnight aesthetic, font-based rendering |
-| `content-brand/` | Content worker -- brand voice and tone alignment |
-| `content-legal/` | Content worker -- regulatory compliance scanning |
-| `content-product/` | Content worker -- product feature and claim accuracy |
-| `content-sales/` | Content worker -- conversion copy and CTA analysis |
-| `content-shared/` | Shared library (CLI, types, test harness) for content workers |
-| `dev-team/` | 20 sub-workers -- PM, task executor, architect, devs, QA, Codex, Gemini |
-| `exec-summary/` | McKinsey SCQA executive summaries -- strict word limits, quantified findings |
-| `frontend-designer/` | UI generation with v0/design tools (requires `@indigoai-us/hq-pack-design-styles` + `hq-pack-design-quality`) |
-| `gardener-team/` | 3 sub-workers -- garden-auditor, garden-curator, garden-scout |
-| `knowledge-tagger/` | Knowledge file tagging using ontology-aligned taxonomy |
-| `paper-designer/` | Paper design tool worker using design-styles knowledge (requires `@indigoai-us/hq-pack-design-styles`) |
-| `performance-benchmarker/` | Core Web Vitals, load testing, capacity planning -- k6, Lighthouse |
-| `pretty-mermaid/` | Renders Mermaid diagrams to SVG or ASCII with 14 professional themes |
-| `qa-tester/` | Adversarial website testing -- defaults to FAIL, requires screenshot evidence |
-| `security-scanner/` | Pre-deploy PII/credential detection for public repositories |
-| `site-builder/` | Static site builder using local-biz-sites templates |
-| `social-publisher/` | Posts approved content via Post-Bridge API with safety checks |
-| `social-reviewer/` | Quality gate -- reviews drafts, validates safety, sets approved status |
-| `social-shared/` | Shared utilities for social team (safety, queue ops, Post-Bridge) |
-| `social-strategist/` | Content planning and draft creation with profile awareness |
-| `social-verifier/` | Delivery verification -- confirms posts are live via agent-browser |
-
-Run workers via `/run {id}`.
+| `accessibility-auditor/` | WCAG 2.2 AA auditing — keyboard nav, screen reader, zoom, reduced motion, contrast |
+| `ascii-artist/` | Generate ASCII block-art banner images for social posts and OG images. Dark midnight aesthetic with… |
+| `content-brand/` | Brand voice, messaging, tone analysis |
+| `content-legal/` | Regulatory compliance, claim verification |
+| `content-product/` | Feature accuracy, technical claims verification |
+| `content-sales/` | Conversion copy, CTAs, value props |
+| `content-shared/` | — |
+| `dev-team/` | — |
+| `exec-summary/` | McKinsey SCQA executive summaries — strict word limits, quantified findings, actionable recommend… |
+| `frontend-designer/` | Bold UI generation using Anthropic skill |
+| `gardener-team/` | — |
+| `knowledge-tagger/` | Auto-classify knowledge docs against ontology, prepend YAML frontmatter |
+| `paper-designer/` | Bidirectional Paper Desktop design bridge — extract specs, preview components, edit designs via M… |
+| `performance-benchmarker/` | Core Web Vitals, load testing, capacity planning — k6, Lighthouse, stress/endurance testing |
+| `pretty-mermaid/` | Mermaid diagram rendering — SVG/ASCII with 14 themes |
+| `qa-tester/` | Adversarial website testing — defaults to FAIL, requires screenshot evidence for every claim |
+| `security-scanner/` | Security scanning and vulnerability detection |
+| `site-builder/` | Build and deploy local business websites from template + config |
+| `social-publisher/` | Posts approved social content via Post-Bridge API. Only worker authorized to call the posting API. … |
+| `social-reviewer/` | Quality gate for social content. Reviews drafts for brand alignment, metadata stripping, character … |
+| `social-shared/` | Shared utilities, types, and safety functions for the social-team workers |
+| `social-strategist/` | Content planning and draft creation for social posts. Wraps /contentidea and /suggestposts with pro… |
+| `social-verifier/` | Delivery confirmation worker. Verifies posts are actually live on platforms using agent-browser and… |

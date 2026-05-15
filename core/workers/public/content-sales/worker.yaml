@@ -1,8 +1,10 @@
 worker:
   id: content-sales
   name: "Content Worker - Conversion Copy"
+  description: "Conversion copy, CTAs, value props"
   type: ContentWorker
   version: "1.0"
+  team: content-team
 
 execution:
   mode: on_demand

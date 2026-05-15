@@ -235,6 +235,11 @@
           },
           {
             "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh hq-autocommit $CLAUDE_PROJECT_DIR/.claude/hooks/hq-autocommit.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh journal-due $CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh",
             "timeout": 5
           }
@@ -255,6 +260,11 @@
           },
           {
             "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh hq-autocommit $CLAUDE_PROJECT_DIR/.claude/hooks/hq-autocommit.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh journal-due $CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh",
             "timeout": 5
           }
@@ -270,7 +280,22 @@
           },
           {
             "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh hq-autocommit $CLAUDE_PROJECT_DIR/.claude/hooks/hq-autocommit.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh journal-due $CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh native-plan-project-sync $CLAUDE_PROJECT_DIR/.claude/hooks/native-plan-project-sync.sh",
             "timeout": 5
           }
         ]
@@ -432,6 +457,11 @@
           },
           {
             "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh auto-startwork $CLAUDE_PROJECT_DIR/.claude/hooks/auto-startwork.sh",
+            "timeout": 3
+          },
+          {
+            "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh check-core-yaml-parity $CLAUDE_PROJECT_DIR/.claude/hooks/check-core-yaml-parity.sh",
             "timeout": 3
           },
@@ -464,6 +494,11 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh route-deep-plan-to-skill $CLAUDE_PROJECT_DIR/.claude/hooks/route-deep-plan-to-skill.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh auto-session-project $CLAUDE_PROJECT_DIR/.claude/hooks/auto-session-project.sh",
             "timeout": 5
           }
         ]
@@ -512,5 +547,5 @@
       }
     ]
   },
-  "outputStyle": "Explanatory"
+  "outputStyle": "Cavebro"
 }

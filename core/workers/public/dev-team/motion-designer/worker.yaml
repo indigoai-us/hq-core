@@ -1,8 +1,10 @@
 worker:
   id: motion-designer
   name: "Motion Designer"
+  description: "Animations, transitions, visual polish, image generation"
   type: CodeWorker
   version: "1.0"
+  team: dev-team
 
 execution:
   mode: on_demand

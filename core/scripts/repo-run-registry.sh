@@ -26,11 +26,11 @@
 
 set -euo pipefail
 
-HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 REG_DIR="$HQ_ROOT/workspace/orchestrator"
 REG_FILE="$REG_DIR/active-runs.json"
 LOCK_DIR="$REG_FILE.lock"
-ORCH_YAML="$HQ_ROOT/settings/orchestrator.yaml"
+ORCH_YAML="$HQ_ROOT/core/settings/orchestrator.yaml"
 
 # ---------- helpers ----------
 

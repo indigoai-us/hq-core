@@ -1,8 +1,11 @@
-name: social-shared
-description: Shared utilities, types, and safety functions for the social-team workers
-version: "1.0"
-type: library
-company: null  # public, company-agnostic
+worker:
+  id: social-shared
+  name: "Social Shared"
+  description: "Shared utilities, types, and safety functions for the social-team workers"
+  type: Library
+  version: "1.0"
+  team: social-team
+
 tags:
   - social
   - shared

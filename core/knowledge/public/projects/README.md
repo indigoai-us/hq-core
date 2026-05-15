@@ -4,7 +4,7 @@ Guidelines for creating and tracking projects in HQ.
 
 ## When to Create a Project
 
-Create a `projects/{name}/` folder when:
+Create a `personal/projects/{name}/` folder for personal/HQ work, or `companies/{co}/projects/{name}/` for company-owned work, when:
 - Work spans multiple steps or sessions
 - There are tangible deliverables (code, content, launches)
 - You'd want to reference the work later
@@ -17,7 +17,7 @@ Create a `projects/{name}/` folder when:
 ## Project Structure
 
 ```
-projects/{name}/
+personal/projects/{name}/
 ├── README.md      # Required - overview, status, log
 ├── prd.json       # Required for multi-feature projects
 └── CLAUDE.md      # Optional - project-specific rules
@@ -25,7 +25,7 @@ projects/{name}/
 
 ## README.md (Required)
 
-Use the template at `core/knowledge/projects/templates/README.template.md`.
+Use the template at `core/knowledge/public/projects/templates/README.template.md`.
 
 Key sections:
 - **Overview**: 1-2 sentences
@@ -55,16 +55,16 @@ If project has code:
 
 ## Session Protocol
 
-1. **Start of session**: Create `projects/{name}/README.md` if new project
+1. **Start of session**: Create `personal/projects/{name}/README.md` or `companies/{co}/projects/{name}/README.md` if new project
 2. **During session**: Update log table after major milestones
 3. **End of session**: Ensure README reflects current state
 
 ## Examples
 
 Good project folders:
-- `projects/sol-reader/` - iPad app
-- `projects/{company}-capital/` - Token launch
-- `projects/{company}-site/` - Website migration
+- `personal/projects/sol-reader/` - iPad app
+- `companies/{co}/projects/{company}-capital/` - Token launch
+- `companies/{co}/projects/{company}-site/` - Website migration
 
 Not projects (too small):
 - Fix a typo in docs

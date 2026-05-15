@@ -17,8 +17,7 @@ The installer:
 1. Resolves the transport (npm / git / local).
 2. Extracts into `packages/{name}/`.
 3. Validates `package.yaml` against the schema.
-4. Registers contributions in `core/modules/modules.yaml` under `strategy: package`.
-5. Symlinks declared contributions into `.claude/commands/`, `.claude/skills/`, `core/workers/`, `core/knowledge/`, etc. on the next session start via `core/scripts/scan-packages.sh`.
+4. Symlinks declared contributions into `.claude/commands/`, `.claude/skills/`, `core/workers/`, `core/knowledge/`, etc. on the next session start via `core/scripts/scan-packages.sh`.
 
 ## Recommended packs
 
@@ -53,6 +52,3 @@ contributes:
 
 Schema: `core/knowledge/public/hq-core/package-yaml-spec.md` (authoritative; shipped with hq-core).
 
-## Backwards compatibility
-
-Existing `core/modules/modules.yaml` entries using `strategy: link`, `strategy: merge`, and `strategy: embedded` continue to resolve. `strategy: package` is additive — packs co-exist with legacy strategies without migration.

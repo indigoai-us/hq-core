@@ -46,7 +46,7 @@ Save current work state as a thread to survive context loss.
    Knowledge folders are separate git repos (symlinked or embedded). For any knowledge path in files_touched, capture its repo state:
    ```bash
    # For each knowledge repo with changes:
-   for symlink in knowledge/public/* knowledge/private/* companies/*/knowledge; do
+   for symlink in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
      [ -L "$symlink" ] || [ -d "$symlink/.git" ] || continue
      repo_dir=$(cd "$symlink" && git rev-parse --show-toplevel 2>/dev/null) || continue
      dirty=$(cd "$repo_dir" && git status --porcelain)
@@ -62,7 +62,7 @@ Save current work state as a thread to survive context loss.
    - Identify next steps
 
 5.5. **Close active session journal** (if any)
-   Spec: `knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, `/prd`, or `/plan`, close it now:
+   Spec: `core/knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, `/prd`, or `/plan`, close it now:
    ```bash
    .claude/skills/_shared/journal.sh close "{one-line synthesis, ≤120 chars}"
    ```
@@ -116,7 +116,7 @@ Save current work state as a thread to survive context loss.
    - Update `INDEX.md` timestamp only (do NOT regenerate full content — it's now slim)
    - Regenerate `workspace/threads/INDEX.md` (all threads, full table)
    - Check files_touched for any `companies/*/knowledge/` paths — if found, regenerate that company's `knowledge/INDEX.md`
-   - See `knowledge/public/hq-core/index-md-spec.md` for INDEX format
+   - See `core/knowledge/public/hq-core/index-md-spec.md` for INDEX format
 
 8b. **Document release**
     Run `/document-release` — the skill resolves company + project context on its own.

@@ -41,7 +41,7 @@ Tell the user how many conflicts are pending, grouped by top-level folder. Examp
 ```
 3 conflicts pending:
   core/knowledge/  (2 files)
-  projects/foo/  (1 file)
+  personal/projects/foo/  (1 file)
 
 Walking through them oldest-first.
 ```

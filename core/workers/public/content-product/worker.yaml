@@ -1,8 +1,10 @@
 worker:
   id: content-product
   name: "Content Worker - Product Accuracy"
+  description: "Feature accuracy, technical claims verification"
   type: ContentWorker
   version: "1.0"
+  team: content-team
 
 execution:
   mode: on_demand

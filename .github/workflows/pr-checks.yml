@@ -132,7 +132,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: core/core.yaml requires version-bump label
+      - name: core/core.yaml hqVersion requires version-bump label
         env:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
         run: bash .leak-scan/scan.sh core-yaml-locked
@@ -205,14 +205,13 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_MODEL: gpt-5
-          POLICY_FILE: ${{ matrix.file }}
         run: |
           set -euo pipefail
-          out="$(bash .leak-scan/codex-rubric.sh "$POLICY_FILE")"
+          out="$(bash .leak-scan/codex-rubric.sh "${{ matrix.file }}")"
           echo "$out"
           # Append to job summary so reviewers see verdicts collated
           {
-            echo "## Rubric: $POLICY_FILE"
+            echo "## Rubric: ${{ matrix.file }}"
             echo '```json'
             echo "$out"
             echo '```'

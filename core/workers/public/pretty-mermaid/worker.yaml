@@ -1,6 +1,7 @@
 worker:
   id: pretty-mermaid
   name: "Pretty Mermaid"
+  description: "Mermaid diagram rendering — SVG/ASCII with 14 themes"
   type: OpsWorker
   status: active
 

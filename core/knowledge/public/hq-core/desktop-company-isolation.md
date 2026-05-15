@@ -18,7 +18,6 @@ How `manifest.yaml` maps to Desktop routing, credential visibility rules, knowle
 {company_id}:
   repos: [list of repo paths]           # Git repos owned by this company
   settings: [list of setting dir names]  # Credential/config dirs under companies/{id}/settings/
-  workers: [list of worker IDs]          # Private workers scoped to this company
   knowledge: companies/{id}/knowledge/   # Knowledge base path (symlinked to a git repo)
   deploy: [list of deploy commands]      # Slash commands for deployment
   vercel_projects: [list of domains]     # Vercel deployment targets
@@ -26,6 +25,8 @@ How `manifest.yaml` maps to Desktop routing, credential visibility rules, knowle
 ```
 
 Nullable fields: `knowledge` (acmestudio has `null`), `settings` (can be empty array), `qmd_collections` (can be empty array).
+
+> Company-scoped workers are not listed in manifest.yaml. They are discovered by scanning `companies/{id}/workers/*/worker.yaml` and surfaced through `core/workers/registry.yaml` (auto-generated). The single source of truth for each worker's company assignment is `worker.company` inside its own `worker.yaml`.
 
 ### Current Companies
 

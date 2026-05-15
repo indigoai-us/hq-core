@@ -86,7 +86,7 @@ Proceed to the full execution pipeline below.
 
 ### 3a. Find Worker Registry Entry
 
-Use the Read tool to read `core/workers/registry.yaml`. The registry stores workers as a YAML list under the `workers:` key, with each entry shaped like:
+Use the Read tool to read `core/workers/registry.yaml` — an **auto-generated, read-only index** (regenerated from `worker.yaml` files by master-sync). It stores workers as a YAML list under the `workers:` key, with each entry shaped like:
 
 ```yaml
 workers:

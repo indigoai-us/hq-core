@@ -32,7 +32,7 @@ Determine mode from the user's argument (first match wins):
 
 - **No arg / empty** — Resume mode
 - **Arg matches company slug** in `companies/manifest.yaml` — Company mode
-- **Arg matches a directory** in `projects/` (not `_archive/`) or `companies/*/projects/` — Project mode
+- **Arg matches a directory** in `personal/projects/` (not `_archive/`) or `companies/*/projects/` — Project mode
 - **Arg matches a directory** in `repos/private/` or `repos/public/` — Repo mode
 - **Partial match** — arg is a substring of any company slug, project dir, or repo name. 1 match: use that mode. 2-5 matches: present numbered list, wait for user to pick. >5: ask user to be more specific
 - **Free-text task** — arg is ≥3 words and doesn't match any company/project/repo/partial → Task mode
@@ -47,8 +47,8 @@ Determine mode from the user's argument (first match wins):
 3. Run `git log --oneline -3` for recent HQ commits
 4. Search for active projects:
    - Primary: `qmd search "prd.json" --json -n 10` via shell
-   - Fallback (if qmd unavailable): `grep -rl '"passes"' projects/ companies/ --include='prd.json'`
-   - Filter results for `projects/` paths and `companies/*/projects/` paths (skip `_archive`). For each (max 5), read the prd.json and extract `name` + count stories where `passes !== true`. Collect projects with remaining work.
+   - Fallback (if qmd unavailable): `grep -rl '"passes"' personal/projects/ companies/ --include='prd.json'`
+   - Filter results for `personal/projects/` paths and `companies/*/projects/` paths (skip `_archive`). For each (max 5), read the prd.json and extract `name` + count stories where `passes !== true`. Collect projects with remaining work.
 5. **If the resumed thread references a project_dir** (extract from thread `files_touched` or `conversation_summary`): read the most-recent journal file from `{project_dir}/journal/*.md` (frontmatter + `## Open threads` only). Surface its `summary` + open threads in orientation. See Project Mode step 4 for the read pattern.
 
 #### Company Mode (arg = company slug)
@@ -57,14 +57,14 @@ Determine mode from the user's argument (first match wins):
 2. Read `workspace/threads/handoff.json` — if last thread relates to this company, note it
 3. Search for company projects:
    - Primary: `qmd search "prd.json" --json -n 10` via shell
-   - Fallback: `grep -rl '"passes"' projects/ companies/ --include='prd.json'`
+   - Fallback: `grep -rl '"passes"' personal/projects/ companies/ --include='prd.json'`
    - Filter to projects whose repoPath matches any of the company's repos. Count incomplete stories per project.
 4. If company has repos, run `git -C {first-repo} log --oneline -3` and `git -C {first-repo} branch --show-current`
 5. List the company's workers from manifest (names only, don't read worker.yaml files)
 
 #### Project Mode (arg = project name)
 
-1. Read `projects/{name}/prd.json` — extract: `name`, `description`, `branchName`, incomplete stories (where `passes !== true`) with id + title + priority
+1. Read `personal/projects/{name}/prd.json` or `companies/{co}/projects/{name}/prd.json` — extract: `name`, `description`, `branchName`, incomplete stories (where `passes !== true`) with id + title + priority
 2. Extract `metadata.repoPath` — identify company by matching against manifest repos
 3. If repoPath exists: `git -C {repoPath} branch --show-current` and `git -C {repoPath} status --short`
 4. **Read session journals** (spec: `core/knowledge/public/hq-core/journal-spec.md`). If `{project_dir}/journal/` exists:
@@ -148,8 +148,8 @@ Rules:
 
 After policies are known, build a compact Worker Packet for the resolved context.
 
-1. Read `core/workers/registry.yaml` once and keep only entries relevant to the current company, project, repo, or task intent.
-2. If company `{co}` is resolved, include company workers listed in `companies/manifest.yaml` plus any registry entries whose path starts with `companies/{co}/workers/`.
+1. Read `core/workers/registry.yaml` (auto-generated read-only index) once and keep only entries relevant to the current company, project, repo, or task intent.
+2. If company `{co}` is resolved, include any registry entries whose `company:` field is `{co}` (sourced from `worker.company` in each `worker.yaml`) or whose path starts with `companies/{co}/workers/`.
 3. If project mode and `prd.json` story metadata includes declared workers or worker hints, include those first.
 4. If task mode, map the classified intent to a worker route before offering direct execution:
    - `design`, `ui_component` → design/frontend workers
