@@ -182,8 +182,8 @@ jobs:
           if ! git diff --quiet "origin/${BASE_REF}..HEAD" -- "$MIG"; then
             # File was modified. Verify added lines include the TBD marker.
             ADDED="$(git diff --no-color "origin/${BASE_REF}..HEAD" -- "$MIG" \
-              | grep -E '^\+' | grep -v '^\+\+\+' || true)"
-            if printf '%s\n' "$ADDED" | grep -qE '^\+##[[:space:]]+Release:[[:space:]]+TBD'; then
+              | grep -E '^[+]' | grep -v '^[+][+][+]' || true)"
+            if printf '%s\n' "$ADDED" | grep -qE '^[+]##[[:space:]]+Release:[[:space:]]+TBD'; then
               echo "✓ MIGRATION.md changed and includes '## Release: TBD' marker"
               exit 0
             fi
