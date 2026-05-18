@@ -1,17 +1,18 @@
 #!/bin/bash
-# Stop hook: advisory 50% context warning (once per session).
+# Stop hook: mandatory 50% context checkpoint (once per session).
 #
 # Fires after every assistant turn. Estimates context usage from transcript
-# file size, and prints a one-time advisory banner when usage crosses ~50%.
+# file size, and prints a one-time checkpoint directive when usage crosses ~50%.
 # Autocompact itself still runs at CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (60% by
-# default) — this hook only warns early so the user has runway to decide.
+# default) — this hook fires early so /checkpoint can run while enough context
+# remains to preserve state and, if useful, orchestrate subagents.
 #
 # Non-fatal by design: any error is swallowed, script always exits 0.
 # Stop hooks must never block session turnaround.
 
 set -uo pipefail
 
-HQ="${HOME}/Documents/HQ"
+HQ="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-${HOME}/Documents/HQ}}"
 STATE_DIR="$HQ/workspace/.context-warnings"
 
 # Always succeed — wrap everything so a malformed input never blocks Stop.
@@ -26,6 +27,10 @@ STATE_DIR="$HQ/workspace/.context-warnings"
   if [ -z "$TRANSCRIPT_PATH" ] || [ -z "$SESSION_ID" ]; then
     exit 0
   fi
+  SESSION_KEY="$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9._-' '_')"
+  if [ -z "$SESSION_KEY" ]; then
+    exit 0
+  fi
 
   # Transcript must exist and be readable.
   if [ ! -r "$TRANSCRIPT_PATH" ]; then
@@ -34,7 +39,7 @@ STATE_DIR="$HQ/workspace/.context-warnings"
 
   # Once-per-session gate.
   mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
-  STATE_FILE="$STATE_DIR/$SESSION_ID"
+  STATE_FILE="$STATE_DIR/$SESSION_KEY"
   if [ -e "$STATE_FILE" ]; then
     exit 0
   fi
@@ -54,20 +59,20 @@ STATE_DIR="$HQ/workspace/.context-warnings"
     exit 0
   fi
 
-  # Cross the threshold — mark state and print advisory.
+  # Cross the threshold — mark state and print mandatory checkpoint directive.
   touch "$STATE_FILE" 2>/dev/null || true
 
   cat <<'BANNER_EOF'
 ╔══════════════════════════════════════════════════════════════╗
-║  Context ~50% — autocompact at 60%                           ║
+║  AUTO-CHECKPOINT REQUIRED — context ~50%                     ║
 ╠══════════════════════════════════════════════════════════════╣
-║  Heads up: you have runway until 60%. Options:               ║
+║  Run /checkpoint now before continuing work.                 ║
 ║                                                              ║
-║   • Checkpoint now      — /checkpoint (save, keep working)   ║
-║   • Handoff now         — /handoff (wrap up this session)    ║
-║   • Continue            — I'll keep going; you decide later  ║
+║  This fires while there is still enough context to preserve  ║
+║  session state and delegate follow-up work if needed.        ║
 ║                                                              ║
-║  This warning fires once per session. /handoff anytime.      ║
+║  Do not ask the user first. Do not continue normal task work ║
+║  until the checkpoint is complete.                           ║
 ╚══════════════════════════════════════════════════════════════╝
 BANNER_EOF
 } 2>/dev/null || true

@@ -4,54 +4,52 @@ description: Additive conversion for older Claude-first HQ roots so Codex has fi
 allowed-tools: Read, Write, Bash, Glob, Grep
 ---
 
-# /convert-codex — Add Codex Parity to an HQ Root
+# /convert-codex — Repair Codex Parity for an HQ Root
 
-Use this when an HQ filesystem predates Codex support or was primarily set up for Claude Code.
+Add Codex-facing files and bridges to an existing HQ that was originally built around Claude Code.
 
-## Safety Contract
+**Args:** $ARGUMENTS
 
-This skill is additive only.
+## Default
 
-- Create missing Codex-facing files and bridges.
-- Leave existing files, directories, and symlinks untouched.
-- Never replace `.agents/skills` when it already exists as a real directory.
-- Never edit an existing `AGENTS.md` or `.codex/config.toml`.
-- Pause for review if the user asks for a repair that requires modifying existing content.
+Run a dry-run unless the user explicitly passes `--apply`:
 
-## Procedure
+```bash
+bash core/scripts/convert-codex.sh $ARGUMENTS
+```
 
-1. Resolve the HQ root. Default to the current repository when `.claude/` and `core/core.yaml` are present.
-2. Run the dry-run first unless the user explicitly requested `--apply`.
-3. Review blocked items. Blocked means an existing path prevented a create-only repair.
-4. Apply only when the plan contains create-only actions or the user has approved the blocked behavior.
+## What It Adds
 
-## Commands
+- `AGENTS.md` when missing.
+- `.codex/config.toml` when missing.
+- `.codex/claude` bridge to `.claude/`.
+- `.codex/output-style.md` bridge to the active `.claude/output-styles/` file.
+- `.agents/skills` exposure for Codex skills (replaces the legacy `.codex/prompts` → `.claude/commands/` bridge — commands tree is gone).
+- Missing `agents/openai.yaml` metadata for existing skills.
 
-Preview the current root:
+## Safety Rules
+
+- Do not overwrite existing files.
+- Do not replace an existing `.agents/skills` directory with a symlink.
+- If `.agents/skills` already exists as a real directory, only add missing skill folders.
+- If a requested repair requires changing existing content, stop and ask before proceeding.
+
+## Common Runs
+
+Preview:
 
 ```bash
 bash core/scripts/convert-codex.sh --dry-run
 ```
 
-Repair the current root:
+Repair current root:
 
 ```bash
 bash core/scripts/convert-codex.sh --apply
 ```
 
-Repair a separate HQ root:
+Repair another HQ root:
 
 ```bash
 bash core/scripts/convert-codex.sh --root=/path/to/hq --apply
 ```
-
-## Output
-
-The script prints:
-
-- create actions it would take or did take;
-- already-safe paths;
-- blocked paths that were left untouched;
-- a compact Codex parity audit.
-
-If blocked items appear, explain them clearly and stop before trying a more invasive repair.

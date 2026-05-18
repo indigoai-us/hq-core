@@ -1,6 +1,7 @@
 worker:
   id: site-builder
   name: "Site Builder"
+  description: "Build and deploy local business websites from template + config"
   type: OpsWorker
   version: "1.0"
 

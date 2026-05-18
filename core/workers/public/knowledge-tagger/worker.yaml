@@ -1,6 +1,7 @@
 worker:
   id: knowledge-tagger
   name: "Knowledge Tagger"
+  description: "Auto-classify knowledge docs against ontology, prepend YAML frontmatter"
   type: OpsWorker
   version: "1.0"
 

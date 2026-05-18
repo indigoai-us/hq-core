@@ -1,8 +1,10 @@
 worker:
   id: frontend-dev
   name: "Frontend Developer"
+  description: "React/Next components, pages, UI implementation"
   type: CodeWorker
   version: "1.0"
+  team: dev-team
 
 execution:
   mode: on_demand

@@ -1,0 +1,173 @@
+name: Backmerge to staging
+
+# Fires after Release succeeds AND committed a TBD-stamping change to main.
+# Cherry-picks that commit into a fresh branch on indigoai-us/hq-core-staging
+# and opens a PR there so staging's MIGRATION.md stays in lock-step with the
+# released version. Only meaningful when running on indigoai-us/hq-core —
+# on hq-core-staging the workflow_run trigger never fires for the local
+# Release workflow that ships there post-promotion (intentional).
+#
+# Authentication: hq-audit-bot App token, scoped to both hq-core (read the
+# new commit) and hq-core-staging (push branch + open PR).
+# Required secrets:
+#   HQ_AUDIT_BOT_APP_ID
+#   HQ_AUDIT_BOT_PRIVATE_KEY
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  backmerge:
+    name: Open backmerge PR on hq-core-staging
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.repository.full_name == 'indigoai-us/hq-core'
+    runs-on: ubuntu-latest
+    env:
+      HQ_AUDIT_BOT_APP_ID: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
+      HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+      STAGING_REPO: indigoai-us/hq-core-staging
+    steps:
+      - name: Fail fast if App credentials missing
+        if: env.HQ_AUDIT_BOT_APP_ID == '' || env.HQ_AUDIT_BOT_PRIVATE_KEY == ''
+        run: |
+          echo "::error::HQ_AUDIT_BOT_APP_ID or HQ_AUDIT_BOT_PRIVATE_KEY not set."
+          exit 1
+
+      - name: Mint installation token for staging + this repo
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            hq-core
+            hq-core-staging
+
+      - name: Check whether Release made a TBD-stamp commit
+        id: detect
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          # Pull stamp_committed + stamp_sha outputs from the Release job.
+          # workflow_run doesn't surface job outputs directly, so we use the
+          # API to read the job and its annotations / step summary if needed.
+          # Simpler: inspect the latest commit on main and ask whether its
+          # author is hq-audit-bot[bot] with the canonical commit message.
+          MAIN_SHA="$(gh api repos/${GITHUB_REPOSITORY}/branches/main --jq '.commit.sha')"
+          MSG="$(gh api repos/${GITHUB_REPOSITORY}/commits/${MAIN_SHA} --jq '.commit.message')"
+          AUTHOR="$(gh api repos/${GITHUB_REPOSITORY}/commits/${MAIN_SHA} --jq '.author.login // empty')"
+          echo "Latest main: ${MAIN_SHA}"
+          echo "Author: ${AUTHOR}"
+          echo "Message: ${MSG}"
+          if printf '%s' "$MSG" | grep -qE '^chore\(migration\): stamp v[0-9]'; then
+            TAG="$(printf '%s' "$MSG" | sed -nE 's/^chore\(migration\): stamp (v[^ ]+).*/\1/p')"
+            {
+              echo "should_backmerge=true"
+              echo "sha=${MAIN_SHA}"
+              echo "tag=${TAG}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Latest main commit is not a TBD-stamp; nothing to backmerge"
+            echo "should_backmerge=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout hq-core at the stamp commit
+        if: steps.detect.outputs.should_backmerge == 'true'
+        uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ steps.detect.outputs.sha }}
+          fetch-depth: 2
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Clone hq-core-staging (target)
+        if: steps.detect.outputs.should_backmerge == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.detect.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git clone --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${STAGING_REPO}.git" target
+          cd target
+          git config user.name  "hq-audit-bot[bot]"
+          git config user.email "hq-audit-bot[bot]@users.noreply.github.com"
+          git checkout -b "backmerge/release-${TAG}"
+
+      - name: Re-apply MIGRATION.md change in staging
+        if: steps.detect.outputs.should_backmerge == 'true'
+        env:
+          SHA: ${{ steps.detect.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Extract the file paths the stamp commit changed.
+          mapfile -t FILES < <(git -C source diff-tree --no-commit-id --name-only -r "$SHA")
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "::notice::Stamp commit has no file changes; nothing to apply"
+            exit 0
+          fi
+          for f in "${FILES[@]}"; do
+            # The stamp commit only touches MIGRATION.md, but be defensive.
+            if [ -f "source/$f" ]; then
+              mkdir -p "$(dirname "target/$f")"
+              cp "source/$f" "target/$f"
+              echo "Applied: $f"
+            fi
+          done
+
+      - name: Commit + push backmerge branch
+        id: push
+        if: steps.detect.outputs.should_backmerge == 'true'
+        env:
+          TAG: ${{ steps.detect.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd target
+          if git diff --quiet; then
+            echo "::notice::Staging already has these changes; nothing to backmerge"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git add -A
+          git commit -m "chore(migration): backmerge ${TAG} stamp from hq-core"
+          git push --set-upstream origin "backmerge/release-${TAG}"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open backmerge PR
+        if: steps.push.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.detect.outputs.tag }}
+          STAMP_SHA: ${{ steps.detect.outputs.sha }}
+        run: |
+          set -euo pipefail
+          cd target
+          BODY_FILE="$(mktemp)"
+          {
+            echo "## Summary"
+            echo "- Backmerges the \`TBD → ${TAG}\` stamp from hq-core@${STAMP_SHA}"
+            echo "- Keeps \`core/docs/hq/MIGRATION.md\` in lock-step with the public release"
+            echo
+            echo "## Lineage"
+            echo "Opened automatically by \`backmerge-to-staging.yml\` after \`Release\` on hq-core stamped MIGRATION.md."
+            echo
+            echo "## Test plan"
+            echo "- [ ] \`special-case-files\` CI passes (label: \`special-case-confirmed\`)"
+            echo "- [ ] \`migration-md-with-tbd\` CI passes (label: \`skip-migration\` — this PR is a backmerge, not a forward-going migration)"
+          } > "$BODY_FILE"
+          gh pr create \
+            --repo "$STAGING_REPO" \
+            --base main \
+            --head "backmerge/release-${TAG}" \
+            --title "chore(migration): backmerge ${TAG} stamp" \
+            --body-file "$BODY_FILE" \
+            --label "special-case-confirmed" \
+            --label "skip-migration"

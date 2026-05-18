@@ -1,6 +1,7 @@
 ---
 name: execute-task
 description: Execute a single PRD story through coordinated worker phases (Ralph pattern). Each worker handles its domain, passes context to the next, with back-pressure (tests/lint/typecheck) keeping code on rails.
+allowed-tools: Task, Read, Write, Glob, Grep, Bash, AskUserQuestion
 ---
 
 # Execute Task - Worker-Coordinated Story Execution
@@ -21,18 +22,44 @@ Execute a single user story from a PRD through coordinated worker phases. Each w
 - Handoffs preserve context between workers
 - Each sub-agent commits its own work before returning
 
-## Return Contract (when invoked under a story sub-agent)
+## Return Contract (when invoked as a story sub-agent)
 
-When the prompt invoking this skill explicitly includes a `RETURN CONTRACT` directive (used by `/run-project --inline` Step 4 to keep parent-session context minimal), override the default completion summary and emit **only** the JSON object specified by the caller as the final message. Rules:
+**Canonical path (orchestrator-dispatched, e.g. `/run-project --inline`, `/run-pipeline`, or any caller injecting `RETURN CONTRACT: json`):** emit ONLY this JSON object as the final message:
 
-- Final message MUST be exactly the JSON object — nothing before, nothing after, no markdown fences, no commentary.
-- All normal execute-task behavior still runs (task classification, worker sequence, back pressure, commits, prd.json `passes:true` on success). Only the shape of the final output message changes.
-- Status semantics: `passed` = all workers succeeded + all back-pressure gates green + commit(s) landed; `failed` = back-pressure failure that could not be auto-recovered; `blocked` = missing spec, credential, or external dependency prevented completion.
-- `commits` = short SHAs of all commits created during this execution (`git log --oneline` delta since start), in order.
-- `files_changed` = total files touched across those commits (`git diff --stat` count).
-- `notes` = 1-2 sentences; on non-`passed` status, describe the blocker concisely enough for the parent orchestrator to surface to the user.
+```json
+{
+  "status": "passed" | "failed" | "blocked",
+  "story_id": "<id>",
+  "commits": ["<short-sha>", ...],
+  "files_changed": <int>,
+  "back_pressure": {
+    "tests": "pass" | "fail" | "skip",
+    "lint": "pass" | "fail" | "skip",
+    "typecheck": "pass" | "fail" | "skip",
+    "build": "pass" | "fail" | "skip"
+  },
+  "workers_run": ["<worker-id>", ...],
+  "notes": "<=240 chars; on non-passed status, name the blocker concisely>"
+}
+```
 
-When invoked **without** a `RETURN CONTRACT` directive (default, e.g. `claude -p /execute-task ...` from `run-project.sh`), use the normal human-readable completion summary as before. This dual mode keeps the skill backward-compatible with headless mode.
+Hard formatting rules:
+
+- Final message MUST be exactly the JSON object — nothing before, nothing after.
+- No markdown fences. No commentary. No "I've done X" preamble.
+- `notes` capped at 240 characters. Anything longer goes to `workspace/threads/journal/<date>/<story-id>.md`, not into the return value.
+
+Field semantics:
+
+- `status`: `passed` = all workers succeeded + back-pressure green + commits landed; `failed` = back-pressure failure that could not be auto-recovered; `blocked` = missing spec/credential/dependency prevented completion.
+- `commits`: short SHAs of all commits created during this execution (`git log --oneline` delta since start), in order.
+- `files_changed`: total files touched across those commits (`git diff --stat` count).
+- `workers_run`: real HQ worker IDs in execution order — placeholder values like `worker`, `general-purpose`, `commit` are rejected by the orchestrator proof gate.
+- `notes`: 1-2 sentences; on non-`passed`, the blocker description must be specific enough for the orchestrator to decide retry/skip/halt.
+
+All normal execute-task behavior still runs (task classification, worker sequence, back pressure, commits, prd.json `passes:true` on success). Only the shape of the final output message changes.
+
+**Opt-out (prose mode):** when the prompt explicitly includes `RETURN CONTRACT: prose`, emit the normal human-readable summary. This path is reserved for direct CLI use (no orchestrator parent). Orchestrators MUST inject `RETURN CONTRACT: json` per [ralph-orchestrator-context-discipline](../../../core/policies/ralph-orchestrator-context-discipline.md) (hard policy).
 
 ## Runtime Adapter: Claude Code Task vs Codex spawn_agent
 
@@ -51,7 +78,11 @@ patch instead of a parent-visible commit, say so and list every changed path.
 Return only the requested JSON.
 ```
 
-The orchestrator still enforces the same proof gates in both runtimes: parseable JSON, real worker IDs in the handoff/summary, back-pressure status, parent-visible commits or parent-created integration commits, lock release, and `passes:true` only after a successful story. If Codex `spawn_agent` / `wait_agent` are unavailable, do not fake the worker sequence in the parent; stop and ask the user to use `--session-mode` for direct parent execution or `--ralph-mode --builder claude` for worker-authoritative headless execution.
+The orchestrator still enforces the same proof gates in both runtimes: parseable JSON, real worker IDs in the handoff/summary, back-pressure status, parent-visible commits or parent-created integration commits, lock release, and `passes:true` only after a successful story.
+
+Codex nesting rule: when `/execute-task` is invoked from a Codex sub-agent, `spawn_agent` / `wait_agent` are not available inside that sub-agent. Do not fake the worker sequence. `/run-project` in Codex must avoid this by running a **filesystem-mediated worker-phase loop**: the parent writes small phase input envelopes under `workspace/orchestrator/{project}/executions/{story-id}/`, spawns one fresh top-level Codex worker per phase, and absorbs compact phase JSON only. Phase workers load PRD/project/worker/policy/repo context themselves from file paths. Direct `/execute-task {project}/{task-id}` from the Codex parent session may still use the normal Codex adapter because the parent has `spawn_agent`.
+
+If Codex `spawn_agent` / `wait_agent` are unavailable, do not fake the worker sequence in the parent; stop and ask the user to use `--session-mode` for direct parent execution or resume in a runtime with Codex sub-agent support. Do not route Codex-triggered story execution through the Claude headless builder.
 
 ## Process
 
@@ -82,7 +113,7 @@ qmd search "{project} prd.json" --json -n 5
 From results, find the entry whose path includes `/{project}/prd.json`. If qmd is unavailable or returns nothing, fall back to direct Read at these paths in order:
 
 1. `companies/{co}/projects/{project}/prd.json` (company projects)
-2. `projects/{project}/prd.json` (personal/HQ projects)
+2. `personal/projects/{project}/prd.json` (personal/HQ projects)
 
 If no `prd.json` found:
 
@@ -479,11 +510,11 @@ For each worker in the sequence, spawn a sub-agent via the Task tool. Each sub-a
 
 #### 6a. Load Worker Config
 
-1. Read `core/workers/registry.yaml` to find the worker path:
+1. Read `core/workers/registry.yaml` (auto-generated, read-only index) to find the worker path:
    ```bash
    grep -A 4 "  - id: {worker-id}$" core/workers/registry.yaml | grep "path:"
    ```
-   Extract the `path:` value. This may resolve to `workers/public/dev-team/{worker-id}/`, `workers/public/{worker-id}/`, or `companies/{co}/workers/{worker-id}/`.
+   Extract the `path:` value. This may resolve to `core/workers/public/dev-team/{worker-id}/`, `core/workers/public/{worker-id}/`, or `companies/{co}/workers/{worker-id}/`.
 
 2. Read `{worker_path}/worker.yaml` to get:
    - `instructions` — worker's role, process, and accumulated learnings

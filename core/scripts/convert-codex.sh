@@ -29,6 +29,7 @@ Safety:
   - Create-only: existing files, directories, and symlinks are left untouched.
   - Existing .agents/skills directories are synced by adding missing skills only.
   - Existing Codex config and AGENTS.md files are never rewritten.
+  - Existing .codex/output-style.md files are never rewritten.
 EOF
 }
 
@@ -68,6 +69,8 @@ fi
 CLAUDE_DIR="${HQ_ROOT}/.claude"
 COMMANDS_DIR="${CLAUDE_DIR}/commands"
 CLAUDE_SKILLS_DIR="${CLAUDE_DIR}/skills"
+SETTINGS_FILE="${CLAUDE_DIR}/settings.json"
+OUTPUT_STYLES_DIR="${CLAUDE_DIR}/output-styles"
 CODEX_DIR="${HQ_ROOT}/.codex"
 AGENTS_DIR="${HQ_ROOT}/.agents"
 AGENTS_SKILLS_DIR="${AGENTS_DIR}/skills"
@@ -187,8 +190,15 @@ resolve_link_target() {
   fi
   (
     cd "$(dirname "${link_path}")"
-    cd "${raw_target}" 2>/dev/null
-    pwd
+    if [[ -d "${raw_target}" ]]; then
+      cd "${raw_target}" 2>/dev/null
+      pwd
+    elif [[ -e "${raw_target}" ]]; then
+      local resolved_dir resolved_base
+      resolved_dir="$(cd "$(dirname "${raw_target}")" && pwd)"
+      resolved_base="$(basename "${raw_target}")"
+      printf '%s/%s\n' "${resolved_dir}" "${resolved_base}"
+    fi
   )
 }
 
@@ -196,12 +206,18 @@ ensure_symlink() {
   local label="$1"
   local link_path="$2"
   local relative_target="$3"
-  local desired_abs
+  local desired_abs resolved_dir resolved_base
 
   desired_abs="$(
     cd "$(dirname "${link_path}")" 2>/dev/null || cd "${HQ_ROOT}"
-    cd "${relative_target}" 2>/dev/null
-    pwd
+    if [[ -d "${relative_target}" ]]; then
+      cd "${relative_target}" 2>/dev/null
+      pwd
+    elif [[ -e "${relative_target}" ]]; then
+      resolved_dir="$(cd "$(dirname "${relative_target}")" && pwd)"
+      resolved_base="$(basename "${relative_target}")"
+      printf '%s/%s\n' "${resolved_dir}" "${resolved_base}"
+    fi
   )"
 
   if [[ -L "${link_path}" ]]; then
@@ -230,6 +246,36 @@ ensure_symlink() {
   else
     record_create "${link_path}"
   fi
+}
+
+active_output_style_name() {
+  [[ -f "${SETTINGS_FILE}" ]] || return 1
+  sed -n 's/.*"outputStyle"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${SETTINGS_FILE}" | tail -n 1
+}
+
+output_style_slug() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed 's/[[:space:]_]\+/-/g; s/[^a-z0-9.-]/-/g; s/-\+/-/g; s/^-//; s/-$//'
+}
+
+ensure_output_style_bridge() {
+  local style_name slug source
+  style_name="$(active_output_style_name || true)"
+
+  if [[ -z "${style_name}" ]]; then
+    record_skip "no .claude/settings.json outputStyle configured"
+    return
+  fi
+
+  slug="$(output_style_slug "${style_name}")"
+  source="${OUTPUT_STYLES_DIR}/${slug}.md"
+  if [[ ! -f "${source}" ]]; then
+    record_block "active outputStyle '${style_name}' has no source file at $(rel_path "${source}")"
+    return
+  fi
+
+  ensure_symlink "project Codex output-style bridge" "${CODEX_DIR}/output-style.md" "../.claude/output-styles/${slug}.md"
 }
 
 extract_frontmatter_field() {
@@ -398,23 +444,19 @@ skill_openai_count() {
 }
 
 print_audit() {
-  local command_total skill_total skill_openai command_skills agent_skill_total
-  command_total="$(count_paths "${COMMANDS_DIR}" -mindepth 1 -maxdepth 1 -type f -name '*.md')"
+  local skill_total skill_openai agent_skill_total
   skill_total="$(skill_dir_count "${CLAUDE_SKILLS_DIR}")"
   skill_openai="$(skill_openai_count "${CLAUDE_SKILLS_DIR}")"
-  command_skills="$(commands_with_skills_count)"
   agent_skill_total="$(skill_dir_count "${AGENTS_SKILLS_DIR}")"
 
   echo
   echo "Codex parity audit:"
-  echo "  Claude commands: ${command_total}"
   echo "  Claude skills: ${skill_total} (${skill_openai} with agents/openai.yaml)"
-  echo "  Commands with same-name skills: ${command_skills}/${command_total}"
   echo "  Repo Codex skills exposed: ${agent_skill_total}"
   [[ -e "${HQ_ROOT}/AGENTS.md" ]] && echo "  AGENTS.md: present" || echo "  AGENTS.md: missing"
   [[ -e "${CODEX_DIR}/config.toml" ]] && echo "  .codex/config.toml: present" || echo "  .codex/config.toml: missing"
   [[ -e "${CODEX_DIR}/claude" || -L "${CODEX_DIR}/claude" ]] && echo "  .codex/claude: present" || echo "  .codex/claude: missing"
-  [[ -e "${CODEX_DIR}/prompts" || -L "${CODEX_DIR}/prompts" ]] && echo "  .codex/prompts: present" || echo "  .codex/prompts: missing"
+  [[ -e "${CODEX_DIR}/output-style.md" || -L "${CODEX_DIR}/output-style.md" ]] && echo "  .codex/output-style.md: present" || echo "  .codex/output-style.md: missing"
 }
 
 main() {
@@ -436,7 +478,7 @@ main() {
   write_agents_md
   write_codex_config
   ensure_symlink "project Claude mirror" "${CODEX_DIR}/claude" "../.claude"
-  ensure_symlink "project command bridge" "${CODEX_DIR}/prompts" "../.claude/commands"
+  ensure_output_style_bridge
   sync_agents_skills
 
   if [[ "${GENERATE_OPENAI}" == true ]]; then

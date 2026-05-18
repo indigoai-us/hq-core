@@ -1,7 +1,7 @@
 ---
 name: learn
 description: Capture and classify learnings, route to structured policy files (rules) or insight files (educational knowledge). Deduplicates via qmd (Grep fallback), rebuilds policy digest after policy changes. Callable manually or from /execute-task, /run-project, /handoff, /checkpoint. Use --hard flag for hard-enforcement rules.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(grep:*), Bash(mkdir:*), Bash(date:*), Bash(ls:*), Bash(bash:*), Bash(git:*), Bash(rm:*), Bash(stat:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(grep:*), Bash(mkdir:*), Bash(date:*), Bash(ls:*), Bash(bash:*), Bash(git:*), Bash(rm:*), Bash(stat:*), Bash
 ---
 
 # Learn - Automated Learning Pipeline

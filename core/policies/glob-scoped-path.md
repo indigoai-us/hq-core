@@ -15,7 +15,7 @@ public: true
 
 ## Rule
 
-ALWAYS pass `path:` to Glob scoped to a subdirectory (e.g. `projects/`, `core/workers/`). Glob from HQ root times out (`.ignore` doesn't protect it). Grep from HQ root is safe (`.ignore` blocks repos/node_modules). Parallel tool failures cascade — one timeout kills all siblings.
+ALWAYS pass `path:` to Glob scoped to a subdirectory (e.g. `personal/projects/`, `companies/{co}/projects/`, `core/workers/`). Glob from HQ root times out (`.ignore` doesn't protect it). Grep from HQ root is safe (`.ignore` blocks repos/node_modules). Parallel tool failures cascade — one timeout kills all siblings.
 
 ## Rationale
 

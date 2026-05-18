@@ -201,5 +201,5 @@ fi
 # GitHub Actions
 - name: Security Scan
   run: |
-    claude --print "/run security-scanner pre-deploy-check"
+    hq run security-scanner pre-deploy-check
 ```

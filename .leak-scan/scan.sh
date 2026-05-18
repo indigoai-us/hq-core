@@ -4,12 +4,12 @@
 # Modes (mechanical — no LLM):
 #   denylist          fail if any denylist key appears in PR-changed files
 #                     (outside of documented exceptions). Body-wide; ports
-#                     HQ promotion-clean verification logic.
+#                     HQ core/scripts/verify-promotion-clean.sh logic.
 #   policy-rationale  fail if a policies/**/*.md file's ## Rationale section
 #                     references non-public context (heuristic regex list).
 #                     Additional to denylist, NOT a replacement.
 #   slugs             fail if a PR-changed file contains a private tenant slug
-#                     from manifest-snapshot.yaml unless explicitly allowed.
+#                     from manifest-snapshot.yaml outside allowlist.yaml.
 #   users-path        fail if any tracked policy/script body contains a
 #                     literal /Users/... absolute path. Tripwire: rule
 #                     hq-promote-hq-core-users-path-tripwire.
@@ -27,7 +27,8 @@
 #                     fail if PR diff touches .claude/commands/ or
 #                     .claude/skills/ AND PR is not labeled "manual-copy".
 #                     Rule: hq-promote-hq-core-skills-commands-manual-copy.
-#   core-yaml-locked  fail if core/core.yaml changed without label "version-bump".
+#   core-yaml-locked  fail if core/core.yaml changes hqVersion without label
+#                     "version-bump"; path-only metadata edits are allowed.
 #   special-case-files
 #                     fail if CHANGELOG.md, MIGRATION.md, or .claude/CLAUDE.md
 #                     changed without label "special-case-confirmed".
@@ -242,12 +243,15 @@ case "$mode" in
 
     snap_slugs="$(awk '/^slugs:/{f=1;next} f && /^- /{print $2} f && /^[a-zA-Z]/ && !/^- /{f=0}' "$snap_file" | sort -u)"
     snap_public="$(awk '/^public_slugs:/{f=1;next} f && /^- /{print $2} f && /^[a-zA-Z]/ && !/^- /{f=0}' "$snap_file" | sort -u)"
-
     private_slugs=()
     while IFS= read -r slug; do
       [[ -z "$slug" ]] && continue
-      if grep -Fxq "$slug" <<< "$snap_public"; then continue; fi
-      if is_allowed "$slug"; then continue; fi
+      if grep -Fxq "$slug" <<< "$snap_public"; then
+        continue
+      fi
+      if is_allowed "$slug"; then
+        continue
+      fi
       private_slugs+=("$slug")
     done <<< "$snap_slugs"
 
@@ -267,7 +271,7 @@ case "$mode" in
     done
 
     if [[ $leaks -gt 0 ]]; then
-      echo "slug-scan: $leaks unknown slug(s) found" >&2
+      echo "slug-scan: $leaks private slug(s) found" >&2
       exit 1
     fi
     echo "slug-scan: clean"
@@ -396,10 +400,18 @@ case "$mode" in
       [[ "$f" == "core/core.yaml" ]] && changed_core=1
     done
     if [[ $changed_core -eq 1 ]]; then
-      if has_label "version-bump"; then
-        echo "core-yaml-locked: change present, label 'version-bump' applied"
+      version_changed=0
+      if git diff -U0 "origin/$base_ref"...HEAD -- core/core.yaml 2>/dev/null \
+        | grep -Eq '^[+-]hqVersion:'; then
+        version_changed=1
+      fi
+
+      if [[ $version_changed -eq 0 ]]; then
+        echo "core-yaml-locked: clean (hqVersion unchanged)"
+      elif has_label "version-bump"; then
+        echo "core-yaml-locked: hqVersion change present, label 'version-bump' applied"
       else
-        echo "::error file=core/core.yaml::core/core.yaml changed without 'version-bump' label" >&2
+        echo "::error file=core/core.yaml::core/core.yaml hqVersion changed without 'version-bump' label" >&2
         exit 1
       fi
     else

@@ -1,55 +1,35 @@
 ---
 name: hq-login
 description: Sign into HQ Cognito — prefer status, then refresh, then browser login
+allowed-tools: Bash(hq:*), Bash(jq:*), Bash(cat:*), Bash(date:*), Bash(test:*), Bash(ls:*)
 ---
 
-# HQ Cognito sign-in
+# /hq-login — HQ Cognito sign-in
 
-Ensure `~/.hq/cognito-tokens.json` holds a valid access token, escalating
-through the cheapest viable path. Wraps existing `hq auth` primitives.
+Ensures `~/.hq/cognito-tokens.json` holds a valid access token. Prefers the
+cheapest viable path: status → refresh → browser login. Wraps the `hq auth`
+primitives — adds no auth logic.
 
-## Process
+## Steps
 
-### 1. Status
+1. **Status check** — `hq auth status`. If a valid session is cached, print
+   identity + expiry and exit 0. Done.
 
-```bash
-hq auth status
-```
+2. **Silent refresh** — if status reports expired, run `hq auth refresh`.
+   On success, run `hq auth status` again to print the new expiry.
 
-If output shows a valid (non-expired) session, print identity + expiry and stop.
+3. **Browser login** — if refresh fails (refresh token revoked / expired),
+   run `hq auth login` (opens Cognito Hosted UI in the default browser via
+   the loopback callback on port 8765). Wait for completion; the command
+   returns once the token is cached.
 
-### 2. Silent refresh
-
-If status indicates expired, attempt a refresh-token exchange:
-
-```bash
-hq auth refresh
-```
-
-- Success → `hq auth status` again to surface the new expiry.
-- Failure (`invalid_grant`, network, etc.) → fall through to step 3.
-
-### 3. Browser login
-
-```bash
-hq auth login
-```
-
-Opens the Cognito Hosted UI (via Google IdP) and listens on a loopback port
-(default 8765) for the callback. Returns once the token is written to
-`~/.hq/cognito-tokens.json`.
-
-### 4. Final status
-
-```bash
-hq auth status
-```
-
-Print to confirm identity + new expiry.
+4. **Final report** — print `hq auth status` so the user sees who they are
+   and how long the new session lasts.
 
 ## Notes
 
-- The token file is shared with the `/deploy` skill — once signed in, deploys
-  work immediately.
-- The HQ Identity pool is `us-east-1_IksCYBcBr` (hq-pro-owned, Google-only).
-- Requires `@indigoai-us/hq-cli` ≥5.4 for `hq auth refresh`.
+- All four `hq auth` subcommands write to `~/.hq/cognito-tokens.json` —
+  same file consumed by `/deploy` (see `.claude/skills/deploy/SKILL.md`).
+- The shared HQ Identity pool (`us-east-1_IksCYBcBr`) is owned by hq-pro;
+  CLI version ≥5.4 is required for `hq-auth-refresh`.
+- If the user is already signed in, this command is a no-op.

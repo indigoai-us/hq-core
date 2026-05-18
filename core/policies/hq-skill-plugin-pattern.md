@@ -22,8 +22,7 @@ script pattern:
    static skill list). Subcommands: install, remove, status, update.
 3. Create `core/policies/{package}-prefix-mapping.md` — soft-enforcement policy
    remapping internal cross-skill references to prefixed equivalents.
-4. Register in `core/modules/modules.yaml` under Add-On Kits.
-5. Optionally create a worker that chains the package's skills.
+4. Optionally create a worker that chains the package's skills.
 
 NEVER copy or fork skill files — symlink for zero-copy upstream updates.
 ALWAYS use a short prefix (e.g. `g-`) to avoid collisions with HQ skills.

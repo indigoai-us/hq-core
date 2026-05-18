@@ -1,6 +1,7 @@
 worker:
   id: paper-designer
   name: "Paper Designer"
+  description: "Bidirectional Paper Desktop design bridge — extract specs, preview components, edit designs via MCP"
   type: OpsWorker
   version: "1.0"
 

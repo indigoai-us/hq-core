@@ -1,8 +1,11 @@
-name: social-reviewer
-description: Quality gate for social content. Reviews drafts for brand alignment, metadata stripping, character limits, and safety. Only worker that can promote drafts to "approved" status.
-version: "1.0"
-type: content
-company: null  # public, company-agnostic — inherits company from invocation
+worker:
+  id: social-reviewer
+  name: "Social Reviewer"
+  description: "Quality gate for social content. Reviews drafts for brand alignment, metadata stripping, character limits, and safety. Only worker that can promote drafts to \"approved\" status."
+  type: ContentWorker
+  version: "1.0"
+  team: social-team
+
 tags:
   - social
   - review

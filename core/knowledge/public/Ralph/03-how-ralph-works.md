@@ -15,7 +15,7 @@ At its core, Ralph is a simple bash script that runs in a for loop:
 ```bash
 #!/bin/bash
 for i in {1..N}; do
-    claude --print "Pick ONE incomplete item from plans/prd.json and implement it.
+    codex exec "Pick ONE incomplete item from plans/prd.json and implement it.
     Run tests. If they pass, commit. Update the PRD passes field.
     Write progress to progress.txt"
 done

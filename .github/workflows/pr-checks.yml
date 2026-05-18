@@ -132,7 +132,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: core/core.yaml requires version-bump label
+      - name: core/core.yaml hqVersion requires version-bump label
         env:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
         run: bash .leak-scan/scan.sh core-yaml-locked
@@ -149,6 +149,65 @@ jobs:
         env:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
         run: bash .leak-scan/scan.sh special-case-files
+
+  migration-md-with-tbd:
+    name: migration-md-with-tbd
+    if: |
+      github.event_name == 'pull_request' &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-migration')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: "MIGRATION.md must change and include the Release-TBD marker"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # Canonical location; the root MIGRATION.md is a symlink.
+          MIG="core/docs/hq/MIGRATION.md"
+
+          # hq-core only sees promote PRs (bulk staging→hq-core rsync), so
+          # "file must change in this PR" carries no human signal — every
+          # promote changes the file by construction. The thing that
+          # matters here is that the TBD marker is present so release.yml
+          # can substitute the version on tag push. Staging keeps the full
+          # "file changed AND added section includes TBD" rule below.
+          if [ "${GITHUB_REPOSITORY:-}" = "indigoai-us/hq-core" ]; then
+            if grep -qE '^##[[:space:]]+Release:[[:space:]]+TBD' "$MIG"; then
+              echo "✓ ${MIG} contains '## Release: TBD' marker"
+              exit 0
+            fi
+            echo "::error file=${MIG}::${MIG} is missing the '## Release: TBD' header. release.yml needs it as a placeholder to substitute on tag push."
+            exit 1
+          fi
+
+          # Fetch base ref without forcing a shallow depth. A shallow
+          # `--depth=1` fetch combined with the PR branch's full history
+          # (from checkout@v4 fetch-depth: 0) leaves no common ancestor
+          # for `git diff A...B` to find, so the three-dot diff errors
+          # out with "no merge base" and the `|| true` below silently
+          # turns the error into an empty ADDED string.
+          git fetch origin "$BASE_REF"
+          # Two-dot diff: just "what HEAD has that origin/${BASE_REF}
+          # does not". Three-dot would be more precise (changes on this
+          # branch's history only) but requires a reachable merge-base,
+          # which is fragile in CI checkouts. Two-dot is sufficient for
+          # the TBD-marker check.
+          if ! git diff --quiet "origin/${BASE_REF}..HEAD" -- "$MIG"; then
+            # File was modified. Verify added lines include the TBD marker.
+            ADDED="$(git diff --no-color "origin/${BASE_REF}..HEAD" -- "$MIG" \
+              | grep -E '^[+]' | grep -v '^[+][+][+]' || true)"
+            if printf '%s\n' "$ADDED" | grep -qE '^[+]##[[:space:]]+Release:[[:space:]]+TBD'; then
+              echo "✓ MIGRATION.md changed and includes '## Release: TBD' marker"
+              exit 0
+            fi
+            echo "::error file=${MIG}::MIGRATION.md was changed but the added section is missing the '## Release: TBD' header. Use it as a placeholder — release.yml will swap it to the actual version on tag push."
+            exit 1
+          fi
+          echo "::error file=${MIG}::MIGRATION.md must be updated on every PR. Add a '## Release: TBD' section describing the migration impact, or apply the 'skip-migration' label if this PR truly has no migration impact."
+          exit 1
 
   # ─── Codex-augmented semantic check ────────────────────────────────
   # Per-file PASS/EDIT/DROP rubric, mirroring /promote-hq-core Phase 3.
@@ -205,14 +264,13 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_MODEL: gpt-5
-          POLICY_FILE: ${{ matrix.file }}
         run: |
           set -euo pipefail
-          out="$(bash .leak-scan/codex-rubric.sh "$POLICY_FILE")"
+          out="$(bash .leak-scan/codex-rubric.sh "${{ matrix.file }}")"
           echo "$out"
           # Append to job summary so reviewers see verdicts collated
           {
-            echo "## Rubric: $POLICY_FILE"
+            echo "## Rubric: ${{ matrix.file }}"
             echo '```json'
             echo "$out"
             echo '```'

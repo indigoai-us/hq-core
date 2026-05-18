@@ -1,8 +1,11 @@
-name: social-publisher
-description: Posts approved social content via Post-Bridge API. Only worker authorized to call the posting API. Includes pre-post safety checks and post-delivery verification.
-version: "1.0"
-type: ops
-company: null  # public, company-agnostic
+worker:
+  id: social-publisher
+  name: "Social Publisher"
+  description: "Posts approved social content via Post-Bridge API. Only worker authorized to call the posting API. Includes pre-post safety checks and post-delivery verification."
+  type: OpsWorker
+  version: "1.0"
+  team: social-team
+
 tags:
   - social
   - posting

@@ -1,6 +1,6 @@
 # Auto-Checkpoint Spec
 
-Auto-checkpoint has two layers: (1) a PostToolUse trigger that fires after specific tool patterns, and (2) a two-stage context-usage advisory.
+Auto-checkpoint has two layers: (1) a PostToolUse trigger that fires after specific tool patterns, and (2) two context-threshold checkpoint directives.
 
 ## PostToolUse Trigger
 
@@ -19,11 +19,11 @@ PostToolUse hooks detect checkpoint-worthy events and inject `AUTO-CHECKPOINT RE
 
 Also checkpoint after worker skill completion. Schema: `core/knowledge/public/hq-core/thread-schema.md`.
 
-## Two-Stage Context-Usage Advisory
+## Context-Threshold Checkpoints
 
-Context-usage advisories run in two stages. Both present the same three options (checkpoint, handoff, or continue) — neither forces action. **When either banner appears**, present the 3 options to the user and wait for their decision. Do not auto-run `/checkpoint`; let the user pick.
+Context-threshold checkpoints run in two stages. Both are mandatory checkpoint directives, not user-choice prompts. **When either banner appears**, run `/checkpoint` immediately. Do not ask the user first, and do not continue normal task work until the checkpoint is complete.
 
-1. **50% advisory (Stop hook).** `.claude/hooks/context-warning-50.sh` fires after an assistant turn when the transcript size crosses ~50% of the context window. Prints once per session (gated via `workspace/.context-warnings/{session_id}`). Purely informational — runway still exists before autocompact.
-2. **60% advisory (PreCompact hook).** `.claude/hooks/auto-checkpoint-precompact.sh` fires immediately before autocompact runs (threshold set by `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=60`). Autocompact cannot be blocked in Claude Code, so the banner surfaces options right before compaction proceeds.
+1. **50% checkpoint (Stop hook).** `.claude/hooks/context-warning-50.sh` fires after an assistant turn when the transcript size crosses ~50% of the context window. Prints once per session (gated via `workspace/.context-warnings/{session_id}`). This leaves enough context to preserve state and, if the remaining task is large, orchestrate subagents after the checkpoint.
+2. **PreCompact backup.** `.claude/hooks/auto-checkpoint-precompact.sh` fires immediately before autocompact runs (threshold set by `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`). Autocompact cannot be blocked in Claude Code or Codex, so the banner tells the next assistant turn to run `/checkpoint` before continuing.
 
-**Fallback (instruction-based):** If context feels heavy (many long turns, lots of file reads), proactively suggest `/checkpoint` or `/handoff`. For end-of-session wrap-up, run `/handoff` manually.
+**Fallback (instruction-based):** If context feels heavy before either hook fires (many long turns, lots of file reads), proactively run `/checkpoint`. For end-of-session wrap-up, run `/handoff` manually.

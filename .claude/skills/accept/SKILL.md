@@ -4,24 +4,62 @@ description: Accept a vault-backed HQ membership invite from a magic link or raw
 allowed-tools: Bash, Read
 ---
 
-# Accept HQ Invite
+# /accept — Accept a Membership Invite
 
-Codex adapter for `/accept`.
+Accept a vault-backed membership invite using a magic link or raw token.
 
-**Arguments:** `<token-or-magic-link>`
+**Usage:**
+```
+/accept <token-or-magic-link>
+```
 
-## Source Of Truth
+## Process
 
-Read `.claude/commands/accept.md` first. That command owns the invite-token parsing, auth expectations, service call shape, errors, and output format. This skill exists so Codex can discover and execute the same HQ capability without duplicating the workflow.
+1. **Parse token** — extracts raw token from `hq://accept/<token>` or raw input
+2. **Resolve caller** — reads Cognito session from `~/.hq/credentials.json`
+3. **Call vault-service** — via `VaultClient.acceptInvite()` from `@indigoai-us/hq-cloud`
+4. **Print result** — company details, role, and sync hint
 
-## Codex Adaptation
+## Implementation
 
-- Execute the command workflow inline from the HQ root with the user's token or magic link.
-- Use existing HQ CLI/package entry points when available; do not hand-roll service calls if a local command already wraps them.
-- Treat Claude Code specific tool names as intent, then use the equivalent Codex workflow available in the current session.
-- If auth is missing or expired, stop and direct the user to `/hq-login`; do not try alternate company credentials.
-- Preserve the source command's success and error wording where practical.
+```typescript
+import { accept } from "@indigoai-us/hq-cloud";
 
-## Completion
+const result = await accept({
+  tokenOrLink: "hq://accept/tok_abc123",
+  callerUid: "<caller-person-uid>",
+  vaultConfig: { apiUrl, authToken },
+});
 
-End with the invite result, company slug, role, and the next sync command when acceptance succeeds. If blocked, state the precise missing prerequisite.
+console.log(`Joined ${result.companySlug} as ${result.membership.role}`);
+```
+
+## Output Format
+
+### On success:
+```
+Invite accepted!
+
+Company: Acme Corp (acme)
+UID: cmp_abc123
+Role: member
+
+Run `hq sync --company acme` to pull vault contents.
+```
+
+### On error:
+```
+This invite was already accepted.
+```
+```
+Invite not found or expired.
+```
+```
+This invite was for a different person.
+```
+
+## Notes
+
+- Accepts both `hq://accept/<token>` magic links and raw tokens
+- Caller's Cognito identity is verified against the invite target
+- After accepting, run `hq sync --company <slug>` to pull vault contents

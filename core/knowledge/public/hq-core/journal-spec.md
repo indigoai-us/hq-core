@@ -26,7 +26,7 @@ The journal preserves it without bloating the canonical artifacts.
 | Scope | Path |
 |---|---|
 | Company project | `companies/{co}/projects/{slug}/` |
-| Personal / HQ project | `projects/{slug}/` |
+| Personal / HQ project | `personal/projects/{slug}/` |
 | Plan-level workstream | wherever `/plan` resolves the workstream dir |
 
 `{skill}` is the lowercase skill name (`brainstorm`, `deep-plan`, `prd`, `startwork`, `plan`).
@@ -42,7 +42,7 @@ One file per session per workstream. A long session that touches multiple skills
 skill: deep-plan
 started_at: 2026-05-07T09:15:00Z
 thread_id: T-20260507-091500-foo-bar
-project: companies/liverecover/projects/messaging-shortlink-reliability
+project: companies/example-co/projects/messaging-shortlink-reliability
 status: active           # active | closed | abandoned
 auto_capture: true       # opt out per-file
 summary: ""              # filled at close
@@ -74,7 +74,7 @@ Section invariants:
 
 ## Reference material
 
-**Invariant**: every file written *because of* a journal capture lives under `{project_dir}/`. No exceptions for the journal file, attachments, research excerpts, or hook-spilled overflow. Enforced by `.claude/policies/journal-project-scoped-writes.md` (hard).
+**Invariant**: every file written *because of* a journal capture lives under `{project_dir}/`. No exceptions for the journal file, attachments, research excerpts, or hook-spilled overflow. Enforced by `core/policies/journal-project-scoped-writes.md` (hard).
 
 Permitted subpaths:
 

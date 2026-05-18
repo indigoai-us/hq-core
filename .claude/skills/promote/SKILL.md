@@ -4,24 +4,74 @@ description: Change an HQ company member's role with optional guest path scoping
 allowed-tools: Bash, Read
 ---
 
-# Promote HQ Member
+# /promote — Change a Member's Role
 
-Codex adapter for `/promote`.
+Change an existing member's role on a company. Admin+ only.
 
-**Arguments:** `<person-slug-or-uid> <owner|admin|member|guest> [--paths <docs/,shared/>] [--company <slug>]`
+**Usage:**
+```
+/promote <person-slug-or-uid> <owner|admin|member|guest> [--paths <docs/,shared/>] [--company <slug>]
+```
 
-## Source Of Truth
+## Process
 
-Read `.claude/commands/promote.md` first. That command owns role validation, auth resolution, company resolution, service call shape, and error wording.
+1. **Resolve auth** — read Cognito session from `~/.hq/credentials.json`
+2. **Resolve company** — from `--company` flag, or active company via `.hq/config.json`
+3. **Validate args** — `--paths` is only valid with guest role
+4. **Call vault-service** — via `VaultClient.updateRole()` from `@indigoai-us/hq-cloud`
+5. **Print result** — updated role and any scope changes
 
-## Codex Adaptation
+## Implementation
 
-- Execute the command workflow inline from the HQ root.
-- Validate that `--paths` is only used with `guest`.
-- Resolve the active company from the explicit flag or the HQ config; do not guess across companies.
-- Use existing HQ CLI/package entry points when available.
-- Stop on missing auth, insufficient permissions, missing member, or last-owner protection.
+```typescript
+import { promote } from "@indigoai-us/hq-cloud";
 
-## Completion
+const result = await promote({
+  target: "psn_alice",
+  newRole: "guest",
+  paths: "docs/",
+  company: "acme",
+  callerUid: "<caller-person-uid>",
+  vaultConfig: { apiUrl, authToken },
+});
 
-End with the target member, company, previous role if known, new role, path scope when relevant, and when the change takes effect.
+console.log(`Role updated to ${result.membership.role}`);
+```
+
+## Output Format
+
+### On success:
+```
+Role updated for psn_alice on acme:
+  member → guest
+  Allowed paths: docs/
+
+Next STS vend will reflect scoped credentials.
+```
+
+### On error:
+```
+Permission denied — only admins and owners can change member roles.
+```
+```
+Cannot leave company without an owner — promote another member to owner first.
+```
+```
+Member "psn_alice" not found in this company.
+```
+
+## Roles
+
+| Role | Permissions |
+|------|-------------|
+| `owner` | Full control + delete entity |
+| `admin` | Manage members + read/write all |
+| `member` | Read/write unrestricted paths |
+| `guest` | Scoped to `--paths` prefixes only |
+
+## Notes
+
+- Admin+ only — members and guests cannot promote
+- Demoting the last owner is blocked (company must always have at least one owner)
+- `--paths` sets `allowedPrefixes` — only meaningful for guest role
+- Role changes take effect on the member's next STS vend

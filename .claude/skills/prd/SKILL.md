@@ -1,7 +1,7 @@
 ---
 name: prd
 description: Create an execution-ready PRD for a project. Creates prd.json + README.md with full HQ context awareness. Runtime-agnostic — executes identically in Claude Code and Codex. Lightweight by default — uses batched questions and adapts interview depth to brainstorm context if available. For deep research subagents + 3-tier 15-question interview, use /deep-plan instead.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(core/scripts/build-policy-digest.sh:*), Bash(npx:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(core/scripts/build-policy-digest.sh:*), Bash(npx:*), Bash, AskUserQuestion
 ---
 
 # PRD — Project Planning & PRD Generation
@@ -87,7 +87,7 @@ Scanned HQ:
 
 Before generating the PRD, verify infrastructure exists for the target company/repo:
 
-1. **Company**: If project targets a company, read `companies/manifest.yaml`. If company has `knowledge: null`, flag: "Company {co} has no knowledge repo. Create one? [Y/n]" — if yes, create embedded repo at `companies/{co}/knowledge/` with `git init`, update manifest + modules.yaml.
+1. **Company**: If project targets a company, read `companies/manifest.yaml`. If company has `knowledge: null`, flag: "Company {co} has no knowledge repo. Create one? [Y/n]" — if yes, create embedded repo at `companies/{co}/knowledge/` with `git init`, and update manifest.yaml.
 
 2. **Repo**: If `repoPath` specified and doesn't exist locally, flag: "Repo not found at {path}. Clone it or create new?" Add to `manifest.yaml` if missing.
 

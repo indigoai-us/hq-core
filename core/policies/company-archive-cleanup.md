@@ -11,9 +11,8 @@ enforcement: hard
 
 When archiving or deleting a company, always:
 1. Remove its qmd collection: `qmd collection remove {name}`
-2. Delete the entry from `core/modules/modules.yaml`
-3. Remove from `companies/manifest.yaml`
-4. Remove from CLAUDE.md companies list
+2. Remove from `companies/manifest.yaml`
+3. Remove from CLAUDE.md companies list
 
 Stale collections pointing to deleted directories crash `qmd update` with ENOENT, blocking all reindexing.
 

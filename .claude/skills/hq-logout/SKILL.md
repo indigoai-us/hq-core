@@ -1,41 +1,32 @@
 ---
 name: hq-logout
 description: Sign out of HQ Cognito locally — clear cached tokens
+allowed-tools: Bash(hq:*), Bash(ls:*), Bash(test:*), Bash(rm:*)
 ---
 
-# HQ Cognito sign-out (local)
+# /hq-logout — HQ Cognito sign-out (local)
 
-Remove `~/.hq/cognito-tokens.json` so HQ-authenticated operations require a
-fresh sign-in. Local clear only — does not call AWS Cognito GlobalSignOut.
+Removes the cached Cognito session at `~/.hq/cognito-tokens.json` so future
+HQ-authenticated operations (deploy, vault, sync) require a fresh sign-in.
 
-## Process
+**Local only.** Refresh tokens remain valid server-side until they expire
+naturally — they just can't be used without `~/.hq/cognito-tokens.json`. If
+you need to revoke at the pool, ask for AWS Cognito GlobalSignOut explicitly
+(not in scope here).
 
-### 1. Probe
+## Steps
 
-```bash
-test -f ~/.hq/cognito-tokens.json && echo "found" || echo "absent"
-```
+1. **Probe** — `test -f ~/.hq/cognito-tokens.json`. If absent, report
+   "already signed out" and exit.
 
-If absent, report "already signed out" and stop.
+2. **Clear** — `hq auth logout` (delegates to `@indigoai-us/hq-cli`'s
+   logout subcommand, which removes the token file).
 
-### 2. Clear
-
-```bash
-hq auth logout
-```
-
-The CLI deletes `~/.hq/cognito-tokens.json`.
-
-### 3. Confirm
-
-```bash
-test ! -f ~/.hq/cognito-tokens.json && echo "cleared"
-```
+3. **Confirm** — `test ! -f ~/.hq/cognito-tokens.json` and report success.
 
 ## Notes
 
-- Server-side refresh tokens stay valid until natural TTL — they're just
-  unusable without the local token file. If full revocation is required,
-  use AWS Cognito `admin-user-global-sign-out` separately.
-- The `~/.hq-deploy/config.json` API-key store (a different CLI) is not
-  touched — that path isn't in active use here.
+- Same file consumed by `/deploy` — after this, `/hq-login` (or any deploy)
+  will trigger a fresh browser flow.
+- Does NOT touch `~/.hq-deploy/config.json` (that's the unrelated
+  `hq-deploy` CLI's API-key store, not currently used here).
