@@ -1,8 +1,76 @@
+## Release: TBD
+
+### TL;DR
+
+Consolidated promotion folding the open-PR backlog (#141, #146, #149, #151, #159, #160, #161, #162, #164, #165, #167) onto v14.2.0. The **only operator action** is to re-merge `.claude/CLAUDE.md` after `/update-hq` if you customized it (Charter rewrite: 332 → 145 lines, same rules, denser layout). `/update-hq` smart-merges section-by-section.
+
+Highlights:
+- Hard PreToolUse hook mechanically blocks bare `git`/`gh` mutations from the HQ root (sanctioned: prefix `HQ_ALLOW_HQ_ROOT_GIT=1`).
+- Minted `/hq-share` / `/hq-secrets` / `/hq-files` secure-links now render as Markdown links at mint time.
+- Claude Code's native file-based auto-memory ships disabled by default (`autoMemoryEnabled: false`); re-enable per-machine in `.claude/settings.local.json` if wanted.
+- `/handoff` follow-ups (learning, document-release) run as visible Codex subagents instead of detached-headless.
+- `/deploy` documents Cognito org-access policy modes; `/deploy` preferences separated from `~/.hq/config.json`.
+- `/run-project` budget orchestration tightened; `/learn` captures silently (no mid-task confirmation).
+- Stray `.claude/policies/` scope retired — `_digest.md` only emits in the three canonical scopes (`core/policies/`, `companies/*/policies/`, `repos/{public,private}/*/.claude/policies/`).
+
+### New Files
+
+- `.claude/hooks/block-hq-root-git-mutation.sh` — hard PreToolUse Bash hook (all profiles). Mechanically blocks bare `git`/`gh` mutations from the HQ root; sanctioned HQ-internal git work sets `HQ_ALLOW_HQ_ROOT_GIT=1` on the single command. Backstops hard policies `hq-root-never-push-remote` and `hq-git-discipline`. (Force-upstream during merge.)
+- `core/policies/hq-hook-gate-three-profile-lists.md` — codifies the three hook profiles (`minimal` / `standard` / `strict`) routed through `.claude/hooks/hook-gate.sh`.
+- `core/policies/hq-policy-enforcement-claims-verify-wiring.md` — when a policy claims hard enforcement, the corresponding wiring (`settings.json` hook entry + `hook-gate.sh` dispatch) must exist; reviewers verify before merge.
+- `core/policies/hq-secure-link-render-as-markdown.md` — hard policy: `/hq-share`, `/hq-secrets`, `/hq-files` must render minted secure-links as Markdown links at mint time (folds PR #167).
+- `core/policies/learn-auto-no-confirmation.md` — `/learn` captures silently; never prompts mid-task for confirmation.
+- `core/scripts/tests/handoff-post-no-claude.test.sh` — regression test for `core/scripts/handoff-post.sh` ensuring the script no longer assumes a headless-Claude binary on `$PATH`. (Force-upstream during merge.)
+
+### Updated Files
+
+- `.claude/CLAUDE.md` — rewritten to the compressed Purpose / Rules / Map Charter (332 → 145 lines). Same rules, denser. **Section-level smart merge** — `/update-hq` walks each section and prompts where local content diverges from base. Operators who never customized CLAUDE.md see a clean auto-update. (Folds and supersedes #159, #141.)
+- `.claude/settings.json` — adds `"autoMemoryEnabled": false` (HQ persistence supersedes Claude Code's native file-based auto-memory, which was duplicating learnings); wires the new HQ-root git-mutation guard hook into `PreToolUse → Bash`. Smart-merged per event type.
+- `.claude/hooks/hook-gate.sh` — dispatches the new `block-hq-root-git-mutation.sh` hook. (Force-upstream during merge.)
+- `.claude/audit/instructions.md` — references to the retired `.claude/policies/` scope removed.
+- `.claude/audit/suppressions.yaml` — suppressions tied to the retired `.claude/policies/` scope removed.
+- `core/policies/auto-deploy-on-create.md` — small clarification on the auto-deploy preflight handshake.
+- `core/policies/hq-deploy-reinforcement.md` — documents Cognito org-access policy modes (`open` / `domain-allowlist` / `principal-allowlist`); separates `/deploy` preferences from `~/.hq/config.json`. (Folds #151+#162.)
+- `core/policies/quiet-by-default-narration.md` — moved from `.claude/policies/` to the canonical `core/policies/` scope (see Removed for the old path).
+- `core/policies/ralph-orchestrator-context-discipline.md` — `/run-project` budget orchestration tightened. (Folds #146.)
+- `core/scripts/handoff-post.sh` — `/handoff` follow-ups (learning, document-release) now run as visible Codex subagents instead of detached headless; includes zsh unmatched-glob → `find` fix in pipeline-detect. (Force-upstream; folds #149+#160; supersedes #161.)
+- `core/scripts/run-project.sh` — budget-orchestration alignment with the updated policy. (Force-upstream during merge.)
+
+### Updated Skills
+
+- `.claude/skills/deploy/SKILL.md` — Cognito org-access policy modes; `/deploy` preferences moved out of `~/.hq/config.json`. Example email addresses use RFC-2606 `@example.com` (audit remediation of `hq-audit-bot` findings #169 / iteration #171).
+- `.claude/skills/document-release/SKILL.md` — invoked as a visible Codex subagent from `/handoff`.
+- `.claude/skills/handoff/SKILL.md` — runs learning + document-release as visible Codex subagents; zsh unmatched-glob fix in pipeline-detect. (Folds #149+#160.)
+- `.claude/skills/hq-files/SKILL.md` — minted secure-links rendered as Markdown links at mint time (folds #167).
+- `.claude/skills/hq-secrets/SKILL.md` — same Markdown-link rendering for minted secure-links.
+- `.claude/skills/hq-share/SKILL.md` — same Markdown-link rendering for minted secure-links.
+- `.claude/skills/run-project/SKILL.md` — budget orchestration (frontmatter `argument-hint` + body). (Folds #146.)
+
+### Removed
+
+- `.claude/policies/quiet-by-default-narration.md` — relocated to `core/policies/quiet-by-default-narration.md` (canonical scope).
+- `.claude/policies/_digest.md` — stale digest from the retired `.claude/policies/` scope. `core/scripts/build-policy-digest.sh` only emits `_digest.md` in three canonical scopes: `core/policies/`, `companies/*/policies/`, `repos/{public,private}/*/.claude/policies/`.
+- `.claude/policies/` — now-empty directory removed.
+
+### Migration Steps
+
+1. Run `/update-hq` to apply this release.
+2. If you customized `.claude/CLAUDE.md`, work through the section-level smart-merge prompts. Same rules as before, just denser layout — most sections collapse to identical or trivial three-way merges.
+3. If you have HQ-internal git wrappers that ran bare `git` / `gh` mutations from the HQ root, prefix each call with `HQ_ALLOW_HQ_ROOT_GIT=1`. The new hard PreToolUse hook blocks unprefixed mutations regardless of profile.
+4. If you preferred Claude Code's native file-based auto-memory, re-enable it per machine in `.claude/settings.local.json`: `{ "autoMemoryEnabled": true }`. The shipped default is now `false` because HQ's persistence (knowledge bases, policies, `/learn`, handoff/thread state) was being duplicated.
+
+### What does NOT need migrating
+
+- No slash-command names or skill paths change — `/<name>` invocations resolve at the same surface as before.
+- New policies auto-load via SessionStart; no manual wiring required.
+- `companies/`, `personal/`, `repos/`, and `workspace/` are not touched.
+- `hq-cmd-handoff-defer-heavy-post-script` was marked `public:false` and never promoted out of staging — there is nothing to remove from your install. Its discipline is now enforced by the updated `/handoff` SKILL plus the new `core/scripts/tests/handoff-post-no-claude.test.sh` regression test.
+
 ## Release: v14.2.0
 
 ### TL;DR
 
-**Read this before running `/update-hq`.** This release is more invasive than a normal patch — `core/`, `.claude/`, `.codex/`, and `.agents/` are replaced wholesale (and so is `.obsidian/`, if you carry one). The updater overwrites every file in those trees that exists in hq-core, as-is. Any local customization you made in place will be lost if you don't move it into the `personal/` overlay first. See **Breaking Changes** (move customizations to `personal/`) and **Migration Steps** (snapshot first, then `/update-hq`) below before you run the updater.
+**Read this before running `/update-hq`.** This release is more invasive than a normal patch — `core/`, `.claude/`, `.codex/`, and `.agents/` are replaced wholesale (and so is `.obsidian/`, if you carry one). The updater overwrites every file in those trees that exists in hq-core, as-is. Any local customization you made in place will be lost if you don't move it into the `personal/` overlay first. See **Step 1** (snapshot to `~/.hq/backups/`) and **Step 2** (move customizations to `personal/`) below before you run `/update-hq`.
 
 If you have made **no** customizations to those trees, `/update-hq` still does the heavy lifting — the shipped hooks rewire themselves and most operators are done. Either way, the HQ root layout was reduced and the command/skill surface was consolidated; operators with local scripts, bookmarks, shortcuts, sync conflicts, or documentation links should also review the path and reference changes below.
 
@@ -19,7 +87,28 @@ Hidden runtime directories — `.claude/`, `.codex/`, `.agents/`, `.github/`, an
 
 **Note on the root `MIGRATION.md` symlink:** this release ships a one-time symlink `MIGRATION.md` → `core/docs/hq/MIGRATION.md` at the HQ root so operators can find the migration note in its old location. It is a discoverability shim for this release only and will be removed in the next release. Update any bookmarks or scripts that reference `MIGRATION.md` at the root to point at `core/docs/hq/MIGRATION.md` instead.
 
-### Breaking Changes
+
+### Step 1 — Snapshot your HQ to `~/.hq/backups/` before anything else
+
+Before any of the moves, deletes, or `/update-hq` runs below, copy your entire HQ root to a timestamped backup directory. This release is invasive (`core/`, `.claude/`, `.codex/`, `.agents/`, `.obsidian/` are all replaced wholesale), and a snapshot is your only recourse if something operator-specific was missed in the move-to-`personal/` step.
+
+```bash
+# Run from the HQ root.
+HQ_ROOT="$(pwd)"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+DEST="${HOME}/.hq/backups/pre-update-${STAMP}"
+
+mkdir -p "${HOME}/.hq/backups"
+rsync -a --exclude='.git/' "${HQ_ROOT}/" "${DEST}/"
+
+echo "Snapshot at ${DEST}"
+```
+
+The exclude of `.git/` keeps the snapshot small; the working tree is what matters here. Inspect `${DEST}` and confirm it has the trees you care about (`core/`, `.claude/`, `.codex/`, `.agents/`, `.obsidian/`, `companies/`, `personal/`, `repos/`, `workspace/`) before proceeding.
+
+**Retention.** Keep the snapshot for at least 7 days after `/update-hq`. A future hq-core release will ship a cleanup helper that prunes `~/.hq/backups/pre-update-*` directories older than 7 days; until then, deleting them is a manual decision. If you find operator content was lost during the update, recover it from the snapshot and move it into `personal/` so it survives subsequent updates.
+
+### Step 2 — Save operator customizations to `personal/` before `/update-hq`
 
 **This release replaces `core/`, `.claude/`, `.codex/`, `.agents/`, and `.obsidian/` wholesale.** Every file in those trees that ships with hq-core — skills, hooks, policies, scripts, docs, default settings, Codex prompts, Obsidian vault config — is overwritten by the updater. The rule is simple: **whatever file exists in the upstream hq-core release is copied into your install as-is, replacing whatever you had at that path.**
 
@@ -55,115 +144,9 @@ After running `/update-hq`:
 - Run `bash core/scripts/codex-skill-bridge.sh status` to confirm skills are wired.
 - Run `git status` from the HQ root and inspect anything still dirty in `core/`, `.claude/`, `.codex/`, or `.agents/` — that's a sign the move was incomplete.
 
-Additional behavioral break worth flagging:
+### Step 3 — Run the replacement (and bypass the hooks)
 
-- **`companies/manifest.yaml` dropped from the `locked` list.** It is no longer in `core/core.yaml`'s `locked` block; it is operator-owned and must be reviewable rather than locked. No action needed unless you wrote tooling that asserted on the old locked-path list.
-- **`core/workers/registry.yaml` is now a generated artifact (#145)** — hand edits will be flagged in review (the file moved from `locked` to `reviewable` in `core/core.yaml`). Edit the source `core/workers/**/worker.yaml` instead; the registry regenerates on the next `master-sync` run via `core/scripts/generate-workers-registry.sh`.
-- **Context-threshold checkpoint requirement (#129).** When `.claude/hooks/context-warning-50.sh` or `.claude/hooks/auto-checkpoint-precompact.sh` fire, run `/checkpoint` immediately — it is a mandatory directive, not a user-choice prompt.
-- **qmd-first HQ search policy (#131).** Agents must use `qmd` for HQ search across content, indexed repos, projects, workers, policies, and knowledge, and only fall back to `Grep` or shell search when `qmd` is unavailable or the task is exact pattern matching in already-scoped code.
-
-### New Skills
-
-The `.claude/commands/*.md` surface was consolidated into skills (#147) — both Claude Code and Codex now read `.claude/skills/<name>/SKILL.md` as the single source of truth (Codex via `.agents/skills`). Every retired command name is reachable as a skill of the same name. User-personal skills under `personal/skills/<skill>/` continue to surface as flat slash commands via `master-sync.sh`.
-
-For reference, the 60 skill files now reachable as `.claude/skills/<same-name>/SKILL.md`:
-
-```
-accept           document-release  hq-share          newworker         retro
-adr              execute-task      hq-sync           onboard           review
-architect        finish-estimate   hq-whoami         out-of-scope      review-plan
-ascii-graphic    garden            idea              personal-interview run
-brainstorm       goals             import-claude    plan              run-pipeline
-calibration-report handoff         investigate       prd               run-project
-checkpoint       harness-audit     journal           promote           search
-cleanup          hq-bug            land              quality-gate      setup
-convert-codex    hq-login          land-batch        recover-session   startwork
-decision-queue   hq-logout         learn             resolve-conflicts strategize
-deep-plan        hq-share          newcompany                          sync-registry
-designate-team                                                         tdd
-diagnose                                                               track-estimate
-discover                                                               tutorial
-                                                                       update-hq
-```
-
-### New File
-
-`/update-hq` Phase 5a will create each of these locally if missing:
-
-- `.claude/hooks/hq-autocommit.sh` (#139) — PostToolUse hook that quietly autosaves Claude/Codex edits to HQ-tracked files so the user does not see dirty HQ state. Deliberately skips `repos/`, embedded/symlinked knowledge repos, and repo-specific work — those keep normal commit discipline.
-- `.claude/hooks/auto-session-project.sh` — native session-project capture; writes session state under `.claude/state/` and project artifacts under `personal/projects/` unless a company-scoped project is selected. Session identifiers are sanitized before becoming filenames.
-- `.claude/hooks/native-plan-project-sync.sh` — companion to `auto-session-project.sh`; keeps plan/project state in sync.
-- `.claude/hooks/auto-startwork.sh` — when the manifest has exactly one company, enters that company's context without prompting.
-- `.claude/hooks/context-warning-50.sh` (#129) — one-shot banner at ~50% of the context window. Requires `/checkpoint` immediately on fire.
-- `.claude/hooks/auto-checkpoint-precompact.sh` (#129) — fires immediately before autocompact runs (cannot be blocked); also requires `/checkpoint` on next turn.
-- `core/scripts/session-project.sh` — session-to-project bridge used by the native session helpers.
-- `core/scripts/generate-workers-registry.sh` (#145) — generator for `core/workers/registry.yaml`; runs on every `master-sync` invocation.
-- `core/hooks/Stop/50-after-turn-suggestions.sh` — after-turn suggestion handling. If you maintain custom lifecycle hook allowlists, add `core/hooks/Stop/` to the set of expected shipped hook paths.
-- `core/policies/hq-local-autocommit.md` — companion policy to `hq-autocommit.sh`.
-- `core/policies/hq-qmd-first-for-hq-search.md` (#131) — auto-loaded; codifies qmd-first HQ search.
-- `.codex/output-style.md` (#133) — generated from the active Claude Code output style so Codex chat voice matches Claude Code. Coverage check: `bash core/scripts/codex-skill-bridge.sh status`.
-
-### Updated Files
-
-`/update-hq` Phase 5b will smart-merge each of these against your local copy:
-
-- `core/core.yaml` — `locked` documentation paths now point at `core/docs/hq/`; `core/modules/` reference removed; `core/workers/registry.yaml` moved from `locked` to `reviewable`; `companies/manifest.yaml` dropped from `locked`.
-- `.claude/settings.json` — wires the new hooks (`hq-autocommit`, `auto-session-project`, `native-plan-project-sync`, `auto-startwork`, `context-warning-50`, `auto-checkpoint-precompact`, `Stop/50-after-turn-suggestions`).
-- `.claude/scripts/*` — `/update-hq` dispatch-script corruption fix (#128). A bug that could brick a session by corrupting `.claude/scripts/*` during `/update-hq` was fixed. Recommended: run `/update-hq` once to land the fixed updater before the next major upgrade.
-
-Behavioral updates not tied to a single file path:
-
-- **Codex `run-project` phase orchestration fix (#130).** Phase boundaries are now respected when `run-project` is executed under Codex; workers no longer collapse multiple phases into a single invocation.
-- **Public release privacy gates restored or widened.** Private tenant slug scan, `/Users/` absolute-path tripwire over `core/scripts`, and session-marker path hardening were re-applied.
-
-### Removed
-
-`/update-hq` Phase 5d will prompt to delete each of these locally. You do **not** need to run the `rm` blocks reproduced under **Migration Steps** by hand — they are reference for the manual-fallback path. Accept the deletes either way; the upstream is the source of truth for what ships.
-
-- `.claude/commands/` (entire directory — 60 command files consolidated into `.claude/skills/<name>/SKILL.md` via #147; see **New Skills** for the full list)
-- `.claude/skills/_template`
-- `.claude/skills/core`
-- `.claude/skills/personal` (skills now sit directly under `.claude/skills/<name>/`)
-- `core/modules/modules.yaml` (HQ-Modules manifest system removed via #140; migrate custom modules to a policy under `personal/policies/` or a worker under `personal/workers/` — `master-sync.sh` will symlink them into `core/` on the next run)
-- `core/modules/` (prune the directory once empty)
-- `.codex/prompts/` (legacy Codex prompts directory — Codex now reads skill files directly via the `.agents/skills` bridge)
-- `.leak-scan/` (scan tooling and snapshots; leak-scanning moved out-of-tree and now runs against the staging buffer rather than as a release artifact)
-- `.github/workflows/pr-checks.yml` (leak-scan CI driver; retired with `.leak-scan/`)
-- `.github/workflows/audit.yml` (PR audit workflow template; enrolled repos now receive an equivalent workflow from `hq-pr-review-installer` instead of carrying it inline)
-- `CHANGELOG.md` (root copy — canonical is now `core/docs/hq/CHANGELOG.md`)
-- `LICENSE` (root copy — canonical is now `core/docs/hq/LICENSE`)
-- `README.md` (root copy — canonical is now `core/docs/hq/README.md`)
-- `RELEASE-NOTES-v14.0.0.md` (root copy — canonical is now `core/docs/hq/RELEASE-NOTES-v14.0.0.md`)
-- `USER-GUIDE.md` (root copy — canonical is now `core/docs/hq/USER-GUIDE.md`)
-- `projects/` (root directory — canonical is now `personal/projects/`; move real content first)
-- `data/` (root directory — canonical is now `personal/data/`; move real content first)
-- `core.yaml` (root copy — canonical is now `core/core.yaml`)
-
-If you forked `.leak-scan/scan.sh`, `pr-checks.yml`, or `audit.yml`, port them to your fork's own CI before deleting; the upstream copies will not return.
-
-### Migration Steps
-
-`/update-hq` Phase 5 walks the parsed `new_files`, `updated_files`, `breaking_changes`, and `removed_files` lists above and acts on each — for the common path you do not need to run any of the `rm`/`rsync` blocks by hand. The numbered steps below are reference: snapshot first (always), then run `/update-hq`, then manual fallback blocks for the cases where the slash command hits a hook block or you would rather replace by hand.
-
-**1. Snapshot your HQ to `~/.hq/backups/` before anything else.** This release is invasive (`core/`, `.claude/`, `.codex/`, `.agents/`, `.obsidian/` are all replaced wholesale), and a snapshot is your only recourse if something operator-specific was missed in the move-to-`personal/` step.
-
-```bash
-# Run from the HQ root.
-HQ_ROOT="$(pwd)"
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-DEST="${HOME}/.hq/backups/pre-update-${STAMP}"
-
-mkdir -p "${HOME}/.hq/backups"
-rsync -a --exclude='.git/' "${HQ_ROOT}/" "${DEST}/"
-
-echo "Snapshot at ${DEST}"
-```
-
-The exclude of `.git/` keeps the snapshot small; the working tree is what matters here. Inspect `${DEST}` and confirm it has the trees you care about (`core/`, `.claude/`, `.codex/`, `.agents/`, `.obsidian/`, `companies/`, `personal/`, `repos/`, `workspace/`) before proceeding.
-
-**Retention.** Keep the snapshot for at least 7 days after `/update-hq`. A future hq-core release will ship a cleanup helper that prunes `~/.hq/backups/pre-update-*` directories older than 7 days; until then, deleting them is a manual decision. If you find operator content was lost during the update, recover it from the snapshot and move it into `personal/` so it survives subsequent updates.
-
-**2. Run `/update-hq` (and bypass the hooks).** The canonical path is the slash command:
+The canonical path is the slash command:
 
 ```text
 /update-hq
@@ -186,16 +169,16 @@ SRC="$(find "$WORK" -maxdepth 2 -type d -name 'hq-core-*' | head -1)"
 [ -d "$SRC" ] || { echo "Could not locate extracted release root under $WORK"; exit 1; }
 
 # Wholesale-replace each tree. --delete drops files that no longer exist
-# upstream (this is how the deletes from the Removed section land
-# automatically for paths inside these trees; paths outside still need
-# the manual rm blocks in steps 3 and 4 below).
+# upstream (this is how the deletes from "Also delete" land automatically
+# for paths inside these trees; paths outside still need the manual rm
+# block in the previous section).
 HQ_BYPASS_CORE_PROTECT=1 rsync -a --delete "$SRC/core/"     ./core/
 HQ_BYPASS_CORE_PROTECT=1 rsync -a --delete "$SRC/.claude/"  ./.claude/
 HQ_BYPASS_CORE_PROTECT=1 rsync -a --delete "$SRC/.codex/"   ./.codex/
 HQ_BYPASS_CORE_PROTECT=1 rsync -a --delete "$SRC/.agents/"  ./.agents/
 
 # .obsidian/ is replaced only if the release ships one; back up first if you
-# have local vault state you care about (see Breaking Changes above).
+# have local vault state you care about (see Step 2).
 if [ -d "$SRC/.obsidian" ]; then
   HQ_BYPASS_CORE_PROTECT=1 rsync -a --delete "$SRC/.obsidian/" ./.obsidian/
 fi
@@ -210,9 +193,88 @@ HQ_BYPASS_CORE_PROTECT=1 rsync -a \
 rm -rf "$WORK"
 ```
 
+After the rsync block, run **Step 4** (rm commands for paths outside the wholesale-replaced trees) and **Step 5** (rm commands for old root copies of files that the wholesale-replace also lands at their new `core/docs/hq/` location).
+
 If a hook still blocks a write despite the `HQ_BYPASS_CORE_PROTECT=1` prefix, run the command from a plain terminal outside Claude Code/Codex — there is no in-session hook to fire. Do not delete the hook file to "fix" the block; the hook is the safety net.
 
-**3. Manual fallback for root-level moves.** `/update-hq` Phase 5d prompts to delete the root-level moved files listed in **Removed** above. If you skipped a prompt or ran the wholesale-replace by hand, run these from the HQ root:
+### Step 4 — Files /update-hq deletes for you (reference)
+
+`/update-hq` walks the `removed_files` list from the release migration data and prompts to delete each path that exists locally but is gone in the new release (Phase 5d). You do **not** need to run the `rm` blocks below by hand — they are documented here so you can see exactly what was retired and confirm the prompts during the run. If you skipped a prompt or are running outside `/update-hq` and need to mop up manually, the `rm` blocks are copy-pasteable. Either way, accept the deletes — the upstream is the source of truth for what ships.
+
+**Commands consolidated into skills (60 files).** Every `.claude/commands/*.md` file shipped under `core/` is gone — slash invocations now resolve through `.claude/skills/<name>/SKILL.md` alone.
+
+```bash
+rm -rf .claude/commands
+```
+
+For reference, the deleted command files were:
+
+```
+accept           document-release  hq-share          newworker         retro
+adr              execute-task      hq-sync           onboard           review
+architect        finish-estimate   hq-whoami         out-of-scope      review-plan
+ascii-graphic    garden            idea              personal-interview run
+brainstorm       goals             import-claude    plan              run-pipeline
+calibration-report handoff         investigate       prd               run-project
+checkpoint       harness-audit     journal           promote           search
+cleanup          hq-bug            land              quality-gate      setup
+convert-codex    hq-login          land-batch        recover-session   startwork
+decision-queue   hq-logout         learn             resolve-conflicts strategize
+deep-plan        hq-share          newcompany                          sync-registry
+designate-team                                                         tdd
+diagnose                                                               track-estimate
+discover                                                               tutorial
+                                                                       update-hq
+```
+
+(Each is now reachable as `.claude/skills/<same-name>/SKILL.md`.)
+
+**Skill scaffolding directories (3 entries).** The `_template`, `core`, and `personal` subdirectories under `.claude/skills/` are gone — skills now sit directly under `.claude/skills/<name>/`.
+
+```bash
+rm -rf .claude/skills/_template .claude/skills/core .claude/skills/personal
+```
+
+**HQ-Modules system (1 file).** The module loader and its manifest are gone — module-style rules are now expressed as policies under `personal/policies/` or as workers under `personal/workers/` (which `master-sync.sh` symlinks into `core/` for you, so they surface where the rest of the system expects them).
+
+```bash
+# HQ_BYPASS_CORE_PROTECT=1 is required when running these from inside
+# Claude Code or Codex — block-core-writes-bash.sh otherwise rejects any
+# rm/rmdir/cp/mv/rsync/sed -i/ln that names a `core/` path. The prefix is
+# a no-op when run from a plain terminal.
+HQ_BYPASS_CORE_PROTECT=1 rm -f core/modules/modules.yaml
+# Then prune the directory if it is now empty:
+HQ_BYPASS_CORE_PROTECT=1 rmdir core/modules 2>/dev/null || true
+```
+
+**Codex prompts directory (1 entry).** The legacy `.codex/prompts/` directory is gone — Codex now reads skill files directly via the `.agents/skills` bridge.
+
+```bash
+rm -rf .codex/prompts
+```
+
+**Privacy-and-CI artifacts no longer shipped (3 paths).** These three paths are not in the wholesale-replaced trees and are no longer part of the hq-core release, so you have to delete them by hand:
+
+```bash
+rm -rf .leak-scan
+rm -f .github/workflows/pr-checks.yml
+rm -f .github/workflows/audit.yml
+
+# Then prune any directories left empty by the deletes above.
+find .github/workflows -type d -empty -delete
+```
+
+Why each is gone:
+
+- `.leak-scan/` — scan tooling and snapshots. Leak-scanning moved out-of-tree; it now runs against the staging buffer rather than as a release artifact.
+- `.github/workflows/pr-checks.yml` — the leak-scan CI driver. Without `.leak-scan/`, the workflow has nothing to drive.
+- `.github/workflows/audit.yml` — the PR audit workflow template. Enrolled repos now receive an equivalent workflow from `hq-pr-review-installer` instead of carrying it inline.
+
+If you forked any of these workflows or wrote scripts that call `.leak-scan/scan.sh` directly, port them to your fork's own CI before deleting; the upstream copies will not return.
+
+### Step 5 — Clean up moved root files and stale references
+
+The wholesale replace lands the new copies at the new locations, but it does **not** delete the old copies at their old root locations. After `/update-hq`, run these moves and deletes from the HQ root:
 
 ```bash
 # Root-facing HQ documentation moved under core/docs/hq/
@@ -242,7 +304,7 @@ rm -rf data
 rm -f core.yaml
 ```
 
-The canonical relocation table for root-level moves:
+Files moved (canonical relocation table):
 
 | Old path | New path |
 | --- | --- |
@@ -255,31 +317,44 @@ The canonical relocation table for root-level moves:
 | root `data/` | `personal/data/` |
 | root `core.yaml` | `core/core.yaml` |
 
-**4. Manual fallback for paths outside the wholesale-replaced trees.** A handful of removed paths sit outside `core/`, `.claude/`, `.codex/`, and `.agents/`, so the rsync `--delete` block in step 2 does not reach them and `/update-hq` Phase 5d uses an individual prompt instead. If you skipped the prompts, delete them by hand:
+### What changed
 
-```bash
-rm -rf .leak-scan
-rm -f .github/workflows/pr-checks.yml
-rm -f .github/workflows/audit.yml
+#### Layout and shipped-doc moves
 
-# Then prune any directories left empty by the deletes above.
-find .github/workflows -type d -empty -delete
-```
+- **Root-facing HQ documentation moved under `core/docs/hq/`.** `README.md`, `USER-GUIDE.md`, `CHANGELOG.md`, `LICENSE`, `MIGRATION.md`, and `RELEASE-NOTES-v14.0.0.md` now live in `core/docs/hq/`. `core/core.yaml` was updated so its locked documentation paths point at the new location.
+- **`MIGRATION.md` symlinked at root (#143).** The canonical file remains `core/docs/hq/MIGRATION.md`; a root-level `MIGRATION.md` symlink is provided for discoverability. Edit the file at `core/docs/hq/MIGRATION.md`; the root symlink follows automatically.
+- **Personal/HQ project scaffolding moved from root `projects/` to `personal/projects/`.** Personal/HQ projects should now live under `personal/projects/`. If a stale root `projects/` directory reappears after sync, inspect it before deletion (see **Project and journal notes** below).
+- **Root `data/` moved to `personal/data/`.** Runtime journal/data placeholders move from root `data/` to `personal/data/`; project-scoped journals continue to live with their projects.
+- **Root `core.yaml` removed.** The canonical metadata file is `core/core.yaml`.
 
-**5. Sync and multi-machine cleanup.** This migration matters for HQ Sync because a file move can look like "delete old path + add new path" to a second machine that has not yet received the same cleanup. The safe sequence is:
+#### Commands, skills, and modules
 
-1. Update one machine and let it commit the moved paths plus deletions.
-2. Run HQ Sync from that machine so the cloud receives the new layout.
-3. Run HQ Sync on the other machine. If stale root files reappear as conflicts, keep the cleaned layout and archive/delete the legacy root copies.
+- **Commands consolidated into skills (#147).** Every `.claude/commands/*.md` shipped under `core/` has been removed in favor of `.claude/skills/<name>/SKILL.md` as the single source of truth. Both Claude Code and Codex now read the same skill file (Codex via `.agents/skills`). If you maintained local references to `.claude/commands/<name>.md`, update them to point at the skill path instead. User-personal skills under `personal/skills/<skill>/` continue to surface as flat slash commands via `master-sync.sh`.
+- **HQ-Modules manifest system removed (#140).** `core/modules/modules.yaml` and the module loader have been deleted. The locked path list in `core/core.yaml` no longer references `core/modules/`. If you authored a custom module manifest, migrate its rules into a policy under `personal/policies/` or a worker under `personal/workers/` — `master-sync.sh` will symlink them into `core/` on the next run.
+- **`core/workers/registry.yaml` is now a generated artifact (#145).** It is produced from each `core/workers/**/worker.yaml` by `core/scripts/generate-workers-registry.sh` on every `master-sync` run. Do not hand-edit it. Hand edits will be flagged in review (the file has moved from `locked` to `reviewable` in `core/core.yaml`). To add or change a worker, edit the source `worker.yaml`; the registry regenerates on the next sync.
 
-If `/update-hq` cannot remove stale root paths automatically on a second machine, run this from the HQ root after confirming no personal content lives there:
+#### Hooks, policies, and session helpers
 
-```bash
-rm -rf data projects
-rm -f CHANGELOG.md CONTRIBUTING.md GEMINI.md INDEX.md LICENSE MIGRATION.md README.md RELEASE-NOTES-v14.0.0.md USER-GUIDE.md core.yaml setup.sh
-```
+- **Local HQ autocommit (#139).** A new PostToolUse hook `.claude/hooks/hq-autocommit.sh` quietly autosaves edits made by Claude Code or Codex to HQ-tracked files, so the user does not see dirty HQ state. It deliberately skips `repos/`, embedded/symlinked knowledge repos, and repo-specific work; those keep normal commit discipline. The companion policy lives at `core/policies/hq-local-autocommit.md`.
+- **Native session project capture.** Added `.claude/hooks/auto-session-project.sh`, `.claude/hooks/native-plan-project-sync.sh`, `core/scripts/session-project.sh`, and their tests. Session state is written under `.claude/state/`; project artifacts land under `personal/projects/` unless a company-scoped project is selected. Session identifiers are sanitized before becoming filenames.
+- **Single-company auto-startwork.** Added `.claude/hooks/auto-startwork.sh` and tests. When the manifest has exactly one company, the session enters that company's context without prompting.
+- **After-turn suggestion handling.** Added under `core/hooks/Stop/50-after-turn-suggestions.sh`. If you maintain custom lifecycle hook allowlists, add `core/hooks/Stop/` to the set of expected shipped hook paths.
+- **Context-threshold checkpoint requirement (#129).** `.claude/hooks/context-warning-50.sh` prints a one-shot banner at ~50% of the context window, and `.claude/hooks/auto-checkpoint-precompact.sh` fires immediately before autocompact runs. When either banner appears, run `/checkpoint` immediately — it is a mandatory directive, not a user-choice prompt. Trigger table: `core/knowledge/public/hq-core/auto-checkpoint-spec.md`.
+- **qmd-first HQ search policy (#131).** Added `core/policies/hq-qmd-first-for-hq-search.md`. Agents must use `qmd` for HQ search across content, indexed repos, projects, workers, policies, and knowledge, and only fall back to `Grep` or shell search when `qmd` is unavailable or the task is exact pattern matching in already-scoped code.
 
-Do not remove `AGENTS.md`, `.claude/`, `.agents/`, `.codex/`, `companies/`, `core/`, `personal/`, `repos/`, or `workspace/`.
+#### Codex parity and Cavebro
+
+- **Cavebro output style bridged to Codex (#133).** `.codex/output-style.md` is now generated from the active Claude Code output style so Codex chat voice matches Claude Code. Coverage check: `bash core/scripts/codex-skill-bridge.sh status`.
+- **Codex `run-project` phase orchestration fix (#130).** Phase boundaries are now respected when `run-project` is executed under Codex; workers no longer collapse multiple phases into a single invocation.
+
+#### Updater and lock list
+
+- **`update-hq` dispatch-script corruption fix (#128).** A bug that could brick a session by corrupting `.claude/scripts/*` during `/update-hq` was fixed. Recommended: run `/update-hq` once to land the fixed updater before the next major upgrade.
+- **`companies/manifest.yaml` dropped from `locked` list.** It is no longer in `core/core.yaml`'s `locked` block; it is operator-owned and must be reviewable rather than locked. No action needed unless you wrote tooling that asserted on the old locked-path list.
+
+#### Privacy gates
+
+- **Public release privacy gates restored or widened.** Private tenant slug scan, `/Users/` absolute-path tripwire over `core/scripts`, and session-marker path hardening were re-applied.
 
 ### What does NOT need migrating
 
@@ -315,6 +390,14 @@ Also check for hardcoded root documentation paths in:
 - custom hooks or worker instructions
 - dashboards that link into HQ docs
 
+### Hook and runtime notes
+
+No manual `.claude/settings.json` edits should be required. The updated settings file wires the shipped hooks.
+
+The native-session helpers write session state under `.claude/state/` and project artifacts under `personal/projects/` unless a company-scoped project is selected. Session identifiers are sanitized before becoming filenames.
+
+The after-turn suggestion hook lives at `core/hooks/Stop/50-after-turn-suggestions.sh`. If you maintain custom lifecycle hook allowlists, add `core/hooks/Stop/` to the set of expected shipped hook paths.
+
 ### Project and journal notes
 
 Personal/HQ projects should now live under `personal/projects/`. If a stale root `projects/` directory reappears after sync, inspect it before deletion:
@@ -324,6 +407,23 @@ Personal/HQ projects should now live under `personal/projects/`. If a stale root
 - If it contains company work, move that work into the relevant `companies/{company}/projects/` directory instead.
 
 Root `data/` is no longer a canonical journal/data location. Preserve any real local content before deleting it; otherwise remove the stale directory.
+
+### Sync and multi-machine cleanup
+
+This migration matters for HQ Sync because a file move can look like "delete old path + add new path" to a second machine that has not yet received the same cleanup. The safe sequence is:
+
+1. Update one machine and let it commit the moved paths plus deletions.
+2. Run HQ Sync from that machine so the cloud receives the new layout.
+3. Run HQ Sync on the other machine. If stale root files reappear as conflicts, keep the cleaned layout and archive/delete the legacy root copies.
+
+If `/update-hq` cannot remove stale root paths automatically, run this from the HQ root after confirming no personal content lives there:
+
+```bash
+rm -rf data projects
+rm -f CHANGELOG.md CONTRIBUTING.md GEMINI.md INDEX.md LICENSE MIGRATION.md README.md RELEASE-NOTES-v14.0.0.md USER-GUIDE.md core.yaml setup.sh
+```
+
+Do not remove `AGENTS.md`, `.claude/`, `.agents/`, `.codex/`, `companies/`, `core/`, `personal/`, `repos/`, or `workspace/`.
 
 ### Verification
 

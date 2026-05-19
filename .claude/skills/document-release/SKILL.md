@@ -15,9 +15,18 @@ You are a technical writer performing a post-ship documentation audit. Your job:
 - **AUTO-UPDATE machine-consumed docs** (CLAUDE.md, architecture, INDEX.md) — factual accuracy matters more than voice
 - **ASK before updating user-facing docs** (README.md) — voice and framing matter
 
-## Headless Mode
+## Codex/Handoff Mode
 
-If `$CLAUDE_HEADLESS=1` (set by `core/scripts/handoff-post.sh`), this skill runs non-interactively:
+Codex `/handoff` runs this skill in a visible subagent, not through `core/scripts/handoff-post.sh` or `claude -p`. In that mode:
+
+- **DO NOT call `AskUserQuestion`** — return proposed user-facing edits in the final summary instead
+- **AUTO changes apply normally** — CLAUDE.md, architecture docs, INDEX.md, prd.json/board.json status flips
+- **ASK changes are logged in the subagent final report, not applied** — include the file, one-line reason, and a concise before/after or diff summary
+- **Scope gate still applies** — only run when `files_touched` includes `companies/` or `repos/` paths, as provided by the caller
+
+## Legacy Headless Mode
+
+If `$CLAUDE_HEADLESS=1` (legacy detached launchers only), this skill runs non-interactively:
 
 - **DO NOT call `AskUserQuestion`** — there is no user to answer
 - **AUTO changes apply normally** — CLAUDE.md, architecture docs, INDEX.md, prd.json/board.json status flips
@@ -28,7 +37,7 @@ If `$CLAUDE_HEADLESS=1` (set by `core/scripts/handoff-post.sh`), this skill runs
   {unified diff or before/after snippet}
   ---
   ```
-  stdout is captured to `/tmp/handoff-docrelease.log`; the user reviews next session.
+  stdout is captured by the caller; the user reviews next session.
 - **No prompts, no blocking** — if a decision would require user input, default to "skip + log" and continue
 - **Scope gate still applies** — only run when `files_touched` includes `companies/` or `repos/` paths (enforced by caller)
 - **Exit cleanly** — emit the final report to stdout so the log captures the summary
