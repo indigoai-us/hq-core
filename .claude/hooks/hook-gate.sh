@@ -39,7 +39,7 @@ DISABLED_HOOKS="${HQ_DISABLED_HOOKS:-}"
 # Minimal: critical safety hooks
 is_in_minimal_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes|block-unsafe-package-install)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes|block-unsafe-package-install|block-hq-root-git-mutation)
       return 0
       ;;
     *)
@@ -51,7 +51,7 @@ is_in_minimal_profile() {
 # Standard: minimal + checkpoint/handoff + pattern learning + core governance + policy loading
 is_in_standard_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes|load-policies|check-bridge-health|check-repo-active-runs|block-on-active-run|context-warning-50|inject-local-context|auto-startwork|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes|load-policies|check-bridge-health|check-repo-active-runs|block-on-active-run|context-warning-50|inject-local-context|auto-startwork|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|block-hq-root-git-mutation)
       return 0
       ;;
     *)
@@ -63,7 +63,7 @@ is_in_standard_profile() {
 # Strict: standard + future quality hooks (reserved for expansion)
 is_in_strict_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes|load-policies|check-bridge-health|check-repo-active-runs|block-on-active-run|context-warning-50|inject-local-context|auto-startwork|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|detect-secrets|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|cleanup-mcp-processes|load-policies|check-bridge-health|check-repo-active-runs|block-on-active-run|context-warning-50|inject-local-context|auto-startwork|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|block-hq-root-git-mutation)
       return 0
       ;;
     *)

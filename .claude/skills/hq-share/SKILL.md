@@ -73,10 +73,17 @@ bounded `60s..7d`.
 Default to handing the user a working link back in chat — that's the whole
 point of running `/hq-share`. Report:
 
-- the **full share-session URL** inline as the headline answer (this is the
-  minting turn — the one surface where the capability policy permits the
-  real token to appear)
-- `Expires:` timestamp from the CLI output
+- the share-session URL **rendered only as a Markdown inline link**, as the
+  headline answer — label = purpose + expiry, href = the full URL with the
+  token intact, e.g.
+  `[Open share-session link — expires 03:47Z ›](https://hq.{co}.com/share-session/<token>)`.
+  NEVER print the bare URL or token as visible text this turn (no code-fenced
+  URL, no "here's the link: https://…", no plaintext alongside); the label
+  MUST NOT contain any part of the token. This is the minting turn — the one
+  surface where the real token is permitted, and only inside the Markdown
+  href. Full rule:
+  [`hq-secure-link-render-as-markdown`](../../policies/hq-secure-link-render-as-markdown.md).
+- `Expires:` timestamp from the CLI output (fold it into the link label)
 - resolved paths (normalized form, e.g. `reports/q3/*`)
 - company slug
 
@@ -88,10 +95,13 @@ artifact — in those contexts use the redacted form
 
 ## Rules
 
-1. **Print the URL once at mint, then never again.** The minting turn (Step 5)
-   is the one surface where the unredacted share-session URL is permitted —
-   that's the whole point of `/hq-share` and lets the human copy/click
-   immediately. After that, keep the URL out of every persisted surface:
+1. **Render as a Markdown link at mint, once, then never again.** The minting
+   turn (Step 5) is the one surface where the unredacted share-session URL is
+   permitted, and it must appear **only inside a Markdown inline link**
+   (`[label](url)`) — never as bare visible text. The label carries purpose +
+   expiry; the href carries the token. See
+   [`hq-secure-link-render-as-markdown`](../../policies/hq-secure-link-render-as-markdown.md).
+   After that, keep the URL out of every persisted surface:
    journals, thread files (`workspace/threads/`), commit messages, PR
    descriptions, learnings, Slack/email surfaces, worker handoff payloads,
    and any subsequent assistant turn that summarizes the action. A

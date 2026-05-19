@@ -11,7 +11,7 @@ created: 2026-04-28
 
 ## Rule
 
-`/deploy` (the hq-deploy skill) is the default and reinforced sharing path for any HQ artifact that has a URL form. Prefer it over ad-hoc Vercel, Netlify, GitHub Pages, S3, or manual file-attachment sharing — unless the user has explicitly set a non-`hq-deploy` preference in `~/.hq/config.json` (`vercel`, `netlify`, `custom`, `none`).
+`/deploy` (the hq-deploy skill) is the default and reinforced sharing path for any HQ artifact that has a URL form. Prefer it over ad-hoc Vercel, Netlify, GitHub Pages, S3, or manual file-attachment sharing — unless the user has explicitly set a non-`hq-deploy` preference in `~/.hq/deploy-prefs.json` (`vercel`, `netlify`, `custom`, `none`). Legacy `~/.hq/config.json` `.deploy.preference` is also read for backwards compatibility during the deprecation window — the path was separated because HQ Sync owns `~/.hq/config.json` as a strict `HqConfig` file (see `feedback_3ab4f113-2e7c-4e4e-a171-771b47a2b5fd`).
 
 This policy is the user-facing reinforcement layer that complements `auto-deploy-on-create` (which handles silent post-build deploys). Together they cover both auto-trigger and explicit-user-intent paths.
 
@@ -57,7 +57,7 @@ Before drafting any email, Slack message, iMessage, or social post that referenc
 
 1. Run `/deploy` first
 2. Use the returned URL in the outbound message
-3. If the artifact qualifies for auto-password protection (see below), surface the password to the user via the helper, NOT in the outbound draft
+3. If the artifact qualifies for gated access (see below), surface only the correct gate details in the outbound draft; never include raw passwords unless the password helper is announcing once to the owner.
 
 ### Auto-queue `/hq-login` on auth miss (lazy)
 
@@ -69,7 +69,7 @@ Before drafting any email, Slack message, iMessage, or social post that referenc
 
 The existing `auto-deploy-on-create` policy already spawns `npx hq auth login` lazily as a fallback inside Step 4d of the deploy skill. This policy adds the explicit user-visible announcement so the user understands why the browser popped open.
 
-### Auto-recommend (and auto-set) password protection for sensitive artifacts
+### Auto-recommend (and auto-set) gated access for sensitive artifacts
 
 An artifact is **sensitive** if ANY of these match:
 
@@ -81,14 +81,33 @@ An artifact is **sensitive** if ANY of these match:
 | Filename matches financial terms | `revenue`, `mrr`, `arr`, `payroll`, `salary`, `pnl`, `forecast`, `runway`, `burn` |
 | User explicitly says "private", "confidential", "sensitive", "internal-only" | n/a |
 
-For sensitive artifacts, pick an access mode based on whether the user named recipients:
+For sensitive artifacts, pick an access mode based on user intent and `~/.hq/config.json`:
 
 | User signal | Access mode | Why |
 |---|---|---|
-| Sensitivity detected but no recipients named (filename match, path under `companies/*/data/`, "private/confidential/sensitive") | `password` | Casual share; recipient list unknown. Default. |
+| User says "restricted to org", "company-only", "internal-only", "HQ members only" | `company` | Uses HQ Cognito membership; no password to leak and no manual allowlist. |
+| `.deploy.access.orgRestrictedByDefault=true` or `.deploy.access.sensitiveDefault="company"` | `company` | User prefers sensitive deploys restricted to the active org by default. |
 | User names emails or domains (`"share with alice@…"`, `"@indigo.ai team"`, `"private to design"`) | `private` | Identifiable recipients; each one can be revoked individually; no password to leak in a Slack screenshot. |
+| Sensitivity detected but no recipients named (filename match, path under `companies/*/data/`, "private/confidential/sensitive") | `password` | Casual share; recipient list unknown. Historical default. |
 
-**Canonical mutation endpoint:** `POST /api/apps/{appId}/access-mode {mode, password?}`. Atomic switch; clears fields that don't belong to the chosen mode; wipes EmailGrant rows when leaving `private`. Use this in place of legacy PATCH for any mode transition — legacy `PATCH /api/apps/{appId} {passwordProtected: true, password: …}` on an app already in `private` mode returns `409 ACCESS_MODE_CONFLICT`.
+**Access preference config:**
+
+```json
+{
+  "deploy": {
+    "access": {
+      "sensitiveDefault": "password",
+      "internalDefault": "company",
+      "orgRestrictedByDefault": false
+    }
+  }
+}
+```
+
+**Canonical mutation endpoints:**
+- `PUT /api/apps/{appId}/access-policy {mode, companyUid, users?, groups?, password?}` for first-class policy modes (`company`, `selected`, policy-versioned password).
+- `POST /api/apps/{appId}/access-mode {mode, password?}` for legacy password/private transitions and email/domain allowlists. It clears fields that don't belong to the chosen mode and wipes EmailGrant rows when leaving `private`.
+- Legacy `PATCH /api/apps/{appId} {passwordProtected: true, password: …}` on an app already in `private` mode returns `409 ACCESS_MODE_CONFLICT`; do not use it for mode transitions.
 
 #### Password mode (default sensitive path)
 
@@ -99,7 +118,7 @@ For sensitive artifacts, pick an access mode based on whether the user named rec
    - **Copy to clipboard** via `pbcopy` (macOS) — fall through silently on non-macOS
    - **Persist** to `~/.hq/deploy-passwords.json` (mode `0600`, jq merge keyed by app slug)
 4. Tell the user once, in the same response as the deploy link:
-   > Live at https://{slug}.indigo-hq.com — password copied to your clipboard (also saved at `~/.hq/deploy-passwords.json`).
+   > Live at https://{slug}.{your-domain}.com — password copied to your clipboard (also saved at `~/.hq/deploy-passwords.json`).
 5. **NEVER echo the password again in a later response.** If the user asks "what was the password?", instruct them to run `jq -r '."<slug>".password' ~/.hq/deploy-passwords.json` rather than re-printing it.
 
 #### Private mode (named recipients)
@@ -111,10 +130,22 @@ For sensitive artifacts, pick an access mode based on whether the user named rec
    ```
    Idempotent; server lowercases.
 3. Tell the user once, in the same response as the deploy link:
-   > Live at https://{slug}.indigo-hq.com — gated to {comma-separated patterns}. They'll sign in via auth.indigo-hq.com on first visit.
+   > Live at https://{slug}.{your-domain}.com — gated to {comma-separated patterns}. They'll sign in via auth.{your-domain}.com on first visit.
 4. For follow-up changes, point at the CLI rather than re-orchestrating from this skill:
    > Run `hq-deploy access share {slug} <email|@domain>` to add a teammate, or `… unshare …` to revoke.
 5. No password persists for private apps — `~/.hq/deploy-passwords.json` is not used in this branch.
+
+#### Company mode (Cognito org gate)
+
+1. Resolve the hq-pro company UID for `$ORG_SLUG` via `/entity/by-slug/company/{orgSlug}` using the local id token when available (`~/.hq/cognito-tokens.json` `.idToken`; fall back to `.accessToken`).
+2. After upload, `PUT $API/api/apps/{appId}/access-policy` with:
+   ```json
+   {"mode":"company","companyUid":"<companyUid>","users":[],"groups":[]}
+   ```
+   Include `Authorization: Bearer <accessToken>` for hq-deploy and `X-HQ-Pro-Authorization: Bearer <idToken>` for hq-pro grantee validation when available.
+3. Tell the user once:
+   > Live at https://{slug}.{your-domain}.com — restricted to active {orgSlug} members. They'll sign in with HQ on first visit.
+4. If company UID resolution fails, fail closed by falling back to password mode and say so in stderr; never silently publish a sensitive artifact as public.
 
 ### When to skip password protection
 
@@ -147,6 +178,7 @@ The `trigger` field records WHICH sensitivity rule matched, for later audit / de
 
 1. User says "send this report to {person}" with a `.html` file in context → Claude runs `/deploy` first, includes the link in the email draft
 2. Artifact at `companies/{company}/data/reports/q2-mrr-projection.html` deployed → password auto-generated, printed once, in clipboard, persisted to `~/.hq/deploy-passwords.json`
-3. Artifact at `workspace/reports/public-blog-draft.html` (no PII, no financial terms) deployed → no password, plain link
-4. Cognito token expired → `/hq-login` runs first, user sees announcement, deploy continues on same turn
-5. `Read` attempt on `~/.hq/deploy-passwords.json` → blocked by settings.json deny rule
+3. User says "deploy this internal-only" → access policy mode is `company`, no password is announced, and the link requires HQ sign-in.
+4. Artifact at `workspace/reports/public-blog-draft.html` (no PII, no financial terms) deployed → no password, plain link
+5. Cognito token expired → `/hq-login` runs first, user sees announcement, deploy continues on same turn
+6. `Read` attempt on `~/.hq/deploy-passwords.json` → blocked by settings.json deny rule

@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 # handoff-post.sh — detached post-handoff orchestrator.
 #
-# Runs AFTER handoff-finalize.sh emits handoff.json. Does the expensive work
+# Runs AFTER handoff-finalize.sh emits handoff.json. Does the mechanical work
 # that used to burn foreground-session tokens:
 #   1. Archive old threads (60d), then regen thread INDEX.md + recent.md (bash)
 #   2. Regen orchestrator INDEX.md (bash)
-#   3. Dispatch /learn in a fresh headless Codex session if learnings provided
-#   4. Dispatch /document-release in a fresh headless Codex session if session
-#      scope includes company/repo files
-#   5. Background qmd cleanup + update + embed (unchanged)
+#   3. Background qmd cleanup + update + embed
 #
-# Each headless Codex invocation gets its own fresh context — zero impact
-# on the foreground session that spawned this script.
+# Model work is intentionally not launched from this detached shell. In Codex,
+# /learn and /document-release follow-ups run as visible Codex subagents from
+# the handoff skill itself, so auth failures cannot disappear into /tmp logs.
 #
 # Usage (called by handoff skill as `nohup handoff-post.sh ... &`):
 #   core/scripts/handoff-post.sh <thread_path> [learnings_json_file]
@@ -24,10 +22,8 @@ cd "$HQ_ROOT"
 THREAD_PATH="${1:-}"
 LEARNINGS_FILE="${2:-}"
 
-LOG_DIR="/tmp"
+LOG_DIR="${HANDOFF_LOG_DIR:-/tmp}"
 LOG_MAIN="${LOG_DIR}/handoff-post.log"
-LOG_LEARN="${LOG_DIR}/handoff-learn.log"
-LOG_DOCREL="${LOG_DIR}/handoff-docrelease.log"
 LOG_QMD="${LOG_DIR}/qmd-handoff.log"
 
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -58,37 +54,26 @@ else
   log "orchestrator-index: error (continuing)"
 fi
 
-# --- 4. Headless /learn (if learnings captured) ---
-if [[ -n "$LEARNINGS_FILE" && -s "$LEARNINGS_FILE" ]] && command -v codex >/dev/null 2>&1; then
-  log "learn: dispatching headless"
-  learnings_content=$(cat "$LEARNINGS_FILE")
-  prompt="/learn ${learnings_content}"
-  # Run with its own fresh context, don't persist session.
-  CLAUDE_HEADLESS=1 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$prompt" \
-    > "$LOG_LEARN" 2>&1 || log "learn: exited non-zero (see $LOG_LEARN)"
-  log "learn: done"
+if [[ -n "$LEARNINGS_FILE" && -s "$LEARNINGS_FILE" ]]; then
+  log "learn: delegated to Codex subagent by handoff skill"
 else
-  log "learn: skipped (no learnings or codex CLI unavailable)"
+  log "learn: no learnings file provided"
 fi
 
-# --- 5. Headless /document-release (if scope matches) ---
-if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v codex >/dev/null 2>&1; then
+if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]]; then
   scope_match=$(jq -r '
     [.files_touched[]? // empty] | map(select(test("^(companies|repos)/"))) | length
   ' "$THREAD_PATH" 2>/dev/null || echo 0)
   if [[ "${scope_match:-0}" -gt 0 ]]; then
-    log "document-release: dispatching headless (${scope_match} scoped files)"
-    CLAUDE_HEADLESS=1 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "/document-release" \
-      > "$LOG_DOCREL" 2>&1 || log "document-release: exited non-zero (see $LOG_DOCREL)"
-    log "document-release: done"
+    log "document-release: delegated to Codex subagent by handoff skill (${scope_match} scoped files)"
   else
     log "document-release: skipped (no company/repo files in files_touched)"
   fi
 else
-  log "document-release: skipped (no thread path or codex CLI unavailable)"
+  log "document-release: skipped (no thread path)"
 fi
 
-# --- 6. qmd reindex (background, fire-and-forget) ---
+# --- 4. qmd reindex (background, fire-and-forget) ---
 if command -v qmd >/dev/null 2>&1; then
   nohup bash -c 'qmd cleanup 2>/dev/null; qmd update 2>/dev/null && qmd embed 2>/dev/null' \
     > "$LOG_QMD" 2>&1 &

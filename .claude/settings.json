@@ -1,4 +1,5 @@
 {
+  "autoMemoryEnabled": false,
   "env": {
     "PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     "MAX_THINKING_TOKENS": "31999",
@@ -50,6 +51,11 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-core-writes-bash $CLAUDE_PROJECT_DIR/.claude/hooks/block-core-writes-bash.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-hq-root-git-mutation $CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-root-git-mutation.sh",
             "timeout": 5
           },
           {

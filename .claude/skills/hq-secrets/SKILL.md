@@ -236,7 +236,7 @@ To onboard a new hire, add them to the group — they inherit all group-level se
    hq secrets generate-link VENDOR_API_KEY --expires 1h
    ```
 
-   The human opens the URL, enters the value, and it goes straight to SSM without the agent ever seeing it.
+   The human opens the URL, enters the value, and it goes straight to SSM without the agent ever seeing it. **Surface that URL only as a Markdown inline link** — `[Submit VENDOR_API_KEY — expires in 1h ›](https://hq.{co}.com/secrets-input/<token>)` — never as bare visible text, and never with the token in the visible label. It is a single-use capability; the same render + persistence rules as share-session URLs apply (`core/policies/hq-secure-link-render-as-markdown.md` and `core/policies/hq-share-session-urls-are-capabilities.md`).
 
 7. **Use `list` to discover available secrets.** Before running `exec`, check what secrets exist for the company.
 
@@ -284,8 +284,12 @@ hq secrets exec --only STAGING_API_KEY -- npm test
 
 ```bash
 hq secrets generate-link STRIPE_SECRET_KEY --expires 4h
-# Share the printed URL with the teammate
 ```
+
+Surface the resulting URL **only as a Markdown inline link** —
+`[Submit STRIPE_SECRET_KEY — expires in 4h ›](https://hq.{co}.com/secrets-input/<token>)` —
+never as bare visible text, label free of the token. Single-use capability;
+governed by `core/policies/hq-secure-link-render-as-markdown.md`.
 
 ### Check what secrets exist
 

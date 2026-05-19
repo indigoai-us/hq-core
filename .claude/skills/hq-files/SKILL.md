@@ -139,7 +139,7 @@ Failure modes (operator-visible):
 
 13. **Prefer `@all` over the legacy `open` flag for new company-wide intent.** Explicit `granteeType: 'company-wide'` rows are auditable, individually revocable, and don't conflate "everyone has read" with "this folder is public." See "Company-wide vs `open` Flag" above.
 
-14. **Treat share-session URLs as live capabilities — never persist them.** A share-session URL is an encrypted, single-use, 15-minute capability that any holder can redeem to write ACLs in the issuer's name. Do **not** paste share-session URLs into:
+14. **Treat share-session URLs as live capabilities — render as Markdown at mint, never persist them.** A share-session URL is an encrypted, single-use, 15-minute capability that any holder can redeem to write ACLs in the issuer's name. At the minting turn, surface it **only as a Markdown inline link** — `[Open share-session link — expires <ts> ›](https://hq.{co}.com/share-session/<token>)` — never as bare visible text, and never with the token in the visible label (rule: `core/policies/hq-secure-link-render-as-markdown.md`). Beyond that turn, do **not** paste share-session URLs (bare or as a Markdown href) into:
     - Auto-checkpoint thread files (`workspace/threads/`)
     - Journal entries, learnings, or session logs
     - Git commit messages or PR descriptions

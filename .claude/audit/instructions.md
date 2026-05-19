@@ -9,7 +9,7 @@ this repo only.
 `hq-core-staging` is HQ's pre-release / staging contributor repo. The contents
 include:
 - The promotion target for `companies/_template/` (a starter HQ filesystem)
-- Example policy files under `.claude/policies/` and `core/policies/`
+- Example policy files under `core/policies/`
 - Example workers under `core/workers/`
 - Test fixtures the audit bot itself uses (under `audit-fixtures/`)
 
@@ -30,8 +30,8 @@ path even if the suppression file is somehow missing.
 
 ### Policy markdown files are documentation
 
-Any `.md` under `.claude/policies/`, `core/policies/`, or
-`companies/_template/policies/` may contain example regexes, sample
+Any `.md` under `core/policies/` or `companies/_template/policies/`
+may contain example regexes, sample
 denylist terms wrapped in `${REDACTED}` sentinels, or "do not share
 externally"-style policy language **as documentation of the rule**, not
 as the violation itself. Do not flag pattern-quoted PII regexes or

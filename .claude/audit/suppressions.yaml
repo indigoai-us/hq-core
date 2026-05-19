@@ -13,13 +13,9 @@
 - path: "audit-fixtures/**"
   reason: "Test fixtures for hq-audit-bot itself. Patterns here are deliberately constructed to exercise scanners; all values are fake (RFC-5733 phone, Visa test card, all-zero SSN, etc)."
 
-- path: ".claude/policies/**"
-  scanners: [pii, denylist]
-  reason: "HQ policy markdown files document scanner rules; they may quote example regexes or denylist-shaped strings as documentation, not violations."
-
 - path: "core/policies/**"
   scanners: [pii, denylist]
-  reason: "Same as .claude/policies/. Core HQ policy definitions for the public scaffold."
+  reason: "Core HQ policy definitions for the public scaffold; policy markdown may quote example regexes or denylist-shaped strings as documentation, not violations."
 
 - path: "companies/_template/**"
   scanners: [pii, denylist, slugs]

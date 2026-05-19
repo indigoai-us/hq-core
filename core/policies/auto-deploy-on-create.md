@@ -106,11 +106,13 @@ Guardrails are enforced **client-side in the deploy skill**, not server-side in 
 
 ### User Preferences
 
-Users can set a global deploy preference at `~/.hq/config.json`:
+Users can set a global deploy preference at `~/.hq/deploy-prefs.json`:
 
 ```json
 { "deploy": { "preference": "hq-deploy" } }
 ```
+
+The legacy `~/.hq/config.json` location is still read for backwards compatibility (one release deprecation window), but writes go exclusively to `deploy-prefs.json`. The path was separated because `~/.hq/config.json` is HQ Sync's strict `HqConfig` file and the two formats collided — see feedback `feedback_3ab4f113-2e7c-4e4e-a171-771b47a2b5fd`.
 
 Valid values:
 
@@ -124,5 +126,5 @@ Valid values:
 
 Per-project override: set `metadata.deploy: false` in `prd.json` to force-skip deploy for that project.
 
-When the user casually states a preference in conversation ("I use Vercel", "don't deploy my stuff"), the deploy skill writes the preference to `~/.hq/config.json` and acknowledges once:
-> Got it — I won't offer auto-deploy. You can change this in `~/.hq/config.json`.
+When the user casually states a preference in conversation ("I use Vercel", "don't deploy my stuff"), the deploy skill writes the preference to `~/.hq/deploy-prefs.json` and acknowledges once:
+> Got it — I won't offer auto-deploy. You can change this in `~/.hq/deploy-prefs.json`.
