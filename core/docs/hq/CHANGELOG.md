@@ -9,6 +9,11 @@
 ### Removed
 - Removed legacy root `data/` scaffold and root copies of public HQ docs.
 
+## [14.2.2] — 2026-05-26
+
+### Added — Skills
+- **`/hq-share` — Claude-drafted note pre-fill.** When `/hq-share` is invoked with the shared paths locally readable, the skill now inventories the files, drafts a 1–2 sentence factual note describing what's being shared, and confirms with the user (Use as-is / Edit / Skip) before minting. The accepted draft rides on the share-session URL as `?note=<urlencoded>`; the hq-console form reads it on mount and seeds the note textarea, auto-grown to fit and capped at 2000 chars. A subtle "drafted by Claude — edit freely" hint sits above the label until the sender takes ownership with their first keystroke. The sender always sees the textarea in the browser and can rewrite or clear the prefill — they remain the final approver. New `--no-draft` flag opts out of the draft step entirely (sender sees an empty textarea, today's pre-prototype behavior). Step 3.5 in `SKILL.md` covers the inventory + draft + confirm flow; rule #6 captures the factual-no-speculation drafting guidance. No CLI release required — the skill captures the URL via `hq files share --no-open`, appends `?note=`, and opens the browser itself.
+
 ## [14.1.0] — 2026-05-13
 
 ### Headline

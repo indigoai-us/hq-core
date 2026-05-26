@@ -1,3 +1,42 @@
+## Release: v14.2.2
+
+### TL;DR
+
+Patch release. Adds Claude-drafted note pre-fill to `/hq-share`: the skill inventories the shared paths, drafts a 1–2 sentence factual note, and confirms with you before minting. The accepted draft rides on the share-session URL as `?note=` and pre-populates the recipient-facing note textarea in the hq-console form — the sender just reviews and approves.
+
+**No operator action required.** Run `/update-hq` to pick it up. No breaking changes, no config to set, no migration steps. Existing `/hq-share` invocations behave identically when the draft step doesn't fire (vault-only paths, headless contexts, or `--no-draft`).
+
+Companion server-side change shipped via `indigoai-us/hq-console#126` — already live on `hq.{your-domain}.com`. The form-side `?note=` reader was deployed before this release, so old `/hq-share` invocations (no `?note=` param) keep their empty-textarea behavior.
+
+### Changed
+
+- **`.claude/skills/hq-share/SKILL.md`** — new Step 3.5 "Draft the note" inserts between scope-confirm and mint. Documents the inventory cap (~30 entries, ≤100 KB per file, text-only basenames), the confirm picker (Use as-is / Edit / Skip / Type-my-own), the always-edit guarantee for the sender, and the new `--no-draft` flag. Step 4 (Mint) now always passes `--no-open` and re-opens the browser itself so `?note=` can be appended without a CLI release. Rule #6 added: factual no-speculation drafting (no "urgent", no "you'll love this", skip the draft if the inventory produces nothing usable).
+
+### New Flag
+
+- `--no-draft` — skips Step 3.5 entirely. Useful when the sender wants to type the note from scratch without an agent-generated starting point. The textarea is still optional and editable in the browser; only the pre-fill is bypassed.
+
+### Server-Side Companion (Already Live)
+
+- `hq-console` `ShareSessionForm` reads `?note=` from `useSearchParams` on mount and seeds the note textarea. A small "drafted by Claude — edit freely" hint appears above the label while the draft is untouched; it disappears on the sender's first keystroke. `?note=` value is capped at 2000 chars (matches the existing soft-hint threshold for notification-preview truncation). Auto-grow `useEffect` ensures multi-line drafts render at natural height on first paint. Three new vitest cases cover prefill behavior, the 2000-char cap, and the absent-param path (no behavior change).
+
+### How To Verify
+
+```
+# In any HQ session that picked up v14.2.2:
+/hq-share companies/{co}/data/some-folder/
+
+# You should see, after path confirmation:
+# - A short Claude-drafted note for review
+# - A picker: Use as-is / Edit / Skip
+# - Browser opens with the textarea pre-filled and "drafted by Claude" hint visible
+# - Editing the textarea clears the hint
+```
+
+If `?note=` doesn't appear on the URL, check that the skill ran Step 3.5 (it skips on `--no-draft`, headless contexts, or vault-only paths that aren't locally readable).
+
+---
+
 ## Release: v14.2.1
 
 ### TL;DR
