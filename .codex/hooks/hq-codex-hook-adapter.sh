@@ -127,7 +127,12 @@ except Exception:
     sys.exit(0)
 
 tool_input = data.get("tool_input") or {}
-command = tool_input.get("command") or tool_input.get("patch") or ""
+parts = []
+for key in ("command", "patch", "input"):
+    value = tool_input.get(key)
+    if isinstance(value, str) and value:
+        parts.append(value)
+command = "\n".join(parts)
 paths = []
 
 for key in ("file_path", "path"):
@@ -160,6 +165,73 @@ payload_for_path() {
   '
 }
 
+normalize_path() {
+  local path="$1"
+  case "$path" in
+    /*) ;;
+    *) path="$HQ_ROOT/$path" ;;
+  esac
+  python3 -c 'import os.path,sys; sys.stdout.write(os.path.realpath(sys.argv[1]))' "$path" 2>/dev/null || printf '%s' "$path"
+}
+
+block_core_edit_if_needed() {
+  local path="$1"
+
+  case "${HQ_BYPASS_CORE_PROTECT:-}" in
+    1|true|TRUE|yes|YES) return 0 ;;
+  esac
+
+  local core_dir core_real target
+  core_dir="$HQ_ROOT/core"
+  core_real="$(normalize_path "$core_dir")"
+  target="$(normalize_path "$path")"
+
+  case "$target" in
+    "$core_dir"/*|"$core_real"/*)
+      printf 'Edits to core/ are denied by hq-codex-hook-adapter.sh (%s).\n' "$path" >&2
+      exit 2
+      ;;
+  esac
+}
+
+block_template_edit_if_needed() {
+  local path="$1"
+  local template_dir template_real target
+  template_dir="$HQ_ROOT/companies/_template"
+  template_real="$(normalize_path "$template_dir")"
+  target="$(normalize_path "$path")"
+  case "$target" in
+    "$template_dir"/*|"$template_real"/*)
+      printf 'Edits to companies/_template/ are denied by hq-codex-hook-adapter.sh (%s).\n' "$path" >&2
+      exit 2
+      ;;
+  esac
+}
+
+# Token-boundary regex deny for sensitive home-dir paths (mirrors the
+# `.claude/settings.local.json` Read deny). Matches both absolute $HOME/
+# and ~/ forms. START and END charsets are symmetric so write-redirect
+# bypasses like `echo x >~/.env`, `cat<~/.env`, `|~/.env`, `;~/.env`
+# are all caught. The `.env` token uses an END boundary so `.env.schema`,
+# `.env.local`, `.envrc` correctly do NOT match — matching Claude's
+# literal `Read(~/.env)` deny rather than a `~/.env*` glob.
+block_sensitive_read_if_needed() {
+  local text="$1"
+  [ -z "$text" ] && return 0
+
+  local home_real="${HOME%/}"
+  local BND='($|[[:space:]"'"'"'=:;|<>])'
+  local STA='(^|[[:space:]"'"'"'=:;|<>])'
+  local alt="\\.ssh(/|${BND})|\\.aws/credentials${BND}|\\.aws/config${BND}|\\.gnupg(/|${BND})|\\.env${BND}|\\.netrc${BND}|\\.zshrc${BND}|\\.zprofile${BND}|\\.zshenv${BND}|\\.bashrc${BND}|\\.bash_profile${BND}"
+  local abs_re="${STA}${home_real}/(${alt})"
+  local tilde_re="${STA}~/(${alt})"
+
+  if printf '%s' "$text" | grep -Eq "${abs_re}|${tilde_re}"; then
+    printf 'Sensitive home-dir path access denied by hq-codex-hook-adapter.sh.\n' >&2
+    exit 2
+  fi
+}
+
 emit_context() {
   [ -z "$STDOUT_ACCUM" ] && return 0
 
@@ -182,10 +254,21 @@ emit_context() {
 }
 
 run_pre_tool_use() {
+  local cmd read_path
   case "$TOOL_NAME" in
     Bash)
+      cmd="$(json_get '.tool_input.command // empty')"
+      [ -n "$cmd" ] && block_sensitive_read_if_needed "$cmd"
       run_hook "detect-secrets" "$HOOK_DIR/detect-secrets.sh" "$INPUT" "blocking"
+      run_hook "block-core-writes-bash" "$HOOK_DIR/block-core-writes-bash.sh" "$INPUT" "blocking"
+      run_hook "block-hq-root-git-mutation" "$HOOK_DIR/block-hq-root-git-mutation.sh" "$INPUT" "blocking"
       run_hook "block-on-active-run" "$HOOK_DIR/block-on-active-run.sh" "$INPUT" "blocking"
+      run_hook "inject-policy-on-trigger" "$HOOK_DIR/inject-policy-on-trigger.sh" "$INPUT" "advisory"
+      run_hook "block-unsafe-package-install" "$HOOK_DIR/block-unsafe-package-install.sh" "$INPUT" "blocking"
+      ;;
+    Read)
+      read_path="$(json_get '.tool_input.file_path // .tool_input.path // empty')"
+      [ -n "$read_path" ] && block_sensitive_read_if_needed "$read_path"
       ;;
     apply_patch|Edit|Write)
       local paths path payload
@@ -193,9 +276,18 @@ run_pre_tool_use() {
       [ -z "$paths" ] && return 0
       while IFS= read -r path; do
         [ -z "$path" ] && continue
+        block_core_edit_if_needed "$path"
+        block_template_edit_if_needed "$path"
+        block_sensitive_read_if_needed "$path"
         payload="$(payload_for_path "$path")"
         run_hook "protect-core" "$HOOK_DIR/protect-core.sh" "$payload" "blocking"
+        run_hook "block-core-writes" "$HOOK_DIR/block-core-writes.sh" "$payload" "blocking"
+        run_hook "block-inline-story-impl" "$HOOK_DIR/block-inline-story-impl.sh" "$payload" "blocking"
         run_hook "block-on-active-run" "$HOOK_DIR/block-on-active-run.sh" "$payload" "blocking"
+        run_hook "env-file-no-trailing-newline" "$HOOK_DIR/env-file-no-trailing-newline.sh" "$payload" "blocking"
+        run_hook "inject-policy-on-trigger" "$HOOK_DIR/inject-policy-on-trigger.sh" "$payload" "advisory"
+        run_hook "block-plans-dir-during-deep-plan" "$HOOK_DIR/block-plans-dir-during-deep-plan.sh" "$payload" "blocking"
+        run_hook "route-company-skill-creation" "$HOOK_DIR/route-company-skill-creation.sh" "$payload" "blocking"
       done <<< "$paths"
       ;;
   esac
@@ -206,6 +298,8 @@ run_post_tool_use() {
     Bash)
       run_hook "auto-checkpoint-trigger" "$HOOK_DIR/auto-checkpoint-trigger.sh" "$INPUT" "advisory"
       run_hook "auto-capture-registry" "$HOOK_DIR/auto-capture-registry.sh" "$INPUT" "advisory"
+      run_hook "screenshot-resize-trigger" "$HOOK_DIR/screenshot-resize-trigger.sh" "$INPUT" "advisory"
+      run_hook "journal-due" "$HOOK_DIR/journal-due.sh" "$INPUT" "advisory"
       ;;
     apply_patch|Edit|Write)
       local paths path payload
@@ -220,7 +314,11 @@ run_post_tool_use() {
       while IFS= read -r path; do
         [ -z "$path" ] && continue
         payload="$(payload_for_path "$path")"
+        # auto-mirror-company-skill MUST run before hq-autocommit so any newly-mirrored
+        # skill files are picked up by autocommit (codex review P2 from prior #187 round).
+        run_hook "auto-mirror-company-skill" "$HOOK_DIR/auto-mirror-company-skill.sh" "$payload" "advisory"
         run_hook "hq-autocommit" "$HOOK_DIR/hq-autocommit.sh" "$payload" "advisory"
+        run_hook "journal-due" "$HOOK_DIR/journal-due.sh" "$payload" "advisory"
       done <<< "$paths"
       ;;
     update_plan|ExitPlanMode)
@@ -232,8 +330,13 @@ run_post_tool_use() {
 case "$HOOK_EVENT" in
   SessionStart)
     run_hook "load-policies" "$HOOK_DIR/load-policies-for-session.sh" "$INPUT" "advisory"
+    run_hook "check-bridge-health" "$HOOK_DIR/check-claude-desktop-bridge-health.sh" "$INPUT" "advisory"
+    run_hook "check-repo-active-runs" "$HOOK_DIR/check-repo-active-runs.sh" "$INPUT" "advisory"
     run_hook "inject-local-context" "$HOOK_DIR/inject-local-context.sh" "$INPUT" "advisory"
     run_hook "auto-startwork" "$HOOK_DIR/auto-startwork.sh" "$INPUT" "advisory"
+    run_hook "check-core-yaml-parity" "$HOOK_DIR/check-core-yaml-parity.sh" "$INPUT" "advisory"
+    run_hook "load-journal-index-on-start" "$HOOK_DIR/load-journal-index-on-start.sh" "$INPUT" "advisory"
+    run_hook "check-hq-update" "$HOOK_DIR/check-hq-update.sh" "$INPUT" "advisory"
     ;;
   UserPromptSubmit)
     run_hook "rewrite-resume-sentinel" "$HOOK_DIR/rewrite-resume-sentinel.sh" "$INPUT" "advisory"
@@ -251,6 +354,7 @@ case "$HOOK_EVENT" in
     run_hook "cleanup-mcp-processes" "$HOOK_DIR/cleanup-mcp-processes.sh" "$INPUT" "advisory"
     run_hook "context-warning-50" "$HOOK_DIR/context-warning-50.sh" "$INPUT" "advisory"
     run_hook "capture-estimates" "$HOOK_DIR/capture-estimates.sh" "$INPUT" "advisory"
+    run_hook "enforce-capability-link-render" "$HOOK_DIR/enforce-capability-link-render.sh" "$INPUT" "advisory"
     ;;
   PreCompact)
     run_hook "precompact-thrashing-detector" "$HOOK_DIR/precompact-thrashing-detector.sh" "$INPUT" "advisory"

@@ -51,7 +51,7 @@ User factual corrections (pricing, product, session details) applied exactly as 
 
 Quiet by default. Silent on routine ops (install, lint, build, test, fmt) + recoverable failures — fix and continue. Surface only: user decisions, irreversible/destructive actions, security signals, unrecoverable blockers, substantive results/insights/reports. Verbose narration allowed inside `/run-project`, `/execute-task`, `/diagnose`, `/investigate`, `/tdd`, `/architect`, `/deep-plan`, `/review`, `/security-review`, `/discover`. URL carveouts that must surface: `/hq-share` minting turn, `/deploy` preview. Filter + tree: `core/policies/quiet-by-default-narration.md`.
 
-Cavebro chat voice (Claude Code via `.claude/settings.json`; Codex via `.codex/output-style.md`) — chat only. Files written to disk, security warnings, irreversible-action confirmations, plans, handoffs, checkpoints, policies, ADRs, deploy previews, outbound drafts → full prose.
+HQ chat voice (Claude Code via `.claude/settings.json`; Codex via `.codex/output-style.md`) — chat only. Files written to disk, security warnings, irreversible-action confirmations, plans, handoffs, checkpoints, policies, ADRs, deploy previews, outbound drafts → full prose.
 
 ### Sensitive Path Deny Lists
 

@@ -60,7 +60,14 @@ Each ACL entry grants one of two permission levels via the `--permission` flag:
 - **`read`** — caller may list, download, and view metadata for files matching the prefix.
 - **`write`** — full `read` plus upload, overwrite, and delete.
 
-The CLI accepts only `read` or `write` for `--permission`. The ACL row's **creator** additionally gets effective `admin` automatically via creator-bypass at resolution time — visible as `Your effective permission: admin` in `hq files acl` output even when no entry grants admin explicitly. Mutating the ACL (`share`/`unshare`) requires that effective admin: company owners/admins, or the row's creator.
+The CLI accepts only `read` or `write` for `--permission`. The ACL row's **creator** additionally gets effective `admin` automatically via creator-bypass at resolution time — visible as `Your effective permission: admin` in `hq files acl` output even when no entry grants admin explicitly. Company **owners and admins** additionally get role-bypass at resolution time — they resolve to `admin` on any prefix, ACL row or not, so `hq files share`-session minting works for them even on prefixes they have no explicit grant on.
+
+**Who can mutate an ACL:**
+
+- **Create an ACL row (`hq files acl <prefix>` with no existing row)** or **delete one entirely** — owner / admin role only. These are structural operations on the row itself.
+- **Grant a permission within an existing row (`hq files share --with`)** — caller must hold effective permission on the prefix at least as high as the permission being granted (owner/admin auto-pass via role bypass; member must have a grant on that row that gives them ≥ the requested level). **Non-bypass roles cannot grant `admin`** — that ceiling is reserved for owner/admin role.
+- **Revoke a grant (`hq files unshare`)** — caller must hold effective `write` (or higher) on the prefix. **Revoking an `admin` entry additionally requires owner/admin role** (so a member with write cannot nuke admin-level grants on the same row).
+- **Mint a share-session URL (`hq files share <paths>`, default flow)** — caller must hold effective permission on every requested path (any non-null level). Owner/admin always pass via role bypass; members need an explicit grant. Token is capped at `write` regardless of caller's effective level.
 
 An ACL may be **open** (all active members get at least `read` automatically) or **restricted** (only explicit entries have access). Most ACLs are created open during the initial backfill; individual grants narrow or extend access on top of the open floor.
 
@@ -129,7 +136,7 @@ Failure modes (operator-visible):
 
 8. **Do not widen ACLs without explicit human approval.** Granting `write` on a prefix is a privilege escalation. Always confirm with the human before making these changes.
 
-9. **Check your effective permission before attempting mutation.** `hq files acl <prefix>` shows `Your effective permission:` in the output. Attempting `share`/`unshare` without the authority to mutate this ACL (creator or company owner/admin) returns 403.
+9. **Check your effective permission before attempting mutation.** `hq files acl <prefix>` shows `Your effective permission:` in the output. Granting requires that effective level be ≥ the permission you're granting (owner/admin always pass via role bypass; non-bypass roles cannot grant `admin`). Revoking requires effective `write` or higher, plus owner/admin role for revoking `admin` entries. Creating or deleting the ACL row itself is owner/admin-only.
 
 10. **Do not share exact keys when a folder-level grant is intended.** `reports/q3/summary.pdf` only covers that one file; `reports/q3/` (normalized to `reports/q3/*`) covers the whole folder.
 
@@ -254,7 +261,9 @@ hq files share services/logs/ --with grp_backend-team --permission read
 |-------------|---------|
 | `400` | Bad request — invalid prefix, invalid permission, or `PolicyNestingUnrepresentable` (3+ nesting depth would produce an unrepresentable IAM policy) |
 | `401` | Not authenticated — run `hq login` |
-| `403` | Not authorized — you need the authority to mutate this ACL (creator or company owner/admin) |
+| `403 Forbidden: owner or admin role required` | Creating or deleting an ACL row, or you tried to grant `'admin'` as a non-bypass role |
+| `403 Forbidden: caller lacks '<perm>' on '<prefix>'` | Granting/revoking but your effective permission on the prefix is below the requested level (members need a grant ≥ what they're handing out; revoke needs write+) |
+| `403 Forbidden: only owner or admin role may revoke 'admin' entries` | Member with write tried to revoke an entry whose permission is `admin` — that ceiling is reserved for owner/admin role |
 | `404` | For `acl`: no ACL record exists yet for this prefix. For `unshare`: grant already absent — the CLI converts this to a no-op and exits 0. `share` no longer surfaces 404 (the row is auto-created on first grant). |
 | `409` | Concurrent modification — retry |
 | `5xx` | Server error |

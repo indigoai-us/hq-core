@@ -1,1 +1,1 @@
-../.claude/output-styles/cavebro.md
+../.claude/output-styles/hq.md

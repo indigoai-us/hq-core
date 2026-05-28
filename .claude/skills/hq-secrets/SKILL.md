@@ -246,6 +246,8 @@ To onboard a new hire, add them to the group — they inherit all group-level se
 
 10. **Do not widen ACLs without explicit human approval.** Granting `--permission admin` or setting the `open` flag are privilege escalations. Always confirm with the human before making these changes.
 
+11. **Never delegate capability-link minting + rendering to a subagent.** `hq secrets generate-link` (and any `share-session` / capability URL) MUST be run and rendered in the **parent turn that talks to the human** — one Markdown inline link, per `core/policies/hq-secure-link-render-as-markdown.md`. A Task subagent does NOT receive the SessionStart policy digest, so it has no knowledge of the markdown-render / persistence rules and will dump bare token URLs. If a workflow step needs a credential, return control to the parent and mint there — do not generate the link inside a subagent. (Backstop: the `enforce-capability-link-render` Stop hook blocks a parent turn that emits a bare capability URL, but it cannot see inside a subagent — prevention is this rule.)
+
 ## Honest Guardrail Framing
 
 The `hq run` and `hq secrets exec` commands both make the safe path the easy path: secrets are injected as env vars into a child process, and the CLI itself never prints values. The `get` command redacts values by default.
@@ -290,6 +292,7 @@ Surface the resulting URL **only as a Markdown inline link** —
 `[Submit STRIPE_SECRET_KEY — expires in 4h ›](https://hq.{co}.com/secrets-input/<token>)` —
 never as bare visible text, label free of the token. Single-use capability;
 governed by `core/policies/hq-secure-link-render-as-markdown.md`.
+Mint + render this in the parent turn — never inside a subagent (guardrail 11).
 
 ### Check what secrets exist
 

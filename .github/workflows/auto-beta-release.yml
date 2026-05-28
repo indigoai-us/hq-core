@@ -1,0 +1,179 @@
+name: Auto-beta release on staging main
+
+# Tags a `v<hqVersion>-beta.<N>` release on every push to main of
+# indigoai-us/hq-core-staging. The tag push, performed with the hq-audit-bot
+# App token, transitively triggers `release.yml` which cuts the GitHub
+# pre-release (the App token — unlike GITHUB_TOKEN — is permitted to
+# trigger workflows, which is exactly what we want here).
+#
+# Hard guards:
+#   1. `github.repository == 'indigoai-us/hq-core-staging'` — staging only.
+#      The full staging tree (including .github/) is rsync'd into hq-core by
+#      `promote-to-hq-core.yml`, so this workflow file WILL land in hq-core
+#      verbatim. The job-level `if` keeps it inert there (skipped, not failed).
+#   2. `github.actor != 'hq-audit-bot[bot]'` — self-loop break. `release.yml`
+#      pushes a `chore(release): stamp <tag>` commit to main using the same
+#      App token; without this guard we'd loop tag → release → stamp-push →
+#      tag → ... indefinitely.
+#
+# Version source: `core/core.yaml` `hqVersion:` (e.g. 14.2.1). Falls back to
+# the highest existing non-prerelease tag's bumped patch, then 0.0.0. The
+# beta counter scans existing tags for `v<base>-beta.N` and picks the next
+# unused N (1-based), so reruns are idempotent against existing tags.
+#
+# Required secrets:
+#   HQ_AUDIT_BOT_APP_ID
+#   HQ_AUDIT_BOT_PRIVATE_KEY
+#
+# Permissions: declared `contents: read` at workflow scope; the actual tag
+# push runs under the minted App installation token, not GITHUB_TOKEN.
+
+on:
+  push:
+    branches: [main]
+    # Pure-doc pushes that don't change shipped behavior shouldn't burn a
+    # beta tag. Add to this list cautiously — anything in `core/` IS shipped.
+    paths-ignore:
+      - '.github/CODEOWNERS'
+      - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Compute the next tag but do not push it'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize against itself on main so two rapid pushes don't race to claim
+  # the same beta number. `cancel-in-progress: false` — we want every push
+  # to get its own tag, not be cancelled by the next one.
+  group: auto-beta-release-main
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag next beta and push
+    # Belt-and-suspenders:
+    #   - staging-only (the file gets rsync'd into hq-core by promote);
+    #   - main-only (`workflow_dispatch` / `gh workflow run --ref <branch>`
+    #     would otherwise let a maintainer publish a beta from a feature
+    #     branch — the push trigger is already main-pinned via `branches:`,
+    #     but the dispatch path needs an explicit ref check);
+    #   - not a self-loop from the release-stamp commit pushed by
+    #     hq-audit-bot.
+    if: |
+      github.repository == 'indigoai-us/hq-core-staging' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor != 'hq-audit-bot[bot]'
+    runs-on: ubuntu-latest
+    env:
+      HQ_AUDIT_BOT_APP_ID: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
+      HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+    steps:
+      - name: Fail fast if App credentials missing
+        if: env.HQ_AUDIT_BOT_APP_ID == '' || env.HQ_AUDIT_BOT_PRIVATE_KEY == ''
+        run: |
+          echo "::error::HQ_AUDIT_BOT_APP_ID or HQ_AUDIT_BOT_PRIVATE_KEY not set on this repo. The auto-beta workflow needs both to push the tag in a way that triggers release.yml."
+          exit 1
+
+      - name: Checkout (full history for tag scan)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mint installation token for this repo
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+
+      - name: Skip release-stamp commits (commit-msg fallback)
+        id: skipcheck
+        run: |
+          set -euo pipefail
+          # Defense-in-depth against the same self-loop the actor guard catches:
+          # if anything ever bypasses that guard, the stamp commit's deterministic
+          # message prefix lets us still bail safely.
+          MSG="$(git log -1 --pretty=%s)"
+          echo "head commit subject: $MSG"
+          case "$MSG" in
+            "chore(release): stamp v"*)
+              echo "::notice::Head commit is a release-stamp commit; skipping auto-beta."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Compute next beta tag
+        if: steps.skipcheck.outputs.skip != 'true'
+        id: meta
+        run: |
+          set -euo pipefail
+
+          BASE=""
+          if [ -f core/core.yaml ]; then
+            BASE=$(grep -E '^hqVersion:' core/core.yaml | head -1 \
+              | sed -E 's/^hqVersion:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+)"?.*/\1/' || true)
+          fi
+          if [ -z "$BASE" ]; then
+            # Fall back to the highest stable tag's value (the next beta still
+            # rides under that base — operators retag a stable v<base> when they
+            # cut the GA release, after which hqVersion bumps and beta restarts).
+            LATEST=$(git tag --list 'v[0-9]*' --sort=-v:refname \
+              | grep -vE -- '-(alpha|beta|rc)' | head -1 || true)
+            if [ -n "$LATEST" ]; then
+              BASE="${LATEST#v}"
+            else
+              BASE="0.0.0"
+            fi
+          fi
+
+          # Make sure we see every existing tag from the remote before picking N.
+          git fetch --tags --force origin >/dev/null 2>&1 || true
+
+          N=1
+          while git rev-parse -q --verify "refs/tags/v${BASE}-beta.${N}" >/dev/null 2>&1; do
+            N=$((N + 1))
+          done
+          TAG="v${BASE}-beta.${N}"
+
+          {
+            echo "tag=${TAG}"
+            echo "base=${BASE}"
+            echo "n=${N}"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::Next beta tag: ${TAG} (base=${BASE}, n=${N})"
+
+      - name: Dry run — stop here
+        if: steps.skipcheck.outputs.skip != 'true' && inputs.dry_run == true
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          echo "::notice::dry_run=true — would have tagged ${TAG} but did not push."
+
+      - name: Create and push beta tag
+        if: steps.skipcheck.outputs.skip != 'true' && inputs.dry_run != true
+        env:
+          GH_PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name  "hq-audit-bot[bot]"
+          git config user.email "hq-audit-bot[bot]@users.noreply.github.com"
+          # Annotated tag — release.yml's GH release pulls its title from the
+          # tag itself, but a tag message is a nicer audit trail than a
+          # lightweight tag's bare ref.
+          git tag -a "$TAG" -m "Auto-beta from main (commit ${GITHUB_SHA})"
+          PUSH_URL="https://x-access-token:${GH_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push "$PUSH_URL" "refs/tags/${TAG}"
+          echo "::notice::Pushed ${TAG} → release.yml will now cut the pre-release."

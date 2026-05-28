@@ -51,6 +51,8 @@ A Markdown href still embeds the live token in the transcript JSONL, so it is ex
 - **Subsequent / persisted context**: no link at all — describe the action and use the `<TOKEN_REDACTED>` text form per `hq-share-session-urls-are-capabilities`.
 - **Headless / `--no-open` / no-Markdown sinks** (background orchestrators, scheduled tasks, plain-text side channels): the Markdown-render requirement assumes a Markdown-rendering chat surface. When the sink cannot render Markdown, the capabilities policy still applies in full; coordinate the human handoff over a channel that can, rather than dumping a bare token.
 
-## Detection (future hook target)
+## Detection (mechanical enforcement — built)
 
-A future PreToolUse/Stop hook could pattern-match an assistant turn containing `/share-session/[A-Za-z0-9_-]{40,}` or `/secrets-input/[A-Za-z0-9_-]{40,}` that is NOT wrapped in a Markdown `](…)` href, and warn (mint turn) or block (persisted surface, per the capabilities policy).
+Enforced by the `enforce-capability-link-render` Stop hook (`.claude/hooks/enforce-capability-link-render.sh`, all hook profiles incl. `minimal`, routed via `hook-gate.sh`). It scans **only the just-finished assistant message** for a `share-session` / `secrets-input` URL with a long opaque token that is NOT wrapped in a Markdown `](…)` href (and not the `<TOKEN_REDACTED>` form); on a hit it returns a `decision:"block"` directive forcing the agent to re-mint (single-use → exposed token is burned) and re-render as one Markdown inline link. Loop-safe via `stop_hook_active`; fail-open (any error → exit 0).
+
+Known gap: a Stop hook sees only the parent session's turn text — it **cannot** inspect a Task subagent's output. A subagent that mints + renders a bare capability URL bypasses this hook entirely. Prevention for that path is procedural, not mechanical: `hq-secrets` SKILL.md guardrail 11 forbids delegating capability-link minting/rendering to a subagent (mint in the parent turn only).

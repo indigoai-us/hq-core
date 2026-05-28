@@ -16,25 +16,24 @@ matcher = "startup|resume|clear"
 type = "command"
 command = '/bin/bash "$(git rev-parse --show-toplevel)/.codex/hooks/hq-codex-hook-adapter.sh"'
 timeout = 30
-statusMessage = "Loading HQ policy context"
+statusMessage = "Loading HQ context"
 
-[[hooks.PreToolUse]]
-matcher = "apply_patch|Edit|Write"
+[[hooks.UserPromptSubmit]]
 
-[[hooks.PreToolUse.hooks]]
+[[hooks.UserPromptSubmit.hooks]]
 type = "command"
-command = '/bin/bash "$(git rev-parse --show-toplevel)/.codex/hooks/deny-core-edits.sh"'
-timeout = 10
-statusMessage = "Checking core/ deny list"
+command = '/bin/bash "$(git rev-parse --show-toplevel)/.codex/hooks/hq-codex-hook-adapter.sh"'
+timeout = 30
+statusMessage = "Routing HQ prompt"
 
 [[hooks.PreToolUse]]
-matcher = "Bash|apply_patch|Edit|Write"
+matcher = "Bash|apply_patch|Edit|Write|Read"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
 command = '/bin/bash "$(git rev-parse --show-toplevel)/.codex/hooks/hq-codex-hook-adapter.sh"'
 timeout = 30
-statusMessage = "Checking HQ guardrails"
+statusMessage = "Checking HQ safety rails"
 
 [[hooks.PostToolUse]]
 matcher = "Bash|apply_patch|Edit|Write"
@@ -43,7 +42,7 @@ matcher = "Bash|apply_patch|Edit|Write"
 type = "command"
 command = '/bin/bash "$(git rev-parse --show-toplevel)/.codex/hooks/hq-codex-hook-adapter.sh"'
 timeout = 30
-statusMessage = "Reviewing HQ post-action hooks"
+statusMessage = "Running HQ post-tool hooks"
 
 [[hooks.Stop]]
 
@@ -51,4 +50,12 @@ statusMessage = "Reviewing HQ post-action hooks"
 type = "command"
 command = '/bin/bash "$(git rev-parse --show-toplevel)/.codex/hooks/hq-codex-hook-adapter.sh"'
 timeout = 30
-statusMessage = "Checking HQ session wrap-up"
+statusMessage = "Wrapping HQ session state"
+
+[[hooks.PreCompact]]
+
+[[hooks.PreCompact.hooks]]
+type = "command"
+command = '/bin/bash "$(git rev-parse --show-toplevel)/.codex/hooks/hq-codex-hook-adapter.sh"'
+timeout = 30
+statusMessage = "Running HQ pre-compact hooks"

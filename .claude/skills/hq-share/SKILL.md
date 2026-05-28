@@ -20,7 +20,7 @@ grant and the browser flow".
 ## Usage
 
 ```
-/hq-share <path>... [--company <slug>] [--no-open]
+/hq-share <path>... [--company <slug>] [--no-open] [--no-draft]
 ```
 
 Examples:
@@ -29,7 +29,13 @@ Examples:
 /hq-share reports/q3/
 /hq-share reports/q3/ docs/handbook/ --company {company}
 /hq-share announcements/ --no-open               # print URL, headless contexts
+/hq-share reports/q3/ --no-draft                 # skip the LLM-drafted note step
 ```
+
+`--no-draft` skips the Step 3.5 "draft the note" pre-fill — useful when
+the sender wants to type their own context from scratch without an
+agent-generated starting point. Sender always gets the textarea in the
+browser regardless.
 
 ## Process
 
@@ -58,15 +64,93 @@ or the active company in `~/.hq/config.json`). Granting on the wrong company
 uid is hard to clean up — pause for approval if anything looks off, then
 proceed.
 
+### 3.5. Draft the note (sender-side LLM pre-fill)
+
+The share-session form has an optional **Note** textarea — the recipient
+sees the note as the body of their macOS notification ("their note: …")
+and again at the top of the ShareDetail window. Empty note → recipient
+notification falls back to a comma-joined list of basenames, which is
+much less useful.
+
+When the local paths are readable (skill is running in the user's session,
+not headless), draft a short note BEFORE minting so the user just reviews
+and approves rather than typing from scratch.
+
+**Inventory step (cheap):**
+
+- For each `<path>` positional:
+  - Folder (trailing slash) → `ls` the top level + recurse one level (cap
+    ~30 entries total); collect basenames + a brief sense of contents
+    (presence of `README.md`, `package.json`, `prd.json`, leading docs).
+  - File → just the basename and (if small text) a 1-line skim.
+- Skip binaries / files > 100 KB / known noise (`node_modules/`, `.git/`,
+  build output). Read text files only when their basename suggests
+  context (`README.md`, `prd.json`, top-level `.md` in folder).
+
+**Draft step (≤2 sentences, factual):**
+
+- Lead with what + why ("Sharing the Q3 retro notes for your review
+  before the all-hands.").
+- Name 1–2 specific things if obvious from the inventory ("Brief +
+  three open-question docs.").
+- Do NOT invent context not present in the files / recent conversation.
+- Cap ~280 chars — the recipient sees it as a notification body which
+  truncates at ~100 chars, and the textarea soft-warns above 1800.
+
+**Confirm step (one structured question, single picker):**
+
+Show the user the draft note and offer:
+
+- **Use this draft (Recommended)** — proceed with the note as written.
+- **Edit before sending** — print the draft so the user can quote/edit
+  in chat; their reply becomes the note.
+- **Skip — no note** — proceed without pre-fill.
+
+If the user types their own note inline ("note: …"), treat that as the
+chosen text without re-asking.
+
+**Skip the whole step when:**
+
+- `--no-open` is set (headless / scripted — the URL goes to a side
+  channel, the human writes the note in the browser).
+- The path is not locally readable (vault-only prefix the user is sharing
+  without a local mirror).
+- The user explicitly passed `--no-draft` (flag added below).
+- The user has set `personal/agents-profile.md` to opt out of LLM-drafted
+  notes (free-form heuristic — if uncertain, ask once and remember the
+  answer for the session).
+
+The drafted text rides on the URL as `?note=<urlencoded>` (Step 4); the
+hq-console form reads it on mount and seeds the textarea, showing a
+"drafted by Claude — edit freely" hint until the user touches it.
+
 ### 4. Mint + open
 
 ```bash
-hq files share <paths...> [--company <slug>] [--no-open]
+# Always mint with --no-open so the skill can append ?note= before
+# launching the browser. (Skipping the draft step → no `?note=` param,
+# behavior matches today's flow.)
+URL=$(hq files share <paths...> [--company <slug>] --no-open 2>&1 \
+  | grep -oE 'https://hq\.[^[:space:]]+')
+
+# If a draft was accepted, append ?note=<urlencoded>. Use jq's @uri
+# filter so newlines / quotes / unicode are encoded safely.
+if [ -n "$DRAFT_NOTE" ]; then
+  ENCODED=$(printf '%s' "$DRAFT_NOTE" | jq -sRr @uri)
+  URL="${URL}?note=${ENCODED}"
+fi
+
+# Open in browser unless the user passed --no-open.
+if [ -z "$USER_NO_OPEN" ]; then
+  open "$URL" 2>/dev/null || xdg-open "$URL" 2>/dev/null
+fi
 ```
 
 The CLI prints `Share-session URL generated:` followed by the URL,
 normalized paths, and `Expires:` timestamp. Default TTL is 15 minutes,
-bounded `60s..7d`.
+bounded `60s..7d`. The skill always reads the URL from `--no-open` output
+and handles browser launch itself so the `?note=` param can be appended
+without a CLI release.
 
 ### 5. Surface the URL + safe metadata
 
@@ -129,6 +213,28 @@ artifact — in those contexts use the redacted form
    scheduled tasks, and sub-agents have no browser to launch into. The flag
    tells the CLI to print the URL and exit, leaving the human handoff for the
    parent session to coordinate over a side channel.
+
+6. **Who can mint.** Owners and admins resolve to `admin` on any prefix via
+   role bypass — they can always mint share-session URLs, even on prefixes
+   they have no explicit ACL grant on. Members and guests need an explicit
+   grant on every requested path; without one the server returns
+   `403 Forbidden: caller has no permission on path '<prefix>'`. If a mint
+   fails for an admin user, suspect a stale auth session (re-run
+   `/hq-login`) before assuming a permission gap. See
+   [`hq-files`](../hq-files/SKILL.md) → "Permission Model" for the full
+   mutation matrix (grant vs revoke vs create/delete).
+
+7. **The agent-drafted note is a starting point, never an assertion.** The
+   draft from Step 3.5 lands in the recipient's macOS notification body
+   verbatim — keep it factual ("Sharing the Q3 retro for review"), avoid
+   speculation about the recipient's response or the contents' importance
+   ("urgent", "you'll love this", "make sure to read carefully"), and never
+   include anything the sender hasn't seen. The sender ALWAYS gets the
+   textarea pre-filled in the browser and is the final approver — but a
+   misleading or pushy draft they have to delete is worse than no draft at
+   all. If the inventory step produced nothing usable (binary blob, single
+   opaque file, no README), skip the draft and let the sender type their
+   own note rather than padding the textarea with filler.
 
 ## Requires
 

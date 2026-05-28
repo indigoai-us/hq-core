@@ -6,9 +6,9 @@ trigger: committing PRD artifacts, infrastructure changes, or any focused delive
 enforcement: hard
 tier: 1
 public: true
-version: 2
+version: 4
 created: 2026-04-16
-updated: 2026-04-28
+updated: 2026-05-21
 source: user-correction
 ---
 
@@ -24,6 +24,17 @@ git commit -m "..."
 Never use `git add -A`, `git add .`, or `git add -u` when the working tree contains drift the commit is not meant to address. If the drift is itself worth committing, commit it separately with its own message — one concern per commit.
 
 When the drift is a submodule or knowledge-repo pointer (e.g. `m companies/{co}/tools/chart-renderer`), check whether it represents in-progress upstream work before deciding to stage, skip, or reset. Never silently fold submodule pointer bumps into an unrelated commit.
+
+## Never mix directories and individual files in one `git add -A <paths>` call
+
+`git add -A <dir1> <dir2> <file1.ts> <file2.ts>` looks like it stages everything you listed, but in practice it can silently drop modifications to the listed individual files while still picking up the directory contents (observed 2026-05-21 in `liverecover-gtm-hq` PR #149: `git add -A src/app/ops src/app/tasks src/components/ui/nav.tsx next.config.ts` staged the directory file renames but dropped modifications to `nav.tsx` and `next.config.ts`, requiring follow-up fix PR #150).
+
+Either:
+
+1. **Stage directories and files in separate `git add` calls** (then commit once), OR
+2. **Run `git status` (or `git diff --cached --name-only`) between stage and commit** and verify every intended path is actually in the index before you commit.
+
+The silent-drop failure mode is invisible without explicit verification — `git add` returns 0 either way.
 
 ## Concurrent-session caveats
 
@@ -55,3 +66,13 @@ git diff --cached --name-only | grep -E '<known-dirty-paths>' && echo "DIRT LEAK
 Only after the staged set matches the resolution set may you `git commit` the merge.
 
 If the merge requires staging legitimate build-script side effects alongside the conflict resolutions (regenerated digests, INDEX rebuilds), see `hq-cmd-handoff-merge-stage-build-artifacts` for how to distinguish derived artifacts from pre-existing dirt.
+
+## Release-commit caveat — never sweep untracked litter into a publishable artifact
+
+When staging a **release** commit (version bump, tag-triggering commit) for a package or app, untracked litter in the working tree is not just noise — it can break the published build. Observed in the hq-sync v0.1.88 release: `git add -A` swept a stray untracked `pnpm-workspace.yaml` into the release commit, which broke the tauri build with `ERROR packages field missing or empty`. The file looked harmless but its mere presence at the repo root changed the build's package resolution.
+
+Before any release commit:
+
+1. Run `git status --short` and account for **every** untracked file — a stray `pnpm-workspace.yaml`, `.npmrc`, `tsconfig.*`, or lockfile at the repo root can silently alter build behavior.
+2. Stage only the intended release paths explicitly (`package.json`, `src-tauri/tauri.conf.json`, changelog, etc.).
+3. If untracked litter exists, remove or `.gitignore` it — do NOT let it ride the release commit.

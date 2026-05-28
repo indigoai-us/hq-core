@@ -1,11 +1,16 @@
 {
+  "model": "claude-opus-4-8",
   "autoMemoryEnabled": false,
+  "useAutoModeDuringPlan": false,
+  "permissions": {
+    "defaultMode": "plan"
+  },
   "env": {
     "PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     "MAX_THINKING_TOKENS": "31999",
     "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "60",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-4-8",
     "CLAUDE_CODE_NO_FLICKER": "1"
   },
   "hooks": {
@@ -415,6 +420,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh capture-estimates $CLAUDE_PROJECT_DIR/.claude/hooks/capture-estimates.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh enforce-capability-link-render $CLAUDE_PROJECT_DIR/.claude/hooks/enforce-capability-link-render.sh",
+            "timeout": 5
           }
         ]
       },
@@ -511,6 +521,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh auto-session-project $CLAUDE_PROJECT_DIR/.claude/hooks/auto-session-project.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh natural-language-router $CLAUDE_PROJECT_DIR/.claude/hooks/natural-language-router.sh",
+            "timeout": 5
           }
         ]
       },
@@ -558,5 +573,5 @@
       }
     ]
   },
-  "outputStyle": "Cavebro"
+  "outputStyle": "HQ"
 }

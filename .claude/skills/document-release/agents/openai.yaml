@@ -1,3 +1,0 @@
-interface:
-  display_name: "Document Release"
-  short_description: "Post-ship documentation sync — updates README, CLAUDE.md, architecture docs, and INDEX files to match what actually sh"

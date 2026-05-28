@@ -170,6 +170,15 @@ if [ -n "$final_event" ]; then
   fi
 fi
 
+# Step 6: reindex qmd so freshly-synced knowledge is searchable immediately.
+# Lexical update is fast (mtime-incremental) and auto-registers any new
+# company knowledge collection — kills the "I forgot to re-index after sync"
+# divergence between teammates. Embeddings are deferred (no --embed) to keep
+# sync snappy. Best-effort: never let reindex mask the sync exit code.
+if [ -z "${final_event:-}" ] || [ "${files_d:-0}" != "0" ]; then
+  bash "$hq_root/core/scripts/qmd-reindex-after-sync.sh" "$hq_root" >/dev/null 2>&1 || true
+fi
+
 rm -f "$output_file"
 exit "$cli_status"
 ```
@@ -180,3 +189,4 @@ exit "$cli_status"
 - `--on-conflict keep` is the default — local wins on divergence, cloud version mirrored to a `.conflict-*` sidecar so `/resolve-conflicts` can walk it later. Same default AppBar uses.
 - Auth is shared with `/deploy`, `/designate-team`, `/hq-login`, AppBar — single Cognito token at `~/.hq/cognito-tokens.json`.
 - For a single-company sync, use `hq sync push <company>` (already in hq-cli) — this command is the "all companies, both directions" full sync that AppBar runs.
+- **Post-sync qmd reindex (Step 6):** after a sync that pulled files, the skill runs `core/scripts/qmd-reindex-after-sync.sh`, which auto-registers any new company knowledge collection and runs an incremental lexical `qmd update`. This is what makes freshly-synced knowledge searchable without a manual re-index, and keeps teammates' personal indexes converged. Embeddings are intentionally deferred (run `qmd embed`, or the reindex script with `--embed`, on an idle pass) so sync stays fast. The qmd index is per-machine (large binary, absolute local paths) and is **not** itself synced — only its freshness is automated. The AppBar menubar sync gets the same behavior via the `hq-sync-runner` seam (see `repos/private/hq-cloud/src/bin/sync-runner.ts`).

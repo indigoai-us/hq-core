@@ -447,7 +447,7 @@ my-hq/
 │   ├── commands/              # 53 slash commands
 │   ├── hooks/                 # 32 lifecycle hooks (master-hook, detect-secrets, observe-patterns, …)
 │   ├── skills/                # 55 skill definitions
-│   ├── output-styles/         # Output styles (e.g. Cavebro)
+│   ├── output-styles/         # Output styles (e.g. HQ)
 │   ├── scripts/               # Claude-scoped helpers (run-project.sh, monitor-project.sh, …)
 │   ├── stack.yaml
 │   └── settings.json / settings.local.json

@@ -477,6 +477,33 @@ For each breaking change parsed from MIGRATION.md:
 
 5. If `DRY_RUN`: display breaking changes but don't ask for acknowledgment.
 
+### 5d-PRE. Auto-Install Force Packs (capability-preserving)
+
+This runs BEFORE 5d so that any inline files about to be removed by Phase 5d are first guaranteed to be re-provided by a working pack at the same bare-name paths. (v15.0.0 uses this to make the `hq-pack-engineering` extraction transparent for upgraders — no prompts, no capability loss.)
+
+Re-read `recommended_packages` from the upgraded `core/core.yaml`. Initialize `pack_provided_paths={}`. For each entry where `auto_install: true`:
+
+1. **Conditional gate (greenfield + already-migrated protection).** If the entry declares a `conditional:`, evaluate it: `bash -c "{predicate}"`. If exit != 0, skip this entry silently — a fresh `npx create-hq` (no inline surface) and an already-migrated host (bare-name paths are now pack symlinks) both land here correctly. Continue to next entry.
+2. **Already-installed short-circuit.** If `core/packages/{pack-dir}/package.yaml` exists locally with the same `source:`, skip the install call, set `engineering_already_present++`, and go to step 4 (verify).
+3. **Force install (no prompt).** Run `npx --yes @indigoai-us/hq-cli install "{source}" --allow-hooks`. If `DRY_RUN`: report `"Would auto-install force pack: {source}"` and skip steps 4-7.
+4. **Payload verify.** Confirm the pack landed: `core/packages/{pack-dir}/package.yaml` parses AND a representative sample of its declared `contributes:` payloads exists on disk under the pack dir. For `hq-pack-engineering`:
+   ```bash
+   test -f core/packages/hq-pack-engineering/skills/tdd/SKILL.md \
+     && test -f core/packages/hq-pack-engineering/workers/qa-tester/worker.yaml \
+     && test -f core/packages/hq-pack-engineering/policies/e2e-testing-standards.md
+   ```
+   Any failure -> treat as install-failure (step 7).
+5. **Register carve-out.** Map this pack's `contributes:` to bare-name host paths using `scan-packages.sh`'s rules (`workers/*` -> `core/workers/public/{name}`, `skills/*` -> `.claude/skills/{name}`, `policies/*` -> `core/policies/{name}.md`, `knowledge/*` -> `core/knowledge/public/{name}`, `hooks/*` -> `.claude/hooks/{name}.sh`) and add each to `pack_provided_paths`. Phase 5d consults this set. Increment `engineering_auto_installed` (when freshly installed).
+6. **Defer symlinks to 5d-POST.** Do NOT run `scan-packages.sh` yet — the host inline files still occupy every target, so it would warn `collision: host content wins, skipping` for all of them. Phase 5d removes the inline copies first; 5d-POST then wires symlinks.
+7. **Install failure -> no data loss.** On any non-zero install, payload-verify failure, or unreadable `package.yaml`: set `engineering_auto_kept_inline=1`, **clear** this pack's entries from `pack_provided_paths` (so Phase 5d falls back to per-file prompts and the user keeps the inline copies), and surface ONE warning (not a hard stop):
+   ```
+   ! Auto-install of {pack} failed ({reason}). Your inline copies are preserved
+     (Phase 5d will prompt per-file). Retry after upgrade:
+       hq install {source}
+     then re-run /update-hq to clean up the now-duplicate inline copies.
+   ```
+   Continue to Phase 5d. Never abort the whole migration for a pack.
+
 ### 5d. Removals
 
 For each path in `removed_files`:
@@ -484,14 +511,42 @@ For each path in `removed_files`:
 1. Check if file/directory exists locally.
 2. If doesn't exist: skip silently.
 3. If exists:
-   ```
-   The upstream repo removed {path} in v{version}.
+   a. **Carve-out (an auto-install pack now provides this path).** If `{path}` is in `pack_provided_paths` (5d-PRE installed + verified a pack that contributes it), delete the inline copy WITHOUT prompting — a pack symlink lands on the same bare-name target in 5d-POST. Increment `deleted`. Report `"✓ Removed (covered by {pack}): {path}"`. **Safety:** before deleting, run `git status --porcelain {path}` (best-effort); if it reports the path dirty (local in-place customization), fall back to the standard prompt in (b) so the user can keep their edits. Prompting 100+ guaranteed-safe deletions one by one would defeat the transparent-upgrade goal, so the carve-out skips the prompt only for clean, pack-covered paths.
+   b. **Standard prompt (everything else).** Use AskUserQuestion:
+      ```
+      The upstream repo removed {path} in v{version}.
 
-   Delete locally? [Y = delete / N = keep your copy]
-   ```
+      Delete locally? [Y = delete / N = keep your copy]
+      ```
 4. If yes and not dry run: delete, increment `deleted`.
 5. If no: note in summary.
-6. If `DRY_RUN`: report `"Would prompt to delete: {path}"`.
+6. If `DRY_RUN`: report `"Would auto-remove (covered by pack): {path}"` for carve-out paths, else `"Would prompt to delete: {path}"`.
+
+### 5d-POST. Wire pack symlinks + verify capability resolves
+
+If 5d-PRE auto-installed or found-present any force pack (`engineering_auto_installed > 0` OR `engineering_already_present > 0`):
+
+1. **Run scan-packages** — now that inline copies are gone, symlinks land cleanly:
+   ```bash
+   bash core/scripts/scan-packages.sh
+   ```
+   Surface any residual `collision: host content wins, skipping` lines verbatim — they mean an inline copy was kept (e.g. user answered N to a non-carved-out path), which is also fine: the capability resolves through the inline copy.
+2. **Verify a representative capability resolves into the pack.** For `hq-pack-engineering`:
+   ```bash
+   readlink .claude/skills/tdd/SKILL.md | grep -q 'core/packages/hq-pack-engineering/skills/tdd' && echo OK || echo FAIL
+   ```
+   Also confirm `.claude/skills/review`, `.claude/skills/execute-task`, and `core/workers/public/qa-tester` are symlinks into `core/packages/hq-pack-engineering/`.
+3. **Verify failure -> recovery note, no rollback.** Inline copies are already deleted by this point, so do NOT roll back. Surface:
+   ```
+   ! {pack} installed but symlinks did not land at the expected bare-name paths.
+     Recovery: bash core/scripts/scan-packages.sh
+     If still failing, inspect: ls -l .claude/skills/tdd core/workers/public/qa-tester
+     and report via /hq-bug.
+   ```
+   Continue to Phase 5e.
+4. **Idempotent re-run.** If the pack is already installed and symlinks already point at it, this sub-phase is a silent no-op.
+
+If `DRY_RUN`: report what would be linked/verified, run nothing.
 
 ### 5e. Content Packs (hq-core v12+)
 
@@ -510,7 +565,9 @@ Scan `core/packages/*/package.yaml` for each installed pack's `source:` field. F
 
 Re-read `recommended_packages` from the **upgraded** `core/core.yaml` (if `core/core.yaml` was itself touched by this migration, use the local post-update copy; otherwise use current local copy). Diff against already-installed pack sources.
 
-For each recommended pack that is (a) not installed locally and (b) passes its `conditional` predicate (if declared):
+**Skip any entry with `auto_install: true`** — those are force-installed in Phase 5d-PRE; never prompt for them here.
+
+For each remaining recommended pack that is (a) not installed locally, (b) NOT `auto_install: true`, and (c) passes its `conditional` predicate (if declared):
 
 1. Use AskUserQuestion:
    ```
@@ -634,6 +691,9 @@ Migration Complete: v{CURRENT} → v{TARGET}
   Packs upgraded: {pack_upgraded}
   Packs installed: {pack_installed} (newly recommended)
   Pack failures:  {pack_failed} (warnings only — retry with hq install)
+  Engineering auto-installed: {engineering_auto_installed}
+  Engineering already present: {engineering_already_present}
+  Engineering kept inline (install failed): {engineering_auto_kept_inline}
 
 {if skipped > 0:}
 Files needing manual merge:
@@ -680,6 +740,10 @@ Run `/migrate` without --check to apply.
 - **One file at a time** — never batch-overwrite without showing what changed
 - **Pack failures never abort migration** — content packs are best-effort; log failures, continue scaffold upgrade
 - **Never silently install recommended packs** — always prompt per-pack; skip silently only on failed `conditional`
+- **Auto-install packs (`auto_install: true`) land BEFORE removals** — Phase 5d-PRE installs + verifies them so Phase 5d can carve out the bare-name paths they now provide and 5d-POST wires symlinks onto cleared targets. Only safe ordering: install+verify, remove inline, scan-packages, verify resolves.
+- **Auto-install failure preserves inline copies** — if 5d-PRE cannot install/verify a force pack it clears the carve-out so Phase 5d prompts per-file; the user is never left without the capability. One warning + retry command, migration continues.
+- **Greenfield never auto-installs** — auto-install gates on the same `conditional` as prompt-based packs; a fresh `npx create-hq` and an already-migrated host (paths are now pack symlinks) both fail it and skip.
+- **Never run scan-packages while inline copies occupy bare-name targets** — the `collision: host content wins` warning means ordering went wrong; remove inline copies first (Phase 5d), then scan-packages (5d-POST).
 - **Pack updates are idempotent** — `hq install`/`hq update` compares manifest version, no-op when already current
 - **Generated artifacts are out of scope** — paths in the "Generated artifacts" list (Phase 3) are filtered from every list before fetch/compare, including directory expansions and the Phase 4 git-status dirty check
 - **Infrastructure files are force-upstream** — paths in the "Infrastructure files (force upstream)" list (Phase 3) are NEVER three-way merged. They take upstream verbatim. This protects `hook-gate.sh` and similar dispatch scripts from session-bricking corruption via conflict markers.

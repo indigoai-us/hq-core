@@ -5,39 +5,30 @@
 # Warns (but allows) edits to core/core.yaml reviewable list.
 # Fails open (logs + allows) if core/core.yaml is missing or malformed.
 #
-# Environment:
-#   HQ_BYPASS_CORE_PROTECT=1 — bypass all checks (used by /update-hq)
+# Bypass: HQ_BYPASS_CORE_PROTECT must be set to "1" under "env" in
+# .claude/settings.local.json. Inline env-var prefixes are NOT accepted.
 #
 # Trigger: PreToolUse on Edit and Write
 # Exit codes: 0 = allow, 2 = block
 
-# Bypass mode — authorized updates only
-if [[ "${HQ_BYPASS_CORE_PROTECT:-}" == "1" ]]; then
-  exit 0
-fi
+set -uo pipefail
 
-# Read tool input from stdin
 INPUT=$(cat)
 
-# Extract file_path from the tool input JSON
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || true
 
-# No file_path → nothing to check
 if [[ -z "$FILE_PATH" ]]; then
   exit 0
 fi
 
-# Resolve to absolute path if relative
 if [[ "$FILE_PATH" != /* ]]; then
   FILE_PATH="$(pwd)/$FILE_PATH"
 fi
 
-# Canonicalize path to resolve any .. or . components
-if command -v realpath >/dev/null 2>&1; then
-  FILE_PATH="$(realpath -m "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
+if command -v python3 >/dev/null 2>&1; then
+  FILE_PATH="$(python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
 fi
 
-# Locate HQ root via git
 HQ_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 if [[ -z "$HQ_ROOT" ]]; then
   echo "WARNING: protect-core.sh could not determine HQ root (git rev-parse failed). Skipping check." >&2
@@ -45,72 +36,104 @@ if [[ -z "$HQ_ROOT" ]]; then
 fi
 
 CORE_YAML="$HQ_ROOT/core/core.yaml"
+SETTINGS_LOCAL="$HQ_ROOT/.claude/settings.local.json"
 
-# Fail open if core/core.yaml is missing
 if [[ ! -f "$CORE_YAML" ]]; then
-  echo "WARNING: protect-core.sh: core/core.yaml not found at $CORE_YAML. Skipping check." >&2
+  echo "WARNING: protect-core.sh: core/core.yaml not found. Skipping check." >&2
   exit 0
 fi
 
-# Check for yq
 if ! which yq >/dev/null 2>&1; then
-  echo "WARNING: protect-core.sh: yq not found. Skipping core protection check." >&2
-  echo "  Install: brew install yq" >&2
+  echo "WARNING: protect-core.sh: yq not found. Install: brew install yq" >&2
   exit 0
 fi
 
-# Parse locked paths — fail open if yq fails
+# Bypass: must be declared in .claude/settings.local.json env section.
+is_bypass_authorized() {
+  [[ -f "$SETTINGS_LOCAL" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  local val
+  val=$(jq -r '.env.HQ_BYPASS_CORE_PROTECT // empty' "$SETTINGS_LOCAL" 2>/dev/null) || return 1
+  [[ "$val" == "1" || "$val" == "true" ]] && return 0
+  return 1
+}
+
+if is_bypass_authorized; then
+  exit 0
+fi
+
+norm_path() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$1" 2>/dev/null || echo "$1"
+  else
+    echo "$1"
+  fi
+}
+
+# Check exclude list first — always allowed.
+EXCLUDE_PATHS=$(yq eval '.rules.exclude[]' "$CORE_YAML" 2>/dev/null) || EXCLUDE_PATHS=""
+while IFS= read -r exc_path; do
+  [[ -z "$exc_path" ]] && continue
+  exc_abs="$(norm_path "${HQ_ROOT}/${exc_path%/}")"
+  if [[ "$FILE_PATH" == "$exc_abs" ]] || [[ "$FILE_PATH" == "$exc_abs/"* ]]; then
+    exit 0
+  fi
+done <<< "$EXCLUDE_PATHS"
+
+# Specific file redirects — give a helpful pointer before the generic block.
+CLAUDE_MD_ABS="$(norm_path "${HQ_ROOT}/.claude/CLAUDE.md")"
+SETTINGS_JSON_ABS="$(norm_path "${HQ_ROOT}/.claude/settings.json")"
+if [[ "$FILE_PATH" == "$CLAUDE_MD_ABS" ]]; then
+  cat >&2 <<MSG
+BLOCKED: .claude/CLAUDE.md is the locked HQ charter.
+  Edit personal/CLAUDE.md for your personal additions instead.
+MSG
+  exit 2
+fi
+if [[ "$FILE_PATH" == "$SETTINGS_JSON_ABS" ]]; then
+  cat >&2 <<MSG
+BLOCKED: .claude/settings.json is locked.
+  Edit .claude/settings.local.json for local overrides instead.
+MSG
+  exit 2
+fi
+
+# Check locked paths.
 LOCKED_PATHS=$(yq eval '.rules.locked[]' "$CORE_YAML" 2>/dev/null) || {
-  echo "WARNING: protect-core.sh: failed to parse core/core.yaml (malformed?). Skipping check." >&2
+  echo "WARNING: protect-core.sh: failed to parse locked paths (malformed?). Skipping check." >&2
   exit 0
 }
 
-# Check locked paths
 while IFS= read -r locked_path; do
   [[ -z "$locked_path" ]] && continue
-
-  # Normalize: strip trailing slash from both sides for comparison
-  locked_path_normalized="${locked_path%/}"
-  file_path_normalized="${FILE_PATH%/}"
-  locked_abs="${HQ_ROOT}/${locked_path_normalized}"
-
-  # Check if file_path matches this locked entry (exact match or starts-with for directories)
-  if [[ "$file_path_normalized" == "$locked_abs" ]] || [[ "$file_path_normalized" == "$locked_abs/"* ]]; then
-    cat >&2 <<EOF
-BLOCKED: Edit to locked core file is not allowed.
+  locked_abs="$(norm_path "${HQ_ROOT}/${locked_path%/}")"
+  if [[ "$FILE_PATH" == "$locked_abs" ]] || [[ "$FILE_PATH" == "$locked_abs/"* ]]; then
+    cat >&2 <<MSG
+BLOCKED: Edit to locked path is not allowed.
   File: $FILE_PATH
-  Locked path: $locked_path
+  Locked: $locked_path
 
-To bypass (authorized updates only): set HQ_BYPASS_CORE_PROTECT=1
-EOF
+To bypass: set "HQ_BYPASS_CORE_PROTECT": "1" under "env" in .claude/settings.local.json
+(inline env-var prefixes are not accepted).
+MSG
     exit 2
   fi
 done <<< "$LOCKED_PATHS"
 
-# Parse reviewable paths — fail open if yq fails
-REVIEWABLE_PATHS=$(yq eval '.rules.reviewable[]' "$CORE_YAML" 2>/dev/null) || {
-  echo "WARNING: protect-core.sh: failed to parse reviewable paths from core/core.yaml. Skipping warning check." >&2
-  exit 0
-}
-
-# Check reviewable paths
+# Check reviewable paths (warn, allow).
+REVIEWABLE_PATHS=$(yq eval '.rules.reviewable[]' "$CORE_YAML" 2>/dev/null) || REVIEWABLE_PATHS=""
 while IFS= read -r reviewable_path; do
   [[ -z "$reviewable_path" ]] && continue
-
-  reviewable_path_normalized="${reviewable_path%/}"
-  file_path_normalized="${FILE_PATH%/}"
-  reviewable_abs="${HQ_ROOT}/${reviewable_path_normalized}"
-
-  if [[ "$file_path_normalized" == "$reviewable_abs" ]] || [[ "$file_path_normalized" == "$reviewable_abs/"* ]]; then
-    cat >&2 <<EOF
-WARNING: Editing reviewable core path.
+  reviewable_abs="$(norm_path "${HQ_ROOT}/${reviewable_path%/}")"
+  if [[ "$FILE_PATH" == "$reviewable_abs" ]] || [[ "$FILE_PATH" == "$reviewable_abs/"* ]]; then
+    cat >&2 <<MSG
+WARNING: Editing reviewable path.
   File: $FILE_PATH
-  Reviewable path: $reviewable_path
+  Reviewable: $reviewable_path
 Edit allowed — proceed with care.
-EOF
+MSG
     exit 0
   fi
 done <<< "$REVIEWABLE_PATHS"
 
-# No match — open category, allow silently
 exit 0

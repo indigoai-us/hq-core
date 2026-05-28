@@ -123,7 +123,7 @@ Present in {your-name}'s production HQ but NOT in the starter-kit. These represe
 | **Workers** | baseline dev-team | 40+ (10 private, 30 public across dev-team, content-team, pr-team) | Full worker ecosystem |
 | **Worker Layout** | Flat `core/workers/` | Split `core/workers/public/` + `core/workers/private/` | Visibility separation |
 | **Knowledge** | Flat `core/knowledge/` (8 dirs) | Split `core/knowledge/public/` + `core/knowledge/private/`, symlinked to git repos | Repo-backed, visibility-split |
-| **Companies** | Not present (optional) | 4 companies ({company}, {company}, personal, acmestudio) + manifest.yaml | Multi-company isolation |
+| **Companies** | Not present (optional) | 3 companies ({company}, {company}, acmestudio) + manifest.yaml. `personal/` is a top-level overlay, **not** a company. | Multi-company isolation |
 | **Projects** | .gitkeep placeholder | 60+ projects with prd.json, README, orchestrator state | Full project lifecycle |
 | **Orchestrator** | .gitkeep | state.json + per-project dirs + checkouts.json | Active execution state |
 | **Threads** | .gitkeep | 170+ thread JSONs + handoff.json + INDEX.md + recent.md | Rich session history |

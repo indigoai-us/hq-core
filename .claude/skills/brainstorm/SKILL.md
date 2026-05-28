@@ -185,7 +185,7 @@ source_idea_id: {board ID or null}
 
 ## Narrowest Wedge *(STARTUP mode only)*
 
-{Smallest version that delivers real value to one specific person. What can you ship in days, not weeks?}
+{Smallest version that delivers real value to one specific person. What's the narrowest scope — one seam, not the whole subsystem?}
 
 ## Approaches
 
@@ -198,7 +198,7 @@ source_idea_id: {board ID or null}
 - Pro: {specific advantage}
 - Con: {specific cost or risk}
 
-**Effort:** {S / M / L / XL}
+**Effort:** {S / M / L / XL — scope/risk} · {throughput: ~N sessions, sequential|concurrent-able}
 **When to choose this:** {specific signal or condition that makes this the right pick}
 
 ---
@@ -211,7 +211,7 @@ source_idea_id: {board ID or null}
 - Pro: {specific advantage}
 - Con: {specific cost or risk}
 
-**Effort:** {S / M / L / XL}
+**Effort:** {S / M / L / XL — scope/risk} · {throughput: ~N sessions, sequential|concurrent-able}
 **When to choose this:** {condition}
 
 ---
@@ -247,7 +247,7 @@ source_idea_id: {board ID or null}
 - Never more than 3 — collapse similar options or pick the most distinct
 - Each option must differ on at least one of: effort, reversibility, dependency, or user experience
 - Must state a recommendation — no "it depends" without a stated override condition
-- T-shirt effort: S (hours-days), M (days-week), L (week-month), XL (month+). Be honest
+- T-shirt effort = scope/risk, NOT calendar time (policy `ai-velocity-time-sense`): S (one seam, low risk), M (one subsystem, modest unknowns), L (multiple seams, real unknowns), XL (cross-cutting, hard-to-reverse). If "how long" is needed, use sessions + concurrency ("~2 sessions, parallel-able"), never weeks/months. Be honest about breadth
 
 ## Step 6: Board Integration
 
@@ -353,7 +353,7 @@ Reindex: `qmd update 2>/dev/null || true`
 - **No orchestrator registration** — brainstorms are not executable
 - **Web research is conditional** — only if idea requires external context. Don't search for thoroughness
 - **board.json + brainstorm.md are the only files written** — no other files modified (knowledge pulse runs as a background agent and writes its own report independently)
-- **T-shirt effort, not story points** — S (hours-days), M (days-week), L (week-month), XL (month+)
+- **T-shirt effort, not story points** — sized by scope/risk, not calendar time: S (one seam), M (one subsystem), L (multiple seams + unknowns), XL (cross-cutting, hard-to-reverse). See policy `ai-velocity-time-sense`
 - **Company isolation enforced** — if anchored, scope all searches to that company. Never mix company knowledge in approaches
 - **brainstorm.md is human-editable** — the user may refine it after generation. The PRD skill reads whatever is in the file, not just what was machine-generated
 - **Do not create README.md** — brainstorm.md is self-contained

@@ -10,7 +10,7 @@ created: 2026-05-12
 
 ## Rule
 
-The global default model in `.claude/settings.json` is `claude-opus-4-7` (200K context). The `[1m]` variant (`claude-opus-4-7[1m]`, 1M context) is **opt-in per command**, not the default.
+The global default model in `.claude/settings.json` is `claude-opus-4-8` (200K context). The `[1m]` variant (`claude-opus-4-8[1m]`, 1M context) is **opt-in per command**, not the default.
 
 Commands that opt into `[1m]`:
 
@@ -21,9 +21,9 @@ Commands that opt into `[1m]`:
 
 How a command opts in (mechanism resolved by US-015):
 
-1. Per-command frontmatter `model: claude-opus-4-7[1m]` if the runtime honors it, or
-2. Slash-command runtime flag (e.g. `/run-project foo --model claude-opus-4-7[1m]`), or
-3. Soft fallback: command's first step prompts the user to restart the session with `--model claude-opus-4-7[1m]` if long context is needed; otherwise proceeds with 200K.
+1. Per-command frontmatter `model: claude-opus-4-8[1m]` if the runtime honors it, or
+2. Slash-command runtime flag (e.g. `/run-project foo --model claude-opus-4-8[1m]`), or
+3. Soft fallback: command's first step prompts the user to restart the session with `--model claude-opus-4-8[1m]` if long context is needed; otherwise proceeds with 200K.
 
 ## Rationale
 

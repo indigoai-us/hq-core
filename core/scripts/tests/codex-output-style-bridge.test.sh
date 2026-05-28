@@ -35,13 +35,13 @@ chmod +x "${HQ_ROOT}/core/scripts/codex-skill-bridge.sh"
 
 cat > "${HQ_ROOT}/.claude/settings.json" <<'JSON'
 {
-  "outputStyle": "Cavebro"
+  "outputStyle": "HQ"
 }
 JSON
 
-cat > "${HQ_ROOT}/.claude/output-styles/cavebro.md" <<'MD'
+cat > "${HQ_ROOT}/.claude/output-styles/hq.md" <<'MD'
 ---
-name: Cavebro
+name: HQ
 ---
 
 Terse chat voice.
@@ -60,10 +60,10 @@ MD
 
 HOME="${TMP}/home" bash "${HQ_ROOT}/core/scripts/codex-skill-bridge.sh" install --root "${HQ_ROOT}" >"${TMP}/codex-output-style-bridge.out"
 
-assert_link_target "${HQ_ROOT}/.codex/output-style.md" "${HQ_ROOT}/.claude/output-styles/cavebro.md"
+assert_link_target "${HQ_ROOT}/.codex/output-style.md" "${HQ_ROOT}/.claude/output-styles/hq.md"
 
 status="$(HOME="${TMP}/home" bash "${HQ_ROOT}/core/scripts/codex-skill-bridge.sh" status --root "${HQ_ROOT}")"
-[[ "${status}" == *"Active output style: Cavebro"* ]] || fail "status did not report active Cavebro style"
+[[ "${status}" == *"Active output style: HQ"* ]] || fail "status did not report active HQ style"
 [[ "${status}" == *"Project Codex output-style bridge"* ]] || fail "status did not report output-style bridge"
 [[ "${status}" == *"status: healthy"* ]] || fail "status did not report healthy bridges"
 

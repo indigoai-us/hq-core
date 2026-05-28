@@ -30,7 +30,7 @@ This rule supersedes the classification table below. The reason it exists: prior
 
 Determine mode from the user's argument (first match wins):
 
-- **No arg / empty** — Resume mode
+- **No arg / empty** — Entry-gate mode (ask before loading context — see "Entry-Gate Mode" below)
 - **Arg matches company slug** in `companies/manifest.yaml` — Company mode
 - **Arg matches a directory** in `personal/projects/` (not `_archive/`) or `companies/*/projects/` — Project mode
 - **Arg matches a directory** in `repos/private/` or `repos/public/` — Repo mode
@@ -40,16 +40,25 @@ Determine mode from the user's argument (first match wins):
 
 ### 2. Gather Context
 
-#### Resume Mode (no arg)
+#### Entry-Gate Mode (no arg)
 
-1. Read `workspace/threads/handoff.json`
-2. Read the thread file it points to. Extract: `conversation_summary`, `next_steps`, `git.branch`, `git.current_commit`, `git.dirty`, `files_touched`
-3. Run `git log --oneline -3` for recent HQ commits
-4. Search for active projects:
-   - Primary: `qmd search "prd.json" --json -n 10` via shell
-   - Fallback (if qmd unavailable): `grep -rl '"passes"' personal/projects/ companies/ --include='prd.json'`
-   - Filter results for `personal/projects/` paths and `companies/*/projects/` paths (skip `_archive`). For each (max 5), read the prd.json and extract `name` + count stories where `passes !== true`. Collect projects with remaining work.
-5. **If the resumed thread references a project_dir** (extract from thread `files_touched` or `conversation_summary`): read the most-recent journal file from `{project_dir}/journal/*.md` (frontmatter + `## Open threads` only). Surface its `summary` + open threads in orientation. See Project Mode step 4 for the read pattern.
+**Do NOT eager-load context.** A naked `/startwork` must ask the user where to go *before* reading the thread file, running the qmd/grep project scan, or reading any prd.json. Only the single cheap read in step 1 is permitted before the gate.
+
+1. **Cheap peek only.** If `workspace/threads/handoff.json` exists, read it (small, allowed by context-diet) and extract only the last-session one-liner (its `summary` / `conversation_summary` field) + referenced branch. Do NOT read the thread file it points to yet. If handoff.json is absent, skip — no last-session option.
+
+2. **Ask the user (AskUserQuestion), one question, then wait.** Present these options:
+   - **Resume last session** — only if step 1 found a handoff; label it with the one-liner (e.g. *"Resume: {summary}"*).
+   - **Pick a company / project / repo** — user names the target; you then re-enter this skill in the matching mode (Company / Project / Repo) with that arg.
+   - **Not sure what to work on** — route to `/strategize` (strategic prioritization). Announce the handoff and load `.claude/skills/strategize/SKILL.md`. Do not do project discovery here.
+   - **Something else** — free-text; user describes intent → treat as Task mode.
+
+   Do not present numbered markdown for this gate — use the structured picker. This is the whole point of the gate: no `qmd search "prd.json"`, no thread-file read, no per-project prd.json reads happen until the user has chosen.
+
+3. **After the pick, load only what that path needs:**
+   - *Resume last session* → now read the thread file handoff.json points to (extract `conversation_summary`, `next_steps`, `git.branch`, `git.current_commit`, `git.dirty`, `files_touched`); run `git log --oneline -3`; if the thread references a `project_dir`, read its most-recent journal file (frontmatter + `## Open threads` only — see Project Mode step 4). Skip the global qmd/grep project scan unless the user then asks "what else is active?".
+   - *Pick company/project/repo* → proceed via the corresponding mode's Gather Context section with the supplied arg.
+   - *Not sure* → `/strategize` owns it from here; stop gathering.
+   - *Something else* → Task Mode gather.
 
 #### Company Mode (arg = company slug)
 
@@ -222,7 +231,7 @@ Active work:
 
 Then present numbered options built from context:
 
-- **Resume mode**: next_steps items (up to 3) + "Pick a project" + "Something else"
+- **Entry-gate mode (no arg)**: no orientation block is rendered before the gate — the AskUserQuestion gate (Gather Context → Entry-Gate Mode step 2) *is* the first interaction. Render an orientation block only *after* the user picks "Resume last session", using the loaded thread context; then offer next_steps items (up to 3) + "Pick a project" + "Something else".
 - **Company mode**: worker-recommended next actions + active projects for that company (up to 3) + "Run a worker" + "Something else"
 - **Project mode**: top 3 incomplete stories by priority via `/execute-task` + matching worker route + "Something else"
 - **Repo mode**: related projects with incomplete work (up to 3) + "Open repo (no project)" + "Something else"
@@ -238,6 +247,8 @@ Output the numbered list and wait for user input. After user picks, proceed dire
 - If >5 active projects found, show top 5 by most recent file modification
 - Always verify git branch with `git branch --show-current` before displaying git state
 - Context diet: every read must serve the orientation summary. No speculative loading
-- If handoff.json doesn't exist, skip resume context — go straight to asking what to work on
+- Naked `/startwork` (no arg) MUST hit the entry gate first — ask via AskUserQuestion before reading the thread file or running any project scan. The only pre-gate read allowed is handoff.json itself (one-liner peek)
+- If the user is unsure what to work on, route them to `/strategize` rather than doing eager project discovery
+- If handoff.json doesn't exist, skip the "Resume last session" option — the gate still asks (pick target / not sure / something else)
 - Use `qmd search` via shell command — if qmd unavailable, fall back to Grep to scan for prd.json files
 - Before specialized work, prefer the relevant worker route surfaced by the Worker Packet

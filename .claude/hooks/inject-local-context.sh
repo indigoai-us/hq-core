@@ -7,7 +7,7 @@
 # Sources:
 #   companies/manifest.yaml → company slugs + qmd collections
 #   core/workers/registry.yaml → company worker counts
-#   agents-profile.md       → owner name
+#   agents-profile.md       → owner name + ## Challenges section
 #
 # Falls back gracefully if files are missing (fresh install).
 
@@ -24,6 +24,19 @@ OWNER="(not configured)"
 if [ -f "$PROFILE" ]; then
   # Extract name from first heading: "# Firstname Lastname - Profile"
   OWNER=$(head -1 "$PROFILE" | sed 's/^# \(.*\) - Profile$/\1/' | sed 's/^# //')
+fi
+
+# --- Standing challenges (Phase 1 Q4 from /setup) ---
+# Surface the user's pain points so every session lands with them in working
+# memory. Bounded: first 5 non-empty lines, joined with `; ` to keep the
+# banner compact. Stops at the next `## ` heading.
+CHALLENGES=""
+if [ -f "$PROFILE" ]; then
+  CHALLENGES=$(awk '
+    /^## Challenges[[:space:]]*$/ { flag=1; next }
+    /^## / && flag { flag=0 }
+    flag && NF { print }
+  ' "$PROFILE" | head -5 | paste -sd ';' - | sed 's/;/; /g' || true)
 fi
 
 # --- Company slugs ---
@@ -55,6 +68,9 @@ fi
 # --- Emit ---
 echo "<local-context>"
 echo "Owner: $OWNER"
+if [ -n "$CHALLENGES" ]; then
+  echo "Challenges: $CHALLENGES"
+fi
 if [ -n "$COMPANIES" ]; then
   echo "Companies ($COMPANY_COUNT): $COMPANIES"
 fi

@@ -18,6 +18,7 @@ If `$ARGUMENTS` is non-empty, match against topic slugs:
 
 | Input | Topic |
 |-------|-------|
+| `cloud`, `team`, `collaboration`, `hq-sync`, `hq-share`, `hq-secrets`, `hq-deploy`, `hq-bug` | 0. Cloud & Team Collaboration |
 | `principles`, `ralph-principles`, `mindset` | 1. Ralph Principles |
 | `hq`, `workflow`, `daily`, `folder`, `folders` | 2. Working with HQ |
 | `knowledge` | 3. Knowledge Architecture |
@@ -41,19 +42,34 @@ Silently assess HQ state:
 1. Check `core/workers/registry.yaml` — count company-specific workers (type: `company`)
 2. Check for any `prd.json` files in `companies/*/projects/` or `personal/projects/`
 3. Count companies in `companies/manifest.yaml`
+4. **Cloud / team detection** — silently run:
+   ```bash
+   grep -l 'cloud' companies/*/manifest.yaml 2>/dev/null | head -1
+   grep -iE 'cloud_backed|cloud_uid|hq[-_]?pro|team' companies/manifest.yaml 2>/dev/null | head -3
+   ```
+   Either signal hit → flag as **CLOUD**.
 
 Classify:
 - **FRESH**: 0 custom workers AND 0 projects
 - **ACTIVE**: has workers OR projects
 - **ADVANCED**: 3+ companies with core/workers/projects
+- **CLOUD** (orthogonal flag): cloud-backed / hq-pro / team context detected. Sits alongside FRESH/ACTIVE/ADVANCED — when present, Topic 0 leads the menu and is the default recommendation regardless of maturity.
 
 ### Present Menu
+
+Menu structure adapts to the CLOUD flag:
+
+- **CLOUD detected** → render the "Cloud & Team Collaboration" block FIRST, above Foundations. Topic 0 is the default recommendation.
+- **CLOUD not detected** → omit the Cloud block entirely. Foundations leads.
 
 ```
 HQ Tutorial
 ───────────
 Learn HQ principles from "Build Your Own AGI" — interactive lessons
 with hands-on exercises using your actual HQ.
+
+  Cloud & Team Collaboration                       [shown only if CLOUD detected]
+  0. Cloud & Team           — hq-sync, hq-share, hq-secrets, hq-deploy, hq-bug
 
   Foundations
   1. Ralph Principles      — Plan mode, fresh context, back pressure (mindset)
@@ -76,9 +92,10 @@ with hands-on exercises using your actual HQ.
 ```
 
 **Recommendation logic:**
-- FRESH → "1. Ralph Principles — start with the mindset before the mechanics"
-- ACTIVE → "4. Session Hygiene — the #1 thing that separates productive users from frustrated ones"
-- ADVANCED → "8. The Ralph Loop — you're ready for orchestrated execution via /run-project"
+- CLOUD (any maturity) → "0. Cloud & Team — learn how your HQ talks to the cloud, your team, and shared secrets before going deeper"
+- FRESH (no cloud) → "1. Ralph Principles — start with the mindset before the mechanics"
+- ACTIVE (no cloud) → "4. Session Hygiene — the #1 thing that separates productive users from frustrated ones"
+- ADVANCED (no cloud) → "8. The Ralph Loop — you're ready for orchestrated execution via /run-project"
 
 Wait for user selection via AskUserQuestion. Route to Step 2 with chosen topic.
 
@@ -126,6 +143,41 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 ---
 
 ## Topic Registry
+
+### Topic 0: cloud — Cloud & Team Collaboration (CLOUD-gated)
+
+- **Chapter:** N/A — HQ product, not Ralph philosophy
+- **HQ refs:** `.claude/skills/{hq-sync,hq-share,hq-secrets,deploy,hq-bug}/SKILL.md`, `companies/manifest.yaml`
+- **Voice:** plain-English "if you want X, do Y." Lead each command with the need, then explain what happens, when to use it, and the one gotcha worth knowing. No jargon-first, no policy citations up front.
+- **Opening framing:** "When you're working solo, HQ lives on your laptop. When you're working with a team — or just want your laptop and the cloud to agree — these 5 commands are the bridge. Each one answers a specific question:"
+- **Show:** present the 5 commands as a needs-based menu. Use this framing:
+
+  - **Want your laptop's HQ to match the cloud (or push local changes up)?**
+    → `/hq-sync` (or just tell Claude "sync HQ")
+    Reconciles every cloud-backed company in both directions. Runs the same engine as the AppBar "HQ Sync" button. Use it at the start of a session if you switched machines, or at the end if you want a teammate to see what you just did. If there are conflicts (you and the cloud changed the same file), HQ surfaces them — `/resolve-conflicts` walks you through each one.
+
+  - **Want to give a teammate access to a file or folder?**
+    → `/hq-share <path>`
+    Generates a one-time link, opens a picker in your browser, and lets you grant any teammates you want (one or many at once). The link is live for 15 minutes and only works once — that's by design, so a leaked link can't be reused. After you've granted access, the teammates have it permanently; the link is just the handoff.
+
+  - **Want to upload API keys / passwords so you and your team can use them without copy-pasting?**
+    → `/hq-secrets`
+    Stores credentials in the cloud per company. Once stored, any teammate with access can use them in their sessions without ever seeing the raw value — Claude fetches them at runtime and never prints them in chat. Best for: Shopify tokens, Stripe keys, database URLs, anything you'd otherwise paste into a `.env` file. If a credential needs a *human* to log in (OAuth, 2FA), HQ mints a link to send instead.
+
+  - **Want to publish something (a doc, preview site, report) so others can see it?**
+    → `/deploy`
+    Ships whatever you just made — a generated report, a brief, a static page — to the hq-deploy host and returns a shareable URL. Optional password protection if it's sensitive. Use this when chat-pasting a long doc would be awkward, or when you want a single link that teammates can bookmark.
+
+  - **Hit a bug or want a feature in HQ itself?**
+    → `/hq-bug`
+    Files a report directly to the HQ team. Auto-attaches your session context (which command was running, what failed, what directory you were in) so you don't have to write a repro. Use it freely — friction here is the difference between a fixed bug and a forgotten one.
+
+- **Exercise (Tier 1):**
+  1. Read `companies/manifest.yaml` → name the user's cloud-backed companies (the ones with `cloud_uid:` or similar markers)
+  2. Ask the user: "Of the 5, which scenario actually fits something you want to do today? Pick one and I'll walk you through it." Map their answer to the command and explain the first step
+- **Verify:** user can answer "which command for X?" for each of the 5 scenarios in their own words — not by reciting the command name, but by knowing which problem it solves
+- **Takeaway:** "5 commands, 5 jobs. `/hq-sync` keeps you and the cloud in agreement. `/hq-share` hands access to a teammate. `/hq-secrets` stores credentials safely. `/deploy` turns work into a link. `/hq-bug` closes the loop with HQ itself. Together they're the team-collab layer — the rest of HQ is what you do *inside* that layer."
+- **Next:** principles (FRESH) or hq (ACTIVE)
 
 ### Topic 1: principles — Ralph Principles (NEW)
 

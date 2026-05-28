@@ -29,6 +29,12 @@
 #                     Rule: hq-promote-hq-core-skills-commands-manual-copy.
 #   core-yaml-locked  fail if core/core.yaml changes hqVersion without label
 #                     "version-bump"; path-only metadata edits are allowed.
+#   core-yaml-version-monotonic
+#                     fail if core/core.yaml hqVersion did not strictly
+#                     increase vs. origin/<base_ref>. Enforced ONLY on
+#                     indigoai-us/hq-core PRs (the workflow gates by repo).
+#                     Counterpart to the promote-side stamp that bumps the
+#                     value into the PR tree.
 #   special-case-files
 #                     fail if CHANGELOG.md, MIGRATION.md, or .claude/CLAUDE.md
 #                     changed without label "special-case-confirmed".
@@ -49,7 +55,7 @@ set -euo pipefail
 
 mode="${1:-}"
 if [[ -z "$mode" ]]; then
-  echo "Usage: $0 <denylist|policy-rationale|slugs|users-path|provenance|vendor-public-ok|public-frontmatter|commands-skills-tripwire|core-yaml-locked|special-case-files|denylist-drift|settings-local-not-ignored>" >&2
+  echo "Usage: $0 <denylist|policy-rationale|slugs|users-path|provenance|vendor-public-ok|public-frontmatter|commands-skills-tripwire|core-yaml-locked|core-yaml-version-monotonic|special-case-files|denylist-drift|settings-local-not-ignored>" >&2
   exit 2
 fi
 
@@ -416,6 +422,89 @@ case "$mode" in
       fi
     else
       echo "core-yaml-locked: clean"
+    fi
+    ;;
+
+  core-yaml-version-monotonic)
+    # Every PR to hq-core must strictly increase core/core.yaml.hqVersion.
+    # The workflow job gates by repo (only fires on indigoai-us/hq-core), so
+    # this script does not need to repeat that check — but we defensively
+    # short-circuit if the file is absent (pre-v12 trees) or the base ref
+    # cannot be resolved.
+    CORE_YAML="core/core.yaml"
+    if [[ ! -f "$CORE_YAML" ]]; then
+      echo "core-yaml-version-monotonic: skipped ($CORE_YAML missing)"
+      exit 0
+    fi
+    extract_hqv() {
+      # $1 = file or '-' for stdin. Echoes the bare hqVersion value, or empty.
+      grep -E '^hqVersion:' "$1" 2>/dev/null \
+        | head -1 \
+        | sed -E 's/^hqVersion:[[:space:]]*"?([0-9A-Za-z.+-]+)"?.*/\1/'
+    }
+    head_v="$(extract_hqv "$CORE_YAML")"
+    if [[ -z "$head_v" ]]; then
+      echo "::error file=$CORE_YAML::could not parse hqVersion on HEAD" >&2
+      exit 1
+    fi
+    # Resolve base hqVersion via `git show`. If the base ref is missing or
+    # the file did not exist on base (first introduction), accept HEAD as-is.
+    if ! git rev-parse --verify "origin/$base_ref" >/dev/null 2>&1; then
+      echo "core-yaml-version-monotonic: skipped (origin/$base_ref not fetched)"
+      exit 0
+    fi
+    base_content="$(git show "origin/$base_ref:$CORE_YAML" 2>/dev/null || true)"
+    if [[ -z "$base_content" ]]; then
+      echo "core-yaml-version-monotonic: pass (no base $CORE_YAML — first introduction; HEAD=$head_v)"
+      exit 0
+    fi
+    base_v="$(printf '%s\n' "$base_content" | grep -E '^hqVersion:' | head -1 \
+      | sed -E 's/^hqVersion:[[:space:]]*"?([0-9A-Za-z.+-]+)"?.*/\1/')"
+    if [[ -z "$base_v" ]]; then
+      echo "::warning::could not parse hqVersion on origin/$base_ref; treating as 0.0.0"
+      base_v="0.0.0"
+    fi
+    if [[ "$head_v" == "$base_v" ]]; then
+      echo "::error file=$CORE_YAML::hqVersion unchanged ($head_v) — every PR to hq-core must bump it" >&2
+      exit 1
+    fi
+    # Semver-aware comparator. `sort -V` gets prerelease order wrong
+    # (e.g. it ranks `14.2.1-beta.1` ABOVE `14.2.1`, the opposite of
+    # semver). Rules: compare x.y.z numerically; if equal, no-prerelease
+    # ranks above any prerelease; if both prereleased, fall back to sort -V
+    # over the prerelease tail.
+    semver_gt() {
+      local a="$1" b="$2"
+      [[ "$a" == "$b" ]] && return 1
+      local a_main="${a%%-*}" a_pre=""
+      local b_main="${b%%-*}" b_pre=""
+      [[ "$a" == *-* ]] && a_pre="${a#*-}"
+      [[ "$b" == *-* ]] && b_pre="${b#*-}"
+      local IFS=. ; local ax ay az bx by bz
+      read -r ax ay az <<< "$a_main"
+      read -r bx by bz <<< "$b_main"
+      ax=${ax:-0}; ay=${ay:-0}; az=${az:-0}
+      bx=${bx:-0}; by=${by:-0}; bz=${bz:-0}
+      if   (( ax > bx )); then return 0
+      elif (( ax < bx )); then return 1
+      elif (( ay > by )); then return 0
+      elif (( ay < by )); then return 1
+      elif (( az > bz )); then return 0
+      elif (( az < bz )); then return 1
+      fi
+      # x.y.z equal — prerelease rules
+      if [[ -z "$a_pre" && -z "$b_pre" ]]; then return 1; fi
+      if [[ -z "$a_pre" ]]; then return 0; fi
+      if [[ -z "$b_pre" ]]; then return 1; fi
+      local top
+      top="$(printf '%s\n%s\n' "$a_pre" "$b_pre" | sort -V | tail -1)"
+      [[ "$top" == "$a_pre" && "$a_pre" != "$b_pre" ]]
+    }
+    if semver_gt "$head_v" "$base_v"; then
+      echo "core-yaml-version-monotonic: clean ($base_v → $head_v)"
+    else
+      echo "::error file=$CORE_YAML::hqVersion went backwards: base=$base_v head=$head_v" >&2
+      exit 1
     fi
     ;;
 

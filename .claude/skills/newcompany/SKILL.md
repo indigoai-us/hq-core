@@ -34,6 +34,9 @@ mkdir -p companies/{slug}/workspace/sessions
 printf '# HQ workspace mirror — sessions are gitignored, index.jsonl is committed\nsessions/\n' \
   > companies/{slug}/workspace/.gitignore
 : > companies/{slug}/workspace/index.jsonl
+# Scaffold company.yaml with cloud-disabled default. /designate-team flips
+# cloud: true later (and provisions via `hq cloud provision company`).
+printf "slug: %s\ncloud: false\n" "{slug}" > companies/{slug}/company.yaml
 # Copy Obsidian vault config (dereference symlink in template)
 [ -e companies/_template/.obsidian ] && cp -rL companies/_template/.obsidian companies/{slug}/.obsidian
 ```
@@ -42,6 +45,13 @@ The `workspace/` directory is the per-company audit trail of HQ sessions that
 touch this company. Sessions are hardlinked here from `workspace/threads/` by
 the mirror hook (`mirror-thread-to-company.sh`); the `index.jsonl` audit log is
 committed to git, individual session JSONs are gitignored.
+
+`company.yaml` is the AppBar / cloud-state marker. `cloud: false` is the
+local-only default; `/designate-team {slug}` rewrites it to `cloud: true` and
+runs `hq cloud provision company {slug}`. Keep the file even for purely-local
+companies — readers (AppBar menu, setup detection, tutorial) treat its absence
+and `cloud: false` as the same "local" signal, but the explicit field makes
+intent unambiguous.
 
 ### 4. Create Knowledge Repo
 
@@ -111,6 +121,7 @@ Report:
 ```
 Company {slug} scaffolded:
   Directory: companies/{slug}/
+  company.yaml: cloud: false (run /designate-team {slug} to go cloud-backed)
   Knowledge: companies/{slug}/knowledge/ → repos/private/knowledge-{slug}
   Manifest: updated (prefix: {chosen-prefix})
   qmd: collection "{slug}" created
@@ -123,3 +134,4 @@ Company {slug} scaffolded:
 - Always update manifest.yaml and qmd in same operation
 - Never create a company that already exists in manifest
 - Validate slug: lowercase, hyphens only, no spaces
+- Always write `companies/{slug}/company.yaml` with `cloud: false` — `/designate-team` flips it later. Never default to `cloud: true`.
