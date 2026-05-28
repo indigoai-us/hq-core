@@ -8,6 +8,7 @@ Ordering follows user feedback: **principles and daily workflow first**, orchest
 
 | # | Slug | Book Ch | Focus | What You Learn |
 |---|------|---------|-------|----------------|
+| 0 | `cloud` | N/A | Cloud/team | `/hq-sync`, `/hq-share`, `/hq-secrets`, `/deploy`, `/hq-bug` for shared HQ work |
 | 1 | `principles` | 3 | Foundations | Plan mode, fresh context, back pressure — the Ralph *mindset* |
 | 2 | `hq` | 4 | Foundations | Daily workflow (`/startwork` → work → `/handoff`) + folder orientation |
 | 3 | `knowledge` | 6 | Daily practice | Hot vs cold channels, qmd search, knowledge gardens |
@@ -24,12 +25,14 @@ Ordering follows user feedback: **principles and daily workflow first**, orchest
 
 ```
 /tutorial                    # Show topic menu with recommendation
+/tutorial cloud              # Cloud/team collaboration commands (shown when CLOUD is detected)
 /tutorial principles         # Jump to specific topic
 /tutorial hq                 # Slug aliases work too (workflow, daily, folder)
 /tutorial ralph-loop         # Orchestration mechanics (Topic 8, not principles)
 ```
 
 **Recommended starting point by HQ maturity:**
+- CLOUD (cloud-backed/team HQ) → `cloud`
 - FRESH (no core/workers/projects) → `principles`
 - ACTIVE (has core/workers/projects) → `session-hygiene`
 - ADVANCED (3+ companies) → `ralph-loop`

@@ -135,7 +135,12 @@ jobs:
           else
             BRANCH="fix/${INPUT_SLUG}"
             TITLE="fix(core): ${INPUT_SLUG}"
-            LABELS=""
+            # `version-bump` required because the promote always bumps
+            # core/core.yaml hqVersion now (the `core-yaml-version-monotonic`
+            # check on hq-core fails any PR that doesn't strictly increase it,
+            # and the existing `core-yaml-locked` check requires this label
+            # whenever hqVersion changes).
+            LABELS="version-bump"
             COMMIT_MSG="fix(core): ${INPUT_SLUG}"
           fi
           {
@@ -171,6 +176,47 @@ jobs:
             --exclude='repos/' \
             --exclude='.obsidian/' \
             staging/ target/
+
+      - name: Stamp hqVersion in target/core/core.yaml
+        # Bumps core/core.yaml hqVersion + updatedAt to the input version so the
+        # PR diff (and therefore the squash-merge commit that becomes the tag
+        # target) carries the new version. Before this step existed, the version
+        # was stamped post-tag-push by release.yml, which meant every tag's tree
+        # showed the PREVIOUS version (e.g. v14.2.1 tag's core.yaml said
+        # 14.2.0). release.yml's stamp step is now a safety net for the rare
+        # case where promote did not bump (idempotent — only mutates on drift).
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          CORE_YAML="target/core/core.yaml"
+          if [ ! -f "$CORE_YAML" ] || [ -L "$CORE_YAML" ]; then
+            echo "::notice::No non-symlink ${CORE_YAML} found; skipping hqVersion stamp"
+            exit 0
+          fi
+          if ! grep -qE '^hqVersion:' "$CORE_YAML"; then
+            echo "::notice::No 'hqVersion:' key in ${CORE_YAML}; skipping stamp"
+            exit 0
+          fi
+          NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          CURRENT=$(grep -E '^hqVersion:' "$CORE_YAML" | head -1 \
+            | sed -E 's/^hqVersion:[[:space:]]*"?([0-9A-Za-z.+-]+)"?.*/\1/')
+          if [ "$CURRENT" = "$INPUT_VERSION" ]; then
+            echo "::notice::${CORE_YAML} already at hqVersion ${INPUT_VERSION}; skipping stamp"
+            exit 0
+          fi
+          sed -E -i.bak \
+            -e "s|^hqVersion:.*|hqVersion: \"${INPUT_VERSION}\"|" \
+            -e "s|^updatedAt:.*|updatedAt: \"${NOW_ISO}\"|" \
+            "$CORE_YAML"
+          rm -f "${CORE_YAML}.bak"
+          # If updatedAt key was absent, insert it right after hqVersion.
+          if ! grep -qE '^updatedAt:' "$CORE_YAML"; then
+            awk -v line="updatedAt: \"${NOW_ISO}\"" '{ print } /^hqVersion:/ && !done { print line; done=1 }' "$CORE_YAML" > "${CORE_YAML}.new"
+            mv "${CORE_YAML}.new" "$CORE_YAML"
+          fi
+          echo "----- core/core.yaml diff -----"
+          diff -u "staging/core/core.yaml" "$CORE_YAML" || true
 
       - name: Diff summary
         id: diff

@@ -68,8 +68,8 @@ jobs:
           echo "Latest main: ${MAIN_SHA}"
           echo "Author: ${AUTHOR}"
           echo "Message: ${MSG}"
-          if printf '%s' "$MSG" | grep -qE '^chore\(migration\): stamp v[0-9]'; then
-            TAG="$(printf '%s' "$MSG" | sed -nE 's/^chore\(migration\): stamp (v[^ ]+).*/\1/p')"
+          if printf '%s' "$MSG" | grep -qE '^chore\(release\): stamp v[0-9]'; then
+            TAG="$(printf '%s' "$MSG" | sed -nE 's/^chore\(release\): stamp (v[^ ]+).*/\1/p')"
             {
               echo "should_backmerge=true"
               echo "sha=${MAIN_SHA}"

@@ -1,13 +1,49 @@
 ## [Unreleased]
 
+## [15.0.0] — BREAKING — engineering surface extracted
+
+### Added — Skills
+- **`/hq-share` — Claude-drafted note pre-fill (Step 3.5).** When `/hq-share` is invoked with the shared paths locally readable, the skill inventories the files, drafts a 1–2 sentence factual note describing what's being shared, and confirms with the user (Use as-is / Edit / Skip / Type-my-own) before minting. The accepted draft rides on the share-session URL as `?note=<urlencoded>`; the hq-console form reads it on mount and seeds the note textarea — sender just reviews and approves. New `--no-draft` flag opts out of the draft step entirely. Rule #6 captures the no-speculation drafting guidance. Companion form-side reader shipped via `indigoai-us/hq-console#126`, live on hq-prod since 2026-05-26.
+
 ### Changed
 - Root structure now keeps user-visible top-level directories to `companies/`, `core/`, `personal/`, `repos/`, and `workspace/`; public HQ docs moved to `core/docs/hq/`.
 - Personal/HQ project instructions now point to `personal/projects/`; company projects remain under `companies/{co}/projects/`.
 - `core/core.yaml` is the only shipped version manifest; legacy root `core.yaml` is no longer part of the scaffold.
 - `/update-hq` now reads public changelog and migration docs from `core/docs/hq/`, with a legacy fallback for older installs.
 
-### Removed
+### Removed (legacy scaffold)
 - Removed legacy root `data/` scaffold and root copies of public HQ docs.
+
+### Removed from shipped `core/` (now provided by `hq-pack-engineering`)
+
+- **Skills (17):** architect, clean-worktree, commit-main, deep-plan, diagnose, discover, document-release, execute-task, investigate, land, land-batch, prd, quality-gate, review, run-pipeline, run-project, tdd
+- **Workers (6):** accessibility-auditor, frontend-designer, performance-benchmarker, qa-tester, security-scanner, site-builder
+- **Knowledge (4):** Ralph (orchestration), agent-browser, ai-security-framework, dev-team
+- **Policies (4):** e2e-testing-standards, hq-bugfix-requires-tests, hq-no-test-shortcuts (hard), hq-prefer-agent-browser
+
+### Migration — transparent for upgraders, opt-in for greenfield
+
+Upgrading from `< 15.0.0` requires **no action**: `/update-hq` auto-installs `hq-pack-engineering` (Phase 5d-PRE) before removing the inline copies, then symlinks all contributions back to their bare-name paths via `scan-packages.sh`. `/tdd`, `/review`, `/execute-task`, `qa-tester`, etc. keep working with zero prompts. If the install can't reach the pack, the inline copies are kept in place and a retry command is shown — nothing is lost.
+
+Greenfield (`npx create-hq`) stays lean: the auto-install conditional skips fresh installs. Coders opt in with:
+
+```bash
+hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering
+```
+
+### Why
+
+Vanilla `hq-core` is an orchestration layer over Claude Code, Cursor, and Codex. The engineering surface assumes a coding workflow — repo, PR pipeline, tests, deploys — which many HQ users (founders, ops, sales, knowledge-work tenants) never touch. Splitting keeps the default scaffold minimal while existing coding installs keep every capability automatically.
+
+### Not changed
+
+- Upgraders keep the full engineering surface (auto-installed); greenfield stays opt-in via `hq install`
+- Staying skills (adr, brainstorm, checkpoint, handoff, harness-audit, learn, newworker, plan, retro, setup, startwork) — these reference the moved set; with the pack auto-installed for upgraders the refs keep resolving
+- 12 personal-overlay dev policies in `personal/policies/` — those are user-personal, not core, so they stay where they are
+
+### Companion pack
+
+[`indigoai-us/hq-packages`](https://github.com/indigoai-us/hq-packages) — `packages/hq-pack-engineering/` (live on `main`).
 
 ## [14.1.0] — 2026-05-13
 

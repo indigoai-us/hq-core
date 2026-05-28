@@ -4,15 +4,9 @@
 # To register a new worker: create its worker.yaml. Registry regenerates.
 
 version: "5.0"
-generated_at: "2026-05-14T22:06:52Z"
+generated_at: "2026-05-21T16:56:49Z"
 
 workers:
-  - id: accessibility-auditor
-    path: core/workers/public/accessibility-auditor/
-    type: OpsWorker
-    visibility: public
-    status: active
-    description: "WCAG 2.2 AA auditing — keyboard nav, screen reader, zoom, reduced motion, contrast"
   - id: architect
     path: core/workers/public/dev-team/architect/
     type: CodeWorker
@@ -116,12 +110,6 @@ workers:
     visibility: public
     status: active
     description: "McKinsey SCQA executive summaries — strict word limits, quantified findings, actionable recommendations"
-  - id: frontend-designer
-    path: core/workers/public/frontend-designer/
-    type: OpsWorker
-    visibility: public
-    status: active
-    description: "Bold UI generation using Anthropic skill"
   - id: frontend-dev
     path: core/workers/public/dev-team/frontend-dev/
     type: CodeWorker
@@ -197,12 +185,6 @@ workers:
     visibility: public
     status: active
     description: "Bidirectional Paper Desktop design bridge — extract specs, preview components, edit designs via MCP"
-  - id: performance-benchmarker
-    path: core/workers/public/performance-benchmarker/
-    type: OpsWorker
-    visibility: public
-    status: active
-    description: "Core Web Vitals, load testing, capacity planning — k6, Lighthouse, stress/endurance testing"
   - id: pretty-mermaid
     path: core/workers/public/pretty-mermaid/
     type: OpsWorker
@@ -223,12 +205,6 @@ workers:
     team: dev-team
     status: active
     description: "PRD lifecycle, issue selection, learning aggregation"
-  - id: qa-tester
-    path: core/workers/public/qa-tester/
-    type: OpsWorker
-    visibility: public
-    status: active
-    description: "Adversarial website testing — defaults to FAIL, requires screenshot evidence for every claim"
   - id: reality-checker
     path: core/workers/public/dev-team/reality-checker/
     type: CodeWorker
@@ -236,18 +212,6 @@ workers:
     team: dev-team
     status: active
     description: "Final quality gate — cross-validates QA findings independently, defaults to NEEDS WORK"
-  - id: security-scanner
-    path: core/workers/public/security-scanner/
-    type: OpsWorker
-    visibility: public
-    status: active
-    description: "Security scanning and vulnerability detection"
-  - id: site-builder
-    path: core/workers/public/site-builder/
-    type: OpsWorker
-    visibility: public
-    status: active
-    description: "Build and deploy local business websites from template + config"
   - id: social-publisher
     path: core/workers/public/social-publisher/
     type: OpsWorker

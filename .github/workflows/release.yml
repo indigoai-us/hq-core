@@ -19,6 +19,23 @@ jobs:
       stamp_committed: ${{ steps.stamp.outputs.committed }}
       stamp_sha: ${{ steps.stamp.outputs.sha }}
     steps:
+      - name: Block alpha/beta on hq-core (production)
+        # Alpha/beta releases ship from indigoai-us/hq-core-staging only;
+        # hq-core is the public production stream. The staging side cuts
+        # beta tags automatically via auto-beta-release.yml; promoting that
+        # workflow into hq-core is harmless (its own job-level `if` keeps it
+        # inert there) but a human pushing a *-alpha*/*-beta* tag here would
+        # leak a pre-release into the public release feed — fail loudly.
+        if: github.repository == 'indigoai-us/hq-core'
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          case "$TAG" in
+            *-alpha*|*-beta*)
+              echo "::error::Alpha/beta releases are not allowed on indigoai-us/hq-core. Cut the tag on hq-core-staging instead; promote a stable v<semver> tag here once it's ready."
+              exit 1
+              ;;
+          esac
+
       - name: Checkout
         uses: actions/checkout@v4
         with:

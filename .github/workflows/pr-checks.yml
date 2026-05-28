@@ -137,6 +137,21 @@ jobs:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
         run: bash .leak-scan/scan.sh core-yaml-locked
 
+  core-yaml-version-monotonic:
+    # hq-core ONLY. Promote PRs (the only kind hq-core sees) always bump
+    # core/core.yaml hqVersion via promote-to-hq-core.yml; this check enforces
+    # that the bump is strictly greater than origin/main. Staging is exempt —
+    # staging churns intra-version without bumping hqVersion.
+    name: core-yaml-version-monotonic
+    if: github.event_name == 'pull_request' && github.repository == 'indigoai-us/hq-core'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: core/core.yaml hqVersion must strictly increase
+        run: bash .leak-scan/scan.sh core-yaml-version-monotonic
+
   special-case-files:
     name: special-case-files
     if: github.event_name == 'pull_request'

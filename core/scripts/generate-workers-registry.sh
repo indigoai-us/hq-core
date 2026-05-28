@@ -52,6 +52,12 @@ errors=0
 while IFS= read -r yaml; do
   case "$yaml" in
     companies/_template/*) continue ;;
+    # Skip any underscore-prefixed pseudo-dir (e.g. an _overrides/ snapshot
+    # mirrored in via personal/workers/). These are not registry sources;
+    # treating them as such produces spurious duplicate-id aborts. `find -L`
+    # follows symlinked dirs, so this also covers core/workers/_overrides
+    # -> personal/workers/_overrides.
+    */_overrides/*|_overrides/*) continue ;;
   esac
 
   id=$(yq_get id "$yaml")

@@ -35,7 +35,7 @@ Root files that always stay at root:
 ├── company-info.md       # Corporate details, address, legal (agent context)
 ├── competitive-landscape.md  # Market position, competitors (cross-domain)
 ├── AGENT-GUIDE.md        # How AI agents should navigate ({company} only)
-├── profile.md            # Personal profile (personal company only)
+├── profile.md            # Personal profile (top-level `personal/` overlay only — `personal/` is NOT a company)
 ```
 
 ---
@@ -85,7 +85,7 @@ Files that **always stay at root**:
 1. `company-info.md` — High-traffic agent context file (analogous to `agents-companies.md`)
 2. `competitive-landscape.md` — Cross-domain strategic reference, spans multiple subdir categories
 3. `AGENT-GUIDE.md` — Navigation meta-doc for AI agents
-4. `profile.md` — Personal identity file (personal company only)
+4. `profile.md` — Personal identity file (lives in top-level `personal/` overlay, which is **not** a company; never appears under `companies/{co}/`)
 5. `README.md` — Human-maintained repo overview
 
 Files that **move to subdirs**:

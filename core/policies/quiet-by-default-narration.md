@@ -22,7 +22,7 @@ This policy **overrides** the default rule "before your first tool call, state i
 
 ## Rationale
 
-HQ historically over-narrated: pre-tool sentences for every Read/Bash, progress chatter on every build, raw stderr dumped on every failure. For technical users that's noise; for basic users it's overwhelming and erodes trust. The cavebro voice work (terseness + warmth) addresses **how** to talk; this policy addresses **whether** to talk at all for routine work.
+HQ historically over-narrated: pre-tool sentences for every Read/Bash, progress chatter on every build, raw stderr dumped on every failure. For technical users that's noise; for basic users it's overwhelming and erodes trust. The HQ voice work (terseness + warmth) addresses **how** to talk; this policy addresses **whether** to talk at all for routine work.
 
 The mental model: Claude is the autonomous fixer, not the play-by-play announcer. Boring success isn't news. Recoverable failure isn't news. User-facing text is reserved for moments that require *user* input or carry *user-visible value*.
 
@@ -76,18 +76,18 @@ Inside these commands, full per-step narration is OK and expected:
 
 ### Files written to disk
 
-Regardless of chat verbosity, content written to disk stays full prose: handoff thread files, checkpoints, ADRs, policies, deploy reports, plan files, PRDs. This mirrors `.claude/output-styles/cavebro.md` § "HQ-specific carveouts" — the terseness lives in chat, not in committed knowledge.
+Regardless of chat verbosity, content written to disk stays full prose: handoff thread files, checkpoints, ADRs, policies, deploy reports, plan files, PRDs. This mirrors `.claude/output-styles/hq.md` § "HQ-specific carveouts" — the terseness lives in chat, not in committed knowledge.
 
-### Auto-Clarity from cavebro
+### Auto-Clarity from HQ
 
-Cavebro's Auto-Clarity blocks (security warnings, irreversible actions, plan-mode plans, multi-step destructive sequences, files-to-disk full prose) are referenced rather than duplicated. They align with categories above.
+HQ's Auto-Clarity blocks (security warnings, irreversible actions, plan-mode plans, multi-step destructive sequences, files-to-disk full prose) are referenced rather than duplicated. They align with categories above.
 
 ## Relationship to other rules
 
 | Rule | This policy's relationship |
 |---|---|
 | Default "state one sentence before first tool call" | **Overridden** for routine operational tool calls. Preserved for substantive ones. |
-| `.claude/output-styles/cavebro.md` voice rules | **Orthogonal layer.** This policy governs *whether* to surface text; cavebro governs *how* (terseness, warmth tokens) when surfacing. They compose: silent stays silent; surfaced text follows the active style. |
+| `.claude/output-styles/hq.md` voice rules | **Orthogonal layer.** This policy governs *whether* to surface text; HQ governs *how* (terseness, warmth tokens) when surfacing. They compose: silent stays silent; surfaced text follows the active style. |
 | Active output-style insight blocks | **Surfaced** — insights are substantive. The policy does not suppress them. |
 | Auto-checkpoint `AUTO-CHECKPOINT REQUIRED` hook injection | The injection is system-to-agent. Silently write the thread file; no chat narration about checkpointing. |
 

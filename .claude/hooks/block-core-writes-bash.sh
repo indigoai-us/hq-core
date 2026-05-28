@@ -1,89 +1,105 @@
 #!/bin/bash
 # block-core-writes-bash.sh — PreToolUse hook for Bash.
 #
-# Companion to block-core-writes.sh. The file-based hook only fires on
-# Edit/Write/MultiEdit; Bash commands like `echo x > core/foo`, `sed -i`,
-# `cp/mv/rm/mkdir/touch ... core/`, `tee core/`, or `ln -s ... core/` would
-# otherwise bypass the rule. This hook scans the Bash command text and
-# rejects high-confidence direct writes into `core/`.
+# Companion to block-core-writes.sh. Scans Bash command text and rejects
+# high-confidence direct writes into core/ or .claude/ (except
+# .claude/settings.local.json).
+#
+# Bypass: HQ_BYPASS_CORE_PROTECT must be set to "1" under "env" in
+# .claude/settings.local.json. Inline env-var prefixes are NOT accepted.
 #
 # This is best-effort — exhaustive shell-command analysis is intractable.
-# Writes that fall outside the detected patterns (e.g. Python/Node scripts,
-# obscure tools) will not be caught here, but those paths are also less
-# common in agent transcripts. The catch-all is `HQ_BYPASS_CORE_PROTECT=1`,
-# either as a shell-prefix on the command itself or in the hook environment.
-#
 # Exit codes: 0 = allow, 2 = block.
 
 set -uo pipefail
-
-if [[ "${HQ_BYPASS_CORE_PROTECT:-}" == "1" ]]; then
-  cat >/dev/null
-  exit 0
-fi
 
 INPUT=$(cat)
 CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
 [[ -z "$CMD" ]] && exit 0
 
-# Inline bypass: writers can prefix the command with HQ_BYPASS_CORE_PROTECT=1
-# (e.g. for writes that ultimately land through a master-sync symlink).
-if echo "$CMD" | grep -Eq '(^|[[:space:]])HQ_BYPASS_CORE_PROTECT=1\b'; then
-  exit 0
-fi
-
-# Compute the absolute core/ prefix from CLAUDE_PROJECT_DIR so that fully
-# expanded paths (e.g. `cat > /workspace/hq-core-staging/core/foo`) are
-# caught alongside the literal `$CLAUDE_PROJECT_DIR/core/` form. Lexically
-# normalized via python3 when available; ERE-escaped for safe interpolation.
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 if command -v python3 >/dev/null 2>&1; then
   PROJECT_DIR="$(python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
 fi
-CORE_ABS="$PROJECT_DIR/core/"
-CORE_ABS_ESC="$(printf '%s' "$CORE_ABS" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
 
-# Path alternation: relative `core/` and `./core/`, common $VAR forms agents
-# write literally, and the absolute prefix derived from CLAUDE_PROJECT_DIR.
-CORE_PATH_ALTS='((\./)?core/|\$\{?CLAUDE_PROJECT_DIR\}?/core/|\$\{?REPO_ROOT\}?/core/|\$\{?HQ_ROOT\}?/core/|'"$CORE_ABS_ESC"')'
+SETTINGS_LOCAL="$PROJECT_DIR/.claude/settings.local.json"
 
-# Match a CORE_PATH_ALTS occurrence preceded by a token boundary.
-CORE_TOKEN_RE='(^|[[:space:]]|[;|&(]|["'\''])'"$CORE_PATH_ALTS"
-
-writes_to_core() {
-  local cmd="$1"
-
-  # `> core/...` / `>> core/...` redirects (works for any preceding command).
-  # Optional surrounding quote on the target is accepted.
-  if echo "$cmd" | grep -Eq '(^|[[:space:]])>{1,2}[[:space:]]*["'\'']?'"$CORE_PATH_ALTS"; then
-    return 0
-  fi
-
-  # Destructive-write tokens paired with a core/ argument anywhere.
-  if echo "$cmd" \
-       | grep -Eq '(^|[[:space:]])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|sed[[:space:]]+-i|sed[[:space:]]+--in-place|awk[[:space:]]+-i[[:space:]]+inplace|ln)([[:space:]]|$)'; then
-    if echo "$cmd" | grep -Eq "$CORE_TOKEN_RE"; then
-      return 0
-    fi
-  fi
-
+# Bypass: must be declared in .claude/settings.local.json env section.
+is_bypass_authorized() {
+  [[ -f "$SETTINGS_LOCAL" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  local val
+  val=$(jq -r '.env.HQ_BYPASS_CORE_PROTECT // empty' "$SETTINGS_LOCAL" 2>/dev/null) || return 1
+  [[ "$val" == "1" || "$val" == "true" ]] && return 0
   return 1
 }
 
-if writes_to_core "$CMD"; then
+if is_bypass_authorized; then
+  exit 0
+fi
+
+# Build absolute path prefixes.
+CORE_ABS="$PROJECT_DIR/core/"
+CLAUDE_ABS="$PROJECT_DIR/.claude/"
+AGENTS_ABS="$PROJECT_DIR/.agents/"
+CODEX_ABS="$PROJECT_DIR/.codex/"
+OBSIDIAN_ABS="$PROJECT_DIR/.obsidian/"
+
+esc() { printf '%s' "$1" | sed 's/[][\\.*^$(){}?+|/]/\\&/g'; }
+CORE_ABS_ESC="$(esc "$CORE_ABS")"
+CLAUDE_ABS_ESC="$(esc "$CLAUDE_ABS")"
+AGENTS_ABS_ESC="$(esc "$AGENTS_ABS")"
+CODEX_ABS_ESC="$(esc "$CODEX_ABS")"
+OBSIDIAN_ABS_ESC="$(esc "$OBSIDIAN_ABS")"
+
+# Per-dir path alternation patterns (relative + env-var + absolute).
+CORE_PATH_ALTS='((\./)?core/|\$\{?CLAUDE_PROJECT_DIR\}?/core/|\$\{?REPO_ROOT\}?/core/|\$\{?HQ_ROOT\}?/core/|'"$CORE_ABS_ESC"')'
+CLAUDE_PATH_ALTS='((\./)?\.claude/|\$\{?CLAUDE_PROJECT_DIR\}?/\.claude/|\$\{?REPO_ROOT\}?/\.claude/|\$\{?HQ_ROOT\}?/\.claude/|'"$CLAUDE_ABS_ESC"')'
+AGENTS_PATH_ALTS='((\./)?\.agents/|\$\{?CLAUDE_PROJECT_DIR\}?/\.agents/|\$\{?REPO_ROOT\}?/\.agents/|\$\{?HQ_ROOT\}?/\.agents/|'"$AGENTS_ABS_ESC"')'
+CODEX_PATH_ALTS='((\./)?\.codex/|\$\{?CLAUDE_PROJECT_DIR\}?/\.codex/|\$\{?REPO_ROOT\}?/\.codex/|\$\{?HQ_ROOT\}?/\.codex/|'"$CODEX_ABS_ESC"')'
+OBSIDIAN_PATH_ALTS='((\./)?\.obsidian/|\$\{?CLAUDE_PROJECT_DIR\}?/\.obsidian/|\$\{?REPO_ROOT\}?/\.obsidian/|\$\{?HQ_ROOT\}?/\.obsidian/|'"$OBSIDIAN_ABS_ESC"')'
+
+PROTECTED_PATH_ALTS="($CORE_PATH_ALTS|$CLAUDE_PATH_ALTS|$AGENTS_PATH_ALTS|$CODEX_PATH_ALTS|$OBSIDIAN_PATH_ALTS)"
+PROTECTED_TOKEN_RE='(^|[[:space:]]|[;|&(]|["'\''])'"$PROTECTED_PATH_ALTS"
+AGENTS_MD_TOKEN_RE='(^|[[:space:]]|[;|&(]|["'\''])AGENTS\.md'
+
+WRITE_OPS='(^|[[:space:]])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|sed[[:space:]]+-i|sed[[:space:]]+--in-place|awk[[:space:]]+-i[[:space:]]+inplace|ln)([[:space:]]|$)'
+
+writes_to_protected() {
+  local cmd="$1"
+  # Strip settings.local.json refs — that file is the allowed exception inside .claude/.
+  local stripped
+  stripped=$(echo "$cmd" | sed 's|[^[:space:]]*settings\.local\.json[^[:space:]]*||g; s|settings\.local\.json||g')
+  # Redirect (>) or append (>>) into any protected dir.
+  if echo "$stripped" | grep -Eq '(^|[[:space:]])>{1,2}[[:space:]]*["'\'']?'"$PROTECTED_PATH_ALTS"; then
+    return 0
+  fi
+  # Write-op tool + protected path token.
+  if echo "$stripped" | grep -Eq "$WRITE_OPS" && echo "$stripped" | grep -Eq "$PROTECTED_TOKEN_RE"; then
+    return 0
+  fi
+  # AGENTS.md (single file — no settings.local.json stripping needed).
+  if echo "$cmd" | grep -Eq '(^|[[:space:]])>{1,2}[[:space:]]*["'\'']?AGENTS\.md'; then
+    return 0
+  fi
+  if echo "$cmd" | grep -Eq "$WRITE_OPS" && echo "$cmd" | grep -Eq "$AGENTS_MD_TOKEN_RE"; then
+    return 0
+  fi
+  return 1
+}
+
+if writes_to_protected "$CMD"; then
   cat >&2 <<EOF
-BLOCKED: Bash command appears to write into core/.
+BLOCKED: Bash command appears to write into protected scaffold paths.
   Command: $CMD
 
-core/ is a generated mirror. Edit the corresponding file under personal/ and
-master-sync will symlink it into core/ automatically.
+Protected: core/, .claude/, .agents/, .codex/, .obsidian/, AGENTS.md
+Exception: .claude/settings.local.json is always writable.
 
-If you genuinely need to write into core/ (e.g. an authorized core update or
-a write that lands through an existing master-sync symlink), either prefix
-the command with HQ_BYPASS_CORE_PROTECT=1, or set HQ_BYPASS_CORE_PROTECT=1
-in the hook environment.
+To bypass: set "HQ_BYPASS_CORE_PROTECT": "1" under "env" in .claude/settings.local.json
+(inline env-var prefixes are not accepted).
 
-If this block is wrong or surprising, report it with /hq-bug (wraps \`hq feedback\`).
+If this block is wrong or surprising, report it with /hq-bug.
 EOF
   exit 2
 fi

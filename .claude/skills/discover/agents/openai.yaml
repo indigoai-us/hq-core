@@ -1,3 +1,0 @@
-interface:
-  display_name: "discover"
-  short_description: "Pull a repo into HQ at latest main, fan out parallel exploration, and synthesize structured knowledge under the owning company."

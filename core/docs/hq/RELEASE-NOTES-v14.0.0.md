@@ -26,7 +26,7 @@ Promoting v14.0.0-beta to stable. Major version v12.x → v14 represents roughly
 - `check-core-yaml-parity.sh` — enforces hq-core ↔ HQ version alignment
 - `capture-estimates.sh` — feeds the calibration system
 - `mirror-thread-to-company.sh` — auto-mirror session threads to company workspaces
-- New output style: `Cavebro` (warm terse chat voice) — see `.claude/output-styles/`
+- New output style: `HQ` (warm terse chat voice) — see `.claude/output-styles/`
 
 ### Policy system
 
