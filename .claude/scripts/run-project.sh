@@ -4,6 +4,19 @@ set -euo pipefail
 # =============================================================================
 # run-project.sh — Externalized Self-Healing Project Orchestrator
 #
+# DEPRECATED EXECUTION PATH (2026-05): The headless story-execution loop below
+# (per-story `codex exec` / builder subprocess, swarm, tmux, PID monitoring) is
+# superseded by the in-session runner in .claude/skills/run-project/SKILL.md.
+# `--ralph-mode` now runs the inline `spawn_agent` story loop unattended in the
+# active session — no detached process, no per-story subprocess, no `claude -p`
+# billing surface, and it works on both Claude Code and Codex. The skill no
+# longer launches this script's execution loop.
+#
+# STILL LIVE: --status, --dry-run, --help, and the state.json read/write helpers.
+# The in-session runner uses those for status and dry-run parity, so do not
+# remove them. The execution loop is retained as-is for reference / fallback
+# only; treat it as frozen.
+#
 # Runs each story as an independent headless builder invocation.
 # No context ceiling. Git validation after each story. Retry queue.
 # Regression gates every N stories.

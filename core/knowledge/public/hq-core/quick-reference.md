@@ -132,6 +132,19 @@ Not slash commands — direct CLI surface for HQ vault access control. Skill: `.
 
 Share-session URLs are encrypted single-use 15-minute capabilities — never persist them in commits, threads, or logs. See `core/policies/hq-share-session-urls-are-capabilities.md`.
 
+## CLI: `hq dm` (direct messages)
+
+Send a person-to-person notification to a teammate's HQ Sync menubar. Skill: `.claude/skills/dm/SKILL.md` (`/dm`).
+
+| Command | Use |
+|---------|-----|
+| `hq dm <email\|prs_*> "<message>"` | Plain DM — recipient gets a menubar notification |
+| `hq dm <r> "<m>" --prompt "<ctx>"` | Attach agent context — recipient gets a one-click "Copy prompt" action |
+| `hq dm <r> "<m>" --details "<text>"` / `--details-file <path>` | Longer text shown in the recipient's "Open details" window |
+| `hq dm <r> "<m>" --at <iso>` / `--in <30s\|10m\|2h\|1d>` | Schedule delivery (store-and-forward) |
+
+Receive-only in the app — sending is session/CLI only. You can only DM someone you share an active company with; DM your own email for a note-to-self/reminder. Never put secrets in a DM (stored server-side).
+
 ## Command ↔ Skill Shapes
 
 Every command exists as `.claude/commands/{name}.md` (the slash-command entry point) and most have a paired `.claude/skills/{name}/SKILL.md` (the Skill-tool canonical logic). Two valid shapes:

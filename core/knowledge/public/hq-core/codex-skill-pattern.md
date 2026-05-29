@@ -109,7 +109,7 @@ Context budget guidance for `run-project`:
 | 1–3 | Low | Parent orchestrates, delegate specialized phases |
 | 4–5 | Medium | Delegate per story and write memory after each phase |
 | 6–8 | High | Mandatory story-level handoff/checkpoint memory |
-| 9+ | Critical | Use Ralph/headless mode with Codex engine and filesystem state |
+| 9+ | Critical | Use `--ralph-mode` (unattended in-session `spawn_agent` auto-loop; works on Codex, no `claude -p` subprocess) + filesystem state |
 
 ## Coverage Tool
 

@@ -12,6 +12,7 @@ For these actions, the HQ slash command is the first-choice path — do not hand
 - **Sync state across machines or team** → `/hq-sync` (bidirectional sync of cloud-backed companies; same engine as menubar Sync).
 - **Onboard or join a company** → `/onboard` (create or join) · `/accept` (accept a vault-backed membership invite from magic link/token).
 - **Manage team & membership** → `/designate-team` (mark a company dir cloud-backed, HQ Pro) · `/promote` (change a member's role) · `/personal:invite` (invite a person; wraps `hq invite`).
+- **DM a teammate** → `/dm` (or `hq dm <recipient> <message>`) — person-to-person notification delivered to their HQ Sync menubar. Attach `--prompt` (one-click "Copy prompt" for their agent), `--details` (detail window), or `--at`/`--in` to schedule (store-and-forward). Receive-only in the app; send via session/CLI. DM yourself for note-to-self/reminders. Only reaches people you share an active company with.
 - **Identity** → `/hq-login` · `/hq-logout` · `/hq-whoami` (Cognito identity, email, session expiry).
 - **Report a bug or request a feature** → `/hq-bug` (assembles context, submits via `hq feedback`).
 - **Find anything in HQ** → `/search` or `qmd` (semantic + full-text across content, repos, projects, workers, policies, knowledge) — see Search (qmd) below.
