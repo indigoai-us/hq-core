@@ -87,7 +87,7 @@ This rule and rule 3 are orthogonal: rule 3 is BSD vs GNU userland; rule 4 is ba
 
 ### 5. Never hardcode `pgrep` PIDs across cron firings or relaunches
 
-NEVER persist a PID discovered by `pgrep` (or `ps`) into a follow-up cron body, state file, or shell variable that survives across orchestrator relaunches. The `/run-project --ralph-mode` parent PID changes on every relaunch; per-story swarm-worker PIDs change every batch; the cron monitor itself can re-exec.
+NEVER persist a PID discovered by `pgrep` (or `ps`) into a follow-up cron body, state file, or shell variable that survives across orchestrator relaunches. Any detached orchestrator's parent PID changes on every relaunch (e.g. the frozen `core/scripts/run-project.sh` headless path); per-batch worker PIDs change every batch; a cron monitor itself can re-exec. (Note: `/run-project --ralph-mode` no longer detaches a process — it runs in-session — so this rule now applies to the legacy script path and any other `pgrep`-driven supervisor, not to ralph-mode.)
 
 Always rediscover the target on each cron firing via `pgrep -f <pattern>`, then validate with `ps -p <pid> -o command=` per rule 6. Persist only the **search pattern**, never the resolved PID. macOS PID space is 99999 and rolls over within hours on a busy system — a stale PID kill can hit `launchd` or an unrelated user shell.
 
@@ -143,4 +143,4 @@ Keeping the rules on one page rather than seven separate files preserves the cro
 
 - `.claude/policies/hq-bash-set-a-source-env-before-subprocess-heredoc.md` — companion soft rule on `set -a` before sourcing dotenv for subprocess heredocs.
 - `.claude/policies/hq-zsh-status-readonly-loop-var.md` — zsh-specific corollary to rule 2.
-- `.claude/policies/hq-cmd-run-project-ralph-hard-pause-procedure.md` — caller of rules 5 and 6.
+- `core/scripts/run-project.sh` (frozen headless path) and any `pgrep`-driven process supervisor — callers of rules 5 and 6.

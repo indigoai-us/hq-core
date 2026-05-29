@@ -87,6 +87,19 @@ These are CLI commands (not slash commands) — direct surface for HQ vault acce
 
 Share-session URLs are encrypted single-use 15-minute capabilities — never paste them into commits, threads, or logs. See policy `core/policies/hq-share-session-urls-are-capabilities.md`.
 
+### HQ CLI: Direct messages (`hq dm`)
+
+Send a person-to-person notification to a teammate. They receive it in their HQ Sync menubar app. Full reference: `.claude/skills/dm/SKILL.md` (`/dm`).
+
+| Command | What it does |
+|---------|--------------|
+| `hq dm <email\|prs_*> "<message>"` | Send a DM — recipient gets a macOS notification in HQ Sync |
+| `hq dm <r> "<m>" --prompt "<context>"` | Attach agent context — recipient gets a one-click **Copy prompt** action to paste into their own agent |
+| `hq dm <r> "<m>" --details "<text>"` (or `--details-file <path>`) | Longer text shown in the recipient's **Open details** window |
+| `hq dm <r> "<m>" --at <iso>` / `--in <30s\|10m\|2h\|1d>` | Schedule delivery (store-and-forward — arrives even if you're offline at that time) |
+
+Receiving is handled by the **HQ Sync menubar app** (it's receive-only — there's no send UI; sending is session/CLI only). You can only DM someone you share an active company with; DM your own email for a note-to-self or reminder. Never put secrets in a DM body/prompt/details — they're stored server-side.
+
 ### Company & Infrastructure
 | Command | What it does |
 |---------|--------------|

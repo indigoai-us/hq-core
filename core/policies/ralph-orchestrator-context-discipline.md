@@ -21,7 +21,7 @@ Any orchestrator that dispatches a story sub-agent to run `/execute-task` (or an
 5. **Narrate one line per story to the user.** Format: `[{story_id}] {status} · {N} files · {commit_sha_short}`. Anything longer than that line goes to `workspace/threads/journal/<date>/<story-id>.md`, not to the parent transcript.
 6. **Keep Codex inline in budget mode by default.** Use one preflight explorer, one story worker per story, and one regression-gate worker at gate cadence; set Codex `reasoning_effort` to `low` unless a hard policy or explicit user request requires more.
 7. **Never simulate `/execute-task` phases in the parent.** If a story worker cannot run `/execute-task` internally, pause and switch execution mode instead of spawning architect/dev/review/QA agents from the parent orchestrator.
-8. **Do not swarm from Codex inline by default.** `--swarm` is a Ralph/headless mode. Extra inline review or QA agents require a high-risk trigger or an explicit user opt-in after stating the token/runtime cost.
+8. **Do not fan out extra agents from the inline loop by default.** One story worker per story. Extra inline review or QA agents require a high-risk trigger or an explicit user opt-in after stating the token/runtime cost. (Bounded parallel `spawn_agent` for dependency-independent stories is a deferred follow-on, not a default.)
 9. **Keep parent log reads bounded.** The parent must not read raw test output, full `*.output.json`, or long logs into the transcript. Detailed logs belong on disk; parent inspection must use compact JSON, omit `stdout_tail` / `stderr_tail`, or cap with a small byte tail.
 10. **Run budget-aware regression gates.** Every-three-story gates default to repos touched since the last gate. Run the full `metadata.qualityGates` matrix at final completion, before deploy, after high-risk cross-repo contract changes, or when the user explicitly asks for full gates.
 
@@ -33,7 +33,7 @@ The whole point of fresh-context-per-story (Ralph principle, `core/knowledge/pub
 
 JSON returns + machine parsing collapse that to ~80 tokens per story. The orchestrator's context budget then stays bounded for the *operational* state it actually needs (next story, retry queue, regression-gate timing) and for the user's interactive turn.
 
-This policy also unblocks a Ralph-mode replacement that doesn't depend on `claude -p` subprocess spawning for context isolation. Inline mode (Task / spawn_agent sub-agents) already isolates context per story; structured returns make it equivalent in context-discipline to subprocess Ralph mode without the per-spawn cost.
+This is also why the in-session loop **is** Ralph mode now (re-engined 2026-05). Inline mode (Task / spawn_agent sub-agents) isolates context per story without depending on `claude -p` subprocess spawning; structured returns make it equivalent in context-discipline to the old subprocess Ralph mode without the per-spawn cost — so `--ralph-mode` was redefined as this inline loop run unattended rather than a detached `claude -p` orchestrator.
 
 Codex adds one more failure mode: it is easy for the parent to keep spawning helpful side agents or to inspect raw outputs while debugging. That defeats the story-boundary savings even when the sub-agent return is JSON. Budget mode makes the parent a coordinator again: one delegated story, one compact result, bounded gates.
 
@@ -63,7 +63,7 @@ Applies to:
 
 - `.claude/skills/run-project/SKILL.md` (inline mode, Step 3b)
 - `.claude/skills/execute-task/SKILL.md` (return contract definition)
-- `.claude/scripts/run-project.sh` (Ralph-mode story spawning — already JSON-parsed at line 2807; bring `RETURN CONTRACT` injection into parity)
+- `.claude/scripts/run-project.sh` (frozen/deprecated headless story-spawning path — JSON-parsed at line 2807; retained for legacy direct-CLI/CI use only, not invoked by `/run-project --ralph-mode`)
 - Any future orchestrator that spawns per-story workers
 
 Does NOT apply to:
