@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# hq-core: public
 # hq-session.sh — read/write the current session's metadata.
 #
 # Usage:
@@ -14,7 +15,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SESSIONS_DIR="$REPO_ROOT/workspace/sessions"
 CURRENT_FILE="$SESSIONS_DIR/.current"
 
