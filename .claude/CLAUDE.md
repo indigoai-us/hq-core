@@ -121,7 +121,7 @@ Worker-first: before design/content/security/data/deploy tasks, check `core/work
 
 ### Policies
 
-Three scopes, precedence high→low: `companies/{co}/policies/`, `repos/{repo}/.claude/policies/`, `core/policies/`. Auto-loaded by SessionStart + slash commands. Author user-personal in `personal/policies/` — master-sync symlinks into `core/policies/` (rides global scope, not a separate layer). Spec: `core/knowledge/public/hq-core/policies-spec.md`.
+Three scopes, precedence high→low: `companies/{co}/policies/`, `repos/{repo}/.claude/policies/`, `core/policies/`. Auto-loaded by SessionStart + slash commands. Author user-personal in `personal/policies/` — master-sync symlinks into `core/policies/` (rides global scope, not a separate layer). Spec: `core/knowledge/public/hq-core/policies-spec.md`. Customizations never go in `core/` directly (wiped wholesale by `/update-hq`) — personal → `personal/`, company → `companies/{co}/`; authoritative rule: `core/policies/hq-customizations-live-in-personal-or-company.md`.
 
 ### Commands & Skill Bridge
 

@@ -490,6 +490,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh check-hq-update $CLAUDE_PROJECT_DIR/.claude/hooks/check-hq-update.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh session-title $CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh",
+            "timeout": 5
           }
         ]
       },
@@ -525,6 +530,11 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh natural-language-router $CLAUDE_PROJECT_DIR/.claude/hooks/natural-language-router.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh session-title $CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh",
             "timeout": 5
           }
         ]

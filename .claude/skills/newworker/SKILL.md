@@ -56,7 +56,13 @@ Ask these questions (can batch related ones):
 
 ## Generate Worker
 
-Create folder: `companies/{company}/workers/{worker-id}/` for company workers, or `core/workers/public/{worker-id}/` for shared workers
+**First, resolve scope explicitly — do not infer silently.** Ask (or confirm from clear context) whether this worker is:
+- **Company-scoped** (only meaningful for one tenant) → `companies/{company}/workers/{worker-id}/`
+- **Shared** (release-shipped, useful across all HQ installs) → `core/workers/public/{worker-id}/`
+
+A company-scoped worker placed in `core/` would be lost on the next `/update-hq` wholesale-replace and leaks one tenant's specifics into the shared scaffold. When in doubt, default to company scope and confirm. See `core/policies/hq-customizations-live-in-personal-or-company.md`.
+
+Then create the folder at the resolved path and **echo the chosen scope + target path before scaffolding.**
 
 ### worker.yaml
 

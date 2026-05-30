@@ -1,0 +1,37 @@
+---
+id: hq-customizations-live-in-personal-or-company
+title: Customizations live in personal/ or companies/{co}/ — never edit core/ to personalize
+scope: global
+trigger: authoring or editing any policy, knowledge, worker, skill, hook, or setting
+enforcement: hard
+public: true
+version: 1
+created: 2026-05-29
+updated: 2026-05-29
+source: user-correction
+---
+
+## Rule
+
+The `core/` tree (and the release-shipped parts of `.claude/`, `.codex/`, `.agents/`) is **release-shipped scaffold and is replaced wholesale by `/update-hq`**. Any personalization or customization written directly into `core/` is silently overwritten or deleted on the next upgrade. Therefore, never edit `core/` to personalize or customize HQ. Route customizations by scope:
+
+- **Personal customizations** (operator-only policies, knowledge, workers, skills, hooks, settings) go in `personal/{policies,knowledge,workers,skills,hooks,settings}/<entry>`. The `master-sync.sh` Stop/PostToolUse hook symlinks `personal/<type>/<entry>` back into `core/<type>/<entry>`, so the customization surfaces in exactly the same place it would have — but survives `/update-hq`. (Collision rule: if a real file already exists at the core link path, master-sync logs and skips, so `personal/` can never silently override a release-shipped core file.)
+- **Company customizations** (tenant-specific policies, knowledge, workers, projects) go in `companies/{co}/{policies,knowledge,workers,projects}/<entry>`. These are the company's own, isolated, and — for cloud-backed HQ-Pro companies — synced to that tenant's vault.
+- **Repo customizations** go in `repos/{repo}/.claude/policies/` (and the repo's own docs/knowledge).
+
+Changes to the **shipped core scaffold itself** — i.e. content that genuinely should ship to every HQ install — are not made by hand-editing local `core/` either. They go through the staging → promotion pipeline: edit, then publish via `repos/private/hq-core-staging/` and `/promote-hq-core` (see `staging-promotion-required` and `hq-core-public-no-direct-pr`).
+
+When in doubt about whether a learning, policy, or artifact is personal, company-specific, or genuinely core, **ask** rather than defaulting into `core/`.
+
+## Rationale
+
+`/update-hq` performs a wholesale replace of the release-shipped trees: whatever file ships in the upstream hq-core release is copied into the install as-is, replacing whatever sat at that path. Operator- or company-specific content placed in `core/` is therefore lost without warning at the next upgrade. The `personal/` overlay exists precisely so that operator content rides inside `core/` at runtime (via master-sync symlinks) while living in an upgrade-safe location. Company content lives under `companies/{co}/` so it stays isolated per tenant and syncs to the correct vault.
+
+This rule generalizes the older, skills-only `hq-core-vs-personal-skill-location-and-rename` (soft) to every overlay type — policies, knowledge, workers, hooks, and settings — and is the authoritative statement of where customizations belong. It is surfaced to every command via the SessionStart policy digest and reinforced at edit time by an advisory reminder in `inject-policy-on-trigger.sh`. The existing `core/`-edit protection (`HQ_BYPASS_CORE_PROTECT`) remains the mechanical guard; this policy supplies the positive routing — *where the customization should go instead*.
+
+## See also
+
+- `core/policies/hq-core-vs-personal-skill-location-and-rename.md` (soft, skills-only precursor)
+- `personal/policies/hq-update-hq-wholesale-replace-overwrites-operator-files.md` (the wholesale-replace hazard)
+- `core/policies/hq-company-scoped-writes-verify-company.md` (sibling rule: company-scoped writes must reach the correct company)
+- `core/knowledge/public/hq-core/quick-reference.md` (personal overlay semantics table)

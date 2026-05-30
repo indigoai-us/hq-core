@@ -184,11 +184,15 @@ For each extracted rule, determine scope (most specific wins):
 
 **Primary output = policy files.** The canonical format for persistent rules is structured policy files (per `core/knowledge/public/hq-core/policies-spec.md`). Worker.yaml injection is still supported for worker-specific learnings.
 
-**Resolve company/repo context:**
+**Resolve company/repo context** (strongest signal wins):
+- From the current working directory — the **leaf** `companies/<slug>/` segment (the last one in the path, not the first)
 - From `prd.json` metadata if in project context
 - From `companies/manifest.yaml` repo lookup if in repo context
 - From worker path if worker-scoped (`companies/{co}/workers/` → `{co}`)
-- Fall back to `core/policies/` (global scope)
+
+**Verify the resolved slug exists in `companies/manifest.yaml`** before targeting `companies/{co}/policies/`.
+
+**Never silently fall back to `core/` for a company-specific learning.** A `core/` (global) target is correct ONLY when the rule is genuinely universal. If a rule is clearly company-specific but the company can't be resolved unambiguously, **stop and ask which company** — do not default the write into `core/policies/`. A misrouted company policy syncs into the wrong tenant vault on the next `hq-sync` (HQ-Pro), a category-1 cross-company bug. See `core/policies/hq-company-scoped-writes-verify-company.md`.
 
 ## Step 4: Dedup Check
 
@@ -442,6 +446,7 @@ Insight-only runs (content_type: insight) skip the digest rebuild — insights d
 **For rules (content_type: rule):**
 ```
 Learning captured:
+  Scope: {company:<slug> | repo:<name> | command | global}
   Rule: {rule}
   Target: {policy file path | worker.yaml path}
   Action: {created-policy | updated-policy | merged-into-policy | worker-yaml-injection}
@@ -449,6 +454,8 @@ Learning captured:
   Dedup: {new|merged|skipped}
   Event: workspace/learnings/learn-{timestamp}.json
 ```
+
+For any `scope: company` rule, **surface the resolved company slug and the full target path and confirm them before writing** — this is the visible checkpoint that catches a misroute before it reaches a tenant vault (`hq-company-scoped-writes-verify-company`).
 
 **For insights (content_type: insight):**
 ```
