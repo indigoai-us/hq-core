@@ -147,6 +147,8 @@ Otherwise, spawn a Task sub-agent:
 
 3. On `Create`: inline-invoke `/newcompany {slug}` via Skill tool. On return, write the row's `suggested knowledge seed` to `companies/{slug}/knowledge/context.md` (seed a fresh file; prepend frontmatter per knowledge-ontology spec).
 
+> **Routing safety.** `/newcompany` is the enforcer that scaffolds all company content under `companies/{slug}/` — `import-claude` delegates company/worker creation to it rather than writing those paths itself. Do not hand-place imported policies, workers, or knowledge into `core/`; company-scoped artifacts belong under the created `companies/{slug}/` tree (see `core/policies/hq-customizations-live-in-personal-or-company.md` and `hq-company-scoped-writes-verify-company.md`).
+
 If user chose `--ontology-only`: after this phase, print summary and exit with report + ontology locations.
 
 ## Phase 4: Per-Category Triage

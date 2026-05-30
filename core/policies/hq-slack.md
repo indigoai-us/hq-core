@@ -2,20 +2,21 @@
 id: hq-slack
 title: Slack platform rules (consolidated)
 scope: global
-trigger: when working with Slack (mcp, webhooks, bots, oauth)
+trigger: when working with Slack (CLI, webhooks, bots, oauth)
 enforcement: hard
 version: 1
 created: 2026-04-29
 updated: 2026-04-29
 applies_to: [slack]
 public: true
+vendor_public_ok: true
 tags: [vendor:slack, consolidated]
 source: consolidation-merge
 ---
 
 ## Rule
 
-Consolidated Slack rules covering permissions for posting, workspace routing, MCP fallback behavior, and bot token / scope verification. All four sub-rules are independently enforced; this file replaces the prior individual policies.
+Consolidated Slack rules covering permissions for posting, workspace routing, posting fallback behavior, and bot token / scope verification. All four sub-rules are independently enforced; this file replaces the prior individual policies.
 
 ## Posting permissions
 
@@ -35,21 +36,21 @@ The `#hq` Slack channel lives on a single designated company workspace (defined 
 
 This global pointer ensures any session posting about HQ finds the workspace routing rule, while the canonical details live in the company-scoped policy where they belong.
 
-## MCP fallback behavior
+## Posting fallback behavior
 
-### Never use Claude in Chrome as a fallback when Slack MCP is unavailable
+### Never use Claude in Chrome as a fallback when Slack posting fails
 [from `hq-no-chrome-mcp-slack-fallback.md`]
 
-When the `slack` MCP `send_message` tool is unavailable, **NEVER fall back to Claude in Chrome** (`mcp__Claude_in_Chrome__*`) to post Slack messages.
+Slack posting goes through `/hq-slack` (`bash personal/skills/hq-slack/hq-slack.sh post`). If the post fails or is unavailable, **NEVER fall back to Claude in Chrome** (`mcp__Claude_in_Chrome__*`) to post Slack messages.
 
-If the Slack MCP is not loaded:
+If the post fails:
 1. Note the failure in the task output/report.
 2. Include the message text that would have been posted (so it can be posted manually).
 3. Continue with remaining task steps — do not abort.
 
-Browser automation is not a valid fallback for MCP tool failures.
+Browser automation is not a valid fallback for a Slack post failure.
 
-**Rationale:** User correction on 2026-04-01 — during a scheduled infra-health task, Slack MCP was unavailable; Claude attempted to use Claude in Chrome to navigate Slack and post the message, burning multiple turns navigating to the wrong workspace. Correct behavior is to note the failure inline and move on.
+**Rationale:** User correction on 2026-04-01 — during a scheduled infra-health task, Slack posting was unavailable; Claude attempted to use Claude in Chrome to navigate Slack and post the message, burning multiple turns navigating to the wrong workspace. Correct behavior is to note the failure inline and move on.
 
 ## Bot token & scope verification
 

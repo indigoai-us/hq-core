@@ -14,7 +14,7 @@ public: true
 
 ## Rule
 
-When the user explicitly instructs you to use a specific tool (e.g. "use Paper MCP", "use the Slack MCP", "use Playwright") and that tool is **not available** (not loaded, not in the deferred tools list, connection failure):
+When the user explicitly instructs you to use a specific tool (e.g. "use Paper MCP", "use Playwright") and that tool is **not available** (not loaded, not in the deferred tools list, connection failure):
 
 1. **Stop immediately** — do not attempt to perform the task by another means
 2. **Tell the user** the tool is unavailable

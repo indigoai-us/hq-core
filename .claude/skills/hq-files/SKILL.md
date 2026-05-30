@@ -21,8 +21,30 @@ Manage per-prefix file access controls in the HQ vault via the `hq files` CLI. A
 | `hq files share <prefix> --with @all --permission <level>` | **Company-wide grant.** Writes a single ACL entry with `granteeType: 'company-wide'` covering every active member. Distinct from the legacy `open` flag (see "Company-wide vs `open` flag" below). |
 | `hq files unshare <prefix> --with <principal>` | Revoke a grant on a prefix from a person, group, or `@all` |
 | `hq files acl <prefix>` | Show the ACL for a prefix: creator, grantees, permissions, open/restricted status, your effective permission |
+| `hq files browse [path]` | **Read, no sync.** List vault objects under `[path]` without materializing them locally. Each row is tagged `shared-with-you` (a grant covers it) or `role-bypass` (owner/admin reach only). `--personal` browses your personal vault. |
+| `hq files cat <path>` | Stream a single vault object to stdout (or `--out <file>`) without syncing it. Refuses `--out` destinations under `<hqRoot>/companies/`. |
+| `hq files search <query>` | Case-insensitive path/name search over a company (or `--personal`) vault listing, no download. `--company <slug>` required (or `--personal`). |
+| `hq files get <path>` | **On-demand materialize.** Download a file/prefix into local HQ. Default writes in place under `companies/<slug>/<path>` and registers a pin (see "Pins") so a scoped sync keeps it; `--into <dir>` writes elsewhere (no pin). |
+| `hq files shared-with-me [--company]` | List the prefixes explicitly shared with you. Omit `--company` for a cross-company roll-up. Pure read — owner/admin role-bypass reach is NOT listed (explicit grants only). |
 
 All commands accept `--company <slug>` to target a specific company. If omitted, the CLI resolves the company from your membership.
+
+## Access vs. Download (read without syncing)
+
+Vault **access** and local **download** are separate. Your access is decided server-side at vend-time (STS credential scope + ACL resolution + owner/admin role-bypass). Download is what a *sync* materializes onto your local HQ tree, governed per-membership by `syncMode` (`all | shared | custom`, set with `hq sync mode`).
+
+The browse/retrieve commands let you reach a file you have **access** to without **downloading** your whole share:
+
+- `browse` / `search` / `cat` read straight from the cloud — nothing lands on disk (except `cat --out`, which you choose).
+- `get` materializes exactly the path you ask for, on demand.
+
+Owners and admins keep full role-bypass *access* regardless of `syncMode` — narrowing `syncMode` only shrinks what a sync downloads, never what you can browse or get. The engine's scope filter is a footprint/UX optimization, **not** a security boundary: a member who lacks access is still blocked by STS no matter the local filter.
+
+Under the hood, browse/cat/search/get vend through the multi-tenant `/sts/vend` (company) and `/sts/vend-self` (personal) routes — never the legacy `POST /vend`. Company vault keys are company-relative; the CLI speaks the anchored `companies/<slug>/…` form and translates at the S3 boundary.
+
+## Pins (keeping a got file under a scoped sync)
+
+`hq files get` (default in-place mode) records the materialized prefix in a per-machine pin set at `<hqRoot>/.hq/pins.json`, keyed by company slug. On the next sync, the runner unions a company's pins into its pull scope — so a file you pulled in `shared`/`custom` mode is **not** pruned as an out-of-scope orphan. Pins only ever widen scope (never narrow), and `all` mode ignores them (it pulls everything anyway). `get --into <dir>` writes outside the sync envelope and registers no pin. The file is plain JSON; delete an entry to let the next scoped sync prune that prefix again.
 
 ### Choosing between direct grant and the browser flow
 
