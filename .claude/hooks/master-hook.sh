@@ -68,8 +68,18 @@ is_tool_event() {
 
 parse_matcher() {
   local stem="${1%.sh}"
+  local full="${2:-}"
   if [[ "$stem" != *"--"* ]]; then
-    printf ''
+    # No filename matcher. Check for a '# hq-hook-match:' frontmatter line so a
+    # hook can carry a tool matcher containing characters that are illegal in
+    # Windows filenames (e.g. '*', which causes ERROR_INVALID_NAME on NTFS and
+    # makes 'git checkout' of the whole pack fail on Windows). Falls back to
+    # empty (always-run) when absent, identical to prior behaviour for plain
+    # <NN>-<name>.sh hooks.
+    if [ -n "$full" ] && [ -f "$full" ]; then
+      sed -n 's/^#[[:space:]]*hq-hook-match:[[:space:]]*//p' "$full" | head -n1 | tr -d '
+'
+    fi
     return
   fi
   local prefix="${stem%%--*}"
@@ -177,7 +187,7 @@ is_json_object() {
 
 for hook in ${hooks[@]+"${hooks[@]}"}; do
   base="$(basename "$hook")"
-  matcher="$(parse_matcher "$base")"
+  matcher="$(parse_matcher "$base" "$hook")"
 
   if is_tool_event "$EVENT" && [ -n "$matcher" ]; then
     if ! matches_tool "$matcher" "$TOOL_NAME"; then
