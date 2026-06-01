@@ -22,9 +22,11 @@ Called programmatically by `/execute-task` and `/run-project` after task complet
 |-------|-----------------|--------|
 | Company | `companies/{co}/policies/{slug}.md` | Policy file (YAML frontmatter + Rule + Rationale) |
 | Repo | `repos/{pub\|priv}/{repo}/.claude/policies/{slug}.md` | Policy file |
-| Command | `core/policies/{slug}.md` (scope: command) | Policy file |
-| Global | `core/policies/{slug}.md` | Policy file |
+| Command (operator) | `personal/policies/{slug}.md` (scope: command) | Policy file |
+| Global / personal (**default**) | `personal/policies/{slug}.md` (scope: global) | Policy file |
 | Worker (legacy) | `core/workers/*/{id}/worker.yaml` | Instructions block `## Learnings` |
+
+> **`/learn` never writes to `core/policies/`.** `core/` is release-shipped scaffold, replaced wholesale by `/update-hq` — anything written there is lost on the next upgrade (hard policy `hq-customizations-live-in-personal-or-company`). Operator-universal learnings go to `personal/policies/`, which `master-sync.sh` symlinks back into `core/policies/` so they still load as global at SessionStart — but live in an upgrade-safe location. A genuine product-level core policy (one that should ship to *every* HQ install) is **not** captured via `/learn`: author it locally, then publish through `repos/private/hq-core-staging/` + `/promote-hq-core` (see `staging-promotion-required`). If a learning is judged truly core, `/learn` stops and points you at that pipeline rather than writing into `core/`.
 
 ### Insights → Insight files (educational understanding)
 
@@ -177,10 +179,12 @@ For each extracted rule, determine scope (most specific wins):
 |--------|-------|------------------|
 | Related to specific company | `company` | `companies/{co}/policies/` |
 | Related to specific repo | `repo` | `repos/{pub\|priv}/{repo}/.claude/policies/` |
-| Error in specific command | `command` | `core/policies/` (with `scope: command`) |
+| Error in specific command | `command` | `personal/policies/` (with `scope: command`) |
 | Failure in specific worker | `worker` | `core/workers/*/{id}/worker.yaml` instructions block (legacy, still supported) |
-| Universal pattern | `global` | `core/policies/` |
-| User correction via /learn --hard | From context, default global | Detected scope directory |
+| Universal pattern (**default** when no company/repo) | `global` | `personal/policies/` |
+| User correction via /learn --hard | From context, default global → `personal/` | Detected scope directory |
+
+**`/learn` does not target `core/policies/`.** The global/command rows route to `personal/policies/` — operator-owned and upgrade-safe — and `master-sync.sh` symlinks each entry into `core/policies/` so it still loads as a global/command policy. Reserve `core/policies/` for release-shipped policies authored through the staging → `/promote-hq-core` pipeline. If a rule is genuinely product-core (must ship to every HQ install), stop and direct the user to that pipeline; never Write it into `core/`.
 
 **Primary output = policy files.** The canonical format for persistent rules is structured policy files (per `core/knowledge/public/hq-core/policies-spec.md`). Worker.yaml injection is still supported for worker-specific learnings.
 
@@ -192,7 +196,7 @@ For each extracted rule, determine scope (most specific wins):
 
 **Verify the resolved slug exists in `companies/manifest.yaml`** before targeting `companies/{co}/policies/`.
 
-**Never silently fall back to `core/` for a company-specific learning.** A `core/` (global) target is correct ONLY when the rule is genuinely universal. If a rule is clearly company-specific but the company can't be resolved unambiguously, **stop and ask which company** — do not default the write into `core/policies/`. A misrouted company policy syncs into the wrong tenant vault on the next `hq-sync` (HQ-Pro), a category-1 cross-company bug. See `core/policies/hq-company-scoped-writes-verify-company.md`.
+**Never silently fall back to a global target for a company-specific learning.** A global target (→ `personal/policies/`) is correct ONLY when the rule is genuinely universal to this operator's HQ. If a rule is clearly company-specific but the company can't be resolved unambiguously, **stop and ask which company** — do not default the write into `personal/policies/` (and never into `core/policies/`). A misrouted company policy syncs into the wrong tenant vault on the next `hq-sync` (HQ-Pro), a category-1 cross-company bug. See `core/policies/hq-company-scoped-writes-verify-company.md`.
 
 ## Step 4: Dedup Check
 
@@ -209,7 +213,7 @@ Check results for similarity to the new rule:
 **Fallback (if qmd unavailable):**
 Use Grep to search for key terms from the rule across the policy directories:
 - Pattern: key terms from the rule (2-3 significant words)
-- Files: `*.md` in `companies/*/policies/`, `core/policies/`, and any repo policy dirs
+- Files: `*.md` in `companies/*/policies/`, `personal/policies/`, `core/policies/` (the symlinked + shipped set), and any repo policy dirs
 - If matching content found → review and decide whether to merge or skip
 
 Report dedup action taken.
@@ -221,7 +225,7 @@ Before creating a new rule, check if an existing policy file already covers this
 1. **Resolve policy directories** based on scope:
    - Company scope → scan `companies/{co}/policies/` (skip `example-policy.md`)
    - Repo scope → scan `{repoPath}/.claude/policies/`
-   - Global/command scope → scan `core/policies/`
+   - Global/command scope → scan `personal/policies/` (the write target) and `core/policies/` (catches shipped + already-symlinked rules)
 
 2. **Search for matching policies:**
    ```bash
@@ -249,8 +253,10 @@ If Step 4.5 found a matching policy → update was already handled. Otherwise, c
 **Target directory:**
 - Company scope → `companies/{co}/policies/{slug}.md`
 - Repo scope → `repos/{pub|priv}/{repo}/.claude/policies/{slug}.md`
-- Command scope → `core/policies/{slug}.md`
-- Global scope → `core/policies/{slug}.md`
+- Command scope (operator-authored) → `personal/policies/{slug}.md` (scope: command)
+- Global scope → `personal/policies/{slug}.md` (scope: global) — **default for non-company/non-repo rules**
+
+> Never Write a `.md` into `core/policies/` from `/learn` — it is lost on `/update-hq` and is now mechanically blocked by `protect-core.sh` (the block message points back here). `personal/policies/` entries are symlinked into `core/policies/` by `master-sync.sh`, so they load identically as global/command policies. Genuine product-core policies ship via the staging → `/promote-hq-core` pipeline only.
 
 **Create the directory if needed:**
 ```bash
@@ -423,7 +429,7 @@ The event log write is mandatory for every invocation (even skipped/trivial ones
 qmd update 2>/dev/null || true
 ```
 
-**If the learning created or updated a policy file** (content_type: rule, and Step 5 created or modified a file under `companies/{co}/policies/`, `repos/*/.claude/policies/`, or `core/policies/`), rebuild the policy digest so SessionStart hooks pick up the change on the next session:
+**If the learning created or updated a policy file** (content_type: rule, and Step 5 created or modified a file under `companies/{co}/policies/`, `repos/*/.claude/policies/`, or `personal/policies/`), rebuild the policy digest so SessionStart hooks pick up the change on the next session. (Personal entries are symlinked into `core/policies/` by `master-sync.sh` before the global digest is built — run master-sync or wait for its Stop/PostToolUse trigger if the symlink isn't present yet.)
 
 ```bash
 bash core/scripts/build-policy-digest.sh

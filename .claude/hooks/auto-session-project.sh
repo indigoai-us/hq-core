@@ -61,6 +61,26 @@ for pattern in skip_patterns:
     if re.search(pattern, lower):
         skip = True
 
+# Continuation / approval guard: prompts like "ok do it", "go for it",
+# "do it for me", "ya do it", "1 and 2", "do it in this session" are replies
+# that advance existing work — they must NOT name a new project. Strip
+# approval/filler tokens; if fewer than 2 content words remain, skip.
+APPROVAL = {
+    "ok", "okay", "k", "kk", "yes", "yep", "yeah", "ya", "yup", "sure", "cool",
+    "nice", "great", "good", "perfect", "thanks", "thank", "you", "please",
+    "pls", "go", "ahead", "for", "it", "do", "that", "this", "now", "lets",
+    "let", "us", "proceed", "continue", "just", "still", "and", "then", "also",
+    "the", "a", "an", "to", "with", "up", "on", "in", "of", "both", "all",
+    "sounds", "lgtm", "fine", "yea", "right", "correct", "exactly", "agreed",
+    "approve", "approved", "next", "keep", "going", "again", "more", "plus",
+    "number", "make", "sense", "im", "i", "m", "we", "should", "can", "could",
+}
+if not skip:
+    toks = re.findall(r"[a-z0-9]+", lower)
+    content = [t for t in toks if t not in APPROVAL and not t.isdigit() and len(t) > 1]
+    if len(content) < 2:
+        skip = True
+
 scope = "personal"
 company = ""
 

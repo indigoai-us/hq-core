@@ -1,0 +1,35 @@
+name: hq-pack-cowork
+version: 0.1.0
+publisher: '@indigoai-us'
+access: public
+description: 'Native HQ inside Cowork (and any Claude Code plugin host). Bundles a host-launched stdio MCP server that wraps the `hq` CLI + `qmd`, exposing 20 tools (identity, sync, qmd/search, secrets, vault files, team & membership, packages & modules, meeting intelligence, feedback, schema-backed runs, guarded long-tail CLI) as tool calls, plus thin HQ skills that preserve default HQ behavior through a host-side transport. The MCP server runs on the host so it has access to ~/.hq cognito auth and the real binaries — Cowork''s Linux sandbox does not. Security posture: the server never returns secret values itself; the secret-injecting tools (hq_secrets_exec, hq_run) refuse to launch a shell or value-printing binary, the long-tail CLI is a strict read-only allowlist, and package/module installs are gated to first-party indigoai-us or local-HQ sources. These tools run host commands with the user''s privileges, so treat them as host-trusted, not an airtight boundary.'
+requires:
+  hqCore: '>=15.0.0'
+  # Runtime prerequisites (host):
+  #   - `hq` CLI on PATH (npm i -g @indigoai-us/hq-cli, or via the HQ installer)
+  #   - `qmd` CLI on PATH (for hq_search; install: cargo install qmd)
+  #   - Node.js 18+ on PATH (for the stdio MCP server)
+  #   - Authenticated HQ session (~/.hq/cognito-tokens.json) — run `hq login` once
+contributes:
+  # HQ-side surfaces (scan-packages.sh symlinks these into core/.claude/).
+  skills:
+    - hq-cowork
+    - hq-cowork-install
+    - hq-cowork-sync
+    - hq-cowork-share
+    - hq-cowork-search
+    - hq-cowork-secrets
+    - hq-cowork-dm
+    - hq-cowork-files
+    - hq-cowork-meetings
+    - hq-cowork-cli
+  workers: []
+  knowledge: []
+  hooks: []
+  policies: []
+  commands: []
+  # The MCP server (mcp-server/index.mjs) and Claude Code plugin manifest
+  # (.claude-plugin/plugin.json + .mcp.json) are wired by the *plugin host*
+  # (Claude Code / Cowork) at plugin-install time, not by scan-packages.sh.
+  # scan-packages currently has no first-class `mcp` contribution key —
+  # install path for the plugin half is documented in README.md.

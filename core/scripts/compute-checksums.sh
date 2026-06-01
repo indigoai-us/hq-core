@@ -24,9 +24,22 @@ if ! command -v yq &>/dev/null; then
   exit 1
 fi
 
+# Portable SHA-256 tool. macOS ships `shasum`; Linux and Git Bash on Windows
+# ship `sha256sum`. Pick whichever exists so this runs on all three. Both
+# print the hash as the first whitespace-delimited field, so the awk extract
+# below is identical for either.
+if command -v shasum &>/dev/null; then
+  SHA256_CMD="shasum -a 256"
+elif command -v sha256sum &>/dev/null; then
+  SHA256_CMD="sha256sum"
+else
+  echo "ERROR: need 'shasum' or 'sha256sum' on PATH for SHA-256" >&2
+  exit 1
+fi
+
 # Compute SHA256 for a single file (returns hex string)
 file_sha256() {
-  shasum -a 256 "$1" | awk '{print $1}'
+  $SHA256_CMD "$1" | awk '{print $1}'
 }
 
 # Compute deterministic SHA256 for a directory
@@ -44,7 +57,7 @@ dir_sha256() {
   done > "$tmpfile"
 
   # SHA256 of the combined string
-  shasum -a 256 "$tmpfile" | awk '{print $1}'
+  $SHA256_CMD "$tmpfile" | awk '{print $1}'
   rm -f "$tmpfile"
 }
 

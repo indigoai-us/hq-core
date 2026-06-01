@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Focused regression tests for run-project engine forwarding.
+# Regression tests for run-project after the engine-selection retirement.
 #
 # Covers two entry points:
-#   1. Wrapper:       core/scripts/run-project.sh   (translates --engine, then exec's main)
-#   2. Direct invoke: .claude/scripts/run-project.sh (parses --builder/--engine itself)
+#   1. Wrapper:       core/scripts/run-project.sh   (thin forwarder)
+#   2. Direct invoke: .claude/scripts/run-project.sh (the orchestrator)
 #
-# Both must default to --builder=codex. Claude builder requests are blocked.
+# New contract (2026-05 inline-ralph re-engine):
+#   - There is NO engine selection. `--ralph-mode` runs the inline worker loop
+#     in-session (see .claude/skills/run-project/SKILL.md).
+#   - The wrapper forwards the live surface (--status/--dry-run/--help/<project>)
+#     verbatim to the orchestrator — it injects no default builder.
+#   - Explicit --engine/--builder are REJECTED at both entry points with a
+#     pointer to in-session ralph (no cryptic "Unknown builder").
 
 set -euo pipefail
 
@@ -29,18 +35,17 @@ assert_contains() {
 }
 
 # ----------------------------------------------------------------------------
-# Wrapper tests — copy real wrapper + lib, mock the main script with an echoer.
-# Minimal PATH because the wrapper only needs bash+dirname.
+# Wrapper tests — copy the real wrapper, mock the orchestrator with an echoer.
+# Minimal PATH because the wrapper only needs bash + dirname.
 # ----------------------------------------------------------------------------
-mkdir -p "$TMP/core/scripts/lib" "$TMP/.claude/scripts"
+mkdir -p "$TMP/core/scripts" "$TMP/.claude/scripts"
 cp "$ROOT/core/scripts/run-project.sh" "$TMP/core/scripts/run-project.sh"
-cp "$ROOT/core/scripts/lib/detect-codex.sh" "$TMP/core/scripts/lib/detect-codex.sh"
 chmod +x "$TMP/core/scripts/run-project.sh"
 
 mkdir -p "$TMP/bin"
 ln -s /bin/bash "$TMP/bin/bash"
 ln -s /usr/bin/dirname "$TMP/bin/dirname"
-WRAPPER_ENV=(/usr/bin/env -u CODEX_SESSION_ID -u CODEX_SANDBOX -u CODEX_EXECUTION_ID -u CODEX_AGENT_ID -u OPENAI_CODEX PATH="$TMP/bin")
+WRAPPER_ENV=(/usr/bin/env PATH="$TMP/bin")
 
 cat > "$TMP/.claude/scripts/run-project.sh" <<'SH'
 #!/usr/bin/env bash
@@ -48,44 +53,57 @@ printf '<%s>\n' "$@"
 SH
 chmod +x "$TMP/.claude/scripts/run-project.sh"
 
+# Live surface forwards verbatim — NO default builder injected.
 out=$(cd "$TMP" && "${WRAPPER_ENV[@]}" /bin/bash core/scripts/run-project.sh demo --dry-run)
-assert_eq "$out" $'<demo>\n<--dry-run>\n<--builder>\n<codex>' "wrapper: defaults to codex builder"
+assert_eq "$out" $'<demo>\n<--dry-run>' "wrapper: forwards live surface verbatim"
 
-out=$(cd "$TMP" && "${WRAPPER_ENV[@]}" CODEX_SESSION_ID=test /bin/bash core/scripts/run-project.sh demo --dry-run)
-assert_eq "$out" $'<demo>\n<--dry-run>\n<--builder>\n<codex>' "wrapper: codex session defaults to codex builder"
+out=$(cd "$TMP" && "${WRAPPER_ENV[@]}" /bin/bash core/scripts/run-project.sh --status)
+assert_eq "$out" $'<--status>' "wrapper: forwards --status verbatim"
 
-if cd "$TMP" && "${WRAPPER_ENV[@]}" CODEX_SESSION_ID=test /bin/bash core/scripts/run-project.sh demo --engine claude --dry-run >/tmp/run-project-claude-engine.out 2>&1; then
-  fail "wrapper: explicit claude engine should be blocked"
+# Explicit --engine is rejected before exec'ing the orchestrator.
+if cd "$TMP" && "${WRAPPER_ENV[@]}" /bin/bash core/scripts/run-project.sh demo --engine claude --dry-run >/tmp/run-project-wrap-engine.out 2>&1; then
+  fail "wrapper: explicit --engine should be rejected"
 fi
-assert_contains "$(cat /tmp/run-project-claude-engine.out)" "Claude builder is not supported" "wrapper: explicit claude engine error"
+assert_contains "$(cat /tmp/run-project-wrap-engine.out)" "no longer selects a build engine" "wrapper: --engine rejection message"
+assert_contains "$(cat /tmp/run-project-wrap-engine.out)" "--ralph-mode" "wrapper: --engine rejection points to in-session ralph"
 
-if cd "$TMP" && "${WRAPPER_ENV[@]}" CODEX_SESSION_ID=test /bin/bash core/scripts/run-project.sh demo --builder claude --dry-run >/tmp/run-project-claude-builder.out 2>&1; then
-  fail "wrapper: explicit claude builder should be blocked"
+# Equals-form --engine is rejected too.
+if cd "$TMP" && "${WRAPPER_ENV[@]}" /bin/bash core/scripts/run-project.sh demo --engine=claude >/tmp/run-project-wrap-engine-eq.out 2>&1; then
+  fail "wrapper: --engine=claude should be rejected"
 fi
-assert_contains "$(cat /tmp/run-project-claude-builder.out)" "Claude builder is not supported" "wrapper: explicit claude builder error"
+assert_contains "$(cat /tmp/run-project-wrap-engine-eq.out)" "no longer selects a build engine" "wrapper: --engine=claude rejection"
 
-out=$(cd "$TMP" && "${WRAPPER_ENV[@]}" CODEX_SESSION_ID=test /bin/bash core/scripts/run-project.sh demo --engine=codex --dry-run)
-assert_eq "$out" $'<demo>\n<--builder>\n<codex>\n<--dry-run>' "wrapper: equals-form engine is normalized"
+# Explicit --builder (any value, even codex) is rejected.
+if cd "$TMP" && "${WRAPPER_ENV[@]}" /bin/bash core/scripts/run-project.sh demo --builder codex >/tmp/run-project-wrap-builder.out 2>&1; then
+  fail "wrapper: explicit --builder should be rejected"
+fi
+assert_contains "$(cat /tmp/run-project-wrap-builder.out)" "no longer selects a build engine" "wrapper: --builder rejection"
 
 # ----------------------------------------------------------------------------
-# Direct-script tests — exercise the real main script's own --help output.
-# Use real PATH (script needs date, mkdir, etc.) but scrub Codex env vars so
-# detection only fires when we explicitly set them.
+# Direct-script tests — exercise the real orchestrator.
+# Scrub Codex env vars so detection only fires when explicitly set.
 # ----------------------------------------------------------------------------
 MAIN_ENV=(/usr/bin/env -u CODEX_SESSION_ID -u CODEX_SANDBOX -u CODEX_EXECUTION_ID -u CODEX_AGENT_ID -u OPENAI_CODEX)
 
-# Help text contains the new default-behavior documentation.
+# Help documents the live surface and the engine retirement; no --builder flag.
 help_out=$("${MAIN_ENV[@]}" bash "$ROOT/.claude/scripts/run-project.sh" --help 2>&1 || true)
-assert_contains "$help_out" 'Auto uses codex' "main: --help documents codex default"
-assert_contains "$help_out" '--engine ENGINE' "main: --help documents --engine alias"
+assert_contains "$help_out" '--dry-run' "main: --help documents live surface"
+assert_contains "$help_out" 'engine selection (--engine/--builder) is retired' "main: --help documents retirement"
 
-# Direct-script syntax check.
+# Syntax check.
 bash -n "$ROOT/.claude/scripts/run-project.sh" || fail "main: syntax check"
 
-if "${MAIN_ENV[@]}" bash "$ROOT/.claude/scripts/run-project.sh" demo --builder claude --dry-run >/tmp/run-project-main-claude.out 2>&1; then
-  fail "main: explicit claude builder should be blocked"
+# Explicit --builder is rejected with the retirement pointer, not "Unknown builder".
+if "${MAIN_ENV[@]}" bash "$ROOT/.claude/scripts/run-project.sh" demo --builder claude --dry-run >/tmp/run-project-main-builder.out 2>&1; then
+  fail "main: explicit --builder should be rejected"
 fi
-assert_contains "$(cat /tmp/run-project-main-claude.out)" "Unknown builder: claude" "main: explicit claude builder error"
+assert_contains "$(cat /tmp/run-project-main-builder.out)" "no longer selects a build engine" "main: --builder rejection message"
+
+# Explicit --engine (alias) is rejected too — even with a 'codex' value.
+if "${MAIN_ENV[@]}" bash "$ROOT/.claude/scripts/run-project.sh" demo --engine codex --dry-run >/tmp/run-project-main-engine.out 2>&1; then
+  fail "main: explicit --engine should be rejected"
+fi
+assert_contains "$(cat /tmp/run-project-main-engine.out)" "no longer selects a build engine" "main: --engine rejection message"
 
 # Shared lib sourceable in isolation and correctly detects env var presence.
 (
@@ -96,4 +114,4 @@ assert_contains "$(cat /tmp/run-project-main-claude.out)" "Unknown builder: clau
   OPENAI_CODEX=1 running_from_codex || fail "lib: missed OPENAI_CODEX detection"
 )
 
-echo "run-project engine default tests passed (wrapper + main + lib)"
+echo "run-project engine-retirement tests passed (wrapper + main + lib)"

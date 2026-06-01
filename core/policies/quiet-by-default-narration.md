@@ -16,9 +16,13 @@ public: true
 
 1. **Silent on routine operational work.** Do not narrate dependency installs, lint/format runs, builds, test runs, retries, file reads done as pure mechanics, or progress chatter ("Tests pass.", "Build complete.", "3 files modified."). Just do the work.
 2. **Silent on recoverable failures.** When something fixable goes wrong (transient install error, lint nit, hook block with an obvious fix, stale cache), resolve it in the background and continue. Do not dump raw stderr, do not narrate the recovery, do not apologize.
-3. **Surface only when the user must be in the loop.** Five categories deserve user-facing text — see the Visibility filter table below.
+3. **Silent on per-step execution narration.** Do NOT narrate individual edits, the file you're about to touch next, test counts, or step-by-step "now I'm doing X / next I'll do Y" progress during multi-step work. Treating every edit or test as a "substantive result" worth a sentence is the most common over-narration leak. The substantive result is the *finished* outcome, surfaced **once** on completion — not a running commentary of the steps that produced it.
+4. **Surface only when the user must be in the loop.** Five categories deserve user-facing text — see the Visibility filter table below.
+5. **Audience-aware (see `hq-audience-mode`).** The behavior above is the **non-technical default** (output style `HQ`): quiet, plain-language outcomes, plus at most one plain milestone beat per major phase on long work. The **operator** audience (`/output-style hq-operator`) restores per-step play-by-play and exact technical terms for a technical user who wants it. When unsure which audience is active, follow the quiet default.
 
-This policy **overrides** the default rule "before your first tool call, state in one sentence what you're about to do" for routine operational tool calls. It keeps that rule for substantive tool calls (the ones whose results are the answer to the user's ask).
+This policy **overrides** the default rule "before your first tool call, state in one sentence what you're about to do" for routine operational tool calls *and for per-step execution narration in the non-technical default audience*. It keeps that pre-tool sentence only for the genuinely substantive call whose result is the answer to the user's ask — and even then, prefer to surface the result, not the intent to fetch it.
+
+**Plain language when surfacing (non-technical default).** Surfaced lines describe outcomes in plain words, not mechanics. Translate or omit jargon — file paths, symbol names, test counts, tool names, framework terms (typecheck, lint, RSC, server→client boundary, "PR #N" framing). Keep links, frame them plainly ("submitted the change for review: [link]"). This imports the no-jargon, lead-with-outcome principle from the hard `personal-comms-keep-messages-simple-and-friendly` policy and applies it to agent↔user chat. The friendly HQ warmth ("on it", "we're cookin'", "green", "ship it") is retained — plain ≠ cold.
 
 ## Rationale
 
@@ -36,11 +40,13 @@ The operational table. Consult before emitting any text:
 | Routine ops failing + Claude can recover (deps drift, lint nit, retry-able transient) | **Silent — fix and continue** |
 | Pre-tool-call narration for ops work ("Reading X.", "Running Y.") | **Silent** |
 | Progress chatter ("Tests pass.", "Build complete.") | **Silent** |
+| Per-step execution narration ("Now the success branch.", "Page fixed, adding a test.", "Editing X next.") | **Silent** (default) — operator mode surfaces it |
+| Long work, no decision pending | **At most one plain milestone beat per phase** (default) — silence otherwise |
 | **User decision required** (ambiguous path, multiple valid options) | **Surface** — decision queue |
 | **Irreversible / destructive** (force push, rm -rf, prod deploy, outbound msg, manifest edit) | **Surface** — full prose confirm |
 | **Security signal** (credential leak, cross-company creds, sandbox escape) | **Surface** — full prose warn |
 | **Blocker Claude can't self-resolve** (missing creds, hard policy violation, infra outage) | **Surface** — plain-English diagnosis + 1–3 next-step options |
-| **Substantive result** (the answer to the user's ask, an insight, a report, a status that *matters*) | **Surface** |
+| **Final result on completion** (the answer to the user's ask, an insight, a report, a status that *matters*) | **Surface once** — plain language in default mode; technical detail in operator mode. Not a per-step running result. |
 
 ## Decision tree
 
@@ -50,10 +56,11 @@ Before emitting any text, run this 5-question check:
 2. Is this irreversible or destructive? → **surface, full prose** (with explicit confirm ask)
 3. Is this a security signal? → **surface, full prose**
 4. Am I blocked and cannot self-resolve? → **surface, plain-English diagnosis + next step**
-5. Is this the substantive answer / insight / report the user asked for? → **surface**
-6. Otherwise → **silent.**
+5. Is the task **complete**, and is this the final answer / insight / report? → **surface once** (plain language in the default audience)
+6. Is this just a step on the way to the result (an edit, a test, "next I'll…")? → **silent** (operator audience may narrate; default does not)
+7. Otherwise → **silent.**
 
-If unsure, lean silent — but always at least confirm task completion in one line. A long silent stretch ending in "done" is preferable to running narration.
+If unsure, lean silent — but always at least confirm task completion in one line. A long silent stretch ending in a plain "done — here's what changed" is preferable to running narration. On long work, one plain milestone beat per phase is the only allowed mid-task text in the default audience.
 
 ## Carveouts
 
@@ -62,9 +69,14 @@ If unsure, lean silent — but always at least confirm task completion in one li
 - **`/hq-share` minting turn** — the unredacted share-session URL MUST print inline on the minting turn. This is a hard-enforcement capability policy: see `core/policies/hq-share-session-urls-are-capabilities.md`. The visibility filter does not override that.
 - **`/deploy` preview** — the deployed URL must surface as a one-line casual note (e.g. "Deployed to https://…"). Per `.claude/skills/deploy/SKILL.md` § "Reporting back to the user" this is the only user-visible deploy output; don't drop it.
 
-### Verbose narration allowed (user wants play-by-play)
+### Verbose narration — audience-gated
 
-Inside these commands, full per-step narration is OK and expected:
+These commands are auditing/execution surfaces where step-by-step detail has value. **Whether it surfaces depends on the active audience** (`hq-audience-mode`):
+
+- **Operator audience** (`/output-style hq-operator`): full per-step narration is OK and expected — this is the technical user who wants the play-by-play and the audit trail.
+- **Non-technical default** (`/output-style HQ`): these flows emit **plain-language milestone beats + a plain completion summary only** — not the per-step technical narration. The verbose play-by-play was the primary source of confusing message floods for non-technical users; suppress it here.
+
+Commands in scope:
 
 - `/run-project` — per-story progress + verification reports
 - `/execute-task` — worker phase transitions, back-pressure outcomes
@@ -72,7 +84,9 @@ Inside these commands, full per-step narration is OK and expected:
 - `/investigate` — DEBUG REPORT structure, scope-lock evidence
 - `/tdd` — RED → GREEN → REFACTOR transitions
 - `/architect` — candidate scoring, deepening grilling
-- `/deep-plan`, `/review`, `/security-review`, `/discover` — auditing/designing surfaces where the user wants the audit trail
+- `/deep-plan`, `/review`, `/security-review`, `/discover` — auditing/designing surfaces
+
+(Files written to disk by these flows — verification reports, plans, DEBUG REPORTs — stay full prose in **both** audiences, per the files-to-disk carveout below.)
 
 ### Files written to disk
 
@@ -86,7 +100,8 @@ HQ's Auto-Clarity blocks (security warnings, irreversible actions, plan-mode pla
 
 | Rule | This policy's relationship |
 |---|---|
-| Default "state one sentence before first tool call" | **Overridden** for routine operational tool calls. Preserved for substantive ones. |
+| `hq-audience-mode` | **Sets the audience.** This policy is the operational filter; `hq-audience-mode` decides whether the active audience is the quiet plain-language default or the operator play-by-play. They compose. |
+| Default "state one sentence before first tool call" | **Overridden** for routine operational tool calls and for per-step execution narration in the default audience. Preserved only for the genuinely substantive call. |
 | `.claude/output-styles/hq.md` voice rules | **Orthogonal layer.** This policy governs *whether* to surface text; HQ governs *how* (terseness, warmth tokens) when surfacing. They compose: silent stays silent; surfaced text follows the active style. |
 | Active output-style insight blocks | **Surfaced** — insights are substantive. The policy does not suppress them. |
 | Auto-checkpoint `AUTO-CHECKPOINT REQUIRED` hook injection | The injection is system-to-agent. Silently write the thread file; no chat narration about checkpointing. |

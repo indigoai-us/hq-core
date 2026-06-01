@@ -78,6 +78,31 @@ if echo "$CWD" | grep -qE 'repos/(public|private)/'; then
   fi
 fi
 
+# Lowest-precedence fallback: the company persisted to this session's meta by
+# /startwork (core/scripts/hq-session.sh set company_slug ...). cwd and the
+# repo→owner lookup above always win, so this only fires when the user ran
+# /startwork {co} from a location that doesn't itself reveal the company
+# (e.g. the HQ root). Without this, `/startwork {company}` from the root never
+# loads that company's policy digest on the next SessionStart/resume/compact.
+if [ -z "$ACTIVE_CO" ]; then
+  CURRENT_FILE="$HQ_ROOT/workspace/sessions/.current"
+  if [ -f "$CURRENT_FILE" ]; then
+    SESSION_ID="$(head -1 "$CURRENT_FILE" 2>/dev/null | tr -d '[:space:]')"
+    META="$HQ_ROOT/workspace/sessions/$SESSION_ID/meta.yaml"
+    if [ -n "$SESSION_ID" ] && [ -f "$META" ]; then
+      META_CO="$(sed -nE 's/^company_slug:[[:space:]]*"?([A-Za-z0-9_-]+)"?[[:space:]]*$/\1/p' "$META" | head -1)"
+      # Validate the slug is a real top-level company key before accepting it,
+      # mirroring the manifest guard used elsewhere (never trust an orphaned slug).
+      if [ -n "$META_CO" ]; then
+        MANIFEST="$HQ_ROOT/companies/manifest.yaml"
+        if [ -f "$MANIFEST" ] && grep -qE "^  ${META_CO}:" "$MANIFEST" 2>/dev/null; then
+          ACTIVE_CO="$META_CO"
+        fi
+      fi
+    fi
+  fi
+fi
+
 # Resolve active service set (space-separated) AND opt-in flag.
 #
 # Sources, in priority order:

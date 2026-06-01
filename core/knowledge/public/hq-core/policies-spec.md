@@ -28,6 +28,8 @@ Each directory can have zero or more policy files. Policies are plain Markdown f
 
 **Personal overlay (`personal/policies/`).** Files in `personal/policies/<slug>.md` are user-personal authoring locations. The `master-sync.sh` Stop/PostToolUse hook symlinks each entry into `core/policies/<slug>.md`, so personal entries become indistinguishable from core at load time — they are *not* a separate precedence layer. Author user-global policies here; they will be picked up by `build-policy-digest.sh` and surface through the global scope.
 
+> **`personal/policies/` is the default home for operator-global rules — including everything `/learn` captures at global/command scope.** `core/policies/` is release-shipped scaffold that `/update-hq` replaces wholesale, so a rule written directly there is lost on the next upgrade. `/learn` therefore never writes to `core/policies/`; it writes operator-universal rules to `personal/policies/` (re-symlinked into `core/policies/` by `master-sync.sh`, so they still load as global) and company/repo rules to their own scoped dirs. The only sanctioned path *into* `core/policies/` is the staging → `/promote-hq-core` pipeline, for policies that genuinely ship to every HQ install. This is enforced mechanically by `protect-core.sh`, which blocks creation of a new `.md` under `core/policies/` (override: `HQ_ALLOW_CORE_POLICY_WRITE=1`). Authoritative rule: `core/policies/hq-customizations-live-in-personal-or-company.md`.
+
 ## File Format
 
 ```markdown
@@ -128,9 +130,9 @@ applies_to: [vercel, clerk]   # OR semantics — loads if ANY tag matches active
 ## How Agents Use Policies
 
 1. Before executing a task, load policies from all applicable directories:
-   - `companies/{co}/policies/` (determine company from context)
+   - `companies/{co}/policies/` (determine company from context — at SessionStart this resolves from cwd, the owning repo via `manifest.yaml`, or the `company_slug` persisted to the session by `/startwork`)
    - `{repo}/.claude/policies/` (if working inside a repo)
-   - `core/policies/` (always)
+   - `core/policies/` (always — this already includes operator rules authored in `personal/policies/`, which are symlinked in)
 2. Read each policy's `trigger` field to determine if it applies to the current task
 3. Follow all applicable `hard` enforcement policies — violation blocks task completion
 4. Follow all applicable `soft` enforcement policies — deviations are acceptable with justification

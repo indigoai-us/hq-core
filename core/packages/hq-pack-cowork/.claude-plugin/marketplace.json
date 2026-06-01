@@ -1,0 +1,27 @@
+{
+  "name": "hq",
+  "description": "HQ plugins that connect Claude Code and Cowork to a user's local HQ install and shared company brain.",
+  "owner": {
+    "name": "Indigo / HQ"
+  },
+  "plugins": [
+    {
+      "name": "hq-cowork",
+      "source": "./",
+      "description": "Native HQ inside Cowork and Claude Code. Exposes the shared HQ brain, sync, files, secrets, teams, DMs, meetings, packages, and guarded HQ CLI access through host-side MCP tools.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Indigo / HQ",
+        "url": "https://github.com/indigoai-us"
+      },
+      "license": "MIT",
+      "keywords": [
+        "hq",
+        "cowork",
+        "claude-code",
+        "mcp",
+        "knowledge"
+      ]
+    }
+  ]
+}

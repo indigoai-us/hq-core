@@ -77,6 +77,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-unsafe-package-install $CLAUDE_PROJECT_DIR/.claude/hooks/block-unsafe-package-install.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh surface-company-infra-policy $CLAUDE_PROJECT_DIR/.claude/hooks/surface-company-infra-policy.sh",
+            "timeout": 5
           }
         ]
       },

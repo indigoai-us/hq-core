@@ -27,7 +27,7 @@ When in doubt about whether a learning, policy, or artifact is personal, company
 
 `/update-hq` performs a wholesale replace of the release-shipped trees: whatever file ships in the upstream hq-core release is copied into the install as-is, replacing whatever sat at that path. Operator- or company-specific content placed in `core/` is therefore lost without warning at the next upgrade. The `personal/` overlay exists precisely so that operator content rides inside `core/` at runtime (via master-sync symlinks) while living in an upgrade-safe location. Company content lives under `companies/{co}/` so it stays isolated per tenant and syncs to the correct vault.
 
-This rule generalizes the older, skills-only `hq-core-vs-personal-skill-location-and-rename` (soft) to every overlay type — policies, knowledge, workers, hooks, and settings — and is the authoritative statement of where customizations belong. It is surfaced to every command via the SessionStart policy digest and reinforced at edit time by an advisory reminder in `inject-policy-on-trigger.sh`. The existing `core/`-edit protection (`HQ_BYPASS_CORE_PROTECT`) remains the mechanical guard; this policy supplies the positive routing — *where the customization should go instead*.
+This rule generalizes the older, skills-only `hq-core-vs-personal-skill-location-and-rename` (soft) to every overlay type — policies, knowledge, workers, hooks, and settings — and is the authoritative statement of where customizations belong. It is surfaced to every command via the SessionStart policy digest and reinforced at edit time by an advisory reminder in `inject-policy-on-trigger.sh`. The existing `core/`-edit protection (`HQ_BYPASS_CORE_PROTECT`) remains the broad mechanical guard; this policy supplies the positive routing — *where the customization should go instead*. For the most common leak — `/learn` (or a hand-edit) creating a new policy in `core/policies/` — `protect-core.sh` adds a narrow, always-on block on creating a new `.md` under `core/policies/` (independent of the broad bypass, since that bypass is often left on; override with `HQ_ALLOW_CORE_POLICY_WRITE=1`). `/learn` itself now routes operator-global and command-scoped rules to `personal/policies/` by default.
 
 ## See also
 
@@ -35,3 +35,6 @@ This rule generalizes the older, skills-only `hq-core-vs-personal-skill-location
 - `personal/policies/hq-update-hq-wholesale-replace-overwrites-operator-files.md` (the wholesale-replace hazard)
 - `core/policies/hq-company-scoped-writes-verify-company.md` (sibling rule: company-scoped writes must reach the correct company)
 - `core/knowledge/public/hq-core/quick-reference.md` (personal overlay semantics table)
+- `.claude/skills/learn/SKILL.md` (routing: global/command → `personal/policies/`; never `core/policies/`)
+- `.claude/hooks/protect-core.sh` (the targeted always-on guard against new `core/policies/` files)
+- `core/knowledge/public/hq-core/policies-spec.md` (scope/precedence + personal-overlay default)
