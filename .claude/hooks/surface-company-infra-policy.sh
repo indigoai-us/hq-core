@@ -1,0 +1,97 @@
+#!/bin/bash
+# surface-company-infra-policy.sh — PreToolUse(Bash) hook.
+#
+# THE GAP THIS CLOSES:
+#   Company policies are injected at SessionStart for the company known *at
+#   start* (.claude/hooks/load-policies-for-session.sh). When a company is
+#   bound LATER in the session (e.g. `hq-session.sh set company_slug <co>`,
+#   or working straight into a company task), nothing re-surfaces that
+#   company's hard rules. An agent can then run company infra/deploy/credential
+#   commands blind to hard policy — e.g. attempting an `sst deploy` with a
+#   local AWS profile instead of the mandated `hq secrets exec` path, and
+#   giving up at NoCredentials. (Real incident: a company cloud-infra deploy.)
+#
+#   hq-session.sh already emits the full company hard digest on bind (Tier-1
+#   for the bind moment). THIS hook is the just-in-time backstop: when an
+#   infra/credential command is about to run and a company is bound, surface
+#   that company's deploy/credential hard policies right then.
+#
+# Input: PreToolUse JSON on stdin —
+#   {"session_id":"abc","tool_name":"Bash","tool_input":{"command":"sst deploy ..."}}
+# Output: a <company-policy-reminder> block on stdout when matched, else nothing.
+# Dedupe: per (session, company); fires once per company per session.
+# Exit: always 0 (advisory hook, never blocks). Never prints secret values.
+
+set -uo pipefail
+
+STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
+
+extract() {
+  printf '%s' "$STDIN_JSON" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit(0)
+v = data
+for k in sys.argv[1].split("."):
+    v = v.get(k, "") if isinstance(v, dict) else ""
+print(v if isinstance(v, str) else "")
+' "$1" 2>/dev/null || echo ""
+}
+
+TOOL_NAME="$(extract tool_name)"
+[ "$TOOL_NAME" = "Bash" ] || exit 0
+CMD="$(extract tool_input.command)"
+[ -z "$CMD" ] && exit 0
+
+# Infra / credential command patterns. Matching one of these in a bound-company
+# context is what triggers the reminder.
+INFRA_RE='(^|[[:space:];&|(])(sst[[:space:]]+(deploy|remove)|pnpm[[:space:]]+deploy|cdk[[:space:]]+deploy|serverless[[:space:]]+deploy|sls[[:space:]]+deploy|terraform[[:space:]]+apply|aws[[:space:]]|hq[[:space:]]+secrets[[:space:]]+exec)'
+printf '%s' "$CMD" | grep -Eq "$INFRA_RE" || exit 0
+
+HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+
+# Resolve the bound company from the current session's meta.yaml — same path
+# resolution hq-session.sh / load-policies-for-session.sh use.
+CO=""
+CURRENT_FILE="$HQ_ROOT/workspace/sessions/.current"
+if [ -f "$CURRENT_FILE" ]; then
+  SID="$(tr -d '[:space:]' < "$CURRENT_FILE" 2>/dev/null || true)"
+  META="$HQ_ROOT/workspace/sessions/$SID/meta.yaml"
+  if [ -n "$SID" ] && [ -f "$META" ]; then
+    CO="$(sed -nE 's/^company_slug:[[:space:]]*"?([A-Za-z0-9_-]+)"?[[:space:]]*$/\1/p' "$META" | head -1)"
+  fi
+fi
+[ -z "$CO" ] && exit 0   # no company bound — nothing company-specific to surface
+
+DIGEST="$HQ_ROOT/companies/$CO/policies/_digest.md"
+[ -f "$DIGEST" ] || exit 0
+
+# Pull the deploy/credential HARD policies out of the company digest. Restrict
+# to the hard-enforcement section, then to slugs about deploy/aws/creds/secrets.
+LINES="$(awk '
+  /^## Hard-enforcement/ { in_body = 1; next }
+  /^## Soft-enforcement/ { in_body = 0 }
+  in_body && /^- \[hard\]/ { print }
+' "$DIGEST" | grep -Ei '\*\*[a-z0-9-]*(deploy|aws|cred|secret)[a-z0-9-]*\*\*' || true)"
+[ -z "$LINES" ] && exit 0
+
+# Dedupe once per (session, company).
+DEDUPE_DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
+mkdir -p "$DEDUPE_DIR" 2>/dev/null || true
+DEDUPE_FILE="$DEDUPE_DIR/${SID:-default}.txt"
+touch "$DEDUPE_FILE" 2>/dev/null || true
+STAMP="company-infra:$CO"
+grep -Fxq "$STAMP" "$DEDUPE_FILE" 2>/dev/null && exit 0
+printf '%s\n' "$STAMP" >> "$DEDUPE_FILE"
+
+printf '<company-policy-reminder co="%s">\n' "$CO"
+printf '> Infra/credential command in **%s** context. These HARD %s policies apply:\n\n' "$CO" "$CO"
+printf '%s\n' "$LINES"
+printf '\n> Full text: `companies/%s/policies/{slug}.md`. For AWS/prod: credentials come ONLY\n' "$CO"
+printf '> via `hq secrets exec` — agent sessions have NO local profile fallback; never use\n'
+printf '> another company'"'"'s profile, and on NoCredentials reach for the vault, do not give up.\n'
+printf '</company-policy-reminder>\n'
+
+exit 0

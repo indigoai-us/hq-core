@@ -381,12 +381,6 @@ Flags:
   --status            Show all project statuses, exit
   --dry-run           Show story order without executing
   --model MODEL       Override model for all stories
-  --builder BUILDER   Build agent: "auto" or "codex".
-                      Auto uses codex.
-                      When "codex", each story is executed via `codex exec`.
-                      Completion is detected via the same 3-layer parser (termination
-                      JSON on any line → git commit heuristic fallback).
-  --engine ENGINE     Alias for --builder.
   --no-permissions    Pass the builder's non-interactive permission bypass
   --retry-failed      Re-run previously failed stories only
   --timeout N         Per-story wall-clock timeout in minutes
@@ -397,6 +391,10 @@ Flags:
   --checkin-interval N  Seconds between check-in status prints (default: 180)
   --codex-autofix     Auto-fix P1/P2 codex review findings (opt-in)
   --no-monitor        Skip auto-spawning the cmux monitor workspace
+
+Note: engine selection (--engine/--builder) is retired. Ralph runs in-session
+via `/run-project <project> --ralph-mode`. This script's execution loop is a
+frozen codex-only fallback; --status/--dry-run/--help are its live surface.
 HELP
       exit 0
       ;;
@@ -409,18 +407,17 @@ HELP
   esac
 done
 
-if [[ -z "$BUILDER" || "$BUILDER" == "auto" ]]; then
-  BUILDER="codex"
+# Engine/builder selection is retired. `--ralph-mode` runs the inline worker
+# loop in-session (see .claude/skills/run-project/SKILL.md); this script's
+# execution loop is a frozen codex-only fallback. Reject any explicit
+# --engine/--builder so a stale caller gets a pointer, not a cryptic error.
+if [[ "$BUILDER_EXPLICIT" == true ]]; then
+  echo -e "${RED}ERROR: run-project.sh no longer selects a build engine.${NC}" >&2
+  echo -e "${DIM}Ralph runs in-session: /run-project <project> --ralph-mode${NC}" >&2
+  echo -e "${DIM}Live surface: --status / --dry-run / --help (bare invocation runs the frozen codex fallback loop).${NC}" >&2
+  exit 2
 fi
-
-case "$BUILDER" in
-  codex) ;;
-  *)
-    echo -e "${RED}Unknown builder: $BUILDER${NC}" >&2
-    echo -e "${DIM}Expected one of: auto, codex${NC}" >&2
-    exit 1
-    ;;
-esac
+BUILDER="codex"
 
 # Headless detection: non-interactive when permissions bypassed (pipeline mode)
 if [[ "$NO_PERMISSIONS" == true ]]; then

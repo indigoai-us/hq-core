@@ -50,9 +50,9 @@ User factual corrections (pricing, product, session details) applied exactly as 
 
 ### User-Facing Messages
 
-Quiet by default. Silent on routine ops (install, lint, build, test, fmt) + recoverable failures — fix and continue. Surface only: user decisions, irreversible/destructive actions, security signals, unrecoverable blockers, substantive results/insights/reports. Verbose narration allowed inside `/run-project`, `/execute-task`, `/diagnose`, `/investigate`, `/tdd`, `/architect`, `/deep-plan`, `/review`, `/security-review`, `/discover`. URL carveouts that must surface: `/hq-share` minting turn, `/deploy` preview. Filter + tree: `core/policies/quiet-by-default-narration.md`.
+Quiet by default, in plain language, two audiences. The shipped default (output style `HQ`) assumes a possibly non-technical reader: the agent works silently and speaks to the human only on task completion, a decision the human must make, a blocker it cannot self-resolve, an irreversible/destructive action, or a security signal — plus at most one plain-language milestone beat per major phase on long work. It never narrates individual edits, tool calls, test counts, or step-by-step progress, and every surfaced line describes an outcome in plain words rather than technical jargon (no file paths, symbol names, framework terms, or "PR #N" framing — translate to outcomes, keep links). The friendly HQ "cavebro" warmth ("on it", "we're cookin'", "green", "ship it") is retained — plain does not mean cold. A technical operator who wants the full per-step play-by-play and exact technical terms switches with `/output-style hq-operator` and returns with `/output-style HQ`. Audience model: `core/policies/hq-audience-mode.md`. Operational filter + decision tree: `core/policies/quiet-by-default-narration.md`.
 
-HQ chat voice (Claude Code via `.claude/settings.json`; Codex via `.codex/output-style.md`) — chat only. Files written to disk, security warnings, irreversible-action confirmations, plans, handoffs, checkpoints, policies, ADRs, deploy previews, outbound drafts → full prose.
+These carveouts hold in both audiences: `/hq-share` minting-turn URL prints inline; `/deploy` preview link surfaces in one line. HQ chat voice (Claude Code via `.claude/settings.json`; Codex via `.codex/output-style.md`) governs chat only — files written to disk, security warnings, irreversible-action confirmations, plans, handoffs, checkpoints, policies, ADRs, deploy previews, and outbound drafts are always full prose regardless of audience.
 
 ### Sensitive Path Deny Lists
 
@@ -96,6 +96,7 @@ Session start: do NOT read INDEX.md, agents files, or company knowledge unless t
 - **NEVER**: Use relative symlinks to reach pattern-2 knowledge repos from a git worktree (`../../repos/` resolves to worktree root). Use absolute `$HOME/Documents/HQ/repos/public/knowledge-{name}/`. <!-- user-correction | 2026-04-16 -->
 - **NEVER**: Push HQ to a remote / ask whether to push HQ. HQ git is local-only; `origin` is pull-only upstream; state sync is `hq-sync`. <!-- user-correction | 2026-05-08 -->
 - **ALWAYS**: `qmd` first for HQ search across content, indexed repos, projects, workers, policies, knowledge. Grep/shell only when qmd is unavailable/errors or for exact pattern matching in already-scoped code. <!-- user-correction | 2026-05-14 -->
+- **ALWAYS**: When a company is bound mid-session (e.g. `hq-session.sh set company_slug`, or working straight into a company task), load that company's hard-enforcement policies (`companies/{co}/policies/`) BEFORE any infra/deploy/credential work — SessionStart only injects company policies for the company known at start. For company AWS/prod work (e.g. deploying `hq-pro` to `hq-prod`), credentials come ONLY via `hq secrets exec`; agent sessions have NO local AWS-profile fallback, so `NoCredentials` means reach for the vault — never give up, never use another company's profile. <!-- user-correction | 2026-05-31 -->
 
 ## Map
 

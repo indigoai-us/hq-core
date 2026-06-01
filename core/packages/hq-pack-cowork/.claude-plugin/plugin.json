@@ -1,0 +1,11 @@
+{
+  "name": "hq-cowork",
+  "version": "0.1.0",
+  "description": "Native HQ inside Cowork (and any Claude Code plugin host). Wraps the host `hq` CLI + `qmd` as MCP tools so sync, share, secrets-exec, and search work from a sandboxed agent. Bundles HQ skills that route through those tools.",
+  "author": {
+    "name": "Indigo / HQ",
+    "url": "https://github.com/indigoai-us"
+  },
+  "homepage": "https://github.com/indigoai-us/hq-core",
+  "license": "MIT"
+}

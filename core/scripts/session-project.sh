@@ -50,6 +50,36 @@ def slugify(value):
     return (value or "native-session")[:60].strip("-") or "native-session"
 
 
+# Filler words that should never anchor a project name — approvals,
+# pleasantries, pronouns, and instruction scaffolding. Distinct from STOPWORDS
+# (which tunes reuse-matching); this set tunes the human-facing slug.
+SLUG_FILLER = {
+    "ok", "okay", "yes", "yep", "yeah", "ya", "sure", "cool", "nice", "great",
+    "good", "perfect", "thanks", "thank", "you", "your", "please", "pls", "go",
+    "ahead", "for", "it", "do", "did", "that", "this", "now", "lets", "let",
+    "us", "proceed", "continue", "just", "still", "also", "and", "then", "the",
+    "a", "an", "to", "with", "up", "on", "in", "of", "both", "all", "sounds",
+    "lgtm", "fine", "right", "exactly", "agreed", "next", "keep", "again",
+    "more", "im", "i", "we", "should", "can", "could", "would", "want", "need",
+    "me", "my", "our", "help", "make", "get", "got", "have", "is", "are", "be",
+    "out", "here", "there", "some", "any", "as", "at", "by", "or", "but", "so",
+    "from", "into", "about", "please", "kindly", "gonna", "wanna", "like",
+}
+
+
+def topic_slug(text, max_words=5):
+    """Build a clean, meaningful project slug: drop filler, keep the first few
+    content words. Date-stamp as a last resort so a name is always produced."""
+    toks = re.findall(r"[a-z0-9][a-z0-9-]*", (text or "").lower())
+    content = [
+        t for t in toks
+        if t not in SLUG_FILLER and not t.isdigit() and len(t) > 1
+    ]
+    if not content:
+        return f"session-{today()}"
+    return slugify("-".join(content[:max_words]))
+
+
 def words(value):
     return {
         w for w in re.findall(r"[a-z0-9][a-z0-9-]{2,}", (value or "").lower())
@@ -229,7 +259,7 @@ def ensure_project(args):
         reused = True
     else:
         base = project_base(args.scope, args.company)
-        slug = slugify(args.slug or args.title or args.prompt)
+        slug = slugify(args.slug) if args.slug else topic_slug(args.title or args.prompt)
         project_dir = base / slug
         suffix = 2
         while project_dir.exists() and not (project_dir / "prd.json").exists():

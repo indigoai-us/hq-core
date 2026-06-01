@@ -73,6 +73,10 @@ cmd_set() {
   mkdir -p "$(dirname "$meta")"
   [ -f "$meta" ] || : > "$meta"
 
+  # Capture the prior value so we only surface policies when it actually changes.
+  local prev=""
+  prev="$(cmd_get "$key" 2>/dev/null || true)"
+
   local tmp
   tmp="$(mktemp)"
   awk -v k="$key" -v v="$value" '
@@ -82,6 +86,35 @@ cmd_set() {
     END { if (!found) print k": " v }
   ' "$meta" > "$tmp"
   mv "$tmp" "$meta"
+
+  # When a company is bound (or rebound) mid-session, surface that company's
+  # hard-enforcement policies into this Bash tool result. SessionStart only
+  # injects company policies for the company known *at start*; binding a
+  # company afterward (this path) otherwise surfaces nothing, so an agent can
+  # do company infra/deploy/credential work blind to hard rules. This closes
+  # that gap. Emits policy text only — never secrets.
+  if [ "$key" = "company_slug" ] && [ -n "$value" ] && [ "$value" != "$prev" ]; then
+    emit_company_hard_policies "$value"
+  fi
+}
+
+# Print the hard-enforcement section of a company's policy digest, if present.
+# Reuses the digest shape produced by core/scripts/build-policy-digest.sh and
+# emitted by .claude/hooks/load-policies-for-session.sh.
+emit_company_hard_policies() {
+  local co="$1"
+  local digest="$REPO_ROOT/companies/$co/policies/_digest.md"
+  [ -f "$digest" ] || return 0
+  printf '\n<company-policy-digest co="%s">\n' "$co"
+  printf '# %s hard-enforcement policies (auto-surfaced on company bind)\n' "$co"
+  printf '> Company context just bound mid-session. These HARD rules now apply.\n'
+  printf '> Full text: `companies/%s/policies/{slug}.md` (or `qmd get -c %s {slug}`).\n\n' "$co" "$co"
+  awk '
+    /^## Hard-enforcement/ { in_body = 1; next }
+    /^## Soft-enforcement/ { in_body = 0 }
+    in_body { print }
+  ' "$digest"
+  printf '</company-policy-digest>\n'
 }
 
 sub="${1:-}"

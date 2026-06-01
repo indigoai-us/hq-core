@@ -75,16 +75,75 @@ All tiers follow these composition rules:
 :chart_with_upwards_trend: *Change Name* — one-sentence summary. <PAGE-URL> | <PR-URL(s)>
 ```
 
-## Step 5 — Load credentials
+## Step 5 — Resolve the broadcaster's personal token
 
-Read `companies/{co}/settings/slack/credentials.json` to get the Slack token.
+A work broadcast posts **as the person running the skill**, so the Slack user token must belong to *that* person — never a shared or company-wide token. A single shared user token makes every teammate's broadcast appear under one person's name, which is wrong and confusing.
 
-**Resolution order** (try in order, use the first that works):
+Read `companies/{co}/settings/slack/credentials.json` for two fields:
 
-1. **`hq_secret` field** → fetch via `hq secrets exec --company {co} --only {hq_secret} -- bash -c 'echo "$SLACK_USER_TOKEN"'`. This is the preferred path — no biometric prompt, cached locally.
-2. **`op_reference` field** → fetch via `op read "{op_reference}" --account {op_account}`. Fallback — requires 1Password biometric approval each time.
+- `personal_secret` — name of the per-person secret holding the Slack **user** token (`xoxp-…`). Defaults to `SLACK_USER_TOKEN` when the field is absent.
+- `slack_workspace` — the Slack workspace the token must belong to (used only to guide onboarding).
 
-Use the **user token** (starts with `xoxp-`), not a bot token. User tokens post as the user, which is the desired behavior for work broadcasts.
+Resolve the token from the running person's **personal** vault, never the company vault:
+
+```bash
+hq secrets --personal list   # confirms the name exists; never reveals the value
+```
+
+The `--personal` scope is keyed to the caller's own identity, so each teammate automatically resolves *their own* token with the same secret name. **Never** read this user token with `--company` — a company-scoped user token is exactly the shared-identity bug this design exists to prevent. (A company-scoped *bot* token is fine for other purposes, but work broadcasts post as the human, not the bot.)
+
+- Personal secret **present** → continue to Step 6.
+- Personal secret **missing** → run the onboarding in Step 5a first, then continue.
+
+Never capture, echo, log, or command-substitute the token value. The agent never needs to see it — `hq secrets … exec` injects it directly into the child process at send time (Step 7).
+
+## Step 5a — Onboarding: help the person mint and store their token
+
+Runs only when the running person has no personal Slack user token yet. It works for **any** person and **any** workspace — nothing here is company-specific. The agent guides; the agent never sees the token value.
+
+1. **Explain** that posting as themselves requires their own Slack **user** token (`xoxp-…`), which only they can mint, and that they will paste it into a secure prompt the agent cannot read.
+
+2. **Acquire the token.** If `credentials.json` provides a `slack_app_oauth_url`, send the person there to authorize and copy their **User OAuth Token**. Otherwise walk them through the generic self-serve path:
+   - Open https://api.slack.com/apps → **Create New App** → **From scratch**.
+   - Name it (e.g. "HQ Broadcasts") and select the `{slack_workspace}` workspace.
+   - **OAuth & Permissions** → **User Token Scopes** → add `chat:write`.
+   - **Install to Workspace** → authorize.
+   - Copy the **User OAuth Token** — it starts with `xoxp-`.
+
+3. **Store it without exposing it** — two ways, both keep the value out of the agent's process (never echoed, never a command argument, never pasted into chat or a file). Prefer **(a)** for remote teammates or anyone not sitting at a terminal with `hq`:
+
+   **(a) Browser self-capture link.** The agent mints a one-time secrets-input link; the person opens it and pastes their token into the web form, so the value never touches a terminal:
+
+   ```bash
+   hq secrets --personal generate-link SLACK_USER_TOKEN --expires 30m
+   ```
+
+   `generate-link` works under `--personal` — the link is a one-time write-capability to the person's *own* secret, so only they need it. **Render the URL to the person as EXACTLY ONE Markdown inline link** (label carries no token, href carries the full token), per the hard policy `hq-secure-link-render-as-markdown`:
+
+   ```
+   [Capture your Slack user token — expires <ts>](<full-url-with-token>)
+   ```
+
+   Mint it only in this (parent) turn — never echo it as bare text or inside a code fence, never delegate minting to a sub-agent, and refer to it only in redacted form on any later turn. The exposed token is single-use: if it ever leaks as bare text, mint a fresh one.
+
+   **(b) Interactive terminal setter.** The person runs this themselves in their own terminal:
+
+   ```bash
+   hq secrets --personal set SLACK_USER_TOKEN
+   ```
+
+   Use the `personal_secret` name from `credentials.json` if it differs from `SLACK_USER_TOKEN`. Never ask the person to paste the token into the chat, a file, or a command argument — only into the browser form or this interactive prompt.
+
+4. **Confirm** it stored: `hq secrets --personal list` shows the name (not the value). Optionally validate the token works without printing it:
+
+   ```bash
+   hq secrets --personal exec --only SLACK_USER_TOKEN -- \
+     bash -c 'curl -s -H "Authorization: Bearer $SLACK_USER_TOKEN" https://slack.com/api/auth.test | jq "{ok, user, team}"'
+   ```
+
+5. **Resume** the broadcast at Step 6.
+
+Security: token writes and any capability minting happen in this (parent) turn — never delegate them to a sub-agent. Never reveal the value with `get --reveal` in this flow.
 
 ## Step 6 — Confirm draft (MANDATORY)
 
@@ -100,38 +159,30 @@ Wait for explicit approval before sending. If the user edits the draft, use thei
 
 ## Step 7 — Send
 
-Post the message to Slack using the API. Two rules make this safe:
+Post the message with the running person's **personal** token. Two rules make this safe and avoid the Bash-harness quoting trap (see policy `work-broadcast-jq-inline-recipe-fails-bash-harness`):
 
-1. **Build the JSON body with `jq -n`** — never hand-quote it. Agent-drafted broadcast text may contain `"`, `\`, backticks, or newlines, which break a hand-built JSON string or smuggle fields.
-2. **Let the token expand inside the child process** — wrap `curl` in `bash -c '...'` with *single* quotes. The parent shell would otherwise expand `$SLACK_USER_TOKEN` to empty *before* `hq secrets exec` injects it, so the `Authorization` header ships blank and Slack returns `not_authed` silently.
-
-Preferred path (`hq_secret` configured):
+1. **Build the JSON body with `jq -n` in the PARENT shell**, using a single-quoted filter, and validate it with `printf '%s' "$PAYLOAD" | jq -e .` before sending — use `printf`, not `echo`, since some `echo` builtins re-interpret the `\n` escapes in the pretty-printed JSON and make `jq` reject a body that `curl` would post fine. Do **not** nest the `jq -n "{…}"` substitution inside the single-quoted `bash -c` — the harness mangles the brace filter and `curl` errors with `option : blank argument`.
+2. **Pass the validated payload to the child as an env var.** The child `bash -c` runs only `curl`, so `$SLACK_USER_TOKEN` (injected by `hq secrets … exec`) still expands inside the child — keeping the token out of the parent shell and out of the agent's view.
 
 ```bash
-CHANNEL="$CHANNEL" MESSAGE="$MESSAGE" \
-  hq secrets exec --company {co} --only SLACK_USER_TOKEN -- bash -c '
-    curl -s -X POST https://slack.com/api/chat.postMessage \
-      -H "Authorization: Bearer $SLACK_USER_TOKEN" \
-      -H "Content-Type: application/json" \
-      --data "$(jq -n --arg c "$CHANNEL" --arg t "$MESSAGE" \
-                  "{channel:\$c, text:\$t, unfurl_links:true}")"
-  '
+PAYLOAD=$(jq -n --arg c "$CHANNEL" --arg t "$MESSAGE" '{channel:$c, text:$t, unfurl_links:true}')
+printf '%s' "$PAYLOAD" | jq -e . >/dev/null && echo "payload-valid"
+PAYLOAD="$PAYLOAD" hq secrets --personal exec --only SLACK_USER_TOKEN -- bash -c '
+  curl -s -X POST https://slack.com/api/chat.postMessage \
+    -H "Authorization: Bearer $SLACK_USER_TOKEN" \
+    -H "Content-Type: application/json" \
+    --data "$PAYLOAD"
+' | jq -r 'if .ok then "OK ts=\(.ts)" else "ERROR: \(.error)" end'
 ```
 
-Fallback (1Password — only when `hq_secret` is unavailable): same command, with the token sourced via `op run` so it too resolves inside the child process:
+If `credentials.json` sets a different `personal_secret` name, substitute it for `SLACK_USER_TOKEN` in both `--only` and the `Bearer $…` reference so they stay matched.
 
-```bash
-CHANNEL="$CHANNEL" MESSAGE="$MESSAGE" SLACK_USER_TOKEN="{op_reference}" \
-  op run --account {op_account} -- bash -c '
-    curl -s -X POST https://slack.com/api/chat.postMessage \
-      -H "Authorization: Bearer $SLACK_USER_TOKEN" \
-      -H "Content-Type: application/json" \
-      --data "$(jq -n --arg c "$CHANNEL" --arg t "$MESSAGE" \
-                  "{channel:\$c, text:\$t, unfurl_links:true}")"
-  '
-```
+Confirm the output is `OK ts=…`.
 
-Verify the response includes `"ok": true`. If it fails, report the error to the user — do not silently retry with different credentials or channels.
+- On `not_authed`, `token_revoked`, `invalid_auth`, or a missing secret → the running person's token is absent or expired. Send them through Step 5a to (re)mint it. **Never** fall back to another person's token or a company-shared token — that reintroduces the shared-identity bug.
+- On `channel_not_found` / `not_in_channel` → fix the channel (Step 3), not the credentials.
+
+Report any other error to the user; do not silently retry with different credentials or channels.
 
 ## Step 8 — Report
 
