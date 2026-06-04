@@ -1,8 +1,23 @@
 name: Promote to hq-core
 
-# Manually-triggered workflow that opens a PR against indigoai-us/hq-core
-# carrying the current staging tree. Models the shape of past hq-core PRs:
-#   - branch:  release/v<version>   or   fix/<slug>
+# Opens (or updates) a PR against indigoai-us/hq-core carrying the current
+# staging tree. Two trigger modes:
+#
+#   1. push to main  (mode=auto)  — fires on every push to staging main.
+#      Maintains ONE standing PR on a fixed branch (promote/auto-main).
+#      Each push force-updates that branch with the latest staging tree, so
+#      an already-open PR is "rebased" onto the new code rather than a new PR
+#      being opened. Version follows a patch train: next = hq-core main
+#      hqVersion + 1 patch (e.g. 15.0.4 -> 15.0.5). The PR is NOT auto-merged
+#      — merging it is the deliberate release gate. Minor/major releases are
+#      still cut manually via workflow_dispatch with an explicit version.
+#
+#   2. workflow_dispatch (mode=manual) — explicit release/v<ver> or fix/<slug>
+#      PR with an operator-supplied version (unchanged from the original
+#      behavior, including dry_run).
+#
+# Models the shape of past hq-core PRs:
+#   - branch:  promote/auto-main (auto) | release/v<version> | fix/<slug>
 #   - title:   release: v<version>   or   fix(core): <slug>
 #   - labels:  version-bump, special-case-confirmed (release type)
 #   - body:    ## Summary / ## Lineage note / ## Test plan
@@ -19,12 +34,14 @@ name: Promote to hq-core
 # uses both. PII filtering (public: frontmatter, ## Provenance stripping) is
 # NOT performed here; hq-core's pr-checks.yml is the gate that catches leaks.
 #
-# Security: every `workflow_dispatch` input is passed to `run:` blocks via
-# `env:` rather than direct ${{ }} interpolation, so values cannot break out
-# of the shell context. Inputs are also regex-validated before any other
-# step runs.
+# Security: every workflow_dispatch input and computed value is passed to
+# run: blocks via env: rather than direct ${{ }} interpolation, so values
+# cannot break out of the shell context. Manual inputs are regex-validated
+# before any push/PR step runs.
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -56,16 +73,34 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Serialize per ref. On rapid pushes the latest wins — it force-updates the
+  # standing branch with the freshest staging tree, so cancelling an in-flight
+  # run is safe (the next run re-syncs from scratch).
+  group: promote-to-hq-core-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   promote:
     name: Open PR on hq-core
+    # Staging-only. This file is rsync'd verbatim into hq-core by the promote
+    # itself; the guard keeps it inert there (a push to hq-core main must never
+    # promote hq-core into itself).
+    if: github.repository == 'indigoai-us/hq-core-staging'
     runs-on: ubuntu-latest
     env:
       HQ_AUDIT_BOT_APP_ID: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
       HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
       TARGET_REPO: indigoai-us/hq-core
     steps:
-      - name: Validate inputs
+      - name: Fail fast if App credentials missing
+        if: env.HQ_AUDIT_BOT_APP_ID == '' || env.HQ_AUDIT_BOT_PRIVATE_KEY == ''
+        run: |
+          echo "::error::HQ_AUDIT_BOT_APP_ID or HQ_AUDIT_BOT_PRIVATE_KEY not set on this repo. Configure them, and ensure the App is installed on $TARGET_REPO with Contents:write + Pull-requests:write."
+          exit 1
+
+      - name: Validate manual inputs
+        if: github.event_name == 'workflow_dispatch'
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_TYPE: ${{ inputs.pr_type }}
@@ -87,12 +122,6 @@ jobs:
             fi
           fi
 
-      - name: Fail fast if App credentials missing
-        if: env.HQ_AUDIT_BOT_APP_ID == '' || env.HQ_AUDIT_BOT_PRIVATE_KEY == ''
-        run: |
-          echo "::error::HQ_AUDIT_BOT_APP_ID or HQ_AUDIT_BOT_PRIVATE_KEY not set on this repo. Configure them, and ensure the App is installed on $TARGET_REPO with Contents:write + Pull-requests:write."
-          exit 1
-
       - name: Mint installation token for hq-core
         id: app-token
         uses: actions/create-github-app-token@v1
@@ -102,6 +131,71 @@ jobs:
           owner: indigoai-us
           repositories: |
             hq-core
+
+      - name: Resolve parameters (auto vs manual)
+        id: params
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TYPE: ${{ inputs.pr_type }}
+          INPUT_SLUG: ${{ inputs.slug }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT" = "push" ]; then
+            # ── Auto mode: patch train off hq-core's current main hqVersion ──
+            MODE="auto"
+            PR_TYPE="release"
+            DRY_RUN="false"
+            BRANCH="promote/auto-main"
+            CUR="$(gh api "repos/${TARGET_REPO}/contents/core/core.yaml" --jq '.content' \
+              | base64 -d \
+              | grep -E '^hqVersion:' | head -1 \
+              | sed -E 's/^hqVersion:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+)"?.*/\1/')"
+            if ! printf '%s' "$CUR" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::Could not read a valid hqVersion from ${TARGET_REPO} core/core.yaml (got '${CUR}')."
+              exit 1
+            fi
+            IFS=. read -r MA MI PA <<< "$CUR"
+            VERSION="${MA}.${MI}.$((PA + 1))"
+            TITLE="release: v${VERSION}"
+            LABELS="version-bump,special-case-confirmed"
+            COMMIT_MSG="release: v${VERSION}"
+            echo "::notice::Auto-promote: hq-core main is ${CUR} → staging promotes as v${VERSION} on branch ${BRANCH}"
+          else
+            # ── Manual mode: operator-supplied version/slug ──
+            MODE="manual"
+            PR_TYPE="$INPUT_TYPE"
+            DRY_RUN="$INPUT_DRY_RUN"
+            VERSION="$INPUT_VERSION"
+            if [ "$PR_TYPE" = "release" ]; then
+              BRANCH="release/v${VERSION}"
+              TITLE="release: v${VERSION}"
+              LABELS="version-bump,special-case-confirmed"
+              COMMIT_MSG="release: v${VERSION}"
+            else
+              BRANCH="fix/${INPUT_SLUG}"
+              TITLE="fix(core): ${INPUT_SLUG}"
+              # version-bump required: promote always bumps core.yaml hqVersion,
+              # and hq-core's core-yaml-locked check requires the label whenever
+              # hqVersion changes.
+              LABELS="version-bump"
+              COMMIT_MSG="fix(core): ${INPUT_SLUG}"
+            fi
+          fi
+
+          {
+            echo "mode=${MODE}"
+            echo "pr_type=${PR_TYPE}"
+            echo "version=${VERSION}"
+            echo "dry_run=${DRY_RUN}"
+            echo "branch=${BRANCH}"
+            echo "title=${TITLE}"
+            echo "labels=${LABELS}"
+            echo "commit_msg=${COMMIT_MSG}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout staging (source)
         uses: actions/checkout@v4
@@ -119,54 +213,26 @@ jobs:
             echo "short=${SHORT}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Resolve branch/title metadata
-        id: meta
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-          INPUT_TYPE: ${{ inputs.pr_type }}
-          INPUT_SLUG: ${{ inputs.slug }}
-        run: |
-          set -euo pipefail
-          if [ "$INPUT_TYPE" = "release" ]; then
-            BRANCH="release/v${INPUT_VERSION}"
-            TITLE="release: v${INPUT_VERSION}"
-            LABELS="version-bump,special-case-confirmed"
-            COMMIT_MSG="release: v${INPUT_VERSION}"
-          else
-            BRANCH="fix/${INPUT_SLUG}"
-            TITLE="fix(core): ${INPUT_SLUG}"
-            # `version-bump` required because the promote always bumps
-            # core/core.yaml hqVersion now (the `core-yaml-version-monotonic`
-            # check on hq-core fails any PR that doesn't strictly increase it,
-            # and the existing `core-yaml-locked` check requires this label
-            # whenever hqVersion changes).
-            LABELS="version-bump"
-            COMMIT_MSG="fix(core): ${INPUT_SLUG}"
-          fi
-          {
-            echo "branch=${BRANCH}"
-            echo "title=${TITLE}"
-            echo "labels=${LABELS}"
-            echo "commit_msg=${COMMIT_MSG}"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Clone hq-core (target)
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          BRANCH: ${{ steps.meta.outputs.branch }}
+          BRANCH: ${{ steps.params.outputs.branch }}
         run: |
           set -euo pipefail
           git clone --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" target
           cd target
           git config user.name  "hq-audit-bot[bot]"
           git config user.email "hq-audit-bot[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
+          # -B: create or reset. For the standing auto branch this discards any
+          # prior promote/auto-main content so the branch always reflects the
+          # latest staging tree (force-pushed below).
+          git checkout -B "$BRANCH"
 
       - name: Sync staging tree into hq-core
         run: |
           set -euo pipefail
-          # NB: hq-core keeps its own .git from the clone — that's preserved
-          # because we sync INTO target/ without --delete on target/.git.
+          # NB: hq-core keeps its own .git from the clone — preserved because we
+          # sync INTO target/ without --delete touching target/.git.
           # Excludes: staging-local trees that never belong in the public kit.
           rsync -a --delete \
             --exclude='.git/' \
@@ -178,15 +244,11 @@ jobs:
             staging/ target/
 
       - name: Stamp hqVersion in target/core/core.yaml
-        # Bumps core/core.yaml hqVersion + updatedAt to the input version so the
-        # PR diff (and therefore the squash-merge commit that becomes the tag
-        # target) carries the new version. Before this step existed, the version
-        # was stamped post-tag-push by release.yml, which meant every tag's tree
-        # showed the PREVIOUS version (e.g. v14.2.1 tag's core.yaml said
-        # 14.2.0). release.yml's stamp step is now a safety net for the rare
-        # case where promote did not bump (idempotent — only mutates on drift).
+        # Bumps core/core.yaml hqVersion + updatedAt to the resolved version so
+        # the PR diff (and the squash-merge commit that becomes the tag target)
+        # carries the new version.
         env:
-          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_VERSION: ${{ steps.params.outputs.version }}
         run: |
           set -euo pipefail
           CORE_YAML="target/core/core.yaml"
@@ -236,17 +298,26 @@ jobs:
           echo "$CHANGED"
           echo "$FILES files would change"
 
-      - name: Abort if no changes
+      - name: Handle no changes
+        id: nochanges
         if: steps.diff.outputs.files == '0'
         run: |
-          echo "::error::No tree differences between staging and hq-core — nothing to promote."
-          exit 1
+          set -euo pipefail
+          if [ "${{ steps.params.outputs.mode }}" = "auto" ]; then
+            echo "::notice::No tree differences between staging and hq-core — nothing to promote on this push."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No tree differences between staging and hq-core — nothing to promote."
+            exit 1
+          fi
 
       - name: Build PR body
         id: body
+        if: steps.nochanges.outputs.skip != 'true'
         env:
-          INPUT_VERSION: ${{ inputs.version }}
-          INPUT_TYPE: ${{ inputs.pr_type }}
+          INPUT_VERSION: ${{ steps.params.outputs.version }}
+          INPUT_TYPE: ${{ steps.params.outputs.pr_type }}
+          INPUT_MODE: ${{ steps.params.outputs.mode }}
           INPUT_EXTRA: ${{ inputs.extra_summary }}
           STAGING_SHA: ${{ steps.staging.outputs.sha }}
           STAGING_SHORT: ${{ steps.staging.outputs.short }}
@@ -267,6 +338,11 @@ jobs:
               echo "- Promotes fix from \`hq-core-staging@${STAGING_SHORT}\` → \`hq-core\`"
               echo "- ${DIFF_FILES} file(s) changed in this promotion"
             } > "$BODY_FILE"
+          fi
+          if [ "$INPUT_MODE" = "auto" ]; then
+            {
+              echo "- 🤖 Auto-promote: this PR tracks staging \`main\` and is force-updated on every push. Merge when ready to release v${INPUT_VERSION}."
+            } >> "$BODY_FILE"
           fi
           if [ -n "${INPUT_EXTRA}" ]; then
             printf '\n%s\n' "${INPUT_EXTRA}" >> "$BODY_FILE"
@@ -307,42 +383,54 @@ jobs:
           cat "$BODY_FILE"
 
       - name: Dry run — stop here
-        if: inputs.dry_run == true
+        if: steps.nochanges.outputs.skip != 'true' && steps.params.outputs.dry_run == 'true'
         env:
-          BRANCH: ${{ steps.meta.outputs.branch }}
+          BRANCH: ${{ steps.params.outputs.branch }}
         run: |
           echo "::notice::dry_run=true — branch '$BRANCH' built locally but NOT pushed; no PR opened."
 
       - name: Commit
-        if: inputs.dry_run != true
+        if: steps.nochanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
         env:
-          COMMIT_MSG: ${{ steps.meta.outputs.commit_msg }}
+          COMMIT_MSG: ${{ steps.params.outputs.commit_msg }}
         run: |
           set -euo pipefail
           cd target
           git commit -m "$COMMIT_MSG"
 
       - name: Push branch to hq-core
-        if: inputs.dry_run != true
+        if: steps.nochanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          BRANCH: ${{ steps.meta.outputs.branch }}
+          BRANCH: ${{ steps.params.outputs.branch }}
+          MODE: ${{ steps.params.outputs.mode }}
         run: |
           set -euo pipefail
           cd target
-          git push --set-upstream origin "$BRANCH"
+          if [ "$MODE" = "auto" ]; then
+            # Force-update the standing branch so an already-open PR is rebased
+            # onto the new staging tree instead of opening a fresh PR.
+            git push --force --set-upstream origin "$BRANCH"
+          else
+            git push --set-upstream origin "$BRANCH"
+          fi
 
-      - name: Open PR on hq-core
-        if: inputs.dry_run != true
+      - name: Open PR on hq-core (if not already open)
+        if: steps.nochanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          BRANCH: ${{ steps.meta.outputs.branch }}
-          TITLE: ${{ steps.meta.outputs.title }}
-          LABELS: ${{ steps.meta.outputs.labels }}
+          BRANCH: ${{ steps.params.outputs.branch }}
+          TITLE: ${{ steps.params.outputs.title }}
+          LABELS: ${{ steps.params.outputs.labels }}
           BODY_FILE: ${{ steps.body.outputs.file }}
         run: |
           set -euo pipefail
           cd target
+          EXISTING="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$EXISTING" ]; then
+            echo "::notice::PR #${EXISTING} already open for ${BRANCH}; the force-push updated it in place."
+            exit 0
+          fi
           LABEL_ARGS=()
           if [ -n "$LABELS" ]; then
             IFS=',' read -ra LABEL_LIST <<< "$LABELS"
