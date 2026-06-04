@@ -1,0 +1,105 @@
+name: Auto-tag release commit
+
+# When a commit lands on hq-core main whose subject is exactly
+# `release: v<semver>` (optionally followed by ` (#<pr>)` from a squash merge),
+# create and push the matching `v<semver>` tag. That tag push transitively
+# triggers release.yml, which cuts the GitHub release — so merging a
+# `release: v<ver>` promote PR is all an operator needs to do; tagging is
+# automatic.
+#
+# Why the hq-audit-bot App token (not GITHUB_TOKEN): a tag created with the
+# default GITHUB_TOKEN does NOT trigger other workflows, so release.yml would
+# never fire. An App installation token is permitted to trigger workflows.
+#
+# Self-loop safety: release.yml pushes a `chore(release): stamp v…` commit to
+# main; that subject does not match `release: v…`, so this workflow no-ops on
+# it. Fix promotes (`fix(core): <slug>`) also don't match — only `release: v…`
+# auto-releases, which mirrors the local /promote-hq-core convention.
+#
+# hq-core only: the file is promoted into hq-core verbatim from staging, but
+# staging main never carries `release: v…` subjects (it cuts betas via
+# auto-beta-release.yml), and the job-level guard keeps it inert there anyway.
+#
+# Required secrets:
+#   HQ_AUDIT_BOT_APP_ID
+#   HQ_AUDIT_BOT_PRIVATE_KEY
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # One tagger per ref; never cancel — each release commit must get its tag.
+  group: auto-tag-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag release commit
+    if: github.repository == 'indigoai-us/hq-core'
+    runs-on: ubuntu-latest
+    env:
+      HQ_AUDIT_BOT_APP_ID: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
+      HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+    steps:
+      - name: Parse release version from head commit subject
+        id: parse
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          SUBJECT="$(printf '%s' "$MSG" | head -1)"
+          echo "head commit subject: ${SUBJECT}"
+          # `release: v<semver>` with optional `-prerelease` and optional
+          # squash-merge ` (#123)` suffix. Anchored so unrelated commits skip.
+          if printf '%s' "$SUBJECT" | grep -Eq '^release: v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?( \(#[0-9]+\))?$'; then
+            VER="$(printf '%s' "$SUBJECT" | sed -E 's/^release: v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?).*/\1/')"
+            {
+              echo "match=true"
+              echo "tag=v${VER}"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::Release commit detected → will tag v${VER}"
+          else
+            echo "match=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Head commit subject is not 'release: v<semver>'; no tag created."
+          fi
+
+      - name: Fail fast if App credentials missing
+        if: steps.parse.outputs.match == 'true' && (env.HQ_AUDIT_BOT_APP_ID == '' || env.HQ_AUDIT_BOT_PRIVATE_KEY == '')
+        run: |
+          echo "::error::HQ_AUDIT_BOT_APP_ID or HQ_AUDIT_BOT_PRIVATE_KEY not set. The App token is required so the tag push triggers release.yml."
+          exit 1
+
+      - name: Mint installation token
+        id: app-token
+        if: steps.parse.outputs.match == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+
+      - name: Create release tag (idempotent)
+        if: steps.parse.outputs.match == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.parse.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Skip if the tag already exists (rerun / manual tag already pushed).
+          if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::notice::${TAG} already exists; nothing to do."
+            exit 0
+          fi
+          # Create the tag via the REST API using the App token. No checkout /
+          # local git needed, and an App-token-created ref DOES trigger
+          # release.yml (unlike a GITHUB_TOKEN-created one).
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/tags/${TAG}" \
+            -f "sha=${GITHUB_SHA}"
+          echo "::notice::Tagged ${TAG} on ${GITHUB_SHA} → release.yml will now cut the release."

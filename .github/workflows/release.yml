@@ -159,6 +159,14 @@ jobs:
           git commit -m "chore(release): stamp ${TAG} on MIGRATION.md and core.yaml"
           NEW_SHA="$(git rev-parse HEAD)"
           PUSH_URL="https://x-access-token:${GH_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # actions/checkout persists the workflow GITHUB_TOKEN as a global
+          # http.<host>.extraheader Authorization. Without clearing it, that
+          # header overrides the app-token creds in PUSH_URL, so the push
+          # authenticates as github-actions (NOT the hq-audit-bot App) — which
+          # is not a bypass actor on main_protect, yielding GH013 "Changes must
+          # be made through a pull request". Drop it so the App token is used
+          # and the App's ruleset bypass applies.
+          git config --unset-all http.https://github.com/.extraheader 2>/dev/null || true
           # HEAD must descend from main (the tag was typically pushed at main HEAD).
           if git push "$PUSH_URL" "HEAD:refs/heads/main"; then
             echo "✓ Pushed stamp commit ${NEW_SHA} to main"
