@@ -1,14 +1,16 @@
 name: Backmerge to staging
 
 # Fires after Release succeeds AND committed a TBD-stamping change to main.
-# Cherry-picks that commit into a fresh branch on indigoai-us/hq-core-staging
-# and opens a PR there so staging's MIGRATION.md stays in lock-step with the
-# released version. Only meaningful when running on indigoai-us/hq-core —
-# on hq-core-staging the workflow_run trigger never fires for the local
-# Release workflow that ships there post-promotion (intentional).
+# Re-applies that commit's MIGRATION.md change and commits it DIRECTLY to
+# indigoai-us/hq-core-staging main (no PR) so staging's MIGRATION.md stays in
+# lock-step with the released version. The push works because the hq-audit-bot
+# App is an always-bypass actor on staging's main_protect ruleset. Only
+# meaningful when running on indigoai-us/hq-core — on hq-core-staging the
+# workflow_run trigger never fires for the local Release workflow that ships
+# there post-promotion (intentional).
 #
 # Authentication: hq-audit-bot App token, scoped to both hq-core (read the
-# new commit) and hq-core-staging (push branch + open PR).
+# new commit) and hq-core-staging (commit straight to main via ruleset bypass).
 # Required secrets:
 #   HQ_AUDIT_BOT_APP_ID
 #   HQ_AUDIT_BOT_PRIVATE_KEY
@@ -100,7 +102,9 @@ jobs:
           cd target
           git config user.name  "hq-audit-bot[bot]"
           git config user.email "hq-audit-bot[bot]@users.noreply.github.com"
-          git checkout -b "backmerge/release-${TAG}"
+          # Stay on main — the backmerge is committed straight to staging main
+          # (the App is an always-bypass actor on staging's main_protect
+          # ruleset), no PR branch.
 
       - name: Re-apply MIGRATION.md change in staging
         if: steps.detect.outputs.should_backmerge == 'true'
@@ -123,51 +127,25 @@ jobs:
             fi
           done
 
-      - name: Commit + push backmerge branch
-        id: push
+      - name: Commit backmerge directly to staging main
         if: steps.detect.outputs.should_backmerge == 'true'
         env:
-          TAG: ${{ steps.detect.outputs.tag }}
-        run: |
-          set -euo pipefail
-          cd target
-          if git diff --quiet; then
-            echo "::notice::Staging already has these changes; nothing to backmerge"
-            echo "pushed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git add -A
-          git commit -m "chore(migration): backmerge ${TAG} stamp from hq-core"
-          git push --set-upstream origin "backmerge/release-${TAG}"
-          echo "pushed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Open backmerge PR
-        if: steps.push.outputs.pushed == 'true'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ steps.detect.outputs.tag }}
           STAMP_SHA: ${{ steps.detect.outputs.sha }}
         run: |
           set -euo pipefail
           cd target
-          BODY_FILE="$(mktemp)"
-          {
-            echo "## Summary"
-            echo "- Backmerges the \`TBD → ${TAG}\` stamp from hq-core@${STAMP_SHA}"
-            echo "- Keeps \`core/docs/hq/MIGRATION.md\` in lock-step with the public release"
-            echo
-            echo "## Lineage"
-            echo "Opened automatically by \`backmerge-to-staging.yml\` after \`Release\` on hq-core stamped MIGRATION.md."
-            echo
-            echo "## Test plan"
-            echo "- [ ] \`special-case-files\` CI passes (label: \`special-case-confirmed\`)"
-            echo "- [ ] \`migration-md-with-tbd\` CI passes (label: \`skip-migration\` — this PR is a backmerge, not a forward-going migration)"
-          } > "$BODY_FILE"
-          gh pr create \
-            --repo "$STAGING_REPO" \
-            --base main \
-            --head "backmerge/release-${TAG}" \
-            --title "chore(migration): backmerge ${TAG} stamp" \
-            --body-file "$BODY_FILE" \
-            --label "special-case-confirmed" \
-            --label "skip-migration"
+          if git diff --quiet; then
+            echo "::notice::Staging already has these changes; nothing to backmerge."
+            exit 0
+          fi
+          git add -A
+          git commit -m "chore(migration): backmerge ${TAG} stamp from hq-core@${STAMP_SHA}"
+          # origin already carries the App installation token (it's baked into
+          # the clone URL above), and the App is an always-bypass actor on
+          # staging's main_protect ruleset, so it pushes to main directly —
+          # bypassing the PR + required-status-check rules. There is no
+          # actions/checkout in this job, so no persisted http extraheader can
+          # override the App credentials.
+          git push origin HEAD:refs/heads/main
+          echo "::notice::Backmerged ${TAG} MIGRATION stamp directly to staging main."
