@@ -175,5 +175,14 @@ jobs:
           # lightweight tag's bare ref.
           git tag -a "$TAG" -m "Auto-beta from main (commit ${GITHUB_SHA})"
           PUSH_URL="https://x-access-token:${GH_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # actions/checkout persists the workflow GITHUB_TOKEN as a global
+          # http.<host>.extraheader Authorization, which overrides the app-token
+          # creds in PUSH_URL. Since this workflow runs with permissions:
+          # contents: read, that persisted github-actions token has NO write
+          # access, so the tag push 403s ("Write access to repository not
+          # granted"). Drop the header so the App token in PUSH_URL is used.
+          # (The earlier `git fetch --tags origin` already ran under the
+          # persisted read token, so clearing it here is safe.)
+          git config --unset-all http.https://github.com/.extraheader 2>/dev/null || true
           git push "$PUSH_URL" "refs/tags/${TAG}"
           echo "::notice::Pushed ${TAG} → release.yml will now cut the pre-release."
