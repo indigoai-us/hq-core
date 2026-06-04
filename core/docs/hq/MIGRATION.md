@@ -1,4 +1,4 @@
-## Release: TBD
+## Release: v15.0.6
 
 ## Release: v15.0.4 — quiet plain-language default voice + operator opt-in (two-audience comms model); policy/learning storage routing (`/learn` → `personal/`) + core-policy write guard + promoted HQ-infra policies; Windows hook-matcher frontmatter compat; run-project engine-selection retirement (script layer); portable SHA-256 in compute-checksums.sh (Windows compat); native-session auto-project hygiene (skip approval/continuation replies + cleaner topic-slug project names); work-broadcast posts as the running person (personal token + onboarding); HQ Cowork plugin pack (`hq-pack-cowork`); mid-session company-policy surfacing (hq-session bind digest + infra-command policy guard + charter rule)
 
