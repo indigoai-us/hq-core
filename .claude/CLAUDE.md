@@ -40,8 +40,8 @@ Specialized work (design, content, security, data, deploy) → check `core/worke
 4. Test before ship — can't verify → can't ship.
 5. E2E proves it works — unit checks code, E2E checks product.
 6. Completeness is near-zero cost — do the complete thing (a "lake"), not the shortcut; reserve shortcuts for genuinely unbounded scope (an "ocean").
-7. Never skip failing tests — fix root cause; no `test.skip`, no false positives, no loosened assertions (unit/integration/E2E equally). <!-- user-correction | 2026-04-04 -->
-8. Bugfixes require tests — every fix ships a regression test; ask if unsure of type/scope. <!-- user-correction | 2026-04-05 -->
+7. Never skip failing tests — fix root cause; no `test.skip`, no false positives, no loosened assertions (unit/integration/E2E equally).
+8. Bugfixes require tests — every fix ships a regression test; ask if unsure of type/scope.
 9. Vague → Verifiable — define observable "done" before starting ambiguous work.
 
 ### Corrections & Accuracy
@@ -91,12 +91,7 @@ Session start: do NOT read INDEX.md, agents files, or company knowledge unless t
 
 ### Learned Rules
 
-- **NEVER**: Run Playwright/Puppeteer/Chromium in serverless Lambda — 250 MB unzipped cap makes it impossible. Use ingest-only endpoints taking pre-captured payloads from client callers. <!-- back-pressure-failure | 2026-04-15 -->
-- **NEVER**: Extract shared skills needing 5+ existing files wired. Prefer layered independent additions (policy + skill edit) over shared extraction; accept duplicated pattern tables. <!-- user-correction | 2026-04-15 -->
-- **NEVER**: Use relative symlinks to reach pattern-2 knowledge repos from a git worktree (`../../repos/` resolves to worktree root). Use absolute `$HOME/Documents/HQ/repos/public/knowledge-{name}/`. <!-- user-correction | 2026-04-16 -->
-- **NEVER**: Push HQ to a remote / ask whether to push HQ. HQ git is local-only; `origin` is pull-only upstream; state sync is `hq-sync`. <!-- user-correction | 2026-05-08 -->
-- **ALWAYS**: `qmd` first for HQ search across content, indexed repos, projects, workers, policies, knowledge. Grep/shell only when qmd is unavailable/errors or for exact pattern matching in already-scoped code. <!-- user-correction | 2026-05-14 -->
-- **ALWAYS**: When a company is bound mid-session (e.g. `hq-session.sh set company_slug`, or working straight into a company task), load that company's hard-enforcement policies (`companies/{co}/policies/`) BEFORE any infra/deploy/credential work — SessionStart only injects company policies for the company known at start. For company AWS/prod work (e.g. deploying `hq-pro` to `hq-prod`), credentials come ONLY via `hq secrets exec`; agent sessions have NO local AWS-profile fallback, so `NoCredentials` means reach for the vault — never give up, never use another company's profile. <!-- user-correction | 2026-05-31 -->
+Learned rules live in policy files (`personal/policies/` for owner/universal, `companies/{co}/policies/` for company, `core/policies/` for release-shipped) and surface every session through the policy digest — they are **never** written inline here. See policy `learned-rules-never-in-claude-md`.
 
 ## Map
 
