@@ -253,6 +253,24 @@ HQ/
     └── threads/               # Session threads + handoff.json
 ```
 
+## Meeting notes, signals & ontology
+
+HQ captures these **natively, per company** — check HQ first, not your email or a third-party notetaker.
+
+- **Meeting notes** — recordings/transcripts the HQ meeting bot ingests into `companies/{co}/sources/meetings/`. Read them with `/meeting-notes` (or `hq meetings list|notes --company {co}`).
+- **Signals** — decisions, action items, wins, risks, open questions, and commitments extracted from your meetings, in `companies/{co}/signals/`. Read them with `/signals`.
+- **Ontology** — situational context about a company (who/what is active, recent decisions) via the `ontology` skill.
+
+**Turnkey setup (activation ladder):**
+
+1. Make the company cloud-backed → `/designate-team {co}`.
+2. Invite the HQ meeting bot to a call → notes ingest into `companies/{co}/sources/meetings/` automatically.
+3. Signals are extracted from ingested notes into `companies/{co}/signals/`; ontology context follows.
+
+**Your preference for "meeting notes":** defaults to HQ-native. To point a company at email instead, set `meeting_notes_source: email` in `companies/{co}/settings/knowledge/preferences.yaml` (global default lives in `personal/settings/knowledge-preferences.yaml`).
+
+> Signals extraction and the ontology gardener run on HQ cloud and will require HQ Pro once billing ships. Billing isn't live yet — today these are provisioned per-company when you cloud-back it via `/designate-team`. Reference: `core/knowledge/public/hq-core/native-knowledge-stores.md`.
+
 ## Typical Session
 
 1. `/startwork` — pick company/project/repo, gather context

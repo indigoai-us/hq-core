@@ -1,34 +1,45 @@
 name: Backmerge to staging
 
-# Fires after Release succeeds AND committed a TBD-stamping change to main.
-# Re-applies that commit's MIGRATION.md change and commits it DIRECTLY to
-# indigoai-us/hq-core-staging main (no PR) so staging's MIGRATION.md stays in
-# lock-step with the released version. The push works because the hq-audit-bot
-# App is an always-bypass actor on staging's main_protect ruleset. Only
-# meaningful when running on indigoai-us/hq-core — on hq-core-staging the
-# workflow_run trigger never fires for the local Release workflow that ships
-# there post-promotion (intentional).
+# Reverse of promote-to-hq-core. On every push to indigoai-us/hq-core main,
+# apply the files that push changed to indigoai-us/hq-core-staging main and
+# commit them directly (no PR). This keeps staging in lock-step with anything
+# that lands on hq-core main — release stamps, hotfixes, anything — with NO
+# dependency on MIGRATION.md, a `## Release: TBD` marker, or release tags.
 #
-# Authentication: hq-audit-bot App token, scoped to both hq-core (read the
-# new commit) and hq-core-staging (commit straight to main via ruleset bypass).
+# Diff-based, not a full mirror: only the paths changed by the push are
+# touched, so un-promoted staging work on other files is never clobbered. If
+# applying the changes produces no net diff on staging, nothing is committed.
+#
+# The push to staging main works because the hq-audit-bot App is an
+# always-bypass actor on staging's main_protect ruleset. The source checkout
+# uses persist-credentials: false so its GITHUB_TOKEN auth header doesn't
+# override the App token baked into the staging clone URL (see release.yml /
+# auto-beta for the same extraheader gotcha).
+#
+# hq-core only: the file is promoted into hq-core verbatim, but the job-level
+# guard keeps it inert on staging (and staging's own pushes are the promote
+# direction, not the backmerge direction).
+#
 # Required secrets:
 #   HQ_AUDIT_BOT_APP_ID
 #   HQ_AUDIT_BOT_PRIVATE_KEY
 
 on:
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  # Serialize per ref so two rapid hq-core pushes don't race the staging push.
+  group: backmerge-to-staging-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   backmerge:
-    name: Open backmerge PR on hq-core-staging
-    if: |
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.repository.full_name == 'indigoai-us/hq-core'
+    name: Backmerge hq-core main to staging
+    if: github.repository == 'indigoai-us/hq-core'
     runs-on: ubuntu-latest
     env:
       HQ_AUDIT_BOT_APP_ID: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
@@ -52,100 +63,106 @@ jobs:
             hq-core
             hq-core-staging
 
-      - name: Check whether Release made a TBD-stamp commit
-        id: detect
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          set -euo pipefail
-          # Pull stamp_committed + stamp_sha outputs from the Release job.
-          # workflow_run doesn't surface job outputs directly, so we use the
-          # API to read the job and its annotations / step summary if needed.
-          # Simpler: inspect the latest commit on main and ask whether its
-          # author is hq-audit-bot[bot] with the canonical commit message.
-          MAIN_SHA="$(gh api repos/${GITHUB_REPOSITORY}/branches/main --jq '.commit.sha')"
-          MSG="$(gh api repos/${GITHUB_REPOSITORY}/commits/${MAIN_SHA} --jq '.commit.message')"
-          AUTHOR="$(gh api repos/${GITHUB_REPOSITORY}/commits/${MAIN_SHA} --jq '.author.login // empty')"
-          echo "Latest main: ${MAIN_SHA}"
-          echo "Author: ${AUTHOR}"
-          echo "Message: ${MSG}"
-          if printf '%s' "$MSG" | grep -qE '^chore\(release\): stamp v[0-9]'; then
-            TAG="$(printf '%s' "$MSG" | sed -nE 's/^chore\(release\): stamp (v[^ ]+).*/\1/p')"
-            {
-              echo "should_backmerge=true"
-              echo "sha=${MAIN_SHA}"
-              echo "tag=${TAG}"
-            } >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::Latest main commit is not a TBD-stamp; nothing to backmerge"
-            echo "should_backmerge=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout hq-core at the stamp commit
-        if: steps.detect.outputs.should_backmerge == 'true'
+      - name: Checkout hq-core at the pushed commit (source)
         uses: actions/checkout@v4
         with:
           path: source
-          ref: ${{ steps.detect.outputs.sha }}
-          fetch-depth: 2
+          fetch-depth: 0
+          # Don't persist the GITHUB_TOKEN auth header globally — it would
+          # override the App token in the staging clone URL on the push below.
+          persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}
 
+      - name: Compute files changed by this push
+        id: changes
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          ZERO="0000000000000000000000000000000000000000"
+          # Pick the diff range. For a normal push, before..after. For a new
+          # branch / unknown before, fall back to the tip commit vs its parent.
+          if [ -z "${BEFORE:-}" ] || [ "$BEFORE" = "$ZERO" ] \
+             || ! git -C source cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            RANGE="${AFTER}^ ${AFTER}"
+          else
+            RANGE="${BEFORE} ${AFTER}"
+          fi
+          echo "diff range: ${RANGE}"
+          # --no-renames so renames surface as delete-old + add-new (simpler to
+          # replay). Capture status<TAB>path lines.
+          git -C source diff --no-renames --name-status ${RANGE} > /tmp/changes.tsv || true
+          echo "----- changed files -----"
+          cat /tmp/changes.tsv || true
+          COUNT="$(wc -l < /tmp/changes.tsv | tr -d ' ')"
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+          echo "after_short=${AFTER:0:8}" >> "$GITHUB_OUTPUT"
+
       - name: Clone hq-core-staging (target)
-        if: steps.detect.outputs.should_backmerge == 'true'
+        if: steps.changes.outputs.count != '0'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          TAG: ${{ steps.detect.outputs.tag }}
         run: |
           set -euo pipefail
           git clone --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${STAGING_REPO}.git" target
           cd target
           git config user.name  "hq-audit-bot[bot]"
           git config user.email "hq-audit-bot[bot]@users.noreply.github.com"
-          # Stay on main — the backmerge is committed straight to staging main
-          # (the App is an always-bypass actor on staging's main_protect
-          # ruleset), no PR branch.
 
-      - name: Re-apply MIGRATION.md change in staging
-        if: steps.detect.outputs.should_backmerge == 'true'
-        env:
-          SHA: ${{ steps.detect.outputs.sha }}
+      - name: Apply changed files to staging
+        if: steps.changes.outputs.count != '0'
         run: |
           set -euo pipefail
-          # Extract the file paths the stamp commit changed.
-          mapfile -t FILES < <(git -C source diff-tree --no-commit-id --name-only -r "$SHA")
-          if [ ${#FILES[@]} -eq 0 ]; then
-            echo "::notice::Stamp commit has no file changes; nothing to apply"
-            exit 0
-          fi
-          for f in "${FILES[@]}"; do
-            # The stamp commit only touches MIGRATION.md, but be defensive.
-            if [ -f "source/$f" ]; then
-              mkdir -p "$(dirname "target/$f")"
-              cp "source/$f" "target/$f"
-              echo "Applied: $f"
+          # Staging-local trees that never come from hq-core — skip defensively
+          # (hq-core shouldn't contain them, but never touch them just in case).
+          is_local() {
+            case "$1" in
+              companies/*|personal/*|repos/*|workspace/*|.obsidian/*|.git/*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+          while IFS=$'\t' read -r STATUS PATHNAME; do
+            [ -z "${STATUS:-}" ] && continue
+            if is_local "$PATHNAME"; then
+              echo "skip (staging-local): $PATHNAME"
+              continue
             fi
-          done
+            case "$STATUS" in
+              D)
+                if [ -e "target/$PATHNAME" ]; then
+                  rm -f "target/$PATHNAME"
+                  echo "deleted: $PATHNAME"
+                fi
+                ;;
+              *)
+                if [ -f "source/$PATHNAME" ]; then
+                  mkdir -p "$(dirname "target/$PATHNAME")"
+                  cp "source/$PATHNAME" "target/$PATHNAME"
+                  echo "applied: $PATHNAME"
+                fi
+                ;;
+            esac
+          done < /tmp/changes.tsv
 
-      - name: Commit backmerge directly to staging main
-        if: steps.detect.outputs.should_backmerge == 'true'
+      - name: Commit + push to staging main (only if changed)
+        if: steps.changes.outputs.count != '0'
         env:
-          TAG: ${{ steps.detect.outputs.tag }}
-          STAMP_SHA: ${{ steps.detect.outputs.sha }}
+          AFTER_SHORT: ${{ steps.changes.outputs.after_short }}
         run: |
           set -euo pipefail
           cd target
-          if git diff --quiet; then
-            echo "::notice::Staging already has these changes; nothing to backmerge."
+          git add -A
+          if git diff --cached --quiet; then
+            echo "::notice::Staging already matches hq-core for these files; nothing to commit."
             exit 0
           fi
-          git add -A
-          git commit -m "chore(migration): backmerge ${TAG} stamp from hq-core@${STAMP_SHA}"
-          # origin already carries the App installation token (it's baked into
-          # the clone URL above), and the App is an always-bypass actor on
-          # staging's main_protect ruleset, so it pushes to main directly —
-          # bypassing the PR + required-status-check rules. There is no
-          # actions/checkout in this job, so no persisted http extraheader can
-          # override the App credentials.
+          echo "----- staging diff to be committed -----"
+          git --no-pager diff --cached --stat | tail -30
+          git commit -m "chore(backmerge): sync hq-core main ${AFTER_SHORT} to staging"
+          # origin carries the App token (clone URL) and the App is an
+          # always-bypass actor on staging's main_protect ruleset, so this
+          # pushes to main directly. No persisted extraheader (source checkout
+          # used persist-credentials: false), so the App creds are honored.
           git push origin HEAD:refs/heads/main
-          echo "::notice::Backmerged ${TAG} MIGRATION stamp directly to staging main."
+          echo "::notice::Backmerged hq-core main ${AFTER_SHORT} to staging main."

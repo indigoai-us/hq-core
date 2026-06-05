@@ -1,0 +1,3 @@
+interface:
+  display_name: "signals"
+  short_description: "Read a company's HQ-native signals — decisions, action items, wins, risks, open questions, commitments — from companies/{co}/signals/. Steer turnkey activation if the store is empty."

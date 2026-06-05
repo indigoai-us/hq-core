@@ -1,0 +1,78 @@
+name: Nag stale release PRs
+
+# Runs daily. For every open release PR (title `release: v<ver>`) on hq-core
+# that has been open longer than the threshold (default 48h), posts a mocking
+# nudge to #hq-dev so someone finally reviews + merges it.
+#
+# hq-core only. Promoted into hq-core verbatim; the job guard keeps it inert
+# on staging.
+#
+# Requires repo secret SLACK_BOT_TOKEN_RELEASE_MANAGER. The bot MUST be a
+# member of #hq-dev.
+
+on:
+  schedule:
+    # Daily at 16:00 UTC.
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+    inputs:
+      threshold_hours:
+        description: 'Age threshold in hours (default 48)'
+        required: false
+        default: '48'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  nag:
+    name: Nag open release PRs older than threshold
+    if: github.repository == 'indigoai-us/hq-core'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SLACK_TOKEN: ${{ secrets.SLACK_BOT_TOKEN_RELEASE_MANAGER }}
+      THRESHOLD: ${{ github.event.inputs.threshold_hours || '48' }}
+    steps:
+      - name: Find stale release PRs and nag
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_TOKEN:-}" ]; then
+            echo "::warning::SLACK_BOT_TOKEN_RELEASE_MANAGER not set; skipping."
+            exit 0
+          fi
+          NOW="$(date -u +%s)"
+          # Open PRs whose title starts with "release: v".
+          gh pr list --repo "${GITHUB_REPOSITORY}" --state open \
+            --json number,title,url,createdAt \
+            --jq '.[] | select(.title | startswith("release: v"))' > /tmp/release_prs.ndjson || true
+          if [ ! -s /tmp/release_prs.ndjson ]; then
+            echo "No open release PRs."
+            exit 0
+          fi
+          nagged=0
+          while IFS= read -r row; do
+            [ -z "$row" ] && continue
+            NUM="$(echo "$row"  | jq -r '.number')"
+            TITLE="$(echo "$row" | jq -r '.title')"
+            URL="$(echo "$row"  | jq -r '.url')"
+            CREATED="$(echo "$row" | jq -r '.createdAt')"
+            CREATED_TS="$(date -u -d "$CREATED" +%s)"
+            AGE_H=$(( (NOW - CREATED_TS) / 3600 ))
+            if [ "$AGE_H" -ge "$THRESHOLD" ]; then
+              DAYS=$(( AGE_H / 24 ))
+              TEXT=":sloth: *This release PR has been gathering dust for ~${AGE_H}h (${DAYS}d).* The robots did their part — the humans, allegedly busy. Someone be a hero and review + merge <${URL}|${TITLE}> (#${NUM}) before it qualifies for tenure. :hourglass_flowing_sand:"
+              RESP="$(curl -s -X POST \
+                -H "Authorization: Bearer ${SLACK_TOKEN}" \
+                -H 'Content-type: application/json; charset=utf-8' \
+                --data "$(jq -nc --arg c '#hq-dev' --arg t "$TEXT" '{channel:$c,text:$t,unfurl_links:false}')" \
+                https://slack.com/api/chat.postMessage)"
+              OK="$(echo "$RESP" | jq -r '.ok')"
+              echo "PR #${NUM} age ${AGE_H}h >= ${THRESHOLD}h -> nag posted (ok=${OK}, err=$(echo "$RESP" | jq -r '.error // "-"'))"
+              [ "$OK" = "true" ] && nagged=$((nagged+1))
+            else
+              echo "PR #${NUM} age ${AGE_H}h < ${THRESHOLD}h -> skip."
+            fi
+          done < /tmp/release_prs.ndjson
+          echo "Nagged ${nagged} PR(s)."

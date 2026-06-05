@@ -1,4 +1,5 @@
 #!/bin/bash
+# hq-core: public
 # protect-core.sh — PreToolUse hook for Edit and Write
 #
 # Blocks edits to files in core/core.yaml locked list.
@@ -33,6 +34,33 @@ HQ_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 if [[ -z "$HQ_ROOT" ]]; then
   echo "WARNING: protect-core.sh could not determine HQ root (git rev-parse failed). Skipping check." >&2
   exit 0
+fi
+
+# ── Targeted guard: block learned-rule injection into the charter ──
+# Fires BEFORE the HQ_BYPASS_CORE_PROTECT bypass below — learned rules must
+# never be written into .claude/CLAUDE.md / AGENTS.md, even with the bypass on
+# (policy learned-rules-never-in-claude-md). Only writes carrying a learned-rule
+# signature are blocked, so legitimate charter edits still fall through to the
+# normal lock logic. The wholesale /update-hq release path writes via cp (not
+# the Edit/Write tool), so it is unaffected.
+_norm() { if command -v python3 >/dev/null 2>&1; then python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$1" 2>/dev/null || echo "$1"; else echo "$1"; fi; }
+CHARTER_MD="$(_norm "$HQ_ROOT/.claude/CLAUDE.md")"
+AGENTS_MD="$(_norm "$HQ_ROOT/AGENTS.md")"
+if [[ "$FILE_PATH" == "$CHARTER_MD" || "$FILE_PATH" == "$AGENTS_MD" ]]; then
+  ADDED=$(echo "$INPUT" | jq -r '.tool_input.content // .tool_input.new_string // empty' 2>/dev/null) || ADDED=""
+  if printf '%s' "$ADDED" | grep -qE '(<!--[[:space:]]*(user-correction|back-pressure-failure))|^##[[:space:]]+Learned Rules|^-[[:space:]]+\*\*(NEVER|ALWAYS)\*\*:.*<!--'; then
+    cat >&2 <<MSG
+BLOCKED: refusing to write a learned rule into the HQ charter.
+  File: $FILE_PATH
+
+Learned rules never go in .claude/CLAUDE.md / AGENTS.md
+(policy learned-rules-never-in-claude-md). Route the rule to a policy file:
+  • Operator / universal → personal/policies/{slug}.md (symlinked into core/policies/, survives upgrade)
+  • Company-specific      → companies/{co}/policies/{slug}.md
+  • Release-shipped       → core/policies/{slug}.md (enforcement: hard), then /promote-hq-core
+MSG
+    exit 2
+  fi
 fi
 
 # ── Targeted guard: block CREATION of a new policy file under core/policies/ ──

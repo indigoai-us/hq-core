@@ -242,7 +242,7 @@ Before creating a new rule, check if an existing policy file already covers this
 
 4. **If no matching policy found:**
    - Proceed to Step 5 (create new rule)
-   - For company/repo/global scoped rules, prefer creating a **policy file** (per `core/knowledge/public/hq-core/policies-spec.md`) over injecting into worker.yaml or CLAUDE.md. Policy files are the canonical format for persistent rules
+   - For company/repo/global scoped rules, prefer creating a **policy file** (per `core/knowledge/public/hq-core/policies-spec.md`) over injecting into worker.yaml. Policy files are the canonical format for persistent rules. **Never** write a learned rule into `.claude/CLAUDE.md` / `AGENTS.md` — the charter is release-shipped scaffold, not a learning store (policy `learned-rules-never-in-claude-md`)
 
 ## Step 5: Create or Update Policy File (rule content type)
 
@@ -317,13 +317,6 @@ instructions: |
   - NEVER: {new rule}
 ```
 
-### Legacy: CLAUDE.md Learned Rules (global promotion only)
-
-Only used for **global promotion** of critical/user-correction rules (Step 6). Not the primary target.
-
-```markdown
-- **{NEVER|ALWAYS}**: {rule} <!-- {source} | {date} -->
-```
 
 ## Step 5b: Create Insight File (insight content type only)
 
@@ -370,28 +363,22 @@ relates_to: []
 - Validated through execution/testing → `confidence: high`
 - Observed but not extensively tested → `confidence: medium`
 
-**After writing:** skip Step 6 (global promotion — insights never go in CLAUDE.md). Proceed to Step 7 (event logging).
+**After writing:** proceed to Step 7 (event logging).
 
 ## Step 6: Evaluate Global Promotion
 
-If the rule was injected into a scoped file (worker/command/knowledge), also add to `.claude/CLAUDE.md` `## Learned Rules` if ANY:
+Global promotion means **raising a rule's enforcement to hard, in a policy file** — never injecting it into the charter. Learned rules never go in `.claude/CLAUDE.md` / `AGENTS.md` (policy `learned-rules-never-in-claude-md`); they already surface for every session through the policy digest, so a hard-enforcement policy file *is* the global path.
+
+If a rule meets ANY of:
 - `severity == critical`
-- `source == user-correction` (explicit /learn --hard invocation)
+- `source == user-correction` (explicit `/learn --hard` invocation)
 - Rule triggered 3+ times (check event log)
 
-### Cap Enforcement
+then ensure it lives as a **hard-enforcement policy file** at global scope:
+- Personal/owner learnings → `personal/policies/{slug}.md` (master-sync symlinks it into `core/policies/`, so it rides global scope and survives `/update-hq`).
+- Release-shipped, all-users learnings → `core/policies/{slug}.md` with the public marker (promoted via `hq-pack-admin`).
 
-`## Learned Rules` is capped at 20 rules.
-
-1. Count existing rules in section
-2. If >= 20: find the oldest rule (by date in comment), remove it from CLAUDE.md
-   - The rule still lives in its source file — only the CLAUDE.md copy is removed
-3. Append new rule
-
-Format:
-```markdown
-- **{NEVER|ALWAYS}**: {rule} <!-- {source} | {date} -->
-```
+Set `enforcement: hard` in the policy frontmatter and rebuild the digest (Step 8). Do **not** touch `CLAUDE.md`.
 
 ## Step 7: Log Event
 
@@ -481,10 +468,10 @@ If multiple rules/insights were extracted, report each.
 - **Scan before create** — always check existing policies for updates before creating new files (Step 4.5)
 - **Never inject empty/trivial rules** — "task completed successfully" is not a learning
 - **Dedup is mandatory** — always check before injecting (qmd first, Grep fallback)
-- **Global cap is hard** — never exceed 20 rules in CLAUDE.md `## Learned Rules`
+- **Learned rules never touch the charter** — never write a learned rule into `.claude/CLAUDE.md` / `AGENTS.md`; global promotion = a hard-enforcement policy file (policy `learned-rules-never-in-claude-md`)
 - **Reindex after every injection** — keeps qmd search current
 - **Rebuild digest after policy write** — `bash core/scripts/build-policy-digest.sh` is required after any policy file create/update (Step 8). SessionStart hooks depend on it
 - **Event log is always written** — `workspace/learnings/learn-{timestamp}.json` is non-optional
 - **Preserve existing rules** — append only, never overwrite existing rules
-- **User corrections always promote** — /learn --hard delegations go to both target file AND CLAUDE.md
+- **User corrections always promote** — /learn --hard delegations go to a hard-enforcement policy file (never CLAUDE.md)
 - **Match existing style** — use the same rule format as existing rules in the target file
