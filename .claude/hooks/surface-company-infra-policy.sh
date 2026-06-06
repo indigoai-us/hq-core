@@ -3,7 +3,7 @@
 #
 # THE GAP THIS CLOSES:
 #   Company policies are injected at SessionStart for the company known *at
-#   start* (.claude/hooks/load-policies-for-session.sh). When a company is
+#   start* (.claude/hooks/inject-policy-on-trigger.sh). When a company is
 #   bound LATER in the session (e.g. `hq-session.sh set company_slug <co>`,
 #   or working straight into a company task), nothing re-surfaces that
 #   company's hard rules. An agent can then run company infra/deploy/credential
@@ -11,8 +11,8 @@
 #   local AWS profile instead of the mandated `hq secrets exec` path, and
 #   giving up at NoCredentials. (Real incident: a company cloud-infra deploy.)
 #
-#   hq-session.sh already emits the full company hard digest on bind (Tier-1
-#   for the bind moment). THIS hook is the just-in-time backstop: when an
+#   hq-session.sh already emits the company hard-policy block on bind (for the
+#   bind moment). THIS hook is the just-in-time backstop: when an
 #   infra/credential command is about to run and a company is bound, surface
 #   that company's deploy/credential hard policies right then.
 #
@@ -53,7 +53,7 @@ printf '%s' "$CMD" | grep -Eq "$INFRA_RE" || exit 0
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 
 # Resolve the bound company from the current session's meta.yaml — same path
-# resolution hq-session.sh / load-policies-for-session.sh use.
+# resolution hq-session.sh / inject-policy-on-trigger.sh use.
 CO=""
 CURRENT_FILE="$HQ_ROOT/workspace/sessions/.current"
 if [ -f "$CURRENT_FILE" ]; then
@@ -65,16 +65,24 @@ if [ -f "$CURRENT_FILE" ]; then
 fi
 [ -z "$CO" ] && exit 0   # no company bound — nothing company-specific to surface
 
-DIGEST="$HQ_ROOT/companies/$CO/policies/_digest.md"
-[ -f "$DIGEST" ] || exit 0
+POLDIR="$HQ_ROOT/companies/$CO/policies"
+[ -d "$POLDIR" ] || exit 0
 
-# Pull the deploy/credential HARD policies out of the company digest. Restrict
-# to the hard-enforcement section, then to slugs about deploy/aws/creds/secrets.
+# Pull the deploy/credential HARD policies straight from the company policy
+# files (the pre-built digest was retired). Emit one `- [hard] **slug**: rule`
+# line per hard policy, then restrict to slugs about deploy/aws/creds/secrets.
 LINES="$(awk '
-  /^## Hard-enforcement/ { in_body = 1; next }
-  /^## Soft-enforcement/ { in_body = 0 }
-  in_body && /^- \[hard\]/ { print }
-' "$DIGEST" | grep -Ei '\*\*[a-z0-9-]*(deploy|aws|cred|secret)[a-z0-9-]*\*\*' || true)"
+  function bn(p,  n,a,b){ n=split(p,a,"/"); b=a[n]; sub(/\.md$/,"",b); return b }
+  function flush(){ if(enf=="hard" && rule!=""){ if(id=="")id=bn(fn); printf "- [hard] **%s**: %s\n", id, rule } }
+  FNR==1 { if(seen) flush(); d=0;id="";enf="";rule="";rsec=0;rcap=0;fn=FILENAME;seen=1 }
+  /^---[ \t]*$/ { d++; next }
+  d==1 && /^id:/          { s=$0; sub(/^id:[ \t]*/,"",s); gsub(/^["'"'"']|["'"'"']$/,"",s); id=s; next }
+  d==1 && /^enforcement:/ { s=$0; sub(/^enforcement:[ \t]*/,"",s); gsub(/[ \t]/,"",s); enf=s; next }
+  d>=2 && /^## Rule[ \t]*$/ { rsec=1; next }
+  d>=2 && rsec && /^## / { rsec=0 }
+  d>=2 && rsec && !rcap && NF { line=$0; gsub(/\*\*/,"",line); if(length(line)>160)line=substr(line,1,157)"..."; rule=line; rcap=1 }
+  END { if(seen) flush() }
+' "$POLDIR"/*.md 2>/dev/null | grep -Ei '\*\*[a-z0-9-]*(deploy|aws|cred|secret)[a-z0-9-]*\*\*' || true)"
 [ -z "$LINES" ] && exit 0
 
 # Dedupe once per (session, company).

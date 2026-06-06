@@ -3,6 +3,8 @@ id: hq-bash-non-subshell-cd-cwd-leak-cross-repo
 title: Non-subshell cd in a single Bash call persists across later calls and silently contaminates other repos
 scope: global
 trigger: Bash tool calls that begin with a bare cd path (no subshell) before further commands, especially when later calls assume HQ-root cwd
+when: cd
+on: [PreToolUse]
 enforcement: hard
 public: true
 version: 1

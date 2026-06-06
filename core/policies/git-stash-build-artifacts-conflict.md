@@ -3,6 +3,8 @@ id: hq-git-stash-build-artifacts-conflict
 title: git stash pop aborts on build artifact conflicts
 scope: global
 trigger: using `git stash` to compare typecheck/test/build output before and after changes
+when: git && stash
+on: [PreToolUse]
 enforcement: soft
 public: true
 version: 1

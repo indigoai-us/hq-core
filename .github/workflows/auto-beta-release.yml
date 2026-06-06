@@ -92,8 +92,11 @@ jobs:
           app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
           private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          # hq-core-staging to push the beta tag; hq-core (read) to resolve the
+          # last STABLE released hqVersion that the beta base is computed from.
           repositories: |
             ${{ github.event.repository.name }}
+            hq-core
 
       - name: Skip release-stamp commits (commit-msg fallback)
         id: skipcheck
@@ -117,26 +120,38 @@ jobs:
       - name: Compute next beta tag
         if: steps.skipcheck.outputs.skip != 'true'
         id: meta
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
 
-          BASE=""
-          if [ -f core/core.yaml ]; then
-            BASE=$(grep -E '^hqVersion:' core/core.yaml | head -1 \
-              | sed -E 's/^hqVersion:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+)"?.*/\1/' || true)
+          # Betas target the NEXT patch version — the one that will actually be
+          # released next — NOT the already-released live version.
+          #
+          # The stable anchor MUST come from hq-core's core.yaml hqVersion: it is
+          # the last GA-released version and is never stamped with a -beta suffix
+          # (hq-core blocks pre-release tags). Staging's own core.yaml can't be
+          # used: release.yml stamps it with the beta version (e.g. 15.0.9-beta.1)
+          # on every beta cut, so reading + bumping it would ratchet the patch
+          # upward on every run (15.0.9 -> 15.0.10 -> ...).
+          STABLE="$(gh api repos/${GITHUB_REPOSITORY_OWNER}/hq-core/contents/core/core.yaml --jq '.content' 2>/dev/null \
+            | base64 -d | grep -E '^hqVersion:' | head -1 \
+            | sed -E 's/^hqVersion:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+).*/\1/' || true)"
+          if ! printf '%s' "$STABLE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            # Fallbacks: hq-core's latest stable GitHub release, then highest
+            # local stable tag, then 0.0.0.
+            STABLE="$(gh api repos/${GITHUB_REPOSITORY_OWNER}/hq-core/releases/latest --jq '.tag_name' 2>/dev/null | sed -E 's/^v//' || true)"
           fi
-          if [ -z "$BASE" ]; then
-            # Fall back to the highest stable tag's value (the next beta still
-            # rides under that base — operators retag a stable v<base> when they
-            # cut the GA release, after which hqVersion bumps and beta restarts).
-            LATEST=$(git tag --list 'v[0-9]*' --sort=-v:refname \
-              | grep -vE -- '-(alpha|beta|rc)' | head -1 || true)
-            if [ -n "$LATEST" ]; then
-              BASE="${LATEST#v}"
-            else
-              BASE="0.0.0"
-            fi
+          if ! printf '%s' "$STABLE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            LATEST="$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -vE -- '-(alpha|beta|rc)' | head -1 || true)"
+            STABLE="${LATEST#v}"
           fi
+          printf '%s' "$STABLE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || STABLE="0.0.0"
+
+          # Next patch above the last stable release.
+          IFS=. read -r _MA _MI _PA <<< "$STABLE"
+          BASE="${_MA}.${_MI}.$((_PA + 1))"
+          echo "::notice::Last stable hq-core release: ${STABLE} → beta base (next patch): ${BASE}"
 
           # Make sure we see every existing tag from the remote before picking N.
           git fetch --tags --force origin >/dev/null 2>&1 || true

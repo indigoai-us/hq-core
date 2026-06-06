@@ -3,6 +3,8 @@ id: git-add-explicit-paths-no-drift
 title: Stage focused commits by explicit path, never git add -A when unrelated drift exists
 scope: global
 trigger: committing PRD artifacts, infrastructure changes, or any focused deliverable
+when: git && commit
+on: [PreToolUse]
 enforcement: hard
 tier: 1
 public: true

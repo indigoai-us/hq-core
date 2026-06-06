@@ -3,6 +3,8 @@ id: credential-access-protocol
 title: Credential Access Protocol
 scope: global
 trigger: before any credential or settings access
+when: secret || credential
+on: [PreToolUse]
 enforcement: hard
 version: 1
 created: 2026-03-05

@@ -1,5 +1,7 @@
 ---
 id: no-relative-symlinks-from-worktree
+when: symlink || worktree
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
 tier: 1

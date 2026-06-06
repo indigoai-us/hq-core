@@ -3,6 +3,8 @@ id: hq-company-scoped-writes-verify-company
 title: Company-scoped writes must resolve and verify the target company before writing
 scope: global
 trigger: writing a company-scoped policy, knowledge, worker, or project under companies/{co}/
+when: company
+on: [SessionStart]
 enforcement: hard
 public: true
 version: 1

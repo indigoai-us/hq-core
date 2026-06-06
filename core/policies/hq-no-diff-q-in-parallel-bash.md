@@ -3,6 +3,8 @@ id: hq-no-diff-q-in-parallel-bash
 title: Never run diff -q in a parallel bash batch — nonzero exits cancel siblings
 scope: global
 trigger: issuing multiple Bash tool calls in a single message that include a diff
+when: diff
+on: [PreToolUse]
 enforcement: soft
 public: true
 version: 2

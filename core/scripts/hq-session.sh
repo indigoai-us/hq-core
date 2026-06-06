@@ -98,22 +98,32 @@ cmd_set() {
   fi
 }
 
-# Print the hard-enforcement section of a company's policy digest, if present.
-# Reuses the digest shape produced by core/scripts/build-policy-digest.sh and
-# emitted by .claude/hooks/load-policies-for-session.sh.
+# Print a company's hard-enforcement policies, read directly from the policy
+# files (the pre-built digest was retired — the when/on trigger hook is now the
+# sole policy-surfacing path). Emits one `- [hard] **slug**: rule` line each.
 emit_company_hard_policies() {
   local co="$1"
-  local digest="$REPO_ROOT/companies/$co/policies/_digest.md"
-  [ -f "$digest" ] || return 0
+  local dir="$REPO_ROOT/companies/$co/policies"
+  [ -d "$dir" ] || return 0
+  local lines
+  lines="$(awk '
+    function bn(p,  n,a,b){ n=split(p,a,"/"); b=a[n]; sub(/\.md$/,"",b); return b }
+    function flush(){ if(enf=="hard" && rule!=""){ if(id=="")id=bn(fn); printf "- [hard] **%s**: %s\n", id, rule } }
+    FNR==1 { if(seen) flush(); d=0;id="";enf="";rule="";rsec=0;rcap=0;fn=FILENAME;seen=1 }
+    /^---[ \t]*$/ { d++; next }
+    d==1 && /^id:/          { s=$0; sub(/^id:[ \t]*/,"",s); gsub(/^["'"'"']|["'"'"']$/,"",s); id=s; next }
+    d==1 && /^enforcement:/ { s=$0; sub(/^enforcement:[ \t]*/,"",s); gsub(/[ \t]/,"",s); enf=s; next }
+    d>=2 && /^## Rule[ \t]*$/ { rsec=1; next }
+    d>=2 && rsec && /^## / { rsec=0 }
+    d>=2 && rsec && !rcap && NF { line=$0; gsub(/\*\*/,"",line); if(length(line)>160)line=substr(line,1,157)"..."; rule=line; rcap=1 }
+    END { if(seen) flush() }
+  ' "$dir"/*.md 2>/dev/null)"
+  [ -z "$lines" ] && return 0
   printf '\n<company-policy-digest co="%s">\n' "$co"
   printf '# %s hard-enforcement policies (auto-surfaced on company bind)\n' "$co"
   printf '> Company context just bound mid-session. These HARD rules now apply.\n'
   printf '> Full text: `companies/%s/policies/{slug}.md` (or `qmd get -c %s {slug}`).\n\n' "$co" "$co"
-  awk '
-    /^## Hard-enforcement/ { in_body = 1; next }
-    /^## Soft-enforcement/ { in_body = 0 }
-    in_body { print }
-  ' "$digest"
+  printf '%s\n' "$lines"
   printf '</company-policy-digest>\n'
 }
 

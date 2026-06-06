@@ -3,6 +3,8 @@ id: pre-refactor-hygiene
 title: Pre-Refactor Dead Code Cleanup
 scope: global
 trigger: before multi-file structural refactors
+when: refactor
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 version: 1
 created: 2026-03-31

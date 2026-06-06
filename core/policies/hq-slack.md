@@ -3,6 +3,8 @@ id: hq-slack
 title: Slack platform rules (consolidated)
 scope: global
 trigger: when working with Slack (CLI, webhooks, bots, oauth)
+when: slack
+on: [PreToolUse, UserPromptSubmit]
 enforcement: hard
 version: 1
 created: 2026-04-29

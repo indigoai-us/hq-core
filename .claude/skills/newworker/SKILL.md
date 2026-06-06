@@ -119,7 +119,7 @@ instructions: |
 
 ### Registry — Auto-Generated
 
-`core/workers/registry.yaml` is an auto-generated index produced by `core/scripts/generate-workers-registry.sh` (invoked from `.claude/hooks/master-sync.sh` on every Stop / PostToolUse-Write). **Do not edit it directly.** Just create the worker.yaml with `worker.id`, `worker.type`, `worker.description` and the registry regenerates automatically. Optional fields the generator picks up: `worker.status` (default "active"), `worker.company`, `worker.team`.
+`core/workers/registry.yaml` is an auto-generated index produced by `core/scripts/generate-workers-registry.sh` (invoked from `.claude/hooks/reindex.sh` on every Stop / PostToolUse-Write). **Do not edit it directly.** Just create the worker.yaml with `worker.id`, `worker.type`, `worker.description` and the registry regenerates automatically. Optional fields the generator picks up: `worker.status` (default "active"), `worker.company`, `worker.team`.
 
 ### Update Context Needs Registry (if overriding defaults)
 
@@ -174,7 +174,7 @@ Workers can get tasks from:
 
 ### Register Worker
 
-The `worker.yaml` you just created IS the registration. `core/workers/registry.yaml` regenerates from it automatically when master-sync fires (Stop / PostToolUse-Write hook). No manifest edits required for shared workers; company-scoped workers are discovered via the `worker.company:` field inside their own `worker.yaml`.
+The `worker.yaml` you just created IS the registration. `core/workers/registry.yaml` regenerates from it automatically when reindex fires (Stop / PostToolUse-Write hook). No manifest edits required for shared workers; company-scoped workers are discovered via the `worker.company:` field inside their own `worker.yaml`.
 
 To force an immediate regen: `bash core/scripts/generate-workers-registry.sh`.
 
@@ -200,7 +200,7 @@ Run `/learn` to register the new worker in the learning system:
 
 Provide next steps:
 1. "Worker created at `companies/{company}/workers/{worker-id}/` (or `core/workers/public/{worker-id}/` if shared)"
-2. "Registry auto-regenerated on next master-sync (or run `bash core/scripts/generate-workers-registry.sh` to force)"
+2. "Registry auto-regenerated on next reindex (or run `bash core/scripts/generate-workers-registry.sh` to force)"
 3. "Test with on-demand execution first"
 4. If using queue: "Add tasks to queue.json to get started"
 5. If using PRD: "Run `/plan {project-name}` to create the PRD, then link it in worker.yaml"

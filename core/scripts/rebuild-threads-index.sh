@@ -69,11 +69,11 @@ write_table() {
 }
 
 if [[ "$MODE" == "--index" || "$MODE" == "--both" ]]; then
-  write_table "$INDEX_PATH" "Threads INDEX" 0 "${THREAD_FILES[@]}"
+  write_table "$INDEX_PATH" "Threads INDEX" 0 "${THREAD_FILES[@]+"${THREAD_FILES[@]}"}"
   echo "rebuild-threads-index: wrote ${INDEX_PATH} (${COUNT} threads)" >&2
 fi
 
 if [[ "$MODE" == "--recent" || "$MODE" == "--both" ]]; then
-  write_table "$RECENT_PATH" "Recent Threads" 15 "${THREAD_FILES[@]}"
+  write_table "$RECENT_PATH" "Recent Threads" 15 "${THREAD_FILES[@]+"${THREAD_FILES[@]}"}"
   echo "rebuild-threads-index: wrote ${RECENT_PATH} (last 15)" >&2
 fi

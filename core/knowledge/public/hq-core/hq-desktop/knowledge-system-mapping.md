@@ -39,7 +39,7 @@ Each company directory contains a knowledge subdirectory that is its own git rep
 | {company} | `companies/{company}/knowledge/` | Own repo (has `.git/`) | ~12 files across 3 subdirs |
 | acmestudio | N/A | No knowledge dir | 0 |
 
-> **Personal scope is not a company.** Personal knowledge lives at top-level `personal/knowledge/` (peer of `core/knowledge/`), surfaced via the `master-sync.sh` mirror. Desktop should treat it like HQ-level public knowledge, not as a company entry.
+> **Personal scope is not a company.** Personal knowledge lives at top-level `personal/knowledge/` (peer of `core/knowledge/`), surfaced via the `reindex.sh` mirror. Desktop should treat it like HQ-level public knowledge, not as a company entry.
 
 ### Tier 3: Worker-Embedded Knowledge
 
@@ -270,7 +270,7 @@ Per `manifest.yaml`, each company owns its knowledge:
   qmd_collections: [{company}]
 ```
 
-(Personal knowledge is not a manifest entry — it lives at top-level `personal/knowledge/` and is mirrored by `master-sync.sh`.)
+(Personal knowledge is not a manifest entry — it lives at top-level `personal/knowledge/` and is mirrored by `reindex.sh`.)
 
 ### Desktop Isolation Rules
 

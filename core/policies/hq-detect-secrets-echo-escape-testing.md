@@ -3,6 +3,8 @@ id: hq-detect-secrets-echo-escape-testing
 title: Do not use echo to test the detect-secrets hook — it has a deliberate false-positive escape
 scope: global
 trigger: When verifying `.claude/hooks/detect-secrets.sh` behavior, writing regression tests for the hook, or constructing a known-bad command to exercise the block path
+when: secret || credential
+on: [PreToolUse]
 enforcement: soft
 public: true
 version: 1

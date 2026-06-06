@@ -3,6 +3,8 @@ id: hq-load-company-hard-policies-on-mid-session-bind
 title: Load a company's hard policies when it is bound mid-session, before any infra/deploy/credential work
 scope: global
 trigger: a company becomes the active context AFTER session start (hq-session.sh set company_slug, working straight into a company task, or anchoring per natural-language-mode)
+when: company
+on: [SessionStart, PreToolUse, UserPromptSubmit]
 enforcement: hard
 public: true
 vendor_public_ok: true

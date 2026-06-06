@@ -4,6 +4,8 @@ title: Clean up qmd + modules when archiving a company
 scope: global
 public: true
 trigger: company archival or deletion
+when: archive
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 ---
 

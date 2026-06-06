@@ -3,6 +3,8 @@ id: hq-classifier-own-labels-single-source
 title: Classifiers own their labels — never duplicate bucketing logic in the display shell
 scope: global
 trigger: UI refactor, dashboards, data-layer + component refactors, bucketing/tier/status logic
+when: refactor || dashboard
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
 version: 1

@@ -3,6 +3,8 @@ id: prd-content-sources
 title: PRD content extraction stories should reference all HQ source locations
 scope: command
 trigger: /prd, content-extraction stories
+when: /prd
+on: [UserPromptSubmit]
 enforcement: soft
 public: true
 ---

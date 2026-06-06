@@ -3,6 +3,8 @@ id: hq-permission-simple-expansion-extract-to-script
 title: Defeat simple_expansion Permission Prompts by Extracting to a Script
 scope: global
 trigger: when a Bash command triggers Claude Code's "simple_expansion" permission prompt despite matching allow rules
+when: permission
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
 version: 1

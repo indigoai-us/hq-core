@@ -72,7 +72,7 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
-            "timeout": 5
+            "timeout": 60
           },
           {
             "type": "command",
@@ -116,11 +116,6 @@
           },
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
-            "timeout": 5
-          },
-          {
-            "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-plans-dir-during-deep-plan $CLAUDE_PROJECT_DIR/.claude/hooks/block-plans-dir-during-deep-plan.sh",
             "timeout": 5
           }
@@ -156,11 +151,6 @@
           },
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
-            "timeout": 5
-          },
-          {
-            "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh route-company-skill-creation $CLAUDE_PROJECT_DIR/.claude/hooks/route-company-skill-creation.sh",
             "timeout": 5
           },
@@ -177,11 +167,6 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh block-core-writes $CLAUDE_PROJECT_DIR/.claude/hooks/block-core-writes.sh",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
             "timeout": 5
           },
           {
@@ -206,7 +191,7 @@
           {
             "type": "command",
             "command": ".claude/hooks/master-hook.sh PreToolUse",
-            "timeout": 30
+            "timeout": 300
           }
         ]
       }
@@ -229,6 +214,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh journal-due $CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 60
           }
         ]
       },
@@ -247,8 +237,8 @@
           },
           {
             "type": "command",
-            "command": ".claude/hooks/master-sync.sh",
-            "timeout": 30
+            "command": ".claude/hooks/reindex.sh",
+            "timeout": 300
           },
           {
             "type": "command",
@@ -272,8 +262,8 @@
           },
           {
             "type": "command",
-            "command": ".claude/hooks/master-sync.sh",
-            "timeout": 30
+            "command": ".claude/hooks/reindex.sh",
+            "timeout": 300
           },
           {
             "type": "command",
@@ -292,8 +282,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/master-sync.sh",
-            "timeout": 30
+            "command": ".claude/hooks/reindex.sh",
+            "timeout": 300
           },
           {
             "type": "command",
@@ -362,7 +352,7 @@
           {
             "type": "command",
             "command": ".claude/hooks/master-hook.sh PostToolUse",
-            "timeout": 30
+            "timeout": 300
           }
         ]
       }
@@ -398,7 +388,7 @@
           {
             "type": "command",
             "command": ".claude/hooks/master-hook.sh PreCompact",
-            "timeout": 30
+            "timeout": 300
           }
         ]
       }
@@ -439,7 +429,7 @@
           {
             "type": "command",
             "command": ".claude/hooks/master-hook.sh Stop",
-            "timeout": 30
+            "timeout": 300
           }
         ]
       },
@@ -447,8 +437,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/master-sync.sh",
-            "timeout": 30
+            "command": ".claude/hooks/reindex.sh",
+            "timeout": 300
           }
         ]
       }
@@ -459,13 +449,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh load-policies $CLAUDE_PROJECT_DIR/.claude/hooks/load-policies-for-session.sh",
-            "timeout": 5
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh migrate-policy-triggers $CLAUDE_PROJECT_DIR/core/scripts/migrate-policy-triggers.sh",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 60
           },
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh check-bridge-health $CLAUDE_PROJECT_DIR/.claude/hooks/check-claude-desktop-bridge-health.sh",
-            "timeout": 3
+            "timeout": 5
           },
           {
             "type": "command",
@@ -480,12 +475,12 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh auto-startwork $CLAUDE_PROJECT_DIR/.claude/hooks/auto-startwork.sh",
-            "timeout": 3
+            "timeout": 5
           },
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh check-core-yaml-parity $CLAUDE_PROJECT_DIR/.claude/hooks/check-core-yaml-parity.sh",
-            "timeout": 3
+            "timeout": 5
           },
           {
             "type": "command",
@@ -509,7 +504,16 @@
           {
             "type": "command",
             "command": ".claude/hooks/master-hook.sh SessionStart",
-            "timeout": 30
+            "timeout": 300
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/reindex.sh",
+            "timeout": 300
           }
         ]
       }
@@ -542,6 +546,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh session-title $CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 60
           }
         ]
       },
@@ -550,7 +559,16 @@
           {
             "type": "command",
             "command": ".claude/hooks/master-hook.sh UserPromptSubmit",
-            "timeout": 30
+            "timeout": 300
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/reindex.sh",
+            "timeout": 300
           }
         ]
       }
@@ -561,7 +579,7 @@
           {
             "type": "command",
             "command": ".claude/hooks/master-hook.sh Notification",
-            "timeout": 30
+            "timeout": 300
           }
         ]
       }
@@ -572,7 +590,7 @@
           {
             "type": "command",
             "command": ".claude/hooks/master-hook.sh SubagentStop",
-            "timeout": 30
+            "timeout": 300
           }
         ]
       }
@@ -583,7 +601,7 @@
           {
             "type": "command",
             "command": ".claude/hooks/master-hook.sh SessionEnd",
-            "timeout": 30
+            "timeout": 300
           }
         ]
       }

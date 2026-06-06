@@ -1,1 +1,0 @@
-core/docs/hq/MIGRATION.md

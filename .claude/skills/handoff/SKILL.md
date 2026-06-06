@@ -8,7 +8,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(no
 
 Write a thread file + `handoff.json` with minimal foreground token cost. Keep shell-only cleanup in a detached post-script, and run model-based follow-ups (`/learn`, `/document-release`) as visible Codex subagents when the runtime supports subagents.
 
-**Why the split:** handoff used to chain 4+ heavy sub-skills (/learn → INDEX regen → document-release → qmd) in the foreground, which re-ingested ~200KB of INDEX.md and 51KB policy digest — enough to trigger mid-handoff autocompact and corrupt the thread write. Detached shell cleanup keeps logs tiny; Codex subagents keep model work isolated without hidden `claude -p` auth failures. If the session dies after `handoff.json` is written, next session self-heals via `/startwork`.
+**Why the split:** handoff used to chain 4+ heavy sub-skills (/learn → INDEX regen → document-release → qmd) in the foreground, which re-ingested ~200KB of INDEX.md and large policy bodies — enough to trigger mid-handoff autocompact and corrupt the thread write. Detached shell cleanup keeps logs tiny; Codex subagents keep model work isolated without hidden `claude -p` auth failures. If the session dies after `handoff.json` is written, next session self-heals via `/startwork`.
 
 **User's message (optional):** $ARGUMENTS
 

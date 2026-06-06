@@ -3,6 +3,8 @@ id: hq-never-swallow-errors
 title: Never Swallow Errors — All Failures Must Be Visible
 scope: global
 trigger: writing error handling, catch blocks, API response handling, webhook handlers, background jobs
+when: always
+on: [SessionStart]
 enforcement: soft
 tier: 1
 version: 1

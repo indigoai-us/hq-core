@@ -3,6 +3,8 @@ id: hq-no-grep-discovery
 title: Never Grep for PRD or Worker Discovery
 scope: global
 trigger: when searching for prd.json, worker.yaml, or discovering project/worker files
+when: grep
+on: [PreToolUse]
 enforcement: hard
 tier: 1
 public: true

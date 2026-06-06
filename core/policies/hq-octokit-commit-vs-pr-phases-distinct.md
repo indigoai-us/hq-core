@@ -3,6 +3,8 @@ id: hq-octokit-commit-vs-pr-phases-distinct
 title: Octokit git data API — commit phase and PR-open phase are distinct, not atomic end-to-end
 scope: global
 trigger: any PRD or implementation using Octokit's git data API (createBlob, createTree, createCommit, updateRef) followed by PR creation (e.g. promote-hq-core, or any "commit-and-PR" flow)
+when: git && commit
+on: [PreToolUse]
 enforcement: soft
 public: true
 version: 3

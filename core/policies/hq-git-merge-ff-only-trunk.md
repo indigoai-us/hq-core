@@ -3,6 +3,8 @@ id: hq-git-merge-ff-only-trunk
 title: Use git merge --ff-only for branch-to-trunk merges
 scope: global
 trigger: merging a feature branch into main (or another trunk/release branch) from the command line
+when: git && merge
+on: [PreToolUse]
 enforcement: soft
 public: true
 version: 1

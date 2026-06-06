@@ -3,6 +3,8 @@ id: hq-git-discipline
 title: HQ git discipline — branch hygiene, focused commits, safe probes, history-preserving moves, chip-safe pushes, reflog/stash safety
 scope: global
 trigger: any git operation in HQ working tree, repos/, or knowledge repos — commits, pushes, merges, rebases, history rewrites, stash, reflog, gc
+when: git && commit
+on: [PreToolUse]
 enforcement: hard
 tier: 1
 public: true
@@ -208,7 +210,7 @@ All eleven rules share the same failure shape: **a routine git command does the 
 - Rule 12 — `D + ??` after `git rm --cached` looks confusing; instinct `git checkout HEAD -- <path>` overwrites in-progress edits.
 - Rule 13 — hq-desktop jsdom 28 + vitest 4 upgrade where a focused single-file PR needed to land while ~25 unrelated test files were mid-edit.
 
-Keeping the rules on one page rather than eleven separate files preserves cross-references (rule 1 underlies rule 10's branch verify; rule 5 composes with rule 13's stash; rules 6 and 12 share the verify-before-write principle) and reduces cold-start digest weight without losing any failure mode.
+Keeping the rules on one page rather than eleven separate files preserves cross-references (rule 1 underlies rule 10's branch verify; rule 5 composes with rule 13's stash; rules 6 and 12 share the verify-before-write principle) and reduces cold-start context weight without losing any failure mode.
 
 ## Related
 

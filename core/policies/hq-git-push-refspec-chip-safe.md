@@ -3,6 +3,8 @@ id: hq-git-push-refspec-chip-safe
 title: Use detached-HEAD + push refspec when committing from a worktree with active task chips
 scope: global
 trigger: committing/pushing to a specific branch from a worktree while task chips may be active, or when another agent could swap the branch mid-stream
+when: git && ( commit || push )
+on: [PreToolUse]
 enforcement: hard
 public: true
 version: 1

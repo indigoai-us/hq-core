@@ -3,6 +3,8 @@ id: hq-hook-gate-three-profile-lists
 title: hook-gate.sh has three INDEPENDENT profile lists — a safety hook must be in all three
 scope: global
 trigger: adding or modifying a PreToolUse/PostToolUse hook routed through .claude/hooks/hook-gate.sh
+when: .sh || hook
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
 version: 1

@@ -3,6 +3,8 @@ id: hq-validator-and-schema-paired-in-pr
 title: Ship Validator + Schema + Data In The Same PR
 scope: global
 trigger: when introducing a validator script that gates a migration of many sibling files
+when: migrate || migration || schema
+on: [PreToolUse, UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

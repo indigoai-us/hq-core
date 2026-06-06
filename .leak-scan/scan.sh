@@ -156,7 +156,6 @@ case "$mode" in
       [[ "$f" == "$deny_file" ]] && continue
       [[ "$f" == "CONTRIBUTING.md" ]] && continue
       [[ "$f" == .leak-scan/manifest-snapshot.yaml ]] && continue
-      [[ "$f" == */_digest.md ]] && continue
 
       for pat in "${patterns[@]}"; do
         while IFS= read -r hit; do
@@ -297,7 +296,7 @@ case "$mode" in
         leaks=$((leaks + 1))
       done < <(grep -RnE '/Users/[a-z][a-zA-Z0-9._-]*' "$s" 2>/dev/null \
         | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' \
-        | grep -v '_digest.md' || true)
+        || true)
     done
     if [[ $leaks -gt 0 ]]; then
       echo "users-path: $leaks /Users/ leak(s) found" >&2
@@ -333,7 +332,6 @@ case "$mode" in
       [[ -z "$f" ]] && continue
       [[ ! -f "$f" ]] && continue
       [[ "$f" != core/policies/*.md ]] && continue
-      [[ "$f" == */_digest.md ]] && continue
 
       applies_to="$(read_frontmatter_value "$f" "applies_to")"
       [[ -z "$applies_to" || "$applies_to" == "[]" ]] && continue
@@ -361,7 +359,6 @@ case "$mode" in
       [[ -z "$f" ]] && continue
       [[ ! -f "$f" ]] && continue
       [[ "$f" != core/policies/*.md ]] && continue
-      [[ "$f" == */_digest.md ]] && continue
 
       pub="$(read_frontmatter_value "$f" "public")"
       skip="$(read_frontmatter_value "$f" "skip-promotion")"

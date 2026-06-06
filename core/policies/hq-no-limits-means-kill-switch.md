@@ -3,6 +3,8 @@ id: hq-no-limits-means-kill-switch
 title: "\"No limits\" on a cost/throughput control = kill-switch, not zero protection"
 scope: global
 trigger: When a product owner or PRD directive says "no limits", "no caps", "unlimited", or equivalent on a cost-, throughput-, or rate-sensitive control
+when: unlimited
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

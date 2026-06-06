@@ -329,7 +329,10 @@ run_post_tool_use() {
 
 case "$HOOK_EVENT" in
   SessionStart)
-    run_hook "load-policies" "$HOOK_DIR/load-policies-for-session.sh" "$INPUT" "advisory"
+    # Backfill when:/on: on trigger-less policies, then evaluate SessionStart triggers
+    # (mirrors Claude settings.json SessionStart ordering: migrate before inject).
+    run_hook "migrate-policy-triggers" "$HQ_ROOT/core/scripts/migrate-policy-triggers.sh" "$INPUT" "advisory"
+    run_hook "inject-policy-on-trigger" "$HOOK_DIR/inject-policy-on-trigger.sh" "$INPUT" "advisory"
     run_hook "check-bridge-health" "$HOOK_DIR/check-claude-desktop-bridge-health.sh" "$INPUT" "advisory"
     run_hook "check-repo-active-runs" "$HOOK_DIR/check-repo-active-runs.sh" "$INPUT" "advisory"
     run_hook "inject-local-context" "$HOOK_DIR/inject-local-context.sh" "$INPUT" "advisory"
@@ -342,6 +345,7 @@ case "$HOOK_EVENT" in
     run_hook "rewrite-resume-sentinel" "$HOOK_DIR/rewrite-resume-sentinel.sh" "$INPUT" "advisory"
     run_hook "route-deep-plan-to-skill" "$HOOK_DIR/route-deep-plan-to-skill.sh" "$INPUT" "advisory"
     run_hook "auto-session-project" "$HOOK_DIR/auto-session-project.sh" "$INPUT" "advisory"
+    run_hook "inject-policy-on-trigger" "$HOOK_DIR/inject-policy-on-trigger.sh" "$INPUT" "advisory"
     ;;
   PreToolUse)
     run_pre_tool_use

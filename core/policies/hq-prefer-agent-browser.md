@@ -3,6 +3,8 @@ id: hq-prefer-agent-browser
 title: Prefer agent-browser CLI over Claude in Chrome for QA audits
 scope: global
 trigger: browser-based QA, page audits, site testing, smoke tests
+when: browser || smoke
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 version: 2
 created: 2026-03-24

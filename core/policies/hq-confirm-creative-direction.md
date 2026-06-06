@@ -3,6 +3,8 @@ id: hq-confirm-creative-direction
 title: Confirm Creative Direction Before Building
 scope: global
 trigger: before building any UI, visual design, brand asset, marketing copy, presentation, or creative deliverable with subjective aesthetic choices
+when: design || brand
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 version: 1
 created: 2026-04-02

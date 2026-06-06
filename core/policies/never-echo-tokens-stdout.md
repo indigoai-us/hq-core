@@ -3,6 +3,8 @@ id: hq-never-echo-tokens-stdout
 title: Never echo API keys or tokens to stdout
 scope: global
 trigger: when building CLI tools that output config snippets or setup instructions
+when: secret || credential
+on: [PreToolUse, UserPromptSubmit]
 enforcement: hard
 tier: 1
 version: 1

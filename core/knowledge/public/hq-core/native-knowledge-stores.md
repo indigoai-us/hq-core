@@ -42,7 +42,7 @@ HQ captures **native, per-company stores** for meeting notes, meeting/comms inte
 A user's meaning of "meeting notes" can differ by company. Resolve it from two optional YAML files, **company over global, per-field**:
 
 1. `companies/{co}/settings/knowledge/preferences.yaml` (per-company override)
-2. `personal/settings/knowledge-preferences.yaml` (global default; symlinks into `core/` via master-sync)
+2. `personal/settings/knowledge-preferences.yaml` (global default; symlinks into `core/` via reindex)
 3. Built-in defaults when neither sets a field: `meeting_notes_source: hq-native`, `notetaker: recall`, `signals_enabled: true`, `ontology_enabled: true` — so a brand-new company works with no file.
 
 Schema:

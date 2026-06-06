@@ -1,5 +1,7 @@
 ---
 id: humanize-generated-content
+when: always
+on: [SessionStart]
 enforcement: hard
 scope: global
 tags: [content, writing, email, blog, social, marketing, copy, voice, humanize, deliverable]

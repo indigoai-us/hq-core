@@ -1,6 +1,6 @@
 ---
 name: hq-heal
-description: Triage and repair an HQ session error. Classifies a pasted Claude Code / Codex error (autocompact thrashing, hook crash, sync conflict, deny-list block, MCP failure, qmd-broken, master-sync abort, stale symlink, git-mutation block, etc.), runs targeted diagnostics, proposes a safe fix, and writes a heal report. Companion to `/recover-session` (post-mortem) — `/hq-heal` is mid-session triage. Can be spawned from a terminal in a fresh Claude session via `bash .claude/skills/hq-heal/hq-heal.sh` when the current session is wedged.
+description: Triage and repair an HQ session error. Classifies a pasted Claude Code / Codex error (autocompact thrashing, hook crash, sync conflict, deny-list block, MCP failure, qmd-broken, reindex abort, stale symlink, git-mutation block, etc.), runs targeted diagnostics, proposes a safe fix, and writes a heal report. Companion to `/recover-session` (post-mortem) — `/hq-heal` is mid-session triage. Can be spawned from a terminal in a fresh Claude session via `bash .claude/skills/hq-heal/hq-heal.sh` when the current session is wedged.
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion
 ---
 
@@ -17,7 +17,7 @@ The first argument shapes how the error is collected. Everything after the flag 
 - `(no args)` → use `AskUserQuestion` to ask the user to paste the error text.
 - `<free text>` → treat the entire argument string as the error text.
 - `--last-session` → scan the most recent JSONL under `~/.claude/projects/-Users-*-Documents-HQ/` for the trailing error (uses the streaming Python pattern from `.claude/skills/recover-session/SKILL.md` step 3 — never read the full file).
-- `--class <name>` → skip classification and jump straight to the diagnostics recipe for that class. Valid: `autocompact`, `hook`, `sync`, `denylist`, `mcp`, `qmd`, `mastersync`, `symlink`, `git-root`, `plan-mode`, `unknown`.
+- `--class <name>` → skip classification and jump straight to the diagnostics recipe for that class. Valid: `autocompact`, `hook`, `sync`, `denylist`, `mcp`, `qmd`, `reindex`, `symlink`, `git-root`, `plan-mode`, `unknown`.
 - `--dry-run` → diagnose and propose but do not apply any fix.
 - `--no-bug` → suppress the automatic `/hq-bug` filing step. By default, every heal run files a bug so HQ engineering accumulates signal on which error classes are recurring (see Step 6).
 - `--allow-core` → permit the apply step to edit files under `core/` (the hook-protected mirror) by prefixing the offending Write/Edit/Bash call with `HQ_BYPASS_CORE_PROTECT=1`. Off by default — heal will refuse a core edit and require this flag to be passed, even when the user confirms the numbered fix. Always documented in the heal report and the filed bug (see Step 5 + Step 6).
@@ -28,7 +28,7 @@ The first argument shapes how the error is collected. Everything after the flag 
 
 If `$ARGUMENTS` is empty, ask: *"Paste the error message you're seeing (or describe what went wrong)."* Wait for response, treat that as the error text.
 
-If `--last-session`, run a Python streaming extract that scans the last 200 lines of the most recently modified JSONL for any of these signals: `Prompt is too long`, `Conversation too long`, `Error during compaction`, `Autocompact is thrashing`, `permission denied`, `EACCES`, `hook .* failed`, `block-hq-root-git-mutation`, `MCP server .* failed`, `qmd: error`, `master-sync.sh.*abort`. Capture the matched line plus 2 lines of surrounding context. Truncate to 2 KB.
+If `--last-session`, run a Python streaming extract that scans the last 200 lines of the most recently modified JSONL for any of these signals: `Prompt is too long`, `Conversation too long`, `Error during compaction`, `Autocompact is thrashing`, `permission denied`, `EACCES`, `hook .* failed`, `block-hq-root-git-mutation`, `MCP server .* failed`, `qmd: error`, `reindex.sh.*abort` (legacy `master-sync.sh.*abort`). Capture the matched line plus 2 lines of surrounding context. Truncate to 2 KB.
 
 Store the resulting text in a local variable called `ERR`.
 
@@ -44,7 +44,7 @@ Unless `--class` is set, walk the pattern table top-to-bottom; first match wins.
 | `denylist` | `Read access blocked`, `denied by settings`, `~/.ssh`, `~/.aws/credentials`, `~/.zshrc`, `permission rule .* deny` |
 | `mcp` | `MCP server .* (failed|disconnected|timeout)`, `Error connecting to MCP`, `tool .* not found` (when the tool name matches a known MCP) |
 | `qmd` | `qmd: error`, `qmd .* index`, `collection .* not found`, `qmd update` failures |
-| `mastersync` | `master-sync.sh`, `duplicate worker id`, `personal/<type>/<entry>.*already exists` |
+| `reindex` | `reindex.sh`, `master-sync.sh`, `duplicate worker id`, `personal/<type>/<entry>.*already exists` |
 | `symlink` | `Too many levels of symbolic links`, `ELOOP`, `dangling symlink`, `readlink: .* No such file` |
 | `git-root` | `block-hq-root-git-mutation`, `git .* blocked from HQ root`, `HQ_ALLOW_HQ_ROOT_GIT` |
 | `plan-mode` | `plan mode`, `ExitPlanMode required`, `cannot Edit in plan mode` |
@@ -67,7 +67,7 @@ Fix proposals (ranked):
 1. `/clear` and resume work — fastest if the session has accumulated stale tool results
 2. `/recover-session --session <uuid>` — reconstruct a thread from the dead JSONL, then start fresh
 3. Identify the offending tool call and recommend a smaller-scope alternative (e.g. `qmd search -c hq-infra <term>` instead of reading a multi-MB INDEX, or `Read` with `offset:`/`limit:` instead of full-file reads)
-4. If a file repeatedly bloats context, propose moving it out of auto-load paths (e.g. very large `_digest.md`, `INDEX.md`, `quick-reference.md`)
+4. If a file repeatedly bloats context, propose moving it out of auto-load paths (e.g. very large `INDEX.md`, `quick-reference.md`)
 
 #### `hook`
 Parallel checks:
@@ -79,14 +79,14 @@ Fix proposals:
 1. Temporarily disable the failing hook: `export HQ_DISABLED_HOOKS=<name>` for the next session — emit the export line, do not run it
 2. Switch profile: `export HQ_HOOK_PROFILE=minimal` — useful for hook-storm scenarios
 3. Patch the hook script if the bug is local and obvious (e.g. missing `2>/dev/null`, unquoted path, missing `mkdir -p`) — apply via Edit only if the fix is one or two lines, otherwise propose
-4. If the failing hook is `master-sync.sh`, escalate to the `mastersync` recipe instead
+4. If the failing hook is `reindex.sh` (or legacy `master-sync.sh`), escalate to the `reindex` recipe instead
 
 #### `sync`
 Checks:
 - `[ -f workspace/sync/conflicts.json ] && wc -l workspace/sync/conflicts.json`
 - `ls workspace/sync/conflicts/ 2>/dev/null | head`
 
-Fix proposal: invoke `/resolve-conflicts`. Surface the count of pending conflicts so the user sees scope. Apply the *learned rule* from charter: keep local when `originalPath` is a symlink or an auto-generated artifact (`policies/_digest.md`, registries, INDEX).
+Fix proposal: invoke `/resolve-conflicts`. Surface the count of pending conflicts so the user sees scope. Apply the *learned rule* from charter: keep local when `originalPath` is a symlink or an auto-generated artifact (registries, INDEX).
 
 #### `denylist`
 Checks:
@@ -114,13 +114,13 @@ Checks:
 
 Fix proposal: `qmd update 2>/dev/null || true`. If a specific collection is missing, surface its expected path and offer to re-add it.
 
-#### `mastersync`
+#### `reindex`
 Apply the learned rule from charter: trace `core/<type>` symlinks back to `personal/<type>/` and look for `find -L` recursion into `_overrides/` or other stale mirrored snapshots.
 
 Checks:
 - `find -L core/workers core/policies -maxdepth 3 -type d -name '_overrides' 2>/dev/null | head`
 - `ls -la personal/workers/ personal/policies/ 2>/dev/null | head -20`
-- `tail -30 workspace/logs/master-sync.log 2>/dev/null` (if present)
+- `tail -30 workspace/logs/reindex.log 2>/dev/null` (if present)
 
 Fix proposal: remove stale `_overrides/` snapshots (with `--dry-run` first), or patch `core/scripts/generate-workers-registry.sh` to skip `*/_overrides/*` if not already patched. Surface the exact rm command for user confirmation — do not auto-remove.
 
@@ -164,7 +164,7 @@ Otherwise, use `AskUserQuestion` to surface the numbered options. Wait for the a
 - For multi-step fixes, apply one step, re-run a minimal diagnostic, then proceed
 
 **Core-divergence handling (`core/` mirror):**
-- HQ's `core/` tree is mechanically write-blocked by `.claude/hooks/block-core-writes.sh` because it is a downstream mirror of `hq-core`. Heal usually routes fixes through `personal/<type>/<name>/` (master-sync mirrors into `core/`) or co-locates with a skill (`.claude/skills/<name>/`) — never into `core/` directly.
+- HQ's `core/` tree is mechanically write-blocked by `.claude/hooks/block-core-writes.sh` because it is a downstream mirror of `hq-core`. Heal usually routes fixes through `personal/<type>/<name>/` (reindex mirrors into `core/`) or co-locates with a skill (`.claude/skills/<name>/`) — never into `core/` directly.
 - Genuine exception: the failing artifact *is* a core file (a broken `core/scripts/*.sh` hook helper, a stale `core/policies/<name>.md`, etc.) and the fix cannot land anywhere else. In that case:
   1. The numbered proposal must call out that the fix diverges from upstream — exact files listed
   2. The user must have passed `--allow-core` (the flag is the explicit acknowledgment that this divergence is intentional)
@@ -252,7 +252,7 @@ Bug:     {hq-bug URL or 'skipped (--no-bug)' or 'skipped (dry-run)' or 'skipped 
 
 If `--allow-core` was used and the `## Core divergence` section was written, append one extra line: *"Core divergence noted — `{N}` `core/` files touched. Upstream patch needed in hq-core."*
 
-If the proposed fix requires re-launching the session (e.g. autocompact, mastersync), append: *"Re-launch suggestion: `bash .claude/skills/hq-heal/hq-heal.sh --resume`"* and stop.
+If the proposed fix requires re-launching the session (e.g. autocompact, reindex), append: *"Re-launch suggestion: `bash .claude/skills/hq-heal/hq-heal.sh --resume`"* and stop.
 
 ## Rules
 
@@ -260,7 +260,7 @@ If the proposed fix requires re-launching the session (e.g. autocompact, masters
 - Never read sensitive deny-listed paths under any circumstance, even when classifying a `denylist` error
 - Recipe context budget is 5 KB per class — if a probe would return more, summarize
 - The classifier is pure pattern matching — do not run subagents or do any HQ-wide search before classification
-- Never auto-apply fixes for `denylist`, `git-root`, or `mastersync` classes — always require user confirmation, the consequences are too broad
+- Never auto-apply fixes for `denylist`, `git-root`, or `reindex` classes — always require user confirmation, the consequences are too broad
 - The heal report is the single durable artifact — it is what `/handoff` and future `/hq-heal` invocations consult to detect repeat failures
 - The `/hq-bug` filing in Step 6 is the *signal* artifact — durable artifact stays local, signal goes to HQ engineering so recurring error classes get systemized fixes upstream. `--no-bug` suppresses the filing only; the report still writes
 - Core-mirror writes are off by default. The `--allow-core` flag is required even when the user explicitly confirms a fix that touches `core/`. This is intentional friction — the bypass should be auditable per-invocation, not implicit
@@ -271,4 +271,4 @@ If the proposed fix requires re-launching the session (e.g. autocompact, masters
 
 ## Why this exists
 
-HQ users hit a recurring class of errors that look scary but are well-understood once classified — autocompact thrashing, hook crashes, sync conflicts, deny-list blocks, master-sync aborts. Without a healer, the recovery path is for the user to switch terminals, paste the error into a fresh Claude session, and hope the new session figures out what to do. `/hq-heal` collapses that into one slash command with a known-good triage recipe per error class, and a companion launcher (`core/scripts/hq-heal.sh`) for the case where the current session is too wedged to invoke the slash command at all.
+HQ users hit a recurring class of errors that look scary but are well-understood once classified — autocompact thrashing, hook crashes, sync conflicts, deny-list blocks, reindex aborts. Without a healer, the recovery path is for the user to switch terminals, paste the error into a fresh Claude session, and hope the new session figures out what to do. `/hq-heal` collapses that into one slash command with a known-good triage recipe per error class, and a companion launcher (`core/scripts/hq-heal.sh`) for the case where the current session is too wedged to invoke the slash command at all.

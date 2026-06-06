@@ -3,6 +3,8 @@ id: prd-story-sizing
 title: PRD Story Complexity Budget
 scope: command
 trigger: /prd story generation
+when: /prd
+on: [UserPromptSubmit]
 enforcement: soft
 public: true
 ---

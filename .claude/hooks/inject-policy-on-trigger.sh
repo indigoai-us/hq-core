@@ -1,22 +1,38 @@
 #!/bin/bash
-# inject-policy-on-trigger.sh — PreToolUse hook that injects a one-line policy
-# reminder when a tool invocation matches a known trigger.
+# inject-policy-on-trigger.sh — the sole policy-surfacing path.
 #
-# Tier-3 of the policy injection model (see .claude/plans/please-evaluate-...md).
-# Tier 1 = always-on (digest at SessionStart). Tier 2 = stack-filtered. Tier 3
-# is THIS file: load only when a concrete tool/path pattern fires, ~150 bytes
-# per match. The trigger map is hardcoded below for the MVP — future iteration
-# will generate it from `triggers:` frontmatter on policy files.
+# The pre-built policy digest (and its always-on / stack-filtered tiers) was
+# retired; this hook now both injects every on:[SessionStart] policy whose
+# `when:` matches at session start AND injects a short `<policy-reminder>` when a
+# reactive policy's trigger fires mid-session (~150 bytes per match), deduped
+# per session.
 #
-# Input: PreToolUse JSON on stdin —
-#   {"session_id":"abc","tool_name":"Bash","tool_input":{"command":"find . ..."}}
-# Output: a `<policy-reminder>` block on stdout when matched, otherwise nothing.
-# Dedupe: per-session-id; same slug never fires twice in one session.
+# TWO trigger sources, unified and deduped by slug:
+#   (A) `when:`/`on:` frontmatter on policy files — boolean expressions over an
+#       open token set, evaluated by core/scripts/eval-trigger.sh against facts
+#       derived by core/scripts/derive-trigger-facts.sh. This is the primary,
+#       data-driven path. Runs for whatever event fired (PreToolUse,
+#       UserPromptSubmit, PostToolUse).
+#   (B) Legacy hardcoded regex map (below) — for precise patterns a coarse
+#       boolean token can't express (e.g. `git checkout {ref} -- .`, `pgrep`,
+#       `IFS=":"`). PreToolUse only. Kept so migrating policies to `when:` is
+#       incremental and never regresses coverage.
+#
+# Event: taken from `hook_event_name` in the stdin JSON (default PreToolUse).
+# Scope (tenant-safe): global core/policies ALWAYS; the active company's and
+#   active repo's policies ONLY when the session is in that company/repo.
+# Dedupe: per session-id; a slug never fires twice in one session.
 # Exit: always 0 (advisory hook, never blocks).
 
 set -euo pipefail
 
 STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HELPERS="$(cd "$SCRIPT_DIR/../.." && pwd)/core/scripts"
+HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
+
+JQ="$(command -v jq || true)"
 
 extract() {
   printf '%s' "$STDIN_JSON" | python3 -c '
@@ -25,81 +41,224 @@ try:
     data = json.load(sys.stdin)
 except Exception:
     print(""); sys.exit(0)
-keys = sys.argv[1].split(".")
 v = data
-for k in keys:
+for k in sys.argv[1].split("."):
     if isinstance(v, dict):
         v = v.get(k, "")
     else:
-        v = ""
-        break
+        v = ""; break
 if isinstance(v, (dict, list)):
     v = ""
 print(str(v))
 ' "$1" 2>/dev/null || echo ""
 }
 
+EVENT="$(extract hook_event_name)"; [ -z "$EVENT" ] && EVENT="PreToolUse"
 SESSION_ID="$(extract session_id)"
 TOOL_NAME="$(extract tool_name)"
-[ -z "$TOOL_NAME" ] && exit 0
+CWD="$(extract cwd)"; [ -z "$CWD" ] && CWD="$HQ_ROOT"
 
-case "$TOOL_NAME" in
-  Bash)                       ARG="$(extract tool_input.command)" ;;
-  Edit|Write|MultiEdit|NotebookEdit) ARG="$(extract tool_input.file_path)" ;;
-  *) exit 0 ;;
-esac
-[ -z "$ARG" ] && exit 0
+# Tool-event trigger evaluation is scoped to CLI/Bash only — the frequent
+# Read/Write/Edit/Glob tool calls don't pay the policy scan. The message path
+# (UserPromptSubmit) is unaffected and still evaluates on every prompt.
+if { [ "$EVENT" = "PreToolUse" ] || [ "$EVENT" = "PostToolUse" ]; } && [ "$TOOL_NAME" != "Bash" ]; then
+  exit 0
+fi
 
-# Trigger registry. Tab-separated: ToolName \t extended-regex \t slug \t rule.
-# (Tab chosen because regex patterns commonly use `|` for alternation.)
-# Keep rule lines under 120 chars. Add new triggers here; one per line.
-TAB=$'\t'
-TRIGGERS=$(printf '%s\n' \
-  "Bash${TAB}(^|[[:space:]])find[[:space:]]${TAB}hq-glob-scoped-path${TAB}\`find\` is unrestricted but Glob is hook-blocked. Prefer qmd/Grep over \`find\`; scope \`find\` to a known sub-tree." \
-  "Bash${TAB}(^|[[:space:]])git[[:space:]]+checkout[[:space:]].*[[:space:]]--[[:space:]]*\\.${TAB}git-checkout-not-a-probe${TAB}\`git checkout {ref} -- .\` is NOT a read-only probe — it overwrites your working tree with that ref's files." \
-  "Bash${TAB}(^|[[:space:]])git[[:space:]]+push[[:space:]]${TAB}hq-always-pr-shared-state-repos${TAB}Never push directly to \`main\` on shared-state repos. Open a PR or push a feature branch." \
-  "Bash${TAB}(^|[[:space:]])pgrep[[:space:]]${TAB}hq-bash-discipline${TAB}Never hardcode a \`pgrep\`-discovered PID into a follow-up command — re-discover and validate with \`ps\` each invocation." \
-  "Bash${TAB}(^|[[:space:]])git[[:space:]]+filter-repo[[:space:]]${TAB}hq-git-discipline${TAB}\`git filter-repo --path\` is case-sensitive. Run separate passes for case variants (e.g. \`Foo\` and \`foo\`)." \
-  "Bash${TAB}(^|[[:space:]])git[[:space:]]+reflog[[:space:]]+expire[[:space:]]${TAB}hq-git-discipline${TAB}\`git reflog expire --all --expire=now\` permanently destroys stashes too. Stash explicitly first or filter the expire." \
-  "Bash${TAB}IFS=\":\"${TAB}hq-bash-discipline${TAB}\`IFS=\":\" read\` corrupts paths. Use \`IFS=\$'\\''\\\\t'\\''\` or read fields by index instead." \
-  "Edit${TAB}companies/[^/]+/settings/${TAB}credential-access-protocol${TAB}Editing inside \`companies/{co}/settings/\` — never read or use credentials from a different company. If unsure, stop and ask." \
-  "Write${TAB}companies/[^/]+/settings/${TAB}credential-access-protocol${TAB}Writing inside \`companies/{co}/settings/\` — never read or use credentials from a different company. If unsure, stop and ask." \
-  "MultiEdit${TAB}companies/[^/]+/settings/${TAB}credential-access-protocol${TAB}Editing inside \`companies/{co}/settings/\` — never read or use credentials from a different company. If unsure, stop and ask." \
-  "Bash${TAB}(^|[[:space:]])(npm|yarn|bun|pnpm)[[:space:]]+(install|i|add)[[:space:]]+[^-]${TAB}hq-pnpm-min-release-age-supply-chain${TAB}Supply-chain guard: prefer \`pnpm\` with \`minimum-release-age=1440\` (24h). Raw \`npm/yarn/bun install <pkg>\` is hard-blocked by block-unsafe-package-install.sh." \
-  "Edit${TAB}core/(policies|knowledge|workers|skills|hooks)/${TAB}hq-customizations-live-in-personal-or-company${TAB}Editing core/ — release-shipped, wiped by \`/update-hq\`. Personalize via \`personal/<type>/\`; company-specific via \`companies/{co}/\`. Core scaffold changes go through staging + /promote-hq-core." \
-  "Write${TAB}core/(policies|knowledge|workers|skills|hooks)/${TAB}hq-customizations-live-in-personal-or-company${TAB}Writing under core/ — release-shipped, wiped by \`/update-hq\`. Personalize via \`personal/<type>/\`; company-specific via \`companies/{co}/\`. Core scaffold changes go through staging + /promote-hq-core." \
-  "MultiEdit${TAB}core/(policies|knowledge|workers|skills|hooks)/${TAB}hq-customizations-live-in-personal-or-company${TAB}Editing core/ — release-shipped, wiped by \`/update-hq\`. Personalize via \`personal/<type>/\`; company-specific via \`companies/{co}/\`. Core scaffold changes go through staging + /promote-hq-core.")
-
-# Per-session dedupe file. Falls back to 'default' if session_id missing.
-HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+# Per-session dedupe ledger (unchanged location for continuity).
 DEDUPE_DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
 mkdir -p "$DEDUPE_DIR" 2>/dev/null || true
 DEDUPE_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.txt"
 touch "$DEDUPE_FILE" 2>/dev/null || true
 
-# Walk triggers: first match wins. Skip if already injected this session.
-matched_slug=""
-matched_rule=""
-while IFS=$'\t' read -r t_tool t_pat t_slug t_rule; do
-  [ -z "$t_tool" ] && continue
-  [ "$t_tool" = "$TOOL_NAME" ] || continue
-  if printf '%s' "$ARG" | grep -Eq "$t_pat"; then
-    if grep -Fxq "$t_slug" "$DEDUPE_FILE" 2>/dev/null; then
-      continue
-    fi
-    matched_slug="$t_slug"
-    matched_rule="$t_rule"
-    break
+# Accumulate "slug<TAB>rule" matches here; dedup by slug at the end.
+MATCHES=""
+already() { grep -Fxq "$1" "$DEDUPE_FILE" 2>/dev/null; }
+# Bash-native membership: a `printf "$MATCHES" | grep -q` pipe races under
+# `set -o pipefail` — grep -q closes the pipe on first hit, printf takes SIGPIPE
+# (141), and the pipeline fails the script before any reminder is emitted. The
+# tab is the field delimiter, so match on "<slug><TAB>".
+pending_has() { case "$MATCHES" in *"$1"$'\t'*) return 0 ;; *) return 1 ;; esac; }
+
+add_match() {
+  # add_match <slug> <rule>
+  local slug="$1" rule="$2"
+  [ -n "$slug" ] || return 0
+  already "$slug" && return 0
+  pending_has "$slug" && return 0
+  MATCHES="${MATCHES}${slug}	${rule}
+"
+}
+
+# ── (A) Frontmatter when:/on: evaluation ──────────────────────────────────
+if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-trigger-facts.sh" ]; then
+  FACTS="$(printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$EVENT" 2>/dev/null || true)"
+
+  # AssistantIntent channel: AI-message-only facts, available where there is a
+  # transcript look-back (PreToolUse + UserPromptSubmit). Policies with
+  # `on: [AssistantIntent]` are evaluated against THIS set, not the event facts.
+  INTENT_FACTS=""; INTENT_MODE=0
+  if [ "$EVENT" = "PreToolUse" ] || [ "$EVENT" = "UserPromptSubmit" ]; then
+    INTENT_MODE=1
+    INTENT_FACTS="$(printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" AssistantIntent 2>/dev/null || true)"
   fi
-done <<< "$TRIGGERS"
 
-[ -z "$matched_slug" ] && exit 0
+  # At SessionStart, every policy whose `on:` includes SessionStart is injected
+  # unconditionally (its `when:` still gates it — `when: always` matches). There
+  # is no separate digest to dedup against; this hook is the sole policy-surfacing
+  # path.
+  DIRS=("$HQ_ROOT/core/policies")
+  case "$CWD" in
+    *companies/*)
+      co="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')"
+      [ -n "$co" ] && DIRS+=("$HQ_ROOT/companies/$co/policies") ;;
+  esac
+  case "$CWD" in
+    *repos/public/*|*repos/private/*)
+      rscope="$(printf '%s' "$CWD" | sed -nE 's#.*repos/(public|private)/.*#\1#p')"
+      rname="$(printf '%s' "$CWD" | sed -nE 's#.*repos/[^/]+/([^/]+).*#\1#p')"
+      [ -n "$rscope" ] && [ -n "$rname" ] && DIRS+=("$HQ_ROOT/repos/$rscope/$rname/.claude/policies") ;;
+  esac
 
-# Record + emit
-printf '%s\n' "$matched_slug" >> "$DEDUPE_FILE"
+  # Collect in-scope policy files (skip generated/template/readme).
+  POLICY_FILES=()
+  for dir in "${DIRS[@]}"; do
+    [ -d "$dir" ] || continue
+    for f in "$dir"/*.md; do
+      [ -f "$f" ] || continue
+      case "$(basename "$f")" in _digest.md|example-policy.md|README.md) continue ;; esac
+      POLICY_FILES+=("$f")
+    done
+  done
+
+  # SINGLE-PASS evaluator. One awk process parses every policy's frontmatter and
+  # evaluates its `when:` boolean expression INTERNALLY — the eval-trigger.sh
+  # recursive-descent grammar + safety gate are ported verbatim into evalexpr()
+  # below, with identical semantics (0=TRUE, 1=FALSE, 2=empty/unsafe→fail-open).
+  # It applies the per-session dedup itself and prints `slug<TAB>rule` per match.
+  # This replaces a fork-per-policy loop
+  # (~3 procs × N policies, one of them a `bash eval-trigger.sh` spawn) with a
+  # SINGLE awk invocation. The hook runs on every Bash PreToolUse and every
+  # prompt, so that fork count was the dominant latency. eval-trigger.sh itself
+  # stays the spec'd standalone evaluator (tests + CLI); the hot path no longer
+  # shells out to it.
+  ALREADY="$(cat "$DEDUPE_FILE" 2>/dev/null || true)"
+  if [ "${#POLICY_FILES[@]}" -gt 0 ]; then
+    while IFS=$'\t' read -r slug rule; do
+      add_match "$slug" "$rule"
+    done < <(
+      # ALREADY (the dedupe ledger) is NEWLINE-separated and, after SessionStart
+      # injects every on:[SessionStart] policy, routinely has many lines. It is
+      # passed via the environment, NOT `awk -v`: onetrueawk/mawk (the default
+      # awk on macOS/BSD) abort with "newline in string" on a `-v` value that
+      # contains a literal newline, which silently kills this whole evaluation
+      # for the rest of the session. ENVIRON has no such restriction. Keep it on
+      # the env — do NOT move it back to `-v ALREADY=`.
+      HQ_ALREADY="$ALREADY" awk -v EVENT="$EVENT" -v INTENT_MODE="$INTENT_MODE" \
+          -v EVFACTS="$FACTS" -v AIFACTS="$INTENT_FACTS" '
+      function skipsp() { while (substr(E, pos, 1) == " ") pos++ }
+      function pOr(  v){ v=pAnd(); skipsp(); while(substr(E,pos,2)=="||"){pos+=2; if(pAnd()||v)v=1;else v=0} return v }
+      function pAnd(  v){ v=pNot(); skipsp(); while(substr(E,pos,2)=="&&"){pos+=2; if(pNot()&&v)v=1;else v=0} return v }
+      function pNot(  c){ skipsp(); c=substr(E,pos,1); if(c=="!"){pos++; return (pNot()?0:1)} return pAtom() }
+      function pAtom(  v,c){ skipsp(); c=substr(E,pos,1); if(c=="("){pos++; v=pOr(); skipsp(); if(substr(E,pos,1)==")")pos++; return v} pos++; return (c=="1")?1:0 }
+      # evalexpr(expr, which) -> 0 TRUE | 1 FALSE | 2 fail-open. which: "ev"|"ai".
+      function evalexpr(expr, which,   e,s,out,tok,present) {
+        e=expr; gsub(/[ \t]/,"",e); if(e=="") return 2            # empty -> fail open
+        s=expr; out=""
+        while (match(s, "[A-Za-z0-9_./][A-Za-z0-9_./-]*")) {
+          tok=substr(s,RSTART,RLENGTH)
+          present = (which=="ev") ? (tok in evh) : (tok in aih)
+          out = out substr(s,1,RSTART-1) (present?"1":"0")
+          s = substr(s,RSTART+RLENGTH)
+        }
+        out = out s
+        if (out ~ /[^01&|!() ]/) return 2                          # unsafe -> fail open
+        E=out; pos=1
+        return (pOr() ? 0 : 1)
+      }
+      function base(p,   n,a,b){ n=split(p,a,"/"); b=a[n]; sub(/\.md$/,"",b); return b }
+      function finalize(   onpad,ev_on,ai_on,matched,r) {
+        if (whenx=="") return
+        if (id=="") id=base(fname)
+        if (onx=="") onx="PreToolUse"                              # default when on: omitted
+        onpad=" " onx " "
+        ev_on = (index(onpad," " EVENT " ")>0)
+        ai_on = (index(onpad," AssistantIntent ")>0)
+        if (!ev_on && !(ai_on && INTENT_MODE)) return
+        if (id in already) return                                  # per-session dedup ledger
+        if (id in emitted) return                                  # de-dup within this run
+        matched=0
+        if (ev_on) { r=evalexpr(whenx,"ev"); if(r==0||r==2) matched=1 }
+        if (!matched && ai_on && INTENT_MODE) { r=evalexpr(whenx,"ai"); if(r==0||r==2) matched=1 }
+        if (matched) { emitted[id]=1; print id "\t" rule }
+      }
+      function reset_file(){ d=0; id=""; whenx=""; onx=""; rule=""; rsec=0; rcap=0 }
+      BEGIN {
+        n=split(EVFACTS,fa,/[ ,]+/); for(i=1;i<=n;i++) if(fa[i]!="") evh[fa[i]]=1
+        n=split(AIFACTS,ga,/[ ,]+/); for(i=1;i<=n;i++) if(ga[i]!="") aih[ga[i]]=1
+        n=split(ENVIRON["HQ_ALREADY"],za,"\n"); for(i=1;i<=n;i++) if(za[i]!="") already[za[i]]=1
+        reset_file()
+      }
+      FNR==1 { if (seen) finalize(); reset_file(); seen=1 }
+      { fname=FILENAME }
+      /^---[ \t]*$/ { if (d<2) { d++; next } }
+      d==1 && /^id:/   { s=$0; sub(/^id:[ \t]*/,"",s);   gsub(/^["'"'"']|["'"'"']$/,"",s); id=s; next }
+      d==1 && /^when:/ { s=$0; sub(/^when:[ \t]*/,"",s); sub(/[ \t]+#.*/,"",s); gsub(/^["'"'"']|["'"'"']$/,"",s); whenx=s; next }
+      d==1 && /^on:/   { s=$0; sub(/^on:[ \t]*/,"",s);   gsub(/[][,]/," ",s); onx=s; next }
+      d>=2 && /^## Rule[ \t]*$/ { rsec=1; next }
+      d>=2 && rsec && /^## / { rsec=0 }
+      d>=2 && rsec && !rcap && NF { line=$0; gsub(/\*\*/,"",line); if(length(line)>160) line=substr(line,1,157)"..."; rule=line; rcap=1 }
+      END { if (seen) finalize() }
+      ' "${POLICY_FILES[@]}"
+    )
+  fi
+fi
+
+# ── (B) Legacy hardcoded regex map (Bash PreToolUse only) ─────────────────
+# Precise command patterns a coarse boolean `when:` token can't express. Only
+# Bash rows remain — per the CLI/bash-only scope, this hook no longer fires on
+# Edit/Write/MultiEdit, so the former settings/core-path file rows are dropped
+# (those cases stay covered mechanically by warn-cross-company-settings.sh and
+# protect-core.sh / block-core-writes.sh).
+#
+# Rows are kept ONLY where path (A) cannot reach the same slug as broadly. The
+# former git-checkout-not-a-probe row was removed — the policy now carries
+# `when: git && checkout`, so path (A) injects that slug on every `git checkout`
+# (a superset of the old `-- .` pattern) and dedup made the legacy row dead.
+# The pnpm row STAYS: its `(install|i|add)` aliases are NOT all reachable by the
+# policy's `when: install` token (`add` is a different word; `i` is too short to
+# tokenize), so it still covers cases path (A) misses. Rule of thumb: drop a
+# legacy row only when an equivalent `when:` covers the SAME command surface.
+if [ "$EVENT" = "PreToolUse" ] && [ "$TOOL_NAME" = "Bash" ]; then
+  ARG="$(extract tool_input.command)"
+  if [ -n "$ARG" ]; then
+    TAB=$'\t'
+    TRIGGERS=$(printf '%s\n' \
+      "(^|[[:space:]])find[[:space:]]${TAB}hq-glob-scoped-path${TAB}\`find\` is unrestricted but Glob is hook-blocked. Prefer qmd/Grep over \`find\`; scope \`find\` to a known sub-tree." \
+      "(^|[[:space:]])pgrep[[:space:]]${TAB}hq-bash-discipline${TAB}Never hardcode a \`pgrep\`-discovered PID into a follow-up command — re-discover and validate with \`ps\` each invocation." \
+      "(^|[[:space:]])git[[:space:]]+filter-repo[[:space:]]${TAB}hq-git-discipline${TAB}\`git filter-repo --path\` is case-sensitive. Run separate passes for case variants (e.g. \`Foo\` and \`foo\`)." \
+      "(^|[[:space:]])git[[:space:]]+reflog[[:space:]]+expire[[:space:]]${TAB}hq-git-discipline${TAB}\`git reflog expire --all --expire=now\` permanently destroys stashes too. Stash explicitly first or filter the expire." \
+      "IFS=\":\"${TAB}hq-bash-discipline${TAB}\`IFS=\":\" read\` corrupts paths. Use \`IFS=\$'\\''\\\\t'\\''\` or read fields by index instead." \
+      "(^|[[:space:]])(npm|yarn|bun|pnpm)[[:space:]]+(install|i|add)[[:space:]]+[^-]${TAB}hq-pnpm-min-release-age-supply-chain${TAB}Supply-chain guard: prefer \`pnpm\` with \`minimum-release-age=1440\` (24h). Raw \`npm/yarn/bun install <pkg>\` is hard-blocked by block-unsafe-package-install.sh.")
+    while IFS=$'\t' read -r t_pat t_slug t_rule; do
+      [ -z "$t_pat" ] && continue
+      if printf '%s' "$ARG" | grep -Eq "$t_pat"; then
+        add_match "$t_slug" "$t_rule"
+      fi
+    done <<< "$TRIGGERS"
+  fi
+fi
+
+# ── Emit + record ─────────────────────────────────────────────────────────
+[ -n "$MATCHES" ] || exit 0
+
 printf '<policy-reminder>\n'
-printf '> Policy `%s` applies here: %s\n' "$matched_slug" "$matched_rule"
-printf '> Read the full rule at `core/policies/%s.md` if you need rationale.\n' "$matched_slug"
+printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug rule; do
+  [ -z "$slug" ] && continue
+  printf '> Policy `%s` applies here: %s\n' "$slug" "$rule"
+  printf '%s\n' "$slug" >> "$DEDUPE_FILE"
+done
+printf '> Read the full rule(s) at `core/policies/{slug}.md` if you need rationale.\n'
 printf '</policy-reminder>\n'
 
 exit 0

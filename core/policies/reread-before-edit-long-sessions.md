@@ -3,6 +3,8 @@ id: reread-before-edit-long-sessions
 title: Re-Read Files Before Edit in Long Sessions
 scope: global
 trigger: before editing files after 10+ conversation turns or after compaction
+when: always
+on: [SessionStart]
 enforcement: soft
 version: 1
 created: 2026-03-31

@@ -3,6 +3,8 @@ id: hq-no-screencapture-self-verify-gui
 title: Do not rely on screencapture to self-verify GUI output
 scope: global
 trigger: Verifying GUI output of an app from within an agent session on macOS
+when: screenshot || screencapture
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

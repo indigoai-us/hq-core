@@ -3,6 +3,8 @@ id: hq-destructive-scripts-default-dry-run
 title: Destructive-write scripts default to dry-run; require explicit --live flag
 scope: global
 trigger: authoring a script that mutates shared CRM, database, KV, Vercel env, production config, or any other shared runtime state
+when: .sh
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

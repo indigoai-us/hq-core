@@ -3,6 +3,8 @@ id: hq-qmd-first-for-hq-search
 title: Use qmd First for HQ Search
 scope: global
 trigger: when searching HQ content, indexed repos, projects, workers, policies, or knowledge
+when: grep
+on: [PreToolUse]
 enforcement: hard
 tier: 1
 version: 1

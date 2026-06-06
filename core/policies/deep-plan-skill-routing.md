@@ -3,6 +3,8 @@ id: hq-deep-plan-skill-routing
 title: /deep-plan must route to the deep-plan skill — never built-in plan mode, never auto-implementation
 scope: command:deep-plan,startwork
 trigger: /deep-plan invoked anywhere — as a slash command, embedded in /startwork args, or referenced in plan-mode prompt text
+when: /deep-plan || /startwork
+on: [UserPromptSubmit]
 enforcement: hard
 tier: 1
 version: 1
@@ -44,7 +46,7 @@ Six layered defenses (defense in depth):
 3. **PreToolUse hook on `EnterPlanMode` (`.claude/hooks/block-builtin-plan-mode-during-deep-plan.sh`):** Reads marker file; exit 2 with rejection message if marker present.
 4. **PreToolUse hook on `Write`/`Edit`/`MultiEdit` (`.claude/hooks/block-plans-dir-during-deep-plan.sh`):** If marker present AND `file_path` matches `*/.claude/plans/*`, exit 2 with re-route message.
 5. **`/startwork` skill (`.claude/skills/startwork/SKILL.md`):** Step 1.0 short-circuit — checks for `/deep-plan` token before classification.
-6. **This policy.** Auto-loaded by SessionStart digest builder; pinned into context for any session whose prompt mentions `/deep-plan`.
+6. **This policy.** Surfaced by the SessionStart trigger hook (`inject-policy-on-trigger.sh`); pinned into context for any session whose prompt mentions `/deep-plan`.
 
 ## Verification
 
@@ -55,7 +57,7 @@ End-to-end smoke test (run after any change to deep-plan routing):
 3. **EnterPlanMode block** — mid-`/deep-plan` session, attempt EnterPlanMode → PreToolUse hook rejects with routing message.
 4. **`~/.claude/plans/` write block** — mid-`/deep-plan` session, attempt Write to `~/.claude/plans/test.md` → PreToolUse hook rejects.
 5. **Auto-mode compatibility** — `/deep-plan` with auto mode active → skill announces auto-mode pause, proceeds question-by-question.
-6. **Policy digest** — `bash core/scripts/build-policy-digest.sh` then grep `_digest.md` for `deep-plan-skill-routing` → present, marked hard-enforcement.
+6. **Policy surfacing** — `grep -E '^(when|on):' core/policies/deep-plan-skill-routing.md` → returns a hit, confirming the policy carries the trigger frontmatter that the SessionStart hook (`inject-policy-on-trigger.sh`) uses to surface it.
 
 ## Failure-mode catalogue
 

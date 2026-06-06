@@ -124,12 +124,6 @@ cat >/dev/null
 exit 0
 SH
 
-cat > "$TMP/.claude/hooks/load-policies-for-session.sh" <<'SH'
-#!/bin/bash
-cat >/dev/null
-echo "POLICY"
-SH
-
 cat > "$TMP/.claude/hooks/inject-local-context.sh" <<'SH'
 #!/bin/bash
 cat >/dev/null
@@ -197,11 +191,14 @@ exit 0
 SH
 done
 
-# PreToolUse Bash parity (advisory)
+# SessionStart + PreToolUse Bash parity (advisory). This hook is now the sole
+# surface for SessionStart policy injection (the digest loader was retired), so
+# it emits the "POLICY" marker the SessionStart parity assertion checks for.
 cat > "$TMP/.claude/hooks/inject-policy-on-trigger.sh" <<'SH'
 #!/bin/bash
 cat >/dev/null
 echo "inject-policy-on-trigger" >> "$TEST_LOG"
+echo "POLICY"
 exit 0
 SH
 
@@ -331,7 +328,7 @@ if err="$(run_adapter "$payload_patch_core_dir" 2>&1 >/dev/null)"; then
   echo "Expected core/ apply_patch payload to be blocked" >&2
   exit 1
 fi
-assert_contains "$err" "Edits to core/ are denied"
+assert_contains "$err" "blocked core write"
 
 payload_patch_input='{"hook_event_name":"PreToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"input":"*** Begin Patch\n*** Update File: blocked.txt\n@@\n x\n*** End Patch"}}'
 if err="$(run_adapter "$payload_patch_input" 2>&1 >/dev/null)"; then

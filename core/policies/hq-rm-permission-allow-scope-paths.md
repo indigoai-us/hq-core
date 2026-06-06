@@ -3,6 +3,8 @@ id: hq-rm-permission-allow-scope-paths
 title: Never broadly allow `Bash(rm:*)` — scope rm permissions to explicit path prefixes
 scope: global
 trigger: When adding `rm`, `rm -f`, `rm -rf`, or any delete-family entry to `.claude/settings.json` or `.claude/settings.local.json` permission allow/ask lists
+when: settings.json || settings.local.json
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 tier: 1
 public: true

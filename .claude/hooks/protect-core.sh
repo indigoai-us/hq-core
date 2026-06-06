@@ -75,8 +75,7 @@ fi
 #   • Only NEW files (path does not yet exist). Edits to existing release-shipped
 #     core policies — the builder-mode + /promote-hq-core workflow — pass through.
 #   • Writing THROUGH an existing personal→core symlink passes (-e follows it).
-#   • _digest.md (built by build-policy-digest.sh) is exempt.
-#   • master-sync symlinks (ln), /update-hq copies (cp), and /promote-hq-core
+#   • reindex symlinks (ln), /update-hq copies (cp), and /promote-hq-core
 #     writes (which target repos/private/hq-core-staging, not local core) never
 #     hit the Edit/Write tool path, so they are unaffected.
 # Sanctioned escape for tooling that must author a core policy locally:
@@ -87,7 +86,7 @@ if [[ "${HQ_ALLOW_CORE_POLICY_WRITE:-}" != "1" ]]; then
   case "$FILE_PATH" in
     "$CORE_POLICIES_DIR"/*.md)
       base="$(basename "$FILE_PATH")"
-      if [[ "$base" != "_digest.md" && ! -e "$FILE_PATH" ]]; then
+      if [[ ! -e "$FILE_PATH" ]]; then
         cat >&2 <<MSG
 BLOCKED: refusing to create a new policy file directly in core/policies/.
   File: $FILE_PATH
@@ -97,7 +96,7 @@ policy written here is lost on the next upgrade.
 
 Route it instead:
   • Operator / universal rule  → personal/policies/$base
-       (master-sync.sh symlinks it into core/policies/ — it still loads as a
+       (reindex.sh symlinks it into core/policies/ — it still loads as a
         global policy, but survives upgrade)
   • Company-specific rule      → companies/{co}/policies/$base
   • Repo-specific rule         → repos/{pub|priv}/{repo}/.claude/policies/$base

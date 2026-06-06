@@ -3,6 +3,8 @@ id: learned-rules-never-in-claude-md
 title: Learned rules never go in CLAUDE.md — they live in policy files
 scope: global
 trigger: capturing a learned rule or user correction, or running /learn (especially /learn --hard)
+when: learn || policies || charter
+on: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
 vendor_public_ok: true
@@ -17,10 +19,10 @@ tags: [hq-core, learn, policies, charter, claude-md]
 
 NEVER write a learned rule or user correction into `.claude/CLAUDE.md` (or its `AGENTS.md` symlink). The charter is release-shipped scaffold — replaced wholesale by `/update-hq` — and must not accumulate per-instance learnings. Every learned rule lives in a **policy file**:
 
-- Personal / owner learnings → `personal/policies/{slug}.md` (master-sync symlinks it into `core/policies/`, so it rides global scope and survives upgrades).
+- Personal / owner learnings → `personal/policies/{slug}.md` (reindex symlinks it into `core/policies/`, so it rides global scope and survives upgrades).
 - Release-shipped, all-users learnings → `core/policies/{slug}.md` (promoted to hq-core via `hq-pack-admin`).
 
-"Global promotion" of a critical or user-correction rule means **raising its enforcement to `hard` in its policy file**, not copying it into the charter — hard-enforcement policies already surface for every session through the policy digest (`core/policies/_digest.md`), so the charter copy is redundant and harmful (it creates locked-scope drift and re-ships one instance's learnings to everyone).
+"Global promotion" of a critical or user-correction rule means **raising its enforcement to `hard` in its policy file**, not copying it into the charter — hard-enforcement policies already surface for every session through the policy trigger hook (`inject-policy-on-trigger.sh`), so the charter copy is redundant and harmful (it creates locked-scope drift and re-ships one instance's learnings to everyone).
 
 This applies to `/learn` and `/learn --hard`, to manual edits, and to any tool or agent capturing a learning.
 
