@@ -3,6 +3,8 @@ id: hq-audience-mode
 title: Two audiences — quiet plain-language by default, technical play-by-play on request
 scope: global
 trigger: every session — governs how much the agent says to the human and in what register
+when: always
+on: [SessionStart]
 enforcement: soft
 version: 1
 created: 2026-05-30
@@ -70,4 +72,4 @@ The mental model: the agent is a friendly teammate who works heads-down and then
 2. Surfaced lines in default mode contain no raw technical tokens (typecheck / lint / RSC / server→client / "PR #N") — outcomes instead, links preserved.
 3. `/output-style hq-operator` restores the terse-technical play-by-play.
 4. Auto-Clarity (destructive/security/plan) renders full prose in both modes; `/hq-share` and `/deploy` URLs still surface.
-5. `grep hq-audience-mode core/policies/_digest.md` hits after the digest rebuild.
+5. `grep -E '^(when|on):' core/policies/hq-audience-mode.md` hits, confirming the policy carries the trigger frontmatter that the SessionStart hook (`inject-policy-on-trigger.sh`) uses to surface it.

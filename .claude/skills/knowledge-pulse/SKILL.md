@@ -1,7 +1,7 @@
 ---
 name: knowledge-pulse
 description: Lightweight background gardening pass for a company's knowledge base and policies. Spawned by startwork/brainstorm/plan after company resolution. Never run directly by users.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/build-policy-digest.sh:*), Bash(core/scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/read-policy-frontmatter.sh:*)
 ---
 
 # Knowledge Pulse — Background Gardening
@@ -38,7 +38,7 @@ The parent command provides these values in the spawn prompt:
 | Stale policy detection | Yes | Yes | Yes |
 | Cross-scope conflict detection | No | Yes | Yes |
 | Orphan policy detection | No | Yes | Yes |
-| Rebuild policy digest | If changed | If changed | If changed |
+| Verify policy `when:`/`on:` frontmatter | If changed | If changed | If changed |
 
 ## Process
 
@@ -129,7 +129,7 @@ If `search_results_summary` provided:
 
 #### 3a. Policy Frontmatter Validation
 
-Glob `{policies_path}/*.md` (skip `example-policy.md`, `_digest.md`).
+Glob `{policies_path}/*.md` (skip `example-policy.md`).
 
 For each policy file:
 
@@ -170,15 +170,9 @@ For each policy file:
 3. If orphaned: log as "Orphan policy {filename}: references {type} {name} which no longer exists"
 4. Track: `policies_orphaned` count
 
-#### 3e. Rebuild Policy Digest
+#### 3e. Policy Surfacing
 
-If **any** policy was modified in Steps 3a-3d (currently none are modified — all report-only), OR if `{policies_path}/_digest.md` does not exist:
-
-```bash
-bash core/scripts/build-policy-digest.sh
-```
-
-Track: `digest_rebuilt = true/false`
+No digest rebuild step exists. Policies surface automatically via the SessionStart trigger hook (`inject-policy-on-trigger.sh`) and the `migrate-policy-triggers.sh` backfill. If a policy was modified in Steps 3a-3d (currently none are — all report-only), just ensure it still carries `when:`/`on:` frontmatter.
 
 ### Step 4: Commit Changes
 
@@ -218,7 +212,6 @@ Write to `workspace/reports/knowledge-pulse/{company_slug}-{YYYY-MM-DD}.md`:
 - Stale references: {N} policies reference missing paths/repos/workers
 - Cross-scope conflicts: {N} potential conflicts {(skipped — startwork caller)}
 - Orphan policies: {N} reference nonexistent repos/workers {(skipped — startwork caller)}
-- Digest: {rebuilt | up to date | not needed}
 
 ## Contradictions Found
 {table: file_a | file_b | conflicting claims — or "None" or "Skipped (startwork caller)"}
@@ -244,7 +237,7 @@ Write to `workspace/reports/knowledge-pulse/{company_slug}-{YYYY-MM-DD}.md`:
 Append one JSON line to `workspace/metrics/knowledge-health.jsonl`:
 
 ```json
-{"timestamp":"{ISO8601}","company":"{company_slug}","caller":"{caller}","repo_type":"{repo_type}","index_refreshed":{bool},"docs_tagged":{N},"stale_flagged":{N},"company_info_age_days":{N|null},"contradictions":{N},"policies_validated":{N},"policies_invalid":{N},"policies_stale_refs":{N},"policy_conflicts":{N},"policies_orphaned":{N},"digest_rebuilt":{bool}}
+{"timestamp":"{ISO8601}","company":"{company_slug}","caller":"{caller}","repo_type":"{repo_type}","index_refreshed":{bool},"docs_tagged":{N},"stale_flagged":{N},"company_info_age_days":{N|null},"contradictions":{N},"policies_validated":{N},"policies_invalid":{N},"policies_stale_refs":{N},"policy_conflicts":{N},"policies_orphaned":{N}}
 ```
 
 ## Rules

@@ -1,5 +1,7 @@
 ---
 id: no-headless-browser-in-vercel-lambda
+when: lambda || vercel || browser
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 scope: global

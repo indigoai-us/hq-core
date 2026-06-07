@@ -1,6 +1,6 @@
 version: 1
-hqVersion: "15.0.8"
-updatedAt: "2026-06-05T08:57:41Z"
+hqVersion: "15.0.9"
+updatedAt: "2026-06-06T12:15:36Z"
 # hq-core is the minimal scaffold seed. Rich add-ons ship as `@indigoai-us/hq-pack-*`
 # npm packages installed into `core/packages/` via `hq install`. See `core/packages/README.md`.
 rules:
@@ -66,7 +66,7 @@ recommended_packages:
     # (`-d X && ! -L X`), so a fresh `npx create-hq` (no engineering surface) and
     # an already-migrated host (paths are now pack symlinks) both skip — keeping
     # engineering opt-in for non-coders. Coders on a green install opt in with
-    # `hq install ...#packages/hq-pack-engineering` per MIGRATION.md.
+    # `hq install ...#packages/hq-pack-engineering` (see CHANGELOG.md).
     conditional: '[ -d .claude/skills/tdd ] && [ ! -L .claude/skills/tdd ] || [ -d .claude/skills/review ] && [ ! -L .claude/skills/review ] || [ -d .claude/skills/execute-task ] && [ ! -L .claude/skills/execute-task ] || [ -d .claude/skills/architect ] && [ ! -L .claude/skills/architect ] || [ -d .claude/skills/run-project ] && [ ! -L .claude/skills/run-project ] || [ -d core/workers/public/qa-tester ] && [ ! -L core/workers/public/qa-tester ] || [ -d core/workers/public/security-scanner ] && [ ! -L core/workers/public/security-scanner ]'
 # Paths the menubar app (and the /personal:replace-from-staging skill)
 # may overwrite when applying an `hq-core-staging` release on top of the
@@ -86,7 +86,6 @@ replace_from_staging:
     - AGENTS.md
   preserve_subpaths:
     - .claude/settings.local.json
-# checksums are recomputed by core/scripts/build-policy-digest.sh + related tooling
-# on the hq-core side. Intentionally omitted on first commit; regenerated on
-# the first publish that runs checksum tooling.
+# checksums are recomputed by the hq-core publish tooling. Intentionally omitted
+# on first commit; regenerated on the first publish that runs checksum tooling.
 checksums: {}

@@ -3,6 +3,8 @@ id: hq-core-main-gated-by-ruleset-not-classic-protection
 title: hq-core main is gated by a repository RULESET, not classic branch protection
 scope: global
 trigger: merging a PR into indigoai-us/hq-core main (e.g. promote PRs from hq-core-staging)
+when: pr && merge
+on: [PreToolUse, UserPromptSubmit]
 enforcement: hard
 public: true
 vendor_public_ok: true

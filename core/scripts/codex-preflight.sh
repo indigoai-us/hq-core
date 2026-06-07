@@ -189,12 +189,20 @@ cmd_policies() {
     esac
   done
 
-  if [[ ! -f "${HOOKS_DIR}/load-policies-for-session.sh" ]]; then
-    echo "skip: missing load-policies-for-session.sh"
+  # Resolve the real HQ-root hooks dir locally: this file lives at
+  # core/scripts/, so the hooks are two levels up. (The global HOOKS_DIR derives
+  # from HQ_ROOT=core, which is correct for ${HQ_ROOT}/scripts/ siblings but
+  # points at a nonexistent core/.claude/hooks for hook scripts.)
+  local hooks_root; hooks_root="$(cd "${SCRIPT_DIR}/../.." && pwd)/.claude/hooks"
+  if [[ ! -f "${hooks_root}/inject-policy-on-trigger.sh" ]]; then
+    echo "skip: missing inject-policy-on-trigger.sh"
     return 0
   fi
 
-  (cd "${cwd}" && printf '%s' '{"source":"startup"}' | bash "${HOOKS_DIR}/load-policies-for-session.sh")
+  # SessionStart policy surfacing is now the trigger hook's job — every
+  # on:[SessionStart] policy whose when: matches is injected. The standalone
+  # digest loader (load-policies-for-session.sh) was retired.
+  (cd "${cwd}" && printf '%s' '{"hook_event_name":"SessionStart","source":"startup","cwd":"'"${cwd}"'"}' | bash "${hooks_root}/inject-policy-on-trigger.sh")
 }
 
 main() {

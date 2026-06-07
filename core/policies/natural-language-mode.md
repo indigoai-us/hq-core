@@ -3,6 +3,8 @@ id: natural-language-mode
 title: Natural Language Mode — infer intent, auto-route to the right HQ skill, confirm-then-run
 scope: global
 trigger: any session — applies to every user prompt that is not already an explicit slash command
+when: always
+on: [SessionStart]
 enforcement: soft
 version: 1
 created: 2026-05-22
@@ -32,12 +34,12 @@ The goal is delight without losing power: everything just works, and the full de
 
 **Before executing any company / project / repo-scoped work, the session MUST be anchored on that company.** This is non-negotiable — it is the "core power" that delight must not erase: company-scoped policy enforcement and credential isolation.
 
-Why this needs explicit handling: `load-policies-for-session.sh` binds the active company **from cwd only** (`companies/{co}/...`, or a repo path → owning company via manifest). When the session starts at the **HQ root** (the common case) and routing sends work straight to a skill, the company digest, manifest infra, and handoff state are **never loaded** — there is no cwd signal and no `/startwork` ran. Routing that skips anchoring silently drops company policies and risks cross-company credential errors.
+Why this needs explicit handling: the SessionStart trigger hook (`inject-policy-on-trigger.sh`) injects global on:[SessionStart] policies, but company-scoped policies, manifest infra, and handoff state are resolved **from cwd**. When the session starts at the **HQ root** (the common case) and routing sends work straight to a skill, those company-scoped policies, manifest infra, and handoff state are **never loaded** — there is no cwd signal and no `/startwork` ran. Routing that skips anchoring silently drops company policies and risks cross-company credential errors.
 
 So when intent resolves to company/project/repo work, **silently anchor first** (no menu, no banner — this is `/startwork`'s context-gathering minus the interactive surface):
 
 1. **Bind the company.** Resolve from explicit mention → cwd → repo's owning company in `companies/manifest.yaml` → handoff state. If genuinely ambiguous, ask one tight question (structured picker) before proceeding.
-2. **Load company-scoped policies.** Read `companies/{co}/policies/_digest.md` if it exists (and the active repo's `repos/{scope}/{repo}/.claude/policies/_digest.md`) so company + repo rules are in context. The cwd-keyed loader will not have done this for an HQ-root start.
+2. **Load company-scoped policies.** Read the hard-enforcement policy files under `companies/{co}/policies/` (and the active repo's policy files under `repos/{scope}/{repo}/.claude/policies/`) directly so company + repo rules are in context. An HQ-root start has no cwd signal, so these are not loaded automatically.
 3. **Load infra context.** Read the company's `companies/manifest.yaml` entry — `services`, `aws_profile`, `dns_zones`, repos, workers — so credentials and isolation resolve correctly. Never guess or fall back to another company's creds (`credential-access-protocol`).
 4. **Read in-flight state.** Check `workspace/threads/handoff.json` (and the thread it references) for where work left off.
 
@@ -153,7 +155,7 @@ The ⚠ gate is additive to — never a replacement for — the charter's irreve
 Two surfaces deliver this mode; neither requires the user to type a command.
 
 1. **First-touch nudge** — `personal/hooks/UserPromptSubmit/natural-language-router.sh` (auto-loaded by `master-hook.sh`, personal layer). Fires once, on the **first prompt of a session**, and only when the user did **not** open with an explicit slash command (startwork, goals, idea, brainstorm, prd, run-project, or any `/command`). It injects a `<natural-language-routing>` reminder so a cold "I want to…" gets routed instead of stalling. Idempotent via a per-session marker at `workspace/orchestrator/policy-trigger-state/{session_id}.nl-router-fired`. Disable with `HQ_NL_ROUTER=0` or `HQ_DISABLED_HOOKS=natural-language-router`.
-2. **This policy** — rides the session-start digest (one-line summary) and is the full reference (intent map, risk gate, examples). It governs routing for the whole session, not just the first turn.
+2. **This policy** — surfaced at session start by the trigger hook (`inject-policy-on-trigger.sh`) and is the full reference (intent map, risk gate, examples). It governs routing for the whole session, not just the first turn.
 
 The first-touch hook is intentionally narrow: it solves the cold-start problem (a user who doesn't know the command surface). Once the session is underway, routing is the model's standing obligation under this policy — it does not depend on a per-turn hook.
 
@@ -229,4 +231,4 @@ After this policy lands, the following session behavior holds (observation, not 
 3. **Cheap routes proceed; ⚠ routes stop.** A `/diagnose` route proceeds same turn; a `/deploy` or `/run-project` route stops for explicit go.
 4. **Explicit commands untouched.** A typed `/review` runs literally with no re-inference.
 5. **Context resolved, not guessed.** Company/project/repo resolved from manifest/handoff/qmd; no cross-company credential use.
-6. **Digest entry.** `grep natural-language-mode core/policies/_digest.md` returns a hit after the auto-rebuild.
+6. **Trigger frontmatter.** `grep -E '^(when|on):' core/policies/natural-language-mode.md` returns a hit, confirming the policy carries the trigger frontmatter that the SessionStart hook (`inject-policy-on-trigger.sh`) uses to surface it.

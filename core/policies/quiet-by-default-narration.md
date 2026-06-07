@@ -3,6 +3,8 @@ id: quiet-by-default-narration
 title: Quiet by default — silent on routine ops, surface only when user must know
 scope: global
 trigger: any session — applies to all assistant text emissions regardless of output style
+when: always
+on: [SessionStart]
 enforcement: soft
 version: 1
 created: 2026-05-12
@@ -190,4 +192,4 @@ After this policy lands, the following session behavior holds (run as observatio
 5. **`/deploy` carveout.** One-line "Deployed to {url}" surfaces.
 6. **`/run-project` verbose.** Per-story narration unchanged.
 7. **Auto-checkpoint silent.** Thread file lands in git, no chat narration about it.
-8. **Digest entry.** `grep quiet-by-default-narration core/policies/_digest.md` returns a hit after the auto-rebuild.
+8. **Trigger frontmatter.** `grep -E '^(when|on):' core/policies/quiet-by-default-narration.md` returns a hit, confirming the policy carries the trigger frontmatter that the SessionStart hook (`inject-policy-on-trigger.sh`) uses to surface it.

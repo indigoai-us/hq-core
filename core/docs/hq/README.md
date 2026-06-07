@@ -128,7 +128,7 @@ Workers learn from and contribute to shared knowledge:
 - `core/knowledge/public/loom/` — Loom agent patterns (reference)
 - `core/knowledge/public/projects/` — Project templates
 - `core/knowledge/public/getting-started/` — Onboarding material
-- `personal/knowledge/` — Your user-personal knowledge overlay. Entries here are symlinked into `core/knowledge/` by master-sync, so they appear inside core without changing precedence.
+- `personal/knowledge/` — Your user-personal knowledge overlay. Entries here are symlinked into `core/knowledge/` by reindex, so they appear inside core without changing precedence.
 
 Optional packs (e.g. `@indigoai-us/hq-pack-design-styles`, `@indigoai-us/hq-pack-gemini`) install additional knowledge bases.
 
@@ -448,7 +448,6 @@ my-hq/
 │   ├── skills/                # 55 skill definitions
 │   ├── output-styles/         # Output styles (e.g. HQ)
 │   ├── scripts/               # Claude-scoped helpers (run-project.sh, monitor-project.sh, …)
-│   ├── stack.yaml
 │   └── settings.json / settings.local.json
 ├── core/
 │   ├── core.yaml              # Core manifest
@@ -457,7 +456,7 @@ my-hq/
 │   │   ├── public/            # Bundled public knowledge bases
 │   │   └── private/           # Private knowledge bases (populated via packs / sync)
 │   ├── packages/              # Packaged extensions
-│   ├── policies/              # Cross-cutting rules (~259), with `_digest.md`
+│   ├── policies/              # Cross-cutting rules (~259)
 │   ├── scripts/               # Shared shell utilities (run-project.sh, audit-log.sh, …)
 │   ├── settings/              # Orchestrator config
 │   └── workers/

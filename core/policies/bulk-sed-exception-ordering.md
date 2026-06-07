@@ -3,6 +3,8 @@ id: bulk-sed-exception-ordering
 title: Bulk sed with exceptions — run sweep first, fix exceptions last
 scope: global
 trigger: bulk file edits, sed, find + sed, mass replace with exceptions
+when: sed
+on: [PreToolUse, UserPromptSubmit]
 enforcement: soft
 public: true
 ---

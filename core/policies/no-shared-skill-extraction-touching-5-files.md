@@ -1,5 +1,7 @@
 ---
 id: no-shared-skill-extraction-touching-5-files
+when: skill
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
 scope: global

@@ -3,8 +3,11 @@ id: hq-auth-middleware-whitelist-password-flow
 title: Audit auth middleware whitelist when adding password-protected flow entry points
 scope: global
 trigger: adding entry-point endpoints (password form, access verify, token exchange) that must serve unauthenticated visitors
+when: auth || middleware
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
+vendor_public_ok: true
 version: 1
 created: 2026-04-28
 updated: 2026-04-28

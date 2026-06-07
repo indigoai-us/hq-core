@@ -3,6 +3,8 @@ id: hq-bash-discipline
 title: HQ bash discipline — IFS, BSD/GNU portability, pgrep validation, set -e returns
 scope: global
 trigger: when writing or editing any shell script in scripts/, .claude/hooks/, workers/, companies/*, or any HQ-targeted shell code that may run on a developer Mac
+when: .sh
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 tier: 1
 public: true
@@ -137,7 +139,7 @@ All seven rules share the same failure shape: **silent success on the developer'
 - pgrep self-match: a `pkill -TERM -f 'run-project.sh.*curriculum-expansion'` that killed the agent's own bash shell mid-tool-call.
 - `set -e` returns: `run-project.sh` silently terminating instead of retrying — direct `handle_failure` call without `|| result=$?`.
 
-Keeping the rules on one page rather than seven separate files preserves the cross-references (rules 5 and 6 only work together; rule 4 is invalid without rule 3) and reduces cold-start digest weight without losing any failure mode.
+Keeping the rules on one page rather than seven separate files preserves the cross-references (rules 5 and 6 only work together; rule 4 is invalid without rule 3) and reduces cold-start context weight without losing any failure mode.
 
 ## Related
 

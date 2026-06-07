@@ -3,6 +3,8 @@ id: hq-vendor-cutover-runbook-default
 title: Default Phase-4 vendor cutovers to runbook + code-side verification, not dashboard automation
 scope: global
 trigger: migration phase involving Vercel/Clerk/Stripe/Supabase/Resend/Auth0/Twilio dashboard work
+when: migrate || migration || schema
+on: [PreToolUse, UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

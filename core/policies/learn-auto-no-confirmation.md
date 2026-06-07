@@ -3,6 +3,8 @@ id: hq-learn-auto-no-confirmation
 title: /learn runs automatically and silently — never ask the user for permission to capture a learning
 scope: global
 trigger: A reusable rule, correction, or insight is identified at end-of-turn, during /checkpoint, /handoff, /retro, /execute-task, /run-project, or any point a learning would normally be captured
+when: /learn || /checkpoint || /handoff || /retro || /execute-task || /run-project
+on: [UserPromptSubmit]
 enforcement: hard
 public: true
 version: 1

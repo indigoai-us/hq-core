@@ -3,6 +3,8 @@ id: chunked-reads-large-files
 title: Chunked Reads for Large Files
 scope: global
 trigger: before reading files over 500 lines
+when: always
+on: [SessionStart]
 enforcement: soft
 version: 1
 created: 2026-03-31

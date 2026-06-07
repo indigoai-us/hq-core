@@ -26,7 +26,7 @@ HQ ships with a pre-configured `.obsidian/` vault. Open the HQ folder in Obsidia
 | `personal/projects/` | Personal/HQ projects |
 | `workspace/reports/` | Generated reports |
 | `workspace/social-drafts/` | Content pipeline |
-| `core/docs/hq/` | INDEX.md, USER-GUIDE.md, CHANGELOG.md, MIGRATION.md |
+| `core/docs/hq/` | INDEX.md, USER-GUIDE.md, CHANGELOG.md |
 
 ## What's Excluded
 

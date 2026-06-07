@@ -3,6 +3,8 @@ id: hq-confirm-session-scope-after-plan-approval
 title: Confirm per-session execution scope after ExitPlanMode for multi-phase or high-blast-radius plans
 scope: global
 trigger: an `ExitPlanMode`-approved plan that spans 3+ phases, contains production-mutating steps (live API calls, git tag push, repo rename, DNS change, payment/auth provider mutations), or is structured as a multi-session migration
+when: /plan || /deep-plan || /brainstorm
+on: [UserPromptSubmit]
 enforcement: soft
 public: true
 version: 1

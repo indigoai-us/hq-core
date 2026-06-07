@@ -138,7 +138,7 @@ Once company `{co}` is resolved (from any mode):
 
 1. **Company policies**: If `{co}` known, read frontmatter-only for each policy in `companies/{co}/policies/` via `bash core/scripts/read-policy-frontmatter.sh {file}` (skip `example-policy.md`). Note count + titles of any `enforcement: hard` rules. For hard-enforcement policies only, additionally read the `## Rule` section with targeted Read + range.
 2. **Repo policies**: If repo context resolved, check `{repoPath}/.claude/policies/` (if dir exists). Same frontmatter-only pattern.
-3. **Global policies**: Count files in `core/policies/`. Prefer the compiled digest at `core/policies/_digest.md` if present (auto-loaded by SessionStart hook — this step becomes a no-op when digest is available). If no digest, filter to policies whose `trigger` matches current context — don't load all.
+3. **Global policies**: Count files in `core/policies/`. On:[SessionStart] policies are already injected automatically by the SessionStart trigger hook (`inject-policy-on-trigger.sh`), so this step is largely a no-op. If you need more, filter to policies whose `when:`/`trigger` matches current context — don't load all.
 
 Display in orientation block:
 ```

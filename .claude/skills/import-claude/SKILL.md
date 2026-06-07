@@ -259,7 +259,7 @@ Registration order is strict — violate this and the worker's knowledge pointer
    - `skills`: paths of imported skill dirs
    - `knowledge`: paths of imported knowledge dirs (must already be registered)
    - `description`: synthesized from SKILL.md frontmatter (user edits in the /newworker flow)
-3. `/newworker` writes `worker.yaml`; `core/workers/registry.yaml` regenerates automatically via master-sync.
+3. `/newworker` writes `worker.yaml`; `core/workers/registry.yaml` regenerates automatically via reindex.
 4. Record the cluster in `$SCAN_DIR/synthesized-workers.json`.
 
 ### Shared vs company default

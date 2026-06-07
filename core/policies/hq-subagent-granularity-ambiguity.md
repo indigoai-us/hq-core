@@ -3,6 +3,8 @@ id: hq-subagent-granularity-ambiguity
 title: "Already uses sub-agents" is ambiguous — verify granularity when evaluating context preservation
 scope: global
 trigger: When analyzing whether an orchestrator preserves parent context, or when a user asks "does this already use sub-agents?" before redesigning an agent pipeline
+when: subagent || subagents || sub-agent || sub-agents
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

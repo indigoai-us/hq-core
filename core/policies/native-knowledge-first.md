@@ -3,6 +3,8 @@ id: hq-native-knowledge-first
 title: Resolve meeting notes / signals against HQ-native stores first; steer activation, never default to email or third-party notetakers
 scope: global
 trigger: user asks for meeting notes, standup notes, recap, action items, decisions, wins/accomplishments, risks, open questions, commitments, follow-ups, or signals for a company
+when: meeting || standup || recap || signals || decisions || commitments || accomplishments || risks || ontology
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

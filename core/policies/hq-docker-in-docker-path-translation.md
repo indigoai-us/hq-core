@@ -3,6 +3,8 @@ id: hq-docker-in-docker-path-translation
 title: Docker-in-Docker bind mounts require host-side path translation
 scope: global
 trigger: when spawning sibling containers via Docker socket from inside a container
+when: docker
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 version: 1
 created: 2026-03-25

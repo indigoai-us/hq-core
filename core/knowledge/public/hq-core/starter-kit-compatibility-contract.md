@@ -18,7 +18,7 @@ Desktop MUST function with this absolute minimum. If any item is missing, Deskto
 |---|------|------|----------------|--------------|
 | 1 | `.claude/CLAUDE.md` | file | Exists, non-empty | Core identity of an HQ instance |
 | 2 | `.claude/commands/` | dir | Contains >= 1 `.md` file | Commands panel needs at least one entry |
-| 3 | `core/workers/registry.yaml` | file | Valid YAML, has `workers:` key (array). **Auto-generated** from worker.yaml files by `core/scripts/generate-workers-registry.sh` on every master-sync run. | Worker browser needs a parseable registry |
+| 3 | `core/workers/registry.yaml` | file | Valid YAML, has `workers:` key (array). **Auto-generated** from worker.yaml files by `core/scripts/generate-workers-registry.sh` on every reindex run. | Worker browser needs a parseable registry |
 | 4 | `personal/projects/` | dir | Exists (may be empty) | Personal/HQ project dashboard mount point |
 | 5 | `workspace/` | dir | Exists | Runtime state container |
 | 6 | `workspace/threads/` | dir | Exists (may be empty) | Thread browser mount point |

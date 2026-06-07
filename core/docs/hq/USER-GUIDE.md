@@ -211,7 +211,6 @@ HQ/
 │   ├── skills/                # Skill definitions (55)
 │   ├── output-styles/
 │   ├── scripts/
-│   ├── stack.yaml
 │   └── settings.json / settings.local.json
 ├── core/
 │   ├── core.yaml              # Core manifest

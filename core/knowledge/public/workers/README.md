@@ -62,7 +62,7 @@ schedule:
 
 ```
 core/workers/
-├── registry.yaml           # AUTO-GENERATED index — do not edit (regenerated from worker.yaml files by master-sync)
+├── registry.yaml           # AUTO-GENERATED index — do not edit (regenerated from worker.yaml files by reindex)
 ├── {category}/
 │   └── {worker-id}/
 │       ├── worker.yaml     # Definition
@@ -72,7 +72,7 @@ core/workers/
 
 ### Build Checklist
 
-1. Create `core/workers/{category}/{id}/worker.yaml` with required fields (`worker.id`, `worker.type`, `worker.description`). Registry regenerates automatically on next master-sync run.
+1. Create `core/workers/{category}/{id}/worker.yaml` with required fields (`worker.id`, `worker.type`, `worker.description`). Registry regenerates automatically on next reindex run.
 2. Define skills with clear inputs/outputs/verification
 3. Test with on-demand execution first
 4. Document in this knowledge base if patterns emerge

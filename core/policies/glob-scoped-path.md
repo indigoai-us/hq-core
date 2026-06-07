@@ -3,6 +3,8 @@ id: hq-glob-scoped-path
 title: Always Scope Glob with Path Parameter
 scope: global
 trigger: when using the Glob tool
+when: glob || find
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 tier: 1
 version: 1

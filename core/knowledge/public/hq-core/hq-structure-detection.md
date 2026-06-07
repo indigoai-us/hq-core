@@ -38,7 +38,6 @@ Present in every fresh `hq-starter-kit` clone. Desktop should expect these and r
 | `core/docs/hq/README.md` | file | Instance README | Informational |
 | `core/docs/hq/CHANGELOG.md` | file | Version history | Informational |
 | `core/docs/hq/LICENSE` | file | MIT license | Informational |
-| `core/docs/hq/MIGRATION.md` | file | Upgrade guide | Informational |
 | `.gitignore` | file | Git ignore rules | Standard |
 | `agents.md` | file | User profile + preferences | Created by /personal-interview or /setup |
 | `data/journal/` | dir | Journal entries | .gitkeep in starter |

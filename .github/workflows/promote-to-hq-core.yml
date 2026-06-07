@@ -243,10 +243,39 @@ jobs:
             --exclude='.obsidian/' \
             staging/ target/
 
+      - name: Detect promotable changes (auto mode)
+        id: realchanges
+        # A release PR should ship actual scaffold content. Two kinds of diff do
+        # NOT justify cutting a versioned release on their own:
+        #   - core/core.yaml: auto-promote stamps the version bump into it below,
+        #     so it ALWAYS differs (this caused empty `release: v<next>` PRs).
+        #   - .github/workflows/**: CI/release plumbing, not shipped content.
+        # If nothing else differs, skip the stamp/PR and close any stale standing
+        # PR. (When real content DOES change, the rsync still carries any pending
+        # workflow changes along into that PR — they just don't trigger one.)
+        if: steps.params.outputs.mode == 'auto'
+        run: |
+          set -euo pipefail
+          cd target
+          git add -A
+          REAL="$(git diff --cached --name-only \
+            | grep -vx 'core/core.yaml' \
+            | grep -vE '^\.github/workflows/' || true)"
+          git reset -q
+          if [ -z "$REAL" ]; then
+            echo "::notice::No promotable changes beyond the version bump; skipping release PR."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "----- promotable files -----"
+            printf '%s\n' "$REAL"
+          fi
+
       - name: Stamp hqVersion in target/core/core.yaml
         # Bumps core/core.yaml hqVersion + updatedAt to the resolved version so
         # the PR diff (and the squash-merge commit that becomes the tag target)
         # carries the new version.
+        if: steps.realchanges.outputs.skip != 'true'
         env:
           INPUT_VERSION: ${{ steps.params.outputs.version }}
         run: |
@@ -282,6 +311,7 @@ jobs:
 
       - name: Diff summary
         id: diff
+        if: steps.realchanges.outputs.skip != 'true'
         run: |
           set -euo pipefail
           cd target
@@ -311,9 +341,26 @@ jobs:
             exit 1
           fi
 
+      - name: Close stale standing PR (auto, no promotable changes)
+        if: steps.params.outputs.mode == 'auto' && steps.realchanges.outputs.skip == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.params.outputs.branch }}
+        run: |
+          set -euo pipefail
+          EXISTING="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$EXISTING" ]; then
+            gh pr close "$EXISTING" --repo "$TARGET_REPO" \
+              --comment "Auto-closed by promote-to-hq-core: no promotable changes beyond the version bump." \
+              --delete-branch
+            echo "Closed stale standing PR #${EXISTING} and deleted ${BRANCH}."
+          else
+            echo "No open standing PR for ${BRANCH}; nothing to close."
+          fi
+
       - name: Build PR body
         id: body
-        if: steps.nochanges.outputs.skip != 'true'
+        if: steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true'
         env:
           INPUT_VERSION: ${{ steps.params.outputs.version }}
           INPUT_TYPE: ${{ steps.params.outputs.pr_type }}
@@ -383,14 +430,14 @@ jobs:
           cat "$BODY_FILE"
 
       - name: Dry run — stop here
-        if: steps.nochanges.outputs.skip != 'true' && steps.params.outputs.dry_run == 'true'
+        if: steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run == 'true'
         env:
           BRANCH: ${{ steps.params.outputs.branch }}
         run: |
           echo "::notice::dry_run=true — branch '$BRANCH' built locally but NOT pushed; no PR opened."
 
       - name: Commit
-        if: steps.nochanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
+        if: steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
         env:
           COMMIT_MSG: ${{ steps.params.outputs.commit_msg }}
         run: |
@@ -399,7 +446,7 @@ jobs:
           git commit -m "$COMMIT_MSG"
 
       - name: Push branch to hq-core
-        if: steps.nochanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
+        if: steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ steps.params.outputs.branch }}
@@ -416,7 +463,7 @@ jobs:
           fi
 
       - name: Open PR on hq-core (if not already open)
-        if: steps.nochanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
+        if: steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ steps.params.outputs.branch }}

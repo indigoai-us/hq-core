@@ -3,6 +3,8 @@ id: mcp-transport-detection
 title: Detect MCP transport type before configuring
 scope: global
 trigger: Adding or updating MCP server entries in .mcp.json
+when: .mcp.json
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
 ---

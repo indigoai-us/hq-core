@@ -158,6 +158,11 @@ jobs:
           # direct inputs in v1.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.app-token.outputs.token }}
+          # Allow PRs opened by hq-audit-bot (the promote/backmerge App) to be
+          # audited — without this the action refuses with "Workflow initiated
+          # by non-human actor: hq-audit-bot". Auto-promote release PRs are all
+          # bot-authored, so they'd otherwise never get a PR Audit.
+          allowed_bots: "hq-audit-bot"
           # --dangerously-skip-permissions: this bot runs unattended in CI on a
           #   private PR audit task; interactive permission prompts would just
           #   rack up denials (we saw 15 in our first real run) and burn turns.

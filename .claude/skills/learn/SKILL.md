@@ -1,6 +1,6 @@
 ---
 name: learn
-description: Capture and classify learnings, route to structured policy files (rules) or insight files (educational knowledge). Deduplicates via qmd (Grep fallback), rebuilds policy digest after policy changes. Callable manually or from /execute-task, /run-project, /handoff, /checkpoint. Use --hard flag for hard-enforcement rules.
+description: Capture and classify learnings, route to structured policy files (rules) or insight files (educational knowledge). Deduplicates via qmd (Grep fallback). New policies surface automatically via the SessionStart trigger hook. Callable manually or from /execute-task, /run-project, /handoff, /checkpoint. Use --hard flag for hard-enforcement rules.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(grep:*), Bash(mkdir:*), Bash(date:*), Bash(ls:*), Bash(bash:*), Bash(git:*), Bash(rm:*), Bash(stat:*), Bash
 ---
 
@@ -26,7 +26,7 @@ Called programmatically by `/execute-task` and `/run-project` after task complet
 | Global / personal (**default**) | `personal/policies/{slug}.md` (scope: global) | Policy file |
 | Worker (legacy) | `core/workers/*/{id}/worker.yaml` | Instructions block `## Learnings` |
 
-> **`/learn` never writes to `core/policies/`.** `core/` is release-shipped scaffold, replaced wholesale by `/update-hq` — anything written there is lost on the next upgrade (hard policy `hq-customizations-live-in-personal-or-company`). Operator-universal learnings go to `personal/policies/`, which `master-sync.sh` symlinks back into `core/policies/` so they still load as global at SessionStart — but live in an upgrade-safe location. A genuine product-level core policy (one that should ship to *every* HQ install) is **not** captured via `/learn`: author it locally, then publish through `repos/private/hq-core-staging/` + `/promote-hq-core` (see `staging-promotion-required`). If a learning is judged truly core, `/learn` stops and points you at that pipeline rather than writing into `core/`.
+> **`/learn` never writes to `core/policies/`.** `core/` is release-shipped scaffold, replaced wholesale by `/update-hq` — anything written there is lost on the next upgrade (hard policy `hq-customizations-live-in-personal-or-company`). Operator-universal learnings go to `personal/policies/`, which `reindex.sh` symlinks back into `core/policies/` so they still load as global at SessionStart — but live in an upgrade-safe location. A genuine product-level core policy (one that should ship to *every* HQ install) is **not** captured via `/learn`: author it locally, then publish through `repos/private/hq-core-staging/` + `/promote-hq-core` (see `staging-promotion-required`). If a learning is judged truly core, `/learn` stops and points you at that pipeline rather than writing into `core/`.
 
 ### Insights → Insight files (educational understanding)
 
@@ -45,11 +45,10 @@ See `core/knowledge/public/hq-core/insights-spec.md` for the insight file format
 
 Before processing, load applicable policies with minimal context burn:
 
-1. Prefer the SessionStart-injected digest at `core/policies/_digest.md` if present — it already contains frontmatter for all global and command-scoped policies
-2. Otherwise, for each file in `core/policies/` (skip `_digest.md` and `example-policy.md`), run `bash core/scripts/read-policy-frontmatter.sh {file}` to get frontmatter-only
-3. Note `enforcement: hard` titles. Only Read the `## Rule` section of hard-enforcement policies if one looks relevant to the current learning
+1. For each file in `core/policies/` (skip `example-policy.md`), run `bash core/scripts/read-policy-frontmatter.sh {file}` to get frontmatter-only
+2. Note `enforcement: hard` titles. Only Read the `## Rule` section of hard-enforcement policies if one looks relevant to the current learning
 
-Skip full policy body loads — the digest and frontmatter contain enough metadata for the learn pipeline.
+Skip full policy body loads — the frontmatter contains enough metadata for the learn pipeline.
 
 ## Step 1: Parse Input
 
@@ -135,9 +134,8 @@ If the input starts with `[` (JSON array), enter batch mode:
 1. **Detect batch input:** if the input is a JSON array (starts with `[`), enter batch mode
 2. **Run qmd vsearch dedup ONCE for all items:** concatenate all item `content` fields as a single query string for a single `qmd vsearch` call, then match results against each item individually
 3. **Process each item through Steps 2–6 normally:** extract rules, classify scope, create/update policy files — one item at a time using the shared dedup results
-4. **Run `bash core/scripts/build-policy-digest.sh` ONCE at the end** (not per-item) — only if any item produced a policy file write
-5. **Write a single event log entry** covering all items processed in the batch
-6. **Backward compatibility:** all existing modes (1, 2, 3) work exactly as before — batch is a new detection branch only
+4. **Write a single event log entry** covering all items processed in the batch
+5. **Backward compatibility:** all existing modes (1, 2, 3) work exactly as before — batch is a new detection branch only
 
 ## Step 1.5: Classify Content Type
 
@@ -184,7 +182,7 @@ For each extracted rule, determine scope (most specific wins):
 | Universal pattern (**default** when no company/repo) | `global` | `personal/policies/` |
 | User correction via /learn --hard | From context, default global → `personal/` | Detected scope directory |
 
-**`/learn` does not target `core/policies/`.** The global/command rows route to `personal/policies/` — operator-owned and upgrade-safe — and `master-sync.sh` symlinks each entry into `core/policies/` so it still loads as a global/command policy. Reserve `core/policies/` for release-shipped policies authored through the staging → `/promote-hq-core` pipeline. If a rule is genuinely product-core (must ship to every HQ install), stop and direct the user to that pipeline; never Write it into `core/`.
+**`/learn` does not target `core/policies/`.** The global/command rows route to `personal/policies/` — operator-owned and upgrade-safe — and `reindex.sh` symlinks each entry into `core/policies/` so it still loads as a global/command policy. Reserve `core/policies/` for release-shipped policies authored through the staging → `/promote-hq-core` pipeline. If a rule is genuinely product-core (must ship to every HQ install), stop and direct the user to that pipeline; never Write it into `core/`.
 
 **Primary output = policy files.** The canonical format for persistent rules is structured policy files (per `core/knowledge/public/hq-core/policies-spec.md`). Worker.yaml injection is still supported for worker-specific learnings.
 
@@ -256,7 +254,7 @@ If Step 4.5 found a matching policy → update was already handled. Otherwise, c
 - Command scope (operator-authored) → `personal/policies/{slug}.md` (scope: command)
 - Global scope → `personal/policies/{slug}.md` (scope: global) — **default for non-company/non-repo rules**
 
-> Never Write a `.md` into `core/policies/` from `/learn` — it is lost on `/update-hq` and is now mechanically blocked by `protect-core.sh` (the block message points back here). `personal/policies/` entries are symlinked into `core/policies/` by `master-sync.sh`, so they load identically as global/command policies. Genuine product-core policies ship via the staging → `/promote-hq-core` pipeline only.
+> Never Write a `.md` into `core/policies/` from `/learn` — it is lost on `/update-hq` and is now mechanically blocked by `protect-core.sh` (the block message points back here). `personal/policies/` entries are symlinked into `core/policies/` by `reindex.sh`, so they load identically as global/command policies. Genuine product-core policies ship via the staging → `/promote-hq-core` pipeline only.
 
 **Create the directory if needed:**
 ```bash
@@ -271,6 +269,8 @@ id: {scope-prefix}-{slug}
 title: {Rule title}
 scope: {company|repo|command|global}
 trigger: {when this applies}
+when: {boolean trigger expr over context words, or `always`}
+on: {[PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent] | [SessionStart]}
 enforcement: {hard|soft}
 public: {true|false}
 version: 1
@@ -293,6 +293,12 @@ source: {back-pressure-failure|user-correction|success-pattern|task-completion|h
 - `source: user-correction` → `enforcement: hard`
 - `severity: critical` → `enforcement: hard`
 - Everything else → `enforcement: soft`
+
+**`when:` / `on:` trigger (just-in-time injection):**
+- `when:` is a boolean expression over an OPEN token set — any word that appears in the relevant command/prompt/AI-message text is a live token (`git && push`, `refactor`, `supabase`, `.tsx`, `/deep-plan`, `secret || credential`). Pick the word(s) that naturally show up when the rule is relevant. Operators: `&& || ! ( )`. Full grammar + fact derivation: `core/knowledge/public/hq-core/policies-spec.md`.
+- `on:` is where it is evaluated. Default for a real trigger: `[PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]` (the `when:` does the filtering). Use `[SessionStart]` **only** with `when: always` for ambient governance rules with no concrete signal.
+- If you genuinely can't name a signal, use `when: always` + `on: [SessionStart]` — but prefer a real trigger so the rule loads just-in-time, not every session.
+- You may omit both fields: the SessionStart `migrate-policy-triggers.sh` hook backfills them from `tags:` + `trigger:` on the next session. Setting them at authoring time is better — the migrator never overwrites an existing `when:`.
 
 **`applies_to:` field mapping (stack applicability filter):**
 - Include the `applies_to:` line ONLY when the rule is *wrong or useless* without a specific service. Tag vocabulary must match the `services:` enum used in `companies/manifest.yaml` plus inferred `vercel` / `aws`. Examples:
@@ -367,7 +373,7 @@ relates_to: []
 
 ## Step 6: Evaluate Global Promotion
 
-Global promotion means **raising a rule's enforcement to hard, in a policy file** — never injecting it into the charter. Learned rules never go in `.claude/CLAUDE.md` / `AGENTS.md` (policy `learned-rules-never-in-claude-md`); they already surface for every session through the policy digest, so a hard-enforcement policy file *is* the global path.
+Global promotion means **raising a rule's enforcement to hard, in a policy file** — never injecting it into the charter. Learned rules never go in `.claude/CLAUDE.md` / `AGENTS.md` (policy `learned-rules-never-in-claude-md`); they already surface for every session through the policy trigger hook (`inject-policy-on-trigger.sh`), so a hard-enforcement policy file *is* the global path.
 
 If a rule meets ANY of:
 - `severity == critical`
@@ -375,10 +381,10 @@ If a rule meets ANY of:
 - Rule triggered 3+ times (check event log)
 
 then ensure it lives as a **hard-enforcement policy file** at global scope:
-- Personal/owner learnings → `personal/policies/{slug}.md` (master-sync symlinks it into `core/policies/`, so it rides global scope and survives `/update-hq`).
+- Personal/owner learnings → `personal/policies/{slug}.md` (reindex symlinks it into `core/policies/`, so it rides global scope and survives `/update-hq`).
 - Release-shipped, all-users learnings → `core/policies/{slug}.md` with the public marker (promoted via `hq-pack-admin`).
 
-Set `enforcement: hard` in the policy frontmatter and rebuild the digest (Step 8). Do **not** touch `CLAUDE.md`.
+Set `enforcement: hard` in the policy frontmatter and ensure the file carries `when:`/`on:` frontmatter so the SessionStart trigger hook surfaces it (Step 8). Do **not** touch `CLAUDE.md`.
 
 ## Step 7: Log Event
 
@@ -410,29 +416,17 @@ Write `workspace/learnings/learn-{YYYYMMDD-HHMMSS}.json`:
 
 The event log write is mandatory for every invocation (even skipped/trivial ones) — downstream tooling relies on it.
 
-## Step 8: Reindex + Rebuild Policy Digest
+## Step 8: Reindex
 
 ```bash
 qmd update 2>/dev/null || true
 ```
 
-**If the learning created or updated a policy file** (content_type: rule, and Step 5 created or modified a file under `companies/{co}/policies/`, `repos/*/.claude/policies/`, or `personal/policies/`), rebuild the policy digest so SessionStart hooks pick up the change on the next session. (Personal entries are symlinked into `core/policies/` by `master-sync.sh` before the global digest is built — run master-sync or wait for its Stop/PostToolUse trigger if the symlink isn't present yet.)
+No manual digest rebuild is needed: policies surface automatically via the SessionStart trigger hook (`inject-policy-on-trigger.sh`) and the `migrate-policy-triggers.sh` backfill. Ensure any new policy file carries `when:`/`on:` frontmatter so it gets injected. (Personal entries are symlinked into `core/policies/` by `reindex.sh` — run reindex or wait for its Stop/PostToolUse trigger if the symlink isn't present yet.)
 
-```bash
-bash core/scripts/build-policy-digest.sh
-```
+Insight-only runs (content_type: insight) write no policy file, so there is nothing for the trigger hook to surface.
 
-This is load-bearing for the Phase 2.4 SessionStart policy digest loop — skipping it causes new policies to silently fail to load in future sessions. The full rebuild is idempotent and fast (~15s over all scopes). If perf matters later, extend `build-policy-digest.sh` to accept a `--scope` arg.
-
-**Stage the regenerated digest** so it lands with the policy change in the next commit:
-```bash
-# Only if inside a git repo and digests changed
-git update-index --refresh >/dev/null 2>&1 || true
-```
-
-Insight-only runs (content_type: insight) skip the digest rebuild — insights don't affect the policy digest.
-
-**Batch mode note:** In batch mode (Mode 4), the digest rebuild runs ONCE after all items are processed — not per-item. The single rebuild covers all policy files written during the batch.
+**Batch mode note:** In batch mode (Mode 4), there is no per-item or end-of-batch digest step — each policy file written during the batch surfaces on its own via its `when:`/`on:` frontmatter.
 
 ## Step 9: Report
 
@@ -470,7 +464,7 @@ If multiple rules/insights were extracted, report each.
 - **Dedup is mandatory** — always check before injecting (qmd first, Grep fallback)
 - **Learned rules never touch the charter** — never write a learned rule into `.claude/CLAUDE.md` / `AGENTS.md`; global promotion = a hard-enforcement policy file (policy `learned-rules-never-in-claude-md`)
 - **Reindex after every injection** — keeps qmd search current
-- **Rebuild digest after policy write** — `bash core/scripts/build-policy-digest.sh` is required after any policy file create/update (Step 8). SessionStart hooks depend on it
+- **New policies need `when:`/`on:` frontmatter** — that is what the SessionStart trigger hook (`inject-policy-on-trigger.sh`) uses to surface a policy; no manual digest rebuild exists anymore
 - **Event log is always written** — `workspace/learnings/learn-{timestamp}.json` is non-optional
 - **Preserve existing rules** — append only, never overwrite existing rules
 - **User corrections always promote** — /learn --hard delegations go to a hard-enforcement policy file (never CLAUDE.md)

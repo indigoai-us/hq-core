@@ -3,6 +3,8 @@ id: hq-env-file-no-trailing-newline
 title: .env files must not contain literal \n or trailing whitespace inside quoted KEY="..." values
 scope: global
 trigger: Write or Edit to any .env* file
+when: secret || credential
+on: [PreToolUse]
 enforcement: hard
 version: 1
 created: 2026-04-22

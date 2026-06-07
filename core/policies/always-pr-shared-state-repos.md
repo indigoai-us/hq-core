@@ -3,6 +3,8 @@ id: hq-always-pr-shared-state-repos
 title: Always use a PR for shared-state repos — never push directly to main
 scope: global
 trigger: Before `git push` or `gh pr merge` targeting a shared-state branch (main, master, staging, production) on any repo under `repos/{public,private}/` or a company-scoped repo
+when: git && push && shared_branch
+on: [PreToolUse]
 enforcement: hard
 tier: 1
 public: true

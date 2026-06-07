@@ -3,6 +3,8 @@ id: hq-pack-policies-excluded-from-core-release
 title: Pack policies/knowledge are excluded from the hq-core release — place default-tooling/optional concerns in the pack, not core/policies
 scope: global
 trigger: deciding where a default-tooling preference, optional capability, or stack-specific policy/knowledge should live (core vs. a pack)
+when: pack
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

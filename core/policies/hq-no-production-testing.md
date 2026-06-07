@@ -3,6 +3,8 @@ id: hq-no-production-testing
 title: Never Test Against Production — Use Staging or Sandbox
 scope: global
 trigger: before any API call, webhook test, data mutation, or integration test that targets an external service
+when: test || webhook
+on: [PreToolUse, UserPromptSubmit]
 enforcement: hard
 tier: 1
 version: 1

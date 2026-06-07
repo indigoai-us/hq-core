@@ -3,6 +3,8 @@ id: hq-sync-codex-validation-and-conflict-resolution
 title: Validate HQ Sync from Codex with the menubar-equivalent root and compare conflict files
 scope: global
 trigger: validating HQ Sync menubar behavior from Codex or resolving HQ Sync conflicts
+when: sync
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

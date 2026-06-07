@@ -2,7 +2,7 @@
 # block-core-writes.sh — PreToolUse hook for Edit, Write, MultiEdit.
 #
 # Blocks any write inside core/ or .claude/. Authoring belongs in personal/;
-# master-sync mirrors personal/<type>/<entry> into core/<type>/<entry> as symlinks.
+# reindex mirrors personal/<type>/<entry> into core/<type>/<entry> as symlinks.
 # Writes that resolve through such a symlink are allowed (they land in personal/).
 #
 # Exception: .claude/settings.local.json is always allowed.
@@ -87,7 +87,7 @@ MSG
 fi
 
 # Walk upward from target. If any existing component is a symlink,
-# the write lands in personal/ (master-sync mirror) — allow it.
+# the write lands in personal/ (reindex mirror) — allow it.
 probe="$FILE_PATH"
 while [[ "$probe" == "$CORE_DIR"/* || "$probe" == "$CLAUDE_DIR"/* || \
          "$probe" == "$AGENTS_DIR"/* || "$probe" == "$CODEX_DIR"/* || \
@@ -111,7 +111,7 @@ BLOCKED: direct writes to protected scaffold paths are not allowed.
 Protected: core/, .claude/, .agents/, .codex/, .obsidian/, AGENTS.md
 Exception: .claude/settings.local.json is always writable.
 
-For core/ content, edit under personal/ and master-sync will symlink it in.
+For core/ content, edit under personal/ and reindex will symlink it in.
 
 To bypass: set "HQ_BYPASS_CORE_PROTECT": "1" under "env" in .claude/settings.local.json
 (inline env-var prefixes are not accepted).

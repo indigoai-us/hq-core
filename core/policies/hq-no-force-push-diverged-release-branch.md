@@ -3,6 +3,8 @@ id: hq-no-force-push-diverged-release-branch
 title: Never force-push a release branch with diverged origin history
 scope: global
 trigger: before `git push --force` or `git push -f` on any branch matching `release/*`, `main`, `master`, or production branches
+when: git && push
+on: [PreToolUse]
 enforcement: hard
 tier: 1
 public: true

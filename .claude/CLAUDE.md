@@ -92,7 +92,7 @@ Session start: do NOT read INDEX.md, agents files, or company knowledge unless t
 
 ### Learned Rules
 
-Learned rules live in policy files (`personal/policies/` for owner/universal, `companies/{co}/policies/` for company, `core/policies/` for release-shipped) and surface every session through the policy digest — they are **never** written inline here. See policy `learned-rules-never-in-claude-md`.
+Learned rules live in policy files (`personal/policies/` for owner/universal, `companies/{co}/policies/` for company, `core/policies/` for release-shipped) and surface every session through the policy trigger hook (`inject-policy-on-trigger.sh`) — they are **never** written inline here. See policy `learned-rules-never-in-claude-md`.
 
 ## Map
 
@@ -106,11 +106,11 @@ Runtime config: Claude Code defaults `.claude/settings.json`; Codex sandbox/hook
 
 Top-level: `.claude/`, `.agents/`, `.codex/`, `AGENTS.md` (symlink → `.claude/CLAUDE.md`), `companies/`, `core/{docs,hooks,knowledge,policies,scripts,skills,workers}/`, `personal/{agents-*.md,hooks,knowledge,policies,projects,settings,skills,workers}/`, `repos/{public,private}/`, `workspace/`. Each company self-contained: `companies/{co}/{knowledge,settings,data,workers,repos,projects}/`. Full tree: `core/knowledge/public/hq-core/quick-reference.md`.
 
-**Personal overlay.** `master-sync.sh` (Stop/PostToolUse) symlinks `personal/{policies,knowledge,workers,settings}/<entry>` into `core/<type>/<entry>` — personal entries appear inside core, not a separate precedence layer (collision rule: skip if a non-symlink already exists, so `personal/` can't override a release-shipped core file). Exceptions: `personal/hooks/<event>/` loads as its own ordered hook layer (after `core/hooks/`, before packs); `personal/skills/<skill>/` surfaces as `/<skill>` (Claude Code tags `(project:personal)`).
+**Personal overlay.** `reindex.sh` (Stop/PostToolUse) symlinks `personal/{policies,knowledge,workers,settings}/<entry>` into `core/<type>/<entry>` — personal entries appear inside core, not a separate precedence layer (collision rule: skip if a non-symlink already exists, so `personal/` can't override a release-shipped core file). Exceptions: `personal/hooks/<event>/` loads as its own ordered hook layer (after `core/hooks/`, before packs); `personal/skills/<skill>/` surfaces as `/<skill>` (Claude Code tags `(project:personal)`).
 
 ### Infrastructure-First
 
-New infra → scaffold BEFORE the work: new company `/newcompany {slug}`; new worker `/newworker`; new knowledge → `git init` in `companies/{co}/knowledge/` or shared `repos/public/knowledge-{name}` + symlink into `core/knowledge/public/`; new project `/plan`; new repo → clone to `repos/{pub|priv}/` → `manifest.yaml` → qmd collection. Post-create: verify `manifest.yaml` + new `worker.yaml` (registry.yaml auto-regenerates via `core/scripts/generate-workers-registry.sh` on master-sync — never hand-edit); `qmd update 2>/dev/null || true`; regen affected INDEX.
+New infra → scaffold BEFORE the work: new company `/newcompany {slug}`; new worker `/newworker`; new knowledge → `git init` in `companies/{co}/knowledge/` or shared `repos/public/knowledge-{name}` + symlink into `core/knowledge/public/`; new project `/plan`; new repo → clone to `repos/{pub|priv}/` → `manifest.yaml` → qmd collection. Post-create: verify `manifest.yaml` + new `worker.yaml` (registry.yaml auto-regenerates via `core/scripts/generate-workers-registry.sh` on reindex — never hand-edit); `qmd update 2>/dev/null || true`; regen affected INDEX.
 
 ### Workers
 
@@ -118,7 +118,7 @@ Worker-first: before design/content/security/data/deploy tasks, check `core/work
 
 ### Policies
 
-Three scopes, precedence high→low: `companies/{co}/policies/`, `repos/{repo}/.claude/policies/`, `core/policies/`. Auto-loaded by SessionStart + slash commands. Author user-personal in `personal/policies/` — master-sync symlinks into `core/policies/` (rides global scope, not a separate layer). Spec: `core/knowledge/public/hq-core/policies-spec.md`. Customizations never go in `core/` directly (wiped wholesale by `/update-hq`) — personal → `personal/`, company → `companies/{co}/`; authoritative rule: `core/policies/hq-customizations-live-in-personal-or-company.md`.
+Three scopes, precedence high→low: `companies/{co}/policies/`, `repos/{repo}/.claude/policies/`, `core/policies/`. Auto-loaded by SessionStart + slash commands. Author user-personal in `personal/policies/` — reindex symlinks into `core/policies/` (rides global scope, not a separate layer). Spec: `core/knowledge/public/hq-core/policies-spec.md`. Customizations never go in `core/` directly (wiped wholesale by `/update-hq`) — personal → `personal/`, company → `companies/{co}/`; authoritative rule: `core/policies/hq-customizations-live-in-personal-or-company.md`.
 
 ### Commands & Skill Bridge
 

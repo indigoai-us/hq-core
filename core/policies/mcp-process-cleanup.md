@@ -3,6 +3,8 @@ id: mcp-process-cleanup
 title: MCP Server Process Cleanup
 scope: global
 trigger: session-end, mcp-server
+when: mcp || .mcp.json
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 tier: 1
 created: 2026-04-06

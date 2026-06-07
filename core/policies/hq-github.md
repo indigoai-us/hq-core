@@ -3,12 +3,15 @@ id: hq-github
 title: GitHub platform rules (consolidated)
 scope: global
 trigger: when working with github.com (PRs, issues, actions, gh CLI)
+when: git
+on: [PreToolUse]
 enforcement: hard
 version: 1
 created: 2026-04-29
 updated: 2026-04-29
 applies_to: [github]
 public: true
+vendor_public_ok: true
 tags: [vendor:github, consolidated]
 source: consolidation-merge
 ---

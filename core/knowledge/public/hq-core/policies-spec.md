@@ -26,9 +26,9 @@ core/policies/*.md              # Cross-cutting + command-scoped (lowest)
 
 Each directory can have zero or more policy files. Policies are plain Markdown files with YAML frontmatter.
 
-**Personal overlay (`personal/policies/`).** Files in `personal/policies/<slug>.md` are user-personal authoring locations. The `master-sync.sh` Stop/PostToolUse hook symlinks each entry into `core/policies/<slug>.md`, so personal entries become indistinguishable from core at load time — they are *not* a separate precedence layer. Author user-global policies here; they will be picked up by `build-policy-digest.sh` and surface through the global scope.
+**Personal overlay (`personal/policies/`).** Files in `personal/policies/<slug>.md` are user-personal authoring locations. The `reindex.sh` Stop/PostToolUse hook symlinks each entry into `core/policies/<slug>.md`, so personal entries become indistinguishable from core at load time — they are *not* a separate precedence layer. Author user-global policies here; they will be picked up by the SessionStart trigger hook (`inject-policy-on-trigger.sh`) and surface through the global scope.
 
-> **`personal/policies/` is the default home for operator-global rules — including everything `/learn` captures at global/command scope.** `core/policies/` is release-shipped scaffold that `/update-hq` replaces wholesale, so a rule written directly there is lost on the next upgrade. `/learn` therefore never writes to `core/policies/`; it writes operator-universal rules to `personal/policies/` (re-symlinked into `core/policies/` by `master-sync.sh`, so they still load as global) and company/repo rules to their own scoped dirs. The only sanctioned path *into* `core/policies/` is the staging → `/promote-hq-core` pipeline, for policies that genuinely ship to every HQ install. This is enforced mechanically by `protect-core.sh`, which blocks creation of a new `.md` under `core/policies/` (override: `HQ_ALLOW_CORE_POLICY_WRITE=1`). Authoritative rule: `core/policies/hq-customizations-live-in-personal-or-company.md`.
+> **`personal/policies/` is the default home for operator-global rules — including everything `/learn` captures at global/command scope.** `core/policies/` is release-shipped scaffold that `/update-hq` replaces wholesale, so a rule written directly there is lost on the next upgrade. `/learn` therefore never writes to `core/policies/`; it writes operator-universal rules to `personal/policies/` (re-symlinked into `core/policies/` by `reindex.sh`, so they still load as global) and company/repo rules to their own scoped dirs. The only sanctioned path *into* `core/policies/` is the staging → `/promote-hq-core` pipeline, for policies that genuinely ship to every HQ install. This is enforced mechanically by `protect-core.sh`, which blocks creation of a new `.md` under `core/policies/` (override: `HQ_ALLOW_CORE_POLICY_WRITE=1`). Authoritative rule: `core/policies/hq-customizations-live-in-personal-or-company.md`.
 
 ## File Format
 
@@ -78,7 +78,9 @@ Optional. Concrete examples of correct and incorrect behavior under this policy.
 | `source` | string | Origin of the policy: `manual`, `migration`, `task-completion`, `back-pressure-failure`, `user-correction`, `pattern-repetition` |
 | `learned_from` | string | Task ID or session reference (for auto-generated policies) |
 | `command` | string | Command name (for `scope: command` policies only, e.g. `prd`, `email`) |
-| `applies_to` | array | Workspace stack tags — policy loads only when at least one tag matches the active workspace's services. Omit for cross-cutting policies (load everywhere). See **Applicability Tagging** below. |
+| `applies_to` | array | Workspace stack tags (documentation only — the stack-based filtering it once drove was retired with the policy digest). Omit for cross-cutting policies. See **Applicability Tagging** below. |
+| `when` | string | Boolean trigger expression evaluated just-in-time to inject the policy when relevant. See **Trigger Expressions** below. |
+| `on` | array | Evaluation site(s) for `when` — any of `PreToolUse`, `UserPromptSubmit`, `PostToolUse`, `SessionStart`, or the pseudo-event `AssistantIntent` (AI-message-only facts). Defaults to `[PreToolUse]` when `when` is set and `on` is omitted. |
 
 ### Applicability Tagging (`applies_to`)
 
@@ -105,12 +107,134 @@ applies_to: [vercel, clerk]   # OR semantics — loads if ANY tag matches active
 - **Missing field:** policy has no stack restrictions → always loads (the 89%+ case).
 - **Unknown active stack:** if the workspace hasn't declared a service set (`services: []` and no `vercel_team`/`aws_profile`), the filter treats it as "unknown" and loads all policies — fail-open, same as untagged.
 
-**How the filter is applied:**
+**Status of `applies_to` filtering:** The `applies_to` field remains a documented part of the policy schema, but its **stack-based digest-filtering behavior was retired together with the policy digest**. The former pipeline — `build-policy-digest.sh` embedding `applies_to` as an HTML-comment suffix on each digest line, and `load-policies-for-session.sh` resolving the active service set from `manifest.yaml`/`stack.yaml` to drop disjoint lines — no longer exists. The current SessionStart trigger hook (`inject-policy-on-trigger.sh`) injects on:[SessionStart] policies and does **not** stack-filter on `applies_to`. Keep tagging stack-specific policies for documentation/clarity, but do not rely on `applies_to` to suppress a policy at runtime.
 
-1. [`core/scripts/build-policy-digest.sh`](../../../scripts/build-policy-digest.sh) embeds each tagged policy's `applies_to` as an HTML-comment suffix on its digest line (`- [hard] **id**: rule... <!-- applies_to: vercel -->`).
-2. [`.claude/hooks/load-policies-for-session.sh`](../../../.claude/hooks/load-policies-for-session.sh) resolves the active service set per session from `companies/{ACTIVE_CO}/manifest.yaml` (primary) or `.claude/stack.yaml` (fallback for starter-kit users with no company context).
-3. The hook filters digest lines whose `applies_to:` comment is disjoint from the active set before emitting the `<policy-digest>` block.
-4. No active set resolved → digest passes through unchanged (backwards compat).
+### Trigger Expressions (`when:` / `on:`)
+
+`when:` decides *when* a policy is injected **just-in-time** during a session.
+The SessionStart trigger hook (`inject-policy-on-trigger.sh`) injects every
+on:[SessionStart] policy at session start; reactive `when:` policies fire later
+on a concrete signal. A reactive `when:` policy costs nothing until its
+expression is true, then a short `<policy-reminder>` is injected once per session.
+
+**Expression grammar — a tiny boolean algebra over open tokens:**
+
+```yaml
+when: git && push && shared_branch     # AND
+when: deploy || share                  # OR
+when: git && ! shared_branch           # NOT (use the derived shared_branch fact, not a literal branch name)
+when: git && ( push || commit )        # parentheses / precedence
+when: .mcp.json || settings.json       # filename tokens (dots/slashes allowed)
+when: /brainstorm || /deep-plan        # slash-command tokens
+```
+
+- **Tokens are open** — there is no fixed vocabulary. An identifier is TRUE iff
+  it appears in the fact set derived for the current event; an absent or
+  misspelled identifier is simply FALSE.
+- **Identifier charset:** `[A-Za-z0-9_./][A-Za-z0-9_./-]*` — letters, digits,
+  `_ . / -`, and may start with `.` or `/`. So a filename (`.mcp.json`,
+  `settings.json`) or a slash-command (`/brainstorm`) is a single literal token.
+- **Operators:** `&&` (and), `||` (or), `!` (not), `( )` (grouping). Nothing else.
+- **Fail-open:** an empty or malformed/unsafe expression injects the policy
+  rather than silently hiding it (a typo never suppresses a hard rule).
+
+**`on:` selects the evaluation site(s):**
+
+```yaml
+on: [PreToolUse]                       # default when omitted
+on: [PreToolUse, UserPromptSubmit]     # also evaluate on the user's message
+on: [PostToolUse]                      # evaluate against the tool's output
+on: [AssistantIntent]                  # evaluate against what the AI said it will do
+on: [SessionStart]                     # introduce at the very start of a session
+```
+
+`SessionStart` evaluates `when` against **static facts only** (`company`, `repo`,
+`shared_branch`) plus the reserved **`always`** token. Use `when: always` +
+`on: [SessionStart]` for advisory policies that should be introduced at the very
+start regardless of context. There is no longer a pre-built digest to dedup
+against, so **every** policy whose `on:` includes `SessionStart` and whose `when:`
+matches is injected unconditionally — hard and soft alike.
+
+**`always`** is a reserved token present in every fact set — `when: always`
+matches unconditionally. It is the canonical "no condition" expression.
+
+`AssistantIntent` is a **pseudo-event**, not a real Claude Code hook. It is
+evaluated wherever an AI-message look-back exists — during `PreToolUse` and
+`UserPromptSubmit` hook runs — but against a fact set built **only** from the
+assistant's recent messages (see below), with no command/prompt/static facts.
+Use it for "fire on what the AI is about to do" independent of the literal
+command. (Tool events are CLI/Bash-only; `PreToolUse`/`PostToolUse` skip
+non-Bash tools.)
+
+**Facts available per channel** (derived by
+[`core/scripts/derive-trigger-facts.sh`](../../../scripts/derive-trigger-facts.sh)):
+
+Each text channel emits **every word token** in its text (lowercased, letter-led,
+length ≥ 2) — open tokenization, no curated keyword list — plus the non-literal
+derived facts (`secret`, `shared_branch`, filename, slash-command). So a policy
+keys on whatever word naturally appears when it is relevant (`refactor`,
+`monitor`, `docker`, `linear`, …) with nothing to register in advance.
+
+| Source | Tokens |
+|--------|--------|
+| `PreToolUse` Bash command | every word of the command (`git`, `push`, `commit`, …); `gh pr`→`pr`; `op://`/`AWS_PROFILE`/`.env`→`secret`; a shared branch name→`shared_branch` |
+| `PreToolUse` other tools | lowercased tool name (`glob`, `grep`, `read`, `write`, `edit`) |
+| `UserPromptSubmit` | every word token of the user's message |
+| `PostToolUse` | every word token of the tool's **output** |
+| `AssistantIntent` | every word token of assistant message text since the last user turn — **AI-message only, no static facts** |
+| `SessionStart` | static facts only (no command/prompt/AI tokens) |
+| Static session facts (real events only) | `company`, `repo`, `shared_branch` (current branch) |
+| Any text channel (command / prompt / output / AI-intent) | **filename tokens** — see below |
+| Every fact set | `always` (reserved — `when: always` matches unconditionally) |
+
+The raw `PreToolUse`/`UserPromptSubmit` fact sets deliberately **exclude** the
+look-back so the command/prompt channel and the AI-intent channel stay distinct.
+
+**Filename tokens.** Any file reference in the evaluated text emits two extra
+facts: a literal basename token and a `.ext` token. `.claude/settings.json` yields
+`settings.json` + `.json`; `.mcp.json` yields `.mcp.json` + `.json`; `shot.png`
+yields `shot.png` + `.png`. The leading dot of a directory is dropped with the
+path; a dotfile keeps its own leading dot. This is how a file-scoped policy fires
+from `AssistantIntent` — the assistant names the file it is about to edit or read
+(`when: settings.json`, `when: .mcp.json`, `when: .png || .jpg`) even though the
+hook never sees the non-Bash Edit/Read tool call itself. Extensions must be
+letter-led, so dotted version numbers (`v1.5`, `3.13`) are not mistaken for files.
+
+**Slash-command tokens.** A `/command` mentioned in the evaluated text emits a
+`/command` fact (`/brainstorm`, `/deep-plan`), so a slash-command-scoped policy
+fires when the command is invoked or referenced in a prompt (`when: /deep-plan`).
+The slash must follow a space or start-of-text, so path segments (`repos/public`)
+are not treated as commands.
+
+**How it is applied:**
+
+1. [`.claude/hooks/inject-policy-on-trigger.sh`](../../../.claude/hooks/inject-policy-on-trigger.sh)
+   takes the event from `hook_event_name`, derives facts, and for each in-scope
+   policy whose `on:` includes the event evaluates `when:` via
+   [`core/scripts/eval-trigger.sh`](../../../scripts/eval-trigger.sh) (exit 0=match,
+   1=skip, 2=fail-open).
+2. **Scope is tenant-safe:** global `core/policies` always; the active company's
+   and active repo's policies only when the session is in that company/repo — so
+   one tenant's `when: git` never injects during another's session.
+3. Matches are injected as a `<policy-reminder>` and recorded in
+   `workspace/orchestrator/policy-trigger-state/<session_id>.txt` (deduped — a
+   slug fires at most once per session).
+4. A legacy hardcoded regex map in the same hook still fires for precise
+   PreToolUse patterns a coarse boolean token cannot express (e.g.
+   `git checkout {ref} -- .`). Both paths dedupe by slug, so migrating a policy
+   to `when:` is incremental and never double-injects.
+
+**Auto-backfill at SessionStart.** A policy authored without `when:`/`on:` does
+not stay untriggered: [`core/scripts/migrate-policy-triggers.sh`](../../../scripts/migrate-policy-triggers.sh)
+runs as a SessionStart hook and derives a trigger from the policy's own
+metadata — `when:` from its `tags:` (topical vocabulary, `vendor:x`→`x`, meta
+tags dropped) OR'd with an action expression parsed from its `trigger:` prose;
+`on: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]` (every live
+event — `when:` does the filtering). If neither tags nor trigger yield a signal
+it falls back to `when: always` + `on: [SessionStart]`. The script is **strictly
+idempotent**: a policy that already declares `when:` (authored or human-tuned) is
+never rewritten — so it backfills new policies only, with zero writes in steady
+state. Hand-tuning a generated trigger is therefore permanent.
 
 ## Optional Sections
 

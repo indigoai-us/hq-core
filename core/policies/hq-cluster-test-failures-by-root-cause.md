@@ -3,6 +3,8 @@ id: hq-cluster-test-failures-by-root-cause
 title: Cluster test failures by error message before claiming a fix is complete
 scope: global
 trigger: Investigating a failing test suite where multiple tests fail simultaneously
+when: test
+on: [PreToolUse, UserPromptSubmit]
 enforcement: soft
 tier: 1
 public: true

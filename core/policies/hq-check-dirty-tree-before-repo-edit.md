@@ -3,6 +3,8 @@ id: hq-check-dirty-tree-before-repo-edit
 title: Check working tree for uncommitted changes before editing repo source
 scope: global
 trigger: before editing source files in a repo; before Write/Edit on files under repos/
+when: repo
+on: [SessionStart]
 enforcement: soft
 public: true
 version: 1

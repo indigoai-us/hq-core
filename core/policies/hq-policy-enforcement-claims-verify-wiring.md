@@ -3,6 +3,8 @@ id: hq-policy-enforcement-claims-verify-wiring
 title: A policy enforcement claim is worthless unless verified against the actually-wired hook + settings
 scope: global
 trigger: writing or relying on a "hard enforcement: hook X registered in Y" sentence in any policy
+when: enforcement
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
 version: 1

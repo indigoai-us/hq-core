@@ -3,6 +3,8 @@ id: hq-sub-agent-summary-verify-via-grep
 title: Verify sub-agent structural claims about large files via direct grep
 scope: global
 trigger: When a sub-agent (Explore, Task, general-purpose) reports the presence or absence of entries in a file larger than the Read token cap (~25K tokens), before acting on that claim
+when: subagent || subagents || sub-agent || sub-agents
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

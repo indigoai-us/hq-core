@@ -37,11 +37,11 @@ HQ/
 ├── personal/           # User-personal overlay (mirrors core/ shape)
 │   ├── hooks/          # Always-on user-global hooks (loaded AFTER core/hooks)
 │   ├── projects/       # Personal/HQ project PRDs and brainstorms
-│   ├── knowledge/      # Symlinked into core/knowledge/ by master-sync
-│   ├── policies/       # Symlinked into core/policies/ by master-sync
-│   ├── settings/       # Symlinked into core/settings/ by master-sync
+│   ├── knowledge/      # Symlinked into core/knowledge/ by reindex
+│   ├── policies/       # Symlinked into core/policies/ by reindex
+│   ├── settings/       # Symlinked into core/settings/ by reindex
 │   ├── skills/         # Surface as /<skill> with (project:personal) tag
-│   └── workers/        # Symlinked into core/workers/ by master-sync
+│   └── workers/        # Symlinked into core/workers/ by reindex
 ├── repos/
 │   ├── public/         # Open-source repos
 │   └── private/        # Private repos
@@ -53,7 +53,7 @@ HQ/
     └── threads/        # Session threads + handoff.json
 ```
 
-**Personal overlay semantics.** `personal/` mirrors the shape of `core/` but is user-personal authoring space. Master-sync (a Stop/PostToolUse hook in `.claude/hooks/master-sync.sh`) keeps the two in sync:
+**Personal overlay semantics.** `personal/` mirrors the shape of `core/` but is user-personal authoring space. Master-sync (a Stop/PostToolUse hook in `.claude/hooks/reindex.sh`) keeps the two in sync:
 
 | Subdir | Runtime behavior |
 |---|---|
@@ -64,7 +64,7 @@ HQ/
 | `personal/workers/<entry>` | Symlinked into `core/workers/<entry>` — appears inside core |
 | `personal/settings/<entry>` | Symlinked into `core/settings/<entry>` — appears inside core |
 
-Collision rule: if a real file/dir already sits at the link path, master-sync logs and skips — personal never silently overwrites core.
+Collision rule: if a real file/dir already sits at the link path, reindex logs and skips — personal never silently overwrites core.
 
 ## Companies (14)
 

@@ -3,6 +3,8 @@ id: hq-rust-string-byte-slice-char-boundary-panic
 title: Never byte-slice potentially non-ASCII Rust strings
 scope: global
 trigger: Truncating, capping, or windowing a `&str` / `String` in Rust where input may contain non-ASCII characters (HTTP error bodies, Claude transcript content, log messages, user-supplied text)
+when: .rs || rust
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
 version: 1

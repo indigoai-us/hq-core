@@ -188,8 +188,7 @@ jobs:
           base="${{ github.base_ref }}"
           git fetch origin "$base" --depth=1
           mapfile -t changed < <(git diff --name-only --diff-filter=AM "origin/$base"...HEAD \
-            | grep -E '^\core/policies/[^/]+\.md$' \
-            | grep -v '/_digest\.md$' || true)
+            | grep -E '^\core/policies/[^/]+\.md$' || true)
           if [[ ${#changed[@]} -eq 0 ]]; then
             echo "files=[]" >> "$GITHUB_OUTPUT"
             echo "count=0"  >> "$GITHUB_OUTPUT"

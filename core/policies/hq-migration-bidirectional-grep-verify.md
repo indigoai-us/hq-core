@@ -3,6 +3,8 @@ id: hq-migration-bidirectional-grep-verify
 title: Verify content/brand migrations with both positive and negative production scans
 scope: global
 trigger: brand migration verification, content migration verification, copy replacement rollouts
+when: migrate || migration || schema
+on: [PreToolUse, UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

@@ -4,6 +4,8 @@ title: Verify Git Branch Before Committing
 scope: global
 public: true
 trigger: before any git commit
+when: git && commit
+on: [PreToolUse]
 enforcement: hard
 tier: 1
 version: 1

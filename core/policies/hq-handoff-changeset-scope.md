@@ -3,6 +3,8 @@ id: hq-handoff-changeset-scope
 title: Handoff scope comes from changesets, not noisy HQ root status
 scope: command
 trigger: /handoff, core/scripts/handoff-finalize.sh, multi-session work in the HQ root
+when: /handoff
+on: [UserPromptSubmit]
 enforcement: hard
 public: false
 skip-promotion: true

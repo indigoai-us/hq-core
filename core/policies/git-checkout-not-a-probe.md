@@ -3,6 +3,8 @@ id: git-checkout-not-a-probe
 title: Never use `git checkout {branch} -- .` to inspect another branch's state
 scope: global
 trigger: git checkout, git probe, branch comparison
+when: git && checkout
+on: [PreToolUse]
 enforcement: hard
 tier: 1
 public: true

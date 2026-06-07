@@ -3,12 +3,15 @@ id: hq-linear
 title: Linear rules (consolidated)
 scope: global
 trigger: when working with Linear (issues, projects, MCP, sync)
+when: linear
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 version: 1
 created: 2026-04-29
 updated: 2026-04-29
 applies_to: [linear]
 public: true
+vendor_public_ok: true
 tags: [vendor:linear, consolidated]
 source: consolidation-merge
 ---

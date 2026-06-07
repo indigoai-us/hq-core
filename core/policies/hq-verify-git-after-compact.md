@@ -3,6 +3,8 @@ id: hq-verify-git-after-compact
 title: Verify git state after a compact boundary before redoing committed work
 scope: global
 trigger: resuming a session from an auto-compact summary that mentions pending commits
+when: git && commit
+on: [PreToolUse]
 enforcement: soft
 public: true
 version: 3
