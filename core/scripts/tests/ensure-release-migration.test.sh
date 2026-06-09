@@ -20,7 +20,7 @@ make_repo() {
     cd "$repo"
     git init -q
     git config user.name "Test User"
-    git config user.email "test@example.com"
+    git config user.email "[EMAIL]"
     mkdir -p core/scripts core/docs/hq .claude
     printf 'hqVersion: "15.0.8"\n' > core/core.yaml
     printf 'old hook\n' > core/scripts/old-hook.sh
