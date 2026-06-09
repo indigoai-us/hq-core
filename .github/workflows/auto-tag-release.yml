@@ -73,6 +73,23 @@ jobs:
           echo "::error::HQ_AUDIT_BOT_APP_ID or HQ_AUDIT_BOT_PRIVATE_KEY not set. The App token is required so the tag push triggers release.yml."
           exit 1
 
+      - name: Checkout release commit
+        if: steps.parse.outputs.match == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Require release migration doc before tag
+        if: steps.parse.outputs.match == 'true'
+        env:
+          TAG: ${{ steps.parse.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash core/scripts/ensure-release-migration.sh \
+            --mode verify \
+            --version "$TAG" \
+            --base-ref HEAD^
+
       - name: Mint installation token
         id: app-token
         if: steps.parse.outputs.match == 'true'
