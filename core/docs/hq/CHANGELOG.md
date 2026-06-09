@@ -1,5 +1,39 @@
 ## [Unreleased]
 
+## [15.0.10] -- release migration docs restored and gated
+
+### Fixed
+- Restores `core/docs/hq/MIGRATION.md` with concrete v15.0.9 migration data so upgraders on v15.0.8 have a consumable patch-line path again.
+- Adds release automation coverage that fails a non-trivial release when the target tag would not carry a migration section with `### Migration Steps` and backtick-wrapped file paths.
+
+### Added
+- `core/scripts/ensure-release-migration.sh` generates release migration sections from the staged release diff during `promote-to-hq-core.yml`.
+- `auto-tag-release.yml` verifies the release commit before creating a tag, and `release.yml` re-checks before cutting the GitHub release.
+- Regression test: `core/scripts/tests/ensure-release-migration.test.sh`.
+
+### Migration
+- Upgrading from v15.0.8 should target v15.0.10 or later. The v15.0.10 migration file includes both the restored v15.0.9 file list and the v15.0.10 release-gate changes.
+
+## [15.0.9] -- policy trigger system and hook routing cleanup
+
+### Added
+- Policy trigger evaluator scripts: `core/scripts/eval-trigger.sh`, `core/scripts/derive-trigger-facts.sh`, and `core/scripts/migrate-policy-triggers.sh`.
+- Regression coverage for policy trigger derivation and hook injection.
+- `.claude/hooks/reindex.sh` as the replacement path for the removed master-sync/reindex split.
+
+### Changed
+- Policy files gained trigger-oriented frontmatter, and hook/session policy loading was routed through the new trigger evaluation path.
+- `.claude/hooks/hook-gate.sh`, `.claude/settings.json`, and related hook surfaces were updated for the trigger-based flow.
+- `/update-hq` was simplified toward the `hq rescue` updater path.
+
+### Removed
+- Removed legacy `.claude/hooks/master-sync.sh`, `.claude/hooks/load-policies-for-session.sh`, `.claude/stack.yaml`, `core/scripts/build-policy-digest.sh`, and generated policy digest output from the public core release.
+- The v15.0.9 tag accidentally removed `core/docs/hq/MIGRATION.md`; v15.0.10 restores the patch-line migration data.
+
+### Migration
+- Do not hand-merge the v15.0.9 diff. Upgrade to v15.0.10 or later so `/update-hq` can read the restored migration file and apply the patch-line changes.
+- Restart Claude Code or Codex after updating because this patch line changes hooks, settings, and core scripts.
+
 ## [15.0.0] — BREAKING — engineering surface extracted
 
 ### Added — Skills

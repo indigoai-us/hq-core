@@ -56,6 +56,16 @@ jobs:
             echo "prerelease=${PRERELEASE}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Require release migration doc
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash core/scripts/ensure-release-migration.sh \
+            --mode verify \
+            --version "$TAG" \
+            --base-ref HEAD^
+
       - name: Mint App token (for MIGRATION.md TBD swap commit)
         id: app-token
         if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''

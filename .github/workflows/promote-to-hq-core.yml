@@ -309,6 +309,21 @@ jobs:
           echo "----- core/core.yaml diff -----"
           diff -u "staging/core/core.yaml" "$CORE_YAML" || true
 
+      - name: Ensure release migration doc
+        # /update-hq reads core/docs/hq/MIGRATION.md at the target tag, so the
+        # release PR commit itself must carry migration data before
+        # auto-tag-release.yml creates the tag.
+        if: steps.realchanges.outputs.skip != 'true' && steps.params.outputs.pr_type == 'release'
+        env:
+          INPUT_VERSION: ${{ steps.params.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd target
+          bash core/scripts/ensure-release-migration.sh \
+            --mode generate \
+            --version "$INPUT_VERSION" \
+            --base-ref HEAD
+
       - name: Diff summary
         id: diff
         if: steps.realchanges.outputs.skip != 'true'
