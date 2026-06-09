@@ -238,7 +238,7 @@ The repo ships **66 slash skills** in `.claude/skills/`. The most-used are liste
 The repo ships **44 bundled workers** under `core/workers/public/`:
 
 - **11 standalone**: `frontend-designer`, `qa-tester`, `security-scanner`, `pretty-mermaid`, `site-builder`, `knowledge-tagger`, `exec-summary`, `accessibility-auditor`, `performance-benchmarker`, `ascii-artist`, `paper-designer`
-- **Dev Team (20)** in `dev-team/`: `project-manager`, `task-executor`, `architect`, `backend-dev`, `database-dev`, `frontend-dev`, `infra-dev`, `motion-designer`, `code-reviewer`, `knowledge-curator`, `product-planner`, `qa-tester`, `reality-checker`, `context-manager`, `codex-engine`, `codex-coder`, `codex-reviewer`, `codex-debugger`, `gemini-coder`, `gemini-reviewer`
+- **Dev Team (18)** in `dev-team/`: `project-manager`, `task-executor`, `architect`, `backend-dev`, `database-dev`, `frontend-dev`, `infra-dev`, `motion-designer`, `code-reviewer`, `knowledge-curator`, `product-planner`, `qa-tester`, `reality-checker`, `context-manager`, `codex-engine`, `codex-coder`, `codex-reviewer`, `codex-debugger` (Gemini CLI workers `gemini-coder`/`gemini-reviewer` install via `@indigoai-us/hq-pack-gemini`)
 - **Content Team (5)** in `content-*/`: `content-brand`, `content-sales`, `content-product`, `content-legal`, `content-shared` (library)
 - **Social Team (5)** in `social-*/`: `social-strategist`, `social-reviewer`, `social-publisher`, `social-verifier`, `social-shared` (library)
 - **Gardener Team (3)** in `gardener-team/`: `garden-scout`, `garden-auditor`, `garden-curator`

@@ -28,7 +28,7 @@ notifications:
     enabled: true
     channel: "#hq-core"
     events:
-      - findings_clean
+      # findings_clean removed — the "Audit clean" message was too noisy.
       - findings_fixed
       - findings_stuck
       - audit_merged

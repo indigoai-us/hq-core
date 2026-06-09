@@ -146,8 +146,9 @@ Receiving is handled by the **HQ Sync menubar app** (it's receive-only — there
 | ascii-artist | ASCII block-art generation |
 | paper-designer | Document / paper layout |
 
-**Dev Team (20)** — `core/workers/public/dev-team/`:
-project-manager, task-executor, architect, backend-dev, database-dev, frontend-dev, infra-dev, motion-designer, code-reviewer, knowledge-curator, product-planner, qa-tester, reality-checker, context-manager, codex-engine, codex-coder, codex-reviewer, codex-debugger, gemini-coder, gemini-reviewer
+**Dev Team (18)** — `core/workers/public/dev-team/`:
+project-manager, task-executor, architect, backend-dev, database-dev, frontend-dev, infra-dev, motion-designer, code-reviewer, knowledge-curator, product-planner, qa-tester, reality-checker, context-manager, codex-engine, codex-coder, codex-reviewer, codex-debugger
+(Gemini CLI workers gemini-coder / gemini-reviewer install via the optional `@indigoai-us/hq-pack-gemini` pack.)
 
 **Content Team (5)** — `core/workers/public/content-*/`:
 content-brand, content-sales, content-product, content-legal, content-shared (library)
