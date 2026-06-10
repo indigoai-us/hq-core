@@ -190,7 +190,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/master-hook.sh PreToolUse",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh PreToolUse",
             "timeout": 300
           }
         ]
@@ -237,7 +237,7 @@
           },
           {
             "type": "command",
-            "command": ".claude/hooks/reindex.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
             "timeout": 300
           },
           {
@@ -262,7 +262,7 @@
           },
           {
             "type": "command",
-            "command": ".claude/hooks/reindex.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
             "timeout": 300
           },
           {
@@ -282,7 +282,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/reindex.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
             "timeout": 300
           },
           {
@@ -351,7 +351,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/master-hook.sh PostToolUse",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh PostToolUse",
             "timeout": 300
           }
         ]
@@ -387,7 +387,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/master-hook.sh PreCompact",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh PreCompact",
             "timeout": 300
           }
         ]
@@ -428,7 +428,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/master-hook.sh Stop",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh Stop",
             "timeout": 300
           }
         ]
@@ -437,7 +437,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/reindex.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
             "timeout": 300
           }
         ]
@@ -503,7 +503,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/master-hook.sh SessionStart",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh SessionStart",
             "timeout": 300
           }
         ]
@@ -512,7 +512,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/reindex.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
             "timeout": 300
           }
         ]
@@ -558,7 +558,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/master-hook.sh UserPromptSubmit",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh UserPromptSubmit",
             "timeout": 300
           }
         ]
@@ -567,7 +567,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/reindex.sh",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
             "timeout": 300
           }
         ]
@@ -578,7 +578,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/master-hook.sh Notification",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh Notification",
             "timeout": 300
           }
         ]
@@ -589,7 +589,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/master-hook.sh SubagentStop",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh SubagentStop",
             "timeout": 300
           }
         ]
@@ -600,7 +600,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/master-hook.sh SessionEnd",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh SessionEnd",
             "timeout": 300
           }
         ]

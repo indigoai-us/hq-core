@@ -19,6 +19,11 @@ set -euo pipefail
 # Read and discard stdin
 cat >/dev/null 2>&1 || true
 
+# Resolve the active HQ root regardless of install path or session cwd:
+# explicit HQ_ROOT env → CLAUDE_PROJECT_DIR (set by Claude Code) → the hook's
+# own location (always <HQ>/.claude/hooks/, matching master-hook.sh) → legacy
+# default. Never hardcode ~/Documents/HQ as the sole source.
+HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)}}"
 HQ_ROOT="${HQ_ROOT:-${HOME}/Documents/HQ}"
 REGISTRY="$HQ_ROOT/scripts/repo-run-registry.sh"
 
