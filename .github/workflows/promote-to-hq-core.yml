@@ -237,7 +237,10 @@ jobs:
           rsync -a --delete \
             --exclude='.git/' \
             --exclude='workspace/' \
-            --exclude='companies/' \
+            --include='/companies/' \
+            --include='/companies/_template/***' \
+            --include='/companies/manifest.yaml' \
+            --exclude='/companies/**' \
             --exclude='personal/' \
             --exclude='repos/' \
             --exclude='.obsidian/' \
