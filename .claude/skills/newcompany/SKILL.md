@@ -37,6 +37,13 @@ printf '# HQ workspace mirror — sessions are gitignored, index.jsonl is commit
 # Scaffold company.yaml with cloud-disabled default. /designate-team flips
 # cloud: true later (and provisions via `hq cloud provision company`).
 printf "slug: %s\ncloud: false\n" "{slug}" > companies/{slug}/company.yaml
+# Seed an empty board.json so the company's board EXISTS from day one. The
+# board lives at the vault root (key `board.json`) and is synced verbatim from
+# this file; without it the desktop/console board lookup 404s every poll
+# (HQ-77). /idea, /plan, /goals populate it later. Stamp the slug + a UTC
+# timestamp; keep the empty objectives/initiatives/projects arrays.
+printf '{\n  "company": "%s",\n  "schema_version": 2,\n  "updated_at": "%s",\n  "objectives": [],\n  "initiatives": [],\n  "projects": []\n}\n' \
+  "{slug}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > companies/{slug}/board.json
 # Copy Obsidian vault config (dereference symlink in template)
 [ -e companies/_template/.obsidian ] && cp -rL companies/_template/.obsidian companies/{slug}/.obsidian
 ```
