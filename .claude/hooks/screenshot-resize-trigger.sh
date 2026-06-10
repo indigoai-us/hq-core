@@ -5,7 +5,12 @@
 
 set -euo pipefail
 
-HQ="${HOME}/Documents/HQ"
+# Resolve the active HQ root regardless of install path or session cwd:
+# CLAUDE_PROJECT_DIR (set by Claude Code) → HQ_ROOT env → the hook's own
+# location (always <HQ>/.claude/hooks/, matching master-hook.sh/reindex.sh) →
+# legacy default. Never hardcode ~/Documents/HQ as the sole source.
+HQ="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)}}"
+HQ="${HQ:-${HOME}/Documents/HQ}"
 RESIZE="$HQ/scripts/resize-screenshot.sh"
 COUNT_FILE="/tmp/hq-screenshot-count-${PPID}"
 WARN_THRESHOLD=30

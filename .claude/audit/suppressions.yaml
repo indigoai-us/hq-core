@@ -28,3 +28,7 @@
 - path: "**/*.snapshot.json"
   scanners: [pii]
   reason: "Vitest/Jest snapshot files; not human-authored content. Re-running tests regenerates them."
+
+- path: "core/scripts/tests/hook-path-resolution.test.sh"
+  scanners: [pii]
+  reason: "Disposable git-config identity in throwaway test fixtures uses an RFC 2606 reserved .test address (example.test — never resolvable in DNS, no real mailbox); placeholder, not PII."
