@@ -15,21 +15,21 @@
       }
     },
     {
-      "query": "path:knowledge/",
+      "query": "path:core/knowledge/",
       "color": {
         "a": 1,
         "rgb": 4905600
       }
     },
     {
-      "query": "path:workers/",
+      "query": "path:core/workers/",
       "color": {
         "a": 1,
         "rgb": 16486460
       }
     },
     {
-      "query": "path:projects/",
+      "query": "path:personal/projects/",
       "color": {
         "a": 1,
         "rgb": 16498436

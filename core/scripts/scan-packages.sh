@@ -89,6 +89,60 @@ ensure_symlink() {
   info "linked $dst -> $src"
 }
 
+# worker_id_of <worker.yaml>
+#   Echo the worker.id field. Shallow YAML parse mirroring the registry generator
+#   (yq if present, awk fallback). Empty when absent/unreadable.
+worker_id_of() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  if command -v yq >/dev/null 2>&1; then
+    yq -r '.worker.id // ""' "$file" 2>/dev/null || true
+  else
+    awk '
+      $0 ~ /^worker:[[:space:]]*$/ { in_w=1; next }
+      in_w && /^[^[:space:]]/ { in_w=0 }
+      in_w && $0 ~ "^[[:space:]]+id:" {
+        sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^["\x27]|["\x27]$/, ""); sub(/[[:space:]]+#.*$/, ""); print; exit
+      }
+    ' "$file"
+  fi
+}
+
+# resolve_file <path>
+#   Physical absolute path of a file, following symlinks in its directory chain
+#   (BSD/macOS-safe — `cd` + `pwd -P`, no GNU realpath / readlink -f).
+resolve_file() {
+  ( cd "$(dirname "$1")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "$1")" )
+}
+
+# worker_id_clashes <pkg_name> <pack_worker_dir> <dst>
+#   Return 0 (clash — caller must skip) and warn loudly if the pack worker's id is
+#   already registered by a DIFFERENT worker.yaml in the host tree. Wiring such a
+#   worker would hand the registry generator a duplicate id and (pre-DEV-1718) block
+#   ALL worker registration. Detect + refuse BEFORE wiring the symlink so the bad
+#   state is never minted. Return 1 when clear (no collision / nothing to compare).
+worker_id_clashes() {
+  local pkg="$1" pdir="$2" dst="$3"
+  local src_yaml="$pdir/worker.yaml"
+  [[ -f "$src_yaml" ]] || return 1   # no id to clash on; let ensure_symlink decide
+  local pid; pid="$(worker_id_of "$src_yaml")"
+  [[ -z "$pid" ]] && return 1
+  local src_phys; src_phys="$(resolve_file "$src_yaml")"
+  local wy clash=""
+  while IFS= read -r wy; do
+    case "$wy" in */_template/*|*/_overrides/*) continue ;; esac
+    [[ "$(worker_id_of "$wy")" == "$pid" ]] || continue
+    # Skip the pack's own already-wired symlink (resolves to the same file).
+    [[ "$(resolve_file "$wy")" == "$src_phys" ]] && continue
+    clash="$wy"; break
+  done < <(find -L "$HQ_ROOT/core/workers" "$HQ_ROOT/companies" -name worker.yaml -type f 2>/dev/null)
+  if [[ -n "$clash" ]]; then
+    warn "worker-id collision: pack '$pkg' worker id '$pid' is already registered at ${clash#"$HQ_ROOT"/} — refusing to wire $dst (would hard-fail the worker registry on a duplicate id). Resolve the duplicate id (or namespace the pack worker), then re-run."
+    return 0
+  fi
+  return 1
+}
+
 # wire_one_package <pkg_dir>
 wire_one_package() {
   local pkg_dir="$1"
@@ -106,6 +160,11 @@ wire_one_package() {
       workers)
         src="$pkg_dir/workers/$item"
         dst="$HQ_ROOT/core/workers/public/$item"
+        # Refuse to wire a pack worker whose id already belongs to a different
+        # host worker — a silent install-time clash would block ALL registration.
+        if worker_id_clashes "$pkg_name" "$src" "$dst"; then
+          continue
+        fi
         ;;
       knowledge)
         src="$pkg_dir/knowledge/$item"

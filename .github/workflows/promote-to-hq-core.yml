@@ -236,14 +236,6 @@ jobs:
           # Excludes: staging-local trees that never belong in the public kit.
           rsync -a --delete \
             --exclude='.git/' \
-            --exclude='workspace/' \
-            --include='/companies/' \
-            --include='/companies/_template/***' \
-            --include='/companies/manifest.yaml' \
-            --exclude='/companies/**' \
-            --exclude='personal/' \
-            --exclude='repos/' \
-            --exclude='.obsidian/' \
             staging/ target/
 
       - name: Detect promotable changes (auto mode)

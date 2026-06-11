@@ -683,7 +683,17 @@ Post-implementation docs needed:
 To execute, start a new session and run:
   /run-project {name}        (multi-story orchestrator)
   /execute-task {name}/US-001 (single story)
+
+  These execution commands ship in the engineering pack. If /run-project
+  isn't available on this install, add the pack once (then run the above):
+    hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering
 ```
+
+> **Pack-aware close.** `/run-project` and `/execute-task` live in
+> `hq-pack-engineering`, which is auto-installed for upgraders but skipped on
+> lean greenfield installs. Always print the install line above alongside the
+> commands so a pack-less user has a resolvable path instead of a dead-end — do
+> not instruct an execution command without it.
 
 **Then run `/handoff` (or the `handoff` skill) and end the session.** Do NOT proceed to execution.
 

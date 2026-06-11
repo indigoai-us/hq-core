@@ -55,7 +55,7 @@ HQ is **model-agnostic**, so it works inside any AI tool and leverages the subsc
 |------|----------|---------|
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Yes | `npm install -g @anthropic-ai/claude-code` |
 | [GitHub CLI](https://cli.github.com/) | Yes | `brew install gh` then `gh auth login` |
-| [qmd](https://github.com/tobi/qmd) | Recommended | `brew install tobi/tap/qmd` |
+| [qmd](https://github.com/tobi/qmd) | Recommended | `npm install -g @tobilu/qmd` (macOS also: `brew install sqlite`) |
 | [OpenAI Codex](https://openai.com/codex) | Optional | `npm install -g @openai/codex` then `codex login` |
 | [ggshield](https://docs.gitguardian.com/ggshield-docs/getting-started/installation) | Recommended | `brew install ggshield` then `ggshield auth login` |
 

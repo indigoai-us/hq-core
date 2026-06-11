@@ -89,7 +89,7 @@ matching `hq` subcommand.
 
 - Node.js 18+
 - `hq` CLI on PATH — `npm i -g @indigoai-us/hq-cli`
-- `qmd` CLI on PATH — `cargo install qmd`
+- `qmd` CLI on PATH — `npm install -g @tobilu/qmd` (macOS also needs `brew install sqlite`)
 - A logged-in HQ session — `hq login`
 
 ## Install

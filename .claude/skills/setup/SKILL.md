@@ -29,7 +29,7 @@ If a manifest exists, this phase becomes the primary driver of setup. The manife
 - `steps.git-init` failed → no git repo; run `git init && git add . && git commit -m "init"`
 
 **P1 — Required (HQ works poorly without these):**
-- `dependencies.qmd` failed → no semantic search; install with `cargo install qmd` or `brew install tobi/tap/qmd`, then `qmd index .`
+- `dependencies.qmd` failed → no semantic search; install with `npm install -g @tobilu/qmd` (on macOS also run `brew install sqlite` — qmd loads SQLite extensions the built-in macOS SQLite can't), then `qmd index .`
 - `dependencies.claude-code` failed → can't run workers; `npm install -g @anthropic-ai/claude-code`
 - `dependencies.yq` failed → can't parse YAML configs; `brew install yq` or download binary
 - `dependencies.hq-cli` failed → can't install packs or sync; `npm install -g @indigoai-us/hq-cli`
@@ -72,23 +72,21 @@ Still needs attention:
   ...
 ```
 
-Skip items already `"ok"` in the manifest — don't re-check things the installer already handled successfully. Then continue to Phase 0b only for dependencies the manifest doesn't cover (e.g. vercel).
+Skip items already `"ok"` in the manifest — don't re-check things the installer already handled successfully. Then continue to Phase 0b only for auth state the manifest doesn't cover.
 
-## Phase 0b: Dependencies (non-manifest)
+## Phase 0b: Auth checks (non-manifest)
 
-If Phase 0a ran, skip any deps already checked there. This phase only handles tools the manifest doesn't track.
-
-**Vercel CLI** (not tracked by installer manifest):
-```bash
-which vercel
-```
-If missing: explain it's needed for site/preview deploys, offer to install (`npm install -g vercel`). Accept "skip" — it's optional.
-
-If installed but not authenticated (`vercel whoami` exits non-zero): offer `vercel login`.
+If Phase 0a ran, skip any deps already checked there. This phase only handles auth state the manifest doesn't track.
 
 **Auth checks** (not tracked by manifest):
 - `gh auth status` — if gh is installed but not authenticated, offer `gh auth login`
-- `vercel whoami` — if vercel is installed but not authenticated, offer `vercel login`
+
+Do **not** check for or install third-party deploy CLIs (e.g. the Vercel CLI) here.
+HQ's own features never shell out to them — `/deploy` targets hq-deploy
+infrastructure, not Vercel — so they are not HQ setup dependencies. They are
+user-provided tools, installed on-demand by the user only when deploying their
+own projects to their own pipeline; point-of-use guidance lives in the relevant
+policy (e.g. `core/policies/hq-vercel.md`), not in setup.
 
 Post-install: run `qmd index .` if qmd was just installed or no index exists.
 

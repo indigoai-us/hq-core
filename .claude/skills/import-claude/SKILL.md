@@ -63,6 +63,17 @@ bash .claude/skills/import-claude/scan.sh \
 
 Confirm `report.json` parses as JSON (`jq -e '.categories' "$SCAN_DIR/report.json" >/dev/null`). If not, surface the scanner's stderr and abort.
 
+**Check discovery status** (`jq -r '.discovery.ok' "$SCAN_DIR/report.json"`). The scanner records whether discovery actually completed, so a failed scan is never mistaken for an empty one. If `.discovery.ok` is `false`, do **not** treat any zero counts as authoritative — surface the failure loudly, e.g.:
+
+```
+⚠️  Discovery did not complete — the counts below may be UNDER-reported.
+The scanner could not read part of the scope (see .discovery.errors in the report).
+This is "could not look", not "nothing to import". Fix the access issue (or
+re-run with a narrower --scope) before concluding there is nothing to migrate.
+```
+
+Print the contents of `.discovery.errors` and let the user decide whether to continue, rather than silently reporting zeros.
+
 **Redact the report** before anything touches user-visible surfaces:
 
 ```bash
@@ -91,7 +102,7 @@ Scan complete. Found:
 Report: workspace/imports/{scan_id}/report.json
 ```
 
-If all counts are zero: `No Claude artifacts found in scanned scope. Exiting.` Stop.
+If all counts are zero **and `.discovery.ok` is `true`**: `No Claude artifacts found in scanned scope. Exiting.` Stop. (If `.discovery.ok` is `false`, do not print this — discovery failed; surface the errors per the discovery-status check above instead of claiming nothing was found.)
 
 If `--dry-run`: print `Dry-run complete. No imports performed.` and exit.
 
