@@ -301,7 +301,7 @@ Add recovered thread to the full threads table.
 **Skip** (unsafe in recovery context):
 - Auto-committing repos (can't know what was dirty at death vs now)
 - Knowledge repo commits
-- qmd reindex (user can `/search-reindex`)
+- qmd reindex (user can run `qmd update`)
 
 ### 7. Report
 
@@ -322,7 +322,7 @@ Thread saved: workspace/threads/{thread_id}.json
 Next:
   - Review: Read workspace/threads/{thread_id}.json
   - Continue: /nexttask (recovered thread will appear)
-  - Reindex: /search-reindex (if needed)
+  - Reindex: qmd update (if needed)
 ```
 
 If multiple sessions recovered, show summary table then per-session details.

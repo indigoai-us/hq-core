@@ -129,6 +129,12 @@ TOP PRIORITIES
 | `in_progress`, stalled | `/run-project {prd-slug}` (resume) |
 | COVERAGE-GAP (no project) | `/idea {co} --objective {obj-id}` |
 
+> **`/run-project` requires the engineering pack.** It ships in
+> `hq-pack-engineering` (auto-installed for upgraders, skipped on lean
+> greenfield installs). If a routed `/run-project` action isn't available on
+> this install, surface the one-time install line instead of failing:
+> `hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering`.
+
 Then **AskUserQuestion** with options:
 
 1. Act on #1 — {title} ({next-action-verb})

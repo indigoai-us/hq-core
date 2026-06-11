@@ -313,14 +313,20 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 ### Topic 8: ralph-loop — The Ralph Loop (Orchestration) *(rescoped)*
 
+- **Requires the engineering pack.** `/run-project` and `/execute-task` ship in
+  `hq-pack-engineering` (auto-installed for upgraders, skipped on lean greenfield
+  installs). Before teaching this topic, check that `/run-project` resolves; if
+  not, tell the user to install it once and continue:
+  `hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering`.
+  Never have the user try a command this topic teaches without that path.
 - **Chapter:** 3 + 7 — orchestrator mechanics, not principles
 - **Book lines:** 243-336 (Ch 3, quickly re-read for loop diagram), 637-738 (Ch 7 for `/run-project` mechanics)
 - **Fallback:** `core/knowledge/public/getting-started/learning-path.md` (Module 3 + 7), `core/knowledge/public/hq-core/policies-spec.md`
-- **HQ refs:** `.claude/commands/run-project.md`, `core/settings/orchestrator.yaml`, `workspace/orchestrator/active-runs.json`
+- **HQ refs:** `core/packages/hq-pack-engineering/skills/run-project/SKILL.md`, `core/settings/orchestrator.yaml`, `workspace/orchestrator/active-runs.json`
 - **Key quote:** "A loop with back pressure runs forever. A loop without it runs off a cliff."
 - **Focus discipline:** This is the *mechanics* topic. Assume the user already knows the three principles from Topic 1. Teach how HQ instantiates them: `/run-project` as the loop runner, sub-agents as fresh-context carriers, `passes: true/false` + file locking as back pressure, autonomous overnight runs as the payoff. Do NOT re-teach plan mode or fresh context here.
 - **Show:**
-  - Read `.claude/commands/run-project.md` — walk through the orchestrator's task-selection loop
+  - Read `core/packages/hq-pack-engineering/skills/run-project/SKILL.md` — walk through the orchestrator's task-selection loop
   - Read `core/settings/orchestrator.yaml` — show file locking config, repo coordination rules
   - Read `workspace/orchestrator/active-runs.json` (if any runs exist) — show the cross-session coordination artifact
   - Annotate: where does each of the three principles live in the orchestrator code? (plan mode = sub-agent kickoff, fresh context = new Task per story, back pressure = `passes` field + file locks)

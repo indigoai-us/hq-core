@@ -108,6 +108,39 @@ jobs:
       - name: .claude/settings.local.json must not be gitignored
         run: bash .leak-scan/scan.sh settings-local-not-ignored
 
+  skill-command-refs:
+    # DEV-1716: a core skill must not instruct a slash-command that isn't
+    # resolvable on the install it is shown to. Engineering commands
+    # (/run-project, /execute-task, ...) live in the separately-installed
+    # hq-pack-engineering and must be allowlisted (+ referenced with their
+    # install line), never presented as always-available. Catches FUTURE
+    # dangling references, not just the originally-reported skills.
+    name: skill-command-refs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Core skills only instruct resolvable commands
+        run: bash core/scripts/lint-skill-command-refs.sh
+
+  install-deps:
+    # DEV-1727: HQ's install/setup surface must not install or dependency-check
+    # a third-party CLI that HQ itself never calls. The /setup wizard used to
+    # `which vercel` + offer `npm install -g vercel`, gating setup on a tool
+    # /deploy never uses (it targets hq-deploy). Denylist: core/scripts/
+    # install-deps.deny. Catches FUTURE re-introductions, not just vercel.
+    name: install-deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install surface installs no user-provided deploy CLI
+        run: bash core/scripts/lint-install-deps.sh
+      - name: Regression test (fixture + live tree + fix present)
+        run: bash core/scripts/tests/install-deps.test.sh
+
   # ─── Label-gated checks ────────────────────────────────────────────
   # These read PR labels to allow intentional overrides.
 

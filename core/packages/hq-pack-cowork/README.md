@@ -90,7 +90,7 @@ The MCP server runs on the host machine, not in the sandbox. The host needs:
 
 - Node.js 18+
 - `hq` CLI on PATH — `npm i -g @indigoai-us/hq-cli`
-- `qmd` CLI on PATH — `cargo install qmd`
+- `qmd` CLI on PATH — `npm install -g @tobilu/qmd` (macOS also needs `brew install sqlite`)
 - A logged-in HQ session — `hq login` (one-time, opens a browser)
 
 The sandboxed agent (Cowork) doesn't need any of those — it just needs to be

@@ -131,5 +131,5 @@ search "case study"                             # Auto-detects → -c {company}
 - Use `-c` to scope to a collection: `hq-infra`, `hq-workers`, `hq-knowledge`, `hq-projects`, `{product}`, + company collections (run `qmd status` for full list)
 - Without `-c`, auto-detects company from context; falls back to all collections
 - Scores 0.0–1.0; above 0.5 is a good match
-- Run `/search-reindex` after adding new content
+- Run `qmd update` after adding new content
 - For exact pattern matching in code (imports, function names), use Grep directly

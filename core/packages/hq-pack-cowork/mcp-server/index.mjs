@@ -424,7 +424,7 @@ async function runBin(bin, args, opts = {}) {
       throw new Error(
         `\`${bin}\` not found on the plugin host PATH or common install paths. Install it on the host machine before ` +
         `running this MCP server (hq: \`npm i -g @indigoai-us/hq-cli\`; qmd: ` +
-        `\`cargo install qmd\`). You can also set ${bin.toUpperCase()}_BIN to an absolute path.`,
+        `\`npm install -g @tobilu/qmd\`, plus \`brew install sqlite\` on macOS). You can also set ${bin.toUpperCase()}_BIN to an absolute path.`,
       );
     }
     // execFile rejects with an Error whose .stdout / .stderr hold the child's output.

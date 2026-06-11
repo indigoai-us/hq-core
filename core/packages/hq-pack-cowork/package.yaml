@@ -7,7 +7,7 @@ requires:
   hqCore: '>=15.0.0'
   # Runtime prerequisites (host):
   #   - `hq` CLI on PATH (npm i -g @indigoai-us/hq-cli, or via the HQ installer)
-  #   - `qmd` CLI on PATH (for hq_search; install: cargo install qmd)
+  #   - `qmd` CLI on PATH (for hq_search; install: npm install -g @tobilu/qmd — macOS also needs `brew install sqlite`)
   #   - Node.js 18+ on PATH (for the stdio MCP server)
   #   - Authenticated HQ session (~/.hq/cognito-tokens.json) — run `hq login` once
 contributes:

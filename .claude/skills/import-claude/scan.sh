@@ -87,22 +87,71 @@ PRUNE_ABS_PATHS=(
   "$HOME/go/pkg"
 )
 
+# Populate the global FIND_PRUNE array with a `find` pruning expression of the
+# shape `( ( -name <base> -o ... ) -o ( -path <abs> -o ... ) ) -prune -o`.
+#
+# CRITICAL: this is built as an argv ARRAY, not a string that is later `eval`'d.
+# The expression contains literal `(` / `)` tokens that `find` requires as its
+# own arguments. If they are emitted into a string and run through `eval` (the
+# previous implementation), the shell re-parses them as subshell syntax and the
+# whole command dies with `syntax error near unexpected token '('` — find exits
+# non-zero and returns nothing, so discovery silently finds zero artifacts.
+# Passing the parens as separate, individually-quoted array elements hands them
+# to find verbatim and sidesteps shell metacharacter interpretation entirely.
+FIND_PRUNE=()
 build_find_prune() {
-  # Emit the `( -path X -o -path Y ... ) -prune -o` fragment.
-  local frags=()
-  for n in "${PRUNE_BASENAMES[@]}"; do frags+=( -name "$n" -o ); done
+  FIND_PRUNE=()
+  local base_expr=()
+  local n
+  for n in "${PRUNE_BASENAMES[@]}"; do base_expr+=( -name "$n" -o ); done
   # Remove trailing -o
-  unset 'frags[${#frags[@]}-1]'
-  # Combine with abs-path prunes
-  local abs=()
-  for p in "${PRUNE_ABS_PATHS[@]}"; do abs+=( -path "$p" -o ); done
-  if [[ ${#abs[@]} -gt 0 ]]; then
-    unset 'abs[${#abs[@]}-1]'
-    printf "( ( %s ) -o ( %s ) ) -prune -o" \
-      "${frags[*]}" "${abs[*]}"
+  if [[ ${#base_expr[@]} -gt 0 ]]; then unset 'base_expr[${#base_expr[@]}-1]'; fi
+
+  local abs_expr=()
+  local p
+  for p in "${PRUNE_ABS_PATHS[@]}"; do abs_expr+=( -path "$p" -o ); done
+
+  if [[ ${#abs_expr[@]} -gt 0 ]]; then
+    unset 'abs_expr[${#abs_expr[@]}-1]'   # remove trailing -o
+    FIND_PRUNE=( '(' '(' "${base_expr[@]}" ')' -o '(' "${abs_expr[@]}" ')' ')' -prune -o )
   else
-    printf "( %s ) -prune -o" "${frags[*]}"
+    FIND_PRUNE=( '(' "${base_expr[@]}" ')' -prune -o )
   fi
+}
+
+# ──────────────────────── discovery status ────────────────────────
+# Track whether discovery actually completed. A `find` that errors (bad
+# expression, unreadable directory, …) must NEVER be silently collapsed into a
+# confident "found nothing" — per the never-swallow-errors policy we record the
+# failure, surface it loudly on stderr, and expose it in the report so callers
+# can distinguish "found none" from "could not look".
+# DISCOVERY_LOG is the authoritative, subshell-safe record of discovery
+# failures: a temp file (one error per line) created in main() before any scan.
+# Several emitters run inside `$(...)` command substitutions (subshells), where
+# in-memory array/var mutations would be lost — appending to a shared file the
+# subshell inherits the path to is what lets those errors reach the report.
+DISCOVERY_LOG=""
+
+# Run `find` capturing stdout (to $1), stderr, and exit code without tripping
+# `set -e` or swallowing errors. Any non-zero exit OR non-empty stderr is
+# recorded loudly (stderr banner + DISCOVERY_LOG). Never collapses an error
+# into a silent empty result. Usage: find_capture <outfile> <label> <find-args...>
+find_capture() {
+  local outf="$1" label="$2"; shift 2
+  local errf rc=0
+  errf="$(mktemp)"
+  find "$@" >"$outf" 2>"$errf" || rc=$?
+  if [[ $rc -ne 0 || -s "$errf" ]]; then
+    local detail; detail="$(tr '\n' ' ' < "$errf")"
+    [[ -n "${DISCOVERY_LOG:-}" ]] && \
+      printf '%s\n' "${label} (find exit ${rc}): ${detail:-<no stderr>}" >> "$DISCOVERY_LOG"
+    {
+      echo "scan.sh: WARNING: incomplete scan — ${label} (find exit ${rc})"
+      [[ -s "$errf" ]] && cat "$errf"
+    } >&2
+  fi
+  rm -f "$errf"
+  return 0
 }
 
 # ──────────────────────── helpers ────────────────────────
@@ -193,85 +242,117 @@ emit_global_configs() {
 # Emits 4 named lists: CLAUDE_DIRS, CLAUDE_MD_FILES, MCP_JSON_FILES, REPOS.
 scan_trees() {
   local parent
-  local prune_frag
-  prune_frag="$(build_find_prune)"
+  build_find_prune
 
   CLAUDE_DIRS=()
   CLAUDE_MD_FILES=()
   MCP_JSON_FILES=()
   REPOS=()
 
-  for parent in "${PARENTS[@]:-}"; do
+  # No parents to scan → nothing to do (and "${PARENTS[@]}" under set -u with an
+  # empty array would error / inject a phantom "" element).
+  if [[ ${#PARENTS[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  local outf; outf="$(mktemp)"
+  for parent in "${PARENTS[@]}"; do
     # .claude directories
+    find_capture "$outf" "discover .claude dirs under $(sub_home "$parent")" \
+      "$parent" -maxdepth 6 "${FIND_PRUNE[@]}" -type d -name .claude -print
     while IFS= read -r d; do
       [[ -z "$d" ]] && continue
       # Skip if inside HQ (paranoid)
       case "$d" in "$HQ_ROOT"/*|"$HQ_ROOT") continue ;; esac
       CLAUDE_DIRS+=("$d")
-    done < <(eval find "$parent" -maxdepth 6 "$prune_frag" -type d -name .claude -print 2>/dev/null)
+    done < "$outf"
 
     # CLAUDE.md files
+    find_capture "$outf" "discover CLAUDE.md under $(sub_home "$parent")" \
+      "$parent" -maxdepth 6 "${FIND_PRUNE[@]}" -type f -name "CLAUDE.md" -print
     while IFS= read -r f; do
       [[ -z "$f" ]] && continue
       case "$f" in "$HQ_ROOT"/*) continue ;; esac
       CLAUDE_MD_FILES+=("$f")
-    done < <(eval find "$parent" -maxdepth 6 "$prune_frag" -type f -name "CLAUDE.md" -print 2>/dev/null)
+    done < "$outf"
 
     # .mcp.json files (Claude Code-compatible MCP configs at repo roots)
+    find_capture "$outf" "discover .mcp.json under $(sub_home "$parent")" \
+      "$parent" -maxdepth 6 "${FIND_PRUNE[@]}" -type f -name ".mcp.json" -print
     while IFS= read -r f; do
       [[ -z "$f" ]] && continue
       case "$f" in "$HQ_ROOT"/*) continue ;; esac
       MCP_JSON_FILES+=("$f")
-    done < <(eval find "$parent" -maxdepth 6 "$prune_frag" -type f -name ".mcp.json" -print 2>/dev/null)
+    done < "$outf"
   done
+  rm -f "$outf"
 
   # Derive "claude repos" from .claude dir parents.
-  local d
-  for d in "${CLAUDE_DIRS[@]:-}"; do
-    local repo_root; repo_root="$(dirname "$d")"
-    REPOS+=("$repo_root")
-  done
+  if [[ ${#CLAUDE_DIRS[@]} -gt 0 ]]; then
+    local d
+    for d in "${CLAUDE_DIRS[@]}"; do
+      local repo_root; repo_root="$(dirname "$d")"
+      REPOS+=("$repo_root")
+    done
+  fi
 }
 
 # Emit entries for every file inside every discovered .claude directory.
 emit_claude_tree_artifacts() {
   local d f cat dest
   local cmds=() skills_a=() hooks=() pols=() agents=() settings=()
-  for d in "${CLAUDE_DIRS[@]:-}"; do
+  # No discovered .claude dirs → nothing to enumerate. Guarding the loop also
+  # prevents "${CLAUDE_DIRS[@]}" from injecting a phantom "" element (which used
+  # to flow through dirname → "." and produce mangled residue entries).
+  if [[ ${#CLAUDE_DIRS[@]} -eq 0 ]]; then
+    : # leave all arrays empty
+  else
+  local tf; tf="$(mktemp)"
+  for d in "${CLAUDE_DIRS[@]}"; do
     # commands
     if [[ -d "$d/commands" ]]; then
+      find_capture "$tf" "enumerate commands in $(sub_home "$d/commands")" \
+        "$d/commands" -maxdepth 2 -type f -name "*.md" -print0
       while IFS= read -r -d '' f; do
         cmds+=("$(entry_json commands "$f" ".claude/commands/$(basename "$f")")")
-      done < <(find "$d/commands" -maxdepth 2 -type f -name "*.md" -print0 2>/dev/null)
+      done < "$tf"
     fi
     # skills
     if [[ -d "$d/skills" ]]; then
       # One entry per skill directory (pointing to SKILL.md or command.md)
+      find_capture "$tf" "enumerate skills in $(sub_home "$d/skills")" \
+        "$d/skills" -mindepth 1 -maxdepth 1 -type d -print0
       while IFS= read -r -d '' sd; do
         local anchor="$sd/SKILL.md"
         [[ -f "$anchor" ]] || anchor="$sd/command.md"
         [[ -f "$anchor" ]] || continue
         local name; name="$(basename "$sd")"
         skills_a+=("$(entry_json skills "$anchor" ".claude/skills/$name/$(basename "$anchor")")")
-      done < <(find "$d/skills" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+      done < "$tf"
     fi
     # hooks
     if [[ -d "$d/hooks" ]]; then
+      find_capture "$tf" "enumerate hooks in $(sub_home "$d/hooks")" \
+        "$d/hooks" -maxdepth 1 -type f \( -name "*.sh" -o -name "*.js" -o -name "*.ts" \) -print0
       while IFS= read -r -d '' f; do
         hooks+=("$(entry_json hooks "$f" ".claude/hooks/$(basename "$f")")")
-      done < <(find "$d/hooks" -maxdepth 1 -type f \( -name "*.sh" -o -name "*.js" -o -name "*.ts" \) -print0 2>/dev/null)
+      done < "$tf"
     fi
     # policies
     if [[ -d "$d/policies" ]]; then
+      find_capture "$tf" "enumerate policies in $(sub_home "$d/policies")" \
+        "$d/policies" -maxdepth 2 -type f -name "*.md" -print0
       while IFS= read -r -d '' f; do
         pols+=("$(entry_json policies "$f" "core/policies/$(basename "$f")")")
-      done < <(find "$d/policies" -maxdepth 2 -type f -name "*.md" -print0 2>/dev/null)
+      done < "$tf"
     fi
     # agents
     if [[ -d "$d/agents" ]]; then
+      find_capture "$tf" "enumerate agents in $(sub_home "$d/agents")" \
+        "$d/agents" -maxdepth 1 -type f -name "*.md" -print0
       while IFS= read -r -d '' f; do
         agents+=("$(entry_json agents "$f" ".claude/agents/$(basename "$f")")")
-      done < <(find "$d/agents" -maxdepth 1 -type f -name "*.md" -print0 2>/dev/null)
+      done < "$tf"
     fi
     # settings (discovered per-.claude, not the global ones already emitted)
     if [[ -f "$d/settings.json" ]]; then
@@ -281,6 +362,8 @@ emit_claude_tree_artifacts() {
       settings+=("$(entry_json settings_fragments "$d/settings.local.json" ".claude/settings.local.json")")
     fi
   done
+  rm -f "$tf"
+  fi
 
   local cmds_json skills_json hooks_json pols_json agents_json settings_json
   cmds_json="$(printf "%s\n" "${cmds[@]:-}" | jq -s '.')"
@@ -302,24 +385,29 @@ emit_claude_tree_artifacts() {
 
 emit_claude_md() {
   local arr=() f
-  for f in "${CLAUDE_MD_FILES[@]:-}"; do
-    local parent; parent="$(dirname "$f")"
-    arr+=("$(entry_json claude_md "$f" "$parent/CLAUDE.md")")
-  done
+  if [[ ${#CLAUDE_MD_FILES[@]} -gt 0 ]]; then
+    for f in "${CLAUDE_MD_FILES[@]}"; do
+      local parent; parent="$(dirname "$f")"
+      arr+=("$(entry_json claude_md "$f" "$parent/CLAUDE.md")")
+    done
+  fi
   printf "%s" "$(printf "%s\n" "${arr[@]:-}" | jq -s '.')"
 }
 
 emit_repo_mcp_json() {
   local arr=() f
-  for f in "${MCP_JSON_FILES[@]:-}"; do
-    arr+=("$(entry_json mcp_servers "$f" ".claude/settings.json#mcpServers")")
-  done
+  if [[ ${#MCP_JSON_FILES[@]} -gt 0 ]]; then
+    for f in "${MCP_JSON_FILES[@]}"; do
+      arr+=("$(entry_json mcp_servers "$f" ".claude/settings.json#mcpServers")")
+    done
+  fi
   printf "%s" "$(printf "%s\n" "${arr[@]:-}" | jq -s '.')"
 }
 
 emit_claude_repos() {
   local arr=() r seen=""
-  for r in "${REPOS[@]:-}"; do
+  if [[ ${#REPOS[@]} -eq 0 ]]; then printf "[]"; return; fi
+  for r in "${REPOS[@]}"; do
     [[ ":$seen:" == *":$r:"* ]] && continue
     seen="$seen:$r"
     local sub; sub="$(sub_home "$r")"
@@ -349,18 +437,27 @@ emit_claude_repos() {
 
 # ──────────────────────── assemble report ────────────────────────
 main() {
+  local tmpd
+  tmpd="$(mktemp -d 2>/dev/null || mktemp -d -t import-claude)"
+  trap 'rm -rf "$tmpd"' RETURN
+
+  # Authoritative discovery-error log — must exist BEFORE any find_capture call
+  # so failures from subshell emitters (command substitutions) are recorded.
+  DISCOVERY_LOG="$tmpd/discovery_errors.log"
+  : > "$DISCOVERY_LOG"
+
   scan_trees
 
   local scan_id
   scan_id="$(date +%Y-%m-%dT%H-%M-%S)"
 
-  local tmpd
-  tmpd="$(mktemp -d 2>/dev/null || mktemp -d -t import-claude)"
-  trap 'rm -rf "$tmpd"' RETURN
-
   # Build all category JSON, normalize empties to [], write to temp files
   # so `jq --slurpfile` can read them without blowing up the exec arg cap.
-  ensure_json_array "$(printf "%s\n" "${PARENTS[@]:-}" | jq -R . | jq -s '.')" > "$tmpd/scope.json"
+  if [[ ${#PARENTS[@]} -gt 0 ]]; then
+    ensure_json_array "$(printf "%s\n" "${PARENTS[@]}" | jq -R . | jq -s '.')" > "$tmpd/scope.json"
+  else
+    printf "[]" > "$tmpd/scope.json"
+  fi
   ensure_json_array "$(emit_plans)"                        > "$tmpd/plans.json"
   ensure_json_array "$(emit_claude_md)"                    > "$tmpd/claude_md.json"
   ensure_json_array "$(emit_claude_repos)"                 > "$tmpd/claude_repos.json"
@@ -388,10 +485,27 @@ main() {
     --slurpfile t "$tmpd/tree.json" \
     '$g[0] + $t[0].settings' > "$tmpd/settings.json"
 
+  # Discovery status — lets callers distinguish "found none" from "could not
+  # look". Read from the subshell-safe DISCOVERY_LOG so failures from every
+  # emitter (including those run in command substitutions) are counted. Never
+  # let a failed scan masquerade as an empty one.
+  local discovery_ok discovery_errors_json discovery_count
+  discovery_count="$(grep -c '' "$DISCOVERY_LOG" 2>/dev/null || echo 0)"
+  if [[ -s "$DISCOVERY_LOG" ]]; then
+    discovery_ok=false
+    discovery_errors_json="$(jq -R . < "$DISCOVERY_LOG" | jq -s '.')"
+  else
+    discovery_ok=true
+    discovery_errors_json="[]"
+  fi
+  printf "%s" "$discovery_errors_json" > "$tmpd/discovery_errors.json"
+
   # Final report — composed via --slurpfile so argv stays tiny.
   jq -n \
     --arg scan_id "$scan_id" \
+    --argjson discovery_ok "$discovery_ok" \
     --slurpfile scope        "$tmpd/scope.json" \
+    --slurpfile derrs        "$tmpd/discovery_errors.json" \
     --slurpfile tree         "$tmpd/tree.json" \
     --slurpfile plans        "$tmpd/plans.json" \
     --slurpfile mcp          "$tmpd/mcp.json" \
@@ -401,6 +515,7 @@ main() {
     '{
       scan_id: $scan_id,
       scope: $scope[0],
+      discovery: { ok: $discovery_ok, errors: $derrs[0] },
       categories: {
         plans: $plans[0],
         commands: $tree[0].commands,
@@ -415,6 +530,18 @@ main() {
         claude_repos: $claude_repos[0]
       }
     } | .counts = (.categories | map_values(length))' > "$tmpd/report.json"
+
+  # Surface a loud, unmissable banner on stderr when discovery did not fully
+  # complete — so a "0 found" report is never read as authoritative.
+  if [[ "$discovery_ok" != "true" ]]; then
+    {
+      echo "scan.sh: ───────────────────────────────────────────────"
+      echo "scan.sh: DISCOVERY INCOMPLETE — counts below may be UNDER-reported."
+      echo "scan.sh: ${discovery_count} discovery error(s) occurred; see report .discovery.errors."
+      echo "scan.sh: Treat any zero counts as 'could not look', NOT 'nothing to import'."
+      echo "scan.sh: ───────────────────────────────────────────────"
+    } >&2
+  fi
 
   if [[ -n "$OUTPUT" ]]; then
     mkdir -p "$(dirname "$OUTPUT")"

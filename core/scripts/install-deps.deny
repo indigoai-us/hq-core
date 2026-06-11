@@ -1,0 +1,16 @@
+# install-deps.deny — third-party CLIs that MUST NOT be installed or
+# dependency-checked by HQ's install/setup surface.
+#
+# WHY (DEV-1727 / feedback_f4f48522): HQ's own features never shell out to these
+# tools. `/deploy` targets hq-deploy infrastructure, not Vercel. So the setup
+# wizard must not `which`/install them or gate setup on their auth — that strands
+# every install behind an irrelevant dependency. They are user-provided
+# integrations, installed on-demand by the user only when they drive their own
+# external pipeline; point-of-use guidance lives in policies (e.g. hq-vercel.md).
+#
+# One lowercase token per line; `#` starts a comment. The lint
+# (core/scripts/lint-install-deps.sh) fails if any token appears in an
+# install / presence-check / auth-gate construct inside the install-surface
+# files. Prose that merely NAMES a tool (incl. "do not install it") is allowed —
+# only the dependency-bearing invocation is forbidden.
+vercel

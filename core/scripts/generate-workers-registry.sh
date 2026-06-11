@@ -43,11 +43,31 @@ derive_visibility() {
   esac
 }
 
+# attribute_pack <worker-dir>
+#   When a worker.yaml is wired in from an installed hq-pack (its real path
+#   resolves under core/packages/<pkg>/), echo " [source: pack <pkg>]" so a
+#   quarantine message names the culprit pack rather than just the opaque
+#   symlinked path. Empty string for first-party workers. Uses `pwd -P` to follow
+#   the symlink (BSD/macOS-safe — no GNU realpath / readlink -f).
+attribute_pack() {
+  local dir="$1" phys pk
+  phys="$(cd "$dir" 2>/dev/null && pwd -P)" || return 0
+  case "$phys" in
+    */core/packages/*)
+      pk="${phys##*/core/packages/}"; pk="${pk%%/*}"
+      [[ -n "$pk" ]] && printf ' [source: pack %s]' "$pk"
+      ;;
+  esac
+}
+
 TMP_OUT="$(mktemp -t workers-registry.XXXXXX)"
 TMP_ENTRIES="$(mktemp -t workers-entries.XXXXXX)"
 trap 'rm -f "$TMP_OUT" "$TMP_ENTRIES"' EXIT
 
-errors=0
+# Quarantine accounting: a single bad/duplicate worker must never block ALL
+# registration. Offending entries are excluded (fail-closed on them) and reported
+# loudly, but the registry is still written for every VALID worker. See DEV-1718.
+quarantined=0
 
 while IFS= read -r yaml; do
   case "$yaml" in
@@ -68,8 +88,12 @@ while IFS= read -r yaml; do
   team=$(yq_get team "$yaml")
 
   if [[ -z "$id" || -z "$type" || -z "$desc" ]]; then
-    echo "generate-workers-registry: missing required field(s) in $yaml (id=$id, type=$type, description=${desc:+set}${desc:-MISSING})" >&2
-    errors=$((errors+1))
+    missing=""
+    [[ -z "$id" ]]   && missing="${missing:+$missing, }id"
+    [[ -z "$type" ]] && missing="${missing:+$missing, }type"
+    [[ -z "$desc" ]] && missing="${missing:+$missing, }description"
+    echo "generate-workers-registry: QUARANTINED $yaml — missing required field(s): ${missing}$(attribute_pack "$(dirname "$yaml")") (excluded from registry; fix the worker.yaml and re-run)" >&2
+    quarantined=$((quarantined+1))
     continue
   fi
 
@@ -87,16 +111,28 @@ done < <(find -L core/workers companies -name worker.yaml -type f 2>/dev/null | 
 
 sort -t$'\x1f' -k1,1 "$TMP_ENTRIES" -o "$TMP_ENTRIES"
 
-# Duplicate-id guard — refuse to write a registry that would shadow workers.
+# Duplicate-id quarantine — a duplicated id is ambiguous: writing one copy would
+# silently shadow the other(s). So we EXCLUDE every copy of any id that appears
+# more than once (never pick a winner) and report all paths loudly. Valid, uniquely
+# named workers still register — one pack's id collision no longer blocks the whole
+# registry (DEV-1718). The duplicated workers reappear automatically once the id
+# clash is resolved.
 dup_ids=$(cut -f1 -d$'\x1f' "$TMP_ENTRIES" | sort | uniq -d)
 if [[ -n "$dup_ids" ]]; then
-  echo "generate-workers-registry: duplicate worker id(s) detected — refusing to write registry:" >&2
+  echo "generate-workers-registry: duplicate worker id(s) detected — quarantining all copies (excluded from registry to avoid silently shadowing a worker):" >&2
   while IFS= read -r dup_id; do
-    echo "  duplicate id: $dup_id" >&2
-    grep -F "${dup_id}"$'\x1f' "$TMP_ENTRIES" | cut -f2 -d$'\x1f' | sed 's/^/    path: /' >&2
+    [[ -z "$dup_id" ]] && continue
+    echo "  duplicate id '$dup_id' — none of these are registered until the clash is resolved:" >&2
+    while IFS= read -r dpath; do
+      echo "    path: ${dpath}$(attribute_pack "$dpath")" >&2
+    done < <(grep -F "${dup_id}"$'\x1f' "$TMP_ENTRIES" | cut -f2 -d$'\x1f')
+    quarantined=$((quarantined+1))
   done <<< "$dup_ids"
-  echo "  Fix: change worker.id in one of the worker.yaml files above to make it unique." >&2
-  exit 1
+  echo "  Fix: change worker.id in one of the colliding worker.yaml files (or namespace the pack's id) to make it unique." >&2
+  # Strip every row whose id is duplicated, keep the rest.
+  awk -v FS=$'\x1f' 'NR==FNR { dup[$1]=1; next } !($1 in dup)' \
+    <(printf '%s\n' "$dup_ids") "$TMP_ENTRIES" > "${TMP_ENTRIES}.f"
+  mv "${TMP_ENTRIES}.f" "$TMP_ENTRIES"
 fi
 
 {
@@ -140,8 +176,8 @@ else
   echo "generate-workers-registry: $REGISTRY_PATH unchanged" >&2
 fi
 
-if [[ $errors -gt 0 ]]; then
-  echo "generate-workers-registry: $errors worker.yaml file(s) had missing required fields — fix and re-run" >&2
+if [[ $quarantined -gt 0 ]]; then
+  echo "generate-workers-registry: wrote registry for all VALID workers; quarantined $quarantined problem(s) above (loud + partial, never a silent total block). Fix the reported worker.yaml file(s) and re-run to register them." >&2
   exit 1
 fi
 

@@ -1,0 +1,59 @@
+# skill-command-refs.allow — allowlist for lint-skill-command-refs.sh
+#
+# The lint asserts that every slash-command a core skill presents as runnable is
+# RESOLVABLE on the install it is shown to. "Resolvable" means one of:
+#   1. a skill shipped in this scaffold (.claude/skills/<name>/), resolved
+#      dynamically — those never need listing here; OR
+#   2. a token listed below, grouped by why it is intentionally allowed.
+#
+# Any referenced command that is neither a shipped core skill nor listed here
+# fails the lint with a file:line pointer. That is the guardrail against the
+# DEV-1716 class of bug: a core skill instructing a command that does not exist
+# on the user's install (the documented /run-project /execute-task dead-end).
+#
+# One bare token per line (no leading slash). Comments start with '#'.
+# Namespaced refs (ns:cmd) and path/URL/route fragments are ignored by the
+# linter itself and must NOT be listed here.
+
+# ── Claude Code built-in slash commands ───────────────────────────────────
+# Provided by the harness, not by a skill file. Add others as skills start to
+# reference them (keep this minimal so a typo of a real skill name still fails).
+clear
+compact
+
+# ── hq-pack-engineering commands ──────────────────────────────────────────
+# The 17 engineering skills extracted from core in 15.0.0 (see
+# core/docs/hq/CHANGELOG.md). They ship in the SEPARATELY-INSTALLED pack
+#   hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering
+# and are auto-installed for upgraders but NOT for lean greenfield installs.
+# CONTRACT: a core skill that instructs one of these as an actionable next step
+# MUST also surface that install line so a pack-less user has a resolvable path.
+architect
+clean-worktree
+commit-main
+deep-plan
+diagnose
+discover
+document-release
+execute-task
+investigate
+land
+land-batch
+prd
+quality-gate
+review
+run-pipeline
+run-project
+tdd
+
+# ── External / maintainer commands ────────────────────────────────────────
+# Not a user workflow command. The staging→hq-core promotion pipeline, surfaced
+# only in maintainer-facing policy prose (learn, hq-heal). Realised by the
+# personal `release-hq-core` skill + the promote-to-hq-core.yml workflow.
+promote-hq-core
+
+# ── Not commands (false positives) ────────────────────────────────────────
+# Tokens that match the command shape but are an API route fragment or an
+# explicit placeholder, not a runnable slash-command.
+access-mode    # deploy: REST route `/access-mode` (POST /api/apps/:id/access-mode)
+foo            # startwork: generic `/foo` placeholder for "any other command"
