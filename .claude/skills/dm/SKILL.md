@@ -21,7 +21,7 @@ hq dm <recipient> <message> [options]
 ```
 
 - `<recipient>` — one of:
-  - a teammate's **email** (e.g. `stefan@example.com`),
+  - a teammate's **email** (e.g. `[EMAIL]`),
   - a **personUid** (`prs_…`),
   - a bare **name** (e.g. `stefan` or `Stefan Walsh`) — resolved to the exact
     email before sending (see **Resolve recipients** below), or
@@ -92,7 +92,7 @@ Options:
    hq dm stefan "Heads up — prod deploy going out at 3pm"
 
    # Group DM — comma-separated recipients (each token resolved independently)
-   hq dm "stefan@example.com,corey,prs_abc123" "Sync on the launch at 4?"
+   hq dm "[EMAIL],corey,prs_abc123" "Sync on the launch at 4?"
 
    # With agent context (recipient gets a Copy-prompt action)
    hq dm stefan@example.com "Can your agent take this over?" \
@@ -111,7 +111,7 @@ Options:
 
 4. **Report.** Print the command's result — `DM sent to <recipient> (eventId …)`
    or `Scheduled DM … for <time>`. When you resolved a name, mention who it
-   resolved to (e.g. "sent to Stefan Walsh <stefan@example.com>") so the user can
+   resolved to (e.g. "sent to Stefan Walsh <[EMAIL]>") so the user can
    confirm it reached the right person. On `Recipient not found or not reachable`,
    tell the user they can only DM someone they share an active company with
    (and to double-check the email / personUid).
