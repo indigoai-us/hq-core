@@ -1,7 +1,4 @@
 {
-  "env": {
-    "HQ_BYPASS_CORE_PROTECT": "1"
-  },
   "permissions": {
     "deny": [
       "Read(~/.ssh/**)",
