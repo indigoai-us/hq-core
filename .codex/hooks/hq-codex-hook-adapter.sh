@@ -21,7 +21,32 @@ TOOL_NAME="$(json_get '.tool_name // empty')"
 CWD="$(json_get '.cwd // empty')"
 [ -z "$CWD" ] && CWD="$(pwd)"
 
-HQ_ROOT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || pwd)"
+# Resolve the HQ root deterministically from this adapter's own location.
+# The adapter always lives at <HQ_ROOT>/.codex/hooks/hq-codex-hook-adapter.sh,
+# so two levels up is the HQ root regardless of where Codex runs the command.
+#
+# DEV-1765: do NOT derive HQ_ROOT from `git -C "$CWD" rev-parse --show-toplevel`.
+# Every working repo is nested under the HQ root (repos/*, companies/*/knowledge),
+# so when Codex's cwd is inside one of those, that command collapses HQ_ROOT to
+# the NESTED repo. The gate then resolves to a path with no hook-gate.sh and the
+# adapter exits 0 — silently bypassing EVERY Codex PreToolUse protection (the
+# git-mutation guard, detect-secrets, core-write blocks, …). A `cd <hq-root> &&
+# git push` issued from a nested-repo cwd thus reached the remote unblocked under
+# Codex while Claude blocked it. Self-location is immune to cwd.
+self_src="${BASH_SOURCE[0]:-$0}"
+self_dir="$(cd "$(dirname "$self_src")" 2>/dev/null && pwd -P || true)"
+HQ_ROOT=""
+if [ -n "$self_dir" ]; then
+  cand="$(cd "$self_dir/../.." 2>/dev/null && pwd -P || true)"
+  if [ -n "$cand" ] && [ -x "$cand/.claude/hooks/hook-gate.sh" ]; then
+    HQ_ROOT="$cand"
+  fi
+fi
+# Fallback only if self-location did not yield a valid HQ root (e.g. adapter run
+# from an unexpected path): prefer the cwd's git toplevel, then cwd itself.
+if [ -z "$HQ_ROOT" ]; then
+  HQ_ROOT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$CWD")"
+fi
 HOOK_DIR="$HQ_ROOT/.claude/hooks"
 GATE="$HOOK_DIR/hook-gate.sh"
 
@@ -65,7 +90,13 @@ run_hook() {
   local out err status
   out="$(mktemp)"
   err="$(mktemp)"
-  printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" "$GATE" "$hook_id" "$script" >"$out" 2>"$err"
+  # Export CLAUDE_PROJECT_DIR alongside HQ_ROOT (DEV-1765): hooks that anchor
+  # their decision on the project root — block-hq-root-git-mutation.sh derives
+  # HQ_ROOT from "${CLAUDE_PROJECT_DIR:-$(pwd)}" — must see the real HQ root, not
+  # the ambient pwd Codex happens to invoke the adapter from. run_script already
+  # does this; run_hook must too, or the git-mutation guard compares anchors
+  # against the wrong root under Codex.
+  printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" "$GATE" "$hook_id" "$script" >"$out" 2>"$err"
   status=$?
 
   append_stdout "$(cat "$out" 2>/dev/null || true)"

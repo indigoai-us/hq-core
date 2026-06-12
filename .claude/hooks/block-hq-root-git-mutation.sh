@@ -12,9 +12,9 @@
 #   (hq-verify-cwd-pwd-after-long-running-tools, parallel-bash-cwd-prefix),
 #   so "I cd'd earlier" is not a safe assumption for a mutation.
 #
-#   The ONLY safe form for a repo git mutation is an explicit per-command
-#   anchor:  `git -C /abs/path <cmd>`  or  `cd /abs/path && git <cmd>` in
-#   the SAME Bash call. Hard policies are model-facing prose; this hook is
+#   The safe form for a repo git mutation is an explicit per-command
+#   anchor: `git -C /abs/path <cmd>` (git) or `-R owner/repo` (gh) in the
+#   SAME Bash call. Hard policies are model-facing prose; this hook is
 #   the mechanical backstop that does not depend on the model remembering
 #   to run a pre-flight `pwd`.
 #
@@ -22,12 +22,35 @@
 # bypass): HQ_ALLOW_HQ_ROOT_GIT=1 in the hook env, or prefixed inline on a
 # single sanctioned call (e.g. intentionally repairing HQ git internals).
 #
+# REGRESSION NOTE — harness cd-strip (2026-06-08, re-verified 2026-06-09):
+#   The Claude Code harness silently STRIPS a leading `cd /abs/path && `
+#   (including inside `( ... )`) from a Bash command when /abs/path equals
+#   the session's current cwd — this hook then receives the command WITHOUT
+#   its cd anchor. Verified by sending `( cd <cwd> && git add --dry-run … )`
+#   from <cwd>: the hook's own block message echoed the command minus the
+#   cd prefix. Separately, the extraction regex below historically rejected
+#   the parenthesized `( cd /abs && git … )` form even when it survived
+#   (no `(` in the prefix class — fixed 2026-06-09). Consequences encoded
+#   in this version:
+#     (a) the cd-anchor form is no longer offered as a FIX — use `git -C`;
+#     (b) when NO anchor is found, fall back to the harness-reported input
+#         cwd: if it resolves to a git toplevel OTHER than HQ root, the
+#         mutation cannot land on HQ root and is allowed (the stripped-
+#         anchor case is by construction intended-anchor == actual cwd);
+#     (c) `gh repo create` (which accepts neither `git -C` nor `-R`) is
+#         self-anchoring: its target is named in its args and without
+#         --source it never touches a local repo; --source must be an
+#         absolute non-HQ path. Previously it was unanchorable — 5
+#         consecutive blocks during the hq-aws-resources build 2026-06-08.
+#   Strip behavior reported upstream via /hq-bug.
+#
 # Exit codes: 0 = allow, 2 = block.
 
 set -uo pipefail
 
 INPUT=$(cat)
 CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
+TOOL_CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || true
 [[ -z "$CMD" ]] && exit 0
 
 if [[ "${HQ_ALLOW_HQ_ROOT_GIT:-}" == "1" ]]; then exit 0; fi
@@ -127,7 +150,7 @@ if [[ -z "$ANCHOR_PATH" ]]; then
   PREFIX_GH="${CMD%%gh *}"
   PREFIX="$PREFIX_GIT"
   [[ ${#PREFIX_GH} -lt ${#PREFIX} ]] && PREFIX="$PREFIX_GH"
-  CDP=$(echo "$PREFIX" | grep -oE '(^|[;&|])[[:space:]]*cd[[:space:]]+("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|]+)' | tail -1 \
+  CDP=$(echo "$PREFIX" | grep -oE '(^|[;&|(])[[:space:]]*cd[[:space:]]+("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|)]+)' | tail -1 \
         | sed -E 's/.*cd[[:space:]]+//; s/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//')
   if [[ -n "$CDP" ]]; then ANCHOR_PATH="$CDP"; ANCHOR_KIND="cd &&"; fi
 fi
@@ -145,9 +168,18 @@ bare mutation can land on the HQ root repo (never committed/pushed:
 hq-root-never-push-remote, hq-git-discipline) or the wrong repo.
 
 FIX — re-issue with an explicit anchor:
-  git -C /abs/path/to/repo <subcommand> ...
-  ( cd /abs/path/to/repo && git <subcommand> ... )     # in ONE call
-  gh pr create -R owner/repo ...                         # for gh
+  git -C /abs/path/to/repo <subcommand> ...    # canonical for git
+  gh pr create -R owner/repo ...               # canonical for gh
+  gh repo create owner/name ...                # self-anchoring (--source, if
+                                               # used, must be absolute, non-HQ)
+
+Do NOT use \`( cd /abs/path && git ... )\` as the anchor: the Claude Code
+harness silently strips a leading \`cd <path> && \` when <path> equals the
+session cwd, so this hook never sees it (verified 2026-06-08, re-verified
+2026-06-09). If your cwd is already inside the target non-HQ repo, bare
+mutations are permitted via the cwd fallback — so seeing this block means
+the effective cwd IS the HQ root repo (or not a repo at all), and the
+mutation would land on HQ.
 
 Mechanical backstop for a real incident (a bare \`git push\` after earlier
 \`cd\`s — the DISABLED HQ push URL caught it only by luck). If you are
@@ -159,8 +191,51 @@ MSG
   exit 2
 }
 
+# `gh repo create` names its target in its own args (owner/name, or name under
+# the authenticated account) and accepts neither `git -C` nor `-R` — requiring
+# an external anchor made it impossible to invoke. Without --source it never
+# touches a local repo, so the HQ-root guard has nothing to protect. The one
+# cwd-dependent part is --source: require it absolute and outside the HQ root
+# repo. Only applies when the command carries no other git/gh mutation.
+if [[ $GIT_IS_MUTATION -eq 0 && $GH_IS_MUTATION -eq 1 && -z "$ANCHOR_PATH" ]] \
+   && echo "$CMD" | grep -Eq 'gh[[:space:]]+repo[[:space:]]+create' \
+   && ! echo "$CMD" | grep -Eq '(^|[[:space:];&|(])gh[[:space:]]+(pr|release|issue|api)([[:space:]]|$)' \
+   && ! echo "$CMD" | grep -Eq 'gh[[:space:]]+repo[[:space:]]+(delete|rename|archive|edit|sync|fork)'; then
+  SRC=$(echo "$CMD" | grep -oE -- '--source(=|[[:space:]]+)("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|)]+)' | head -1 \
+        | sed -E 's/^--source(=|[[:space:]]+)//; s/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//')
+  if [[ -z "$SRC" ]]; then
+    exit 0
+  fi
+  case "$SRC" in
+    /*)
+      SRC_TOP="$(git -C "$(norm "$SRC")" rev-parse --show-toplevel 2>/dev/null || true)"
+      if [[ -n "$SRC_TOP" && "$(norm "$SRC_TOP")" == "$HQ_ROOT" ]]; then
+        block "gh repo create --source ($SRC) resolves to the HQ root git repo (never pushed to a remote)."
+      fi
+      exit 0
+      ;;
+    *)
+      block "gh repo create --source must be an ABSOLUTE path ('$SRC' is relative — ambient-cwd dependent)."
+      ;;
+  esac
+fi
+
 if [[ -z "$ANCHOR_PATH" ]]; then
-  block "Unanchored git/gh mutation (no \`git -C\`, no \`cd <abs> &&\`, no \`gh -R\`)."
+  # Harness-strip fallback (see REGRESSION NOTE in header): a correctly
+  # cd-anchored command can reach this hook bare because the harness strips
+  # `cd <path> && ` when <path> equals the session cwd — and in exactly that
+  # case the intended anchor IS the input cwd. If the harness-reported cwd
+  # resolves to a git toplevel other than HQ root, the mutation mechanically
+  # cannot land on the HQ root repo — allow it. Bare mutations whose
+  # effective cwd is HQ root (or not a repo) remain blocked: that is the
+  # incident class this hook exists for.
+  if [[ -n "$TOOL_CWD" ]]; then
+    CWD_TOP="$(git -C "$TOOL_CWD" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [[ -n "$CWD_TOP" && "$(norm "$CWD_TOP")" != "$HQ_ROOT" ]]; then
+      exit 0
+    fi
+  fi
+  block "Unanchored git/gh mutation with effective cwd at the HQ root (no \`git -C\`, no \`gh -R\`)."
 fi
 
 case "$ANCHOR_PATH" in
