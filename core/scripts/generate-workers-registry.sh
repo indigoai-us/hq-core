@@ -87,6 +87,16 @@ while IFS= read -r yaml; do
   company=$(yq_get company "$yaml")
   team=$(yq_get team "$yaml")
 
+  # Flatten embedded newlines + the field delimiter out of every extracted value
+  # to single spaces BEFORE serialization. A multi-line `description: |` block
+  # otherwise keeps its newlines through the printf→`read` round-trip below, and
+  # the newline-delimited reader splits each extra line into a bogus worker row —
+  # corrupting the whole registry into invalid YAML. (DEV: registry-0-workers.)
+  for __f in id type desc status company team; do
+    printf -v "$__f" '%s' "${!__f//$'\n'/ }"
+    printf -v "$__f" '%s' "${!__f//$'\x1f'/ }"
+  done
+
   if [[ -z "$id" || -z "$type" || -z "$desc" ]]; then
     missing=""
     [[ -z "$id" ]]   && missing="${missing:+$missing, }id"
@@ -147,15 +157,16 @@ fi
   echo "workers:"
   while IFS=$'\x1f' read -r id path type visibility team company status desc; do
     [[ -z "$id" ]] && continue
-    echo "  - id: ${id}"
-    echo "    path: ${path}"
-    echo "    type: ${type}"
-    echo "    visibility: ${visibility}"
-    [[ -n "$team" ]]    && echo "    team: ${team}"
-    [[ -n "$company" ]] && echo "    company: ${company}"
-    echo "    status: ${status}"
-    desc_esc="${desc//\"/\\\"}"
-    echo "    description: \"${desc_esc}\""
+    # Double-quote every scalar so a value containing `: ` (or other YAML
+    # metacharacters) can never break the block mapping.
+    echo "  - id: \"${id//\"/\\\"}\""
+    echo "    path: \"${path//\"/\\\"}\""
+    echo "    type: \"${type//\"/\\\"}\""
+    echo "    visibility: \"${visibility//\"/\\\"}\""
+    [[ -n "$team" ]]    && echo "    team: \"${team//\"/\\\"}\""
+    [[ -n "$company" ]] && echo "    company: \"${company//\"/\\\"}\""
+    echo "    status: \"${status//\"/\\\"}\""
+    echo "    description: \"${desc//\"/\\\"}\""
   done < "$TMP_ENTRIES"
 } > "$TMP_OUT"
 
