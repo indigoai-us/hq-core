@@ -7,9 +7,9 @@ when: cd
 on: [PreToolUse]
 enforcement: hard
 public: true
-version: 1
+version: 2
 created: 2026-05-28
-updated: 2026-05-28
+updated: 2026-06-09
 source: user-correction
 tags: [bash, git, cwd, anchor, hq-discipline]
 ---
@@ -25,6 +25,8 @@ ALWAYS use one of:
 1. **Subshell** — `( cd /abs/path && <commands> )`. The `cd` is scoped to the subshell; parent shell cwd is untouched.
 2. **`git -C /abs/path <subcmd>`** — preferred for git; never touches shell cwd.
 3. **Absolute paths in every command** — `bash /abs/path/script.sh`, `cat /abs/path/file`. No `cd` at all.
+
+**Caveat (added 2026-06-09):** the subshell form is fine for scoping cwd, but it is NOT a valid anchor for git/gh *mutations*. The Claude Code harness silently strips a leading `cd <path> && ` (including inside `( … )`) when `<path>` equals the session cwd, so PreToolUse hooks — including `block-hq-root-git-mutation.sh` — never see the cd (verified 2026-06-08, re-verified 2026-06-09). For mutations, anchor with `git -C /abs/path` or `gh -R owner/repo`; regression coverage lives in `core/scripts/tests/block-hq-root-git-mutation.test.sh`.
 
 Do NOT trust an earlier `cd` to "set up" a repo context for later calls. If a later call needs to operate in a repo, it must self-anchor (`git -C /abs`, subshell, or absolute paths) — the same discipline the HQ-root git-mutation hook already enforces for mutations, now extended to ALL repo-scoped Bash work.
 

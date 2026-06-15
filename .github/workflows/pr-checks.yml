@@ -141,6 +141,22 @@ jobs:
       - name: Regression test (fixture + live tree + fix present)
         run: bash core/scripts/tests/install-deps.test.sh
 
+  git-mutation-guard:
+    # DEV-1765: the HQ-root git-mutation guard must FIRE correctly under BOTH
+    # harnesses. Under Codex the adapter used to resolve HQ_ROOT from the cwd's
+    # git toplevel, which collapses into a nested repo (repos/*), missed the
+    # gate, and exited 0 — silently allowing `cd <hq-root> && git push` from a
+    # nested cwd. Claude side: block-hq-root-git-mutation.test.sh. Codex side:
+    # codex-git-mutation-firing.test.sh (real adapter + gate + hook, no stubs).
+    name: git-mutation-guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Claude-harness git-mutation guard
+        run: bash core/scripts/tests/block-hq-root-git-mutation.test.sh
+      - name: Codex-harness git-mutation guard fires
+        run: bash core/scripts/tests/codex-git-mutation-firing.test.sh
+
   # ─── Label-gated checks ────────────────────────────────────────────
   # These read PR labels to allow intentional overrides.
 

@@ -7,8 +7,10 @@
 #
 # Exception: .claude/settings.local.json is always allowed.
 #
-# Bypass: HQ_BYPASS_CORE_PROTECT must be set to "1" under "env" in
-# .claude/settings.local.json. Inline env-var prefixes are NOT accepted.
+# Bypass: HQ_BYPASS_CORE_PROTECT="1" under "env" in .claude/settings.local.json.
+# Enabling it disables protection for every later write, so an agent must NEVER
+# set it autonomously — the block message tells it to ask the user first.
+# Inline env-var prefixes are NOT accepted.
 #
 # Exit codes: 0 = allow, 2 = block.
 
@@ -57,6 +59,7 @@ if [[ "$FILE_PATH" == "$SETTINGS_LOCAL" ]]; then
 fi
 
 # Bypass: must be declared in .claude/settings.local.json env section.
+# NOTE: agents must ask the user before enabling this (see block message).
 is_bypass_authorized() {
   [[ -f "$SETTINGS_LOCAL" ]] || return 1
   command -v jq >/dev/null 2>&1 || return 1
@@ -111,10 +114,15 @@ BLOCKED: direct writes to protected scaffold paths are not allowed.
 Protected: core/, .claude/, .agents/, .codex/, .obsidian/, AGENTS.md
 Exception: .claude/settings.local.json is always writable.
 
-For core/ content, edit under personal/ and reindex will symlink it in.
+Preferred fix: author the content under personal/ and reindex will symlink it
+into core/ — no bypass needed.
 
-To bypass: set "HQ_BYPASS_CORE_PROTECT": "1" under "env" in .claude/settings.local.json
-(inline env-var prefixes are not accepted).
+A bypass exists, but DO NOT enable it on your own. Setting
+"HQ_BYPASS_CORE_PROTECT": "1" under "env" in .claude/settings.local.json turns
+OFF this protection for EVERY later write, so it requires the user's explicit
+approval. Ask the user to confirm first; only with their go-ahead set the flag
+(and offer to turn it back off when done). Inline env-var prefixes are not
+accepted.
 
 If this block is wrong or surprising, report it with /hq-bug.
 EOF
