@@ -1,6 +1,6 @@
 ---
 name: learn
-description: Capture and classify learnings, route to structured policy files (rules) or insight files (educational knowledge). Deduplicates via qmd (Grep fallback). New policies surface automatically via the SessionStart trigger hook. Callable manually or from /execute-task, /run-project, /handoff, /checkpoint. Use --hard flag for hard-enforcement rules.
+description: Turn reusable findings into scoped policies or insight files.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(grep:*), Bash(mkdir:*), Bash(date:*), Bash(ls:*), Bash(bash:*), Bash(git:*), Bash(rm:*), Bash(stat:*), Bash
 ---
 

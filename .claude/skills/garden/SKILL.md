@@ -1,6 +1,6 @@
 ---
 name: garden
-description: Audit and clean HQ content — detect stale, duplicate, and inaccurate information
+description: Audit HQ content for stale, duplicate, or inaccurate information.
 allowed-tools: Task, Read, Write, Edit, Glob, Grep, Bash, AskUserQuestion
 ---
 

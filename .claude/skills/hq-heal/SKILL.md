@@ -1,6 +1,6 @@
 ---
 name: hq-heal
-description: Triage and repair an HQ session error. Classifies a pasted Claude Code / Codex error (autocompact thrashing, hook crash, sync conflict, deny-list block, MCP failure, qmd-broken, reindex abort, stale symlink, git-mutation block, etc.), runs targeted diagnostics, proposes a safe fix, and writes a heal report. Companion to `/recover-session` (post-mortem) — `/hq-heal` is mid-session triage. Can be spawned from a terminal in a fresh Claude session via `bash .claude/skills/hq-heal/hq-heal.sh` when the current session is wedged.
+description: Triage and repair HQ session errors such as hook crashes, sync conflicts, or MCP failures.
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion
 ---
 

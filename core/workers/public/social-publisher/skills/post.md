@@ -136,6 +136,20 @@ If `--platform` flag was set, use that. Otherwise:
 - If entry.platform is `linkedin` -> post to LinkedIn only
 - If entry.platform is `x-community` or `hn` or `show-hn` -> **NOT supported by Post-Bridge**. Use agent-browser fallback or skip with message.
 
+## Step 2.6: Humanize before posting (required)
+
+Run the channel-aware humanize pass on `$CONTENT` (the clean post text, after
+the metadata header is stripped) per
+`core/knowledge/public/hq-core/humanize-before-send.md` — channel `social`,
+default intensity `full`. Social posts are public, so this is the full
+`/humanize` pass including the audit step and voice calibration, ending with no
+em or en dashes. If a `voice_pack` is configured for the `social` channel,
+load it from the brand-voice registry and calibrate to it; otherwise use the
+profile's brand voice (or `personal/agents-profile.md` for personal accounts).
+Humanize only the post body, never the metadata, image path, account IDs, or
+schedule. Use the humanized text as `$CONTENT` from here on, including in the
+Step 4 confirmation preview.
+
 ## Step 3: Schedule Resolution
 
 ### If `--schedule auto`:

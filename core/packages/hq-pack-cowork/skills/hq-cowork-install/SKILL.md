@@ -1,6 +1,6 @@
 ---
 name: hq-cowork-install
-description: Install hq-pack-cowork for Claude Code / Cowork from an HQ install, build the Cowork upload artifact, and show the exact Cowork smoke-test steps. Use this to make installing the HQ Cowork plugin easy for an HQ user.
+description: Build and install the HQ Cowork plugin artifact and smoke-test it.
 allowed-tools: Bash
 ---
 

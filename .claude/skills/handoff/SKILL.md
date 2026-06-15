@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Prepare for a new session to continue this work. Minimal foreground writes thread file, handoff.json, and HQ commit via handoff-finalize.sh; mechanical cleanup runs in handoff-post.sh, while learning/document-release follow-ups run as visible Codex subagents when available. Designed to survive mid-handoff context compaction.
+description: Preserve session state for a follow-up agent with handoff files and commits.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(nohup:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash, AskUserQuestion
 ---
 

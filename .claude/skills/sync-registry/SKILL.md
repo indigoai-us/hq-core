@@ -1,6 +1,6 @@
 ---
 name: sync-registry
-description: Regenerate a company's resource-registry index (registry.yaml) from its resources/*.yaml files
+description: Rebuild a company resource registry index.
 allowed-tools: Bash, Read
 ---
 

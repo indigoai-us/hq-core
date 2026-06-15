@@ -1,6 +1,6 @@
 ---
 name: registry
-description: Detect and work with a company's resource registry — check what exists before creating, update after creating or changing a resource. The registry lives as a local folder inside the company (`companies/{co}/registry/`) and is reconciled across machines by hq-sync, not git.
+description: Inspect or update a company resource registry around resource changes.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(ls:*), Bash(yq:*), Bash(cat:*), Bash(date:*), Bash(bash:*), Bash(gh:*), Bash(grep:*)
 ---
 

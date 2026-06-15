@@ -1,6 +1,6 @@
 ---
 name: hq-cowork-search
-description: Hybrid full-text + semantic search across HQ content (policies, skills, knowledge, workers, projects, per-company collections) from a sandboxed Claude Code plugin host (Cowork). Calls the host-side `hq_search` MCP tool, which wraps `qmd query` (hybrid: expansion + RRF + rerank — the recommended search mode). Use when the agent needs to find HQ content but `qmd` isn't reachable from its bash sandbox.
+description: Search HQ content from Cowork with full-text, semantic, or hybrid modes.
 allowed-tools: mcp__hq__hq_search
 ---
 

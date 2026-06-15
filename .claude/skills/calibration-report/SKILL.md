@@ -1,6 +1,6 @@
 ---
 name: calibration-report
-description: Summarize assistant time-estimate accuracy by category from the estimate log.
+description: Summarize estimate accuracy from the assistant time log.
 allowed-tools: Bash, Read
 ---
 

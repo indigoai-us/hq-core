@@ -1,6 +1,6 @@
 ---
 name: retro
-description: Project or session retrospective — review what happened, surface patterns, and feed learnings back to /learn. Two modes — PROJECT (completed project arc) and SESSION (recent work session). Triggers on "retro", "retrospective", "what did we ship", "what went well", "lessons learned".
+description: Run a project or session retrospective and capture reusable lessons.
 allowed-tools: Read, Write, Glob, Grep, Bash(git:*), Bash(qmd:*), AskUserQuestion
 ---
 

@@ -1,9 +1,6 @@
 ---
 name: out-of-scope
-description: |
-  Record what was deliberately rejected and why, so future sessions don't re-litigate the same idea.
-  Maintains a per-scope graveyard (.out-of-scope/ in repo, companies/{co}/knowledge/out-of-scope/, or knowledge/public/out-of-scope/) consulted by /brainstorm and /prd when assessing new feature requests.
-  Distinct from /adr (which captures accepted decisions).
+description: Record rejected ideas so future planning does not revisit them.
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit, AskUserQuestion
 ---
 

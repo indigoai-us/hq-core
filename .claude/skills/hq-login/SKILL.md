@@ -1,6 +1,6 @@
 ---
 name: hq-login
-description: Sign into HQ Cognito — prefer status, then refresh, then browser login
+description: Sign into HQ Cognito, preferring status, refresh, then browser login.
 allowed-tools: Bash(hq:*), Bash(jq:*), Bash(cat:*), Bash(date:*), Bash(test:*), Bash(ls:*)
 ---
 

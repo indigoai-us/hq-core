@@ -1,6 +1,6 @@
 ---
 name: designate-team
-description: Mark an HQ company directory as cloud-backed, run company sync, and write an audit row for HQ Pro team designation.
+description: Mark a company as HQ Pro cloud-backed and sync its team setup.
 allowed-tools: Read, Bash(bash:*), Bash(yq:*), Bash(awk:*), Bash(grep:*), Bash(wc:*), Bash(tr:*), Bash(mkdir:*), Bash(mktemp:*), Bash(mv:*), Bash(printf:*), Bash(date:*), Bash(jq:*), Bash(hq:*), Bash
 ---
 

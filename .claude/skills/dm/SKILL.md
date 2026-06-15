@@ -1,6 +1,6 @@
 ---
 name: dm
-description: Send a direct message to a teammate — they receive it as an HQ Sync menubar notification. Recipients can be an email, a personUid, or just a NAME (auto-resolved to the right teammate across all your companies), and a comma-separated list opens a group DM. Optionally attach an agent prompt (one-click "Copy prompt" for their agent), a details pane, or schedule it for later. Use when the user wants to DM/message/ping/notify a teammate, hand context to someone's agent, or send themselves a note/reminder. Wraps `hq dm`.
+description: Send HQ Sync direct messages, prompts, details, or scheduled notes to teammates.
 allowed-tools: Bash(hq:*), Read, Glob, Grep
 ---
 
@@ -80,9 +80,15 @@ Options:
    After this step you hold a fully-resolved list of emails/personUids — one for
    a 1:1 DM, two or more for a group DM.
 
-3. **Send.** Run a single `hq dm` invocation with the resolved recipient(s).
-   For a group DM, join the resolved tokens back into one comma-separated
-   recipient string (a group needs at least 2 other people). Examples:
+3. **Humanize, then send.** Before sending, run the channel-aware humanize pass
+   on the message body (and any `--prompt` / `--details` text) per
+   `core/knowledge/public/hq-core/humanize-before-send.md` — channel `dm`,
+   default intensity `light`: strip the obvious AI tells but keep the message
+   terse and conversational. Never rewrite recipients, scheduling flags, or
+   anything that is not prose. Then run a single `hq dm` invocation with the
+   resolved recipient(s). For a group DM, join the resolved tokens back into one
+   comma-separated recipient string (a group needs at least 2 other people).
+   Examples:
 
    ```bash
    # Plain DM (email — fast path, unchanged)

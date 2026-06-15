@@ -1,0 +1,8 @@
+id: my-voice               # unique, kebab-case; matches registry + voice_pack value
+version: 0.1.0
+type: voice
+scope: global              # global | company
+# company: my-slug         # required when scope: company
+# extends: hq-plain        # optional: inherit a parent pack, override below
+description: >-
+  One or two lines on who this voice is for and how it should feel.

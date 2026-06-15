@@ -1,0 +1,7 @@
+id: hq-plain
+version: 1.0.0
+type: voice
+scope: global
+description: >-
+  Plain, warm, direct default voice. Short sentences, concrete nouns, no hype.
+  The personalizable starter: copy it, keep what fits, change the rest.

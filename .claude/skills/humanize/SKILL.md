@@ -1,13 +1,6 @@
 ---
 name: humanize
-description: |
-  Remove signs of AI-generated writing from any human-facing prose deliverable
-  (email, blog post, social post, landing/marketing copy, outreach, essay,
-  external doc). Use when drafting or reviewing content that a real person will
-  read. Based on Wikipedia's "Signs of AI writing" guide. Detects and fixes
-  inflated significance, promotional language, superficial -ing analyses, vague
-  attributions, em dash overuse, rule of three, AI vocabulary, copula avoidance,
-  passive voice, negative parallelisms, filler, and more.
+description: Revise human-facing prose to remove AI tells and match the intended voice.
 allowed-tools: Read, Write, Edit, Grep, Glob, AskUserQuestion
 license: MIT
 provenance: blader/humanizer v2.7.0 (https://github.com/blader/humanizer)

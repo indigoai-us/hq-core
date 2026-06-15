@@ -421,6 +421,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh enforce-capability-link-render $CLAUDE_PROJECT_DIR/.claude/hooks/enforce-capability-link-render.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh enforce-humanize-before-send $CLAUDE_PROJECT_DIR/.claude/hooks/enforce-humanize-before-send.sh",
+            "timeout": 5
           }
         ]
       },

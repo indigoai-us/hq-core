@@ -1,6 +1,6 @@
 ---
 name: knowledge-pulse
-description: Lightweight background gardening pass for a company's knowledge base and policies. Spawned by startwork/brainstorm/plan after company resolution. Never run directly by users.
+description: Run a lightweight freshness pass over company knowledge and policies.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/read-policy-frontmatter.sh:*)
 ---
 

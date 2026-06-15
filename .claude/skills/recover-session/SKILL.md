@@ -1,6 +1,6 @@
 ---
 name: recover-session
-description: Recover dead sessions that hit context limits without running /handoff
+description: Recover sessions that hit context limits without a handoff.
 allowed-tools: Read, Write, Bash, Glob, Grep, AskUserQuestion
 ---
 

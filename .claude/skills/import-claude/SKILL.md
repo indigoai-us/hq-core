@@ -1,6 +1,6 @@
 ---
 name: import-claude
-description: Scan the machine for Claude artifacts (sessions, MCPs, commands, skills, hooks, policies, knowledge, repos, plans) and guide a selective import into HQ. Hydrates the skeleton that /setup scaffolds.
+description: Import selected Claude sessions, skills, hooks, policies, repos, and plans into HQ.
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion, Task
 ---
 

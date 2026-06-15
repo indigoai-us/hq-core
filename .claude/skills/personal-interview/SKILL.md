@@ -1,6 +1,6 @@
 ---
 name: personal-interview
-description: Deep interview to populate your profile and social voice
+description: Build the owner profile and social voice through interview.
 allowed-tools: Read, Write, Edit, AskUserQuestion, Glob, Bash
 ---
 

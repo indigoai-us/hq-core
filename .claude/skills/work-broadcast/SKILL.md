@@ -1,9 +1,6 @@
 ---
 name: work-broadcast
-description: |
-  Compose and send Slack channel broadcasts announcing completed or proposed work.
-  Enforces tier discipline: small changes get 1 line, medium get 3 lines max, large get a deployed marketing page + 1 line.
-  Routes to the correct channel and confirms drafts before sending.
+description: Draft Slack broadcasts for completed or proposed HQ work.
 allowed-tools: Read, Bash, Write, Edit
 ---
 
@@ -146,6 +143,13 @@ Runs only when the running person has no personal Slack user token yet. It works
 Security: token writes and any capability minting happen in this (parent) turn — never delegate them to a sub-agent. Never reveal the value with `get --reveal` in this flow.
 
 ## Step 6 — Confirm draft (MANDATORY)
+
+Before presenting the draft, run the channel-aware humanize pass on the
+summary line per `core/knowledge/public/hq-core/humanize-before-send.md`
+(channel `work-broadcast`, intensity `light`). Clean only the prose a human
+reads: strip AI vocabulary, em/en dashes, and promotional framing from the
+one-sentence summary. Never touch the `:chart_with_upwards_trend:` signature,
+the PR/page links, the channel, or the Slack `*bold*` markup.
 
 Present the composed message to the user exactly as it will appear in Slack, including the target channel:
 

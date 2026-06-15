@@ -1,6 +1,6 @@
 ---
 name: onboard
-description: Run the HQ company onboarding flow for creating or joining a company.
+description: Create or join an HQ company through onboarding.
 allowed-tools: Bash, Read
 ---
 

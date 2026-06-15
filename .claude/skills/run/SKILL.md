@@ -1,6 +1,6 @@
 ---
 name: run
-description: Run a worker or list available workers. Prefer isolated Codex sub-agents with filesystem memory; fall back to inline execution only when delegation is unavailable.
+description: Run or list HQ workers, preferring isolated Codex subagents when available.
 allowed-tools: Read, Grep, Bash(qmd:*), Bash(grep:*), Bash(ls:*), Bash(git:*), Bash(cat:*), Bash(which:*), Bash(wc:*), Edit, Write, Task, Glob, Bash, WebSearch, WebFetch, AskUserQuestion
 ---
 

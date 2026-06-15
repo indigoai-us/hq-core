@@ -1,6 +1,6 @@
 ---
 name: ontology
-description: Read the ontology gardener output (company-brief.md, entity graph, signal_count freshness) from the active company's vault. Use when an agent needs situational awareness of a company — what's been decided/discussed/risked recently, who/what is active, which entities a meeting or signal references. Multi-tenant — resolves the active company from session context and reads ITS vault. Also exposes manual gardener triggering and cheap-path-hit-rate inspection. Use when the user asks "what's going on at {company}", "what are the recent decisions/risks/questions", "what does the gardener know about {entity}", "which projects are hot right now", "trigger the ontology gardener", or "check ontology metrics".
+description: Read a company ontology brief, entity graph, and freshness signals for context.
 ---
 
 # Ontology (HQ-shared)

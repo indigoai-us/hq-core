@@ -1,6 +1,6 @@
 ---
 name: hq-cowork-share
-description: Share an HQ vault path from a sandboxed Claude Code plugin host (Cowork) by calling the host-side `hq_share` MCP tool. Without `--with`, mints an encrypted single-use share-session URL (default 15-min expiry). With `--with`, grants direct ACL access to a person, group, or `@all`. Same capability as `/hq-share`, routed through hq-pack-cowork's MCP server so it works from a sandboxed agent.
+description: Share HQ vault paths from Cowork through links or direct grants.
 allowed-tools: mcp__hq__hq_share
 ---
 

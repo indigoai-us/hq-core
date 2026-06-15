@@ -1,6 +1,6 @@
 ---
 name: hq-cowork-dm
-description: Send a direct message to a teammate from a sandboxed Claude Code plugin host (Cowork) via the host-side `mcp__hq__hq_dm` tool. Delivers an HQ Sync menubar notification to anyone you share an active company with; optionally attaches a one-click agent prompt, a detail body, or schedules delivery. Same capability as `/dm`, routed through hq-pack-cowork's MCP server.
+description: Send HQ Sync direct messages from Cowork through the host-side DM tool.
 allowed-tools: mcp__hq__hq_dm
 ---
 
@@ -20,6 +20,14 @@ as an HQ Sync menubar notification.
 | `--details <text>` | Longer detail shown in the recipient's DM detail window. |
 | `--at <ISO8601>` | Schedule delivery at an absolute time (store-and-forward). |
 | `--in <delay>` | Schedule after a relative delay: `30s`, `10m`, `2h`, `1d`. |
+
+## Humanize before send
+
+Before calling the tool, run the channel-aware humanize pass on the `message`
+(and any `prompt` / `details` text) per
+`core/knowledge/public/hq-core/humanize-before-send.md` — channel `cowork-dm`,
+default intensity `light`: strip the obvious AI tells while keeping the message
+terse and conversational. Never rewrite the recipient or scheduling fields.
 
 ## Call the tool
 

@@ -1,0 +1,26 @@
+# Personal (global) communication preferences.
+#
+# Lowest precedence: a company file (companies/<slug>/settings/communication/
+# preferences.yaml) with the same key overrides these. Controls the
+# channel-aware humanize pass run at every outbound surface's draft -> send step.
+# See core/knowledge/public/hq-core/humanize-before-send.md for resolution +
+# the intensity definitions (off | light | standard | full).
+#
+# This ships as a sane default. Edit it to taste; delete a key to fall back to
+# the built-in default for that channel.
+version: 1
+
+defaults:
+  enabled: true
+  intensity: standard
+  voice_pack: null       # e.g. hq-plain — see core/knowledge/public/brand-voice/registry.yaml
+
+channels:
+  dm:
+    intensity: light
+  cowork-dm:
+    intensity: light
+  work-broadcast:
+    intensity: light
+  social:
+    intensity: full

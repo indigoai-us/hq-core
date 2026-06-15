@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Interactive setup wizard for HQ Starter Kit
+description: Run the HQ Starter Kit setup wizard.
 allowed-tools: Read, Write, Edit, AskUserQuestion, Glob, Bash
 ---
 

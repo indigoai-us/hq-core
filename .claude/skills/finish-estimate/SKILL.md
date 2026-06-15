@@ -1,6 +1,6 @@
 ---
 name: finish-estimate
-description: Mark a pending time estimate complete with an actual duration.
+description: Mark a pending time estimate complete with actual duration.
 allowed-tools: Bash, Read, Edit
 ---
 

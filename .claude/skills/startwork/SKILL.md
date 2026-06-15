@@ -1,6 +1,6 @@
 ---
 name: startwork
-description: Start a work session — resolve company, project, or repo context, gather state from handoff.json and manifest.yaml, surface worker routes, and present smart options. Lightweight session entry point that replaces ad-hoc orientation.
+description: Resolve current HQ context and surface useful next work options.
 allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash, AskUserQuestion
 ---
 

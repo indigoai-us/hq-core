@@ -1,6 +1,6 @@
 ---
 name: hq-cowork-meetings
-description: Read HQ meeting intelligence (recorded meetings, attached sources, extracted signals) from a sandboxed Claude Code plugin host (Cowork) via the host-side `mcp__hq__hq_meetings`, `mcp__hq__hq_sources`, and `mcp__hq__hq_signals` tools. List/get/search meetings, pull transcripts and AI notes, browse sources (meeting/email/slack/linear/notion) and signals (action_item/commitment/decision/key_point/risk/summary). Read-only; routed through hq-pack-cowork's MCP server.
+description: Read HQ meeting notes and extracted signals from Cowork.
 allowed-tools: mcp__hq__hq_meetings, mcp__hq__hq_sources, mcp__hq__hq_signals
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: hq-cowork-sync
-description: Run a full HQ sync (all cloud-backed companies, bidirectional) from a sandboxed Claude Code plugin host (Cowork) by calling the host-side `hq_sync` MCP tool. Same engine as AppBar HQ Sync and the `/hq-sync` skill, but routed through the hq-pack-cowork MCP server so it works even when the `hq` binary and `~/.hq` auth are not reachable from the agent's bash sandbox.
+description: Run bidirectional HQ Sync from Cowork.
 allowed-tools: mcp__hq__hq_sync, mcp__hq__hq_whoami
 ---
 
