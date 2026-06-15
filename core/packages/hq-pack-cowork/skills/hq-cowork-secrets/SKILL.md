@@ -1,6 +1,6 @@
 ---
 name: hq-cowork-secrets
-description: Use HQ secrets from a sandboxed Claude Code plugin host (Cowork). The host-side MCP server never returns a secret value itself: `mcp__hq__hq_secrets_exec` runs a command on the host with named secrets injected as env vars (only the command's output returns), and refuses to launch a shell or value-printing binary; `mcp__hq__hq_secrets_list` lists secret NAMES/metadata only. These tools run host commands with the user's privileges, so treat them as host-trusted, not a cryptographic boundary. Same capability as `/hq-secrets`, routed through hq-pack-cowork's host-side MCP server. The value-revealing path is deliberately unavailable.
+description: Run commands with HQ secrets from Cowork without exposing values.
 allowed-tools: mcp__hq__hq_secrets_exec, mcp__hq__hq_secrets_list
 ---
 

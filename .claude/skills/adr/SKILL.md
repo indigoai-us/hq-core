@@ -1,9 +1,6 @@
 ---
 name: adr
-description: |
-  Capture an Architectural Decision Record. Enforces the three-condition gate (hard-to-reverse + surprising + result-of-trade-off) before writing.
-  Picks home: code-bound decisions go to <repo>/docs/adr/; HQ-managed project decisions go to companies/{co}/knowledge/adrs/. Sequential numbering.
-  Use after a /brainstorm, /prd, /architect, or /diagnose session crystallizes a decision worth not re-litigating.
+description: Capture qualifying architecture decisions as ADRs in the right HQ or repo location.
 allowed-tools: Read, Grep, Glob, Bash, Write, Edit, AskUserQuestion
 ---
 

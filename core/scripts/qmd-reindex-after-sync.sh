@@ -55,6 +55,21 @@ for kdir in companies/*/knowledge; do
   qmd context add "qmd://$slug" "Knowledge base for $slug." >/dev/null 2>&1 || true
 done
 
+# 1b. Auto-register company *projects* collections that don't exist yet.
+#    Convention matches the HQ-level `hq-projects` collection: --name <slug>-projects
+#    --mask "**/*.{md,json}" (so prd.json + project docs are searchable). Without
+#    this, company projects/ dirs are indexed by nothing and /startwork's global
+#    `qmd search "prd.json"` and /brainstorm's project discovery silently miss them.
+for pdir in companies/*/projects; do
+  [ -d "$pdir" ] || continue
+  find "$pdir" -type f \( -name '*.md' -o -name '*.json' \) 2>/dev/null | head -1 | grep -q . || continue
+  slug="$(basename "$(dirname "$pdir")")"
+  name="${slug}-projects"
+  printf '%s\n' "$existing" | grep -Fq "qmd://$name/" && continue
+  qmd collection add "$hq_root/$pdir" --name "$name" --mask "**/*.{md,json}" >/dev/null 2>&1 || true
+  qmd context add "qmd://$name" "Project PRDs and documentation for $slug." >/dev/null 2>&1 || true
+done
+
 # 2. Incremental lexical reindex (cheap; mtime-incremental inside qmd).
 qmd update >/dev/null 2>&1 || true
 

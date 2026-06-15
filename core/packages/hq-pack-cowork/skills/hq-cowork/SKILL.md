@@ -1,6 +1,6 @@
 ---
 name: hq-cowork
-description: Discovery + dispatch entry point for native HQ inside Cowork (or any sandboxed Claude Code plugin host). Enumerates every HQ capability available through hq-pack-cowork's host-side MCP server (identity, sync, qmd/search, secrets, vault files, team & membership, packages & modules, meeting intelligence, feedback, schema-backed runs, guarded long-tail CLI) and routes to the right `mcp__hq__*` tool while preserving default HQ behavior through a different transport. Use when the agent needs HQ but `hq`/`qmd` aren't reachable from its bash sandbox and isn't sure which tool to call.
+description: Discover and dispatch HQ capabilities from a sandboxed Cowork plugin host.
 allowed-tools: mcp__hq__hq_whoami, mcp__hq__hq_sync, mcp__hq__hq_team_sync, mcp__hq__hq_search, mcp__hq__hq_qmd, mcp__hq__hq_secrets_exec, mcp__hq__hq_secrets_list, mcp__hq__hq_share, mcp__hq__hq_files, mcp__hq__hq_members, mcp__hq__hq_groups, mcp__hq__hq_dm, mcp__hq__hq_packages, mcp__hq__hq_modules, mcp__hq__hq_meetings, mcp__hq__hq_sources, mcp__hq__hq_signals, mcp__hq__hq_feedback, mcp__hq__hq_run, mcp__hq__hq_cli
 ---
 

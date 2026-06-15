@@ -1,6 +1,6 @@
 ---
 name: checkpoint
-description: Save checkpoint and check context status
+description: Save a lightweight session checkpoint.
 allowed-tools: Write, Bash, Read
 ---
 

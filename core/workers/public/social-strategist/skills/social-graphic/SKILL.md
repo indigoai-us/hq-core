@@ -1,6 +1,6 @@
 ---
 name: social-graphic
-description: Generate 1080x1080 HTML social graphics for HQ update posts. Dark monochrome terminal aesthetic with tree structures, color-coded categories, and {company} branding. Use when creating visuals for social posts about HQ features, workers, or releases.
+description: Generate 1080x1080 HTML social graphics for HQ update posts.
 allowed-tools: Read, Write, Edit, Bash(open:*), Bash(agent-browser:*)
 ---
 

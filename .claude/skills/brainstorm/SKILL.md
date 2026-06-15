@@ -1,6 +1,6 @@
 ---
 name: brainstorm
-description: Explore approaches and tradeoffs before committing to a PRD. Research HQ context, compare options, surface unknowns, generate brainstorm.md with recommendation.
+description: Compare approaches, surface unknowns, and draft a recommendation before PRD work.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash, AskUserQuestion, WebSearch
 ---
 

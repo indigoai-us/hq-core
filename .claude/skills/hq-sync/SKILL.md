@@ -1,6 +1,6 @@
 ---
 name: hq-sync
-description: Run a full HQ sync (all cloud-backed companies, bidirectional) — same engine as AppBar HQ Sync
+description: Run a full bidirectional sync for cloud-backed HQ companies.
 allowed-tools: Bash, Read
 ---
 

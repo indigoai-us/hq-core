@@ -1,6 +1,6 @@
 ---
 name: idea
-description: Capture a project idea on the board without a full PRD
+description: Capture a lightweight project idea on the board.
 allowed-tools: Read, Write, Bash, AskUserQuestion
 ---
 

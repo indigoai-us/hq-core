@@ -1,6 +1,6 @@
 ---
 name: goals
-description: View and manage OKR structure (objectives, key results) on company boards
+description: View and manage company OKRs and key results.
 allowed-tools: Read, Write, Edit, Bash, AskUserQuestion
 ---
 

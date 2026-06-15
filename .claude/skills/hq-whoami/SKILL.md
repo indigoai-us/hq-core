@@ -1,6 +1,6 @@
 ---
 name: hq-whoami
-description: Show HQ Cognito identity, email, and session expiry (read-only)
+description: Show current HQ Cognito identity and session expiry.
 allowed-tools: Bash(hq:*), Bash(jq:*), Bash(cat:*), Bash(date:*), Bash(test:*)
 ---
 

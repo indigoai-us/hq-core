@@ -1,6 +1,6 @@
 ---
 name: signals
-description: Read a company's HQ-native "signals" — meeting/comms intelligence extracted into companies/{co}/signals/. Use when the user asks for action items, decisions, commitments, risks, open questions, wins/accomplishments, key points, or "what did {person} commit to / decide / flag". Multi-tenant — resolves the active company and reads ITS signals store. Generic reader so every company gets first-class signals, not only ones that ship their own namespaced signals skill. Read-only; if the store is empty/unactivated, surfaces turnkey activation instead of guessing.
+description: Read HQ-native company signals such as decisions, actions, risks, commitments, and wins.
 allowed-tools: Bash, Read, Grep, Glob
 ---
 

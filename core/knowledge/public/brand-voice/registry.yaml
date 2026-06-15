@@ -1,0 +1,25 @@
+# Brand-voice pack registry.
+#
+# One row per voice pack. A pack defines how outbound prose should SOUND, the
+# same way a design-styles pack defines how a site should LOOK. The humanize
+# pass loads a pack's voice-guide.md to calibrate voice when a channel's
+# `voice_pack` is set (see core/knowledge/public/hq-core/humanize-before-send.md).
+#
+# Resolution: a `voice_pack: <id>` value resolves to the row whose `id` matches.
+# Global packs live at core/knowledge/public/brand-voice/packs/<id>/; company
+# packs at companies/<slug>/knowledge/brand-voice/packs/<id>/ (scope: company).
+#
+# This mirrors core/knowledge/public/design-styles/registry.yaml. New packs:
+# copy core/knowledge/public/brand-voice/_template/ and register here.
+version: 1
+
+packs:
+  - id: hq-plain
+    version: 1.0.0
+    type: voice
+    scope: global
+    path: core/knowledge/public/brand-voice/packs/hq-plain
+    description: >-
+      Plain, warm, direct default voice. Short sentences, concrete nouns, no
+      hype. The personalizable starter — copy it, keep what fits, change the
+      rest.

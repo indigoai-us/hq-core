@@ -1,0 +1,34 @@
+# Company communication preferences.
+#
+# Controls the channel-aware humanize pass that every outbound surface
+# (dm, cowork-dm, work-broadcast, social) runs at its draft -> send step.
+# See core/knowledge/public/hq-core/humanize-before-send.md for the full design.
+#
+# Resolution order (first value set wins, per setting, per channel):
+#   1. company  channels.<channel>.<key>
+#   2. company  defaults.<key>
+#   3. personal channels.<channel>.<key>   (personal/settings/communication-preferences.yaml)
+#   4. personal defaults.<key>
+#   5. built-in default
+# Company always wins over personal (global) on a conflict.
+#
+# This is the template copied for a new company. The real file lives at
+# companies/<slug>/settings/communication/preferences.yaml. Edit to taste; any
+# key you omit falls through to the next level above.
+version: 1
+
+defaults:
+  enabled: true          # run the humanize pass before sending
+  intensity: standard    # off | light | standard | full
+  voice_pack: null       # brand-voice pack id (core/knowledge/public/brand-voice/registry.yaml)
+
+channels:
+  dm:
+    intensity: light     # conversational, semi-internal: strip slop, keep it terse
+  cowork-dm:
+    intensity: light
+  work-broadcast:
+    intensity: light     # templates already constrain shape; clean the summary line
+  social:
+    intensity: full      # public audience: full pass + voice calibration
+    # voice_pack: <your-company-voice-pack-id>

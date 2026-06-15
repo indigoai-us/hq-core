@@ -1,6 +1,6 @@
 ---
 name: strategize
-description: Strategic prioritization — "what should I work on next?" with optional deep review
+description: Prioritize what to work on next, optionally with deep review.
 allowed-tools: Read, Write, Bash, AskUserQuestion
 ---
 

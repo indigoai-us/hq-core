@@ -1,6 +1,6 @@
 ---
 name: cleanup
-description: Audit and clean HQ to enforce current policies and migrate outdated structures
+description: Audit and clean HQ structures, indexes, and stale content.
 allowed-tools: Task, Read, Glob, Grep, Bash, Write, Edit, AskUserQuestion
 ---
 

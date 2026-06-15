@@ -1,6 +1,6 @@
 ---
 name: promote
-description: Change an HQ company member's role with optional guest path scoping.
+description: Change an HQ company member role or guest path scope.
 allowed-tools: Bash, Read
 ---
 

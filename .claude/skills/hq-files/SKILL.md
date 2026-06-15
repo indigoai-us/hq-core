@@ -1,6 +1,6 @@
 ---
 name: hq-files
-description: Manage file access controls in HQ vault — share prefixes, revoke grants, inspect ACLs, and orchestrate access for individuals or groups.
+description: Inspect or change HQ vault ACLs, grants, and shared prefixes.
 allowed-tools: Bash(hq:*)
 ---
 

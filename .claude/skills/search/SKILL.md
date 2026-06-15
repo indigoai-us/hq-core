@@ -1,6 +1,6 @@
 ---
 name: search
-description: Search across HQ and indexed repos (qmd-powered semantic + full-text). Falls back to Grep if qmd is unavailable.
+description: Search HQ content and indexed repos with qmd, falling back to grep.
 allowed-tools: Read, Grep, Bash(qmd:*), Bash(grep:*), Bash(ls:*)
 ---
 

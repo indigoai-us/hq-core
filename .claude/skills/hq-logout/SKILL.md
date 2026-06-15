@@ -1,6 +1,6 @@
 ---
 name: hq-logout
-description: Sign out of HQ Cognito locally — clear cached tokens
+description: Sign out of HQ Cognito and clear local tokens.
 allowed-tools: Bash(hq:*), Bash(ls:*), Bash(test:*), Bash(rm:*)
 ---
 
