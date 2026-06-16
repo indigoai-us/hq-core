@@ -1,6 +1,6 @@
 ---
 name: tutorial
-description: Interactive tutorial — hands-on lessons on HQ principles, daily workflow, and scaling
+description: Run hands-on HQ workflow lessons.
 allowed-tools: Read, Glob, Grep, Bash, AskUserQuestion
 ---
 

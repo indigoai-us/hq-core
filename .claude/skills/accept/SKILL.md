@@ -1,6 +1,6 @@
 ---
 name: accept
-description: Accept a vault-backed HQ membership invite from a magic link or raw token.
+description: Accept HQ membership invites from a magic link or raw token.
 allowed-tools: Bash, Read
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: newworker
-description: Scaffold a new worker with skills, tools, and knowledge
+description: Scaffold a new HQ worker with skills, tools, and knowledge.
 allowed-tools: Read, Write, Edit, AskUserQuestion
 ---
 

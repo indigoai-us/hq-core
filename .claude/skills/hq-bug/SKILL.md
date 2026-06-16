@@ -1,6 +1,6 @@
 ---
 name: hq-bug
-description: Submit a bug report or feature request via `hq feedback`. Assembles a four-section body (user prose / session context / last failing tool / cwd hint), writes it to a mktemp path, then submits in a single Bash call with --body-file. Company slug resolved via hq-session.sh — no GHQ-OS coupling.
+description: Submit HQ bug reports or feature requests with session context.
 allowed-tools: AskUserQuestion, Write, Bash(mktemp:*), Bash(bash:*), Bash(rm:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(pwd:*)
 ---
 

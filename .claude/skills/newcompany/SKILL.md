@@ -1,6 +1,6 @@
 ---
 name: newcompany
-description: Scaffold a new company with full infrastructure
+description: Scaffold a new HQ company.
 allowed-tools: Read, Write, Edit, Bash, AskUserQuestion
 ---
 

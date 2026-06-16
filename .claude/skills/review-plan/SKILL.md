@@ -1,6 +1,6 @@
 ---
 name: review-plan
-description: Structured plan review with three scope modes — EXPANSION (dream big, find the 10x version), HOLD (maximum rigor, bulletproof everything), REDUCTION (surgical cuts, minimum viable value). Use when reviewing a plan, PRD, or proposal before execution. Triggers on requests to "review this plan", "stress-test this PRD", "challenge this approach", or "is this plan good enough".
+description: Stress-test a plan or PRD in expansion, hold, or reduction mode.
 allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), AskUserQuestion
 ---
 

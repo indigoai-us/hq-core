@@ -1,6 +1,6 @@
 ---
 name: hq-share
-description: Share HQ vault paths — mint a single-use browser share-session link for batch/ephemeral sharing, or write a direct ACL grant to a specific person, group, or @all
+description: Share HQ vault paths through single-use links or direct ACL grants.
 allowed-tools: Bash(hq:*), Bash(test:*), Bash(jq:*)
 ---
 

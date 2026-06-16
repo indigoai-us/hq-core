@@ -50,6 +50,22 @@ When the deliverable type is ambiguous, default to running the pass; over-applyi
 
 When the user explicitly invokes `/humanize` on existing text, deliver the full draft → audit → final loop. When the pass runs inline as part of producing a deliverable, the audit step is still mandatory, but you may present only the final result.
 
+### Outbound enforcement (humanize before send)
+
+For outbound communication channels the pass has an enforced seam at the
+draft → send step. Each outbound skill (`dm`, `work-broadcast`,
+`social-publisher` / `post`, `hq-cowork-dm`) runs the shared, channel-aware
+"humanize before send" block (`core/knowledge/public/hq-core/humanize-before-send.md`)
+on the human-readable body before the message is sent. Intensity is per-channel
+and configurable via `personal/settings/communication-preferences.yaml` and
+`companies/{co}/settings/communication/preferences.yaml` (company over global),
+and voice can be calibrated with a brand-voice pack
+(`core/knowledge/public/brand-voice/`). The `enforce-humanize-before-send` Stop
+hook (`.claude/hooks/enforce-humanize-before-send.sh`, routed via `hook-gate.sh`)
+is the backstop: it scans the just-finished turn for an outbound send whose body
+still carries a cluster of AI-writing tells and blocks once with a corrective
+directive. Loop-safe via `stop_hook_active`; fail-open on any error.
+
 ### Why this is hard-enforcement
 
 AI writing tells (em dashes, rule-of-three, inflated significance, promotional vocabulary, sycophantic framing, generic upbeat conclusions) are immediately recognizable to readers and undermine the credibility of anything published under the owner's or a company's name. The cost of the pass is low and the cost of shipping slop to a real audience is high, so the pass is required rather than optional.

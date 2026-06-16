@@ -1,6 +1,6 @@
 ---
 name: decision-queue
-description: Walk through pending decisions one at a time, updating state between answers.
+description: Resolve pending user decisions one at a time.
 allowed-tools: Read, Write, Edit, Bash, AskUserQuestion
 ---
 

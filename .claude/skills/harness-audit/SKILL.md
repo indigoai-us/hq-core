@@ -1,6 +1,6 @@
 ---
 name: harness-audit
-description: Score HQ setup quality across 7 categories (hooks, context, gates, persistence, search, security, cost)
+description: Score an HQ setup across hooks, context, gates, persistence, search, security, and cost.
 allowed-tools: Read, Bash, Grep
 ---
 

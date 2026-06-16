@@ -1,6 +1,6 @@
 ---
 name: hq-cowork-cli
-description: Use long-tail HQ CLI functionality from Cowork via the host-side guarded `mcp__hq__hq_cli` tool and schema-driven `mcp__hq__hq_run` tool. Covers HQ commands not yet modeled as dedicated MCP tools while blocking browser/session flows and secret-value output.
+description: Run long-tail HQ CLI commands through guarded host-side Cowork tools.
 allowed-tools: mcp__hq__hq_cli, mcp__hq__hq_run, mcp__hq__hq_whoami
 ---
 

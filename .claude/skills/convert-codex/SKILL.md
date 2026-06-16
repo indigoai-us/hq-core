@@ -1,6 +1,6 @@
 ---
 name: convert-codex
-description: Additive conversion for older Claude-first HQ roots so Codex has first-class AGENTS.md guidance, project mirrors, skill exposure, and OpenAI metadata without disrupting Claude Code behavior.
+description: Add Codex support to older Claude-first HQ roots without breaking Claude setup.
 allowed-tools: Read, Write, Bash, Glob, Grep
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: resolve-conflicts
-description: Walk through HQ Sync conflicts and resolve them interactively (keep local | take cloud | discard).
+description: Resolve HQ Sync conflicts by choosing local, cloud, or discard.
 allowed-tools: Read, Write, Edit, Bash, AskUserQuestion
 ---
 

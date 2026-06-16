@@ -1,6 +1,6 @@
 ---
 name: hq-secrets
-description: "Use hq CLI secrets safely — prefer 'hq run' for repos with .env.schema (schema-driven, batch-fetched, never printed); use 'hq secrets exec' for one-off invocations; generate links for human-supplied credentials."
+description: Use HQ CLI secrets safely through env injection or one-off exec.
 allowed-tools: Bash(hq:*), Bash(source:*), Bash(bash:*)
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: meeting-notes
-description: Read a company's HQ-native meeting notes (recordings/transcripts/recaps captured by the HQ meeting bot). Use whenever the user asks for meeting notes, standup notes, a call recap, "what was said in {meeting}", or the latest notes for a company. Multi-tenant — resolves the active company and reads ITS native store at companies/{co}/sources/meetings/. HQ-native first; never defaults to email or third-party notetakers. If the store is empty or the feature isn't activated, surfaces turnkey activation steps instead of scraping email.
+description: Read HQ-native meeting notes, transcripts, recaps, and sources for a company.
 allowed-tools: Bash, Read, Grep, Glob
 ---
 

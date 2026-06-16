@@ -1,6 +1,6 @@
 ---
 name: hq-cowork-files
-description: Read and inspect HQ vault objects from a sandboxed Claude Code plugin host (Cowork) without a full sync, via the host-side `mcp__hq__hq_files` tool. Actions — browse (list), cat (read one object), acl (show access list), search (match object keys), shared-with-me (grants to you), get (materialize into local HQ). Same capability as `/hq-files`, routed through hq-pack-cowork's MCP server.
+description: Browse or read HQ vault files from Cowork without a full sync.
 allowed-tools: mcp__hq__hq_files
 ---
 

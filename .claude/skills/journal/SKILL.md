@@ -1,6 +1,6 @@
 ---
 name: journal
-description: Session-level working-memory journal — write structured entries to workspace/threads/journal/<date>/ so autocompact can discard raw tool-results while preserving findings/decisions.
+description: Write structured session journal entries for durable working memory.
 allowed-tools: Bash, Read, Write
 ---
 

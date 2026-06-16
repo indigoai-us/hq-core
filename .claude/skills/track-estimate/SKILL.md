@@ -1,6 +1,6 @@
 ---
 name: track-estimate
-description: Manually log a time estimate when automatic estimate capture misses it.
+description: Manually log a time estimate.
 allowed-tools: Bash, Read, Edit
 ---
 

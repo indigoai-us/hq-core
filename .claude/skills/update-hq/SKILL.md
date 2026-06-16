@@ -1,6 +1,6 @@
 ---
 name: update-hq
-description: Upgrade HQ from the latest indigoai-us/hq-core release
+description: Upgrade HQ from the latest hq-core release.
 allowed-tools: Read, Bash, AskUserQuestion
 ---
 
