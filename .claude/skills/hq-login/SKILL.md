@@ -30,6 +30,6 @@ primitives — adds no auth logic.
 
 - All four `hq auth` subcommands write to `~/.hq/cognito-tokens.json` —
   same file consumed by `/deploy` (see `.claude/skills/deploy/SKILL.md`).
-- The shared HQ Identity pool (`us-east-1_IksCYBcBr`) is owned by hq-pro;
+- The shared HQ Identity pool is managed by the HQ cloud backend;
   CLI version ≥5.4 is required for `hq-auth-refresh`.
 - If the user is already signed in, this command is a no-op.

@@ -23,7 +23,7 @@ Map `$ARGUMENTS` onto `hq rescue` flags:
 | `--check` / `--dry-run` | `--check` | Plan only — classify and report, change nothing on disk |
 | `v{X.Y.Z}` (bare version) | `--ref v{X.Y.Z}` | Upgrade to a specific release instead of latest |
 | `--ref <ref>` | `--ref <ref>` | Target tag/branch (default: latest hq-core release) |
-| `--staging` | `--staging` | Use the staging channel (`indigoai-us/hq-core-staging@main`) |
+| `--staging` | `--staging` | Use the staging release channel |
 | `--source <repo>` | `--source <repo>` | Override the source repo |
 | `--paths <list>` | `--paths <list>` | Narrow the rescue to comma-separated top-level paths |
 | `--floor-sha <sha>` | `--floor-sha <sha>` | Pin the three-way history floor to a 40-char commit SHA |

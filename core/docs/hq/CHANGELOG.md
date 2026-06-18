@@ -1,9 +1,15 @@
 ## [Unreleased]
 
+### Added — Skills
+- **`/project-summary` — visual project artifact + auto-deploy.** New skill that reads a project's `prd.json` (plan mode) or `brainstorm.md` (deck mode), renders a self-contained branded `index.html` on the company's design pack (falling back to a shipped neutral theme when none is bound), and deploys it gated via hq-deploy, returning a link. Plan mode renders objectives, the story-map, phasing, and auto-detected UX mockups (user-facing products) or an architecture diagram (backend/infra). Deck mode renders the framing, premise verdict, what-we-know/don't, an options comparison with the recommended approach highlighted, and the recommendation. Idempotent (stable per-project app name → stable URL); deploy failures are non-fatal to the caller.
+
+### Changed — Skills
+- **`/brainstorm` now auto-deploys a research deck (Step 6.6).** On completion, brainstorm invokes `/project-summary … --brainstorm` to publish a visual deck of the findings and surfaces the live link in its confirmation. Non-fatal: a failed deploy logs a one-line skip and never blocks the brainstorm.
+
 ## [15.0.0] — BREAKING — engineering surface extracted
 
 ### Added — Skills
-- **`/hq-share` — Claude-drafted note pre-fill (Step 3.5).** When `/hq-share` is invoked with the shared paths locally readable, the skill inventories the files, drafts a 1–2 sentence factual note describing what's being shared, and confirms with the user (Use as-is / Edit / Skip / Type-my-own) before minting. The accepted draft rides on the share-session URL as `?note=<urlencoded>`; the hq-console form reads it on mount and seeds the note textarea — sender just reviews and approves. New `--no-draft` flag opts out of the draft step entirely. Rule #6 captures the no-speculation drafting guidance. Companion form-side reader shipped via `indigoai-us/hq-console#126`, live on hq-prod since 2026-05-26.
+- **`/hq-share` — Claude-drafted note pre-fill (Step 3.5).** When `/hq-share` is invoked with the shared paths locally readable, the skill inventories the files, drafts a 1–2 sentence factual note describing what's being shared, and confirms with the user (Use as-is / Edit / Skip / Type-my-own) before minting. The accepted draft rides on the share-session URL as `?note=<urlencoded>`; the HQ share form reads it on mount and seeds the note textarea — sender just reviews and approves. New `--no-draft` flag opts out of the draft step entirely. Rule #6 captures the no-speculation drafting guidance. Companion form-side reader shipped in a coordinated HQ console release.
 
 ### Changed
 - Root structure now keeps user-visible top-level directories to `companies/`, `core/`, `personal/`, `repos/`, and `workspace/`; public HQ docs moved to `core/docs/hq/`.
@@ -298,7 +304,7 @@ Path renames in 4 policy files to reflect the current contributor layout. Enforc
 **Hotfix on top of v12.1.0** — finishes the dev→prod Cognito cutover by flipping the last user-visible dev-pool reference and codifies the no-bandaid principle that drove the cleanup.
 
 ### Fixed
-- **`/designate-team`** — the env-echo block (`HQ environment for designation:`) printed `Cognito domain: hq-vault-dev` whenever the operator hadn't set `HQ_COGNITO_DOMAIN`. Misleading post-2026-04-25 cutover, since the running CLI defaults to `vault-indigo-hq-prod`. Now the displayed default mirrors the canonical pool, so operators can sanity-check at a glance.
+- **`/designate-team`** — the env-echo block (`HQ environment for designation:`) printed a stale Cognito domain whenever the operator hadn't set `HQ_COGNITO_DOMAIN`. Misleading post-2026-04-25 cutover, since the running CLI uses a different default. Now the displayed default mirrors the canonical pool, so operators can sanity-check at a glance.
 
 ### Added — Policies
 - **`prefer-systemic-fix-over-user-bandaid`** (hard, global) — codifies the rule that bug fixes ship as systemic patches (default change + version bump + release), not as per-operator env exports. Banned framings: "Layer A: unblock <user> today", "tell <user> to set HQ_FOO=…", "quick fix vs proper fix". Compounds with `hq-fix-root-cause-not-symptoms`. Source: 2026-04-29 user correction during the create-hq cognito cutover.

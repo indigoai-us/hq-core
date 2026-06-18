@@ -18,8 +18,8 @@ Every deployed app has exactly one edge access mode. New policy-aware deploys pr
 |---|---|---|
 | `public` | Default. Casual handoff, anyone with the link. | No gate. App serves immediately. |
 | `password` | Sensitive content, casual share over Slack/email, recipients unknown ahead of time. | App owner sets a password (Argon2id-hashed). Visitors land on `hq.{your-domain}.com/__access`, enter the password, get a 24h `hq-access` JWT cookie scoped to `.{your-domain}.com`. |
-| `company` | Internal/company-only share; user says "restricted to org", "internal-only", "company-only"; or config prefers org-restricted deploys. | Visitors sign in with HQ Cognito on `hq.{your-domain}.com/__access`; hq-console checks active membership in the app's company before minting a policy-versioned `hq-access` cookie. |
-| `selected` | Specific HQ people/groups when the caller has resolvable hq-pro IDs. | Same Cognito flow as `company`, but only selected user/group IDs in the policy are accepted. Use only when IDs are known from hq-pro, not from free-form names. |
+| `company` | Internal/company-only share; user says "restricted to org", "internal-only", "company-only"; or config prefers org-restricted deploys. | Visitors sign in with HQ Cognito on `hq.{your-domain}.com/__access`; the HQ access service checks active membership in the app's company before minting a policy-versioned `hq-access` cookie. |
+| `selected` | Specific HQ people/groups when the caller has resolvable HQ directory IDs. | Same Cognito flow as `company`, but only selected user/group IDs in the policy are accepted. Use only when IDs are known from the HQ directory, not from free-form names. |
 | `private` | Legacy sensitive sharing for **known recipients by email/domain** when Cognito company membership is not the desired gate. | Visitors must be signed in to hq-auth (`auth.{your-domain}.com`) AND their email must be on the app's allowlist. Lands on `hq.{your-domain}.com/__private`, which checks the session + allowlist and mints the same `hq-access` JWT. |
 
 Pick `company` when the user asks for org/company/internal restriction. Pick `private` over `password` when the user gives concrete email/domain recipients (`"share with [EMAIL] and the @example.com team"`) and did not ask for company-wide Cognito access. Pick `password` when sensitivity is detected but recipients are unspecified and config does not prefer org restriction.
@@ -141,7 +141,7 @@ fi
 | Thing | How |
 |-------|-----|
 | Org (`$ORG_SLUG`) | Resolution chain below — never default to a hardcoded org |
-| API endpoint | manifest `services.hq-deploy.endpoint` → `$HQ_DEPLOY_API` → `https://api.indigo-hq.com` |
+| API endpoint | manifest `services.hq-deploy.endpoint` → `$HQ_DEPLOY_API` (your HQ deploy host) |
 | App name | `package.json` `name` → current directory name, slug-cased |
 
 #### Org resolution chain
@@ -548,7 +548,7 @@ If any `/api/*` call returns 401, the JWT went stale between Phase A and now. Fa
 
 After upload, with `appId` in hand. Branch on `ACCESS_MODE`. Use `PUT /access-policy` for first-class Cognito policy modes (`company`, `selected`, policy-versioned password); use `POST /access-mode` for legacy password/private transitions and allowlist cleanup.
 
-For hq-pro validation, send the id token when available. `identity-resolve.sh` returns the hq-deploy access token as `$JWT`; read the companion id token from the local token file only inside the shell and never echo it.
+For grantee validation, send the id token when available. `identity-resolve.sh` returns the hq-deploy access token as `$JWT`; read the companion id token from the local token file only inside the shell and never echo it.
 
 ```bash
 TOKEN_FILE="$HOME/.hq/cognito-tokens.json"
@@ -585,7 +585,7 @@ elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "company" ]; then
   fi
 elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "selected" ]; then
   # SELECTED_USERS_JSON / SELECTED_GROUPS_JSON must be arrays of {id} objects
-  # resolved from hq-pro. Do not invent IDs from display names.
+  # resolved from the HQ directory. Do not invent IDs from display names.
   COMPANY_UID=${COMPANY_UID:-$(curl -sS -H "Authorization: Bearer ${HQ_PRO_JWT:-$JWT}" \
     "$VAULT_API/entity/by-slug/company/$ORG_SLUG" \
     | jq -r '.entity.uid // empty' 2>/dev/null)}
@@ -758,4 +758,4 @@ All scripts:
 - The CLI at `repos/public/hq-deploy/cli/` remains for CI/CD pipelines (uses its own auth flow).
 - For Vercel-managed projects, skip entirely.
 - Respects company isolation — credentials resolved from active company context.
-- Shared HQ Identity pool means one onboarding.indigo-hq.com sign-in works across hq-deploy, hq-pro, hq-onboarding.
+- Shared HQ Identity pool means one sign-in works across HQ's deploy, vault, and onboarding surfaces.

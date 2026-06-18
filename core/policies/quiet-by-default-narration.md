@@ -160,9 +160,9 @@ YES:
 
 YES (unchanged from current behavior):
 ```
-Two repos match "hq-pro":
-  1. repos/private/hq-pro (canonical)
-  2. companies/indigo/repos/hq-pro (symlink)
+Two repos match "acme-web":
+  1. repos/private/acme-web (canonical)
+  2. companies/acme/repos/acme-web (symlink)
 Pick:
 ```
 

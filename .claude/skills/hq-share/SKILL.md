@@ -177,7 +177,7 @@ chosen text without re-asking.
   answer for the session).
 
 The drafted text rides on the URL as `?note=<urlencoded>` (Step 4); the
-hq-console form reads it on mount and seeds the textarea, showing a
+the HQ share form reads it on mount and seeds the textarea, showing a
 "drafted by Claude — edit freely" hint until the user touches it.
 
 ### 4. Mint + open (share-session mode)

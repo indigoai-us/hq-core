@@ -115,7 +115,7 @@ fi
 # falls back to the CLI defaults. Operator identity comes from `hq whoami`
 # when available — this is informational only, never blocking.
 hq_vault_api_url_env="${HQ_VAULT_API_URL:-}"
-hq_cognito_domain_env="${HQ_COGNITO_DOMAIN:-vault-indigo-hq-prod}"
+hq_cognito_domain_env="${HQ_COGNITO_DOMAIN:-}"
 hq_whoami_line=""
 if hq whoami >/dev/null 2>&1; then
   hq_whoami_line="$(hq whoami 2>/dev/null | head -1 || true)"
@@ -123,7 +123,7 @@ fi
 echo "HQ environment for designation:"
 echo "  Operator:          ${hq_whoami_line:-<unknown — run \`hq auth login\`>}"
 echo "  Vault API URL:     ${hq_vault_api_url_env:-<CLI default>}"
-echo "  Cognito domain:    ${hq_cognito_domain_env}"
+echo "  Cognito domain:    ${hq_cognito_domain_env:-<CLI default>}"
 
 # Delegate to the canonical CLI subcommand.
 # Exit codes: 0 success | 1 vault/auth | 2 invalid input | 3 sync failed (entity provisioned)
