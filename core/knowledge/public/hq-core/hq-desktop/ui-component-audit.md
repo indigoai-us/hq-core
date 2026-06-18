@@ -2,7 +2,7 @@
 
 **Story:** US-005 - Audit existing UI components & patterns
 **Date:** 2026-02-11
-**Scope:** All React components, CSS classes, and design tokens in `repos/private/hq-desktop/src/`
+**Scope:** All React components, CSS classes, and design tokens in the HQ desktop app's `src/` (internal)
 
 ---
 

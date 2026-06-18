@@ -27,6 +27,6 @@ long the cached access token has left. Read-only — touches nothing.
 
 - Reads `~/.hq/cognito-tokens.json` only — same file as `/deploy`,
   `/hq-login`, `/hq-logout`.
-- Pool: shared HQ Identity (`us-east-1_IksCYBcBr`).
+- Pool: shared HQ Identity.
 - Does not refresh the token; for that, run `/hq-login` (it auto-refreshes
   if expired).

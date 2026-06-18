@@ -322,6 +322,26 @@ Do NOT wait for the pulse to complete — continue immediately to Step 7.
 
 **Skip if:** company has no knowledge directory.
 
+## Step 6.6: Deploy Visual Brainstorm Deck
+
+The brainstorm is written. Automatically deploy a **visual research deck** so the findings are
+shareable, not just a markdown file — the framing, what we know / don't know, the premise
+verdict, the approaches compared with their tradeoffs, and the recommendation, rendered on the
+company's design standards.
+
+Invoke the `project-summary` skill in **deck mode** on this brainstorm:
+`project-summary {co}/{slug} --brainstorm` (for personal/HQ brainstorms the path is
+`personal/projects/{slug}` and it falls back to a password gate). It reads `brainstorm.md`,
+renders a branded deck, deploys it company-gated via hq-deploy, and returns a live URL.
+
+Rules for this step:
+- **Visualization only** — it reads `brainstorm.md` and writes no project files; this does not
+  violate the "brainstorm.md + board.json are the only files written" rule (the deck is a
+  deploy artifact under `workspace/`, not a project file).
+- **Non-fatal** — if the build or deploy fails (no HQ identity, offline, etc.), log a one-line
+  note and continue to Step 7. The brainstorm must never be blocked by the deck deploy.
+- Capture the returned URL (or `skipped — {reason}`) and surface it in Step 7.
+
 ## Step 7: Confirm & Reindex
 
 Print:
@@ -335,6 +355,8 @@ Approaches:
   {C. Option C name — effort, if present}
 
 Recommendation: Option {X}
+
+Deck (live, members only): {deck_url}   (or: "skipped — {reason}")
 
 Next: promote to PRD, edit brainstorm.md, or park on the board.
 ```

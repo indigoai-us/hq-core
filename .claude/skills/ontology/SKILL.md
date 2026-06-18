@@ -27,8 +27,8 @@ Do NOT use this for:
 The gardener output lives in the company's per-entity vault bucket. Resolve:
 
 - Active company slug from session context (e.g. `companies/manifest.yaml` company anchor, `~/.hq/active-company`, or ask the user if ambiguous)
-- That company's vault bucket — look up via `companies/{co}/manifest.yaml` `vault_bucket` field OR derive from the gardener Lambda env (`S3_BUCKET`) if the user is operating hq-pro
-- That company's gardener Lambda — `hq-pro-hq-prod-OntologyGardenerFnFunction-*` if deployed; check `aws lambda list-functions --query "Functions[?contains(FunctionName,'OntologyGardener') && contains(FunctionName,'hq-prod')].FunctionName" --output text`
+- That company's vault bucket — look up via `companies/{co}/manifest.yaml` `vault_bucket` field OR derive from the gardener Lambda env (`S3_BUCKET`) if you operate the HQ cloud backend that runs the gardener
+- That company's gardener Lambda — discover it (if deployed) via `aws lambda list-functions --query "Functions[?contains(FunctionName,'OntologyGardener')].FunctionName" --output text`
 
 Announce: `Ontology context: {company} · bucket {bucket} · gardener {fn-name}`
 
@@ -84,7 +84,7 @@ Trigger an ad-hoc gardener invocation (don't wait for the 4h tick):
 
 ```bash
 GARDENER_FN=$(aws lambda list-functions \
-  --query "Functions[?contains(FunctionName,'OntologyGardener') && contains(FunctionName,'hq-prod')].FunctionName | [0]" \
+  --query "Functions[?contains(FunctionName,'OntologyGardener')].FunctionName | [0]" \
   --output text)
 
 aws lambda invoke --function-name "$GARDENER_FN" \
@@ -104,16 +104,17 @@ The gardener emits `SignalRefsResolved` + `SignalRefsUnresolved` counters. High 
 ```bash
 NOW=$(date -u +%FT%TZ)
 ONE_DAY_AGO=$(date -u -v-1d +%FT%TZ 2>/dev/null || date -u -d '1 day ago' +%FT%TZ)
+GARDENER_NAMESPACE="<your-gardener-cloudwatch-namespace>"  # set to the namespace your HQ cloud backend publishes under
 
 aws cloudwatch get-metric-statistics \
-  --namespace HQPro/OntologyGardener \
+  --namespace "$GARDENER_NAMESPACE" \
   --metric-name SignalRefsResolved \
   --dimensions Name=CompanyId,Value={company} Name=Prefix,Value=signals \
   --start-time "$ONE_DAY_AGO" --end-time "$NOW" \
   --period 3600 --statistics Sum --output text
 
 aws cloudwatch get-metric-statistics \
-  --namespace HQPro/OntologyGardener \
+  --namespace "$GARDENER_NAMESPACE" \
   --metric-name SignalRefsUnresolved \
   --dimensions Name=CompanyId,Value={company} Name=Prefix,Value=signals \
   --start-time "$ONE_DAY_AGO" --end-time "$NOW" \
@@ -125,12 +126,12 @@ If unresolved >> resolved, either (a) the signals agent is producing signals for
 ## Step 6 — Inspect logs / metrics dashboards
 
 - Logs: `aws logs tail /aws/lambda/{GARDENER_FN} --follow --since 5m --format short`
-- Dashboard: CloudWatch `HQ-OntologyGardener-hq-prod` — per-prefix invocation graphs, cheap-path hit rate, cost
+- Dashboard: CloudWatch `HQ-OntologyGardener-{stage}` — per-prefix invocation graphs, cheap-path hit rate, cost
 - Cost alarms: `ontology-signals-run-cost-{stage}`, `ontology-sources-run-cost-{stage}`, `ontology-daily-cost-ceiling-{stage}`, `ontology-stale-gardener-{stage}`
 
 ## Multi-tenant note
 
-Today the gardener is single-tenant — there's one Lambda instance bound to indigo (`COMPANY_ID=indigo`, mount `/mnt/s3-indigo`). For another company to benefit from this skill, hq-pro infra needs to provision a per-company Lambda OR rewrite the single Lambda to loop over companies. Track in a future PRD; until then this skill is functionally indigo-only even though its design is multi-tenant.
+Today the gardener is single-tenant — there's one Lambda instance bound to a single company (`COMPANY_ID={company}`, mount `/mnt/s3-{company}`). For another company to benefit from this skill, the HQ cloud backend needs to provision a per-company Lambda OR rewrite the single Lambda to loop over companies. Track in a future PRD; until then this skill is single-company even though its design is multi-tenant.
 
 ## Rules
 

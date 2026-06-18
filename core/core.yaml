@@ -1,6 +1,6 @@
 version: 1
-hqVersion: "15.0.17"
-updatedAt: "2026-06-15T19:41:25Z"
+hqVersion: "15.0.18"
+updatedAt: "2026-06-18T14:24:19Z"
 # hq-core is the minimal scaffold seed. Rich add-ons ship as `@indigoai-us/hq-pack-*`
 # npm packages installed into `core/packages/` via `hq install`. See `core/packages/README.md`.
 rules:
@@ -19,7 +19,7 @@ rules:
     - .claude/scheduled-tasks/        # live scheduled-task store (managed by the scheduler)
     - .claude/scheduled_tasks.lock    # transient scheduler lock (sessionId/pid)
     # Builder/admin-only tooling (hq-pack-admin) — deliberately NOT base-release content
-    # (policy hq-pack-policies-excluded-from-core-release). Canonical source: repos/private/hq-pack-admin.
+    # (policy hq-pack-policies-excluded-from-core-release). Canonical source: the hq-pack-admin repo (internal).
     - core/scripts/promote-hq-core-apply.sh
     - core/scripts/promote-hq-core-scan.sh
     - core/scripts/promote-hq-core-diff-report.py

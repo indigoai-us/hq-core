@@ -21,7 +21,7 @@ The `core/` tree (and the release-shipped parts of `.claude/`, `.codex/`, `.agen
 - **Company customizations** (tenant-specific policies, knowledge, workers, projects) go in `companies/{co}/{policies,knowledge,workers,projects}/<entry>`. These are the company's own, isolated, and — for cloud-backed HQ-Pro companies — synced to that tenant's vault.
 - **Repo customizations** go in `repos/{repo}/.claude/policies/` (and the repo's own docs/knowledge).
 
-Changes to the **shipped core scaffold itself** — i.e. content that genuinely should ship to every HQ install — are not made by hand-editing local `core/` either. They go through the staging → promotion pipeline: edit, then publish via `repos/private/hq-core-staging/` and `/promote-hq-core` (see `staging-promotion-required` and `hq-core-public-no-direct-pr`).
+Changes to the **shipped core scaffold itself** — i.e. content that genuinely should ship to every HQ install — are not made by hand-editing local `core/` either. They go through the staging → promotion pipeline: edit, then publish via the hq-core staging repo and `/promote-hq-core` (see `staging-promotion-required` and `hq-core-public-no-direct-pr`).
 
 When in doubt about whether a learning, policy, or artifact is personal, company-specific, or genuinely core, **ask** rather than defaulting into `core/`.
 

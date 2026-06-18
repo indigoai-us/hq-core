@@ -139,12 +139,12 @@ For sensitive artifacts, pick an access mode based on user intent and `~/.hq/con
 
 #### Company mode (Cognito org gate)
 
-1. Resolve the hq-pro company UID for `$ORG_SLUG` via `/entity/by-slug/company/{orgSlug}` using the local id token when available (`~/.hq/cognito-tokens.json` `.idToken`; fall back to `.accessToken`).
+1. Resolve the HQ company UID for `$ORG_SLUG` via `/entity/by-slug/company/{orgSlug}` using the local id token when available (`~/.hq/cognito-tokens.json` `.idToken`; fall back to `.accessToken`).
 2. After upload, `PUT $API/api/apps/{appId}/access-policy` with:
    ```json
    {"mode":"company","companyUid":"<companyUid>","users":[],"groups":[]}
    ```
-   Include `Authorization: Bearer <accessToken>` for hq-deploy and `X-HQ-Pro-Authorization: Bearer <idToken>` for hq-pro grantee validation when available.
+   Include `Authorization: Bearer <accessToken>` for the deploy host and `X-HQ-Pro-Authorization: Bearer <idToken>` for grantee validation when available.
 3. Tell the user once:
    > Live at https://{slug}.{your-domain}.com — restricted to active {orgSlug} members. They'll sign in with HQ on first visit.
 4. If company UID resolution fails, fail closed by falling back to password mode and say so in stderr; never silently publish a sensitive artifact as public.

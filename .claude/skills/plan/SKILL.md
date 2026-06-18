@@ -640,7 +640,7 @@ Read `metadata.openQuestions[]` from the prd.json just written. **If empty**, sk
 2. **Batch up to 4 questions per AskUserQuestion call.** For each question, infer **2–3 concrete candidate options** from:
    - The PRD's own metadata (`integrations`, `architectureNotes`, `authModel`, `dataModel`, `rolloutStrategy`, etc.)
    - Prior `metadata.decisions[]` already captured (if re-running)
-   - Anchored company policies (e.g. `indigo-aws-credentials-safety` → "Indigo aws_profile (804849608251, us-east-1)")
+   - Anchored company policies (e.g. an `aws-credentials-safety` policy → "company aws_profile (<account-id>, <region>)")
    - Common-sense defaults ("existing cert" when signing, "existing pool" when auth)
 3. **Always append a `"Defer — track as pre-flight story"` option LAST** to every question. Users must be able to opt out of answering any single question without abandoning decision mode entirely.
 4. **Write results back to prd.json:**

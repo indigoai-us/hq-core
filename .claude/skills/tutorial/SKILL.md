@@ -53,7 +53,7 @@ Classify:
 - **FRESH**: 0 custom workers AND 0 projects
 - **ACTIVE**: has workers OR projects
 - **ADVANCED**: 3+ companies with core/workers/projects
-- **CLOUD** (orthogonal flag): cloud-backed / hq-pro / team context detected. Sits alongside FRESH/ACTIVE/ADVANCED — when present, Topic 0 leads the menu and is the default recommendation regardless of maturity.
+- **CLOUD** (orthogonal flag): cloud-backed / HQ Pro / team context detected. Sits alongside FRESH/ACTIVE/ADVANCED — when present, Topic 0 leads the menu and is the default recommendation regardless of maturity.
 
 ### Present Menu
 

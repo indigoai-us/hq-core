@@ -102,7 +102,7 @@ Options:
 
    # With agent context (recipient gets a Copy-prompt action)
    hq dm stefan@example.com "Can your agent take this over?" \
-     --prompt "You are Stefan's agent. Pick up the hq-pro deploy: merge #178, run pnpm deploy:prod, verify routes."
+     --prompt "You are Stefan's agent. Pick up the acme-web deploy: merge #178, run the deploy script, verify routes."
 
    # With a details pane
    hq dm stefan@example.com "Review notes attached" --details-file /tmp/notes.md

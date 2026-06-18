@@ -1,0 +1,97 @@
+/* default.css — neutral dark fallback theme for project-summary.
+ * Used ONLY when the project's company has no design pack at
+ * companies/{co}/knowledge/design-styles/packs/. When a pack exists, load its
+ * design-tokens.css instead and build from its implementation.md — do not use this.
+ *
+ * Same token surface (var names) as the Indigo Blueprint pack, so the same
+ * index.html markup renders correctly whether a pack is present or not.
+ */
+
+:root {
+  --bg:           #0a0b0d;
+  --bg-2:         #0f1115;
+  --panel:        #14171d;
+  --panel-2:      #1a1e25;
+  --rule:         #262b35;
+  --rule-bright:  #3a414f;
+  --ink:          #e7e9ec;
+  --ink-mute:     #9ca3ad;
+  --ink-deep:     #6a7079;
+  --ink-faint:    #4a4f57;
+  --stamp:        #c8ccd2;
+  --accent:       #6b7cff;   /* single signal color */
+  --pass:         #4ade80;
+  --warn:         #f5b441;
+  --err:          #ff6b6b;
+  --grid-line:    rgba(255,255,255,0.025);
+  --grid-size:    40px;
+  --font-display: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-body:    'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono:    ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+  --maxw:         920px;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-weight: 300;
+  line-height: 1.55;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+}
+.wrap { max-width: var(--maxw); margin: 0 auto; padding: 48px 24px 96px; }
+
+.kicker {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+h1 { font-family: var(--font-display); font-weight: 300; font-size: clamp(30px, 6vw, 52px); letter-spacing: -0.015em; margin: 8px 0 12px; }
+h2 { font-family: var(--font-display); font-weight: 400; font-size: 24px; margin: 40px 0 14px; }
+h3 { font-size: 16px; font-weight: 500; margin: 20px 0 8px; }
+.lead { font-size: 18px; color: var(--ink-mute); max-width: 60ch; }
+p { color: var(--ink-mute); }
+
+.plate {
+  border: 1px solid var(--rule);
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 20px 22px;
+  margin: 14px 0;
+}
+.meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-deep);
+}
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-deep); background: var(--panel); }
+td.num { font-family: var(--font-mono); color: var(--accent); white-space: nowrap; }
+
+ul.checks { list-style: none; padding: 0; }
+ul.checks li { padding: 4px 0 4px 22px; position: relative; color: var(--ink); }
+ul.checks li::before { content: "▸"; position: absolute; left: 0; color: var(--accent); }
+
+.tag { display: inline-block; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-deep); border: 1px solid var(--rule-bright); border-radius: 4px; padding: 2px 7px; margin: 0 4px 4px 0; }
+.concept-note { font-family: var(--font-mono); font-size: 11px; color: var(--warn); letter-spacing: 0.05em; }
+
+/* SVG mockups / diagrams inherit tokens via currentColor + the classes above */
+.mock { width: 100%; height: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--bg-2); }
+
+footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule); color: var(--ink-faint); font-family: var(--font-mono); font-size: 11px; }
+
+@media (max-width: 560px) {
+  .wrap { padding: 28px 14px 64px; }
+  th, td { padding: 8px 8px; font-size: 13px; }
+}

@@ -266,7 +266,7 @@ If the proposed fix requires re-launching the session (e.g. autocompact, reindex
 - Core-mirror writes are off by default. The `--allow-core` flag is required even when the user explicitly confirms a fix that touches `core/`. This is intentional friction — the bypass should be auditable per-invocation, not implicit
 - This skill must remain runnable in `--bare` mode (no hooks, no MCPs) so it stays usable when hooks or MCPs are the failure mode being diagnosed
 - Companion to `/recover-session` (post-mortem on a dead JSONL) — `/hq-heal` is mid-session triage and may invoke `/recover-session` as its fix for the `autocompact` class
-- Promotion: this skill lives at `.claude/skills/hq-heal/` locally; to ship it to other HQs, stage it under `repos/private/hq-core-staging` and publish via `/promote-hq-core` per the `staging-promotion-required` policy
+- Promotion: this skill lives at `.claude/skills/hq-heal/` locally; to ship it to other HQs, stage it in the hq-core staging repo and publish via `/promote-hq-core` per the `staging-promotion-required` policy
 - The launcher `hq-heal.sh` is co-located with the skill (`.claude/skills/hq-heal/hq-heal.sh`) rather than placed under `core/scripts/`, because `core/` is hook-protected (`block-core-writes`) — promotion happens via the staging hop, not direct writes
 
 ## Why this exists

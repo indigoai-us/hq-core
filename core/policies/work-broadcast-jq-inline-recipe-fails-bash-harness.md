@@ -17,7 +17,7 @@ source: session-learning
 
 WORKAROUND: The work-broadcast skill's inline jq recipe fails when the `jq -n` filter is left unquoted or is nested inside the single-quoted `bash -c '...'` that runs curl. In both cases the shell mangles the `{...}` filter (brace-expansion word-splitting, or the inner double-quotes collapsing) before jq sees it, so jq receives the filter split into separate fragments (`channel:$c`, `text:$t`, `unfurl_links:true`) → three compile errors, and curl then errors with `option : blank argument`.
 
-**Primary fix (confirmed 2026-05-31 posting to #hq-dev):** build the payload with `jq -n` in the PARENT shell using a SINGLE-quoted filter, validate it, then pass it to the child as an env var — the child `bash -c` does ONLY the curl (the token still expands inside the child):
+**Primary fix (confirmed 2026-05-31 posting to a Slack channel):** build the payload with `jq -n` in the PARENT shell using a SINGLE-quoted filter, validate it, then pass it to the child as an env var — the child `bash -c` does ONLY the curl (the token still expands inside the child):
 
 ```bash
 PAYLOAD=$(jq -n --arg c "$CHANNEL" --arg t "$MESSAGE" '{channel:$c, text:$t, unfurl_links:true}')

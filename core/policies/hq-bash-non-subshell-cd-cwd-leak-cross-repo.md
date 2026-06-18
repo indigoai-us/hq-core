@@ -16,9 +16,9 @@ tags: [bash, git, cwd, anchor, hq-discipline]
 
 ## Rule
 
-NEVER write a Bash tool call that starts with a bare `cd <relative-or-absolute>;` (or `cd ... && ...`) when the call's purpose is to "step into a repo for a moment." The Bash tool's cwd PERSISTS across sequential calls in the same session, so a single `cd repos/private/hq-core-staging; <commands>` silently re-roots EVERY later relative-path Bash call into that repo until something else changes cwd. This is a different and more dangerous failure mode than the parallel-Bash cwd-drift problem — it bites sequentially, often many tool calls later, and is invisible at the call site.
+NEVER write a Bash tool call that starts with a bare `cd <relative-or-absolute>;` (or `cd ... && ...`) when the call's purpose is to "step into a repo for a moment." The Bash tool's cwd PERSISTS across sequential calls in the same session, so a single `cd repos/private/<some-repo>; <commands>` silently re-roots EVERY later relative-path Bash call into that repo until something else changes cwd. This is a different and more dangerous failure mode than the parallel-Bash cwd-drift problem — it bites sequentially, often many tool calls later, and is invisible at the call site.
 
-The concrete bite: a hot-step into `hq-core-staging` was followed (many calls later) by `handoff-finalize.sh`, which runs `git add` / `git commit` using paths relative to cwd. Because cwd was still inside `repos/private/hq-core-staging`, the handoff committed HQ-root thread / handoff.json / INDEX files INTO the staging repo — cross-repo contamination that is invisible from HQ root and only surfaces in the wrong repo's history.
+The concrete bite: a hot-step into a nested repo was followed (many calls later) by `handoff-finalize.sh`, which runs `git add` / `git commit` using paths relative to cwd. Because cwd was still inside `repos/private/<some-repo>`, the handoff committed HQ-root thread / handoff.json / INDEX files INTO the staging repo — cross-repo contamination that is invisible from HQ root and only surfaces in the wrong repo's history.
 
 ALWAYS use one of:
 
@@ -34,7 +34,7 @@ This rule also applies inside shell scripts that are themselves invoked from a B
 
 ## Rationale
 
-Session 2026-05-28: a `/handoff` mid-session wrote HQ thread file, handoff.json, and INDEX.md commits INTO `repos/private/hq-core-staging` instead of HQ root. Root cause traced to an earlier Bash tool call that started with `cd repos/private/hq-core-staging; ...` without a subshell. The Bash tool's persistent cwd meant every subsequent call ran from inside the staging repo, including `handoff-finalize.sh`'s `git add` / `git commit` lines that used cwd-relative resolution.
+Session 2026-05-28: a `/handoff` mid-session wrote HQ thread file, handoff.json, and INDEX.md commits INTO `repos/private/<some-repo>` instead of HQ root. Root cause traced to an earlier Bash tool call that started with `cd repos/private/<some-repo>; ...` without a subshell. The Bash tool's persistent cwd meant every subsequent call ran from inside the staging repo, including `handoff-finalize.sh`'s `git add` / `git commit` lines that used cwd-relative resolution.
 
 This is a distinct failure mode from `hq-parallel-bash-cwd-prefix` (parallel calls leaking cwd to siblings) and `hq-anchor-repo-build-cwd` (a later build picking the wrong repo because cwd persisted). Those two policies are correct but did not surface "cross-repo git commit contamination via handoff-finalize" as a concrete bite. Codifying it here so future sessions reject the `cd <path>; ...` pattern at authoring time and reach for `( cd /abs && ... )`, `git -C /abs`, or absolute paths instead.
 

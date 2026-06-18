@@ -2,7 +2,7 @@
 
 Detailed UX specifications for enhanced command palette, session tab bar, checkpoint/handoff controls, context usage meter, session resume flow, and auto-handoff notification. Built on the gap analysis from `terminal-session-audit.md` (US-016).
 
-**Target repo:** `repos/private/hq-desktop`
+**Target repo:** the HQ desktop app repo (internal)
 **Addresses gaps:** G1-G9, G19-G20 from US-016 audit
 
 ---

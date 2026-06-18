@@ -1,12 +1,12 @@
 # Ontology Gardener
 
-The **ontology gardener** is a Claude-powered entity-extraction pipeline that runs in `hq-pro` against each company's per-entity vault bucket. It treats `knowledge/`, `sources/`, and `signals/` as three first-class corpuses and produces:
+The **ontology gardener** is a Claude-powered entity-extraction pipeline that runs in the HQ cloud backend against each company's per-entity vault bucket. It treats `knowledge/`, `sources/`, and `signals/` as three first-class corpuses and produces:
 
 1. An entity graph at `ontology/entities/{type}/{slug}.md` (person, project, company, concept)
 2. A situational-awareness brief at `company-brief.md` (bucket root)
 3. Entity-ref enrichment (frontmatter + inline wiki-links) on knowledge and source files
 
-Canonical implementation: `repos/private/hq-pro/src/ontology/` · ADR: `hq-pro/architectural-decisions.md` ADR-0005 · Per-company knowledge bases should reference this doc rather than re-describing the pipeline.
+Canonical implementation lives in the HQ cloud backend (internal). · Per-company knowledge bases should reference this doc rather than re-describing the pipeline.
 
 ## When to use this from an agent
 
@@ -116,7 +116,7 @@ No config = default applied silently on first run.
 
 ## Observability
 
-CloudWatch namespace: `HQPro/OntologyGardener`. Dimensions:
+CloudWatch namespace: the gardener's published namespace (set per HQ cloud backend deploy). Dimensions:
 - `CompanyId` (primary) — partition per tenant
 - `Prefix` ∈ {`knowledge`, `sources`, `signals`} — partition per corpus
 
@@ -140,7 +140,7 @@ For verification or ad-hoc processing:
 
 ```bash
 # Manual invoke with synthetic scheduled event
-aws lambda invoke --function-name hq-pro-{stage}-OntologyGardenerFnFunction-* \
+aws lambda invoke --function-name <gardener-lambda-name> \
   --invocation-type RequestResponse --cli-binary-format raw-in-base64-out \
   --payload '{"version":"0","detail-type":"Scheduled Event","source":"aws.events","detail":{}}' \
   /tmp/response.json
@@ -156,11 +156,11 @@ Caveats:
 - Entity IDs are deterministic: `sha256(type:canonicalName)`. Renaming the canonical name = new entity.
 - ECS Fargate fallback exists gated by `OntologyEcsFallbackEnabled` secret (default off). Use it for buckets larger than Lambda's 15-min timeout.
 - Brief generation requires ≥3 entities; skipped silently below that threshold.
-- The `S3_BUCKET` env var on the gardener Lambda is the indigo vault bucket today. The Lambda is single-tenant per deploy — multi-tenant rollout to other companies requires per-company Lambda instances OR a multi-tenant rewrite (separate PRD).
+- The `S3_BUCKET` env var on the gardener Lambda is the operating company's vault bucket today. The Lambda is single-tenant per deploy — multi-tenant rollout to other companies requires per-company Lambda instances OR a multi-tenant rewrite (separate PRD).
 
 ## Related
 
 - Skill: `.claude/skills/ontology/SKILL.md` — agent-facing API for consuming gardener output
 - Per-company knowledge: companies SHOULD have a short `companies/{co}/knowledge/integrations/ontology.md` pointing here, NOT a duplicate description
-- ADR: `hq-pro/architectural-decisions.md` ADR-0005 covers per-corpus sub-budgets, skip_if_signaled gate, Haiku default, annotator-on-sources, single-watermark rationale
-- Code: `repos/private/hq-pro/src/ontology/` (Lambda) + `repos/private/hq-pro/infra/ontology-*.ts` (SST)
+- ADR: the HQ cloud backend's ADR-0005 (internal) covers per-corpus sub-budgets, skip_if_signaled gate, Haiku default, annotator-on-sources, single-watermark rationale
+- Code: the HQ cloud backend's ontology Lambda + SST infra (internal)
