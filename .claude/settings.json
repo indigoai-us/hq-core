@@ -207,6 +207,11 @@
           },
           {
             "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh hq-auto-acl-suggest $CLAUDE_PROJECT_DIR/.claude/hooks/hq-auto-acl-suggest.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh screenshot-resize-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/screenshot-resize-trigger.sh",
             "timeout": 10
           },
@@ -228,6 +233,11 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh auto-checkpoint-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/auto-checkpoint-trigger.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh hq-auto-acl-suggest $CLAUDE_PROJECT_DIR/.claude/hooks/hq-auto-acl-suggest.sh",
             "timeout": 5
           },
           {
@@ -262,6 +272,11 @@
           },
           {
             "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh hq-auto-acl-suggest $CLAUDE_PROJECT_DIR/.claude/hooks/hq-auto-acl-suggest.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
             "timeout": 300
           },
@@ -280,6 +295,11 @@
       {
         "matcher": "MultiEdit",
         "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh hq-auto-acl-suggest $CLAUDE_PROJECT_DIR/.claude/hooks/hq-auto-acl-suggest.sh",
+            "timeout": 5
+          },
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",

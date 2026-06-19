@@ -157,6 +157,26 @@ jobs:
       - name: Codex-harness git-mutation guard fires
         run: bash core/scripts/tests/codex-git-mutation-firing.test.sh
 
+  auto-checkpoint-cmds:
+    # Item 2: /brainstorm and /plan must auto-checkpoint at command end so users
+    # do not have to manually /handoff before a fresh session. Structural guard.
+    name: auto-checkpoint-cmds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Planning commands auto-checkpoint on completion
+        run: bash core/scripts/tests/auto-checkpoint-planning-cmds.test.sh
+
+  auto-acl-share-hooks:
+    name: auto-acl-share-hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detector smoke test
+        run: bash core/scripts/tests/auto-acl-suggest.test.sh
+      - name: Stop reminder smoke test
+        run: bash core/scripts/tests/auto-acl-share-reminder.test.sh
+
   # ─── Label-gated checks ────────────────────────────────────────────
   # These read PR labels to allow intentional overrides.
 

@@ -363,6 +363,14 @@ Next: promote to PRD, edit brainstorm.md, or park on the board.
 
 Reindex: `qmd update 2>/dev/null || true`
 
+## Final step — auto-checkpoint <!-- AUTO-CHECKPOINT-ON-COMPLETION -->
+
+Once `brainstorm.md` is written and the summary printed, automatically save a lightweight checkpoint so the user can continue in a fresh session without a manual `/handoff`. This only **snapshots** continuity — it does **not** close the brainstorm (which stays open across `/prd` and `/plan`).
+
+Write `workspace/threads/T-{UTC YYYYMMDD-HHMMSS}-auto-brainstorm-{slug}.json` with: `thread_id`, `version: 1`, `type: "auto-checkpoint"`, `created_at`, `updated_at`, `workspace_root`, `cwd`, `git: { branch, current_commit, dirty }`, `conversation_summary` (topic + recommended option, one sentence), `files_touched` (include the `brainstorm.md` path), `next_steps` (e.g. "promote to PRD with `/prd`, or refine `brainstorm.md`"), and `metadata: { title: "Auto: brainstorm {slug}", tags: ["auto-checkpoint", "brainstorm"], trigger: "brainstorm-complete" }`.
+
+Keep it cheap: do **not** rebuild INDEX, update `recent.md`, run `qmd update`, or write a legacy checkpoint. Then tell the user a fresh session can resume from this checkpoint (`/startwork`).
+
 ## Rules
 
 - **Scan HQ before asking anything** — research phase (Step 2) happens before the first question. Never ask for info findable in qmd, board.json, or policies
@@ -374,7 +382,7 @@ Reindex: `qmd update 2>/dev/null || true`
 - **No Linear sync** — brainstorms are pre-planning. Linear happens at PRD time
 - **No orchestrator registration** — brainstorms are not executable
 - **Web research is conditional** — only if idea requires external context. Don't search for thoroughness
-- **board.json + brainstorm.md are the only files written** — no other files modified (knowledge pulse runs as a background agent and writes its own report independently)
+- **board.json + brainstorm.md are the only project files written** — plus the final auto-checkpoint thread under `workspace/threads/` (see "Final step — auto-checkpoint"). No implementation/target files are modified (knowledge pulse runs as a background agent and writes its own report independently)
 - **T-shirt effort, not story points** — sized by scope/risk, not calendar time: S (one seam), M (one subsystem), L (multiple seams + unknowns), XL (cross-cutting, hard-to-reverse). See policy `ai-velocity-time-sense`
 - **Company isolation enforced** — if anchored, scope all searches to that company. Never mix company knowledge in approaches
 - **brainstorm.md is human-editable** — the user may refine it after generation. The PRD skill reads whatever is in the file, not just what was machine-generated
