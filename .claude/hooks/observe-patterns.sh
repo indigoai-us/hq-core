@@ -37,7 +37,7 @@ GIT_LOG=$(git log --oneline -50 2>/dev/null || echo "")
 
 # Pattern 1: back-pressure-retry detection (fixup commits indicate retry loop)
 if echo "$GIT_LOG" | grep -qiE '(fixup|amend|rebase|retry|fix.*previous)'; then
-  observations+=("$(cat <<'PATTERN1'
+  IFS= read -r -d '' pattern1 <<'PATTERN1' || true
 {
   "pattern_type": "back-pressure-retry",
   "confidence": 0.8,
@@ -47,13 +47,12 @@ if echo "$GIT_LOG" | grep -qiE '(fixup|amend|rebase|retry|fix.*previous)'; then
   "recommendation": "Extract pattern about what caused retry and how to prevent it next time"
 }
 PATTERN1
-)"
-  )
+  observations+=("$pattern1")
 fi
 
 # Pattern 2: repeated tool failure detection (check for error/fail keywords)
 if echo "$GIT_LOG" | grep -qiE '(fix.*error|resolve.*bug|handle.*fail)'; then
-  observations+=("$(cat <<'PATTERN2'
+  IFS= read -r -d '' pattern2 <<'PATTERN2' || true
 {
   "pattern_type": "repeated-tool-failure",
   "confidence": 0.6,
@@ -63,13 +62,12 @@ if echo "$GIT_LOG" | grep -qiE '(fix.*error|resolve.*bug|handle.*fail)'; then
   "recommendation": "Identify what tool/process failed repeatedly and capture prevention pattern"
 }
 PATTERN2
-)"
-  )
+  observations+=("$pattern2")
 fi
 
 # Pattern 3: workflow improvement detection (new hooks, commands, scripts created)
 if echo "$GIT_LOG" | grep -qiE '(hook|command|script|workflow|automation)'; then
-  observations+=("$(cat <<'PATTERN3'
+  IFS= read -r -d '' pattern3 <<'PATTERN3' || true
 {
   "pattern_type": "workflow-improvement",
   "confidence": 0.6,
@@ -79,13 +77,12 @@ if echo "$GIT_LOG" | grep -qiE '(hook|command|script|workflow|automation)'; then
   "recommendation": "Document the workflow improvement pattern for reuse"
 }
 PATTERN3
-)"
-  )
+  observations+=("$pattern3")
 fi
 
 # Pattern 4: novel pattern detection (check for new file types or integrations)
 if echo "$GIT_LOG" | grep -qiE '(add|new|integrate|extend|support)'; then
-  observations+=("$(cat <<'PATTERN4'
+  IFS= read -r -d '' pattern4 <<'PATTERN4' || true
 {
   "pattern_type": "novel-pattern",
   "confidence": 0.4,
@@ -95,8 +92,7 @@ if echo "$GIT_LOG" | grep -qiE '(add|new|integrate|extend|support)'; then
   "recommendation": "Low confidence: worth noting but verify pattern utility before capture"
 }
 PATTERN4
-)"
-  )
+  observations+=("$pattern4")
 fi
 
 # Only generate output if observations were found

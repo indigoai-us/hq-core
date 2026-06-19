@@ -16,8 +16,8 @@
 #   2. A structural lint (lint-hook-heredoc-nesting.py) that flags the
 #      bash-3.2 nested-heredoc trap directly — bash-version-independent, since
 #      CI runs bash 5 and does NOT reproduce the 3.2 phantom error.
-#      hq-auto-acl-suggest.sh MUST have zero nesting, and no NEW hook may
-#      introduce the pattern beyond a documented legacy baseline.
+#      hq-auto-acl-suggest.sh MUST have zero nesting, and NO hook anywhere
+#      under .claude/hooks/ may introduce the pattern (zero violations).
 #   3. A runtime smoke of hq-auto-acl-suggest.sh on a sample PostToolUse Bash
 #      payload (clean exit, no stderr parser noise).
 
@@ -31,26 +31,6 @@ TARGET_HOOK="$HOOKS_DIR/hq-auto-acl-suggest.sh"
 fail() {
   echo "FAIL: $*" >&2
   exit 1
-}
-
-# Known pre-existing hooks that still nest a heredoc inside a substitution.
-# These predate this gate and are tracked for a separate fix-forward; the gate
-# allows them but forbids any NEW file from joining the list. DO NOT add
-# entries here to silence a freshly-introduced violation — fix the hook.
-BASELINE="auto-mirror-company-skill.sh
-auto-session-project.sh
-observe-patterns.sh
-route-company-skill-creation.sh"
-
-is_baseline() {
-  local name="$1" b
-  while IFS= read -r b; do
-    [ -n "$b" ] || continue
-    [ "$name" = "$b" ] && return 0
-  done <<EOF
-$BASELINE
-EOF
-  return 1
 }
 
 # ── 1. bash -n over every hook ──────────────────────────────────────────────
@@ -96,24 +76,21 @@ if ! python3 "$LINT" "$TARGET_HOOK" >/dev/null 2>&1; then
 fi
 echo "PASS: hq-auto-acl-suggest.sh has no nested heredoc"
 
-# 2c. No NEW hook may introduce the pattern. Every violating file must be in the
-#     documented legacy baseline.
-new_violations=""
+# 2c. ZERO violations: NO hook may nest a heredoc inside a substitution.
+violations=""
 for hook in "$HOOKS_DIR"/*.sh; do
   [ -f "$hook" ] || continue
-  name="$(basename "$hook")"
   if ! python3 "$LINT" "$hook" >/dev/null 2>&1; then
-    if ! is_baseline "$name"; then
-      new_violations="$new_violations $name"
-    fi
+    violations="$violations $(basename "$hook")"
   fi
 done
-if [ -n "$new_violations" ]; then
-  fail "new hook(s) nest a heredoc inside a substitution (bash-3.2 trap):$new_violations
+if [ -n "$violations" ]; then
+  python3 "$LINT" "$HOOKS_DIR"/*.sh || true
+  fail "hook(s) nest a heredoc inside a substitution (bash-3.2 trap):$violations
 Slurp the heredoc into a top-level variable and run via an argument, e.g.
   prog=\"\"; IFS= read -r -d '' prog <<'PY' || true ... PY ; python3 -c \"\$prog\""
 fi
-echo "PASS: no new hook introduces the nested-heredoc pattern"
+echo "PASS: no hook nests a heredoc inside a substitution (zero violations)"
 
 # ── 3. runtime smoke of the acl hook ────────────────────────────────────────
 sample='{"hook_event_name":"PostToolUse","session_id":"gate-smoke","cwd":"'"$ROOT"'","tool_name":"Bash","tool_input":{"command":"echo hello"},"tool_response":{"stdout":"hello"}}'
