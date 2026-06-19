@@ -176,6 +176,8 @@ jobs:
         run: bash core/scripts/tests/auto-acl-suggest.test.sh
       - name: Stop reminder smoke test
         run: bash core/scripts/tests/auto-acl-share-reminder.test.sh
+      - name: Hooks parse + no bash-3.2 nested-heredoc (DEV-1513f1f5)
+        run: bash core/scripts/tests/hooks-heredoc-syntax.test.sh
 
   # ─── Label-gated checks ────────────────────────────────────────────
   # These read PR labels to allow intentional overrides.
