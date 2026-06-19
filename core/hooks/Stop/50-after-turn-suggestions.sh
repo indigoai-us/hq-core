@@ -30,6 +30,12 @@ set -uo pipefail
   INPUT="$(cat 2>/dev/null || echo '{}')"
   TRANSCRIPT_PATH="$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
   SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  SHARE_HELPER="$REPO_ROOT/core/scripts/share-suggestion-state.sh"
+
+  if [ -n "$SESSION_ID" ] && [ -f "$SHARE_HELPER" ]; then
+    pending_share="$("$SHARE_HELPER" peek "$SESSION_ID" || true)"
+    [ -n "$pending_share" ] && exit 0
+  fi
 
   LAST_TEXT=""
   if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then

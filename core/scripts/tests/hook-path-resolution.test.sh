@@ -147,4 +147,35 @@ rc=0
 pass "hook resolved its own install root with no env vars (cwd in a subdir, path with a space)"
 rm -rf "$(dirname "$FI")"; trap - EXIT
 
+echo "[8] hq-auto-acl-suggest.sh: resolves root via project env, cwd walk-up, then self-path"
+for mode in env walkup selfpath; do
+  FR="$(make_fake_root)"; trap 'rm -rf "$FR"' EXIT
+  mkdir -p "$FR/.claude/hooks" "$FR/core/scripts" "$FR/workspace/sessions/s-acl-$mode" "$FR/companies/acme/data/reports"
+  cp "$HOOKS/hq-auto-acl-suggest.sh" "$FR/.claude/hooks/hq-auto-acl-suggest.sh"
+  cp "$ROOT/core/scripts/share-suggestion-state.sh" "$FR/core/scripts/share-suggestion-state.sh"
+  chmod +x "$FR/.claude/hooks/hq-auto-acl-suggest.sh" "$FR/core/scripts/share-suggestion-state.sh"
+  cat > "$FR/workspace/sessions/s-acl-$mode/meta.yaml" <<'YAML'
+company_slug: acme
+YAML
+  payload="$(printf '{"hook_event_name":"PostToolUse","session_id":"s-acl-%s","cwd":"%s/deep/nested/cwd","tool_name":"Write","tool_input":{"file_path":"%s/companies/acme/data/reports/demo.md"},"tool_response":{"stdout":""}}' "$mode" "$FR" "$FR")"
+  case "$mode" in
+    env)
+      ( cd "$FR/deep/nested/cwd" && CLAUDE_PROJECT_DIR="$FR" env -u HQ_ROOT \
+          bash "$FR/.claude/hooks/hq-auto-acl-suggest.sh" <<<"$payload" >/dev/null )
+      ;;
+    walkup)
+      ( cd "$FR/deep/nested/cwd" && env -u CLAUDE_PROJECT_DIR -u HQ_ROOT \
+          bash "$FR/.claude/hooks/hq-auto-acl-suggest.sh" <<<"$payload" >/dev/null )
+      ;;
+    selfpath)
+      ( cd /tmp && env -u CLAUDE_PROJECT_DIR -u HQ_ROOT \
+          bash "$FR/.claude/hooks/hq-auto-acl-suggest.sh" <<<"$payload" >/dev/null )
+      ;;
+  esac
+  [ -f "$FR/workspace/orchestrator/share-suggestions/s-acl-$mode.json" ] \
+    || fail "hq-auto-acl-suggest did not queue under the resolved root in $mode mode"
+  pass "hq-auto-acl-suggest queued under the fake root in $mode mode"
+  rm -rf "$FR"; trap - EXIT
+done
+
 echo "hook path resolution: ok"

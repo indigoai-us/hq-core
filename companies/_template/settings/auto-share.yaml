@@ -1,0 +1,18 @@
+# Company auto-share preferences.
+#
+# Company settings override personal (global) settings. Project settings override
+# both company and personal values.
+version: 1
+
+defaults:
+  enabled: true
+
+artifact_classes:
+  deployable: true
+  vault_data: true
+  checkpoint: false
+  handoff: false
+
+surfaces:
+  in_session_picker: true
+  dm: false

@@ -1,0 +1,18 @@
+# Personal (global) auto-share preferences.
+#
+# Lowest precedence: company and project files override these settings.
+# Resolution order: project > company > global.
+version: 1
+
+defaults:
+  enabled: true
+
+artifact_classes:
+  deployable: true
+  vault_data: true
+  checkpoint: false
+  handoff: false
+
+surfaces:
+  in_session_picker: true
+  dm: false
