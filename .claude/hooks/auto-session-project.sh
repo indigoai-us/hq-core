@@ -40,7 +40,12 @@ PROMPT="$(extract prompt)"
 SESSION_ID="$(extract session_id)"
 [ -z "$SESSION_ID" ] && SESSION_ID="default"
 
-classification_json="$(AUTO_SESSION_PROJECT_PROMPT="$PROMPT" python3 - "$HQ_ROOT" <<'PY'
+# NOTE: slurp the classifier into a variable via a standalone heredoc, then run
+# it with `python3 -c`. A heredoc nested inside a `$( … )` substitution is
+# mis-parsed as an unterminated quote by macOS system bash 3.2
+# (policy indigo-hook-no-heredoc-in-command-substitution).
+classify_py=""
+IFS= read -r -d '' classify_py <<'PY' || true
 import json
 import os
 import pathlib
@@ -109,7 +114,8 @@ if len(title) > 90:
 
 print(json.dumps({"skip": skip, "scope": scope, "company": company, "title": title}))
 PY
-)"
+
+classification_json="$(AUTO_SESSION_PROJECT_PROMPT="$PROMPT" python3 -c "$classify_py" "$HQ_ROOT")"
 
 skip="$(printf '%s' "$classification_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("skip", True))' 2>/dev/null || echo True)"
 [ "$skip" = "True" ] && exit 0

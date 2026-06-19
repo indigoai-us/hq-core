@@ -58,8 +58,12 @@ fi
 # Resolve prefix → company via manifest. If unknown prefix, this isn't a
 # bridged path — let it through (some non-company skills like `hq-deploy` happen
 # to look like prefix-name but don't match any manifest entry).
-CO=$(
-  cd "$PROJECT_DIR" && python3 - "$PREFIX" <<'PY' 2>/dev/null || true
+# NOTE: slurp the program into a variable via a standalone heredoc, then run it
+# with `python3 -c`. A heredoc nested inside a `$( … )` substitution is
+# mis-parsed as an unterminated quote by macOS system bash 3.2
+# (policy indigo-hook-no-heredoc-in-command-substitution).
+co_py=""
+IFS= read -r -d '' co_py <<'PY' || true
 import sys, yaml
 prefix = sys.argv[1]
 try:
@@ -71,7 +75,7 @@ try:
 except Exception:
     pass
 PY
-)
+CO=$(cd "$PROJECT_DIR" && python3 -c "$co_py" "$PREFIX" 2>/dev/null || true)
 
 if [[ -z "$CO" ]]; then
   exit 0
