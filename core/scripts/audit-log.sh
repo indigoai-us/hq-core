@@ -150,6 +150,7 @@ cmd_append() {
     } | with_entries(select(.value != null and .value != []))'
   )"
 
+  mkdir -p "$(dirname "$AUDIT_LOG")"
   echo "$entry" >> "$AUDIT_LOG"
   echo "Appended to $AUDIT_LOG"
 }

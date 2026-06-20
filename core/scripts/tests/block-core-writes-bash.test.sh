@@ -8,6 +8,8 @@
 #     colon-joined paths are now caught (previously slipped through because
 #     '=' / ':' were not treated as token boundaries);
 #   - .claude/settings.local.json remains writable;
+#   - companies/_template/ (a locked path per core.yaml) is blocked, while a
+#     real tenant dir (companies/<co>/) stays writable;
 #   - the settings.local.json HQ_BYPASS_CORE_PROTECT escape hatch still works
 #     (it is consent-gated by messaging, not removed).
 
@@ -18,7 +20,7 @@ HOOK="$ROOT/.claude/hooks/block-core-writes-bash.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-mkdir -p "$TMP/.claude" "$TMP/core/packages/x" "$TMP/personal" "$TMP/repos/private/app"
+mkdir -p "$TMP/.claude" "$TMP/core/packages/x" "$TMP/personal" "$TMP/repos/private/app" "$TMP/companies/_template/knowledge" "$TMP/companies/acme/data"
 printf '{}' > "$TMP/.claude/settings.local.json"   # no bypass by default
 
 PASS=0
@@ -47,6 +49,9 @@ run 2 "echo hi > $C/s.json"                  'redirect into abs core blocked'
 run 2 "printf x >> core/packages/x/s"        'append into rel core blocked'
 run 2 "cp /tmp/y $TMP/.claude/h.sh"          'cp into .claude blocked'
 run 2 "touch $TMP/.codex/x"                  'touch into .codex blocked'
+run 2 "touch $TMP/companies/_template/x"                   'touch into abs companies/_template blocked'
+run 2 "echo x > companies/_template/seed.md"              'redirect into rel companies/_template blocked'
+run 2 "cp /tmp/y $TMP/companies/_template/knowledge/k.md" 'cp into companies/_template blocked'
 
 # --- Blocked: 2026-06-14 boundary fix (= and : are boundaries) -----------
 run 2 "D=$C; mv /tmp/y \"\$D/s.json\""       'VAR=core-path assignment + mv blocked (boundary fix)'
@@ -58,6 +63,7 @@ run 0 "mv /tmp/y $TMP/repos/private/app/s"         'write into repos/ allowed'
 run 0 "mv /tmp/y $TMP/personal/p.md"               'write into personal/ allowed'
 run 0 "cat $C/s.json"                              'read-only cat of core allowed'
 run 0 "ls $TMP/core"                               'read-only ls of core allowed'
+run 0 "mv /tmp/y $TMP/companies/acme/data/r.md"    'write into a real tenant (not _template) allowed'
 
 # --- Allowed: settings.local.json bypass still works ---------------------
 printf '{"env":{"HQ_BYPASS_CORE_PROTECT":"1"}}' > "$TMP/.claude/settings.local.json"

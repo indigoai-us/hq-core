@@ -67,14 +67,12 @@ for pattern_entry in "${PATTERNS[@]}"; do
 
         # Check if this is a false positive
         if ! is_false_positive "$line" "$MATCHED"; then
-          # Real secret detected
-          FIRST_8="${MATCHED:0:8}"
-          LAST_4="${MATCHED: -4}"
-
+          # Real secret detected. Do NOT echo any portion of the matched value:
+          # for short/low-entropy tokens a first8...last4 preview can reveal most
+          # or all of the secret into the transcript. Report only the pattern name.
           cat >&2 <<EOF
 🚨 SECRET DETECTED — Blocking Bash command
 Pattern matched: $PATTERN_NAME
-Matched value: $FIRST_8...$LAST_4
 
 Remove the secret from the command and use environment variables or config files instead.
 EOF
