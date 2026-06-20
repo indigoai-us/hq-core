@@ -117,5 +117,20 @@ if [ $should_run -eq 0 ]; then
   exit 0
 fi
 
-# Hook should run: pipe stdin to the actual hook script and delegate exit code
-"$HOOK_SCRIPT" "$@"
+# Hook should run: pipe stdin to the actual hook script and delegate exit code.
+#
+# Self-heal a missing executable bit before invoking. Cross-machine HQ sync can
+# land a hook script WITHOUT its +x bit -- e.g. an S3 object that predates the
+# hq-cloud "hq-mode" metadata stamp, or any transport that drops POSIX mode --
+# and a direct exec would then fail with "Permission denied", silently
+# disabling the hook. Restore the bit best-effort (a read-only FS just no-ops)
+# so the script's own shebang keeps selecting the right interpreter, then fall
+# back to running it through bash if the bit is still missing. Every
+# gate-wrapped hook is a bash script, so the fallback is always safe. Either
+# path runs the hook and propagates its exit code.
+chmod u+x "$HOOK_SCRIPT" 2>/dev/null || true
+if [ -x "$HOOK_SCRIPT" ]; then
+  exec "$HOOK_SCRIPT" "$@"
+else
+  exec bash "$HOOK_SCRIPT" "$@"
+fi

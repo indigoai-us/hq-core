@@ -167,6 +167,18 @@ jobs:
       - name: Planning commands auto-checkpoint on completion
         run: bash core/scripts/tests/auto-checkpoint-planning-cmds.test.sh
 
+  dm-people-resolve:
+    # feature-dm-skill-email-confirm: the /dm skill must CONFIRM a recipient's
+    # email via `hq people resolve` (single-company, tenancy-safe) before
+    # sending — never send to an unconfirmed name. Structural guard over the
+    # dm SKILL.md instruction contract.
+    name: dm-people-resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: /dm confirms recipient email via hq people resolve before sending
+        run: bash core/scripts/tests/dm-people-resolve-integration.test.sh
+
   auto-acl-share-hooks:
     name: auto-acl-share-hooks
     runs-on: ubuntu-latest
@@ -178,6 +190,16 @@ jobs:
         run: bash core/scripts/tests/auto-acl-share-reminder.test.sh
       - name: Hooks parse + no bash-3.2 nested-heredoc (DEV-1513f1f5)
         run: bash core/scripts/tests/hooks-heredoc-syntax.test.sh
+
+  core-write-protection:
+    name: core-write-protection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: hook-gate self-heals a non-executable (sync-stripped) hook
+        run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+      - name: block-core-writes-bash exempts repos/ checkouts, still guards live root
+        run: bash core/scripts/tests/block-core-writes-repos-exempt.test.sh
 
   # ─── Label-gated checks ────────────────────────────────────────────
   # These read PR labels to allow intentional overrides.
