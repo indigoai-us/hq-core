@@ -5,6 +5,10 @@ settings/**/*.json
 *.credentials.json
 *.secret.*
 .mcp.json
+# ...but plugin packs MUST ship their `.mcp.json` — it is the manifest that
+# registers the pack's MCP server with Claude Code / Cowork. Without it the
+# host loads zero tools (feedback_ce873c1f). These manifests carry no secrets.
+!core/packages/*/.mcp.json
 .env.*-token
 
 # Environment files

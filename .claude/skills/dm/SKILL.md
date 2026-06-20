@@ -45,40 +45,57 @@ Options:
    "send my agent context" or "so their agent can act," put that in `--prompt`.
    If they want a longer writeup, use `--details`.
 
-2. **Resolve recipients to emails.** `hq dm` only accepts an **email** or a
-   **personUid** — it does NOT look up names. So before sending, turn every
-   recipient token into one. First split the recipient on commas (a comma means
-   a group DM); then resolve **each token independently**:
+2. **Resolve & confirm recipient emails — never send blind.** `hq dm` only
+   accepts an **email** or a **personUid** — it does NOT look up names. So before
+   sending, turn every recipient token into a **confirmed** email. First split
+   the recipient on commas (a comma means a group DM); then resolve **each token
+   independently**:
 
    - **Fast path — already an email or personUid → use it verbatim.** If the
      token contains `@` (an email) or starts with `prs_` (a personUid), pass it
      through unchanged. Do NOT look it up. This keeps every existing
      email/personUid invocation working exactly as before.
 
-   - **Name → resolve against your local member roster.** Otherwise treat the
-     token as a name. Your synced companies each keep a member roster on disk at
-     `companies/*/people/*/meta.yaml` — one file per person, carrying `name`,
-     `slug`, `email`, and `type` (`internal`/`external`). This is the cheapest
-     source: it's local, offline, and already covers **all** the companies you
-     belong to (one `companies/<co>/` directory per company). Glob those files
-     and match the token **case-insensitively** against each person's full
-     `name`, any single word of their `name` (so `jacob` matches `Jacob Posel`),
-     or their `slug`. Collect every match as `{name, email, company, role}`.
+   - **Name → resolve with `hq people resolve` (confirm before sending).**
+     Otherwise treat the token as a name and resolve it through the built-in
+     people lookup (hq-cli ≥ 5.47.16) instead of sending to an unconfirmed
+     recipient:
 
-     - **Exactly one match → resolve to that person's `email`** and continue.
-     - **More than one match → STOP and disambiguate.** Never guess. Present the
-       candidates (name · company · role · email) as a single decision and let
-       the user pick — use the runtime structured picker (`AskUserQuestion` /
-       Codex `request_user_input`), one question, plain-text numbered fallback if
-       no picker is available (the decision-queue pattern). Use the chosen email.
-     - **Zero matches → say so plainly and stop.** Tell the user no teammate
-       named "<token>" was found across their companies, and that they can pass
-       the exact email or personUid instead (or that the person may not be in a
-       company they share / not yet synced to this machine). Do not send a
-       guessed recipient.
+     ```bash
+     hq people resolve "<token>" --json            # active company
+     hq people resolve "<token>" --json --company <slug>   # when scoping explicitly
+     ```
 
-   After this step you hold a fully-resolved list of emails/personUids — one for
-   a 1:1 DM, two or more for a group DM.
+     This is **single-company and tenancy-safe**: it reads the active company's
+     member roster (`companies/<co>/people/*/meta.yaml`) and never looks across
+     company boundaries — HQ tenancy rules forbid cross-company member lookups.
+     The active company is the sole non-archived company in
+     `companies/manifest.yaml`; pass `--company <slug>` to scope explicitly. Read
+     the JSON `status` field:
+
+     - **`status: "found"` → use the returned `email`.** Resolution is confirmed;
+       continue. (`hq people resolve "<token>"` without `--json` prints the bare
+       email if you just want the address.)
+     - **`status: "ambiguous"` → STOP and disambiguate.** Never guess. The result
+       carries a `matches[]` array (the same set `hq people search "<token>"`
+       returns); present those candidates (name · email · role) as a single
+       decision and let the user pick — use the runtime structured picker
+       (`AskUserQuestion` / Codex `request_user_input`), one question, plain-text
+       numbered fallback if no picker is available (the decision-queue pattern).
+       Use the chosen person's email.
+     - **`status: "no_email"` → STOP.** The person was found but has no email on
+       record. Tell the user plainly and ask for the exact email/personUid; do
+       not send.
+     - **`status: "not_found"` → STOP.** Say plainly that no teammate named
+       "<token>" was found in the company, and that they can pass the exact email
+       or personUid instead (or the person may not be in this company / not yet
+       synced to this machine). Do not send a guessed recipient.
+     - **"Multiple companies" error (no `--company` given) → ask which company,**
+       then re-run `hq people resolve "<token>" --company <slug>`. Stay
+       single-company; never fan the lookup across every company.
+
+   After this step you hold a fully-resolved list of **confirmed**
+   emails/personUids — one for a 1:1 DM, two or more for a group DM.
 
 3. **Humanize, then send.** Before sending, run the channel-aware humanize pass
    on the message body (and any `--prompt` / `--details` text) per
@@ -94,7 +111,7 @@ Options:
    # Plain DM (email — fast path, unchanged)
    hq dm stefan@example.com "Heads up — prod deploy going out at 3pm"
 
-   # By name — resolved to the teammate's email first, then sent
+   # By name — confirmed to the teammate's email via `hq people resolve` first, then sent
    hq dm stefan "Heads up — prod deploy going out at 3pm"
 
    # Group DM — comma-separated recipients (each token resolved independently)
@@ -124,10 +141,13 @@ Options:
 
 ## Notes
 
-- Name resolution is **read-only and local** — it only reads
-  `companies/*/people/*/meta.yaml` and never mutates anything. If a teammate
-  isn't in that roster yet (not synced, or never recorded), pass their exact
-  email/personUid; the name lookup is a convenience layer over the same `hq dm`.
+- Name resolution is **read-only, local, and single-company** — `hq people
+  resolve` only reads the active company's `companies/<co>/people/*/meta.yaml`
+  roster, never mutates anything, and never looks across companies (tenancy-safe
+  by construction). If a teammate isn't in that roster yet (not synced, or never
+  recorded), pass their exact email/personUid; the name lookup is a confirm layer
+  over the same `hq dm`. Use `hq people search "<token>"` to browse candidates,
+  and `--company <slug>` to scope when you belong to more than one company.
 - Requires a signed-in HQ session (`/hq-login`). The CLI resolves the caller
   identity from the Cognito token — the DM is always **from** the signed-in user.
 - Sending is CLI/session-only by design; the menubar app is **receive-only**.
