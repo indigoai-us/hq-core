@@ -48,6 +48,7 @@ CLAUDE_ABS="$PROJECT_DIR/.claude/"
 AGENTS_ABS="$PROJECT_DIR/.agents/"
 CODEX_ABS="$PROJECT_DIR/.codex/"
 OBSIDIAN_ABS="$PROJECT_DIR/.obsidian/"
+TEMPLATE_ABS="$PROJECT_DIR/companies/_template/"
 
 esc() { printf '%s' "$1" | sed 's/[][\\.*^$(){}?+|/]/\\&/g'; }
 CORE_ABS_ESC="$(esc "$CORE_ABS")"
@@ -55,6 +56,7 @@ CLAUDE_ABS_ESC="$(esc "$CLAUDE_ABS")"
 AGENTS_ABS_ESC="$(esc "$AGENTS_ABS")"
 CODEX_ABS_ESC="$(esc "$CODEX_ABS")"
 OBSIDIAN_ABS_ESC="$(esc "$OBSIDIAN_ABS")"
+TEMPLATE_ABS_ESC="$(esc "$TEMPLATE_ABS")"
 
 # Per-dir path alternation patterns, split by how unambiguously each form
 # denotes the LIVE HQ root:
@@ -71,22 +73,27 @@ OBSIDIAN_ABS_ESC="$(esc "$OBSIDIAN_ABS")"
 #                  scanner cannot see the shell cwd, so without this split a
 #                  relative ".claude/" typed from a repos/ checkout
 #                  false-positives as a live-root write.
+#
+# companies/_template/ is a locked path per core.yaml; it follows the same
+# ABS/REL split so the Bash guard matches the Edit/Write guard while still
+# allowing legitimate edits to the prototype from inside a repos/ checkout.
 CORE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/core/|\$\{?HQ_ROOT\}?/core/|'"$CORE_ABS_ESC"')'
 CLAUDE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.claude/|\$\{?HQ_ROOT\}?/\.claude/|'"$CLAUDE_ABS_ESC"')'
 AGENTS_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.agents/|\$\{?HQ_ROOT\}?/\.agents/|'"$AGENTS_ABS_ESC"')'
 CODEX_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.codex/|\$\{?HQ_ROOT\}?/\.codex/|'"$CODEX_ABS_ESC"')'
 OBSIDIAN_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.obsidian/|\$\{?HQ_ROOT\}?/\.obsidian/|'"$OBSIDIAN_ABS_ESC"')'
+TEMPLATE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/companies/_template/|\$\{?HQ_ROOT\}?/companies/_template/|'"$TEMPLATE_ABS_ESC"')'
 
 CORE_REL_ALTS='((\./)?core/|\$\{?REPO_ROOT\}?/core/)'
 CLAUDE_REL_ALTS='((\./)?\.claude/|\$\{?REPO_ROOT\}?/\.claude/)'
 AGENTS_REL_ALTS='((\./)?\.agents/|\$\{?REPO_ROOT\}?/\.agents/)'
 CODEX_REL_ALTS='((\./)?\.codex/|\$\{?REPO_ROOT\}?/\.codex/)'
 OBSIDIAN_REL_ALTS='((\./)?\.obsidian/|\$\{?REPO_ROOT\}?/\.obsidian/)'
+TEMPLATE_REL_ALTS='((\./)?companies/_template/|\$\{?REPO_ROOT\}?/companies/_template/)'
 
-ABS_PATH_ALTS="($CORE_ABS_ALTS|$CLAUDE_ABS_ALTS|$AGENTS_ABS_ALTS|$CODEX_ABS_ALTS|$OBSIDIAN_ABS_ALTS)"
-REL_PATH_ALTS="($CORE_REL_ALTS|$CLAUDE_REL_ALTS|$AGENTS_REL_ALTS|$CODEX_REL_ALTS|$OBSIDIAN_REL_ALTS)"
+ABS_PATH_ALTS="($CORE_ABS_ALTS|$CLAUDE_ABS_ALTS|$AGENTS_ABS_ALTS|$CODEX_ABS_ALTS|$OBSIDIAN_ABS_ALTS|$TEMPLATE_ABS_ALTS)"
+REL_PATH_ALTS="($CORE_REL_ALTS|$CLAUDE_REL_ALTS|$AGENTS_REL_ALTS|$CODEX_REL_ALTS|$OBSIDIAN_REL_ALTS|$TEMPLATE_REL_ALTS)"
 ALL_PATH_ALTS="($ABS_PATH_ALTS|$REL_PATH_ALTS)"
-
 # Boundary set includes = and : so VAR=<path> assignments and colon-joined
 # PATH-style lists (...:/abs/core/...) are caught, not just whitespace-delimited args.
 BND='(^|[[:space:]]|[;|&(=:]|["'\''])'
@@ -150,7 +157,7 @@ if writes_to_protected "$CMD"; then
 BLOCKED: Bash command appears to write into protected scaffold paths.
   Command: $CMD
 
-Protected: core/, .claude/, .agents/, .codex/, .obsidian/, AGENTS.md
+Protected: core/, .claude/, .agents/, .codex/, .obsidian/, companies/_template/, AGENTS.md
 Exception: .claude/settings.local.json is always writable.
 
 Preferred fix: author the content under personal/ (reindex symlinks it into
