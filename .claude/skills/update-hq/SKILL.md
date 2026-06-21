@@ -81,3 +81,8 @@ qmd update 2>/dev/null || true
 - **Staging is opt-in** — only pass `--staging` when the user asks for the staging release; default is the latest stable hq-core release.
 - **Idempotent** — rescue compares against the release; re-running when already current is a safe no-op.
 - **Keep the backup** — the snapshot under `~/.hq/backups` is the only easy revert path; don't skip it on the user's behalf.
+
+## See also
+
+- `/sync-registry` — refresh skill/worker indexes
+- `/promote` — publish your local changes

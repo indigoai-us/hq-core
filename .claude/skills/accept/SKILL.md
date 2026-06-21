@@ -63,3 +63,8 @@ This invite was for a different person.
 - Accepts both `hq://accept/<token>` magic links and raw tokens
 - Caller's Cognito identity is verified against the invite target
 - After accepting, run `hq sync --company <slug>` to pull vault contents
+
+## See also
+
+- `/onboard` — set up your own company
+- `/hq-whoami` — confirm which identity accepted

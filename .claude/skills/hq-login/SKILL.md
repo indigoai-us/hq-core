@@ -33,3 +33,8 @@ primitives — adds no auth logic.
 - The shared HQ Identity pool is managed by the HQ cloud backend;
   CLI version ≥5.4 is required for `hq-auth-refresh`.
 - If the user is already signed in, this command is a no-op.
+
+## See also
+
+- `/hq-whoami` — check the active identity
+- `/hq-logout` — clear the session

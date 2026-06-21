@@ -4,7 +4,7 @@ title: PRD Story Complexity Budget
 scope: command
 trigger: /prd story generation
 when: /prd
-on: [UserPromptSubmit]
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 ---

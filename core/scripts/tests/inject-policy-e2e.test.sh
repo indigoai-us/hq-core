@@ -27,15 +27,36 @@ run_hook() {
     | HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" 2>/dev/null
 }
 
-# slugs <hook-output> -> newline list of injected slugs
-slugs() { printf '%s' "$1" | sed -nE 's/^> Policy `([^`]+)`.*/\1/p'; }
+# slugs <hook-output> -> newline list of injected slugs.
+# PURE BASH — no subprocess. The previous version forked `sed` inside $(...) on
+# every membership check (two or three forks per assertion). Under heavy load
+# (e.g. looping this suite, which fires the hook hundreds of times) a transient
+# fork failure made one `slugs` call return empty, so a slug that WAS present
+# read as absent and the assertion false-failed nondeterministically. Parsing
+# in-process removes the fork entirely and makes the harness deterministic
+# regardless of system load. (The hook output was always correct — this only
+# ever flaked in the test's own membership check.)
+slugs() {
+  local line s
+  while IFS= read -r line; do
+    case "$line" in
+      '> Policy `'*) s="${line#'> Policy `'}"; printf '%s\n' "${s%%\`*}" ;;
+    esac
+  done <<SLUGS_EOF
+$1
+SLUGS_EOF
+}
+
+# fork-free membership: is <slug> ($1) a line in the newline list <list> ($2)?
+_has_slug() { case $'\n'"$2"$'\n' in *$'\n'"$1"$'\n'*) return 0 ;; *) return 1 ;; esac; }
 
 # assert_has <label> <output> <slug...>
 assert_has() {
   local label="$1" out="$2"; shift 2
+  local got; got="$(slugs "$out")"
   local s ok=1
   for s in "$@"; do
-    printf '%s\n' "$(slugs "$out")" | grep -qxF "$s" || { ok=0; echo "FAIL [$label]: expected slug '$s'; got: [$(slugs "$out" | tr '\n' ' ')]"; }
+    _has_slug "$s" "$got" || { ok=0; echo "FAIL [$label]: expected slug '$s'; got: [$(printf '%s' "$got" | tr '\n' ' ')]"; }
   done
   [ "$ok" = 1 ] && { PASS=$((PASS+1)); echo "ok   [$label]: $*"; } || FAIL=$((FAIL+1))
 }
@@ -43,9 +64,10 @@ assert_has() {
 # assert_not <label> <output> <slug...>
 assert_not() {
   local label="$1" out="$2"; shift 2
+  local got; got="$(slugs "$out")"
   local s ok=1
   for s in "$@"; do
-    printf '%s\n' "$(slugs "$out")" | grep -qxF "$s" && { ok=0; echo "FAIL [$label]: did NOT expect '$s'; got: [$(slugs "$out" | tr '\n' ' ')]"; }
+    _has_slug "$s" "$got" && { ok=0; echo "FAIL [$label]: did NOT expect '$s'; got: [$(printf '%s' "$got" | tr '\n' ' ')]"; }
   done
   [ "$ok" = 1 ] && { PASS=$((PASS+1)); echo "ok   [$label]: none of $*"; } || FAIL=$((FAIL+1))
 }
@@ -53,8 +75,9 @@ assert_not() {
 # assert_empty <label> <output>
 assert_empty() {
   local label="$1" out="$2"
-  [ -z "$(slugs "$out")" ] && { PASS=$((PASS+1)); echo "ok   [$label]: no injection"; } \
-    || { FAIL=$((FAIL+1)); echo "FAIL [$label]: expected nothing; got: [$(slugs "$out" | tr '\n' ' ')]"; }
+  local got; got="$(slugs "$out")"
+  [ -z "$got" ] && { PASS=$((PASS+1)); echo "ok   [$label]: no injection"; } \
+    || { FAIL=$((FAIL+1)); echo "FAIL [$label]: expected nothing; got: [$(printf '%s' "$got" | tr '\n' ' ')]"; }
 }
 
 # bash <cmd> helper for PreToolUse Bash JSON body

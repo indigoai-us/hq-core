@@ -124,3 +124,8 @@ Reindex: `qmd update 2>/dev/null || true`
 - **Board.json is the only file written** (plus manifest if board_path was empty)
 - **Follow existing ID conventions** — lowercase prefix, zero-padded 3-digit numbers
 - **Inline mode**: if all info is provided via args/flags, write the entry with zero questions
+
+## See also
+
+- `/brainstorm` — compare approaches
+- `/plan` — promote it to a full PRD

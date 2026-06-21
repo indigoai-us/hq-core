@@ -759,3 +759,8 @@ All scripts:
 - For Vercel-managed projects, skip entirely.
 - Respects company isolation — credentials resolved from active company context.
 - Shared HQ Identity pool means one sign-in works across HQ's deploy, vault, and onboarding surfaces.
+
+## See also
+
+- `/hq-share` — grant a teammate access to a vault path
+- `/dm` — send the live link to someone

@@ -87,3 +87,8 @@ jq -c --arg id "$ID" --argjson actual "$ACTUAL_MINUTES" --arg ts "$NOW_ISO" --ar
 - Once `status: "completed"`, an entry won't be re-processed by `latest` — so it's safe to run repeatedly.
 - If you mistyped the actual, just run again with the correct value — the rewrite is idempotent.
 - Don't worry about precise wall-clock timing. The signal we want is "ratio order of magnitude" (2x, 5x, 0.5x), not minutes-of-minutes precision.
+
+## See also
+
+- `/calibration-report` — review accuracy across estimates
+- `/track-estimate` — start a new one

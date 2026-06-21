@@ -81,6 +81,26 @@ match_keywords() {
       if (t ~ /(^|[^a-z0-9_])aws_profile/ || t ~ /op:\/\// || t ~ /\.env([^a-z0-9]|$)/) print "secret"
       if (t ~ /(^|[^a-z0-9_])(main|master|staging|production)([^a-z0-9_]|$)/ || t ~ /release\//) print "shared_branch"
 
+      # derived: API-key / token shaped strings -> `apikey` + `secret`, so a pasted
+      # or named key trips the secrets policy even when the words secret/password/api
+      # are absent (the key itself open-tokenizes to one meaningless word). Prefix
+      # shapes only, interval-free for portable awk (BSD/onetrueawk/mawk).
+      if (t ~ /(^|[^a-z0-9])sk-[a-z0-9]/ \
+         || t ~ /(^|[^a-z0-9])(gh[opsur]_|github_pat_)[a-z0-9_]/ \
+         || t ~ /(^|[^a-z0-9])akia[a-z0-9][a-z0-9]/ \
+         || t ~ /(^|[^a-z0-9])xox[bpsa]-[a-z0-9]/ \
+         || t ~ /(^|[^a-z0-9])glpat-[a-z0-9]/ \
+         || t ~ /-----begin[a-z -]*private key/ \
+         || t ~ /(^|[^a-z0-9])bearer[ ][a-z0-9._-][a-z0-9._-][a-z0-9._-]/) { print "apikey"; print "secret" }
+
+      # derived: clear completion markers in an agent message or command output ->
+      # `completed`, so the share-on-completion policy fires even when phrased
+      # differently than the literal when: tokens.
+      if (t ~ /successfully (merged|deployed|pushed|published|created)/ \
+         || t ~ /(deployment|deploy|build|release) (complete|completed|succeeded|ready)/ \
+         || t ~ /merged pull request/ \
+         || t ~ /pull request #?[0-9]+ .* merged/) print "completed"
+
       # file references in the text -> literal basename + `.ext` tokens. The
       # eval-trigger grammar allows dots and slashes in identifiers, so a policy
       # keys on the file directly: `when: .mcp.json`, `when: settings.json`,

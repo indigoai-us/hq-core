@@ -4,7 +4,7 @@ title: Audit diff composition before panicking over large file counts
 scope: global
 trigger: when a `git diff`, PR review, or release commit touches a suspiciously large number of files (e.g. 500+, 1000+)
 when: git && commit
-on: [PreToolUse]
+on: [AssistantIntent, PreToolUse]
 enforcement: soft
 public: true
 version: 2

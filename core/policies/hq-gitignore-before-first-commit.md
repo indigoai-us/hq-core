@@ -5,7 +5,7 @@ scope: global
 public: true
 trigger: scaffolding a new project with git init
 when: git && commit
-on: [PreToolUse]
+on: [AssistantIntent, PreToolUse]
 enforcement: soft
 tier: 1
 version: 1

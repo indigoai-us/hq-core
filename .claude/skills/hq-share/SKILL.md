@@ -355,3 +355,8 @@ artifact — in those contexts use the redacted form
   `~/.hq/cognito-tokens.json`
 - `companies/{company}/projects/hq-share/` — PRD, ADRs, and brainstorm behind
   the flow (token-based public page, `granteeType: 'company-wide'`)
+
+## See also
+
+- `/hq-files` — inspect or change the underlying ACLs
+- `/dm` — notify the recipient with the link

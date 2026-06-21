@@ -148,3 +148,8 @@ Save current work state as a thread to survive context loss.
 - Run frequently during long sessions
 - If session feels long, suggest `/handoff`
 - Threads are searchable via `/search`
+
+## See also
+
+- `/handoff` — a full continuation package
+- `/journal` — durable working memory

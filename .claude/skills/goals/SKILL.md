@@ -155,3 +155,8 @@ Print: `Linked {proj-id} to {kr-id} ({project-title})`
 - **Follow existing ID conventions** — prefix from existing entries, zero-padded 3-digit numbers
 - **Never block on errors** — if board.json is v1 or malformed, warn and exit gracefully
 - **Reindex after writes**: `qmd update 2>/dev/null || true`
+
+## See also
+
+- `/signals` — commitments and decisions feeding goals
+- `/strategize` — turn goals into a plan

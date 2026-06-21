@@ -388,3 +388,8 @@ Keep it cheap: do **not** rebuild INDEX, update `recent.md`, run `qmd update`, o
 - **brainstorm.md is human-editable** — the user may refine it after generation. The PRD skill reads whatever is in the file, not just what was machine-generated
 - **Do not create README.md** — brainstorm.md is self-contained
 - **Anti-sycophancy** — Never say "that's interesting," "great idea," "excellent question." Take a position immediately. If the premise is weak, say so before exploring approaches. State which approach you'd actually build and why. Brainstorm is for honest analysis, not validation
+
+## See also
+
+- `/plan` — turn the chosen approach into a PRD
+- `/idea` — capture it on the board first

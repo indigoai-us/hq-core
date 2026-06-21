@@ -4,8 +4,8 @@ enforcement: hard
 public: true
 scope: global
 trigger: any context handling output of `hq files share` (without `--with`), `hq secrets generate-link`, or any other share-session URL minted by the HQ vault-service
-when: share || secret || credential
-on: [PreToolUse, UserPromptSubmit]
+when: share || secret || credential || credentials || password || passphrase || token || apikey || api_key
+on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 tags: [security, hq-cli, vault, capabilities, secrets]
 created: 2026-05-12
 provenance: feature-launch

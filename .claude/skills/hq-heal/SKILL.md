@@ -272,3 +272,8 @@ If the proposed fix requires re-launching the session (e.g. autocompact, reindex
 ## Why this exists
 
 HQ users hit a recurring class of errors that look scary but are well-understood once classified — autocompact thrashing, hook crashes, sync conflicts, deny-list blocks, reindex aborts. Without a healer, the recovery path is for the user to switch terminals, paste the error into a fresh Claude session, and hope the new session figures out what to do. `/hq-heal` collapses that into one slash command with a known-good triage recipe per error class, and a companion launcher (`core/scripts/hq-heal.sh`) for the case where the current session is too wedged to invoke the slash command at all.
+
+## See also
+
+- `/resolve-conflicts` — pick local/cloud on a conflict
+- `/recover-session` — restore a lost session

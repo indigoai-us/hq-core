@@ -4,7 +4,7 @@ title: Cluster test failures by error message before claiming a fix is complete
 scope: global
 trigger: Investigating a failing test suite where multiple tests fail simultaneously
 when: test
-on: [PreToolUse, UserPromptSubmit]
+on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft
 tier: 1
 public: true

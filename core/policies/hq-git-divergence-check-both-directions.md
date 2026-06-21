@@ -4,7 +4,7 @@ title: Check git branch divergence in both directions before acting
 scope: global
 trigger: Before any action that depends on understanding how two git refs have diverged (merge, rebase, force-push decision, "are we ahead/behind" status check)
 when: git && ( rebase || merge || push || pull )
-on: [PreToolUse]
+on: [AssistantIntent, PreToolUse]
 enforcement: soft
 public: true
 version: 1

@@ -4,7 +4,7 @@ title: Never spawn task chips that do git ops in a shared worktree
 scope: global
 trigger: spawning Task tool chips that will run git commands while the parent session (or a sibling chip) is actively using the same worktree
 when: git
-on: [PreToolUse]
+on: [AssistantIntent, PreToolUse]
 enforcement: soft
 tier: 1
 public: true

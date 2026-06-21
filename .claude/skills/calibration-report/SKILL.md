@@ -101,3 +101,8 @@ For median in awk:
 - This report is read-only by default. Only `--abandon-stale` mutates the log.
 - Suggested multipliers should be applied loosely — if the median says `2.5x` but `n=3`, treat it as a rough heuristic, not a precise correction.
 - The agent should consult this report (or read `log.jsonl` directly) when generating a new estimate in a high-bias category, and explicitly inflate.
+
+## See also
+
+- `/track-estimate` — start tracking an estimate
+- `/finish-estimate` — close one out

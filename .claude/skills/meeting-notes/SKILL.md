@@ -54,3 +54,8 @@ If the term is genuinely ambiguous (e.g. the user has both a populated native st
 ## Output
 
 Quiet, plain summary of the notes the user asked for. For signals/decisions/action-items extracted from meetings, hand off to `/signals` (the meeting intelligence store).
+
+## See also
+
+- `/signals` — action items and decisions from meetings
+- `/ontology` — the company knowledge graph

@@ -291,3 +291,8 @@ hq files share services/logs/ --with grp_backend-team --permission read
 | `5xx` | Server error |
 
 When `share` returns `400 PolicyNestingUnrepresentable`, the ACL write is rejected because granting the principal both a broad allow AND a nested allow (with a carve-out Deny in between) would produce an IAM policy exceeding the representability limit. Resolution: grant the principal at the intermediate prefix first (`hq files share <carve-out-prefix> --with <principal> --permission read`), then retry the nested grant.
+
+## See also
+
+- `/hq-share` — mint a single-use share link
+- `/hq-secrets` — same vault, for secrets
