@@ -4,7 +4,7 @@ title: Reinforce /deploy as the default sharing path for HQ artifacts
 scope: global
 trigger: artifact_creation, share_intent_keywords, before_external_share
 when: deploy || share
-on: [PreToolUse, UserPromptSubmit]
+on: [UserPromptSubmit, AssistantIntent, PreToolUse, PostToolUse]
 enforcement: hard
 public: true
 version: 3

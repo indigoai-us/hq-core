@@ -4,7 +4,7 @@ title: Confirm per-session execution scope after ExitPlanMode for multi-phase or
 scope: global
 trigger: an `ExitPlanMode`-approved plan that spans 3+ phases, contains production-mutating steps (live API calls, git tag push, repo rename, DNS change, payment/auth provider mutations), or is structured as a multi-session migration
 when: /plan || /deep-plan || /brainstorm
-on: [UserPromptSubmit]
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 version: 1

@@ -4,7 +4,7 @@ title: Codex planning skills must preserve decision gates with a text fallback
 scope: global
 trigger: Codex skill adaptation; brainstorm/prd/review-plan/run-project user question or decision gate; AskUserQuestion unavailable; request_user_input available
 when: /brainstorm || /prd || /review-plan || /run-project
-on: [UserPromptSubmit]
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 version: 2
 created: 2026-05-01

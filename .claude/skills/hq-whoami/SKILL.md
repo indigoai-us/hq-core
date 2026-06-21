@@ -30,3 +30,8 @@ long the cached access token has left. Read-only — touches nothing.
 - Pool: shared HQ Identity.
 - Does not refresh the token; for that, run `/hq-login` (it auto-refreshes
   if expired).
+
+## See also
+
+- `/hq-login` — sign in or refresh
+- `/hq-logout` — sign out

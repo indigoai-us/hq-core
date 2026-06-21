@@ -4,7 +4,7 @@ title: Never run diff -q in a parallel bash batch — nonzero exits cancel sibli
 scope: global
 trigger: issuing multiple Bash tool calls in a single message that include a diff
 when: diff
-on: [PreToolUse]
+on: [AssistantIntent, PreToolUse]
 enforcement: soft
 public: true
 version: 2

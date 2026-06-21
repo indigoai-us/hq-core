@@ -56,3 +56,8 @@ If `companies/{co}/signals/` is empty or absent, signals haven't been extracted 
 ## Output
 
 Quiet, plain, grouped summary of the signals the user asked for — decisions, action items, wins, risks, etc. — with light citations.
+
+## See also
+
+- `/meeting-notes` — the source meeting notes
+- `/ontology` — entities behind the signals

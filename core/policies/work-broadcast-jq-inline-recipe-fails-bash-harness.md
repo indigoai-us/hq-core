@@ -4,7 +4,7 @@ title: work-broadcast inline jq recipe fails in Bash harness — use python3 bod
 scope: global
 trigger: when building a Slack message body for the work-broadcast skill (or any chat.postMessage call) via inline jq in the Bash tool
 when: slack
-on: [PreToolUse, UserPromptSubmit]
+on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft
 public: true
 version: 3

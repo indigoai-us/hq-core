@@ -201,3 +201,8 @@ Fresh context = no accumulated noise, clean slate for complex tasks, follows Ral
 - **Context diet** — this skill should emit <15K tokens of tool output on a typical session. If you find yourself Reading more than 3 files, stop and rethink.
 - **Session handoffs execute directly** — skip any planning-mode detour.
 - **Commit flow** — knowledge repo commits run in bg (Step 1), HQ commit runs inside `handoff-finalize.sh` via explicit paths. Never `git add -A` from this skill.
+
+## See also
+
+- `/startwork` — the follow-up agent resumes here
+- `/checkpoint` — a lighter mid-session save

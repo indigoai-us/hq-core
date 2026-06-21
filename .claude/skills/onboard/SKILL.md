@@ -139,3 +139,8 @@ This ensures no leaked resources from test runs.
 - `@indigoai-us/hq-cloud` — VaultClient, sync, entity context
 - Vault service must be reachable (`VAULT_API_URL` env var or from `.hq/config.json`)
 - Valid Cognito auth token (from `hq auth` or env)
+
+## See also
+
+- `/designate-team` — make the company cloud-backed
+- `/accept` — accept an invite to an existing company

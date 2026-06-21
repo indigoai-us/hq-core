@@ -243,3 +243,8 @@ case "$membership_visible" in
     ;;
 esac
 ```
+
+## See also
+
+- `/onboard` — provision a company first
+- `/hq-sync` — sync the cloud-backed company

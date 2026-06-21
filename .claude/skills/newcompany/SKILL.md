@@ -325,3 +325,8 @@ Skip → no agents (the most likely default; it's a deliberate step).
 - Every `hq` call carries `--company {slug}`. Never collect raw secrets in chat — mint links.
 - Don't fake integrations: tools without an easy key become tracked tasks (manual export / ingestion script), not silent no-ops.
 - Reuse `/designate-team`, `/newworker`, `/idea`, `/plan`, `hq groups|secrets|files|invite`, and the cloud-agent provisioning path — don't reimplement them.
+
+## See also
+
+- `/onboard` — provision the vault for it
+- `/designate-team` — turn on cloud/team sync

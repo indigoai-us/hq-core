@@ -92,3 +92,8 @@ If there are still pending conflicts, suggest the user re-run sync afterwards so
 ## After resolution
 
 After the user has resolved conflicts, suggest they hit Sync in the menubar. The runner will pick up the resolved file (now with a new local hash that differs from journal) and push it cleanly. If a *new* conflict happens in the meantime (someone else pushed again), they'll see a new entry in the index.
+
+## See also
+
+- `/hq-sync` — re-run sync after resolving
+- `/hq-heal` — broader session repair

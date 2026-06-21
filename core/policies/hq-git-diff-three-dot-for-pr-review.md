@@ -4,7 +4,7 @@ title: Use three-dot diff (A...B) when reviewing a PR, never two-dot
 scope: global
 trigger: when reviewing a branch's changes vs `main` locally, inspecting a PR diff, or validating "what does this PR actually change"
 when: pr
-on: [PreToolUse, UserPromptSubmit]
+on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft
 public: true
 version: 1

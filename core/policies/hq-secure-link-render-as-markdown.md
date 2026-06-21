@@ -4,8 +4,8 @@ enforcement: hard
 public: true
 scope: global
 trigger: any assistant turn that surfaces a single-use / capability link minted by an HQ command — `hq files share` (without `--with`) share-session URLs, `hq secrets generate-link` URLs, `hq invite` claim/magic links, or any analogous short-lived credential-bearing URL
-when: secret || credential
-on: [PreToolUse]
+when: secret || credential || credentials || password || passphrase || token || apikey || api_key
+on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 tags: [security, hq-cli, vault, capabilities, secrets, ux]
 created: 2026-05-18
 provenance: user-directive

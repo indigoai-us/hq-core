@@ -154,3 +154,8 @@ Options:
 - Scheduled DMs are promoted to live notifications within ~60s of their time
   on the recipient's next inbox poll.
 - Never paste secrets into a DM body/prompt/details — DMs are stored server-side.
+
+## See also
+
+- `/hq-share` — share a vault path in your message
+- `/signals` — see action items and commitments

@@ -4,7 +4,7 @@ title: Anchor forbidden patterns to their invocation context in static regressio
 scope: global
 trigger: authoring or modifying a static regression harness (grep/regex-based test) that forbids a URL path, flag, or command substring
 when: grep
-on: [PreToolUse]
+on: [AssistantIntent, PreToolUse]
 enforcement: soft
 public: true
 version: 1

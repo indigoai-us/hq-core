@@ -4,7 +4,7 @@ title: Fix lint regressions on feature branch before resuming
 scope: command
 trigger: /run-project
 when: /run-project
-on: [UserPromptSubmit]
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
 ---

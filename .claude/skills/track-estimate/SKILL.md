@@ -63,3 +63,8 @@ The argument should be a free-form phrase containing both a task description and
 - This command is the escape hatch for the auto-capture hook. Most estimates should land via the Stop hook automatically; this is for the cases the hook misses.
 - The `session_id` is set to `"manual"` to distinguish manual entries from auto-captured ones in `/calibration-report`.
 - If the user provides only a duration with no task, prompt for the task — never log an estimate without context.
+
+## See also
+
+- `/finish-estimate` — close it with the actual time
+- `/calibration-report` — see estimate accuracy
