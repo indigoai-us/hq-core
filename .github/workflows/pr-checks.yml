@@ -200,6 +200,8 @@ jobs:
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
       - name: block-core-writes-bash exempts repos/ checkouts, still guards live root
         run: bash core/scripts/tests/block-core-writes-repos-exempt.test.sh
+      - name: block-core-writes-bash target-aware write detection
+        run: bash core/scripts/tests/block-core-writes-bash.test.sh
 
   # ─── Label-gated checks ────────────────────────────────────────────
   # These read PR labels to allow intentional overrides.

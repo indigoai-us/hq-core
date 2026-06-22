@@ -52,6 +52,13 @@ run 2 "touch $TMP/.codex/x"                  'touch into .codex blocked'
 run 2 "touch $TMP/companies/_template/x"                   'touch into abs companies/_template blocked'
 run 2 "echo x > companies/_template/seed.md"              'redirect into rel companies/_template blocked'
 run 2 "cp /tmp/y $TMP/companies/_template/knowledge/k.md" 'cp into companies/_template blocked'
+run 2 "cp /tmp/y $C/s.json"                  'cp into core still blocked'
+run 2 "mv $C/old.md /tmp/old.md"             'mv out of core blocked'
+run 2 "rm -rf $C"                            'rm -rf core blocked'
+run 2 "cp -t $C /tmp/a /tmp/b"               'cp -t target-dir into core blocked'
+run 2 "tee $TMP/.claude/x < /tmp/in"         'tee into .claude blocked'
+run 2 "sed -i 's/a/b/' $C/p.md"              'sed -i editing core blocked'
+run 2 "touch $C/new"                         'touch into core blocked'
 
 # --- Blocked: 2026-06-14 boundary fix (= and : are boundaries) -----------
 run 2 "D=$C; mv /tmp/y \"\$D/s.json\""       'VAR=core-path assignment + mv blocked (boundary fix)'
@@ -64,6 +71,12 @@ run 0 "mv /tmp/y $TMP/personal/p.md"               'write into personal/ allowed
 run 0 "cat $C/s.json"                              'read-only cat of core allowed'
 run 0 "ls $TMP/core"                               'read-only ls of core allowed'
 run 0 "mv /tmp/y $TMP/companies/acme/data/r.md"    'write into a real tenant (not _template) allowed'
+run 0 "cp $C/a.md /tmp/a.md"                       'cp out of core to tmp allowed'
+run 0 "cp $TMP/.claude/hooks/x.sh /tmp/b.sh"       'cp out of .claude to tmp allowed'
+run 0 "touch /tmp/marker && cat $C/p.md"           'touch tmp + read core allowed'
+run 0 "rm /tmp/scratch; grep -l foo $C/p.md"       'rm tmp + grep core allowed'
+run 0 "sed -i 's|core/|X|' /tmp/f"                 'sed script mentions core, target tmp allowed'
+run 0 "cp $C/a.md /tmp/ && rm -f /tmp/a.md"        'core read + tmp cleanup allowed'
 
 # --- Allowed: settings.local.json bypass still works ---------------------
 printf '{"env":{"HQ_BYPASS_CORE_PROTECT":"1"}}' > "$TMP/.claude/settings.local.json"

@@ -99,7 +99,7 @@ ALL_PATH_ALTS="($ABS_PATH_ALTS|$REL_PATH_ALTS)"
 BND='(^|[[:space:]]|[;|&(=:]|["'\''])'
 AGENTS_MD_TOKEN_RE='(^|[[:space:]]|[;|&(=:]|["'\''])AGENTS\.md'
 
-WRITE_OPS='(^|[[:space:]])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|sed[[:space:]]+-i|sed[[:space:]]+--in-place|awk[[:space:]]+-i[[:space:]]+inplace|ln)([[:space:]]|$)'
+WRITE_OPS='(^|[[:space:]])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|sed[[:space:]]+-i[^[:space:]]*|sed[[:space:]]+--in-place|awk[[:space:]]+-i[[:space:]]+inplace|ln)([[:space:]]|$)'
 
 # True when the command changes directory into a checked-out repo under repos/
 # (cd/pushd whose target path contains a repos/ segment). ONLY cd/pushd qualify:
@@ -111,6 +111,272 @@ WRITE_OPS='(^|[[:space:]])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|r
 # before "repos/" to end at a slash, so "/tmp/myrepos/" does NOT match.
 in_repo_context() {
   echo "$1" | grep -Eq '(^|[[:space:]])(cd|pushd)[[:space:]]+["'\'']?([^;&|[:space:]"'\'']*/)?repos/'
+}
+
+strip_token_quotes() {
+  local tok="$1"
+  case "$tok" in
+    \"*\") tok="${tok#\"}"; tok="${tok%\"}" ;;
+    \'*\') tok="${tok#\'}"; tok="${tok%\'}" ;;
+  esac
+  printf '%s' "$tok"
+}
+
+WRITE_TARGET_PROTECTED_CWD="no"
+WRITE_TARGET_PROTECTED_VARS=""
+
+raw_token_matches_re() {
+  local token="$1" token_re="$2"
+  printf ' %s' "$token" | grep -Eq "$token_re"
+}
+
+target_matches_re() {
+  local token="$1" token_re="$2" var
+  if raw_token_matches_re "$token" "$token_re"; then
+    return 0
+  fi
+  for var in $WRITE_TARGET_PROTECTED_VARS; do
+    case "$token" in
+      "\$$var"|"\$$var/"*|"\${$var}"|"\${$var}/"*) return 0 ;;
+    esac
+  done
+  if [[ "$WRITE_TARGET_PROTECTED_CWD" = "yes" ]]; then
+    case "$token" in
+      /*) ;;
+      \$*) ;;
+      *) return 0 ;;
+    esac
+  fi
+  return 1
+}
+
+segment_fallback_matches() {
+  local segment="$1" token_re="$2"
+  echo "$segment" | grep -Eq "$token_re"
+}
+
+record_segment_context() {
+  local segment="$1" token_re="$2"
+  local words=() clean=() i tok key val next
+
+  read -r -a words <<< "$segment"
+  for ((i=0; i<${#words[@]}; i++)); do
+    clean[$i]="$(strip_token_quotes "${words[$i]}")"
+  done
+
+  for ((i=0; i<${#clean[@]}; i++)); do
+    tok="${clean[$i]}"
+    case "$tok" in
+      [A-Za-z_]*=*)
+        key="${tok%%=*}"
+        val="${tok#*=}"
+        if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && raw_token_matches_re "$val" "$token_re"; then
+          case " $WRITE_TARGET_PROTECTED_VARS " in
+            *" $key "*) ;;
+            *) WRITE_TARGET_PROTECTED_VARS="$WRITE_TARGET_PROTECTED_VARS $key" ;;
+          esac
+        fi
+        ;;
+      cd|pushd)
+        next="${clean[$((i+1))]:-}"
+        if [[ -n "$next" ]] && raw_token_matches_re "$next" "$token_re"; then
+          WRITE_TARGET_PROTECTED_CWD="yes"
+        elif [[ "$tok" = "cd" && -n "$next" ]]; then
+          WRITE_TARGET_PROTECTED_CWD="no"
+        fi
+        ;;
+    esac
+  done
+}
+
+write_targets_match() {
+  local segment="$1" token_re="$2"
+  local words=() clean=() targets=() positionals=()
+  local word op="" op_i=-1 i j tok next positional_count has_inplace has_ef
+  local target_dir="" target_count=0
+
+  # Whitespace tokenization is deliberate: this is a best-effort guard and
+  # matches the documented parser contract for the hook.
+  read -r -a words <<< "$segment"
+  for ((i=0; i<${#words[@]}; i++)); do
+    clean[$i]="$(strip_token_quotes "${words[$i]}")"
+  done
+
+  for ((i=0; i<${#clean[@]}; i++)); do
+    case "${clean[$i]}" in
+      rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|sed|awk|ln)
+        op="${clean[$i]}"
+        op_i=$i
+        break
+        ;;
+    esac
+  done
+
+  [[ "$op_i" -ge 0 ]] || return 1
+
+  case "$op" in
+    rm|rmdir|touch|mkdir|tee)
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        [[ -z "$tok" || "$tok" == -* ]] && continue
+        targets[${#targets[@]}]="$tok"
+      done
+      ;;
+
+    cp|rsync|mv)
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        case "$tok" in
+          -t)
+            i=$((i+1))
+            if [[ "$i" -lt "${#clean[@]}" ]]; then
+              target_dir="${clean[$i]}"
+            else
+              return 2
+            fi
+            ;;
+          --target-directory=*)
+            target_dir="${tok#--target-directory=}"
+            ;;
+          --target-directory)
+            i=$((i+1))
+            if [[ "$i" -lt "${#clean[@]}" ]]; then
+              target_dir="${clean[$i]}"
+            else
+              return 2
+            fi
+            ;;
+          -*)
+            ;;
+          *)
+            positionals[${#positionals[@]}]="$tok"
+            ;;
+        esac
+      done
+      if [[ -n "$target_dir" ]]; then
+        targets[${#targets[@]}]="$target_dir"
+      elif [[ "$op" = "mv" ]]; then
+        for ((i=0; i<${#positionals[@]}; i++)); do
+          targets[${#targets[@]}]="${positionals[$i]}"
+        done
+      elif [[ "${#positionals[@]}" -gt 0 ]]; then
+        targets[${#targets[@]}]="${positionals[$((${#positionals[@]}-1))]}"
+      else
+        return 2
+      fi
+      ;;
+
+    ln)
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        [[ -z "$tok" || "$tok" == -* ]] && continue
+        positionals[${#positionals[@]}]="$tok"
+      done
+      if [[ "${#positionals[@]}" -gt 0 ]]; then
+        targets[${#targets[@]}]="${positionals[$((${#positionals[@]}-1))]}"
+      else
+        return 2
+      fi
+      ;;
+
+    chmod|chown|chgrp)
+      positional_count=0
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        [[ -z "$tok" || "$tok" == -* ]] && continue
+        positional_count=$((positional_count+1))
+        [[ "$positional_count" -eq 1 ]] && continue
+        targets[${#targets[@]}]="$tok"
+      done
+      ;;
+
+    dd)
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        case "$tok" in
+          of=*) targets[${#targets[@]}]="${tok#of=}" ;;
+        esac
+      done
+      ;;
+
+    sed)
+      has_inplace="no"
+      has_ef="no"
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        case "$tok" in
+          -i|--in-place|-i*) has_inplace="yes" ;;
+          -e|-f) has_ef="yes"; i=$((i+1)) ;;
+          -e*|-f*) has_ef="yes" ;;
+          --expression|--file) has_ef="yes"; i=$((i+1)) ;;
+          --expression=*|--file=*) has_ef="yes" ;;
+          --*) ;;
+          -*) ;;
+          *) positionals[${#positionals[@]}]="$tok" ;;
+        esac
+      done
+      [[ "$has_inplace" = "yes" ]] || return 1
+      j=0
+      if [[ "$has_ef" = "no" ]]; then
+        j=1
+      fi
+      for ((i=j; i<${#positionals[@]}; i++)); do
+        targets[${#targets[@]}]="${positionals[$i]}"
+      done
+      ;;
+
+    awk)
+      has_inplace="no"
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        next="${clean[$((i+1))]:-}"
+        if [[ "$tok" = "-i" && "$next" = "inplace" ]]; then
+          has_inplace="yes"
+          i=$((i+1))
+          continue
+        fi
+        [[ -z "$tok" || "$tok" == -* ]] && continue
+        positionals[${#positionals[@]}]="$tok"
+      done
+      [[ "$has_inplace" = "yes" ]] || return 1
+      for ((i=1; i<${#positionals[@]}; i++)); do
+        targets[${#targets[@]}]="${positionals[$i]}"
+      done
+      ;;
+  esac
+
+  target_count="${#targets[@]}"
+  if [[ "$target_count" -eq 0 ]]; then
+    return 2
+  fi
+  for ((i=0; i<target_count; i++)); do
+    if target_matches_re "${targets[$i]}" "$token_re"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+write_op_targets_protected() {
+  local cmd="$1" token_re="$2"
+  local segments segment rc
+  WRITE_TARGET_PROTECTED_CWD="no"
+  WRITE_TARGET_PROTECTED_VARS=""
+  segments=$(printf '%s' "$cmd" | sed -E 's/(&&|\|\||[;|&])/\n/g')
+  while IFS= read -r segment; do
+    [[ -z "$segment" ]] && continue
+    record_segment_context "$segment" "$token_re"
+    echo "$segment" | grep -Eq "$WRITE_OPS" || continue
+    write_targets_match "$segment" "$token_re"
+    rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+      return 0
+    fi
+    if [[ "$rc" -eq 2 ]] && segment_fallback_matches "$segment" "$token_re"; then
+      return 0
+    fi
+  done <<< "$segments"
+  return 1
 }
 
 writes_to_protected() {
@@ -135,8 +401,8 @@ writes_to_protected() {
   if echo "$stripped" | grep -Eq '(^|[[:space:]]|=)>{1,2}[[:space:]]*["'\'']?'"$path_alts"; then
     return 0
   fi
-  # Write-op tool + protected path token.
-  if echo "$stripped" | grep -Eq "$WRITE_OPS" && echo "$stripped" | grep -Eq "$token_re"; then
+  # Write-op tool + protected write target token.
+  if write_op_targets_protected "$stripped" "$token_re"; then
     return 0
   fi
   # AGENTS.md (single file). In a repos/ checkout the bare AGENTS.md token is the
@@ -145,7 +411,7 @@ writes_to_protected() {
     if echo "$cmd" | grep -Eq '(^|[[:space:]])>{1,2}[[:space:]]*["'\'']?AGENTS\.md'; then
       return 0
     fi
-    if echo "$cmd" | grep -Eq "$WRITE_OPS" && echo "$cmd" | grep -Eq "$AGENTS_MD_TOKEN_RE"; then
+    if write_op_targets_protected "$cmd" "$AGENTS_MD_TOKEN_RE"; then
       return 0
     fi
   fi

@@ -4,7 +4,7 @@ title: Place regression gates at every phase boundary in multi-layer migrations
 scope: global
 trigger: migration stories spanning multiple infra layers (filesystem, infra-as-code, brand, DNS cutover, etc.)
 when: migrate || migration || schema
-on: [PreToolUse, UserPromptSubmit, AssistantIntent]
+on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft
 public: true
 version: 1

@@ -4,7 +4,7 @@ title: Check Domain Ownership Before Vercel Deploys
 scope: global
 trigger: before any Vercel deploy or domain assignment
 when: deploy
-on: [PreToolUse, UserPromptSubmit, AssistantIntent]
+on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft
 public: true
 version: 3
