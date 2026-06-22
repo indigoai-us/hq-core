@@ -7,9 +7,9 @@ when: install
 on: [PreToolUse]
 enforcement: hard
 public: true
-version: 1
+version: 2
 created: 2026-05-12
-updated: 2026-05-12
+updated: 2026-06-22
 source: incident-response
 learned_from: npm-supply-chain-leak-2026-05-12
 ---
@@ -30,7 +30,7 @@ learned_from: npm-supply-chain-leak-2026-05-12
      ```yaml
      minimumReleaseAge: 1440
      ```
-   - Per-invocation: `pnpm add <pkg> --config.minimumReleaseAge=1440`
+   - Per-invocation: `pnpm add <pkg> --config.minimumReleaseAge=1440` (in a repo not already managed by pnpm, also pass `--config.node-linker=hoisted` so pnpm keeps a flat, npm-compatible `node_modules` instead of restructuring it into pnpm's symlinked store)
 
 3. **HARD: raw `npm install <pkg>` / `npm i <pkg>` / `yarn add <pkg>` / `bun install <pkg>` / `bun add <pkg>` is blocked.** These commands cannot honor pnpm's release-age gate and so cannot meet this policy. Switch to `pnpm`.
 
@@ -40,7 +40,11 @@ learned_from: npm-supply-chain-leak-2026-05-12
 
 5. **CI must inherit the same gate.** Any `.github/workflows/*.yml`, `vercel.json`, or other CI install step that runs `pnpm install` MUST either commit `.npmrc` with `minimum-release-age=1440` or pass `--config.minimumReleaseAge=1440` on the command. CI without this gate is the easiest path for a compromised package to reach production.
 
-6. **Emergency bypass:** `HQ_ALLOW_UNSAFE_INSTALL=1 <command>` for a single invocation. Audit row appended to `workspace/learnings/unsafe-install-bypasses.jsonl`. Use only when (a) you have read the package's release notes, (b) you trust the maintainer, and (c) the package version is ≥ 24h old by independent verification.
+6. **Emergency bypass:** set `HQ_ALLOW_UNSAFE_INSTALL=1` in the **environment** of the Claude Code process that runs the hook — **NOT** by prefixing the assignment onto the install command. The PreToolUse hook reads the variable from its own process environment, not from the parsed command string, so an inline prefix sets the var only in the command's own subprocess, never reaches the hook, and the block still fires. Set it by either:
+   - adding `"env": { "HQ_ALLOW_UNSAFE_INSTALL": "1" }` to `.claude/settings.local.json`, or
+   - running `export HQ_ALLOW_UNSAFE_INSTALL=1` before launching Claude Code.
+
+   It is **session-scoped, not per-invocation** — remove it again once the install is done. Each install while it is set appends an audit row to `workspace/learnings/unsafe-install-bypasses.jsonl`. Use only when (a) you have read the package's release notes, (b) you trust the maintainer, and (c) the package version is ≥ 24h old by independent verification.
 
 ## Rationale
 
@@ -60,7 +64,7 @@ Soft enforcement does not justify those odds.
 - `pnpm add chalk` in a repo with `.npmrc` containing `minimum-release-age=1440`
 - `pnpm install` (lockfile hydration) — uses the version already pinned, no fresh resolution
 - `npm ci` — strict lockfile install, no fresh resolution
-- `pnpm add lodash --config.minimumReleaseAge=1440` (per-invocation override when no `.npmrc` is present)
+- `pnpm add lodash --config.minimumReleaseAge=1440` (per-invocation override when no `.npmrc` is present; in a non-pnpm repo also add `--config.node-linker=hoisted`)
 
 **Incorrect (blocked):**
 - `npm install left-pad` — npm does not support the gate, switch to pnpm

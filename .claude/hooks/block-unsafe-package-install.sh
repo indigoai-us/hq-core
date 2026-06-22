@@ -17,7 +17,12 @@
 #   - pnpm install / pnpm i  (same — lockfile hydration only)
 #   - yarn install (no `add`)
 #   - bun install / bun i    (no positional pkg)
-#   - Anything with HQ_ALLOW_UNSAFE_INSTALL=1
+#   - Anything when HQ_ALLOW_UNSAFE_INSTALL=1 is set in THIS hook's process
+#     environment (via .claude/settings.local.json "env", or exported before
+#     launching Claude Code). NOTE: prefixing that assignment onto the install
+#     command itself (an inline command prefix) does NOT work — it sets the var
+#     only in the command's own subprocess, never in this hook's env, so the
+#     block still fires.
 #
 # Audit: bypasses append a row to workspace/learnings/unsafe-install-bypasses.jsonl.
 #
@@ -88,9 +93,16 @@ BLOCKED — supply-chain guard (.claude/policies/hq-pnpm-min-release-age-supply-
 
     1. One-time fix this repo:        echo 'minimum-release-age=1440' >> .npmrc
     2. Or per-invocation:             pnpm add <pkg> --config.minimumReleaseAge=1440
+       (in a repo NOT already managed by pnpm, also pass
+        --config.node-linker=hoisted so pnpm keeps a flat, npm-compatible node_modules)
     3. Or workspace-wide:             add  minimumReleaseAge: 1440  to pnpm-workspace.yaml
 
-  Emergency bypass (audited):         HQ_ALLOW_UNSAFE_INSTALL=1 <cmd>
+  Emergency bypass (audited): set HQ_ALLOW_UNSAFE_INSTALL=1 in THIS hook's
+  ENVIRONMENT — prefixing the assignment onto the command itself does NOT work
+  (it never reaches the hook, so the block still fires). Either:
+    - add  "env": { "HQ_ALLOW_UNSAFE_INSTALL": "1" }  to .claude/settings.local.json, or
+    - run  export HQ_ALLOW_UNSAFE_INSTALL=1  before launching Claude Code,
+  then remove it afterward (it is session-scoped, not per-command).
 
 EOF
   exit 2

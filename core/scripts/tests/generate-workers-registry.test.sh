@@ -58,7 +58,7 @@ if [ "$code" != "0" ]; then
   echo "FAIL[clean]: expected exit 0, got $code; stderr: $GEN_ERR" >&2; fails=$((fails+1))
 elif [ ! -f "$r1/core/workers/registry.yaml" ]; then
   echo "FAIL[clean]: registry.yaml not written" >&2; fails=$((fails+1))
-elif ! grep -q 'id: alpha' "$r1/core/workers/registry.yaml" || ! grep -q 'id: beta' "$r1/core/workers/registry.yaml"; then
+elif ! grep -q 'id: "alpha"' "$r1/core/workers/registry.yaml" || ! grep -q 'id: "beta"' "$r1/core/workers/registry.yaml"; then
   echo "FAIL[clean]: registry missing expected worker ids" >&2; fails=$((fails+1))
 else
   echo "ok: clean worker set generates registry (exit 0)"
@@ -81,9 +81,9 @@ elif ! printf '%s' "$GEN_ERR" | grep -qi 'duplicate worker id'; then
   echo "FAIL[dup]: error did not mention duplicate id; stderr: $GEN_ERR" >&2; fails=$((fails+1))
 elif [ ! -f "$reg2" ]; then
   echo "FAIL[dup]: registry.yaml not written (must quarantine, not total-block)" >&2; fails=$((fails+1))
-elif grep -q 'id: gemini-coder' "$reg2"; then
+elif grep -q 'id: "gemini-coder"' "$reg2"; then
   echo "FAIL[dup]: duplicated id 'gemini-coder' was registered (must be excluded)" >&2; fails=$((fails+1))
-elif ! grep -q 'id: keep' "$reg2"; then
+elif ! grep -q 'id: "keep"' "$reg2"; then
   echo "FAIL[dup]: valid worker 'keep' missing from registry (one bad id blocked all)" >&2; fails=$((fails+1))
 else
   echo "ok: duplicate id quarantined, valid worker still registered (non-zero exit)"
@@ -109,14 +109,70 @@ elif ! printf '%s' "$GEN_ERR" | grep -qi 'missing required field'; then
   echo "FAIL[missing]: error did not mention missing required field; stderr: $GEN_ERR" >&2; fails=$((fails+1))
 elif [ ! -f "$reg3" ]; then
   echo "FAIL[missing]: registry.yaml not written (must quarantine, not total-block)" >&2; fails=$((fails+1))
-elif grep -q 'id: bad' "$reg3"; then
+elif grep -q 'id: "bad"' "$reg3"; then
   echo "FAIL[missing]: invalid worker 'bad' was registered (must be excluded)" >&2; fails=$((fails+1))
-elif ! grep -q 'id: good' "$reg3"; then
+elif ! grep -q 'id: "good"' "$reg3"; then
   echo "FAIL[missing]: valid worker 'good' missing from registry (one bad worker blocked all)" >&2; fails=$((fails+1))
 else
   echo "ok: missing-field worker quarantined, valid worker still registered (non-zero exit)"
 fi
 rm -rf "$r3"
+
+# --- Test 4: PACK-SOURCED missing-field worker -> remedy points at `hq packs update` ---
+# DEV-1796: a worker shipped by an installed pack lives under protected core/ (a
+# symlink into core/packages/<pkg>/), so the user cannot edit it locally. The
+# quarantine message must attribute the pack AND tell them to refresh the stale
+# pack with `hq packs update` — NOT "fix the worker.yaml" (impossible for a
+# protected pack copy).
+r4="$(new_root)"
+worker "$r4" "firstparty" "firstparty" "OpsWorker" "A valid first-party worker."
+mkdir -p "$r4/core/packages/hq-pack-demo/workers/demo-team"
+cat > "$r4/core/packages/hq-pack-demo/workers/demo-team/worker.yaml" <<'YAML'
+worker:
+  id: demo-team
+  name: "demo-team"
+  type: OpsWorker
+  version: "1.0"
+YAML
+# Symlink the pack worker into core/workers/public so the generator's `find -L`
+# discovers it and attribute_pack resolves the physical core/packages/ path.
+ln -s "$r4/core/packages/hq-pack-demo/workers/demo-team" "$r4/core/workers/public/demo-team"
+code="$(run_gen "$r4")"; GEN_ERR="$(cat "$r4/.err" 2>/dev/null || true)"
+if [ "$code" = "0" ]; then
+  echo "FAIL[pack]: expected non-zero exit flagging the quarantine, got 0" >&2; fails=$((fails+1))
+elif ! printf '%s' "$GEN_ERR" | grep -qi 'source: pack hq-pack-demo'; then
+  echo "FAIL[pack]: quarantine did not attribute the source pack; stderr: $GEN_ERR" >&2; fails=$((fails+1))
+elif ! printf '%s' "$GEN_ERR" | grep -qi 'hq packs update hq-pack-demo'; then
+  echo "FAIL[pack]: pack-sourced quarantine must advise the named 'hq packs update <pack>' form; stderr: $GEN_ERR" >&2; fails=$((fails+1))
+elif printf '%s' "$GEN_ERR" | grep -qi 'fix the worker.yaml and re-run'; then
+  echo "FAIL[pack]: pack-sourced quarantine wrongly told user to fix the protected worker.yaml; stderr: $GEN_ERR" >&2; fails=$((fails+1))
+else
+  echo "ok: pack-sourced quarantine advises 'hq packs update' (not 'fix the worker.yaml')"
+fi
+rm -rf "$r4"
+
+# --- Test 5: FIRST-PARTY missing-field worker -> keeps "fix the worker.yaml" ---
+# The pack-specific remedy must NOT leak onto first-party workers, which the user
+# CAN edit directly.
+r5="$(new_root)"
+worker "$r5" "okw" "okw" "OpsWorker" "Valid."
+mkdir -p "$r5/core/workers/public/local-bad"
+cat > "$r5/core/workers/public/local-bad/worker.yaml" <<'YAML'
+worker:
+  id: local-bad
+  name: "local-bad"
+  type: OpsWorker
+  version: "1.0"
+YAML
+run_gen "$r5" >/dev/null; GEN_ERR="$(cat "$r5/.err" 2>/dev/null || true)"
+if ! printf '%s' "$GEN_ERR" | grep -qi 'fix the worker.yaml and re-run'; then
+  echo "FAIL[firstparty]: first-party quarantine should keep 'fix the worker.yaml and re-run'; stderr: $GEN_ERR" >&2; fails=$((fails+1))
+elif printf '%s' "$GEN_ERR" | grep -qi 'hq packs update'; then
+  echo "FAIL[firstparty]: first-party quarantine wrongly advised 'hq packs update'; stderr: $GEN_ERR" >&2; fails=$((fails+1))
+else
+  echo "ok: first-party quarantine keeps 'fix the worker.yaml and re-run'"
+fi
+rm -rf "$r5"
 
 if [ "$fails" -ne 0 ]; then
   echo "generate-workers-registry tests: $fails failure(s)" >&2
