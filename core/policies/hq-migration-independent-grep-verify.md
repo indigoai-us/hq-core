@@ -4,7 +4,7 @@ title: Independently grep the repo before claiming a code migration complete
 scope: global
 trigger: any in-repo migration that replaces a string, model name, version, API path, or config token across multiple files
 when: migrate || migration || schema
-on: [PreToolUse, UserPromptSubmit, AssistantIntent]
+on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft
 public: true
 version: 1

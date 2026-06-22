@@ -4,7 +4,7 @@ title: Verify content/brand migrations with both positive and negative productio
 scope: global
 trigger: brand migration verification, content migration verification, copy replacement rollouts
 when: migrate || migration || schema
-on: [PreToolUse, UserPromptSubmit, AssistantIntent]
+on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft
 public: true
 version: 1
