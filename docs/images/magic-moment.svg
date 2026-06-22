@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 332" width="760" height="332" font-family="ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace" role="img" aria-label="Before HQ, an AI agent has no memory of your company. After HQ, it knows your whole company.">
+  <defs>
+    <clipPath id="screen"><rect x="8" y="8" width="744" height="316" rx="11"/></clipPath>
+  </defs>
+
+  <!-- chrome -->
+  <rect x="8" y="8" width="744" height="316" rx="11" fill="#0d0f13" stroke="#262b35" stroke-width="1"/>
+  <g clip-path="url(#screen)">
+    <rect x="8" y="8" width="744" height="46" fill="#14171d"/>
+  </g>
+  <line x1="8" y1="54" x2="752" y2="54" stroke="#262b35" stroke-width="1"/>
+  <circle cx="30" cy="31" r="5.5" fill="#ff6b6b"/>
+  <circle cx="50" cy="31" r="5.5" fill="#f5b441"/>
+  <circle cx="70" cy="31" r="5.5" fill="#4ade80"/>
+  <text x="96" y="36" font-size="12.5" letter-spacing="0.14em" fill="#6a7079">hq · your company's memory</text>
+
+  <!-- ============ BEAT 1 — AMNESIA ============ -->
+  <g>
+    <text x="30" y="104" font-size="15" fill="#e7e9ec"><tspan fill="#7B9BC7">$ </tspan>claude "who owns billing in our codebase?"</text>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.0308;0.0500;0.2308;0.2500;1" values="0;0;1;1;0;0"/>
+  </g>
+  <g>
+    <rect x="430" y="91" width="9" height="17" fill="#7B9BC7">
+      <animate attributeName="opacity" dur="1.06s" repeatCount="indefinite" keyTimes="0;0.48;0.5;0.98;1" values="1;1;0;0;1"/>
+    </rect>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.0308;0.0500;0.2308;0.2500;1" values="0;0;1;1;0;0"/>
+  </g>
+  <g>
+    <text x="30" y="134" font-size="15" fill="#ff6b6b">✗  no idea — I have zero memory of your company.</text>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.0769;0.0962;0.2308;0.2500;1" values="0;0;1;1;0;0"/>
+  </g>
+  <g>
+    <text x="730" y="104" font-size="10.5" letter-spacing="0.18em" text-anchor="end" fill="#ff6b6b">AMNESIA</text>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.0769;0.0962;0.2308;0.2500;1" values="0;0;1;1;0;0"/>
+  </g>
+
+  <!-- ============ BEAT 2 — THE CURE ============ -->
+  <g>
+    <text x="30" y="104" font-size="15" fill="#e7e9ec"><tspan fill="#7B9BC7">$ </tspan>npx create-hq</text>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.2769;0.2962;0.4769;0.4962;1" values="0;0;1;1;0;0"/>
+  </g>
+  <g>
+    <rect x="170" y="91" width="9" height="17" fill="#7B9BC7">
+      <animate attributeName="opacity" dur="1.06s" repeatCount="indefinite" keyTimes="0;0.48;0.5;0.98;1" values="1;1;0;0;1"/>
+    </rect>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.2769;0.2962;0.4769;0.4962;1" values="0;0;1;1;0;0"/>
+  </g>
+  <g>
+    <text x="30" y="134" font-size="15" fill="#9ca3ad">↳  indexing repos · decisions · people · skills …</text>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.3231;0.3423;0.4769;0.4962;1" values="0;0;1;1;0;0"/>
+  </g>
+  <g>
+    <text x="30" y="162" font-size="15" fill="#4ade80">✓  HQ online. your context now persists.</text>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.3769;0.3962;0.4769;0.4962;1" values="0;0;1;1;0;0"/>
+  </g>
+
+  <!-- ============ BEAT 3 — TOTAL RECALL ============ -->
+  <g>
+    <text x="30" y="98" font-size="15" fill="#e7e9ec"><tspan fill="#7B9BC7">$ </tspan>claude "who owns billing in our codebase?"</text>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.5231;0.5423;0.9692;0.9885;1" values="0;0;1;1;0;0"/>
+  </g>
+  <g>
+    <rect x="430" y="85" width="9" height="17" fill="#7B9BC7">
+      <animate attributeName="opacity" dur="1.06s" repeatCount="indefinite" keyTimes="0;0.48;0.5;0.98;1" values="1;1;0;0;1"/>
+    </rect>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.5231;0.5423;0.9692;0.9885;1" values="0;0;1;1;0;0"/>
+  </g>
+  <g>
+    <text x="30" y="134" font-size="15" fill="#e7e9ec"><tspan fill="#7B9BC7">→  </tspan>services/billing — owned by Sarah's team</text>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.5846;0.6038;0.9692;0.9885;1" values="0;0;1;1;0;0"/>
+  </g>
+  <g>
+    <text x="30" y="162" font-size="15" fill="#9ca3ad">   decision: ADR-014 · last touched in PR #482</text>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.6385;0.6577;0.9692;0.9885;1" values="0;0;1;1;0;0"/>
+  </g>
+  <g>
+    <text x="30" y="190" font-size="15" fill="#9ca3ad">   oncall: @marco · ask in #billing</text>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.6923;0.7115;0.9692;0.9885;1" values="0;0;1;1;0;0"/>
+  </g>
+  <g>
+    <text x="730" y="98" font-size="10.5" letter-spacing="0.18em" text-anchor="end" fill="#4ade80">TOTAL RECALL</text>
+    <animate attributeName="opacity" dur="13s" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.5846;0.6038;0.9692;0.9885;1" values="0;0;1;1;0;0"/>
+  </g>
+
+  <!-- ============ FOOTER (pinned) ============ -->
+  <line x1="30" y1="278" x2="730" y2="278" stroke="#262b35" stroke-width="1"/>
+  <text x="30" y="305" font-size="11" letter-spacing="0.16em" fill="#6a7079">AGENT AMNESIA<tspan fill="#7B9BC7">  →  </tspan>HQ<tspan fill="#7B9BC7">  →  </tspan>IT KNOWS YOUR WHOLE COMPANY</text>
+</svg>
