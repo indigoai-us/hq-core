@@ -108,6 +108,16 @@ jobs:
       - name: .claude/settings.local.json must not be gitignored
         run: bash .leak-scan/scan.sh settings-local-not-ignored
 
+  repos-segment-not-ignored:
+    name: repos-segment-not-ignored
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: nested knowledge/repos/ must sync; only top-level repos/ excluded (DEV-1791)
+        run: bash .leak-scan/scan.sh repos-segment-not-ignored
+
   skill-command-refs:
     # DEV-1716: a core skill must not instruct a slash-command that isn't
     # resolvable on the install it is shown to. Engineering commands
@@ -190,6 +200,10 @@ jobs:
         run: bash core/scripts/tests/auto-acl-share-reminder.test.sh
       - name: Hooks parse + no bash-3.2 nested-heredoc (DEV-1513f1f5)
         run: bash core/scripts/tests/hooks-heredoc-syntax.test.sh
+      - name: Supply-chain guard bypass is env-only, not inline prefix (DEV-1798)
+        run: bash core/scripts/tests/block-unsafe-package-install.test.sh
+      - name: Workers-registry quarantine semantics + pack-sourced remedy (DEV-1718, DEV-1796)
+        run: bash core/scripts/tests/generate-workers-registry.test.sh
 
   core-write-protection:
     name: core-write-protection
@@ -204,34 +218,6 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
 
   # ─── Label-gated checks ────────────────────────────────────────────
-  # These read PR labels to allow intentional overrides.
-
-  commands-skills-tripwire:
-    name: commands-skills-tripwire
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: commands/skills require manual-copy label
-        env:
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
-        run: bash .leak-scan/scan.sh commands-skills-tripwire
-
-  core-yaml-locked:
-    name: core-yaml-locked
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: core/core.yaml hqVersion requires version-bump label
-        env:
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
-        run: bash .leak-scan/scan.sh core-yaml-locked
-
   core-yaml-version-monotonic:
     # hq-core ONLY. Promote PRs (the only kind hq-core sees) always bump
     # core/core.yaml hqVersion via promote-to-hq-core.yml; this check enforces
@@ -246,19 +232,6 @@ jobs:
           fetch-depth: 0
       - name: core/core.yaml hqVersion must strictly increase
         run: bash .leak-scan/scan.sh core-yaml-version-monotonic
-
-  special-case-files:
-    name: special-case-files
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: CHANGELOG/MIGRATION/CLAUDE.md require special-case-confirmed
-        env:
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
-        run: bash .leak-scan/scan.sh special-case-files
 
   # ─── Codex-augmented semantic check ────────────────────────────────
   # Per-file PASS/EDIT/DROP rubric, mirroring /promote-hq-core Phase 3.

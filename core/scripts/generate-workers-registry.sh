@@ -102,7 +102,20 @@ while IFS= read -r yaml; do
     [[ -z "$id" ]]   && missing="${missing:+$missing, }id"
     [[ -z "$type" ]] && missing="${missing:+$missing, }type"
     [[ -z "$desc" ]] && missing="${missing:+$missing, }description"
-    echo "generate-workers-registry: QUARANTINED $yaml — missing required field(s): ${missing}$(attribute_pack "$(dirname "$yaml")") (excluded from registry; fix the worker.yaml and re-run)" >&2
+    pack_attr="$(attribute_pack "$(dirname "$yaml")")"
+    if [[ -n "$pack_attr" ]]; then
+      # Pack-sourced worker: the file lives under protected core/ (a symlink into
+      # an installed pack), so the user cannot edit it locally. The real remedy is
+      # to refresh a stale installed pack — `hq install` / `/update-hq` SKIP
+      # already-installed packs, so a fix landed upstream does not reach an
+      # existing install until `hq packs update <pack>` re-pulls it. The NAMED
+      # form forces a re-sync even when no update is auto-detected. (DEV-1796.)
+      pack_name="${pack_attr##*pack }"; pack_name="${pack_name%]}"
+      remedy="this worker ships from an installed pack — its on-disk copy is likely stale; run 'hq packs update ${pack_name}' to refresh it (you cannot edit the protected core/ copy directly). If it persists after refreshing, the pack's worker.yaml needs the field(s) added upstream"
+    else
+      remedy="fix the worker.yaml and re-run"
+    fi
+    echo "generate-workers-registry: QUARANTINED $yaml — missing required field(s): ${missing}${pack_attr} (excluded from registry; ${remedy})" >&2
     quarantined=$((quarantined+1))
     continue
   fi

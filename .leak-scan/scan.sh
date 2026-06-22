@@ -45,6 +45,13 @@
 #                     fail if `.claude/settings.local.json` is matched by any
 #                     .gitignore rule. Tripwire: a future edit must not
 #                     accidentally re-ignore the file.
+#   repos-segment-not-ignored
+#                     fail if a nested `companies/<co>/knowledge/repos/<name>/`
+#                     path is matched by a .gitignore ignore rule (DEV-1791),
+#                     while still requiring the top-level `repos/` clone dir to
+#                     BE ignored. The root .gitignore is merged into the cloud
+#                     sync ignore filter, so a bare (unanchored) `repos/` rule
+#                     silently drops discover-generated knowledge from sync.
 #
 # Exit codes: 0 = clean, 1 = leak/violation found, 2 = script error.
 #
@@ -55,7 +62,7 @@ set -euo pipefail
 
 mode="${1:-}"
 if [[ -z "$mode" ]]; then
-  echo "Usage: $0 <denylist|policy-rationale|slugs|users-path|provenance|vendor-public-ok|public-frontmatter|commands-skills-tripwire|core-yaml-locked|core-yaml-version-monotonic|special-case-files|denylist-drift|settings-local-not-ignored>" >&2
+  echo "Usage: $0 <denylist|policy-rationale|slugs|users-path|provenance|vendor-public-ok|public-frontmatter|commands-skills-tripwire|core-yaml-locked|core-yaml-version-monotonic|special-case-files|denylist-drift|settings-local-not-ignored|repos-segment-not-ignored>" >&2
   exit 2
 fi
 
@@ -596,6 +603,51 @@ case "$mode" in
         exit 1
       fi
     fi
+    ;;
+
+  repos-segment-not-ignored)
+    # Regression gate for DEV-1791. The root .gitignore is merged into the
+    # cloud sync ignore filter (hq-cloud createIgnoreFilter, layer 2). A bare,
+    # unanchored `repos/` rule matches a directory named `repos` at ANY depth,
+    # so it silently excludes companies/<co>/knowledge/repos/<name>/ (the
+    # per-repo knowledge that /discover writes) from sync — a silent data-loss
+    # path. The rule must be ROOT-ANCHORED (`/repos/`) so ONLY the top-level
+    # clone dir is excluded.
+    #
+    # We assert with git's own ignore engine (`git check-ignore -v --no-index`,
+    # the same gitignore semantics the sync filter's `ignore` lib honors):
+    #   1. a nested knowledge/repos/ path must NOT be ignored, and
+    #   2. the top-level repos/ clone dir MUST still be ignored.
+    nested="companies/_dev1791probe/knowledge/repos/dev-docs-mcp/overview.md"
+    toplevel="repos/private/example-repo/src/index.ts"
+    fail=0
+
+    nmatch="$(git check-ignore -v --no-index "$nested" 2>/dev/null || true)"
+    if [[ -n "$nmatch" ]]; then
+      npat="${nmatch%$'\t'*}"; npat="${npat#*:*:}"
+      if [[ "${npat:0:1}" != "!" ]]; then
+        echo "::error file=.gitignore::nested knowledge path '$nested' is ignored by rule: ${nmatch%$'\t'*} — an unanchored repos/ rule re-introduces DEV-1791" >&2
+        fail=1
+      fi
+    fi
+
+    tmatch="$(git check-ignore -v --no-index "$toplevel" 2>/dev/null || true)"
+    if [[ -z "$tmatch" ]]; then
+      echo "::error file=.gitignore::top-level clone path '$toplevel' is NOT ignored — the /repos/ exclusion is missing" >&2
+      fail=1
+    else
+      tpat="${tmatch%$'\t'*}"; tpat="${tpat#*:*:}"
+      if [[ "${tpat:0:1}" == "!" ]]; then
+        echo "::error file=.gitignore::top-level clone path '$toplevel' is un-ignored by negation rule: ${tmatch%$'\t'*}" >&2
+        fail=1
+      fi
+    fi
+
+    if [[ $fail -ne 0 ]]; then
+      echo "repos-segment-not-ignored: violation" >&2
+      exit 1
+    fi
+    echo "repos-segment-not-ignored: clean (nested syncs, top-level clone excluded)"
     ;;
 
   *)

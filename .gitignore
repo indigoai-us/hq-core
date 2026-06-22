@@ -17,8 +17,13 @@ settings/**/*.json
 .env.*.local
 workspace/charlie-envs/
 
-# Cloned repos (independent git repos, symlinked into HQ)
-repos/
+# Cloned repos (independent git repos, symlinked into HQ).
+# Root-anchored (`/repos/`) so ONLY the top-level clone dir is excluded. A bare
+# `repos/` matches a directory named `repos` at ANY depth, which silently drops
+# legitimate nested content such as companies/<co>/knowledge/repos/<name>/
+# (discover-generated knowledge) from cloud sync — this file is merged into the
+# sync ignore filter as a layer. See DEV-1791.
+/repos/
 
 # Node
 node_modules/
@@ -92,7 +97,7 @@ companies/*/settings/secrets/
 workspace/.context-warnings/
 
 # hq-kit-app engine state (SQLite WAL, release tarball cache, engine logs).
-# Belt-and-suspenders: the repos/ line above already excludes the whole clone,
+# Belt-and-suspenders: the /repos/ line above already excludes the whole clone,
 # but hq-kit-app is referenced enough in HQ flows (orchestrator, /kit) that
 # calling out .data/ here prevents accidental `git add -f` mistakes.
 repos/private/hq-kit-app/.data/
