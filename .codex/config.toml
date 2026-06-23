@@ -1,6 +1,13 @@
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
 
+# Default reasoning effort for HQ Codex sessions. `xhigh` is the highest tier
+# Codex exposes (above `high`) and the strongest one that runs cleanly on HQ's
+# models (gpt-5.5 / gpt-5.3-codex-spark). Note: `minimal` is unavailable in this
+# Codex build — its always-on image_gen tool is incompatible with minimal effort.
+# Override per-invocation with `-c model_reasoning_effort=<low|medium|high|xhigh>`.
+model_reasoning_effort = "xhigh"
+
 [shell_environment_policy]
 inherit = "core"
 

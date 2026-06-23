@@ -1,7 +1,6 @@
 {
   "model": "claude-opus-4-8",
   "autoMemoryEnabled": false,
-  "remoteControlAtStartup": true,
   "useAutoModeDuringPlan": false,
   "permissions": {
     "defaultMode": "plan"

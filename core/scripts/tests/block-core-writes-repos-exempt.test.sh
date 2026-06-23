@@ -35,4 +35,13 @@ expect 0 "cd $PROJ/repos/private/hq-pro && rm -rf .claude/old"        'rm repo .
 echo "[3] ABSOLUTE live-root writes stay BLOCKED even with a repos/ cd"
 expect 2 "cd $PROJ/repos/x && rm -rf $PROJ/.claude/hooks" 'absolute live-root rm despite repos cd'
 
+echo "[4] edits inside a workspace/worktrees/ checkout are ALLOWED"
+expect 0 'cd workspace/worktrees/hq-core-staging/x && chmod u+x .claude/hooks/hook-gate.sh' 'chmod worktree .claude (relative cd)'
+expect 0 'cd workspace/worktrees/hq-core-staging/x && echo hi > core/scripts/test.sh'       'redirect worktree core (relative cd)'
+expect 0 "cd $PROJ/workspace/worktrees/hq-core-staging/x && rm -rf .claude/old"              'rm worktree .claude (absolute cd)'
+expect 2 'cd /tmp/myworkspace/worktrees/x && rm .claude/y'                                   'myworkspace/worktrees is NOT a real worktrees context'
+
+echo "[5] ABSOLUTE live-root writes stay BLOCKED even with a worktrees cd"
+expect 2 "cd $PROJ/workspace/worktrees/x && rm -rf $PROJ/.claude/hooks" 'absolute live-root rm despite worktrees cd'
+
 echo "ALL PASS: block-core-writes-repos-exempt"
