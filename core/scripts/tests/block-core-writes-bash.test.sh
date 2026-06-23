@@ -83,5 +83,15 @@ printf '{"env":{"HQ_BYPASS_CORE_PROTECT":"1"}}' > "$TMP/.claude/settings.local.j
 run 0 "mv /tmp/y $C/s.json"                  'bypass flag set -> core write allowed'
 printf '{}' > "$TMP/.claude/settings.local.json"
 
+# --- Regression (2026-06-23): the deny output must not leak a grep warning.
+# esc() previously escaped '/' as '\/' (invalid in ERE) -> "grep: warning: stray
+# \ before /" lines polluted stderr and the deny reason surfaced to Codex/Grok. ---
+stray_err="$(printf '%s' "$(jq -n --arg cmd "echo hi > $C/s.json" '{tool_input:{command:$cmd}}')" | CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>&1 1>/dev/null || true)"
+if printf '%s' "$stray_err" | grep -q 'stray'; then
+  FAIL=$((FAIL+1)); echo "FAIL [no-grep-warning]: deny output leaked a grep warning" >&2
+else
+  PASS=$((PASS+1))
+fi
+
 echo "block-core-writes-bash: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

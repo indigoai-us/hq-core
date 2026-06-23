@@ -33,6 +33,38 @@ yq_get() {
   fi
 }
 
+# Detect yq once. The per-worker field read is the hot path of this script —
+# resolving yq on every field of every worker (6 x N spawns of `command -v`)
+# is itself measurable on a cold reindex, which fires on every Stop / Write.
+if command -v yq >/dev/null 2>&1; then YQ_BIN="$(command -v yq)"; else YQ_BIN=""; fi
+
+# US — the \x1f unit separator used as this script's internal field delimiter,
+# both for read_worker_fields output and the serialized $TMP_ENTRIES rows.
+US=$'\x1f'
+
+# read_worker_fields <file> — emit the six worker fields (id, type, description,
+# status, company, team), \x1f-delimited, on ONE line, in that fixed order.
+#
+# With yq present this is a SINGLE yq invocation per worker; the previous code
+# spawned yq six times per worker (once per field), and process-spawn overhead
+# dominated reindex wall time (~2.4s -> ~0.7s across ~50 workers here). Newlines
+# and the \x1f delimiter are scrubbed to spaces INSIDE yq so a multi-line
+# `description: |` block can never split the single-record round-trip (yq's
+# `sub` is global). Batching ALL files into one yq call is deliberately avoided:
+# yq aborts the whole batch at the first malformed file, which would silently
+# drop every worker sorted after it — breaking the per-worker fail-closed
+# quarantine guarantee (DEV-1718). One call per file keeps that isolation.
+#
+# Without yq it falls back to the awk reader, one yq_get (awk) call per field.
+read_worker_fields() {
+  local file="$1"
+  if [[ -n "$YQ_BIN" ]]; then
+    "$YQ_BIN" -r "[.worker.id, .worker.type, .worker.description, .worker.status, .worker.company, .worker.team] | map((. // \"\") | tostring | sub(\"\n+$\";\"\") | sub(\"\n\";\" \") | sub(\"${US}\";\" \")) | join(\"${US}\")" "$file" 2>/dev/null
+  else
+    printf '%s' "$(yq_get id "$file")${US}$(yq_get type "$file")${US}$(yq_get description "$file")${US}$(yq_get status "$file")${US}$(yq_get company "$file")${US}$(yq_get team "$file")"
+  fi
+}
+
 derive_visibility() {
   local path="$1"
   case "$path" in
@@ -80,12 +112,9 @@ while IFS= read -r yaml; do
     */_overrides/*|_overrides/*) continue ;;
   esac
 
-  id=$(yq_get id "$yaml")
-  type=$(yq_get type "$yaml")
-  desc=$(yq_get description "$yaml")
-  status=$(yq_get status "$yaml")
-  company=$(yq_get company "$yaml")
-  team=$(yq_get team "$yaml")
+  # All six fields in ONE read (single yq spawn per worker — see
+  # read_worker_fields). IFS scoped to this read so only \x1f splits fields.
+  IFS="$US" read -r id type desc status company team < <(read_worker_fields "$yaml")
 
   # Flatten embedded newlines + the field delimiter out of every extracted value
   # to single spaces BEFORE serialization. A multi-line `description: |` block

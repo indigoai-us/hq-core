@@ -8,7 +8,7 @@ inherit = "core"
 network_access = true
 
 [features]
-codex_hooks = true
+hooks = true
 
 [[hooks.SessionStart]]
 matcher = "startup|resume|clear"

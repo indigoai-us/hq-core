@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.grok/hooks/hq-grok-hook-adapter.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

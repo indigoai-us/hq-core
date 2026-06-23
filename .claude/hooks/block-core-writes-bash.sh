@@ -50,7 +50,7 @@ CODEX_ABS="$PROJECT_DIR/.codex/"
 OBSIDIAN_ABS="$PROJECT_DIR/.obsidian/"
 TEMPLATE_ABS="$PROJECT_DIR/companies/_template/"
 
-esc() { printf '%s' "$1" | sed 's/[][\\.*^$(){}?+|/]/\\&/g'; }
+esc() { printf '%s' "$1" | sed 's/[][\\.*^$(){}?+|]/\\&/g'; }
 CORE_ABS_ESC="$(esc "$CORE_ABS")"
 CLAUDE_ABS_ESC="$(esc "$CLAUDE_ABS")"
 AGENTS_ABS_ESC="$(esc "$AGENTS_ABS")"
