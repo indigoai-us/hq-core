@@ -30,10 +30,25 @@ if command -v python3 >/dev/null 2>&1; then
   FILE_PATH="$(python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
 fi
 
-HQ_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+# Anchor on the LIVE session root (CLAUDE_PROJECT_DIR), NOT `git rev-parse` from
+# the hook's cwd. The harness runs Edit/Write hooks with cwd at/near the target
+# file, so when that target lives inside a checked-out repo (repos/<repo>/ or a
+# git worktree under workspace/worktrees/<repo>/<name>/) `git rev-parse` resolves
+# HQ_ROOT to the CHECKOUT's toplevel and then treats the checkout's own .claude/
+# or core/ as the locked live root -- a false positive that blocks legitimate dev
+# edits to a repo's scaffold. CLAUDE_PROJECT_DIR always points at the live HQ
+# root the session was launched from, matching the companion block-core-writes.sh.
+# Fall back to `git rev-parse` only when it is unset (e.g. non-Claude harnesses).
+HQ_ROOT="${CLAUDE_PROJECT_DIR:-}"
 if [[ -z "$HQ_ROOT" ]]; then
-  echo "WARNING: protect-core.sh could not determine HQ root (git rev-parse failed). Skipping check." >&2
+  HQ_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || HQ_ROOT=""
+fi
+if [[ -z "$HQ_ROOT" ]]; then
+  echo "WARNING: protect-core.sh could not determine HQ root (no CLAUDE_PROJECT_DIR; git rev-parse failed). Skipping check." >&2
   exit 0
+fi
+if command -v python3 >/dev/null 2>&1; then
+  HQ_ROOT="$(python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$HQ_ROOT" 2>/dev/null || echo "$HQ_ROOT")"
 fi
 
 # ── Targeted guard: block learned-rule injection into the charter ──

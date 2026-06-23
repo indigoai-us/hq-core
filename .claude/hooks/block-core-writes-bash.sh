@@ -101,16 +101,20 @@ AGENTS_MD_TOKEN_RE='(^|[[:space:]]|[;|&(=:]|["'\''])AGENTS\.md'
 
 WRITE_OPS='(^|[[:space:]])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|sed[[:space:]]+-i[^[:space:]]*|sed[[:space:]]+--in-place|awk[[:space:]]+-i[[:space:]]+inplace|ln)([[:space:]]|$)'
 
-# True when the command changes directory into a checked-out repo under repos/
-# (cd/pushd whose target path contains a repos/ segment). ONLY cd/pushd qualify:
-# they move the shell cwd, so subsequent relative scaffold tokens (.claude/,
-# core/, ...) refer to the repo's own tree. `git -C <repos>` does NOT change the
-# cwd (and git subcommands never match the shell WRITE_OPS scanner anyway), so
-# it is deliberately excluded to avoid leaking the exemption to unrelated
-# relative tokens in the same command. The "([^...]*/)?" requires any chars
-# before "repos/" to end at a slash, so "/tmp/myrepos/" does NOT match.
+# True when the command changes directory into a checked-out repo tree -- either
+# a source checkout under repos/ or a git worktree under workspace/worktrees/
+# (cd/pushd whose target path contains a repos/ or workspace/worktrees/ segment).
+# A worktree under workspace/worktrees/<repo>/<name>/ is a checkout of <repo>, so
+# its scaffold tokens (.claude/, core/, ...) are the repo's own tree, NOT the
+# live HQ root -- same rationale as repos/. ONLY cd/pushd qualify: they move the
+# shell cwd, so subsequent relative scaffold tokens refer to the checkout's tree.
+# `git -C <path>` does NOT change the cwd (and git subcommands never match the
+# shell WRITE_OPS scanner anyway), so it is deliberately excluded to avoid
+# leaking the exemption to unrelated relative tokens in the same command. The
+# "([^...]*/)?" requires any chars before the segment to end at a slash, so
+# "/tmp/myrepos/" and "/tmp/myworkspace/worktrees/" do NOT match.
 in_repo_context() {
-  echo "$1" | grep -Eq '(^|[[:space:]])(cd|pushd)[[:space:]]+["'\'']?([^;&|[:space:]"'\'']*/)?repos/'
+  echo "$1" | grep -Eq '(^|[[:space:]])(cd|pushd)[[:space:]]+["'\'']?([^;&|[:space:]"'\'']*/)?(repos/|workspace/worktrees/)'
 }
 
 strip_token_quotes() {

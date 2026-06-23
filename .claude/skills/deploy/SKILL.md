@@ -1,7 +1,7 @@
 ---
 name: deploy
 description: Deploy or share generated HQ artifacts through hq-deploy.
-allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(pbcopy:*), Bash(chmod:*), Bash(node:*), Bash(lsof:*), Bash(mkdir:*), Bash(echo:*), Bash(wait:*), Bash(disown:*), Bash(test:*), Bash(touch:*), Bash(rm:*), Bash(paste:*), Bash(.claude/skills/deploy/scripts/identity-resolve.sh:*), Bash(.claude/skills/deploy/scripts/sensitivity-check.sh:*), Bash(.claude/skills/deploy/scripts/guardrails-check.sh:*), Bash(.claude/skills/deploy/scripts/password-helper.sh:*), Edit, Write
+allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(pbcopy:*), Bash(chmod:*), Bash(node:*), Bash(lsof:*), Bash(mkdir:*), Bash(echo:*), Bash(wait:*), Bash(disown:*), Bash(test:*), Bash(touch:*), Bash(rm:*), Bash(paste:*), Bash(.claude/skills/deploy/scripts/identity-resolve.sh:*), Bash(.claude/skills/deploy/scripts/sensitivity-check.sh:*), Bash(.claude/skills/deploy/scripts/guardrails-check.sh:*), Bash(.claude/skills/deploy/scripts/og-inject.sh:*), Bash(.claude/skills/deploy/scripts/password-helper.sh:*), Edit, Write
 ---
 
 # Deploy Engine
@@ -62,6 +62,7 @@ The engine is **three phases**, structured by data-dependency. Independent work 
 | `.claude/skills/deploy/scripts/identity-resolve.sh` | Resolves Cognito JWT (cache → refresh → login) | `{"status":"ok"\|"login_required",...}` |
 | `.claude/skills/deploy/scripts/sensitivity-check.sh <path> [user_msg]` | Classifies artifact sensitivity (filename-list grep, no content surfaces) | `{"sensitive":bool,"trigger":string\|null}` |
 | `.claude/skills/deploy/scripts/guardrails-check.sh <output_dir>` | Caps + builds tarball | `{"pass":bool,"reason":string\|null,"tarball_path":string,...}` |
+| `.claude/skills/deploy/scripts/og-inject.sh <output_dir> [base_url] [app_name]` | Injects OG/Twitter preview tags; generates a 1200x630 card image when none exists | `{"injected":int,"image":string,"changed":bool}` |
 | `.claude/skills/deploy/scripts/password-helper.sh` | `gen` / `announce` / `persist` / `lookup` | password text, or persisted entry |
 
 All scripts are deterministic, run in 0.3–0.5s, and never echo JWTs / artifact contents / matched PII.
@@ -479,8 +480,9 @@ fi
 
 ```bash
 # GET /api/apps returns {apps: [...]}
-APP_ID=$(curl -s -H "Authorization: Bearer $JWT" \
-  "$API/api/apps" | jq -r --arg name "$APP_NAME" '.apps[] | select(.name == $name) | .id' | head -1)
+APPS_JSON=$(curl -s -H "Authorization: Bearer $JWT" "$API/api/apps")
+APP_ID=$(echo "$APPS_JSON" | jq -r --arg name "$APP_NAME" '.apps[] | select(.name == $name) | .id' | head -1)
+APP_SUBDOMAIN=$(echo "$APPS_JSON" | jq -r --arg name "$APP_NAME" '[.apps[] | select(.name == $name)][0].subdomain // empty')
 
 if [ -z "$APP_ID" ]; then
   # POST /api/apps requires {name, type}
@@ -491,6 +493,32 @@ if [ -z "$APP_ID" ]; then
     "$API/api/apps")
   APP_ID=$(echo "$APP_RESPONSE" | jq -r '.id')
   APP_SUBDOMAIN=$(echo "$APP_RESPONSE" | jq -r '.subdomain')
+fi
+# Subdomain anchors both the upload (appSlug) and the preview-tag base URL; fall
+# back to the app-name slug if the API response didn't surface one.
+if [ -z "$APP_SUBDOMAIN" ] || [ "$APP_SUBDOMAIN" = "null" ]; then APP_SUBDOMAIN="$APP_NAME"; fi
+```
+
+#### Inject social preview tags (static deploys only)
+
+Before tarring for upload, add Open Graph / Twitter Card tags so a shared link unfurls with a real card (title + description + 1200x630 image) instead of a bare URL. This is what makes Slack/iMessage/Twitter render a rich preview. Runs only for `DEPLOY_TYPE=static`, and never overwrites a page's author-supplied `og:title`. The base URL is derived from the resolved subdomain so `og:url`/`og:image` are absolute. If injection changes the output, the tarball is rebuilt so the deploy manifest's `size` + `sha256` match the bytes actually uploaded.
+
+```bash
+if [ "$DEPLOY_TYPE" = "static" ]; then
+  BASE_URL="https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}"
+  OG_JSON=$(.claude/skills/deploy/scripts/og-inject.sh "$OUTPUT_DIR" "$BASE_URL" "$APP_NAME")
+  if [ "$(echo "$OG_JSON" | jq -r '.changed')" = "true" ]; then
+    NEW_TAR=$(mktemp -t hq-deploy-tar.XXXXXX).tar.gz
+    tar -czf "$NEW_TAR" -C "$OUTPUT_DIR" . 2>/dev/null
+    rm -f "$TARBALL_PATH"
+    TARBALL_PATH="$NEW_TAR"
+    TARBALL_SIZE=$(stat -c%s "$TARBALL_PATH" 2>/dev/null || stat -f%z "$TARBALL_PATH" 2>/dev/null || echo 0)
+    if command -v sha256sum >/dev/null 2>&1; then
+      TARBALL_SHA256=$(sha256sum "$TARBALL_PATH" | awk '{print $1}')
+    else
+      TARBALL_SHA256=$(shasum -a 256 "$TARBALL_PATH" | awk '{print $1}')
+    fi
+  fi
 fi
 ```
 
@@ -741,6 +769,7 @@ Then move on. Deploy is never the main event.
 | `identity-resolve.sh` | (none — reads `~/.hq/cognito-tokens.json`) | `{"status":"ok","jwt":"...","expires_at":<epoch-ms>,"source":"cache\|refresh\|login"}` or `{"status":"login_required","reason":"..."}` |
 | `sensitivity-check.sh <path> [user_msg]` | artifact path + latest user message excerpt | `{"sensitive":bool,"trigger":"companies-data-path\|private-repo\|pii-detected\|financial-filename\|user-stated-private"\|null}` |
 | `guardrails-check.sh <output_dir>` | build output directory | `{"pass":bool,"reason":string\|null,"tarball_path":string,"size_bytes":int,"sha256":string,"file_count":int}` |
+| `og-inject.sh <output_dir> [base_url] [app_name]` | static build dir (+ live base URL) | `{"injected":int,"image":"generated\|existing\|none","changed":bool}` |
 | `password-helper.sh gen` | — | `<adjective-noun-NN>` on stdout |
 | `password-helper.sh announce <slug> <pw> [trigger]` | slug + password | stderr message + pbcopy + writes `~/.hq/deploy-passwords.json` |
 
