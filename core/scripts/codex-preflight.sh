@@ -21,6 +21,7 @@ Usage:
   core/scripts/codex-preflight.sh bash --command <command>
   core/scripts/codex-preflight.sh repo --path <path>
   core/scripts/codex-preflight.sh policies [--cwd <path>]
+  core/scripts/codex-preflight.sh doctor
 
 Purpose:
   Run portable HQ safety checks explicitly from Codex workflows. This does not
@@ -205,6 +206,30 @@ cmd_policies() {
   (cd "${cwd}" && printf '%s' '{"hook_event_name":"SessionStart","source":"startup","cwd":"'"${cwd}"'"}' | bash "${hooks_root}/inject-policy-on-trigger.sh")
 }
 
+# doctor: report whether headless hook enforcement is ready for Codex + Grok,
+# so an HQ session can self-check parity with Claude Code's auto-enforced hooks.
+cmd_doctor() {
+  local root; root="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
+  echo "HQ headless-enforcement doctor (Codex + Grok)"
+  if command -v codex >/dev/null 2>&1; then
+    local v maj min; v="$(codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    maj="$(printf '%s' "${v:-0}" | cut -d. -f1)"; min="$(printf '%s' "${v:-0}" | cut -d. -f2)"
+    if { [ "${maj:-0}" -gt 0 ] 2>/dev/null; } || { [ "${min:-0}" -ge 142 ] 2>/dev/null; }; then
+      echo "  codex ${v:-?}: OK (>= 0.142). Launch codex exec with --dangerously-bypass-hook-trust; project must be trusted in ~/.codex/config.toml."
+    else
+      echo "  codex ${v:-?}: NEEDS UPGRADE. codex exec runs NO PreToolUse hooks before 0.142 (silent). Upgrade (npm i -g @openai/codex) then launch with --dangerously-bypass-hook-trust." >&2
+    fi
+  else
+    echo "  codex: not installed."
+  fi
+  if grep -qxF "$root" "$HOME/.grok/trusted-hook-projects" 2>/dev/null; then
+    echo "  grok: project trusted (OK)."
+  else
+    echo "  grok: NOT trusted — run core/scripts/grok-trust.sh so .grok/ hooks enforce in headless grok -p." >&2
+  fi
+  if [ -d "$root/.grok/hooks" ]; then echo "  grok: .grok/hooks present (OK)."; else echo "  grok: .grok/hooks MISSING." >&2; fi
+}
+
 main() {
   local command="${1:-}"
   [[ -n "${command}" ]] || { usage; exit 1; }
@@ -216,6 +241,7 @@ main() {
     bash) cmd_bash "$@" ;;
     repo) cmd_repo "$@" ;;
     policies) cmd_policies "$@" ;;
+    doctor) cmd_doctor "$@" ;;
     -h|--help) usage ;;
     *) echo "Unknown command: ${command}" >&2; usage >&2; exit 1 ;;
   esac

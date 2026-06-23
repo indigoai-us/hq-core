@@ -174,6 +174,41 @@ else
 fi
 rm -rf "$r5"
 
+# --- Test 6: multi-line `description: |` block -> flattened to ONE space-joined
+# line with NO trailing space. Locks the batched yq reader's byte-parity with
+# the old per-field reader, which relied on command substitution stripping the
+# block scalar's trailing newline. Regression guard for the reindex yq-batch
+# speedup (6 yq spawns/worker -> 1). Gated on yq: the awk fallback cannot parse
+# block scalars (a separate, pre-existing limitation), so this asserts the yq
+# path that production reindex always takes.
+if command -v yq >/dev/null 2>&1; then
+  r6="$(new_root)"
+  mkdir -p "$r6/core/workers/public/multi"
+  cat > "$r6/core/workers/public/multi/worker.yaml" <<'YAML'
+worker:
+  id: multi
+  name: "multi"
+  type: OpsWorker
+  version: "1.0"
+  description: |
+    first line
+    second line
+    third line
+YAML
+  run_gen "$r6" >/dev/null
+  reg6="$r6/core/workers/registry.yaml"
+  if ! grep -q 'description: "first line second line third line"' "$reg6"; then
+    echo "FAIL[multiline]: block scalar not flattened to single space-joined line without trailing space; got:" >&2
+    grep 'description:' "$reg6" | grep -i line >&2 || true
+    fails=$((fails+1))
+  else
+    echo "ok: multi-line description flattened to single line, no trailing space"
+  fi
+  rm -rf "$r6"
+else
+  echo "skip: multi-line description test (yq not on PATH)"
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "generate-workers-registry tests: $fails failure(s)" >&2
   exit 1
