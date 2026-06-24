@@ -27,7 +27,7 @@ Desktop and Claude Code share the same HQ filesystem (`~/Documents/HQ/`). Today 
 | `list_prds` / `list_workers` / `list_threads` | Writing any HQ file | Desktop reads entire file into memory; if file is mid-rename, `read_to_string` returns the old version or errors (handled gracefully) |
 | `get_empire_data` (aggregator) | Worker execution writing threads | Thread watcher triggers refresh after write completes |
 | `read_dir_tree` (file navigator) | Creating new files/dirs | readdir is atomic per entry; worst case is stale listing, fixed by next refresh |
-| `start_prd_watcher` | `/prd` command creating/updating prd.json | Watcher has 100ms debounce; picks up final state |
+| `start_prd_watcher` | `/plan` command creating/updating prd.json | Watcher has 100ms debounce; picks up final state |
 
 ### Unsafe / Risky Operations
 

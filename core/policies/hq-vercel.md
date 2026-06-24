@@ -110,7 +110,7 @@ Do NOT invoke the `/deploy` skill for Vercel-managed projects. The `/deploy` ski
 | Has `.vercel/project.json` | `vercel` CLI from the repo root |
 | Listed in `manifest.yaml → vercel_projects[]` | `vercel` CLI from the repo root |
 | Static HTML report / dashboard in `workspace/reports/` or `companies/{co}/data/` | `/deploy` (hq-deploy) |
-| Astro docs site scaffolded by `/prd` with hq-deploy target | `/deploy` (hq-deploy) |
+| Astro docs site scaffolded by `/plan` with hq-deploy target | `/deploy` (hq-deploy) |
 | Next.js app with no `.vercel/project.json` but user intends Vercel | `vercel link` first, then `vercel deploy` |
 
 ### Never deploy to production custom domains without explicit confirmation

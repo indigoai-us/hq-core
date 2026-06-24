@@ -4,7 +4,7 @@
 # Usage: bash core/scripts/read-policy-frontmatter.sh <policy-file>
 #
 # Returns only the YAML frontmatter block (between the first two --- markers),
-# skipping the policy body. Used by /startwork, /prd, /brainstorm, /run commands
+# skipping the policy body. Used by /startwork, /plan, /brainstorm, /run commands
 # to minimize context burn when scanning policy metadata (id, title, enforcement,
 # trigger) without loading the full ## Rule and ## Rationale sections.
 #

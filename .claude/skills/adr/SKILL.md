@@ -163,6 +163,6 @@ Print:
 ## Cross-references
 
 - `/out-of-scope` — sibling skill for *rejected feature requests* (vs. this for *accepted technical decisions*).
-- `/brainstorm`, `/prd`, `/architect`, `/diagnose` — all hand off here when a decision warrants ADR.
+- `/brainstorm`, `/plan`, `/architect`, `/diagnose` — all hand off here when a decision warrants ADR.
 - HQ `/learn` — for cross-tenant knowledge capture (different from per-repo / per-company ADR).
 - Pattern source: `mattpocock/skills` `grill-with-docs/ADR-FORMAT.md`.

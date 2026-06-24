@@ -18,7 +18,6 @@ The AI operating system for your company. A shared context layer on top of Claud
 |---------|--------------|
 | `/brainstorm` | Explore approaches and tradeoffs before committing to a PRD |
 | `/plan` | Lightweight plan for a new project |
-| `/prd` | Create an execution-ready PRD (`prd.json` + `README.md`) |
 | `/deep-plan` | Deep planning with research subagents and tiered interview |
 | `/idea` | Capture a project idea on the board without a full PRD |
 | `/strategize` | Strategic prioritization — "what should I work on next?" |
@@ -196,7 +195,7 @@ companies/{co}/
 PRDs live at `companies/{co}/projects/{name}/prd.json` for company work, or `personal/projects/{name}/prd.json` for personal/HQ work, with `README.md` as the human-readable view.
 
 ```
-/prd "Build dashboard"          # creates PRD
+/plan "Build dashboard"          # creates PRD
 /run-project customer-cube      # execute via Ralph loop / Codex
 ```
 

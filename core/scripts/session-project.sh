@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # session-project.sh - create or reuse a lightweight project folder for native sessions.
 #
-# This is intentionally thinner than /prd. It gives native Claude/Codex work a
+# This is intentionally thinner than /plan. It gives native Claude/Codex work a
 # durable project/prd.json target without forcing a full interview flow.
 
 set -uo pipefail
@@ -233,7 +233,7 @@ def write_readme(project_dir, prd):
         f"{description}\n\n"
         "## Status\n\n"
         "Native session project. This folder was created automatically so work "
-        "done outside `/prd` and `/run-project` still has a durable home.\n\n"
+        "done outside `/plan` and `/run-project` still has a durable home.\n\n"
         "## Next\n\n"
         "- Enrich `prd.json` if this becomes structured execution work.\n"
         "- Keep session notes in `journal/` or `sessions/`.\n"

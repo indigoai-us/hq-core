@@ -2,8 +2,8 @@
 id: hq-codex-decision-gate-fallback
 title: Codex planning skills must preserve decision gates with a text fallback
 scope: global
-trigger: Codex skill adaptation; brainstorm/prd/review-plan/run-project user question or decision gate; AskUserQuestion unavailable; request_user_input available
-when: /brainstorm || /prd || /review-plan || /run-project
+trigger: Codex skill adaptation; brainstorm/plan/prd/review-plan/run-project user question or decision gate; AskUserQuestion unavailable; request_user_input available
+when: /brainstorm || /plan || /prd || /review-plan || /run-project
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 version: 2
@@ -30,7 +30,7 @@ This preference applies to all user-facing HQ questions with enumerated choices,
 This especially applies to artifact lifecycle gates:
 
 - After `/brainstorm`: ask whether to promote to PRD, refine, park, or end.
-- During `/prd` open-question resolution: ask, defer as a pre-flight story, or explicitly record the user chose to leave it unresolved.
+- During `/plan` open-question resolution: ask, defer as a pre-flight story, or explicitly record the user chose to leave it unresolved.
 - During `/review-plan`: ask for the selected response to each blocking issue.
 - During `/run-project`: ask before changing execution semantics between interactive/session/headless modes.
 

@@ -491,7 +491,7 @@ How HQ works — the 60-second model:
     serve), repos/ (all actual code, public or private).
   • Knowledge compounds. Workers, knowledge docs, and policies you create
     make every future session smarter — capture learnings, don't re-derive.
-  • Slash commands are the interface. /newworker, /prd, /deploy, /search,
+  • Slash commands are the interface. /newworker, /plan, /deploy, /search,
     /onboard — you drive HQ by naming the capability, not hand-rolling it.
   • /search (or qmd) finds anything across HQ — knowledge, projects,
     workers, policies, indexed repos.
@@ -625,7 +625,7 @@ answers describe working with a team. Notes:
   it with the team: `/newworker` (a specialist for the draining task), or a
   knowledge doc + `/learn`, then `/hq-share <path>` (or `/designate-team` to
   make the company cloud-backed for the whole team).
-- And/or **produce a report and deploy it**: `/prd` (or a direct artifact) →
+- And/or **produce a report and deploy it**: `/plan` (or a direct artifact) →
   `/deploy` — framed as "show your team something real, behind a signed URL".
 
 **Deploy is not team-gated.** Even for solo / personal scope, surface a
@@ -643,13 +643,13 @@ to the launch list, do NOT run inline). See the Rules for the inline/handoff lin
   - *Do now:* `/newcompany {slug}` (new — lightweight scaffold) or `/onboard`
     (join existing). If they're an existing Claude user, surface `/import-claude`
     to hydrate the skeleton.
-  - *Recommend:* first deliverable → `/brainstorm` / `/prd` / `/startwork {slug}`.
+  - *Recommend:* first deliverable → `/brainstorm` / `/plan` / `/startwork {slug}`.
     If team/cloud, fold in the shareable-asset + `/deploy` recommendation.
 - **Personal projects** → "What's the first thing you want a worker to do?"
   (anchored to role-discovery + Q4 challenges).
   - *Do now:* `/idea` to capture it on the board; `/newworker` if a recurring
     specialist is clearly implied.
-  - *Recommend:* `/prd` or `/plan` for the first real deliverable, plus the solo
+  - *Recommend:* `/plan` for the first real deliverable, plus the solo
     `/deploy` early-win.
 - **Learn first** → *Do now:* nothing heavy. *Recommend:* `/tutorial` (suggest a
   topic from role-discovery + Phase 1 goal) then `/personal-interview`.
@@ -779,7 +779,7 @@ brand-new setup, simply starting fresh with the first prompt is enough.
   produce a high-quality inline design. Degrade gracefully.
 - **Inline vs handoff:** scaffold lightweight, high-momentum items inline during
   setup (`/newcompany`, `/idea`, a knowledge doc, a `hq secrets generate-link`
-  connection). Heavy / context-hungry work (`/prd`, `/plan`, `/discover`, deep
+  connection). Heavy / context-hungry work (`/plan`, `/discover`, deep
   planning) is recommended for a fresh session — never run inline. This honors
   HQ context hygiene while still delivering first-session momentum.
 - **Secret-link / share / deploy URLs are capabilities** — surface inline at mint

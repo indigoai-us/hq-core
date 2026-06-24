@@ -1395,7 +1395,7 @@ RULES:
   # Codex CLI builder — invokes `codex exec` with the same prompt payload.
   # Completion detection: Layer 2 (grep for story_id/task_id+status on the raw file)
   # and Layer 3 (git heuristic) both work on codex's plain-text output.
-  local codex_flags=(exec --skip-git-repo-check)
+  local codex_flags=(exec --dangerously-bypass-hook-trust --skip-git-repo-check)
   if [[ "$NO_PERMISSIONS" == true ]]; then
     codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
   else
@@ -2084,7 +2084,7 @@ Do NOT modify the PRD. Do NOT run unrelated changes."
 
   local fix_output="$EXEC_DIR/${story_id}.codex-fix.json"
 
-  timeout 300 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$fix_prompt" \
+  timeout 300 codex exec --dangerously-bypass-hook-trust --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$fix_prompt" \
     > "$fix_output" 2>&1 || {
     log_warn "Codex fix agent failed or timed out for $story_id (non-blocking)"
     return 0
@@ -2260,7 +2260,7 @@ Rules:
 - Do NOT use EnterPlanMode or TodoWrite
 - Output JSON: {\"layers_updated\": [\"internal\",\"external\",\"repo_knowledge\",\"company_knowledge\"], \"files_touched\": [], \"summary\": \"1-sentence\"}"
 
-  local codex_flags=(exec --skip-git-repo-check)
+  local codex_flags=(exec --dangerously-bypass-hook-trust --skip-git-repo-check)
   if [[ "$NO_PERMISSIONS" == true ]]; then
     codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
   else
@@ -2468,7 +2468,7 @@ IMPORTANT: Do NOT modify the PRD. Only write your analysis report.
 Write your report to: ${reanchor_file}"
 
   # Best-effort, non-blocking — don't fail the loop
-  timeout 300 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$reanchor_prompt" \
+  timeout 300 codex exec --dangerously-bypass-hook-trust --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$reanchor_prompt" \
     > "$EXEC_DIR/reanchor-${reanchor_num}.output.json" 2>&1 || {
     log_warn "Project reanchor #${reanchor_num} failed or timed out (non-blocking)"
     return 0
@@ -3009,7 +3009,7 @@ RULES:
   local output_file="$EXEC_DIR/${story_id}.output.json"
   local stderr_file="$EXEC_DIR/${story_id}.stderr"
   # Swarm mode codex builder — same invocation shape as sequential mode.
-  local codex_flags=(exec --skip-git-repo-check)
+  local codex_flags=(exec --dangerously-bypass-hook-trust --skip-git-repo-check)
   if [[ "$NO_PERMISSIONS" == true ]]; then
     codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
   else

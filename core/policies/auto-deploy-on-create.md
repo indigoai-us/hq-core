@@ -23,7 +23,7 @@ The deploy skill runs a seven-step flow: **Preferences → Build → Localhost p
 ### When to deploy
 
 1. **After a successful build** that produces web output (static HTML, SPA, or SSR bundle)
-2. **After `/prd`** scaffolds a docs site (Astro + Starlight)
+2. **After `/plan`** scaffolds a docs site (Astro + Starlight)
 3. **After `/execute-task`** completes a story in a project that has a web-servable output
 4. **After `/run-project`** finishes all stories in a deployable project
 5. **After a worker** generates an HTML report or dashboard to `workspace/reports/` or `companies/{co}/data/`

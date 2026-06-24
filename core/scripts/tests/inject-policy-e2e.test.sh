@@ -110,6 +110,8 @@ assert_has "aws_profile->secret" "$O" credential-access-protocol
 echo "== slash-commands (UserPromptSubmit) =="
 O="$(run_hook UserPromptSubmit "$(promptbody '/prd for the dashboard')")"
 assert_has "/prd"              "$O" prd-content-sources prd-story-sizing prd-validation
+O="$(run_hook UserPromptSubmit "$(promptbody '/plan for the dashboard')")"
+assert_has "/plan"             "$O" prd-content-sources prd-story-sizing prd-validation
 O="$(run_hook UserPromptSubmit "$(promptbody '/run-project the auth epic')")"
 assert_has "/run-project"      "$O" prd-validation regression-gate-lint-fix verify-routes-after-parallel-execution ralph-orchestrator-context-discipline hq-learn-auto-no-confirmation
 O="$(run_hook UserPromptSubmit "$(promptbody 'kick off /deep-plan now')")"
@@ -146,11 +148,30 @@ assert_empty "Glob skipped"    "$O"
 O="$(run_hook PreToolUse "$(printf '"tool_name":"Read","tool_input":{"file_path":"/x.png"},"cwd":"%s"' "$ROOT")")"
 assert_empty "Read skipped"    "$O"
 
-echo "== negative / neutral =="
-O="$(run_hook PreToolUse "$(bashbody 'ls -la')")"
-assert_empty "plain ls"        "$O"
-O="$(run_hook UserPromptSubmit "$(promptbody 'what does this function do?')")"
-assert_empty "neutral prompt"  "$O"
+echo "== SessionStart baseline backfill (injected on ANY first event, then deduped) =="
+# A neutral event matching NO reactive trigger still backfills the always-on
+# SessionStart baseline on the FIRST event of a fresh session.
+BSID1="baseline-bash-$RUN"
+O="$(printf '{"hook_event_name":"PreToolUse","session_id":"%s","tool_name":"Bash","tool_input":{"command":"ls -la"},"cwd":"%s"}' "$BSID1" "$ROOT" | HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" 2>/dev/null)"
+assert_has "baseline on first Bash" "$O" decision-queue-one-at-a-time hq-audience-mode quiet-by-default-narration
+# Second neutral event in the SAME session: baseline already recorded -> nothing.
+O2="$(printf '{"hook_event_name":"PreToolUse","session_id":"%s","tool_name":"Bash","tool_input":{"command":"echo hi"},"cwd":"%s"}' "$BSID1" "$ROOT" | HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" 2>/dev/null)"
+assert_empty "baseline deduped 2nd event" "$O2"
+# Same backfill when the first event of a fresh session is a neutral prompt.
+BSID2="baseline-prompt-$RUN"
+O="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s","prompt":"what does this function do?","cwd":"%s"}' "$BSID2" "$ROOT" | HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" 2>/dev/null)"
+assert_has "baseline on first prompt" "$O" decision-queue-one-at-a-time hq-audience-mode
+
+echo "== negative / neutral (baseline pre-warmed -> no reactive noise) =="
+# Pre-warm a session via SessionStart so the baseline is injected+recorded, then
+# fire neutral events on that SAME session: nothing new should surface.
+NSID="neutral-$RUN"
+printf '{"hook_event_name":"SessionStart","session_id":"%s","cwd":"%s"}' "$NSID" "$ROOT" | HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" >/dev/null 2>&1
+nrun() { printf '{"hook_event_name":"%s","session_id":"%s",%s}' "$1" "$NSID" "$2" | HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" 2>/dev/null; }
+O="$(nrun PreToolUse "$(bashbody 'ls -la')")"
+assert_empty "plain ls (warmed)"        "$O"
+O="$(nrun UserPromptSubmit "$(promptbody 'what does this function do?')")"
+assert_empty "neutral prompt (warmed)"  "$O"
 
 echo "== legacy regex map (precise patterns) =="
 O="$(run_hook PreToolUse "$(bashbody 'find . -name foo')")"
