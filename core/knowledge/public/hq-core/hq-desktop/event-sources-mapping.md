@@ -36,7 +36,7 @@ Desktop currently has **2 file watchers** and **1 polling mechanism**:
 | File Path | Change Type | Frequency | Payload |
 |-----------|-------------|-----------|---------|
 | `projects/*/prd.json` | Modify | ~10-50/day (story passes flip, metadata updates) | Full PRD with userStories array |
-| `projects/*/prd.json` | Create | ~1-3/week (new projects via /prd) | New PRD |
+| `projects/*/prd.json` | Create | ~1-3/week (new projects via /plan) | New PRD |
 | `workspace/orchestrator/state.json` | Modify | ~20-100/day during project runs | Full orchestrator state (all projects, states, progress) |
 | `workspace/orchestrator/checkouts.json` | Modify | ~5-20/day | File checkout mapping |
 | `workspace/orchestrator/*/executions/*.json` | Create/Modify | ~5-20/day per active project | Execution state per story |

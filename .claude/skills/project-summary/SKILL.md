@@ -11,7 +11,7 @@ link. Two modes:
 
 - **plan mode** (default) — visualizes a finished PRD: objectives, the plan (story map),
   phasing, and product-style UX mockups (or an architecture diagram for backend work). Auto-run
-  at the end of `/prd` and `/deep-plan` (their Step 8.9), and via `/project-summary {co}/{name}`.
+  at the end of `/plan` and `/deep-plan` (their Step 8.9), and via `/project-summary {co}/{name}`.
 - **deck mode** (`--brainstorm`) — visualizes a brainstorm as a research/findings deck: the
   framing, what we know / don't know, the premise verdict, the approaches compared with their
   tradeoffs, and the recommendation. Auto-run at the end of `/brainstorm`, and via

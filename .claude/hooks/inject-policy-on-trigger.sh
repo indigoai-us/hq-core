@@ -103,10 +103,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     INTENT_FACTS="$(printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" AssistantIntent 2>/dev/null || true)"
   fi
 
-  # At SessionStart, every policy whose `on:` includes SessionStart is injected
-  # unconditionally (its `when:` still gates it — `when: always` matches). There
-  # is no separate digest to dedup against; this hook is the sole policy-surfacing
-  # path.
+  # Policies whose `on:` includes SessionStart form an always-injected per-session
+  # BASELINE: they are injected on the FIRST qualifying event of a session (the
+  # SessionStart event itself, or — if that was missed or lost to resume/
+  # compaction — the first prompt or Bash command), gated by their `when:`
+  # (`when: always` matches everywhere) and the per-session dedup ledger so each
+  # fires at most once. There is no separate digest to dedup against; this hook is
+  # the sole policy-surfacing path.
   DIRS=("$HQ_ROOT/core/policies")
   case "$CWD" in
     *companies/*)
@@ -177,18 +180,24 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         return (pOr() ? 0 : 1)
       }
       function base(p,   n,a,b){ n=split(p,a,"/"); b=a[n]; sub(/\.md$/,"",b); return b }
-      function finalize(   onpad,ev_on,ai_on,matched,r) {
+      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r) {
         if (whenx=="") return
         if (id=="") id=base(fname)
         if (onx=="") onx="PreToolUse"                              # default when on: omitted
         onpad=" " onx " "
         ev_on = (index(onpad," " EVENT " ")>0)
         ai_on = (index(onpad," AssistantIntent ")>0)
-        if (!ev_on && !(ai_on && INTENT_MODE)) return
+        # on:[SessionStart] policies are an always-injected per-session BASELINE:
+        # eligible on ANY triggering event, not just the SessionStart event, so a
+        # session backfills any baseline slug not yet in the ledger on whatever
+        # event fires first. Still gated by when: (vs the current event facts) and
+        # the per-session dedup ledger, so each fires at most once per session.
+        ss_on = (index(onpad," SessionStart ")>0)
+        if (!ev_on && !ss_on && !(ai_on && INTENT_MODE)) return
         if (id in already) return                                  # per-session dedup ledger
         if (id in emitted) return                                  # de-dup within this run
         matched=0
-        if (ev_on) { r=evalexpr(whenx,"ev"); if(r==0||r==2) matched=1 }
+        if (ev_on || ss_on) { r=evalexpr(whenx,"ev"); if(r==0||r==2) matched=1 }
         if (!matched && ai_on && INTENT_MODE) { r=evalexpr(whenx,"ai"); if(r==0||r==2) matched=1 }
         if (matched) { emitted[id]=1; print id "\t" rule }
       }

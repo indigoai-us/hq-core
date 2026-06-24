@@ -236,7 +236,7 @@ source_idea_id: {board ID or null}
 - [ ] {Other prerequisite}
 
 **Promotion path:**
-- Ready to build --> promote to PRD (brainstorm.md pre-populates the interview)
+- Ready to build --> promote to a PRD with `/plan` (brainstorm.md pre-populates the interview)
 - Needs more research --> edit this file, revisit later
 - Not worth pursuing --> park as idea on the board
 ```
@@ -358,7 +358,7 @@ Recommendation: Option {X}
 
 Deck (live, members only): {deck_url}   (or: "skipped — {reason}")
 
-Next: promote to PRD, edit brainstorm.md, or park on the board.
+Next: promote to a PRD with `/plan`, edit brainstorm.md, or park on the board.
 ```
 
 Reindex: `qmd update 2>/dev/null || true`
@@ -367,7 +367,7 @@ Reindex: `qmd update 2>/dev/null || true`
 
 Once `brainstorm.md` is written and the summary printed, automatically save a lightweight checkpoint so the user can continue in a fresh session without a manual `/handoff`. This only **snapshots** continuity — it does **not** close the brainstorm (which stays open across `/prd` and `/plan`).
 
-Write `workspace/threads/T-{UTC YYYYMMDD-HHMMSS}-auto-brainstorm-{slug}.json` with: `thread_id`, `version: 1`, `type: "auto-checkpoint"`, `created_at`, `updated_at`, `workspace_root`, `cwd`, `git: { branch, current_commit, dirty }`, `conversation_summary` (topic + recommended option, one sentence), `files_touched` (include the `brainstorm.md` path), `next_steps` (e.g. "promote to PRD with `/prd`, or refine `brainstorm.md`"), and `metadata: { title: "Auto: brainstorm {slug}", tags: ["auto-checkpoint", "brainstorm"], trigger: "brainstorm-complete" }`.
+Write `workspace/threads/T-{UTC YYYYMMDD-HHMMSS}-auto-brainstorm-{slug}.json` with: `thread_id`, `version: 1`, `type: "auto-checkpoint"`, `created_at`, `updated_at`, `workspace_root`, `cwd`, `git: { branch, current_commit, dirty }`, `conversation_summary` (topic + recommended option, one sentence), `files_touched` (include the `brainstorm.md` path), `next_steps` (e.g. "promote to PRD with `/plan`, or refine `brainstorm.md`"), and `metadata: { title: "Auto: brainstorm {slug}", tags: ["auto-checkpoint", "brainstorm"], trigger: "brainstorm-complete" }`.
 
 Keep it cheap: do **not** rebuild INDEX, update `recent.md`, run `qmd update`, or write a legacy checkpoint. Then tell the user a fresh session can resume from this checkpoint (`/startwork`).
 

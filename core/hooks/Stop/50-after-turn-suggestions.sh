@@ -98,12 +98,12 @@ set -uo pipefail
       add_suggestion "If this project shipped, run \`/document-release\` or a quick \`/retro\` before moving on."
     fi
   elif [ -n "$project_dir" ] && [ -f "$project_dir/brainstorm.md" ]; then
-    add_suggestion "Promote this brainstorm to a PRD when ready: \`/prd ${project_name}\`."
+    add_suggestion "Promote this brainstorm to a PRD when ready: \`/plan ${project_name}\`."
     add_suggestion "Tighten the open questions in \`${ACTIVE_PROJECT}/brainstorm.md\` before planning."
   fi
 
   if printf '%s' "$lower_text" | grep -qE 'brainstorm.*created|brainstorm:|recommendation: option'; then
-    add_suggestion "Choose the recommendation path, then promote it with \`/prd\`."
+    add_suggestion "Choose the recommendation path, then promote it with \`/plan\`."
   fi
 
   if printf '%s' "$lower_text" | grep -qE 'project .*(created|ready)|prd\.json|user stories'; then

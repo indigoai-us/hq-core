@@ -124,7 +124,7 @@ Print:
 
 ## Consultation pattern (for other skills)
 
-When `/brainstorm`, `/prd`, or any feature-triage skill receives a feature request, it should grep all three out-of-scope dirs (most-specific first):
+When `/brainstorm`, `/plan`, or any feature-triage skill receives a feature request, it should grep all three out-of-scope dirs (most-specific first):
 
 ```bash
 # in repo scope
@@ -148,6 +148,6 @@ This is the *whole point* of the graveyard. A graveyard nobody reads is just a f
 ## Cross-references
 
 - `/adr` — sibling for accepted decisions.
-- `/brainstorm`, `/prd` — should consult `/out-of-scope` before adding ideas.
+- `/brainstorm`, `/plan` — should consult `/out-of-scope` before adding ideas.
 - `/learn` — for cross-tenant failure-mode patterns (different surface).
 - Pattern source: `mattpocock/skills` `.out-of-scope/` directory.
