@@ -77,7 +77,7 @@ code="$(run_gen "$r2")"; GEN_ERR="$(cat "$r2/.err" 2>/dev/null || true)"
 reg2="$r2/core/workers/registry.yaml"
 if [ "$code" = "0" ]; then
   echo "FAIL[dup]: expected non-zero exit flagging the duplicate, got 0" >&2; fails=$((fails+1))
-elif ! printf '%s' "$GEN_ERR" | grep -qi 'duplicate worker id'; then
+elif ! grep -qi 'duplicate worker id' <<<"$GEN_ERR"; then
   echo "FAIL[dup]: error did not mention duplicate id; stderr: $GEN_ERR" >&2; fails=$((fails+1))
 elif [ ! -f "$reg2" ]; then
   echo "FAIL[dup]: registry.yaml not written (must quarantine, not total-block)" >&2; fails=$((fails+1))
@@ -105,7 +105,7 @@ code="$(run_gen "$r3")"; GEN_ERR="$(cat "$r3/.err" 2>/dev/null || true)"
 reg3="$r3/core/workers/registry.yaml"
 if [ "$code" = "0" ]; then
   echo "FAIL[missing]: expected non-zero exit flagging the missing field, got 0" >&2; fails=$((fails+1))
-elif ! printf '%s' "$GEN_ERR" | grep -qi 'missing required field'; then
+elif ! grep -qi 'missing required field' <<<"$GEN_ERR"; then
   echo "FAIL[missing]: error did not mention missing required field; stderr: $GEN_ERR" >&2; fails=$((fails+1))
 elif [ ! -f "$reg3" ]; then
   echo "FAIL[missing]: registry.yaml not written (must quarantine, not total-block)" >&2; fails=$((fails+1))
@@ -140,11 +140,11 @@ ln -s "$r4/core/packages/hq-pack-demo/workers/demo-team" "$r4/core/workers/publi
 code="$(run_gen "$r4")"; GEN_ERR="$(cat "$r4/.err" 2>/dev/null || true)"
 if [ "$code" = "0" ]; then
   echo "FAIL[pack]: expected non-zero exit flagging the quarantine, got 0" >&2; fails=$((fails+1))
-elif ! printf '%s' "$GEN_ERR" | grep -qi 'source: pack hq-pack-demo'; then
+elif ! grep -qi 'source: pack hq-pack-demo' <<<"$GEN_ERR"; then
   echo "FAIL[pack]: quarantine did not attribute the source pack; stderr: $GEN_ERR" >&2; fails=$((fails+1))
-elif ! printf '%s' "$GEN_ERR" | grep -qi 'hq packs update hq-pack-demo'; then
+elif ! grep -qi 'hq packs update hq-pack-demo' <<<"$GEN_ERR"; then
   echo "FAIL[pack]: pack-sourced quarantine must advise the named 'hq packs update <pack>' form; stderr: $GEN_ERR" >&2; fails=$((fails+1))
-elif printf '%s' "$GEN_ERR" | grep -qi 'fix the worker.yaml and re-run'; then
+elif grep -qi 'fix the worker.yaml and re-run' <<<"$GEN_ERR"; then
   echo "FAIL[pack]: pack-sourced quarantine wrongly told user to fix the protected worker.yaml; stderr: $GEN_ERR" >&2; fails=$((fails+1))
 else
   echo "ok: pack-sourced quarantine advises 'hq packs update' (not 'fix the worker.yaml')"
@@ -165,9 +165,9 @@ worker:
   version: "1.0"
 YAML
 run_gen "$r5" >/dev/null; GEN_ERR="$(cat "$r5/.err" 2>/dev/null || true)"
-if ! printf '%s' "$GEN_ERR" | grep -qi 'fix the worker.yaml and re-run'; then
+if ! grep -qi 'fix the worker.yaml and re-run' <<<"$GEN_ERR"; then
   echo "FAIL[firstparty]: first-party quarantine should keep 'fix the worker.yaml and re-run'; stderr: $GEN_ERR" >&2; fails=$((fails+1))
-elif printf '%s' "$GEN_ERR" | grep -qi 'hq packs update'; then
+elif grep -qi 'hq packs update' <<<"$GEN_ERR"; then
   echo "FAIL[firstparty]: first-party quarantine wrongly advised 'hq packs update'; stderr: $GEN_ERR" >&2; fails=$((fails+1))
 else
   echo "ok: first-party quarantine keeps 'fix the worker.yaml and re-run'"

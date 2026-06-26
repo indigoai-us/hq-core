@@ -3,7 +3,7 @@ id: hq-secure-link-render-as-markdown
 enforcement: hard
 public: true
 scope: global
-trigger: any assistant turn that surfaces a single-use / capability link minted by an HQ command — `hq files share` (without `--with`) share-session URLs, `hq secrets generate-link` URLs, `hq invite` claim/magic links, or any analogous short-lived credential-bearing URL
+trigger: any assistant turn that surfaces a single-use / capability link minted by an HQ command — `hq files share` (without `--with`) share-session URLs, `hq secrets generate-link` URLs, `hq members invite` claim/magic links, or any analogous short-lived credential-bearing URL
 when: secret || credential || credentials || password || passphrase || token || apikey || api_key
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 tags: [security, hq-cli, vault, capabilities, secrets, ux]
@@ -30,7 +30,7 @@ In-scope link types:
 
 - `hq files share <prefix>` (no `--with`) — share-session URLs (`/share-session/<token>`)
 - `hq secrets generate-link <PATH>` — secret-submission URLs (`/secrets-input/<token>`)
-- `hq invite` — claim / magic links the CLI emits back to the agent (e.g. the `--no-email` path where the recipient must be told out-of-band)
+- `hq members invite` — claim / magic links the CLI emits back to the agent (e.g. the `--no-email` path where the recipient must be told out-of-band)
 - Any future HQ command that returns a single-use or otherwise credential-bearing capability URL
 
 Out of scope (may be rendered as plain visible URLs): non-secret links such as the `/deploy` public app URL, the `/deploy` localhost preview URL, and the onboarding signup URL. These are not capabilities and the plaintext-exposure concern does not apply.

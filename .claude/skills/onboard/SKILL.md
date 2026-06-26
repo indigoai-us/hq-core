@@ -56,7 +56,7 @@ Creating company "Acme Corp" (acme-corp)...
 │  Bucket:   hq-acme-corp-vault               │
 ├─────────────────────────────────────────────┤
 │  Next steps:                                │
-│    • Run /invite <email> to add team        │
+│    • Run hq members invite <email>          │
 │    • Run hq sync to push files              │
 └─────────────────────────────────────────────┘
 ```
