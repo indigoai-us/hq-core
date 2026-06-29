@@ -147,7 +147,7 @@ fi
 
 #### Org resolution chain
 
-The org the deploy targets MUST be resolved — never fall back to a hardcoded slug. Walk these priorities in order until one produces `$ORG_SLUG`. Priorities 1–4 don't need a JWT and run here; Priority 5 needs `$JWT` and runs in **A.5** after the Phase A barrier. Priority 6 is the state-aware CTA path when nothing resolves.
+The org the deploy targets MUST be resolved — never fall back to a hardcoded slug. Walk these priorities in order until one produces `$ORG_SLUG`. Priorities 1–4 don't need a JWT and run here; Priority 5 needs `$JWT` and runs in **A.5** after the Phase A barrier. When the signed-in user has no company at all, A.5 sets `PERSONAL_SCOPE=true` and the deploy ships to their personal scope (Priority 5b). Priority 6 is the state-aware CTA path, reached only when the org is genuinely ambiguous (multi-org) or vault is unreachable.
 
 | Priority | Source | Notes |
 |---|---|---|
@@ -156,7 +156,8 @@ The org the deploy targets MUST be resolved — never fall back to a hardcoded s
 | 3 | cwd → `companies/{slug}/…` segment | Running inside HQ tree |
 | 4 | `~/.hq/deploy-prefs.json` `defaultOrg` field | Persisted choice (legacy `~/.hq/config.json` read as fallback for backwards-compat) |
 | 5 | Single active vault membership | Auto-resolved + auto-written to `defaultOrg` (runs in A.5) |
-| 6 | State-aware CTA (A/B/C — see C.5) | Preview already shown; skip upload |
+| 5b | No active membership → personal scope | Signed in but no company: deploy to the auto-provisioned `personal-<sub>` scope (`PERSONAL_SCOPE=true`, runs in A.5). Upload proceeds with no org selector |
+| 6 | State-aware CTA (multi-org / unreachable — see C.5) | Only when the org is genuinely ambiguous or vault is down; preview already shown; skip upload |
 
 Pre-JWT block (Priorities 1–4):
 
@@ -319,6 +320,12 @@ This block is no-op when:
 VAULT_API="${VAULT_API_URL:-https://4nfy67z28h.execute-api.us-east-1.amazonaws.com}"
 ORG_RESOLUTION_STATE=""
 ACTIVE_SLUGS=""
+# Set when the signed-in person belongs to NO company. The deploy still ships,
+# under an auto-provisioned per-user PERSONAL scope — the hq-deploy API resolves
+# org purely from the caller's auth context and, for a person with no membership
+# and no X-Org-Slug, find-or-creates a `personal-<sub>` Org (hq-deploy #76). The
+# upload below sends no org selector, so it lands in that personal scope.
+PERSONAL_SCOPE=""
 
 if [ -z "$ORG_SLUG" ] && [ "$IDENTITY_STATUS" = "ok" ] && [ -n "$JWT" ]; then
   PERSON_UID=$(curl -s -H "Authorization: Bearer $JWT" \
@@ -353,7 +360,11 @@ if [ -z "$ORG_SLUG" ] && [ "$IDENTITY_STATUS" = "ok" ] && [ -n "$JWT" ]; then
         fi
         ;;
       0)
+        # No company membership → deploy to the user's personal scope rather
+        # than bailing. ORG_SLUG stays empty so the upload sends no org selector
+        # and the backend auto-provisions `personal-<sub>`.
         ORG_RESOLUTION_STATE="no-orgs"
+        PERSONAL_SCOPE="true"
         ;;
       *)
         ORG_RESOLUTION_STATE="multi-org"
@@ -370,7 +381,24 @@ if [ -z "$ORG_SLUG" ] && [ "$IDENTITY_STATUS" = "ok" ] && [ -n "$JWT" ]; then
 fi
 ```
 
-After A.5, Phase C upload is gated additionally by `ORG_SLUG` being set — never silently fall back to a hardcoded org. The CTA at C.5 reads `$ORG_RESOLUTION_STATE` to pick the right copy.
+After A.5, Phase C upload proceeds when **either** `$ORG_SLUG` is set (company deploy) **or** `PERSONAL_SCOPE=true` (signed-in user with no company → personal deploy). Never silently fall back to a hardcoded org. The remaining unresolved states (`multi-org`, vault-unreachable) skip the upload and hit the state-aware CTA at C.5, which reads `$ORG_RESOLUTION_STATE`.
+
+A personal deploy has no company to gate against, so `company` / `selected` access modes are impossible. Normalize the access mode chosen in A.4 before Phase C:
+
+```bash
+# Personal scope can't use a Cognito company/selected gate. Sensitive content
+# falls back to a password; non-sensitive stays public (default, no policy).
+# NOTE: this default (public, or password when sensitive) is the security-
+# relevant choice flagged for confirmation at the hq-core-staging promotion gate.
+if [ "$PERSONAL_SCOPE" = "true" ]; then
+  case "$ACCESS_MODE" in
+    company|selected)
+      ACCESS_MODE="password"
+      echo "[deploy] personal scope: no company to gate on — using a password instead of company access." >&2
+      ;;
+  esac
+fi
+```
 
 ---
 
@@ -460,7 +488,7 @@ Every API call carries `Authorization: Bearer $JWT`.
 
 **Pre-conditions:**
 - Phase A: `BUILD_STATUS="ok"`, `IDENTITY_STATUS="ok"` (otherwise skip upload, jump to C.5 with preview-only outcome)
-- A.5: `$ORG_SLUG` is non-empty (otherwise skip upload, jump to C.5 with the appropriate state-aware CTA — see C.5)
+- A.5: `$ORG_SLUG` is non-empty **or** `PERSONAL_SCOPE=true` (otherwise — `multi-org` or vault-unreachable — skip upload, jump to C.5 with the appropriate state-aware CTA — see C.5)
 - Phase B: `GUARDRAILS_PASS=true` (otherwise abort silently)
 
 ### C.1 — Generate password (sensitive + password mode only)
@@ -525,6 +553,13 @@ fi
 #### Static upload (presigned URL)
 
 The Guardrails script already produced `$TARBALL_PATH`, `$TARBALL_SIZE`, `$TARBALL_SHA256` — reuse them, do not re-tar:
+
+The `org` field below is informational only — the hq-deploy API resolves the
+target org from the caller's auth context and **ignores** the body `org` /
+`X-Org-Slug` on the user-JWT path. For a personal deploy (`PERSONAL_SCOPE=true`)
+`$ORG_SLUG` is empty, so the request carries no org selector and the backend
+lands it in the auto-provisioned personal scope. Do not add an `X-Org-Slug`
+header here — sending one would suppress the personal fallback.
 
 ```bash
 DEPLOY_RESPONSE=$(curl -s -X POST \
@@ -705,6 +740,13 @@ The only user-visible output. Keep it casual.
 - "Here's a link you can share: https://{app}.indigo-hq.com"
 - "The docs are live at https://{app}.indigo-hq.com"
 
+**On success (personal scope, `PERSONAL_SCOPE=true`):** the deploy went to the
+user's own personal space (no company). Say so once, casually, so they know it
+isn't org-restricted — and only mention a password if the content was sensitive
+(personal sensitive deploys use password mode, see A.5 normalization):
+- Non-sensitive: "Deployed to your personal space — here's the link: https://$APP_SUBDOMAIN.indigo-hq.com (it's public; once you join a company you can deploy there too)."
+- Sensitive: same `password mode` line as below, plus a one-time note that it landed in your personal space.
+
 **On success (sensitive, password mode):** mention password ONCE:
 > Live at `https://$APP_SUBDOMAIN.indigo-hq.com` — password copied to your clipboard (also saved to `~/.hq/deploy-passwords.json`).
 
@@ -732,15 +774,11 @@ if [ ! -f "$UPSOLD_FILE" ]; then
 fi
 ```
 
-**On signed-in-but-org-unresolved path** (`IDENTITY_STATUS=ok` but `$ORG_SLUG` is empty after A.5): emit the appropriate state-aware CTA. Preview URL was already shown in Phase B, so the CTA pairs with that, not in place of it:
+**On signed-in-but-org-unresolved path** (`IDENTITY_STATUS=ok`, `PERSONAL_SCOPE` not set, and `$ORG_SLUG` still empty after A.5): emit the appropriate state-aware CTA. This now covers only `multi-org` (the user must pick) and the vault-unreachable defensive case — the `no-orgs` state is no longer a dead end, it deploys to personal scope above. Preview URL was already shown in Phase B, so the CTA pairs with that, not in place of it:
 
 ```bash
 PREVIEW_URL=$(cat "$URLFILE" 2>/dev/null || echo "http://localhost:$PORT")
 case "$ORG_RESOLUTION_STATE" in
-  no-orgs)
-    # State B — signed in, no companies yet
-    echo "You're signed in but don't have any companies yet. Create or sync one (\`hq onboard\` or push your local companies/ folder) and I'll deploy this next time. Preview: $PREVIEW_URL"
-    ;;
   multi-org)
     # State C — multiple memberships, no default
     echo "You're a member of multiple companies (${ACTIVE_SLUGS:-multiple}). Tell me which one to deploy to (\"deploy this to <slug>\") or set a default (\"make <slug> my default org\"). Preview: $PREVIEW_URL"

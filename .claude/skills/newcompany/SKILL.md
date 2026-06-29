@@ -24,7 +24,7 @@ rules, invited teammates, and (optionally) cloud agents.
 - **Tenant isolation.** Every `hq` call is company-scoped with `--company {slug}`.
 - **Reuse, don't reinvent.** This skill orchestrates existing primitives
   (`/designate-team`, `/newworker`, `/idea`, `/plan`, `hq groups`, `hq secrets`,
-  `hq files`, `hq invite`, cloud-agent provisioning). It adds the interview + the
+  `hq files`, `hq members invite`, cloud-agent provisioning). It adds the interview + the
   tool-classification logic, nothing more.
 - **Secret hygiene.** Never collect a raw credential in chat. Mint a submission link
   (`hq secrets generate-link`) and render it ONLY as a Markdown inline link at mint time
@@ -270,7 +270,7 @@ Skip → no groups/rules (owner still has full access).
 ## Phase 7 — Invite Teammates (NEW, optional)
 
 For each teammate from Phase 1 (or ask): email + role + group.
-- `hq invite <email> --company {slug} --role <admin|member>` (owner is provisioning-only; not via CLI).
+- `hq members --company {slug} invite <email> --role <admin|member>` (owner is provisioning-only; not via CLI).
 - If a group was chosen: `hq groups add grp_<name> <email> --company {slug}`.
 - They accept via `/accept` on first sign-in. Surface pending vs joined state.
 
