@@ -1,0 +1,3 @@
+interface:
+  display_name: "Resume Work"
+  short_description: "Resume work from a specific handoff thread by id."
