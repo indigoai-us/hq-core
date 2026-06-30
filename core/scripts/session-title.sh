@@ -82,10 +82,19 @@ if not company and not project:
     manifest = hq / "companies" / "manifest.yaml"
     slugs = []
     if manifest.exists():
+        in_companies = False
         for line in manifest.read_text(encoding="utf-8", errors="ignore").splitlines():
-            m = re.match(r"^([a-z][a-z0-9_-]*):", line)
-            if m and m.group(1) != "_template":
-                slugs.append(m.group(1))
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            if in_companies and re.match(r"^[^\s#]", line):
+                break
+            if re.match(r"^companies:\s*$", line):
+                in_companies = True
+                continue
+            if in_companies:
+                m = re.match(r"^  ([a-z][a-z0-9_-]*):\s*$", line)
+                if m and m.group(1) != "_template":
+                    slugs.append(m.group(1))
     if len(slugs) == 1:
         company = slugs[0]
 

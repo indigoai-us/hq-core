@@ -151,6 +151,24 @@ jobs:
       - name: Regression test (fixture + live tree + fix present)
         run: bash core/scripts/tests/install-deps.test.sh
 
+  # feedback_1b307a08: nested manifests were misparsed by a flat col-0 regex.
+  manifest-nested-parse:
+    name: manifest-nested-parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nested company manifest parsing
+        run: bash core/scripts/tests/manifest-nested-parse.test.sh
+
+  # feedback_c930eafe: catch stale org chart drift between README teams and person ontology.
+  ontology-readme-drift:
+    name: ontology-readme-drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: README team table matches person ontology
+        run: bash core/scripts/tests/ontology-readme-drift.test.sh
+
   git-mutation-guard:
     # DEV-1765: the HQ-root git-mutation guard must FIRE correctly under BOTH
     # harnesses. Under Codex the adapter used to resolve HQ_ROOT from the cwd's

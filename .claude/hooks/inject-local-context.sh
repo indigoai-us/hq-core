@@ -43,10 +43,23 @@ fi
 COMPANIES=""
 COMPANY_COUNT=0
 if [ -f "$MANIFEST" ]; then
-  # Top-level keys in manifest (lines starting with a word, ending with colon, no indentation)
-  # Exclude comment lines and the _template entry
-  COMPANIES=$(grep -E '^[a-z][a-z0-9_-]*:' "$MANIFEST" | sed 's/://' | grep -v '^_template$' | paste -sd ',' - | sed 's/,/, /g')
-  COMPANY_COUNT=$(grep -cE '^[a-z][a-z0-9_-]*:' "$MANIFEST" | tr -d ' ')
+  # Direct child keys under the top-level companies: block.
+  COMPANY_SLUGS=$(awk '
+    /^[[:space:]]*$/ { next }
+    /^[[:space:]]*#/ { next }
+    in_companies && /^[^[:space:]#]/ { exit }
+    /^companies:[[:space:]]*$/ { in_companies=1; next }
+    in_companies && /^  [a-z][a-z0-9_-]*:[[:space:]]*$/ {
+      slug=$0
+      sub(/^  /, "", slug)
+      sub(/:[[:space:]]*$/, "", slug)
+      if (slug != "_template") print slug
+    }
+  ' "$MANIFEST")
+  if [ -n "$COMPANY_SLUGS" ]; then
+    COMPANIES=$(printf '%s\n' "$COMPANY_SLUGS" | paste -sd ',' - | sed 's/,/, /g')
+    COMPANY_COUNT=$(printf '%s\n' "$COMPANY_SLUGS" | awk 'NF { n++ } END { print n+0 }')
+  fi
 fi
 
 # --- Company worker counts ---
