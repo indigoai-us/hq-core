@@ -23,7 +23,7 @@ Targeted resume. Unlike `/startwork` (which peeks at `handoff.json` for the *lat
 The argument is a thread id, with or without the `.json` suffix, and may be a partial slug. Resolve it to exactly one thread file under `workspace/threads/` (also check `workspace/threads/archive/**` for older threads).
 
 ```bash
-arg="$ARGUMENTS"                       # e.g. T-20260625-084414-files-acl-grant-timeout
+arg="$ARGUMENTS"                       # e.g. T-[CARD]-files-acl-grant-timeout
 id="${arg%.json}"; id="${id##*/}"      # strip .json and any leading path
 id="$(echo "$id" | tr -d '[:space:]')" # trim stray whitespace
 
