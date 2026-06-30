@@ -247,7 +247,7 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
-            "timeout": 300
+            "timeout": 20
           },
           {
             "type": "command",
@@ -277,7 +277,7 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
-            "timeout": 300
+            "timeout": 20
           },
           {
             "type": "command",
@@ -302,7 +302,7 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
-            "timeout": 300
+            "timeout": 20
           },
           {
             "type": "command",
@@ -462,7 +462,7 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
-            "timeout": 300
+            "timeout": 20
           }
         ]
       }
@@ -537,7 +537,7 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
-            "timeout": 300
+            "timeout": 20
           }
         ]
       }
@@ -592,7 +592,7 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
-            "timeout": 300
+            "timeout": 20
           }
         ]
       }

@@ -20,7 +20,11 @@
 # Robustness: if the hq CLI isn't on PATH (e.g. a partial install), the shim
 # exits cleanly so a missing binary never breaks a session. HQ_NO_UPDATE_CHECK
 # is set so this hot hook never blocks on the CLI's network version gate or
-# triggers an auto-update mid-session.
+# triggers an auto-update mid-session. HQ_OP_LOCK_TIMEOUT=0 makes `hq reindex`
+# refuse-fast (never wait) for the per-root operation lock it shares with
+# `sync`/`rescue`, so a hook fired while a sync/rescue holds the lock can never
+# stall the session. Without it the wait is UNBOUNDED and the hook hangs up to
+# settings.json's per-hook timeout — the multi-minute-spinner bug.
 
 set -uo pipefail
 
@@ -31,7 +35,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 if command -v hq >/dev/null 2>&1; then
-  HQ_NO_UPDATE_CHECK=1 hq reindex --repo-root "$REPO_ROOT" 1>&2 || true
+  HQ_NO_UPDATE_CHECK=1 HQ_OP_LOCK_TIMEOUT=0 hq reindex --repo-root "$REPO_ROOT" 1>&2 || true
 fi
 
 exit 0
