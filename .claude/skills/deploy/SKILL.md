@@ -141,7 +141,7 @@ fi
 
 | Thing | How |
 |-------|-----|
-| Org (`$ORG_SLUG`) | Resolution chain below — never default to a hardcoded org |
+| Deploy context | Company context via `$ORG_SLUG`, or explicit personal context when the signed-in user has no companies |
 | API endpoint | manifest `services.hq-deploy.endpoint` → `$HQ_DEPLOY_API` (your HQ deploy host) |
 | App name | `package.json` `name` → current directory name, slug-cased |
 
@@ -156,7 +156,7 @@ The org the deploy targets MUST be resolved — never fall back to a hardcoded s
 | 3 | cwd → `companies/{slug}/…` segment | Running inside HQ tree |
 | 4 | `~/.hq/deploy-prefs.json` `defaultOrg` field | Persisted choice (legacy `~/.hq/config.json` read as fallback for backwards-compat) |
 | 5 | Single active vault membership | Auto-resolved + auto-written to `defaultOrg` (runs in A.5) |
-| 5b | No active membership → personal scope | Signed in but no company: deploy to the auto-provisioned `personal-<sub>` scope (`PERSONAL_SCOPE=true`, runs in A.5). Upload proceeds with no org selector |
+| 5b | No active membership → personal scope | Signed in but no company: deploy to the auto-provisioned `personal-<sub>` scope (`PERSONAL_SCOPE=true`, runs in A.5). Upload proceeds with `X-HQ-Deploy-Scope: personal` |
 | 6 | State-aware CTA (multi-org / unreachable — see C.5) | Only when the org is genuinely ambiguous or vault is down; preview already shown; skip upload |
 
 Pre-JWT block (Priorities 1–4):
@@ -320,11 +320,11 @@ This block is no-op when:
 VAULT_API="${VAULT_API_URL:-https://4nfy67z28h.execute-api.us-east-1.amazonaws.com}"
 ORG_RESOLUTION_STATE=""
 ACTIVE_SLUGS=""
+DEPLOY_CONTEXT_HEADERS=()
 # Set when the signed-in person belongs to NO company. The deploy still ships,
-# under an auto-provisioned per-user PERSONAL scope — the hq-deploy API resolves
-# org purely from the caller's auth context and, for a person with no membership
-# and no X-Org-Slug, find-or-creates a `personal-<sub>` Org (hq-deploy #76). The
-# upload below sends no org selector, so it lands in that personal scope.
+# under an auto-provisioned per-user PERSONAL scope. The upload below sends
+# X-HQ-Deploy-Scope: personal so hq-deploy bypasses company resolution and
+# find-or-creates the caller's `personal-<sub>` Org.
 PERSONAL_SCOPE=""
 
 if [ -z "$ORG_SLUG" ] && [ "$IDENTITY_STATUS" = "ok" ] && [ -n "$JWT" ]; then
@@ -379,9 +379,15 @@ if [ -z "$ORG_SLUG" ] && [ "$IDENTITY_STATUS" = "ok" ] && [ -n "$JWT" ]; then
     esac
   fi
 fi
+
+if [ -n "$ORG_SLUG" ]; then
+  DEPLOY_CONTEXT_HEADERS=(-H "X-Org-Slug: $ORG_SLUG")
+elif [ "$PERSONAL_SCOPE" = "true" ]; then
+  DEPLOY_CONTEXT_HEADERS=(-H "X-HQ-Deploy-Scope: personal")
+fi
 ```
 
-After A.5, Phase C upload proceeds when **either** `$ORG_SLUG` is set (company deploy) **or** `PERSONAL_SCOPE=true` (signed-in user with no company → personal deploy). Never silently fall back to a hardcoded org. The remaining unresolved states (`multi-org`, vault-unreachable) skip the upload and hit the state-aware CTA at C.5, which reads `$ORG_RESOLUTION_STATE`.
+After A.5, Phase C upload proceeds when **either** `$ORG_SLUG` is set (company deploy) **or** `PERSONAL_SCOPE=true` (signed-in user with no company → personal deploy). Every hq-deploy API call must include `"${DEPLOY_CONTEXT_HEADERS[@]}"`, which is `X-Org-Slug` for company deploys and `X-HQ-Deploy-Scope: personal` for personal deploys. Never silently fall back to a hardcoded org. The remaining unresolved states (`multi-org`, vault-unreachable) skip the upload and hit the state-aware CTA at C.5, which reads `$ORG_RESOLUTION_STATE`.
 
 A personal deploy has no company to gate against, so `company` / `selected` access modes are impossible. Normalize the access mode chosen in A.4 before Phase C:
 
@@ -508,7 +514,9 @@ fi
 
 ```bash
 # GET /api/apps returns {apps: [...]}
-APPS_JSON=$(curl -s -H "Authorization: Bearer $JWT" "$API/api/apps")
+APPS_JSON=$(curl -s -H "Authorization: Bearer $JWT" \
+  "${DEPLOY_CONTEXT_HEADERS[@]}" \
+  "$API/api/apps")
 APP_ID=$(echo "$APPS_JSON" | jq -r --arg name "$APP_NAME" '.apps[] | select(.name == $name) | .id' | head -1)
 APP_SUBDOMAIN=$(echo "$APPS_JSON" | jq -r --arg name "$APP_NAME" '[.apps[] | select(.name == $name)][0].subdomain // empty')
 
@@ -516,6 +524,7 @@ if [ -z "$APP_ID" ]; then
   # POST /api/apps requires {name, type}
   APP_RESPONSE=$(curl -s -X POST \
     -H "Authorization: Bearer $JWT" \
+    "${DEPLOY_CONTEXT_HEADERS[@]}" \
     -H "Content-Type: application/json" \
     -d "{\"name\": \"$APP_NAME\", \"type\": \"$DEPLOY_TYPE\"}" \
     "$API/api/apps")
@@ -555,15 +564,15 @@ fi
 The Guardrails script already produced `$TARBALL_PATH`, `$TARBALL_SIZE`, `$TARBALL_SHA256` — reuse them, do not re-tar:
 
 The `org` field below is informational only — the hq-deploy API resolves the
-target org from the caller's auth context and **ignores** the body `org` /
-`X-Org-Slug` on the user-JWT path. For a personal deploy (`PERSONAL_SCOPE=true`)
-`$ORG_SLUG` is empty, so the request carries no org selector and the backend
-lands it in the auto-provisioned personal scope. Do not add an `X-Org-Slug`
-header here — sending one would suppress the personal fallback.
+target org from the caller's auth context and context headers. Company deploys
+carry `X-Org-Slug: $ORG_SLUG`; personal deploys carry
+`X-HQ-Deploy-Scope: personal` and leave `$ORG_SLUG` empty. Never send both
+headers on the same request.
 
 ```bash
 DEPLOY_RESPONSE=$(curl -s -X POST \
   -H "Authorization: Bearer $JWT" \
+  "${DEPLOY_CONTEXT_HEADERS[@]}" \
   -H "Content-Type: application/json" \
   -d "{\"appSlug\": \"$APP_SUBDOMAIN\", \"org\": \"$ORG_SLUG\", \"manifest\": {\"files\": [], \"size\": $TARBALL_SIZE, \"sha256\": \"$TARBALL_SHA256\"}}" \
   "$API/api/deploys")
@@ -579,6 +588,7 @@ curl -s -X PUT \
 
 COMPLETE_RESPONSE=$(curl -s -X POST \
   -H "Authorization: Bearer $JWT" \
+  "${DEPLOY_CONTEXT_HEADERS[@]}" \
   -H "Content-Type: application/json" \
   -d "{\"appSlug\": \"$APP_SUBDOMAIN\"}" \
   "$API/api/deploys/$DEPLOY_ID/complete")
@@ -598,6 +608,7 @@ docker push "$ECR_URI/$APP_NAME:$VERSION"
 
 curl -s -X POST \
   -H "Authorization: Bearer $JWT" \
+  "${DEPLOY_CONTEXT_HEADERS[@]}" \
   -H "Content-Type: application/json" \
   -d "{\"image_tag\": \"$VERSION\", \"deploy_type\": \"ssr\"}" \
   "$API/api/apps/$APP_ID/deploy"
@@ -625,6 +636,7 @@ HQ_PRO_HEADER=()
 if [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "password" ]; then
   curl -sS -X POST "$API/api/apps/$APP_ID/access-mode" \
     -H "Authorization: Bearer $JWT" \
+    "${DEPLOY_CONTEXT_HEADERS[@]}" \
     -H "Content-Type: application/json" \
     -d "{\"mode\": \"password\", \"password\": \"$PW\"}" >/dev/null
 elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "company" ]; then
@@ -637,11 +649,13 @@ elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "company" ]; then
     ACCESS_MODE=password
     curl -sS -X POST "$API/api/apps/$APP_ID/access-mode" \
       -H "Authorization: Bearer $JWT" \
+      "${DEPLOY_CONTEXT_HEADERS[@]}" \
       -H "Content-Type: application/json" \
       -d "{\"mode\": \"password\", \"password\": \"$PW\"}" >/dev/null
   else
     curl -sS -X PUT "$API/api/apps/$APP_ID/access-policy" \
       -H "Authorization: Bearer $JWT" \
+      "${DEPLOY_CONTEXT_HEADERS[@]}" \
       "${HQ_PRO_HEADER[@]}" \
       -H "Content-Type: application/json" \
       -d "{\"mode\":\"company\",\"companyUid\":\"$COMPANY_UID\",\"users\":[],\"groups\":[]}" >/dev/null
@@ -654,6 +668,7 @@ elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "selected" ]; then
     | jq -r '.entity.uid // empty' 2>/dev/null)}
   curl -sS -X PUT "$API/api/apps/$APP_ID/access-policy" \
     -H "Authorization: Bearer $JWT" \
+    "${DEPLOY_CONTEXT_HEADERS[@]}" \
     "${HQ_PRO_HEADER[@]}" \
     -H "Content-Type: application/json" \
     -d "{\"mode\":\"selected\",\"companyUid\":\"$COMPANY_UID\",\"users\":${SELECTED_USERS_JSON:-[]},\"groups\":${SELECTED_GROUPS_JSON:-[]}}" >/dev/null
@@ -661,6 +676,7 @@ elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "private" ]; then
   # Flip the app to private mode, then grant each pattern.
   curl -sS -X POST "$API/api/apps/$APP_ID/access-mode" \
     -H "Authorization: Bearer $JWT" \
+    "${DEPLOY_CONTEXT_HEADERS[@]}" \
     -H "Content-Type: application/json" \
     -d '{"mode": "private"}' >/dev/null
 
@@ -669,6 +685,7 @@ elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "private" ]; then
     [ -z "$PATTERN" ] && continue
     curl -sS -X POST "$API/api/apps/$APP_ID/allowed-emails" \
       -H "Authorization: Bearer $JWT" \
+      "${DEPLOY_CONTEXT_HEADERS[@]}" \
       -H "Content-Type: application/json" \
       -d "{\"email\": \"$PATTERN\"}" >/dev/null
   done <<< "$ALLOW_PATTERNS"
@@ -681,7 +698,9 @@ fi
 
 ```bash
 if [ "$SENSITIVE" = "true" ]; then
-  APP_JSON=$(curl -sS -H "Authorization: Bearer $JWT" "$API/api/apps/$APP_ID")
+  APP_JSON=$(curl -sS -H "Authorization: Bearer $JWT" \
+    "${DEPLOY_CONTEXT_HEADERS[@]}" \
+    "$API/api/apps/$APP_ID")
   PROTECTED=$(echo "$APP_JSON" | jq -r '.passwordProtected // false')
   PRIVATE=$(echo "$APP_JSON" | jq -r '.privateMode // false')
   POLICY_MODE=$(echo "$APP_JSON" | jq -r '.accessPolicy.mode // .accessMode // empty')

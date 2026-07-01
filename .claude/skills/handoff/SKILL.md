@@ -177,7 +177,8 @@ Background work dispatched:
 
 To continue in a fresh session:
   1. Start a new session
-  2. Run: /startwork (it will find workspace/threads/handoff.json)
+  2. Run: /resumework {thread_id}   (resumes THIS handoff exactly)
+     — or /startwork to resume the latest handoff / pick a new target
 
 If `git_bg_errors` was non-empty, append:
 ⚠ Knowledge repo git errors: {git_bg_errors}
@@ -204,5 +205,6 @@ Fresh context = no accumulated noise, clean slate for complex tasks, follows Ral
 
 ## See also
 
-- `/startwork` — the follow-up agent resumes here
+- `/resumework {thread_id}` — resume THIS thread exactly in a fresh session (takes the thread id this skill prints)
+- `/startwork` — the follow-up agent resumes the latest handoff, or picks a new company/project/repo
 - `/checkpoint` — a lighter mid-session save
