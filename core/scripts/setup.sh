@@ -108,7 +108,8 @@ echo "Configuring PATH for subagents…"
 
 SETTINGS_FILE="$REPO_ROOT/.claude/settings.json"
 if [[ -f "$SETTINGS_FILE" ]]; then
-  CURRENT_PATH="$(bash "$REPO_ROOT/core/scripts/compose-settings-path.sh")"
+  # Composer failure degrades to the plain snapshot — never abort setup here.
+  CURRENT_PATH="$(bash "$REPO_ROOT/core/scripts/compose-settings-path.sh" || printf '%s' "$PATH")"
   UPDATED="$(jq --arg p "$CURRENT_PATH" '.env.PATH = $p' "$SETTINGS_FILE")"
   printf '%s\n' "$UPDATED" > "$SETTINGS_FILE"
   ok "PATH snapshot written to settings.json"
