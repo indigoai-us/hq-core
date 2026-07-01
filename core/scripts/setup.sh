@@ -98,13 +98,17 @@ ok "scripts marked executable"
 # Headless story workers run non-interactive bash that never sources .zshrc,
 # so they'd only see the system PATH. We snapshot the user's current PATH
 # (which includes nvm, bun, pnpm, pyenv, ~/.local/bin, etc.) at install time.
+# compose-settings-path.sh additionally prepends the native installer's
+# managed toolchain dirs when they exist on disk but are missing from this
+# session's PATH (a GUI-launched Claude never sources the profile block that
+# wires them in) — without it, hooks in such sessions can't find qmd/hq.
 
 echo ""
 echo "Configuring PATH for subagents…"
 
 SETTINGS_FILE="$REPO_ROOT/.claude/settings.json"
 if [[ -f "$SETTINGS_FILE" ]]; then
-  CURRENT_PATH="$PATH"
+  CURRENT_PATH="$(bash "$REPO_ROOT/core/scripts/compose-settings-path.sh")"
   UPDATED="$(jq --arg p "$CURRENT_PATH" '.env.PATH = $p' "$SETTINGS_FILE")"
   printf '%s\n' "$UPDATED" > "$SETTINGS_FILE"
   ok "PATH snapshot written to settings.json"
