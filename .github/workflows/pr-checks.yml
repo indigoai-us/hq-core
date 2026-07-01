@@ -151,6 +151,18 @@ jobs:
       - name: Regression test (fixture + live tree + fix present)
         run: bash core/scripts/tests/install-deps.test.sh
 
+  # Installer→Claude PATH gap: the template must not hardcode env.PATH, and
+  # the setup.sh snapshot must include the native installer's managed
+  # toolchain dirs even when the session PATH is missing them (GUI-launched
+  # Claude never sources the shell-profile block that wires them in).
+  compose-settings-path:
+    name: compose-settings-path
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: settings.json PATH snapshot composition
+        run: bash core/scripts/tests/compose-settings-path.test.sh
+
   # feedback_1b307a08: nested manifests were misparsed by a flat col-0 regex.
   manifest-nested-parse:
     name: manifest-nested-parse
