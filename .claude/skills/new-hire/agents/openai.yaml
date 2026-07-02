@@ -1,0 +1,3 @@
+interface:
+  display_name: "new-hire"
+  short_description: "Onboard a human teammate end-to-end: invite, role, groups, secrets, file access, onboarding packet, and acceptance follow-through."
