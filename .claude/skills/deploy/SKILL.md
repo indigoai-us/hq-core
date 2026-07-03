@@ -142,8 +142,19 @@ fi
 | Thing | How |
 |-------|-----|
 | Deploy context | Company context via `$ORG_SLUG`, or explicit personal context when the signed-in user has no companies |
-| API endpoint | manifest `services.hq-deploy.endpoint` → `$HQ_DEPLOY_API` (your HQ deploy host) |
+| API endpoint | `$HQ_DEPLOY_API` → manifest `services.hq-deploy.endpoint` → `https://api.indigo-hq.com` (always-on public default) — via `resolve-deploy-api.sh` |
 | App name | `package.json` `name` → current directory name, slug-cased |
+
+Resolve the deploy API base **concretely, up front** — this must produce a non-empty
+`$API` or Phase C stalls on an empty upload host. The resolver applies the chain above
+and always falls back to the public default, so a fresh install (no manifest, no
+`$HQ_DEPLOY_API`) still deploys:
+
+```bash
+API="$(.claude/skills/deploy/scripts/resolve-deploy-api.sh)"
+# $API is now guaranteed non-empty (public default https://api.indigo-hq.com when
+# nothing else is configured). Every Phase C hq-deploy call uses "$API/api/...".
+```
 
 #### Org resolution chain
 
