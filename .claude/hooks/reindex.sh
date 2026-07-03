@@ -1,21 +1,26 @@
 #!/bin/bash
-# reindex.sh — thin hook shim.
+# reindex.sh — path-gated hook shim.
 #
-# The implementation now lives in the @indigoai-us/hq-cloud package and is
-# invoked via `hq reindex`. This shim preserves the historical hook path
-# referenced by .claude/settings.json (Stop + PostToolUse Write/Edit/MultiEdit)
-# so settings need no change: it reads and discards stdin (hook contract), then
-# runs `hq reindex` against the HQ root.
+# Runs `hq reindex` ONLY when a reindex-relevant file is created, edited, or
+# deleted — i.e. a skill, a worker, or a personal-overlay entry (knowledge /
+# policies / settings). Everything else is a fast no-op.
 #
-# What `hq reindex` does (see the hq-cloud package for the script):
+# Wiring (.claude/settings.json):
+#   - PostToolUse Write / Edit / MultiEdit → create + edit (gated by file_path)
+#   - PostToolUse Bash                      → delete + move (gated by command)
+# The historical Stop / SessionStart / UserPromptSubmit triggers were removed:
+# they carry no file path, so they could only ever run reindex unconditionally
+# on every turn / prompt / session — exactly the needless churn this gate ends.
+# The trade-off: out-of-band changes that DON'T flow through the tools above
+# (a `git pull` / `hq sync` that lands new skills, an `/update-hq`) no longer
+# auto-reindex; run `hq reindex` by hand after those. `hq reindex` is idempotent,
+# so an occasional manual run is safe.
+#
+# What `hq reindex` does (see the @indigoai-us/hq-cloud package):
 #   - surfaces namespaced skills as .claude/skills/<ns>:<skill>/ wrappers
 #   - mirrors personal/{knowledge,policies,workers,settings} into core/
 #   - prunes orphan wrappers + legacy command symlinks
 #   - regenerates the workers registry
-#
-# `hq reindex` was formerly `hq master-sync` (renamed to avoid colliding with
-# cloud `sync`); the CLI keeps a `master-sync` alias for one release, so this
-# shim works whether the installed CLI is mid- or post-rename.
 #
 # Robustness: if the hq CLI isn't on PATH (e.g. a partial install), the shim
 # exits cleanly so a missing binary never breaks a session. HQ_NO_UPDATE_CHECK
@@ -23,19 +28,76 @@
 # triggers an auto-update mid-session. HQ_OP_LOCK_TIMEOUT=0 makes `hq reindex`
 # refuse-fast (never wait) for the per-root operation lock it shares with
 # `sync`/`rescue`, so a hook fired while a sync/rescue holds the lock can never
-# stall the session. Without it the wait is UNBOUNDED and the hook hangs up to
-# settings.json's per-hook timeout — the multi-minute-spinner bug.
+# stall the session.
 
 set -uo pipefail
 
-# Read and discard stdin (hook contract).
-cat > /dev/null
+# Read the hook payload (JSON on stdin). Never let a read failure abort.
+PAYLOAD="$(cat 2>/dev/null || true)"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-if command -v hq >/dev/null 2>&1; then
-  HQ_NO_UPDATE_CHECK=1 HQ_OP_LOCK_TIMEOUT=0 hq reindex --repo-root "$REPO_ROOT" 1>&2 || true
-fi
+# No CLI → nothing to do.
+command -v hq >/dev/null 2>&1 || exit 0
+
+# --- what counts as a reindex-relevant path (REPO_ROOT-relative) --------------
+# companies/<slug>/{skills,workers}/…   core/{skills,workers}/…
+# core/packages/<pack>/{skills,workers}/…
+# personal/{skills,workers,knowledge,policies,settings}/…
+# .claude/skills/…                      (the generated wrappers themselves)
+REL_RE='^(companies/[^/]+/(skills|workers)|core/(skills|workers)|core/packages/[^/]+/(skills|workers)|personal/(skills|workers|knowledge|policies|settings)|\.claude/skills)/'
+# Same set, matched anywhere in a shell command string (paths there may be
+# absolute or root-relative). Kept in lock-step with REL_RE above.
+CMD_PATH_RE='(companies/[^/]+/(skills|workers)|core/(skills|workers)|core/packages/[^/]+/(skills|workers)|personal/(skills|workers|knowledge|policies|settings)|\.claude/skills)/'
+# Mutating verbs that create / move / delete files (word-bounded).
+CMD_VERB_RE='(^|[^[:alnum:]_])(rm|rmdir|unlink|mv|cp|trash)([^[:alnum:]_]|$)'
+
+# Extract a string field from the payload: jq if present, else a python fallback.
+_field() { # $1 = jq path, e.g. .tool_input.file_path
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$PAYLOAD" | jq -r "$1 // empty" 2>/dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$PAYLOAD" | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+cur=d
+for k in sys.argv[1].strip(".").split("."):
+    if isinstance(cur,dict) and k in cur: cur=cur[k]
+    else: cur=""; break
+sys.stdout.write(cur if isinstance(cur,str) else "")' "$1" 2>/dev/null
+  fi
+}
+
+relevant=0
+[ -z "$PAYLOAD" ] && exit 0
+tool="$(_field .tool_name)"
+
+case "$tool" in
+  Write|Edit|MultiEdit)
+    fp="$(_field .tool_input.file_path)"
+    case "$fp" in
+      "$REPO_ROOT"/*) rel="${fp#"$REPO_ROOT"/}" ;;
+      *)              rel="" ;;
+    esac
+    if [ -n "$rel" ] && printf '%s' "$rel" | grep -Eq "$REL_RE"; then
+      relevant=1
+    fi
+    ;;
+  Bash)
+    cmd="$(_field .tool_input.command)"
+    # A mutation (create/move/delete) that names a reindex-relevant path. The
+    # verb check keeps read-only bash (ls/cat/grep over skills/) from triggering
+    # a reindex.
+    if printf '%s' "$cmd" | grep -Eq "$CMD_VERB_RE" \
+       && printf '%s' "$cmd" | grep -Eq "$CMD_PATH_RE"; then
+      relevant=1
+    fi
+    ;;
+esac
+
+[ "$relevant" -eq 1 ] || exit 0
+
+HQ_NO_UPDATE_CHECK=1 HQ_OP_LOCK_TIMEOUT=0 hq reindex --repo-root "$REPO_ROOT" 1>&2 || true
 
 exit 0

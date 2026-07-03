@@ -206,6 +206,18 @@ jobs:
       - name: Codex-harness git-mutation guard fires
         run: bash core/scripts/tests/codex-git-mutation-firing.test.sh
 
+  reindex-path-gate:
+    # Path-gated reindex hook: `hq reindex` must run ONLY when a skill, worker,
+    # or personal-overlay entry (knowledge/policies/settings) is created,
+    # edited, or deleted — not on every turn/prompt/session. Guards the gate in
+    # .claude/hooks/reindex.sh against regressions.
+    name: reindex-path-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: reindex hook fires only on relevant file changes
+        run: bash core/scripts/tests/reindex-path-gate.test.sh
+
   auto-checkpoint-cmds:
     # Item 2: /brainstorm and /plan must auto-checkpoint at command end so users
     # do not have to manually /handoff before a fresh session. Structural guard.
