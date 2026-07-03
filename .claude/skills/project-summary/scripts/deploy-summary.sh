@@ -33,9 +33,12 @@ fail() { echo "ERR: $1"; exit 1; }
 
 cd "$HQ_ROOT"
 
-# Resolve the hq-deploy API base the same way the core deploy engine does:
-#   manifest services.hq-deploy.endpoint -> $HQ_DEPLOY_API -> public default.
-# Never hardcode a tenant-specific host inline.
+# Resolve the hq-deploy API base with the same chain + public default as the
+# canonical resolver .claude/skills/deploy/scripts/resolve-deploy-api.sh:
+#   $HQ_DEPLOY_API -> manifest services.hq-deploy.endpoint -> https://api.indigo-hq.com.
+# Kept inline here (rather than calling the resolver) so this script stays
+# self-contained, but the public default is intentionally identical so the two
+# stay reconciled. Never hardcode a tenant-specific host inline.
 # HQ_DEPLOY_API is an OPTIONAL override — default it to empty so an unset var
 # under `set -u` (nounset) doesn't abort here; the manifest + public-default
 # fallback below then resolves the base (feedback_3cdd3064).

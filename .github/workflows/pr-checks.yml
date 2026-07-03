@@ -172,6 +172,16 @@ jobs:
       - name: deploy-summary.sh tolerates unset HQ_DEPLOY_API under set -u
         run: bash core/scripts/tests/deploy-summary-nounset.test.sh
 
+  # task-3517155514: /deploy must always resolve a non-empty API base (public
+  # default https://api.indigo-hq.com) so a fresh install does not stall at Phase C.
+  resolve-deploy-api:
+    name: resolve-deploy-api
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deploy API base always resolves (public-default fallback)
+        run: bash core/scripts/tests/resolve-deploy-api.test.sh
+
   # feedback_1b307a08: nested manifests were misparsed by a flat col-0 regex.
   manifest-nested-parse:
     name: manifest-nested-parse
