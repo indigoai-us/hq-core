@@ -36,7 +36,10 @@ cd "$HQ_ROOT"
 # Resolve the hq-deploy API base the same way the core deploy engine does:
 #   manifest services.hq-deploy.endpoint -> $HQ_DEPLOY_API -> public default.
 # Never hardcode a tenant-specific host inline.
-API="$HQ_DEPLOY_API"
+# HQ_DEPLOY_API is an OPTIONAL override — default it to empty so an unset var
+# under `set -u` (nounset) doesn't abort here; the manifest + public-default
+# fallback below then resolves the base (feedback_3cdd3064).
+API="${HQ_DEPLOY_API:-}"
 if [ -z "$API" ] && [ -f companies/manifest.yaml ]; then
   API="$(awk -F'endpoint:[ \t]*' '/hq-deploy/{f=1} f&&/endpoint:/{gsub(/[ \t\r]+$/,"",$2); print $2; exit}' companies/manifest.yaml 2>/dev/null)"
 fi
@@ -47,7 +50,7 @@ API="${API:-https://api.indigo-hq.com}"
 # 1. Identity (JWT) + HQ Pro token for policy-gated access-policy calls.
 JWT="$("$DEPLOY/identity-resolve.sh" 2>/dev/null | jq -r '.jwt // empty')"
 [ -n "$JWT" ] || fail "no_identity (run /hq-login)"
-HQ_PRO_JWT="$(jq -r '.idToken // .accessToken // empty' "$HOME/.hq/cognito-tokens.json" 2>/dev/null || true)"
+HQ_PRO_JWT="$(jq -r '.idToken // .accessToken // empty' "${HOME:-}/.hq/cognito-tokens.json" 2>/dev/null || true)"
 
 # 2. Guardrails + tarball.
 GR="$("$DEPLOY/guardrails-check.sh" "$BUILD_DIR" 2>/dev/null)"

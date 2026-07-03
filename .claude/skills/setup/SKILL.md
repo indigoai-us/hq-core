@@ -550,7 +550,8 @@ Present this (adapt wording, keep it tight):
 How HQ works — the 60-second model:
 
   • Sessions are disposable; context is precious. Start with /startwork,
-    do one focused thing, end with /handoff. A fresh session is a feature,
+    do one focused thing, end with /handoff (it saves where you left off so
+    the next session resumes exactly there). A fresh session is a feature,
     not a reset.
   • Three homes for things: personal/ (your overlay — workers, knowledge,
     policies just for you), companies/ (isolated tenants you operate or
@@ -820,8 +821,34 @@ Open it, then close this session and start a fresh one. Your first move:
 full list.)
 ```
 
-If the user wants, point them at `/handoff` to preserve richer state — but for a
-brand-new setup, simply starting fresh with the first prompt is enough.
+### 4. Teach the `/handoff` habit before they go
+
+This is the one habit that makes every future session work. Setup is where they
+learn it, so end by teaching it explicitly — don't leave it as an optional
+aside.
+
+Deliver a short, plain-language nudge along these lines (adapt the wording, keep
+it to a few lines):
+
+```
+One habit that'll save you every time: when you finish real work in a
+session, end it with /handoff.
+
+/handoff writes down where you left off — what you did, what's next, which
+files changed — and saves it so a fresh session picks up exactly there. No
+"remind me what we were doing." You just run /startwork next time and it's
+all waiting.
+
+The rhythm is: /startwork → do one focused thing → /handoff → close the
+session. Try it at the end of your very first work session.
+```
+
+**Nudge, don't just mention.** As real work accumulates in *this* session
+(a company scaffolded, a worker built, a knowledge doc written), it's worth
+actively offering to run `/handoff` now so they see it once end-to-end — for a
+bare setup with nothing substantive done yet, teaching the habit is enough and
+starting fresh with the first prompt is fine. Either way, they should leave
+setup knowing what `/handoff` is, why it matters, and how to run it.
 
 ## Rules
 

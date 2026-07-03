@@ -1,0 +1,3 @@
+interface:
+  display_name: "new-agent"
+  short_description: "Provision a fleet agent end-to-end: identity, membership, vault join, secrets, runtime bootstrap, mission brief, and verified capability probe."

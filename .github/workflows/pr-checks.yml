@@ -163,6 +163,15 @@ jobs:
       - name: settings.json PATH snapshot composition
         run: bash core/scripts/tests/compose-settings-path.test.sh
 
+  # feedback_3cdd3064: deploy-summary.sh aborted under set -u when HQ_DEPLOY_API was unset.
+  deploy-summary-nounset:
+    name: deploy-summary-nounset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deploy-summary.sh tolerates unset HQ_DEPLOY_API under set -u
+        run: bash core/scripts/tests/deploy-summary-nounset.test.sh
+
   # feedback_1b307a08: nested manifests were misparsed by a flat col-0 regex.
   manifest-nested-parse:
     name: manifest-nested-parse
@@ -242,6 +251,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: hook-gate self-heals a non-executable (sync-stripped) hook
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+      - name: hook-gate augments PATH for version-manager node (nvm/volta/fnm/asdf)
+        run: bash core/scripts/tests/hook-gate-path-augment.test.sh
       - name: block-core-writes-bash exempts repos/ checkouts, still guards live root
         run: bash core/scripts/tests/block-core-writes-repos-exempt.test.sh
       - name: block-core-writes-bash target-aware write detection
