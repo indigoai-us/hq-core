@@ -222,6 +222,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh inject-policy-on-trigger $CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh",
             "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
+            "timeout": 20
           }
         ]
       },
@@ -455,15 +460,6 @@
             "timeout": 300
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
-            "timeout": 20
-          }
-        ]
       }
     ],
     "SessionStart": [
@@ -530,15 +526,6 @@
             "timeout": 300
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
-            "timeout": 20
-          }
-        ]
       }
     ],
     "UserPromptSubmit": [
@@ -583,15 +570,6 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh UserPromptSubmit",
             "timeout": 300
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh",
-            "timeout": 20
           }
         ]
       }
