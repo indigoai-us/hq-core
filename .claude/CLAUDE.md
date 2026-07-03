@@ -23,6 +23,8 @@ scaffolds, supervises, and syncs work across repos and companies.
 - Sync: `/hq-sync`.
 - Company setup and membership: `/onboard`, `/accept`, `/designate-team`,
   `/promote`.
+- Provision teammates and agents: `/new-hire` for people, `/new-agent` for
+  fleet agents (identity → membership → vault → grants → verified probe).
 - Direct messages and reminders: `/dm` or `hq dm`.
 - Identity: `/hq-login`, `/hq-logout`, `/hq-whoami`.
 - Bugs and feature requests: `/hq-bug`.
