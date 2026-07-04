@@ -29,8 +29,8 @@ layer above it silently useless:
 
 | Layer | What it is | Granted by | Verified by |
 |---|---|---|---|
-| 1. Identity | Cognito principal + agent email (`agt-<ulid>@agents.{your-domain}.ai`) | hq-pro provisioning / `hq invite` | `hq whoami` on the agent runtime |
-| 2. Membership | Row in the company's member list | `hq invite` + `/accept` on the agent runtime | `hq members list --company {co}` |
+| 1. Identity | Cognito principal + agent email (`agt-<ulid>@agents.{your-domain}.ai`) | hq-pro provisioning / `hq members invite` | `hq whoami` on the agent runtime |
+| 2. Membership | Row in the company's member list | `hq members invite` + `/accept` on the agent runtime | `hq members list --company {co}` |
 | 3. Team vault | Company directory synced into the agent's HQ | company is cloud-backed (`/designate-team`) + `hq team-sync` on the agent runtime | agent sees `companies/{co}/` locally |
 | 4. Secrets & files | Read grants on vault secrets + file ACLs | `hq secrets share`, `hq files` | `hq secrets list --company {co}` on the agent runtime |
 | 5. Runtime config | MCP servers, Slack tokens, model creds registered in the agent's own `.mcp.json`/settings | paste-ready bootstrap block (this skill generates it) | agent runs its probe checklist |
@@ -102,7 +102,7 @@ Rules while building the manifest:
 
 **Membership** (if not already a member):
 ```bash
-hq invite <agent-email> --company {slug} --role member --no-email
+hq members invite <agent-email> --company {slug} --role member --no-send-email
 ```
 Surface any claim link per `core/policies/hq-secure-link-render-as-markdown.md`
 — markdown inline link only, token never in the visible label.

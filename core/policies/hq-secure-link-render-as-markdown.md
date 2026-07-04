@@ -30,7 +30,7 @@ In-scope link types:
 
 - `hq files share <prefix>` (no `--with`) — share-session URLs (`/share-session/<token>`)
 - `hq secrets generate-link <PATH>` — secret-submission URLs (`/secrets-input/<token>`)
-- `hq members invite` — claim / magic links the CLI emits back to the agent (e.g. the `--no-email` path where the recipient must be told out-of-band)
+- `hq members invite` — claim / magic links the CLI emits back to the agent (e.g. the `--no-send-email` path where the recipient must be told out-of-band)
 - Any future HQ command that returns a single-use or otherwise credential-bearing capability URL
 
 Out of scope (may be rendered as plain visible URLs): non-secret links such as the `/deploy` public app URL, the `/deploy` localhost preview URL, and the onboarding signup URL. These are not capabilities and the plaintext-exposure concern does not apply.
