@@ -339,55 +339,41 @@ DEPLOY_CONTEXT_HEADERS=()
 PERSONAL_SCOPE=""
 
 if [ -z "$ORG_SLUG" ] && [ "$IDENTITY_STATUS" = "ok" ] && [ -n "$JWT" ]; then
-  PERSON_UID=$(curl -s -H "Authorization: Bearer $JWT" \
-    "$VAULT_API/entity/by-type/person" \
-    | jq -r '.entities[0].uid // empty' 2>/dev/null)
+  # Resolve active memberships via GET /membership/me — it works for BOTH human
+  # (prs_) AND AGENT (agt_) callers because the vault service derives the agent
+  # entity from the JWT (custom:entityType=agent) server-side and unions its
+  # memberships. The OLD person-only chain (/entity/by-type/person ->
+  # /membership/person/{personUid}) returned NOTHING for an agent — agents have
+  # no person entity — so an agent deploy silently downgraded to personal scope,
+  # blocking company-scoped deploys for machine identities
+  # (feedback_1e8d78ed / DEV-1843: Nanit dashboard). resolve-deploy-org.sh turns
+  # the /membership/me body into ORG_SLUG / ORG_RESOLUTION_STATE / PERSONAL_SCOPE
+  # / ACTIVE_SLUGS / ACTIVE_COMPANY_UID (single active -> slug; none -> personal;
+  # many -> multi-org CTA).
+  MEMBERSHIPS_JSON=$(curl -s -H "Authorization: Bearer $JWT" "$VAULT_API/membership/me")
+  eval "$(printf '%s' "$MEMBERSHIPS_JSON" \
+    | .claude/skills/deploy/scripts/resolve-deploy-org.sh)"
 
-  if [ -n "$PERSON_UID" ]; then
-    MEMBERSHIPS_JSON=$(curl -s -H "Authorization: Bearer $JWT" \
-      "$VAULT_API/membership/person/$PERSON_UID")
-    ACTIVE=$(echo "$MEMBERSHIPS_JSON" \
-      | jq -r '[.memberships[]? | select(.status=="active")]' 2>/dev/null)
-    COUNT=$(echo "$ACTIVE" | jq 'length' 2>/dev/null)
+  # Single active membership whose companySlug wasn't enriched → resolve it via
+  # the entity lookup (fallback only).
+  if [ -z "$ORG_SLUG" ] && [ -z "$ORG_RESOLUTION_STATE" ] && [ -n "$ACTIVE_COMPANY_UID" ]; then
+    ORG_SLUG=$(curl -s -H "Authorization: Bearer $JWT" \
+      "$VAULT_API/entity/$ACTIVE_COMPANY_UID" \
+      | jq -r '.entity.slug // empty' 2>/dev/null)
+  fi
 
-    case "$COUNT" in
-      1)
-        COMPANY_UID=$(echo "$ACTIVE" | jq -r '.[0].companyUid')
-        ORG_SLUG=$(curl -s -H "Authorization: Bearer $JWT" \
-          "$VAULT_API/entity/$COMPANY_UID" \
-          | jq -r '.entity.slug // empty' 2>/dev/null)
-        # Persist as defaultOrg so future deploys skip the vault round-trip.
-        # Written to ~/.hq/deploy-prefs.json — never to ~/.hq/config.json, which
-        # HQ Sync parses as a strict HqConfig.
-        if [ -n "$ORG_SLUG" ]; then
-          mkdir -p "$HOME/.hq"
-          PREFS="$HOME/.hq/deploy-prefs.json"
-          if [ -f "$PREFS" ]; then
-            jq --arg slug "$ORG_SLUG" '.defaultOrg = $slug' \
-              "$PREFS" > "$PREFS.tmp" && mv "$PREFS.tmp" "$PREFS"
-          else
-            printf '{"defaultOrg":"%s"}\n' "$ORG_SLUG" > "$PREFS"
-          fi
-        fi
-        ;;
-      0)
-        # No company membership → deploy to the user's personal scope rather
-        # than bailing. ORG_SLUG stays empty so the upload sends no org selector
-        # and the backend auto-provisions `personal-<sub>`.
-        ORG_RESOLUTION_STATE="no-orgs"
-        PERSONAL_SCOPE="true"
-        ;;
-      *)
-        ORG_RESOLUTION_STATE="multi-org"
-        # Best-effort: collect company slugs for the CTA, capped at 5 in
-        # the user-facing message so it stays readable.
-        for uid in $(echo "$ACTIVE" | jq -r '.[].companyUid'); do
-          SLUG=$(curl -s -H "Authorization: Bearer $JWT" \
-            "$VAULT_API/entity/$uid" | jq -r '.entity.slug // empty' 2>/dev/null)
-          [ -n "$SLUG" ] && ACTIVE_SLUGS="${ACTIVE_SLUGS:+$ACTIVE_SLUGS, }$SLUG"
-        done
-        ;;
-    esac
+  # Persist a resolved single-org as defaultOrg so future deploys skip the vault
+  # round-trip. ~/.hq/deploy-prefs.json only — never ~/.hq/config.json, which
+  # HQ Sync parses as a strict HqConfig.
+  if [ -n "$ORG_SLUG" ]; then
+    mkdir -p "$HOME/.hq"
+    PREFS="$HOME/.hq/deploy-prefs.json"
+    if [ -f "$PREFS" ]; then
+      jq --arg slug "$ORG_SLUG" '.defaultOrg = $slug' \
+        "$PREFS" > "$PREFS.tmp" && mv "$PREFS.tmp" "$PREFS"
+    else
+      printf '{"defaultOrg":"%s"}\n' "$ORG_SLUG" > "$PREFS"
+    fi
   fi
 fi
 

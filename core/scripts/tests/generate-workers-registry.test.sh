@@ -65,30 +65,64 @@ else
 fi
 rm -rf "$r1"
 
-# --- Test 2: duplicate id -> quarantine BOTH copies, still write valid workers ---
-# DEV-1718: a duplicate id must NOT block the whole registry. Both copies of the
-# clashing id are excluded (never pick a winner -> no silent shadowing), but the
-# unique 'keep' worker still registers. Exit is non-zero to flag the problem.
+# --- Test 2: duplicate id -> graceful last-wins, registry still generates, EXIT 0 ---
+# DEV-1845 (supersedes the DEV-1718 exclude-all + non-zero policy): a duplicate id
+# must NOT hard-fail the generator or drop the id entirely — that permanently
+# staled registry.yaml (id vanished AND non-zero exit read as "generation
+# failed", so new workers stopped appearing). The generator now KEEPS one copy
+# deterministically (lexicographically-first path), SKIPS the rest with a loud
+# warning, and exits NON-FATAL so the registry keeps regenerating.
 r2="$(new_root)"
 worker "$r2" "gemini-coder-a" "gemini-coder" "OpsWorker" "Gemini coder (dir A)."
 worker "$r2" "gemini-coder-b" "gemini-coder" "OpsWorker" "Gemini coder (dir B)."
 worker "$r2" "keep"           "keep"         "OpsWorker" "A valid unique worker."
 code="$(run_gen "$r2")"; GEN_ERR="$(cat "$r2/.err" 2>/dev/null || true)"
 reg2="$r2/core/workers/registry.yaml"
-if [ "$code" = "0" ]; then
-  echo "FAIL[dup]: expected non-zero exit flagging the duplicate, got 0" >&2; fails=$((fails+1))
+dup_count="$(grep -c 'id: "gemini-coder"' "$reg2" 2>/dev/null || true)"
+if [ "$code" != "0" ]; then
+  echo "FAIL[dup]: expected NON-FATAL exit 0 (graceful degradation), got $code; stderr: $GEN_ERR" >&2; fails=$((fails+1))
 elif ! grep -qi 'duplicate worker id' <<<"$GEN_ERR"; then
-  echo "FAIL[dup]: error did not mention duplicate id; stderr: $GEN_ERR" >&2; fails=$((fails+1))
+  echo "FAIL[dup]: warning did not mention duplicate id; stderr: $GEN_ERR" >&2; fails=$((fails+1))
+elif ! grep -qi 'SKIPPING' <<<"$GEN_ERR"; then
+  echo "FAIL[dup]: warning did not name the skipped copy; stderr: $GEN_ERR" >&2; fails=$((fails+1))
 elif [ ! -f "$reg2" ]; then
-  echo "FAIL[dup]: registry.yaml not written (must quarantine, not total-block)" >&2; fails=$((fails+1))
-elif grep -q 'id: "gemini-coder"' "$reg2"; then
-  echo "FAIL[dup]: duplicated id 'gemini-coder' was registered (must be excluded)" >&2; fails=$((fails+1))
+  echo "FAIL[dup]: registry.yaml not written" >&2; fails=$((fails+1))
+elif [ "$dup_count" != "1" ]; then
+  echo "FAIL[dup]: expected exactly ONE 'gemini-coder' row (last-wins), got '$dup_count'" >&2; fails=$((fails+1))
+elif ! grep -q 'Gemini coder (dir A)' "$reg2"; then
+  echo "FAIL[dup]: expected the lexicographically-first path (dir A) to win" >&2; fails=$((fails+1))
 elif ! grep -q 'id: "keep"' "$reg2"; then
-  echo "FAIL[dup]: valid worker 'keep' missing from registry (one bad id blocked all)" >&2; fails=$((fails+1))
+  echo "FAIL[dup]: valid worker 'keep' missing from registry" >&2; fails=$((fails+1))
 else
-  echo "ok: duplicate id quarantined, valid worker still registered (non-zero exit)"
+  echo "ok: duplicate id degrades gracefully (last-wins, warned, exit 0, valid worker registered)"
 fi
 rm -rf "$r2"
+
+# --- Test 2b: a duplicate id does NOT block a NEW (company) worker from appearing ---
+# The core contract behind DEV-1845: an operator adding a brand-new worker must
+# see it register even while an unrelated duplicate-id clash exists elsewhere.
+r2b="$(new_root)"
+worker "$r2b" "dupe-a" "dupe" "OpsWorker" "Dupe A."
+worker "$r2b" "dupe-b" "dupe" "OpsWorker" "Dupe B."
+mkdir -p "$r2b/companies/acme/workers/newbie"
+cat > "$r2b/companies/acme/workers/newbie/worker.yaml" <<'YAML'
+worker:
+  id: newbie
+  name: "newbie"
+  description: "A brand-new company worker."
+  type: OpsWorker
+  version: "1.0"
+YAML
+code="$(run_gen "$r2b")"; GEN_ERR="$(cat "$r2b/.err" 2>/dev/null || true)"
+reg2b="$r2b/core/workers/registry.yaml"
+if [ "$code" != "0" ]; then
+  echo "FAIL[dup-newworker]: expected exit 0, got $code; stderr: $GEN_ERR" >&2; fails=$((fails+1))
+elif ! grep -q 'id: "newbie"' "$reg2b"; then
+  echo "FAIL[dup-newworker]: new company worker 'newbie' did not appear despite unrelated duplicate" >&2; fails=$((fails+1))
+else
+  echo "ok: new company worker still registers alongside an unrelated duplicate-id clash"
+fi
+rm -rf "$r2b"
 
 # --- Test 3: worker missing a required field -> quarantine it, register the rest ---
 r3="$(new_root)"
