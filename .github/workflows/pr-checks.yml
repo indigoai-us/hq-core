@@ -182,6 +182,16 @@ jobs:
       - name: deploy API base always resolves (public-default fallback)
         run: bash core/scripts/tests/resolve-deploy-api.test.sh
 
+  # task-2854627137: /deploy org resolution must work for AGENT callers (agt_),
+  # not just humans — else an agent's company deploy silently downgrades to personal.
+  resolve-deploy-org:
+    name: resolve-deploy-org
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deploy org resolves for agent + human callers (via /membership/me)
+        run: bash core/scripts/tests/resolve-deploy-org.test.sh
+
   # feedback_1b307a08: nested manifests were misparsed by a flat col-0 regex.
   manifest-nested-parse:
     name: manifest-nested-parse

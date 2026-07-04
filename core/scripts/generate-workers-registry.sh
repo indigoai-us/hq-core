@@ -161,29 +161,41 @@ while IFS= read -r yaml; do
     >> "$TMP_ENTRIES"
 done < <(find -L core/workers companies -name worker.yaml -type f 2>/dev/null | sort)
 
-sort -t$'\x1f' -k1,1 "$TMP_ENTRIES" -o "$TMP_ENTRIES"
+# Sort by id, then by path — the secondary path key makes duplicate-id
+# resolution deterministic (the lexicographically-first path wins; see below).
+sort -t$'\x1f' -k1,1 -k2,2 "$TMP_ENTRIES" -o "$TMP_ENTRIES"
 
-# Duplicate-id quarantine — a duplicated id is ambiguous: writing one copy would
-# silently shadow the other(s). So we EXCLUDE every copy of any id that appears
-# more than once (never pick a winner) and report all paths loudly. Valid, uniquely
-# named workers still register — one pack's id collision no longer blocks the whole
-# registry (DEV-1718). The duplicated workers reappear automatically once the id
-# clash is resolved.
+# Duplicate-id graceful degradation (DEV-1845) — a duplicated id is ambiguous,
+# but it must NEVER hard-fail the generator or drop the id entirely. The old
+# behavior (exclude EVERY copy + non-zero exit, DEV-1718) permanently staled
+# registry.yaml on any single duplicate: the id vanished AND the non-zero exit
+# read as "registry generation failed", so new company workers stopped
+# appearing until a human hand-resolved the clash. Instead: KEEP one copy
+# deterministically (the lexicographically-first path — the entries are now
+# sorted by id then path, so the first row per id is stable and reproducible),
+# SKIP the rest, emit a LOUD stderr warning naming what was kept vs skipped, and
+# stay NON-FATAL (a duplicate never increments `quarantined`, so the exit code is
+# unaffected). registry.yaml keeps regenerating; the operator resolves the clash
+# at leisure and the shadowed copy reappears once its id is made unique.
 dup_ids=$(cut -f1 -d$'\x1f' "$TMP_ENTRIES" | sort | uniq -d)
 if [[ -n "$dup_ids" ]]; then
-  echo "generate-workers-registry: duplicate worker id(s) detected — quarantining all copies (excluded from registry to avoid silently shadowing a worker):" >&2
+  echo "generate-workers-registry: WARNING duplicate worker id(s) detected — keeping the first copy of each and skipping the rest (registry still generated; resolve the clash to silence this):" >&2
   while IFS= read -r dup_id; do
     [[ -z "$dup_id" ]] && continue
-    echo "  duplicate id '$dup_id' — none of these are registered until the clash is resolved:" >&2
+    kept=1
     while IFS= read -r dpath; do
-      echo "    path: ${dpath}$(attribute_pack "$dpath")" >&2
+      if [[ $kept -eq 1 ]]; then
+        echo "  duplicate id '$dup_id' — KEEPING ${dpath}$(attribute_pack "$dpath")" >&2
+        kept=0
+      else
+        echo "  duplicate id '$dup_id' — SKIPPING ${dpath}$(attribute_pack "$dpath")" >&2
+      fi
     done < <(grep -F "${dup_id}"$'\x1f' "$TMP_ENTRIES" | cut -f2 -d$'\x1f')
-    quarantined=$((quarantined+1))
   done <<< "$dup_ids"
   echo "  Fix: change worker.id in one of the colliding worker.yaml files (or namespace the pack's id) to make it unique." >&2
-  # Strip every row whose id is duplicated, keep the rest.
-  awk -v FS=$'\x1f' 'NR==FNR { dup[$1]=1; next } !($1 in dup)' \
-    <(printf '%s\n' "$dup_ids") "$TMP_ENTRIES" > "${TMP_ENTRIES}.f"
+  # Keep only the FIRST row per id (stable: TMP_ENTRIES is sorted by id then
+  # path, so the first row of each id group is the smallest-path winner above).
+  awk -F$'\x1f' '!seen[$1]++' "$TMP_ENTRIES" > "${TMP_ENTRIES}.f"
   mv "${TMP_ENTRIES}.f" "$TMP_ENTRIES"
 fi
 
