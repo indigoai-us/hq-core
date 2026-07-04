@@ -71,9 +71,9 @@ vault (`hq secrets list --company {co}`) over minting new credentials.
 
 **Invite** (skip in top-up mode):
 ```bash
-hq invite {email} --company {slug} --role {admin|member} --inviter "{Owner Name}"
+hq members invite {email} --company {slug} --role {admin|member}
 ```
-- Default path emails the claim link via Resend. With `--no-email`, the CLI
+- Default path emails the claim link via Resend. With `--no-send-email`, the CLI
   prints the claim link — surface it ONLY as a Markdown inline link per
   `core/policies/hq-secure-link-render-as-markdown.md`; it is a single-use
   capability.
@@ -153,6 +153,6 @@ Done when: membership active + they confirm the setup checklist.
 ## See also
 
 - `/new-agent` — fleet-agent equivalent (adds runtime bootstrap + probe gate)
-- `hq invite` — the bare invite primitive this skill wraps
+- `hq members invite` — the bare invite primitive this skill wraps
 - `/designate-team` — make a company cloud-backed first
 - `/hq-secrets`, `/hq-files`, `/hq-share` — grant primitives
