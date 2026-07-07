@@ -2,6 +2,7 @@
   "model": "claude-opus-4-8",
   "autoMemoryEnabled": false,
   "useAutoModeDuringPlan": false,
+  "disableArtifact": true,
   "permissions": {
     "defaultMode": "plan"
   },

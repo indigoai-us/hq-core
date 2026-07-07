@@ -36,17 +36,29 @@ if [[ "$FILE_PATH" != /* ]]; then
   FILE_PATH="$HQ_ROOT/$FILE_PATH"
 fi
 
-if command -v python3 >/dev/null 2>&1; then
-  FILE_PATH="$(python3 -c 'import os.path,sys; sys.stdout.write(os.path.realpath(sys.argv[1]))' "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
-  HQ_ROOT="$(python3 -c 'import os.path,sys; sys.stdout.write(os.path.realpath(sys.argv[1]))' "$HQ_ROOT" 2>/dev/null || echo "$HQ_ROOT")"
+DIR_PATH="$FILE_PATH"
+if [[ ! -d "$DIR_PATH" ]]; then
+  DIR_PATH="$(dirname "$FILE_PATH")"
 fi
 
-case "$FILE_PATH" in
-  "$HQ_ROOT"/*) ;;
-  *) exit 0 ;;
-esac
+PATH_TOP="$(git -C "$DIR_PATH" rev-parse --show-toplevel 2>/dev/null || true)"
+HQ_TOP="$(git -C "$HQ_ROOT" rev-parse --show-toplevel 2>/dev/null || echo "$HQ_ROOT")"
+if [[ -z "$PATH_TOP" || "$PATH_TOP" != "$HQ_TOP" ]]; then
+  exit 0
+fi
 
-REL_PATH="${FILE_PATH#$HQ_ROOT/}"
+if [[ -d "$FILE_PATH" ]]; then
+  REL_PATH="$(git -C "$FILE_PATH" rev-parse --show-prefix 2>/dev/null || true)"
+  REL_PATH="${REL_PATH%/}"
+else
+  PREFIX="$(git -C "$DIR_PATH" rev-parse --show-prefix 2>/dev/null || true)"
+  REL_PATH="${PREFIX}$(basename "$FILE_PATH")"
+fi
+
+if [[ -z "$REL_PATH" ]]; then
+  exit 0
+fi
+
 case "$REL_PATH" in
   .git/*|repos/*|node_modules/*|.next/*|.vercel/*|*.tmp|*.log)
     exit 0
@@ -57,16 +69,6 @@ case "$REL_PATH" in
     exit 0
     ;;
 esac
-
-DIR_PATH="$FILE_PATH"
-if [[ ! -d "$DIR_PATH" ]]; then
-  DIR_PATH="$(dirname "$FILE_PATH")"
-fi
-
-PATH_TOP="$(git -C "$DIR_PATH" rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -n "$PATH_TOP" && "$PATH_TOP" != "$HQ_ROOT" ]]; then
-  exit 0
-fi
 
 STATUS="$(git -C "$HQ_ROOT" status --porcelain -- "$REL_PATH" 2>/dev/null || true)"
 if [[ -z "$STATUS" ]]; then
