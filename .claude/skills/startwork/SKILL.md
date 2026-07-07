@@ -1,7 +1,7 @@
 ---
 name: startwork
 description: Resolve current HQ context and surface useful next work options.
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash, AskUserQuestion
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(core/scripts/work-mesh.sh:*), Bash, AskUserQuestion
 ---
 
 # Start Work Session
@@ -76,7 +76,8 @@ Determine mode from the user's argument (first match wins):
 1. Read `personal/projects/{name}/prd.json` or `companies/{co}/projects/{name}/prd.json` — extract: `name`, `description`, `branchName`, incomplete stories (where `passes !== true`) with id + title + priority
 2. Extract `metadata.repoPath` — identify company by matching against manifest repos
 3. If repoPath exists: `git -C {repoPath} branch --show-current` and `git -C {repoPath} status --short`
-4. **Read session journals** (spec: `core/knowledge/public/hq-core/journal-spec.md`). If `{project_dir}/journal/` exists:
+4. If company `{co}` is resolved, run `bash core/scripts/work-mesh.sh check --company {co} --project {name}`. Include any active owners, blockers, or in-progress threads in the orientation block. If the helper prints nothing or is unavailable, omit the line and continue. A local daemon may keep `workspace/work-mesh/live-cache.json` warm with `bash core/scripts/work-mesh.sh watch`; use that only as live context, not as a direct MQTT write path.
+5. **Read session journals** (spec: `core/knowledge/public/hq-core/journal-spec.md`). If `{project_dir}/journal/` exists:
    - `ls -t {project_dir}/journal/*.md 2>/dev/null | head -2` — most recent 2 files
    - For each: read frontmatter (`status`, `summary`) + `## Open threads` section only — skip `## Auto-capture` (reference material, too noisy for orientation)
    - If most-recent file has `status: active` and mtime > 24h, treat as abandoned (visually flag in orientation block)
@@ -227,6 +228,9 @@ Knowledge pulse: {summary line from workspace/reports/knowledge-pulse/{co}-{toda
 Active work:
   - {project} -- {done}/{total} stories ({remaining} left)
   ...
+
+Work mesh:
+  {active mesh owners/blockers for the selected company/project, or omit if none/unavailable}
 ```
 
 Then present numbered options built from context:

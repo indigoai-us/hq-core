@@ -28,6 +28,7 @@ scaffolds, supervises, and syncs work across repos and companies.
 - Direct messages and reminders: `/dm` or `hq dm`.
 - Identity: `/hq-login`, `/hq-logout`, `/hq-whoami`.
 - Bugs and feature requests: `/hq-bug`.
+- Coordinate active project work: `bash core/scripts/work-mesh.sh check|start|progress|blocked|done --company {co} --project {project}`. On cloud-connected HQ installs this writes through the hq-pro Work Mesh API and fans out over MQTT/IoT; on local/offline installs it silently no-ops. Local HQ instances that need live awareness can run `bash core/scripts/work-mesh.sh watch` to subscribe to authorized MQTT topics and maintain `workspace/work-mesh/live-cache.json`; thread writes still go through the helper's project verbs, not direct MQTT publish.
 - Search: `/search` or `qmd`.
 - Meetings, signals, and company context: `/meeting-notes`, `/signals`,
   `/ontology`.
