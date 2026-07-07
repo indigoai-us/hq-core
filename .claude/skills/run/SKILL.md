@@ -1,7 +1,7 @@
 ---
 name: run
 description: Run or list HQ workers, preferring isolated Codex subagents when available.
-allowed-tools: Read, Grep, Bash(qmd:*), Bash(grep:*), Bash(ls:*), Bash(git:*), Bash(cat:*), Bash(which:*), Bash(wc:*), Edit, Write, Task, Glob, Bash, WebSearch, WebFetch, AskUserQuestion
+allowed-tools: Read, Grep, Bash(qmd:*), Bash(grep:*), Bash(ls:*), Bash(git:*), Bash(cat:*), Bash(which:*), Bash(wc:*), Bash(core/scripts/work-mesh.sh:*), Edit, Write, Task, Glob, Bash, WebSearch, WebFetch, AskUserQuestion
 ---
 
 # Run - Worker Execution
@@ -165,6 +165,27 @@ Or read knowledge files directly via Read tool if paths are specified in worker.
 ---
 
 ## Step 6 — Execute Skill
+
+### Project work-mesh check
+
+If the worker execution is tied to a resolved company project, first run:
+
+```bash
+bash core/scripts/work-mesh.sh check --company {co} --project {project}
+```
+
+If active mesh work is reported, surface it before dispatching so the user can
+avoid duplicate effort or coordinate ownership. If a live local watcher/daemon
+is needed, `bash core/scripts/work-mesh.sh watch` subscribes to the authorized
+MQTT topics and maintains `workspace/work-mesh/live-cache.json`; do not publish
+thread events directly to MQTT. Then report this worker run:
+
+```bash
+bash core/scripts/work-mesh.sh progress --company {co} --project {project} --summary "Running {worker_id}/{skill}"
+```
+
+On completion, append `progress` or `blocked` with the worker outcome. These
+calls are best-effort and must not block local/offline work.
 
 ### Preferred: isolated Codex worker
 
