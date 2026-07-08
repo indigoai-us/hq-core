@@ -241,6 +241,15 @@ Then present numbered options built from context:
 - **Repo mode**: related projects with incomplete work (up to 3) + "Open repo (no project)" + "Something else"
 - **Task mode**: proposed worker pipeline phases (up to 5) + "Run this worker pipeline" + "Modify pipeline" + "Do it directly (no worker)" + "Run /plan for full options" + "Something else"
 
+> **`/execute-task` requires the engineering pack.** It (and `/run-project`)
+> ship in `hq-pack-engineering` (auto-installed for upgraders, skipped on lean
+> greenfield installs). Before presenting a story-execution option, probe once
+> with `bash core/scripts/pack-installed.sh hq-pack-engineering`. If it is NOT
+> installed, do not present `/execute-task` as a runnable next step — route the
+> user through `/run {worker} {skill}` (ships in core), or surface the one-time
+> install line instead of a dead-end:
+> `hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering`.
+
 Output the numbered list and wait for user input. After user picks, proceed directly into the work.
 
 ## Rules

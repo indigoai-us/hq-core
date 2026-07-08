@@ -160,6 +160,14 @@ State the outcome in one or two plain lines and point to the next step:
 - **spec-led:** "Design's locked for **{slug}** — {N} changes folded into the PRD. Ready to build with `/run-project {slug}`." Include the preview URL if there is one.
 - **design-led:** "Design explored for **{slug}** — wrote `design/design.md`. Run `/plan {slug}` and it'll pre-fill from the design."
 
+> **`/run-project` requires the engineering pack.** It ships in
+> `hq-pack-engineering` (auto-installed for upgraders, skipped on lean
+> greenfield installs). Before pointing the user at `/run-project` in the
+> spec-led handoff, probe once with `bash core/scripts/pack-installed.sh
+> hq-pack-engineering`. If it isn't installed, surface the one-time install line
+> instead of a dead-end command:
+> `hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering`.
+
 ## Codex Notes
 
 - Replace `Agent` sub-agents with Codex sub-agents when available, or run the same phases inline and persist to the journal / `design/design.md` between phases.

@@ -236,10 +236,41 @@ if command -v qmd &>/dev/null; then
   qmd context add qmd://hq-projects "Project PRDs and documentation." 2>/dev/null || true
 fi
 
-# Update qmd search index and build embeddings
-qmd update 2>/dev/null || true
-qmd embed 2>/dev/null || true
-ok "qmd index built"
+# Update qmd search index and (optionally) warm up the semantic-search model.
+if command -v qmd &>/dev/null; then
+  qmd update 2>/dev/null || true
+
+  # Warm up the semantic-search model NOW, once, up front. qmd downloads its
+  # GGUF models (~1.3GB) lazily on the FIRST semantic call — `qmd vsearch` /
+  # `qmd query` / `qmd embed`. If we don't fetch them here, that download lands
+  # MID-SESSION the first time /learn dedup or /search runs (the verified
+  # new-user report: a ~1.28GB pull that blocked a live session). Fetching it at
+  # setup keeps it out of the user's working sessions.
+  #
+  # Skippable on constrained machines: set HQ_SKIP_SEARCH_MODEL=1, or just let
+  # the download fail — HQ never hard-fails setup over it. When the model is not
+  # cached, HQ skills automatically stay in BM25 mode: every `qmd vsearch` /
+  # `qmd query` is gated behind core/scripts/qmd-ready.sh, which downgrades to
+  # `qmd search` (BM25, no model). Search still works — it just isn't semantic
+  # until the model lands (re-run `qmd embed` any time to enable it).
+  if [[ "${HQ_SKIP_SEARCH_MODEL:-}" == "1" ]]; then
+    skip "search model download (HQ_SKIP_SEARCH_MODEL=1) — skills stay in BM25 mode"
+  elif bash "$REPO_ROOT/core/scripts/qmd-ready.sh" >/dev/null 2>&1; then
+    ok "search model already cached"
+  else
+    echo "  Downloading search model (~1.3GB, one time)…"
+    echo "  (skip with HQ_SKIP_SEARCH_MODEL=1 on constrained machines — search stays BM25-only)"
+    if qmd embed; then
+      ok "search model ready — semantic search enabled"
+    else
+      fail "search model download failed — continuing without it (setup is NOT blocked)"
+      echo "     HQ skills automatically use BM25 (qmd search) until you re-run: qmd embed"
+    fi
+  fi
+  ok "qmd index built"
+else
+  skip "qmd not installed — knowledge index + search model skipped"
+fi
 
 # ── 7. Recommended content packs (hq-core v12+) ──────────────────────────────
 # hq-core ships as a minimal scaffold; batteries-included UX comes from packs

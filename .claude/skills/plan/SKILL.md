@@ -58,9 +58,10 @@ If `{co}` is anchored, scope all searches to that company.
 - If `{co}` is anchored and a candidate project slug is already clear from the input, also run `bash core/scripts/work-mesh.sh check --company {co} --project {candidate-slug}`. If it reports active owners, blockers, or in-progress threads, surface that before asking whether to create a new PRD. If it prints nothing or reports unavailable/offline, continue normally.
 - A local daemon or long-running HQ instance may run `bash core/scripts/work-mesh.sh watch` to keep `workspace/work-mesh/live-cache.json` current from MQTT. This is optional context; project creation still uses `check` and the reporting verbs below.
 
-**Knowledge (use single qmd hybrid query, not Grep, not vsearch+search pair):**
-- If anchored + company has `qmd_collections`: `qmd query "<description keywords>" -c {collection} --json -n 10`
-- If not anchored: `qmd query "<description keywords>" --json -n 10` — hybrid BM25 + vector + re-ranking for related knowledge, prior work, workers
+**Knowledge (default to BM25 `qmd search` — never triggers a model download):**
+- If anchored + company has `qmd_collections`: `qmd search "<description keywords>" -c {collection} --json -n 10`
+- If not anchored: `qmd search "<description keywords>" --json -n 10`
+- `qmd search` is BM25 keyword search — it needs no embedding model, so it never triggers qmd's blocking ~1.3GB first-use model download (the verified new-user report was a ~1.28GB pull mid-`/plan`). **`/plan` deliberately stays on BM25.** The heavier hybrid `qmd query` (BM25 + vector + re-ranking) is reserved for `/deep-plan`, which gates the model behind `core/scripts/qmd-ready.sh` and is meant for large or strategically important PRDs.
 
 **Company Policies (anchored only):**
 - Already loaded in Step 0 (frontmatter-only). Do NOT re-read here. Note constraints from that scan
@@ -70,7 +71,7 @@ If `{co}` is anchored, scope all searches to that company.
 
 **Target Repo (if repo specified or discovered):**
 - If anchored: company repos already pre-loaded from manifest. Present as options
-- If target repo has a qmd collection (e.g. `my-app`): `qmd query "<description keywords>" -c {collection} --json -n 10` — hybrid search for related code, patterns, existing implementations
+- If target repo has a qmd collection (e.g. `my-app`): `qmd search "<description keywords>" -c {collection} --json -n 10` — BM25 keyword search for related code, patterns, existing implementations (no model download; hybrid `qmd query` stays in `/deep-plan`)
 - Present: "Found related code: {list of relevant files}"
 
 Present:
@@ -560,13 +561,23 @@ If project already exists in state.json, update it instead of duplicating.
 
 ## Step 7: Sync to Beads
 
+**Tiny-project fast path (instruction to the executing agent).** If this PRD is *tiny* — **≤ 2 user stories AND no `repoPath`** (a content/knowledge/one-off, not a code build) — keep the tail of this skill lightweight and skip the heavy machinery that a one-off doesn't need:
+
+- **Step 7 (this step — beads):** run the beads sync only if `tsx` is already available quickly. Probe once, non-blocking: `command -v tsx >/dev/null 2>&1 || npx --no-install tsx --version >/dev/null 2>&1`. If neither resolves (running `npx tsx` would trigger a package download), **skip beads sync**, log one line, and continue — never block PRD completion on a toolchain fetch.
+- **Step 7.5 (auto-learn):** skip — a one-off tiny PRD is not a reusable learning.
+- **Step 7.7 (knowledge-pulse):** skip — no background gardening for a tiny project.
+
+For every other project (≥ 3 stories, or any project with a `repoPath`), run Steps 7, 7.5, and 7.7 normally.
+
 ```bash
 npx tsx core/scripts/prd-to-beads.ts --project={name}
 ```
 
-Silent — just log success/failure.
+Silent — just log success/failure. (Per the fast path above, skip this entirely for a tiny project when `tsx` isn't immediately available.)
 
 ## Step 7.5: Capture Learning (Auto-Learn)
+
+**Skip for tiny projects** (≤ 2 stories AND no `repoPath`) — see the fast path at Step 7. A one-off tiny PRD is not a reusable learning.
 
 Run the `learn` skill (or `/learn` in Claude Code) to register the new project in the learning system:
 
@@ -630,7 +641,7 @@ spawn_task(
 
 Do NOT wait for the pulse to complete — continue immediately to Step 8.
 
-**Skip if:** company has no knowledge directory.
+**Skip if:** company has no knowledge directory, **or** this is a tiny project (≤ 2 stories AND no `repoPath` — see the fast path at Step 7).
 
 ## Step 8: Linear Sync (best-effort, when configured)
 
@@ -683,7 +694,15 @@ Read `metadata.openQuestions[]` from the prd.json just written. **If empty**, sk
 
 ## Step 9: Confirm & STOP
 
-Tell user:
+**Pack-aware execution guidance — probe before you tell the user what to run.** `/run-project` and `/execute-task` ship in `hq-pack-engineering`, NOT in the lean core scaffold (they were extracted in 15.0.0; auto-installed for upgraders, skipped on greenfield installs). A pack-less user handed `/run-project` as an actionable next step hits `Unknown command: /run-project` — the DEV-1716 dead-end. Detect the pack first:
+
+```bash
+bash core/scripts/pack-installed.sh hq-pack-engineering
+```
+
+(Equivalent inline check: `test -f .claude/skills/run-project/SKILL.md`.)
+
+**If the pack IS installed (exit 0)** — the execution commands resolve; tell the user:
 ```
 Project **{name}** created with {N} user stories.
 Decisions resolved: {metadata.decisions.length} (Step 8.5)
@@ -699,19 +718,36 @@ Post-implementation docs needed:
 To execute, start a new session and run:
   /run-project {name}        (multi-story orchestrator)
   /execute-task {name}/US-001 (single story)
-
-  These execution commands ship in the engineering pack. If /run-project
-  isn't available on this install, add the pack once (then run the above):
-    hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering
 ```
 
-> **Pack-aware close.** `/run-project` and `/execute-task` live in
-> `hq-pack-engineering`, which is auto-installed for upgraders but skipped on
-> lean greenfield installs. Always print the install line above alongside the
-> commands so a pack-less user has a resolvable path instead of a dead-end — do
-> not instruct an execution command without it.
+**If the pack is NOT installed (exit non-zero)** — do NOT present `/run-project` or `/execute-task` as if they were runnable. Lead with the install step as the required first action; tell the user:
+```
+Project **{name}** created with {N} user stories.
+Decisions resolved: {metadata.decisions.length} (Step 8.5)
+Open questions remaining: {metadata.openQuestions.length}
 
-**Final step — auto-checkpoint <!-- AUTO-CHECKPOINT-ON-COMPLETION -->.** Do NOT proceed to execution. Rather than asking the user to manually `/handoff`, automatically save a lightweight checkpoint so a fresh session can pick up execution. Write `workspace/threads/T-{UTC YYYYMMDD-HHMMSS}-auto-plan-{project}.json` with `thread_id`, `version: 1`, `type: "auto-checkpoint"`, `created_at`, `updated_at`, `workspace_root`, `cwd`, `git: { branch, current_commit, dirty }`, `conversation_summary` (the project + that its PRD was created), `files_touched` (the `prd.json` + `README.md`), `next_steps` ("in a fresh session run `/run-project {project}` or `/execute-task {project}/US-001`"), and `metadata: { title: "Auto: plan {project}", tags: ["auto-checkpoint", "plan"], trigger: "plan-complete" }`. Keep it cheap (no INDEX/`recent.md`/`qmd` rebuild, no legacy checkpoint). Then tell the user the PRD is ready and a fresh session can start execution from this checkpoint. A full `/handoff` remains available if the user wants the heavier wrap-up.
+Files:
+  companies/{co}/projects/{name}/prd.json   (source of truth — tracks all work)
+  companies/{co}/projects/{name}/README.md  (human-readable view)
+
+Post-implementation docs needed:
+  {list from postImplementation metadata, or "None detected"}
+
+To execute this PRD you first need the engineering pack (it ships the
+execution commands). In a fresh session, run this once:
+  hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering
+
+Once installed, the execution commands become available:
+  /run-project {name}        (multi-story orchestrator)
+  /execute-task {name}/US-001 (single story)
+```
+
+> **Why the branch.** When the pack is absent, the install line is the required
+> first action — never instruct `/run-project` or `/execute-task` as a
+> copy-paste-now command that resolves to a dead-end. When it is present, skip
+> the install line and route straight to the execution commands.
+
+**Final step — auto-checkpoint <!-- AUTO-CHECKPOINT-ON-COMPLETION -->.** Do NOT proceed to execution. Rather than asking the user to manually `/handoff`, automatically save a lightweight checkpoint so a fresh session can pick up execution. Write `workspace/threads/T-{UTC YYYYMMDD-HHMMSS}-auto-plan-{project}.json` with `thread_id`, `version: 1`, `type: "auto-checkpoint"`, `created_at`, `updated_at`, `workspace_root`, `cwd`, `git: { branch, current_commit, dirty }`, `conversation_summary` (the project + that its PRD was created), `files_touched` (the `prd.json` + `README.md`), `next_steps` (**pack-aware** — reuse the Step 9 probe: if `bash core/scripts/pack-installed.sh hq-pack-engineering` exits 0, write "in a fresh session run `/run-project {project}` or `/execute-task {project}/US-001`"; if it exits non-zero, write "in a fresh session install the engineering pack once (`hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering`), then run `/run-project {project}`" — do not record a bare execution command a pack-less session can't resolve), and `metadata: { title: "Auto: plan {project}", tags: ["auto-checkpoint", "plan"], trigger: "plan-complete" }`. Keep it cheap (no INDEX/`recent.md`/`qmd` rebuild, no legacy checkpoint). Then tell the user the PRD is ready and a fresh session can start execution from this checkpoint. A full `/handoff` remains available if the user wants the heavier wrap-up.
 
 ## Story Guidelines
 

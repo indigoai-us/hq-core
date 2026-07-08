@@ -1,7 +1,7 @@
 ---
 name: search
 description: Search HQ content and indexed repos with qmd, falling back to grep.
-allowed-tools: Read, Grep, Bash(qmd:*), Bash(grep:*), Bash(ls:*)
+allowed-tools: Read, Grep, Bash(qmd:*), Bash(grep:*), Bash(ls:*), Bash(bash core/scripts/qmd-ready.sh:*)
 ---
 
 # Search - HQ + Codebase Search
@@ -40,6 +40,19 @@ which qmd 2>/dev/null && qmd --version 2>/dev/null
 
 If qmd is not available, skip to **Fallback** section.
 
+## Check Semantic Readiness (vsearch / query modes only)
+
+`qmd vsearch` and `qmd query` need local GGUF models (~1.3GB total) that qmd downloads on first use — a blocking mid-session download on a fresh machine. Before running either mode:
+
+```bash
+bash core/scripts/qmd-ready.sh
+```
+
+- **Exit 0** (models cached) — proceed with the requested mode.
+- **Exit non-zero** — downgrade to `search` mode (BM25) with the same query/collection, and note the downgrade in the results header: `(semantic model not cached — used BM25; run 'qmd embed' once to enable)`. Never let vsearch/query trigger the download.
+
+**Search ladder:** `vsearch`/`query` (models cached) → `qmd search` (BM25) → Grep (qmd not installed).
+
 ## Execute Search
 
 Run the matching qmd command. Add `-c $COLLECTION` if a collection was specified or auto-detected:
@@ -49,12 +62,12 @@ Run the matching qmd command. Add `-c $COLLECTION` if a collection was specified
 qmd search "$QUERY" -n $N --json [-c $COLLECTION]
 ```
 
-**Semantic (conceptual match):**
+**Semantic (conceptual match — requires readiness check above):**
 ```bash
 qmd vsearch "$QUERY" -n $N --json [-c $COLLECTION]
 ```
 
-**Hybrid (BM25 + vector + re-rank — best quality, slower):**
+**Hybrid (BM25 + vector + re-rank — best quality, slower; requires readiness check above):**
 ```bash
 qmd query "$QUERY" -n $N --json [-c $COLLECTION]
 ```
@@ -128,6 +141,7 @@ search "case study"                             # Auto-detects → -c {company}
 - Default `search` mode is fastest — use for exact keywords
 - Use `--mode vsearch` for conceptual/semantic queries
 - Use `--mode query` for highest quality (slower, uses LLM re-ranking)
+- vsearch/query silently downgrade to BM25 when `core/scripts/qmd-ready.sh` reports the models aren't cached — never trigger the ~1.3GB model download mid-session
 - Use `-c` to scope to a collection: `hq-infra`, `hq-workers`, `hq-knowledge`, `hq-projects`, `{product}`, + company collections (run `qmd status` for full list)
 - Without `-c`, auto-detects company from context; falls back to all collections
 - Scores 0.0–1.0; above 0.5 is a good match

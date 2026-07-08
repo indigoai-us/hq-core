@@ -54,9 +54,19 @@ Mode affects Steps 2-4 (premise challenge depth, question framing, research scop
 
 Do not ask questions yet. Build context from HQ first.
 
-**Hybrid search (BM25 + vector + re-ranking):**
-- If anchored + company has `qmd_collections`: `qmd query "<description keywords>" -c {collection} --json -n 10`
-- If not anchored: `qmd query "<description keywords>" --json -n 10`
+**Knowledge search (semantic ladder — gate the model first):** `qmd query` (hybrid, models cached) → `qmd search` (BM25, no model) → Grep. `qmd query` needs local GGUF models (~1.3GB) that qmd downloads on first use — a blocking mid-session download on a fresh/constrained machine. Never let it fire uncached:
+
+```bash
+bash core/scripts/qmd-ready.sh
+```
+
+- **Exit 0** (models cached) — run the hybrid query:
+  - If anchored + company has `qmd_collections`: `qmd query "<description keywords>" -c {collection} --json -n 10`
+  - If not anchored: `qmd query "<description keywords>" --json -n 10`
+- **Exit non-zero** (models not cached, or qmd missing) — downgrade to BM25 with the same query/collection (do NOT trigger the download):
+  - If anchored + company has `qmd_collections`: `qmd search "<description keywords>" -c {collection} --json -n 10`
+  - If not anchored: `qmd search "<description keywords>" --json -n 10`
+  - If qmd itself is absent, fall to Grep over `companies/{co}/projects/` and the knowledge dirs.
 
 **Existing projects:**
 - If anchored: search `companies/{co}/projects/` directly or `qmd search "prd.json" -c {co} --json -n 10`

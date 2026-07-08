@@ -151,6 +151,21 @@ jobs:
       - name: Regression test (fixture + live tree + fix present)
         run: bash core/scripts/tests/install-deps.test.sh
 
+  search-model-pack-gate:
+    # New-user report: /learn dedup triggered a blocking ~1.28GB qmd model
+    # download mid-session, and /plan's completion led with /run-project (an
+    # hq-pack-engineering command) on a pack-less install. Guards the two probes
+    # skills now gate on: qmd-ready.sh (semantic model cached? -> else BM25) and
+    # pack-installed.sh (is a pack present? -> else lead with the install line).
+    name: search-model-pack-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: qmd-ready gate (never blocks on a mid-session model download)
+        run: bash core/scripts/tests/qmd-ready.test.sh
+      - name: pack-installed check (pack-aware skill output)
+        run: bash core/scripts/tests/pack-installed.test.sh
+
   # Installer→Claude PATH gap: the template must not hardcode env.PATH, and
   # the setup.sh snapshot must include the native installer's managed
   # toolchain dirs even when the session PATH is missing them (GUI-launched

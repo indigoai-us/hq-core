@@ -132,7 +132,7 @@ If the input starts with `[` (JSON array), enter batch mode:
 **Batch processing rules:**
 
 1. **Detect batch input:** if the input is a JSON array (starts with `[`), enter batch mode
-2. **Run qmd vsearch dedup ONCE for all items:** concatenate all item `content` fields as a single query string for a single `qmd vsearch` call, then match results against each item individually
+2. **Run qmd dedup ONCE for all items:** concatenate all item `content` fields as a single query string for a single qmd call — gated exactly like Step 4 (`bash core/scripts/qmd-ready.sh && qmd vsearch …`; `qmd search` BM25 when not ready; Grep when qmd is missing) — then match results against each item individually
 3. **Process each item through Steps 2–6 normally:** extract rules, classify scope, create/update policy files — one item at a time using the shared dedup results
 4. **Write a single event log entry** covering all items processed in the batch
 5. **Backward compatibility:** all existing modes (1, 2, 3) work exactly as before — batch is a new detection branch only
@@ -198,15 +198,23 @@ For each extracted rule, determine scope (most specific wins):
 
 ## Step 4: Dedup Check
 
-**Primary (if qmd available):**
+**Search ladder:** `qmd vsearch` (model cached) → `qmd search` (BM25) → Grep. On a fresh machine `qmd vsearch` blocks the session downloading ~1.3GB of models — never let it. Gate with `core/scripts/qmd-ready.sh` first.
+
+**Primary (if qmd available AND its models are already cached):**
 ```bash
-qmd vsearch "{rule text}" --json -n 5
+bash core/scripts/qmd-ready.sh && qmd vsearch "{rule text}" --json -n 5
 ```
 
 Check results for similarity to the new rule:
 - Similarity > 0.85 → **Skip** (already captured somewhere)
 - Similarity 0.6–0.85 → **Merge** (update existing rule to be more precise)
 - Similarity < 0.6 → **Add new**
+
+**BM25 rung (qmd installed but `qmd-ready.sh` exits non-zero — models not cached):**
+```bash
+qmd search "{rule text}" --json -n 5
+```
+Keyword match instead of semantic similarity — treat strong keyword overlap as a **Merge** candidate (review the hit before deciding Skip/Merge/Add). Do NOT run `qmd vsearch`/`qmd query` in this state: it triggers a blocking model download mid-session.
 
 **Fallback (if qmd unavailable):**
 Use Grep to search for key terms from the rule across the policy directories:
@@ -230,7 +238,7 @@ Before creating a new rule, check if an existing policy file already covers this
    # Grep policy titles and rules for keyword overlap
    grep -rl "{key terms from rule}" {policy_dir}/*.md 2>/dev/null
    ```
-   Also check `qmd vsearch` results from Step 4 for hits in policy files.
+   Also check the qmd results from Step 4 (vsearch, or BM25 `qmd search` when the model wasn't cached) for hits in policy files.
 
 3. **If matching policy found:**
    - Read the policy file
