@@ -1,8 +1,6 @@
 ---
 id: hq-session-resume-git-status-reverify
 title: Re-run `git status` fresh before acting on session-resume dirty-state reports
-scope: global
-trigger: session resume, handoff recovery, system-reminder shows dirty working tree, before stash/checkout/reset
 when: git && checkout
 on: [AssistantIntent, PreToolUse]
 enforcement: soft

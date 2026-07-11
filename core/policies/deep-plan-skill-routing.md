@@ -1,8 +1,6 @@
 ---
 id: hq-deep-plan-skill-routing
 title: /deep-plan must route to the deep-plan skill — never built-in plan mode, never auto-implementation
-scope: command:deep-plan,startwork
-trigger: /deep-plan invoked anywhere — as a slash command, embedded in /startwork args, or referenced in plan-mode prompt text
 when: /deep-plan || /startwork
 on: [UserPromptSubmit]
 enforcement: hard

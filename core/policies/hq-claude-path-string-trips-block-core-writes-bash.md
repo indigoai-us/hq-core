@@ -1,8 +1,6 @@
 ---
 id: hq-claude-path-string-trips-block-core-writes-bash
 title: A literal .claude/ path in a Bash command trips block-core-writes-bash even for reads
-scope: global
-trigger: Composing a Bash command that contains a literal ".claude/" path string during deep-plan/handoff journal steps
 when: /deep-plan || /handoff
 on: [UserPromptSubmit]
 enforcement: hard

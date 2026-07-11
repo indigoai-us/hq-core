@@ -1,8 +1,6 @@
 ---
 id: hq-core-never-recut-shipped-tag-for-docs
 title: Never re-cut or rewrite a shipped hq-core tag just to add a CHANGELOG line
-scope: global
-trigger: discovering a missing CHANGELOG entry for an already-shipped hq-core version
 when: changelog || /release-hq-core
 on: [UserPromptSubmit]
 enforcement: hard
@@ -12,7 +10,6 @@ version: 1
 created: 2026-05-28
 updated: 2026-05-28
 source: user-correction
-applies_to: [github]
 tags: [hq-core, promotion, release, changelog]
 ---
 

@@ -1,8 +1,6 @@
 ---
 id: rename-safety-checklist
 title: Rename and Signature Change Safety Checklist
-scope: global
-trigger: when renaming functions, types, variables, or changing signatures
 when: rename
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

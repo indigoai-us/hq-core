@@ -1,8 +1,6 @@
 ---
 id: hq-html-target-blank-noopener
 title: Always pair target="_blank" with rel="noopener" to prevent reverse-tabnabbing
-scope: global
-trigger: when writing HTML with external links that open in a new tab
 when: .html
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

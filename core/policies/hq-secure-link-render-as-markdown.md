@@ -2,8 +2,6 @@
 id: hq-secure-link-render-as-markdown
 enforcement: hard
 public: true
-scope: global
-trigger: any assistant turn that surfaces a single-use / capability link minted by an HQ command — `hq files share` (without `--with`) share-session URLs, `hq secrets generate-link` URLs, `hq members invite` claim/magic links, or any analogous short-lived credential-bearing URL
 when: secret || credential || credentials || password || passphrase || token || apikey || api_key
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 tags: [security, hq-cli, vault, capabilities, secrets, ux]

@@ -1,8 +1,6 @@
 ---
 id: learned-rules-never-in-claude-md
 title: Learned rules never go in CLAUDE.md — they live in policy files
-scope: global
-trigger: capturing a learned rule or user correction, or running /learn (especially /learn --hard)
 when: learn || policies || charter
 on: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]
 enforcement: hard

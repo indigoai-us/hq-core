@@ -1,8 +1,6 @@
 ---
 id: quiet-by-default-narration
 title: Quiet by default — silent on routine ops, surface only when user must know
-scope: global
-trigger: any session — applies to all assistant text emissions regardless of output style
 when: always
 on: [SessionStart]
 enforcement: soft

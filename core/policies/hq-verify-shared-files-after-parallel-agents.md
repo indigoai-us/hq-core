@@ -1,8 +1,6 @@
 ---
 id: hq-verify-shared-files-after-parallel-agents
 title: Verify shared files after parallel agent edits
-scope: global
-trigger: parallel agent execution editing same file
 when: parallel
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

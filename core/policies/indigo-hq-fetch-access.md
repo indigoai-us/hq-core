@@ -1,8 +1,6 @@
 ---
 id: indigo-hq-fetch-access
 title: Fetching access-gated *.indigo-hq.com pages
-scope: global
-trigger: any mention of an *.indigo-hq.com URL
 when: indigo-hq && com
 on: [UserPromptSubmit, AssistantIntent, PreToolUse, PostToolUse]
 enforcement: soft

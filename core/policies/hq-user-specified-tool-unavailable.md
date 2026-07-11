@@ -1,8 +1,6 @@
 ---
 id: hq-user-specified-tool-unavailable
 title: Pause and ask when a user-specified tool is unavailable
-scope: global
-trigger: tool unavailable, mcp not loaded, paper mcp, specific tool requested, tool not found
 when: unavailable
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

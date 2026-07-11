@@ -1,8 +1,6 @@
 ---
 id: hq-rust-helper-extension-audit-call-sites
 title: When fixing a helper bug class, audit all call sites — don't ship a parallel safe helper
-scope: global
-trigger: Discovering a bug class in a shared helper function (Rust, TypeScript, Python — language-agnostic). Examples: `truncate_str` panicking on non-ASCII, `parse_int` accepting negatives, `escape_html` missing an entity
 when: .rs || helper
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

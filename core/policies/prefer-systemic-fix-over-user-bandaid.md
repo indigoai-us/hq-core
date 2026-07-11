@@ -1,8 +1,6 @@
 ---
 id: prefer-systemic-fix-over-user-bandaid
 title: Prefer systemic fix over individual-user bandaid
-scope: global
-trigger: bug fix, hotfix, error report, "X doesn't work for <user>", version drift, default config, env mismatch, package upgrade
 when: bug || hotfix
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

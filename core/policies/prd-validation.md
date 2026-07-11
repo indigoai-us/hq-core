@@ -1,8 +1,6 @@
 ---
 id: prd-validation
 title: PRD validation — verify source files at draft, validate JSON post-write
-scope: global
-trigger: "/plan, /prd, /run-project, /execute-task, PRD drafting, AC writing"
 when: /plan || /prd || /run-project || /execute-task
 on: [UserPromptSubmit]
 enforcement: hard

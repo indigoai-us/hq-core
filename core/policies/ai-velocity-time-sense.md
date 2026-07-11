@@ -3,7 +3,6 @@ id: ai-velocity-time-sense
 when: /plan || /deep-plan || /brainstorm || /prd || /track-estimate || /finish-estimate || /calibration-report || /run-project || /handoff
 on: [UserPromptSubmit]
 enforcement: hard
-scope: global
 tags: [planning, brainstorm, prd, estimates, time, velocity, run-project, handoff]
 public: true
 created: 2026-05-23

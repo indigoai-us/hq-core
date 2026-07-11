@@ -1,8 +1,6 @@
 ---
 id: natural-language-mode
 title: Natural Language Mode — infer intent, auto-route to the right HQ skill, confirm-then-run
-scope: global
-trigger: any session — applies to every user prompt that is not already an explicit slash command
 when: always
 on: [SessionStart]
 enforcement: soft

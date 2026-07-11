@@ -44,7 +44,7 @@ The engine is **three phases**, structured by data-dependency. Independent work 
 | Phase | What runs | Parallelism |
 |-------|-----------|-------------|
 | **Step 1** | Preferences + exclusions (gate) | inline, sequential |
-| **Phase A** | Build (inline) ‖ Identity (script) ‖ Sensitivity (script) | 3-way parallel via `&` + `wait` |
+| **Phase A** | Framework detect + **design pass** (A.1.5, generated static only) → Build (inline) ‖ Identity (script) ‖ Sensitivity (script) | detect + design sync, then 3-way parallel via `&` + `wait` |
 | **Phase B** | Localhost preview (inline-bg) ‖ Guardrails (script) | 2-way parallel via `&` + `wait` |
 | **Phase C** | Password gen → upload → wire password → announce → present link | sequential, hard-gated |
 
@@ -54,6 +54,7 @@ The engine is **three phases**, structured by data-dependency. Independent work 
 - Guardrails (Phase B) MUST gate Upload (Phase C)
 - Upload (Phase C) returns `appId` which MUST exist before password persist + announce
 - Localhost preview (Phase B) is NEVER gated by identity — always runs
+- **Design pass (A.1.5) MUST complete before Build/Guardrails package the artifact** — it restyles the generated static source in place, so it runs synchronously right after framework detection and before the Phase A fan-out
 
 **Inline helper scripts** (each is self-contained, returns one JSON line on stdout):
 
@@ -251,12 +252,50 @@ else
   for d in dist build out public .; do [ -f "$d/index.html" ] && OUTPUT_DIR="$d" && break; done
 fi
 
+# Backend API routes → upgrade to the `app` deploy type (per-app-function path).
+# Orthogonal to the framework above: a root `api/` dir with >=1 handler file
+# (api/**/*.{ts,js}) means the app ships backend routes, so it deploys as a
+# static frontend PLUS an `api/*` per-app Lambda with keyless secret bindings —
+# NOT Docker/ECR/ECS. Framework NAME is preserved (a Vite app with api/ stays
+# framework=vite, type=app). No api/ dir (or empty) stays `static`. See the
+# "App deploy type" section below and hq-deploy `src/deploy/function/`.
+if [ "$DEPLOY_TYPE" != "ssr" ] && [ -n "$(find api -type f \( -name '*.ts' -o -name '*.js' \) 2>/dev/null | head -n1)" ]; then
+  DEPLOY_TYPE="app"
+fi
+
 # Package manager
 if   [ -f "bun.lockb" ] || [ -f "bun.lock" ]; then PM="bun"
 elif [ -f "pnpm-lock.yaml" ]; then PM="pnpm"
 elif [ -f "yarn.lock" ]; then PM="yarn"
 else PM="npm"; fi
 ```
+
+### A.1.5 — Design pass (generated single-page artifacts only)
+
+**Default ON — this is the deploy-quality default.** A plain, HQ-generated report/deck/summary should never ship looking like an unstyled document. Before the artifact is packaged, lift a self-authored single-page HTML to on-brand quality using the **hq-design** house system. This runs *synchronously* here (right after framework detection, before the Phase A fan-out) so the restyled file is what Phase B guardrails tars and Phase C uploads.
+
+**Gate — decide whether to run it:**
+
+```bash
+DESIGN_PASS=1
+[ "$FRAMEWORK" != "static" ] && DESIGN_PASS=0          # framework builds (Next/Vite/Astro/Remix) own their design — never touch them
+[ -f "$OUTPUT_DIR/DESIGN.md" ] && DESIGN_PASS=0         # artifact already declares its own design system
+[ "$(jq -r '.deploy.designPass // "true"' "$HOME/.hq/deploy-prefs.json" 2>/dev/null)" = "false" ] && DESIGN_PASS=0   # user disabled globally
+case "$LATEST_USER_MSG" in                             # explicit opt-out in the latest message
+  *as-is*|*"as is"*|*"no design"*|*"skip design"*|*"no restyle"*|*"don't restyle"*|*"dont restyle"*|*"leave the styling"*|*"keep the design"*|*"keep the styling"*) DESIGN_PASS=0 ;;
+esac
+```
+
+Scope is deliberately narrow: **only `FRAMEWORK=static` single-page artifacts** (reports, decks, summaries, briefs that HQ generated). Framework builds and already-designed artifacts pass through untouched.
+
+**When `DESIGN_PASS=1`, apply the pass — this is design work you do inline, not a script:**
+
+1. Read the house system: [`core/knowledge/public/hq-core/design-md-spec.md`](../../../core/knowledge/public/hq-core/design-md-spec.md). If the design packs are installed (`core/knowledge/public/design-styles/`, `core/knowledge/public/design-quality/`), fold them in for a higher bar.
+2. Restyle `$OUTPUT_DIR/index.html` to that bar — deliberate type scale, spacing rhythm, color/token discipline, restraint, visual hierarchy; accessible (semantic HTML, aria) and responsive; wrap any animation in `@media (prefers-reduced-motion: reduce)`.
+3. **Preserve exactly:** every piece of content and every link, and self-containment (inline CSS, inline SVG, web fonts via CDN only — no new local asset dependencies, no external calls). Never invent facts, drop items, or add `.html` sub-pages (the static host SPA-fallbacks them — keep one self-contained `index.html`).
+4. If the page is **already at the hq-design bar**, make it a no-op and move on — don't restyle good work.
+
+Then continue to A.2 with the restyled artifact in place.
 
 ### A.2 — Spawn three workstreams in parallel
 
@@ -593,6 +632,68 @@ COMPLETE_RESPONSE=$(curl -s -X POST \
 LIVE_URL=$(echo "$COMPLETE_RESPONSE" | jq -r '.url')
 rm -f "$TARBALL_PATH"
 ```
+
+#### App upload (backend `api/*` → per-app Lambda)
+
+When `DEPLOY_TYPE=app` (a root `api/` dir was detected in A.1), the app ships a
+static frontend **and** backend `api/*` handlers. The client-side flow is the
+**same presigned-tarball upload as static** — tar the whole build (frontend +
+`api/` dir) and push it through `POST /api/deploys` → S3 PUT → `…/complete`
+exactly as in "Static upload" above. The control plane does the backend work:
+it esbuild-bundles `api/**/*.{ts,js}` into a per-app Lambda, mounts it behind a
+shared front-door HTTP API, and maps the app's subdomain to it. There is **no**
+Docker/ECR/ECS step — `app` is distinct from the dormant SSR path.
+
+**Runtime secrets → SecretBindings (not env vars in the bundle).** A backend
+handler that needs a secret (DB URL, Slack webhook, API key) must NOT have the
+value baked into the tarball. Instead bind the app to named HQ-Pro vault secrets;
+the per-app function reads its own bound secrets **keylessly at runtime** via
+SigV4 against its app identity. Author the bindings before deploy:
+
+```bash
+# List current bindings
+curl -s -H "Authorization: Bearer $JWT" "${DEPLOY_CONTEXT_HEADERS[@]}" \
+  "$API/api/apps/$APP_ID/secret-bindings" | jq '.secrets'
+
+# Bind vault secrets the caller currently has read on (references only — no values).
+# Requires an hq-pro token; each ref is validated against the vault + deployer grant.
+curl -s -X PUT "$API/api/apps/$APP_ID/secret-bindings" \
+  -H "Authorization: Bearer $JWT" "${DEPLOY_CONTEXT_HEADERS[@]}" \
+  "${HQ_PRO_HEADER[@]}" -H "Content-Type: application/json" \
+  -d '{"companyUid":"'"$COMPANY_UID"'","secrets":[{"name":"SLACK_WEBHOOK_URL"},{"name":"DATABASE_URL"}]}'
+```
+
+**Public + secret-backed deploy gate (ADVISORY-first — STOP before deploying).**
+The trigger is deliberately simple — no source analysis, no route inspection:
+
+```
+(access mode is PUBLIC)  AND  (runtime SecretBinding count > 0)
+```
+
+Fetch access mode + binding count and decide PUBLIC the same way the edge
+validator does (public = `accessMode=="public"`, or legacy rows where neither
+`privateMode` nor `passwordProtected` is true; any password/company/selected/
+private gate is NOT public):
+
+```bash
+APP_JSON=$(curl -s -H "Authorization: Bearer $JWT" "${DEPLOY_CONTEXT_HEADERS[@]}" "$API/api/apps/$APP_ID")
+ACCESS_MODE=$(echo "$APP_JSON" | jq -r '.accessMode // empty')
+BINDING_COUNT=$(curl -s -H "Authorization: Bearer $JWT" "${DEPLOY_CONTEXT_HEADERS[@]}" \
+  "$API/api/apps/$APP_ID/secret-bindings" | jq -r '.secrets | length')
+```
+
+- **PUBLIC and `BINDING_COUNT > 0` → STOP.** Secret-backed endpoints would be
+  world-callable. Surface the risk in full prose and require the user to EITHER
+  add an access gate (password/company/private) and re-run, OR explicitly
+  acknowledge the risk for this deploy — then pass `acknowledgePublicSecretRisk`
+  through the deploy call so the acceptance is recorded/audited. Do not proceed
+  silently.
+- **`BINDING_COUNT == 0`**, or **any gate present** → proceed with no prompt.
+
+> Canonical, testable trigger lives in hq-deploy at
+> `src/deploy/function/security-gate.ts` (`evaluateDeployGate`/`assertDeployGate`);
+> this step is the operator-facing surface. The full app-runtime contract lives
+> alongside it in the hq-deploy repo's app/api-routes runtime spec.
 
 #### SSR upload (ECR image)
 

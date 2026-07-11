@@ -1,8 +1,6 @@
 ---
 id: hq-journal-project-scoped-writes
 title: Journal writes stay inside the project folder
-scope: command:brainstorm,deep-plan,prd,plan,startwork,handoff,checkpoint
-trigger: Any write performed by `journal.sh`, the `journal-autocapture` hook, or a skill spilling reference material attached to a session journal
 when: /journal
 on: [UserPromptSubmit]
 enforcement: hard

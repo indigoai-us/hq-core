@@ -1,8 +1,6 @@
 ---
 id: hq-image-context-isolation
 title: Image context isolation — delegate image reading to sub-agents
-scope: global
-trigger: Read tool on image files (.png/.jpg/.jpeg/.gif/.webp), preview_screenshot, Chrome MCP screenshot, batch image verification, export verification, design review
 when: .png || .jpg || .jpeg || .gif || .webp
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

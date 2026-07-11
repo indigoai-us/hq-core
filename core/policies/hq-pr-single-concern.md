@@ -1,8 +1,6 @@
 ---
 id: hq-pr-single-concern
 title: One PR, One Concern — Never Bundle Unrelated Changes
-scope: global
-trigger: before creating any pull request, before committing changes that span multiple features
 when: git && commit
 on: [PreToolUse]
 enforcement: hard

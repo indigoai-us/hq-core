@@ -1,8 +1,6 @@
 ---
 id: hq-no-worktree-for-repo-work
 title: "Never create HQ worktrees or branches for repo work"
-scope: global
-trigger: "/startwork, repo-scoped tasks, company repo work"
 when: /startwork || repo || worktree
 on: [UserPromptSubmit, SessionStart]
 enforcement: hard

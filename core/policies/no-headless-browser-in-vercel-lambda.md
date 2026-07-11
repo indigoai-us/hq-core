@@ -4,7 +4,6 @@ when: lambda || vercel || browser
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
-scope: global
 tags: [vercel, lambda, playwright, puppeteer, chromium]
 created: 2026-04-15
 provenance: back-pressure-failure

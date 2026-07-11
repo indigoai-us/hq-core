@@ -1,8 +1,6 @@
 ---
 id: hq-git-discipline
 title: HQ git discipline — branch hygiene, focused commits, safe probes, history-preserving moves, chip-safe pushes, reflog/stash safety
-scope: global
-trigger: any git operation in HQ working tree, repos/, or knowledge repos — commits, pushes, merges, rebases, history rewrites, stash, reflog, gc
 when: git && commit
 on: [PreToolUse]
 enforcement: hard

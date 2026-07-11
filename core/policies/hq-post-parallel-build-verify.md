@@ -1,8 +1,6 @@
 ---
 id: hq-post-parallel-build-verify
 title: Build and Typecheck After Parallel Agent Execution
-scope: global
-trigger: after any parallel/concurrent agent execution that edits code (swarm, sub-agents, worktrees)
 when: parallel || subagent || sub-agent || sub-agents
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

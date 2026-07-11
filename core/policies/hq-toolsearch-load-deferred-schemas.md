@@ -1,8 +1,6 @@
 ---
 id: hq-toolsearch-load-deferred-schemas
 title: Load deferred tool schemas via ToolSearch after resumed/compacted sessions
-scope: global
-trigger: InputValidationError on TodoWrite/WebFetch/etc, resumed session, post-compaction, deferred tool list present
 when: toolsearch || deferred
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

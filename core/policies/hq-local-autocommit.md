@@ -1,8 +1,6 @@
 ---
 id: hq-local-autocommit
 title: Local HQ non-repo edits autosave silently
-scope: global
-trigger: local HQ edits outside repos/, embedded knowledge repos, and specific repo work
 when: always
 on: [SessionStart]
 enforcement: soft

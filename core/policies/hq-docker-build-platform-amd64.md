@@ -1,8 +1,6 @@
 ---
 id: hq-docker-build-platform-amd64
 title: Always build Docker images with --platform linux/amd64 for ECS/EC2
-scope: global
-trigger: before any docker build targeting cloud deployment (ECS, EC2, ECR)
 when: build || deploy
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft

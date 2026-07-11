@@ -1,8 +1,6 @@
 ---
 id: hq-surface-share-on-completion
 title: Offer /hq-share or /deploy when work completes
-scope: global
-trigger: when a project, PR, deploy, or deliverable completes — the agent announces done/shipped/merged/deployed, or a merge/deploy command returns success
 when: completed || complete || shipped || merged || deployed || landed || published
 on: [UserPromptSubmit, AssistantIntent, PostToolUse]
 enforcement: soft

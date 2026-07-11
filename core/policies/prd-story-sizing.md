@@ -1,8 +1,6 @@
 ---
 id: prd-story-sizing
 title: PRD Story Complexity Budget
-scope: command
-trigger: /plan, /prd story generation
 when: /plan || /prd
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

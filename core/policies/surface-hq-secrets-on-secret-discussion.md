@@ -1,8 +1,6 @@
 ---
 id: hq-surface-hq-secrets-on-secret-discussion
 title: Surface /hq-secrets when secrets are discussed
-scope: global
-trigger: when the user or the agent mentions passwords, API keys, tokens, or other credentials
 when: secret || credential || credentials || password || passphrase || token || apikey || api_key || api
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

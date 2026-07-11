@@ -1,8 +1,6 @@
 ---
 id: decision-queue-one-at-a-time
 title: Present decisions one question at a time, never batched
-scope: global
-trigger: when surfacing user-facing questions or decisions via AskUserQuestion, Codex request_user_input, or any structured picker (any skill or ad-hoc)
 when: always
 on: [SessionStart]
 enforcement: soft

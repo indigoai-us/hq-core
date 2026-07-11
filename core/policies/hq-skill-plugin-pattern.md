@@ -1,8 +1,6 @@
 ---
 id: hq-skill-plugin-pattern
 title: External skill package integration via bridge script
-scope: global
-trigger: integrating a third-party Claude Code skill package into HQ
 when: skill || plugin
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

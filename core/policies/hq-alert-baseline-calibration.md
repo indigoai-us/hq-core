@@ -1,8 +1,6 @@
 ---
 id: hq-alert-baseline-calibration
 title: Calibrate Alert Thresholds Against Known Patterns
-scope: global
-trigger: when creating monitoring, alerts, health checks, or anomaly detection
 when: monitor || alert
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

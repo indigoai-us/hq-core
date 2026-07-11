@@ -1,8 +1,6 @@
 ---
 id: hq-auto-acl-suggest
 title: Suggest least-privilege sharing after artifact creation or task completion
-scope: global
-trigger: after artifact creation, project/story completion, checkpoint, handoff, or explicit share intent
 when: share || send || present || deploy || artifact || report || complete || checkpoint || handoff || /deploy || /hq-share || /hq-files || /run-project || /execute-task || /checkpoint || /handoff
 on: [UserPromptSubmit, AssistantIntent, PostToolUse]
 enforcement: soft

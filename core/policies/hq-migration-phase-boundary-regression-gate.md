@@ -1,8 +1,6 @@
 ---
 id: hq-migration-phase-boundary-regression-gate
 title: Place regression gates at every phase boundary in multi-layer migrations
-scope: global
-trigger: migration stories spanning multiple infra layers (filesystem, infra-as-code, brand, DNS cutover, etc.)
 when: migrate || migration || schema
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft

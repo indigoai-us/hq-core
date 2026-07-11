@@ -1,9 +1,7 @@
 ---
 id: hq-gitignore-before-first-commit
 title: Create .gitignore before first commit in new projects
-scope: global
 public: true
-trigger: scaffolding a new project with git init
 when: git && commit
 on: [AssistantIntent, PreToolUse]
 enforcement: soft

@@ -1,8 +1,6 @@
 ---
 id: hq-pack-hooks-auto-discover-from-packages-dir
 title: HQ pack hooks auto-discover from core/packages/*/hooks/ — no settings.json edit needed
-scope: global
-trigger: shipping a PreToolUse/SessionStart/Stop/PostToolUse/etc. hook from inside an HQ pack
 when: pack || hook
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

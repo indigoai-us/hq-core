@@ -1,8 +1,6 @@
 ---
 id: reskin-separate-orchestration-from-visual
 title: When reskinning a design, separate orchestration patterns from visual execution
-scope: global
-trigger: PRD or design task adapts motion/UX patterns from a reference implementation
 when: reskin || design
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

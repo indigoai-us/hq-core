@@ -1,8 +1,6 @@
 ---
 id: hq-git-large-diff-audit-before-panic
 title: Audit diff composition before panicking over large file counts
-scope: global
-trigger: when a `git diff`, PR review, or release commit touches a suspiciously large number of files (e.g. 500+, 1000+)
 when: git && commit
 on: [AssistantIntent, PreToolUse]
 enforcement: soft

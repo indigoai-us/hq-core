@@ -1,8 +1,6 @@
 ---
 id: hook-macos-case-paths
 title: Hooks must use case-insensitive path matching on macOS
-scope: global
-trigger: writing hooks that check file paths
 when: .sh || hook
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
