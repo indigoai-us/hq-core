@@ -290,6 +290,18 @@ jobs:
       - name: block-core-writes-bash target-aware write detection
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
 
+  work-mesh-v2:
+    name: work-mesh-v2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Work Mesh watcher unit contract
+        run: node --test core/scripts/__tests__/work-mesh.test.mjs
+      - name: Work Mesh watcher US-011 acceptance
+        run: node --test test/__tests__/stories/US-011.test.mjs
+      - name: Work Mesh helper compatibility smoke
+        run: bash core/scripts/tests/work-mesh-helper.test.sh
+
   # ─── Label-gated checks ────────────────────────────────────────────
   core-yaml-version-monotonic:
     # hq-core ONLY. Promote PRs (the only kind hq-core sees) always bump
