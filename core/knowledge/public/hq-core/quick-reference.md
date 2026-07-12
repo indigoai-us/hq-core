@@ -132,6 +132,19 @@ Not slash commands — direct CLI surface for HQ vault access control. Skill: `.
 
 Share-session URLs are encrypted single-use 15-minute capabilities — never persist them in commits, threads, or logs. See `core/policies/hq-share-session-urls-are-capabilities.md`.
 
+## CLI: `hq db` (vault databases)
+
+Local SQLite per company (always) + optional remote Postgres-class on **HQ Team** ($500/mo). Guide: `core/knowledge/public/hq-core/vault-databases.md`. Requires `@indigoai-us/hq-cli` ≥ 5.62.0.
+
+| Command | Use |
+|---------|-----|
+| `hq db status --company {co}` | Ensure local `~/.hq/db/{co}/vault.db` (WAL); report schema version |
+| `hq db sql --company {co} -- 'SELECT …'` | Query local DB (read-only default; `--write` for mutations) |
+| `hq db migrate --company {co} --hq-root {HQ}` | Apply `companies/{co}/db/migrations/*.sql` |
+| `hq db provision --company {co}` | Remote binding — **Team plan only** (when control plane live) |
+
+Migrations are vault **text**; binary `.db` files stay machine-local (never under `companies/`). Never print connection strings. Local and remote are not auto-replicated in v1.
+
 ## CLI: `hq dm` (direct messages)
 
 Send a person-to-person notification to a teammate's HQ Sync menubar. Skill: `.claude/skills/dm/SKILL.md` (`/dm`).

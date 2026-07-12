@@ -71,27 +71,37 @@ const server = http.createServer((req, res) => {
     }
 
     if (req.method === "POST" && req.url === "/v1/realtime/credentials") {
+      const request = raw ? JSON.parse(raw) : {};
+      if (request.contractVersion === 2) {
+        send(res, 409, {
+          code: "REALTIME_CONTRACT_UNSUPPORTED",
+          supportedContractVersions: [1],
+        });
+        return;
+      }
+      const expiresAt = new Date(Date.now() + 60_000).toISOString();
       send(res, 200, {
         credentials: {
-          accessKeyId: "AKIA_TEST",
+          accessKeyId: "ASIA0000000000000000",
           secretAccessKey: "secret",
           sessionToken: "token",
-          expiration: "2026-07-05T01:00:00.000Z",
+          expiration: expiresAt,
         },
         iotEndpoint: "abc123-ats.iot.us-east-1.amazonaws.com",
         region: "us-east-1",
-        topic: "hq/prs_test/dm",
+        topic: "hq/prs_01ARZ3NDEKTSV4RRFFQ69G5FAV/dm",
         topics: {
-          dm: "hq/prs_test/dm",
-          sessions: "hq/prs_test/sessions",
-          work: "hq/prs_test/work",
+          dm: "hq/prs_01ARZ3NDEKTSV4RRFFQ69G5FAV/dm",
+          sessions: "hq/prs_01ARZ3NDEKTSV4RRFFQ69G5FAV/sessions",
+          work: "hq/prs_01ARZ3NDEKTSV4RRFFQ69G5FAV/work",
+          notifications: "hq/prs_01ARZ3NDEKTSV4RRFFQ69G5FAV/notifications",
         },
         companyTopics: [{
           companyUid: "cmp_indigo",
           threadTopicFilter: "hq/cmp_indigo/thread/#",
           presenceTopic: "hq/cmp_indigo/presence",
         }],
-        expiresAt: "2026-07-05T01:00:00.000Z",
+        expiresAt,
       });
       return;
     }
@@ -147,7 +157,7 @@ assert_contains "$progress_out" '"eventKind": "progress"' "progress appends even
 
 watch_out="$(HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" watch --dry-run --json --cache-file "$TMP/live-cache.json")"
 assert_contains "$watch_out" '"action": "watch"' "watch dry-run reports action"
-assert_contains "$watch_out" '"hq/prs_test/work"' "watch uses authoritative work topic"
+assert_contains "$watch_out" '"hq/prs_01ARZ3NDEKTSV4RRFFQ69G5FAV/work"' "watch uses authoritative work topic"
 assert_contains "$watch_out" '"hq/cmp_indigo/thread/#"' "watch subscribes to company thread filter"
 
 python3 - "$TMP/requests.jsonl" <<'PY' || fail "request log validation failed"
@@ -160,6 +170,8 @@ assert any(row["method"] == "POST" and row["url"] == "/v1/work-mesh/threads" for
 assert any(row["body"] and row["body"].get("eventKind") == "claim" for row in rows)
 assert any(row["body"] and row["body"].get("eventKind") == "progress" for row in rows)
 assert any(row["method"] == "POST" and row["url"] == "/v1/realtime/credentials" for row in rows)
+credential_rows = [row for row in rows if row["method"] == "POST" and row["url"] == "/v1/realtime/credentials"]
+assert [row["body"] for row in credential_rows] == [{"contractVersion": 2}, {}]
 assert all(row["authorization"] == "Bearer test-token" for row in rows)
 PY
 
@@ -168,7 +180,7 @@ import json
 import sys
 
 cache = json.load(open(sys.argv[1]))
-assert cache["realtime"]["topics"]["work"] == "hq/prs_test/work"
+assert cache["realtime"]["topics"]["work"] == "hq/prs_01ARZ3NDEKTSV4RRFFQ69G5FAV/work"
 assert "thr_1" in cache["threadsById"]
 assert "cmp_indigo/mesh-adoption" in cache["projects"]
 PY
