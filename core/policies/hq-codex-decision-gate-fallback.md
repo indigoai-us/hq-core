@@ -1,8 +1,6 @@
 ---
 id: hq-codex-decision-gate-fallback
 title: Codex planning skills must preserve decision gates with a text fallback
-scope: global
-trigger: Codex skill adaptation; brainstorm/plan/prd/review-plan/run-project user question or decision gate; AskUserQuestion unavailable; request_user_input available
 when: /brainstorm || /plan || /prd || /review-plan || /run-project
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

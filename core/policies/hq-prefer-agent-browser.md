@@ -1,8 +1,6 @@
 ---
 id: hq-prefer-agent-browser
 title: Use agent-browser for any browser task — and auto-install it without asking
-scope: global
-trigger: any browser task — opening/navigating a page, reading/snapshotting, clicking, filling forms, screenshots, scraping, web-app testing, logging into a site, or "use the browser"
 when: browser || browse || website || webpage || scrape || smoke
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

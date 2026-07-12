@@ -1,8 +1,6 @@
 ---
 id: hq-orthogonal-filters-over-overlapping-presets
 title: Prefer orthogonal filters over N presets derived from the same composite score
-scope: global
-trigger: dashboard UX, filter design, saved-view presets, account/lead prioritization UIs
 when: dashboard || filter
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

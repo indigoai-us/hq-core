@@ -5,7 +5,6 @@ on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
 tier: 1
-scope: global
 tags: [git, worktree, symlinks, knowledge-repos]
 created: 2026-04-16
 provenance: user-correction

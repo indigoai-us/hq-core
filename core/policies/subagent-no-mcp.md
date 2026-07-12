@@ -1,8 +1,6 @@
 ---
 id: hq-subagent-no-mcp
 title: Sub-Agents Lack MCP Server Access
-scope: global
-trigger: when spawning Task() sub-agents that need external tools
 when: subagent || subagents || sub-agent || sub-agents || codex
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

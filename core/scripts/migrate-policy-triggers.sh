@@ -2,7 +2,13 @@
 # migrate-policy-triggers.sh — add `when:`/`on:` frontmatter to every policy
 # that lacks it, derived from the policy's own metadata.
 #
-# `when:` is generated from TWO sources, OR-combined:
+# NOTE: `trigger:` was removed from the policy schema (superseded by when/on).
+# This backfill still reads a `trigger:` line if a legacy/external policy has
+# one, but newly authored policies derive `when:` from tags alone (or the
+# `when: always` fallback). The create/edit guard validate-policy-frontmatter.sh
+# is now the primary enforcement that every policy declares when/on.
+#
+# `when:` is generated from up to TWO sources, OR-combined:
 #   1. trigger content — the authored `trigger:` prose, mapped to a precise
 #      expression for the cross-cutting actions tags don't capture (git
 #      sub-commands, deploy, secret/credential, migration, pr, install, ...).

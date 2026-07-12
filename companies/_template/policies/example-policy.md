@@ -1,13 +1,12 @@
 ---
 id: {company}-example-policy
 title: Example Policy Title
-scope: company
-trigger: before any task execution
+when: always                  # boolean trigger expression — see policies-spec.md
+on: [SessionStart]            # sites: PreToolUse|PostToolUse|UserPromptSubmit|AssistantIntent|SessionStart
 enforcement: soft
 version: 1
 created: {YYYY-MM-DD}
 updated: {YYYY-MM-DD}
-# applies_to: [vercel, clerk]   # optional — tag only if policy is wrong/useless without the service; omit for cross-cutting
 ---
 
 ## Rule

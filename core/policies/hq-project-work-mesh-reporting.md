@@ -1,8 +1,6 @@
 ---
 id: hq-project-work-mesh-reporting
 title: Report Active Project Work To The HQ Work Mesh
-scope: global
-trigger: when creating, planning, starting, executing, blocking, handing off, or completing an HQ project
 when: project || prd || run-project || execute-task || startwork
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: hard

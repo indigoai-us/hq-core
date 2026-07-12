@@ -4,7 +4,6 @@ when: skill
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
-scope: global
 tags: [skills, refactor, abstraction]
 created: 2026-04-15
 provenance: user-correction

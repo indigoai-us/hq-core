@@ -1,8 +1,6 @@
 ---
 id: hq-codex-sdk-config-vs-typed-fields
 title: Route codex-sdk options through typed ThreadOptions first, CodexOptions.config only as fallback
-scope: global
-trigger: wrapping or extending @openai/codex-sdk; setting model/reasoning/feature-flag options on Codex or Thread instances
 when: codex || sdk
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

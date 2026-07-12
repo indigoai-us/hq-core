@@ -1,8 +1,6 @@
 ---
 id: hq-scanner-no-default-scopes-test-flag
 title: Scanner scripts must expose a `--no-default-scopes` test flag
-scope: global
-trigger: When authoring a scanner/discovery script that auto-expands to default parent directories (home dir, HQ root, `/Applications`, etc.)
 when: scanner
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

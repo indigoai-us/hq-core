@@ -1,8 +1,6 @@
 ---
 id: hq-announce-before-irreversible
 title: Announce and Confirm Before Any Irreversible Action
-scope: global
-trigger: before any action that cannot be undone — deletes, deploys to production, sending emails/messages, publishing content, DNS changes, database migrations, API mutations that create immutable records
 when: deploy || push || share || slack || email || migration
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft

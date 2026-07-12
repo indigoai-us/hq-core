@@ -1,8 +1,6 @@
 ---
 id: post-edit-verification
 title: Universal Post-Edit Verification
-scope: global
-trigger: after completing file edits in any repo with a configured typecheck/lint
 when: repo
 on: [SessionStart]
 enforcement: soft

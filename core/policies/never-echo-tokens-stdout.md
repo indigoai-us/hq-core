@@ -1,8 +1,6 @@
 ---
 id: hq-never-echo-tokens-stdout
 title: Never echo API keys or tokens to stdout
-scope: global
-trigger: when building CLI tools that output config snippets or setup instructions
 when: secret || credential || credentials || password || passphrase || token || apikey || api_key
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: hard

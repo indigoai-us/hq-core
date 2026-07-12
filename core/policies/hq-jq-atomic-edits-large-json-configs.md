@@ -1,8 +1,6 @@
 ---
 id: hq-jq-atomic-edits-large-json-configs
 title: Use `jq` for atomic structural edits to JSON config files larger than the Read token cap
-scope: global
-trigger: When editing a JSON config file (e.g. `.claude/settings.local.json`, `.mcp.json`, `package.json` in large monorepos) whose full contents exceed the ~25K Read token cap, or when making structural edits (filter + append + set sibling field) that must land as one change
 when: settings.local.json || .mcp.json || package.json
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

@@ -6,7 +6,8 @@
 # Returns only the YAML frontmatter block (between the first two --- markers),
 # skipping the policy body. Used by /startwork, /plan, /brainstorm, /run commands
 # to minimize context burn when scanning policy metadata (id, title, enforcement,
-# trigger) without loading the full ## Rule and ## Rationale sections.
+# when) without loading the full ## Rule and ## Rationale sections.
+# (Fields id/title/enforcement/when/on live in that block.)
 #
 # Exit codes:
 #   0 - Success, frontmatter written to stdout

@@ -1,8 +1,6 @@
 ---
 id: hq-pre-push-gate-probes-prod-not-localhost
 title: Pre-push E2E gates probe production, not localhost
-scope: global
-trigger: when designing or editing git pre-push hooks, pre-merge checks, or any "blocking" gate that guards against regressions before code lands
 when: git && push
 on: [PreToolUse, UserPromptSubmit]
 enforcement: hard

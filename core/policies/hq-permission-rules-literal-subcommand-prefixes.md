@@ -1,8 +1,6 @@
 ---
 id: hq-permission-rules-literal-subcommand-prefixes
 title: Claude Code permission rules are literal command-prefix matchers — list each subcommand explicitly
-scope: global
-trigger: When adding, auditing, or debugging `permissions.allow` / `permissions.ask` entries in `.claude/settings.json` or `.claude/settings.local.json`
 when: settings.json || settings.local.json
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

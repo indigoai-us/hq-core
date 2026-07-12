@@ -1,8 +1,6 @@
 ---
 id: ralph-orchestrator-context-discipline
 title: Story sub-agents return structured JSON only; orchestrator parses and refuses malformed
-scope: global
-trigger: orchestrators dispatching story execution sub-agents (`/run-project`, `/run-pipeline`, any future story loop) via `Task` or `spawn_agent`
 when: /run-project || /run-pipeline
 on: [UserPromptSubmit]
 enforcement: hard

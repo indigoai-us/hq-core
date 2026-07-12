@@ -1,8 +1,6 @@
 ---
 id: hq-compiled-ts-rebuild-after-src-edits
 title: Rebuild dist after editing src in compiled TypeScript packages — never hand-edit dist
-scope: global
-trigger: editing a fallback constant, default config, or any runtime value in `src/` of a compiled TypeScript package whose published artifact lives in `dist/`
 when: .ts || dist
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

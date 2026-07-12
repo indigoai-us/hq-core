@@ -1,8 +1,6 @@
 ---
 id: hq-cross-repo-privilege-tier-surface-scope
 title: Surface scope + shortcuts before implementing new identity/privilege tiers
-scope: global
-trigger: proposing work that introduces a new identity tier, role, group, or privilege primitive across multiple repos (e.g. Cognito group, RBAC role, feature flag tier, API scope)
 when: privilege || tier || role
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

@@ -1,8 +1,6 @@
 ---
 id: hq-parallel-batch-block-cancels-writes
 title: A blocked tool call cancels its whole parallel batch — re-verify writes against disk
-scope: global
-trigger: A PreToolUse hook blocks one call inside a parallel tool batch that also contains Write/Edit calls
 when: parallel
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

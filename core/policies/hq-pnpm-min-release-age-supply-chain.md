@@ -1,8 +1,6 @@
 ---
 id: hq-pnpm-min-release-age-supply-chain
 title: Use pnpm with minimumReleaseAge=1440 — block raw npm/yarn install of fresh packages
-scope: global
-trigger: before any `npm install <pkg>`, `npm i <pkg>`, `yarn add <pkg>`, `bun install <pkg>`, `bun add <pkg>`, `pnpm install <pkg>`, or `pnpm add <pkg>` invocation; before adding/editing a `.npmrc`, `pnpm-workspace.yaml`, or CI install step
 when: install
 on: [PreToolUse]
 enforcement: hard

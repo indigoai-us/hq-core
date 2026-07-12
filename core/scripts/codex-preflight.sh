@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# hq-core: public
 #
 # Explicit Codex preflight checks for HQ.
 #
@@ -222,12 +223,34 @@ cmd_doctor() {
   else
     echo "  codex: not installed."
   fi
+  # Grok trust: modern folder-trust store + legacy file + user bridge.
+  # Project .grok/hooks/*.json alone is not enough on Grok 0.2.93 (project
+  # hooks often never load); the user bridge under ~/.grok/hooks/ is required.
+  local grok_trusted=0
+  if [ -f "$HOME/.grok/trusted_folders.toml" ] && grep -Fq "folders.\"$root\"" "$HOME/.grok/trusted_folders.toml" 2>/dev/null; then
+    grok_trusted=1
+  fi
   if grep -qxF "$root" "$HOME/.grok/trusted-hook-projects" 2>/dev/null; then
+    grok_trusted=1
+  fi
+  if [ "$grok_trusted" -eq 1 ]; then
     echo "  grok: project trusted (OK)."
   else
-    echo "  grok: NOT trusted — run core/scripts/grok-trust.sh so .grok/ hooks enforce in headless grok -p." >&2
+    echo "  grok: NOT trusted — run core/scripts/grok-trust.sh (writes trusted_folders.toml + installs user bridge)." >&2
   fi
   if [ -d "$root/.grok/hooks" ]; then echo "  grok: .grok/hooks present (OK)."; else echo "  grok: .grok/hooks MISSING." >&2; fi
+  if [ -x "$HOME/.grok/hooks/hq-hq-bridge.sh" ] && [ -f "$HOME/.grok/hooks/hq-hq-bridge.json" ]; then
+    echo "  grok: user bridge installed (OK)."
+  else
+    echo "  grok: user bridge MISSING — run core/scripts/grok-trust.sh so HQ guards enforce (project hooks often do not load)." >&2
+  fi
+  if command -v grok >/dev/null 2>&1; then
+    local gv
+    gv="$(grok --version 2>/dev/null | head -1 || true)"
+    echo "  grok: ${gv:-installed}."
+  else
+    echo "  grok: not installed."
+  fi
 }
 
 main() {

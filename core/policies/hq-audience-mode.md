@@ -1,8 +1,6 @@
 ---
 id: hq-audience-mode
 title: Two audiences — quiet plain-language by default, technical play-by-play on request
-scope: global
-trigger: every session — governs how much the agent says to the human and in what register
 when: always
 on: [SessionStart]
 enforcement: soft

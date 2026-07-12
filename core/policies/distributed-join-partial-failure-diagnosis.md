@@ -1,8 +1,6 @@
 ---
 id: hq-distributed-join-partial-failure-diagnosis
 title: Partial join failure points to visitor-id divergence on specific pages, not pipeline-wide bugs
-scope: global
-trigger: debugging an analytics/experiment/event join where some event types match and others don't (not total silence)
 when: join || pipeline
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

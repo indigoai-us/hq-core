@@ -1,8 +1,6 @@
 ---
 id: work-broadcast-prompt
 title: Prompt to broadcast completed work
-scope: command
-trigger: "/land, /execute-task, /run-project, gh pr create"
 when: pr
 on: [AssistantIntent, PreToolUse]
 enforcement: soft

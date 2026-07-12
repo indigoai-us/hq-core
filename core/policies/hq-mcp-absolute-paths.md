@@ -1,8 +1,6 @@
 ---
 id: hq-mcp-absolute-paths
 title: Use absolute paths for Homebrew binaries (MCP + Bash tool)
-scope: global
-trigger: mcp, .mcp.json, stdio, npx, node, aws, brew, homebrew, bash tool
 when: .mcp.json || mcp
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

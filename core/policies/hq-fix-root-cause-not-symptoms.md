@@ -1,8 +1,6 @@
 ---
 id: hq-fix-root-cause-not-symptoms
 title: Fix root causes, never mask errors
-scope: global
-trigger: bug fix, error handling, investigation, /investigate
 when: bug || debug || /investigate
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

@@ -1,8 +1,6 @@
 ---
 id: hq-redact-structural-plus-regex-pass
 title: Pair structural JSON-field redaction with a regex pass on string values
-scope: global
-trigger: When redacting credentials/secrets from JSON artifacts (e.g. `.mcp.json`, settings files, config exports)
 when: secret || credential || credentials || password || passphrase || token || apikey || api_key
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft

@@ -1,8 +1,6 @@
 ---
 id: hq-bash-discipline
 title: HQ bash discipline — IFS, BSD/GNU portability, pgrep validation, set -e returns
-scope: global
-trigger: when writing or editing any shell script in scripts/, .claude/hooks/, workers/, companies/*, or any HQ-targeted shell code that may run on a developer Mac
 when: .sh
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

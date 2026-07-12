@@ -1,54 +1,151 @@
 # Grok integration for HQ
 
-HQ enforces its safety guardrails (core-write protection, secret detection,
-HQ-root git-mutation block, unsafe-package block) through `.claude/hooks/`. This
-directory makes those same guardrails fire under **Grok** (Grok Build / Composer),
-bringing Grok to parity with Claude Code and Codex.
+# hq-core: public
 
-## How it works
+HQ enforces its safety and lifecycle hooks through `.claude/hooks/`. This
+directory makes those same policies fire under **Grok Build** (interactive +
+headless `grok -p`), bringing Grok as close as possible to Claude Code and
+Codex — with one Grok-specific bootstrap step.
 
-- `.grok/hooks/hq-grok.json` registers a `PreToolUse` hook for Grok's file and
-  shell tools (`run_terminal_command`, `search_replace`, `write`, …).
-- `.grok/hooks/hq-grok-hook-adapter.sh` normalizes Grok's camelCase hook payload
-  (`toolName` / `toolInput`) into the Claude-shaped JSON the existing HQ hooks
-  expect, runs them through `.claude/hooks/hook-gate.sh`, and translates a block
-  into Grok's `{"decision":"deny","reason":…}` response (exit 2).
+## Architecture
 
-This keeps a single canonical policy implementation in `.claude/hooks/` — Claude,
-Codex (`.codex/`), and Grok (`.grok/`) all route through it.
+| Layer | Role |
+|---|---|
+| `.claude/hooks/*` | Canonical policy (shared by Claude, Codex, Grok) |
+| `.grok/hooks/hq-grok-hook-adapter.sh` | Normalizes Grok payloads → Claude-shaped JSON, maps tool names, translates deny to Grok's `{"decision":"deny"}` |
+| `.grok/hooks/hq-grok.json` | Project-scoped registration (all lifecycle events) |
+| `~/.grok/hooks/hq-hq-bridge.*` | **User-global bridge** installed by `core/scripts/grok-trust.sh` — required on Grok builds that skip project hooks |
+| `.grok/rules/*.md` | Grok-only always-on rules (`message-canvas`, `prefer-swarms`) |
 
-## One-time trust (required)
+Claude, Codex (`.codex/`), and Grok all route through the same `.claude/hooks/`
+implementations. Do not fork policy into Grok-only scripts.
 
-Grok silently skips **project** hooks until the project is explicitly trusted —
-a supply-chain guard so an untrusted repo can't run code on your machine. Grant
-trust once by adding the HQ root's absolute path to `~/.grok/trusted-hook-projects`
-(one path per line):
+## Lifecycle coverage
+
+The adapter handles:
+
+| Event | Role |
+|---|---|
+| `SessionStart` | Policy inject, local context, startwork, update check, … |
+| `UserPromptSubmit` | Resume sentinel, deep-plan route, session project, policy |
+| `PreToolUse` | **Blocking** secrets / core-write / HQ-root git / active-run / packages / skill routing / … |
+| `PostToolUse` | Checkpoint, registry capture, autocommit, journal due |
+| `Stop` | Observe patterns, cleanup, estimates |
+| `PreCompact` | Thrashing detector, precompact checkpoint + journal |
+
+Grok cannot inject Claude-style “additional context” from passive hooks the way
+Codex can; side-effect hooks still run. Blocking safety is PreToolUse-only
+(platform constraint).
+
+## One-time setup (required)
 
 ```sh
-core/scripts/grok-trust.sh   # preferred: idempotently trusts this tree, or:
-grok /hooks-trust            # from inside an interactive session, or:
-printf '%s\n' "$(git rev-parse --show-toplevel)" >> ~/.grok/trusted-hook-projects
+core/scripts/grok-trust.sh
 ```
 
-Until trusted, Grok runs unguarded. After trusting, HQ's guardrails enforce for
-Grok exactly as they do for Claude.
+That script:
+
+1. Trusts this HQ root in `~/.grok/trusted_folders.toml` (and legacy
+   `~/.grok/trusted-hook-projects` for older docs). **Folder trust is what
+   unlocks project `.grok/hooks` loading.**
+2. Installs `~/.grok/hooks/hq-hq-bridge.sh` + `.json` (PreToolUse only) so
+   blocking guards still fire if project hooks fail to load.
+3. Sets `[compat.claude] hooks = false` in `~/.grok/config.toml` so Grok does
+   **not** also load every project `.claude/settings.json` hook. HQ policy
+   still runs via bridge → adapter → `hook-gate.sh`.
+
+Re-run after `/update-hq` or whenever the project adapter changes.
+
+### Why a user bridge?
+
+On Grok Build **0.2.93**, until the HQ root is listed in
+`trusted_folders.toml`, `grok inspect` can report `projectTrusted: yes` while
+still loading **zero** project hooks. After `grok-trust.sh`, project
+`.grok/hooks` load **and** the user bridge provides a PreToolUse safety net.
+The bridge walks from cwd / `GROK_WORKSPACE_ROOT` to the nearest HQ root and
+execs the project adapter; outside HQ it fails open.
+
+Passive lifecycle events (SessionStart, PostToolUse, …) are registered on the
+**project** adapter only — not the user bridge — so advisory hooks do not
+triple-run once the project adapter is loaded.
+
+### Quieting noisy hook annotations
+
+Grok’s TUI draws a green check per hook under each tool call. If Claude
+compat still loads `.claude/settings.json`, you get ~50 `project/settings:…`
+lines **plus** the bridge/adapter on every tool use — messy and slow.
+
+HQ’s intended Grok path is thin:
+
+| Keep | Role |
+|---|---|
+| `~/.grok/hooks/hq-hq-bridge` | User PreToolUse safety net |
+| project `.grok/hooks/hq-grok*` | Full lifecycle → adapter → gate |
+
+| Turn off | Why |
+|---|---|
+| `[compat.claude] hooks = true` (default) | Duplicates the adapter with individual settings handlers |
+
+`grok-trust.sh` writes this for you:
+
+```toml
+# ~/.grok/config.toml
+[compat.claude]
+hooks = false
+```
+
+Optional (hides remaining annotations + `/hooks` UI entirely):
+
+```toml
+disable_plugins = true
+```
+
+Restart the Grok session (or `/hooks` → `r`) after changing `config.toml`.
 
 ## Verifying
 
-From the HQ root, ask Grok to write to a protected path (e.g. `core/scripts/x`).
-A trusted, correctly-wired setup blocks it with an HQ "protected scaffold" message;
-writes to `personal/` and other non-protected paths proceed normally.
+```sh
+# Doctor (Codex + Grok)
+bash core/scripts/codex-preflight.sh doctor
 
-## Headless enforcement — verified working (Grok 0.2.56)
+# Inspect: should list hq-hq-bridge under user hooks
+grok inspect | sed -n '/Hooks/,/^$/p'
 
-Verified empirically (2026-06-23): with the corrected adapter (real tool names
-`Shell`/`StrReplace` + a match-all matcher) and the project trusted, headless
-`grok -p` **executes** project `PreToolUse` hooks and honors `{"decision":"deny"}`
-/ exit 2. A `grok -p` shell write into `core/` is DENIED; a write into `personal/`
-is allowed.
+# Adapter unit checks (no network)
+bash core/scripts/tests/hq-grok-hook-adapter.test.sh
+```
 
-An earlier note here claimed `grok -p` could not run PreToolUse hooks. That was
-wrong — a Grok **fail-open masking two HQ bugs**: a test hook whose `command` path
-didn't resolve, and stale tool names (`run_terminal_command`/`search_replace`)
-that let `Shell`/`StrReplace` calls fall through unguarded. Both are fixed (commit
-`2f076b9`).
+Manual: from the HQ root, ask Grok to `git push` without `git -C` / `gh -R`,
+or to write a secret-bearing command. A correctly-wired setup denies with an
+HQ guard message. Writes under `personal/` proceed (unless other policies fire).
+
+> Note: if `.claude/settings.local.json` sets `env.HQ_BYPASS_CORE_PROTECT=1`,
+> core-write guards intentionally no-op. That is an operator choice, not a Grok
+> gap.
+
+## Headless invocation
+
+Policy: `core/policies/grok-build-cli-headless-invocation.md`
+
+```sh
+grok -p "<prompt>" --permission-mode acceptEdits --cwd <repo> --no-alt-screen --output-format plain
+```
+
+With the user bridge installed, PreToolUse still enforces under `bypassPermissions`
+(explicit hook denies win).
+
+## Skills and charter
+
+- Skills: `.agents/skills` → `.claude/skills` (Grok discovers both).
+- Charter: root `AGENTS.md` → `.claude/CLAUDE.md`.
+- Grok-only UI guidance: `.grok/rules/message-canvas.md`.
+- Grok-only swarm doctrine: `.grok/rules/prefer-swarms.md` (worker-backed
+  background swarms + durable `workspace/orchestrator/` handoffs).
+
+## Parity note
+
+This is **guardrail + lifecycle side-effect** parity with Codex’s adapter, not
+a line-for-line clone of every Claude `settings.json` hook (Claude still has
+the richest event surface and context-injection path). When Grok’s project-hook
+loader is fixed upstream, `hq-grok.json` is already registered for the same
+events so double-firing is harmless (idempotent / fail-open advisory hooks).

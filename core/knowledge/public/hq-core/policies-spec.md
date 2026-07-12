@@ -36,8 +36,8 @@ Each directory can have zero or more policy files. Policies are plain Markdown f
 ---
 id: {scope-prefix}-{slug}
 title: Short descriptive title
-scope: company | repo | command | global
-trigger: when-this-policy-applies
+when: <boolean trigger expression>   # e.g. always | git && push | deploy || share
+on: [<events>]                       # PreToolUse | PostToolUse | UserPromptSubmit | AssistantIntent | SessionStart
 enforcement: hard | soft
 version: 1
 created: YYYY-MM-DD
@@ -64,8 +64,8 @@ Optional. Concrete examples of correct and incorrect behavior under this policy.
 |-------|------|-------------|
 | `id` | string | Unique identifier: `{prefix}-{slug}` (e.g. `acmeflow-docs-update`, `hq-git-branch-verify`, `{product}-staging-first`) |
 | `title` | string | Human-readable title |
-| `scope` | enum | `company`, `repo`, `command`, `global`, `team`, `worker`, `project` |
-| `trigger` | string | When the policy applies (e.g. "before any task execution", "when deploying", "before any git commit") |
+| `when` | string | Boolean trigger expression evaluated just-in-time to inject the policy when relevant (e.g. `always`, `git && push`). See **Trigger Expressions** below. Scope is determined by the policy's **directory**, not a field. |
+| `on` | array | Evaluation site(s) for `when` — any of `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `AssistantIntent`, `SessionStart`. |
 | `enforcement` | enum | `hard` (must follow, blocks execution if violated) or `soft` (should follow, deviations noted) |
 | `version` | integer | Starts at 1, incremented on material changes |
 | `created` | date | ISO date of creation |
@@ -77,37 +77,9 @@ Optional. Concrete examples of correct and incorrect behavior under this policy.
 |-------|------|-------------|
 | `source` | string | Origin of the policy: `manual`, `migration`, `task-completion`, `back-pressure-failure`, `user-correction`, `pattern-repetition` |
 | `learned_from` | string | Task ID or session reference (for auto-generated policies) |
-| `command` | string | Command name (for `scope: command` policies only, e.g. `prd`, `email`) |
-| `applies_to` | array | Workspace stack tags (documentation only — the stack-based filtering it once drove was retired with the policy digest). Omit for cross-cutting policies. See **Applicability Tagging** below. |
-| `when` | string | Boolean trigger expression evaluated just-in-time to inject the policy when relevant. See **Trigger Expressions** below. |
-| `on` | array | Evaluation site(s) for `when` — any of `PreToolUse`, `UserPromptSubmit`, `PostToolUse`, `SessionStart`, or the pseudo-event `AssistantIntent` (AI-message-only facts). Defaults to `[PreToolUse]` when `when` is set and `on` is omitted. |
+| `command` | string | Command name for a command-scoped policy (e.g. `prd`, `email`); pair with a `when:` keyed on the `/command` token |
 
-### Applicability Tagging (`applies_to`)
-
-Stack-specific policies (Vercel, Shopify, Clerk, Expo/EAS, etc.) can be tagged so they only surface in workspaces that actually use the relevant service. Cross-cutting policies (git, bash, email, general HQ) omit the field and load everywhere.
-
-**Schema:**
-
-```yaml
-applies_to: [vercel, clerk]   # OR semantics — loads if ANY tag matches active stack
-```
-
-**Tag vocabulary:** reuse the `services:` enum from [`companies/manifest.yaml`](../../../companies/manifest.yaml) (attio, aws, clerk, shopify, stripe, supabase, linear, slack, expo, gmail, meta, ...) plus the inferred platform tags `vercel` (from `vercel_team:`) and `aws` (from `aws_profile:`). Never invent new tag values — run [`core/scripts/validate-policy-tags.sh`](../../../scripts/validate-policy-tags.sh) to lint against the enum.
-
-**When to tag:** only when the policy is *wrong or useless* without the service. Examples:
-
-- ✅ `vercel-env-no-trailing-newline` → `applies_to: [vercel]` (Vercel-specific env-var quirk)
-- ✅ `clerk-vercel-edge-removal` → `applies_to: [clerk, vercel]` (spans two stacks)
-- ❌ `hq-git-branch-verify` (generic git hygiene — no tag, loads everywhere)
-- ❌ A deployment policy that *mentions* Vercel as one example among many — do NOT tag; transitive mentions don't count
-
-**Semantics:**
-
-- **OR across tags:** `[clerk, vercel]` means "load if the workspace has clerk OR vercel."
-- **Missing field:** policy has no stack restrictions → always loads (the 89%+ case).
-- **Unknown active stack:** if the workspace hasn't declared a service set (`services: []` and no `vercel_team`/`aws_profile`), the filter treats it as "unknown" and loads all policies — fail-open, same as untagged.
-
-**Status of `applies_to` filtering:** The `applies_to` field remains a documented part of the policy schema, but its **stack-based digest-filtering behavior was retired together with the policy digest**. The former pipeline — `build-policy-digest.sh` embedding `applies_to` as an HTML-comment suffix on each digest line, and `load-policies-for-session.sh` resolving the active service set from `manifest.yaml`/`stack.yaml` to drop disjoint lines — no longer exists. The current SessionStart trigger hook (`inject-policy-on-trigger.sh`) injects on:[SessionStart] policies and does **not** stack-filter on `applies_to`. Keep tagging stack-specific policies for documentation/clarity, but do not rely on `applies_to` to suppress a policy at runtime.
+> **Removed:** the `applies_to` field and its stack-based filtering have been removed from the policy schema. Scope stack-specificity through the `when:` expression instead (e.g. `when: vercel`).
 
 ### Trigger Expressions (`when:` / `on:`)
 
@@ -228,7 +200,7 @@ are not treated as commands.
 not stay untriggered: [`core/scripts/migrate-policy-triggers.sh`](../../../scripts/migrate-policy-triggers.sh)
 runs as a SessionStart hook and derives a trigger from the policy's own
 metadata — `when:` from its `tags:` (topical vocabulary, `vendor:x`→`x`, meta
-tags dropped) OR'd with an action expression parsed from its `trigger:` prose;
+tags dropped);
 `on: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]` (every live
 event — `when:` does the filtering). If neither tags nor trigger yield a signal
 it falls back to `when: always` + `on: [SessionStart]`. The script is **strictly
@@ -257,7 +229,7 @@ state. Hand-tuning a generated trigger is therefore permanent.
    - `companies/{co}/policies/` (determine company from context — at SessionStart this resolves from cwd, the owning repo via `manifest.yaml`, or the `company_slug` persisted to the session by `/startwork`)
    - `{repo}/.claude/policies/` (if working inside a repo)
    - `core/policies/` (always — this already includes operator rules authored in `personal/policies/`, which are symlinked in)
-2. Read each policy's `trigger` field to determine if it applies to the current task
+2. The `when:` / `on:` fields decide when each policy is injected just-in-time (see **Trigger Expressions**); an injected policy applies to the current task
 3. Follow all applicable `hard` enforcement policies — violation blocks task completion
 4. Follow all applicable `soft` enforcement policies — deviations are acceptable with justification
 5. **Precedence:** company > repo > command > global. If policies conflict, higher-precedence wins
@@ -296,21 +268,18 @@ These are always loaded regardless of company or repo context. They have the low
 
 ## Command-Scoped Policies
 
-Policies that apply to specific HQ commands live at `core/policies/` with `scope: command` and an additional `command: {name}` frontmatter field.
+Policies that apply to specific HQ commands live at `core/policies/`. They fire when the command is invoked or referenced by keying `when:` on the slash-command token.
 
 Example:
 ```yaml
 ---
 id: hq-cmd-prd-question-batching
 title: Limit PRD Discovery Question Batches
-scope: command
-command: prd
-trigger: during /plan discovery phase
+when: /prd || /plan
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 ---
 ```
-
-These are loaded when the specified command is invoked.
 
 ## Relationship to Other HQ Concepts
 

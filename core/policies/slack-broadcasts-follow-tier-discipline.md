@@ -1,8 +1,6 @@
 ---
 id: hq-slack-broadcasts-follow-tier-discipline
 title: Slack broadcasts must follow work-broadcast skill tier discipline
-scope: global
-trigger: any Slack channel broadcast announcing completed/shipped/proposed work (PR open, feature ship, infra change, milestone)
 when: slack
 on: [PreToolUse, UserPromptSubmit]
 enforcement: hard

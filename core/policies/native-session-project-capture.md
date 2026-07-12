@@ -1,8 +1,6 @@
 ---
 id: native-session-project-capture
 title: Native sessions get project capture, but reuse related projects first
-scope: global
-trigger: UserPromptSubmit for non-trivial native Claude/Codex work outside explicit /prd, /plan, /deep-plan, /run-project, /execute-task, /startwork, or /brainstorm flows
 when: project || prd
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

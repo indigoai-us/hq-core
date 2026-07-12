@@ -1,8 +1,6 @@
 ---
 id: hq-customizations-live-in-personal-or-company
 title: Customizations live in personal/ or companies/{co}/ — never edit core/ to personalize
-scope: global
-trigger: authoring or editing any policy, knowledge, worker, skill, hook, or setting
 when: policy || worker || skill || knowledge
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

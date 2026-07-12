@@ -1,8 +1,6 @@
 ---
 id: hq-never-fabricate-research-artifacts
 title: Never fabricate research artifacts a command did not actually gather
-scope: global
-trigger: a command produces a research/discovery artifact (brainstorm.md, codebase-scan.md, repo-analysis.md, etc.)
 when: /brainstorm || /discover || /deep-plan
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

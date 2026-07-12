@@ -1,8 +1,6 @@
 ---
 id: hq-hook-json-build-with-jq-not-unquoted-heredoc
 title: Build hook additionalContext JSON with jq, never an unquoted heredoc containing backticks
-scope: global
-trigger: a hook (PreToolUse/SessionStart/PostToolUse/etc.) emits hookSpecificOutput.additionalContext JSON containing a message body
 when: .sh || hook
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

@@ -1,8 +1,6 @@
 ---
 id: credential-access-protocol
 title: Credential Access Protocol
-scope: global
-trigger: before any credential or settings access
 when: secret || credential || credentials || password || passphrase || token || apikey || api_key
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: hard
@@ -10,7 +8,6 @@ version: 1
 created: 2026-03-05
 updated: 2026-05-13
 source: policy-slimming
-applies_to: [aws]
 vendor_public_ok: true
 tags: [deployment, data-handling, infrastructure]
 public: true

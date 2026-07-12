@@ -1,8 +1,6 @@
 ---
 id: hq-permissions-fan-out-edit-write-multiedit
 title: Fan out permission patterns across Edit, Write, and MultiEdit
-scope: global
-trigger: When adding entries to `permissions.allow` or `permissions.deny` in any `.claude/settings.json` or `.claude/settings.local.json`
 when: settings.json || settings.local.json
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

@@ -1,8 +1,6 @@
 ---
 id: hq-no-parent-import-from-child-component
 title: Never import parent-shell modules from a child component — duplicate small utilities locally
-scope: global
-trigger: React/TS refactors, component extraction, shared utility/palette/label extraction
 when: .tsx || refactor
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

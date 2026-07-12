@@ -1,8 +1,6 @@
 ---
 id: hq-db-query-probe-real-table
 title: Probe the real table when shipping a new DB query pattern
-scope: global
-trigger: adding or changing a DynamoDB / SQL / Mongo query shape in a production code path
 when: query || sql
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

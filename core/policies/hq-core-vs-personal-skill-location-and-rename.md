@@ -1,8 +1,6 @@
 ---
 id: hq-core-vs-personal-skill-location-and-rename
 title: Core skills live at .claude/skills/; personal skills are authored in personal/skills/ and bridged
-scope: global
-trigger: creating, renaming, moving, or deleting an HQ skill (core vs personal)
 when: skill
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

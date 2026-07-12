@@ -1,8 +1,6 @@
 ---
 id: hq-claude-code-default-mode-plan-not-auto
 title: "Claude Code defaults to plan mode; auto mode is operator opt-in, advised against"
-scope: global
-trigger: Configuring Claude Code permission mode in a shipped HQ .claude/settings.json, or auditing a teammate's HQ install for permission posture
 when: settings.json || settings.local.json
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

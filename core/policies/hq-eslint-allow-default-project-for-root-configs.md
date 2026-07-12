@@ -1,8 +1,6 @@
 ---
 id: hq-eslint-allow-default-project-for-root-configs
 title: Register new root-level config files in typescript-eslint allowDefaultProject
-scope: global
-trigger: adding a root-level config file (e.g. `vitest.e2e.config.ts`, `playwright.config.ts`) to a TypeScript project with typescript-eslint
 when: eslint
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

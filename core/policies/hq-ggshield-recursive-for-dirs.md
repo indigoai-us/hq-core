@@ -1,8 +1,6 @@
 ---
 id: hq-ggshield-recursive-for-dirs
 title: Pass --recursive --yes when scanning directories with ggshield
-scope: global
-trigger: invoking ggshield secret scan path <target> where target is a directory
 when: secret || credential || credentials || password || passphrase || token || apikey || api_key
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft

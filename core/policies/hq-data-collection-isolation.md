@@ -1,8 +1,6 @@
 ---
 id: hq-data-collection-isolation
 title: Isolate high-volume data collection from parent session
-scope: global
-trigger: Any recurring monitoring, dashboard, health check, or bulk data pull
 when: monitor || dashboard
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

@@ -1,8 +1,6 @@
 ---
 id: auto-deploy-on-create
 title: Auto-deploy deployable artifacts on creation
-scope: global
-trigger: after-build, after-execute-task, after-run-project, after-prd
 when: build || deploy
 on: [UserPromptSubmit, AssistantIntent, PreToolUse, PostToolUse]
 enforcement: soft

@@ -1,8 +1,6 @@
 ---
 id: hq-pre-deploy-domain-check
 title: Check Domain Ownership Before Vercel Deploys
-scope: global
-trigger: before any Vercel deploy or domain assignment
 when: deploy
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft

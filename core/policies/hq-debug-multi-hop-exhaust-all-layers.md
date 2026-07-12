@@ -1,8 +1,6 @@
 ---
 id: hq-debug-multi-hop-exhaust-all-layers
 title: Multi-hop debugging — exhaust every layer before declaring fixed
-scope: global
-trigger: debugging a broken end-to-end flow with multiple hops (browser → CDN → app → upstream API → DB)
 when: debug
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft

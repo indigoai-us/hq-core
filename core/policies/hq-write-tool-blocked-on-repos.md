@@ -1,8 +1,6 @@
 ---
 id: hq-write-tool-blocked-on-repos
 title: "Write/Edit tool is blocked on repos/ paths — use a worktree for code, Bash heredoc for knowledge"
-scope: global
-trigger: "Editing files under repos/, or via symlinks that resolve into repos/ (e.g. companies/{co}/knowledge -> repos/private/knowledge-{co})"
 when: always
 on: [SessionStart]
 enforcement: hard

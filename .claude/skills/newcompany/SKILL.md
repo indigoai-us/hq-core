@@ -1,6 +1,6 @@
 ---
 name: newcompany
-description: Scaffold a new HQ company AND optionally take it all the way to operational — business-discovery interview, seeded knowledge/workers/skills/projects, connected integrations, org groups + ACL rules, teammate invites, and optional cloud agents.
+description: Scaffold a new HQ company AND optionally take it all the way to operational — business-discovery interview, seeded knowledge/workers/skills/projects, brand design packs (generated from website/PDF/Drive and bound to deploys via policy), connected integrations, org groups + ACL rules, teammate invites, and optional cloud agents.
 allowed-tools: Read, Write, Edit, Bash, AskUserQuestion
 ---
 
@@ -189,6 +189,84 @@ Skip → leave knowledge/projects empty (still valid).
 
 ---
 
+## Phase 2.5 — Brand & Design Packs (NEW, optional)
+
+Turn the company's existing brand into one or more **design packs** so every downstream
+surface (deploy reports, landing pages, decks, project summaries, worker-generated UI)
+ships on-brand from day one. Governing policies: `hq-company-brand-pack-location`,
+`hq-bind-company-brand-pack-as-deploy-default`, `hq-worker-dynamic-context-company-packs`.
+
+### 2.5.1 Pick the brand source
+
+Ask (`AskUserQuestion`): "Where's the best source to learn {Name}'s brand from?"
+- **Website** — ask for the URL; fetch key pages, extract palette, type, spacing, voice,
+  imagery style from live CSS + rendered pages.
+- **Brand guide PDF** — ask for the file path (or drop path `companies/{slug}/data/imports/`);
+  read via the pdf skill and extract the codified system.
+- **Google Drive / Notion / Figma doc** — ask for a link or an export; if not directly
+  readable, give export instructions + the drop path and record a finish-later task.
+- **Existing repo** — point at a repo with a `design.md` / tokens / component library and
+  extract from source.
+- **No brand yet** — offer to synthesize a starter brand from the Phase 1 business
+  description (industry, audience, positioning), clearly marked `status: draft`.
+- **Skip** — no packs; note "run brand-pack creation later" in the finish checklist.
+
+If the source is only partially readable (e.g. Drive link without access), fail soft:
+extract what you can, record the gap as a finish-later task. Never block the phase.
+
+### 2.5.2 Decide pack count
+
+Default is **one** brand pack (`{slug}-brand`). Offer more only when the interview or
+source reveals genuinely distinct visual systems (e.g. separate product brands, or a
+"marketing" vs "internal docs" split). One pack per distinct system, each with its own id.
+
+### 2.5.3 Build each pack
+
+Create `companies/{slug}/knowledge/design-styles/packs/{pack-id}/` with the five required
+files (schema: `core/knowledge/public/design-styles/PACK-SCHEMA.md`; reference example:
+any existing pack under `companies/{co}/knowledge/design-styles/packs/`):
+
+- `pack.yaml` — `type: brand`, `scope` implied company; fill `aesthetic`, `origin`
+  (cite the source used), `contents`, `compatibility`, `context_paths` (required:
+  `implementation.md`, `design-tokens.css`).
+- `style-guide.md` — the visual reference: palette with hex values, type roles, spacing,
+  imagery/voice notes extracted from the source.
+- `implementation.md` — code-level system: component patterns, layout rules, do/don't.
+- `design-tokens.css` — CSS custom properties.
+- `design-tokens.json` — same tokens in DTCG format.
+
+NEVER place company packs under `knowledge/public/design-styles/packs/` — that's shared
+packs only.
+
+### 2.5.4 Register the pack
+
+Add each pack to `repos/public/knowledge-design-styles/registry.yaml` under Brand Packs:
+`type: brand`, `status: active`, `scope: company`, `company: {slug}`,
+`path: companies/{slug}/knowledge/design-styles/packs/{pack-id}/`, plus the one-line
+`aesthetic`. Consumers reference packs by `id` only — the registry resolves the path.
+
+### 2.5.5 Wire packs to use cases via policies
+
+Ask which surfaces should default to the pack (multi-select; pre-select deploy):
+- **Deploy artifacts** (reports, dashboards, share pages) — write a company-scoped
+  **hard** policy at `companies/{slug}/policies/{slug}-deploy-report-brand-pack.md`
+  binding the pack path as the `/deploy` default (pattern:
+  `hq-bind-company-brand-pack-as-deploy-default`). The global
+  Midnight Editorial default already cedes to a bound company pack — no core edits.
+- **Marketing / landing pages** — extend the same policy (or a sibling) to cover
+  landing-page and public-site artifacts, naming the marketing pack if distinct.
+- **Repos** — for each associated repo that ships UI, offer to add/update the repo's
+  `design.md` with `style-pack: {pack-id}`.
+- **Project summaries / decks** — note in the policy that `/project-summary` and deck
+  artifacts use the pack.
+
+One policy file per pack-binding decision, company-scoped, standard policy frontmatter
+(`scope: company`, `enforcement: hard`, `when: deploy || design`).
+
+Skip → no packs; deploy artifacts fall back to HQ Midnight Editorial.
+
+---
+
 ## Phase 3 — Synthesize Workers + Skills (NEW, optional)
 
 Cluster the functions/workflows from Phase 1 into proposed workers, reusing the
@@ -204,6 +282,11 @@ Cluster the functions/workflows from Phase 1 into proposed workers, reusing the
    The `auto-mirror-company-skill` hook bridges them to `.claude/skills/{prefix}-{name}/`
    so they're callable as `/{prefix}-{name}`. Do NOT write the mirror symlink yourself —
    the hook does it (and `route-company-skill-creation.sh` blocks direct prefix writes).
+4. **Design-pack wiring:** if Phase 2.5 created packs, any pack-consuming worker
+   (frontend-designer-style roles) MUST get a `dynamic` context entry pointing to
+   `companies/{slug}/knowledge/design-styles/packs/` in its worker.yaml — without it the
+   registry resolves the pack but the worker can't load it (policy
+   `hq-worker-dynamic-context-company-packs`).
 
 Skip → no workers/skills synthesized.
 
@@ -308,6 +391,7 @@ Skip → no agents (the most likely default; it's a deliberate step).
   Directory: companies/{slug}/  (prefix: {prefix})
   Cloud: {provisioned | local-only — run /designate-team {slug} to enable team features}
   Knowledge: {N seeded docs | empty}
+  Design packs: {pack ids + bound surfaces | none — deploy falls back to HQ Midnight Editorial}
   Workers/Skills: {list | none}
   Projects: {N ideas on the board | none}
   Integrations: {connected list | none} · Finish later: {classified manual/script items}
@@ -324,6 +408,7 @@ Skip → no agents (the most likely default; it's a deliberate step).
 - Always write `company.yaml` with `cloud: false`; only `/designate-team` flips it. Never default to `cloud: true`.
 - Every `hq` call carries `--company {slug}`. Never collect raw secrets in chat — mint links.
 - Don't fake integrations: tools without an easy key become tracked tasks (manual export / ingestion script), not silent no-ops.
+- Design packs go in `companies/{slug}/knowledge/design-styles/packs/` (never the shared public packs dir), get registered in `repos/public/knowledge-design-styles/registry.yaml`, and bind to surfaces via company-scoped policies — never by editing core deploy infra.
 - Reuse `/designate-team`, `/newworker`, `/idea`, `/plan`, `hq groups|secrets|files|invite`, and the cloud-agent provisioning path — don't reimplement them.
 
 ## See also
