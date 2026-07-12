@@ -32,3 +32,11 @@
 - path: "core/scripts/tests/hook-path-resolution.test.sh"
   scanners: [pii]
   reason: "Disposable git-config identity in throwaway test fixtures uses an RFC 2606 reserved .test address (example.test — never resolvable in DNS, no real mailbox); placeholder, not PII."
+
+- path: "core/scripts/__tests__/work-mesh.test.mjs"
+  scanners: [pii]
+  reason: "Work Mesh unit-test fixtures use loopback IPs, an RFC 2606 .test address, UUID-shaped IDs, and integer boundary values; none are real personal data."
+
+- path: "test/__tests__/stories/US-011.test.mjs"
+  scanners: [pii]
+  reason: "Work Mesh acceptance tests bind an ephemeral in-process server to the IPv4 loopback address; the address is infrastructure test data, not PII."
