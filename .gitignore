@@ -83,6 +83,12 @@ companies/*/settings/*.env
 companies/*/settings/*.env.*
 companies/*/settings/secrets/
 
+# Work Mesh transcript staging (company-work-corpus US-004). Full-content,
+# tenant-scoped session transcripts copied here by the close hook must NEVER
+# enter HQ-root git history — they are locally-staged for hq-sync only. Excluded
+# from autocommit (respects gitignore) and from qmd/Grep (see .ignore).
+companies/*/sessions/
+
 # Obsidian runtime (keep shipped config, ignore personal state)
 .obsidian/workspace.json
 .obsidian/workspace-mobile.json

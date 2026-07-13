@@ -11,8 +11,8 @@
 #     workspace/sessions/.current to point at it.
 #   - Read company_slug from meta.yaml. If unset, run NO company hooks.
 #     This is intentional — startwork (or any skill) is responsible for
-#     calling `core/scripts/hq-session.sh set company <slug>` once context is
-#     resolved. Until that happens, only top-level .claude/hooks fire.
+#     calling `core/scripts/hq-session.sh set company_slug <slug>` once context
+#     is resolved. Until that happens, only top-level .claude/hooks fire.
 #
 # Discovery (in dispatch order):
 #   core/hooks/<event-name>/*.sh                  — always-on repo defaults
