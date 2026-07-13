@@ -95,7 +95,31 @@ cmd_set() {
   # that gap. Emits policy text only — never secrets.
   if [ "$key" = "company_slug" ] && [ -n "$value" ] && [ "$value" != "$prev" ]; then
     emit_company_hard_policies "$value"
+    # Fire-and-forget: register this company bind with the Work Mesh (US-003).
+    # Fully silent (all output → the hook's own bounded log) and guarded so it
+    # can neither fail cmd_set under `set -euo pipefail` nor delay its return.
+    spawn_work_mesh_register "$id" || true
   fi
+}
+
+# Spawn the client-side Work Mesh registration hook, detached, for a mid-session
+# company bind. No-ops silently when the hook or jq is absent (e.g. sandboxed
+# tests copy only hq-session.sh). Never blocks: the hook itself is fire-and-forget
+# and this backgrounds even its fast foreground path off cmd_set's return path.
+spawn_work_mesh_register() {
+  local sid="$1"
+  local hook="$REPO_ROOT/core/hooks/work-mesh-register.sh"
+  local logf="$REPO_ROOT/workspace/logs/work-mesh-hook.log"
+  [ -x "$hook" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local ev
+  ev="$(jq -nc --arg sid "$sid" --arg cwd "${PWD:-}" '{session_id:$sid,cwd:$cwd}' 2>/dev/null)" || return 0
+  [ -n "$ev" ] || return 0
+  mkdir -p "$(dirname "$logf")" 2>/dev/null || true
+  HQ_ROOT="$REPO_ROOT" nohup bash -c 'printf "%s" "$1" | "$2" company_slug' _ "$ev" "$hook" \
+    >>"$logf" 2>&1 </dev/null &
+  disown 2>/dev/null || true
+  return 0
 }
 
 # Print a company's hard-enforcement policies, read directly from the policy

@@ -18,3 +18,7 @@ dist/
 **/browser-state/
 **/credentials.json
 **/token.json
+
+# Work Mesh transcript staging (company-work-corpus US-004) — full-content,
+# tenant-scoped session transcripts must never surface in qmd/Grep or /search.
+companies/*/sessions/
