@@ -15,6 +15,16 @@ registered its MCPs.
 **Provisioning is not done when grants are issued. It is done when the agent
 confirms, from its own runtime, that every capability mounts.**
 
+> **Billing gate (paid resource).** A cloud fleet agent is a paid resource —
+> **$100/month** on the company's payer. Before creating one, get the operator's
+> explicit approval of that recurring charge, and never provision silently. The
+> `hq agents provision` command enforces this: it prints the monthly cost and
+> refuses to run without `--yes`, and if the company has no card on file it
+> returns a Stripe card-capture link instead of an opaque failure. Hand that link
+> to whoever owns billing, wait until a card is added, then re-run. Do not try to
+> work around the gate. This applies only to **create mode** — repairing an
+> existing agent's access grants nothing paid and needs no approval.
+
 **Usage:**
 ```
 /new-agent                      # interview from scratch
@@ -29,7 +39,7 @@ layer above it silently useless:
 
 | Layer | What it is | Granted by | Verified by |
 |---|---|---|---|
-| 1. Identity | Cognito principal + agent email (`agt-<ulid>@agents.{your-domain}.ai`) | hq-pro provisioning / `hq members invite` | `hq whoami` on the agent runtime |
+| 1. Identity | Cognito principal + agent email (`agt-<ulid>@agents.{your-domain}.ai`) | `hq agents provision` (paid — billing-gated) / `hq members invite` | `hq whoami` on the agent runtime |
 | 2. Membership | Row in the company's member list | `hq members invite` + `/accept` on the agent runtime | `hq members list --company {co}` |
 | 3. Team vault | Company directory synced into the agent's HQ | company is cloud-backed (`/designate-team`) + `hq team-sync` on the agent runtime | agent sees `companies/{co}/` locally |
 | 4. Secrets & files | Read grants on vault secrets + file ACLs | `hq secrets share`, `hq files` | `hq secrets list --company {co}` on the agent runtime |
@@ -48,8 +58,14 @@ produces the exact bootstrap block and verifies via probe instead.
   ids in the EMAIL column.
 - If the agent exists → **repair mode**: diff what it has against what it
   needs, grant only the gaps.
-- If not → **create mode**: the identity comes from hq-pro agent provisioning
-  (or invite an agent email directly if one was already issued).
+- If not → **create mode**: provision the paid agent box through the billing
+  gate — `hq agents provision {name} --company {co} [--provider codex|grok]`.
+  This prints the **$100/month** cost and requires `--yes` to proceed; approve it
+  with the operator first. If the company has no card on file the command returns
+  a Stripe card-capture link instead of provisioning — hand that link to whoever
+  owns billing, wait until a card is added, then re-run. (If an agent email was
+  already issued out-of-band, you can invite it directly with `hq members invite`
+  instead.)
 - Company must resolve to a slug in `companies/manifest.yaml` **and** be
   cloud-backed (`cloud_uid` present). If it is not cloud-backed, stop and route
   to `/designate-team` first — without a cloud entity there is no team vault to
