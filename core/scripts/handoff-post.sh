@@ -73,6 +73,21 @@ else
   log "document-release: skipped (no thread path)"
 fi
 
+# --- 3b. Work Mesh close: reconcile the session + (gated) transcript copy ---
+# US-004: fire the close hook DETACHED + non-blocking so /handoff posts the
+# authoritative outcome and hands off a vetted transcript. The hook resolves the
+# session from workspace/sessions/.current (no hook stdin on this path), is
+# fully fail-soft, and never blocks handoff. Guarded so an older checkout
+# without the hook simply skips it.
+WM_CLOSE_HOOK="$HQ_ROOT/core/hooks/work-mesh-close.sh"
+if [[ -f "$WM_CLOSE_HOOK" ]]; then
+  HQ_ROOT="$HQ_ROOT" nohup bash "$WM_CLOSE_HOOK" close >>"${LOG_DIR}/work-mesh-close.log" 2>&1 </dev/null &
+  disown 2>/dev/null || true
+  log "work-mesh-close: launched PID $!"
+else
+  log "work-mesh-close: skipped (hook absent)"
+fi
+
 # --- 4. qmd reindex (background, fire-and-forget) ---
 if command -v qmd >/dev/null 2>&1; then
   nohup bash -c 'qmd cleanup 2>/dev/null; qmd update 2>/dev/null && qmd embed 2>/dev/null' \

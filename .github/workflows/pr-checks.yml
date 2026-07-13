@@ -290,6 +290,27 @@ jobs:
       - name: block-core-writes-bash target-aware write detection
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
 
+  work-mesh-tests:
+    # Wire the company-work-corpus hook suites explicitly without enabling
+    # unrelated legacy scripts in the broader tests directory.
+    name: work-mesh-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Work Mesh client-hook test scripts
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tests=(core/scripts/tests/work-mesh-*.test.sh)
+          if [ ${#tests[@]} -eq 0 ]; then
+            echo "no core/scripts/tests/work-mesh-*.test.sh found" >&2
+            exit 1
+          fi
+          for t in "${tests[@]}"; do
+            echo "=== $t ==="
+            bash "$t"
+          done
+
   work-mesh-v2:
     name: work-mesh-v2
     runs-on: ubuntu-latest
