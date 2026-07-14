@@ -15,11 +15,17 @@
 #     --files-touched-json '["path1","path2"]' \
 #     --learnings-json '[]' \
 #     --tags-json '["handoff"]' \
-#     --slug "handoff-short-tag"
+#     --slug "handoff-short-tag" \
+#     --next-command "/startwork"
+#
+# --next-command is copied to the user's clipboard fail-soft (pbcopy /
+# wl-copy / xclip) so the follow-up command is ready to paste into a fresh
+# session. Defaults to "/resumework {thread_id}". Pass "" to skip the copy.
 #
 # Outputs JSON on stdout:
 #   {"thread_id":"...","thread_path":"...","handoff_path":"...",
-#    "hq_committed":true,"indexes_regen":true,"qmd_pid":12345}
+#    "hq_committed":true,"indexes_regen":true,"qmd_pid":12345,
+#    "next_command":"/resumework T-...","clipboard_copied":true}
 
 set -euo pipefail
 
@@ -35,6 +41,7 @@ FILES_TOUCHED_JSON="[]"
 LEARNINGS_JSON="[]"
 TAGS_JSON='["handoff"]'
 SLUG="handoff"
+NEXT_COMMAND="__auto__"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --learnings-json) LEARNINGS_JSON="$2"; shift 2 ;;
     --tags-json) TAGS_JSON="$2"; shift 2 ;;
     --slug) SLUG="$2"; shift 2 ;;
+    --next-command) NEXT_COMMAND="$2"; shift 2 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -286,6 +294,19 @@ if command -v qmd >/dev/null 2>&1; then
   QMD_PID=$!
 fi
 
+# -------- copy next-step command to clipboard (fail-soft) --------
+[[ "$NEXT_COMMAND" == "__auto__" ]] && NEXT_COMMAND="/resumework ${THREAD_ID}"
+CLIPBOARD_COPIED="false"
+if [[ -n "$NEXT_COMMAND" ]]; then
+  if command -v pbcopy >/dev/null 2>&1; then
+    printf '%s' "$NEXT_COMMAND" | pbcopy 2>/dev/null && CLIPBOARD_COPIED="true"
+  elif command -v wl-copy >/dev/null 2>&1; then
+    printf '%s' "$NEXT_COMMAND" | wl-copy 2>/dev/null && CLIPBOARD_COPIED="true"
+  elif command -v xclip >/dev/null 2>&1; then
+    printf '%s' "$NEXT_COMMAND" | xclip -selection clipboard 2>/dev/null && CLIPBOARD_COPIED="true"
+  fi
+fi
+
 # -------- emit result --------
 jq -n \
   --arg thread_id "$THREAD_ID" \
@@ -300,6 +321,8 @@ jq -n \
   --argjson skipped_paths "$SKIPPED_PATHS_JSON" \
   --argjson baseline_noise_count "$BASELINE_NOISE_COUNT" \
   --arg commit_after_finalize "$COMMIT_AFTER" \
+  --arg next_command "$NEXT_COMMAND" \
+  --argjson clipboard_copied "$CLIPBOARD_COPIED" \
   '{
     thread_id: $thread_id,
     thread_path: $thread_path,
@@ -312,5 +335,7 @@ jq -n \
     baseline_noise_count: $baseline_noise_count,
     indexes_regen: $indexes_regen,
     qmd_pid: $qmd_pid,
-    git_bg_errors: $git_bg_errors
+    git_bg_errors: $git_bg_errors,
+    next_command: $next_command,
+    clipboard_copied: $clipboard_copied
   }'

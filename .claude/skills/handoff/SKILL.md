@@ -78,6 +78,8 @@ core/scripts/handoff-finalize.sh \
   --slug "{short-hyphenated-slug}"
 ```
 
+The script also copies the next-step command to the user's clipboard (fail-soft; pbcopy/wl-copy/xclip). Default is `/resumework {thread_id}`. If a different command is the right continuation, pass it explicitly via `--next-command "{command}"`.
+
 `--files-touched-json` is the session changeset boundary. Pass precise paths for files/directories intentionally changed this session. It may be an array of strings or objects:
 
 ```json
@@ -96,7 +98,8 @@ The script emits a single JSON line to stdout:
  "changeset_path":"workspace/threads/T-...changeset.json",
  "handoff_path":"workspace/threads/handoff.json","hq_committed":true,
  "committed_paths":["..."],"skipped_paths":[],"baseline_noise_count":123,
- "indexes_regen":true,"qmd_pid":"12345","git_bg_errors":""}
+ "indexes_regen":true,"qmd_pid":"12345","git_bg_errors":"",
+ "next_command":"/resumework T-...","clipboard_copied":true}
 ```
 
 **Capture `thread_path` from the result** — you need it for Step 4. Keep `changeset_path`, `committed_paths`, `skipped_paths`, and `baseline_noise_count` for the final report.
@@ -177,8 +180,11 @@ Background work dispatched:
 
 To continue in a fresh session:
   1. Start a new session
-  2. Run: /resumework {thread_id}   (resumes THIS handoff exactly)
-     — or /startwork to resume the latest handoff / pick a new target
+  2. Run: {next_command} — already copied to your clipboard, just paste
+     (resumes THIS handoff exactly; or /startwork to resume the latest
+     handoff / pick a new target)
+
+If `clipboard_copied` was false, drop the "already copied" phrasing and just show the command.
 
 If `git_bg_errors` was non-empty, append:
 ⚠ Knowledge repo git errors: {git_bg_errors}
