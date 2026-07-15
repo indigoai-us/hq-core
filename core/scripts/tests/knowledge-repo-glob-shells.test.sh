@@ -54,7 +54,7 @@ make_fixture() {
   esac
 
   git init -q "$repo"
-  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.email [EMAIL]
   git -C "$repo" config user.name test
   printf 'tracked\n' > "$repo/state.txt"
   git -C "$repo" add state.txt

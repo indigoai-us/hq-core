@@ -85,7 +85,7 @@ make_repo() {
   shift
   mkdir -p "$repo"
   git -C "$repo" init -q -b main
-  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.email [EMAIL]
   git -C "$repo" config user.name 'Run Project Test'
   printf 'fixture\n' > "$repo/README.md"
   local lockfile
