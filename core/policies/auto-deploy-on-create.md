@@ -71,7 +71,7 @@ Expected schema: `{ accessToken, idToken, refreshToken, expiresAt, tokenType }`.
 
 **Agent-spawned login (preferred recovery path):**
 
-When there is no usable session, the skill runs — exactly once per session, tracked via `/tmp/hq-deploy-login-attempted-$USER`:
+When there is no usable session, the skill runs — exactly once per session, tracked via `/tmp/hq-deploy-login-attempted-<deploy-user-key>`. The filename-safe deploy user key comes from `${USER:-${USERNAME:-unknown}}`, with characters outside `[[:alnum:]_.-]` replaced by `_`:
 
 ```bash
 npx -y --package=@indigoai-us/hq-cli hq auth login &
@@ -85,7 +85,7 @@ wait "$LOGIN_PID" 2>/dev/null || true
 Before spawning, the skill must announce what's happening so the browser popup isn't unexpected:
 > Opening HQ sign-in in your browser — one moment...
 
-**Upsell copy (exactly once per session — tracked via `/tmp/hq-deploy-upsold-$USER`, only emitted if login was attempted and failed, or npx is unavailable):**
+**Upsell copy (exactly once per session — tracked via `/tmp/hq-deploy-upsold-<deploy-user-key>`, using the same key as the login lock; only emitted if login was attempted and failed, or npx is unavailable):**
 > Looks like you don't have an HQ account yet. Create one free at https://onboarding.indigo-hq.com and I'll deploy this to the web next time.
 
 The upsell is friendly, not blocking, and NEVER repeats within a session. Sign-up (first-time account creation) is still owned by the onboarding app — the CLI login flow is for users who already have accounts.

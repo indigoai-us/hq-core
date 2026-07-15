@@ -98,28 +98,79 @@ rm -f "$TB"
 # 6. Wire access mode.
 APP_ID="$(curl -s -H "Authorization: Bearer $JWT" "$API/api/apps" \
   | jq -r --arg n "$APP_NAME" '.apps[]?|select(.name==$n)|.id' | head -1)"
+[ -n "$APP_ID" ] && [ "$APP_ID" != "null" ] || fail "app_id_unresolved"
 
-if [ -n "$CO_UID" ]; then
-  # Company-gated: restrict to active members of the project's company.
-  curl -s -X PUT "$API/api/apps/$APP_ID/access-policy" \
+is_2xx() { [[ "$1" =~ ^2[0-9]{2}$ ]]; }
+
+read_app_state() {
+  local response status
+  response="$(curl -sS -w $'\n%{http_code}' -H "Authorization: Bearer $JWT" \
+    "$API/api/apps/$APP_ID" || true)"
+  status="${response##*$'\n'}"
+  is_2xx "$status" || return 1
+  APP_STATE="${response%$'\n'*}"
+}
+
+verify_gate() {
+  local expected_mode="$1" expected_uid="${2:-}" attempt state_mode state_uid protected
+  for attempt in 1 2 3; do
+    if read_app_state; then
+      state_mode="$(printf '%s' "$APP_STATE" | jq -r '.accessPolicy.mode // .accessMode // empty')"
+      state_uid="$(printf '%s' "$APP_STATE" | jq -r '.accessPolicy.companyUid // empty')"
+      protected="$(printf '%s' "$APP_STATE" | jq -r '.passwordProtected // false')"
+      GATE="$(curl -sS -o /dev/null -w '%{http_code}' "$LIVE/" || true)"
+      if [ "$GATE" = "302" ] && [ "$state_mode" = "$expected_mode" ]; then
+        if [ "$expected_mode" = "password" ] && [ "$protected" = "true" ]; then
+          return 0
+        fi
+        if [ "$expected_mode" = "company" ] && [ "$state_uid" = "$expected_uid" ]; then
+          return 0
+        fi
+      fi
+    fi
+    [ "$attempt" -lt 3 ] && sleep 1
+  done
+  return 1
+}
+
+set_company_gate() {
+  local status
+  status="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "$API/api/apps/$APP_ID/access-policy" \
     -H "Authorization: Bearer $JWT" \
     ${HQ_PRO_JWT:+-H "X-HQ-Pro-Authorization: Bearer $HQ_PRO_JWT"} \
     -H "Content-Type: application/json" \
-    -d "{\"mode\":\"company\",\"companyUid\":\"$CO_UID\",\"users\":[],\"groups\":[]}" -o /dev/null
-  GATE="$(curl -s -o /dev/null -w '%{http_code}' "$LIVE/")"
-  echo "LIVE=$LIVE"
-  echo "MODE=company"
-  echo "GATE=$GATE"   # expect 302 -> members-only sign-in
-else
-  # Password fallback (personal / no resolvable company).
-  PW="$("$DEPLOY/password-helper.sh" gen)"
-  curl -s -X POST "$API/api/apps/$APP_ID/access-mode" \
+    -d "{\"mode\":\"company\",\"companyUid\":\"$CO_UID\",\"users\":[],\"groups\":[]}" || true)"
+  is_2xx "$status"
+}
+
+set_password_gate() {
+  local status
+  status="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$API/api/apps/$APP_ID/access-mode" \
     -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
-    -d "{\"mode\":\"password\",\"password\":\"$PW\"}" -o /dev/null
+    -d "{\"mode\":\"password\",\"password\":\"$PW\"}" || true)"
+  is_2xx "$status"
+}
+
+if [ -n "$CO_UID" ]; then
+  # Company-gated: restrict to active members of the project's company.
+  if set_company_gate && verify_gate company "$CO_UID"; then
+    echo "LIVE=$LIVE"
+    echo "MODE=company"
+    echo "GATE=$GATE"   # 302 -> members-only sign-in
+    exit 0
+  fi
+  echo "ERR: company_gate_unverified; trying password fallback" >&2
+fi
+
+# Password fallback (personal / no resolvable company, or unproven company gate).
+PW="$("$DEPLOY/password-helper.sh" gen)"
+if set_password_gate && verify_gate password; then
   "$DEPLOY/password-helper.sh" announce "$SUB" "$PW" project-summary >/dev/null 2>&1 || true
-  GATE="$(curl -s -o /dev/null -w '%{http_code}' "$LIVE/")"
   echo "LIVE=$LIVE"
   echo "MODE=password"
   echo "GATE=$GATE"
   echo "PASSWORD=$PW"
+  exit 0
 fi
+
+fail "access_gate_unverified"

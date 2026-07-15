@@ -49,10 +49,10 @@ Choose one concrete learnings file path, such as `/tmp/handoff-learnings-{short-
 Spec: `core/knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, `/prd`, or `/plan`, close it now so its frontmatter records `status: closed` + a one-line summary.
 
 ```bash
-.claude/skills/_shared/journal.sh close "{one-line synthesis of session, ≤120 chars}"
+.claude/skills/_shared/journal.sh close "{project_dir}" "{one-line synthesis of session, ≤120 chars}"
 ```
 
-The helper is fail-soft (no-op if no active journal pointer exists). The summary should mirror what you write into `--summary` for `handoff-finalize.sh`. Helper clears `.claude/state/active-journal` on success.
+Pass the resolved project directory that owns this session's journal. The helper is fail-soft (no-op if no owned active journal pointer exists). The summary should mirror what you write into `--summary` for `handoff-finalize.sh`. Helper clears only this session's pointer on success.
 
 ### 3. Call handoff-finalize.sh (synchronous, one tool call)
 

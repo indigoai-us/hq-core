@@ -45,6 +45,8 @@ Save current work state as a thread to survive context loss.
    Knowledge folders are separate git repos (symlinked or embedded). For any knowledge path in files_touched, capture its repo state:
    ```bash
    # For each knowledge repo with changes:
+   bash -c '
+   shopt -s nullglob
    for symlink in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
      [ -L "$symlink" ] || [ -d "$symlink/.git" ] || continue
      repo_dir=$(cd "$symlink" && git rev-parse --show-toplevel 2>/dev/null) || continue
@@ -52,6 +54,7 @@ Save current work state as a thread to survive context loss.
      [ -z "$dirty" ] && continue
      echo "$symlink: $(cd "$repo_dir" && git rev-parse --short HEAD) (dirty)"
    done
+   '
    ```
    Include dirty knowledge repos in the thread JSON under `git.knowledge_repos`.
 
@@ -63,9 +66,9 @@ Save current work state as a thread to survive context loss.
 5.5. **Close active session journal** (if any)
    Spec: `core/knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, `/prd`, or `/plan`, close it now:
    ```bash
-   .claude/skills/_shared/journal.sh close "{one-line synthesis, ≤120 chars}"
+   .claude/skills/_shared/journal.sh close "{project_dir}" "{one-line synthesis, ≤120 chars}"
    ```
-   Fail-soft: no-op if no active journal pointer exists. Use the same one-line summary you used for `conversation_summary` below.
+   Pass the resolved project directory that owns this session's journal. Fail-soft: no-op if no owned active journal pointer exists. Use the same one-line summary you used for `conversation_summary` below.
 
 6. **Write thread** to `workspace/threads/{thread_id}.json` (include knowledge_repos from step 3):
    ```json

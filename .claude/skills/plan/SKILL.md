@@ -140,7 +140,7 @@ Spec: `core/knowledge/public/hq-core/journal-spec.md`. Open a session journal at
 Where `{project_dir}` = `companies/{co}/projects/{slug}/` or `personal/projects/{slug}/` for personal/HQ. The helper:
 
 - Creates `{project_dir}/journal/{ISO8601}-plan.md` with frontmatter (`status: active`, `skill: plan`)
-- Writes `.claude/state/active-journal` so the autocapture hook + later steps append to this file
+- Writes a session-scoped pointer under `.claude/state/active-journal.d/` so this session's autocapture hook + later steps append to this file
 - Stays open across `/handoff` boundaries — only `/handoff` and `/checkpoint` close it
 
 The autocapture PostToolUse hook appends `## Auto-capture` lines for any Agent / WebFetch / WebSearch / AskUserQuestion calls. Step 4 (interview decisions) and Step 8.5 (resolved/deferred questions) append curated entries via the same helper.
@@ -336,7 +336,7 @@ For each user story targeting a deployable repo, specify E2E tests:
 After the interview batches complete:
 
 ```bash
-.claude/skills/_shared/journal.sh append decisions "Interview decisions: project type — {classification}; scope — {what's in / what's out}; notable answers — {2-3 bullets}"
+.claude/skills/_shared/journal.sh append "{project_dir}" decisions "Interview decisions: project type — {classification}; scope — {what's in / what's out}; notable answers — {2-3 bullets}"
 ```
 
 ### Live Path Watch hook
@@ -674,7 +674,7 @@ Read `metadata.openQuestions[]` from the prd.json just written. **If empty**, sk
 8. **Append decision-mode results to journal:**
 
 ```bash
-.claude/skills/_shared/journal.sh append decisions "Open question resolution: resolved {N} → metadata.decisions[]; deferred {M} → investigation stories; key decisions — {2-3 bullet summary}"
+.claude/skills/_shared/journal.sh append "{project_dir}" decisions "Open question resolution: resolved {N} → metadata.decisions[]; deferred {M} → investigation stories; key decisions — {2-3 bullet summary}"
 ```
 
 9. Only after Step 8.5 completes may Step 9 run.

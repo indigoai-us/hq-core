@@ -179,20 +179,23 @@ For each extracted rule, determine scope (most specific wins):
 | Related to specific repo | `repo` | `repos/{pub\|priv}/{repo}/.claude/policies/` |
 | Error in specific command | `command` | `personal/policies/` (with `scope: command`) |
 | Failure in specific worker | `worker` | `core/workers/*/{id}/worker.yaml` instructions block (legacy, still supported) |
-| Universal pattern (**default** when no company/repo) | `global` | `personal/policies/` |
-| User correction via /learn --hard | From context, default global → `personal/` | Detected scope directory |
+| Active session company (when no explicit repo, command, or global scope) | `company` | `companies/{co}/policies/` |
+| Universal pattern (**default** when no company/repo/session context) | `global` | `personal/policies/` |
+| User correction via /learn --hard | From context; default to active session company, then global | Detected scope directory |
 
 **`/learn` does not target `core/policies/`.** The global/command rows route to `personal/policies/` — operator-owned and upgrade-safe — and `reindex.sh` symlinks each entry into `core/policies/` so it still loads as a global/command policy. Reserve `core/policies/` for release-shipped policies authored through the staging → `/promote-hq-core` pipeline. If a rule is genuinely product-core (must ship to every HQ install), stop and direct the user to that pipeline; never Write it into `core/`.
 
 **Primary output = policy files.** The canonical format for persistent rules is structured policy files (per `core/knowledge/public/hq-core/policies-spec.md`). Worker.yaml injection is still supported for worker-specific learnings.
 
 **Resolve company/repo context** (strongest signal wins):
+- An explicit scope in the input or user request wins. Honor explicit `repo`, `command`, or `global` scope rather than the session default; explicit global scope targets `personal/policies/`. Verify an explicit company slug against the manifest.
 - From the current working directory — the **leaf** `companies/<slug>/` segment (the last one in the path, not the first)
 - From `prd.json` metadata if in project context
 - From `companies/manifest.yaml` repo lookup if in repo context
 - From worker path if worker-scoped (`companies/{co}/workers/` → `{co}`)
+- From the active session: `bash core/scripts/hq-session.sh get company_slug`. For free-text and `/learn --hard` input with no explicit repo, command, or global scope, default to this active company and target `companies/{co}/policies/`.
 
-**Verify the resolved slug exists in `companies/manifest.yaml`** before targeting `companies/{co}/policies/`.
+**Verify every resolved slug, including the active session `company_slug`, exists in `companies/manifest.yaml`** before targeting `companies/{co}/policies/`. If the session value is absent or invalid, do not treat it as company context.
 
 **Never silently fall back to a global target for a company-specific learning.** A global target (→ `personal/policies/`) is correct ONLY when the rule is genuinely universal to this operator's HQ. If a rule is clearly company-specific but the company can't be resolved unambiguously, **stop and ask which company** — do not default the write into `personal/policies/` (and never into `core/policies/`). A misrouted company policy syncs into the wrong tenant vault on the next `hq-sync` (HQ-Pro), a category-1 cross-company bug. See `core/policies/hq-company-scoped-writes-verify-company.md`.
 
