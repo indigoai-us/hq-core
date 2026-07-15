@@ -64,6 +64,11 @@ else
 fi
 SHIM
 chmod +x "$SHIM_DIR/git"
+cat > "$SHIM_DIR/python3" <<'SHIM'
+#!/usr/bin/env bash
+exit 1
+SHIM
+chmod +x "$SHIM_DIR/python3"
 
 printf 'windows\n' > "$TMP/windows-path.txt"
 payload_windows='{"tool_name":"Edit","tool_input":{"file_path":"windows-path.txt"}}'

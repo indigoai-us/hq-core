@@ -248,6 +248,18 @@ jobs:
       - name: Planning commands auto-checkpoint on completion
         run: bash core/scripts/tests/auto-checkpoint-planning-cmds.test.sh
 
+  knowledge-repo-glob-shells:
+    # knowledge-repo-loop-zsh-unmatched-glob: the checkpoint and cleanup
+    # snippets must not let zsh NOMATCH abort on an empty knowledge directory.
+    name: knowledge-repo-glob-shells
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zsh for NOMATCH regression coverage
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Knowledge repository glob expansion is shell-safe
+        run: bash core/scripts/tests/knowledge-repo-glob-shells.test.sh
+
   dm-people-resolve:
     # feature-dm-skill-email-confirm: the /dm skill must CONFIRM a recipient's
     # email via `hq people resolve` (single-company, tenancy-safe) before

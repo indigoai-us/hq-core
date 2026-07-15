@@ -61,7 +61,7 @@ read_worker_fields() {
   if [[ -n "$YQ_BIN" ]]; then
     "$YQ_BIN" -r "[.worker.id, .worker.type, .worker.description, .worker.status, .worker.company, .worker.team] | map((. // \"\") | tostring | sub(\"\n+$\";\"\") | sub(\"\n\";\" \") | sub(\"${US}\";\" \")) | join(\"${US}\")" "$file" 2>/dev/null
   else
-    printf '%s' "$(yq_get id "$file")${US}$(yq_get type "$file")${US}$(yq_get description "$file")${US}$(yq_get status "$file")${US}$(yq_get company "$file")${US}$(yq_get team "$file")"
+    printf '%s\n' "$(yq_get id "$file")${US}$(yq_get type "$file")${US}$(yq_get description "$file")${US}$(yq_get status "$file")${US}$(yq_get company "$file")${US}$(yq_get team "$file")"
   fi
 }
 

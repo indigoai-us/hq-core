@@ -31,7 +31,7 @@ The `/deploy` skill structures its work into three phases to parallelize indepen
 2. Guardrails (Phase B.2) MUST pass before Upload (Phase C.2) — no upload of disqualified artifacts
 3. Upload (Phase C.2) returns `appId` which MUST exist before password persist + announce (C.3 + C.4)
 4. Localhost preview (Phase B.1) MUST run regardless of identity outcome — every user gets a preview URL
-5. The login attempt is one-shot per session, owned by `identity-resolve.sh` (`/tmp/hq-deploy-login-attempted-$USER` lock) — main agent does NOT re-trigger login mid-deploy
+5. The login attempt is one-shot per session, owned by `identity-resolve.sh` (`/tmp/hq-deploy-login-attempted-<deploy-user-key>` lock, where the filename-safe key comes from `${USER:-${USERNAME:-unknown}}`) — main agent does NOT re-trigger login mid-deploy
 
 **Inline-script isolation requirements:**
 
@@ -146,6 +146,16 @@ For sensitive artifacts, pick an access mode based on user intent and `~/.hq/con
 3. Tell the user once:
    > Live at https://{slug}.{your-domain}.com — restricted to active {orgSlug} members. They'll sign in with HQ on first visit.
 4. If company UID resolution fails, fail closed by falling back to password mode and say so in stderr; never silently publish a sensitive artifact as public.
+
+#### Gate proof is mandatory
+
+Before reporting any selected gate as active, require a 2xx response from its
+mutation, reread the app with authenticated `GET /api/apps/{appId}` and confirm
+the expected protection state, then confirm an anonymous request to the live URL
+returns `302`. Retry the reread and redirect check briefly for edge propagation.
+If a company gate cannot be proven, try the password fallback using the same
+proof. If neither gate is proven, exit non-zero and do not report the deploy as
+gated or usable.
 
 ### When to skip password protection
 

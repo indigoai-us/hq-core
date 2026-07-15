@@ -50,6 +50,56 @@ for needle in 'master-hook.sh' 'reindex.sh'; do
 done
 pass "master-hook.sh and reindex.sh anchored to \$CLAUDE_PROJECT_DIR"
 
+# Every project-root-derived path must be quoted, and each shipped hook
+# entrypoint must be launched through Bash so setup can recover even when an
+# archive or update strips executable bits.
+hook_commands="$(jq -r '.. | objects | select(.type? == "command") | .command' "$SETTINGS")"
+if printf '%s\n' "$hook_commands" \
+    | grep -nE '(^|[[:space:]])\$CLAUDE_PROJECT_DIR/|"\$CLAUDE_PROJECT_DIR/[^"]*([[:space:]]|$)'; then
+  fail "settings.json has an unquoted \$CLAUDE_PROJECT_DIR-derived path"
+fi
+if printf '%s\n' "$hook_commands" \
+    | grep -vE '^bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/(hook-gate|master-hook|reindex)\.sh"([[:space:]]|$)'; then
+  fail "settings.json has a hook entrypoint that is not invoked through bash"
+fi
+pass "all project-root paths are quoted and hook entrypoints use bash"
+
+# Execute a real shipped command string against non-executable fixtures. This
+# covers both shell word splitting and the entrypoint executable-bit fallback.
+SPACE_PARENT="$(mktemp -d)"; SPACE_ROOT="$SPACE_PARENT/HQ With Spaces"
+mkdir -p "$SPACE_ROOT/.claude/hooks"; trap 'rm -rf "$SPACE_PARENT"' EXIT
+cat >"$SPACE_ROOT/.claude/hooks/hook-gate.sh" <<'EOF'
+#!/usr/bin/env bash
+[ "$#" -eq 2 ] || exit 10
+[ "$1" = "session-title" ] || exit 11
+[ "$2" = "$CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh" ] || exit 12
+bash "$2"
+EOF
+cat >"$SPACE_ROOT/.claude/hooks/session-title.sh" <<'EOF'
+#!/usr/bin/env bash
+touch "$CLAUDE_PROJECT_DIR/.representative-hook-ran"
+EOF
+chmod 0644 "$SPACE_ROOT/.claude/hooks/hook-gate.sh" "$SPACE_ROOT/.claude/hooks/session-title.sh"
+representative_command="$(jq -r '[.. | objects | select(.type? == "command") | .command | select(contains(" session-title "))][0] // empty' "$SETTINGS")"
+[ -n "$representative_command" ] || fail "session-title command missing from settings.json"
+rc=0
+CLAUDE_PROJECT_DIR="$SPACE_ROOT" /bin/sh -c "$representative_command" || rc=$?
+[ "$rc" -eq 0 ] || fail "representative command failed from a project root containing spaces (rc=$rc)"
+[ -f "$SPACE_ROOT/.representative-hook-ran" ] || fail "representative command did not run its child hook"
+pass "representative command works with spaces and non-executable hook files"
+rm -rf "$SPACE_PARENT"; trap - EXIT
+
+# setup.sh must restore executable bits in both release-shipped script trees.
+SETUP="$ROOT/core/scripts/setup.sh"
+for script_dir in '.claude/hooks' 'core/scripts'; do
+  grep -Fq "find \"\$REPO_ROOT/$script_dir\" -name '*.sh' -exec chmod +x {} \\;" "$SETUP" \
+    || fail "setup.sh does not repair executable bits under $script_dir"
+done
+if grep -nF 'find "$REPO_ROOT/scripts"' "$SETUP"; then
+  fail "setup.sh still repairs the stale top-level scripts directory"
+fi
+pass "setup.sh repairs both release-shipped script trees"
+
 # ---------------------------------------------------------------------------
 echo "[2] auto-checkpoint-trigger.sh: resolves CLAUDE_PROJECT_DIR from a subdir (was exit 128)"
 FR="$(make_fake_root)"; trap 'rm -rf "$FR"' EXIT
