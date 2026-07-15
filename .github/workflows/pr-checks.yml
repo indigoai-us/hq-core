@@ -226,6 +226,16 @@ jobs:
       - name: Codex-harness git-mutation guard fires
         run: bash core/scripts/tests/codex-git-mutation-firing.test.sh
 
+  journal-session-isolation:
+    name: journal-session-isolation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Session-scoped journal pointers and ownership validation
+        run: bash core/scripts/tests/journal-session-scoped-pointer.test.sh
+      - name: Stop hook selects only its session journal
+        run: bash core/scripts/tests/after-turn-suggestions.test.sh
+
   reindex-path-gate:
     # Path-gated reindex hook: `hq reindex` must run ONLY when a skill, worker,
     # or personal-overlay entry (knowledge/policies/settings) is created,
@@ -247,6 +257,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Planning commands auto-checkpoint on completion
         run: bash core/scripts/tests/auto-checkpoint-planning-cmds.test.sh
+
+  knowledge-repo-glob-shells:
+    # knowledge-repo-loop-zsh-unmatched-glob: the checkpoint and cleanup
+    # snippets must not let zsh NOMATCH abort on an empty knowledge directory.
+    name: knowledge-repo-glob-shells
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zsh for NOMATCH regression coverage
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Knowledge repository glob expansion is shell-safe
+        run: bash core/scripts/tests/knowledge-repo-glob-shells.test.sh
 
   dm-people-resolve:
     # feature-dm-skill-email-confirm: the /dm skill must CONFIRM a recipient's

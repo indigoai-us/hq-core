@@ -63,6 +63,49 @@ USING_WORKTREE=false
 WORKTREE_PATH=""
 ORIGINAL_REPO_PATH=""
 
+# Provision dependencies for a newly-created worktree. Keep this centralized so
+# every worktree path gets the same package-manager selection and private-registry
+# configuration.
+provision_worktree() {
+  local source_repo="$1"
+  local wt_path="$2"
+  local package_manager=""
+  local install_args=()
+
+  if [[ -f "$source_repo/.npmrc" && ! -e "$wt_path/.npmrc" ]]; then
+    if ! cp "$source_repo/.npmrc" "$wt_path/.npmrc"; then
+      log_err "Failed to copy .npmrc into worktree: $wt_path"
+      return 1
+    fi
+    log_info "Copied source .npmrc into worktree"
+  fi
+
+  # Prefer pnpm when repositories carry more than one lockfile.
+  if [[ -f "$wt_path/pnpm-lock.yaml" ]]; then
+    package_manager="pnpm"
+    install_args=(install --frozen-lockfile)
+  elif [[ -f "$wt_path/bun.lock" || -f "$wt_path/bun.lockb" ]]; then
+    package_manager="bun"
+    install_args=(install --frozen-lockfile)
+  elif [[ -f "$wt_path/package-lock.json" ]]; then
+    package_manager="npm"
+    install_args=(ci)
+  else
+    return 0
+  fi
+
+  if ! command -v "$package_manager" >/dev/null 2>&1; then
+    log_err "Worktree bootstrap precondition failed: $package_manager is required for $wt_path"
+    return 1
+  fi
+
+  log_info "Installing dependencies in worktree with $package_manager..."
+  if ! (cd "$wt_path" && "$package_manager" "${install_args[@]}"); then
+    log_err "Worktree bootstrap failed: $package_manager install did not complete in $wt_path"
+    return 1
+  fi
+}
+
 # Create or reuse a git worktree for isolated branch work.
 # Sets REPO_PATH to the worktree and USING_WORKTREE=true.
 ensure_worktree() {
@@ -140,19 +183,62 @@ ensure_worktree() {
     }
   fi
 
-  # Install dependencies (monorepo needs node_modules)
-  if [[ -f "$wt_path/bun.lock" || -f "$wt_path/bun.lockb" ]]; then
-    log_info "Installing dependencies in worktree..."
-    (cd "$wt_path" && bun install --frozen-lockfile 2>/dev/null || bun install 2>/dev/null) || true
-  elif [[ -f "$wt_path/package-lock.json" ]]; then
-    (cd "$wt_path" && npm ci 2>/dev/null || npm install 2>/dev/null) || true
-  fi
+  provision_worktree "$repo_path" "$wt_path" || return 1
 
   WORKTREE_PATH="$wt_path"
   ORIGINAL_REPO_PATH="$REPO_PATH"
   REPO_PATH="$wt_path"
   USING_WORKTREE=true
   log_ok "Worktree ready: $wt_path"
+}
+
+# Create a worktree when repoPath names a not-yet-created branch directory.
+ensure_missing_repo_worktree() {
+  local target_repo="$1"
+  local branch_name="$2"
+  local base_branch="$3"
+  local source_repo=""
+  local candidate="$target_repo"
+
+  while [[ -n "$candidate" && "$candidate" != "$(dirname "$candidate")" ]]; do
+    local base parent
+    base=$(basename "$candidate")
+    parent=$(dirname "$candidate")
+    if [[ "$base" == *-* ]]; then
+      candidate="$parent/${base%-*}"
+      if is_git_repo "$candidate"; then
+        source_repo="$candidate"
+        break
+      fi
+    else
+      break
+    fi
+  done
+
+  if [[ -z "$source_repo" ]]; then
+    log_warn "Target repoPath '${target_repo}' does not exist and no source repo could be derived — builder will run from HQ_ROOT"
+    return 0
+  fi
+
+  log_info "Target repoPath ${target_repo} does not exist — creating worktree from ${source_repo}"
+  if git -C "$source_repo" show-ref --verify --quiet "refs/heads/$branch_name" 2>/dev/null; then
+    git -C "$source_repo" worktree add "$target_repo" "$branch_name" 2>&1 || {
+      log_err "Failed to create worktree at $target_repo"
+      return 1
+    }
+  else
+    git -C "$source_repo" worktree add -b "$branch_name" "$target_repo" "$base_branch" 2>&1 || {
+      log_err "Failed to create worktree at $target_repo with new branch $branch_name"
+      return 1
+    }
+  fi
+
+  provision_worktree "$source_repo" "$target_repo" || return 1
+
+  USING_WORKTREE=true
+  WORKTREE_PATH="$target_repo"
+  ORIGINAL_REPO_PATH="$source_repo"
+  log_ok "Worktree ready: $target_repo"
 }
 
 # Clean up worktree on project completion
@@ -641,47 +727,7 @@ BASE_BRANCH=$(jq -r '.metadata.baseBranch // "main"' "$PRD_PATH")
 # exist yet. Derive the source repo by stripping the trailing `-suffix` from
 # basename(REPO_PATH). Example: repos/private/{product}-sms-guardrails -> repos/private/{product}.
 if [[ -n "$BRANCH_NAME" && -n "$REPO_PATH" ]] && ! is_git_repo "$REPO_PATH"; then
-  _source_repo=""
-  _candidate="$REPO_PATH"
-  while [[ -n "$_candidate" && "$_candidate" != "$(dirname "$_candidate")" ]]; do
-    _base=$(basename "$_candidate")
-    _parent=$(dirname "$_candidate")
-    if [[ "$_base" == *-* ]]; then
-      _candidate="$_parent/${_base%-*}"
-      if is_git_repo "$_candidate"; then
-        _source_repo="$_candidate"
-        break
-      fi
-    else
-      break
-    fi
-  done
-  unset _candidate _base _parent
-  if [[ -n "$_source_repo" ]]; then
-    log_info "Target repoPath ${REPO_PATH} does not exist — creating worktree from ${_source_repo}"
-    if git -C "$_source_repo" show-ref --verify --quiet "refs/heads/$BRANCH_NAME" 2>/dev/null; then
-      git -C "$_source_repo" worktree add "$REPO_PATH" "$BRANCH_NAME" 2>&1 || {
-        log_err "Failed to create worktree at $REPO_PATH"
-        exit 1
-      }
-    else
-      git -C "$_source_repo" worktree add -b "$BRANCH_NAME" "$REPO_PATH" "$BASE_BRANCH" 2>&1 || {
-        log_err "Failed to create worktree at $REPO_PATH with new branch $BRANCH_NAME"
-        exit 1
-      }
-    fi
-    if [[ -f "$REPO_PATH/bun.lock" || -f "$REPO_PATH/bun.lockb" ]]; then
-      log_info "Installing dependencies in worktree (frozen lockfile)..."
-      (cd "$REPO_PATH" && bun install --frozen-lockfile 2>/dev/null || bun install 2>/dev/null) || true
-    fi
-    USING_WORKTREE=true
-    WORKTREE_PATH="$REPO_PATH"
-    ORIGINAL_REPO_PATH="$_source_repo"
-    log_ok "Worktree ready: $REPO_PATH"
-  else
-    log_warn "Target repoPath '${REPO_PATH}' does not exist and no source repo could be derived — builder will run from HQ_ROOT"
-  fi
-  unset _source_repo
+  ensure_missing_repo_worktree "$REPO_PATH" "$BRANCH_NAME" "$BASE_BRANCH" || exit 1
 fi
 
 if [[ -n "$BRANCH_NAME" && -n "$REPO_PATH" ]] && is_git_repo "$REPO_PATH"; then
@@ -2303,6 +2349,18 @@ Rules:
 # Regression Gate
 # =============================================================================
 
+is_gate_execution_error() {
+  local exit_code="$1"
+  local output="$2"
+
+  # 126/127 are the shell's permission-denied/command-not-found statuses.
+  [[ "$exit_code" -eq 126 || "$exit_code" -eq 127 ]] && return 0
+
+  grep -Eqi \
+    'command not found|: not found|failed to (start|spawn|exec)|unable to (start|spawn|execute)|could not (start|spawn|execute).*runner|no such file or directory' \
+    <<< "$output"
+}
+
 run_regression_gate() {
   local after_story="$1"
   local gates
@@ -2321,11 +2379,21 @@ run_regression_gate() {
     log "  Gate: $gate"
     local output
     local exit_code=0
-    output=$(cd "$REPO_PATH" && eval "$gate" 2>&1) || exit_code=$?
+    if output=$(cd "$REPO_PATH" && eval "$gate" 2>&1); then
+      exit_code=0
+    else
+      exit_code=$?
+    fi
 
     if [[ $exit_code -eq 0 ]]; then
       log_ok "  Passed: $gate"
       continue
+    fi
+
+    if is_gate_execution_error "$exit_code" "$output"; then
+      log_err "  PRECONDITION ERROR: $gate could not start (exit=$exit_code)"
+      log_err "  Install or restore the required test runner before rerunning the project."
+      return "$exit_code"
     fi
 
     # Gate failed — check if errors are pre-existing (baseline comparison)
@@ -3097,12 +3165,7 @@ ensure_story_worktree() {
     return 1
   }
 
-  # Install deps if needed
-  if [[ -f "$wt_path/bun.lockb" || -f "$wt_path/bun.lock" ]] && command -v bun >/dev/null 2>&1; then
-    (cd "$wt_path" && bun install --frozen-lockfile 2>/dev/null) || true
-  elif [[ -f "$wt_path/package-lock.json" ]]; then
-    (cd "$wt_path" && npm ci 2>/dev/null) || true
-  fi
+  provision_worktree "$base_repo" "$wt_path" || return 1
 
   STORY_WORKTREE_PATH="$wt_path"
   log_ok "Story worktree ready: $wt_path ($story_id)"

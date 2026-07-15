@@ -27,10 +27,10 @@ Permitted destinations:
 Forbidden destinations:
 
 - `/tmp/*` — wiped on reboot, does not travel with HQ Sync
-- `workspace/*` — global, not project-scoped (the only exception is `.claude/state/active-journal`, which is a runtime pointer, not a journal artifact)
+- `workspace/*` — global, not project-scoped (the only exceptions are `.claude/state/active-journal` and `.claude/state/active-journal.d/*`, which are runtime pointers, not journal artifacts)
 - Any HQ-root path outside the three permitted subpaths above
 
-Use `journal.sh attach <research|attachment>` for non-trivial reference material. Do not hand-write paths into `journal/attachments/` or `research/` — the helper enforces the naming convention and cross-references the file from the journal.
+Use `journal.sh attach <project_dir> <research|attachment>` for non-trivial reference material. The caller project must match the active journal's normalized `project:` frontmatter. Do not hand-write paths into `journal/attachments/` or `research/` — the helper enforces the naming convention and cross-references the file from the journal.
 
 ## Rationale
 
@@ -42,10 +42,10 @@ Use `journal.sh attach <research|attachment>` for non-trivial reference material
 
 Hard-block. Reviewer fixes by either:
 1. Relocating the write under `{project_dir}/` via direct path, or
-2. Replacing the hand-written path with `journal.sh attach <kind>` and letting the helper place it.
+2. Replacing the hand-written path with `journal.sh attach <project_dir> <kind>` and letting the helper place it.
 
 Acceptable adjacent writes that are NOT journal artifacts (and thus NOT covered by this policy):
-- `.claude/state/active-journal` — the runtime pointer (single line, gitignored)
+- `.claude/state/active-journal` and `.claude/state/active-journal.d/<session-key>` — legacy and session-scoped runtime pointers (single line, gitignored)
 - `/tmp/hq-journal*.log` — debug logs for the journal subsystem itself
 - `workspace/threads/*.json`, `workspace/checkpoints/*.json` — handoff/checkpoint state (separate subsystem)
 

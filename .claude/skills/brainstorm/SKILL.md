@@ -292,7 +292,7 @@ Spec: `core/knowledge/public/hq-core/journal-spec.md`. Open a session journal at
 Where `{project_dir}` is `companies/{co}/projects/{slug}/` (or `personal/projects/{slug}/` for personal/HQ). The helper:
 
 - Creates `{project_dir}/journal/{ISO8601}-brainstorm.md` with frontmatter (`status: active`, `skill: brainstorm`, `summary: ""`)
-- Writes a pointer at `.claude/state/active-journal` so subsequent skill steps and the autocapture hook append to this file
+- Writes a session-scoped pointer at `.claude/state/active-journal.d/` so only this session's subsequent steps and autocapture hook append to this file
 - Stays open across `/prd`, `/deep-plan`, `/plan` handoffs — only `/handoff` and `/checkpoint` close it
 
 After the helper returns, append a curated entry summarizing the brainstorm outcome (preferred approach, biggest risk, open questions) to the journal's `## Decisions` section. The autocapture hook will append a `## Auto-capture` line for any subsequent Agent / WebFetch / WebSearch / AskUserQuestion calls in this session.
