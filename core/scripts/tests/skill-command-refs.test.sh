@@ -55,7 +55,7 @@ PLANF
 # deliberately a native Slack command, not an HQ command alias.
 cat > "${FX}/core/policies/routes.md" <<'ROUTESF'
 # routes
-Invite a teammate with ⚠ `/new-hire person@example.com acme`.
+Invite a teammate with ⚠ `/new-hire [EMAIL] acme`.
 Use `/fixture:signals` for the company view.
 ROUTESF
 cat > "${FX}/core/policies/hq-slack.md" <<'SLACKF'
@@ -102,7 +102,7 @@ rm -f "${FX}/core/policies/broken.md"
 
 cat > "${FX}/core/policies/broken.md" <<'HQINVITEF'
 # broken CLI guidance
-Run `hq invite person@example.com`.
+Run `hq invite [EMAIL]`.
 HQINVITEF
 if out="$(run_lint_in "$FX" 2>&1)"; then
   fail "Case C: top-level hq invite should fail the lint, but it passed:\n${out}"
