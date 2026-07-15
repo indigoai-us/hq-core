@@ -45,6 +45,8 @@ Save current work state as a thread to survive context loss.
    Knowledge folders are separate git repos (symlinked or embedded). For any knowledge path in files_touched, capture its repo state:
    ```bash
    # For each knowledge repo with changes:
+   bash -c '
+   shopt -s nullglob
    for symlink in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
      [ -L "$symlink" ] || [ -d "$symlink/.git" ] || continue
      repo_dir=$(cd "$symlink" && git rev-parse --show-toplevel 2>/dev/null) || continue
@@ -52,6 +54,7 @@ Save current work state as a thread to survive context loss.
      [ -z "$dirty" ] && continue
      echo "$symlink: $(cd "$repo_dir" && git rev-parse --short HEAD) (dirty)"
    done
+   '
    ```
    Include dirty knowledge repos in the thread JSON under `git.knowledge_repos`.
 

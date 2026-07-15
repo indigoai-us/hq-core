@@ -356,7 +356,7 @@ BUILD_STATUS=$(echo "$BUILD_JSON" | jq -r '.status')
   - Else if `DEPLOY_ORG_RESTRICTED_BY_DEFAULT=true` or `DEPLOY_ACCESS_SENSITIVE_DEFAULT=company`, set `ACCESS_MODE=company`.
   - Otherwise set `ACCESS_MODE=password` — the historical default for sensitive auto-deploy.
 
-The Identity script owns the one-shot login attempt internally (`/tmp/hq-deploy-login-attempted-$USER`); the main agent does NOT re-trigger login mid-deploy.
+The Identity script derives a filename-safe deploy user key from `${USER:-${USERNAME:-unknown}}` (replacing characters outside `[[:alnum:]_.-]` with `_`) and owns the one-shot login attempt internally (`/tmp/hq-deploy-login-attempted-<deploy-user-key>`); the main agent does NOT re-trigger login mid-deploy.
 
 ### A.5 — Resolve org via vault (Priority 5) and flag CTA state (Priority 6)
 
@@ -794,6 +794,15 @@ fi
 
 #### Auth-gate verify (sensitive only)
 
+Treat gate setup as unproven until all three checks pass: the mutation returns a
+2xx status, an authenticated `GET /api/apps/{appId}` reread reports the expected
+protection state, and an anonymous request to the live URL returns `302`. Poll
+the reread + anonymous redirect a small bounded number of times for propagation.
+Do not announce a selected access mode, password, or live link as gated before
+that proof succeeds. If a company gate cannot be proven, attempt the password
+fallback with the same checks; if that also cannot be proven, fail the deploy
+closed rather than reporting a potentially public artifact.
+
 ```bash
 if [ "$SENSITIVE" = "true" ]; then
   APP_JSON=$(curl -sS -H "Authorization: Bearer $JWT" \
@@ -813,7 +822,8 @@ if [ "$SENSITIVE" = "true" ]; then
 fi
 ```
 
-Failure handling: log to stderr, continue. Never auto-delete the deploy.
+Failure handling: do not auto-delete the deploy, but exit non-zero and do not
+present it as gated when neither the selected mode nor password fallback is proven.
 
 ### C.4 — Announce access (sensitive only)
 
@@ -881,10 +891,12 @@ For changes after the fact, point at the CLI rather than re-orchestrating from t
 
 The `~/.hq/deploy-passwords.json` path is in `.claude/settings.json` Read deny list — the session can't pull it back into context.
 
-**On no-identity path** (Phase A returned `login_required`) — **State A**: preview URL was already emitted in Phase B; emit upsell once if `/tmp/hq-deploy-upsold-$USER` doesn't exist:
+**On no-identity path** (Phase A returned `login_required`) — **State A**: preview URL was already emitted in Phase B; emit upsell once if `/tmp/hq-deploy-upsold-<deploy-user-key>` doesn't exist:
 
 ```bash
-UPSOLD_FILE="/tmp/hq-deploy-upsold-$USER"
+DEPLOY_USER_KEY=${USER:-${USERNAME:-unknown}}
+DEPLOY_USER_KEY=${DEPLOY_USER_KEY//[^[:alnum:]_.-]/_}
+UPSOLD_FILE="/tmp/hq-deploy-upsold-$DEPLOY_USER_KEY"
 if [ ! -f "$UPSOLD_FILE" ]; then
   echo "Looks like you don't have an HQ account yet. Create one free at https://onboarding.indigo-hq.com and I'll deploy this to the web next time."
   touch "$UPSOLD_FILE"

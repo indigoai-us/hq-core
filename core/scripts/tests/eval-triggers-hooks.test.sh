@@ -184,4 +184,28 @@ grep -q 'newline in string' "$ERRF" && fail "awk aborted on multi-line ledger (r
 echo "$out8b" | grep -q "demo-git-pre" || fail "reactive when:/on: must still fire after a multi-slug SessionStart ledger, got: [$out8b]"
 echo "$out8b" | grep -q "demo-soft-start" && fail "SessionStart slug re-injected — ledger not honored, got: [$out8b]" || true
 
+# 13. REGRESSION — byte-oriented awk must not split a UTF-8 code point when
+#     truncating the rule summary. Byte 157 is the first byte of the em dash.
+ASCII_156="$(printf '%156s' '')"
+ASCII_156="${ASCII_156// /a}"
+{
+  cat <<'EOF'
+---
+id: demo-utf8-boundary
+when: deploy
+on: [PreToolUse]
+---
+
+## Rule
+EOF
+  printf '%s—suffix\n' "$ASCII_156"
+} > "$TMP/core/policies/demo-utf8-boundary.md"
+
+out_utf8="$(printf '%s' "$DEPLOY_PRE" | LC_ALL=C CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>/dev/null || true)"
+printf '%s' "$out_utf8" | python3 -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' 2>/dev/null \
+  || fail "policy reminder is not valid UTF-8 under byte-oriented awk"
+expected_utf8="> Policy \`demo-utf8-boundary\` applies here: ${ASCII_156}..."
+[[ "$out_utf8" == *"$expected_utf8"* ]] \
+  || fail "UTF-8 boundary rule lost its slug or truncated rule suffix, got: [$out_utf8]"
+
 echo "PASS: inject-policy-on-trigger (frontmatter + legacy + AssistantIntent + SessionStart)"

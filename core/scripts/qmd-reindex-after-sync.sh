@@ -48,7 +48,7 @@ cd "$hq_root" || exit 0
 existing="$(qmd collection list 2>/dev/null || true)"
 for kdir in companies/*/knowledge; do
   [ -d "$kdir" ] || continue
-  find "$kdir" -name '*.md' -not -name 'INDEX.md' 2>/dev/null | head -1 | grep -q . || continue
+  [ -n "$(find "$kdir" -name '*.md' -not -name 'INDEX.md' -print -quit 2>/dev/null)" ] || continue
   slug="$(basename "$(dirname "$kdir")")"
   printf '%s\n' "$existing" | grep -Fq "qmd://$slug/" && continue
   qmd collection add "$hq_root/$kdir" --name "$slug" --mask "**/*.md" >/dev/null 2>&1 || true
@@ -62,7 +62,7 @@ done
 #    `qmd search "prd.json"` and /brainstorm's project discovery silently miss them.
 for pdir in companies/*/projects; do
   [ -d "$pdir" ] || continue
-  find "$pdir" -type f \( -name '*.md' -o -name '*.json' \) 2>/dev/null | head -1 | grep -q . || continue
+  [ -n "$(find "$pdir" -type f \( -name '*.md' -o -name '*.json' \) -print -quit 2>/dev/null)" ] || continue
   slug="$(basename "$(dirname "$pdir")")"
   name="${slug}-projects"
   printf '%s\n' "$existing" | grep -Fq "qmd://$name/" && continue
