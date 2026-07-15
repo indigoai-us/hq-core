@@ -55,10 +55,14 @@ set -uo pipefail
   lower_text="$(printf '%s' "$LAST_TEXT" | tr '[:upper:]' '[:lower:]')"
 
   ACTIVE_PROJECT=""
-  JOURNAL_POINTER="$REPO_ROOT/.claude/state/active-journal"
-  if [ -f "$JOURNAL_POINTER" ]; then
-    journal_path="$(cat "$JOURNAL_POINTER" 2>/dev/null | tr -d '\n' || true)"
-    if [ -n "$journal_path" ] && [ -r "$journal_path" ]; then
+  JOURNAL_HELPER="$REPO_ROOT/.claude/skills/_shared/journal.sh"
+  if [ -x "$JOURNAL_HELPER" ]; then
+    if [ -n "$SESSION_ID" ]; then
+      journal_path="$(CLAUDE_PROJECT_DIR="$REPO_ROOT" HQ_JOURNAL_SESSION="$SESSION_ID" "$JOURNAL_HELPER" path 2>/dev/null || true)"
+    else
+      journal_path="$(CLAUDE_PROJECT_DIR="$REPO_ROOT" "$JOURNAL_HELPER" path 2>/dev/null || true)"
+    fi
+    if [ -n "${journal_path:-}" ] && [ -r "$journal_path" ]; then
       ACTIVE_PROJECT="$(awk '/^project: / { sub(/^project: /, ""); print; exit }' "$journal_path" 2>/dev/null || true)"
     fi
   fi

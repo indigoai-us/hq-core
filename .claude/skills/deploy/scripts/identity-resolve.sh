@@ -15,7 +15,9 @@ set -u
 
 TOKEN_FILE="$HOME/.hq/cognito-tokens.json"
 LEGACY_FILE="$HOME/.hq/auth/session.json"
-LOGIN_LOCK="/tmp/hq-deploy-login-attempted-$USER"
+DEPLOY_USER_KEY=${USER:-${USERNAME:-unknown}}
+DEPLOY_USER_KEY=${DEPLOY_USER_KEY//[^[:alnum:]_.-]/_}
+LOGIN_LOCK="/tmp/hq-deploy-login-attempted-$DEPLOY_USER_KEY"
 HARD_CAP_S=200
 NOW_MS=$(($(date +%s) * 1000))
 

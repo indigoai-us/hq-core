@@ -103,6 +103,8 @@ git status --short
 **Policy**: Knowledge repos should be clean (committed)
 
 ```bash
+bash -c '
+shopt -s nullglob
 for symlink in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
   [ -L "$symlink" ] || continue
   repo_dir=$(cd "$symlink" && git rev-parse --show-toplevel 2>/dev/null) || continue
@@ -110,6 +112,7 @@ for symlink in core/knowledge/public/* core/knowledge/private/* personal/knowled
   [ -z "$dirty" ] && continue
   echo "DIRTY: $symlink → $repo_dir"
 done
+'
 ```
 
 **With --fix**: Auto-commit dirty knowledge repos:

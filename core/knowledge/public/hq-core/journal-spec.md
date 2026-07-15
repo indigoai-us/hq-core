@@ -70,7 +70,7 @@ summary: ""              # filled at close
 Section invariants:
 - All five section headers always present, even if empty (consistent shape for the reader skill).
 - Entries timestamped ISO8601, prefixed at the start of the bullet.
-- One bullet per decision/finding — no nested lists, no multi-paragraph entries. If an entry would be longer than 3 lines, persist it via `journal.sh attach research` (see "## Reference material" below) and let the helper cross-reference it.
+- One bullet per decision/finding — no nested lists, no multi-paragraph entries. If an entry would be longer than 3 lines, persist it via `journal.sh attach {project_dir} research` (see "## Reference material" below) and let the helper cross-reference it.
 
 ## Reference material
 
@@ -81,13 +81,13 @@ Permitted subpaths:
 | Path | Written by | Purpose |
 |---|---|---|
 | `journal/{YYYY-MM-DD-HHMM}-{skill}-{thread-short}.md` | `journal.sh open` | The journal itself. |
-| `journal/attachments/{ts}-{tool}-{hash6}.{ext}` | `journal-autocapture.sh` (hook) or `journal.sh attach attachment` | Overflow from auto-capture (>1 KB agent/WebFetch/WebSearch output) and other hook-captured raw material. |
-| `research/{ts}-research-{hash6}.{ext}` or `research/{descriptive-slug}.md` | `journal.sh attach research` or curated by the skill | Reference docs that the journal links to. Curated, not hook-captured. |
+| `journal/attachments/{ts}-{tool}-{hash6}.{ext}` | `journal-autocapture.sh` (hook) or `journal.sh attach {project_dir} attachment` | Overflow from auto-capture (>1 KB agent/WebFetch/WebSearch output) and other hook-captured raw material. |
+| `research/{ts}-research-{hash6}.{ext}` or `research/{descriptive-slug}.md` | `journal.sh attach {project_dir} research` or curated by the skill | Reference docs that the journal links to. Curated, not hook-captured. |
 
 Forbidden destinations for any journal-adjacent write:
 - `/tmp/*` — wiped on reboot, does not travel with HQ Sync.
 - `workspace/*` — global, not project-scoped; loses the trail when the workstream moves.
-- `.claude/state/*` — runtime pointers only; the sole permitted file here is `active-journal` (the single-line absolute path to the current journal).
+- `.claude/state/*` — runtime pointers only; permitted journal pointers are `active-journal` (legacy callers with no session ID) and `active-journal.d/<session-key>` (the single-line absolute path for a session).
 - Any HQ-root path outside the three permitted subpaths above.
 
 ### Helper API
@@ -95,13 +95,13 @@ Forbidden destinations for any journal-adjacent write:
 Skills do **not** hand-write paths into `journal/attachments/` or `research/`. They call:
 
 ```bash
-journal.sh attach <kind> [<source_path>|-] [--ext <ext>]
+journal.sh attach <project_dir> <kind> [<source_path>|-] [--ext <ext>]
 ```
 
 - `<kind>` ∈ `{research, attachment}`. `research` → `{project_dir}/research/`, cross-references appear under `## Findings`. `attachment` → `{project_dir}/journal/attachments/`, cross-references appear under `## Auto-capture`.
 - Source: a file path, or `-`/omitted to read from stdin.
 - `--ext` is optional; inferred from the source filename when present, else `txt` for stdin.
-- The helper reads `project:` from the active journal's frontmatter — callers do not pass it.
+- The caller passes the project directory; the helper normalizes it and requires it to match the active journal's `project:` frontmatter before writing.
 - Prints the absolute path of the written file. Fail-soft: warns to stderr and exits 0 on any error.
 
 ### Overflow handling
@@ -112,17 +112,17 @@ When the auto-capture hook records a tool result whose body exceeds **1024 bytes
 
 ### Open
 
-Skill creates the journal file as soon as `{project_dir}` is known (typically the first step that resolves the write target). Frontmatter is initialized with `status: active`, `auto_capture: true`, `summary: ""`. The skill writes the absolute path to `.claude/state/active-journal` (single line, no newline).
+Skill creates the journal file as soon as `{project_dir}` is known (typically the first step that resolves the write target). Frontmatter is initialized with `status: active`, `auto_capture: true`, `summary: ""`. The skill writes the absolute path to a session-scoped pointer in `.claude/state/active-journal.d/<session-key>` (single line, no newline).
 
 If the file already exists for the same `(date, skill, thread)` triple — appending continues (unusual — only happens if the skill is re-invoked within the same session).
 
 ### Append (curated)
 
-Skills append at decision points listed in their SKILL.md. Each append writes to one of the five sections under a timestamped bullet.
+Skills append at decision points listed in their SKILL.md. Each append supplies the caller's `{project_dir}`; the helper normalizes it and rejects writes unless it matches the journal's `project:` frontmatter and `status: active`. Each append writes to one of the five sections under a timestamped bullet.
 
 ### Append (auto)
 
-The hook `.claude/hooks/journal-autocapture.sh` (PostToolUse) reads `.claude/state/active-journal`, opens the target file, checks `auto_capture: true` in its frontmatter, then appends to the `## Auto-capture` section if the just-finished tool is one of:
+The hook `.claude/hooks/journal-autocapture.sh` (PostToolUse) first reads `session_id` from its payload, then resolves only that session's pointer in `.claude/state/active-journal.d/`. It does nothing without a session ID or scoped pointer. It opens the target file, checks `auto_capture: true` in its frontmatter, then appends to the `## Auto-capture` section if the just-finished tool is one of:
 
 - `Agent` — record description + first 200 chars of result
 - `AskUserQuestion` — record question header + chosen answer label
@@ -135,10 +135,10 @@ The hook never reads the tool result for content beyond what's needed to record 
 
 ### Close
 
-`/handoff` and `/checkpoint` close the active journal:
+`/handoff` and `/checkpoint` close the active journal after supplying the project directory that owns it:
 - Read the file, set `status: closed`
 - Fill `summary` with a one-line synthesis of the session (caller-provided)
-- Clear `.claude/state/active-journal`
+- Clear only the caller session's pointer
 
 If a session ends without `/handoff` or `/checkpoint` (compaction, crash, user kills the process), the file is left at `status: active`. A reader skill that finds an `active` file older than 24h should treat it as abandoned and visually flag it.
 
@@ -156,9 +156,9 @@ A meta/research-level reader (e.g. a `/journal-survey` skill, future) can crawl 
 
 ## State pointer
 
-`.claude/state/active-journal` is a single file containing the absolute path to the currently-active journal. Gitignored. Cleared on close.
+`.claude/state/active-journal.d/<session-key>` contains the absolute path to the journal owned by that session. The key is derived from the first available `HQ_JOURNAL_SESSION`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID`, `CODEX_SESSION_ID`, or `CODEX_THREAD_ID`, then sanitized and hashed. Scoped callers never read the legacy pointer. `.claude/state/active-journal` remains a gitignored fallback only for callers that supply no session identifier.
 
-If the hook reads the pointer and the target file's mtime is more than 2 hours old AND `status: active`, the hook treats it as stale and skips appending — better to lose an entry than to write to a journal whose owner is gone.
+Missing journal targets cause their scoped pointer to be removed on lookup. If the hook reads a session pointer and the target file's mtime is more than 2 hours old AND `status: active`, the hook treats it as stale and skips appending — better to lose an entry than to write to a journal whose owner is gone.
 
 ## Promotion / sharing
 

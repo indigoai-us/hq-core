@@ -151,7 +151,7 @@ Into `{project_dir}`:
   .claude/skills/_shared/journal.sh open storyboard "{project_dir}"
   ```
 
-  Record the surface used, the design decisions, and the applied deltas at `{project_dir}/journal/{ISO8601}-storyboard.md`.
+  Record the surface used, the design decisions, and the applied deltas at `{project_dir}/journal/{ISO8601}-storyboard.md`. The active pointer is scoped to this session.
 
 ## Step 8 — Handoff
 

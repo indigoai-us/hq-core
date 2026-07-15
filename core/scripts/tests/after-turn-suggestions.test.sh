@@ -4,6 +4,7 @@
 set -euo pipefail
 
 SRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HQ_ROOT="$(cd "$SRC_ROOT/.." && pwd)"
 HOOK="$SRC_ROOT/hooks/Stop/50-after-turn-suggestions.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -32,7 +33,8 @@ assert_empty() {
 
 [ -x "$HOOK" ] || fail "hook is not executable: $HOOK"
 
-mkdir -p "$TMP_ROOT/.claude/state" "$TMP_ROOT/workspace" "$TMP_ROOT/projects/demo/journal"
+mkdir -p "$TMP_ROOT/.claude/state" "$TMP_ROOT/.claude/skills/_shared" "$TMP_ROOT/workspace" "$TMP_ROOT/projects/demo/journal" "$TMP_ROOT/projects/other"
+ln -s "$HQ_ROOT/.claude/skills/_shared/journal.sh" "$TMP_ROOT/.claude/skills/_shared/journal.sh"
 
 cat > "$TMP_ROOT/projects/demo/journal/active.md" <<'EOF'
 ---
@@ -48,7 +50,8 @@ summary: ""
 ## Decisions
 EOF
 
-printf '%s' "$TMP_ROOT/projects/demo/journal/active.md" > "$TMP_ROOT/.claude/state/active-journal"
+JOURNAL_HELPER="$TMP_ROOT/.claude/skills/_shared/journal.sh"
+CLAUDE_PROJECT_DIR="$TMP_ROOT" HQ_JOURNAL_SESSION=s-test "$JOURNAL_HELPER" open prd "$TMP_ROOT/projects/demo" s-test >/dev/null
 
 cat > "$TMP_ROOT/projects/demo/prd.json" <<'EOF'
 {
@@ -81,5 +84,28 @@ assert_empty "$out_disabled_hook" "HQ_DISABLED_HOOKS disables hook"
 touch "$TMP_ROOT/.claude/state/after-turn-suggestions.disabled"
 out_disabled_file=$(CLAUDE_PROJECT_DIR="$TMP_ROOT" bash "$HOOK" <<<"$payload")
 assert_empty "$out_disabled_file" "state file disables hook"
+rm -f "$TMP_ROOT/.claude/state/after-turn-suggestions.disabled"
+
+cat > "$TMP_ROOT/projects/other/prd.json" <<'EOF'
+{
+  "name": "other",
+  "userStories": [
+    { "id": "US-999", "title": "Other story", "passes": false }
+  ]
+}
+EOF
+
+CLAUDE_PROJECT_DIR="$TMP_ROOT" HQ_JOURNAL_SESSION=session-demo "$JOURNAL_HELPER" open prd "$TMP_ROOT/projects/demo" session-demo >/dev/null
+CLAUDE_PROJECT_DIR="$TMP_ROOT" HQ_JOURNAL_SESSION=session-other "$JOURNAL_HELPER" open prd "$TMP_ROOT/projects/other" session-other >/dev/null
+
+demo_payload=$(printf '{"session_id":"session-demo","transcript_path":"%s"}' "$TRANSCRIPT")
+other_payload=$(printf '{"session_id":"session-other","transcript_path":"%s"}' "$TRANSCRIPT")
+demo_out=$(CLAUDE_PROJECT_DIR="$TMP_ROOT" bash "$HOOK" <<<"$demo_payload")
+other_out=$(CLAUDE_PROJECT_DIR="$TMP_ROOT" bash "$HOOK" <<<"$other_payload")
+assert_contains "$demo_out" "/execute-task demo/US-001" "session demo journal selection"
+assert_contains "$other_out" "/execute-task other/US-999" "session other journal selection"
+if printf '%s' "$demo_out" | grep -qF "/execute-task other/US-999"; then
+  fail "session demo read another session's journal"
+fi
 
 echo "after-turn-suggestions smoke: ok"
