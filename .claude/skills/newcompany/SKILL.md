@@ -409,7 +409,7 @@ Skip → no agents (the most likely default; it's a deliberate step).
 - Every `hq` call carries `--company {slug}`. Never collect raw secrets in chat — mint links.
 - Don't fake integrations: tools without an easy key become tracked tasks (manual export / ingestion script), not silent no-ops.
 - Design packs go in `companies/{slug}/knowledge/design-styles/packs/` (never the shared public packs dir), get registered in `repos/public/knowledge-design-styles/registry.yaml`, and bind to surfaces via company-scoped policies — never by editing core deploy infra.
-- Reuse `/designate-team`, `/newworker`, `/idea`, `/plan`, `hq groups|secrets|files|invite`, and the cloud-agent provisioning path — don't reimplement them.
+- Reuse `/designate-team`, `/newworker`, `/idea`, `/plan`, `hq groups|secrets|files|members invite`, and the cloud-agent provisioning path — don't reimplement them.
 
 ## See also
 

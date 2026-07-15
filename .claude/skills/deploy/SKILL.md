@@ -1,7 +1,7 @@
 ---
 name: deploy
 description: Deploy or share generated HQ artifacts through hq-deploy.
-allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(pbcopy:*), Bash(chmod:*), Bash(node:*), Bash(lsof:*), Bash(mkdir:*), Bash(echo:*), Bash(wait:*), Bash(disown:*), Bash(test:*), Bash(touch:*), Bash(rm:*), Bash(paste:*), Bash(.claude/skills/deploy/scripts/identity-resolve.sh:*), Bash(.claude/skills/deploy/scripts/sensitivity-check.sh:*), Bash(.claude/skills/deploy/scripts/guardrails-check.sh:*), Bash(.claude/skills/deploy/scripts/og-inject.sh:*), Bash(.claude/skills/deploy/scripts/password-helper.sh:*), Edit, Write
+allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(pbcopy:*), Bash(chmod:*), Bash(node:*), Bash(lsof:*), Bash(mkdir:*), Bash(echo:*), Bash(wait:*), Bash(disown:*), Bash(test:*), Bash(touch:*), Bash(rm:*), Bash(paste:*), Bash(.claude/skills/deploy/scripts/identity-resolve.sh:*), Bash(.claude/skills/deploy/scripts/sensitivity-check.sh:*), Bash(.claude/skills/deploy/scripts/guardrails-check.sh:*), Bash(.claude/skills/deploy/scripts/deploy-api-request.sh:*), Bash(.claude/skills/deploy/scripts/og-inject.sh:*), Bash(.claude/skills/deploy/scripts/password-helper.sh:*), Edit, Write
 ---
 
 # Deploy Engine
@@ -63,6 +63,7 @@ The engine is **three phases**, structured by data-dependency. Independent work 
 | `.claude/skills/deploy/scripts/identity-resolve.sh` | Resolves Cognito JWT (cache → refresh → login) | `{"status":"ok"\|"login_required",...}` |
 | `.claude/skills/deploy/scripts/sensitivity-check.sh <path> [user_msg]` | Classifies artifact sensitivity (filename-list grep, no content surfaces) | `{"sensitive":bool,"trigger":string\|null}` |
 | `.claude/skills/deploy/scripts/guardrails-check.sh <output_dir>` | Caps + builds tarball | `{"pass":bool,"reason":string\|null,"tarball_path":string,...}` |
+| `.claude/skills/deploy/scripts/deploy-api-request.sh` | Makes a checked Phase C API/S3 request | validated body on stdout; safe failure diagnostic on stderr |
 | `.claude/skills/deploy/scripts/og-inject.sh <output_dir> [base_url] [app_name]` | Injects OG/Twitter preview tags; generates a 1200x630 card image when none exists | `{"injected":int,"image":string,"changed":bool}` |
 | `.claude/skills/deploy/scripts/password-helper.sh` | `gen` / `announce` / `persist` / `lookup` | password text, or persisted entry |
 
@@ -356,7 +357,7 @@ BUILD_STATUS=$(echo "$BUILD_JSON" | jq -r '.status')
   - Else if `DEPLOY_ORG_RESTRICTED_BY_DEFAULT=true` or `DEPLOY_ACCESS_SENSITIVE_DEFAULT=company`, set `ACCESS_MODE=company`.
   - Otherwise set `ACCESS_MODE=password` — the historical default for sensitive auto-deploy.
 
-The Identity script owns the one-shot login attempt internally (`/tmp/hq-deploy-login-attempted-$USER`); the main agent does NOT re-trigger login mid-deploy.
+The Identity script derives a filename-safe deploy user key from `${USER:-${USERNAME:-unknown}}` (replacing characters outside `[[:alnum:]_.-]` with `_`) and owns the one-shot login attempt internally (`/tmp/hq-deploy-login-attempted-<deploy-user-key>`); the main agent does NOT re-trigger login mid-deploy.
 
 ### A.5 — Resolve org via vault (Priority 5) and flag CTA state (Priority 6)
 
@@ -370,7 +371,7 @@ This block is no-op when:
 VAULT_API="${VAULT_API_URL:-https://4nfy67z28h.execute-api.us-east-1.amazonaws.com}"
 ORG_RESOLUTION_STATE=""
 ACTIVE_SLUGS=""
-DEPLOY_CONTEXT_HEADERS=()
+DEPLOY_CONTEXT_ARGS=()
 # Set when the signed-in person belongs to NO company. The deploy still ships,
 # under an auto-provisioned per-user PERSONAL scope. The upload below sends
 # X-HQ-Deploy-Scope: personal so hq-deploy bypasses company resolution and
@@ -417,13 +418,13 @@ if [ -z "$ORG_SLUG" ] && [ "$IDENTITY_STATUS" = "ok" ] && [ -n "$JWT" ]; then
 fi
 
 if [ -n "$ORG_SLUG" ]; then
-  DEPLOY_CONTEXT_HEADERS=(-H "X-Org-Slug: $ORG_SLUG")
+  DEPLOY_CONTEXT_ARGS=(--header "X-Org-Slug: $ORG_SLUG")
 elif [ "$PERSONAL_SCOPE" = "true" ]; then
-  DEPLOY_CONTEXT_HEADERS=(-H "X-HQ-Deploy-Scope: personal")
+  DEPLOY_CONTEXT_ARGS=(--header "X-HQ-Deploy-Scope: personal")
 fi
 ```
 
-After A.5, Phase C upload proceeds when **either** `$ORG_SLUG` is set (company deploy) **or** `PERSONAL_SCOPE=true` (signed-in user with no company → personal deploy). Every hq-deploy API call must include `"${DEPLOY_CONTEXT_HEADERS[@]}"`, which is `X-Org-Slug` for company deploys and `X-HQ-Deploy-Scope: personal` for personal deploys. Never silently fall back to a hardcoded org. The remaining unresolved states (`multi-org`, vault-unreachable) skip the upload and hit the state-aware CTA at C.5, which reads `$ORG_RESOLUTION_STATE`.
+After A.5, Phase C upload proceeds when **either** `$ORG_SLUG` is set (company deploy) **or** `PERSONAL_SCOPE=true` (signed-in user with no company → personal deploy). Every hq-deploy API call passes `"${DEPLOY_CONTEXT_ARGS[@]}"` to `deploy-api-request.sh`, which adds `X-Org-Slug` for company deploys and `X-HQ-Deploy-Scope: personal` for personal deploys. Never silently fall back to a hardcoded org. The remaining unresolved states (`multi-org`, vault-unreachable) skip the upload and hit the state-aware CTA at C.5, which reads `$ORG_RESOLUTION_STATE`.
 
 A personal deploy has no company to gate against, so `company` / `selected` access modes are impossible. Normalize the access mode chosen in A.4 before Phase C:
 
@@ -549,21 +550,32 @@ fi
 #### Ensure app exists
 
 ```bash
+# All Phase C HTTP calls go through this helper. It records the response body
+# separately from the HTTP status, validates the expected response shape, and
+# exits before the next stage on any failure. It never prints auth headers or
+# presigned query strings. `--no-auth` is only for the direct S3 PUT.
+DEPLOY_SCOPE="company"
+[ "$PERSONAL_SCOPE" = "true" ] && DEPLOY_SCOPE="personal"
+deploy_request() {
+  local stage="$1"
+  shift
+  HQ_DEPLOY_JWT="$JWT" .claude/skills/deploy/scripts/deploy-api-request.sh \
+    --stage "$stage" --org "${ORG_SLUG:--}" --scope "$DEPLOY_SCOPE" \
+    "${DEPLOY_CONTEXT_ARGS[@]}" "$@"
+}
+
 # GET /api/apps returns {apps: [...]}
-APPS_JSON=$(curl -s -H "Authorization: Bearer $JWT" \
-  "${DEPLOY_CONTEXT_HEADERS[@]}" \
-  "$API/api/apps")
+APPS_JSON=$(deploy_request app-list --method GET --url "$API/api/apps" \
+  --expect '.apps | type == "array"') || exit 1
 APP_ID=$(echo "$APPS_JSON" | jq -r --arg name "$APP_NAME" '.apps[] | select(.name == $name) | .id' | head -1)
 APP_SUBDOMAIN=$(echo "$APPS_JSON" | jq -r --arg name "$APP_NAME" '[.apps[] | select(.name == $name)][0].subdomain // empty')
 
 if [ -z "$APP_ID" ]; then
   # POST /api/apps requires {name, type}
-  APP_RESPONSE=$(curl -s -X POST \
-    -H "Authorization: Bearer $JWT" \
-    "${DEPLOY_CONTEXT_HEADERS[@]}" \
-    -H "Content-Type: application/json" \
-    -d "{\"name\": \"$APP_NAME\", \"type\": \"$DEPLOY_TYPE\"}" \
-    "$API/api/apps")
+  APP_RESPONSE=$(deploy_request app-creation --method POST --url "$API/api/apps" \
+    --header 'Content-Type: application/json' \
+    --data "{\"name\": \"$APP_NAME\", \"type\": \"$DEPLOY_TYPE\"}" \
+    --expect '(.id | type == "string" and length > 0)') || exit 1
   APP_ID=$(echo "$APP_RESPONSE" | jq -r '.id')
   APP_SUBDOMAIN=$(echo "$APP_RESPONSE" | jq -r '.subdomain')
 fi
@@ -606,28 +618,22 @@ carry `X-Org-Slug: $ORG_SLUG`; personal deploys carry
 headers on the same request.
 
 ```bash
-DEPLOY_RESPONSE=$(curl -s -X POST \
-  -H "Authorization: Bearer $JWT" \
-  "${DEPLOY_CONTEXT_HEADERS[@]}" \
-  -H "Content-Type: application/json" \
-  -d "{\"appSlug\": \"$APP_SUBDOMAIN\", \"org\": \"$ORG_SLUG\", \"manifest\": {\"files\": [], \"size\": $TARBALL_SIZE, \"sha256\": \"$TARBALL_SHA256\"}}" \
-  "$API/api/deploys")
+DEPLOY_RESPONSE=$(deploy_request deploy-creation --method POST --url "$API/api/deploys" \
+  --header 'Content-Type: application/json' \
+  --data "{\"appSlug\": \"$APP_SUBDOMAIN\", \"org\": \"$ORG_SLUG\", \"manifest\": {\"files\": [], \"size\": $TARBALL_SIZE, \"sha256\": \"$TARBALL_SHA256\"}}" \
+  --expect '(.deployId | type == "string" and length > 0) and (.presignedUrl | type == "string" and length > 0)') || exit 1
 
 DEPLOY_ID=$(echo "$DEPLOY_RESPONSE" | jq -r '.deployId')
 PRESIGNED_URL=$(echo "$DEPLOY_RESPONSE" | jq -r '.presignedUrl')
 
 # Direct S3 PUT — presigned URL carries its own signature, no Authorization header
-curl -s -X PUT \
-  -H "Content-Type: application/gzip" \
-  --data-binary @"$TARBALL_PATH" \
-  "$PRESIGNED_URL"
+deploy_request s3-upload --no-auth --method PUT --url "$PRESIGNED_URL" \
+  --header 'Content-Type: application/gzip' --upload-file "$TARBALL_PATH" || exit 1
 
-COMPLETE_RESPONSE=$(curl -s -X POST \
-  -H "Authorization: Bearer $JWT" \
-  "${DEPLOY_CONTEXT_HEADERS[@]}" \
-  -H "Content-Type: application/json" \
-  -d "{\"appSlug\": \"$APP_SUBDOMAIN\"}" \
-  "$API/api/deploys/$DEPLOY_ID/complete")
+COMPLETE_RESPONSE=$(deploy_request deploy-completion --method POST \
+  --url "$API/api/deploys/$DEPLOY_ID/complete" \
+  --header 'Content-Type: application/json' --data "{\"appSlug\": \"$APP_SUBDOMAIN\"}" \
+  --expect '(.url | type == "string" and length > 0)') || exit 1
 
 LIVE_URL=$(echo "$COMPLETE_RESPONSE" | jq -r '.url')
 rm -f "$TARBALL_PATH"
@@ -652,15 +658,17 @@ SigV4 against its app identity. Author the bindings before deploy:
 
 ```bash
 # List current bindings
-curl -s -H "Authorization: Bearer $JWT" "${DEPLOY_CONTEXT_HEADERS[@]}" \
-  "$API/api/apps/$APP_ID/secret-bindings" | jq '.secrets'
+BINDINGS_JSON=$(deploy_request secret-bindings-list --method GET \
+  --url "$API/api/apps/$APP_ID/secret-bindings" \
+  --expect '.secrets | type == "array"') || exit 1
+echo "$BINDINGS_JSON" | jq '.secrets'
 
 # Bind vault secrets the caller currently has read on (references only — no values).
 # Requires an hq-pro token; each ref is validated against the vault + deployer grant.
-curl -s -X PUT "$API/api/apps/$APP_ID/secret-bindings" \
-  -H "Authorization: Bearer $JWT" "${DEPLOY_CONTEXT_HEADERS[@]}" \
-  "${HQ_PRO_HEADER[@]}" -H "Content-Type: application/json" \
-  -d '{"companyUid":"'"$COMPANY_UID"'","secrets":[{"name":"SLACK_WEBHOOK_URL"},{"name":"DATABASE_URL"}]}'
+deploy_request secret-bindings-write --method PUT \
+  --url "$API/api/apps/$APP_ID/secret-bindings" \
+  "${HQ_PRO_REQUEST_HEADERS[@]}" --header 'Content-Type: application/json' \
+  --data '{"companyUid":"'"$COMPANY_UID"'","secrets":[{"name":"SLACK_WEBHOOK_URL"},{"name":"DATABASE_URL"}]}'
 ```
 
 **Public + secret-backed deploy gate (ADVISORY-first — STOP before deploying).**
@@ -676,10 +684,13 @@ validator does (public = `accessMode=="public"`, or legacy rows where neither
 private gate is NOT public):
 
 ```bash
-APP_JSON=$(curl -s -H "Authorization: Bearer $JWT" "${DEPLOY_CONTEXT_HEADERS[@]}" "$API/api/apps/$APP_ID")
+APP_JSON=$(deploy_request app-read --method GET --url "$API/api/apps/$APP_ID" \
+  --expect 'type == "object"') || exit 1
 ACCESS_MODE=$(echo "$APP_JSON" | jq -r '.accessMode // empty')
-BINDING_COUNT=$(curl -s -H "Authorization: Bearer $JWT" "${DEPLOY_CONTEXT_HEADERS[@]}" \
-  "$API/api/apps/$APP_ID/secret-bindings" | jq -r '.secrets | length')
+BINDINGS_JSON=$(deploy_request secret-bindings-list --method GET \
+  --url "$API/api/apps/$APP_ID/secret-bindings" \
+  --expect '.secrets | type == "array"') || exit 1
+BINDING_COUNT=$(echo "$BINDINGS_JSON" | jq -r '.secrets | length')
 ```
 
 - **PUBLIC and `BINDING_COUNT > 0` → STOP.** Secret-backed endpoints would be
@@ -704,17 +715,21 @@ docker build -t "$APP_NAME:$VERSION" .
 docker tag "$APP_NAME:$VERSION" "$ECR_URI/$APP_NAME:$VERSION"
 docker push "$ECR_URI/$APP_NAME:$VERSION"
 
-curl -s -X POST \
-  -H "Authorization: Bearer $JWT" \
-  "${DEPLOY_CONTEXT_HEADERS[@]}" \
-  -H "Content-Type: application/json" \
-  -d "{\"image_tag\": \"$VERSION\", \"deploy_type\": \"ssr\"}" \
-  "$API/api/apps/$APP_ID/deploy"
+deploy_request ssr-deploy --method POST --url "$API/api/apps/$APP_ID/deploy" \
+  --header 'Content-Type: application/json' \
+  --data "{\"image_tag\": \"$VERSION\", \"deploy_type\": \"ssr\"}" || exit 1
 ```
 
 #### 401 handling
 
-If any `/api/*` call returns 401, the JWT went stale between Phase A and now. Fall back to the no-upload branch — present preview, upsell if not already shown, stop. Do NOT re-trigger login mid-deploy.
+`deploy-api-request.sh` is the only Phase C request path. On a non-2xx response it
+stops the phase before a later request runs and reports the stage, method,
+sanitized URL, status, API code/message, request ID, and non-secret org/scope.
+It strips Authorization values and the full query string (including presigned S3
+credentials). A 401 is explicitly marked `auth=stale-login action=preview-only`:
+fall back to the no-upload branch, present preview, and do not re-trigger login
+mid-deploy. A 403 is marked `authorization=forbidden` with the target org/scope
+so authorization failures are not mistaken for malformed responses.
 
 ### C.3 — Wire access mode (sensitive only)
 
@@ -728,15 +743,14 @@ HQ_PRO_JWT=""
 if [ -f "$TOKEN_FILE" ]; then
   HQ_PRO_JWT=$(jq -r '.idToken // .accessToken // empty' "$TOKEN_FILE" 2>/dev/null)
 fi
-HQ_PRO_HEADER=()
-[ -n "$HQ_PRO_JWT" ] && HQ_PRO_HEADER=(-H "X-HQ-Pro-Authorization: Bearer $HQ_PRO_JWT")
+HQ_PRO_REQUEST_HEADERS=()
+[ -n "$HQ_PRO_JWT" ] && HQ_PRO_REQUEST_HEADERS=(--header "X-HQ-Pro-Authorization: Bearer $HQ_PRO_JWT")
 
 if [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "password" ]; then
-  curl -sS -X POST "$API/api/apps/$APP_ID/access-mode" \
-    -H "Authorization: Bearer $JWT" \
-    "${DEPLOY_CONTEXT_HEADERS[@]}" \
-    -H "Content-Type: application/json" \
-    -d "{\"mode\": \"password\", \"password\": \"$PW\"}" >/dev/null
+  deploy_request access-mode-password --method POST \
+    --url "$API/api/apps/$APP_ID/access-mode" \
+    --header 'Content-Type: application/json' \
+    --data "{\"mode\": \"password\", \"password\": \"$PW\"}" >/dev/null || exit 1
 elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "company" ]; then
   COMPANY_UID=$(curl -sS -H "Authorization: Bearer ${HQ_PRO_JWT:-$JWT}" \
     "$VAULT_API/entity/by-slug/company/$ORG_SLUG" \
@@ -745,18 +759,15 @@ elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "company" ]; then
     echo "[deploy] company access requested but companyUid could not be resolved for $ORG_SLUG; falling back to password mode." >&2
     PW=${PW:-$(.claude/skills/deploy/scripts/password-helper.sh gen)}
     ACCESS_MODE=password
-    curl -sS -X POST "$API/api/apps/$APP_ID/access-mode" \
-      -H "Authorization: Bearer $JWT" \
-      "${DEPLOY_CONTEXT_HEADERS[@]}" \
-      -H "Content-Type: application/json" \
-      -d "{\"mode\": \"password\", \"password\": \"$PW\"}" >/dev/null
+    deploy_request access-mode-password-fallback --method POST \
+      --url "$API/api/apps/$APP_ID/access-mode" \
+      --header 'Content-Type: application/json' \
+      --data "{\"mode\": \"password\", \"password\": \"$PW\"}" >/dev/null || exit 1
   else
-    curl -sS -X PUT "$API/api/apps/$APP_ID/access-policy" \
-      -H "Authorization: Bearer $JWT" \
-      "${DEPLOY_CONTEXT_HEADERS[@]}" \
-      "${HQ_PRO_HEADER[@]}" \
-      -H "Content-Type: application/json" \
-      -d "{\"mode\":\"company\",\"companyUid\":\"$COMPANY_UID\",\"users\":[],\"groups\":[]}" >/dev/null
+    deploy_request access-policy-company --method PUT \
+      --url "$API/api/apps/$APP_ID/access-policy" \
+      "${HQ_PRO_REQUEST_HEADERS[@]}" --header 'Content-Type: application/json' \
+      --data "{\"mode\":\"company\",\"companyUid\":\"$COMPANY_UID\",\"users\":[],\"groups\":[]}" >/dev/null || exit 1
   fi
 elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "selected" ]; then
   # SELECTED_USERS_JSON / SELECTED_GROUPS_JSON must be arrays of {id} objects
@@ -764,28 +775,23 @@ elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "selected" ]; then
   COMPANY_UID=${COMPANY_UID:-$(curl -sS -H "Authorization: Bearer ${HQ_PRO_JWT:-$JWT}" \
     "$VAULT_API/entity/by-slug/company/$ORG_SLUG" \
     | jq -r '.entity.uid // empty' 2>/dev/null)}
-  curl -sS -X PUT "$API/api/apps/$APP_ID/access-policy" \
-    -H "Authorization: Bearer $JWT" \
-    "${DEPLOY_CONTEXT_HEADERS[@]}" \
-    "${HQ_PRO_HEADER[@]}" \
-    -H "Content-Type: application/json" \
-    -d "{\"mode\":\"selected\",\"companyUid\":\"$COMPANY_UID\",\"users\":${SELECTED_USERS_JSON:-[]},\"groups\":${SELECTED_GROUPS_JSON:-[]}}" >/dev/null
+  deploy_request access-policy-selected --method PUT \
+    --url "$API/api/apps/$APP_ID/access-policy" \
+    "${HQ_PRO_REQUEST_HEADERS[@]}" --header 'Content-Type: application/json' \
+    --data "{\"mode\":\"selected\",\"companyUid\":\"$COMPANY_UID\",\"users\":${SELECTED_USERS_JSON:-[]},\"groups\":${SELECTED_GROUPS_JSON:-[]}}" >/dev/null || exit 1
 elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "private" ]; then
   # Flip the app to private mode, then grant each pattern.
-  curl -sS -X POST "$API/api/apps/$APP_ID/access-mode" \
-    -H "Authorization: Bearer $JWT" \
-    "${DEPLOY_CONTEXT_HEADERS[@]}" \
-    -H "Content-Type: application/json" \
-    -d '{"mode": "private"}' >/dev/null
+  deploy_request access-mode-private --method POST \
+    --url "$API/api/apps/$APP_ID/access-mode" \
+    --header 'Content-Type: application/json' --data '{"mode": "private"}' >/dev/null || exit 1
 
   # ALLOW_PATTERNS is one pattern per line (set in A.4 from the user message).
   while IFS= read -r PATTERN; do
     [ -z "$PATTERN" ] && continue
-    curl -sS -X POST "$API/api/apps/$APP_ID/allowed-emails" \
-      -H "Authorization: Bearer $JWT" \
-      "${DEPLOY_CONTEXT_HEADERS[@]}" \
-      -H "Content-Type: application/json" \
-      -d "{\"email\": \"$PATTERN\"}" >/dev/null
+    deploy_request allowed-email-grant --method POST \
+      --url "$API/api/apps/$APP_ID/allowed-emails" \
+      --header 'Content-Type: application/json' \
+      --data "{\"email\": \"$PATTERN\"}" >/dev/null || exit 1
   done <<< "$ALLOW_PATTERNS"
 fi
 ```
@@ -794,11 +800,19 @@ fi
 
 #### Auth-gate verify (sensitive only)
 
+Treat gate setup as unproven until all three checks pass: the mutation returns a
+2xx status, an authenticated `GET /api/apps/{appId}` reread reports the expected
+protection state, and an anonymous request to the live URL returns `302`. Poll
+the reread + anonymous redirect a small bounded number of times for propagation.
+Do not announce a selected access mode, password, or live link as gated before
+that proof succeeds. If a company gate cannot be proven, attempt the password
+fallback with the same checks; if that also cannot be proven, fail the deploy
+closed rather than reporting a potentially public artifact.
+
 ```bash
 if [ "$SENSITIVE" = "true" ]; then
-  APP_JSON=$(curl -sS -H "Authorization: Bearer $JWT" \
-    "${DEPLOY_CONTEXT_HEADERS[@]}" \
-    "$API/api/apps/$APP_ID")
+  APP_JSON=$(deploy_request auth-gate-reread --method GET \
+    --url "$API/api/apps/$APP_ID" --expect 'type == "object"') || exit 1
   PROTECTED=$(echo "$APP_JSON" | jq -r '.passwordProtected // false')
   PRIVATE=$(echo "$APP_JSON" | jq -r '.privateMode // false')
   POLICY_MODE=$(echo "$APP_JSON" | jq -r '.accessPolicy.mode // .accessMode // empty')
@@ -813,7 +827,8 @@ if [ "$SENSITIVE" = "true" ]; then
 fi
 ```
 
-Failure handling: log to stderr, continue. Never auto-delete the deploy.
+Failure handling: do not auto-delete the deploy, but exit non-zero and do not
+present it as gated when neither the selected mode nor password fallback is proven.
 
 ### C.4 — Announce access (sensitive only)
 
@@ -881,10 +896,12 @@ For changes after the fact, point at the CLI rather than re-orchestrating from t
 
 The `~/.hq/deploy-passwords.json` path is in `.claude/settings.json` Read deny list — the session can't pull it back into context.
 
-**On no-identity path** (Phase A returned `login_required`) — **State A**: preview URL was already emitted in Phase B; emit upsell once if `/tmp/hq-deploy-upsold-$USER` doesn't exist:
+**On no-identity path** (Phase A returned `login_required`) — **State A**: preview URL was already emitted in Phase B; emit upsell once if `/tmp/hq-deploy-upsold-<deploy-user-key>` doesn't exist:
 
 ```bash
-UPSOLD_FILE="/tmp/hq-deploy-upsold-$USER"
+DEPLOY_USER_KEY=${USER:-${USERNAME:-unknown}}
+DEPLOY_USER_KEY=${DEPLOY_USER_KEY//[^[:alnum:]_.-]/_}
+UPSOLD_FILE="/tmp/hq-deploy-upsold-$DEPLOY_USER_KEY"
 if [ ! -f "$UPSOLD_FILE" ]; then
   echo "Looks like you don't have an HQ account yet. Create one free at https://onboarding.indigo-hq.com and I'll deploy this to the web next time."
   touch "$UPSOLD_FILE"

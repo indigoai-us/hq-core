@@ -42,8 +42,8 @@ if [[ ! -d "$DIR_PATH" ]]; then
 fi
 
 PATH_TOP="$(git -C "$DIR_PATH" rev-parse --show-toplevel 2>/dev/null || true)"
-HQ_TOP="$(git -C "$HQ_ROOT" rev-parse --show-toplevel 2>/dev/null || echo "$HQ_ROOT")"
-if [[ -z "$PATH_TOP" || "$PATH_TOP" != "$HQ_TOP" ]]; then
+HQ_TOP="$(git -C "$HQ_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$PATH_TOP" || -z "$HQ_TOP" || "$PATH_TOP" != "$HQ_TOP" ]]; then
   exit 0
 fi
 

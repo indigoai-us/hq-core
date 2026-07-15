@@ -218,7 +218,11 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       d>=2 && rsec && /^## / { rsec=0 }
       d>=2 && rsec && !rcap && NF { line=$0; gsub(/\*\*/,"",line); if(length(line)>160) line=substr(line,1,157)"..."; rule=line; rcap=1 }
       END { if (seen) finalize() }
-      ' "${POLICY_FILES[@]}"
+      ' "${POLICY_FILES[@]}" | {
+        # Byte-oriented awk can cut through a multibyte code point. Some iconv
+        # implementations still return nonzero after -c repairs the output.
+        iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || true
+      }
     )
   fi
 fi

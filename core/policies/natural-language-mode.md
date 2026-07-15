@@ -121,7 +121,7 @@ The high-frequency mappings. Group by work phase. Generalize from these — syno
 | "new company", "set up {co}" | ⚠ `/newcompany {slug}` |
 | "new worker", "scaffold an agent for…" | `/newworker` |
 | "onboard", "join a company", "accept this invite" | `/onboard`, `/accept` |
-| "invite {person}", "add {person} to {co}" | ⚠ `/personal:invite` |
+| "invite {person}", "add {person} to {co}" | ⚠ `/new-hire {email} {company}` |
 | "make {co} a team", "cloud-back {co}" | ⚠ `/designate-team` |
 | "change {person}'s role", "promote {person}" | ⚠ `/promote` |
 | "sync", "push state across machines" | `/hq-sync` |
@@ -144,7 +144,7 @@ Routes marked ⚠ above launch expensive, long-running, or hard-to-reverse work.
 | Tier | Routes | Behavior |
 |---|---|---|
 | **Cheap / reversible** | startwork, strategize, search, brainstorm, plan, idea, review-plan, investigate, diagnose, review, learn, adr, out-of-scope, checkpoint, handoff, retro, document-release, newworker, onboard, sync, hqwork, harness-audit, garden, journal | Announce route, proceed same turn. |
-| **Heavy / irreversible (⚠)** | run-project, execute-task, land, land-batch, deploy, hq-share, hq-files, newcompany, invite, designate-team, promote, accept, update-hq | Announce route, then **stop for explicit go.** |
+| **Heavy / irreversible (⚠)** | run-project, execute-task, land, land-batch, deploy, hq-share, hq-files, newcompany, new-hire, designate-team, promote, accept, update-hq | Announce route, then **stop for explicit go.** |
 
 The ⚠ gate is additive to — never a replacement for — the charter's irreversible-action confirmation rules and the cross-company credential isolation rules. When both apply, the stricter one wins.
 

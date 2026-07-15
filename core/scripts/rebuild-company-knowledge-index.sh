@@ -104,8 +104,8 @@ write_knowledge_index() {
       fi
     done < <(
       {
-        find "$kdir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort
-        find "$kdir" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | sort
+        find -L "$kdir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort
+        find -L "$kdir" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | sort
       }
     )
   } > "$out"
