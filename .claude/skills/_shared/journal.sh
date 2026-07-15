@@ -5,21 +5,21 @@
 # Usage:
 #   journal.sh open <skill_name> <project_dir> [thread_id]
 #     Creates journal file at <project_dir>/journal/<ts>-<skill>-<short>.md and
-#     sets .claude/state/active-journal to its absolute path. Prints the absolute
-#     path on stdout.
+#     sets the caller's session-scoped active-journal pointer to its absolute
+#     path. Prints the absolute path on stdout.
 #
-#   journal.sh append <section> <entry_text>
+#   journal.sh append <project_dir> <section> <entry_text>
 #     Appends one timestamped bullet to the active journal under the section header.
 #     <section> ∈ {decisions, open, findings, rejected}
 #     <entry_text> is wrapped: "- <ISO8601> <entry_text>"
 #
-#   journal.sh close <summary>
+#   journal.sh close <project_dir> <summary>
 #     Sets status: closed in frontmatter, fills summary, clears the pointer.
 #
 #   journal.sh path
 #     Prints the active journal path (or empty + exit 1 if none).
 #
-#   journal.sh attach <kind> [<source_path>] [--ext <ext>]
+#   journal.sh attach <project_dir> <kind> [<source_path>] [--ext <ext>]
 #     Persists reference material into the active journal's project tree.
 #     <kind> ∈ {research, attachment}:
 #       research    → {project_dir}/research/{ts}-research-{hash6}.{ext}
@@ -28,8 +28,8 @@
 #                     cross-ref appended under '## Auto-capture'
 #     If <source_path> is omitted or '-', content is read from stdin.
 #     If --ext is omitted, inferred from source extension (file) or 'txt' (stdin).
-#     Project dir is read from the active journal's frontmatter — caller does
-#     not need to know it. Prints the absolute path of the written file.
+#     Caller project_dir must match the active journal's frontmatter. Prints
+#     the absolute path of the written file.
 #     Spec: core/knowledge/public/hq-core/journal-spec.md (## Reference material)
 #
 # All commands fail-soft: on any unexpected error, print a one-line warning to
@@ -38,7 +38,9 @@
 set -uo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-POINTER="$PROJECT_DIR/.claude/state/active-journal"
+PROJECT_DIR="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)" || PROJECT_DIR="$(pwd -P)"
+STATE_DIR="$PROJECT_DIR/.claude/state"
+LEGACY_POINTER="$STATE_DIR/active-journal"
 LOG_FILE="/tmp/hq-journal.log"
 
 warn() {
@@ -48,13 +50,83 @@ warn() {
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+normalize_project_dir() {
+  local dir="${1:-}"
+  [ -n "$dir" ] && [ -d "$dir" ] || return 1
+  (cd "$dir" 2>/dev/null && pwd -P)
+}
+
+resolve_session_id() {
+  local var value
+  for var in HQ_JOURNAL_SESSION CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CODEX_SESSION_ID CODEX_THREAD_ID; do
+    value="${!var:-}"
+    case "$value" in
+      ''|null) ;;
+      *) printf '%s' "$value"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+session_pointer_key() {
+  local raw="$1" safe hash
+  safe="$(printf '%s' "$raw" | tr -cs 'A-Za-z0-9._-' '_')"
+  [ -n "$safe" ] || safe="session"
+  if command -v shasum >/dev/null 2>&1; then
+    hash="$(printf '%s' "$raw" | shasum -a 256 2>/dev/null | awk '{print $1}')"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    hash="$(printf '%s' "$raw" | sha256sum 2>/dev/null | awk '{print $1}')"
+  else
+    hash="$(printf '%s' "$raw" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' 2>/dev/null)"
+  fi
+  [ -n "$hash" ] || { warn "session key hash failed"; return 1; }
+  printf '%s-%s' "${safe:0:48}" "${hash:0:12}"
+}
+
+SESSION_ID="$(resolve_session_id 2>/dev/null || true)"
+POINTER="$LEGACY_POINTER"
+POINTER_IS_SCOPED=0
+if [ -n "$SESSION_ID" ]; then
+  SESSION_KEY="$(session_pointer_key "$SESSION_ID")" || { warn "session key resolution failed"; exit 0; }
+  POINTER="$STATE_DIR/active-journal.d/$SESSION_KEY"
+  POINTER_IS_SCOPED=1
+fi
+
 active_path() {
   [ -f "$POINTER" ] || return 1
   local p
   p=$(cat "$POINTER" 2>/dev/null | tr -d '\n')
   [ -z "$p" ] && return 1
-  [ -f "$p" ] || return 1
+  if [ ! -f "$p" ]; then
+    [ "$POINTER_IS_SCOPED" -eq 1 ] && rm -f "$POINTER" 2>/dev/null || true
+    return 1
+  fi
   printf '%s' "$p"
+}
+
+journal_project_dir() {
+  local journal="$1" project
+  project=$(awk '/^project: / { sub(/^project: /, ""); print; exit }' "$journal" 2>/dev/null)
+  normalize_project_dir "$project"
+}
+
+owned_journal() {
+  local caller="$1" require_active="${2:-0}" journal journal_project status
+  caller=$(normalize_project_dir "$caller") || { warn "project_dir required and must exist"; return 1; }
+  journal=$(active_path) || { warn "no active journal"; return 1; }
+  journal_project=$(journal_project_dir "$journal") || { warn "journal has no valid project frontmatter"; return 1; }
+  if [ "$caller" != "$journal_project" ]; then
+    warn "caller project does not own active journal"
+    return 1
+  fi
+  if [ "$require_active" = "1" ]; then
+    status=$(awk '/^status: / { sub(/^status: /, ""); print; exit }' "$journal" 2>/dev/null)
+    if [ "$status" != "active" ]; then
+      warn "journal is not active (status: ${status:-missing})"
+      return 1
+    fi
+  fi
+  printf '%s' "$journal"
 }
 
 cmd="${1:-}"
@@ -84,6 +156,8 @@ case "$cmd" in
     ts_file=$(date -u +%Y-%m-%d-%H%M)
     journal_dir="$proj/journal"
     mkdir -p "$journal_dir" 2>/dev/null || { warn "open: mkdir failed: $journal_dir"; exit 0; }
+    proj=$(normalize_project_dir "$proj") || { warn "open: invalid project_dir: $proj"; exit 0; }
+    journal_dir="$proj/journal"
     journal_path="$journal_dir/${ts_file}-${skill}-${thread_short}.md"
 
     # If file already exists for this triple, reuse (rare — same skill re-invoked same minute)
@@ -109,18 +183,19 @@ EOF
 
     # Set pointer (absolute path)
     abs_path=$(cd "$(dirname "$journal_path")" && pwd)/$(basename "$journal_path")
-    mkdir -p "$PROJECT_DIR/.claude/state" 2>/dev/null || true
+    mkdir -p "$(dirname "$POINTER")" 2>/dev/null || true
     printf '%s' "$abs_path" > "$POINTER" 2>/dev/null || warn "open: pointer write failed"
 
     printf '%s\n' "$abs_path"
     ;;
 
   append)
-    section="${1:-}"
-    entry="${2:-}"
-    [ -z "$section" ] || [ -z "$entry" ] && { warn "append: section and entry required"; exit 0; }
+    caller_project="${1:-}"
+    section="${2:-}"
+    entry="${3:-}"
+    [ -z "$caller_project" ] || [ -z "$section" ] || [ -z "$entry" ] && { warn "append: project_dir, section and entry required"; exit 0; }
 
-    journal=$(active_path) || { warn "append: no active journal"; exit 0; }
+    journal=$(owned_journal "$caller_project" 1) || { warn "append: no owned active journal"; exit 0; }
 
     case "$section" in
       decisions) header='## Decisions' ;;
@@ -149,8 +224,10 @@ EOF
     ;;
 
   close)
-    summary="${1:-}"
-    journal=$(active_path) || { warn "close: no active journal"; exit 0; }
+    caller_project="${1:-}"
+    summary="${2:-}"
+    [ -z "$caller_project" ] && { warn "close: project_dir required"; exit 0; }
+    journal=$(owned_journal "$caller_project") || { warn "close: no owned active journal"; exit 0; }
 
     # Update frontmatter: status: active -> closed, summary: "" -> "<summary>"
     # Use python to preserve YAML structure safely.
@@ -189,8 +266,9 @@ PYEOF
     ;;
 
   attach)
-    kind="${1:-}"
-    shift || true
+    caller_project="${1:-}"
+    kind="${2:-}"
+    shift 2 || true
     src=""
     # Only consume $1 as src if it's not a flag (e.g. --ext)
     if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then
@@ -205,18 +283,16 @@ PYEOF
       esac
     done
 
-    [ -z "$kind" ] && { warn "attach: kind required (research|attachment)"; exit 0; }
+    [ -z "$caller_project" ] || [ -z "$kind" ] && { warn "attach: project_dir and kind required (research|attachment)"; exit 0; }
     case "$kind" in
       research|attachment) ;;
       *) warn "attach: invalid kind '$kind' (use research|attachment)"; exit 0 ;;
     esac
 
-    journal=$(active_path) || { warn "attach: no active journal"; exit 0; }
+    journal=$(owned_journal "$caller_project" 1) || { warn "attach: no owned active journal"; exit 0; }
 
     # Extract project path from frontmatter (line: 'project: <path>')
-    proj=$(awk '/^project: / { sub(/^project: /, ""); print; exit }' "$journal" 2>/dev/null)
-    [ -z "$proj" ] && { warn "attach: no 'project:' field in journal frontmatter"; exit 0; }
-    [ -d "$proj" ] || { warn "attach: project dir does not exist: $proj"; exit 0; }
+    proj=$(journal_project_dir "$journal") || { warn "attach: no valid 'project:' field in journal frontmatter"; exit 0; }
 
     if [ "$kind" = "research" ]; then
       target_dir="$proj/research"
@@ -276,10 +352,10 @@ PYEOF
     cat >&2 <<USAGE
 journal.sh: usage:
   journal.sh open <skill_name> <project_dir> [thread_id]
-  journal.sh append <decisions|open|findings|rejected> <entry_text>
-  journal.sh close <summary>
+  journal.sh append <project_dir> <decisions|open|findings|rejected> <entry_text>
+  journal.sh close <project_dir> <summary>
   journal.sh path
-  journal.sh attach <research|attachment> [<source_path>|-] [--ext <ext>]
+  journal.sh attach <project_dir> <research|attachment> [<source_path>|-] [--ext <ext>]
 USAGE
     exit 1
     ;;

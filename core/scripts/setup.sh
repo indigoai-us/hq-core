@@ -90,7 +90,7 @@ echo ""
 echo "Setting permissions…"
 
 find "$REPO_ROOT/.claude/hooks" -name '*.sh' -exec chmod +x {} \;
-find "$REPO_ROOT/scripts" -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+find "$REPO_ROOT/core/scripts" -name '*.sh' -exec chmod +x {} \;
 ok "scripts marked executable"
 
 # ── 3b. Snapshot user's PATH into settings.json ────────────────────────────
@@ -214,7 +214,7 @@ echo "Building knowledge index…"
 for dir in "$REPO_ROOT"/companies/*/knowledge; do
   [[ -d "$dir" ]] || continue
   # Only reindex if there are .md files
-  if find "$dir" -name "*.md" -not -name "INDEX.md" | head -1 | grep -q .; then
+  if [[ -n "$(find "$dir" -name "*.md" -not -name "INDEX.md" -print -quit)" ]]; then
     company="$(basename "$(dirname "$dir")")"
     echo "  Indexing $company…"
     # Per-company reindex covered by the global `qmd update` call below.

@@ -122,3 +122,7 @@ test-results/
 
 # Local VS Code launch config (may contain inline secrets — keep ignored)
 .claude/launch.json
+
+# Runtime journal pointers (legacy and session-scoped forms)
+.claude/state/active-journal
+.claude/state/active-journal.d/

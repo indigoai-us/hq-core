@@ -6,9 +6,8 @@
 # Spec: core/knowledge/public/hq-core/journal-spec.md
 #
 # Activation:
-#   Reads `.claude/state/active-journal` (single-line absolute path) to find target.
-#   If pointer is missing, file is missing, file is stale (>2h since mtime), or
-#   the journal's frontmatter has `auto_capture: false`, the hook exits silently.
+#   Resolves the hook payload's `session_id` to a session-scoped journal pointer.
+#   If no session ID or pointer is available, the hook exits silently.
 #
 # Skipped tools (noisy or secret-risky):
 #   Bash, Read, Edit, Write, Grep, Glob, NotebookEdit, TodoWrite, anything else
@@ -20,7 +19,7 @@
 set -uo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-POINTER="$PROJECT_DIR/.claude/state/active-journal"
+JOURNAL_HELPER="$PROJECT_DIR/.claude/skills/_shared/journal.sh"
 LOG_FILE="/tmp/hq-journal-autocapture.log"
 STALE_SECONDS=7200  # 2 hours
 OVERFLOW_BYTES=1024  # spill raw tool output to journal/attachments/ when above this
@@ -31,15 +30,32 @@ log() {
 
 trap 'exit 0' EXIT
 
-# 1. Pointer check
-[ -f "$POINTER" ] || exit 0
-JOURNAL=$(cat "$POINTER" 2>/dev/null | tr -d '\n')
-[ -z "$JOURNAL" ] && exit 0
+# 1. Read tool JSON and resolve its session-scoped pointer. Hooks do not use
+# the legacy pointer: a payload without a session_id cannot safely own one.
+INPUT=$(cat)
+[ -z "$INPUT" ] && exit 0
+
+SESSION_ID=$(printf '%s' "$INPUT" | python3 -c "
+import sys, json
+try:
+    value = json.load(sys.stdin).get('session_id', '')
+    print(value if isinstance(value, str) else '')
+except Exception:
+    print('')
+" 2>/dev/null)
+[ -n "$SESSION_ID" ] || exit 0
+[ -x "$JOURNAL_HELPER" ] || exit 0
+
+JOURNAL=$(CLAUDE_PROJECT_DIR="$PROJECT_DIR" HQ_JOURNAL_SESSION="$SESSION_ID" "$JOURNAL_HELPER" path 2>/dev/null || true)
+[ -n "$JOURNAL" ] || exit 0
 [ -f "$JOURNAL" ] || { log "pointer references missing file: $JOURNAL"; exit 0; }
 
 # 2. Stale check
 NOW=$(date +%s)
-MTIME=$(stat -f %m "$JOURNAL" 2>/dev/null || stat -c %Y "$JOURNAL" 2>/dev/null || echo 0)
+case "$(uname -s)" in
+  Darwin|FreeBSD) MTIME=$(stat -f %m "$JOURNAL" 2>/dev/null || echo 0) ;;
+  *) MTIME=$(stat -c %Y "$JOURNAL" 2>/dev/null || echo 0) ;;
+esac
 if [ "$MTIME" -gt 0 ] && [ $((NOW - MTIME)) -gt $STALE_SECONDS ]; then
   log "journal stale (mtime $((NOW - MTIME))s ago): $JOURNAL — skipping"
   exit 0
@@ -55,10 +71,7 @@ if head -20 "$JOURNAL" 2>/dev/null | grep -qE '^status: (closed|abandoned)'; the
   exit 0
 fi
 
-# 5. Read tool JSON from stdin
-INPUT=$(cat)
-[ -z "$INPUT" ] && exit 0
-
+# 5. Read tool name
 TOOL_NAME=$(echo "$INPUT" | python3 -c "
 import sys, json
 try:
@@ -74,9 +87,18 @@ case "$TOOL_NAME" in
 esac
 
 # 6. Build digest line (with overflow spill into journal/attachments/)
-# Project dir = parent of the journal dir (journal lives at {proj}/journal/*.md)
-JOURNAL_DIR=$(dirname "$JOURNAL")
-PROJ_ROOT=$(dirname "$JOURNAL_DIR")
+# Project dir comes from journal frontmatter. Verify that the journal remains
+# beneath it before any overflow attachment write.
+PROJ_ROOT=$(awk '/^project: / { sub(/^project: /, ""); print; exit }' "$JOURNAL" 2>/dev/null)
+[ -n "$PROJ_ROOT" ] || { log "journal has no project frontmatter: $JOURNAL"; exit 0; }
+if [ "${PROJ_ROOT#/}" = "$PROJ_ROOT" ]; then
+  PROJ_ROOT="$PROJECT_DIR/$PROJ_ROOT"
+fi
+PROJ_ROOT=$(cd "$PROJ_ROOT" 2>/dev/null && pwd -P) || { log "journal project is unavailable: $JOURNAL"; exit 0; }
+case "$JOURNAL" in
+  "$PROJ_ROOT"/journal/*) ;;
+  *) log "journal is outside its project: $JOURNAL"; exit 0 ;;
+esac
 export JOURNAL_PROJECT="$PROJ_ROOT"
 export JOURNAL_OVERFLOW_BYTES="$OVERFLOW_BYTES"
 

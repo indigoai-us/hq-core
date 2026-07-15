@@ -19,6 +19,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$ROOT/core/scripts/generate-workers-registry.sh"
 [ -f "$SCRIPT" ] || { echo "FAIL: $SCRIPT not found" >&2; exit 1; }
+BASH_BIN="$(command -v bash)"
 
 new_root() {
   local d; d="$(mktemp -d)"
@@ -41,10 +42,19 @@ worker:
 YAML
 }
 
-run_gen() { # <root> -> echoes exit code; stderr captured to <root>/.err on disk
-  local root="$1" rc
-  HQ_ROOT="$root" bash "$root/core/scripts/generate-workers-registry.sh" >/dev/null 2>"$root/.err" && rc=0 || rc=$?
+run_gen() { # <root> [PATH] -> echoes exit code; stderr captured to <root>/.err on disk
+  local root="$1" path="${2:-$PATH}" rc
+  PATH="$path" HQ_ROOT="$root" "$BASH_BIN" "$root/core/scripts/generate-workers-registry.sh" >/dev/null 2>"$root/.err" && rc=0 || rc=$?
   echo "$rc"
+}
+
+path_without_yq() { # <root> -> minimal generator PATH with no yq executable
+  local root="$1" bin="$1/.no-yq-bin" cmd
+  mkdir -p "$bin"
+  for cmd in awk cp cut date diff dirname find grep mkdir mktemp mv rm sed sort uniq; do
+    ln -s "$(command -v "$cmd")" "$bin/$cmd"
+  done
+  echo "$bin"
 }
 
 fails=0
@@ -64,6 +74,34 @@ else
   echo "ok: clean worker set generates registry (exit 0)"
 fi
 rm -rf "$r1"
+
+# --- Test 1b: no-yq fallback -> exit 0, company worker registered ---
+# The fallback must terminate its delimiter-separated record with a newline.
+# Otherwise `read` assigns every field but returns 1 at EOF, and `set -e` exits
+# the generator before it writes registry.yaml.
+r1b="$(new_root)"
+mkdir -p "$r1b/companies/acme/workers/company-ops"
+cat > "$r1b/companies/acme/workers/company-ops/worker.yaml" <<'YAML'
+worker:
+  id: company-ops
+  name: "company-ops"
+  description: "Company operations worker."
+  type: OpsWorker
+  company: acme
+  version: "1.0"
+YAML
+code="$(run_gen "$r1b" "$(path_without_yq "$r1b")")"; GEN_ERR="$(cat "$r1b/.err" 2>/dev/null || true)"
+reg1b="$r1b/core/workers/registry.yaml"
+if [ "$code" != "0" ]; then
+  echo "FAIL[no-yq]: expected exit 0, got $code; stderr: $GEN_ERR" >&2; fails=$((fails+1))
+elif [ ! -f "$reg1b" ]; then
+  echo "FAIL[no-yq]: registry.yaml not written" >&2; fails=$((fails+1))
+elif ! grep -q 'id: "company-ops"' "$reg1b"; then
+  echo "FAIL[no-yq]: company worker 'company-ops' missing from registry" >&2; fails=$((fails+1))
+else
+  echo "ok: no-yq fallback registers a company worker (exit 0)"
+fi
+rm -rf "$r1b"
 
 # --- Test 2: duplicate id -> graceful last-wins, registry still generates, EXIT 0 ---
 # DEV-1845 (supersedes the DEV-1718 exclude-all + non-zero policy): a duplicate id
