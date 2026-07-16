@@ -192,6 +192,33 @@ jobs:
       - name: deploy org resolves for agent + human callers (via /membership/me)
         run: bash core/scripts/tests/resolve-deploy-org.test.sh
 
+  # US-001: /deploy identity-resolve portable USER key + TMPDIR lock (#357 regression).
+  identity-resolve:
+    name: identity-resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: identity-resolve USER/USERNAME lock path
+        run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
+
+  # US-001: identity-resolve jq→node fallback; missing engines → missing_dependency not login_required.
+  identity-resolve-missing-jq:
+    name: identity-resolve-missing-jq
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: identity-resolve node fallback + missing_dependency
+        run: bash .claude/skills/deploy/scripts/tests/identity-resolve-missing-jq.test.sh
+
+  # US-002: shared OS portability helpers (stat/sed/tmp/user/require_jq).
+  portable-lib:
+    name: portable-lib
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: portable.sh helpers
+        run: bash core/scripts/tests/portable-lib.test.sh
+
   # feedback_1b307a08: nested manifests were misparsed by a flat col-0 regex.
   manifest-nested-parse:
     name: manifest-nested-parse
@@ -307,11 +334,100 @@ jobs:
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
       - name: hook-gate augments PATH for version-manager node (nvm/volta/fnm/asdf)
         run: bash core/scripts/tests/hook-gate-path-augment.test.sh
+      - name: All tracked .sh files are mode 100755 in the git index (US-004)
+        run: bash core/scripts/tests/exec-bit-all-scripts.test.sh
       - name: block-core-writes-bash exempts repos/ checkouts, still guards live root
         run: bash core/scripts/tests/block-core-writes-repos-exempt.test.sh
       - name: block-core-writes-bash target-aware write detection
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
 
+  # US-005: shell portability lint + shellcheck + cross-platform smoke.
+  shell-portability:
+    name: shell-portability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: lint-shell-portability
+        run: bash core/scripts/lint-shell-portability.sh
+      - name: lint-shell-portability regression test
+        run: bash core/scripts/tests/lint-shell-portability.test.sh
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: shellcheck portability surface (warning; this-PR shell paths)
+        run: |
+          set -euo pipefail
+          # Scope to the cross-platform surface introduced/touched by this work.
+          # Full-tree shellcheck is a separate burn-down (pre-existing SC noise).
+          files=(
+            core/scripts/lib/portable.sh
+            core/scripts/lint-shell-portability.sh
+            core/scripts/setup.sh
+            core/scripts/repo-run-registry.sh
+            core/scripts/rebuild-social-drafts-index.sh
+            core/scripts/audit-log.sh
+            .claude/hooks/hook-gate.sh
+            .claude/skills/deploy/scripts/identity-resolve.sh
+            .claude/skills/deploy/scripts/password-helper.sh
+            .claude/skills/deploy/scripts/resolve-deploy-org.sh
+          )
+          present=()
+          for f in "${files[@]}"; do
+            [ -f "$f" ] && present+=("$f")
+          done
+          echo "shellcheck ${#present[@]} files"
+          shellcheck -S warning "${present[@]}"
+
+  shell-smoke-windows:
+    name: shell-smoke-windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: portable-lib
+        run: bash core/scripts/tests/portable-lib.test.sh
+      - name: identity-resolve USER key
+        run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
+      - name: identity-resolve missing engines
+        run: bash .claude/skills/deploy/scripts/tests/identity-resolve-missing-jq.test.sh
+      - name: exec-bit index
+        run: bash core/scripts/tests/exec-bit-all-scripts.test.sh
+      - name: hook-gate path augment
+        run: bash core/scripts/tests/hook-gate-path-augment.test.sh
+      - name: hook-gate exec-bit self-heal
+        run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+
+  shell-smoke-macos:
+    name: shell-smoke-macos
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: portable-lib
+        run: bash core/scripts/tests/portable-lib.test.sh
+      - name: identity-resolve USER key
+        run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
+      - name: identity-resolve missing engines
+        run: bash .claude/skills/deploy/scripts/tests/identity-resolve-missing-jq.test.sh
+      - name: exec-bit index
+        run: bash core/scripts/tests/exec-bit-all-scripts.test.sh
+      - name: hook-gate path augment
+        run: bash core/scripts/tests/hook-gate-path-augment.test.sh
+      - name: hook-gate exec-bit self-heal
+        run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+
+  hooks-no-python:
+    # HQ's runtime hook layer must not depend on python3 (Windows machines
+    # often have none — or the Store alias stub that resolves on PATH but
+    # cannot run). Tripwire (no python3 invocations in runtime hooks/scripts),
+    # hook-lib engine parity (jq vs node), and broken-python3 runtime proof
+    # for policy injection + the frontmatter validator.
+    name: hooks-no-python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hooks run python-free (tripwire + parity + broken-stub runtime)
+        run: bash core/scripts/tests/hooks-no-python.test.sh
   prefer-native-capabilities:
     # hq-prefer-native-capabilities must inject at session start (always-on
     # baseline) and on canvas/share/secret prompts, stay untruncated in the

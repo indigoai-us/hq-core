@@ -339,20 +339,20 @@ assert_contains "$err" "blocked active run"
 
 payload_post_patch='{"hook_event_name":"PostToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"command":"*** Begin Patch\n*** Add File: docs/test.md\n+ok\n*** End Patch"},"tool_response":{"exit_code":0}}'
 out="$(run_adapter "$payload_post_patch")"
-printf '%s' "$out" | python3 -m json.tool >/dev/null
+printf '%s' "$out" | jq -e . >/dev/null
 assert_contains "$out" "AUTO-CHECKPOINT REQUIRED"
 assert_contains "$(cat "$TEST_LOG")" "master-sync"
 assert_contains "$(cat "$TEST_LOG")" "autosave:docs/test.md"
 
 payload_stop='{"hook_event_name":"Stop","cwd":"'"$TMP"'","last_assistant_message":"done"}'
 out="$(run_adapter "$payload_stop")"
-printf '%s' "$out" | python3 -m json.tool >/dev/null
+printf '%s' "$out" | jq -e . >/dev/null
 assert_contains "$out" "OBSERVE"
 assert_contains "$(cat "$TEST_LOG")" "context-warning-50"
 
 payload_precompact='{"hook_event_name":"PreCompact","cwd":"'"$TMP"'","session_id":"s1"}'
 out="$(run_adapter "$payload_precompact")"
-printf '%s' "$out" | python3 -m json.tool >/dev/null
+printf '%s' "$out" | jq -e . >/dev/null
 assert_contains "$out" "PRECOMPACT CHECKPOINT"
 
 # ----- parity-extension assertions -----

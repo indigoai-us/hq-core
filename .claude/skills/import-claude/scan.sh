@@ -34,7 +34,14 @@ if [[ -z "$HQ_ROOT" ]]; then
 fi
 HQ_ROOT="$(cd "$HQ_ROOT" && pwd)"
 
-command -v jq >/dev/null 2>&1 || { echo "scan.sh: jq is required" >&2; exit 2; }
+# Prefer portable require_jq when available (multi-OS install guidance).
+if [ -f "$HQ_ROOT/core/scripts/lib/portable.sh" ]; then
+  # shellcheck source=core/scripts/lib/portable.sh
+  . "$HQ_ROOT/core/scripts/lib/portable.sh"
+  require_jq || { echo "scan.sh: jq is required" >&2; exit 2; }
+else
+  command -v jq >/dev/null 2>&1 || { echo "scan.sh: jq is required" >&2; exit 2; }
+fi
 SHASUM="shasum -a 256"
 command -v shasum >/dev/null 2>&1 || SHASUM="sha256sum"
 

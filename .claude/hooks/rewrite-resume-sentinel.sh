@@ -18,15 +18,10 @@ set -euo pipefail
 
 STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
 
-# Extract "prompt" field via python3 (reliable JSON unescaping)
-PROMPT="$(printf '%s' "$STDIN_JSON" | python3 -c '
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    sys.stdout.write(d.get("prompt", ""))
-except Exception:
-    pass
-' 2>/dev/null || echo "")"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+
+# Extract "prompt" field via hook-lib (reliable JSON unescaping)
+PROMPT="$(printf '%s' "$STDIN_JSON" | hq_json_get prompt)"
 
 # Normalize: strip whitespace, lowercase, strip trailing period
 NORMALIZED="$(printf '%s' "$PROMPT" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | sed 's/\.$//')"
@@ -38,14 +33,8 @@ if [ "$NORMALIZED" = "$SENTINEL" ]; then
   LOG_DIR="$HQ_ROOT/workspace/learnings"
   mkdir -p "$LOG_DIR" 2>/dev/null || true
   TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  SESSION_ID="$(printf '%s' "$STDIN_JSON" | python3 -c '
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    sys.stdout.write(d.get("session_id", "unknown"))
-except Exception:
-    sys.stdout.write("unknown")
-' 2>/dev/null || echo "unknown")"
+  SESSION_ID="$(printf '%s' "$STDIN_JSON" | hq_json_get session_id)"
+  [ -n "$SESSION_ID" ] || SESSION_ID="unknown"
   printf '{"ts":"%s","event":"resume-sentinel-rewrite","session":"%s"}\n' "$TS" "$SESSION_ID" \
     >> "$LOG_DIR/resume-sentinel.jsonl" 2>/dev/null || true
 

@@ -1053,6 +1053,128 @@ sync_board() {
   ' "$board_file" > "$board_file.tmp" && mv "$board_file.tmp" "$board_file" 2>/dev/null || true
 }
 
+# Keep aggregate project trackers aligned with the per-project state.
+# Every target is best-effort: a missing or malformed tracker must never stop a run.
+reconcile_trackers() {
+  local target_state="$1"
+  local company updated_at
+  local stories_complete="${COMPLETED:-0}"
+  local stories_total="${TOTAL:-0}"
+
+  [[ "$stories_complete" =~ ^[0-9]+$ ]] || stories_complete=0
+  [[ "$stories_total" =~ ^[0-9]+$ ]] || stories_total=0
+  updated_at=$(ts) || return 0
+  company=$(jq -r '.metadata.company // empty' "$PRD_PATH" 2>/dev/null) || company=""
+
+  local orchestrator_state="$HQ_ROOT/workspace/orchestrator/state.json"
+  if [[ -f "$orchestrator_state" ]]; then
+    jq \
+      --arg name "$PROJECT" \
+      --arg prd "$PRD_REL" \
+      --arg state "$target_state" \
+      --argjson completed "$stories_complete" \
+      --argjson total "$stories_total" \
+      --arg updated_at "$updated_at" '
+        (.projects // []) as $projects |
+        .projects = (
+          if any($projects[]; .name == $name or .prdPath == $prd) then
+            $projects | map(
+              if .name == $name or .prdPath == $prd then
+                .state = $state |
+                .storiesComplete = $completed |
+                .storiesTotal = $total |
+                .updatedAt = $updated_at
+              else . end
+            )
+          else
+            $projects + [{
+              name: $name,
+              prdPath: $prd,
+              state: $state,
+              storiesComplete: $completed,
+              storiesTotal: $total,
+              updatedAt: $updated_at
+            }]
+          end
+        )
+      ' "$orchestrator_state" > "$orchestrator_state.tmp" \
+        && mv "$orchestrator_state.tmp" "$orchestrator_state" \
+        || { rm -f "$orchestrator_state.tmp" 2>/dev/null || true; }
+  fi
+
+  if [[ -n "$company" ]]; then
+    local board_path board_file
+    board_path=$(yq -r --arg co "$company" '.[$co].board_path // empty' "$HQ_ROOT/companies/manifest.yaml" 2>/dev/null) || board_path=""
+    if [[ -n "$board_path" && "$board_path" != "null" ]]; then
+      board_file="$HQ_ROOT/$board_path"
+      if [[ -f "$board_file" ]]; then
+        jq \
+          --arg prd "$PRD_REL" \
+          --argjson completed "$stories_complete" \
+          --argjson total "$stories_total" '
+            (.projects // []) |= map(
+              if .prd_path == $prd then
+                .storiesComplete = $completed |
+                .storiesTotal = $total
+              else . end
+            )
+          ' "$board_file" > "$board_file.tmp" \
+            && mv "$board_file.tmp" "$board_file" \
+            || { rm -f "$board_file.tmp" 2>/dev/null || true; }
+      fi
+    fi
+
+    local projects_index="$HQ_ROOT/companies/$company/projects/INDEX.md"
+    if [[ -f "$projects_index" ]]; then
+      awk -v project="$PROJECT" -v state="$target_state" -v stories="$stories_complete/$stories_total" '
+        function trim(value) {
+          sub(/^[[:space:]]+/, "", value)
+          sub(/[[:space:]]+$/, "", value)
+          return value
+        }
+        function project_name(value, label) {
+          value = trim(value)
+          if (value ~ /^\[[^]]+\]\([^)]*\)$/) {
+            label = value
+            sub(/^\[/, "", label)
+            sub(/\]\([^)]*\)$/, "", label)
+            value = label
+          }
+          if (value ~ /^`.*`$/) value = substr(value, 2, length(value) - 2)
+          sub(/\/$/, "", value)
+          return value
+        }
+        {
+          if ($0 ~ /^\|/) {
+            for (i = 2; i < NF; i++) {
+              heading = trim($i)
+              if (heading == "Project") project_col = i
+              if (heading == "Status") status_col = i
+              if (heading == "Stories") stories_col = i
+            }
+          }
+
+          if (project_col && status_col && stories_col && project_name($project_col) == project) {
+            $status_col = " " state " "
+            $stories_col = " " stories " "
+            matches++
+            line = $1
+            for (i = 2; i <= NF; i++) line = line "|" $i
+            print line
+          } else {
+            print
+          }
+        }
+        END {
+          if (!project_col || !status_col || !stories_col || matches != 1) exit 42
+        }
+      ' FS='|' "$projects_index" > "$projects_index.tmp" \
+        && mv "$projects_index.tmp" "$projects_index" \
+        || { rm -f "$projects_index.tmp" 2>/dev/null || true; }
+    fi
+  fi
+}
+
 clean_stale_checkouts
 
 sync_board "in_progress"
@@ -4119,6 +4241,7 @@ if [[ "$REMAINING" -eq 0 ]]; then
 
   # Board sync → done
   sync_board "done"
+  reconcile_trackers "completed"
 
   # ---- Full Ralph Completion Flow ----
 
@@ -4162,29 +4285,14 @@ if [[ "$REMAINING" -eq 0 ]]; then
   } > "$REPORT_FILE"
   log_ok "Report: $REPORT_FILE"
 
-  # 2. Update INDEX.md files (company projects + orchestrator)
-  company=$(jq -r '.metadata.company // empty' "$PRD_PATH" 2>/dev/null) || true
-  if [[ -n "$company" ]]; then
-    co_projects_index="$HQ_ROOT/companies/$company/projects/INDEX.md"
-    if [[ -f "$co_projects_index" ]]; then
-      # Touch updated_at — full rebuild deferred to /cleanup
-      log_info "INDEX: $co_projects_index needs rebuild (deferred)"
-    fi
-  fi
-
-  orch_index="$HQ_ROOT/workspace/orchestrator/INDEX.md"
-  if [[ -f "$orch_index" ]]; then
-    log_info "INDEX: $orch_index needs rebuild (deferred)"
-  fi
-
-  # 3. Doc sweep — headless update of all 4 doc layers
+  # 2. Doc sweep — headless update of all 4 doc layers
   run_doc_sweep "$PROJECT" "$PRD_REL"
 
-  # 4. Final reindex
+  # 3. Final reindex
   qmd update 2>/dev/null || true
   log_ok "qmd reindexed"
 
-  # 5. Verify manifest (repos/workers created during project are registered)
+  # 4. Verify manifest (repos/workers created during project are registered)
   if [[ -n "$REPO_PATH" && -f "$HQ_ROOT/companies/manifest.yaml" ]]; then
     repo_rel="${REPO_PATH#"$HQ_ROOT/"}"
     if ! grep -q "$repo_rel" "$HQ_ROOT/companies/manifest.yaml" 2>/dev/null; then
@@ -4192,10 +4300,11 @@ if [[ "$REMAINING" -eq 0 ]]; then
     fi
   fi
 
-  # 6. Worktree cleanup (if used)
+  # 5. Worktree cleanup (if used)
   cleanup_worktree
 
 else
+  reconcile_trackers "in_progress"
   echo -e "\n${YELLOW}$REMAINING stories remaining.${NC}"
   echo -e "Resume: ${DIM}core/scripts/run-project.sh --resume $PROJECT${NC}"
 fi

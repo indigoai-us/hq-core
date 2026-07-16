@@ -61,7 +61,10 @@ JSON
 )
 
 [[ ! -e "$TMP_ROOT/claude-called" ]] || fail "handoff-post invoked claude"
-grep -q "learn: delegated to Codex subagent" "$TMP_ROOT/logs/handoff-post.log" \
-  || fail "learn delegation was not logged"
-grep -q "document-release: delegated to Codex subagent" "$TMP_ROOT/logs/handoff-post.log" \
-  || fail "document-release delegation was not logged"
+grep -q "learn: eligible and pending runtime dispatch" "$TMP_ROOT/logs/handoff-post.log" \
+  || fail "eligible learnings were not logged as pending"
+grep -q "document-release: eligible and pending runtime dispatch" "$TMP_ROOT/logs/handoff-post.log" \
+  || fail "eligible document-release work was not logged as pending"
+if grep -qi "delegated" "$TMP_ROOT/logs/handoff-post.log"; then
+  fail "handoff-post claimed delegation without dispatch proof"
+fi

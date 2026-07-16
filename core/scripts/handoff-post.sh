@@ -7,9 +7,9 @@
 #   2. Regen orchestrator INDEX.md (bash)
 #   3. Background qmd cleanup + update + embed
 #
-# Model work is intentionally not launched from this detached shell. In Codex,
-# /learn and /document-release follow-ups run as visible Codex subagents from
-# the handoff skill itself, so auth failures cannot disappear into /tmp logs.
+# Model work is intentionally not launched from this detached shell. /learn and
+# /document-release follow-ups run from the handoff skill itself, so auth
+# failures cannot disappear into /tmp logs.
 #
 # Usage (called by handoff skill as `nohup handoff-post.sh ... &`):
 #   core/scripts/handoff-post.sh <thread_path> [learnings_json_file]
@@ -55,7 +55,12 @@ else
 fi
 
 if [[ -n "$LEARNINGS_FILE" && -s "$LEARNINGS_FILE" ]]; then
-  log "learn: delegated to Codex subagent by handoff skill"
+  learning_count=$(jq 'if type == "array" then length else 0 end' "$LEARNINGS_FILE" 2>/dev/null || echo 0)
+  if [[ "${learning_count:-0}" -gt 0 ]]; then
+    log "learn: eligible and pending runtime dispatch by handoff skill (${learning_count} learning(s); no dispatch proof)"
+  else
+    log "learn: no learnings to dispatch"
+  fi
 else
   log "learn: no learnings file provided"
 fi
@@ -65,7 +70,7 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]]; then
     [.files_touched[]? // empty] | map(select(test("^(companies|repos)/"))) | length
   ' "$THREAD_PATH" 2>/dev/null || echo 0)
   if [[ "${scope_match:-0}" -gt 0 ]]; then
-    log "document-release: delegated to Codex subagent by handoff skill (${scope_match} scoped files)"
+    log "document-release: eligible and pending runtime dispatch by handoff skill (${scope_match} scoped files; no dispatch proof)"
   else
     log "document-release: skipped (no company/repo files in files_touched)"
   fi
