@@ -9,6 +9,8 @@
 set -euo pipefail
 
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# shellcheck source=core/scripts/lib/portable.sh
+. "$HQ_ROOT/core/scripts/lib/portable.sh"
 cd "$HQ_ROOT"
 
 OUT="workspace/social-drafts/INDEX.md"
@@ -97,8 +99,8 @@ describe_file() {
         find "workspace/social-drafts/${chan}" -mindepth 1 -maxdepth 1 -type f -name '*.md' 2>/dev/null
       done
     } | while IFS= read -r f; do
-      # Sortable timestamp (macOS BSD stat)
-      ts=$(stat -f '%m' "$f" 2>/dev/null || echo 0)
+      # Sortable timestamp (portable BSD/GNU stat)
+      ts=$(portable_stat_mtime "$f" 2>/dev/null || echo 0)
       printf '%s\t%s\n' "$ts" "$f"
     done | sort -rn | head -20 | cut -f2
   )

@@ -2,6 +2,14 @@
 
 The AI operating system for your company. A shared context layer on top of Claude Code, Cursor, and Codex — syncs knowledge, skills, and capabilities across your team. Scales from solopreneur to enterprise.
 
+## Prerequisites & platforms
+
+HQ's shell layer (hooks, scripts, skills) runs on **Linux, macOS, and Windows Git Bash**. Required tools: bash, git, node, **jq**.
+
+Per-OS install commands, known limitations (including `/deploy` identity `missing_dependency`), and contributor conventions (`portable.sh`, `hook-lib.sh`) live in:
+
+→ [core/knowledge/public/hq-core/cross-platform-support.md](../../knowledge/public/hq-core/cross-platform-support.md)
+
 ## Commands
 
 ### Session Management

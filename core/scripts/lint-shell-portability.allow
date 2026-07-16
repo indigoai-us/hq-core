@@ -1,0 +1,21 @@
+# Allowlist for lint-shell-portability.sh (path substring match).
+# Justified exceptions only — burn down over time.
+
+# portable.sh implements dual sed -i / sed -i '' intentionally
+core/scripts/lib/portable.sh
+
+# Pre-existing readlink -f (burn-down follow-up)
+core/scripts/generate-workers-registry.sh
+core/scripts/scan-packages.sh
+
+# Test fixtures
+core/scripts/tests/
+
+# Dual-form reference implementations (not lint targets)
+core/scripts/archive-old-threads.sh
+core/scripts/work-mesh-lib.sh
+core/scripts/hook-lib.sh
+core/scripts/compute-checksums.sh
+
+# Docs-only sed example text
+.claude/hooks/check-core-yaml-parity.sh

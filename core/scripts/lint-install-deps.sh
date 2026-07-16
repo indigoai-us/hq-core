@@ -59,64 +59,68 @@ if [[ ${#present[@]} -eq 0 ]]; then
 fi
 
 set +e
-python3 - "$deny_file" "${present[@]}" <<'PY'
-import re, sys
+node - "$deny_file" "${present[@]}" <<'JS'
+const fs = require("fs");
 
-deny_file = sys.argv[1]
-files = sys.argv[2:]
+const denyFile = process.argv[2];
+const files = process.argv.slice(3);
 
-tokens = []
-for ln in open(deny_file, errors="ignore"):
-    ln = ln.split("#", 1)[0].strip()
-    if re.fullmatch(r"[a-z][a-z0-9-]*", ln):
-        tokens.append(ln)
+const tokens = [];
+for (let ln of fs.readFileSync(denyFile, "utf8").split(/\r?\n/)) {
+  ln = ln.split("#", 1)[0].trim();
+  if (/^[a-z][a-z0-9-]*$/.test(ln)) tokens.push(ln);
+}
 
-if not tokens:
-    print("OK: install-deps.deny lists no tokens (nothing to check).")
-    sys.exit(0)
+if (!tokens.length) {
+  console.log("OK: install-deps.deny lists no tokens (nothing to check).");
+  process.exit(0);
+}
 
-bad = []
-for tok in tokens:
-    t = re.escape(tok)
-    patterns = [
-        # package-manager install of the token (token is the install target,
-        # optionally after one or more -flags)
-        rf"\b(?:npm|pnpm|yarn|bun)\s+(?:install|i|add|exec)\b(?:\s+-{{1,2}}[a-z][\w-]*)*\s+{t}\b",
-        # global install flag pointing at the token
-        rf"-g\s+{t}\b",
-        rf"--global\b(?:\s+-{{1,2}}[a-z][\w-]*)*\s+{t}\b",
-        # homebrew install of the token
-        rf"\bbrew\s+install\b(?:\s+-{{1,2}}[a-z][\w-]*)*\s+{t}\b",
-        # presence check used as a setup gate
-        rf"\bwhich\s+{t}\b",
-        rf"\bcommand\s+-v\s+{t}\b",
-        # auth-gate invocation during setup
-        rf"\b{t}\s+(?:whoami|login)\b",
-    ]
-    rx = re.compile("|".join(patterns), re.IGNORECASE)
-    for f in files:
-        for i, line in enumerate(open(f, errors="ignore"), 1):
-            if rx.search(line):
-                bad.append((f, i, tok, line.strip()))
+const bad = [];
+for (const tok of tokens) {
+  const t = tok.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    // package-manager install of the token (token is the install target,
+    // optionally after one or more -flags)
+    "\\b(?:npm|pnpm|yarn|bun)\\s+(?:install|i|add|exec)\\b(?:\\s+-{1,2}[a-z][\\w-]*)*\\s+" + t + "\\b",
+    // global install flag pointing at the token
+    "-g\\s+" + t + "\\b",
+    "--global\\b(?:\\s+-{1,2}[a-z][\\w-]*)*\\s+" + t + "\\b",
+    // homebrew install of the token
+    "\\bbrew\\s+install\\b(?:\\s+-{1,2}[a-z][\\w-]*)*\\s+" + t + "\\b",
+    // presence check used as a setup gate
+    "\\bwhich\\s+" + t + "\\b",
+    "\\bcommand\\s+-v\\s+" + t + "\\b",
+    // auth-gate invocation during setup
+    "\\b" + t + "\\s+(?:whoami|login)\\b",
+  ];
+  const rx = new RegExp(patterns.join("|"), "i");
+  for (const f of files) {
+    const lines = fs.readFileSync(f, "utf8").split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      if (rx.test(lines[i])) bad.push([f, i + 1, tok, lines[i].trim()]);
+    }
+  }
+}
 
-if bad:
-    print("FAIL: HQ's install/setup surface installs or dependency-checks a tool")
-    print("listed in core/scripts/install-deps.deny. HQ features never call these;")
-    print("they are user-provided — do not gate setup on them.")
-    print()
-    for f, i, tok, line in bad:
-        print(f"  {f}:{i}  [{tok}]  {line}")
-    print()
-    print("Fix one of:")
-    print("  • remove the install/check from the setup surface (the tool is")
-    print("    user-provided; document usage in a point-of-use policy instead); or")
-    print("  • if HQ genuinely needs the tool at install time, remove it from")
-    print("    core/scripts/install-deps.deny (and justify in the PR).")
-    sys.exit(1)
+if (bad.length) {
+  console.log("FAIL: HQ's install/setup surface installs or dependency-checks a tool");
+  console.log("listed in core/scripts/install-deps.deny. HQ features never call these;");
+  console.log("they are user-provided — do not gate setup on them.");
+  console.log("");
+  for (const [f, i, tok, line] of bad) console.log("  " + f + ":" + i + "  [" + tok + "]  " + line);
+  console.log("");
+  console.log("Fix one of:");
+  console.log("  • remove the install/check from the setup surface (the tool is");
+  console.log("    user-provided; document usage in a point-of-use policy instead); or");
+  console.log("  • if HQ genuinely needs the tool at install time, remove it from");
+  console.log("    core/scripts/install-deps.deny (and justify in the PR).");
+  process.exit(1);
+}
 
-print(f"OK: install/setup surface installs no denied dependency "
-      f"({len(tokens)} token(s) checked across {len(files)} file(s)).")
-PY
+console.log("OK: install/setup surface installs no denied dependency (" +
+  tokens.length + " token(s) checked across " + files.length + " file(s)).");
+JS
 rc=$?
 set -e
 exit "$rc"

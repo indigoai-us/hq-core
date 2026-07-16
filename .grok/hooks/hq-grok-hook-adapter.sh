@@ -57,17 +57,17 @@ self_dir="$(cd "$(dirname "$self_src")" 2>/dev/null && pwd -P || true)"
 HQ_ROOT=""
 if [ -n "$self_dir" ]; then
   cand="$(cd "$self_dir/../.." 2>/dev/null && pwd -P || true)"
-  [ -n "$cand" ] && [ -x "$cand/.claude/hooks/hook-gate.sh" ] && HQ_ROOT="$cand"
+  [ -n "$cand" ] && [ -f "$cand/.claude/hooks/hook-gate.sh" ] && HQ_ROOT="$cand"
 fi
 if [ -z "$HQ_ROOT" ]; then
   HQ_ROOT="${CLAUDE_PROJECT_DIR:-${GROK_WORKSPACE_ROOT:-}}"
-  [ -n "$HQ_ROOT" ] && [ ! -x "$HQ_ROOT/.claude/hooks/hook-gate.sh" ] && HQ_ROOT=""
+  [ -n "$HQ_ROOT" ] && [ ! -f "$HQ_ROOT/.claude/hooks/hook-gate.sh" ] && HQ_ROOT=""
 fi
 if [ -z "$HQ_ROOT" ]; then
   # Walk up from cwd (nested repos under HQ).
   walk="$CWD"
   while [ -n "$walk" ] && [ "$walk" != "/" ]; do
-    if [ -x "$walk/.claude/hooks/hook-gate.sh" ]; then
+    if [ -f "$walk/.claude/hooks/hook-gate.sh" ]; then
       HQ_ROOT="$walk"
       break
     fi
@@ -78,8 +78,10 @@ fi
 GATE="${HQ_ROOT:+$HQ_ROOT/.claude/hooks/hook-gate.sh}"
 HOOK_DIR="${HQ_ROOT:+$HQ_ROOT/.claude/hooks}"
 
-# Fail-open outside HQ trees (never wedge non-HQ projects).
-if [ -z "$HQ_ROOT" ] || [ ! -x "${GATE:-}" ]; then
+# Fail-open outside HQ trees (never wedge non-HQ projects). Gate presence is
+# checked with -f, not -x: HQ Sync strips exec bits, and the gate is invoked
+# via `bash` below so a stripped bit must not silently disable enforcement.
+if [ -z "$HQ_ROOT" ] || [ ! -f "${GATE:-}" ]; then
   if [ "$EVENT" = "PreToolUse" ]; then
     echo '{"decision":"allow"}'
   fi
@@ -105,6 +107,13 @@ FP="$(jget '.toolInput.file_path // .toolInput.path // .toolInput.target_file //
 CONTENT="$(jget '.toolInput.content // .toolInput.new_string // .tool_input.content // .tool_input.new_string // empty')"
 
 # Claude-shaped payload for HQ hooks.
+# Session identity: without a session_id the policy-injection dedupe collapses
+# into the shared persistent default.txt ledger (fires once per machine, ever).
+# Prefer whatever session field Grok supplies; else synthesize from the
+# invoking process ($PPID — stable within a Grok session, distinct across).
+SID="$(jget '.session_id // .sessionId // .conversationId // .threadId // empty')"
+[ -z "$SID" ] && SID="grok-${GROK_SESSION_ID:-$PPID}"
+
 CLAUDE_JSON="$(jq -n \
   --arg t "$CTOOL" \
   --arg c "$CMD" \
@@ -112,10 +121,12 @@ CLAUDE_JSON="$(jq -n \
   --arg body "$CONTENT" \
   --arg event "$EVENT" \
   --arg cwd "$CWD" \
+  --arg sid "$SID" \
   '{
     hook_event_name: $event,
     tool_name: $t,
     cwd: $cwd,
+    session_id: $sid,
     tool_input: (
       {}
       + (if $c != "" then {command: $c} else {} end)
@@ -139,7 +150,7 @@ run_block() { # <hook-id> <hook-script> [payload]
   local id="$1" script="$2" payload="${3:-$CLAUDE_JSON}"
   [ -x "$script" ] || return 0
   local err st
-  err="$(printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" "$GATE" "$id" "$script" 2>&1 1>/dev/null)"
+  err="$(printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$GATE" "$id" "$script" 2>&1 1>/dev/null)"
   st=$?
   if [ "$st" -ne 0 ]; then
     deny "$(printf '%s' "${err:-Blocked by HQ guard: $id}" | head -c 1200)"
@@ -150,7 +161,7 @@ run_advisory() { # <hook-id> <hook-script> [payload]
   local id="$1" script="$2" payload="${3:-$CLAUDE_JSON}"
   [ -x "$script" ] || return 0
   printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" \
-    "$GATE" "$id" "$script" >/dev/null 2>&1 || true
+    bash "$GATE" "$id" "$script" >/dev/null 2>&1 || true
 }
 
 run_script_advisory() { # <script> [payload]

@@ -26,15 +26,10 @@ set -euo pipefail
 
 STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+
 extract() {
-  printf '%s' "$STDIN_JSON" | python3 -c '
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    sys.stdout.write(str(d.get(sys.argv[1], "")))
-except Exception:
-    pass
-' "$1" 2>/dev/null || echo ""
+  printf '%s' "$STDIN_JSON" | hq_json_get "$1"
 }
 
 PROMPT="$(extract prompt)"

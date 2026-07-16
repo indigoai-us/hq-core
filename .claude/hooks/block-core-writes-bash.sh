@@ -21,9 +21,8 @@ CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
 [[ -z "$CMD" ]] && exit 0
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-if command -v python3 >/dev/null 2>&1; then
-  PROJECT_DIR="$(python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
-fi
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+PROJECT_DIR="$(hq_normpath "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
 
 SETTINGS_LOCAL="$PROJECT_DIR/.claude/settings.local.json"
 

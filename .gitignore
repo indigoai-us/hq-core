@@ -126,3 +126,7 @@ test-results/
 # Runtime journal pointers (legacy and session-scoped forms)
 .claude/state/active-journal
 .claude/state/active-journal.d/
+
+# Policy-injection dedupe ledgers are per-machine runtime state, never code.
+# A tracked ledger ships pre-populated and suppresses first-run injection.
+workspace/orchestrator/policy-trigger-state/

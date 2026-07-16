@@ -59,12 +59,14 @@ if echo "$CMD" | grep -Eq '(^|[[:space:]])HQ_ALLOW_HQ_ROOT_GIT=1\b'; then exit 0
 echo "$CMD" | grep -Eq '(^|[[:space:];&|(])(git|gh)([[:space:]]|$)' || exit 0
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+# expanduser + realpath (symlink-resolving when the path exists), python-free:
+# `realpath` ships with GNU coreutils (Linux, Git Bash) and modern macOS; fall
+# back to the lexical hq_normpath when it is missing or the path is dangling.
 norm() {
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import os,sys; sys.stdout.write(os.path.realpath(os.path.expanduser(sys.argv[1])))' "$1" 2>/dev/null || echo "$1"
-  else
-    echo "$1"
-  fi
+  local p="$1"
+  case "$p" in "~") p="$HOME" ;; "~/"*) p="$HOME${p#\~}" ;; esac
+  realpath "$p" 2>/dev/null || hq_normpath "$p" 2>/dev/null || echo "$p"
 }
 HQ_ROOT="$(norm "$PROJECT_DIR")"
 

@@ -12,16 +12,13 @@ set -uo pipefail
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 MARKER_DIR="${HQ_ROOT}/workspace/orchestrator/policy-trigger-state"
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+
 # Read PreToolUse JSON from stdin.
 INPUT="$(cat 2>/dev/null || true)"
 [ -z "$INPUT" ] && exit 0
 
-SESSION_ID="$(printf '%s' "$INPUT" | python3 -c 'import json,sys
-try:
-  d=json.load(sys.stdin); print(d.get("session_id",""))
-except Exception:
-  print("")
-' 2>/dev/null)"
+SESSION_ID="$(printf '%s' "$INPUT" | hq_json_get session_id)"
 
 [ -z "$SESSION_ID" ] && exit 0
 

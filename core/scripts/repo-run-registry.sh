@@ -27,6 +27,8 @@
 set -euo pipefail
 
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# shellcheck source=core/scripts/lib/portable.sh
+. "$HQ_ROOT/core/scripts/lib/portable.sh"
 REG_DIR="$HQ_ROOT/workspace/orchestrator"
 REG_FILE="$REG_DIR/active-runs.json"
 LOCK_DIR="$REG_FILE.lock"
@@ -73,8 +75,9 @@ _lock() {
     if [[ $tries -ge $max ]]; then
       # stale lock fallback: remove if older than 60s
       if [[ -d "$LOCK_DIR" ]]; then
-        local age
-        age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0) ))
+        local age mtime
+        mtime="$(portable_stat_mtime "$LOCK_DIR" 2>/dev/null || echo 0)"
+        age=$(( $(date +%s) - mtime ))
         if [[ $age -gt 60 ]]; then
           rm -rf "$LOCK_DIR" 2>/dev/null || true
           continue

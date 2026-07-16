@@ -13,389 +13,375 @@ if [ "${1:-}" = "ingest-plan" ]; then
 fi
 export SESSION_PROJECT_STDIN_INPUT
 
-python3 - "$HQ_ROOT" "$@" <<'PY'
-import argparse
-import datetime as dt
-import json
-import os
-import pathlib
-import re
-import sys
+command -v node >/dev/null 2>&1 || { echo "session-project: node is required" >&2; exit 1; }
 
-HQ_ROOT = pathlib.Path(sys.argv[1]).resolve()
-ARGS = sys.argv[2:]
+node - "$HQ_ROOT" "$@" <<'JS'
+const fs = require("fs");
+const path = require("path");
 
-STOPWORDS = {
-    "about", "after", "again", "almost", "always", "and", "any", "are",
-    "basically", "before", "being", "can", "claude", "codex", "create",
-    "created", "creating", "default", "does", "doing", "done", "for",
-    "from", "have", "how", "into", "mode", "native", "ones", "plan",
-    "project", "projects", "session", "sessions", "should", "that",
-    "the", "this", "update", "updated", "when", "with", "work", "would",
+const HQ_ROOT = fs.realpathSync(process.argv[2]);
+const ARGS = process.argv.slice(3);
+
+const STOPWORDS = new Set([
+  "about", "after", "again", "almost", "always", "and", "any", "are",
+  "basically", "before", "being", "can", "claude", "codex", "create",
+  "created", "creating", "default", "does", "doing", "done", "for",
+  "from", "have", "how", "into", "mode", "native", "ones", "plan",
+  "project", "projects", "session", "sessions", "should", "that",
+  "the", "this", "update", "updated", "when", "with", "work", "would",
+]);
+
+const pad = (x) => String(x).padStart(2, "0");
+function nowIso() {
+  const d = new Date();
+  return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate()) +
+    "T" + pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()) + ":" + pad(d.getUTCSeconds()) + "Z";
+}
+function today() {
+  const d = new Date();
+  return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate());
 }
 
-
-def now_iso():
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def today():
-    return dt.datetime.now(dt.timezone.utc).date().isoformat()
-
-
-def slugify(value):
-    value = (value or "native-session").lower()
-    value = re.sub(r"[^a-z0-9]+", "-", value).strip("-")
-    value = re.sub(r"-+", "-", value)
-    return (value or "native-session")[:60].strip("-") or "native-session"
-
-
-# Filler words that should never anchor a project name — approvals,
-# pleasantries, pronouns, and instruction scaffolding. Distinct from STOPWORDS
-# (which tunes reuse-matching); this set tunes the human-facing slug.
-SLUG_FILLER = {
-    "ok", "okay", "yes", "yep", "yeah", "ya", "sure", "cool", "nice", "great",
-    "good", "perfect", "thanks", "thank", "you", "your", "please", "pls", "go",
-    "ahead", "for", "it", "do", "did", "that", "this", "now", "lets", "let",
-    "us", "proceed", "continue", "just", "still", "also", "and", "then", "the",
-    "a", "an", "to", "with", "up", "on", "in", "of", "both", "all", "sounds",
-    "lgtm", "fine", "right", "exactly", "agreed", "next", "keep", "again",
-    "more", "im", "i", "we", "should", "can", "could", "would", "want", "need",
-    "me", "my", "our", "help", "make", "get", "got", "have", "is", "are", "be",
-    "out", "here", "there", "some", "any", "as", "at", "by", "or", "but", "so",
-    "from", "into", "about", "please", "kindly", "gonna", "wanna", "like",
+function slugify(value) {
+  value = (value || "native-session").toLowerCase();
+  value = value.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  value = value.replace(/-+/g, "-");
+  value = (value || "native-session").slice(0, 60).replace(/^-+|-+$/g, "");
+  return value || "native-session";
 }
 
+// Filler words that should never anchor a project name — approvals,
+// pleasantries, pronouns, and instruction scaffolding. Distinct from STOPWORDS
+// (which tunes reuse-matching); this set tunes the human-facing slug.
+const SLUG_FILLER = new Set([
+  "ok", "okay", "yes", "yep", "yeah", "ya", "sure", "cool", "nice", "great",
+  "good", "perfect", "thanks", "thank", "you", "your", "please", "pls", "go",
+  "ahead", "for", "it", "do", "did", "that", "this", "now", "lets", "let",
+  "us", "proceed", "continue", "just", "still", "also", "and", "then", "the",
+  "a", "an", "to", "with", "up", "on", "in", "of", "both", "all", "sounds",
+  "lgtm", "fine", "right", "exactly", "agreed", "next", "keep", "again",
+  "more", "im", "i", "we", "should", "can", "could", "would", "want", "need",
+  "me", "my", "our", "help", "make", "get", "got", "have", "is", "are", "be",
+  "out", "here", "there", "some", "any", "as", "at", "by", "or", "but", "so",
+  "from", "into", "about", "kindly", "gonna", "wanna", "like",
+]);
 
-def topic_slug(text, max_words=5):
-    """Build a clean, meaningful project slug: drop filler, keep the first few
-    content words. Date-stamp as a last resort so a name is always produced."""
-    toks = re.findall(r"[a-z0-9][a-z0-9-]*", (text or "").lower())
-    content = [
-        t for t in toks
-        if t not in SLUG_FILLER and not t.isdigit() and len(t) > 1
-    ]
-    if not content:
-        return f"session-{today()}"
-    return slugify("-".join(content[:max_words]))
+// Build a clean, meaningful project slug: drop filler, keep the first few
+// content words. Date-stamp as a last resort so a name is always produced.
+function topicSlug(text, maxWords = 5) {
+  const toks = ((text || "").toLowerCase().match(/[a-z0-9][a-z0-9-]*/g)) || [];
+  const content = toks.filter((t) => !SLUG_FILLER.has(t) && !/^[0-9]+$/.test(t) && t.length > 1);
+  if (!content.length) return "session-" + today();
+  return slugify(content.slice(0, maxWords).join("-"));
+}
 
+function words(value) {
+  const found = ((value || "").toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g)) || [];
+  const out = new Set();
+  for (const w of found) if (!STOPWORDS.has(w)) out.add(w);
+  return out;
+}
 
-def words(value):
-    return {
-        w for w in re.findall(r"[a-z0-9][a-z0-9-]{2,}", (value or "").lower())
-        if w not in STOPWORDS
+function readJson(p) {
+  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { return null; }
+}
+
+function writeJson(p, data) {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(data, null, 2) + "\n");
+}
+
+const relToRoot = (p) => path.relative(HQ_ROOT, p).replace(/\\/g, "/");
+
+function projectBase(scope, company) {
+  if (scope === "company" && company) return path.join(HQ_ROOT, "companies", company, "projects");
+  return path.join(HQ_ROOT, "personal", "projects");
+}
+
+// Company isolation: when a company is explicit, only reuse that company's
+// projects. Otherwise use personal/HQ projects as the neutral home.
+const candidateBases = (scope, company) => [projectBase(scope, company)];
+
+function projectText(prd, prdPath) {
+  const metadata = (prd && typeof prd.metadata === "object" && prd.metadata) || {};
+  const stories = Array.isArray(prd.userStories) ? prd.userStories : [];
+  const storyText = stories.slice(0, 5)
+    .filter((s) => s && typeof s === "object")
+    .map((s) => (s.id || "") + " " + (s.title || "") + " " + (s.description || ""))
+    .join(" ");
+  return [
+    String(prd.name || ""),
+    String(prd.description || ""),
+    String(metadata.goal || ""),
+    path.basename(path.dirname(prdPath)),
+    storyText,
+  ].join(" ");
+}
+
+function findCandidates(scope, company, query, limit = 5) {
+  const queryWords = words(query);
+  if (!queryWords.size) return [];
+
+  const candidates = [];
+  for (const base of candidateBases(scope, company)) {
+    let children;
+    try { children = fs.readdirSync(base).sort(); } catch (e) { continue; }
+    for (const name of children) {
+      const child = path.join(base, name);
+      const prdPath = path.join(child, "prd.json");
+      let stat;
+      try { stat = fs.statSync(prdPath); } catch (e) { continue; }
+      if (!stat.isFile()) continue;
+      const prd = readJson(prdPath);
+      if (!prd || typeof prd !== "object" || Array.isArray(prd)) continue;
+      const hayWords = words(projectText(prd, prdPath));
+      const overlap = [...queryWords].filter((w) => hayWords.has(w)).sort();
+      const slugHits = [...queryWords].filter((w) => name.toLowerCase().includes(w));
+      const score = overlap.length + slugHits.length;
+      if (score === 0) continue;
+      candidates.push({
+        path: relToRoot(prdPath),
+        projectDir: relToRoot(child),
+        name: prd.name || name,
+        score: score,
+        overlap: overlap.slice(0, 12),
+      });
     }
+  }
 
+  candidates.sort((a, b) => (b.score - a.score) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return candidates.slice(0, limit);
+}
 
-def read_json(path):
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return None
+function loadOrCreatePrd(projectDir, title, scope, company, prompt, origin, repoPath) {
+  const prdPath = path.join(projectDir, "prd.json");
+  if (fs.existsSync(prdPath)) {
+    const prd = readJson(prdPath);
+    return (prd && typeof prd === "object" && !Array.isArray(prd)) ? prd : {};
+  }
 
+  const slug = path.basename(projectDir);
+  const description = prompt || title;
+  return {
+    name: slug,
+    description: description,
+    branchName: "main",
+    metadata: {
+      origin: "native-session",
+      scope: scope,
+      company: company || "personal",
+      createdAt: nowIso(),
+      goal: title,
+      repoPath: repoPath,
+      status: "active",
+      executionMode: "native",
+      source: origin,
+      nativeSessions: [],
+      nativePlans: [],
+    },
+    userStories: [
+      {
+        id: "US-001",
+        title: title,
+        description: description,
+        acceptanceCriteria: [],
+        e2eTests: [],
+        priority: 1,
+        passes: false,
+        files: [],
+        labels: ["native-session"],
+        dependsOn: [],
+        notes: "Created automatically from a native Claude/Codex session. Enrich with /prd or /plan if this becomes a structured project.",
+        model_hint: "",
+      },
+    ],
+  };
+}
 
-def write_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=True) + "\n")
+function appendSession(prd, sessionId, prompt, reused) {
+  const metadata = prd.metadata || (prd.metadata = {});
+  const sessions = metadata.nativeSessions || (metadata.nativeSessions = []);
+  const entry = {
+    ts: nowIso(),
+    sessionId: sessionId || "unknown",
+    prompt: (prompt || "").slice(0, 1000),
+    reused: Boolean(reused),
+  };
+  const last = sessions[sessions.length - 1];
+  if (!sessions.length || JSON.stringify(last) !== JSON.stringify(entry)) sessions.push(entry);
+  metadata.updatedAt = entry.ts;
+}
 
+function writeReadme(projectDir, prd) {
+  const readme = path.join(projectDir, "README.md");
+  if (fs.existsSync(readme)) return;
+  const name = prd.name || path.basename(projectDir);
+  const description = prd.description || "";
+  fs.writeFileSync(readme,
+    "# " + name + "\n\n" +
+    description + "\n\n" +
+    "## Status\n\n" +
+    "Native session project. This folder was created automatically so work " +
+    "done outside `/plan` and `/run-project` still has a durable home.\n\n" +
+    "## Next\n\n" +
+    "- Enrich `prd.json` if this becomes structured execution work.\n" +
+    "- Keep session notes in `journal/` or `sessions/`.\n");
+}
 
-def project_base(scope, company):
-    if scope == "company" and company:
-        return HQ_ROOT / "companies" / company / "projects"
-    return HQ_ROOT / "personal" / "projects"
+function setActivePointer(projectDir) {
+  const state = path.join(HQ_ROOT, ".claude", "state");
+  fs.mkdirSync(state, { recursive: true });
+  fs.writeFileSync(path.join(state, "active-session-project"), String(projectDir) + "\n");
+}
 
+function ensureProject(args) {
+  const query = [args.title || "", args.prompt || ""].join(" ").trim();
+  let reuse = null;
+  if (!args.force_new) {
+    const candidates = findCandidates(args.scope, args.company, query, 3);
+    if (candidates.length && candidates[0].score >= args.reuse_threshold) reuse = candidates[0];
+  }
 
-def candidate_bases(scope, company):
-    # Company isolation: when a company is explicit, only reuse that company's
-    # projects. Otherwise use personal/HQ projects as the neutral home.
-    return [project_base(scope, company)]
-
-
-def project_text(prd, path):
-    metadata = prd.get("metadata") if isinstance(prd, dict) else {}
-    stories = prd.get("userStories") if isinstance(prd, dict) else []
-    story_text = " ".join(
-        f"{s.get('id', '')} {s.get('title', '')} {s.get('description', '')}"
-        for s in stories[:5]
-        if isinstance(s, dict)
-    )
-    return " ".join([
-        str(prd.get("name", "")),
-        str(prd.get("description", "")),
-        str(metadata.get("goal", "")) if isinstance(metadata, dict) else "",
-        path.parent.name,
-        story_text,
-    ])
-
-
-def find_candidates(scope, company, query, limit=5):
-    query_words = words(query)
-    if not query_words:
-        return []
-
-    candidates = []
-    for base in candidate_bases(scope, company):
-        if not base.exists():
-            continue
-        for child in sorted(base.iterdir()):
-            prd_path = child / "prd.json"
-            if not prd_path.is_file():
-                continue
-            prd = read_json(prd_path)
-            if not isinstance(prd, dict):
-                continue
-            haystack = project_text(prd, prd_path)
-            hay_words = words(haystack)
-            overlap = sorted(query_words & hay_words)
-            slug_hits = [w for w in query_words if w in child.name.lower()]
-            score = len(overlap) + len(slug_hits)
-            if score == 0:
-                continue
-            candidates.append({
-                "path": str(prd_path.relative_to(HQ_ROOT)),
-                "projectDir": str(child.relative_to(HQ_ROOT)),
-                "name": prd.get("name") or child.name,
-                "score": score,
-                "overlap": overlap[:12],
-            })
-
-    candidates.sort(key=lambda c: (-c["score"], c["path"]))
-    return candidates[:limit]
-
-
-def load_or_create_prd(project_dir, title, scope, company, prompt, origin, repo_path):
-    prd_path = project_dir / "prd.json"
-    if prd_path.exists():
-        prd = read_json(prd_path)
-        return prd if isinstance(prd, dict) else {}
-
-    slug = project_dir.name
-    description = prompt or title
-    prd = {
-        "name": slug,
-        "description": description,
-        "branchName": "main",
-        "metadata": {
-            "origin": "native-session",
-            "scope": scope,
-            "company": company or "personal",
-            "createdAt": now_iso(),
-            "goal": title,
-            "repoPath": repo_path,
-            "status": "active",
-            "executionMode": "native",
-            "source": origin,
-            "nativeSessions": [],
-            "nativePlans": [],
-        },
-        "userStories": [
-            {
-                "id": "US-001",
-                "title": title,
-                "description": description,
-                "acceptanceCriteria": [],
-                "e2eTests": [],
-                "priority": 1,
-                "passes": False,
-                "files": [],
-                "labels": ["native-session"],
-                "dependsOn": [],
-                "notes": "Created automatically from a native Claude/Codex session. Enrich with /prd or /plan if this becomes a structured project.",
-                "model_hint": "",
-            }
-        ],
+  let projectDir, reused;
+  if (reuse) {
+    projectDir = path.join(HQ_ROOT, reuse.projectDir);
+    reused = true;
+  } else {
+    const base = projectBase(args.scope, args.company);
+    const slug = args.slug ? slugify(args.slug) : topicSlug(args.title || args.prompt);
+    projectDir = path.join(base, slug);
+    let suffix = 2;
+    while (fs.existsSync(projectDir) && !fs.existsSync(path.join(projectDir, "prd.json"))) {
+      projectDir = path.join(base, slug + "-" + suffix);
+      suffix += 1;
     }
-    return prd
+    reused = false;
+  }
 
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.mkdirSync(path.join(projectDir, "journal"), { recursive: true });
+  fs.mkdirSync(path.join(projectDir, "sessions"), { recursive: true });
 
-def append_session(prd, session_id, prompt, reused):
-    metadata = prd.setdefault("metadata", {})
-    sessions = metadata.setdefault("nativeSessions", [])
-    entry = {
-        "ts": now_iso(),
-        "sessionId": session_id or "unknown",
-        "prompt": (prompt or "")[:1000],
-        "reused": bool(reused),
-    }
-    if not sessions or sessions[-1] != entry:
-        sessions.append(entry)
-    metadata["updatedAt"] = entry["ts"]
+  const prd = loadOrCreatePrd(projectDir, args.title, args.scope, args.company,
+    args.prompt, args.origin, args.repo_path);
+  appendSession(prd, args.session_id, args.prompt, reused);
+  writeJson(path.join(projectDir, "prd.json"), prd);
+  writeReadme(projectDir, prd);
+  setActivePointer(projectDir);
 
+  const stamp = nowIso().split(":").join("").split("-").join("");
+  const sessionFile = path.join(projectDir, "sessions", stamp + "-" + (args.session_id || "session") + ".json");
+  writeJson(sessionFile, {
+    ts: nowIso(),
+    kind: "native-session-start",
+    prompt: args.prompt,
+    reused: reused,
+    projectDir: relToRoot(projectDir),
+  });
 
-def write_readme(project_dir, prd):
-    readme = project_dir / "README.md"
-    if readme.exists():
-        return
-    name = prd.get("name", project_dir.name)
-    description = prd.get("description", "")
-    readme.write_text(
-        f"# {name}\n\n"
-        f"{description}\n\n"
-        "## Status\n\n"
-        "Native session project. This folder was created automatically so work "
-        "done outside `/plan` and `/run-project` still has a durable home.\n\n"
-        "## Next\n\n"
-        "- Enrich `prd.json` if this becomes structured execution work.\n"
-        "- Keep session notes in `journal/` or `sessions/`.\n"
-    )
+  console.log(JSON.stringify({
+    projectDir: relToRoot(projectDir),
+    prdPath: relToRoot(path.join(projectDir, "prd.json")),
+    reused: reused,
+    match: reuse,
+  }, null, 2));
+}
 
+function resolveProjectDir(project, requiredMsg) {
+  const pointer = path.join(HQ_ROOT, ".claude", "state", "active-session-project");
+  let projectDir;
+  if (project) {
+    projectDir = path.join(HQ_ROOT, project);
+  } else if (fs.existsSync(pointer)) {
+    projectDir = fs.readFileSync(pointer, "utf8").trim();
+  } else if (requiredMsg) {
+    process.stderr.write(requiredMsg + "\n");
+    process.exit(1);
+  } else {
+    process.exit(0);
+  }
+  if (!path.isAbsolute(projectDir)) projectDir = path.join(HQ_ROOT, projectDir);
+  return projectDir;
+}
 
-def set_active_pointer(project_dir):
-    state = HQ_ROOT / ".claude" / "state"
-    state.mkdir(parents=True, exist_ok=True)
-    (state / "active-session-project").write_text(str(project_dir) + "\n")
+function ingestPlan(args) {
+  const projectDir = resolveProjectDir(args.project, "session-project: no active project; run ensure first");
+  const prdPath = path.join(projectDir, "prd.json");
+  const prd = readJson(prdPath) || {};
 
+  let body;
+  if (args.plan_file) body = fs.readFileSync(args.plan_file, "utf8");
+  else body = process.env.SESSION_PROJECT_STDIN_INPUT || "";
+  body = body.trim();
+  if (!body) process.exit(0);
 
-def ensure_project(args):
-    query = " ".join([args.title or "", args.prompt or ""]).strip()
-    reuse = None
-    if not args.force_new:
-        candidates = find_candidates(args.scope, args.company, query, limit=3)
-        if candidates and candidates[0]["score"] >= args.reuse_threshold:
-            reuse = candidates[0]
+  const plansDir = path.join(projectDir, "sessions");
+  fs.mkdirSync(plansDir, { recursive: true });
+  const stamp = nowIso().split(":").join("").split("-").join("");
+  const planPath = path.join(plansDir, stamp + "-native-plan.md");
+  fs.writeFileSync(planPath, body + "\n");
 
-    if reuse:
-        project_dir = HQ_ROOT / reuse["projectDir"]
-        reused = True
-    else:
-        base = project_base(args.scope, args.company)
-        slug = slugify(args.slug) if args.slug else topic_slug(args.title or args.prompt)
-        project_dir = base / slug
-        suffix = 2
-        while project_dir.exists() and not (project_dir / "prd.json").exists():
-            project_dir = base / f"{slug}-{suffix}"
-            suffix += 1
-        reused = False
+  const metadata = prd.metadata || (prd.metadata = {});
+  const nativePlans = metadata.nativePlans || (metadata.nativePlans = []);
+  nativePlans.push({
+    ts: nowIso(),
+    path: relToRoot(planPath),
+    summary: body.slice(0, 500),
+    source: args.source,
+  });
+  metadata.updatedAt = nowIso();
+  writeJson(prdPath, prd);
+  console.log(relToRoot(planPath));
+}
 
-    project_dir.mkdir(parents=True, exist_ok=True)
-    (project_dir / "journal").mkdir(exist_ok=True)
-    (project_dir / "sessions").mkdir(exist_ok=True)
+function appendEvent(args) {
+  const projectDir = resolveProjectDir(args.project, "");
+  const prdPath = path.join(projectDir, "prd.json");
+  const prd = readJson(prdPath) || {};
+  const metadata = prd.metadata || (prd.metadata = {});
+  const events = metadata.nativeEvents || (metadata.nativeEvents = []);
+  events.push({ ts: nowIso(), kind: args.kind, summary: args.summary });
+  metadata.updatedAt = nowIso();
+  writeJson(prdPath, prd);
+  console.log(relToRoot(prdPath));
+}
 
-    prd = load_or_create_prd(
-        project_dir, args.title, args.scope, args.company, args.prompt,
-        args.origin, args.repo_path,
-    )
-    append_session(prd, args.session_id, args.prompt, reused)
-    write_json(project_dir / "prd.json", prd)
-    write_readme(project_dir, prd)
-    set_active_pointer(project_dir)
+// --- minimal argparse ---
+function die(msg) { process.stderr.write("session-project.sh: " + msg + "\n"); process.exit(2); }
 
-    session_file = project_dir / "sessions" / f"{now_iso().replace(':', '').replace('-', '')}-{args.session_id or 'session'}.json"
-    write_json(session_file, {
-        "ts": now_iso(),
-        "kind": "native-session-start",
-        "prompt": args.prompt,
-        "reused": reused,
-        "projectDir": str(project_dir.relative_to(HQ_ROOT)),
-    })
+const cmd = ARGS[0];
+const flags = {};
+for (let i = 1; i < ARGS.length; i++) {
+  const a = ARGS[i];
+  if (a === "--force-new") { flags.force_new = true; continue; }
+  if (a.startsWith("--")) {
+    flags[a.slice(2).replace(/-/g, "_")] = ARGS[i + 1] !== undefined ? ARGS[++i] : "";
+    continue;
+  }
+}
 
-    print(json.dumps({
-        "projectDir": str(project_dir.relative_to(HQ_ROOT)),
-        "prdPath": str((project_dir / "prd.json").relative_to(HQ_ROOT)),
-        "reused": reused,
-        "match": reuse,
-    }, indent=2))
+const defaults = {
+  scope: "personal", company: "", title: "", prompt: "", slug: "",
+  repo_path: "", session_id: "", origin: "native-session",
+  reuse_threshold: 2, force_new: false, query: "", limit: 5,
+  project: "", plan_file: "", source: "native-plan", kind: "", summary: "",
+};
+const args = Object.assign({}, defaults, flags);
+args.reuse_threshold = parseInt(args.reuse_threshold, 10) || 2;
+args.limit = parseInt(args.limit, 10) || 5;
 
-
-def ingest_plan(args):
-    pointer = HQ_ROOT / ".claude" / "state" / "active-session-project"
-    if args.project:
-        project_dir = HQ_ROOT / args.project
-    elif pointer.exists():
-        project_dir = pathlib.Path(pointer.read_text().strip())
-    else:
-        raise SystemExit("session-project: no active project; run ensure first")
-
-    if not project_dir.is_absolute():
-        project_dir = HQ_ROOT / project_dir
-    prd_path = project_dir / "prd.json"
-    prd = read_json(prd_path) or {}
-
-    if args.plan_file:
-        body = pathlib.Path(args.plan_file).read_text()
-    else:
-        body = os.environ.get("SESSION_PROJECT_STDIN_INPUT", "")
-    body = body.strip()
-    if not body:
-        raise SystemExit(0)
-
-    plans_dir = project_dir / "sessions"
-    plans_dir.mkdir(parents=True, exist_ok=True)
-    plan_path = plans_dir / f"{now_iso().replace(':', '').replace('-', '')}-native-plan.md"
-    plan_path.write_text(body + "\n")
-
-    metadata = prd.setdefault("metadata", {})
-    native_plans = metadata.setdefault("nativePlans", [])
-    native_plans.append({
-        "ts": now_iso(),
-        "path": str(plan_path.relative_to(HQ_ROOT)),
-        "summary": body[:500],
-        "source": args.source,
-    })
-    metadata["updatedAt"] = now_iso()
-    write_json(prd_path, prd)
-    print(str(plan_path.relative_to(HQ_ROOT)))
-
-
-def append_event(args):
-    pointer = HQ_ROOT / ".claude" / "state" / "active-session-project"
-    if args.project:
-        project_dir = HQ_ROOT / args.project
-    elif pointer.exists():
-        project_dir = pathlib.Path(pointer.read_text().strip())
-    else:
-        raise SystemExit(0)
-    if not project_dir.is_absolute():
-        project_dir = HQ_ROOT / project_dir
-    prd_path = project_dir / "prd.json"
-    prd = read_json(prd_path) or {}
-    metadata = prd.setdefault("metadata", {})
-    events = metadata.setdefault("nativeEvents", [])
-    events.append({"ts": now_iso(), "kind": args.kind, "summary": args.summary})
-    metadata["updatedAt"] = now_iso()
-    write_json(prd_path, prd)
-    print(str(prd_path.relative_to(HQ_ROOT)))
-
-
-parser = argparse.ArgumentParser(prog="session-project.sh")
-sub = parser.add_subparsers(dest="cmd", required=True)
-
-p_find = sub.add_parser("find")
-p_find.add_argument("--scope", default="personal", choices=["personal", "hq-core", "company", "repo"])
-p_find.add_argument("--company", default="")
-p_find.add_argument("--query", required=True)
-p_find.add_argument("--limit", type=int, default=5)
-
-p_ensure = sub.add_parser("ensure")
-p_ensure.add_argument("--scope", default="personal", choices=["personal", "hq-core", "company", "repo"])
-p_ensure.add_argument("--company", default="")
-p_ensure.add_argument("--title", required=True)
-p_ensure.add_argument("--prompt", default="")
-p_ensure.add_argument("--slug", default="")
-p_ensure.add_argument("--repo-path", default="")
-p_ensure.add_argument("--session-id", default="")
-p_ensure.add_argument("--origin", default="native-session")
-p_ensure.add_argument("--reuse-threshold", type=int, default=2)
-p_ensure.add_argument("--force-new", action="store_true")
-
-p_ingest = sub.add_parser("ingest-plan")
-p_ingest.add_argument("--project", default="")
-p_ingest.add_argument("--plan-file", default="")
-p_ingest.add_argument("--source", default="native-plan")
-
-p_event = sub.add_parser("append-event")
-p_event.add_argument("--project", default="")
-p_event.add_argument("--kind", required=True)
-p_event.add_argument("--summary", required=True)
-
-args = parser.parse_args(ARGS)
-
-if args.cmd == "find":
-    print(json.dumps(find_candidates(args.scope, args.company, args.query, args.limit), indent=2))
-elif args.cmd == "ensure":
-    ensure_project(args)
-elif args.cmd == "ingest-plan":
-    ingest_plan(args)
-elif args.cmd == "append-event":
-    append_event(args)
-PY
+if (cmd === "find") {
+  if (!args.query) die("find requires --query");
+  console.log(JSON.stringify(findCandidates(args.scope, args.company, args.query, args.limit), null, 2));
+} else if (cmd === "ensure") {
+  if (!args.title) die("ensure requires --title");
+  ensureProject(args);
+} else if (cmd === "ingest-plan") {
+  ingestPlan(args);
+} else if (cmd === "append-event") {
+  if (!args.kind || !args.summary) die("append-event requires --kind and --summary");
+  appendEvent(args);
+} else {
+  die("unknown or missing subcommand (find | ensure | ingest-plan | append-event)");
+}
+JS

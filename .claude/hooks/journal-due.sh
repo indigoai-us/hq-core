@@ -20,6 +20,8 @@ set -uo pipefail
 HQ_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 JOURNAL_HELPER="$HQ_ROOT/core/scripts/session-journal.sh"
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+
 # Read stdin JSON (fail-soft if absent or invalid).
 stdin_json=""
 if [ -t 0 ]; then
@@ -29,21 +31,8 @@ stdin_json=$(cat || true)
 [ -z "$stdin_json" ] && exit 0
 
 # Extract tool name + tool input command (best-effort).
-tool_name=$(printf '%s' "$stdin_json" \
-  | python3 -c 'import json,sys
-try:
-  d=json.load(sys.stdin)
-  print(d.get("tool_name",""))
-except Exception:
-  pass' 2>/dev/null)
-tool_cmd=$(printf '%s' "$stdin_json" \
-  | python3 -c 'import json,sys
-try:
-  d=json.load(sys.stdin)
-  ti=d.get("tool_input",{})
-  print(ti.get("command","") if isinstance(ti, dict) else "")
-except Exception:
-  pass' 2>/dev/null)
+tool_name=$(printf '%s' "$stdin_json" | hq_json_get tool_name)
+tool_cmd=$(printf '%s' "$stdin_json" | hq_json_get tool_input.command)
 
 THRESHOLD=10
 should_remind=0
