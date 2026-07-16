@@ -25,6 +25,8 @@ assert_empty() {
 mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts" "$TMP/personal/projects/native-project-journaling"
 cp "$ROOT/.claude/hooks/auto-session-project.sh" "$TMP/.claude/hooks/auto-session-project.sh"
 cp "$ROOT/core/scripts/session-project.sh" "$TMP/core/scripts/session-project.sh"
+# The hook sources hook-lib.sh relative to its own location (../../core/scripts).
+cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/hook-lib.sh"
 chmod +x "$TMP/.claude/hooks/auto-session-project.sh" "$TMP/core/scripts/session-project.sh"
 
 cat > "$TMP/personal/projects/native-project-journaling/prd.json" <<'JSON'

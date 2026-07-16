@@ -26,9 +26,8 @@ if [[ "$FILE_PATH" != /* ]]; then
   FILE_PATH="$(pwd)/$FILE_PATH"
 fi
 
-if command -v python3 >/dev/null 2>&1; then
-  FILE_PATH="$(python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
-fi
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+FILE_PATH="$(hq_normpath "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
 
 # Anchor on the LIVE session root (CLAUDE_PROJECT_DIR), NOT `git rev-parse` from
 # the hook's cwd. The harness runs Edit/Write hooks with cwd at/near the target
@@ -47,9 +46,7 @@ if [[ -z "$HQ_ROOT" ]]; then
   echo "WARNING: protect-core.sh could not determine HQ root (no CLAUDE_PROJECT_DIR; git rev-parse failed). Skipping check." >&2
   exit 0
 fi
-if command -v python3 >/dev/null 2>&1; then
-  HQ_ROOT="$(python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$HQ_ROOT" 2>/dev/null || echo "$HQ_ROOT")"
-fi
+HQ_ROOT="$(hq_normpath "$HQ_ROOT" 2>/dev/null || echo "$HQ_ROOT")"
 
 # ── Targeted guard: block learned-rule injection into the charter ──
 # Fires BEFORE the HQ_BYPASS_CORE_PROTECT bypass below — learned rules must
@@ -58,7 +55,7 @@ fi
 # signature are blocked, so legitimate charter edits still fall through to the
 # normal lock logic. The wholesale /update-hq release path writes via cp (not
 # the Edit/Write tool), so it is unaffected.
-_norm() { if command -v python3 >/dev/null 2>&1; then python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$1" 2>/dev/null || echo "$1"; else echo "$1"; fi; }
+_norm() { hq_normpath "$1" 2>/dev/null || echo "$1"; }
 CHARTER_MD="$(_norm "$HQ_ROOT/.claude/CLAUDE.md")"
 AGENTS_MD="$(_norm "$HQ_ROOT/AGENTS.md")"
 if [[ "$FILE_PATH" == "$CHARTER_MD" || "$FILE_PATH" == "$AGENTS_MD" ]]; then
@@ -155,11 +152,7 @@ if is_bypass_authorized; then
 fi
 
 norm_path() {
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$1" 2>/dev/null || echo "$1"
-  else
-    echo "$1"
-  fi
+  hq_normpath "$1" 2>/dev/null || echo "$1"
 }
 
 # Check exclude list first — always allowed.

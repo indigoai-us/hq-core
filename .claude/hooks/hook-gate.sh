@@ -129,6 +129,25 @@ fi
 # We DELIBERATELY never source shell rc/profile files (~/.bashrc, ~/.zshrc,
 # ~/.profile) to discover PATH — that is a denied sensitive-path read and could
 # execute arbitrary user startup code. Directory probing is sufficient and safe.
+# Print the highest vMAJOR.MINOR.PATCH directory name without GNU sort -V.
+# macOS ships BSD sort; awk numeric comparison works on all supported shells.
+hq_highest_node_version() {
+  local versions_dir="${1:-}"
+  [ -d "$versions_dir" ] || return 0
+  ls -1 "$versions_dir" 2>/dev/null | awk -F. '
+    {
+      major=$1; sub(/^[^0-9]*/, "", major); major+=0
+      minor=$2+0; patch=$3; sub(/[^0-9].*$/, "", patch); patch+=0
+      if (!seen || major>best_major ||
+          (major==best_major && minor>best_minor) ||
+          (major==best_major && minor==best_minor && patch>best_patch)) {
+        seen=1; best_major=major; best_minor=minor; best_patch=patch; best=$0
+      }
+    }
+    END { if (seen) print best }
+  '
+}
+
 hq_augment_path() {
   # Fast path: if node, hq, and qmd already resolve, do nothing (Homebrew and
   # correctly-configured setups pay ~zero).
@@ -155,7 +174,7 @@ hq_augment_path() {
   local nvm_root="${NVM_DIR:-$home/.nvm}"
   if [ -d "$nvm_root/versions/node" ]; then
     local nvm_ver
-    nvm_ver="$(ls -1 "$nvm_root/versions/node" 2>/dev/null | sort -V | tail -1)"
+    nvm_ver="$(hq_highest_node_version "$nvm_root/versions/node")"
     [ -n "$nvm_ver" ] && candidates+=("$nvm_root/versions/node/$nvm_ver/bin")
   fi
 
@@ -163,11 +182,39 @@ hq_augment_path() {
   local fnm_root="${FNM_DIR:-$home/.fnm}"
   if [ -d "$fnm_root/node-versions" ]; then
     local fnm_ver
-    fnm_ver="$(ls -1 "$fnm_root/node-versions" 2>/dev/null | sort -V | tail -1)"
+    fnm_ver="$(hq_highest_node_version "$fnm_root/node-versions")"
     [ -n "$fnm_ver" ] && candidates+=("$fnm_root/node-versions/$fnm_ver/installation/bin")
   fi
 
-  candidates+=("$home/.local/bin" "/opt/homebrew/bin" "/usr/local/bin")
+  candidates+=("$home/.local/bin")
+
+  # Windows Git Bash / MSYS: official Node installer, npm global, scoop, chocolatey.
+  # Inserted BEFORE Homebrew/system bins so real Windows Node wins over MSYS paths.
+  # Guarded so Linux/macOS skip these probes. Paths may contain spaces — always
+  # quote when testing -d/-x and when prepending to PATH.
+  case "$(uname -s 2>/dev/null || echo unknown)" in
+    MINGW*|MSYS*|CYGWIN*)
+      candidates+=("/c/Program Files/nodejs")
+      if [ -n "${APPDATA:-}" ]; then
+        # APPDATA is typically C:\Users\...\AppData\Roaming — convert if needed.
+        _appdata_unix="${APPDATA//\\//}"
+        case "$_appdata_unix" in
+          [A-Za-z]:*) _appdata_unix="/${_appdata_unix:0:1}${_appdata_unix:2}" ;;
+        esac
+        candidates+=("$_appdata_unix/npm")
+      fi
+      if [ -n "${USERPROFILE:-}" ]; then
+        _up="${USERPROFILE//\\//}"
+        case "$_up" in
+          [A-Za-z]:*) _up="/${_up:0:1}${_up:2}" ;;
+        esac
+        candidates+=("$_up/scoop/shims")
+      fi
+      candidates+=("/c/ProgramData/chocolatey/bin" "/c/ProgramData/scoop/shims")
+      ;;
+  esac
+
+  candidates+=("/opt/homebrew/bin" "/usr/local/bin")
 
   # Accumulate a prefix of dirs that (a) aren't already on PATH and (b) actually
   # contain one of our tools, preserving priority order.
@@ -178,7 +225,8 @@ hq_augment_path() {
       *":$dir:"*) continue ;;
     esac
     [ -d "$dir" ] || continue
-    if [ -x "$dir/node" ] || [ -x "$dir/hq" ] || [ -x "$dir/qmd" ]; then
+    if [ -x "$dir/node" ] || [ -x "$dir/hq" ] || [ -x "$dir/qmd" ] \
+      || [ -x "$dir/node.exe" ] || [ -x "$dir/hq.exe" ] || [ -x "$dir/qmd.exe" ]; then
       prefix="${prefix:+$prefix:}$dir"
     fi
   done

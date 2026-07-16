@@ -34,23 +34,10 @@ HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
 
 JQ="$(command -v jq || true)"
 
+. "$HELPERS/hook-lib.sh"
+
 extract() {
-  printf '%s' "$STDIN_JSON" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print(""); sys.exit(0)
-v = data
-for k in sys.argv[1].split("."):
-    if isinstance(v, dict):
-        v = v.get(k, "")
-    else:
-        v = ""; break
-if isinstance(v, (dict, list)):
-    v = ""
-print(str(v))
-' "$1" 2>/dev/null || echo ""
+  printf '%s' "$STDIN_JSON" | hq_json_get "$1"
 }
 
 EVENT="$(extract hook_event_name)"; [ -z "$EVENT" ] && EVENT="PreToolUse"

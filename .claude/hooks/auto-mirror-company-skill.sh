@@ -60,23 +60,11 @@ else
   exit 0
 fi
 
-# NOTE: slurp the program into a variable via a standalone heredoc, then run it
-# with `python3 -c`. A heredoc nested inside a `$( … )` substitution is
-# mis-parsed as an unterminated quote by macOS system bash 3.2
-# (policy indigo-hook-no-heredoc-in-command-substitution).
-prefix_py=""
-IFS= read -r -d '' prefix_py <<'PY' || true
-import sys, yaml
-co = sys.argv[1]
-try:
-    d = yaml.safe_load(open("companies/manifest.yaml"))
-    p = d.get("companies", {}).get(co, {}).get("prefix")
-    if p:
-        print(p)
-except Exception:
-    pass
-PY
-PREFIX=$(cd "$PROJECT_DIR" && python3 -c "$prefix_py" "$CO" 2>/dev/null || true)
+# Manifest prefix lookup via yq (the same YAML engine the registry hooks use).
+# Missing yq degrades exactly like the old missing-python path: empty prefix,
+# stderr nudge, skip.
+PREFIX=$(cd "$PROJECT_DIR" && yq -r ".companies.\"$CO\".prefix // \"\"" companies/manifest.yaml 2>/dev/null || true)
+[ "$PREFIX" = "null" ] && PREFIX=""
 
 if [[ -z "$PREFIX" ]]; then
   echo "auto-mirror: no prefix in manifest for company '$CO' — skipping mirror for $REL" >&2

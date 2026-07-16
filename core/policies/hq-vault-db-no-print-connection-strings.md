@@ -5,7 +5,7 @@ scope: core
 trigger: Implementing or reviewing hq db, remote provision, SecretBinding, or logging around databases
 enforcement: hard
 public: true
-when: hq db || vault database || DATABASE_URL || postgres:// || postgresql:// || db provision || better-sqlite
+when: (hq && db) || (vault && database) || database_url || postgres || postgresql || (db && provision) || better-sqlite
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 tags: [security, hq-cli, vault, databases, secrets]
 created: 2026-07-12

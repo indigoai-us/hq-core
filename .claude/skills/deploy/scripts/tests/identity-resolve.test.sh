@@ -52,17 +52,21 @@ fi
 
 SAFE_USERNAME="win/${TMP##*/} user"
 SAFE_KEY="win_${TMP##*/}_user"
-LOGIN_LOCK="/tmp/hq-deploy-login-attempted-$SAFE_KEY"
+# Use a private TMPDIR so the lock path is isolated and asserts ${TMPDIR:-/tmp}.
+TMPDIR_TEST="$TMP/tmpdir"
+mkdir -p "$TMPDIR_TEST" "$TMP/home-lock"
+TMPDIR_TEST="$(cd "$TMPDIR_TEST" && pwd)"
+LOGIN_LOCK="$TMPDIR_TEST/hq-deploy-login-attempted-$SAFE_KEY"
 touch "$LOGIN_LOCK"
-mkdir -p "$TMP/path"
-ln -s "$(command -v date)" "$TMP/path/date"
-OUTPUT=$(env -u USER USERNAME="$SAFE_USERNAME" HOME="$TMP/home-lock" PATH="$TMP/path" \
+# Keep real PATH (jq/node required for engine probe); lock short-circuits before login.
+OUTPUT=$(env -u USER USERNAME="$SAFE_USERNAME" HOME="$TMP/home-lock" \
+  TMPDIR="$TMPDIR_TEST" \
   /bin/bash "$RESOLVER" 2>"$TMP/lock.err")
 STATUS=$?
 if [ "$STATUS" = "0" ] && [ "$(printf '%s\n' "$OUTPUT" | jq -r '.reason // empty')" = "login_already_attempted" ]; then
-  pass "USERNAME is sanitized for the login lock path"
+  pass "USERNAME is sanitized for the login lock path under TMPDIR"
 else
-  fail "resolver did not use the sanitized login lock path"
+  fail "resolver did not use the sanitized login lock path under TMPDIR (got: $OUTPUT)"
 fi
 
 if [ "$FAIL" = "0" ]; then echo "ALL PASS"; exit 0; else echo "FAILURES"; exit 1; fi

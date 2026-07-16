@@ -12,6 +12,8 @@
 set -euo pipefail
 
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# shellcheck source=core/scripts/lib/portable.sh
+. "$HQ_ROOT/core/scripts/lib/portable.sh"
 ORCH_DIR="${ORCH_DIR:-$HQ_ROOT/workspace/orchestrator}"
 
 # ---------- arg parse ----------
@@ -40,7 +42,7 @@ EXEC_DIR="$ORCH_DIR/$PROJECT/executions"
 PROGRESS_FILE="$ORCH_DIR/$PROJECT/progress.txt"
 
 [[ -f "$STATE_FILE" ]] || { echo "no state.json for project '$PROJECT' at $STATE_FILE" >&2; exit 1; }
-command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+require_jq || exit 1
 
 # ---------- presentation helpers ----------
 if [[ $PLAIN -eq 1 ]] || [[ ! -t 1 && $WATCH -eq 0 ]]; then

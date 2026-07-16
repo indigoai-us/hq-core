@@ -54,94 +54,122 @@ trap 'rm -f "$resolvable_file"' EXIT
 } | sort -u > "$resolvable_file"
 
 set +e
-python3 - "$skills_dir" "core/policies" ".claude/hooks" "$resolvable_file" <<'PY'
-import re, sys, glob, os
+node - "$skills_dir" "core/policies" ".claude/hooks" "$resolvable_file" <<'JS'
+const fs = require("fs");
+const path = require("path");
 
-skills_dir, policies_dir, hooks_dir, resolvable_file = sys.argv[1:]
-resolvable = set(open(resolvable_file).read().split())
+const [skillsDir, policiesDir, hooksDir, resolvableFile] = process.argv.slice(2);
+const resolvable = new Set(fs.readFileSync(resolvableFile, "utf8").split(/\s+/).filter(Boolean));
 
-# First token of a line/span: a slash-command, not a path/route fragment.
-cmd = re.compile(r'^/([a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?)(?![a-z0-9/:-])')
-hook_cmd = re.compile(r'\b(?:run|running|invoke|execute)\s+`?/([a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?)(?![a-z0-9/:-])')
-backtick = re.compile(r'`([^`]+)`')
-hq_invite = re.compile(r'(?<![a-z0-9_-])hq\s+invite(?:\s|$)')
+// First token of a line/span: a slash-command, not a path/route fragment.
+const cmd = /^\/([a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?)(?![a-z0-9/:-])/;
+const hookCmd = /\b(?:run|running|invoke|execute)\s+`?\/([a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?)(?![a-z0-9/:-])/g;
+const backtick = /`([^`]+)`/g;
+const hqInvite = /(?<![a-z0-9_-])hq\s+invite(?:\s|$)/;
 
-# These commands are supplied by their named integrations rather than hq-core.
-# Other namespaced targets must resolve to a shipped skill.
-external_namespaced = {'indigo:action-items', 'personal:worktree'}
+// These commands are supplied by their named integrations rather than hq-core.
+// Other namespaced targets must resolve to a shipped skill.
+const externalNamespaced = new Set(["indigo:action-items", "personal:worktree"]);
 
-bad = []
-files = sorted(glob.glob(os.path.join(skills_dir, '*', 'SKILL.md')))
-files += sorted(glob.glob(os.path.join(policies_dir, '**', '*.md'), recursive=True))
-files += sorted(glob.glob(os.path.join(hooks_dir, '*.sh')))
+const walkMd = (dir) => {
+  const out = [];
+  const walk = (d) => {
+    let entries;
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of entries) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile() && e.name.endsWith(".md")) out.push(p);
+    }
+  };
+  walk(dir);
+  return out.sort();
+};
 
-def slack_native_invite(f, line, command):
-    return (
-        command == 'invite'
-        and os.path.normpath(f) == os.path.normpath('core/policies/hq-slack.md')
-        and re.search(r'/invite\s+@[a-z0-9_-]+', line, re.I)
-    )
+const files = [];
+try {
+  for (const d of fs.readdirSync(skillsDir).sort()) {
+    const f = path.join(skillsDir, d, "SKILL.md");
+    if (fs.existsSync(f)) files.push({ f: f, kind: "skill" });
+  }
+} catch (e) {}
+for (const f of walkMd(policiesDir)) files.push({ f: f, kind: "policy" });
+try {
+  for (const name of fs.readdirSync(hooksDir).sort()) {
+    if (name.endsWith(".sh")) files.push({ f: path.join(hooksDir, name), kind: "hook" });
+  }
+} catch (e) {}
 
-def resolvable_command(command):
-    if command in external_namespaced:
-        return True
-    return command.rsplit(':', 1)[-1] in resolvable
+const norm = (p) => p.split(path.sep).join("/");
+const slackNativeInvite = (f, line, command) =>
+  command === "invite" &&
+  norm(f) === "core/policies/hq-slack.md" &&
+  /\/invite\s+@[a-z0-9_-]+/i.test(line);
 
-for f in files:
-    is_hook = os.path.normpath(f).startswith(os.path.normpath(hooks_dir) + os.sep)
-    is_policy = os.path.normpath(f).startswith(os.path.normpath(policies_dir) + os.sep)
-    in_fence = False
-    for i, line in enumerate(open(f, errors='ignore'), 1):
-        s = line.rstrip('\n')
-        if hq_invite.search(s):
-            bad.append((f, i, 'hq invite'))
+const resolvableCommand = (command) => {
+  if (externalNamespaced.has(command)) return true;
+  const parts = command.split(":");
+  return resolvable.has(parts[parts.length - 1]);
+};
 
-        if is_hook:
-            if 'additionalContext' in s:
-                cands = [m.group(1) for m in hook_cmd.finditer(s)]
-                for c in cands:
-                    if not resolvable_command(c):
-                        bad.append((f, i, c))
-            continue
+const bad = [];
+for (const { f, kind } of files) {
+  const isHook = kind === "hook";
+  const isPolicy = kind === "policy";
+  let inFence = false;
+  const lines = fs.readFileSync(f, "utf8").split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const s = lines[i];
+    if (hqInvite.test(s)) bad.push([f, i + 1, "hq invite"]);
 
-        if s.lstrip().startswith('```'):
-            in_fence = not in_fence
-            continue
-        cands = []
-        if in_fence:
-            m = cmd.match(s.strip())
-            if m:
-                cands.append(m.group(1))
-        for span in backtick.findall(s):
-            m = cmd.match(span.strip())
-            if m:
-                cands.append(m.group(1))
-        for c in cands:
-            if is_policy and ':' not in c and c != 'invite' and '⚠' not in s:
-                continue
-            if slack_native_invite(f, s, c):
-                continue
-            if not resolvable_command(c):
-                bad.append((f, i, c))
+    if (isHook) {
+      if (s.includes("additionalContext")) {
+        let m;
+        hookCmd.lastIndex = 0;
+        while ((m = hookCmd.exec(s)) !== null) {
+          if (!resolvableCommand(m[1])) bad.push([f, i + 1, m[1]]);
+        }
+      }
+      continue;
+    }
 
-if bad:
-    print("FAIL: dangling release-guidance command reference(s) — these commands are neither")
-    print("a shipped core skill nor allowlisted in core/scripts/skill-command-refs.allow:")
-    print()
-    for f, i, c in bad:
-        print(f"  {f}:{i}  ->  {c if c == 'hq invite' else '/' + c}")
-    print()
-    print("Fix one of:")
-    print("  • change the skill to instruct a command that ships in core; or")
-    print("  • if /<cmd> comes from an installable pack, reference it WITH the")
-    print("    pack's install line and add /<cmd> to skill-command-refs.allow; or")
-    print("  • if it is a genuine non-command (API route/placeholder), add it to")
-    print("    the 'Not commands' section of skill-command-refs.allow.")
-    sys.exit(1)
+    if (s.trimStart().startsWith("```")) { inFence = !inFence; continue; }
+    const cands = [];
+    if (inFence) {
+      const m = s.trim().match(cmd);
+      if (m) cands.push(m[1]);
+    }
+    let bm;
+    backtick.lastIndex = 0;
+    while ((bm = backtick.exec(s)) !== null) {
+      const m = bm[1].trim().match(cmd);
+      if (m) cands.push(m[1]);
+    }
+    for (const c of cands) {
+      if (isPolicy && !c.includes(":") && c !== "invite" && !s.includes("⚠")) continue;
+      if (slackNativeInvite(f, s, c)) continue;
+      if (!resolvableCommand(c)) bad.push([f, i + 1, c]);
+    }
+  }
+}
 
-print(f"OK: every command referenced by release guidance resolves "
-      f"({len(resolvable)} resolvable names).")
-PY
+if (bad.length) {
+  console.log("FAIL: dangling release-guidance command reference(s) — these commands are neither");
+  console.log("a shipped core skill nor allowlisted in core/scripts/skill-command-refs.allow:");
+  console.log("");
+  for (const [f, i, c] of bad) console.log("  " + f + ":" + i + "  ->  " + (c === "hq invite" ? c : "/" + c));
+  console.log("");
+  console.log("Fix one of:");
+  console.log("  • change the skill to instruct a command that ships in core; or");
+  console.log("  • if /<cmd> comes from an installable pack, reference it WITH the");
+  console.log("    pack's install line and add /<cmd> to skill-command-refs.allow; or");
+  console.log("  • if it is a genuine non-command (API route/placeholder), add it to");
+  console.log("    the 'Not commands' section of skill-command-refs.allow.");
+  process.exit(1);
+}
+
+console.log("OK: every command referenced by release guidance resolves (" + resolvable.size + " resolvable names).");
+JS
 rc=$?
 set -e
 exit "$rc"

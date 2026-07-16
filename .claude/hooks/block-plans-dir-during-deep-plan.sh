@@ -9,15 +9,12 @@ set -uo pipefail
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 MARKER_DIR="${HQ_ROOT}/workspace/orchestrator/policy-trigger-state"
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+
 INPUT="$(cat 2>/dev/null || true)"
 [ -z "$INPUT" ] && exit 0
 
-SESSION_ID="$(printf '%s' "$INPUT" | python3 -c 'import json,sys
-try:
-  d=json.load(sys.stdin); print(d.get("session_id",""))
-except Exception:
-  print("")
-' 2>/dev/null)"
+SESSION_ID="$(printf '%s' "$INPUT" | hq_json_get session_id)"
 
 [ -z "$SESSION_ID" ] && exit 0
 
@@ -25,12 +22,7 @@ MARKER="${MARKER_DIR}/${SESSION_ID}.deep-plan-active"
 [ -f "$MARKER" ] || exit 0
 
 # Extract file_path from tool_input (Write/Edit/MultiEdit all use file_path).
-FILE_PATH="$(printf '%s' "$INPUT" | python3 -c 'import json,sys
-try:
-  d=json.load(sys.stdin); ti=d.get("tool_input",{}) or {}; print(ti.get("file_path","") or "")
-except Exception:
-  print("")
-' 2>/dev/null)"
+FILE_PATH="$(printf '%s' "$INPUT" | hq_json_get tool_input.file_path)"
 
 [ -z "$FILE_PATH" ] && exit 0
 

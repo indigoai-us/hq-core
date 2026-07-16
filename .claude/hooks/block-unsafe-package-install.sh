@@ -36,25 +36,10 @@ set -uo pipefail
 
 STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+
 extract() {
-  printf '%s' "$STDIN_JSON" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print(""); sys.exit(0)
-keys = sys.argv[1].split(".")
-v = data
-for k in keys:
-    if isinstance(v, dict):
-        v = v.get(k, "")
-    else:
-        v = ""
-        break
-if isinstance(v, (dict, list)):
-    v = ""
-print(str(v))
-' "$1" 2>/dev/null || echo ""
+  printf '%s' "$STDIN_JSON" | hq_json_get "$1"
 }
 
 TOOL_NAME="$(extract tool_name)"
@@ -71,7 +56,7 @@ if [ "${HQ_ALLOW_UNSAFE_INSTALL:-0}" = "1" ]; then
   printf '{"ts":"%s","cwd":"%s","cmd":%s}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$(pwd)" \
-    "$(printf '%s' "$CMD" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+    "$(printf '%s' "$CMD" | hq_json_encode)" \
     >> "$AUDIT_DIR/unsafe-install-bypasses.jsonl" 2>/dev/null || true
   exit 0
 fi

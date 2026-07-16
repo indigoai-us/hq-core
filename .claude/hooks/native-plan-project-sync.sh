@@ -15,30 +15,31 @@ POINTER="$HQ_ROOT/.claude/state/active-session-project"
 [ -x "$HELPER" ] || exit 0
 [ -f "$POINTER" ] || exit 0
 
-body="$(printf '%s' "$STDIN_JSON" | python3 -c '
-import json
-import sys
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
 
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-
-tool = data.get("tool_name", "")
-tool_input = data.get("tool_input") or {}
-tool_response = data.get("tool_response") or data.get("tool_output") or {}
-
-if tool == "ExitPlanMode":
-    for key in ("plan", "content", "summary"):
-        value = tool_input.get(key) if isinstance(tool_input, dict) else ""
-        if value:
-            print(str(value))
-            sys.exit(0)
-    if tool_response:
-        print(json.dumps(tool_response, indent=2))
-elif tool == "update_plan":
-    print(json.dumps(tool_input, indent=2))
-' 2>/dev/null || true)"
+tool="$(printf '%s' "$STDIN_JSON" | hq_json_get tool_name)"
+body=""
+case "$tool" in
+  ExitPlanMode)
+    for key in plan content summary; do
+      body="$(printf '%s' "$STDIN_JSON" | hq_json_get "tool_input.$key")"
+      [ -n "$body" ] && break
+    done
+    if [ -z "$body" ] && command -v jq >/dev/null 2>&1; then
+      # Pretty-printed response, but only when it is non-empty (mirrors the
+      # old truthiness check: null / "" / {} / [] all count as empty).
+      body="$(printf '%s' "$STDIN_JSON" | jq '
+        (.tool_response // .tool_output)
+        | if . == null or . == "" or . == {} or . == [] then empty else . end' 2>/dev/null || true)"
+    fi
+    ;;
+  update_plan)
+    if command -v jq >/dev/null 2>&1; then
+      body="$(printf '%s' "$STDIN_JSON" | jq '
+        .tool_input | if . == null then empty else . end' 2>/dev/null || true)"
+    fi
+    ;;
+esac
 
 [ -n "$body" ] || exit 0
 
