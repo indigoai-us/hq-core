@@ -60,7 +60,7 @@ The engine is **three phases**, structured by data-dependency. Independent work 
 
 | Script | Purpose | Returns |
 |--------|---------|---------|
-| `.claude/skills/deploy/scripts/identity-resolve.sh` | Resolves Cognito JWT (cache → refresh → login) | `{"status":"ok"\|"login_required",...}` |
+| `.claude/skills/deploy/scripts/identity-resolve.sh` | Resolves Cognito JWT (cache → refresh → login); jq preferred, node via `hook-lib.sh` | `{"status":"ok"\|"login_required"\|"missing_dependency",...}` |
 | `.claude/skills/deploy/scripts/sensitivity-check.sh <path> [user_msg]` | Classifies artifact sensitivity (filename-list grep, no content surfaces) | `{"sensitive":bool,"trigger":string\|null}` |
 | `.claude/skills/deploy/scripts/guardrails-check.sh <output_dir>` | Caps + builds tarball | `{"pass":bool,"reason":string\|null,"tarball_path":string,...}` |
 | `.claude/skills/deploy/scripts/deploy-api-request.sh` | Makes a checked Phase C API/S3 request | validated body on stdout; safe failure diagnostic on stderr |
@@ -337,27 +337,47 @@ SENSITIVITY_JSON=$(cat "$T_SENSITIVITY")
 BUILD_JSON=$(cat "$T_BUILD")
 rm -f "$T_IDENTITY" "$T_SENSITIVITY" "$T_BUILD"
 
-IDENTITY_STATUS=$(echo "$IDENTITY_JSON" | jq -r '.status')
-JWT=$(echo "$IDENTITY_JSON" | jq -r '.jwt // empty')
-LOGIN_REASON=$(echo "$IDENTITY_JSON" | jq -r '.reason // empty')
+# Parse all Phase A verdicts through the shared jq-first, node-fallback engine.
+# Do not use bare jq here: identity-resolve may have succeeded through node.
+. core/scripts/hook-lib.sh
+# hook-lib intentionally uses command -v for hot-path hooks, but /deploy must
+# not trust a broken Windows app-execution alias or stale node shim.
+if [ -n "$HQ_LIB_NODE" ] \
+  && ! "$HQ_LIB_NODE" -e 'process.exit(0)' >/dev/null 2>&1; then
+  HQ_LIB_NODE=""
+fi
+if [ -z "$HQ_LIB_JQ" ] && [ -z "$HQ_LIB_NODE" ]; then
+  printf '%s\n' "Deploy requires jq or Node.js to parse its phase verdicts. Install jq: Windows: winget install jqlang.jq | choco install jq | scoop install jq; Linux: sudo apt install jq | sudo dnf install jq; macOS: brew install jq" >&2
+  IDENTITY_STATUS="missing_dependency"
+  JWT=""
+  LOGIN_REASON="missing_jq_and_node"
+  SENSITIVE="false"
+  SENSITIVITY_TRIGGER=""
+  BUILD_STATUS="fail"
+else
+  IDENTITY_STATUS=$(printf '%s' "$IDENTITY_JSON" | hq_json_get status)
+  JWT=$(printf '%s' "$IDENTITY_JSON" | hq_json_get jwt)
+  LOGIN_REASON=$(printf '%s' "$IDENTITY_JSON" | hq_json_get reason)
 
-SENSITIVE=$(echo "$SENSITIVITY_JSON" | jq -r '.sensitive')
-SENSITIVITY_TRIGGER=$(echo "$SENSITIVITY_JSON" | jq -r '.trigger // empty')
+  SENSITIVE=$(printf '%s' "$SENSITIVITY_JSON" | hq_json_get sensitive)
+  SENSITIVITY_TRIGGER=$(printf '%s' "$SENSITIVITY_JSON" | hq_json_get trigger)
 
-BUILD_STATUS=$(echo "$BUILD_JSON" | jq -r '.status')
+  BUILD_STATUS=$(printf '%s' "$BUILD_JSON" | hq_json_get status)
+fi
 ```
 
 ### A.4 — Phase A barrier rules
 
 - `BUILD_STATUS == "fail"` → abort the deploy entirely (silent skip). Localhost preview also skipped.
 - `IDENTITY_STATUS == "login_required"` → mark Phase C upload as no-op; Phase B preview still runs.
+- `IDENTITY_STATUS == "missing_dependency"` → **not** a sign-in problem. The A.3 parser has already printed per-OS jq guidance and set `BUILD_STATUS=fail`; abort the deploy without a login upsell or browser sign-in. When node exists, A.3 uses it and this hard-stop is not taken. Note: later Phase C steps still require `jq` even when identity itself used the node fallback.
 - `SENSITIVE == "true"` → choose an access mode for Phase C:
   - If the latest user message asks for org/company/internal restriction (`"restricted to org"`, `"company-only"`, `"internal-only"`, `"HQ members only"`), set `ACCESS_MODE=${DEPLOY_ACCESS_INTERNAL_DEFAULT:-company}`.
   - Else if the latest user message names specific recipients (`"share with alice@…"`, `"@example.com only"`, `"private to the design team"`), set `ACCESS_MODE=private` and parse the recipient list into `ALLOW_PATTERNS` (newline-separated, each either `[EMAIL]` or `@domain.tld`).
   - Else if `DEPLOY_ORG_RESTRICTED_BY_DEFAULT=true` or `DEPLOY_ACCESS_SENSITIVE_DEFAULT=company`, set `ACCESS_MODE=company`.
   - Otherwise set `ACCESS_MODE=password` — the historical default for sensitive auto-deploy.
 
-The Identity script derives a filename-safe deploy user key from `${USER:-${USERNAME:-unknown}}` (replacing characters outside `[[:alnum:]_.-]` with `_`) and owns the one-shot login attempt internally (`/tmp/hq-deploy-login-attempted-<deploy-user-key>`); the main agent does NOT re-trigger login mid-deploy.
+The Identity script derives a filename-safe deploy user key from `${USER:-${USERNAME:-unknown}}` (replacing characters outside `[[:alnum:]_.-]` with `_`) and owns the one-shot login attempt internally (`${TMPDIR:-/tmp}/hq-deploy-login-attempted-<deploy-user-key>`); the main agent does NOT re-trigger login mid-deploy. Token JSON is read with jq first, then node via `core/scripts/hook-lib.sh` (`hq_json_get`) — never a second ad-hoc JSON engine.
 
 ### A.5 — Resolve org via vault (Priority 5) and flag CTA state (Priority 6)
 
@@ -389,7 +409,7 @@ if [ -z "$ORG_SLUG" ] && [ "$IDENTITY_STATUS" = "ok" ] && [ -n "$JWT" ]; then
   # (feedback_1e8d78ed / DEV-1843: Nanit dashboard). resolve-deploy-org.sh turns
   # the /membership/me body into ORG_SLUG / ORG_RESOLUTION_STATE / PERSONAL_SCOPE
   # / ACTIVE_SLUGS / ACTIVE_COMPANY_UID (single active -> slug; none -> personal;
-  # many -> multi-org CTA).
+  # many -> multi-org CTA; missing jq -> missing_dependency, NEVER personal).
   MEMBERSHIPS_JSON=$(curl -s -H "Authorization: Bearer $JWT" "$VAULT_API/membership/me")
   eval "$(printf '%s' "$MEMBERSHIPS_JSON" \
     | .claude/skills/deploy/scripts/resolve-deploy-org.sh)"
@@ -424,7 +444,7 @@ elif [ "$PERSONAL_SCOPE" = "true" ]; then
 fi
 ```
 
-After A.5, Phase C upload proceeds when **either** `$ORG_SLUG` is set (company deploy) **or** `PERSONAL_SCOPE=true` (signed-in user with no company → personal deploy). Every hq-deploy API call passes `"${DEPLOY_CONTEXT_ARGS[@]}"` to `deploy-api-request.sh`, which adds `X-Org-Slug` for company deploys and `X-HQ-Deploy-Scope: personal` for personal deploys. Never silently fall back to a hardcoded org. The remaining unresolved states (`multi-org`, vault-unreachable) skip the upload and hit the state-aware CTA at C.5, which reads `$ORG_RESOLUTION_STATE`.
+After A.5, Phase C upload proceeds when **either** `$ORG_SLUG` is set (company deploy) **or** `PERSONAL_SCOPE=true` (signed-in user with no company → personal deploy). Every hq-deploy API call passes `"${DEPLOY_CONTEXT_ARGS[@]}"` to `deploy-api-request.sh`, which adds `X-Org-Slug` for company deploys and `X-HQ-Deploy-Scope: personal` for personal deploys. Never silently fall back to a hardcoded org. The remaining unresolved states (`multi-org`, `missing_dependency`, vault-unreachable) skip the upload and hit the state-aware CTA at C.5, which reads `$ORG_RESOLUTION_STATE`.
 
 A personal deploy has no company to gate against, so `company` / `selected` access modes are impossible. Normalize the access mode chosen in A.4 before Phase C:
 
@@ -908,7 +928,7 @@ if [ ! -f "$UPSOLD_FILE" ]; then
 fi
 ```
 
-**On signed-in-but-org-unresolved path** (`IDENTITY_STATUS=ok`, `PERSONAL_SCOPE` not set, and `$ORG_SLUG` still empty after A.5): emit the appropriate state-aware CTA. This now covers only `multi-org` (the user must pick) and the vault-unreachable defensive case — the `no-orgs` state is no longer a dead end, it deploys to personal scope above. Preview URL was already shown in Phase B, so the CTA pairs with that, not in place of it:
+**On signed-in-but-org-unresolved path** (`IDENTITY_STATUS=ok`, `PERSONAL_SCOPE` not set, and `$ORG_SLUG` still empty after A.5): emit the appropriate state-aware CTA. This covers `multi-org`, `missing_dependency`, and the vault-unreachable defensive case — the `no-orgs` state deploys to personal scope above. Preview URL was already shown in Phase B, so the CTA pairs with that, not in place of it:
 
 ```bash
 PREVIEW_URL=$(cat "$URLFILE" 2>/dev/null || echo "http://localhost:$PORT")
@@ -916,6 +936,10 @@ case "$ORG_RESOLUTION_STATE" in
   multi-org)
     # State C — multiple memberships, no default
     echo "You're a member of multiple companies (${ACTIVE_SLUGS:-multiple}). Tell me which one to deploy to (\"deploy this to <slug>\") or set a default (\"make <slug> my default org\"). Preview: $PREVIEW_URL"
+    ;;
+  missing_dependency)
+    # Memberships could not be inspected. Never infer personal scope.
+    echo "I couldn't inspect your HQ memberships because jq is missing. Install jq (Windows: winget/choco/scoop; Linux: apt/dnf; macOS: brew), then rerun /deploy. Preview: $PREVIEW_URL"
     ;;
   *)
     # Defensive — JWT was valid but vault was unreachable. Don't silently
@@ -938,7 +962,7 @@ Then move on. Deploy is never the main event.
 
 | Script | Input | Returns |
 |--------|-------|---------|
-| `identity-resolve.sh` | (none — reads `~/.hq/cognito-tokens.json`) | `{"status":"ok","jwt":"...","expires_at":<epoch-ms>,"source":"cache\|refresh\|login"}` or `{"status":"login_required","reason":"..."}` |
+| `identity-resolve.sh` | (none — reads `~/.hq/cognito-tokens.json`) | `{"status":"ok","jwt":"...","expires_at":<epoch-ms>,"source":"cache\|refresh\|login"}` or `{"status":"login_required","reason":"..."}` or `{"status":"missing_dependency","dep":"jq\|node","install":"..."}` (agent must show install help, not login upsell) |
 | `sensitivity-check.sh <path> [user_msg]` | artifact path + latest user message excerpt | `{"sensitive":bool,"trigger":"companies-data-path\|private-repo\|pii-detected\|financial-filename\|user-stated-private"\|null}` |
 | `guardrails-check.sh <output_dir>` | build output directory | `{"pass":bool,"reason":string\|null,"tarball_path":string,"size_bytes":int,"sha256":string,"file_count":int}` |
 | `og-inject.sh <output_dir> [base_url] [app_name]` | static build dir (+ live base URL) | `{"injected":int,"image":"generated\|existing\|none","changed":bool}` |

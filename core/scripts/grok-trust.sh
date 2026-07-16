@@ -44,37 +44,33 @@ trust_folder_toml() {
   now="$(date +%s 2>/dev/null || echo 0)"
   touch "${TRUST_TOML}"
 
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "$TRUST_TOML" "$path" "$now" <<'PY'
-import re, sys
-from pathlib import Path
-toml_path, folder, now = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-text = toml_path.read_text() if toml_path.exists() else ""
-# Match [folders."/abs/path"] blocks (path may contain spaces rarely; HQ roots don't).
-pat = re.compile(
-    r'(?m)^\[folders\."' + re.escape(folder) + r'"\]\s*\n(?:^[^\[]*\n)*'
-)
-block = f'[folders."{folder}"]\ntrusted = true\ndecided_at = {now}\n'
-if pat.search(text):
-    text = pat.sub(block + ("\n" if not block.endswith("\n") else ""), text, count=1)
-    # Ensure trailing newline separation
-    if not text.endswith("\n"):
-        text += "\n"
-else:
-    if text and not text.endswith("\n"):
-        text += "\n"
-    if text and not text.endswith("\n\n"):
-        text += "\n"
-    text += block
-    if not text.endswith("\n"):
-        text += "\n"
-toml_path.write_text(text)
-print(f"grok-trust: folder-trust OK -> {folder}")
-PY
+  if command -v node >/dev/null 2>&1; then
+    node - "$TRUST_TOML" "$path" "$now" <<'JS'
+const fs = require("fs");
+const [tomlPath, folder, now] = process.argv.slice(2);
+let text = "";
+try { text = fs.readFileSync(tomlPath, "utf8"); } catch (e) {}
+// Match [folders."/abs/path"] blocks (path may contain spaces rarely; HQ roots don't).
+const esc = folder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const pat = new RegExp('^\\[folders\\."' + esc + '"\\]\\s*\\n(?:^[^\\[]*\\n)*', "m");
+const block = '[folders."' + folder + '"]\ntrusted = true\ndecided_at = ' + now + "\n";
+if (pat.test(text)) {
+  text = text.replace(pat, block);
+  // Ensure trailing newline separation
+  if (!text.endsWith("\n")) text += "\n";
+} else {
+  if (text && !text.endsWith("\n")) text += "\n";
+  if (text && !text.endsWith("\n\n")) text += "\n";
+  text += block;
+  if (!text.endsWith("\n")) text += "\n";
+}
+fs.writeFileSync(tomlPath, text);
+console.log("grok-trust: folder-trust OK -> " + folder);
+JS
   else
-    # Minimal append if python missing and path not already present.
+    # Minimal append if node missing and path not already present.
     if grep -Fq "folders.\"${path}\"" "${TRUST_TOML}" 2>/dev/null; then
-      echo "grok-trust: folder-trust entry present (python missing; not rewritten) -> ${path}"
+      echo "grok-trust: folder-trust entry present (node missing; not rewritten) -> ${path}"
     else
       {
         echo ""
@@ -127,54 +123,50 @@ fi
 # Keep project .grok/hooks + user bridge; only disable Claude settings scan.
 quiet_claude_compat_hooks() {
   local config="${GROK_CONFIG}"
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "grok-trust: note — python3 missing; set [compat.claude] hooks = false in ${config} by hand." >&2
+  if ! command -v node >/dev/null 2>&1; then
+    echo "grok-trust: note — node missing; set [compat.claude] hooks = false in ${config} by hand." >&2
     return 0
   fi
-  python3 - "$config" <<'PY'
-import re, sys
-from pathlib import Path
-path = Path(sys.argv[1])
-text = path.read_text() if path.exists() else ""
-orig = text
-comment = (
-    "# HQ grok-trust: Grok enforces via hq-hq-bridge → adapter → .claude/hooks.\n"
-    "# Do not also load every .claude/settings.json hook (double work + noisy UI).\n"
-)
-if re.search(r"(?m)^\[compat\.claude\]", text):
-    def fix_section(m: re.Match[str]) -> str:
-        body = m.group(0)
-        if re.search(r"(?m)^hooks\s*=", body):
-            body = re.sub(r"(?m)^hooks\s*=\s*.*$", "hooks = false", body, count=1)
-        else:
-            body = body.rstrip("\n") + "\nhooks = false\n"
-        return body
-
-    text, n = re.subn(
-        r"(?ms)^\[compat\.claude\]\n(?:(?!^\[).*\n)*",
-        fix_section,
-        text,
-        count=1,
-    )
-    if n == 0:
-        text = orig
-else:
-    if text and not text.endswith("\n"):
-        text += "\n"
-    if text and not text.endswith("\n\n"):
-        text += "\n"
-    text += comment + "[compat.claude]\nhooks = false\n"
-if text != orig:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
-    print(f"grok-trust: set [compat.claude] hooks = false -> {path}")
-else:
-    # Confirm value is false even if we did not rewrite
-    if re.search(r"(?ms)^\[compat\.claude\]\n(?:(?!^\[).*\n)*hooks\s*=\s*false\b", text):
-        print(f"grok-trust: [compat.claude] hooks already false -> {path}")
-    else:
-        print(f"grok-trust: note — could not confirm hooks=false in {path}", file=sys.stderr)
-PY
+  node - "$config" <<'JS'
+const fs = require("fs");
+const path = require("path");
+const config = process.argv[2];
+let text = "";
+try { text = fs.readFileSync(config, "utf8"); } catch (e) {}
+const orig = text;
+const comment =
+  "# HQ grok-trust: Grok enforces via hq-hq-bridge → adapter → .claude/hooks.\n" +
+  "# Do not also load every .claude/settings.json hook (double work + noisy UI).\n";
+if (/^\[compat\.claude\]/m.test(text)) {
+  const section = /^\[compat\.claude\]\n(?:(?!\[)[^\n]*\n)*/m;
+  const m = text.match(section);
+  if (m) {
+    let body = m[0];
+    if (/^hooks\s*=/m.test(body)) {
+      body = body.replace(/^hooks\s*=\s*.*$/m, "hooks = false");
+    } else {
+      body = body.replace(/\n+$/, "") + "\nhooks = false\n";
+    }
+    text = text.replace(section, body);
+  }
+} else {
+  if (text && !text.endsWith("\n")) text += "\n";
+  if (text && !text.endsWith("\n\n")) text += "\n";
+  text += comment + "[compat.claude]\nhooks = false\n";
+}
+if (text !== orig) {
+  fs.mkdirSync(path.dirname(config), { recursive: true });
+  fs.writeFileSync(config, text);
+  console.log("grok-trust: set [compat.claude] hooks = false -> " + config);
+} else {
+  // Confirm value is false even if we did not rewrite
+  if (/^\[compat\.claude\]\n(?:(?!\[)[^\n]*\n)*hooks\s*=\s*false\b/m.test(text)) {
+    console.log("grok-trust: [compat.claude] hooks already false -> " + config);
+  } else {
+    process.stderr.write("grok-trust: note — could not confirm hooks=false in " + config + "\n");
+  }
+}
+JS
 }
 
 quiet_claude_compat_hooks

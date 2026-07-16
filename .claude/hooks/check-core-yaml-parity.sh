@@ -44,10 +44,13 @@ Resolve via /promote-hq-core (manifest-bump step), or manually:
 
   VERSION="{correct-version}"
   NOW="\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  HQ_BYPASS_CORE_PROTECT=1 sed -i '' \\
-    -e "s/^hqVersion: \".*\"\$/hqVersion: \"\${VERSION}\"/" \\
-    -e "s/^updatedAt: \".*\"\$/updatedAt: \"\${NOW}\"/" \\
-    core/core.yaml repos/public/hq-core/core.yaml
+  . core/scripts/lib/portable.sh
+  for f in core/core.yaml repos/public/hq-core/core.yaml; do
+    HQ_BYPASS_CORE_PROTECT=1 portable_sed_inplace \\
+      "s/^hqVersion: \".*\"\$/hqVersion: \"\${VERSION}\"/" "\$f"
+    HQ_BYPASS_CORE_PROTECT=1 portable_sed_inplace \\
+      "s/^updatedAt: \".*\"\$/updatedAt: \"\${NOW}\"/" "\$f"
+  done
 
 Policy: core/policies/core-yaml-parity.md
 EOF

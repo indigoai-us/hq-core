@@ -6,6 +6,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=core/scripts/lib/portable.sh
+. "$REPO_ROOT/core/scripts/lib/portable.sh"
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 ok()   { printf '  ✓ %s\n' "$1"; }
@@ -42,10 +45,10 @@ else
 fi
 
 # jq (used by hooks)
-if check_cmd jq; then
+if require_jq; then
   ok "jq $(jq --version)"
 else
-  fail "jq not found — install via: brew install jq"
+  fail "jq not found"
   exit 1
 fi
 
@@ -171,8 +174,8 @@ elif check_cmd indigo; then
     sources: [indigo-mcp]
     created_at: ""
 MANIFEST
-          # Set the date
-          sed -i '' "s/created_at: \"\"/created_at: \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"/" companies/manifest.yaml
+          # Set the date (portable GNU/BSD sed)
+          portable_sed_inplace "s/created_at: \"\"/created_at: \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"/" companies/manifest.yaml
           mkdir -p companies/indigo/knowledge companies/indigo/data companies/indigo/settings
           ok "companies/indigo/ scaffolded + added to manifest"
         fi

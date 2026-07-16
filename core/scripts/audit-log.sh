@@ -23,6 +23,8 @@
 set -euo pipefail
 
 HQ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=core/scripts/lib/portable.sh
+. "$HQ_ROOT/core/scripts/lib/portable.sh"
 AUDIT_LOG="$HQ_ROOT/workspace/metrics/audit-log.jsonl"
 
 VALID_EVENTS="task_started phase_completed task_completed task_failed project_started project_completed story_dispatched story_completed story_failed pipeline_started pipeline_completed pipeline_paused pipeline_failed project_pr_created project_reviewed project_merged project_deployed project_canary_pass project_canary_fail gate_requested gate_resolved"
@@ -34,9 +36,7 @@ VALID_RESULTS="success fail skipped"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-require_jq() {
-  command -v jq >/dev/null 2>&1 || die "jq is required but not installed (brew install jq)"
-}
+# require_jq comes from portable.sh (multi-OS install guidance).
 
 iso_now() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"

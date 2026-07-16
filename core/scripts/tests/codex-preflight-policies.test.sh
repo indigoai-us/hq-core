@@ -11,10 +11,10 @@
 #      (Grok auto-scans .grok/rules/ — the Grok-side pointer).
 #   3. codex-skill-bridge.sh status still runs cleanly (no regression).
 #
-# The session-less preflight payload maps to the shared default.txt dedupe
-# ledger (a TRACKED file), and the hook appends every fired slug to it — so
-# the ledger is backed up before the run and byte-restored after, leaving the
-# working tree clean.
+# Dedupe is session-scoped: the preflight stamps a per-session session_id
+# (codex-preflight-$PPID by default, --session to override) so a second
+# SESSION still gets the policies, and the shared default.txt ledger is
+# never written (it is runtime state, gitignored — not shipped).
 #
 # Explicitly wired into .github/workflows/pr-checks.yml — tests here are NOT
 # auto-discovered (indigo-hq-core-staging-pr-mechanics rule 3).
@@ -22,30 +22,51 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SLUG="hq-prefer-native-capabilities"
-LEDGER="$ROOT/workspace/orchestrator/policy-trigger-state/default.txt"
+LEDGER_DIR="$ROOT/workspace/orchestrator/policy-trigger-state"
+DEFAULT_LEDGER="$LEDGER_DIR/default.txt"
+RUN="cpp-$$-$RANDOM"
 PASS=0; FAIL=0
 
 ok()   { PASS=$((PASS+1)); echo "ok   [$1]"; }
 fail() { FAIL=$((FAIL+1)); echo "FAIL [$1]: $2"; }
 
-# Back up the shared dedupe ledger; restore it exactly on exit.
-BACKUP=""
-if [ -f "$LEDGER" ]; then
-  BACKUP="$(mktemp)"
-  cp "$LEDGER" "$BACKUP"
-  trap '[ -n "$BACKUP" ] && cp "$BACKUP" "$LEDGER" && rm -f "$BACKUP"' EXIT
-else
-  trap 'rm -f "$LEDGER"' EXIT
-fi
-# Neutralize prior state so dedupe can never suppress the slug for this run.
-rm -f "$LEDGER"
+# Remove only the ledgers this run creates; note whether default.txt predates us.
+trap 'rm -f "$LEDGER_DIR/$RUN-a.txt" "$LEDGER_DIR/$RUN-b.txt" "$LEDGER_DIR/$RUN-cx.txt" 2>/dev/null || true' EXIT
+DEFAULT_PREEXISTS=0
+[ -f "$DEFAULT_LEDGER" ] && DEFAULT_PREEXISTS=1
 
-echo "== 1. codex-preflight.sh policies emits $SLUG =="
-OUT="$( (cd "$ROOT" && bash core/scripts/codex-preflight.sh policies) 2>/dev/null )"
-if printf '%s' "$OUT" | grep -Fq "$SLUG"; then
-  ok "preflight policies emits $SLUG"
+echo "== 1. preflight policies: two distinct sessions BOTH emit $SLUG =="
+OUT_A="$( (cd "$ROOT" && bash core/scripts/codex-preflight.sh policies --session "$RUN-a") 2>/dev/null )"
+OUT_B="$( (cd "$ROOT" && bash core/scripts/codex-preflight.sh policies --session "$RUN-b") 2>/dev/null )"
+if printf '%s' "$OUT_A" | grep -Fq "$SLUG"; then
+  ok "session A emits $SLUG"
 else
-  fail "preflight policies emits $SLUG" "slug missing; got: $(printf '%s' "$OUT" | tr '\n' ' ' | cut -c1-300)"
+  fail "session A emits $SLUG" "slug missing; got: $(printf '%s' "$OUT_A" | tr '\n' ' ' | cut -c1-300)"
+fi
+if printf '%s' "$OUT_B" | grep -Fq "$SLUG"; then
+  ok "session B emits $SLUG (dedupe is per-session, not per-machine)"
+else
+  fail "session B emits $SLUG (dedupe is per-session, not per-machine)" "slug missing — dedupe leaked across sessions"
+fi
+if [ "$DEFAULT_PREEXISTS" = 0 ] && [ -f "$DEFAULT_LEDGER" ]; then
+  fail "preflight never touches the shared default.txt ledger" "default.txt was created"
+else
+  ok "preflight never touches the shared default.txt ledger"
+fi
+
+echo "== 1b. codex adapter synthesizes a session_id when the payload lacks one =="
+ADAPTER="$ROOT/.codex/hooks/hq-codex-hook-adapter.sh"
+if [ -f "$ADAPTER" ]; then
+  AOUT="$(printf '{"hook_event_name":"SessionStart","source":"startup","cwd":"%s"}' "$ROOT" \
+    | CODEX_SESSION_ID="$RUN-cx" HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$ADAPTER" 2>/dev/null)"
+  if printf '%s' "$AOUT" | grep -Fq "$SLUG" && [ -f "$LEDGER_DIR/codex-$RUN-cx.txt" ]; then
+    ok "adapter injects $SLUG under a synthesized session ledger"
+  else
+    fail "adapter injects $SLUG under a synthesized session ledger" "output or ledger codex-$RUN-cx.txt missing"
+  fi
+  rm -f "$LEDGER_DIR/codex-$RUN-cx.txt" 2>/dev/null || true
+else
+  ok "codex adapter not present — skip"
 fi
 
 echo "== 2. .grok/rules pointer exists and is non-empty =="

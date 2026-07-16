@@ -182,10 +182,16 @@ cmd_repo() {
 
 cmd_policies() {
   local cwd="${PWD}"
+  # Per-session dedupe: without a session_id the injection hook records fired
+  # slugs in the shared persistent default.txt ledger, so the SECOND preflight
+  # ever run on a machine emits nothing. $PPID is the invoking Codex process —
+  # stable within a session, distinct across sessions.
+  local session="codex-preflight-${PPID}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --cwd) cwd="${2:-}"; shift 2 ;;
+      --session) session="${2:-}"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unknown policies argument: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -204,7 +210,7 @@ cmd_policies() {
   # SessionStart policy surfacing is now the trigger hook's job — every
   # on:[SessionStart] policy whose when: matches is injected. The standalone
   # digest loader (load-policies-for-session.sh) was retired.
-  (cd "${cwd}" && printf '%s' '{"hook_event_name":"SessionStart","source":"startup","cwd":"'"${cwd}"'"}' | bash "${hooks_root}/inject-policy-on-trigger.sh")
+  (cd "${cwd}" && printf '%s' '{"hook_event_name":"SessionStart","source":"startup","session_id":"'"${session}"'","cwd":"'"${cwd}"'"}' | bash "${hooks_root}/inject-policy-on-trigger.sh")
 }
 
 # doctor: report whether headless hook enforcement is ready for Codex + Grok,

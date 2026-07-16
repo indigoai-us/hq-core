@@ -25,6 +25,14 @@ workspace/charlie-envs/
 # sync ignore filter as a layer. See DEV-1791.
 /repos/
 
+# Stray project worktrees (independent linked git repos with a moving HEAD).
+# Root-anchored (`/workspace/worktrees/`) so a live worktree can never be swept
+# into the HQ root as an embedded gitlink (mode 160000), which leaves the tree
+# permanently dirty and blocks /handoff + session archiving. Registered HQ
+# worktrees live under `.claude/worktrees/` and are handled separately; mirrors
+# the `/repos/` handling above and is merged into the sync ignore filter layer.
+/workspace/worktrees/
+
 # Node
 node_modules/
 dist/
@@ -126,3 +134,7 @@ test-results/
 # Runtime journal pointers (legacy and session-scoped forms)
 .claude/state/active-journal
 .claude/state/active-journal.d/
+
+# Policy-injection dedupe ledgers are per-machine runtime state, never code.
+# A tracked ledger ships pre-populated and suppresses first-run injection.
+workspace/orchestrator/policy-trigger-state/

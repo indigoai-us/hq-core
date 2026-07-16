@@ -29,10 +29,9 @@ if [[ "$FILE_PATH" != /* ]]; then
   FILE_PATH="$PROJECT_DIR/$FILE_PATH"
 fi
 
-if command -v python3 >/dev/null 2>&1; then
-  FILE_PATH="$(python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
-  PROJECT_DIR="$(python3 -c 'import os.path,sys; sys.stdout.write(os.path.normpath(sys.argv[1]))' "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
-fi
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+FILE_PATH="$(hq_normpath "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
+PROJECT_DIR="$(hq_normpath "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
 
 CORE_DIR="$PROJECT_DIR/core"
 CLAUDE_DIR="$PROJECT_DIR/.claude"

@@ -55,27 +55,12 @@ else
   exit 0
 fi
 
-# Resolve prefix → company via manifest. If unknown prefix, this isn't a
-# bridged path — let it through (some non-company skills like `hq-deploy` happen
-# to look like prefix-name but don't match any manifest entry).
-# NOTE: slurp the program into a variable via a standalone heredoc, then run it
-# with `python3 -c`. A heredoc nested inside a `$( … )` substitution is
-# mis-parsed as an unterminated quote by macOS system bash 3.2
-# (policy indigo-hook-no-heredoc-in-command-substitution).
-co_py=""
-IFS= read -r -d '' co_py <<'PY' || true
-import sys, yaml
-prefix = sys.argv[1]
-try:
-    d = yaml.safe_load(open("companies/manifest.yaml"))
-    for slug, meta in d.get("companies", {}).items():
-        if meta.get("prefix") == prefix:
-            print(slug)
-            break
-except Exception:
-    pass
-PY
-CO=$(cd "$PROJECT_DIR" && python3 -c "$co_py" "$PREFIX" 2>/dev/null || true)
+# Resolve prefix → company via manifest (yq, same engine as the registry
+# hooks). If unknown prefix — or yq is unavailable — this isn't a bridged
+# path; let it through (some non-company skills like `hq-deploy` happen to
+# look like prefix-name but don't match any manifest entry).
+CO=$(cd "$PROJECT_DIR" && yq -r ".companies | to_entries[] | select(.value.prefix == \"$PREFIX\") | .key" companies/manifest.yaml 2>/dev/null | head -1 || true)
+[ "$CO" = "null" ] && CO=""
 
 if [[ -z "$CO" ]]; then
   exit 0

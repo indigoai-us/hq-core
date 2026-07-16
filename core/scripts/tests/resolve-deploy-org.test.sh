@@ -60,4 +60,18 @@ grep -qF '/membership/me' "$SKILL" || fail "SKILL A.5 does not call the agent-aw
 grep -qF 'resolve-deploy-org.sh' "$SKILL" || fail "SKILL A.5 does not invoke resolve-deploy-org.sh"
 pass "A.5 resolves via /membership/me + resolve-deploy-org.sh"
 
+echo "[8] missing jq -> unresolved dependency, NEVER personal scope"
+NO_JQ_BIN="$(mktemp -d "${TMPDIR:-/tmp}/resolve-org-no-jq.XXXXXX")"
+trap 'rm -rf "$NO_JQ_BIN"' EXIT
+OUT=$(PATH="$NO_JQ_BIN" /bin/bash "$SRC" <<<'{"memberships":[{"companySlug":"acme","status":"active"}]}' 2>/dev/null)
+eval "$OUT"
+[ "$ORG_RESOLUTION_STATE" = "missing_dependency" ] \
+  || fail "missing jq should set missing_dependency (got: $ORG_RESOLUTION_STATE)"
+[ -z "$PERSONAL_SCOPE" ] \
+  || fail "missing jq must not set PERSONAL_SCOPE=true"
+[ -z "$ORG_SLUG" ] || fail "missing jq must not guess an org"
+grep -q 'missing_dependency)' "$SKILL" \
+  || fail "SKILL C.5 must handle missing_dependency explicitly"
+pass "missing jq -> missing_dependency; personal scope remains unset"
+
 echo "ALL PASS: resolve-deploy-org"

@@ -1,0 +1,3 @@
+# Repo-wide shellcheck defaults for hq-core shell surfaces.
+shell=bash
+disable=SC1090,SC1091,SC2100,SC1007,SC2221,SC2222

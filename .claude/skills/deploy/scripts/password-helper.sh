@@ -72,7 +72,7 @@ cmd_persist() {
   fi
 
   if ! command -v jq >/dev/null 2>&1; then
-    printf "password-helper: jq not found, cannot persist\n" >&2
+    printf "password-helper: jq not found, cannot persist. Install: Windows: winget install jqlang.jq (or choco/scoop install jq); macOS: brew install jq; Linux: sudo apt-get install jq (or dnf install jq).\n" >&2
     return 1
   fi
 
@@ -87,6 +87,10 @@ cmd_persist() {
 cmd_lookup() {
   local slug="${1:?slug required}"
   if [ ! -f "$PASS_FILE" ]; then
+    return 1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    printf "password-helper: jq not found, cannot lookup. Install: Windows: winget install jqlang.jq (or choco/scoop install jq); macOS: brew install jq; Linux: sudo apt-get install jq (or dnf install jq).\n" >&2
     return 1
   fi
   jq -r --arg slug "$slug" '.[$slug].password // empty' "$PASS_FILE"
