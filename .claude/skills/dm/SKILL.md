@@ -7,11 +7,11 @@ allowed-tools: Bash(hq:*), Read, Glob, Grep
 # /dm — Send an HQ direct message
 
 Send a person-to-person notification through HQ. The recipient gets it as a
-macOS notification in their HQ Sync menubar; if you attach agent context they
+macOS notification in their HQ Desktop App; if you attach agent context they
 get a one-click **Copy prompt** action, and if you attach details they get an
 **Open details** window. You can DM yourself (note-to-self / reminders).
 
-This is the **send** side — receiving is handled by the HQ Sync menubar app.
+This is the **send** side — receiving is handled by the HQ Desktop App.
 You can only DM someone you share an active company with.
 
 ## Usage
@@ -150,7 +150,7 @@ Options:
   and `--company <slug>` to scope when you belong to more than one company.
 - Requires a signed-in HQ session (`/hq-login`). The CLI resolves the caller
   identity from the Cognito token — the DM is always **from** the signed-in user.
-- Sending is CLI/session-only by design; the menubar app is **receive-only**.
+- Sending is CLI/session-only by design; the HQ Desktop App is **receive-only**.
 - Scheduled DMs are promoted to live notifications within ~60s of their time
   on the recipient's next inbox poll.
 - Never paste secrets into a DM body/prompt/details — DMs are stored server-side.

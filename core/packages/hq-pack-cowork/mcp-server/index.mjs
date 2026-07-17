@@ -23,7 +23,7 @@
  *
  *   Identity / sync / search
  *     hq_whoami        — show current HQ identity + session expiry
- *     hq_sync          — bidirectional sync (mirrors AppBar HQ Sync "Sync Now")
+ *     hq_sync          — bidirectional sync (mirrors HQ Desktop App "Sync Now")
  *     hq_team_sync     — pull latest team content for joined teams
  *     hq_search        — qmd hybrid search across HQ content
  *   Secrets (server never returns values; injecting tools are host-trusted)
@@ -100,7 +100,7 @@ function requireStringArray(value, name, ctx) {
 }
 
 // ─── HQ root resolution ──────────────────────────────────────────────────────
-// Same 4-tier resolver the AppBar / /hq-sync skill use, in order:
+// Same 4-tier resolver the HQ Desktop App / /hq-sync skill use, in order:
 //   1. $HQ_ROOT env override
 //   2. ~/.hq/menubar.json `hqPath` (canonical, hq-installer ≥ 0.1.28)
 //   3. ~/.hq/config.json `hqFolderPath` (legacy)
@@ -448,8 +448,8 @@ const TOOLS = [
   {
     name: "hq_sync",
     description:
-      "Bidirectional sync against the HQ vault — mirrors the AppBar HQ Sync " +
-      "menubar app's 'Sync Now' button. By default syncs every cloud-backed " +
+      "Bidirectional sync against the HQ vault — mirrors the HQ Desktop App " +
+      "'Sync Now' button. By default syncs every cloud-backed " +
       "company you're a member of plus your personal vault. Use `company` to " +
       "scope to one company, or `personal: true` to sync only your personal " +
       "vault. Wraps `hq sync now`.",
@@ -726,7 +726,7 @@ const TOOLS = [
     name: "hq_dm",
     description:
       "Send a direct message to a teammate (by email or personUid). They " +
-      "receive it as an HQ Sync menubar notification. Optionally attach an " +
+      "receive it as an HQ Desktop App notification. Optionally attach an " +
       "agent `prompt` they can one-click copy, longer `details`, or schedule " +
       "delivery with `at` (ISO8601) or `in` (e.g. 30s, 10m, 2h, 1d). Only " +
       "reaches people you share an active company with. Wraps `hq dm`.",

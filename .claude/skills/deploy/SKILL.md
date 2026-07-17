@@ -77,7 +77,7 @@ Auto-deploy is opt-out. Honor user preference and rule out projects that shouldn
 
 ### 1a. Read user preference
 
-`$PREF_FILE` is `~/.hq/deploy-prefs.json` — a file owned exclusively by `/deploy`. The legacy `~/.hq/config.json` is read-only here (backwards compat) and never written by this skill: that path is owned by HQ Sync's strict `HqConfig` serde struct, and overlapping writers caused the menubar to bail on every sync (see `feedback_3ab4f113-2e7c-4e4e-a171-771b47a2b5fd`).
+`$PREF_FILE` is `~/.hq/deploy-prefs.json` — a file owned exclusively by `/deploy`. The legacy `~/.hq/config.json` is read-only here (backwards compat) and never written by this skill: that path is owned by the HQ Desktop App's strict `HqConfig` serde struct, and overlapping writers caused the HQ Desktop App to bail on every sync (see `feedback_3ab4f113-2e7c-4e4e-a171-771b47a2b5fd`).
 
 ```bash
 PREF_FILE="$HOME/.hq/deploy-prefs.json"

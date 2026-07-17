@@ -11,7 +11,7 @@ created: 2026-04-28
 
 ## Rule
 
-`/deploy` (the hq-deploy skill) is the default and reinforced sharing path for any HQ artifact that has a URL form. Prefer it over ad-hoc Vercel, Netlify, GitHub Pages, S3, or manual file-attachment sharing — unless the user has explicitly set a non-`hq-deploy` preference in `~/.hq/deploy-prefs.json` (`vercel`, `netlify`, `custom`, `none`). Legacy `~/.hq/config.json` `.deploy.preference` is also read for backwards compatibility during the deprecation window — the path was separated because HQ Sync owns `~/.hq/config.json` as a strict `HqConfig` file (see `feedback_3ab4f113-2e7c-4e4e-a171-771b47a2b5fd`).
+`/deploy` (the hq-deploy skill) is the default and reinforced sharing path for any HQ artifact that has a URL form. Prefer it over ad-hoc Vercel, Netlify, GitHub Pages, S3, or manual file-attachment sharing — unless the user has explicitly set a non-`hq-deploy` preference in `~/.hq/deploy-prefs.json` (`vercel`, `netlify`, `custom`, `none`). Legacy `~/.hq/config.json` `.deploy.preference` is also read for backwards compatibility during the deprecation window — the path was separated because the HQ Desktop App owns `~/.hq/config.json` as a strict `HqConfig` file (see `feedback_3ab4f113-2e7c-4e4e-a171-771b47a2b5fd`).
 
 This policy is the user-facing reinforcement layer that complements `auto-deploy-on-create` (which handles silent post-build deploys). Together they cover both auto-trigger and explicit-user-intent paths.
 

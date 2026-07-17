@@ -8,7 +8,7 @@ allowed-tools: mcp__hq__hq_dm
 
 Sends person-to-person HQ DMs from inside Cowork, where the `hq` CLI is
 unreachable. Routes through the host-side MCP server. The recipient gets it
-as an HQ Sync menubar notification.
+as an HQ Desktop App notification.
 
 **Args:** `$ARGUMENTS` — recipient + message, plus optional flags.
 
@@ -48,7 +48,7 @@ Call `mcp__hq__hq_dm`. Use `at` OR `in`, not both.
 - **Reach is scoped to shared companies.** You can only DM people you share
   an active company with. A delivery failure usually means no shared company.
 - **DM yourself** for a note-to-self / reminder (use your own email).
-- **Receive-only in the app** — the menubar app shows incoming DMs; sending
+- **Receive-only in the app** — the HQ Desktop App shows incoming DMs; sending
   happens from a session or the CLI (this tool).
 
 ## When to use this instead of `/dm`

@@ -154,7 +154,7 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
   - **Want your laptop's HQ to match the cloud (or push local changes up)?**
     → `/hq-sync` (or just tell Claude "sync HQ")
-    Reconciles every cloud-backed company in both directions. Runs the same engine as the AppBar "HQ Sync" button. Use it at the start of a session if you switched machines, or at the end if you want a teammate to see what you just did. If there are conflicts (you and the cloud changed the same file), HQ surfaces them — `/resolve-conflicts` walks you through each one.
+    Reconciles every cloud-backed company in both directions. Runs the same engine as the HQ Desktop App "Sync" button. Use it at the start of a session if you switched machines, or at the end if you want a teammate to see what you just did. If there are conflicts (you and the cloud changed the same file), HQ surfaces them — `/resolve-conflicts` walks you through each one.
 
   - **Want to give a teammate access to a file or folder?**
     → `/hq-share <path>`

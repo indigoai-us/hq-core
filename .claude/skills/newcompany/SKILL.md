@@ -75,7 +75,7 @@ The `workspace/` directory is the per-company audit trail of HQ sessions that to
 company. Sessions are hardlinked here from `workspace/threads/` by the mirror hook
 (`mirror-thread-to-company.sh`); `index.jsonl` is committed, individual session JSONs are gitignored.
 
-`company.yaml` is the AppBar / cloud-state marker. `cloud: false` is the local-only
+`company.yaml` is the HQ Desktop App / cloud-state marker. `cloud: false` is the local-only
 default; `/designate-team {slug}` rewrites it to `cloud: true` and runs
 `hq cloud provision company {slug}`. Keep the file even for purely-local companies.
 

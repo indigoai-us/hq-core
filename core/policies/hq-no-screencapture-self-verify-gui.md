@@ -17,4 +17,4 @@ NEVER: Rely on `screencapture` to self-verify GUI output in an agent session —
 
 ## Rationale
 
-User-validated finding from a session shipping custom notification banners in HQ Sync. `screencapture` requires Screen Recording permission the agent session lacks, so it returns 'could not create image' — diagnose via app logs and request screenshots from the user.
+User-validated finding from a session shipping custom notification banners in the HQ Desktop App. `screencapture` requires Screen Recording permission the agent session lacks, so it returns 'could not create image' — diagnose via app logs and request screenshots from the user.

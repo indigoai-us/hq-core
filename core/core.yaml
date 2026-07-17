@@ -1,6 +1,6 @@
 version: 1
-hqVersion: "15.0.50"
-updatedAt: "2026-07-16T23:52:32Z"
+hqVersion: "15.0.51"
+updatedAt: "2026-07-17T11:56:20Z"
 # hq-core is the minimal scaffold seed. Rich add-ons ship as `@indigoai-us/hq-pack-*`
 # npm packages installed into `core/packages/` via `hq install`. See `core/packages/README.md`.
 rules:
@@ -68,7 +68,7 @@ recommended_packages:
     # engineering opt-in for non-coders. Coders on a green install opt in with
     # `hq install ...#packages/hq-pack-engineering` (see CHANGELOG.md).
     conditional: '[ -d .claude/skills/tdd ] && [ ! -L .claude/skills/tdd ] || [ -d .claude/skills/review ] && [ ! -L .claude/skills/review ] || [ -d .claude/skills/execute-task ] && [ ! -L .claude/skills/execute-task ] || [ -d .claude/skills/architect ] && [ ! -L .claude/skills/architect ] || [ -d .claude/skills/run-project ] && [ ! -L .claude/skills/run-project ] || [ -d core/workers/public/qa-tester ] && [ ! -L core/workers/public/qa-tester ] || [ -d core/workers/public/security-scanner ] && [ ! -L core/workers/public/security-scanner ]'
-# Paths the menubar app (and the /personal:replace-from-staging skill)
+# Paths the HQ Desktop App (and the /personal:replace-from-staging skill)
 # may overwrite when applying an `hq-core-staging` release on top of the
 # local HQ root. Acts as the source of truth so the UI confirmation list,
 # the script's wipe set, and any future consumers stay in lock-step. Anything

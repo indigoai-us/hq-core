@@ -320,7 +320,7 @@ Path renames in 4 policy files to reflect the current contributor layout. Enforc
 
 ### Added — Commands
 - **`/hq-login`, `/hq-logout`, `/hq-whoami`** — Cognito identity flow (status → refresh → browser fallback).
-- **`/hq-sync`** — Full HQ sync from CLI (same engine as the AppBar HQ Sync button).
+- **`/hq-sync`** — Full HQ sync from CLI (same engine as the HQ Desktop App Sync button).
 - **`/resolve-conflicts`** — Interactive walk-through of HQ Sync conflicts (keep local | take cloud | discard).
 - **`/import-claude`** — Scan the machine for Claude artifacts (sessions, MCPs, commands, skills, hooks, policies, knowledge, repos, plans) and guide a selective import into HQ.
 - **`/deep-plan`** — Heavy planning split from `/plan`: research subagents (codebase / HQ / repo) + a 3-tier 15-question interview (Strategic / Architecture / Quality), with smart-skip and pushback. Use for large or strategically important PRDs; `/plan` remains lightweight for everyday work.
