@@ -83,7 +83,7 @@ hq dm inbox --unread
 hq dm inbox --mark-read
 
 # 1:1 thread (alias: hq dm read …)
-hq dm thread stefan@example.com
+hq dm thread [EMAIL]
 hq dm read prs_abc123 --no-ack --limit 50
 
 # Channel / group history (alias: hq dm history …)
@@ -93,7 +93,7 @@ hq dm channel chn_…          # unnamed group DM — id from `hq channels`
 
 # Machine-readable
 hq dm inbox --json
-hq dm thread stefan@example.com --json
+hq dm thread [EMAIL] --json
 ```
 
 For a bare name on `thread`/`read`, resolve with `hq people resolve` first (same
