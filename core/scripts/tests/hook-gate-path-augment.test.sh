@@ -44,14 +44,15 @@ make_tools() {
   done
 }
 
-# Curated utils dir: symlink ONLY the externals the gate + probe hook need, so
-# the gate runs with a PATH that deliberately EXCLUDES node/hq/qmd (this box may
-# carry them in /usr/bin). That forces the "tools not resolvable" path so the
-# augmentation is actually exercised, hermetically, regardless of the host.
+# Curated utils dir: wrappers (not symlinks) so Windows Git Bash does not break
+# on shared-library resolution for symlinked bash. PATH deliberately EXCLUDES
+# node/hq/qmd so augmentation is exercised regardless of the host.
 UTILS="$TMP/utils"; mkdir -p "$UTILS"
-for u in bash cat chmod ls sort tail; do
+for u in awk bash cat chmod ls sort tail uname; do
   real="$(command -v "$u")" || fail "required test util '$u' not found on host"
-  ln -sf "$real" "$UTILS/$u"
+  # Quote real path for spaces (e.g. Program Files).
+  printf '#!/bin/bash\nexec "%s" "$@"\n' "$real" > "$UTILS/$u"
+  chmod +x "$UTILS/$u"
 done
 
 # Run the gate with the curated PATH + a fake HOME so the probe hook can only
@@ -82,12 +83,18 @@ pass "node/hq/qmd resolved from ~/.volta/bin"
 # ---------------------------------------------------------------------------
 echo "[2] nvm-style versioned dir: highest installed version is resolved"
 H2="$TMP/home-nvm"
+make_tools "$H2/.nvm/versions/node/v9.99.0/bin"     # lexical trap: must not beat v20
 make_tools "$H2/.nvm/versions/node/v18.19.0/bin"
 make_tools "$H2/.nvm/versions/node/v20.11.1/bin"   # higher — must win
 set +e; run_gate "$H2"; set -e
 grep -q "$H2/.nvm/versions/node/v20.11.1/bin/node" "$TMP/probe.out" \
   || fail "nvm node not resolved to the highest version (got: $(cat "$TMP/probe.out"))"
 pass "nvm highest version (v20.11.1) resolved over v18.19.0"
+
+if sed 's/#.*//' "$GATE" | grep -qE 'sort[[:space:]]+-V|sort[[:space:]]+--version-sort'; then
+  fail "hook-gate must not use GNU-only sort -V (macOS ships BSD sort)"
+fi
+pass "node version selection avoids GNU-only sort -V"
 
 # ---------------------------------------------------------------------------
 echo "[3] ~/.local/bin fallback is discovered"
@@ -117,5 +124,35 @@ if sed 's/#.*//' "$GATE" \
   fail "hook-gate.sh must NOT source shell rc/profile files (sensitive-path policy)"
 fi
 pass "no rc/profile sourcing in hook-gate.sh"
+
+# ---------------------------------------------------------------------------
+echo "[6] Windows APPDATA/npm is discovered under simulated MINGW uname"
+# Force the MINGW branch via a uname wrapper on PATH. Host system dirs
+# (/usr/local/bin) may still hold node; assert hq+qmd resolve from APPDATA
+# (Windows candidates are prepended before Homebrew/system on MINGW).
+H6="$TMP/home-win"
+APPDATA_FIX="$H6/AppData/Roaming"
+make_tools "$APPDATA_FIX/npm"
+# Override uname in UTILS for this run only.
+printf '#!/bin/bash\necho MINGW64_NT-10.0\n' > "$UTILS/uname"
+chmod +x "$UTILS/uname"
+set +e
+env -u NVM_DIR -u FNM_DIR -u VOLTA_HOME -u ASDF_DATA_DIR \
+  PROBE_OUT="$TMP/probe.out" \
+  HOME="$H6" \
+  APPDATA="$APPDATA_FIX" \
+  PATH="$UTILS" \
+  bash "$GATE" detect-secrets "$TMP/probe-hook.sh" <<<'{}' 2>"$TMP/err6"
+set -e
+# Restore real uname wrapper for any later use
+real_uname="$(command -v uname)"
+printf '#!/bin/bash\nexec "%s" "$@"\n' "$real_uname" > "$UTILS/uname"
+chmod +x "$UTILS/uname"
+grep -q PROBE_HOOK_RAN "$TMP/err6" || fail "probe hook did not run for Windows APPDATA fixture (stderr: $(cat "$TMP/err6"))"
+grep -q "$APPDATA_FIX/npm/hq" "$TMP/probe.out" \
+  || fail "hq not resolved from APPDATA/npm (got: $(cat "$TMP/probe.out"))"
+grep -q "$APPDATA_FIX/npm/qmd" "$TMP/probe.out" \
+  || fail "qmd not resolved from APPDATA/npm (got: $(cat "$TMP/probe.out"))"
+pass "Windows APPDATA/npm path discovered under simulated MINGW"
 
 echo "ALL PASS: hook-gate-path-augment"

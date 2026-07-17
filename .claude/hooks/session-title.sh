@@ -24,16 +24,10 @@ esac
 
 [ -x "$HELPER" ] || exit 0
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+
 extract() {
-  printf '%s' "$STDIN_JSON" | python3 -c '
-import json,sys
-try:
-    d=json.load(sys.stdin)
-    v=d.get(sys.argv[1],"")
-    sys.stdout.write(str(v if v is not None else ""))
-except Exception:
-    pass
-' "$1" 2>/dev/null || true
+  printf '%s' "$STDIN_JSON" | hq_json_get "$1"
 }
 
 EVENT="$(extract hook_event_name)"
@@ -68,13 +62,17 @@ fi
 # command word persists across turns until a new command is issued.
 command="$last_command"
 if [ "$EVENT" = "UserPromptSubmit" ] && [ -n "$PROMPT" ]; then
-  detected="$(printf '%s' "$PROMPT" | python3 -c '
-import sys,re
-t=sys.stdin.read().lstrip()
-m=re.match(r"/([A-Za-z0-9:_-]+)", t)
-if m:
-    sys.stdout.write(m.group(1).split(":")[-1])
-' 2>/dev/null || true)"
+  # First non-blank content must open with /command; keep the last :segment
+  # (mirrors the old lstrip + regex + split(":")[-1] semantics).
+  detected="$(printf '%s' "$PROMPT" | awk '
+    !found && /[^ \t]/ {
+      found = 1
+      line = $0; sub(/^[ \t]+/, "", line)
+      if (match(line, /^\/[A-Za-z0-9:_-]+/)) {
+        s = substr(line, RSTART + 1, RLENGTH - 1)
+        n = split(s, a, ":"); print a[n]
+      }
+    }' 2>/dev/null || true)"
   [ -n "$detected" ] && command="$detected"
 fi
 

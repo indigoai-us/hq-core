@@ -31,116 +31,120 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-HQ_ROOT="$HQ_ROOT" SESSION_ID="$SESSION_ID" CMD="$COMMAND" python3 - <<'PY'
-import json, os, re, pathlib, datetime
+command -v node >/dev/null 2>&1 || exit 0
 
-hq = pathlib.Path(os.environ["HQ_ROOT"])
-sid = os.environ.get("SESSION_ID", "default") or "default"
-command = (os.environ.get("CMD", "") or "").strip().lstrip("/")
+HQ_ROOT="$HQ_ROOT" SESSION_ID="$SESSION_ID" CMD="$COMMAND" node - <<'JS'
+const fs = require("fs");
+const path = require("path");
 
-key = re.sub(r"[^A-Za-z0-9._-]", "_", sid) or "default"
-state = hq / ".claude" / "state"
+const hq = process.env.HQ_ROOT || "";
+const sid = process.env.SESSION_ID || "default";
+let command = (process.env.CMD || "").trim().replace(/^\/+/, "");
 
-def first_line(p):
-    try:
-        for line in p.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                return line
-    except Exception:
-        pass
-    return ""
+const key = sid.replace(/[^A-Za-z0-9._-]/g, "_") || "default";
+const state = path.join(hq, ".claude", "state");
 
-# --- resolve active project path (session-scoped, then global fallback) ---
-proj_path = first_line(state / f"auto-session-project-{key}")
-if not proj_path:
-    proj_path = first_line(state / "active-session-project")
+const firstLine = (p) => {
+  try {
+    for (let line of fs.readFileSync(p, "utf8").split(/\r?\n/)) {
+      line = line.trim();
+      if (line) return line;
+    }
+  } catch (e) {}
+  return "";
+};
 
-company = ""
-project = ""
-if proj_path:
-    rel = proj_path
-    try:
-        rel = str(pathlib.Path(proj_path).resolve().relative_to(hq.resolve()))
-    except Exception:
-        rel = proj_path.replace(str(hq).rstrip("/") + "/", "")
-    parts = [p for p in rel.strip("/").split("/") if p]
-    if len(parts) >= 2 and parts[0] == "companies":
-        company = parts[1]
-        project = parts[-1]
-    elif parts and parts[0] == "personal":
-        company = ""          # personal scope → no company segment
-        project = parts[-1]
-    elif parts:
-        project = parts[-1]
+// --- resolve active project path (session-scoped, then global fallback) ---
+let projPath = firstLine(path.join(state, "auto-session-project-" + key));
+if (!projPath) projPath = firstLine(path.join(state, "active-session-project"));
 
-# --- company fallbacks when no project resolved ---
-if not company and command == "hqwork":
-    company = "hq-core"
+let company = "";
+let project = "";
+if (projPath) {
+  let rel = projPath;
+  try {
+    const resolved = fs.realpathSync(projPath);
+    const hqResolved = fs.realpathSync(hq);
+    const r = path.relative(hqResolved, resolved);
+    if (r === "" || r.startsWith("..") || path.isAbsolute(r)) throw new Error("outside hq");
+    rel = r;
+  } catch (e) {
+    rel = projPath.split(hq.replace(/\/+$/, "") + "/").join("");
+  }
+  const parts = rel.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+  if (parts.length >= 2 && parts[0] === "companies") {
+    company = parts[1];
+    project = parts[parts.length - 1];
+  } else if (parts.length && parts[0] === "personal") {
+    company = "";          // personal scope -> no company segment
+    project = parts[parts.length - 1];
+  } else if (parts.length) {
+    project = parts[parts.length - 1];
+  }
+}
 
-if not company and not project:
-    manifest = hq / "companies" / "manifest.yaml"
-    slugs = []
-    if manifest.exists():
-        in_companies = False
-        for line in manifest.read_text(encoding="utf-8", errors="ignore").splitlines():
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            if in_companies and re.match(r"^[^\s#]", line):
-                break
-            if re.match(r"^companies:\s*$", line):
-                in_companies = True
-                continue
-            if in_companies:
-                m = re.match(r"^  ([a-z][a-z0-9_-]*):\s*$", line)
-                if m and m.group(1) != "_template":
-                    slugs.append(m.group(1))
-    if len(slugs) == 1:
-        company = slugs[0]
+// --- company fallbacks when no project resolved ---
+if (!company && command === "hqwork") company = "hq-core";
 
-# --- status emoji from the orchestrator ---
-emoji = ""
-orch = hq / "workspace" / "orchestrator" / "state.json"
-if project and orch.exists():
-    try:
-        data = json.loads(orch.read_text(encoding="utf-8"))
-        for p in data.get("projects", []):
-            nm = p.get("name", "")
-            prd = "/" + (p.get("prdPath", "") or "")
-            if nm == project or ("/" + project + "/") in prd:
-                st = p.get("state", "")
-                if st == "IN_PROGRESS":
-                    emoji = "▶️"
-                elif st == "COMPLETED":
-                    ts = p.get("updatedAt") or p.get("updated_at") or ""
-                    try:
-                        t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                        now = datetime.datetime.now(datetime.timezone.utc)
-                        if (now - t).total_seconds() < 86400:   # only recent completions
-                            emoji = "✅"
-                    except Exception:
-                        pass
-                break
-    except Exception:
-        pass
+if (!company && !project) {
+  const manifest = path.join(hq, "companies", "manifest.yaml");
+  const slugs = [];
+  try {
+    let inCompanies = false;
+    for (const line of fs.readFileSync(manifest, "utf8").split(/\r?\n/)) {
+      if (!line.trim() || line.trimStart().startsWith("#")) continue;
+      if (inCompanies && /^[^\s#]/.test(line)) break;
+      if (/^companies:\s*$/.test(line)) { inCompanies = true; continue; }
+      if (inCompanies) {
+        const m = line.match(/^  ([a-z][a-z0-9_-]*):\s*$/);
+        if (m && m[1] !== "_template") slugs.push(m[1]);
+      }
+    }
+  } catch (e) {}
+  if (slugs.length === 1) company = slugs[0];
+}
 
-# --- compose ---
-if not command:
-    command = "chat"
+// --- status emoji from the orchestrator ---
+let emoji = "";
+const orch = path.join(hq, "workspace", "orchestrator", "state.json");
+if (project) {
+  try {
+    const data = JSON.parse(fs.readFileSync(orch, "utf8"));
+    for (const p of data.projects || []) {
+      const nm = p.name || "";
+      const prd = "/" + (p.prdPath || "");
+      if (nm === project || prd.includes("/" + project + "/")) {
+        const st = p.state || "";
+        if (st === "IN_PROGRESS") {
+          emoji = "▶️";
+        } else if (st === "COMPLETED") {
+          const ts = p.updatedAt || p.updated_at || "";
+          const t = new Date(ts);
+          if (!isNaN(t.getTime()) && (Date.now() - t.getTime()) / 1000 < 86400) {
+            emoji = "✅";   // only recent completions
+          }
+        }
+        break;
+      }
+    }
+  } catch (e) {}
+}
 
-core = [x for x in [project, command] if x]
-full = ([company] + core) if company else core
+// --- compose ---
+if (!command) command = "chat";
 
-def compose(parts):
-    s = " · ".join(parts)
-    return (emoji + " " + s) if emoji else s
+const core = [project, command].filter(Boolean);
+const full = company ? [company].concat(core) : core;
 
-MAX = 44
-title = compose(full)
-if len(title) > MAX:
-    title = compose(core)          # drop company first (project implies it)
-if len(title) > MAX:
-    title = title[:MAX - 1].rstrip() + "…"
+const compose = (parts) => {
+  const s = parts.join(" · ");
+  return emoji ? emoji + " " + s : s;
+};
 
-print(title)
-PY
+const MAX = 44;
+let title = compose(full);
+if (title.length > MAX) title = compose(core);   // drop company first (project implies it)
+if (title.length > MAX) title = title.slice(0, MAX - 1).replace(/\s+$/, "") + "…";
+
+console.log(title);
+JS

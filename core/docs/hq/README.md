@@ -54,10 +54,15 @@ HQ is **model-agnostic**, so it works inside any AI tool and leverages the subsc
 | Tool | Required | Install |
 |------|----------|---------|
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Yes | `npm install -g @anthropic-ai/claude-code` |
-| [GitHub CLI](https://cli.github.com/) | Yes | `brew install gh` then `gh auth login` |
+| bash + git | Yes | Linux/macOS system tools; Windows: [Git for Windows](https://git-scm.com) (Git Bash) |
+| node | Yes | [nodejs.org](https://nodejs.org) or nvm/fnm/volta |
+| [jq](https://jqlang.github.io/jq/) | Yes | Windows: `winget install jqlang.jq` / `choco install jq` / `scoop install jq`; Linux: `apt`/`dnf install jq`; macOS: `brew install jq` |
+| [GitHub CLI](https://cli.github.com/) | Yes | `brew install gh` / winget / apt — then `gh auth login` |
 | [qmd](https://github.com/tobi/qmd) | Recommended | `npm install -g @tobilu/qmd` (macOS also: `brew install sqlite`) |
 | [OpenAI Codex](https://openai.com/codex) | Optional | `npm install -g @openai/codex` then `codex login` |
 | [ggshield](https://docs.gitguardian.com/ggshield-docs/getting-started/installation) | Recommended | `brew install ggshield` then `ggshield auth login` |
+
+Platform details (Windows Git Bash baseline, deploy identity fallback, portable shell helpers): [cross-platform-support.md](../../knowledge/public/hq-core/cross-platform-support.md).
 
 ### LSP (Language Server Protocol)
 

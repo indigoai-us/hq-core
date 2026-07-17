@@ -16,7 +16,7 @@
 #          { "companyUid", "companySlug"?, "role", "status", ... }, ... ] }.
 # OUTPUT (stdout): shell KEY=VALUE lines for the caller to eval —
 #          ORG_SLUG=<slug|empty>            single active membership resolved
-#          ORG_RESOLUTION_STATE=<""|no-orgs|multi-org>
+#          ORG_RESOLUTION_STATE=<""|no-orgs|multi-org|missing_dependency>
 #          PERSONAL_SCOPE=<""|true>         no active membership -> personal scope
 #          ACTIVE_SLUGS=<comma-joined>      only set for multi-org (CTA list)
 #          ACTIVE_COMPANY_UID=<uid|empty>   single-membership companyUid (slug fallback)
@@ -30,6 +30,25 @@ ORG_RESOLUTION_STATE=""
 PERSONAL_SCOPE=""
 ACTIVE_SLUGS=""
 ACTIVE_COMPANY_UID=""
+
+_emit_defaults() {
+  printf "ORG_SLUG='%s'\n" "$ORG_SLUG"
+  printf "ORG_RESOLUTION_STATE='%s'\n" "$ORG_RESOLUTION_STATE"
+  printf "PERSONAL_SCOPE='%s'\n" "$PERSONAL_SCOPE"
+  printf "ACTIVE_SLUGS='%s'\n" "$ACTIVE_SLUGS"
+  printf "ACTIVE_COMPANY_UID='%s'\n" "$ACTIVE_COMPANY_UID"
+}
+
+# Complex membership filtering needs jq (not covered by hook-lib hq_json_get).
+if ! command -v jq >/dev/null 2>&1; then
+  printf 'resolve-deploy-org: jq is required. Install: Windows: winget install jqlang.jq (or choco/scoop install jq); macOS: brew install jq; Linux: sudo apt-get install jq (or dnf install jq).\n' >&2
+  # Missing tooling is not proof that the caller has no memberships. Keep
+  # PERSONAL_SCOPE empty so company members can never silently downgrade to a
+  # personal deploy when membership JSON could not be inspected.
+  ORG_RESOLUTION_STATE="missing_dependency"
+  _emit_defaults
+  exit 0
+fi
 
 # Active memberships only. `// []` guards a missing/empty memberships array.
 ACTIVE="$(printf '%s' "$IN" | jq -c '[(.memberships // [])[] | select(.status=="active")]' 2>/dev/null || echo '[]')"

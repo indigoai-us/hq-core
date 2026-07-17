@@ -21,6 +21,18 @@ TOOL_NAME="$(json_get '.tool_name // empty')"
 CWD="$(json_get '.cwd // empty')"
 [ -z "$CWD" ] && CWD="$(pwd)"
 
+# Session identity: inject-policy-on-trigger dedupes per session_id; a payload
+# without one falls into the shared, persistent default.txt ledger, so a policy
+# fires once per MACHINE instead of once per session. When Codex's event lacks
+# a session field, synthesize one from the invoking process ($PPID is the Codex
+# process for this session — stable across its events, distinct across
+# sessions) and stamp it into the payload every hook sees.
+SESSION_ID="$(json_get '.session_id // .sessionId // .conversation_id // .thread_id // empty')"
+if [ -z "$SESSION_ID" ]; then
+  SESSION_ID="codex-${CODEX_SESSION_ID:-$PPID}"
+  INPUT="$(printf '%s' "$INPUT" | jq --arg sid "$SESSION_ID" '. + {session_id: $sid}' 2>/dev/null || printf '%s' "$INPUT")"
+fi
+
 # Resolve the HQ root deterministically from this adapter's own location.
 # The adapter always lives at <HQ_ROOT>/.codex/hooks/hq-codex-hook-adapter.sh,
 # so two levels up is the HQ root regardless of where Codex runs the command.
@@ -38,7 +50,7 @@ self_dir="$(cd "$(dirname "$self_src")" 2>/dev/null && pwd -P || true)"
 HQ_ROOT=""
 if [ -n "$self_dir" ]; then
   cand="$(cd "$self_dir/../.." 2>/dev/null && pwd -P || true)"
-  if [ -n "$cand" ] && [ -x "$cand/.claude/hooks/hook-gate.sh" ]; then
+  if [ -n "$cand" ] && [ -f "$cand/.claude/hooks/hook-gate.sh" ]; then
     HQ_ROOT="$cand"
   fi
 fi
@@ -50,9 +62,12 @@ fi
 HOOK_DIR="$HQ_ROOT/.claude/hooks"
 GATE="$HOOK_DIR/hook-gate.sh"
 
-if [ ! -x "$GATE" ]; then
+if [ ! -f "$GATE" ]; then
   exit 0
 fi
+
+# Shared python-free primitives (hq_normpath fallback in normalize_path).
+. "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
 
 STDOUT_ACCUM=""
 STDERR_ACCUM=""
@@ -96,7 +111,7 @@ run_hook() {
   # the ambient pwd Codex happens to invoke the adapter from. run_script already
   # does this; run_hook must too, or the git-mutation guard compares anchors
   # against the wrong root under Codex.
-  printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" "$GATE" "$hook_id" "$script" >"$out" 2>"$err"
+  printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$GATE" "$hook_id" "$script" >"$out" 2>"$err"
   status=$?
 
   append_stdout "$(cat "$out" 2>/dev/null || true)"
@@ -146,46 +161,22 @@ run_script() {
   exit "$status"
 }
 
+# Collect edit-target paths from an apply_patch/Edit/Write payload: explicit
+# file_path/path fields plus "*** Add/Update/Delete File:" and "*** Move to:"
+# markers inside the patch text. jq+sed+awk — python-free (hooks-no-python).
 patch_paths() {
-  printf '%s' "$INPUT" | python3 -c '
-import json
-import re
-import sys
-
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-
-tool_input = data.get("tool_input") or {}
-parts = []
-for key in ("command", "patch", "input"):
-    value = tool_input.get(key)
-    if isinstance(value, str) and value:
-        parts.append(value)
-command = "\n".join(parts)
-paths = []
-
-for key in ("file_path", "path"):
-    value = tool_input.get(key)
-    if isinstance(value, str) and value:
-        paths.append(value)
-
-for line in command.splitlines():
-    match = re.match(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", line)
-    if match:
-        paths.append(match.group(1).strip())
-        continue
-    match = re.match(r"^\*\*\* Move to: (.+)$", line)
-    if match:
-        paths.append(match.group(1).strip())
-
-seen = set()
-for path in paths:
-    if path and path not in seen:
-        seen.add(path)
-        print(path)
-'
+  {
+    printf '%s' "$INPUT" | jq -r '
+      (.tool_input // {}) as $ti
+      | [$ti.file_path?, $ti.path?]
+      | .[] | select(type == "string" and . != "")' 2>/dev/null
+    printf '%s' "$INPUT" | jq -r '
+      (.tool_input // {}) as $ti
+      | [$ti.command?, $ti.patch?, $ti.input?]
+      | map(select(type == "string" and . != ""))
+      | join("\n")' 2>/dev/null \
+      | sed -nE 's/^\*\*\* (Add|Update|Delete) File: (.+)$/\2/p; s/^\*\*\* Move to: (.+)$/\1/p'
+  } | awk '{gsub(/^[ \t]+|[ \t\r]+$/, "")} NF && !seen[$0]++'
 }
 
 payload_for_path() {
@@ -202,7 +193,9 @@ normalize_path() {
     /*) ;;
     *) path="$HQ_ROOT/$path" ;;
   esac
-  python3 -c 'import os.path,sys; sys.stdout.write(os.path.realpath(sys.argv[1]))' "$path" 2>/dev/null || printf '%s' "$path"
+  # realpath ships with coreutils (Linux, Git Bash) and modern macOS; fall
+  # back to the lexical normalizer, then the raw path (python-free).
+  realpath "$path" 2>/dev/null || hq_normpath "$path" 2>/dev/null || printf '%s' "$path"
 }
 
 block_core_edit_if_needed() {

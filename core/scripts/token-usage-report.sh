@@ -36,76 +36,88 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+command -v node >/dev/null 2>&1 || { echo "token-usage-report: node is required" >&2; exit 1; }
+
 # --- Compare-windows mode (US-011) ---
 # Format: --before YYYY-MM-DD:YYYY-MM-DD --after YYYY-MM-DD:YYYY-MM-DD
 if [ -n "$COMPARE_BEFORE" ] && [ -n "$COMPARE_AFTER" ]; then
-  python3 - "$PROJECT_DIR" "$COMPARE_BEFORE" "$COMPARE_AFTER" "$MIN_HOURS" "$JSON_MODE" <<'PY'
-import json, os, sys, glob, datetime, statistics
-proj, before, after, min_hours, json_mode = sys.argv[1:6]
-min_hours = float(min_hours); json_mode = int(json_mode) == 1
-def parse_range(s):
-    a,b = s.split(":")
-    return datetime.date.fromisoformat(a), datetime.date.fromisoformat(b)
-b_start, b_end = parse_range(before)
-a_start, a_end = parse_range(after)
+  node - "$PROJECT_DIR" "$COMPARE_BEFORE" "$COMPARE_AFTER" "$MIN_HOURS" "$JSON_MODE" <<'JS'
+const fs = require("fs");
+const path = require("path");
 
-def collect(window_start, window_end):
-    rows = []
-    for f in sorted(glob.glob(os.path.join(proj, "*.jsonl"))):
-        cr = 0
-        first_ts = last_ts = None
-        sid = os.path.basename(f).replace(".jsonl","")
-        try:
-            with open(f) as fh:
-                for line in fh:
-                    try: rec = json.loads(line)
-                    except: continue
-                    u = (rec.get("message") or {}).get("usage") or {}
-                    cr += u.get("cache_read_input_tokens",0) or 0
-                    ts = rec.get("timestamp")
-                    if ts:
-                        if not first_ts: first_ts = ts
-                        last_ts = ts
-        except: continue
-        if not first_ts or not last_ts: continue
-        try:
-            ft = datetime.datetime.fromisoformat(first_ts.replace("Z","+00:00"))
-            lt = datetime.datetime.fromisoformat(last_ts.replace("Z","+00:00"))
-        except: continue
-        d = ft.date()
-        if d < window_start or d > window_end: continue
-        hours = max((lt-ft).total_seconds()/3600, 0.01)
-        if hours < min_hours: continue
-        rows.append({"sid": sid[:8], "hours": round(hours,1), "cr": cr,
-                     "cr_per_hour": int(cr/hours)})
-    return rows
+const [proj, before, after, minHoursS, jsonModeS] = process.argv.slice(2);
+const minHours = parseFloat(minHoursS);
+const jsonMode = parseInt(jsonModeS, 10) === 1;
 
-b_rows = collect(b_start, b_end)
-a_rows = collect(a_start, a_end)
+const parseRange = (s) => s.split(":").map((d) => new Date(d + "T00:00:00Z"));
+const [bStart, bEnd] = parseRange(before);
+const [aStart, aEnd] = parseRange(after);
 
-def median(rows):
-    if not rows: return 0
-    return int(statistics.median(r["cr_per_hour"] for r in rows))
+const fmt = (n) => n.toLocaleString("en-US");
+const listJsonl = () => {
+  try { return fs.readdirSync(proj).filter((f) => f.endsWith(".jsonl")).sort(); } catch (e) { return []; }
+};
 
-b_med, a_med = median(b_rows), median(a_rows)
-delta_pct = ((b_med - a_med) / b_med * 100) if b_med else 0
+function collect(windowStart, windowEnd) {
+  const rows = [];
+  for (const name of listJsonl()) {
+    const f = path.join(proj, name);
+    let cr = 0, firstTs = null, lastTs = null;
+    const sid = name.replace(/\.jsonl$/, "");
+    let content;
+    try { content = fs.readFileSync(f, "utf8"); } catch (e) { continue; }
+    for (const line of content.split(/\r?\n/)) {
+      let rec;
+      try { rec = JSON.parse(line); } catch (e) { continue; }
+      const u = ((rec.message || {}).usage) || {};
+      cr += u.cache_read_input_tokens || 0;
+      const ts = rec.timestamp;
+      if (ts) { if (!firstTs) firstTs = ts; lastTs = ts; }
+    }
+    if (!firstTs || !lastTs) continue;
+    const ft = new Date(firstTs), lt = new Date(lastTs);
+    if (isNaN(ft.getTime()) || isNaN(lt.getTime())) continue;
+    const d = new Date(firstTs.slice(0, 10) + "T00:00:00Z");
+    if (d < windowStart || d > windowEnd) continue;
+    const hours = Math.max((lt - ft) / 3600000, 0.01);
+    if (hours < minHours) continue;
+    rows.push({ sid: sid.slice(0, 8), hours: Math.round(hours * 10) / 10, cr: cr,
+      cr_per_hour: Math.trunc(cr / hours) });
+  }
+  return rows;
+}
 
-if json_mode:
-    print(json.dumps({
-        "before": {"window": before, "sessions": len(b_rows), "median_cr_per_hour": b_med, "rows": b_rows},
-        "after":  {"window": after,  "sessions": len(a_rows), "median_cr_per_hour": a_med, "rows": a_rows},
-        "delta_pct": round(delta_pct, 1),
-    }, indent=2))
-else:
-    print(f"\nCache_read/hour comparison (min {min_hours}h session duration)")
-    print(f"\n  BEFORE  {before}  — {len(b_rows)} sessions")
-    for r in b_rows: print(f"    {r['sid']}  {r['hours']:>5.1f}h  cr_per_hour={r['cr_per_hour']:>12,}")
-    print(f"    median: {b_med:,}/h")
-    print(f"\n  AFTER   {after}   — {len(a_rows)} sessions")
-    for r in a_rows: print(f"    {r['sid']}  {r['hours']:>5.1f}h  cr_per_hour={r['cr_per_hour']:>12,}")
-    print(f"    median: {a_med:,}/h")
-    print(f"\n  Δ:  {delta_pct:+.1f}%  ({'IMPROVED' if delta_pct > 0 else 'WORSE' if delta_pct < 0 else 'unchanged'})")
-PY
+const bRows = collect(bStart, bEnd);
+const aRows = collect(aStart, aEnd);
+
+function median(rows) {
+  if (!rows.length) return 0;
+  const vals = rows.map((r) => r.cr_per_hour).sort((a, b) => a - b);
+  const mid = Math.floor(vals.length / 2);
+  return Math.trunc(vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2);
+}
+
+const bMed = median(bRows), aMed = median(aRows);
+const deltaPct = bMed ? ((bMed - aMed) / bMed) * 100 : 0;
+
+if (jsonMode) {
+  console.log(JSON.stringify({
+    before: { window: before, sessions: bRows.length, median_cr_per_hour: bMed, rows: bRows },
+    after: { window: after, sessions: aRows.length, median_cr_per_hour: aMed, rows: aRows },
+    delta_pct: Math.round(deltaPct * 10) / 10,
+  }, null, 2));
+} else {
+  console.log("\nCache_read/hour comparison (min " + minHours + "h session duration)");
+  console.log("\n  BEFORE  " + before + "  — " + bRows.length + " sessions");
+  for (const r of bRows) console.log("    " + r.sid + "  " + String(r.hours.toFixed(1)).padStart(5) + "h  cr_per_hour=" + fmt(r.cr_per_hour).padStart(12));
+  console.log("    median: " + fmt(bMed) + "/h");
+  console.log("\n  AFTER   " + after + "   — " + aRows.length + " sessions");
+  for (const r of aRows) console.log("    " + r.sid + "  " + String(r.hours.toFixed(1)).padStart(5) + "h  cr_per_hour=" + fmt(r.cr_per_hour).padStart(12));
+  console.log("    median: " + fmt(aMed) + "/h");
+  const verdict = deltaPct > 0 ? "IMPROVED" : deltaPct < 0 ? "WORSE" : "unchanged";
+  console.log("\n  Δ:  " + (deltaPct >= 0 ? "+" : "") + deltaPct.toFixed(1) + "%  (" + verdict + ")");
+}
+JS
   exit 0
 fi
 
@@ -114,124 +126,129 @@ if [ ! -d "$PROJECT_DIR" ]; then
   exit 1
 fi
 
-python3 - "$PROJECT_DIR" "$LAST_DAYS" "$SINCE" "$JSON_MODE" <<'PY'
-import json, os, sys, glob, datetime, collections
+node - "$PROJECT_DIR" "$LAST_DAYS" "$SINCE" "$JSON_MODE" <<'JS'
+const fs = require("fs");
+const path = require("path");
 
-project_dir, last_days_s, since_s, json_mode_s = sys.argv[1:5]
-last_days = int(last_days_s)
-json_mode = int(json_mode_s) == 1
+const [projectDir, lastDaysS, sinceS, jsonModeS] = process.argv.slice(2);
+const lastDays = parseInt(lastDaysS, 10);
+const jsonMode = parseInt(jsonModeS, 10) === 1;
 
-today = datetime.date.today()
-if since_s:
-    cutoff = datetime.date.fromisoformat(since_s)
-else:
-    cutoff = today - datetime.timedelta(days=last_days - 1)
+const dayOf = (d) => d.toISOString().slice(0, 10);
+const today = new Date();
+let cutoff;
+if (sinceS) cutoff = sinceS;
+else {
+  const c = new Date(today.getTime() - (lastDays - 1) * 86400000);
+  cutoff = dayOf(c);
+}
 
-day_totals = collections.defaultdict(lambda: {"sessions": set(), "inp": 0, "out": 0, "cc": 0, "cr": 0})
-session_totals = {}
+const fmt = (n) => n.toLocaleString("en-US");
+const dayTotals = {};
+const sessionTotals = {};
 
-def sess_id(p):
-    return os.path.basename(p).replace(".jsonl", "")
+let names;
+try { names = fs.readdirSync(projectDir).filter((f) => f.endsWith(".jsonl")).sort(); } catch (e) { names = []; }
 
-# Parent sessions only (top-level *.jsonl)
-for f in sorted(glob.glob(os.path.join(project_dir, "*.jsonl"))):
-    mt = datetime.date.fromtimestamp(os.path.getmtime(f))
-    if mt < cutoff:
-        continue
-    inp = out = cc = cr = 0
-    first_ts = last_ts = None
-    first_user = ""
-    sub_count = 0
-    sid = sess_id(f)
-    try:
-        with open(f) as fh:
-            for line in fh:
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    continue
-                u = (rec.get("message") or {}).get("usage") or {}
-                inp += u.get("input_tokens", 0) or 0
-                out += u.get("output_tokens", 0) or 0
-                cc += u.get("cache_creation_input_tokens", 0) or 0
-                cr += u.get("cache_read_input_tokens", 0) or 0
-                ts = rec.get("timestamp")
-                if ts:
-                    if not first_ts:
-                        first_ts = ts
-                    last_ts = ts
-                if not first_user and rec.get("type") == "user":
-                    c = (rec.get("message") or {}).get("content")
-                    if isinstance(c, str):
-                        first_user = c[:120]
-                    elif isinstance(c, list) and c:
-                        first_user = (c[0].get("text") or "")[:120]
-    except Exception:
-        continue
-    sub_dir = os.path.join(project_dir, sid, "subagents")
-    if os.path.isdir(sub_dir):
-        sub_count = len([x for x in os.listdir(sub_dir) if x.endswith(".jsonl")])
-
-    eff = inp + 5 * out + 1.25 * cc + 0.1 * cr
-    day = (first_ts or last_ts or "")[:10]
-    if not day:
-        day = mt.isoformat()
-    if datetime.date.fromisoformat(day) < cutoff:
-        continue
-    day_totals[day]["sessions"].add(sid)
-    day_totals[day]["inp"] += inp
-    day_totals[day]["out"] += out
-    day_totals[day]["cc"] += cc
-    day_totals[day]["cr"] += cr
-    session_totals[sid] = {
-        "day": day, "inp": inp, "out": out, "cc": cc, "cr": cr,
-        "eff": int(eff), "subagents": sub_count, "first_user": first_user.replace("\n", " "),
+// Parent sessions only (top-level *.jsonl)
+for (const name of names) {
+  const f = path.join(projectDir, name);
+  let mtime;
+  try { mtime = fs.statSync(f).mtime; } catch (e) { continue; }
+  const mt = dayOf(mtime);
+  if (mt < cutoff) continue;
+  let inp = 0, out = 0, cc = 0, cr = 0;
+  let firstTs = null, lastTs = null, firstUser = "";
+  let subCount = 0;
+  const sid = name.replace(/\.jsonl$/, "");
+  let content;
+  try { content = fs.readFileSync(f, "utf8"); } catch (e) { continue; }
+  for (const line of content.split(/\r?\n/)) {
+    let rec;
+    try { rec = JSON.parse(line); } catch (e) { continue; }
+    const u = ((rec.message || {}).usage) || {};
+    inp += u.input_tokens || 0;
+    out += u.output_tokens || 0;
+    cc += u.cache_creation_input_tokens || 0;
+    cr += u.cache_read_input_tokens || 0;
+    const ts = rec.timestamp;
+    if (ts) { if (!firstTs) firstTs = ts; lastTs = ts; }
+    if (!firstUser && rec.type === "user") {
+      const c = (rec.message || {}).content;
+      if (typeof c === "string") firstUser = c.slice(0, 120);
+      else if (Array.isArray(c) && c.length) firstUser = ((c[0] && c[0].text) || "").slice(0, 120);
     }
+  }
+  const subDir = path.join(projectDir, sid, "subagents");
+  try { subCount = fs.readdirSync(subDir).filter((x) => x.endsWith(".jsonl")).length; } catch (e) {}
 
-if json_mode:
-    days_out = []
-    for d in sorted(day_totals):
-        v = day_totals[d]
-        eff = v["inp"] + 5 * v["out"] + 1.25 * v["cc"] + 0.1 * v["cr"]
-        days_out.append({
-            "date": d, "sessions": len(v["sessions"]),
-            "input": v["inp"], "output": v["out"],
-            "cache_create": v["cc"], "cache_read": v["cr"],
-            "effective": int(eff),
-        })
-    most_recent_day = max(day_totals) if day_totals else None
-    if most_recent_day:
-        top3 = sorted(
-            (s for s in session_totals.values() if s["day"] == most_recent_day),
-            key=lambda s: -s["eff"],
-        )[:3]
-    else:
-        top3 = []
-    print(json.dumps({"days": days_out, "top_sessions_recent_day": top3}, indent=2))
-else:
-    # Pretty table
-    print(f"\nToken usage (last {len(day_totals)} day(s), cutoff {cutoff})")
-    print(f"  Effective = input + 5×output + 1.25×cache_create + 0.1×cache_read\n")
-    print(f"  {'date':12} {'sessions':>8} {'output':>12} {'cache_read':>14} {'effective':>14}")
-    print(f"  {'-'*12:12} {'-'*8:>8} {'-'*12:>12} {'-'*14:>14} {'-'*14:>14}")
-    total_eff = 0
-    for d in sorted(day_totals):
-        v = day_totals[d]
-        eff = v["inp"] + 5 * v["out"] + 1.25 * v["cc"] + 0.1 * v["cr"]
-        total_eff += int(eff)
-        print(f"  {d:12} {len(v['sessions']):>8} {v['out']:>12,} {v['cr']:>14,} {int(eff):>14,}")
-    print(f"\n  total effective: {total_eff:,}")
+  const eff = inp + 5 * out + 1.25 * cc + 0.1 * cr;
+  let day = (firstTs || lastTs || "").slice(0, 10);
+  if (!day) day = mt;
+  if (day < cutoff) continue;
+  if (!dayTotals[day]) dayTotals[day] = { sessions: new Set(), inp: 0, out: 0, cc: 0, cr: 0 };
+  dayTotals[day].sessions.add(sid);
+  dayTotals[day].inp += inp;
+  dayTotals[day].out += out;
+  dayTotals[day].cc += cc;
+  dayTotals[day].cr += cr;
+  sessionTotals[sid] = {
+    day: day, inp: inp, out: out, cc: cc, cr: cr,
+    eff: Math.trunc(eff), subagents: subCount, first_user: firstUser.split("\n").join(" "),
+  };
+}
 
-    most_recent_day = max(day_totals) if day_totals else None
-    if most_recent_day:
-        top3 = sorted(
-            (s for s in session_totals.items() if s[1]["day"] == most_recent_day),
-            key=lambda kv: -kv[1]["eff"],
-        )[:3]
-        if top3:
-            print(f"\nTop sessions on {most_recent_day}:")
-            for sid, s in top3:
-                prompt = s["first_user"][:80]
-                print(f"  {sid[:8]}  eff={s['eff']:>11,}  subagents={s['subagents']:>3}  {prompt}")
-    print()
-PY
+const sortedDays = Object.keys(dayTotals).sort();
+if (jsonMode) {
+  const daysOut = [];
+  for (const d of sortedDays) {
+    const v = dayTotals[d];
+    const eff = v.inp + 5 * v.out + 1.25 * v.cc + 0.1 * v.cr;
+    daysOut.push({
+      date: d, sessions: v.sessions.size,
+      input: v.inp, output: v.out,
+      cache_create: v.cc, cache_read: v.cr,
+      effective: Math.trunc(eff),
+    });
+  }
+  const mostRecentDay = sortedDays.length ? sortedDays[sortedDays.length - 1] : null;
+  let top3 = [];
+  if (mostRecentDay) {
+    top3 = Object.values(sessionTotals)
+      .filter((s) => s.day === mostRecentDay)
+      .sort((a, b) => b.eff - a.eff)
+      .slice(0, 3);
+  }
+  console.log(JSON.stringify({ days: daysOut, top_sessions_recent_day: top3 }, null, 2));
+} else {
+  // Pretty table
+  console.log("\nToken usage (last " + sortedDays.length + " day(s), cutoff " + cutoff + ")");
+  console.log("  Effective = input + 5×output + 1.25×cache_create + 0.1×cache_read\n");
+  console.log("  " + "date".padEnd(12) + " " + "sessions".padStart(8) + " " + "output".padStart(12) + " " + "cache_read".padStart(14) + " " + "effective".padStart(14));
+  console.log("  " + "-".repeat(12) + " " + "-".repeat(8) + " " + "-".repeat(12) + " " + "-".repeat(14) + " " + "-".repeat(14));
+  let totalEff = 0;
+  for (const d of sortedDays) {
+    const v = dayTotals[d];
+    const eff = v.inp + 5 * v.out + 1.25 * v.cc + 0.1 * v.cr;
+    totalEff += Math.trunc(eff);
+    console.log("  " + d.padEnd(12) + " " + String(v.sessions.size).padStart(8) + " " + fmt(v.out).padStart(12) + " " + fmt(v.cr).padStart(14) + " " + fmt(Math.trunc(eff)).padStart(14));
+  }
+  console.log("\n  total effective: " + fmt(totalEff));
+
+  const mostRecentDay = sortedDays.length ? sortedDays[sortedDays.length - 1] : null;
+  if (mostRecentDay) {
+    const top3 = Object.entries(sessionTotals)
+      .filter(([, s]) => s.day === mostRecentDay)
+      .sort((a, b) => b[1].eff - a[1].eff)
+      .slice(0, 3);
+    if (top3.length) {
+      console.log("\nTop sessions on " + mostRecentDay + ":");
+      for (const [sid, s] of top3) {
+        const prompt = s.first_user.slice(0, 80);
+        console.log("  " + sid.slice(0, 8) + "  eff=" + fmt(s.eff).padStart(11) + "  subagents=" + String(s.subagents).padStart(3) + "  " + prompt);
+      }
+    }
+  }
+  console.log("");
+}
+JS

@@ -29,14 +29,9 @@ log() {
 # Read tool input from stdin (PostToolUse provides JSON with tool_input)
 INPUT=$(cat)
 
-COMMAND=$(echo "$INPUT" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    print(data.get('tool_input', {}).get('command', ''))
-except Exception:
-    print('')
-" 2>/dev/null)
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+
+COMMAND=$(printf '%s' "$INPUT" | hq_json_get tool_input.command)
 
 [ -z "$COMMAND" ] && exit 0
 [ ! -f "$MANIFEST" ] && exit 0

@@ -2,18 +2,18 @@
 #
 # Regression gate for DEV feedback_1513f1f5.
 #
-# hq-auto-acl-suggest.sh embeds two Python programs. An earlier form fed them
+# hq-auto-acl-suggest.sh embeds interpreter programs. An earlier form fed them
 # into the shell via a heredoc nested inside a `$( … )` command substitution.
 # macOS system bash (3.2) mis-parses a heredoc opened inside `$( … )` /
 # `<( … )` / backticks as an unterminated quote, so the PostToolUse hook died
 # with a syntax error on EVERY Bash/Write/Edit tool call. The fix slurps each
 # program into a top-level variable (standalone heredoc) and runs it via
-# `python3 -c "$var"`, which never nests a heredoc inside a substitution.
+# `node -e "$var"`, which never nests a heredoc inside a substitution.
 #
 # This gate makes the bug non-recurring on any bash version:
 #   1. `bash -n` over every shipped hook (catches genuine unterminated quotes
 #      and other syntax errors).
-#   2. A structural lint (lint-hook-heredoc-nesting.py) that flags the
+#   2. A structural lint (lint-hook-heredoc-nesting.js) that flags the
 #      bash-3.2 nested-heredoc trap directly — bash-version-independent, since
 #      CI runs bash 5 and does NOT reproduce the 3.2 phantom error.
 #      hq-auto-acl-suggest.sh MUST have zero nesting, and NO hook anywhere
@@ -25,7 +25,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HOOKS_DIR="$ROOT/.claude/hooks"
-LINT="$ROOT/core/scripts/lint-hook-heredoc-nesting.py"
+LINT="$ROOT/core/scripts/lint-hook-heredoc-nesting.js"
 TARGET_HOOK="$HOOKS_DIR/hq-auto-acl-suggest.sh"
 
 fail() {
@@ -64,14 +64,14 @@ BAD="$FIXTURE_DIR/bad.sh"
   printf '%s\n' ')"'
   printf '%s\n' 'echo "$out"'
 } > "$BAD"
-if python3 "$LINT" "$BAD" 2>/dev/null; then
+if node "$LINT" "$BAD" 2>/dev/null; then
   fail "lint self-test: did NOT catch a heredoc nested in a \"\$( … )\" substitution"
 fi
 echo "PASS: lint self-test catches the nested-heredoc trap"
 
 # 2b. The acl hook (the file this feedback is about) must have ZERO nesting.
-if ! python3 "$LINT" "$TARGET_HOOK" >/dev/null 2>&1; then
-  python3 "$LINT" "$TARGET_HOOK" || true
+if ! node "$LINT" "$TARGET_HOOK" >/dev/null 2>&1; then
+  node "$LINT" "$TARGET_HOOK" || true
   fail "hq-auto-acl-suggest.sh nests a heredoc inside a substitution — the bash-3.2 bug has regressed"
 fi
 echo "PASS: hq-auto-acl-suggest.sh has no nested heredoc"
@@ -80,12 +80,12 @@ echo "PASS: hq-auto-acl-suggest.sh has no nested heredoc"
 violations=""
 for hook in "$HOOKS_DIR"/*.sh; do
   [ -f "$hook" ] || continue
-  if ! python3 "$LINT" "$hook" >/dev/null 2>&1; then
+  if ! node "$LINT" "$hook" >/dev/null 2>&1; then
     violations="$violations $(basename "$hook")"
   fi
 done
 if [ -n "$violations" ]; then
-  python3 "$LINT" "$HOOKS_DIR"/*.sh || true
+  node "$LINT" "$HOOKS_DIR"/*.sh || true
   fail "hook(s) nest a heredoc inside a substitution (bash-3.2 trap):$violations
 Slurp the heredoc into a top-level variable and run via an argument, e.g.
   prog=\"\"; IFS= read -r -d '' prog <<'PY' || true ... PY ; python3 -c \"\$prog\""

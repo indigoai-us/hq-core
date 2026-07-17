@@ -92,500 +92,447 @@ main() {
   SHARE_SUGGESTION_SESSION_ID="$session_id" \
   SHARE_SUGGESTION_DECISION="$decision" \
   SHARE_SUGGESTION_PAYLOAD="$payload" \
-  python3 - <<'PY'
-import json
-import os
-import pathlib
-import re
-import sys
-from datetime import datetime, timezone
+  node - <<'JS'
+const fs = require("fs");
+const path = require("path");
 
+const pad = (x) => String(x).padStart(2, "0");
+function nowIso() {
+  const d = new Date();
+  return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate()) +
+    "T" + pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()) + ":" + pad(d.getUTCSeconds()) + "Z";
+}
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+const sortKeys = (v) =>
+  Array.isArray(v) ? v.map(sortKeys)
+  : (v && typeof v === "object")
+    ? Object.keys(v).sort().reduce((o, k) => { o[k] = sortKeys(v[k]); return o; }, {})
+    : v;
 
+function readJson(p, dflt) {
+  if (!fs.existsSync(p)) return dflt;
+  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { return dflt; }
+}
 
-def read_json(path: pathlib.Path, default):
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return default
+function writeJson(p, payload) {
+  const tmp = p + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(sortKeys(payload), null, 2) + "\n");
+  fs.renameSync(tmp, p);
+}
 
+function appendJsonl(p, payload) {
+  fs.appendFileSync(p, JSON.stringify(sortKeys(payload)) + "\n");
+}
 
-def write_json(path: pathlib.Path, payload) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    tmp.replace(path)
+function loadPayload() {
+  const raw = process.env.SHARE_SUGGESTION_PAYLOAD || "";
+  if (!raw) return {};
+  try { return JSON.parse(raw); } catch (e) { return {}; }
+}
 
+const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+const sanitizeValue = (v) => (typeof v === "string" ? v.trim() : v);
 
-def append_jsonl(path: pathlib.Path, payload) -> None:
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+function sanitizePerson(person) {
+  if (!isObj(person)) return null;
+  const personId = sanitizeValue(person.id || person.slug || "");
+  const name = sanitizeValue(person.name || "");
+  const role = sanitizeValue(person.role || "");
+  const cleaned = {};
+  if (personId) cleaned.id = personId;
+  if (name) cleaned.name = name;
+  if (role) cleaned.role = role;
+  return Object.keys(cleaned).length ? cleaned : null;
+}
 
+function uniquePeople(items) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items || []) {
+    const cleaned = sanitizePerson(item);
+    if (!cleaned) continue;
+    const key = (cleaned.id || "") + "|" + (cleaned.name || "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(cleaned);
+  }
+  return result;
+}
 
-def load_payload():
-    raw = os.environ.get("SHARE_SUGGESTION_PAYLOAD", "")
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw)
-    except Exception:
-        return {}
+function sanitizeSources(items) {
+  const allowed = [];
+  const seen = new Set();
+  for (const item of items || []) {
+    if (typeof item !== "string") continue;
+    const value = item.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    allowed.push(value);
+  }
+  return allowed;
+}
 
+function sanitizeArtifact(payload) {
+  if (!isObj(payload)) payload = {};
+  let artifact = payload.artifact;
+  if (!isObj(artifact)) artifact = payload;
+  const cleaned = {};
+  for (const key of ["path", "fingerprint", "class", "surface", "permission", "app_id", "label"]) {
+    const value = sanitizeValue(artifact[key]);
+    if (typeof value === "string" && value) cleaned[key] = value;
+  }
+  if (!("permission" in cleaned)) cleaned.permission = "read";
+  return cleaned;
+}
 
-def sanitize_value(value):
-    if isinstance(value, str):
-        return value.strip()
-    return value
+function sanitizeCandidateHints(payload) {
+  let hints = payload.candidate_hints;
+  if (!isObj(hints)) hints = {};
+  const cleaned = {
+    sources: sanitizeSources(hints.sources || payload.candidate_sources || []),
+    local_people: uniquePeople(hints.local_people || payload.local_people || []),
+    needs_assistant_resolution: Boolean(
+      "needs_assistant_resolution" in hints
+        ? hints.needs_assistant_resolution
+        : payload.needs_assistant_resolution
+    ),
+  };
+  const projectHints = hints.project_recipient_hints || payload.project_recipient_hints || [];
+  const projectCleaned = sanitizeSources(projectHints);
+  if (projectCleaned.length) cleaned.project_recipient_hints = projectCleaned;
+  return cleaned;
+}
 
+function sanitizeSuggestion(payload, sessionId) {
+  const artifact = sanitizeArtifact(payload);
+  const fingerprint = artifact.fingerprint || "";
+  const company = sanitizeValue(payload.company || "");
+  const project = sanitizeValue(payload.project || "");
+  const suggestion = {
+    session_id: sessionId,
+    company: company,
+    project: project,
+    artifact: artifact,
+    trigger: sanitizeValue(payload.trigger || ""),
+    action_kind: sanitizeValue(payload.action_kind || "share-suggestion"),
+    suggested_permission: sanitizeValue(payload.suggested_permission || artifact.permission || "read"),
+    recommended_surface: sanitizeValue(payload.recommended_surface || artifact.surface || ""),
+    recipients: uniquePeople(payload.recipients || []),
+    candidate_hints: sanitizeCandidateHints(payload),
+    created_at: payload.created_at || nowIso(),
+    updated_at: nowIso(),
+    shown_at: payload.shown_at === undefined ? null : payload.shown_at,
+  };
+  if (!company || !fingerprint) return null;
+  return suggestion;
+}
 
-def sanitize_person(person):
-    if not isinstance(person, dict):
-        return None
-    person_id = sanitize_value(person.get("id") or person.get("slug") or "")
-    name = sanitize_value(person.get("name") or "")
-    role = sanitize_value(person.get("role") or "")
-    cleaned = {}
-    if person_id:
-        cleaned["id"] = person_id
-    if name:
-        cleaned["name"] = name
-    if role:
-        cleaned["role"] = role
-    return cleaned or None
+function sanitizeHistoryEntry(payload, sessionId) {
+  const artifact = sanitizeArtifact(payload);
+  const entry = {
+    session_id: sessionId,
+    company: sanitizeValue(payload.company || ""),
+    project: sanitizeValue(payload.project || ""),
+    trigger: sanitizeValue(payload.trigger || ""),
+    action_kind: sanitizeValue(payload.action_kind || "share-suggestion"),
+    decision: sanitizeValue(payload.decision || ""),
+    event: sanitizeValue(payload.event || ""),
+    artifact: artifact,
+    recipients: uniquePeople(payload.recipients || []),
+    recorded_at: nowIso(),
+  };
+  if (!entry.artifact.fingerprint) return null;
+  return entry;
+}
 
+function sanitizeSuppression(payload) {
+  const artifact = sanitizeArtifact(payload);
+  const scope = sanitizeValue(payload.scope || "");
+  const record = {
+    kind: scope ? "scope" : "artifact",
+    scope: scope,
+    company: sanitizeValue(payload.company || ""),
+    project: sanitizeValue(payload.project || ""),
+    artifact_class: sanitizeValue(payload.artifact_class || artifact.class || ""),
+    artifact: {},
+    reason: sanitizeValue(payload.reason || "suppressed"),
+    created_at: nowIso(),
+  };
+  if (artifact.fingerprint) record.artifact.fingerprint = artifact.fingerprint;
+  if (artifact.path) record.artifact.path = artifact.path;
+  if (scope) {
+    if (!["global", "company", "project"].includes(scope)) return null;
+    return record;
+  }
+  if (!record.artifact.fingerprint) return null;
+  return record;
+}
 
-def unique_people(items):
-    seen = set()
-    result = []
-    for item in items or []:
-        cleaned = sanitize_person(item)
-        if not cleaned:
-            continue
-        key = (cleaned.get("id", ""), cleaned.get("name", ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(cleaned)
-    return result
+// --- tiny YAML subset parser (ported 1:1 from the python original) ---
+function stripComments(line) {
+  let inSingle = false, inDouble = false;
+  const chars = [];
+  for (const ch of line) {
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === "#" && !inSingle && !inDouble) break;
+    chars.push(ch);
+  }
+  return chars.join("").replace(/\s+$/, "");
+}
 
+function parseScalar(value) {
+  value = value.trim();
+  if (value === "") return "";
+  const lowered = value.toLowerCase();
+  if (lowered === "true") return true;
+  if (lowered === "false") return false;
+  if (lowered === "null" || lowered === "~") return null;
+  if (value === "{}") return {};
+  if (value === "[]") return [];
+  if (value.startsWith("[") && value.endsWith("]")) {
+    const inner = value.slice(1, -1).trim();
+    if (!inner) return [];
+    return inner.split(",").map((part) => parseScalar(part.trim()));
+  }
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    return value.slice(1, -1);
+  }
+  if (/^-?\d+$/.test(value)) {
+    const n = parseInt(value, 10);
+    return Number.isNaN(n) ? value : n;
+  }
+  return value;
+}
 
-def sanitize_sources(items):
-    allowed = []
-    seen = set()
-    for item in items or []:
-        if not isinstance(item, str):
-            continue
-        value = item.strip()
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        allowed.append(value)
-    return allowed
+function tokenizeYaml(text) {
+  const tokens = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = stripComments(raw);
+    if (!line.trim()) continue;
+    const content = line.replace(/^ +/, "");
+    const indent = line.length - content.length;
+    tokens.push([indent, content]);
+  }
+  return tokens;
+}
 
-
-def sanitize_artifact(payload):
-    if not isinstance(payload, dict):
-        payload = {}
-    artifact = payload.get("artifact")
-    if not isinstance(artifact, dict):
-        artifact = payload
-    cleaned = {}
-    for key in ("path", "fingerprint", "class", "surface", "permission", "app_id", "label"):
-        value = sanitize_value(artifact.get(key))
-        if isinstance(value, str) and value:
-            cleaned[key] = value
-    if "permission" not in cleaned:
-        cleaned["permission"] = "read"
-    return cleaned
-
-
-def sanitize_candidate_hints(payload):
-    hints = payload.get("candidate_hints")
-    if not isinstance(hints, dict):
-        hints = {}
-    cleaned = {
-        "sources": sanitize_sources(hints.get("sources") or payload.get("candidate_sources") or []),
-        "local_people": unique_people(hints.get("local_people") or payload.get("local_people") or []),
-        "needs_assistant_resolution": bool(
-            hints.get("needs_assistant_resolution")
-            if "needs_assistant_resolution" in hints
-            else payload.get("needs_assistant_resolution")
-        ),
+function parseYamlBlock(tokens, index = 0, indent = null) {
+  if (index >= tokens.length) return [{}, index];
+  if (indent === null) indent = tokens[index][0];
+  const firstContent = tokens[index][1];
+  if (firstContent.startsWith("- ")) {
+    const result = [];
+    while (index < tokens.length) {
+      const [currentIndent, content] = tokens[index];
+      if (currentIndent !== indent || !content.startsWith("- ")) break;
+      const value = content.slice(2).trim();
+      if (value === "") {
+        const [child, next] = parseYamlBlock(tokens, index + 1);
+        result.push(child);
+        index = next;
+      } else {
+        result.push(parseScalar(value));
+        index += 1;
+      }
     }
-    project_hints = hints.get("project_recipient_hints") or payload.get("project_recipient_hints") or []
-    project_cleaned = sanitize_sources(project_hints)
-    if project_cleaned:
-        cleaned["project_recipient_hints"] = project_cleaned
-    return cleaned
+    return [result, index];
+  }
 
-
-def sanitize_suggestion(payload, session_id):
-    artifact = sanitize_artifact(payload)
-    fingerprint = artifact.get("fingerprint", "")
-    company = sanitize_value(payload.get("company") or "")
-    project = sanitize_value(payload.get("project") or "")
-    suggestion = {
-        "session_id": session_id,
-        "company": company,
-        "project": project,
-        "artifact": artifact,
-        "trigger": sanitize_value(payload.get("trigger") or ""),
-        "action_kind": sanitize_value(payload.get("action_kind") or "share-suggestion"),
-        "suggested_permission": sanitize_value(payload.get("suggested_permission") or artifact.get("permission") or "read"),
-        "recommended_surface": sanitize_value(payload.get("recommended_surface") or artifact.get("surface") or ""),
-        "recipients": unique_people(payload.get("recipients") or []),
-        "candidate_hints": sanitize_candidate_hints(payload),
-        "created_at": payload.get("created_at") or now_iso(),
-        "updated_at": now_iso(),
-        "shown_at": payload.get("shown_at"),
+  const result = {};
+  while (index < tokens.length) {
+    const [currentIndent, content] = tokens[index];
+    if (currentIndent !== indent || content.startsWith("- ")) break;
+    const sep = content.indexOf(":");
+    const key = (sep === -1 ? content : content.slice(0, sep)).trim();
+    const remainder = (sep === -1 ? "" : content.slice(sep + 1)).trim();
+    if (remainder === "") {
+      if (index + 1 < tokens.length && tokens[index + 1][0] > currentIndent) {
+        const [child, next] = parseYamlBlock(tokens, index + 1, tokens[index + 1][0]);
+        result[key] = child;
+        index = next;
+      } else {
+        result[key] = {};
+        index += 1;
+      }
+    } else {
+      result[key] = parseScalar(remainder);
+      index += 1;
     }
-    if not company or not fingerprint:
-        return None
-    return suggestion
+  }
+  return [result, index];
+}
 
+function loadYaml(p) {
+  if (!p || !fs.existsSync(p)) return {};
+  try {
+    const tokens = tokenizeYaml(fs.readFileSync(p, "utf8"));
+    if (!tokens.length) return {};
+    const [parsed] = parseYamlBlock(tokens);
+    return isObj(parsed) ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
 
-def sanitize_history_entry(payload, session_id):
-    artifact = sanitize_artifact(payload)
-    entry = {
-        "session_id": session_id,
-        "company": sanitize_value(payload.get("company") or ""),
-        "project": sanitize_value(payload.get("project") or ""),
-        "trigger": sanitize_value(payload.get("trigger") or ""),
-        "action_kind": sanitize_value(payload.get("action_kind") or "share-suggestion"),
-        "decision": sanitize_value(payload.get("decision") or ""),
-        "event": sanitize_value(payload.get("event") or ""),
-        "artifact": artifact,
-        "recipients": unique_people(payload.get("recipients") or []),
-        "recorded_at": now_iso(),
+function lookupNested(data, dottedKey) {
+  let current = data;
+  for (const part of dottedKey.split(".")) {
+    if (!isObj(current) || !(part in current)) return null;
+    current = current[part];
+  }
+  return current;
+}
+
+const boolSetting = (value) => (typeof value === "boolean" ? value : null);
+
+function configPaths(hqRoot, company, project) {
+  return {
+    global: path.join(hqRoot, "personal", "settings", "auto-share-preferences.yaml"),
+    company: company ? path.join(hqRoot, "companies", company, "settings", "auto-share.yaml") : null,
+    project: company && project ? path.join(hqRoot, "companies", company, "projects", project, "share-policy.yaml") : null,
+  };
+}
+
+function classDisabledFromConfig(hqRoot, company, project, artifactClass) {
+  const paths = configPaths(hqRoot, company, project);
+  const projectCfg = paths.project ? loadYaml(paths.project) : {};
+  const companyCfg = paths.company ? loadYaml(paths.company) : {};
+  const globalCfg = loadYaml(paths.global);
+  const hasKeys = (o) => Object.keys(o).length > 0;
+
+  let enabled = hasKeys(projectCfg) ? boolSetting(lookupNested(projectCfg, "enabled")) : null;
+  if (enabled === null) enabled = hasKeys(companyCfg) ? boolSetting(lookupNested(companyCfg, "defaults.enabled")) : null;
+  if (enabled === null) enabled = boolSetting(lookupNested(globalCfg, "defaults.enabled"));
+  if (enabled === false) return true;
+
+  const classKey = "artifact_classes." + artifactClass;
+  let classEnabled = hasKeys(projectCfg) ? boolSetting(lookupNested(projectCfg, classKey)) : null;
+  if (classEnabled === null) classEnabled = hasKeys(companyCfg) ? boolSetting(lookupNested(companyCfg, classKey)) : null;
+  if (classEnabled === null) classEnabled = boolSetting(lookupNested(globalCfg, classKey));
+  return classEnabled === false;
+}
+
+function suppressionMatch(record, company, project, artifactClass, fingerprint) {
+  if (!isObj(record)) return false;
+  const artifact = isObj(record.artifact) ? record.artifact : {};
+  if (fingerprint && artifact.fingerprint === fingerprint) return true;
+  if (record.kind !== "scope") return false;
+  const scope = record.scope;
+  const scopeClass = record.artifact_class;
+  if (scopeClass && artifactClass && scopeClass !== artifactClass) return false;
+  if (scope === "global") return true;
+  if (scope === "company") return Boolean(company) && record.company === company;
+  if (scope === "project") return Boolean(company && project) && record.company === company && record.project === project;
+  return false;
+}
+
+// --- dispatch ---
+const cmd = process.env.SHARE_SUGGESTION_CMD;
+const hqRoot = process.env.SHARE_SUGGESTION_HQ_ROOT;
+const pendingPath = process.env.SHARE_SUGGESTION_PENDING_PATH;
+const historyPath = process.env.SHARE_SUGGESTION_HISTORY_PATH;
+const suppressionsPath = process.env.SHARE_SUGGESTION_SUPPRESSIONS_PATH;
+const sessionId = process.env.SHARE_SUGGESTION_SESSION_ID;
+const payload = loadPayload();
+
+if (cmd === "enqueue") {
+  const suggestion = sanitizeSuggestion(payload, sessionId);
+  if (suggestion === null) process.exit(0);
+  const existing = readJson(pendingPath, {});
+  if (isObj(existing) && Object.keys(existing).length && !existing.resolved_at) {
+    process.exit(0);   // one pending suggestion at a time (same as the original)
+  }
+  writeJson(pendingPath, suggestion);
+  const entry = sanitizeHistoryEntry(Object.assign({}, suggestion, { event: "enqueued" }), sessionId);
+  if (entry) appendJsonl(historyPath, entry);
+  process.exit(0);
+}
+
+if (cmd === "peek") {
+  const pending = readJson(pendingPath, {});
+  if (isObj(pending) && Object.keys(pending).length && !pending.resolved_at) {
+    process.stdout.write(JSON.stringify(sortKeys(pending)));
+  }
+  process.exit(0);
+}
+
+if (cmd === "mark-shown") {
+  const pending = readJson(pendingPath, {});
+  if (isObj(pending) && Object.keys(pending).length && !pending.resolved_at && !pending.shown_at) {
+    pending.shown_at = nowIso();
+    pending.updated_at = nowIso();
+    writeJson(pendingPath, pending);
+    const entry = sanitizeHistoryEntry(Object.assign({}, pending, { event: "shown" }), sessionId);
+    if (entry) appendJsonl(historyPath, entry);
+  }
+  process.exit(0);
+}
+
+if (cmd === "record-decision") {
+  const pending = readJson(pendingPath, {});
+  const decision = process.env.SHARE_SUGGESTION_DECISION || sanitizeValue(payload.decision || "");
+  if (!isObj(pending) || !Object.keys(pending).length || pending.resolved_at || !decision) process.exit(0);
+  pending.decision = decision;
+  pending.decision_at = nowIso();
+  pending.resolved_at = nowIso();
+  pending.updated_at = nowIso();
+  if (payload.recipients) pending.recipients = uniquePeople(payload.recipients);
+  const entry = sanitizeHistoryEntry(Object.assign({}, pending, { event: "decision", decision: decision }), sessionId);
+  if (entry) appendJsonl(historyPath, entry);
+  if (["never", "never-again", "never_again"].includes(decision)) {
+    const suppression = sanitizeSuppression({
+      company: pending.company,
+      project: pending.project,
+      artifact_class: (pending.artifact || {}).class,
+      artifact: pending.artifact,
+      reason: "never-again",
+    });
+    if (suppression) appendJsonl(suppressionsPath, suppression);
+  }
+  try { fs.unlinkSync(pendingPath); } catch (e) {}
+  process.exit(0);
+}
+
+if (cmd === "append-history") {
+  const entry = sanitizeHistoryEntry(payload, sessionId);
+  if (entry) appendJsonl(historyPath, entry);
+  process.exit(0);
+}
+
+if (cmd === "suppress") {
+  const record = sanitizeSuppression(payload);
+  if (record) appendJsonl(suppressionsPath, record);
+  process.exit(0);
+}
+
+if (cmd === "is-suppressed") {
+  const artifact = sanitizeArtifact(payload);
+  const company = sanitizeValue(payload.company || "");
+  const project = sanitizeValue(payload.project || "");
+  const artifactClass = sanitizeValue(payload.artifact_class || artifact.class || "");
+  const fingerprint = sanitizeValue(artifact.fingerprint || "");
+  if (classDisabledFromConfig(hqRoot, company, project, artifactClass)) {
+    process.stdout.write("true");
+    process.exit(0);
+  }
+  if (fs.existsSync(suppressionsPath)) {
+    for (let raw of fs.readFileSync(suppressionsPath, "utf8").split(/\r?\n/)) {
+      raw = raw.trim();
+      if (!raw) continue;
+      let record;
+      try { record = JSON.parse(raw); } catch (e) { continue; }
+      if (suppressionMatch(record, company, project, artifactClass, fingerprint)) {
+        process.stdout.write("true");
+        process.exit(0);
+      }
     }
-    if not entry["artifact"].get("fingerprint"):
-        return None
-    return entry
+  }
+  process.exit(0);
+}
 
-
-def sanitize_suppression(payload):
-    artifact = sanitize_artifact(payload)
-    scope = sanitize_value(payload.get("scope") or "")
-    record = {
-        "kind": "scope" if scope else "artifact",
-        "scope": scope,
-        "company": sanitize_value(payload.get("company") or ""),
-        "project": sanitize_value(payload.get("project") or ""),
-        "artifact_class": sanitize_value(payload.get("artifact_class") or artifact.get("class") or ""),
-        "artifact": {},
-        "reason": sanitize_value(payload.get("reason") or "suppressed"),
-        "created_at": now_iso(),
-    }
-    if artifact.get("fingerprint"):
-        record["artifact"]["fingerprint"] = artifact["fingerprint"]
-    if artifact.get("path"):
-        record["artifact"]["path"] = artifact["path"]
-    if scope:
-        if scope not in {"global", "company", "project"}:
-            return None
-        return record
-    if not record["artifact"].get("fingerprint"):
-        return None
-    return record
-
-
-def strip_comments(line: str) -> str:
-    in_single = False
-    in_double = False
-    chars = []
-    for ch in line:
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif ch == "#" and not in_single and not in_double:
-            break
-        chars.append(ch)
-    return "".join(chars).rstrip()
-
-
-def parse_scalar(value: str):
-    value = value.strip()
-    if value == "":
-        return ""
-    lowered = value.lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    if lowered in {"null", "~"}:
-        return None
-    if value == "{}":
-        return {}
-    if value == "[]":
-        return []
-    if value.startswith("[") and value.endswith("]"):
-        inner = value[1:-1].strip()
-        if not inner:
-            return []
-        return [parse_scalar(part.strip()) for part in inner.split(",")]
-    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-        return value[1:-1]
-    if re.fullmatch(r"-?\d+", value):
-        try:
-            return int(value)
-        except Exception:
-            return value
-    return value
-
-
-def tokenize_yaml(text: str):
-    tokens = []
-    for raw in text.splitlines():
-        line = strip_comments(raw)
-        if not line.strip():
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        content = line.lstrip(" ")
-        tokens.append((indent, content))
-    return tokens
-
-
-def parse_yaml_block(tokens, index=0, indent=None):
-    if index >= len(tokens):
-        return {}, index
-    if indent is None:
-        indent = tokens[index][0]
-    first_content = tokens[index][1]
-    if first_content.startswith("- "):
-        result = []
-        while index < len(tokens):
-            current_indent, content = tokens[index]
-            if current_indent != indent or not content.startswith("- "):
-                break
-            value = content[2:].strip()
-            if value == "":
-                child, index = parse_yaml_block(tokens, index + 1)
-                result.append(child)
-            else:
-                result.append(parse_scalar(value))
-                index += 1
-        return result, index
-
-    result = {}
-    while index < len(tokens):
-        current_indent, content = tokens[index]
-        if current_indent != indent or content.startswith("- "):
-            break
-        key, _, remainder = content.partition(":")
-        key = key.strip()
-        remainder = remainder.strip()
-        if remainder == "":
-            if index + 1 < len(tokens) and tokens[index + 1][0] > current_indent:
-                child, index = parse_yaml_block(tokens, index + 1, tokens[index + 1][0])
-                result[key] = child
-            else:
-                result[key] = {}
-                index += 1
-        else:
-            result[key] = parse_scalar(remainder)
-            index += 1
-    return result, index
-
-
-def load_yaml(path: pathlib.Path):
-    if not path.exists():
-        return {}
-    try:
-        tokens = tokenize_yaml(path.read_text())
-        if not tokens:
-            return {}
-        parsed, _ = parse_yaml_block(tokens)
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:
-        return {}
-
-
-def lookup_nested(data, dotted_key):
-    current = data
-    for part in dotted_key.split("."):
-        if not isinstance(current, dict) or part not in current:
-            return None
-        current = current[part]
-    return current
-
-
-def bool_setting(value):
-    if isinstance(value, bool):
-        return value
-    return None
-
-
-def config_paths(hq_root: pathlib.Path, company: str, project: str):
-    return {
-        "global": hq_root / "personal" / "settings" / "auto-share-preferences.yaml",
-        "company": hq_root / "companies" / company / "settings" / "auto-share.yaml" if company else None,
-        "project": hq_root / "companies" / company / "projects" / project / "share-policy.yaml" if company and project else None,
-    }
-
-
-def class_disabled_from_config(hq_root: pathlib.Path, company: str, project: str, artifact_class: str):
-    paths = config_paths(hq_root, company, project)
-    project_cfg = load_yaml(paths["project"]) if paths["project"] else {}
-    company_cfg = load_yaml(paths["company"]) if paths["company"] else {}
-    global_cfg = load_yaml(paths["global"])
-
-    enabled = (
-        bool_setting(lookup_nested(project_cfg, "enabled"))
-        if project_cfg
-        else None
-    )
-    if enabled is None:
-        enabled = bool_setting(lookup_nested(company_cfg, "defaults.enabled")) if company_cfg else None
-    if enabled is None:
-        enabled = bool_setting(lookup_nested(global_cfg, "defaults.enabled"))
-    if enabled is False:
-        return True
-
-    class_key = f"artifact_classes.{artifact_class}"
-    class_enabled = (
-        bool_setting(lookup_nested(project_cfg, class_key))
-        if project_cfg
-        else None
-    )
-    if class_enabled is None:
-        class_enabled = bool_setting(lookup_nested(company_cfg, class_key)) if company_cfg else None
-    if class_enabled is None:
-        class_enabled = bool_setting(lookup_nested(global_cfg, class_key))
-    return class_enabled is False
-
-
-def suppression_match(record, company: str, project: str, artifact_class: str, fingerprint: str) -> bool:
-    if not isinstance(record, dict):
-        return False
-    artifact = record.get("artifact") if isinstance(record.get("artifact"), dict) else {}
-    if fingerprint and artifact.get("fingerprint") == fingerprint:
-        return True
-    if record.get("kind") != "scope":
-        return False
-    scope = record.get("scope")
-    scope_class = record.get("artifact_class")
-    if scope_class and artifact_class and scope_class != artifact_class:
-        return False
-    if scope == "global":
-        return True
-    if scope == "company":
-        return bool(company) and record.get("company") == company
-    if scope == "project":
-        return bool(company and project) and record.get("company") == company and record.get("project") == project
-    return False
-
-
-cmd = os.environ["SHARE_SUGGESTION_CMD"]
-hq_root = pathlib.Path(os.environ["SHARE_SUGGESTION_HQ_ROOT"])
-pending_path = pathlib.Path(os.environ["SHARE_SUGGESTION_PENDING_PATH"])
-history_path = pathlib.Path(os.environ["SHARE_SUGGESTION_HISTORY_PATH"])
-suppressions_path = pathlib.Path(os.environ["SHARE_SUGGESTION_SUPPRESSIONS_PATH"])
-session_id = os.environ["SHARE_SUGGESTION_SESSION_ID"]
-payload = load_payload()
-
-if cmd == "enqueue":
-    suggestion = sanitize_suggestion(payload, session_id)
-    if suggestion is None:
-        sys.exit(0)
-    existing = read_json(pending_path, {})
-    if existing and not existing.get("resolved_at"):
-        existing_fp = ((existing.get("artifact") or {}).get("fingerprint") or "")
-        if existing_fp == suggestion["artifact"]["fingerprint"]:
-            sys.exit(0)
-        sys.exit(0)
-    write_json(pending_path, suggestion)
-    entry = sanitize_history_entry({**suggestion, "event": "enqueued"}, session_id)
-    if entry:
-        append_jsonl(history_path, entry)
-    sys.exit(0)
-
-if cmd == "peek":
-    pending = read_json(pending_path, {})
-    if pending and not pending.get("resolved_at"):
-        sys.stdout.write(json.dumps(pending, sort_keys=True))
-    sys.exit(0)
-
-if cmd == "mark-shown":
-    pending = read_json(pending_path, {})
-    if pending and not pending.get("resolved_at") and not pending.get("shown_at"):
-        pending["shown_at"] = now_iso()
-        pending["updated_at"] = now_iso()
-        write_json(pending_path, pending)
-        entry = sanitize_history_entry({**pending, "event": "shown"}, session_id)
-        if entry:
-            append_jsonl(history_path, entry)
-    sys.exit(0)
-
-if cmd == "record-decision":
-    pending = read_json(pending_path, {})
-    decision = os.environ.get("SHARE_SUGGESTION_DECISION", "") or sanitize_value(payload.get("decision") or "")
-    if not pending or pending.get("resolved_at") or not decision:
-        sys.exit(0)
-    pending["decision"] = decision
-    pending["decision_at"] = now_iso()
-    pending["resolved_at"] = now_iso()
-    pending["updated_at"] = now_iso()
-    if payload.get("recipients"):
-        pending["recipients"] = unique_people(payload.get("recipients"))
-    entry = sanitize_history_entry({**pending, "event": "decision", "decision": decision}, session_id)
-    if entry:
-        append_jsonl(history_path, entry)
-    if decision in {"never", "never-again", "never_again"}:
-        suppression = sanitize_suppression(
-            {
-                "company": pending.get("company"),
-                "project": pending.get("project"),
-                "artifact_class": (pending.get("artifact") or {}).get("class"),
-                "artifact": pending.get("artifact"),
-                "reason": "never-again",
-            }
-        )
-        if suppression:
-            append_jsonl(suppressions_path, suppression)
-    pending_path.unlink(missing_ok=True)
-    sys.exit(0)
-
-if cmd == "append-history":
-    entry = sanitize_history_entry(payload, session_id)
-    if entry:
-        append_jsonl(history_path, entry)
-    sys.exit(0)
-
-if cmd == "suppress":
-    record = sanitize_suppression(payload)
-    if record:
-        append_jsonl(suppressions_path, record)
-    sys.exit(0)
-
-if cmd == "is-suppressed":
-    artifact = sanitize_artifact(payload)
-    company = sanitize_value(payload.get("company") or "")
-    project = sanitize_value(payload.get("project") or "")
-    artifact_class = sanitize_value(payload.get("artifact_class") or artifact.get("class") or "")
-    fingerprint = sanitize_value(artifact.get("fingerprint") or "")
-    if class_disabled_from_config(hq_root, company, project, artifact_class):
-        sys.stdout.write("true")
-        sys.exit(0)
-    if suppressions_path.exists():
-        for raw in suppressions_path.read_text().splitlines():
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                record = json.loads(raw)
-            except Exception:
-                continue
-            if suppression_match(record, company, project, artifact_class, fingerprint):
-                sys.stdout.write("true")
-                sys.exit(0)
-    sys.exit(0)
-
-raise SystemExit(0)
-PY
+process.exit(0);
+JS
 }
 
 main "$@" || log_error "internal error"

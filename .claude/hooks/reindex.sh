@@ -53,20 +53,10 @@ CMD_PATH_RE='(companies/[^/]+/(skills|workers)|core/(skills|workers)|core/packag
 # Mutating verbs that create / move / delete files (word-bounded).
 CMD_VERB_RE='(^|[^[:alnum:]_])(rm|rmdir|unlink|mv|cp|trash)([^[:alnum:]_]|$)'
 
-# Extract a string field from the payload: jq if present, else a python fallback.
+# Extract a string field from the payload (jq-first, node fallback — hook-lib).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
 _field() { # $1 = jq path, e.g. .tool_input.file_path
-  if command -v jq >/dev/null 2>&1; then
-    printf '%s' "$PAYLOAD" | jq -r "$1 // empty" 2>/dev/null
-  elif command -v python3 >/dev/null 2>&1; then
-    printf '%s' "$PAYLOAD" | python3 -c 'import json,sys
-try: d=json.load(sys.stdin)
-except Exception: sys.exit(0)
-cur=d
-for k in sys.argv[1].strip(".").split("."):
-    if isinstance(cur,dict) and k in cur: cur=cur[k]
-    else: cur=""; break
-sys.stdout.write(cur if isinstance(cur,str) else "")' "$1" 2>/dev/null
-  fi
+  printf '%s' "$PAYLOAD" | hq_json_get "${1#.}"
 }
 
 relevant=0

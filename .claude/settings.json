@@ -4,7 +4,11 @@
   "useAutoModeDuringPlan": false,
   "disableArtifact": true,
   "permissions": {
-    "defaultMode": "plan"
+    "defaultMode": "plan",
+    "deny": [
+      "EnterWorktree",
+      "ExitWorktree"
+    ]
   },
   "env": {
     "MAX_THINKING_TOKENS": "31999",

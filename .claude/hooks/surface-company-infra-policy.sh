@@ -26,18 +26,10 @@ set -uo pipefail
 
 STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+
 extract() {
-  printf '%s' "$STDIN_JSON" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print(""); sys.exit(0)
-v = data
-for k in sys.argv[1].split("."):
-    v = v.get(k, "") if isinstance(v, dict) else ""
-print(v if isinstance(v, str) else "")
-' "$1" 2>/dev/null || echo ""
+  printf '%s' "$STDIN_JSON" | hq_json_get "$1"
 }
 
 TOOL_NAME="$(extract tool_name)"
