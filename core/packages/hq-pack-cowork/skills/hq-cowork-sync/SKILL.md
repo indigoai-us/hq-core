@@ -6,7 +6,7 @@ allowed-tools: mcp__hq__hq_sync, mcp__hq__hq_whoami
 
 # /hq-cowork-sync — Sync HQ from a sandboxed agent
 
-Runs the same sync engine the AppBar HQ Sync menubar app uses, but from
+Runs the same sync engine the HQ Desktop App uses, but from
 inside a sandboxed Claude Code plugin host (Cowork, in particular). Walks
 every cloud-backed company in your local HQ, syncs in both directions
 against the vault, and writes conflict mirror files when divergence is

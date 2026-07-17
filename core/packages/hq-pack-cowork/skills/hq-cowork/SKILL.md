@@ -31,7 +31,7 @@ print the full capability map below and ask what the user wants.
 | Read vault objects | `mcp__hq__hq_files` | browse / cat / acl / search / shared-with-me / get. See `/hq-cowork-files`. |
 | Memberships | `mcp__hq__hq_members` | list / invite / revoke. |
 | Permission groups | `mcp__hq__hq_groups` | list / members / create / delete / add / remove. |
-| DM a teammate | `mcp__hq__hq_dm` | menubar notification. See `/hq-cowork-dm`. |
+| DM a teammate | `mcp__hq__hq_dm` | HQ Desktop App notification. See `/hq-cowork-dm`. |
 | HQ packages | `mcp__hq__hq_packages` | list / install / remove / update. |
 | Knowledge modules | `mcp__hq__hq_modules` | list / add / sync / update. |
 | Meetings | `mcp__hq__hq_meetings` | list / get / search / transcript / notes. See `/hq-cowork-meetings`. |

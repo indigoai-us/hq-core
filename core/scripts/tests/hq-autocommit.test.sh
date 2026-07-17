@@ -96,4 +96,41 @@ if [[ "$(git -C "$TMP" rev-parse HEAD)" != "$head_before_nested" ]]; then
   exit 1
 fi
 
+# A file under workspace/worktrees/ (a live project worktree) is never autosaved
+# into the HQ root. (feedback_2ada615f)
+mkdir -p "$TMP/workspace/worktrees/proj"
+printf 'wt\n' > "$TMP/workspace/worktrees/proj/notes.md"
+head_before_wt="$(git -C "$TMP" rev-parse HEAD)"
+payload_wt='{"tool_name":"Edit","tool_input":{"file_path":"workspace/worktrees/proj/notes.md"}}'
+(cd "$TMP" && printf '%s' "$payload_wt" | .claude/hooks/hq-autocommit.sh)
+
+if [[ "$(git -C "$TMP" rev-parse HEAD)" != "$head_before_wt" ]]; then
+  echo "workspace/worktrees path should not be autocommitted" >&2
+  exit 1
+fi
+
+# Gitlink guard: a directory add that would sweep a nested repo into the HQ root
+# as an embedded gitlink (mode 160000) is refused — no commit, nothing staged.
+# (feedback_2ada615f)
+mkdir -p "$TMP/holder/inner"
+git -C "$TMP/holder/inner" init -q
+git -C "$TMP/holder/inner" config user.email "hq-autocommit-test"
+git -C "$TMP/holder/inner" config user.name "HQ Autocommit Test"
+printf 'inner\n' > "$TMP/holder/inner/f.txt"
+git -C "$TMP/holder/inner" add -A
+git -C "$TMP/holder/inner" commit -q -m "inner"
+printf 'plain\n' > "$TMP/holder/plain.txt"
+head_before_gitlink="$(git -C "$TMP" rev-parse HEAD)"
+payload_gitlink='{"tool_name":"Edit","tool_input":{"file_path":"holder"}}'
+(cd "$TMP" && printf '%s' "$payload_gitlink" | .claude/hooks/hq-autocommit.sh)
+
+if [[ "$(git -C "$TMP" rev-parse HEAD)" != "$head_before_gitlink" ]]; then
+  echo "directory add sweeping a gitlink should not be autocommitted" >&2
+  exit 1
+fi
+if git -C "$TMP" ls-files --stage | awk '$1 == "160000" { exit 0 } END { exit 1 }'; then
+  echo "gitlink (mode 160000) must not remain staged in the HQ root" >&2
+  exit 1
+fi
+
 echo "hq-autocommit smoke: ok"

@@ -112,7 +112,7 @@ Users can set a global deploy preference at `~/.hq/deploy-prefs.json`:
 { "deploy": { "preference": "hq-deploy" } }
 ```
 
-The legacy `~/.hq/config.json` location is still read for backwards compatibility (one release deprecation window), but writes go exclusively to `deploy-prefs.json`. The path was separated because `~/.hq/config.json` is HQ Sync's strict `HqConfig` file and the two formats collided — see feedback `feedback_3ab4f113-2e7c-4e4e-a171-771b47a2b5fd`.
+The legacy `~/.hq/config.json` location is still read for backwards compatibility (one release deprecation window), but writes go exclusively to `deploy-prefs.json`. The path was separated because `~/.hq/config.json` is the HQ Desktop App's strict `HqConfig` file and the two formats collided — see feedback `feedback_3ab4f113-2e7c-4e4e-a171-771b47a2b5fd`.
 
 Valid values:
 

@@ -55,7 +55,7 @@ matching `hq` subcommand.
 |---|---|---|
 | `hq_members` | `hq members <action>` | `action`: list / invite / revoke. |
 | `hq_groups` | `hq groups <action>` | `action`: list / members / create / delete / add / remove. |
-| `hq_dm` | `hq dm` | Send a DM (menubar notification). Optional `prompt` / `details` / scheduled `at` / `in`. |
+| `hq_dm` | `hq dm` | Send a DM (HQ Desktop App notification). Optional `prompt` / `details` / scheduled `at` / `in`. |
 
 ### Packages & modules
 
@@ -126,7 +126,7 @@ The server resolves the HQ root (where `core/core.yaml` lives) in this order:
    `~/Desktop/HQ`, `~/Desktop/hq` that contains `core/core.yaml`
 5. `~/Documents/HQ` (last-resort default)
 
-This matches the resolver used by `hq-sync` and the AppBar menubar app.
+This matches the resolver used by `hq-sync` and the HQ Desktop App.
 
 ## Security notes
 

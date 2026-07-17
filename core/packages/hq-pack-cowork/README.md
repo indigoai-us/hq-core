@@ -71,7 +71,7 @@ hq-pack-cowork/
 | `hq_files` | `hq files <action>` | browse / cat / acl / search / shared-with-me / get. |
 | `hq_members` | `hq members <action>` | list / invite / revoke memberships. |
 | `hq_groups` | `hq groups <action>` | list / members / create / delete / add / remove. |
-| `hq_dm` | `hq dm` | Send a direct message (menubar notification). |
+| `hq_dm` | `hq dm` | Send a direct message (HQ Desktop App notification). |
 | `hq_packages` | `hq packages` / `install` / `remove` | list / install / remove / update packages. |
 | `hq_modules` | `hq modules <action>` | list / add / sync / update knowledge modules. |
 | `hq_meetings` | `hq meetings <action>` | list / get / search / transcript / notes. |
@@ -121,9 +121,9 @@ helpers in any Claude Code session on that HQ.
 
 This is the path that actually lets a sandboxed agent use HQ. Five ways:
 
-### Option A — HQ Sync app
+### Option A — HQ Desktop App
 
-Open the HQ Sync menubar app and click:
+Open the HQ Desktop App and click:
 
 ```text
 Install Cowork plugin

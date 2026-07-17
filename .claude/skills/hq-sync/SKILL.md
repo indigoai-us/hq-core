@@ -6,7 +6,7 @@ allowed-tools: Bash, Read
 
 # /hq-sync — Full HQ sync from the CLI
 
-Runs the same sync engine the AppBar HQ Sync menubar app uses, from the
+Runs the same sync engine the HQ Desktop App uses, from the
 terminal. Walks every cloud-backed company in your local HQ, syncs in
 both directions against the vault, and writes conflict mirror files +
 `<hqRoot>/.hq-conflicts/index.json` when divergence is detected so
@@ -18,7 +18,7 @@ both directions against the vault, and writes conflict mirror files +
 
 ### Step 1 — Resolve HQ root
 
-The same 4-tier resolver AppBar uses:
+The same 4-tier resolver the HQ Desktop App uses:
 
 1. `~/.hq/menubar.json` `hqPath` (canonical, written by hq-installer ≥0.1.28)
 2. `~/.hq/config.json` `hqFolderPath` (legacy installer path)
@@ -34,7 +34,7 @@ expired, tell the user "Not signed in — run /hq-login first" and stop.
 
 ### Step 3 — Spawn the runner
 
-Same invocation as AppBar's `commands/sync.rs::HQ_CLOUD_VERSION`:
+Same invocation as the HQ Desktop App's `commands/sync.rs::HQ_CLOUD_VERSION`:
 
 ```bash
 npx -y --package=@indigoai-us/hq-cloud@latest hq-sync-runner \
@@ -111,7 +111,7 @@ if [ "$expires_ms" -le "$now_ms" ]; then
   exit 2
 fi
 
-# Step 3: parse user args (defaults match AppBar). We expand $ARGUMENTS into
+# Step 3: parse user args (defaults match the HQ Desktop App). We expand $ARGUMENTS into
 # positional args so the standard while-case parser works under both bash and zsh.
 direction="both"
 on_conflict="keep"
@@ -130,7 +130,7 @@ fi
 # Step 4: spawn the runner. `set -o pipefail` is the portable way to capture
 # the exit status of the LEFT side of `| tee` under both bash and zsh —
 # avoids ${PIPESTATUS[0]} (bash-only) and ${pipestatus[1]} (zsh-only, 1-based).
-echo "Spawning hq-sync-runner (this is the same engine AppBar uses)..."
+echo "Spawning hq-sync-runner (this is the same engine the HQ Desktop App uses)..."
 output_file="$(mktemp)"
 set +e
 set -o pipefail 2>/dev/null || true
@@ -185,11 +185,11 @@ exit "$cli_status"
 
 ## Notes
 
-- Uses the **same `hq-sync-runner` invocation pattern** as AppBar HQ Sync (`commands/sync.rs::HQ_CLOUD_VERSION`). The npx pin to `@latest` matches AppBar's runtime spawn so behavior stays consistent across the two surfaces.
-- `--on-conflict keep` is the default — local wins on divergence, cloud version mirrored to a `.conflict-*` sidecar so `/resolve-conflicts` can walk it later. Same default AppBar uses.
-- Auth is shared with `/deploy`, `/designate-team`, `/hq-login`, AppBar — single Cognito token at `~/.hq/cognito-tokens.json`.
-- For a single-company sync, use `hq sync push <company>` (already in hq-cli) — this command is the "all companies, both directions" full sync that AppBar runs.
-- **Post-sync qmd reindex (Step 6):** after a sync that pulled files, the skill runs `core/scripts/qmd-reindex-after-sync.sh`, which auto-registers any new company knowledge collection and runs an incremental lexical `qmd update`. This is what makes freshly-synced knowledge searchable without a manual re-index, and keeps teammates' personal indexes converged. Embeddings are intentionally deferred (run `qmd embed`, or the reindex script with `--embed`, on an idle pass) so sync stays fast. The qmd index is per-machine (large binary, absolute local paths) and is **not** itself synced — only its freshness is automated. The AppBar menubar sync gets the same behavior via the `hq-sync-runner` seam.
+- Uses the **same `hq-sync-runner` invocation pattern** as the HQ Desktop App (`commands/sync.rs::HQ_CLOUD_VERSION`). The npx pin to `@latest` matches the HQ Desktop App's runtime spawn so behavior stays consistent across the two surfaces.
+- `--on-conflict keep` is the default — local wins on divergence, cloud version mirrored to a `.conflict-*` sidecar so `/resolve-conflicts` can walk it later. Same default the HQ Desktop App uses.
+- Auth is shared with `/deploy`, `/designate-team`, `/hq-login`, and the HQ Desktop App — single Cognito token at `~/.hq/cognito-tokens.json`.
+- For a single-company sync, use `hq sync push <company>` (already in hq-cli) — this command is the "all companies, both directions" full sync that the HQ Desktop App runs.
+- **Post-sync qmd reindex (Step 6):** after a sync that pulled files, the skill runs `core/scripts/qmd-reindex-after-sync.sh`, which auto-registers any new company knowledge collection and runs an incremental lexical `qmd update`. This is what makes freshly-synced knowledge searchable without a manual re-index, and keeps teammates' personal indexes converged. Embeddings are intentionally deferred (run `qmd embed`, or the reindex script with `--embed`, on an idle pass) so sync stays fast. The qmd index is per-machine (large binary, absolute local paths) and is **not** itself synced — only its freshness is automated. The HQ Desktop App sync gets the same behavior via the `hq-sync-runner` seam.
 
 - **Selective download (`syncMode`) — access ≠ download.** What a sync *downloads* is governed per-membership by `syncMode`: `all` (full bucket — the default, and what owners get on upgrade), `shared` (only your explicit ACL grants), or `custom` (an explicit prefix list). Set it with `hq sync mode <all|shared|custom>` and narrow an existing local tree with `hq sync narrow`. This is purely about local footprint — it does **not** change your *access*. Owners/admins keep full role-bypass access regardless of mode; `shared`/`custom` just stop a sync from materializing the whole vault locally. The scope is resolved per company in `sync-runner.ts::resolvePullScope` (degrades to `all` on any error so a transient failure never prunes the tree). To reach a file you have access to but didn't download, use `hq files browse`/`cat`/`search`/`get` (see the `hq-files` skill) — no full sync required.
 

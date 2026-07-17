@@ -7,7 +7,7 @@ allowed-tools: Read, Bash(bash:*), Bash(yq:*), Bash(awk:*), Bash(grep:*), Bash(w
 # /designate-team
 
 Designate one local `companies/{slug}/` directory as an HQ Pro team workspace by
-setting `cloud: true` in `companies/{slug}/company.yaml` (an AppBar marker), then
+setting `cloud: true` in `companies/{slug}/company.yaml` (an HQ Desktop App marker), then
 delegating cloud provisioning to the canonical CLI subcommand
 `hq cloud provision company <slug>`.
 
@@ -20,7 +20,7 @@ delegating cloud provisioning to the canonical CLI subcommand
 - Validate `companies/{slug}/` exists locally (deeper validation — manifest
   membership, archived status — happens inside the CLI subcommand).
 - Write `cloud: true` to `companies/{slug}/company.yaml` idempotently. This is
-  an **AppBar marker** that `provision.rs::provision_missing_companies()` reads
+  an **HQ Desktop App marker** that `provision.rs::provision_missing_companies()` reads
   to discover cloud-eligible companies. The CLI subcommand writes
   `.hq/config.json` + patches `manifest.yaml` but does NOT touch `company.yaml`.
 - Delegate manifest patching, vault entity creation, S3 bucket provisioning, and
@@ -76,7 +76,7 @@ if [ ! -d "$company_dir" ]; then
 fi
 
 # Idempotently write cloud: true to company.yaml.
-# This is the AppBar marker (provision.rs walks companies/*/company.yaml looking
+# This is the HQ Desktop App marker (provision.rs walks companies/*/company.yaml looking
 # for cloud:true). The CLI subcommand never writes this file — it writes
 # .hq/config.json and patches manifest.yaml.
 mkdir -p "$company_dir"

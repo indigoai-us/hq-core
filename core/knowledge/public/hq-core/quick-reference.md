@@ -147,11 +147,11 @@ Migrations are vault **text**; binary `.db` files stay machine-local (never unde
 
 ## CLI: `hq dm` (direct messages)
 
-Send a person-to-person notification to a teammate's HQ Sync menubar. Skill: `.claude/skills/dm/SKILL.md` (`/dm`).
+Send a person-to-person notification to a teammate's HQ Desktop App. Skill: `.claude/skills/dm/SKILL.md` (`/dm`).
 
 | Command | Use |
 |---------|-----|
-| `hq dm <email\|prs_*> "<message>"` | Plain DM — recipient gets a menubar notification |
+| `hq dm <email\|prs_*> "<message>"` | Plain DM — recipient gets an HQ Desktop App notification |
 | `hq dm <r> "<m>" --prompt "<ctx>"` | Attach agent context — recipient gets a one-click "Copy prompt" action |
 | `hq dm <r> "<m>" --details "<text>"` / `--details-file <path>` | Longer text shown in the recipient's "Open details" window |
 | `hq dm <r> "<m>" --at <iso>` / `--in <30s\|10m\|2h\|1d>` | Schedule delivery (store-and-forward) |

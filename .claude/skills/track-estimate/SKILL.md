@@ -16,7 +16,7 @@ Append a time estimate to `workspace/estimate-log/log.jsonl`. Use this when:
 The argument should be a free-form phrase containing both a task description and a duration. Examples:
 - `"port resolve-conflicts skill to hq-core-staging" "1-2h"`
 - `"npm release of hq-cloud@5.7.1, including verification" "30m"`
-- `"AppBar Tauri build + sign + notarize" "10-30m"`
+- `"HQ Desktop App Tauri build + sign + notarize" "10-30m"`
 
 ## Steps
 
