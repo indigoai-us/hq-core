@@ -24,6 +24,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 ADAPTER_SRC="$ROOT/.codex/hooks/hq-codex-hook-adapter.sh"
 GATE_SRC="$ROOT/.claude/hooks/hook-gate.sh"
 HOOK_SRC="$ROOT/.claude/hooks/block-hq-root-git-mutation.sh"
+HELPER_SRC="$ROOT/core/scripts/hook-lib.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -31,17 +32,22 @@ trap 'rm -rf "$TMP"' EXIT
 # Fake HQ root (a git repo) with a nested working repo — mirrors real layout
 # where repos/* are their own git repos nested under the HQ root.
 git -C "$TMP" init -q
-mkdir -p "$TMP/.codex/hooks" "$TMP/.claude/hooks" "$TMP/repos/private/app"
+mkdir -p "$TMP/.codex/hooks" "$TMP/.claude/hooks" "$TMP/core/scripts" "$TMP/repos/private/app"
 git -C "$TMP/repos/private/app" init -q
 cp "$ADAPTER_SRC" "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
 cp "$GATE_SRC"    "$TMP/.claude/hooks/hook-gate.sh"
 cp "$HOOK_SRC"    "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
+cp "$HELPER_SRC"  "$TMP/core/scripts/hook-lib.sh"
 chmod +x "$TMP/.codex/hooks/hq-codex-hook-adapter.sh" \
          "$TMP/.claude/hooks/hook-gate.sh" \
          "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
 
 ADAPTER="$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
 NESTED="$TMP/repos/private/app"
+
+# Keep this fixture focused on the mutation guard. The real adapter dispatches
+# several other Bash hooks first; disable those rather than stubbing them.
+export HQ_DISABLED_HOOKS="detect-secrets,block-core-writes-bash,block-on-active-run,inject-policy-on-trigger,block-unsafe-package-install"
 
 PASS=0
 FAIL=0
@@ -53,16 +59,17 @@ FAIL=0
 # prove cwd independence; the adapter is referenced by its absolute path so
 # BASH_SOURCE self-location resolves the HQ root.
 run() {
-  local expect="$1" cwd="$2" cmd="$3" label="$4" rc=0 payload
+  local expect="$1" cwd="$2" cmd="$3" label="$4" rc=0 payload err
   payload=$(jq -n --arg cwd "$cwd" --arg cmd "$cmd" \
     '{hook_event_name:"PreToolUse", tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')
   # Run from / (an unrelated dir) so any accidental pwd-dependence is exposed.
-  printf '%s' "$payload" | ( cd / && bash "$ADAPTER" ) >/dev/null 2>&1 || rc=$?
+  err="$(printf '%s' "$payload" | ( cd / && bash "$ADAPTER" ) 2>&1 >/dev/null)" || rc=$?
   if [[ "$rc" -eq "$expect" ]]; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))
     echo "FAIL [$label]: expected exit $expect, got $rc — cmd: $cmd (cwd: $cwd)" >&2
+    [ -n "$err" ] && printf '  adapter stderr: %s\n' "$err" >&2
   fi
 }
 

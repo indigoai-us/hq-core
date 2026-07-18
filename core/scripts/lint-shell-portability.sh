@@ -27,6 +27,7 @@ is_allowed() {
   local file="$1"
   [ -f "$ALLOW" ] || return 1
   while IFS= read -r pat || [ -n "$pat" ]; do
+    pat="${pat%$'\r'}"
     [ -z "$pat" ] && continue
     case "$pat" in \#*) continue ;; esac
     case "$file" in *"$pat"*) return 0 ;; esac

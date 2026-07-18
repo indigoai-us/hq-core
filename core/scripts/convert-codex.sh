@@ -8,6 +8,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPLY=false
 ROOT_ARG=""
 SYNC_SKILLS=true
@@ -278,41 +279,46 @@ ensure_output_style_bridge() {
   ensure_symlink "project Codex output-style bridge" "${CODEX_DIR}/output-style.md" "../.claude/output-styles/${slug}.md"
 }
 
-extract_frontmatter_field() {
-  local file="$1"
-  local field="$2"
-  awk -v field="${field}" '
-    /^---$/ { fm++; next }
-    fm == 1 && $0 ~ "^" field ":" {
-      sub("^" field ":[ ]*", "")
-      gsub(/^["'\''"]|["'\''"]$/, "")
-      print
-      exit
-    }
-    fm > 1 { exit }
-  ' "${file}" 2>/dev/null || true
+emit_openai_yaml() {
+  local skill_md="$1"
+  node "${SCRIPT_DIR}/validate-agent-runtime-contracts.mjs" emit-openai-yaml "${skill_md}"
 }
 
-yaml_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+list_skill_directories() {
+  local skills_root="$1"
+  local skill_dir
+
+  [[ -d "${skills_root}" || -L "${skills_root}" ]] || return 0
+
+  for skill_dir in "${skills_root}"/*; do
+    [[ -e "${skill_dir}" ]] || continue
+    [[ -d "${skill_dir}" || -L "${skill_dir}" ]] || continue
+    [[ -f "${skill_dir}/SKILL.md" ]] || continue
+    printf '%s\n' "${skill_dir}"
+  done | LC_ALL=C sort
 }
 
-first_sentence() {
-  printf '%s' "$1" | sed 's/\. .*/./' | cut -c1-140
-}
+write_generated_openai_yaml() {
+  local skill_md="$1"
+  local yaml_path="$2"
+  local tmp_path=""
 
-display_name_for() {
-  printf '%s' "$1" | tr '-' ' '
+  tmp_path="$(mktemp "${yaml_path}.tmp.XXXXXX")" || return 1
+  if emit_openai_yaml "${skill_md}" > "${tmp_path}" && mv "${tmp_path}" "${yaml_path}"; then
+    return 0
+  fi
+
+  rm -f "${tmp_path}"
+  return 1
 }
 
 generate_openai_yaml_for_dir() {
   local skills_root="$1"
-  local skill_dir skill_name skill_md yaml_path name description display short
+  local skill_dir skill_md yaml_path
 
   [[ -d "${skills_root}" || -L "${skills_root}" ]] || return
 
   while IFS= read -r skill_dir; do
-    skill_name="$(basename "${skill_dir}")"
     skill_md="${skill_dir}/SKILL.md"
     yaml_path="${skill_dir}/agents/openai.yaml"
 
@@ -322,20 +328,8 @@ generate_openai_yaml_for_dir() {
       continue
     fi
 
-    name="$(extract_frontmatter_field "${skill_md}" "name")"
-    description="$(extract_frontmatter_field "${skill_md}" "description")"
-    [[ -n "${name}" ]] || name="${skill_name}"
-    [[ -n "${description}" ]] || description="Use the ${name} HQ skill with Codex."
-
-    display="$(yaml_escape "$(display_name_for "${name}")")"
-    short="$(yaml_escape "$(first_sentence "${description}")")"
-
     if [[ "${APPLY}" == true ]]; then
-      if mkdir -p "$(dirname "${yaml_path}")" && cat > "${yaml_path}" <<EOF
-interface:
-  display_name: "${display}"
-  short_description: "${short}"
-EOF
+      if mkdir -p "$(dirname "${yaml_path}")" && write_generated_openai_yaml "${skill_md}" "${yaml_path}"
       then
         record_create "${yaml_path}"
       else
@@ -344,7 +338,7 @@ EOF
     else
       record_create "${yaml_path}"
     fi
-  done < <(find "${skills_root}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) | sort)
+  done < <(list_skill_directories "${skills_root}")
 }
 
 sync_agents_skills() {
@@ -397,7 +391,7 @@ sync_agents_skills() {
     else
       record_create "${target_skill}"
     fi
-  done < <(find "${CLAUDE_SKILLS_DIR}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) | sort)
+  done < <(list_skill_directories "${CLAUDE_SKILLS_DIR}")
 }
 
 count_paths() {
@@ -416,31 +410,41 @@ commands_with_skills_count() {
     printf '0\n'
     return
   }
-  while IFS= read -r cmd_file; do
+  for cmd_file in "${COMMANDS_DIR}"/*.md; do
+    [[ -f "${cmd_file}" ]] || continue
     cmd_name="$(basename "${cmd_file}" .md)"
     if [[ -f "${CLAUDE_SKILLS_DIR}/${cmd_name}/SKILL.md" ]]; then
       count=$((count + 1))
     fi
-  done < <(find "${COMMANDS_DIR}" -mindepth 1 -maxdepth 1 -type f -name '*.md' | sort)
+  done
   printf '%s\n' "${count}"
 }
 
 skill_dir_count() {
   local root="$1"
+  local count=0 skill_dir
   [[ -d "${root}" || -L "${root}" ]] || {
     printf '0\n'
     return
   }
-  find -H "${root}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -exec test -f '{}/SKILL.md' \; -print 2>/dev/null | wc -l | tr -d '[:space:]'
+  while IFS= read -r skill_dir; do
+    count=$((count + 1))
+  done < <(list_skill_directories "${root}")
+  printf '%s\n' "${count}"
 }
 
 skill_openai_count() {
   local root="$1"
+  local count=0 skill_dir
   [[ -d "${root}" || -L "${root}" ]] || {
     printf '0\n'
     return
   }
-  find -H "${root}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -exec sh -c 'test -f "$1/SKILL.md" && test -f "$1/agents/openai.yaml"' _ '{}' \; -print 2>/dev/null | wc -l | tr -d '[:space:]'
+  while IFS= read -r skill_dir; do
+    [[ -f "${skill_dir}/agents/openai.yaml" ]] || continue
+    count=$((count + 1))
+  done < <(list_skill_directories "${root}")
+  printf '%s\n' "${count}"
 }
 
 print_audit() {

@@ -37,6 +37,10 @@
   scanners: [pii]
   reason: "Work Mesh unit-test fixtures use loopback IPs, an RFC 2606 .test address, UUID-shaped IDs, and integer boundary values; none are real personal data."
 
+- path: "core/scripts/tests/agent-runtime-skill-metadata.test.sh"
+  rules: [pii/email]
+  reason: "Metadata validator tests assert a pinned js-yaml package version; the npm specifier resembles an email address but is not PII."
+
 - path: "test/__tests__/stories/US-011.test.mjs"
   scanners: [pii]
   reason: "Work Mesh acceptance tests bind an ephemeral in-process server to the IPv4 loopback address; the address is infrastructure test data, not PII."

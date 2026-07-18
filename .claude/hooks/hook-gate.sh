@@ -29,6 +29,21 @@ HOOK_SCRIPT="$2"
 shift 2
 # Remaining args passed to actual hook script (if any)
 
+self_src="${BASH_SOURCE[0]:-$0}"
+self_dir="$(cd "$(dirname "$self_src")" 2>/dev/null && pwd -P || true)"
+HQ_ROOT_RESOLVED=""
+if [ -n "$self_dir" ]; then
+  cand="$(cd "$self_dir/../.." 2>/dev/null && pwd -P || true)"
+  if [ -n "$cand" ] && [ -f "$cand/core/scripts/hook-lib.sh" ]; then
+    HQ_ROOT_RESOLVED="$cand"
+  fi
+fi
+[ -z "$HQ_ROOT_RESOLVED" ] && HQ_ROOT_RESOLVED="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}"
+if [ -n "$HQ_ROOT_RESOLVED" ] && [ -f "$HQ_ROOT_RESOLVED/core/scripts/hook-lib.sh" ]; then
+  # Shared HQ-owned launch helpers: bounded warnings, safe chmod repair, bash fallback.
+  . "$HQ_ROOT_RESOLVED/core/scripts/hook-lib.sh"
+fi
+
 # Determine profile (default: standard)
 PROFILE="${HQ_HOOK_PROFILE:-standard}"
 
@@ -111,9 +126,8 @@ if [ -n "$DISABLED_HOOKS" ]; then
 fi
 
 # If hook should not run, pass-through (exit 0)
+HOOK_PAYLOAD="$(cat 2>/dev/null || true)"
 if [ $should_run -eq 0 ]; then
-  # Read stdin and discard (hooks expect to consume stdin)
-  cat >/dev/null
   exit 0
 fi
 
@@ -235,20 +249,32 @@ hq_augment_path() {
 }
 hq_augment_path
 
-# Hook should run: pipe stdin to the actual hook script and delegate exit code.
-#
-# Self-heal a missing executable bit before invoking. Cross-machine HQ sync can
-# land a hook script WITHOUT its +x bit -- e.g. an S3 object that predates the
-# hq-cloud "hq-mode" metadata stamp, or any transport that drops POSIX mode --
-# and a direct exec would then fail with "Permission denied", silently
-# disabling the hook. Restore the bit best-effort (a read-only FS just no-ops)
-# so the script's own shebang keeps selecting the right interpreter, then fall
-# back to running it through bash if the bit is still missing. Every
-# gate-wrapped hook is a bash script, so the fallback is always safe. Either
-# path runs the hook and propagates its exit code.
+# Hook should run: delegate through the shared launch contract. It only mutates
+# files under the resolved HQ root, preserves delegated exit codes, and emits
+# one bounded warning per failed hook/path/session when chmod+bash fallback
+# still cannot launch the hook.
+if command -v hq_launch_shell_path >/dev/null 2>&1 \
+  && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
+  status=0
+  hq_launch_shell_path "$HQ_ROOT_RESOLVED" "$HOOK_SCRIPT" "$HOOK_PAYLOAD" "$@" || status=$?
+  if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ]; then
+    warning="$(hq_hook_launch_warning_text \
+      "$HOOK_PAYLOAD" \
+      "$HQ_ROOT_RESOLVED" \
+      "runtime" \
+      "hook" \
+      "$HOOK_ID" \
+      "$HOOK_SCRIPT" \
+      "$HQ_HOOK_LAST_CAUSE")"
+    [ -n "$warning" ] && printf '%s\n' "$warning" >&2
+  fi
+  exit "$status"
+fi
+
 chmod u+x "$HOOK_SCRIPT" 2>/dev/null || true
 if [ -x "$HOOK_SCRIPT" ]; then
-  exec "$HOOK_SCRIPT" "$@"
-else
-  exec bash "$HOOK_SCRIPT" "$@"
+  printf '%s' "$HOOK_PAYLOAD" | "$HOOK_SCRIPT" "$@"
+  exit $?
 fi
+printf '%s' "$HOOK_PAYLOAD" | bash "$HOOK_SCRIPT" "$@"
+exit $?

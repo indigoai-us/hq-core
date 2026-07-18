@@ -1,6 +1,6 @@
 #!/bin/bash
 # hq-core: public
-# hq-grok-hook-adapter.sh — route Grok lifecycle hooks through HQ's existing
+# hq-grok-hook-adapter.sh - route Grok lifecycle hooks through HQ's existing
 # .claude/hooks gate, so HQ guardrails enforce for Grok as they do for Claude
 # and Codex.
 #
@@ -78,17 +78,67 @@ fi
 GATE="${HQ_ROOT:+$HQ_ROOT/.claude/hooks/hook-gate.sh}"
 HOOK_DIR="${HQ_ROOT:+$HQ_ROOT/.claude/hooks}"
 
+if [ -n "$HQ_ROOT" ]; then
+  CLAUDE_PROJECT_DIR="$HQ_ROOT"
+  export HQ_ROOT CLAUDE_PROJECT_DIR
+  . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
+fi
+
 # Fail-open outside HQ trees (never wedge non-HQ projects). Gate presence is
 # checked with -f, not -x: HQ Sync strips exec bits, and the gate is invoked
-# via `bash` below so a stripped bit must not silently disable enforcement.
+# via bash below so a stripped bit must not silently disable enforcement.
 if [ -z "$HQ_ROOT" ] || [ ! -f "${GATE:-}" ]; then
+  if [ -n "$HQ_ROOT" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
+    warning="$(hq_hook_launch_warning_text \
+      "$INPUT_RAW" "$HQ_ROOT" "advisory" "hook gate" "hook-gate" "$GATE" \
+      "file is missing under HQ_ROOT")"
+    [ -n "$warning" ] && printf '%s\n' "$warning" >&2
+  fi
   if [ "$EVENT" = "PreToolUse" ]; then
     echo '{"decision":"allow"}'
   fi
   exit 0
 fi
 
-# Map Grok tool names → Claude names HQ hooks key on.
+DIAG_ACCUM=""
+
+append_diag() {
+  local text="$1"
+  [ -z "$text" ] && return 0
+  if [ -z "$DIAG_ACCUM" ]; then
+    DIAG_ACCUM="$text"
+  else
+    DIAG_ACCUM="${DIAG_ACCUM}
+${text}"
+  fi
+}
+
+compact_diag() {
+  if command -v hq_text_compact >/dev/null 2>&1; then
+    hq_text_compact 420 "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+emit_diag() {
+  [ -z "$DIAG_ACCUM" ] && return 0
+  if command -v hq_text_compact >/dev/null 2>&1; then
+    printf '%s\n' "$(hq_text_compact 420 "$DIAG_ACCUM")" >&2
+  else
+    printf '%s\n' "$DIAG_ACCUM" >&2
+  fi
+}
+
+compact_reason() {
+  if command -v hq_text_compact >/dev/null 2>&1; then
+    hq_text_compact 1200 "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+# Map Grok tool names -> Claude names HQ hooks key on.
 case "$GTOOL" in
   run_terminal_command|Shell|Bash|bash)           CTOOL=Bash ;;
   search_replace|StrReplace|Edit|MultiEdit)       CTOOL=Edit ;;
@@ -110,7 +160,7 @@ CONTENT="$(jget '.toolInput.content // .toolInput.new_string // .tool_input.cont
 # Session identity: without a session_id the policy-injection dedupe collapses
 # into the shared persistent default.txt ledger (fires once per machine, ever).
 # Prefer whatever session field Grok supplies; else synthesize from the
-# invoking process ($PPID — stable within a Grok session, distinct across).
+# invoking process ($PPID - stable within a Grok session, distinct across).
 SID="$(jget '.session_id // .sessionId // .conversationId // .threadId // empty')"
 [ -z "$SID" ] && SID="grok-${GROK_SESSION_ID:-$PPID}"
 
@@ -137,7 +187,6 @@ CLAUDE_JSON="$(jq -n \
 
 deny() {
   local reason="$1"
-  # Compact JSON — Grok parsers accept pretty output, but tests and logs prefer one line.
   jq -c -n --arg r "$reason" '{decision:"deny", reason:$r}'
   exit 2
 }
@@ -148,27 +197,132 @@ allow_pre() {
 
 run_block() { # <hook-id> <hook-script> [payload]
   local id="$1" script="$2" payload="${3:-$CLAUDE_JSON}"
-  [ -x "$script" ] || return 0
-  local err st
-  err="$(printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$GATE" "$id" "$script" 2>&1 1>/dev/null)"
-  st=$?
-  if [ "$st" -ne 0 ]; then
-    deny "$(printf '%s' "${err:-Blocked by HQ guard: $id}" | head -c 1200)"
+  local out err status out_text err_text warning reason
+  out="$(mktemp)"
+  err="$(mktemp)"
+  status=0
+  warning=""
+
+  if command -v hq_launch_shell_path >/dev/null 2>&1; then
+    hq_launch_shell_path "$HQ_ROOT" "$GATE" "$payload" "$id" "$script" >"$out" 2>"$err" || status=$?
+    if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
+      warning="$(hq_hook_launch_warning_text \
+        "$payload" \
+        "$HQ_ROOT" \
+        "blocking" \
+        "hook gate" \
+        "$id" \
+        "$GATE" \
+        "$HQ_HOOK_LAST_CAUSE")"
+    fi
+  else
+    printf '%s' "$payload" | bash "$GATE" "$id" "$script" >"$out" 2>"$err" || status=$?
+  fi
+
+  out_text="$(cat "$out" 2>/dev/null || true)"
+  err_text="$(cat "$err" 2>/dev/null || true)"
+  rm -f "$out" "$err"
+
+  [ "$status" -eq 0 ] && return 0
+
+  reason="$err_text"
+  if [ -n "$warning" ]; then
+    if [ -n "$reason" ]; then
+      reason="${warning}
+${reason}"
+    else
+      reason="$warning"
+    fi
+  fi
+  [ -z "$reason" ] && reason="Blocked by HQ guard: $id"
+  deny "$(compact_reason "$reason")"
+}
+
+run_advisory() { # <hook-id> <hook-script> [payload] [stdout_mode]
+  local id="$1" script="$2" payload="${3:-$CLAUDE_JSON}" stdout_mode="${4:-drop}"
+  local out err status out_text err_text warning
+  out="$(mktemp)"
+  err="$(mktemp)"
+  status=0
+  warning=""
+
+  if command -v hq_launch_shell_path >/dev/null 2>&1; then
+    hq_launch_shell_path "$HQ_ROOT" "$GATE" "$payload" "$id" "$script" >"$out" 2>"$err" || status=$?
+    if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
+      warning="$(hq_hook_launch_warning_text \
+        "$payload" \
+        "$HQ_ROOT" \
+        "advisory" \
+        "hook gate" \
+        "$id" \
+        "$GATE" \
+        "$HQ_HOOK_LAST_CAUSE")"
+    fi
+  else
+    printf '%s' "$payload" | bash "$GATE" "$id" "$script" >"$out" 2>"$err" || status=$?
+  fi
+
+  out_text="$(cat "$out" 2>/dev/null || true)"
+  err_text="$(cat "$err" 2>/dev/null || true)"
+  rm -f "$out" "$err"
+
+  if [ "$status" -ne 0 ]; then
+    [ -n "$warning" ] && append_diag "$warning"
+    if [ -n "$err_text" ]; then
+      append_diag "$(compact_diag "$err_text")"
+    elif [ -z "$warning" ]; then
+      append_diag "WARNING: advisory hook '$id' exited $status; continuing."
+    fi
+    return 0
+  fi
+
+  if [ "$stdout_mode" = "diag" ] && [ -n "$out_text" ]; then
+    append_diag "$(compact_diag "$out_text")"
   fi
 }
 
-run_advisory() { # <hook-id> <hook-script> [payload]
-  local id="$1" script="$2" payload="${3:-$CLAUDE_JSON}"
-  [ -x "$script" ] || return 0
-  printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" \
-    bash "$GATE" "$id" "$script" >/dev/null 2>&1 || true
-}
+run_script_advisory() { # <script> [payload] [stdout_mode]
+  local script="$1" payload="${2:-$CLAUDE_JSON}" stdout_mode="${3:-drop}"
+  local out err status out_text err_text warning label
+  out="$(mktemp)"
+  err="$(mktemp)"
+  label="$(basename "$script")"
+  status=0
+  warning=""
 
-run_script_advisory() { # <script> [payload]
-  local script="$1" payload="${2:-$CLAUDE_JSON}"
-  [ -x "$script" ] || return 0
-  printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" \
-    "$script" >/dev/null 2>&1 || true
+  if command -v hq_launch_shell_path >/dev/null 2>&1; then
+    hq_launch_shell_path "$HQ_ROOT" "$script" "$payload" >"$out" 2>"$err" || status=$?
+    if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
+      warning="$(hq_hook_launch_warning_text \
+        "$payload" \
+        "$HQ_ROOT" \
+        "advisory" \
+        "script" \
+        "$label" \
+        "$script" \
+        "$HQ_HOOK_LAST_CAUSE")"
+    fi
+  else
+    printf '%s' "$payload" | "$script" >"$out" 2>"$err" || status=$?
+  fi
+
+  out_text="$(cat "$out" 2>/dev/null || true)"
+  err_text="$(cat "$err" 2>/dev/null || true)"
+  rm -f "$out" "$err"
+
+  if [ "$status" -ne 0 ]; then
+    [ -n "$warning" ] && append_diag "$warning"
+    if [ -n "$err_text" ]; then
+      append_diag "$(compact_diag "$err_text")"
+    elif [ -z "$warning" ]; then
+      append_diag "WARNING: advisory script '$label' exited $status; continuing."
+    fi
+    return 0
+  fi
+
+  if [ "$stdout_mode" = "diag" ] && [ -n "$out_text" ]; then
+    append_diag "$(compact_diag "$out_text")"
+  fi
 }
 
 # Token-boundary deny for sensitive home paths (mirrors Codex adapter + Claude Read deny).
@@ -188,10 +342,11 @@ block_sensitive_if_needed() {
 
 payload_for_path() {
   local path="$1"
-  jq -n --arg path "$path" --arg event "$EVENT" --arg cwd "$CWD" '{
+  jq -n --arg path "$path" --arg event "$EVENT" --arg cwd "$CWD" --arg sid "$SID" '{
     hook_event_name: $event,
     tool_name: "Edit",
     cwd: $cwd,
+    session_id: $sid,
     tool_input: {file_path: $path}
   }'
 }
@@ -200,11 +355,11 @@ run_pre_tool_use() {
   case "$CTOOL" in
     Bash)
       [ -n "$CMD" ] && block_sensitive_if_needed "$CMD"
-      run_block detect-secrets              "$HOOK_DIR/detect-secrets.sh"
-      run_block block-core-writes-bash      "$HOOK_DIR/block-core-writes-bash.sh"
-      run_block block-hq-root-git-mutation  "$HOOK_DIR/block-hq-root-git-mutation.sh"
-      run_block block-on-active-run         "$HOOK_DIR/block-on-active-run.sh"
-      run_advisory inject-policy-on-trigger "$HOOK_DIR/inject-policy-on-trigger.sh"
+      run_block detect-secrets               "$HOOK_DIR/detect-secrets.sh"
+      run_block block-core-writes-bash       "$HOOK_DIR/block-core-writes-bash.sh"
+      run_block block-hq-root-git-mutation   "$HOOK_DIR/block-hq-root-git-mutation.sh"
+      run_block block-on-active-run          "$HOOK_DIR/block-on-active-run.sh"
+      run_advisory inject-policy-on-trigger  "$HOOK_DIR/inject-policy-on-trigger.sh"
       run_block block-unsafe-package-install "$HOOK_DIR/block-unsafe-package-install.sh"
       run_advisory surface-company-infra-policy "$HOOK_DIR/surface-company-infra-policy.sh"
       ;;
@@ -220,15 +375,15 @@ run_pre_tool_use() {
       block_sensitive_if_needed "$FP"
       local payload
       payload="$(payload_for_path "$FP")"
-      run_block protect-core                   "$HOOK_DIR/protect-core.sh" "$payload"
-      run_block block-core-writes              "$HOOK_DIR/block-core-writes.sh" "$payload"
-      run_block block-inline-story-impl        "$HOOK_DIR/block-inline-story-impl.sh" "$payload"
-      run_block block-on-active-run            "$HOOK_DIR/block-on-active-run.sh" "$payload"
-      run_block env-file-no-trailing-newline   "$HOOK_DIR/env-file-no-trailing-newline.sh" "$payload"
-      run_advisory inject-policy-on-trigger    "$HOOK_DIR/inject-policy-on-trigger.sh" "$payload"
+      run_block protect-core                    "$HOOK_DIR/protect-core.sh" "$payload"
+      run_block block-core-writes               "$HOOK_DIR/block-core-writes.sh" "$payload"
+      run_block block-inline-story-impl         "$HOOK_DIR/block-inline-story-impl.sh" "$payload"
+      run_block block-on-active-run             "$HOOK_DIR/block-on-active-run.sh" "$payload"
+      run_block env-file-no-trailing-newline    "$HOOK_DIR/env-file-no-trailing-newline.sh" "$payload"
+      run_advisory inject-policy-on-trigger     "$HOOK_DIR/inject-policy-on-trigger.sh" "$payload"
       run_block block-plans-dir-during-deep-plan "$HOOK_DIR/block-plans-dir-during-deep-plan.sh" "$payload"
-      run_block route-company-skill-creation   "$HOOK_DIR/route-company-skill-creation.sh" "$payload"
-      run_block validate-policy-frontmatter    "$HOOK_DIR/validate-policy-frontmatter.sh" "$payload"
+      run_block route-company-skill-creation    "$HOOK_DIR/route-company-skill-creation.sh" "$payload"
+      run_block validate-policy-frontmatter     "$HOOK_DIR/validate-policy-frontmatter.sh" "$payload"
       ;;
     Grep)
       run_block block-hq-grep "$HOOK_DIR/block-hq-grep.sh"
@@ -243,10 +398,10 @@ run_pre_tool_use() {
 run_post_tool_use() {
   case "$CTOOL" in
     Bash)
-      run_advisory auto-checkpoint-trigger  "$HOOK_DIR/auto-checkpoint-trigger.sh"
-      run_advisory auto-capture-registry    "$HOOK_DIR/auto-capture-registry.sh"
+      run_advisory auto-checkpoint-trigger   "$HOOK_DIR/auto-checkpoint-trigger.sh"
+      run_advisory auto-capture-registry     "$HOOK_DIR/auto-capture-registry.sh"
       run_advisory screenshot-resize-trigger "$HOOK_DIR/screenshot-resize-trigger.sh"
-      run_advisory journal-due              "$HOOK_DIR/journal-due.sh"
+      run_advisory journal-due               "$HOOK_DIR/journal-due.sh"
       ;;
     Write|Edit)
       if [ -n "$FP" ]; then
@@ -263,16 +418,16 @@ run_post_tool_use() {
 }
 
 run_session_start() {
-  # Mirrors Codex/Claude SessionStart ordering (migrate → inject → checks).
+  # Mirrors Codex/Claude SessionStart ordering (migrate -> inject -> checks).
   run_script_advisory "$HQ_ROOT/core/scripts/migrate-policy-triggers.sh"
-  run_advisory inject-policy-on-trigger       "$HOOK_DIR/inject-policy-on-trigger.sh"
-  run_advisory check-bridge-health            "$HOOK_DIR/check-claude-desktop-bridge-health.sh"
-  run_advisory check-repo-active-runs         "$HOOK_DIR/check-repo-active-runs.sh"
-  run_advisory inject-local-context           "$HOOK_DIR/inject-local-context.sh"
-  run_advisory auto-startwork                 "$HOOK_DIR/auto-startwork.sh"
-  run_advisory check-core-yaml-parity         "$HOOK_DIR/check-core-yaml-parity.sh"
-  run_advisory load-journal-index-on-start    "$HOOK_DIR/load-journal-index-on-start.sh"
-  run_advisory check-hq-update                "$HOOK_DIR/check-hq-update.sh"
+  run_advisory inject-policy-on-trigger    "$HOOK_DIR/inject-policy-on-trigger.sh"
+  run_advisory check-bridge-health         "$HOOK_DIR/check-claude-desktop-bridge-health.sh" "$CLAUDE_JSON" "diag"
+  run_advisory check-repo-active-runs      "$HOOK_DIR/check-repo-active-runs.sh"
+  run_advisory inject-local-context        "$HOOK_DIR/inject-local-context.sh"
+  run_advisory auto-startwork              "$HOOK_DIR/auto-startwork.sh"
+  run_advisory check-core-yaml-parity      "$HOOK_DIR/check-core-yaml-parity.sh"
+  run_advisory load-journal-index-on-start "$HOOK_DIR/load-journal-index-on-start.sh"
+  run_advisory check-hq-update             "$HOOK_DIR/check-hq-update.sh"
 }
 
 run_user_prompt_submit() {
@@ -283,11 +438,11 @@ run_user_prompt_submit() {
 }
 
 run_stop() {
-  run_advisory observe-patterns                 "$HOOK_DIR/observe-patterns.sh"
-  run_advisory cleanup-mcp-processes            "$HOOK_DIR/cleanup-mcp-processes.sh"
-  run_advisory context-warning-50               "$HOOK_DIR/context-warning-50.sh"
-  run_advisory capture-estimates                "$HOOK_DIR/capture-estimates.sh"
-  run_advisory enforce-capability-link-render   "$HOOK_DIR/enforce-capability-link-render.sh"
+  run_advisory observe-patterns               "$HOOK_DIR/observe-patterns.sh"
+  run_advisory cleanup-mcp-processes          "$HOOK_DIR/cleanup-mcp-processes.sh"
+  run_advisory context-warning-50             "$HOOK_DIR/context-warning-50.sh"
+  run_advisory capture-estimates              "$HOOK_DIR/capture-estimates.sh"
+  run_advisory enforce-capability-link-render "$HOOK_DIR/enforce-capability-link-render.sh"
 }
 
 run_precompact() {
@@ -297,15 +452,14 @@ run_precompact() {
 }
 
 case "$EVENT" in
-  SessionStart)       run_session_start ;;
-  UserPromptSubmit)   run_user_prompt_submit ;;
-  PreToolUse)         run_pre_tool_use ;;
-  PostToolUse)        run_post_tool_use ;;
-  Stop)               run_stop ;;
-  PreCompact)         run_precompact ;;
-  *)
-    # Unknown / passive events: no-op (fail-open).
-    if [ "$EVENT" = "PreToolUse" ]; then allow_pre; fi
-    ;;
+  SessionStart)     run_session_start ;;
+  UserPromptSubmit) run_user_prompt_submit ;;
+  PreToolUse)       run_pre_tool_use ;;
+  PostToolUse)      run_post_tool_use ;;
+  Stop)             run_stop ;;
+  PreCompact)       run_precompact ;;
+  *) ;;
 esac
+
+emit_diag
 exit 0
