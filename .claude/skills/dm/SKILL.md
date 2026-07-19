@@ -1,20 +1,25 @@
 ---
 name: dm
-description: Send HQ Sync direct messages, prompts, details, or scheduled notes to teammates.
+description: Send or read HQ Sync direct messages — inbox, 1:1 threads, channel history; also prompts, details, or scheduled notes to teammates.
 allowed-tools: Bash(hq:*), Read, Glob, Grep
 ---
 
-# /dm — Send an HQ direct message
+# /dm — Send or read an HQ direct message
 
-Send a person-to-person notification through HQ. The recipient gets it as a
-macOS notification in their HQ Desktop App; if you attach agent context they
-get a one-click **Copy prompt** action, and if you attach details they get an
-**Open details** window. You can DM yourself (note-to-self / reminders).
+Send a person-to-person notification through HQ, **or read** DMs from the CLI.
+On send, the recipient gets it as a macOS notification in their HQ Desktop App;
+if you attach agent context they get a one-click **Copy prompt** action, and if
+you attach details they get an **Open details** window. You can DM yourself
+(note-to-self / reminders).
 
-This is the **send** side — receiving is handled by the HQ Desktop App.
-You can only DM someone you share an active company with.
+`hq dm` is **send and read**. The HQ Desktop App still surfaces live
+notifications; the CLI can also list your inbox, open a 1:1 thread, and show
+channel / group history. You can only DM someone you share an active company
+with.
 
 ## Usage
+
+### Send
 
 ```
 hq dm <recipient> <message> [options]
@@ -22,14 +27,16 @@ hq dm <recipient> <message> [options]
 
 - `<recipient>` — one of:
   - a teammate's **email** (e.g. `stefan@example.com`),
-  - a **personUid** (`prs_…`),
+  - a **personUid** (`prs_…`) or **agentUid** (`agt_…`),
   - a bare **name** (e.g. `stefan` or `Stefan Walsh`) — resolved to the exact
-    email before sending (see **Resolve recipients** below), or
+    email before sending (see **Resolve recipients** below),
   - a **comma-separated list** of any of the above — this opens a **group DM**
-    (every token is resolved independently). Your own email = a note-to-self.
+    (every token is resolved independently). Your own email = a note-to-self, or
+  - a **named channel** — bare (`vyg-dev`), hash form (`#vyg-dev`), or
+    `--channel <name>` (see `hq channels`).
 - `<message>` — the notification body (the headline the recipient sees). Required.
 
-Options:
+Options (1:1 DMs only — not channels/groups):
 
 | Option | Effect |
 |---|---|
@@ -38,12 +45,67 @@ Options:
 | `--at <iso>` | Schedule delivery at an ISO8601 time (store-and-forward — arrives even if you're offline at that time). |
 | `--in <duration>` | Schedule after a relative delay: `30s`, `10m`, `2h`, `1d`. |
 
-## Steps
+### Read
+
+DMs can be **read from the CLI** (hq-cli ≥ 5.70). Prefer these when the user
+asks to check messages, open a thread, list unread, or pull channel history —
+do **not** tell them DMs are receive-only in the desktop app.
+
+```
+hq dm inbox [options]
+hq dm thread|read <person> [options]
+hq dm channel|history <target> [options]
+```
+
+| Command | Effect |
+|---|---|
+| `hq dm inbox` | List recent **incoming** DMs. |
+| `hq dm thread <person>` (alias `read`) | Show the two-way 1:1 conversation with a person (email, `prs_…`, or `agt_…`). Oldest-first; marks their messages read unless `--no-ack`. |
+| `hq dm channel <target>` (alias `history`) | Show recent messages in a named channel or group DM — by name, `#name`, or a channel id from `hq channels`. |
+
+Read options:
+
+| Option | Where | Effect |
+|---|---|---|
+| `--limit <n>` | all | Max messages to fetch (server-capped). |
+| `--unread` | `inbox` | Show only unread messages. |
+| `--mark-read` | `inbox`, `channel` | Mark fetched inbox messages read / advance the channel read marker. |
+| `--no-ack` | `thread` | Do **not** mark incoming messages as read. |
+| `--json` | all | Raw JSON instead of the list / transcript. |
+
+Examples:
+
+```bash
+# Unread inbox
+hq dm inbox --unread
+
+# Mark the page read after listing
+hq dm inbox --mark-read
+
+# 1:1 thread (alias: hq dm read …)
+hq dm thread stefan@example.com
+hq dm read prs_abc123 --no-ack --limit 50
+
+# Channel / group history (alias: hq dm history …)
+hq dm channel vyg-dev
+hq dm history "#launch" --mark-read
+hq dm channel chn_…          # unnamed group DM — id from `hq channels`
+
+# Machine-readable
+hq dm inbox --json
+hq dm thread stefan@example.com --json
+```
+
+For a bare name on `thread`/`read`, resolve with `hq people resolve` first (same
+rules as send) — the read path only accepts email / personUid / agentUid.
+
+## Steps (send)
 
 1. **Resolve intent.** From the user's request, pull the recipient(s), the
    message body, and any agent prompt / details / schedule. If the user said
    "send my agent context" or "so their agent can act," put that in `--prompt`.
-   If they want a longer writeup, use `--details`.
+   If they want a longer writeup, use `--details`. If they want to **read**
+   messages instead, skip to the Read commands above.
 
 2. **Resolve & confirm recipient emails — never send blind.** `hq dm` only
    accepts an **email** or a **personUid** — it does NOT look up names. So before
@@ -149,8 +211,11 @@ Options:
   over the same `hq dm`. Use `hq people search "<token>"` to browse candidates,
   and `--company <slug>` to scope when you belong to more than one company.
 - Requires a signed-in HQ session (`/hq-login`). The CLI resolves the caller
-  identity from the Cognito token — the DM is always **from** the signed-in user.
-- Sending is CLI/session-only by design; the HQ Desktop App is **receive-only**.
+  identity from the Cognito token — a sent DM is always **from** the signed-in
+  user; read commands show **your** inbox / threads.
+- **Read is first-class in the CLI** (`inbox`, `thread`/`read`,
+  `channel`/`history`). The Desktop App still delivers live notifications; use
+  the CLI when the agent or user needs to inspect messages without the app UI.
 - Scheduled DMs are promoted to live notifications within ~60s of their time
   on the recipient's next inbox poll.
 - Never paste secrets into a DM body/prompt/details — DMs are stored server-side.
@@ -159,3 +224,4 @@ Options:
 
 - `/hq-share` — share a vault path in your message
 - `/signals` — see action items and commitments
+- `hq channels` — list named channels / group DM ids for `hq dm channel`

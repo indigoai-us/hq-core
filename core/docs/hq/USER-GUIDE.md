@@ -10,6 +10,8 @@ Per-OS install commands, known limitations (including `/deploy` identity `missin
 
 → [core/knowledge/public/hq-core/cross-platform-support.md](../../knowledge/public/hq-core/cross-platform-support.md)
 
+If a skill is skipped as invalid YAML or a hook reports a launch failure, use the runtime-contract troubleshooting section in that guide. HQ attempts safe execute-bit repair first; unrecoverable failures include an exact remediation command without exposing hook payloads or secrets.
+
 ## Commands
 
 ### Session Management

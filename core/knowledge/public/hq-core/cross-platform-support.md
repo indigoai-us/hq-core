@@ -34,7 +34,52 @@ macOS:               brew install jq
 
 - **`/deploy` identity** can parse tokens with **jq or node** (`identity-resolve.sh` → `hook-lib.sh`). If both are missing it returns `status=missing_dependency` (not a false login prompt).
 - **Later deploy steps** in `deploy/SKILL.md` still call `jq` directly. Full upload path expects jq installed.
-- Execute bits: every shipped `*.sh` should be git mode `100755`. CI enforces this; `hook-gate.sh` also self-heals a missing `+x` at runtime.
+- Execute bits: every shipped `*.sh` should be git mode `100755`. CI enforces this; the shared hook launcher also attempts `chmod u+x` and falls back to `bash` for readable HQ-owned shell hooks.
+
+## Runtime contract troubleshooting
+
+HQ validates the same release contract for Claude, Codex, Grok, and Cowork:
+
+- Shipped `SKILL.md` and generated `agents/openai.yaml` metadata must parse as YAML. This includes package-contributed Cowork skills.
+- Concrete commands in shipped skills need narrow `allowed-tools` rules or an explicit approval-gated disposition.
+- Hook adapters must execute a hook or emit bounded remediation. They must not silently skip a missing execute bit or failed launch.
+
+### Validate skills and permissions locally
+
+Install the maintained parser into a temporary dependency root, then run the validator:
+
+```bash
+node core/scripts/validate-agent-runtime-contracts.mjs install-parser --install-dir "${TMPDIR:-/tmp}/hq-agent-runtime-parser"
+HQ_AGENT_RUNTIME_PARSER_ROOT="${TMPDIR:-/tmp}/hq-agent-runtime-parser" \
+  node core/scripts/validate-agent-runtime-contracts.mjs
+HQ_AGENT_RUNTIME_PARSER_ROOT="${TMPDIR:-/tmp}/hq-agent-runtime-parser" \
+  node core/scripts/validate-agent-runtime-contracts.mjs validate-permissions
+```
+
+Run the hermetic four-runtime fixture matrix:
+
+```bash
+HQ_AGENT_RUNTIME_PARSER_ROOT="${TMPDIR:-/tmp}/hq-agent-runtime-parser" \
+  bash core/scripts/tests/agent-runtime-contracts-e2e.test.sh
+```
+
+### Repair a hook permission failure
+
+Runtime recovery is automatic when safe. If both chmod and the readable-shell fallback fail, HQ prints the repo-relative hook path, cause, and repair command without including the hook payload or secrets.
+
+For an installed checkout:
+
+```bash
+chmod u+x "$HQ_ROOT/.claude/hooks/<hook>.sh"
+```
+
+For an HQ Core source checkout, preserve the mode in Git as well:
+
+```bash
+git update-index --chmod=+x -- .claude/hooks/<hook>.sh
+```
+
+If a skill is skipped with `invalid YAML`, quote descriptions containing `: ` or use a YAML block scalar. The validator reports the exact file, field, line, and remediation.
 
 ## Contributor conventions
 
@@ -63,7 +108,7 @@ New scripts must pass:
 bash core/scripts/lint-shell-portability.sh
 ```
 
-CI also runs shellcheck (warning severity) and a Windows/macOS smoke subset of portability tests.
+CI also runs ShellCheck (warning severity), the Claude/Codex/Grok/Cowork contract matrix, and a Windows/macOS smoke subset of portability tests.
 
 ## Related
 

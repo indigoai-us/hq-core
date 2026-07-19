@@ -109,3 +109,216 @@ hq_normpath() {
       print r
     }'
 }
+
+hq_text_compact() {
+  local max="${1:-240}"
+  local text="$2"
+  text="$(printf '%s' "$text" | tr '\r\n' '  ' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')"
+  if [ "${#text}" -gt "$max" ]; then
+    printf '%s...' "${text:0:$((max - 3))}"
+  else
+    printf '%s' "$text"
+  fi
+}
+
+hq_hook_safe_session_key() {
+  local raw="$1"
+  raw="$(printf '%s' "$raw" | tr -c 'A-Za-z0-9._-' '_')"
+  raw="${raw#_}"
+  raw="${raw%_}"
+  if [ -z "$raw" ]; then
+    raw="session-${PPID:-$$}"
+  fi
+  if [ "${#raw}" -gt 96 ]; then
+    raw="${raw:0:96}"
+  fi
+  printf '%s' "$raw"
+}
+
+hq_hook_session_key_from_payload() {
+  local payload="$1"
+  local key="${HQ_HOOK_SESSION_ID:-}"
+  if [ -z "$key" ]; then
+    key="$(printf '%s' "$payload" | hq_json_get 'session_id')"
+  fi
+  if [ -z "$key" ]; then
+    key="$(printf '%s' "$payload" | hq_json_get 'sessionId')"
+  fi
+  if [ -z "$key" ]; then
+    key="$(printf '%s' "$payload" | hq_json_get 'conversation_id')"
+  fi
+  if [ -z "$key" ]; then
+    key="$(printf '%s' "$payload" | hq_json_get 'conversationId')"
+  fi
+  if [ -z "$key" ]; then
+    key="$(printf '%s' "$payload" | hq_json_get 'thread_id')"
+  fi
+  if [ -z "$key" ]; then
+    key="$(printf '%s' "$payload" | hq_json_get 'threadId')"
+  fi
+  if [ -z "$key" ]; then
+    key="$(printf '%s' "$payload" | hq_json_get 'tool_input.session_id')"
+  fi
+  hq_hook_safe_session_key "$key"
+}
+
+hq_path_within_root() {
+  local root="$1"
+  local path="$2"
+  local root_norm path_norm
+  [ -n "$root" ] || return 1
+  [ -n "$path" ] || return 1
+  # Never chmod through a symlink that may resolve outside HQ_ROOT.
+  [ -L "$path" ] && return 1
+  root_norm="$(hq_normpath "$root")"
+  path_norm="$(hq_normpath "$path")"
+  case "$path_norm" in
+    "$root_norm"|"$root_norm"/*) return 0 ;;
+  esac
+  return 1
+}
+
+hq_path_label() {
+  local root="$1"
+  local path="$2"
+  local root_norm path_norm
+  [ -n "$path" ] || return 0
+  root_norm="$(hq_normpath "$root")"
+  path_norm="$(hq_normpath "$path")"
+  case "$path_norm" in
+    "$root_norm")
+      printf '.'
+      return 0
+      ;;
+    "$root_norm"/*)
+      printf '%s' "${path_norm#"$root_norm"/}"
+      return 0
+      ;;
+  esac
+  case "$path" in
+    */*) printf '%s' "${path##*/}" ;;
+    *) printf '%s' "$path" ;;
+  esac
+}
+
+hq_hook_repair_command() {
+  local root="$1"
+  local path="$2"
+  local rel
+  if ! hq_path_within_root "$root" "$path"; then
+    return 0
+  fi
+  rel="$(hq_path_label "$root" "$path")"
+  [ -n "$rel" ] || return 0
+  printf 'chmod u+x "$HQ_ROOT/%s"' "$rel"
+}
+
+hq_hook_warning_cache_path() {
+  local root="$1"
+  local session_key="$2"
+  local cache_dir
+  [ -n "$root" ] || return 1
+  cache_dir="$root/workspace/.hook-launch-warnings"
+  mkdir -p "$cache_dir" 2>/dev/null || return 1
+  printf '%s/%s.keys' "$cache_dir" "$session_key"
+}
+
+hq_hook_warning_once() {
+  local root="$1"
+  local session_key="$2"
+  local dedupe_key="$3"
+  local cache_path
+  cache_path="$(hq_hook_warning_cache_path "$root" "$session_key")" || return 0
+  if grep -Fqx "$dedupe_key" "$cache_path" 2>/dev/null; then
+    return 1
+  fi
+  printf '%s\n' "$dedupe_key" >>"$cache_path" 2>/dev/null || true
+  return 0
+}
+
+hq_hook_launch_warning_text() {
+  local payload="$1"
+  local root="$2"
+  local mode="$3"
+  local kind="$4"
+  local label="$5"
+  local path="$6"
+  local cause="$7"
+  local session_key rel repair dedupe_key msg
+
+  session_key="$(hq_hook_session_key_from_payload "$payload")"
+  rel="$(hq_path_label "$root" "$path")"
+  repair="$(hq_hook_repair_command "$root" "$path")"
+  dedupe_key="$(hq_text_compact 240 "$mode|$kind|$label|$rel|$cause")"
+  if ! hq_hook_warning_once "$root" "$session_key" "$dedupe_key"; then
+    return 0
+  fi
+
+  msg="WARNING: HQ ${mode} ${kind} launch failed for ${label}"
+  if [ -n "$rel" ]; then
+    msg="${msg} (${rel})"
+  fi
+  msg="${msg}: ${cause}."
+  if [ -n "$repair" ]; then
+    msg="${msg} Repair: ${repair}"
+  fi
+  printf '%s' "$(hq_text_compact 420 "$msg")"
+}
+
+HQ_HOOK_LAST_STATUS=0
+HQ_HOOK_LAST_CAUSE=""
+
+hq_launch_shell_path() {
+  local root="$1"
+  local path="$2"
+  local payload="$3"
+  shift 3
+
+  HQ_HOOK_LAST_STATUS=0
+  HQ_HOOK_LAST_CAUSE=""
+
+  if [ ! -f "$path" ]; then
+    HQ_HOOK_LAST_STATUS=127
+    if hq_path_within_root "$root" "$path"; then
+      HQ_HOOK_LAST_CAUSE="file is missing under HQ_ROOT"
+    else
+      HQ_HOOK_LAST_CAUSE="file is missing"
+    fi
+    return 127
+  fi
+
+  if [ ! -x "$path" ] && hq_path_within_root "$root" "$path"; then
+    chmod u+x "$path" 2>/dev/null || true
+  fi
+
+  if [ -x "$path" ]; then
+    printf '%s' "$payload" | "$path" "$@"
+    HQ_HOOK_LAST_STATUS=$?
+    return "$HQ_HOOK_LAST_STATUS"
+  fi
+
+  local bash_bin="${BASH:-}"
+  if [ -z "$bash_bin" ] || [ ! -x "$bash_bin" ]; then
+    bash_bin="$(command -v bash 2>/dev/null || true)"
+  fi
+  if [ -r "$path" ] && [ -n "$bash_bin" ]; then
+    printf '%s' "$payload" | "$bash_bin" "$path" "$@"
+    HQ_HOOK_LAST_STATUS=$?
+    return "$HQ_HOOK_LAST_STATUS"
+  fi
+
+  if [ ! -r "$path" ]; then
+    if hq_path_within_root "$root" "$path"; then
+      HQ_HOOK_LAST_CAUSE="chmod u+x could not repair the file and bash could not read it"
+    else
+      HQ_HOOK_LAST_CAUSE="file is not executable or readable"
+    fi
+    HQ_HOOK_LAST_STATUS=126
+    return 126
+  fi
+
+  HQ_HOOK_LAST_STATUS=127
+  # shellcheck disable=SC2034 # Read by adapters after this sourced function returns.
+  HQ_HOOK_LAST_CAUSE="bash is unavailable for the readable shell fallback"
+  return 127
+}

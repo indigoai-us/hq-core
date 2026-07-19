@@ -25,7 +25,7 @@ CWD="$(json_get '.cwd // empty')"
 # without one falls into the shared, persistent default.txt ledger, so a policy
 # fires once per MACHINE instead of once per session. When Codex's event lacks
 # a session field, synthesize one from the invoking process ($PPID is the Codex
-# process for this session — stable across its events, distinct across
+# process for this session - stable across its events, distinct across
 # sessions) and stamp it into the payload every hook sees.
 SESSION_ID="$(json_get '.session_id // .sessionId // .conversation_id // .thread_id // empty')"
 if [ -z "$SESSION_ID" ]; then
@@ -41,8 +41,8 @@ fi
 # Every working repo is nested under the HQ root (repos/*, companies/*/knowledge),
 # so when Codex's cwd is inside one of those, that command collapses HQ_ROOT to
 # the NESTED repo. The gate then resolves to a path with no hook-gate.sh and the
-# adapter exits 0 — silently bypassing EVERY Codex PreToolUse protection (the
-# git-mutation guard, detect-secrets, core-write blocks, …). A `cd <hq-root> &&
+# adapter exits 0 - silently bypassing EVERY Codex PreToolUse protection (the
+# git-mutation guard, detect-secrets, core-write blocks, ...). A `cd <hq-root> &&
 # git push` issued from a nested-repo cwd thus reached the remote unblocked under
 # Codex while Claude blocked it. Self-location is immune to cwd.
 self_src="${BASH_SOURCE[0]:-$0}"
@@ -62,15 +62,27 @@ fi
 HOOK_DIR="$HQ_ROOT/.claude/hooks"
 GATE="$HOOK_DIR/hook-gate.sh"
 
-if [ ! -f "$GATE" ]; then
+# Load diagnostics before checking the gate so a damaged HQ install is visible.
+if [ -n "$HQ_ROOT" ]; then
+  CLAUDE_PROJECT_DIR="$HQ_ROOT"
+  export HQ_ROOT CLAUDE_PROJECT_DIR
+  . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
+fi
+
+if [ -z "$HQ_ROOT" ] || [ ! -d "$HOOK_DIR" ] || [ ! -f "$GATE" ]; then
+  if [ -n "$HQ_ROOT" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
+    warning="$(hq_hook_launch_warning_text \
+      "$INPUT" "$HQ_ROOT" "advisory" "hook gate" "hook-gate" "$GATE" \
+      "file is missing under HQ_ROOT")"
+    [ -n "$warning" ] && printf '%s\n' "$warning" >&2
+  fi
   exit 0
 fi
 
 # Shared python-free primitives (hq_normpath fallback in normalize_path).
-. "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
 
 STDOUT_ACCUM=""
-STDERR_ACCUM=""
+DIAG_ACCUM=""
 
 append_stdout() {
   local text="$1"
@@ -83,14 +95,31 @@ ${text}"
   fi
 }
 
-append_stderr() {
+append_diag() {
   local text="$1"
   [ -z "$text" ] && return 0
-  if [ -z "$STDERR_ACCUM" ]; then
-    STDERR_ACCUM="$text"
+  if [ -z "$DIAG_ACCUM" ]; then
+    DIAG_ACCUM="$text"
   else
-    STDERR_ACCUM="${STDERR_ACCUM}
+    DIAG_ACCUM="${DIAG_ACCUM}
 ${text}"
+  fi
+}
+
+compact_diag() {
+  if command -v hq_text_compact >/dev/null 2>&1; then
+    hq_text_compact 420 "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+emit_diag() {
+  [ -z "$DIAG_ACCUM" ] && return 0
+  if command -v hq_text_compact >/dev/null 2>&1; then
+    printf '%s\n' "$(hq_text_compact 420 "$DIAG_ACCUM")" >&2
+  else
+    printf '%s\n' "$DIAG_ACCUM" >&2
   fi
 }
 
@@ -100,22 +129,31 @@ run_hook() {
   local payload="$3"
   local mode="${4:-blocking}"
 
-  [ -x "$script" ] || return 0
-
-  local out err status
+  local out err status out_text err_text warning
   out="$(mktemp)"
   err="$(mktemp)"
-  # Export CLAUDE_PROJECT_DIR alongside HQ_ROOT (DEV-1765): hooks that anchor
-  # their decision on the project root — block-hq-root-git-mutation.sh derives
-  # HQ_ROOT from "${CLAUDE_PROJECT_DIR:-$(pwd)}" — must see the real HQ root, not
-  # the ambient pwd Codex happens to invoke the adapter from. run_script already
-  # does this; run_hook must too, or the git-mutation guard compares anchors
-  # against the wrong root under Codex.
-  printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$GATE" "$hook_id" "$script" >"$out" 2>"$err"
-  status=$?
+  status=0
+  warning=""
 
-  append_stdout "$(cat "$out" 2>/dev/null || true)"
-  append_stderr "$(cat "$err" 2>/dev/null || true)"
+  if command -v hq_launch_shell_path >/dev/null 2>&1; then
+    hq_launch_shell_path "$HQ_ROOT" "$GATE" "$payload" "$hook_id" "$script" >"$out" 2>"$err" || status=$?
+    if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
+      warning="$(hq_hook_launch_warning_text \
+        "$payload" \
+        "$HQ_ROOT" \
+        "$mode" \
+        "hook gate" \
+        "$hook_id" \
+        "$GATE" \
+        "$HQ_HOOK_LAST_CAUSE")"
+    fi
+  else
+    printf '%s' "$payload" | bash "$GATE" "$hook_id" "$script" >"$out" 2>"$err" || status=$?
+  fi
+
+  out_text="$(cat "$out" 2>/dev/null || true)"
+  err_text="$(cat "$err" 2>/dev/null || true)"
+  append_stdout "$out_text"
   rm -f "$out" "$err"
 
   if [ "$status" -eq 0 ]; then
@@ -123,11 +161,22 @@ run_hook() {
   fi
 
   if [ "$mode" = "advisory" ]; then
-    append_stderr "WARNING: advisory hook '$hook_id' exited $status; continuing."
+    [ -n "$warning" ] && append_diag "$warning"
+    if [ -n "$err_text" ]; then
+      append_diag "$(compact_diag "$err_text")"
+    elif [ -z "$warning" ]; then
+      append_diag "WARNING: advisory hook '$hook_id' exited $status; continuing."
+    fi
     return 0
   fi
 
-  [ -n "$STDERR_ACCUM" ] && printf '%s\n' "$STDERR_ACCUM" >&2
+  emit_diag
+  [ -n "$warning" ] && printf '%s\n' "$warning" >&2
+  if [ -n "$err_text" ]; then
+    printf '%s\n' "$err_text" >&2
+  elif [ -z "$warning" ]; then
+    printf "Hook '%s' exited %s.\n" "$hook_id" "$status" >&2
+  fi
   exit "$status"
 }
 
@@ -136,16 +185,32 @@ run_script() {
   local payload="$2"
   local mode="${3:-advisory}"
 
-  [ -x "$script" ] || return 0
-
-  local out err status
+  local out err status out_text err_text warning label
   out="$(mktemp)"
   err="$(mktemp)"
-  printf '%s' "$payload" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" "$script" >"$out" 2>"$err"
-  status=$?
+  label="$(basename "$script")"
+  status=0
+  warning=""
 
-  append_stdout "$(cat "$out" 2>/dev/null || true)"
-  append_stderr "$(cat "$err" 2>/dev/null || true)"
+  if command -v hq_launch_shell_path >/dev/null 2>&1; then
+    hq_launch_shell_path "$HQ_ROOT" "$script" "$payload" >"$out" 2>"$err" || status=$?
+    if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
+      warning="$(hq_hook_launch_warning_text \
+        "$payload" \
+        "$HQ_ROOT" \
+        "$mode" \
+        "script" \
+        "$label" \
+        "$script" \
+        "$HQ_HOOK_LAST_CAUSE")"
+    fi
+  else
+    printf '%s' "$payload" | "$script" >"$out" 2>"$err" || status=$?
+  fi
+
+  out_text="$(cat "$out" 2>/dev/null || true)"
+  err_text="$(cat "$err" 2>/dev/null || true)"
+  append_stdout "$out_text"
   rm -f "$out" "$err"
 
   if [ "$status" -eq 0 ]; then
@@ -153,17 +218,28 @@ run_script() {
   fi
 
   if [ "$mode" = "advisory" ]; then
-    append_stderr "WARNING: advisory script '$(basename "$script")' exited $status; continuing."
+    [ -n "$warning" ] && append_diag "$warning"
+    if [ -n "$err_text" ]; then
+      append_diag "$(compact_diag "$err_text")"
+    elif [ -z "$warning" ]; then
+      append_diag "WARNING: advisory script '$label' exited $status; continuing."
+    fi
     return 0
   fi
 
-  [ -n "$STDERR_ACCUM" ] && printf '%s\n' "$STDERR_ACCUM" >&2
+  emit_diag
+  [ -n "$warning" ] && printf '%s\n' "$warning" >&2
+  if [ -n "$err_text" ]; then
+    printf '%s\n' "$err_text" >&2
+  elif [ -z "$warning" ]; then
+    printf "Script '%s' exited %s.\n" "$label" "$status" >&2
+  fi
   exit "$status"
 }
 
 # Collect edit-target paths from an apply_patch/Edit/Write payload: explicit
 # file_path/path fields plus "*** Add/Update/Delete File:" and "*** Move to:"
-# markers inside the patch text. jq+sed+awk — python-free (hooks-no-python).
+# markers inside the patch text. jq+sed+awk - python-free (hooks-no-python).
 patch_paths() {
   {
     printf '%s' "$INPUT" | jq -r '
@@ -237,7 +313,7 @@ block_template_edit_if_needed() {
 # and ~/ forms. START and END charsets are symmetric so write-redirect
 # bypasses like `echo x >~/.env`, `cat<~/.env`, `|~/.env`, `;~/.env`
 # are all caught. The `.env` token uses an END boundary so `.env.schema`,
-# `.env.local`, `.envrc` correctly do NOT match — matching Claude's
+# `.env.local`, `.envrc` correctly do NOT match - matching Claude's
 # literal `Read(~/.env)` deny rather than a `~/.env*` glob.
 block_sensitive_read_if_needed() {
   local text="$1"
@@ -391,5 +467,6 @@ case "$HOOK_EVENT" in
     ;;
 esac
 
+emit_diag
 emit_context
 exit 0
