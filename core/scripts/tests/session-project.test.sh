@@ -66,4 +66,19 @@ plans = data.get("metadata", {}).get("nativePlans", [])
 assert plans and plans[-1]["path"].endswith("-native-plan.md")
 PY
 
+# Regression: a conflicted pointer is not a project path. It must fail closed
+# rather than creating a directory tree whose names contain merge markers.
+mkdir -p "$TMP/.claude/state"
+printf '<<<<<<< HEAD\npersonal/projects/one\n=======\npersonal/projects/two\n>>>>>>> topic\n' \
+  > "$TMP/.claude/state/active-session-project"
+set +e
+bad_pointer_out=$(printf '## Plan\n' | HQ_ROOT="$TMP" "$HELPER" ingest-plan 2>&1)
+bad_pointer_status=$?
+set -e
+[[ "$bad_pointer_status" -ne 0 ]] || fail "conflicted active pointer was accepted"
+assert_contains "$bad_pointer_out" "invalid active project pointer" "conflicted pointer rejection"
+[[ ! -e "$TMP/<<<<<<< HEAD" ]] || fail "conflicted pointer created a filesystem path"
+grep -qxF '.claude/state/active-session-project merge=binary' "$ROOT/.gitattributes" \
+  || fail "active project pointer lacks binary merge protection"
+
 echo "session-project smoke: ok"

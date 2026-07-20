@@ -234,6 +234,26 @@ function setActivePointer(projectDir) {
   fs.writeFileSync(path.join(state, "active-session-project"), String(projectDir) + "\n");
 }
 
+function readActivePointer(pointer) {
+  let raw;
+  try { raw = fs.readFileSync(pointer, "utf8"); } catch (e) { return null; }
+
+  // This pointer is a one-line project directory, not arbitrary file content.
+  // In particular, never reinterpret merge conflict markers as directory names.
+  const match = raw.match(/^([^\r\n]+)(?:\r?\n)?$/);
+  if (!match || /<<<<<<<|=======|>>>>>>>/.test(match[1])) return null;
+
+  const projectDir = path.resolve(HQ_ROOT, match[1]);
+  const rel = path.relative(HQ_ROOT, projectDir);
+  const parts = rel.split(path.sep).filter(Boolean);
+  const isPersonalProject = parts.length >= 3 && parts[0] === "personal" && parts[1] === "projects";
+  const isCompanyProject = parts.length >= 4 && parts[0] === "companies" && parts[2] === "projects";
+  if (rel === "" || rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel) ||
+      (!isPersonalProject && !isCompanyProject)) return null;
+
+  return projectDir;
+}
+
 function ensureProject(args) {
   const query = [args.title || "", args.prompt || ""].join(" ").trim();
   let reuse = null;
@@ -293,7 +313,11 @@ function resolveProjectDir(project, requiredMsg) {
   if (project) {
     projectDir = path.join(HQ_ROOT, project);
   } else if (fs.existsSync(pointer)) {
-    projectDir = fs.readFileSync(pointer, "utf8").trim();
+    projectDir = readActivePointer(pointer);
+    if (!projectDir) {
+      process.stderr.write("session-project: invalid active project pointer\n");
+      process.exit(2);
+    }
   } else if (requiredMsg) {
     process.stderr.write(requiredMsg + "\n");
     process.exit(1);

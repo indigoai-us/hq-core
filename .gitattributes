@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# This is a single-writer session pointer, not mergeable text.  Treating it as
+# binary preserves the current valid value in the worktree rather than writing
+# conflict-marker bytes that consumers could mistake for a filesystem path.
+.claude/state/active-session-project merge=binary
