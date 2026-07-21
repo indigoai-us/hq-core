@@ -12,7 +12,7 @@ fail() {
   exit 1
 }
 
-mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/bin" "$TMP_ROOT/logs"
+mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/companies/acme/workspace" "$TMP_ROOT/bin" "$TMP_ROOT/logs"
 cp "$SRC_ROOT/scripts/handoff-post.sh" "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
 chmod +x "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
 
@@ -39,11 +39,18 @@ exit 42
 SH
 chmod +x "$TMP_ROOT/bin/claude"
 
+cat > "$TMP_ROOT/bin/hq" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HQ_SYNC_SENTINEL"
+SH
+chmod +x "$TMP_ROOT/bin/hq"
+
 cat > "$TMP_ROOT/repo/workspace/threads/T-test.json" <<'JSON'
 {
   "files_touched": [
     "companies/acme/knowledge/release-note.md"
-  ]
+  ],
+  "metadata": {"company": ["acme"]}
 }
 JSON
 cat > "$TMP_ROOT/learnings.json" <<'JSON'
@@ -55,12 +62,15 @@ JSON
 (
   cd "$TMP_ROOT/repo"
   CLAUDE_SENTINEL="$TMP_ROOT/claude-called" \
+  HQ_SYNC_SENTINEL="$TMP_ROOT/hq-sync-called" \
   HANDOFF_LOG_DIR="$TMP_ROOT/logs" \
   PATH="$TMP_ROOT/bin:/usr/bin:/bin" \
     bash core/scripts/handoff-post.sh workspace/threads/T-test.json "$TMP_ROOT/learnings.json"
 )
 
 [[ ! -e "$TMP_ROOT/claude-called" ]] || fail "handoff-post invoked claude"
+grep -qx 'sync push companies/acme/workspace' "$TMP_ROOT/hq-sync-called" \
+  || fail "handoff-post did not push the mirrored company workspace"
 grep -q "learn: eligible and pending runtime dispatch" "$TMP_ROOT/logs/handoff-post.log" \
   || fail "eligible learnings were not logged as pending"
 grep -q "document-release: eligible and pending runtime dispatch" "$TMP_ROOT/logs/handoff-post.log" \

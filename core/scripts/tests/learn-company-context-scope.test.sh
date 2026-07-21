@@ -15,6 +15,13 @@ assert_contains() {
   grep -qF "$needle" "$SKILL" || fail "$label: missing '$needle'"
 }
 
+assert_not_contains() {
+  local needle="$1" label="$2"
+  if grep -qF "$needle" "$SKILL"; then
+    fail "$label: found retired '$needle'"
+  fi
+}
+
 [ -f "$SKILL" ] || fail "learn skill is missing: $SKILL"
 
 assert_contains \
@@ -32,5 +39,23 @@ assert_contains \
 assert_contains \
   'explicit global scope targets `personal/policies/`' \
   'explicit global scope continues to route to personal policies'
+assert_contains \
+  'automatically checked by the `validate-policy-frontmatter.sh` write/edit hook' \
+  'learn documents the current automatic policy validation path'
+assert_contains \
+  'when: vercel' \
+  'learn routes stack-specific policy applicability through when'
+assert_not_contains \
+  '# applies_to:' \
+  'learn policy template omits the removed applicability field'
+assert_not_contains \
+  'validate-policy-tags.sh' \
+  'learn does not reference the retired policy-tag validator'
+assert_not_contains \
+  'scope: {company|repo|command|global}' \
+  'learn policy template omits the removed scope field'
+assert_not_contains \
+  'trigger: {when this applies}' \
+  'learn policy template omits the retired trigger field'
 
 echo "learn-company-context-scope: ok"

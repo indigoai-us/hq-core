@@ -61,6 +61,10 @@ done
 # -------- changeset path extraction / validation --------
 SKIPPED_PATHS_JSON="[]"
 SAFE_STAGE_PATHS=()
+MIRROR_COMPANIES_JSON="[]"
+MIRRORED_COMPANIES=()
+MIRRORED_COMPANIES_JSON="[]"
+MIRROR_STAGE_PATHS=()
 
 record_skip() {
   local path="$1"
@@ -130,6 +134,15 @@ done < <(
   ' 2>/dev/null || true
 )
 
+# Company workspace mirrors are scoped from the already-validated changeset,
+# never from ambient repository state. A handoff can legitimately touch more
+# than one company, so preserve all unique slugs in durable thread metadata.
+MIRROR_COMPANIES_JSON=$(printf '%s\n' "${SAFE_STAGE_PATHS[@]:-}" | jq -R -s -c '
+  split("\n")
+  | [ .[] | select(length > 0) | try (capture("^companies/(?<company>[a-z][a-z0-9_-]*)/").company) ]
+  | unique
+' 2>/dev/null || printf '[]')
+
 # -------- bg git reap (if launched by caller) --------
 GIT_BG_ERRORS=""
 if [[ -f /tmp/handoff-git-bg.pid ]]; then
@@ -179,6 +192,7 @@ jq -n \
   --argjson files_touched "$FILES_TOUCHED_JSON" \
   --argjson learnings "$LEARNINGS_JSON" \
   --argjson tags "$TAGS_JSON" \
+  --argjson companies "$MIRROR_COMPANIES_JSON" \
   '{
     thread_id: $thread_id,
     version: 1,
@@ -193,8 +207,29 @@ jq -n \
     next_steps: $next_steps,
     files_touched: $files_touched,
     learnings: $learnings,
-    metadata: { title: $title, tags: $tags }
+    metadata: { title: $title, tags: $tags, company: $companies }
   }' > "$THREAD_PATH"
+
+# `handoff-finalize.sh` writes from a shell subprocess, so its thread creation
+# does not pass through editor PostToolUse hooks. Replay the installed mirror
+# hook with Bash: hooks are source files and do not require an executable bit.
+MIRROR_HOOK="$HQ_ROOT/.claude/hooks/mirror-thread-to-company.sh"
+if [[ -f "$MIRROR_HOOK" ]]; then
+  jq -n --arg file_path "$HQ_ROOT/$THREAD_PATH" \
+    '{tool_name:"Write", tool_input:{file_path:$file_path}}' | \
+    bash "$MIRROR_HOOK" >/dev/null 2>&1 || true
+fi
+while IFS= read -r company; do
+  [[ -n "$company" ]] || continue
+  if [[ -f "companies/${company}/workspace/sessions/${THREAD_ID}.json" ]]; then
+    MIRRORED_COMPANIES+=("$company")
+    MIRROR_STAGE_PATHS+=(
+      "companies/${company}/workspace/index.jsonl"
+      "companies/${company}/workspace/.gitignore"
+    )
+  fi
+done < <(jq -r '.[]' <<<"$MIRROR_COMPANIES_JSON")
+MIRRORED_COMPANIES_JSON=$(printf '%s\n' "${MIRRORED_COMPANIES[@]:-}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
 
 jq -n \
   --arg thread_id "$THREAD_ID" \
@@ -263,6 +298,7 @@ fi
 HQ_COMMITTED="false"
 EXPLICIT_PATHS=(
   "${SAFE_STAGE_PATHS[@]:-}"
+  "${MIRROR_STAGE_PATHS[@]:-}"
   "workspace/threads/${THREAD_ID}.json"
   "workspace/threads/${THREAD_ID}.changeset.json"
   "workspace/threads/handoff.json"
@@ -323,6 +359,7 @@ jq -n \
   --arg commit_after_finalize "$COMMIT_AFTER" \
   --arg next_command "$NEXT_COMMAND" \
   --argjson clipboard_copied "$CLIPBOARD_COPIED" \
+  --argjson mirror_companies "$MIRRORED_COMPANIES_JSON" \
   '{
     thread_id: $thread_id,
     thread_path: $thread_path,
@@ -337,5 +374,6 @@ jq -n \
     qmd_pid: $qmd_pid,
     git_bg_errors: $git_bg_errors,
     next_command: $next_command,
-    clipboard_copied: $clipboard_copied
+    clipboard_copied: $clipboard_copied,
+    mirror_companies: $mirror_companies
   }'

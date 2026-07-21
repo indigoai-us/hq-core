@@ -27,6 +27,9 @@ mkdir -p "$THREADS_DIR"
 # Portable (bash 3.x compatible) — avoid mapfile.
 THREAD_FILES=()
 while IFS= read -r line; do
+  # Each primary thread record can have a changeset sidecar. The T-*.json
+  # glob also matches that sidecar, but it is not a thread record.
+  [[ "$line" == *.changeset.json ]] && continue
   THREAD_FILES+=("$line")
 done < <(ls -t "$THREADS_DIR"/T-*.json 2>/dev/null || true)
 COUNT=${#THREAD_FILES[@]}
