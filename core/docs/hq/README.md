@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
+  <a href="https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_docs_readme">Guided Tutorial</a> •
   <a href="#core-concepts">Core Concepts</a> •
   <a href="#commands">Commands</a> •
   <a href="#workers">Workers</a>
@@ -20,6 +21,8 @@
 ---
 
 ## What is HQ?
+
+New to HQ? Follow the **[guided seven-lesson tutorial](https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_docs_readme)**. Each lesson pairs a short video with written steps and screenshots.
 
 HQ is a **shared context layer** on top of any AI tool — Claude Code, Cursor, Codex, or whatever your team uses. It syncs knowledge, skills, and capabilities across everyone working with AI, so the most skilled user's workflow becomes the whole team's baseline.
 

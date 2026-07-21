@@ -2,6 +2,8 @@
 
 The AI operating system for your company. A shared context layer on top of Claude Code, Cursor, and Codex — syncs knowledge, skills, and capabilities across your team. Scales from solopreneur to enterprise.
 
+For a first-time setup, begin with the **[guided HQ tutorial](https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_user_guide)**. Its seven videos, written walkthroughs, and screenshots take you from installation through your first shared worker. The `/tutorial` command below is the complementary adaptive course inside your local HQ.
+
 ## Prerequisites & platforms
 
 HQ's shell layer (hooks, scripts, skills) runs on **Linux, macOS, and Windows Git Bash**. Required tools: bash, git, node, **jq**.

@@ -281,6 +281,37 @@ else
   echo "skip: multi-line description test (yq not on PATH)"
 fi
 
+# --- Test 7: personal/workers is walked DIRECTLY (no reindex symlink mirror) ---
+# personal is now the sole read source for the personal overlay: a worker.yaml
+# under personal/workers/<name>/ must register on its own, without any
+# core/workers/<name> -> ../../personal/workers/<name> symlink present. Guards
+# the retirement of the mirror (the generator's find must include personal/workers).
+r7="$(new_root)"
+worker "$r7" "shipped" "shipped" "OpsWorker" "A shipped core worker."
+mkdir -p "$r7/personal/workers/my-helper"
+cat > "$r7/personal/workers/my-helper/worker.yaml" <<'YAML'
+worker:
+  id: my-helper
+  name: "my-helper"
+  description: "A personal-overlay worker."
+  type: OpsWorker
+  version: "1.0"
+YAML
+code="$(run_gen "$r7")"; GEN_ERR="$(cat "$r7/.err" 2>/dev/null || true)"
+reg7="$r7/core/workers/registry.yaml"
+if [ "$code" != "0" ]; then
+  echo "FAIL[personal]: expected exit 0, got $code; stderr: $GEN_ERR" >&2; fails=$((fails+1))
+elif ! grep -q 'id: "my-helper"' "$reg7"; then
+  echo "FAIL[personal]: personal/workers worker 'my-helper' missing from registry" >&2; fails=$((fails+1))
+elif ! grep -q 'id: "shipped"' "$reg7"; then
+  echo "FAIL[personal]: shipped core worker missing — both core and personal must surface" >&2; fails=$((fails+1))
+elif ! grep -q 'personal/workers/my-helper/' "$reg7"; then
+  echo "FAIL[personal]: personal worker registered under an unexpected path" >&2; fails=$((fails+1))
+else
+  echo "ok: personal/workers registers directly (no mirror), alongside core workers"
+fi
+rm -rf "$r7"
+
 if [ "$fails" -ne 0 ]; then
   echo "generate-workers-registry tests: $fails failure(s)" >&2
   exit 1

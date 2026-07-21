@@ -11,9 +11,15 @@ Educational materials for new HQ users. Created during `/setup`, referenced thro
 | `learning-path.md` | 11-module self-paced progression from beginner to advanced |
 | `tutorials/` | Interactive lessons via `/tutorial` — hands-on exercises using your actual HQ |
 
+## Start Here
+
+Follow the [guided HQ tutorial](https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_getting_started_index) first. Its seven short lessons combine videos, written steps, and screenshots from installation through creating and sharing your first HQ worker.
+
+The guided web course and `/tutorial` are complementary: the web course is the canonical setup walkthrough; `/tutorial` adapts hands-on exercises to the HQ already on your machine.
+
 ## When to Use
 
-- **First day:** Read `quick-start-guide.md` (auto-opened by `/setup`)
+- **First day:** Complete the guided HQ tutorial, then read `quick-start-guide.md`
 - **Daily:** Glance at `cheatsheet.md` before starting a session
 - **Weekly:** Check `learning-path.md` to see what to learn next
 

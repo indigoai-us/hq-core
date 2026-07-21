@@ -808,10 +808,19 @@ on the auto-verdict.
 
 Print the deploy URL **inline, in one plain line** (this is the `/deploy`
 capability carveout — surfaced at publish time, never re-pasted into knowledge
-files or later turns). Then deliver the handoff message:
+files or later turns). Then point the user to the guided public course as their
+canonical visual walkthrough:
+
+`https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_setup_wizard`
+
+Call it the **guided HQ tutorial (videos + written steps)** so it stays distinct
+from the adaptive, in-agent `/tutorial` command. Then deliver the handoff message:
 
 ```
 You're all set — here's your welcome page (private to you): {url}
+
+Follow the guided HQ tutorial here (videos + written steps):
+https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_setup_wizard
 
 Open it, then close this session and start a fresh one. Your first move:
 

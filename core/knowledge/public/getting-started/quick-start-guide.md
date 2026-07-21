@@ -2,6 +2,8 @@
 
 Your personal AI operating system. This guide covers what HQ is, how it works, and how to start shipping real work with it.
 
+> New to HQ? Start with the [guided seven-lesson HQ tutorial](https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_quick_start). Every lesson includes a video, written steps, and screenshots you can follow at your own pace.
+
 ---
 
 ## What HQ Is

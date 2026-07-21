@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://github.com/indigoai-us/hq-core/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-6b7cff.svg" alt="License: MIT"/></a>
   <a href="https://www.npmjs.com/package/create-hq"><img src="https://img.shields.io/npm/v/create-hq?color=6b7cff&label=create-hq" alt="create-hq on npm"/></a>
-  <a href="https://docs.getindigo.ai"><img src="https://img.shields.io/badge/docs-getindigo.ai-6b7cff.svg" alt="Docs"/></a>
+  <a href="https://docs.hq.computer"><img src="https://img.shields.io/badge/docs-hq.computer-6b7cff.svg" alt="Docs"/></a>
 </p>
 
 ---
@@ -31,14 +31,16 @@ made last week. You re-explain. It re-discovers. Nothing compounds. HQ is the cu
 
 ## Quick start
 
+Prefer to follow along? Start with the **[guided HQ tutorial](https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_core_readme)** — seven short videos with matching written steps and screenshots.
+
 ```bash
 npx create-hq
 ```
 
-That scaffolds your HQ and wires it into the agents you already use. Prefer Homebrew?
+That scaffolds your HQ and wires it into the agents you already use. Prefer the CLI directly?
 
 ```bash
-brew install coreyepstein/tap/hq
+npm install -g @indigoai-us/hq-cli
 ```
 
 ## The 30-second version
@@ -66,7 +68,8 @@ Read the thesis: **[Context is the moat](https://www.hqforwork.com/manifesto)**.
 
 ## Learn more
 
-- **Docs** — https://docs.getindigo.ai
+- **Guided HQ tutorial** — https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_core_readme
+- **Docs** — https://docs.hq.computer
 - **Agent Amnesia** (the anti-pattern HQ solves) — https://www.hqforwork.com/agent-amnesia
 - **Manifesto** — https://www.hqforwork.com/manifesto
 

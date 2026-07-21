@@ -350,6 +350,7 @@ if [ -z "$HQ_LIB_JQ" ] && [ -z "$HQ_LIB_NODE" ]; then
   printf '%s\n' "Deploy requires jq or Node.js to parse its phase verdicts. Install jq: Windows: winget install jqlang.jq | choco install jq | scoop install jq; Linux: sudo apt install jq | sudo dnf install jq; macOS: brew install jq" >&2
   IDENTITY_STATUS="missing_dependency"
   JWT=""
+  HQ_PRO_JWT=""
   LOGIN_REASON="missing_jq_and_node"
   SENSITIVE="false"
   SENSITIVITY_TRIGGER=""
@@ -357,6 +358,10 @@ if [ -z "$HQ_LIB_JQ" ] && [ -z "$HQ_LIB_NODE" ]; then
 else
   IDENTITY_STATUS=$(printf '%s' "$IDENTITY_JSON" | hq_json_get status)
   JWT=$(printf '%s' "$IDENTITY_JSON" | hq_json_get jwt)
+  # id_token is the HQ Pro / grantee-validation token used by C.3. Take it from
+  # the resolver output, never from a raw read of ~/.hq/cognito-tokens.json —
+  # only the resolver applies the expiry skew and the refresh path.
+  HQ_PRO_JWT=$(printf '%s' "$IDENTITY_JSON" | hq_json_get id_token)
   LOGIN_REASON=$(printf '%s' "$IDENTITY_JSON" | hq_json_get reason)
 
   SENSITIVE=$(printf '%s' "$SENSITIVITY_JSON" | hq_json_get sensitive)
@@ -755,16 +760,49 @@ so authorization failures are not mistaken for malformed responses.
 
 After upload, with `appId` in hand. Branch on `ACCESS_MODE`. Use `PUT /access-policy` for first-class Cognito policy modes (`company`, `selected`, policy-versioned password); use `POST /access-mode` for legacy password/private transitions and allowlist cleanup.
 
-For grantee validation, send the id token when available. `identity-resolve.sh` returns the hq-deploy access token as `$JWT`; read the companion id token from the local token file only inside the shell and never echo it.
+For grantee validation, send the id token when available. `identity-resolve.sh` returns the hq-deploy access token as `$JWT` and the companion id token as `id_token`; take it from that output only, keep it inside the shell, and never echo it.
 
 ```bash
-TOKEN_FILE="$HOME/.hq/cognito-tokens.json"
-HQ_PRO_JWT=""
-if [ -f "$TOKEN_FILE" ]; then
-  HQ_PRO_JWT=$(jq -r '.idToken // .accessToken // empty' "$TOKEN_FILE" 2>/dev/null)
-fi
+# BOTH tokens come from identity-resolve.sh — A.3 parsed `id_token` into
+# $HQ_PRO_JWT. Never re-read ~/.hq/cognito-tokens.json with a raw `jq` (as this
+# did until 2026-07-19): only the resolver applies the expiry skew and the
+# refresh path, so a raw read bypasses both and hands C.3 an id token that can
+# already be dead while the access token is still fresh — which 401s the
+# access-policy call below and silently downgrades a members-only gate.
+# No re-resolve fallback here on purpose. A second invocation of the resolver
+# would be a second resolution path — the exact shape of the bug above — and
+# every other Phase C variable ($JWT, $APP_ID, $API) already carries over from
+# its defining block. If HQ_PRO_JWT is somehow empty, the header is simply
+# omitted and the companyUid lookup falls back to $JWT, which the API accepts.
 HQ_PRO_REQUEST_HEADERS=()
 [ -n "$HQ_PRO_JWT" ] && HQ_PRO_REQUEST_HEADERS=(--header "X-HQ-Pro-Authorization: Bearer $HQ_PRO_JWT")
+
+# A 401 anywhere in the company-gate path is a transient auth failure, never a
+# policy decision — so it must fail closed instead of falling back to a weaker
+# gate. Report the artifact's current anonymous reachability first so the
+# exposure is visible rather than implied.
+# LIVE_URL is set in the upload block above. If these blocks are run as
+# separate shell invocations it will be unset here — and an unset URL must not
+# silently turn the exposure warning into "artifact is live at  and its status
+# is unknown", which reads as reassuring noise at the exact moment the operator
+# needs a real answer. Fall back to reconstructing it from the subdomain, and
+# if even that is unavailable, say plainly that the state is unverified.
+report_gate_exposure_and_fail() {
+  local why="$1" live_code url
+  url="${LIVE_URL:-}"
+  # Same construction as BASE_URL in the upload block — keep them in step.
+  if [ -z "$url" ] && [ -n "${APP_SUBDOMAIN:-}" ]; then
+    url="https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}"
+  fi
+  if [ -n "$url" ]; then
+    live_code=$(curl -sS -o /dev/null -w '%{http_code}' "$url/" || true)
+    echo "[deploy] artifact is live at $url and its anonymous status is ${live_code:-unknown} (302 = gated, 200 = OPEN). Re-gate or remove it after logging in." >&2
+  else
+    echo "[deploy] WARNING: the artifact was uploaded and is live, but its URL could not be resolved here, so its anonymous reachability is UNVERIFIED. Check it in the HQ console and re-gate or remove it." >&2
+  fi
+  echo "[deploy] auth_expired: $why Run /hq-login, then re-run /deploy to apply the company gate. Refusing to downgrade a members-only artifact to a shared password." >&2
+  exit 1
+}
 
 if [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "password" ]; then
   deploy_request access-mode-password --method POST \
@@ -772,11 +810,19 @@ if [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "password" ]; then
     --header 'Content-Type: application/json' \
     --data "{\"mode\": \"password\", \"password\": \"$PW\"}" >/dev/null || exit 1
 elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "company" ]; then
-  COMPANY_UID=$(curl -sS -H "Authorization: Bearer ${HQ_PRO_JWT:-$JWT}" \
-    "$VAULT_API/entity/by-slug/company/$ORG_SLUG" \
-    | jq -r '.entity.uid // empty' 2>/dev/null)
+  # Resolve the companyUid with the status code in hand. An expired HQ Pro token
+  # answers 401 here, which yields an empty uid — indistinguishable from "no such
+  # company" unless the status is checked, and an empty uid is what triggers the
+  # password fallback below.
+  UID_RESPONSE=$(curl -sS -w $'\n%{http_code}' -H "Authorization: Bearer ${HQ_PRO_JWT:-$JWT}" \
+    "$VAULT_API/entity/by-slug/company/$ORG_SLUG" 2>/dev/null || printf '\n000')
+  UID_STATUS="${UID_RESPONSE##*$'\n'}"
+  COMPANY_UID=$(printf '%s' "${UID_RESPONSE%$'\n'*}" | jq -r '.entity.uid // empty' 2>/dev/null)
+  if [ "$UID_STATUS" = "401" ]; then
+    report_gate_exposure_and_fail "companyUid lookup for $ORG_SLUG returned 401 AUTH_FAILED."
+  fi
   if [ -z "$COMPANY_UID" ]; then
-    echo "[deploy] company access requested but companyUid could not be resolved for $ORG_SLUG; falling back to password mode." >&2
+    echo "[deploy] company access requested but companyUid could not be resolved for $ORG_SLUG (status=$UID_STATUS); falling back to password mode." >&2
     PW=${PW:-$(.claude/skills/deploy/scripts/password-helper.sh gen)}
     ACCESS_MODE=password
     deploy_request access-mode-password-fallback --method POST \
@@ -784,10 +830,18 @@ elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "company" ]; then
       --header 'Content-Type: application/json' \
       --data "{\"mode\": \"password\", \"password\": \"$PW\"}" >/dev/null || exit 1
   else
+    # deploy_request already fails closed: it prints a `status=NNN api_code=...`
+    # diagnostic and exits non-zero on any non-2xx, so a 401 here can no longer
+    # fall through to the password gate. What it does NOT do is say what the
+    # artifact's exposure is right now — and by this point it is already
+    # uploaded and live. Any failure to apply the gate leaves it in an unknown
+    # state, so report reachability and the recovery step on every failure, not
+    # just on 401.
     deploy_request access-policy-company --method PUT \
       --url "$API/api/apps/$APP_ID/access-policy" \
       "${HQ_PRO_REQUEST_HEADERS[@]}" --header 'Content-Type: application/json' \
-      --data "{\"mode\":\"company\",\"companyUid\":\"$COMPANY_UID\",\"users\":[],\"groups\":[]}" >/dev/null || exit 1
+      --data "{\"mode\":\"company\",\"companyUid\":\"$COMPANY_UID\",\"users\":[],\"groups\":[]}" >/dev/null \
+      || report_gate_exposure_and_fail "PUT /access-policy failed for $ORG_SLUG (see the status= diagnostic above)."
   fi
 elif [ "$SENSITIVE" = "true" ] && [ "$ACCESS_MODE" = "selected" ]; then
   # SELECTED_USERS_JSON / SELECTED_GROUPS_JSON must be arrays of {id} objects
@@ -826,8 +880,19 @@ protection state, and an anonymous request to the live URL returns `302`. Poll
 the reread + anonymous redirect a small bounded number of times for propagation.
 Do not announce a selected access mode, password, or live link as gated before
 that proof succeeds. If a company gate cannot be proven, attempt the password
-fallback with the same checks; if that also cannot be proven, fail the deploy
-closed rather than reporting a potentially public artifact.
+fallback with the same checks — subject to the 401 exception below; if that also
+cannot be proven, fail the deploy closed rather than reporting a potentially
+public artifact.
+
+**The password fallback is for policy rejections only — never for 401.** A 401 on
+the access-policy call or on the companyUid lookup means the credential expired, not
+that the policy engine refused this caller. Treating the two alike silently
+publishes a members-only artifact behind a shared password — a weaker gate than
+the one requested, reached because a token aged out. On 401: stop, report the
+artifact's current anonymous reachability, tell the user to run `/hq-login`, and
+re-run — do not weaken the gate. Genuine rejections (`400`, or
+`403 ACCESS_POLICY_COMPANY_MISMATCH` on a cross-company deploy the caller's token
+cannot gate) are what the fallback exists for.
 
 ```bash
 if [ "$SENSITIVE" = "true" ]; then
@@ -962,7 +1027,7 @@ Then move on. Deploy is never the main event.
 
 | Script | Input | Returns |
 |--------|-------|---------|
-| `identity-resolve.sh` | (none — reads `~/.hq/cognito-tokens.json`) | `{"status":"ok","jwt":"...","expires_at":<epoch-ms>,"source":"cache\|refresh\|login"}` or `{"status":"login_required","reason":"..."}` or `{"status":"missing_dependency","dep":"jq\|node","install":"..."}` (agent must show install help, not login upsell) |
+| `identity-resolve.sh` | (none — reads `~/.hq/cognito-tokens.json`) | `{"status":"ok","jwt":"...","id_token":"...","expires_at":<epoch-ms>,"source":"cache\|refresh\|login"}` or `{"status":"login_required","reason":"..."}` or `{"status":"missing_dependency","dep":"jq\|node","install":"..."}` (agent must show install help, not login upsell). `id_token` is the only sanctioned source of the HQ Pro token — a raw `jq` read of the token file skips the expiry skew and the refresh path |
 | `sensitivity-check.sh <path> [user_msg]` | artifact path + latest user message excerpt | `{"sensitive":bool,"trigger":"companies-data-path\|private-repo\|pii-detected\|financial-filename\|user-stated-private"\|null}` |
 | `guardrails-check.sh <output_dir>` | build output directory | `{"pass":bool,"reason":string\|null,"tarball_path":string,"size_bytes":int,"sha256":string,"file_count":int}` |
 | `og-inject.sh <output_dir> [base_url] [app_name]` | static build dir (+ live base URL) | `{"injected":int,"image":"generated\|existing\|none","changed":bool}` |

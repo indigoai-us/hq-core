@@ -61,7 +61,9 @@ esac; done
 # (tenant-safe — only the dir the session is actually in). Mirrors the scope the
 # inject-policy-on-trigger hook evaluates.
 if [ "${#DIRS[@]}" -eq 0 ]; then
-  DIRS=("$HQ_ROOT/core/policies")
+  # personal/policies is read DIRECTLY (the reindex symlink mirror into
+  # core/policies is retired). Mirrors the scope inject-policy-on-trigger reads.
+  DIRS=("$HQ_ROOT/core/policies" "$HQ_ROOT/personal/policies")
   case "$CWD" in
     *companies/*)
       co="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')"

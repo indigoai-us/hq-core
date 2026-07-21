@@ -32,7 +32,15 @@ HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 REG_DIR="$HQ_ROOT/workspace/orchestrator"
 REG_FILE="$REG_DIR/active-runs.json"
 LOCK_DIR="$REG_FILE.lock"
+# Resolve the orchestrator settings file. personal/settings is read DIRECTLY now
+# (the reindex symlink mirror into core/settings is retired). orchestrator.yaml
+# ships as a core default; unlike the list-shaped overlays (policies/workers/
+# knowledge, where core + personal BOTH surface), this is a singleton config
+# file — so a personal copy, when present, overrides the shipped default.
 ORCH_YAML="$HQ_ROOT/core/settings/orchestrator.yaml"
+if [[ -f "$HQ_ROOT/personal/settings/orchestrator.yaml" ]]; then
+  ORCH_YAML="$HQ_ROOT/personal/settings/orchestrator.yaml"
+fi
 
 # ---------- helpers ----------
 

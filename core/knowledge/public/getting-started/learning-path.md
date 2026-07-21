@@ -2,6 +2,8 @@
 
 Self-paced progression from first setup to running parallel agents. Each module builds on the previous one.
 
+Before Module 1, complete the [guided HQ tutorial](https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_learning_path). It is the canonical installation and onboarding walkthrough; the modules below deepen the operating model after your HQ is running.
+
 ---
 
 ## Beginner — Week 1

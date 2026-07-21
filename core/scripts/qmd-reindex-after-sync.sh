@@ -70,6 +70,18 @@ for pdir in companies/*/projects; do
   qmd context add "qmd://$name" "Project PRDs and documentation for $slug." >/dev/null 2>&1 || true
 done
 
+# 1c. Auto-register the personal knowledge collection if it isn't one yet.
+#     personal/knowledge is now read DIRECTLY (the reindex symlink mirror into
+#     core/knowledge is retired), so it needs its own qmd collection to stay
+#     searchable rather than riding in under a core collection.
+if [ -d "personal/knowledge" ] && \
+   [ -n "$(find "personal/knowledge" -name '*.md' -not -name 'INDEX.md' -print -quit 2>/dev/null)" ]; then
+  printf '%s\n' "$existing" | grep -Fq "qmd://personal-knowledge/" || {
+    qmd collection add "$hq_root/personal/knowledge" --name "personal-knowledge" --mask "**/*.md" >/dev/null 2>&1 || true
+    qmd context add "qmd://personal-knowledge" "Personal knowledge base (owner overlay)." >/dev/null 2>&1 || true
+  }
+fi
+
 # 2. Incremental lexical reindex (cheap; mtime-incremental inside qmd).
 qmd update >/dev/null 2>&1 || true
 
