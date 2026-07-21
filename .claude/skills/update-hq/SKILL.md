@@ -1,7 +1,7 @@
 ---
 name: update-hq
 description: Upgrade HQ from the latest hq-core release.
-allowed-tools: Read, Bash, AskUserQuestion
+allowed-tools: Read, Bash, Bash(bash core/scripts/check-hq-hooks.sh:*), AskUserQuestion
 ---
 
 # /update-hq — HQ Upgrade
@@ -65,9 +65,42 @@ hq rescue -y {mapped-flags}
 
 Keep the pre-op backup: do **not** pass `--no-backup` unless the user explicitly asked for it. `hq rescue` writes a snapshot under `~/.hq/backups` before touching anything, which is the recovery path if a merge goes wrong.
 
-## Phase 4: Report
+## Phase 4: Verify project hooks, repair if needed, and report
 
-Relay rescue's summary in plain language: what was updated, what kept your local edits, and anything that needs manual follow-up. Then refresh the search index so new/renamed content is findable:
+`hq rescue` preserves user drift and replaces release-owned paths, but the
+Desktop/SDK runtime only runs HQ hooks if the resulting project still has
+`.claude/settings.json` and loads it as a project setting source. Check that
+postcondition with the hook-independent checker:
+
+```bash
+bash core/scripts/check-hq-hooks.sh --root {hq-root}
+```
+
+If it reports a missing/invalid settings file or missing `SessionStart` or
+`PreToolUse` hook, repair the released `.claude` tree and check again. Keep any
+other mapped release flags such as `--ref` / `--staging`; omit a user-provided
+`--paths` restriction because this repair must include `.claude`:
+
+```bash
+hq rescue -y --paths .claude {mapped release flags}
+bash core/scripts/check-hq-hooks.sh --root {hq-root}
+```
+
+If the second check fails, stop and report its exact diagnostics; do not claim
+the update completed successfully. See `core/docs/hq/HOOKS-NOT-FIRING.md` for
+the Desktop/SDK cwd and `settingSources` recovery instructions.
+
+After a real Desktop or SDK session, the user can additionally prove the
+policy-trigger hook actually ran:
+
+```bash
+bash core/scripts/check-hq-hooks.sh --root {hq-root} --require-ledger
+```
+
+Then relay rescue's summary in plain language: what was updated, what kept
+local edits, hook-health status, and anything that needs manual follow-up.
+Refresh the search index so new/renamed content is findable:
+
 ```bash
 qmd update 2>/dev/null || true
 ```

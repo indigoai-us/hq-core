@@ -74,6 +74,11 @@ social-content/drafts/**/*.md
 # Checkpoints (session-specific)
 workspace/checkpoints/*.json
 
+# Resume locks are local session markers. Handoff thread records remain tracked
+# by the explicit handoff finalizer; these runtime ownership markers must not
+# pollute its changeset or make the HQ root appear dirty.
+workspace/threads/resume-locks/
+
 # Journal entries (personal)
 data/journal/*.jsonl
 

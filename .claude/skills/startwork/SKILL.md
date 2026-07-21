@@ -1,7 +1,7 @@
 ---
 name: startwork
 description: Resolve current HQ context and surface useful next work options.
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(core/scripts/work-mesh.sh:*), Bash, AskUserQuestion
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(core/scripts/work-mesh.sh:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash, AskUserQuestion
 ---
 
 # Start Work Session
@@ -55,7 +55,7 @@ Determine mode from the user's argument (first match wins):
    Do not present numbered markdown for this gate — use the structured picker. This is the whole point of the gate: no `qmd search "prd.json"`, no thread-file read, no per-project prd.json reads happen until the user has chosen.
 
 3. **After the pick, load only what that path needs:**
-   - *Resume last session* → now read the thread file handoff.json points to (extract `conversation_summary`, `next_steps`, `git.branch`, `git.current_commit`, `git.dirty`, `files_touched`); run `git log --oneline -3`; if the thread references a `project_dir`, read its most-recent journal file (frontmatter + `## Open threads` only — see Project Mode step 4). Skip the global qmd/grep project scan unless the user then asks "what else is active?".
+   - *Resume last session* → before reading the thread file, resolve `thread_id` from `handoff.json.last_thread` and apply the same resume-lock confirmation procedure from `/resumework` Step 2. Run `bash core/scripts/hq-session.sh current` to obtain the session id, then `bash core/scripts/resume-thread-lock.sh inspect "{thread_id}"`. On `unlocked`, acquire the marker with `bash core/scripts/resume-thread-lock.sh acquire "{thread_id}" --session-id "{session_id}"`. On `locked` or `stale`, use AskUserQuestion with the returned `prompt` and stop on cancel; only after **Re-resume anyway** run `bash core/scripts/resume-thread-lock.sh acquire "{thread_id}" --replace --expected-generation "{lock_generation from inspected JSON}" --session-id "{session_id}"`. If replacement exits `4`, re-inspect and ask again because a newer marker replaced the one the user confirmed. Then, and only then, read the thread file handoff.json points to (extract `conversation_summary`, `next_steps`, `git.branch`, `git.current_commit`, `git.dirty`, `files_touched`); run `git log --oneline -3`; if the thread references a `project_dir`, read its most-recent journal file (frontmatter + `## Open threads` only — see Project Mode step 4). Skip the global qmd/grep project scan unless the user then asks "what else is active?".
    - *Pick company/project/repo* → proceed via the corresponding mode's Gather Context section with the supplied arg.
    - *Not sure* → `/strategize` owns it from here; stop gathering.
    - *Something else* → Task Mode gather.

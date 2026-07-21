@@ -263,12 +263,30 @@ fi
 # ── Emit + record ─────────────────────────────────────────────────────────
 [ -n "$MATCHES" ] || exit 0
 
+# Bound the SessionStart-heavy baseline so box preflight cannot fail closed
+# (US-003 / former US-013). SESSION_PREFLIGHT_MAX_POLICIES=16 on the box;
+# company/repo/personal already precede core in DIRS, so head -n keeps
+# higher-precedence policies and drops the excess core SessionStart flood.
+# Truncation is NEVER silent — withheld count is emitted so a reader cannot
+# mistake a capped set for the whole set.
+SESSION_POLICY_CAP="${HQ_SESSION_POLICY_CAP:-16}"
+MATCH_COUNT="$(printf '%s' "$MATCHES" | grep -c . || true)"
+WITHHELD=0
+if [ "$MATCH_COUNT" -gt "$SESSION_POLICY_CAP" ]; then
+  WITHHELD=$((MATCH_COUNT - SESSION_POLICY_CAP))
+  MATCHES="$(printf '%s' "$MATCHES" | head -n "$SESSION_POLICY_CAP")
+"
+fi
+
 printf '<policy-reminder>\n'
 printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug rule; do
   [ -z "$slug" ] && continue
   printf '> Policy `%s` applies here: %s\n' "$slug" "$rule"
   printf '%s\n' "$slug" >> "$DEDUPE_FILE"
 done
+if [ "$WITHHELD" -gt 0 ]; then
+  printf '> Policy baseline truncated: %s additional policies withheld to stay within the session cap of %s (US-003 SessionStart bound).\n' "$WITHHELD" "$SESSION_POLICY_CAP"
+fi
 printf '> Read the full rule(s) at `core/policies/{slug}.md` if you need rationale.\n'
 printf '</policy-reminder>\n'
 

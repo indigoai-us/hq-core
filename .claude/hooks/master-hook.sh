@@ -179,6 +179,10 @@ hooks=("${ordered_hooks[@]+${ordered_hooks[@]}}")
 exit_code=0
 plain_buf=""
 json_outputs=()
+# Parallel array: absolute path of the hook that produced each json_outputs entry.
+# Used so a selected {"decision":"block"} can be stamped with
+# hookSpecificOutput.hqSessionBlockedBy (US-402 / agent-session blockedBy).
+json_sources=()
 
 is_json_object() {
   printf '%s' "$1" | jq -e 'type == "object"' >/dev/null 2>&1
@@ -203,6 +207,7 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
   if [ -n "$out" ]; then
     if is_json_object "$out"; then
       json_outputs+=("$out")
+      json_sources+=("$hook")
     else
       plain_buf+="$out"$'\n'
     fi
@@ -215,17 +220,39 @@ done
 [ -n "$plain_buf" ] && printf '%s' "$plain_buf"
 
 if [ ${#json_outputs[@]} -eq 1 ]; then
-  printf '%s\n' "${json_outputs[0]}"
+  # Single JSON result: if it is a block, stamp provenance.
+  if printf '%s' "${json_outputs[0]}" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+    printf '%s\n' "${json_outputs[0]}" | jq -c --arg src "${json_sources[0]}" '
+      .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
+    '
+  else
+    printf '%s\n' "${json_outputs[0]}"
+  fi
 elif [ ${#json_outputs[@]} -gt 1 ]; then
-  printf '%s\n' "${json_outputs[@]}" | jq -sc '
-    (map(select(.decision == "block")) | .[0])
-    // (reduce .[] as $h ({};
+  # Find first block (if any) and its source path; otherwise shallow-merge.
+  block_idx=""
+  i=0
+  for jo in "${json_outputs[@]}"; do
+    if printf '%s' "$jo" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+      block_idx="$i"
+      break
+    fi
+    i=$((i + 1))
+  done
+  if [ -n "$block_idx" ]; then
+    printf '%s\n' "${json_outputs[$block_idx]}" | jq -c --arg src "${json_sources[$block_idx]}" '
+      .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
+    '
+  else
+    printf '%s\n' "${json_outputs[@]}" | jq -sc '
+      reduce .[] as $h ({};
         . * $h
         | if (.hookSpecificOutput? and $h.hookSpecificOutput?)
           then .hookSpecificOutput = (.hookSpecificOutput * $h.hookSpecificOutput)
           else .
-          end))
-  '
+          end)
+    '
+  fi
 fi
 
 exit "$exit_code"

@@ -145,9 +145,14 @@ jobs:
         with:
           fetch-depth: 0
       - name: Core skills only reference shipped local shell scripts
-        run: bash core/scripts/lint-skill-script-refs.sh learn
+        run: |
+          bash core/scripts/lint-skill-script-refs.sh learn
+          bash core/scripts/lint-skill-script-refs.sh resumework
+          bash core/scripts/lint-skill-script-refs.sh startwork
       - name: Regression test (fixture + live tree + WC-17 fix)
         run: bash core/scripts/tests/skill-script-refs.test.sh
+      - name: /resumework requires explicit confirmation for locked threads
+        run: bash core/scripts/tests/resume-thread-lock.test.sh
 
   install-deps:
     # DEV-1727: HQ's install/setup surface must not install or dependency-check
@@ -216,6 +221,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: settings.json PATH snapshot composition
         run: bash core/scripts/tests/compose-settings-path.test.sh
+
+  hook-health-prevention:
+    # DEV-1942: project hook configuration can be absent or never loaded in
+    # Desktop/SDK sessions. Keep the independent doctor, release-overlay
+    # contract, and remediation docs from drifting together.
+    name: hook-health-prevention
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hook health checker behavior
+        run: bash core/scripts/tests/hook-health-check.test.sh
+      - name: Hook settings release contract
+        run: bash core/scripts/tests/hook-settings-release-contract.test.sh
 
   # feedback_3cdd3064: deploy-summary.sh aborted under set -u when HQ_DEPLOY_API was unset.
   deploy-summary-nounset:

@@ -305,7 +305,8 @@ scan_trees() {
 }
 
 # Emit entries for every file inside every discovered .claude directory.
-emit_claude_tree_artifacts() {
+emit_claude_tree_artifacts() { # <tree-json-output> <parts-dir>
+  local tree_json="$1" parts_dir="$2"
   local d f cat dest
   local cmds=() skills_a=() hooks=() pols=() agents=() settings=()
   # No discovered .claude dirs → nothing to enumerate. Guarding the loop also
@@ -372,22 +373,25 @@ emit_claude_tree_artifacts() {
   rm -f "$tf"
   fi
 
-  local cmds_json skills_json hooks_json pols_json agents_json settings_json
-  cmds_json="$(printf "%s\n" "${cmds[@]:-}" | jq -s '.')"
-  skills_json="$(printf "%s\n" "${skills_a[@]:-}" | jq -s '.')"
-  hooks_json="$(printf "%s\n" "${hooks[@]:-}" | jq -s '.')"
-  pols_json="$(printf "%s\n" "${pols[@]:-}" | jq -s '.')"
-  agents_json="$(printf "%s\n" "${agents[@]:-}" | jq -s '.')"
-  settings_json="$(printf "%s\n" "${settings[@]:-}" | jq -s '.')"
+  # Write each category to a file before composing the tree object. Passing the
+  # serialized arrays through --argjson puts every discovered entry in jq's
+  # argv, which exceeds ARG_MAX on large Claude installations.
+  printf "%s\n" "${cmds[@]:-}"     | jq -s '.' > "$parts_dir/commands.json"
+  printf "%s\n" "${skills_a[@]:-}" | jq -s '.' > "$parts_dir/skills.json"
+  printf "%s\n" "${hooks[@]:-}"    | jq -s '.' > "$parts_dir/hooks.json"
+  printf "%s\n" "${pols[@]:-}"     | jq -s '.' > "$parts_dir/policies.json"
+  printf "%s\n" "${agents[@]:-}"   | jq -s '.' > "$parts_dir/agents.json"
+  printf "%s\n" "${settings[@]:-}" | jq -s '.' > "$parts_dir/settings.json"
 
   jq -n \
-    --argjson commands "$cmds_json" \
-    --argjson skills "$skills_json" \
-    --argjson hooks "$hooks_json" \
-    --argjson policies "$pols_json" \
-    --argjson agents "$agents_json" \
-    --argjson settings "$settings_json" \
-    '{commands:$commands, skills:$skills, hooks:$hooks, policies:$policies, agents:$agents, settings:$settings}'
+    --slurpfile commands "$parts_dir/commands.json" \
+    --slurpfile skills "$parts_dir/skills.json" \
+    --slurpfile hooks "$parts_dir/hooks.json" \
+    --slurpfile policies "$parts_dir/policies.json" \
+    --slurpfile agents "$parts_dir/agents.json" \
+    --slurpfile settings "$parts_dir/settings.json" \
+    '{commands:$commands[0], skills:$skills[0], hooks:$hooks[0], policies:$policies[0], agents:$agents[0], settings:$settings[0]}' \
+    > "$tree_json"
 }
 
 emit_claude_md() {
@@ -469,13 +473,13 @@ main() {
   ensure_json_array "$(emit_claude_md)"                    > "$tmpd/claude_md.json"
   ensure_json_array "$(emit_claude_repos)"                 > "$tmpd/claude_repos.json"
 
-  # Tree artifacts return an object, not an array — handle separately.
-  local tree_json
-  tree_json="$(emit_claude_tree_artifacts)"
-  if [[ -z "$tree_json" ]] || ! echo "$tree_json" | jq empty 2>/dev/null; then
-    tree_json='{"commands":[],"skills":[],"hooks":[],"policies":[],"agents":[],"settings":[]}'
+  # Tree artifacts return an object, not an array — handle separately. Their
+  # category payloads are file-backed so large scans never enter jq's argv.
+  mkdir -p "$tmpd/tree-parts"
+  emit_claude_tree_artifacts "$tmpd/tree.json" "$tmpd/tree-parts"
+  if ! jq empty < "$tmpd/tree.json" 2>/dev/null; then
+    printf '%s' '{"commands":[],"skills":[],"hooks":[],"policies":[],"agents":[],"settings":[]}' > "$tmpd/tree.json"
   fi
-  printf "%s" "$tree_json" > "$tmpd/tree.json"
 
   # Merge MCP sources (desktop config + repo-root .mcp.json)
   local mcp_desktop mcp_repo

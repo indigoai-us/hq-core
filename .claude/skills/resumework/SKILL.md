@@ -1,7 +1,7 @@
 ---
 name: resumework
 description: Resume work from a specific handoff thread by id. Loads that thread's saved state (summary, next steps, git, files touched, learnings) and drops you straight back into the work. Use when you have a thread id in hand — e.g. from a previous `/handoff` report — and want to continue that exact session in a fresh one, rather than picking the most recent handoff (`/startwork`) or doing a post-mortem (`/recover-session`).
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(cat:*), Bash(core/scripts/hq-session.sh:*), Bash, AskUserQuestion
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(cat:*), Bash(core/scripts/hq-session.sh:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash, AskUserQuestion
 ---
 
 # Resume Work From a Thread
@@ -30,8 +30,9 @@ id="$(echo "$id" | tr -d '[:space:]')" # trim stray whitespace
 # Exact match first, then prefix/substring across active + archived threads.
 matches=$(ls "workspace/threads/${id}.json" 2>/dev/null)
 if [ -z "$matches" ]; then
-  matches=$(find workspace/threads -name '*.json' ! -name '*.changeset.json' \
-    -path "*${id}*" 2>/dev/null)
+  matches=$(find workspace/threads \
+    -path 'workspace/threads/resume-locks' -prune -o \
+    -name '*.json' ! -name '*.changeset.json' -path "*${id}*" -print 2>/dev/null)
 fi
 printf '%s\n' "$matches"
 ```
@@ -43,7 +44,43 @@ printf '%s\n' "$matches"
 
 Never load a `*.changeset.json` as the thread — it's the changeset sidecar, not the thread.
 
-### 2. Load the thread
+### 2. Check and record the resume lock
+
+After resolving exactly one thread and **before reading its handoff details**, inspect its durable resume lock. The lock lives at `workspace/threads/resume-locks/{thread_id}.lock/`, separate from the immutable thread JSON: thread archival can move `T-*.json` files without losing the marker.
+
+```bash
+thread_file="$matches"                         # exactly one match from Step 1
+thread_id="$(basename "$thread_file" .json)"
+bash core/scripts/hq-session.sh current
+bash core/scripts/resume-thread-lock.sh inspect "$thread_id"
+```
+
+Keep the first command's output as `session_id` (use `unknown-session` if it is empty). Keep the second command's one-JSON-object output as `lock_json`, and read its `.status` with `jq`.
+
+- **`unlocked`** — acquire the marker, then continue:
+
+  ```bash
+  bash core/scripts/resume-thread-lock.sh acquire "$thread_id" --session-id "$session_id"
+  ```
+
+  If this race-loses with exit `3`, inspect again and follow the `locked`/`stale` path below. Do not proceed without the resulting confirmation.
+
+- **`locked` or `stale`** — use **AskUserQuestion** and wait. Ask exactly the `prompt` supplied by `lock_json`; it includes the prior session and timestamp. The question must explicitly ask: **“This thread was already resumed by {session} at {when}. Re-resume anyway?”** Offer only:
+
+  - **Re-resume anyway** — refresh the marker for this session and continue.
+  - **Cancel resume** — stop; do not read or act on the thread.
+
+  Only after the user chooses **Re-resume anyway**, keep `lock_json.lock_generation` as `lock_generation`, then run:
+
+  ```bash
+  bash core/scripts/resume-thread-lock.sh acquire "$thread_id" --replace --expected-generation "$lock_generation" --session-id "$session_id"
+  ```
+
+  If that command exits `4`, the marker changed while the question was open. Re-inspect it and ask the user again using the new `prompt`; never reuse the earlier confirmation to replace a newer lock.
+
+  Never silently proceed or silently replace a marker. A stale marker (expired after the configured `HQ_RESUME_LOCK_STALE_SECONDS`, 24 hours by default, or malformed) is still evidence of an earlier resume, so it follows this same explicit confirmation path. Do not delete stale lock state; the confirmed `--replace` refreshes it.
+
+### 3. Load the thread
 
 Read the resolved thread file (it's small — one Read). Extract:
 
@@ -57,7 +94,7 @@ Read the resolved thread file (it's small — one Read). Extract:
 
 If the thread references a company (via tags, `cwd`, or a `companies/{co}/...` path in `files_touched`), note the slug for Step 4.
 
-### 3. Verify current git state vs the thread
+### 4. Verify current git state vs the thread
 
 The thread records the git state at handoff. Confirm where the repo is now so the user knows if anything drifted:
 
@@ -71,7 +108,7 @@ git -C {repoPath or HQ root} status --short
 
 Flag plainly if the current branch differs from `git.branch`, or if `git.current_commit` is no longer at HEAD (someone committed/merged since the handoff). If `git.dirty` was true at handoff but the tree is now clean, the in-flight edits may have been committed or lost — call that out.
 
-### 4. Persist session metadata (if a company resolved)
+### 5. Persist session metadata (if a company resolved)
 
 ```bash
 bash core/scripts/hq-session.sh set company_slug "{co}"   # only if resolved
@@ -80,7 +117,7 @@ bash core/scripts/hq-session.sh set mode "Resume"
 
 Skip the `company_slug` line if no company is resolvable from the thread — same fail-closed behavior as `/startwork`.
 
-### 5. Present the resume block + next steps
+### 6. Present the resume block + next steps
 
 ```
 Resuming thread
@@ -114,6 +151,8 @@ After the pick, proceed directly into the work.
 - Read at most: the one resolved thread file + git state + (optionally) one journal file if the thread names a `project_dir`. Do not read INDEX.md, agents files, or company knowledge — same context diet as `/startwork`.
 - Never re-run `/learn` on the thread's `learnings[]`; they were applied at handoff time. They're shown for context only.
 - Resolve to exactly one thread before loading. On ambiguity, ask — never guess which thread the user meant.
+- Once a thread is exactly resolved, always inspect and acquire its resume lock before loading it. If it is already locked or stale, always ask the user whether to re-resume; never silently proceed or hard-block.
+- Keep the marker under `workspace/threads/resume-locks/`; never add resume state to the handoff JSON or changeset sidecar, because they are immutable handoff records and can be archived.
 - Always verify the live git branch with `git branch --show-current`; never trust the thread's recorded branch as current.
 - This skill executes directly — no plan-mode detour.
 
