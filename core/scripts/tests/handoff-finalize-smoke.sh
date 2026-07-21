@@ -19,11 +19,14 @@ assert_eq() {
 
 cp "$SRC_ROOT/scripts/handoff-finalize.sh" "$TMP_ROOT/handoff-finalize.sh"
 cp "$SRC_ROOT/scripts/hq-status-summary.sh" "$TMP_ROOT/hq-status-summary.sh"
+cp "$SRC_ROOT/../.claude/hooks/mirror-thread-to-company.sh" "$TMP_ROOT/mirror-thread-to-company.sh"
 
-mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/workspace/baseline" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/orchestrator"
+mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/.claude/hooks" "$TMP_ROOT/repo/workspace/baseline" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/orchestrator"
 cp "$TMP_ROOT/handoff-finalize.sh" "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh"
 cp "$TMP_ROOT/hq-status-summary.sh" "$TMP_ROOT/repo/core/scripts/hq-status-summary.sh"
+cp "$TMP_ROOT/mirror-thread-to-company.sh" "$TMP_ROOT/repo/.claude/hooks/mirror-thread-to-company.sh"
 chmod +x "$TMP_ROOT/repo/core/scripts/"*.sh
+chmod -x "$TMP_ROOT/repo/.claude/hooks/mirror-thread-to-company.sh"
 
 cat > "$TMP_ROOT/repo/core/scripts/rebuild-threads-index.sh" <<'SH'
 #!/usr/bin/env bash
@@ -151,5 +154,29 @@ empty_changeset=$(jq -r '.changeset_path' <<<"$empty_out")
 [[ -f "$empty_changeset" ]] || fail "empty changeset file missing"
 assert_eq "$(jq -r '.staged_paths | length' "$empty_changeset")" "0" "empty changeset has zero staged_paths"
 
+# Regression: a company-scoped handoff mirrors even when the helper lacks an
+# executable bit. The finalizer runs it through Bash because a shell hook is
+# not an executable contract.
+mkdir -p companies/winks/projects/offer
+echo "offer" > companies/winks/projects/offer/README.md
+[[ ! -x .claude/hooks/mirror-thread-to-company.sh ]] || fail "mirror hook unexpectedly executable"
+mirror_out=$(bash core/scripts/handoff-finalize.sh \
+  --title "Handoff: Winks offer" \
+  --summary "Mirror handoff across devices" \
+  --message "Mirror handoff" \
+  --next-steps-json '[]' \
+  --files-touched-json '["companies/winks/projects/offer/README.md"]' \
+  --learnings-json '[]' \
+  --tags-json '["test"]' \
+  --slug "winks-offer")
+mirror_thread_path=$(jq -r '.thread_path' <<<"$mirror_out")
+mirror_thread_id=$(jq -r '.thread_id' <<<"$mirror_out")
+assert_eq "$(jq -c '.mirror_companies' <<<"$mirror_out")" '["winks"]' "mirrored company output"
+jq -e '.metadata.company == ["winks"]' "$mirror_thread_path" >/dev/null \
+  || fail "handoff metadata omitted touched company"
+[[ -f "companies/winks/workspace/sessions/${mirror_thread_id}.json" ]] \
+  || fail "non-executable mirror hook was not replayed"
+git show "HEAD:companies/winks/workspace/index.jsonl" | grep -q "${mirror_thread_id}" \
+  || fail "mirror index was not committed with handoff"
 
 echo "handoff-finalize smoke: ok"

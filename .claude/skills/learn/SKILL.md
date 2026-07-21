@@ -270,8 +270,6 @@ mkdir -p {target_directory}
 ---
 id: {scope-prefix}-{slug}
 title: {Rule title}
-scope: {company|repo|command|global}
-trigger: {when this applies}
 when: {boolean trigger expr over context words, or `always`}
 on: {[PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent] | [SessionStart]}
 enforcement: {hard|soft}
@@ -280,7 +278,6 @@ version: 1
 created: {YYYY-MM-DD}
 updated: {YYYY-MM-DD}
 source: {back-pressure-failure|user-correction|success-pattern|task-completion|hook-observation}
-# applies_to: [vercel, clerk]   # optional — stack-specific filter; see mapping below
 ---
 
 ## Rule
@@ -303,14 +300,7 @@ source: {back-pressure-failure|user-correction|success-pattern|task-completion|h
 - If you genuinely can't name a signal, use `when: always` + `on: [SessionStart]` — but prefer a real trigger so the rule loads just-in-time, not every session.
 - You may omit both fields: the SessionStart `migrate-policy-triggers.sh` hook backfills them from `tags:` + `trigger:` on the next session. Setting them at authoring time is better — the migrator never overwrites an existing `when:`.
 
-**`applies_to:` field mapping (stack applicability filter):**
-- Include the `applies_to:` line ONLY when the rule is *wrong or useless* without a specific service. Tag vocabulary must match the `services:` enum used in `companies/manifest.yaml` plus inferred `vercel` / `aws`. Examples:
-  - Rule about Vercel env-var newlines → `applies_to: [vercel]`
-  - Rule spanning two stacks (e.g. Clerk edge runtime on Vercel) → `applies_to: [clerk, vercel]`
-  - Generic git/bash/HQ hygiene rule, or a rule that merely *mentions* Vercel as one example → omit the field entirely (loads everywhere)
-- OR semantics: `[clerk, vercel]` means "load if workspace has clerk OR vercel." Omit the field for the 89%+ cross-cutting case.
-- Lint with `bash core/scripts/validate-policy-tags.sh` after write (it fails on unknown tags — prevents typos that would silently filter everywhere).
-- Full spec: `core/knowledge/public/hq-core/policies-spec.md` → "Applicability Tagging (`applies_to`)" section.
+**Policy frontmatter validation:** `when:` and `on:` are required and automatically checked by the `validate-policy-frontmatter.sh` write/edit hook. For stack-specific rules, express the service token in `when:` (for example, `when: vercel`); do not add retired applicability metadata. See `core/knowledge/public/hq-core/policies-spec.md` for the complete schema.
 
 **Slug generation:** lowercase, hyphens, from rule keywords. Prefix: `{co}-` for company, `{repo}-` for repo, `hq-cmd-{name}-` for command, `hq-` for global.
 
