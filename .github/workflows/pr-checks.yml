@@ -134,6 +134,21 @@ jobs:
       - name: Core skills only instruct resolvable commands
         run: bash core/scripts/lint-skill-command-refs.sh
 
+  skill-script-refs:
+    # WC-17: a skill must not retain a path to a shell script removed with a
+    # retired workflow; commands and local script references are both released
+    # guidance that must resolve on a fresh scaffold.
+    name: skill-script-refs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Core skills only reference shipped local shell scripts
+        run: bash core/scripts/lint-skill-script-refs.sh learn
+      - name: Regression test (fixture + live tree + WC-17 fix)
+        run: bash core/scripts/tests/skill-script-refs.test.sh
+
   install-deps:
     # DEV-1727: HQ's install/setup surface must not install or dependency-check
     # a third-party CLI that HQ itself never calls. The /setup wizard used to
@@ -314,6 +329,16 @@ jobs:
       - name: reindex hook fires only on relevant file changes
         run: bash core/scripts/tests/reindex-path-gate.test.sh
 
+  rebuild-threads-index:
+    # Changeset sidecars share the T-*.json prefix but must never consume
+    # INDEX.md rows or recent.md's 15-thread limit.
+    name: rebuild-threads-index
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Index primary thread records only
+        run: bash core/scripts/tests/rebuild-threads-index.test.sh
+
   auto-checkpoint-cmds:
     # Item 2: /brainstorm and /plan must auto-checkpoint at command end so users
     # do not have to manually /handoff before a fresh session. Structural guard.
@@ -402,6 +427,8 @@ jobs:
           files=(
             core/scripts/lib/portable.sh
             core/scripts/lint-shell-portability.sh
+            core/scripts/rebuild-threads-index.sh
+            core/scripts/tests/rebuild-threads-index.test.sh
             core/scripts/setup.sh
             core/scripts/repo-run-registry.sh
             core/scripts/rebuild-social-drafts-index.sh

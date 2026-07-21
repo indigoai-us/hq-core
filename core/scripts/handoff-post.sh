@@ -93,6 +93,24 @@ else
   log "work-mesh-close: skipped (hook absent)"
 fi
 
+# --- 3c. Push company handoff mirrors promptly (best effort) ---
+# Session snapshots are intentionally gitignored, so a completed mirror needs
+# the sync client to make the handoff available to a second device. Trust only
+# the finalizer's lowercase company-slug metadata before constructing a path.
+if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1; then
+  while IFS= read -r company; do
+    [[ "$company" =~ ^[a-z][a-z0-9_-]*$ ]] || continue
+    [[ -d "$HQ_ROOT/companies/$company/workspace" ]] || continue
+    if hq sync push "companies/$company/workspace" >>"$LOG_MAIN" 2>&1; then
+      log "workspace-sync: pushed companies/$company/workspace"
+    else
+      log "workspace-sync: failed companies/$company/workspace"
+    fi
+  done < <(jq -r '.metadata.company // empty | if type == "array" then .[] else . end' "$THREAD_PATH" 2>/dev/null || true)
+elif [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]]; then
+  log "workspace-sync: skipped (hq CLI unavailable)"
+fi
+
 # --- 4. qmd reindex (background, fire-and-forget) ---
 if command -v qmd >/dev/null 2>&1; then
   nohup bash -c 'qmd cleanup 2>/dev/null; qmd update 2>/dev/null && qmd embed 2>/dev/null' \
