@@ -54,6 +54,8 @@ the user:
 - `{"type":"conflict", path, direction, resolution}` → "⚠️ Conflict: {path} ({direction}) — {resolution}"
 - `{"type":"complete", company, filesDownloaded, filesUploaded, conflicts, ...}` → "✓ {company}: {filesDownloaded}↓ {filesUploaded}↑ {conflicts}⚠"
 - `{"type":"all-complete", companiesAttempted, conflictPaths, errors}` → final summary
+- `{"type":"setup-needed", reason, pendingInviteCount?}` → the run could not
+  proceed. NOT a silent success — see Step 5b.
 
 ### Step 4 — Final summary
 
@@ -132,13 +134,18 @@ fi
 # avoids ${PIPESTATUS[0]} (bash-only) and ${pipestatus[1]} (zsh-only, 1-based).
 echo "Spawning hq-sync-runner (this is the same engine the HQ Desktop App uses)..."
 output_file="$(mktemp)"
+# Keep stderr in its own file. Folding it into stdout with `2>&1` left the
+# runner's diagnostics (claim-dance skips, manifest reconciliation) buried in
+# the ndjson stream where nobody read them — the failures that make a joiner
+# look solo were being reported and then lost.
+err_file="$(mktemp)"
 set +e
 set -o pipefail 2>/dev/null || true
 npx -y --package=@indigoai-us/hq-cloud@latest hq-sync-runner \
   --companies \
   --direction "$direction" \
   --on-conflict "$on_conflict" \
-  --hq-root "$hq_root" 2>&1 | tee "$output_file"
+  --hq-root "$hq_root" 2>"$err_file" | tee "$output_file"
 # zsh reserves $status (mirrors $?), so we use cli_status to avoid
 # `read-only variable: status` errors when the slash command runs under zsh.
 cli_status=$?
@@ -168,6 +175,61 @@ if [ -n "$final_event" ]; then
     echo ""
     echo "Run /resolve-conflicts to walk them interactively."
   fi
+fi
+
+# Step 5b: setup-needed. The runner exits 0 here on purpose (a non-zero exit
+# would make the watch loop report spurious crashes), so without this branch a
+# user who is blocked sees a silent, successful-looking run.
+setup_event="$(grep -E '^\{"type":"setup-needed"' "$output_file" | tail -1 || true)"
+if [ -n "$setup_event" ]; then
+  reason=$(printf '%s' "$setup_event" | jq -r '.reason // "unknown"')
+  pending=$(printf '%s' "$setup_event" | jq -r '.pendingInviteCount // 0')
+
+  echo ""
+  echo "=== Sync could not complete ==="
+  if [ "$pending" -gt 0 ]; then
+    echo "You have $pending invite(s) waiting to be accepted — that is why no"
+    echo "company synced. You are NOT solo."
+    echo ""
+    echo "Run: /accept <link-or-token>"
+    echo "Then re-run /hq-sync."
+  else
+    case "$reason" in
+      no-memberships)
+        echo "You are signed in, but you do not belong to any cloud company yet."
+        echo "If you were expecting an invite, ask whoever invited you to re-send"
+        echo "it, then run /accept <link-or-token>."
+        ;;
+      no-person-entity)
+        echo "You are signed in, but you have no personal entity to sync into."
+        echo "This usually means a legacy magic-link invite that still needs"
+        echo "redeeming: /accept <link-or-token>"
+        ;;
+      *)
+        echo "The runner reported it could not proceed, without a reason"
+        echo "(reason: $reason). This is usually an older runner. Try"
+        echo "/accept <link-or-token> if you are expecting an invite."
+        ;;
+    esac
+  fi
+fi
+
+# Step 5c: neither event. Say so — a run that reports nothing is not a success,
+# and silently treating it as one is how a broken sync passes for a clean one.
+if [ -z "${final_event:-}" ] && [ -z "${setup_event:-}" ]; then
+  echo ""
+  echo "=== Sync finished without a final status ==="
+  echo "The runner emitted neither all-complete nor setup-needed (exit"
+  echo "$cli_status). Treat this as an incomplete sync, not a clean one."
+fi
+
+# Step 5d: surface the runner's diagnostics. These are the breadcrumbs for
+# "why did nothing land" — claim-dance skips, manifest reconciliation, and
+# activeCompany seeding all report here.
+if [ -s "$err_file" ]; then
+  echo ""
+  echo "=== Runner diagnostics ==="
+  cat "$err_file"
 fi
 
 # Step 6: reindex qmd so freshly-synced knowledge is searchable immediately.

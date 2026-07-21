@@ -127,23 +127,58 @@ Once signed in, run a full sync via the `/hq-sync` skill (engine:
 the claim dance — auto-accepting any email-keyed pending invites — and pulls
 every cloud company the user belongs to.
 
-- If the sync-runner emits `setup-needed` (pending invites but no person entity
-  yet), the user likely has a **legacy magic-link** invite — point them to
+The runner emits `setup-needed` when a run cannot proceed. It carries a `reason`
+and, when relevant, a `pendingInviteCount` — read both and act on them. Do NOT
+fall through to the solo path on a bare `setup-needed`:
+
+- `reason: "no-memberships"` with `pendingInviteCount > 0` — the user has an
+  invite that has not been accepted. Say so, and tell them to run
+  `/accept <link-or-token>`, then re-run sync. This is the single most common
+  reason someone is wrongly told they are solo.
+- `reason: "no-memberships"` with no pending invites — genuinely no company yet.
+  The solo path is correct here.
+- `reason: "no-person-entity"` — signed in, but there is no personal entity to
+  sync into. Usually a **legacy magic-link** invite; point them to
   `/accept <link-or-token>` to redeem it, then re-run sync.
-- If sync errors (network, no membership), report it plainly and continue — a
-  solo HQ has nothing to pull.
+- If sync errors (network, transport), report it plainly and continue.
+
+An older runner emits `setup-needed` with no `reason` at all. Treat that as
+"unknown — do not conclude solo", and offer `/accept` rather than asserting the
+user has no team.
 
 ### 3. Report what landed
 
-After sync, read the now-present companies and state them plainly:
+**Membership is the source of truth here, not the manifest file.** A newly
+invited member's `companies/manifest.yaml` arrives as the stock empty template
+synced from their personal vault, so grepping it reports "solo" for someone who
+demonstrably belongs to a company. That is the exact bug this step exists to
+avoid re-introducing.
+
+Resolve the company list in this order:
+
+1. **The runner's `fanout-plan` event** from the sync you just ran. It lists
+   every company target the run resolved, with slug and name. This is free —
+   you already have it.
+2. **`GET /membership/me`** via the vault client, if you need to resolve
+   membership without a sync in hand.
+3. **The manifest grep, fallback only** — use it when the API is unreachable,
+   and say that the answer is local-only:
 
 ```bash
 grep -E "^  [a-z0-9-]+:" companies/manifest.yaml 2>/dev/null | sed -E 's/^  ([a-z0-9-]+):.*/\1/'
 ```
 
-- Cloud companies present → "You're connected and synced. You're in: {names}."
-- None → "You're signed in. No cloud companies yet — you're solo for now, that's
-  fine."
+Then report:
+
+- Companies resolved → "You're connected and synced. You're in: {names}." Name
+  the companies. A user who was just told they are on a team and cannot see
+  which one has not actually been told anything.
+- API says companies exist but the manifest grep disagrees → report the API
+  answer, and note that local routing has been repaired (the sync runner
+  reconciles the manifest entry and seeds `activeCompany` on the way through;
+  a freshly written manifest propagates on the NEXT sync).
+- Nothing resolved, and no pending invites → "You're signed in. No cloud
+  companies yet — you're solo for now, that's fine."
 
 Keep Phase 0c to a few plain lines; the heavy lifting is the reused skills.
 
@@ -670,7 +705,13 @@ hq secrets generate-link <SECRET_PATH> [--personal | --company {slug}]
 
 ### 5c. Team / cloud detection (shapes the strongest recommendation)
 
-Silently check whether this is a team / cloud-backed context:
+Use the membership list already resolved in Phase 0c step 3 — do not re-derive
+this from a manifest grep. If the user has at least one active company
+membership, this is a team / cloud context, full stop. A joiner whose manifest
+has not caught up yet is still on a team.
+
+Only when membership could not be resolved at all (API unreachable), fall back
+to the local signals:
 
 ```bash
 grep -l 'cloud' companies/*/manifest.yaml 2>/dev/null | head -1
@@ -710,6 +751,13 @@ to the launch list, do NOT run inline). See the Rules for the inline/handoff lin
   - *Do now:* `/newcompany {slug}` (new — lightweight scaffold) or `/onboard`
     (join existing). If Phase 1.6 was skipped and they're an existing Claude
     user, re-offer `/import-claude` here to hydrate the skeleton.
+  - **Never offer `/newcompany` for a slug the user already has an active
+    membership in.** Check the membership list resolved in Phase 0c step 3
+    first. Routing a joiner to `/newcompany` for a company they already belong
+    to is what produced the duplicate companies this flow exists to prevent —
+    they end up owning a second, empty company with the same name as the real
+    one. If the slug matches an existing membership, the answer is "you're
+    already in that one" plus `/startwork {slug}`, not a scaffold.
   - *Recommend:* first deliverable → `/brainstorm` / `/plan` / `/startwork {slug}`.
     If team/cloud, fold in the shareable-asset + `/deploy` recommendation.
 - **Personal projects** → "What's the first thing you want a worker to do?"
