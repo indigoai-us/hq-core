@@ -1,8 +1,9 @@
 name: Nag stale release PRs
 
-# Runs daily. For every open release PR (title `release: v<ver>`) on hq-core
-# that has been open longer than the threshold (default 48h), posts a mocking
-# nudge to #hq-dev so someone finally reviews + merges it.
+# Runs every 6 hours. For every open release PR (title `release: v<ver>`) on
+# hq-core that has been open longer than the threshold (default 12h), posts a
+# mocking nudge to #hq-dev. After US-012 auto-merge-on-green, this mainly
+# backstops held (hold-release) or stuck PRs rather than the normal path.
 #
 # hq-core only. Promoted into hq-core verbatim; the job guard keeps it inert
 # on staging.
@@ -12,14 +13,14 @@ name: Nag stale release PRs
 
 on:
   schedule:
-    # Daily at 16:00 UTC.
-    - cron: '0 16 * * *'
+    # Every 6 hours (US-012: worst-case first nag under ~18h with 12h threshold).
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       threshold_hours:
-        description: 'Age threshold in hours (default 48)'
+        description: 'Age threshold in hours (default 12)'
         required: false
-        default: '48'
+        default: '12'
 
 permissions:
   contents: read
@@ -33,7 +34,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       SLACK_TOKEN: ${{ secrets.SLACK_BOT_TOKEN_RELEASE_MANAGER }}
-      THRESHOLD: ${{ github.event.inputs.threshold_hours || '48' }}
+      THRESHOLD: ${{ github.event.inputs.threshold_hours || '12' }}
     steps:
       - name: Find stale release PRs and nag
         run: |

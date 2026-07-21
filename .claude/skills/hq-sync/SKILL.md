@@ -182,8 +182,17 @@ fi
 # user who is blocked sees a silent, successful-looking run.
 setup_event="$(grep -E '^\{"type":"setup-needed"' "$output_file" | tail -1 || true)"
 if [ -n "$setup_event" ]; then
-  reason=$(printf '%s' "$setup_event" | jq -r '.reason // "unknown"')
-  pending=$(printf '%s' "$setup_event" | jq -r '.pendingInviteCount // 0')
+  # This whole script runs under `set -euo pipefail`. The grep above matches on
+  # a PREFIX, so a line truncated mid-write still reaches jq — and then jq exits
+  # non-zero, the command substitution inherits that status, and `set -e` kills
+  # the script. That would take out the one branch whose entire job is to stop a
+  # blocked user from seeing a silent, successful-looking run. Never let parsing
+  # the diagnostic be the thing that suppresses the diagnostic.
+  reason=$(printf '%s' "$setup_event" | jq -r '.reason // "unknown"' 2>/dev/null || echo "unknown")
+  pending=$(printf '%s' "$setup_event" | jq -r '.pendingInviteCount // 0' 2>/dev/null || echo 0)
+  # `[ "$pending" -gt 0 ]` needs an integer. jq yields a non-numeric if the field
+  # is ever sent as a string, and an empty string if the parse failed above.
+  case "$pending" in ''|*[!0-9]*) pending=0 ;; esac
 
   echo ""
   echo "=== Sync could not complete ==="

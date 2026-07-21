@@ -1,0 +1,5 @@
+grok
+-p
+--yolo
+--no-auto-update
+--system-prompt-override

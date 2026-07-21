@@ -120,6 +120,16 @@ else
   skip "settings.json not found — PATH not configured"
 fi
 
+# This is intentionally a direct script call rather than a lifecycle hook:
+# it is the post-install signal when Desktop/SDK did not load project hooks at
+# all. Do not abort setup here; report the repair while allowing the remaining
+# bootstrap steps to finish.
+if bash "$REPO_ROOT/core/scripts/check-hq-hooks.sh" --root "$REPO_ROOT"; then
+  ok "HQ project hook settings verified"
+else
+  fail "HQ project hooks need repair — run: hq rescue -y --paths .claude"
+fi
+
 # ── 4. Create personal scaffold ─────────────────────────────────────────────
 
 echo ""

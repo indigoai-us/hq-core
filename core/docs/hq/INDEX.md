@@ -14,6 +14,11 @@ to `AGENTS.md`) references this file as the canonical directory map under its
     release notes, `LICENSE`, and this `INDEX.md`.
   - `policies/` — release-shipped policy rules (markdown with YAML frontmatter).
   - `scripts/` — orchestration and automation scripts, plus `tests/`.
+    Includes `core/scripts/hq-agent-session.sh` — on-box HQ Agent Session
+    entrypoint (contract owner for fleet agent turns; see
+    `core/knowledge/public/hq-core/agent-session-contract.md`).
+  - `schemas/` — versioned JSON Schema contracts (e.g. agent-session
+    request/response envelopes).
   - `knowledge/` — shared knowledge stores, conventions, and specs.
   - `workers/` — worker definitions and the generated `registry.yaml`.
   - `packages/` — installed `@indigoai-us/hq-pack-*` packages.
@@ -31,6 +36,12 @@ to `AGENTS.md`) references this file as the canonical directory map under its
 - **`.agents/`**, **`.obsidian/`** — overlay symlinks and Obsidian vault config.
 - **`AGENTS.md`** — symlink to `.claude/CLAUDE.md` so Codex and other agents read
   the same Charter.
+
+## Runtime recovery
+
+- **[HQ hooks not firing](HOOKS-NOT-FIRING.md)** — diagnose and repair missing
+  project hook settings, then configure Claude Desktop or SDK `cwd` and
+  `settingSources` correctly.
 
 ## Tenancy and overlays
 

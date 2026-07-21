@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hq.indigo.ai/schemas/agent-session-response.schema.json",
+  "title": "HQ Agent Session Response",
+  "description": "Versioned response envelope emitted by core/scripts/hq-agent-session.sh on every exit path (success and failure).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "contractVersion",
+    "disposition",
+    "text",
+    "artifacts"
+  ],
+  "properties": {
+    "contractVersion": {
+      "type": "integer",
+      "description": "Integer contract version this response conforms to. Absent or non-integer values are rejected."
+    },
+    "disposition": {
+      "type": "string",
+      "enum": ["reply", "no_reply", "clarify", "plan", "error"],
+      "description": "How the producer should treat this turn outcome."
+    },
+    "text": {
+      "type": "string",
+      "description": "Human- or channel-facing body. Empty string is valid for no_reply."
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "HQ-root-relative path to a file produced during the turn."
+      },
+      "description": "HQ-root-relative paths of durable artifacts written this turn."
+    }
+  }
+}

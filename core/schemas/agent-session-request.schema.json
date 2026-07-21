@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hq.indigo.ai/schemas/agent-session-request.schema.json",
+  "title": "HQ Agent Session Request",
+  "description": "Versioned request envelope that hq-pro (or any producer) sends to the on-box HQ Agent Session entrypoint. Validated by core/scripts/hq-agent-session.sh before any provider work begins.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "agentUid",
+    "companySlug",
+    "channel",
+    "convKey",
+    "messageText",
+    "provider",
+    "sender"
+  ],
+  "properties": {
+    "contractVersion": {
+      "type": "integer",
+      "description": "Integer contract version. Must match or be less than core/core.yaml agentSessionContractVersion on the box. Absent or non-integer values are rejected."
+    },
+    "agentUid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Fleet agent identity (e.g. agt_…)."
+    },
+    "companySlug": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Company directory slug under companies/ that this turn is authorized for."
+    },
+    "channel": {
+      "type": "string",
+      "enum": ["slack", "telegram", "email", "dm", "job", "task"],
+      "description": "Origin surface for this turn."
+    },
+    "convKey": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable conversation key (e.g. {agentUid}#slack:{channelId}[:{threadRoot}])."
+    },
+    "messageText": {
+      "type": "string",
+      "description": "Untrusted channel body for this turn."
+    },
+    "provider": {
+      "type": "string",
+      "enum": ["claude", "codex", "grok"],
+      "description": "Which on-box provider adapter to invoke."
+    },
+    "sender": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["verified"],
+      "properties": {
+        "verified": {
+          "type": "boolean",
+          "description": "Whether the producer authenticated the sender as an active company member."
+        }
+      },
+      "description": "Sender trust metadata. verified is required; additional identity fields may be present."
+    },
+    "rehydration": {
+      "type": ["string", "null"],
+      "description": "Optional formatted prior-turn block from the conversation store. null when unavailable."
+    },
+    "rehydrationTurnCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of turns represented in rehydration. 0 when rehydration is null or empty."
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{1,64}$",
+      "description": "Optional project slug for durable writes under companies/{co}/projects/{project}/."
+    }
+  }
+}

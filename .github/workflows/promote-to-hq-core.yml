@@ -8,9 +8,11 @@ name: Promote to hq-core
 #      Each push force-updates that branch with the latest staging tree, so
 #      an already-open PR is "rebased" onto the new code rather than a new PR
 #      being opened. Version follows a patch train: next = hq-core main
-#      hqVersion + 1 patch (e.g. 15.0.4 -> 15.0.5). The PR is NOT auto-merged
-#      — merging it is the deliberate release gate. Minor/major releases are
-#      still cut manually via workflow_dispatch with an explicit version.
+#      hqVersion + 1 patch (e.g. 15.0.4 -> 15.0.5). Auto-mode arms GitHub
+#      auto-merge (squash) once required checks are green; apply the
+#      `hold-release` label to disable auto-merge and skip re-arming.
+#      Minor/major releases are still cut manually via workflow_dispatch with
+#      an explicit version.
 #
 #   2. workflow_dispatch (mode=manual) — explicit release/v<ver> or fix/<slug>
 #      PR with an operator-supplied version (unchanged from the original
@@ -383,7 +385,9 @@ jobs:
           fi
           if [ "$INPUT_MODE" = "auto" ]; then
             {
-              echo "- 🤖 Auto-promote: this PR tracks staging \`main\` and is force-updated on every push. Merge when ready to release v${INPUT_VERSION}."
+              echo "- 🤖 Auto-promote: this PR tracks staging \`main\` and is force-updated on every push."
+              echo "- ✅ **Auto-merge on green** is armed (\`gh pr merge --auto --squash\`). Required checks must pass; red checks hold the PR indefinitely."
+              echo "- 🛑 **Hold a release:** \`gh pr edit <N> --add-label hold-release\` (or apply the \`hold-release\` label in the UI). That disables auto-merge and skips re-arming on subsequent staging pushes."
             } >> "$BODY_FILE"
           fi
           if [ -n "${INPUT_EXTRA}" ]; then
@@ -458,6 +462,7 @@ jobs:
           fi
 
       - name: Open PR on hq-core (if not already open)
+        id: openpr
         if: steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -471,6 +476,7 @@ jobs:
           EXISTING="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [ -n "$EXISTING" ]; then
             echo "::notice::PR #${EXISTING} already open for ${BRANCH}; the force-push updated it in place."
+            echo "number=${EXISTING}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           LABEL_ARGS=()
@@ -480,10 +486,41 @@ jobs:
               LABEL_ARGS+=(--label "$L")
             done
           fi
-          gh pr create \
+          URL="$(gh pr create \
             --repo "$TARGET_REPO" \
             --base main \
             --head "$BRANCH" \
             --title "$TITLE" \
             --body-file "$BODY_FILE" \
-            "${LABEL_ARGS[@]}"
+            "${LABEL_ARGS[@]}")"
+          NUM="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          echo "number=${NUM}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Opened PR #${NUM}: ${URL}"
+
+      # US-012: arm GitHub auto-merge (squash) on the standing auto-mode PR so
+      # green required checks land without a multi-hour human gate. hold-release
+      # label is the human opt-out (disable + skip re-arm).
+      - name: Arm or hold auto-merge (auto mode)
+        if: >-
+          steps.params.outputs.mode == 'auto' &&
+          steps.nochanges.outputs.skip != 'true' &&
+          steps.realchanges.outputs.skip != 'true' &&
+          steps.params.outputs.dry_run != 'true' &&
+          steps.openpr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.openpr.outputs.number }}
+        run: |
+          set -euo pipefail
+          LABELS="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json labels --jq '[.labels[].name] | join(",")')"
+          if echo ",${LABELS}," | grep -q ',hold-release,'; then
+            gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --disable-auto || true
+            echo "::notice::hold-release present on PR #${PR_NUMBER} — auto-merge disabled; not re-arming."
+            exit 0
+          fi
+          # Queues until required checks are green; does not bypass red checks.
+          if gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --auto --squash; then
+            echo "::notice::Auto-merge armed (squash) on PR #${PR_NUMBER}."
+          else
+            echo "::warning::Could not arm auto-merge on PR #${PR_NUMBER} (checks may already be red or merge state blocked). Will retry on next staging push."
+          fi

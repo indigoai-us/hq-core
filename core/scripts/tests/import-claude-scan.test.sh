@@ -13,6 +13,8 @@
 #   1. Discovery actually finds what exists (populated fixture → non-zero counts).
 #   2. A discovery failure surfaces LOUDLY and is distinguishable from "found
 #      none" (permission-denied fixture → discovery.ok=false, loud stderr).
+#   3. Large discovered payloads are file-backed, never passed to jq in argv
+#      (DEV-1973 / feedback_01065ffc-f06c-4be0-b7ad-f20bd314b3fb).
 
 set -euo pipefail
 
@@ -97,5 +99,35 @@ else
     || fail "T3: a loud 'DISCOVERY INCOMPLETE' banner must be printed to stderr"
   ok "permission-denied fixture: discovery.ok=false, errors recorded, loud stderr banner"
 fi
+
+# ── Test 4: large fixture → no jq ARG_MAX overflow ──────────────────────────
+# 240 SKILL.md files with 40 previewable long lines make the serialized skills
+# payload exceed the argv budget that previously failed at scan.sh's tree-object
+# jq call. The scanner must finish and preserve every discovered skill.
+L="$TMP_ROOT/large"
+mkdir -p "$L/.claude/skills"
+long_line='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+for i in $(seq 1 240); do
+  mkdir -p "$L/.claude/skills/skill-$i"
+  for _ in $(seq 1 80); do printf '%s\n' "$long_line"; done > "$L/.claude/skills/skill-$i/SKILL.md"
+done
+
+set +e
+HOME="$L" bash "$SCAN" \
+  --hq-root="$SRC_ROOT" \
+  --no-default-scopes \
+  --scope="$L" \
+  >"$TMP_ROOT/t4.json" 2>"$TMP_ROOT/t4.err"
+scan_status=$?
+set -e
+
+[ "$scan_status" -eq 0 ] || fail "T4: large fixture scan exited $scan_status: $(sed -n '1p' "$TMP_ROOT/t4.err")"
+jq -e '.categories' "$TMP_ROOT/t4.json" >/dev/null 2>&1 || fail "T4: report is not valid JSON"
+[ "$(count "$TMP_ROOT/t4.json" skills)" = "240" ] \
+  || fail "T4: expected 240 skills, got $(count "$TMP_ROOT/t4.json" skills)"
+if grep -q 'Argument list too long' "$TMP_ROOT/t4.err"; then
+  fail "T4: scanner must not hit ARG_MAX"
+fi
+ok "large fixture: 240 skills scan without jq ARG_MAX overflow"
 
 echo "PASS: $PASS import-claude scanner assertion group(s) green"
