@@ -111,20 +111,43 @@ read_app_state() {
   APP_STATE="${response%$'\n'*}"
 }
 
+# The company policy lives behind its OWN endpoint. `GET /api/apps/{id}`
+# reports accessMode but returns accessPolicy: null for every app, gated or
+# not — so reading .accessPolicy.companyUid from it ALWAYS yields empty.
+# Verifying a company gate against that field could therefore never succeed,
+# and the "unverified" branch below overwrote the correct company gate with a
+# password gate on every single company deploy. A verification that cannot
+# pass is worse than no verification: it actively destroyed the thing it was
+# checking. Caught by a live smoke on 2026-07-19; no unit test saw it because
+# the API shape was mocked.
+read_access_policy() {
+  local response status
+  response="$(curl -sS -w $'\n%{http_code}' -H "Authorization: Bearer $JWT" \
+    "$API/api/apps/$APP_ID/access-policy" || true)"
+  status="${response##*$'\n'}"
+  is_2xx "$status" || return 1
+  POLICY_STATE="${response%$'\n'*}"
+}
+
 verify_gate() {
-  local expected_mode="$1" expected_uid="${2:-}" attempt state_mode state_uid protected
+  local expected_mode="$1" expected_uid="${2:-}" attempt state_mode protected policy_mode policy_uid
   for attempt in 1 2 3; do
     if read_app_state; then
-      state_mode="$(printf '%s' "$APP_STATE" | jq -r '.accessPolicy.mode // .accessMode // empty')"
-      state_uid="$(printf '%s' "$APP_STATE" | jq -r '.accessPolicy.companyUid // empty')"
+      state_mode="$(printf '%s' "$APP_STATE" | jq -r '.accessMode // empty')"
       protected="$(printf '%s' "$APP_STATE" | jq -r '.passwordProtected // false')"
       GATE="$(curl -sS -o /dev/null -w '%{http_code}' "$LIVE/" || true)"
       if [ "$GATE" = "302" ] && [ "$state_mode" = "$expected_mode" ]; then
         if [ "$expected_mode" = "password" ] && [ "$protected" = "true" ]; then
           return 0
         fi
-        if [ "$expected_mode" = "company" ] && [ "$state_uid" = "$expected_uid" ]; then
-          return 0
+        if [ "$expected_mode" = "company" ] && read_access_policy; then
+          policy_mode="$(printf '%s' "$POLICY_STATE" | jq -r '.mode // empty')"
+          policy_uid="$(printf '%s' "$POLICY_STATE" | jq -r '.companyUid // empty')"
+          # Full proof: edge redirects, app record says company, AND the policy
+          # record binds the company we asked for.
+          if [ "$policy_mode" = "company" ] && [ "$policy_uid" = "$expected_uid" ]; then
+            return 0
+          fi
         fi
       fi
     fi

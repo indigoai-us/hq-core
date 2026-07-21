@@ -18,8 +18,9 @@
 #
 # What `hq reindex` does (see the @indigoai-us/hq-cloud package):
 #   - surfaces namespaced skills as .claude/skills/<ns>:<skill>/ wrappers
-#   - mirrors personal/{knowledge,policies,workers,settings} into core/
-#   - prunes orphan wrappers + legacy command symlinks
+#   - prunes orphan wrappers + legacy command symlinks (and, as a migration,
+#     retired personal/{knowledge,policies,workers,settings} mirror symlinks in
+#     core/ — that overlay is now read DIRECTLY from personal/, not mirrored)
 #   - regenerates the workers registry
 #
 # Robustness: if the hq CLI isn't on PATH (e.g. a partial install), the shim

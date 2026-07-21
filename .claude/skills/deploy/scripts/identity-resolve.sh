@@ -4,7 +4,12 @@
 # zero Task-tool overhead, deterministic.
 #
 # Output (one JSON line on stdout):
-#   {"status":"ok","jwt":"...","expires_at":<epoch-ms>,"source":"cache|refresh|login"}
+#   {"status":"ok","jwt":"...","id_token":"...","expires_at":<epoch-ms>,"source":"cache|refresh|login"}
+#
+# `id_token` is the HQ Pro / grantee-validation token (X-HQ-Pro-Authorization).
+# Callers MUST take it from here rather than re-reading the token file with a
+# raw `jq`: only this script applies the expiry skew and the refresh path, so a
+# raw read silently reintroduces the mid-deploy 401 this script exists to stop.
 #   {"status":"login_required","reason":"<short>"}
 #   {"status":"missing_dependency","dep":"jq|node","install":"<per-OS guidance>"}
 #
@@ -109,12 +114,19 @@ else
 fi
 
 # 2. Try cache hit
+# A bare "not yet expired" check is not enough: the caller uses this token for
+# the WHOLE deploy (build, tarball, S3 upload, then the access-policy call),
+# which routinely takes minutes. Accepting a token with seconds of life left
+# guarantees a mid-deploy 401 once per token hour. Treat anything inside the
+# skew window as stale so the refresh path below runs first.
+SKEW_MS=300000  # 5 min — must exceed worst-case deploy duration after this call
 if [ -n "$TF" ]; then
   AT=$(token_field "$TF" "accessToken")
+  IDT=$(token_field "$TF" "idToken")
   EXP=$(token_field "$TF" "expiresAt")
   [ -n "$EXP" ] || EXP=0
-  if [ -n "$AT" ] && [ "$EXP" -gt "$NOW_MS" ] 2>/dev/null; then
-    emit "{\"status\":\"ok\",\"jwt\":\"$AT\",\"expires_at\":$EXP,\"source\":\"cache\"}"
+  if [ -n "$AT" ] && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
+    emit "{\"status\":\"ok\",\"jwt\":\"$AT\",\"id_token\":\"$IDT\",\"expires_at\":$EXP,\"source\":\"cache\"}"
   fi
 fi
 
@@ -129,10 +141,14 @@ if [ -n "$TF" ]; then
     fi
     if [ -f "$TOKEN_FILE" ]; then
       AT=$(token_field "$TOKEN_FILE" "accessToken")
+      IDT=$(token_field "$TOKEN_FILE" "idToken")
       EXP=$(token_field "$TOKEN_FILE" "expiresAt")
       [ -n "$EXP" ] || EXP=0
-      if [ -n "$AT" ] && [ "$EXP" -gt "$NOW_MS" ] 2>/dev/null; then
-        emit "{\"status\":\"ok\",\"jwt\":\"$AT\",\"expires_at\":$EXP,\"source\":\"refresh\"}"
+      # Same skew applies: if hq-auth-refresh silently no-opped, the on-disk
+      # token is unchanged and still inside the window. Fall through to login
+      # rather than hand the caller a token that dies mid-deploy.
+      if [ -n "$AT" ] && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
+        emit "{\"status\":\"ok\",\"jwt\":\"$AT\",\"id_token\":\"$IDT\",\"expires_at\":$EXP,\"source\":\"refresh\"}"
       fi
     fi
   fi
@@ -163,10 +179,11 @@ wait "$KILLER_PID" 2>/dev/null
 
 if [ -f "$TOKEN_FILE" ]; then
   AT=$(token_field "$TOKEN_FILE" "accessToken")
+  IDT=$(token_field "$TOKEN_FILE" "idToken")
   EXP=$(token_field "$TOKEN_FILE" "expiresAt")
   [ -n "$EXP" ] || EXP=0
   if [ -n "$AT" ]; then
-    emit "{\"status\":\"ok\",\"jwt\":\"$AT\",\"expires_at\":$EXP,\"source\":\"login\"}"
+    emit "{\"status\":\"ok\",\"jwt\":\"$AT\",\"id_token\":\"$IDT\",\"expires_at\":$EXP,\"source\":\"login\"}"
   fi
 fi
 err "login_attempt_failed"

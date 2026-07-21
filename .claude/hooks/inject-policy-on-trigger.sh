@@ -97,7 +97,17 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # (`when: always` matches everywhere) and the per-session dedup ledger so each
   # fires at most once. There is no separate digest to dedup against; this hook is
   # the sole policy-surfacing path.
-  DIRS=("$HQ_ROOT/core/policies")
+  # personal/policies is read DIRECTLY (not via the old reindex symlink mirror
+  # into core/policies): personal is now the sole read source for the personal
+  # overlay. Both core (shipped) and personal surface — no override semantics.
+  #
+  # ORDER IS LOAD-BEARING (US-003): both match paths downstream are
+  # first-match-wins on the policy id, so DIRS order IS the precedence order.
+  # HQ's documented precedence is company > repo > global — company and repo
+  # dirs must therefore precede core, or a core policy sharing an id silently
+  # overrides the company copy (observed live with three core/indigo id
+  # collisions; regression test: inject-policy-scope-precedence.test.sh).
+  DIRS=()
   case "$CWD" in
     *companies/*)
       co="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')"
@@ -109,6 +119,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       rname="$(printf '%s' "$CWD" | sed -nE 's#.*repos/[^/]+/([^/]+).*#\1#p')"
       [ -n "$rscope" ] && [ -n "$rname" ] && DIRS+=("$HQ_ROOT/repos/$rscope/$rname/.claude/policies") ;;
   esac
+  DIRS+=("$HQ_ROOT/personal/policies" "$HQ_ROOT/core/policies")
 
   # Collect in-scope policy files (skip generated/template/readme).
   POLICY_FILES=()

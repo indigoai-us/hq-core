@@ -60,4 +60,26 @@ add_count="$(grep -c '^collection add ' "$LOG" || true)"
 [ "$add_count" -eq 2 ] || fail "expected only 2 populated collections, got $add_count"
 pass "empty and INDEX-only collections skipped"
 
+# --- personal/knowledge is registered as its own collection (read directly) ---
+# personal is the sole read source now (no reindex mirror into core/knowledge),
+# so a populated personal/knowledge must get its own qmd collection.
+HQ2="$TMP/hq2"; LOG2="$TMP/qmd2.log"
+mkdir -p "$HQ2/core" "$HQ2/personal/knowledge"
+: > "$HQ2/core/core.yaml"
+: > "$HQ2/personal/knowledge/note.md"
+: > "$HQ2/personal/knowledge/INDEX.md"
+env -i PATH="$TMP/bin:/usr/bin:/bin" QMD_LOG="$LOG2" bash "$SCRIPT" "$HQ2"
+personal_add="collection add $HQ2/personal/knowledge --name personal-knowledge --mask **/*.md"
+grep -Fqx "$personal_add" "$LOG2" || fail "personal/knowledge collection was not registered"
+pass "personal/knowledge registered as its own collection"
+
+# INDEX-only personal/knowledge must NOT register (mirrors the company rule).
+HQ3="$TMP/hq3"; LOG3="$TMP/qmd3.log"
+mkdir -p "$HQ3/core" "$HQ3/personal/knowledge"
+: > "$HQ3/core/core.yaml"
+: > "$HQ3/personal/knowledge/INDEX.md"
+env -i PATH="$TMP/bin:/usr/bin:/bin" QMD_LOG="$LOG3" bash "$SCRIPT" "$HQ3"
+grep -Fq 'name personal-knowledge' "$LOG3" && fail "INDEX-only personal/knowledge should not register"
+pass "INDEX-only personal/knowledge skipped"
+
 echo "PASS: qmd-reindex-after-sync SIGPIPE regression"

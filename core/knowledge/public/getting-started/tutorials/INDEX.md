@@ -1,5 +1,10 @@
 # Tutorials
 
+There are two complementary ways to learn HQ:
+
+- **[Guided HQ tutorial](https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_tutorial_index)** — the canonical seven-lesson setup course, with videos, written steps, and screenshots.
+- **`/tutorial`** — adaptive, hands-on exercises against the HQ already on your machine.
+
 Interactive lessons run via `/tutorial`. No static lesson files — the command reads from *Build Your Own AGI* and HQ reference files at runtime, adapting to the user's actual HQ state.
 
 Ordering follows user feedback: **principles and daily workflow first**, orchestration and worker authoring last. Most users won't need `/run-project` until they've lived in HQ for a while.

@@ -159,7 +159,10 @@ while IFS= read -r yaml; do
   printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
     "$id" "$path" "$type" "$visibility" "$team" "$company" "$status" "$desc" \
     >> "$TMP_ENTRIES"
-done < <(find -L core/workers companies -name worker.yaml -type f 2>/dev/null | sort)
+# personal/workers is walked DIRECTLY: personal is now the sole read source for
+# the personal overlay (the old reindex symlink mirror into core/workers is
+# retired). `derive_visibility` already classifies personal/workers/* as public.
+done < <(find -L core/workers companies personal/workers -name worker.yaml -type f 2>/dev/null | sort)
 
 # Sort by id, then by path — the secondary path key makes duplicate-id
 # resolution deterministic (the lexicographically-first path wins; see below).
