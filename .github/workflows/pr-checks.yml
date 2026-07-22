@@ -424,6 +424,8 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-repos-exempt.test.sh
       - name: block-core-writes-bash target-aware write detection
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
+      - name: block-core-writes permits only the durable native personal context
+        run: bash core/scripts/tests/block-core-writes-native-context.test.sh
 
   # US-005: shell portability lint + shellcheck + cross-platform smoke.
   shell-portability:
@@ -522,6 +524,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Hooks run python-free (tripwire + parity + broken-stub runtime)
         run: bash core/scripts/tests/hooks-no-python.test.sh
+
+  policy-trigger-migration:
+    # Trigger-less soft/unset policies must not be promoted into the always-on
+    # SessionStart baseline; hard fallback and normal reactive injection stay live.
+    name: policy-trigger-migration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforcement-gated policy trigger backfill
+        run: bash core/scripts/tests/migrate-policy-triggers.test.sh
+      - name: Retired digest path has no frontmatter exemption
+        run: bash core/scripts/tests/validate-policy-frontmatter.test.sh
+
   prefer-native-capabilities:
     # hq-prefer-native-capabilities must inject at session start (always-on
     # baseline) and on canvas/share/secret prompts, stay untruncated in the

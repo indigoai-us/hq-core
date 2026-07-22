@@ -1,0 +1,4 @@
+<policy-reminder>
+> Policy `fixture-pol` applies here: FIXTURE_RULE_MARKER prose.
+> Read the full rule(s) at `core/policies/{slug}.md` if you need rationale.
+</policy-reminder>

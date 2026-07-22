@@ -1,0 +1,6 @@
+codex
+exec
+resume
+--skip-git-repo-check
+--dangerously-bypass-hook-trust
+--

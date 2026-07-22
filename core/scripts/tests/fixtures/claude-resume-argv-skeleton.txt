@@ -1,0 +1,8 @@
+claude
+--settings
+--dangerously-skip-permissions
+--permission-mode
+bypassPermissions
+--append-system-prompt
+--resume
+--

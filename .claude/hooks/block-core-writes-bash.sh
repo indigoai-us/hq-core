@@ -3,7 +3,7 @@
 #
 # Companion to block-core-writes.sh. Scans Bash command text and rejects
 # high-confidence direct writes into core/ or .claude/ (except
-# .claude/settings.local.json).
+# .claude/settings.local.json and .claude/personal-context.md).
 #
 # Bypass: HQ_BYPASS_CORE_PROTECT="1" under "env" in .claude/settings.local.json.
 # This is a real escape hatch, but enabling it disables protection for EVERY
@@ -384,9 +384,9 @@ write_op_targets_protected() {
 
 writes_to_protected() {
   local cmd="$1"
-  # Strip settings.local.json refs -- that file is the allowed exception inside .claude/.
+  # Strip the two user-owned files -- they are allowed exceptions inside .claude/.
   local stripped
-  stripped=$(echo "$cmd" | sed 's|[^[:space:]]*settings\.local\.json[^[:space:]]*||g; s|settings\.local\.json||g')
+  stripped=$(echo "$cmd" | sed 's|[^[:space:]]*settings\.local\.json[^[:space:]]*||g; s|settings\.local\.json||g; s|[^[:space:]]*personal-context\.md[^[:space:]]*||g; s|personal-context\.md||g')
 
   # Absolute/live-root forms are always enforced; relative forms only outside a
   # repos/ checkout.
@@ -427,7 +427,9 @@ BLOCKED: Bash command appears to write into protected scaffold paths.
   Command: $CMD
 
 Protected: core/, .claude/, .agents/, .codex/, .obsidian/, companies/_template/, AGENTS.md
-Exception: .claude/settings.local.json is always writable.
+Exceptions: .claude/settings.local.json and .claude/personal-context.md are
+always writable. Put durable personal voice and preferences in
+.claude/personal-context.md.
 
 Preferred fix: author the content under personal/ (reindex symlinks it into
 core/), which needs no bypass at all.

@@ -38,11 +38,11 @@ echo "[2] scope coverage: company + repo policies enforced too"
 exp 2 "$(wp "$PROJ/companies/acme/policies/x.md" "$NOWHENON")"     "company policy missing -> block"
 exp 2 "$(wp "$PROJ/repos/private/x/.claude/policies/y.md" "$NOON")" "repo policy missing -> block"
 
-echo "[3] exclusions: non-policy, audit store, README/_digest ALLOWED"
+echo "[3] exclusions: non-policy, audit store, README allowed; retired digest blocked"
 exp 0 "$(wp "$PROJ/core/scripts/foo.sh" "echo hi")"                       "non-policy path -> allow"
 exp 0 "$(wp "$PROJ/.claude/audit/policies/repo-internal-codes.md" "$NOWHENON")" "audit redaction rule -> allow"
 exp 0 "$(wp "$PROJ/core/policies/README.md" "no frontmatter")"            "policies/README.md -> allow"
-exp 0 "$(wp "$PROJ/core/policies/_digest.md" "no frontmatter")"           "policies/_digest.md -> allow"
+exp 2 "$(wp "$PROJ/core/policies/_digest.md" "no frontmatter")"           "retired policies/_digest.md path -> block"
 
 echo "[4] Edit / MultiEdit reflect the RESULTING content"
 POL="$PROJ/core/policies/live.md"; printf '%s' "$GOOD" > "$POL"

@@ -7,7 +7,7 @@
 #   - the 2026-06-14 boundary fix: VAR=<protected path> assignments and
 #     colon-joined paths are now caught (previously slipped through because
 #     '=' / ':' were not treated as token boundaries);
-#   - .claude/settings.local.json remains writable;
+#   - .claude/settings.local.json and the durable personal context remain writable;
 #   - companies/_template/ (a locked path per core.yaml) is blocked, while a
 #     real tenant dir (companies/<co>/) stays writable;
 #   - the settings.local.json HQ_BYPASS_CORE_PROTECT escape hatch still works
@@ -66,6 +66,7 @@ run 2 "P=/x:$TMP/core/y; cp /tmp/z \$P"      'colon-joined core path + cp blocke
 
 # --- Allowed: exceptions and non-protected targets -----------------------
 run 0 "echo x > $TMP/.claude/settings.local.json"  'settings.local.json writable'
+run 0 "echo x > $TMP/.claude/personal-context.md"   'personal-context.md writable'
 run 0 "mv /tmp/y $TMP/repos/private/app/s"         'write into repos/ allowed'
 run 0 "mv /tmp/y $TMP/personal/p.md"               'write into personal/ allowed'
 run 0 "cat $C/s.json"                              'read-only cat of core allowed'

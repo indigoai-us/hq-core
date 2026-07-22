@@ -4,9 +4,11 @@
 #
 # NOTE: `trigger:` was removed from the policy schema (superseded by when/on).
 # This backfill still reads a `trigger:` line if a legacy/external policy has
-# one, but newly authored policies derive `when:` from tags alone (or the
-# `when: always` fallback). The create/edit guard validate-policy-frontmatter.sh
-# is now the primary enforcement that every policy declares when/on.
+# one, but newly authored policies derive `when:` from tags alone. When no
+# signal can be derived, only hard-enforcement policies receive the
+# `when: always` fallback; soft/unset policies remain untriggered. The
+# create/edit guard validate-policy-frontmatter.sh is now the primary
+# enforcement that every authored policy declares when/on.
 #
 # `when:` is generated from up to TWO sources, OR-combined:
 #   1. trigger content — the authored `trigger:` prose, mapped to a precise
@@ -27,9 +29,10 @@
 # UserPromptSubmit, AssistantIntent] — for any policy that gets a real `when:`.
 # `on:` is the set of sites where the policy is even evaluated; the `when:`
 # expression does the actual filtering, so evaluating broadly is cheap and
-# correct. SessionStart is reserved for the `when: always` fallback (it has no
-# command/prompt facts — only static facts + `always`), used when neither tags
-# nor trigger yield a signal.
+# correct. SessionStart is reserved for the hard-policy `when: always` fallback
+# (it has no command/prompt facts — only static facts + `always`), used when
+# neither tags nor trigger yield a signal. A non-hard policy with no derivable
+# signal is left unchanged so it cannot silently join the SessionStart baseline.
 #
 # STRICTLY IDEMPOTENT: a policy that already has a `when:` line is left
 # untouched — the script only ever ADDS when/on to a policy that lacks them, and
@@ -127,11 +130,16 @@ tag_tokens() {
   done
 }
 
-# build_when <trigger-prose> <raw-tags> — emit "WHEN<TAB>ON"
+# build_when <trigger-prose> <raw-tags> <enforcement> — emit "WHEN<TAB>ON".
+# Returns 1 without output when no signal is derivable for a non-hard policy.
 build_when() {
-  local trig tags te t seen
+  local trig tags enforcement te t seen
   trig="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   tags="$2"
+  enforcement="${3%%#*}"
+  enforcement="$(printf '%s' "$enforcement" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  enforcement="${enforcement#\"}"; enforcement="${enforcement%\"}"
+  enforcement="${enforcement#\'}"; enforcement="${enforcement%\'}"
   te="$(trigger_expr "$trig")"
 
   # terms: the trigger expression first (parenthesised if it has operators),
@@ -151,6 +159,7 @@ build_when() {
   done < <(tag_tokens "$tags")
 
   if [ "${#terms[@]}" -eq 0 ]; then
+    [ "$enforcement" = "hard" ] || return 1
     printf 'always\t%s' "$ON_START"
   else
     local when=""; local i
@@ -161,20 +170,25 @@ build_when() {
   fi
 }
 
-total=0; migrated=0; skipped=0
+total=0; migrated=0; skipped=0; untriggered=0
 declare -i n_session=0
 for dir in "${DIRS[@]}"; do
   [ -d "$dir" ] || continue
   for f in "$dir"/*.md; do
     [ -f "$f" ] || continue
-    case "$(basename "$f")" in _digest.md|example-policy.md|README.md) continue ;; esac
+    case "$(basename "$f")" in example-policy.md|README.md) continue ;; esac
     total=$((total+1))
     # STRICTLY IDEMPOTENT: a policy that already declares a trigger is left as-is.
     if grep -q '^when:' "$f"; then skipped=$((skipped+1)); continue; fi
 
     trig="$(fm trigger "$f")"
     tags="$(fm tags "$f" | sed 's/^\[//; s/\]$//')"
-    IFS=$'\t' read -r WHEN ON <<< "$(build_when "$trig" "$tags")"
+    enforcement="$(fm enforcement "$f")"
+    if ! built="$(build_when "$trig" "$tags" "$enforcement")"; then
+      untriggered=$((untriggered+1))
+      continue
+    fi
+    IFS=$'\t' read -r WHEN ON <<< "$built"
     [ "$ON" = "$ON_START" ] && n_session=$((n_session+1))
 
     if [ "$DRY" = "1" ]; then
@@ -194,5 +208,5 @@ for dir in "${DIRS[@]}"; do
 done
 
 # Quiet in steady state: only report when something was actually backfilled.
-[ "$migrated" -gt 0 ] && echo "migrate-policy-triggers: backfilled $migrated policy trigger(s) ($n_session -> SessionStart, $skipped already had when)" >&2
+[ "$migrated" -gt 0 ] && echo "migrate-policy-triggers: backfilled $migrated policy trigger(s) ($n_session hard -> SessionStart, $untriggered non-hard triggerless left unchanged, $skipped already had when)" >&2
 exit 0
