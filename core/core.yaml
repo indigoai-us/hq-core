@@ -1,7 +1,10 @@
 version: 1
-hqVersion: "15.0.57"
+hqVersion: "15.0.58"
 agentSessionContractVersion: 1
-updatedAt: "2026-07-22T08:58:15Z"
+# Provider adapter contract version (US-500). Must match
+# HQ_ADAPTER_CONTRACT_VERSION in core/scripts/lib/provider-adapter-version.sh.
+adapterContractVersion: "1.0.0"
+updatedAt: "2026-07-22T15:38:48Z"
 # hq-core is the minimal scaffold seed. Rich add-ons ship as `@indigoai-us/hq-pack-*`
 # npm packages installed into `core/packages/` via `hq install`. See `core/packages/README.md`.
 rules:
