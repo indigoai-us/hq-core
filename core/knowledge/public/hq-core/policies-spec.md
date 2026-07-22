@@ -202,11 +202,13 @@ runs as a SessionStart hook and derives a trigger from the policy's own
 metadata — `when:` from its `tags:` (topical vocabulary, `vendor:x`→`x`, meta
 tags dropped);
 `on: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]` (every live
-event — `when:` does the filtering). If neither tags nor trigger yield a signal
-it falls back to `when: always` + `on: [SessionStart]`. The script is **strictly
-idempotent**: a policy that already declares `when:` (authored or human-tuned) is
-never rewritten — so it backfills new policies only, with zero writes in steady
-state. Hand-tuning a generated trigger is therefore permanent.
+event — `when:` does the filtering). If neither tags nor trigger yield a signal,
+only an `enforcement: hard` policy falls back to `when: always` +
+`on: [SessionStart]`. A soft or unset-enforcement policy is left unbackfilled,
+and the injector skips it because it has no `when:` trigger. The script is
+**strictly idempotent**: a policy that already declares `when:` (authored or
+human-tuned) is never rewritten — so it backfills new policies only, with zero
+writes in steady state. Hand-tuning a generated trigger is therefore permanent.
 
 ## Optional Sections
 

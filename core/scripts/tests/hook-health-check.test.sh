@@ -87,10 +87,24 @@ LEDGER="$TMP/ledger"
 make_healthy_root "$LEDGER"
 out="$(run_expect 2 "$LEDGER" --require-ledger)"
 printf '%s' "$out" | grep -Fq 'policy-trigger ledger was not found' || fail "missing ledger diagnosis absent: $out"
+printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+  || fail "missing ledger did not emit the runtime-off warning: $out"
 mkdir -p "$LEDGER/workspace/orchestrator/policy-trigger-state"
 : >"$LEDGER/workspace/orchestrator/policy-trigger-state/desktop-session.txt"
 out="$(run_expect 0 "$LEDGER" --require-ledger)"
 printf '%s' "$out" | grep -Fq 'ledger: present' || fail "present ledger not reported: $out"
+printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: OBSERVED' \
+  || fail "present ledger did not emit the runtime-on signal: $out"
 pass "ledger requirement distinguishes hook-ready from hooks-observed"
+
+echo "[6] session-scoped verification cannot be satisfied by a stale ledger"
+out="$(run_expect 2 "$LEDGER" --session-id app-sdk-session)"
+printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+  || fail "missing session ledger did not emit runtime-off warning: $out"
+: >"$LEDGER/workspace/orchestrator/policy-trigger-state/app-sdk-session.txt"
+out="$(run_expect 0 "$LEDGER" --session-id app-sdk-session)"
+printf '%s' "$out" | grep -Fq 'session: app-sdk-session' \
+  || fail "exact session identity was not reported: $out"
+pass "session-scoped ledger check rejects stale evidence"
 
 echo "PASS: hook-health checker"

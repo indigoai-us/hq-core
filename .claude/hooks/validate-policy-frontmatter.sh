@@ -7,8 +7,8 @@
 # edited must declare both.
 #
 # Targets: */policies/*.md (core/, companies/*/, repos/*/*/.claude/, personal/).
-# Excludes: README.md, _digest.md, and the .claude/audit/ redaction-rule store
-# (those are not trigger-injected policies).
+# Excludes: README.md and the .claude/audit/ redaction-rule store (those are not
+# trigger-injected policies). The retired `_digest.md` path has no exemption.
 #
 # Advisory-safe: FAILS OPEN (exit 0) on any ambiguity — non-policy paths,
 # unparsable input, or when neither analyzer engine is usable — so it never
@@ -62,7 +62,7 @@ const low = p.toLowerCase().replace(/\\/g, "/");
 
 if (!(low.endsWith(".md") && low.includes("/policies/"))) allow();
 const base = low.split("/").pop();
-if (base === "readme.md" || base === "_digest.md") allow();
+if (base === "readme.md") allow();
 if (low.includes("/audit/")) allow();   // secret-redaction store, not a policy
 
 const readCurrent = () => { try { return fs.readFileSync(p, "utf8"); } catch (e) { return ""; } };
@@ -126,7 +126,7 @@ analyze_with_jq() {
   case "$low" in *.md) : ;; *) echo ALLOW; return ;; esac
   case "$low" in */policies/*) : ;; *) echo ALLOW; return ;; esac
   base="${low##*/}"
-  case "$base" in readme.md|_digest.md) echo ALLOW; return ;; esac
+  case "$base" in readme.md) echo ALLOW; return ;; esac
   case "$low" in */audit/*) echo ALLOW; return ;; esac
 
   kind="$(printf '%s' "$INPUT" | "$JQ" -r 'if (.tool_input.content? != null) then "write" elif ((.tool_input.edits? | type) == "array") then "multi" elif (.tool_input | has("new_string")) then "edit" else "none" end' 2>/dev/null || echo none)"

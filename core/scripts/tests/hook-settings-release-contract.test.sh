@@ -27,14 +27,29 @@ jq -e 'has("hooks") | not' "$LOCAL_SETTINGS" >/dev/null \
   || fail "shipped settings.local.json must not shadow project hook registrations"
 pass "tracked settings retain SessionStart + PreToolUse hooks without local shadowing"
 
-echo "[2] the staging overlay replaces project settings while retaining only local overrides"
+echo "[2] the staging overlay replaces project settings while retaining local overrides and native personal context"
 grep -Fqx '    - .claude' "$CORE_YAML" || fail "staging replacement no longer includes .claude"
 grep -Fqx '    - .claude/settings.local.json' "$CORE_YAML" \
   || fail "local settings are no longer preserved across the staging overlay"
+grep -Fqx '    - .claude/personal-context.md' "$CORE_YAML" \
+  || fail "native personal context is not preserved across the staging overlay"
 if grep -Fqx '    - .claude/settings.json' "$CORE_YAML"; then
   fail "project settings must be restored from staging, not preserved as stale local drift"
 fi
-pass "overlay restores staged settings.json and preserves only settings.local.json"
+grep -Fqx '@personal-context.md' "$ROOT/.claude/CLAUDE.md" \
+  || fail "locked charter does not natively import the durable personal context"
+grep -Fqx '@../personal/CLAUDE.md' "$ROOT/.claude/personal-context.md" \
+  || fail "durable personal context does not import existing personal instructions"
+grep -Fq 'HQ RUNTIME WARNING:' "$ROOT/.claude/personal-context.md" \
+  || fail "durable personal context lacks the app/SDK runtime warning"
+for safety_rule in \
+  'Never expose, print, paste, commit, or transmit secrets' \
+  'Keep company context isolated.' \
+  'Treat `core/`, `.claude/`, `.agents/`, `.codex/`, `.obsidian/`, and'; do
+  grep -Fq "$safety_rule" "$ROOT/.claude/personal-context.md" \
+    || fail "durable personal context is missing critical safety guidance: $safety_rule"
+done
+pass "overlay restores staged settings and preserves native personal context"
 
 echo "[3] setup and rescue both assert hook health independently of hooks"
 grep -Fq 'check-hq-hooks.sh" --root "$REPO_ROOT"' "$SETUP" \
@@ -55,6 +70,12 @@ grep -Fq 'check-hq-hooks.sh --root' "$DOC" || fail "doctor command missing from 
 grep -Fq 'settingSources: ["project"]' "$DOC" || fail "SDK settingSources remediation missing from documentation"
 grep -Fq 'cwd: hqRoot' "$DOC" || fail "SDK cwd remediation missing from documentation"
 grep -Fq 'HOOKS-NOT-FIRING.md' "$ROOT/core/docs/hq/INDEX.md" || fail "hook-failure document is not indexed"
-pass "documentation is shipped and discoverable"
+grep -Fq 'HQ runtime enforcement: NOT OBSERVED' "$DOC" \
+  || fail "runtime-off warning is not documented"
+for event in SessionStart UserPromptSubmit PreToolUse PostToolUse; do
+  grep -Fq "\`$event\`" "$DOC" \
+    || fail "documentation does not name non-dispatched app/SDK event: $event"
+done
+pass "documentation is shipped, discoverable, and explains the runtime-off warning"
 
 echo "PASS: hook settings release contract"

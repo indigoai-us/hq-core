@@ -140,6 +140,37 @@ Channel-specific constants are still only *emitted* for the matching
 `channel` value; the inventory above is the full set that must survive the
 move from the watcher.
 
+## Skill body trust classification
+
+A chat message that begins with `/<skill-name>` is skill **dispatch**, not
+free-form channel prose. Resolution and placement:
+
+| Artifact | Destination | Trust |
+|----------|-------------|--------|
+| Invoking message text (`messageText`) | **user.txt** only | **UNTRUSTED** channel input |
+| Resolved `SKILL.md` body | `<runDir>/skill.txt` and **system.txt** under `<!-- hq-section: skill -->` | **TRUSTED** repo content |
+
+**Why TRUSTED:** the skill body is delivered by `hq rescue` and the HQ sync
+legs as part of the on-box tree (`.claude/skills/`, `companies/<slug>/skills/`,
+`core/packages/*/skills/`). It is not supplied by the channel. Therefore the
+skill body belongs in the system channel with charter and policy text, while
+the invoking slash-command line stays in the untrusted user channel that
+system/user separation protects.
+
+An unresolved `/<skill-name>` yields disposition `clarify` with nearest
+catalog matches and writes **no** `skill.txt`. Catalog entries themselves are
+name plus one-line description only; full bodies are never inlined into the
+catalog section.
+
+## Policy records (system.txt)
+
+Triggered policies land under `<!-- hq-section: policies -->` in system.txt
+only (never user.txt). The entrypoint consumes the hook's
+`HQ_POLICY_EMIT=tsv` records (`slug`, `scope`, `abs_path`, `enforcement`,
+`rule`) so company-over-core precedence and hard-before-soft budget ordering
+are machine-derivable. Truncation is reported via `policiesTruncated` and is
+never silent.
+
 ## Versioning
 
 - Boxes advertise support via `agentSessionContractVersion` in

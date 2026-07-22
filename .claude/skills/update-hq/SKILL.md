@@ -67,8 +67,8 @@ Keep the pre-op backup: do **not** pass `--no-backup` unless the user explicitly
 
 ## Phase 4: Verify project hooks, repair if needed, and report
 
-`hq rescue` preserves user drift and replaces release-owned paths, but the
-Desktop/SDK runtime only runs HQ hooks if the resulting project still has
+`hq rescue` preserves user drift and replaces release-owned paths. The terminal
+CLI can run HQ hooks only when the resulting project still has
 `.claude/settings.json` and loads it as a project setting source. Check that
 postcondition with the hook-independent checker:
 
@@ -90,12 +90,18 @@ If the second check fails, stop and report its exact diagnostics; do not claim
 the update completed successfully. See `core/docs/hq/HOOKS-NOT-FIRING.md` for
 the Desktop/SDK cwd and `settingSources` recovery instructions.
 
-After a real Desktop or SDK session, the user can additionally prove the
+After a real terminal CLI session, the user can additionally prove the
 policy-trigger hook actually ran:
 
 ```bash
 bash core/scripts/check-hq-hooks.sh --root {hq-root} --require-ledger
 ```
+
+The affected Claude Code app/SDK runtime does not dispatch command-hook events,
+even with valid project settings. `settingSources: ["project"]` can load native
+project context but cannot make that runtime enforce shell hooks. The durable
+`.claude/personal-context.md` import remains available there; use host-side
+enforcement or terminal Claude Code for work that requires a mechanical block.
 
 Then relay rescue's summary in plain language: what was updated, what kept
 local edits, hook-health status, and anything that needs manual follow-up.

@@ -4,6 +4,8 @@ HQ is a team AI operating system: a shared context and capability layer over
 Claude Code, Cursor, and Codex. You operate the orchestration layer that
 scaffolds, supervises, and syncs work across repos and companies.
 
+@personal-context.md
+
 ## Start Here
 
 - Use HQ skills/commands for HQ-native work. Do not hand-roll raw AWS, GitHub,

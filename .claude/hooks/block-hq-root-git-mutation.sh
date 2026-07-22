@@ -193,6 +193,127 @@ MSG
   exit 2
 }
 
+# `git init` is the one mutation for which upward git discovery can identify
+# the wrong repository: before the new repository has a .git, a direct child
+# of repos/private or repos/public resolves upward to HQ_ROOT. Parse the init
+# invocation itself so the exception is based on Git's actual target directory,
+# not merely on the process cwd. This intentionally accepts only a standalone
+# `git init` command; compound commands continue through the normal guard.
+git_init_target() {
+  local cmd="$1" token value
+  local -a arr
+  local i=0 base="${TOOL_CWD:-$HQ_ROOT}" dir="" end_options=0
+
+  [[ "$cmd" != *$'\n'* && "$cmd" != *$'\r'* ]] || return 1
+  echo "$cmd" | grep -Eq '[;&|`$()<>]' && return 1
+  read -r -a arr <<<"$cmd"
+  [[ ${#arr[@]} -gt 0 && "${arr[0]}" == "git" ]] || return 1
+
+  # Remove simple surrounding quotes without evaluating any command text.
+  unquote_init_token() {
+    local v="$1"
+    if [[ "$v" == \"*\" && "$v" == *\" ]]; then
+      v="${v#\"}"; v="${v%\"}"
+    elif [[ "$v" == \'*\' && "$v" == *\' ]]; then
+      v="${v#\'}"; v="${v%\'}"
+    fi
+    printf '%s\n' "$v"
+  }
+
+  # Apply global -C options in order, matching Git's relative -C semantics.
+  i=1
+  while (( i < ${#arr[@]} )); do
+    token="${arr[i]}"
+    case "$token" in
+      -C)
+        ((i++)); (( i < ${#arr[@]} )) || return 1
+        value="$(unquote_init_token "${arr[i]}")"
+        case "$value" in
+          /*|\~*) base="$(norm "$value")" ;;
+          *)      base="$(norm "$base/$value")" ;;
+        esac
+        ;;
+      -c|--namespace|--exec-path|--super-prefix)
+        ((i++)); (( i < ${#arr[@]} )) || return 1
+        ;;
+      -c=*|--namespace=*|--exec-path=*|-p|--paginate|--no-pager|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--bare)
+        ;;
+      init)
+        ((i++))
+        break
+        ;;
+      *) return 1 ;;
+    esac
+    ((i++))
+  done
+  [[ "${arr[i-1]:-}" == "init" ]] || return 1
+
+  # git-init options that consume a following value must not be mistaken for
+  # the optional directory. --separate-git-dir is deliberately excluded: it
+  # initializes repository metadata at a second path and is not this carve-out.
+  while (( i < ${#arr[@]} )); do
+    token="${arr[i]}"
+    if [[ $end_options -eq 1 ]]; then
+      [[ -z "$dir" ]] || return 1
+      dir="$(unquote_init_token "$token")"
+    else
+      case "$token" in
+        --) end_options=1 ;;
+        -q|--quiet|--bare|--shared) ;;
+        --shared=*|--template=*|--object-format=*|--ref-format=*|--initial-branch=*|-b?*) ;;
+        -b|--initial-branch|--template|--object-format|--ref-format)
+          ((i++)); (( i < ${#arr[@]} )) || return 1
+          ;;
+        --separate-git-dir|--separate-git-dir=*) return 1 ;;
+        -*) return 1 ;;
+        *)
+          [[ -z "$dir" ]] || return 1
+          dir="$(unquote_init_token "$token")"
+          ;;
+      esac
+    fi
+    ((i++))
+  done
+
+  if [[ -n "$dir" ]]; then
+    case "$dir" in
+      /*|\~*) printf '%s\n' "$(norm "$dir")" ;;
+      *)      printf '%s\n' "$(norm "$base/$dir")" ;;
+    esac
+  else
+    printf '%s\n' "$(norm "$base")"
+  fi
+}
+
+is_new_direct_child_repo_target() {
+  local target="$1" parent existing_git_dir hq_git_dir
+  parent="$(norm "$target/..")"
+  [[ "$parent" == "$(norm "$HQ_ROOT/repos/private")" ||
+     "$parent" == "$(norm "$HQ_ROOT/repos/public")" ]] || return 1
+  [[ ! -e "$target" || -d "$target" ]] || return 1
+  [[ ! -e "$target/.git" && ! -L "$target/.git" ]] || return 1
+
+  # A bare repository has no .git child. Reject it (and any other nested repo)
+  # by comparing its resolved git dir with the HQ git dir inherited by a plain
+  # uninitialized child directory.
+  if [[ -d "$target" ]]; then
+    existing_git_dir="$(git -C "$target" rev-parse --absolute-git-dir 2>/dev/null || true)"
+    hq_git_dir="$(git -C "$HQ_ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+    if [[ -n "$existing_git_dir" &&
+          "$(norm "$existing_git_dir")" != "$(norm "$hq_git_dir")" ]]; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
+if [[ $GIT_IS_MUTATION -eq 1 && $GH_IS_MUTATION -eq 0 && "$SUB" == "init" ]]; then
+  INIT_TARGET="$(git_init_target "$CMD" || true)"
+  if [[ -n "$INIT_TARGET" ]] && is_new_direct_child_repo_target "$INIT_TARGET"; then
+    exit 0
+  fi
+fi
+
 # `gh repo create` names its target in its own args (owner/name, or name under
 # the authenticated account) and accepts neither `git -C` nor `-R` — requiring
 # an external anchor made it impossible to invoke. Without --source it never

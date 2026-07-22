@@ -5,22 +5,27 @@
 # available precisely when a Desktop or SDK runtime failed to load every hook.
 #
 # Usage:
-#   bash core/scripts/check-hq-hooks.sh [--root <hq-root>] [--require-ledger]
+#   bash core/scripts/check-hq-hooks.sh [--root <hq-root>] [--require-ledger] [--session-id <id>]
 
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: check-hq-hooks.sh [--root <hq-root>] [--require-ledger]
+Usage: check-hq-hooks.sh [--root <hq-root>] [--require-ledger] [--session-id <id>]
 
 Checks the tracked project settings required for HQ hooks. --require-ledger
-also verifies that a policy-trigger ledger exists after a real session.
+also verifies that a policy-trigger ledger exists after a real session. This
+command is deliberately hook-independent: use it to make a non-dispatching
+Claude Code app/SDK runtime visible instead of silently assuming enforcement.
+With --session-id, checks that exact session's ledger rather than any earlier
+session's ledger. --session-id implies --require-ledger.
 EOF
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 HQ_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 REQUIRE_LEDGER=0
+SESSION_ID=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -32,6 +37,12 @@ while [ "$#" -gt 0 ]; do
     --require-ledger)
       REQUIRE_LEDGER=1
       shift
+      ;;
+    --session-id)
+      [ "$#" -ge 2 ] || { echo "--session-id requires an id" >&2; usage >&2; exit 64; }
+      SESSION_ID="$2"
+      REQUIRE_LEDGER=1
+      shift 2
       ;;
     -h|--help)
       usage
@@ -77,16 +88,31 @@ fi
 
 LEDGER_STATE="not checked"
 if [ "$REQUIRE_LEDGER" -eq 1 ]; then
-  if find "$LEDGER_DIR" -type f -name '*.txt' -print -quit 2>/dev/null | grep -q .; then
+  if [ -n "$SESSION_ID" ]; then
+    LEDGER_CANDIDATE="$LEDGER_DIR/$SESSION_ID.txt"
+  else
+    LEDGER_CANDIDATE=""
+  fi
+  if { [ -n "$LEDGER_CANDIDATE" ] && [ -f "$LEDGER_CANDIDATE" ]; } || \
+     { [ -z "$LEDGER_CANDIDATE" ] && find "$LEDGER_DIR" -type f -name '*.txt' -print -quit 2>/dev/null | grep -q .; }; then
     LEDGER_STATE="present"
   else
     LEDGER_STATE="missing"
-    ISSUES+=("policy-trigger ledger was not found under workspace/orchestrator/policy-trigger-state")
+    if [ -n "$SESSION_ID" ]; then
+      ISSUES+=("policy-trigger ledger was not found for session $SESSION_ID under workspace/orchestrator/policy-trigger-state")
+    else
+      ISSUES+=("policy-trigger ledger was not found under workspace/orchestrator/policy-trigger-state")
+    fi
   fi
 fi
 
 if [ "${#ISSUES[@]}" -gt 0 ]; then
   echo "HQ hook health: FAIL" >&2
+  if [ "$REQUIRE_LEDGER" -eq 1 ] && [ "$LEDGER_STATE" = "missing" ]; then
+    echo "HQ runtime enforcement: NOT OBSERVED" >&2
+    echo "  The policy-trigger hook did not run in this session. In the affected" >&2
+    echo "  Claude Code app/SDK runtime, command hooks are not dispatched." >&2
+  fi
   printf '  - %s\n' "${ISSUES[@]}" >&2
   cat >&2 <<'EOF'
 
@@ -100,7 +126,7 @@ For an SDK launch, set both project root and settings source:
   const hqRoot = "/absolute/path/to/HQ";
   query({ prompt: "...", options: { cwd: hqRoot, settingSources: ["project"] } });
 
-After a real Desktop/SDK session, verify that the policy-trigger hook ran:
+After a real terminal CLI session, verify that the policy-trigger hook ran:
   bash core/scripts/check-hq-hooks.sh --root "$PWD" --require-ledger
 
 See core/docs/hq/HOOKS-NOT-FIRING.md for the complete recovery procedure.
@@ -113,6 +139,10 @@ echo "  root: $HQ_ROOT"
 echo "  settings: SessionStart and PreToolUse command hooks present"
 if [ "$REQUIRE_LEDGER" -eq 1 ]; then
   echo "  ledger: $LEDGER_STATE"
+  if [ -n "$SESSION_ID" ]; then
+    echo "  session: $SESSION_ID"
+  fi
+  echo "HQ runtime enforcement: OBSERVED (policy-trigger ledger present)"
 else
   echo "  ledger: not checked (run with --require-ledger after a real Desktop/SDK session)"
 fi

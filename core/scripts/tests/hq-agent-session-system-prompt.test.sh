@@ -58,7 +58,9 @@ RUN1="$(echo "$OUT1" | jq -r .runDir)"
 
 # Delimiter order
 ORDER="$(grep -n '<!-- hq-section:' "$RUN1/system.txt" | sed 's/.*hq-section: //;s/ -->//')"
-EXPECTED=$'charter\nagent-contract\ncompany-charter\nchannel-format\npolicies'
+# US-406 appends skill-catalog after policies; US-408 appends durable-writes last.
+# Base five sections stay first.
+EXPECTED=$'charter\nagent-contract\ncompany-charter\nchannel-format\npolicies\nskill-catalog\ndurable-writes'
 [ "$ORDER" = "$EXPECTED" ] || fail "delimiter order:\n$ORDER\n!=\n$EXPECTED"
 pass "delimiter ordering"
 

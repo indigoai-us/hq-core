@@ -5,7 +5,9 @@
 # reindex mirrors personal/<type>/<entry> into core/<type>/<entry> as symlinks.
 # Writes that resolve through such a symlink are allowed (they land in personal/).
 #
-# Exception: .claude/settings.local.json is always allowed.
+# Exceptions: .claude/settings.local.json and .claude/personal-context.md are
+# always allowed. The latter is the update-preserved native personal-context
+# import, so it must remain editable even in hook-enabled CLI sessions.
 #
 # Bypass: HQ_BYPASS_CORE_PROTECT="1" under "env" in .claude/settings.local.json.
 # Enabling it disables protection for every later write, so an agent must NEVER
@@ -40,6 +42,7 @@ CODEX_DIR="$PROJECT_DIR/.codex"
 OBSIDIAN_DIR="$PROJECT_DIR/.obsidian"
 AGENTS_MD="$PROJECT_DIR/AGENTS.md"
 SETTINGS_LOCAL="$PROJECT_DIR/.claude/settings.local.json"
+PERSONAL_CONTEXT="$PROJECT_DIR/.claude/personal-context.md"
 
 # Only concerned with protected paths.
 case "$FILE_PATH" in
@@ -52,8 +55,8 @@ case "$FILE_PATH" in
   *) exit 0 ;;
 esac
 
-# Exception: .claude/settings.local.json is always allowed.
-if [[ "$FILE_PATH" == "$SETTINGS_LOCAL" ]]; then
+# Exceptions: machine-local settings and durable personal context are writable.
+if [[ "$FILE_PATH" == "$SETTINGS_LOCAL" || "$FILE_PATH" == "$PERSONAL_CONTEXT" ]]; then
   exit 0
 fi
 
@@ -111,7 +114,9 @@ BLOCKED: direct writes to protected scaffold paths are not allowed.
   File: $REL
 
 Protected: core/, .claude/, .agents/, .codex/, .obsidian/, AGENTS.md
-Exception: .claude/settings.local.json is always writable.
+Exceptions: .claude/settings.local.json and .claude/personal-context.md are
+always writable. Put durable personal voice and preferences in
+.claude/personal-context.md.
 
 Preferred fix: author the content under personal/ and reindex will symlink it
 into core/ — no bypass needed.

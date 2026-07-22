@@ -20,8 +20,10 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Fake HQ root (a git repo) with a nested working repo, mirroring real layout.
 git -C "$TMP" init -q
-mkdir -p "$TMP/repos/private/app"
+mkdir -p "$TMP/repos/private/app" "$TMP/repos/private/bare-app" \
+  "$TMP/repos/private/newcwd" "$TMP/repos/public/x"
 git -C "$TMP/repos/private/app" init -q
+git -C "$TMP/repos/private/bare-app" init -q --bare
 mkdir -p "$TMP/not-a-repo"
 
 PASS=0
@@ -55,6 +57,24 @@ run 0 "$TMP" "git -C $NESTED commit -m x"            'git -C nested repo allowed
 run 2 "$TMP" "git -C $TMP push origin main"          'git -C HQ root blocked'
 run 0 "$TMP" 'gh pr create -R owner/repo --title x'  'gh -R allowed'
 run 0 "$TMP" 'git status'                            'read-only git allowed'
+
+# --- New nested repository initialization ----------------------------------
+# Regression: feedback_1b242f16-eb7f-4c35-86d5-9d32f81b11ab.
+# Before .git exists, Git discovers the HQ root upward from these targets.
+# `init` is allowed only when its own parsed target is an uninitialized direct
+# child of repos/private or repos/public.
+run 0 "$TMP" 'git init repos/private/newthing'        'git init path: new direct private child allowed'
+run 2 "$TMP" 'git init'                               'bare git init at HQ root still blocked'
+run 0 "$TMP/repos/private/newcwd" 'git init'          'bare git init in new direct private child allowed'
+run 0 "$TMP/repos/private/newcwd" 'git init --bare'   'git init --bare in new direct private child allowed'
+run 0 "$TMP" 'git -C repos/public/x init'             'git -C path init: new direct public child allowed'
+run 0 "$TMP" 'git init --bare repos/private/newbare'  'git init --bare path: new direct private child allowed'
+run 2 "$TMP" 'git init repos/private/app'             'git init path: existing nested repo remains blocked'
+run 2 "$TMP" 'git init repos/private/bare-app'        'git init path: existing bare nested repo remains blocked'
+run 0 "$NESTED" 'git init'                            'bare git init in existing nested repo keeps cwd-fallback behavior'
+run 0 "$TMP" "git -C $NESTED init"                   'git -C init in existing nested repo keeps anchored behavior'
+run 2 "$TMP" 'git init repos/private/newthing/deep'   'git init path: deeper descendant stays blocked'
+run 2 "$TMP" 'git init repos/private/newthing && git push origin main' 'git init carve-out rejects compound mutation'
 
 # --- Harness-strip cwd fallback (REGRESSION 2026-06-08/09) ----------------
 # The harness strips `cd <path> && ` when <path> == session cwd, so an
@@ -93,6 +113,17 @@ run 0 "$NESTED" 'git push origin main'                'DEV-1765 stripped bare pu
 
 # --- Escape hatch unchanged -------------------------------------------------
 run 0 "$TMP" 'HQ_ALLOW_HQ_ROOT_GIT=1 git commit -m x' 'inline escape hatch allowed'
+
+payload=$(jq -n --arg cwd "$TMP" --arg cmd 'git commit -m x' \
+  '{cwd: $cwd, tool_input: {command: $cmd}}')
+rc=0
+printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$TMP" HQ_ALLOW_HQ_ROOT_GIT=1 bash "$HOOK" >/dev/null 2>&1 || rc=$?
+if [[ "$rc" -eq 0 ]]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo "FAIL [hook-env escape hatch allowed]: expected exit 0, got $rc" >&2
+fi
 
 echo "block-hq-root-git-mutation: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

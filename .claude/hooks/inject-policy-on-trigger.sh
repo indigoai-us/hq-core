@@ -58,7 +58,9 @@ mkdir -p "$DEDUPE_DIR" 2>/dev/null || true
 DEDUPE_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.txt"
 touch "$DEDUPE_FILE" 2>/dev/null || true
 
-# Accumulate "slug<TAB>rule" matches here; dedup by slug at the end.
+# Accumulate "slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule" matches.
+# Default emit still prints only slug+rule as <policy-reminder> prose; tsv mode
+# (HQ_POLICY_EMIT=tsv, US-406) prints all five fields per line.
 MATCHES=""
 already() { grep -Fxq "$1" "$DEDUPE_FILE" 2>/dev/null; }
 # Bash-native membership: a `printf "$MATCHES" | grep -q` pipe races under
@@ -68,12 +70,21 @@ already() { grep -Fxq "$1" "$DEDUPE_FILE" 2>/dev/null; }
 pending_has() { case "$MATCHES" in *"$1"$'\t'*) return 0 ;; *) return 1 ;; esac; }
 
 add_match() {
-  # add_match <slug> <rule>
-  local slug="$1" rule="$2"
+  # add_match <slug> <scope> <abs_path> <enforcement> <rule>
+  # Back-compat: add_match <slug> <rule> → scope=core path= enf=unset
+  local slug="$1" scope rule path enf
+  if [ "$#" -ge 5 ]; then
+    scope="$2"; path="$3"; enf="$4"; rule="$5"
+  else
+    scope="core"; path=""; enf="unset"; rule="${2:-}"
+  fi
   [ -n "$slug" ] || return 0
   already "$slug" && return 0
   pending_has "$slug" && return 0
-  MATCHES="${MATCHES}${slug}	${rule}
+  [ -n "$enf" ] || enf="unset"
+  # Tabs inside rule would break the field layout — collapse them.
+  rule="${rule//$'\t'/ }"
+  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}
 "
 }
 
@@ -108,11 +119,17 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # overrides the company copy (observed live with three core/indigo id
   # collisions; regression test: inject-policy-scope-precedence.test.sh).
   DIRS=()
-  case "$CWD" in
-    *companies/*)
-      co="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')"
-      [ -n "$co" ] && DIRS+=("$HQ_ROOT/companies/$co/policies") ;;
-  esac
+  # HQ_POLICY_COMPANY=<slug> overrides CWD-derived company scope (US-406) so a
+  # caller running outside companies/<slug> still gets that company's policies.
+  if [ -n "${HQ_POLICY_COMPANY:-}" ]; then
+    DIRS+=("$HQ_ROOT/companies/${HQ_POLICY_COMPANY}/policies")
+  else
+    case "$CWD" in
+      *companies/*)
+        co="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')"
+        [ -n "$co" ] && DIRS+=("$HQ_ROOT/companies/$co/policies") ;;
+    esac
+  fi
   case "$CWD" in
     *repos/public/*|*repos/private/*)
       rscope="$(printf '%s' "$CWD" | sed -nE 's#.*repos/(public|private)/.*#\1#p')"
@@ -127,7 +144,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     [ -d "$dir" ] || continue
     for f in "$dir"/*.md; do
       [ -f "$f" ] || continue
-      case "$(basename "$f")" in _digest.md|example-policy.md|README.md) continue ;; esac
+      case "$(basename "$f")" in example-policy.md|README.md) continue ;; esac
       POLICY_FILES+=("$f")
     done
   done
@@ -145,8 +162,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # shells out to it.
   ALREADY="$(cat "$DEDUPE_FILE" 2>/dev/null || true)"
   if [ "${#POLICY_FILES[@]}" -gt 0 ]; then
-    while IFS=$'\t' read -r slug rule; do
-      add_match "$slug" "$rule"
+    while IFS=$'\t' read -r slug scope path enf rule; do
+      add_match "$slug" "$scope" "$path" "$enf" "$rule"
     done < <(
       # ALREADY (the dedupe ledger) is NEWLINE-separated and, after SessionStart
       # injects every on:[SessionStart] policy, routinely has many lines. It is
@@ -155,6 +172,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # contains a literal newline, which silently kills this whole evaluation
       # for the rest of the session. ENVIRON has no such restriction. Keep it on
       # the env — do NOT move it back to `-v ALREADY=`.
+      # Emit: slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule (US-406 tsv).
       HQ_ALREADY="$ALREADY" awk -v EVENT="$EVENT" -v INTENT_MODE="$INTENT_MODE" \
           -v EVFACTS="$FACTS" -v AIFACTS="$INTENT_FACTS" '
       function skipsp() { while (substr(E, pos, 1) == " ") pos++ }
@@ -178,7 +196,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         return (pOr() ? 0 : 1)
       }
       function base(p,   n,a,b){ n=split(p,a,"/"); b=a[n]; sub(/\.md$/,"",b); return b }
-      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r) {
+      function scopeof(p) {
+        if (p ~ /\/companies\//) return "company"
+        if (p ~ /\/repos\//) return "repo"
+        if (p ~ /\/personal\//) return "personal"
+        return "core"
+      }
+      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en) {
         if (whenx=="") return
         if (id=="") id=base(fname)
         if (onx=="") onx="PreToolUse"                              # default when on: omitted
@@ -197,9 +221,15 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         matched=0
         if (ev_on || ss_on) { r=evalexpr(whenx,"ev"); if(r==0||r==2) matched=1 }
         if (!matched && ai_on && INTENT_MODE) { r=evalexpr(whenx,"ai"); if(r==0||r==2) matched=1 }
-        if (matched) { emitted[id]=1; print id "\t" rule }
+        if (matched) {
+          emitted[id]=1
+          sc=scopeof(fname)
+          en=(enf=="" ? "unset" : enf)
+          gsub(/\t/," ",rule)
+          print id "\t" sc "\t" fname "\t" en "\t" rule
+        }
       }
-      function reset_file(){ d=0; id=""; whenx=""; onx=""; rule=""; rsec=0; rcap=0 }
+      function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; rule=""; rsec=0; rcap=0 }
       BEGIN {
         n=split(EVFACTS,fa,/[ ,]+/); for(i=1;i<=n;i++) if(fa[i]!="") evh[fa[i]]=1
         n=split(AIFACTS,ga,/[ ,]+/); for(i=1;i<=n;i++) if(ga[i]!="") aih[ga[i]]=1
@@ -211,7 +241,11 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       /^---[ \t]*$/ { if (d<2) { d++; next } }
       d==1 && /^id:/   { s=$0; sub(/^id:[ \t]*/,"",s);   gsub(/^["'"'"']|["'"'"']$/,"",s); id=s; next }
       d==1 && /^when:/ { s=$0; sub(/^when:[ \t]*/,"",s); sub(/[ \t]+#.*/,"",s); gsub(/^["'"'"']|["'"'"']$/,"",s); whenx=s; next }
-      d==1 && /^on:/   { s=$0; sub(/^on:[ \t]*/,"",s);   gsub(/[][,]/," ",s); onx=s; next }
+      d==1 && /^on:/   { s=$0; sub(/^on:[ \t]*/,"",s);   gsub(/[][, ]/," ",s); onx=s; next }
+      d==1 && /^enforcement:/ {
+        s=$0; sub(/^enforcement:[ \t]*/,"",s); sub(/[ \t]+#.*/,"",s)
+        gsub(/^["'"'"']|["'"'"']$/,"",s); enf=s; next
+      }
       d>=2 && /^## Rule[ \t]*$/ { rsec=1; next }
       d>=2 && rsec && /^## / { rsec=0 }
       d>=2 && rsec && !rcap && NF { line=$0; gsub(/\*\*/,"",line); if(length(line)>160) line=substr(line,1,157)"..."; rule=line; rcap=1 }
@@ -254,7 +288,8 @@ if [ "$EVENT" = "PreToolUse" ] && [ "$TOOL_NAME" = "Bash" ]; then
     while IFS=$'\t' read -r t_pat t_slug t_rule; do
       [ -z "$t_pat" ] && continue
       if printf '%s' "$ARG" | grep -Eq "$t_pat"; then
-        add_match "$t_slug" "$t_rule"
+        # Legacy rows have no on-disk path; scope=core, enforcement=unset.
+        add_match "$t_slug" "core" "" "unset" "$t_rule"
       fi
     done <<< "$TRIGGERS"
   fi
@@ -262,6 +297,17 @@ fi
 
 # ── Emit + record ─────────────────────────────────────────────────────────
 [ -n "$MATCHES" ] || exit 0
+
+# US-406: machine-readable records for the agent-session entrypoint. No prose
+# wrapper, no interactive 16-cap (consumer applies HQ_SESSION_POLICY_MAX_*).
+if [ "${HQ_POLICY_EMIT:-}" = "tsv" ]; then
+  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule; do
+    [ -z "$slug" ] && continue
+    printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule"
+    printf '%s\n' "$slug" >> "$DEDUPE_FILE"
+  done
+  exit 0
+fi
 
 # Bound the SessionStart-heavy baseline so box preflight cannot fail closed
 # (US-003 / former US-013). SESSION_PREFLIGHT_MAX_POLICIES=16 on the box;
@@ -279,7 +325,7 @@ if [ "$MATCH_COUNT" -gt "$SESSION_POLICY_CAP" ]; then
 fi
 
 printf '<policy-reminder>\n'
-printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug rule; do
+printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule; do
   [ -z "$slug" ] && continue
   printf '> Policy `%s` applies here: %s\n' "$slug" "$rule"
   printf '%s\n' "$slug" >> "$DEDUPE_FILE"
