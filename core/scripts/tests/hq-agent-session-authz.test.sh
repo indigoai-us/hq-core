@@ -111,4 +111,17 @@ OUT="$(req nosuch false | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$T
 [ "$RC" -eq 6 ] || fail "verified=false unknown should still exit 6 got $RC"
 pass "sender.verified false"
 
+# ── 5. HQ_AGENT_WORKDIR-UNSET root resolution (dogfood canary, 2026-07-23) ───
+# The box watcher fork invokes the session script WITHOUT HQ_AGENT_WORKDIR — it
+# relies on session_resolve_root()'s BASH_SOURCE fallback climbing lib->scripts
+# ->core->root. A two-hop (instead of three) climb resolved the root as .../core
+# and every real turn failed "HQ root resolution failed" while every test here
+# passed (they all export HQ_AGENT_WORKDIR). This case reproduces the box path.
+RC=0
+OUT="$(env -u HQ_AGENT_WORKDIR bash -c "cd '$FIXTURE' && req() { jq -nc --arg co indigo '{contractVersion:1,agentUid:\"agt_test\",companySlug:\$co,channel:\"slack\",convKey:\"agt_test#slack:C1\",messageText:\"hi\",provider:\"claude\",sender:{verified:true}}'; }; req | bash '$FIXTURE/core/scripts/hq-agent-session.sh'" 2>"$TMP/e6")" || RC=$?
+[ "$RC" -eq 0 ] || fail "workdir-unset root resolution exit $RC err=$(cat "$TMP/e6")"
+echo "$OUT" | jq -e '.disposition != "error"' >/dev/null || fail "workdir-unset produced error envelope: $OUT"
+grep -q "HQ root resolution failed" "$TMP/e6" && fail "root resolution still failing without HQ_AGENT_WORKDIR"
+pass "root resolves without HQ_AGENT_WORKDIR (box fork path)"
+
 echo "PASS: hq-agent-session-authz.test.sh"

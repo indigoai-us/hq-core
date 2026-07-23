@@ -42,8 +42,14 @@ session_resolve_root() {
     raw="$HQ_AGENT_WORKDIR"
   else
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    # lib/ → scripts/ → core/ → root
-    raw="$(cd "$script_dir/../.." && pwd)"
+    # this file is core/scripts/lib/session-authz.sh:
+    #   lib/ (..) → scripts/ (..) → core/ (..) → HQ root. THREE hops, not two.
+    # The two-hop form resolved the root as .../core, so session_resolve_company_dir
+    # looked for companies/ under .../core and every box turn failed "HQ root
+    # resolution failed" — masked in tests because the parity harness sets
+    # HQ_AGENT_WORKDIR and never exercises this fallback (dogfood canary,
+    # 2026-07-23).
+    raw="$(cd "$script_dir/../../.." && pwd)"
   fi
 
   if hq_is_symlink "$raw"; then
