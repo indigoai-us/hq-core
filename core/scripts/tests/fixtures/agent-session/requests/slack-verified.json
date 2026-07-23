@@ -1,0 +1,10 @@
+{
+  "contractVersion": 1,
+  "agentUid": "agt_parity_fixture",
+  "companySlug": "indigo",
+  "channel": "slack",
+  "convKey": "agt_parity_fixture#slack:C_PARITY:T_ROOT",
+  "messageText": "please draft the weekly status for the indigo launch",
+  "provider": "claude",
+  "sender": { "verified": true }
+}

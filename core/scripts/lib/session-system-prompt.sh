@@ -61,6 +61,8 @@ session_assemble_system_prompt() {
   agent_contract="$root/personal/knowledge/public/agent-capabilities/hq-agent-contract.md"
   company_charter="$root/companies/$company/CLAUDE.md"
   formats="$root/core/knowledge/public/hq-core/channel-writing-formats.md"
+  local voice
+  voice="$root/core/knowledge/public/hq-core/voice/hq.md"
   # policies: empty placeholder filled by a later story (US-045 / US-406)
   policies_placeholder=""
 
@@ -68,6 +70,9 @@ session_assemble_system_prompt() {
     session_emit_section "charter" "$charter"
     session_emit_section "agent-contract" "$agent_contract"
     session_emit_section "company-charter" "$company_charter"
+    # HQ voice profile (voice/hq.md): canonical writing voice, ahead of the
+    # per-channel mechanics so format rules refine — never fight — the voice.
+    session_emit_section "voice" "$voice"
     # channel-format body extracted from the formats doc
     printf '<!-- hq-section: channel-format -->\n'
     if [ -f "$formats" ]; then

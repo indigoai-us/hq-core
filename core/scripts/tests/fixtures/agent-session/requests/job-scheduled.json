@@ -1,0 +1,11 @@
+{
+  "contractVersion": 1,
+  "agentUid": "agt_parity_fixture",
+  "companySlug": "indigo",
+  "channel": "job",
+  "convKey": "agt_parity_fixture#job:job_parity_001",
+  "messageText": "scheduled job fire: refresh indigo status board and post outcome summary",
+  "provider": "claude",
+  "sender": { "verified": true },
+  "project": "parity-fixture"
+}

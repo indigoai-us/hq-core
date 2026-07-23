@@ -24,6 +24,9 @@ cp "$SRC_ROOT/core/scripts/hq-session.sh" "$FIXTURE/core/scripts/"
 cp "$SRC_ROOT/.claude/hooks/master-hook.sh" "$FIXTURE/.claude/hooks/"
 cp "$SRC_ROOT/core/knowledge/public/hq-core/channel-writing-formats.md" \
   "$FIXTURE/core/knowledge/public/hq-core/"
+mkdir -p "$FIXTURE/core/knowledge/public/hq-core/voice"
+cp "$SRC_ROOT/core/knowledge/public/hq-core/voice/hq.md" \
+  "$FIXTURE/core/knowledge/public/hq-core/voice/"
 printf 'CHARTER_BODY_UNIQUE\n' > "$FIXTURE/AGENTS.md"
 printf 'COMPANY_BODY_UNIQUE\n' > "$FIXTURE/companies/indigo/CLAUDE.md"
 # Intentionally omit personal/.../hq-agent-contract.md for skip test
@@ -58,9 +61,9 @@ RUN1="$(echo "$OUT1" | jq -r .runDir)"
 
 # Delimiter order
 ORDER="$(grep -n '<!-- hq-section:' "$RUN1/system.txt" | sed 's/.*hq-section: //;s/ -->//')"
-# US-406 appends skill-catalog after policies; US-408 appends durable-writes last.
-# Base five sections stay first.
-EXPECTED=$'charter\nagent-contract\ncompany-charter\nchannel-format\npolicies\nskill-catalog\ndurable-writes'
+# US-406 appends skill-catalog after policies; US-412 inserts brief-posture after
+# the base five; US-408 appends durable-writes last.
+EXPECTED=$'charter\nagent-contract\ncompany-charter\nvoice\nchannel-format\npolicies\nbrief-posture\nskill-catalog\ndurable-writes'
 [ "$ORDER" = "$EXPECTED" ] || fail "delimiter order:\n$ORDER\n!=\n$EXPECTED"
 pass "delimiter ordering"
 
@@ -100,6 +103,9 @@ grep -q 'skipped' "$TMP/err-a" || fail "expected skipped line on stderr for miss
 grep -q 'hq-agent-contract.md' "$TMP/err-a" || fail "skipped path should name agent-contract"
 # agent-contract delimiter still present
 grep -q '<!-- hq-section: agent-contract -->' "$RUN1/system.txt" || fail "agent-contract delimiter missing"
+grep -q '<!-- hq-section: voice -->' "$RUN1/system.txt" || fail "voice delimiter missing"
+grep -q 'hq-plain' "$RUN1/system.txt" || fail "voice profile body missing"
+
 pass "missing-source skip"
 
 # systemPromptBytes
