@@ -31,6 +31,8 @@ LIB_DIR="$SCRIPT_DIR/lib"
 . "$LIB_DIR/session-version.sh"
 # shellcheck source=lib/session-system-prompt.sh
 . "$LIB_DIR/session-system-prompt.sh"
+# shellcheck source=lib/session-brief-constants.sh
+. "$LIB_DIR/session-brief-constants.sh"
 # shellcheck source=lib/session-policy-inject.sh
 . "$LIB_DIR/session-policy-inject.sh"
 # shellcheck source=lib/session-skill-catalog.sh
@@ -43,6 +45,8 @@ LIB_DIR="$SCRIPT_DIR/lib"
 . "$LIB_DIR/session-resume.sh"
 # shellcheck source=lib/session-durable-writes.sh
 . "$LIB_DIR/session-durable-writes.sh"
+# shellcheck source=lib/session-timing.sh
+. "$LIB_DIR/session-timing.sh"
 # shellcheck source=lib/provider-adapter.sh
 . "$LIB_DIR/provider-adapter.sh"
 
@@ -78,6 +82,9 @@ SESSION_RESUME_SUPPORTED=""
 SESSION_NON_DURABLE_JSON='[]'
 SESSION_PROJECT_DIR=""
 SESSION_RUN_START_EPOCH=""
+# US-411 assembly timing
+SESSION_ASSEMBLY_MS_JSON="{}"
+SESSION_ASSEMBLY_BUDGET_EXCEEDED=0
 
 # emit_response then exit with SESSION_EXIT_CODE
 emit_and_exit() {
@@ -92,6 +99,8 @@ emit_and_exit() {
   local resume_fallback_json="false"
   local resume_supported_json="null"
   local non_durable_json='[]'
+  local assembly_ms_json='{}'
+  local assembly_budget_json="false"
 
   case "${SESSION_SYSTEM_PROMPT_BYTES:-}" in
     ''|*[!0-9]*) bytes_json="null" ;;
@@ -130,6 +139,18 @@ emit_and_exit() {
   if ! printf '%s' "$non_durable_json" | jq -e . >/dev/null 2>&1; then
     non_durable_json='[]'
   fi
+  # NOTE: never use ${SESSION_ASSEMBLY_MS_JSON:-{}} — bash parses the closing
+  # } of {} as end of parameter expansion and appends a stray brace.
+  assembly_ms_json="${SESSION_ASSEMBLY_MS_JSON:-}"
+  if [ -z "$assembly_ms_json" ]; then
+    assembly_ms_json='{}'
+  fi
+  if ! printf '%s' "$assembly_ms_json" | jq -e . >/dev/null 2>&1; then
+    assembly_ms_json='{}'
+  fi
+  if [ "${SESSION_ASSEMBLY_BUDGET_EXCEEDED:-0}" = "1" ]; then
+    assembly_budget_json="true"
+  fi
 
   # Build optional fields (null bytes → omit systemPromptBytes)
   opt_json="$(jq -nc \
@@ -146,6 +167,8 @@ emit_and_exit() {
     --argjson resumeSupported "$resume_supported_json" \
     --argjson nonDurableWrites "$non_durable_json" \
     --arg projectDir "${SESSION_PROJECT_DIR:-}" \
+    --argjson assemblyMs "$assembly_ms_json" \
+    --argjson assemblyBudgetExceeded "$assembly_budget_json" \
     '
       {}
       | if $runDir != "" then .runDir = $runDir else . end
@@ -161,6 +184,8 @@ emit_and_exit() {
       | if $resumeSupported != null then .resumeSupported = $resumeSupported else . end
       | if ($nonDurableWrites | length) > 0 then .nonDurableWrites = $nonDurableWrites else . end
       | if $projectDir != "" then .projectDir = $projectDir else . end
+      | if ($assemblyMs | type) == "object" and ($assemblyMs | length) > 0 then .assemblyMs = $assemblyMs else . end
+      | if $assemblyBudgetExceeded == true then .assemblyBudgetExceeded = true else . end
     ')" || opt_json="{}"
 
   # NOTE: do not use ${opt_json:-{}} — bash parses the closing } of {} as end of
@@ -296,7 +321,7 @@ main() {
 
   # Extract fields
   local contract_version agent_uid company_slug channel conv_key message_text provider
-  local project_field=""
+  local project_field="" sender_verified="false" rehydration_block=""
   contract_version="$(jq -r '.contractVersion' "$req_file")"
   agent_uid="$(jq -r '.agentUid' "$req_file")"
   company_slug="$(jq -r '.companySlug' "$req_file")"
@@ -305,7 +330,16 @@ main() {
   message_text="$(jq -r '.messageText' "$req_file")"
   provider="$(jq -r '.provider' "$req_file")"
   project_field="$(jq -r '.project // empty' "$req_file")"
+  if [ "$(jq -r '.sender.verified' "$req_file")" = "true" ]; then
+    sender_verified="true"
+  else
+    sender_verified="false"
+  fi
+  rehydration_block="$(jq -r '.rehydration // empty' "$req_file")"
   SESSION_CONTRACT_VERSION="$contract_version"
+
+  # US-411: assembly phase timing (default budget 20000ms)
+  session_timing_init
 
   # Resolve HQ root (exit 3). Capture rc before `if !` inverts status.
   local root rc=0
@@ -371,24 +405,43 @@ main() {
   # Persist request for adapters/hooks
   cp "$req_file" "$run_dir/request.json"
 
-  # Assemble system.txt / user.txt
+  # ── US-411 phases: system-prompt ──────────────────────────────────────────
+  session_timing_begin system-prompt
   local bytes
   bytes="$(session_assemble_system_prompt "$root" "$company_slug" "$channel" "$run_dir/system.txt")"
   SESSION_SYSTEM_PROMPT_BYTES="$bytes"
+  # user.txt: untrusted channel payload only (contract destination rule)
   session_write_user_txt "$message_text" "$run_dir/user.txt"
+  # US-412: all brief constants (preambles, posture, voice, formatting) → system.txt
+  session_append_brief_posture "$root" "$channel" "$sender_verified" "$run_dir/system.txt" || true
+  session_timing_end
 
-  # US-406: policy records into system.txt policies section
+  # ── policy ────────────────────────────────────────────────────────────────
+  session_timing_begin policy
   session_policy_inject "$root" "$company_slug" "$run_dir" "$message_text" >/dev/null || true
+  session_timing_end
 
-  # US-406 / US-409: company-scoped skill catalog + optional /skill dispatch
+  # ── skill-catalog ─────────────────────────────────────────────────────────
+  session_timing_begin skill-catalog
   session_skill_catalog_build "$root" "$company_slug" >/dev/null || true
   session_skill_catalog_append "$run_dir" || true
   session_skill_dispatch "$run_dir" "$message_text" || true
+  session_timing_end
 
-  # US-408: durable-write guidance (literal $HQ_SESSION_PROJECT_DIR)
+  # ── worker-catalog (placeholder until worker materialization lands) ───────
+  session_timing_begin worker-catalog
+  : # no-op: worker catalog not yet assembled in-process
+  session_timing_end
+
+  # ── rehydrate ─────────────────────────────────────────────────────────────
+  session_timing_begin rehydrate
+  session_append_rehydration "$run_dir/user.txt" "$rehydration_block" || true
+  session_timing_end
+
+  # US-408: durable-write guidance after skill-catalog (preserves section order)
   session_append_durable_guidance "$run_dir/system.txt" || true
 
-  # Refresh system prompt byte count after policy/skill/durable appends
+  # Refresh system prompt byte count after all system.txt appends
   if [ -f "$run_dir/system.txt" ]; then
     SESSION_SYSTEM_PROMPT_BYTES="$(wc -c < "$run_dir/system.txt" | tr -d '[:space:]')"
   fi
@@ -402,6 +455,7 @@ main() {
     else
       clarify_text="Unknown skill /${SESSION_SKILL_NAME:-}. No catalog matches."
     fi
+    session_timing_finalize
     session_finalize_writes "$root" "$project_dir" "$SESSION_RUN_START_EPOCH"
     SESSION_DISPOSITION="clarify"
     SESSION_TEXT="$clarify_text"
@@ -419,7 +473,8 @@ main() {
   fi
   session_verify_company "$root" "$company_slug" >/dev/null
 
-  # Hooks: SessionStart then UserPromptSubmit
+  # ── hooks ─────────────────────────────────────────────────────────────────
+  session_timing_begin hooks
   local hook_rc=0
   SESSION_HOOK_BLOCKED_BY=""
   set +e
@@ -428,6 +483,8 @@ main() {
   set -e
   if [ "$hook_rc" -eq 2 ]; then
     SESSION_BLOCKED_BY="${SESSION_HOOK_BLOCKED_BY:-SessionStart}"
+    session_timing_end
+    session_timing_finalize
     session_finalize_writes "$root" "$project_dir" "$SESSION_RUN_START_EPOCH"
     fail 0 no_reply "blocked by hook: ${SESSION_BLOCKED_BY}"
   elif [ "$hook_rc" -ne 0 ]; then
@@ -440,6 +497,8 @@ main() {
   set -e
   if [ "$hook_rc" -eq 2 ]; then
     SESSION_BLOCKED_BY="${SESSION_HOOK_BLOCKED_BY:-UserPromptSubmit}"
+    session_timing_end
+    session_timing_finalize
     session_finalize_writes "$root" "$project_dir" "$SESSION_RUN_START_EPOCH"
     fail 0 no_reply "blocked by hook: ${SESSION_BLOCKED_BY}"
   elif [ "$hook_rc" -ne 0 ]; then
@@ -449,6 +508,10 @@ main() {
   if [ -n "${SESSION_HOOK_UPDATED_INPUT:-}" ]; then
     printf '%s' "$SESSION_HOOK_UPDATED_INPUT" > "$run_dir/user.txt"
   fi
+  session_timing_end
+
+  # Finalize assembly timing before provider dispatch (report-and-continue)
+  session_timing_finalize
 
   # US-408: resume support flag (matrix-aligned) even on skip-provider path
   SESSION_RESUME_SUPPORTED="$(session_resume_supported "$provider")"

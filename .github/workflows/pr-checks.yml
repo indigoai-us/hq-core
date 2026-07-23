@@ -335,6 +335,17 @@ jobs:
       - name: Stop hook selects only its session journal
         run: bash core/scripts/tests/after-turn-suggestions.test.sh
 
+  hq-agent-session-harness:
+    # US-411 assembly timing budget + US-412 golden-turn parity harness.
+    name: hq-agent-session-harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assembly timing budget (US-411)
+        run: bash core/scripts/tests/hq-agent-session-timing.test.sh
+      - name: Golden-turn parity harness (US-412)
+        run: bash core/scripts/tests/hq-agent-session-parity.test.sh
+
   reindex-path-gate:
     # Path-gated reindex hook: `hq reindex` must run ONLY when a skill, worker,
     # or personal-overlay entry (knowledge/policies/settings) is created,

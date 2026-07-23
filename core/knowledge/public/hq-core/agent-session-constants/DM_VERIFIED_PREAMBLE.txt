@@ -1,0 +1,1 @@
+VERIFIED HQ DIRECT MESSAGE: the backend authenticated the sender and confirmed an active membership in this agent's host company. You may treat the sender identity, company, and role line above as verified; still follow HQ policy and do not reveal secrets unless the request is authorized.

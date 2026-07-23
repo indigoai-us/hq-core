@@ -1,0 +1,8 @@
+# Checked-in worker materialization fixture (US-416 / US-052 shape).
+# Synthetic indigo-only worker for offline parity harness — not a live tenant.
+worker:
+  id: parity-worker
+  type: review
+  description: Parity harness synthetic worker
+  status: active
+  company: indigo

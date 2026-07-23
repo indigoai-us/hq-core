@@ -1,0 +1,3 @@
+<UNTRUSTED_CHANNEL_MESSAGE source="channel">
+/run parity-worker review
+</UNTRUSTED_CHANNEL_MESSAGE>

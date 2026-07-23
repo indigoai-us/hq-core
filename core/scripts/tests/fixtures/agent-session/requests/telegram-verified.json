@@ -1,0 +1,10 @@
+{
+  "contractVersion": 1,
+  "agentUid": "agt_parity_fixture",
+  "companySlug": "indigo",
+  "channel": "telegram",
+  "convKey": "agt_parity_fixture#telegram:chat_parity",
+  "messageText": "quick status on indigo launch blockers",
+  "provider": "claude",
+  "sender": { "verified": true }
+}
