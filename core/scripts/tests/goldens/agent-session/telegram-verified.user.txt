@@ -1,0 +1,3 @@
+<UNTRUSTED_CHANNEL_MESSAGE source="channel">
+quick status on indigo launch blockers
+</UNTRUSTED_CHANNEL_MESSAGE>

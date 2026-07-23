@@ -1,0 +1,3 @@
+<UNTRUSTED_CHANNEL_MESSAGE source="channel">
+please draft the weekly status for the indigo launch
+</UNTRUSTED_CHANNEL_MESSAGE>

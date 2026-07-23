@@ -1,0 +1,3 @@
+<UNTRUSTED_CHANNEL_MESSAGE source="channel">
+scheduled job fire: refresh indigo status board and post outcome summary
+</UNTRUSTED_CHANNEL_MESSAGE>

@@ -1,0 +1,10 @@
+{
+  "contractVersion": 1,
+  "agentUid": "agt_parity_fixture",
+  "companySlug": "indigo",
+  "channel": "email",
+  "convKey": "agt_parity_fixture#email:parity@example.com",
+  "messageText": "please send the indigo weekly launch summary as plain email prose",
+  "provider": "claude",
+  "sender": { "verified": true }
+}

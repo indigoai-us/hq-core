@@ -1,0 +1,3 @@
+<UNTRUSTED_CHANNEL_MESSAGE source="channel">
+/handoff wrap parity session for follow-up
+</UNTRUSTED_CHANNEL_MESSAGE>

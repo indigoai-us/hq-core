@@ -1,0 +1,3 @@
+<UNTRUSTED_CHANNEL_MESSAGE source="channel">
+summarize open indigo tasks for me
+</UNTRUSTED_CHANNEL_MESSAGE>

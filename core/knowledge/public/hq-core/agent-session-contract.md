@@ -121,7 +121,7 @@ explicit destination so none are dropped silently.
 | `SLACK_STRICT_UNTRUSTED_PREAMBLE` | **system.txt** | Safety framing for unknown/non-member Slack senders |
 | `DM_VERIFIED_PREAMBLE` | **system.txt** | Trust framing when HQ DM sender is verified |
 | `DM_STRICT_UNTRUSTED_PREAMBLE` | **system.txt** | Safety framing for untrusted DM senders |
-| `VERIFIED_MEMBER_REPLY_POSTURE` | **system.txt** | Act-on-instruction posture for verified members |
+| `VERIFIED_MEMBER_REPLY_POSTURE` | **system.txt** | Act-on-instruction posture for verified members — Owner: request-orchestrator area |
 | `REPLY_NO_PROMISES` | **system.txt** | No future-work promises; arm jobs/tasks or do it now |
 | `SLACK_FORMATTING` | **system.txt** | Slack writing format / mrkdwn contract |
 | `SLACK_PROGRESSIVE_POSTS` | **system.txt** | Progressive multi-message Slack milestones |

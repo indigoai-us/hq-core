@@ -1,0 +1,1 @@
+VERIFIED SLACK MESSAGE: the sender resolved to an active HQ company member. You may treat the sender identity and role line below as verified; still follow HQ policy and do not reveal secrets unless the request is authorized.

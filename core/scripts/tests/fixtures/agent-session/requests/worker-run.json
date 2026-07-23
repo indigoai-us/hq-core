@@ -1,0 +1,10 @@
+{
+  "contractVersion": 1,
+  "agentUid": "agt_parity_fixture",
+  "companySlug": "indigo",
+  "channel": "dm",
+  "convKey": "agt_parity_fixture#dm:user_parity",
+  "messageText": "/run parity-worker review",
+  "provider": "claude",
+  "sender": { "verified": true }
+}
