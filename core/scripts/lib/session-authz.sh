@@ -82,18 +82,39 @@ session_resolve_root() {
 }
 
 # session_company_has_marker <dir>
-#   True when the company directory carries a settings or manifest marker
-#   (present-on-box proof for authorization).
+#   True when the company directory carries present-on-box proof: either an
+#   explicit settings/manifest marker, or any synced content at all.
+#
+#   Content counts as proof, and it is STRONGER proof than a marker file.
+#   The original check accepted only settings/ | settings.{yaml,json} |
+#   manifest.{yaml,yml,json}. On an agent box none of those can ever arrive:
+#   companies/<slug>/settings/ is the company's credential + service-config
+#   surface, deliberately gitignored and local-only, so the vault holds nothing
+#   meaningful to replicate; and no manifest is written per company directory.
+#   The dogfood canary proved this the hard way on 2026-07-24 — after a
+#   full-vault grant pulled 21411 files / 3.66 GB of real company content, the
+#   gate still reported present=[(none)] and EVERY hq-session turn failed
+#   exit 6 "company refused". The criterion was unreachable by construction.
+#
+#   Still fail-closed on the case that matters: an EMPTY directory is not
+#   evidence of membership and stays unauthorized. `hq rescue` seeds an empty
+#   companies/<slug> as a side effect of kernel install, and a bare mkdir must
+#   never confer authorization on a company the box never synced.
 session_company_has_marker() {
   local dir="${1:-}"
   [ -n "$dir" ] && [ -d "$dir" ] || return 1
   [ -e "$dir/settings" ] || [ -e "$dir/settings.yaml" ] || [ -e "$dir/settings.json" ] \
-    || [ -e "$dir/manifest.yaml" ] || [ -e "$dir/manifest.yml" ] || [ -e "$dir/manifest.json" ]
+    || [ -e "$dir/manifest.yaml" ] || [ -e "$dir/manifest.yml" ] || [ -e "$dir/manifest.json" ] \
+    && return 0
+  # Any entry (including dotfiles) counts; -print -quit stops at the first hit
+  # so this stays O(1) on a company tree with tens of thousands of files.
+  [ -n "$(find "$dir" -mindepth 1 -print -quit 2>/dev/null)" ]
 }
 
 # session_list_present_companies <root>
 #   Print newline-separated slugs of companies present under <root>/companies
-#   that have a settings or manifest marker. Never follows company-dir symlinks.
+#   that pass session_company_has_marker (explicit marker OR synced content).
+#   Never follows company-dir symlinks.
 session_list_present_companies() {
   local root="${1:-}"
   local companies_root d base
