@@ -124,4 +124,38 @@ echo "$OUT" | jq -e '.disposition != "error"' >/dev/null || fail "workdir-unset 
 grep -q "HQ root resolution failed" "$TMP/e6" && fail "root resolution still failing without HQ_AGENT_WORKDIR"
 pass "root resolves without HQ_AGENT_WORKDIR (box fork path)"
 
+
+# --- present-on-box proof: synced CONTENT counts, empty dir does not ----------
+# 2026-07-24 dogfood canary: the marker check accepted only settings/manifest,
+# but companies/<slug>/settings/ is local-only by design and cannot reach a box.
+# After a full-vault grant put 21411 real files on the dogfood box the gate STILL
+# reported present=[(none)] and every hq-session turn failed exit 6. Content is
+# present-on-box proof; an empty directory is not.
+. "$FIXTURE/core/scripts/lib/session-authz.sh"
+
+MARKERLESS="$TMP/markerless"
+mkdir -p "$MARKERLESS/companies/withcontent/knowledge" "$MARKERLESS/companies/emptyco"
+echo x > "$MARKERLESS/companies/withcontent/knowledge/a.md"
+
+session_company_has_marker "$MARKERLESS/companies/withcontent" \
+  || fail "populated company dir must be present-on-box proof"
+pass "synced content authorizes a company with no settings/manifest marker"
+
+session_company_has_marker "$MARKERLESS/companies/emptyco" \
+  && fail "EMPTY company dir must stay unauthorized (hq rescue seeds bare dirs)"
+pass "empty company dir stays fail-closed"
+
+# Dotfile-only content still counts (a company whose grant yields only dotfiles).
+mkdir -p "$MARKERLESS/companies/dotonly"
+echo x > "$MARKERLESS/companies/dotonly/.keep"
+session_company_has_marker "$MARKERLESS/companies/dotonly" \
+  || fail "dotfile-only content must count as present-on-box proof"
+pass "dotfile-only content authorizes"
+
+PRESENT="$(session_list_present_companies "$MARKERLESS")"
+echo "$PRESENT" | grep -qx withcontent || fail "listing must include content-only company: $PRESENT"
+echo "$PRESENT" | grep -qx dotonly     || fail "listing must include dotfile-only company: $PRESENT"
+echo "$PRESENT" | grep -qx emptyco     && fail "listing must NOT include empty company: $PRESENT"
+pass "session_list_present_companies reflects content-based presence"
+
 echo "PASS: hq-agent-session-authz.test.sh"
