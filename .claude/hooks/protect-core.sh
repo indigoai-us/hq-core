@@ -67,7 +67,7 @@ BLOCKED: refusing to write a learned rule into the HQ charter.
 
 Learned rules never go in .claude/CLAUDE.md / AGENTS.md
 (policy learned-rules-never-in-claude-md). Route the rule to a policy file:
-  • Operator / universal → personal/policies/{slug}.md (symlinked into core/policies/, survives upgrade)
+  • Operator / universal → personal/policies/{slug}.md (read directly by the policy trigger hook, survives upgrade)
   • Company-specific      → companies/{co}/policies/{slug}.md
   • Release-shipped       → core/policies/{slug}.md (enforcement: hard), then /promote-hq-core
 MSG
@@ -85,11 +85,13 @@ fi
 #
 # Scope is deliberately narrow:
 #   • Only NEW files (path does not yet exist). Edits to existing release-shipped
-#     core policies — the builder-mode + /promote-hq-core workflow — pass through.
-#   • Writing THROUGH an existing personal→core symlink passes (-e follows it).
-#   • reindex symlinks (ln), /update-hq copies (cp), and /promote-hq-core
-#     writes (which target repos/private/hq-core-staging, not local core) never
-#     hit the Edit/Write tool path, so they are unaffected.
+#     core policies — the builder-mode + /promote-hq-core workflow — pass through
+#     (-e also follows any leftover personal→core mirror symlink from before the
+#     mirror was retired; such a write lands in personal/, so it stays allowed).
+#   • The personal→core policy mirror is retired: reindex no longer creates
+#     symlinks (it prunes leftover ones), and /update-hq copies (cp) plus
+#     /promote-hq-core writes (which target repos/private/hq-core-staging, not
+#     local core) never hit the Edit/Write tool path, so they are unaffected.
 # Sanctioned escape for tooling that must author a core policy locally:
 #   HQ_ALLOW_CORE_POLICY_WRITE=1 (inline env is accepted here, unlike the broad
 #   bypass — this is a narrow, single-purpose hatch).
@@ -108,8 +110,8 @@ policy written here is lost on the next upgrade.
 
 Route it instead:
   • Operator / universal rule  → personal/policies/$base
-       (reindex.sh symlinks it into core/policies/ — it still loads as a
-        global policy, but survives upgrade)
+       (read directly by the policy trigger hook — no core/policies/ mirror —
+        it still loads as a global policy, but survives upgrade)
   • Company-specific rule      → companies/{co}/policies/$base
   • Repo-specific rule         → repos/{pub|priv}/{repo}/.claude/policies/$base
   • Genuine product-core rule  → author locally, then publish via

@@ -378,6 +378,18 @@ jobs:
       - name: Planning commands auto-checkpoint on completion
         run: bash core/scripts/tests/auto-checkpoint-planning-cmds.test.sh
 
+  session-title-manual-backoff:
+    # feedback_0919db0c / feedback_1f573b9f: the session-title hook must stop
+    # overwriting a user's manual title (launcher --name / /rename / desktop
+    # rename). Primary back-off is the documented session_title SessionStart
+    # input; the transcript custom-title scan is a labeled secondary net.
+    name: session-title-manual-backoff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Manual /rename and --name titles are not clobbered
+        run: bash core/scripts/tests/session-title-manual-backoff.test.sh
+
   knowledge-repo-glob-shells:
     # knowledge-repo-loop-zsh-unmatched-glob: the checkpoint and cleanup
     # snippets must not let zsh NOMATCH abort on an empty knowledge directory.
@@ -548,6 +560,20 @@ jobs:
       - name: Retired digest path has no frontmatter exemption
         run: bash core/scripts/tests/validate-policy-frontmatter.test.sh
 
+  personal-policy-overlay:
+    # The personal→core policy mirror is retired: the trigger hook must read
+    # personal/policies DIRECTLY (no core/policies symlink mirror), and the
+    # drift detector must classify + prune only behavior-neutral orphan copies
+    # while never touching a diverged twin or a core-only shipped policy.
+    name: personal-policy-overlay
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: personal/policies is read directly by the trigger hook (no mirror)
+        run: bash core/scripts/tests/personal-policy-overlay.test.sh
+      - name: stale core/policies mirror detector classifies + prunes safely
+        run: bash core/scripts/tests/detect-stale-core-policy-mirror.test.sh
+
   prefer-native-capabilities:
     # hq-prefer-native-capabilities must inject at session start (always-on
     # baseline) and on canvas/share/secret prompts, stay untruncated in the
@@ -675,3 +701,67 @@ jobs:
             echo "$out"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ─── Provider adapter contract (US-504) ─────────────────────────────
+  #
+  # One job covering the whole adapter surface: cross-provider parity, the
+  # three per-adapter suites, and the capability-snapshot drift check.
+  #
+  # WHY THE SNAPSHOT CHECK IS HERE AND NOT OPTIONAL. capabilities.generated.json
+  # is the only mechanism by which hq-pro control-plane TypeScript can read a
+  # descriptor that otherwise exists solely as bash on an agent box. If it goes
+  # stale, the control plane routes work using capabilities the fleet no longer
+  # has -- e.g. sending a plan turn to a provider that has since declared
+  # plan_mode=absent. The failure is silent in production and cheap to catch here.
+  #
+  # Toolchain is bash + jq only (both preinstalled on ubuntu-latest), per the
+  # story's constraint -- no node, no package install, nothing to drift.
+  provider-adapter-contract:
+    name: provider-adapter-contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Paths filter, implemented in bash rather than a marketplace action so
+      # the job keeps its bash+jq-only guarantee and gains no new dependency.
+      #
+      # provider-adapter-version.sh is included beyond the story's literal path
+      # list on purpose: a contract-version bump changes the snapshot's
+      # contractVersion field without touching any adapter file, so filtering
+      # on the adapters alone would let that specific drift through unnoticed.
+      - name: Decide whether adapter contract files changed
+        id: filter
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" || true
+            changed="$(git diff --name-only "$base"...HEAD || true)"
+          else
+            changed="$(git diff --name-only HEAD~1 HEAD || true)"
+          fi
+          echo "$changed" | grep -qE '^core/scripts/lib/provider-adapter\.sh$|^core/scripts/lib/provider-adapters/|^core/scripts/lib/provider-adapter-version\.sh$|^core/scripts/generate-adapter-capabilities\.sh$|^core/scripts/tests/provider-adapter-|^core/scripts/tests/probes/' \
+            && echo "run=true" >> "$GITHUB_OUTPUT" \
+            || echo "run=false" >> "$GITHUB_OUTPUT"
+
+      - name: Cross-provider parity conformance
+        if: steps.filter.outputs.run == 'true'
+        run: bash core/scripts/tests/provider-adapter-parity.test.sh
+
+      - name: codex adapter suite
+        if: steps.filter.outputs.run == 'true'
+        run: bash core/scripts/tests/provider-adapter-codex.test.sh
+
+      - name: grok adapter suite
+        if: steps.filter.outputs.run == 'true'
+        run: bash core/scripts/tests/provider-adapter-grok.test.sh
+
+      - name: claude adapter suite
+        if: steps.filter.outputs.run == 'true'
+        run: bash core/scripts/tests/provider-adapter-claude.test.sh
+
+      - name: Capability snapshot is not stale
+        if: steps.filter.outputs.run == 'true'
+        run: bash core/scripts/tests/provider-adapter-capabilities-snapshot.test.sh

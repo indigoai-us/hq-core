@@ -698,7 +698,8 @@ core/workers/registry.yaml  (auto-generated from worker.yaml files)
 
   Personal workers (e.g. x-user, invoices) live at top-level `personal/workers/`,
   alongside `personal/{knowledge,policies,settings,skills,hooks}/` — peer to `core/`,
-  not a company. reindex.sh mirrors them into `core/workers/<entry>` symlinks.
+  not a company. The workers-registry generator walks `personal/workers/` directly
+  (the `core/workers/<entry>` symlink mirror was retired).
 ```
 
 ---
