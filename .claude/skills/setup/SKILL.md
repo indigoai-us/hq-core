@@ -200,7 +200,7 @@ So gather all five before moving on.
    later (a connection string, API token, etc.). Don't ask for the secret itself
    — just whether one exists.
 
-Personal scope lives at the top-level `personal/` directory (peer of `core/`), not as a company. Workers, knowledge, policies, and skills you create for yourself live under `personal/{type}/...` — `reindex.sh` mirrors them into `core/<type>/<entry>` symlinks automatically.
+Personal scope lives at the top-level `personal/` directory (peer of `core/`), not as a company. Workers, knowledge, policies, and skills you create for yourself live under `personal/{type}/...` — they are read directly from `personal/` (the old `core/<type>/` symlink mirror was retired), so they load without any mirror step and survive `/update-hq`. (Personal skills surface via the `.claude/skills/personal:<name>/` bridge.)
 
 ## Phase 1.5: Social presence + browser harness
 

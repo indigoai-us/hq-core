@@ -39,7 +39,7 @@ Each company directory contains a knowledge subdirectory that is its own git rep
 | {company} | `companies/{company}/knowledge/` | Own repo (has `.git/`) | ~12 files across 3 subdirs |
 | acmestudio | N/A | No knowledge dir | 0 |
 
-> **Personal scope is not a company.** Personal knowledge lives at top-level `personal/knowledge/` (peer of `core/knowledge/`), surfaced via the `reindex.sh` mirror. Desktop should treat it like HQ-level public knowledge, not as a company entry.
+> **Personal scope is not a company.** Personal knowledge lives at top-level `personal/knowledge/` (peer of `core/knowledge/`), read directly from `personal/knowledge/` (the `reindex.sh` symlink mirror into `core/knowledge/` was retired). Desktop should treat it like HQ-level public knowledge, not as a company entry.
 
 ### Tier 3: Worker-Embedded Knowledge
 
@@ -333,7 +333,7 @@ Knowledge Browser
 | `{product}` | {PRODUCT} monorepo | `**/*.{ts,tsx,js,jsx,md,json,yaml,yml,sql,css,prisma}` | 3,078 | 3 | {PRODUCT} codebase |
 | `{company}` | LR knowledge | `**/*.md` | 121 | 1 | LR company knowledge |
 | `{company}` | {company} knowledge | `**/*.md` | 15 | 1 | {company} company knowledge |
-| `personal` | Personal knowledge (mirrored from top-level `personal/knowledge/`) | `**/*.md` | 8 | 1 | Personal knowledge |
+| `personal` | Personal knowledge (read from top-level `personal/knowledge/`) | `**/*.md` | 8 | 1 | Personal knowledge |
 
 ### Collection Contexts
 
