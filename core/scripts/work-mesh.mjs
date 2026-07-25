@@ -967,8 +967,22 @@ function parseCredentials(value, version) {
   return parsed;
 }
 
+/**
+ * Validate the topics map WITHOUT rejecting keys we do not know yet.
+ *
+ * This used to require an exact key count, which made the map effectively
+ * frozen: the response comes from our own authenticated server and is
+ * documented as additive, so any new topic it learns to advertise would make
+ * every deployed watcher throw "topics are invalid" and lose realtime outright.
+ * Rejecting unknown keys bought nothing — an attacker cannot add keys to a
+ * response we fetched over TLS from our own API — while coupling every future
+ * server-side topic to a client rollout.
+ *
+ * So: require the keys we actually read, validate those, and ignore the rest.
+ * Only known keys are returned, so an unexpected key can never reach a caller.
+ */
 function parseTopics(value, version) {
-  if (!hasExactKeys(value, REALTIME_TOPIC_KEYS)) {
+  if (!isRecord(value) || !REALTIME_TOPIC_KEYS.every((key) => Object.hasOwn(value, key))) {
     throw new WorkMeshContractError(`realtime v${version} topics are invalid`);
   }
   return Object.fromEntries(REALTIME_TOPIC_KEYS.map((key) => [key, requiredString(value[key], 256, `realtime ${key} topic`)]));

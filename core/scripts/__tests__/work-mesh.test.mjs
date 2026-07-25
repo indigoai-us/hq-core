@@ -507,3 +507,56 @@ test("project rollups remain linear with 10,000 distinct owners on one project",
     elapsedMs: Number(elapsedMs.toFixed(2)),
   }));
 });
+
+/**
+ * The topics map must tolerate topics this client does not know yet.
+ *
+ * `parseTopics` used to require an EXACT key count, which froze the map: the
+ * moment the server learned to advertise a new topic — `meeting`, for live
+ * meeting participation — every deployed watcher would throw "topics are
+ * invalid" and lose realtime outright. The response is fetched over TLS from
+ * our own authenticated API and is documented as additive, so rejecting unknown
+ * keys bought nothing while coupling every future server-side topic to a client
+ * rollout.
+ */
+test("realtime v2 tolerates a topic key this client does not know", () => {
+  const config = parseRealtimeV2Config(
+    v2({ topics: { ...topics(), meeting: `hq/${PERSON}/meeting` } }),
+  );
+  assert.equal(config.topics.work, topics().work);
+});
+
+test("realtime v2 tolerates several unknown topic keys at once", () => {
+  const config = parseRealtimeV2Config(
+    v2({ topics: { ...topics(), meeting: "a", future: "b", another: "c" } }),
+  );
+  assert.equal(config.topics.dm, topics().dm);
+});
+
+test("realtime v2 does not surface unknown topics to callers", () => {
+  const config = parseRealtimeV2Config(
+    v2({ topics: { ...topics(), meeting: `hq/${PERSON}/meeting` } }),
+  );
+  assert.deepEqual(Object.keys(config.topics).sort(), [
+    "dm",
+    "notifications",
+    "sessions",
+    "work",
+  ]);
+});
+
+test("realtime v1 tolerates unknown topic keys too (shared parser)", () => {
+  const config = parseRealtimeV1Config(
+    v1({ topics: { ...topics(), meeting: `hq/${PERSON}/meeting` } }),
+  );
+  assert.equal(config.topics.work, topics().work);
+});
+
+test("realtime v2 still rejects a topics map missing a key we read", () => {
+  const { work: _dropped, ...withoutWork } = topics();
+  assert.throws(() => parseRealtimeV2Config(v2({ topics: withoutWork })), /topics are invalid/);
+});
+
+test("realtime v2 still rejects a non-object topics value", () => {
+  assert.throws(() => parseRealtimeV2Config(v2({ topics: "nope" })), /topics are invalid/);
+});
