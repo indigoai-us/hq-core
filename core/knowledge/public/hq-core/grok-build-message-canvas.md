@@ -56,8 +56,8 @@ Every line of the callout is a blockquote line. Tag alone on the first line, bod
 
 ```markdown
 > [!NOTE]
-> HQ reindex symlinks `personal/knowledge/` into `core/knowledge/`.
-> Personal never overwrites a real core file.
+> HQ reads `personal/knowledge/` directly (the reindex symlink mirror into
+> `core/knowledge/` was retired). Personal never overwrites a real core file.
 
 > [!WARNING]
 > Do not push the HQ root. Only repos under `repos/` get pushed.

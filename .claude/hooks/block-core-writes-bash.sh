@@ -431,8 +431,9 @@ Exceptions: .claude/settings.local.json and .claude/personal-context.md are
 always writable. Put durable personal voice and preferences in
 .claude/personal-context.md.
 
-Preferred fix: author the content under personal/ (reindex symlinks it into
-core/), which needs no bypass at all.
+Preferred fix: author the content under personal/. The personal overlay
+(policies/knowledge/workers/settings) is read directly from personal/ — there
+is no mirror into core/ — so no bypass is needed.
 
 A bypass exists, but DO NOT enable it on your own. Setting
 "HQ_BYPASS_CORE_PROTECT": "1" under "env" in .claude/settings.local.json turns

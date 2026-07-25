@@ -383,7 +383,7 @@ main() {
   run_id="run-$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N4 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
   [ -n "$run_id" ] || run_id="run-$$-$RANDOM"
   SESSION_RUN_ID="$run_id"
-  run_dir="${HOME}/.hq/agent-session/${run_id}"
+  run_dir="${HOME:-${TMPDIR:-/tmp}}/.hq/agent-session/${run_id}"
   mkdir -p "$run_dir"
   chmod 700 "$run_dir"
   SESSION_RUN_DIR="$run_dir"
@@ -543,8 +543,13 @@ main() {
 
   local prov_out prov_rc=0
   set +e
-  prov_out="$(session_provider_dispatch "$provider" "$run_dir" "$company_dir" 2>"$run_dir/provider.stderr")"
+  # Capture provider stdout via file, not command substitution: a provider
+  # helper process that outlives the CLI (MCP server, updater) inherits the
+  # substitution pipe and blocks the read forever. A file never blocks.
+  session_provider_dispatch "$provider" "$run_dir" "$company_dir" \
+    >"$run_dir/provider.stdout" 2>"$run_dir/provider.stderr"
   prov_rc=$?
+  prov_out="$(cat "$run_dir/provider.stdout" 2>/dev/null || true)"
   set -e
 
   if [ "$prov_rc" -eq 4 ]; then
@@ -563,8 +568,10 @@ main() {
       : > "$transcript_path_file"
     fi
     set +e
-    prov_out="$(session_provider_dispatch "$provider" "$run_dir" "$company_dir" 2>"$run_dir/provider.stderr")"
+    session_provider_dispatch "$provider" "$run_dir" "$company_dir" \
+      >"$run_dir/provider.stdout" 2>"$run_dir/provider.stderr"
     prov_rc=$?
+    prov_out="$(cat "$run_dir/provider.stdout" 2>/dev/null || true)"
     set -e
   fi
 

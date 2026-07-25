@@ -172,3 +172,20 @@ echo "$ND2" | jq -e 'index("workspace/scratch/lost.md") != null' >/dev/null \
 pass "residual workspace write detection"
 
 echo "PASS: hq-agent-session-durable.test.sh"
+
+# ── residual scan prunes dependency/VCS trees (fleet-box hang regression) ───
+# A node_modules tree under the scanned dir once cost >400s (2 subprocesses
+# per file); the scan must skip node_modules/.git/.pnpm and still find real
+# files, in both the GNU fast path and the portable fallback.
+SCAN="$TMP/scan"
+mkdir -p "$SCAN/node_modules/dep" "$SCAN/.git" "$SCAN/.pnpm" "$SCAN/real"
+echo x > "$SCAN/real/artifact.txt"
+echo x > "$SCAN/node_modules/dep/index.js"
+echo x > "$SCAN/.git/config"
+echo x > "$SCAN/.pnpm/pkg.js"
+FOUND="$(_session_find_newer "$SCAN" 0)"
+printf '%s\n' "$FOUND" | grep -q 'real/artifact.txt' || fail "residual scan missed real artifact"
+printf '%s\n' "$FOUND" | grep -q 'node_modules' && fail "residual scan descended into node_modules"
+printf '%s\n' "$FOUND" | grep -q '.git/config' && fail "residual scan descended into .git"
+printf '%s\n' "$FOUND" | grep -q '.pnpm' && fail "residual scan descended into .pnpm"
+pass "residual scan prunes node_modules/.git/.pnpm"

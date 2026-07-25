@@ -37,11 +37,11 @@ HQ/
 ├── personal/           # User-personal overlay (mirrors core/ shape)
 │   ├── hooks/          # Always-on user-global hooks (loaded AFTER core/hooks)
 │   ├── projects/       # Personal/HQ project PRDs and brainstorms
-│   ├── knowledge/      # Symlinked into core/knowledge/ by reindex
-│   ├── policies/       # Symlinked into core/policies/ by reindex
-│   ├── settings/       # Symlinked into core/settings/ by reindex
+│   ├── knowledge/      # Read directly from personal/ (no core/ mirror)
+│   ├── policies/       # Read directly by the policy trigger hook (no core/ mirror)
+│   ├── settings/       # Read directly from personal/ (no core/ mirror)
 │   ├── skills/         # Surface as /<skill> with (project:personal) tag
-│   └── workers/        # Symlinked into core/workers/ by reindex
+│   └── workers/        # Read directly from personal/ (no core/ mirror)
 ├── repos/
 │   ├── public/         # Open-source repos
 │   └── private/        # Private repos
@@ -53,18 +53,18 @@ HQ/
     └── threads/        # Session threads + handoff.json
 ```
 
-**Personal overlay semantics.** `personal/` mirrors the shape of `core/` but is user-personal authoring space. Master-sync (a Stop/PostToolUse hook in `.claude/hooks/reindex.sh`) keeps the two in sync:
+**Personal overlay semantics.** `personal/` mirrors the shape of `core/` but is user-personal authoring space. The old reindex symlink mirror into `core/` was **retired** — `personal/{knowledge,policies,settings,workers}` are now read DIRECTLY from `personal/` by the code that consumes each (the policy trigger hook, the workers-registry generator, the session/knowledge readers), and reindex prunes any leftover mirror symlinks:
 
 | Subdir | Runtime behavior |
 |---|---|
 | `personal/hooks/<event>/*.sh` | **Loaded as a separate ordered layer** — runs after `core/hooks/<event>/` and before `core/packages/*/hooks/<event>/` |
 | `personal/skills/<skill>/SKILL.md` | Surfaces as `/<skill>` — same flat command name as a core skill. Claude Code's `.claude/commands/<subdir>/<name>.md` surfacing puts the subdirectory in the command *description* (`(project:personal)`), not the command name. Collisions with a core skill of the same name are won by whichever ordering Claude Code resolves first; rename your personal skill to disambiguate. |
-| `personal/knowledge/<entry>` | Symlinked into `core/knowledge/<entry>` — appears inside core |
-| `personal/policies/<entry>` | Symlinked into `core/policies/<entry>` — appears inside core; NOT a separate precedence layer |
-| `personal/workers/<entry>` | Symlinked into `core/workers/<entry>` — appears inside core |
-| `personal/settings/<entry>` | Symlinked into `core/settings/<entry>` — appears inside core |
+| `personal/knowledge/<entry>` | Read directly from `personal/knowledge/` (no `core/` mirror) — loads alongside core |
+| `personal/policies/<entry>` | Read directly by the policy trigger hook (no `core/policies/` mirror) — loads as global; NOT a separate precedence layer |
+| `personal/workers/<entry>` | Walked directly by the workers-registry generator (no `core/workers/` mirror) — surfaces as a worker |
+| `personal/settings/<entry>` | Read directly from `personal/settings/` (no `core/settings/` mirror) |
 
-Collision rule: if a real file/dir already sits at the link path, reindex logs and skips — personal never silently overwrites core.
+Collision rule: with the mirror retired there is no link path to collide on. Both the personal and the core copy are read; a consumer that dedups by identity resolves same-id twins with personal first (e.g. the policy trigger hook scans `personal/policies/` ahead of `core/policies/`, so an operator's global rule wins over a same-id core copy).
 
 ## Companies (14)
 

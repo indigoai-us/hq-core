@@ -1,0 +1,32 @@
+{
+  "contractVersion": "1.0.0",
+  "providers": {
+    "codex": {
+      "system_prompt": "emulated",
+      "resume": "native",
+      "hooks": "native",
+      "plan_mode": "native",
+      "durable_writes": "native",
+      "telegram_eligible": "yes",
+      "usage_source": "cli"
+    },
+    "grok": {
+      "system_prompt": "native",
+      "resume": "native",
+      "hooks": "absent",
+      "plan_mode": "absent",
+      "durable_writes": "native",
+      "telegram_eligible": "yes",
+      "usage_source": "unavailable"
+    },
+    "claude": {
+      "system_prompt": "native",
+      "resume": "emulated",
+      "hooks": "native",
+      "plan_mode": "absent",
+      "durable_writes": "native",
+      "telegram_eligible": "no",
+      "usage_source": "transcript"
+    }
+  }
+}

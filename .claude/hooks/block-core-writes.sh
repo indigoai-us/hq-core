@@ -1,9 +1,10 @@
 #!/bin/bash
 # block-core-writes.sh — PreToolUse hook for Edit, Write, MultiEdit.
 #
-# Blocks any write inside core/ or .claude/. Authoring belongs in personal/;
-# reindex mirrors personal/<type>/<entry> into core/<type>/<entry> as symlinks.
-# Writes that resolve through such a symlink are allowed (they land in personal/).
+# Blocks any write inside core/ or .claude/. Authoring belongs in personal/,
+# which is read DIRECTLY from personal/<type>/<entry> (the reindex symlink
+# mirror into core/ was retired). A write that still resolves through a leftover
+# personal→core mirror symlink is allowed (it lands in personal/).
 #
 # Exceptions: .claude/settings.local.json and .claude/personal-context.md are
 # always allowed. The latter is the update-preserved native personal-context
@@ -91,8 +92,10 @@ MSG
   exit 2
 fi
 
-# Walk upward from target. If any existing component is a symlink,
-# the write lands in personal/ (reindex mirror) — allow it.
+# Walk upward from target. If any existing component is a symlink, the write
+# resolves OUT of the protected tree (e.g. a knowledge-repo symlink, or a
+# leftover personal→core mirror symlink from before that mirror was retired) —
+# so it lands outside core/; allow it.
 probe="$FILE_PATH"
 while [[ "$probe" == "$CORE_DIR"/* || "$probe" == "$CLAUDE_DIR"/* || \
          "$probe" == "$AGENTS_DIR"/* || "$probe" == "$CODEX_DIR"/* || \
@@ -118,8 +121,8 @@ Exceptions: .claude/settings.local.json and .claude/personal-context.md are
 always writable. Put durable personal voice and preferences in
 .claude/personal-context.md.
 
-Preferred fix: author the content under personal/ and reindex will symlink it
-into core/ — no bypass needed.
+Preferred fix: author the content under personal/. The personal overlay is read
+directly from personal/ — there is no mirror into core/ — so no bypass is needed.
 
 A bypass exists, but DO NOT enable it on your own. Setting
 "HQ_BYPASS_CORE_PROTECT": "1" under "env" in .claude/settings.local.json turns

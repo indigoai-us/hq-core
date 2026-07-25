@@ -83,7 +83,14 @@ session_run_hook() {
       prompt: $prompt
     }')"
 
-  out="$(printf '%s' "$payload" | bash "$hook" "$event" 2>"${SESSION_HOOK_ERR:-/dev/stderr}")" || rc=$?
+  # Do not default to /dev/stderr: re-opening it fails when the underlying
+  # file belongs to another user (sudo / systemd service fds). Without an
+  # explicit sink, let hook stderr flow to the inherited fd 2.
+  if [ -n "${SESSION_HOOK_ERR:-}" ]; then
+    out="$(printf '%s' "$payload" | bash "$hook" "$event" 2>"$SESSION_HOOK_ERR")" || rc=$?
+  else
+    out="$(printf '%s' "$payload" | bash "$hook" "$event")" || rc=$?
+  fi
 
   if [ -n "$out" ] && command -v jq >/dev/null 2>&1; then
     if printf '%s' "$out" | jq -e 'type == "object" and .decision == "block"' >/dev/null 2>&1; then

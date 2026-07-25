@@ -6,9 +6,9 @@ on: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
 vendor_public_ok: true
-version: 1
+version: 2
 created: 2026-06-01
-updated: 2026-06-01
+updated: 2026-07-24
 source: user-correction
 tags: [hq-core, learn, policies, charter, claude-md]
 ---
@@ -17,7 +17,7 @@ tags: [hq-core, learn, policies, charter, claude-md]
 
 NEVER write a learned rule or user correction into `.claude/CLAUDE.md` (or its `AGENTS.md` symlink). The charter is release-shipped scaffold — replaced wholesale by `/update-hq` — and must not accumulate per-instance learnings. Every learned rule lives in a **policy file**:
 
-- Personal / owner learnings → `personal/policies/{slug}.md` (reindex symlinks it into `core/policies/`, so it rides global scope and survives upgrades).
+- Personal / owner learnings → `personal/policies/{slug}.md` (read directly by the policy trigger hook — no `core/policies/` mirror — so it rides global scope and survives upgrades).
 - Release-shipped, all-users learnings → `core/policies/{slug}.md` (promoted to hq-core via `hq-pack-admin`).
 
 "Global promotion" of a critical or user-correction rule means **raising its enforcement to `hard` in its policy file**, not copying it into the charter — hard-enforcement policies already surface for every session through the policy trigger hook (`inject-policy-on-trigger.sh`), so the charter copy is redundant and harmful (it creates locked-scope drift and re-ships one instance's learnings to everyone).

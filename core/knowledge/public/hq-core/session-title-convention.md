@@ -64,6 +64,50 @@ hq-core · hooks · hqwork
   only if it changed. This is what lets the title track a session as it moves
   `brainstorm → plan → run-project`.
 
+## Manual renames win
+
+A title you set yourself — `claude --name "…"`, `/rename`, or the desktop
+"Recents" rename — outranks HQ's computed one. As soon as the hook sees a title
+it does not recognise as its own, it marks the session and stops emitting for
+the rest of that session, so the manual title sticks.
+
+Two signals feed that decision:
+
+- **`session_title`** — the documented SessionStart hook input, populated by
+  Claude Code when the session was named or renamed. This is the primary,
+  version-stable signal.
+- **the newest `custom-title` line in the session transcript** — how a
+  mid-session `/rename` surfaces before the next SessionStart. Real lines look
+  like `{"type":"custom-title","customTitle":"…","sessionId":"…"}`. The
+  transcript format is internal and changes between Claude Code releases, so
+  this is a labeled fallback net, not a contract.
+
+To tell its own title apart from yours, the hook keeps a ledger of every title
+it has emitted: per session in `.claude/state/session-title-<id>.emitted`, and
+machine-wide in `.claude/state/session-title.hq-titles`. The machine-wide ledger
+matters because `session_title` is inherited when a session is forked or
+resumed while the session id is not — without it, HQ's own title coming back on
+a forked session would look like a manual rename and would silently disable
+titling there. If both ledgers are missing (a wiped `.claude/state`), an exact
+match against the title HQ computes for that turn still identifies it as HQ's.
+Per-session state files untouched for 14 days are pruned on SessionStart. A
+session that is still open refreshes its own marker on every turn, so a session
+you named weeks ago and never closed keeps its title.
+
+## `sessionTitle` on UserPromptSubmit
+
+`hookSpecificOutput.sessionTitle` is documented only for `SessionStart`, where
+the docs note it takes precedence over `--name`/`/rename` and should be used
+sparingly. It is *not* documented for `UserPromptSubmit`.
+
+Observed behavior on current Claude Code is that mid-session emissions are
+honored: real transcripts contain `custom-title` lines carrying HQ's computed
+title well past the first turn, including a title switching to a different
+project mid-session — which only a per-turn emission can produce. HQ therefore
+keeps the per-turn update, but treats it as best-effort and undocumented: if a
+future release ignores it, the title simply stops tracking the mode within a
+session and SessionStart still sets it. Nothing else depends on it.
+
 ## Opting out
 
 - Per session / environment: `HQ_SESSION_TITLE=off` (also accepts

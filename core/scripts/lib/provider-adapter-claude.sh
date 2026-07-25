@@ -61,7 +61,7 @@ provider_adapter_claude() {
   cwd="${HQ_SESSION_PROJECT_DIR:-${company_dir:?company dir required}}"
   (
     cd "$cwd" || exit 1
-    "${argv[@]}"
+    "${argv[@]}" </dev/null
   )
 }
 
