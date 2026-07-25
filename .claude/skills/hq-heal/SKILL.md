@@ -164,7 +164,7 @@ Otherwise, use `AskUserQuestion` to surface the numbered options. Wait for the a
 - For multi-step fixes, apply one step, re-run a minimal diagnostic, then proceed
 
 **Core-divergence handling (`core/` mirror):**
-- HQ's `core/` tree is mechanically write-blocked by `.claude/hooks/block-core-writes.sh` because it is a downstream mirror of `hq-core`. Heal usually routes fixes through `personal/<type>/<name>/` (reindex mirrors into `core/`) or co-locates with a skill (`.claude/skills/<name>/`) — never into `core/` directly.
+- HQ's `core/` tree is mechanically write-blocked by `.claude/hooks/block-core-writes.sh` because it is a downstream mirror of `hq-core`. Heal usually routes fixes through `personal/<type>/<name>/` (read directly from `personal/` — the old symlink mirror into `core/` was retired) or co-locates with a skill (`.claude/skills/<name>/`) — never into `core/` directly.
 - Genuine exception: the failing artifact *is* a core file (a broken `core/scripts/*.sh` hook helper, a stale `core/policies/<name>.md`, etc.) and the fix cannot land anywhere else. In that case:
   1. The numbered proposal must call out that the fix diverges from upstream — exact files listed
   2. The user must have passed `--allow-core` (the flag is the explicit acknowledgment that this divergence is intentional)

@@ -110,6 +110,16 @@ _session_find_newer() {
   [ -d "$dir" ] || return 0
   case "$start" in ''|*[!0-9]*) start=0 ;; esac
 
+  # Heavyweight dependency/VCS trees are never durable artifacts; scanning
+  # them per-file once cost 100k+ subprocesses (>400s) on a fleet box with an
+  # abandoned node_modules under workspace/. Prune them in both paths.
+  # Fast path: GNU find (-newermt) — one process for the whole walk.
+  if find "$dir" -maxdepth 0 -newermt "@0" >/dev/null 2>&1; then
+    find "$dir" \( -name node_modules -o -name .git -o -name .pnpm \) -prune \
+      -o -type f -newermt "@$(( start - 1 ))" -print 2>/dev/null || true
+    return 0
+  fi
+  # Portable fallback (BSD/macOS): per-file mtime compare, same pruning.
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     mt="$(_session_mtime_epoch "$path" 2>/dev/null || echo 0)"
@@ -117,7 +127,8 @@ _session_find_newer() {
     if [ "$mt" -ge "$start" ]; then
       printf '%s\n' "$path"
     fi
-  done < <(find "$dir" -type f -print 2>/dev/null || true)
+  done < <(find "$dir" \( -name node_modules -o -name .git -o -name .pnpm \) -prune \
+    -o -type f -print 2>/dev/null || true)
 }
 
 # _session_paths_to_json_array <root> <mode>

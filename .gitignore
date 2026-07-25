@@ -140,6 +140,12 @@ test-results/
 .claude/state/active-journal
 .claude/state/active-journal.d/
 
+# Session-title runtime state: per-session command/title files, the per-session
+# HQ-emitted ledger and manual-rename marker, and the machine-wide ledger of
+# titles HQ has emitted. All per-machine, all regenerated on demand.
+.claude/state/session-title-*
+.claude/state/session-title.hq-titles
+
 # Policy-injection dedupe ledgers are per-machine runtime state, never code.
 # A tracked ledger ships pre-populated and suppresses first-run injection.
 workspace/orchestrator/policy-trigger-state/

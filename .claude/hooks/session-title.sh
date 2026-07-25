@@ -10,6 +10,27 @@
 # and emits hookSpecificOutput.sessionTitle — but ONLY when the title actually
 # changes (live, change-only cadence).
 #
+# Manual-rename back-off: once the user sets their own title (launcher
+# `claude --name`, `/rename`, or the desktop "Recents" rename), HQ must stop
+# overwriting it. Any title Claude Code surfaces that HQ does not own is a
+# manual title, so we mark the session (${STATE}.manual) and permanently stop
+# emitting for it. Signals, in order:
+#   PRIMARY   the documented `session_title` SessionStart hook input
+#   SECONDARY the newest `custom-title` line in the session transcript, which
+#             is how a mid-session /rename surfaces (the transcript format is
+#             internal/version-fragile, so it is a labeled net, not the path)
+#
+# "HQ owns this title" is decided by three tests, because a session_title is
+# inherited across fork/resume while the session id is not, and .claude/state
+# can be wiped at any time:
+#   1. the per-session ledger  (${STATE}.emitted)
+#   2. the cross-session ledger of every title HQ has emitted on this machine
+#      (${STATE_DIR}/session-title.hq-titles) — survives fork/resume/new ids
+#   3. an exact match against the title HQ computes for this turn — survives a
+#      wiped state directory
+# Without those, HQ's own title echoed back on a forked session would look like
+# a manual rename and would silently disable titling for that session.
+#
 # Opt out:  HQ_SESSION_TITLE=off (or 0/false/no)  |  HQ_DISABLED_HOOKS=session-title
 set -uo pipefail
 
@@ -34,6 +55,10 @@ EVENT="$(extract hook_event_name)"
 SOURCE="$(extract source)"
 PROMPT="$(extract prompt)"
 SESSION_ID="$(extract session_id)"
+TRANSCRIPT="$(extract transcript_path)"
+# Documented, version-stable SessionStart field: Claude Code populates it with
+# the user's title when the session was named via --name or renamed via /rename.
+SESSION_TITLE_INPUT="$(extract session_title)"
 [ -z "$SESSION_ID" ] && SESSION_ID="default"
 
 # Infer the event if Claude Code did not provide hook_event_name.
@@ -50,6 +75,60 @@ mkdir -p "$STATE_DIR" 2>/dev/null || true
 SESSION_KEY="$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9._-' '_')"
 [ -n "$SESSION_KEY" ] || SESSION_KEY="default"
 STATE="$STATE_DIR/session-title-${SESSION_KEY}"
+EMITTED="$STATE.emitted"   # ledger of titles HQ has emitted this session
+MANUAL="$STATE.manual"     # marker: a manual title was seen -> stop emitting
+# Cross-session ledger of every title HQ has emitted on this machine. A dotted
+# name so per-session pruning ("session-title-*") never sweeps it away.
+HQ_TITLES="$STATE_DIR/session-title.hq-titles"
+HQ_TITLES_MAX=400          # keep the ledger bounded; newest entries win
+
+# --- manual-rename back-off (BEGIN) -----------------------------------------
+# Permanent back-off once a manual title has been detected for this session.
+# Refresh the marker's mtime on the way out so a long-lived named session is
+# never swept by another session's 14-day prune below.
+if [ -f "$MANUAL" ]; then
+  touch "$MANUAL" 2>/dev/null || true
+  exit 0
+fi
+# --- manual-rename back-off (END) -------------------------------------------
+
+prune_stale_state() {
+  # Per-session title state accumulates one to three small files per session.
+  # Drop anything untouched for a fortnight; cheap and SessionStart-only.
+  command -v find >/dev/null 2>&1 || return 0
+  find "$STATE_DIR" -maxdepth 1 -type f -name 'session-title-*' -mtime +14 \
+    -exec rm -f {} + 2>/dev/null || true
+}
+[ "$EVENT" = "SessionStart" ] && prune_stale_state
+
+hq_emitted_title() {
+  # Has HQ emitted TITLE ($1) — in this session, or in any session on this
+  # machine? The cross-session ledger is what keeps a forked or resumed session
+  # (new session id, inherited title) from mistaking HQ's own title for a
+  # manual rename.
+  local t="$1"
+  if [ -f "$EMITTED" ] && grep -qxF -- "$t" "$EMITTED" 2>/dev/null; then return 0; fi
+  if [ -f "$HQ_TITLES" ] && grep -qxF -- "$t" "$HQ_TITLES" 2>/dev/null; then return 0; fi
+  return 1
+}
+
+mark_manual() {
+  : > "$MANUAL" 2>/dev/null || true
+}
+
+transcript_custom_title() {
+  # Newest custom-title value from a Claude Code transcript .jsonl, or "".
+  # Real transcript lines carry the title under "customTitle":
+  #   {"type":"custom-title","customTitle":"…","sessionId":"…"}
+  # The plain "title" key is read as a defensive fallback only. The transcript
+  # format is internal/version-fragile — this whole path is a net, not the API.
+  local f="$1" last="" value=""
+  last="$(grep -F '"custom-title"' "$f" 2>/dev/null | tail -n 1)"
+  [ -n "$last" ] || { printf '%s' ""; return 0; }
+  value="$(printf '%s' "$last" | hq_json_get 'customTitle')"
+  [ -n "$value" ] || value="$(printf '%s' "$last" | hq_json_get 'title')"
+  printf '%s' "$value"
+}
 
 # State file: line 1 = last command word, line 2 = last emitted title.
 last_command=""; last_title=""
@@ -79,12 +158,67 @@ fi
 title="$("$HELPER" --session-id "$SESSION_ID" --command "$command" 2>/dev/null || true)"
 [ -n "$title" ] || exit 0
 
+hq_owned_title() {
+  # Is TITLE ($1) one of HQ's own, rather than a user's manual rename?
+  # Ledger hit, or an exact match against what HQ computes for this very turn
+  # (the latter survives a wiped/relocated .claude/state, where both ledgers
+  # are empty but the inherited title is still plainly ours).
+  local t="$1"
+  [ "$t" = "$title" ] && return 0
+  [ -n "$last_title" ] && [ "$t" = "$last_title" ] && return 0
+  hq_emitted_title "$t"
+}
+
+manual_title_backoff() {
+  # Returns 0 when a title HQ does not own is in play — the user renamed the
+  # session and owns it from here on.
+  #
+  # PRIMARY: the documented `session_title` SessionStart input. Empty on an
+  # unnamed session; set to the user's title after --name or /rename.
+  if [ -n "$SESSION_TITLE_INPUT" ] && ! hq_owned_title "$SESSION_TITLE_INPUT"; then
+    return 0
+  fi
+  # SECONDARY (labeled fallback): a mid-session /rename is not reflected in the
+  # SessionStart input, so read the newest custom-title line in the transcript.
+  if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+    local ct
+    ct="$(transcript_custom_title "$TRANSCRIPT")"
+    if [ -n "$ct" ] && ! hq_owned_title "$ct"; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# --- manual-rename back-off (BEGIN) -----------------------------------------
+if manual_title_backoff; then
+  mark_manual
+  exit 0
+fi
+# --- manual-rename back-off (END) -------------------------------------------
+
+record_emitted() {
+  # Append TITLE ($1) to the per-session and cross-session HQ-emitted ledgers.
+  hq_emitted_title "$1" && return 0
+  printf '%s\n' "$1" >> "$EMITTED" 2>/dev/null || true
+  printf '%s\n' "$1" >> "$HQ_TITLES" 2>/dev/null || true
+  # Bound the shared ledger: keep the newest HQ_TITLES_MAX entries.
+  local lines
+  lines="$(wc -l < "$HQ_TITLES" 2>/dev/null || echo 0)"
+  if [ "${lines:-0}" -gt "$((HQ_TITLES_MAX * 2))" ] 2>/dev/null; then
+    tail -n "$HQ_TITLES_MAX" "$HQ_TITLES" > "$HQ_TITLES.tmp" 2>/dev/null &&
+      mv -f "$HQ_TITLES.tmp" "$HQ_TITLES" 2>/dev/null || true
+  fi
+}
+
 # Persist the command regardless; only emit when the title actually changed.
 if [ "$title" = "$last_title" ]; then
+  record_emitted "$title"
   printf '%s\n%s\n' "$command" "$last_title" > "$STATE" 2>/dev/null || true
   exit 0
 fi
 
+record_emitted "$title"
 printf '%s\n%s\n' "$command" "$title" > "$STATE" 2>/dev/null || true
 
 jq -n --arg ev "$EVENT" --arg t "$title" '{

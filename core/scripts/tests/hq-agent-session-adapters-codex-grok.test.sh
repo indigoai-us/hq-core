@@ -121,3 +121,23 @@ grep -qi 'system-prompt-override\|none' "$MATRIX" || fail "matrix missing mechan
 pass "provider matrix doc"
 
 echo "PASS: hq-agent-session-adapters-codex-grok.test.sh"
+
+# ── provider invocation must not consume inherited stdin ────────────────────
+# codex reads "additional input from stdin" until EOF when stdin is a pipe;
+# under the session engine that pipe is the request channel and never closes,
+# so the provider blocked forever on the first live turn. Every adapter must
+# invoke its CLI with stdin at EOF (</dev/null).
+STUB="$TMP/stub-bin"
+mkdir -p "$STUB"
+cat > "$STUB/codex" <<'STUBEOF'
+#!/usr/bin/env bash
+if IFS= read -r _line; then echo "GOT_STDIN:$_line"; else echo "NO_STDIN"; fi
+STUBEOF
+chmod +x "$STUB/codex"
+export PATH="$STUB:$PATH"
+unset HQ_AGENT_SESSION_RENDER_ONLY
+SESSION_SYSTEM_PROMPT_MODE=""
+OUT="$(printf 'sentinel-stdin-content\n' | provider_adapter_codex "$RUN" "$TMP/company")" || fail "codex stub invoke failed"
+printf '%s\n' "$OUT" | grep -q 'NO_STDIN' || fail "codex CLI consumed inherited stdin: $OUT"
+pass "codex invocation runs with stdin at EOF"
+export HQ_AGENT_SESSION_RENDER_ONLY=1

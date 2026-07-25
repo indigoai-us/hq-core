@@ -26,7 +26,7 @@ Called programmatically by `/execute-task` and `/run-project` after task complet
 | Global / personal (**default**) | `personal/policies/{slug}.md` (scope: global) | Policy file |
 | Worker (legacy) | `core/workers/*/{id}/worker.yaml` | Instructions block `## Learnings` |
 
-> **`/learn` never writes to `core/policies/`.** `core/` is release-shipped scaffold, replaced wholesale by `/update-hq` — anything written there is lost on the next upgrade (hard policy `hq-customizations-live-in-personal-or-company`). Operator-universal learnings go to `personal/policies/`, which `reindex.sh` symlinks back into `core/policies/` so they still load as global at SessionStart — but live in an upgrade-safe location. A genuine product-level core policy (one that should ship to *every* HQ install) is **not** captured via `/learn`: author it locally, then publish through the hq-core staging repo + `/promote-hq-core` (see `staging-promotion-required`). If a learning is judged truly core, `/learn` stops and points you at that pipeline rather than writing into `core/`.
+> **`/learn` never writes to `core/policies/`.** `core/` is release-shipped scaffold, replaced wholesale by `/update-hq` — anything written there is lost on the next upgrade (hard policy `hq-customizations-live-in-personal-or-company`). Operator-universal learnings go to `personal/policies/`, which the policy trigger hook (`inject-policy-on-trigger.sh`) reads directly — no `core/policies/` mirror — so they still load as global at SessionStart while living in an upgrade-safe location. A genuine product-level core policy (one that should ship to *every* HQ install) is **not** captured via `/learn`: author it locally, then publish through the hq-core staging repo + `/promote-hq-core` (see `staging-promotion-required`). If a learning is judged truly core, `/learn` stops and points you at that pipeline rather than writing into `core/`.
 
 ### Insights → Insight files (educational understanding)
 
@@ -183,7 +183,7 @@ For each extracted rule, determine scope (most specific wins):
 | Universal pattern (**default** when no company/repo/session context) | `global` | `personal/policies/` |
 | User correction via /learn --hard | From context; default to active session company, then global | Detected scope directory |
 
-**`/learn` does not target `core/policies/`.** The global/command rows route to `personal/policies/` — operator-owned and upgrade-safe — and `reindex.sh` symlinks each entry into `core/policies/` so it still loads as a global/command policy. Reserve `core/policies/` for release-shipped policies authored through the staging → `/promote-hq-core` pipeline. If a rule is genuinely product-core (must ship to every HQ install), stop and direct the user to that pipeline; never Write it into `core/`.
+**`/learn` does not target `core/policies/`.** The global/command rows route to `personal/policies/` — operator-owned and upgrade-safe — and the policy trigger hook reads `personal/policies/` directly (no `core/policies/` mirror), so each entry still loads as a global/command policy. Reserve `core/policies/` for release-shipped policies authored through the staging → `/promote-hq-core` pipeline. If a rule is genuinely product-core (must ship to every HQ install), stop and direct the user to that pipeline; never Write it into `core/`.
 
 **Primary output = policy files.** The canonical format for persistent rules is structured policy files (per `core/knowledge/public/hq-core/policies-spec.md`). Worker.yaml injection is still supported for worker-specific learnings.
 
@@ -214,7 +214,7 @@ Check results for similarity to the new rule:
 **Fallback (if qmd unavailable):**
 Use Grep to search for key terms from the rule across the policy directories:
 - Pattern: key terms from the rule (2-3 significant words)
-- Files: `*.md` in `companies/*/policies/`, `personal/policies/`, `core/policies/` (the symlinked + shipped set), and any repo policy dirs
+- Files: `*.md` in `companies/*/policies/`, `personal/policies/`, `core/policies/` (the release-shipped set), and any repo policy dirs
 - If matching content found → review and decide whether to merge or skip
 
 Report dedup action taken.
@@ -226,7 +226,7 @@ Before creating a new rule, check if an existing policy file already covers this
 1. **Resolve policy directories** based on scope:
    - Company scope → scan `companies/{co}/policies/` (skip `example-policy.md`)
    - Repo scope → scan `{repoPath}/.claude/policies/`
-   - Global/command scope → scan `personal/policies/` (the write target) and `core/policies/` (catches shipped + already-symlinked rules)
+   - Global/command scope → scan `personal/policies/` (the write target) and `core/policies/` (the release-shipped set)
 
 2. **Search for matching policies:**
    ```bash
@@ -257,7 +257,7 @@ If Step 4.5 found a matching policy → update was already handled. Otherwise, c
 - Command scope (operator-authored) → `personal/policies/{slug}.md` (scope: command)
 - Global scope → `personal/policies/{slug}.md` (scope: global) — **default for non-company/non-repo rules**
 
-> Never Write a `.md` into `core/policies/` from `/learn` — it is lost on `/update-hq` and is now mechanically blocked by `protect-core.sh` (the block message points back here). `personal/policies/` entries are symlinked into `core/policies/` by `reindex.sh`, so they load identically as global/command policies. Genuine product-core policies ship via the staging → `/promote-hq-core` pipeline only.
+> Never Write a `.md` into `core/policies/` from `/learn` — it is lost on `/update-hq` and is now mechanically blocked by `protect-core.sh` (the block message points back here). `personal/policies/` entries are read directly by the policy trigger hook (no `core/policies/` mirror), so they load identically as global/command policies. Genuine product-core policies ship via the staging → `/promote-hq-core` pipeline only.
 
 **Create the directory if needed:**
 ```bash
@@ -374,7 +374,7 @@ If a rule meets ANY of:
 - Rule triggered 3+ times (check event log)
 
 then ensure it lives as a **hard-enforcement policy file** at global scope:
-- Personal/owner learnings → `personal/policies/{slug}.md` (reindex symlinks it into `core/policies/`, so it rides global scope and survives `/update-hq`).
+- Personal/owner learnings → `personal/policies/{slug}.md` (read directly by the policy trigger hook — no `core/policies/` mirror — so it rides global scope and survives `/update-hq`).
 - Release-shipped, all-users learnings → `core/policies/{slug}.md` with the public marker (promoted via `hq-pack-admin`).
 
 Set `enforcement: hard` in the policy frontmatter and ensure the file carries `when:`/`on:` frontmatter so the SessionStart trigger hook surfaces it (Step 8). Do **not** touch `CLAUDE.md`.
@@ -415,7 +415,7 @@ The event log write is mandatory for every invocation (even skipped/trivial ones
 qmd update 2>/dev/null || true
 ```
 
-No manual digest rebuild is needed: policies surface automatically via the SessionStart trigger hook (`inject-policy-on-trigger.sh`) and the `migrate-policy-triggers.sh` backfill. Ensure any new policy file carries `when:`/`on:` frontmatter so it gets injected. (Personal entries are symlinked into `core/policies/` by `reindex.sh` — run reindex or wait for its Stop/PostToolUse trigger if the symlink isn't present yet.)
+No manual digest rebuild is needed: policies surface automatically via the SessionStart trigger hook (`inject-policy-on-trigger.sh`) and the `migrate-policy-triggers.sh` backfill. Ensure any new policy file carries `when:`/`on:` frontmatter so it gets injected. (Personal entries under `personal/policies/` are read directly by the trigger hook — there is no mirror step, so a new file loads on the next qualifying event without any reindex.)
 
 Insight-only runs (content_type: insight) write no policy file, so there is nothing for the trigger hook to surface.
 
