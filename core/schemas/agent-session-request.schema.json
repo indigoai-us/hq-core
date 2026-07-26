@@ -23,7 +23,7 @@
     "agentUid": {
       "type": "string",
       "minLength": 1,
-      "description": "Fleet agent identity (e.g. agt_…)."
+      "description": "Fleet agent identity (e.g. agt_\u2026)."
     },
     "companySlug": {
       "type": "string",
@@ -32,7 +32,14 @@
     },
     "channel": {
       "type": "string",
-      "enum": ["slack", "telegram", "email", "dm", "job", "task"],
+      "enum": [
+        "slack",
+        "telegram",
+        "email",
+        "dm",
+        "job",
+        "task"
+      ],
       "description": "Origin surface for this turn."
     },
     "convKey": {
@@ -46,13 +53,19 @@
     },
     "provider": {
       "type": "string",
-      "enum": ["claude", "codex", "grok"],
+      "enum": [
+        "claude",
+        "codex",
+        "grok"
+      ],
       "description": "Which on-box provider adapter to invoke."
     },
     "sender": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["verified"],
+      "required": [
+        "verified"
+      ],
       "properties": {
         "verified": {
           "type": "boolean",
@@ -62,7 +75,10 @@
       "description": "Sender trust metadata. verified is required; additional identity fields may be present."
     },
     "rehydration": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Optional formatted prior-turn block from the conversation store. null when unavailable."
     },
     "rehydrationTurnCount": {
@@ -74,6 +90,10 @@
       "type": "string",
       "pattern": "^[a-z0-9-]{1,64}$",
       "description": "Optional project slug for durable writes under companies/{co}/projects/{project}/."
+    },
+    "directMention": {
+      "type": "boolean",
+      "description": "True when THIS inbound message directly @-mentioned the agent. Lets the model honour 'only reply when I @ you' instructions, which are unfollowable without it. Optional; absent means false."
     }
   }
 }
