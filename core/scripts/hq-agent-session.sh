@@ -25,6 +25,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/lib"
 
+# --- provider CLI PATH -------------------------------------------------------
+# Provider CLIs install per-user, not system-wide: grok -> ~/.grok/bin,
+# and the hq/claude shims -> ~/.local/bin. A LOGIN shell picks those up from
+# the user's profile, but hq-agent-session is dispatched from a NON-login
+# context (systemd unit -> sudo -u <agent> bash -c ...), whose PATH is the
+# system default only. Every adapter invokes its binary by BARE NAME, so on a
+# grok box the turn died at `grok: command not found` (exit 127) while codex
+# boxes survived purely because codex happens to be installed under
+# /usr/local/bin — i.e. the direct path worked by luck, not by design.
+# Prepend the per-user bin dirs once, here, so EVERY adapter resolves its
+# binary the same way regardless of how the session was invoked.
+# Idempotent: skips dirs already on PATH, and never adds a dir that is absent.
+for _hq_bin_dir in "${HOME:-}/.grok/bin" "${HOME:-}/.local/bin" "${HOME:-}/bin"; do
+  if [ -n "${HOME:-}" ] && [ -d "$_hq_bin_dir" ]; then
+    case ":${PATH}:" in
+      *":${_hq_bin_dir}:"*) ;;
+      *) PATH="${_hq_bin_dir}:${PATH}" ;;
+    esac
+  fi
+done
+unset _hq_bin_dir
+export PATH
+
 # shellcheck source=lib/session-authz.sh
 . "$LIB_DIR/session-authz.sh"
 # shellcheck source=lib/session-version.sh
@@ -86,8 +109,105 @@ SESSION_RUN_START_EPOCH=""
 SESSION_ASSEMBLY_MS_JSON="{}"
 SESSION_ASSEMBLY_BUDGET_EXCEEDED=0
 
+# --- provider liveness heartbeat ---------------------------------------------
+# The dispatch supervisor (hq-agent-dispatch) counts a run as making progress
+# when its stdout grows, its stderr grows, or the agent-status text CHANGES.
+# On the hq-session contract path none of the first two can happen while the
+# provider works: the engine's stdout is redirected into the response envelope
+# by the caller, and this script captures the provider's own stdout AND stderr
+# to files (see session_provider_dispatch below). That left the status text as
+# the only signal, and nothing wrote it — so a quiet turn read as idle and was
+# SIGKILLed at the idle timeout. Confirmed live on a fleet box 2026-07-25: a
+# silent engine under the real supervisor returned rc=124
+# timeoutReason=idle_no_progress. Long turns had been surviving only when
+# unrelated activity happened to write something in time, which makes the
+# failure intermittent rather than absent.
+#
+# hq-pro #1567 made HQ_AGENT_STATUS_FILE actually reach this process and stopped
+# the supervisor unlinking it, so writing here is now the designed signal. The
+# provider gets a separate status file and this relay is the sole writer to the
+# supervisor file; otherwise agent-status and the heartbeat can overwrite each
+# other between the heartbeat's read and write.
+SESSION_HEARTBEAT_PID=""
+SESSION_HEARTBEAT_OUTPUT_FILE="${HQ_AGENT_STATUS_FILE:-}"
+SESSION_AGENT_STATUS_FILE=""
+
+session_heartbeat_configure() {
+  local run_dir="${1:-}"
+  [ -n "$SESSION_HEARTBEAT_OUTPUT_FILE" ] || return 0
+  [ -n "$run_dir" ] || return 0
+
+  SESSION_AGENT_STATUS_FILE="$run_dir/agent-status.txt"
+  if ! : > "$SESSION_AGENT_STATUS_FILE"; then
+    SESSION_AGENT_STATUS_FILE=""
+    return 0
+  fi
+  chmod 600 "$SESSION_AGENT_STATUS_FILE" 2>/dev/null || true
+  export HQ_AGENT_STATUS_FILE="$SESSION_AGENT_STATUS_FILE"
+}
+
+session_heartbeat_start() {
+  [ -n "$SESSION_HEARTBEAT_OUTPUT_FILE" ] || return 0
+  [ -n "$SESSION_AGENT_STATUS_FILE" ] || return 0
+  [ -z "$SESSION_HEARTBEAT_PID" ] || return 0
+  local interval="${HQ_AGENT_STATUS_HEARTBEAT_SECONDS:-30}"
+  case "$interval" in ''|*[!0-9]*) interval=30 ;; esac
+  [ "$interval" -ge 1 ] || interval=30
+  (
+    _hb_seen=""
+    _hb_base=""
+    _hb_elapsed=0
+    _hb_next="$interval"
+    while :; do
+      # Poll agent-status often enough to preserve the existing near-immediate
+      # thinking-line updates, but write heartbeat-only changes at the configured
+      # interval so the supervisor still observes useful progress.
+      sleep 1 || exit 0
+      _hb_elapsed=$((_hb_elapsed + 1))
+      _hb_cur="$(head -c 80 "$SESSION_AGENT_STATUS_FILE" 2>/dev/null || true)"
+      _hb_write=0
+      if [ "$_hb_cur" != "$_hb_seen" ]; then
+        _hb_seen="$_hb_cur"
+        _hb_base="$(printf '%s' "$_hb_cur" | cut -c1-56)"
+        _hb_elapsed=0
+        _hb_next="$interval"
+        _hb_write=1
+      elif [ "$_hb_elapsed" -ge "$_hb_next" ]; then
+        _hb_next=$((_hb_next + interval))
+        _hb_write=1
+      fi
+      [ "$_hb_write" -eq 1 ] || continue
+
+      if [ -n "$_hb_base" ]; then
+        if [ "$_hb_elapsed" -gt 0 ]; then
+          _hb_mine="$_hb_base (${_hb_elapsed}s)"
+        else
+          _hb_mine="$_hb_base"
+        fi
+      elif [ "$_hb_elapsed" -gt 0 ]; then
+        _hb_mine="working (${_hb_elapsed}s)"
+      else
+        _hb_mine="working"
+      fi
+      # A status write must never be able to fail the turn.
+      printf '%s' "$_hb_mine" > "$SESSION_HEARTBEAT_OUTPUT_FILE" 2>/dev/null || exit 0
+    done
+  ) &
+  SESSION_HEARTBEAT_PID=$!
+}
+
+session_heartbeat_stop() {
+  [ -n "${SESSION_HEARTBEAT_PID:-}" ] || return 0
+  kill "$SESSION_HEARTBEAT_PID" 2>/dev/null || true
+  wait "$SESSION_HEARTBEAT_PID" 2>/dev/null || true
+  SESSION_HEARTBEAT_PID=""
+}
+
 # emit_response then exit with SESSION_EXIT_CODE
 emit_and_exit() {
+  # Every exit path funnels through here, so this is the one place that
+  # guarantees the background loop cannot outlive the turn.
+  session_heartbeat_stop
   local resp opt_json
   local bytes_json="null"
   local cv_json="1"
@@ -528,6 +648,10 @@ main() {
     emit_and_exit
   fi
 
+  # Keep agent-status writes and heartbeat writes on separate files. The relay
+  # forwards provider status into the supervisor-owned path while it runs.
+  session_heartbeat_configure "$run_dir"
+
   # US-408: load prior session id for this convKey+provider (if any)
   local resume_id=""
   resume_id="$(session_resume_read "$conv_key" "$provider" 2>/dev/null || true)"
@@ -546,9 +670,14 @@ main() {
   # Capture provider stdout via file, not command substitution: a provider
   # helper process that outlives the CLI (MCP server, updater) inherits the
   # substitution pipe and blocks the read forever. A file never blocks.
+  # Because BOTH streams land in files, the supervisor sees nothing from this
+  # process while the provider runs — the heartbeat is what keeps the turn
+  # alive past the idle timeout.
+  session_heartbeat_start
   session_provider_dispatch "$provider" "$run_dir" "$company_dir" \
     >"$run_dir/provider.stdout" 2>"$run_dir/provider.stderr"
   prov_rc=$?
+  session_heartbeat_stop
   prov_out="$(cat "$run_dir/provider.stdout" 2>/dev/null || true)"
   set -e
 
@@ -568,9 +697,11 @@ main() {
       : > "$transcript_path_file"
     fi
     set +e
+    session_heartbeat_start
     session_provider_dispatch "$provider" "$run_dir" "$company_dir" \
       >"$run_dir/provider.stdout" 2>"$run_dir/provider.stderr"
     prov_rc=$?
+    session_heartbeat_stop
     prov_out="$(cat "$run_dir/provider.stdout" 2>/dev/null || true)"
     set -e
   fi

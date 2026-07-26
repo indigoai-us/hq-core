@@ -121,4 +121,34 @@ assert_envelope "$OUT"
 echo "$OUT" | jq -e '.disposition == "error"' >/dev/null || fail "traversal disposition"
 pass "traversal slug ../other"
 
+# ── 6. provider CLI resolves from a per-user bin dir ────────────────────────
+# Regression: hq-agent-session is dispatched from a NON-login shell
+# (systemd unit -> sudo -u <agent> bash -c), whose PATH is system-only.
+# Provider CLIs install per-user — grok under ~/.grok/bin — and every adapter
+# invokes its binary by BARE NAME. Before the entrypoint prepended the
+# per-user bin dirs, every grok-box turn died at `grok: command not found`
+# (exit 127); codex boxes survived only because codex happens to sit in
+# /usr/local/bin. Assert the entrypoint resolves a CLI that exists ONLY under
+# $HOME/.grok/bin and is not otherwise on PATH.
+GROK_BIN="$HOME/.grok/bin"
+SENTINEL="$TMP/grok-was-executed"
+mkdir -p "$GROK_BIN"
+# POSITIVE proof: the fake CLI records that it actually ran. Asserting only the
+# ABSENCE of "command not found" would pass vacuously whenever the run errors
+# before provider dispatch is ever reached.
+printf '#!/usr/bin/env bash\ntouch %s\nexit 0\n' "$SENTINEL" > "$GROK_BIN/grok"
+chmod +x "$GROK_BIN/grok"
+case ":$PATH:" in
+  *":$GROK_BIN:"*) fail "fixture invalid: $GROK_BIN already on PATH" ;;
+esac
+rm -f "$SENTINEL"
+RC=0
+OUT="$(valid_req | jq '.provider = "grok"' \
+  | HQ_AGENT_SESSION_SKIP_PROVIDER=0 bash "$FIXTURE/core/scripts/hq-agent-session.sh" \
+    2>"$TMP/err6")" || RC=$?
+[ -f "$SENTINEL" ] || fail "provider CLI in \$HOME/.grok/bin was never executed (PATH regression) rc=$RC err=$(cat "$TMP/err6")"
+grep -q 'command not found' "$TMP/err6" && fail "provider CLI not resolved: $(cat "$TMP/err6")"
+assert_envelope "$OUT"
+pass "provider CLI resolves from per-user bin dir"
+
 echo "PASS: hq-agent-session.test.sh"
