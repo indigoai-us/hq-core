@@ -62,8 +62,11 @@ RUN1="$(echo "$OUT1" | jq -r .runDir)"
 # Delimiter order
 ORDER="$(grep -n '<!-- hq-section:' "$RUN1/system.txt" | sed 's/.*hq-section: //;s/ -->//')"
 # US-406 appends skill-catalog after policies; US-412 inserts brief-posture after
-# the base five; US-408 appends durable-writes last.
-EXPECTED=$'charter\nagent-contract\ncompany-charter\nvoice\nchannel-format\npolicies\nbrief-posture\nskill-catalog\ndurable-writes'
+# the base five; US-408 appends durable-writes last. mention-posture follows
+# brief-posture -- it states whether THIS turn @-mentioned the agent, which the
+# rehydrated thread's stand-down instructions need in order to be actionable.
+# (reply-contract sits here too, but only for providers under enforcement.)
+EXPECTED=$'charter\nagent-contract\ncompany-charter\nvoice\nchannel-format\npolicies\nbrief-posture\nmention-posture\nskill-catalog\ndurable-writes'
 [ "$ORDER" = "$EXPECTED" ] || fail "delimiter order:\n$ORDER\n!=\n$EXPECTED"
 pass "delimiter ordering"
 

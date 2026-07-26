@@ -72,6 +72,8 @@ export PATH
 . "$LIB_DIR/session-timing.sh"
 # shellcheck source=lib/provider-adapter.sh
 . "$LIB_DIR/provider-adapter.sh"
+# shellcheck source=lib/session-reply-contract.sh
+. "$LIB_DIR/session-reply-contract.sh"
 
 # --- response emission (every path) ------------------------------------------
 
@@ -388,7 +390,7 @@ validate_request_json() {
       (keys - [
         "contractVersion","agentUid","companySlug","channel","convKey",
         "messageText","provider","sender","rehydration",
-        "rehydrationTurnCount","project"
+        "rehydrationTurnCount","project","directMention"
       ] | length) == 0
     )
     and (
@@ -403,6 +405,10 @@ validate_request_json() {
     and (
       (has("project") | not)
       or (.project | type == "string" and test("^[a-z0-9-]{1,64}$"))
+    )
+    and (
+      (has("directMention") | not)
+      or (.directMention | type == "boolean")
     )
   ' "$file" >/dev/null 2>&1
 }
@@ -441,7 +447,7 @@ main() {
 
   # Extract fields
   local contract_version agent_uid company_slug channel conv_key message_text provider
-  local project_field="" sender_verified="false" rehydration_block=""
+  local project_field="" sender_verified="false" rehydration_block="" direct_mention="false"
   contract_version="$(jq -r '.contractVersion' "$req_file")"
   agent_uid="$(jq -r '.agentUid' "$req_file")"
   company_slug="$(jq -r '.companySlug' "$req_file")"
@@ -456,6 +462,9 @@ main() {
     sender_verified="false"
   fi
   rehydration_block="$(jq -r '.rehydration // empty' "$req_file")"
+  if [ "$(jq -r '.directMention // false' "$req_file")" = "true" ]; then
+    direct_mention="true"
+  fi
   SESSION_CONTRACT_VERSION="$contract_version"
 
   # US-411: assembly phase timing (default budget 20000ms)
@@ -534,6 +543,17 @@ main() {
   session_write_user_txt "$message_text" "$run_dir/user.txt"
   # US-412: all brief constants (preambles, posture, voice, formatting) → system.txt
   session_append_brief_posture "$root" "$channel" "$sender_verified" "$run_dir/system.txt" || true
+  # Reply contract instruction — only for providers whose output we enforce.
+  # Deliberately NOT a mirrored brief constant: this is the session's own wire
+  # protocol, not voice/posture shared with the hq-pro direct path, so it must
+  # not ride the 13-constant parity fixture set.
+  session_append_reply_contract "$provider" "$run_dir/system.txt" || true
+  # Tell the model whether THIS turn was a direct @-mention. Without it, an
+  # instruction like "only reply when I @ you" is unfollowable: the rehydrated
+  # thread shows the stand-down order but nothing says the current message
+  # satisfies it, so the agent stays silent when it was in fact addressed
+  # (observed live 2026-07-26). Absent/false keeps the prior wording.
+  session_append_mention_posture "$direct_mention" "$run_dir/system.txt" || true
   session_timing_end
 
   # ── policy ────────────────────────────────────────────────────────────────
@@ -729,8 +749,44 @@ main() {
 
   session_finalize_writes "$root" "$project_dir" "$SESSION_RUN_START_EPOCH"
 
-  SESSION_DISPOSITION="reply"
-  SESSION_TEXT="${prov_out:-}"
+  # Reply contract (dispatch-path parity). The DIRECT path in hq-pro tells the
+  # model to emit {"action":"reply","text":…} | {"action":"no_reply"} and
+  # validates it fail-closed. This path historically did neither — it set
+  # disposition=reply and shipped the provider's ENTIRE stdout as the reply
+  # body. Codex masked that by self-regulating; grok did not, and posted its
+  # accumulated working narration into a channel with external members.
+  #
+  # Enforcement is PROVIDER-CONDITIONAL on purpose. Requiring the envelope from
+  # every provider in one release would break every codex/claude agent the
+  # moment it ships, since none emit it yet. Grok is gated now; the others keep
+  # byte-identical behaviour until they are instructed and migrated too.
+  if session_reply_contract_required "$provider"; then
+    if ! session_reply_contract_apply "${prov_out:-}"; then
+      # DEGRADE, never go silent.
+      #
+      # An earlier revision suppressed here. Measured on a live box: grok emits
+      # the envelope on roughly 3 runs in 5 and simply answers in prose on the
+      # rest. Suppressing turned those real answers into silence -- and silence
+      # is not a safe default on this path, because a turn that delivers nothing
+      # does not retire its inbound message, so the message is redelivered and
+      # the agent loops on it (hq-pro#1589). A 60%-compliant provider became a
+      # 60%-silent agent that never converges.
+      #
+      # So a missing envelope falls back to the provider's own output: exactly
+      # the behaviour before the contract existed. The contract is an
+      # IMPROVEMENT when honoured and a NO-OP when not -- it can never make the
+      # agent worse than the day before it shipped. The stderr record drives
+      # compliance measurement so the fallback rate is visible rather than
+      # assumed.
+      printf 'hq-agent-session: %s did not return the reply contract envelope; falling back to raw provider output (%s bytes)\n' \
+        "$provider" "$(printf '%s' "${prov_out:-}" | wc -c | tr -d ' ')" >&2
+      SESSION_DISPOSITION="reply"
+      SESSION_TEXT="${prov_out:-}"
+    fi
+  else
+    SESSION_DISPOSITION="reply"
+    SESSION_TEXT="${prov_out:-}"
+  fi
   SESSION_EXIT_CODE=0
   SESSION_EMITTED=1
   emit_and_exit
