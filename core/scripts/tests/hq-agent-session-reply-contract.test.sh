@@ -229,12 +229,27 @@ load_helpers() {
     pass "mention and non-mention posture differ"
   fi
 
-  # Default (absent field -> false) must be the conservative branch.
-  : > "$TMP/m3.txt"; session_append_mention_posture "" "$TMP/m3.txt"
-  if cmp -s "$TMP/m2.txt" "$TMP/m3.txt"; then
-    pass "absent mention flag defaults to the non-mention branch"
+  # ABSENT is not false. A sender that predates the field has no opinion, and an
+  # absent opinion rendered as "stay silent" silences EVERY turn until the sender
+  # catches up -- live regression 2026-07-26, caught between the hq-core release
+  # and toolset delivery of the sender half.
+  : > "$TMP/m3.txt"; session_append_mention_posture unknown "$TMP/m3.txt"
+  if [ -s "$TMP/m3.txt" ]; then
+    fail "unknown mention state emitted a posture; absent must add NO constraint"
   else
-    fail "absent mention flag should default to non-mention"
+    pass "unknown mention state emits nothing (prompt byte-identical to pre-feature)"
+  fi
+  : > "$TMP/m4.txt"; session_append_mention_posture "" "$TMP/m4.txt"
+  if [ -s "$TMP/m4.txt" ]; then
+    fail "empty mention state emitted a posture"
+  else
+    pass "empty mention state emits nothing"
+  fi
+  # The entrypoint must distinguish absent from false, not coalesce with // false.
+  if grep -q 'jq -r .directMention // false' "$SCRIPT_DIR/../hq-agent-session.sh"; then
+    fail "entrypoint coalesces absent to false -- silences turns from older senders"
+  else
+    pass "entrypoint distinguishes absent from false"
   fi
   exit "$FAILED"
 ) || FAILED=1
@@ -269,6 +284,61 @@ load_helpers() {
   else
     fail "validate_request_json should type-check directMention"
   fi
+  exit "$FAILED"
+) || FAILED=1
+
+# ── contract salience: head AND tail ────────────────────────────────────────
+# Position is the fix, not wording. Buried ~line 276 of a 67KB prompt, grok
+# honoured the contract on ~3 runs in 5. Primacy and recency are the positions a
+# long-context model reliably attends to.
+(
+  load_helpers
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+
+  printf 'EXISTING PROMPT BODY\n' > "$TMP/s.txt"
+  session_append_reply_contract grok "$TMP/s.txt"
+  head -1 "$TMP/s.txt" | grep -Fq '<!-- hq-section: reply-contract -->' \
+    && pass "contract is the FIRST line of the prompt" \
+    || fail "contract is not at the head: $(head -1 "$TMP/s.txt")"
+  grep -Fq 'EXISTING PROMPT BODY' "$TMP/s.txt" \
+    && pass "prepend preserves the existing prompt body" \
+    || fail "prepend destroyed the existing body"
+
+  # more sections land after the contract, as they do in real assembly
+  printf 'LATER SECTION\n' >> "$TMP/s.txt"
+  session_append_reply_contract_reminder grok "$TMP/s.txt"
+  tail -4 "$TMP/s.txt" | grep -Fq 'REMINDER' \
+    && pass "reminder is at the TAIL, after later sections" \
+    || fail "reminder is not last"
+  [ "$(grep -c 'REPLY CONTRACT — this overrides' "$TMP/s.txt")" = "1" ] \
+    && pass "full contract appears exactly once (tail is a short restatement)" \
+    || fail "full contract duplicated; tail must not repeat it verbatim"
+
+  # non-enforced providers get neither copy
+  printf 'BODY\n' > "$TMP/c.txt"
+  session_append_reply_contract codex "$TMP/c.txt"
+  session_append_reply_contract_reminder codex "$TMP/c.txt"
+  [ "$(cat "$TMP/c.txt")" = "BODY" ] \
+    && pass "non-enforced provider prompt is untouched at both ends" \
+    || fail "non-enforced provider prompt was modified"
+  exit "$FAILED"
+) || FAILED=1
+
+# ── status notes ────────────────────────────────────────────────────────────
+(
+  load_helpers
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+  : > "$TMP/n.txt"; session_append_status_notes "$TMP/n.txt"
+  grep -Fq '<!-- hq-section: status-notes -->' "$TMP/n.txt" \
+    && pass "status-notes section present" || fail "status-notes section missing"
+  grep -Fq 'agent-status' "$TMP/n.txt" \
+    && pass "names the agent-status command" || fail "does not name agent-status"
+  grep -Fq 'working (300s)' "$TMP/n.txt" \
+    && pass "explains the bare-timer degradation it prevents" \
+    || fail "does not explain why a note matters"
+  grep -Fqi 'never post the same text' "$TMP/n.txt" \
+    && pass "status notes replace progress chatter rather than adding to it" \
+    || fail "must not invite duplicate channel posts"
   exit "$FAILED"
 ) || FAILED=1
 

@@ -462,9 +462,12 @@ main() {
     sender_verified="false"
   fi
   rehydration_block="$(jq -r '.rehydration // empty' "$req_file")"
-  if [ "$(jq -r '.directMention // false' "$req_file")" = "true" ]; then
-    direct_mention="true"
-  fi
+  # ABSENT is not false. A sender that predates this field carries no opinion,
+  # and an absent opinion must never be rendered as "stay silent" -- that
+  # silences every turn until the sender catches up (live regression 2026-07-26,
+  # caught between the hq-core release and toolset delivery of the sender).
+  direct_mention="$(jq -r 'if has("directMention") then (.directMention | tostring) else "unknown" end' "$req_file")"
+  case "$direct_mention" in true|false) ;; *) direct_mention="unknown" ;; esac
   SESSION_CONTRACT_VERSION="$contract_version"
 
   # US-411: assembly phase timing (default budget 20000ms)
@@ -543,10 +546,10 @@ main() {
   session_write_user_txt "$message_text" "$run_dir/user.txt"
   # US-412: all brief constants (preambles, posture, voice, formatting) → system.txt
   session_append_brief_posture "$root" "$channel" "$sender_verified" "$run_dir/system.txt" || true
-  # Reply contract instruction — only for providers whose output we enforce.
-  # Deliberately NOT a mirrored brief constant: this is the session's own wire
-  # protocol, not voice/posture shared with the hq-pro direct path, so it must
-  # not ride the 13-constant parity fixture set.
+  # Reply contract — PREPENDED to the head of the prompt for enforced providers
+  # (see session_append_reply_contract). Deliberately NOT a mirrored brief
+  # constant: this is the session's own wire protocol, not voice/posture shared
+  # with the hq-pro direct path, so it must not ride the 13-constant fixture set.
   session_append_reply_contract "$provider" "$run_dir/system.txt" || true
   # Tell the model whether THIS turn was a direct @-mention. Without it, an
   # instruction like "only reply when I @ you" is unfollowable: the rehydrated
@@ -554,6 +557,8 @@ main() {
   # satisfies it, so the agent stays silent when it was in fact addressed
   # (observed live 2026-07-26). Absent/false keeps the prior wording.
   session_append_mention_posture "$direct_mention" "$run_dir/system.txt" || true
+  # Keep the live status line meaningful — see session_append_status_notes.
+  session_append_status_notes "$run_dir/system.txt" || true
   session_timing_end
 
   # ── policy ────────────────────────────────────────────────────────────────
@@ -580,6 +585,10 @@ main() {
 
   # US-408: durable-write guidance after skill-catalog (preserves section order)
   session_append_durable_guidance "$run_dir/system.txt" || true
+  # Recency copy of the reply contract. MUST be the final append: primacy and
+  # recency are the two positions a long-context model reliably attends to, and
+  # a "reminder" that is not actually last buys nothing.
+  session_append_reply_contract_reminder "$provider" "$run_dir/system.txt" || true
 
   # Refresh system prompt byte count after all system.txt appends
   if [ -f "$run_dir/system.txt" ]; then
