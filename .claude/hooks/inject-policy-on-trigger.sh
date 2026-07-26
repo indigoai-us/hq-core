@@ -19,8 +19,12 @@
 #       incremental and never regresses coverage.
 #
 # Event: taken from `hook_event_name` in the stdin JSON (default PreToolUse).
-# Scope (tenant-safe): global core/policies ALWAYS; the active company's and
-#   active repo's policies ONLY when the session is in that company/repo.
+# Scope (tenant-safe): global core/policies ALWAYS; the active repo's policies
+#   ONLY when the session's cwd is in that repo; exactly ONE company's policies,
+#   that company being the session's own active tenant — resolved as
+#   HQ_POLICY_COMPANY > cwd companies/<slug> > session-meta company_slug (US-004,
+#   see the DIRS block). The session-meta step is what lets an HQ-root session
+#   load its bound company; it never widens scope to a second company.
 # Dedupe: per session-id; a slug never fires twice in one session.
 # Exit: always 0 (advisory hook, never blocks).
 
@@ -119,17 +123,35 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # overrides the company copy (observed live with three core/indigo id
   # collisions; regression test: inject-policy-scope-precedence.test.sh).
   DIRS=()
-  # HQ_POLICY_COMPANY=<slug> overrides CWD-derived company scope (US-406) so a
-  # caller running outside companies/<slug> still gets that company's policies.
+  # Company-scope precedence (highest first), US-004 / US-406:
+  #   HQ_POLICY_COMPANY env override  (caller outside companies/<slug>)
+  #   > cwd companies/<slug>
+  #   > session-meta company_slug     (HQ-root orchestration sessions — so the
+  #                                    active tenant's guardrails still load in
+  #                                    the sessions most likely to touch infra)
+  # EXACTLY ONE branch ever sets co_scope, so the company policy dir is appended
+  # AT MOST ONCE even when cwd and session meta agree — the dedupe is structural,
+  # not a filter. Fail-open: any resolution miss leaves co_scope empty and the
+  # behaviour identical to today's unresolved-company path.
+  co_scope=""
   if [ -n "${HQ_POLICY_COMPANY:-}" ]; then
-    DIRS+=("$HQ_ROOT/companies/${HQ_POLICY_COMPANY}/policies")
+    co_scope="$HQ_POLICY_COMPANY"
   else
     case "$CWD" in
-      *companies/*)
-        co="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')"
-        [ -n "$co" ] && DIRS+=("$HQ_ROOT/companies/$co/policies") ;;
+      *companies/*) co_scope="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')" ;;
     esac
+    if [ -z "$co_scope" ] && [ -n "${SESSION_ID:-}" ]; then
+      # Read THIS session's own meta.yaml directly. Never shell out to
+      # hq-session.sh get — that helper keys off workspace/sessions/.current,
+      # which can point at a different session than the one that fired the hook.
+      # awk idiom lifted verbatim from master-hook.sh:119 so both paths resolve
+      # the company identically. READ ONLY: master-hook.sh bootstraps meta.yaml;
+      # a second writer here would race.
+      META="$HQ_ROOT/workspace/sessions/$SESSION_ID/meta.yaml"
+      [ -f "$META" ] && co_scope="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META")"
+    fi
   fi
+  [ -n "$co_scope" ] && DIRS+=("$HQ_ROOT/companies/$co_scope/policies")
   case "$CWD" in
     *repos/public/*|*repos/private/*)
       rscope="$(printf '%s' "$CWD" | sed -nE 's#.*repos/(public|private)/.*#\1#p')"

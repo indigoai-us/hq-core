@@ -97,6 +97,26 @@ else
   bad "truncation notice missing"
 fi
 
+# US-004: company policy resolved from SESSION META (cwd at HQ root, no
+# companies/<slug> segment) must ALSO survive the cap — company precedence is
+# independent of how the company was resolved.
+sid_meta="bounds-meta-$$"
+mkdir -p "$tmp/hq/workspace/sessions/$sid_meta"
+printf 'session_id: %s\ncompany_slug: "acme"\n' "$sid_meta" \
+  > "$tmp/hq/workspace/sessions/$sid_meta/meta.yaml"
+input_meta="$(jq -cn --arg sid "$sid_meta" --arg cwd "$tmp/hq" \
+  '{session_id:$sid,source:"startup",hook_event_name:"SessionStart",cwd:$cwd,prompt:"hello"}')"
+out_meta="$(
+  cd "$tmp/hq" && \
+  HQ_ROOT="$tmp/hq" CLAUDE_PROJECT_DIR="$tmp/hq" HQ_SESSION_POLICY_CAP=16 \
+    bash "$tmp/hq/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input_meta" 2>/dev/null || true
+)"
+if printf '%s' "$out_meta" | grep -q 'company-important'; then
+  ok "company policy survives the cap when injected via session meta"
+else
+  bad "company policy (session-meta) missing under cap"
+fi
+
 # Under-cap tree: no truncation notice.
 rm -rf "$tmp/hq/core/policies"
 mkdir -p "$tmp/hq/core/policies"
