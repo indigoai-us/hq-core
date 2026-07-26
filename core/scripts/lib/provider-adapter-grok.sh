@@ -25,12 +25,20 @@ provider_adapter_grok() {
   user_text="$(cat "$user_file")"
   resume_id="${HQ_AGENT_SESSION_RESUME_ID:-}"
 
+  # --output-format json is REQUIRED, not cosmetic. In `plain` (the CLI default)
+  # a multi-step run interleaves each step's narration with the final answer on
+  # one stdout stream, and the session captures that stream verbatim as the
+  # reply — which is how whole transcripts (and a literal NO_REPLY sentinel)
+  # shipped into Slack. The json envelope separates `.text` (the answer) from
+  # `.thought` (reasoning), so we can deliver only the answer.
   argv=(
     grok
     -p
     "$user_text"
     --yolo
     --no-auto-update
+    --output-format
+    json
     --system-prompt-override
     "$system_text"
   )
@@ -64,8 +72,29 @@ provider_adapter_grok() {
   fi
 
   cwd="${HQ_SESSION_PROJECT_DIR:-${company_dir:?company dir required}}"
+  local raw rc=0
+  raw="$run_dir/provider.grok.json"
   (
     cd "$cwd" || exit 1
     "${argv[@]}" </dev/null
-  )
+  ) >"$raw" || rc=$?
+
+  # Emit ONLY the final assistant text on stdout — the session captures our
+  # stdout as the reply body. `.thought` is deliberately dropped: it is the
+  # model's private reasoning and must never reach a channel.
+  if jq -e -s 'length == 1 and (.[0] | (type == "object" and (.text | type == "string")))' \
+    "$raw" >/dev/null 2>&1; then
+    jq -r -s '.[0].text' "$raw"
+    # Surface the provider session id for resume without polluting the reply.
+    local sid
+    sid="$(jq -r -s '.[0].sessionId | if type == "string" then . else empty end' \
+      "$raw" 2>/dev/null || true)"
+    [ -n "$sid" ] && printf '%s\n' "$sid" > "$run_dir/provider.sessionId"
+  else
+    # The raw stream can contain private reasoning and control sentinels. Never
+    # copy it to stderr or reply stdout when the envelope contract is broken.
+    echo "hq-agent-session: grok output was not a valid json envelope; refusing output" >&2
+    [ "$rc" -ne 0 ] || rc=1
+  fi
+  return "$rc"
 }

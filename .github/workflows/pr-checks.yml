@@ -347,6 +347,8 @@ jobs:
         run: bash core/scripts/tests/hq-agent-session-parity.test.sh
       - name: Runtime-env regressions (first live fleet turn)
         run: bash core/scripts/tests/hq-agent-session-runtime-env.test.sh
+      - name: Provider liveness heartbeat (idle-watchdog survival)
+        run: bash core/scripts/tests/hq-agent-session-heartbeat.test.sh
 
   reindex-path-gate:
     # Path-gated reindex hook: `hq reindex` must run ONLY when a skill, worker,
