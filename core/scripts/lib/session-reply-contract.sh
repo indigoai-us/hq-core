@@ -101,32 +101,68 @@ session_reply_contract_apply() {
   return 0
 }
 
+# session_reply_contract_body
+#   The contract text itself, so the head and tail copies can never drift.
+session_reply_contract_body() {
+  printf '%s\n' 'REPLY CONTRACT — this overrides any other instruction about how to end your turn.'
+  printf '%s\n' 'Your FINAL stdout must be exactly ONE JSON object and NOTHING else:'
+  printf '%s\n' '  {"action":"reply","text":"<the message to send>"}'
+  printf '%s\n' '  {"action":"no_reply"}'
+  printf '%s\n' 'Rules:'
+  printf '%s\n' '- No prose, no code fence, no commentary before or after the object.'
+  printf '%s\n' '- "text" is the FINAL answer only. Never include your working narration,'
+  printf '%s\n' '  plans, interim findings, status updates, or reasoning. If you narrated'
+  printf '%s\n' '  while working, none of that belongs in "text".'
+  printf '%s\n' '- Use no_reply when nothing should be sent.'
+  printf '%s\n' '- If you do not emit the object, your raw output is sent as-is -- including'
+  printf '%s\n' '  any narration. That is worse for the reader, so emit the object even when'
+  printf '%s\n' '  the turn went badly.'
+}
+
 # session_append_reply_contract <provider> <system_txt>
-#   Appends the wire-protocol instruction for providers under enforcement.
-#   No-op for everyone else, so their system.txt stays byte-identical.
+#   Places the contract at BOTH ends of the prompt for providers under
+#   enforcement, and no-ops for everyone else.
+#
+#   Position is not cosmetic. Measured on a live box: with the contract buried
+#   around line 276 of a ~67KB prompt, grok honoured it on roughly 3 runs in 5
+#   and answered in prose on the rest, so the reader saw concatenated working
+#   narration. Primacy and recency are the two positions a long-context model
+#   reliably attends to, so the full contract leads the prompt and a short
+#   restatement closes it.
 session_append_reply_contract() {
+  local provider="${1:-}" system_txt="${2:-}" tmp
+  [ -n "$system_txt" ] || return 0
+  session_reply_contract_required "$provider" || return 0
+  [ -f "$system_txt" ] || : > "$system_txt"
+
+  tmp="${system_txt}.rc.$$"
+  {
+    printf '<!-- hq-section: reply-contract -->\n'
+    session_reply_contract_body
+    printf '\n'
+    cat "$system_txt"
+  } > "$tmp" && mv "$tmp" "$system_txt"
+
+  return 0
+}
+
+# session_append_reply_contract_reminder <provider> <system_txt>
+#   Recency copy — MUST run after every other section is appended, or it is not
+#   actually last and the recency effect is lost. Deliberately short: the full
+#   text at both ends would invite the model to treat the tail as a different,
+#   competing instruction.
+session_append_reply_contract_reminder() {
   local provider="${1:-}" system_txt="${2:-}"
   [ -n "$system_txt" ] || return 0
   session_reply_contract_required "$provider" || return 0
   {
-    printf '\n<!-- hq-section: reply-contract -->\n'
-    printf '%s\n' 'REPLY CONTRACT — this overrides any other instruction about how to end your turn.'
-    printf '%s\n' 'Your FINAL stdout must be exactly ONE JSON object and NOTHING else:'
-    printf '%s\n' '  {"action":"reply","text":"<the message to send>"}'
-    printf '%s\n' '  {"action":"no_reply"}'
-    printf '%s\n' 'Rules:'
-    printf '%s\n' '- No prose, no code fence, no commentary before or after the object.'
-    printf '%s\n' '- "text" is the FINAL answer only. Never include your working narration,'
-    printf '%s\n' '  plans, interim findings, status updates, or reasoning. If you narrated'
-    printf '%s\n' '  while working, none of that belongs in "text".'
-    printf '%s\n' '- Use no_reply when nothing should be sent.'
-    printf '%s\n' '- If you do not emit the object, your raw output is sent as-is -- including'
-    printf '%s\n' '  any narration. That is worse for the reader, so emit the object even when'
-    printf '%s\n' '  the turn went badly.'
+    printf '\n<!-- hq-section: reply-contract-reminder -->\n'
+    printf '%s\n' 'REMINDER — end your turn with exactly one JSON object and nothing else:'
+    printf '%s\n' '  {"action":"reply","text":"<the message to send>"} or {"action":"no_reply"}'
+    printf '%s\n' 'No narration before or after it. See REPLY CONTRACT at the top.'
   } >> "$system_txt"
   return 0
 }
-
 
 # session_append_mention_posture <direct_mention> <system_txt>
 #   States plainly whether THIS turn was a direct @-mention of the agent.
@@ -135,15 +171,52 @@ session_append_reply_contract() {
 #   current message satisfies it. Without this it reads the stand-down and stays
 #   silent even when addressed (observed live 2026-07-26).
 session_append_mention_posture() {
-  local direct="${1:-false}" system_txt="${2:-}"
+  local direct="${1:-unknown}" system_txt="${2:-}"
+  [ -n "$system_txt" ] || return 0
+  # "unknown" (sender does not send the field yet) emits NOTHING, so the prompt
+  # is byte-identical to before this feature existed. Only a sender that has an
+  # actual opinion gets to constrain the agent.
+  case "$direct" in
+    true)
+      printf '\n<!-- hq-section: mention-posture -->\n%s\n' \
+        'THIS message DIRECTLY @-mentioned you. If earlier in this conversation you were asked to stay quiet unless @-mentioned, that condition is MET now — answer normally.' \
+        >> "$system_txt"
+      ;;
+    false)
+      printf '\n<!-- hq-section: mention-posture -->\n%s\n' \
+        'This message did NOT @-mention you; you are seeing it because you follow this conversation. If you were asked to only speak when @-mentioned, stay silent this turn.' \
+        >> "$system_txt"
+      ;;
+    *) : ;;
+  esac
+  return 0
+}
+
+# session_append_status_notes <system_txt>
+#   Ask the agent to keep the live status line meaningful.
+#
+#   The dispatch supervisor renders whatever the agent last wrote to
+#   HQ_AGENT_STATUS_FILE. When nothing is written the heartbeat falls back to a
+#   bare "working (300s)", which tells the reader only that time is passing --
+#   reported as unhelpful by an operator watching a long turn 2026-07-26. The
+#   existing guidance mentions agent-status in one clause buried in the posting
+#   rules; this states it plainly and shows the shape.
+#
+#   Applies to every provider: a stale status line is provider-independent.
+session_append_status_notes() {
+  local system_txt="${1:-}"
   [ -n "$system_txt" ] || return 0
   {
-    printf '\n<!-- hq-section: mention-posture -->\n'
-    if [ "$direct" = "true" ]; then
-      printf '%s\n' 'THIS message DIRECTLY @-mentioned you. If earlier in this conversation you were asked to stay quiet unless @-mentioned, that condition is MET now — answer normally.'
-    else
-      printf '%s\n' 'This message did NOT @-mention you; you are seeing it because you follow this conversation. If you were asked to only speak when @-mentioned, stay silent this turn.'
-    fi
+    printf '\n<!-- hq-section: status-notes -->\n'
+    printf '%s\n' 'STATUS LINE — the person watching sees your latest status note while you work.'
+    printf '%s\n' 'Update it with `agent-status "<short note>"` whenever you start a distinct step.'
+    printf '%s\n' 'Write what you are DOING, in plain words, under ~60 characters:'
+    printf '%s\n' '  agent-status "pulling last week'"'"'s meeting notes"'
+    printf '%s\n' '  agent-status "checking which PRs merged"'
+    printf '%s\n' '  agent-status "deploying the report"'
+    printf '%s\n' 'Without a note the line degrades to a bare timer ("working (300s)"), which'
+    printf '%s\n' 'tells the reader nothing. This is NOT a channel message -- it replaces'
+    printf '%s\n' 'progress chatter rather than adding to it, so never post the same text.'
   } >> "$system_txt"
   return 0
 }

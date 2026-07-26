@@ -66,7 +66,7 @@ ORDER="$(grep -n '<!-- hq-section:' "$RUN1/system.txt" | sed 's/.*hq-section: //
 # brief-posture -- it states whether THIS turn @-mentioned the agent, which the
 # rehydrated thread's stand-down instructions need in order to be actionable.
 # (reply-contract sits here too, but only for providers under enforcement.)
-EXPECTED=$'charter\nagent-contract\ncompany-charter\nvoice\nchannel-format\npolicies\nbrief-posture\nmention-posture\nskill-catalog\ndurable-writes'
+EXPECTED=$'charter\nagent-contract\ncompany-charter\nvoice\nchannel-format\npolicies\nbrief-posture\nstatus-notes\nskill-catalog\ndurable-writes'
 [ "$ORDER" = "$EXPECTED" ] || fail "delimiter order:\n$ORDER\n!=\n$EXPECTED"
 pass "delimiter ordering"
 
