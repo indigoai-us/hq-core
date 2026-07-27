@@ -189,4 +189,68 @@ TR_FLAT="$TMP/flat.jsonl"
 } > "$TR_FLAT"
 has deploy AssistantIntent "$(printf '{"prompt":"ok","transcript_path":"%s"}' "$TR_FLAT")"
 
+# ---- US-004: `company` fact resolution (env > cwd > session-meta) ----
+# Hermetic HQ_ROOT so the live policy tree / cwd never leak in. company is now a
+# SESSION-IDENTITY fact resolved on EVERY event, including AssistantIntent, with
+# the SAME precedence as inject-policy-on-trigger.sh DIRS.
+CO_ROOT="$TMP/hqroot"
+mkdir -p "$CO_ROOT/workspace/sessions"
+
+mk_meta() { # mk_meta <sid> <literal-body>
+  mkdir -p "$CO_ROOT/workspace/sessions/$1"
+  printf '%s\n' "$2" > "$CO_ROOT/workspace/sessions/$1/meta.yaml"
+}
+# co_facts <event> <json> [env assignments...]  -> stdout fact set (hermetic root)
+co_facts() {
+  local event="$1" json="$2"; shift 2
+  printf '%s' "$json" | env HQ_ROOT="$CO_ROOT" "$@" bash "$SRC" "$event" 2>/dev/null
+}
+co_has() { printf ' %s ' "$1" | grep -qw company || fail "$2 (facts: [$1])"; }
+co_hasnot() { printf ' %s ' "$1" | grep -qw company && fail "$2 (facts: [$1])" || true; }
+
+# company fact derived from session meta at HQ root (the core US-004 scenario)
+mk_meta s-meta $'session_id: s-meta\ncompany_slug: "acme"'
+OUT="$(co_facts UserPromptSubmit "$(printf '{"prompt":"hello","session_id":"s-meta","cwd":"%s"}' "$CO_ROOT")")"
+co_has "$OUT" "US-004: company fact not derived from session meta at HQ root"
+
+# cwd inside companies/ derives company with no meta at all
+OUT="$(co_facts UserPromptSubmit "$(printf '{"prompt":"hi","cwd":"%s/companies/other/x"}' "$CO_ROOT")")"
+co_has "$OUT" "US-004: company fact not derived from cwd companies/"
+
+# HQ_POLICY_COMPANY at HQ root (no meta) derives company — env override
+OUT="$(co_facts UserPromptSubmit "$(printf '{"prompt":"hi","session_id":"ghost","cwd":"%s"}' "$CO_ROOT")" HQ_POLICY_COMPANY=force)"
+co_has "$OUT" "US-004: HQ_POLICY_COMPANY did not derive company fact"
+
+# precedence: env override wins even when cwd has no company and meta is absent;
+# and cwd company resolves even when session meta points elsewhere (boolean fact
+# is present in both — the point is the fallback never fails to resolve).
+mk_meta s-prec $'session_id: s-prec\ncompany_slug: "acme"'
+OUT="$(co_facts PreToolUse "$(printf '{"tool_name":"Bash","tool_input":{"command":"ls"},"session_id":"s-prec","cwd":"%s/companies/other/x"}' "$CO_ROOT")")"
+co_has "$OUT" "US-004: cwd company not resolved when meta disagrees"
+
+# missing meta.yaml at HQ root -> company ABSENT (silent no-op, fail-open)
+OUT="$(co_facts UserPromptSubmit "$(printf '{"prompt":"hi","session_id":"nope","cwd":"%s"}' "$CO_ROOT")")"
+co_hasnot "$OUT" "US-004: missing meta.yaml wrongly produced company fact"
+
+# malformed meta.yaml (no usable company_slug) -> company ABSENT
+mk_meta s-bad $'not: yaml\ncompany_slug:\n  [broken'
+OUT="$(co_facts UserPromptSubmit "$(printf '{"prompt":"hi","session_id":"s-bad","cwd":"%s"}' "$CO_ROOT")")"
+co_hasnot "$OUT" "US-004: malformed meta.yaml wrongly produced company fact"
+
+# AssistantIntent path: the session-meta company fact reaches THIS channel too,
+# so `when: company` policies gated on AssistantIntent match in HQ-root sessions.
+AI_TR="$TMP/us004-ai.jsonl"
+{
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"go"}}'
+  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"deploying now"}]}}'
+} > "$AI_TR"
+OUT="$(co_facts AssistantIntent "$(printf '{"prompt":"ok","session_id":"s-meta","cwd":"%s","transcript_path":"%s"}' "$CO_ROOT" "$AI_TR")")"
+co_has "$OUT" "US-004: company fact missing on AssistantIntent channel"
+# ...and AssistantIntent still excludes cwd/git-only static facts (repo).
+printf ' %s ' "$OUT" | grep -qw repo && fail "US-004: repo fact leaked onto AssistantIntent channel (facts: [$OUT])" || true
+
+# missing meta at HQ root on AssistantIntent -> company ABSENT (fail-open there too)
+OUT="$(co_facts AssistantIntent "$(printf '{"prompt":"ok","session_id":"nope","cwd":"%s","transcript_path":"%s"}' "$CO_ROOT" "$AI_TR")")"
+co_hasnot "$OUT" "US-004: missing meta wrongly produced company on AssistantIntent"
+
 echo "PASS: derive-trigger-facts.sh"

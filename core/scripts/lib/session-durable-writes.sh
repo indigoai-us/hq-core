@@ -100,22 +100,34 @@ _session_mtime_epoch() {
   esac
 }
 
-# _session_find_newer <dir> <epoch> → absolute paths on stdout, one per line
+# _session_find_newer <dir> <epoch> [mode] → absolute paths on stdout, one per line
 #   Portable mtime compare (works where find -newermt @epoch is unavailable).
 #   AC wording uses find -newermt @runStartEpoch; implementation is equivalent:
-#   files whose mtime >= runStartEpoch.
+#   files whose mtime >= runStartEpoch. mode=workspace additionally prunes the
+#   provider-owned top-level <dir>/.session-logs telemetry tree.
 _session_find_newer() {
-  local dir="${1:-}" start="${2:-}"
-  local path mt
+  local dir="${1:-}" start="${2:-}" mode="${3:-any}"
+  local path mt provider_logs
+  local -a prune_expr=(-name node_modules -o -name .git -o -name .pnpm)
   [ -d "$dir" ] || return 0
   case "$start" in ''|*[!0-9]*) start=0 ;; esac
+  if [ "$mode" = "workspace" ]; then
+    # find -path treats [, *, and ? in an HQ root as glob syntax. Compare the
+    # rare candidate directory as an exact string instead, so unusual but valid
+    # install paths cannot make the provider telemetry tree visible again.
+    provider_logs="${dir%/}/.session-logs"
+    prune_expr+=(-o \( -type d -name .session-logs -exec test '{}' = "$provider_logs" \; \))
+  fi
 
-  # Heavyweight dependency/VCS trees are never durable artifacts; scanning
-  # them per-file once cost 100k+ subprocesses (>400s) on a fleet box with an
-  # abandoned node_modules under workspace/. Prune them in both paths.
+  # Heavyweight dependency/VCS/provider-log trees are never durable artifacts;
+  # scanning them per-file once cost 100k+ subprocesses (>400s) on a fleet box
+  # with an abandoned node_modules under workspace/. A Grok session-log export
+  # also refreshed 47k files under workspace/.session-logs after the provider
+  # exited, making finalization outlive the inbox lane and discard a completed
+  # reply. Prune all of these implementation-owned trees in both paths.
   # Fast path: GNU find (-newermt) — one process for the whole walk.
   if find "$dir" -maxdepth 0 -newermt "@0" >/dev/null 2>&1; then
-    find "$dir" \( -name node_modules -o -name .git -o -name .pnpm \) -prune \
+    find "$dir" \( "${prune_expr[@]}" \) -prune \
       -o -type f -newermt "@$(( start - 1 ))" -print 2>/dev/null || true
     return 0
   fi
@@ -127,7 +139,7 @@ _session_find_newer() {
     if [ "$mt" -ge "$start" ]; then
       printf '%s\n' "$path"
     fi
-  done < <(find "$dir" \( -name node_modules -o -name .git -o -name .pnpm \) -prune \
+  done < <(find "$dir" \( "${prune_expr[@]}" \) -prune \
     -o -type f -print 2>/dev/null || true)
 }
 
@@ -172,7 +184,7 @@ session_collect_non_durable_writes() {
   [ -n "$root" ] || { printf '[]'; return 0; }
   ws="$root/workspace"
   [ -d "$ws" ] || { printf '[]'; return 0; }
-  _session_find_newer "$ws" "$start" | _session_paths_to_json_array "$root" workspace
+  _session_find_newer "$ws" "$start" workspace | _session_paths_to_json_array "$root" workspace
 }
 
 # session_collect_project_artifacts <root> <projectDir> <runStartEpoch>

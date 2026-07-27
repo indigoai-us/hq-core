@@ -77,6 +77,30 @@ run_hook() {
     bash "$HOOK_COPY" <<<"$input" 2>/dev/null || true
 }
 
+# run_hook_sid <cwd> <event> <prompt> <session_id> [env assignments...]
+# Like run_hook but with a caller-chosen session_id, so a matching
+# workspace/sessions/<sid>/meta.yaml can be staged first (US-004).
+run_hook_sid() {
+  local cwd="$1" event="$2" prompt="$3" sid="$4"
+  shift 4 || true
+  local input
+  input="$(jq -cn --arg sid "$sid" --arg cwd "$cwd" --arg p "$prompt" --arg e "$event" \
+    '{session_id:$sid,hook_event_name:$e,cwd:$cwd,prompt:$p}')"
+  env HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" "$@" \
+    bash "$HOOK_COPY" <<<"$input" 2>/dev/null || true
+}
+
+# write_meta <session_id> <company_slug>  — stage a well-formed session meta.
+# write_meta_raw <session_id> <literal-body> — stage arbitrary (e.g. malformed).
+write_meta() {
+  mkdir -p "$ROOT/workspace/sessions/$1"
+  printf 'session_id: %s\ncompany_slug: "%s"\n' "$1" "$2" > "$ROOT/workspace/sessions/$1/meta.yaml"
+}
+write_meta_raw() {
+  mkdir -p "$ROOT/workspace/sessions/$1"
+  printf '%s\n' "$2" > "$ROOT/workspace/sessions/$1/meta.yaml"
+}
+
 # ── Case 1: tsv line shape ───────────────────────────────────────────────────
 setup_tree
 write_policy "$ROOT/core/policies/shape-me.md" \
@@ -167,6 +191,98 @@ printf '%s\n' "$OUT5" | grep -q INDIGO_ONLY_MARKER \
 printf '%s\n' "$OUT5" | grep -E $'^co-only\tcompany\t' >/dev/null \
   || fail "scope not company: $OUT5"
 ok "HQ_POLICY_COMPANY override outside companies/"
+
+# ── Case 6: injects company policy from session meta when cwd is HQ root ─────
+# US-004: the core scenario — HQ-root orchestration with an active company in
+# session meta. The company policy dir must be scanned even though cwd carries
+# no companies/<slug> segment.
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/companies/indigo/policies/only-indigo.md" \
+  "only-indigo" "always" "[SessionStart]" "soft" "INDIGO_META_MARKER"
+write_meta "meta-6" "indigo"
+OUT6="$(run_hook_sid "$ROOT" "UserPromptSubmit" "x" "meta-6" HQ_POLICY_EMIT=tsv)"
+printf '%s\n' "$OUT6" | grep -q INDIGO_META_MARKER \
+  || fail "session-meta at HQ root did not inject company policy: $OUT6"
+printf '%s\n' "$OUT6" | grep -E $'^only-indigo\tcompany\t' >/dev/null \
+  || fail "session-meta policy not scoped company: $OUT6"
+ok "injects company policy from session meta at HQ root"
+
+# ── Case 7: cwd inside companies/ takes precedence over session meta ─────────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/companies/indigo/policies/only-indigo.md" \
+  "only-indigo" "always" "[SessionStart]" "soft" "INDIGO_META_MARKER"
+write_policy "$ROOT/companies/other/policies/only-other.md" \
+  "only-other" "always" "[SessionStart]" "soft" "OTHER_CWD_MARKER"
+write_meta "meta-7" "indigo"
+# cwd is companies/other; session meta says indigo. cwd must win.
+OUT7="$(run_hook_sid "$ROOT/companies/other" "UserPromptSubmit" "x" "meta-7" HQ_POLICY_EMIT=tsv)"
+printf '%s\n' "$OUT7" | grep -q OTHER_CWD_MARKER \
+  || fail "cwd company policy not injected: $OUT7"
+printf '%s\n' "$OUT7" | grep -q INDIGO_META_MARKER \
+  && fail "session-meta company leaked when cwd company differs: $OUT7"
+ok "cwd inside companies/ takes precedence over session meta"
+
+# ── Case 8: HQ_POLICY_COMPANY overrides both cwd and session meta ────────────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/companies/force/policies/only-force.md" \
+  "only-force" "always" "[SessionStart]" "soft" "FORCE_ENV_MARKER"
+write_policy "$ROOT/companies/other/policies/only-other.md" \
+  "only-other" "always" "[SessionStart]" "soft" "OTHER_CWD_MARKER"
+write_policy "$ROOT/companies/indigo/policies/only-indigo.md" \
+  "only-indigo" "always" "[SessionStart]" "soft" "INDIGO_META_MARKER"
+write_meta "meta-8" "indigo"
+OUT8="$(run_hook_sid "$ROOT/companies/other" "UserPromptSubmit" "x" "meta-8" HQ_POLICY_EMIT=tsv HQ_POLICY_COMPANY=force)"
+printf '%s\n' "$OUT8" | grep -q FORCE_ENV_MARKER \
+  || fail "HQ_POLICY_COMPANY override not injected: $OUT8"
+printf '%s\n' "$OUT8" | grep -qE 'OTHER_CWD_MARKER|INDIGO_META_MARKER' \
+  && fail "cwd or session-meta company leaked past HQ_POLICY_COMPANY: $OUT8"
+ok "HQ_POLICY_COMPANY overrides both cwd and session meta"
+
+# ── Case 9: missing meta.yaml is a silent no-op ──────────────────────────────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/core/policies/core-baseline.md" \
+  "core-baseline" "always" "[SessionStart]" "soft" "CORE_BASELINE_MARKER"
+write_policy "$ROOT/companies/indigo/policies/only-indigo.md" \
+  "only-indigo" "always" "[SessionStart]" "soft" "INDIGO_META_MARKER"
+# session id with NO meta.yaml on disk; cwd at HQ root.
+OUT9="$(run_hook_sid "$ROOT" "UserPromptSubmit" "x" "no-such-session" HQ_POLICY_EMIT=tsv)"
+printf '%s\n' "$OUT9" | grep -q INDIGO_META_MARKER \
+  && fail "missing meta.yaml wrongly injected a company policy: $OUT9"
+printf '%s\n' "$OUT9" | grep -q CORE_BASELINE_MARKER \
+  || fail "missing meta.yaml broke core baseline (not fail-open): $OUT9"
+ok "missing meta.yaml is a silent no-op"
+
+# ── Case 10: malformed meta.yaml is a silent no-op ───────────────────────────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/core/policies/core-baseline.md" \
+  "core-baseline" "always" "[SessionStart]" "soft" "CORE_BASELINE_MARKER"
+write_policy "$ROOT/companies/indigo/policies/only-indigo.md" \
+  "only-indigo" "always" "[SessionStart]" "soft" "INDIGO_META_MARKER"
+# meta.yaml exists but yields no usable company_slug (garbage + empty value).
+write_meta_raw "meta-10" $'not: valid\ncompany_slug:\n  [broken'
+OUT10="$(run_hook_sid "$ROOT" "UserPromptSubmit" "x" "meta-10" HQ_POLICY_EMIT=tsv)"
+printf '%s\n' "$OUT10" | grep -q INDIGO_META_MARKER \
+  && fail "malformed meta.yaml wrongly injected a company policy: $OUT10"
+printf '%s\n' "$OUT10" | grep -q CORE_BASELINE_MARKER \
+  || fail "malformed meta.yaml broke core baseline (not fail-open): $OUT10"
+ok "malformed meta.yaml is a silent no-op"
+
+# ── Case 11: company dir appears exactly once when cwd and meta agree ─────────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/companies/indigo/policies/only-indigo.md" \
+  "only-indigo" "always" "[SessionStart]" "soft" "INDIGO_AGREE_MARKER"
+write_meta "meta-11" "indigo"
+# cwd companies/indigo AND meta company_slug=indigo — same company by both paths.
+OUT11="$(run_hook_sid "$ROOT/companies/indigo" "UserPromptSubmit" "x" "meta-11" HQ_POLICY_EMIT=tsv)"
+n11="$(printf '%s\n' "$OUT11" | grep -c $'^only-indigo\t' || true)"
+[ "$n11" = "1" ] || fail "company policy emitted $n11 times (expected exactly 1): $OUT11"
+ok "company dir appears exactly once when cwd and session meta agree"
 
 echo
 echo "PASS ($pass assertions)"
