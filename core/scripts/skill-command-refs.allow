@@ -57,3 +57,8 @@ promote-hq-core
 # explicit placeholder, not a runnable slash-command.
 access-mode    # deploy: REST route `/access-mode` (POST /api/apps/:id/access-mode)
 foo            # startwork: generic `/foo` placeholder for "any other command"
+tmp            # handoff: the POSIX temp dir `/tmp`, named in prose to tell
+               # authors NOT to write the changeset there (Git Bash may lack
+               # it). The linter's path-fragment exclusion needs a following
+               # segment (`/tmp/handoff-x.json` is ignored), so a bare `/tmp`
+               # still reads as a command shape.

@@ -8,6 +8,8 @@ allowed-tools: Read, Write, Edit, Bash, AskUserQuestion
 
 Interactive conflict resolution for HQ Sync. When two machines (or two users) edit the same file and sync detects divergence, both versions land on disk: the *original path* keeps the local version, and a `.conflict-<timestamp>-<machine>.<ext>` file holds the cloud's version. This command walks the user through each pending conflict and applies their decision.
 
+**Note on auto-merge:** the `@indigoai-us/hq-cloud` sync-runner may now auto-merge clean, non-overlapping text-file conflicts on the **pull** path when a baseline is available — those pull conflicts never reach this index or this skill. What still lands here includes: pull conflicts the runner could *not* safely auto-merge (overlapping edits, binary/oversized files, safety-only conflicts, or divergence with no baseline), and **push-side** conflicts (never auto-merged; with default `--direction both` / `--on-conflict keep`, the cloud version is mirrored to a sidecar). Resolution here therefore stays two-way (local vs. cloud) for whatever lands in the queue; this skill does not implement or duplicate any three-way merge logic itself.
+
 ## What you do
 
 ### Step 1 — Locate and read the index
@@ -84,7 +86,7 @@ If there are still pending conflicts, suggest the user re-run sync afterwards so
 
 ## Don't
 
-- Don't try to do 3-way merges automatically — that's a future enhancement that requires the journal-version blob. Just show the two versions and let the user pick.
+- Don't try to do 3-way/diff3 merges yourself — that logic lives in the sync-runner (`@indigoai-us/hq-cloud`) on the pull path, and is out of scope for this skill. Just show the two versions that made it into the queue and let the user pick.
 - Don't propagate or upload conflict files. They're local-only by design (`.hqignore` blocks them).
 - Don't touch the journal directly — let the next sync update the journal with the resolved file's new hash.
 - Don't skip the atomic write of the index. Always tmp-then-rename so a crash doesn't leave a corrupt index.

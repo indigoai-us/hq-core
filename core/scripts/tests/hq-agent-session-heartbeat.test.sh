@@ -188,4 +188,21 @@ printf '%s' "$(cat "$ENGINE_OUT")" | jq -e '.disposition == "reply"' >/dev/null 
   || fail "unset-status turn did not reply: $(cat "$ENGINE_OUT")"
 pass "turn completes normally with no status file configured"
 
+# ── 5. post-provider finalization ignores provider telemetry ────────────────
+# This suite is the session-harness CI anchor. Keep the production incident's
+# boundary here as well as in the detailed durable-write unit suite: once the
+# provider heartbeat stops, refreshed provider telemetry must not enter the
+# residual-write list, while an ordinary workspace artifact still must.
+# shellcheck source=/dev/null
+. "$SRC_ROOT/core/scripts/lib/session-durable-writes.sh"
+mkdir -p "$FIXTURE/workspace/.session-logs/grok/session" "$FIXTURE/workspace/scratch"
+printf 'telemetry\n' > "$FIXTURE/workspace/.session-logs/grok/session/events.jsonl"
+printf 'artifact\n' > "$FIXTURE/workspace/scratch/control.md"
+FINALIZED="$(session_collect_non_durable_writes "$FIXTURE" 0)"
+printf '%s' "$FINALIZED" | jq -e \
+  'index("workspace/scratch/control.md") != null
+   and (map(startswith("workspace/.session-logs/")) | any | not)' >/dev/null \
+  || fail "post-provider finalization included telemetry or lost control artifact: $FINALIZED"
+pass "post-provider finalization excludes provider telemetry and keeps control artifact"
+
 echo "hq-agent-session-heartbeat: all tests passed"
