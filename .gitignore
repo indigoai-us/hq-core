@@ -79,6 +79,10 @@ workspace/checkpoints/*.json
 # pollute its changeset or make the HQ root appear dirty.
 workspace/threads/resume-locks/
 
+# Ephemeral handoff argv offload (changeset + jq slurps). Must stay ignored so
+# temps created before git.dirty / hq-status-summary do not pollute status.
+workspace/threads/.handoff-tmp/
+
 # Journal entries (personal)
 data/journal/*.jsonl
 

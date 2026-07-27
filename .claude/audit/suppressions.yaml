@@ -33,6 +33,10 @@
   scanners: [pii]
   reason: "Disposable git-config identity in throwaway test fixtures uses an RFC 2606 reserved .test address (example.test — never resolvable in DNS, no real mailbox); placeholder, not PII."
 
+- path: "core/scripts/tests/handoff-finalize-large-changeset.test.sh"
+  scanners: [pii]
+  reason: "Disposable git-config identity in throwaway test fixtures uses an RFC 2606 reserved .invalid address (example.invalid — never resolvable in DNS, no real mailbox); placeholder, not PII."
+
 - path: "core/scripts/__tests__/work-mesh.test.mjs"
   scanners: [pii]
   reason: "Work Mesh unit-test fixtures use loopback IPs, an RFC 2606 .test address, UUID-shaped IDs, and integer boundary values; none are real personal data."

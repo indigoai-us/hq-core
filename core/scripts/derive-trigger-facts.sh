@@ -51,6 +51,12 @@ EVENT="${1:-}"
 STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
 JQ="$(command -v jq || true)"
 
+# HQ root — used only to resolve the session's meta.yaml for the company fact
+# (US-004). Prefer an explicit HQ_ROOT / CLAUDE_PROJECT_DIR; otherwise walk up
+# from this script (core/scripts/derive-trigger-facts.sh -> ../.. == HQ root).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
+
 # jget <jq-filter> — extract a field, empty string on miss / no jq.
 jget() {
   [ -n "$JQ" ] || { printf ''; return 0; }
@@ -167,11 +173,44 @@ case "$EVENT" in
     ;;
 esac
 
-# --- AssistantIntent: facts come ONLY from the AI-message look-back ---
+# --- company: a SESSION-IDENTITY fact, resolved on EVERY event (US-004) ---
+# Company is not look-back content; it identifies the active tenant. It is
+# derived with the SAME precedence as inject-policy-on-trigger.sh DIRS —
+#   HQ_POLICY_COMPANY env override > cwd companies/<slug> > session-meta
+#   company_slug (workspace/sessions/$session_id/meta.yaml)
+# — so a `when: company` policy (e.g. hq-load-company-hard-policies-on-mid-
+# session-bind) matches in HQ-root sessions, and matches identically whether it
+# is gated on the primary channel or the AssistantIntent channel. Exactly one
+# branch resolves the slug. Fail-open: any miss leaves company absent, i.e. the
+# behaviour identical to today's unresolved-company path. Unlike company, `repo`
+# and `shared_branch` stay primary-event-only (see below) — they are cwd/git
+# facts with no session-identity meaning on the AI-message channel.
+CWD="$(jget '.cwd')"; [ -z "$CWD" ] && CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
+co_scope=""
+if [ -n "${HQ_POLICY_COMPANY:-}" ]; then
+  co_scope="$HQ_POLICY_COMPANY"
+else
+  case "$CWD" in
+    *companies/*) co_scope="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')" ;;
+  esac
+  if [ -z "$co_scope" ]; then
+    SESSION_ID="$(jget '.session_id')"
+    if [ -n "$SESSION_ID" ]; then
+      # Read the session's own meta.yaml directly (awk idiom from
+      # master-hook.sh:119); READ ONLY, never via hq-session.sh get.
+      META="$HQ_ROOT/workspace/sessions/$SESSION_ID/meta.yaml"
+      [ -f "$META" ] && co_scope="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META")"
+    fi
+  fi
+fi
+[ -n "$co_scope" ] && add company
+
+# --- AssistantIntent: remaining facts come ONLY from the AI-message look-back ---
 # The dedicated channel for "what the assistant said it would do" — assistant
 # text emitted since the last user turn in transcript_path. No command/prompt
-# tokens and no static facts are mixed in; the raw PreToolUse/UserPromptSubmit
-# fact sets deliberately exclude this look-back so the two channels stay crisp.
+# tokens are mixed in; the raw PreToolUse/UserPromptSubmit fact sets deliberately
+# exclude this look-back so the two channels stay crisp. (Company, above, is the
+# one session-identity fact shared across channels.)
 if [ "$EVENT" = "AssistantIntent" ]; then
   TRANSCRIPT="$(jget '.transcript_path')"
   if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] && [ -n "$JQ" ]; then
@@ -195,12 +234,9 @@ if [ "$EVENT" = "AssistantIntent" ]; then
     [ -n "$LOOKBACK_TEXT" ] && add "$(match_keywords "$LOOKBACK_TEXT")"
   fi
 else
-  # --- Best-effort static session facts (company / repo / shared_branch) ---
-  # Real events only — AssistantIntent is intentionally facts-from-AI-only.
-  CWD="$(jget '.cwd')"; [ -z "$CWD" ] && CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
-  case "$CWD" in
-    *companies/*) add company ;;
-  esac
+  # --- Best-effort static session facts (repo / shared_branch) ---
+  # Primary events only — AssistantIntent is facts-from-AI-only except for the
+  # session-identity `company` fact resolved above. CWD is already resolved.
   case "$CWD" in
     *repos/public/*|*repos/private/*) add repo ;;
   esac

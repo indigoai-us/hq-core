@@ -171,21 +171,50 @@ echo "$ND2" | jq -e 'index("workspace/scratch/lost.md") != null' >/dev/null \
   || fail "entrypoint residual detect: $ND2"
 pass "residual workspace write detection"
 
-echo "PASS: hq-agent-session-durable.test.sh"
-
 # ── residual scan prunes dependency/VCS trees (fleet-box hang regression) ───
 # A node_modules tree under the scanned dir once cost >400s (2 subprocesses
 # per file); the scan must skip node_modules/.git/.pnpm and still find real
 # files, in both the GNU fast path and the portable fallback.
-SCAN="$TMP/scan"
-mkdir -p "$SCAN/node_modules/dep" "$SCAN/.git" "$SCAN/.pnpm" "$SCAN/real"
+SCAN="$TMP/scan[bracket]"
+mkdir -p "$SCAN/node_modules/dep" "$SCAN/.git" "$SCAN/.pnpm" \
+  "$SCAN/.session-logs/grok/session" "$SCAN/real"
 echo x > "$SCAN/real/artifact.txt"
 echo x > "$SCAN/node_modules/dep/index.js"
 echo x > "$SCAN/.git/config"
 echo x > "$SCAN/.pnpm/pkg.js"
-FOUND="$(_session_find_newer "$SCAN" 0)"
+echo x > "$SCAN/.session-logs/grok/session/events.jsonl"
+FOUND="$(_session_find_newer "$SCAN" 0 workspace)"
 printf '%s\n' "$FOUND" | grep -q 'real/artifact.txt' || fail "residual scan missed real artifact"
 printf '%s\n' "$FOUND" | grep -q 'node_modules' && fail "residual scan descended into node_modules"
 printf '%s\n' "$FOUND" | grep -q '.git/config' && fail "residual scan descended into .git"
 printf '%s\n' "$FOUND" | grep -q '.pnpm' && fail "residual scan descended into .pnpm"
-pass "residual scan prunes node_modules/.git/.pnpm"
+printf '%s\n' "$FOUND" | grep -q '.session-logs' && fail "residual scan descended into provider session logs"
+pass "GNU residual scan prunes node_modules/.git/.pnpm/.session-logs"
+
+# The helper also scans durable project trees. A project-owned directory with
+# the same basename remains a legitimate artifact; only the top-level workspace
+# telemetry tree is implementation-owned.
+FOUND_PROJECT="$(_session_find_newer "$SCAN" 0 any)"
+printf '%s\n' "$FOUND_PROJECT" | grep -q '.session-logs/grok/session/events.jsonl' \
+  || fail "project artifact scan incorrectly pruned a user .session-logs directory"
+pass "project artifact scan retains user .session-logs directories"
+
+# Force _session_find_newer through its portable fallback and prove the same
+# provider-log boundary there. The production incident was Linux/GNU, but a
+# one-sided prune would leave macOS/BSD sessions with the identical failure.
+SYSTEM_FIND="$(command -v find)"
+find() {
+  if [ "$*" = "$SCAN -maxdepth 0 -newermt @0" ]; then
+    return 1
+  fi
+  "$SYSTEM_FIND" "$@"
+}
+FOUND_PORTABLE="$(_session_find_newer "$SCAN" 0 workspace)"
+unset -f find
+printf '%s\n' "$FOUND_PORTABLE" | grep -q 'real/artifact.txt' \
+  || fail "portable residual scan missed real artifact"
+printf '%s\n' "$FOUND_PORTABLE" | grep -q '.session-logs' \
+  && fail "portable residual scan descended into provider session logs"
+pass "portable residual scan prunes provider session logs"
+
+echo "PASS: hq-agent-session-durable.test.sh"

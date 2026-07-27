@@ -10,17 +10,34 @@ set -euo pipefail
 ROOT="${HQ_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 PORCELAIN_FILE=""
 SESSION_FILES_JSON="[]"
+SESSION_FILES_FILE=""
 FORMAT="json"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --porcelain-file) PORCELAIN_FILE="$2"; shift 2 ;;
     --session-files-json) SESSION_FILES_JSON="$2"; shift 2 ;;
+    --session-files-file) SESSION_FILES_FILE="$2"; shift 2 ;;
     --json) FORMAT="json"; shift ;;
     --text) FORMAT="text"; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+# --session-files-file <path> keeps a large session changeset off argv (mirrors
+# the existing --porcelain-file pattern). A missing path is a hard error rather
+# than a silent empty summary. It is resolved before the cd below because a
+# relative path is relative to the caller's cwd, not ROOT.
+if [[ -n "$SESSION_FILES_FILE" ]]; then
+  if [[ ! -f "$SESSION_FILES_FILE" ]]; then
+    echo "hq-status-summary: --session-files-file not found: $SESSION_FILES_FILE" >&2
+    exit 3
+  fi
+  case "$SESSION_FILES_FILE" in
+    /*) : ;;
+    *) SESSION_FILES_FILE="$PWD/$SESSION_FILES_FILE" ;;
+  esac
+fi
 
 cd "$ROOT"
 
@@ -36,11 +53,16 @@ unsafe_session="$tmpdir/unsafe_session"
 : >"$tracked"; : >"$session_untracked"; : >"$baseline_untracked"; : >"$unrelated_untracked"; : >"$ignored"; : >"$unsafe_session"
 
 session_paths_file="$tmpdir/session_paths"
-printf '%s' "$SESSION_FILES_JSON" | jq -r '
+session_files_jq='
   if type != "array" then empty else
     .[] | if type == "string" then . else (.path // empty) end
   end
-' 2>/dev/null | sed '/^$/d' > "$session_paths_file" || : > "$session_paths_file"
+'
+if [[ -n "$SESSION_FILES_FILE" ]]; then
+  jq -r "$session_files_jq" "$SESSION_FILES_FILE" 2>/dev/null | sed '/^$/d' > "$session_paths_file" || : > "$session_paths_file"
+else
+  printf '%s' "$SESSION_FILES_JSON" | jq -r "$session_files_jq" 2>/dev/null | sed '/^$/d' > "$session_paths_file" || : > "$session_paths_file"
+fi
 
 baseline_patterns_file="$tmpdir/baseline_patterns"
 if [[ -f workspace/baseline/hq-local-baseline.json ]]; then
@@ -113,44 +135,53 @@ while IFS= read -r line; do
   esac
 done < "$status_source"
 
-json_array() {
-  jq -R -s 'split("\n") | map(select(length > 0))' "$1"
+# Materialize each classified list as a JSON array file, then feed jq via
+# --slurpfile. --argjson puts the whole array on argv and overflows CreateProcess
+# (~32KB) / MAX_ARG_STRLEN (128KB) when thousands of untracked paths classify here.
+write_json_array() {
+  jq -R -s 'split("\n") | map(select(length > 0))' "$1" > "$2"
 }
 
-tracked_json=$(json_array "$tracked")
-session_untracked_json=$(json_array "$session_untracked")
-baseline_untracked_json=$(json_array "$baseline_untracked")
-unrelated_untracked_json=$(json_array "$unrelated_untracked")
-ignored_json=$(json_array "$ignored")
+tracked_json="$tmpdir/tracked.json"
+session_untracked_json="$tmpdir/session_untracked.json"
+baseline_untracked_json="$tmpdir/baseline_untracked.json"
+unrelated_untracked_json="$tmpdir/unrelated_untracked.json"
+ignored_json="$tmpdir/ignored.json"
+
+write_json_array "$tracked" "$tracked_json"
+write_json_array "$session_untracked" "$session_untracked_json"
+write_json_array "$baseline_untracked" "$baseline_untracked_json"
+write_json_array "$unrelated_untracked" "$unrelated_untracked_json"
+write_json_array "$ignored" "$ignored_json"
 
 if [[ "$FORMAT" == "text" ]]; then
-  printf 'tracked_changes=%s\n' "$(jq 'length' <<<"$tracked_json")"
-  printf 'session_untracked=%s\n' "$(jq 'length' <<<"$session_untracked_json")"
-  printf 'baseline_untracked=%s\n' "$(jq 'length' <<<"$baseline_untracked_json")"
-  printf 'unrelated_untracked=%s\n' "$(jq 'length' <<<"$unrelated_untracked_json")"
-  printf 'ignored=%s\n' "$(jq 'length' <<<"$ignored_json")"
+  printf 'tracked_changes=%s\n' "$(jq 'length' "$tracked_json")"
+  printf 'session_untracked=%s\n' "$(jq 'length' "$session_untracked_json")"
+  printf 'baseline_untracked=%s\n' "$(jq 'length' "$baseline_untracked_json")"
+  printf 'unrelated_untracked=%s\n' "$(jq 'length' "$unrelated_untracked_json")"
+  printf 'ignored=%s\n' "$(jq 'length' "$ignored_json")"
 else
   jq -n \
-    --argjson tracked "$tracked_json" \
-    --argjson session_untracked "$session_untracked_json" \
-    --argjson baseline_untracked "$baseline_untracked_json" \
-    --argjson unrelated_untracked "$unrelated_untracked_json" \
-    --argjson ignored "$ignored_json" \
+    --slurpfile tracked "$tracked_json" \
+    --slurpfile session_untracked "$session_untracked_json" \
+    --slurpfile baseline_untracked "$baseline_untracked_json" \
+    --slurpfile unrelated_untracked "$unrelated_untracked_json" \
+    --slurpfile ignored "$ignored_json" \
     '{
       counts: {
-        tracked_changes: ($tracked | length),
-        session_touched_untracked: ($session_untracked | length),
-        baseline_untracked: ($baseline_untracked | length),
-        unrelated_untracked: ($unrelated_untracked | length),
-        ignored: ($ignored | length),
-        baseline_noise: (($baseline_untracked | length) + ($unrelated_untracked | length))
+        tracked_changes: ($tracked[0] | length),
+        session_touched_untracked: ($session_untracked[0] | length),
+        baseline_untracked: ($baseline_untracked[0] | length),
+        unrelated_untracked: ($unrelated_untracked[0] | length),
+        ignored: ($ignored[0] | length),
+        baseline_noise: (($baseline_untracked[0] | length) + ($unrelated_untracked[0] | length))
       },
       files: {
-        tracked_changes: $tracked,
-        session_touched_untracked: $session_untracked,
-        baseline_untracked: $baseline_untracked,
-        unrelated_untracked: $unrelated_untracked,
-        ignored: $ignored
+        tracked_changes: $tracked[0],
+        session_touched_untracked: $session_untracked[0],
+        baseline_untracked: $baseline_untracked[0],
+        unrelated_untracked: $unrelated_untracked[0],
+        ignored: $ignored[0]
       }
     }'
 fi

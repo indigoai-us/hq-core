@@ -137,6 +137,23 @@ assert_eq "$(jq -r '.counts.baseline_untracked' <<<"$summary")" "1" "baseline un
 assert_eq "$(jq -r '.counts.unrelated_untracked' <<<"$summary")" "1" "unrelated untracked count"
 assert_eq "$(jq -r '.counts.ignored' <<<"$summary")" "1" "ignored count"
 
+# --session-files-file path is used when provided (mirrors --session-files-json).
+echo '[{"path":"notes/new.md"}]' > "$TMP_ROOT/session-files.json"
+summary_file=$(bash core/scripts/hq-status-summary.sh \
+  --porcelain-file "$TMP_ROOT/porcelain.txt" \
+  --session-files-file "$TMP_ROOT/session-files.json" \
+  --json)
+assert_eq "$(jq -r '.counts.session_touched_untracked' <<<"$summary_file")" "1" "session untracked count (file input)"
+assert_eq "$(jq -r '.counts.unrelated_untracked' <<<"$summary_file")" "1" "unrelated untracked count (file input)"
+
+# A missing --session-files-file is a hard error, never a silent empty summary.
+if bash core/scripts/hq-status-summary.sh \
+    --porcelain-file "$TMP_ROOT/porcelain.txt" \
+    --session-files-file "$TMP_ROOT/does-not-exist.json" \
+    --json >/dev/null 2>&1; then
+  fail "missing --session-files-file should exit non-zero"
+fi
+
 # Regression: empty --files-touched-json '[]' must not crash under `set -u`.
 # Previously the bare "${SAFE_STAGE_PATHS[@]}" expansion in EXPLICIT_PATHS
 # tripped nounset when no foreground file edits occurred (empty array case).
