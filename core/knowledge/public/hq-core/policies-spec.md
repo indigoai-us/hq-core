@@ -87,7 +87,9 @@ Optional. Concrete examples of correct and incorrect behavior under this policy.
 The SessionStart trigger hook (`inject-policy-on-trigger.sh`) injects every
 on:[SessionStart] policy at session start; reactive `when:` policies fire later
 on a concrete signal. A reactive `when:` policy costs nothing until its
-expression is true, then a short `<policy-reminder>` is injected once per session.
+expression is true, then a `<policy-reminder>` is injected once per session.
+How *much* of the policy that reminder carries is decided by `enforcement:` —
+see **Injection Depth** below.
 
 **Expression grammar — a tiny boolean algebra over open tokens:**
 
@@ -195,6 +197,41 @@ are not treated as commands.
    PreToolUse patterns a coarse boolean token cannot express (e.g.
    `git checkout {ref} -- .`). Both paths dedupe by slug, so migrating a policy
    to `when:` is incremental and never double-injects.
+
+### Injection Depth (`enforcement:` decides how much text is injected)
+
+`when:`/`on:` decide **whether** a policy is injected. `enforcement:` decides
+**how much of it**:
+
+| `enforcement` | What the agent receives |
+|---------------|-------------------------|
+| `hard` | The policy's **entire body** — everything after the closing frontmatter `---`, verbatim, quoted into the `<policy-reminder>` block. Rule, Rationale, Examples, caveats, escape hatches: all of it. |
+| `soft` (or omitted) | **Frontmatter-level only** — the slug plus a single ≤160-char excerpt of the first line of `## Rule`, with a pointer to the file. |
+
+The reason for the split: a hard policy is *binding*, and its binding content is
+rarely confined to its first sentence — the exceptions, the sanctioned override
+env vars, and the "this looks like a bug but is the gate working" clauses all sit
+further down the file. Paraphrasing a hard rule down to one line is how an agent
+ends up confidently violating it. A soft policy is advisory, so a pointer is
+enough; the agent can open the file when it matters.
+
+**Bounded, and never silently.** Full text is capped by a byte budget across the
+whole injection (`HQ_POLICY_HARD_BUDGET_BYTES`, default 40960), consumed in
+precedence order (company > repo > personal > core) so a tenant's own hard rules
+claim it first. A hard policy that does not fit degrades to the soft one-line
+shape **and is named** in a trailing `Full-text budget … reached` notice, so a
+shortened set can never be misread as the complete text. A hard policy whose file
+is unreadable or has no body degrades the same way — fail-open, never dropped.
+
+**Escape hatches.** `HQ_POLICY_HARD_FULL_TEXT=0` restores summary-only output for
+hard policies; `HQ_POLICY_HARD_BUDGET_BYTES` resizes the budget. The
+`HQ_POLICY_EMIT=tsv` machine path is unaffected — it emits the five-field record
+(`slug`, `scope`, `path`, `enforcement`, `rule`) and leaves depth to its consumer,
+which has the `path` and can read the file itself.
+
+This is one more reason `enforcement:` is not decorative: marking a policy `hard`
+materially increases its per-session context cost. Reserve it for rules that
+genuinely block execution when violated.
 
 **Auto-backfill at SessionStart.** A policy authored without `when:`/`on:` does
 not stay untriggered: [`core/scripts/migrate-policy-triggers.sh`](../../../scripts/migrate-policy-triggers.sh)

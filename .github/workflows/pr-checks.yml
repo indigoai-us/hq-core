@@ -591,6 +591,10 @@ jobs:
         run: bash core/scripts/tests/migrate-policy-triggers.test.sh
       - name: Retired digest path has no frontmatter exemption
         run: bash core/scripts/tests/validate-policy-frontmatter.test.sh
+      - name: Emit contract — tsv shape, scope precedence, enforcement-tiered depth
+        run: bash .claude/hooks/tests/inject-policy-on-trigger-emit.test.sh
+      - name: Policy trigger end-to-end corpus coverage
+        run: bash core/scripts/tests/inject-policy-e2e.test.sh
 
   personal-policy-overlay:
     # The personal→core policy mirror is retired: the trigger hook must read
@@ -605,6 +609,22 @@ jobs:
         run: bash core/scripts/tests/personal-policy-overlay.test.sh
       - name: stale core/policies mirror detector classifies + prunes safely
         run: bash core/scripts/tests/detect-stale-core-policy-mirror.test.sh
+
+  stale-review-base:
+    # An HQ root that is a git repo with a remote attached drifts thousands of
+    # autosave commits ahead of its remote-tracking ref (HQ is never pushed).
+    # A review tool that auto-selects a base picks that ref and builds a
+    # whole-tree diff from it — the 2026-07-28 Codex desktop git-worker SIGTRAP.
+    # The detector must flag those refs and repair them WITHOUT touching local
+    # branches, the configured remote, or any repos/ clone.
+    name: stale-review-base
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: stale review-base detector reports + repairs safely
+        run: bash core/scripts/tests/detect-stale-review-base.test.sh
+      - name: session-start hook auto-repairs installs and spares clones
+        run: bash core/scripts/tests/repair-stale-review-base-hook.test.sh
 
   prefer-native-capabilities:
     # hq-prefer-native-capabilities must inject at session start (always-on

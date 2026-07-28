@@ -75,15 +75,12 @@ load_helpers() {
     '{"action":"reply","text":123}' \
     '{"action":"no_reply","text":"but also this"}' \
     '{"action":"bogus","text":"hi"}' \
-    '{"action":"reply","text":"hi","extra":1}' \
-    '```json
-{"action":"reply","text":"fenced"}
-```' ; do
+    '{"action":"reply","text":"hi","extra":1}' ; do
     if session_reply_contract_apply "$bad"; then
       fail "accepted invalid payload: $(printf '%s' "$bad" | head -c 60)"
     fi
   done
-  pass "all malformed / fenced / multi-object payloads rejected"
+  pass "all malformed payloads rejected"
 
   # OBSERVED LIVE 2026-07-26 on Izzy's box: grok narrates one line, THEN emits a
   # correct envelope. Strict-only parsing threw away a CORRECT answer and the
@@ -127,6 +124,86 @@ load_helpers() {
     fail "narration with no envelope was accepted"
   else
     pass "narration with no envelope still fails closed"
+  fi
+
+  # ── narration AFTER the envelope ──────────────────────────────────────────
+  #
+  # OBSERVED LIVE 2026-07-28 on Izzy's box (Corey's report: "all of the
+  # reasoning output is coming throuhg"): grok narrates, emits a correct
+  # envelope, then KEEPS narrating. Slicing from the last opener to
+  # end-of-string made the candidate unparseable, apply() returned 1, and the
+  # #437 degrade posted the model's entire working narration into a channel
+  # with external members. Balanced extraction must recover the envelope and
+  # drop BOTH sides of the narration. Fixture abridged from the live run
+  # (run-20260727T164919Z-636ed2bb).
+  SESSION_DISPOSITION=""; SESSION_TEXT=""
+  live_after='I'"'"'ll dig into why the earlier failure happened. I have the root cause confirmed. Writing a short durable note, then posting the update.{"action":"reply","text":"*Update - root cause found.* Delivery died after Grok returned."}Now I need to emit the final reply JSON only. Keep it conversational, outcome first, Slack mrkdwn.'
+  if session_reply_contract_apply "$live_after" \
+     && [ "$SESSION_DISPOSITION" = "reply" ] \
+     && [ "$SESSION_TEXT" = "*Update - root cause found.* Delivery died after Grok returned." ]; then
+    pass "narration-envelope-narration recovers the answer (the 2026-07-28 leak)"
+  else
+    fail "trailing narration broke recovery (disp=$SESSION_DISPOSITION text=$SESSION_TEXT)"
+  fi
+  case "$SESSION_TEXT" in
+    *"root cause confirmed"*|*"emit the final reply JSON"*)
+      fail "narration leaked into the recovered text" ;;
+    *) pass "neither leading nor trailing narration survives into the text" ;;
+  esac
+
+  # no_reply with trailing narration must still suppress the reply.
+  SESSION_DISPOSITION=""; SESSION_TEXT="stale"
+  if session_reply_contract_apply 'Checking whether this needs me...{"action":"no_reply"}It was addressed to someone else, so I stayed quiet.' \
+     && [ "$SESSION_DISPOSITION" = "no_reply" ] && [ -z "$SESSION_TEXT" ]; then
+    pass "no_reply with trailing narration still suppresses"
+  else
+    fail "no_reply with trailing narration mishandled (disp=$SESSION_DISPOSITION)"
+  fi
+
+  # Pretty-printed envelope with trailing prose — balancing is jq's job, so
+  # newlines between tokens must not defeat recovery.
+  SESSION_DISPOSITION=""; SESSION_TEXT=""
+  pretty='thinking...{ "action": "reply",
+  "text": "pretty but valid" }
+and then some afterthought'
+  if session_reply_contract_apply "$pretty" && [ "$SESSION_TEXT" = "pretty but valid" ]; then
+    pass "pretty-printed envelope with trailing prose is recovered"
+  else
+    fail "pretty-printed envelope with trailing prose not recovered (text=$SESSION_TEXT)"
+  fi
+
+  # Envelope followed by a DIFFERENT json value: the balanced first value at
+  # the last opener is the envelope; the stray value is trailing garbage.
+  SESSION_DISPOSITION=""; SESSION_TEXT=""
+  if session_reply_contract_apply '{"action":"reply","text":"real"}{"note":"scratch"}' \
+     && [ "$SESSION_TEXT" = "real" ]; then
+    pass "trailing non-envelope json value is dropped"
+  else
+    fail "trailing json value defeated recovery (text=$SESSION_TEXT)"
+  fi
+
+  # DELIBERATE BEHAVIOUR CHANGE, mirroring #435's must-reject relocations: a
+  # code-fenced envelope was previously rejected (the trailing fence made the
+  # slice unparseable) and therefore leaked RAW into the channel via the #437
+  # degrade. Balanced extraction now recovers it — strictly better than
+  # posting the fenced block verbatim. Safety is unchanged: the extracted
+  # object still passes the same fail-closed validation.
+  SESSION_DISPOSITION=""; SESSION_TEXT=""
+  fenced='```json
+{"action":"reply","text":"fenced"}
+```'
+  if session_reply_contract_apply "$fenced" && [ "$SESSION_TEXT" = "fenced" ]; then
+    pass "code-fenced envelope is recovered (moved out of must-reject)"
+  else
+    fail "code-fenced envelope not recovered (text=$SESSION_TEXT)"
+  fi
+
+  # An opener inside prose with NO completable object anywhere still fails
+  # closed — balanced extraction must not conjure a candidate.
+  if session_reply_contract_apply 'I would normally send {"action":"reply","text":"like this but I never finished'; then
+    fail "unbalanced opener in prose was accepted"
+  else
+    pass "unbalanced opener with no valid envelope still fails closed"
   fi
 
   # A reply whose text merely CONTAINS the sentinel is still a real reply.
