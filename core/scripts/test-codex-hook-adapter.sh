@@ -4,7 +4,12 @@
 
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
+# HQ is not necessarily a git repo (and this suite is often run from a
+# worktree), so fall back to the checkout this script lives in.
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$ROOT" ] || [ ! -d "$ROOT/.codex/hooks" ]; then
+  ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -281,7 +286,11 @@ run_adapter() {
 assert_contains() {
   local haystack="$1"
   local needle="$2"
-  if ! printf '%s' "$haystack" | grep -qF "$needle"; then
+  # Here-string, not a pipe: `grep -q` exits on first match and closes the pipe,
+  # so `printf` can take SIGPIPE (141) and — under `set -o pipefail` — turn a
+  # SUCCESSFUL match into a failed assertion. That race made this suite
+  # intermittently red on large haystacks.
+  if ! grep -qF -- "$needle" <<<"$haystack"; then
     echo "Expected output to contain: $needle" >&2
     echo "Actual output:" >&2
     printf '%s\n' "$haystack" >&2
@@ -328,7 +337,13 @@ if err="$(run_adapter "$payload_patch_core_dir" 2>&1 >/dev/null)"; then
   echo "Expected core/ apply_patch payload to be blocked" >&2
   exit 1
 fi
-assert_contains "$err" "blocked core write"
+# The adapter grew its own inline core/ guard, which short-circuits before the
+# block-core-writes stub ever runs. Either layer refusing the write is a pass —
+# what this case pins is that a core/ apply_patch never gets through.
+case "$err" in
+  *"blocked core write"*|*"Edits to core/ are denied"*) ;;
+  *) echo "Expected a core/ denial, got: $err" >&2; exit 1 ;;
+esac
 
 payload_patch_input='{"hook_event_name":"PreToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"input":"*** Begin Patch\n*** Update File: blocked.txt\n@@\n x\n*** End Patch"}}'
 if err="$(run_adapter "$payload_patch_input" 2>&1 >/dev/null)"; then
@@ -428,6 +443,60 @@ log="$(cat "$TEST_LOG")"
 for hk in rewrite-resume-sentinel route-deep-plan-to-skill auto-session-project; do
   assert_contains "$log" "$hk"
 done
+
+# ----- context emission is ONE JSON document -----
+
+# REGRESSION: Codex parses hook stdout as a single JSON document whenever it
+# starts with "{", and rejects the whole thing if anything trails the object.
+# HQ child hooks emit a mix of shapes — auto-session-project returns a
+# Claude-style {"hookSpecificOutput": {...}} object, inject-policy-on-trigger
+# returns bare text — and the adapter used to concatenate them verbatim. That
+# produced JSON-then-text, which Codex failed wholesale ("UserPromptSubmit
+# Failed"), silently dropping BOTH payloads. Every context-bearing event must
+# emit exactly one well-formed object with both payloads folded in.
+cat > "$TMP/.claude/hooks/auto-session-project.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+echo "auto-session-project" >> "$TEST_LOG"
+printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"<json-shaped-chunk>"}}'
+exit 0
+SH
+cat > "$TMP/.claude/hooks/rewrite-resume-sentinel.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+echo "rewrite-resume-sentinel" >> "$TEST_LOG"
+printf '%s\n' '<plain-text-chunk>'
+exit 0
+SH
+chmod +x "$TMP/.claude/hooks/auto-session-project.sh" "$TMP/.claude/hooks/rewrite-resume-sentinel.sh"
+
+out="$(run_adapter "$payload_prompt")"
+printf '%s' "$out" | jq -e . >/dev/null || {
+  echo "UserPromptSubmit stdout is not a single valid JSON document:" >&2
+  printf '%s\n' "$out" >&2
+  exit 1
+}
+ctx="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')"
+assert_contains "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" "UserPromptSubmit"
+# Both shapes survive: the JSON chunk is unwrapped to its context, the text chunk
+# is passed through — neither is dropped and neither corrupts the document.
+assert_contains "$ctx" "<json-shaped-chunk>"
+assert_contains "$ctx" "<plain-text-chunk>"
+# The raw JSON wrapper of the child hook must NOT leak into the context string.
+if printf '%s' "$ctx" | grep -qF 'hookSpecificOutput'; then
+  echo "Child hook JSON wrapper leaked into additionalContext:" >&2
+  printf '%s\n' "$ctx" >&2
+  exit 1
+fi
+
+# SessionStart takes the same path and must also be a single JSON document.
+out="$(run_adapter "$payload_session")"
+printf '%s' "$out" | jq -e . >/dev/null || {
+  echo "SessionStart stdout is not a single valid JSON document:" >&2
+  printf '%s\n' "$out" >&2
+  exit 1
+}
+assert_contains "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')" "POLICY"
 
 # ----- folded sensitive-path deny (block_sensitive_read_if_needed inline) -----
 

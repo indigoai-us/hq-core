@@ -79,7 +79,10 @@ echo "$OUT" | jq -e '.disposition == "reply" and (.runDir | type == "string" and
   || fail "valid request envelope missing runDir/reply: $OUT"
 RUNDIR="$(echo "$OUT" | jq -r .runDir)"
 [ -d "$RUNDIR" ] || fail "runDir does not exist: $RUNDIR"
-MODE="$(stat -f %Lp "$RUNDIR" 2>/dev/null || stat -c %a "$RUNDIR")"
+# GNU stat first, BSD second — see the note in hq-agent-session-resume.test.sh.
+# GNU's `-f` succeeds on Linux and prints a filesystem dump instead of failing
+# over to `-c`, so the reversed order silently compares against the wrong thing.
+MODE="$(stat -c %a "$RUNDIR" 2>/dev/null || stat -f %Lp "$RUNDIR" 2>/dev/null)"
 [ "$MODE" = "700" ] || fail "runDir mode not 700: $MODE"
 pass "valid request"
 

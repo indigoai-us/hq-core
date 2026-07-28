@@ -82,17 +82,54 @@ fi
 # Shared python-free primitives (hq_normpath fallback in normalize_path).
 
 STDOUT_ACCUM=""
+STDOUT_CHUNKS=()
 DIAG_ACCUM=""
 
 append_stdout() {
   local text="$1"
   [ -z "$text" ] && return 0
+  STDOUT_CHUNKS+=("$text")
   if [ -z "$STDOUT_ACCUM" ]; then
     STDOUT_ACCUM="$text"
   else
     STDOUT_ACCUM="${STDOUT_ACCUM}
 ${text}"
   fi
+}
+
+# Codex parses a hook's stdout as ONE JSON document whenever it starts with
+# "{", and rejects the whole thing if anything trails the object. HQ's child
+# hooks are a mix of shapes: auto-session-project emits a Claude-style
+# {"hookSpecificOutput": {"additionalContext": "..."}} object, while
+# inject-policy-on-trigger emits bare text. Concatenating them produced
+# JSON-then-text, so Codex failed the event ("UserPromptSubmit Failed") and
+# dropped BOTH payloads — no session-project context and no policy reminders
+# ever reached a Codex session. Flatten every chunk to its plain-text context
+# so the caller can wrap the result in exactly one object.
+context_text() {
+  local chunk extracted out=""
+  for chunk in ${STDOUT_CHUNKS[@]+"${STDOUT_CHUNKS[@]}"}; do
+    extracted=""
+    case "$chunk" in
+      '{'*)
+        extracted="$(printf '%s' "$chunk" | jq -r '
+          .hookSpecificOutput.additionalContext
+          // .additionalContext
+          // .systemMessage
+          // empty
+        ' 2>/dev/null || true)"
+        ;;
+    esac
+    # Not JSON, or JSON carrying no context field: pass the chunk through as-is.
+    [ -z "$extracted" ] && extracted="$chunk"
+    if [ -z "$out" ]; then
+      out="$extracted"
+    else
+      out="${out}
+${extracted}"
+    fi
+  done
+  printf '%s' "$out"
 }
 
 append_diag() {
@@ -335,20 +372,21 @@ block_sensitive_read_if_needed() {
 emit_context() {
   [ -z "$STDOUT_ACCUM" ] && return 0
 
+  local ctx
+  ctx="$(context_text)"
+  [ -z "$ctx" ] && return 0
+
   case "$HOOK_EVENT" in
-    SessionStart|UserPromptSubmit)
-      printf '%s\n' "$STDOUT_ACCUM"
-      ;;
-    PostToolUse)
-      jq -n --arg ctx "$STDOUT_ACCUM" '{
+    SessionStart|UserPromptSubmit|PostToolUse)
+      jq -n --arg ctx "$ctx" --arg ev "$HOOK_EVENT" '{
         hookSpecificOutput: {
-          hookEventName: "PostToolUse",
+          hookEventName: $ev,
           additionalContext: $ctx
         }
       }'
       ;;
     Stop|PreCompact)
-      jq -n --arg msg "$STDOUT_ACCUM" '{systemMessage: $msg}'
+      jq -n --arg msg "$ctx" '{systemMessage: $msg}'
       ;;
   esac
 }

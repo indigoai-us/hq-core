@@ -783,7 +783,12 @@ main() {
     new_sid="${HQ_AGENT_SESSION_CAPTURED_ID}"
   fi
   if [ -n "$new_sid" ]; then
-    session_resume_write "$conv_key" "$provider" "$new_sid" 2>/dev/null || true
+    # Carry the conversation descriptor so a later sweep (idle reflection) can
+    # start from the record and re-enter this conversation. Best-effort: a
+    # descriptor failure must never cost us the resume id itself.
+    session_resume_write "$conv_key" "$provider" "$new_sid" \
+      "$(session_resume_descriptor "$conv_key" "$agent_uid" "$company_slug" "$channel" 2>/dev/null || true)" \
+      2>/dev/null || true
   fi
 
   session_finalize_writes "$root" "$project_dir" "$SESSION_RUN_START_EPOCH"

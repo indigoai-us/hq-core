@@ -3,9 +3,17 @@
 # session-resume.sh — per-convKey provider session id records for hq-agent-session.
 #
 # Record path: $HOME/.hq/agent-session/resume/<sha256 of convKey>.json
-# Body: { "provider", "sessionId", "updatedAt" } mode 600.
+# Body: { "provider", "sessionId", "updatedAt" } mode 600, plus an OPTIONAL
+# conversation descriptor (see session_resume_descriptor).
 # TTL mirrors CONVERSATION_TTL_DAYS (30) in hq-pro conversation-store.
 # Cross-provider reads discard the record; corrupt/expired never fatal.
+#
+# NOTE FOR SWEEPERS / OFFLINE READERS: session_resume_read DELETES the record on
+# TTL-expiry, cross-provider mismatch, or malformed body. That is correct for a
+# turn (a record it will not use should not linger) but WRONG for any process
+# that merely inspects records — deleting one silently costs a live conversation
+# its history the next time a user revives it. Read the JSON directly instead.
+# personal/scripts/hq-agent-reflect.sh does exactly that, on purpose.
 
 # Mirror of CONVERSATION_TTL_DAYS (src/agents/conversations/conversation-store.ts:44)
 CONVERSATION_TTL_DAYS="${CONVERSATION_TTL_DAYS:-30}"
@@ -58,20 +66,59 @@ session_resume_iso_to_epoch() {
   return 1
 }
 
-# session_resume_write <convKey> <provider> <sessionId>
+# session_resume_descriptor <convKey> <agentUid> <companySlug> <channel>
+#   Build the conversation descriptor object for session_resume_write.
+#
+#   The record is KEYED by sha256(convKey), so on its own it is a one-way hash —
+#   nothing on the box can turn a record back into the conversation it belongs
+#   to. That is fine for resuming (the caller already holds the convKey) but
+#   makes the store useless to any process that starts from the records, such as
+#   the idle-reflection sweep. The descriptor carries just enough non-secret
+#   routing to re-enter the conversation. No message content, no token.
+session_resume_descriptor() {
+  local conv_key="${1:-}" agent_uid="${2:-}" company_slug="${3:-}" channel="${4:-}"
+  jq -nc \
+    --arg convKey "$conv_key" \
+    --arg agentUid "$agent_uid" \
+    --arg companySlug "$company_slug" \
+    --arg channel "$channel" \
+    '{convKey:$convKey, agentUid:$agentUid, companySlug:$companySlug, channel:$channel}
+     | with_entries(select(.value != ""))' 2>/dev/null || printf '{}'
+}
+
+# session_resume_write <convKey> <provider> <sessionId> [descriptorJson]
 #   Writes record mode 600. Returns 0 on success.
+#
+#   descriptorJson (optional) is a JSON OBJECT of extra routing fields — see
+#   session_resume_descriptor. It is merged UNDERNEATH the canonical fields, so
+#   a malformed or hostile descriptor can never shadow provider/sessionId/
+#   updatedAt. A non-object descriptor is dropped rather than failing the write:
+#   losing the resume record is far worse than losing the descriptor.
+#
+#   Backward compatible in BOTH directions. session_resume_read selects fields
+#   by name, so an old reader ignores the descriptor; and a record written
+#   before this change simply has no descriptor, which readers treat as "not
+#   eligible for sweeping" rather than as corruption.
 session_resume_write() {
-  local conv_key="${1:-}" provider="${2:-}" session_id="${3:-}"
+  local conv_key="${1:-}" provider="${2:-}" session_id="${3:-}" descriptor="${4-}"
   local path tmp updated
   [ -n "$conv_key" ] && [ -n "$provider" ] && [ -n "$session_id" ] || return 1
   path="$(session_resume_path "$conv_key")" || return 1
   updated="$(session_resume_now_iso)"
+
+  if [ -n "$descriptor" ] \
+    && ! printf '%s' "$descriptor" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    descriptor=""
+  fi
+  [ -n "$descriptor" ] || descriptor='{}'
+
   tmp="${path}.tmp.$$"
   if ! jq -nc \
     --arg provider "$provider" \
     --arg sessionId "$session_id" \
     --arg updatedAt "$updated" \
-    '{provider:$provider, sessionId:$sessionId, updatedAt:$updatedAt}' \
+    --argjson descriptor "$descriptor" \
+    '$descriptor + {provider:$provider, sessionId:$sessionId, updatedAt:$updatedAt}' \
     > "$tmp" 2>/dev/null; then
     rm -f "$tmp"
     return 1
