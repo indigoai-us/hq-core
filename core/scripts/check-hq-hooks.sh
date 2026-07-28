@@ -24,6 +24,8 @@ EOF
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 HQ_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+# shellcheck source=core/scripts/lib/hook-command-scan.sh
+. "$SCRIPT_DIR/lib/hook-command-scan.sh"
 REQUIRE_LEDGER=0
 SESSION_ID=""
 
@@ -64,8 +66,61 @@ fi
 HQ_ROOT="$(cd "$HQ_ROOT" && pwd -P)"
 
 SETTINGS="$HQ_ROOT/.claude/settings.json"
+LOCAL_SETTINGS="$HQ_ROOT/.claude/settings.local.json"
 LEDGER_DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
 ISSUES=()
+SCANNED=()
+ROOT_HAS_SPACE=0
+case "$HQ_ROOT" in
+  *[[:space:]]*) ROOT_HAS_SPACE=1 ;;
+esac
+
+# Every hook command is executed by /bin/sh, so an unquoted $CLAUDE_PROJECT_DIR
+# is word-split. On a root whose path contains a space that truncates the
+# script path and every hook dies as a non-blocking error nobody sees.
+#
+# The scan is quote-aware (core/scripts/lib/hook-command-scan.sh): it splits a
+# command the way the shell would and flags only an expansion that really sits
+# outside quotes. "$CLAUDE_PROJECT_DIR/..." and "${CLAUDE_PROJECT_DIR}/..." are
+# split-safe, and so is a quoted token that merely contains the variable such as
+# "--root=$CLAUDE_PROJECT_DIR". This checker diagnoses arbitrary field settings
+# that may have drifted by hand or by merge, and calling a safe form broken
+# would be exactly the confident misdiagnosis it exists to end. The shipped file
+# is separately held to one canonical shape by hook-path-resolution.test.sh.
+
+# Scan every command hook in one settings file. Claude Code merges
+# .claude/settings.local.json over .claude/settings.json, so a hook command that
+# lives only in the local overlay fails on a spaced root exactly like a shipped
+# one. Appends to ISSUES; takes the file path and the label used in messages.
+scan_hook_commands() {
+  local file="$1" label="$2" commands unquoted relpath
+
+  # One JSON-encoded command per line: a hook command may contain a newline, so
+  # counting raw lines would report one broken command as several.
+  commands="$(hook_scan_commands_json "$file")"
+
+  unquoted="$(printf '%s\n' "$commands" | hook_scan_unquoted_commands | grep -c . || true)"
+  if [ "$unquoted" -gt 0 ]; then
+    if [ "$ROOT_HAS_SPACE" -eq 1 ]; then
+      ISSUES+=("${unquoted} hook command(s) in ${label} reference \$CLAUDE_PROJECT_DIR without quotes and this HQ root contains a space, so /bin/sh splits the path and every one of those hooks is failing right now: $HQ_ROOT")
+    else
+      ISSUES+=("${unquoted} hook command(s) in ${label} reference \$CLAUDE_PROJECT_DIR without quotes; they break on any install path containing a space")
+    fi
+  fi
+
+  # Only the scripts a command actually runs are required to exist. A guarded
+  # optional path (`[ -f "$CLAUDE_PROJECT_DIR/personal/x.sh" ] && …`), a data
+  # argument, or a file the hook creates at runtime is absent on a perfectly
+  # healthy install, and failing those would make this checker cry wolf.
+  while IFS= read -r relpath; do
+    [ -n "$relpath" ] || continue
+    if [ ! -e "$HQ_ROOT/$relpath" ]; then
+      ISSUES+=("a hook command in ${label} runs a script that does not exist: $relpath")
+    fi
+  done <<EOF
+$(printf '%s\n' "$commands" | hook_scan_required_relpaths | sort -u)
+EOF
+}
 
 if [ ! -f "$SETTINGS" ]; then
   ISSUES+=(".claude/settings.json is missing")
@@ -84,6 +139,23 @@ else
       ISSUES+=("${event} has no command hook in .claude/settings.json")
     fi
   done
+
+  scan_hook_commands "$SETTINGS" ".claude/settings.json"
+  SCANNED+=(".claude/settings.json")
+fi
+
+# The local overlay is optional, so its absence is never an issue — but when it
+# is present Claude Code loads its hooks too, and an unquoted command hiding
+# there produces the same silent failure as one in the shipped file.
+if [ -f "$LOCAL_SETTINGS" ]; then
+  if ! command -v jq >/dev/null 2>&1; then
+    ISSUES+=("jq is required to inspect .claude/settings.local.json")
+  elif ! jq empty "$LOCAL_SETTINGS" >/dev/null 2>&1; then
+    ISSUES+=(".claude/settings.local.json is not valid JSON")
+  else
+    scan_hook_commands "$LOCAL_SETTINGS" ".claude/settings.local.json"
+    SCANNED+=(".claude/settings.local.json")
+  fi
 fi
 
 LEDGER_STATE="not checked"
@@ -137,6 +209,8 @@ fi
 echo "HQ hook health: PASS"
 echo "  root: $HQ_ROOT"
 echo "  settings: SessionStart and PreToolUse command hooks present"
+echo "  scanned: $(printf '%s, ' "${SCANNED[@]-none}" | sed 's/, $//')"
+echo "  paths: every \$CLAUDE_PROJECT_DIR expansion is quoted, and every hook script it runs exists"
 if [ "$REQUIRE_LEDGER" -eq 1 ]; then
   echo "  ledger: $LEDGER_STATE"
   if [ -n "$SESSION_ID" ]; then

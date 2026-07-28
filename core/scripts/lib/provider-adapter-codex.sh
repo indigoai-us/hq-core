@@ -15,6 +15,13 @@
 # Invocation parity with resolveRunAgentInner:
 #   codex exec --skip-git-repo-check --dangerously-bypass-hook-trust <prompt>
 #
+# Final-answer capture (codex-cli 0.145.0, AE incident 2026-07-28): newer codex
+# builds stream the final agent message to STDERR and can leave stdout EMPTY,
+# which the engine read as "no reply" and turned into a task-failed post while
+# the real answer was discarded. `--output-last-message` (supported by both
+# `exec` and `exec resume` in 0.145.0) writes the last agent message to a file;
+# hq-agent-session falls back to it whenever provider.stdout comes back empty.
+#
 # CWD: HQ_SESSION_PROJECT_DIR when set, else company_dir.
 
 provider_adapter_codex() {
@@ -45,6 +52,8 @@ provider_adapter_codex() {
       resume
       --skip-git-repo-check
       --dangerously-bypass-hook-trust
+      --output-last-message
+      "$run_dir/last-message.txt"
       "$resume_id"
       --
       "$prompt"
@@ -55,6 +64,8 @@ provider_adapter_codex() {
       exec
       --skip-git-repo-check
       --dangerously-bypass-hook-trust
+      --output-last-message
+      "$run_dir/last-message.txt"
       --
       "$prompt"
     )

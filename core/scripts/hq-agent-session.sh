@@ -335,6 +335,36 @@ emit_and_exit() {
   exit "${SESSION_EXIT_CODE:-1}"
 }
 
+# Provider stdout with last-message fallback (codex-cli 0.145.0, AE incident
+# 2026-07-28): newer codex builds can stream the final answer to stderr and
+# leave stdout empty, which read as "no reply" and became a task-failed post
+# over a completed run. Adapters that support it write the last agent message
+# to $run_dir/last-message.txt; an empty stdout falls back to that file.
+session_read_provider_out() {
+  local rd="${1:-}" provider="${2:-}" out
+  out="$(cat "$rd/provider.stdout" 2>/dev/null || true)"
+  if [ -z "$out" ] && [ -s "$rd/last-message.txt" ]; then
+    out="$(cat "$rd/last-message.txt" 2>/dev/null || true)"
+  fi
+  # Last resort, codex only (AE 2026-07-28, second shape): a long agent run
+  # that ends on hook/auto-checkpoint activity finishes with NO final agent
+  # message, so stdout AND --output-last-message are both empty even though
+  # the real answer was emitted mid-run to stderr as a "codex" block. Extract
+  # the LAST such block; stop at the next hook/diff/usage marker. Codex-only:
+  # other providers do not use this stderr framing.
+  if [ -z "$out" ] && [ "$provider" = "codex" ] && [ -s "$rd/provider.stderr" ]; then
+    out="$(awk '
+      /^codex$/ { blk=""; cap=1; next }
+      cap && (/^hook: / || /^diff --git / || /^tokens used/ || /^OpenAI Codex/) { cap=0 }
+      cap { blk = blk $0 "\n" }
+      END { printf "%s", blk }
+    ' "$rd/provider.stderr" 2>/dev/null || true)"
+    # Trim trailing blank lines.
+    out="$(printf '%s' "$out" | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}')"
+  fi
+  printf '%s' "$out"
+}
+
 # trap: always emit a valid envelope even on unexpected failure
 _cleanup_trap() {
   local ec=$?
@@ -707,7 +737,7 @@ main() {
     >"$run_dir/provider.stdout" 2>"$run_dir/provider.stderr"
   prov_rc=$?
   session_heartbeat_stop
-  prov_out="$(cat "$run_dir/provider.stdout" 2>/dev/null || true)"
+  prov_out="$(session_read_provider_out "$run_dir" "$provider")"
   set -e
 
   if [ "$prov_rc" -eq 4 ]; then
@@ -731,7 +761,7 @@ main() {
       >"$run_dir/provider.stdout" 2>"$run_dir/provider.stderr"
     prov_rc=$?
     session_heartbeat_stop
-    prov_out="$(cat "$run_dir/provider.stdout" 2>/dev/null || true)"
+    prov_out="$(session_read_provider_out "$run_dir" "$provider")"
     set -e
   fi
 

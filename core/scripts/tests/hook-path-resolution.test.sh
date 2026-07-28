@@ -53,10 +53,39 @@ pass "master-hook.sh and reindex.sh anchored to \$CLAUDE_PROJECT_DIR"
 # Every project-root-derived path must be quoted, and each shipped hook
 # entrypoint must be launched through Bash so setup can recover even when an
 # archive or update strips executable bits.
+#
+# A project root whose path contains a space is the field failure this guards.
+# An unquoted reference is word-split by /bin/sh, the hook execs a truncated
+# path ("<parent>/My" for "<parent>/My HQ"), and the entire hook layer dies
+# non-blocking and silent — no policy injection, no safety blockers, no
+# automations, and no error the user ever sees. Two layers below: a static
+# contract over the shipped command strings, and an execution pass that runs
+# EVERY shipped command from a root containing a space. Both are functions so
+# the negative controls at the end can prove they reject the broken forms.
 hook_commands="$(jq -r '.. | objects | select(.type? == "command") | .command' "$SETTINGS")"
-if printf '%s\n' "$hook_commands" \
-    | grep -nE '(^|[[:space:]])\$CLAUDE_PROJECT_DIR/|"\$CLAUDE_PROJECT_DIR/[^"]*([[:space:]]|$)'; then
-  fail "settings.json has an unquoted \$CLAUDE_PROJECT_DIR-derived path"
+
+# The static guard is the same quote-aware scanner the runtime doctor
+# (core/scripts/check-hq-hooks.sh) uses, sourced rather than re-implemented so
+# the two can never drift on what counts as quoted. It splits a command the way
+# /bin/sh would, so it catches the braced form ${CLAUDE_PROJECT_DIR}/… and
+# embedded forms like --root=$CLAUDE_PROJECT_DIR/… that a "whitespace then
+# $VAR" pattern silently lets through, while leaving genuinely quoted tokens
+# alone. Both wrappers take one command per line and keep this file's
+# convention that "refs found" is a successful exit.
+# shellcheck source=core/scripts/lib/hook-command-scan.sh
+. "$ROOT/core/scripts/lib/hook-command-scan.sh"
+
+unquoted_project_dir_refs() {
+  printf '%s\n' "$1" | hook_scan_encode | hook_scan_unquoted_commands | grep .
+}
+
+# Every $CLAUDE_PROJECT_DIR-relative path a command names, quoted or not.
+project_dir_relpaths() {
+  printf '%s\n' "$1" | hook_scan_encode | hook_scan_relpaths
+}
+
+if unquoted_project_dir_refs "$hook_commands"; then
+  fail "settings.json has an unquoted \$CLAUDE_PROJECT_DIR-derived path (dies on a root containing a space)"
 fi
 if printf '%s\n' "$hook_commands" \
     | grep -vE '^bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/(hook-gate|master-hook|reindex)\.sh"([[:space:]]|$)'; then
@@ -64,29 +93,134 @@ if printf '%s\n' "$hook_commands" \
 fi
 pass "all project-root paths are quoted and hook entrypoints use bash"
 
-# Execute a real shipped command string against non-executable fixtures. This
-# covers both shell word splitting and the entrypoint executable-bit fallback.
-SPACE_PARENT="$(mktemp -d)"; SPACE_ROOT="$SPACE_PARENT/HQ With Spaces"
-mkdir -p "$SPACE_ROOT/.claude/hooks"; trap 'rm -rf "$SPACE_PARENT"' EXIT
-cat >"$SPACE_ROOT/.claude/hooks/hook-gate.sh" <<'EOF'
+# A real shipped command string must drive its delegate to completion from a
+# spaced root even when both files have lost their executable bit.
+REP_PARENT="$(mktemp -d)"; REP_ROOT="$REP_PARENT/HQ With Spaces"
+mkdir -p "$REP_ROOT/.claude/hooks"; trap 'rm -rf "$REP_PARENT"' EXIT
+cat >"$REP_ROOT/.claude/hooks/hook-gate.sh" <<'EOF'
 #!/usr/bin/env bash
 [ "$#" -eq 2 ] || exit 10
 [ "$1" = "session-title" ] || exit 11
 [ "$2" = "$CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh" ] || exit 12
 bash "$2"
 EOF
-cat >"$SPACE_ROOT/.claude/hooks/session-title.sh" <<'EOF'
+cat >"$REP_ROOT/.claude/hooks/session-title.sh" <<'EOF'
 #!/usr/bin/env bash
 touch "$CLAUDE_PROJECT_DIR/.representative-hook-ran"
 EOF
-chmod 0644 "$SPACE_ROOT/.claude/hooks/hook-gate.sh" "$SPACE_ROOT/.claude/hooks/session-title.sh"
+chmod 0644 "$REP_ROOT/.claude/hooks/hook-gate.sh" "$REP_ROOT/.claude/hooks/session-title.sh"
 representative_command="$(jq -r '[.. | objects | select(.type? == "command") | .command | select(contains(" session-title "))][0] // empty' "$SETTINGS")"
 [ -n "$representative_command" ] || fail "session-title command missing from settings.json"
 rc=0
-CLAUDE_PROJECT_DIR="$SPACE_ROOT" /bin/sh -c "$representative_command" || rc=$?
+CLAUDE_PROJECT_DIR="$REP_ROOT" /bin/sh -c "$representative_command" || rc=$?
 [ "$rc" -eq 0 ] || fail "representative command failed from a project root containing spaces (rc=$rc)"
-[ -f "$SPACE_ROOT/.representative-hook-ran" ] || fail "representative command did not run its child hook"
+[ -f "$REP_ROOT/.representative-hook-ran" ] || fail "representative command did not run its child hook"
 pass "representative command works with spaces and non-executable hook files"
+rm -rf "$REP_PARENT"; trap - EXIT
+
+# Execute the shipped command strings against non-executable recording stubs in
+# an install root whose path contains a space. This covers shell word splitting
+# and the entrypoint executable-bit fallback for EVERY command, not a sample.
+SPACE_PARENT="$(mktemp -d)"; SPACE_ROOT="$SPACE_PARENT/HQ With Spaces"
+STUB_LOG="$SPACE_PARENT/stub.log"
+trap 'rm -rf "$SPACE_PARENT"' EXIT
+while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  mkdir -p "$SPACE_ROOT/$(dirname "$rel")"
+  cat >"$SPACE_ROOT/$rel" <<'STUB'
+#!/usr/bin/env bash
+# Recording stub: logs how it was invoked and flags any path-shaped argument
+# that does not resolve — the signature of a word-split project root.
+log="${HQ_STUB_LOG:?stub log path missing}"
+printf 'self=%s\n' "$0" >>"$log"
+for a in "$@"; do
+  printf 'arg=%s\n' "$a" >>"$log"
+  case "$a" in
+    */*) [ -e "$a" ] || printf 'SPLIT_PATH=%s\n' "$a" >>"$log" ;;
+  esac
+done
+STUB
+  chmod 0644 "$SPACE_ROOT/$rel"
+done < <(project_dir_relpaths "$hook_commands" | sort -u)
+
+# Run one command string from the spaced root; non-zero means it would break.
+run_command_in_spaced_root() {
+  local cmd="$1" rc=0 rel
+  : >"$STUB_LOG"
+  CLAUDE_PROJECT_DIR="$SPACE_ROOT" HQ_STUB_LOG="$STUB_LOG" \
+    /bin/sh -c "$cmd" </dev/null >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "  command exited $rc" >&2
+    return 1
+  fi
+  if grep -q '^SPLIT_PATH=' "$STUB_LOG"; then
+    grep '^SPLIT_PATH=' "$STUB_LOG" >&2
+    return 1
+  fi
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    grep -qxF "self=$SPACE_ROOT/$rel" "$STUB_LOG" \
+      || grep -qxF "arg=$SPACE_ROOT/$rel" "$STUB_LOG" \
+      || { echo "  path did not arrive intact: $SPACE_ROOT/$rel" >&2; return 1; }
+  done < <(project_dir_relpaths "$cmd")
+  return 0
+}
+
+executed=0
+while IFS= read -r cmd; do
+  [ -n "$cmd" ] || continue
+  run_command_in_spaced_root "$cmd" \
+    || fail "shipped hook command breaks from a project root containing a space: $cmd"
+  executed=$((executed + 1))
+done <<<"$hook_commands"
+[ "$executed" -ge 20 ] \
+  || fail "expected the full shipped hook command set, executed only $executed"
+pass "all $executed shipped hook commands run intact from a root containing a space"
+
+# Negative controls: both guards must actually reject the broken forms. The
+# braced and embedded variants split identically in the field but slipped past
+# the earlier pattern-only check, so each is proven rejected here.
+while IFS= read -r broken; do
+  [ -n "$broken" ] || continue
+  unquoted_project_dir_refs "$broken" >/dev/null \
+    || fail "static guard missed an unquoted form: $broken"
+  if run_command_in_spaced_root "$broken" 2>/dev/null; then
+    fail "execution guard missed an unquoted form: $broken"
+  fi
+done <<'BROKEN'
+bash "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh" session-title $CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh
+bash "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh" session-title ${CLAUDE_PROJECT_DIR}/.claude/hooks/session-title.sh
+bash $CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh session-title "$CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh"
+bash "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh" session-title "$CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh" --root=$CLAUDE_PROJECT_DIR/core/scripts
+BROKEN
+pass "guards reject bare, braced, unquoted-entrypoint, and embedded forms"
+
+# Positive controls: a quoted token that merely *contains* the variable is
+# split-safe, and calling it broken would be a false alarm that sends someone
+# repairing a healthy config. Proven both ways — the static guard stays quiet
+# and the command runs clean from the spaced root.
+while IFS= read -r safe; do
+  [ -n "$safe" ] || continue
+  if unquoted_project_dir_refs "$safe" >/dev/null; then
+    fail "static guard called a split-safe form unquoted: $safe"
+  fi
+done <<'SAFE'
+bash "$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh" session-title "$CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh" "--root=$CLAUDE_PROJECT_DIR"
+bash "${CLAUDE_PROJECT_DIR}/.claude/hooks/hook-gate.sh" session-title "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-title.sh"
+SAFE
+run_command_in_spaced_root 'bash "${CLAUDE_PROJECT_DIR}/.claude/hooks/hook-gate.sh" session-title "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-title.sh"' \
+  || fail "execution guard rejected a split-safe braced form"
+pass "guards accept quoted plain, braced, and embedded-in-a-quoted-token forms"
+
+# The existence sweep above is only as complete as this extraction: a path the
+# helper skips is a path no assertion ever covers. One token can name two, and a
+# quoted segment can contain a space.
+relpaths_out="$(project_dir_relpaths 'bash "$CLAUDE_PROJECT_DIR/a dir/one.sh" "--pair=$CLAUDE_PROJECT_DIR/b/two.sh:$CLAUDE_PROJECT_DIR/c/three.sh"')"
+for expected in 'a dir/one.sh' 'b/two.sh' 'c/three.sh'; do
+  printf '%s\n' "$relpaths_out" | grep -qxF "$expected" \
+    || fail "path extraction dropped $expected: $relpaths_out"
+done
+pass "every \$CLAUDE_PROJECT_DIR path in a token is extracted, spaces intact"
 rm -rf "$SPACE_PARENT"; trap - EXIT
 
 # setup.sh must restore executable bits in both release-shipped script trees.

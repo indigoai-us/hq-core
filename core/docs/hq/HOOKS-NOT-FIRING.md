@@ -30,8 +30,44 @@ bash core/scripts/check-hq-hooks.sh --root "$PWD"
 ```
 
 The checker confirms valid `.claude/settings.json` plus non-empty
-`SessionStart` and `PreToolUse` command hooks. It is an ordinary shell command,
-so it works even when every lifecycle hook is unavailable.
+`SessionStart` and `PreToolUse` command hooks, that every `$CLAUDE_PROJECT_DIR`
+reference in those commands is quoted, and that the script each command actually
+runs exists. It applies the same command scan to `.claude/settings.local.json`
+when that optional overlay is present, since Claude Code loads its hooks too. It
+is an ordinary shell command, so it works even when every lifecycle hook is
+unavailable.
+
+The scan splits each command the way `/bin/sh` would rather than matching text,
+so it reports only the references the shell would really split, and it reads a
+path through its closing quote so a directory name containing a space is named
+in full. A path the command does not execute — a guarded optional hook, a data
+argument, a file the hook writes at runtime — is not required to exist.
+
+## An install path containing a space
+
+Hook commands are executed by `/bin/sh`. An unquoted `$CLAUDE_PROJECT_DIR` is
+word-split, so on a root such as `/Users/you/Documents/SENDER HQ` the shell
+tries to execute `/Users/you/Documents/SENDER` and every hook fails with
+`No such file or directory`. Those failures are non-blocking, so nothing is
+surfaced in the session: policy injection, secret detection, the core-write and
+cross-company guards, autocommit, and journal capture are all inactive while
+the session looks normal.
+
+Both `"$CLAUDE_PROJECT_DIR/..."` and `"${CLAUDE_PROJECT_DIR}/..."` are safe; only
+an unquoted reference splits. The released `.claude/settings.json` quotes every
+one of them. A settings file can still drift out of that shape through an old
+install, a hand edit, a merge, or a hook added to
+`.claude/settings.local.json`. The checker reports that condition by name and
+says which file it came from. For the shipped file, the targeted rescue below
+restores the released, quote-safe copy:
+
+```bash
+hq rescue -y --paths .claude
+```
+
+`.claude/settings.local.json` is machine-local: `core/core.yaml` excludes it
+from the release payload and preserves it across updates, so a rescue will not
+rewrite it. Quote any `$CLAUDE_PROJECT_DIR` reference in that overlay by hand.
 
 After starting an actual Desktop or SDK session, verify that the policy trigger
 was observed as well:

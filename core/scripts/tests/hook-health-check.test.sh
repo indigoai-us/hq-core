@@ -107,4 +107,287 @@ printf '%s' "$out" | grep -Fq 'session: app-sdk-session' \
   || fail "exact session identity was not reported: $out"
 pass "session-scoped ledger check rejects stale evidence"
 
+echo "[7] an unquoted project-dir reference is caught, not reported as healthy"
+# feedback_4e67345c-ca66-4dae-8500-19c52726c39c: an install root containing a
+# space plus unquoted $CLAUDE_PROJECT_DIR made /bin/sh split the script path, so
+# every hook died as a non-blocking error while this checker still said PASS.
+make_hook_scripts() {
+  local root="$1"
+  mkdir -p "$root/.claude/hooks"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$root/.claude/hooks/hook-gate.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$root/.claude/hooks/probe.sh"
+  chmod +x "$root/.claude/hooks/hook-gate.sh" "$root/.claude/hooks/probe.sh"
+}
+
+SPACED="$TMP/HQ With Spaces"
+make_hook_scripts "$SPACED"
+# The checker reports the physical root; compare against the same form.
+SPACED="$(cd "$SPACED" && pwd -P)"
+cat >"$SPACED/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh probe $CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh"}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh"}]}]
+  }
+}
+JSON
+
+# Anchor the claim: that exact command really does die on this root.
+split_cmd="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$SPACED/.claude/settings.json")"
+set +e
+CLAUDE_PROJECT_DIR="$SPACED" /bin/sh -c "$split_cmd" >/dev/null 2>&1
+split_rc=$?
+set -e
+[ "$split_rc" -ne 0 ] || fail "expected the unquoted command to fail on a spaced root, but it succeeded"
+
+out="$(run_expect 2 "$SPACED")"
+printf '%s' "$out" | grep -Fq 'without quotes' || fail "unquoted reference diagnosis absent: $out"
+printf '%s' "$out" | grep -Fq "$SPACED" || fail "diagnosis did not name the spaced root: $out"
+pass "unquoted references on a spaced root fail instead of passing silently"
+
+echo "[8] the same root passes once every reference is quoted"
+cat >"$SPACED/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" probe \"$CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh\""}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh\""}]}]
+  }
+}
+JSON
+quoted_cmd="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$SPACED/.claude/settings.json")"
+CLAUDE_PROJECT_DIR="$SPACED" /bin/sh -c "$quoted_cmd" >/dev/null 2>&1 \
+  || fail "the quoted command should run cleanly from a spaced root"
+out="$(run_expect 0 "$SPACED")"
+printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' || fail "quoted spaced root did not pass: $out"
+pass "quoted references pass on a path containing a space"
+
+echo "[9] braced and embedded references are caught too"
+for variant in \
+  'bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/probe.sh' \
+  'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh" --root=$CLAUDE_PROJECT_DIR'
+do
+  BRACED="$TMP/braced"
+  rm -rf "$BRACED"
+  make_hook_scripts "$BRACED"
+  jq -n --arg cmd "$variant" '{
+    hooks: {
+      SessionStart: [{hooks: [{type: "command", command: "echo session-start"}]}],
+      PreToolUse: [{hooks: [{type: "command", command: $cmd}]}]
+    }
+  }' >"$BRACED/.claude/settings.json"
+  out="$(run_expect 2 "$BRACED")"
+  printf '%s' "$out" | grep -Fq 'without quotes' \
+    || fail "variant not detected as unquoted: $variant :: $out"
+done
+pass "braced and embedded project-dir references are detected"
+
+echo "[10] a QUOTED braced reference is split-safe and must not be called broken"
+# The detector blanks well-formed quoted tokens and reports the rest. If it only
+# recognised "$CLAUDE_PROJECT_DIR/..." then "${CLAUDE_PROJECT_DIR}/..." — which
+# /bin/sh handles perfectly — would be reported as a hook that is "failing right
+# now", turning the tool meant to end a silent misdiagnosis into a confident
+# false one. Anchor the claim by running the command before trusting the verdict.
+cat >"$SPACED/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/hook-gate.sh\" probe \"${CLAUDE_PROJECT_DIR}/.claude/hooks/probe.sh\""}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/probe.sh\""}]}]
+  }
+}
+JSON
+braced_quoted_cmd="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$SPACED/.claude/settings.json")"
+CLAUDE_PROJECT_DIR="$SPACED" /bin/sh -c "$braced_quoted_cmd" >/dev/null 2>&1 \
+  || fail "the quoted braced command should run cleanly from a spaced root"
+out="$(run_expect 0 "$SPACED")"
+printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+  || fail "quoted braced reference was wrongly reported as broken: $out"
+pass "a quoted \${CLAUDE_PROJECT_DIR} reference passes on a spaced root"
+
+echo "[11] an unquoted command in the local settings overlay is caught"
+# Claude Code merges .claude/settings.local.json over .claude/settings.json, so
+# a hook that lives only in the overlay fails on a spaced root just as silently.
+LOCAL="$TMP/HQ With Local Overlay"
+make_hook_scripts "$LOCAL"
+LOCAL="$(cd "$LOCAL" && pwd -P)"
+cat >"$LOCAL/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\""}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh\""}]}]
+  }
+}
+JSON
+# With no overlay present at all the root is healthy: absence must stay benign.
+out="$(run_expect 0 "$LOCAL")"
+printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+  || fail "a root without a local overlay should pass: $out"
+if printf '%s' "$out" | grep -Fq 'settings.local.json'; then
+  fail "an absent overlay must not be reported as scanned: $out"
+fi
+
+cat >"$LOCAL/.claude/settings.local.json" <<'JSON'
+{
+  "hooks": {
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh"}]}]
+  }
+}
+JSON
+overlay_cmd="$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$LOCAL/.claude/settings.local.json")"
+set +e
+CLAUDE_PROJECT_DIR="$LOCAL" /bin/sh -c "$overlay_cmd" >/dev/null 2>&1
+overlay_rc=$?
+set -e
+[ "$overlay_rc" -ne 0 ] || fail "expected the overlay command to fail on a spaced root, but it succeeded"
+
+out="$(run_expect 2 "$LOCAL")"
+printf '%s' "$out" | grep -Fq '.claude/settings.local.json' \
+  || fail "overlay diagnosis did not name the local settings file: $out"
+printf '%s' "$out" | grep -Fq 'without quotes' \
+  || fail "unquoted overlay reference not detected: $out"
+pass "an unquoted hook that lives only in the local overlay is detected"
+
+echo "[12] a quoted reference to a missing hook script fails"
+GONE="$TMP/gone"
+make_hook_scripts "$GONE"
+rm -f "$GONE/.claude/hooks/probe.sh"
+cat >"$GONE/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\""}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh\""}]}]
+  }
+}
+JSON
+out="$(run_expect 2 "$GONE")"
+printf '%s' "$out" | grep -Fq 'runs a script that does not exist: .claude/hooks/probe.sh' \
+  || fail "missing hook script diagnosis absent: $out"
+pass "a hook command pointing at a deleted script fails"
+
+echo "[13] the shipped project settings satisfy the checker"
+out="$(run_expect 0 "$ROOT")"
+printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' || fail "shipped settings did not pass: $out"
+pass "shipped .claude/settings.json is quote-safe and fully resolvable"
+
+echo "[14] a quoted token that merely CONTAINS the variable is split-safe"
+# "--root=$CLAUDE_PROJECT_DIR" is a single word to /bin/sh even on a spaced
+# root. A detector that only recognises a quoted token STARTING with the
+# variable calls this healthy config broken — and in the overlay the printed
+# repair (hq rescue) cannot even touch it, so the operator is sent in a circle.
+# Anchor the verdict: run the command first, observe rc=0, then ask the checker.
+EMBED="$TMP/HQ With Embedded Args"
+make_hook_scripts "$EMBED"
+EMBED="$(cd "$EMBED" && pwd -P)"
+cat >"$EMBED/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" probe \"$CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh\""}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh\" \"--root=$CLAUDE_PROJECT_DIR\""}]}]
+  }
+}
+JSON
+embed_cmd="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$EMBED/.claude/settings.json")"
+CLAUDE_PROJECT_DIR="$EMBED" /bin/sh -c "$embed_cmd" >/dev/null 2>&1 \
+  || fail "the embedded-but-quoted command should run cleanly from a spaced root"
+out="$(run_expect 0 "$EMBED")"
+printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+  || fail "a quoted token containing the variable was wrongly called unquoted: $out"
+
+cat >"$EMBED/.claude/settings.local.json" <<'JSON'
+{
+  "hooks": {
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh\" \"--root=$CLAUDE_PROJECT_DIR\""}]}]
+  }
+}
+JSON
+overlay_embed_cmd="$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$EMBED/.claude/settings.local.json")"
+CLAUDE_PROJECT_DIR="$EMBED" /bin/sh -c "$overlay_embed_cmd" >/dev/null 2>&1 \
+  || fail "the embedded-but-quoted overlay command should run cleanly from a spaced root"
+out="$(run_expect 0 "$EMBED")"
+printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+  || fail "a quoted token containing the variable was wrongly called unquoted in the overlay: $out"
+pass "\"--root=\$CLAUDE_PROJECT_DIR\" passes in both the shipped file and the overlay"
+
+echo "[15] paths a command does not execute are not required to exist"
+# A guarded optional hook and a data argument the hook creates at runtime are
+# both absent on a perfectly healthy install. Failing them would make the
+# checker cry wolf on configurations that run without error.
+OPTIONAL="$TMP/optional"
+make_hook_scripts "$OPTIONAL"
+cat >"$OPTIONAL/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "[ -f \"$CLAUDE_PROJECT_DIR/personal/hooks/opt.sh\" ] && bash \"$CLAUDE_PROJECT_DIR/personal/hooks/opt.sh\" || true"}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh\" \"$CLAUDE_PROJECT_DIR/workspace/generated-at-runtime.json\""}]}]
+  }
+}
+JSON
+while IFS= read -r optional_cmd; do
+  CLAUDE_PROJECT_DIR="$OPTIONAL" /bin/sh -c "$optional_cmd" >/dev/null 2>&1 \
+    || fail "an optional/runtime path command should run cleanly: $optional_cmd"
+done < <(jq -r '.. | objects | select(.type? == "command") | .command' "$OPTIONAL/.claude/settings.json")
+out="$(run_expect 0 "$OPTIONAL")"
+printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+  || fail "a guarded optional path or runtime data path was wrongly failed: $out"
+pass "guarded optional hooks and runtime data paths do not fail a healthy install"
+
+echo "[16] a path segment containing a space survives the scan"
+# The relpath must be read through its closing quote. Truncating at the first
+# space reports the nonexistent path "my" and hides the real one.
+SPACED_REL="$TMP/spaced-relpath"
+make_hook_scripts "$SPACED_REL"
+mkdir -p "$SPACED_REL/.claude/hooks/my dir"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$SPACED_REL/.claude/hooks/my dir/x.sh"
+chmod +x "$SPACED_REL/.claude/hooks/my dir/x.sh"
+cat >"$SPACED_REL/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\""}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/my dir/x.sh\""}]}]
+  }
+}
+JSON
+spaced_rel_cmd="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$SPACED_REL/.claude/settings.json")"
+CLAUDE_PROJECT_DIR="$SPACED_REL" /bin/sh -c "$spaced_rel_cmd" >/dev/null 2>&1 \
+  || fail "a quoted path with a spaced segment should run cleanly"
+out="$(run_expect 0 "$SPACED_REL")"
+printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+  || fail "a present hook script with a spaced path segment was reported missing: $out"
+
+rm -f "$SPACED_REL/.claude/hooks/my dir/x.sh"
+out="$(run_expect 2 "$SPACED_REL")"
+printf '%s' "$out" | grep -Fq 'runs a script that does not exist: .claude/hooks/my dir/x.sh' \
+  || fail "the missing spaced path was not named in full: $out"
+if printf '%s\n' "$out" | grep -Eq 'does not exist: \.claude/hooks/my$'; then
+  fail "the spaced path was truncated at the space: $out"
+fi
+pass "a spaced path segment is reported whole, present or missing"
+
+echo "[17] the count names broken commands, not matching lines"
+# A hook command may contain a newline. Counting lines turns one broken command
+# into several and understates two refs in one command, so the number an
+# operator reads would not be the number of hooks they have to fix.
+COUNT="$TMP/count"
+make_hook_scripts "$COUNT"
+multiline_cmd="$(printf 'bash $CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh\nbash $CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh')"
+jq -n --arg cmd "$multiline_cmd" '{
+  hooks: {
+    SessionStart: [{hooks: [{type: "command", command: "echo session-start"}]}],
+    PreToolUse: [{hooks: [{type: "command", command: $cmd}]}]
+  }
+}' >"$COUNT/.claude/settings.json"
+out="$(run_expect 2 "$COUNT")"
+printf '%s' "$out" | grep -Fq '1 hook command(s)' \
+  || fail "one multi-line command should count once: $out"
+
+jq -n '{
+  hooks: {
+    SessionStart: [{hooks: [{type: "command", command: "bash $CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh $CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh"}]}],
+    PreToolUse: [{hooks: [{type: "command", command: "bash $CLAUDE_PROJECT_DIR/.claude/hooks/probe.sh"}]}]
+  }
+}' >"$COUNT/.claude/settings.json"
+out="$(run_expect 2 "$COUNT")"
+printf '%s' "$out" | grep -Fq '2 hook command(s)' \
+  || fail "two broken commands should count twice: $out"
+pass "the reported number is a count of broken commands"
+
 echo "PASS: hook-health checker"

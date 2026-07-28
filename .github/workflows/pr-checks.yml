@@ -235,6 +235,17 @@ jobs:
       - name: Hook settings release contract
         run: bash core/scripts/tests/hook-settings-release-contract.test.sh
 
+  # feedback_4e67345c: an unquoted project-root path in a hook command is
+  # word-split by /bin/sh, so every hook dies non-blocking and silent on an
+  # install path containing a space. The guard existed but ran in no workflow.
+  hook-path-resolution:
+    name: hook-path-resolution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hook commands resolve from an install path containing spaces
+        run: bash core/scripts/tests/hook-path-resolution.test.sh
+
   # feedback_3cdd3064: deploy-summary.sh aborted under set -u when HQ_DEPLOY_API was unset.
   deploy-summary-nounset:
     name: deploy-summary-nounset
