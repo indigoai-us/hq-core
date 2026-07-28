@@ -222,6 +222,23 @@ jobs:
       - name: settings.json PATH snapshot composition
         run: bash core/scripts/tests/compose-settings-path.test.sh
 
+  agent-session-resume:
+    # The resume store is what lets a user revive a Slack thread days later, and
+    # its records are the only handle any sweep has on a conversation. These
+    # suites existed but nothing ran them on a PR — this job is that gate.
+    name: agent-session-resume
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resume store round-trip, TTL, and discard paths
+        run: bash core/scripts/tests/hq-agent-session-resume.test.sh
+      - name: Conversation descriptor on resume records
+        run: bash core/scripts/tests/hq-agent-session-resume-descriptor.test.sh
+      - name: Resume wiring through a real turn (incl. descriptor callsite)
+        run: bash core/scripts/tests/hq-agent-session-resume-wiring.test.sh
+      - name: Multi-line /slash never dispatches a skill
+        run: bash core/scripts/tests/hq-agent-session-skill-dispatch-multiline.test.sh
+
   hook-health-prevention:
     # DEV-1942: project hook configuration can be absent or never loaded in
     # Desktop/SDK sessions. Keep the independent doctor, release-overlay

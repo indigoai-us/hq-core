@@ -192,6 +192,29 @@ NEW="$(session_resume_read "$CONV2" "claude")"
 [ "$NEW" = "hq-stub-fresh-session-77" ] || fail "post-fallback resume id got='$NEW'"
 pass "rejection fallback + resumeFallback"
 
+# ── 4b. the turn persists the conversation descriptor (CALLSITE coverage) ───
+# The descriptor unit tests exercise session_resume_write/_descriptor directly,
+# so they stay green even if the 4th argument is dropped at the callsite in
+# hq-agent-session.sh. This asserts a REAL turn actually writes it — the sweep
+# that consumes these records (hq-pro idle reflection) can only start from a
+# record, so a silently descriptor-less write makes every conversation
+# unsweepable while every unit test still passes.
+REC_PATH="$(session_resume_path "$CONV2")"
+[ -f "$REC_PATH" ] || fail "no resume record after turn: $REC_PATH"
+jq -e \
+  --arg ck "$CONV2" \
+  '.convKey == $ck
+   and .agentUid == "agt_test"
+   and .companySlug == "indigo"
+   and .channel == "slack"' \
+  "$REC_PATH" >/dev/null \
+  || fail "turn did not persist the descriptor: $(cat "$REC_PATH")"
+# Canonical fields must still be intact alongside it.
+jq -e '.provider == "claude" and (.sessionId | length > 0) and (.updatedAt | length > 0)' \
+  "$REC_PATH" >/dev/null \
+  || fail "descriptor clobbered canonical fields: $(cat "$REC_PATH")"
+pass "a real turn persists the conversation descriptor"
+
 # ── 5. matrix documents resume for claude + codex ───────────────────────────
 MATRIX="$SRC_ROOT/core/knowledge/public/hq-core/agent-session-provider-matrix.md"
 [ -f "$MATRIX" ] || fail "missing matrix doc"
