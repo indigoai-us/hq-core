@@ -2,7 +2,6 @@
 id: hq-github-reference
 title: GitHub platform reference (on-demand)
 scope: global
-trigger: on-demand GitHub reference — NOT auto-injected; the binding gate is hq-github
 when: git && !git
 on: [PreToolUse]
 enforcement: soft

@@ -2,7 +2,6 @@
 id: hq-vercel-reference
 title: Vercel reference (on-demand)
 scope: global
-trigger: on-demand Vercel reference — NOT auto-injected; the binding gate is hq-vercel
 when: deploy && !deploy
 on: [PreToolUse]
 enforcement: soft

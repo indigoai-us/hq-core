@@ -2,7 +2,6 @@
 id: hq-linear
 title: Linear — auth header, description cap, PRD-scan hygiene
 scope: global
-trigger: when working with Linear (issues, projects, MCP, sync)
 when: linear
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard

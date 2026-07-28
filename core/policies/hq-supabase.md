@@ -2,7 +2,6 @@
 id: hq-supabase
 title: Supabase — never delete a project without confirmation
 scope: global
-trigger: when working with Supabase (auth, storage, postgres, realtime)
 when: supabase
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
