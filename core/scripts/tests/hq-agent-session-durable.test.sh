@@ -217,4 +217,64 @@ printf '%s\n' "$FOUND_PORTABLE" | grep -q '.session-logs' \
   && fail "portable residual scan descended into provider session logs"
 pass "portable residual scan prunes provider session logs"
 
+# ── Serialisation: one jq for the stream, and a hard cap ────────────────────
+#
+# Regression: Izzy discarded completed turns as "unexpected failure (exit 0)".
+# _session_paths_to_json_array called `jq -nc --arg p "$rel" '$p'` PER PATH,
+# purely to JSON-escape one short string. A turn touching ~47k workspace files
+# cost ~47k process spawns in post-turn bookkeeping -- after the model had
+# answered -- which outran the dispatch lane's 900s absolute cap. The engine
+# was killed before it emitted and the finished reply was thrown away.
+JQROOT="$(mktemp -d)"
+
+# Escaping is the reason jq is here at all: paths carry quotes, backslashes,
+# tabs and non-ASCII. Assert the DECODED values, so the test pins behaviour
+# rather than one particular escaping spelling.
+ESC="$(printf '%s\n' \
+  "$JQROOT/workspace/plain.md" \
+  "$JQROOT/workspace/it's a \"quoted\" file.md" \
+  "$JQROOT/workspace/back\\slash.md" \
+  "$JQROOT/workspace/uni-café-日本.md" \
+  | _session_paths_to_json_array "$JQROOT" workspace)"
+printf '%s' "$ESC" | jq -e 'type == "array"' >/dev/null \
+  || fail "path array is not valid JSON: $ESC"
+# Compare via --arg so the expectation is a literal shell string; writing these
+# inline makes the test about jq's own escaping spelling rather than about the
+# value that survives the round trip.
+printf '%s' "$ESC" | jq -e --arg w "workspace/it's a \"quoted\" file.md" '.[1] == $w' >/dev/null \
+  || fail "quotes/apostrophes not round-tripped: $ESC"
+printf '%s' "$ESC" | jq -e --arg w 'workspace/back\slash.md' '.[2] == $w' >/dev/null \
+  || fail "backslash not round-tripped: $ESC"
+printf '%s' "$ESC" | jq -e --arg w "workspace/uni-café-日本.md" '.[3] == $w' >/dev/null \
+  || fail "non-ASCII not round-tripped: $ESC"
+pass "path array JSON-escapes quotes, backslashes and non-ASCII"
+
+# Empty input must still be a valid empty array, not "[" or "".
+EMPTY="$(printf '' | _session_paths_to_json_array "$JQROOT" workspace)"
+[ "$EMPTY" = "[]" ] || fail "empty input produced '$EMPTY', expected []"
+pass "empty input yields []"
+
+# The cap is what makes the failure mode impossible rather than merely faster.
+BIG="$(i=1; while [ "$i" -le 300 ]; do printf '%s\n' "$JQROOT/workspace/f$i.md"; i=$((i+1)); done)"
+CAPPED="$(printf '%s\n' "$BIG" | SESSION_PATHS_MAX=50 _session_paths_to_json_array "$JQROOT" workspace 2>/dev/null | jq 'length')"
+[ "$CAPPED" = "50" ] || fail "SESSION_PATHS_MAX not honoured: got $CAPPED entries, expected 50"
+WARN="$(printf '%s\n' "$BIG" | SESSION_PATHS_MAX=50 _session_paths_to_json_array "$JQROOT" workspace 2>&1 >/dev/null | grep -c 'truncated')"
+[ "$WARN" = "1" ] || fail "truncation warned $WARN times, expected exactly 1"
+pass "path array caps at SESSION_PATHS_MAX and says so once"
+
+# The defect itself: jq must NOT be invoked per path. Bound the process count by
+# shadowing jq with a counting wrapper.
+JQ_REAL="$(command -v jq)"
+JQ_COUNT="$JQROOT/jq-calls"
+: > "$JQ_COUNT"
+jq() { echo x >> "$JQ_COUNT"; "$JQ_REAL" "$@"; }
+printf '%s\n' "$BIG" | SESSION_PATHS_MAX=999999 _session_paths_to_json_array "$JQROOT" workspace >/dev/null
+unset -f jq
+CALLS="$(wc -l < "$JQ_COUNT" | tr -d ' ')"
+[ "$CALLS" -le 2 ] \
+  || fail "jq invoked $CALLS times for 300 paths — the per-path spawn is back (must be O(1), not O(paths))"
+pass "serialises 300 paths with $CALLS jq process(es), not one per path"
+
+rm -rf "$JQROOT"
+
 echo "PASS: hq-agent-session-durable.test.sh"

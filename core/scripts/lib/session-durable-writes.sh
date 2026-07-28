@@ -7,6 +7,14 @@
 # Residual workspace writes (except sessions/** and locks/**) surface as
 # nonDurableWrites[]; files under the project dir surface as artifacts[].
 
+# Upper bound on paths serialised into a finalize array.
+#
+# These arrays are DIAGNOSTIC METADATA describing what a turn touched, not a
+# durable record of it. A turn that touched tens of thousands of files is
+# already pathological, and serialising every one of them is what killed the
+# turn rather than what reported it. Truncate and say so on stderr.
+: "${SESSION_PATHS_MAX:=1000}"
+
 # session_validate_project_slug <slug>
 #   Accepts only [a-z0-9-]{1,64}. Rejects empty, '/', '..', uppercase, etc.
 #   Exit 0 if valid, 1 otherwise (no directory created).
@@ -149,30 +157,46 @@ _session_find_newer() {
 #   Reads absolute paths from stdin.
 _session_paths_to_json_array() {
   local root="${1:-}" mode="${2:-any}"
-  local path rel first=1
-  printf '['
-  while IFS= read -r path || [ -n "$path" ]; do
-    [ -n "$path" ] || continue
-    case "$path" in
-      "$root"/*) rel="${path#"$root"/}" ;;
-      *) continue ;;
-    esac
-    if [ "$mode" = "workspace" ]; then
-      case "$rel" in
-        workspace/sessions|workspace/sessions/*) continue ;;
-        workspace/locks|workspace/locks/*) continue ;;
-        workspace/*) ;;
+  local path rel n=0
+  # ONE jq for the whole stream, not one per path.
+  #
+  # This used to run `jq -nc --arg p "$rel" '$p'` INSIDE the loop -- a full
+  # process spawn per file, whose only job was to JSON-escape one short string
+  # -- and hand-assemble the brackets and commas around it. Post-turn
+  # bookkeeping on a box whose turn touched ~47k workspace files therefore cost
+  # ~47k process spawns, AFTER the model had already produced its answer. That
+  # outran the dispatch lane's 900s absolute cap, the engine was killed before
+  # it emitted, and the completed reply was discarded as
+  # "unexpected failure (exit 0)".
+  #
+  # The escaping still has to happen (paths carry quotes and backslashes), so
+  # jq stays -- it just runs once: -R reads raw lines instead of JSON, -s slurps
+  # the stream, and jq emits the array delimiters itself.
+  {
+    while IFS= read -r path || [ -n "$path" ]; do
+      [ -n "$path" ] || continue
+      case "$path" in
+        "$root"/*) rel="${path#"$root"/}" ;;
         *) continue ;;
       esac
-    fi
-    if [ "$first" -eq 1 ]; then
-      first=0
-    else
-      printf ','
-    fi
-    jq -nc --arg p "$rel" '$p'
-  done
-  printf ']'
+      if [ "$mode" = "workspace" ]; then
+        case "$rel" in
+          workspace/sessions|workspace/sessions/*) continue ;;
+          workspace/locks|workspace/locks/*) continue ;;
+          workspace/*) ;;
+          *) continue ;;
+        esac
+      fi
+      n=$((n + 1))
+      if [ "$n" -eq "$(( SESSION_PATHS_MAX + 1 ))" ]; then
+        printf 'hq-agent-session: finalize path list truncated at %s entries (this turn touched more)\n' \
+          "$SESSION_PATHS_MAX" >&2
+      fi
+      if [ "$n" -le "$SESSION_PATHS_MAX" ]; then
+        printf '%s\n' "$rel"
+      fi
+    done
+  } | jq -R -s -c 'split("\n") | map(select(length > 0))'
 }
 
 # session_collect_non_durable_writes <root> <runStartEpoch>
