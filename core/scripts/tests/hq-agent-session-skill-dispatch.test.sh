@@ -38,12 +38,10 @@ cp "$SRC_ROOT/core/knowledge/public/hq-core/agent-session-contract.md" \
   "$FIXTURE/core/knowledge/public/hq-core/"
 cat > "$FIXTURE/core/scripts/hook-lib.sh" <<'EOF'
 hq_json_get() {
-  printf '%s' "$STDIN_JSON" | jq -r --arg k "$1" '
-    if $k == "hook_event_name" then .hook_event_name // empty
-    elif $k == "session_id" then .session_id // empty
-    elif $k == "tool_name" then .tool_name // empty
-    elif $k == "cwd" then .cwd // empty
-    else empty end'
+  jq -r --arg k "$1" '
+    if $k == "hook_event_name" or $k == "session_id" or $k == "tool_name" or $k == "cwd" then
+      .[$k] | if . == null or type == "object" or type == "array" then "" else tostring end
+    else "" end'
 }
 EOF
 printf '#!/bin/bash\necho always\n' > "$FIXTURE/core/scripts/derive-trigger-facts.sh"

@@ -20,6 +20,15 @@
   "hooks": {
     "PreToolUse": [
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-worktree-session \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-worktree-session.sh\" PreToolUse",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Glob",
         "hooks": [
           {
@@ -488,6 +497,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-worktree-session \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-worktree-session.sh\" SessionStart",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" migrate-policy-triggers \"$CLAUDE_PROJECT_DIR/core/scripts/migrate-policy-triggers.sh\"",
             "timeout": 60
           },
@@ -533,6 +547,11 @@
           },
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" repair-stale-review-base \"$CLAUDE_PROJECT_DIR/.claude/hooks/repair-stale-review-base.sh\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" session-title \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh\"",
             "timeout": 5
           }
@@ -552,6 +571,11 @@
       {
         "matcher": "",
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-worktree-session \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-worktree-session.sh\" UserPromptSubmit",
+            "timeout": 5
+          },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" rewrite-resume-sentinel \"$CLAUDE_PROJECT_DIR/.claude/hooks/rewrite-resume-sentinel.sh\"",

@@ -18,6 +18,11 @@
 #       `IFS=":"`). PreToolUse only. Kept so migrating policies to `when:` is
 #       incremental and never regresses coverage.
 #
+# Injection DEPTH is tiered by `enforcement:` (see the emit block at the bottom):
+#   hard → the policy's whole body is injected verbatim, under a byte budget
+#          whose overflow is reported, never silent.
+#   soft/unset → the one-line `## Rule` excerpt, as always.
+#
 # Event: taken from `hook_event_name` in the stdin JSON (default PreToolUse).
 # Scope (tenant-safe): global core/policies ALWAYS; the active repo's policies
 #   ONLY when the session's cwd is in that repo; exactly ONE company's policies,
@@ -62,7 +67,9 @@ mkdir -p "$DEDUPE_DIR" 2>/dev/null || true
 DEDUPE_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.txt"
 touch "$DEDUPE_FILE" 2>/dev/null || true
 
-# Accumulate "slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule" matches.
+# Accumulate "slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule<TAB>kind"
+# matches. `kind` is internal metadata for the default interactive cap; the TSV
+# contract remains its original five fields and retains its original ordering.
 # Default emit still prints only slug+rule as <policy-reminder> prose; tsv mode
 # (HQ_POLICY_EMIT=tsv, US-406) prints all five fields per line.
 MATCHES=""
@@ -74,21 +81,23 @@ already() { grep -Fxq "$1" "$DEDUPE_FILE" 2>/dev/null; }
 pending_has() { case "$MATCHES" in *"$1"$'\t'*) return 0 ;; *) return 1 ;; esac; }
 
 add_match() {
-  # add_match <slug> <scope> <abs_path> <enforcement> <rule>
+  # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline]
   # Back-compat: add_match <slug> <rule> → scope=core path= enf=unset
-  local slug="$1" scope rule path enf
+  local slug="$1" scope rule path enf kind
   if [ "$#" -ge 5 ]; then
     scope="$2"; path="$3"; enf="$4"; rule="$5"
+    kind="${6:-reactive}"
   else
-    scope="core"; path=""; enf="unset"; rule="${2:-}"
+    scope="core"; path=""; enf="unset"; rule="${2:-}"; kind="reactive"
   fi
   [ -n "$slug" ] || return 0
   already "$slug" && return 0
   pending_has "$slug" && return 0
   [ -n "$enf" ] || enf="unset"
+  [ "$kind" = "baseline" ] || kind="reactive"
   # Tabs inside rule would break the field layout — collapse them.
   rule="${rule//$'\t'/ }"
-  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}
+  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}	${kind}
 "
 }
 
@@ -184,8 +193,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # shells out to it.
   ALREADY="$(cat "$DEDUPE_FILE" 2>/dev/null || true)"
   if [ "${#POLICY_FILES[@]}" -gt 0 ]; then
-    while IFS=$'\t' read -r slug scope path enf rule; do
-      add_match "$slug" "$scope" "$path" "$enf" "$rule"
+    while IFS=$'\t' read -r slug scope path enf rule kind; do
+      add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind"
     done < <(
       # ALREADY (the dedupe ledger) is NEWLINE-separated and, after SessionStart
       # injects every on:[SessionStart] policy, routinely has many lines. It is
@@ -194,7 +203,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # contains a literal newline, which silently kills this whole evaluation
       # for the rest of the session. ENVIRON has no such restriction. Keep it on
       # the env — do NOT move it back to `-v ALREADY=`.
-      # Emit: slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule (US-406 tsv).
+      # Emit: slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule<TAB>kind.
+      # `kind` is consumed only inside this hook before prose emission; the
+      # public HQ_POLICY_EMIT=tsv path continues to print five fields below.
       HQ_ALREADY="$ALREADY" awk -v EVENT="$EVENT" -v INTENT_MODE="$INTENT_MODE" \
           -v EVFACTS="$FACTS" -v AIFACTS="$INTENT_FACTS" '
       function skipsp() { while (substr(E, pos, 1) == " ") pos++ }
@@ -224,7 +235,29 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         if (p ~ /\/personal\//) return "personal"
         return "core"
       }
-      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en) {
+      # `always` is the documented canonical unconditional fact. A policy that
+      # is eligible only through SessionStart and whose expression reduces to
+      # TRUE once `always` is substituted is baseline; one with a real event
+      # condition is reactive. This deliberately handles `always || token` as
+      # baseline too, without making a non-tautological expression baseline.
+      function cskipsp() { while (substr(C, cpos, 1) == " ") cpos++ }
+      function cOr(   v,w) { v=cAnd(); cskipsp(); while(substr(C,cpos,2)=="||"){cpos+=2; w=cAnd(); if(v==1||w==1)v=1; else if(v==0&&w==0)v=0; else v=2} return v }
+      function cAnd(  v,w) { v=cNot(); cskipsp(); while(substr(C,cpos,2)=="&&"){cpos+=2; w=cNot(); if(v==0||w==0)v=0; else if(v==1&&w==1)v=1; else v=2} return v }
+      function cNot(  v,c) { cskipsp(); c=substr(C,cpos,1); if(c=="!"){cpos++; v=cNot(); return (v==2 ? 2 : (v ? 0 : 1))} return cAtom() }
+      function cAtom( v,c) { cskipsp(); c=substr(C,cpos,1); if(c=="("){cpos++; v=cOr(); cskipsp(); if(substr(C,cpos,1)==")")cpos++; return v} cpos++; return (c=="1" ? 1 : (c=="0" ? 0 : 2)) }
+      function unconditional(expr,   s,out,tok) {
+        s=expr; out=""
+        while (match(s, "[A-Za-z0-9_./][A-Za-z0-9_./-]*")) {
+          tok=substr(s,RSTART,RLENGTH)
+          out=out substr(s,1,RSTART-1) (tok=="always" ? "1" : "x")
+          s=substr(s,RSTART+RLENGTH)
+        }
+        out=out s
+        if (out ~ /[^01x&|!() ]/) return 0
+        C=out; cpos=1
+        return (cOr()==1 && substr(C,cpos) ~ /^[ ]*$/)
+      }
+      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind) {
         if (whenx=="") return
         if (id=="") id=base(fname)
         if (onx=="") onx="PreToolUse"                              # default when on: omitted
@@ -247,8 +280,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           emitted[id]=1
           sc=scopeof(fname)
           en=(enf=="" ? "unset" : enf)
+          # Policies whose current event is explicitly listed are reactive even
+          # if they also carry SessionStart. Conditional SessionStart-only
+          # policies are reactive as well: they matched facts from this event.
+          # Only the unconditional SessionStart backfill is baseline.
+          kind=((ss_on && !ev_on && !(ai_on && INTENT_MODE) && unconditional(whenx)) ? "baseline" : "reactive")
           gsub(/\t/," ",rule)
-          print id "\t" sc "\t" fname "\t" en "\t" rule
+          print id "\t" sc "\t" fname "\t" en "\t" rule "\t" kind
         }
       }
       function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; rule=""; rsec=0; rcap=0 }
@@ -323,7 +361,7 @@ fi
 # US-406: machine-readable records for the agent-session entrypoint. No prose
 # wrapper, no interactive 16-cap (consumer applies HQ_SESSION_POLICY_MAX_*).
 if [ "${HQ_POLICY_EMIT:-}" = "tsv" ]; then
-  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule; do
+  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind; do
     [ -z "$slug" ] && continue
     printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule"
     printf '%s\n' "$slug" >> "$DEDUPE_FILE"
@@ -332,28 +370,138 @@ if [ "${HQ_POLICY_EMIT:-}" = "tsv" ]; then
 fi
 
 # Bound the SessionStart-heavy baseline so box preflight cannot fail closed
-# (US-003 / former US-013). SESSION_PREFLIGHT_MAX_POLICIES=16 on the box;
-# company/repo/personal already precede core in DIRS, so head -n keeps
-# higher-precedence policies and drops the excess core SessionStart flood.
-# Truncation is NEVER silent — withheld count is emitted so a reader cannot
-# mistake a capped set for the whole set.
+# (US-003 / former US-013). Crucially, stable-partition reactive matches ahead
+# of the SessionStart baseline BEFORE applying the cap: scope order is preserved
+# inside each group, but an event-specific policy must not lose its slot to a
+# generic policy that would have fired on any event.
+#
+# This is Bash-native (portable to Bash 3.2) rather than sort -s so the stable
+# ordering does not depend on GNU/BSD sort differences.
+ORDERED_MATCHES=""
+for match_kind in reactive baseline; do
+  while IFS= read -r match; do
+    [ -n "$match" ] || continue
+    case "$match" in
+      *$'\t'"$match_kind") ORDERED_MATCHES="${ORDERED_MATCHES}${match}
+" ;;
+    esac
+  done <<< "$MATCHES"
+done
+MATCHES="$ORDERED_MATCHES"
+
+# Truncation is NEVER silent. In addition to naming withheld policies below,
+# record them now: the SessionStart baseline is a one-time introduction, so a
+# policy that lost the cap was considered and dropped, not deferred to the next
+# event where it could crowd out new reactive work again.
 SESSION_POLICY_CAP="${HQ_SESSION_POLICY_CAP:-16}"
 MATCH_COUNT="$(printf '%s' "$MATCHES" | grep -c . || true)"
 WITHHELD=0
+WITHHELD_MATCHES=""
 if [ "$MATCH_COUNT" -gt "$SESSION_POLICY_CAP" ]; then
   WITHHELD=$((MATCH_COUNT - SESSION_POLICY_CAP))
-  MATCHES="$(printf '%s' "$MATCHES" | head -n "$SESSION_POLICY_CAP")
+  KEPT_MATCHES=""
+  kept=0
+  while IFS= read -r match; do
+    [ -n "$match" ] || continue
+    if [ "$kept" -lt "$SESSION_POLICY_CAP" ]; then
+      KEPT_MATCHES="${KEPT_MATCHES}${match}
 "
+      kept=$((kept + 1))
+    else
+      WITHHELD_MATCHES="${WITHHELD_MATCHES}${match}
+"
+    fi
+  done <<< "$MATCHES"
+  MATCHES="$KEPT_MATCHES"
 fi
 
+WITHHELD_NAMES=""
+WITHHELD_NAMED=0
+if [ -n "$WITHHELD_MATCHES" ]; then
+  while IFS=$'\t' read -r slug scope path enf rule kind; do
+    [ -n "$slug" ] || continue
+    printf '%s\n' "$slug" >> "$DEDUPE_FILE"
+    if [ "$WITHHELD_NAMED" -lt 10 ]; then
+      WITHHELD_NAMES="${WITHHELD_NAMES}${WITHHELD_NAMES:+, }${slug}"
+      WITHHELD_NAMED=$((WITHHELD_NAMED + 1))
+    fi
+  done <<< "$WITHHELD_MATCHES"
+fi
+
+# Enforcement-tiered injection depth:
+#   enforcement: hard  → the policy's ENTIRE body (everything after the closing
+#                        frontmatter `---`) is injected verbatim. A binding rule
+#                        must never reach the agent as a 160-char paraphrase of
+#                        its first line — the caveats, the exceptions and the
+#                        escape hatches all live further down the file.
+#   soft / unset       → unchanged: the one-line `## Rule` excerpt, exactly as
+#                        before (the default-prose fixture pins this path).
+#
+# Full text is bounded by a byte budget across the whole injection, consumed in
+# reactive-first MATCHES order. Scope precedence (company > repo > personal >
+# core) is preserved within each group, so event-specific hard rules claim the
+# budget ahead of the SessionStart baseline. Overflow is NEVER silent: a policy
+# that does not fit falls back to its summary line and is named in a trailing
+# notice, so a shortened set can't be misread as the full text.
+# Escape hatches: HQ_POLICY_HARD_FULL_TEXT=0 restores summary-only for hard
+# policies; HQ_POLICY_HARD_BUDGET_BYTES resizes the budget.
+HARD_FULL="${HQ_POLICY_HARD_FULL_TEXT:-1}"
+HARD_BUDGET="${HQ_POLICY_HARD_BUDGET_BYTES:-40960}"
+
+policy_body() {
+  # Print everything after the closing frontmatter `---`, leading blank lines
+  # trimmed. A file with no frontmatter (or an unreadable one) prints nothing,
+  # and the caller falls back to the summary line — fail-open to prior
+  # behaviour, never a dropped policy.
+  awk '
+    /^---[ \t]*$/ && d < 2 { d++; next }
+    d >= 2 { if (!started && $0 ~ /^[ \t]*$/) next; started = 1; print }
+  ' "$1" 2>/dev/null
+}
+
 printf '<policy-reminder>\n'
-printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule; do
-  [ -z "$slug" ] && continue
-  printf '> Policy `%s` applies here: %s\n' "$slug" "$rule"
-  printf '%s\n' "$slug" >> "$DEDUPE_FILE"
-done
+printf '%s' "$MATCHES" | {
+  spent=0
+  shortened=""
+  while IFS=$'\t' read -r slug scope path enf rule kind; do
+    [ -z "$slug" ] && continue
+    printf '%s\n' "$slug" >> "$DEDUPE_FILE"
+    body=""
+    if [ "$HARD_FULL" != "0" ] && [ "$enf" = "hard" ] && [ -n "$path" ] && [ -r "$path" ]; then
+      body="$(policy_body "$path")"
+    fi
+    if [ -n "$body" ]; then
+      size="$(printf '%s' "$body" | wc -c | tr -d ' ')"
+      if [ $((spent + size)) -le "$HARD_BUDGET" ]; then
+        spent=$((spent + size))
+        printf '> Policy `%s` (HARD — full text of `%s`):\n' "$slug" "${path#"$HQ_ROOT"/}"
+        # Quote every body line into the reminder block, and neutralise any
+        # literal <policy-reminder> tag inside a policy body (one exists today)
+        # so an injected body cannot close or nest this block.
+        printf '%s\n' "$body" \
+          | sed -e 's#</policy-reminder>#[/policy-reminder]#g' \
+                -e 's#<policy-reminder>#[policy-reminder]#g' \
+                -e 's/^/> /' -e 's/^> $/>/'
+        continue
+      fi
+      shortened="${shortened:+$shortened, }$slug"
+    fi
+    printf '> Policy `%s` applies here: %s\n' "$slug" "$rule"
+  done
+  if [ -n "$shortened" ]; then
+    printf '> Full-text budget of %s bytes reached: these HARD policies were shortened to one-line summaries — %s. Read each in full at its own file before acting on it.\n' \
+      "$HARD_BUDGET" "$shortened"
+  fi
+}
 if [ "$WITHHELD" -gt 0 ]; then
-  printf '> Policy baseline truncated: %s additional policies withheld to stay within the session cap of %s (US-003 SessionStart bound).\n' "$WITHHELD" "$SESSION_POLICY_CAP"
+  more=""
+  if [ "$WITHHELD" -gt "$WITHHELD_NAMED" ]; then
+    more=" (+$((WITHHELD - WITHHELD_NAMED)) more)"
+  fi
+  # Do not start this line with "> Policy `": inject-policy-e2e's slugs()
+  # parser intentionally recognises that prefix as an injected policy record.
+  printf '> Session policy cap withheld %s policies (cap %s): %s%s. Reactive matches were prioritized over the SessionStart baseline.\n' \
+    "$WITHHELD" "$SESSION_POLICY_CAP" "$WITHHELD_NAMES" "$more"
 fi
 printf '> Read the full rule(s) at `core/policies/{slug}.md` if you need rationale.\n'
 printf '</policy-reminder>\n'

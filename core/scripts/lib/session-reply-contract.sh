@@ -71,14 +71,27 @@ session_reply_contract_apply() {
     # Rejecting that outright throws away a CORRECT answer and the agent goes
     # silent, which is just a different failure. Take the LAST envelope-shaped
     # object and validate it; a wrong guess still fails closed below.
+    #
+    # Grok also narrates AFTER the envelope (observed live on Izzy 2026-07-28:
+    #   narration…{"action":"reply","text":"…"}Now I need to emit the final
+    #   reply JSON only. Keep it conversational…
+    # ). Slicing to end-of-string made that unparseable, apply() returned 1,
+    # and the #437 degrade posted the model's ENTIRE working narration into a
+    # channel with external members. So: slice from the LAST opener as before,
+    # then let jq extract the balanced first value from that slice — jq parses
+    # concatenated values, emitting the complete object and stopping at the
+    # trailing prose. Balancing (strings, escapes, nesting, pretty-printing)
+    # stays jq's job, not a hand-rolled scanner's. The extracted object still
+    # goes through the same fail-closed validation.
     candidate=""
-    local tail_try
+    local tail_try extracted
     for pat in '{"action"' '{ "action"'; do
       case "$raw" in
         *"$pat"*)
           tail_try="${pat}${raw##*"$pat"}"
-          if session_reply_contract_validate "$tail_try"; then
-            candidate="$tail_try"
+          extracted="$(printf '%s' "$tail_try" | jq -c '.' 2>/dev/null | head -n 1)"
+          if [ -n "$extracted" ] && session_reply_contract_validate "$extracted"; then
+            candidate="$extracted"
             break
           fi
           ;;

@@ -478,6 +478,7 @@ case "$HOOK_EVENT" in
     run_hook "check-core-yaml-parity" "$HOOK_DIR/check-core-yaml-parity.sh" "$INPUT" "advisory"
     run_hook "load-journal-index-on-start" "$HOOK_DIR/load-journal-index-on-start.sh" "$INPUT" "advisory"
     run_hook "check-hq-update" "$HOOK_DIR/check-hq-update.sh" "$INPUT" "advisory"
+    run_hook "repair-stale-review-base" "$HOOK_DIR/repair-stale-review-base.sh" "$INPUT" "advisory"
     ;;
   UserPromptSubmit)
     run_hook "rewrite-resume-sentinel" "$HOOK_DIR/rewrite-resume-sentinel.sh" "$INPUT" "advisory"
