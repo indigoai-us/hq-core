@@ -2,7 +2,6 @@
 id: hq-github
 title: GitHub — always pass an explicit repo to gh
 scope: global
-trigger: when working with github.com (PRs, issues, actions, gh CLI)
 when: git
 on: [PreToolUse]
 enforcement: hard

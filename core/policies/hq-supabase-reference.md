@@ -2,7 +2,6 @@
 id: hq-supabase-reference
 title: Supabase reference (on-demand)
 scope: global
-trigger: on-demand Supabase reference — NOT auto-injected; the binding gate is hq-supabase
 when: supabase && !supabase
 on: [PreToolUse]
 enforcement: soft

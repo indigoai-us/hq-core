@@ -2,7 +2,6 @@
 id: hq-vercel
 title: Vercel — never deploy to a prod custom domain without confirmation
 scope: global
-trigger: when deploying with Vercel (CLI, deploys, domains, projects)
 when: deploy
 on: [PreToolUse, UserPromptSubmit, AssistantIntent]
 enforcement: hard

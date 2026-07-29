@@ -2,7 +2,6 @@
 id: hq-vault-db-no-print-connection-strings
 title: Never print vault database connection strings
 scope: core
-trigger: Implementing or reviewing hq db, remote provision, SecretBinding, or logging around databases
 enforcement: hard
 public: true
 when: (hq && db) || (vault && database) || database_url || postgres || postgresql || (db && provision) || better-sqlite

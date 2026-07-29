@@ -2,7 +2,6 @@
 id: hq-linear-reference
 title: Linear reference (on-demand)
 scope: global
-trigger: on-demand Linear reference — NOT auto-injected; the binding gate is hq-linear
 when: linear && !linear
 on: [PreToolUse]
 enforcement: soft
