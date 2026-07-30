@@ -46,7 +46,16 @@ while [ "$i" -lt 400 ]; do
   i=$((i + 1))
 done
 
-env -i PATH="$TMP/bin:/usr/bin:/bin" QMD_LOG="$LOG" \
+# The script under test is now a forwarder into the hq CLI, so the hermetic
+# environment below must be able to find `hq` — otherwise the forwarder exits 127
+# before any qmd call is made and this test measures nothing. The rest of the
+# environment stays stripped: `$TMP/bin` still shadows qmd with the recording stub,
+# which is what these assertions are actually about.
+HQ_BIN_DIR="$(dirname "$(command -v hq 2>/dev/null || true)")"
+[ -n "$HQ_BIN_DIR" ] && [ "$HQ_BIN_DIR" != "." ] || fail "hq CLI not on PATH — required since core/scripts/qmd-reindex-after-sync.sh became a CLI forwarder"
+HERMETIC_PATH="$TMP/bin:$HQ_BIN_DIR:/usr/bin:/bin"
+
+env -i PATH="$HERMETIC_PATH" QMD_LOG="$LOG" \
   bash "$SCRIPT" "$HQ_ROOT"
 
 knowledge_add="collection add $HQ_ROOT/companies/populated/knowledge --name populated --mask **/*.md"
@@ -68,7 +77,7 @@ mkdir -p "$HQ2/core" "$HQ2/personal/knowledge"
 : > "$HQ2/core/core.yaml"
 : > "$HQ2/personal/knowledge/note.md"
 : > "$HQ2/personal/knowledge/INDEX.md"
-env -i PATH="$TMP/bin:/usr/bin:/bin" QMD_LOG="$LOG2" bash "$SCRIPT" "$HQ2"
+env -i PATH="$HERMETIC_PATH" QMD_LOG="$LOG2" bash "$SCRIPT" "$HQ2"
 personal_add="collection add $HQ2/personal/knowledge --name personal-knowledge --mask **/*.md"
 grep -Fqx "$personal_add" "$LOG2" || fail "personal/knowledge collection was not registered"
 pass "personal/knowledge registered as its own collection"
@@ -78,7 +87,7 @@ HQ3="$TMP/hq3"; LOG3="$TMP/qmd3.log"
 mkdir -p "$HQ3/core" "$HQ3/personal/knowledge"
 : > "$HQ3/core/core.yaml"
 : > "$HQ3/personal/knowledge/INDEX.md"
-env -i PATH="$TMP/bin:/usr/bin:/bin" QMD_LOG="$LOG3" bash "$SCRIPT" "$HQ3"
+env -i PATH="$HERMETIC_PATH" QMD_LOG="$LOG3" bash "$SCRIPT" "$HQ3"
 grep -Fq 'name personal-knowledge' "$LOG3" && fail "INDEX-only personal/knowledge should not register"
 pass "INDEX-only personal/knowledge skipped"
 

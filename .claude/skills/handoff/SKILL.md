@@ -109,12 +109,16 @@ The script emits a single JSON line to stdout:
 {"thread_id":"T-...","thread_path":"workspace/threads/T-...json",
  "changeset_path":"workspace/threads/T-...changeset.json",
  "handoff_path":"workspace/threads/handoff.json","hq_committed":true,
- "committed_paths":["..."],"skipped_paths":[],"baseline_noise_count":123,
+ "hq_commit_status":"committed","hq_commit_error":"",
+ "committed_paths":["..."],"stage_failures":[],"skipped_paths":[],
+ "baseline_noise_count":123,
  "indexes_regen":true,"qmd_pid":"12345","git_bg_errors":"",
  "next_command":"/resumework T-...","clipboard_copied":true}
 ```
 
 **Capture `thread_path` from the result** — you need it for Step 4. Keep `changeset_path`, `committed_paths`, `skipped_paths`, and `baseline_noise_count` for the final report.
+
+`hq_commit_status` says why `hq_committed` is what it is: `committed`, `nothing-to-commit`, `failed` (git refused the commit), or `stage-failed` (`git add` rejected paths — the shape a held `.git/index.lock` takes, where no commit is even attempted). Both failure states exit **4** after printing the payload, with git's message in `hq_commit_error` and the unstageable paths in `stage_failures`. Treat exit 4 as a hard stop — the thread files exist on disk but are uncommitted, so tell the user the handoff did not complete, surface the git error, and do not proceed to Step 4.
 
 ### 4. Launch handoff-post.sh detached (mechanical cleanup only)
 

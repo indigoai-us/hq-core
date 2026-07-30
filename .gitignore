@@ -118,6 +118,8 @@ companies/*/sessions/
 
 # Ephemeral hook state (per-session, 0-byte touch files)
 workspace/.context-warnings/
+workspace/.hook-launch-warnings/
+workspace/.autocommit-warnings/
 
 # hq-kit-app engine state (SQLite WAL, release tarball cache, engine logs).
 # Belt-and-suspenders: the /repos/ line above already excludes the whole clone,
