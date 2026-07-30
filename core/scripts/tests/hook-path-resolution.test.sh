@@ -245,7 +245,7 @@ rc=0
 out="$( cd "$FR/deep/nested/cwd" && CLAUDE_PROJECT_DIR="$FR" HQ_ROOT= \
         bash "$HOOKS/auto-checkpoint-trigger.sh" PostToolUse <<<"$payload" )" || rc=$?
 [ "$rc" -eq 0 ] || fail "auto-checkpoint-trigger exited $rc (expected 0) on a non-default root"
-printf '%s' "$out" | grep -qF "AUTO-CHECKPOINT REQUIRED" || fail "no checkpoint nudge emitted"
+printf '%s' "$out" | grep -qF "AUTO-CHECKPOINT SUGGESTED" || fail "no checkpoint nudge emitted"
 printf '%s' "$out" | grep -qF "current_commit: \"$EXPECT_SHA\"" \
   || fail "nudge did not reflect the fake root's HEAD ($EXPECT_SHA) — wrong root resolved"
 pass "exit 0 + nudge reflects the fake root's HEAD ($EXPECT_SHA)"
