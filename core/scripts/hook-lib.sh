@@ -162,6 +162,62 @@ hq_hook_session_key_from_payload() {
   hq_hook_safe_session_key "$key"
 }
 
+# hq_hook_state_dir <hq_root>
+#   Session-scoped hook state lives under the resolved HQ root, never /tmp and
+#   never keyed by $PPID — tool and hook processes do not share a parent PID in
+#   every host, so a PID-keyed path silently defeats debouncing.
+hq_hook_state_dir() {
+  local root="$1"
+  local dir="$root/workspace/orchestrator/hook-state"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s' "$dir"
+}
+
+# hq_hook_tool_failed <payload>
+#   Exit 0 when the PostToolUse payload shows the tool call FAILED, 1 when it
+#   succeeded or the host reported nothing either way.
+#
+#   Claude Code does not dispatch PostToolUse at all for a failed tool call, so
+#   this matters for the Codex adapter, which forwards every call along with
+#   `tool_response.exit_code`. Without it a red test run counts as a milestone
+#   and every targeted rerun mints another reminder.
+hq_hook_tool_failed() {
+  local payload="$1"
+  local key v
+  for key in tool_response.exit_code tool_response.exitCode tool_response.returnCode; do
+    v="$(printf '%s' "$payload" | hq_json_get "$key")"
+    case "$v" in
+      '') continue ;;
+      0) return 1 ;;
+      *[!0-9-]*) continue ;;
+      *) return 0 ;;
+    esac
+  done
+  for key in tool_response.is_error tool_response.isError tool_response.interrupted; do
+    v="$(printf '%s' "$payload" | hq_json_get "$key")"
+    [ "$v" = "true" ] && return 0
+  done
+  return 1
+}
+
+# hq_hook_within_window <state_file> <seconds>
+#   Exit 0 when <state_file> holds an epoch stamp newer than <seconds> ago —
+#   i.e. the caller is still inside its debounce window and should stay quiet.
+hq_hook_within_window() {
+  local file="$1"
+  local window="$2"
+  local last now
+  [ -f "$file" ] || return 1
+  last="$(tr -dc '0-9' < "$file" 2>/dev/null)"
+  [ -n "$last" ] || return 1
+  now="$(date +%s)"
+  [ $(( now - last )) -lt "$window" ]
+}
+
+hq_hook_stamp_now() {
+  date +%s > "$1" 2>/dev/null || true
+}
+
 hq_path_within_root() {
   local root="$1"
   local path="$2"

@@ -27,9 +27,14 @@ CWD="$(json_get '.cwd // empty')"
 # a session field, synthesize one from the invoking process ($PPID is the Codex
 # process for this session - stable across its events, distinct across
 # sessions) and stamp it into the payload every hook sees.
-SESSION_ID="$(json_get '.session_id // .sessionId // .conversation_id // .thread_id // empty')"
+#
+# $PPID is the LAST resort: Codex tool and hook processes do not always share a
+# parent, and a drifting key silently defeats every per-session debounce and
+# counter downstream (checkpoint nudges, journal reminders). Prefer any real
+# Codex-supplied thread/session identifier first.
+SESSION_ID="$(json_get '.session_id // .sessionId // .conversation_id // .conversationId // .thread_id // .threadId // empty')"
 if [ -z "$SESSION_ID" ]; then
-  SESSION_ID="codex-${CODEX_SESSION_ID:-$PPID}"
+  SESSION_ID="codex-${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-${CODEX_CONVERSATION_ID:-$PPID}}}"
   INPUT="$(printf '%s' "$INPUT" | jq --arg sid "$SESSION_ID" '. + {session_id: $sid}' 2>/dev/null || printf '%s' "$INPUT")"
 fi
 

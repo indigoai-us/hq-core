@@ -182,6 +182,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
       - name: Install pinned YAML parser for skill metadata contracts
         run: |
           set -euo pipefail
@@ -260,6 +263,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install hq CLI for forwarded scaffold scripts
+        run: |
+          set -euo pipefail
+          npm install -g @indigoai-us/hq-cli
+          if ! command -v hq >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
+            exit 1
+          fi
+          if ! hq core --help >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
+            exit 1
+          fi
       - name: Hook commands resolve from an install path containing spaces
         run: bash core/scripts/tests/hook-path-resolution.test.sh
 
@@ -334,6 +352,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install hq CLI for forwarded scaffold scripts
+        run: |
+          set -euo pipefail
+          npm install -g @indigoai-us/hq-cli
+          if ! command -v hq >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
+            exit 1
+          fi
+          if ! hq core --help >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
+            exit 1
+          fi
       - name: README team table matches person ontology
         run: bash core/scripts/tests/ontology-readme-drift.test.sh
 
@@ -353,6 +386,39 @@ jobs:
       - name: Codex-harness git-mutation guard fires
         run: bash core/scripts/tests/codex-git-mutation-firing.test.sh
 
+  autosave-failure-visibility:
+    # B4 (feedback_b16e277b): the autocommit hook ended every git call with
+    # `|| exit 0` and the handoff finalizer reported a refused commit inside an
+    # exit-0 success payload, so a wedged .git/index.lock stopped all HQ writes
+    # for hours with zero signal. Neither suite was wired into CI before.
+    name: autosave-failure-visibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install hq CLI for forwarded scaffold scripts
+        run: |
+          set -euo pipefail
+          npm install -g @indigoai-us/hq-cli
+          if ! command -v hq >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
+            exit 1
+          fi
+          if ! hq core --help >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
+            exit 1
+          fi
+      - name: Autocommit hook surfaces git failures and stays quiet otherwise
+        run: bash core/scripts/tests/hq-autocommit.test.sh
+      - name: Handoff finalizer never reports a failed commit as success
+        run: bash core/scripts/tests/handoff-finalize-commit-status.test.sh
+      - name: Handoff finalizer smoke
+        run: bash core/scripts/tests/handoff-finalize-smoke.sh
+      - name: Handoff finalizer accepts a large file-backed changeset
+        run: bash core/scripts/tests/handoff-finalize-large-changeset.test.sh
+
   journal-session-isolation:
     name: journal-session-isolation
     runs-on: ubuntu-latest
@@ -362,6 +428,16 @@ jobs:
         run: bash core/scripts/tests/journal-session-scoped-pointer.test.sh
       - name: Stop hook selects only its session journal
         run: bash core/scripts/tests/after-turn-suggestions.test.sh
+      - name: Checkpoint and journal hooks do not over-trigger
+        run: bash core/scripts/tests/checkpoint-journal-noise.test.sh
+
+  mcp-cleanup-session-scope:
+    name: mcp-cleanup-session-scope
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stop-hook cleanup stays inside its own session tree
+        run: bash core/scripts/tests/cleanup-mcp-session-scope.test.sh
 
   hq-agent-session-harness:
     # US-411 assembly timing budget + US-412 golden-turn parity harness.
@@ -397,6 +473,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install hq CLI for forwarded scaffold scripts
+        run: |
+          set -euo pipefail
+          npm install -g @indigoai-us/hq-cli
+          if ! command -v hq >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
+            exit 1
+          fi
+          if ! hq core --help >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
+            exit 1
+          fi
+      - name: Rebuild qmd collections after sync
+        run: bash core/scripts/tests/qmd-reindex-after-sync.test.sh
+      - name: Index symlinked company knowledge
+        run: bash core/scripts/tests/rebuild-company-knowledge-index.test.sh
+      - name: Index orchestrator state
+        run: bash core/scripts/tests/rebuild-orchestrator-index.test.sh
       - name: Index primary thread records only
         run: bash core/scripts/tests/rebuild-threads-index.test.sh
 
@@ -461,6 +558,19 @@ jobs:
         run: bash core/scripts/tests/block-unsafe-package-install.test.sh
       - name: Workers-registry quarantine semantics + pack-sourced remedy (DEV-1718, DEV-1796)
         run: bash core/scripts/tests/generate-workers-registry.test.sh
+
+  previously-unrun-suites:
+    # These suites existed but were never wired into CI, so they rotted
+    # unnoticed: audit-log-mkdir had been failing outright since audit-log.sh
+    # gained a lib/portable.sh dependency the fixture never copied.
+    name: previously-unrun-suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: audit-log append creates its metrics dir on a clean tree
+        run: bash core/scripts/tests/audit-log-mkdir.test.sh
+      - name: release-guidance command references resolve
+        run: bash core/scripts/tests/skill-command-refs.test.sh
 
   core-write-protection:
     name: core-write-protection
@@ -605,6 +715,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install hq CLI for forwarded scaffold scripts
+        run: |
+          set -euo pipefail
+          npm install -g @indigoai-us/hq-cli
+          if ! command -v hq >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
+            exit 1
+          fi
+          if ! hq core --help >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
+            exit 1
+          fi
       - name: personal/policies is read directly by the trigger hook (no mirror)
         run: bash core/scripts/tests/personal-policy-overlay.test.sh
       - name: stale core/policies mirror detector classifies + prunes safely
@@ -634,10 +759,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install hq CLI for forwarded scaffold scripts
+        run: |
+          set -euo pipefail
+          npm install -g @indigoai-us/hq-cli
+          if ! command -v hq >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
+            exit 1
+          fi
+          if ! hq core --help >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
+            exit 1
+          fi
       - name: Policy fires on SessionStart + canvas prompt (trigger battery)
         run: bash core/scripts/tests/prefer-native-capabilities-trigger.test.sh
       - name: Codex preflight pull path emits the policy + Grok rules pointer
         run: bash core/scripts/tests/codex-preflight-policies.test.sh
+      - name: Codex output-style bridge
+        run: bash core/scripts/tests/codex-output-style-bridge.test.sh
+
+  forwarder-ci-contract:
+    # Forwarder tests depend on the released hq CLI. This contract keeps the
+    # workflow install steps synchronized with every test that references one.
+    name: forwarder-ci-contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every forwarder-dependent test has an hq CLI job
+        run: bash core/scripts/tests/forwarder-ci-contract.test.sh
 
   work-mesh-tests:
     # Wire the company-work-corpus hook suites explicitly without enabling

@@ -1,69 +1,29 @@
 #!/usr/bin/env bash
-# rebuild-all-indexes.sh — fan out to every per-class INDEX.md regenerator.
+# FORWARDER — the implementation of this script now lives in the hq CLI.
 #
-# Stdout: JSON array of every INDEX.md path that was actually written
-# (parsed from per-script "wrote {path}" lines on stderr).
-# Stderr: passthrough log from each script, plus a final "all-indexes: ok"
-# or "all-indexes: errors" line.
+# It ships at assets/scaffold/core/scripts/rebuild-all-indexes.sh inside @indigoai-us/hq-cli and
+# runs as the hidden command `hq core rebuild-index all`. This file stays behind so every
+# existing caller — skills, other scripts, CI, and muscle memory — keeps working
+# against the path it already knows.
 #
-# Used by handoff-post.sh / handoff-finalize.sh / /cleanup --reindex.
-# Exit 0 always (handoff must not fail because one INDEX class blew up).
+# Why the implementation moved: it is a cold, explicitly-invoked operation where
+# process startup is immaterial, so hosting it in the CLI costs nothing and
+# keeps the scaffold to configuration rather than code.
+#
+# The ABI is preserved exactly: arguments are forwarded unchanged, stdin is never
+# read by this file, stdout and stderr are inherited untouched, and the child
+# replaces this process so its exit code and signal disposition become the
+# caller's.
 
-set -uo pipefail
+set -euo pipefail
 
+# This forwarder sits in the tree it targets, so its own location IS the root.
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-cd "$HQ_ROOT"
 
-SCRIPTS=(
-  "rebuild-threads-index.sh"
-  "rebuild-orchestrator-index.sh"
-  "rebuild-companies-index.sh"
-  "rebuild-projects-index.sh"
-  "rebuild-company-knowledge-index.sh"
-  "rebuild-public-knowledge-index.sh"
-  "rebuild-workers-index.sh"
-  "rebuild-reports-index.sh"
-  "rebuild-social-drafts-index.sh"
-)
-
-TMP_STDERR=$(mktemp /tmp/rebuild-all-indexes.XXXXXX)
-trap 'rm -f "$TMP_STDERR"' EXIT
-
-ERRORS=0
-for s in "${SCRIPTS[@]}"; do
-  path="core/scripts/${s}"
-  if [[ ! -x "$path" ]] && [[ -f "$path" ]]; then
-    chmod +x "$path" 2>/dev/null || true
-  fi
-  if [[ ! -f "$path" ]]; then
-    echo "rebuild-all-indexes: skip ${s} (missing)" >&2
-    continue
-  fi
-  if ! bash "$path" 2>>"$TMP_STDERR"; then
-    echo "rebuild-all-indexes: ERROR in ${s}" >&2
-    ERRORS=$((ERRORS+1))
-  fi
-done
-
-# Replay each rebuild's stderr to our stderr (so callers see logs)
-cat "$TMP_STDERR" >&2
-
-# Parse "wrote {path}" lines to build the JSON output array
-paths_json=$(
-  grep -E 'wrote (workspace|companies|knowledge|workers|projects)' "$TMP_STDERR" 2>/dev/null \
-    | sed -E 's/.*wrote ([^ ]+).*/\1/' \
-    | sort -u \
-    | jq -R . \
-    | jq -s .
-)
-[[ -z "$paths_json" ]] && paths_json='[]'
-
-printf '%s\n' "$paths_json"
-
-if [[ "$ERRORS" -gt 0 ]]; then
-  echo "all-indexes: errors (${ERRORS})" >&2
-else
-  echo "all-indexes: ok" >&2
+if ! command -v hq >/dev/null 2>&1; then
+  echo "rebuild-all-indexes.sh: requires the hq CLI — this script's implementation now ships with it." >&2
+  echo "Install it with: npm install -g @indigoai-us/hq-cli" >&2
+  exit 127
 fi
 
-exit 0
+exec hq core --hq-root "$HQ_ROOT" rebuild-index all "$@"

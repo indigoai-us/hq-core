@@ -1,82 +1,29 @@
 #!/usr/bin/env bash
-# rebuild-threads-index.sh — regenerate workspace/threads/INDEX.md from thread JSON files.
+# FORWARDER — the implementation of this script now lives in the hq CLI.
 #
-# Pure bash + jq. Zero Claude context. Reads active thread JSONs (not archive/),
-# batches metadata through a single jq invocation (vs 1 subprocess per file).
+# It ships at assets/scaffold/core/scripts/rebuild-threads-index.sh inside @indigoai-us/hq-cli and
+# runs as the hidden command `hq core rebuild-index threads`. This file stays behind so every
+# existing caller — skills, other scripts, CI, and muscle memory — keeps working
+# against the path it already knows.
 #
-# Usage:
-#   core/scripts/rebuild-threads-index.sh              # regen INDEX.md
-#   core/scripts/rebuild-threads-index.sh --recent     # regen recent.md only (last 15)
-#   core/scripts/rebuild-threads-index.sh --both       # regen both
+# Why the implementation moved: it is a cold, explicitly-invoked operation where
+# process startup is immaterial, so hosting it in the CLI costs nothing and
+# keeps the scaffold to configuration rather than code.
+#
+# The ABI is preserved exactly: arguments are forwarded unchanged, stdin is never
+# read by this file, stdout and stderr are inherited untouched, and the child
+# replaces this process so its exit code and signal disposition become the
+# caller's.
 
 set -euo pipefail
 
+# This forwarder sits in the tree it targets, so its own location IS the root.
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-cd "$HQ_ROOT"
 
-MODE="${1:---index}"
-
-THREADS_DIR="workspace/threads"
-INDEX_PATH="${THREADS_DIR}/INDEX.md"
-RECENT_PATH="${THREADS_DIR}/recent.md"
-TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-mkdir -p "$THREADS_DIR"
-
-# Gather active thread files (exclude archive/), newest first by mtime.
-# Portable (bash 3.x compatible) — avoid mapfile.
-THREAD_FILES=()
-while IFS= read -r line; do
-  # Each primary thread record can have a changeset sidecar. The T-*.json
-  # glob also matches that sidecar, but it is not a thread record.
-  [[ "$line" == *.changeset.json ]] && continue
-  THREAD_FILES+=("$line")
-done < <(ls -t "$THREADS_DIR"/T-*.json 2>/dev/null || true)
-COUNT=${#THREAD_FILES[@]}
-
-extract_metadata() {
-  [[ $# -eq 0 ]] && return 0
-  jq -rs '
-    .[] | [
-      (.thread_id // "-"),
-      (.type // "-"),
-      (.updated_at // "-"),
-      ((.metadata.title // "-") | gsub("\\|"; "/") | gsub("\n"; " "))
-    ] | @tsv
-  ' "$@" 2>/dev/null || true
-}
-
-write_table() {
-  local out="$1"; shift
-  local title="$1"; shift
-  local limit="$1"; shift
-  # remaining args are files
-
-  {
-    echo "# ${title}"
-    echo ""
-    echo "Generated: ${TS}"
-    echo "Active threads: ${COUNT} (archive/ excluded)"
-    echo ""
-    echo "| Thread | Type | Updated | Title |"
-    echo "|--------|------|---------|-------|"
-    if [[ $# -gt 0 ]]; then
-      local rows
-      rows=$(extract_metadata "$@")
-      if [[ "$limit" -gt 0 ]]; then
-        rows=$(printf "%s\n" "$rows" | head -n "$limit")
-      fi
-      printf "%s\n" "$rows" | awk -F'\t' 'NF>=4 { printf "| %s | %s | %s | %s |\n", $1, $2, $3, $4 }'
-    fi
-  } > "$out"
-}
-
-if [[ "$MODE" == "--index" || "$MODE" == "--both" ]]; then
-  write_table "$INDEX_PATH" "Threads INDEX" 0 "${THREAD_FILES[@]+"${THREAD_FILES[@]}"}"
-  echo "rebuild-threads-index: wrote ${INDEX_PATH} (${COUNT} threads)" >&2
+if ! command -v hq >/dev/null 2>&1; then
+  echo "rebuild-threads-index.sh: requires the hq CLI — this script's implementation now ships with it." >&2
+  echo "Install it with: npm install -g @indigoai-us/hq-cli" >&2
+  exit 127
 fi
 
-if [[ "$MODE" == "--recent" || "$MODE" == "--both" ]]; then
-  write_table "$RECENT_PATH" "Recent Threads" 15 "${THREAD_FILES[@]+"${THREAD_FILES[@]}"}"
-  echo "rebuild-threads-index: wrote ${RECENT_PATH} (last 15)" >&2
-fi
+exec hq core --hq-root "$HQ_ROOT" rebuild-index threads "$@"

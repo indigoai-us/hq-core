@@ -125,5 +125,54 @@ else
   echo "FAIL [hook-env escape hatch allowed]: expected exit 0, got $rc" >&2
 fi
 
+# --- Anchor extraction must not slice the command inside the PATH ---------
+# The guard used to locate the git/gh token with literal-substring cuts:
+#     PREFIX_GIT="${CMD%%git*}" ; PREFIX_GH="${CMD%%gh *}"
+# Those also fire INSIDE the path being cd'd to, so an HQ root ending in "gh"
+# (or containing "git") truncated the prefix mid-path, the extracted anchor no
+# longer equalled HQ root, and `cd <hq-root> && git push` was ALLOWED.
+# CI hit this whenever mktemp produced such a name, which read as flakiness.
+#
+# run_root <root> <expected_exit> <cwd> <command> <label>
+run_root() {
+  local root="$1" expect="$2" cwd="$3" cmd="$4" label="$5"
+  local payload rc=0
+  payload=$(jq -n --arg cwd "$cwd" --arg cmd "$cmd" '{cwd: $cwd, tool_input: {command: $cmd}}')
+  printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$root" HQ_ALLOW_HQ_ROOT_GIT= bash "$HOOK" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq "$expect" ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "FAIL [$label]: expected exit $expect, got $rc — cmd: $cmd (root: $root)" >&2
+  fi
+}
+
+# Deterministic adversarial roots — the exact shapes that defeated the guard.
+for adversarial in edinburgh github git-tools gh hq.git borough; do
+  AROOT="$TMP/adversarial/$adversarial"
+  mkdir -p "$AROOT/repos/private/app"
+  git -C "$AROOT" init -q
+  git -C "$AROOT/repos/private/app" init -q
+  ANESTED="$AROOT/repos/private/app"
+
+  run_root "$AROOT" 2 "$ANESTED" "cd $AROOT && git push origin main" \
+    "cd HQ root && push blocked when root path contains '$adversarial'"
+  run_root "$AROOT" 2 "$ANESTED" "( cd $AROOT && git push origin main )" \
+    "paren cd HQ root && push blocked when root path contains '$adversarial'"
+  run_root "$AROOT" 2 "$AROOT" 'git push origin main' \
+    "bare push @ HQ root blocked when root path contains '$adversarial'"
+
+  # The escape hatches must still work with these paths.
+  run_root "$AROOT" 0 "$AROOT" "git -C $ANESTED commit -m x" \
+    "git -C nested repo allowed when root path contains '$adversarial'"
+  run_root "$AROOT" 0 "$ANESTED" "cd $ANESTED && git push origin main" \
+    "cd nested repo && push allowed when root path contains '$adversarial'"
+done
+
+# A cd to HQ root anywhere in the command is the anchor, even when a later cd
+# points elsewhere — the guard fails closed rather than trusting the last cd.
+run 2 "$NESTED" "cd $TMP && echo hi && git push origin main" \
+  'cd HQ root then push blocked even with an intervening command'
+
 echo "block-hq-root-git-mutation: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
