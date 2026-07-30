@@ -14,6 +14,12 @@
 
 set -euo pipefail
 
+# NOTE: use `grep -q PAT <<<"$var"`, never `echo "$var" | grep -q PAT`.
+# `grep -q` exits at the first match, so the writer on the left of the pipe can
+# die with SIGPIPE (141); with `pipefail` that failure becomes the pipeline's
+# exit status and a PASSING assertion is reported as a failure. That raced
+# roughly 1 run in 10 here and read as flakiness.
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 LINT="${ROOT}/core/scripts/lint-skill-command-refs.sh"
 ALLOW="${ROOT}/core/scripts/skill-command-refs.allow"
@@ -72,7 +78,7 @@ run_lint_in() { ( cd "$1" && bash "$LINT" ); }
 
 # Case A: fixture with only resolvable references -> clean (exit 0)
 out="$(run_lint_in "$FX" 2>&1)" || fail "Case A: clean fixture should pass; got:\n${out}"
-echo "$out" | grep -q '^OK:' || fail "Case A: expected OK line, got:\n${out}"
+grep -q '^OK:' <<<"$out" || fail "Case A: expected OK line, got:\n${out}"
 
 # Case B: inject a dangling reference -> lint fails and names the command
 mkdir -p "${FX}/.claude/skills/broken"
@@ -83,7 +89,7 @@ BROKENF
 if out="$(run_lint_in "$FX" 2>&1)"; then
   fail "Case B: dangling reference should fail the lint, but it passed:\n${out}"
 fi
-echo "$out" | grep -q 'totally-bogus-cmd' \
+grep -q 'totally-bogus-cmd' <<<"$out" \
   || fail "Case B: failure output should name the dangling command; got:\n${out}"
 rm -rf "${FX}/.claude/skills/broken"
 
@@ -96,7 +102,7 @@ NAMESPACEF
 if out="$(run_lint_in "$FX" 2>&1)"; then
   fail "Case C: dangling namespaced target should fail the lint, but it passed:\n${out}"
 fi
-echo "$out" | grep -q 'personal:missing' \
+grep -q 'personal:missing' <<<"$out" \
   || fail "Case C: failure output should name the namespaced target; got:\n${out}"
 rm -f "${FX}/core/policies/broken.md"
 
@@ -107,7 +113,7 @@ HQINVITEF
 if out="$(run_lint_in "$FX" 2>&1)"; then
   fail "Case C: top-level hq invite should fail the lint, but it passed:\n${out}"
 fi
-echo "$out" | grep -q 'hq invite' \
+grep -q 'hq invite' <<<"$out" \
   || fail "Case C: failure output should name hq invite; got:\n${out}"
 rm -f "${FX}/core/policies/broken.md"
 
@@ -118,7 +124,7 @@ SLACKINVITEF
 if out="$(run_lint_in "$FX" 2>&1)"; then
   fail "Case C: /invite outside Slack should fail the lint, but it passed:\n${out}"
 fi
-echo "$out" | grep -q '/invite' \
+grep -q '/invite' <<<"$out" \
   || fail "Case C: failure output should name /invite; got:\n${out}"
 rm -f "${FX}/core/policies/broken.md"
 
@@ -130,7 +136,7 @@ HOOKF
 if out="$(run_lint_in "$FX" 2>&1)"; then
   fail "Case C: dangling hook route should fail the lint, but it passed:\n${out}"
 fi
-echo "$out" | grep -q 'missing-hook-command' \
+grep -q 'missing-hook-command' <<<"$out" \
   || fail "Case C: failure output should name the hook command; got:\n${out}"
 rm -f "${FX}/.claude/hooks/broken.sh"
 
