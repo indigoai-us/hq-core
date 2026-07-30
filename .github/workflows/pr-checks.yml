@@ -362,6 +362,16 @@ jobs:
         run: bash core/scripts/tests/journal-session-scoped-pointer.test.sh
       - name: Stop hook selects only its session journal
         run: bash core/scripts/tests/after-turn-suggestions.test.sh
+      - name: Checkpoint and journal hooks do not over-trigger
+        run: bash core/scripts/tests/checkpoint-journal-noise.test.sh
+
+  mcp-cleanup-session-scope:
+    name: mcp-cleanup-session-scope
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stop-hook cleanup stays inside its own session tree
+        run: bash core/scripts/tests/cleanup-mcp-session-scope.test.sh
 
   hq-agent-session-harness:
     # US-411 assembly timing budget + US-412 golden-turn parity harness.
