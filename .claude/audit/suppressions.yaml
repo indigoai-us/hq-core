@@ -48,3 +48,11 @@
 - path: "test/__tests__/stories/US-011.test.mjs"
   scanners: [pii]
   reason: "Work Mesh acceptance tests bind an ephemeral in-process server to the IPv4 loopback address; the address is infrastructure test data, not PII."
+
+- path: "core/scripts/tests/checkpoint-journal-noise.test.sh"
+  scanners: [pii]
+  reason: "Disposable git-config identity in throwaway test fixtures uses minimal placeholder addresses (t@t.t) that are not real mailboxes; placeholder, not PII."
+
+- path: "core/scripts/tests/handoff-finalize-commit-status.test.sh"
+  scanners: [pii]
+  reason: "Disposable git-config identity in throwaway test fixtures uses RFC 2606 reserved example.com address (test@example.com — never a real mailbox); placeholder, not PII."
