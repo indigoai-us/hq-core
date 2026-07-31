@@ -47,7 +47,7 @@ mkdir -p "$knowledge/design-styles/packs"
 (
   cd "$knowledge"
   git init -q
-  git config user.email test@example.com
+  git config user.email [EMAIL]
   git config user.name test
   printf '# %s Knowledge\n\nKnowledge base for %s.\n' "$name" "$name" > README.md
   : > design-styles/packs/.gitkeep

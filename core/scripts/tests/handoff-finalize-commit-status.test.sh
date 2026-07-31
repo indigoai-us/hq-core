@@ -51,7 +51,7 @@ SH
 JSON
 
   git -C "$repo" init -q
-  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.email [EMAIL]
   git -C "$repo" config user.name "Handoff Commit Status Test"
   echo "base" > "$repo/tracked.txt"
   git -C "$repo" add tracked.txt core/scripts workspace/baseline/hq-local-baseline.json

@@ -32,7 +32,7 @@ make_root() {
   cp "$HOOKS/auto-checkpoint-trigger.sh" "$fr/.claude/hooks/auto-checkpoint-trigger.sh"
   chmod +x "$fr/core/scripts"/*.sh "$fr/.claude/hooks"/*.sh
   git -C "$fr" init -q 2>/dev/null
-  git -C "$fr" config user.email t@t.t 2>/dev/null
+  git -C "$fr" config user.email [EMAIL] 2>/dev/null
   git -C "$fr" config user.name t 2>/dev/null
   echo root > "$fr/README.md"
   git -C "$fr" add -A >/dev/null 2>&1
@@ -82,7 +82,7 @@ echo "[3] checkpoint git metadata follows the active repo, not HQ root"
 APP="$TMP_ROOT/app"
 mkdir -p "$APP"
 git -C "$APP" init -q
-git -C "$APP" config user.email t@t.t
+git -C "$APP" config user.email [EMAIL]
 git -C "$APP" config user.name t
 git -C "$APP" checkout -q -b feature/app-branch
 echo app > "$APP/main.ts"
