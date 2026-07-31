@@ -35,6 +35,11 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-glob \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-glob.sh\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
+            "timeout": 5
           }
         ]
       },
@@ -45,12 +50,22 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-grep \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-grep.sh\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
+            "timeout": 5
           }
         ]
       },
       {
         "matcher": "Read",
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
+            "timeout": 5
+          },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" warn-cross-company-settings \"$CLAUDE_PROJECT_DIR/.claude/hooks/warn-cross-company-settings.sh\"",
@@ -61,6 +76,11 @@
       {
         "matcher": "Bash",
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
+            "timeout": 5
+          },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" detect-secrets \"$CLAUDE_PROJECT_DIR/.claude/hooks/detect-secrets.sh\"",

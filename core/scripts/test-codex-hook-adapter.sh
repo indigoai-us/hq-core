@@ -78,6 +78,20 @@ echo "unsafe-package-check" >> "$TEST_LOG"
 exit 0
 SH
 
+cat > "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" <<'SH'
+#!/bin/bash
+input="$(cat)"
+tool="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
+echo "mandatory-scope-authorizer:$tool" >> "$TEST_LOG"
+path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // empty')"
+cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty')"
+if printf '%s' "$path$cmd" | grep -q 'companies/liverecover/'; then
+  echo "blocked scope" >&2
+  exit 2
+fi
+exit 0
+SH
+
 cat > "$TMP/.claude/hooks/protect-core.sh" <<'SH'
 #!/bin/bash
 input="$(cat)"
@@ -316,6 +330,15 @@ run_adapter "$payload_bash_safe" >/dev/null
 assert_contains "$(cat "$TEST_LOG")" "block-core-writes-bash"
 assert_contains "$(cat "$TEST_LOG")" "block-hq-root-git-mutation"
 assert_contains "$(cat "$TEST_LOG")" "block-unsafe-package-install"
+assert_contains "$(cat "$TEST_LOG")" "mandatory-scope-authorizer:Bash"
+
+payload_read_scope='{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/liverecover/settings/x.yaml"}}'
+if err="$(run_adapter "$payload_read_scope" 2>&1 >/dev/null)"; then
+  echo "Expected mandatory-scope-authorizer block on cross-company Read" >&2
+  exit 1
+fi
+assert_contains "$err" "blocked scope"
+assert_contains "$(cat "$TEST_LOG")" "mandatory-scope-authorizer:Read"
 
 payload_root_git='{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"'"$TMP"'","tool_input":{"command":"git push origin main"}}'
 if err="$(run_adapter "$payload_root_git" 2>&1 >/dev/null)"; then
