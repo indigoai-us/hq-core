@@ -358,7 +358,7 @@ brings in becomes context for Dream Big (4.5) and the action interview (5).
 
 ### Repos directory (required)
 
-All repos — code, knowledge, company projects — live under `repos/`. This is the single canonical location for every cloned or created repository in HQ.
+Code repos live under `repos/public/` and `repos/private/`. Knowledge bases are **real directories** under `personal/knowledge/` or `companies/{slug}/knowledge/` (embedded git) — not symlinks into `repos/`.
 
 ```bash
 mkdir -p repos/public repos/private

@@ -434,6 +434,16 @@ jobs:
       - name: Knowledge repository glob expansion is shell-safe
         run: bash core/scripts/tests/knowledge-repo-glob-shells.test.sh
 
+  knowledge-scaffold-real-dir:
+    # fix/knowledge-scaffold-no-symlink: /newcompany must scaffold embedded git
+    # directories, not repo symlinks that sync as vault markers.
+    name: knowledge-scaffold-real-dir
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Knowledge scaffold uses real directories with sync-visible content
+        run: bash core/scripts/tests/knowledge-scaffold-real-dir.test.sh
+
   dm-people-resolve:
     # feature-dm-skill-email-confirm: the /dm skill must CONFIRM a recipient's
     # email via `hq people resolve` (single-company, tenancy-safe) before

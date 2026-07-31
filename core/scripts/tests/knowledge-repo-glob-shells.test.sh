@@ -20,7 +20,7 @@ extract_knowledge_loop() {
   awk '
     /^ *```bash$/ { in_code=1; next }
     in_code && /^ *```$/ {
-      if (code ~ /for symlink in core\/knowledge\/public\/\*/) {
+      if (code ~ /for (symlink|knowledge_path) in core\/knowledge\/public\/\*/) {
         printf "%s", code
         exit
       }

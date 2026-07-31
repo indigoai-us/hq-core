@@ -96,23 +96,23 @@ git status --short
 - Untracked new files (should commit or ignore)
 - Modified submodules
 
-**Note:** Knowledge folders are symlinks to repos in `repos/public/` and `repos/private/` (gitignored). Symlinks themselves should be tracked by HQ git. Knowledge file changes are invisible to HQ git (they live in their own repos).
+**Note:** Knowledge folders are separate embedded git repos (real directories under `personal/knowledge/` or `companies/{slug}/knowledge/`) or legacy symlinks into `repos/`. HQ git tracks the directory entry; knowledge file changes live in the embedded repo and are invisible to HQ git.
 
 ### 4b. Knowledge Repo Status
 
 **Policy**: Knowledge repos should be clean (committed)
 
 ```bash
-bash -c '
-shopt -s nullglob
-for symlink in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
-  [ -L "$symlink" ] || continue
-  repo_dir=$(cd "$symlink" && git rev-parse --show-toplevel 2>/dev/null) || continue
-  dirty=$(cd "$repo_dir" && git status --porcelain)
-  [ -z "$dirty" ] && continue
-  echo "DIRTY: $symlink → $repo_dir"
-done
-'
+   bash -c '
+   shopt -s nullglob
+   for knowledge_path in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
+     [ -L "$knowledge_path" ] || [ -d "$knowledge_path/.git" ] || continue
+     repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
+     dirty=$(cd "$repo_dir" && git status --porcelain)
+     [ -z "$dirty" ] && continue
+     echo "DIRTY: $knowledge_path → $repo_dir"
+   done
+   '
 ```
 
 **With --fix**: Auto-commit dirty knowledge repos:
