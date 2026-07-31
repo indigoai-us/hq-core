@@ -3,11 +3,11 @@ id: hq-policy-enforcement-claims-verify-wiring
 title: A policy enforcement claim is worthless unless verified against the actually-wired hook + settings
 when: enforcement
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-05-18
-updated: 2026-05-18
+updated: 2026-07-28
 source: user-correction
 tags: [infrastructure, safety, knowledge, docs]
 ---

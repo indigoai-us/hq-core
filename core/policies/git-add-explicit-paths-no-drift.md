@@ -3,12 +3,12 @@ id: git-add-explicit-paths-no-drift
 title: Stage focused commits by explicit path, never git add -A when unrelated drift exists
 when: git && commit
 on: [PreToolUse]
-enforcement: hard
+enforcement: soft
 tier: 1
 public: true
-version: 4
+version: 5
 created: 2026-04-16
-updated: 2026-05-21
+updated: 2026-07-28
 source: user-correction
 ---
 

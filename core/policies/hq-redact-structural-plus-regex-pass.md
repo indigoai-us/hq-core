@@ -3,11 +3,11 @@ id: hq-redact-structural-plus-regex-pass
 title: Pair structural JSON-field redaction with a regex pass on string values
 when: secret || credential || credentials || password || passphrase || token || apikey || api_key
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
-enforcement: soft
+enforcement: hard
 public: true
-version: 1
+version: 2
 created: 2026-04-22
-updated: 2026-04-22
+updated: 2026-07-28
 source: session-learning
 ---
 

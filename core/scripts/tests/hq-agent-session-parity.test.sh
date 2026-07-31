@@ -97,23 +97,34 @@ export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 # Ensure jq still available
 command -v jq >/dev/null 2>&1 || fail "jq required on PATH"
 # Prove providers absent
-for bin in claude codex grok; do
-  if command -v "$bin" >/dev/null 2>&1; then
-    # Shadow with a non-executable / missing via a private bin dir
-    :
-  fi
-done
 SHADOW="$TMP/shadow-bin"
 mkdir -p "$SHADOW"
-# Prefer shadow PATH with only essential tools + jq location
 JQ_PATH="$(command -v jq)"
 JQ_DIR="$(dirname "$JQ_PATH")"
 # Keep python3 for timing helpers
 PY_PATH="$(command -v python3 2>/dev/null || true)"
-export PATH="${SHADOW}:${JQ_DIR}:/usr/bin:/bin"
-if [ -n "$PY_PATH" ]; then
-  export PATH="$(dirname "$PY_PATH"):$PATH"
-fi
+
+# Build the offline PATH by MIRRORING the real tool directories into $SHADOW,
+# minus the provider binaries — do not just prepend $SHADOW to /usr/bin.
+#
+# The old construction was `PATH="$SHADOW:$JQ_DIR:/usr/bin:/bin"`, which asserts
+# that the developer's machine has no claude/codex/grok anywhere in those
+# directories. On a machine where claude is installed to /usr/bin (i.e. any
+# machine actually running Claude Code) the assertion below tripped and the
+# suite failed — the test's own PATH put the binary back. CI passed only
+# because its runners have no provider binaries installed.
+for src in "$JQ_DIR" /usr/bin /bin ${PY_PATH:+"$(dirname "$PY_PATH")"}; do
+  [ -d "$src" ] || continue
+  for entry in "$src"/*; do
+    name="${entry##*/}"
+    case "$name" in
+      claude|codex|grok) continue ;;
+    esac
+    [ -e "$SHADOW/$name" ] || ln -s "$entry" "$SHADOW/$name" 2>/dev/null || true
+  done
+done
+export PATH="$SHADOW"
+
 # Intentionally do NOT place claude/codex/grok on PATH
 command -v claude >/dev/null 2>&1 && fail "claude must not be on PATH for offline harness"
 command -v codex >/dev/null 2>&1 && fail "codex must not be on PATH for offline harness"

@@ -3,11 +3,11 @@ id: hq-mcp-absolute-paths
 title: Use absolute paths for Homebrew binaries (MCP + Bash tool)
 when: .mcp.json || mcp
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 tier: 1
-version: 3
+version: 4
 created: 2026-04-01
-updated: 2026-04-02
+updated: 2026-07-28
 source: success-pattern
 public: true
 ---

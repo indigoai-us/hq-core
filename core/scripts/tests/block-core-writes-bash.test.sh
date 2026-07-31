@@ -7,7 +7,7 @@
 #   - the 2026-06-14 boundary fix: VAR=<protected path> assignments and
 #     colon-joined paths are now caught (previously slipped through because
 #     '=' / ':' were not treated as token boundaries);
-#   - .claude/settings.local.json and the durable personal context remain writable;
+#   - .claude/settings.local.json and core.yaml exclude paths remain writable;
 #   - companies/_template/ (a locked path per core.yaml) is blocked, while a
 #     real tenant dir (companies/<co>/) stays writable;
 #   - the settings.local.json HQ_BYPASS_CORE_PROTECT escape hatch still works
@@ -19,6 +19,8 @@ ROOT="$(git rev-parse --show-toplevel)"
 HOOK="$ROOT/.claude/hooks/block-core-writes-bash.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not available"; exit 0; }
 
 mkdir -p "$TMP/.claude" "$TMP/core/packages/x" "$TMP/personal" "$TMP/repos/private/app" "$TMP/companies/_template/knowledge" "$TMP/companies/acme/data"
 printf '{}' > "$TMP/.claude/settings.local.json"   # no bypass by default
@@ -83,6 +85,19 @@ run 0 "cp $C/a.md /tmp/ && rm -f /tmp/a.md"        'core read + tmp cleanup allo
 printf '{"env":{"HQ_BYPASS_CORE_PROTECT":"1"}}' > "$TMP/.claude/settings.local.json"
 run 0 "mv /tmp/y $C/s.json"                  'bypass flag set -> core write allowed'
 printf '{}' > "$TMP/.claude/settings.local.json"
+
+# --- core.yaml exclude cases (require yq + core.yaml) --------------------
+if command -v yq >/dev/null 2>&1; then
+  cp "$ROOT/core/core.yaml" "$TMP/core/core.yaml"
+  run 0 "echo x > $TMP/.claude/launch.json"           'launch.json writable via core.yaml exclude'
+  mkdir -p "$TMP/.claude/scheduled-tasks"
+  run 0 "echo x > $TMP/.claude/scheduled-tasks/job.json" 'scheduled-tasks store writable via core.yaml exclude'
+  mkdir -p "$TMP/.claude/hooks" "$TMP/core/packages"
+  run 2 "touch $TMP/.claude/hooks/toolkit.sh" 'kit exclude must not strip toolkit substring'
+  run 2 "touch $TMP/core/packages/promote-hq-core-scan.sh.copy" 'scan exclude must not strip .copy variant'
+else
+  echo "SKIP: core.yaml exclude cases (yq not available)"
+fi
 
 # --- Regression (2026-06-23): the deny output must not leak a grep warning.
 # esc() previously escaped '/' as '\/' (invalid in ERE) -> "grep: warning: stray

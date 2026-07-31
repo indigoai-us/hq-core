@@ -34,8 +34,22 @@
 #
 # Outputs JSON on stdout:
 #   {"thread_id":"...","thread_path":"...","handoff_path":"...",
-#    "hq_committed":true,"indexes_regen":true,"qmd_pid":12345,
-#    "next_command":"/resumework T-...","clipboard_copied":true}
+#    "hq_committed":true,"hq_commit_status":"committed","hq_commit_error":"",
+#    "committed_paths":[...],"stage_failures":[],"indexes_regen":true,
+#    "qmd_pid":12345,"next_command":"/resumework T-...","clipboard_copied":true}
+#
+# hq_commit_status is the honest reason behind hq_committed:
+#   committed         — the handoff commit landed; committed_paths lists it
+#   nothing-to-commit — no staged change existed; hq_committed:false, exit 0
+#   failed            — git refused the commit; committed_paths is [],
+#                       hq_commit_error carries git's message, exit 4
+#   stage-failed      — git add rejected one or more paths, so the handoff is
+#                       incomplete even if a commit landed for the rest; exit 4.
+#                       This is the shape a held .git/index.lock takes.
+# stage_failures lists paths git add rejected for a reason other than gitignore.
+#
+# Exit codes: 0 ok · 2 bad argument · 3 changeset file missing · 4 handoff not
+# durable (commit refused or paths unstageable).
 
 set -euo pipefail
 
@@ -384,7 +398,13 @@ if [[ -f INDEX.md ]]; then
 fi
 
 # -------- HQ commit (explicit paths only — never git add -A) --------
+# A failed commit must never ride inside a success payload. hq_committed alone
+# cannot say why it is false — "there was nothing to commit" and "git refused
+# the commit" are the same value — so hq_commit_status carries the reason and a
+# genuine failure also exits non-zero (4).
 HQ_COMMITTED="false"
+HQ_COMMIT_STATUS="nothing-to-commit"
+HQ_COMMIT_ERROR=""
 EXPLICIT_PATHS=(
   "${SAFE_STAGE_PATHS[@]:-}"
   "${MIRROR_STAGE_PATHS[@]:-}"
@@ -397,19 +417,63 @@ EXPLICIT_PATHS=(
   "INDEX.md"
 )
 STAGED=0
+# Newline-separated, not an array: `${#arr[@]}` on an empty array is an unbound
+# variable under bash 3.2 + `set -u` (the same trap the SAFE_STAGE_PATHS
+# regression hit), and macOS still ships bash 3.2.
+STAGE_FAILURES=""
+STAGE_FAILURE_COUNT=0
 for p in "${EXPLICIT_PATHS[@]}"; do
+  [[ -n "$p" ]] || continue
   if [[ -e "$p" || -n "$(git status --porcelain -- "$p" 2>/dev/null)" ]]; then
-    git add -- "$p" 2>/dev/null && STAGED=$((STAGED+1)) || true
+    add_rc=0
+    git add -- "$p" >/dev/null 2>&1 || add_rc=$?
+    if [[ $add_rc -eq 0 ]]; then
+      STAGED=$((STAGED+1))
+    elif git check-ignore -q -- "$p" 2>/dev/null; then
+      # A gitignored path is a deliberate exclusion, not a failed write.
+      :
+    else
+      STAGE_FAILURES="${STAGE_FAILURES}${p}"$'\n'
+      STAGE_FAILURE_COUNT=$((STAGE_FAILURE_COUNT+1))
+    fi
   fi
 done
 # committed_paths scales with the staged set; capture it to a file (git piped to
 # jq via stdin, then the result written to disk) so it too stays off argv.
 new_tmp COMMITTED_PATHS_FILE
 printf '[]' > "$COMMITTED_PATHS_FILE"
+new_tmp STAGE_FAILURES_FILE
+printf '[]' > "$STAGE_FAILURES_FILE"
+if [[ -n "$STAGE_FAILURES" ]]; then
+  printf '%s' "$STAGE_FAILURES" \
+    | jq -R -s 'split("\n") | map(select(length > 0))' > "$STAGE_FAILURES_FILE"
+fi
 if [[ $STAGED -gt 0 ]] && [[ -n "$(git diff --cached --name-only 2>/dev/null)" ]]; then
-  git diff --cached --name-only | jq -R -s 'split("\n") | map(select(length > 0))' > "$COMMITTED_PATHS_FILE"
-  if git commit -m "checkpoint: handoff ${THREAD_ID}" >/dev/null 2>&1; then
+  # Snapshot the staged set separately. It only becomes committed_paths once the
+  # commit actually lands; a refused commit must not report paths as committed.
+  new_tmp PENDING_PATHS_FILE
+  git diff --cached --name-only | jq -R -s 'split("\n") | map(select(length > 0))' > "$PENDING_PATHS_FILE"
+  commit_out=""
+  commit_rc=0
+  commit_out="$(git commit -m "checkpoint: handoff ${THREAD_ID}" 2>&1)" || commit_rc=$?
+  if [[ $commit_rc -eq 0 ]]; then
     HQ_COMMITTED="true"
+    HQ_COMMIT_STATUS="committed"
+    cat "$PENDING_PATHS_FILE" > "$COMMITTED_PATHS_FILE"
+  else
+    HQ_COMMIT_STATUS="failed"
+    HQ_COMMIT_ERROR="$(printf '%s' "$commit_out" | tr '\r\n' '  ' | sed 's/  */ /g; s/^ //; s/ $//' | cut -c1-500)"
+    [[ -n "$HQ_COMMIT_ERROR" ]] || HQ_COMMIT_ERROR="git commit exited ${commit_rc} with no output"
+  fi
+fi
+# A staging failure is just as fatal as a refused commit, and it is the shape a
+# held .git/index.lock actually takes: every `git add` fails, STAGED stays 0, no
+# commit is even attempted, and the run would otherwise look like the benign
+# "nothing to commit" case while the entire handoff sits uncommitted on disk.
+if [[ $STAGE_FAILURE_COUNT -gt 0 && "$HQ_COMMIT_STATUS" != "failed" ]]; then
+  HQ_COMMIT_STATUS="stage-failed"
+  if [[ -z "$HQ_COMMIT_ERROR" ]]; then
+    HQ_COMMIT_ERROR="git add failed for ${STAGE_FAILURE_COUNT} path(s) — see stage_failures"
   fi
 fi
 COMMIT_AFTER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -445,7 +509,10 @@ jq -n \
   --arg qmd_pid "${QMD_PID:-}" \
   --arg git_bg_errors "$GIT_BG_ERRORS" \
   --arg changeset_path "$CHANGESET_PATH" \
+  --arg hq_commit_status "$HQ_COMMIT_STATUS" \
+  --arg hq_commit_error "$HQ_COMMIT_ERROR" \
   --slurpfile committed_paths "$COMMITTED_PATHS_FILE" \
+  --slurpfile stage_failures "$STAGE_FAILURES_FILE" \
   --slurpfile skipped_paths "$SKIPPED_PATHS_FILE" \
   --argjson baseline_noise_count "$BASELINE_NOISE_COUNT" \
   --arg commit_after_finalize "$COMMIT_AFTER" \
@@ -458,8 +525,11 @@ jq -n \
     changeset_path: $changeset_path,
     handoff_path: $handoff_path,
     hq_committed: $hq_committed,
+    hq_commit_status: $hq_commit_status,
+    hq_commit_error: $hq_commit_error,
     commit_after_finalize: $commit_after_finalize,
     committed_paths: ($committed_paths[0] // []),
+    stage_failures: ($stage_failures[0] // []),
     skipped_paths: ($skipped_paths[0] // []),
     baseline_noise_count: $baseline_noise_count,
     indexes_regen: $indexes_regen,
@@ -469,3 +539,24 @@ jq -n \
     clipboard_copied: $clipboard_copied,
     mirror_companies: $mirror_companies
   }'
+
+# -------- fail loudly on a git write that did not land --------
+# The payload above is always emitted first: the caller still needs the thread
+# id and paths to recover. What changes is that a refused commit no longer
+# leaves the process looking successful.
+if [[ -n "$GIT_BG_ERRORS" ]]; then
+  echo "handoff-finalize: WARNING background git step reported errors: $GIT_BG_ERRORS" >&2
+fi
+if [[ $STAGE_FAILURE_COUNT -gt 0 ]]; then
+  echo "handoff-finalize: ERROR git add failed for ${STAGE_FAILURE_COUNT} path(s):" >&2
+  printf '%s' "$STAGE_FAILURES" | sed 's/^/handoff-finalize:   /' >&2
+fi
+case "$HQ_COMMIT_STATUS" in
+  failed|stage-failed)
+    echo "handoff-finalize: ERROR the HQ handoff commit FAILED — thread files were written but are NOT committed." >&2
+    echo "handoff-finalize: git said: $HQ_COMMIT_ERROR" >&2
+    echo "handoff-finalize: resolve the git error and re-run /handoff before ending the session." >&2
+    exit 4
+    ;;
+esac
+exit 0

@@ -3,12 +3,12 @@ id: hq-handoff-changeset-scope
 title: Handoff scope comes from changesets, not noisy HQ root status
 when: /handoff
 on: [UserPromptSubmit]
-enforcement: hard
+enforcement: soft
 public: false
 skip-promotion: true
-version: 1
+version: 2
 created: 2026-05-01
-updated: 2026-05-01
+updated: 2026-07-28
 source: user-correction
 ---
 

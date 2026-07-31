@@ -18,6 +18,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SESSIONS_DIR="$REPO_ROOT/workspace/sessions"
 CURRENT_FILE="$SESSIONS_DIR/.current"
+LIB_DIR="$SCRIPT_DIR/lib"
+# shellcheck source=lib/session-scope-capability.sh
+. "$LIB_DIR/session-scope-capability.sh"
 
 usage() {
   sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -94,6 +97,10 @@ cmd_set() {
   # do company infra/deploy/credential work blind to hard rules. This closes
   # that gap. Emits policy text only — never secrets.
   if [ "$key" = "company_slug" ] && [ -n "$value" ] && [ "$value" != "$prev" ]; then
+    session_scope_mint "$REPO_ROOT" "$id" "$value" || {
+      echo "hq-session: failed to mint scope-capability for session $id" >&2
+      exit 1
+    }
     emit_company_hard_policies "$value"
     # Fire-and-forget: register this company bind with the Work Mesh (US-003).
     # Fully silent (all output → the hook's own bounded log) and guarded so it

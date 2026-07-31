@@ -3,11 +3,11 @@ id: hq-detect-secrets-echo-escape-testing
 title: Do not use echo to test the detect-secrets hook — it has a deliberate false-positive escape
 when: secret || credential || credentials || password || passphrase || token || apikey || api_key
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
-enforcement: soft
+enforcement: hard
 public: true
-version: 1
+version: 2
 created: 2026-04-18
-updated: 2026-04-18
+updated: 2026-07-28
 source: session-learning
 ---
 

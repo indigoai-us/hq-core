@@ -3,11 +3,11 @@ id: hq-rust-helper-extension-audit-call-sites
 title: When fixing a helper bug class, audit all call sites — don't ship a parallel safe helper
 when: .rs || helper
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-04-25
-updated: 2026-04-25
+updated: 2026-07-28
 source: session-learning
 ---
 

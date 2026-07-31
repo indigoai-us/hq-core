@@ -3,10 +3,11 @@ id: hq-project-work-mesh-reporting
 title: Report Active Project Work To The HQ Work Mesh
 when: project || prd || run-project || execute-task || startwork
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-07-05
+updated: 2026-07-28
 source: user-request
 tags: [projects, collaboration, work-mesh, mqtt, hq-pro]
 ---

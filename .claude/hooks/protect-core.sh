@@ -158,14 +158,9 @@ norm_path() {
 }
 
 # Check exclude list first — always allowed.
-EXCLUDE_PATHS=$(yq eval '.rules.exclude[]' "$CORE_YAML" 2>/dev/null) || EXCLUDE_PATHS=""
-while IFS= read -r exc_path; do
-  [[ -z "$exc_path" ]] && continue
-  exc_abs="$(norm_path "${HQ_ROOT}/${exc_path%/}")"
-  if [[ "$FILE_PATH" == "$exc_abs" ]] || [[ "$FILE_PATH" == "$exc_abs/"* ]]; then
-    exit 0
-  fi
-done <<< "$EXCLUDE_PATHS"
+if hq_path_matches_core_yaml_exclude "$HQ_ROOT" "$FILE_PATH" "$CORE_YAML"; then
+  exit 0
+fi
 
 # Specific file redirects — give a helpful pointer before the generic block.
 CLAUDE_MD_ABS="$(norm_path "${HQ_ROOT}/.claude/CLAUDE.md")"

@@ -3,11 +3,11 @@ id: hq-announce-before-irreversible
 title: Announce and Confirm Before Any Irreversible Action
 when: deploy || push || share || slack || email || migration
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
-enforcement: soft
+enforcement: hard
 tier: 1
-version: 1
+version: 2
 created: 2026-04-02
-updated: 2026-04-02
+updated: 2026-07-28
 source: session-learning
 public: true
 ---

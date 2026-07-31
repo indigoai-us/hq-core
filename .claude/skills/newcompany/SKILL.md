@@ -79,22 +79,36 @@ company. Sessions are hardlinked here from `workspace/threads/` by the mirror ho
 default; `/designate-team {slug}` rewrites it to `cloud: true` and runs
 `hq cloud provision company {slug}`. Keep the file even for purely-local companies.
 
-### 0.4 Create Knowledge Repo
+### 0.4 Create Knowledge Directory (embedded git)
+
+Scaffold `companies/{slug}/knowledge/` as a **real directory** with its own git
+repo so cloud sync uploads documents directly. Do **not** symlink into `repos/` —
+symlinked knowledge dirs upload as ~50-byte vault markers and break teammate sync.
 
 ```bash
-mkdir -p repos/private/knowledge-{slug}
-cd repos/private/knowledge-{slug}
+mkdir -p companies/{slug}/knowledge/design-styles/packs
+cd companies/{slug}/knowledge
 git init
-echo "# {Name} Knowledge\n\nKnowledge base for {Name}." > README.md
+printf '# %s Knowledge\n\nKnowledge base for %s.\n' "{Name}" "{Name}" > README.md
 mkdir -p design-styles/packs
 : > design-styles/packs/.gitkeep
 git add -A && git commit -m "init: knowledge base"
+cd -
 ```
 
-The `design-styles/packs/` subdir is where company-scoped brand packs live. Create the symlink:
+Verify (must pass before continuing):
+
 ```bash
-ln -s ../../repos/private/knowledge-{slug} companies/{slug}/knowledge
+test -d companies/{slug}/knowledge && ! test -L companies/{slug}/knowledge \
+  && echo "OK: knowledge is a real directory"
 ```
+
+**Optional advanced layout:** a separate repo under `repos/private/knowledge-{slug}`
+is supported only when the operator explicitly confirms they understand sync will
+**not** follow directory symlinks and they will push from that repo path directly.
+Default is always the embedded-git directory above.
+
+The `design-styles/packs/` subdir is where company-scoped brand packs live.
 
 ### 0.5 Update Registries
 

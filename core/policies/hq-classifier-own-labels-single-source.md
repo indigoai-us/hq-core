@@ -3,11 +3,11 @@ id: hq-classifier-own-labels-single-source
 title: Classifiers own their labels — never duplicate bucketing logic in the display shell
 when: refactor || dashboard
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-04-20
-updated: 2026-04-20
+updated: 2026-07-28
 source: session-learning
 ---
 

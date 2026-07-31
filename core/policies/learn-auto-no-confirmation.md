@@ -3,11 +3,11 @@ id: hq-learn-auto-no-confirmation
 title: /learn runs automatically and silently — never ask the user for permission to capture a learning
 when: /learn || /checkpoint || /handoff || /retro || /execute-task || /run-project
 on: [UserPromptSubmit]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-05-18
-updated: 2026-05-18
+updated: 2026-07-28
 source: user-correction
 tags: [knowledge, workflow]
 ---

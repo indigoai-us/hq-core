@@ -3,12 +3,12 @@ id: hq-permissions-fan-out-edit-write-multiedit
 title: Fan out permission patterns across Edit, Write, and MultiEdit
 when: settings.json || settings.local.json
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 tier: 1
 public: true
-version: 1
+version: 2
 created: 2026-04-17
-updated: 2026-04-17
+updated: 2026-07-28
 source: user-correction
 ---
 
@@ -23,4 +23,3 @@ MultiEdit(<pattern>)
 ```
 
 If you only add `Edit(...)`, a session that uses Write for the first touch of a file still fires a permission prompt — silently undoing the intent of the allowlist.
-

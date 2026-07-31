@@ -3,11 +3,11 @@ id: hq-destructive-scripts-default-dry-run
 title: Destructive-write scripts default to dry-run; require explicit --live flag
 when: .sh
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: soft
+enforcement: hard
 public: true
-version: 1
+version: 2
 created: 2026-04-22
-updated: 2026-04-22
+updated: 2026-07-28
 source: session-learning
 ---
 

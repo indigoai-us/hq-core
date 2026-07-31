@@ -1,10 +1,22 @@
 #!/bin/bash
 # hq-core: public
-# hq-autocommit.sh — silent local HQ autosave for non-repo edits.
+# hq-autocommit.sh — quiet local HQ autosave for non-repo edits.
 #
 # Runs after Edit/Write/MultiEdit-shaped changes. It commits only the file path
 # touched by the just-finished tool call, skips repos/ and nested git repos, and
-# emits no user-facing output. Specific repo work keeps normal commit discipline.
+# says nothing while it is working. Specific repo work keeps normal commit
+# discipline.
+#
+# Quiet is not the same as silent. Every path that is a deliberate no-op (wrong
+# tool, path outside the HQ root, excluded prefix, nothing staged) still exits 0
+# without a word. A path where git itself FAILED is recorded in
+# workspace/logs/hq-autocommit.log and warned about once per session — an
+# orphaned .git/index.lock used to stop autosave for hours while producing zero
+# output anywhere, which read to the user as a healthy quiet system.
+#
+# Exit status stays 0 on git failure so a broken autosave never blocks the
+# editor. Set HQ_AUTOCOMMIT_STRICT=1 to make failures exit non-zero instead
+# (for diagnostics and tests, where "did it work" must be machine-readable).
 
 set -uo pipefail
 
@@ -77,44 +89,124 @@ case "$REL_PATH" in
     ;;
 esac
 
-STATUS="$(git -C "$HQ_ROOT" status --porcelain -- "$REL_PATH" 2>/dev/null || true)"
-if [[ -z "$STATUS" ]]; then
+LOG_DIR="$HQ_ROOT/workspace/logs"
+LOG_FILE="$LOG_DIR/hq-autocommit.log"
+LOG_MAX_BYTES="${HQ_AUTOCOMMIT_LOG_MAX_BYTES:-1048576}"
+WARN_DIR="$HQ_ROOT/workspace/.autocommit-warnings"
+LOCK_DIR="${TMPDIR:-/tmp}/hq-autocommit.lock"
+STALE_LOCK_MINUTES="${HQ_AUTOCOMMIT_STALE_LOCK_MINUTES:-5}"
+
+SESSION_KEY="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
+[[ -z "$SESSION_KEY" ]] && SESSION_KEY="pid-${PPID:-$$}"
+SESSION_KEY="$(printf '%s' "$SESSION_KEY" | tr -c 'A-Za-z0-9._-' '_')"
+
+log_line() {
+  mkdir -p "$LOG_DIR" 2>/dev/null || return 0
+  local size
+  size="$(wc -c <"$LOG_FILE" 2>/dev/null || echo 0)"
+  size="${size//[^0-9]/}"
+  if [[ -n "$size" && "$size" -gt "$LOG_MAX_BYTES" ]]; then
+    mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null || true
+  fi
+  printf '%s\n' "$1" >>"$LOG_FILE" 2>/dev/null || true
+}
+
+# One warning per session per distinct cause. A wedged repo fails on every
+# single edit; repeating the same line hundreds of times would train the user
+# to ignore it, which is the failure mode this hook is meant to end.
+warn_once() {
+  local key="$1" msg="$2" cache
+  if mkdir -p "$WARN_DIR" 2>/dev/null; then
+    cache="$WARN_DIR/$SESSION_KEY.keys"
+    if grep -Fqx "$key" "$cache" 2>/dev/null; then
+      return 0
+    fi
+    printf '%s\n' "$key" >>"$cache" 2>/dev/null || true
+  fi
+  printf '%s\n' "$msg"
+  printf '%s\n' "$msg" >&2
+}
+
+report_failure() {
+  local stage="$1" rc="$2" output="$3"
+  log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] FAIL stage=${stage} exit=${rc} path=${REL_PATH} session=${SESSION_KEY}"
+  if [[ -n "$output" ]]; then
+    log_line "$(printf '%s' "$output" | sed 's/^/    git: /')"
+  fi
+  warn_once "autocommit|${stage}|${rc}" \
+    "WARNING: HQ autosave failed — git ${stage} exited ${rc} for '${REL_PATH}'. Local HQ edits are NOT being committed until this is resolved. Details: workspace/logs/hq-autocommit.log"
+  if [[ "${HQ_AUTOCOMMIT_STRICT:-0}" == "1" ]]; then
+    exit 1
+  fi
+  exit 0
+}
+
+STATUS_OUT="$(git -C "$HQ_ROOT" status --porcelain -- "$REL_PATH" 2>&1)"
+STATUS_RC=$?
+if [[ $STATUS_RC -ne 0 ]]; then
+  report_failure "status" "$STATUS_RC" "$STATUS_OUT"
+fi
+if [[ -z "$STATUS_OUT" ]]; then
   exit 0
 fi
 
-if [[ -n "$(git -C "$HQ_ROOT" diff --cached --name-only 2>/dev/null)" ]]; then
+PRESTAGED="$(git -C "$HQ_ROOT" diff --cached --name-only 2>&1)"
+PRESTAGED_RC=$?
+if [[ $PRESTAGED_RC -ne 0 ]]; then
+  report_failure "diff-cached" "$PRESTAGED_RC" "$PRESTAGED"
+fi
+if [[ -n "$PRESTAGED" ]]; then
+  # Someone else is mid-commit with a staged index. Not our index to touch.
   exit 0
 fi
-
-LOG_FILE="/tmp/hq-autocommit.log"
-LOCK_DIR="/tmp/hq-autocommit.lock"
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  # Contention with a concurrent autosave is normal and silent. A lock that
+  # outlives the staleness window is an orphan from a killed run, and it
+  # suppresses every autosave until someone removes it — say so once.
+  if [[ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin "+${STALE_LOCK_MINUTES}" 2>/dev/null)" ]]; then
+    log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] FAIL stage=lock exit=0 path=${REL_PATH} session=${SESSION_KEY}"
+    log_line "    lock: ${LOCK_DIR} is older than ${STALE_LOCK_MINUTES}m and is blocking every autosave"
+    warn_once "autocommit|stale-lock" \
+      "WARNING: HQ autosave is blocked by a stale lock at ${LOCK_DIR} (older than ${STALE_LOCK_MINUTES}m). Local HQ edits are NOT being committed. Remove the directory to restore autosave."
+  fi
   exit 0
 fi
 trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
-{
-  git -C "$HQ_ROOT" add -- "$REL_PATH" || exit 0
+ADD_OUT="$(git -C "$HQ_ROOT" add -- "$REL_PATH" 2>&1)"
+ADD_RC=$?
+if [[ $ADD_RC -ne 0 ]]; then
+  report_failure "add" "$ADD_RC" "$ADD_OUT"
+fi
 
-  # Refuse to autosave an embedded git repo (gitlink, mode 160000). A directory
-  # add that reaches a nested worktree/repo would otherwise stage it into the HQ
-  # root, leaving the tree permanently dirty and blocking /handoff + archiving.
-  # Unstage and bail rather than commit a moving gitlink. (feedback_2ada615f)
-  if git -C "$HQ_ROOT" ls-files --stage -- "$REL_PATH" 2>/dev/null \
-       | awk '$1 == "160000" { hit = 1 } END { exit hit ? 0 : 1 }'; then
-    git -C "$HQ_ROOT" reset -q -- "$REL_PATH" 2>/dev/null || true
-    exit 0
-  fi
+# Refuse to autosave an embedded git repo (gitlink, mode 160000). A directory
+# add that reaches a nested worktree/repo would otherwise stage it into the HQ
+# root, leaving the tree permanently dirty and blocking /handoff + archiving.
+# Unstage and bail rather than commit a moving gitlink. (feedback_2ada615f)
+if git -C "$HQ_ROOT" ls-files --stage -- "$REL_PATH" 2>/dev/null \
+     | awk '$1 == "160000" { hit = 1 } END { exit hit ? 0 : 1 }'; then
+  git -C "$HQ_ROOT" reset -q -- "$REL_PATH" 2>/dev/null || true
+  exit 0
+fi
 
-  git -C "$HQ_ROOT" diff --cached --quiet -- "$REL_PATH" && exit 0
+git -C "$HQ_ROOT" diff --cached --quiet -- "$REL_PATH" 2>/dev/null
+DIFF_RC=$?
+case "$DIFF_RC" in
+  0) exit 0 ;;                                    # staged, but identical to HEAD
+  1) ;;                                           # real staged change — commit it
+  *) report_failure "diff-staged" "$DIFF_RC" "" ;;
+esac
 
-  msg_path="$REL_PATH"
-  if [[ ${#msg_path} -gt 72 ]]; then
-    msg_path="${msg_path:0:69}..."
-  fi
+msg_path="$REL_PATH"
+if [[ ${#msg_path} -gt 72 ]]; then
+  msg_path="${msg_path:0:69}..."
+fi
 
-  git -C "$HQ_ROOT" commit --no-verify -m "autosave(hq): ${msg_path}"
-} >>"$LOG_FILE" 2>&1 || true
+COMMIT_OUT="$(git -C "$HQ_ROOT" commit --no-verify -m "autosave(hq): ${msg_path}" 2>&1)"
+COMMIT_RC=$?
+if [[ $COMMIT_RC -ne 0 ]]; then
+  report_failure "commit" "$COMMIT_RC" "$COMMIT_OUT"
+fi
 
 exit 0

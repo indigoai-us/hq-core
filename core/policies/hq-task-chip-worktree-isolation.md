@@ -3,12 +3,12 @@ id: hq-task-chip-worktree-isolation
 title: Never spawn task chips that do git ops in a shared worktree
 when: git
 on: [AssistantIntent, PreToolUse]
-enforcement: soft
+enforcement: hard
 tier: 1
 public: true
-version: 1
+version: 2
 created: 2026-04-21
-updated: 2026-04-21
+updated: 2026-07-28
 source: session-learning
 ---
 

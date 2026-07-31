@@ -3,12 +3,12 @@ id: hq-auth-middleware-whitelist-password-flow
 title: Audit auth middleware whitelist when adding password-protected flow entry points
 when: auth || middleware
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 public: true
 vendor_public_ok: true
-version: 1
+version: 2
 created: 2026-04-28
-updated: 2026-04-28
+updated: 2026-07-28
 source: session-learning
 ---
 

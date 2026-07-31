@@ -3,11 +3,11 @@ id: hq-confirm-session-scope-after-plan-approval
 title: Confirm per-session execution scope after ExitPlanMode for multi-phase or high-blast-radius plans
 when: /plan || /deep-plan || /brainstorm
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: soft
+enforcement: hard
 public: true
-version: 1
+version: 2
 created: 2026-04-24
-updated: 2026-04-24
+updated: 2026-07-28
 source: session-learning
 ---
 

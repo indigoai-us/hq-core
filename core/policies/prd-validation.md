@@ -3,8 +3,10 @@ id: prd-validation
 title: PRD validation — verify source files at draft, validate JSON post-write
 when: /plan || /prd || /run-project || /execute-task
 on: [UserPromptSubmit]
-enforcement: hard
+enforcement: soft
+version: 1
 created: 2026-04-28
+updated: 2026-07-28
 public: true
 tags: [design, infrastructure]
 ---

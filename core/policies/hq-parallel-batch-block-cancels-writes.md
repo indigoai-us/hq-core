@@ -3,11 +3,11 @@ id: hq-parallel-batch-block-cancels-writes
 title: A blocked tool call cancels its whole parallel batch — re-verify writes against disk
 when: parallel
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-05-29
-updated: 2026-05-29
+updated: 2026-07-28
 source: session-learning
 ---
 

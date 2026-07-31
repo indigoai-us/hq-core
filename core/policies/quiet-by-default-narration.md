@@ -104,7 +104,7 @@ HQ's Auto-Clarity blocks (security warnings, irreversible actions, plan-mode pla
 | Default "state one sentence before first tool call" | **Overridden** for routine operational tool calls and for per-step execution narration in the default audience. Preserved only for the genuinely substantive call. |
 | `.claude/output-styles/hq.md` voice rules | **Orthogonal layer.** This policy governs *whether* to surface text; HQ governs *how* (terseness, warmth tokens) when surfacing. They compose: silent stays silent; surfaced text follows the active style. |
 | Active output-style insight blocks | **Surfaced** — insights are substantive. The policy does not suppress them. |
-| Auto-checkpoint `AUTO-CHECKPOINT REQUIRED` hook injection | The injection is system-to-agent. Silently write the thread file; no chat narration about checkpointing. |
+| Auto-checkpoint `AUTO-CHECKPOINT REQUIRED` / `AUTO-CHECKPOINT SUGGESTED` hook injection | The injection is system-to-agent. Silently write the thread file; no chat narration about checkpointing. `REQUIRED` (context threshold, pre-compaction) is acted on immediately; `SUGGESTED` (PostToolUse trigger) waits for a natural pause. |
 
 ## Examples
 

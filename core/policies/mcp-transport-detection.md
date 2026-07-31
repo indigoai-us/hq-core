@@ -3,7 +3,9 @@ id: mcp-transport-detection
 title: Detect MCP transport type before configuring
 when: .mcp.json
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
+version: 1
+updated: 2026-07-28
 public: true
 ---
 

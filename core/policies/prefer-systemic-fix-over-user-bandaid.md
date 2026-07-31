@@ -3,10 +3,10 @@ id: prefer-systemic-fix-over-user-bandaid
 title: Prefer systemic fix over individual-user bandaid
 when: bug || hotfix
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
-version: 1
+enforcement: soft
+version: 2
 created: 2026-04-29
-updated: 2026-04-29
+updated: 2026-07-28
 source: user-correction
 public: true
 tags: [deployment, auth, testing, design, docs, knowledge]
