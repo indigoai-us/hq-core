@@ -62,7 +62,7 @@ Pass the resolved project directory that owns this session's journal. The helper
 - Regenerates thread INDEX + recent.md + orchestrator INDEX via dedicated bash scripts (`rebuild-threads-index.sh`, `rebuild-orchestrator-index.sh`) — zero Claude context
 - Commits HQ via explicit paths: thread/index files plus the validated `--files-touched-json` paths (never `git add -A`)
 - Classifies noisy HQ root status via `core/scripts/hq-status-summary.sh` so baseline local files do not become accidental handoff scope
-- Schedules single-flight qmd reindex via `qmd-handoff-reindex.sh` (shared with post; lock prevents double mutation)
+- Schedules single-flight qmd reindex via `qmd-handoff-reindex.sh` (shared with post; lock + recent-completion dedupe prevent double mutation)
 
 First write the changeset to a workspace temp file, then pass its path — never inline the changeset into `--files-touched-json`. On Windows Git Bash the OS caps a command line at ~32KB (~8KB under cmd.exe), and a large changeset rides argv through several hops (status-summary, jq) and aborts the handoff. The file form keeps it off argv. This mirrors the learnings temp-file pattern from Step 2. Use `mktemp` under `workspace/threads/.handoff-tmp/` (gitignored, exists on Git Bash — do **not** use `/tmp`, which some Windows setups lack; do **not** use a slug-only deterministic path under `workspace/threads/` — concurrent sessions collide and unignored temps flip `git.dirty`). Clean it up whether the finalizer succeeds or fails, and propagate a non-zero finalize exit status:
 
@@ -133,9 +133,9 @@ nohup bash core/scripts/handoff-post.sh \
 1. Archives threads older than 60 days into `workspace/threads/archive/YYYY-MM/` (gated once per 24h)
 2. Regenerates INDEX files again (captures any archive moves)
 3. Records eligible learn/doc-release work as pending until the handoff reports dispatch proof
-4. Schedules the same single-flight qmd reindex helper as finalize (`qmd-handoff-reindex.sh`). If finalize already owns the flight, this is a quiet no-op — not a second independent `qmd cleanup/update/embed`.
+4. Schedules the same single-flight qmd reindex helper as finalize (`qmd-handoff-reindex.sh`). If finalize already owns the flight, or just finished within the helper's short dedupe window, this is a quiet no-op — not a second independent `qmd cleanup/update/embed`.
 
-Logs land at `/tmp/handoff-post.log` and `/tmp/qmd-handoff.log` (one bounded qmd log; only the lock winner truncates it). If the session dies while the post-script runs, the script keeps going — `handoff.json` is already valid.
+Logs land at `/tmp/handoff-post.log` and `/tmp/qmd-handoff.log` (one bounded qmd log; only the lock winner truncates/writes it, then enforces a modest byte cap). If the session dies while the post-script runs, the script keeps going — `handoff.json` is already valid.
 
 ### 4.5 Dispatch runtime-appropriate model follow-ups
 

@@ -6,8 +6,8 @@
 #   1. Archive old threads (60d), then regen thread INDEX.md + recent.md (bash)
 #   2. Regen orchestrator INDEX.md (bash)
 #   3. Schedule single-flight qmd reindex (shared helper with finalize; the
-#      helper's lock makes a second launch a quiet no-op when finalize already
-#      owns the flight)
+#      helper's lock + recent-completion dedupe make a second launch a quiet
+#      no-op when finalize already owns or just finished the flight)
 #
 # Model work is intentionally not launched from this detached shell. /learn and
 # /document-release follow-ups run from the handoff skill itself, so auth
@@ -117,12 +117,13 @@ fi
 # --- 4. qmd reindex (single-flight helper; fire-and-forget) ---
 # Shared with handoff-finalize.sh. Do not inline raw qmd here — on agent boxes
 # the helper routes to the managed user-half; on developer machines it takes
-# one nonblocking user lock before cleanup/update/embed.
+# one nonblocking user lock before cleanup/update/embed. If finalize already
+# completed a flight within the helper's short dedupe window, this is a no-op.
 QMD_HELPER="$HQ_ROOT/core/scripts/qmd-handoff-reindex.sh"
 if [[ -f "$QMD_HELPER" ]]; then
   # Propagate HANDOFF_LOG_DIR so the helper shares this post's log root;
-  # helper decides managed vs raw and only the lock winner truncates the log.
-  # HQ_QMD_INDEX_USER / QMD_HANDOFF_LOG inherit from the caller when set.
+  # helper decides managed vs raw; only the lock winner truncates/writes/caps
+  # the log. HQ_QMD_INDEX_USER / QMD_HANDOFF_LOG inherit from the caller when set.
   HANDOFF_LOG_DIR="$LOG_DIR" nohup bash "$QMD_HELPER" </dev/null >/dev/null 2>&1 &
   log "qmd: scheduled single-flight helper PID $!"
 else

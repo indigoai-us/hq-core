@@ -4,9 +4,11 @@
 # Guards the agent qmd concurrency fix:
 #   - managed user-half wins when present (no raw qmd mutation)
 #   - finalize + post share one in-flight mutation
+#   - sequential finalize → post collides via recent-completion dedupe
 #   - developer fallback runs cleanup → update → embed under a user lock
+#   - live owner lock preserved; dead/stale owner reclaimed
 #   - lock contention / failures stay non-blocking for handoff
-#   - log truncate only happens for the winner
+#   - log truncate only happens for the winner; post-run byte cap enforced
 #   - finalize-only (agent ritual) still schedules a refresh
 
 set -euo pipefail
@@ -34,6 +36,8 @@ BIN="$TMP/bin"
 LOG="$TMP/qmd-handoff.log"
 MUTATION_LOG="$TMP/mutations.log"
 MANAGED="$TMP/managed/qmd-index-user"
+LOCK_DIR="$HOME_DIR/.hq/locks/qmd-handoff-reindex.lock"
+COMPLETE_STAMP="$HOME_DIR/.hq/locks/qmd-handoff-reindex.completed"
 mkdir -p "$HOME_DIR/.hq/locks" "$BIN" "$TMP/managed" "$TMP/logs" "$TMP/repo/core/scripts" \
   "$TMP/repo/workspace/threads" "$TMP/repo/workspace/baseline" "$TMP/repo/workspace/orchestrator"
 
@@ -66,6 +70,16 @@ if [[ -n "${MANAGED_HOLD_FILE:-}" && -f "${MANAGED_HOLD_FILE}" ]]; then
     sleep 0.05
   done
 fi
+if [[ "${MANAGED_OVERFLOW_BYTES:-0}" -gt 0 ]]; then
+  # Oversized stdout to exercise post-run log cap (winner-only).
+  python3 - <<PY
+import os
+n = int(os.environ["MANAGED_OVERFLOW_BYTES"])
+print("OVERFLOW_START")
+print("x" * n)
+print("OVERFLOW_END")
+PY
+fi
 if [[ "${MANAGED_FAIL:-0}" == "1" ]]; then
   echo "managed boom" >&2
   exit "${MANAGED_FAIL_RC:-1}"
@@ -87,11 +101,15 @@ run_helper() {
     MANAGED_HOLD_FILE="${MANAGED_HOLD_FILE:-}" \
     MANAGED_FAIL="${MANAGED_FAIL:-0}" \
     MANAGED_FAIL_RC="${MANAGED_FAIL_RC:-1}" \
+    MANAGED_OVERFLOW_BYTES="${MANAGED_OVERFLOW_BYTES:-0}" \
+    QMD_HANDOFF_DEDUPE_SEC="${QMD_HANDOFF_DEDUPE_SEC:-90}" \
+    QMD_HANDOFF_LOG_MAX_BYTES="${QMD_HANDOFF_LOG_MAX_BYTES:-65536}" \
+    QMD_HANDOFF_LOCK_GRACE_SEC="${QMD_HANDOFF_LOCK_GRACE_SEC:-5}" \
     bash "$HELPER"
 }
 
 reset_state() {
-  rm -f "$MUTATION_LOG" "$LOG"
+  rm -f "$MUTATION_LOG" "$LOG" "$COMPLETE_STAMP"
   rm -rf "$HOME_DIR/.hq/locks"
   mkdir -p "$HOME_DIR/.hq/locks"
   : > "$MUTATION_LOG"
@@ -246,6 +264,7 @@ HOLD="$TMP/hold-log"
 : > "$HOLD"
 env -i PATH="$BIN:/usr/bin:/bin" HOME="$HOME_DIR" MUTATION_LOG="$MUTATION_LOG" \
   QMD_HANDOFF_LOG="$LOG" QMD_HOLD_FILE="$HOLD" HQ_QMD_INDEX_USER="$TMP/nope" \
+  QMD_HANDOFF_DEDUPE_SEC=0 \
   bash "$HELPER" &
 wpid=$!
 for _ in $(seq 1 100); do
@@ -254,7 +273,7 @@ for _ in $(seq 1 100); do
 done
 echo "KEEP_ME" >> "$LOG"
 size_before=$(wc -c < "$LOG")
-HQ_QMD_INDEX_USER="$TMP/nope" run_helper
+QMD_HANDOFF_DEDUPE_SEC=0 HQ_QMD_INDEX_USER="$TMP/nope" run_helper
 size_after=$(wc -c < "$LOG")
 [[ "$size_before" -eq "$size_after" ]] || fail "loser changed log size"
 grep -q 'KEEP_ME' "$LOG" || fail "loser wiped KEEP_ME"
@@ -262,9 +281,25 @@ rm -f "$HOLD"
 wait "$wpid" || true
 ok "busy caller leaves winner log untouched"
 
+# Oversized managed output is capped by the winner; completion tail retained.
+reset_state
+MAX_BYTES=4096
+OVERFLOW=20000
+MANAGED_OVERFLOW_BYTES="$OVERFLOW" QMD_HANDOFF_LOG_MAX_BYTES="$MAX_BYTES" \
+  HQ_QMD_INDEX_USER="$MANAGED" run_helper
+[[ -f "$LOG" ]] || fail "log missing after oversized managed run"
+log_size=$(wc -c <"$LOG" | tr -d '[:space:]')
+[[ "$log_size" -le "$MAX_BYTES" ]] \
+  || fail "log not capped: size=$log_size max=$MAX_BYTES"
+grep -q 'qmd-handoff-reindex done mode=managed' "$LOG" \
+  || fail "capped log lost completion evidence"
+grep -q '^managed' "$MUTATION_LOG" || fail "oversized managed run did not mutate"
+ok "oversized managed log is capped while retaining completion tail"
+
 # =============================================================================
 # 7) finalize-only path schedules the helper (agent ritual compatible)
 # =============================================================================
+reset_state
 cp "$FINALIZE" "$TMP/repo/core/scripts/handoff-finalize.sh"
 cp "$HELPER" "$TMP/repo/core/scripts/qmd-handoff-reindex.sh"
 cp "$ROOT/core/scripts/hq-status-summary.sh" "$TMP/repo/core/scripts/hq-status-summary.sh"
@@ -305,13 +340,14 @@ chmod +x "$REAL_HELPER" "$TMP/repo/core/scripts/qmd-handoff-reindex.real.sh"
   git commit -qm base
   echo changed > tracked.txt
 
-  rm -f "$TMP/helper-scheduled.log" "$MUTATION_LOG"
+  rm -f "$TMP/helper-scheduled.log" "$MUTATION_LOG" "$COMPLETE_STAMP"
   : > "$MUTATION_LOG"
   out=$(
     env -i PATH="$BIN:/usr/bin:/bin" HOME="$HOME_DIR" \
       MUTATION_LOG="$MUTATION_LOG" \
       QMD_HANDOFF_LOG="$LOG" \
       HQ_QMD_INDEX_USER="$TMP/nope" \
+      QMD_HANDOFF_DEDUPE_SEC=0 \
       bash core/scripts/handoff-finalize.sh \
         --title "Handoff: qmd ritual" \
         --summary "finalize-only schedules reindex" \
@@ -342,6 +378,7 @@ ok "finalize-only (agent ritual) schedules single-flight helper"
 # =============================================================================
 # 8) finalize + post both route through helper; single flight under managed
 # =============================================================================
+reset_state
 cp "$POST" "$TMP/repo/core/scripts/handoff-post.sh"
 chmod +x "$TMP/repo/core/scripts/handoff-post.sh"
 cat > "$TMP/repo/core/scripts/archive-old-threads.sh" <<'SH'
@@ -350,7 +387,7 @@ exit 0
 SH
 chmod +x "$TMP/repo/core/scripts/archive-old-threads.sh"
 
-rm -f "$TMP/helper-scheduled.log" "$MUTATION_LOG"
+rm -f "$TMP/helper-scheduled.log" "$MUTATION_LOG" "$COMPLETE_STAMP"
 : > "$MUTATION_LOG"
 : > "$TMP/helper-scheduled.log"
 
@@ -363,11 +400,13 @@ HOLD="$TMP/hold-fp"
   env -i PATH="$BIN:/usr/bin:/bin" HOME="$HOME_DIR" \
     MUTATION_LOG="$MUTATION_LOG" QMD_HANDOFF_LOG="$LOG" \
     HQ_QMD_INDEX_USER="$MANAGED" MANAGED_HOLD_FILE="$HOLD" \
+    QMD_HANDOFF_DEDUPE_SEC=0 \
     bash core/scripts/qmd-handoff-reindex.sh &
   env -i PATH="$BIN:/usr/bin:/bin" HOME="$HOME_DIR" \
     MUTATION_LOG="$MUTATION_LOG" QMD_HANDOFF_LOG="$LOG" \
     HQ_QMD_INDEX_USER="$MANAGED" MANAGED_HOLD_FILE="$HOLD" \
     HANDOFF_LOG_DIR="$TMP/logs" \
+    QMD_HANDOFF_DEDUPE_SEC=0 \
     bash core/scripts/handoff-post.sh workspace/threads/T-missing.json ""
   sleep 0.1
   rm -f "$HOLD"
@@ -388,6 +427,7 @@ reset_state
   env -i PATH="$BIN:/usr/bin:/bin" HOME="$HOME_DIR" \
     MUTATION_LOG="$MUTATION_LOG" QMD_HANDOFF_LOG="$LOG" \
     HQ_QMD_INDEX_USER="$MANAGED" HANDOFF_LOG_DIR="$TMP/logs" \
+    QMD_HANDOFF_DEDUPE_SEC=0 \
     bash core/scripts/handoff-post.sh workspace/threads/T-missing.json ""
   for _ in $(seq 1 100); do
     grep -q '^managed' "$MUTATION_LOG" 2>/dev/null && break
@@ -419,5 +459,99 @@ if grep -nE "nohup bash -c 'qmd |qmd cleanup|qmd update && qmd embed" "$POST" | 
   fail "handoff-post.sh still launches raw qmd inline"
 fi
 ok "finalize and post delegate to shared helper (no inline raw pipeline)"
+
+# =============================================================================
+# 10) sequential finalize + post after first fully completed → one mutation
+#     (dedupe window override; no sleeps)
+# =============================================================================
+reset_state
+QMD_HANDOFF_DEDUPE_SEC=60 HQ_QMD_INDEX_USER="$MANAGED" run_helper
+[[ -f "$COMPLETE_STAMP" ]] || fail "completion stamp missing after first run"
+first_mut="$(cat "$MUTATION_LOG")"
+managed_n=$(grep -c '^managed' "$MUTATION_LOG" || true)
+[[ "$managed_n" -eq 1 ]] || fail "first sequential call expected 1 managed, got $managed_n"
+
+# Second call after first fully completed (sync). Within window → no mutation.
+QMD_HANDOFF_DEDUPE_SEC=60 HQ_QMD_INDEX_USER="$MANAGED" run_helper
+second_mut="$(cat "$MUTATION_LOG")"
+[[ "$first_mut" == "$second_mut" ]] \
+  || fail "sequential second call mutated: before=[$first_mut] after=[$second_mut]"
+managed_n=$(grep -c '^managed' "$MUTATION_LOG" || true)
+[[ "$managed_n" -eq 1 ]] || fail "sequential dedupe expected 1 managed total, got $managed_n"
+ok "sequential finalize+post after completion: one managed mutation (dedupe)"
+
+# Window disabled → second call runs a full mutation (ritual still works).
+reset_state
+QMD_HANDOFF_DEDUPE_SEC=0 HQ_QMD_INDEX_USER="$MANAGED" run_helper
+QMD_HANDOFF_DEDUPE_SEC=0 HQ_QMD_INDEX_USER="$MANAGED" run_helper
+managed_n=$(grep -c '^managed' "$MUTATION_LOG" || true)
+[[ "$managed_n" -eq 2 ]] || fail "dedupe=0 expected 2 managed, got $managed_n"
+ok "dedupe window override 0 allows sequential re-run (ritual cadence)"
+
+# Raw sequential path also collapses to one pipeline.
+reset_state
+QMD_HANDOFF_DEDUPE_SEC=90 HQ_QMD_INDEX_USER="$TMP/nope" run_helper
+QMD_HANDOFF_DEDUPE_SEC=90 HQ_QMD_INDEX_USER="$TMP/nope" run_helper
+cleanup_n=$(grep -c '^qmd cleanup' "$MUTATION_LOG" || true)
+update_n=$(grep -c '^qmd update' "$MUTATION_LOG" || true)
+embed_n=$(grep -c '^qmd embed' "$MUTATION_LOG" || true)
+[[ "$cleanup_n" -eq 1 && "$update_n" -eq 1 && "$embed_n" -eq 1 ]] \
+  || fail "sequential raw dedupe expected one pipeline, got c=$cleanup_n u=$update_n e=$embed_n"
+ok "sequential raw finalize+post: one mutation pipeline via dedupe"
+
+# =============================================================================
+# 11) stale-owner recovery: live owner preserved; dead owner reclaimed
+# =============================================================================
+reset_state
+# Live owner: plant lock with this shell's PID and keep process alive.
+mkdir -p "$LOCK_DIR"
+{
+  echo "pid=$$"
+  echo "ts=$(date +%s)"
+  echo "nonce=live-test"
+} >"$LOCK_DIR/owner"
+before_mut="$(cat "$MUTATION_LOG")"
+QMD_HANDOFF_DEDUPE_SEC=0 HQ_QMD_INDEX_USER="$MANAGED" run_helper
+after_mut="$(cat "$MUTATION_LOG")"
+[[ "$before_mut" == "$after_mut" ]] || fail "live owner lock was stolen (mutation occurred)"
+[[ -d "$LOCK_DIR" ]] || fail "live owner lock dir was removed"
+[[ -f "$LOCK_DIR/owner" ]] || fail "live owner record was removed"
+grep -q "^pid=$$" "$LOCK_DIR/owner" || fail "live owner pid rewritten"
+ok "live owner lock is preserved (no reclaim, no mutation)"
+
+# Dead/stale owner: PID that is definitely not alive.
+reset_state
+mkdir -p "$LOCK_DIR"
+DEAD_PID=$(( $$ + 1000000 ))
+# Ensure kill -0 fails for this synthetic pid (and does not match us).
+if kill -0 "$DEAD_PID" 2>/dev/null; then
+  # Extremely unlikely; pick a high unused number.
+  DEAD_PID=2147483646
+  kill -0 "$DEAD_PID" 2>/dev/null && fail "could not find a dead pid for stale-owner test"
+fi
+{
+  echo "pid=$DEAD_PID"
+  echo "ts=1"
+  echo "nonce=dead-test"
+} >"$LOCK_DIR/owner"
+QMD_HANDOFF_DEDUPE_SEC=0 HQ_QMD_INDEX_USER="$MANAGED" run_helper
+managed_n=$(grep -c '^managed' "$MUTATION_LOG" || true)
+[[ "$managed_n" -eq 1 ]] || fail "stale/dead owner should be reclaimed; managed=$managed_n"
+# Lock should be released after successful flight.
+if [[ -d "$LOCK_DIR" ]]; then
+  fail "lock dir still present after reclaimed run completed"
+fi
+[[ -f "$COMPLETE_STAMP" ]] || fail "completion stamp missing after reclaim run"
+ok "dead/stale owner lock is reclaimed; mutation proceeds"
+
+# Empty pre-owner lock dir (legacy / SIGKILL before owner write) is reclaimable
+# once past the owner-write grace window (simulate age via grace=0).
+reset_state
+mkdir -p "$LOCK_DIR"
+QMD_HANDOFF_DEDUPE_SEC=0 QMD_HANDOFF_LOCK_GRACE_SEC=0 \
+  HQ_QMD_INDEX_USER="$MANAGED" run_helper
+managed_n=$(grep -c '^managed' "$MUTATION_LOG" || true)
+[[ "$managed_n" -eq 1 ]] || fail "empty lock dir should be reclaimed; managed=$managed_n"
+ok "empty lock dir without owner is reclaimed"
 
 echo "PASS: qmd-handoff-reindex ($ASSERTIONS assertions)"

@@ -480,13 +480,14 @@ COMMIT_AFTER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 # -------- qmd reindex fire-and-forget (single-flight helper) --------
 # Shared with handoff-post.sh via qmd-handoff-reindex.sh. Agent ritual calls
-# finalize only; full /handoff also calls post — the helper's user lock ensures
-# at most one managed/raw mutation. On agent boxes the helper prefers the
-# managed user-half (no raw qmd, no --embed).
+# finalize only; full /handoff also calls post — the helper's user lock plus a
+# short recent-completion dedupe window ensure at most one managed/raw mutation
+# (sequential finalize→post collapses; ~15m ritual still refreshes). On agent
+# boxes the helper prefers the managed user-half (no raw qmd, no --embed).
 QMD_PID=""
 QMD_HELPER="$HQ_ROOT/core/scripts/qmd-handoff-reindex.sh"
 if [[ -f "$QMD_HELPER" ]]; then
-  # Helper owns lock, log truncate, managed/raw routing. Detach; never block.
+  # Helper owns lock, log truncate/cap, managed/raw routing. Detach; never block.
   nohup bash "$QMD_HELPER" </dev/null >/dev/null 2>&1 &
   QMD_PID=$!
 fi
