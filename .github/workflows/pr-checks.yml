@@ -422,6 +422,8 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-smoke.sh
       - name: Handoff finalizer accepts a large file-backed changeset
         run: bash core/scripts/tests/handoff-finalize-large-changeset.test.sh
+      - name: Handoff qmd reindex is single-flight (managed + developer fallback)
+        run: bash core/scripts/tests/qmd-handoff-reindex.test.sh
 
   journal-session-isolation:
     name: journal-session-isolation
