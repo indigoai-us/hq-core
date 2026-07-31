@@ -190,9 +190,11 @@ grep -n "null" companies/manifest.yaml
 **Violations**: Company with `knowledge: null`, empty settings when settings dir has files, etc.
 
 **With --fix**: For each company with `knowledge: null`:
-1. Create knowledge repo: `repos/private/knowledge-{company}/` → `git init` → initial README
-2. Create symlink: `companies/{company}/knowledge → ../../repos/private/knowledge-{company}`
-3. Update manifest.yaml: replace `null` with `companies/{company}/knowledge/`
+1. Create embedded knowledge repo: `companies/{company}/knowledge/` → `git init` → initial README
+2. Update manifest.yaml: replace `null` with `companies/{company}/knowledge/`
+
+Do **not** symlink `companies/{company}/knowledge` into `repos/` — sync uploads
+symlink markers instead of document contents.
 
 ### 10. qmd Collection Completeness
 
