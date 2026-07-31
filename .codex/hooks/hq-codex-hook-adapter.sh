@@ -27,9 +27,14 @@ CWD="$(json_get '.cwd // empty')"
 # a session field, synthesize one from the invoking process ($PPID is the Codex
 # process for this session - stable across its events, distinct across
 # sessions) and stamp it into the payload every hook sees.
-SESSION_ID="$(json_get '.session_id // .sessionId // .conversation_id // .thread_id // empty')"
+#
+# $PPID is the LAST resort: Codex tool and hook processes do not always share a
+# parent, and a drifting key silently defeats every per-session debounce and
+# counter downstream (checkpoint nudges, journal reminders). Prefer any real
+# Codex-supplied thread/session identifier first.
+SESSION_ID="$(json_get '.session_id // .sessionId // .conversation_id // .conversationId // .thread_id // .threadId // empty')"
 if [ -z "$SESSION_ID" ]; then
-  SESSION_ID="codex-${CODEX_SESSION_ID:-$PPID}"
+  SESSION_ID="codex-${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-${CODEX_CONVERSATION_ID:-$PPID}}}"
   INPUT="$(printf '%s' "$INPUT" | jq --arg sid "$SESSION_ID" '. + {session_id: $sid}' 2>/dev/null || printf '%s' "$INPUT")"
 fi
 
@@ -392,11 +397,12 @@ emit_context() {
 }
 
 run_pre_tool_use() {
-  local cmd read_path
+  local cmd read_path grep_path glob_path
   case "$TOOL_NAME" in
     Bash)
       cmd="$(json_get '.tool_input.command // empty')"
       [ -n "$cmd" ] && block_sensitive_read_if_needed "$cmd"
+      run_hook "mandatory-scope-authorizer" "$HOOK_DIR/mandatory-scope-authorizer.sh" "$INPUT" "blocking"
       run_hook "detect-secrets" "$HOOK_DIR/detect-secrets.sh" "$INPUT" "blocking"
       run_hook "block-core-writes-bash" "$HOOK_DIR/block-core-writes-bash.sh" "$INPUT" "blocking"
       run_hook "block-hq-root-git-mutation" "$HOOK_DIR/block-hq-root-git-mutation.sh" "$INPUT" "blocking"
@@ -407,6 +413,17 @@ run_pre_tool_use() {
     Read)
       read_path="$(json_get '.tool_input.file_path // .tool_input.path // empty')"
       [ -n "$read_path" ] && block_sensitive_read_if_needed "$read_path"
+      run_hook "mandatory-scope-authorizer" "$HOOK_DIR/mandatory-scope-authorizer.sh" "$INPUT" "blocking"
+      ;;
+    Grep)
+      grep_path="$(json_get '.tool_input.path // empty')"
+      [ -n "$grep_path" ] && block_sensitive_read_if_needed "$grep_path"
+      run_hook "mandatory-scope-authorizer" "$HOOK_DIR/mandatory-scope-authorizer.sh" "$INPUT" "blocking"
+      ;;
+    Glob)
+      glob_path="$(json_get '.tool_input.path // empty')"
+      [ -n "$glob_path" ] && block_sensitive_read_if_needed "$glob_path"
+      run_hook "mandatory-scope-authorizer" "$HOOK_DIR/mandatory-scope-authorizer.sh" "$INPUT" "blocking"
       ;;
     apply_patch|Edit|Write)
       local paths path payload

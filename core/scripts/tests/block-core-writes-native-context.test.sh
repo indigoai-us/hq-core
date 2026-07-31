@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Regression: the update-preserved native personal context is editable without
 # opening the rest of the release-owned .claude/ tree to direct writes.
+# Also verifies core/core.yaml rules.exclude paths (launch.json, scheduled-tasks/).
 
 set -euo pipefail
 
@@ -32,5 +33,15 @@ run 0 "$TMP/.claude/personal-context.md" 'native personal context is writable'
 run 0 "$TMP/.claude/settings.local.json" 'machine-local settings stay writable'
 run 2 "$TMP/.claude/CLAUDE.md" 'locked charter stays protected'
 run 2 "$TMP/core/core.yaml" 'core stays protected'
+
+if command -v yq >/dev/null 2>&1; then
+  cp "$ROOT/core/core.yaml" "$TMP/core/core.yaml"
+  run 0 "$TMP/.claude/launch.json" 'machine-local launch.json is writable'
+  mkdir -p "$TMP/.claude/scheduled-tasks"
+  run 0 "$TMP/.claude/scheduled-tasks/job.json" 'scheduled-tasks store is writable'
+  run 2 "$TMP/.claude/settings.json" 'locked settings.json stays protected'
+else
+  echo "SKIP: core.yaml exclude cases (yq not available)"
+fi
 
 echo "PASS: block-core-writes native context exception"

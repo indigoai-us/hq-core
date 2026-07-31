@@ -2,10 +2,12 @@
 id: no-shared-skill-extraction-touching-5-files
 when: skill
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
+version: 1
 public: true
 tags: [skills, refactor, abstraction]
 created: 2026-04-15
+updated: 2026-07-28
 provenance: user-correction
 ---
 

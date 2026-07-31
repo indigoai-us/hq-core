@@ -3,11 +3,11 @@ id: hq-pre-deploy-domain-check
 title: Check Domain Ownership Before Vercel Deploys
 when: deploy
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
-enforcement: soft
+enforcement: hard
 public: true
-version: 3
+version: 4
 created: 2026-02-22
-updated: 2026-04-20
+updated: 2026-07-28
 source: {your-project}.get{company}.ai overwrite incident
 ---
 
@@ -22,4 +22,3 @@ Before ANY Vercel deploy:
 5. **NEVER** deploy a repo whose registry entry shows a different `owner` without explicit user confirmation
 
 Protected domains (never reassign): `hq.get{company}.ai`, `{your-project}.get{company}.ai`, `get{company}.ai`, `{company}.com`, `{your-domain}.com`, `{your-domain}.com`, `{your-domain}.com`, `{your-domain}.band`, `{company}.com`, `{your-name}.com`, `{your-domain}.com`, `www.{company}.ai`
-

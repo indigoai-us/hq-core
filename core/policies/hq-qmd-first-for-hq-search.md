@@ -3,11 +3,11 @@ id: hq-qmd-first-for-hq-search
 title: Use qmd First for HQ Search
 when: grep
 on: [PreToolUse]
-enforcement: hard
+enforcement: soft
 tier: 1
-version: 1
+version: 2
 created: 2026-05-14
-updated: 2026-05-14
+updated: 2026-07-28
 source: user-correction
 public: true
 ---

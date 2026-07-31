@@ -3,11 +3,11 @@ id: hq-image-context-isolation
 title: Image context isolation — delegate image reading to sub-agents
 when: .png || .jpg || .jpeg || .gif || .webp
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 tier: 1
-version: 1
+version: 2
 created: 2026-03-30
-updated: 2026-03-30
+updated: 2026-07-28
 source: back-pressure-failure
 learned_from: an export-graphics session crash
 public: true

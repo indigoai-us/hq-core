@@ -38,4 +38,25 @@ if grep -Fq '| - | - | - |' "$INDEX" "$RECENT"; then
   fail "changeset sidecar rendered as a placeholder thread row"
 fi
 
-echo "rebuild-threads-index: 4 passed, 0 failed"
+# The rows passed through the recent-index limiter must be materially larger
+# than a pipe buffer. `head -n` can close that pipe early, causing bash's
+# builtin printf to receive SIGPIPE under `set -o pipefail` before recent.md is
+# written. Long real titles make this a deterministic regression fixture.
+LARGE_ROOT="$TMP/large"
+LARGE_THREADS="$LARGE_ROOT/workspace/threads"
+mkdir -p "$LARGE_THREADS"
+LONG_TITLE="$(printf '%*s' 1024 '' | tr ' ' x)"
+
+for n in $(seq -w 1 200); do
+  printf '{"thread_id":"T-large-%s","type":"task","updated_at":"2026-07-20T12:00:00Z","metadata":{"title":"%s"}}\n' \
+    "$n" "$LONG_TITLE" > "$LARGE_THREADS/T-large-$n.json"
+done
+
+# A non-zero status here is the regression: the forwarder/CLI path must finish
+# --both and leave a complete 15-row recent index behind.
+HQ_ROOT="$LARGE_ROOT" bash "$SCRIPT" --both >/dev/null
+LARGE_RECENT="$LARGE_THREADS/recent.md"
+[[ -f "$LARGE_RECENT" ]] || fail "large recent.md was not written"
+assert_eq "large recent rows capped at 15" "15" "$(grep -c '^| T-large-' "$LARGE_RECENT" || true)"
+
+echo "rebuild-threads-index: 5 passed, 0 failed"

@@ -148,13 +148,38 @@ if [[ -z "$ANCHOR_PATH" && $GH_IS_MUTATION -eq 1 ]]; then
 fi
 
 if [[ -z "$ANCHOR_PATH" ]]; then
-  PREFIX_GIT="${CMD%%git*}"
-  PREFIX_GH="${CMD%%gh *}"
-  PREFIX="$PREFIX_GIT"
-  [[ ${#PREFIX_GH} -lt ${#PREFIX} ]] && PREFIX="$PREFIX_GH"
-  CDP=$(echo "$PREFIX" | grep -oE '(^|[;&|(])[[:space:]]*cd[[:space:]]+("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|)]+)' | tail -1 \
+  # Scan the WHOLE command for `cd <path>` anchors.
+  #
+  # Do NOT slice the command at the git/gh token first. The previous
+  # implementation did:
+  #
+  #     PREFIX_GIT="${CMD%%git*}" ; PREFIX_GH="${CMD%%gh *}"
+  #
+  # Those are literal-substring cuts, so they also fire INSIDE the path being
+  # cd'd to. An HQ root whose path ends in "gh" — or contains "git" anywhere —
+  # truncated the prefix mid-path, the extracted anchor no longer equalled
+  # HQ_ROOT, and the guard silently ALLOWED the push:
+  #
+  #     cd /tmp/tmp.VW3WsvCtgh && git push origin main
+  #        └ "gh " matches here, prefix becomes "cd /tmp/tmp.VW3WsvCt"
+  #
+  # Real paths hit this (…/edinburgh, …/github, …/git-tools, …/hq.git, any repo
+  # ending in "gh"), and CI hit it whenever mktemp produced such a name — which
+  # read as a flaky test rather than the bypass it was.
+  #
+  # Collect every cd anchor instead, and fail CLOSED: if ANY of them lands on
+  # HQ root, that is the anchor. Otherwise keep the previous behaviour of using
+  # the last one. `git -C` is resolved earlier and still wins outright.
+  CD_PATHS=$(echo "$CMD" | grep -oE '(^|[;&|(])[[:space:]]*cd[[:space:]]+("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|)]+)' \
         | sed -E 's/.*cd[[:space:]]+//; s/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//')
-  if [[ -n "$CDP" ]]; then ANCHOR_PATH="$CDP"; ANCHOR_KIND="cd &&"; fi
+  if [[ -n "$CD_PATHS" ]]; then
+    while IFS= read -r CDP; do
+      [[ -z "$CDP" ]] && continue
+      ANCHOR_PATH="$CDP"
+      ANCHOR_KIND="cd &&"
+      [[ "$(norm "$CDP")" == "$HQ_ROOT" ]] && break
+    done <<<"$CD_PATHS"
+  fi
 fi
 
 block() {

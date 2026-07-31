@@ -4,7 +4,9 @@ title: Clean up qmd + modules when archiving a company
 public: true
 when: archive
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
+version: 1
+updated: 2026-07-28
 ---
 
 ## Rule
@@ -15,4 +17,3 @@ When archiving or deleting a company, always:
 3. Remove from CLAUDE.md companies list
 
 Stale collections pointing to deleted directories crash `qmd update` with ENOENT, blocking all reindexing.
-

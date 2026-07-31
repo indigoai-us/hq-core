@@ -3,10 +3,11 @@ id: ralph-orchestrator-context-discipline
 title: Story sub-agents return structured JSON only; orchestrator parses and refuses malformed
 when: /run-project || /run-pipeline
 on: [UserPromptSubmit]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-05-13
+updated: 2026-07-28
 source: user-correction
 ---
 

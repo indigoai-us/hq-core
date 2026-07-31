@@ -2,11 +2,13 @@
 id: no-relative-symlinks-from-worktree
 when: symlink || worktree
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
+version: 1
 public: true
 tier: 1
 tags: [git, worktree, symlinks, knowledge-repos]
 created: 2026-04-16
+updated: 2026-07-28
 provenance: user-correction
 ---
 

@@ -3,11 +3,11 @@ id: hq-hook-gate-three-profile-lists
 title: hook-gate.sh has three INDEPENDENT profile lists — a safety hook must be in all three
 when: .sh || hook
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-05-18
-updated: 2026-05-18
+updated: 2026-07-28
 source: user-correction
 tags: [infrastructure, safety, knowledge]
 ---

@@ -3,11 +3,11 @@ id: hq-rust-string-byte-slice-char-boundary-panic
 title: Never byte-slice potentially non-ASCII Rust strings
 when: .rs || rust
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-04-25
-updated: 2026-04-25
+updated: 2026-07-28
 source: session-learning
 ---
 

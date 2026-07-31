@@ -3,11 +3,11 @@ id: hq-permission-simple-expansion-extract-to-script
 title: Defeat simple_expansion Permission Prompts by Extracting to a Script
 when: permission
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-04-20
-updated: 2026-04-20
+updated: 2026-07-28
 source: user-correction
 ---
 

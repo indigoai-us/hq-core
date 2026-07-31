@@ -3,11 +3,11 @@ id: hq-subagent-no-mcp
 title: Sub-Agents Lack MCP Server Access
 when: subagent || subagents || sub-agent || sub-agents || codex
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 tier: 1
-version: 1
+version: 2
 created: 2026-02-22
-updated: 2026-02-22
+updated: 2026-07-28
 source: migration
 learned_from: "CLAUDE.md learned rules migration 2026-02-22"
 public: true

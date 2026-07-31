@@ -3,11 +3,11 @@ id: hq-pre-push-gate-probes-prod-not-localhost
 title: Pre-push E2E gates probe production, not localhost
 when: git && push
 on: [PreToolUse, UserPromptSubmit]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-04-23
-updated: 2026-04-23
+updated: 2026-07-28
 source: session-learning
 ---
 

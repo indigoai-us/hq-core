@@ -3,11 +3,11 @@ id: hq-no-parent-import-from-child-component
 title: Never import parent-shell modules from a child component — duplicate small utilities locally
 when: .tsx || refactor
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-04-20
-updated: 2026-04-20
+updated: 2026-07-28
 source: session-learning
 ---
 

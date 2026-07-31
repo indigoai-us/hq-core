@@ -3,11 +3,11 @@ id: hq-pr-single-concern
 title: One PR, One Concern — Never Bundle Unrelated Changes
 when: git && commit
 on: [PreToolUse]
-enforcement: hard
+enforcement: soft
 tier: 1
-version: 1
+version: 2
 created: 2026-04-02
-updated: 2026-04-02
+updated: 2026-07-28
 source: session-learning
 public: true
 ---

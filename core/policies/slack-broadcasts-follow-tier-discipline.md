@@ -3,11 +3,11 @@ id: hq-slack-broadcasts-follow-tier-discipline
 title: Slack broadcasts must follow work-broadcast skill tier discipline
 when: slack
 on: [PreToolUse, UserPromptSubmit]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-05-10
-updated: 2026-05-27
+updated: 2026-07-28
 source: user-correction
 ---
 

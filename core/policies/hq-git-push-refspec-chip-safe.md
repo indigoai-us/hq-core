@@ -3,11 +3,11 @@ id: hq-git-push-refspec-chip-safe
 title: Use detached-HEAD + push refspec when committing from a worktree with active task chips
 when: git && ( commit || push )
 on: [PreToolUse]
-enforcement: hard
+enforcement: soft
 public: true
-version: 1
+version: 2
 created: 2026-04-21
-updated: 2026-04-21
+updated: 2026-07-28
 source: session-learning
 ---
 

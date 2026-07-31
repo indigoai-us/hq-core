@@ -3,12 +3,12 @@ id: hq-bash-discipline
 title: HQ bash discipline — IFS, BSD/GNU portability, pgrep validation, set -e returns
 when: .sh
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: hard
+enforcement: soft
 tier: 1
 public: true
-version: 1
+version: 2
 created: 2026-04-27
-updated: 2026-04-27
+updated: 2026-07-28
 source: consolidation
 merged_from:
   - hq-bash-ifs-tsv-ansi-c-escape
