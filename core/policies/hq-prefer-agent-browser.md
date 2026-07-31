@@ -3,11 +3,11 @@ id: hq-prefer-agent-browser
 title: Use agent-browser for any browser task — and auto-install it without asking
 when: browser || browse || website || webpage || scrape || smoke
 on: [UserPromptSubmit, AssistantIntent]
-enforcement: soft
+enforcement: hard
 tier: 1
-version: 4
+version: 3
 created: 2026-03-24
-updated: 2026-07-28
+updated: 2026-06-29
 source: user-correction
 public: true
 ---
