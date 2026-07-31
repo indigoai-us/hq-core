@@ -3,14 +3,20 @@
 # Spec: core/knowledge/public/hq-core/session-journal-spec.md
 #
 # Usage:
-#   session-journal.sh write "<title>" [--files f1,f2,...] [--body-file PATH]
+#   session-journal.sh write "<title>" [--files f1,f2,...] [--body-file PATH] [--session KEY]
 #   session-journal.sh list [--date YYYY-MM-DD]
 #   session-journal.sh read <NNN> [--date YYYY-MM-DD]
 #   session-journal.sh index-path [--date YYYY-MM-DD]   # prints the INDEX.md path
 #   session-journal.sh dir-path [--date YYYY-MM-DD]     # prints the journal dir
-#   session-journal.sh tool-counter increment           # used by PostToolUse hook
-#   session-journal.sh tool-counter read                # current count
-#   session-journal.sh tool-counter reset
+#   session-journal.sh tool-counter increment [--session KEY]   # used by PostToolUse hook
+#   session-journal.sh tool-counter read [--session KEY]        # current count
+#   session-journal.sh tool-counter reset [--session KEY]
+#
+# The tool counter is per-session: state lives at
+# workspace/threads/journal/<date>/.tool-count-<session-key>. The key comes from
+# --session, else $HQ_JOURNAL_SESSION, else $HQ_HOOK_SESSION_ID, else
+# "unscoped". A date-global counter let concurrent Claude and Codex tasks
+# trigger and reset each other's journal reminders.
 #
 # All commands fail-soft: warn to stderr, exit 0 — never block the caller.
 
@@ -37,6 +43,41 @@ slugify() {
     | cut -c1-40
 }
 
+# Counters are per-session. A date-global counter lets concurrent Claude and
+# Codex tasks trip (and reset) each other's journal reminders.
+counter_key() {
+  local raw="${1:-}"
+  raw="$(printf '%s' "$raw" | tr -c 'A-Za-z0-9._-' '_')"
+  raw="${raw#_}"; raw="${raw%_}"
+  [ -z "$raw" ] && raw="unscoped"
+  [ "${#raw}" -gt 96 ] && raw="${raw:0:96}"
+  printf '%s' "$raw"
+}
+
+resolve_session_key() {
+  counter_key "${1:-${HQ_JOURNAL_SESSION:-${HQ_HOOK_SESSION_ID:-}}}"
+}
+
+# Read-modify-write on the counter must not interleave across concurrent tasks.
+with_counter_lock() {
+  local lockdir="$1"; shift
+  local i=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -ge 50 ] && break
+    sleep 0.02 2>/dev/null || sleep 1
+  done
+  "$@"
+  rmdir "$lockdir" 2>/dev/null || true
+}
+
+counter_read_raw() {
+  local counter="$1" n=0
+  [ -f "$counter" ] && n=$(tr -dc '0-9' < "$counter" 2>/dev/null)
+  [ -z "$n" ] && n=0
+  printf '%d' "$n"
+}
+
 next_seq() {
   local dir="$1"
   # Highest NNN in the dir, +1, zero-padded to 3.
@@ -56,10 +97,12 @@ case "$cmd" in
     title="${1:-}"; shift || true
     files_csv=""
     body_file=""
+    session_arg=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --files)     files_csv="${2:-}"; shift 2 || break ;;
         --body-file) body_file="${2:-}"; shift 2 || break ;;
+        --session)   session_arg="${2:-}"; shift 2 || break ;;
         *) shift ;;
       esac
     done
@@ -109,8 +152,9 @@ case "$cmd" in
     printf -- '- `%s` %s — %s\n' "$seq" "$(now_hhmm_z)" "$title" >> "$idx" \
       || warn "write: INDEX update failed"
 
-    # Reset tool counter — milestone was journaled
-    "$0" tool-counter reset >/dev/null 2>&1 || true
+    # Reset the tool counter for THIS session only — journaling one task's
+    # milestone must not clear a concurrent task's progress toward its own.
+    "$0" tool-counter reset --session "$(resolve_session_key "$session_arg")" >/dev/null 2>&1 || true
 
     printf '%s\n' "$out"
     ;;
@@ -160,23 +204,30 @@ case "$cmd" in
 
   tool-counter)
     sub="${1:-}"; shift || true
+    session_arg=""
+    while [ $# -gt 0 ]; do
+      case "$1" in --session) session_arg="${2:-}"; shift 2 || break ;; *) shift ;; esac
+    done
+    session_key="$(resolve_session_key "$session_arg")"
     dir="$(journal_dir_for "$(today)")"
     mkdir -p "$dir" 2>/dev/null || true
-    counter="$dir/.tool-count"
+    counter="$dir/.tool-count-$session_key"
+    lockdir="$counter.lock"
     case "$sub" in
       increment)
-        n=0
-        [ -f "$counter" ] && n=$(cat "$counter" 2>/dev/null | tr -d '\n' | tr -dc '0-9')
-        [ -z "$n" ] && n=0
-        echo $((n + 1)) > "$counter" 2>/dev/null || true
+        do_increment() {
+          local n
+          n=$(counter_read_raw "$counter")
+          echo $((n + 1)) > "$counter" 2>/dev/null || true
+        }
+        with_counter_lock "$lockdir" do_increment
         ;;
       read)
-        n=0
-        [ -f "$counter" ] && n=$(cat "$counter" 2>/dev/null | tr -d '\n' | tr -dc '0-9')
-        printf '%d\n' "${n:-0}"
+        printf '%d\n' "$(counter_read_raw "$counter")"
         ;;
       reset)
-        echo 0 > "$counter" 2>/dev/null || true
+        do_reset() { echo 0 > "$counter" 2>/dev/null || true; }
+        with_counter_lock "$lockdir" do_reset
         ;;
       *) warn "tool-counter: subcommand required (increment|read|reset)" ;;
     esac
@@ -185,12 +236,12 @@ case "$cmd" in
   *)
     cat >&2 <<'USAGE'
 session-journal.sh: usage:
-  session-journal.sh write "<title>" [--files f1,f2,...] [--body-file PATH]
+  session-journal.sh write "<title>" [--files f1,f2,...] [--body-file PATH] [--session KEY]
   session-journal.sh list [--date YYYY-MM-DD]
   session-journal.sh read <NNN> [--date YYYY-MM-DD]
   session-journal.sh index-path [--date YYYY-MM-DD]
   session-journal.sh dir-path [--date YYYY-MM-DD]
-  session-journal.sh tool-counter (increment|read|reset)
+  session-journal.sh tool-counter (increment|read|reset) [--session KEY]
 USAGE
     exit 1
     ;;

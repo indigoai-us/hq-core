@@ -39,6 +39,20 @@ trap 'rm -rf "$TMP"; rm -f "$LEDGER_DIR"/nopy-*.txt 2>/dev/null || true' EXIT
 ok()   { PASS=$((PASS+1)); echo "ok   [$1]"; }
 fail() { FAIL=$((FAIL+1)); echo "FAIL [$1]: $2"; }
 
+# fork-free slug list from hook output (mirrors inject-policy-e2e.test.sh).
+slugs_from_output() {
+  local line s
+  while IFS= read -r line; do
+    case "$line" in
+      '> Policy `'*) s="${line#'> Policy `'}"; printf '%s\n' "${s%%\`*}" ;;
+    esac
+  done
+}
+
+has_slug() {
+  case $'\n'"$2"$'\n' in *$'\n'"$1"$'\n'*) return 0 ;; *) return 1 ;; esac
+}
+
 echo "== 1. tripwire: no python3 invocations in runtime hooks/scripts =="
 # Strip comment lines, then look for the interpreter name. The single
 # allowlisted file carries it only as a QUOTED CLASSIFICATION LITERAL.
@@ -101,12 +115,14 @@ if printf '%s' "$O" | grep -Fq '> Policy `'; then
 else
   fail "SessionStart injects baseline policies with broken python3" "no reminder emitted"
 fi
-O2="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s-up","prompt":"/handoff please","cwd":"%s"}' "$RUN" "$ROOT" \
-  | PATH="$BROKEN_PATH" HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" 2>/dev/null)"
-if printf '%s' "$O2" | grep -Fq 'hq-handoff-changeset-scope'; then
+HANDOFF_SID="${RUN}-handoff-$$"
+O2="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s","prompt":"/handoff please","cwd":"%s"}' "$HANDOFF_SID" "$ROOT" \
+  | PATH="$BROKEN_PATH" HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" HQ_POLICY_HARD_FULL_TEXT=0 bash "$HOOK" 2>/dev/null)"
+got_handoff="$(printf '%s' "$O2" | slugs_from_output)"
+if has_slug "hq-handoff-changeset-scope" "$got_handoff"; then
   ok "reactive /handoff trigger fires with broken python3"
 else
-  fail "reactive /handoff trigger fires with broken python3" "slug missing; got: $(printf '%s' "$O2" | tr '\n' ' ' | cut -c1-200)"
+  fail "reactive /handoff trigger fires with broken python3" "slug missing; got: [$(printf '%s' "$got_handoff" | tr '\n' ' ')]"
 fi
 
 mkdir -p "$TMP/policies"

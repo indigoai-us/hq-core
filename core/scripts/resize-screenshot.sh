@@ -1,47 +1,30 @@
-#!/bin/bash
-# resize-screenshot.sh — Resize screenshot to max 1800px (longest dimension), in-place.
-# Uses sips (macOS native). Falls back to magick if sips unavailable.
-# Usage: resize-screenshot.sh <path-to-image>
+#!/usr/bin/env bash
+# FORWARDER — the implementation of this script now lives in the hq CLI.
 #
-# 1800px chosen to stay under the 2000px API limit with margin.
-# JPEG at q=85 is visually lossless for audit work.
+# It ships at assets/scaffold/core/scripts/resize-screenshot.sh inside @indigoai-us/hq-cli and
+# runs as the hidden command `hq core resize-screenshot`. This file stays behind so every
+# existing caller — skills, other scripts, CI, and muscle memory — keeps working
+# against the path it already knows.
+#
+# Why the implementation moved: it is a cold, explicitly-invoked operation where
+# process startup is immaterial, so hosting it in the CLI costs nothing and
+# keeps the scaffold to configuration rather than code.
+#
+# The ABI is preserved exactly: arguments are forwarded unchanged, stdin is never
+# read by this file, stdout and stderr are inherited untouched, and the child
+# replaces this process so its exit code and signal disposition become the
+# caller's.
 
 set -euo pipefail
 
-MAX_DIM=1800
-FILE="${1:-}"
+# No root is injected: this script derived its root from the CALLER's cwd
+# before it moved (git top level, a cwd walk, or a positional argument), and the
+# CLI preserves that. Anything the caller already exported still applies.
 
-[[ -n "$FILE" && -f "$FILE" ]] || { echo "resize-screenshot: file not found: $FILE" >&2; exit 1; }
-
-# Get current dimensions via sips
-W=$(sips -g pixelWidth "$FILE" 2>/dev/null | awk '/pixelWidth/{print $2}')
-H=$(sips -g pixelHeight "$FILE" 2>/dev/null | awk '/pixelHeight/{print $2}')
-
-[[ -n "$W" && -n "$H" ]] || { echo "resize-screenshot: cannot read dimensions" >&2; exit 2; }
-
-if [[ "$W" -le "$MAX_DIM" && "$H" -le "$MAX_DIM" ]]; then
-  echo "resize-screenshot: ${W}x${H} — within bounds, skipping"
-  exit 0
+if ! command -v hq >/dev/null 2>&1; then
+  echo "resize-screenshot.sh: requires the hq CLI — this script's implementation now ships with it." >&2
+  echo "Install it with: npm install -g @indigoai-us/hq-cli" >&2
+  exit 127
 fi
 
-# Determine new size (preserve aspect ratio, shrink longest dimension to MAX_DIM)
-if [[ "$W" -ge "$H" ]]; then
-  NEW_W=$MAX_DIM
-  NEW_H=$(( H * MAX_DIM / W ))
-else
-  NEW_H=$MAX_DIM
-  NEW_W=$(( W * MAX_DIM / H ))
-fi
-
-echo "resize-screenshot: ${W}x${H} → ${NEW_W}x${NEW_H} ($FILE)"
-
-if command -v sips &>/dev/null; then
-  sips --resampleHeightWidth "$NEW_H" "$NEW_W" "$FILE" --out "$FILE" >/dev/null 2>&1
-elif command -v magick &>/dev/null; then
-  magick "$FILE" -resize "${MAX_DIM}x${MAX_DIM}>" "$FILE"
-else
-  echo "resize-screenshot: no image tool available (sips/magick)" >&2
-  exit 2
-fi
-
-echo "resize-screenshot: done"
+exec hq core resize-screenshot "$@"

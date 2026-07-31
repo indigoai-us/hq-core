@@ -35,7 +35,7 @@ timeout = 30
 statusMessage = "Routing HQ prompt"
 
 [[hooks.PreToolUse]]
-matcher = "Bash|apply_patch|Edit|Write|Read"
+matcher = "Bash|apply_patch|Edit|Write|Read|Grep|Glob"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"

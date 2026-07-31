@@ -1,51 +1,30 @@
-#!/bin/bash
-# One-time backfill: walk workspace/threads/*.json and replay each through
-# the mirror hook so existing sessions are represented in their companies'
-# workspace/ folders.
+#!/usr/bin/env bash
+# FORWARDER — the implementation of this script now lives in the hq CLI.
 #
-# Idempotent: hardlinks use ln -f, index.jsonl rows are deduped by
-# (thread_id, ts, kind). Safe to re-run.
+# It ships at assets/scaffold/core/scripts/backfill-workspace-mirror.sh inside @indigoai-us/hq-cli and
+# runs as the hidden command `hq core backfill-workspace-mirror`. This file stays behind so every
+# existing caller — skills, other scripts, CI, and muscle memory — keeps working
+# against the path it already knows.
 #
-# Usage:  bash core/scripts/backfill-workspace-mirror.sh [HQ_ROOT]
+# Why the implementation moved: it is a cold, explicitly-invoked operation where
+# process startup is immaterial, so hosting it in the CLI costs nothing and
+# keeps the scaffold to configuration rather than code.
+#
+# The ABI is preserved exactly: arguments are forwarded unchanged, stdin is never
+# read by this file, stdout and stderr are inherited untouched, and the child
+# replaces this process so its exit code and signal disposition become the
+# caller's.
 
 set -euo pipefail
 
-HQ_ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-HOOK="$HQ_ROOT/.claude/hooks/mirror-thread-to-company.sh"
-THREADS_DIR="$HQ_ROOT/workspace/threads"
+# No root is injected: this script derived its root from the CALLER's cwd
+# before it moved (git top level, a cwd walk, or a positional argument), and the
+# CLI preserves that. Anything the caller already exported still applies.
 
-[ -x "$HOOK" ] || { echo "Mirror hook missing or not executable: $HOOK" >&2; exit 1; }
-[ -d "$THREADS_DIR" ] || { echo "No threads dir at $THREADS_DIR" >&2; exit 1; }
+if ! command -v hq >/dev/null 2>&1; then
+  echo "backfill-workspace-mirror.sh: requires the hq CLI — this script's implementation now ships with it." >&2
+  echo "Install it with: npm install -g @indigoai-us/hq-cli" >&2
+  exit 127
+fi
 
-mirrored=0
-skipped=0
-total=0
-
-for thread in "$THREADS_DIR"/T-*.json; do
-  [ -f "$thread" ] || continue
-  total=$((total + 1))
-
-  has_company=$(jq -r 'if .metadata.company then "yes" else "no" end' "$thread" 2>/dev/null || echo "no")
-  if [ "$has_company" != "yes" ]; then
-    skipped=$((skipped + 1))
-    continue
-  fi
-
-  printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$thread" \
-    | bash "$HOOK"
-
-  mirrored=$((mirrored + 1))
-done
-
-echo "Backfill complete:"
-echo "  Total threads:   $total"
-echo "  Mirrored:        $mirrored"
-echo "  Skipped (no co): $skipped"
-echo
-echo "Per-company index.jsonl row counts:"
-for index_file in "$HQ_ROOT"/companies/*/workspace/index.jsonl; do
-  [ -f "$index_file" ] || continue
-  co=$(basename "$(dirname "$(dirname "$index_file")")")
-  rows=$(wc -l < "$index_file" | tr -d ' ')
-  printf "  %-20s %s rows\n" "$co" "$rows"
-done
+exec hq core backfill-workspace-mirror "$@"

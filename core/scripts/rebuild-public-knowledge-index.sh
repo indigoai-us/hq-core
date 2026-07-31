@@ -1,83 +1,29 @@
 #!/usr/bin/env bash
-# rebuild-public-knowledge-index.sh — regenerate core/knowledge/public/INDEX.md.
+# FORWARDER — the implementation of this script now lives in the hq CLI.
 #
-# Pure bash + jq. Lists each public-knowledge subdir with a file count.
-# Description: prefer the subdir's README.md first heading, else first
-# alphabetical .md file's first heading, else "{N} file(s)".
+# It ships at assets/scaffold/core/scripts/rebuild-public-knowledge-index.sh inside @indigoai-us/hq-cli and
+# runs as the hidden command `hq core rebuild-index public-knowledge`. This file stays behind so every
+# existing caller — skills, other scripts, CI, and muscle memory — keeps working
+# against the path it already knows.
+#
+# Why the implementation moved: it is a cold, explicitly-invoked operation where
+# process startup is immaterial, so hosting it in the CLI costs nothing and
+# keeps the scaffold to configuration rather than code.
+#
+# The ABI is preserved exactly: arguments are forwarded unchanged, stdin is never
+# read by this file, stdout and stderr are inherited untouched, and the child
+# replaces this process so its exit code and signal disposition become the
+# caller's.
 
 set -euo pipefail
 
+# This forwarder sits in the tree it targets, so its own location IS the root.
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-cd "$HQ_ROOT"
 
-KNOWLEDGE_DIR="core/knowledge/public"
-OUT="${KNOWLEDGE_DIR}/INDEX.md"
-DATE=$(date -u +%Y-%m-%d)
+if ! command -v hq >/dev/null 2>&1; then
+  echo "rebuild-public-knowledge-index.sh: requires the hq CLI — this script's implementation now ships with it." >&2
+  echo "Install it with: npm install -g @indigoai-us/hq-cli" >&2
+  exit 127
+fi
 
-[[ -d "$KNOWLEDGE_DIR" ]] || { echo "rebuild-public-knowledge-index: ${KNOWLEDGE_DIR}/ missing, skipping" >&2; exit 0; }
-
-sanitize_cell() {
-  printf '%s' "$1" | tr '\n' ' ' | sed -e 's/|/\\|/g' -e 's/  */ /g' -e 's/^ *//' -e 's/ *$//'
-}
-trunc() {
-  local s="$1" n="$2"
-  if [[ ${#s} -le $n ]]; then printf '%s' "$s"; else printf '%s…' "${s:0:$((n-1))}"; fi
-}
-
-heading_of() {
-  awk '/^# / { sub(/^# +/, ""); print; exit }' "$1" 2>/dev/null || true
-}
-
-describe_subdir() {
-  local d="$1"
-  local n
-  n=$(find "$d" -mindepth 1 -maxdepth 1 -name '*.md' ! -name 'INDEX.md' 2>/dev/null | wc -l | tr -d ' ')
-  local readme="${d}/README.md"
-  local h=""
-  if [[ -f "$readme" ]]; then
-    h=$(heading_of "$readme")
-  fi
-  if [[ -z "$h" ]]; then
-    # First alphabetical .md file (excluding INDEX.md, README.md).
-    local first
-    first=$(find "$d" -mindepth 1 -maxdepth 1 -name '*.md' ! -name 'INDEX.md' ! -name 'README.md' 2>/dev/null | sort | head -1)
-    [[ -n "$first" ]] && h=$(heading_of "$first")
-  fi
-  if [[ -n "$h" ]]; then
-    echo "${h} (${n} file(s))"
-  else
-    echo "${n} file(s)"
-  fi
-}
-
-{
-  echo "# Public Knowledge"
-  echo ""
-  echo "> Auto-generated. Updated: ${DATE}"
-  echo ""
-  echo "| Name | Description |"
-  echo "|------|-------------|"
-  while IFS= read -r d; do
-    name=$(basename "$d")
-    [[ "$name" == .* ]] && continue
-    desc=$(describe_subdir "$d")
-    desc=$(sanitize_cell "$desc")
-    desc=$(trunc "$desc" 100)
-    printf '| `%s/` | %s |\n' "$name" "$desc"
-  done < <(find "$KNOWLEDGE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
-
-  # Loose top-level .md files
-  while IFS= read -r f; do
-    name=$(basename "$f")
-    [[ "$name" == "INDEX.md" ]] && continue
-    [[ "$name" == .* ]] && continue
-    desc=$(heading_of "$f")
-    [[ -z "$desc" ]] && desc="$name"
-    desc=$(sanitize_cell "$desc")
-    desc=$(trunc "$desc" 100)
-    printf '| `%s` | %s |\n' "$name" "$desc"
-  done < <(find "$KNOWLEDGE_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
-} > "$OUT"
-
-n=$(find "$KNOWLEDGE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-echo "rebuild-public-knowledge-index: wrote ${OUT} (${n} subdir(s))" >&2
+exec hq core --hq-root "$HQ_ROOT" rebuild-index public-knowledge "$@"

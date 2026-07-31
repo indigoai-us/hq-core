@@ -24,8 +24,9 @@ assert_eq() {
 
 # Build a minimal HQ-shaped layout so the script's BASH_SOURCE-relative
 # REPO_ROOT computation has something real to resolve against.
-mkdir -p "$TMP/core/scripts" "$TMP/workspace/sessions"
+mkdir -p "$TMP/core/scripts/lib" "$TMP/workspace/sessions"
 cp "$SRC" "$TMP/core/scripts/hq-session.sh"
+cp "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"
 chmod +x "$TMP/core/scripts/hq-session.sh"
 HS="$TMP/core/scripts/hq-session.sh"
 
@@ -56,5 +57,12 @@ assert_eq "$("$HS" get company)" "acme" "get after set"
 assert_eq "$("$HS" get company)" "beta" "get after overwrite"
 count="$(grep -c '^company:' "$path_out")"
 assert_eq "$count" "1" "company key not duplicated"
+
+# 6. set company_slug mints scope-capability.json for the current session.
+"$HS" set company_slug indigo
+cap="$TMP/workspace/sessions/sess-1/scope-capability.json"
+[ -f "$cap" ] || fail "scope-capability.json not minted"
+assert_eq "$(jq -r '.company_slug' "$cap")" "indigo" "capability company_slug"
+assert_eq "$(jq -r '.session_id' "$cap")" "sess-1" "capability session_id"
 
 echo "PASS: hq-session.sh ($(basename "$HS"))"
