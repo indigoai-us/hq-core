@@ -162,6 +162,153 @@ hq_hook_session_key_from_payload() {
   hq_hook_safe_session_key "$key"
 }
 
+# hq_hook_state_dir <hq_root>
+#   Session-scoped hook state lives under the resolved HQ root, never /tmp and
+#   never keyed by $PPID — tool and hook processes do not share a parent PID in
+#   every host, so a PID-keyed path silently defeats debouncing.
+hq_hook_state_dir() {
+  local root="$1"
+  local dir="$root/workspace/orchestrator/hook-state"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s' "$dir"
+}
+
+# hq_hook_tool_failed <payload>
+#   Exit 0 when the PostToolUse payload shows the tool call FAILED, 1 when it
+#   succeeded or the host reported nothing either way.
+#
+#   Claude Code does not dispatch PostToolUse at all for a failed tool call, so
+#   this matters for the Codex adapter, which forwards every call along with
+#   `tool_response.exit_code`. Without it a red test run counts as a milestone
+#   and every targeted rerun mints another reminder.
+hq_hook_tool_failed() {
+  local payload="$1"
+  local key v
+  for key in tool_response.exit_code tool_response.exitCode tool_response.returnCode; do
+    v="$(printf '%s' "$payload" | hq_json_get "$key")"
+    case "$v" in
+      '') continue ;;
+      0) return 1 ;;
+      *[!0-9-]*) continue ;;
+      *) return 0 ;;
+    esac
+  done
+  for key in tool_response.is_error tool_response.isError tool_response.interrupted; do
+    v="$(printf '%s' "$payload" | hq_json_get "$key")"
+    [ "$v" = "true" ] && return 0
+  done
+  return 1
+}
+
+# hq_hook_within_window <state_file> <seconds>
+#   Exit 0 when <state_file> holds an epoch stamp newer than <seconds> ago —
+#   i.e. the caller is still inside its debounce window and should stay quiet.
+hq_hook_within_window() {
+  local file="$1"
+  local window="$2"
+  local last now
+  [ -f "$file" ] || return 1
+  last="$(tr -dc '0-9' < "$file" 2>/dev/null)"
+  [ -n "$last" ] || return 1
+  now="$(date +%s)"
+  [ $(( now - last )) -lt "$window" ]
+}
+
+hq_hook_stamp_now() {
+  date +%s > "$1" 2>/dev/null || true
+}
+
+# hq_path_is_absolute <path>
+#   exit 0 for Unix or Windows drive-letter absolutes.
+hq_path_is_absolute() {
+  case "$1" in
+    /*|[a-zA-Z]:/*|[a-zA-Z]:\\*) return 0 ;;
+  esac
+  return 1
+}
+
+# hq_canonical_path <path>
+#   Normalize for hook comparisons. On MSYS/Git Bash, cygpath -m unifies
+#   /tmp/... and C:/Users/.../Temp/... forms of the same directory.
+hq_canonical_path() {
+  local p="$1"
+  p="$(hq_normpath "$p" 2>/dev/null || printf '%s' "$p")"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$p" 2>/dev/null || printf '%s' "$p"
+    return 0
+  fi
+  printf '%s' "$p"
+}
+
+# hq_path_matches_core_yaml_exclude <hq_root> <file_path> [<core_yaml>]
+#   exit 0 when file_path matches a core/core.yaml rules.exclude entry (file or
+#   directory prefix). Requires yq and a readable core_yaml; otherwise exit 1.
+hq_path_matches_core_yaml_exclude() {
+  local hq_root="$1"
+  local file_path="$2"
+  local core_yaml="${3:-$hq_root/core/core.yaml}"
+  local exc_path exc_abs exclude_paths
+
+  [ -n "$hq_root" ] || return 1
+  [ -n "$file_path" ] || return 1
+  [ -f "$core_yaml" ] || return 1
+  command -v yq >/dev/null 2>&1 || return 1
+
+  file_path="$(hq_canonical_path "$file_path")"
+  hq_root="$(hq_canonical_path "$hq_root")"
+
+  exclude_paths="$(yq eval '.rules.exclude[]' "$core_yaml" 2>/dev/null)" || exclude_paths=""
+  while IFS= read -r exc_path; do
+    [ -n "$exc_path" ] || continue
+    exc_abs="$(hq_normpath "${hq_root}/${exc_path%/}")"
+    case "$file_path" in
+      "$exc_abs"|"$exc_abs"/*) return 0 ;;
+    esac
+  done <<< "$exclude_paths"
+  return 1
+}
+
+# hq_bash_strip_core_yaml_exclude_tokens <command> <hq_root> [<core_yaml>]
+#   Best-effort removal of command tokens that reference rules.exclude paths.
+#   Match full root-relative (and absolute) exclude paths — never basename
+#   substrings, which would strip unrelated protected targets (e.g. toolkit.sh
+#   when .claude/kit/ is excluded).
+hq_bash_strip_core_yaml_exclude_tokens() {
+  local cmd="$1"
+  local hq_root="$2"
+  local core_yaml="${3:-$hq_root/core/core.yaml}"
+  local exc_path rel abs esc esc_dir sed_script exclude_paths
+
+  [ -n "$cmd" ] || { printf '%s' "$cmd"; return 0; }
+  [ -f "$core_yaml" ] || { printf '%s' "$cmd"; return 0; }
+  command -v yq >/dev/null 2>&1 || { printf '%s' "$cmd"; return 0; }
+
+  hq_root="$(hq_canonical_path "$hq_root")"
+  sed_script=''
+  exclude_paths="$(yq eval '.rules.exclude[]' "$core_yaml" 2>/dev/null)" || exclude_paths=""
+  while IFS= read -r exc_path; do
+    [ -n "$exc_path" ] || continue
+    rel="${exc_path%/}"
+    [ -n "$rel" ] || continue
+
+    esc="$(printf '%s' "$rel" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
+    sed_script="${sed_script}s|[^[:space:]]*${esc}[^[:space:]]*||g; s|${esc}||g;"
+
+    if [[ "$exc_path" == */ ]]; then
+      esc_dir="$(printf '%s' "$exc_path" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
+      sed_script="${sed_script}s|[^[:space:]]*${esc_dir}[^[:space:]]*||g; s|${esc_dir}||g;"
+    fi
+
+    abs="$(hq_canonical_path "${hq_root}/${rel}")"
+    esc_abs="$(printf '%s' "$abs" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
+    sed_script="${sed_script}s|[^[:space:]]*${esc_abs}[^[:space:]]*||g; s|${esc_abs}||g;"
+  done <<< "$exclude_paths"
+
+  [ -n "$sed_script" ] || { printf '%s' "$cmd"; return 0; }
+  printf '%s' "$cmd" | sed "$sed_script"
+}
+
+
 hq_path_within_root() {
   local root="$1"
   local path="$2"

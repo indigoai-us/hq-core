@@ -384,9 +384,13 @@ write_op_targets_protected() {
 
 writes_to_protected() {
   local cmd="$1"
-  # Strip the two user-owned files -- they are allowed exceptions inside .claude/.
-  local stripped
-  stripped=$(echo "$cmd" | sed 's|[^[:space:]]*settings\.local\.json[^[:space:]]*||g; s|settings\.local\.json||g; s|[^[:space:]]*personal-context\.md[^[:space:]]*||g; s|personal-context\.md||g')
+  # Strip core.yaml exclude paths — machine-local artifacts are writable.
+  local stripped core_yaml="$PROJECT_DIR/core/core.yaml"
+  stripped="$(hq_bash_strip_core_yaml_exclude_tokens "$cmd" "$PROJECT_DIR" "$core_yaml")"
+  # Fixed exceptions — writable even when yq/core.yaml parsing is unavailable.
+  stripped=$(echo "$stripped" | sed 's|[^[:space:]]*settings\.local\.json[^[:space:]]*||g; s|settings\.local\.json||g')
+  # personal-context.md is preserve_subpaths (not rules.exclude) but still writable.
+  stripped=$(echo "$stripped" | sed 's|[^[:space:]]*personal-context\.md[^[:space:]]*||g; s|personal-context\.md||g')
 
   # Absolute/live-root forms are always enforced; relative forms only outside a
   # repos/ checkout.

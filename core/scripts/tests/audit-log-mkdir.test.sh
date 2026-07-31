@@ -18,8 +18,13 @@ SRC_ROOT="$(git rev-parse --show-toplevel)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-mkdir -p "$TMP/core/scripts"
+mkdir -p "$TMP/core/scripts/lib"
 cp "$SRC_ROOT/core/scripts/audit-log.sh" "$TMP/core/scripts/audit-log.sh"
+# audit-log.sh sources core/scripts/lib/portable.sh. The fixture used to copy
+# only the script, so every append died with "portable.sh: No such file or
+# directory" — invisible because this suite does not run in CI. Copy the whole
+# lib/ so a future dependency cannot silently break the fixture again.
+cp "$SRC_ROOT"/core/scripts/lib/*.sh "$TMP/core/scripts/lib/" 2>/dev/null || true
 
 LOG="$TMP/workspace/metrics/audit-log.jsonl"
 

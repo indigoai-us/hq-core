@@ -1,73 +1,30 @@
-#!/bin/bash
-# backfill-company-skill-mirrors.sh
+#!/usr/bin/env bash
+# FORWARDER — the implementation of this script now lives in the hq CLI.
 #
-# One-shot, idempotent. Walks every company under companies/{co}/skills/ and
-# companies/{co}/commands/ and ensures a mirror symlink exists at
-# .claude/skills/{prefix}-{name}/ (or .claude/commands/{prefix}-{name}.md).
+# It ships at assets/scaffold/core/scripts/backfill-company-skill-mirrors.sh inside @indigoai-us/hq-cli and
+# runs as the hidden command `hq core backfill-company-skill-mirrors`. This file stays behind so every
+# existing caller — skills, other scripts, CI, and muscle memory — keeps working
+# against the path it already knows.
 #
-# Logic is delegated to .claude/hooks/auto-mirror-company-skill.sh — this
-# script just discovers candidate paths and feeds them in. Re-run safely.
+# Why the implementation moved: it is a cold, explicitly-invoked operation where
+# process startup is immaterial, so hosting it in the CLI costs nothing and
+# keeps the scaffold to configuration rather than code.
 #
-# Usage:  bash core/scripts/backfill-company-skill-mirrors.sh
+# The ABI is preserved exactly: arguments are forwarded unchanged, stdin is never
+# read by this file, stdout and stderr are inherited untouched, and the child
+# replaces this process so its exit code and signal disposition become the
+# caller's.
 
 set -euo pipefail
 
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-HOOK="$PROJECT_DIR/.claude/hooks/auto-mirror-company-skill.sh"
+# No root is injected: this script derived its root from the CALLER's cwd
+# before it moved (git top level, a cwd walk, or a positional argument), and the
+# CLI preserves that. Anything the caller already exported still applies.
 
-if [[ ! -x "$HOOK" ]]; then
-  echo "ERROR: auto-mirror hook not found or not executable: $HOOK" >&2
-  exit 1
+if ! command -v hq >/dev/null 2>&1; then
+  echo "backfill-company-skill-mirrors.sh: requires the hq CLI — this script's implementation now ships with it." >&2
+  echo "Install it with: npm install -g @indigoai-us/hq-cli" >&2
+  exit 127
 fi
 
-cd "$PROJECT_DIR"
-
-CREATED=0
-SKIPPED=0
-
-emit() {
-  local rel_path="$1"
-  rel_path="${rel_path//\/\//\/}"
-  local out
-  out=$(echo "{\"tool_input\":{\"file_path\":\"$rel_path\"}}" | CLAUDE_PROJECT_DIR="$PROJECT_DIR" bash "$HOOK" 2>&1 || true)
-  if [[ -n "$out" ]]; then
-    echo "$out"
-    if [[ "$out" == *"linked"* ]]; then
-      CREATED=$((CREATED + 1))
-    else
-      SKIPPED=$((SKIPPED + 1))
-    fi
-  fi
-}
-
-shopt -s nullglob
-for co_dir in companies/*/; do
-  co="${co_dir%/}"
-  co="${co##*/}"
-
-  # Skip if no manifest entry (defensive — shouldn't happen).
-  [[ -d "$co_dir" ]] || continue
-
-  # Top-level skills: directory form (skills/{name}/SKILL.md) and flat-file form (skills/{name}.md).
-  if [[ -d "$co_dir/skills" ]]; then
-    for skill_md in "$co_dir/skills"/*/SKILL.md; do
-      [[ -f "$skill_md" ]] || continue
-      emit "$skill_md"
-    done
-    for flat_md in "$co_dir/skills"/*.md; do
-      [[ -f "$flat_md" ]] || continue
-      emit "$flat_md"
-    done
-  fi
-
-  # Top-level commands: commands/{name}.md
-  if [[ -d "$co_dir/commands" ]]; then
-    for cmd_md in "$co_dir/commands"/*.md; do
-      [[ -f "$cmd_md" ]] || continue
-      emit "$cmd_md"
-    done
-  fi
-done
-
-echo ""
-echo "backfill complete: $CREATED linked, $SKIPPED skipped (already-correct or no-prefix)"
+exec hq core backfill-company-skill-mirrors "$@"

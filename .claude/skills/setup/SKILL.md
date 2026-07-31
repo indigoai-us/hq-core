@@ -358,7 +358,7 @@ brings in becomes context for Dream Big (4.5) and the action interview (5).
 
 ### Repos directory (required)
 
-All repos — code, knowledge, company projects — live under `repos/`. This is the single canonical location for every cloned or created repository in HQ.
+Code repos live under `repos/public/` and `repos/private/`. Knowledge bases are **real directories** under `personal/knowledge/` or `companies/{slug}/knowledge/` (embedded git) — not symlinks into `repos/`.
 
 ```bash
 mkdir -p repos/public repos/private
@@ -376,43 +376,48 @@ companies/{slug}/{settings,data,knowledge,workers,policies}
 ```
 The schema and a fillable template live at `companies/_template/`.
 
-### Knowledge repos
+### Knowledge directories
 
-Personal knowledge bases can be independent git repos symlinked into `personal/knowledge/`. Shared starter-kit knowledge ships under `core/knowledge/`.
+Personal and company knowledge directories must be **real directories** so cloud
+sync uploads document contents. Do **not** symlink `personal/knowledge/` or
+`companies/{slug}/knowledge/` into `repos/` — sync records symlinks as vault
+markers and teammates receive nothing.
 
 For each knowledge base the user wants to create:
 
-1. Create the repo directory:
+1. Create the directory and embedded git repo:
 ```bash
-mkdir -p repos/public/knowledge-{name}
-cd repos/public/knowledge-{name}
+mkdir -p personal/knowledge/{name}
+cd personal/knowledge/{name}
 git init
-echo "# {Name} Knowledge Base" > README.md
+printf '# %s Knowledge Base\n' "{Name}" > README.md
 git add . && git commit -m "init knowledge repo"
 cd -
 ```
 
-2. Symlink into HQ:
+Verify:
+
 ```bash
+test -d personal/knowledge/{name} && ! test -L personal/knowledge/{name} \
+  && echo "OK: knowledge is a real directory"
+```
+
+**Optional:** turn all of `personal/knowledge/` into one git repo for cross-machine sync:
+```bash
+# Only when personal/knowledge/ is still empty or the user confirms migration
 mkdir -p personal/knowledge
-ln -s ../../repos/public/knowledge-{name} personal/knowledge/{name}
-```
-
-**Optional: turn `personal/knowledge/` into its own git repo so you can sync it across machines.**
-```bash
-# Personal knowledge repo
-mkdir -p repos/private/knowledge-personal
-cd repos/private/knowledge-personal
+cd personal/knowledge
 git init
-echo "# Personal Knowledge Base" > README.md
-git add . && git commit -m "init knowledge repo"
+printf '# Personal Knowledge Base\n' > README.md
+git add . && git commit -m "init personal knowledge"
 cd -
-
-# Replace the empty personal/knowledge/ dir with a symlink to the canonical clone
-rm -rf personal/knowledge
-ln -s ../repos/private/knowledge-personal personal/knowledge
 ```
-If you skip this, `personal/knowledge/` is just a plain directory tracked by HQ git — fine for single-machine setups.
+
+If you skip embedded git, `personal/knowledge/` is a plain directory tracked by HQ git — fine for single-machine setups.
+
+**Optional advanced layout:** separate repos under `repos/private/knowledge-*` are
+supported only when the operator explicitly confirms sync will not follow directory
+symlinks and they will push from that repo path directly.
 
 **The starter kit's bundled knowledge (Ralph, workers, ai-security-framework, etc.) ships as plain directories. Explain to the user:**
 ```
