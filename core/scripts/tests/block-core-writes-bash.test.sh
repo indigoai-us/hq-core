@@ -7,7 +7,7 @@
 #   - the 2026-06-14 boundary fix: VAR=<protected path> assignments and
 #     colon-joined paths are now caught (previously slipped through because
 #     '=' / ':' were not treated as token boundaries);
-#   - .claude/settings.local.json and the durable personal context remain writable;
+#   - .claude/settings.local.json and core.yaml exclude paths remain writable;
 #   - companies/_template/ (a locked path per core.yaml) is blocked, while a
 #     real tenant dir (companies/<co>/) stays writable;
 #   - the settings.local.json HQ_BYPASS_CORE_PROTECT escape hatch still works
@@ -20,7 +20,11 @@ HOOK="$ROOT/.claude/hooks/block-core-writes-bash.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not available"; exit 0; }
+command -v yq >/dev/null 2>&1 || { echo "SKIP: yq not available"; exit 0; }
+
 mkdir -p "$TMP/.claude" "$TMP/core/packages/x" "$TMP/personal" "$TMP/repos/private/app" "$TMP/companies/_template/knowledge" "$TMP/companies/acme/data"
+cp "$ROOT/core/core.yaml" "$TMP/core/core.yaml"
 printf '{}' > "$TMP/.claude/settings.local.json"   # no bypass by default
 
 PASS=0
@@ -67,6 +71,8 @@ run 2 "P=/x:$TMP/core/y; cp /tmp/z \$P"      'colon-joined core path + cp blocke
 # --- Allowed: exceptions and non-protected targets -----------------------
 run 0 "echo x > $TMP/.claude/settings.local.json"  'settings.local.json writable'
 run 0 "echo x > $TMP/.claude/personal-context.md"   'personal-context.md writable'
+run 0 "echo x > $TMP/.claude/launch.json"           'launch.json writable via core.yaml exclude'
+run 0 "echo x > $TMP/.claude/scheduled-tasks/job.json" 'scheduled-tasks store writable via core.yaml exclude'
 run 0 "mv /tmp/y $TMP/repos/private/app/s"         'write into repos/ allowed'
 run 0 "mv /tmp/y $TMP/personal/p.md"               'write into personal/ allowed'
 run 0 "cat $C/s.json"                              'read-only cat of core allowed'

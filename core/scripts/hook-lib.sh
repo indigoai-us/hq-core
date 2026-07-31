@@ -162,6 +162,84 @@ hq_hook_session_key_from_payload() {
   hq_hook_safe_session_key "$key"
 }
 
+# hq_path_is_absolute <path>
+#   exit 0 for Unix or Windows drive-letter absolutes.
+hq_path_is_absolute() {
+  case "$1" in
+    /*|[a-zA-Z]:/*|[a-zA-Z]:\\*) return 0 ;;
+  esac
+  return 1
+}
+
+# hq_canonical_path <path>
+#   Normalize for hook comparisons. On MSYS/Git Bash, cygpath -m unifies
+#   /tmp/... and C:/Users/.../Temp/... forms of the same directory.
+hq_canonical_path() {
+  local p="$1"
+  p="$(hq_normpath "$p" 2>/dev/null || printf '%s' "$p")"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$p" 2>/dev/null || printf '%s' "$p"
+    return 0
+  fi
+  printf '%s' "$p"
+}
+
+# hq_path_matches_core_yaml_exclude <hq_root> <file_path> [<core_yaml>]
+#   exit 0 when file_path matches a core/core.yaml rules.exclude entry (file or
+#   directory prefix). Requires yq and a readable core_yaml; otherwise exit 1.
+hq_path_matches_core_yaml_exclude() {
+  local hq_root="$1"
+  local file_path="$2"
+  local core_yaml="${3:-$hq_root/core/core.yaml}"
+  local exc_path exc_abs exclude_paths
+
+  [ -n "$hq_root" ] || return 1
+  [ -n "$file_path" ] || return 1
+  [ -f "$core_yaml" ] || return 1
+  command -v yq >/dev/null 2>&1 || return 1
+
+  file_path="$(hq_canonical_path "$file_path")"
+  hq_root="$(hq_canonical_path "$hq_root")"
+
+  exclude_paths="$(yq eval '.rules.exclude[]' "$core_yaml" 2>/dev/null)" || exclude_paths=""
+  while IFS= read -r exc_path; do
+    [ -n "$exc_path" ] || continue
+    exc_abs="$(hq_normpath "${hq_root}/${exc_path%/}")"
+    case "$file_path" in
+      "$exc_abs"|"$exc_abs"/*) return 0 ;;
+    esac
+  done <<< "$exclude_paths"
+  return 1
+}
+
+# hq_bash_strip_core_yaml_exclude_tokens <command> <hq_root> [<core_yaml>]
+#   Best-effort removal of command tokens that reference rules.exclude paths.
+#   Mirrors the fixed exceptions block-core-writes-bash.sh already strips.
+hq_bash_strip_core_yaml_exclude_tokens() {
+  local cmd="$1"
+  local hq_root="$2"
+  local core_yaml="${3:-$hq_root/core/core.yaml}"
+  local exc_path base esc sed_script exclude_paths
+
+  [ -n "$cmd" ] || { printf '%s' "$cmd"; return 0; }
+  [ -f "$core_yaml" ] || { printf '%s' "$cmd"; return 0; }
+  command -v yq >/dev/null 2>&1 || { printf '%s' "$cmd"; return 0; }
+
+  sed_script=''
+  exclude_paths="$(yq eval '.rules.exclude[]' "$core_yaml" 2>/dev/null)" || exclude_paths=""
+  while IFS= read -r exc_path; do
+    [ -n "$exc_path" ] || continue
+    base="${exc_path%/}"
+    base="${base##*/}"
+    [ -n "$base" ] || continue
+    esc="$(printf '%s' "$base" | sed 's/[][\\.*^$(){}?+|]/\\&/g')"
+    sed_script="${sed_script}s|[^[:space:]]*${esc}[^[:space:]]*||g; s|${esc}||g;"
+  done <<< "$exclude_paths"
+
+  [ -n "$sed_script" ] || { printf '%s' "$cmd"; return 0; }
+  printf '%s' "$cmd" | sed "$sed_script"
+}
+
 hq_path_within_root() {
   local root="$1"
   local path="$2"

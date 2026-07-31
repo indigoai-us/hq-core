@@ -28,13 +28,14 @@ fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 
-if [[ "$FILE_PATH" != /* ]]; then
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+
+if ! hq_path_is_absolute "$FILE_PATH"; then
   FILE_PATH="$PROJECT_DIR/$FILE_PATH"
 fi
 
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
-FILE_PATH="$(hq_normpath "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
-PROJECT_DIR="$(hq_normpath "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
+FILE_PATH="$(hq_canonical_path "$FILE_PATH")"
+PROJECT_DIR="$(hq_canonical_path "$PROJECT_DIR")"
 
 CORE_DIR="$PROJECT_DIR/core"
 CLAUDE_DIR="$PROJECT_DIR/.claude"
@@ -42,8 +43,8 @@ AGENTS_DIR="$PROJECT_DIR/.agents"
 CODEX_DIR="$PROJECT_DIR/.codex"
 OBSIDIAN_DIR="$PROJECT_DIR/.obsidian"
 AGENTS_MD="$PROJECT_DIR/AGENTS.md"
-SETTINGS_LOCAL="$PROJECT_DIR/.claude/settings.local.json"
-PERSONAL_CONTEXT="$PROJECT_DIR/.claude/personal-context.md"
+SETTINGS_LOCAL="$(hq_canonical_path "$PROJECT_DIR/.claude/settings.local.json")"
+PERSONAL_CONTEXT="$(hq_canonical_path "$PROJECT_DIR/.claude/personal-context.md")"
 
 # Only concerned with protected paths.
 case "$FILE_PATH" in
@@ -76,15 +77,21 @@ if is_bypass_authorized; then
   exit 0
 fi
 
+# core/core.yaml rules.exclude — machine-local paths are always writable.
+CORE_YAML="$PROJECT_DIR/core/core.yaml"
+if hq_path_matches_core_yaml_exclude "$PROJECT_DIR" "$FILE_PATH" "$CORE_YAML"; then
+  exit 0
+fi
+
 # Specific file redirects — give a helpful pointer before the generic block.
-if [[ "$FILE_PATH" == "$PROJECT_DIR/.claude/CLAUDE.md" ]]; then
+if [[ "$FILE_PATH" == "$(hq_canonical_path "$PROJECT_DIR/.claude/CLAUDE.md")" ]]; then
   cat >&2 <<MSG
 BLOCKED: .claude/CLAUDE.md is the locked HQ charter.
   Edit personal/CLAUDE.md for your personal additions instead.
 MSG
   exit 2
 fi
-if [[ "$FILE_PATH" == "$PROJECT_DIR/.claude/settings.json" ]]; then
+if [[ "$FILE_PATH" == "$(hq_canonical_path "$PROJECT_DIR/.claude/settings.json")" ]]; then
   cat >&2 <<MSG
 BLOCKED: .claude/settings.json is locked.
   Edit .claude/settings.local.json for local overrides instead.
