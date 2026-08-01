@@ -3,8 +3,8 @@
 #
 # Folds steps 1/2/3b/4/5/7 of the handoff skill into a single subprocess so the
 # model doesn't narrate each step. Writes the thread file, handoff.json,
-# regenerates INDEX files, commits HQ via explicit paths, and launches qmd
-# reindex fire-and-forget.
+# regenerates INDEX files, commits HQ via explicit paths, and schedules the
+# single-flight qmd reindex helper (shared with handoff-post.sh).
 #
 # Usage (all args optional):
 #   handoff-finalize.sh \
@@ -478,11 +478,17 @@ if [[ $STAGE_FAILURE_COUNT -gt 0 && "$HQ_COMMIT_STATUS" != "failed" ]]; then
 fi
 COMMIT_AFTER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
-# -------- qmd reindex fire-and-forget --------
+# -------- qmd reindex fire-and-forget (single-flight helper) --------
+# Shared with handoff-post.sh via qmd-handoff-reindex.sh. Agent ritual calls
+# finalize only; full /handoff also calls post — the helper's user lock plus a
+# short recent-completion dedupe window ensure at most one managed/raw mutation
+# (sequential finalize→post collapses; ~15m ritual still refreshes). On agent
+# boxes the helper prefers the managed user-half (no raw qmd, no --embed).
 QMD_PID=""
-if command -v qmd >/dev/null 2>&1; then
-  nohup bash -c 'qmd cleanup 2>/dev/null; qmd update 2>/dev/null && qmd embed 2>/dev/null' \
-    > /tmp/qmd-handoff.log 2>&1 &
+QMD_HELPER="$HQ_ROOT/core/scripts/qmd-handoff-reindex.sh"
+if [[ -f "$QMD_HELPER" ]]; then
+  # Helper owns lock, log truncate/cap, managed/raw routing. Detach; never block.
+  nohup bash "$QMD_HELPER" </dev/null >/dev/null 2>&1 &
   QMD_PID=$!
 fi
 

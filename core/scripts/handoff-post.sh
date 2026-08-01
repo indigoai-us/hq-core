@@ -5,7 +5,9 @@
 # that used to burn foreground-session tokens:
 #   1. Archive old threads (60d), then regen thread INDEX.md + recent.md (bash)
 #   2. Regen orchestrator INDEX.md (bash)
-#   3. Background qmd cleanup + update + embed
+#   3. Schedule single-flight qmd reindex (shared helper with finalize; the
+#      helper's lock + recent-completion dedupe make a second launch a quiet
+#      no-op when finalize already owns or just finished the flight)
 #
 # Model work is intentionally not launched from this detached shell. /learn and
 # /document-release follow-ups run from the handoff skill itself, so auth
@@ -24,7 +26,8 @@ LEARNINGS_FILE="${2:-}"
 
 LOG_DIR="${HANDOFF_LOG_DIR:-/tmp}"
 LOG_MAIN="${LOG_DIR}/handoff-post.log"
-LOG_QMD="${LOG_DIR}/qmd-handoff.log"
+# qmd log path is owned by qmd-handoff-reindex.sh (QMD_HANDOFF_LOG /
+# HANDOFF_LOG_DIR); this script must not truncate it.
 
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -111,13 +114,20 @@ elif [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]]; then
   log "workspace-sync: skipped (hq CLI unavailable)"
 fi
 
-# --- 4. qmd reindex (background, fire-and-forget) ---
-if command -v qmd >/dev/null 2>&1; then
-  nohup bash -c 'qmd cleanup 2>/dev/null; qmd update 2>/dev/null && qmd embed 2>/dev/null' \
-    > "$LOG_QMD" 2>&1 &
-  log "qmd: launched PID $!"
+# --- 4. qmd reindex (single-flight helper; fire-and-forget) ---
+# Shared with handoff-finalize.sh. Do not inline raw qmd here — on agent boxes
+# the helper routes to the managed user-half; on developer machines it takes
+# one nonblocking user lock before cleanup/update/embed. If finalize already
+# completed a flight within the helper's short dedupe window, this is a no-op.
+QMD_HELPER="$HQ_ROOT/core/scripts/qmd-handoff-reindex.sh"
+if [[ -f "$QMD_HELPER" ]]; then
+  # Propagate HANDOFF_LOG_DIR so the helper shares this post's log root;
+  # helper decides managed vs raw; only the lock winner truncates/writes/caps
+  # the log. HQ_QMD_INDEX_USER / QMD_HANDOFF_LOG inherit from the caller when set.
+  HANDOFF_LOG_DIR="$LOG_DIR" nohup bash "$QMD_HELPER" </dev/null >/dev/null 2>&1 &
+  log "qmd: scheduled single-flight helper PID $!"
 else
-  log "qmd: skipped (CLI unavailable)"
+  log "qmd: skipped (helper missing)"
 fi
 
 log "handoff-post complete"
