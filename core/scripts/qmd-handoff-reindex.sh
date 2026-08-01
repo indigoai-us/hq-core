@@ -261,25 +261,38 @@ mkdir -p "$(dirname "$LOG_PATH")" 2>/dev/null || true
 
 if [[ "$mode" == "managed" ]]; then
   # Lexical-only: do not pass --embed. Managed timer owns embed cadence.
-  if ! "$MANAGED_BIN" >>"$LOG_PATH" 2>&1; then
+  # Stamp only on true success so a failed flight does not suppress the
+  # sequential finalize→post second chance for DEDUPE_SEC.
+  managed_ok=0
+  if "$MANAGED_BIN" >>"$LOG_PATH" 2>&1; then
+    managed_ok=1
+  else
     echo "qmd-handoff-reindex: managed user-half failed (non-blocking)" >>"$LOG_PATH" 2>/dev/null || true
   fi
   echo "qmd-handoff-reindex done mode=managed" >>"$LOG_PATH" 2>/dev/null || true
-  write_completion_stamp
+  if [[ "$managed_ok" -eq 1 ]]; then
+    write_completion_stamp
+  fi
   cap_log
   exit 0
 fi
 
 # Developer fallback: one raw cleanup → update → embed pipeline.
 # Preserve original short-circuit: embed only runs when update succeeds.
+# cleanup/embed remain best-effort; update is the mutation gate for success
+# (stamp only when update exits 0 so a failed flight can be retried).
+raw_ok=0
 {
   qmd cleanup 2>/dev/null || true
   if qmd update 2>/dev/null; then
+    raw_ok=1
     qmd embed 2>/dev/null || true
   fi
   echo "qmd-handoff-reindex done mode=raw"
 } >>"$LOG_PATH" 2>&1 || true
 
-write_completion_stamp
+if [[ "$raw_ok" -eq 1 ]]; then
+  write_completion_stamp
+fi
 cap_log
 exit 0

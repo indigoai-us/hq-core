@@ -243,6 +243,84 @@ fi
 ok "raw qmd failure is non-blocking (exit 0)"
 
 # =============================================================================
+# 5b) failed flight does not stamp; immediate second call retries (M1)
+#     Dedupe must collapse successful finalize→post only — not blackout a
+#     failed first flight for DEDUPE_SEC.
+# =============================================================================
+reset_state
+set +e
+MANAGED_FAIL=1 QMD_HANDOFF_DEDUPE_SEC=90 HQ_QMD_INDEX_USER="$MANAGED" run_helper
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "managed failure should exit 0, got $rc"
+if [[ -f "$COMPLETE_STAMP" ]]; then
+  fail "failed managed flight must not write completion stamp (got $(cat "$COMPLETE_STAMP"))"
+fi
+managed_n=$(grep -c '^managed' "$MUTATION_LOG" || true)
+[[ "$managed_n" -eq 1 ]] || fail "first failed managed expected 1 invocation, got $managed_n"
+
+# Immediate second call within default dedupe window must still mutate.
+set +e
+MANAGED_FAIL=1 QMD_HANDOFF_DEDUPE_SEC=90 HQ_QMD_INDEX_USER="$MANAGED" run_helper
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "second managed failure should exit 0, got $rc"
+managed_n=$(grep -c '^managed' "$MUTATION_LOG" || true)
+[[ "$managed_n" -eq 2 ]] \
+  || fail "failed managed must allow immediate retry within dedupe window; managed=$managed_n"
+if [[ -f "$COMPLETE_STAMP" ]]; then
+  fail "second failed managed must still not stamp (got $(cat "$COMPLETE_STAMP"))"
+fi
+# Success after failures stamps and subsequent call dedupes.
+MANAGED_FAIL=0 QMD_HANDOFF_DEDUPE_SEC=90 HQ_QMD_INDEX_USER="$MANAGED" run_helper
+[[ -f "$COMPLETE_STAMP" ]] || fail "successful managed after fail should stamp"
+managed_n=$(grep -c '^managed' "$MUTATION_LOG" || true)
+[[ "$managed_n" -eq 3 ]] || fail "success after fails expected 3 managed total, got $managed_n"
+MANAGED_FAIL=0 QMD_HANDOFF_DEDUPE_SEC=90 HQ_QMD_INDEX_USER="$MANAGED" run_helper
+managed_n=$(grep -c '^managed' "$MUTATION_LOG" || true)
+[[ "$managed_n" -eq 3 ]] || fail "success stamp should dedupe next call; managed=$managed_n"
+ok "failed managed does not stamp; second call retries; success then dedupes"
+
+# Raw: update failure (embed skipped) must not stamp; immediate retry mutates.
+reset_state
+set +e
+QMD_FAIL_CMD=update QMD_FAIL_RC=7 QMD_HANDOFF_DEDUPE_SEC=90 \
+  HQ_QMD_INDEX_USER="$TMP/nope" run_helper
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "raw update failure should exit 0, got $rc"
+if [[ -f "$COMPLETE_STAMP" ]]; then
+  fail "failed raw update must not write completion stamp (got $(cat "$COMPLETE_STAMP"))"
+fi
+if grep -q '^qmd embed' "$MUTATION_LOG"; then
+  fail "embed must not run after failed update (stamp regression setup)"
+fi
+cleanup_n=$(grep -c '^qmd cleanup' "$MUTATION_LOG" || true)
+[[ "$cleanup_n" -eq 1 ]] || fail "first raw fail expected 1 cleanup, got $cleanup_n"
+
+QMD_FAIL_CMD=update QMD_FAIL_RC=7 QMD_HANDOFF_DEDUPE_SEC=90 \
+  HQ_QMD_INDEX_USER="$TMP/nope" run_helper
+cleanup_n=$(grep -c '^qmd cleanup' "$MUTATION_LOG" || true)
+update_n=$(grep -c '^qmd update' "$MUTATION_LOG" || true)
+[[ "$cleanup_n" -eq 2 && "$update_n" -eq 2 ]] \
+  || fail "failed raw update must allow immediate retry; c=$cleanup_n u=$update_n"
+if [[ -f "$COMPLETE_STAMP" ]]; then
+  fail "second failed raw update must still not stamp"
+fi
+# Successful raw after failure stamps (cleanup → update → embed).
+unset QMD_FAIL_CMD QMD_FAIL_RC
+QMD_HANDOFF_DEDUPE_SEC=90 HQ_QMD_INDEX_USER="$TMP/nope" run_helper
+[[ -f "$COMPLETE_STAMP" ]] || fail "successful raw after fail should stamp"
+cleanup_n=$(grep -c '^qmd cleanup' "$MUTATION_LOG" || true)
+embed_n=$(grep -c '^qmd embed' "$MUTATION_LOG" || true)
+[[ "$cleanup_n" -eq 3 && "$embed_n" -eq 1 ]] \
+  || fail "success raw after fails expected c=3 e=1, got c=$cleanup_n e=$embed_n"
+QMD_HANDOFF_DEDUPE_SEC=90 HQ_QMD_INDEX_USER="$TMP/nope" run_helper
+cleanup_n=$(grep -c '^qmd cleanup' "$MUTATION_LOG" || true)
+[[ "$cleanup_n" -eq 3 ]] || fail "raw success stamp should dedupe next call; c=$cleanup_n"
+ok "failed raw update does not stamp; second call retries; success then dedupes"
+
+# =============================================================================
 # 6) log behavior is bounded and deterministic (winner truncates once)
 # =============================================================================
 reset_state
