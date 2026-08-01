@@ -39,7 +39,7 @@
 
 - path: "core/scripts/tests/qmd-handoff-reindex.test.sh"
   scanners: [pii]
-  reason: "Disposable git-config identity in throwaway test fixtures uses an RFC 2606 reserved example.com address (test@example.com — never resolvable in DNS, no real mailbox); synthetic dead-PID integer 2147483646 for stale-owner reclaim is not a phone number; neither is real personal data."
+  reason: "Disposable git-config identity in throwaway test fixtures uses an RFC-reserved example.com disposable git identity (never a real mailbox); synthetic dead-PID integer 2147483646 for stale-owner reclaim is not a phone number; neither is real personal data."
 
 - path: "core/scripts/__tests__/work-mesh.test.mjs"
   scanners: [pii]
