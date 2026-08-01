@@ -478,10 +478,23 @@ if [[ $STAGE_FAILURE_COUNT -gt 0 && "$HQ_COMMIT_STATUS" != "failed" ]]; then
 fi
 COMMIT_AFTER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
-# -------- qmd reindex fire-and-forget --------
+# -------- qmd reindex fire-and-forget (agent: skip; laptop: single-flight) --------
+# Agent boxes: managed timer owns indexing — handoff never kicks qmd.
+# Laptop: qmd-reindex-bg single-flight reindex. See qmd-reindex-bg.sh.
 QMD_PID=""
-if command -v qmd >/dev/null 2>&1; then
-  nohup bash -c 'qmd cleanup 2>/dev/null; qmd update 2>/dev/null && qmd embed 2>/dev/null' \
+_QMD_BG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qmd-reindex-bg.sh"
+# Prefer PATH toolset helper on agent boxes (survives vault overwrite of core/).
+if [[ -x /usr/local/bin/hq-agent-qmd-reindex-bg ]]; then
+  _QMD_BG=/usr/local/bin/hq-agent-qmd-reindex-bg
+fi
+if [[ -x "$_QMD_BG" ]]; then
+  QMD_PID="$("$_QMD_BG" --log /tmp/qmd-handoff.log 2>/dev/null || true)"
+elif [[ -d /var/lib/hq-agent ]]; then
+  # Agent box without helper yet: still do not raw-embed.
+  QMD_PID="skipped-agent"
+elif command -v qmd >/dev/null 2>&1; then
+  # Laptop fallback if helper missing: single-flight via flock.
+  nohup bash -c 'exec 9>"${HOME:-/tmp}/.hq-agent/qmd-index.lock" 2>/dev/null || exec 9>/tmp/hq-qmd-index.lock; flock -n 9 || exit 0; nice -n 19 qmd cleanup 2>/dev/null; nice -n 19 qmd update 2>/dev/null; nice -n 19 qmd embed 2>/dev/null' \
     > /tmp/qmd-handoff.log 2>&1 &
   QMD_PID=$!
 fi
