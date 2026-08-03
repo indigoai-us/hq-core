@@ -10,6 +10,7 @@ LOCAL_SETTINGS="$ROOT/.claude/settings.local.json"
 UPDATE_SKILL="$ROOT/.claude/skills/update-hq/SKILL.md"
 SETUP="$ROOT/core/scripts/setup.sh"
 DOC="$ROOT/core/docs/hq/HOOKS-NOT-FIRING.md"
+PROMOTE_WORKFLOW="$ROOT/.github/workflows/promote-to-hq-core.yml"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
@@ -25,7 +26,19 @@ jq -e '
 ' "$SETTINGS" >/dev/null || fail "settings.json has no PreToolUse command hook"
 jq -e 'has("hooks") | not' "$LOCAL_SETTINGS" >/dev/null \
   || fail "shipped settings.local.json must not shadow project hook registrations"
+REPOSITORY="${GITHUB_REPOSITORY:-$(git config --get remote.origin.url || true)}"
+if [[ "$REPOSITORY" == *hq-core-staging* ]]; then
+  jq -e '.env.HQ_CHECKPOINT_GATE == "0"' "$LOCAL_SETTINGS" >/dev/null \
+    || fail "hq-core-staging must disable the checkpoint Stop gate locally"
+else
+  jq -e '(.env // {}) | has("HQ_CHECKPOINT_GATE") | not' "$LOCAL_SETTINGS" >/dev/null \
+    || fail "stable hq-core must not ship a checkpoint gate override"
+fi
 pass "tracked settings retain SessionStart + PreToolUse hooks without local shadowing"
+
+grep -Fq -- "--exclude='.claude/settings.local.json'" "$PROMOTE_WORKFLOW" \
+  || fail "staging-local settings must be excluded from stable hq-core promotion"
+pass "stable promotion excludes the staging-only checkpoint override"
 
 echo "[2] the staging overlay replaces project settings while retaining local overrides and native personal context"
 grep -Fqx '    - .claude' "$CORE_YAML" || fail "staging replacement no longer includes .claude"

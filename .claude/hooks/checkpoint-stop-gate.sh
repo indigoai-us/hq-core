@@ -13,31 +13,39 @@ set -uo pipefail
   . "$self_hq/core/scripts/hook-lib.sh"
 
   input="$(cat 2>/dev/null || printf '{}')"
-  input_fields="$(printf '%s' "$input" | jq -r '[.transcript_path // "", .session_id // "", .stop_hook_active // ""] | @tsv' 2>/dev/null)" || exit 0
-  IFS=$'\t' read -r transcript_path session_id stop_hook_active <<<"$input_fields" || exit 0
+  input_fields="$(printf '%s' "$input" | jq -r '[.transcript_path // "", .session_id // ""] | @tsv' 2>/dev/null)" || exit 0
+  IFS=$'\t' read -r transcript_path session_id <<<"$input_fields" || exit 0
 
   # The sibling maintains HQ after a successful checkpoint. It must never
   # recursively demand another checkpoint of itself.
   [ "${HQ_CHECKPOINT_SIBLING:-}" = "1" ] && exit 0
 
-  # Operator switches precede identity eligibility. A forced gate intentionally
-  # bypasses the cached verdict for local trials and regression tests.
+  runtime="${HQ_CHECKPOINT_RUNTIME:-claude}"
+
+  # Operator switches precede runtime and identity eligibility. A forced gate
+  # intentionally bypasses the rollout rules for local trials and tests.
   case "${HQ_CHECKPOINT_GATE:-}" in
     0) exit 0 ;;
     1) enforce=true ;;
-    *) enforce=false ;;
+    *)
+      case "$runtime" in
+        claude) enforce=true ;;
+        codex) enforce=false ;;
+        *) exit 0 ;;
+      esac
+      ;;
   esac
 
   state_dir="$(hq_hook_state_dir "$HQ")"
   [ -d "$state_dir" ] && [ -w "$state_dir" ] || exit 0
-  eligibility_file="$state_dir/checkpoint-gate-eligible"
+  eligibility_file="$state_dir/checkpoint-gate-eligible-$runtime"
 
   refresh_eligibility() {
     command -v hq >/dev/null 2>&1 || return 0
-    (nohup hq core checkpoint --gate-probe >/dev/null 2>&1 &)
+    (nohup env HQ_CHECKPOINT_RUNTIME="$runtime" hq core checkpoint --gate-probe >/dev/null 2>&1 &)
   }
 
-  if [ "$enforce" = false ]; then
+  if [ "$runtime" = "codex" ] && [ "$enforce" = false ]; then
     if [ ! -e "$eligibility_file" ]; then
       refresh_eligibility
       exit 0
@@ -73,17 +81,48 @@ set -uo pipefail
 
   session_key="$(hq_hook_safe_session_key "$session_id")"
   [ -n "$session_key" ] || exit 0
-  block_file="$state_dir/stop-gate-blocks-$session_key"
 
-  # Parse only the recent JSONL tail. Claude tool results are user entries, so
-  # a real user turn is a string content entry or an array with a text block.
-  # Keeping the raw line lets UUID-less records use the required checksum marker.
+  # Parse only the recent JSONL tail. Claude and Codex persist different row
+  # shapes, so normalize both to the same user/tool boundary before checking
+  # whether the final action was the checkpoint command.
   parsed="$(tail -n 400 "$transcript_path" 2>/dev/null | jq -Rrsc '
-    def real_user:
+    def claude_user:
       .type == "user" and (
         (.message.content? | type) == "string" or
         ((.message.content? | type) == "array" and any(.message.content[]?; .type == "text"))
       );
+    def codex_user:
+      .type == "response_item"
+      and .payload.type? == "message"
+      and .payload.role? == "user"
+      and ((.payload.content? | type) == "array")
+      and any(.payload.content[]?; .type == "input_text");
+    def real_user: claude_user or codex_user;
+    def javascript_object_cmd:
+      capture("(^|[,{}])\\s*cmd\\s*:\\s*(?<quoted>\"(?:\\\\.|[^\"\\\\])*\")")
+      | .quoted
+      | fromjson;
+    def codex_command:
+      if .name? == "exec" and ((.input? | type) == "string") then
+        try (
+          .input
+          | capture("tools\\.exec_command\\((?<args>\\{.*\\})\\);")
+          | .args
+          | try (fromjson | .cmd // "") catch javascript_object_cmd
+        ) catch ""
+      elif (.name? == "exec_command" or .name? == "Bash") then
+        if ((.input? | type) == "object") then
+          .input.cmd? // .input.command? // ""
+        elif ((.input? | type) == "string") then
+          try (.input | fromjson | .cmd? // .command? // "") catch .input
+        elif ((.arguments? | type) == "string") then
+          try (.arguments | fromjson | .cmd? // .command? // "") catch ""
+        else ""
+        end
+      else ""
+      end;
+    def checkpoint_command:
+      test("(^|[;&|(\\s])(command\\s+)?([A-Za-z_][A-Za-z0-9_]*=[^\\s]*\\s+)*hq\\s+core\\s+checkpoint(\\s|$)");
     [split("\n")[] | select(length > 0) | {line: ., entry: (fromjson)}] as $rows
     | [range(0; $rows | length) | select($rows[.].entry | real_user)] as $user_indexes
     | if ($user_indexes | length) == 0 then error("no real user entry") else
@@ -91,10 +130,29 @@ set -uo pipefail
         | [
             $rows[($user_index + 1):][]
             | .entry
-            | select(.type == "assistant")
-            | .message.content?
-            | if type == "array" then .[]? else empty end
-            | select(.type == "tool_use")
+            | if .type == "assistant" then
+                .message.content?
+                | if type == "array" then .[]? else empty end
+                | select(.type == "tool_use")
+                | {
+                    runtime: "claude",
+                    id: (.id? // ""),
+                    name: (.name? // ""),
+                    command: (.input.command? // "")
+                  }
+              elif (
+                .type == "response_item"
+                and (.payload.type? == "custom_tool_call" or .payload.type? == "function_call")
+              ) then
+                .payload
+                | {
+                    runtime: "codex",
+                    id: (.call_id? // .id? // ""),
+                    name: (.name? // ""),
+                    command: codex_command
+                  }
+              else empty
+              end
           ] as $tools
         | (if ($tools | length) > 0 then $tools[-1] else {} end) as $last_tool
         | ([
@@ -105,57 +163,47 @@ set -uo pipefail
              | if type == "array" then .[]? else empty end
              | select(.type == "tool_result" and (.tool_use_id? == $last_tool.id?))
              | (.is_error? // false)
-           ] | any(. == true)) as $last_result_error
-        | [
-            ("uuid:" + ($rows[$user_index].entry.uuid? // "")),
-            $rows[$user_index].line,
-            (if (
-              ($tools | length) > 0
-              and ($last_tool.name? == "Bash")
-              and (($last_tool.input.command? // "") | test("(^|[;&|(\\s])(command\\s+)?([A-Za-z_][A-Za-z0-9_]*=[^\\s]*\\s+)*hq\\s+core\\s+checkpoint(\\s|$)"))
-              and ($last_result_error | not)
-            ) then "1" else "0" end)
-          ] | @tsv
+          ] | any(. == true)) as $last_result_error
+        | if (
+            ($tools | length) > 0
+            and ($last_tool.command | checkpoint_command)
+          ) then
+            if $last_tool.runtime == "claude" and ($last_result_error | not) then "1"
+            elif $last_tool.runtime == "codex" then "stamp"
+            else "0"
+            end
+          else "0"
+          end
       end
   ' 2>/dev/null)" || exit 0
-  [ -n "$parsed" ] || exit 0
-
-  IFS=$'\t' read -r marker_field marker_line satisfied <<<"$parsed" || exit 0
-  case "$marker_field" in
-    uuid:*) turn_marker="${marker_field#uuid:}" ;;
+  satisfied="$parsed"
+  case "$satisfied" in
+    0|1|stamp) ;;
     *) exit 0 ;;
   esac
-  if [ -z "$turn_marker" ]; then
-    [ -n "$marker_line" ] || exit 0
-    marker_hash="$(printf '%s' "$marker_line" | cksum 2>/dev/null | awk '{print $1 "-" $2}')"
-    [ -n "$marker_hash" ] || exit 0
-    turn_marker="line-$marker_hash"
-  fi
 
-  # The state records repeated blocks of this exact turn. stop_hook_active
-  # counts as one prior block only when there is no persisted state yet.
-  prior_marker=""
-  prior_count=0
-  state_present=false
-  if [ -e "$block_file" ]; then
-    [ -r "$block_file" ] || exit 0
-    IFS=' ' read -r prior_marker prior_count <"$block_file" || exit 0
-    case "$prior_count" in
-      ''|*[!0-9]*) exit 0 ;;
-    esac
-    state_present=true
+  # Codex tool-result envelopes do not reliably expose a nested shell exit
+  # status. The CLI writes this session-scoped stamp only after a successful
+  # checkpoint, so require a fresh stamp in addition to the final command.
+  if [ "$satisfied" = "stamp" ]; then
+    satisfied=0
+    stamp_file="$state_dir/checkpoint-cli-last-$session_key"
+    if [ -r "$stamp_file" ]; then
+      stamp_epoch="$(tr -d '\r\n' <"$stamp_file" 2>/dev/null || true)"
+      now="$(date +%s 2>/dev/null || true)"
+      case "$stamp_epoch:$now" in
+        *[!0-9:]*|:*) ;;
+        *)
+          stamp_age=$((now - stamp_epoch))
+          if [ "$stamp_age" -ge 0 ] && [ "$stamp_age" -le 120 ]; then
+            satisfied=1
+          fi
+          ;;
+      esac
+    fi
   fi
-
-  current_count=0
-  if [ "$state_present" = true ] && [ "$prior_marker" = "$turn_marker" ]; then
-    current_count="$prior_count"
-  elif [ "$state_present" = false ] && [ "$stop_hook_active" = "true" ]; then
-    current_count=1
-  fi
-  [ "$current_count" -ge 2 ] && exit 0
 
   if [ "$satisfied" = "1" ]; then
-    rm -f "$block_file" 2>/dev/null || true
     exit 0
   fi
 
@@ -164,7 +212,6 @@ set -uo pipefail
   reason_suffix_2=' --idle` if the turn changed nothing. Then end the turn immediately after the command.'
   reason="${reason_prefix}${session_id}${reason_suffix}${session_id}${reason_suffix_2}"
   printf '{"decision":"block","reason":%s}\n' "$(printf '%s' "$reason" | hq_json_encode)"
-  printf '%s %s\n' "$turn_marker" "$((current_count + 1))" >"$block_file" 2>/dev/null || true
 } 2>/dev/null || true
 
 exit 0

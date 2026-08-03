@@ -32,7 +32,8 @@ name: Promote to hq-core
 #
 # Tree sync: rsync from this repo into a fresh hq-core clone, excluding
 # staging-local trees (companies/, personal/, repos/, workspace/, .obsidian/,
-# .git/). The .github/ and .leak-scan/ directories ARE promoted — hq-core
+# .git/) plus `.claude/settings.local.json`, whose staging-only environment
+# overrides must never enter a stable release. The .github/ and .leak-scan/ directories ARE promoted — hq-core
 # uses both. PII filtering (public: frontmatter, ## Provenance stripping) is
 # NOT performed here; hq-core's pr-checks.yml is the gate that catches leaks.
 #
@@ -238,6 +239,7 @@ jobs:
           # Excludes: staging-local trees that never belong in the public kit.
           rsync -a --delete \
             --exclude='.git/' \
+            --exclude='.claude/settings.local.json' \
             staging/ target/
 
       - name: Detect promotable changes (auto mode)

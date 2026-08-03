@@ -11,6 +11,45 @@ set -euo pipefail
 INPUT="$(cat)"
 TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')"
 
+scope_mask_literal_expansions() {
+  local raw="${1:-}" out="" ch backtick
+  local in_single=0 escaped=0 i
+  backtick=$'\140'
+
+  for ((i = 0; i < ${#raw}; i++)); do
+    ch="${raw:i:1}"
+    if [ "$escaped" -eq 1 ]; then
+      case "$ch" in
+        '$'|"$backtick") out+="__HQ_LITERAL_EXPANSION__" ;;
+        *) out+="$ch" ;;
+      esac
+      escaped=0
+      continue
+    fi
+
+    if [ "$in_single" -eq 1 ]; then
+      if [ "$ch" = "'" ]; then
+        in_single=0
+        out+="$ch"
+      else
+        case "$ch" in
+          '$'|"$backtick") out+="__HQ_LITERAL_EXPANSION__" ;;
+          *) out+="$ch" ;;
+        esac
+      fi
+      continue
+    fi
+
+    case "$ch" in
+      \\) out+="$ch"; escaped=1 ;;
+      \') out+="$ch"; in_single=1 ;;
+      *) out+="$ch" ;;
+    esac
+  done
+
+  printf '%s' "$out"
+}
+
 case "$TOOL" in
   Read|Grep|Glob|Bash) ;;
   *) exit 0 ;;
@@ -226,15 +265,19 @@ case "$TOOL" in
   Bash)
     cmd="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
     [ -n "$cmd" ] || exit 0
-    if printf '%s' "$cmd" | grep -q 'companies/'; then
-      if printf '%s' "$cmd" | grep -q '\$'; then
-        scope_block_rel "companies/(shell-expanded)"
-      fi
+    # Bash removes an unquoted backslash-newline before tokenizing, so scan the
+    # same normalized form before deciding whether a company path is dynamic.
+    scope_cmd="${cmd//$'\\\n'/}"
+    scope_detection_cmd="$(scope_mask_literal_expansions "$scope_cmd")"
+    # Reject expansions anywhere in a company-path token. Expansions in other
+    # command tokens remain safe to validate normally.
+    if printf '%s' "$scope_detection_cmd" | grep -qE 'companies/[^[:space:];|&()<>]*[$`]'; then
+      scope_block_rel "companies/(shell-expanded)"
     fi
     while IFS= read -r fragment; do
       [ -n "$fragment" ] || continue
-      scope_check_rel "$fragment"
-    done < <(printf '%s' "$cmd" | grep -oE 'companies/[a-z0-9_-]+(/[a-zA-Z0-9._@+/-]*)?' 2>/dev/null || true)
+      scope_check_raw "$fragment"
+    done < <(printf '%s' "$scope_cmd" | grep -oE 'companies/[a-z0-9_-]+(/[a-zA-Z0-9._@+/-]*)?' 2>/dev/null || true)
     ;;
 esac
 
