@@ -6,6 +6,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HOOK="$ROOT/.claude/hooks/checkpoint-stop-gate.sh"
+ADAPTER="$ROOT/.codex/hooks/hq-codex-hook-adapter.sh"
 BASH_BIN="$(command -v bash)"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -28,23 +29,43 @@ assert_block() {
 }
 
 [ -x "$HOOK" ] || fail "checkpoint Stop hook is not executable: $HOOK"
+[ -x "$ADAPTER" ] || fail "Codex hook adapter is not executable: $ADAPTER"
 
 FIXTURE="$TMP_ROOT/hq"
 STATE_DIR="$FIXTURE/workspace/orchestrator/hook-state"
 SHIM_DIR="$TMP_ROOT/shim-bin"
 NO_HQ_DIR="$TMP_ROOT/no-hq-bin"
 SHIM_LOG="$TMP_ROOT/hq-shim.log"
-mkdir -p "$FIXTURE/.claude/hooks" "$FIXTURE/core/scripts" "$STATE_DIR" "$SHIM_DIR" "$NO_HQ_DIR"
+mkdir -p "$FIXTURE/.claude/hooks" "$FIXTURE/.codex/hooks" "$FIXTURE/core/scripts" "$STATE_DIR" "$SHIM_DIR" "$NO_HQ_DIR"
 cp "$ROOT/core/scripts/hook-lib.sh" "$FIXTURE/core/scripts/hook-lib.sh"
 cp "$HOOK" "$FIXTURE/.claude/hooks/checkpoint-stop-gate.sh"
-chmod +x "$FIXTURE/.claude/hooks/checkpoint-stop-gate.sh"
+cp "$ROOT/.claude/hooks/hook-gate.sh" "$FIXTURE/.claude/hooks/hook-gate.sh"
+cp "$ADAPTER" "$FIXTURE/.codex/hooks/hq-codex-hook-adapter.sh"
+chmod +x \
+  "$FIXTURE/.claude/hooks/checkpoint-stop-gate.sh" \
+  "$FIXTURE/.claude/hooks/hook-gate.sh" \
+  "$FIXTURE/.codex/hooks/hq-codex-hook-adapter.sh"
+
+# Keep this integration fixture focused on Stop-decision propagation. The
+# neighboring advisory Stop hooks are inert but present so the public adapter
+# entrypoint runs exactly as it does in Codex.
+for hook_name in \
+  observe-patterns \
+  cleanup-mcp-processes \
+  context-warning-50 \
+  capture-estimates \
+  enforce-capability-link-render; do
+  printf '#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n' >"$FIXTURE/.claude/hooks/$hook_name.sh"
+  chmod +x "$FIXTURE/.claude/hooks/$hook_name.sh"
+done
 
 cat >"$SHIM_DIR/hq" <<'SHIM'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$HQ_SHIM_LOG"
 if [ "${1:-}" = "core" ] && [ "${2:-}" = "checkpoint" ] && [ "${3:-}" = "--gate-probe" ]; then
   mkdir -p "$HQ_SHIM_ROOT/workspace/orchestrator/hook-state"
-  printf '%s' "${HQ_SHIM_VERDICT:-1}" >"$HQ_SHIM_ROOT/workspace/orchestrator/hook-state/checkpoint-gate-eligible"
+  runtime="${HQ_CHECKPOINT_RUNTIME:-other}"
+  printf '%s' "${HQ_SHIM_VERDICT:-1}" >"$HQ_SHIM_ROOT/workspace/orchestrator/hook-state/checkpoint-gate-eligible-$runtime"
 fi
 SHIM
 chmod +x "$SHIM_DIR/hq"
@@ -80,6 +101,67 @@ append_result() {
     "$id" "$is_error" >>"$transcript"
 }
 
+append_codex_user() {
+  local transcript="$1"
+  jq -nc '{
+    timestamp: "2026-08-02T00:00:00Z",
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "user",
+      content: [{type: "input_text", text: "prompt"}]
+    }
+  }' >>"$transcript"
+}
+
+append_codex_tool() {
+  local transcript="$1"
+  local id="$2"
+  local command="$3"
+  jq -nc --arg id "$id" --arg command "$command" '{
+    timestamp: "2026-08-02T00:00:01Z",
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call",
+      call_id: $id,
+      name: "exec",
+      status: "completed",
+      input: ("const r = await tools.exec_command(" + ({cmd: $command} | tojson) + "); text(r.output);")
+    }
+  }' >>"$transcript"
+}
+
+append_codex_js_object_tool() {
+  local transcript="$1"
+  local id="$2"
+  local command="$3"
+  jq -nc --arg id "$id" --arg command "$command" '{
+    timestamp: "2026-08-02T00:00:01Z",
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call",
+      call_id: $id,
+      name: "exec",
+      status: "completed",
+      input: ("const r = await tools.exec_command({cmd:" + ($command | tojson) + ",workdir:\"/tmp\"}); text(r.output);")
+    }
+  }' >>"$transcript"
+}
+
+append_codex_result() {
+  local transcript="$1"
+  local id="$2"
+  jq -nc --arg id "$id" '{
+    timestamp: "2026-08-02T00:00:02Z",
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call_output",
+      call_id: $id,
+      output: [{type: "input_text", text: "Script completed"}]
+    }
+  }' >>"$transcript"
+}
+
 new_transcript() {
   local label="$1"
   TRANSCRIPT="$TMP_ROOT/$label.jsonl"
@@ -88,17 +170,19 @@ new_transcript() {
 
 set_verdict() {
   local verdict="$1"
-  printf '%s' "$verdict" >"$STATE_DIR/checkpoint-gate-eligible"
+  local runtime="${2:-codex}"
+  printf '%s' "$verdict" >"$STATE_DIR/checkpoint-gate-eligible-$runtime"
 }
 
 clear_verdict() {
-  rm -f "$STATE_DIR/checkpoint-gate-eligible"
+  rm -f "$STATE_DIR"/checkpoint-gate-eligible-*
 }
 
 reset_case() {
-  rm -f "$STATE_DIR"/stop-gate-blocks-* "$SHIM_LOG"
+  rm -f "$STATE_DIR"/stop-gate-blocks-* "$STATE_DIR"/checkpoint-cli-last* "$SHIM_LOG"
   RUN_PATH="$SHIM_DIR:$PATH"
   RUN_GATE=""
+  RUN_RUNTIME=""
   RUN_SIBLING=""
 }
 
@@ -115,11 +199,30 @@ run_hook() {
     "HQ_SHIM_ROOT=$FIXTURE" \
     "HQ_SHIM_VERDICT=1" \
     "HQ_CHECKPOINT_GATE=$RUN_GATE" \
+    "HQ_CHECKPOINT_RUNTIME=$RUN_RUNTIME" \
     "HQ_CHECKPOINT_SIBLING=$RUN_SIBLING" \
     "PATH=$RUN_PATH" \
     "$BASH_BIN" "$FIXTURE/.claude/hooks/checkpoint-stop-gate.sh" <<<"$payload" 2>"$stderr_path")"
   HOOK_STATUS=$?
   HOOK_STDERR="$(cat "$stderr_path")"
+}
+
+run_codex_stop() {
+  local session="$1"
+  local transcript="$2"
+  local stderr_path="$TMP_ROOT/codex-hook.stderr"
+  local payload
+  payload="$(printf '{"hook_event_name":"Stop","session_id":"%s","transcript_path":"%s","stop_hook_active":false,"cwd":"%s"}' "$session" "$transcript" "$FIXTURE")"
+  CODEX_STDERR=""
+  CODEX_STDOUT="$(env \
+    "HQ_ROOT=$FIXTURE" \
+    "HQ_SHIM_LOG=$SHIM_LOG" \
+    "HQ_SHIM_ROOT=$FIXTURE" \
+    "HQ_SHIM_VERDICT=1" \
+    "PATH=$SHIM_DIR:$PATH" \
+    "$BASH_BIN" "$FIXTURE/.codex/hooks/hq-codex-hook-adapter.sh" <<<"$payload" 2>"$stderr_path")"
+  CODEX_STATUS=$?
+  CODEX_STDERR="$(cat "$stderr_path")"
 }
 
 wait_for_probe() {
@@ -198,19 +301,31 @@ run_hook s-env-prefix "$TRANSCRIPT"
 assert_allow "environment-prefixed checkpoint"
 pass "environment-prefixed checkpoint allows"
 
-# 6. Ineligible identities are completely unaffected.
+# 6. Claude Code enforces regardless of identity eligibility.
 reset_case
 set_verdict 0
 new_transcript 6-ineligible
 append_user "$TRANSCRIPT" u-ineligible
 append_tool "$TRANSCRIPT" tu-6 Bash 'git status'
 run_hook s-ineligible "$TRANSCRIPT"
-assert_allow "ineligible verdict"
-pass "verdict 0 allows"
+assert_block "$HOOK_STDOUT" s-ineligible "Claude identity-independent enforcement"
+pass "Claude Code ignores identity eligibility"
+
+# 6b. Unknown runtimes are completely unaffected.
+reset_case
+set_verdict 1
+RUN_RUNTIME=grok
+new_transcript 6b-other-runtime
+append_user "$TRANSCRIPT" u-other-runtime
+append_tool "$TRANSCRIPT" tu-6b Bash 'git status'
+run_hook s-other-runtime "$TRANSCRIPT"
+assert_allow "unknown runtime"
+pass "unknown runtime allows"
 
 # 7. A missing verdict allows now and refreshes in the background.
 reset_case
 clear_verdict
+RUN_RUNTIME=codex
 new_transcript 7-refresh
 append_user "$TRANSCRIPT" u-refresh
 append_tool "$TRANSCRIPT" tu-7 Bash 'git status'
@@ -231,19 +346,23 @@ assert_allow "missing hq"
 assert_empty "$HOOK_STDERR" "missing hq"
 pass "missing hq allows quietly"
 
-# 9. Two blocks per turn are enough; the third Stop invocation gives up.
+# 9. An unsatisfied turn remains blocked until a checkpoint succeeds.
 reset_case
 set_verdict 1
 new_transcript 9-loop-cap
 append_user "$TRANSCRIPT" u-loop-cap
 append_tool "$TRANSCRIPT" tu-9 Bash 'git status'
 run_hook s-loop-cap "$TRANSCRIPT"
-assert_block "$HOOK_STDOUT" s-loop-cap "loop cap first block"
+assert_block "$HOOK_STDOUT" s-loop-cap "persistent gate first block"
 run_hook s-loop-cap "$TRANSCRIPT"
-assert_block "$HOOK_STDOUT" s-loop-cap "loop cap second block"
+assert_block "$HOOK_STDOUT" s-loop-cap "persistent gate second block"
 run_hook s-loop-cap "$TRANSCRIPT"
-assert_allow "loop cap third invocation"
-pass "loop cap allows the third evaluation"
+assert_block "$HOOK_STDOUT" s-loop-cap "persistent gate third block"
+append_tool "$TRANSCRIPT" tu-9-checkpoint Bash 'hq core checkpoint --idle'
+append_result "$TRANSCRIPT" tu-9-checkpoint false
+run_hook s-loop-cap "$TRANSCRIPT"
+assert_allow "persistent gate after checkpoint"
+pass "unsatisfied turn stays blocked until checkpoint succeeds"
 
 # 10. The checkpoint sibling must never recursively gate itself.
 reset_case
@@ -279,7 +398,8 @@ pass "HQ_CHECKPOINT_GATE=1 enforces without verdict"
 # 13. A stale positive verdict still enforces and asks the shim to refresh.
 reset_case
 set_verdict 1
-touch -d '25 hours ago' "$STATE_DIR/checkpoint-gate-eligible"
+RUN_RUNTIME=codex
+touch -d '25 hours ago' "$STATE_DIR/checkpoint-gate-eligible-codex"
 new_transcript 13-stale
 append_user "$TRANSCRIPT" u-stale
 append_tool "$TRANSCRIPT" tu-13 Bash 'git status'
@@ -316,5 +436,101 @@ for profile in standard strict; do
 done
 [ -x "$HOOK" ] || fail "checkpoint Stop hook is not executable"
 pass "registration and profile membership are present"
+
+# 17. An ineligible Codex identity is unaffected through the adapter.
+reset_case
+set_verdict 0
+new_transcript 17-codex-ineligible
+append_codex_user "$TRANSCRIPT"
+append_codex_tool "$TRANSCRIPT" tu-17-ineligible 'git status'
+append_codex_result "$TRANSCRIPT" tu-17-ineligible
+run_codex_stop s-codex-ineligible "$TRANSCRIPT"
+[ "$CODEX_STATUS" -eq 0 ] || fail "Codex ineligible identity: adapter exited $CODEX_STATUS: $CODEX_STDERR"
+assert_empty "$CODEX_STDOUT" "Codex ineligible identity"
+pass "Codex ineligible identity allows through the adapter"
+
+# 18. Codex must receive a real Stop continuation, not a system-message wrapper.
+reset_case
+set_verdict 1
+new_transcript 17-codex-missing
+append_codex_user "$TRANSCRIPT"
+append_codex_tool "$TRANSCRIPT" tu-17 'git status'
+append_codex_result "$TRANSCRIPT" tu-17
+run_codex_stop s-codex-missing "$TRANSCRIPT"
+[ "$CODEX_STATUS" -eq 0 ] || fail "Codex missing checkpoint: adapter exited $CODEX_STATUS: $CODEX_STDERR"
+printf '%s' "$CODEX_STDOUT" | jq -e --arg session s-codex-missing '
+  .decision == "block"
+  and ((.reason | type) == "string")
+  and (.reason | contains($session))
+' >/dev/null || fail "Codex missing checkpoint: expected one block decision, got: $CODEX_STDOUT"
+pass "Codex missing checkpoint blocks through the adapter"
+
+# 19. The adapter must not invent a continuation after a final checkpoint.
+reset_case
+set_verdict 1
+new_transcript 18-codex-checkpointed
+append_codex_user "$TRANSCRIPT"
+append_codex_tool "$TRANSCRIPT" tu-18 'hq core checkpoint --session-id s-codex-checkpointed --idle'
+append_codex_result "$TRANSCRIPT" tu-18
+printf '%s' "$(date +%s)" >"$STATE_DIR/checkpoint-cli-last-s-codex-checkpointed"
+run_codex_stop s-codex-checkpointed "$TRANSCRIPT"
+[ "$CODEX_STATUS" -eq 0 ] || fail "Codex final checkpoint: adapter exited $CODEX_STATUS: $CODEX_STDERR"
+assert_empty "$CODEX_STDOUT" "Codex final checkpoint"
+pass "Codex final checkpoint allows through the adapter"
+
+# 20. A checkpoint-looking Codex tool call without the CLI success stamp fails.
+reset_case
+set_verdict 1
+new_transcript 19-codex-unstamped
+append_codex_user "$TRANSCRIPT"
+append_codex_tool "$TRANSCRIPT" tu-19 'hq core checkpoint --session-id s-codex-unstamped --idle'
+append_codex_result "$TRANSCRIPT" tu-19
+run_codex_stop s-codex-unstamped "$TRANSCRIPT"
+[ "$CODEX_STATUS" -eq 0 ] || fail "Codex unstamped checkpoint: adapter exited $CODEX_STATUS: $CODEX_STDERR"
+printf '%s' "$CODEX_STDOUT" | jq -e --arg session s-codex-unstamped '
+  .decision == "block" and (.reason | contains($session))
+' >/dev/null || fail "Codex unstamped checkpoint: expected block decision, got: $CODEX_STDOUT"
+pass "Codex checkpoint requires a fresh CLI success stamp"
+
+# 21. Codex Q&A turns are real user turns and require the explicit idle stamp.
+reset_case
+set_verdict 1
+new_transcript 20-codex-no-tools
+append_codex_user "$TRANSCRIPT"
+run_codex_stop s-codex-no-tools "$TRANSCRIPT"
+[ "$CODEX_STATUS" -eq 0 ] || fail "Codex tool-free turn: adapter exited $CODEX_STATUS: $CODEX_STDERR"
+printf '%s' "$CODEX_STDOUT" | jq -e --arg session s-codex-no-tools '
+  .decision == "block" and (.reason | contains($session))
+' >/dev/null || fail "Codex tool-free turn: expected block decision, got: $CODEX_STDOUT"
+pass "Codex tool-free turn blocks through the adapter"
+
+# 22. An old stamp from an earlier turn cannot satisfy a new Codex checkpoint.
+reset_case
+set_verdict 1
+new_transcript 21-codex-stale-stamp
+append_codex_user "$TRANSCRIPT"
+append_codex_tool "$TRANSCRIPT" tu-21 'hq core checkpoint --session-id s-codex-stale --idle'
+append_codex_result "$TRANSCRIPT" tu-21
+printf '%s' "$(($(date +%s) - 121))" >"$STATE_DIR/checkpoint-cli-last-s-codex-stale"
+run_codex_stop s-codex-stale "$TRANSCRIPT"
+[ "$CODEX_STATUS" -eq 0 ] || fail "Codex stale stamp: adapter exited $CODEX_STATUS: $CODEX_STDERR"
+printf '%s' "$CODEX_STDOUT" | jq -e --arg session s-codex-stale '
+  .decision == "block" and (.reason | contains($session))
+' >/dev/null || fail "Codex stale stamp: expected block decision, got: $CODEX_STDOUT"
+pass "Codex checkpoint rejects a stale CLI success stamp"
+
+# 23. Codex exec wrappers may use JavaScript object literals, not strict JSON.
+reset_case
+set_verdict 1
+new_transcript 22-codex-js-object
+append_codex_user "$TRANSCRIPT"
+append_codex_js_object_tool "$TRANSCRIPT" tu-22 \
+  'hq core checkpoint --session-id s-codex-js-object --idle'
+append_codex_result "$TRANSCRIPT" tu-22
+printf '%s' "$(date +%s)" >"$STATE_DIR/checkpoint-cli-last-s-codex-js-object"
+run_codex_stop s-codex-js-object "$TRANSCRIPT"
+[ "$CODEX_STATUS" -eq 0 ] || fail "Codex JavaScript object checkpoint: adapter exited $CODEX_STATUS: $CODEX_STDERR"
+assert_empty "$CODEX_STDOUT" "Codex JavaScript object checkpoint"
+pass "Codex JavaScript object-literal exec wrapper allows through the adapter"
 
 echo "checkpoint Stop gate: ok"

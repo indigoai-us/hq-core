@@ -70,7 +70,8 @@ GATE="$HOOK_DIR/hook-gate.sh"
 # Load diagnostics before checking the gate so a damaged HQ install is visible.
 if [ -n "$HQ_ROOT" ]; then
   CLAUDE_PROJECT_DIR="$HQ_ROOT"
-  export HQ_ROOT CLAUDE_PROJECT_DIR
+  HQ_CHECKPOINT_RUNTIME=codex
+  export HQ_ROOT CLAUDE_PROJECT_DIR HQ_CHECKPOINT_RUNTIME
   . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
 fi
 
@@ -89,10 +90,21 @@ fi
 STDOUT_ACCUM=""
 STDOUT_CHUNKS=()
 DIAG_ACCUM=""
+STOP_BLOCK_REASON=""
 
 append_stdout() {
   local text="$1"
   [ -z "$text" ] && return 0
+  if [ "$HOOK_EVENT" = "Stop" ]; then
+    local block_reason
+    block_reason="$(printf '%s' "$text" | jq -r '
+      if .decision == "block" and ((.reason? | type) == "string")
+      then .reason
+      else empty
+      end
+    ' 2>/dev/null || true)"
+    [ -n "$block_reason" ] && STOP_BLOCK_REASON="$block_reason"
+  fi
   STDOUT_CHUNKS+=("$text")
   if [ -z "$STDOUT_ACCUM" ]; then
     STDOUT_ACCUM="$text"
@@ -377,6 +389,14 @@ block_sensitive_read_if_needed() {
 emit_context() {
   [ -z "$STDOUT_ACCUM" ] && return 0
 
+  # Stop decisions are control flow, not display context. Codex requires one
+  # top-level JSON document; wrapping the gate's decision in `systemMessage`
+  # would show the instruction but still let the turn end.
+  if [ "$HOOK_EVENT" = "Stop" ] && [ -n "$STOP_BLOCK_REASON" ]; then
+    jq -n --arg reason "$STOP_BLOCK_REASON" '{decision: "block", reason: $reason}'
+    return 0
+  fi
+
   local ctx
   ctx="$(context_text)"
   [ -z "$ctx" ] && return 0
@@ -513,6 +533,9 @@ case "$HOOK_EVENT" in
     run_hook "observe-patterns" "$HOOK_DIR/observe-patterns.sh" "$INPUT" "advisory"
     run_hook "cleanup-mcp-processes" "$HOOK_DIR/cleanup-mcp-processes.sh" "$INPUT" "advisory"
     run_hook "context-warning-50" "$HOOK_DIR/context-warning-50.sh" "$INPUT" "advisory"
+    # The gate itself is deliberately fail-open, so launch failures remain
+    # advisory while a valid decision:block is preserved by emit_context.
+    run_hook "checkpoint-stop-gate" "$HOOK_DIR/checkpoint-stop-gate.sh" "$INPUT" "advisory"
     run_hook "capture-estimates" "$HOOK_DIR/capture-estimates.sh" "$INPUT" "advisory"
     run_hook "enforce-capability-link-render" "$HOOK_DIR/enforce-capability-link-render.sh" "$INPUT" "advisory"
     ;;
