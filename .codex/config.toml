@@ -18,7 +18,7 @@ network_access = true
 hooks = true
 
 [[hooks.SessionStart]]
-matcher = "startup|resume|clear"
+matcher = "startup|resume|clear|compact"
 
 [[hooks.SessionStart.hooks]]
 type = "command"
