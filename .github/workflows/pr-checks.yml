@@ -420,6 +420,8 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-commit-status.test.sh
       - name: Handoff finalizer smoke
         run: bash core/scripts/tests/handoff-finalize-smoke.sh
+      - name: Handoff qmd reindex ownership (agent skip + laptop single-flight)
+        run: bash core/scripts/tests/qmd-handoff-reindex.test.sh
       - name: Handoff finalizer accepts a large file-backed changeset
         run: bash core/scripts/tests/handoff-finalize-large-changeset.test.sh
 

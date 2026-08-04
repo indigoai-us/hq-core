@@ -5,7 +5,7 @@
 # that used to burn foreground-session tokens:
 #   1. Archive old threads (60d), then regen thread INDEX.md + recent.md (bash)
 #   2. Regen orchestrator INDEX.md (bash)
-#   3. Background qmd cleanup + update + embed
+#   3. qmd reindex via qmd-reindex-bg.sh (single-flight; agent boxes skip)
 #
 # Model work is intentionally not launched from this detached shell. /learn and
 # /document-release follow-ups run from the handoff skill itself, so auth
@@ -111,13 +111,23 @@ elif [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]]; then
   log "workspace-sync: skipped (hq CLI unavailable)"
 fi
 
-# --- 4. qmd reindex (background, fire-and-forget) ---
-if command -v qmd >/dev/null 2>&1; then
-  nohup bash -c 'qmd cleanup 2>/dev/null; qmd update 2>/dev/null && qmd embed 2>/dev/null' \
-    > "$LOG_QMD" 2>&1 &
-  log "qmd: launched PID $!"
+# --- 4. qmd reindex (agent: skip; laptop: single-flight) ---
+# handoff-finalize may already have run the helper; agent boxes no-op
+# (skipped-agent). Never dual-nohup raw cleanup+update+embed on agents.
+# Never invoke managed index wrappers — handoff owns no agent freshness.
+# Prefer Core US-001 helper; fleet binary only if Core file is missing.
+_QMD_BG="$HQ_ROOT/core/scripts/qmd-reindex-bg.sh"
+if [[ ! -f "$_QMD_BG" ]] && [[ -x /usr/local/bin/hq-agent-qmd-reindex-bg ]]; then
+  _QMD_BG=/usr/local/bin/hq-agent-qmd-reindex-bg
+fi
+if [[ -x "$_QMD_BG" ]] || [[ -f "$_QMD_BG" ]]; then
+  _qmd_out="$(bash "$_QMD_BG" --log "$LOG_QMD" 2>/dev/null || true)"
+  # Empty stdout is busy/dedupe quiet — never claim "ok".
+  log "qmd: reindex-bg → ${_qmd_out:-busy-or-quiet}"
+elif [[ -d /var/lib/hq-agent ]]; then
+  log "qmd: skipped-agent (no helper; indexer owns freshness)"
 else
-  log "qmd: skipped (CLI unavailable)"
+  log "qmd: skipped (helper missing)"
 fi
 
 log "handoff-post complete"
