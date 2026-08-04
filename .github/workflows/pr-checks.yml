@@ -618,6 +618,10 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
       - name: block-core-writes permits only the durable native personal context
         run: bash core/scripts/tests/block-core-writes-native-context.test.sh
+      - name: enforce-vault-write-access blocks mutations without vault write permission
+        run: bash core/scripts/tests/enforce-vault-write-access.test.sh
+      - name: refresh-vault-access builds the manifest the write-access hook consumes
+        run: bash core/scripts/tests/refresh-vault-access.test.sh
 
   # US-005: shell portability lint + shellcheck + cross-platform smoke.
   shell-portability:
