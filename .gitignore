@@ -86,6 +86,10 @@ workspace/threads/.handoff-tmp/
 # Journal entries (personal)
 data/journal/*.jsonl
 
+# Per-machine HQ state (CLI pins, vault-access manifest for the write-access
+# hook). Machine-local by design — never committed, never synced by git.
+.hq/
+
 # Synced modules (cloned repos)
 modules/.synced/
 !.claude/settings.local.json

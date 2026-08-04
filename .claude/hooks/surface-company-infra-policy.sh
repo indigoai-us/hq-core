@@ -44,14 +44,22 @@ printf '%s' "$CMD" | grep -Eq "$INFRA_RE" || exit 0
 
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 
-# Resolve the bound company from the current session's meta.yaml — same path
-# resolution hq-session.sh / inject-policy-on-trigger.sh use.
+# Resolve the bound company from THIS session's meta.yaml. The payload
+# session_id is authoritative — it names the session that fired this event.
+# workspace/sessions/.current is only a fallback (via the shared resolver, which
+# tries the session environment first): it is one global pointer rewritten by
+# every hook event, so with concurrent sessions it can name a different session
+# and surface the wrong company's policies into this one.
 CO=""
-CURRENT_FILE="$HQ_ROOT/workspace/sessions/.current"
-if [ -f "$CURRENT_FILE" ]; then
-  SID="$(tr -d '[:space:]' < "$CURRENT_FILE" 2>/dev/null || true)"
+SID="$(extract session_id)"
+if [ -z "$SID" ]; then
+  # shellcheck source=../../core/scripts/lib/session-id.sh
+  . "$HQ_ROOT/core/scripts/lib/session-id.sh"
+  SID="$(session_id_resolve "$HQ_ROOT")"
+fi
+if [ -n "$SID" ]; then
   META="$HQ_ROOT/workspace/sessions/$SID/meta.yaml"
-  if [ -n "$SID" ] && [ -f "$META" ]; then
+  if [ -f "$META" ]; then
     CO="$(sed -nE 's/^company_slug:[[:space:]]*"?([A-Za-z0-9_-]+)"?[[:space:]]*$/\1/p' "$META" | head -1)"
   fi
 fi

@@ -221,6 +221,22 @@ echo "POLICY"
 exit 0
 SH
 
+# enforce-vault-write-access is dispatched blocking on BOTH the Bash branch
+# (whole command) and the per-path edit branch, so it logs whichever of the two
+# payload shapes it received.
+cat > "$TMP/.claude/hooks/enforce-vault-write-access.sh" <<'SH'
+#!/bin/bash
+input="$(cat)"
+tool="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
+path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
+if [ -n "$path" ]; then
+  echo "enforce-vault-write-access:$path" >> "$TEST_LOG"
+else
+  echo "enforce-vault-write-access:$tool" >> "$TEST_LOG"
+fi
+exit 0
+SH
+
 # PreToolUse Edit/Write parity (blocking, except inject-policy-on-trigger which is advisory)
 for name in block-inline-story-impl env-file-no-trailing-newline \
             block-plans-dir-during-deep-plan; do
@@ -331,6 +347,7 @@ assert_contains "$(cat "$TEST_LOG")" "block-core-writes-bash"
 assert_contains "$(cat "$TEST_LOG")" "block-hq-root-git-mutation"
 assert_contains "$(cat "$TEST_LOG")" "block-unsafe-package-install"
 assert_contains "$(cat "$TEST_LOG")" "mandatory-scope-authorizer:Bash"
+assert_contains "$(cat "$TEST_LOG")" "enforce-vault-write-access:Bash"
 
 payload_read_scope='{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/otherco/settings/x.yaml"}}'
 if err="$(run_adapter "$payload_read_scope" 2>&1 >/dev/null)"; then
@@ -424,7 +441,7 @@ run_adapter "$payload_patch_edit" >/dev/null
 log="$(cat "$TEST_LOG")"
 for hk in block-inline-story-impl env-file-no-trailing-newline \
           block-plans-dir-during-deep-plan route-company-skill-creation \
-          inject-policy-on-trigger; do
+          inject-policy-on-trigger enforce-vault-write-access; do
   assert_contains "$log" "$hk"
 done
 

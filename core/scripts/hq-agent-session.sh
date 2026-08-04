@@ -650,7 +650,10 @@ main() {
   if [ -f "$meta_file" ] && ! grep -q '^company:' "$meta_file"; then
     printf 'company: %s\n' "$company_slug" >> "$meta_file"
   fi
-  session_verify_company "$root" "$company_slug" >/dev/null
+  # Pin the verify to this run: hq-session.sh resolves "current session" from the
+  # process environment, which names the parent when an agent session is spawned
+  # from inside another session.
+  session_verify_company "$root" "$company_slug" "$run_id" >/dev/null
 
   # ── hooks ─────────────────────────────────────────────────────────────────
   session_timing_begin hooks

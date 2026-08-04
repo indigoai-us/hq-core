@@ -23,6 +23,7 @@ install_fixture() {
   cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.claude/hooks/"
   cp "$ROOT/core/scripts/lib/session-authz.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"
+  cp "$ROOT/core/scripts/lib/session-id.sh" "$TMP/core/scripts/lib/"
   chmod +x "$TMP/.claude/hooks/mandatory-scope-authorizer.sh"
 
   printf 'companies:\n  indigo:\n    name: Indigo\n  otherco:\n    name: otherco\n' \
@@ -156,5 +157,39 @@ ln -sfn "$TMP/companies/otherco/settings/foo.yaml" "$TMP/companies/indigo/settin
 payload='{"tool_name":"Read","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/otherco-link.yaml"}}'
 rc="$(run_hook "$payload")"
 [ "$rc" = "2" ] || fail "expected exit 2 for symlink into other company, got $rc"
+
+echo "[15] binding the session that actually fired the hook unblocks it"
+# End-to-end guard against the wrong-session bind: workspace/sessions/.current
+# names a DIFFERENT session (sess-bound, e.g. one that fired a hook more
+# recently), while the tool call under test comes from sess-live. Running
+# `hq-session.sh set company_slug` from sess-live's process must bind sess-live
+# — under the old .current-based resolution it bound sess-bound instead,
+# reported success, and sess-live stayed blocked forever.
+install_fixture ""
+cp "$ROOT/core/scripts/hq-session.sh" "$TMP/core/scripts/"
+chmod +x "$TMP/core/scripts/hq-session.sh"
+
+read_payload='{"tool_name":"Read","session_id":"sess-live","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml"}}'
+rc="$(run_hook "$read_payload")"
+[ "$rc" = "2" ] || fail "expected exit 2 before binding sess-live, got $rc"
+grep -q "Session: sess-live" "$TMP/err.txt" || fail "block message must name the blocked session"
+
+env -u HQ_SESSION_ID -u CLAUDE_SESSION_ID -u CODEX_SESSION_ID -u CODEX_THREAD_ID \
+  CLAUDE_CODE_SESSION_ID=sess-live \
+  bash "$TMP/core/scripts/hq-session.sh" set company_slug indigo >/dev/null
+
+[ -f "$TMP/workspace/sessions/sess-live/scope-capability.json" ] \
+  || fail "bind did not mint a capability for the live session"
+if [ -f "$TMP/workspace/sessions/sess-bound/scope-capability.json" ]; then
+  fail "bind leaked into the .current session"
+fi
+
+rc="$(run_hook "$read_payload")"
+[ "$rc" = "0" ] || fail "expected allow after binding sess-live, got $rc"
+
+# The .current session must still be unbound, and still blocked.
+payload='{"tool_name":"Read","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml"}}'
+rc="$(run_hook "$payload")"
+[ "$rc" = "2" ] || fail "expected the unrelated .current session to stay unbound, got $rc"
 
 echo "PASS: mandatory-scope-authorizer.test.sh"
