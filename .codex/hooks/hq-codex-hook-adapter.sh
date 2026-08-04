@@ -504,6 +504,7 @@ run_post_tool_use() {
 
 case "$HOOK_EVENT" in
   SessionStart)
+    run_hook "inject-codex-checkpoint-reprompt" "$HOOK_DIR/inject-codex-checkpoint-reprompt.sh" "$INPUT" "advisory"
     # Backfill when:/on: on trigger-less policies, then evaluate SessionStart triggers
     # (mirrors Claude settings.json SessionStart ordering: migrate before inject).
     run_hook "migrate-policy-triggers" "$HQ_ROOT/core/scripts/migrate-policy-triggers.sh" "$INPUT" "advisory"
