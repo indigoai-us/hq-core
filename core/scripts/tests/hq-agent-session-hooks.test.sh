@@ -11,6 +11,13 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $1" >&2; exit 1; }
 pass() { echo "  ok: $1"; }
 
+# This test drives a fixture HQ, but may itself run inside a real session, which
+# exports a session id. hq-session.sh resolves "current session" from that
+# environment before falling back to the fixture's workspace/sessions/.current,
+# so clear the whole precedence list to keep the fixture authoritative.
+unset HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
+      CODEX_SESSION_ID CODEX_THREAD_ID || true
+
 FIXTURE="$TMP/hq"
 mkdir -p "$FIXTURE/core/schemas" "$FIXTURE/core/scripts" \
   "$FIXTURE/core/knowledge/public/hq-core" \
@@ -80,6 +87,10 @@ grep -q "session_id: $RUN_ID" "$META" || fail "meta session_id"
 grep -q "company_slug: indigo" "$META" || fail "meta company_slug"
 GOT="$(cd "$FIXTURE" && bash "$FIXTURE/core/scripts/hq-session.sh" get company)"
 [ "$GOT" = "indigo" ] || fail "hq-session get company got '$GOT'"
+# Pinning to the run id must resolve the same record — this is the path
+# hq-agent-session.sh itself uses, so a session-env mismatch can't skew it.
+GOT_PINNED="$(cd "$FIXTURE" && bash "$FIXTURE/core/scripts/hq-session.sh" --session-id "$RUN_ID" get company)"
+[ "$GOT_PINNED" = "indigo" ] || fail "hq-session --session-id get company got '$GOT_PINNED'"
 pass "session bootstrap"
 
 # ── 2. company hooks fired exactly once each ────────────────────────────────
@@ -158,5 +169,25 @@ OUT="$(req | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/e4")" || R
 RD="$(echo "$OUT" | jq -r .runDir)"
 grep -q 'REPLACED_USER_TEXT' "$RD/user.txt" || fail "user.txt not updated: $(cat "$RD/user.txt")"
 pass "updatedInput replaces user.txt"
+
+# ── 7. bootstrap survives a foreign session id in the environment ───────────
+# An agent session spawned from inside another session inherits that parent's
+# session id. hq-session.sh resolves "current session" from the environment, so
+# the post-bootstrap verify must be pinned to this run — unpinned it reads the
+# parent's (nonexistent) record and the run aborts.
+rm -f "$FIXTURE/companies/indigo/hooks/UserPromptSubmit/05-update.sh" \
+      "$FIXTURE/companies/indigo/hooks/UserPromptSubmit/00-fail.sh"
+RC=0
+OUT="$(req | CLAUDE_CODE_SESSION_ID=foreign-parent-session \
+  bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/e5")" || RC=$?
+[ "$RC" -eq 0 ] || fail "foreign session env aborted the run exit=$RC err=$(cat "$TMP/e5")"
+echo "$OUT" | jq -e '.disposition == "reply"' >/dev/null || fail "foreign-env run should complete: $OUT"
+NEW_RUN_ID="$(tr -d '[:space:]' < "$FIXTURE/workspace/sessions/.current")"
+[ "$NEW_RUN_ID" != "foreign-parent-session" ] || fail "run adopted the ambient session id"
+grep -q "company_slug: indigo" "$FIXTURE/workspace/sessions/$NEW_RUN_ID/meta.yaml" \
+  || fail "run's own meta.yaml not bootstrapped under a foreign session env"
+[ ! -d "$FIXTURE/workspace/sessions/foreign-parent-session" ] \
+  || fail "bootstrap wrote into the ambient session's record"
+pass "bootstrap pins to its own run under a foreign session env"
 
 echo "PASS: hq-agent-session-hooks.test.sh"

@@ -93,6 +93,11 @@
           },
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-root-git-mutation \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-root-git-mutation.sh\"",
             "timeout": 5
           },
@@ -138,6 +143,11 @@
           },
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-on-active-run \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-on-active-run.sh\"",
             "timeout": 5
           },
@@ -178,6 +188,11 @@
           },
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-on-active-run \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-on-active-run.sh\"",
             "timeout": 5
           },
@@ -213,12 +228,27 @@
           },
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-plans-dir-during-deep-plan \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-plans-dir-during-deep-plan.sh\"",
             "timeout": 5
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" validate-policy-frontmatter \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate-policy-frontmatter.sh\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
             "timeout": 10
           }
         ]

@@ -26,26 +26,37 @@ session_bootstrap_meta() {
   printf '%s\n' "$run_id" > "$current_file"
 }
 
-# session_verify_company <root> <expectedSlug>
+# session_verify_company <root> <expectedSlug> [runId]
 #   Run hq-session.sh get company and assert it prints expectedSlug.
+#
+#   Pass runId whenever the caller knows it. hq-session.sh otherwise resolves
+#   "current session" from this process's session environment, and an agent
+#   session bootstrapped from inside another session inherits that parent's
+#   session id — so the verify would read the parent's meta.yaml instead of the
+#   run it just wrote. Pinning with --session-id keeps the check on this run.
 session_verify_company() {
-  local root="${1:-}" expected="${2:-}"
+  local root="${1:-}" expected="${2:-}" run_id="${3:-}"
   local got
-  got="$(cd "$root" && bash "$root/core/scripts/hq-session.sh" get company 2>/dev/null || true)"
+  local -a pin=()
+  [ -n "$run_id" ] && pin=(--session-id "$run_id")
+  got="$(cd "$root" && bash "$root/core/scripts/hq-session.sh" "${pin[@]}" get company 2>/dev/null || true)"
   # hq-session uses key "company" OR we need company_slug — AC says get company.
   # hq-session.sh get reads exact key from meta.yaml. We wrote company_slug.
   # Support both keys: prefer `company` alias via reading company_slug.
   if [ -z "$got" ]; then
-    got="$(cd "$root" && bash "$root/core/scripts/hq-session.sh" get company_slug 2>/dev/null || true)"
+    got="$(cd "$root" && bash "$root/core/scripts/hq-session.sh" "${pin[@]}" get company_slug 2>/dev/null || true)"
   fi
   # Also write company: alias so `get company` works as AC states.
   if [ "$got" != "$expected" ]; then
-    # Ensure company: key exists for the AC path
-    local meta="$root/workspace/sessions/$(tr -d '[:space:]' <"$root/workspace/sessions/.current")/meta.yaml"
+    # Ensure company: key exists for the AC path. Prefer the caller's runId;
+    # fall back to .current only when the caller did not supply one.
+    local meta_id="$run_id"
+    [ -n "$meta_id" ] || meta_id="$(tr -d '[:space:]' <"$root/workspace/sessions/.current")"
+    local meta="$root/workspace/sessions/$meta_id/meta.yaml"
     if [ -f "$meta" ] && ! grep -q '^company:' "$meta"; then
       printf 'company: %s\n' "$expected" >> "$meta"
     fi
-    got="$(cd "$root" && bash "$root/core/scripts/hq-session.sh" get company 2>/dev/null || true)"
+    got="$(cd "$root" && bash "$root/core/scripts/hq-session.sh" "${pin[@]}" get company 2>/dev/null || true)"
   fi
   [ "$got" = "$expected" ] || {
     echo "hq-agent-session: session bootstrap verify failed: expected company=$expected got=${got:-<empty>}" >&2

@@ -72,10 +72,15 @@ LIB_DIR="$HQ_ROOT/core/scripts/lib"
 . "$LIB_DIR/session-authz.sh"
 # shellcheck source=../../core/scripts/lib/session-scope-capability.sh
 . "$LIB_DIR/session-scope-capability.sh"
+# shellcheck source=../../core/scripts/lib/session-id.sh
+. "$LIB_DIR/session-id.sh"
 
+# The hook payload is authoritative — it names the session that fired this event.
+# Only when it is absent do we fall back to the shared resolver (session env
+# first, workspace/sessions/.current last).
 SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty')"
-if [ -z "$SESSION_ID" ] && [ -f "$HQ_ROOT/workspace/sessions/.current" ]; then
-  SESSION_ID="$(tr -d '[:space:]' < "$HQ_ROOT/workspace/sessions/.current" 2>/dev/null || true)"
+if [ -z "$SESSION_ID" ]; then
+  SESSION_ID="$(session_id_resolve "$HQ_ROOT")"
 fi
 
 BOUND_CO=""
@@ -233,9 +238,12 @@ BLOCKED: Cross-company scope violation
 Tool: $TOOL
 Path: $rel
 Target company: ${co:-unknown}
+Session: ${SESSION_ID:-unknown}
 $bound_msg
 
 Bind the correct company with: core/scripts/hq-session.sh set company_slug <slug>
+If that reports success but this keeps blocking, the bind landed on another
+session — retry it as: core/scripts/hq-session.sh --session-id ${SESSION_ID:-<id>} set company_slug <slug>
 Allowed without binding: core/, personal/, repos/, workspace/, companies/manifest.yaml, companies/_template/
 EOF
   exit 2

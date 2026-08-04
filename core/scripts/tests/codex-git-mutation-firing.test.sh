@@ -47,7 +47,7 @@ NESTED="$TMP/repos/private/app"
 
 # Keep this fixture focused on the mutation guard. The real adapter dispatches
 # several other Bash hooks first; disable those rather than stubbing them.
-export HQ_DISABLED_HOOKS="detect-secrets,block-core-writes-bash,block-on-active-run,inject-policy-on-trigger,block-unsafe-package-install,mandatory-scope-authorizer"
+export HQ_DISABLED_HOOKS="detect-secrets,block-core-writes-bash,enforce-vault-write-access,block-on-active-run,inject-policy-on-trigger,block-unsafe-package-install,mandatory-scope-authorizer"
 
 PASS=0
 FAIL=0

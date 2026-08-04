@@ -8,27 +8,44 @@
 #   core/scripts/hq-session.sh get <key>             # read a key from meta.yaml
 #   core/scripts/hq-session.sh set <key> <value>     # set/replace a top-level key
 #
+# Global option (before the subcommand):
+#   --session-id <id>   operate on this session instead of the resolved one
+#
 # Session bootstrapping is owned by .claude/hooks/master-hook.sh, which
 # writes workspace/sessions/.current and ensures
 # workspace/sessions/<session_id>/meta.yaml exists on every hook event.
+#
+# "Current session" is resolved by core/scripts/lib/session-id.sh: the session id
+# exported into this process wins, and workspace/sessions/.current is only a
+# fallback. .current is a single global pointer rewritten by every hook event, so
+# with concurrent sessions it can name someone else's session — trusting it made
+# `set company_slug` write to the wrong session's meta.yaml while the calling
+# session stayed unbound and blocked by the scope guard.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SESSIONS_DIR="$REPO_ROOT/workspace/sessions"
-CURRENT_FILE="$SESSIONS_DIR/.current"
 LIB_DIR="$SCRIPT_DIR/lib"
 # shellcheck source=lib/session-scope-capability.sh
 . "$LIB_DIR/session-scope-capability.sh"
+# shellcheck source=lib/session-id.sh
+. "$LIB_DIR/session-id.sh"
+
+# Set by the --session-id global option; empty means "resolve it".
+SESSION_ID_OVERRIDE=""
 
 usage() {
   sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 current_id() {
-  [ -f "$CURRENT_FILE" ] || return 0
-  tr -d '[:space:]' < "$CURRENT_FILE"
+  if [ -n "$SESSION_ID_OVERRIDE" ]; then
+    printf '%s' "$SESSION_ID_OVERRIDE"
+    return 0
+  fi
+  session_id_resolve "$REPO_ROOT"
 }
 
 current_meta() {
@@ -69,12 +86,17 @@ cmd_set() {
   local id meta
   id="$(current_id)"
   if [ -z "$id" ]; then
-    echo "hq-session: no current session (workspace/sessions/.current missing); is master-hook installed?" >&2
+    echo "hq-session: no current session — no session id in the environment (HQ_SESSION_ID, CLAUDE_CODE_SESSION_ID, CLAUDE_SESSION_ID, CODEX_SESSION_ID, CODEX_THREAD_ID) and workspace/sessions/.current is missing or invalid. Is master-hook installed? Pass --session-id <id> to target a session explicitly." >&2
     exit 1
   fi
   meta="$SESSIONS_DIR/$id/meta.yaml"
   mkdir -p "$(dirname "$meta")"
-  [ -f "$meta" ] || : > "$meta"
+  # Seed the same header master-hook.sh writes, so binding a session the hook
+  # has not bootstrapped yet still produces a well-formed record.
+  if [ ! -f "$meta" ]; then
+    printf 'session_id: %s\nstarted_at: "%s"\n' \
+      "$id" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$meta"
+  fi
 
   # Capture the prior value so we only surface policies when it actually changes.
   local prev=""
@@ -157,6 +179,28 @@ emit_company_hard_policies() {
   printf '%s\n' "$lines"
   printf '</company-policy-digest>\n'
 }
+
+while [ $# -gt 0 ]; do
+  case "${1:-}" in
+    --session-id)
+      SESSION_ID_OVERRIDE="${2:-}"
+      if ! session_id_is_valid "$SESSION_ID_OVERRIDE"; then
+        echo "hq-session: invalid --session-id: '${SESSION_ID_OVERRIDE}'" >&2
+        exit 1
+      fi
+      shift 2
+      ;;
+    --session-id=*)
+      SESSION_ID_OVERRIDE="${1#--session-id=}"
+      if ! session_id_is_valid "$SESSION_ID_OVERRIDE"; then
+        echo "hq-session: invalid --session-id: '${SESSION_ID_OVERRIDE}'" >&2
+        exit 1
+      fi
+      shift
+      ;;
+    *) break ;;
+  esac
+done
 
 sub="${1:-}"
 shift || true

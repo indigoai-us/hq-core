@@ -150,9 +150,10 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       *companies/*) co_scope="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')" ;;
     esac
     if [ -z "$co_scope" ] && [ -n "${SESSION_ID:-}" ]; then
-      # Read THIS session's own meta.yaml directly. Never shell out to
-      # hq-session.sh get — that helper keys off workspace/sessions/.current,
-      # which can point at a different session than the one that fired the hook.
+      # Read THIS session's own meta.yaml directly, keyed off the session id in
+      # the hook payload. Do not shell out to hq-session.sh get: it resolves the
+      # session from this process's environment, which on a hook path is the
+      # host's, not necessarily the one that fired the event.
       # awk idiom lifted verbatim from master-hook.sh:119 so both paths resolve
       # the company identically. READ ONLY: master-hook.sh bootstraps meta.yaml;
       # a second writer here would race.

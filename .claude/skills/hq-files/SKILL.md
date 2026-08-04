@@ -140,6 +140,30 @@ Failure modes (operator-visible):
 
 `hq files unshare` is safe to call multiple times. When the grant is already absent, the server returns `404`; the CLI treats this as a successful no-op — it prints a green "Grant already absent" message and exits 0. Code or automation calling `unshare` does not need to pre-check whether the grant exists.
 
+## Local Write-Access Enforcement (read-only shares)
+
+Vault ACLs are enforced server-side at vend-time, but local HQ sessions also
+mirror them: the PreToolUse hook `enforce-vault-write-access.sh` blocks
+edits, writes, and deletes (Edit/Write/MultiEdit/NotebookEdit and best-effort
+Bash) under `companies/<slug>/` when the local manifest
+`.hq/vault-access.json` says your effective permission on that vault path is
+read-only (or absent). This stops doomed local mutations to read-only shares
+before the next sync rejects or clobbers them.
+
+- Refresh the manifest after your grants change:
+  `bash core/scripts/refresh-vault-access.sh [--company <slug>]`
+  (sources: `hq files shared-with-me` for grants, `hq members` for your role).
+- Fail-open by design: no manifest, an unlisted company, or role
+  owner/admin/unknown means no local enforcement — the server-side STS/ACL
+  layer remains the authoritative boundary.
+- Grant matching mirrors the ACL prefix semantics above: `*`, `prefix/*`
+  (covers the bare `prefix` directory too), or an exact key; the most
+  specific matching grant wins, so a specific read grant carves down a
+  broader write grant.
+- Bypass requires the user's explicit approval:
+  `"HQ_BYPASS_VAULT_WRITE_PROTECT": "1"` under `env` in
+  `.claude/settings.local.json` — never set it autonomously.
+
 ## Rules for Agent Workflows
 
 1. **Normalize prefixes before calling `share`.** Pass a trailing slash or an explicit `/*` suffix for folder-level grants. The CLI normalizes for you, but be deliberate: granting `reports/q3.pdf` (exact key) is very different from granting `reports/q3/` (folder), and granting bare `reports` (no slash, no `*`) is an exact-key grant that covers nothing inside the folder.

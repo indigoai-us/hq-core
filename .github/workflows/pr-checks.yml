@@ -441,12 +441,16 @@ jobs:
         run: bash core/scripts/tests/checkpoint-stop-gate.test.sh
       - name: Checkpoint and journal hooks do not over-trigger
         run: bash core/scripts/tests/checkpoint-journal-noise.test.sh
+      - name: Session id resolves to this process, not .current
+        run: bash core/scripts/tests/session-id.test.sh
       - name: Session scope capability mint/read contract
         run: bash core/scripts/tests/session-scope-capability.test.sh
       - name: Mandatory scope authorizer blocks cross-company access
         run: bash core/scripts/tests/mandatory-scope-authorizer.test.sh
       - name: hq-session mints scope capability on company bind
         run: bash core/scripts/tests/hq-session.test.sh
+      - name: Company infra policy reminder follows the firing session
+        run: bash core/scripts/tests/surface-company-infra-policy.test.sh
 
   mcp-cleanup-session-scope:
     name: mcp-cleanup-session-scope
@@ -618,6 +622,10 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
       - name: block-core-writes permits only the durable native personal context
         run: bash core/scripts/tests/block-core-writes-native-context.test.sh
+      - name: enforce-vault-write-access blocks mutations without vault write permission
+        run: bash core/scripts/tests/enforce-vault-write-access.test.sh
+      - name: refresh-vault-access builds the manifest the write-access hook consumes
+        run: bash core/scripts/tests/refresh-vault-access.test.sh
 
   # US-005: shell portability lint + shellcheck + cross-platform smoke.
   shell-portability:
