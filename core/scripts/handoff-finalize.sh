@@ -4,7 +4,7 @@
 # Folds steps 1/2/3b/4/5/7 of the handoff skill into a single subprocess so the
 # model doesn't narrate each step. Writes the thread file, handoff.json,
 # regenerates INDEX files, commits HQ via explicit paths, and launches qmd
-# reindex fire-and-forget.
+# reindex fire-and-forget via qmd-reindex-bg.sh (agent skip / laptop single-flight).
 #
 # Usage (all args optional):
 #   handoff-finalize.sh \
@@ -478,12 +478,24 @@ if [[ $STAGE_FAILURE_COUNT -gt 0 && "$HQ_COMMIT_STATUS" != "failed" ]]; then
 fi
 COMMIT_AFTER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
-# -------- qmd reindex fire-and-forget --------
+# -------- qmd reindex fire-and-forget (agent: skip; laptop: single-flight) --------
+# Agent boxes: managed timer owns indexing — handoff never kicks qmd.
+# Laptop: qmd-reindex-bg single-flight reindex. See qmd-reindex-bg.sh.
+# Helper is invoked synchronously: it is fail-soft and either prints
+# skipped-agent / skipped, or launches its own detached worker and prints a PID.
+# qmd_pid must never claim an agent reindex ran.
 QMD_PID=""
-if command -v qmd >/dev/null 2>&1; then
-  nohup bash -c 'qmd cleanup 2>/dev/null; qmd update 2>/dev/null && qmd embed 2>/dev/null' \
-    > /tmp/qmd-handoff.log 2>&1 &
-  QMD_PID=$!
+# Prefer Core US-001 helper; fleet binary only if Core file is missing.
+_QMD_BG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qmd-reindex-bg.sh"
+if [[ ! -f "$_QMD_BG" ]] && [[ -x /usr/local/bin/hq-agent-qmd-reindex-bg ]]; then
+  _QMD_BG=/usr/local/bin/hq-agent-qmd-reindex-bg
+fi
+if [[ -x "$_QMD_BG" ]] || [[ -f "$_QMD_BG" ]]; then
+  # bash (not require +x) so a fresh checkout still routes through the helper.
+  QMD_PID="$(bash "$_QMD_BG" --log /tmp/qmd-handoff.log 2>/dev/null || true)"
+elif [[ -d /var/lib/hq-agent ]]; then
+  # Agent box without helper yet: still do not raw-embed.
+  QMD_PID="skipped-agent"
 fi
 
 # -------- copy next-step command to clipboard (fail-soft) --------
