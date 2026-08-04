@@ -62,7 +62,7 @@ Pass the resolved project directory that owns this session's journal. The helper
 - Regenerates thread INDEX + recent.md + orchestrator INDEX via dedicated bash scripts (`rebuild-threads-index.sh`, `rebuild-orchestrator-index.sh`) — zero Claude context
 - Commits HQ via explicit paths: thread/index files plus the validated `--files-touched-json` paths (never `git add -A`)
 - Classifies noisy HQ root status via `core/scripts/hq-status-summary.sh` so baseline local files do not become accidental handoff scope
-- Launches qmd reindex fire-and-forget
+- Schedules ownership-aware qmd reindex via `qmd-reindex-bg.sh` (shared with post): agent boxes hard-skip (`skipped-agent`, zero qmd mutation — managed timer/post-sync own freshness); laptops use one non-blocking single-flight cleanup→update→embed
 
 First write the changeset to a workspace temp file, then pass its path — never inline the changeset into `--files-touched-json`. On Windows Git Bash the OS caps a command line at ~32KB (~8KB under cmd.exe), and a large changeset rides argv through several hops (status-summary, jq) and aborts the handoff. The file form keeps it off argv. This mirrors the learnings temp-file pattern from Step 2. Use `mktemp` under `workspace/threads/.handoff-tmp/` (gitignored, exists on Git Bash — do **not** use `/tmp`, which some Windows setups lack; do **not** use a slug-only deterministic path under `workspace/threads/` — concurrent sessions collide and unignored temps flip `git.dirty`). Clean it up whether the finalizer succeeds or fails, and propagate a non-zero finalize exit status:
 
@@ -116,6 +116,8 @@ The script emits a single JSON line to stdout:
  "next_command":"/resumework T-...","clipboard_copied":true}
 ```
 
+`qmd_pid` may be a worker PID on laptops, or the tokens `skipped-agent` / `skipped` (or empty when HOME is unset / helper missing). Busy and dedupe are quiet inside the worker after a PID was already printed; they must never be reported as a successful agent reindex.
+
 **Capture `thread_path` from the result** — you need it for Step 4. Keep `changeset_path`, `committed_paths`, `skipped_paths`, and `baseline_noise_count` for the final report.
 
 `hq_commit_status` says why `hq_committed` is what it is: `committed`, `nothing-to-commit`, `failed` (git refused the commit), or `stage-failed` (`git add` rejected paths — the shape a held `.git/index.lock` takes, where no commit is even attempted). Both failure states exit **4** after printing the payload, with git's message in `hq_commit_error` and the unstageable paths in `stage_failures`. Treat exit 4 as a hard stop — the thread files exist on disk but are uncommitted, so tell the user the handoff did not complete, surface the git error, and do not proceed to Step 4.
@@ -133,7 +135,7 @@ nohup bash core/scripts/handoff-post.sh \
 1. Archives threads older than 60 days into `workspace/threads/archive/YYYY-MM/` (gated once per 24h)
 2. Regenerates INDEX files again (captures any archive moves)
 3. Records eligible learn/doc-release work as pending until the handoff reports dispatch proof
-4. Launches qmd reindex (qmd cleanup/update/embed)
+4. Schedules the same ownership-aware helper as finalize (`qmd-reindex-bg.sh`). On agent boxes both paths return `skipped-agent` and never start qmd or the managed indexer. On laptops, if a finalize-spawned worker already holds the single-flight lock (or just finished within the helper dedupe window), this is a quiet no-op — not a second independent writer
 
 Logs land at `/tmp/handoff-post.log` and `/tmp/qmd-handoff.log`. If the session dies while the post-script runs, the script keeps going — `handoff.json` is already valid.
 
@@ -200,7 +202,7 @@ Background work dispatched:
   - handoff-post.sh PID {from nohup} → /tmp/handoff-post.log
   - /learn → {Codex spawn_agent | Claude Task/Agent | synchronous Skill | durably pending}
   - /document-release → {Codex spawn_agent | Claude Task/Agent | synchronous Skill | durably pending}
-  - qmd reindex → /tmp/qmd-handoff.log
+  - qmd helper (`skipped-agent` | `skipped` | worker pid) → /tmp/qmd-handoff.log
 
 To continue in a fresh session:
   1. Start a new session
