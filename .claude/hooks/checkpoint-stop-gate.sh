@@ -204,6 +204,9 @@ set -uo pipefail
   fi
 
   if [ "$satisfied" = "1" ]; then
+    if [ "$runtime" = "codex" ]; then
+      rm -f "$state_dir/codex-checkpoint-reprompt-$session_key" 2>/dev/null || true
+    fi
     exit 0
   fi
 
@@ -211,6 +214,19 @@ set -uo pipefail
   reason_suffix=' --trigger stop-gate --summary "<one-line outcome>" [--learning "..."] [--decision "..."] [--next "..."] [--file <path>] — or `hq core checkpoint --session-id '
   reason_suffix_2=' --idle` if the turn changed nothing. Then end the turn immediately after the command.'
   reason="${reason_prefix}${session_id}${reason_suffix}${session_id}${reason_suffix_2}"
+
+  # Codex surfaces a blocked Stop reason as a synthetic user prompt. Preserve
+  # the actionable instruction out-of-band, then use the stable marker covered
+  # by the guidance preloaded at SessionStart.
+  if [ "$runtime" = "codex" ]; then
+    reprompt_file="$state_dir/codex-checkpoint-reprompt-$session_key"
+    reprompt_tmp="$reprompt_file.$$"
+    if (umask 077 && printf '%s' "$reason" >"$reprompt_tmp" && mv -f "$reprompt_tmp" "$reprompt_file"); then
+      reason='Hook re-prompted Codex'
+    else
+      rm -f "$reprompt_tmp" 2>/dev/null || true
+    fi
+  fi
   printf '{"decision":"block","reason":%s}\n' "$(printf '%s' "$reason" | hq_json_encode)"
 } 2>/dev/null || true
 
