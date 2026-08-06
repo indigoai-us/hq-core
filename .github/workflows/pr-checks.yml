@@ -372,6 +372,21 @@ jobs:
       - name: README team table matches person ontology
         run: bash core/scripts/tests/ontology-readme-drift.test.sh
 
+  git-pack-extension:
+    # A packfile set is paired BY EXTENSION (pack-<sha>.pack/.idx/.rev). Strip
+    # the extension off one of them and git stops seeing the whole set: the
+    # objects are intact on disk but report as missing, so the repo presents as
+    # catastrophic history loss when the actual repair is a rename. Observed on
+    # a macOS HQ root alongside Finder Icon\r cruft. The suite asserts against
+    # real repos and real packfiles — it builds the breakage, proves git fails,
+    # then proves the repair makes git healthy again.
+    name: git-pack-extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: De-extensioned packfile detection and repair
+        run: bash core/scripts/tests/git-pack-extension-check.test.sh
+
   git-mutation-guard:
     # DEV-1765: the HQ-root git-mutation guard must FIRE correctly under BOTH
     # harnesses. Under Codex the adapter used to resolve HQ_ROOT from the cwd's

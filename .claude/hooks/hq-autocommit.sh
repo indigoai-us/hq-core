@@ -71,6 +71,28 @@ if [[ -z "$REL_PATH" ]]; then
   exit 0
 fi
 
+# Refuse any path carrying a control character. The case that matters in the
+# wild is the macOS Finder custom-icon file — the literal name `Icon` followed
+# by a carriage return — which Finder writes into every directory it renders an
+# icon for, and which a folder-level cloud-sync agent then spreads tree-wide.
+#
+# Two reasons this has to be a hook-level guard rather than a .gitignore entry:
+#
+#   1. gitignore does not apply to files git already tracks. Once one of these
+#      is committed, Finder rewriting it makes it a tracked modification that
+#      this hook would autosave forever.
+#   2. The staging path below is `git add -- "$REL_PATH"`, and when the tool
+#      call touched a DIRECTORY, REL_PATH is that directory — so a single add
+#      sweeps in every control-char file beneath it regardless of the file the
+#      tool actually wrote.
+#
+# These names also break HQ cloud sync outright: an S3 key cannot contain a
+# control character, so each one is a permanent per-file upload failure. Never
+# stage them; a shell glob cannot express the name, so match the bytes.
+if [[ "$REL_PATH" == *$'\r'* || "$REL_PATH" == *$'\n'* || "$REL_PATH" =~ [[:cntrl:]] ]]; then
+  exit 0
+fi
+
 case "$REL_PATH" in
   .git/*|repos/*|node_modules/*|.next/*|.vercel/*|*.tmp|*.log)
     exit 0
@@ -178,6 +200,24 @@ ADD_OUT="$(git -C "$HQ_ROOT" add -- "$REL_PATH" 2>&1)"
 ADD_RC=$?
 if [[ $ADD_RC -ne 0 ]]; then
   report_failure "add" "$ADD_RC" "$ADD_OUT"
+fi
+
+# Unstage any control-character path the add pulled in. The guard above rejects
+# a control-char REL_PATH, but when REL_PATH is a DIRECTORY the add sweeps in
+# everything beneath it — which is how a macOS `Icon\r` file becomes tracked in
+# the first place, after which Finder rewriting it makes it a tracked
+# modification autosaved forever. NUL-delimited because these names contain the
+# very bytes that would otherwise split the list.
+STAGED_CONTROL_CHAR=0
+while IFS= read -r -d '' staged_path; do
+  [[ -n "$staged_path" ]] || continue
+  if [[ "$staged_path" =~ [[:cntrl:]] ]]; then
+    git -C "$HQ_ROOT" reset -q -- "$staged_path" 2>/dev/null || true
+    STAGED_CONTROL_CHAR=$((STAGED_CONTROL_CHAR+1))
+  fi
+done < <(git -C "$HQ_ROOT" diff --cached --name-only -z 2>/dev/null)
+if [[ $STAGED_CONTROL_CHAR -gt 0 ]]; then
+  log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] SKIP stage=control-char count=${STAGED_CONTROL_CHAR} path=${REL_PATH} session=${SESSION_KEY}"
 fi
 
 # Refuse to autosave an embedded git repo (gitlink, mode 160000). A directory
