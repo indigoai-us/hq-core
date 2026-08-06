@@ -441,14 +441,75 @@ assert_codex_block "$HOOK_STDOUT" "stale verdict"
 wait_for_probe "stale verdict"
 pass "stale verdict enforces and refreshes"
 
-# 14. A pure Q&A turn also needs the explicit --idle checkpoint.
+# 14. A pure Q&A turn changed nothing, so the gate must stay out of the way.
 reset_case
 set_verdict 1
 new_transcript 14-no-tools
 append_user "$TRANSCRIPT" u-no-tools
 run_hook s-no-tools "$TRANSCRIPT"
-assert_block "$HOOK_STDOUT" s-no-tools "turn without tools"
-pass "tool-free turn blocks"
+assert_allow "turn without tools"
+pass "tool-free turn allows"
+
+# 14b. A turn whose only tool call was the checkpoint itself is not "work".
+# Without this the gate re-fires on its own satisfying call in some shapes.
+reset_case
+set_verdict 1
+new_transcript 14b-checkpoint-only
+append_user "$TRANSCRIPT" u-checkpoint-only
+append_tool "$TRANSCRIPT" tu-14b Bash 'hq core checkpoint --session-id s-checkpoint-only --idle'
+append_result "$TRANSCRIPT" tu-14b false
+run_hook s-checkpoint-only "$TRANSCRIPT"
+assert_allow "checkpoint-only turn"
+pass "checkpoint-only turn allows"
+
+# 14c. A gate probe is bookkeeping, not work: it must not demand a checkpoint.
+reset_case
+set_verdict 1
+new_transcript 14c-probe-only
+append_user "$TRANSCRIPT" u-probe-only
+append_tool "$TRANSCRIPT" tu-14c Bash 'hq core checkpoint --gate-probe'
+append_result "$TRANSCRIPT" tu-14c false
+run_hook s-probe-only "$TRANSCRIPT"
+assert_allow "gate-probe-only turn"
+pass "gate-probe-only turn allows"
+
+# 14d. One real tool alongside a checkpoint still counts as work, so a turn
+# that did work and then failed to checkpoint must still block.
+reset_case
+set_verdict 1
+new_transcript 14d-work-then-nothing
+append_user "$TRANSCRIPT" u-work-then-nothing
+append_tool "$TRANSCRIPT" tu-14d-a Bash 'hq core checkpoint --gate-probe'
+append_result "$TRANSCRIPT" tu-14d-a false
+append_tool "$TRANSCRIPT" tu-14d-b Bash 'git commit -m real-work'
+append_result "$TRANSCRIPT" tu-14d-b false
+run_hook s-work-then-nothing "$TRANSCRIPT"
+assert_block "$HOOK_STDOUT" s-work-then-nothing "work turn without checkpoint"
+pass "work alongside a probe still blocks"
+
+# 14e. A non-Bash tool (no command string) is real work and must still block.
+reset_case
+set_verdict 1
+new_transcript 14e-edit-only
+append_user "$TRANSCRIPT" u-edit-only
+append_tool "$TRANSCRIPT" tu-14e Edit ''
+append_result "$TRANSCRIPT" tu-14e false
+run_hook s-edit-only "$TRANSCRIPT"
+assert_block "$HOOK_STDOUT" s-edit-only "edit-only turn"
+pass "commandless tool call still blocks"
+
+# 14f. The block message must carry the guidance the checkpoint depends on.
+printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF -- '--trigger stop-gate' \
+  || fail "block reason: missing the stop-gate command"
+printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF -- '--idle' \
+  || fail "block reason: missing the --idle alternative"
+for flag in '--file' '--decision' '--learning' '--next'; do
+  printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF -- "$flag" \
+    || fail "block reason: missing guidance for $flag"
+done
+printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF 'worse than none' \
+  || fail "block reason: missing the do-not-pad instruction"
+pass "block reason carries checkpoint guidance"
 
 # 15. An unreadable or missing transcript is always an allow path.
 reset_case
@@ -524,17 +585,15 @@ printf '%s' "$CODEX_STDOUT" | jq -e '
 ' >/dev/null || fail "Codex unstamped checkpoint: expected block decision, got: $CODEX_STDOUT"
 pass "Codex checkpoint requires a fresh CLI success stamp"
 
-# 21. Codex Q&A turns are real user turns and require the explicit idle stamp.
+# 21. A Codex Q&A turn changed nothing, so the adapter must let it through too.
 reset_case
 set_verdict 1
 new_transcript 20-codex-no-tools
 append_codex_user "$TRANSCRIPT"
 run_codex_stop s-codex-no-tools "$TRANSCRIPT"
 [ "$CODEX_STATUS" -eq 0 ] || fail "Codex tool-free turn: adapter exited $CODEX_STATUS: $CODEX_STDERR"
-printf '%s' "$CODEX_STDOUT" | jq -e '
-  .decision == "block" and .reason == "Hook re-prompted Codex"
-' >/dev/null || fail "Codex tool-free turn: expected block decision, got: $CODEX_STDOUT"
-pass "Codex tool-free turn blocks through the adapter"
+assert_empty "$CODEX_STDOUT" "Codex tool-free turn"
+pass "Codex tool-free turn allows through the adapter"
 
 # 22. An old stamp from an earlier turn cannot satisfy a new Codex checkpoint.
 reset_case
