@@ -155,6 +155,7 @@ set -uo pipefail
               end
           ] as $tools
         | (if ($tools | length) > 0 then $tools[-1] else {} end) as $last_tool
+        | ([$tools[] | select((.command | checkpoint_command) | not)] | length) as $work_tool_count
         | ([
              $rows[]
              | .entry
@@ -172,13 +173,14 @@ set -uo pipefail
             elif $last_tool.runtime == "codex" then "stamp"
             else "0"
             end
+          elif $work_tool_count == 0 then "idle"
           else "0"
           end
       end
   ' 2>/dev/null)" || exit 0
   satisfied="$parsed"
   case "$satisfied" in
-    0|1|stamp) ;;
+    0|1|stamp|idle) ;;
     *) exit 0 ;;
   esac
 
@@ -203,17 +205,20 @@ set -uo pipefail
     fi
   fi
 
-  if [ "$satisfied" = "1" ]; then
+  # "idle" means the turn called no tool other than the checkpoint itself, so
+  # there is nothing to record. Demanding one anyway turns every conversational
+  # reply — and every background-notification wake-up — into an --idle round
+  # trip that writes no state and only costs a turn.
+  if [ "$satisfied" = "1" ] || [ "$satisfied" = "idle" ]; then
     if [ "$runtime" = "codex" ]; then
       rm -f "$state_dir/codex-checkpoint-reprompt-$session_key" 2>/dev/null || true
     fi
     exit 0
   fi
 
-  reason_prefix='End-of-turn checkpoint required. As the FINAL action of this turn run: hq core checkpoint --session-id '
-  reason_suffix=' --trigger stop-gate --summary "<one-line outcome>" [--learning "..."] [--decision "..."] [--next "..."] [--file <path>] — or `hq core checkpoint --session-id '
-  reason_suffix_2=' --idle` if the turn changed nothing. Then end the turn immediately after the command.'
-  reason="${reason_prefix}${session_id}${reason_suffix}${session_id}${reason_suffix_2}"
+  # Built with printf rather than concatenation so the session id can appear in
+  # both commands without re-splitting the message into fragments.
+  reason="$(printf 'This turn changed something, so it needs an end-of-turn checkpoint. Run it as the FINAL action of the turn and end the turn immediately after — no closing commentary once the command has run.\n\n  hq core checkpoint --session-id %s --trigger stop-gate --summary "<what changed, in one line>" [--file <path>] [--decision "<choice and why>"] [--learning "<reusable rule>"] [--next "<outstanding step>"]\n\nOnly --summary is required, and the repeatable flags are what a background maintenance agent uses afterwards to enrich the record, distil policies and update the indexes — a bare summary gives it almost nothing to work with. Pass each one that genuinely applies:\n  --file      every path you created or modified this turn\n  --decision  a choice you made that a reader would otherwise have to reverse-engineer\n  --learning  a rule that changes how someone acts next time, not a restatement of what just happened\n  --next      work that is genuinely still outstanding\nOmit a flag rather than padding it: an empty or invented learning is worse than none.\n\nIf this turn only read or inspected things and changed no state, the correct call instead is:\n\n  hq core checkpoint --session-id %s --idle' "$session_id" "$session_id")"
 
   # Codex surfaces a blocked Stop reason as a synthetic user prompt. Preserve
   # the actionable instruction out-of-band, then use the stable marker covered
