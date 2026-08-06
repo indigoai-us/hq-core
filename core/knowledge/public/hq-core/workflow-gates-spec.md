@@ -1,0 +1,135 @@
+# Workflow Gates Spec
+
+Human-in-the-loop pauses for long-running orchestrations. A **gate** is a
+question written to disk by a paused workflow run; writing a matching answer
+file resumes that run in place. The protocol is plain files, so it is
+runner-agnostic: any orchestrator (the core workflow runner
+`core/scripts/workflow-runner.mjs`, an agency worker, a bespoke script) can
+open gates, and any session —
+not just the one that launched the run — can answer them.
+
+Design goals, in order:
+
+1. **Pause in place.** The asking process stays alive and resumes from the
+   exact point it paused. Nothing exits, so nothing re-runs.
+2. **Answer from anywhere.** The pending file is self-contained (question,
+   options, context, recommended choice, answer command), so a cold session
+   can answer it without the launcher's context.
+3. **Never ask twice.** Answers are durable. A crashed-and-relaunched run
+   finds them and passes each already-answered gate instantly.
+
+## File layout
+
+```
+workspace/gates/
+  pending/<gate-id>.json     open questions (one file per gate)
+  answered/<gate-id>.json    durable answers (survive the run that asked)
+```
+
+The gates root defaults to `workspace/gates/` under the HQ root and can be
+relocated with `HQ_WORKFLOW_GATES_DIR` (legacy `CODEX_WORKFLOW_GATES_DIR` is
+honored; tests use these for hermeticity).
+
+Gate ids are slugged filenames: lowercase `[a-z0-9._-]`, no leading/trailing
+separators. Orchestrators must slug caller-supplied ids before writing.
+Because answers are keyed by id alone, ids must be scoped by the asking
+pipeline (e.g. `myproject-approach`, not `approach`) so unrelated runs never
+collide with — or silently reuse — each other's answers.
+
+## Pending gate schema
+
+Written atomically (tmp + rename) by the paused orchestrator:
+
+```json
+{
+  "id": "myproject-approach",
+  "question": "Which approach should the build take?",
+  "options": [
+    { "label": "option-a", "description": "one-line tradeoff" },
+    { "label": "option-b", "description": "one-line tradeoff" }
+  ],
+  "context": "1-3 sentences a cold reader needs to decide.",
+  "recommended": "option-a",
+  "status": "pending",
+  "created_at": "<ISO8601>",
+  "run_id": "<orchestrator run id>",
+  "run_dir": "<orchestrator run dir, for log spelunking>",
+  "script": "<workflow script path or name>",
+  "answer_path": "<abs path of the answered file the run polls>",
+  "answer_hint": "bash core/scripts/workflow-gate.sh answer myproject-approach \"<choice|N>\""
+}
+```
+
+`options`, `context`, `recommended`, `run_dir`, `script`, and `answer_hint`
+are optional; everything else is required. `options` may be empty for
+free-text questions.
+
+## Answered gate schema
+
+Written atomically by the answering party (the CLI does this):
+
+```json
+{
+  "id": "myproject-approach",
+  "choice": "option-a",
+  "notes": "optional free text",
+  "answered_by": "optional name",
+  "answered_at": "<ISO8601>"
+}
+```
+
+## Lifecycle
+
+1. **Open** — the orchestrator hits a human decision, writes
+   `pending/<id>.json`, emits a `GATE OPEN` signal line on stdout, and polls
+   for `answered/<id>.json`. While gated it must run no agents and hold no
+   concurrency slots.
+2. **Answer** — any session runs
+   `bash core/scripts/workflow-gate.sh answer <id> <choice|N>`. The CLI
+   validates the choice against the gate's options (1-based numeric shorthand
+   maps to the Nth label; `--freeform` records an off-menu choice; `--force`
+   pre-answers an unopened gate or overwrites an existing answer), writes the
+   answered file atomically, and removes the pending file.
+3. **Resume** — the poll sees the answer, the orchestrator emits
+   `GATE ANSWERED`, and the run continues from the pause point with the
+   answer object in hand.
+4. **Cached** — if `answered/<id>.json` already exists when a gate opens, the
+   orchestrator must return it immediately (emit `GATE CACHED`) without
+   writing a pending file or waiting. This is the crash-recovery contract: a
+   re-launched run re-runs its agents but sails through every decision a
+   human already made.
+
+Poll-side robustness: a garbage or partially-written answered file is treated
+as "not answered yet" — keep polling and pick up the next valid write.
+
+## Answering CLI
+
+`core/scripts/workflow-gate.sh`:
+
+| Command | Behavior |
+|---|---|
+| `list` | One line per pending gate: id, age, question, numbered options |
+| `show <id>` | Print the pending gate JSON (falls back to the answered file) |
+| `answer <id> <choice\|N> [--notes "..."] [--by name] [--force] [--freeform]` | Validate and write the answer, remove the pending file |
+| `wait-pending [--timeout secs]` | Block until any gate is pending (exit 0) or timeout (exit 1) — a wake condition for watching sessions |
+| `clear <id>` | Remove both the pending and answered files |
+
+## Session integration
+
+- **Launching session**: run the orchestrator as a background task, watch its
+  stdout (or `wait-pending`) for `GATE OPEN`, surface each gate to the human
+  with the runtime's structured picker (one question at a time, per
+  `decision-queue-one-at-a-time`), answer via the CLI, and let the run
+  continue. Task-exit notification brings the session back for verification.
+- **Any later session**: `/startwork` surfaces pending gates at session start
+  so a returning human can answer without hunting for them.
+- **Away from keyboard**: DM the owner (`hq dm`) with the gate id and answer
+  command rather than letting a question sit silently.
+
+## Hygiene
+
+Answered files are the memory that prevents re-asking — keep them for the
+life of the project that asked, then remove them with `clear` (or by
+retiring the ids) once the pipeline is done. A stale answer under a reused
+id will short-circuit a future gate silently; scoped ids (above) are the
+guard.

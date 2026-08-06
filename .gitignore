@@ -47,6 +47,26 @@ venv/
 # OS files
 .DS_Store
 Thumbs.db
+# macOS Finder custom-icon files. The real filename is `Icon` followed by a
+# carriage return, which is why the pattern is spelled with a character class
+# rather than the obvious alternatives — both of those are traps:
+#
+#   Icon<CR>   inert. Git treats the trailing CR as part of the line ending and
+#              strips it, so the pattern silently degrades to `Icon` and never
+#              matches. (The GitHub macOS template works around this by ending
+#              the line with TWO CRs — invisible, and any editor or linter that
+#              trims trailing whitespace silently breaks it.)
+#   Icon?      over-broad. `?` is a single-character wildcard, so it also
+#              ignores real files named Icons, Icon1, IconX.
+#
+# The character class matches the exact shape with no invisible bytes and no
+# collateral. Verified against git 2.x: ignores `Icon<CR>` at any depth and
+# leaves `Icons` alone.
+#
+# Note this only stops NEW ones — gitignore does not apply to already-tracked
+# files. The autosave hook refuses to stage them regardless, which is the guard
+# that actually holds (.claude/hooks/hq-autocommit.sh).
+Icon[[:cntrl:]]
 
 # Editor files
 .idea/

@@ -1,0 +1,922 @@
+#!/usr/bin/env node
+/**
+ * workflow-runner.mjs — multi-agent workflow orchestration over headless
+ * coding-agent CLIs (Codex, Grok), with human gates.
+ *
+ * Runs a plain-JavaScript orchestration script (Workflow-tool authoring shape:
+ * agent()/parallel()/pipeline()/phase()/log()/gate()/workflow(), top-level
+ * await, top-level return) where every agent() call spawns a headless CLI
+ * subprocess chosen by opts.engine:
+ *
+ *   engine "codex" (default) — `codex exec` with the unattended-run flags
+ *     (--dangerously-bypass-hook-trust --skip-git-repo-check
+ *      --dangerously-bypass-approvals-and-sandbox); result read from a
+ *     dedicated --output-last-message file (transcripts are huge — never
+ *     tailed); structured output via --output-schema.
+ *   engine "grok" — `grok -p` (single-turn headless) with
+ *     --permission-mode bypassPermissions --always-approve; result captured
+ *     from stdout; structured output via a schema instruction appended to the
+ *     prompt (the CLI has no schema flag), parsed from the reply.
+ *
+ * Hardening shared by both engines:
+ *   - soft per-agent timeout: on expiry the agent is NOT killed — a
+ *     TIMEOUT WARNING line prints to stdout and repeats every interval so the
+ *     watching orchestrator decides to kill the process group
+ *     (`kill -- -<pid>`) or let it run
+ *   - stdin closed (/dev/null) — headless CLIs otherwise block on stdin
+ *   - every agent is anchored at the HQ root (codex via -C, grok via spawn
+ *     cwd) so project-level agent config and safety hooks load; opts.cd names
+ *     the task's directory and is injected as a prompt preamble, and must
+ *     resolve inside the HQ root
+ *   - stderr (and codex's combined output) streamed to a per-agent log file
+ *   - CPU governor: at high load, resolved concurrency is halved (floor 1)
+ *
+ * Human gates (spec: core/knowledge/public/hq-core/workflow-gates-spec.md):
+ *   gate(id, question, opts?) pauses the run IN PLACE — a self-contained
+ *   question file lands in <gates>/pending/, a GATE OPEN line prints to
+ *   stdout (even under --quiet — it is the wake signal), and the run polls
+ *   until <gates>/answered/<id>.json exists, then resumes and returns the
+ *   parsed answer. No agents run and no concurrency slot is held while gated.
+ *   Answers are durable: an already-answered id returns instantly
+ *   (GATE CACHED), so a re-launched run never re-asks a human. Answer with
+ *   `bash core/scripts/workflow-gate.sh answer <id> <choice|N>`.
+ *
+ * Usage:
+ *   node core/scripts/workflow-runner.mjs <script.mjs> [options]
+ *   node core/scripts/workflow-runner.mjs --eval '<script source>' [options]
+ *
+ * Options:
+ *   --args <json>        Value exposed to the script as `args`
+ *   --concurrency <n>    Max concurrent agent processes
+ *                        (default: min(16, cores-2), env HQ_WORKFLOW_CONCURRENCY)
+ *   --timeout <secs>     Default per-agent soft timeout — the warning interval
+ *                        (default: 1800, env HQ_WORKFLOW_TIMEOUT_SECS)
+ *   --run-dir <dir>      Where logs/journal land
+ *                        (default: <hq-root>/workspace/tmp/workflow-runner/<runId>)
+ *   --quiet              Suppress narrator lines on stderr
+ *
+ * Env:
+ *   HQ_ROOT                    Explicit HQ root. Unset -> auto-detected by
+ *                              walking up from this script (then cwd) to the
+ *                              first dir with companies/manifest.yaml or
+ *                              .claude/settings.json.
+ *   HQ_WORKFLOW_CODEX_BIN      codex binary (default `codex`; tests inject a fake)
+ *   HQ_WORKFLOW_GROK_BIN       grok binary (default `grok`)
+ *   HQ_WORKFLOW_CODEX_PLAN_MODEL / HQ_WORKFLOW_CODEX_EXEC_MODEL
+ *                              codex tier models (defaults gpt-5.6-sol /
+ *                              gpt-5.6-terra)
+ *   HQ_WORKFLOW_GROK_PLAN_MODEL / HQ_WORKFLOW_GROK_EXEC_MODEL
+ *                              grok tier models (default grok-4.5 for both)
+ *   HQ_WORKFLOW_MODEL          Global model pin overriding every tier map;
+ *                              empty string -> engine CLI default (no -m)
+ *   HQ_WORKFLOW_EFFORT         Default reasoning effort (default high; empty
+ *                              string -> engine CLI default)
+ *   HQ_WORKFLOW_FAST_MODE      Codex fast mode override (1/0). Per-tier
+ *                              default: exec on, plan off. Ignored by grok.
+ *   HQ_WORKFLOW_CPU_CHECK      High-CPU governor on/off (default on)
+ *   HQ_WORKFLOW_CPU_HIGH_THRESHOLD  Busy fraction counting as high (0.85)
+ *   HQ_WORKFLOW_CPU_BUSY_OVERRIDE   Injected busy fraction (tests)
+ *   HQ_WORKFLOW_GATES_DIR      Gates root (default <hq-root>/workspace/gates;
+ *                              legacy CODEX_WORKFLOW_GATES_DIR honored)
+ *   HQ_WORKFLOW_GATE_POLL_SECS Gate poll interval (default 5; legacy
+ *                              CODEX_WORKFLOW_GATE_POLL_SECS honored)
+ *
+ * Script API (mirrors the Workflow tool):
+ *   agent(prompt, opts) -> Promise<string|object>
+ *     opts.tier (REQUIRED): "plan" (analysis/planning — the flagship model)
+ *           or "exec" (execution — the throughput model). agent() throws if
+ *           missing/invalid so the model choice is never implicit.
+ *     opts.engine: "codex" (default) or "grok"
+ *     opts: label, phase, schema (JSON Schema; result parsed+returned as an
+ *           object), model (explicit override), effort, fastMode (codex only),
+ *           cd (task directory inside the HQ root; injected into the prompt),
+ *           timeoutSecs (soft), extraArgs (string[])
+ *   parallel(thunks)     -> barrier; a thrown thunk resolves to null
+ *   pipeline(items, ...stages) -> no barrier; a throwing stage drops its item
+ *   phase(title) / log(msg)
+ *   gate(id, question, opts?) -> human pause (see above)
+ *   workflow(ref, args?) -> nested script, one level deep
+ *   args / budget (budget is a stub: spend is not tracked for CLI engines)
+ *
+ * The script's top-level return value prints to stdout as JSON.
+ */
+
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// HQ root: explicit env, else walk up from the script dir (installed under
+// <hq>/core/scripts/), else from cwd. Tests set HQ_ROOT for hermeticity.
+function looksLikeHqRoot(dir) {
+  return fs.existsSync(path.join(dir, 'companies', 'manifest.yaml'))
+    || fs.existsSync(path.join(dir, '.claude', 'settings.json'));
+}
+function findHqRoot() {
+  if (process.env.HQ_ROOT) return path.resolve(process.env.HQ_ROOT);
+  for (const start of [__dirname, process.cwd()]) {
+    let dir = path.resolve(start);
+    for (;;) {
+      if (looksLikeHqRoot(dir)) return dir;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  process.stderr.write('workflow-runner: cannot locate the HQ root — set HQ_ROOT\n');
+  process.exit(2);
+}
+const HQ_ROOT = findHqRoot();
+
+// ------------------------------------------------------------------- engines
+
+// Codex fast mode: elevated-credit speed tier, ChatGPT-auth only. Per-tier
+// default: on for exec (throughput is the point), off for plan (full
+// reasoning on the expensive tier). Env/opts override in that order.
+const FAST_MODE_FLAGS = ['-c', 'service_tier="fast"', '--enable', 'fast_mode'];
+const FAST_MODE_TIER_DEFAULTS = { plan: false, exec: true };
+const FAST_MODE_ENV = (() => {
+  const raw = (process.env.HQ_WORKFLOW_FAST_MODE || '').trim();
+  if (!raw) return undefined;
+  if (/^(0|false|off|no)$/i.test(raw)) return false;
+  return true;
+})();
+
+const VALID_TIERS = ['plan', 'exec'];
+const ENGINES = {
+  codex: {
+    bin: process.env.HQ_WORKFLOW_CODEX_BIN || 'codex',
+    tierModels: {
+      plan: process.env.HQ_WORKFLOW_CODEX_PLAN_MODEL || 'gpt-5.6-sol',
+      exec: process.env.HQ_WORKFLOW_CODEX_EXEC_MODEL || 'gpt-5.6-terra',
+    },
+  },
+  grok: {
+    bin: process.env.HQ_WORKFLOW_GROK_BIN || 'grok',
+    tierModels: {
+      plan: process.env.HQ_WORKFLOW_GROK_PLAN_MODEL || 'grok-4.5',
+      exec: process.env.HQ_WORKFLOW_GROK_EXEC_MODEL || 'grok-4.5',
+    },
+  },
+};
+const VALID_ENGINES = Object.keys(ENGINES);
+
+const MANDATED_CODEX_FLAGS = [
+  '--dangerously-bypass-hook-trust',
+  '--skip-git-repo-check',
+  '--dangerously-bypass-approvals-and-sandbox',
+];
+
+const MODEL_OVERRIDE = process.env.HQ_WORKFLOW_MODEL; // undefined if unset
+const DEFAULT_EFFORT = process.env.HQ_WORKFLOW_EFFORT ?? 'high';
+const MAX_AGENTS = 1000; // runaway-loop backstop
+
+const CPU_CHECK_ENABLED = !/^(0|false|off|no)$/i.test(process.env.HQ_WORKFLOW_CPU_CHECK || '');
+const CPU_HIGH_THRESHOLD = (() => {
+  const raw = process.env.HQ_WORKFLOW_CPU_HIGH_THRESHOLD;
+  const v = Number(raw);
+  return raw !== undefined && raw !== '' && Number.isFinite(v) && v > 0 && v <= 1 ? v : 0.85;
+})();
+const CPU_SAMPLE_MS = 200;
+
+// Human gates: a well-known location outside the per-run dir so ANY session
+// can list/answer them, and answers survive the run that asked. The legacy
+// CODEX_WORKFLOW_* names are honored because the shipped answering CLI and
+// spec introduced them.
+const GATES_DIR = process.env.HQ_WORKFLOW_GATES_DIR
+  || process.env.CODEX_WORKFLOW_GATES_DIR
+  || path.join(HQ_ROOT, 'workspace', 'gates');
+const DEFAULT_GATE_POLL_SECS = (() => {
+  const v = Number(process.env.HQ_WORKFLOW_GATE_POLL_SECS ?? process.env.CODEX_WORKFLOW_GATE_POLL_SECS);
+  return Number.isFinite(v) && v > 0 ? v : 5;
+})();
+
+// ---------------------------------------------------------------- CLI parsing
+
+function usageAndExit(code) {
+  const header = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+  const doc = header.slice(header.indexOf('/**'), header.indexOf('*/') + 2);
+  process.stderr.write(doc + '\n');
+  process.exit(code);
+}
+
+function parseCli(argv) {
+  const cli = {
+    scriptPath: null,
+    evalSrc: null,
+    args: undefined,
+    concurrency: null,
+    timeoutSecs: null,
+    runDir: null,
+    quiet: false,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    const next = (name) => {
+      if (i + 1 >= argv.length) {
+        process.stderr.write(`workflow-runner: ${name} requires a value\n`);
+        process.exit(2);
+      }
+      return argv[++i];
+    };
+    switch (a) {
+      case '--help': case '-h': usageAndExit(0); break;
+      case '--eval': cli.evalSrc = next('--eval'); break;
+      case '--args': {
+        const raw = next('--args');
+        try { cli.args = JSON.parse(raw); } catch { cli.args = raw; }
+        break;
+      }
+      case '--concurrency': cli.concurrency = next('--concurrency'); break;
+      case '--timeout': cli.timeoutSecs = next('--timeout'); break;
+      case '--run-dir': cli.runDir = next('--run-dir'); break;
+      case '--quiet': cli.quiet = true; break;
+      default:
+        if (a.startsWith('-')) {
+          process.stderr.write(`workflow-runner: unknown option ${a}\n`);
+          process.exit(2);
+        }
+        if (cli.scriptPath) {
+          process.stderr.write('workflow-runner: only one script path allowed\n');
+          process.exit(2);
+        }
+        cli.scriptPath = a;
+    }
+  }
+  if (!cli.scriptPath && !cli.evalSrc) usageAndExit(2);
+  if (cli.scriptPath && cli.evalSrc) {
+    process.stderr.write('workflow-runner: pass a script path OR --eval, not both\n');
+    process.exit(2);
+  }
+  return cli;
+}
+
+// ------------------------------------------------------------------ utilities
+
+function hhmmss() {
+  return new Date().toISOString().slice(11, 19);
+}
+
+function errMsg(e) {
+  return e instanceof Error ? e.message : String(e);
+}
+
+// The child is spawned detached so it leads its own process group; signal the
+// whole group (-pid) so the CLI AND everything it spawned die together.
+function killTree(child, sig) {
+  try {
+    process.kill(-child.pid, sig);
+  } catch {
+    try { child.kill(sig); } catch { /* already gone */ }
+  }
+}
+
+class Semaphore {
+  constructor(n) { this.free = n; this.queue = []; }
+  async acquire() {
+    if (this.free > 0) { this.free--; return; }
+    await new Promise((resolve) => this.queue.push(resolve));
+  }
+  release() {
+    const next = this.queue.shift();
+    if (next) next(); else this.free++;
+  }
+}
+
+function tailOfFile(file, bytes) {
+  try {
+    const size = fs.statSync(file).size;
+    const fd = fs.openSync(file, 'r');
+    try {
+      const start = Math.max(0, size - bytes);
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      return buf.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (e) {
+    return `<could not read log tail: ${e.message}>`;
+  }
+}
+
+// grok --output-format json wraps the reply as {text, stopReason, sessionId,
+// requestId, thought}. Unwrap it to the reply text, but FAIL LOUDLY when the
+// run did not finish normally: a denied tool call (HQ hooks deny e.g.
+// Glob-from-root) ends the run with stopReason "Cancelled", an empty-ish text,
+// and exit code 0. Silence there would look like a malformed reply instead of
+// "your agent was stopped", so the reason is surfaced in the error.
+const GROK_FAILURE_STOP_REASON = /cancel|error|refus|abort|max.?turns|limit/i;
+
+function unwrapGrokEnvelope(raw, label, lastFile, logFile) {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error(`${label} produced no output at all (grok exited 0 with an empty envelope). Result file: ${lastFile}. Log: ${logFile}`);
+  }
+  let env;
+  try {
+    env = JSON.parse(trimmed);
+  } catch {
+    // Not an envelope (older CLI, or plain text slipped through) — the raw
+    // reply is still the most useful thing to hand back.
+    return trimmed;
+  }
+  if (!env || typeof env !== 'object' || !('text' in env || 'stopReason' in env)) return trimmed;
+  const stop = String(env.stopReason ?? '');
+  const text = typeof env.text === 'string' ? env.text : '';
+  if (stop && GROK_FAILURE_STOP_REASON.test(stop)) {
+    throw new Error(
+      `${label} stopped early: stopReason=${stop}. This is usually a denied tool ` +
+      `call (HQ hooks deny some tools, e.g. Glob from the HQ root) or a limit. ` +
+      `Last text before stopping: ${JSON.stringify(text.slice(0, 300))}. ` +
+      `Envelope: ${lastFile}. Log: ${logFile}`);
+  }
+  if (!text.trim()) {
+    throw new Error(
+      `${label} returned an empty reply (stopReason=${stop || 'none'}). ` +
+      `Envelope: ${lastFile}. Log: ${logFile}`);
+  }
+  return text;
+}
+
+// Scan for embedded JSON values and return every balanced {...} / [...] block,
+// respecting string literals and escapes so braces inside strings do not throw
+// the matching off. Needed because an engine without a schema flag (grok)
+// happily prefixes its answer with narration — observed live:
+// "Reading the skill file.Re-running the listing.{\"idPattern\":...}".
+function balancedJsonCandidates(s) {
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    const open = s[i];
+    if (open !== '{' && open !== '[') continue;
+    const close = open === '{' ? '}' : ']';
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j < s.length; j++) {
+      const c = s[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') { inStr = true; continue; }
+      if (c === open) depth++;
+      else if (c === close) {
+        depth--;
+        if (depth === 0) { out.push(s.slice(i, j + 1)); i = j; break; }
+      }
+    }
+  }
+  return out;
+}
+
+function parseMaybeJson(text, context) {
+  const trimmed = text.trim();
+  try { return JSON.parse(trimmed); } catch { /* fall through */ }
+  const fence = trimmed.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+  if (fence) {
+    try { return JSON.parse(fence[1]); } catch { /* fall through */ }
+  }
+  // Prose-wrapped answer: take the LAST parseable balanced block — the final
+  // answer, not an example the model quoted earlier while thinking.
+  const candidates = balancedJsonCandidates(trimmed);
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    try { return JSON.parse(candidates[i]); } catch { /* try the next */ }
+  }
+  throw new Error(`schema result is not valid JSON (${context})`);
+}
+
+function cpuTimesSnapshot() {
+  const cpus = os.cpus() || [];
+  let idle = 0, total = 0;
+  for (const cpu of cpus) {
+    const t = cpu.times;
+    idle += t.idle;
+    total += t.user + t.nice + t.sys + t.idle + t.irq;
+  }
+  return { idle, total };
+}
+
+async function sampleCpuBusyFraction(ms) {
+  try {
+    const a = cpuTimesSnapshot();
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    const b = cpuTimesSnapshot();
+    const idleDelta = b.idle - a.idle;
+    const totalDelta = b.total - a.total;
+    if (!(totalDelta > 0)) return null;
+    return Math.max(0, Math.min(1, 1 - idleDelta / totalDelta));
+  } catch {
+    return null;
+  }
+}
+
+async function resolveCpuBusyFraction() {
+  const raw = process.env.HQ_WORKFLOW_CPU_BUSY_OVERRIDE;
+  if (raw !== undefined && raw !== '') {
+    const v = Number(raw);
+    if (Number.isFinite(v)) return Math.max(0, Math.min(1, v));
+  }
+  return sampleCpuBusyFraction(CPU_SAMPLE_MS);
+}
+
+// --------------------------------------------------------------------- runner
+
+async function buildRuntime(cli) {
+  const runId = `wf-${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}`;
+  const runDir = path.resolve(cli.runDir || path.join(HQ_ROOT, 'workspace', 'tmp', 'workflow-runner', runId));
+  fs.mkdirSync(runDir, { recursive: true });
+
+  const positiveInt = (raw, name) => {
+    if (raw === undefined || raw === null || raw === '') return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 1) {
+      process.stderr.write(`workflow-runner: ${name} must be a positive integer, got ${JSON.stringify(raw)}\n`);
+      process.exit(2);
+    }
+    return Math.floor(n);
+  };
+  const defaultConcurrency = Math.min(16, Math.max(1, os.cpus().length - 2));
+  let concurrency = positiveInt(cli.concurrency, '--concurrency')
+    ?? positiveInt(process.env.HQ_WORKFLOW_CONCURRENCY, 'HQ_WORKFLOW_CONCURRENCY')
+    ?? defaultConcurrency;
+
+  let cpuThrottle = null;
+  if (CPU_CHECK_ENABLED && concurrency > 1) {
+    const busy = await resolveCpuBusyFraction();
+    if (busy !== null && busy >= CPU_HIGH_THRESHOLD) {
+      const reduced = Math.max(1, Math.floor(concurrency / 2));
+      if (reduced < concurrency) {
+        cpuThrottle = { busy, from: concurrency, to: reduced };
+        concurrency = reduced;
+      }
+    }
+  }
+
+  const defaultTimeoutSecs = positiveInt(cli.timeoutSecs, '--timeout')
+    ?? positiveInt(process.env.HQ_WORKFLOW_TIMEOUT_SECS, 'HQ_WORKFLOW_TIMEOUT_SECS')
+    ?? 1800;
+
+  const state = {
+    runDir,
+    concurrency,
+    semaphore: new Semaphore(concurrency),
+    counter: 0,
+    currentPhase: '',
+    defaultTimeoutSecs,
+    quiet: cli.quiet,
+    activeChildren: new Set(),
+    journalFile: path.join(runDir, 'journal.jsonl'),
+    aborted: false,
+    onAllChildrenGone: null,
+  };
+
+  const narr = (msg) => {
+    if (!state.quiet) process.stderr.write(`[${hhmmss()}] ${msg}\n`);
+  };
+
+  const journal = (entry) => {
+    fs.appendFileSync(state.journalFile, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n');
+  };
+
+  if (cpuThrottle) {
+    const pct = Math.round(cpuThrottle.busy * 100);
+    const thr = Math.round(CPU_HIGH_THRESHOLD * 100);
+    process.stderr.write(
+      `[${hhmmss()}] WARNING: high CPU usage (${pct}% >= ${thr}%) — concurrency reduced ` +
+      `from ${cpuThrottle.from} to ${cpuThrottle.to}\n`);
+    journal({ event: 'cpu-throttle', busy: cpuThrottle.busy, threshold: CPU_HIGH_THRESHOLD, from: cpuThrottle.from, to: cpuThrottle.to });
+  }
+
+  async function agent(prompt, opts = {}) {
+    if (typeof prompt !== 'string' || !prompt.trim()) {
+      throw new Error('agent() requires a non-empty string prompt');
+    }
+    const n = ++state.counter;
+    if (n > MAX_AGENTS) throw new Error(`agent cap reached (${MAX_AGENTS})`);
+    const label = opts.label || `agent-${n}`;
+    const engineName = opts.engine || 'codex';
+    const engine = ENGINES[engineName];
+    if (!engine) {
+      throw new Error(
+        `agent() opts.engine must be one of ${JSON.stringify(VALID_ENGINES)} — ` +
+        `got ${JSON.stringify(engineName)} for "${label}".`);
+    }
+    // Every worker picks a tier so the model choice is explicit: "plan" for
+    // analysis/planning (flagship model), "exec" for execution (throughput).
+    const tier = opts.tier;
+    if (!VALID_TIERS.includes(tier)) {
+      throw new Error(
+        `agent() requires opts.tier to be one of ${JSON.stringify(VALID_TIERS)} — ` +
+        `got ${JSON.stringify(tier)} for "${label}". Use "plan" for analysis & ` +
+        `planning and "exec" for execution.`);
+    }
+    const phaseName = opts.phase || state.currentPhase;
+    const timeoutSecs = opts.timeoutSecs || state.defaultTimeoutSecs;
+    const logFile = path.join(state.runDir, `agent-${n}.log`);
+    const lastFile = path.join(state.runDir, `agent-${n}.last.md`);
+
+    // Working directory: every agent is anchored at the HQ root (codex loads
+    // its hook config from -C; grok from its spawn cwd) so project safety
+    // rails load. opts.cd names the folder the TASK lives in, must resolve
+    // inside the HQ root, and is injected as a prompt preamble.
+    const explicitCd = opts.cd !== undefined && opts.cd !== null && String(opts.cd) !== '';
+    let workDir = path.resolve(explicitCd ? String(opts.cd) : process.cwd());
+    const rel = path.relative(HQ_ROOT, workDir);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      if (explicitCd) {
+        throw new Error(
+          `agent() opts.cd must resolve inside the HQ root (${HQ_ROOT}) — got ` +
+          `${workDir} for "${label}". Agents always anchor at the HQ root so ` +
+          `its safety hooks load; put the working path in opts.cd (it is ` +
+          `injected into the prompt) or in the prompt itself.`);
+      }
+      narr(`! cwd ${workDir} is outside the HQ root — "${label}" targets ${HQ_ROOT} instead`);
+      workDir = HQ_ROOT;
+    }
+    let spawnPrompt = workDir === HQ_ROOT ? prompt : [
+      `Working directory for this task: ${workDir}`,
+      '',
+      `You are launched at the HQ root (${HQ_ROOT}) so its agent hooks and safety`,
+      'rails load. Do the work under the path above, not at the HQ root: cd into it',
+      'for reads, builds and tests, anchor every git mutation with',
+      `\`git -C ${workDir} ...\` and every GitHub mutation with \`gh ... -R owner/repo\`.`,
+      '',
+      '---',
+      '',
+      prompt,
+    ].join('\n');
+
+    // Model precedence: explicit opts.model > global HQ_WORKFLOW_MODEL pin >
+    // the engine's tier model. tier is required, so there is always a model.
+    let model;
+    if (opts.model !== undefined) model = opts.model;
+    else if (MODEL_OVERRIDE !== undefined) model = MODEL_OVERRIDE;
+    else model = engine.tierModels[tier];
+    const effort = opts.effort !== undefined ? opts.effort : DEFAULT_EFFORT;
+
+    let argv;
+    let resultFromStdout = false;
+    if (engineName === 'codex') {
+      argv = ['exec', ...MANDATED_CODEX_FLAGS, '--color', 'never',
+        '-C', HQ_ROOT,
+        '--output-last-message', lastFile];
+      if (model) argv.push('-m', String(model));
+      if (effort) argv.push('-c', `model_reasoning_effort=${JSON.stringify(String(effort))}`);
+      let fastMode;
+      if (opts.fastMode !== undefined) fastMode = Boolean(opts.fastMode);
+      else if (FAST_MODE_ENV !== undefined) fastMode = FAST_MODE_ENV;
+      else fastMode = FAST_MODE_TIER_DEFAULTS[tier];
+      if (fastMode) argv.push(...FAST_MODE_FLAGS);
+      if (opts.schema) {
+        const schemaFile = path.join(state.runDir, `agent-${n}.schema.json`);
+        fs.writeFileSync(schemaFile, JSON.stringify(opts.schema, null, 2));
+        argv.push('--output-schema', schemaFile);
+      }
+      if (Array.isArray(opts.extraArgs)) argv.push(...opts.extraArgs.map(String));
+      // `--` ends option parsing so a prompt like 'help' or '-x' stays a prompt
+      argv.push('--', spawnPrompt);
+    } else {
+      // grok: single-turn headless. Always ask for the JSON envelope rather
+      // than plain text — a run that ends early (`stopReason: "Cancelled"`,
+      // which is what a denied tool call produces, e.g. HQ's Glob-from-root
+      // guard) prints NOTHING in plain mode and still exits 0, so the failure
+      // would surface downstream as a bogus parse error instead of the real
+      // reason. The envelope carries {text, stopReason} and is unwrapped
+      // below. No schema flag exists — instruct in the prompt, parse the text.
+      if (opts.schema) {
+        spawnPrompt += '\n\nReturn ONLY JSON matching this JSON Schema — no prose, no code fences:\n'
+          + JSON.stringify(opts.schema);
+      }
+      argv = ['--single', spawnPrompt,
+        '--permission-mode', 'bypassPermissions',
+        '--always-approve',
+        '--output-format', 'json'];
+      if (model) argv.push('-m', String(model));
+      if (effort) argv.push('--reasoning-effort', String(effort));
+      if (Array.isArray(opts.extraArgs)) argv.push(...opts.extraArgs.map(String));
+      resultFromStdout = true;
+    }
+
+    if (state.aborted) throw new Error('workflow aborted by signal');
+    await state.semaphore.acquire();
+    const startedAt = Date.now();
+    narr(`${phaseName ? `[${phaseName}] ` : ''}▶ ${label} started (${engineName}, warn-after ${timeoutSecs}s, log ${logFile})`);
+    journal({ event: 'agent-start', n, label, phase: phaseName, engine: engineName, timeoutSecs, logFile, lastFile, spawnCwd: HQ_ROOT, workDir, promptHead: prompt.slice(0, 200) });
+
+    try {
+      const result = await new Promise((resolve, reject) => {
+        const logFd = fs.openSync(logFile, 'w');
+        // grok's stdout is the result — write it straight to lastFile so both
+        // engines converge on "read lastFile when the child exits 0".
+        const outFd = resultFromStdout ? fs.openSync(lastFile, 'w') : logFd;
+        let settled = false;
+        let fdsClosed = false;
+        const closeFds = () => {
+          if (fdsClosed) return;
+          fdsClosed = true;
+          try { fs.closeSync(logFd); } catch { /* already closed */ }
+          if (resultFromStdout) { try { fs.closeSync(outFd); } catch { /* already closed */ } }
+        };
+        const settle = (err) => {
+          closeFds();
+          if (settled) return;
+          settled = true;
+          if (err) reject(err); else resolve(null);
+        };
+        let child;
+        try {
+          // stdin: 'ignore' wires the child's stdin to /dev/null — headless
+          // CLIs otherwise hang on a stdin-EOF wait. detached: the child
+          // leads its own process group so killTree() reaches its subtree.
+          child = spawn(engine.bin, argv, {
+            stdio: ['ignore', outFd, logFd],
+            detached: true,
+            cwd: HQ_ROOT,
+          });
+        } catch (e) {
+          settle(new Error(`failed to spawn ${engine.bin}: ${errMsg(e)}`));
+          return;
+        }
+        state.activeChildren.add(child);
+        const warnTimer = setInterval(() => {
+          const elapsed = Math.round((Date.now() - startedAt) / 1000);
+          process.stdout.write(
+            `[${hhmmss()}] TIMEOUT WARNING: ${label} still running after ${elapsed}s ` +
+            `(timeout ${timeoutSecs}s, pid ${child.pid}) — not killed; ` +
+            `kill -- -${child.pid} to stop it, or let it continue. Log: ${logFile}\n`);
+          journal({ event: 'agent-timeout-warning', n, label, phase: phaseName, elapsed, timeoutSecs, pid: child.pid });
+        }, timeoutSecs * 1000);
+        child.on('error', (e) => {
+          clearInterval(warnTimer);
+          state.activeChildren.delete(child);
+          settle(new Error(`failed to spawn ${engine.bin}: ${errMsg(e)}`));
+        });
+        child.on('close', (code, signal) => {
+          clearInterval(warnTimer);
+          state.activeChildren.delete(child);
+          if (state.aborted && state.activeChildren.size === 0 && state.onAllChildrenGone) {
+            state.onAllChildrenGone();
+          }
+          if (state.aborted) {
+            settle(new Error(`workflow aborted by signal (${label} terminated)`));
+          } else if (code !== 0) {
+            settle(new Error(`${label} exited with code=${code} signal=${signal ?? 'none'}. Log: ${logFile}\n--- log tail ---\n${tailOfFile(logFile, 600)}`));
+          } else {
+            settle(null);
+          }
+        });
+      }).then(() => {
+        let text;
+        try {
+          text = fs.readFileSync(lastFile, 'utf8');
+        } catch {
+          throw new Error(`${label} exited 0 but wrote no result file (${lastFile}). Log: ${logFile}`);
+        }
+        if (resultFromStdout) text = unwrapGrokEnvelope(text, label, lastFile, logFile);
+        return opts.schema ? parseMaybeJson(text, `${label}, raw text in ${lastFile}`) : text.trim();
+      });
+
+      const secs = Math.round((Date.now() - startedAt) / 1000);
+      narr(`${phaseName ? `[${phaseName}] ` : ''}✔ ${label} done (${secs}s)`);
+      journal({ event: 'agent-done', n, label, phase: phaseName, secs });
+      return result;
+    } catch (e) {
+      const secs = Math.round((Date.now() - startedAt) / 1000);
+      narr(`${phaseName ? `[${phaseName}] ` : ''}✖ ${label} FAILED (${secs}s): ${errMsg(e).split('\n')[0]}`);
+      journal({ event: 'agent-fail', n, label, phase: phaseName, secs, error: errMsg(e) });
+      throw e;
+    } finally {
+      state.semaphore.release();
+    }
+  }
+
+  async function parallel(thunks) {
+    if (!Array.isArray(thunks)) throw new Error('parallel() takes an array of thunks');
+    return Promise.all(thunks.map(async (thunk, i) => {
+      try {
+        return await thunk();
+      } catch (e) {
+        narr(`parallel[${i}] resolved to null: ${errMsg(e).split('\n')[0]}`);
+        return null;
+      }
+    }));
+  }
+
+  async function pipeline(items, ...stages) {
+    if (!Array.isArray(items)) throw new Error('pipeline() takes an array of items');
+    return Promise.all(items.map(async (item, i) => {
+      let acc = item;
+      for (let s = 0; s < stages.length; s++) {
+        try {
+          acc = await stages[s](acc, item, i);
+        } catch (e) {
+          narr(`pipeline item[${i}] dropped at stage ${s + 1}: ${errMsg(e).split('\n')[0]}`);
+          return null;
+        }
+      }
+      return acc;
+    }));
+  }
+
+  function phase(title) {
+    state.currentPhase = String(title);
+    narr(`━━ phase: ${title}`);
+    journal({ event: 'phase', title: String(title) });
+  }
+
+  function log(msg) {
+    narr(String(msg));
+    journal({ event: 'log', msg: String(msg) });
+  }
+
+  // Token spend is not tracked for CLI engines — behave like "no target set".
+  const budget = { total: null, spent: () => 0, remaining: () => Infinity };
+
+  // ---------------------------------------------------------------- gate()
+  // Human-in-the-loop pause. The run stays alive and resumes IN PLACE when an
+  // answer file lands; nothing re-runs because nothing exited. The pending
+  // file is self-contained so any session can answer it cold.
+  const scriptName = cli.scriptPath ? path.resolve(cli.scriptPath) : '<eval>';
+
+  const slugifyGateId = (raw) => String(raw ?? '')
+    .trim().toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[-._]+|[-._]+$/g, '');
+
+  async function gate(id, question, opts = {}) {
+    const gid = slugifyGateId(id);
+    if (!gid) {
+      throw new Error(`gate() requires an id with at least one [a-z0-9._-] character after slugging — got ${JSON.stringify(id)}`);
+    }
+    if (typeof question !== 'string' || !question.trim()) {
+      throw new Error(`gate() requires a non-empty question string for "${gid}"`);
+    }
+    const options = Array.isArray(opts.options)
+      ? opts.options.map((o) => (typeof o === 'string'
+        ? { label: o }
+        : { label: String(o.label), ...(o.description ? { description: String(o.description) } : {}) }))
+      : [];
+    const pollSecs = Number(opts.pollSecs) > 0 ? Number(opts.pollSecs) : DEFAULT_GATE_POLL_SECS;
+    const pendingDir = path.join(GATES_DIR, 'pending');
+    const answeredDir = path.join(GATES_DIR, 'answered');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.mkdirSync(answeredDir, { recursive: true });
+    const pendingFile = path.join(pendingDir, `${gid}.json`);
+    const answerFile = path.join(answeredDir, `${gid}.json`);
+
+    // A half-written or garbage answer file must not crash the wait — treat
+    // it as "not answered yet" and pick up the next valid write.
+    const readAnswer = () => {
+      try { return JSON.parse(fs.readFileSync(answerFile, 'utf8')); } catch { return null; }
+    };
+
+    // Durable answers: an already-answered gate returns instantly, so a
+    // re-launched run sails through every decision a human already made.
+    const cached = readAnswer();
+    if (cached) {
+      try { fs.rmSync(pendingFile, { force: true }); } catch { /* best-effort */ }
+      process.stdout.write(`[${hhmmss()}] GATE CACHED: ${gid} → ${cached.choice ?? '<no choice>'} (${answerFile})\n`);
+      journal({ event: 'gate-cached', id: gid, choice: cached.choice ?? null });
+      return cached;
+    }
+
+    const payload = {
+      id: gid,
+      question: question.trim(),
+      options,
+      ...(opts.context ? { context: String(opts.context) } : {}),
+      ...(opts.recommended ? { recommended: String(opts.recommended) } : {}),
+      status: 'pending',
+      created_at: new Date().toISOString(),
+      run_id: runId,
+      run_dir: state.runDir,
+      script: scriptName,
+      answer_path: answerFile,
+      answer_hint: `bash core/scripts/workflow-gate.sh answer ${gid} "<choice|N>" [--notes "..."]`,
+    };
+    const tmp = `${pendingFile}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n');
+    fs.renameSync(tmp, pendingFile);
+    // GATE OPEN goes to stdout even under --quiet — like TIMEOUT WARNING, it
+    // is the signal a watching orchestrator acts on.
+    process.stdout.write(
+      `[${hhmmss()}] GATE OPEN: ${gid} — ${question.trim()} ` +
+      `(answer: bash core/scripts/workflow-gate.sh answer ${gid} "<choice|N>"; pending: ${pendingFile})\n`);
+    journal({ event: 'gate-open', id: gid, question: question.trim(), pendingFile });
+    narr(`⏸ gate open: ${gid} — paused for a human answer (poll ${pollSecs}s)`);
+
+    const startedAt = Date.now();
+    for (;;) {
+      if (state.aborted) throw new Error(`workflow aborted by signal (gate ${gid} still pending)`);
+      const answer = readAnswer();
+      if (answer) {
+        try { fs.rmSync(pendingFile, { force: true }); } catch { /* best-effort */ }
+        const waitedSecs = Math.round((Date.now() - startedAt) / 1000);
+        process.stdout.write(`[${hhmmss()}] GATE ANSWERED: ${gid} → ${answer.choice ?? '<no choice>'} (waited ${waitedSecs}s)\n`);
+        journal({ event: 'gate-answered', id: gid, choice: answer.choice ?? null, waitedSecs });
+        narr(`▶ gate answered: ${gid} — resuming`);
+        return answer;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollSecs * 1000));
+    }
+  }
+
+  return { state, narr, journal, agent, parallel, pipeline, phase, log, budget, gate };
+}
+
+// ------------------------------------------------------------- script loading
+
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const SCRIPT_PARAMS = ['agent', 'parallel', 'pipeline', 'phase', 'log', 'args', 'budget', 'workflow', 'gate'];
+
+function compileScript(source, name) {
+  // Try the source verbatim first: inside a function body a real top-level
+  // `export`/`import` is a SyntaxError, but the same words inside a
+  // template-literal prompt are data and must never be rewritten.
+  try {
+    return new AsyncFunction(...SCRIPT_PARAMS, source);
+  } catch (primaryErr) {
+    // Workflow-tool shape: strip top-level `export` keywords and retry.
+    const transformed = source.replace(/^(\s*)export\s+(?=(const|let|var|function|async|class)\b)/gm, '$1');
+    try {
+      return new AsyncFunction(...SCRIPT_PARAMS, transformed);
+    } catch {
+      throw new Error(`${name}: script failed to parse: ${errMsg(primaryErr)} (static import and export default are not supported; Workflow-tool scripts with "export const meta" are)`);
+    }
+  }
+}
+
+// Set once buildRuntime() has run so shutdown paths (signals, fatal errors)
+// can always reach the active children.
+let RT = null;
+
+function terminateAndExit(code) {
+  if (!RT) process.exit(code);
+  const st = RT.state;
+  if (st.aborted) {
+    for (const child of st.activeChildren) killTree(child, 'SIGKILL');
+    process.exit(code);
+  }
+  st.aborted = true;
+  for (const child of st.activeChildren) killTree(child, 'SIGTERM');
+  if (st.activeChildren.size === 0) process.exit(code);
+  st.onAllChildrenGone = () => process.exit(code);
+  setTimeout(() => {
+    for (const child of st.activeChildren) killTree(child, 'SIGKILL');
+    process.exit(code);
+  }, 5000);
+}
+
+async function main() {
+  const cli = parseCli(process.argv.slice(2));
+  const rt = await buildRuntime(cli);
+  RT = rt;
+
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    process.on(sig, () => {
+      rt.narr(`received ${sig} — terminating ${rt.state.activeChildren.size} agent process(es)`);
+      terminateAndExit(130);
+    });
+  }
+
+  let workflowDepth = 0;
+  async function workflow(ref, childArgs) {
+    if (workflowDepth >= 1) throw new Error('workflow() nesting is one level only');
+    const scriptPath = typeof ref === 'string' ? ref : ref && ref.scriptPath;
+    if (!scriptPath) throw new Error('workflow() needs a script path string or {scriptPath}');
+    const resolved = path.resolve(scriptPath);
+    const source = fs.readFileSync(resolved, 'utf8');
+    const fn = compileScript(source, resolved);
+    rt.narr(`▸ nested workflow: ${resolved}`);
+    workflowDepth++;
+    try {
+      return await fn(rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log, childArgs, rt.budget, () => {
+        throw new Error('workflow() nesting is one level only');
+      }, rt.gate);
+    } finally {
+      workflowDepth--;
+    }
+  }
+
+  const name = cli.scriptPath ? path.resolve(cli.scriptPath) : '<eval>';
+  const source = cli.scriptPath ? fs.readFileSync(name, 'utf8') : cli.evalSrc;
+  const fn = compileScript(source, name);
+
+  rt.narr(`run dir: ${rt.state.runDir}`);
+  rt.journal({ event: 'run-start', script: name, argsProvided: cli.args !== undefined, concurrency: rt.state.concurrency });
+
+  const result = await fn(rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log, cli.args, rt.budget, workflow, rt.gate);
+
+  rt.journal({ event: 'run-done', agents: rt.state.counter });
+  rt.narr(`done — ${rt.state.counter} agent(s), artifacts in ${rt.state.runDir}`);
+  process.stdout.write(JSON.stringify(result ?? null, null, 2) + '\n');
+}
+
+main().catch((e) => {
+  process.stderr.write(`workflow-runner: FAILED: ${errMsg(e)}\n`);
+  terminateAndExit(1);
+});

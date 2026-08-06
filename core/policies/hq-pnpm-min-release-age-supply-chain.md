@@ -83,3 +83,7 @@ Soft enforcement does not justify those odds.
   - `.claude/policies/package-manager-per-repo.md` — per-repo manager pin (broader rule about which manager each repo uses)
   - `.claude/policies/vercel-pnpm-version-pin.md` — pinning the pnpm version itself
 - 2026-05-12 incident reference: workspace/learnings (incident notes), captured this policy
+
+### First-party exemption (2026-08-05, owner request)
+
+Packages under a trusted first-party npm scope — default **`@indigoai-us/*`** (the HQ CLI and packs) — are exempt from the release-age gate in `block-unsafe-package-install.sh`: HQ publishes these itself, so the 24h quarantine only delays our own releases. A mixed install (trusted + third-party in one command) still blocks. Override the scope list via `HQ_TRUSTED_INSTALL_SCOPES` (space-separated) in the hook environment.

@@ -1,7 +1,7 @@
 ---
 name: hq-heal
 description: Triage and repair HQ session errors such as hook crashes, sync conflicts, or MCP failures.
-allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion
+allowed-tools: Read, Write, Edit, Bash, Bash(bash core/scripts/git-pack-extension-check.sh:*), Glob, Grep, AskUserQuestion
 ---
 
 # HQ Heal — Session Error Triage
@@ -17,7 +17,7 @@ The first argument shapes how the error is collected. Everything after the flag 
 - `(no args)` → use `AskUserQuestion` to ask the user to paste the error text.
 - `<free text>` → treat the entire argument string as the error text.
 - `--last-session` → scan the most recent JSONL under `~/.claude/projects/-Users-*-Documents-HQ/` for the trailing error (uses the streaming Python pattern from `.claude/skills/recover-session/SKILL.md` step 3 — never read the full file).
-- `--class <name>` → skip classification and jump straight to the diagnostics recipe for that class. Valid: `autocompact`, `hook`, `sync`, `denylist`, `mcp`, `qmd`, `reindex`, `symlink`, `git-root`, `plan-mode`, `unknown`.
+- `--class <name>` → skip classification and jump straight to the diagnostics recipe for that class. Valid: `autocompact`, `hook`, `sync`, `denylist`, `mcp`, `qmd`, `reindex`, `symlink`, `git-root`, `git-object-store`, `plan-mode`, `unknown`.
 - `--dry-run` → diagnose and propose but do not apply any fix.
 - `--no-bug` → suppress the automatic `/hq-bug` filing step. By default, every heal run files a bug so HQ engineering accumulates signal on which error classes are recurring (see Step 6).
 - `--allow-core` → permit the apply step to edit files under `core/` (the hook-protected mirror) by prefixing the offending Write/Edit/Bash call with `HQ_BYPASS_CORE_PROTECT=1`. Off by default — heal will refuse a core edit and require this flag to be passed, even when the user confirms the numbered fix. Always documented in the heal report and the filed bug (see Step 5 + Step 6).
@@ -46,6 +46,7 @@ Unless `--class` is set, walk the pattern table top-to-bottom; first match wins.
 | `qmd` | `qmd: error`, `qmd .* index`, `collection .* not found`, `qmd update` failures |
 | `reindex` | `reindex.sh`, `master-sync.sh`, `duplicate worker id`, `personal/<type>/<entry>.*already exists` |
 | `symlink` | `Too many levels of symbolic links`, `ELOOP`, `dangling symlink`, `readlink: .* No such file` |
+| `git-object-store` | `unable to read tree`, `bad tree object`, `cannot read commit object`, `invalid sha1 pointer`, `fatal: bad object`, `object file .* is empty`, `packfile .* (cannot|does not)` |
 | `git-root` | `block-hq-root-git-mutation`, `git .* blocked from HQ root`, `HQ_ALLOW_HQ_ROOT_GIT` |
 | `plan-mode` | `plan mode`, `ExitPlanMode required`, `cannot Edit in plan mode` |
 | `unknown` | (no match) |
@@ -130,6 +131,24 @@ Checks:
 - Common HQ symlinks to verify: `AGENTS.md`, `companies/*/knowledge`, `core/knowledge/public/*`, `.claude/skills/personal:*`
 
 Fix proposal: re-create the symlink with an absolute path under `$HOME/Documents/HQ/` (learned rule: never relative symlinks across worktrees). Apply via Edit/Bash only if the target is unambiguous.
+
+#### `git-object-store`
+These errors read like history loss, so the instinct is to reach for `git gc`, a reclone, or `--prune`. Do NOT start there — check for a mechanical cause first, because the most common one destroys nothing and is repaired by a rename.
+
+Run the deterministic probe first (report-only; it never renames without `--fix`):
+
+```bash
+bash core/scripts/git-pack-extension-check.sh --root .
+```
+
+A packfile set is three files sharing a basename — `pack-<sha>.pack`, `.idx`, `.rev` — and git pairs them **by extension**. If any one of them loses its extension, git stops seeing the whole set: the objects are still on disk byte for byte, but they become unreachable, and git reports them as missing. `git fsck` will agree they are gone and `git gc` cannot help, because nothing is corrupt.
+
+- Exit 0 → the pack set is intact; this is a different problem. Go on to `git fsck --full`, check `.git/objects/info/alternates`, and look for genuinely truncated or zero-length loose objects.
+- Exit 2 → an orphan was found. Show the user the reported filename and propose the rename as a numbered fix. On confirmation, re-run with `--fix`, then verify with `git -C <root> fsck` and `git -C <root> status`.
+
+If the probe is clean but the index still reports a stale cached tree, `git read-tree HEAD` rebuilds the index from HEAD without touching working files (it does unstage anything currently staged).
+
+Worth surfacing to the user: git never writes an extensionless `pack-*` file, so if one exists, something outside git renamed it. On macOS that usually means a folder-level sync or backup agent walking the tree — the same class of tool that scatters `Icon\r` files. Ask whether the HQ root sits inside iCloud Drive, Dropbox, or a backup target, since the repair will not hold if the cause is still running.
 
 #### `git-root`
 Read first 30 lines of `.claude/hooks/block-hq-root-git-mutation.sh` to surface the rule. Show the user the correct invocation form: `git -C /abs/path <cmd>` or `( cd /abs/path && git <cmd> )` or `gh ... -R owner/repo`. For sanctioned HQ-internal git work, surface `HQ_ALLOW_HQ_ROOT_GIT=1 git ...`. No file mutations.
@@ -260,7 +279,7 @@ If the proposed fix requires re-launching the session (e.g. autocompact, reindex
 - Never read sensitive deny-listed paths under any circumstance, even when classifying a `denylist` error
 - Recipe context budget is 5 KB per class — if a probe would return more, summarize
 - The classifier is pure pattern matching — do not run subagents or do any HQ-wide search before classification
-- Never auto-apply fixes for `denylist`, `git-root`, or `reindex` classes — always require user confirmation, the consequences are too broad
+- Never auto-apply fixes for `denylist`, `git-root`, `reindex`, or `git-object-store` classes — always require user confirmation, the consequences are too broad. For `git-object-store` the probe is safe to run unattended because it only reports; it is the `--fix` rename that needs confirmation
 - The heal report is the single durable artifact — it is what `/handoff` and future `/hq-heal` invocations consult to detect repeat failures
 - The `/hq-bug` filing in Step 6 is the *signal* artifact — durable artifact stays local, signal goes to HQ engineering so recurring error classes get systemized fixes upstream. `--no-bug` suppresses the filing only; the report still writes
 - Core-mirror writes are off by default. The `--allow-core` flag is required even when the user explicitly confirms a fix that touches `core/`. This is intentional friction — the bypass should be auditable per-invocation, not implicit

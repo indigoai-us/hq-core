@@ -260,4 +260,64 @@ if ! grep -q "FAIL stage=lock" "$LOG"; then
 fi
 rmdir "$TMPDIR/hq-autocommit.lock"
 
+# --- macOS Finder Icon\r / control-character paths -------------------------
+# Finder writes a file literally named `Icon` + CR into every directory it
+# renders a custom icon for, and a folder-level cloud-sync agent spreads them
+# tree-wide. Once one is committed, Finder rewriting it makes it a tracked
+# modification that autosave would re-commit forever. They also cannot sync:
+# an S3 key may not contain a control character, so each is a permanent
+# per-file upload failure. Autosave must never stage one.
+
+icon_name="Icon"$'\r'
+
+# Direct hit: the tool call names the control-char path itself. The JSON
+# payload carries it as an escaped \r, which jq decodes back to a real CR.
+printf 'finder cruft\n' > "$TMP/$icon_name"
+head_before_icon="$(git -C "$TMP" rev-parse HEAD)"
+HOOK_RC=0
+HOOK_OUT="$(cd "$TMP" \
+  && printf '{"tool_name":"Edit","session_id":"sess-icon","tool_input":{"file_path":"Icon\\r"}}' \
+  | bash .claude/hooks/hq-autocommit.sh 2>/dev/null)" || HOOK_RC=$?
+if [[ "$HOOK_RC" -ne 0 || -n "$HOOK_OUT" ]]; then
+  echo "an Icon\\r autosave must be a silent no-op; rc=$HOOK_RC out='$HOOK_OUT'" >&2
+  exit 1
+fi
+if [[ "$(git -C "$TMP" rev-parse HEAD)" != "$head_before_icon" ]]; then
+  echo "an Icon\\r path must never be committed" >&2
+  exit 1
+fi
+if git -C "$TMP" ls-files -z | tr '\0' '\n' | grep -q "^Icon"; then
+  echo "an Icon\\r path must never become tracked" >&2
+  exit 1
+fi
+
+# Directory sweep: the tool call names a DIRECTORY, so `git add -- <dir>`
+# reaches every file beneath it. The legitimate file must still be committed
+# and the control-char sibling must be left behind — this is the path that
+# actually made `.agents/Icon\r` tracked on the reporting machine.
+mkdir -p "$TMP/docs"
+printf 'real content\n' > "$TMP/docs/page.md"
+printf 'finder cruft\n' > "$TMP/docs/$icon_name"
+HOOK_RC=0
+HOOK_OUT="$(cd "$TMP" \
+  && printf '{"tool_name":"Edit","session_id":"sess-icon-dir","tool_input":{"file_path":"docs"}}' \
+  | bash .claude/hooks/hq-autocommit.sh 2>/dev/null)" || HOOK_RC=$?
+if [[ "$HOOK_RC" -ne 0 || -n "$HOOK_OUT" ]]; then
+  echo "a directory autosave alongside Icon\\r must stay silent; rc=$HOOK_RC out='$HOOK_OUT'" >&2
+  exit 1
+fi
+if ! git -C "$TMP" show --name-only --format= HEAD | grep -q "^docs/page.md$"; then
+  echo "the legitimate file in the directory must still be autosaved" >&2
+  exit 1
+fi
+if git -C "$TMP" ls-files -z | tr '\0' '\n' | grep -q "^docs/Icon"; then
+  echo "a directory add must not sweep in an Icon\\r sibling" >&2
+  exit 1
+fi
+# The staged control-char entry is dropped, so it must not linger in the index.
+if git -C "$TMP" diff --cached --name-only -z | tr '\0' '\n' | grep -q "Icon"; then
+  echo "an Icon\\r path must not be left staged in the index" >&2
+  exit 1
+fi
+
 echo "hq-autocommit smoke: ok"

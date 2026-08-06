@@ -191,6 +191,31 @@ check_segment() {
     fi
   fi
 
+  # First-party trust allowlist: when EVERY positional package arg belongs to a
+  # trusted npm scope (default: @indigoai-us — HQ's own CLI/packs), the
+  # release-age gate does not apply. Override scopes (space-separated) via
+  # HQ_TRUSTED_INSTALL_SCOPES. A mixed install (trusted + third-party) still blocks.
+  local trusted_scopes="${HQ_TRUSTED_INSTALL_SCOPES:-@indigoai-us}"
+  local all_trusted=1 saw_pkg=0 tok scope
+  for tok in $rest; do
+    case "$tok" in
+      -*) continue ;;
+      *)
+        saw_pkg=1
+        local tok_trusted=0
+        for scope in $trusted_scopes; do
+          case "$tok" in
+            "$scope"/*) tok_trusted=1 ;;
+          esac
+        done
+        [ "$tok_trusted" = "1" ] || all_trusted=0
+        ;;
+    esac
+  done
+  if [ "$saw_pkg" = "1" ] && [ "$all_trusted" = "1" ]; then
+    return 0
+  fi
+
   # At this point we have <pm> <sub> <pkg> (or pnpm add etc.) — must enforce.
   case "$pm" in
     npm|yarn|bun)
