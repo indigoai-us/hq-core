@@ -1,0 +1,3 @@
+interface:
+  display_name: "Investigate"
+  short_description: "Iron Law debugging — systematic root cause investigation before any fixes."

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Quality Gate"
+  short_description: "Universal pre-commit quality checks (typecheck, lint, test, coverage, dead code) with auto-detection and --fix support"

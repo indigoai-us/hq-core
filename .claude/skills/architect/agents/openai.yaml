@@ -1,0 +1,3 @@
+interface:
+  display_name: "architect"
+  short_description: "Surface architectural friction and propose high-leverage refactor opportunities without editing code."

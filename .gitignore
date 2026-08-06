@@ -179,3 +179,4 @@ test-results/
 # Policy-injection dedupe ledgers are per-machine runtime state, never code.
 # A tracked ledger ships pre-populated and suppresses first-run injection.
 workspace/orchestrator/policy-trigger-state/
+workspace/.hq-update-check/

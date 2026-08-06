@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Regression coverage for the v15.0.0 hq-pack-engineering force-install contract:
+# Regression coverage for scan-packages.sh's inline-copy contract. Named for
+# hq-pack-engineering, whose v15.0.0 extraction first exercised it; that pack was
+# absorbed back into core, so the pack name here is now purely a synthetic
+# fixture. The behaviour it pins is still live for every installable pack:
 # scan-packages.sh must (a) refuse to clobber an inline copy still present at a
 # bare-name target, (b) symlink the pack contribution once the inline copy is
 # removed, and (c) be an idempotent no-op on re-run. This is the seam /update-hq

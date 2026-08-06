@@ -145,11 +145,23 @@ out="$( ( cd "$ROOT" && bash "$LINT" ) 2>&1 )" \
   || fail "Case D: live tree has dangling release-guidance command refs:\n${out}"
 
 # Case E: the reported-bug fixes are actually present, not just lint-green.
-grep -qE '^run-project$'  "$ALLOW" || fail "Case E: run-project not accounted for in allowlist"
-grep -qE '^execute-task$' "$ALLOW" || fail "Case E: execute-task not accounted for in allowlist"
-grep -q 'hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering' \
-  "${ROOT}/.claude/skills/plan/SKILL.md" \
-  || fail "Case E: /plan must surface the engineering-pack install line next to /run-project"
+# DEV-1716 was "a core skill instructs a command that does not exist on this
+# install". The original fix allowlisted /run-project + /execute-task as pack
+# commands and made /plan print the pack's install line. hq-pack-engineering was
+# absorbed into core, so the fix is now structural: those commands SHIP, which
+# means they must resolve as real skills and must NOT be allowlisted (an
+# allowlist entry would mask a genuine future deletion).
+for cmd in run-project execute-task; do
+  [ -f "${ROOT}/.claude/skills/${cmd}/SKILL.md" ] \
+    || fail "Case E: /${cmd} must ship as a core skill after the engineering merge"
+  if grep -qE "^${cmd}\$" "$ALLOW"; then
+    fail "Case E: /${cmd} ships in core — remove it from the allowlist so a real deletion still fails the lint"
+  fi
+done
+if grep -q 'hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering' \
+     "${ROOT}/.claude/skills/plan/SKILL.md"; then
+  fail "Case E: /plan still prints the engineering-pack install line, but the pack no longer exists"
+fi
 grep -qF '`/new-hire {email} {company}`' "${ROOT}/core/policies/natural-language-mode.md" \
   || fail "Case E: invitation route must use /new-hire with email and company"
 if grep -qF '/personal:invite' "${ROOT}/core/policies/natural-language-mode.md"; then
