@@ -2,9 +2,9 @@
 
 CLI browser automation tool from Vercel. Headless by default, snapshot+refs pattern for minimal context usage.
 
-## Architecture (v0.20+)
+## Architecture (v0.27+)
 
-100% native Rust — Node.js and Playwright have been fully removed. 7MB install, 8MB memory, direct CDP connection to Chromium. No configuration needed.
+100% native Rust — Node.js and Playwright have been fully removed. ~10MB install, low memory, direct CDP connection to Chromium. No configuration needed.
 
 **Limitations:** Chromium + Safari only (no Firefox/WebKit), network interception uses CDP Fetch. None affect current HQ usage.
 

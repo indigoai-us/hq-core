@@ -1,0 +1,23 @@
+{
+  "name": "@hq/qa-tester",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "mcp": "node dist/mcp-server.js"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "^4.10.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@playwright/test": "^1.50.0",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/xml2js": "^0.4.14",
+    "typescript": "^5.7.0"
+  }
+}

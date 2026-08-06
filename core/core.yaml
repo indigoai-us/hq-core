@@ -1,10 +1,10 @@
 version: 1
-hqVersion: "15.0.78"
+hqVersion: "15.0.79"
 agentSessionContractVersion: 1
 # Provider adapter contract version (US-500). Must match
 # HQ_ADAPTER_CONTRACT_VERSION in core/scripts/lib/provider-adapter-version.sh.
 adapterContractVersion: "1.0.0"
-updatedAt: "2026-08-06T07:39:54Z"
+updatedAt: "2026-08-06T09:28:46Z"
 # hq-core is the minimal scaffold seed. Rich add-ons ship as `@indigoai-us/hq-pack-*`
 # npm packages installed into `core/packages/` via `hq install`. See `core/packages/README.md`.
 rules:
@@ -58,20 +58,6 @@ recommended_packages:
     conditional: 'command -v gemini >/dev/null 2>&1'
   - source: 'github:indigoai-us/hq-packages#packages/hq-pack-gstack'
     description: 'gstack-team workers (26 g-* skills) + core/scripts/gstack-bridge.sh'
-  - source: 'github:indigoai-us/hq-packages#packages/hq-pack-engineering'
-    description: 'Engineering capabilities (17 skills, 6 workers, 4 knowledge bases, 4 policies) extracted from hq-core in v15.0.0. Auto-installed by /update-hq for anyone upgrading from <15.0.0 (transparent — preserves /tdd, /review, /execute-task, /architect, /diagnose, /investigate, /run-project, /land, qa-tester, security-scanner, etc. at their original paths); opt-in for greenfield via hq install.'
-    # auto_install: when true AND the conditional below passes, /update-hq's
-    # Phase 5d-PRE installs this pack WITHOUT prompting and lands its symlinks
-    # before removing the inline copies — so upgraders keep every engineering
-    # capability with zero prompts (the v15.0.0 transparent-extraction contract).
-    # On install failure /update-hq keeps the inline copies in place (no loss).
-    auto_install: true
-    # The conditional gates greenfield OUT: it matches only a real inline dir
-    # (`-d X && ! -L X`), so a fresh `npx create-hq` (no engineering surface) and
-    # an already-migrated host (paths are now pack symlinks) both skip — keeping
-    # engineering opt-in for non-coders. Coders on a green install opt in with
-    # `hq install ...#packages/hq-pack-engineering` (see CHANGELOG.md).
-    conditional: '[ -d .claude/skills/tdd ] && [ ! -L .claude/skills/tdd ] || [ -d .claude/skills/review ] && [ ! -L .claude/skills/review ] || [ -d .claude/skills/execute-task ] && [ ! -L .claude/skills/execute-task ] || [ -d .claude/skills/architect ] && [ ! -L .claude/skills/architect ] || [ -d .claude/skills/run-project ] && [ ! -L .claude/skills/run-project ] || [ -d core/workers/public/qa-tester ] && [ ! -L core/workers/public/qa-tester ] || [ -d core/workers/public/security-scanner ] && [ ! -L core/workers/public/security-scanner ]'
 # Paths the HQ Desktop App (and the /personal:replace-from-staging skill)
 # may overwrite when applying an `hq-core-staging` release on top of the
 # local HQ root. Acts as the source of truth so the UI confirmation list,

@@ -110,10 +110,6 @@ Decisions locked during the run: {decisionsApplied}
 
 To execute, start a fresh session and run:
   /run-project {name}
-
-  /run-project ships in the engineering pack. If it isn't available on this
-  install, add the pack once (then run the above):
-    hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering
 ```
 
 - Write the same lightweight auto-checkpoint thread file the PRD skill writes

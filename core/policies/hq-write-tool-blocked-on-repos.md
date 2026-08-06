@@ -1,24 +1,24 @@
 ---
 id: hq-write-tool-blocked-on-repos
-title: "Write/Edit is blocked on repos/ paths (hq-pack-engineering hosts) — use a worktree for code, Bash heredoc for knowledge"
+title: "Write/Edit is blocked on repos/ paths — use a worktree for code, Bash heredoc for knowledge"
 when: always
 on: [SessionStart]
 enforcement: hard
-version: 3
+version: 4
 created: 2026-05-24
-updated: 2026-07-26
+updated: 2026-08-06
 source: session-learning
 public: true
 ---
 
 ## Rule
 
-On hosts with the **hq-pack-engineering** pack installed, do NOT use the Write or Edit tool for any file under `repos/` — including symlinks that resolve there. That pack contributes a PreToolUse hook that blocks:
+Do NOT use the Write or Edit tool for any file under `repos/` — including symlinks that resolve there. A PreToolUse hook blocks:
 
 1. Direct paths like `repos/private/knowledge-{co}/foo.md`
 2. Symlinks that resolve into repos/ (e.g. `companies/{co}/knowledge/foo.md` → `repos/private/knowledge-{co}/foo.md`)
 
-**Where this hook actually lives.** hq-core ships NO `repos/` Write/Edit block of its own. The block is contributed by `hq-pack-engineering`, which was extracted from hq-core in v15.0.0 and now lives in the public **`indigoai-us/hq-packages`** monorepo at **`packages/hq-pack-engineering`** (see `core/core.yaml`) — NOT at any `core/packages/...` path inside hq-core (that path does not exist here). `/update-hq` force-installs this pack for anyone upgrading from <15.0.0, so most established hosts do have the block; a stock hq-core install with no engineering pack does not, and knowledge writes through the symlink work directly there. The hq-core guards that always ship (`block-core-writes.sh`, `block-core-writes-bash.sh`, `protect-core.sh`) protect `core/`, `.claude/`, and the charter — not `repos/`.
+**Where this hook lives.** `core/hooks/PreToolUse/10-Edit,Write,MultiEdit--block-repo-edits-use-worktree.sh`, shipped with hq-core. It was contributed by `hq-pack-engineering` between v15.0.0 and the merge that absorbed that pack back into core, so every host now has the block rather than only those who installed the pack. The other hq-core guards (`block-core-writes.sh`, `block-core-writes-bash.sh`, `protect-core.sh`) protect `core/`, `.claude/`, and the charter — not `repos/`.
 
 For **code repos**, you MUST use a git worktree and edit there — that is the intended (and only sanctioned) workflow for code that ships. Never edit repo files in place. Create the worktree with the shipped helper `core/scripts/worktree.sh`:
 

@@ -699,17 +699,7 @@ Post-implementation docs needed:
 To execute, start a new session and run:
   /run-project {name}        (multi-story orchestrator)
   /execute-task {name}/US-001 (single story)
-
-  These execution commands ship in the engineering pack. If /run-project
-  isn't available on this install, add the pack once (then run the above):
-    hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering
 ```
-
-> **Pack-aware close.** `/run-project` and `/execute-task` live in
-> `hq-pack-engineering`, which is auto-installed for upgraders but skipped on
-> lean greenfield installs. Always print the install line above alongside the
-> commands so a pack-less user has a resolvable path instead of a dead-end — do
-> not instruct an execution command without it.
 
 **Final step — auto-checkpoint <!-- AUTO-CHECKPOINT-ON-COMPLETION -->.** Do NOT proceed to execution. Rather than asking the user to manually `/handoff`, automatically save a lightweight checkpoint so a fresh session can pick up execution. Write `workspace/threads/T-{UTC YYYYMMDD-HHMMSS}-auto-plan-{project}.json` with `thread_id`, `version: 1`, `type: "auto-checkpoint"`, `created_at`, `updated_at`, `workspace_root`, `cwd`, `git: { branch, current_commit, dirty }`, `conversation_summary` (the project + that its PRD was created), `files_touched` (the `prd.json` + `README.md`), `next_steps` ("in a fresh session run `/run-project {project}` or `/execute-task {project}/US-001`"), and `metadata: { title: "Auto: plan {project}", tags: ["auto-checkpoint", "plan"], trigger: "plan-complete" }`. Keep it cheap (no INDEX/`recent.md`/`qmd` rebuild, no legacy checkpoint). Then tell the user the PRD is ready and a fresh session can start execution from this checkpoint. A full `/handoff` remains available if the user wants the heavier wrap-up.
 

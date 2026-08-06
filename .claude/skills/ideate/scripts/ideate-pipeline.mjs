@@ -131,7 +131,7 @@ const chosenApproach = approachAnswer.choice
 
 phase('PRD')
 const prd = await agent(`
-Read the PRD skill at .claude/skills/hq-pack-engineering:prd/SKILL.md (fall
+Read the PRD skill at .claude/skills/prd/SKILL.md (fall
 back to .claude/skills/plan/SKILL.md if that path is absent) and execute it for
 company "${co}", project slug "${slug}". A brainstorm.md exists at the project
 dir — use the skill's brainstorm-detection path so its content pre-fills the
@@ -183,7 +183,7 @@ for (let i = 0; i < toGate.length; i++) {
 const finalize = await agent(`
 Project "${co}/${prd.name}" has a freshly generated prd.json at ${prd.prdPath}.
 Apply the decision-mode write-back rules from the PRD skill's open-question
-resolution step (read .claude/skills/hq-pack-engineering:prd/SKILL.md or
+resolution step (read .claude/skills/prd/SKILL.md or
 .claude/skills/plan/SKILL.md, the step that resolves metadata.openQuestions):
 - Resolved decisions (append to metadata.decisions[], remove from
   metadata.openQuestions[]): ${JSON.stringify(decisions)}

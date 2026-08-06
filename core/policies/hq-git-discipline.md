@@ -8,7 +8,7 @@ tier: 1
 public: true
 version: 1
 created: 2026-04-27
-updated: 2026-04-27
+updated: 2026-08-06
 source: consolidation
 merged_from:
   - git-workflow
@@ -18,6 +18,7 @@ merged_from:
   - git-filter-repo-case-variants
   - hq-git-bulk-archive-rename-detection
   - hq-git-log-shell-wrapper-hides-merges
+  - hq-gitignore-before-first-commit
   - hq-git-push-refspec-chip-safe
   - hq-git-reflog-expire-all-destroys-stash
   - hq-git-staged-deletion-verify-blob-before-reset
