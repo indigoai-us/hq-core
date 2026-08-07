@@ -52,3 +52,11 @@
 - path: "test/__tests__/stories/US-011.test.mjs"
   scanners: [pii]
   reason: "Work Mesh acceptance tests bind an ephemeral in-process server to the IPv4 loopback address; the address is infrastructure test data, not PII."
+
+- path: "core/scripts/tests/hq-delegate-*.test.sh"
+  scanners: [pii]
+  reason: "Delegation test fixtures use RFC 2606 reserved domains (.acme.test, .local) for synthetic identities — no real mailboxes, never routable in DNS. Redacting would break test assertions."
+
+- path: "core/knowledge/public/hq-core/delegation-bundle-spec.md"
+  rules: [pii/email]
+  reason: "Spec document contains a git SSH remote URL (git@github.com:org/repo.git) that matches the email pattern but is not PII — it is a documentation example of a repo remote."
