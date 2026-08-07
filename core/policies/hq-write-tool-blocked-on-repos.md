@@ -39,11 +39,15 @@ EOF
   git -c user.name="..." -c user.email="..." commit -q -m "msg" )
 ```
 
-**`HQ_BYPASS_REPO_WORKTREE` is not implemented — do not rely on it.** This env var was documented here as a Write-tool escape hatch, but no shipped hook reads it: the string appears nowhere in hq-core or the pack except this policy. Setting it does nothing today. Implementing it belongs in the `hq-pack-engineering` hook (mirroring the existing `HQ_BYPASS_CORE_PROTECT` pattern in `block-core-writes.sh`, which reads from the process env / `.claude/settings.local.json`, never an inline `VAR=1` prefix) and is tracked as an hq-packages follow-up. You do not need it for knowledge edits anyway: Bash redirects (heredoc) are not intercepted by the Write/Edit hook — prefer that.
+**`HQ_BYPASS_REPO_WORKTREE` does not exist and will not be added.** It was once documented here as a Write-tool escape hatch; no shipped hook has ever read it, and that is now a deliberate decision rather than an outstanding task. There is no env-var bypass for this guard. Regression coverage: `core/scripts/tests/block-repo-edits-strict.test.sh` asserts that setting it changes nothing.
+
+**There is exactly one sanctioned worktree location: `workspace/worktrees/`.** Nothing under `repos/` is a valid Edit/Write target — not a plain checkout, not a knowledge tree, and not a git worktree someone created there. The guard deliberately carries no structural exemption for "but this really is a worktree" or "but this really is a knowledge repo": each such check is a hole, and each is spoofable or liable to decay. Anything that needs to write under `repos/` creates its worktree in the sanctioned location instead — `core/scripts/worktree.sh` and the run-project orchestrator both do.
 
 ## Rationale
 
-The pack-provided hook treats a knowledge symlink path (`companies/{co}/knowledge/...`) as equivalent to its `repos/`-prefixed target, so the seemingly-safe path trips the same block. Hitting it mid-task without recognizing this pattern wastes time on worktree spin-up that knowledge edits do not need.
+The hook resolves symlinks before its prefix check, so a knowledge symlink path (`companies/{co}/knowledge/...`) is equivalent to its `repos/`-prefixed target and trips the same block. That is correct — the write really does land in `repos/` — but "spin up a worktree" is useless advice for a notes repo with no PR workflow, so the block message routes knowledge writes to the Bash redirect instead of leaving the reader to guess.
+
+The guard stays absolute rather than growing exemptions because the pressure to add them is constant and each one is permanent. The right response to "I keep hitting this" is to remove the reason: the orchestrator now creates its worktrees under `workspace/worktrees/` rather than as siblings inside `repos/`, and the active-run hooks tell you to do the same.
 
 Do not confuse that pack hook with hq-core's own shipped guards, and do not assume symlink resolution or `master-hook.sh` dispatch. hq-core's guards (`block-core-writes.sh`, `block-core-writes-bash.sh`, `protect-core.sh`) are dispatched through `hook-gate.sh`, not `master-hook.sh`, and they normalize paths with `hq_normpath` (`core/scripts/hook-lib.sh`) — a purely **lexical** normalizer that collapses `.` and `..` but resolves no symlinks at all. They also guard `core/`, `.claude/`, and the charter, not `repos/`.
 

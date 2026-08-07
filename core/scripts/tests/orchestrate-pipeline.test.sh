@@ -1,6 +1,6 @@
 #!/bin/bash
-# E2E test for the /ideate pipeline script
-# (.claude/skills/ideate/scripts/ideate-pipeline.mjs) run through
+# E2E test for the /orchestrate pipeline script
+# (.claude/skills/ideate/scripts/orchestrate-pipeline.mjs) run through
 # core/scripts/workflow-runner.mjs with CANNED fake engine binaries — no real
 # agents, no real HQ content.
 #
@@ -8,7 +8,11 @@
 # PRD / finalize) with schema-valid JSON, and the human gates are pre-answered
 # as files (the durable-answer path), so the whole pipeline runs headless.
 # Covered behaviors:
-#   1. happy path (codex engine): capture -> brainstorm (STRONG) -> approach
+#   1. continuous default: no gates ever open — the recommended approach and
+#      recommended open-question answers are taken and ledgered (decidedBy
+#      "auto (recommended)"), no-recommendation questions defer to pre-flight
+#      stories, a WEAK premise continues loudly (never auto-parks)
+#   1c. gated mode (args.gated=true): capture -> brainstorm (STRONG) -> approach
 #      gate -> PRD -> open-question gate -> finalize, returning prd_ready with
 #      the gate choices threaded through (approach + decision reach the agents)
 #   2. args contract: company/description required; a bad engine name fails
@@ -23,7 +27,7 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 RUNNER="$REPO_ROOT/core/scripts/workflow-runner.mjs"
-PIPELINE="$REPO_ROOT/.claude/skills/ideate/scripts/ideate-pipeline.mjs"
+PIPELINE="$REPO_ROOT/.claude/skills/orchestrate/scripts/orchestrate-pipeline.mjs"
 
 pass=0
 fail=0
@@ -35,7 +39,7 @@ check() { # check <name> <condition-exit-code>
   fi
 }
 
-TMP="$(mktemp -d /tmp/ideate-pipeline-test.XXXXXX)"
+TMP="$(mktemp -d /tmp/orchestrate-pipeline-test.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 TMP="$(cd "$TMP" && pwd -P)"
 mkdir -p "$TMP/bin"
@@ -51,7 +55,14 @@ canned_response() { # canned_response <prompt> <verdict>
   # the most specific marker first
   case "$prompt" in
     *"decision-mode write-back"*)
-      printf '{"decisionsApplied":1,"investigationStories":2,"storiesTotal":7}\n' ;;
+      printf '{"decisionsApplied":1,"investigationStories":2,"storiesTotal":7,"stories":[{"id":"US-001","title":"First deliverable"},{"id":"US-002","title":"Second deliverable"}]}\n' ;;
+    *"Execute story US-"*)
+      sid="$(printf '%s' "$prompt" | sed -n 's/.*Execute story \(US-[0-9]*\).*/\1/p')"
+      if [ -n "${FAKE_BLOCK_STORY:-}" ] && [ "$sid" = "$FAKE_BLOCK_STORY" ]; then
+        printf '{"storyId":"%s","status":"blocked","artifacts":[],"note":"canned blocker"}\n' "$sid"
+      else
+        printf '{"storyId":"%s","status":"passed","artifacts":["projects/demo-slug/artifact-%s.txt"],"note":"done"}\n' "$sid" "$sid"
+      fi ;;
     *"skills/idea/SKILL.md"*)
       printf '{"boardId":"xx-proj-001","title":"Demo Title"}\n' ;;
     *"skills/brainstorm/SKILL.md"*)
@@ -118,38 +129,75 @@ pre_answer() { # pre_answer <gates-dir> <id> <choice>
 run_pipeline() { # run_pipeline <gates-dir> <rec-dir> <args-json> [env pairs...] -> $OUT, $RC
   local gates="$1" rec="$2" argsjson="$3"; shift 3
   mkdir -p "$rec"
+  RUNDIR="$TMP/run-$RANDOM"
   OUT="$(env "$@" HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" HQ_WORKFLOW_GROK_BIN="$TMP/bin/grok" \
     FAKE_REC_DIR="$rec" HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" \
     HQ_WORKFLOW_GATES_DIR="$gates" HQ_WORKFLOW_GATE_POLL_SECS=1 \
     node "$RUNNER" "$PIPELINE" --quiet --args "$argsjson" \
-    --run-dir "$TMP/run-$RANDOM" 2>"$TMP/stderr.last")"
+    --run-dir "$RUNDIR" 2>"$TMP/stderr.last")"
   RC=$?
 }
 
-# ---- 1: happy path (codex) ---------------------------------------------------
+# ---- 1: continuous default — no gates, recommended answers taken -------------
+G0="$TMP/g0"; R0="$TMP/r0"
+run_pipeline "$G0" "$R0" '{"company":"demo","description":"a demo idea worth building","direction":"quality"}'
+check "continuous pipeline exits 0" "$RC"
+printf '%s\n' "$OUT" | node -e '
+  const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(r.status === "delivered" && r.mode === "continuous"
+    && r.chosenApproach === "option-a" && r.autoDecided >= 1
+    && r.storiesTotal === 7 && r.storiesExecuted === 2
+    && r.deliverables.length === 2 && r.blockedStory === null ? 0 : 1);
+'
+check "continuous: full arc delivered — approach taken, 2 stories executed, deliverables listed" "$?"
+grep -q 'Execute story US-001' "$R0/codex-prompts" && grep -q 'Execute story US-002' "$R0/codex-prompts"
+check "continuous: an execute agent ran per story" "$?"
+[ ! -d "$G0/pending" ] && [ ! -d "$G0/answered" ]
+check "continuous: no gate files ever created" "$?"
+grep -q '"decidedBy":"auto (recommended)"' "$R0/codex-prompts"
+check "continuous: auto decisions carry decidedBy auto (recommended)" "$?"
+grep -q '"answer":"existing"' "$R0/codex-prompts"
+check "continuous: recommended open-question answer became a ledgered decision" "$?"
+grep -q 'Overflow question A?' "$R0/codex-prompts" && grep -q 'Overflow question B?' "$R0/codex-prompts"
+check "continuous: no-recommendation questions deferred to pre-flight stories" "$?"
+
+# ---- 1b: continuous + WEAK premise — never auto-parks -------------------------
+G0W="$TMP/g0w"; R0W="$TMP/r0w"
+run_pipeline "$G0W" "$R0W" '{"company":"demo","description":"a shaky idea"}' FAKE_VERDICT=WEAK
+check "continuous weak-premise pipeline exits 0" "$RC"
+printf '%s\n' "$OUT" | node -e '
+  const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit((r.status === "delivered") && r.premiseVerdict === "WEAK" ? 0 : 1);
+'
+check "continuous: WEAK premise continues to delivered (no auto-park)" "$?"
+grep -q 'PREMISE WEAK (continuing' "$RUNDIR/journal.jsonl"
+check "continuous: WEAK premise logged loudly (journal)" "$?"
+
+# ---- 1c: gated happy path (gates still work behind the flag) ------------------
 G1="$TMP/g1"; R1="$TMP/r1"
 pre_answer "$G1" demo-slug-approach option-b
 pre_answer "$G1" demo-slug-q1 existing
-run_pipeline "$G1" "$R1" '{"company":"demo","description":"a demo idea worth building","direction":"quality","maxQuestionGates":1}'
-check "happy-path pipeline exits 0" "$RC"
+run_pipeline "$G1" "$R1" '{"company":"demo","description":"a demo idea worth building","direction":"quality","gated":true,"planOnly":true,"maxQuestionGates":1}'
+check "gated pipeline exits 0" "$RC"
 printf '%s\n' "$OUT" | grep -v 'GATE ' | node -e '
   const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
-  process.exit(r.status === "prd_ready" && r.boardId === "xx-proj-001"
-    && r.slug === "demo-slug" && r.chosenApproach === "option-b"
+  process.exit(r.status === "prd_ready" && r.mode === "gated"
+    && r.boardId === "xx-proj-001" && r.slug === "demo-slug"
+    && r.chosenApproach === "option-b" && r.autoDecided === 0
     && r.storiesTotal === 7 && r.decisionsApplied === 1
     && r.investigationStories === 2 ? 0 : 1);
 '
-check "final JSON: prd_ready with gate choices threaded through" "$?"
+check "gated: final JSON prd_ready with gate choices threaded through" "$?"
 grep -q 'option-b' "$R1/codex-prompts"
-check "chosen approach (gate answer) reached the PRD agent prompt" "$?"
+check "gated: chosen approach (gate answer) reached the PRD agent prompt" "$?"
 grep -q '"answer":"existing"' "$R1/codex-prompts"
-check "resolved decision reached the finalize agent" "$?"
+check "gated: resolved decision reached the finalize agent" "$?"
 
-# ---- 4: overflow questions auto-deferred (maxQuestionGates=1) ----------------
+# ---- 4: gated overflow questions auto-deferred (maxQuestionGates=1) ----------
 grep -q 'Overflow question A?' "$R1/codex-prompts" && grep -q 'Overflow question B?' "$R1/codex-prompts"
-check "overflow questions passed to finalize as deferred" "$?"
+check "gated: overflow questions passed to finalize as deferred" "$?"
 [ ! -f "$G1/pending/demo-slug-q2.json" ] && [ ! -f "$G1/answered/demo-slug-q2.json" ]
-check "no gate opened for overflow questions" "$?"
+check "gated: no gate opened for overflow questions" "$?"
 
 # ---- 2: args contract --------------------------------------------------------
 G2="$TMP/g2"; R2="$TMP/r2"
@@ -160,32 +208,54 @@ run_pipeline "$G2" "$R2" '{"company":"demo","description":"x","engine":"gemini"}
 [ "$RC" -ne 0 ] && grep -q 'args.engine must be' "$TMP/stderr.last"
 check "unknown engine name fails fast" "$?"
 
-# ---- 3: weak premise -> park -------------------------------------------------
+# ---- 3: gated weak premise -> park -------------------------------------------
 G3="$TMP/g3"; R3="$TMP/r3"
 pre_answer "$G3" demo-slug-premise park
-run_pipeline "$G3" "$R3" '{"company":"demo","description":"a shaky idea"}' FAKE_VERDICT=WEAK
-check "weak-premise pipeline exits 0" "$RC"
+run_pipeline "$G3" "$R3" '{"company":"demo","description":"a shaky idea","gated":true}' FAKE_VERDICT=WEAK
+check "gated weak-premise pipeline exits 0" "$RC"
 printf '%s\n' "$OUT" | grep -v 'GATE ' | node -e '
   const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
   process.exit(r.status === "parked" && r.slug === "demo-slug" ? 0 : 1);
 '
-check "park answer ends the run with status parked" "$?"
+check "gated: park answer ends the run with status parked" "$?"
 grep -q 'Read the PRD skill at' "$R3/codex-prompts" && prd_ran=1 || prd_ran=0
-check "no PRD/finalize agents ran after park" "$prd_ran"
+check "gated: no PRD/finalize agents ran after park" "$prd_ran"
 
-# ---- 5: engine threading — grok runs every stage -----------------------------
+# ---- 5: engine threading — grok runs every stage (continuous) ----------------
 G5="$TMP/g5"; R5="$TMP/r5"
-pre_answer "$G5" demo-slug-approach option-a
-pre_answer "$G5" demo-slug-q1 existing
-run_pipeline "$G5" "$R5" '{"company":"demo","description":"a demo idea worth building","engine":"grok","maxQuestionGates":1}'
+run_pipeline "$G5" "$R5" '{"company":"demo","description":"a demo idea worth building","engine":"grok"}'
 check "grok-engine pipeline exits 0" "$RC"
 printf '%s\n' "$OUT" | grep -v 'GATE ' | node -e '
   const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
-  process.exit(r.status === "prd_ready" && r.chosenApproach === "option-a" ? 0 : 1);
+  process.exit(r.status === "delivered" && r.chosenApproach === "option-a" ? 0 : 1);
 '
-check "grok-engine run reached prd_ready" "$?"
+check "grok-engine run reached delivered" "$?"
 [ -f "$R5/grok-prompts" ] && [ ! -f "$R5/codex-prompts" ]
 check "every stage ran on the grok bin (codex bin never spawned)" "$?"
+
+# ---- 6: plan-only stops at the PRD --------------------------------------------
+G6="$TMP/g6"; R6="$TMP/r6"
+run_pipeline "$G6" "$R6" '{"company":"demo","description":"a demo idea worth building","planOnly":true}'
+check "plan-only pipeline exits 0" "$RC"
+printf '%s\n' "$OUT" | node -e '
+  const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(r.status === "prd_ready" && r.storiesExecuted === undefined ? 0 : 1);
+'
+check "plan-only: stops at prd_ready, no execution fields" "$?"
+grep -q 'Execute story' "$R6/codex-prompts" && po_exec=1 || po_exec=0
+check "plan-only: no execute agents ran" "$po_exec"
+
+# ---- 7: blocked story stops the line ------------------------------------------
+G7="$TMP/g7"; R7="$TMP/r7"
+run_pipeline "$G7" "$R7" '{"company":"demo","description":"a demo idea worth building"}' FAKE_BLOCK_STORY=US-002
+check "blocked-story pipeline exits 0" "$RC"
+printf '%s\n' "$OUT" | node -e '
+  const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(r.status === "execution_blocked" && r.storiesExecuted === 2
+    && r.blockedStory && r.blockedStory.id === "US-002"
+    && r.deliverables.length === 1 ? 0 : 1);
+'
+check "blocked story stops the line with honest status + partial deliverables" "$?"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

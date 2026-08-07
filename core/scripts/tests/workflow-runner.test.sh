@@ -418,8 +418,31 @@ node -e '
     && typeof g.answer_path === "string" ? 0 : 1);
 ' "$GATES/pending/core-gate.json"
 check "pending gate is self-contained" "$?"
-grep -q 'GATE OPEN' "$OUTF" && grep -q 'core/scripts/workflow-gate.sh answer core-gate' "$OUTF"
-check "GATE OPEN on stdout with the core answer-command hint" "$?"
+grep -q 'GATE OPEN' "$OUTF" && grep -q 'workflow-gate.sh answer core-gate' "$OUTF"
+check "GATE OPEN on stdout with the answer-command hint" "$?"
+
+# The hinted CLI path must be one that EXISTS on this install — printing an
+# absent path (core/ on a pre-release install) makes the gate unanswerable for
+# whoever picks it up. The synthetic HQ root here has only personal/.
+mkdir -p "$HQROOT/personal/scripts"
+printf '#!/bin/bash\nexit 0\n' > "$HQROOT/personal/scripts/workflow-gate.sh"
+GATESH="$TMP/gates-hint"; RECH="$TMP/rec-hint"; mkdir -p "$RECH"
+OUTH="$TMP/hint-out"
+HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$RECH" \
+  HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" HQ_WORKFLOW_GATES_DIR="$GATESH" \
+  node "$RUNNER" "$TMP/wf-gate.mjs" --quiet --run-dir "$TMP/run-hint" >"$OUTH" 2>/dev/null &
+HPID=$!
+wait_for 15 'test -f "$GATESH/pending/core-gate.json"'
+grep -q 'personal/scripts/workflow-gate.sh answer core-gate' "$OUTH"
+check "answer hint resolves to the CLI copy that exists (personal when core is absent)" "$?"
+node -e '
+  const g = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  process.exit(g.answer_hint.includes("personal/scripts/workflow-gate.sh") ? 0 : 1);
+' "$GATESH/pending/core-gate.json"
+check "pending payload answer_hint carries the resolved path too" "$?"
+CODEX_WORKFLOW_GATES_DIR="$GATESH" bash "$REPO_ROOT/core/scripts/workflow-gate.sh" answer core-gate fast >/dev/null 2>&1
+wait "$HPID" 2>/dev/null
+rm -rf "$HQROOT/personal"
 [ -z "$(ls "$REC2"/codex-argv.* 2>/dev/null)" ] && kill -0 "$BGPID" 2>/dev/null
 check "no agents spawned while gated; process alive" "$?"
 CODEX_WORKFLOW_GATES_DIR="$GATES" bash "$REPO_ROOT/core/scripts/workflow-gate.sh" answer core-gate fast >/dev/null 2>&1

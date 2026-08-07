@@ -111,16 +111,19 @@ as "not answered yet" — keep polling and pick up the next valid write.
 | `list` | One line per pending gate: id, age, question, numbered options |
 | `show <id>` | Print the pending gate JSON (falls back to the answered file) |
 | `answer <id> <choice\|N> [--notes "..."] [--by name] [--force] [--freeform]` | Validate and write the answer, remove the pending file |
-| `wait-pending [--timeout secs]` | Block until any gate is pending (exit 0) or timeout (exit 1) — a wake condition for watching sessions |
+| `wait-pending [--timeout secs]` | Block until any gate is pending (exit 0) or timeout (exit 1) — the un-scoped wake condition |
+| `watch-run <run-dir> [--timeout secs]` | Block until a gate **belonging to that run** opens (exit 0, prints its id), the run finishes (exit 3), or timeout (exit 1) — see [Run-scoped watching](#run-scoped-watching) |
 | `clear <id>` | Remove both the pending and answered files |
 
 ## Session integration
 
-- **Launching session**: run the orchestrator as a background task, watch its
-  stdout (or `wait-pending`) for `GATE OPEN`, surface each gate to the human
-  with the runtime's structured picker (one question at a time, per
+- **Launching session**: launch the orchestrator detached with an explicit
+  `--run-dir`, then loop on `watch-run "$RUN_DIR"` (see below) — it wakes only
+  for this run's gates and reports when the run is done. Surface each gate to
+  the human with the runtime's structured picker (one question at a time, per
   `decision-queue-one-at-a-time`), answer via the CLI, and let the run
-  continue. Task-exit notification brings the session back for verification.
+  continue. An off-menu human answer is recorded faithfully with `--freeform`
+  plus `--notes`, never squeezed into the nearest offered option.
 - **Any later session**: `/startwork` surfaces pending gates at session start
   so a returning human can answer without hunting for them.
 - **Away from keyboard**: DM the owner (`hq dm`) with the gate id and answer
@@ -133,3 +136,28 @@ life of the project that asked, then remove them with `clear` (or by
 retiring the ids) once the pipeline is done. A stale answer under a reused
 id will short-circuit a future gate silently; scoped ids (above) are the
 guard.
+
+
+## Run-scoped watching
+
+A session that launches a workflow watches gates for **that run**, not for
+whatever happens to be pending globally. Every gate payload carries the
+`run_dir` the runner was launched with, and the launching session is the one
+that chose that `--run-dir`, so the binding needs no id parsing, no env
+coupling, and has no startup race:
+
+```bash
+bash core/scripts/workflow-gate.sh watch-run "$RUN_DIR" --timeout 900
+#   exit 0  -> prints the id of a gate belonging to this run
+#   exit 3  -> this run finished (its journal.jsonl carries run-done)
+#   exit 1  -> timeout elapsed, run still live
+```
+
+`exit 3` is what lets a watch loop terminate on its own instead of hanging
+after the last gate. `wait-pending` remains the un-scoped variant for an
+operator triaging every pending gate on the box.
+
+Launch long runs **detached** (`nohup ... < /dev/null & disown`). The runner
+dies with its parent process, and agent work is not resumable — only human
+answers are — so a session restart during an attached run discards every
+completed stage.

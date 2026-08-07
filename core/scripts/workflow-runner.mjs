@@ -39,7 +39,8 @@
  *   parsed answer. No agents run and no concurrency slot is held while gated.
  *   Answers are durable: an already-answered id returns instantly
  *   (GATE CACHED), so a re-launched run never re-asks a human. Answer with
- *   `bash core/scripts/workflow-gate.sh answer <id> <choice|N>`.
+ *   `bash core/scripts/workflow-gate.sh answer <id> <choice|N>` (the runner
+ *   prints whichever copy exists on this install).
  *
  * Usage:
  *   node core/scripts/workflow-runner.mjs <script.mjs> [options]
@@ -192,6 +193,17 @@ const GATES_DIR = process.env.HQ_WORKFLOW_GATES_DIR
 const DEFAULT_GATE_POLL_SECS = (() => {
   const v = Number(process.env.HQ_WORKFLOW_GATE_POLL_SECS ?? process.env.CODEX_WORKFLOW_GATE_POLL_SECS);
   return Number.isFinite(v) && v > 0 ? v : 5;
+})();
+// The answering CLI a human is told to run. It ships at core/scripts/, but an
+// install whose hq-core release predates that (or a dev box running the
+// personal copy) only has personal/scripts/ — printing an absent path makes
+// the gate unanswerable for whoever picks it up, so resolve what is actually
+// on disk and fall back to the core path only as the documented default.
+const GATE_CLI_REL = (() => {
+  for (const rel of ['core/scripts/workflow-gate.sh', 'personal/scripts/workflow-gate.sh']) {
+    if (fs.existsSync(path.join(HQ_ROOT, rel))) return rel;
+  }
+  return 'core/scripts/workflow-gate.sh';
 })();
 
 // ---------------------------------------------------------------- CLI parsing
@@ -796,7 +808,7 @@ async function buildRuntime(cli) {
       run_dir: state.runDir,
       script: scriptName,
       answer_path: answerFile,
-      answer_hint: `bash core/scripts/workflow-gate.sh answer ${gid} "<choice|N>" [--notes "..."]`,
+      answer_hint: `bash ${GATE_CLI_REL} answer ${gid} "<choice|N>" [--notes "..."]`,
     };
     const tmp = `${pendingFile}.tmp-${process.pid}`;
     fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n');
@@ -805,7 +817,7 @@ async function buildRuntime(cli) {
     // is the signal a watching orchestrator acts on.
     process.stdout.write(
       `[${hhmmss()}] GATE OPEN: ${gid} — ${question.trim()} ` +
-      `(answer: bash core/scripts/workflow-gate.sh answer ${gid} "<choice|N>"; pending: ${pendingFile})\n`);
+      `(answer: bash ${GATE_CLI_REL} answer ${gid} "<choice|N>"; pending: ${pendingFile})\n`);
     journal({ event: 'gate-open', id: gid, question: question.trim(), pendingFile });
     narr(`⏸ gate open: ${gid} — paused for a human answer (poll ${pollSecs}s)`);
 

@@ -140,6 +140,7 @@ jobs:
 
       # ── 6. Run Claude Code audit ─────────────────────────────────────────
       - name: Claude Code Audit
+        id: claude
         if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
         uses: anthropics/claude-code-action@v1
         env:
@@ -197,6 +198,27 @@ jobs:
 
             STEP 8 posts a Slack notification at each terminal action if
             SLACK_ENABLED is "true" and SLACK_BOT_TOKEN is set in env.
+
+      # ── 6b. Explain an aborted run on the pull request ───────────────────
+      #
+      # claude-code-action redacts the SDK result text from the job log, so an
+      # audit rejected on its first API call surfaces only "result is_error:true"
+      # and nothing at all reaches the PR — a broken bot is indistinguishable
+      # from a genuinely failing audit. Read the unredacted cause out of the
+      # action's execution file, classify it, and comment it on the PR.
+      - name: Report audit failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          REPORTER=.audit-settings/workflow-template/scripts/report-failure.sh
+          if [ -f "$REPORTER" ]; then
+            bash "$REPORTER" "$EXECUTION_FILE"
+          else
+            echo "::warning::Audit settings were never checked out; cannot report the failure cause"
+          fi
 
       # ── 7. Cleanup ────────────────────────────────────────────────────────
       - name: Cleanup settings

@@ -594,6 +594,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install hq CLI for forwarded scaffold scripts
+        run: |
+          set -euo pipefail
+          npm install -g @indigoai-us/hq-cli
+          if ! command -v hq >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
+            exit 1
+          fi
+          if ! hq core --help >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
+            exit 1
+          fi
       - name: Detector smoke test
         run: bash core/scripts/tests/auto-acl-suggest.test.sh
       - name: Stop reminder smoke test
@@ -604,6 +616,10 @@ jobs:
         run: bash core/scripts/tests/block-unsafe-package-install.test.sh
       - name: Workers-registry quarantine semantics + pack-sourced remedy (DEV-1718, DEV-1796)
         run: bash core/scripts/tests/generate-workers-registry.test.sh
+      - name: Pack scan host-wins collision + inline-copy refusal
+        run: bash core/scripts/tests/scan-packages-engineering.test.sh
+      - name: Pack scan worker-id collision
+        run: bash core/scripts/tests/scan-packages-id-collision.test.sh
 
   previously-unrun-suites:
     # These suites existed but were never wired into CI, so they rotted
@@ -637,6 +653,8 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
       - name: block-core-writes permits only the durable native personal context
         run: bash core/scripts/tests/block-core-writes-native-context.test.sh
+      - name: block-repo-edits admits only workspace/worktrees, no exemptions
+        run: bash core/scripts/tests/block-repo-edits-strict.test.sh
       - name: enforce-vault-write-access blocks mutations without vault write permission
         run: bash core/scripts/tests/enforce-vault-write-access.test.sh
       - name: refresh-vault-access builds the manifest the write-access hook consumes

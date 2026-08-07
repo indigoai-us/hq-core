@@ -1,7 +1,7 @@
 ---
 name: clean-worktree
 description: Clean up an HQ git worktree — merge a detached worktree branch back into local main in the primary HQ tree, then remove the worktree and delete the branch. Use when HQ work happened in a separate worktree (e.g. .claude/worktrees/<name> on claude/*, or workspace/worktrees/<name> on codex/*) and needs to land and be cleaned up — including right after /handoff when HQ itself is running from a separate worktree. HQ is local-only; this workflow never pushes to a remote.
-allowed-tools: Bash(git:*), Bash(ls:*), Bash(rmdir:*), Read, AskUserQuestion
+allowed-tools: Bash(git:*), Bash(docker:*), Bash(ls:*), Bash(rmdir:*), Read, AskUserQuestion
 ---
 
 # Clean HQ Worktree
@@ -107,7 +107,22 @@ git -C ${HQ_ROOT} log --oneline -3
 
 ### 6. Cleanup — destructive, confirm first
 
-State explicitly to the user, in full prose, what is about to be permanently removed: the worktree directory at `<WT>`, the branch `<BRANCH>`, and confirm there is no uncommitted or unmerged work left (steps 2 and 5 should have ensured this). Wait for confirmation, then:
+Before removing the worktree, check whether Docker Compose containers were started from it. Removing the directory out from under a running Compose project leaves orphaned containers and networks behind:
+
+```bash
+docker ps -a --filter "label=com.docker.compose.project.working_dir=<WT>" \
+  --format '{{.Label "com.docker.compose.project"}}' | sort -u
+```
+
+If a Compose project is clearly worktree-scoped (its project name derives from the worktree directory name), stop it before removing the worktree:
+
+```bash
+docker compose -p <PROJECT> --project-directory <WT> down --remove-orphans
+```
+
+If the project name is shared across checkouts (for example `privy`), do **not** stop it automatically. Tell the user the shared project is still running and ask before stopping it — another checkout may be using those containers.
+
+Then state explicitly to the user, in full prose, what is about to be permanently removed: the worktree directory at `<WT>`, the branch `<BRANCH>`, and confirm there is no uncommitted or unmerged work left (steps 2 and 5 should have ensured this). Wait for confirmation, then:
 
 ```bash
 HQ_ALLOW_HQ_ROOT_GIT=1 git -C ${HQ_ROOT} worktree remove <WT>

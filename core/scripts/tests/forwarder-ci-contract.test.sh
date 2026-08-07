@@ -62,6 +62,9 @@ ANALYZER_METADATA_ALLOWLIST = {
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "hq-status-summary.sh"),
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "rebuild-orchestrator-index.sh"),
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "rebuild-threads-index.sh"),
+    # Named in references_forwarder()'s docstring as the worked example of the
+    # suffix false positive it exists to prevent. Prose, not execution.
+    ("core/scripts/tests/forwarder-ci-contract.test.sh", "worktree.sh"),
 }
 ALLOWLISTED_REFERENCES = (
     NON_EXECUTING_REFERENCE_ALLOWLIST | ANALYZER_METADATA_ALLOWLIST
@@ -72,6 +75,24 @@ def fail(message: str) -> None:
     print(f"FAIL: {message}", file=sys.stderr)
 
 
+def references_forwarder(source: str, forwarder: str) -> bool:
+    """True when `forwarder` appears as a filename in its own right.
+
+    A plain substring test also fires on any LONGER filename that happens to end
+    with the forwarder's name — e.g. the hook
+    `10-Edit,Write,MultiEdit--block-repo-edits-use-worktree.sh` ends with
+    `worktree.sh`, so a test that merely names that hook was reported as
+    executing the worktree forwarder and told to install the hq CLI it never
+    calls. Requiring the preceding character to be a non-filename character (or
+    start of input) keeps a real `core/scripts/worktree.sh` reference matching
+    while dropping the false positive. Deliberately still permissive about what
+    FOLLOWS the name: static analysis cannot prove a mentioned script is never
+    executed, which is what the allowlist below is for.
+    """
+    pattern = r"(?<![A-Za-z0-9_.\-])" + re.escape(forwarder)
+    return re.search(pattern, source) is not None
+
+
 references: set[tuple[str, str]] = set()
 for test_path in tests_dir.rglob("*"):
     if not test_path.is_file():
@@ -79,7 +100,7 @@ for test_path in tests_dir.rglob("*"):
     relative_path = test_path.relative_to(root).as_posix()
     source = test_path.read_text(encoding="utf-8", errors="replace")
     for forwarder in forwarders:
-        if forwarder in source:
+        if references_forwarder(source, forwarder):
             references.add((relative_path, forwarder))
 
 unknown_allowlist_entries = ALLOWLISTED_REFERENCES - references

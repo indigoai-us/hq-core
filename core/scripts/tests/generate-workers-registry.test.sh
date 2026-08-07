@@ -51,7 +51,10 @@ run_gen() { # <root> [PATH] -> echoes exit code; stderr captured to <root>/.err 
 path_without_yq() { # <root> -> minimal generator PATH with no yq executable
   local root="$1" bin="$1/.no-yq-bin" cmd
   mkdir -p "$bin"
-  for cmd in awk cp cut date diff dirname find grep mkdir mktemp mv rm sed sort uniq; do
+  # `hq` and `node` are linked in deliberately: this case removes yq ONLY. The
+  # generator forwards to the CLI, so stripping hq here would test a missing
+  # CLI (exit 127) instead of the yq-absent fallback this case is named for.
+  for cmd in awk bash cp cut date diff dirname find grep mkdir mktemp mv rm sed sort uniq hq node; do
     ln -s "$(command -v "$cmd")" "$bin/$cmd"
   done
   echo "$bin"
