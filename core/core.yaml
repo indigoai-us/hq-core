@@ -1,5 +1,5 @@
 version: 1
-hqVersion: "15.0.84"
+hqVersion: "15.0.85"
 agentSessionContractVersion: 1
 # Provider adapter contract version (US-500). Must match
 # HQ_ADAPTER_CONTRACT_VERSION in core/scripts/lib/provider-adapter-version.sh.
