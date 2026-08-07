@@ -879,7 +879,12 @@ rm -f "$TMP/r3-finalize-out.json" "$TMP/r3-post-pid" "$TMP/logs/handoff-post.log
 
   # Keep hold until: one raw pipeline started AND both callers scheduled helper.
   # Otherwise a fast post can finish before finalize reaches qmd (2 pipelines).
-  for _ in $(seq 1 200); do
+  # Budget 600 (30s), not 200: R3 is the heaviest case in the suite — two real
+  # forwarder chains each spawn a detached `hq index background` worker, so up to
+  # four CLI cold-boots (~1.5s each) contend for a 2-core CI runner. 10s left no
+  # tail headroom and flaked ~once a day here; the other concurrent cases (C1/C4,
+  # laptop launchers) already use 600 for the same reason.
+  for _ in $(seq 1 600); do
     sched_n=0
     if [[ -f "$TMP/helper-scheduled.log" ]]; then
       sched_n=$(wc -l < "$TMP/helper-scheduled.log" | tr -d ' ')
