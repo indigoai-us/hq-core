@@ -55,4 +55,4 @@
 
 - path: "core/scripts/tests/hq-delegate-grant.test.sh"
   scanners: [pii]
-  reason: "Direct-grant regression test fixtures use RFC 2606 reserved .test TLD addresses (alice@acme.test, someone-else@acme.test — never resolvable in DNS, no real mailbox); stub ACL responses and manifest principal fields are synthetic test data, not personal data."
+  reason: "Direct-grant regression test fixtures use RFC 2606 reserved .test TLD addresses ([EMAIL], [EMAIL] — never resolvable in DNS, no real mailbox); stub ACL responses and manifest principal fields are synthetic test data, not personal data."
