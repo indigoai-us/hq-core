@@ -63,11 +63,20 @@ write_manifest() { # path status
     {"prefix": "knowledge/insights/", "permission": "read", "reason": "referenced knowledge"},
     {"prefix": "policies/", "permission": "read", "reason": "referenced policies"}
   ],
+  "knowledge": ["companies/acme/knowledge/insights/widget-notes.md", "repos/public/widget-repo/docs/widget.md"],
+  "policies": ["companies/acme/policies/widget-policy.md"],
   "secrets": [],
   "status": "$2"
 }
 JSON
 }
+
+# Fixture HQ root so referenced knowledge exists locally for pushing
+FIXROOT="$TMP/hqroot"
+mkdir -p "$FIXROOT/companies/acme/knowledge/insights" "$FIXROOT/companies/acme/policies"
+echo note > "$FIXROOT/companies/acme/knowledge/insights/widget-notes.md"
+echo policy > "$FIXROOT/companies/acme/policies/widget-policy.md"
+export HQ_ROOT="$FIXROOT"
 
 # --- 4. without --yes: plan only, exit 2, zero mutations ---------------------
 
@@ -94,6 +103,17 @@ bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "happy path exited n
 
 grep -q "^sync push companies/acme/projects/widget/ --company acme --on-conflict keep" "$INVOKE_LOG" \
   || fail "must push the project dir to the vault first: $(cat "$INVOKE_LOG")"
+
+# Referenced company-local knowledge/policies are pushed too (live finding:
+# a read grant on a prefix is useless if the referenced file was never
+# pushed); repo-based docs are NOT pushed.
+grep -q "^sync push companies/acme/knowledge/insights/widget-notes.md --company acme --on-conflict keep" "$INVOKE_LOG" \
+  || fail "must push referenced knowledge files: $(cat "$INVOKE_LOG")"
+grep -q "^sync push companies/acme/policies/widget-policy.md --company acme --on-conflict keep" "$INVOKE_LOG" \
+  || fail "must push referenced policy files"
+if grep '^sync push' "$INVOKE_LOG" | grep -q 'repos/'; then
+  fail "repo-based docs must never be pushed to the vault"
+fi
 
 SHARE_COUNT="$(grep -c '^files share' "$INVOKE_LOG")"
 [ "$SHARE_COUNT" -eq 3 ] || fail "expected exactly 3 share calls, got $SHARE_COUNT"

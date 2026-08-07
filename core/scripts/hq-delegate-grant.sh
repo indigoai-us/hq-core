@@ -110,10 +110,25 @@ if [ "$YES" -ne 1 ]; then
   exit 2
 fi
 
-# --- 1. materialize the dossier in the vault ---------------------------------
+# --- 1. materialize the dossier AND referenced knowledge in the vault --------
+# (Live finding: granting read on a knowledge prefix is useless if the
+# specific referenced file was never pushed — the recipient's pull succeeds
+# on the prefix and silently misses the file. Push every referenced
+# company-local knowledge/policy path alongside the dossier.)
 
 hq sync push "companies/$COMPANY/projects/$PROJECT/" --company "$COMPANY" --on-conflict keep \
   || die "vault push failed for companies/$COMPANY/projects/$PROJECT/"
+
+jq -r --arg co "$COMPANY" \
+  '((.knowledge // []) + (.policies // []))[] | select(startswith("companies/" + $co + "/"))' \
+  "$MANIFEST" | while IFS= read -r kpath; do
+  if [ -e "$HQ_ROOT/$kpath" ]; then
+    hq sync push "$kpath" --company "$COMPANY" --on-conflict keep \
+      || die "vault push failed for referenced knowledge: $kpath"
+  else
+    echo "hq-delegate-grant: referenced path missing locally (cannot push): $kpath — the verify probe will fail if it is not already in the vault" >&2
+  fi
+done
 
 # --- 1b. agent recipients: ensure the delegation group exists + contains them
 
