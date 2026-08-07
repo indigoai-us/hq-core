@@ -52,3 +52,7 @@
 - path: "test/__tests__/stories/US-011.test.mjs"
   scanners: [pii]
   reason: "Work Mesh acceptance tests bind an ephemeral in-process server to the IPv4 loopback address; the address is infrastructure test data, not PII."
+
+- path: "core/scripts/tests/hq-delegate-grant.test.sh"
+  scanners: [pii]
+  reason: "Direct-grant regression test fixtures use RFC 2606 reserved .test TLD addresses (alice@acme.test, someone-else@acme.test — never resolvable in DNS, no real mailbox); stub ACL responses and manifest principal fields are synthetic test data, not personal data."
