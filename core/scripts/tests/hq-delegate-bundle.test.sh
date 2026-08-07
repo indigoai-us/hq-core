@@ -66,7 +66,7 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/hq" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1" = "whoami" ]; then
-  echo '{"email": "owner@acme.test", "personUid": "prs_owner1"}'
+  echo '{"email": "[EMAIL]", "personUid": "prs_owner1"}'
   exit 0
 fi
 exit 0
@@ -77,7 +77,7 @@ export PATH="$TMP/bin:$PATH"
 # --- 1+2. happy path ---------------------------------------------------------
 
 OUT="$(HQ_ROOT="$FIX" bash "$BUILDER" build --company acme --project widget \
-  --to alice@acme.test --to-name "Alice" 2>"$TMP/stderr.log")" \
+  --to [EMAIL] --to-name "Alice" 2>"$TMP/stderr.log")" \
   || fail "builder exited non-zero on valid fixture: $(cat "$TMP/stderr.log")"
 
 DID="$(printf '%s' "$OUT" | head -1)"
@@ -95,9 +95,9 @@ jq -e '
   .delegationId != null and
   .createdAt != null and
   .mode == "transfer" and
-  .from.email == "owner@acme.test" and
+  .from.email == "[EMAIL]" and
   .to.kind == "person" and
-  .to.principal == "alice@acme.test" and
+  .to.principal == "[EMAIL]" and
   .to.displayName == "Alice" and
   .company == "acme" and
   .project.name == "widget" and
@@ -142,14 +142,14 @@ grep -q "1 of 3 stories" "$BRIEF" || fail "BRIEF must state where things stand (
 
 mkdir -p "$FIX/companies/acme/projects/empty"
 if HQ_ROOT="$FIX" bash "$BUILDER" build --company acme --project empty \
-  --to alice@acme.test >/dev/null 2>&1; then
+  --to [EMAIL] >/dev/null 2>&1; then
   fail "builder must exit non-zero when the project has no prd.json"
 fi
 [ -z "$(find "$FIX/workspace/delegations" -maxdepth 1 -name '*empty*' 2>/dev/null)" ] \
   || fail "builder wrote a bundle for a project with no prd.json"
 
 # Missing --company is a usage error.
-if HQ_ROOT="$FIX" bash "$BUILDER" build --project widget --to a@b.c >/dev/null 2>&1; then
+if HQ_ROOT="$FIX" bash "$BUILDER" build --project widget --to [EMAIL] >/dev/null 2>&1; then
   fail "builder must exit non-zero when --company is missing"
 fi
 
@@ -162,7 +162,7 @@ jq '.name = "leaky" | .description = "key is AKIA" + "ABCDEFGHIJKLMNOP"' \
 
 BEFORE_COUNT="$(find "$FIX/workspace/delegations" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')"
 if HQ_ROOT="$FIX" bash "$BUILDER" build --company acme --project leaky \
-  --to alice@acme.test >/dev/null 2>&1; then
+  --to [EMAIL] >/dev/null 2>&1; then
   fail "builder must fail closed when output matches a secret pattern"
 fi
 AFTER_COUNT="$(find "$FIX/workspace/delegations" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')"
