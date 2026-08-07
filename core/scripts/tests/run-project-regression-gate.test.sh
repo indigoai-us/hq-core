@@ -102,8 +102,13 @@ make_repo "$normal_repo" pnpm-lock.yaml bun.lock package-lock.json
 printf '@private:registry=https://registry.example.test\n' > "$normal_repo/.npmrc"
 : > "$PM_LOG"
 REPO_PATH="$normal_repo"
+export HQ_ROOT="$TMP/hq"
+mkdir -p "$HQ_ROOT/workspace/worktrees"
 ensure_worktree "$normal_repo" 'feature/normal' main
-normal_wt="${normal_repo}-wt-feature-normal"
+# Sanctioned location — NOT a sibling of the checkout. The Edit/Write guard
+# admits only workspace/worktrees/, so the orchestrator's own worktrees have to
+# live there or every story edit fights it.
+normal_wt="$HQ_ROOT/workspace/worktrees/normal/feature-normal"
 assert_eq "$(cat "$PM_LOG")" 'pnpm install --frozen-lockfile' 'normal worktree uses pnpm before Bun and npm'
 assert_eq "$(cat "$normal_wt/.npmrc")" '@private:registry=https://registry.example.test' 'normal worktree copies untracked .npmrc'
 
@@ -127,7 +132,7 @@ BRANCH_NAME='feature/story'
 BASE_BRANCH=main
 : > "$PM_LOG"
 ensure_story_worktree 'US_001'
-story_wt="${story_repo}-wt-feature-story-us-001"
+story_wt="$HQ_ROOT/workspace/worktrees/story/feature-story-us-001"
 assert_eq "$(cat "$PM_LOG")" 'npm ci' 'story worktree uses npm when it is the only lockfile'
 assert_eq "$(cat "$story_wt/.npmrc")" 'registry=https://registry.example.test' 'story worktree copies .npmrc'
 

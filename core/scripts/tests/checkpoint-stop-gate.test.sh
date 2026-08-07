@@ -509,6 +509,14 @@ for flag in '--file' '--decision' '--learning' '--next'; do
 done
 printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF 'worse than none' \
   || fail "block reason: missing the do-not-pad instruction"
+# The two audiences must be named and separated: the checkpoint is a machine
+# record for the sibling, never a substitute for replying to the user.
+printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF 'running it does not count as having replied' \
+  || fail "block reason: missing the checkpoint-is-not-a-reply rule"
+printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF 'It never sees your chat reply' \
+  || fail "block reason: missing the sibling-audience explanation"
+printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF 'finish whatever you owe the user in the reply first' \
+  || fail "block reason: missing the reply-first ordering"
 pass "block reason carries checkpoint guidance"
 
 # 15. An unreadable or missing transcript is always an allow path.

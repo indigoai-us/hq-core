@@ -170,7 +170,7 @@ Spec: `core/knowledge/public/hq-core/journal-spec.md`. Open a session journal at
 Where `{project_dir}` = `companies/{co}/projects/{slug}/` or `personal/projects/{slug}/` for personal/HQ. The helper:
 
 - Creates `{project_dir}/journal/{ISO8601}-deep-plan.md` with frontmatter (`status: active`, `skill: deep-plan`)
-- Writes `.claude/state/active-journal` so the autocapture hook + later steps append to this file
+- Writes a session-scoped pointer under `.claude/state/active-journal.d/` so this session's autocapture hook + later steps append to this file
 - Stays open across `/handoff` boundaries — only `/handoff` and `/checkpoint` close it
 
 Subsequent steps (3.7 research synthesis, 4 interview decisions, 8.5 resolved/deferred questions) append curated entries via the same helper. The autocapture PostToolUse hook appends `## Auto-capture` lines for any Agent / WebFetch / WebSearch / AskUserQuestion calls.
@@ -394,7 +394,7 @@ After all agents complete, the main session reads the research files and writes 
 4. **Append synthesis to journal** (curated layer):
 
 ```bash
-.claude/skills/_shared/journal.sh append findings "Research synthesis: key findings — {3-5 bullets}; pre-answered — {list of question IDs}; open questions surfaced — {list}; constraints — {list}"
+.claude/skills/_shared/journal.sh append "{project_dir}" findings "Research synthesis: key findings — {3-5 bullets}; pre-answered — {list of question IDs}; open questions surfaced — {list}; constraints — {list}"
 ```
 
 This preserves the research thinking even if research-brief.md is later edited or the session compacts before PRD finalization.
@@ -485,7 +485,7 @@ If user chooses B, skip remaining questions and proceed to Step 4.5. If A, conti
 **After interview completes** — append decisions to journal:
 
 ```bash
-.claude/skills/_shared/journal.sh append decisions "Interview decisions: project type — {classification}; scope — {what's in / what's out}; premises agreed/disagreed — {brief}; smart-skipped — {count}"
+.claude/skills/_shared/journal.sh append "{project_dir}" decisions "Interview decisions: project type — {classification}; scope — {what's in / what's out}; premises agreed/disagreed — {brief}; smart-skipped — {count}"
 ```
 
 ### Step 4.5: Metadata Extraction + Operational Questions
@@ -850,7 +850,7 @@ Read `metadata.openQuestions[]` from the prd.json just written. **If empty**, sk
 8. **Append decision-mode results to journal:**
 
 ```bash
-.claude/skills/_shared/journal.sh append decisions "Open question resolution: resolved {N} → metadata.decisions[]; deferred {M} → investigation stories; key decisions — {2-3 bullet summary}"
+.claude/skills/_shared/journal.sh append "{project_dir}" decisions "Open question resolution: resolved {N} → metadata.decisions[]; deferred {M} → investigation stories; key decisions — {2-3 bullet summary}"
 ```
 
 9. Only after Step 8.5 completes may Step 9 run.

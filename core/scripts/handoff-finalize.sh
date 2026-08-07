@@ -263,8 +263,8 @@ DIRTY="false"
 # noise, so they are captured to files and later slurped into jq off argv.
 new_tmp STATUS_SUMMARY_FILE
 printf '{}' > "$STATUS_SUMMARY_FILE"
-if [[ -f core/scripts/hq-status-summary.sh ]]; then
-  bash core/scripts/hq-status-summary.sh --session-files-file "$FILES_TOUCHED_FILE" --json > "$STATUS_SUMMARY_FILE" 2>/dev/null \
+if command -v hq >/dev/null 2>&1; then
+  hq core hq-status-summary --session-files-file "$FILES_TOUCHED_FILE" --json > "$STATUS_SUMMARY_FILE" 2>/dev/null \
     || printf '{}' > "$STATUS_SUMMARY_FILE"
   # Guard against a truncated/empty write masquerading as success.
   [[ -s "$STATUS_SUMMARY_FILE" ]] || printf '{}' > "$STATUS_SUMMARY_FILE"
@@ -384,8 +384,8 @@ jq -n \
 # Inline INDEX regen replaced with delegations to reusable bash scripts.
 # Index regen is also callable independently (e.g. /cleanup --reindex,
 # handoff-post.sh). Zero Claude context either way.
-bash core/scripts/rebuild-threads-index.sh --both >/dev/null 2>&1 || true
-bash core/scripts/rebuild-orchestrator-index.sh >/dev/null 2>&1 || true
+hq core rebuild-index threads --both >/dev/null 2>&1 || true
+hq core rebuild-index orchestrator >/dev/null 2>&1 || true
 
 # -------- INDEX.md top-level timestamp only --------
 if [[ -f INDEX.md ]]; then

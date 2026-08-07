@@ -34,21 +34,21 @@ log() { echo "[${TS}] $*" >> "$LOG_MAIN"; }
 log "handoff-post starting (thread=${THREAD_PATH:-none}, learnings=${LEARNINGS_FILE:-none})"
 
 # --- 1. Archive old threads (gated once per 24h) ---
-if bash core/scripts/archive-old-threads.sh --gated >>"$LOG_MAIN" 2>&1; then
+if hq core archive-old-threads --gated >>"$LOG_MAIN" 2>&1; then
   log "archive: ok"
 else
   log "archive: error (continuing)"
 fi
 
 # --- 2. Regen thread INDEX + recent (bash, no Claude) ---
-if bash core/scripts/rebuild-threads-index.sh --both >>"$LOG_MAIN" 2>&1; then
+if hq core rebuild-index threads --both >>"$LOG_MAIN" 2>&1; then
   log "threads-index: ok"
 else
   log "threads-index: error (continuing)"
 fi
 
 # --- 3. Regen orchestrator INDEX (bash, no Claude) ---
-if bash core/scripts/rebuild-orchestrator-index.sh >>"$LOG_MAIN" 2>&1; then
+if hq core rebuild-index orchestrator >>"$LOG_MAIN" 2>&1; then
   log "orchestrator-index: ok"
 else
   log "orchestrator-index: error (continuing)"

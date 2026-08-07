@@ -127,8 +127,11 @@ Active run(s):
 $BLOCKER_LINES
 Options:
   1. Branch into a git worktree and work there (not owned):
-       git -C <repo> worktree add ../<repo>-wt-<branch> <branch>
-     Then cd ../<repo>-wt-<branch> and continue.
+       bash core/scripts/worktree.sh --name <kebab-slug> --source <repo>
+     It creates workspace/worktrees/<repo>/<name>/ and prints the path — cd
+     there and continue. Worktrees must live under workspace/worktrees/; the
+     Edit/Write guard blocks every path under repos/, including a worktree
+     created there.
   2. Wait for the owning session to finish. Stale owners auto-clear after
      heartbeat timeout or when the owning PID dies.
   3. Emergency bypass (logged to workspace/learnings/active-run-bypasses.jsonl):

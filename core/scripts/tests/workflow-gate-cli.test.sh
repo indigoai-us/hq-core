@@ -19,6 +19,11 @@
 #   6. wait-pending: exits 0 when a pending gate exists, non-zero after
 #      --timeout with none (a wake condition for watching sessions)
 #   7. clear: removes both the pending and answered files for an id
+#   8. watch-run <run-dir>: the run-scoped wake condition a launching session
+#      uses. Prints and exits 0 ONLY for a gate whose run_dir matches (another
+#      run's pending gate is ignored); exits 3 when that run has finished
+#      (journal.jsonl carries run-done) so a watch loop terminates instead of
+#      hanging; exits 1 on --timeout; rejects a missing/blank run-dir
 #
 # Hermetic: CODEX_WORKFLOW_GATES_DIR points every call at a temp dir.
 
@@ -209,6 +214,60 @@ synth_pending "$G8" gone
 gate "$G8" clear gone >/dev/null
 [ ! -f "$G8/pending/gone.json" ] && [ ! -f "$G8/answered/gone.json" ]
 check "clear removes both pending and answered files" "$?"
+
+# ---- 8: watch-run — the run-scoped wake condition -----------------------------
+# synth_pending_for <gates-dir> <id> <run-dir> — a pending gate tagged with the
+# run_dir the runner was launched with (gate() always stamps this).
+synth_pending_for() {
+  node -e '
+    const fs = require("fs");
+    const [, dir, id, runDir] = process.argv;
+    fs.mkdirSync(`${dir}/pending`, { recursive: true });
+    fs.writeFileSync(`${dir}/pending/${id}.json`, JSON.stringify({
+      id, question: "Which way?", options: [{ label: "a" }, { label: "b" }],
+      status: "pending", created_at: new Date().toISOString(),
+      run_id: "wf-test", run_dir: runDir,
+      answer_path: `${dir}/answered/${id}.json`,
+    }, null, 2) + "\n");
+  ' "$1" "$2" "$3"
+}
+
+GW="$TMP/gw"; mkdir -p "$GW"
+RUN_A="$TMP/run-a"; RUN_B="$TMP/run-b"; mkdir -p "$RUN_A" "$RUN_B"
+
+# a gate belonging to ANOTHER run must not wake this run's watcher
+synth_pending_for "$GW" other-run-gate "$RUN_B"
+gate "$GW" watch-run "$RUN_A" --timeout 2 >/dev/null 2>&1
+[ "$?" -eq 1 ]
+check "watch-run ignores a pending gate from a different run (times out)" "$?"
+
+# this run's gate wakes it and its id is printed
+synth_pending_for "$GW" my-run-gate "$RUN_A"
+OUT="$(gate "$GW" watch-run "$RUN_A" --timeout 5 2>/dev/null)"
+RC=$?
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'my-run-gate'
+check "watch-run exits 0 and prints the gate id for its own run" "$?"
+
+# a finished run must end the watch loop rather than hang until timeout
+GW2="$TMP/gw2"; RUN_C="$TMP/run-c"; mkdir -p "$GW2" "$RUN_C"
+printf '%s\n' '{"event":"run-start"}' '{"event":"run-done","agents":2}' > "$RUN_C/journal.jsonl"
+start_s=$(date +%s)
+gate "$GW2" watch-run "$RUN_C" --timeout 30 >/dev/null 2>&1
+RC=$?
+elapsed=$(( $(date +%s) - start_s ))
+[ "$RC" -eq 3 ] && [ "$elapsed" -le 5 ]
+check "watch-run exits 3 promptly when the run is already done" "$?"
+
+# a still-running run with no gate yet keeps waiting, then times out
+GW3="$TMP/gw3"; RUN_D="$TMP/run-d"; mkdir -p "$GW3" "$RUN_D"
+printf '%s\n' '{"event":"run-start"}' > "$RUN_D/journal.jsonl"
+gate "$GW3" watch-run "$RUN_D" --timeout 2 >/dev/null 2>&1
+[ "$?" -eq 1 ]
+check "watch-run keeps waiting while the run is live with no gate (times out 1)" "$?"
+
+gate "$GW3" watch-run >/dev/null 2>&1
+[ "$?" -ne 0 ]
+check "watch-run without a run-dir fails" "$?"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

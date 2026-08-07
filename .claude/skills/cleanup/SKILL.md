@@ -291,7 +291,7 @@ mv apps/{name}/prd.json personal/projects/{name}/
 Delegate to the umbrella regenerator — same script the handoff pipeline uses.
 
 ```bash
-bash core/scripts/rebuild-all-indexes.sh
+hq core rebuild-index all
 ```
 
 Covers all 9 INDEX classes: threads, orchestrator, companies, projects, company-knowledge, public-knowledge, workers, reports, social-drafts. Per-class scripts live at `core/scripts/rebuild-{class}-index.sh` — each is pure bash + jq (zero Claude context), writes its `Generated: {TS}` header per `core/knowledge/public/hq-core/index-md-spec.md`, and logs `wrote {path} (N entries)` to stderr. Umbrella emits JSON array of regenerated paths on stdout.

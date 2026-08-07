@@ -19,6 +19,12 @@
 #   workflow-gate.sh wait-pending [--timeout secs]
 #       Blocks until any pending gate exists (exit 0) or the timeout elapses
 #       (exit 1). Monitor-friendly wake condition for watching sessions.
+#   workflow-gate.sh watch-run <run-dir> [--timeout secs]
+#       Run-scoped wake condition for the session that launched a workflow.
+#       Blocks until a gate belonging to THAT run opens (prints its id, exit 0),
+#       the run finishes (exit 3), or --timeout elapses (exit 1). Match is on
+#       the run_dir every gate carries, which is the --run-dir the launching
+#       session chose — no id parsing, no env coupling, no startup race.
 #   workflow-gate.sh clear <id>
 #       Remove both the pending and answered files for a gate id.
 #
@@ -34,7 +40,7 @@ PENDING_DIR="$GATES_DIR/pending"
 ANSWERED_DIR="$GATES_DIR/answered"
 
 die() { printf 'workflow-gate: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # Gate ids are slugged filenames (see the spec) — reject anything else so an id
 # can never traverse outside the gates dir or smuggle path separators.
@@ -171,6 +177,58 @@ NODE
     done
     ;;
 
+  watch-run)
+    # Run-scoped wake condition: block until a gate belonging to THIS run opens,
+    # or until the run finishes. Gates carry the run_dir the runner was launched
+    # with, and the launching session chooses that --run-dir, so matching on it
+    # needs no id parsing, no env coupling, and no race at startup.
+    #   exit 0 + gate id  a pending gate for this run
+    #   exit 3            the run finished (journal.jsonl has run-done)
+    #   exit 1            --timeout elapsed
+    run_dir="${1:-}"
+    [ -n "$run_dir" ] || die "usage: watch-run <run-dir> [--timeout secs]"
+    case "$run_dir" in -*) die "usage: watch-run <run-dir> [--timeout secs]" ;; esac
+    shift
+    timeout=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --timeout) [ $# -ge 2 ] || die "--timeout needs a value"; timeout="$2"; shift 2 ;;
+        *) die "unknown flag: $1" ;;
+      esac
+    done
+    if [ -n "$timeout" ]; then
+      case "$timeout" in
+        (*[!0-9]*|'') die "--timeout must be a whole number of seconds" ;;
+      esac
+    fi
+    elapsed=0
+    while :; do
+      # Gate check first: a gate that opened just before the run ended must
+      # still be surfaced rather than swallowed by the run-done exit.
+      hit="$(PENDING_DIR="$PENDING_DIR" RUN_DIR="$run_dir" node -e '
+        const fs = require("fs"), path = require("path");
+        const pendingDir = process.env.PENDING_DIR;
+        const want = path.resolve(process.env.RUN_DIR);
+        let files = [];
+        try { files = fs.readdirSync(pendingDir).filter((f) => f.endsWith(".json")); } catch { process.exit(0); }
+        files.sort();
+        for (const f of files) {
+          try {
+            const g = JSON.parse(fs.readFileSync(path.join(pendingDir, f), "utf8"));
+            if (g.run_dir && path.resolve(g.run_dir) === want) { console.log(g.id || f.slice(0, -5)); break; }
+          } catch { /* half-written or malformed — try the next one */ }
+        }
+      ' 2>/dev/null)"
+      if [ -n "$hit" ]; then printf '%s\n' "$hit"; exit 0; fi
+      if [ -f "$run_dir/journal.jsonl" ] && grep -q '"event":"run-done"' "$run_dir/journal.jsonl" 2>/dev/null; then
+        exit 3
+      fi
+      if [ -n "$timeout" ] && [ "$elapsed" -ge "$timeout" ]; then exit 1; fi
+      sleep 1
+      elapsed=$((elapsed + 1))
+    done
+    ;;
+
   clear)
     id="${1:-}"
     [ -n "$id" ] || die "usage: clear <id>"
@@ -184,6 +242,6 @@ NODE
     ;;
 
   *)
-    die "unknown command: $cmd (list | show | answer | wait-pending | clear)"
+    die "unknown command: $cmd (list | show | answer | wait-pending | watch-run | clear)"
     ;;
 esac

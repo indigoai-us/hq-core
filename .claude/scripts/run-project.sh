@@ -141,9 +141,17 @@ ensure_worktree() {
     return 0
   fi
 
-  # Slugify branch for new worktree directory name
+  # Slugify branch for new worktree directory name.
+  #
+  # Worktrees go in workspace/worktrees/{repo}/{name}/ — the one sanctioned
+  # location, and the only one the Edit/Write guard allows. This used to create
+  # a sibling of the checkout (repos/**/{repo}-wt-{branch}), which put the
+  # orchestrator's own worktrees inside the tree that guard blocks, so every
+  # story edit had to fight it.
   local branch_slug="${branch_name//\//-}"
-  local wt_path="${repo_path}-wt-${branch_slug}"
+  local wt_root="${HQ_ROOT:?ensure_worktree requires HQ_ROOT to locate workspace/worktrees}"
+  local wt_path="${wt_root}/workspace/worktrees/$(basename "$repo_path")/${branch_slug}"
+  mkdir -p "$(dirname "$wt_path")"
 
   # Heal orphan worktree directories left from prior failed runs.
   # git worktree add refuses to reuse a pre-existing path, even an empty one.
@@ -3257,7 +3265,11 @@ ensure_story_worktree() {
   story_slug=$(echo "$story_id" | tr '[:upper:]' '[:lower:]' | tr '_' '-')
   local branch_slug="${project_branch//\//-}"
   local base_repo="${ORIGINAL_REPO_PATH:-$REPO_PATH}"
-  local wt_path="${base_repo}-wt-${branch_slug}-${story_slug}"
+  # workspace/worktrees/{repo}/{branch}-{story}/ — see ensure_worktree for why
+  # these are no longer siblings of the checkout under repos/.
+  local wt_root="${HQ_ROOT:?ensure_story_worktree requires HQ_ROOT to locate workspace/worktrees}"
+  local wt_path="${wt_root}/workspace/worktrees/$(basename "$base_repo")/${branch_slug}-${story_slug}"
+  mkdir -p "$(dirname "$wt_path")"
   # Each story worktree gets its own branch to avoid "already checked out" conflicts
   # Use -- separator (not /) to avoid git ref tree conflict with the project branch
   local story_branch="${project_branch}--${story_slug}"

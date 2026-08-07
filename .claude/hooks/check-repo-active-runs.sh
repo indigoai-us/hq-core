@@ -59,9 +59,12 @@ $OUTPUT
 
 Recommended options:
   1. Read-only exploration is allowed — Read/Grep/Glob/qmd will not be blocked.
-  2. For parallel work: create a git worktree in a sibling directory and cd into it.
-       git -C <repo> worktree add ../<repo>-wt-<branch> <branch>
-     Worktrees that are not registered as owned can be edited freely.
+  2. For parallel work: create a git worktree under workspace/worktrees/ and cd into it.
+       bash core/scripts/worktree.sh --name <kebab-slug> --source <repo>
+     It creates workspace/worktrees/<repo>/<name>/ and prints the path.
+     Worktrees there that are not registered as owned can be edited freely —
+     the Edit/Write guard blocks everything under repos/, so a worktree created
+     inside repos/ is not a usable target.
   3. Wait for the owning session to finish. Stale entries auto-clear after the
      heartbeat timeout (default 15 min) or when the owning PID dies.
   4. Emergency bypass (use with caution, logged to workspace/learnings/):

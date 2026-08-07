@@ -229,5 +229,5 @@ Output remaining unknowns from the DEBUG REPORT. Do NOT suggest guessing or tryi
 - **Minimal fix** — when applying a fix, change the minimum code necessary. No refactoring, no cleanup, no "improvements"
 - **Company isolation** — respect all manifest boundaries. Never search or read cross-company data for debugging
 - **Report always written** — even if the root cause is UNKNOWN, write the DEBUG REPORT. Investigation history has value
-- **Do NOT create task lists or enter planning mode** — this command is a focused investigation, not a project
+- **Do NOT use TodoWrite or EnterPlanMode** — this command is a focused investigation, not a project
 - **No Linear sync** — investigation is pre-task. Linear happens when fixes become stories
