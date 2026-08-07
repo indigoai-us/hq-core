@@ -52,3 +52,23 @@
 - path: "test/__tests__/stories/US-011.test.mjs"
   scanners: [pii]
   reason: "Work Mesh acceptance tests bind an ephemeral in-process server to the IPv4 loopback address; the address is infrastructure test data, not PII."
+
+- path: "core/scripts/tests/hq-delegate-bundle.test.sh"
+  scanners: [pii]
+  reason: "Delegate bundle test fixtures use RFC 2606 reserved .test and .local addresses as principal identifiers in jq assertions and CLI arguments; never resolvable in DNS, no real mailbox — placeholder, not PII."
+
+- path: "core/scripts/tests/hq-delegate-grant.test.sh"
+  scanners: [pii]
+  reason: "Delegate grant test fixtures use RFC 2606 reserved .test addresses as principal identifiers in grep checks and CLI invocations; never resolvable in DNS, no real mailbox — placeholder, not PII."
+
+- path: "core/scripts/tests/hq-delegate-repo.test.sh"
+  scanners: [pii]
+  reason: "Delegate repo test fixtures use RFC 2606 reserved .test addresses as principal identifiers; never resolvable in DNS, no real mailbox — placeholder, not PII."
+
+- path: "core/scripts/tests/hq-delegate-resolve.test.sh"
+  scanners: [pii]
+  reason: "Delegate resolve test fixtures use RFC 2606 reserved .test addresses as principal identifiers in resolution checks; never resolvable in DNS, no real mailbox — placeholder, not PII."
+
+- path: "core/scripts/tests/hq-delegate-secrets.test.sh"
+  scanners: [pii]
+  reason: "Delegate secrets test fixtures use RFC 2606 reserved .test addresses as principal identifiers in jq assertions and CLI arguments; never resolvable in DNS, no real mailbox — placeholder, not PII."

@@ -60,7 +60,7 @@ entry with `verifiedAt` and the confirmed permission.
 ## `repo` block
 
 ```json
-{ "path": "repos/public/hq-core", "remote": "git@github.com:org/repo.git",
+{ "path": "repos/public/hq-core", "remote": "https://github.com/org/repo.git",
   "branch": "feature/x", "baseBranch": "main", "headSha": "abc123…",
   "dirtyFiles": [], "accessVerified": false }
 ```
