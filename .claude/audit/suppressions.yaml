@@ -52,3 +52,35 @@
 - path: "test/__tests__/stories/US-011.test.mjs"
   scanners: [pii]
   reason: "Work Mesh acceptance tests bind an ephemeral in-process server to the IPv4 loopback address; the address is infrastructure test data, not PII."
+
+- path: "core/scripts/tests/hq-delegate-bundle.test.sh"
+  rules: [pii/email]
+  reason: "Delegation bundle test fixtures use RFC 2606 reserved .test domain addresses (owner@acme.test, alice@acme.test) and git SSH remote URLs (git@github.test:...); none are real email addresses or PII."
+
+- path: "core/scripts/tests/hq-delegate-grant.test.sh"
+  rules: [pii/email]
+  reason: "Delegation grant test fixtures use RFC 2606 reserved .test domain addresses; none are real email addresses or PII."
+
+- path: "core/scripts/tests/hq-delegate-repo.test.sh"
+  rules: [pii/email]
+  reason: "Delegation repo test fixtures use RFC 2606 reserved .test domain addresses and git SSH remote URLs; none are real email addresses or PII."
+
+- path: "core/scripts/tests/hq-delegate-resolve.test.sh"
+  rules: [pii/email]
+  reason: "Delegation resolve test fixtures use RFC 2606 reserved .test domain addresses; none are real email addresses or PII."
+
+- path: "core/scripts/tests/hq-delegate-secrets.test.sh"
+  rules: [pii/email]
+  reason: "Delegation secrets test fixtures use RFC 2606 reserved .test domain addresses; none are real email addresses or PII."
+
+- path: "core/scripts/tests/hq-delegate-send.test.sh"
+  rules: [pii/email]
+  reason: "Delegation send test fixtures use RFC 2606 reserved .test domain addresses (owner@acme.test, alice@acme.test) and git SSH remote URLs (git@github.test:...); none are real email addresses or PII."
+
+- path: "core/scripts/tests/hq-delegate-transfer.test.sh"
+  rules: [pii/email]
+  reason: "Delegation transfer test fixtures use RFC 2606 reserved .test domain addresses; none are real email addresses or PII."
+
+- path: "core/knowledge/public/hq-core/delegation-bundle-spec.md"
+  rules: [pii/email]
+  reason: "Documentation spec file; the pii/email match is a git SSH remote URL (git@github.com:org/repo.git) inside a JSON code block illustrating the manifest schema, not a real email address."
