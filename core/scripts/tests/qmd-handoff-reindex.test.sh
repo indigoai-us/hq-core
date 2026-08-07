@@ -74,6 +74,10 @@ reap_workers() {
 # A failing EXIT trap would turn a green assertion suite red (set -e).
 cleanup() {
   set +e
+  # Release any active hold markers FIRST: a fail() fired while a hold-gated
+  # stub was looping leaves a held worker alive, and reap_workers' bare `wait`
+  # would block on it forever (observed as a whole-suite timeout).
+  rm -f "$TMP"/hold-* 2>/dev/null
   reap_workers
   if [[ -n "${TMP:-}" && -d "$TMP" ]]; then
     # Best-effort: stop any remaining processes whose cmdline references this TMP.
@@ -101,24 +105,88 @@ COMPLETE_STAMP="$HOME_DIR/.hq/locks/qmd-reindex-bg.completed"
 mkdir -p "$HOME_DIR/.hq/locks" "$BIN" "$TMP/logs" "$TMP/repo/core/scripts" \
   "$TMP/repo/workspace/threads" "$TMP/repo/workspace/baseline" "$TMP/repo/workspace/orchestrator"
 
+# A CLI-reachable dir with NO qmd, for the cases whose subject is qmd's absence.
+# It must not inherit the stub qmd from $BIN, and /usr/bin is not safe to use as
+# a "qmd-free" PATH: qmd installs there on any host that ran `npm i -g`.
+#
+# Populate it by mirroring EVERY system-bin tool except qmd. Hand-picking tools
+# has broken twice: the pnpm `hq` launcher needs dirname/sed/uname before it
+# ever reaches node (a missing dirname makes its basedir resolve empty, and the
+# CLI dies with MODULE_NOT_FOUND on a /global/5/... path), and the forwarder
+# script needs dirname too. A full mirror minus qmd is the only PATH that is
+# simultaneously "qmd absent" and "everything else works".
+CLI_ONLY_BIN="$TMP/cli-only-bin"
+mkdir -p "$CLI_ONLY_BIN"
+for _sys in /usr/bin /bin /usr/local/bin; do
+  [[ -d "$_sys" ]] || continue
+  for _tool in "$_sys"/*; do
+    _name="${_tool##*/}"
+    [[ "$_name" == "qmd" ]] && continue
+    [[ -e "$CLI_ONLY_BIN/$_name" ]] || ln -s "$_tool" "$CLI_ONLY_BIN/$_name"
+  done
+done
+
+# The helper forwards to `hq index background`, so every hermetic `env -i` case
+# needs the CLI and its node runtime reachable.
+#
+# `hq` must be reached through its OWN directory and never symlinked in: the
+# pnpm shim derives its payload path from $0's dirname, so a symlink elsewhere
+# makes it look for dist/index.js under that location and die with
+# MODULE_NOT_FOUND. `node` is a real binary and is safe to link — and required,
+# since the shim execs it (a PATH without node fails with 127).
+HQ_REAL_BIN="$(command -v hq 2>/dev/null || true)"
+[[ -n "$HQ_REAL_BIN" ]] \
+  || { echo "FAIL: hq CLI not on PATH; this suite exercises the hq CLI forwarder" >&2; exit 1; }
+# A WRAPPER, never a symlink. The pnpm shim derives its payload path from $0, so
+# a symlink (or a PATH lookup that leaves $0 bare) makes it resolve dist/index.js
+# against the wrong directory and die with MODULE_NOT_FOUND. Calling the real
+# shim by absolute path keeps its own $0 correct wherever the fixture puts it.
+for _dir in "$BIN" "$CLI_ONLY_BIN"; do
+  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$HQ_REAL_BIN" > "$_dir/hq"
+  chmod +x "$_dir/hq"
+done
+for _cmd in node bash sh; do
+  _resolved="$(command -v "$_cmd" 2>/dev/null || true)"
+  if [[ -z "$_resolved" ]]; then
+    echo "FAIL: $_cmd not on PATH; this suite exercises the hq CLI forwarder" >&2
+    exit 1
+  fi
+  ln -sf "$_resolved" "$BIN/$_cmd"
+  ln -sf "$_resolved" "$CLI_ONLY_BIN/$_cmd"
+done
+
 # --- fake qmd: records ordered mutations; optional hold for concurrency ---
-cat > "$BIN/qmd" <<'SH'
+# ONE writer for the standard stub. Cases that need a special stub (C2's
+# ready-signal, C3's noisy update) overwrite $BIN/qmd and then restore through
+# this function — four hand-copied restore blocks previously drifted from the
+# canonical body and reintroduced retired hold semantics.
+write_standard_qmd_stub() {
+  cat > "$BIN/qmd" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 cmd="${1:-}"
 printf 'qmd %s\n' "$cmd" >> "${MUTATION_LOG:?}"
-if [[ -n "${QMD_HOLD_FILE:-}" && -f "${QMD_HOLD_FILE}" ]]; then
-  # Hold while the marker exists so a second caller can race the lock.
-  while [[ -f "${QMD_HOLD_FILE}" ]]; do
-    sleep 0.05
-  done
-fi
+# Hold only on PIPELINE commands. The CLI probes `qmd collection` before the
+# raw pipeline; holding there would block the winner ahead of `qmd cleanup`,
+# and hold-gated cases that wait for cleanup-under-hold would deadlock.
+case "$cmd" in
+  cleanup|update|embed)
+    if [[ -n "${QMD_HOLD_FILE:-}" && -f "${QMD_HOLD_FILE}" ]]; then
+      # Hold while the marker exists so a second caller can race the lock.
+      while [[ -f "${QMD_HOLD_FILE}" ]]; do
+        sleep 0.05
+      done
+    fi
+    ;;
+esac
 if [[ -n "${QMD_FAIL_CMD:-}" && "$cmd" == "$QMD_FAIL_CMD" ]]; then
   exit "${QMD_FAIL_RC:-1}"
 fi
 exit 0
 SH
-chmod +x "$BIN/qmd"
+  chmod +x "$BIN/qmd"
+}
+write_standard_qmd_stub
 
 # Shared env for helper runs (isolated HOME + PATH; no real agent markers).
 helper_env() {
@@ -126,6 +194,7 @@ helper_env() {
   env -i \
     PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
+    HQ_QMD_BIN="$BIN/qmd" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
     QMD_HANDOFF_LOG="$LOG" \
@@ -151,14 +220,79 @@ run_worker() {
 
 # Launcher path (prints skipped-agent / skipped / pid).
 run_launcher() {
-  helper_env bash "$HELPER" --log "$LOG"
+  # Record the detached worker so reset_state can actually drain it. track_pid
+  # is file-backed precisely so this works from a command-substitution subshell.
+  # Without this the reap list stayed empty and a prior case's worker kept
+  # writing into the next case's freshly-truncated MUTATION_LOG — invisible while
+  # the worker was a fast shell process, but not once it became a node process.
+  local _out
+  _out="$(helper_env bash "$HELPER" --log "$LOG")"
+  track_pid "$_out"
+  printf '%s' "$_out"
 }
 
+# KNOWN GAP — this suite cannot yet isolate cases from a detached node worker.
+#
+# Diagnosed 2026-08-06 by instrumenting the qmd stub with pid/ppid:
+#   * One `--worker` run emits exactly one cleanup/update/embed, so the CLI's
+#     single-flight lock is correct.
+#   * After reset_state, stray mutations carried ppid=<the previous launcher's
+#     printed PID>, and `wait` reports that PID is not a child of this shell.
+#   * track_pid() existed but had NO callers, so reap_workers always drained an
+#     empty list. That is fixed below (run_launcher now records its worker).
+#   * Fixture-spawned workers (finalize/post) never surface a PID at all, so PID
+#     tracking alone cannot cover them.
+#
+# Draining on the single-flight lock was tried and rejected: several cases park a
+# worker mid-pipeline via $HOLD to race the lock, so lock-waiting either blocks
+# for the full timeout or, once holds are cleared early, releases a worker into
+# the next case. Both were observed.
+#
+# The durable fix is per-case isolation — a fresh HOME and MUTATION_LOG per case
+# so cross-case leakage is structurally impossible — rather than more draining.
+# Until then this suite must not be treated as green for the forwarder.
+
+CASE_SEQ=0
+# "The worker is inside qmd" — it holds the lock and is blocked in a call.
+#
+# Cases used to wait for `^qmd cleanup` specifically, which was the shell
+# worker's FIRST qmd call. The CLI reconciles collections first, so under a stub
+# that holds on every call the worker blocks at `collection list` and `cleanup`
+# never arrives — the wait cannot succeed and the case times out. Any logged
+# call proves the worker reached qmd, which is what these waits actually mean.
+wait_for_worker_in_qmd() { # <label>
+  # Anchor on `qmd cleanup` specifically: it is the step the hold-gated stub
+  # blocks in, so its presence proves the worker is INSIDE the raw pipeline
+  # with the lock held. Any-line waiting would return on the CLI's pre-lock
+  # `qmd collection` registration, before the lock is acquired — a race.
+  local label="${1:-worker}" _
+  for _ in $(seq 1 600); do
+    grep -q '^qmd cleanup' "$MUTATION_LOG" 2>/dev/null && return 0
+    sleep 0.05
+  done
+  fail "$label never reached qmd cleanup (log: $(tr '\n' ' ' <"$MUTATION_LOG" 2>/dev/null))"
+}
+
+# NOTE: main's #522 introduced a hand-picked path_without_qmd() helper for the
+# qmd-absent cases. This branch supersedes it with $CLI_ONLY_BIN — a full
+# system-bin mirror minus qmd — because a curated tool list broke twice (the
+# pnpm hq launcher alone needs dirname/sed/uname before it reaches node).
+
 reset_state() {
-  # Drain prior async workers before wiping lock/stamp state.
+  # Per-case isolation. A detached worker from a previous case cannot be waited
+  # on (it is not a child of this shell) and fixture-spawned workers never
+  # surface a PID at all, so draining can never be complete. Instead of chasing
+  # stragglers, give every case its own HOME, mutation log and helper log: a
+  # leaked worker keeps writing to the paths it captured at spawn and is
+  # structurally unable to contaminate the next case. Cheap, and it removes the
+  # timing assumptions this suite inherited from a synchronous shell worker.
   reap_workers
-  rm -f "$MUTATION_LOG" "$LOG" "$COMPLETE_STAMP"
-  rm -rf "$HOME_DIR/.hq/locks"
+  CASE_SEQ=$((CASE_SEQ + 1))
+  HOME_DIR="$TMP/home.$CASE_SEQ"
+  LOG="$TMP/qmd-handoff.$CASE_SEQ.log"
+  MUTATION_LOG="$TMP/mutations.$CASE_SEQ.log"
+  LOCK_DIR="$HOME_DIR/.hq/locks/qmd-reindex-bg.lock"
+  COMPLETE_STAMP="$HOME_DIR/.hq/locks/qmd-reindex-bg.completed"
   mkdir -p "$HOME_DIR/.hq/locks"
   : > "$MUTATION_LOG"
   # Clear any env that prior cases set in this shell (run_* inherit via ${VAR:-}).
@@ -174,18 +308,6 @@ inv_count() {
   local n
   n=$(grep -c '^qmd ' "$MUTATION_LOG" 2>/dev/null || true)
   echo "${n:-0}"
-}
-
-wait_for_mutations() {
-  local want="${1:-1}" i=0
-  for i in $(seq 1 100); do
-    local n
-    n=$(inv_count)
-    n=${n//$'\n'/}
-    [[ "$n" -ge "$want" ]] 2>/dev/null && return 0
-    sleep 0.05
-  done
-  return 1
 }
 
 # =============================================================================
@@ -211,7 +333,7 @@ ok "A2: HQ_QMD_REINDEX_MODE=skip-agent|skip → skipped-agent, zero mutations"
 # Agent with qmd ABSENT must still print skipped-agent (not skipped).
 reset_state
 out=$(
-  env -i PATH="/usr/bin:/bin" HOME="$HOME_DIR" \
+  env -i PATH="$CLI_ONLY_BIN" HOME="$HOME_DIR" \
     QMD_REINDEX_LOG="$LOG" HQ_AGENT_BOX=1 \
     bash "$HELPER" --log "$LOG"
 )
@@ -231,18 +353,17 @@ set -e
 [[ "$(inv_count)" -eq 0 ]] || fail "agent worker must not mutate"
 ok "A4: agent --worker hard-skip, zero mutations"
 
-# Structural: helper never treats managed path as an invoke target.
-if grep -nE 'HQ_QMD_INDEX_USER|qmd-index-user' "$HELPER" | grep -vE '^\s*#|:\s*#|hard-skip|never|managed|agent' >/dev/null 2>&1; then
-  # Allow comments that mention managed as skip markers; forbid assignment/exec.
-  live=$(grep -nE '\$\{?HQ_QMD_INDEX_USER|exec .*qmd-index-user|bash .*qmd-index-user' "$HELPER" || true)
-  if [[ -n "$live" ]]; then
-    if echo "$live" | grep -vE '^[0-9]+:[[:space:]]*#' >/dev/null; then
-      fail "helper must not invoke managed user-half: $live"
-    fi
-  fi
+# Structural: the forwarder must never invoke the managed user-half itself.
+# It previously also had to MENTION `qmd-index-user`, because is_agent_box read
+# that marker inline. Detection now lives in the CLI, so requiring the string
+# here would assert against the wrong file; what still matters is that this
+# script never execs the managed half. Agent detection itself — including the
+# /usr/local/lib/hq-agent/qmd-index-user marker — is covered by hq-cli's
+# background differential and isHostedAgent unit tests.
+if grep -nE '(exec|bash|sh)[[:space:]]+[^#]*qmd-index-user' "$HELPER" | grep -vE '^[0-9]+:[[:space:]]*#' >/dev/null 2>&1; then
+  fail "forwarder must not invoke the managed user-half"
 fi
-# Presence of managed binary path is only a *detection* marker in is_agent_box.
-grep -q 'qmd-index-user' "$HELPER" || fail "helper should detect managed path as agent marker"
+ok "A5: forwarder does not invoke the managed user-half"
 if grep -nE 'run_qmd .*qmd-index|bash .*/qmd-index-user' "$HELPER" | grep -vE '^[0-9]+:[[:space:]]*#' >/dev/null 2>&1; then
   fail "helper must not exec qmd-index-user"
 fi
@@ -253,8 +374,13 @@ ok "A5: managed path is skip marker only (never invoke target)"
 # =============================================================================
 reset_state
 run_worker
-mapfile -t steps < <(grep '^qmd ' "$MUTATION_LOG" || true)
-[[ "${#steps[@]}" -eq 3 ]] || fail "expected 3 raw qmd steps, got ${#steps[@]}: $(cat "$MUTATION_LOG")"
+# The CLI reconciles collections before the pipeline; the old shell worker had
+# no such step. Count the pipeline itself and assert the registration calls
+# separately, so the addition stays visible instead of being absorbed into a
+# looser total. Equivalence of the pipeline against the pre-migration script is
+# proven in hq-cli's e2e/qmd-background-differential.test.ts.
+mapfile -t steps < <(grep '^qmd ' "$MUTATION_LOG" | grep -vE '^qmd (collection|context)\b' || true)
+[[ "${#steps[@]}" -eq 3 ]] || fail "expected 3 raw qmd pipeline steps, got ${#steps[@]}: $(cat "$MUTATION_LOG")"
 [[ "${steps[0]}" == "qmd cleanup" ]] || fail "step1 want cleanup, got ${steps[0]}"
 [[ "${steps[1]}" == "qmd update" ]] || fail "step2 want update, got ${steps[1]}"
 [[ "${steps[2]}" == "qmd embed" ]] || fail "step3 want embed, got ${steps[2]}"
@@ -265,12 +391,42 @@ ok "L1: laptop --worker runs cleanup → update → embed and stamps"
 reset_state
 HOLD="$TMP/hold-concurrent"
 : > "$HOLD"
-for _ in 1 2; do
-  QMD_HOLD_FILE="$HOLD" QMD_HANDOFF_DEDUPE_SEC=0 helper_env bash "$HELPER" --worker --log "$LOG" &
-done
-# Let both race the lock.
-sleep 0.15
+# Establish contention deterministically rather than racing two process starts.
+#
+# This used to launch both workers and `sleep 0.15`, which worked when the
+# worker was a bash script starting in ~10ms. The helper now forwards into the
+# hq CLI and node takes ~1.7s to boot, so the hold was released before either
+# worker arrived: the first ran and RELEASED the lock, then the second acquired
+# it and ran too. Timestamps showed the second pipeline beginning 39-136ms AFTER
+# the first finished — sequential execution, i.e. single-flight working, not
+# failing. The case was measuring startup latency, not lock contention.
+#
+# Waiting for BOTH workers to reach qmd cannot work either: the loser is
+# supposed to skip without touching qmd, so only one can ever log.
+#
+# So: start one worker, wait until it is demonstrably inside qmd (holding the
+# lock), start the second while that is still true, and assert the second adds
+# no qmd calls. Deterministic at any startup speed.
+QMD_HOLD_FILE="$HOLD" QMD_HANDOFF_DEDUPE_SEC=0 helper_env bash "$HELPER" --worker --log "$LOG" &
+holder=$!
+wait_for_worker_in_qmd "first concurrent worker"
+# Count PIPELINE steps only. The CLI registers collections (`qmd collection`,
+# idempotent, read-mostly) BEFORE trying the lock, so the losing worker
+# legitimately logs those; the single-flight invariant is about the raw
+# cleanup/update/embed pipeline, and the final assertions below pin each of
+# those to exactly one occurrence.
+pipeline_lines() { grep -cE '^qmd (cleanup|update|embed)$' "$MUTATION_LOG" 2>/dev/null || true; }
+before_second=$(pipeline_lines)
+
+QMD_HOLD_FILE="$HOLD" QMD_HANDOFF_DEDUPE_SEC=0 helper_env bash "$HELPER" --worker --log "$LOG" &
+second=$!
+wait "$second" 2>/dev/null || true
+after_second=$(pipeline_lines)
+[[ "$after_second" -eq "$before_second" ]] \
+  || fail "second worker ran pipeline steps while the lock was held (before=$before_second after=$after_second)"
+
 rm -f "$HOLD"
+wait "$holder" 2>/dev/null || true
 wait || true
 cleanup_n=$(grep -c '^qmd cleanup' "$MUTATION_LOG" || true)
 update_n=$(grep -c '^qmd update' "$MUTATION_LOG" || true)
@@ -336,11 +492,7 @@ HOLD="$TMP/hold-log"
 : > "$HOLD"
 QMD_HOLD_FILE="$HOLD" QMD_HANDOFF_DEDUPE_SEC=0 helper_env bash "$HELPER" --worker --log "$LOG" &
 wpid=$!
-for _ in $(seq 1 100); do
-  grep -q '^qmd cleanup' "$MUTATION_LOG" 2>/dev/null && break
-  sleep 0.05
-done
-grep -q '^qmd cleanup' "$MUTATION_LOG" || fail "winner never started raw pipeline"
+wait_for_worker_in_qmd "winner"
 echo "KEEP_ME" >> "$LOG"
 size_before=$(wc -c < "$LOG")
 QMD_HANDOFF_DEDUPE_SEC=0 run_worker
@@ -448,13 +600,23 @@ assert_no_raw_qmd_pipeline "$POST" "handoff-post.sh"
 ok "S1: finalize+post delegate to qmd-reindex-bg (no inline raw pipeline)"
 
 reset_state
+# S2 asserted "skipped" when no qmd was on PATH. Two things changed:
+#   1. PATH=/usr/bin:/bin never actually removed qmd — it is installed there on
+#      hosts that ran `npm i -g @tobilu/qmd`, so this case silently tested the
+#      opposite of its name and failed on exactly those machines.
+#   2. The helper now forwards to `hq index background`, and the CLI bundles qmd
+#      (resolved via node_modules/.bin since hq-cli 5.94.1), so "skipped" is
+#      unreachable by design — that is the point of bundling (hq-cli#333).
+# The new contract: with no qmd on PATH the run still proceeds rather than
+# skipping. CLI_ONLY_BIN holds the CLI and coreutils, deliberately no qmd.
+[[ -e "$CLI_ONLY_BIN/qmd" ]] && fail "S2 fixture leaked a qmd binary"
 out=$(
-  env -i PATH="/usr/bin:/bin" HOME="$HOME_DIR" \
+  env -i PATH="$CLI_ONLY_BIN" HOME="$HOME_DIR" \
     QMD_REINDEX_LOG="$LOG" \
     bash "$HELPER" --log "$LOG"
 )
-[[ "$out" == "skipped" ]] || fail "missing qmd non-agent want skipped, got '$out'"
-ok "S2: missing qmd non-agent → skipped, exit 0"
+[[ "$out" != "skipped" ]] || fail "bundled qmd should make 'skipped' unreachable, got '$out'"
+ok "S2: no qmd on PATH still proceeds (CLI bundles qmd), exit 0"
 
 reset_state
 set +e
@@ -476,8 +638,15 @@ reset_state
 out=$(run_launcher)
 [[ "$out" =~ ^[0-9]+$ ]] || fail "laptop launcher want numeric pid, got '$out'"
 track_pid "$out"
-# Poll async worker mutations
-wait_for_mutations 3 || fail "launcher worker did not complete pipeline: $(cat "$MUTATION_LOG")"
+# Wait for the pipeline's FINAL step, not a raw line count: the CLI logs
+# collection/context probes before the pipeline, so "any 3 lines" can be
+# satisfied with zero pipeline steps run.
+for _ in $(seq 1 200); do
+  grep -q '^qmd embed' "$MUTATION_LOG" 2>/dev/null && break
+  sleep 0.05
+done
+grep -q '^qmd embed' "$MUTATION_LOG" \
+  || fail "launcher worker did not complete pipeline: $(cat "$MUTATION_LOG")"
 cleanup_n=$(grep -c '^qmd cleanup' "$MUTATION_LOG" || true)
 [[ "$cleanup_n" -eq 1 ]] || fail "launcher expected one cleanup, got $cleanup_n"
 wait_pid_soft "$out"
@@ -537,6 +706,7 @@ chmod +x "$REAL_HELPER" "$TMP/repo/core/scripts/qmd-reindex-bg.real.sh"
   out=$(
     env -i PATH="$BIN:/usr/bin:/bin:$(dirname "$(command -v jq || echo /usr/bin)")" \
       HOME="$HOME_DIR" \
+      HQ_QMD_BIN="$BIN/qmd" \
       MUTATION_LOG="$MUTATION_LOG" \
       QMD_REINDEX_LOG="$LOG" \
       QMD_HANDOFF_LOG="$LOG" \
@@ -582,6 +752,7 @@ rm -f "$TMP/helper-scheduled.log"
   out=$(
     env -i PATH="$BIN:/usr/bin:/bin:$(dirname "$(command -v jq || echo /usr/bin)")" \
       HOME="$HOME_DIR" \
+      HQ_QMD_BIN="$BIN/qmd" \
       MUTATION_LOG="$MUTATION_LOG" \
       QMD_REINDEX_LOG="$LOG" \
       HQ_AGENT_BOX=1 \
@@ -608,6 +779,7 @@ reset_state
   cd "$TMP/repo"
   env -i PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
+    HQ_QMD_BIN="$BIN/qmd" \
     HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
@@ -641,6 +813,7 @@ reset_state
   cd "$TMP/repo"
   env -i PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
+    HQ_QMD_BIN="$BIN/qmd" \
     HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
@@ -670,6 +843,7 @@ rm -f "$TMP/r3-finalize-out.json" "$TMP/r3-post-pid" "$TMP/logs/handoff-post.log
   # Real finalize in background (launcher path → detached worker; holds on qmd).
   env -i PATH="$BIN:/usr/bin:/bin:$JQ_DIR" \
     HOME="$HOME_DIR" \
+    HQ_QMD_BIN="$BIN/qmd" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
     QMD_HANDOFF_LOG="$LOG" \
@@ -692,6 +866,7 @@ rm -f "$TMP/r3-finalize-out.json" "$TMP/r3-post-pid" "$TMP/logs/handoff-post.log
   # helper while the hold is still active (finalize is slower than post).
   env -i PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
+    HQ_QMD_BIN="$BIN/qmd" \
     HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
@@ -763,6 +938,7 @@ reset_state
   set +e
   env -i PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
+    HQ_QMD_BIN="$BIN/qmd" \
     HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
@@ -826,19 +1002,26 @@ for _ in $(seq 1 "$C1_N"); do
     helper_env bash "$HELPER" --worker --log "$LOG" 2>>"$C1_ERR" &
   C1_PIDS+=($!)
 done
-# Wait until the single winner is inside held cleanup.
-for _ in $(seq 1 200); do
+# Wait until the single winner is inside held cleanup. 30s: sixty CLI workers
+# boot ~1.7s of node each and share the cores, so the fastest boot can pass 10s.
+for _ in $(seq 1 600); do
   grep -q '^qmd cleanup' "$MUTATION_LOG" 2>/dev/null && break
   sleep 0.05
 done
 grep -q '^qmd cleanup' "$MUTATION_LOG" || fail "C1: no reclaim winner started under hold"
-# While hold is active, at most one worker should be alive in the pipeline.
-sleep 0.2
-alive_hold=0
-for p in "${C1_PIDS[@]}"; do
-  if kill -0 "$p" 2>/dev/null; then
-    alive_hold=$((alive_hold + 1))
-  fi
+# While hold is active, losers must EXIT (skip), never queue behind the lock.
+# CLI workers take seconds to boot under 60-way contention, so an instant
+# sample races startup latency; poll until the census settles to the single
+# held winner instead. A loser that blocks on the lock stays alive forever
+# and times this poll out — which is exactly the failure it must catch.
+alive_hold="$C1_N"
+for _ in $(seq 1 600); do
+  alive_hold=0
+  for p in "${C1_PIDS[@]}"; do
+    kill -0 "$p" 2>/dev/null && alive_hold=$((alive_hold + 1))
+  done
+  [[ "$alive_hold" -le 1 ]] && break
+  sleep 0.1
 done
 [[ "$alive_hold" -eq 1 ]] \
   || fail "C1: expected exactly 1 live worker during hold, got $alive_hold (mut=$(cat "$MUTATION_LOG"))"
@@ -909,6 +1092,7 @@ chmod +x "$BIN/qmd"
 env -i \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
+  HQ_QMD_BIN="$BIN/qmd" \
   MUTATION_LOG="$MUTATION_LOG" \
   QMD_REINDEX_LOG="$LOG" \
   QMD_HANDOFF_LOG="$LOG" \
@@ -948,22 +1132,7 @@ grep -q '^qmd cleanup' "$MUTATION_LOG" || fail "C2: cleanup should have started 
 ok "C2: TERM during held cleanup → no update/embed/stamp; lock released"
 
 # Restore standard fake qmd for remaining cases.
-cat > "$BIN/qmd" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-}"
-printf 'qmd %s\n' "$cmd" >> "${MUTATION_LOG:?}"
-if [[ -n "${QMD_HOLD_FILE:-}" && -f "${QMD_HOLD_FILE}" ]]; then
-  while [[ -f "${QMD_HOLD_FILE}" ]]; do
-    sleep 0.05
-  done
-fi
-if [[ -n "${QMD_FAIL_CMD:-}" && "$cmd" == "$QMD_FAIL_CMD" ]]; then
-  exit "${QMD_FAIL_RC:-1}"
-fi
-exit 0
-SH
-chmod +x "$BIN/qmd"
+write_standard_qmd_stub
 
 # C3: failed noisy update must still respect log cap.
 reset_state
@@ -1003,22 +1172,7 @@ fi
 ok "C3: failed noisy update respects log cap"
 
 # Restore standard fake qmd.
-cat > "$BIN/qmd" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-}"
-printf 'qmd %s\n' "$cmd" >> "${MUTATION_LOG:?}"
-if [[ -n "${QMD_HOLD_FILE:-}" && -f "${QMD_HOLD_FILE}" ]]; then
-  while [[ -f "${QMD_HOLD_FILE}" ]]; do
-    sleep 0.05
-  done
-fi
-if [[ -n "${QMD_FAIL_CMD:-}" && "$cmd" == "$QMD_FAIL_CMD" ]]; then
-  exit "${QMD_FAIL_RC:-1}"
-fi
-exit 0
-SH
-chmod +x "$BIN/qmd"
+write_standard_qmd_stub
 
 # C4: late observers must not move a replacement live claim or live main lock.
 # PATH mv shim records renames and flags any mv of a live-owned main lock dir
@@ -1115,17 +1269,22 @@ for _ in $(seq 1 "$C4_N"); do
     helper_env bash "$HELPER" --worker --log "$LOG" 2>>"$C4_ERR" &
   C4_PIDS+=($!)
 done
-for _ in $(seq 1 200); do
+# 30s winner-wait for the same reason as C1: 60 node boots share the cores.
+for _ in $(seq 1 600); do
   grep -q '^qmd cleanup' "$MUTATION_LOG" 2>/dev/null && break
   sleep 0.05
 done
 grep -q '^qmd cleanup' "$MUTATION_LOG" || fail "C4: no reclaim winner under hold"
-sleep 0.2
-alive_hold=0
-for p in "${C4_PIDS[@]}"; do
-  if kill -0 "$p" 2>/dev/null; then
-    alive_hold=$((alive_hold + 1))
-  fi
+# Same settle-poll as C1: losers exit (skip) at their own boot pace; a loser
+# that queues behind the lock stays alive and times the poll out.
+alive_hold="$C4_N"
+for _ in $(seq 1 600); do
+  alive_hold=0
+  for p in "${C4_PIDS[@]}"; do
+    kill -0 "$p" 2>/dev/null && alive_hold=$((alive_hold + 1))
+  done
+  [[ "$alive_hold" -le 1 ]] && break
+  sleep 0.1
 done
 [[ "$alive_hold" -eq 1 ]] \
   || fail "C4: expected exactly 1 live worker during hold, got $alive_hold (mut=$(cat "$MUTATION_LOG"); trace=$(cat "$MV_TRACE"))"
@@ -1162,22 +1321,7 @@ rm -f "$BIN/mv"
 ok "C4: late observers cannot move live claim/main; one pipeline"
 
 # Restore standard fake qmd (C4 may have been last mutator setup).
-cat > "$BIN/qmd" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-}"
-printf 'qmd %s\n' "$cmd" >> "${MUTATION_LOG:?}"
-if [[ -n "${QMD_HOLD_FILE:-}" && -f "${QMD_HOLD_FILE}" ]]; then
-  while [[ -f "${QMD_HOLD_FILE}" ]]; do
-    sleep 0.05
-  done
-fi
-if [[ -n "${QMD_FAIL_CMD:-}" && "$cmd" == "$QMD_FAIL_CMD" ]]; then
-  exit "${QMD_FAIL_RC:-1}"
-fi
-exit 0
-SH
-chmod +x "$BIN/qmd"
+write_standard_qmd_stub
 
 # =============================================================================
 # C5–C10: R2 pre-push — owner write mandatory, launcher HUP/INT, EXIT cap_log
@@ -1191,22 +1335,19 @@ chmod +x "$BIN/qmd"
 reset_state
 C5_ERR="$TMP/c5-stderr.txt"
 : > "$C5_ERR"
-# Structural: _abandon_created_lock must not recursively delete fixed LOCK_DIR
-# (peer may have moved our dir and recreated a live lock at that path).
-c5_ab_body="$(awk '
-  /^_abandon_created_lock\(\)/ {grab=1}
-  grab {print}
-  grab && /^}/ {exit}
-' "$HELPER")"
-[[ -n "$c5_ab_body" ]] || fail "C5: could not extract _abandon_created_lock"
-if printf '%s\n' "$c5_ab_body" | grep -Eiq 'rm[[:space:]]+-rf[[:space:]]+"?\$\{?LOCK_DIR\}?"?'; then
-  fail "C5 structural: _abandon_created_lock must not rm -rf fixed LOCK_DIR path"
+# Structural: the identity-safe abandon contract (marker + rmdir, never a
+# fixed-path recursive delete of LOCK_DIR) moved with the implementation into
+# the hq CLI, where it is pinned by background.test.ts ("abandons a created
+# lock if owner publish cannot be verified") and exercised behaviorally by the
+# forced-owner-write-fail parts of this case below. What remains structural
+# HERE is that the forwarder carries no shell-side lock handling for the old
+# grep targets to silently pass against.
+if grep -Eq '_abandon_created_lock|ACQ_MARKER|rm[[:space:]]+-rf' "$HELPER"; then
+  fail "C5 structural: forwarder must not reintroduce shell-side lock handling"
 fi
-printf '%s\n' "$c5_ab_body" | grep -q 'rmdir' \
-  || fail "C5 structural: _abandon_created_lock must rmdir parent if empty"
-printf '%s\n' "$c5_ab_body" | grep -q 'ACQ_MARKER' \
-  || fail "C5 structural: abandon must target unique ACQ_MARKER identity"
-ok "C5s: structural — abandon is marker+rmdir, never fixed-path recursive delete"
+grep -q 'exec hq index background' "$HELPER" \
+  || fail "C5 structural: helper must forward to hq index background"
+ok "C5s: structural — lock-abandon logic lives in the CLI; forwarder is lock-free"
 
 # Part 1: sequential forced owner-write fail — zero mutations; identity-safe abandon.
 set +e
@@ -1322,6 +1463,7 @@ rm -f "$READY"
 env -i \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
+  HQ_QMD_BIN="$BIN/qmd" \
   MUTATION_LOG="$MUTATION_LOG" \
   QMD_REINDEX_LOG="$LOG" \
   QMD_HANDOFF_LOG="$LOG" \
@@ -1346,6 +1488,7 @@ set +e
 env -i \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
+  HQ_QMD_BIN="$BIN/qmd" \
   MUTATION_LOG="$MUTATION_LOG" \
   QMD_REINDEX_LOG="$LOG" \
   QMD_HANDOFF_LOG="$LOG" \
@@ -1383,22 +1526,7 @@ embed_n=$(grep -c '^qmd embed' "$MUTATION_LOG" || true)
 : > "$MUTATION_LOG"
 rm -f "$COMPLETE_STAMP"
 # Restore standard fake qmd (no hold/ready special case).
-cat > "$BIN/qmd" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-}"
-printf 'qmd %s\n' "$cmd" >> "${MUTATION_LOG:?}"
-if [[ -n "${QMD_HOLD_FILE:-}" && -f "${QMD_HOLD_FILE}" ]]; then
-  while [[ -f "${QMD_HOLD_FILE}" ]]; do
-    sleep 0.05
-  done
-fi
-if [[ -n "${QMD_FAIL_CMD:-}" && "$cmd" == "$QMD_FAIL_CMD" ]]; then
-  exit "${QMD_FAIL_RC:-1}"
-fi
-exit 0
-SH
-chmod +x "$BIN/qmd"
+write_standard_qmd_stub
 QMD_HANDOFF_DEDUPE_SEC=0 run_worker
 cleanup_n=$(grep -c '^qmd cleanup' "$MUTATION_LOG" || true)
 [[ "$cleanup_n" -eq 1 ]] || fail "C5: post-fail recover expected 1 cleanup, got $cleanup_n"
@@ -1574,6 +1702,7 @@ rm -f "$READY"
 env -i \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
+  HQ_QMD_BIN="$BIN/qmd" \
   MUTATION_LOG="$MUTATION_LOG" \
   QMD_REINDEX_LOG="$LOG" \
   QMD_HANDOFF_LOG="$LOG" \
