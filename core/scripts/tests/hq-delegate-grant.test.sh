@@ -32,6 +32,8 @@ cat > "$TMP/bin/hq" <<'STUB'
 echo "$*" >> "$HQ_STUB_LOG"
 case "$1 $2" in
   "sync push") exit 0 ;;
+  "groups create") exit 0 ;;
+  "groups add") exit 0 ;;
   "files share") exit 0 ;;
   "files acl")
     resp="${HQ_STUB_ACL_RESPONSE:-}"
@@ -159,4 +161,29 @@ set -e
 [ "$RC" -ne 0 ] || fail "bare non-folder prefix must be a hard error"
 [ ! -s "$INVOKE_LOG" ] || fail "bare-prefix violation must invoke nothing"
 
-echo "hq-delegate-grant: ok (plan/confirm gate, push+share+readback, folder-form enforced, fail-closed on unverified grant, direct grants only)"
+# --- agent recipient: grants flow through a per-agent delegation group -------
+# (Live finding: `hq files share --with` rejects agt_ principals — only
+# email/grp_/@all are valid file-ACL grantees. Agent grants use grp_dlg-<tail>.)
+
+write_manifest "$M" building
+TMP_M="$(mktemp)"
+jq '.to = {"kind": "agent", "principal": "agt_01KTXDEACON", "displayName": "Deacon"}' "$M" > "$TMP_M" && mv "$TMP_M" "$M"
+: > "$INVOKE_LOG"
+export HQ_STUB_ACL_RESPONSE="grantee: group:grp_dlg-ktxdeacon permission: write
+grantee: group:grp_dlg-ktxdeacon permission: read"
+bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "agent-recipient grant run exited non-zero"
+
+grep -q '^groups create grp_dlg-ktxdeacon --name Delegation: Deacon --company acme$' "$INVOKE_LOG" \
+  || fail "agent recipient must ensure the delegation group exists: $(cat "$INVOKE_LOG")"
+grep -q '^groups add grp_dlg-ktxdeacon agt_01KTXDEACON --company acme$' "$INVOKE_LOG" \
+  || fail "agent recipient must be added to the delegation group"
+if grep '^files share' "$INVOKE_LOG" | grep -q 'agt_'; then
+  fail "files share must never receive a raw agt_ principal"
+fi
+grep -q '^files share projects/widget/ --with grp_dlg-ktxdeacon --permission write --company acme$' "$INVOKE_LOG" \
+  || fail "agent write grant must target the delegation group"
+jq -e '.status == "granted" and .grantPrincipal == "grp_dlg-ktxdeacon"' "$M" >/dev/null \
+  || fail "manifest must record the group grant principal"
+unset HQ_STUB_ACL_RESPONSE
+
+echo "hq-delegate-grant: ok (plan/confirm gate, push+share+readback, folder-form enforced, fail-closed on unverified grant, direct grants only, agent-via-group)"
