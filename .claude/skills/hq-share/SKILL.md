@@ -360,3 +360,4 @@ artifact — in those contexts use the redacted form
 
 - `/hq-files` — inspect or change the underlying ACLs
 - `/dm` — notify the recipient with the link
+- `/delegate` — handing over a whole project? Use this instead of composing shares by hand: it grants, verifies, transfers ownership, and sends the pickup DM in one confirmed flow (direct grants only — no share-session URLs)

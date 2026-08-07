@@ -28,6 +28,9 @@ scaffolds, supervises, and syncs work across repos and companies.
 - Provision teammates and agents: `/new-hire` for people, `/new-agent` for
   fleet agents (identity → membership → vault → grants → verified probe).
 - Direct messages and reminders: `/dm` or `hq dm`.
+- Hand a project to a person or fleet agent: `/delegate` (verified vault
+  grants, branch + secrets handover, ownership transfer, self-pulling
+  pickup DM — never hand-roll this flow from share/dm primitives).
 - Identity: `/hq-login`, `/hq-logout`, `/hq-whoami`.
 - Bugs and feature requests: `/hq-bug`.
 - Coordinate active project work: `bash core/scripts/work-mesh.sh check|start|progress|blocked|done --company {co} --project {project}`. On cloud-connected HQ installs this writes through the hq-pro Work Mesh API and fans out over MQTT/IoT; on local/offline installs it silently no-ops. Local HQ instances that need live awareness can run `bash core/scripts/work-mesh.sh watch` to subscribe to authorized MQTT topics and maintain `workspace/work-mesh/live-cache.json`; thread writes still go through the helper's project verbs, not direct MQTT publish.
