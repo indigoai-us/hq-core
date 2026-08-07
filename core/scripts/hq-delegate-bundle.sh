@@ -6,7 +6,9 @@
 #   core/scripts/hq-delegate-bundle.sh build \
 #     --company <slug> --project <name> --to <principal> \
 #     [--to-kind person|agent] [--to-name <display name>] \
-#     [--mode transfer|share]
+#     [--mode transfer|share] [--dry-run]
+#
+# --dry-run prints the manifest JSON to stdout and writes nothing.
 #
 # Writes workspace/delegations/<delegationId>/{manifest.json,BRIEF.md} and
 # prints the delegationId on stdout. The manifest is the single source of
@@ -46,7 +48,7 @@ command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 [ "${1:-}" = "build" ] || { usage >&2; exit 1; }
 shift
 
-COMPANY="" PROJECT="" TO="" TO_KIND="person" TO_NAME="" MODE="transfer"
+COMPANY="" PROJECT="" TO="" TO_KIND="person" TO_NAME="" MODE="transfer" DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --company) COMPANY="${2:-}"; shift 2 ;;
@@ -55,6 +57,7 @@ while [ $# -gt 0 ]; do
     --to-kind) TO_KIND="${2:-}"; shift 2 ;;
     --to-name) TO_NAME="${2:-}"; shift 2 ;;
     --mode)    MODE="${2:-}"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -284,6 +287,16 @@ TRAPS="$(jq -r '[.metadata.securityNotes // empty, (.metadata.executionConventio
 
 if ! hq_scan_secrets "$STAGE/manifest.json" "$STAGE/BRIEF.md"; then
   die "generated bundle matched a secret-detection pattern — nothing written (see stderr above)"
+fi
+
+# --- dry run: print the manifest, write nothing ------------------------------
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  cat "$STAGE/manifest.json"
+  rm -rf "$STAGE"
+  trap - EXIT
+  echo "hq-delegate-bundle: dry run — nothing written" >&2
+  exit 0
 fi
 
 # --- move into place ---------------------------------------------------------
