@@ -43,6 +43,10 @@ case "$1 $2" in
       exit 0
     fi
     echo "prd.json  1.2KB  shared-with-you"
+    # the referenced knowledge file is present unless the scenario hides it
+    if [ "${HQ_STUB_BROWSE_NO_FILE:-0}" != "1" ]; then
+      echo "notes.md  0.4KB  shared-with-you"
+    fi
     exit 0
     ;;
   "whoami "*|"whoami ")
@@ -85,6 +89,8 @@ write_manifest() { # status
     {"prefix": "projects/widget/", "permission": "write"},
     {"prefix": "knowledge/insights/", "permission": "read"}
   ],
+  "knowledge": ["companies/acme/knowledge/insights/notes.md"],
+  "policies": [],
   "status": "$1"
 }
 JSON
@@ -137,7 +143,23 @@ HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
 jq -e '.status == "verified" and .verifiedAt != null' "$M" >/dev/null \
   || fail "healthy probe must advance status to verified"
 BROWSE_COUNT="$(grep -c '^files browse' "$INVOKE_LOG")"
-[ "$BROWSE_COUNT" -eq 2 ] || fail "expected one browse per prefix (2), got $BROWSE_COUNT"
+[ "$BROWSE_COUNT" -eq 3 ] || fail "expected one browse per prefix (2) + one per referenced file (1), got $BROWSE_COUNT"
+
+# --- referenced file absent from a reachable prefix -> FAIL naming the file --
+# (Live finding: Deacon's pickup pulled a reachable knowledge prefix that
+# silently lacked the specific referenced note.)
+
+write_manifest granted
+export HQ_STUB_BROWSE_NO_FILE=1
+set +e
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "missing referenced file must fail the probe"
+printf '%s' "$OUT" | grep -q "FAIL  knowledge/insights/notes.md" \
+  || fail "failure must name the missing referenced file: $OUT"
+jq -e '.status == "granted"' "$M" >/dev/null || fail "missing-file probe must not advance status"
+unset HQ_STUB_BROWSE_NO_FILE
 
 # --- 6. probe from 'building' refuses ----------------------------------------
 

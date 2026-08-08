@@ -135,12 +135,22 @@ case "$ERR" in
   *) fail "not-found message must name the token and company: '$ERR'" ;;
 esac
 
-# no_email also stops with exit 4
+# no_email with no agent match stops with exit 4
 export HQ_STUB_PEOPLE_JSON='{"status":"no_email"}'
+export HQ_STUB_AGENTS_JSON='[]'
 set +e
 run "ghost" >/dev/null 2>&1
 RC=$?
 set -e
 [ "$RC" -eq 4 ] || fail "no_email must exit 4, got $RC"
+
+# no_email BUT the name matches a fleet agent -> resolves as that agent.
+# (Live finding: fleet agents appear in the people roster without an email;
+# stopping at no_email would make agents unreachable by name.)
+export HQ_STUB_PEOPLE_JSON='{"status":"no_email"}'
+export HQ_STUB_AGENTS_JSON='[{"agentUid":"agt_01DEACON","name":"Deacon"}]'
+OUT="$(run "deacon")" || fail "no_email + agent match must resolve, not stop"
+printf '%s' "$OUT" | jq -e '.kind == "agent" and .principal == "agt_01DEACON" and .source == "agents-list"' >/dev/null \
+  || fail "no_email + agent match must resolve to the agent: $OUT"
 
 echo "hq-delegate-resolve: ok (verbatim fast path, person/agent resolution, ambiguous=3, not-found=4, single-company enforced)"

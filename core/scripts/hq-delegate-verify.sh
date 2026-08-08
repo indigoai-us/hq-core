@@ -140,6 +140,32 @@ while [ "$i" -lt "$PREFIX_COUNT" ]; do
   i=$((i + 1))
 done
 
+# --- referenced files: prefix reachability is not enough ---------------------
+# (Live finding: a knowledge prefix can be reachable and non-empty while the
+# SPECIFIC referenced file is absent — the recipient then pulls a folder that
+# silently misses the note the brief points at. Probe each referenced file.)
+
+REF_COUNT="$(jq -r --arg co "$COMPANY" \
+  '[((.knowledge // []) + (.policies // []))[] | select(startswith("companies/" + $co + "/"))] | length' "$MANIFEST")"
+if [ "$REF_COUNT" -gt 0 ]; then
+  echo "hq-delegate-verify: probing $REF_COUNT referenced knowledge/policy file(s)"
+  while IFS= read -r kpath; do
+    [ -n "$kpath" ] || continue
+    REL="${kpath#companies/$COMPANY/}"
+    PARENT="$(dirname "$REL")/"
+    BASE="$(basename "$REL")"
+    LISTING="$(hq files browse "$PARENT" --company "$COMPANY" 2>/dev/null || true)"
+    if printf '%s\n' "$LISTING" | grep -qF "$BASE"; then
+      echo "  pass  $REL"
+    else
+      echo "  FAIL  $REL — granted prefix is reachable but this referenced file is NOT in the vault (likely cause: it was never pushed — hq sync push $kpath --company $COMPANY and re-run)"
+      FAILED=1
+    fi
+  done <<EOF
+$(jq -r --arg co "$COMPANY" '((.knowledge // []) + (.policies // []))[] | select(startswith("companies/" + $co + "/"))' "$MANIFEST")
+EOF
+fi
+
 if [ "$FAILED" -ne 0 ]; then
   echo "hq-delegate-verify: probe FAILED — the DM must not be sent; fix the failing prefix(es) above and re-run (manifest status left at '$STATUS')" >&2
   exit 1

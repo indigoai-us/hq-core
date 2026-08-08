@@ -32,6 +32,8 @@ cat > "$TMP/bin/hq" <<'STUB'
 echo "$*" >> "$HQ_STUB_LOG"
 case "$1 $2" in
   "sync push") exit 0 ;;
+  "groups create") exit 0 ;;
+  "groups add") exit 0 ;;
   "files share") exit 0 ;;
   "files acl")
     resp="${HQ_STUB_ACL_RESPONSE:-}"
@@ -61,11 +63,20 @@ write_manifest() { # path status
     {"prefix": "knowledge/insights/", "permission": "read", "reason": "referenced knowledge"},
     {"prefix": "policies/", "permission": "read", "reason": "referenced policies"}
   ],
+  "knowledge": ["companies/acme/knowledge/insights/widget-notes.md", "repos/public/widget-repo/docs/widget.md"],
+  "policies": ["companies/acme/policies/widget-policy.md"],
   "secrets": [],
   "status": "$2"
 }
 JSON
 }
+
+# Fixture HQ root so referenced knowledge exists locally for pushing
+FIXROOT="$TMP/hqroot"
+mkdir -p "$FIXROOT/companies/acme/knowledge/insights" "$FIXROOT/companies/acme/policies"
+echo note > "$FIXROOT/companies/acme/knowledge/insights/widget-notes.md"
+echo policy > "$FIXROOT/companies/acme/policies/widget-policy.md"
+export HQ_ROOT="$FIXROOT"
 
 # --- 4. without --yes: plan only, exit 2, zero mutations ---------------------
 
@@ -92,6 +103,17 @@ bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "happy path exited n
 
 grep -q "^sync push companies/acme/projects/widget/ --company acme --on-conflict keep" "$INVOKE_LOG" \
   || fail "must push the project dir to the vault first: $(cat "$INVOKE_LOG")"
+
+# Referenced company-local knowledge/policies are pushed too (live finding:
+# a read grant on a prefix is useless if the referenced file was never
+# pushed); repo-based docs are NOT pushed.
+grep -q "^sync push companies/acme/knowledge/insights/widget-notes.md --company acme --on-conflict keep" "$INVOKE_LOG" \
+  || fail "must push referenced knowledge files: $(cat "$INVOKE_LOG")"
+grep -q "^sync push companies/acme/policies/widget-policy.md --company acme --on-conflict keep" "$INVOKE_LOG" \
+  || fail "must push referenced policy files"
+if grep '^sync push' "$INVOKE_LOG" | grep -q 'repos/'; then
+  fail "repo-based docs must never be pushed to the vault"
+fi
 
 SHARE_COUNT="$(grep -c '^files share' "$INVOKE_LOG")"
 [ "$SHARE_COUNT" -eq 3 ] || fail "expected exactly 3 share calls, got $SHARE_COUNT"
@@ -159,4 +181,29 @@ set -e
 [ "$RC" -ne 0 ] || fail "bare non-folder prefix must be a hard error"
 [ ! -s "$INVOKE_LOG" ] || fail "bare-prefix violation must invoke nothing"
 
-echo "hq-delegate-grant: ok (plan/confirm gate, push+share+readback, folder-form enforced, fail-closed on unverified grant, direct grants only)"
+# --- agent recipient: grants flow through a per-agent delegation group -------
+# (Live finding: `hq files share --with` rejects agt_ principals — only
+# email/grp_/@all are valid file-ACL grantees. Agent grants use grp_dlg-<tail>.)
+
+write_manifest "$M" building
+TMP_M="$(mktemp)"
+jq '.to = {"kind": "agent", "principal": "agt_01KTXDEACON", "displayName": "Deacon"}' "$M" > "$TMP_M" && mv "$TMP_M" "$M"
+: > "$INVOKE_LOG"
+export HQ_STUB_ACL_RESPONSE="grantee: group:grp_dlg-ktxdeacon permission: write
+grantee: group:grp_dlg-ktxdeacon permission: read"
+bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "agent-recipient grant run exited non-zero"
+
+grep -q '^groups create grp_dlg-ktxdeacon --name Delegation: Deacon --company acme$' "$INVOKE_LOG" \
+  || fail "agent recipient must ensure the delegation group exists: $(cat "$INVOKE_LOG")"
+grep -q '^groups add grp_dlg-ktxdeacon agt_01KTXDEACON --company acme$' "$INVOKE_LOG" \
+  || fail "agent recipient must be added to the delegation group"
+if grep '^files share' "$INVOKE_LOG" | grep -q 'agt_'; then
+  fail "files share must never receive a raw agt_ principal"
+fi
+grep -q '^files share projects/widget/ --with grp_dlg-ktxdeacon --permission write --company acme$' "$INVOKE_LOG" \
+  || fail "agent write grant must target the delegation group"
+jq -e '.status == "granted" and .grantPrincipal == "grp_dlg-ktxdeacon"' "$M" >/dev/null \
+  || fail "manifest must record the group grant principal"
+unset HQ_STUB_ACL_RESPONSE
+
+echo "hq-delegate-grant: ok (plan/confirm gate, push+share+readback, folder-form enforced, fail-closed on unverified grant, direct grants only, agent-via-group)"

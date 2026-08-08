@@ -98,8 +98,9 @@ case "$PEOPLE_STATUS" in
     exit 3
     ;;
   no_email)
-    echo "hq-delegate-resolve: '$TOKEN' was found in company '$COMPANY' but has no email on record — pass their exact email or personUid instead" >&2
-    exit 4
+    # A person entry without an email is often a fleet agent's roster row —
+    # fall through to the agent roster before treating this as terminal.
+    PERSON_NO_EMAIL=1
     ;;
   not_found|"")
     : # fall through to the fleet-agent roster
@@ -136,5 +137,9 @@ elif [ "$MATCH_COUNT" -gt 1 ]; then
   exit 3
 fi
 
-echo "hq-delegate-resolve: no teammate or fleet agent named '$TOKEN' found in company '$COMPANY' — pass the exact email, personUid (prs_…), or agentUid (agt_…) instead" >&2
+if [ "${PERSON_NO_EMAIL:-0}" -eq 1 ]; then
+  echo "hq-delegate-resolve: '$TOKEN' was found in company '$COMPANY' but has no email on record and matches no fleet agent — pass their exact email, personUid (prs_…), or agentUid (agt_…) instead" >&2
+else
+  echo "hq-delegate-resolve: no teammate or fleet agent named '$TOKEN' found in company '$COMPANY' — pass the exact email, personUid (prs_…), or agentUid (agt_…) instead" >&2
+fi
 exit 4

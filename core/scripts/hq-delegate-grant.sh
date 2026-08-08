@@ -52,10 +52,23 @@ jq -e . "$MANIFEST" >/dev/null 2>&1 || die "manifest is not valid JSON: $MANIFES
 COMPANY="$(jq -r '.company // empty' "$MANIFEST")"
 PROJECT="$(jq -r '.project.name // empty' "$MANIFEST")"
 PRINCIPAL="$(jq -r '.to.principal // empty' "$MANIFEST")"
+DISPLAY="$(jq -r '.to.displayName // .to.principal // empty' "$MANIFEST")"
 STATUS="$(jq -r '.status // empty' "$MANIFEST")"
 [ -n "$COMPANY" ]   || die "manifest has no company"
 [ -n "$PROJECT" ]   || die "manifest has no project.name"
 [ -n "$PRINCIPAL" ] || die "manifest has no to.principal"
+
+# File-ACL principals must be an email, grp_<id>, or @all — an agentUid is
+# NOT accepted by `hq files share`. For agent recipients, grants flow through
+# a deterministic per-agent delegation group (the /new-agent pattern):
+# grp_dlg-<uid tail>, containing exactly that agent.
+GRANT_PRINCIPAL="$PRINCIPAL"
+case "$PRINCIPAL" in
+  agt_*)
+    TAIL="$(printf '%s' "$PRINCIPAL" | tail -c 9 | tr '[:upper:]' '[:lower:]')"
+    GRANT_PRINCIPAL="grp_dlg-$TAIL"
+    ;;
+esac
 
 case "$STATUS" in
   building|granted) ;;
@@ -79,6 +92,9 @@ fi
 # --- plan (always printed; the only output without --yes) --------------------
 
 echo "Delegation grant plan — company '$COMPANY', recipient '$PRINCIPAL':"
+if [ "$GRANT_PRINCIPAL" != "$PRINCIPAL" ]; then
+  echo "  0. Agent recipient: grants flow through group $GRANT_PRINCIPAL (created if absent, containing exactly $DISPLAY)"
+fi
 echo "  1. Push companies/$COMPANY/projects/$PROJECT/ to the vault (on-conflict keep)"
 jq -r '.vaultPrefixes[] | "  2. Grant \(.permission) on \(.prefix) — \(.reason // "")"' "$MANIFEST"
 WRITE_PREFIXES="$(jq -r '.vaultPrefixes[] | select(.permission == "write") | .prefix' "$MANIFEST")"
@@ -94,10 +110,36 @@ if [ "$YES" -ne 1 ]; then
   exit 2
 fi
 
-# --- 1. materialize the dossier in the vault ---------------------------------
+# --- 1. materialize the dossier AND referenced knowledge in the vault --------
+# (Live finding: granting read on a knowledge prefix is useless if the
+# specific referenced file was never pushed — the recipient's pull succeeds
+# on the prefix and silently misses the file. Push every referenced
+# company-local knowledge/policy path alongside the dossier.)
 
 hq sync push "companies/$COMPANY/projects/$PROJECT/" --company "$COMPANY" --on-conflict keep \
   || die "vault push failed for companies/$COMPANY/projects/$PROJECT/"
+
+jq -r --arg co "$COMPANY" \
+  '((.knowledge // []) + (.policies // []))[] | select(startswith("companies/" + $co + "/"))' \
+  "$MANIFEST" | while IFS= read -r kpath; do
+  if [ -e "$HQ_ROOT/$kpath" ]; then
+    hq sync push "$kpath" --company "$COMPANY" --on-conflict keep \
+      || die "vault push failed for referenced knowledge: $kpath"
+  else
+    echo "hq-delegate-grant: referenced path missing locally (cannot push): $kpath — the verify probe will fail if it is not already in the vault" >&2
+  fi
+done
+
+# --- 1b. agent recipients: ensure the delegation group exists + contains them
+
+if [ "$GRANT_PRINCIPAL" != "$PRINCIPAL" ]; then
+  # Both calls are idempotent-tolerated: an existing group / existing member
+  # is fine — the ACL read-back below is the arbiter of success.
+  hq groups create "$GRANT_PRINCIPAL" --name "Delegation: $DISPLAY" --company "$COMPANY" \
+    || echo "hq-delegate-grant: group create reported an error (may already exist) — continuing" >&2
+  hq groups add "$GRANT_PRINCIPAL" "$PRINCIPAL" --company "$COMPANY" \
+    || echo "hq-delegate-grant: group add reported an error (may already be a member) — continuing" >&2
+fi
 
 # --- 2+3. grant each prefix, then verify via ACL read-back -------------------
 
@@ -107,14 +149,14 @@ while [ "$i" -lt "$PREFIX_COUNT" ]; do
   PFX="$(jq -r ".vaultPrefixes[$i].prefix" "$MANIFEST")"
   PERM="$(jq -r ".vaultPrefixes[$i].permission" "$MANIFEST")"
 
-  if ! hq files share "$PFX" --with "$PRINCIPAL" --permission "$PERM" --company "$COMPANY"; then
+  if ! hq files share "$PFX" --with "$GRANT_PRINCIPAL" --permission "$PERM" --company "$COMPANY"; then
     # The share may fail because an identical grant already exists — the
     # read-back below is the arbiter either way.
     echo "hq-delegate-grant: share reported an error on $PFX — checking whether the grant already exists" >&2
   fi
 
   ACL_OUT="$(hq files acl "$PFX" --company "$COMPANY" 2>/dev/null || true)"
-  MATCH="$(printf '%s\n' "$ACL_OUT" | grep -F "$PRINCIPAL" | grep -c "$PERM" || true)"
+  MATCH="$(printf '%s\n' "$ACL_OUT" | grep -F "$GRANT_PRINCIPAL" | grep -c "$PERM" || true)"
   if [ "${MATCH:-0}" -eq 0 ]; then
     die "grant did not land: '$PRINCIPAL' with '$PERM' not visible in ACL for '$PFX' — manifest status left unchanged"
   fi
@@ -125,8 +167,9 @@ done
 # --- 4. advance manifest status ----------------------------------------------
 
 TMP_MANIFEST="$(mktemp)"
-jq --arg now "$NOW" '
+jq --arg now "$NOW" --arg gp "$GRANT_PRINCIPAL" '
   .status = "granted"
+  | .grantPrincipal = $gp
   | .vaultPrefixes = [.vaultPrefixes[] | . + {verifiedAt: $now}]
 ' "$MANIFEST" > "$TMP_MANIFEST" && mv "$TMP_MANIFEST" "$MANIFEST"
 

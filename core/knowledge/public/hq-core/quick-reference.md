@@ -108,6 +108,7 @@ garden-scout, garden-auditor, garden-curator
 ## Commands (44)
 
 **Session:** `/startwork`, `/reanchor`, `/checkpoint`, `/handoff`, `/recover-session`, `/remember`, `/learn`
+**Handoff:** `/delegate <recipient> [project]` — transfer a project to a person or fleet agent: vault grants (verified), branch push, secrets by name, board + work-mesh reassignment, and a self-pulling pickup DM (no `/hq-sync` needed on their side). Skill: `.claude/skills/delegate/SKILL.md`; manifest spec: `core/knowledge/public/hq-core/delegation-bundle-spec.md`.
 **Workers:** `/run`, `/newworker`
 **Projects:** `/plan`, `/run-project`, `/execute-task`, `/understand-project`, `/idea`, `/goals`, `/dashboard`, `/tdd`, `/quality-gate`
 **Content:** `/contentidea`, `/suggestposts`, `/preview-post`, `/post`, `/post-results`, `/social-setup`
