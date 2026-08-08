@@ -241,3 +241,4 @@ Done when: agent confirms probe checklist in {channel}.
 - `/designate-team` — make a company cloud-backed (prerequisite for layer 3)
 - `/accept` — how the agent's runtime claims a pending membership
 - `/hq-secrets`, `/hq-files` — the underlying grant primitives
+- `/delegate` — hand an existing project to a provisioned agent (or person): verified access, branch + secrets handover, ownership transfer, and a self-sufficient pickup DM

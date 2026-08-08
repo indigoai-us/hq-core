@@ -154,6 +154,39 @@ jobs:
       - name: /resumework requires explicit confirmation for locked threads
         run: bash core/scripts/tests/resume-thread-lock.test.sh
 
+  hq-delegate:
+    # /delegate — one-command project handoff. Every helper ships with an
+    # offline regression test (stubbed hq CLI / real git fixtures). The two
+    # hard rules (no secret values, no share-session URLs in any delegation
+    # artifact) are enforced by these tests, not reviewer vigilance. Policy:
+    # core/policies/hq-delegate-never-inlines-secrets-or-share-urls.md
+    name: hq-delegate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Bundle builder (schema, prefix conventions, fail-closed secret scan)
+        run: bash core/scripts/tests/hq-delegate-bundle.test.sh
+      - name: Recipient resolution (person/agent, tenancy-safe)
+        run: bash core/scripts/tests/hq-delegate-resolve.test.sh
+      - name: Vault grants (direct-only, verified read-back)
+        run: bash core/scripts/tests/hq-delegate-grant.test.sh
+      - name: Repo/branch handover (anchored push, dirty work surfaced)
+        run: bash core/scripts/tests/hq-delegate-repo.test.sh
+      - name: Secrets by name only (sentinel no-value-leak)
+        run: bash core/scripts/tests/hq-delegate-secrets.test.sh
+      - name: Ownership transfer (board/PRD/mesh/journal, idempotent)
+        run: bash core/scripts/tests/hq-delegate-transfer.test.sh
+      - name: Pickup prompt + single-DM delivery (verify-gated)
+        run: bash core/scripts/tests/hq-delegate-send.test.sh
+      - name: Reachability probe + inert dry run
+        run: bash core/scripts/tests/hq-delegate-verify.test.sh
+      - name: /delegate skill structural contract
+        run: bash core/scripts/tests/hq-delegate-skill.test.sh
+      - name: /delegate script references resolve
+        run: bash core/scripts/lint-skill-script-refs.sh delegate
+
   install-deps:
     # DEV-1727: HQ's install/setup surface must not install or dependency-check
     # a third-party CLI that HQ itself never calls. The /setup wizard used to

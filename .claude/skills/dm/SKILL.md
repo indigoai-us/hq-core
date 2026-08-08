@@ -223,5 +223,6 @@ rules as send) — the read path only accepts email / personUid / agentUid.
 ## See also
 
 - `/hq-share` — share a vault path in your message
+- `/delegate` — a DM alone doesn't transfer work; use this to hand a whole project over (access, branch, secrets, ownership, and the pickup prompt in one flow)
 - `/signals` — see action items and commitments
 - `hq channels` — list named channels / group DM ids for `hq dm channel`

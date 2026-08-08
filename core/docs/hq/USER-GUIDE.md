@@ -22,6 +22,7 @@ If a skill is skipped as invalid YAML or a hook reports a launch failure, use th
 | `/startwork` | Pick company/project/repo, gather context |
 | `/checkpoint` | Save progress to `workspace/checkpoints/` |
 | `/handoff` | Prepare handoff for fresh session |
+| `/delegate <recipient> [project]` | Transfer a project to a teammate or fleet agent — verified vault access, branch push, secrets by name, board + work-mesh reassignment, and a DM whose prompt pulls every file on demand (no `/hq-sync` on their side). `--share` grants access without transferring ownership; `--dry-run` prints the plan and touches nothing |
 | `/recover-session` | Recover dead sessions that hit context limits |
 | `/learn` | Auto-capture learnings from task execution |
 
