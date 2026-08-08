@@ -250,3 +250,4 @@ Fresh context = no accumulated noise, clean slate for complex tasks, follows Ral
 - `/resumework {thread_id}` — resume THIS thread exactly in a fresh session (takes the thread id this skill prints)
 - `/startwork` — the follow-up agent resumes the latest handoff, or picks a new company/project/repo
 - `/checkpoint` — a lighter mid-session save
+- `/delegate` — hand the project to ANOTHER person or fleet agent (ownership transfer + verified access + pickup DM), rather than to your own next session
