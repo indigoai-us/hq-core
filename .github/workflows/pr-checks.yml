@@ -941,6 +941,37 @@ jobs:
       - name: core/core.yaml hqVersion must strictly increase
         run: bash .leak-scan/scan.sh core-yaml-version-monotonic
 
+  pr-author-hq-audit-bot:
+    # hq-core ONLY. The only PRs hq-core ever receives are the promote/backmerge
+    # PRs opened by the hq-audit-bot App (see promote-to-hq-core.yml). Any PR
+    # authored by a human — or any other bot — is illegitimate on hq-core and
+    # must be blocked from merging: real work lands on hq-core-staging and is
+    # promoted here by the bot. Staging is exempt (the job is skipped there),
+    # so human contributors are never blocked on staging.
+    #
+    # This file is promoted into hq-core verbatim; the repository guard keeps
+    # the job inert on staging. To actually block merges, this job's name
+    # ("pr-author-hq-audit-bot") must be listed as a required status check in
+    # hq-core's main_protect ruleset.
+    name: pr-author-hq-audit-bot
+    if: github.event_name == 'pull_request' && github.repository == 'indigoai-us/hq-core'
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR author must be the hq-audit-bot App
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          case "$PR_AUTHOR" in
+            hq-audit-bot|"hq-audit-bot[bot]")
+              echo "PR author '$PR_AUTHOR' is the HQ audit bot — allowed."
+              ;;
+            *)
+              echo "::error::PR author '${PR_AUTHOR}' is not the HQ audit bot. indigoai-us/hq-core only accepts PRs opened by hq-audit-bot (promoted from hq-core-staging). Open your change against hq-core-staging instead."
+              exit 1
+              ;;
+          esac
+
   # ─── Codex-augmented semantic check ────────────────────────────────
   # Per-file PASS/EDIT/DROP rubric, mirroring /promote-hq-core Phase 3.
   # Dynamic matrix over changed policy files; capped at 10 in parallel
