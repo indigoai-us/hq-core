@@ -170,13 +170,30 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   esac
   DIRS+=("$HQ_ROOT/personal/policies" "$HQ_ROOT/core/policies")
 
-  # Collect in-scope policy files (skip generated/template/readme).
+  # Collect in-scope policy files (skip generated/template/readme AND sync
+  # conflict/drift copies). A real policy filename is a kebab-case slug —
+  # `<slug>.md`, never containing a space or a sync-conflict marker. Cross-
+  # machine sync (iCloud/Dropbox/Syncthing/hq-sync) mints conflict copies like
+  # `foo 2.md`, `foo (conflicted copy).md`, `foo.sync-conflict-<host>.md`. A
+  # single runaway can leave TENS OF THOUSANDS of these (observed live: 23k
+  # copies in one core/policies, one slug alone at 1000+). Because this hook
+  # awks EVERY matched file on every prompt and every Bash call, that bloat
+  # pushed the scan past the 60s hook timeout, so UserPromptSubmit output was
+  # discarded and every request stalled a full minute. Skipping conflict/drift
+  # copies keeps the scan proportional to the real policy set. It is also safe:
+  # no legitimate policy slug contains a space, so this can never drop a real
+  # policy — a same-slug conflict copy is a stale duplicate of one still
+  # collected under its canonical name.
   POLICY_FILES=()
   for dir in "${DIRS[@]}"; do
     [ -d "$dir" ] || continue
     for f in "$dir"/*.md; do
       [ -f "$f" ] || continue
-      case "$(basename "$f")" in example-policy.md|README.md) continue ;; esac
+      case "$(basename "$f")" in
+        example-policy.md|README.md) continue ;;
+        *" "*) continue ;;              # any space => sync conflict/drift copy
+        *.sync-conflict-*.md) continue ;;  # Syncthing-style conflict copy
+      esac
       POLICY_FILES+=("$f")
     done
   done
