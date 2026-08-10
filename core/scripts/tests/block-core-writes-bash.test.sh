@@ -80,6 +80,10 @@ run 0 "touch /tmp/marker && cat $C/p.md"           'touch tmp + read core allowe
 run 0 "rm /tmp/scratch; grep -l foo $C/p.md"       'rm tmp + grep core allowed'
 run 0 "sed -i 's|core/|X|' /tmp/f"                 'sed script mentions core, target tmp allowed'
 run 0 "cp $C/a.md /tmp/ && rm -f /tmp/a.md"        'core read + tmp cleanup allowed'
+run 0 'cd /tmp/worker-e2e && mkdir -p core/workers/dev-team/backend/skills' \
+  'relative core under an unrelated cwd allowed'
+run 0 'hq core checkpoint --summary "mkdir -p core/workers/dev-team"' \
+  'protected path only in a summary argument allowed'
 
 # --- Allowed: settings.local.json bypass still works ---------------------
 printf '{"env":{"HQ_BYPASS_CORE_PROTECT":"1"}}' > "$TMP/.claude/settings.local.json"

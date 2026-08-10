@@ -57,6 +57,10 @@ run 0 "$TMP" "git -C $NESTED commit -m x"            'git -C nested repo allowed
 run 2 "$TMP" "git -C $TMP push origin main"          'git -C HQ root blocked'
 run 0 "$TMP" 'gh pr create -R owner/repo --title x'  'gh -R allowed'
 run 0 "$TMP" 'git status'                            'read-only git allowed'
+run 0 "$TMP" 'hq core checkpoint --summary "synchronous git fetch + hard-reset"' \
+  'git words in a non-git summary argument allowed'
+run 0 "$TMP" 'grep -niE "git reset|reset --hard|git checkout|git restore" some.log' \
+  'git write words in a grep pattern allowed'
 
 # --- New nested repository initialization ----------------------------------
 # Regression: feedback_1b242f16-eb7f-4c35-86d5-9d32f81b11ab.

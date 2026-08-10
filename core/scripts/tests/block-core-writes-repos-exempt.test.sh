@@ -25,7 +25,7 @@ echo "[1] live-root relative writes (no repo context) are BLOCKED"
 expect 2 'echo x > .claude/hooks/evil.sh'   'redirect into .claude'
 expect 2 'chmod +x core/scripts/foo.sh'     'chmod core/'
 expect 2 'rm -rf .claude/hooks'             'rm .claude'
-expect 2 'cd /tmp/myrepos && rm .claude/x'  'myrepos/ is NOT a repos/ context'
+expect 0 'cd /tmp/myrepos && rm .claude/x'  'relative .claude under an unrelated cwd is not HQ root'
 
 echo "[2] edits inside a repos/ checkout are ALLOWED"
 expect 0 'cd repos/private/x && chmod u+x .claude/hooks/hook-gate.sh' 'chmod repo .claude (relative cd)'
@@ -39,7 +39,7 @@ echo "[4] edits inside a workspace/worktrees/ checkout are ALLOWED"
 expect 0 'cd workspace/worktrees/hq-core-staging/x && chmod u+x .claude/hooks/hook-gate.sh' 'chmod worktree .claude (relative cd)'
 expect 0 'cd workspace/worktrees/hq-core-staging/x && echo hi > core/scripts/test.sh'       'redirect worktree core (relative cd)'
 expect 0 "cd $PROJ/workspace/worktrees/hq-core-staging/x && rm -rf .claude/old"              'rm worktree .claude (absolute cd)'
-expect 2 'cd /tmp/myworkspace/worktrees/x && rm .claude/y'                                   'myworkspace/worktrees is NOT a real worktrees context'
+expect 0 'cd /tmp/myworkspace/worktrees/x && rm .claude/y'                                   'relative .claude under an unrelated cwd is not HQ root'
 
 echo "[5] ABSOLUTE live-root writes stay BLOCKED even with a worktrees cd"
 expect 2 "cd $PROJ/workspace/worktrees/x && rm -rf $PROJ/.claude/hooks" 'absolute live-root rm despite worktrees cd'

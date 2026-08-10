@@ -92,11 +92,11 @@ payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_in
 rc="$(run_hook "$payload")"
 [ "$rc" = "0" ] || fail "expected allow for literal same-company path with unrelated expansion, got $rc"
 
-echo "[6] Bash blocks shell-expanded companies/ paths"
+echo "[6] Bash allows an unresolved company segment"
 install_fixture "indigo"
 payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"command":"co=otherco; cat companies/$co/settings/x"}}'
 rc="$(run_hook "$payload")"
-[ "$rc" = "2" ] || fail "expected exit 2 for shell-expanded companies path, got $rc"
+[ "$rc" = "0" ] || fail "expected allow for unresolved company segment, got $rc"
 
 echo "[7] Bash blocks expansion in the remainder of a company path"
 install_fixture "indigo"
@@ -104,13 +104,13 @@ payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_in
 rc="$(run_hook "$payload")"
 [ "$rc" = "2" ] || fail "expected block for an expansion in a company path, got $rc"
 
-echo "[8] Bash blocks a line-continued shell-expanded company path"
+echo "[8] Bash allows a line-continued unresolved company segment"
 install_fixture "indigo"
 command=$'co=otherco; cat companies/\\\n$co/settings/x'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name: "Bash", session_id: "sess-bound", cwd: $cwd, tool_input: {command: $command}}')"
 rc="$(run_hook "$payload")"
-[ "$rc" = "2" ] || fail "expected block for line-continued shell-expanded company path, got $rc"
+[ "$rc" = "0" ] || fail "expected allow for line-continued unresolved company segment, got $rc"
 
 echo "[9] Bash blocks normalized company traversal"
 install_fixture "indigo"
@@ -191,5 +191,23 @@ rc="$(run_hook "$read_payload")"
 payload='{"tool_name":"Read","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml"}}'
 rc="$(run_hook "$payload")"
 [ "$rc" = "2" ] || fail "expected the unrelated .current session to stay unbound, got $rc"
+
+echo "[16] Bash allows manifest mentions and placeholder company segments"
+install_fixture "indigo"
+for command in \
+  'cat companies/manifest.yaml' \
+  'printf %s companies/${co}/settings/x' \
+  'cat companies/(shell-expanded)/settings/x'; do
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+    '{tool_name: "Bash", session_id: "sess-bound", cwd: $cwd, tool_input: {command: $command}}')"
+  rc="$(run_hook "$payload")"
+  [ "$rc" = "0" ] || fail "expected allow for $command, got $rc"
+done
+
+echo "[17] Bash still blocks a literal, existing cross-company target"
+install_fixture "indigo"
+payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"command":"cat companies/otherco/settings/secret.yaml"}}'
+rc="$(run_hook "$payload")"
+[ "$rc" = "2" ] || fail "expected block for literal otherco path, got $rc"
 
 echo "PASS: mandatory-scope-authorizer.test.sh"

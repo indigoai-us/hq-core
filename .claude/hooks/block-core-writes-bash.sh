@@ -362,14 +362,19 @@ write_targets_match() {
 
 write_op_targets_protected() {
   local cmd="$1" token_re="$2"
-  local segments segment rc
+  local shell_record segment shell_exe rc
   WRITE_TARGET_PROTECTED_CWD="no"
   WRITE_TARGET_PROTECTED_VARS=""
-  segments=$(printf '%s' "$cmd" | sed -E 's/(&&|\|\||[;|&])/\n/g')
-  while IFS= read -r segment; do
-    [[ -z "$segment" ]] && continue
+  while IFS= read -r shell_record; do
+    [ -n "$shell_record" ] || continue
+    segment="${shell_record//$'\037'/ }"
     record_segment_context "$segment" "$token_re"
-    echo "$segment" | grep -Eq "$WRITE_OPS" || continue
+    shell_exe="$(hq_shell_command_executable "$shell_record" || true)"
+    case "$shell_exe" in
+      rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|sed|awk|ln) ;;
+      *) continue ;;
+    esac
+    [[ -z "$segment" ]] && continue
     write_targets_match "$segment" "$token_re"
     rc=$?
     if [[ "$rc" -eq 0 ]]; then
@@ -378,7 +383,43 @@ write_op_targets_protected() {
     if [[ "$rc" -eq 2 ]] && segment_fallback_matches "$segment" "$token_re"; then
       return 0
     fi
-  done <<< "$segments"
+  done < <(hq_shell_simple_commands "$cmd")
+  return 1
+}
+
+redirect_targets_protected() {
+  local cmd="$1" token_re="$2" shell_record token
+  local -a argv
+  while IFS= read -r shell_record; do
+    [ -n "$shell_record" ] || continue
+    IFS=$'\037' read -r -a argv <<< "$shell_record"
+    for ((i=0; i<${#argv[@]}; i++)); do
+      case "${argv[$i]}" in
+        '>'|'>>')
+          token="${argv[$((i+1))]:-}"
+          [ -n "$token" ] && target_matches_re "$token" "$token_re" && return 0
+          ;;
+      esac
+    done
+  done < <(hq_shell_simple_commands "$cmd")
+  return 1
+}
+
+in_external_cwd_context() {
+  local cmd="$1" shell_record exe arg resolved
+  while IFS= read -r shell_record; do
+    [ -n "$shell_record" ] || continue
+    exe="$(hq_shell_command_executable "$shell_record" || true)"
+    case "$exe" in cd|pushd) ;; *) continue ;; esac
+    shell_record="${shell_record//$'\037'/ }"
+    read -r _ arg _ <<< "$shell_record"
+    [ -n "${arg:-}" ] || return 1
+    case "$arg" in
+      /*) resolved="$(hq_normpath "$arg")" ;;
+      *) resolved="$(hq_normpath "$PROJECT_DIR/$arg")" ;;
+    esac
+    case "$resolved" in "$PROJECT_DIR"|"$PROJECT_DIR"/*) return 1 ;; *) return 0 ;; esac
+  done < <(hq_shell_simple_commands "$cmd")
   return 1
 }
 
@@ -395,7 +436,7 @@ writes_to_protected() {
   # Absolute/live-root forms are always enforced; relative forms only outside a
   # repos/ checkout.
   local path_alts token_re repo_ctx="no"
-  if in_repo_context "$cmd"; then
+  if in_repo_context "$cmd" || in_external_cwd_context "$cmd"; then
     repo_ctx="yes"
     path_alts="$ABS_PATH_ALTS"
     token_re="$BND$ABS_PATH_ALTS"
@@ -405,7 +446,7 @@ writes_to_protected() {
   fi
 
   # Redirect (>) or append (>>) into any protected dir.
-  if echo "$stripped" | grep -Eq '(^|[[:space:]]|=)>{1,2}[[:space:]]*["'\'']?'"$path_alts"; then
+  if redirect_targets_protected "$stripped" "$token_re"; then
     return 0
   fi
   # Write-op tool + protected write target token.

@@ -56,8 +56,6 @@ TOOL_CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || true
 if [[ "${HQ_ALLOW_HQ_ROOT_GIT:-}" == "1" ]]; then exit 0; fi
 if echo "$CMD" | grep -Eq '(^|[[:space:]])HQ_ALLOW_HQ_ROOT_GIT=1\b'; then exit 0; fi
 
-echo "$CMD" | grep -Eq '(^|[[:space:];&|(])(git|gh)([[:space:]]|$)' || exit 0
-
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
 # expanduser + realpath (symlink-resolving when the path exists), python-free:
@@ -110,25 +108,44 @@ is_dual_mutation() {
 }
 
 GIT_IS_MUTATION=0
-if echo "$CMD" | grep -Eq '(^|[[:space:];&|(])git([[:space:]]|$)'; then
-  SUB="$(git_subcommand "$CMD" || true)"
-  if [[ -n "$SUB" ]]; then
-    if echo "$SUB" | grep -Eq "$GIT_RE_MUTATION"; then
-      GIT_IS_MUTATION=1
-    elif echo "$SUB" | grep -Eq "$GIT_RE_READONLY"; then
-      is_dual_mutation "$SUB" "$CMD" && GIT_IS_MUTATION=1
-    else
-      GIT_IS_MUTATION=1
-    fi
-  fi
-fi
-
 GH_IS_MUTATION=0
-if echo "$CMD" | grep -Eq '(^|[[:space:];&|(])gh[[:space:]]+(pr|repo|release|issue|api)'; then
-  if echo "$CMD" | grep -Eq 'gh[[:space:]]+(pr[[:space:]]+(create|merge|close|reopen|edit|comment|ready|review)|repo[[:space:]]+(create|delete|rename|archive|edit|sync|fork)|release[[:space:]]+(create|delete|edit|upload)|issue[[:space:]]+(create|close|edit|comment|delete)|api[^|;&]*-X[[:space:]]*(POST|PUT|PATCH|DELETE))'; then
-    GH_IS_MUTATION=1
-  fi
-fi
+GIT_CMD=""
+GH_CMD=""
+SUB=""
+GIT_MUTATION_COUNT=0
+GH_MUTATION_COUNT=0
+# Classify executable words, not arbitrary command text. A git phrase inside a
+# summary, JSON payload, echo, or grep pattern is an argument, never a git
+# operation.
+while IFS= read -r shell_record; do
+  [ -n "$shell_record" ] || continue
+  shell_exe="$(hq_shell_command_executable "$shell_record" || true)"
+  shell_text="${shell_record//$'\037'/ }"
+  case "$shell_exe" in
+    git)
+      shell_sub="$(git_subcommand "$shell_text" || true)"
+      [ -n "$shell_sub" ] || continue
+      shell_mutation=0
+      if echo "$shell_sub" | grep -Eq "$GIT_RE_MUTATION"; then
+        shell_mutation=1
+      elif echo "$shell_sub" | grep -Eq "$GIT_RE_READONLY"; then
+        is_dual_mutation "$shell_sub" "$shell_text" && shell_mutation=1
+      else
+        shell_mutation=1
+      fi
+      if [ "$shell_mutation" -eq 1 ] && [ "$GIT_IS_MUTATION" -eq 0 ]; then
+        GIT_IS_MUTATION=1; GIT_CMD="$shell_text"; SUB="$shell_sub"
+      fi
+      [ "$shell_mutation" -eq 1 ] && GIT_MUTATION_COUNT=$((GIT_MUTATION_COUNT + 1))
+      ;;
+    gh)
+      if echo "$shell_text" | grep -Eq '^[^[:space:]]*[[:space:]]+(pr[[:space:]]+(create|merge|close|reopen|edit|comment|ready|review)|repo[[:space:]]+(create|delete|rename|archive|edit|sync|fork)|release[[:space:]]+(create|delete|edit|upload)|issue[[:space:]]+(create|close|edit|comment|delete)|api.*-X[[:space:]]*(POST|PUT|PATCH|DELETE))'; then
+        if [ "$GH_IS_MUTATION" -eq 0 ]; then GH_IS_MUTATION=1; GH_CMD="$shell_text"; fi
+        GH_MUTATION_COUNT=$((GH_MUTATION_COUNT + 1))
+      fi
+      ;;
+  esac
+done < <(hq_shell_simple_commands "$CMD")
 
 [[ $GIT_IS_MUTATION -eq 0 && $GH_IS_MUTATION -eq 0 ]] && exit 0
 
@@ -136,13 +153,13 @@ ANCHOR_PATH=""
 ANCHOR_KIND=""
 
 if [[ $GIT_IS_MUTATION -eq 1 ]]; then
-  GC=$(echo "$CMD" | grep -oE 'git[[:space:]]+([^|;&]*[[:space:]])?-C[[:space:]]+("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|]+)' | head -1 \
+  GC=$(echo "$GIT_CMD" | grep -oE 'git[[:space:]]+([^|;&]*[[:space:]])?-C[[:space:]]+("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|]+)' | head -1 \
        | sed -E 's/.*-C[[:space:]]+//; s/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//')
   if [[ -n "$GC" ]]; then ANCHOR_PATH="$GC"; ANCHOR_KIND="git -C"; fi
 fi
 
 if [[ -z "$ANCHOR_PATH" && $GH_IS_MUTATION -eq 1 ]]; then
-  if echo "$CMD" | grep -Eq 'gh[^|;&]*[[:space:]](-R|--repo)[[:space:]]+[^ ;&|]+'; then
+  if echo "$GH_CMD" | grep -Eq 'gh[^|;&]*[[:space:]](-R|--repo)[[:space:]]+[^ ;&|]+'; then
     exit 0
   fi
 fi
@@ -332,8 +349,8 @@ is_new_direct_child_repo_target() {
   return 0
 }
 
-if [[ $GIT_IS_MUTATION -eq 1 && $GH_IS_MUTATION -eq 0 && "$SUB" == "init" ]]; then
-  INIT_TARGET="$(git_init_target "$CMD" || true)"
+if [[ $GIT_IS_MUTATION -eq 1 && $GIT_MUTATION_COUNT -eq 1 && $GH_IS_MUTATION -eq 0 && "$SUB" == "init" ]]; then
+  INIT_TARGET="$(git_init_target "$GIT_CMD" || true)"
   if [[ -n "$INIT_TARGET" ]] && is_new_direct_child_repo_target "$INIT_TARGET"; then
     exit 0
   fi
@@ -345,11 +362,10 @@ fi
 # touches a local repo, so the HQ-root guard has nothing to protect. The one
 # cwd-dependent part is --source: require it absolute and outside the HQ root
 # repo. Only applies when the command carries no other git/gh mutation.
-if [[ $GIT_IS_MUTATION -eq 0 && $GH_IS_MUTATION -eq 1 && -z "$ANCHOR_PATH" ]] \
-   && echo "$CMD" | grep -Eq 'gh[[:space:]]+repo[[:space:]]+create' \
-   && ! echo "$CMD" | grep -Eq '(^|[[:space:];&|(])gh[[:space:]]+(pr|release|issue|api)([[:space:]]|$)' \
-   && ! echo "$CMD" | grep -Eq 'gh[[:space:]]+repo[[:space:]]+(delete|rename|archive|edit|sync|fork)'; then
-  SRC=$(echo "$CMD" | grep -oE -- '--source(=|[[:space:]]+)("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|)]+)' | head -1 \
+if [[ $GIT_IS_MUTATION -eq 0 && $GH_IS_MUTATION -eq 1 && $GH_MUTATION_COUNT -eq 1 && -z "$ANCHOR_PATH" ]] \
+   && echo "$GH_CMD" | grep -Eq 'gh[[:space:]]+repo[[:space:]]+create' \
+   && ! echo "$GH_CMD" | grep -Eq 'gh[[:space:]]+repo[[:space:]]+(delete|rename|archive|edit|sync|fork)'; then
+  SRC=$(echo "$GH_CMD" | grep -oE -- '--source(=|[[:space:]]+)("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|)]+)' | head -1 \
         | sed -E 's/^--source(=|[[:space:]]+)//; s/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//')
   if [[ -z "$SRC" ]]; then
     exit 0

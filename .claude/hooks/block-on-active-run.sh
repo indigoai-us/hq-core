@@ -34,6 +34,7 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo ""
 # default. Never hardcode ~/Documents/HQ as the sole source.
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)}}"
 HQ_ROOT="${HQ_ROOT:-${HOME}/Documents/HQ}"
+. "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
 REG="$HQ_ROOT/scripts/repo-run-registry.sh"
 [[ ! -x "$REG" ]] && exit 0
 
@@ -61,13 +62,79 @@ case "$TOOL_NAME" in
     ;;
   Bash)
     cmd=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
-    # Denylist of destructive bash patterns. Read-only commands pass through.
-    if echo "$cmd" | grep -qE '(\brm[[:space:]]|\brm$|\bgit[[:space:]]+(reset[[:space:]]+--hard|clean[[:space:]]+-|checkout[[:space:]]+--|rebase([[:space:]]|$)|merge([[:space:]]|$)|push([[:space:]]|$)|commit([[:space:]]|$)|apply([[:space:]]|$))|\bsed[[:space:]]+-i|\bawk[[:space:]]+-i|\bmv[[:space:]]|\btee[[:space:]]|[^&>|]>[[:space:]]*[^&]|>>[[:space:]])'; then
-      # Use cwd as the target — shell commands run in the cwd.
-      TARGETS+=("$(pwd)")
-    else
-      exit 0
-    fi
+    # Inspect actual simple-command executables, not quoted argument text.
+    # This keeps grep patterns and checkpoint summaries from impersonating a
+    # destructive operation while retaining all real write classifications.
+    bash_write=0
+    while IFS= read -r shell_record; do
+      [ -n "$shell_record" ] || continue
+      shell_exe="$(hq_shell_command_executable "$shell_record" 2>/dev/null || true)"
+      shell_text="${shell_record//$'\037'/ }"
+      case "$shell_exe" in
+        rm|rmdir|mv|tee|dd|rsync|mkdir|touch|chmod|chown|chgrp|ln)
+          bash_write=1
+          ;;
+        sed)
+          echo "$shell_text" | grep -Eq '(^|[[:space:]])(-i|--in-place)([[:space:]]|$)' && bash_write=1
+          ;;
+        awk)
+          echo "$shell_text" | grep -Eq '(^|[[:space:]])-i[[:space:]]+inplace([[:space:]]|$)' && bash_write=1
+          ;;
+        git)
+          git_sub="$(printf '%s' "$shell_text" | awk '{for(i=2;i<=NF;i++){if($i=="-C"||$i=="-c"||$i=="--git-dir"||$i=="--work-tree"){i++;continue} if($i !~ /^-/){print $i; exit}}}')"
+          case "$git_sub" in
+            reset|checkout|restore|clean|rebase|merge|push|commit|apply|add|rm|mv|switch|cherry-pick|revert|am|fetch|pull|clone)
+              bash_write=1
+              ;;
+          esac
+          ;;
+      esac
+      if [ "$bash_write" -eq 1 ]; then
+        # The registry is repo-root scoped. `git -C` changes Git's target,
+        # whereas shell write tools name their own targets. Preserve those
+        # targets so `rm -rf repos/private/x` is checked against that repo,
+        # not merely the caller's ambient cwd.
+        git_cwd="$(printf '%s' "$shell_text" | sed -nE 's/.*[[:space:]]-C[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)"
+        if [ "$shell_exe" = "git" ]; then
+          TARGETS+=("${git_cwd:-$(pwd)}")
+        else
+          IFS=$'\037' read -r -a shell_argv <<< "$shell_record"
+          write_args=()
+          case "$shell_exe" in
+            mv)
+              for ((j=1; j<${#shell_argv[@]}; j++)); do
+                [[ "${shell_argv[$j]}" == -* ]] || write_args+=("${shell_argv[$j]}")
+              done
+              [ "${#write_args[@]}" -gt 0 ] && TARGETS+=("${write_args[$((${#write_args[@]}-1))]}")
+              ;;
+            chmod|chown|chgrp)
+              seen_mode=0
+              for ((j=1; j<${#shell_argv[@]}; j++)); do
+                [[ "${shell_argv[$j]}" == -* ]] && continue
+                if [ "$seen_mode" -eq 0 ]; then seen_mode=1; continue; fi
+                TARGETS+=("${shell_argv[$j]}")
+              done
+              ;;
+            sed|awk)
+              # The final non-option argument is the in-place target.
+              for ((j=1; j<${#shell_argv[@]}; j++)); do
+                [[ "${shell_argv[$j]}" == -* ]] || write_args+=("${shell_argv[$j]}")
+              done
+              [ "${#write_args[@]}" -gt 1 ] && TARGETS+=("${write_args[$((${#write_args[@]}-1))]}")
+              ;;
+            *)
+              for ((j=1; j<${#shell_argv[@]}; j++)); do
+                [[ "${shell_argv[$j]}" == -* ]] && continue
+                TARGETS+=("${shell_argv[$j]}")
+              done
+              ;;
+          esac
+          [ "${#TARGETS[@]}" -gt 0 ] || TARGETS+=("$(pwd)")
+        fi
+        break
+      fi
+    done < <(hq_shell_simple_commands "$cmd")
+    [ "$bash_write" -eq 1 ] || exit 0
     ;;
   *)
     exit 0
