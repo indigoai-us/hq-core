@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "bash ${HOME}/.grok/hooks/hq-hq-bridge.sh",
-            "timeout": 30
+            "timeout": 120
           }
         ]
       }

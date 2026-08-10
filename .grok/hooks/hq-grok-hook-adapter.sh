@@ -351,6 +351,60 @@ payload_for_path() {
   }'
 }
 
+# Grok's list_dir supplies an explicit `target_directory` (a scoped path); it is
+# NOT a Claude-style Glob with a pattern. The generic CLAUDE_JSON only carries
+# command/file_path/content, so a list_dir reached block-hq-glob.sh with an
+# empty tool_input: pattern resolved to "null" and, with no path, the guard
+# fell back to the cwd (the HQ root) and wrongly blocked the scoped listing as
+# an "unscoped Glob from HQ root" (harness-analysis 2026-08-10, 13 events).
+# Build a Glob-shaped payload that carries the scoped path (and pattern, if any)
+# so the guard tests the real target: a scoped dir passes, and a listing whose
+# target IS the HQ root still blocks.
+payload_for_glob() {
+  local path="$1" pattern="$2"
+  jq -n --arg path "$path" --arg pattern "$pattern" \
+    --arg event "$EVENT" --arg cwd "$CWD" --arg sid "$SID" '{
+    hook_event_name: $event,
+    tool_name: "Glob",
+    cwd: $cwd,
+    session_id: $sid,
+    tool_input: (
+      {}
+      + (if $path != "" then {path: $path} else {} end)
+      + (if $pattern != "" then {pattern: $pattern} else {} end)
+    )
+  }'
+}
+
+# Per-session debounce for the expensive advisory policy-injection scan on
+# PreToolUse. inject-policy-on-trigger dedupes emitted policies per session, so
+# re-running its full facts-derive + all-policy awk scan on EVERY tool call is
+# almost pure latency after the first call (measured 3.3s median, 17.8s p95, and
+# 30s fail-open timeouts over the bridge — harness-analysis 2026-08-10). The
+# BLOCK hooks that actually enforce (detect-secrets, block-core-writes-bash,
+# block-hq-root-git-mutation, block-on-active-run, block-unsafe-package-install)
+# are NEVER debounced and still run on every call; policy surfacing also still
+# runs in full on SessionStart and every UserPromptSubmit. Window is overridable
+# via HQ_GROK_POLICY_DEBOUNCE_SECS (0 disables). Fail-open: if the hook-lib
+# debounce primitives are unavailable, we simply run every time (slower, never
+# wrong).
+HQ_GROK_POLICY_DEBOUNCE_SECS="${HQ_GROK_POLICY_DEBOUNCE_SECS:-20}"
+run_advisory_debounced() { # <hook-id> <hook-script> [payload]
+  local id="$1" script="$2" payload="${3:-$CLAUDE_JSON}"
+  if [ "${HQ_GROK_POLICY_DEBOUNCE_SECS}" -gt 0 ] 2>/dev/null \
+    && command -v hq_hook_state_dir >/dev/null 2>&1 \
+    && command -v hq_hook_within_window >/dev/null 2>&1; then
+    local state_dir stamp
+    state_dir="$(hq_hook_state_dir "$HQ_ROOT")"
+    stamp="${state_dir}/grok-debounce-${id}-$(hq_hook_safe_session_key "$SID").stamp"
+    if hq_hook_within_window "$stamp" "$HQ_GROK_POLICY_DEBOUNCE_SECS"; then
+      return 0
+    fi
+    hq_hook_stamp_now "$stamp"
+  fi
+  run_advisory "$id" "$script" "$payload"
+}
+
 run_pre_tool_use() {
   case "$CTOOL" in
     Bash)
@@ -359,7 +413,7 @@ run_pre_tool_use() {
       run_block block-core-writes-bash       "$HOOK_DIR/block-core-writes-bash.sh"
       run_block block-hq-root-git-mutation   "$HOOK_DIR/block-hq-root-git-mutation.sh"
       run_block block-on-active-run          "$HOOK_DIR/block-on-active-run.sh"
-      run_advisory inject-policy-on-trigger  "$HOOK_DIR/inject-policy-on-trigger.sh"
+      run_advisory_debounced inject-policy-on-trigger "$HOOK_DIR/inject-policy-on-trigger.sh"
       run_block block-unsafe-package-install "$HOOK_DIR/block-unsafe-package-install.sh"
       run_advisory surface-company-infra-policy "$HOOK_DIR/surface-company-infra-policy.sh"
       ;;
@@ -380,7 +434,7 @@ run_pre_tool_use() {
       run_block block-inline-story-impl         "$HOOK_DIR/block-inline-story-impl.sh" "$payload"
       run_block block-on-active-run             "$HOOK_DIR/block-on-active-run.sh" "$payload"
       run_block env-file-no-trailing-newline    "$HOOK_DIR/env-file-no-trailing-newline.sh" "$payload"
-      run_advisory inject-policy-on-trigger     "$HOOK_DIR/inject-policy-on-trigger.sh" "$payload"
+      run_advisory_debounced inject-policy-on-trigger "$HOOK_DIR/inject-policy-on-trigger.sh" "$payload"
       run_block block-plans-dir-during-deep-plan "$HOOK_DIR/block-plans-dir-during-deep-plan.sh" "$payload"
       run_block route-company-skill-creation    "$HOOK_DIR/route-company-skill-creation.sh" "$payload"
       run_block validate-policy-frontmatter     "$HOOK_DIR/validate-policy-frontmatter.sh" "$payload"
@@ -389,7 +443,29 @@ run_pre_tool_use() {
       run_block block-hq-grep "$HOOK_DIR/block-hq-grep.sh"
       ;;
     Glob)
-      run_block block-hq-glob "$HOOK_DIR/block-hq-glob.sh"
+      # list_dir carries target_directory; a real glob carries pattern (+path).
+      # Resolve the explicit target so a scoped listing is not misread as a
+      # root Glob (see payload_for_glob).
+      local gpath gpattern gpayload
+      gpath="$(jget '.toolInput.target_directory // .tool_input.target_directory // .toolInput.path // .tool_input.path // empty')"
+      gpattern="$(jget '.toolInput.pattern // .tool_input.pattern // empty')"
+      # Canonicalize the target against cwd BEFORE the guard sees it. Grok can
+      # spell the HQ root as a RELATIVE target ("." or "workspace/..") that
+      # block-hq-glob would compare literally against the absolute root and let
+      # through — traversing the 1.38M-file root the guard exists to block.
+      # Resolve relative paths against CWD, then normalize away "." / ".." so a
+      # target that resolves to the root is caught in every spelling.
+      if [ -n "$gpath" ]; then
+        case "$gpath" in
+          /*|[A-Za-z]:/*|[A-Za-z]:\\*) : ;;   # already absolute
+          *) gpath="$CWD/$gpath" ;;            # resolve relative against cwd
+        esac
+        if command -v hq_normpath >/dev/null 2>&1; then
+          gpath="$(hq_normpath "$gpath")"
+        fi
+      fi
+      gpayload="$(payload_for_glob "$gpath" "$gpattern")"
+      run_block block-hq-glob "$HOOK_DIR/block-hq-glob.sh" "$gpayload"
       ;;
   esac
   allow_pre
