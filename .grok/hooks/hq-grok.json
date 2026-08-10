@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "./hq-grok-hook-adapter.sh",
-            "timeout": 30
+            "timeout": 120
           }
         ]
       }
@@ -17,7 +17,7 @@
           {
             "type": "command",
             "command": "./hq-grok-hook-adapter.sh",
-            "timeout": 30
+            "timeout": 120
           }
         ]
       }
@@ -28,7 +28,7 @@
           {
             "type": "command",
             "command": "./hq-grok-hook-adapter.sh",
-            "timeout": 30
+            "timeout": 120
           }
         ]
       }
@@ -39,7 +39,7 @@
           {
             "type": "command",
             "command": "./hq-grok-hook-adapter.sh",
-            "timeout": 30
+            "timeout": 120
           }
         ]
       }
@@ -50,7 +50,7 @@
           {
             "type": "command",
             "command": "./hq-grok-hook-adapter.sh",
-            "timeout": 30
+            "timeout": 120
           }
         ]
       }
@@ -61,7 +61,7 @@
           {
             "type": "command",
             "command": "./hq-grok-hook-adapter.sh",
-            "timeout": 30
+            "timeout": 120
           }
         ]
       }

@@ -42,6 +42,18 @@ find_adapter() {
 
 ADAPTER="$(find_adapter || true)"
 if [ -n "${ADAPTER:-}" ] && [ -x "$ADAPTER" ]; then
+  # Propagate a STABLE session key to the adapter. Grok spawns a fresh
+  # `bash hq-hq-bridge.sh` per hook call, so THIS bridge process is short-lived
+  # and its own PID changes every call — but its PARENT ($PPID) is the
+  # long-lived Grok CLI process, stable for the whole session. The adapter's
+  # last-resort session id is `grok-${GROK_SESSION_ID:-$PPID}`; on the bridge
+  # path the adapter's $PPID is THIS bridge (per-call, unstable), which would
+  # give every call a different per-session debounce/dedupe key and defeat the
+  # policy-scan debounce on exactly the global-bridge path that carries the
+  # latency. Export the Grok parent PID as the fallback so consecutive bridge
+  # calls in one session share a key. A real session id in the payload/env
+  # still wins (adapter checks those first; we only set the fallback if unset).
+  export GROK_SESSION_ID="${GROK_SESSION_ID:-bridge-$PPID}"
   # Do NOT use `exec` on the RHS of a pipeline — it does not replace this shell,
   # so fall-through would emit a second allow after a deny.
   set +e
