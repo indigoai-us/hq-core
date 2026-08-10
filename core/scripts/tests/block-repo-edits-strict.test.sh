@@ -129,5 +129,34 @@ else
   fail "a knowledge write is told the Bash-redirect route" "$(cat "$ERR")"
 fi
 
+# --- Bash classification uses actual operations, not argument text ----------
+# The active-run guard is the Bash counterpart of this repo-write policy. Give
+# it a foreign owner for every target so a real mutation must block.
+ACTIVE_HOOK="$ROOT/.claude/hooks/block-on-active-run.sh"
+mkdir -p "$HQ/scripts" "$HQ/core/scripts"
+cp "$ROOT/core/scripts/hook-lib.sh" "$HQ/core/scripts/hook-lib.sh"
+cat > "$HQ/scripts/repo-run-registry.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"pid":"999999","session_id":"other","run_id":"foreign","command":"run","project":"p","scope":"repo","started_at":"now"}]'
+EOF
+chmod +x "$HQ/scripts/repo-run-registry.sh"
+
+run_bash() {
+  local command="$1" payload rc=0
+  payload="$(jq -nc --arg cmd "$command" '{tool_name:"Bash", tool_input:{command:$cmd}}')"
+  ( cd "$HQ" && printf '%s' "$payload" | HQ_ROOT="$HQ" CLAUDE_PROJECT_DIR="$HQ" \
+      bash "$ACTIVE_HOOK" ) >/dev/null 2>"$ERR" || rc=$?
+  printf '%s' "$rc"
+}
+
+got="$(run_bash 'grep -niE "git reset|reset --hard|git checkout|git restore" some.log')"
+if [ "$got" = "0" ]; then ok "git write words in a grep pattern do not activate Bash repo guard"; else fail "grep pattern is allowed" "expected 0, got $got"; fi
+got="$(run_bash 'git -C repos/private/app-code reflog --date=iso -8')"
+if [ "$got" = "0" ]; then ok "read-only git reflog does not activate Bash repo guard"; else fail "git reflog is allowed" "expected 0, got $got"; fi
+got="$(run_bash 'git -C repos/private/app-code reset --hard origin/main')"
+if [ "$got" = "2" ]; then ok "real git reset against a repo remains blocked"; else fail "git reset remains blocked" "expected 2, got $got"; fi
+got="$(run_bash 'rm -rf repos/private/app-code')"
+if [ "$got" = "2" ]; then ok "real repo deletion remains blocked"; else fail "repo rm remains blocked" "expected 2, got $got"; fi
+
 echo "block-repo-edits-strict: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

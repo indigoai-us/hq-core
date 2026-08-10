@@ -110,6 +110,92 @@ hq_normpath() {
     }'
 }
 
+# hq_shell_simple_commands <command>
+# Emit one unit-separator-delimited argv record for each simple command in a
+# shell command string. Quotes and escapes are interpreted only far enough to
+# identify command boundaries and arguments; nothing is evaluated. This gives
+# guards a safe classification surface: `grep "git reset"` is grep, while
+# `git reset` is git. Redirections are retained as argv tokens so write guards
+# can inspect their targets.
+hq_shell_simple_commands() {
+  printf '%s' "$1" | awk '
+    function push_word() { if (word != "") { argv[++argc] = word; word = "" } }
+    function emit(    j, out) {
+      push_word()
+      if (argc == 0) return
+      out = argv[1]
+      for (j = 2; j <= argc; j++) out = out sprintf("%c", 31) argv[j]
+      print out
+      for (j in argv) delete argv[j]
+      argc = 0
+    }
+    {
+      text = $0 "\n"
+      n = length(text); quote = ""; escaped = 0; word = ""; argc = 0
+      for (i = 1; i <= n; i++) {
+        c = substr(text, i, 1)
+        if (escaped) { word = word c; escaped = 0; continue }
+        if (quote == "\047") {
+          if (c == "\047") quote = ""; else word = word c
+          continue
+        }
+        if (quote == "\"") {
+          if (c == "\"") quote = ""
+          else if (c == "\\") escaped = 1
+          else word = word c
+          continue
+        }
+        if (c == "\047" || c == "\"") { quote = c; continue }
+        if (c == "\\") { escaped = 1; continue }
+        if (c == " " || c == "\t") { push_word(); continue }
+        if (c == ";" || c == "|" || c == "&" || c == "\n" || c == "(" || c == ")") {
+          emit()
+          if ((c == "|" || c == "&") && substr(text, i + 1, 1) == c) i++
+          continue
+        }
+        if (c == ">" || c == "<") {
+          push_word(); argv[++argc] = c
+          if (substr(text, i + 1, 1) == c) { argv[argc] = argv[argc] c; i++ }
+          continue
+        }
+        word = word c
+      }
+    }
+  '
+}
+
+# hq_shell_command_executable <US-delimited argv>
+# Print the executable of a simple command after leading environment
+# assignments and the common `env` / `command` wrappers.
+hq_shell_command_executable() {
+  local record="$1" token
+  local -a argv
+  IFS=$'\037' read -r -a argv <<< "$record"
+  local i=0
+  while [ "$i" -lt "${#argv[@]}" ]; do
+    token="${argv[$i]}"
+    case "$token" in
+      [A-Za-z_][A-Za-z0-9_]*=*) i=$((i + 1)); continue ;;
+      env)
+        i=$((i + 1))
+        while [ "$i" -lt "${#argv[@]}" ]; do
+          token="${argv[$i]}"
+          case "$token" in
+            [A-Za-z_][A-Za-z0-9_]*=*) i=$((i + 1)); continue ;;
+            -*) i=$((i + 1)); continue ;;
+          esac
+          break
+        done
+        continue
+        ;;
+      command|builtin|exec|sudo)
+        i=$((i + 1)); continue ;;
+      *) printf '%s' "$token"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
 hq_text_compact() {
   local max="${1:-240}"
   local text="$2"

@@ -171,14 +171,23 @@ scope_resolve_rel_symlinks() {
 }
 
 scope_company_slug_for_rel() {
-  local rel="${1:-}"
+  local rel="${1:-}" co
   [ -n "$rel" ] || return 0
   case "$rel" in
     companies)
       printf '%s' "__companies_root__"
       ;;
     companies/*)
-      printf '%s' "${rel#companies/}" | cut -d/ -f1
+      co="${rel#companies/}"
+      co="${co%%/*}"
+      # The first segment is a company only when it resolves to an actual
+      # tenant directory. Top-level files (notably manifest.yaml), shell
+      # expansions, and placeholder prose are not tenant targets.
+      case "$co" in
+        *'$'*|*'`'*|*'('*|*')'*|*'{'*|*'}'*|*'<'*|*'>'*) return 0 ;;
+      esac
+      [ -d "$HQ_ROOT/companies/$co" ] || return 0
+      printf '%s' "$co"
       ;;
   esac
 }
@@ -274,18 +283,19 @@ case "$TOOL" in
     cmd="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
     [ -n "$cmd" ] || exit 0
     # Bash removes an unquoted backslash-newline before tokenizing, so scan the
-    # same normalized form before deciding whether a company path is dynamic.
+    # same normalized form when extracting possible path tokens.
     scope_cmd="${cmd//$'\\\n'/}"
     scope_detection_cmd="$(scope_mask_literal_expansions "$scope_cmd")"
-    # Reject expansions anywhere in a company-path token. Expansions in other
-    # command tokens remain safe to validate normally.
-    if printf '%s' "$scope_detection_cmd" | grep -qE 'companies/[^[:space:];|&()<>]*[$`]'; then
+    # A literal tenant followed by an unexpanded remainder can traverse out of
+    # that tenant at execution time (companies/indigo/$p). This is distinct
+    # from an unresolved first segment, which has no tenant to authorize.
+    if printf '%s' "$scope_detection_cmd" | grep -qE 'companies/[a-z0-9_-]+/[^[:space:];|&()<>]*[$`]'; then
       scope_block_rel "companies/(shell-expanded)"
     fi
     while IFS= read -r fragment; do
       [ -n "$fragment" ] || continue
       scope_check_raw "$fragment"
-    done < <(printf '%s' "$scope_cmd" | grep -oE 'companies/[a-z0-9_-]+(/[a-zA-Z0-9._@+/-]*)?' 2>/dev/null || true)
+    done < <(printf '%s' "$scope_cmd" | grep -oE 'companies/[^[:space:];|&()<>]*' 2>/dev/null || true)
     ;;
 esac
 
