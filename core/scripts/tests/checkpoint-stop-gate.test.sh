@@ -45,8 +45,12 @@ STATE_DIR="$FIXTURE/workspace/orchestrator/hook-state"
 SHIM_DIR="$TMP_ROOT/shim-bin"
 NO_HQ_DIR="$TMP_ROOT/no-hq-bin"
 SHIM_LOG="$TMP_ROOT/hq-shim.log"
-mkdir -p "$FIXTURE/.claude/hooks" "$FIXTURE/.codex/hooks" "$FIXTURE/core/scripts" "$STATE_DIR" "$SHIM_DIR" "$NO_HQ_DIR"
+mkdir -p "$FIXTURE/.claude/hooks" "$FIXTURE/.codex/hooks" "$FIXTURE/core/scripts/lib" "$STATE_DIR" "$SHIM_DIR" "$NO_HQ_DIR"
 cp "$ROOT/core/scripts/hook-lib.sh" "$FIXTURE/core/scripts/hook-lib.sh"
+# The adapter dispatches Stop hooks by reading settings.json through the shared
+# lib; provide both so checkpoint-stop-gate is dispatched exactly as in Codex.
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$FIXTURE/core/scripts/lib/hook-adapter-core.sh"
+cp "$ROOT/.claude/settings.json" "$FIXTURE/.claude/settings.json"
 cp "$HOOK" "$FIXTURE/.claude/hooks/checkpoint-stop-gate.sh"
 cp "$ROOT/.claude/hooks/hook-gate.sh" "$FIXTURE/.claude/hooks/hook-gate.sh"
 cp "$ADAPTER" "$FIXTURE/.codex/hooks/hq-codex-hook-adapter.sh"

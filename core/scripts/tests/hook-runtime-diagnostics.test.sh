@@ -118,10 +118,12 @@ esac
 
 echo "[5] Codex keeps structured stdout intact under advisory failures"
 CODEX_FIX="$TMP/codex"
-mkdir -p "$CODEX_FIX/.codex/hooks" "$CODEX_FIX/.claude/hooks" "$CODEX_FIX/core/scripts"
+mkdir -p "$CODEX_FIX/.codex/hooks" "$CODEX_FIX/.claude/hooks" "$CODEX_FIX/core/scripts/lib"
 cp "$CODEX_ADAPTER_SRC" "$CODEX_FIX/.codex/hooks/hq-codex-hook-adapter.sh"
 cp "$GATE_SRC" "$CODEX_FIX/.claude/hooks/hook-gate.sh"
 cp "$HOOK_LIB" "$CODEX_FIX/core/scripts/hook-lib.sh"
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$CODEX_FIX/core/scripts/lib/hook-adapter-core.sh"
+cp "$ROOT/.claude/settings.json" "$CODEX_FIX/.claude/settings.json"
 chmod +x \
   "$CODEX_FIX/.codex/hooks/hq-codex-hook-adapter.sh" \
   "$CODEX_FIX/.claude/hooks/hook-gate.sh" \
@@ -147,7 +149,10 @@ cat >"$CODEX_FIX/.claude/hooks/journal-due.sh" <<'EOF'
 cat >/dev/null
 exit 0
 EOF
-cat >"$CODEX_FIX/.claude/hooks/master-sync.sh" <<'EOF'
+# reindex is the post-write finalizer the adapter now dispatches (script-kind,
+# from settings.json). Make it the failing advisory hook so this case exercises
+# bounded-diagnostic handling exactly as the old master-sync path did.
+cat >"$CODEX_FIX/.claude/hooks/reindex.sh" <<'EOF'
 #!/bin/bash
 cat >/dev/null
 printf 'MASTER_SYNC_FAIL ' >&2
@@ -185,10 +190,12 @@ pass "Codex keeps stdout JSON clean and emits bounded advisory diagnostics on st
 
 echo "[6] Grok surfaces passive bridge diagnostics without corrupting PreToolUse JSON"
 GROK_FIX="$TMP/grok"
-mkdir -p "$GROK_FIX/.grok/hooks" "$GROK_FIX/.claude/hooks" "$GROK_FIX/core/scripts"
+mkdir -p "$GROK_FIX/.grok/hooks" "$GROK_FIX/.claude/hooks" "$GROK_FIX/core/scripts/lib"
 cp "$GROK_ADAPTER_SRC" "$GROK_FIX/.grok/hooks/hq-grok-hook-adapter.sh"
 cp "$GATE_SRC" "$GROK_FIX/.claude/hooks/hook-gate.sh"
 cp "$HOOK_LIB" "$GROK_FIX/core/scripts/hook-lib.sh"
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$GROK_FIX/core/scripts/lib/hook-adapter-core.sh"
+cp "$ROOT/.claude/settings.json" "$GROK_FIX/.claude/settings.json"
 chmod +x \
   "$GROK_FIX/.grok/hooks/hq-grok-hook-adapter.sh" \
   "$GROK_FIX/.claude/hooks/hook-gate.sh" \

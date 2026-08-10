@@ -32,12 +32,16 @@ trap 'rm -rf "$TMP"' EXIT
 # Fake HQ root (a git repo) with a nested working repo — mirrors real layout
 # where repos/* are their own git repos nested under the HQ root.
 git -C "$TMP" init -q
-mkdir -p "$TMP/.codex/hooks" "$TMP/.claude/hooks" "$TMP/core/scripts" "$TMP/repos/private/app"
+mkdir -p "$TMP/.codex/hooks" "$TMP/.claude/hooks" "$TMP/core/scripts/lib" "$TMP/repos/private/app"
 git -C "$TMP/repos/private/app" init -q
 cp "$ADAPTER_SRC" "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
 cp "$GATE_SRC"    "$TMP/.claude/hooks/hook-gate.sh"
 cp "$HOOK_SRC"    "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
 cp "$HELPER_SRC"  "$TMP/core/scripts/hook-lib.sh"
+# The adapter now reads dispatch from the shared lib. With no settings.json in
+# this minimal fixture it falls back to the critical-guard set (which includes
+# block-hq-root-git-mutation); missing guard scripts are skipped.
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$TMP/core/scripts/lib/hook-adapter-core.sh"
 chmod +x "$TMP/.codex/hooks/hq-codex-hook-adapter.sh" \
          "$TMP/.claude/hooks/hook-gate.sh" \
          "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"

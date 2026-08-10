@@ -73,6 +73,9 @@ if [ -n "$HQ_ROOT" ]; then
   HQ_CHECKPOINT_RUNTIME=codex
   export HQ_ROOT CLAUDE_PROJECT_DIR HQ_CHECKPOINT_RUNTIME
   . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
+  # Single-source dispatch: read .claude/settings.json live so Codex runs
+  # exactly the hooks Claude runs (hqad_iter_settings / hqad_mode_for).
+  . "$HQ_ROOT/core/scripts/lib/hook-adapter-core.sh" 2>/dev/null || true
 fi
 
 if [ -z "$HQ_ROOT" ] || [ ! -d "$HOOK_DIR" ] || [ ! -f "$GATE" ]; then
@@ -182,6 +185,8 @@ run_hook() {
   local script="$2"
   local payload="$3"
   local mode="${4:-blocking}"
+  shift 4 2>/dev/null || shift $#
+  local extra=("$@")
 
   local out err status out_text err_text warning
   out="$(mktemp)"
@@ -190,7 +195,7 @@ run_hook() {
   warning=""
 
   if command -v hq_launch_shell_path >/dev/null 2>&1; then
-    hq_launch_shell_path "$HQ_ROOT" "$GATE" "$payload" "$hook_id" "$script" >"$out" 2>"$err" || status=$?
+    hq_launch_shell_path "$HQ_ROOT" "$GATE" "$payload" "$hook_id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
     if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
       warning="$(hq_hook_launch_warning_text \
         "$payload" \
@@ -202,7 +207,7 @@ run_hook() {
         "$HQ_HOOK_LAST_CAUSE")"
     fi
   else
-    printf '%s' "$payload" | bash "$GATE" "$hook_id" "$script" >"$out" 2>"$err" || status=$?
+    printf '%s' "$payload" | bash "$GATE" "$hook_id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
   fi
 
   out_text="$(cat "$out" 2>/dev/null || true)"
@@ -289,6 +294,71 @@ run_script() {
     printf "Script '%s' exited %s.\n" "$label" "$status" >&2
   fi
   exit "$status"
+}
+
+# Run master-hook.sh (the company/personal/pack fan-out) for an event. Not
+# gate-wrapped; master-hook resolves the active company from session meta and
+# fan-outs to core/personal/pack/company hooks. Advisory except on PreToolUse,
+# where a company guard's non-zero exit must deny the tool.
+run_master_hook() {
+  local event_arg="$1" payload="$2" mode="${3:-advisory}"
+  local script="$HOOK_DIR/master-hook.sh"
+  [ -f "$script" ] || return 0
+
+  local out err status out_text err_text
+  out="$(mktemp)"; err="$(mktemp)"; status=0
+  printf '%s' "$payload" | bash "$script" "$event_arg" >"$out" 2>"$err" || status=$?
+  out_text="$(cat "$out" 2>/dev/null || true)"
+  err_text="$(cat "$err" 2>/dev/null || true)"
+  append_stdout "$out_text"
+  rm -f "$out" "$err"
+
+  [ "$status" -eq 0 ] && return 0
+  if [ "$mode" = "advisory" ]; then
+    [ -n "$err_text" ] && append_diag "$(compact_diag "$err_text")"
+    return 0
+  fi
+  emit_diag
+  [ -n "$err_text" ] && printf '%s\n' "$err_text" >&2
+  exit "$status"
+}
+
+# Dispatch every settings.json-registered hook for (event, canonical tools)
+# through this adapter's protocol handlers. Reading settings.json live is what
+# keeps Codex in lockstep with Claude (single-source dispatch). `tools` is a
+# space-separated set of canonical tool names ("ANY" for non-tool events);
+# records are de-duplicated across the set so an apply_patch (Edit+Write) does
+# not double-run a shared hook.
+dispatch_settings_hooks() {
+  local event="$1" tools="$2" payload="$3" skip_master="${4:-}"
+  command -v hqad_iter_settings >/dev/null 2>&1 || return 0
+  local tool kind a b rest key mode seen="|"
+  for tool in $tools; do
+    while IFS=$'\t' read -r kind a b rest; do
+      [ -n "$kind" ] || continue
+      key="$kind:$a:$b:$rest"
+      case "$seen" in *"|$key|"*) continue ;; esac
+      seen="$seen$key|"
+      case "$kind" in
+        gate)
+          mode="$(hqad_mode_for "$event" "$b")"
+          if [ -n "$rest" ]; then
+            # shellcheck disable=SC2086
+            run_hook "$a" "$b" "$payload" "$mode" $rest
+          else
+            run_hook "$a" "$b" "$payload" "$mode"
+          fi
+          ;;
+        master)
+          [ -n "$skip_master" ] && continue
+          run_master_hook "$a" "$payload" "$(hqad_mode_for "$event" "")"
+          ;;
+        script)
+          run_script "$a" "$payload" "advisory"
+          ;;
+      esac
+    done < <(hqad_iter_settings "$event" "$tool")
+  done
 }
 
 # Collect edit-target paths from an apply_patch/Edit/Write payload: explicit
@@ -422,49 +492,42 @@ run_pre_tool_use() {
     Bash)
       cmd="$(json_get '.tool_input.command // empty')"
       [ -n "$cmd" ] && block_sensitive_read_if_needed "$cmd"
-      run_hook "mandatory-scope-authorizer" "$HOOK_DIR/mandatory-scope-authorizer.sh" "$INPUT" "blocking"
-      run_hook "detect-secrets" "$HOOK_DIR/detect-secrets.sh" "$INPUT" "blocking"
-      run_hook "block-core-writes-bash" "$HOOK_DIR/block-core-writes-bash.sh" "$INPUT" "blocking"
-      run_hook "enforce-vault-write-access" "$HOOK_DIR/enforce-vault-write-access.sh" "$INPUT" "blocking"
-      run_hook "block-hq-root-git-mutation" "$HOOK_DIR/block-hq-root-git-mutation.sh" "$INPUT" "blocking"
-      run_hook "block-on-active-run" "$HOOK_DIR/block-on-active-run.sh" "$INPUT" "blocking"
-      run_hook "inject-policy-on-trigger" "$HOOK_DIR/inject-policy-on-trigger.sh" "$INPUT" "advisory"
-      run_hook "block-unsafe-package-install" "$HOOK_DIR/block-unsafe-package-install.sh" "$INPUT" "blocking"
+      dispatch_settings_hooks "PreToolUse" "Bash" "$INPUT"
       ;;
     Read)
       read_path="$(json_get '.tool_input.file_path // .tool_input.path // empty')"
       [ -n "$read_path" ] && block_sensitive_read_if_needed "$read_path"
-      run_hook "mandatory-scope-authorizer" "$HOOK_DIR/mandatory-scope-authorizer.sh" "$INPUT" "blocking"
+      dispatch_settings_hooks "PreToolUse" "Read" "$INPUT"
       ;;
     Grep)
       grep_path="$(json_get '.tool_input.path // empty')"
       [ -n "$grep_path" ] && block_sensitive_read_if_needed "$grep_path"
-      run_hook "mandatory-scope-authorizer" "$HOOK_DIR/mandatory-scope-authorizer.sh" "$INPUT" "blocking"
+      dispatch_settings_hooks "PreToolUse" "Grep" "$INPUT"
       ;;
     Glob)
       glob_path="$(json_get '.tool_input.path // empty')"
       [ -n "$glob_path" ] && block_sensitive_read_if_needed "$glob_path"
-      run_hook "mandatory-scope-authorizer" "$HOOK_DIR/mandatory-scope-authorizer.sh" "$INPUT" "blocking"
+      dispatch_settings_hooks "PreToolUse" "Glob" "$INPUT"
       ;;
     apply_patch|Edit|Write)
-      local paths path payload
+      local paths path payload canon
+      # Edit's hook set is a strict subset of Write's, so apply_patch (generic)
+      # maps to Write to cover both without dedup-ordering hazards.
+      case "$TOOL_NAME" in
+        Edit) canon="Edit" ;;
+        *) canon="Write" ;;
+      esac
       paths="$(patch_paths)"
       [ -z "$paths" ] && return 0
       while IFS= read -r path; do
         [ -z "$path" ] && continue
+        # Inline guards mirror Claude's native permission denies (not in the
+        # settings.json hooks block), so they stay hard-coded here.
         block_core_edit_if_needed "$path"
         block_template_edit_if_needed "$path"
         block_sensitive_read_if_needed "$path"
         payload="$(payload_for_path "$path")"
-        run_hook "protect-core" "$HOOK_DIR/protect-core.sh" "$payload" "blocking"
-        run_hook "block-core-writes" "$HOOK_DIR/block-core-writes.sh" "$payload" "blocking"
-        run_hook "enforce-vault-write-access" "$HOOK_DIR/enforce-vault-write-access.sh" "$payload" "blocking"
-        run_hook "block-inline-story-impl" "$HOOK_DIR/block-inline-story-impl.sh" "$payload" "blocking"
-        run_hook "block-on-active-run" "$HOOK_DIR/block-on-active-run.sh" "$payload" "blocking"
-        run_hook "env-file-no-trailing-newline" "$HOOK_DIR/env-file-no-trailing-newline.sh" "$payload" "blocking"
-        run_hook "inject-policy-on-trigger" "$HOOK_DIR/inject-policy-on-trigger.sh" "$payload" "advisory"
-        run_hook "block-plans-dir-during-deep-plan" "$HOOK_DIR/block-plans-dir-during-deep-plan.sh" "$payload" "blocking"
-        run_hook "route-company-skill-creation" "$HOOK_DIR/route-company-skill-creation.sh" "$payload" "blocking"
+        dispatch_settings_hooks "PreToolUse" "$canon" "$payload"
       done <<< "$paths"
       ;;
   esac
@@ -473,58 +536,47 @@ run_pre_tool_use() {
 run_post_tool_use() {
   case "$TOOL_NAME" in
     Bash)
-      run_hook "auto-checkpoint-trigger" "$HOOK_DIR/auto-checkpoint-trigger.sh" "$INPUT" "advisory"
+      # Adapter-only supplement (not registered in settings.json for Claude):
+      # capture resource-registry entries from bash commands. Kept so faithful
+      # settings mirroring does not drop it; reconcile into settings.json if
+      # Claude should run it too.
       run_hook "auto-capture-registry" "$HOOK_DIR/auto-capture-registry.sh" "$INPUT" "advisory"
-      run_hook "screenshot-resize-trigger" "$HOOK_DIR/screenshot-resize-trigger.sh" "$INPUT" "advisory"
-      run_hook "journal-due" "$HOOK_DIR/journal-due.sh" "$INPUT" "advisory"
+      dispatch_settings_hooks "PostToolUse" "Bash" "$INPUT"
       ;;
     apply_patch|Edit|Write)
-      local paths path payload
+      local paths path payload canon
+      case "$TOOL_NAME" in
+        Edit) canon="Edit" ;;
+        *) canon="Write" ;;  # Edit's hooks ⊂ Write's; apply_patch -> Write
+      esac
       paths="$(patch_paths)"
       [ -z "$paths" ] && return 0
+      # Per-path so hq-autocommit/auto-mirror/journal see each file; skip the
+      # company fan-out here and run it once for the whole edit event below.
       while IFS= read -r path; do
         [ -z "$path" ] && continue
         payload="$(payload_for_path "$path")"
-        run_hook "auto-checkpoint-trigger" "$HOOK_DIR/auto-checkpoint-trigger.sh" "$payload" "advisory"
+        dispatch_settings_hooks "PostToolUse" "$canon" "$payload" skip_master
       done <<< "$paths"
-      run_script "$HOOK_DIR/master-sync.sh" "$INPUT" "advisory"
-      while IFS= read -r path; do
-        [ -z "$path" ] && continue
-        payload="$(payload_for_path "$path")"
-        # auto-mirror-company-skill MUST run before hq-autocommit so any newly-mirrored
-        # skill files are picked up by autocommit (codex review P2 from prior #187 round).
-        run_hook "auto-mirror-company-skill" "$HOOK_DIR/auto-mirror-company-skill.sh" "$payload" "advisory"
-        run_hook "hq-autocommit" "$HOOK_DIR/hq-autocommit.sh" "$payload" "advisory"
-        run_hook "journal-due" "$HOOK_DIR/journal-due.sh" "$payload" "advisory"
-      done <<< "$paths"
+      run_master_hook "PostToolUse" "$INPUT" "advisory"
       ;;
     update_plan|ExitPlanMode)
-      run_hook "native-plan-project-sync" "$HOOK_DIR/native-plan-project-sync.sh" "$INPUT" "advisory"
+      # Codex's native plan tool (update_plan) maps to Claude's ExitPlanMode.
+      dispatch_settings_hooks "PostToolUse" "ExitPlanMode" "$INPUT"
       ;;
   esac
 }
 
 case "$HOOK_EVENT" in
   SessionStart)
+    # Codex-only supplement: nudge Codex to honor HQ checkpoint cadence. No
+    # Claude analog, so it is not in settings.json. Runs before the mirrored
+    # SessionStart hooks (migrate -> inject -> ... in settings.json order).
     run_hook "inject-codex-checkpoint-reprompt" "$HOOK_DIR/inject-codex-checkpoint-reprompt.sh" "$INPUT" "advisory"
-    # Backfill when:/on: on trigger-less policies, then evaluate SessionStart triggers
-    # (mirrors Claude settings.json SessionStart ordering: migrate before inject).
-    run_hook "migrate-policy-triggers" "$HQ_ROOT/core/scripts/migrate-policy-triggers.sh" "$INPUT" "advisory"
-    run_hook "inject-policy-on-trigger" "$HOOK_DIR/inject-policy-on-trigger.sh" "$INPUT" "advisory"
-    run_hook "check-bridge-health" "$HOOK_DIR/check-claude-desktop-bridge-health.sh" "$INPUT" "advisory"
-    run_hook "check-repo-active-runs" "$HOOK_DIR/check-repo-active-runs.sh" "$INPUT" "advisory"
-    run_hook "inject-local-context" "$HOOK_DIR/inject-local-context.sh" "$INPUT" "advisory"
-    run_hook "auto-startwork" "$HOOK_DIR/auto-startwork.sh" "$INPUT" "advisory"
-    run_hook "check-core-yaml-parity" "$HOOK_DIR/check-core-yaml-parity.sh" "$INPUT" "advisory"
-    run_hook "load-journal-index-on-start" "$HOOK_DIR/load-journal-index-on-start.sh" "$INPUT" "advisory"
-    run_hook "check-hq-update" "$HOOK_DIR/check-hq-update.sh" "$INPUT" "advisory"
-    run_hook "repair-stale-review-base" "$HOOK_DIR/repair-stale-review-base.sh" "$INPUT" "advisory"
+    dispatch_settings_hooks "SessionStart" "ANY" "$INPUT"
     ;;
   UserPromptSubmit)
-    run_hook "rewrite-resume-sentinel" "$HOOK_DIR/rewrite-resume-sentinel.sh" "$INPUT" "advisory"
-    run_hook "route-deep-plan-to-skill" "$HOOK_DIR/route-deep-plan-to-skill.sh" "$INPUT" "advisory"
-    run_hook "auto-session-project" "$HOOK_DIR/auto-session-project.sh" "$INPUT" "advisory"
-    run_hook "inject-policy-on-trigger" "$HOOK_DIR/inject-policy-on-trigger.sh" "$INPUT" "advisory"
+    dispatch_settings_hooks "UserPromptSubmit" "ANY" "$INPUT"
     ;;
   PreToolUse)
     run_pre_tool_use
@@ -533,19 +585,13 @@ case "$HOOK_EVENT" in
     run_post_tool_use
     ;;
   Stop)
-    run_hook "observe-patterns" "$HOOK_DIR/observe-patterns.sh" "$INPUT" "advisory"
-    run_hook "cleanup-mcp-processes" "$HOOK_DIR/cleanup-mcp-processes.sh" "$INPUT" "advisory"
-    run_hook "context-warning-50" "$HOOK_DIR/context-warning-50.sh" "$INPUT" "advisory"
-    # The gate itself is deliberately fail-open, so launch failures remain
-    # advisory while a valid decision:block is preserved by emit_context.
-    run_hook "checkpoint-stop-gate" "$HOOK_DIR/checkpoint-stop-gate.sh" "$INPUT" "advisory"
-    run_hook "capture-estimates" "$HOOK_DIR/capture-estimates.sh" "$INPUT" "advisory"
-    run_hook "enforce-capability-link-render" "$HOOK_DIR/enforce-capability-link-render.sh" "$INPUT" "advisory"
+    # checkpoint-stop-gate emits decision:block; emit_context translates that to
+    # Codex's Stop block protocol. The gate is fail-open, so launch failures
+    # stay advisory.
+    dispatch_settings_hooks "Stop" "ANY" "$INPUT"
     ;;
   PreCompact)
-    run_hook "precompact-thrashing-detector" "$HOOK_DIR/precompact-thrashing-detector.sh" "$INPUT" "advisory"
-    run_hook "auto-checkpoint-precompact" "$HOOK_DIR/auto-checkpoint-precompact.sh" "$INPUT" "advisory"
-    run_hook "journal-precompact" "$HOOK_DIR/journal-precompact.sh" "$INPUT" "advisory"
+    dispatch_settings_hooks "PreCompact" "ANY" "$INPUT"
     ;;
 esac
 

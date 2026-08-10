@@ -3,6 +3,13 @@
 # Unit tests for .grok/hooks/hq-grok-hook-adapter.sh (no network, no grok CLI).
 set -euo pipefail
 
+# The adapter now mirrors Claude's settings.json, which registers
+# block-hq-worktree-session on every PreToolUse. This suite drives the adapter
+# against the checkout it lives in; when that checkout is itself an HQ worktree
+# (the normal dev flow), that guard would deny every tool. Bypass it here — this
+# suite exercises the OTHER guards, and in a normal CI checkout the flag is a
+# no-op.
+export HQ_ALLOW_HQ_WORKTREE=1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 ADAPTER="${ROOT}/.grok/hooks/hq-grok-hook-adapter.sh"
 BRIDGE="${ROOT}/.grok/hooks/hq-grok-user-bridge.sh"

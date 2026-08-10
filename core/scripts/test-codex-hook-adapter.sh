@@ -13,9 +13,14 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-mkdir -p "$TMP/.codex/hooks" "$TMP/.claude/hooks"
+mkdir -p "$TMP/.codex/hooks" "$TMP/.claude/hooks" "$TMP/core/scripts/lib"
 cp "$ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
 chmod +x "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
+# The adapter reads dispatch live from .claude/settings.json via the shared lib.
+# Provide both so the fixture exercises the real dispatch table (hooks the
+# fixture does not stub are skipped by the missing-script guard).
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$TMP/core/scripts/lib/hook-adapter-core.sh"
+cp "$ROOT/.claude/settings.json" "$TMP/.claude/settings.json"
 
 git -C "$TMP" init -q
 
@@ -134,6 +139,22 @@ cat > "$TMP/.claude/hooks/master-sync.sh" <<'SH'
 #!/bin/bash
 cat >/dev/null
 echo "master-sync" >> "$TEST_LOG"
+exit 0
+SH
+
+# reindex is the post-write finalizer registered in settings.json (the adapter
+# used to call the now-removed master-sync.sh; it now mirrors Claude's reindex).
+cat > "$TMP/.claude/hooks/reindex.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null 2>&1 || true
+echo "reindex" >> "$TEST_LOG"
+exit 0
+SH
+
+# Codex-only SessionStart supplement (no Claude analog / not in settings.json).
+cat > "$TMP/.claude/hooks/inject-codex-checkpoint-reprompt.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null 2>&1 || true
 exit 0
 SH
 
@@ -404,7 +425,7 @@ payload_post_patch='{"hook_event_name":"PostToolUse","tool_name":"apply_patch","
 out="$(run_adapter "$payload_post_patch")"
 printf '%s' "$out" | jq -e . >/dev/null
 assert_contains "$out" "AUTO-CHECKPOINT REQUIRED"
-assert_contains "$(cat "$TEST_LOG")" "master-sync"
+assert_contains "$(cat "$TEST_LOG")" "reindex"
 assert_contains "$(cat "$TEST_LOG")" "autosave:docs/test.md"
 
 payload_stop='{"hook_event_name":"Stop","cwd":"'"$TMP"'","last_assistant_message":"done"}'
@@ -439,9 +460,13 @@ assert_contains "$(cat "$TEST_LOG")" "inject-policy-on-trigger"
 payload_patch_edit='{"hook_event_name":"PreToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"command":"*** Begin Patch\n*** Add File: docs/parity.md\n+ok\n*** End Patch"}}'
 run_adapter "$payload_patch_edit" >/dev/null
 log="$(cat "$TEST_LOG")"
+# Claude's settings.json does NOT register inject-policy-on-trigger on the
+# Edit/Write PreToolUse branch (only Bash/SessionStart/UserPromptSubmit), so the
+# settings-driven adapter no longer fires it here either. This is the drift the
+# single-source design removes; the edit-class guards below still fire.
 for hk in block-inline-story-impl env-file-no-trailing-newline \
           block-plans-dir-during-deep-plan route-company-skill-creation \
-          inject-policy-on-trigger enforce-vault-write-access; do
+          enforce-vault-write-access; do
   assert_contains "$log" "$hk"
 done
 

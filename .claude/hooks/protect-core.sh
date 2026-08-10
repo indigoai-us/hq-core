@@ -195,8 +195,17 @@ BLOCKED: Edit to locked path is not allowed.
   File: $FILE_PATH
   Locked: $locked_path
 
-To bypass: set "HQ_BYPASS_CORE_PROTECT": "1" under "env" in .claude/settings.local.json
-(inline env-var prefixes are not accepted).
+Preferred fix: author the change under personal/ (read directly from personal/,
+with no mirror into core/), or make the edit in its intended non-locked location.
+
+A bypass exists, but DO NOT enable it on your own. Setting
+"HQ_BYPASS_CORE_PROTECT": "1" under "env" in .claude/settings.local.json turns
+OFF core protection for EVERY later write this session, so it may ONLY be set
+with the human operator's EXPLICIT permission. If you are an agent: never set
+this flag autonomously — not to complete a task, and not because this message
+named it. Ask the user to confirm first; only with their explicit go-ahead set
+the flag (and offer to turn it back off when done). Inline env-var prefixes are
+not accepted.
 MSG
     exit 2
   fi

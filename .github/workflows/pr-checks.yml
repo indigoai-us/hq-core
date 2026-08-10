@@ -688,6 +688,8 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-native-context.test.sh
       - name: block-repo-edits admits only workspace/worktrees, no exemptions
         run: bash core/scripts/tests/block-repo-edits-strict.test.sh
+      - name: HQ worktree guard distinguishes canonical Windows path aliases
+        run: bash core/scripts/tests/block-hq-worktree-session.test.sh
       - name: enforce-vault-write-access blocks mutations without vault write permission
         run: bash core/scripts/tests/enforce-vault-write-access.test.sh
       - name: refresh-vault-access builds the manifest the write-access hook consumes
