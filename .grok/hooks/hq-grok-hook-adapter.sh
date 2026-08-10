@@ -80,8 +80,12 @@ HOOK_DIR="${HQ_ROOT:+$HQ_ROOT/.claude/hooks}"
 
 if [ -n "$HQ_ROOT" ]; then
   CLAUDE_PROJECT_DIR="$HQ_ROOT"
-  export HQ_ROOT CLAUDE_PROJECT_DIR
+  HQ_CHECKPOINT_RUNTIME=grok
+  export HQ_ROOT CLAUDE_PROJECT_DIR HQ_CHECKPOINT_RUNTIME
   . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
+  # Single-source dispatch: read .claude/settings.json live so Grok runs
+  # exactly the hooks Claude runs (hqad_iter_settings / hqad_mode_for).
+  . "$HQ_ROOT/core/scripts/lib/hook-adapter-core.sh" 2>/dev/null || true
 fi
 
 # Fail-open outside HQ trees (never wedge non-HQ projects). Gate presence is
@@ -195,8 +199,10 @@ allow_pre() {
   echo '{"decision":"allow"}'
 }
 
-run_block() { # <hook-id> <hook-script> [payload]
+run_block() { # <hook-id> <hook-script> [payload] [extra-gate-args...]
   local id="$1" script="$2" payload="${3:-$CLAUDE_JSON}"
+  shift 3 2>/dev/null || shift $#
+  local extra=("$@")
   local out err status out_text err_text warning reason
   out="$(mktemp)"
   err="$(mktemp)"
@@ -204,7 +210,7 @@ run_block() { # <hook-id> <hook-script> [payload]
   warning=""
 
   if command -v hq_launch_shell_path >/dev/null 2>&1; then
-    hq_launch_shell_path "$HQ_ROOT" "$GATE" "$payload" "$id" "$script" >"$out" 2>"$err" || status=$?
+    hq_launch_shell_path "$HQ_ROOT" "$GATE" "$payload" "$id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
     if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
       warning="$(hq_hook_launch_warning_text \
         "$payload" \
@@ -216,7 +222,7 @@ run_block() { # <hook-id> <hook-script> [payload]
         "$HQ_HOOK_LAST_CAUSE")"
     fi
   else
-    printf '%s' "$payload" | bash "$GATE" "$id" "$script" >"$out" 2>"$err" || status=$?
+    printf '%s' "$payload" | bash "$GATE" "$id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
   fi
 
   out_text="$(cat "$out" 2>/dev/null || true)"
@@ -405,21 +411,117 @@ run_advisory_debounced() { # <hook-id> <hook-script> [payload]
   run_advisory "$id" "$script" "$payload"
 }
 
+# Grok-specific per-hook overrides for the settings-driven dispatcher. Returns 0
+# when it fully handles the hook (dispatcher skips generic handling), 1 to fall
+# through. Two hooks need Grok-specific invocation:
+#   - inject-policy-on-trigger on PreToolUse uses the debounced runner so a burst
+#     of tool calls does not re-surface the same policy repeatedly.
+#   - block-hq-glob needs the canonicalized target payload so a relative target
+#     that resolves to the HQ root is caught in every spelling.
+hqad_gate_override() {
+  local id="$1" script="$2" payload="$3" event="$4"
+  case "$id" in
+    inject-policy-on-trigger)
+      if [ "$event" = "PreToolUse" ] && declare -F run_advisory_debounced >/dev/null 2>&1; then
+        run_advisory_debounced "$id" "$script" "$payload"
+        return 0
+      fi
+      return 1
+      ;;
+    block-hq-glob)
+      [ "$event" = "PreToolUse" ] || return 1
+      local gpath gpattern gpayload
+      gpath="$(jget '.toolInput.target_directory // .tool_input.target_directory // .toolInput.path // .tool_input.path // empty')"
+      gpattern="$(jget '.toolInput.pattern // .tool_input.pattern // empty')"
+      if [ -n "$gpath" ]; then
+        case "$gpath" in
+          /*|[A-Za-z]:/*|[A-Za-z]:\\*) : ;;
+          *) gpath="$CWD/$gpath" ;;
+        esac
+        command -v hq_normpath >/dev/null 2>&1 && gpath="$(hq_normpath "$gpath")"
+      fi
+      gpayload="$(payload_for_glob "$gpath" "$gpattern")"
+      run_block block-hq-glob "$script" "$gpayload"
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# Run master-hook.sh (company/personal/pack fan-out) for an event. Advisory
+# except on PreToolUse, where a company guard's non-zero exit denies the tool.
+run_master() {
+  local event_arg="$1" payload="${2:-$CLAUDE_JSON}" mode="${3:-advisory}"
+  local script="$HOOK_DIR/master-hook.sh"
+  [ -f "$script" ] || return 0
+  local out err status err_text
+  out="$(mktemp)"; err="$(mktemp)"; status=0
+  printf '%s' "$payload" | bash "$script" "$event_arg" >"$out" 2>"$err" || status=$?
+  err_text="$(cat "$err" 2>/dev/null || true)"
+  rm -f "$out" "$err"
+  [ "$status" -eq 0 ] && return 0
+  if [ "$mode" = "advisory" ]; then
+    [ -n "$err_text" ] && append_diag "$(compact_diag "$err_text")"
+    return 0
+  fi
+  deny "$(compact_reason "${err_text:-Blocked by HQ company hook}")"
+}
+
+# Dispatch every settings.json-registered hook for (event, canonical tools)
+# through Grok's protocol handlers. Reading settings.json live keeps Grok in
+# lockstep with Claude (single-source dispatch). `tools` is a space-separated
+# set of canonical tool names ("ANY" for non-tool events); records are
+# de-duplicated across the set. Only PreToolUse can deny under Grok, which is
+# exactly what hqad_mode_for returns "blocking" for.
+dispatch_settings_hooks() {
+  local event="$1" tools="$2" payload="$3" skip_master="${4:-}"
+  command -v hqad_iter_settings >/dev/null 2>&1 || return 0
+  local tool kind a b rest key mode seen="|"
+  for tool in $tools; do
+    while IFS=$'\t' read -r kind a b rest; do
+      [ -n "$kind" ] || continue
+      key="$kind:$a:$b:$rest"
+      case "$seen" in *"|$key|"*) continue ;; esac
+      seen="$seen$key|"
+      case "$kind" in
+        gate)
+          # Grok-specific per-hook handling (glob canonicalization, policy
+          # debounce) intercepts here; everything else runs generically.
+          if hqad_gate_override "$a" "$b" "$payload" "$event"; then
+            continue
+          fi
+          mode="$(hqad_mode_for "$event" "$b")"
+          if [ "$mode" = "blocking" ]; then
+            # shellcheck disable=SC2086
+            run_block "$a" "$b" "$payload" $rest
+          else
+            # Grok cannot inject context on any event, so surface a successful
+            # advisory hook's stdout as bounded stderr diagnostics rather than
+            # dropping it (preserves e.g. bridge-health / policy warnings).
+            run_advisory "$a" "$b" "$payload" "diag"
+          fi
+          ;;
+        master)
+          [ -n "$skip_master" ] && continue
+          run_master "$a" "$payload" "$(hqad_mode_for "$event" "")"
+          ;;
+        script)
+          run_script_advisory "$a" "$payload"
+          ;;
+      esac
+    done < <(hqad_iter_settings "$event" "$tool")
+  done
+}
+
 run_pre_tool_use() {
   case "$CTOOL" in
     Bash)
       [ -n "$CMD" ] && block_sensitive_if_needed "$CMD"
-      run_block detect-secrets               "$HOOK_DIR/detect-secrets.sh"
-      run_block block-core-writes-bash       "$HOOK_DIR/block-core-writes-bash.sh"
-      run_block block-hq-root-git-mutation   "$HOOK_DIR/block-hq-root-git-mutation.sh"
-      run_block block-on-active-run          "$HOOK_DIR/block-on-active-run.sh"
-      run_advisory_debounced inject-policy-on-trigger "$HOOK_DIR/inject-policy-on-trigger.sh"
-      run_block block-unsafe-package-install "$HOOK_DIR/block-unsafe-package-install.sh"
-      run_advisory surface-company-infra-policy "$HOOK_DIR/surface-company-infra-policy.sh"
+      dispatch_settings_hooks "PreToolUse" "Bash" "$CLAUDE_JSON"
       ;;
     Read)
       [ -n "$FP" ] && block_sensitive_if_needed "$FP"
-      run_advisory warn-cross-company-settings "$HOOK_DIR/warn-cross-company-settings.sh"
+      dispatch_settings_hooks "PreToolUse" "Read" "$CLAUDE_JSON"
       ;;
     Write|Edit)
       if [ -z "$FP" ]; then
@@ -427,45 +529,23 @@ run_pre_tool_use() {
         return 0
       fi
       block_sensitive_if_needed "$FP"
-      local payload
+      local payload canon
       payload="$(payload_for_path "$FP")"
-      run_block protect-core                    "$HOOK_DIR/protect-core.sh" "$payload"
-      run_block block-core-writes               "$HOOK_DIR/block-core-writes.sh" "$payload"
-      run_block block-inline-story-impl         "$HOOK_DIR/block-inline-story-impl.sh" "$payload"
-      run_block block-on-active-run             "$HOOK_DIR/block-on-active-run.sh" "$payload"
-      run_block env-file-no-trailing-newline    "$HOOK_DIR/env-file-no-trailing-newline.sh" "$payload"
-      run_advisory_debounced inject-policy-on-trigger "$HOOK_DIR/inject-policy-on-trigger.sh" "$payload"
-      run_block block-plans-dir-during-deep-plan "$HOOK_DIR/block-plans-dir-during-deep-plan.sh" "$payload"
-      run_block route-company-skill-creation    "$HOOK_DIR/route-company-skill-creation.sh" "$payload"
-      run_block validate-policy-frontmatter     "$HOOK_DIR/validate-policy-frontmatter.sh" "$payload"
+      # Edit's hook set is a strict subset of Write's; a Grok write maps to
+      # Write (adds route-company-skill-creation), a str-replace edit to Edit.
+      case "$CTOOL" in
+        Edit) canon="Edit" ;;
+        *) canon="Write" ;;
+      esac
+      dispatch_settings_hooks "PreToolUse" "$canon" "$payload"
       ;;
     Grep)
-      run_block block-hq-grep "$HOOK_DIR/block-hq-grep.sh"
+      dispatch_settings_hooks "PreToolUse" "Grep" "$CLAUDE_JSON"
       ;;
     Glob)
-      # list_dir carries target_directory; a real glob carries pattern (+path).
-      # Resolve the explicit target so a scoped listing is not misread as a
-      # root Glob (see payload_for_glob).
-      local gpath gpattern gpayload
-      gpath="$(jget '.toolInput.target_directory // .tool_input.target_directory // .toolInput.path // .tool_input.path // empty')"
-      gpattern="$(jget '.toolInput.pattern // .tool_input.pattern // empty')"
-      # Canonicalize the target against cwd BEFORE the guard sees it. Grok can
-      # spell the HQ root as a RELATIVE target ("." or "workspace/..") that
-      # block-hq-glob would compare literally against the absolute root and let
-      # through — traversing the 1.38M-file root the guard exists to block.
-      # Resolve relative paths against CWD, then normalize away "." / ".." so a
-      # target that resolves to the root is caught in every spelling.
-      if [ -n "$gpath" ]; then
-        case "$gpath" in
-          /*|[A-Za-z]:/*|[A-Za-z]:\\*) : ;;   # already absolute
-          *) gpath="$CWD/$gpath" ;;            # resolve relative against cwd
-        esac
-        if command -v hq_normpath >/dev/null 2>&1; then
-          gpath="$(hq_normpath "$gpath")"
-        fi
-      fi
-      gpayload="$(payload_for_glob "$gpath" "$gpattern")"
-      run_block block-hq-glob "$HOOK_DIR/block-hq-glob.sh" "$gpayload"
+      # block-hq-glob needs a canonicalized target payload; hqad_gate_override
+      # rebuilds it. Other Glob-matched hooks run generically.
+      dispatch_settings_hooks "PreToolUse" "Glob" "$CLAUDE_JSON"
       ;;
   esac
   allow_pre
@@ -474,57 +554,45 @@ run_pre_tool_use() {
 run_post_tool_use() {
   case "$CTOOL" in
     Bash)
-      run_advisory auto-checkpoint-trigger   "$HOOK_DIR/auto-checkpoint-trigger.sh"
-      run_advisory auto-capture-registry     "$HOOK_DIR/auto-capture-registry.sh"
-      run_advisory screenshot-resize-trigger "$HOOK_DIR/screenshot-resize-trigger.sh"
-      run_advisory journal-due               "$HOOK_DIR/journal-due.sh"
+      # Adapter-only supplement (not registered in settings.json for Claude):
+      # capture resource-registry entries from bash commands.
+      run_advisory auto-capture-registry "$HOOK_DIR/auto-capture-registry.sh"
+      dispatch_settings_hooks "PostToolUse" "Bash" "$CLAUDE_JSON"
       ;;
     Write|Edit)
       if [ -n "$FP" ]; then
-        local payload
+        local payload canon
         payload="$(payload_for_path "$FP")"
-        run_advisory auto-checkpoint-trigger   "$HOOK_DIR/auto-checkpoint-trigger.sh" "$payload"
-        run_script_advisory "$HOOK_DIR/master-sync.sh" "$payload"
-        run_advisory auto-mirror-company-skill "$HOOK_DIR/auto-mirror-company-skill.sh" "$payload"
-        run_advisory hq-autocommit             "$HOOK_DIR/hq-autocommit.sh" "$payload"
-        run_advisory journal-due               "$HOOK_DIR/journal-due.sh" "$payload"
+        case "$CTOOL" in
+          Edit) canon="Edit" ;;
+          *) canon="Write" ;;
+        esac
+        # Per-path so hq-autocommit/auto-mirror/journal see each file; run the
+        # company fan-out once for the whole edit event.
+        dispatch_settings_hooks "PostToolUse" "$canon" "$payload" skip_master
+        run_master "PostToolUse" "$CLAUDE_JSON" advisory
       fi
       ;;
   esac
 }
 
 run_session_start() {
-  # Mirrors Codex/Claude SessionStart ordering (migrate -> inject -> checks).
-  run_script_advisory "$HQ_ROOT/core/scripts/migrate-policy-triggers.sh"
-  run_advisory inject-policy-on-trigger    "$HOOK_DIR/inject-policy-on-trigger.sh"
-  run_advisory check-bridge-health         "$HOOK_DIR/check-claude-desktop-bridge-health.sh" "$CLAUDE_JSON" "diag"
-  run_advisory check-repo-active-runs      "$HOOK_DIR/check-repo-active-runs.sh"
-  run_advisory inject-local-context        "$HOOK_DIR/inject-local-context.sh"
-  run_advisory auto-startwork              "$HOOK_DIR/auto-startwork.sh"
-  run_advisory check-core-yaml-parity      "$HOOK_DIR/check-core-yaml-parity.sh"
-  run_advisory load-journal-index-on-start "$HOOK_DIR/load-journal-index-on-start.sh"
-  run_advisory check-hq-update             "$HOOK_DIR/check-hq-update.sh"
+  dispatch_settings_hooks "SessionStart" "ANY" "$CLAUDE_JSON"
 }
 
 run_user_prompt_submit() {
-  run_advisory rewrite-resume-sentinel  "$HOOK_DIR/rewrite-resume-sentinel.sh"
-  run_advisory route-deep-plan-to-skill "$HOOK_DIR/route-deep-plan-to-skill.sh"
-  run_advisory auto-session-project     "$HOOK_DIR/auto-session-project.sh"
-  run_advisory inject-policy-on-trigger "$HOOK_DIR/inject-policy-on-trigger.sh"
+  dispatch_settings_hooks "UserPromptSubmit" "ANY" "$CLAUDE_JSON"
 }
 
 run_stop() {
-  run_advisory observe-patterns               "$HOOK_DIR/observe-patterns.sh"
-  run_advisory cleanup-mcp-processes          "$HOOK_DIR/cleanup-mcp-processes.sh"
-  run_advisory context-warning-50             "$HOOK_DIR/context-warning-50.sh"
-  run_advisory capture-estimates              "$HOOK_DIR/capture-estimates.sh"
-  run_advisory enforce-capability-link-render "$HOOK_DIR/enforce-capability-link-render.sh"
+  # checkpoint-stop-gate now runs under Grok too. Grok cannot hard-block a Stop
+  # (only PreToolUse denies), so it runs advisory: its checkpoint side-effects
+  # fire but the turn is not blocked.
+  dispatch_settings_hooks "Stop" "ANY" "$CLAUDE_JSON"
 }
 
 run_precompact() {
-  run_advisory precompact-thrashing-detector "$HOOK_DIR/precompact-thrashing-detector.sh"
-  run_advisory auto-checkpoint-precompact    "$HOOK_DIR/auto-checkpoint-precompact.sh"
-  run_advisory journal-precompact            "$HOOK_DIR/journal-precompact.sh"
+  dispatch_settings_hooks "PreCompact" "ANY" "$CLAUDE_JSON"
 }
 
 case "$EVENT" in

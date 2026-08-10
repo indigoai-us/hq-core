@@ -41,6 +41,43 @@ git_quiet -C "$TMP/hq/repos/private/app" worktree add -q -b feat \
 
 mkdir -p "$TMP/not-a-repo"
 
+# --- Git for Windows path aliases ------------------------------------------
+# Git Bash can spell the same checkout as /c/... while Git itself emits C:/....
+# Mock that split so this regression remains runnable on Linux.
+WINDOWS_HQ="$TMP/windows-hq"
+WINDOWS_BIN="$TMP/windows-bin"
+mkdir -p "$WINDOWS_HQ/core/scripts" "$WINDOWS_BIN"
+cp "$ROOT/core/scripts/hook-lib.sh" "$WINDOWS_HQ/core/scripts/hook-lib.sh"
+
+cat > "$WINDOWS_BIN/git" <<'WINDOWS_GIT'
+#!/usr/bin/env bash
+case "$*" in
+  *"rev-parse --absolute-git-dir"*) printf '%s\n' 'C:/hq-test/.git' ;;
+  *"rev-parse --git-common-dir"*) printf '%s\n' '.git' ;;
+  *"rev-parse --show-toplevel"*) printf '%s\n' 'C:/hq-test' ;;
+  *"worktree list --porcelain"*) printf '%s\n' 'worktree C:/hq-test' ;;
+  *) exit 1 ;;
+esac
+WINDOWS_GIT
+
+cat > "$WINDOWS_BIN/realpath" <<WINDOWS_REALPATH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  "$WINDOWS_HQ"*) printf '/c/hq-test%s\n' "\${1#"$WINDOWS_HQ"}" ;;
+  *) printf '%s\n' "\${1:-}" ;;
+esac
+WINDOWS_REALPATH
+
+cat > "$WINDOWS_BIN/cygpath" <<'WINDOWS_CYGPATH'
+#!/usr/bin/env bash
+path="${2:-${1:-}}"
+case "$path" in
+  /c/*) printf 'C:/%s\n' "${path#/c/}" ;;
+  *) printf '%s\n' "$path" ;;
+esac
+WINDOWS_CYGPATH
+chmod +x "$WINDOWS_BIN/git" "$WINDOWS_BIN/realpath" "$WINDOWS_BIN/cygpath"
+
 PASS=0
 FAIL=0
 
@@ -89,6 +126,9 @@ run 0 "$HQ" "$APPWT"        UserPromptSubmit 'cwd in a repo worktree under works
 run 0 "$HQ" "$APPWT"        PreToolUse       'repo worktree tool calls allowed'
 run 0 "$HQ" "$TMP/not-a-repo" UserPromptSubmit 'cwd outside any repo allowed'
 run 0 "$TMP/not-a-repo" "$TMP/not-a-repo" UserPromptSubmit 'project dir outside any repo allowed'
+run 0 "$WINDOWS_HQ" "$WINDOWS_HQ" UserPromptSubmit \
+  'Git Bash and drive-letter aliases identify the same canonical HQ checkout' \
+  PATH="$WINDOWS_BIN:$PATH"
 
 # --- Escape hatch -----------------------------------------------------------
 run 0 "$HQWT" "$HQWT" UserPromptSubmit 'HQ_ALLOW_HQ_WORKTREE=1 bypasses the block' \

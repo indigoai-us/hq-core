@@ -73,10 +73,17 @@ if [ -f "$HQ_ROOT/core/scripts/hook-lib.sh" ]; then
 fi
 
 norm() {
-  local p="${1:-}"
+  local p="${1:-}" resolved
   [ -n "$p" ] || return 0
   case "$p" in "~") p="$HOME" ;; "~/"*) p="$HOME${p#\~}" ;; esac
-  realpath "$p" 2>/dev/null || hq_normpath "$p" 2>/dev/null || printf '%s\n' "$p"
+  resolved="$(realpath "$p" 2>/dev/null \
+    || hq_normpath "$p" 2>/dev/null \
+    || printf '%s\n' "$p")"
+  if declare -F hq_canonical_path >/dev/null 2>&1; then
+    hq_canonical_path "$resolved"
+  else
+    printf '%s\n' "$resolved"
+  fi
 }
 
 SESSION_CWD="$(payload_field cwd)"
