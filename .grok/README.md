@@ -13,8 +13,8 @@ Codex — with one Grok-specific bootstrap step.
 |---|---|
 | `.claude/hooks/*` | Canonical policy (shared by Claude, Codex, Grok) |
 | `.grok/hooks/hq-grok-hook-adapter.sh` | Normalizes Grok payloads → Claude-shaped JSON, maps tool names, translates deny to Grok's `{"decision":"deny"}` |
-| `.grok/hooks/hq-grok.json` | Project-scoped registration (all lifecycle events) |
-| `~/.grok/hooks/hq-hq-bridge.*` | **User-global bridge** installed by `core/scripts/grok-trust.sh` — required on Grok builds that skip project hooks |
+| `.grok/hooks/hq-grok.json` | Project-scoped registration (**PreToolUse only** — the bridge carries the rest) |
+| `~/.grok/hooks/hq-hq-bridge.*` | **User-global bridge** installed by `hq reindex` — required on Grok builds that skip project hooks |
 | `.grok/rules/*.md` | Grok-only always-on rules (`message-canvas`, `prefer-swarms`) |
 
 Claude, Codex (`.codex/`), and Grok all route through the same `.claude/hooks/`
@@ -40,16 +40,17 @@ Codex can; side-effect hooks still run. Blocking safety is PreToolUse-only
 ## One-time setup (required)
 
 ```sh
-core/scripts/grok-trust.sh
+hq reindex
 ```
 
-That script:
+`hq reindex` converges Grok hook trust as part of its hook-trust step (the
+installer lives in hq-cli — `src/utils/hook-trust.ts` — not a shell script):
 
 1. Trusts this HQ root in `~/.grok/trusted_folders.toml` (and legacy
    `~/.grok/trusted-hook-projects` for older docs). **Folder trust is what
    unlocks project `.grok/hooks` loading.**
-2. Installs `~/.grok/hooks/hq-hq-bridge.sh` + `.json` (PreToolUse only) so
-   blocking guards still fire if project hooks fail to load.
+2. Installs `~/.grok/hooks/hq-hq-bridge.sh` + `.json` (**all lifecycle events**)
+   so guards still fire if project hooks fail to load.
 3. Sets `[compat.claude] hooks = false` in `~/.grok/config.toml` so Grok does
    **not** also load every project `.claude/settings.json` hook. HQ policy
    still runs via bridge → adapter → `hook-gate.sh`.
@@ -60,14 +61,16 @@ Re-run after `/update-hq` or whenever the project adapter changes.
 
 On Grok Build **0.2.93**, until the HQ root is listed in
 `trusted_folders.toml`, `grok inspect` can report `projectTrusted: yes` while
-still loading **zero** project hooks. After `grok-trust.sh`, project
+still loading **zero** project hooks. After `hq reindex`, project
 `.grok/hooks` load **and** the user bridge provides a PreToolUse safety net.
 The bridge walks from cwd / `GROK_WORKSPACE_ROOT` to the nearest HQ root and
 execs the project adapter; outside HQ it fails open.
 
-Passive lifecycle events (SessionStart, PostToolUse, …) are registered on the
-**project** adapter only — not the user bridge — so advisory hooks do not
-triple-run once the project adapter is loaded.
+The user bridge registers EVERY lifecycle event and is the reliable path. The
+project registration (`hq-grok.json`) is **PreToolUse only**, so passive /
+side-effect events (PostToolUse, Stop, SessionEnd, …) fire exactly once — via the
+bridge — and never double-run when a build loads both. Blocking PreToolUse is on
+both paths on purpose (idempotent, so redundant enforcement is safe).
 
 ### Quieting noisy hook annotations
 
@@ -86,7 +89,7 @@ HQ’s intended Grok path is thin:
 |---|---|
 | `[compat.claude] hooks = true` (default) | Duplicates the adapter with individual settings handlers |
 
-`grok-trust.sh` writes this for you:
+`hq reindex` writes this for you:
 
 ```toml
 # ~/.grok/config.toml

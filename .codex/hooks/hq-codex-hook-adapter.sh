@@ -564,6 +564,16 @@ run_post_tool_use() {
       # Codex's native plan tool (update_plan) maps to Claude's ExitPlanMode.
       dispatch_settings_hooks "PostToolUse" "ExitPlanMode" "$INPUT"
       ;;
+    web_search|WebSearch)
+      # If this Codex build reports web searches as a tool event, dispatch the
+      # WebSearch-matched hooks (journal-autocapture). Rewrite the tool_name to
+      # the canonical "WebSearch" the hook keys on (payload already carries the
+      # query + tool_response); otherwise the record would be empty.
+      local ws_payload
+      ws_payload="$(printf '%s' "$INPUT" | jq -c '.tool_name = "WebSearch"' 2>/dev/null)"
+      [ -n "$ws_payload" ] || ws_payload="$INPUT"
+      dispatch_settings_hooks "PostToolUse" "WebSearch" "$ws_payload"
+      ;;
   esac
 }
 
@@ -592,6 +602,16 @@ case "$HOOK_EVENT" in
     ;;
   PreCompact)
     dispatch_settings_hooks "PreCompact" "ANY" "$INPUT"
+    ;;
+  # Codex supports these lifecycle events natively; settings.json registers the
+  # master-hook company/personal/pack fan-out on each (SessionEnd has live
+  # listeners). Side-effect only — emit_context has no shape for them, so their
+  # output is dropped and the exit code is ignored by Codex.
+  SessionEnd)
+    dispatch_settings_hooks "SessionEnd" "ANY" "$INPUT"
+    ;;
+  SubagentStop)
+    dispatch_settings_hooks "SubagentStop" "ANY" "$INPUT"
     ;;
 esac
 

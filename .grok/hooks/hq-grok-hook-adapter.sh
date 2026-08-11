@@ -16,12 +16,12 @@
 #      still run side-effect hooks (autocommit, checkpoints, policy eval).
 #
 # Canonical policy stays in .claude/hooks/. Claude settings.json, Codex
-# (.codex/), and Grok (.grok/ + optional user bridge from grok-trust.sh) all
+# (.codex/), and Grok (.grok/ + optional user bridge installed by hq reindex) all
 # route through it.
 #
 # Project .grok/hooks may not load on some Grok builds (observed 0.2.93:
-# project hooks never appear in `grok inspect`). core/scripts/grok-trust.sh
-# installs a user-global bridge under ~/.grok/hooks/ that finds and execs
+# project hooks never appear in `grok inspect`). `hq reindex` (hq-cli
+# hook-trust step) installs a user-global bridge under ~/.grok/hooks/ that finds and execs
 # this adapter when cwd is inside an HQ tree.
 set -uo pipefail
 
@@ -39,6 +39,8 @@ case "$EVENT" in
   pre_compact|PreCompact) EVENT=PreCompact ;;
   stop|Stop) EVENT=Stop ;;
   session_end|SessionEnd) EVENT=SessionEnd ;;
+  subagent_stop|SubagentStop) EVENT=SubagentStop ;;
+  notification|Notification) EVENT=Notification ;;
   *) ;;
 esac
 
@@ -357,6 +359,23 @@ payload_for_path() {
   }'
 }
 
+# Claude-shaped payload for a tool whose interesting fields are NOT command/
+# file/content (e.g. WebSearch's query, spawn_subagent's prompt). Passes the
+# full native toolInput/toolResponse through with a canonical tool_name so
+# journal-autocapture keys correctly and records real content instead of blanks.
+payload_passthrough() {
+  local canon="$1"
+  printf '%s' "$INPUT_RAW" | jq -c \
+    --arg tn "$canon" --arg event "$EVENT" --arg cwd "$CWD" --arg sid "$SID" '{
+      hook_event_name: $event,
+      tool_name: $tn,
+      cwd: $cwd,
+      session_id: $sid,
+      tool_input: (.toolInput // .tool_input // {}),
+      tool_response: (.toolResponse // .tool_response // .toolOutput // .tool_output // null)
+    }' 2>/dev/null
+}
+
 # Grok's list_dir supplies an explicit `target_directory` (a scoped path); it is
 # NOT a Claude-style Glob with a pattern. The generic CLAUDE_JSON only carries
 # command/file_path/content, so a list_dir reached block-hq-glob.sh with an
@@ -559,6 +578,16 @@ run_post_tool_use() {
       run_advisory auto-capture-registry "$HOOK_DIR/auto-capture-registry.sh"
       dispatch_settings_hooks "PostToolUse" "Bash" "$CLAUDE_JSON"
       ;;
+    WebSearch)
+      # Grok web_search -> Claude WebSearch (journal-autocapture). Pass the full
+      # toolInput (the query lives there, not in command/file/content).
+      dispatch_settings_hooks "PostToolUse" "WebSearch" "$(payload_passthrough WebSearch)"
+      ;;
+    Task)
+      # Grok spawn_subagent -> Claude Agent-matched hooks (journal-autocapture).
+      # Canonical tool_name Agent + full toolInput (the prompt/metadata).
+      dispatch_settings_hooks "PostToolUse" "Agent" "$(payload_passthrough Agent)"
+      ;;
     Write|Edit)
       if [ -n "$FP" ]; then
         local payload canon
@@ -602,6 +631,12 @@ case "$EVENT" in
   PostToolUse)      run_post_tool_use ;;
   Stop)             run_stop ;;
   PreCompact)       run_precompact ;;
+  # Grok supports these lifecycle events natively; settings.json registers the
+  # master-hook company/personal/pack fan-out on each (SessionEnd has live
+  # listeners). Side-effect only — output is dropped, exit ignored by Grok.
+  SessionEnd)       dispatch_settings_hooks "SessionEnd" "ANY" "$CLAUDE_JSON" ;;
+  SubagentStop)     dispatch_settings_hooks "SubagentStop" "ANY" "$CLAUDE_JSON" ;;
+  Notification)     dispatch_settings_hooks "Notification" "ANY" "$CLAUDE_JSON" ;;
   *) ;;
 esac
 

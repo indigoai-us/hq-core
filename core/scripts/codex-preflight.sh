@@ -242,13 +242,13 @@ cmd_doctor() {
   if [ "$grok_trusted" -eq 1 ]; then
     echo "  grok: project trusted (OK)."
   else
-    echo "  grok: NOT trusted — run core/scripts/grok-trust.sh (writes trusted_folders.toml + installs user bridge)." >&2
+    echo "  grok: NOT trusted — run `hq reindex` (writes trusted_folders.toml + installs user bridge)." >&2
   fi
   if [ -d "$root/.grok/hooks" ]; then echo "  grok: .grok/hooks present (OK)."; else echo "  grok: .grok/hooks MISSING." >&2; fi
   if [ -x "$HOME/.grok/hooks/hq-hq-bridge.sh" ] && [ -f "$HOME/.grok/hooks/hq-hq-bridge.json" ]; then
     echo "  grok: user bridge installed (OK)."
   else
-    echo "  grok: user bridge MISSING — run core/scripts/grok-trust.sh so HQ guards enforce (project hooks often do not load)." >&2
+    echo "  grok: user bridge MISSING — run `hq reindex` so HQ guards enforce (project hooks often do not load)." >&2
   fi
   if command -v grok >/dev/null 2>&1; then
     local gv
