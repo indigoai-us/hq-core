@@ -16,7 +16,7 @@ Total score: **70 points** (10 points × 7 categories). Grade: A (63-70), B (56-
 
 | Category | Points | What it Checks |
 |----------|--------|----------------|
-| Hook Coverage | 10 | All 8 hooks installed + settings.json config |
+| Hook Coverage | 10 | Derived from `hq doctor --json` (wiring + firing + fixture coverage) |
 | Context Efficiency | 10 | CLAUDE.md conciseness + lazy loading |
 | Quality Gates | 10 | typecheck/lint/test infrastructure |
 | Session Persistence | 10 | thread files + checkpoint infrastructure |
@@ -30,26 +30,48 @@ Total score: **70 points** (10 points × 7 categories). Grade: A (63-70), B (56-
 
 ### Step 1: Hook Coverage Check (0-10)
 
-**What we check:**
-- settings.json has PreToolUse, PostToolUse, PreCompact, Stop hooks configured
-- All 8 hook scripts exist and are executable:
-  1. `hook-gate.sh` (main router)
-  2. `block-hq-glob.sh`
-  3. `block-hq-grep.sh`
-  4. `warn-cross-company-settings.sh`
-  5. `detect-secrets.sh`
-  6. `auto-checkpoint-trigger.sh`
-  7. `auto-checkpoint-precompact.sh`
-  8. `observe-patterns.sh`
+This category delegates to `hq doctor`, the single source of truth for hook
+wiring and firing (US-012). It runs `hq doctor --json` and maps the result onto
+this 10-point score; the other six categories are unaffected.
 
-**Scoring:**
-- All 8 hooks present + 4 hook categories in settings.json = 10 points
-- 6-7 hooks = 7 points
-- 4-5 hooks = 5 points
-- 1-3 hooks = 2 points
-- 0 hooks = 0 points
+**What we check** (via `hq doctor --json`):
+- The doctor's `results` array reports per-hook wiring status across Claude,
+  Codex, and Grok, plus the runtime probe (did hooks actually fire this session)
+  and fixture coverage (which hooks are exercised vs merely wired).
+- `FAIL` / `UNKNOWN` results mark broken or unverifiable wiring; `UNTESTED`
+  marks a hook that is wired but has no fixture; `WARN` / `NA` / `KNOWN-DEFECT`
+  are informational and never fail the command.
 
-**Implementation:** Read `.claude/settings.json` and list `.claude/hooks/`, count matches.
+**Implementation:**
+
+```bash
+hq doctor --json 2>/dev/null
+```
+
+Then derive the 10-point score from the parsed document:
+
+- Let `fails` = number of `results[]` whose `status` is `FAIL` or `UNKNOWN`.
+- Let `coverage` = the fixture coverage ratio `tested/total` (from the
+  `hooks.fixtures.coverage` result, or the `UNTESTED` vs total registered count).
+
+**Scoring (mapped onto 10 points):**
+- `fails == 0` and `coverage >= 0.8` = 10 points
+- `fails == 0` and `coverage >= 0.5` = 8 points
+- `fails == 0` (any coverage) = 7 points
+- `fails` 1-2 = 5 points
+- `fails` 3-5 = 2 points
+- `fails` > 5 = 0 points
+
+Record the specific FAIL/UNKNOWN check ids and the coverage line as the
+category's `details`, and surface the doctor's `remediation` fields as the
+improvement suggestions for this category.
+
+**Graceful fallback (hq CLI absent or too old):** if `hq doctor --json` is not
+available or does not emit a document with a `results` array, fall back to the
+legacy static check — read `.claude/settings.json` for the PreToolUse,
+PostToolUse, PreCompact, and Stop hook categories, list `.claude/hooks/`, and
+score: all core hooks present + 4 categories = 10; 6-7 = 7; 4-5 = 5; 1-3 = 2;
+0 = 0. Note in the report that the score used the fallback path.
 
 ---
 

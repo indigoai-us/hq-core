@@ -4,6 +4,16 @@
 # This is deliberately a plain shell command, not a Claude hook: it remains
 # available precisely when a Desktop or SDK runtime failed to load every hook.
 #
+# US-012: this script is now a thin wrapper over `hq doctor`. When a new-enough
+# `hq` CLI is on PATH it maps `hq doctor --json` (scoped to the exact checks this
+# script has always made — settings load and the policy-trigger ledger) back onto
+# this command's PASS/FAIL header, its `HQ runtime enforcement:` line, and its 0/2
+# exit codes, so existing callers and the personal-context.md app/SDK instruction
+# keep working unchanged. It DEGRADES GRACEFULLY: when `hq` is absent or too old
+# to have `hq doctor`, it falls back to the inline implementation below rather
+# than failing — this checker has to stay useful precisely when the toolchain is
+# suspect.
+#
 # Usage:
 #   bash core/scripts/check-hq-hooks.sh [--root <hq-root>] [--require-ledger] [--session-id <id>]
 
@@ -19,6 +29,9 @@ command is deliberately hook-independent: use it to make a non-dispatching
 Claude Code app/SDK runtime visible instead of silently assuming enforcement.
 With --session-id, checks that exact session's ledger rather than any earlier
 session's ledger. --session-id implies --require-ledger.
+
+When a new-enough `hq` CLI is installed this delegates to `hq doctor`; otherwise
+it runs an equivalent inline check.
 EOF
 }
 
@@ -65,28 +78,137 @@ if [ ! -d "$HQ_ROOT" ]; then
 fi
 HQ_ROOT="$(cd "$HQ_ROOT" && pwd -P)"
 
-SETTINGS="$HQ_ROOT/.claude/settings.json"
-LOCAL_SETTINGS="$HQ_ROOT/.claude/settings.local.json"
-LEDGER_DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
-ISSUES=()
-SCANNED=()
-ROOT_HAS_SPACE=0
-case "$HQ_ROOT" in
-  *[[:space:]]*) ROOT_HAS_SPACE=1 ;;
-esac
-
-# Every hook command is executed by /bin/sh, so an unquoted $CLAUDE_PROJECT_DIR
-# is word-split. On a root whose path contains a space that truncates the
-# script path and every hook dies as a non-blocking error nobody sees.
+# --- Modern path: delegate to `hq doctor` -----------------------------------
 #
-# The scan is quote-aware (core/scripts/lib/hook-command-scan.sh): it splits a
-# command the way the shell would and flags only an expansion that really sits
-# outside quotes. "$CLAUDE_PROJECT_DIR/..." and "${CLAUDE_PROJECT_DIR}/..." are
-# split-safe, and so is a quoted token that merely contains the variable such as
-# "--root=$CLAUDE_PROJECT_DIR". This checker diagnoses arbitrary field settings
-# that may have drifted by hand or by merge, and calling a safe form broken
-# would be exactly the confident misdiagnosis it exists to end. The shipped file
-# is separately held to one canonical shape by hook-path-resolution.test.sh.
+# The doctor is a strict superset of this checker (Codex/Grok parity, exec bits,
+# three-profile membership, fixture coverage) and reports the tree's known Codex
+# drift as FAIL on an otherwise-healthy tree. Adopting its whole verdict would
+# break every existing caller, so the wrapper maps only the SCOPED slice that
+# corresponds to this checker's original checks: settings load (present, valid
+# JSON, no word-splitting $CLAUDE_PROJECT_DIR, referenced scripts exist) and,
+# under --require-ledger, the policy-trigger ledger. This mapping is the shell
+# twin of deriveCheckHqHooksVerdict() in hq-cli's src/lib/doctor/compat.ts; the
+# agreement test there pins the two together.
+
+# The `hq doctor --json` check ids that make up this checker's settings scope.
+DOCTOR_SETTINGS_SCOPE='["hooks.settings-present","hooks.settings-valid-json","hooks.claude.settings-local-valid-json","hooks.claude.unquoted-project-dir","hooks.claude.script-missing"]'
+DOCTOR_RUNTIME_CHECK_ID="hooks.runtime.enforcement"
+
+# Render this checker's contract from a validated `hq doctor --json` document,
+# scoped to the settings-load + ledger concerns, then exit. Mirrors
+# deriveCheckHqHooksVerdict() in compat.ts.
+render_from_doctor() {
+  local json="$1"
+  local settings_issues runtime_status runtime_message
+  local -a issues=()
+
+  settings_issues="$(printf '%s' "$json" | jq -r --argjson scope "$DOCTOR_SETTINGS_SCOPE" '
+    .results[]
+    | select((.checkId as $c | $scope | index($c)) and (.status == "FAIL" or .status == "UNKNOWN"))
+    | .message
+  ')"
+  runtime_status="$(printf '%s' "$json" | jq -r --arg id "$DOCTOR_RUNTIME_CHECK_ID" '
+    first(.results[] | select(.checkId == $id) | .status) // empty
+  ')"
+  runtime_message="$(printf '%s' "$json" | jq -r --arg id "$DOCTOR_RUNTIME_CHECK_ID" '
+    first(.results[] | select(.checkId == $id) | .message) // empty
+  ')"
+
+  if [ -n "$settings_issues" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] && issues+=("$line")
+    done <<EOF
+$settings_issues
+EOF
+  fi
+
+  local runtime_obs="NOT CHECKED"
+  if [ "$REQUIRE_LEDGER" -eq 1 ]; then
+    if [ "$runtime_status" = "PASS" ]; then
+      runtime_obs="OBSERVED"
+    else
+      runtime_obs="NOT OBSERVED"
+      if [ -n "$runtime_message" ]; then
+        issues+=("$runtime_message")
+      elif [ -n "$SESSION_ID" ]; then
+        issues+=("policy-trigger ledger was not found for session $SESSION_ID under workspace/orchestrator/policy-trigger-state")
+      else
+        issues+=("policy-trigger ledger was not found under workspace/orchestrator/policy-trigger-state")
+      fi
+    fi
+  fi
+
+  if [ "${#issues[@]}" -gt 0 ]; then
+    echo "HQ hook health: FAIL" >&2
+    if [ "$REQUIRE_LEDGER" -eq 1 ] && [ "$runtime_obs" = "NOT OBSERVED" ]; then
+      echo "HQ runtime enforcement: NOT OBSERVED" >&2
+      echo "  The policy-trigger hook did not run in this session. In the affected" >&2
+      echo "  Claude Code app/SDK runtime, command hooks are not dispatched." >&2
+    fi
+    printf '  - %s\n' "${issues[@]}" >&2
+    cat >&2 <<'EOF'
+
+Repair the shipped project configuration:
+  hq rescue -y --paths .claude
+
+For Claude Desktop, open the HQ root itself as the project (not a parent or a
+child folder), then start a new session.
+
+For an SDK launch, set both project root and settings source:
+  const hqRoot = "/absolute/path/to/HQ";
+  query({ prompt: "...", options: { cwd: hqRoot, settingSources: ["project"] } });
+
+After a real terminal CLI session, verify that the policy-trigger hook ran:
+  bash core/scripts/check-hq-hooks.sh --root "$PWD" --require-ledger
+
+See core/docs/hq/HOOKS-NOT-FIRING.md for the complete recovery procedure.
+EOF
+    exit 2
+  fi
+
+  echo "HQ hook health: PASS"
+  echo "  root: $HQ_ROOT"
+  echo "  checked via: hq doctor (scoped to hook load + policy-trigger ledger)"
+  if [ "$REQUIRE_LEDGER" -eq 1 ]; then
+    echo "  ledger: present"
+    if [ -n "$SESSION_ID" ]; then
+      echo "  session: $SESSION_ID"
+    fi
+    echo "HQ runtime enforcement: OBSERVED (policy-trigger ledger present)"
+  else
+    echo "  ledger: not checked (run with --require-ledger after a real Desktop/SDK session)"
+  fi
+  exit 0
+}
+
+# Try the modern path. Returns non-zero (without exiting) to request the inline
+# fallback: `hq` missing, `jq` missing, `hq doctor` absent/too old, or its JSON
+# not the versioned document this wrapper understands.
+try_doctor() {
+  command -v hq >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  local -a doctor_args=(doctor --json)
+  if [ -n "$SESSION_ID" ]; then
+    doctor_args+=(--session-id "$SESSION_ID")
+  fi
+
+  # `hq doctor` resolves the tree by walking up from the working directory, so
+  # run it with the working directory set to the requested root. A non-zero exit
+  # (e.g. an old CLI's "unknown command", or "not inside an HQ tree") must not
+  # abort this script under `set -e`, so swallow it and validate the output.
+  local json=""
+  json="$( cd "$HQ_ROOT" && hq "${doctor_args[@]}" 2>/dev/null )" || true
+  printf '%s' "$json" | jq -e '.schemaVersion and (.results | type == "array")' >/dev/null 2>&1 || return 1
+
+  render_from_doctor "$json"
+}
+
+# --- Inline fallback: the original, self-contained implementation -----------
+#
+# Kept verbatim so this checker still works when `hq` is unavailable — the whole
+# reason it exists as a plain shell command. Also the implementation the hq-core
+# regression suite (core/scripts/tests/hook-health-check.test.sh) exercises.
 
 # Scan every command hook in one settings file. Claude Code merges
 # .claude/settings.local.json over .claude/settings.json, so a hook command that
@@ -122,71 +244,95 @@ $(printf '%s\n' "$commands" | hook_scan_required_relpaths | sort -u)
 EOF
 }
 
-if [ ! -f "$SETTINGS" ]; then
-  ISSUES+=(".claude/settings.json is missing")
-elif ! command -v jq >/dev/null 2>&1; then
-  ISSUES+=("jq is required to inspect .claude/settings.json")
-elif ! jq empty "$SETTINGS" >/dev/null 2>&1; then
-  ISSUES+=(".claude/settings.json is not valid JSON")
-else
-  for event in SessionStart PreToolUse; do
-    if ! jq -e --arg event "$event" '
-      [
-        .hooks[$event][]?.hooks[]?
-        | select(.type == "command" and (.command | type == "string") and (.command | length > 0))
-      ] | length > 0
-    ' "$SETTINGS" >/dev/null 2>&1; then
-      ISSUES+=("${event} has no command hook in .claude/settings.json")
-    fi
-  done
+run_inline() {
+  SETTINGS="$HQ_ROOT/.claude/settings.json"
+  LOCAL_SETTINGS="$HQ_ROOT/.claude/settings.local.json"
+  LEDGER_DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
+  ISSUES=()
+  SCANNED=()
+  ROOT_HAS_SPACE=0
+  case "$HQ_ROOT" in
+    *[[:space:]]*) ROOT_HAS_SPACE=1 ;;
+  esac
 
-  scan_hook_commands "$SETTINGS" ".claude/settings.json"
-  SCANNED+=(".claude/settings.json")
-fi
+  # Every hook command is executed by /bin/sh, so an unquoted $CLAUDE_PROJECT_DIR
+  # is word-split. On a root whose path contains a space that truncates the
+  # script path and every hook dies as a non-blocking error nobody sees.
+  #
+  # The scan is quote-aware (core/scripts/lib/hook-command-scan.sh): it splits a
+  # command the way the shell would and flags only an expansion that really sits
+  # outside quotes. "$CLAUDE_PROJECT_DIR/..." and "${CLAUDE_PROJECT_DIR}/..." are
+  # split-safe, and so is a quoted token that merely contains the variable such as
+  # "--root=$CLAUDE_PROJECT_DIR". This checker diagnoses arbitrary field settings
+  # that may have drifted by hand or by merge, and calling a safe form broken
+  # would be exactly the confident misdiagnosis it exists to end. The shipped file
+  # is separately held to one canonical shape by hook-path-resolution.test.sh.
 
-# The local overlay is optional, so its absence is never an issue — but when it
-# is present Claude Code loads its hooks too, and an unquoted command hiding
-# there produces the same silent failure as one in the shipped file.
-if [ -f "$LOCAL_SETTINGS" ]; then
-  if ! command -v jq >/dev/null 2>&1; then
-    ISSUES+=("jq is required to inspect .claude/settings.local.json")
-  elif ! jq empty "$LOCAL_SETTINGS" >/dev/null 2>&1; then
-    ISSUES+=(".claude/settings.local.json is not valid JSON")
+  if [ ! -f "$SETTINGS" ]; then
+    ISSUES+=(".claude/settings.json is missing")
+  elif ! command -v jq >/dev/null 2>&1; then
+    ISSUES+=("jq is required to inspect .claude/settings.json")
+  elif ! jq empty "$SETTINGS" >/dev/null 2>&1; then
+    ISSUES+=(".claude/settings.json is not valid JSON")
   else
-    scan_hook_commands "$LOCAL_SETTINGS" ".claude/settings.local.json"
-    SCANNED+=(".claude/settings.local.json")
+    for event in SessionStart PreToolUse; do
+      if ! jq -e --arg event "$event" '
+        [
+          .hooks[$event][]?.hooks[]?
+          | select(.type == "command" and (.command | type == "string") and (.command | length > 0))
+        ] | length > 0
+      ' "$SETTINGS" >/dev/null 2>&1; then
+        ISSUES+=("${event} has no command hook in .claude/settings.json")
+      fi
+    done
+
+    scan_hook_commands "$SETTINGS" ".claude/settings.json"
+    SCANNED+=(".claude/settings.json")
   fi
-fi
 
-LEDGER_STATE="not checked"
-if [ "$REQUIRE_LEDGER" -eq 1 ]; then
-  if [ -n "$SESSION_ID" ]; then
-    LEDGER_CANDIDATE="$LEDGER_DIR/$SESSION_ID.txt"
-  else
-    LEDGER_CANDIDATE=""
-  fi
-  if { [ -n "$LEDGER_CANDIDATE" ] && [ -f "$LEDGER_CANDIDATE" ]; } || \
-     { [ -z "$LEDGER_CANDIDATE" ] && find "$LEDGER_DIR" -type f -name '*.txt' -print -quit 2>/dev/null | grep -q .; }; then
-    LEDGER_STATE="present"
-  else
-    LEDGER_STATE="missing"
-    if [ -n "$SESSION_ID" ]; then
-      ISSUES+=("policy-trigger ledger was not found for session $SESSION_ID under workspace/orchestrator/policy-trigger-state")
+  # The local overlay is optional, so its absence is never an issue — but when it
+  # is present Claude Code loads its hooks too, and an unquoted command hiding
+  # there produces the same silent failure as one in the shipped file.
+  if [ -f "$LOCAL_SETTINGS" ]; then
+    if ! command -v jq >/dev/null 2>&1; then
+      ISSUES+=("jq is required to inspect .claude/settings.local.json")
+    elif ! jq empty "$LOCAL_SETTINGS" >/dev/null 2>&1; then
+      ISSUES+=(".claude/settings.local.json is not valid JSON")
     else
-      ISSUES+=("policy-trigger ledger was not found under workspace/orchestrator/policy-trigger-state")
+      scan_hook_commands "$LOCAL_SETTINGS" ".claude/settings.local.json"
+      SCANNED+=(".claude/settings.local.json")
     fi
   fi
-fi
 
-if [ "${#ISSUES[@]}" -gt 0 ]; then
-  echo "HQ hook health: FAIL" >&2
-  if [ "$REQUIRE_LEDGER" -eq 1 ] && [ "$LEDGER_STATE" = "missing" ]; then
-    echo "HQ runtime enforcement: NOT OBSERVED" >&2
-    echo "  The policy-trigger hook did not run in this session. In the affected" >&2
-    echo "  Claude Code app/SDK runtime, command hooks are not dispatched." >&2
+  LEDGER_STATE="not checked"
+  if [ "$REQUIRE_LEDGER" -eq 1 ]; then
+    if [ -n "$SESSION_ID" ]; then
+      LEDGER_CANDIDATE="$LEDGER_DIR/$SESSION_ID.txt"
+    else
+      LEDGER_CANDIDATE=""
+    fi
+    if { [ -n "$LEDGER_CANDIDATE" ] && [ -f "$LEDGER_CANDIDATE" ]; } || \
+       { [ -z "$LEDGER_CANDIDATE" ] && find "$LEDGER_DIR" -type f -name '*.txt' -print -quit 2>/dev/null | grep -q .; }; then
+      LEDGER_STATE="present"
+    else
+      LEDGER_STATE="missing"
+      if [ -n "$SESSION_ID" ]; then
+        ISSUES+=("policy-trigger ledger was not found for session $SESSION_ID under workspace/orchestrator/policy-trigger-state")
+      else
+        ISSUES+=("policy-trigger ledger was not found under workspace/orchestrator/policy-trigger-state")
+      fi
+    fi
   fi
-  printf '  - %s\n' "${ISSUES[@]}" >&2
-  cat >&2 <<'EOF'
+
+  if [ "${#ISSUES[@]}" -gt 0 ]; then
+    echo "HQ hook health: FAIL" >&2
+    if [ "$REQUIRE_LEDGER" -eq 1 ] && [ "$LEDGER_STATE" = "missing" ]; then
+      echo "HQ runtime enforcement: NOT OBSERVED" >&2
+      echo "  The policy-trigger hook did not run in this session. In the affected" >&2
+      echo "  Claude Code app/SDK runtime, command hooks are not dispatched." >&2
+    fi
+    printf '  - %s\n' "${ISSUES[@]}" >&2
+    cat >&2 <<'EOF'
 
 Repair the shipped project configuration:
   hq rescue -y --paths .claude
@@ -203,20 +349,25 @@ After a real terminal CLI session, verify that the policy-trigger hook ran:
 
 See core/docs/hq/HOOKS-NOT-FIRING.md for the complete recovery procedure.
 EOF
-  exit 2
-fi
-
-echo "HQ hook health: PASS"
-echo "  root: $HQ_ROOT"
-echo "  settings: SessionStart and PreToolUse command hooks present"
-echo "  scanned: $(printf '%s, ' "${SCANNED[@]-none}" | sed 's/, $//')"
-echo "  paths: every \$CLAUDE_PROJECT_DIR expansion is quoted, and every hook script it runs exists"
-if [ "$REQUIRE_LEDGER" -eq 1 ]; then
-  echo "  ledger: $LEDGER_STATE"
-  if [ -n "$SESSION_ID" ]; then
-    echo "  session: $SESSION_ID"
+    exit 2
   fi
-  echo "HQ runtime enforcement: OBSERVED (policy-trigger ledger present)"
-else
-  echo "  ledger: not checked (run with --require-ledger after a real Desktop/SDK session)"
-fi
+
+  echo "HQ hook health: PASS"
+  echo "  root: $HQ_ROOT"
+  echo "  settings: SessionStart and PreToolUse command hooks present"
+  echo "  scanned: $(printf '%s, ' "${SCANNED[@]-none}" | sed 's/, $//')"
+  echo "  paths: every \$CLAUDE_PROJECT_DIR expansion is quoted, and every hook script it runs exists"
+  if [ "$REQUIRE_LEDGER" -eq 1 ]; then
+    echo "  ledger: $LEDGER_STATE"
+    if [ -n "$SESSION_ID" ]; then
+      echo "  session: $SESSION_ID"
+    fi
+    echo "HQ runtime enforcement: OBSERVED (policy-trigger ledger present)"
+  else
+    echo "  ledger: not checked (run with --require-ledger after a real Desktop/SDK session)"
+  fi
+  exit 0
+}
+
+# Prefer `hq doctor`; fall back to the inline checker when it is unavailable.
+try_doctor || run_inline
