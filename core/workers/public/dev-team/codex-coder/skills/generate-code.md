@@ -1,6 +1,6 @@
 # generate-code
 
-Generate code from a task description using the Codex CLI (`codex exec --full-auto`).
+Generate code from a task description using the Codex CLI (`codex exec --sandbox danger-full-access`).
 
 ## Arguments
 
@@ -26,7 +26,7 @@ Optional:
 3. **Run Codex Exec for Generation**
    - Build prompt with task description and context:
      ```bash
-     cd {cwd} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
+     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
        "Generate code for: {task_description}. Follow existing patterns in the repo. Context files: {context_summary}" 2>&1
      ```
    - If `--output-schema` provided, add `--output-schema {file}` flag

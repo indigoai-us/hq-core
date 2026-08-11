@@ -47,7 +47,7 @@ output:
 cli:
   binary: /opt/homebrew/bin/codex
   commands:
-    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+    - codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast
 
 mcp:
   server:
@@ -93,19 +93,19 @@ instructions: |
 
   ```bash
   # create-schema
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Design database schema for: {feature}. Use {orm}. Follow existing schema patterns." 2>&1
 
   # create-migration
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Create database migration for: {change}. Use {orm}. Ensure reversibility." 2>&1
 
   # optimize-query
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Optimize this query: {query_description}. Analyze execution plan and improve." 2>&1
 
   # add-indexes
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Add indexes for: {table/query}. Analyze query patterns and add appropriate indexes." 2>&1
   ```
 

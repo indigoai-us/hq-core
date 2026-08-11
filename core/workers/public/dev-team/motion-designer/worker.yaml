@@ -43,7 +43,7 @@ output:
 cli:
   binary: /opt/homebrew/bin/codex
   commands:
-    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+    - codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast
 
 mcp:
   server:
@@ -112,15 +112,15 @@ instructions: |
 
   ```bash
   # add-animation
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Add animation to: {component}. Use Framer Motion/GSAP. Follow existing animation patterns." 2>&1
 
   # add-transition
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Add transition: {description}. Smooth, performant, accessible (respects prefers-reduced-motion)." 2>&1
 
   # polish-component
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Polish visual design of: {component}. Refine spacing, colors, shadows, transitions." 2>&1
   ```
 

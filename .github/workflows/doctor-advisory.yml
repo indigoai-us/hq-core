@@ -1,0 +1,182 @@
+name: doctor-advisory
+
+# ADVISORY ONLY — this workflow NEVER fails the build.
+#
+# US-014 (hq-doctor): on every PR that touches a hook, settings, or fixture
+# file, install the `hq` CLI, run `hq doctor --json` against the checked-out
+# tree AND against the base branch, then post a hook-health summary as a PR
+# comment. The summary calls out only what THIS PR introduced (new FAIL results
+# and newly-UNTESTED hooks) relative to base, so a reviewer is not shown the
+# whole standing backlog on every run.
+#
+# It is deliberately advisory, not blocking: the tree currently carries a set of
+# known drifted files, so a blocking gate would couple the doctor's ship date to
+# that cleanup. Every step below tolerates failure and the job exits 0 no matter
+# what the doctor reports. Revisit blocking once the allowed-divergence list is
+# seeded and the standing FAIL count is near zero (PRD decision).
+
+on:
+  pull_request:
+    # Paths filter: keep this job OFF PRs that touch no hook, settings, or
+    # fixture files (US-014: "skipped for PRs that touch no hook, settings, or
+    # fixture files"). A docs-only PR never triggers a run.
+    paths:
+      - '.claude/hooks/**'
+      - '.claude/settings.json'
+      - '.claude/settings.local.json'
+      - '.codex/hooks/**'
+      - '.codex/hooks.json'
+      - '.grok/hooks/**'
+      - '.grok/hooks.json'
+      - 'core/hooks/**'
+      - 'core/hook-tests/**'
+      - '.github/workflows/doctor-advisory.yml'
+      - 'core/scripts/doctor-ci-summary.mjs'
+
+concurrency:
+  # One advisory run per PR; a re-push cancels the in-flight run so the single
+  # comment is never raced by two concurrent updates.
+  group: doctor-advisory-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write # required to create/update the single advisory comment
+
+jobs:
+  doctor:
+    name: doctor-advisory
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR head (full history for base diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install hq CLI
+        id: install
+        run: |
+          set -uo pipefail
+          npm install -g @indigoai-us/hq-cli || true
+          if command -v hq >/dev/null 2>&1 && hq doctor --help >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::hq doctor is unavailable in the installed CLI; the advisory comment will say so and the job will still pass."
+          fi
+
+      - name: Run hq doctor on the PR head
+        if: steps.install.outputs.available == 'true'
+        continue-on-error: true # advisory: a doctor failure must never fail the job
+        run: |
+          set -uo pipefail
+          # Capture output but NEVER fail the step: a tree with standing drift
+          # makes `hq doctor` exit 1, which is expected and must not block.
+          hq doctor --json > "$RUNNER_TEMP/head.json" 2> "$RUNNER_TEMP/head.err" || true
+          if [ ! -s "$RUNNER_TEMP/head.json" ]; then
+            echo "::warning::hq doctor produced no head output"
+            cat "$RUNNER_TEMP/head.err" 2>/dev/null || true
+          fi
+
+      - name: Run hq doctor on the base branch
+        if: steps.install.outputs.available == 'true'
+        continue-on-error: true # advisory: a base-run failure must never fail the job
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -uo pipefail
+          # Fetch the base branch and materialise it in a detached worktree
+          # OUTSIDE the repo, so the base run reads base-branch hooks/fixtures
+          # without disturbing the head checkout.
+          git fetch --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" || true
+          base_dir="$RUNNER_TEMP/hq-doctor-base"
+          rm -rf "$base_dir"
+          if git worktree add --detach "$base_dir" "refs/remotes/origin/${BASE_REF}"; then
+            ( cd "$base_dir" && hq doctor --json ) > "$RUNNER_TEMP/base.json" 2> "$RUNNER_TEMP/base.err" || true
+            git worktree remove --force "$base_dir" || true
+            if [ ! -s "$RUNNER_TEMP/base.json" ]; then
+              echo "::warning::hq doctor produced no base output"
+              cat "$RUNNER_TEMP/base.err" 2>/dev/null || true
+            fi
+          else
+            echo "::warning::could not create a base worktree for origin/${BASE_REF}; the summary will show standing status only"
+          fi
+
+      - name: Render advisory summary
+        if: always()
+        continue-on-error: true # advisory: never fail the job on a render hiccup
+        run: |
+          set -euo pipefail
+          # The helper is tolerant: a missing head file (doctor unavailable) or a
+          # missing base file (base run failed) renders an explanatory note
+          # rather than throwing, and always exits 0.
+          node core/scripts/doctor-ci-summary.mjs \
+            --head "$RUNNER_TEMP/head.json" \
+            --base "$RUNNER_TEMP/base.json" \
+            --workflow ".github/workflows/doctor-advisory.yml" \
+            --out "$RUNNER_TEMP/summary.md"
+          echo "----- advisory summary -----"
+          cat "$RUNNER_TEMP/summary.md"
+
+      - name: Post or update the single advisory PR comment
+        if: always()
+        continue-on-error: true # a comment failure (e.g. read-only fork token) must not fail the job
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const url = require('url');
+            const summaryPath = `${process.env.RUNNER_TEMP}/summary.md`;
+            if (!fs.existsSync(summaryPath)) {
+              core.info('No summary file to post; skipping.');
+              return;
+            }
+            const body = fs.readFileSync(summaryPath, 'utf8');
+
+            // Reuse the SAME selection logic the tests exercise, so "update the
+            // existing comment instead of appending" is the tested behaviour.
+            const helperUrl = url.pathToFileURL(
+              path.join(process.env.GITHUB_WORKSPACE, 'core/scripts/doctor-ci-summary.mjs'),
+            ).href;
+            const helper = await import(helperUrl);
+
+            // Paginate so a busy PR (>100 comments) cannot hide the marker and
+            // spawn a duplicate — exactly one advisory comment must survive.
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            const existing = helper.selectExistingComment(comments);
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`Updated advisory comment ${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+              core.info('Created advisory comment');
+            }
+
+      - name: Advisory job always succeeds
+        if: always()
+        run: |
+          # US-014: the doctor is advisory. Regardless of the verdict above, this
+          # job exits 0 so new hook drift is surfaced at review time without ever
+          # blocking a merge.
+          exit 0
