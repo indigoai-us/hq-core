@@ -209,7 +209,14 @@ for c in hq-infra hq-workers hq-knowledge hq-projects; do
 done
 ```
 
-**With --fix**: Create qmd collection for each missing company. If any `hq-*` sub-collection is missing, run `core/scripts/migrate-qmd-collections.sh`.
+**With --fix**: Create qmd collection for each missing company. If an `hq-*` sub-collection is missing, recreate just that one with its targeted `qmd collection add` — the exact operations `core/scripts/setup.sh` performs, without running the full installer (which can replace the globally installed qmd, rewrite the PATH snapshot in `.claude/settings.json`, and prompt to install content packs):
+
+```bash
+qmd collection add "$REPO_ROOT/.claude"  --name hq-infra     --mask "**/*.{md,yaml,yml,json,sh}"
+qmd collection add "$REPO_ROOT/workers"  --name hq-workers   --mask "**/*.{md,yaml,yml,json}"
+qmd collection add "$REPO_ROOT/knowledge" --name hq-knowledge --mask "**/*.{md,yaml,yml}"
+qmd collection add "$REPO_ROOT/projects" --name hq-projects  --mask "**/*.{md,json}"
+```
 
 ---
 

@@ -43,7 +43,7 @@ output:
 cli:
   binary: /opt/homebrew/bin/codex
   commands:
-    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+    - codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast
 
 mcp:
   server:
@@ -92,11 +92,11 @@ instructions: |
 
   ```bash
   # write-test
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Write tests for: {feature}. Follow existing test patterns. Use Playwright for E2E, Jest/Vitest for unit." 2>&1
 
   # create-demo-account
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Create demo account setup for: {scenario}. Follow existing fixture/seed patterns." 2>&1
   ```
 

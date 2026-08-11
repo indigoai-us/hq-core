@@ -1,0 +1,16 @@
+# lint-skill-script-refs.allow — known-pending script backbones.
+#
+# Each line is a normalized script ref (as it appears in a SKILL.md, minus any
+# leading `./`) that lint-skill-script-refs.sh must NOT fail on, because the
+# skill was absorbed into the base release ahead of its backbone script. Listing
+# it here keeps the release gate green while keeping the gap auditable: the fix
+# is to ship the script (or retire the skill), then delete the line.
+#
+# `#` comments and blank lines are ignored.
+
+# run-pipeline: absorbed from hq-pack-engineering (commit 0fd393e4) without its
+# core/scripts/run-pipeline.sh backbone, which has no source in this repo's
+# history. The /run-pipeline skill and the /handoff resume suggestion both point
+# at it. Tracked for a follow-up project: build the pipeline orchestrator
+# backbone or retire the skill. See workspace/reports/fix-2.7-missing-hooks-2026-08-11.md.
+core/scripts/run-pipeline.sh

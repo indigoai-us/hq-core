@@ -5,6 +5,7 @@
 #   - BSD-only sed -i ''
 #   - brew-only jq install messages
 #   - readlink -f (GNU-only)
+#   - flock (Linux-only; absent on macOS — the util-linux binary is not shipped)
 #
 # Allowlist: core/scripts/lint-shell-portability.allow (path substring per line).
 # /tmp and bare $USER are documented contributor rules; full auto-lint for those
@@ -92,6 +93,21 @@ while IFS= read -r f || [ -n "$f" ]; do
     report "$f" "${hit%%:*}" "brew-only jq install message (use require_jq / multi-OS guidance)"
   done < "$HITS"
   scan_file "$f" "readlink[[:space:]]+-f" "readlink -f is GNU-only"
+  # flock as a command word (util-linux) is absent on macOS, where a shipped
+  # hook that assumes it dies with "flock: command not found" — the exact
+  # failure that hit macOS members. A `command -v flock` (or which/type/hash)
+  # PROBE is how portable code guards the call, so those lines are exempt; a
+  # deliberate guarded call site belongs in the allow file, not shipped bare.
+  : > "$HITS"
+  grep -nE '(^|[^[:alnum:]_.-])flock[[:space:]]' "$f" > "$HITS" 2>/dev/null || true
+  while IFS= read -r hit || [ -n "$hit" ]; do
+    [ -z "$hit" ] && continue
+    body="${hit#*:}"
+    case "$body" in
+      *"command -v flock"*|*"which flock"*|*"type flock"*|*"hash flock"*) continue ;;
+    esac
+    report "$f" "${hit%%:*}" "flock is Linux-only (absent on macOS); guard on 'command -v flock' or use a portable lock"
+  done < "$HITS"
 done < "$LIST"
 
 if [ "$FINDINGS" -gt 0 ]; then

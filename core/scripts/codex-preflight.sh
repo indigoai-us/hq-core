@@ -22,6 +22,7 @@ Usage:
   core/scripts/codex-preflight.sh bash --command <command>
   core/scripts/codex-preflight.sh repo --path <path>
   core/scripts/codex-preflight.sh policies [--cwd <path>]
+  core/scripts/codex-preflight.sh sandbox
   core/scripts/codex-preflight.sh doctor
 
 Purpose:
@@ -213,6 +214,92 @@ cmd_policies() {
   (cd "${cwd}" && printf '%s' '{"hook_event_name":"SessionStart","source":"startup","session_id":"'"${session}"'","cwd":"'"${cwd}"'"}' | bash "${hooks_root}/inject-policy-on-trigger.sh")
 }
 
+# sandbox: probe whether Codex's OS sandbox can run HQ's workloads on THIS host,
+# and whether HQ's shipped Codex posture is the danger-full-access one HQ relies
+# on. Prevents harness finding 2.3 (Codex sandbox denials) from failing silently
+# 726+ times: the workspace-write sandbox forced by `codex exec --full-auto`
+# denies temp/cache/socket writes on macOS (git/Xcode/asdf/zsh heredocs) and
+# cannot even initialize bubblewrap networking on some Linux hosts
+# (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). HQ's safety
+# boundary is its hooks, not the Codex sandbox, so HQ ships danger-full-access.
+# Exit 0 = OK; exit 1 = misconfigured posture or a broken host sandbox.
+cmd_sandbox() {
+  local root; root="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
+  local rc=0
+  echo "HQ Codex sandbox doctor"
+
+  # 1) Shipped posture: HQ's .codex/config.toml must declare danger-full-access.
+  # HQ_CODEX_CONFIG overrides the probed file (used by the regression test).
+  local cfg="${HQ_CODEX_CONFIG:-${root}/.codex/config.toml}" mode=""
+  if [[ -f "${cfg}" ]]; then
+    # `|| true`: a config with no sandbox_mode key must reach the empty-mode
+    # branch below, not abort the whole probe under `set -euo pipefail`.
+    mode="$(grep -E '^[[:space:]]*sandbox_mode[[:space:]]*=' "${cfg}" 2>/dev/null \
+      | head -1 | sed -E 's/.*=[[:space:]]*"?([a-z-]+)"?.*/\1/' || true)"
+  fi
+  case "${mode}" in
+    danger-full-access)
+      echo "  posture: sandbox_mode=danger-full-access (OK — HQ hooks are the safety boundary)."
+      ;;
+    workspace-write|read-only)
+      echo "  posture: sandbox_mode=${mode} (BROKEN for HQ workflows). This over-restrictive sandbox denies temp/cache/socket writes (macOS) and bubblewrap setup (Linux). Set sandbox_mode=\"danger-full-access\" in ${cfg}." >&2
+      rc=1
+      ;;
+    "")
+      echo "  posture: no sandbox_mode found in ${cfg:-<missing .codex/config.toml>}; Codex will fall back to its default sandbox. HQ requires sandbox_mode=\"danger-full-access\"." >&2
+      rc=1
+      ;;
+    *)
+      echo "  posture: sandbox_mode=${mode} (unrecognized). HQ requires sandbox_mode=\"danger-full-access\"." >&2
+      rc=1
+      ;;
+  esac
+
+  # 2) Host capability probe follows. HQ_SANDBOX_OS overrides the detected OS
+  # (used by the regression test to exercise the Linux bwrap path on any host).
+  local os; os="${HQ_SANDBOX_OS:-$(uname -s 2>/dev/null || echo unknown)}"
+
+  # 3) Host capability probe (best-effort; only the workspace-write/read-only
+  # sandboxes invoke bubblewrap — danger-full-access bypasses it entirely). A
+  # bwrap limitation is therefore only ACTIONABLE when the posture would use it;
+  # under danger-full-access it is purely informational and must NOT fail the
+  # probe, since danger-full-access is the very config that recovers such hosts.
+  local bwrap_gates=1
+  [[ "${mode}" == "danger-full-access" ]] && bwrap_gates=0
+  case "${os}" in
+    Linux)
+      if command -v bwrap >/dev/null 2>&1; then
+        # Reproduce Codex's network-namespace setup. On hosts lacking the
+        # capability this fails exactly as the 2.3 rollouts did.
+        local probe
+        if probe="$(bwrap --ro-bind / / --unshare-net --dev /dev /bin/true 2>&1)"; then
+          echo "  host: bubblewrap net-namespace sandbox initializes (OK). workspace-write would work here."
+        elif [[ "${bwrap_gates}" -eq 1 ]]; then
+          echo "  host: bubblewrap sandbox CANNOT initialize on this host: ${probe}. Under the current posture (${mode:-none}) Codex will fail before the task starts — you MUST use sandbox_mode=danger-full-access (HQ default), which bypasses bubblewrap." >&2
+          rc=1
+        else
+          echo "  host: NOTE — bubblewrap cannot initialize here (${probe}), but the danger-full-access posture bypasses bubblewrap, so this host is fine. (workspace-write/read-only would NOT work here.)"
+        fi
+      else
+        echo "  host: bwrap not on PATH; cannot probe the Linux sandbox directly. Rely on danger-full-access posture above."
+      fi
+      ;;
+    Darwin)
+      echo "  host: macOS Seatbelt workspace-write denies /tmp + \$TMPDIR + ~/.cache writes and local socket binds used by git/Xcode/asdf/zsh and agent-browser. Keep sandbox_mode=danger-full-access for HQ workflows; do not launch codex exec with --full-auto/--approve-for-me."
+      ;;
+    *)
+      echo "  host: unrecognized OS '${os}'; cannot probe the sandbox. Rely on danger-full-access posture above."
+      ;;
+  esac
+
+  if [[ "${rc}" -eq 0 ]]; then
+    echo "  result: OK — Codex sandbox posture is safe to run HQ workloads on this host."
+  else
+    echo "  result: ACTION REQUIRED — see the messages above (finding 2.3)." >&2
+  fi
+  return "${rc}"
+}
+
 # doctor: report whether headless hook enforcement is ready for Codex + Grok,
 # so an HQ session can self-check parity with Claude Code's auto-enforced hooks.
 cmd_doctor() {
@@ -257,6 +344,9 @@ cmd_doctor() {
   else
     echo "  grok: not installed."
   fi
+  # Codex sandbox posture + host capability (finding 2.3). Non-fatal in doctor;
+  # run `codex-preflight.sh sandbox` directly for a gating exit code.
+  cmd_sandbox || true
 }
 
 main() {
@@ -270,6 +360,7 @@ main() {
     bash) cmd_bash "$@" ;;
     repo) cmd_repo "$@" ;;
     policies) cmd_policies "$@" ;;
+    sandbox) cmd_sandbox "$@" ;;
     doctor) cmd_doctor "$@" ;;
     -h|--help) usage ;;
     *) echo "Unknown command: ${command}" >&2; usage >&2; exit 1 ;;

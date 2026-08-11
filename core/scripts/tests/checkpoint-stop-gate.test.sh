@@ -78,6 +78,19 @@ done
 cat >"$SHIM_DIR/hq" <<'SHIM'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$HQ_SHIM_LOG"
+# The in-tree hook and hq-session prefer the CLI-hosted implementation, probing
+# `hq core --help` for the command name. Only advertise (and honor) those
+# commands when HQ_SHIM_CLI_HAS_GATE=1, so every pre-existing case exercises the
+# in-tree fallback exactly as before.
+if [ "${1:-}" = "core" ] && [ "${2:-}" = "--help" ]; then
+  [ "${HQ_SHIM_CLI_HAS_GATE:-}" = "1" ] && printf 'checkpoint-stop-gate\nhq-session\n'
+  exit 0
+fi
+if [ "${1:-}" = "core" ] && [ "${2:-}" = "checkpoint-stop-gate" ] && [ "${HQ_SHIM_CLI_HAS_GATE:-}" = "1" ]; then
+  cat >/dev/null 2>&1 || true
+  printf '%s\n' "${HQ_SHIM_GATE_OUTPUT:-{\"decision\":\"block\",\"reason\":\"CLI-DELEGATED\"}}"
+  exit 0
+fi
 if [ "${1:-}" = "core" ] && [ "${2:-}" = "checkpoint" ] && [ "${3:-}" = "--gate-probe" ]; then
   mkdir -p "$HQ_SHIM_ROOT/workspace/orchestrator/hook-state"
   runtime="${HQ_CHECKPOINT_RUNTIME:-other}"
@@ -196,11 +209,58 @@ clear_verdict() {
 
 reset_case() {
   rm -f "$STATE_DIR"/stop-gate-blocks-* "$STATE_DIR"/checkpoint-cli-last* \
-    "$STATE_DIR"/codex-checkpoint-reprompt-* "$SHIM_LOG"
+    "$STATE_DIR"/codex-checkpoint-reprompt-* "$STATE_DIR"/cli-caps* "$SHIM_LOG"
   RUN_PATH="$SHIM_DIR:$PATH"
   RUN_GATE=""
   RUN_RUNTIME=""
   RUN_SIBLING=""
+  RUN_EMAIL=""
+  RUN_CLI_HAS_GATE=""
+  RUN_DOMAINS=""
+  RUN_TOKENS=""
+}
+
+# The scope gate resolves the caller email from the local Cognito token cache.
+# Point every run at a file that never exists so the developer's real ~/.hq token
+# cannot leak in and flip cases that predate the gate; the gate cases drive
+# identity explicitly through RUN_EMAIL (or a crafted RUN_TOKENS file) instead.
+# The gate is opt-in: RUN_DOMAINS feeds HQ_CHECKPOINT_SCOPE_GATE_DOMAINS, so a
+# case only exercises it when it sets a domain. GATE_DOMAIN is the synthetic
+# domain these tests gate on (never a real company domain).
+ABSENT_TOKEN="$TMP_ROOT/absent-cognito-tokens.json"
+GATE_DOMAIN="operator.example"
+
+# session_meta <session_id> [company_slug]
+#   Materialize workspace/sessions/<id>/meta.yaml under the fixture. Pass a slug
+#   to bind the session; omit it to leave the session unbound.
+session_meta() {
+  local id="$1" slug="${2:-}" dir
+  dir="$FIXTURE/workspace/sessions/$id"
+  mkdir -p "$dir"
+  if [ -n "$slug" ]; then
+    printf 'session_id: "%s"\ncompany_slug: "%s"\n' "$id" "$slug" >"$dir/meta.yaml"
+  else
+    printf 'session_id: "%s"\n' "$id" >"$dir/meta.yaml"
+  fi
+}
+
+# tenant <slug>  — create a real tenant directory so a binding to it counts.
+tenant() { mkdir -p "$FIXTURE/companies/$1"; }
+
+# b64url <string>  — base64url with padding stripped (JWT segment encoding).
+b64url() { printf '%s' "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+
+# mint_token <path> <idToken-payload-json> <accessToken-payload-json>
+#   Write a Cognito-tokens.json whose id/access tokens carry the given claims,
+#   with a far-future expiresAt so the reader accepts them.
+mint_token() {
+  local path="$1" id_payload="$2" acc_payload="$3"
+  local hdr; hdr="$(b64url '{"alg":"none"}')"
+  local id_tok acc_tok
+  id_tok="$hdr.$(b64url "$id_payload").sig"
+  acc_tok="$hdr.$(b64url "$acc_payload").sig"
+  jq -nc --arg id "$id_tok" --arg acc "$acc_tok" \
+    '{idToken:$id, accessToken:$acc, expiresAt: 9999999999999}' >"$path"
 }
 
 run_codex_session_start() {
@@ -238,6 +298,11 @@ run_hook() {
     "HQ_CHECKPOINT_GATE=$RUN_GATE" \
     "HQ_CHECKPOINT_RUNTIME=$RUN_RUNTIME" \
     "HQ_CHECKPOINT_SIBLING=$RUN_SIBLING" \
+    "HQ_CHECKPOINT_CALLER_EMAIL=$RUN_EMAIL" \
+    "HQ_COGNITO_TOKENS_FILE=${RUN_TOKENS:-$ABSENT_TOKEN}" \
+    "HQ_CHECKPOINT_SCOPE_GATE_DOMAINS=$RUN_DOMAINS" \
+    "HQ_SHIM_CLI_HAS_GATE=$RUN_CLI_HAS_GATE" \
+    "HQ_CLI_CAPS_CACHE=$STATE_DIR/cli-caps" \
     "PATH=$RUN_PATH" \
     "$BASH_BIN" "$FIXTURE/.claude/hooks/checkpoint-stop-gate.sh" <<<"$payload" 2>"$stderr_path")"
   HOOK_STATUS=$?
@@ -256,6 +321,8 @@ run_codex_stop() {
     "HQ_SHIM_LOG=$SHIM_LOG" \
     "HQ_SHIM_ROOT=$FIXTURE" \
     "HQ_SHIM_VERDICT=1" \
+    "HQ_COGNITO_TOKENS_FILE=$ABSENT_TOKEN" \
+    "HQ_CLI_CAPS_CACHE=$STATE_DIR/cli-caps-codex" \
     "PATH=$SHIM_DIR:$PATH" \
     "$BASH_BIN" "$FIXTURE/.codex/hooks/hq-codex-hook-adapter.sh" <<<"$payload" 2>"$stderr_path")"
   CODEX_STATUS=$?
@@ -695,5 +762,226 @@ if grep -qF 'inject-codex-checkpoint-reprompt' "$ROOT/.claude/settings.json"; th
   fail "Codex checkpoint re-prompt hook must not be registered for Claude Code"
 fi
 pass "checkpoint continuation guidance is registered only through Codex"
+
+# ---------------------------------------------------------------------------
+# Company-scope gate (opt-in via HQ_CHECKPOINT_SCOPE_GATE_DOMAINS).
+# ---------------------------------------------------------------------------
+assert_company_block() {
+  local value="$1" session="$2" label="$3"
+  printf '%s' "$value" | grep -q '"decision":"block"' \
+    || fail "$label: no block decision: $value"
+  printf '%s' "$value" | jq -r '.reason' | grep -qF 'has not declared its scope' \
+    || fail "$label: reason is not the scope block: $value"
+  printf '%s' "$value" | jq -r '.reason' | grep -qF "$session" \
+    || fail "$label: session id missing from reason: $value"
+  printf '%s' "$value" | jq -r '.reason' | grep -qF 'set company_slug' \
+    || fail "$label: missing the bind command: $value"
+}
+
+# 27. A configured-domain caller whose session is unbound is blocked even on an
+# idle turn that the checkpoint gate would happily allow.
+reset_case
+set_verdict 1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_EMAIL="operator@$GATE_DOMAIN"
+session_meta s-scope-unbound
+new_transcript 27-scope-unbound
+append_user "$TRANSCRIPT" u-scope-unbound
+run_hook s-scope-unbound "$TRANSCRIPT"
+assert_company_block "$HOOK_STDOUT" s-scope-unbound "gated unbound session"
+printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF -- '--trigger stop-gate' \
+  && fail "scope block leaked the checkpoint reason: $HOOK_STDOUT"
+pass "gated unbound session blocks with the scope instruction"
+
+# 28. A binding to a REAL tenant (dir exists) via meta.yaml clears the gate.
+reset_case
+set_verdict 1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_EMAIL="operator@$GATE_DOMAIN"
+tenant acme
+session_meta s-scope-bound acme
+new_transcript 28-scope-bound
+append_user "$TRANSCRIPT" u-scope-bound
+run_hook s-scope-bound "$TRANSCRIPT"
+assert_allow "gated bound session (real tenant)"
+pass "binding a real tenant via meta.yaml allows"
+
+# 28b. A scope-capability.json binding to a real tenant also satisfies the gate.
+reset_case
+set_verdict 1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_EMAIL="operator@$GATE_DOMAIN"
+tenant acme
+mkdir -p "$FIXTURE/workspace/sessions/s-scope-cap"
+printf '{"company_slug":"acme"}' >"$FIXTURE/workspace/sessions/s-scope-cap/scope-capability.json"
+new_transcript 28b-scope-cap
+append_user "$TRANSCRIPT" u-scope-cap
+run_hook s-scope-cap "$TRANSCRIPT"
+assert_allow "gated scope-capability binding (real tenant)"
+pass "binding a real tenant via scope-capability.json allows"
+
+# 28c. The reserved `personal` scope satisfies the gate with no tenant dir.
+reset_case
+set_verdict 1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_EMAIL="operator@$GATE_DOMAIN"
+session_meta s-scope-personal personal
+new_transcript 28c-scope-personal
+append_user "$TRANSCRIPT" u-scope-personal
+run_hook s-scope-personal "$TRANSCRIPT"
+assert_allow "gated personal binding"
+pass "binding the reserved personal scope allows"
+
+# 29. An email whose domain is not in the configured list is exempt.
+reset_case
+set_verdict 1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_EMAIL='someone@other.example'
+session_meta s-other-unbound
+new_transcript 29-other-unbound
+append_user "$TRANSCRIPT" u-other-unbound
+run_hook s-other-unbound "$TRANSCRIPT"
+assert_allow "non-configured domain"
+pass "a caller outside the configured domains is exempt"
+
+# 29b. With no domains configured the gate never applies, even to a would-match
+# address. This is the release-shipped default: company-agnostic, off.
+reset_case
+set_verdict 1
+RUN_EMAIL="operator@$GATE_DOMAIN"
+session_meta s-nodomains-unbound
+new_transcript 29b-nodomains
+append_user "$TRANSCRIPT" u-nodomains
+run_hook s-nodomains "$TRANSCRIPT"
+assert_allow "gate off by default"
+pass "no configured domains means the gate is off"
+
+# 29c. Exact domain-suffix match: a look-alike that merely extends the domain is
+# not a member. operator.example vs operator.example.evil.
+reset_case
+set_verdict 1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_EMAIL="operator@$GATE_DOMAIN.evil"
+session_meta s-suffix-unbound
+new_transcript 29c-suffix
+append_user "$TRANSCRIPT" u-suffix
+run_hook s-suffix "$TRANSCRIPT"
+assert_allow "suffix look-alike domain"
+pass "a domain that only extends a configured one is not gated"
+
+# 30. The operator kill switch disables the scope gate too.
+reset_case
+set_verdict 1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_EMAIL="operator@$GATE_DOMAIN"
+RUN_GATE=0
+session_meta s-scope-killswitch
+new_transcript 30-scope-killswitch
+append_user "$TRANSCRIPT" u-scope-killswitch
+run_hook s-scope-killswitch "$TRANSCRIPT"
+assert_allow "gated with HQ_CHECKPOINT_GATE=0"
+pass "HQ_CHECKPOINT_GATE=0 disables the scope gate"
+
+# 31. A binding to an unknown slug (no tenant dir, not personal) does NOT satisfy
+# the gate — a typo or invented company cannot silently pass it.
+reset_case
+set_verdict 1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_EMAIL="operator@$GATE_DOMAIN"
+session_meta s-badslug made-up-co
+new_transcript 31-badslug
+append_user "$TRANSCRIPT" u-badslug
+run_hook s-badslug "$TRANSCRIPT"
+assert_company_block "$HOOK_STDOUT" s-badslug "unknown-tenant binding"
+pass "a binding to a non-existent tenant does not satisfy the gate"
+
+# 32. When the session did work AND is unbound, the scope gate takes precedence
+# over the checkpoint gate so the operator declares a scope first.
+reset_case
+set_verdict 1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_EMAIL="operator@$GATE_DOMAIN"
+session_meta s-scope-work-unbound
+new_transcript 32-scope-work-unbound
+append_user "$TRANSCRIPT" u-scope-work-unbound
+append_tool "$TRANSCRIPT" tu-32 Bash 'git status'
+append_result "$TRANSCRIPT" tu-32 false
+run_hook s-scope-work-unbound "$TRANSCRIPT"
+assert_company_block "$HOOK_STDOUT" s-scope-work-unbound "gated work turn unbound"
+pass "scope gate precedes checkpoint gate for unbound work turns"
+
+# 32b. A mixed-case configured address still matches (email is lowercased).
+reset_case
+set_verdict 1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_EMAIL="Operator@Operator.EXAMPLE"
+session_meta s-scope-mixedcase
+new_transcript 32b-scope-mixedcase
+append_user "$TRANSCRIPT" u-scope-mixedcase
+run_hook s-scope-mixedcase "$TRANSCRIPT"
+assert_company_block "$HOOK_STDOUT" s-scope-mixedcase "mixed-case configured domain"
+pass "a mixed-case configured address is gated"
+
+# 32c. A delegated/outpost token carrying BOTH a service `email` and an operator
+# `custom:delegatedEmail` must resolve to the operator (delegated) identity, so a
+# delegated operator is gated rather than exempted by the service email.
+reset_case
+set_verdict 1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_TOKENS="$TMP_ROOT/delegated-token.json"
+mint_token "$RUN_TOKENS" \
+  "$(jq -nc --arg d "operator@$GATE_DOMAIN" '{"custom:delegatedEmail":$d,"email":"svc@other.example"}')" \
+  "$(jq -nc '{"email":"svc@other.example"}')"
+session_meta s-delegated-unbound
+new_transcript 32c-delegated
+append_user "$TRANSCRIPT" u-delegated
+run_hook s-delegated-unbound "$TRANSCRIPT"
+assert_company_block "$HOOK_STDOUT" s-delegated-unbound "delegated identity precedence"
+pass "the delegated email claim is preferred over the service email"
+
+# ---------------------------------------------------------------------------
+# CLI delegation: the in-tree hook is a thin fallback that prefers the
+# CLI-hosted gate (`hq core checkpoint-stop-gate`) when the installed CLI
+# advertises it, and runs the in-tree body otherwise.
+# ---------------------------------------------------------------------------
+
+# 33. When the CLI advertises the command, the hook delegates and emits the
+# CLI's output verbatim — the in-tree body never runs. The session is unbound
+# and the caller is gated, which WOULD scope-block in the body: proof of deleg.
+reset_case
+set_verdict 1
+RUN_CLI_HAS_GATE=1
+RUN_DOMAINS="$GATE_DOMAIN"
+RUN_EMAIL="operator@$GATE_DOMAIN"
+session_meta s-delegate
+new_transcript 33-delegate
+append_user "$TRANSCRIPT" u-delegate
+run_hook s-delegate "$TRANSCRIPT"
+printf '%s' "$HOOK_STDOUT" | jq -e '.reason == "CLI-DELEGATED"' >/dev/null \
+  || fail "prefer-CLI: hook did not delegate to hq core: $HOOK_STDOUT"
+printf '%s' "$HOOK_STDOUT" | grep -qF 'has not declared its scope' \
+  && fail "prefer-CLI: in-tree body ran instead of delegating: $HOOK_STDOUT"
+pass "delegates to the CLI-hosted gate when the installed CLI provides it"
+
+# 34. With the same CLI advertising the command, HQ_CHECKPOINT_GATE_NO_CLI=1
+# forces the in-tree body (so tests and operators can pin the fallback).
+reset_case
+set_verdict 1
+RUN_CLI_HAS_GATE=1
+new_transcript 34-force-intree
+append_user "$TRANSCRIPT" u-force-intree
+append_tool "$TRANSCRIPT" tu-34 Bash 'git status'
+append_result "$TRANSCRIPT" tu-34 false
+HOOK_STDOUT="$(env \
+  "CLAUDE_PROJECT_DIR=$FIXTURE" "HQ_SHIM_LOG=$SHIM_LOG" "HQ_SHIM_ROOT=$FIXTURE" \
+  "HQ_SHIM_VERDICT=1" "HQ_SHIM_CLI_HAS_GATE=1" "HQ_CHECKPOINT_GATE_NO_CLI=1" \
+  "HQ_COGNITO_TOKENS_FILE=$ABSENT_TOKEN" "PATH=$SHIM_DIR:$PATH" \
+  "$BASH_BIN" "$FIXTURE/.claude/hooks/checkpoint-stop-gate.sh" \
+  <<<"$(printf '{"session_id":"s-force-intree","transcript_path":"%s","stop_hook_active":false,"cwd":"%s"}' "$TRANSCRIPT" "$FIXTURE")" 2>/dev/null)"
+printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF -- '--trigger stop-gate' \
+  || fail "HQ_CHECKPOINT_GATE_NO_CLI=1 did not run the in-tree checkpoint body: $HOOK_STDOUT"
+printf '%s' "$HOOK_STDOUT" | jq -e '.reason == "CLI-DELEGATED"' >/dev/null \
+  && fail "HQ_CHECKPOINT_GATE_NO_CLI=1 still delegated to the CLI: $HOOK_STDOUT"
+pass "HQ_CHECKPOINT_GATE_NO_CLI=1 forces the in-tree fallback body"
 
 echo "checkpoint Stop gate: ok"

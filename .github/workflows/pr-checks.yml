@@ -149,10 +149,25 @@ jobs:
           bash core/scripts/lint-skill-script-refs.sh learn
           bash core/scripts/lint-skill-script-refs.sh resumework
           bash core/scripts/lint-skill-script-refs.sh startwork
-      - name: Regression test (fixture + live tree + WC-17 fix)
+      - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
         run: bash core/scripts/tests/skill-script-refs.test.sh
+      - name: Company resolver (session bind + whole-token prompt scan)
+        run: bash core/scripts/tests/resolve-company.test.sh
       - name: /resumework requires explicit confirmation for locked threads
         run: bash core/scripts/tests/resume-thread-lock.test.sh
+
+  setup-skill-direct-install:
+    # /setup must install missing CLI tools directly, never re-introduce the
+    # install-all/some/none prompt that made onboarding pause mid-flow. Pins the
+    # direct-install invariant plus the auth/bootstrap carve-outs the fix relies on.
+    name: setup-skill-direct-install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: /setup installs missing tools directly (no tool-choice prompt)
+        run: bash core/scripts/tests/setup-skill-direct-install.test.sh
 
   hq-delegate:
     # /delegate — one-command project handoff. Every helper ships with an
@@ -927,6 +942,22 @@ jobs:
       - name: Work Mesh helper compatibility smoke
         run: bash core/scripts/tests/work-mesh-helper.test.sh
 
+  doctor-advisory-summary:
+    # US-014 (hq-doctor): unit + contract coverage for the advisory CI helper
+    # that renders the `hq doctor --json` PR comment. Guards the diff-against-base
+    # logic, the update-in-place comment selection, and the doctor-advisory.yml
+    # workflow contract (paths filter, advisory exit-0, github-script wiring)
+    # against regressions.
+    name: doctor-advisory-summary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Advisory summary helper unit + workflow contract
+        run: node --test core/scripts/__tests__/doctor-ci-summary.test.mjs
+
   # ─── Label-gated checks ────────────────────────────────────────────
   core-yaml-version-monotonic:
     # hq-core ONLY. Promote PRs (the only kind hq-core sees) always bump
@@ -1080,7 +1111,7 @@ jobs:
           else
             changed="$(git diff --name-only HEAD~1 HEAD || true)"
           fi
-          echo "$changed" | grep -qE '^core/scripts/lib/provider-adapter\.sh$|^core/scripts/lib/provider-adapters/|^core/scripts/lib/provider-adapter-version\.sh$|^core/scripts/generate-adapter-capabilities\.sh$|^core/scripts/tests/provider-adapter-|^core/scripts/tests/probes/' \
+          echo "$changed" | grep -qE '^core/scripts/lib/provider-adapter\.sh$|^core/scripts/lib/provider-adapters/|^core/scripts/lib/provider-adapter-version\.sh$|^core/scripts/generate-adapter-capabilities\.sh$|^core/scripts/tests/provider-adapter-|^core/scripts/tests/probes/|^core/scripts/codex-preflight\.sh$|^core/scripts/convert-codex\.sh$|^core/scripts/tests/codex-sandbox-danger-full-access\.test\.sh$|^core/workers/public/dev-team/|^\.claude/scripts/run-project\.sh$|^\.claude/skills/execute-task/SKILL\.md$' \
             && echo "run=true" >> "$GITHUB_OUTPUT" \
             || echo "run=false" >> "$GITHUB_OUTPUT"
 
@@ -1091,6 +1122,10 @@ jobs:
       - name: codex adapter suite
         if: steps.filter.outputs.run == 'true'
         run: bash core/scripts/tests/provider-adapter-codex.test.sh
+
+      - name: codex sandbox danger-full-access (finding 2.3)
+        if: steps.filter.outputs.run == 'true'
+        run: bash core/scripts/tests/codex-sandbox-danger-full-access.test.sh
 
       - name: grok adapter suite
         if: steps.filter.outputs.run == 'true'

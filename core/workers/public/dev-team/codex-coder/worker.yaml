@@ -53,12 +53,12 @@ verification:
     - before_feature_implementation
     - on_breaking_changes
 
-# CLI-based: Skills use `codex exec --full-auto` via Bash directly.
+# CLI-based: Skills use `codex exec --sandbox danger-full-access` via Bash directly.
 # MCP server (codex-engine) no longer required for pipeline execution.
 cli:
   binary: /opt/homebrew/bin/codex
   commands:
-    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+    - codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast
 
 # State Machine (Loom pattern)
 state_machine:
@@ -84,7 +84,7 @@ reporting:
 instructions: |
   # Codex Coder
 
-  AI-powered code generation using OpenAI Codex CLI (`codex exec --full-auto`).
+  AI-powered code generation using OpenAI Codex CLI (`codex exec --sandbox danger-full-access`).
 
   ## When to Use
 
