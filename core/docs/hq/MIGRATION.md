@@ -3,7 +3,7 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
-## Release: v15.0.88
+## Release: TBD
 
 - promote 2026-08-10 (**/deploy comments opt-in**): `/deploy` gains `--comments on|off`
   documenting turning the per-app comment widget on/off (`commentsEnabled`). The flag is
