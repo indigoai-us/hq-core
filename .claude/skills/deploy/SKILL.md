@@ -35,6 +35,11 @@ Pick `company` when the user asks for org/company/internal restriction. Pick `pr
 - `POST   /api/apps/:id/allowed-emails  {email}` — accepts an exact address (`[EMAIL]`) or a `@domain.tld` pattern; idempotent; lowercased server-side.
 - `DELETE /api/apps/:id/allowed-emails/{patternKey}` — `patternKey` URL-encoded.
 
+**Comments (opt-in) — `--comments on|off`:** orthogonal to access mode. Turn it on when the user wants identity-verified, click-anywhere commenting on the deploy: viewers drop a point pin or drag a box/region, tagged to who they are, the owner reads/resolves/deletes from a side pane, and a "Sign in to comment" Cognito prompt turns viewers into HQ users. It sets the per-app `commentsEnabled` flag, which the deploy pipeline reads to inject the comment widget at deploy time. Access controls still hold: on a gated deploy the thread is only readable/writable by viewers who pass the gate, and access revocation applies to the comment surface too.
+- Detect intent from the invocation: `--comments`/`--comments on` (or "with comments", "turn comments on") → on; `--comments off` (or "turn comments off") → off; otherwise leave unset.
+- Wire it in Phase C after upload returns `appId` (see C.2.6): `PATCH /api/apps/:id {commentsEnabled: true|false}`.
+- **Off by default.** Without the flag `commentsEnabled` stays unset and the injector is a strict no-op — the served HTML is byte-identical to a pre-feature deploy (no widget markup, no script, no network calls). The flag takes effect on the *next* deploy.
+
 ---
 
 ## Architecture: Three Phases, Inline Parallel Scripts
@@ -755,6 +760,21 @@ credentials). A 401 is explicitly marked `auth=stale-login action=preview-only`:
 fall back to the no-upload branch, present preview, and do not re-trigger login
 mid-deploy. A 403 is marked `authorization=forbidden` with the target org/scope
 so authorization failures are not mistaken for malformed responses.
+
+### C.2.6 — Enable comments (opt-in)
+
+Only when the invocation opted in (`$COMMENTS` is `on` or `off` per the `--comments` intent in "Access modes"; unset → skip this step entirely). Comments are a per-app opt-in, off by default; the flag makes the deploy pipeline inject the widget on the *next* deploy. Wire it right after upload with `appId` in hand:
+
+```bash
+if [ "$COMMENTS" = "on" ] || [ "$COMMENTS" = "off" ]; then
+  ENABLED=$([ "$COMMENTS" = "on" ] && echo true || echo false)
+  deploy_request comments-toggle --method PATCH --url "$API/api/apps/$APP_ID" \
+    --header 'Content-Type: application/json' \
+    --data "{\"commentsEnabled\": $ENABLED}" >/dev/null || exit 1
+fi
+```
+
+`commentsEnabled` is orthogonal to `ACCESS_MODE` — the comment surface enforces the SAME gate as the deploy (a gated deploy's thread is only readable/writable by viewers who pass the gate; access revocation reaches comments too), so no extra access wiring is needed here. Mention it once in C.5 when it was toggled ("comments are on for this deploy").
 
 ### C.3 — Wire access mode (sensitive only)
 

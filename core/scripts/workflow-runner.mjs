@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * workflow-runner.mjs — multi-agent workflow orchestration over headless
- * coding-agent CLIs (Codex, Grok), with human gates.
+ * coding-agent CLIs (Codex, Grok, Claude), with human gates.
  *
  * Runs a plain-JavaScript orchestration script (Workflow-tool authoring shape:
  * agent()/parallel()/pipeline()/phase()/log()/gate()/workflow(), top-level
@@ -17,6 +17,15 @@
  *     --permission-mode bypassPermissions --always-approve; result captured
  *     from stdout; structured output via a schema instruction appended to the
  *     prompt (the CLI has no schema flag), parsed from the reply.
+ *   engine "claude" — `claude -p` (single-turn headless) with
+ *     --permission-mode bypassPermissions --output-format json; the result
+ *     envelope ({type,subtype,is_error,result,stop_reason,permission_denials})
+ *     is captured from stdout and unwrapped to its `result` text — a run that
+ *     ended in error (is_error / subtype != success) fails loudly instead of
+ *     surfacing downstream as a bogus parse error; structured output via a
+ *     schema instruction appended to the prompt (the CLI has no schema flag),
+ *     parsed from the reply. Hooks run normally: bypassPermissions skips only
+ *     the interactive prompt, so HQ's PreToolUse/SessionStart hooks still fire.
  *
  * Hardening shared by both engines:
  *   - soft per-agent timeout: on expiry the agent is NOT killed — a
@@ -24,8 +33,8 @@
  *     watching orchestrator decides to kill the process group
  *     (`kill -- -<pid>`) or let it run
  *   - stdin closed (/dev/null) — headless CLIs otherwise block on stdin
- *   - every agent is anchored at the HQ root (codex via -C, grok via spawn
- *     cwd) so project-level agent config and safety hooks load; opts.cd names
+ *   - every agent is anchored at the HQ root (codex via -C, grok and claude via
+ *     spawn cwd) so project-level agent config and safety hooks load; opts.cd names
  *     the task's directory and is injected as a prompt preamble, and must
  *     resolve inside the HQ root
  *   - stderr (and codex's combined output) streamed to a per-agent log file
@@ -63,11 +72,14 @@
  *                              .claude/settings.json.
  *   HQ_WORKFLOW_CODEX_BIN      codex binary (default `codex`; tests inject a fake)
  *   HQ_WORKFLOW_GROK_BIN       grok binary (default `grok`)
+ *   HQ_WORKFLOW_CLAUDE_BIN     claude binary (default `claude`)
  *   HQ_WORKFLOW_CODEX_PLAN_MODEL / HQ_WORKFLOW_CODEX_EXEC_MODEL
  *                              codex tier models (defaults gpt-5.6-sol /
  *                              gpt-5.6-terra)
  *   HQ_WORKFLOW_GROK_PLAN_MODEL / HQ_WORKFLOW_GROK_EXEC_MODEL
  *                              grok tier models (default grok-4.5 for both)
+ *   HQ_WORKFLOW_CLAUDE_PLAN_MODEL / HQ_WORKFLOW_CLAUDE_EXEC_MODEL
+ *                              claude tier models (defaults opus / sonnet)
  *   HQ_WORKFLOW_MODEL          Global model pin overriding every tier map;
  *                              empty string -> engine CLI default (no -m)
  *   HQ_WORKFLOW_EFFORT         Default reasoning effort (default high; empty
@@ -87,7 +99,7 @@
  *     opts.tier (REQUIRED): "plan" (analysis/planning — the flagship model)
  *           or "exec" (execution — the throughput model). agent() throws if
  *           missing/invalid so the model choice is never implicit.
- *     opts.engine: "codex" (default) or "grok"
+ *     opts.engine: "codex" (default), "grok", or "claude"
  *     opts: label, phase, schema (JSON Schema; result parsed+returned as an
  *           object), model (explicit override), effort, fastMode (codex only),
  *           cd (task directory inside the HQ root; injected into the prompt),
@@ -160,6 +172,13 @@ const ENGINES = {
     tierModels: {
       plan: process.env.HQ_WORKFLOW_GROK_PLAN_MODEL || 'grok-4.5',
       exec: process.env.HQ_WORKFLOW_GROK_EXEC_MODEL || 'grok-4.5',
+    },
+  },
+  claude: {
+    bin: process.env.HQ_WORKFLOW_CLAUDE_BIN || 'claude',
+    tierModels: {
+      plan: process.env.HQ_WORKFLOW_CLAUDE_PLAN_MODEL || 'opus',
+      exec: process.env.HQ_WORKFLOW_CLAUDE_EXEC_MODEL || 'sonnet',
     },
   },
 };
@@ -354,6 +373,52 @@ function unwrapGrokEnvelope(raw, label, lastFile, logFile) {
   return text;
 }
 
+// claude -p --output-format json wraps the reply as
+// {type:"result", subtype, is_error, result, stop_reason, permission_denials, ...}.
+// Unwrap it to the `result` text, but FAIL LOUDLY when the run did not finish
+// normally: a run that errors (subtype "error_max_turns" / "error_during_execution",
+// or is_error true) still exits 0 with a JSON envelope, so silence there would
+// surface downstream as a bogus "not valid JSON" parse failure instead of the
+// real reason. Denied tool calls (HQ hooks can deny e.g. Glob-from-root) land in
+// permission_denials — reported in the error context so the cause is visible.
+const CLAUDE_FAILURE_SUBTYPE = /error/i;
+
+function unwrapClaudeEnvelope(raw, label, lastFile, logFile) {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error(`${label} produced no output at all (claude exited 0 with an empty envelope). Result file: ${lastFile}. Log: ${logFile}`);
+  }
+  let env;
+  try {
+    env = JSON.parse(trimmed);
+  } catch {
+    // Not an envelope (plain text slipped through) — hand back the raw reply.
+    return trimmed;
+  }
+  if (!env || typeof env !== 'object' || !('result' in env || 'subtype' in env || 'is_error' in env)) {
+    return trimmed;
+  }
+  const subtype = String(env.subtype ?? '');
+  const text = typeof env.result === 'string' ? env.result : '';
+  const denials = Array.isArray(env.permission_denials) ? env.permission_denials : [];
+  const denialNote = denials.length
+    ? ` ${denials.length} tool call(s) were denied (HQ hooks deny some tools, e.g. Glob from the HQ root): `
+      + JSON.stringify(denials.slice(0, 3))
+    : '';
+  if (env.is_error === true || (subtype && CLAUDE_FAILURE_SUBTYPE.test(subtype))) {
+    throw new Error(
+      `${label} ended in error: subtype=${subtype || 'none'}, is_error=${env.is_error === true}.${denialNote} ` +
+      `Last result text: ${JSON.stringify(text.slice(0, 300))}. ` +
+      `Envelope: ${lastFile}. Log: ${logFile}`);
+  }
+  if (!text.trim()) {
+    throw new Error(
+      `${label} returned an empty reply (subtype=${subtype || 'none'}).${denialNote} ` +
+      `Envelope: ${lastFile}. Log: ${logFile}`);
+  }
+  return text;
+}
+
 // Scan for embedded JSON values and return every balanced {...} / [...] block,
 // respecting string literals and escapes so braces inside strings do not throw
 // the matching off. Needed because an engine without a schema flag (grok)
@@ -399,6 +464,67 @@ function parseMaybeJson(text, context) {
     try { return JSON.parse(candidates[i]); } catch { /* try the next */ }
   }
   throw new Error(`schema result is not valid JSON (${context})`);
+}
+
+// Minimal JSON Schema validation for structured agent results. The stdout
+// engines (grok, claude) have no server-side schema flag — they are only asked
+// in-prompt to honor opts.schema, so a syntactically valid but shape-violating
+// reply (wrong type, missing required field, bad enum) would otherwise flow
+// downstream and crash a later phase or misreport a result (e.g. the orchestrate
+// pipeline's status enum or required story fields). This enforces the subset of
+// JSON Schema the workflow scripts actually use (type, required, properties,
+// items, enum); unknown keywords are ignored so it never rejects a value it
+// simply does not understand. Codex results (already enforced by
+// --output-schema) pass through unchanged.
+function schemaTypeOf(v) {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return 'array';
+  return typeof v; // 'object' | 'string' | 'number' | 'boolean'
+}
+function matchesSchemaType(v, t) {
+  if (t === 'integer') return typeof v === 'number' && Number.isInteger(v);
+  if (t === 'number') return typeof v === 'number';
+  return schemaTypeOf(v) === t;
+}
+function validateSchemaNode(value, schema, pathStr, errs) {
+  if (!schema || typeof schema !== 'object') return;
+  const at = pathStr || '<root>';
+  if (schema.type !== undefined) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+    if (!types.some((t) => matchesSchemaType(value, t))) {
+      // Type is wrong — dependent checks below would just be noise.
+      errs.push(`${at}: expected type ${types.join('|')}, got ${schemaTypeOf(value)}`);
+      return;
+    }
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((e) => e === value)) {
+    errs.push(`${at}: value ${JSON.stringify(value)} not in enum ${JSON.stringify(schema.enum)}`);
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if (Array.isArray(schema.required)) {
+      for (const key of schema.required) {
+        if (!(key in value)) errs.push(`${at}: missing required property "${key}"`);
+      }
+    }
+    if (schema.properties && typeof schema.properties === 'object') {
+      for (const [key, sub] of Object.entries(schema.properties)) {
+        if (key in value) validateSchemaNode(value[key], sub, pathStr ? `${pathStr}.${key}` : key, errs);
+      }
+    }
+  }
+  if (Array.isArray(value) && schema.items && typeof schema.items === 'object') {
+    value.forEach((item, i) => validateSchemaNode(item, schema.items, `${at}[${i}]`, errs));
+  }
+}
+function validateAgainstSchema(value, schema, label, lastFile) {
+  const errs = [];
+  validateSchemaNode(value, schema, '', errs);
+  if (errs.length) {
+    throw new Error(
+      `${label} returned JSON that violates the requested schema: ` +
+      `${errs.slice(0, 6).join('; ')}${errs.length > 6 ? ` (+${errs.length - 6} more)` : ''}. ` +
+      `Raw result in ${lastFile}.`);
+  }
 }
 
 function cpuTimesSnapshot() {
@@ -572,6 +698,9 @@ async function buildRuntime(cli) {
 
     let argv;
     let resultFromStdout = false;
+    // Set for the stdout-envelope engines (grok, claude) to the function that
+    // unwraps their reply envelope; null for codex (result read from a file).
+    let envelopeUnwrap = null;
     if (engineName === 'codex') {
       argv = ['exec', ...MANDATED_CODEX_FLAGS, '--color', 'never',
         '-C', HQ_ROOT,
@@ -591,7 +720,7 @@ async function buildRuntime(cli) {
       if (Array.isArray(opts.extraArgs)) argv.push(...opts.extraArgs.map(String));
       // `--` ends option parsing so a prompt like 'help' or '-x' stays a prompt
       argv.push('--', spawnPrompt);
-    } else {
+    } else if (engineName === 'grok') {
       // grok: single-turn headless. Always ask for the JSON envelope rather
       // than plain text — a run that ends early (`stopReason: "Cancelled"`,
       // which is what a denied tool call produces, e.g. HQ's Glob-from-root
@@ -611,6 +740,27 @@ async function buildRuntime(cli) {
       if (effort) argv.push('--reasoning-effort', String(effort));
       if (Array.isArray(opts.extraArgs)) argv.push(...opts.extraArgs.map(String));
       resultFromStdout = true;
+      envelopeUnwrap = unwrapGrokEnvelope;
+    } else {
+      // claude: single-turn headless (`claude -p <prompt>`). Ask for the JSON
+      // envelope so an errored run (which still exits 0 with a JSON result
+      // object) fails loudly here instead of downstream. bypassPermissions
+      // skips only the interactive permission prompt — HQ's SessionStart and
+      // PreToolUse hooks still fire, so a denied tool call lands in the
+      // envelope's permission_denials and is surfaced by the unwrapper. No
+      // schema flag exists — instruct in the prompt, parse the reply text.
+      // claude has no reasoning-effort CLI flag, so `effort` is not applied.
+      if (opts.schema) {
+        spawnPrompt += '\n\nReturn ONLY JSON matching this JSON Schema — no prose, no code fences:\n'
+          + JSON.stringify(opts.schema);
+      }
+      argv = ['-p', spawnPrompt,
+        '--permission-mode', 'bypassPermissions',
+        '--output-format', 'json'];
+      if (model) argv.push('--model', String(model));
+      if (Array.isArray(opts.extraArgs)) argv.push(...opts.extraArgs.map(String));
+      resultFromStdout = true;
+      envelopeUnwrap = unwrapClaudeEnvelope;
     }
 
     if (state.aborted) throw new Error('workflow aborted by signal');
@@ -688,8 +838,14 @@ async function buildRuntime(cli) {
         } catch {
           throw new Error(`${label} exited 0 but wrote no result file (${lastFile}). Log: ${logFile}`);
         }
-        if (resultFromStdout) text = unwrapGrokEnvelope(text, label, lastFile, logFile);
-        return opts.schema ? parseMaybeJson(text, `${label}, raw text in ${lastFile}`) : text.trim();
+        if (resultFromStdout && envelopeUnwrap) text = envelopeUnwrap(text, label, lastFile, logFile);
+        if (!opts.schema) return text.trim();
+        // Parse, then enforce the schema. The stdout engines only ask for the
+        // shape in-prompt (no server-side schema flag), so a valid-JSON-but-
+        // wrong-shape reply must be rejected here rather than downstream.
+        const parsed = parseMaybeJson(text, `${label}, raw text in ${lastFile}`);
+        validateAgainstSchema(parsed, opts.schema, label, lastFile);
+        return parsed;
       });
 
       const secs = Math.round((Date.now() - startedAt) / 1000);
