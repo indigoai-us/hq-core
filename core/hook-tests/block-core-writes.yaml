@@ -1,0 +1,36 @@
+# Fixture for block-core-writes.sh — blocks Edit/Write into protected scaffold.
+# Seeded by US-013 (hq-doctor). See core/hook-tests/README.md for the schema.
+hookId: block-core-writes
+schemaVersion: 1
+cases:
+  # A direct Edit into core/ is blocked (author under personal/ instead).
+  - name: blocks-edit-into-core
+    event: PreToolUse
+    tool: Edit
+    input:
+      file_path: "core/foo.sh"
+    expect: block
+
+  # A direct Write into .claude/ is blocked.
+  - name: blocks-write-into-claude-dir
+    event: PreToolUse
+    tool: Write
+    input:
+      file_path: ".claude/hooks/evil.sh"
+    expect: block
+
+  # A write into a checked-out repo under repos/ is fine — not protected scaffold.
+  - name: allows-write-into-repo
+    event: PreToolUse
+    tool: Write
+    input:
+      file_path: "repos/public/example/README.md"
+    expect: allow
+
+  # .claude/settings.local.json is an explicit exception — always writable.
+  - name: allows-settings-local-exception
+    event: PreToolUse
+    tool: Edit
+    input:
+      file_path: ".claude/settings.local.json"
+    expect: allow

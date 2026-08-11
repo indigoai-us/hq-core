@@ -1,0 +1,28 @@
+# Fixture for block-unsafe-package-install.sh — supply-chain min-release-age gate.
+# Seeded by US-013 (hq-doctor). See core/hook-tests/README.md for the schema.
+hookId: block-unsafe-package-install
+schemaVersion: 1
+cases:
+  # `npm install <pkg>` adds a package without the pnpm min-release-age gate → blocked.
+  - name: blocks-npm-install-with-package
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "npm install lodash"
+    expect: block
+
+  # `npm install` with no positional package is lockfile hydration → allowed.
+  - name: allows-lockfile-hydration
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "npm install"
+    expect: allow
+
+  # `npm ci` is always lockfile-strict → allowed.
+  - name: allows-npm-ci
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "npm ci"
+    expect: allow

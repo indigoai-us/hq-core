@@ -8,6 +8,9 @@
 #   core/scripts/hq-session.sh get <key>             # read a key from meta.yaml
 #   core/scripts/hq-session.sh set <key> <value>     # set/replace a top-level key
 #
+# Reserved value:
+#   set company_slug personal   # bind the session to no-company (personal) work
+#
 # Global option (before the subcommand):
 #   --session-id <id>   operate on this session instead of the resolved one
 #
@@ -24,9 +27,53 @@
 
 set -euo pipefail
 
+# Prefer the CLI-hosted implementation. The canonical script ships in the CLI
+# (`hq core hq-session`); when the installed CLI provides it, delegate with
+# arguments passed through untouched. Otherwise fall through to the in-tree copy
+# below, which stays behavior-identical as a transitional fallback for a CLI
+# that predates the command. HQ_HQ_SESSION_NO_CLI=1 forces the in-tree path.
+if [ "${HQ_HQ_SESSION_NO_CLI:-}" != "1" ]; then
+  __hs_hq="$(command -v hq 2>/dev/null || true)"
+  if [ -n "$__hs_hq" ]; then
+    # `hq core --help` costs seconds of node startup, so probe it at most once
+    # per CLI build and cache the answer. Key by resolved path + mtime + size so
+    # a PATH switch or same-second rebuild cannot reuse a stale result; keep the
+    # cache in a private 0700 dir and trust it only when we own it; never persist
+    # a failed probe. HQ_CLI_CAPS_CACHE overrides the path (tests isolate it).
+    __hs_mt="$(stat -c %Y "$__hs_hq" 2>/dev/null || stat -f %m "$__hs_hq" 2>/dev/null || echo 0)"
+    __hs_sz="$(stat -c %s "$__hs_hq" 2>/dev/null || stat -f %z "$__hs_hq" 2>/dev/null || echo 0)"
+    __hs_key="$(printf '%s' "$__hs_hq:$__hs_mt:$__hs_sz" | cksum 2>/dev/null | cut -d' ' -f1)"
+    if [ -n "${HQ_CLI_CAPS_CACHE:-}" ]; then
+      __hs_cache="$HQ_CLI_CAPS_CACHE"
+    else
+      __hs_dir="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/hq-cli"
+      mkdir -p "$__hs_dir" 2>/dev/null && chmod 700 "$__hs_dir" 2>/dev/null || true
+      __hs_cache="$__hs_dir/core-caps.${__hs_key:-0}"
+    fi
+    __hs_caps=""
+    if [ -r "$__hs_cache" ] && [ -O "$__hs_cache" ]; then
+      __hs_caps="$(cat "$__hs_cache" 2>/dev/null || true)"
+    elif __hs_caps="$(hq core --help 2>/dev/null)"; then
+      [ -n "$__hs_caps" ] && (umask 077; printf '%s' "$__hs_caps" >"$__hs_cache" 2>/dev/null) || true
+    else
+      __hs_caps=""
+    fi
+    case "$__hs_caps" in
+      *hq-session*) exec hq core hq-session "$@" ;;
+    esac
+  fi
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# The DATA tree (sessions, companies, hooks) is the live HQ root. When this
+# script is dispatched as `hq core hq-session` from inside the hq-cli package,
+# its own location is NOT that tree — the CLI injects the live root via
+# HQ_ROOT / CLAUDE_PROJECT_DIR. Prefer those; fall back to the self-relative
+# root so a loose-file (in-tree) invocation keeps resolving exactly as before.
+REPO_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
 SESSIONS_DIR="$REPO_ROOT/workspace/sessions"
+# Libs are sourced from THIS script's own directory, so a bundled dispatch loads
+# the bundled copies and a loose-file invocation loads the tree's copies.
 LIB_DIR="$SCRIPT_DIR/lib"
 # shellcheck source=lib/session-scope-capability.sh
 . "$LIB_DIR/session-scope-capability.sh"
@@ -37,7 +84,7 @@ LIB_DIR="$SCRIPT_DIR/lib"
 SESSION_ID_OVERRIDE=""
 
 usage() {
-  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 current_id() {
@@ -83,6 +130,19 @@ cmd_set() {
   local key="${1:-}" value="${2:-}"
   [ -n "$key" ] && [ $# -ge 2 ] || { echo "usage: hq-session.sh set <key> <value>" >&2; exit 1; }
 
+  # Reject an invalid company_slug BEFORE writing anything. Otherwise a bad value
+  # lands in meta.yaml and only fails later at session_scope_mint, leaving
+  # corrupt state that the scope gate would read as a (bogus) binding. Mirrors
+  # session_scope_mint's own character-set rule; `personal` is a valid slug.
+  if [ "$key" = "company_slug" ] && [ -n "$value" ]; then
+    case "$value" in
+      *[!a-z0-9_-]*)
+        echo "hq-session: invalid company_slug: '$value' (allowed characters: a-z 0-9 - _)" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
   local id meta
   id="$(current_id)"
   if [ -z "$id" ]; then
@@ -123,11 +183,18 @@ cmd_set() {
       echo "hq-session: failed to mint scope-capability for session $id" >&2
       exit 1
     }
-    emit_company_hard_policies "$value"
-    # Fire-and-forget: register this company bind with the Work Mesh (US-003).
-    # Fully silent (all output → the hook's own bounded log) and guarded so it
-    # can neither fail cmd_set under `set -euo pipefail` nor delay its return.
-    spawn_work_mesh_register "$id" || true
+    # `personal` is the reserved scope for work that belongs to no company. It
+    # binds the session — satisfying the checkpoint company gate and scoping the
+    # authorizer to personal/ — but it has no tenant directory, so there are no
+    # company hard-policies to surface and nothing to register with the
+    # company-scoped Work Mesh. Everything else is a real company bind.
+    if [ "$value" != "personal" ]; then
+      emit_company_hard_policies "$value"
+      # Fire-and-forget: register this company bind with the Work Mesh (US-003).
+      # Fully silent (all output → the hook's own bounded log) and guarded so it
+      # can neither fail cmd_set under `set -euo pipefail` nor delay its return.
+      spawn_work_mesh_register "$id" || true
+    fi
   fi
 }
 
@@ -158,6 +225,13 @@ emit_company_hard_policies() {
   local co="$1"
   local dir="$REPO_ROOT/companies/$co/policies"
   [ -d "$dir" ] || return 0
+  # Guard the glob: with no matching files "$dir"/*.md expands literally, awk
+  # exits nonzero, and under `set -e` that would abort an otherwise fine bind.
+  local have=0 f
+  for f in "$dir"/*.md; do
+    [ -e "$f" ] && { have=1; break; }
+  done
+  [ "$have" = 1 ] || return 0
   local lines
   lines="$(awk '
     function bn(p,  n,a,b){ n=split(p,a,"/"); b=a[n]; sub(/\.md$/,"",b); return b }

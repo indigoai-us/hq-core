@@ -1575,7 +1575,12 @@ RULES:
   if [[ "$NO_PERMISSIONS" == true ]]; then
     codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
   else
-    codex_flags+=(--full-auto)
+    # Honor HQ's declared danger-full-access posture (.codex/config.toml). NOT
+    # --full-auto/--approve-for-me: that forces the workspace-write sandbox, which
+    # denies temp/cache/socket writes on macOS and cannot initialize bubblewrap on
+    # some Linux hosts (harness finding 2.3). HQ safety comes from hooks, not the
+    # Codex sandbox. Regression: core/scripts/tests/codex-sandbox-danger-full-access.test.sh
+    codex_flags+=(--sandbox danger-full-access)
   fi
   if [[ -n "$MODEL" ]]; then
     codex_flags+=(-m "$MODEL")
@@ -2440,7 +2445,12 @@ Rules:
   if [[ "$NO_PERMISSIONS" == true ]]; then
     codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
   else
-    codex_flags+=(--full-auto)
+    # Honor HQ's declared danger-full-access posture (.codex/config.toml). NOT
+    # --full-auto/--approve-for-me: that forces the workspace-write sandbox, which
+    # denies temp/cache/socket writes on macOS and cannot initialize bubblewrap on
+    # some Linux hosts (harness finding 2.3). HQ safety comes from hooks, not the
+    # Codex sandbox. Regression: core/scripts/tests/codex-sandbox-danger-full-access.test.sh
+    codex_flags+=(--sandbox danger-full-access)
   fi
   if [[ -n "$MODEL" ]]; then
     codex_flags+=(-m "$MODEL")
@@ -3211,7 +3221,12 @@ RULES:
   if [[ "$NO_PERMISSIONS" == true ]]; then
     codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
   else
-    codex_flags+=(--full-auto)
+    # Honor HQ's declared danger-full-access posture (.codex/config.toml). NOT
+    # --full-auto/--approve-for-me: that forces the workspace-write sandbox, which
+    # denies temp/cache/socket writes on macOS and cannot initialize bubblewrap on
+    # some Linux hosts (harness finding 2.3). HQ safety comes from hooks, not the
+    # Codex sandbox. Regression: core/scripts/tests/codex-sandbox-danger-full-access.test.sh
+    codex_flags+=(--sandbox danger-full-access)
   fi
   if [[ -n "$MODEL" ]]; then
     codex_flags+=(-m "$MODEL")

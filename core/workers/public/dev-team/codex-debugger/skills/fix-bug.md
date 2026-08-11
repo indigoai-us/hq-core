@@ -31,7 +31,7 @@ Optional:
 3. **Diagnose via Codex** (skip if `--skip-diagnosis`)
    - Run Codex in read-only sandbox for diagnosis:
      ```bash
-     cd {cwd} && codex exec --sandbox read-only -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
+     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox read-only -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
        "Diagnose this bug (analysis only, no file changes): {issue_description}. Error: {error_output}. Identify root cause and suggest fix." 2>&1
      ```
    - Parse diagnosis: root cause, affected files, suggested fixes
@@ -40,7 +40,7 @@ Optional:
 4. **Generate Fix via Codex**
    - Using the diagnosis (or `--issue` if `--skip-diagnosis`), run Codex:
      ```bash
-     cd {cwd} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
+     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
        "Fix this bug: {root_cause}. Apply the fix: {selected_fix}. Also update or add tests to cover the fix." 2>&1
      ```
    - Codex generates fix and applies it in sandbox
@@ -61,7 +61,7 @@ Optional:
    - Capture error output from failed checks
    - Feed errors back to Codex:
      ```bash
-     cd {cwd} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
+     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
        "The previous fix introduced errors: {error_output}. Fix them while preserving the bug fix for: {root_cause}" 2>&1
      ```
    - Re-run back-pressure after each fix attempt
