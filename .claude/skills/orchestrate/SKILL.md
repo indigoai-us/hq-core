@@ -2,14 +2,15 @@
 name: orchestrate
 description: Take an idea all the way to a finished deliverable in one command — capture it, research and compare approaches, generate the PRD, then execute every story to the actual work product (code, artwork, documents), continuously and without pausing. Recommended answers are taken automatically and recorded in the decision ledger; --gated pauses at human decisions instead; --plan-only stops at the execution-ready PRD. Use when the user says "/orchestrate", "take this idea to done", "make this end to end", or wants idea → brainstorm → plan → execution chained without invoking each step by hand. Formerly /ideate (planning-only).
 allowed-tools: Read, Write, Grep, Glob, Bash, Bash(node:*), Bash(bash:*), Bash(nohup:*), Bash(ls:*), Bash(cat:*), Bash(jq:*), Bash(tail:*), Bash(mkdir:*), Bash(file:*), Bash(bash core/scripts/workflow-gate.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), AskUserQuestion, Task
-argument-hint: "[company] <idea description> [--board <id>] [--engine codex|grok] [--gated] [--plan-only]"
+argument-hint: "[company] <idea description> [--board <id>] [--engine codex|grok|claude] [--gated] [--plan-only]"
 ---
 
 # Orchestrate — Idea → Finished Deliverable, One Command
 
 Runs the whole arc through the core workflow runner
 (`core/scripts/workflow-runner.mjs` — Codex by default, Grok via
-`--engine grok`), launched detached in the background:
+`--engine grok`, Claude via `--engine claude`), launched detached in the
+background:
 
 **Capture → Brainstorm → Decide → PRD → Resolve → Execute.**
 
@@ -38,7 +39,9 @@ fresh session.
   `{co}`, announce ("Anchored on **{co}**"). Otherwise resolve from cwd, else
   ask (one AskUserQuestion).
 - `--board <id>` → expanding an existing board idea.
-- `--engine codex|grok` → which agent CLI runs the stages (default codex).
+- `--engine codex|grok|claude` → which agent CLI runs the stages (default
+  codex). `claude` runs each stage as a headless `claude -p` subagent — same
+  HQ hooks, tiers map to `opus` (plan) / `sonnet` (exec).
 - `--gated` → pause at human gates. `--plan-only` → stop at the PRD.
 - Remaining text = the idea description. If empty, ask for it (fold into the
   same single question as company when both are missing).
@@ -61,7 +64,7 @@ Run these cheap checks; on any failure use the Fallback (Step 7):
 
 ```bash
 command -v node
-command -v {codex|grok}        # the chosen engine's CLI
+command -v {codex|grok|claude} # the chosen engine's CLI
 test -f core/scripts/workflow-runner.mjs
 test -f core/scripts/workflow-gate.sh
 ```

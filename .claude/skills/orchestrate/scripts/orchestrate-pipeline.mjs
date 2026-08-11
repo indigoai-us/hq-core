@@ -14,7 +14,7 @@ export const meta = {
 // args contract (all strings unless noted):
 //   company      REQUIRED  company slug from companies/manifest.yaml, or "personal"
 //   description  REQUIRED  the idea, 1-3 sentences
-//   engine       optional  "codex" (default) or "grok" — which agent CLI runs the stages
+//   engine       optional  "codex" (default), "grok", or "claude" — which agent CLI runs the stages
 //   boardId      optional  existing board idea id ({prefix}-proj-NNN) to expand
 //   direction    optional  speed | quality | exploration | cost  (interview answer)
 //   constraints  optional  free text (timeline, must-use tech, budget)
@@ -44,8 +44,8 @@ if (!co || !description) {
   throw new Error('ideate-pipeline needs args {company, description} — got ' + JSON.stringify(args))
 }
 const engine = args?.engine || 'codex'
-if (engine !== 'codex' && engine !== 'grok') {
-  throw new Error('ideate-pipeline args.engine must be "codex" or "grok" — got ' + JSON.stringify(engine))
+if (engine !== 'codex' && engine !== 'grok' && engine !== 'claude') {
+  throw new Error('ideate-pipeline args.engine must be "codex", "grok", or "claude" — got ' + JSON.stringify(engine))
 }
 const direction = args?.direction || ''
 const constraints = args?.constraints || ''

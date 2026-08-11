@@ -1,10 +1,10 @@
 #!/bin/bash
 # Regression test for core/scripts/workflow-runner.mjs — the multi-engine
-# workflow orchestrator (Codex + Grok) with human gates.
+# workflow orchestrator (Codex + Grok + Claude) with human gates.
 #
-# Uses FAKE engine binaries (HQ_WORKFLOW_CODEX_BIN / HQ_WORKFLOW_GROK_BIN) so
-# no real agents run, and a synthetic HQ root (HQ_ROOT) so the suite is
-# hermetic in CI. Covered behaviors:
+# Uses FAKE engine binaries (HQ_WORKFLOW_CODEX_BIN / HQ_WORKFLOW_GROK_BIN /
+# HQ_WORKFLOW_CLAUDE_BIN) so no real agents run, and a synthetic HQ root
+# (HQ_ROOT) so the suite is hermetic in CI. Covered behaviors:
 #   1. codex engine (default): every spawn carries the three unattended-run
 #      flags, stdin at /dev/null, `--` before the prompt, -C <hq-root>; result
 #      read from the --output-last-message file; --output-schema parsed
@@ -13,9 +13,18 @@
 #      the reply is captured from stdout; a schema instruction is appended to
 #      the prompt and the JSON reply parsed; the process runs with its cwd at
 #      the HQ root (grok's anchor is cwd, not -C)
+#   2d. claude engine: spawns the claude bin with -p <prompt>,
+#      --permission-mode bypassPermissions --output-format json, NO codex flags
+#      and NO --always-approve; the reply is unwrapped from the result envelope
+#      ({subtype,is_error,result,permission_denials}) on stdout; an errored
+#      envelope (is_error/subtype error) or empty result throws loudly; a schema
+#      instruction is appended and the JSON reply parsed; cwd anchored at the
+#      HQ root. For the stdout engines a parsed reply that violates opts.schema
+#      (wrong type / missing required / bad enum) is rejected with a schema
+#      error rather than passed downstream
 #   3. tiers are engine-neutral: "plan"/"exec" required; codex maps to
-#      gpt-5.6-sol / gpt-5.6-terra, grok to grok-4.5; the
-#      HQ_WORKFLOW_{CODEX,GROK}_{PLAN,EXEC}_MODEL envs re-point them; an
+#      gpt-5.6-sol / gpt-5.6-terra, grok to grok-4.5, claude to opus/sonnet; the
+#      HQ_WORKFLOW_{CODEX,GROK,CLAUDE}_{PLAN,EXEC}_MODEL envs re-point them; an
 #      unknown engine or tier throws
 #   4. parallel(): a failing thunk resolves to null, siblings survive
 #   5. soft timeout: a slow agent is NOT killed — repeating TIMEOUT WARNING
@@ -127,9 +136,49 @@ exit 0
 FAKE
 chmod +x "$TMP/bin/grok"
 
+# ---- fake claude (JSON result envelope on STDOUT, as `claude -p` emits) ------
+# Real shape (claude -p --output-format json):
+#   {"type":"result","subtype":"success","is_error":false,"result":"...",
+#    "stop_reason":"end_turn","permission_denials":[], ...}
+# An errored run still exits 0 with a JSON envelope but subtype/is_error flag
+# the failure — the ERRORRUN directive reproduces that.
+cat > "$TMP/bin/claude" <<'FAKE'
+#!/usr/bin/env bash
+rec="${FAKE_REC_DIR:?}"
+n="$$-$RANDOM"
+printf '%s\n' "$@" > "$rec/claude-argv.$n"
+pwd > "$rec/claude-cwd.$n"
+prompt=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|--print) prompt="$2"; shift 2 ;;
+    --model|--output-format|--permission-mode) shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$prompt" in
+  *ERRORRUN*)
+    printf '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Ran out of turns.","permission_denials":[{"tool_name":"Glob"}]}\n' ;;
+  *EMPTYREPLY*)
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"","permission_denials":[]}\n' ;;
+  *BADSCHEMA*)
+    # syntactically valid JSON, but pong is a string where the schema wants a number
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"{\\"pong\\": \\"not-a-number\\"}","permission_denials":[]}\n' ;;
+  *PROSEJSON*)
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"Reading the file.{\\"pong\\": 99, \\"draft\\": true}Re-checking.{\\"pong\\": 2, \\"viaStdout\\": true}","permission_denials":[]}\n' ;;
+  *"Return ONLY JSON matching this JSON Schema"*)
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"{\\"pong\\": 2, \\"viaStdout\\": true}","permission_denials":[]}\n' ;;
+  *)
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"claudeecho:%s","permission_denials":[]}\n' "$prompt" ;;
+esac
+exit 0
+FAKE
+chmod +x "$TMP/bin/claude"
+
 run_wf() { # run_wf <script-file> [extra runner args...] -> $OUT, $RC
   local script="$1"; shift
   OUT="$(HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" HQ_WORKFLOW_GROK_BIN="$TMP/bin/grok" \
+    HQ_WORKFLOW_CLAUDE_BIN="$TMP/bin/claude" \
     FAKE_REC_DIR="$TMP/rec" HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" \
     HQ_WORKFLOW_GATES_DIR="$TMP/gates-default" \
     node "$RUNNER" "$script" --quiet --run-dir "$TMP/run-$RANDOM" "$@" 2>"$TMP/stderr.last")"
@@ -277,6 +326,131 @@ sf="$(grep -l -- 'shape this' "$TMP/rec"/grok-argv.* 2>/dev/null | head -1)"
 [ -n "$sf" ] && grep -q 'Return ONLY JSON matching this JSON Schema' "$sf"
 check "grok: schema instruction appended to the prompt" "$?"
 
+# ---- 2d: claude engine -------------------------------------------------------
+cat > "$TMP/wf-claude.mjs" <<'WF'
+const text = await agent('say hi claude', { engine: 'claude', tier: 'exec', timeoutSecs: 30 })
+const structured = await agent('shape this claude', {
+  engine: 'claude', tier: 'exec', timeoutSecs: 30,
+  schema: { type: 'object', properties: { pong: { type: 'number' } } },
+})
+return { text, structured }
+WF
+run_wf "$TMP/wf-claude.mjs"
+check "claude workflow exits 0" "$RC"
+echo "$OUT" | node -e '
+  const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(r.text === "claudeecho:say hi claude" && r.structured.pong === 2
+    && r.structured.viaStdout === true ? 0 : 1);
+'
+check "claude: reply unwrapped from result envelope; schema JSON parsed from the reply" "$?"
+
+claude_ok=0
+cf="$(grep -l -- 'say hi claude' "$TMP/rec"/claude-argv.* 2>/dev/null | head -1)"
+[ -n "$cf" ] || claude_ok=1
+if [ -n "$cf" ]; then
+  grep -qx -- '-p' "$cf" || claude_ok=1
+  grep -qx -- 'bypassPermissions' "$cf" || claude_ok=1
+  grep -qx -- 'sonnet' "$cf" || claude_ok=1
+  grep -q -- '--always-approve' "$cf" && claude_ok=1
+  grep -q -- '--dangerously-bypass' "$cf" && claude_ok=1
+fi
+check "claude: -p + bypassPermissions + sonnet (exec), no codex flags, no --always-approve" "$claude_ok"
+
+env_fmt_c=1
+if [ -n "$cf" ]; then
+  grep -A1 -x -- '--output-format' "$cf" | tail -1 | grep -qx -- 'json' && env_fmt_c=0
+fi
+check "claude: always requested with --output-format json (envelope, not text)" "$env_fmt_c"
+
+cc="$(ls "$TMP/rec"/claude-cwd.* 2>/dev/null | head -1)"
+[ -n "$cc" ] && grep -qx -- "$HQROOT" "$cc"
+check "claude: process anchored at the HQ root via cwd" "$?"
+
+scf="$(grep -l -- 'shape this claude' "$TMP/rec"/claude-argv.* 2>/dev/null | head -1)"
+[ -n "$scf" ] && grep -q 'Return ONLY JSON matching this JSON Schema' "$scf"
+check "claude: schema instruction appended to the prompt" "$?"
+
+# An errored envelope (subtype error / is_error) or an empty result still exits
+# 0 — that must surface as a clear error naming the subtype, NOT a downstream
+# "not valid JSON" parse failure. permission_denials are surfaced in the error.
+cat > "$TMP/wf-claude-error.mjs" <<'WF'
+const r = await (async () => {
+  try {
+    await agent('please ERRORRUN this one', { engine: 'claude', tier: 'exec', timeoutSecs: 30 })
+    return { threw: false }
+  } catch (e) {
+    return {
+      threw: true,
+      namesSubtype: e.message.includes('subtype=error_during_execution'),
+      notParseError: !e.message.includes('not valid JSON'),
+      namesDenial: e.message.includes('denied'),
+    }
+  }
+})()
+const empty = await (async () => {
+  try {
+    await agent('EMPTYREPLY please', { engine: 'claude', tier: 'exec', timeoutSecs: 30 })
+    return { threw: false }
+  } catch (e) { return { threw: true, marker: e.message.includes('empty reply') } }
+})()
+return { r, empty }
+WF
+run_wf "$TMP/wf-claude-error.mjs"
+check "claude-error workflow exits 0 (errors are catchable in-script)" "$RC"
+echo "$OUT" | node -e '
+  const x = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(x.r.threw && x.r.namesSubtype && x.r.notParseError && x.r.namesDenial
+    && x.empty.threw && x.empty.marker ? 0 : 1);
+'
+check "errored envelope throws naming subtype + denials; empty result throws too" "$?"
+
+# Prose-wrapped JSON (a discarded draft object then the real answer) still parses
+# the LAST balanced block from the unwrapped result text.
+cat > "$TMP/wf-claude-prose.mjs" <<'WF'
+const r = await agent('PROSEJSON please', {
+  engine: 'claude', tier: 'exec', timeoutSecs: 30,
+  schema: { type: 'object', properties: { pong: { type: 'number' } } },
+})
+return r
+WF
+run_wf "$TMP/wf-claude-prose.mjs"
+check "claude prose-wrapped JSON workflow exits 0" "$RC"
+echo "$OUT" | node -e '
+  const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(r.pong === 2 && r.viaStdout === true ? 0 : 1);
+'
+check "claude: JSON extracted from narration, last block wins over earlier draft" "$?"
+
+# The stdout engines only ask for opts.schema in-prompt (no server-side schema
+# flag), so a valid-JSON-but-wrong-shape reply must be rejected here — not passed
+# downstream where it crashes a later phase or misreports a result.
+cat > "$TMP/wf-claude-badschema.mjs" <<'WF'
+const r = await (async () => {
+  try {
+    await agent('BADSCHEMA please', {
+      engine: 'claude', tier: 'exec', timeoutSecs: 30,
+      schema: { type: 'object', required: ['pong'], properties: { pong: { type: 'number' } } },
+    })
+    return { threw: false }
+  } catch (e) {
+    return {
+      threw: true,
+      namesSchema: e.message.includes('violates the requested schema'),
+      namesField: e.message.includes('pong'),
+      notParseError: !e.message.includes('is not valid JSON'),
+    }
+  }
+})()
+return r
+WF
+run_wf "$TMP/wf-claude-badschema.mjs"
+check "claude-badschema workflow exits 0 (schema error is catchable in-script)" "$RC"
+echo "$OUT" | node -e '
+  const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(r.threw && r.namesSchema && r.namesField && r.notParseError ? 0 : 1);
+'
+check "schema-violating JSON (wrong type) rejected with a schema error, not passed through" "$?"
+
 # ---- 3: tiers + models + validation ------------------------------------------
 cat > "$TMP/wf-tier.mjs" <<'WF'
 const badTier = await (async () => {
@@ -289,6 +463,8 @@ const badEngine = await (async () => {
 })()
 await agent('planner-prompt', { tier: 'plan', timeoutSecs: 30 })
 await agent('doer-prompt', { tier: 'exec', timeoutSecs: 30 })
+await agent('claude-planner-prompt', { engine: 'claude', tier: 'plan', timeoutSecs: 30 })
+await agent('claude-doer-prompt', { engine: 'claude', tier: 'exec', timeoutSecs: 30 })
 return { badTier, badEngine }
 WF
 run_wf "$TMP/wf-tier.mjs"
@@ -304,24 +480,35 @@ for f in "$TMP/rec"/codex-argv.*; do
   if grep -qx -- 'doer-prompt' "$f"; then grep -qx -- 'gpt-5.6-terra' "$f" && exec_ok=0; fi
 done
 check "codex tiers: plan -> gpt-5.6-sol, exec -> gpt-5.6-terra" "$(( plan_ok + exec_ok ))"
+cplan_ok=1; cexec_ok=1
+for f in "$TMP/rec"/claude-argv.*; do
+  if grep -qx -- 'claude-planner-prompt' "$f"; then grep -qx -- 'opus' "$f" && cplan_ok=0; fi
+  if grep -qx -- 'claude-doer-prompt' "$f"; then grep -qx -- 'sonnet' "$f" && cexec_ok=0; fi
+done
+check "claude tiers: plan -> opus, exec -> sonnet" "$(( cplan_ok + cexec_ok ))"
 
 cat > "$TMP/wf-tier-env.mjs" <<'WF'
 await agent('env-codex-plan', { tier: 'plan', timeoutSecs: 30 })
 await agent('env-grok-exec', { engine: 'grok', tier: 'exec', timeoutSecs: 30 })
+await agent('env-claude-plan', { engine: 'claude', tier: 'plan', timeoutSecs: 30 })
 return 'ok'
 WF
 export HQ_WORKFLOW_CODEX_PLAN_MODEL="custom-codex-plan"
 export HQ_WORKFLOW_GROK_EXEC_MODEL="custom-grok-exec"
+export HQ_WORKFLOW_CLAUDE_PLAN_MODEL="custom-claude-plan"
 run_wf "$TMP/wf-tier-env.mjs"
-unset HQ_WORKFLOW_CODEX_PLAN_MODEL HQ_WORKFLOW_GROK_EXEC_MODEL
-env_c=1; env_g=1
+unset HQ_WORKFLOW_CODEX_PLAN_MODEL HQ_WORKFLOW_GROK_EXEC_MODEL HQ_WORKFLOW_CLAUDE_PLAN_MODEL
+env_c=1; env_g=1; env_cl=1
 for f in "$TMP/rec"/codex-argv.*; do
   if grep -qx -- 'env-codex-plan' "$f"; then grep -qx -- 'custom-codex-plan' "$f" && env_c=0; fi
 done
 for f in "$TMP/rec"/grok-argv.*; do
   if grep -qx -- 'env-grok-exec' "$f"; then grep -qx -- 'custom-grok-exec' "$f" && env_g=0; fi
 done
-check "model envs re-point tier models per engine" "$(( env_c + env_g ))"
+for f in "$TMP/rec"/claude-argv.*; do
+  if grep -qx -- 'env-claude-plan' "$f"; then grep -qx -- 'custom-claude-plan' "$f" && env_cl=0; fi
+done
+check "model envs re-point tier models per engine" "$(( env_c + env_g + env_cl ))"
 
 # ---- 4: parallel errors -> null ----------------------------------------------
 cat > "$TMP/wf-parallel.mjs" <<'WF'
