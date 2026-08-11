@@ -2,7 +2,7 @@
 # hq-core: public
 # hq-grok-user-bridge.sh — user-global Grok hook bridge for HQ trees.
 #
-# Installed by core/scripts/grok-trust.sh into ~/.grok/hooks/ so HQ guards
+# Installed by `hq reindex` (hq-cli hook-trust step) into ~/.grok/hooks/ so HQ guards
 # enforce even when Grok fails to load project-scoped `.grok/hooks/*.json`
 # (observed on Grok Build 0.2.93: project hooks never appear in `grok inspect`,
 # while ~/.grok/hooks/ always does).

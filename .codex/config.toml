@@ -44,7 +44,7 @@ timeout = 30
 statusMessage = "Checking HQ safety rails"
 
 [[hooks.PostToolUse]]
-matcher = "Bash|apply_patch|Edit|Write"
+matcher = "Bash|apply_patch|Edit|Write|update_plan|web_search"
 
 [[hooks.PostToolUse.hooks]]
 type = "command"
@@ -67,3 +67,21 @@ type = "command"
 command = 'for d in "${HQ_ROOT:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "$PWD"; do h="$d/.codex/hooks/hq-codex-hook-adapter.sh"; if [ -n "$d" ] && [ -f "$h" ]; then exec /bin/bash "$h"; fi; done; echo "HQ codex hook adapter not found (searched HQ_ROOT, git toplevel, $PWD) - HQ safety rails did NOT run for this event" >&2; cat >/dev/null; exit 0'
 timeout = 30
 statusMessage = "Running HQ pre-compact hooks"
+
+[[hooks.SessionEnd]]
+
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = 'for d in "${HQ_ROOT:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "$PWD"; do h="$d/.codex/hooks/hq-codex-hook-adapter.sh"; if [ -n "$d" ] && [ -f "$h" ]; then exec /bin/bash "$h"; fi; done; cat >/dev/null; exit 0'
+# Codex enforces a 3s SessionEnd budget and clamps (with a warning) anything
+# larger — declare 3 explicitly so sessions stay warning-free.
+timeout = 3
+statusMessage = "Running HQ session-end hooks"
+
+[[hooks.SubagentStop]]
+
+[[hooks.SubagentStop.hooks]]
+type = "command"
+command = 'for d in "${HQ_ROOT:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "$PWD"; do h="$d/.codex/hooks/hq-codex-hook-adapter.sh"; if [ -n "$d" ] && [ -f "$h" ]; then exec /bin/bash "$h"; fi; done; cat >/dev/null; exit 0'
+timeout = 30
+statusMessage = "Running HQ subagent-stop hooks"
