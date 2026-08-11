@@ -44,6 +44,7 @@ If a skill is skipped as invalid YAML or a hook reports a launch failure, use th
 ### Quality, Debugging & Review
 | Command | What it does |
 |---------|--------------|
+| `hq doctor` | Verify HQ hook guardrails are wired and firing (read-only, offline) — see [hq doctor](#hq-doctor--hook-guardrail-diagnostics) |
 | `/tdd` | Enforce test-driven development cycle |
 | `/quality-gate` | Pre-commit quality checks (typecheck, lint, test, coverage) |
 | `/investigate` | Iron Law debugging — root-cause investigation before fixes |
@@ -145,6 +146,45 @@ Receiving is handled by the **HQ Desktop App** (it's receive-only — there's no
 |---------|--------------|
 | `/personal-interview` | Deep interview to populate profile / voice |
 | `/ascii-graphic` | Generate ASCII block-art banners for posts and OG images |
+
+## hq doctor — hook guardrail diagnostics
+
+`hq doctor` is the single command that answers whether your HQ hook guardrails
+are actually wired and firing, on whichever agent platform you are running
+(Claude Code, Codex, or Grok Build). It is read-only and fully offline — no HQ
+login, no vault access, no network — because it has to work precisely when the
+rest of the toolchain is suspect. It absorbs the older `check-hq-hooks.sh` (now a
+thin wrapper that calls `hq doctor` and degrades to an inline check when the CLI
+is absent) and the `/harness-audit` hook-coverage score.
+
+| Invocation | What it does |
+|------------|--------------|
+| `hq doctor` | Wiring checks: every hook registration across Claude/Codex/Grok is present, executable, correctly gated, and not word-split; plus the runtime probe (did hooks actually fire this session). Never executes a hook. |
+| `hq doctor --deep-test` | Everything above, then actually fires your blocking hooks with crafted inputs through the real `hook-gate.sh` under all three profiles — in a throwaway sandbox, never your live tree — to prove they block what they claim to. |
+| `hq doctor --fix` | Applies only the allowlisted safe repairs (restore an executable bit, add a hook id to gate profiles it is missing from, re-register an on-disk hook) behind a backup, a diff preview, interactive confirmation, and a dirty-tree refusal. Never rewrites a hook's body or deletes a file. |
+| `hq doctor --json` | Emits the machine-readable, versioned document (schema version, detected platform, resolved root, and every result). This is what `/harness-audit` and CI consume. |
+| `hq doctor --session-id <id>` | Scopes the runtime probe's ledger check to that exact session, so an older session's ledger cannot be mistaken for the current runtime (useful on app/SDK hosts). |
+
+**Exit code:** `0` unless some result is `FAIL` or `UNKNOWN`; `1` when any is.
+`WARN`, `UNTESTED`, `NA`, and `KNOWN-DEFECT` are reported but never fail the
+command — a doctor that goes red on a healthy install would train you to ignore
+it, which is the exact failure mode it exists to prevent.
+
+**Status vocabulary** (the load-bearing part — these never collapse into `PASS`):
+
+| Status | Meaning |
+|--------|---------|
+| `PASS` | Verified correct. |
+| `FAIL` | Verified broken — fix it. |
+| `WARN` | Non-blocking concern worth a look (e.g. an orphaned hook, a stale allowed-divergence entry). |
+| `UNTESTED` | Wired but never exercised: the hook is registered but has no fixture, so its behaviour has not been proven. Coverage is reported as a `tested/total` line so this stays visible. |
+| `NA` | Untestable on this platform (e.g. a Grok passive-event hook that cannot inject model-facing context). Not a pass and not a failure — the platform simply cannot run the check. |
+| `UNKNOWN` | Could not be determined — the host platform was unidentifiable, or a check could not run. Fails the command rather than claiming a verdict it cannot support. |
+| `KNOWN-DEFECT` | A tracked, unfixed defect pinned by an `expectedFailure` fixture marker. Always printed and counted separately, but never fails the command; if it starts passing, the doctor warns that the marker is stale. |
+
+The distinction between `UNTESTED` / `NA` / `UNKNOWN` and `PASS` is the design's
+central safeguard: a false `PASS` is worse than no tool, because it retires the
+instinct to check by hand.
 
 ## Workers
 

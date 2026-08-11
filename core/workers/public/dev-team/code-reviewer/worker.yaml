@@ -65,7 +65,7 @@ cli:
   binary: /opt/homebrew/bin/codex
   commands:
     - codex review --uncommitted -c model="gpt-5.4" --reasoning high --fast
-    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+    - codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast
 
 # State Machine (Loom pattern)
 state_machine:

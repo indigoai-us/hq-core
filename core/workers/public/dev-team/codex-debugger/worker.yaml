@@ -53,13 +53,13 @@ verification:
     - before_applying_fix
     - on_breaking_changes
 
-# CLI-based: Skills use `codex exec --full-auto` and `codex exec --sandbox read-only` via Bash.
+# CLI-based: Skills use `codex exec --sandbox danger-full-access` and `codex exec --sandbox read-only` via Bash.
 # MCP server (codex-engine) no longer required for pipeline execution.
 cli:
   binary: /opt/homebrew/bin/codex
   commands:
-    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
-    - codex exec --sandbox read-only -c model="gpt-5.4" --reasoning high --fast
+    - codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast
+    - codex exec --dangerously-bypass-hook-trust --sandbox read-only -c model="gpt-5.4" --reasoning high --fast
 
 # State Machine (Loom pattern)
 state_machine:
