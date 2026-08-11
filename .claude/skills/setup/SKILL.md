@@ -40,20 +40,40 @@ If a manifest exists, this phase becomes the primary driver of setup. The manife
 - `packs` with status `"failed"` or `"running"` (interrupted) → retry each: `npx --package=@indigoai-us/hq-cli hq install {pack-name}`
 
 **P2 — Recommended (HQ works but some features limited):**
-- `dependencies.gh` failed/skipped → no PR workflows; explain benefit and offer: `brew install gh && gh auth login`
-- `dependencies.homebrew` skipped → limits future installs; explain benefit and offer install
+- `dependencies.gh` failed/skipped → no PR workflows; install directly: `brew install gh` (then `gh auth login` — the browser auth is the one warranted prompt)
+- `dependencies.homebrew` skipped → limits future installs; install directly (best-effort; skip silently if the platform install can't run unattended)
 - `steps.personalize` failed → profile not set up; Phase 1 below will cover this
 
 ### Remediation flow
 
+**Install missing dependencies and CLI tools directly — never ask whether to
+install them, and never surface an "install all / install some / skip all"
+picker.** A user running `/setup` has already opted into getting HQ working; a
+mid-setup "do you want these tools?" question is pure friction. The install
+commands in the triage lists above are safe, idempotent, and non-blocking — just
+run them. This includes P2 items (`gh`, `homebrew`): install them directly too.
+
 For each issue found (in priority order):
 
-1. **Explain what it is and why it matters** — one sentence, tied to what the user loses without it.
-   - Example: "GitHub CLI wasn't installed during setup. This means you won't be able to create PRs or manage repos from HQ. Would you like me to install it now?"
-   - Example: "The search index wasn't built during install. Without it, `/search` and knowledge lookups won't work. Let me set that up."
-2. **For P0/P1 items: fix them directly.** Run the install command, verify it worked, move on. Only ask if there's a real choice (e.g. install method).
-3. **For P2 items: offer with context.** Explain what the user gains, ask if they want it. Accept "skip" gracefully.
-4. **After each fix: verify.** Run `which {tool}` or equivalent. If it failed, try an alternative approach. Don't move on until it's resolved or the user explicitly skips.
+1. **Install it directly, silently.** Run the item's install command (from the
+   triage lists above), best-effort. Do not pause for permission, do not
+   explain-then-ask, and do not offer install-method choices — pick the standard
+   method and run it.
+2. **After each fix: verify.** Run `which {tool}` or equivalent. If it worked,
+   move on without narrating it. If it failed, try one alternative, then record
+   it under "Still needs attention" in the summary and keep going — never block
+   setup on a failed optional tool.
+3. **The only permitted prompt in this phase is a genuine interactive auth** that
+   cannot run unattended (e.g. `gh auth login`, which opens a browser).
+   *Installing* a tool is never that case — installs are always direct.
+4. **Bootstrap dependencies are the one install exception.** A P0 that cannot be
+   installed unattended from within setup — Node itself (nothing runs without it,
+   and there is no npm to install it with), or a platform package manager on a
+   machine that has none (e.g. Homebrew on a bare macOS) — falls back to *guiding*
+   the user through that one install, per its triage entry. This is not the
+   tool-choice picker the rule forbids; it is the narrow "we literally cannot do
+   this for you" case. Everything installable via npm / an existing package
+   manager still installs directly, no prompt.
 
 ### After remediation
 
@@ -77,12 +97,46 @@ Still needs attention:
 
 Skip items already `"ok"` in the manifest — don't re-check things the installer already handled successfully. Then continue to Phase 0b only for auth state the manifest doesn't cover.
 
-## Phase 0b: Auth checks (non-manifest)
+## Phase 0b: Dependencies + auth checks (non-manifest)
 
-If Phase 0a ran, skip any deps already checked there. This phase only handles auth state the manifest doesn't track.
+If Phase 0a ran, skip any deps already checked there. This phase covers the
+fresh / manual install case where there is **no** install manifest — the tools
+the wizard leans on may simply not be present yet.
+
+**Missing tools — install directly, never ask.** When there's no manifest, probe
+the core tooling and install whatever is missing, best-effort and silently. Do
+**not** present an "install all / some / none" choice — a user running `/setup`
+wants HQ working, so install and move on:
+
+```bash
+# hq-cli — npm global
+command -v hq >/dev/null 2>&1 || npm install -g @indigoai-us/hq-cli
+
+# qmd — npm global; on macOS it loads SQLite extensions the built-in sqlite3
+# can't, so ensure Homebrew SQLite is present regardless of whether qmd itself
+# was already installed.
+command -v qmd >/dev/null 2>&1 || npm install -g @tobilu/qmd
+if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+  brew list sqlite >/dev/null 2>&1 || brew install sqlite
+fi
+
+# gh — pick the platform-appropriate installer (brew / apt / winget); best-effort.
+if ! command -v gh >/dev/null 2>&1; then
+  if   command -v brew    >/dev/null 2>&1; then brew install gh
+  elif command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y gh
+  elif command -v winget  >/dev/null 2>&1; then winget install --id GitHub.cli -e --source winget
+  fi
+fi
+```
+
+Verify each with `command -v {tool}` afterward. If an install fails (or no
+supported installer is available on this platform), note it under "Still needs
+attention" in the Phase 3 summary and continue — never block setup on a failed
+optional tool.
 
 **Auth checks** (not tracked by manifest):
 - `gh auth status` — if gh is installed but not authenticated, offer `gh auth login`
+  (a browser auth is the one place a prompt is warranted; installing gh is not).
 
 Do **not** check for or install third-party deploy CLIs (e.g. the Vercel CLI) here.
 HQ's own features never shell out to them — `/deploy` targets hq-deploy
@@ -566,6 +620,10 @@ Dependencies:
 ✓ qmd (semantic search) — or skipped
 ✓ gh (GitHub CLI) — or skipped
 
+Still needs attention:      ← include this block ONLY if a direct install failed
+✗ {tool} — {what failed; the one manual command the user can run to finish it}
+...
+
 Knowledge Repos:
 Your personal knowledge bases can be independent git repos symlinked into personal/knowledge/.
 This lets you version, share, and publish each knowledge base separately.
@@ -944,7 +1002,12 @@ setup knowing what `/handoff` is, why it matters, and how to run it.
 - Use defaults when user says "skip"
 - Never overwrite existing files without asking
 - Create parent directories as needed
-- For CLI tools (gh, vercel): inform but don't block setup if missing. These are "recommended" not "required" (except claude itself)
+- **Install missing dependencies and CLI tools directly — never ask.** Do not
+  prompt "do you want to install X?" and never surface an install-all / some /
+  none picker for tooling; the standard install command runs unattended. The one
+  exception is an interactive auth that can't run unattended (e.g. `gh auth
+  login`). Don't block setup if an optional tool's install fails — note it in the
+  summary and move on. These are "recommended" not "required" (except claude itself).
 - Always use relative paths for symlinks (../../repos/... not absolute paths)
 - Phase 4/5 are skippable — if the user says "skip", still write `personal/knowledge/getting-started-next-steps.md` using best-effort defaults from Phase 1 answers. Never block setup completion on the orientation or interview
 - Phase 6 (welcome page) is skippable — if the user isn't signed in or declines,

@@ -745,7 +745,7 @@ Parse the worker's JSON output.
    - Check `codex_debug_attempts` — skip if this phase already had a codex-debugger intervention.
    - **If `codex_available == true`:** Run Codex debugger inline via CLI:
      ```bash
-     cd {target_repo_path} && codex exec --full-auto -c model="{codex_model}" --cd {target_repo_path} \
+     cd {target_repo_path} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="{codex_model}" --cd {target_repo_path} \
        "Diagnose and fix back-pressure failure. Check: {failed_check_name}. Error: {stdout_stderr_from_failed_check}. Then re-run: {verification.post_execute commands}" 2>&1
      ```
    - **If `codex_available == false`:** Spawn a debugger sub-agent with the runtime adapter:

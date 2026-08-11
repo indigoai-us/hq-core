@@ -5,12 +5,89 @@
 
 set -uo pipefail
 
+# Prefer the CLI-hosted gate. The canonical implementation ships in the CLI
+# (`hq core checkpoint-stop-gate`); when the installed CLI provides it, delegate
+# with the hook payload flowing through untouched on stdin. Otherwise fall
+# through to the in-tree copy below, which stays behavior-identical as a
+# transitional fallback for a CLI that predates the command. The probe reads
+# `hq core --help`, never our stdin, so a fall-through still sees the full
+# payload. HQ_CHECKPOINT_GATE_NO_CLI=1 forces the in-tree path (used by tests).
+if [ "${HQ_CHECKPOINT_GATE_NO_CLI:-}" != "1" ]; then
+  __cp_hq="$(command -v hq 2>/dev/null || true)"
+  if [ -n "$__cp_hq" ]; then
+    # `hq core --help` costs seconds of node startup, so probe it at most once
+    # per CLI build and cache the answer. Key by resolved path + mtime + size so
+    # a PATH switch or same-second rebuild cannot reuse a stale result; keep the
+    # cache in a private 0700 dir and trust it only when we own it, so another
+    # user cannot plant a positive result on a shared host; never persist a
+    # failed probe. HQ_CLI_CAPS_CACHE overrides the path (tests isolate it).
+    __cp_mt="$(stat -c %Y "$__cp_hq" 2>/dev/null || stat -f %m "$__cp_hq" 2>/dev/null || echo 0)"
+    __cp_sz="$(stat -c %s "$__cp_hq" 2>/dev/null || stat -f %z "$__cp_hq" 2>/dev/null || echo 0)"
+    __cp_key="$(printf '%s' "$__cp_hq:$__cp_mt:$__cp_sz" | cksum 2>/dev/null | cut -d' ' -f1)"
+    if [ -n "${HQ_CLI_CAPS_CACHE:-}" ]; then
+      __cp_cache="$HQ_CLI_CAPS_CACHE"
+    else
+      __cp_dir="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/hq-cli"
+      mkdir -p "$__cp_dir" 2>/dev/null && chmod 700 "$__cp_dir" 2>/dev/null || true
+      __cp_cache="$__cp_dir/core-caps.${__cp_key:-0}"
+    fi
+    __cp_caps=""
+    if [ -r "$__cp_cache" ] && [ -O "$__cp_cache" ]; then
+      __cp_caps="$(cat "$__cp_cache" 2>/dev/null || true)"
+    elif __cp_caps="$(hq core --help 2>/dev/null)"; then
+      [ -n "$__cp_caps" ] && (umask 077; printf '%s' "$__cp_caps" >"$__cp_cache" 2>/dev/null) || true
+    else
+      __cp_caps=""
+    fi
+    case "$__cp_caps" in
+      *checkpoint-stop-gate*) exec hq core checkpoint-stop-gate ;;
+    esac
+  fi
+fi
+
 {
   self_hq="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)"
   HQ="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-$self_hq}}"
   HQ="${HQ:-${HOME}/Documents/HQ}"
   [ -n "$self_hq" ] || exit 0
   . "$self_hq/core/scripts/hook-lib.sh"
+
+  # checkpoint_gate_caller_email — best-effort caller email from the local
+  # Cognito token cache, with no network round-trip. Prints empty when it cannot
+  # be resolved, so the scope gate below simply does not apply (fail-open). Both
+  # the id and access tokens are inspected, and the DELEGATED email claim is
+  # preferred over the raw `email`, so an outpost / delegated token resolves to
+  # the operator identity rather than the service identity it acts as (the same
+  # precedence the checkpoint eligibility logic uses).
+  # HQ_CHECKPOINT_CALLER_EMAIL overrides the lookup for tests and trusted callers.
+  checkpoint_gate_caller_email() {
+    if [ -n "${HQ_CHECKPOINT_CALLER_EMAIL:-}" ]; then
+      printf '%s' "$HQ_CHECKPOINT_CALLER_EMAIL"
+      return 0
+    fi
+    command -v jq >/dev/null 2>&1 || return 0
+    local tf tok claim seg email
+    tf="${HQ_COGNITO_TOKENS_FILE:-${HOME:-}/.hq/cognito-tokens.json}"
+    [ -n "${HQ_COGNITO_TOKENS_FILE:-}${HOME:-}" ] || return 0
+    [ -r "$tf" ] || return 0
+    for claim in idToken accessToken; do
+      tok="$(jq -r --arg k "$claim" '.[$k] // empty' "$tf" 2>/dev/null || true)"
+      [ -n "$tok" ] || continue
+      # JWT payload is the middle segment; base64url -> base64 before decoding.
+      seg="$(printf '%s' "$tok" | cut -d. -f2 | tr '_-' '/+')"
+      case $(( ${#seg} % 4 )) in
+        2) seg="${seg}==" ;;
+        3) seg="${seg}=" ;;
+      esac
+      email="$(jq -rn --arg s "$seg" '
+        try ($s | @base64d | fromjson
+          | (."custom:delegatedEmail" // .email // empty)) catch empty' 2>/dev/null || true)"
+      case "$email" in
+        ?*@?*) printf '%s' "$email"; return 0 ;;
+      esac
+    done
+    return 0
+  }
 
   input="$(cat 2>/dev/null || printf '{}')"
   input_fields="$(printf '%s' "$input" | jq -r '[.transcript_path // "", .session_id // ""] | @tsv' 2>/dev/null)" || exit 0
@@ -19,6 +96,78 @@ set -uo pipefail
   # The sibling maintains HQ after a successful checkpoint. It must never
   # recursively demand another checkpoint of itself.
   [ "${HQ_CHECKPOINT_SIBLING:-}" = "1" ] && exit 0
+
+  # Company-scope gate ---------------------------------------------------------
+  # An OPT-IN requirement layered onto this Stop hook: for an operator whose
+  # email domain is listed in HQ_CHECKPOINT_SCOPE_GATE_DOMAINS (comma-separated,
+  # e.g. "example.ai,example.com"), a session must declare a scope — a real
+  # company, or the reserved `personal` — before it can end. It is off by
+  # default: release-shipped scaffold stays company-agnostic, and a deployment
+  # that wants the requirement configures the domains in its own environment. It
+  # is orthogonal to the checkpoint requirement (applies on every turn and
+  # runtime); every branch is fail-open; HQ_CHECKPOINT_GATE=0 disables it
+  # alongside the checkpoint gate. Binding is a single recoverable call, so the
+  # block loops only until the operator declares a scope.
+  gate_domains="${HQ_CHECKPOINT_SCOPE_GATE_DOMAINS:-}"
+  case "${HQ_CHECKPOINT_GATE:-}" in
+    0) ;;
+    *)
+      gate_session_id="$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null || true)"
+      if [ -n "$gate_domains" ] && [ -n "$gate_session_id" ]; then
+        gate_email="$(checkpoint_gate_caller_email 2>/dev/null || true)"
+        gate_email="$(printf '%s' "$gate_email" | tr '[:upper:]' '[:lower:]')"
+        # Exact domain-suffix match against the configured list: `user@example.ai`
+        # matches `example.ai`, but `user@example.ai.evil` and `user@sub.example.ai`
+        # do not. Iterate a newline split of the comma list (no lingering IFS).
+        gate_match=0
+        if [ -n "$gate_email" ]; then
+          while IFS= read -r gate_dom; do
+            gate_dom="$(printf '%s' "$gate_dom" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+            [ -n "$gate_dom" ] || continue
+            case "$gate_email" in
+              *"@$gate_dom") gate_match=1; break ;;
+            esac
+          done <<<"$(printf '%s' "$gate_domains" | tr ',' '\n')"
+        fi
+        if [ "$gate_match" = 1 ]; then
+          gate_root="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$self_hq}}"
+          bound_co=""
+          gate_cap="$gate_root/workspace/sessions/$gate_session_id/scope-capability.json"
+          if [ -r "$gate_cap" ]; then
+            bound_co="$(jq -r '.company_slug // empty' "$gate_cap" 2>/dev/null || true)"
+          fi
+          if [ -z "$bound_co" ]; then
+            gate_meta="$gate_root/workspace/sessions/$gate_session_id/meta.yaml"
+            if [ -r "$gate_meta" ]; then
+              bound_co="$(awk '
+                $1 == "company_slug:" {
+                  sub(/^[^:]+:[[:space:]]*/, "")
+                  gsub(/^"|"$/, "")
+                  print
+                  exit
+                }
+              ' "$gate_meta" 2>/dev/null || true)"
+            fi
+          fi
+          # A binding satisfies the gate only when it names a REAL scope: the
+          # reserved `personal`, or an actual tenant directory. hq-session will
+          # still store a typo'd or invented slug (it validates only the
+          # character set), so an unknown slug must not silently pass the gate.
+          gate_bound=0
+          case "$bound_co" in
+            "") ;;
+            personal) gate_bound=1 ;;
+            *) [ -d "$gate_root/companies/$bound_co" ] && gate_bound=1 ;;
+          esac
+          if [ "$gate_bound" = 0 ]; then
+            company_reason="$(printf 'This session has not declared its scope, and a scope is required before the turn can end. Decide where this work belongs, then bind the session as the FINAL action of the turn and end the turn immediately after:\n\n  bash %s/core/scripts/hq-session.sh --session-id %s set company_slug <company-slug>\n\nUse a real tenant slug from companies/manifest.yaml — the company this session is actually working in, never an invented one. If this session does no company-scoped work, bind it to the reserved personal scope instead:\n\n  bash %s/core/scripts/hq-session.sh --session-id %s set company_slug personal\n\nAn operator can also disable this requirement for the run by exporting HQ_CHECKPOINT_GATE=0.' "$gate_root" "$gate_session_id" "$gate_root" "$gate_session_id")"
+            printf '{"decision":"block","reason":%s}\n' "$(printf '%s' "$company_reason" | hq_json_encode)"
+            exit 0
+          fi
+        fi
+      fi
+      ;;
+  esac
 
   runtime="${HQ_CHECKPOINT_RUNTIME:-claude}"
 

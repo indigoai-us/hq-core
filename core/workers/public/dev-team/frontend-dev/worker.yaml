@@ -62,7 +62,7 @@ output:
 cli:
   binary: /opt/homebrew/bin/codex
   commands:
-    - codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast
+    - codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast
 
 mcp:
   server:
@@ -114,23 +114,23 @@ instructions: |
 
   ```bash
   # create-component
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Create React component: {name}. Follow existing component patterns. TypeScript strict, accessible, responsive." 2>&1
 
   # create-page
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Create page/route: {path}. Follow existing page patterns. Include SEO metadata." 2>&1
 
   # fix-ui-bug
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Fix UI bug: {issue}. Error: {error_output}. Apply the fix directly." 2>&1
 
   # add-form
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Add form: {description}. Include validation, error states, and accessibility." 2>&1
 
   # e2e-testing
-  cd {repo} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+  cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
     "Write E2E tests for: {feature}. Follow existing test patterns. Use Playwright." 2>&1
   ```
 

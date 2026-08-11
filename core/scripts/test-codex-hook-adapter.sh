@@ -231,6 +231,22 @@ exit 0
 SH
 done
 
+# block-foreground-timeout-over-harness-ceiling (finding 2.1): dispatched
+# blocking on the Bash branch. Stub mirrors the real contract — block a
+# foreground command declaring an over-ceiling `timeout <N>` — to prove the
+# Codex adapter routes a Codex shell tool call through this guard.
+cat > "$TMP/.claude/hooks/block-foreground-timeout-over-harness-ceiling.sh" <<'SH'
+#!/bin/bash
+input="$(cat)"
+cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty')"
+echo "block-foreground-timeout-over-harness-ceiling" >> "$TEST_LOG"
+if printf '%s' "$cmd" | grep -Eq 'timeout[[:space:]]+2400'; then
+  echo "blocked foreground timeout" >&2
+  exit 2
+fi
+exit 0
+SH
+
 # SessionStart + PreToolUse Bash parity (advisory). This hook is now the sole
 # surface for SessionStart policy injection (the digest loader was retired), so
 # it emits the "POLICY" marker the SessionStart parity assertion checks for.
@@ -369,6 +385,15 @@ assert_contains "$(cat "$TEST_LOG")" "block-hq-root-git-mutation"
 assert_contains "$(cat "$TEST_LOG")" "block-unsafe-package-install"
 assert_contains "$(cat "$TEST_LOG")" "mandatory-scope-authorizer:Bash"
 assert_contains "$(cat "$TEST_LOG")" "enforce-vault-write-access:Bash"
+assert_contains "$(cat "$TEST_LOG")" "block-foreground-timeout-over-harness-ceiling"
+
+# Codex shell tool call declaring an over-ceiling foreground timeout is blocked
+# by the same guard Claude uses (finding 2.1 cross-backend coverage).
+payload_fg_timeout='{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"'"$TMP"'","tool_input":{"command":"timeout 2400s node run.mjs"}}'
+if err="$(run_adapter "$payload_fg_timeout" 2>&1 >/dev/null)"; then
+  echo "Expected Codex over-ceiling foreground timeout to be blocked" >&2
+  exit 1
+fi
 
 payload_read_scope='{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/otherco/settings/x.yaml"}}'
 if err="$(run_adapter "$payload_read_scope" 2>&1 >/dev/null)"; then

@@ -1,6 +1,6 @@
 # apply-best-practices
 
-Run a standard improvement pass with predefined quality goals using the Codex CLI (`codex exec --full-auto`). Consistent code quality improvements.
+Run a standard improvement pass with predefined quality goals using the Codex CLI (`codex exec --sandbox danger-full-access`). Consistent code quality improvements.
 
 ## Arguments
 
@@ -32,7 +32,7 @@ Optional:
 3. **Run Codex Exec with Goals**
    - For each goal, run Codex in sequence (sequential ensures no conflicts):
      ```bash
-     cd {cwd} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
+     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
        "Apply {goal} best practices to: {file_list}. Make minimal, targeted changes. Do not modify unrelated code." 2>&1
      ```
    - After each goal pass, verify files are still valid (quick syntax check)

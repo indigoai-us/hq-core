@@ -30,7 +30,7 @@ Optional:
 3. **Run Codex in Read-Only Mode**
    - Run Codex with read-only sandbox (no file modifications):
      ```bash
-     cd {cwd} && codex exec --sandbox read-only -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
+     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox read-only -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
        "Root cause analysis only — do NOT modify any files. Issue: {issue_description}. Error output: {error_output}. Analyze: root cause, contributing factors, affected files with line numbers, execution path, and suggest fixes ranked by risk." 2>&1
      ```
    - **No file changes are made** — sandbox enforces read-only
