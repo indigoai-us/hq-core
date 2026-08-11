@@ -1,0 +1,38 @@
+# Fixture for enforce-vault-write-access.sh — blocks writes to read-only vault
+# paths under companies/<slug>/.
+# Seeded by US-013 (hq-doctor). See core/hook-tests/README.md for the schema.
+#
+# Behavioural note: this hook reads its access manifest from
+# <hqRoot>/.hq/vault-access.json and fails OPEN (exit 0) at
+# `[[ -f "$MANIFEST" ]] || exit 0` when it is absent. The --deep-test sandbox
+# (SANDBOX_COPY_RELPATHS) does not seed .hq/, so the hook allows every write in
+# the sandbox. The read-only-vault block case is therefore pinned with
+# expectedFailure (reports KNOWN-DEFECT, never FAIL).
+hookId: enforce-vault-write-access
+schemaVersion: 1
+cases:
+  # A write outside companies/ (a scratch draft) is never a vault path → allowed.
+  - name: allows-write-outside-vault
+    event: PreToolUse
+    tool: Write
+    input:
+      file_path: "workspace/drafts/note.md"
+    expect: allow
+
+  # A write to a read-only vault path must be blocked in a live tree whose
+  # manifest grants read-only. The sandbox seeds no .hq/vault-access.json, so the
+  # hook fails open here — pinned rather than FAIL.
+  - name: blocks-write-to-readonly-vault-path
+    event: PreToolUse
+    tool: Write
+    input:
+      file_path: "companies/acme/reports/locked.md"
+    expect: block
+    expectedFailure:
+      reason: >
+        The --deep-test sandbox (SANDBOX_COPY_RELPATHS) does not seed
+        .hq/vault-access.json, so enforce-vault-write-access.sh fails open
+        (exit 0) at `[[ -f "$MANIFEST" ]] || exit 0` and cannot deny a read-only
+        vault write here. Vault enforcement is real in a live tree with a
+        refreshed manifest; it is unobservable in this sandbox, so this reports
+        KNOWN-DEFECT rather than FAIL.

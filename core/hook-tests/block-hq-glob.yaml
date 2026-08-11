@@ -1,0 +1,22 @@
+# Fixture for block-hq-glob.sh — blocks Glob calls that should use qmd/Read.
+# Seeded by US-013 (hq-doctor). See core/hook-tests/README.md for the schema.
+hookId: block-hq-glob
+schemaVersion: 1
+cases:
+  # prd.json / worker.yaml discovery via Glob is always blocked (use qmd/Read).
+  - name: blocks-glob-for-prd-json
+    event: PreToolUse
+    tool: Glob
+    input:
+      pattern: "**/prd.json"
+    expect: block
+
+  # A scoped code-file Glob into a subdirectory is fine — not prd/worker, and
+  # the search path is a subdir (not the HQ root), so the hook passes it through.
+  - name: allows-scoped-code-glob
+    event: PreToolUse
+    tool: Glob
+    input:
+      pattern: "*.md"
+      path: "core/"
+    expect: allow
