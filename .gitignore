@@ -182,3 +182,4 @@ workspace/orchestrator/policy-trigger-state/
 # Per-session hook debounce/window stamps (hq_hook_state_dir) — runtime only.
 workspace/orchestrator/hook-state/
 workspace/.hq-update-check/
+/workspace/sessions/

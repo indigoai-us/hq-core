@@ -30,6 +30,12 @@ trap 'rm -rf "$TMP"' EXIT
 # fallback rather than the ambient session.
 unset HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
       CODEX_SESSION_ID CODEX_THREAD_ID || true
+# Pin the root resolution to the fixture's self-relative walk (the depth guard
+# below), independent of any injected root the ambient environment carries.
+unset HQ_ROOT CLAUDE_PROJECT_DIR || true
+# These tests target the in-tree implementation, not the CLI delegation path, so
+# force the fallback body rather than probing the (seconds-slow) installed CLI.
+export HQ_HQ_SESSION_NO_CLI=1
 
 fail() {
   echo "FAIL: $*" >&2
@@ -83,6 +89,30 @@ cap="$TMP/workspace/sessions/sess-1/scope-capability.json"
 [ -f "$cap" ] || fail "scope-capability.json not minted"
 assert_eq "$(jq -r '.company_slug' "$cap")" "indigo" "capability company_slug"
 assert_eq "$(jq -r '.session_id' "$cap")" "sess-1" "capability session_id"
+
+# 6b. `personal` is a reserved no-company scope: it binds (mints the capability)
+#     but must NOT surface a company hard-policy digest, even if a companies/
+#     directory of that name happens to exist. A real company, by contrast, does.
+mkdir -p "$TMP/companies/realco/policies" "$TMP/companies/personal/policies"
+printf -- '---\nid: realco-rule\nenforcement: hard\n---\n\n## Rule\n\nDo the realco thing.\n' \
+  > "$TMP/companies/realco/policies/r.md"
+printf -- '---\nid: personal-rule\nenforcement: hard\n---\n\n## Rule\n\nShould never surface.\n' \
+  > "$TMP/companies/personal/policies/p.md"
+
+# Use a dedicated session so the .current (sess-1) assertions below stay valid.
+real_out="$("$HS" --session-id sess-personal set company_slug realco)"
+case "$real_out" in
+  *"<company-policy-digest"*) : ;;
+  *) fail "a real company bind must surface its hard-policy digest" ;;
+esac
+
+personal_out="$("$HS" --session-id sess-personal set company_slug personal)"
+case "$personal_out" in
+  *"<company-policy-digest"*) fail "personal bind must not surface a company digest: $personal_out" ;;
+esac
+cap_personal="$TMP/workspace/sessions/sess-personal/scope-capability.json"
+assert_eq "$(jq -r '.company_slug' "$cap_personal")" "personal" "personal capability slug"
+assert_eq "$("$HS" --session-id sess-personal get company_slug)" "personal" "personal get roundtrip"
 
 # ── Wrong-session bind regression ──────────────────────────────────────────────
 # .current still says sess-1 (another session fired the most recent hook), but

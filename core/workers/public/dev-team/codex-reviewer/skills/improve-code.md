@@ -1,6 +1,6 @@
 # improve-code
 
-Apply targeted improvements to code files using the Codex CLI (`codex exec --full-auto`). Shows before/after diffs for human approval.
+Apply targeted improvements to code files using the Codex CLI (`codex exec --sandbox danger-full-access`). Shows before/after diffs for human approval.
 
 ## Arguments
 
@@ -34,7 +34,7 @@ Optional:
 3. **Run Codex Exec for Improvements**
    - Build prompt with file list and goals:
      ```bash
-     cd {cwd} && codex exec --full-auto -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
+     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
        "Improve these files: {file_list}. Goals: {goals}. Make targeted changes only — do not refactor unrelated code. Show what you changed." 2>&1
      ```
    - Codex runs in sandbox with workspace-write access

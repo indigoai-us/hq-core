@@ -156,6 +156,23 @@ EOF
 write_codex_config() {
   local target="${CODEX_DIR}/config.toml"
   if [[ -e "${target}" ]]; then
+    # An older run of this script seeded sandbox_mode="workspace-write", which
+    # forces Codex's workspace-write sandbox and breaks HQ workflows on macOS
+    # (temp/cache/socket denials) and some Linux hosts (bubblewrap cannot init) —
+    # harness finding 2.3. Migrate ONLY that exact legacy generated shape; never
+    # touch a config a user has since customized.
+    if is_legacy_workspace_write_config "${target}"; then
+      if [[ "${APPLY}" != true ]]; then
+        record_create "${target} (migrate legacy workspace-write -> danger-full-access)"
+        return
+      fi
+      if migrate_legacy_workspace_write_config "${target}"; then
+        record_create "${target} (migrated legacy workspace-write -> danger-full-access)"
+      else
+        record_block "could not migrate $(rel_path "${target}")"
+      fi
+      return
+    fi
     record_skip ".codex/config.toml already exists"
     return
   fi
@@ -166,7 +183,8 @@ write_codex_config() {
   fi
 
   if mkdir -p "${CODEX_DIR}" && cat > "${target}" <<'EOF'
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
 
 [shell_environment_policy]
 inherit = "core"
@@ -179,6 +197,33 @@ EOF
   else
     record_block "could not create $(rel_path "${target}")"
   fi
+}
+
+# True only for the exact config an older convert-codex generated: a
+# workspace-write sandbox_mode with the same generated body and no user edits
+# (no approval_policy, not already danger-full-access). This keeps the migration
+# from ever clobbering a hand-tuned config.
+is_legacy_workspace_write_config() {
+  local target="$1"
+  [[ -f "${target}" ]] || return 1
+  grep -qE '^[[:space:]]*sandbox_mode[[:space:]]*=[[:space:]]*"workspace-write"[[:space:]]*$' "${target}" || return 1
+  grep -qE '^[[:space:]]*inherit[[:space:]]*=[[:space:]]*"core"[[:space:]]*$' "${target}" || return 1
+  grep -qE '^[[:space:]]*network_access[[:space:]]*=[[:space:]]*true[[:space:]]*$' "${target}" || return 1
+  # Untouched: must not already carry an approval policy or danger-full-access.
+  grep -qE '^[[:space:]]*approval_policy' "${target}" && return 1
+  grep -qE 'danger-full-access' "${target}" && return 1
+  return 0
+}
+
+# Rewrite the sandbox_mode line to danger-full-access and add approval_policy so
+# the migrated config matches the shipped .codex/config.toml posture.
+migrate_legacy_workspace_write_config() {
+  local target="$1"
+  local tmp="${target}.hqmig.$$"
+  sed -E \
+    -e 's/^([[:space:]]*sandbox_mode[[:space:]]*=[[:space:]]*)"workspace-write"([[:space:]]*)$/\1"danger-full-access"\2\napproval_policy = "never"/' \
+    "${target}" > "${tmp}" || { rm -f "${tmp}"; return 1; }
+  mv "${tmp}" "${target}"
 }
 
 resolve_link_target() {

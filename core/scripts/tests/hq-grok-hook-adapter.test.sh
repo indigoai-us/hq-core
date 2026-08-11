@@ -246,6 +246,27 @@ fi
 unset HQ_GROK_POLICY_DEBOUNCE_SECS
 rm -f "$STATE_DIR"/grok-debounce-inject-policy-on-trigger-grok-bridge-*.stamp 2>/dev/null || true
 
+# Finding 2.1 cross-backend coverage: a Grok run_terminal_command declaring an
+# over-ceiling foreground `timeout` is denied by the block-foreground-timeout
+# shim — the same guard Claude/Codex hit — through the REAL adapter and REAL
+# hooks. The decision now lives in `hq core timeout-guard` (gated to an internal
+# HQ email domain), so this end-to-end assertion only runs when a gated guard is
+# actually active in this environment; otherwise the shim fails open and we skip
+# (the guard logic itself is unit-tested in hq-cli). `echo hi` is harmless, so a
+# deny is attributable to the timeout guard; its reason steers to background.
+if printf '%s' '{"tool_input":{"command":"timeout 2400s echo hi"}}' | hq core timeout-guard >/dev/null 2>&1; \
+   [ "$?" -eq 2 ]; then
+  run_adapter '{"hookEventName":"PreToolUse","toolName":"run_terminal_command","toolInput":{"command":"timeout 2400s echo hi"},"cwd":"'"$ROOT"'"}'
+  assert_exit "$ADAPTER_ST" 2 "grok over-ceiling foreground timeout denied (gated guard active)"
+  assert_contains "$ADAPTER_OUT" '"decision":"deny"' "deny JSON on over-ceiling timeout"
+  assert_contains "$ADAPTER_OUT" 'background' "deny reason steers to background"
+  run_adapter '{"hookEventName":"PreToolUse","toolName":"run_terminal_command","toolInput":{"command":"timeout 60s echo hi"},"cwd":"'"$ROOT"'"}'
+  assert_exit "$ADAPTER_ST" 0 "grok in-ceiling timeout allowed"
+else
+  echo "SKIP: hq core timeout-guard not active/gated here — routing proven by dispatch; decision unit-tested in hq-cli"
+  PASS=$((PASS + 1))
+fi
+
 # Leave the checkout clean: remove the runtime hook-state dir if the test emptied
 # it (it is also gitignored, so residue never dirties a checkout regardless).
 rmdir "$STATE_DIR" 2>/dev/null || true

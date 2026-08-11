@@ -32,12 +32,28 @@ set -euo pipefail
 #   --model MODEL       Override model for all stories
 #   --no-permissions    Pass the builder's non-interactive permission bypass
 #   --retry-failed      Re-run previously failed stories only
-#   --timeout N         Per-story wall-clock timeout in minutes (default: none)
+#   --timeout N         Per-story wall-clock timeout in minutes (default: none).
+#                       HQ_SOFT_STORY_TIMEOUT=1 makes it warn-don't-kill (§2.1):
+#                       warn every N min, hard-cap at 3xN (HQ_SOFT_STORY_TIMEOUT_CAP
+#                       =none disables, or a minute value overrides).
 #   --verbose           Show full builder output
 #   --tmux              Launch in tmux session with Remote Control
 # =============================================================================
 
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+
+# Soft story-timeout runner (finding 2.1 / hq-soft-timeouts-warn-dont-kill).
+# Resolved once, on first use: the primitive lives in the hq CLI
+# (`hq core soft-timeout`). If the installed `hq` predates that command the
+# runner stays empty and the caller keeps its hard-kill behavior.
+SOFT_TIMEOUT_RUNNER=()
+_rp_resolve_soft_runner() {
+  [[ -n "${_SOFT_RUNNER_RESOLVED:-}" ]] && return 0
+  _SOFT_RUNNER_RESOLVED=1
+  if command -v hq >/dev/null 2>&1 && hq core --help 2>/dev/null | grep -q 'soft-timeout'; then
+    SOFT_TIMEOUT_RUNNER=(hq core soft-timeout)
+  fi
+}
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 ORCH_DIR="$HQ_ROOT/workspace/orchestrator"
 REGRESSION_INTERVAL=3
@@ -477,7 +493,10 @@ Flags:
   --model MODEL       Override model for all stories
   --no-permissions    Pass the builder's non-interactive permission bypass
   --retry-failed      Re-run previously failed stories only
-  --timeout N         Per-story wall-clock timeout in minutes
+  --timeout N         Per-story wall-clock timeout in minutes (hard kill).
+                      Set HQ_SOFT_STORY_TIMEOUT=1 for warn-don't-kill: warn
+                      every N min, hard-cap at 3xN (HQ_SOFT_STORY_TIMEOUT_CAP=
+                      none disables the cap, or a minute value overrides it).
   --verbose           Show full builder output
   --tmux              Launch in tmux session with Remote Control
   --in-place          Skip worktree creation, work directly on repo checkout
@@ -1575,7 +1594,12 @@ RULES:
   if [[ "$NO_PERMISSIONS" == true ]]; then
     codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
   else
-    codex_flags+=(--full-auto)
+    # Honor HQ's declared danger-full-access posture (.codex/config.toml). NOT
+    # --full-auto/--approve-for-me: that forces the workspace-write sandbox, which
+    # denies temp/cache/socket writes on macOS and cannot initialize bubblewrap on
+    # some Linux hosts (harness finding 2.3). HQ safety comes from hooks, not the
+    # Codex sandbox. Regression: core/scripts/tests/codex-sandbox-danger-full-access.test.sh
+    codex_flags+=(--sandbox danger-full-access)
   fi
   if [[ -n "$MODEL" ]]; then
     codex_flags+=(-m "$MODEL")
@@ -1584,8 +1608,22 @@ RULES:
   local cmd=(codex "${codex_flags[@]}" "$prompt")
 
   if [[ -n "$TIMEOUT" ]]; then
+    # Soft-timeout opt-in (finding 2.1 / hq-soft-timeouts-warn-dont-kill): warn
+    # every TIMEOUT minutes instead of killing a story still making progress. A
+    # generous hard cap (default 3x TIMEOUT; HQ_SOFT_STORY_TIMEOUT_CAP=none to
+    # disable, or a minute value to override) bounds a genuinely hung builder for
+    # this unattended runner. Default (env unset) keeps the hard-kill behavior.
+    _rp_resolve_soft_runner
+    if [[ "${HQ_SOFT_STORY_TIMEOUT:-}" == "1" && ${#SOFT_TIMEOUT_RUNNER[@]} -gt 0 ]]; then
+      local _cap_arg=()
+      case "${HQ_SOFT_STORY_TIMEOUT_CAP:-}" in
+        none|off|0) : ;;
+        "")         _cap_arg=(--hard-cap "$(( TIMEOUT * 3 ))m") ;;
+        *)          _cap_arg=(--hard-cap "${HQ_SOFT_STORY_TIMEOUT_CAP}m") ;;
+      esac
+      cmd=("${SOFT_TIMEOUT_RUNNER[@]}" "${TIMEOUT}m" "${_cap_arg[@]}" --label "story-${story_id}" -- "${cmd[@]}")
     # macOS doesn't ship GNU timeout — try gtimeout (coreutils), then perl fallback
-    if command -v timeout &>/dev/null; then
+    elif command -v timeout &>/dev/null; then
       cmd=(timeout "${TIMEOUT}m" "${cmd[@]}")
     elif command -v gtimeout &>/dev/null; then
       cmd=(gtimeout "${TIMEOUT}m" "${cmd[@]}")
@@ -2440,7 +2478,12 @@ Rules:
   if [[ "$NO_PERMISSIONS" == true ]]; then
     codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
   else
-    codex_flags+=(--full-auto)
+    # Honor HQ's declared danger-full-access posture (.codex/config.toml). NOT
+    # --full-auto/--approve-for-me: that forces the workspace-write sandbox, which
+    # denies temp/cache/socket writes on macOS and cannot initialize bubblewrap on
+    # some Linux hosts (harness finding 2.3). HQ safety comes from hooks, not the
+    # Codex sandbox. Regression: core/scripts/tests/codex-sandbox-danger-full-access.test.sh
+    codex_flags+=(--sandbox danger-full-access)
   fi
   if [[ -n "$MODEL" ]]; then
     codex_flags+=(-m "$MODEL")
@@ -3211,7 +3254,12 @@ RULES:
   if [[ "$NO_PERMISSIONS" == true ]]; then
     codex_flags+=(--dangerously-bypass-approvals-and-sandbox)
   else
-    codex_flags+=(--full-auto)
+    # Honor HQ's declared danger-full-access posture (.codex/config.toml). NOT
+    # --full-auto/--approve-for-me: that forces the workspace-write sandbox, which
+    # denies temp/cache/socket writes on macOS and cannot initialize bubblewrap on
+    # some Linux hosts (harness finding 2.3). HQ safety comes from hooks, not the
+    # Codex sandbox. Regression: core/scripts/tests/codex-sandbox-danger-full-access.test.sh
+    codex_flags+=(--sandbox danger-full-access)
   fi
   if [[ -n "$MODEL" ]]; then
     codex_flags+=(-m "$MODEL")
@@ -3219,7 +3267,18 @@ RULES:
   local cmd=(codex "${codex_flags[@]}" "$prompt")
   # macOS doesn't ship GNU timeout — mirror the sequential fallback chain
   if [[ -n "$TIMEOUT" ]]; then
-    if command -v timeout &>/dev/null; then
+    # Soft-timeout opt-in (finding 2.1 / hq-soft-timeouts-warn-dont-kill): see
+    # the builder path above. Default (env unset) keeps the hard-kill behavior.
+    _rp_resolve_soft_runner
+    if [[ "${HQ_SOFT_STORY_TIMEOUT:-}" == "1" && ${#SOFT_TIMEOUT_RUNNER[@]} -gt 0 ]]; then
+      local _cap_arg=()
+      case "${HQ_SOFT_STORY_TIMEOUT_CAP:-}" in
+        none|off|0) : ;;
+        "")         _cap_arg=(--hard-cap "$(( TIMEOUT * 3 ))m") ;;
+        *)          _cap_arg=(--hard-cap "${HQ_SOFT_STORY_TIMEOUT_CAP}m") ;;
+      esac
+      cmd=("${SOFT_TIMEOUT_RUNNER[@]}" "${TIMEOUT}m" "${_cap_arg[@]}" --label "story-${story_id}" -- "${cmd[@]}")
+    elif command -v timeout &>/dev/null; then
       cmd=(timeout "${TIMEOUT}m" "${cmd[@]}")
     elif command -v gtimeout &>/dev/null; then
       cmd=(gtimeout "${TIMEOUT}m" "${cmd[@]}")

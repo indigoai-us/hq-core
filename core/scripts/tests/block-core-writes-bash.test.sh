@@ -29,15 +29,31 @@ PASS=0
 FAIL=0
 
 # run <expected_exit> <command> <label>
+#
+# Asserts the hook's exit code AND that it never leaks a grep warning on stderr
+# for ANY command (allow or deny). The 2026-06-20 crash cluster was a `\/` in an
+# ERE (esc() escaped '/') that made GNU grep print "grep: warning: stray \
+# before /" on nearly every Bash call while the hook still exited 0 -- a
+# hook_success the harness surfaced as a "PreToolUse:Bash hook error". Checking
+# every case for `grep: warning` keeps that noise from ever reappearing, on the
+# allow path (which no longer compiles the path pattern at all) as well as deny.
 run() {
-  local expect="$1" cmd="$2" label="$3" rc=0 payload
+  local expect="$1" cmd="$2" label="$3" rc=0 payload errfile err
   payload=$(jq -n --arg cmd "$cmd" '{tool_input: {command: $cmd}}')
-  printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" >/dev/null 2>&1 || rc=$?
+  errfile=$(mktemp)
+  printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" >/dev/null 2>"$errfile" || rc=$?
+  err=$(cat "$errfile"); rm -f "$errfile"
   if [[ "$rc" -eq "$expect" ]]; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))
     echo "FAIL [$label]: expected exit $expect, got $rc -- cmd: $cmd" >&2
+  fi
+  if printf '%s' "$err" | grep -q 'grep: warning'; then
+    FAIL=$((FAIL+1))
+    echo "FAIL [$label]: hook leaked a grep warning on stderr -- cmd: $cmd" >&2
+  else
+    PASS=$((PASS+1))
   fi
 }
 
@@ -84,6 +100,15 @@ run 0 'cd /tmp/worker-e2e && mkdir -p core/workers/dev-team/backend/skills' \
   'relative core under an unrelated cwd allowed'
 run 0 'hq core checkpoint --summary "mkdir -p core/workers/dev-team"' \
   'protected path only in a summary argument allowed'
+
+# --- Allowed: benign commands stay clean (2026-06-20 stray-warning regression).
+# These never touch a protected path but are the shapes the old esc()/'\/' bug
+# spammed with grep warnings on every call. The run() helper asserts clean
+# stderr, so an unconditional compile of a '\/'-bearing pattern would fail here. -
+run 0 "echo hi"                                    'benign echo, no path, allowed + clean stderr'
+run 0 "ls /tmp"                                    'benign ls of an absolute path, allowed + clean stderr'
+run 0 "bash $C/run.sh --flag arg"                  'executing a script under core/ (not a write) allowed + clean stderr'
+run 0 "grep -r foo $TMP/core"                      'read-only grep -r of core allowed + clean stderr'
 
 # --- Allowed: settings.local.json bypass still works ---------------------
 printf '{"env":{"HQ_BYPASS_CORE_PROTECT":"1"}}' > "$TMP/.claude/settings.local.json"

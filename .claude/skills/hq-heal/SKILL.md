@@ -71,16 +71,30 @@ Fix proposals (ranked):
 4. If a file repeatedly bloats context, propose moving it out of auto-load paths (e.g. very large `INDEX.md`, `quick-reference.md`)
 
 #### `hook`
-Parallel checks:
+First diagnostic step — run `hq doctor`, the authoritative hook wiring/firing
+diagnostic (US-012):
+- `hq doctor` (or `hq doctor --json` for machine-readable findings) — it enumerates
+  every hook registration across Claude/Codex/Grok, verifies the referenced
+  scripts exist and are executable, checks three-profile membership, and reports
+  via the runtime probe whether hooks actually fired this session. Read its
+  `FAIL`/`UNKNOWN` results and their `remediation` fields to target the checks
+  below. For a deeper confirmation that a specific guard actually blocks, run
+  `hq doctor --deep-test`.
+- If `hq doctor` is unavailable (older HQ without the CLI command), fall back to
+  `bash core/scripts/check-hq-hooks.sh --root . --require-ledger`, which degrades
+  to the same check inline.
+
+Then the targeted parallel checks:
 - `cat .claude/settings.json | grep -E '"(PreToolUse|PostToolUse|SessionStart|Stop|PreCompact)"' | head` — confirm hook chain is intact
 - `echo "HQ_HOOK_PROFILE=$HQ_HOOK_PROFILE  HQ_DISABLED_HOOKS=$HQ_DISABLED_HOOKS"`
 - Grep `ERR` for the hook script name; if found, `ls -la .claude/hooks/<name>.sh` and read its first 40 lines
 
 Fix proposals:
-1. Temporarily disable the failing hook: `export HQ_DISABLED_HOOKS=<name>` for the next session — emit the export line, do not run it
-2. Switch profile: `export HQ_HOOK_PROFILE=minimal` — useful for hook-storm scenarios
-3. Patch the hook script if the bug is local and obvious (e.g. missing `2>/dev/null`, unquoted path, missing `mkdir -p`) — apply via Edit only if the fix is one or two lines, otherwise propose
-4. If the failing hook is `reindex.sh` (or legacy `master-sync.sh`), escalate to the `reindex` recipe instead
+1. If `hq doctor` flagged a mechanical wiring defect (a lost executable bit, a hook missing from some gate profiles, an unregistered on-disk hook), propose `hq doctor --fix` — it applies only the allowlisted safe repairs behind a backup, a diff preview, and a dirty-tree refusal, then re-checks
+2. Temporarily disable the failing hook: `export HQ_DISABLED_HOOKS=<name>` for the next session — emit the export line, do not run it
+3. Switch profile: `export HQ_HOOK_PROFILE=minimal` — useful for hook-storm scenarios
+4. Patch the hook script if the bug is local and obvious (e.g. missing `2>/dev/null`, unquoted path, missing `mkdir -p`) — apply via Edit only if the fix is one or two lines, otherwise propose
+5. If the failing hook is `reindex.sh` (or legacy `master-sync.sh`), escalate to the `reindex` recipe instead
 
 #### `sync`
 Checks:
@@ -250,7 +264,7 @@ Build the bug as follows:
   - The heal report path: `workspace/reports/hq-heal/{filename}.md` — engineering reads this for the raw error, classification, diagnostics, and applied fix
   - The error class
   - The fix that was applied (or `dry-run — none applied`)
-  - If `## Core divergence` was set, the list of `core/` files touched + the upstream `hq-core` path they map to (e.g. `core/scripts/foo.sh` → `https://github.com/indigoai-us/hq-core/blob/main/core/scripts/foo.sh`)
+  - If `## Core divergence` was set, the list of `core/` files touched + the upstream `hq-core` path they map to (e.g. `core/scripts/<name>.sh` → `https://github.com/indigoai-us/hq-core/blob/main/core/scripts/<name>.sh`)
 
 Invocation: call the `/hq-bug` skill via the `Skill` tool with the bug type and title as args. Do not shell out to `hq feedback` directly — `/hq-bug` already wraps the CLI with the right body-file allocation, CWD capture, and session-context assembly.
 
@@ -290,7 +304,7 @@ If the proposed fix requires re-launching the session (e.g. autocompact, reindex
 
 ## Why this exists
 
-HQ users hit a recurring class of errors that look scary but are well-understood once classified — autocompact thrashing, hook crashes, sync conflicts, deny-list blocks, reindex aborts. Without a healer, the recovery path is for the user to switch terminals, paste the error into a fresh Claude session, and hope the new session figures out what to do. `/hq-heal` collapses that into one slash command with a known-good triage recipe per error class, and a companion launcher (`core/scripts/hq-heal.sh`) for the case where the current session is too wedged to invoke the slash command at all.
+HQ users hit a recurring class of errors that look scary but are well-understood once classified — autocompact thrashing, hook crashes, sync conflicts, deny-list blocks, reindex aborts. Without a healer, the recovery path is for the user to switch terminals, paste the error into a fresh Claude session, and hope the new session figures out what to do. `/hq-heal` collapses that into one slash command with a known-good triage recipe per error class, and a companion launcher (`.claude/skills/hq-heal/hq-heal.sh`) for the case where the current session is too wedged to invoke the slash command at all.
 
 ## See also
 
