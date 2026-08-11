@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 2,
+  "platform": { "id": "unknown" },
+  "hqRoot": "/home/runner/work/hq-core/hq-core",
+  "summary": {
+    "PASS": 9,
+    "FAIL": 1,
+    "WARN": 0,
+    "UNTESTED": 3,
+    "NA": 1,
+    "UNKNOWN": 0,
+    "KNOWN-DEFECT": 0
+  },
+  "exitCode": 1,
+  "results": [
+    {
+      "status": "PASS",
+      "family": "hooks",
+      "checkId": "hooks.settings-present",
+      "message": "All 9 registered Claude hooks resolve and are executable."
+    },
+    {
+      "status": "FAIL",
+      "family": "hooks",
+      "checkId": "hooks.codex.mirror-parity",
+      "target": "block-core-writes.sh",
+      "message": "Codex mirror .codex/hooks/block-core-writes.sh differs from its Claude original and is not on the allowed-divergence list.",
+      "remediation": "Reconcile the two copies or add an allowed-divergence entry with a reason."
+    },
+    {
+      "status": "UNTESTED",
+      "family": "hooks",
+      "checkId": "hooks.fixtures.untested",
+      "target": "reindex",
+      "message": "Hook \"reindex\" is registered but has no fixture; its behaviour is never exercised."
+    },
+    {
+      "status": "UNTESTED",
+      "family": "hooks",
+      "checkId": "hooks.fixtures.untested",
+      "target": "session-title",
+      "message": "Hook \"session-title\" is registered but has no fixture; its behaviour is never exercised."
+    },
+    {
+      "status": "UNTESTED",
+      "family": "hooks",
+      "checkId": "hooks.fixtures.untested",
+      "target": "block-new-thing",
+      "message": "Hook \"block-new-thing\" is registered but has no fixture; its behaviour is never exercised.",
+      "remediation": "Add core/hook-tests/block-new-thing.yaml (see core/hook-tests/README.md)."
+    },
+    {
+      "status": "NA",
+      "family": "hooks",
+      "checkId": "hooks.fixtures.coverage",
+      "target": "10/13",
+      "message": "Fixture coverage: 10/13 registered hooks have a fixture."
+    }
+  ]
+}

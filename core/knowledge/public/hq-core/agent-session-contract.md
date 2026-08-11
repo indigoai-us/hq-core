@@ -184,4 +184,7 @@ never silent.
 
 - Entrypoint stub: `core/scripts/hq-agent-session.sh` (body in US-402+)
 - Directory map: `core/docs/hq/INDEX.md`
-- Session metadata helper (distinct): `core/scripts/hq-session.sh`
+- Session metadata helper (distinct): `core/scripts/hq-session.sh` — a thin
+  fallback that prefers the CLI-hosted `hq core hq-session` when the installed
+  version provides it, and otherwise runs its own copy. Callers keep using the
+  script path either way.

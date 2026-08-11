@@ -71,16 +71,30 @@ Fix proposals (ranked):
 4. If a file repeatedly bloats context, propose moving it out of auto-load paths (e.g. very large `INDEX.md`, `quick-reference.md`)
 
 #### `hook`
-Parallel checks:
+First diagnostic step — run `hq doctor`, the authoritative hook wiring/firing
+diagnostic (US-012):
+- `hq doctor` (or `hq doctor --json` for machine-readable findings) — it enumerates
+  every hook registration across Claude/Codex/Grok, verifies the referenced
+  scripts exist and are executable, checks three-profile membership, and reports
+  via the runtime probe whether hooks actually fired this session. Read its
+  `FAIL`/`UNKNOWN` results and their `remediation` fields to target the checks
+  below. For a deeper confirmation that a specific guard actually blocks, run
+  `hq doctor --deep-test`.
+- If `hq doctor` is unavailable (older HQ without the CLI command), fall back to
+  `bash core/scripts/check-hq-hooks.sh --root . --require-ledger`, which degrades
+  to the same check inline.
+
+Then the targeted parallel checks:
 - `cat .claude/settings.json | grep -E '"(PreToolUse|PostToolUse|SessionStart|Stop|PreCompact)"' | head` — confirm hook chain is intact
 - `echo "HQ_HOOK_PROFILE=$HQ_HOOK_PROFILE  HQ_DISABLED_HOOKS=$HQ_DISABLED_HOOKS"`
 - Grep `ERR` for the hook script name; if found, `ls -la .claude/hooks/<name>.sh` and read its first 40 lines
 
 Fix proposals:
-1. Temporarily disable the failing hook: `export HQ_DISABLED_HOOKS=<name>` for the next session — emit the export line, do not run it
-2. Switch profile: `export HQ_HOOK_PROFILE=minimal` — useful for hook-storm scenarios
-3. Patch the hook script if the bug is local and obvious (e.g. missing `2>/dev/null`, unquoted path, missing `mkdir -p`) — apply via Edit only if the fix is one or two lines, otherwise propose
-4. If the failing hook is `reindex.sh` (or legacy `master-sync.sh`), escalate to the `reindex` recipe instead
+1. If `hq doctor` flagged a mechanical wiring defect (a lost executable bit, a hook missing from some gate profiles, an unregistered on-disk hook), propose `hq doctor --fix` — it applies only the allowlisted safe repairs behind a backup, a diff preview, and a dirty-tree refusal, then re-checks
+2. Temporarily disable the failing hook: `export HQ_DISABLED_HOOKS=<name>` for the next session — emit the export line, do not run it
+3. Switch profile: `export HQ_HOOK_PROFILE=minimal` — useful for hook-storm scenarios
+4. Patch the hook script if the bug is local and obvious (e.g. missing `2>/dev/null`, unquoted path, missing `mkdir -p`) — apply via Edit only if the fix is one or two lines, otherwise propose
+5. If the failing hook is `reindex.sh` (or legacy `master-sync.sh`), escalate to the `reindex` recipe instead
 
 #### `sync`
 Checks:
