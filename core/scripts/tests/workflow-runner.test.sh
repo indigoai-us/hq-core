@@ -23,7 +23,7 @@
 #      (wrong type / missing required / bad enum) is rejected with a schema
 #      error rather than passed downstream
 #   3. tiers are engine-neutral: "plan"/"exec" required; codex maps to
-#      gpt-5.6-sol / gpt-5.6-terra, grok to grok-4.5, claude to opus/sonnet; the
+#      gpt-5.6-sol / gpt-5.6-terra, grok to grok-4.6, claude to opus/sonnet; the
 #      HQ_WORKFLOW_{CODEX,GROK,CLAUDE}_{PLAN,EXEC}_MODEL envs re-point them; an
 #      unknown engine or tier throws
 #   4. parallel(): a failing thunk resolves to null, siblings survive
@@ -253,10 +253,10 @@ if [ -n "$gf" ]; then
   grep -qx -- '--single' "$gf" || grok_ok=1
   grep -qx -- 'bypassPermissions' "$gf" || grok_ok=1
   grep -qx -- '--always-approve' "$gf" || grok_ok=1
-  grep -qx -- 'grok-4.5' "$gf" || grok_ok=1
+  grep -qx -- 'grok-4.6' "$gf" || grok_ok=1
   grep -q -- '--dangerously-bypass' "$gf" && grok_ok=1
 fi
-check "grok: --single + bypassPermissions + --always-approve + grok-4.5, no codex flags" "$grok_ok"
+check "grok: --single + bypassPermissions + --always-approve + grok-4.6, no codex flags" "$grok_ok"
 
 # the JSON envelope is mandatory: plain mode prints nothing on a cancelled run
 env_fmt=1

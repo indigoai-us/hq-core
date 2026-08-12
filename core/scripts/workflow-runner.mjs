@@ -77,7 +77,7 @@
  *                              codex tier models (defaults gpt-5.6-sol /
  *                              gpt-5.6-terra)
  *   HQ_WORKFLOW_GROK_PLAN_MODEL / HQ_WORKFLOW_GROK_EXEC_MODEL
- *                              grok tier models (default grok-4.5 for both)
+ *                              grok tier models (default grok-4.6 for both)
  *   HQ_WORKFLOW_CLAUDE_PLAN_MODEL / HQ_WORKFLOW_CLAUDE_EXEC_MODEL
  *                              claude tier models (defaults opus / sonnet)
  *   HQ_WORKFLOW_MODEL          Global model pin overriding every tier map;
@@ -170,8 +170,8 @@ const ENGINES = {
   grok: {
     bin: process.env.HQ_WORKFLOW_GROK_BIN || 'grok',
     tierModels: {
-      plan: process.env.HQ_WORKFLOW_GROK_PLAN_MODEL || 'grok-4.5',
-      exec: process.env.HQ_WORKFLOW_GROK_EXEC_MODEL || 'grok-4.5',
+      plan: process.env.HQ_WORKFLOW_GROK_PLAN_MODEL || 'grok-4.6',
+      exec: process.env.HQ_WORKFLOW_GROK_EXEC_MODEL || 'grok-4.6',
     },
   },
   claude: {
