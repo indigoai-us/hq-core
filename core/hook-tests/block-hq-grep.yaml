@@ -1,0 +1,21 @@
+# Fixture for block-hq-grep.sh — blocks Grep calls that should use qmd/Read.
+# Seeded by US-013 (hq-doctor). See core/hook-tests/README.md for the schema.
+hookId: block-hq-grep
+schemaVersion: 1
+cases:
+  # worker.yaml discovery via Grep is always blocked (use the registry + Read).
+  - name: blocks-grep-for-worker-yaml
+    event: PreToolUse
+    tool: Grep
+    input:
+      pattern: "worker.yaml"
+    expect: block
+
+  # A normal source-code Grep is passed through.
+  - name: allows-normal-code-grep
+    event: PreToolUse
+    tool: Grep
+    input:
+      pattern: "TODO"
+      path: "core/"
+    expect: allow

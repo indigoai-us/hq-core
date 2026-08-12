@@ -1,0 +1,30 @@
+# Fixture for block-hq-root-git-mutation.sh — blocks unanchored git/gh mutations
+# that could land on the HQ root repo.
+# Seeded by US-013 (hq-doctor). See core/hook-tests/README.md for the schema.
+hookId: block-hq-root-git-mutation
+schemaVersion: 1
+cases:
+  # An unanchored git mutation (no `git -C`, no `gh -R`, cwd not a non-HQ repo)
+  # is blocked — it could silently operate on whichever .git the cwd resolves to.
+  - name: blocks-unanchored-git-push
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git push origin main"
+    expect: block
+
+  # A read-only git command is never a mutation — passed through.
+  - name: allows-readonly-git-status
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git status"
+    expect: allow
+
+  # A gh mutation carrying an explicit `-R owner/repo` anchor is allowed.
+  - name: allows-anchored-gh-with-repo
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "gh pr create -R owner/repo --title x --body y"
+    expect: allow

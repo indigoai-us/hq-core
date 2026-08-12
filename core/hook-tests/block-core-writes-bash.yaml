@@ -1,0 +1,28 @@
+# Fixture for block-core-writes-bash.sh — blocks Bash writes into scaffold.
+# Seeded by US-013 (hq-doctor). See core/hook-tests/README.md for the schema.
+#
+# NOTE (macOS/BSD sed): on hosts with BSD sed the hook's core.yaml-exclude strip
+# helper (hq_bash_strip_core_yaml_exclude_tokens in core/scripts/hook-lib.sh)
+# errors and returns an empty string, so redirects/write-ops into core/ and
+# .claude/ are NOT detected there. AGENTS.md detection uses the ORIGINAL command
+# (bypassing the strip), so the block case below is robust on every platform;
+# the core/-write gap is a real hook-lib bug tracked separately (see US-013
+# notes), not something this fixture pins.
+hookId: block-core-writes-bash
+schemaVersion: 1
+cases:
+  # A redirect that would create/overwrite AGENTS.md (locked scaffold) is blocked.
+  - name: blocks-redirect-into-agents-md
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "echo pwned > AGENTS.md"
+    expect: block
+
+  # A benign command touching nothing protected is passed through.
+  - name: allows-benign-command
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "echo hello world"
+    expect: allow
