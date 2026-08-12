@@ -3,6 +3,15 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.91-beta.1
+
+- promote 2026-08-12 (**Grok 4.6 workflow default**): the `/orchestrate` workflow runner
+  (`core/scripts/workflow-runner.mjs`) now defaults its grok plan/exec tier models to
+  `grok-4.6` (was `grok-4.5`), matching the newly released model. No action required — the
+  defaults remain overridable via `HQ_WORKFLOW_GROK_PLAN_MODEL` / `HQ_WORKFLOW_GROK_EXEC_MODEL`,
+  and reasoning effort is still inherited from the grok CLI config (`~/.grok/config.toml`),
+  not set by the runner.
+
 ## Release: v15.0.88
 
 - promote 2026-08-10 (**/deploy comments opt-in**): `/deploy` gains `--comments on|off`
