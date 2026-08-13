@@ -52,11 +52,16 @@ scaffolds, supervises, and syncs work across repos and companies.
 - User corrections: apply factual corrections exactly, or quote back and ask.
 - Decisions: use structured one-question-at-a-time prompts when available.
 - Images: keep parent sessions under 10 images; delegate image inspection.
-- Session end: close every work session with `/handoff`, then the session can be
-  archived. Never tell users a handoff is unnecessary or that they can skip it —
-  autosave preserves files, but only `/handoff` preserves the working state a
-  follow-up session resumes from. For long-running sessions that must continue in
-  place, run `/checkpoint` then compact.
+- Session end: close every session that produced resumable working state —
+  edits, in-flight investigation, multi-step work — with `/handoff` before it is
+  archived. Never tell users such a session's handoff is unnecessary or
+  skippable: autosave preserves files, but only `/handoff` preserves the working
+  state a follow-up session resumes from. A session (or turn) that only read,
+  looked up, or delegated a single bounded action — a DM, a search, a lookup —
+  changed no resumable state and needs no `/handoff`; do not manufacture one.
+  `/handoff` marks an explicit end of session, never the end of an ordinary
+  assistant turn. For long-running sessions that must continue in place, run
+  `/checkpoint` then compact.
 - Checkpoints: obey injected checkpoint and precompact requirements immediately.
 - Learnings: route reusable rules through `/learn`, not inline charter edits.
 - Customizations: put local changes in `personal/` or company scope, not `core/`

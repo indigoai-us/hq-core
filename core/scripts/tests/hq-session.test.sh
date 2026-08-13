@@ -114,6 +114,49 @@ cap_personal="$TMP/workspace/sessions/sess-personal/scope-capability.json"
 assert_eq "$(jq -r '.company_slug' "$cap_personal")" "personal" "personal capability slug"
 assert_eq "$("$HS" --session-id sess-personal get company_slug)" "personal" "personal get roundtrip"
 
+# 6c. The bind digest is deduped: generated digests, docs, examples, and
+#     sync-conflict copies (space-named or *.conflict-*) contribute no lines.
+#     A stray "r 2.md" copy previously emitted a duplicate [hard] line, which
+#     is how one tenant's bind ballooned to ~298 lines.
+printf -- '---\nid: realco-rule\nenforcement: hard\n---\n\n## Rule\n\nDuplicate from space-named copy.\n' \
+  > "$TMP/companies/realco/policies/r 2.md"
+printf -- '---\nid: digest-rule\nenforcement: hard\n---\n\n## Rule\n\nShould never surface.\n' \
+  > "$TMP/companies/realco/policies/_digest.md"
+printf -- '---\nid: example-rule\nenforcement: hard\n---\n\n## Rule\n\nShould never surface.\n' \
+  > "$TMP/companies/realco/policies/example-policy.md"
+printf -- '---\nid: conflict-rule\nenforcement: hard\n---\n\n## Rule\n\nShould never surface.\n' \
+  > "$TMP/companies/realco/policies/r.md.conflict-abc123.md"
+dedupe_out="$("$HS" --session-id sess-dedupe set company_slug realco)"
+assert_eq "$(printf '%s\n' "$dedupe_out" | grep -c 'realco-rule')" "1" \
+  "sync-conflict copy must not duplicate the policy line"
+case "$dedupe_out" in
+  *digest-rule*|*example-rule*|*conflict-rule*)
+    fail "non-policy files leaked into the bind digest: $dedupe_out" ;;
+esac
+
+# 6d. The bind digest is budgeted, never silently truncated: the count cap and
+#     the byte cap each limit the emitted lines and summarize the overflow with
+#     a pointer, so withheld hard policies stay discoverable.
+mkdir -p "$TMP/companies/bigco/policies"
+for i in 1 2 3; do
+  printf -- '---\nid: big-rule-%s\nenforcement: hard\n---\n\n## Rule\n\nRule number %s.\n' "$i" "$i" \
+    > "$TMP/companies/bigco/policies/big-rule-$i.md"
+done
+cap_out="$(HQ_COMPANY_BIND_POLICY_CAP=2 "$HS" --session-id sess-cap set company_slug bigco)"
+assert_eq "$(printf '%s\n' "$cap_out" | grep -c '^- \[hard\]')" "2" \
+  "count cap must limit emitted policy lines"
+case "$cap_out" in
+  *"1 more hard policy not shown"*) : ;;
+  *) fail "count-cap overflow must be summarized, not silent: $cap_out" ;;
+esac
+bytes_out="$(HQ_COMPANY_BIND_POLICY_BYTES=40 "$HS" --session-id sess-bytes set company_slug bigco)"
+assert_eq "$(printf '%s\n' "$bytes_out" | grep -c '^- \[hard\]')" "1" \
+  "byte cap must limit emitted policy lines"
+case "$bytes_out" in
+  *"2 more hard policies not shown"*) : ;;
+  *) fail "byte-cap overflow must be summarized, not silent: $bytes_out" ;;
+esac
+
 # ── Wrong-session bind regression ──────────────────────────────────────────────
 # .current still says sess-1 (another session fired the most recent hook), but
 # THIS process belongs to sess-2. Every read and write must follow sess-2.

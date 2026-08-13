@@ -43,7 +43,7 @@ So when intent resolves to company/project/repo work, **silently anchor first** 
 
 Only after anchoring → execute the work skill. Announce the anchor compactly as part of the route line — e.g. "Anchoring on acme → reading this as a debugging task → `/investigate`."
 
-**Carveouts (no company anchor needed):** HQ-core builder work (`/hqwork` and edits to `core/`, `.claude/`, the CLI); global/cross-company tasks; and read-only multi-company search (`/search`, `qmd`). These are not company-scoped, so step 1's bind does not apply.
+**Carveouts (no company anchor needed):** HQ-core builder work (edits to `core/`, `.claude/`, the CLI — done directly in the source repos); global/cross-company tasks; and read-only multi-company search (`/search`, `qmd`). These are not company-scoped, so step 1's bind does not apply.
 
 ## Rationale
 
@@ -130,7 +130,7 @@ The high-frequency mappings. Group by work phase. Generalize from these — syno
 
 | User says (paraphrased) | Route |
 |---|---|
-| "work on HQ itself", "edit a policy/hook/skill/the CLI" | `/hqwork` |
+| "work on HQ itself", "edit a policy/hook/skill/the CLI" | Edit the source repo directly (the hq-core staging repo, or the CLI repo) on a feature branch per the staging PR mechanics — there is no dedicated command |
 | "upgrade HQ", "pull the latest HQ" | `/update-hq` |
 | "audit my HQ setup" | `/harness-audit` |
 | "clean up HQ", "garden the knowledge" | `/garden` |
@@ -143,7 +143,7 @@ Routes marked ⚠ above launch expensive, long-running, or hard-to-reverse work.
 
 | Tier | Routes | Behavior |
 |---|---|---|
-| **Cheap / reversible** | startwork, strategize, search, brainstorm, plan, idea, review-plan, investigate, diagnose, review, learn, adr, out-of-scope, checkpoint, handoff, retro, document-release, newworker, onboard, sync, hqwork, harness-audit, garden, journal | Announce route, proceed same turn. |
+| **Cheap / reversible** | startwork, strategize, search, brainstorm, plan, idea, review-plan, investigate, diagnose, review, learn, adr, out-of-scope, checkpoint, handoff, retro, document-release, newworker, onboard, sync, harness-audit, garden, journal | Announce route, proceed same turn. |
 | **Heavy / irreversible (⚠)** | run-project, execute-task, land, land-batch, deploy, hq-share, hq-files, newcompany, new-hire, designate-team, promote, accept, update-hq | Announce route, then **stop for explicit go.** |
 
 The ⚠ gate is additive to — never a replacement for — the charter's irreversible-action confirmation rules and the cross-company credential isolation rules. When both apply, the stricter one wins.
@@ -218,7 +218,7 @@ User: "/review"
 **Builder intent**
 
 User: "I want to tweak the secrets-handling policy"
-> HQ-core edit → `/hqwork policies`. Narrowing to the secrets policies now.
+> HQ-core edit → editing the policy in the hq-core source repo on a feature branch. Narrowing to the secrets policies now.
 
 ## Verification
 

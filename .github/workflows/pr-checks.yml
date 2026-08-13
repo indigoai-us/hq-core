@@ -512,6 +512,8 @@ jobs:
         run: bash core/scripts/tests/mandatory-scope-authorizer.test.sh
       - name: hq-session mints scope capability on company bind
         run: bash core/scripts/tests/hq-session.test.sh
+      - name: Bounded-action scope contract (Claude+Codex shared text)
+        run: bash core/scripts/tests/startwork-bounded-action-contract.test.sh
       - name: Company infra policy reminder follows the firing session
         run: bash core/scripts/tests/surface-company-infra-policy.test.sh
 
