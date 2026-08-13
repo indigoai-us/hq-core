@@ -26,7 +26,29 @@ If the argument contains a slash-command token (whitespace-delimited substring m
 
 This rule supersedes the classification table below. The reason it exists: prior failure where `/startwork {company} vyg /deep-plan apps/...` was treated as free-text task description, causing the agent to enter Claude Code's built-in plan mode and start implementing instead of running the deep-plan questionnaire. Policy: `core/policies/deep-plan-skill-routing.md`.
 
-**1.1 Mode resolution** (only if no slash-command short-circuit fired):
+**1.0b Bounded-action short-circuit (HARD RULE — check SECOND, after the slash-command rule, before mode resolution):**
+
+If the argument names a bounded action owned by a dedicated skill in the table below, abort the normal classification flow, route to that skill with the raw remaining args, and STOP. Do NOT enter Company Mode. Do NOT read `companies/manifest.yaml`, do NOT run the qmd/grep project scan, do NOT run git, do NOT build the Worker Packet, and do NOT perform §2.4 session metadata, §2.5 policies, §2.6 worker routing, or any background maintenance. The target skill performs its own tenancy-safe company resolution.
+
+Bounded-action routing table (closed list — route only on these):
+
+| Argument names… | Route to |
+|---|---|
+| open / read / check / send a DM, "DM {person}", inbox, message thread | `/dm` |
+| meeting notes, transcript, recap, "what was discussed" | `/meeting-notes` |
+| signals, decisions, risks, commitments, wins | `/signals` |
+| action items (read-only "what are my action items") | `/signals` (company skills may own the mutable tracker) |
+| find / search / "where is X" | `/search` |
+| goals, OKRs, key results | `/goals` |
+| "who am I", session identity, login state | `/hq-whoami` |
+
+- A company slug appearing as a word inside a bounded action does NOT upgrade the request to Company Mode — the bounded-action route wins. Example: `/startwork open my DM on indigo` → route to `/dm` (the slug is context for the target skill, not a mode selector).
+- Negative example (the documented failure this rule exists for): `/startwork open Izzy's latest project DM` → route to `/dm` and stop. Full company orientation for this request is a scope bug, not thoroughness.
+- Fall-through: if the argument is a bare company/project/repo name, or names orientation itself ("what's the state of X", "pick up X", "start on X", "what should I work on"), this rule does not apply — continue to §1.1 Mode resolution.
+
+This rule exists because a bounded read-only request ("open Izzy's latest project DM") was observed expanding into full company orientation, duplicate policy ingestion, a background maintenance agent, and an unrequested session handoff. Runtimes that follow skill text literally (Codex) must find the fast path in the text itself.
+
+**1.1 Mode resolution** (only if no short-circuit fired):
 
 Determine mode from the user's argument (first match wins):
 
@@ -137,25 +159,23 @@ session.
 
 **Skip if:** no company resolved (resume mode with no company context).
 
-### 2.5 Load Applicable Policies
+### 2.5 Report Applicable Policies (display-only — no policy re-reads)
 
-Once company `{co}` is resolved (from any mode):
+Policy loading is NOT this skill's job. Two mechanisms already inject policies before this step runs:
 
-1. **Company policies**: If `{co}` known, read frontmatter-only for each policy in `companies/{co}/policies/` via `bash core/scripts/read-policy-frontmatter.sh {file}` (skip `example-policy.md`). Note count + titles of any `enforcement: hard` rules. For hard-enforcement policies only, additionally read the `## Rule` section with targeted Read + range.
-2. **Repo policies**: If repo context resolved, check `{repoPath}/.claude/policies/` (if dir exists). Same frontmatter-only pattern.
-3. **Global policies**: Count files in `core/policies/`. On:[SessionStart] policies are already injected automatically by the SessionStart trigger hook (`inject-policy-on-trigger.sh`), so this step is largely a no-op. If you need more, filter to policies whose `when:`/`trigger` matches current context — don't load all.
+1. **Company policies**: surfaced automatically when §2.4 runs `hq-session.sh set company_slug` — the bind emits the company's hard-enforcement rules (deduped and budgeted) directly into the tool result. Do NOT re-scan `companies/{co}/policies/` frontmatter here; that duplicates the bind emission.
+2. **Repo policies**: if repo context resolved and `{repoPath}/.claude/policies/` exists, read frontmatter-only for each file via `bash core/scripts/read-policy-frontmatter.sh {file}` (skip `example-policy.md`). This is the one scan this step still owns — repo policies are not covered by the company bind.
+3. **Global policies**: injected by the SessionStart/PreToolUse trigger hook (`inject-policy-on-trigger.sh`). No action here.
 
-Display in orientation block:
+Display in orientation block (counts only — `ls | wc -l` is enough for N/K):
 ```
 Policies: {N} company, {M} repo, {K} global ({H} hard-enforcement)
 ```
 
-**Hard-enforcement policies** with triggers matching current context: list titles in orientation block so user sees constraints upfront.
-
 Rules:
-- Only READ policy frontmatter (title, enforcement, trigger) — don't load full body into context
-- Exception: hard-enforcement policies — read full `## Rule` section
-- If no company resolved (resume mode with no company context), skip company policies
+- This step performs no company-policy file reads. The bind emission (§2.4) is the company-policy surface
+- Repo policies: frontmatter only; for repo hard-enforcement policies read the `## Rule` section
+- If no company resolved (resume mode with no company context), the count line may omit company
 - Precedence: company > repo > global
 
 ### 2.6 Worker Routing & Skill Readiness
@@ -185,31 +205,6 @@ Rules:
 - If no worker matches, say so and proceed normally.
 - If the selected path needs worker execution, route through `/run {worker} {skill}` or `/execute-task` rather than reimplementing the worker inline.
 
-### 2.7 Spawn Knowledge Pulse (Background)
-
-Once `{co}` is resolved (from any mode except resume-with-no-company):
-
-1. Read `companies/manifest.yaml` to resolve `knowledge` path and `qmd_collections` for `{co}`
-2. If company has a knowledge directory (not `null` in manifest), spawn a background knowledge pulse:
-
-```
-spawn_task(
-  reason: "Pulse-garden {co} knowledge",
-  prompt: "Run the knowledge-pulse skill at .claude/skills/knowledge-pulse/SKILL.md.
-    company_slug: {co}
-    knowledge_path: companies/{co}/knowledge/
-    policies_path: companies/{co}/policies/
-    caller: startwork
-    qmd_collection: {qmd_collections[0] from manifest, or omit if none}
-    No search_results_summary or discovered_facts (startwork is read-only).
-    Read the skill file for full instructions."
-)
-```
-
-3. Do NOT wait for the pulse to complete — continue immediately to Step 3
-
-**Skip if:** no company resolved (resume mode with no company context), or company has no knowledge directory.
-
 ### 3. Present Options
 
 Display a concise orientation block:
@@ -227,7 +222,6 @@ Session Start
 
 Git: {branch} @ {short-hash} {" (dirty)" if dirty}
 Worker route: {primary worker/skill or "none matched"} ({N} candidates)
-Knowledge pulse: {summary line from workspace/reports/knowledge-pulse/{co}-{today}.md if exists, e.g. "3 docs tagged, 2 flagged stale" — or omit line if no recent pulse}
 
 Active work:
   - {project} -- {done}/{total} stories ({remaining} left)
@@ -251,6 +245,8 @@ Output the numbered list and wait for user input. After user picks, proceed dire
 
 - NEVER read INDEX.md, agents files, or company knowledge dirs during startup
 - NEVER run exploratory searches to orient — this skill replaces exploration with targeted reads
+- A bounded single-action request (§1.0b table) routes to its owning skill and never triggers orientation loading, session-metadata writes, policy scans, worker routing, or background maintenance
+- NEVER spawn a background knowledge-pulse (or any maintenance agent) from startup. The pulse is spawned only by the planning skills (`/brainstorm`, `/plan`, `/deep-plan`, `/prd`) — interactive startup spawns zero agents
 - Max file reads: handoff.json + 1 thread + manifest + up to 5 prd.json (headers only) + up to 2 journal files per resolved project (frontmatter + Open threads section only — never load Auto-capture)
 - If >5 active projects found, show top 5 by most recent file modification
 - Always verify git branch with `git branch --show-current` before displaying git state

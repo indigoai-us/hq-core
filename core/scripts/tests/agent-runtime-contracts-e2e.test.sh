@@ -37,6 +37,8 @@ run "Claude executable-bit fallback" \
   bash "$ROOT/core/scripts/tests/hook-gate-exec-bit.test.sh"
 run "Codex/Grok advisory and blocking protocols" \
   bash "$ROOT/core/scripts/tests/hook-runtime-diagnostics.test.sh"
+run "bounded-action scope contract (Claude+Codex shared text)" \
+  bash "$ROOT/core/scripts/tests/startwork-bounded-action-contract.test.sh"
 
 . "$HOOK_LIB"
 FIX_ROOT="$TMP/hq"

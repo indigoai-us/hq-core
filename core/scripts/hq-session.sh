@@ -220,18 +220,31 @@ spawn_work_mesh_register() {
 
 # Print a company's hard-enforcement policies, read directly from the policy
 # files (the pre-built digest was retired — the when/on trigger hook is now the
-# sole policy-surfacing path). Emits one `- [hard] **slug**: rule` line each.
+# sole policy-surfacing path). Emits one `- [hard] **slug**: rule` line each,
+# deduped (digest/README/example/sync-conflict copies are skipped) and budgeted
+# (HQ_COMPANY_BIND_POLICY_CAP lines / HQ_COMPANY_BIND_POLICY_BYTES bytes, with a
+# non-silent pointer for the overflow). An unbounded dump — observed at ~298
+# lines for a large tenant — buries the rules it exists to surface; the
+# reactive trigger hook re-injects any withheld policy when its trigger fires.
 emit_company_hard_policies() {
   local co="$1"
   local dir="$REPO_ROOT/companies/$co/policies"
   [ -d "$dir" ] || return 0
-  # Guard the glob: with no matching files "$dir"/*.md expands literally, awk
-  # exits nonzero, and under `set -e` that would abort an otherwise fine bind.
-  local have=0 f
+  # Collect real policy files only. Skip the generated digest, docs, examples,
+  # and sync-conflict duplicates: policy slugs never contain spaces, so a space
+  # in the basename ("foo 2.md") marks a stray copy whose lines would duplicate
+  # the original's. (Also guards the glob: with no matching files "$dir"/*.md
+  # expands literally and awk would exit nonzero under `set -e`.)
+  local files=() f b
   for f in "$dir"/*.md; do
-    [ -e "$f" ] && { have=1; break; }
+    [ -e "$f" ] || continue
+    b="${f##*/}"
+    case "$b" in
+      _digest*.md|README.md|readme.md|example-policy.md|*.conflict-*|*" "*) continue ;;
+    esac
+    files+=("$f")
   done
-  [ "$have" = 1 ] || return 0
+  [ "${#files[@]}" -gt 0 ] || return 0
   local lines
   lines="$(awk '
     function bn(p,  n,a,b){ n=split(p,a,"/"); b=a[n]; sub(/\.md$/,"",b); return b }
@@ -244,13 +257,31 @@ emit_company_hard_policies() {
     d>=2 && rsec && /^## / { rsec=0 }
     d>=2 && rsec && !rcap && NF { line=$0; gsub(/\*\*/,"",line); if(length(line)>160)line=substr(line,1,157)"..."; rule=line; rcap=1 }
     END { if(seen) flush() }
-  ' "$dir"/*.md 2>/dev/null)"
+  ' "${files[@]}" 2>/dev/null)"
   [ -z "$lines" ] && return 0
+  # Budget the emission: count cap and cumulative byte cap, prefix-stable
+  # (glob order), never silent — overflow is summarized with a pointer so the
+  # withheld policies stay one command away.
+  local cap="${HQ_COMPANY_BIND_POLICY_CAP:-32}"
+  local max_bytes="${HQ_COMPANY_BIND_POLICY_BYTES:-40960}"
   printf '\n<company-policy-digest co="%s">\n' "$co"
   printf '# %s hard-enforcement policies (auto-surfaced on company bind)\n' "$co"
   printf '> Company context just bound mid-session. These HARD rules now apply.\n'
   printf '> Full text: `companies/%s/policies/{slug}.md` (or `qmd get -c %s {slug}`).\n\n' "$co" "$co"
-  printf '%s\n' "$lines"
+  printf '%s\n' "$lines" | awk -v cap="$cap" -v maxb="$max_bytes" -v co="$co" '
+    NF {
+      n++
+      if (!stop) {
+        bytes += length($0) + 1
+        if (n <= cap && bytes <= maxb) { print; kept = n } else stop = 1
+      }
+    }
+    END {
+      dropped = n - kept
+      if (dropped > 0)
+        printf "\n> %d more hard %s not shown (bind budget: %d policies / %d bytes). Full set: `companies/%s/policies/` or `qmd get -c %s {slug}`; matching rules re-surface via the policy trigger hook when they apply.\n", \
+          dropped, (dropped == 1 ? "policy" : "policies"), cap, maxb, co, co
+    }'
   printf '</company-policy-digest>\n'
 }
 
