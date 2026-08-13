@@ -77,7 +77,7 @@ Empire Root → [click Knowledge card] → Knowledge Browser (Level 1)
 - Name (derived from directory name, title-cased)
 - File count (non-hidden files, recursive)
 - Scope badge: `Public`, `Private`, or company name
-- Symlink indicator icon (chain-link icon) for HQ-level symlinked knowledge
+- Package badge for read-only `core/packages/` contributions; invalid-layout warning if a link targets a separate git repo
 - Git status dot: green (clean), yellow (dirty), gray (no git)
 - Last modified timestamp
 
@@ -638,10 +638,8 @@ interface KnowledgeBase {
   name: string              // "Ralph", "hq-core", "{company}"
   displayName: string       // Title-cased: "Ralph", "HQ Core", "{company}"
   scope: 'hq-public' | 'hq-private' | `company:${string}`
-  repoPath: string          // Relative: "repos/public/ralph-methodology/docs"
-  isSymlink: boolean        // true for core/knowledge/public/*, false for company knowledge
-  isAlias: boolean          // true if duplicate entry pointing to same repo
-  aliasOf?: string          // Canonical name if alias
+  canonicalPath: string     // Canonical real-directory path in HQ
+  layoutStatus: 'valid' | 'package-contribution' | 'legacy-repo-symlink' | 'broken-link'
   gitStatus: 'clean' | 'dirty' | 'no-git'
   dirtyFileCount?: number
   branch?: string

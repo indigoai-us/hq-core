@@ -79,7 +79,7 @@ instructions: |
 
   ## Rules
   - NEVER delete without archival (move to _archive/ first)
-  - Knowledge repo files: changes must be committed to the TARGET repo (the symlink destination), not HQ git. Use `cd` to the target repo, `git add`, `git commit`.
+  - Knowledge repo files: the canonical knowledge path must be a real directory. If it contains embedded git, commit there rather than to HQ git.
   - HQ-native files (workspace/, projects/): commit to HQ git
   - Create _archive/ directories as needed (they're gitignored in knowledge repos, tracked in HQ)
   - When creating escalation PRDs, use minimal format:

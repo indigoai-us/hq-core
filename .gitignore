@@ -17,7 +17,8 @@ settings/**/*.json
 .env.*.local
 workspace/charlie-envs/
 
-# Cloned repos (independent git repos, symlinked into HQ).
+# Cloned code repos. Knowledge stays in real directories at its canonical HQ
+# path; if separately versioned, Git is initialized inside that directory.
 # Root-anchored (`/repos/`) so ONLY the top-level clone dir is excluded. A bare
 # `repos/` matches a directory named `repos` at ANY depth, which silently drops
 # legitimate nested content such as companies/<co>/knowledge/repos/<name>/

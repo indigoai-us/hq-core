@@ -230,7 +230,7 @@ Update registries immediately after each category finishes — limits blast radi
 | policies | Validate frontmatter against `core/knowledge/public/hq-core/policies-spec.md`; place at `core/policies/` or `companies/{co}/policies/` |
 | agents | Copy to `.claude/agents/` |
 | claude_md | Merge into nearest-root CLAUDE.md (show diff, confirm before write) |
-| knowledge_dirs | Create repo symlink per pattern choice; register the knowledge dir in the relevant company knowledge tree |
+| knowledge_dirs | Materialize content in a real canonical knowledge directory; optionally initialize git in place; register it in the relevant company knowledge tree |
 | claude_repos | Per-repo prompt: `Symlink / Move / Skip`; update `manifest.yaml` company `repos:` array on adoption |
 
 **No null fields** — every `manifest.yaml` company entry and every `worker.yaml` must include all required fields from the schema. If a field is unknown, ask before writing. (`core/workers/registry.yaml` is auto-generated — no direct writes.)
@@ -263,7 +263,7 @@ For each detected cluster, **AskUserQuestion**:
 
 Registration order is strict — violate this and the worker's knowledge pointers won't resolve:
 
-1. Verify knowledge dirs from Phase 5 are in place (symlinks resolve, `companies/{co}/knowledge/` is populated)
+1. Verify knowledge dirs from Phase 5 are real directories (`test -d` and `! test -L`) and `companies/{co}/knowledge/` is populated
 2. Inline-invoke `/newworker` with pre-filled fields:
    - `name`: inferred from dominant keyword
    - `scope`: company-scoped if cluster maps to a known slug, else `core/workers/public/`

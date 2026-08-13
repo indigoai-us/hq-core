@@ -252,8 +252,7 @@ Throwaway one-offs: still swarm + FS handoff; no worker tree.
 | Role | Path |
 |------|------|
 | Always-on Grok rule | `.grok/rules/prefer-swarms.md` |
-| Authoring knowledge | `personal/knowledge/public/hq-core/grok-build-swarm-workers.md` |
-| Runtime symlink after reindex | `core/knowledge/public/hq-core/grok-build-swarm-workers.md` |
+| Canonical authoring/runtime knowledge | `core/knowledge/public/hq-core/grok-build-swarm-workers.md` |
 
 Frontmatter `public: true` → promote-scan eligible. Do not inject this into
 root `AGENTS.md` / Claude hooks unless multi-runtime charter is intended.

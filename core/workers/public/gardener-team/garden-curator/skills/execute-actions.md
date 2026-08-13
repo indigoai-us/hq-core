@@ -30,7 +30,7 @@ mkdir -p "$(dirname {path})/_archive"
 mv "{path}" "$(dirname {path})/_archive/$(date +%Y%m%d)-$(basename {path})"
 ```
 - If file listed in an INDEX.md, remove that line from INDEX
-- If file is in a knowledge repo (symlinked), commit to target repo
+- If the real knowledge directory contains embedded git, commit in that directory
 
 **DEDUPLICATE:**
 1. Verify canonical file still exists
@@ -59,7 +59,7 @@ mv "{path}" "workspace/threads/_archive/"
 1. Move file to correct company directory
 2. Update source INDEX.md (remove entry)
 3. Update destination INDEX.md (add entry)
-4. If moving between knowledge repos, commit to both target repos
+4. If moving between embedded knowledge repos, commit in both canonical directories
 
 **ESCALATE:**
 1. Generate slug from prd_title
@@ -109,7 +109,7 @@ Write `actions-log.json` to `{output_path}`:
 ## Rules
 
 - NEVER delete without archival
-- Commit knowledge repo changes to TARGET repo, not HQ git
+- Commit knowledge repo changes to the embedded repo at the canonical knowledge path, not HQ git
 - Always verify `git branch --show-current` before committing to any repo
 - If action fails, log error and continue (don't abort)
 - Output MUST be valid JSON

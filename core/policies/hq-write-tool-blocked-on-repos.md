@@ -1,22 +1,22 @@
 ---
 id: hq-write-tool-blocked-on-repos
-title: "Write/Edit is blocked on repos/ paths — use a worktree for code, Bash heredoc for knowledge"
+title: "Write/Edit is blocked on repos/ paths — use a worktree for code"
 when: always
 on: [SessionStart]
 enforcement: hard
-version: 4
+version: 5
 created: 2026-05-24
-updated: 2026-08-06
+updated: 2026-08-13
 source: session-learning
 public: true
 ---
 
 ## Rule
 
-Do NOT use the Write or Edit tool for any file under `repos/` — including symlinks that resolve there. A PreToolUse hook blocks:
+Do NOT use the Write or Edit tool for any file under `repos/` — including symlinks that resolve there. A PreToolUse hook blocks paths such as:
 
-1. Direct paths like `repos/private/knowledge-{co}/foo.md`
-2. Symlinks that resolve into repos/ (e.g. `companies/{co}/knowledge/foo.md` → `repos/private/knowledge-{co}/foo.md`)
+1. Direct code paths like `repos/private/app/src/index.ts`
+2. Any symlink that resolves into `repos/`
 
 **Where this hook lives.** `core/hooks/PreToolUse/10-Edit,Write,MultiEdit--block-repo-edits-use-worktree.sh`, shipped with hq-core. It was contributed by `hq-pack-engineering` between v15.0.0 and the merge that absorbed that pack back into core, so every host now has the block rather than only those who installed the pack. The other hq-core guards (`block-core-writes.sh`, `block-core-writes-bash.sh`, `protect-core.sh`) protect `core/`, `.claude/`, and the charter — not `repos/`.
 
@@ -29,15 +29,18 @@ bash core/scripts/worktree.sh --name <kebab-slug> --source <repo-path>
 
 It cuts a fresh branch under `workspace/worktrees/{repo}/{name}/` off `origin/<default-branch>`, leaving the source repo's working tree and refs untouched. The worktree lives under `workspace/`, not `repos/`, so the Write/Edit block does not apply inside it — edit, commit, and open the PR from there. (`/personal:worktree` wraps the same script.)
 
-For **knowledge repos** (per-company knowledge under `repos/private/knowledge-{co}/` symlinked from `companies/{co}/knowledge/`), worktree discipline is overkill — these are Obsidian-style notes the user edits by hand. Use **Bash with heredoc** to write the file, then commit inside the knowledge repo:
+Knowledge repositories do not belong under `repos/`. They are real directories at
+`personal/knowledge/` or `companies/{co}/knowledge/`, with git initialized in place
+when separate history is needed. Edit through that canonical path and commit there:
 
 ```bash
-cat > companies/{co}/knowledge/notes.md <<'EOF'
-# Content here
-EOF
-( cd repos/private/knowledge-{co} && git add notes.md && \
-  git -c user.name="..." -c user.email="..." commit -q -m "msg" )
+git -C companies/{co}/knowledge add notes.md
+git -C companies/{co}/knowledge commit -m "update knowledge"
 ```
+
+If a knowledge path is a symlink into `repos/`, it is an invalid legacy layout.
+Materialize it as a real canonical directory before editing; do not use a Bash
+write workaround that preserves the symlink.
 
 **`HQ_BYPASS_REPO_WORKTREE` does not exist and will not be added.** It was once documented here as a Write-tool escape hatch; no shipped hook has ever read it, and that is now a deliberate decision rather than an outstanding task. There is no env-var bypass for this guard. Regression coverage: `core/scripts/tests/block-repo-edits-strict.test.sh` asserts that setting it changes nothing.
 
@@ -45,7 +48,10 @@ EOF
 
 ## Rationale
 
-The hook resolves symlinks before its prefix check, so a knowledge symlink path (`companies/{co}/knowledge/...`) is equivalent to its `repos/`-prefixed target and trips the same block. That is correct — the write really does land in `repos/` — but "spin up a worktree" is useless advice for a notes repo with no PR workflow, so the block message routes knowledge writes to the Bash redirect instead of leaving the reader to guess.
+The hook resolves symlinks before its prefix check, so an invalid legacy knowledge
+symlink that points into `repos/` still trips the block. That is correct: the write
+would land in the prohibited tree. The resolution is to migrate the knowledge path
+to a real directory, not bypass the guard.
 
 The guard stays absolute rather than growing exemptions because the pressure to add them is constant and each one is permanent. The right response to "I keep hitting this" is to remove the reason: the orchestrator now creates its worktrees under `workspace/worktrees/` rather than as siblings inside `repos/`, and the active-run hooks tell you to do the same.
 
@@ -53,4 +59,4 @@ Do not confuse that pack hook with hq-core's own shipped guards, and do not assu
 
 Two distinct paths, by repo kind:
 - **Code that ships** → a worktree (`core/scripts/worktree.sh`). The worktree gives you an isolated branch off `origin/main` under `workspace/`, so edits, commits, and the eventual PR never touch the live checkout and never hit the repos/ Write block.
-- **Knowledge notes** → Bash heredoc, committed in place. Worktree ceremony is overkill for hand-authored notes.
+- **Knowledge notes** → edit the real canonical knowledge directory and commit its embedded repo in place.

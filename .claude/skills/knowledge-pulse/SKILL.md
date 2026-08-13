@@ -63,9 +63,16 @@ else
 fi
 ```
 
+**If `repo_type` is `symlink`, STOP HERE.** The layout is invalid (policy
+`knowledge-repositories-never-symlink`): skip Steps 2–4 entirely — no INDEX.md
+regeneration, no tagging, no stale-status edits, nothing written through the
+link — and jump straight to Step 5 to write a report-only pulse recording the
+migration violation (materialize at `{knowledge_path}`, run `hq reindex`,
+verify `! test -L`).
+
 **Commit rules:**
 - `embedded`: commit changes inside the inner repo (`git -C {knowledge_path} add . && git -C {knowledge_path} commit`)
-- `symlink`: resolve target, commit inside the target repo
+- `symlink`: unreachable — a symlink layout exits to report-only in Step 1
 - `inline`: **skip committing** — flag in report as "changes staged but not committed (inline HQ-tracked)"
 
 ### Step 2: Knowledge Garden
@@ -184,9 +191,11 @@ No digest rebuild step exists. Policies surface automatically via the SessionSta
   git add -A
   git diff --cached --quiet || git commit -m "pulse: auto-tag and index refresh ({date})"
   ```
-- If `repo_type` is `symlink`:
-  - Resolve symlink target: `readlink {knowledge_path}`
-  - Commit inside the resolved target with same message
+- If `repo_type` is `symlink`: this step is never reached — Step 1 exits to
+  report-only before any mutation, so there is nothing to commit or decline.
+  The pulse report records the migration violation: materialize the content at
+  `{knowledge_path}` (run `hq reindex`), preserve git there if needed, and
+  verify `! test -L`
 - If `repo_type` is `inline`:
   - Skip commit. Note in report: "Knowledge is HQ-tracked (inline). Changes staged but not committed to avoid race with parent command."
 
@@ -247,7 +256,7 @@ Append one JSON line to `workspace/metrics/knowledge-health.jsonl`:
 - **Policy changes are report-only** — never auto-modify policy content. Frontmatter validation and stale detection produce reports, not fixes
 - **company-info.md is hands-off** — only report age and discovered facts. Never auto-update
 - **Cap tagging at 20 files** — prevents runaway in large knowledge bases
-- **Respect repo type** — only commit to embedded/symlink repos. Never commit inline knowledge to avoid racing HQ git
+- **Respect repo type** — commit only embedded repos. Report symlinks as migration violations and never write through them. Never commit inline knowledge to avoid racing HQ git
 - **Company isolation** — only garden the specified company's knowledge and policies. Never cross-company
 - **Background execution** — this skill runs detached from the parent command. No user interaction, no AskUserQuestion, no plan mode
 - **Fail gracefully** — if qmd is unavailable, skip contradiction detection. If git commands fail, skip stale detection. Always produce a report even if partial

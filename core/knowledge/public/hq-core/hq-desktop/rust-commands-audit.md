@@ -2,6 +2,11 @@
 
 Comprehensive audit of every Tauri command in the HQ Desktop Rust backend against actual HQ file structures. Identifies type mismatches, missing data accessors, stale mock data, and new commands needed.
 
+> Historical note: earlier HQ installations used symlinked knowledge repositories.
+> Current HQ requires real canonical knowledge directories with optional embedded
+> git. Any link references below describe legacy compatibility, not a layout to
+> create or preserve.
+
 ## 1. Command Inventory
 
 ### files.rs (26 commands)
@@ -288,12 +293,12 @@ No Rust command wraps `qmd` CLI. Desktop needs:
 
 ### 3.5 Knowledge Directory Browser (MEDIUM)
 
-No command understands symlink resolution for knowledge directories. Knowledge paths like `knowledge/public/Ralph/` are symlinks to `repos/public/knowledge-ralph/`. Desktop needs:
-- Symlink resolution for display
+No command validates knowledge-directory layout. Desktop needs:
+- Real-directory validation and a migration warning for legacy symlinks
 - Knowledge repo git status (clean/dirty)
 - INDEX.md hierarchy traversal
 
-**Needed commands:** `resolve_symlink`, `get_knowledge_tree`
+**Needed commands:** `validate_knowledge_path`, `get_knowledge_tree`
 
 ### 3.6 Commands/Skills Discovery (LOW)
 
@@ -458,7 +463,7 @@ All mock data lives in `src/lib/tauri.ts` and `src/hooks/use-empire-data.ts`. Us
 
 11. **Add `get_execution_state`**: Read execution tracking from `workspace/orchestrator/{project}/executions/`.
 
-12. **Add `resolve_symlink`**: Resolve knowledge directory symlinks to actual repo paths.
+12. **Add `validate_knowledge_path`**: Require a real canonical directory and report legacy symlinks for migration.
 
 13. **Improve `list_threads`**: Parse full thread schema with typed struct (git state, worker details, metadata).
 
@@ -468,7 +473,7 @@ All mock data lives in `src/lib/tauri.ts` and `src/hooks/use-empire-data.ts`. Us
 
 15. **Remove `spawn_worker_skill` / `open_terminal_in_hq`**: Replace AppleScript Terminal.app with PTY-based execution (terminal.rs already supports this via `spawn_pty`).
 
-16. **Add `get_knowledge_tree`**: Build knowledge directory tree with symlink awareness and INDEX.md parsing.
+16. **Add `get_knowledge_tree`**: Build a real-directory knowledge tree with INDEX.md parsing after layout validation.
 
 17. **Add file watcher expansion**: Watch more directories beyond prd.json and threads (worker state, learnings, orchestrator state).
 

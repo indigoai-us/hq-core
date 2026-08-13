@@ -105,7 +105,7 @@ Execute the 5-phase lesson flow for the selected topic. Each phase is described 
 
 ### Phase 1: Concept (synthesize, don't paste)
 
-1. **Attempt to read book chapter.** Check if the book exists at `repos/private/knowledge-curriculum/book/handbook.md`. If yes, read ONLY the line range for this topic's chapter (see Topic Registry below). If the file does not exist, use fallback sources.
+1. **Attempt to read book chapter.** Check if the book exists at `personal/knowledge/curriculum/book/handbook.md`; on not-yet-migrated installations, fall back to the legacy `repos/private/knowledge-curriculum/book/handbook.md` (reading it is fine — note that `hq reindex` migrates it). If found, read ONLY the line range for this topic's chapter (see Topic Registry below). If neither exists, use fallback sources.
 2. **Read the HQ reference file(s)** listed in the topic's `hq_refs` field.
 3. **Synthesize a 200-300 word explanation** of the core concept in your own words. Do NOT paste paragraphs from the book.
 4. **Surface the key quote** defined for this topic — attribute it to the book.
@@ -226,7 +226,7 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 - **Show:**
   - List `core/knowledge/public/` directories — show what knowledge bases exist
   - Count total knowledge files: `ls core/knowledge/public/` and any `companies/*/knowledge/`
-  - Show the three knowledge repo patterns (inline, embedded git, symlink) with examples from the user's HQ
+  - Show the two supported knowledge storage forms: a plain real directory or a real directory with embedded git. Explain that symlinked knowledge repositories are invalid because sync cannot materialize their contents
 - **Exercise (Tier 1):**
   1. Pick a keyword relevant to the user's work (ask them for one via AskUserQuestion)
   2. Run `qmd search "{keyword}" --json -n 5` (BM25 keyword search)
@@ -354,7 +354,7 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 
 ## Book Reference Protocol
 
-The book at `repos/private/knowledge-curriculum/book/handbook.md` is the source material.
+The book at `personal/knowledge/curriculum/book/handbook.md` is the source material (legacy installations may still have it at `repos/private/knowledge-curriculum/book/handbook.md` until `hq reindex` migrates it — read whichever exists).
 
 **Rules:**
 1. Read ONLY the line range mapped to the current topic's chapter — never the full book

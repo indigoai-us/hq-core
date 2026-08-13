@@ -164,7 +164,8 @@ Desktop MUST follow these rules when encountering missing structures. The princi
 
 | Condition | Desktop Behavior |
 |-----------|-----------------|
-| `core/knowledge/` contains symlinks | Resolve symlinks transparently. Show git status of target repo if available. |
+| `core/knowledge/` link resolves under `core/packages/*/knowledge/` | Treat as a read-only package contribution, not an independent repo. |
+| Knowledge link resolves to a separate git repository | Mark the layout invalid, show migration guidance, and skip traversal. |
 | Symlink target doesn't exist (broken symlink) | Show knowledge entry as "broken link" (warning icon, skip in tree). |
 | Knowledge dir has no `INDEX.md` | Use directory listing for that subtree. |
 | Knowledge dir has `INDEX.md` | Parse and render INDEX.md as the tree structure. |
@@ -254,7 +255,7 @@ Desktop should detect when a user has evolved their HQ template beyond the defau
 | First project | `personal/projects/*/plan.json` or `companies/*/projects/*/plan.json` exists | Created PRD via `/plan` |
 | Active use | `workspace/threads/*.json` count > 5 | Regular session use |
 | Multi-company | `companies/` exists with manifest | Set up company isolation |
-| Knowledge repos | Symlinks in `core/knowledge/` pointing to `repos/` | Graduated to repo-backed knowledge |
+| Knowledge repos | Embedded `.git/` inside a real canonical knowledge directory | Graduated to independently versioned knowledge |
 | Full production | `workspace/orchestrator/state.json` exists, > 10 projects, > 10 workers | Power user |
 
 ## 6. Compatibility Contract Summary
@@ -266,7 +267,7 @@ This section is the formal contract that Desktop code MUST adhere to.
 1. Desktop MUST validate the 7 required items before loading any UI.
 2. Desktop MUST classify the instance as minimal/standard/full after validation.
 3. Desktop MUST hide (not error on) any missing optional structure.
-4. Desktop MUST resolve symlinks transparently when reading knowledge directories.
+4. Desktop MUST distinguish package contributions from repository symlinks: allow read-only links into `core/packages/*/knowledge/`, but reject links to separate git repositories and provide migration guidance.
 5. Desktop MUST parse `core/workers/registry.yaml` from the HQ root, never assume a path like `core/workers/public/` or `core/workers/private/`.
 6. Desktop MUST support both flat `core/knowledge/` and split `core/knowledge/public/` + `core/knowledge/private/` layouts.
 7. Desktop MUST support both flat `core/workers/` and split `core/workers/public/` + `core/workers/private/` layouts.
@@ -310,6 +311,6 @@ The current Rust backend (see US-001, Section 5) needs these changes to comply w
 
 5. **Worker path resolution:** `list_workers()` and `get_worker_detail()` must read paths from `registry.yaml` rather than assuming directory structure. Support both `core/workers/{id}/` and `core/workers/public/{id}/` patterns.
 
-6. **Knowledge symlink resolution:** Use `std::fs::canonicalize()` or Tauri's path resolver when reading knowledge directories to transparently follow symlinks.
+6. **Knowledge layout validation:** Use `std::fs::symlink_metadata()` before reading a knowledge root. Allow only package links whose resolved target stays under `core/packages/*/knowledge/`; reject links to separate git repositories. Detect embedded git in real canonical directories.
 
 7. **PRD field compatibility:** Support both `userStories` and `features` keys in prd.json parsing. When `features` is found but not `userStories`, treat it as the story array (with field name mapping).

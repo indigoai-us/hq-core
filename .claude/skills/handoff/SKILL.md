@@ -18,9 +18,20 @@ Write a thread file + `handoff.json` with minimal foreground token cost. Keep sh
 
 ```bash
 nohup bash -c '
-for symlink in knowledge/public/* knowledge/private/* companies/*/knowledge; do
-  [ -L "$symlink" ] || [ -d "$symlink/.git" ] || continue
-  repo_dir=$(cd "$symlink" && git rev-parse --show-toplevel 2>/dev/null) || continue
+for knowledge_path in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
+  if [ -L "$knowledge_path" ]; then
+    # Invalid legacy layout: never write through the link, but never lose the
+    # dirty state silently either — record it so the handoff surfaces it.
+    repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
+    hq_repo=$(git rev-parse --show-toplevel 2>/dev/null) || hq_repo=""
+    [ "$repo_dir" = "$hq_repo" ] && continue  # in-tree link (e.g. package mount)
+    dirty=$(cd "$repo_dir" && git status --porcelain)
+    [ -z "$dirty" ] && continue
+    echo "INVALID-DIRTY: $knowledge_path is a legacy knowledge symlink to $repo_dir with uncommitted changes — NOT auto-committed; run hq reindex to materialize it, then commit, before archiving this session"
+    continue
+  fi
+  [ -d "$knowledge_path/.git" ] || continue
+  repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
   dirty=$(cd "$repo_dir" && git status --porcelain)
   [ -z "$dirty" ] && continue
   (cd "$repo_dir" && git add -A && git commit -m "checkpoint: auto-commit before handoff") \
