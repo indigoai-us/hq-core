@@ -1,6 +1,6 @@
 # Knowledge System to Desktop UX Mapping
 
-Maps HQ's knowledge repository structure, symlink resolution, INDEX.md hierarchy, company-scoped knowledge, and qmd search collections to Desktop browsing, navigation, and search UX.
+Maps HQ's canonical real-directory knowledge structure, embedded-git detection, INDEX.md hierarchy, company-scoped knowledge, and qmd search collections to Desktop browsing, navigation, and search UX.
 
 ---
 
@@ -12,26 +12,21 @@ HQ knowledge is distributed across three tiers:
 
 ```
 core/knowledge/
-├── public/                    # Shared knowledge bases (symlinks to git repos)
-│   ├── Ralph/                → repos/public/ralph-methodology/docs
-│   ├── ai-security-framework/→ repos/public/knowledge-ai-security
-│   ├── curious-minds/        → repos/public/knowledge-curious-minds
-│   ├── design-styles/        → repos/public/knowledge-design-styles
-│   ├── dev-team/             → repos/public/knowledge-dev-team
-│   ├── hq/                   → repos/public/knowledge-hq-core (alias)
-│   ├── hq-core/              → repos/public/knowledge-hq-core
-│   ├── loom/                 → repos/public/knowledge-loom
-│   ├── pr/                   → repos/public/knowledge-pr
-│   ├── projects/             → repos/public/knowledge-projects
-│   ├── core/workers/              → repos/public/knowledge-workers
-│   └── INDEX.md              # Navigation index (not a symlink)
-└── private/                   # Private knowledge bases
-    └── linear/               → repos/private/knowledge-linear
+├── public/                    # Shared real directories tracked by hq-core
+│   ├── Ralph/
+│   ├── ai-security-framework/
+│   ├── dev-team/
+│   ├── hq-core/
+│   ├── loom/
+│   ├── projects/
+│   ├── workers/
+│   └── INDEX.md              # Navigation index
+└── private/                   # Private real directories when configured
 ```
 
 ### Tier 2: Company-Scoped Knowledge (`companies/{co}/knowledge/`)
 
-Each company directory contains a knowledge subdirectory that is its own git repo (not a symlink -- these are actual cloned repos with `.git/` inside):
+Each company directory contains a real knowledge subdirectory. It may be its own embedded git repo, with `.git/` directly inside the canonical directory:
 
 | Company | Knowledge Path | Git Repo | File Count |
 |---------|---------------|----------|------------|
@@ -47,46 +42,28 @@ Workers carry domain knowledge in their `worker.yaml` `instructions:` block and 
 
 ---
 
-## 2. Symlink-to-Repo Mapping
+## 2. Canonical Directory and Git Mapping
 
-### Resolution Table
+| Scope | Canonical Path | Git Model |
+|-------|----------------|-----------|
+| HQ public | `core/knowledge/public/{base}/` | Real directory tracked by hq-core |
+| HQ private | `core/knowledge/private/{base}/` | Real directory tracked by its containing HQ tree |
+| Personal | `personal/knowledge/{base}/` | Real directory; optional embedded `.git/` |
+| Company | `companies/{co}/knowledge/` | Real directory; optional embedded `.git/` |
 
-| Symlink Path | Target Repo | Repo Type |
-|-------------|-------------|-----------|
-| `core/knowledge/public/Ralph/` | `repos/public/ralph-methodology/docs` | Public |
-| `knowledge/public/ai-security-framework/` | `repos/public/knowledge-ai-security` | Public |
-| `knowledge/public/curious-minds/` | `repos/public/knowledge-curious-minds` | Public |
-| `knowledge/public/design-styles/` | `repos/public/knowledge-design-styles` | Public |
-| `knowledge/public/dev-team/` | `repos/public/knowledge-dev-team` | Public |
-| `knowledge/public/hq/` | `repos/public/knowledge-hq-core` | Public (alias) |
-| `knowledge/public/hq-core/` | `repos/public/knowledge-hq-core` | Public |
-| `knowledge/public/loom/` | `repos/public/knowledge-loom` | Public |
-| `knowledge/public/pr/` | `repos/public/knowledge-pr` | Public |
-| `knowledge/public/projects/` | `repos/public/knowledge-projects` | Public |
-| `knowledge/public/workers/` | `repos/public/knowledge-workers` | Public |
-| `knowledge/private/linear/` | `repos/private/knowledge-linear` | Private |
-
-### Alias Detection
-
-`knowledge/public/hq/` and `knowledge/public/hq-core/` point to the same repo (`repos/public/knowledge-hq-core`). Desktop should:
-- Detect aliases (two symlinks resolving to the same canonical path)
-- Display one entry with an "also known as" note, not duplicate entries
-- Prefer the canonical name (`hq-core`) over the alias (`hq`)
-
-### Company Knowledge: Not Symlinks
-
-Company knowledge directories (`companies/*/knowledge/`) are NOT symlinks. They are actual git repositories cloned directly into the company directory structure. They have `.git/` inside them. Desktop must handle these differently:
-- No symlink resolution needed
-- Git status is available directly (check `.git/` presence)
-- Knowledge repo identity comes from the directory path, not a symlink target
+Knowledge identity comes from the canonical directory path. `repos/` is for code
+repositories; Desktop must never infer a supported knowledge layout from a link
+target under that tree. A package-managed link from `core/knowledge/` into
+`core/packages/*/knowledge/` is read-only mounted content, not a knowledge repo.
 
 ---
 
-## 3. Symlink Resolution in Rust/Tauri Context
+## 3. Directory Validation in Rust/Tauri Context
 
 ### Challenge
 
-Rust's `std::fs` follows symlinks transparently by default:
+Rust's `std::fs` follows symlinks transparently by default, so Desktop must
+validate knowledge entries before traversing them:
 - `fs::read_dir(path)` follows symlinks and lists target contents
 - `fs::metadata(path)` follows symlinks (returns metadata of target)
 - `fs::symlink_metadata(path)` does NOT follow symlinks (returns symlink metadata)
@@ -102,11 +79,8 @@ use std::path::PathBuf;
 pub struct KnowledgeRepo {
     pub name: String,              // "Ralph", "hq-core", etc.
     pub display_path: String,      // "core/knowledge/public/Ralph/"
-    pub canonical_path: String,    // Resolved absolute path (after following symlink)
-    pub repo_path: Option<String>, // "repos/public/ralph-methodology/docs" (relative)
-    pub is_symlink: bool,          // true for core/knowledge/public/*, false for company knowledge
-    pub is_alias: bool,            // true if another entry points to same canonical_path
-    pub alias_of: Option<String>,  // name of the canonical entry this aliases
+    pub canonical_path: String,    // Absolute real-directory path
+    pub layout_kind: String,       // "real", "package-contribution", or "invalid-repo-symlink"
     pub visibility: String,        // "public" or "private"
     pub scope: String,             // "hq" or company ID ("{company}", etc.)
     pub has_git: bool,             // Whether .git exists in resolved path
@@ -115,34 +89,35 @@ pub struct KnowledgeRepo {
 }
 ```
 
-### Symlink Resolution Algorithm
+### Directory Validation Algorithm
 
 ```
 for each entry in core/knowledge/public/ and core/knowledge/private/:
-  1. Check if entry is symlink: fs::symlink_metadata(path).is_symlink()
-  2. If symlink: resolve target with fs::read_link(path)
-  3. Canonicalize with fs::canonicalize(path) to get absolute resolved path
-  4. Extract repo name from target path (e.g., repos/public/knowledge-hq-core → hq-core)
-  5. Check for aliases: if canonical_path matches another entry, mark as alias
+  1. Read symlink metadata without following the path
+  2. If it links inside core/packages/*/knowledge/, mark it as a read-only package contribution
+  3. If it links to a separate git repo, mark it invalid and do not traverse it
+  4. Otherwise canonicalize the real directory and inspect its contents
 
 for each company in companies/:
   1. Check if companies/{co}/knowledge/ exists
-  2. Check if .git/ exists inside it
-  3. Treat as standalone knowledge repo (not symlink)
+  2. Reject a symlinked knowledge root as an invalid legacy layout
+  3. Check whether .git/ exists inside the real directory
 ```
 
 ### Tauri FS Plugin Behavior
 
-The `@tauri-apps/plugin-fs` `readDir()` also follows symlinks transparently. The existing `use-hq-files.ts` hook does NOT distinguish symlinks from real directories. For the knowledge browser, this is mostly fine (content is accessible), but Desktop should:
-- Show a link icon on symlinked knowledge bases (visual distinction)
-- Show the repo target path in detail view
-- Show git status of the target repo (not the HQ repo)
+The `@tauri-apps/plugin-fs` `readDir()` also follows symlinks transparently. The
+knowledge browser must check metadata first. It may traverse a package contribution
+whose target stays inside `core/packages/`; it must refuse a symlink to a separate
+git repository and show a migration warning. For a real directory, show the git
+status of an embedded `.git/` when present.
 
 ### Edge Cases
 
-1. **Broken symlinks:** If a repo is deleted but the symlink remains, `fs::read_dir()` will fail. Desktop should catch this and show a "broken link" indicator.
-2. **Relative vs absolute symlinks:** HQ uses both relative (`../../repos/public/knowledge-hq-core`) and absolute (`~/Documents/HQ/repos/public/knowledge-curious-minds`) symlinks. `fs::canonicalize()` handles both.
-3. **Nested symlinks:** Some knowledge repos contain internal symlinks (e.g., {company} CDP knowledge has `audit/` and `flow-migration/` symlinks). Desktop should resolve these recursively.
+1. **Legacy repository symlink:** Show an invalid-layout warning with migration guidance; never present it as a normal repository.
+2. **Package contribution:** Allow a read-only link whose resolved target stays under `core/packages/*/knowledge/`; do not present it as an independent repo.
+3. **Broken symlink:** Show a broken-link warning and skip traversal.
+4. **Nested links inside content:** Do not allow them to escape the canonical knowledge root or package root.
 
 ---
 
@@ -235,7 +210,7 @@ KnowledgeBase (top-level grouping)
 - File count
 - Last modified date
 - Git status indicator (clean / dirty / untracked)
-- Symlink indicator (for HQ-level knowledge)
+- Invalid-layout warning when a legacy symlink is detected
 
 **Knowledge Base Detail View:**
 - INDEX.md rendered as navigation sidebar
@@ -469,11 +444,10 @@ Building on the US-003 audit, the knowledge browser needs these Rust commands:
 
 | Command | Priority | Purpose |
 |---------|----------|---------|
-| `list_knowledge_repos` | P0 | List all knowledge bases with symlink resolution, scope, git status |
+| `list_knowledge_repos` | P0 | List real-directory knowledge bases with layout validation, scope, git status |
 | `get_knowledge_tree` | P0 | Build file tree for a knowledge base with INDEX.md enrichment |
 | `qmd_search` | P0 | Wrap qmd CLI for search (keyword/semantic/hybrid) |
 | `list_qmd_collections` | P1 | List available qmd collections with stats |
-| `resolve_symlink` | P1 | Resolve a symlink path and return target + metadata |
 | `render_markdown` | P2 | Server-side markdown rendering (or do client-side) |
 | `get_knowledge_git_status` | P2 | Git status for a knowledge repo (branch, dirty, last commit) |
 
@@ -481,7 +455,7 @@ Building on the US-003 audit, the knowledge browser needs these Rust commands:
 
 | Command | How It Helps Knowledge Browser |
 |---------|-------------------------------|
-| `read_dir_tree` | Can scan knowledge directories (follows symlinks transparently) |
+| `read_dir_tree` | Can scan knowledge directories after the caller rejects symlinked roots |
 | `read_file_content` | Can read markdown files for rendering |
 | `read_yaml` | Can read worker.yaml for embedded knowledge |
 | `list_companies` | Provides company list for knowledge scoping (needs manifest enrichment) |

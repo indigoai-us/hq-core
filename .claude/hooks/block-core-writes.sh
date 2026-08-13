@@ -100,14 +100,27 @@ MSG
 fi
 
 # Walk upward from target. If any existing component is a symlink, the write
-# resolves OUT of the protected tree (e.g. a knowledge-repo symlink, or a
-# leftover personal→core mirror symlink from before that mirror was retired) —
-# so it lands outside core/; allow it.
+# usually resolves OUT of the protected tree (e.g. an invalid legacy knowledge
+# symlink, or a leftover personal→core mirror symlink from before that mirror
+# was retired) — it lands outside core/, so allow it. The exception is a
+# package contribution link (core/knowledge/* → core/packages/*/knowledge/*):
+# that resolves back INTO core/, and installed pack content is immutable, so
+# the write stays blocked.
 probe="$FILE_PATH"
 while [[ "$probe" == "$CORE_DIR"/* || "$probe" == "$CLAUDE_DIR"/* || \
          "$probe" == "$AGENTS_DIR"/* || "$probe" == "$CODEX_DIR"/* || \
          "$probe" == "$OBSIDIAN_DIR"/* ]]; do
   if [[ -L "$probe" ]]; then
+    # One-level readlink + lexical normalization (portable — macOS readlink
+    # has no -f). Pack mounts are single links, so one level is sufficient.
+    resolved="$(readlink "$probe" 2>/dev/null || true)"
+    if [[ -n "$resolved" && "$resolved" != /* ]]; then
+      resolved="$(dirname "$probe")/$resolved"
+    fi
+    resolved="$(hq_canonical_path "$resolved")"
+    if [[ -n "$resolved" && "$resolved" == "$CORE_DIR"/* ]]; then
+      break # resolves back into core/ (package mount) — keep blocking
+    fi
     exit 0
   fi
   parent="$(dirname "$probe")"

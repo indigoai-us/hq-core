@@ -105,8 +105,8 @@ case "$REL_PATH" in
     exit 0
     ;;
   companies/*/knowledge|companies/*/knowledge/*)
-    # Company knowledge can be an embedded or symlinked repo. Let its own repo
-    # discipline decide when to commit.
+    # Company knowledge is a real canonical directory and may contain an
+    # embedded repo. Let that repo's discipline decide when to commit.
     exit 0
     ;;
 esac

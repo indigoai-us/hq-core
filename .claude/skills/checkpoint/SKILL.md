@@ -42,17 +42,31 @@ Save current work state as a thread to survive context loss.
    ```
 
 4. **Capture knowledge repo git states**
-   Knowledge folders are separate git repos (symlinked or embedded). For any knowledge path in files_touched, capture its repo state:
+   Knowledge folders may contain embedded git repos at their canonical real-directory paths. For any knowledge path in files_touched, capture its repo state. Continue detecting legacy symlinks only so they can be reported for migration:
    ```bash
    # For each knowledge repo with changes:
    bash -c '
    shopt -s nullglob
-   for symlink in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
-     [ -L "$symlink" ] || [ -d "$symlink/.git" ] || continue
-     repo_dir=$(cd "$symlink" && git rev-parse --show-toplevel 2>/dev/null) || continue
+   for knowledge_path in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
+     if [ -L "$knowledge_path" ]; then
+       target=$(cd "$knowledge_path" 2>/dev/null && pwd -P) || continue
+       case "$target" in
+         "$(pwd -P)"/core/packages/*) continue ;;  # package-managed mount — the only valid knowledge link
+       esac
+       repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || repo_dir=""
+       hq_repo=$(git rev-parse --show-toplevel 2>/dev/null) || hq_repo=""
+       if [ -n "$repo_dir" ] && [ "$repo_dir" != "$hq_repo" ]; then
+         echo "$knowledge_path: INVALID legacy symlink to $repo_dir (migration required — run hq reindex)"
+       else
+         echo "$knowledge_path: NONSTANDARD symlink to $target (knowledge must be a real directory)"
+       fi
+       continue
+     fi
+     [ -d "$knowledge_path/.git" ] || continue
+     repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
      dirty=$(cd "$repo_dir" && git status --porcelain)
      [ -z "$dirty" ] && continue
-     echo "$symlink: $(cd "$repo_dir" && git rev-parse --short HEAD) (dirty)"
+     echo "$knowledge_path: $(cd "$repo_dir" && git rev-parse --short HEAD) (dirty)"
    done
    '
    ```

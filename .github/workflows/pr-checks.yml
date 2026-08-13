@@ -576,7 +576,7 @@ jobs:
           fi
       - name: Rebuild qmd collections after sync
         run: bash core/scripts/tests/qmd-reindex-after-sync.test.sh
-      - name: Index symlinked company knowledge
+      - name: Index real-directory company knowledge
         run: bash core/scripts/tests/rebuild-company-knowledge-index.test.sh
       - name: Index orchestrator state
         run: bash core/scripts/tests/rebuild-orchestrator-index.test.sh
@@ -618,13 +618,13 @@ jobs:
         run: bash core/scripts/tests/knowledge-repo-glob-shells.test.sh
 
   knowledge-scaffold-real-dir:
-    # fix/knowledge-scaffold-no-symlink: /newcompany must scaffold embedded git
-    # directories, not repo symlinks that sync as vault markers.
+    # Knowledge repositories must be real canonical directories everywhere;
+    # setup/import/docs may never recreate the legacy repo-symlink layout.
     name: knowledge-scaffold-real-dir
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Knowledge scaffold uses real directories with sync-visible content
+      - name: Knowledge repositories use real directories with sync-visible content
         run: bash core/scripts/tests/knowledge-scaffold-real-dir.test.sh
 
   dm-people-resolve:
@@ -703,6 +703,8 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
       - name: block-core-writes permits only the durable native personal context
         run: bash core/scripts/tests/block-core-writes-native-context.test.sh
+      - name: block-core-writes keeps package contribution links immutable
+        run: bash core/scripts/tests/block-core-writes-package-mount.test.sh
       - name: block-repo-edits admits only workspace/worktrees, no exemptions
         run: bash core/scripts/tests/block-repo-edits-strict.test.sh
       - name: HQ worktree guard distinguishes canonical Windows path aliases

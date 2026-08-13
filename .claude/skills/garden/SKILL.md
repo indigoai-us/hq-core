@@ -278,7 +278,7 @@ After all chunks:
 - ONE garden run at a time (check for in_progress runs before starting)
 - NEVER delete without archival — curator moves to _archive/ first
 - NEVER skip human gates — always present findings/actions for approval
-- Knowledge repo commits go to TARGET repo, not HQ git
+- Knowledge repo commits go to the embedded repo at the canonical knowledge path, not HQ git
 - Always verify `git branch --show-current` before any commit
 - For "all" sweep: chunk by company, sequential, human gate per chunk
 - Scout is read-only. Auditor is read-only. Only Curator modifies files.

@@ -103,10 +103,8 @@ test -d companies/{slug}/knowledge && ! test -L companies/{slug}/knowledge \
   && echo "OK: knowledge is a real directory"
 ```
 
-**Optional advanced layout:** a separate repo under `repos/private/knowledge-{slug}`
-is supported only when the operator explicitly confirms they understand sync will
-**not** follow directory symlinks and they will push from that repo path directly.
-Default is always the embedded-git directory above.
+This layout is mandatory: initialize git inside the canonical knowledge directory.
+Never move it under `repos/` or replace it with a symlink.
 
 The `design-styles/packs/` subdir is where company-scoped brand packs live.
 
@@ -254,10 +252,20 @@ packs only.
 
 ### 2.5.4 Register the pack
 
-Add each pack to `repos/public/knowledge-design-styles/registry.yaml` under Brand Packs:
-`type: brand`, `status: active`, `scope: company`, `company: {slug}`,
-`path: companies/{slug}/knowledge/design-styles/packs/{pack-id}/`, plus the one-line
-`aesthetic`. Consumers reference packs by `id` only — the registry resolves the path.
+Registry entry fields: `type: brand`, `status: active`, `scope: company`,
+`company: {slug}`, `path: companies/{slug}/knowledge/design-styles/packs/{pack-id}/`,
+plus the one-line `aesthetic`. Consumers reference packs by `id` only — the
+registry resolves the path.
+
+Where to write it depends on the layout: if `core/knowledge/public/design-styles`
+is a real HQ-tracked directory (`! test -L`), add the entry to its
+`registry.yaml`. If it is a package contribution mounted from `core/packages/`
+(installed via `hq install @indigoai-us/hq-pack-design-styles`), that content is
+immutable — never edit through the mount. Write the entry to the company scope
+instead: `companies/{slug}/knowledge/design-styles/registry.yaml` (create it if
+missing); company brand packs under `companies/{slug}/knowledge/design-styles/packs/`
+auto-load when the company is bound, and resolution merges company entries over
+the shared registry.
 
 ### 2.5.5 Wire packs to use cases via policies
 
@@ -422,7 +430,7 @@ Skip → no agents (the most likely default; it's a deliberate step).
 - Always write `company.yaml` with `cloud: false`; only `/designate-team` flips it. Never default to `cloud: true`.
 - Every `hq` call carries `--company {slug}`. Never collect raw secrets in chat — mint links.
 - Don't fake integrations: tools without an easy key become tracked tasks (manual export / ingestion script), not silent no-ops.
-- Design packs go in `companies/{slug}/knowledge/design-styles/packs/` (never the shared public packs dir), get registered in `repos/public/knowledge-design-styles/registry.yaml`, and bind to surfaces via company-scoped policies — never by editing core deploy infra.
+- Design packs go in `companies/{slug}/knowledge/design-styles/packs/` (never the shared public packs dir), get registered per §2.5.4 (shared registry only when it is a real HQ-tracked file; company-scoped `registry.yaml` when design-styles is an immutable package mount), and bind to surfaces via company-scoped policies — never through a knowledge repository under `repos/` or by editing core deploy infra.
 - Reuse `/designate-team`, `/newworker`, `/idea`, `/plan`, `hq groups|secrets|files|members invite`, and the cloud-agent provisioning path — don't reimplement them.
 
 ## See also
