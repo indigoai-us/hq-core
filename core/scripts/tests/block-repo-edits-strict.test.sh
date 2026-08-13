@@ -12,9 +12,8 @@
 #      Tempting to allow by inspecting whether the directory is "really" a git
 #      worktree. Instead the orchestrator now creates its worktrees in the
 #      sanctioned location, so the need is gone.
-#   2. A knowledge tree symlinked in from repos/private/knowledge-*. Tempting to
-#      exempt by resolving which repo a knowledge symlink points at. Instead the
-#      guard explains the Bash-redirect route, which it does not intercept.
+#   2. An invalid legacy knowledge tree symlinked in from repos/private/. The
+#      guard must block it and require migration to a real canonical directory.
 #   3. An env-var escape hatch. Tempting because it is one line.
 #
 # Every one of those is a hole, and every structural test that would police one
@@ -41,8 +40,13 @@ mkdir -p "$HQ/repos/private/app-code/src" \
          "$HQ/personal" \
          "$HQ/workspace/worktrees/app-code/feature/src"
 
-# A knowledge repo symlinked in the way HQ's own /setup wires it.
+# Invalid legacy layout retained only as a path-safety fixture.
 ln -s ../../repos/private/knowledge-acme "$HQ/companies/acme/knowledge"
+
+# Same legacy shape at the HQ-level knowledge root — the classification must
+# cover core/knowledge/* too, not just company/personal paths.
+mkdir -p "$HQ/core/knowledge/public"
+ln -s ../../../repos/private/knowledge-acme "$HQ/core/knowledge/public/acme-notes"
 
 # A structurally real git worktree living under repos/ — the exact shape a
 # "just check whether it's a worktree" exemption would let through.
@@ -120,13 +124,22 @@ else
   fail "the block message gives the command that creates one" "$(cat "$ERR")"
 fi
 
-# A knowledge write gets the knowledge route, not "go open a worktree" — that
-# advice is useless for a repo with no PR workflow.
+# A legacy knowledge symlink gets a migration diagnostic, never a bypass recipe.
 run "$HQ/companies/acme/knowledge/finance/overview.md" -u HQ_BYPASS_REPO_WORKTREE >/dev/null
-if grep -Fq 'knowledge tree' "$ERR" && grep -Fq 'cat >' "$ERR"; then
-  ok "a knowledge write is told the Bash-redirect route"
+if grep -Fq 'invalid legacy knowledge symlink' "$ERR" && grep -Fq '! test -L' "$ERR" && ! grep -Fq 'cat >' "$ERR"; then
+  ok "a legacy knowledge symlink is told to migrate"
 else
-  fail "a knowledge write is told the Bash-redirect route" "$(cat "$ERR")"
+  fail "a legacy knowledge symlink is told to migrate" "$(cat "$ERR")"
+fi
+
+# The same diagnostic covers a legacy link at the HQ knowledge root
+# (core/knowledge/*): the write resolves into repos/, and "open a worktree"
+# would be the wrong advice there too.
+run "$HQ/core/knowledge/public/acme-notes/finance/overview.md" -u HQ_BYPASS_REPO_WORKTREE >/dev/null
+if grep -Fq 'invalid legacy knowledge symlink' "$ERR" && grep -Fq '! test -L' "$ERR" && ! grep -Fq 'cat >' "$ERR"; then
+  ok "a legacy core-knowledge symlink is told to migrate"
+else
+  fail "a legacy core-knowledge symlink is told to migrate" "$(cat "$ERR")"
 fi
 
 # --- Bash classification uses actual operations, not argument text ----------

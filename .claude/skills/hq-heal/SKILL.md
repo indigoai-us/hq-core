@@ -142,9 +142,10 @@ Fix proposal: remove stale `_overrides/` snapshots (with `--dry-run` first), or 
 #### `symlink`
 Checks:
 - Grep `ERR` for the broken path; if found, `ls -la <path>` and `readlink <path>`
-- Common HQ symlinks to verify: `AGENTS.md`, `companies/*/knowledge`, `core/knowledge/public/*`, `.claude/skills/personal:*`
+- Common legitimate HQ symlinks to verify: `AGENTS.md` and `.claude/skills/personal:*`
+- Knowledge repositories under `personal/knowledge/` and `companies/*/knowledge/` must be real directories. Under `core/knowledge/`, a package-managed link into `core/packages/*/knowledge/` is valid; a link to a separate git repository is a migration violation.
 
-Fix proposal: re-create the symlink with an absolute path under `$HOME/Documents/HQ/` (learned rule: never relative symlinks across worktrees). Apply via Edit/Bash only if the target is unambiguous.
+Fix proposal: for legitimate non-knowledge links, re-create the symlink with an absolute path under `$HOME/Documents/HQ/` only if the target is unambiguous. For knowledge, materialize the content at the canonical path and verify it is not a symlink.
 
 #### `git-object-store`
 These errors read like history loss, so the instinct is to reach for `git gc`, a reclone, or `--prune`. Do NOT start there — check for a mechanical cause first, because the most common one destroys nothing and is repaired by a rename.

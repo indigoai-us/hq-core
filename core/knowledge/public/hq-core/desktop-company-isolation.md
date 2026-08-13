@@ -18,7 +18,7 @@ How `manifest.yaml` maps to Desktop routing, credential visibility rules, knowle
 {company_id}:
   repos: [list of repo paths]           # Git repos owned by this company
   settings: [list of setting dir names]  # Credential/config dirs under companies/{id}/settings/
-  knowledge: companies/{id}/knowledge/   # Knowledge base path (symlinked to a git repo)
+  knowledge: companies/{id}/knowledge/   # Real directory; optional embedded git repo
   deploy: [list of deploy commands]      # Slash commands for deployment
   vercel_projects: [list of domains]     # Vercel deployment targets
   qmd_collections: [list of names]       # Semantic search collections
@@ -144,7 +144,9 @@ Desktop MUST NOT allow viewing Company A's settings when Company B is the active
 
 ### How Company Filter Maps to Knowledge Access
 
-Each company's knowledge is stored at `companies/{id}/knowledge/`, which is a symlink to an independent git repo (e.g., `repos/private/knowledge-{company}/`).
+Each company's knowledge is stored as a real directory at
+`companies/{id}/knowledge/`. If independent version history is needed, git is
+initialized inside that directory; the path is never a symlink into `repos/`.
 
 When `activeCompany` is set:
 

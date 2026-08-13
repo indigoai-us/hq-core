@@ -27,8 +27,8 @@ HQ/
 │   ├── hooks/          # Always-on system hooks (loaded first)
 │   ├── docs/hq/        # Public HQ docs (README, CHANGELOG, MIGRATION, USER-GUIDE)
 │   ├── knowledge/
-│   │   ├── public/     # Symlinks → repos/public/knowledge-*
-│   │   └── private/    # Symlinks → repos/private/knowledge-*
+│   │   ├── public/     # Bundled real directories tracked by hq-core
+│   │   └── private/    # Private real directories when configured
 │   ├── policies/       # Cross-cutting + command-scoped policies
 │   ├── settings/       # Orchestrator config
 │   ├── skills/         # Core skills (surface as /<skill>)
@@ -43,8 +43,8 @@ HQ/
 │   ├── skills/         # Surface as /<skill> with (project:personal) tag
 │   └── workers/        # Read directly from personal/ (no core/ mirror)
 ├── repos/
-│   ├── public/         # Open-source repos
-│   └── private/        # Private repos
+│   ├── public/         # Open-source code repos
+│   └── private/        # Private code repos
 └── workspace/
     ├── checkpoints/    # Session saves
     ├── orchestrator/   # Ralph loop workflow state

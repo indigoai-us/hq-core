@@ -108,7 +108,7 @@ claude
 /personal-interview
 ```
 
-`/setup` asks your name, work, and goals, then scaffolds your first knowledge repo as a symlinked git repo (see [Knowledge Repos](#knowledge-repos) below). `/personal-interview` goes deeper — a tiered interview that builds your voice, preferences, and working style.
+`/setup` asks your name, work, and goals, then scaffolds your first knowledge base as a real directory with an optional embedded git repo (see [Knowledge Repos](#knowledge-repos) below). `/personal-interview` goes deeper — a tiered interview that builds your voice, preferences, and working style.
 
 ## Core Concepts
 
@@ -389,58 +389,51 @@ core/scripts/run-project.sh my-project --timeout 30  # Per-story timeout (minute
 
 ## Knowledge Repos
 
-Knowledge bases in HQ are **independent git repos**, symlinked into `core/knowledge/`. This lets you version, share, and publish each knowledge base separately from HQ itself.
+Knowledge bases in HQ are **real directories at their canonical HQ paths**. When a knowledge base needs independent version history, initialize git inside that directory. Never place a knowledge repo under `repos/` and symlink it back into `core/knowledge/`, `personal/knowledge/`, or `companies/{co}/knowledge/`.
 
 ### How it works
 
 ```
-repos/private/knowledge-personal/                                  ← actual git repo
-    └── README.md, notes.md, ...
+personal/knowledge/my-topic/        ← real directory
+├── .git/                              ← optional embedded repo
+├── README.md
+└── notes.md
 
-personal/knowledge → ../repos/private/knowledge-personal                     ← symlink
+companies/acme/knowledge/           ← real directory + embedded repo
 ```
 
-HQ git tracks the symlink. The repo contents are tracked by their own git. Tools (`qmd`, `Glob`, `Read`) follow symlinks transparently.
+This keeps document contents visible to HQ sync and gives every tool one stable path. `repos/` is reserved for code repositories.
 
 ### Creating a knowledge repo
 
 ```bash
-# 1. Create and init the repo
-mkdir -p repos/public/knowledge-my-topic
-cd repos/public/knowledge-my-topic
-git init
-echo "# My Topic" > README.md
-git add . && git commit -m "init knowledge repo"
-cd -
-
-# 2. Symlink into HQ
-ln -s ../../../repos/public/knowledge-my-topic core/knowledge/public/my-topic
+# Create the canonical real directory and initialize git in place
+mkdir -p personal/knowledge/my-topic
+git -C personal/knowledge/my-topic init
+printf '# My Topic\n' > personal/knowledge/my-topic/README.md
+git -C personal/knowledge/my-topic add README.md
+git -C personal/knowledge/my-topic commit -m "init knowledge repo"
 ```
 
-For company-scoped knowledge:
-```bash
-ln -s ../../../repos/private/knowledge-acme companies/acme/knowledge/acme
-```
+For company-scoped knowledge, `/newcompany acme` creates
+`companies/acme/knowledge/` as a real directory and initializes its embedded repo.
 
 ### Committing knowledge changes
 
-Changes appear in `git status` of the *target repo*, not HQ:
+Changes appear in `git status` of the embedded repo:
 
 ```bash
-cd repos/public/knowledge-my-topic
-git add . && git commit -m "update notes" && git push
+git -C personal/knowledge/my-topic add .
+git -C personal/knowledge/my-topic commit -m "update notes"
 ```
+
+Do not push knowledge repos to ad-hoc remotes — HQ state moves across machines
+and teammates through `/hq-sync`, which is tenant-aware and syncs the real
+directory contents.
 
 ### Bundled knowledge
 
-The starter kit ships Ralph, workers, security framework, etc. as plain directories under `core/knowledge/public/`. These work as-is. To convert one to a versioned repo later:
-
-```bash
-mv core/knowledge/public/Ralph repos/public/knowledge-ralph
-cd repos/public/knowledge-ralph && git init && git add . && git commit -m "init"
-cd -
-ln -s ../../../repos/public/knowledge-ralph core/knowledge/public/Ralph
-```
+The starter kit ships Ralph, workers, security framework, and other shared material as real directories under `core/knowledge/public/`, tracked by hq-core. Keep those directories in place. Put user-specific or company-specific additions under `personal/knowledge/` or `companies/{co}/knowledge/` instead of converting bundled knowledge into a symlinked repository.
 
 ---
 
@@ -484,8 +477,8 @@ my-hq/
 │   ├── skills/
 │   └── workers/
 ├── repos/
-│   ├── public/                # Open-source repos + knowledge repos
-│   └── private/               # Private repos + knowledge repos
+│   ├── public/                # Open-source code repos
+│   └── private/               # Private code repos
 └── workspace/
     ├── baseline/              # Reference baselines
     ├── checkpoints/           # Session saves

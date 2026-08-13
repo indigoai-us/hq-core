@@ -18,8 +18,8 @@
 #
 # Symlinks and `..` are resolved before the prefix check so paths like
 # `repos/private/../private/foo` or symlinks into repos/ still trip the
-# guard. A knowledge tree symlinked in from repos/ therefore also lands here —
-# intentionally. The block message below names the supported route for it.
+# guard. An invalid legacy knowledge tree symlinked in from repos/ therefore
+# also lands here intentionally. The block message below requires migration.
 #
 # Exit codes: 0 = allow, 2 = block.
 
@@ -39,7 +39,7 @@ if [[ "$FILE_PATH" != /* ]]; then
 fi
 
 # Absolute but NOT yet symlink-resolved — used only to phrase the diagnostic, so
-# a write that arrived through a knowledge symlink can be told what to do next
+# a write that arrived through a legacy knowledge symlink can be told to migrate
 # instead of being told, unhelpfully, about a repos/ path it never named.
 RAW_PATH="$FILE_PATH"
 RAW_PROJECT_DIR="$PROJECT_DIR"
@@ -81,15 +81,13 @@ esac
 
 REL="${FILE_PATH#$PROJECT_DIR/}"
 
-# A write that arrived through a knowledge symlink gets the knowledge route
-# rather than the worktree route. Knowledge repos have no PR workflow, so
-# "open a worktree" is the wrong advice; the supported path is a Bash redirect,
-# which this hook does not intercept.
+# A write that arrived through a legacy knowledge symlink gets a migration
+# diagnostic rather than the code-worktree route.
 KNOWLEDGE_WRITE=false
 for KNOWN_BASE in "$RAW_PROJECT_DIR" "$PROJECT_DIR"; do
   [[ -n "$KNOWN_BASE" ]] || continue
   case "$RAW_PATH" in
-    "$KNOWN_BASE"/companies/*/knowledge/*|"$KNOWN_BASE"/personal/knowledge/*)
+    "$KNOWN_BASE"/companies/*/knowledge/*|"$KNOWN_BASE"/personal/knowledge/*|"$KNOWN_BASE"/core/knowledge/*)
       KNOWLEDGE_WRITE=true ;;
   esac
 done
@@ -101,18 +99,17 @@ BLOCKED: direct edits inside repos/ are not allowed.
   File: $RAW_REL
   Resolves to: $REL
 
-This is a knowledge tree. HQ stores knowledge as its own git repo under
-repos/private/ and symlinks it in, so writing through the symlink still lands
-in repos/ — which Edit and Write may never do.
+This is an invalid legacy knowledge symlink. Knowledge repositories must be
+real directories at their canonical path, with git initialized there when
+separate history is needed. Never write through this link or bypass the guard.
 
-Knowledge repos have no PR workflow, so a worktree is the wrong tool here. Use
-a Bash redirect instead, which this guard does not intercept:
+Run \`hq reindex\` to migrate automatically: it pulls the legacy repo, copies
+its content (and git history) inline at "$RAW_REL", and removes the fully
+migrated legacy repo. Or materialize the content by hand, preserving its git
+history there if needed. Either way, verify both:
 
-  cat > "$RAW_REL" <<'MARKDOWN'
-  ...your content...
-  MARKDOWN
-
-Then commit inside the knowledge repo as normal.
+  test -d "$RAW_REL"
+  ! test -L "$RAW_REL"
 EOF
   exit 2
 fi

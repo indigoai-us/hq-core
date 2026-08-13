@@ -96,7 +96,7 @@ git status --short
 - Untracked new files (should commit or ignore)
 - Modified submodules
 
-**Note:** Knowledge folders are separate embedded git repos (real directories under `personal/knowledge/` or `companies/{slug}/knowledge/`) or legacy symlinks into `repos/`. HQ git tracks the directory entry; knowledge file changes live in the embedded repo and are invisible to HQ git.
+**Note:** Knowledge repositories must be real directories at their canonical paths. They may contain embedded git repos. A legacy symlink into a separate repository is a migration violation; keep detecting it so cleanup can report it, but never create or preserve it as a supported layout. Package-managed links into `core/packages/*/knowledge/` are not repositories and remain valid.
 
 ### 4b. Knowledge Repo Status
 
@@ -106,7 +106,21 @@ git status --short
    bash -c '
    shopt -s nullglob
    for knowledge_path in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
-     [ -L "$knowledge_path" ] || [ -d "$knowledge_path/.git" ] || continue
+     if [ -L "$knowledge_path" ]; then
+       target=$(cd "$knowledge_path" 2>/dev/null && pwd -P) || continue
+       case "$target" in
+         "$(pwd -P)"/core/packages/*) continue ;;  # package-managed mount — the only valid knowledge link
+       esac
+       repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || repo_dir=""
+       hq_repo=$(git rev-parse --show-toplevel 2>/dev/null) || hq_repo=""
+       if [ -n "$repo_dir" ] && [ "$repo_dir" != "$hq_repo" ]; then
+         echo "INVALID: $knowledge_path links to separate repo $repo_dir; migrate to a real directory (hq reindex)"
+       else
+         echo "NONSTANDARD: $knowledge_path is a symlink to $target — knowledge must be a real directory; only core/packages mounts may be links"
+       fi
+       continue
+     fi
+     [ -d "$knowledge_path/.git" ] || continue
      repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
      dirty=$(cd "$repo_dir" && git status --porcelain)
      [ -z "$dirty" ] && continue
@@ -198,7 +212,7 @@ symlink markers instead of document contents.
 
 ### 10. qmd Collection Completeness
 
-**Policy**: Every company with a knowledge symlink should have a qmd collection. HQ itself should have 4 sub-collections: `hq-infra`, `hq-workers`, `hq-knowledge`, `hq-projects` (not a monolithic `hq`).
+**Policy**: Every company with a knowledge directory should have a qmd collection. HQ itself should have 4 sub-collections: `hq-infra`, `hq-workers`, `hq-knowledge`, `hq-projects` (not a monolithic `hq`).
 
 ```bash
 # Check companies with knowledge but empty qmd_collections
@@ -531,7 +545,7 @@ Reference for what we're enforcing:
 | Checkpoints | Legacy format, archive after 30 days |
 | Metrics | Append to `workspace/metrics/metrics.jsonl` |
 | Git | Clean working tree |
-| Knowledge repos | Symlinks in `knowledge/` and `companies/*/knowledge/` point to repos; all repos committed |
+| Knowledge repos | Real canonical directories; embedded repos are committed; links to separate repos are flagged for migration |
 | INDEX.md | Exist at 10 key dirs, match contents (see spec) |
 | Manifest | All companies have non-null knowledge, settings, repos |
 | qmd | All companies with knowledge have a qmd collection |

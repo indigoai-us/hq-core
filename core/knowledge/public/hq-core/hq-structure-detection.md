@@ -85,7 +85,7 @@ Present in {your-name}'s production HQ but NOT in the starter-kit. These represe
 | `companies/manifest.yaml` | file | Company-resource isolation map | Not in starter |
 | `companies/{co}/settings/` | dir | Per-company credentials | Not in starter |
 | `companies/{co}/data/` | dir | Per-company data exports | Not in starter |
-| `companies/{co}/knowledge/` | dir/symlink | Per-company knowledge (symlinked repos) | Not in starter |
+| `companies/{co}/knowledge/` | dir | Per-company knowledge (optional embedded git) | Not in starter |
 | `core/knowledge/public/` | dir | Public knowledge (split) | Flat `core/knowledge/` |
 | `core/knowledge/private/` | dir | Private knowledge | Not in starter |
 | `repos/public/` | dir | Public git repos | Not in starter |
@@ -121,7 +121,7 @@ Present in {your-name}'s production HQ but NOT in the starter-kit. These represe
 | **Commands** | 18 in `.claude/commands/` | 22+ (added checkemail, email, generateimage, post-now, pr, preview-post, social-setup, contentidea, suggestposts, scheduleposts, digest) | +10-12 custom commands |
 | **Workers** | baseline dev-team | 40+ (10 private, 30 public across dev-team, content-team, pr-team) | Full worker ecosystem |
 | **Worker Layout** | Flat `core/workers/` | Split `core/workers/public/` + `core/workers/private/` | Visibility separation |
-| **Knowledge** | Flat `core/knowledge/` (8 dirs) | Split `core/knowledge/public/` + `core/knowledge/private/`, symlinked to git repos | Repo-backed, visibility-split |
+| **Knowledge** | Flat `core/knowledge/` (8 dirs) | Split `core/knowledge/public/` + `core/knowledge/private/`, using real directories | Visibility-split, sync-safe |
 | **Companies** | Not present (optional) | 3 companies ({company}, {company}, acmestudio) + manifest.yaml. `personal/` is a top-level overlay, **not** a company. | Multi-company isolation |
 | **Projects** | .gitkeep placeholder | 60+ projects with prd.json, README, orchestrator state | Full project lifecycle |
 | **Orchestrator** | .gitkeep | state.json + per-project dirs + checkouts.json | Active execution state |
@@ -158,14 +158,16 @@ Each feature below is optional but, when present, unlocks additional Desktop cap
 | `companies/` dir exists | Dir present with subdirs | Company switcher, company-scoped views |
 | `companies/manifest.yaml` | Valid YAML with company entries | Company isolation enforcement, resource mapping |
 | `companies/{co}/settings/` | Settings dir per company | Credential visibility (masked display) |
-| `companies/{co}/knowledge/` | Knowledge dir (may be symlink) | Company-scoped knowledge browser |
+| `companies/{co}/knowledge/` | Real knowledge directory | Company-scoped knowledge browser |
 
 ### Tier 3: Knowledge System (medium value, knowledge-heavy users)
 
 | Feature | Detection | Desktop Capability Unlocked |
 |---------|-----------|---------------------------|
 | `core/knowledge/public/` + `core/knowledge/private/` split | Both dirs exist | Visibility-aware knowledge browser |
-| Symlinked knowledge dirs | `fs.readlink()` resolves to `repos/` | Knowledge repo status, git state per KB |
+| Embedded knowledge git | `.git/` exists inside a real knowledge directory | Knowledge repo status, git state per KB |
+| Package knowledge contribution | Link resolves under `core/packages/*/knowledge/` | Read-only packaged knowledge |
+| Legacy repository symlink | Link resolves to a separate git repository | Invalid-layout migration warning |
 | `INDEX.md` files | Present in key dirs | INDEX-based navigation tree |
 | qmd installed (`which qmd`) | Binary on PATH | Search bar integration (keyword, semantic, hybrid) |
 
@@ -244,7 +246,8 @@ function detectHQInstance(path: string): HQDetectionResult {
     // Knowledge
     knowledgeSplit:      isDir(path, 'core/knowledge/public') || isDir(path, 'core/knowledge/private'),
     knowledgeFlatCount:  countSubdirs(path, 'knowledge'),
-    hasSymlinkedKB:      anySymlinks(path, 'knowledge'),
+    packageKnowledgeCount: countPackageKnowledgeLinks(path),
+    hasInvalidKnowledgeRepoLink: anyKnowledgeLinksToSeparateGitRepos(path),
 
     // Search
     hasQmd:              commandExists('qmd'),

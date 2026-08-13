@@ -3,6 +3,20 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.93-beta.1
+
+- **Knowledge repositories must be real directories:** `/setup`, `/newcompany`,
+  `/import-claude`, `/tutorial`, cleanup guidance, and the public README now use
+  canonical real directories with optional embedded git. They no longer create or
+  endorse repositories under `repos/` symlinked into `core/knowledge/`,
+  `personal/knowledge/`, or `companies/{co}/knowledge/`. Existing installations
+  with legacy knowledge symlinks should materialize the same content at the
+  canonical path, preserve git there if needed, and verify `test -d PATH` plus
+  `! test -L PATH` before the next cloud sync. `hq reindex` (hq CLI with the
+  knowledge-migration pass) does this automatically: it scours the canonical
+  knowledge locations, pulls each legacy repo, copies it inline with history
+  preserved as an embedded repo, and removes the fully migrated legacy repo.
+
 ## Release: v15.0.91-beta.1
 
 - promote 2026-08-12 (**Grok 4.6 workflow default**): the `/orchestrate` workflow runner

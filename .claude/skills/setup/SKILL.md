@@ -469,21 +469,13 @@ cd -
 
 If you skip embedded git, `personal/knowledge/` is a plain directory tracked by HQ git — fine for single-machine setups.
 
-**Optional advanced layout:** separate repos under `repos/private/knowledge-*` are
-supported only when the operator explicitly confirms sync will not follow directory
-symlinks and they will push from that repo path directly.
-
 **The starter kit's bundled knowledge (Ralph, workers, ai-security-framework, etc.) ships as plain directories. Explain to the user:**
 ```
 Bundled knowledge (Ralph, workers, security framework) ships as plain directories.
-To version them independently, you can convert any to a repo later:
-
-  1. Move: mv core/knowledge/public/Ralph repos/public/knowledge-ralph
-  2. Init: cd repos/public/knowledge-ralph && git init && git add . && git commit -m "init"
-  3. Symlink: ln -s ../../../repos/public/knowledge-ralph core/knowledge/public/Ralph
-  4. Add to .gitignore: core/knowledge/public/Ralph
-
-This is optional — plain directories work fine for read-only knowledge.
+Keep those real directories in place so upgrades and sync see their contents. Add
+personal or company-specific knowledge under personal/knowledge/ or
+companies/{slug}/knowledge/. If separate version history is needed, initialize git
+inside the canonical real directory; never move it into repos/ and symlink it back.
 ```
 
 ### Profile files
@@ -586,7 +578,7 @@ _Run `/personal-interview` or edit manually to populate._
 
 Add to `.gitignore` if not already present:
 ```
-# Personal knowledge repo contents (tracked by their own git when symlinked)
+# Personal knowledge contents (tracked by embedded git when configured)
 personal/knowledge/
 ```
 
@@ -601,7 +593,7 @@ qmd update 2>/dev/null || qmd index . 2>/dev/null || true
 HQ Setup Complete!
 
 Created:
-- repos/public/, repos/private/ (ALL repos — code, knowledge, projects)
+- repos/public/, repos/private/ (code repositories only)
 - personal/ scaffold (knowledge, policies, workers, settings, skills, hooks)
 - personal/knowledge/profile.md
 - personal/knowledge/systems-of-record.md
@@ -609,7 +601,7 @@ Created:
 - personal/knowledge/voice-style.md
 - agents-profile.md
 - agents-companies.md
-- Optional knowledge repo: repos/private/knowledge-personal/ → personal/knowledge (symlink)
+- personal/knowledge/ as a real directory (optionally an embedded git repo)
 
 HQ Cloud:
 ✓ Signed in {as email} — or "not connected (run /hq-login later)"
@@ -625,9 +617,10 @@ Still needs attention:      ← include this block ONLY if a direct install fail
 ...
 
 Knowledge Repos:
-Your personal knowledge bases can be independent git repos symlinked into personal/knowledge/.
-This lets you version, share, and publish each knowledge base separately.
-See "Knowledge Repos" in CLAUDE.md for details.
+Your personal knowledge bases are real directories under personal/knowledge/.
+Initialize git inside a knowledge directory when it needs independent version history;
+knowledge repositories are never symlinked into HQ.
+See "Knowledge Repos" in core/docs/hq/README.md for details.
 
 Setup is done. Next: a short orientation + a few questions so I can hand you
 the exact commands to start your first real work.
@@ -1008,7 +1001,7 @@ setup knowing what `/handoff` is, why it matters, and how to run it.
   exception is an interactive auth that can't run unattended (e.g. `gh auth
   login`). Don't block setup if an optional tool's install fails — note it in the
   summary and move on. These are "recommended" not "required" (except claude itself).
-- Always use relative paths for symlinks (../../repos/... not absolute paths)
+- On the rare occasion a symlink is genuinely needed (never for knowledge — knowledge repositories are real directories at their canonical paths), use a relative target, not an absolute path
 - Phase 4/5 are skippable — if the user says "skip", still write `personal/knowledge/getting-started-next-steps.md` using best-effort defaults from Phase 1 answers. Never block setup completion on the orientation or interview
 - Phase 6 (welcome page) is skippable — if the user isn't signed in or declines,
   skip the `/deploy` and just deliver the launch block + handoff message in chat.

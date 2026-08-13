@@ -38,7 +38,7 @@ extract_knowledge_loop() {
 make_fixture() {
   local fixture=$1
   local layout=$2
-  local repo="$fixture/repository"
+  local repo="$fixture/core/knowledge/public/dirty-repo"
 
   mkdir -p "$fixture/core/knowledge/public" "$fixture/companies"
   case "$layout" in
@@ -53,6 +53,7 @@ make_fixture() {
       ;;
   esac
 
+  mkdir -p "$repo"
   git init -q "$repo"
   git -C "$repo" config user.email test@example.com
   git -C "$repo" config user.name test
@@ -60,7 +61,6 @@ make_fixture() {
   git -C "$repo" add state.txt
   git -C "$repo" commit -qm initial
   printf 'dirty\n' >> "$repo/state.txt"
-  ln -s "$repo" "$fixture/core/knowledge/public/dirty-repo"
 }
 
 run_snippet() {
@@ -79,13 +79,16 @@ assert_discovery() {
   local skill=$1
   local output=$2
   local repo=$3
+  local canonical_repo
+
+  canonical_repo="$(git -C "$repo" rev-parse --show-toplevel)"
 
   if [[ "$skill" == checkpoint ]]; then
     grep -Fq 'core/knowledge/public/dirty-repo:' <<<"$output" ||
-      fail "$skill did not discover the dirty symlinked repository"
+      fail "$skill did not discover the dirty embedded repository"
   else
-    grep -Fq "DIRTY: core/knowledge/public/dirty-repo → $repo" <<<"$output" ||
-      fail "$skill did not report the dirty symlinked repository"
+    grep -Fq "DIRTY: core/knowledge/public/dirty-repo → $canonical_repo" <<<"$output" ||
+      fail "$skill did not report the dirty embedded repository"
   fi
 }
 
@@ -102,7 +105,7 @@ for skill in checkpoint cleanup; do
       if ! output="$(run_snippet "$shell" "$snippet" "$fixture" 2>&1)"; then
         fail "$skill snippet failed under $shell with $layout knowledge directories: $output"
       fi
-      assert_discovery "$skill" "$output" "$fixture/repository"
+      assert_discovery "$skill" "$output" "$fixture/core/knowledge/public/dirty-repo"
       ((passed += 1))
     done
   done

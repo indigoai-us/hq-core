@@ -264,28 +264,27 @@ When calling `spawn_subagent` / Task:
 
 ## 7. Promote to public hq-core
 
-This doc is authored under the personal knowledge overlay so it survives `/update-hq` and can be scrubbed before shipping.
+This shipped document is authored at its canonical real-directory path in
+`core/knowledge/public/hq-core/` and promoted through the normal staging flow.
 
 ### Staging path (this worktree / HQ)
 
 | Role | Path |
 |------|------|
-| **Authoring (now)** | `personal/knowledge/public/hq-core/grok-build-message-canvas.md` |
-| **Runtime symlink (after reindex)** | `core/knowledge/public/hq-core/grok-build-message-canvas.md` |
+| **Canonical authoring/runtime path** | `core/knowledge/public/hq-core/grok-build-message-canvas.md` |
 | **Grok-only always-on pointer** | `.grok/rules/message-canvas.md` |
 
-Frontmatter already sets `public: true` so promote-scan treats it as push-eligible knowledge (not hook/script opt-in).
+Frontmatter already sets `public: true` so promote-scan treats the canonical real-directory file as push-eligible knowledge (not hook/script opt-in).
 
 ### Promote / stage flow
 
-1. **Reindex (optional local visibility)** — master-sync / reindex so personal knowledge appears under `core/knowledge/…` without clobbering real core files.
-2. **Stage kit (no PR)** — `/stage-kit --item personal/knowledge/public/hq-core/grok-build-message-canvas.md` (or the remapped core path once linked). Stages a scrubbed copy into the public kit working tree per stage-kit allowlist rules.
-3. **Promote HQ core (staging buffer)** — `/promote-hq-core` (or `--scan-only` first):
+1. **Stage kit (no PR)** — `/stage-kit --item core/knowledge/public/hq-core/grok-build-message-canvas.md`. Stages a scrubbed copy into the public kit working tree per stage-kit allowlist rules. (No reindex step: the file already lives at its canonical real-directory path.)
+2. **Promote HQ core (staging buffer)** — `/promote-hq-core` (or `--scan-only` first):
    - Scans HQ ↔ `repos/private/hq-core-staging`
    - Uses frontmatter `public: true` / `# hq-core: public` for eligibility
    - Deterministic PII gate; triage LOCAL_ONLY / DIFFERENT rows
    - Apply push into staging, then open/land PR staging → public `hq-core`
-4. **Do not** hand-edit `repos/public/hq-core/` for knowledge unless following the same scrub + allowlist path as stage-kit.
+3. **Do not** hand-edit `repos/public/hq-core/` for knowledge unless following the same scrub + allowlist path as stage-kit.
 
 ### Grok-only inject (do not break Claude)
 
