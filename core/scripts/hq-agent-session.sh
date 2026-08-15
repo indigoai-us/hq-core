@@ -809,6 +809,19 @@ main() {
   # byte-identical behaviour until they are instructed and migrated too.
   if session_reply_contract_required "$provider"; then
     if ! session_reply_contract_apply "${prov_out:-}"; then
+      # SALVAGE before degrade. The first turn did not satisfy the envelope, so
+      # its raw output is about to ship as-is -- which is how planning preamble
+      # glued to the answer leaked into a channel (Telegram, 2026-08). Before
+      # falling back, attempt ONE strict reformat re-ask through the SAME gated
+      # provider: feed it its own raw output and ask for only the final-answer
+      # envelope, then re-validate. This is additive salvage -- it runs only on
+      # the already-failed path, issues at most one extra call, and on any error
+      # falls through to the exact raw behaviour below, so an answer is never
+      # lost or truncated.
+      if session_reply_contract_reformat "$provider" "$run_dir" "$company_dir" "${prov_out:-}"; then
+        printf 'hq-agent-session: reply_contract_reformat_recovered provider=%s disposition=%s\n' \
+          "$provider" "${SESSION_DISPOSITION:-reply}" >&2
+      else
       # DEGRADE, never go silent.
       #
       # An earlier revision suppressed here. Measured on a live box: grok emits
@@ -829,6 +842,7 @@ main() {
         "$provider" "$(printf '%s' "${prov_out:-}" | wc -c | tr -d ' ')" >&2
       SESSION_DISPOSITION="reply"
       SESSION_TEXT="${prov_out:-}"
+      fi
     fi
   else
     SESSION_DISPOSITION="reply"
