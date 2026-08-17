@@ -2,14 +2,14 @@ name: Nag stale release PRs
 
 # Runs every 6 hours. For every open release PR (title `release: v<ver>`) on
 # hq-core that has been open longer than the threshold (default 12h), posts a
-# mocking nudge to #hq-dev. After US-012 auto-merge-on-green, this mainly
+# mocking nudge to #hq-liveops. After US-012 auto-merge-on-green, this mainly
 # backstops held (hold-release) or stuck PRs rather than the normal path.
 #
 # hq-core only. Promoted into hq-core verbatim; the job guard keeps it inert
 # on staging.
 #
 # Requires repo secret SLACK_BOT_TOKEN_RELEASE_MANAGER. The bot MUST be a
-# member of #hq-dev.
+# member of #hq-liveops.
 
 on:
   schedule:
@@ -67,7 +67,7 @@ jobs:
               RESP="$(curl -s -X POST \
                 -H "Authorization: Bearer ${SLACK_TOKEN}" \
                 -H 'Content-type: application/json; charset=utf-8' \
-                --data "$(jq -nc --arg c '#hq-dev' --arg t "$TEXT" '{channel:$c,text:$t,unfurl_links:false}')" \
+                --data "$(jq -nc --arg c '#hq-liveops' --arg t "$TEXT" '{channel:$c,text:$t,unfurl_links:false}')" \
                 https://slack.com/api/chat.postMessage)"
               OK="$(echo "$RESP" | jq -r '.ok')"
               echo "PR #${NUM} age ${AGE_H}h >= ${THRESHOLD}h -> nag posted (ok=${OK}, err=$(echo "$RESP" | jq -r '.error // "-"'))"
