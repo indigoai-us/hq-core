@@ -101,47 +101,76 @@ Premise check:
 
 If verdict is WEAK: flag it and ask the user if they want to continue or reconsider.
 
-## Step 3: Light Interview (1 question max)
+## Step 3: Interview (decision-queue grilling, one question AT A TIME)
 
-Batch all missing directional info into **one** question posed directly to the user. Skip any field already clear from args, board entry, or research. Wait for the user's response before proceeding.
+This is a **grilling** in the wayfinder sense (pattern: [mattpocock/skills](https://github.com/mattpocock/skills) wayfinder — see `.claude/skills/wayfinder/SKILL.md`): the agent asks, the human answers, one question per exchange, until the directional inputs are resolved. Never stand in for the human's side of the exchange.
 
-### STARTUP mode questions (include only what's missing):
+Walk the user through every missing directional input as a sequence of **separate `AskUserQuestion` calls** — one question per call, wait for the answer, update internal state, then ask the next. **Never batch multiple decisions into a single question** (violates `decision-queue-one-at-a-time`). **Never collapse the interview to a single combined question** — that is the inverse mistake: "one question at a time" means "one Q on screen at a time," not "one Q total."
 
-1. **Demand Reality** — Who has this problem badly enough to hack a workaround today? Can you name a specific person or group?
-2. **Status Quo** — What do they do right now? Why isn't that good enough?
-3. **Narrowest Wedge** — What's the smallest starting point that delivers real value to one specific person?
-4. **Direction + constraints** — Speed vs quality? Hard constraints? (timeline, must-use-tech, budget ceiling)
-5. **Which company?** (only if not anchored and not inferrable from context)
+**Skip any individual question whose answer is already clear** from args, board entry, prior turn, or Step 2 research. Otherwise ask every relevant question below, one at a time. Expect a real interview: 4–8 questions is normal; zero is rare and reserved for genuinely fully-specified inputs.
 
-### BUILDER mode questions (include only what's missing):
+For each question:
+1. Use `AskUserQuestion` with 2–4 concrete options (no free-text-only questions when a picker fits — see option-design guidance below)
+2. Wait for the answer
+3. Record it in your working notes
+4. Move to the next missing field
 
-1. **What's the core problem or opportunity?** (skip if description is >15 words with clear intent)
-2. **Which direction matters most?**
-   - A. Speed to ship (MVP fast, iterate later)
-   - B. Quality/durability (build it right once)
-   - C. Exploration (prove or disprove a hypothesis first)
-   - D. Cost minimization (cheapest viable path)
-3. **Hard constraints?** (timeline, must-use-tech, budget ceiling, avoid-tech) — optional, free text
-4. **Which company?** (only if not anchored and not inferrable from context)
+### STARTUP mode questions (ask each that is still unresolved, one at a time):
 
-**If all info is already clear** (description + company + direction obvious from context), skip the interview entirely.
+1. **Which company?** (only if not anchored and not inferrable from context) — picker of plausible company slugs from `companies/manifest.yaml`
+2. **Demand Reality** — Who has this problem badly enough to hack a workaround today? Options: specific named person/team / a known segment we've talked to / hypothetical persona / unknown — need to validate
+3. **Status Quo** — What do they do right now? Options: nothing (problem ignored) / manual workaround / existing tool (which?) / unknown
+4. **Narrowest Wedge** — Smallest starting point that delivers real value to one person? Options: pre-generate 2–3 candidate wedges from the research and let the user pick, plus "none of these — describe"
+5. **Direction** — Speed to ship / Quality and durability / Exploration (prove hypothesis) / Cost minimization
+6. **Hard constraints?** — Options: none / timeline-driven / must-use-tech / avoid-tech / budget-ceiling (follow-up free-text only if a constraint type is picked)
+7. **Success signal** — What observable outcome would tell you this worked? Options drawn from the research (a metric, a named user's adoption, a replaced tool), plus "other — describe"
 
-## Step 4: 3-Layer Landscape Gate
+### BUILDER mode questions (ask each that is still unresolved, one at a time):
 
-Research in layers — stop as soon as you have enough signal. Don't research for thoroughness.
+1. **Which company?** (only if not anchored and not inferrable from context)
+2. **Core problem framing** — only if the input description is <15 words or ambiguous. Offer 2–3 reframings of the user's request as picker options plus "none — describe"
+3. **Direction** — Speed / Quality / Exploration / Cost
+4. **Hard constraints?** — None / timeline / must-use-tech / avoid-tech / budget-ceiling
+5. **Integration surface** — Which existing system/seam does this touch first? Pre-fill options from Step 2 research (repos, workers, prior projects)
+6. **Success signal** — What observable outcome marks this done/working? Options drawn from research, plus "other — describe"
 
-**Layer 1 — HQ (always, already done in Step 2):**
-qmd, workers, policies, existing projects. Already complete.
+### Option-design guidance
+
+- Always pre-fill 2–4 specific options drawn from Step 2 research. Do NOT ship a question with placeholder options like "yes / no / other" — the picker carries no value if the model didn't pre-think the choices.
+- Mark the first option `(Recommended)` if research clearly points to one answer.
+- The user can always type free-text via "Other," so the picker is a default, not a cage.
+
+### Interactive checkpoint after research (optional but encouraged)
+
+Before starting the interview, if Step 2 surfaced a strong prior-art hit (existing project, near-duplicate worker, dead-end policy), AskUserQuestion ONCE: "Proceed with new brainstorm / Extend existing {project} / Park — duplicate of {X}." This prevents redundant brainstorms.
+
+### Follow-the-thread rule
+
+If an answer opens a genuinely new decision (e.g. the user names a constraint that changes the approach space), add a follow-up question to the queue and ask it — one at a time, same mechanics. The interview ends when no directional input is missing, not when a fixed count is reached.
+
+## Step 4: 3-Layer Landscape Research (stored to the project)
+
+Research in layers, and **write the findings down** — every substantive research pass produces a markdown note under the project's `research/` directory (wayfinder assets pattern: notes are linked from the brainstorm, not pasted into it):
+
+```
+{project_dir}/research/
+  hq-landscape.md        # Layer 1 — prior art, related projects, workers, policy constraints
+  market-landscape.md    # Layer 2 — alternatives, comparable tools, pricing, dynamics
+  web-{topic}.md         # Layer 3 — one note per live-web investigation, with sources
+```
+
+Where `{project_dir}` is `companies/{co}/projects/{slug}/` (or `personal/projects/{slug}/` for personal/HQ). Each note gets a one-line frontmatter-style header (`layer`, `date`, `question it answers`). Notes survive context compaction and feed `/prd` and `/deep-plan` directly — brainstorm.md links them, it never restates them in full.
+
+**Layer 1 — HQ (always, from Step 2):**
+qmd, workers, policies, existing projects. Distil the Step 2 findings into `research/hq-landscape.md` — the hits that mattered, the overlap verdict, the policy constraints that shape the approach space.
 
 **Layer 2 — Reasoning (always, free):**
-Competitive landscape, known tools, pricing, market context from training data. No API calls needed. Run this as part of your analysis — identify alternatives, comparable tools, known pricing tiers, and market dynamics. 2-3 bullets.
+Competitive landscape, known tools, pricing, market context from training data. No API calls needed. Identify alternatives, comparable tools, known pricing tiers, and market dynamics. Write `research/market-landscape.md`.
 
-**Layer 3 — Live Web (conditional, privacy-gated):**
-**Only if:** idea involves a new API/service you're not confident about, unfamiliar domain, or user explicitly requested research.
+**Layer 3 — Live Web (default-on for external-facing ideas):**
+Run live web research whenever the idea touches an external API/service, an unfamiliar domain, a competitive market, or the user asked for research. Skip only for purely internal tooling on platforms you know cold. Announce what you'll search for and why before searching (user continuing counts as approval). Write one `research/web-{topic}.md` per investigation, with sources cited. For deep multi-source questions, delegate to research subagents (Task/Agent) and have each write its own note.
 
-Before searching: announce what you'll search for and why. Proceed only after implicit or explicit approval (user continuing the conversation counts as approval).
-
-**If Layer 2 is sufficient** (internal tooling, known platforms — the common case): skip Layer 3 entirely.
+**Depth guidance:** more research is better than less **as long as it is stored** — a finding that lives only in context is wasted. Stop a layer when new passes stop changing the approach comparison, not at a fixed effort cap.
 
 ## Step 5: Generate brainstorm.md
 
@@ -165,6 +194,14 @@ source_idea_id: {board ID or null}
 ## Context
 
 {2-4 sentences: why this matters now, what triggered the exploration, rough size of the thing}
+
+## Research
+
+<!-- index of research/ notes — gist + link, never the full content -->
+
+- [HQ landscape](research/hq-landscape.md) — {one-line gist}
+- [Market landscape](research/market-landscape.md) — {one-line gist}
+- [{Web topic}](research/web-{topic}.md) — {one-line gist} *(if Layer 3 ran)*
 
 ## What We Know
 
@@ -374,15 +411,15 @@ Keep it cheap: do **not** rebuild INDEX, update `recent.md`, run `qmd update`, o
 ## Rules
 
 - **Scan HQ before asking anything** — research phase (Step 2) happens before the first question. Never ask for info findable in qmd, board.json, or policies
-- **1 question max** — direction + constraints in one message. If everything is clear from args/context, zero questions is fine
+- **One question AT A TIME, not one total** — every interview question is its own `AskUserQuestion` call (decision-queue style per `decision-queue-one-at-a-time`). Ask every unresolved field; skip any already clear from args/research. Never batch multiple decisions into a single combined question, and never collapse the full interview to a single question. 4–8 questions is a normal interview
 - **2-3 approaches, no more** — present distinct options, not variations. If only one reasonable path exists, say so and explain why
 - **State a recommendation** — "it depends" without a stated override condition is not a recommendation
 - **No execution** — brainstorm.md is the output. Do NOT write code, scaffold repos, or modify any implementation files
 - **No prd.json** — this skill does NOT produce prd.json. That is the PRD skill's job
 - **No Linear sync** — brainstorms are pre-planning. Linear happens at PRD time
 - **No orchestrator registration** — brainstorms are not executable
-- **Web research is conditional** — only if idea requires external context. Don't search for thoroughness
-- **board.json + brainstorm.md are the only project files written** — plus the final auto-checkpoint thread under `workspace/threads/` (see "Final step — auto-checkpoint"). No implementation/target files are modified (knowledge pulse runs as a background agent and writes its own report independently)
+- **Research is stored, not ephemeral** — every substantive research pass writes a note under `{project_dir}/research/`, linked from brainstorm.md. Live web research is default-on for external-facing ideas; skip only for purely internal tooling on well-known platforms
+- **board.json + brainstorm.md + research/ notes are the only project files written** — plus the final auto-checkpoint thread under `workspace/threads/` (see "Final step — auto-checkpoint"). No implementation/target files are modified (knowledge pulse runs as a background agent and writes its own report independently)
 - **T-shirt effort, not story points** — sized by scope/risk, not calendar time: S (one seam), M (one subsystem), L (multiple seams + unknowns), XL (cross-cutting, hard-to-reverse). See policy `ai-velocity-time-sense`
 - **Company isolation enforced** — if anchored, scope all searches to that company. Never mix company knowledge in approaches
 - **brainstorm.md is human-editable** — the user may refine it after generation. The PRD skill reads whatever is in the file, not just what was machine-generated
@@ -393,3 +430,4 @@ Keep it cheap: do **not** rebuild INDEX, update `recent.md`, run `qmd update`, o
 
 - `/plan` — turn the chosen approach into a PRD
 - `/idea` — capture it on the board first
+- `/wayfinder` — when the effort is too big for one brainstorm and the destination is foggy; brainstorm is its grilling engine. Interview + stored-research pattern adapted from [mattpocock/skills](https://github.com/mattpocock/skills)
