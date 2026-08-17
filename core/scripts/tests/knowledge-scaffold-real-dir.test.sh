@@ -16,7 +16,7 @@ fail() {
 NEWCOMPANY="${ROOT}/.claude/skills/newcompany/SKILL.md"
 SETUP="${ROOT}/.claude/skills/setup/SKILL.md"
 CLEANUP="${ROOT}/.claude/skills/cleanup/SKILL.md"
-IMPORT="${ROOT}/.claude/skills/import-claude/SKILL.md"
+IMPORT="${ROOT}/.claude/skills/import-context/SKILL.md"
 TUTORIAL="${ROOT}/.claude/skills/tutorial/SKILL.md"
 README="${ROOT}/core/docs/hq/README.md"
 POLICY="${ROOT}/core/policies/knowledge-repositories-never-symlink.md"
@@ -24,7 +24,7 @@ POLICY="${ROOT}/core/policies/knowledge-repositories-never-symlink.md"
 [[ -f "$NEWCOMPANY" ]] || fail "newcompany skill missing"
 [[ -f "$SETUP" ]] || fail "setup skill missing"
 [[ -f "$CLEANUP" ]] || fail "cleanup skill missing"
-[[ -f "$IMPORT" ]] || fail "import-claude skill missing"
+[[ -f "$IMPORT" ]] || fail "import-context skill missing"
 [[ -f "$TUTORIAL" ]] || fail "tutorial skill missing"
 [[ -f "$README" ]] || fail "HQ README missing"
 [[ -f "$POLICY" ]] || fail "knowledge no-symlink policy missing"
@@ -63,7 +63,7 @@ if grep -Eq 'ln -s .*knowledge|knowledge.*symlinked git repo|independent git rep
   fail "active setup or documentation still recommends a symlinked knowledge repository"
 fi
 grep -Fq 'real canonical knowledge directory' "$IMPORT" \
-  || fail "import-claude must materialize knowledge at its canonical path"
+  || fail "import-context must materialize knowledge at its canonical path"
 grep -Fq 'two supported knowledge storage forms' "$TUTORIAL" \
   || fail "tutorial must teach only real-directory knowledge layouts"
 

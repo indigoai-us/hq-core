@@ -636,8 +636,8 @@ wm_gate_is_false() {
 # ---------------------------------------------------------------------------
 # Secrets redaction — FAIL-CLOSED streaming scrub applied on transcript copy.
 # ---------------------------------------------------------------------------
-# Pattern catalog is a deliberate replication of the /import-claude redactor
-# (.claude/skills/import-claude/redact.sh REDACTIONS + JSON_KEYS) so the hook has
+# Pattern catalog is a deliberate replication of the /import-context redactor
+# (.claude/skills/import-context/redact.sh REDACTIONS + JSON_KEYS) so the hook has
 # no runtime dependency on that skill's file layout. KEEP THE TWO IN SYNC: if a
 # credential pattern is added there, mirror it here (and vice-versa). Applied
 # with a single streaming `sed -E` (memory-bounded — transcripts can be large).

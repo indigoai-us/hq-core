@@ -133,7 +133,7 @@ Receiving is handled by the **HQ Desktop App** (it's receive-only — there's no
 | `/designate-team` | Mark a company directory as cloud-backed |
 | `/sync-registry` | Regenerate a company's resource registry index |
 | `/discover` | Pull a repo into HQ and synthesize structured knowledge |
-| `/import-claude` | Scan the machine for Claude artifacts and import into HQ |
+| `/import-context` | Scan the machine for prior AI artifacts and conversation history (Claude Code, Codex, Grok, claude.ai) and import into HQ (alias: `/import-claude`) |
 | `/setup` | Interactive setup wizard for HQ Starter Kit |
 | `/update-hq` | Upgrade HQ from latest hq-core release |
 | `/convert-codex` | Additive conversion so Codex has first-class AGENTS.md guidance |

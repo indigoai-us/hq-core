@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /import-claude scanner — read-only discovery of Claude artifacts on disk.
+# /import-context scanner — read-only discovery of AI artifacts + conversation stores on disk.
 # Emits JSON to stdout (or --output path). Safe to run anytime; never writes state.
 
 set -euo pipefail
@@ -8,19 +8,23 @@ set -euo pipefail
 HQ_ROOT=""
 OUTPUT=""
 SCOPES=()
+CLAUDE_EXPORT=""
 NO_DEFAULT_SCOPES=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --hq-root=*) HQ_ROOT="${1#*=}" ;;
     --output=*) OUTPUT="${1#*=}" ;;
     --scope=*) SCOPES+=("${1#*=}") ;;
+    --claude-export=*) CLAUDE_EXPORT="${1#*=}" ;;
     --no-default-scopes) NO_DEFAULT_SCOPES=true ;;
     -h|--help)
       cat <<'EOF'
-Usage: scan.sh --hq-root=<path> [--output=<json>] [--scope=<dir>]...
+Usage: scan.sh --hq-root=<path> [--output=<json>] [--scope=<dir>]... [--claude-export=<path>]
 
-Emits a JSON catalog of Claude artifacts discovered across allowlisted parents
-plus any --scope dirs. HQ root is self-excluded.
+Emits a JSON catalog of AI artifacts discovered across allowlisted parents
+plus any --scope dirs, and store-level entries for conversation history
+(Claude Code, Codex, Grok, and an optional claude.ai data export).
+HQ root is self-excluded.
 EOF
       exit 0
       ;;
@@ -446,10 +450,62 @@ emit_claude_repos() {
   printf "%s" "$(printf "%s\n" "${arr[@]:-}" | jq -s '.')"
 }
 
+# ──────────────────────── conversation stores ────────────────────────
+# Store-level discovery of prior AI conversation history. Emits one JSON entry
+# per store — source, path, session count, no file contents. Transcripts are
+# only ever read later by Phase 3.5 mining sub-agents under the skill's
+# sampling + redaction rules. These stores live in $HOME dot-dirs outside every
+# scan scope, so the artifact denylist (which prunes ~/.claude/projects from
+# the file-artifact walk) intentionally does not apply to this count-only pass.
+emit_conversation_stores() {
+  local arr=() count d cj
+
+  d="$HOME/.claude/projects"
+  if [[ -d "$d" ]]; then
+    count="$(find "$d" -type f -name '*.jsonl' 2>>"$DISCOVERY_LOG" | grep -c '' || true)"
+    arr+=("$(jq -n --arg p "$(sub_home "$d")" --argjson n "${count:-0}" \
+      '{source:"claude-code", path:$p, sessions:$n}')")
+  fi
+
+  d="$HOME/.codex/sessions"
+  if [[ -d "$d" ]]; then
+    count="$(find "$d" -type f -name '*.jsonl' 2>>"$DISCOVERY_LOG" | grep -c '' || true)"
+    arr+=("$(jq -n --arg p "$(sub_home "$d")" --argjson n "${count:-0}" \
+      '{source:"codex", path:$p, sessions:$n}')")
+  fi
+
+  # Grok CLI: ~/.grok/sessions/<url-encoded-cwd>/<session-id>/updates.jsonl
+  d="$HOME/.grok/sessions"
+  if [[ -d "$d" ]]; then
+    count="$(find "$d" -type f -name 'updates.jsonl' 2>>"$DISCOVERY_LOG" | grep -c '' || true)"
+    if [[ "${count:-0}" -gt 0 ]]; then
+      arr+=("$(jq -n --arg p "$(sub_home "$d")" --argjson n "$count" \
+        '{source:"grok", path:$p, sessions:$n}')")
+    fi
+  fi
+
+  if [[ -n "$CLAUDE_EXPORT" ]]; then
+    cj="$CLAUDE_EXPORT"
+    [[ -d "$cj" ]] && cj="$cj/conversations.json"
+    if [[ -f "$cj" ]] && count="$(jq 'length' "$cj" 2>/dev/null)"; then
+      arr+=("$(jq -n --arg p "$(sub_home "$cj")" --argjson n "$count" \
+        '{source:"claude-ai", path:$p, sessions:$n}')")
+    else
+      echo "claude-export: no readable conversations.json at $(sub_home "$CLAUDE_EXPORT")" >> "$DISCOVERY_LOG"
+    fi
+  fi
+
+  if [[ ${#arr[@]} -gt 0 ]]; then
+    printf "%s\n" "${arr[@]}" | jq -s '.'
+  else
+    printf "[]"
+  fi
+}
+
 # ──────────────────────── assemble report ────────────────────────
 main() {
   local tmpd
-  tmpd="$(mktemp -d 2>/dev/null || mktemp -d -t import-claude)"
+  tmpd="$(mktemp -d 2>/dev/null || mktemp -d -t import-context)"
   trap 'rm -rf "$tmpd"' RETURN
 
   # Authoritative discovery-error log — must exist BEFORE any find_capture call
@@ -472,6 +528,7 @@ main() {
   ensure_json_array "$(emit_plans)"                        > "$tmpd/plans.json"
   ensure_json_array "$(emit_claude_md)"                    > "$tmpd/claude_md.json"
   ensure_json_array "$(emit_claude_repos)"                 > "$tmpd/claude_repos.json"
+  ensure_json_array "$(emit_conversation_stores)"          > "$tmpd/conversations.json"
 
   # Tree artifacts return an object, not an array — handle separately. Their
   # category payloads are file-backed so large scans never enter jq's argv.
@@ -523,6 +580,7 @@ main() {
     --slurpfile settings     "$tmpd/settings.json" \
     --slurpfile claude_md    "$tmpd/claude_md.json" \
     --slurpfile claude_repos "$tmpd/claude_repos.json" \
+    --slurpfile conversations "$tmpd/conversations.json" \
     '{
       scan_id: $scan_id,
       scope: $scope[0],
@@ -538,7 +596,8 @@ main() {
         settings_fragments: $settings[0],
         mcp_servers: $mcp[0],
         knowledge_dirs: [],
-        claude_repos: $claude_repos[0]
+        claude_repos: $claude_repos[0],
+        conversations: $conversations[0]
       }
     } | .counts = (.categories | map_values(length))' > "$tmpd/report.json"
 

@@ -292,7 +292,7 @@ Skip → no packs; deploy artifacts fall back to HQ Midnight Editorial.
 ## Phase 3 — Synthesize Workers + Skills (NEW, optional)
 
 Cluster the functions/workflows from Phase 1 into proposed workers, reusing the
-`import-claude` cluster pattern + `/newworker`:
+`import-context` cluster pattern + `/newworker`:
 
 1. Propose 1 worker per high-value function (e.g. a "growth" worker, a "finance-reporting"
    worker). Present the proposed set via `AskUserQuestion` — create / edit / skip each.

@@ -467,12 +467,34 @@ jobs:
       - name: Codex hook adapter routes mandatory scope authorizer
         run: bash core/scripts/test-codex-hook-adapter.sh
 
-  autosave-failure-visibility:
-    # B4 (feedback_b16e277b): the autocommit hook ended every git call with
-    # `|| exit 0` and the handoff finalizer reported a refused commit inside an
-    # exit-0 success payload, so a wedged .git/index.lock stopped all HQ writes
-    # for hours with zero signal. Neither suite was wired into CI before.
-    name: autosave-failure-visibility
+  # ---------------------------------------------------------------------------
+  # B4 (feedback_b16e277b): the autocommit hook ended every git call with
+  # `|| exit 0` and the handoff finalizer reported a refused commit inside an
+  # exit-0 success payload, so a wedged .git/index.lock stopped all HQ writes
+  # for hours with zero signal. Neither suite was wired into CI before.
+  #
+  # These five suites used to run back to back in ONE job that took 6.4 min and
+  # was the single longest job in this 61-job workflow — so it alone set the
+  # whole workflow's wall clock (measured 2026-08-17: 6.3 min of a 6.5 min run).
+  # The breakdown was 1.9 min to install the hq CLI, 2.7 min for the qmd reindex
+  # suite, and 1.7 min for the other four together.
+  #
+  # The qmd suite is therefore split onto its own runner so it stops queueing
+  # behind the handoff suites. Both jobs keep the hq CLI install: four of the
+  # five suites reference a core/scripts CLI forwarder (hq-status-summary.sh,
+  # rebuild-threads-index.sh, rebuild-orchestrator-index.sh, qmd-reindex-bg.sh,
+  # archive-old-threads.sh), and forwarder-ci-contract.test.sh requires every
+  # job running such a suite to carry the install/validation step. Do NOT try to
+  # drop the install from the handoff job on the grounds that its scripts never
+  # type `hq` directly — they reach it THROUGH those forwarders, which is
+  # precisely the false negative that contract exists to catch.
+  #
+  # `autosave-failure-visibility` below is the aggregating gate and keeps the
+  # name: branch protection matches on check NAME, so the aggregator is what
+  # makes splitting these legs safe to do again later.
+  # ---------------------------------------------------------------------------
+  autosave-failure-visibility-handoff:
+    name: autosave-failure-visibility (handoff)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -497,10 +519,55 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-commit-status.test.sh
       - name: Handoff finalizer smoke
         run: bash core/scripts/tests/handoff-finalize-smoke.sh
-      - name: Handoff qmd reindex ownership (agent skip + laptop single-flight)
-        run: bash core/scripts/tests/qmd-handoff-reindex.test.sh
       - name: Handoff finalizer accepts a large file-backed changeset
         run: bash core/scripts/tests/handoff-finalize-large-changeset.test.sh
+
+  autosave-failure-visibility-qmd-reindex:
+    name: autosave-failure-visibility (qmd-reindex)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install hq CLI for forwarded scaffold scripts
+        run: |
+          set -euo pipefail
+          npm install -g @indigoai-us/hq-cli
+          if ! command -v hq >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
+            exit 1
+          fi
+          if ! hq core --help >/dev/null 2>&1; then
+            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
+            exit 1
+          fi
+      - name: Handoff qmd reindex ownership (agent skip + laptop single-flight)
+        run: bash core/scripts/tests/qmd-handoff-reindex.test.sh
+
+  # Aggregating gate. Green ONLY if BOTH legs above succeeded — a skipped or
+  # cancelled leg reds this too, so the split cannot silently drop a suite.
+  autosave-failure-visibility:
+    name: autosave-failure-visibility
+    needs:
+      - autosave-failure-visibility-handoff
+      - autosave-failure-visibility-qmd-reindex
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every autosave-failure-visibility leg passed
+        run: |
+          set -euo pipefail
+          handoff='${{ needs.autosave-failure-visibility-handoff.result }}'
+          qmd='${{ needs.autosave-failure-visibility-qmd-reindex.result }}'
+          echo "handoff=$handoff qmd-reindex=$qmd"
+          rc=0
+          [ "$handoff" = "success" ] || rc=1
+          [ "$qmd" = "success" ] || rc=1
+          if [ "$rc" -ne 0 ]; then
+            echo "ERROR: an autosave-failure-visibility leg did not succeed." >&2
+            exit 1
+          fi
 
   journal-session-isolation:
     name: journal-session-isolation
