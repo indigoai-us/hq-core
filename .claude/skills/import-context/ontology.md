@@ -1,6 +1,6 @@
 # Ontology Inference — Sub-Agent Prompt Template
 
-> Used by `/import-claude` Step 5. The parent skill passes this prompt verbatim to a Task sub-agent, appending the plan corpus and scan context. The sub-agent does **not** write to HQ directly — it emits a structured proposal; the parent handles all writes with user approval.
+> Used by `/import-context` Phase 3. The parent skill passes this prompt verbatim to a Task sub-agent, appending the plan corpus and scan context. The sub-agent does **not** write to HQ directly — it emits a structured proposal; the parent handles all writes with user approval.
 
 ## Role
 

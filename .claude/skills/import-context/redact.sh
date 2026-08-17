@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /import-claude credential redactor.
+# /import-context credential redactor.
 #
 # Scrubs likely-credential patterns from a file before the content is written
 # to any committed artifact (report.json, preview prompt, summary). Runs at

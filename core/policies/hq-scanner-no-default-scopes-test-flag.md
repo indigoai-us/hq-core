@@ -27,4 +27,4 @@ fi
 
 ## Rationale
 
-Discovered while building `.claude/skills/import-claude/scan.sh`. A 2-file fixture test was failing intermittently with `Argument list too long` — the scanner was correctly honoring its default scopes (scanning `$HOME` on top of the fixture) and producing a 400KB JSON blob. The fixture had nothing to do with the failure, but debugging was painful because the real bug (missing `--slurpfile`) was hidden behind unrelated noise. A test-scope flag isolates the fixture surface and makes failures crisp.
+Discovered while building `.claude/skills/import-context/scan.sh` (then named import-claude). A 2-file fixture test was failing intermittently with `Argument list too long` — the scanner was correctly honoring its default scopes (scanning `$HOME` on top of the fixture) and producing a 400KB JSON blob. The fixture had nothing to do with the failure, but debugging was painful because the real bug (missing `--slurpfile`) was hidden behind unrelated noise. A test-scope flag isolates the fixture surface and makes failures crisp.

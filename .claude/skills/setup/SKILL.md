@@ -342,68 +342,79 @@ _Synthesized during /setup from the profiles below. Refresh anytime._
 Hold this understanding in working memory — Phase 2 weaves it into `profile.md`,
 `agents-profile.md`, and `voice-style.md`, and Phase 4.5 + Phase 6 draw on it.
 
-## Phase 1.6: Adopt prior Claude footprint
+## Phase 1.6: Adopt prior AI footprint
 
-If the user already used Claude Code before HQ, they likely have skills, hooks,
-policies, plans, MCP servers, and repos sitting in `~/.claude/` (and common code
-dirs). Hydrating those into HQ now means the rest of the wizard — Dream Big
-(4.5), the action interview (5) — reflects the companies, workers, and plans
-they already have, instead of starting from a blank slate. This is the `/import-claude`
-skill, surfaced as a first-class setup step. One question at a time; never block
-setup — a clean install with no prior footprint flows straight past this.
+If the user already used AI tools before HQ — Claude Code, Codex, Grok, or
+claude.ai chat — they have two kinds of prior context worth adopting: artifacts
+on disk (skills, hooks, policies, plans, MCP servers, repos in `~/.claude/` and
+common code dirs) and **conversation history** (Claude Code, Codex, and Grok
+session stores, plus claude.ai chats via export). Hydrating both into HQ now
+means the rest of the wizard — Dream Big (4.5), the action interview (5) —
+reflects the companies, knowledge, policies, and projects they already have,
+instead of starting from a blank slate. This is the `/import-context` skill
+(formerly `/import-claude`), surfaced as a first-class setup step. One question
+at a time; never block setup — a clean install with no prior footprint flows
+straight past this.
 
 ### 1. Detect a prior footprint (cheap, read-only)
 
-`/import-claude` requires `companies/manifest.yaml` to exist (a fresh `hq init`
+`/import-context` requires `companies/manifest.yaml` to exist (a fresh `hq init`
 ships it). If it's missing, skip this phase. Otherwise do a quick existence probe
-of the scanner's main allowlist — do **not** run the full scan here, just decide
-whether there's plausibly anything to import:
+of the scanner's main allowlist plus the conversation stores — do **not** run
+the full scan here, just decide whether there's plausibly anything to import:
 
 ```bash
 test -f companies/manifest.yaml || echo "no-manifest-skip"
 # Probe the highest-signal locations; any non-empty hit means "offer the import".
 for d in "$HOME/.claude/plans" "$HOME/.claude/commands" "$HOME/.claude/skills" \
-         "$HOME/.claude/projects" "$HOME/.claude/agents"; do
+         "$HOME/.claude/projects" "$HOME/.claude/agents" \
+         "$HOME/.codex/sessions" "$HOME/.grok/sessions"; do
   [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null
 done
 ```
 
 - **No manifest, or every probe is empty** → print one plain line ("No prior
-  Claude footprint to import — starting fresh.") and continue to Phase 2.
+  AI footprint to import — starting fresh.") and continue to Phase 2.
 - **Any probe returns a path** → there's plausibly something to adopt; offer it
   in step 2. (The authoritative scan, with counts and redaction, happens inside
-  `/import-claude` itself — keep this probe lightweight.)
+  `/import-context` itself — keep this probe lightweight.)
 
 ### 2. Offer the import (AskUserQuestion)
 
 One AskUserQuestion call:
 
-- `question`: "Looks like you've used Claude Code before. Want me to import your
-  existing skills, plans, workers, and repos into HQ now?"
+- `question`: "Looks like you've used Claude Code, Codex, or Grok before. Want
+  me to import your existing skills, plans, and repos — and mine your past
+  conversations for proposed companies, knowledge, and projects — now? You
+  approve every item before it's created."
 - `header`: "Import"
 - `multiSelect`: false
 - `options`:
-  - `Import now` — "Run /import-claude inline — discovers your artifacts, infers
-    companies from past plans, and brings them in (you confirm each step)"
+  - `Import now` — "Run /import-context inline — discovers your artifacts,
+    mines your conversation history across tools, and proposes companies,
+    knowledge, policies, and projects (you confirm each step)"
   - `Preview first` — "Scan and show me what's there, import nothing yet
-    (/import-claude --dry-run)"
-  - `Skip` — "Don't import; I'll run /import-claude later if I want"
+    (/import-context --dry-run)"
+  - `Skip` — "Don't import; I'll run /import-context later if I want"
 
 ### 3. Run it
 
-- **Import now** → inline-invoke the `/import-claude` skill via the Skill tool.
-  It runs its own preflight, scan, redaction, and per-category triage — every
-  write is gated by its own AskUserQuestion prompts, so you don't re-ask here.
-  When it returns, briefly note what landed (companies created, workers
-  synthesized, repos adopted) in one plain line, then continue to Phase 2.
-- **Preview first** → inline-invoke `/import-claude --dry-run`. It scans and
+- **Import now** → inline-invoke the `/import-context` skill via the Skill tool.
+  It runs its own preflight, scan, redaction, conversation mining, and
+  per-category triage — every write is gated by its own AskUserQuestion prompts,
+  so you don't re-ask here. If the user mentions claude.ai chats, pass
+  `--claude-export=<path>` once they have a data export (claude.ai → Settings →
+  Privacy → Export data). When it returns, briefly note what landed (companies
+  created, knowledge seeded, projects proposed, workers synthesized, repos
+  adopted) in one plain line, then continue to Phase 2.
+- **Preview first** → inline-invoke `/import-context --dry-run`. It scans and
   reports counts without importing. After it returns, ask once whether to run the
-  real import now (re-invoke `/import-claude` without the flag) or defer. If they
+  real import now (re-invoke `/import-context` without the flag) or defer. If they
   defer, treat it as Skip.
-- **Skip** → note that `/import-claude` is available anytime, and add it to the
+- **Skip** → note that `/import-context` is available anytime, and add it to the
   Phase 5 recommended-commands list so it resurfaces in their launch block.
 
-Because `/import-claude` already creates companies (`/newcompany`) and workers
+Because `/import-context` already creates companies (`/newcompany`) and workers
 (`/newworker`) inline and confirms every write, running it here is the canonical
 way to hydrate the skeleton — do not hand-roll an equivalent import. Whatever it
 brings in becomes context for Dream Big (4.5) and the action interview (5).
@@ -806,7 +817,7 @@ to the launch list, do NOT run inline). See the Rules for the inline/handoff lin
 - **Companies / clients** → "Is the company already in HQ?"
   - *Do now:* `/newcompany {slug}` (new — lightweight scaffold) or `/onboard`
     (join existing). If Phase 1.6 was skipped and they're an existing Claude
-    user, re-offer `/import-claude` here to hydrate the skeleton.
+    user, re-offer `/import-context` here to hydrate the skeleton.
   - **Never offer `/newcompany` for a slug the user already has an active
     membership in.** Check the membership list resolved in Phase 0c step 3
     first. Routing a joiner to `/newcompany` for a company they already belong
