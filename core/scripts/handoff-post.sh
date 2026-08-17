@@ -130,4 +130,20 @@ else
   log "qmd: skipped (helper missing)"
 fi
 
+# --- 5. Worktree GC (gated once-per-24h, detached, fully fail-soft) ---
+# HQ worktrees accumulate forever and can reach hundreds of GB. Opportunistically
+# GC the provably-safe stale ones on every handoff. --gated caps this to once per
+# 24h; --apply lets it actually remove (the script's own guards keep it to clean,
+# old, branch-preserved, unreferenced worktrees only). Launched DETACHED because
+# the safety check fetches from origin per repo — it must never block or fail the
+# handoff. Guarded so an older checkout without the script simply skips it.
+WT_GC="$HQ_ROOT/core/scripts/worktree-gc.sh"
+if [[ -f "$WT_GC" ]]; then
+  HQ_ROOT="$HQ_ROOT" nohup bash "$WT_GC" --apply --gated >>"${LOG_DIR}/worktree-gc.log" 2>&1 </dev/null &
+  disown 2>/dev/null || true
+  log "worktree-gc: launched PID $! (--apply --gated)"
+else
+  log "worktree-gc: skipped (script absent)"
+fi
+
 log "handoff-post complete"

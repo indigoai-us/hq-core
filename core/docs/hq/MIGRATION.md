@@ -3,6 +3,18 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: TBD
+
+- **`/brainstorm` interviews properly again and stores research:** Step 3 is a
+  decision-queue grilling — separate `AskUserQuestion` calls, one question at a
+  time, covering every unresolved directional input (4-8 questions is normal;
+  the prior "1 question max / skip if clear" behavior is removed). Step 4 now
+  writes research notes to `{project_dir}/research/` (HQ landscape, market
+  landscape, per-topic web notes) linked from brainstorm.md, and live web
+  research is default-on for external-facing ideas. Pattern adapted from
+  mattpocock/skills wayfinder. No action required for existing installations;
+  the skill file is replaced on `/update-hq`.
+
 ## Release: v15.0.93-beta.1
 
 - **Knowledge repositories must be real directories:** `/setup`, `/newcompany`,
