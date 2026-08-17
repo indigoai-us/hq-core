@@ -169,6 +169,20 @@ jobs:
       - name: /setup installs missing tools directly (no tool-choice prompt)
         run: bash core/scripts/tests/setup-skill-direct-install.test.sh
 
+  worktree-gc:
+    # Safe worktree garbage collector. The data-safety invariants (never remove
+    # a dirty, unmerged/unpushed, too-recent, or in-use worktree; default
+    # dry-run) are enforced by this offline fixture test, not reviewer vigilance.
+    # Policy: core/policies/hq-worktree-retention.md
+    name: worktree-gc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: GC removes only provably-safe stale worktrees
+        run: bash core/scripts/tests/worktree-gc.test.sh
+
   hq-delegate:
     # /delegate — one-command project handoff. Every helper ships with an
     # offline regression test (stubbed hq CLI / real git fixtures). The two

@@ -1,7 +1,7 @@
 name: Notify release PR opened
 
 # When a release PR (title `release: v<ver>`) is opened on hq-core, post a
-# heads-up to #hq-dev via the release-manager Slack bot so reviewers know a
+# heads-up to #hq-liveops via the release-manager Slack bot so reviewers know a
 # new release is waiting.
 #
 # hq-core only (release PRs are opened there by promote-to-hq-core.yml). The
@@ -9,7 +9,7 @@ name: Notify release PR opened
 # staging.
 #
 # Requires repo secret SLACK_BOT_TOKEN_RELEASE_MANAGER (the
-# releasemanager_hq_bot xoxb token). The bot MUST be a member of #hq-dev.
+# releasemanager_hq_bot xoxb token). The bot MUST be a member of #hq-liveops.
 
 on:
   pull_request:
@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   notify:
-    name: Post release-PR notice to #hq-dev
+    name: Post release-PR notice to #hq-liveops
     if: |
       github.repository == 'indigoai-us/hq-core' &&
       startsWith(github.event.pull_request.title, 'release: v')
@@ -32,7 +32,7 @@ jobs:
       PR_URL: ${{ github.event.pull_request.html_url }}
       PR_NUM: ${{ github.event.pull_request.number }}
     steps:
-      - name: Post to #hq-dev
+      - name: Post to #hq-liveops
         run: |
           set -euo pipefail
           if [ -z "${SLACK_TOKEN:-}" ]; then
@@ -43,10 +43,10 @@ jobs:
           RESP="$(curl -s -X POST \
             -H "Authorization: Bearer ${SLACK_TOKEN}" \
             -H 'Content-type: application/json; charset=utf-8' \
-            --data "$(jq -nc --arg c '#hq-dev' --arg t "$TEXT" '{channel:$c,text:$t,unfurl_links:false}')" \
+            --data "$(jq -nc --arg c '#hq-liveops' --arg t "$TEXT" '{channel:$c,text:$t,unfurl_links:false}')" \
             https://slack.com/api/chat.postMessage)"
           echo "$RESP" | jq '{ok,error}'
           if [ "$(echo "$RESP" | jq -r '.ok')" != "true" ]; then
-            echo "::error::Slack post failed: $(echo "$RESP" | jq -r '.error // "unknown"') (is releasemanager_hq_bot a member of #hq-dev?)"
+            echo "::error::Slack post failed: $(echo "$RESP" | jq -r '.error // "unknown"') (is releasemanager_hq_bot a member of #hq-liveops?)"
             exit 1
           fi
