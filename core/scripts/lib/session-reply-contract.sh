@@ -114,6 +114,84 @@ session_reply_contract_apply() {
   return 0
 }
 
+# session_reply_contract_reformat_prompt
+#   The system prompt for the ONE degrade-path reformat re-ask. Deliberately
+#   NOT the full session prompt: this is a stateless text transform, not a new
+#   turn. It takes the provider's own raw output (which failed the envelope) and
+#   asks for ONLY the final-answer envelope, stripped of narration.
+session_reply_contract_reformat_prompt() {
+  printf '%s\n' 'REFORMAT TASK — this overrides any other instruction.'
+  printf '%s\n' 'The USER MESSAGE below is the raw output of an assistant turn that was'
+  printf '%s\n' 'supposed to end with a single reply envelope but did not. It may interleave'
+  printf '%s\n' 'planning, narration, status updates, and reasoning with the actual final answer.'
+  printf '%s\n' 'Your ENTIRE stdout must be exactly ONE JSON object and NOTHING else:'
+  printf '%s\n' '  {"action":"reply","text":"<the FINAL answer only>"}'
+  printf '%s\n' '  {"action":"no_reply"}'
+  printf '%s\n' 'Rules:'
+  printf '%s\n' '- "text" is the final answer that was already produced, with ALL planning,'
+  printf '%s\n' '  preamble, narration, status updates, and reasoning removed. Preserve the'
+  printf '%s\n' '  answer verbatim where you can; do not add, rewrite, summarize, or invent.'
+  printf '%s\n' '- If the raw output contains no real answer to deliver (only planning or'
+  printf '%s\n' '  narration), return {"action":"no_reply"}.'
+  printf '%s\n' '- No prose, no code fence, no commentary before or after the object.'
+}
+
+# session_reply_contract_reformat <provider> <run_dir> <company_dir> <raw>
+#   ONE deterministic reformat re-ask on the DEGRADE path: a contract-gated
+#   provider whose first turn did not satisfy the envelope is fed its OWN raw
+#   output and asked for ONLY the final-answer envelope. On success this sets
+#   SESSION_DISPOSITION/SESSION_TEXT via session_reply_contract_apply and returns
+#   0. On ANY failure (render-only, empty raw, dispatch error/timeout, empty
+#   reformat output, still-invalid envelope) it returns 1 and leaves SESSION_*
+#   untouched, so the caller falls back to the raw output exactly as before.
+#
+#   Strictly ADDITIVE salvage. It runs ONLY when the first turn already failed
+#   the contract, issues AT MOST one extra provider call, and can never truncate
+#   or lose an answer: the worst case is the pre-existing raw fallback.
+#
+#   Depends on session_provider_dispatch (provider-adapter.sh) and
+#   session_read_provider_out (hq-agent-session.sh); both are in scope wherever
+#   the entrypoint sources this lib.
+session_reply_contract_reformat() {
+  local provider="${1:-}" run_dir="${2:-}" company_dir="${3:-}" raw="${4:-}"
+  session_reply_contract_required "$provider" || return 1
+  # Never issue a live provider call in render-only (fixture/CI) mode.
+  [ "${HQ_AGENT_SESSION_RENDER_ONLY:-0}" != "1" ] || return 1
+  [ -n "$run_dir" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  [ -n "$(printf '%s' "$raw" | tr -d '[:space:]')" ] || return 1
+  command -v session_provider_dispatch >/dev/null 2>&1 || return 1
+  command -v session_read_provider_out >/dev/null 2>&1 || return 1
+
+  local rdir="$run_dir/reformat"
+  mkdir -p "$rdir" 2>/dev/null || return 1
+  session_reply_contract_reformat_prompt > "$rdir/system.txt" 2>/dev/null || return 1
+  printf '%s' "$raw" > "$rdir/user.txt" 2>/dev/null || return 1
+
+  # AT MOST one extra provider call, on the same "never hang, never drop"
+  # posture as the primary dispatch: the adapter runs the CLI with stdin from
+  # /dev/null so it self-terminates, and both streams are captured to files so
+  # the read can never block. On any non-zero exit we fall back to raw below.
+  local rc=0
+  (
+    # A reformat is a FRESH stateless transform: never resume the live
+    # conversation, and scope every env change to this subshell.
+    export HQ_AGENT_SESSION_RESUME_ID=""
+    session_provider_dispatch "$provider" "$rdir" "$company_dir" \
+      >"$rdir/provider.stdout" 2>"$rdir/provider.stderr"
+  )
+  rc=$?
+  [ "$rc" -eq 0 ] || return 1
+
+  local out
+  out="$(session_read_provider_out "$rdir" "$provider")"
+  [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] || return 1
+
+  # Fail-closed: only a valid envelope from the reformat is accepted.
+  session_reply_contract_apply "$out" || return 1
+  return 0
+}
+
 # session_reply_contract_body
 #   The contract text itself, so the head and tail copies can never drift.
 session_reply_contract_body() {

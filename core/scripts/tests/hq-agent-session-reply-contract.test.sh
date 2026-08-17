@@ -274,6 +274,149 @@ and then some afterthought'
   exit "$FAILED"
 ) || FAILED=1
 
+# ── degrade-path reformat salvage (grok only) ───────────────────────────────
+# On the DEGRADE path a contract-gated provider is asked ONCE to reformat its
+# own raw output into a clean envelope, BEFORE the raw fallback. Observed live
+# (Telegram, 2026-08): grok glued a planning preamble to the answer
+# ("I'll match the voice profile...Done — archived 5...") and the raw fallback
+# shipped both. The reformat strips the preamble; on any failure it falls
+# through to the exact raw behaviour, so an answer is never lost or truncated.
+(
+  load_helpers
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+  RD="$TMP/run"; CO="$TMP/company"; mkdir -p "$RD" "$CO"
+  DISPATCH_CALLS="$TMP/dispatch.calls"; : > "$DISPATCH_CALLS"
+  STUB_MODE="reply"
+
+  # Stub the provider dispatch + reader the reformat depends on. The real
+  # session_provider_dispatch shells out to the grok CLI; here it is a
+  # controllable seam so the salvage logic is exercised offline. It writes to
+  # its own stdout, which session_reply_contract_reformat redirects into
+  # $rdir/provider.stdout exactly as the live path does.
+  session_provider_dispatch() {
+    printf 'x' >> "$DISPATCH_CALLS"
+    case "$STUB_MODE" in
+      reply)   printf '%s' '{"action":"reply","text":"Done — archived 5 threads."}' ;;
+      noreply) printf '%s' '{"action":"no_reply"}' ;;
+      prose)   printf '%s' 'still just narrating; no envelope anywhere here' ;;
+      empty)   : ;;
+      fail)    return 3 ;;
+    esac
+    return 0
+  }
+  session_read_provider_out() { cat "$1/provider.stdout" 2>/dev/null || true; }
+  dispatch_count() { wc -c < "$DISPATCH_CALLS" | tr -d ' '; }
+
+  raw_leak="I'll match the voice profile, then write the follow-up from the triage results only.Done — archived 5 threads."
+
+  # (a) grok degrade with a planning-preamble prose → reformat recovers clean answer.
+  STUB_MODE="reply"; : > "$DISPATCH_CALLS"
+  SESSION_DISPOSITION=""; SESSION_TEXT=""
+  if session_reply_contract_reformat grok "$RD" "$CO" "$raw_leak" \
+     && [ "$SESSION_DISPOSITION" = "reply" ] \
+     && [ "$SESSION_TEXT" = "Done — archived 5 threads." ]; then
+    pass "grok degrade: reformat recovers the clean answer, drops the preamble"
+  else
+    fail "grok degrade reformat did not recover (disp=$SESSION_DISPOSITION text=$SESSION_TEXT)"
+  fi
+  case "$SESSION_TEXT" in
+    *"voice profile"*|*"triage results"*) fail "planning preamble leaked into the reformatted text" ;;
+    *) pass "planning preamble is absent from the reformatted text" ;;
+  esac
+  [ "$(dispatch_count)" = "1" ] \
+    && pass "reformat issues exactly ONE extra provider call" \
+    || fail "reformat should issue exactly one call, made $(dispatch_count)"
+
+  # reformat may legitimately conclude there is no answer to send.
+  STUB_MODE="noreply"; : > "$DISPATCH_CALLS"
+  SESSION_DISPOSITION=""; SESSION_TEXT="stale"
+  if session_reply_contract_reformat grok "$RD" "$CO" "just planning out loud, never answered" \
+     && [ "$SESSION_DISPOSITION" = "no_reply" ] && [ -z "$SESSION_TEXT" ]; then
+    pass "grok degrade: reformat may resolve to no_reply when there is no answer"
+  else
+    fail "reformat no_reply mishandled (disp=$SESSION_DISPOSITION text=$SESSION_TEXT)"
+  fi
+
+  # (b) grok degrade where the reformat ALSO fails → returns 1, SESSION_* untouched,
+  #     so the caller falls back to raw (unchanged behaviour).
+  for mode in prose empty fail; do
+    STUB_MODE="$mode"; : > "$DISPATCH_CALLS"
+    SESSION_DISPOSITION="SENTINEL"; SESSION_TEXT="SENTINEL"
+    if session_reply_contract_reformat grok "$RD" "$CO" "$raw_leak"; then
+      fail "reformat ($mode) should fail closed, not report success"
+    elif [ "$SESSION_DISPOSITION" = "SENTINEL" ] && [ "$SESSION_TEXT" = "SENTINEL" ]; then
+      pass "reformat ($mode) fails closed and leaves SESSION_* untouched for raw fallback"
+    else
+      fail "reformat ($mode) mutated SESSION_* on failure (disp=$SESSION_DISPOSITION text=$SESSION_TEXT)"
+    fi
+  done
+
+  # (c) compliant grok turn is structural: reformat is nested INSIDE the
+  #     apply-failure branch, so a first-try envelope never reaches it → no
+  #     extra call on the happy path.
+  SESSION_SH="$SCRIPT_DIR/../hq-agent-session.sh"
+  if awk '/if ! session_reply_contract_apply/{a=1} a && /session_reply_contract_reformat "\$provider"/{print; found=1} END{exit !found}' "$SESSION_SH" >/dev/null; then
+    pass "reformat call is nested inside the apply-failure branch (no extra call when compliant)"
+  else
+    fail "reformat must be gated behind the apply failure, or compliant turns pay for a call"
+  fi
+
+  # (d) non-grok (not contract-gated) → reformat is a no-op: no call, no mutation.
+  STUB_MODE="reply"; : > "$DISPATCH_CALLS"
+  SESSION_DISPOSITION="SENTINEL"; SESSION_TEXT="SENTINEL"
+  if session_reply_contract_reformat codex "$RD" "$CO" "$raw_leak"; then
+    fail "reformat ran for a non-gated provider (codex)"
+  elif [ "$(dispatch_count)" = "0" ] \
+       && [ "$SESSION_DISPOSITION" = "SENTINEL" ] && [ "$SESSION_TEXT" = "SENTINEL" ]; then
+    pass "non-gated provider: reformat is a no-op (no call, no mutation)"
+  else
+    fail "non-gated reformat should not call or mutate (calls=$(dispatch_count))"
+  fi
+
+  # render-only (fixture/CI) must never trigger a live provider call.
+  STUB_MODE="reply"; : > "$DISPATCH_CALLS"
+  if HQ_AGENT_SESSION_RENDER_ONLY=1 session_reply_contract_reformat grok "$RD" "$CO" "$raw_leak"; then
+    fail "reformat ran under render-only mode"
+  elif [ "$(dispatch_count)" = "0" ]; then
+    pass "render-only mode makes reformat a no-op (no provider call)"
+  else
+    fail "render-only reformat issued a call (calls=$(dispatch_count))"
+  fi
+
+  # empty raw output → nothing to salvage, no call.
+  STUB_MODE="reply"; : > "$DISPATCH_CALLS"
+  if session_reply_contract_reformat grok "$RD" "$CO" "   "; then
+    fail "reformat ran on blank raw input"
+  elif [ "$(dispatch_count)" = "0" ]; then
+    pass "blank raw input: reformat is a no-op"
+  else
+    fail "blank-raw reformat issued a call"
+  fi
+  exit "$FAILED"
+) || FAILED=1
+
+# The entrypoint must attempt the reformat BEFORE the raw fallback, and log a
+# recovery breadcrumb, so live compliance/recovery is measurable.
+(
+  SESSION_SH="$SCRIPT_DIR/../hq-agent-session.sh"
+  if grep -q 'session_reply_contract_reformat "\$provider" "\$run_dir" "\$company_dir"' "$SESSION_SH"; then
+    pass "entrypoint attempts the reformat re-ask on the degrade path"
+  else
+    fail "entrypoint does not call the reformat salvage"
+  fi
+  if grep -q 'reply_contract_reformat_recovered' "$SESSION_SH"; then
+    pass "entrypoint logs the reply_contract_reformat_recovered breadcrumb"
+  else
+    fail "entrypoint should log a recovery breadcrumb"
+  fi
+  # The reformat must be tried BEFORE the raw fallback, or salvage never runs.
+  if awk '/session_reply_contract_reformat "\$provider"/{r=NR} /falling back to raw provider output/{f=NR} END{exit !(r>0 && f>0 && r<f)}' "$SESSION_SH"; then
+    pass "reformat is attempted before the raw fallback"
+  else
+    fail "reformat must precede the raw fallback"
+  fi
+) || FAILED=1
+
 # ── mention posture ─────────────────────────────────────────────────────────
 # "only reply when I @ me" is unfollowable unless the model is told whether THIS
 # turn satisfies it. Observed live 2026-07-26: operator told the agent to stand
