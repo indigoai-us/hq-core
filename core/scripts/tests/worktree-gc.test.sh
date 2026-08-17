@@ -20,7 +20,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 export HOME="$TMP"
 export GIT_TERMINAL_PROMPT=0
 git config --global init.defaultBranch main
-git config --global user.email "gc-test@example.com"
+git config --global user.email "[EMAIL]"
 git config --global user.name "GC Test"
 git config --global commit.gpgsign false
 git config --global advice.detachedHead false
