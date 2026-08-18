@@ -47,11 +47,11 @@ const INTENTIONALLY_APPROVAL_GATED_COMMANDS = new Map([
     "Work Mesh writes are best-effort cloud updates and remain approval-gated.",
   ],
   [
-    ".claude/skills/import-claude/SKILL.md::bash .claude/skills/import-claude/scan.sh",
+    ".claude/skills/import-context/SKILL.md::bash .claude/skills/import-context/scan.sh",
     "Import scanning traverses user-selected external Claude data.",
   ],
   [
-    ".claude/skills/import-claude/SKILL.md::bash .claude/skills/import-claude/redact.sh",
+    ".claude/skills/import-context/SKILL.md::bash .claude/skills/import-context/redact.sh",
     "Import redaction handles user-selected external Claude data.",
   ],
   [

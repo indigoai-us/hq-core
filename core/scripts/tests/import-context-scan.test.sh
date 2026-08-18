@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression tests for the /import-claude scanner (.claude/skills/import-claude/scan.sh).
+# Regression tests for the /import-context scanner (.claude/skills/import-context/scan.sh).
 #
 # Guards the DEV-1740 / feedback_4c76eff2 bug: the scanner reported 0 skills /
 # 0 hooks against a populated ~/.claude because directory discovery built its
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 SRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-SCAN="$SRC_ROOT/.claude/skills/import-claude/scan.sh"
+SCAN="$SRC_ROOT/.claude/skills/import-context/scan.sh"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'chmod -R u+rwx "$TMP_ROOT" 2>/dev/null || true; rm -rf "$TMP_ROOT"' EXIT
@@ -130,4 +130,44 @@ if grep -q 'Argument list too long' "$TMP_ROOT/t4.err"; then
 fi
 ok "large fixture: 240 skills scan without jq ARG_MAX overflow"
 
-echo "PASS: $PASS import-claude scanner assertion group(s) green"
+# ── Test 5: conversation stores → store-level entries with session counts ────
+C="$TMP_ROOT/convos"
+mkdir -p "$C/.claude/projects/-Users-me-proj" \
+         "$C/.codex/sessions/2026/01/01" \
+         "$C/.grok/sessions/%2FUsers%2Fme/abc-123"
+printf '{"type":"user"}\n' > "$C/.claude/projects/-Users-me-proj/s1.jsonl"
+printf '{"type":"user"}\n' > "$C/.claude/projects/-Users-me-proj/s2.jsonl"
+printf '{}\n' > "$C/.codex/sessions/2026/01/01/rollout-1.jsonl"
+printf '{}\n' > "$C/.grok/sessions/%2FUsers%2Fme/abc-123/updates.jsonl"
+printf '[{"name":"chat 1","chat_messages":[]},{"name":"chat 2","chat_messages":[]}]' > "$C/conversations.json"
+
+HOME="$C" bash "$SCAN" \
+  --hq-root="$SRC_ROOT" \
+  --no-default-scopes \
+  --scope="$C" \
+  --claude-export="$C" \
+  >"$TMP_ROOT/t5.json" 2>"$TMP_ROOT/t5.err" || true
+
+cval() { jq -r ".categories.conversations[] | select(.source==\"$1\").sessions" "$TMP_ROOT/t5.json"; }
+[ "$(cval claude-code)" = "2" ] || fail "T5: expected 2 claude-code sessions, got '$(cval claude-code)'"
+[ "$(cval codex)"       = "1" ] || fail "T5: expected 1 codex session, got '$(cval codex)'"
+[ "$(cval grok)"        = "1" ] || fail "T5: expected 1 grok session, got '$(cval grok)'"
+[ "$(cval claude-ai)"   = "2" ] || fail "T5: expected 2 claude.ai conversations, got '$(cval claude-ai)'"
+[ "$(jq '[.categories.conversations[] | select(has("preview"))] | length' "$TMP_ROOT/t5.json")" = "0" ] \
+  || fail "T5: conversation entries must be store-level (no file previews/contents)"
+ok "conversation stores: claude-code/codex/grok/claude-ai counted at store level, no contents"
+
+# ── Test 6: missing claude-export path → discovery error, not silent zero ────
+HOME="$E" bash "$SCAN" \
+  --hq-root="$SRC_ROOT" \
+  --no-default-scopes \
+  --scope="$E" \
+  --claude-export="$TMP_ROOT/nonexistent-export" \
+  >"$TMP_ROOT/t6.json" 2>"$TMP_ROOT/t6.err" || true
+[ "$(jq -r '.discovery.ok' "$TMP_ROOT/t6.json")" = "false" ] \
+  || fail "T6: bad --claude-export path must set discovery.ok=false"
+jq -r '.discovery.errors[]' "$TMP_ROOT/t6.json" | grep -q "claude-export" \
+  || fail "T6: discovery.errors must name the claude-export failure"
+ok "missing claude-export path: recorded as discovery error, never a silent zero"
+
+echo "PASS: $PASS import-context scanner assertion group(s) green"

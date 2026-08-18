@@ -24,4 +24,4 @@ Credential values living under shouty env keys (`API_KEY`, `TOKEN`, `DATABASE_UR
 
 ## Rationale
 
-Discovered while building `.claude/skills/import-claude/redact.sh`. Named-key redaction is fast and precise but has blind spots wherever config schemas use arbitrary key names for credential envelopes — notably MCP server env blocks, GitHub Actions step envs, and Docker Compose `environment:` sections. A regex pass catches credentials by shape (known secret prefixes, high-entropy tokens) rather than by field name, closing the blind spot without needing an exhaustive key list.
+Discovered while building `.claude/skills/import-context/redact.sh` (then named import-claude). Named-key redaction is fast and precise but has blind spots wherever config schemas use arbitrary key names for credential envelopes — notably MCP server env blocks, GitHub Actions step envs, and Docker Compose `environment:` sections. A regex pass catches credentials by shape (known secret prefixes, high-entropy tokens) rather than by field name, closing the blind spot without needing an exhaustive key list.
