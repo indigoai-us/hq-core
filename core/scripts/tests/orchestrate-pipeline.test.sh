@@ -22,6 +22,15 @@
 #      auto-deferred (finalize agent receives it), not gated
 #   5. engine threading: args.engine="grok" runs every stage on the grok bin
 #      (codex bin never spawns)
+#   9. company binding: every stage prompt opens with the hq-session bind (a
+#      spawned stage is a fresh, unbound session and HQ denies its company
+#      reads until it binds), and the personal scope is never told to bind
+#   8. codex structured output: EVERY schema the pipeline hands agent() reaches
+#      codex in the provider's STRICT dialect — additionalProperties:false on
+#      every object node and a `required` listing every property — which is what
+#      the run needs to survive its first agent (HTTP 400 invalid_json_schema
+#      otherwise), plus the source-level invariant that each schema literal in
+#      the pipeline states additionalProperties: false itself
 
 set -uo pipefail
 
@@ -83,7 +92,8 @@ last=""; prompt=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --output-last-message) last="$2"; shift 2 ;;
-    --output-schema|-C|-c|-m|--color) shift 2 ;;
+    --output-schema) mkdir -p "$rec/schemas"; cp "$2" "$rec/schemas/schema.$$-$RANDOM.json"; shift 2 ;;
+    -C|-c|-m|--color) shift 2 ;;
     exec) shift ;;
     --*) shift ;;
     *) prompt="$1"; shift ;;
@@ -256,6 +266,49 @@ printf '%s\n' "$OUT" | node -e '
     && r.deliverables.length === 1 ? 0 : 1);
 '
 check "blocked story stops the line with honest status + partial deliverables" "$?"
+
+# ---- 8: every schema the pipeline hands agent() reaches codex strict-valid ---
+# The codex engine forwards --output-schema to its provider as a STRICT
+# structured-output schema. An object node without additionalProperties:false,
+# or with a `required` that misses a property, is rejected with HTTP 400
+# invalid_json_schema before the agent does any work — which is exactly how this
+# pipeline died on its very first agent (capture-idea) on 2026-08-19. Run 1
+# above exercised every stage, so its recorded schemas are the full set.
+schemas_seen="$(ls "$R0/schemas"/*.json 2>/dev/null | wc -l | tr -d ' ')"
+[ "${schemas_seen:-0}" -ge 6 ]
+check "every pipeline stage handed codex a schema (${schemas_seen:-0} recorded, >= 6)" "$?"
+
+node "$REPO_ROOT/core/scripts/tests/assert-strict-output-schema.mjs" "$R0/schemas"/*.json 2>"$TMP/strict.err"
+check "every schema handed to agent() is strict-valid at every object node" "$?"
+
+# Source-level invariant: the fix belongs in the pipeline literals too, so a new
+# stage written by copying an existing one carries the flag rather than relying
+# on the runner's defensive rewrite alone.
+pipeline_code="$(grep -v '^[[:space:]]*//' "$PIPELINE")"   # prose about the rule is not the rule
+obj_nodes="$(printf '%s\n' "$pipeline_code" | grep -c "type: 'object'")"
+declared="$(printf '%s\n' "$pipeline_code" | grep -c 'additionalProperties: false')"
+[ "$obj_nodes" -gt 0 ] && [ "$obj_nodes" -eq "$declared" ]
+check "every object schema literal in the pipeline declares additionalProperties: false ($declared/$obj_nodes)" "$?"
+
+# ---- 9: every stage is told to bind the company before reading it -----------
+# A spawned stage is a FRESH session, and a fresh session is unbound: HQ's scope
+# authorizer denies every read under companies/{co}/ until `hq-session.sh set
+# company_slug` runs, and nothing runs it for a spawned agent. Observed
+# 2026-08-19: a capture stage lost its first two turns to that denial.
+grep -q 'hq-session.sh set company_slug demo' "$R0/codex-prompts"
+check "each stage prompt carries the company-bind command" "$?"
+bind_stages="$(grep -c 'hq-session.sh set company_slug demo' "$R0/codex-prompts")"
+[ "${bind_stages:-0}" -ge 6 ]
+check "the bind instruction reaches every stage (${bind_stages:-0} prompts, >= 6)" "$?"
+grep -q 'ONE denial worth retrying' "$R0/codex-prompts"
+check "the bind denial is carved out of the never-retry rule" "$?"
+
+# personal scope has no company to bind — the instruction must not appear.
+G9="$TMP/g9"; R9="$TMP/r9"
+run_pipeline "$G9" "$R9" '{"company":"personal","description":"a personal idea","planOnly":true}'
+check "personal-scope pipeline exits 0" "$RC"
+grep -q 'set company_slug' "$R9/codex-prompts" && personal_bind=1 || personal_bind=0
+check "personal scope is never told to bind a company" "$personal_bind"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

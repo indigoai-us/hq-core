@@ -9,7 +9,11 @@ Generate code from a task description using the Codex CLI (`codex exec --sandbox
 Optional:
 - `--cwd <path>` - Working directory for Codex execution (defaults to target repo)
 - `--context <files>` - Comma-separated list of context files to include
-- `--output-schema <file>` - JSON schema file for structured output
+- `--output-schema <file>` - JSON schema file for structured output. Codex sends
+  it to the provider as a STRICT schema: every object node must set
+  `additionalProperties: false` and list every property in `required` (use
+  `type: ["string","null"]` for a property that may be empty), or the request
+  fails with HTTP 400 `invalid_json_schema` before any work happens.
 
 ## Process
 

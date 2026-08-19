@@ -8,6 +8,11 @@
 #   1. codex engine (default): every spawn carries the three unattended-run
 #      flags, stdin at /dev/null, `--` before the prompt, -C <hq-root>; result
 #      read from the --output-last-message file; --output-schema parsed
+#   1b. codex strict output schema: --output-schema is written in the provider's
+#      STRICT dialect (additionalProperties:false on every object node, `required`
+#      listing every property), an optional property is widened to nullable and
+#      the null it invites is stripped back out of the result, and the stdout
+#      engines still get the script's own schema verbatim in-prompt
 #   2. grok engine: spawns the grok bin with --single <prompt>,
 #      --permission-mode bypassPermissions --always-approve, NO codex flags;
 #      the reply is captured from stdout; a schema instruction is appended to
@@ -22,6 +27,10 @@
 #      HQ root. For the stdout engines a parsed reply that violates opts.schema
 #      (wrong type / missing required / bad enum) is rejected with a schema
 #      error rather than passed downstream
+#   1c. spawned agents run with HQ's end-of-turn checkpoint gate suppressed
+#      (HQ_DISABLED_HOOKS), on every engine, without clobbering a suppression
+#      the operator set: the gate demands a turn AFTER the answer, which ends a
+#      headless run on a tool call and returns an empty result
 #   3. tiers are engine-neutral: "plan"/"exec" required; codex maps to
 #      gpt-5.6-sol / gpt-5.6-terra, grok to grok-4.6, claude to opus/sonnet; the
 #      HQ_WORKFLOW_{CODEX,GROK,CLAUDE}_{PLAN,EXEC}_MODEL envs re-point them; an
@@ -68,13 +77,14 @@ cat > "$TMP/bin/codex" <<'FAKE'
 rec="${FAKE_REC_DIR:?}"
 n="$$-$RANDOM"
 printf '%s\n' "$@" > "$rec/codex-argv.$n"
+printenv HQ_DISABLED_HOOKS > "$rec/codex-hooksenv.$n" 2>/dev/null || : > "$rec/codex-hooksenv.$n"
 { readlink /proc/self/fd/0 2>/dev/null || lsof -a -p $$ -d 0 -Fn 2>/dev/null | sed -n 's/^n//p'; } > "$rec/codex-stdin.$n"
 [ -s "$rec/codex-stdin.$n" ] || echo "unknown" > "$rec/codex-stdin.$n"
 last=""; schema=""; prompt=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --output-last-message) last="$2"; shift 2 ;;
-    --output-schema) schema="$2"; shift 2 ;;
+    --output-schema) schema="$2"; shift 2; mkdir -p "$rec/schemas"; cp "$schema" "$rec/schemas/schema.$n.json" ;;
     -C|-c|-m|--color) shift 2 ;;
     exec) shift ;;
     --*) shift ;;
@@ -91,7 +101,14 @@ case "$prompt" in
   *FAIL*) echo "fake codex: failing on purpose" >&2; exit 3 ;;
 esac
 if [ -n "$schema" ]; then
-  printf '{"pong": 1, "sawSchema": true}\n' > "$last"
+  case "$prompt" in
+    *STRICTNULLS*)
+      # what a STRICT structured-output run actually returns: every key present,
+      # the optional ones answered null
+      printf '{"pong": 1, "note": null, "rows": [{"id": "a", "hint": null}]}\n' > "$last" ;;
+    *)
+      printf '{"pong": 1, "sawSchema": true}\n' > "$last" ;;
+  esac
 else
   printf 'echo:%s\n' "$prompt" > "$last"
 fi
@@ -109,6 +126,7 @@ cat > "$TMP/bin/grok" <<'FAKE'
 rec="${FAKE_REC_DIR:?}"
 n="$$-$RANDOM"
 printf '%s\n' "$@" > "$rec/grok-argv.$n"
+printenv HQ_DISABLED_HOOKS > "$rec/grok-hooksenv.$n" 2>/dev/null || : > "$rec/grok-hooksenv.$n"
 pwd > "$rec/grok-cwd.$n"
 prompt=""
 while [ $# -gt 0 ]; do
@@ -147,6 +165,7 @@ cat > "$TMP/bin/claude" <<'FAKE'
 rec="${FAKE_REC_DIR:?}"
 n="$$-$RANDOM"
 printf '%s\n' "$@" > "$rec/claude-argv.$n"
+printenv HQ_DISABLED_HOOKS > "$rec/claude-hooksenv.$n" 2>/dev/null || : > "$rec/claude-hooksenv.$n"
 pwd > "$rec/claude-cwd.$n"
 prompt=""
 while [ $# -gt 0 ]; do
@@ -227,6 +246,112 @@ for f in "$TMP/rec"/codex-argv.*; do
   grep -A1 -x -- '-C' "$f" | tail -1 | grep -qx -- "$HQROOT" || flags_ok=1
 done
 check "codex: unattended flags + stdin /dev/null + -- + -C <hq-root> on every spawn" "$flags_ok"
+
+# ---- 1b: codex strict output-schema dialect ---------------------------------
+# codex forwards --output-schema to its provider as a STRICT structured-output
+# schema: every object node must carry additionalProperties:false AND list every
+# property in `required`, or the request is rejected (HTTP 400
+# invalid_json_schema) before the agent does any work — verified live against
+# codex-cli 0.144.5 on 2026-08-19, which is what killed the first agent of every
+# /orchestrate run. The runner rewrites the script's ordinary JSON Schema on the
+# wire and maps the answer back, so a script keeps declaring optional properties
+# the normal way (absent from `required`) and gets them back absent, not null.
+rm -rf "$TMP/rec/schemas"
+cat > "$TMP/wf-strict.mjs" <<'WF'
+export const meta = { name: 'strict', description: 'strict output schema' }
+const r = await agent('STRICTNULLS please', {
+  label: 'strict', tier: 'exec', timeoutSecs: 30,
+  schema: { type: 'object', required: ['pong'],
+    properties: {
+      pong: { type: 'number' },
+      note: { type: 'string' },
+      rows: { type: 'array', items: { type: 'object', required: ['id'],
+        properties: { id: { type: 'string' }, hint: { type: 'string' } } } },
+    } },
+})
+return r
+WF
+run_wf "$TMP/wf-strict.mjs"
+check "codex strict-schema workflow exits 0" "$RC"
+
+node "$REPO_ROOT/core/scripts/tests/assert-strict-output-schema.mjs" "$TMP/rec/schemas"/*.json 2>"$TMP/strict.err"
+check "codex: the schema written to --output-schema is strict-valid at every object node" "$?"
+
+node -e '
+  const fs = require("fs");
+  const files = fs.readdirSync(process.argv[1]).filter((f) => f.endsWith(".json"));
+  if (files.length !== 1) process.exit(1);
+  const s = JSON.parse(fs.readFileSync(`${process.argv[1]}/${files[0]}`, "utf8"));
+  const rows = s.properties.rows.items;
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  process.exit(
+    s.additionalProperties === false
+    && eq(s.required, ["pong", "note", "rows"])
+    && eq(s.properties.pong.type, "number")          // required: untouched
+    && eq(s.properties.note.type, ["string", "null"]) // optional: nullable
+    && rows.additionalProperties === false
+    && eq(rows.required, ["id", "hint"])
+    && eq(rows.properties.hint.type, ["string", "null"]) ? 0 : 1);
+' "$TMP/rec/schemas"
+check "codex: optional properties become required+nullable, required ones are untouched" "$?"
+
+echo "$OUT" | node -e '
+  const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(r.pong === 1 && !("note" in r)
+    && r.rows.length === 1 && r.rows[0].id === "a" && !("hint" in r.rows[0]) ? 0 : 1);
+'
+check "codex: nulls invited by the widening are stripped back out of the result" "$?"
+
+# The adaptation is codex-only: the stdout engines get the script's schema
+# verbatim in-prompt, so their local validation keeps matching what it asked for.
+cat > "$TMP/wf-strict-grok.mjs" <<'WF'
+export const meta = { name: 'strict-grok', description: 'strict schema, grok engine' }
+return await agent('STRICTNULLS please', {
+  label: 'strict-grok', tier: 'exec', engine: 'grok', timeoutSecs: 30,
+  schema: { type: 'object', required: ['pong'],
+    properties: { pong: { type: 'number' }, note: { type: 'string' } } },
+})
+WF
+run_wf "$TMP/wf-strict-grok.mjs"
+check "grok strict-schema workflow exits 0" "$RC"
+gargv="$(grep -l 'STRICTNULLS' "$TMP/rec"/grok-argv.* 2>/dev/null | head -1)"
+[ -n "$gargv" ] && grep -q '"required":\["pong"\]' "$gargv" && ! grep -q 'additionalProperties' "$gargv"
+check "grok: prompt carries the script's own schema, not the codex strict rewrite" "$?"
+
+# ---- 1c: the checkpoint stop gate never fires inside a spawned agent --------
+# A spawned agent's whole contract is that its FINAL TEXT is the return value.
+# HQ's Stop gate fires mechanically and demands one more turn AFTER the answer
+# is already written — observed 2026-08-19 ending a finished claude stage on a
+# `hq core checkpoint` tool call, so the envelope came back `result: ""` and the
+# runner failed a stage that had actually done its work. Checkpointing is the
+# launching session's job.
+rm -f "$TMP/rec"/*-hooksenv.* 2>/dev/null
+cat > "$TMP/wf-hookenv.mjs" <<'WF'
+export const meta = { name: 'hookenv', description: 'hook suppression' }
+await agent('say hi', { label: 'c', tier: 'exec', timeoutSecs: 30 })
+await agent('say hi', { label: 'g', tier: 'exec', engine: 'grok', timeoutSecs: 30 })
+await agent('say hi', { label: 'a', tier: 'exec', engine: 'claude', timeoutSecs: 30 })
+return 'ok'
+WF
+run_wf "$TMP/wf-hookenv.mjs"
+check "hook-suppression workflow exits 0" "$RC"
+
+env_ok=0
+for e in codex grok claude; do
+  f="$(ls "$TMP/rec"/$e-hooksenv.* 2>/dev/null | head -1)"
+  [ -n "$f" ] && grep -q 'checkpoint-stop-gate' "$f" || env_ok=1
+done
+check "every engine's child is spawned with the checkpoint stop gate disabled" "$env_ok"
+
+# An operator suppression must survive — the runner adds to it, never replaces it.
+rm -f "$TMP/rec"/*-hooksenv.* 2>/dev/null
+export HQ_DISABLED_HOOKS=operator-chosen-hook
+run_wf "$TMP/wf-hookenv.mjs"
+unset HQ_DISABLED_HOOKS
+check "hook-suppression workflow exits 0 (operator env set)" "$RC"
+f="$(ls "$TMP/rec"/codex-hooksenv.* 2>/dev/null | head -1)"
+[ -n "$f" ] && grep -q 'operator-chosen-hook' "$f" && grep -q 'checkpoint-stop-gate' "$f"
+check "an operator's HQ_DISABLED_HOOKS is preserved, not clobbered" "$?"
 
 # ---- 2: grok engine ----------------------------------------------------------
 cat > "$TMP/wf-grok.mjs" <<'WF'
@@ -653,6 +778,13 @@ OUT="$(HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$REC3" \
 RC=$?
 [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q 'GATE CACHED'
 check "legacy CODEX_WORKFLOW_GATES_DIR honored (cached answer found there)" "$?"
+
+# ---- 8: every schema this suite handed codex is strict-valid ----------------
+# A sweep over the schema files the runner wrote across ALL the codex runs
+# above, not just the one the strict section aimed at — a schema shape a future
+# test introduces gets checked for free.
+node "$REPO_ROOT/core/scripts/tests/assert-strict-output-schema.mjs" "$TMP/rec/schemas"/*.json 2>"$TMP/strict-all.err"
+check "every schema handed to the codex engine in this suite is strict-valid" "$?"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

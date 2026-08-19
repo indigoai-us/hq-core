@@ -73,7 +73,24 @@ const decide = async (id, question, opts) => {
 // /brainstorm, and the PRD skill. Stages run non-interactively: session-coupled
 // steps (interviews, journal pointers, background pulse spawns, deck deploys,
 // auto-checkpoint thread files) are skipped — the launching session owns those.
-const NONINTERACTIVE = `
+//
+// Each stage runs as a FRESH session, and a fresh session starts with no
+// company bound: HQ's scope authorizer denies every read under companies/{co}/
+// until one is (`master-hook.sh`: "startwork (or any skill) is responsible for
+// calling hq-session.sh set company_slug once context is resolved" — nothing
+// calls it for a spawned agent). Observed 2026-08-19: a capture stage lost its
+// first two turns to that denial before recovering on its own. Binding up front
+// turns a recoverable stumble into a non-event, so the preamble opens with it.
+const BIND_COMPANY = co === 'personal' ? '' : `
+FIRST ACTION — bind this session to the company before anything else:
+  bash core/scripts/hq-session.sh set company_slug ${co}
+You are a fresh session and start UNBOUND, so every read under companies/${co}/
+is denied until you run it. If a company read is still denied afterwards, the
+bind landed on a different session — re-run it with the session id the denial
+message names, then retry the read. This is the ONE denial worth retrying.
+`
+
+const NONINTERACTIVE = `${BIND_COMPANY}
 Run non-interactively; you have no user to ask. Skip any step that requires a
 live user, a session journal pointer, a background sub-agent spawn, a visual
 deck deploy, or an auto-checkpoint thread file — the launching session handles
@@ -88,12 +105,23 @@ TOOL RULES — breaking these ends your run, they are not advice:
   If you must glob, scope it to a subdirectory, never '.' or the root.
 - To search content, use qmd: \`qmd query "<terms>" --json -n 10\` (add
   \`-c <collection>\` when the company has one). Never substitute a root glob.
-- If ANY tool call comes back denied, do not retry it and do not stop: switch
-  to a scoped shell command and carry on to your deliverable.
+- If a tool call comes back denied, do not stop: switch to a scoped shell
+  command and carry on to your deliverable. Do not retry a denied call
+  unchanged — the one exception is the company-bind denial above, whose message
+  names the exact command that fixes it.
 
 Company isolation applies: read and write only under this company's scope (or
 personal/ for the personal scope). Do not run git commands; HQ-local writes
 autosave.`
+
+// Every object node in a stage schema declares `additionalProperties: false`.
+// The codex engine forwards these schemas to its provider as STRICT
+// structured-output schemas, which reject an object node that omits it — with
+// no flag, the first agent of the run dies on an HTTP 400 before doing any
+// work. The runner injects it defensively too (core/scripts/lib/
+// codex-output-schema.mjs), and stating it here keeps the contract readable at
+// the point a new stage is written. Optional properties stay out of `required`
+// as usual; the runner handles that half of the dialect gap.
 
 phase('Capture')
 const capture = await agent(`
@@ -106,7 +134,7 @@ zero questions. If the company has no board.json yet, create a fresh one per
 the skill. ${NONINTERACTIVE}
 Return ONLY JSON: {"boardId": "<id>", "title": "<concise title>"}`,
   { engine, tier: 'exec', label: 'capture-idea', phase: 'Capture', timeoutSecs: 600,
-    schema: { type: 'object', required: ['boardId', 'title'],
+    schema: { type: 'object', additionalProperties: false, required: ['boardId', 'title'],
       properties: { boardId: { type: 'string' }, title: { type: 'string' } } } })
 
 phase('Brainstorm')
@@ -126,13 +154,13 @@ Return ONLY JSON with: slug (the project slug you derived), premiseVerdict
 of {name, effort, summary, whenToChoose}), recommended (the name of the
 approach you recommend), biggestRisk (1 sentence).`,
   { engine, tier: 'plan', label: 'brainstorm', phase: 'Brainstorm', timeoutSecs: 1800,
-    schema: { type: 'object',
+    schema: { type: 'object', additionalProperties: false,
       required: ['slug', 'premiseVerdict', 'premiseSummary', 'approaches', 'recommended', 'biggestRisk'],
       properties: {
         slug: { type: 'string' },
         premiseVerdict: { type: 'string', enum: ['STRONG', 'QUESTIONABLE', 'WEAK'] },
         premiseSummary: { type: 'string' },
-        approaches: { type: 'array', items: { type: 'object',
+        approaches: { type: 'array', items: { type: 'object', additionalProperties: false,
           required: ['name', 'effort', 'summary'],
           properties: { name: { type: 'string' }, effort: { type: 'string' },
             summary: { type: 'string' }, whenToChoose: { type: 'string' } } } },
@@ -198,10 +226,11 @@ openQuestions (array of {question, options (array of 2-3 short candidate
 answers, may be empty), recommended (may be empty), whyItMatters (1
 sentence)}).`,
   { engine, tier: 'plan', label: 'prd', phase: 'PRD', timeoutSecs: 1800,
-    schema: { type: 'object', required: ['name', 'prdPath', 'stories', 'openQuestions'],
+    schema: { type: 'object', additionalProperties: false,
+      required: ['name', 'prdPath', 'stories', 'openQuestions'],
       properties: {
         name: { type: 'string' }, prdPath: { type: 'string' }, stories: { type: 'number' },
-        openQuestions: { type: 'array', items: { type: 'object', required: ['question'],
+        openQuestions: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['question'],
           properties: { question: { type: 'string' },
             options: { type: 'array', items: { type: 'string' } },
             recommended: { type: 'string' }, whyItMatters: { type: 'string' } } } },
@@ -261,10 +290,11 @@ Also return stories: EVERY story now in prd.json, in execution order
 Return ONLY JSON: {"decisionsApplied": <n>, "investigationStories": <n>,
 "storiesTotal": <n>, "stories": [{"id": "US-...", "title": "..."}]}`,
   { engine, tier: 'exec', label: 'finalize-prd', phase: 'Resolve', timeoutSecs: 900,
-    schema: { type: 'object', required: ['decisionsApplied', 'investigationStories', 'storiesTotal', 'stories'],
+    schema: { type: 'object', additionalProperties: false,
+      required: ['decisionsApplied', 'investigationStories', 'storiesTotal', 'stories'],
       properties: { decisionsApplied: { type: 'number' },
         investigationStories: { type: 'number' }, storiesTotal: { type: 'number' },
-        stories: { type: 'array', items: { type: 'object', required: ['id', 'title'],
+        stories: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'title'],
           properties: { id: { type: 'string' }, title: { type: 'string' } } } } } } })
 
 const planning = {
@@ -304,7 +334,7 @@ satisfied, do not fake it: report blocked with the reason. ${NONINTERACTIVE}
 Return ONLY JSON: {"storyId": "${st.id}", "status": "passed"|"blocked",
 "artifacts": ["<created/modified paths>"], "note": "<1 line>"}`,
     { engine, tier: 'exec', label: `execute-${st.id}`, phase: 'Execute', timeoutSecs: 1800,
-      schema: { type: 'object', required: ['storyId', 'status', 'artifacts', 'note'],
+      schema: { type: 'object', additionalProperties: false, required: ['storyId', 'status', 'artifacts', 'note'],
         properties: { storyId: { type: 'string' },
           status: { type: 'string', enum: ['passed', 'blocked'] },
           artifacts: { type: 'array', items: { type: 'string' } },
