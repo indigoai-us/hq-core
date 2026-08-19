@@ -7,6 +7,7 @@ name: pr-checks
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
   push:
     branches: [main]
@@ -19,6 +20,7 @@ jobs:
   # ─── Mechanical checks (no LLM) ─────────────────────────────────────
 
   denylist-scan:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: denylist-scan
     runs-on: ubuntu-latest
     steps:
@@ -29,6 +31,7 @@ jobs:
         run: bash .leak-scan/scan.sh denylist
 
   policy-rationale-scan:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: policy-rationale-scan
     runs-on: ubuntu-latest
     steps:
@@ -39,6 +42,7 @@ jobs:
         run: bash .leak-scan/scan.sh policy-rationale
 
   slug-scan:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: slug-scan
     runs-on: ubuntu-latest
     steps:
@@ -49,6 +53,7 @@ jobs:
         run: bash .leak-scan/scan.sh slugs
 
   users-path-tripwire:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: users-path-tripwire
     runs-on: ubuntu-latest
     steps:
@@ -59,6 +64,7 @@ jobs:
         run: bash .leak-scan/scan.sh users-path
 
   provenance-stripped:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: provenance-stripped
     runs-on: ubuntu-latest
     steps:
@@ -69,6 +75,7 @@ jobs:
         run: bash .leak-scan/scan.sh provenance
 
   vendor-public-ok:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: vendor-public-ok
     runs-on: ubuntu-latest
     steps:
@@ -79,6 +86,7 @@ jobs:
         run: bash .leak-scan/scan.sh vendor-public-ok
 
   public-frontmatter-revalidate:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: public-frontmatter-revalidate
     runs-on: ubuntu-latest
     steps:
@@ -89,6 +97,7 @@ jobs:
         run: bash .leak-scan/scan.sh public-frontmatter
 
   denylist-drift:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: denylist-drift
     runs-on: ubuntu-latest
     steps:
@@ -99,6 +108,7 @@ jobs:
         run: bash .leak-scan/scan.sh denylist-drift
 
   settings-local-not-ignored:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: settings-local-not-ignored
     runs-on: ubuntu-latest
     steps:
@@ -109,6 +119,7 @@ jobs:
         run: bash .leak-scan/scan.sh settings-local-not-ignored
 
   repos-segment-not-ignored:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: repos-segment-not-ignored
     runs-on: ubuntu-latest
     steps:
@@ -119,6 +130,7 @@ jobs:
         run: bash .leak-scan/scan.sh repos-segment-not-ignored
 
   skill-command-refs:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # DEV-1716: a core skill must not instruct a slash-command that isn't
     # resolvable on the install it is shown to. Engineering commands
     # (/run-project, /execute-task, ...) live in the separately-installed
@@ -135,6 +147,7 @@ jobs:
         run: bash core/scripts/lint-skill-command-refs.sh
 
   skill-script-refs:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # WC-17: a skill must not retain a path to a shell script removed with a
     # retired workflow; commands and local script references are both released
     # guidance that must resolve on a fresh scaffold.
@@ -157,6 +170,7 @@ jobs:
         run: bash core/scripts/tests/resume-thread-lock.test.sh
 
   setup-skill-direct-install:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # /setup must install missing CLI tools directly, never re-introduce the
     # install-all/some/none prompt that made onboarding pause mid-flow. Pins the
     # direct-install invariant plus the auth/bootstrap carve-outs the fix relies on.
@@ -170,6 +184,7 @@ jobs:
         run: bash core/scripts/tests/setup-skill-direct-install.test.sh
 
   worktree-gc:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # Safe worktree garbage collector. The data-safety invariants (never remove
     # a dirty, unmerged/unpushed, too-recent, or in-use worktree; default
     # dry-run) are enforced by this offline fixture test, not reviewer vigilance.
@@ -184,6 +199,7 @@ jobs:
         run: bash core/scripts/tests/worktree-gc.test.sh
 
   hq-delegate:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # /delegate — one-command project handoff. Every helper ships with an
     # offline regression test (stubbed hq CLI / real git fixtures). The two
     # hard rules (no secret values, no share-session URLs in any delegation
@@ -217,6 +233,7 @@ jobs:
         run: bash core/scripts/lint-skill-script-refs.sh delegate
 
   install-deps:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # DEV-1727: HQ's install/setup surface must not install or dependency-check
     # a third-party CLI that HQ itself never calls. The /setup wizard used to
     # `which vercel` + offer `npm install -g vercel`, gating setup on a tool
@@ -240,6 +257,7 @@ jobs:
   # US-001: canonical YAML-backed validation for shipped skill metadata and
   # generated agents/openai.yaml contracts.
   agent-runtime-skill-metadata:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: agent-runtime-skill-metadata
     runs-on: ubuntu-latest
     steps:
@@ -282,6 +300,7 @@ jobs:
         run: bash core/scripts/tests/agent-runtime-contracts-e2e.test.sh
 
   compose-settings-path:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: compose-settings-path
     runs-on: ubuntu-latest
     steps:
@@ -290,6 +309,7 @@ jobs:
         run: bash core/scripts/tests/compose-settings-path.test.sh
 
   agent-session-resume:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # The resume store is what lets a user revive a Slack thread days later, and
     # its records are the only handle any sweep has on a conversation. These
     # suites existed but nothing ran them on a PR — this job is that gate.
@@ -307,6 +327,7 @@ jobs:
         run: bash core/scripts/tests/hq-agent-session-skill-dispatch-multiline.test.sh
 
   hook-health-prevention:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # DEV-1942: project hook configuration can be absent or never loaded in
     # Desktop/SDK sessions. Keep the independent doctor, release-overlay
     # contract, and remediation docs from drifting together.
@@ -323,6 +344,7 @@ jobs:
   # word-split by /bin/sh, so every hook dies non-blocking and silent on an
   # install path containing a space. The guard existed but ran in no workflow.
   hook-path-resolution:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: hook-path-resolution
     runs-on: ubuntu-latest
     steps:
@@ -347,6 +369,7 @@ jobs:
 
   # feedback_3cdd3064: deploy-summary.sh aborted under set -u when HQ_DEPLOY_API was unset.
   deploy-summary-nounset:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: deploy-summary-nounset
     runs-on: ubuntu-latest
     steps:
@@ -357,6 +380,7 @@ jobs:
   # task-3517155514: /deploy must always resolve a non-empty API base (public
   # default https://api.indigo-hq.com) so a fresh install does not stall at Phase C.
   resolve-deploy-api:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: resolve-deploy-api
     runs-on: ubuntu-latest
     steps:
@@ -367,6 +391,7 @@ jobs:
   # task-2854627137: /deploy org resolution must work for AGENT callers (agt_),
   # not just humans — else an agent's company deploy silently downgrades to personal.
   resolve-deploy-org:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: resolve-deploy-org
     runs-on: ubuntu-latest
     steps:
@@ -376,6 +401,7 @@ jobs:
 
   # US-001: /deploy identity-resolve portable USER key + TMPDIR lock (#357 regression).
   identity-resolve:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: identity-resolve
     runs-on: ubuntu-latest
     steps:
@@ -385,6 +411,7 @@ jobs:
 
   # US-001: identity-resolve jq→node fallback; missing engines → missing_dependency not login_required.
   identity-resolve-missing-jq:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: identity-resolve-missing-jq
     runs-on: ubuntu-latest
     steps:
@@ -394,6 +421,7 @@ jobs:
 
   # US-002: shared OS portability helpers (stat/sed/tmp/user/require_jq).
   portable-lib:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: portable-lib
     runs-on: ubuntu-latest
     steps:
@@ -403,6 +431,7 @@ jobs:
 
   # feedback_1b307a08: nested manifests were misparsed by a flat col-0 regex.
   manifest-nested-parse:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: manifest-nested-parse
     runs-on: ubuntu-latest
     steps:
@@ -412,6 +441,7 @@ jobs:
 
   # feedback_c930eafe: catch stale org chart drift between README teams and person ontology.
   ontology-readme-drift:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: ontology-readme-drift
     runs-on: ubuntu-latest
     steps:
@@ -435,6 +465,7 @@ jobs:
         run: bash core/scripts/tests/ontology-readme-drift.test.sh
 
   git-pack-extension:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # A packfile set is paired BY EXTENSION (pack-<sha>.pack/.idx/.rev). Strip
     # the extension off one of them and git stops seeing the whole set: the
     # objects are intact on disk but report as missing, so the repo presents as
@@ -450,6 +481,7 @@ jobs:
         run: bash core/scripts/tests/git-pack-extension-check.test.sh
 
   git-mutation-guard:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # DEV-1765: the HQ-root git-mutation guard must FIRE correctly under BOTH
     # harnesses. Under Codex the adapter used to resolve HQ_ROOT from the cwd's
     # git toplevel, which collapses into a nested repo (repos/*), missed the
@@ -494,6 +526,7 @@ jobs:
   # makes splitting these legs safe to do again later.
   # ---------------------------------------------------------------------------
   autosave-failure-visibility-handoff:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: autosave-failure-visibility (handoff)
     runs-on: ubuntu-latest
     steps:
@@ -523,6 +556,7 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-large-changeset.test.sh
 
   autosave-failure-visibility-qmd-reindex:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: autosave-failure-visibility (qmd-reindex)
     runs-on: ubuntu-latest
     steps:
@@ -552,7 +586,7 @@ jobs:
     needs:
       - autosave-failure-visibility-handoff
       - autosave-failure-visibility-qmd-reindex
-    if: always()
+    if: ${{ (always()) && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
     steps:
       - name: Every autosave-failure-visibility leg passed
@@ -570,6 +604,7 @@ jobs:
           fi
 
   journal-session-isolation:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: journal-session-isolation
     runs-on: ubuntu-latest
     steps:
@@ -599,6 +634,7 @@ jobs:
         run: bash core/scripts/tests/surface-company-infra-policy.test.sh
 
   mcp-cleanup-session-scope:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: mcp-cleanup-session-scope
     runs-on: ubuntu-latest
     steps:
@@ -607,6 +643,7 @@ jobs:
         run: bash core/scripts/tests/cleanup-mcp-session-scope.test.sh
 
   hq-agent-session-harness:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # US-411 assembly timing budget + US-412 golden-turn parity harness.
     name: hq-agent-session-harness
     runs-on: ubuntu-latest
@@ -622,6 +659,7 @@ jobs:
         run: bash core/scripts/tests/hq-agent-session-heartbeat.test.sh
 
   reindex-path-gate:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # Path-gated reindex hook: `hq reindex` must run ONLY when a skill, worker,
     # or personal-overlay entry (knowledge/policies/settings) is created,
     # edited, or deleted — not on every turn/prompt/session. Guards the gate in
@@ -634,6 +672,7 @@ jobs:
         run: bash core/scripts/tests/reindex-path-gate.test.sh
 
   rebuild-threads-index:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # Changeset sidecars share the T-*.json prefix but must never consume
     # INDEX.md rows or recent.md's 15-thread limit.
     name: rebuild-threads-index
@@ -665,6 +704,7 @@ jobs:
         run: bash core/scripts/tests/rebuild-threads-index.test.sh
 
   auto-checkpoint-cmds:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # Item 2: /brainstorm and /plan must auto-checkpoint at command end so users
     # do not have to manually /handoff before a fresh session. Structural guard.
     name: auto-checkpoint-cmds
@@ -675,6 +715,7 @@ jobs:
         run: bash core/scripts/tests/auto-checkpoint-planning-cmds.test.sh
 
   session-title-manual-backoff:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # feedback_0919db0c / feedback_1f573b9f: the session-title hook must stop
     # overwriting a user's manual title (launcher --name / /rename / desktop
     # rename). Primary back-off is the documented session_title SessionStart
@@ -687,6 +728,7 @@ jobs:
         run: bash core/scripts/tests/session-title-manual-backoff.test.sh
 
   knowledge-repo-glob-shells:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # knowledge-repo-loop-zsh-unmatched-glob: the checkpoint and cleanup
     # snippets must not let zsh NOMATCH abort on an empty knowledge directory.
     name: knowledge-repo-glob-shells
@@ -699,6 +741,7 @@ jobs:
         run: bash core/scripts/tests/knowledge-repo-glob-shells.test.sh
 
   knowledge-scaffold-real-dir:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # Knowledge repositories must be real canonical directories everywhere;
     # setup/import/docs may never recreate the legacy repo-symlink layout.
     name: knowledge-scaffold-real-dir
@@ -709,6 +752,7 @@ jobs:
         run: bash core/scripts/tests/knowledge-scaffold-real-dir.test.sh
 
   dm-people-resolve:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # feature-dm-skill-email-confirm: the /dm skill must CONFIRM a recipient's
     # email via `hq people resolve` (single-company, tenancy-safe) before
     # sending — never send to an unconfirmed name. Structural guard over the
@@ -721,6 +765,7 @@ jobs:
         run: bash core/scripts/tests/dm-people-resolve-integration.test.sh
 
   auto-acl-share-hooks:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: auto-acl-share-hooks
     runs-on: ubuntu-latest
     steps:
@@ -753,6 +798,7 @@ jobs:
         run: bash core/scripts/tests/scan-packages-id-collision.test.sh
 
   previously-unrun-suites:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # These suites existed but were never wired into CI, so they rotted
     # unnoticed: audit-log-mkdir had been failing outright since audit-log.sh
     # gained a lib/portable.sh dependency the fixture never copied.
@@ -766,6 +812,7 @@ jobs:
         run: bash core/scripts/tests/skill-command-refs.test.sh
 
   core-write-protection:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: core-write-protection
     runs-on: ubuntu-latest
     steps:
@@ -797,6 +844,7 @@ jobs:
 
   # US-005: shell portability lint + shellcheck + cross-platform smoke.
   shell-portability:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: shell-portability
     runs-on: ubuntu-latest
     steps:
@@ -834,6 +882,7 @@ jobs:
           shellcheck -S warning "${present[@]}"
 
   shell-smoke-windows:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: shell-smoke-windows
     runs-on: windows-latest
     defaults:
@@ -863,6 +912,7 @@ jobs:
         run: node core/scripts/validate-agent-runtime-contracts.mjs
 
   shell-smoke-macos:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: shell-smoke-macos
     runs-on: macos-latest
     steps:
@@ -881,6 +931,7 @@ jobs:
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
 
   hooks-no-python:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # HQ's runtime hook layer must not depend on python3 (Windows machines
     # often have none — or the Store alias stub that resolves on PATH but
     # cannot run). Tripwire (no python3 invocations in runtime hooks/scripts),
@@ -894,6 +945,7 @@ jobs:
         run: bash core/scripts/tests/hooks-no-python.test.sh
 
   policy-trigger-migration:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # Trigger-less soft/unset policies must not be promoted into the always-on
     # SessionStart baseline; hard fallback and normal reactive injection stay live.
     name: policy-trigger-migration
@@ -910,6 +962,7 @@ jobs:
         run: bash core/scripts/tests/inject-policy-e2e.test.sh
 
   personal-policy-overlay:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # The personal→core policy mirror is retired: the trigger hook must read
     # personal/policies DIRECTLY (no core/policies symlink mirror), and the
     # drift detector must classify + prune only behavior-neutral orphan copies
@@ -939,6 +992,7 @@ jobs:
         run: bash core/scripts/tests/detect-stale-core-policy-mirror.test.sh
 
   stale-review-base:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # An HQ root that is a git repo with a remote attached drifts thousands of
     # autosave commits ahead of its remote-tracking ref (HQ is never pushed).
     # A review tool that auto-selects a base picks that ref and builds a
@@ -955,6 +1009,7 @@ jobs:
         run: bash core/scripts/tests/repair-stale-review-base-hook.test.sh
 
   prefer-native-capabilities:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # hq-prefer-native-capabilities must inject at session start (always-on
     # baseline) and on canvas/share/secret prompts, stay untruncated in the
     # policy-reminder, and pass frontmatter validation (US-001).
@@ -985,6 +1040,7 @@ jobs:
         run: bash core/scripts/tests/codex-output-style-bridge.test.sh
 
   forwarder-ci-contract:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # Forwarder tests depend on the released hq CLI. This contract keeps the
     # workflow install steps synchronized with every test that references one.
     name: forwarder-ci-contract
@@ -995,6 +1051,7 @@ jobs:
         run: bash core/scripts/tests/forwarder-ci-contract.test.sh
 
   work-mesh-tests:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # Wire the company-work-corpus hook suites explicitly without enabling
     # unrelated legacy scripts in the broader tests directory.
     name: work-mesh-tests
@@ -1016,6 +1073,7 @@ jobs:
           done
 
   work-mesh-v2:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: work-mesh-v2
     runs-on: ubuntu-latest
     steps:
@@ -1028,6 +1086,7 @@ jobs:
         run: bash core/scripts/tests/work-mesh-helper.test.sh
 
   doctor-advisory-summary:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # US-014 (hq-doctor): unit + contract coverage for the advisory CI helper
     # that renders the `hq doctor --json` PR comment. Guards the diff-against-base
     # logic, the update-in-place comment selection, and the doctor-advisory.yml
@@ -1050,7 +1109,7 @@ jobs:
     # that the bump is strictly greater than origin/main. Staging is exempt —
     # staging churns intra-version without bumping hqVersion.
     name: core-yaml-version-monotonic
-    if: github.event_name == 'pull_request' && github.repository == 'indigoai-us/hq-core'
+    if: ${{ (github.event_name == 'pull_request' && github.repository == 'indigoai-us/hq-core') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -1072,7 +1131,7 @@ jobs:
     # ("pr-author-hq-audit-bot") must be listed as a required status check in
     # hq-core's main_protect ruleset.
     name: pr-author-hq-audit-bot
-    if: github.event_name == 'pull_request' && github.repository == 'indigoai-us/hq-core'
+    if: ${{ (github.event_name == 'pull_request' && github.repository == 'indigoai-us/hq-core') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
     steps:
       - name: PR author must be the hq-audit-bot App
@@ -1097,7 +1156,7 @@ jobs:
 
   collect-policy-changes:
     name: collect-policy-changes
-    if: github.event_name == 'pull_request'
+    if: ${{ (github.event_name == 'pull_request') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
     outputs:
       files: ${{ steps.collect.outputs.files }}
@@ -1128,6 +1187,7 @@ jobs:
     needs: collect-policy-changes
     if: |
       github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
       needs.collect-policy-changes.outputs.count != '0' &&
       !contains(github.event.pull_request.labels.*.name, 'skip-codex-rubric')
     runs-on: ubuntu-latest
@@ -1171,6 +1231,7 @@ jobs:
   # Toolchain is bash + jq only (both preinstalled on ubuntu-latest), per the
   # story's constraint -- no node, no package install, nothing to drift.
   provider-adapter-contract:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: provider-adapter-contract
     runs-on: ubuntu-latest
     steps:

@@ -24,6 +24,7 @@ permissions:
 
 jobs:
   audit:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: PR Audit
     runs-on: ubuntu-latest
     # timeout: wall_clock_minutes (30 default) + 5 buffer = 35
