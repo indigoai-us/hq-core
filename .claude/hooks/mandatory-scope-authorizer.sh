@@ -75,13 +75,28 @@ LIB_DIR="$HQ_ROOT/core/scripts/lib"
 # shellcheck source=../../core/scripts/lib/session-id.sh
 . "$LIB_DIR/session-id.sh"
 
-# The hook payload is authoritative — it names the session that fired this event.
-# Only when it is absent do we fall back to the shared resolver (session env
-# first, workspace/sessions/.current last).
+# The hook payload is the ONLY identity this guard accepts. It names the session
+# that fired this event; nothing else here describes the caller reliably.
+#
+# Not workspace/sessions/.current: that pointer is global and last-writer-wins
+# (see core/scripts/lib/session-id.sh, whose own header states the invariant this
+# restores: "the enforcement side does not use .current"). It names whichever
+# session fired a hook most recently, so an unrelated agent inherits a stranger's
+# company binding — an UNBOUND agent was observed reading another tenant's files
+# because .current happened to name a session bound to that tenant (2026-08-19,
+# HQ 15.0.98).
+#
+# And NOT the session environment either, however tempting: a session id in the
+# environment describes whoever EXPORTED it, which for a spawned agent is its
+# PARENT. core/scripts/tests/hq-agent-session-hooks.test.sh case 7 documents and
+# tests exactly that inheritance ("An agent session spawned from inside another
+# session inherits that parent's session id"). Resolving identity from the
+# environment would therefore authorize a payload-less child against its parent's
+# tenant — the same cross-session failure by a different route.
+#
+# A payload with no session id is produced by `claude -p --session-id <uuid>`.
+# Such a call cannot be attributed to any session and is denied below.
 SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty')"
-if [ -z "$SESSION_ID" ]; then
-  SESSION_ID="$(session_id_resolve "$HQ_ROOT")"
-fi
 
 BOUND_CO=""
 if [ -n "$SESSION_ID" ]; then
@@ -225,7 +240,11 @@ scope_rel_allowed() {
       ;;
   esac
 
-  if [ -z "$BOUND_CO" ]; then
+  # Fail CLOSED. An unidentifiable session (no id in the payload, none in the
+  # environment) gets no company access, and neither does an identified session
+  # with no binding. Permitting either would make the guard depend on being able
+  # to name the caller, which is precisely what it cannot assume.
+  if [ -z "$SESSION_ID" ] || [ -z "$BOUND_CO" ]; then
     return 1
   fi
 
@@ -236,7 +255,15 @@ scope_block_rel() {
   local rel="${1:-}"
   local co bound_msg
   co="$(scope_company_slug_for_rel "$rel")"
-  if [ -z "$BOUND_CO" ]; then
+  if [ -z "$SESSION_ID" ]; then
+    bound_msg="This call carries NO session id in its hook payload, so there is no
+session whose company scope could authorize it, and company paths are denied
+rather than guessed. Only the payload identity counts here: an id in the
+environment names whoever exported it — for a spawned agent, its parent — and a
+child must not inherit its parent's tenant. If this is an agent you spawned, run
+it so the host reports a session of its own (a \`claude -p --session-id <uuid>\`
+child does not)."
+  elif [ -z "$BOUND_CO" ]; then
     bound_msg="Session has no company_slug bound."
   else
     bound_msg="Session company_slug is '$BOUND_CO'."

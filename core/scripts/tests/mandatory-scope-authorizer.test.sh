@@ -7,6 +7,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# Canonicalize. On macOS mktemp -d hands back /var/folders/... while /var is a
+# symlink to /private/var, and the hook resolves its own root with `pwd -P`. The
+# payload paths would then sit "outside" HQ_ROOT, every absolute-path case would
+# normalize to empty, and the suite would report a pass-through as an allow —
+# on this machine every case below [1] failed for that reason alone, against an
+# untouched hook. CI runs on Linux, where /tmp is real, so it never showed there.
+# Same treatment as core/scripts/tests/workflow-runner.test.sh.
+TMP="$(cd "$TMP" && pwd -P)"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -211,3 +219,66 @@ rc="$(run_hook "$payload")"
 [ "$rc" = "2" ] || fail "expected block for literal otherco path, got $rc"
 
 echo "PASS: mandatory-scope-authorizer.test.sh"
+
+echo "[18] a call with NO identifiable session is denied, not guessed"
+# Fail closed. Test [15] guards the WRITE side of the .current problem (a bind
+# landing on someone else's session); this guards the READ side. The hook used
+# to fall back to workspace/sessions/.current to decide authorization, so an
+# agent the host could not name inherited whatever binding that global pointer
+# happened to hold.
+install_fixture "indigo"
+scoped_payload='{"tool_name":"Read","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml"}}'
+run_hook_env() { # run_hook_env <payload> [env assignments...]
+  local pl="$1"; shift
+  local rc=0
+  : > "$TMP/err.txt"
+  printf '%s' "$pl" | env -u HQ_SESSION_ID -u CLAUDE_SESSION_ID -u CLAUDE_CODE_SESSION_ID \
+    -u CODEX_SESSION_ID -u CODEX_THREAD_ID "$@" \
+    bash "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" 2>"$TMP/err.txt" || rc=$?
+  printf '%s' "$rc"
+}
+
+rc="$(run_hook_env "$scoped_payload" HQ_TEST_MARKER=1)"
+[ "$rc" = "2" ] || fail "expected exit 2 for an unidentifiable session, got '$rc'"
+grep -q "NO session id" "$TMP/err.txt" || fail "message must say the call carries no session id"
+
+echo "[19] .current is never consulted for an authorization decision"
+# The fixture binds sess-bound AND points .current at it. A call carrying no
+# session id must still be denied: .current names whichever session fired a hook
+# most recently, which is not the caller. Before this fix the same call was
+# ALLOWED, and an unbound spawned agent read another tenant's files that way
+# (observed 2026-08-19 on HQ 15.0.98, reproduced 2/2).
+grep -qx 'sess-bound' "$TMP/workspace/sessions/.current" \
+  || fail "fixture precondition: .current must name the bound session"
+[ -f "$TMP/workspace/sessions/sess-bound/scope-capability.json" ] \
+  || fail "fixture precondition: the .current session must be bound"
+rc="$(run_hook_env "$scoped_payload" HQ_TEST_MARKER=1)"
+[ "$rc" = "2" ] || fail "expected exit 2 — .current must not authorize a call, got '$rc'"
+
+echo "[20] an ambient session id in the environment does not authorize either"
+# This assertion was inverted during review of this change. An earlier revision
+# accepted the environment as a fallback identity, reasoning that the host
+# exports it per process. It does — but a SPAWNED agent inherits its parent's
+# value, which core/scripts/tests/hq-agent-session-hooks.test.sh case 7 documents
+# and tests ("An agent session spawned from inside another session inherits that
+# parent's session id"). Trusting it would authorize a payload-less child against
+# its PARENT's tenant: the same cross-session failure this change closes, by a
+# different route. Payload identity only.
+rc="$(run_hook_env "$scoped_payload" HQ_SESSION_ID=sess-bound)"
+[ "$rc" = "2" ] || fail "expected exit 2 — an ambient env id must not authorize, got '$rc'"
+grep -q "NO session id" "$TMP/err.txt" || fail "message must still name the missing payload identity"
+
+echo "[22] a child cannot inherit its parent's tenant through the environment"
+# The reviewer's scenario, end to end: a payload-less child spawned from a bound
+# parent inherits that parent's session id in every session variable the host
+# sets. None of them may grant the child the parent's company.
+for var in HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CODEX_SESSION_ID CODEX_THREAD_ID; do
+  rc="$(run_hook_env "$scoped_payload" "$var=sess-bound")"
+  [ "$rc" = "2" ] || fail "expected exit 2 with inherited $var, got '$rc'"
+done
+
+echo "[21] an identified but unbound session is still denied (unchanged)"
+unbound_payload='{"tool_name":"Read","session_id":"sess-live","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml"}}'
+rc="$(run_hook_env "$unbound_payload" HQ_TEST_MARKER=1)"
+[ "$rc" = "2" ] || fail "expected exit 2 for an identified but unbound session, got '$rc'"
+grep -q "no company_slug bound" "$TMP/err.txt" || fail "unbound session keeps its own message"
