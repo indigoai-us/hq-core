@@ -100,8 +100,13 @@
  *           or "exec" (execution — the throughput model). agent() throws if
  *           missing/invalid so the model choice is never implicit.
  *     opts.engine: "codex" (default), "grok", or "claude"
- *     opts: label, phase, schema (JSON Schema; result parsed+returned as an
- *           object), model (explicit override), effort, fastMode (codex only),
+ *     opts: label, phase, schema (ordinary JSON Schema; result parsed+returned
+ *           as an object. Write it the normal way — optional properties simply
+ *           stay out of `required`. On the codex engine it is rewritten into
+ *           the provider's strict dialect on the wire and the answer is mapped
+ *           back, so results are engine-neutral: see
+ *           core/scripts/lib/codex-output-schema.mjs),
+ *           model (explicit override), effort, fastMode (codex only),
  *           cd (task directory inside the HQ root; injected into the prompt),
  *           timeoutSecs (soft), extraArgs (string[])
  *   parallel(thunks)     -> barrier; a thrown thunk resolves to null
@@ -119,6 +124,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { strictifySchemaForCodex, stripStrictNulls } from './lib/codex-output-schema.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -183,6 +189,27 @@ const ENGINES = {
   },
 };
 const VALID_ENGINES = Object.keys(ENGINES);
+
+// Hooks that must not fire inside a spawned agent. An agent's whole contract is
+// that its FINAL TEXT is the return value; HQ's end-of-turn checkpoint gate
+// fires mechanically at Stop and demands one more turn AFTER the answer is
+// already written. Observed 2026-08-19 on a claude-engine /orchestrate stage:
+// the agent produced its JSON answer at 13:35:39, the gate fired at 13:35:43,
+// the agent ran `hq core checkpoint` at 13:36:00 — and the turn then ended on
+// that tool call, so the envelope came back with `result: ""` after 16 turns and
+// ~8 minutes of real work. The runner correctly refuses an empty result, so a
+// finished stage was reported as a failure and the pipeline stopped. Checkpoints
+// are the LAUNCHING session's job (the stage prompts say so already, but a hook
+// does not read prompts), and a spawned agent is not a session anyone resumes.
+const CHILD_DISABLED_HOOKS = ['checkpoint-stop-gate'];
+
+// Child env = ours plus those suppressions, preserving any the operator set.
+function childEnv() {
+  const disabled = new Set(
+    String(process.env.HQ_DISABLED_HOOKS || '').split(',').map((s) => s.trim()).filter(Boolean));
+  for (const hook of CHILD_DISABLED_HOOKS) disabled.add(hook);
+  return { ...process.env, HQ_DISABLED_HOOKS: [...disabled].join(',') };
+}
 
 const MANDATED_CODEX_FLAGS = [
   '--dangerously-bypass-hook-trust',
@@ -714,7 +741,14 @@ async function buildRuntime(cli) {
       if (fastMode) argv.push(...FAST_MODE_FLAGS);
       if (opts.schema) {
         const schemaFile = path.join(state.runDir, `agent-${n}.schema.json`);
-        fs.writeFileSync(schemaFile, JSON.stringify(opts.schema, null, 2));
+        // Codex forwards this file to the provider as a STRICT structured-output
+        // schema, a narrower dialect that 400s the request outright when an
+        // object node omits additionalProperties:false or lists an incomplete
+        // `required` (see core/scripts/lib/codex-output-schema.mjs). Adapt it on
+        // the wire only: opts.schema stays the script's own contract, used for
+        // the in-prompt copy on the stdout engines and for the result check
+        // below, so a script keeps writing ordinary JSON Schema.
+        fs.writeFileSync(schemaFile, JSON.stringify(strictifySchemaForCodex(opts.schema), null, 2));
         argv.push('--output-schema', schemaFile);
       }
       if (Array.isArray(opts.extraArgs)) argv.push(...opts.extraArgs.map(String));
@@ -798,6 +832,7 @@ async function buildRuntime(cli) {
             stdio: ['ignore', outFd, logFd],
             detached: true,
             cwd: HQ_ROOT,
+            env: childEnv(),
           });
         } catch (e) {
           settle(new Error(`failed to spawn ${engine.bin}: ${errMsg(e)}`));
@@ -844,8 +879,12 @@ async function buildRuntime(cli) {
         // shape in-prompt (no server-side schema flag), so a valid-JSON-but-
         // wrong-shape reply must be rejected here rather than downstream.
         const parsed = parseMaybeJson(text, `${label}, raw text in ${lastFile}`);
-        validateAgainstSchema(parsed, opts.schema, label, lastFile);
-        return parsed;
+        // codex answered the STRICT rewrite of opts.schema, where an optional
+        // property became "required but nullable" — drop those nulls so every
+        // engine hands the script the shape its own schema describes.
+        const shaped = engineName === 'codex' ? stripStrictNulls(parsed, opts.schema) : parsed;
+        validateAgainstSchema(shaped, opts.schema, label, lastFile);
+        return shaped;
       });
 
       const secs = Math.round((Date.now() - startedAt) / 1000);

@@ -3,6 +3,44 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.98-beta.1
+
+- **`/orchestrate` runs on the codex engine again:** codex forwards an
+  `agent()` schema to its provider as a STRICT structured-output schema, which
+  rejects any object node that omits `additionalProperties: false` or whose
+  `required` does not list every property (HTTP 400 `invalid_json_schema`).
+  The orchestrate pipeline's schemas set neither, so every codex launch died on
+  its first agent (capture-idea) before doing any work. The workflow runner now
+  rewrites each schema into the strict dialect on the wire
+  (`core/scripts/lib/codex-output-schema.mjs`) and maps the answer back, so
+  workflow scripts keep writing ordinary JSON Schema — an optional property
+  stays out of `required` and comes back absent, not null — and the fix covers
+  every present and future pipeline script, not just this one. The orchestrate
+  pipeline's own schema literals also declare `additionalProperties: false`.
+  No action required on update; the grok and claude engines are unaffected
+  (they receive the script's schema in-prompt, unchanged).
+
+- **Spawned workflow agents no longer lose their answer to the checkpoint
+  gate:** an agent's whole contract is that its final text IS the return value,
+  but HQ's end-of-turn checkpoint gate fires at Stop and demands one more turn
+  after that answer is written. Observed 2026-08-19 on a claude-engine
+  `/orchestrate` stage: the agent produced its JSON result, the gate fired, the
+  agent ran `hq core checkpoint`, and the turn ended on that tool call — so the
+  envelope came back with an empty result and the runner failed a stage that
+  had really done ~8 minutes of work. `core/scripts/workflow-runner.mjs` now
+  spawns every child with `HQ_DISABLED_HOOKS` extended by
+  `checkpoint-stop-gate` (any value the operator set is preserved, not
+  replaced). Checkpointing stays the launching session's job.
+
+- **`/orchestrate` stages bind their company before reading it:** every stage
+  runs as a fresh session, and a fresh session is unbound, so HQ's scope
+  authorizer denies each read under `companies/{co}/` until
+  `core/scripts/hq-session.sh set company_slug` runs — which nothing does for a
+  spawned agent. Stages recovered on their own (the denial names its remedy)
+  but burned turns doing it. The pipeline preamble now opens with the bind, and
+  the "never retry a denied call" rule carves out this one denial, whose message
+  states the exact fix. The personal scope is never told to bind.
+
 ## Release: v15.0.97-beta.2
 
 - **Final-message placement contract (hidden-links fix):** the checkpoint stop

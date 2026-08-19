@@ -1102,6 +1102,29 @@ jobs:
       - name: Advisory summary helper unit + workflow contract
         run: node --test core/scripts/__tests__/doctor-ci-summary.test.mjs
 
+  workflow-runner:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    # The engine-neutral workflow runner (core/scripts/workflow-runner.mjs) and
+    # the /orchestrate pipeline it drives. Both suites are hermetic — fake engine
+    # binaries, synthetic HQ root, no network — and run in ~25s each. Wired into
+    # CI alongside the codex strict-output-schema fix: the provider rejects any
+    # object node without additionalProperties:false or with an incomplete
+    # `required` (HTTP 400 invalid_json_schema), which killed the first agent of
+    # every codex-engine run, so the guard belongs somewhere mechanical.
+    name: workflow-runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Codex strict output-schema adapter (unit)
+        run: node --test core/scripts/__tests__/codex-output-schema.test.mjs
+      - name: Workflow runner — codex / grok / claude engines + gates
+        run: bash core/scripts/tests/workflow-runner.test.sh
+      - name: Orchestrate pipeline E2E (fake engines)
+        run: bash core/scripts/tests/orchestrate-pipeline.test.sh
+
   # ─── Label-gated checks ────────────────────────────────────────────
   core-yaml-version-monotonic:
     # hq-core ONLY. Promote PRs (the only kind hq-core sees) always bump
