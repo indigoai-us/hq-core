@@ -23,7 +23,7 @@ Known leakers:
 
 1. Kills **only descendants of the stopping session's own process tree**. A match outside that tree is left alone no matter how orphaned it looks — reclaiming a stranger's memory is never worth killing a stranger's job.
 2. Matches patterns **anchored to the executable or script path**, so a worker whose prompt merely names a server is not mistaken for one.
-3. **Never kills agent workloads** (`codex exec`, `codex-workflow.mjs`, `agency-worker`, `claude`, `codex`, `grok`), even in-tree — a session that spawned workers must not reap them on its way out.
+3. **Never kills agent workloads** (`codex exec`, the workflow runners `workflow-runner.mjs` / `ultracode-workflow.mjs` / legacy `codex-workflow.mjs`, `agency-worker`, `claude`, `codex`, `grok`), even in-tree — a session that spawned workers must not reap them on its way out.
 4. **Reports what it skipped** instead of sweeping silently.
 
 Never reintroduce a bare `pgrep -f` / `pkill -f` sweep here; see hard policy `no-machine-wide-process-pattern-kills`. Regression coverage: `core/scripts/tests/cleanup-mcp-session-scope.test.sh`.
