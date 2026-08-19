@@ -106,6 +106,8 @@ One fragment line. What changed + what's next.
 NOT: "I've successfully completed the implementation of the new feature, including writing tests..."
 YES: "Added `parseHeader`. Tests green. Next: wire to handler."
 
+HARD placement rule: the app folds text that precedes a tool call into a collapsed sub-message — only text after the turn's LAST tool call renders in full. Every link, URL, instruction, runnable command, and pending question MUST land in the final post-tool-call message, restated in full even if written earlier in the turn. Terse governs how much, never where.
+
 # Auto-Clarity (drop terseness, full prose)
 
 Restore normal prose temporarily — full sentences, hedges OK, pleasantries fine — for ANY of:

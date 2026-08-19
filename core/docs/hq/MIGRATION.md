@@ -3,6 +3,17 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.97-beta.2
+
+- **Final-message placement contract (hidden-links fix):** the checkpoint stop
+  gate now instructs runtimes to run the end-of-turn checkpoint FIRST and
+  deliver the complete user-facing reply as the turn's final post-tool-call
+  message (the Claude Code app folds pre-tool-call text into collapsed
+  sub-messages, which was hiding links and instructions). Both HQ output
+  styles (`hq.md`, `hq-operator.md`) gain a matching HARD placement rule.
+  No action required on update; behavior-safe (the gate never mechanically
+  required last-position).
+
 ## Release: v15.0.95-beta.1
 
 - **`/brainstorm` interviews properly again and stores research:** Step 3 is a
