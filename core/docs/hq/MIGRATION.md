@@ -3,6 +3,38 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.103-beta.1
+
+- **The scope guard's line-continuation defence worked only on Linux (SECURITY).**
+  `mandatory-scope-authorizer.sh` strips backslash-newline before scanning a
+  Bash command, because bash removes it before tokenizing — without that step a
+  company path split across a line continuation is never reassembled. The strip
+  was written as `${cmd//$'\\\n'/}`, and bash 3.2 — the stock macOS shell —
+  matches that unquoted pattern against nothing: it reads the leading backslash
+  as a pattern escape rather than a literal. The strip silently became a no-op,
+  the scanner saw only the fragment before the break (an unknown company, so
+  allowed) and never examined the rest, and the cross-company read the check
+  exists to stop went through. bash 5 matches the same expression, so Linux CI
+  stayed green while every macOS run of the covering test (`[9]`) failed.
+
+  The pattern is now a quoted variable, which is literal on 3.2 and 5.x alike.
+  `lint-shell-portability.sh` gained a rule for the whole class — an unquoted
+  ANSI-C substitution pattern carrying a literal backslash — so the next one
+  fails CI instead of shipping. Single-escape patterns (`$'\\t'`, `$'\\037'`)
+  expand to one character, are unaffected, and are not flagged.
+
+- **The scope-guard suite stopped writing into the developer's real HQ.** Case
+  `[15]` invoked `hq-session.sh`, which resolves its root as
+  `${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-<its own path>}}`. A developer running the
+  suite from inside a Claude session inherits `CLAUDE_PROJECT_DIR` pointing at
+  the real checkout, so the bind landed in that developer's own
+  `workspace/sessions/` and the case failed locally. CI sets neither variable and
+  fell through to the script's path, which is why it passed there. The case now
+  pins both to the fixture.
+
+  With this and the `[9]` fix, the suite passes end to end on macOS/bash 3.2 for
+  the first time.
+
 ## Release: v15.0.101-beta.1
 
 - **The company-scope guard now fails closed (SECURITY).**
