@@ -6,6 +6,12 @@
 #   - brew-only jq install messages
 #   - readlink -f (GNU-only)
 #   - flock (Linux-only; absent on macOS — the util-linux binary is not shipped)
+#   - ${var//$'..\\\\..'/..}: an UNQUOTED ANSI-C substitution pattern carrying a
+#     LITERAL backslash. bash 3.2 (stock macOS) reads it as a pattern escape and
+#     the substitution silently matches nothing, while bash 5 matches it
+#     literally — so the defect never appears in Linux CI. Assign the pattern to
+#     a variable and quote it: p=$'\\\\\\n'; "${var//"$p"/}". Single-escape
+#     patterns ($'\\t', $'\\037') expand to one character and are not flagged.
 #
 # Allowlist: core/scripts/lint-shell-portability.allow (path substring per line).
 # /tmp and bare $USER are documented contributor rules; full auto-lint for those
@@ -93,6 +99,20 @@ while IFS= read -r f || [ -n "$f" ]; do
     report "$f" "${hit%%:*}" "brew-only jq install message (use require_jq / multi-OS guidance)"
   done < "$HITS"
   scan_file "$f" "readlink[[:space:]]+-f" "readlink -f is GNU-only"
+  # An unquoted ANSI-C pattern holding a LITERAL backslash silently no-ops on
+  # bash 3.2 (stock macOS) while working on bash 5, so it fails only off-CI.
+  # Shipped instance: the scope guard's line-continuation strip, which left a
+  # split company path unreassembled and therefore unscanned.
+  # Comment lines are skipped: the fixed call site documents the broken form it
+  # replaced, and a rule that cannot tell prose from code punishes that.
+  : > "$HITS"
+  grep -nE "\\$\\{[A-Za-z_][A-Za-z0-9_]*//?\\$'[^']*\\\\\\\\[^']*'" "$f" > "$HITS" 2>/dev/null || true
+  while IFS= read -r hit || [ -n "$hit" ]; do
+    [ -z "$hit" ] && continue
+    body="${hit#*:}"
+    case "${body#"${body%%[![:space:]]*}"}" in \#*) continue ;; esac
+    report "$f" "${hit%%:*}" "unquoted ANSI-C substitution pattern with a literal backslash (bash 3.2 matches nothing; assign it to a variable and quote it)"
+  done < "$HITS"
   # flock as a command word (util-linux) is absent on macOS, where a shipped
   # hook that assumes it dies with "flock: command not found" — the exact
   # failure that hit macOS members. A `command -v flock` (or which/type/hash)
