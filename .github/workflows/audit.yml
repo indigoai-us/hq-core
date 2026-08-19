@@ -164,7 +164,7 @@ jobs:
           # audited — without this the action refuses with "Workflow initiated
           # by non-human actor: hq-audit-bot". Auto-promote release PRs are all
           # bot-authored, so they'd otherwise never get a PR Audit.
-          allowed_bots: "hq-audit-bot"
+          allowed_bots: "hq-audit-bot,shepherd-hq"
           # --dangerously-skip-permissions: this bot runs unattended in CI on a
           #   private PR audit task; interactive permission prompts would just
           #   rack up denials (we saw 15 in our first real run) and burn turns.
