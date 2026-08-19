@@ -123,17 +123,21 @@ pass "cleanup stayed inside the session"
 
 # ---------------------------------------------------------------------------
 echo "[4] an agent workload is never killed, even in-tree"
-make_fixture "$TMP/bin/codex-workflow.mjs"
-# A worker whose own command line also matches an MCP pattern — exactly the
-# shape that reaped live workers before.
-spawn_child "$TMP/bin/codex-workflow.mjs" "$TMP/worker.pid" "--prompt" "drive $TMP/bin/agent-browser for QA"
-worker="$SPAWN_PID"
-sleep 0.4
-alive "$worker" || fail "fixture: worker did not start"
-run_hook
-sleep 2.5
-alive "$worker" || fail "the hook killed an agent workload"
-pass "codex worker survived"
+# Every workflow runner by name: the core multi-engine runner, the personal
+# /ultracode runner, and the legacy codex-only name. A runner's own command
+# line can legitimately carry an MCP pattern (a delegated prompt that names an
+# agent-browser path) — exactly the shape that reaped live workers before.
+for runner in codex-workflow.mjs ultracode-workflow.mjs workflow-runner.mjs; do
+  make_fixture "$TMP/bin/$runner"
+  spawn_child "$TMP/bin/$runner" "$TMP/worker-$runner.pid" "--prompt" "drive $TMP/bin/agent-browser for QA"
+  worker="$SPAWN_PID"
+  sleep 0.4
+  alive "$worker" || fail "fixture: $runner worker did not start"
+  run_hook
+  sleep 2.5
+  alive "$worker" || fail "the hook killed an agent workload ($runner)"
+  pass "$runner worker survived"
+done
 
 # ---------------------------------------------------------------------------
 echo "[5] a process that only MENTIONS a pattern in an argument is not matched"

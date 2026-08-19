@@ -9,7 +9,8 @@
 # SAFETY CONTRACT — read before changing anything here.
 #
 # HQ runs a shared multi-agent fleet: Agency workers, other operators' Claude and
-# Codex sessions, and their `codex-workflow.mjs` runners all live on the same
+# Codex sessions, and their workflow runners (`workflow-runner.mjs`,
+# `ultracode-workflow.mjs`, legacy `codex-workflow.mjs`) all live on the same
 # box. A Stop hook that sweeps by command-line pattern therefore kills OTHER
 # OWNERS' live work. This hook used to do exactly that — `pgrep -f <pattern>`
 # machine-wide, SIGTERM then SIGKILL — while its own header claimed it scoped by
@@ -48,8 +49,12 @@ MCP_PATTERNS=(
 )
 
 # Command lines that are agent workloads. Never killed by this hook — a session
-# that spawned workers must not reap them when it stops.
-PROTECTED_PATTERN='codex exec|codex-workflow\.mjs|codex-code-mode-host|agency-worker|agency-spawn-guardian|(^|/)claude( |$)|(^|/)codex( |$)|(^|/)grok( |$)'
+# that spawned workers must not reap them when it stops. The workflow runners
+# are listed by script name because a runner's command line can legitimately
+# carry an MCP pattern (e.g. a delegated prompt that names an agent-browser
+# path) — without this entry the runner, and every agent it is driving, would
+# be reaped at Stop.
+PROTECTED_PATTERN='codex exec|codex-workflow\.mjs|ultracode-workflow\.mjs|workflow-runner\.mjs|codex-code-mode-host|agency-worker|agency-spawn-guardian|(^|/)claude( |$)|(^|/)codex( |$)|(^|/)grok( |$)'
 
 SKIPPED_FOREIGN=0
 SKIPPED_PROTECTED=0
