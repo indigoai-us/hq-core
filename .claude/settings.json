@@ -3,6 +3,9 @@
   "autoMemoryEnabled": false,
   "useAutoModeDuringPlan": false,
   "disableArtifact": true,
+  "worktree": {
+    "bgIsolation": "none"
+  },
   "permissions": {
     "defaultMode": "plan",
     "deny": [
