@@ -77,7 +77,7 @@ fi
 ANSI_REPO="$TMP/ansi-c-repo"
 mkdir -p "$ANSI_REPO/core/scripts"
 git -C "$ANSI_REPO" init -q
-git -C "$ANSI_REPO" config user.email t@example.com
+git -C "$ANSI_REPO" config user.email [EMAIL]
 git -C "$ANSI_REPO" config user.name t
 cp "$ROOT/core/scripts/lint-shell-portability.sh" "$ANSI_REPO/core/scripts/"
 
