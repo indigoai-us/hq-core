@@ -311,7 +311,18 @@ case "$TOOL" in
     [ -n "$cmd" ] || exit 0
     # Bash removes an unquoted backslash-newline before tokenizing, so scan the
     # same normalized form when extracting possible path tokens.
-    scope_cmd="${cmd//$'\\\n'/}"
+    #
+    # The pattern MUST be a quoted VARIABLE. Written inline and unquoted, as
+    # ${cmd//$'\\\n'/}, bash 3.2 — the stock macOS shell — matches nothing: it
+    # reads the leading backslash as a pattern escape rather than a literal, so
+    # the strip silently no-ops and a company path split by a line continuation
+    # is never reassembled. The scan then sees only the fragment before the
+    # break (an unknown company, allowed) and never examines the rest, so the
+    # cross-company read this normalization exists to stop goes through. bash 5
+    # matches the same expression, which is why CI stayed green and only macOS
+    # runs of test [9] failed. Quoting makes it a literal on 3.2 and 5.x alike.
+    scope_line_continuation=$'\\\n'
+    scope_cmd="${cmd//"$scope_line_continuation"/}"
     scope_detection_cmd="$(scope_mask_literal_expansions "$scope_cmd")"
     # A literal tenant followed by an unexpanded remainder can traverse out of
     # that tenant at execution time (companies/indigo/$p). This is distinct

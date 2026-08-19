@@ -182,7 +182,16 @@ rc="$(run_hook "$read_payload")"
 [ "$rc" = "2" ] || fail "expected exit 2 before binding sess-live, got $rc"
 grep -q "Session: sess-live" "$TMP/err.txt" || fail "block message must name the blocked session"
 
+# Pin the fixture as the HQ root. hq-session.sh resolves it as
+# ${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-<its own path>}}, and a developer running this
+# suite from inside a Claude session inherits CLAUDE_PROJECT_DIR pointing at the
+# REAL checkout — so the bind landed in the developer's own workspace/sessions/
+# and this case failed with "bind did not mint a capability". CI sets neither
+# variable and fell through to the script's path, which is why it only ever
+# failed locally. Pinning both makes the fixture authoritative either way, and
+# stops the suite writing a company binding into a real tree.
 env -u HQ_SESSION_ID -u CLAUDE_SESSION_ID -u CODEX_SESSION_ID -u CODEX_THREAD_ID \
+  HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" \
   CLAUDE_CODE_SESSION_ID=sess-live \
   bash "$TMP/core/scripts/hq-session.sh" set company_slug indigo >/dev/null
 
@@ -218,7 +227,6 @@ payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_in
 rc="$(run_hook "$payload")"
 [ "$rc" = "2" ] || fail "expected block for literal otherco path, got $rc"
 
-echo "PASS: mandatory-scope-authorizer.test.sh"
 
 echo "[18] a call with NO identifiable session is denied, not guessed"
 # Fail closed. Test [15] guards the WRITE side of the .current problem (a bind
@@ -282,3 +290,34 @@ unbound_payload='{"tool_name":"Read","session_id":"sess-live","cwd":"'"$TMP"'","
 rc="$(run_hook_env "$unbound_payload" HQ_TEST_MARKER=1)"
 [ "$rc" = "2" ] || fail "expected exit 2 for an identified but unbound session, got '$rc'"
 grep -q "no company_slug bound" "$TMP/err.txt" || fail "unbound session keeps its own message"
+
+
+echo "[23] a continuation inside single quotes is stripped too — deliberately conservative"
+# Raised in review of this change: bash does NOT treat a backslash-newline inside
+# single quotes as a line continuation, it keeps both characters. The strip here
+# is unconditional, so a quoted literal whose JOINED form looks like a
+# cross-tenant path is denied even though the command touches no file.
+#
+# That is accepted, not overlooked. Making the strip quote-aware means a second
+# quote-state walk of arbitrary shell text, and an error in THAT direction —
+# failing to strip a real continuation — reopens the traversal this case exists
+# to stop ([9]). The current error direction is a clear denial on an obscure
+# input; the alternative risks a silent bypass. The three cases below pin all of
+# it, so a future quote-aware rewrite has to keep [9] and the third case intact.
+install_fixture "indigo"
+
+quoted_cross='printf '"'"'companies/in\
+digo/../otherco/x'"'"''
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$quoted_cross" \
+  '{tool_name: "Bash", session_id: "sess-bound", cwd: $cwd, tool_input: {command: $command}}')"
+rc="$(run_hook "$payload")"
+[ "$rc" = "2" ] || fail "expected the conservative block for a quoted cross-tenant literal, got $rc"
+
+quoted_same='printf '"'"'companies/in\
+digo/notes.txt'"'"''
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$quoted_same" \
+  '{tool_name: "Bash", session_id: "sess-bound", cwd: $cwd, tool_input: {command: $command}}')"
+rc="$(run_hook "$payload")"
+[ "$rc" = "0" ] || fail "a quoted literal joining to an in-tenant path must stay allowed, got $rc"
+
+echo "PASS: mandatory-scope-authorizer.test.sh"
