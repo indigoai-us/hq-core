@@ -3,7 +3,44 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
-## Release: v15.0.98-beta.1
+## Release: v15.0.101-beta.1
+
+- **The company-scope guard now fails closed (SECURITY).**
+  `mandatory-scope-authorizer.sh` decides whether a tool call may touch
+  `companies/{co}/`. When the hook payload carried no session id it fell back to
+  `workspace/sessions/.current` — a single, global, last-writer-wins pointer that
+  names whichever session fired a hook most recently, not the caller. An agent
+  the host could not name therefore inherited a stranger's company binding: an
+  **unbound** spawned agent was observed reading another tenant's files because
+  `.current` happened to name a session bound to that tenant (2026-08-19, HQ
+  15.0.98, reproduced 2/2). A payload with no session id is exactly what
+  `claude -p --session-id <uuid>` produces.
+
+  The guard now accepts **only** the hook payload's session id. It consults
+  neither `.current` nor the session environment: an id in the environment names
+  whoever exported it, and a spawned agent inherits its parent's
+  (`core/scripts/tests/hq-agent-session-hooks.test.sh` case 7 documents that
+  inheritance), so trusting it would authorize a child against its parent's
+  tenant. A call that cannot be attributed to a session is **denied** rather than
+  guessed. This restores the invariant `core/scripts/lib/session-id.sh` already
+  documents: "the enforcement side does not use .current. The scope guard …
+  reads the authoritative session id out of the hook payload".
+
+  Impact on update: a caller that reaches the guard with no identifiable session
+  now gets a clear denial naming the cause, where it previously got silent
+  access to company paths. Sessions identified by payload or environment are
+  unaffected, as are `core/`, `personal/`, `repos/`, `workspace/`,
+  `companies/manifest.yaml` and `companies/_template/`, which never required a
+  binding.
+
+- **`mandatory-scope-authorizer.test.sh` runs on macOS again.** `mktemp -d`
+  returns `/var/folders/...` there while `/var` is a symlink to `/private/var`,
+  and the hook resolves its own root with `pwd -P`; every absolute-path case
+  then normalized to empty and the suite reported a pass-through as an allow.
+  The fixture root is now canonicalized, the same way
+  `core/scripts/tests/workflow-runner.test.sh` already does it. CI is unaffected
+  (Linux `/tmp` is a real directory).
+
 
 - **`/orchestrate` runs on the codex engine again:** codex forwards an
   `agent()` schema to its provider as a STRICT structured-output schema, which
