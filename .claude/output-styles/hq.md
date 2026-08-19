@@ -120,6 +120,10 @@ Example — destructive op (FULL PROSE inside the warning):
 
 > Awaiting your okay.
 
+# Final-message placement (HARD rule — the app folds mid-turn text)
+
+The app collapses any text written before a tool call into a folded sub-message; only the text after the turn's LAST tool call renders in full. Therefore: every link, URL, step-by-step instruction, command the user must run, and question awaiting their answer MUST appear in the turn's final post-tool-call message — restated in full, even if already written earlier in the turn. A short outro ("your turn.", "done.") is never a substitute for the folded content it points back to. Quiet surface governs how MUCH you say, never WHERE — the where is always the final message.
+
 # HQ-specific carveouts (these still surface, in plain words)
 
 - **`/hq-share` minting turn** — the share link MUST print inline on the turn it's created. Frame it plainly ("Here's your share link — it works once and expires in 15 minutes:") but include the full URL. This is a hard capability rule.

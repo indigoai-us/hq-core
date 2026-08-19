@@ -586,8 +586,12 @@ printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF 'running it does not cou
   || fail "block reason: missing the checkpoint-is-not-a-reply rule"
 printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF 'It never sees your chat reply' \
   || fail "block reason: missing the sibling-audience explanation"
-printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF 'finish whatever you owe the user in the reply first' \
-  || fail "block reason: missing the reply-first ordering"
+# Ordering: checkpoint FIRST, complete reply as the turn's final post-tool-call
+# message — the app folds pre-tool-call text into collapsed sub-messages.
+printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF 'run the checkpoint FIRST, then deliver your COMPLETE user-facing reply' \
+  || fail "block reason: missing the checkpoint-first ordering"
+printf '%s' "$HOOK_STDOUT" | jq -r '.reason' | grep -qF 'final post-checkpoint message' \
+  || fail "block reason: missing the final-message placement rule"
 pass "block reason carries checkpoint guidance"
 
 # 15. An unreadable or missing transcript is always an allow path.
