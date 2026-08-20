@@ -320,8 +320,11 @@ if (planOnly) return { status: 'prd_ready', ...planning }
 phase('Execute')
 const executed = []
 let blockedStory = null
+let failedStory = null
 for (const st of finalize.stories) {
-  const r = await agent(`
+  let r
+  try {
+    r = await agent(`
 Execute story ${st.id} ("${st.title}") of project "${co}/${prd.name}".
 Read ${prd.prdPath} for the story's description, acceptanceCriteria, and
 metadata (qualityGates, repoPath), and the project dir's planning files
@@ -339,6 +342,17 @@ Return ONLY JSON: {"storyId": "${st.id}", "status": "passed"|"blocked",
           status: { type: 'string', enum: ['passed', 'blocked'] },
           artifacts: { type: 'array', items: { type: 'string' } },
           note: { type: 'string' } } } })
+  } catch (e) {
+    // A story agent that dies (crash, unusable reply, killed process) used to
+    // take the WHOLE run's output with it: the exception escaped the script, so
+    // nothing was returned and the finished planning and delivered stories went
+    // unreported even though they were on disk. Stop the line, but hand back
+    // everything that did land — and the runner prints a --resume hint that
+    // replays those finished agents rather than re-running them.
+    failedStory = { id: st.id, title: st.title, error: String((e && e.message) || e).split('\n')[0] }
+    log(`story ${st.id} FAILED: ${failedStory.error} — stopping the line, returning partial results`)
+    break
+  }
   executed.push(r)
   if (r.status !== 'passed') {
     blockedStory = r
@@ -349,9 +363,10 @@ Return ONLY JSON: {"storyId": "${st.id}", "status": "passed"|"blocked",
 }
 
 return {
-  status: blockedStory ? 'execution_blocked' : 'delivered',
+  status: failedStory ? 'execution_failed' : (blockedStory ? 'execution_blocked' : 'delivered'),
   ...planning,
   storiesExecuted: executed.length,
   deliverables: executed.flatMap((e) => e.artifacts || []),
   blockedStory: blockedStory ? { id: blockedStory.storyId, note: blockedStory.note } : null,
+  failedStory,
 }

@@ -1,0 +1,41 @@
+{
+  "backend": "codex",
+  "summary": "workflow-runner: added --resume (replay finished agents by key) + one-shot repair of off-contract agent replies; orchestrate pipeline now returns partial results when a story agent dies. Committed 540d7a4 on branch resume-and-repair, opened PR indigoai-us/hq-core-staging#597, CI running.",
+  "files": [
+    "workspace/worktrees/hq-core-staging/resume-and-repair/core/scripts/workflow-runner.mjs",
+    "workspace/worktrees/hq-core-staging/resume-and-repair/core/scripts/tests/workflow-runner.test.sh",
+    "workspace/worktrees/hq-core-staging/resume-and-repair/core/scripts/tests/orchestrate-pipeline.test.sh",
+    "workspace/worktrees/hq-core-staging/resume-and-repair/.claude/skills/orchestrate/scripts/orchestrate-pipeline.mjs",
+    "workspace/worktrees/hq-core-staging/resume-and-repair/.claude/skills/orchestrate/SKILL.md"
+  ],
+  "learnings": [
+    "Never edit a shell script while a test run is executing it — bash reads scripts incrementally by byte offset, so an in-flight edit shifts offsets and produces a bogus 'syntax error near unexpected token' at an unrelated line. Diagnose by re-running cleanly before believing the error.",
+    "Establish a baseline by running the suite against origin/main BEFORE attributing failures to your change; two of the three failures seen in this session were machine-load flake and a pre-existing off-CI fixture failure, not regressions.",
+    "When a long-running headless agent replies in prose instead of the requested JSON, the work is usually already done — the reply's envelope (num_turns after compaction) shows it lost the output contract, not the task. Recover the envelope; do not re-run the work."
+  ],
+  "insights": [],
+  "decisions": [
+    "Repair pass is a REFORMAT not a retry: no tools, no re-work, prompt forbids inventing an outcome the reply does not state and requires the blocked/failing reading when ambiguous; repaired output is validated against the script's own schema exactly like a first-pass reply, so nothing unvalidated reaches the script.",
+    "Resume uses strict prefix semantics matching the Workflow tool: first key mismatch permanently ends the replay for the whole run, because later agent calls consume earlier results and a cached downstream answer would no longer correspond to live state.",
+    "Cache key = sha256(engine, tier, model, effort, label, prompt, schema, extraArgs, workDir); checked BEFORE the semaphore so a replayed agent holds no concurrency slot; replayed calls are journalled as normal agent-done with cached:true so resumes chain.",
+    "Extracted argv-building + spawn from agent() into runEngine() rather than duplicating flag construction for the repair spawn — three engines' worth of flags is the part most likely to drift if copied. Refactored against the existing 61-check suite as the safety net.",
+    "Changed rather than deleted the existing assertion 'schema-violating JSON is rejected with a schema error': it now runs with HQ_WORKFLOW_REPAIR=0, so the guarantee (wrong-shape reply never reaches the script) stays pinned independently of whether a repair pass exists."
+  ],
+  "next_steps": [
+    "PR indigoai-us/hq-core-staging#597 CI is running (background task bhxap2ewq watching); merge is NOT authorized yet — ask the user before merging.",
+    "Four pre-existing PRs still untouched and unreviewed: #587 (stop-gate reply ordering), #485 (four off-CI-failing suites incl. cleanup-mcp-session-scope), #484 (PII fixtures), #420 (qmd reindex serialization). Not from this session; user has not authorized action on them.",
+    "cleanup-mcp-session-scope.test.sh fails identically on origin/main and this branch (fixture: foreign process did not report a pid) — pre-existing, off-CI only, in scope for PR #485."
+  ],
+  "tags": [],
+  "trigger": "stop-gate",
+  "company": null,
+  "session_id": "6bf5e3c4-c718-4f4b-b66a-3dd3c58a8968",
+  "transcript": null,
+  "worker": {
+    "id": null,
+    "skill": null,
+    "state": null
+  },
+  "thread_path": "/Users/hassaansaleemmacbook2026/HQ/workspace/worktrees/hq-core-staging/resume-and-repair/workspace/threads/T-20260820-131656-auto-workflow-runner-added-resume.json",
+  "pending_payloads": []
+}
