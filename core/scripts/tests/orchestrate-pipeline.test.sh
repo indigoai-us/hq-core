@@ -20,6 +20,10 @@
 #      ends the run with status parked and NO PRD/finalize agents ever spawn
 #   4. open questions are capped: overflow past maxQuestionGates is
 #      auto-deferred (finalize agent receives it), not gated
+#   7b. a story agent that DIES (not merely blocks) no longer takes the run's
+#      whole output with it: the line stops, but the planning and the stories
+#      already delivered come back with status execution_failed, and the runner
+#      prints the --resume id that replays the finished agents
 #   5. engine threading: args.engine="grok" runs every stage on the grok bin
 #      (codex bin never spawns)
 #   9. company binding: every stage prompt opens with the hq-session bind (a
@@ -100,6 +104,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 printf '%s\n' "$prompt" >> "$rec/codex-prompts"
+if [ -n "${FAKE_KILL_STORY:-}" ]; then
+  case "$prompt" in
+    *"Execute story $FAKE_KILL_STORY "*)
+      echo "fake codex: story agent died" >&2; exit 3 ;;
+  esac
+fi
 canned_response "$prompt" "${FAKE_VERDICT:-STRONG}" > "$last"
 exit 0
 FAKE
@@ -266,6 +276,27 @@ printf '%s\n' "$OUT" | node -e '
     && r.deliverables.length === 1 ? 0 : 1);
 '
 check "blocked story stops the line with honest status + partial deliverables" "$?"
+
+# ---- 7b: a story agent that DIES returns partial results, not nothing --------
+# A blocked story was already handled; a story agent that crashes outright was
+# not. The exception escaped the script, so the runner returned NO result at
+# all — the finished planning and the stories already delivered went unreported
+# even though they were on disk. Observed live on 2026-08-19: 13 agents and
+# 5h44m of finished work vanished from the run's output when agent 14 died.
+G7B="$TMP/g7b"; R7B="$TMP/r7b"
+run_pipeline "$G7B" "$R7B" '{"company":"demo","description":"a demo idea worth building"}' FAKE_KILL_STORY=US-002
+check "a dead story agent no longer takes the whole run's output with it" "$RC"
+printf '%s\n' "$OUT" | node -e '
+  const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(r.status === "execution_failed"
+    && r.failedStory && r.failedStory.id === "US-002" && r.failedStory.error
+    && r.storiesExecuted === 1 && r.deliverables.length === 1
+    && r.prdPath === "projects/demo-slug/prd.json" && r.boardId === "xx-proj-001"
+    ? 0 : 1);
+'
+check "the partial result names the dead story and keeps the planning + delivered work" "$?"
+grep -q -- '--resume ' "$TMP/stderr.last"
+check "the run still prints how to resume the finished agents" "$?"
 
 # ---- 8: every schema the pipeline hands agent() reaches codex strict-valid ---
 # The codex engine forwards --output-schema to its provider as a STRICT
