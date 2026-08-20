@@ -77,7 +77,9 @@ service), probe it with one minimal end-to-end use BEFORE launching — a
 
 Pick the run dir first — it is this run's identity. Then launch the runner
 **detached**, so a session restart, compaction, or crash cannot take the run
-down with it (agent work is not resumable — only human answers are).
+down with it. The run dir is also the recovery handle: every finished agent
+records its result there, so a run that dies part-way can be resumed rather
+than restarted (see Step 6).
 `{skill_dir}` = this skill's directory; include `"gated":true` /
 `"planOnly":true` only when the flags were given:
 
@@ -157,9 +159,44 @@ Decisions taken for you ({autoDecided} — review, veto anything):
 
   Send the primary artifact to the user when it is a viewable deliverable.
 - `status: "execution_blocked"` → report which story blocked and why, what
-  completed (with artifacts), and offer: fix-forward in this session, re-run
-  (completed stories' artifacts and all ledgered decisions survive — the
-  brainstorm/PRD stages re-run but human answers are durable), or park.
+  completed (with artifacts), and offer: fix-forward in this session, or park.
+  **Do not offer `--resume` here.** A blocked story is a story agent that
+  answered *successfully* with `status: "blocked"`, so its verdict is recorded
+  like any other result — resuming would replay that same verdict and stop at
+  the same story without launching an agent to retry it. Resume is for a story
+  that DIED, not one that reported a blocker.
+- `status: "execution_failed"` → a story agent DIED rather than reporting a
+  blocker (crash, killed process, a reply that could not be read even after a
+  repair pass). `failedStory` names it and the error. Everything up to it is
+  real and reported — the planning, and each story already delivered.
+
+### Resuming a run that died part-way
+
+Use this for `execution_failed` (and for a run killed by a crash, a restart or
+a timeout). It is the wrong tool for `execution_blocked` — see above.
+
+Every agent that finished recorded its result in the run dir, so a resumed run
+replays those instead of paying for them again. The runner prints the exact id
+on any run that lost an agent:
+
+```
+workflow-runner: 13 agent(s) finished successfully in this run and their results are recorded.
+workflow-runner: re-run the SAME command with --resume <runId> to replay them instead of paying for them again.
+```
+
+Re-run the Step 4 command **unchanged** with `--resume <runId>` appended and a
+fresh `--run-dir`. Replay walks the recorded calls in order and stops at the
+first one that differs — so an unchanged script resumes exactly where it died,
+and an edited one replays up to the edit. Human gate answers stay durable
+independently, as they always were.
+
+The source run must actually be dead: a run dir records its owning pid, and
+resuming a live one is refused, because it would replay the finished prefix and
+then start the in-flight agent a second time.
+
+Prefer resume over a plain re-run: capture, brainstorm, PRD and every finished
+story are hours of agent work, and re-running them also re-does their
+side effects.
 - Write the auto-checkpoint thread file (type `auto-checkpoint`, trigger
   `orchestrate-complete`) so a fresh session can pick up.
 - Leave `workspace/gates/answered/` entries in place (gated runs) — re-run
