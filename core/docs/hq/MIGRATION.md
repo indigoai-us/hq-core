@@ -3,6 +3,65 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.106-beta.1
+
+- **The in-tree checkpoint Stop gate is now a delegating shim; the logic lives
+  only in the CLI.** `.claude/hooks/checkpoint-stop-gate.sh` shipped a full,
+  behavior-identical copy of the gate as a transitional fallback for CLIs
+  predating `hq core checkpoint-stop-gate` (hq-cli 5.99.0, 2026-08-11). The
+  duplication cost what duplication costs: the copies drifted — the CLI ran
+  three fixes behind at one point — every change needed a matched pair of PRs,
+  and each repo grew a suite whose real job was detecting the drift. The hook
+  is now ~70 lines: probe the CLI once per version, hand over stdin, emit the
+  CLI's decision verbatim.
+
+  **Impact on update:** if the installed CLI cannot provide the gate (no `hq`
+  on PATH, or a build older than 5.99.0), the gate no longer runs at all —
+  the hook emits no decision and the turn ends normally, per the
+  never-strand-a-session doctrine that governs every other error path in this
+  hook. Previously such an install fell back to the in-tree copy. The CLI
+  self-updates, so this affects only an install that is both very stale and
+  not updating; `hq doctor` reports it and `hq self-update` fixes it. Note
+  that the opt-in company-scope requirement
+  (`HQ_CHECKPOINT_SCOPE_GATE_DOMAINS`) rides the same gate and is therefore
+  also inactive on such an install — it is off by default in release-shipped
+  scaffold, so only deployments that configured it are affected.
+  `HQ_CHECKPOINT_GATE=0` remains the supported kill switch;
+  `HQ_CHECKPOINT_GATE_NO_CLI=1` now means the gate does not run at all rather
+  than "use the in-tree copy".
+
+- **The Stop gate now requires a user-facing reply, not just the checkpoint:**
+  the checkpoint payload is read by a background maintenance agent and never by
+  the human, but agents kept treating it as the report — writing rich
+  `--summary/--decision/--next` flags and then ending the turn on the tool
+  call with a stub reply or none at all. A transcript audit of 1471 stop-gate
+  checkpoint turns (2026-08-19) found 2.7% ended with no user-facing reply
+  anywhere. Guidance alone could not fix this: the CLI's post-checkpoint
+  reminder arrives after the agent has already decided to end the turn.
+  The gate now measures the assistant text the genuine turn delivered after
+  its last *work* tool call — on either side of the checkpoint, and across the
+  gate's own block feedback — and, when a satisfying checkpoint leaves that
+  under `HQ_CHECKPOINT_REPLY_MIN` non-whitespace characters (default 80),
+  blocks **once** with a dedicated "deliver your reply now" message. An agent
+  that already replied is never asked to restate (no double-messaging);
+  mid-turn status notes written before the last work tool do not count as the
+  reply. The nudge is stamped per checkpoint tool id and counted against the
+  shared consecutive-block loop guard (hq-cli 5.103.8: at most 3 consecutive
+  blocks per session, then the gate fails open until an allowed Stop resets
+  the counter), so no combination of demands can strand a session.
+  `--gate-probe` never triggers it, `--idle` triggers it only when the turn
+  ran other tools, and the Codex runtime is excluded (its Stop feedback has
+  its own delivery contract). It composes with the reply-aware block variants
+  from hq-cli #417: an unsatisfied turn whose reply is already visible is told
+  to checkpoint and stop — never to repeat itself — while an unreplied turn is
+  told to checkpoint first and reply as the turn's final text.
+
+  This behavior ships in the CLI (`hq core checkpoint-stop-gate`, hq-cli
+  #415) and reaches operators with the CLI update, not with this scaffold
+  release; the shim above is what routes to it. No action required on update.
+  Operators who want the old behavior can set `HQ_CHECKPOINT_REPLY_MIN=0`;
+  `HQ_CHECKPOINT_GATE=0` still disables the whole gate.
+
 ## Release: v15.0.105-beta.1
 
 - **New `/hq-checkup` command: one manual health check that also repairs.**
