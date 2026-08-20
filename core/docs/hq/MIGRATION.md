@@ -3,6 +3,50 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.105-beta.1
+
+- **New `/hq-checkup` command: one manual health check that also repairs.**
+  HQ previously had no single answer to "is my HQ working?". `hq doctor` covers
+  hook wiring only; `/hq-heal` is reactive and needs an error already in hand;
+  the CLI-version and hq-core-release facts existed only inside the advisory
+  `check-hq-update.sh` SessionStart banner, which nobody could invoke on demand.
+  `/hq-checkup` closes that gap. It verifies that the HQ CLI is installed and
+  current, that hq-core is current, that the user is signed in, that the macOS
+  menubar app and its background sync watcher are running, that cloud sync is not
+  paused, that every workspace has backed up recently, that no sync conflicts are
+  outstanding, and that the hook guardrails pass.
+
+  It repairs by default rather than only reporting. Four remediations run
+  automatically because each is safe and reversible: installing or updating the
+  CLI, launching the menubar app, backing up stale workspaces one company at a
+  time, and applying `hq doctor --fix`. After each repair it re-runs the original
+  measurement and reports the true post-fix state, so a remediation that did not
+  take is never announced as a success.
+
+  Four conditions are deliberately left to the operator because no agent can
+  perform them: signing in (a browser flow), un-pausing cloud sync (a menubar
+  click), resolving conflicting file copies (only the operator knows which copy
+  to keep), and running `/update-hq` (it rewrites the scaffold beneath a live
+  session and must run in a fresh one).
+
+  Findings that survive an attempted repair are demoted from the "Needs you"
+  list to an informational line, so a permanently unfixable condition — an
+  abandoned vault that no longer responds to sync — does not train the operator
+  to ignore the whole report.
+
+  All operator-facing output is written for a non-technical reader: no file
+  paths, version numbers, process names, or HQ-internal vocabulary. `SKILL.md`
+  carries a substitution table enforcing that ("hook" becomes "HQ's safety
+  checks", "conflict" becomes "two copies of the same file").
+
+  `check-hq-update.sh` is unchanged; the session-start nudge still fires
+  independently, and `/hq-checkup` is the manual path to the same facts plus
+  everything that hook does not cover.
+
+  No action required on upgrade. Run `/hq-checkup`, or
+  `bash .claude/skills/hq-checkup/hq-checkup.sh --check` to inspect without
+  changing anything.
+
 ## Release: v15.0.103-beta.1
 
 - **The scope guard's line-continuation defence worked only on Linux (SECURITY).**
