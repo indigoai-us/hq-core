@@ -35,11 +35,42 @@ cat > "$TMP/bin/hq" <<'STUB'
 echo "$*" >> "$HQ_STUB_LOG"
 case "$1 $2" in
   "files browse")
-    if [ "$3" = "${HQ_STUB_BROWSE_FAIL:-}" ]; then
+    pfx="$3"
+    if [ "$pfx" = "${HQ_STUB_BROWSE_FAIL:-}" ]; then
       echo "403 Forbidden" >&2
       exit 1
     fi
-    if [ "$3" = "${HQ_STUB_BROWSE_EMPTY:-}" ]; then
+    if [ "$pfx" = "${HQ_STUB_BROWSE_EMPTY:-}" ]; then
+      exit 0
+    fi
+    # per-prefix call counter (for throttle scenarios)
+    n=1
+    if [ -n "${HQ_STUB_COUNT_DIR:-}" ]; then
+      cf="$HQ_STUB_COUNT_DIR/$(printf '%s' "$pfx" | tr '/@' '__')"
+      n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
+      echo "$n" > "$cf"
+    fi
+    # Throttle: listing on the FIRST browse of this prefix, empty afterwards
+    # (models a second back-to-back browse of the same parent being throttled).
+    if [ "$pfx" = "${HQ_STUB_EMPTY_AFTER_FIRST:-}" ]; then
+      if [ "$n" -eq 1 ]; then
+        echo "a.md  0.1KB  shared-with-you"; echo "b.md  0.1KB  shared-with-you"
+      fi
+      exit 0
+    fi
+    # Throttle: empty on the FIRST browse, listing on a retry.
+    if [ "$pfx" = "${HQ_STUB_EMPTY_BEFORE_FIRST:-}" ]; then
+      if [ "$n" -ge 2 ]; then
+        echo "a.md  0.1KB  shared-with-you"; echo "b.md  0.1KB  shared-with-you"
+      fi
+      exit 0
+    fi
+    # Large listing with the target near the TOP: exercises the grep -q + pipefail
+    # SIGPIPE false-fail (early match closes the pipe while printf still has bytes
+    # to write). Must overflow the pipe buffer to fire SIGPIPE under the old code.
+    if [ "$pfx" = "${HQ_STUB_BIG_LISTING:-}" ]; then
+      echo "target.md  0.1KB  shared-with-you"
+      k=0; while [ "$k" -lt 3000 ]; do echo "filler-$k.md  0.1KB  shared-with-you"; k=$((k + 1)); done
       exit 0
     fi
     echo "prd.json  1.2KB  shared-with-you"
@@ -161,6 +192,74 @@ printf '%s' "$OUT" | grep -q "FAIL  knowledge/insights/notes.md" \
 jq -e '.status == "granted"' "$M" >/dev/null || fail "missing-file probe must not advance status"
 unset HQ_STUB_BROWSE_NO_FILE
 
+# --- 7. two referenced files sharing a parent: browse the parent ONCE, and a
+#     throttled second browse must NOT be misread as "file missing" (the prod
+#     regression). RETRIES=1 isolates the per-parent cache from the retry path.
+write_manifest_shared() { # status
+  cat > "$M" <<JSON
+{
+  "schemaVersion": 1, "delegationId": "dlg-test-widget", "mode": "transfer",
+  "company": "acme",
+  "to": {"kind": "person", "principal": "alice@acme.test"},
+  "project": {"name": "widget", "prdPath": "companies/acme/projects/widget/prd.json"},
+  "vaultPrefixes": [
+    {"prefix": "projects/widget/", "permission": "write"},
+    {"prefix": "knowledge/insights/", "permission": "read"}
+  ],
+  "knowledge": ["companies/acme/knowledge/deep/sub/a.md", "companies/acme/knowledge/deep/sub/b.md"],
+  "policies": [],
+  "status": "$1"
+}
+JSON
+}
+
+write_manifest_shared granted
+export HQ_STUB_COUNT_DIR="$TMP/counts"; mkdir -p "$HQ_STUB_COUNT_DIR"; rm -f "$HQ_STUB_COUNT_DIR"/*
+export HQ_STUB_EMPTY_AFTER_FIRST="knowledge/deep/sub/"
+HQ_DELEGATE_BROWSE_RETRIES=1 HQ_DELEGATE_BROWSE_RETRY_SLEEP=0 \
+  HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
+  || fail "shared-parent probe must pass via per-parent browse cache (throttled 2nd browse must not false-fail)"
+jq -e '.status == "verified"' "$M" >/dev/null || fail "shared-parent probe must advance to verified"
+[ "$(cat "$HQ_STUB_COUNT_DIR/knowledge_deep_sub_")" = "1" ] \
+  || fail "referenced-file loop must browse a shared parent only once, got $(cat "$HQ_STUB_COUNT_DIR/knowledge_deep_sub_" 2>/dev/null)"
+unset HQ_STUB_EMPTY_AFTER_FIRST
+
+# --- 8. a transient EMPTY browse recovers on retry ---------------------------
+write_manifest_shared granted
+rm -f "$HQ_STUB_COUNT_DIR"/*
+export HQ_STUB_EMPTY_BEFORE_FIRST="knowledge/deep/sub/"
+HQ_DELEGATE_BROWSE_RETRIES=3 HQ_DELEGATE_BROWSE_RETRY_SLEEP=0 \
+  HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
+  || fail "probe must recover from a transient empty browse via retry"
+jq -e '.status == "verified"' "$M" >/dev/null || fail "retry-recovered probe must advance to verified"
+unset HQ_STUB_EMPTY_BEFORE_FIRST HQ_STUB_COUNT_DIR
+
+# --- 9. large parent listing, target near the TOP: `grep -q` + pipefail would
+#     SIGPIPE-false-fail; the pipe-free substring match must pass. (prod bug) ---
+write_manifest_big() { # status
+  cat > "$M" <<JSON
+{
+  "schemaVersion": 1, "delegationId": "dlg-test-widget", "mode": "transfer",
+  "company": "acme",
+  "to": {"kind": "person", "principal": "alice@acme.test"},
+  "project": {"name": "widget", "prdPath": "companies/acme/projects/widget/prd.json"},
+  "vaultPrefixes": [
+    {"prefix": "projects/widget/", "permission": "write"},
+    {"prefix": "knowledge/insights/", "permission": "read"}
+  ],
+  "knowledge": ["companies/acme/knowledge/big/target.md"],
+  "policies": [],
+  "status": "$1"
+}
+JSON
+}
+write_manifest_big granted
+export HQ_STUB_BIG_LISTING="knowledge/big/"
+HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
+  || fail "big-listing probe must pass (early match must not SIGPIPE-false-fail under pipefail)"
+jq -e '.status == "verified"' "$M" >/dev/null || fail "big-listing probe must advance to verified"
+unset HQ_STUB_BIG_LISTING
+
 # --- 6. probe from 'building' refuses ----------------------------------------
 
 write_manifest building
@@ -187,4 +286,4 @@ for needle in "alice@acme.test" "transfer" "projects/widget/" "knowledge/insight
 done
 printf '%s' "$OUT" | grep -q "write" || fail "dry-run plan must show permissions"
 
-echo "hq-delegate-verify: ok (probe gates the DM, named failures with causes, resume without re-grant, empty=fail, dry run fully inert)"
+echo "hq-delegate-verify: ok (probe gates the DM, named failures with causes, resume without re-grant, empty=fail, shared-parent browsed once, transient-empty retried, large-listing early-match no SIGPIPE, dry run fully inert)"

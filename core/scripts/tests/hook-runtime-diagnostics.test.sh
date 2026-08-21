@@ -134,11 +134,6 @@ cat >"$CODEX_FIX/.claude/hooks/auto-checkpoint-trigger.sh" <<'EOF'
 cat >/dev/null
 echo "AUTO-CHECKPOINT REQUIRED"
 EOF
-cat >"$CODEX_FIX/.claude/hooks/auto-mirror-company-skill.sh" <<'EOF'
-#!/bin/bash
-cat >/dev/null
-exit 0
-EOF
 cat >"$CODEX_FIX/.claude/hooks/hq-autocommit.sh" <<'EOF'
 #!/bin/bash
 cat >/dev/null
