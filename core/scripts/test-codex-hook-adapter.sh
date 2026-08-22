@@ -135,19 +135,12 @@ echo "autosave:$path" >> "$TEST_LOG"
 exit 0
 SH
 
-cat > "$TMP/.claude/hooks/master-sync.sh" <<'SH'
-#!/bin/bash
-cat >/dev/null
-echo "master-sync" >> "$TEST_LOG"
-exit 0
-SH
-
-# reindex is the post-write finalizer registered in settings.json (the adapter
-# used to call the now-removed master-sync.sh; it now mirrors Claude's reindex).
+# Reindex is the canonical post-write finalizer registered in settings.json.
 cat > "$TMP/.claude/hooks/reindex.sh" <<'SH'
 #!/bin/bash
-cat >/dev/null 2>&1 || true
-echo "reindex" >> "$TEST_LOG"
+input="$(cat)"
+path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
+echo "reindex:$path" >> "$TEST_LOG"
 exit 0
 SH
 
@@ -311,14 +304,6 @@ cat > "$TMP/.claude/hooks/journal-due.sh" <<'SH'
 #!/bin/bash
 cat >/dev/null
 echo "journal-due" >> "$TEST_LOG"
-exit 0
-SH
-
-cat > "$TMP/.claude/hooks/auto-mirror-company-skill.sh" <<'SH'
-#!/bin/bash
-input="$(cat)"
-path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
-echo "auto-mirror-company-skill:$path" >> "$TEST_LOG"
 exit 0
 SH
 
@@ -512,18 +497,18 @@ log="$(cat "$TEST_LOG")"
 assert_contains "$log" "screenshot-resize-trigger"
 assert_contains "$log" "journal-due"
 
-# PostToolUse apply_patch: auto-mirror-company-skill MUST run BEFORE hq-autocommit so any
-# newly-mirrored skill files are picked up by autosave. journal-due also fires per-path.
+# PostToolUse apply_patch: canonical reindex MUST run BEFORE hq-autocommit so any
+# generated namespaced wrappers are picked up by autosave. journal-due also fires per-path.
 : > "$TEST_LOG"
 payload_post_patch_parity='{"hook_event_name":"PostToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"command":"*** Begin Patch\n*** Add File: companies/acme/skills/new.md\n+ok\n*** End Patch"},"tool_response":{"exit_code":0}}'
 run_adapter "$payload_post_patch_parity" >/dev/null
 log="$(cat "$TEST_LOG")"
-assert_contains "$log" "auto-mirror-company-skill:companies/acme/skills/new.md"
+assert_contains "$log" "reindex:companies/acme/skills/new.md"
 assert_contains "$log" "journal-due"
-mirror_line=$(grep -n "^auto-mirror-company-skill:companies/acme/skills/new.md$" "$TEST_LOG" | head -1 | cut -d: -f1)
+reindex_line=$(grep -n "^reindex:companies/acme/skills/new.md$" "$TEST_LOG" | head -1 | cut -d: -f1)
 autosave_line=$(grep -n "^autosave:companies/acme/skills/new.md$" "$TEST_LOG" | head -1 | cut -d: -f1)
-if [ -z "$mirror_line" ] || [ -z "$autosave_line" ] || [ "$mirror_line" -ge "$autosave_line" ]; then
-  echo "Expected auto-mirror-company-skill BEFORE hq-autocommit (mirror=$mirror_line autosave=$autosave_line)" >&2
+if [ -z "$reindex_line" ] || [ -z "$autosave_line" ] || [ "$reindex_line" -ge "$autosave_line" ]; then
+  echo "Expected reindex BEFORE hq-autocommit (reindex=$reindex_line autosave=$autosave_line)" >&2
   cat "$TEST_LOG" >&2
   exit 1
 fi
