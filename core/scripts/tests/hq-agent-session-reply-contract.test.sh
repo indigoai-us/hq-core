@@ -425,7 +425,7 @@ and then some afterthought'
   load_helpers
   TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
-  : > "$TMP/m1.txt"; session_append_mention_posture true "$TMP/m1.txt"
+  : > "$TMP/m1.txt"; session_append_mention_posture true "$TMP/m1.txt" slack true 'agt_test#slack:C1:T1'
   if grep -Fq '<!-- hq-section: mention-posture -->' "$TMP/m1.txt" \
      && grep -Fqi 'DIRECTLY @-mentioned you' "$TMP/m1.txt" \
      && grep -Fqi 'condition is MET' "$TMP/m1.txt"; then
@@ -434,12 +434,34 @@ and then some afterthought'
     fail "direct-mention posture missing or does not release a stand-down"
   fi
 
-  : > "$TMP/m2.txt"; session_append_mention_posture false "$TMP/m2.txt"
+  : > "$TMP/m2.txt"; session_append_mention_posture false "$TMP/m2.txt" slack true 'agt_test#slack:C1:T1'
   if grep -Fqi 'did NOT @-mention you' "$TMP/m2.txt" \
      && grep -Fqi 'stay silent' "$TMP/m2.txt"; then
-    pass "non-mention posture keeps a stand-down in force"
+    pass "unmentioned followed Slack turn keeps a stand-down in force"
   else
-    fail "non-mention posture wrong"
+    fail "unmentioned followed Slack posture wrong"
+  fi
+
+  # A direct message is inherently addressed. Slack does not require users to
+  # mention the recipient inside an already-private conversation, so the
+  # producer legitimately sends directMention=false for this case.
+  : > "$TMP/dm.txt"; session_append_mention_posture false "$TMP/dm.txt" slack true 'agt_test#slack:D1:T1'
+  if grep -Fqi 'verified direct message addressed to you' "$TMP/dm.txt" \
+     && grep -Fqi '@mention is not required' "$TMP/dm.txt" \
+     && ! grep -Fqi 'stay silent' "$TMP/dm.txt" \
+     && ! grep -Fqi 'you follow this conversation' "$TMP/dm.txt"; then
+    pass "verified DM without a literal mention is treated as addressed"
+  else
+    fail "verified DM inherited mention-only stand-down posture"
+  fi
+
+  # A literal mention keeps its existing stronger posture even when the origin
+  # is a DM; channel classification must not replace direct-mention behavior.
+  : > "$TMP/dm-mentioned.txt"; session_append_mention_posture true "$TMP/dm-mentioned.txt" slack true 'agt_test#slack:D1:T1'
+  if cmp -s "$TMP/m1.txt" "$TMP/dm-mentioned.txt"; then
+    pass "direct mentions retain their existing posture across channels"
+  else
+    fail "DM classification changed direct-mention posture"
   fi
 
   # The two must never say the same thing.
@@ -470,6 +492,12 @@ and then some afterthought'
     fail "entrypoint coalesces absent to false -- silences turns from older senders"
   else
     pass "entrypoint distinguishes absent from false"
+  fi
+  if grep -Fq 'session_append_mention_posture "$direct_mention" "$run_dir/system.txt" "$channel" "$sender_verified" "$conv_key"' \
+      "$SCRIPT_DIR/../hq-agent-session.sh"; then
+    pass "entrypoint passes channel and sender trust to mention posture"
+  else
+    fail "entrypoint omits DM addressing context from mention posture"
   fi
   exit "$FAILED"
 ) || FAILED=1
