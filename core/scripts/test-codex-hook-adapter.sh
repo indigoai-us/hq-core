@@ -135,19 +135,12 @@ echo "autosave:$path" >> "$TEST_LOG"
 exit 0
 SH
 
-cat > "$TMP/.claude/hooks/master-sync.sh" <<'SH'
-#!/bin/bash
-cat >/dev/null
-echo "master-sync" >> "$TEST_LOG"
-exit 0
-SH
-
-# reindex is the post-write finalizer registered in settings.json (the adapter
-# used to call the now-removed master-sync.sh; it now mirrors Claude's reindex).
+# Reindex is the canonical post-write finalizer registered in settings.json.
 cat > "$TMP/.claude/hooks/reindex.sh" <<'SH'
 #!/bin/bash
-cat >/dev/null 2>&1 || true
-echo "reindex" >> "$TEST_LOG"
+input="$(cat)"
+path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
+echo "reindex:$path" >> "$TEST_LOG"
 exit 0
 SH
 
@@ -314,14 +307,6 @@ echo "journal-due" >> "$TEST_LOG"
 exit 0
 SH
 
-cat > "$TMP/.claude/hooks/auto-mirror-company-skill.sh" <<'SH'
-#!/bin/bash
-input="$(cat)"
-path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
-echo "auto-mirror-company-skill:$path" >> "$TEST_LOG"
-exit 0
-SH
-
 # UserPromptSubmit parity
 for name in rewrite-resume-sentinel route-deep-plan-to-skill auto-session-project; do
   cat > "$TMP/.claude/hooks/$name.sh" <<SH
@@ -350,6 +335,17 @@ run_adapter() {
   (cd "$TMP" && printf '%s' "$payload" | "$ADAPTER")
 }
 
+# Use stock /bin/bash when it is the macOS 3.2 runtime under test. Linux CI
+# exercises the same compatibility contract through Bash's 3.2 mode.
+run_adapter_bash32() {
+  local payload="$1"
+  if /bin/bash -c '[ "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}" = "3.2" ]'; then
+    (cd "$TMP" && printf '%s' "$payload" | /bin/bash "$ADAPTER")
+  else
+    (cd "$TMP" && printf '%s' "$payload" | env BASH_COMPAT=3.2 bash "$ADAPTER")
+  fi
+}
+
 assert_contains() {
   local haystack="$1"
   local needle="$2"
@@ -374,6 +370,14 @@ assert_contains "$out" "AUTO-STARTWORK"
 payload_secret='{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"'"$TMP"'","tool_input":{"command":"echo sk-testSECRET1234567890"}}'
 if err="$(run_adapter "$payload_secret" 2>&1 >/dev/null)"; then
   echo "Expected secret payload to be blocked" >&2
+  exit 1
+fi
+assert_contains "$err" "blocked secret"
+
+# Regression: the settings-driven iterator previously emitted no records under
+# Bash 3.2, silently skipping detect-secrets and every other configured guard.
+if err="$(run_adapter_bash32 "$payload_secret" 2>&1 >/dev/null)"; then
+  echo "Expected Bash 3.2-compatible dispatch to block the secret payload" >&2
   exit 1
 fi
 assert_contains "$err" "blocked secret"
@@ -512,18 +516,18 @@ log="$(cat "$TEST_LOG")"
 assert_contains "$log" "screenshot-resize-trigger"
 assert_contains "$log" "journal-due"
 
-# PostToolUse apply_patch: auto-mirror-company-skill MUST run BEFORE hq-autocommit so any
-# newly-mirrored skill files are picked up by autosave. journal-due also fires per-path.
+# PostToolUse apply_patch: canonical reindex MUST run BEFORE hq-autocommit so any
+# generated namespaced wrappers are picked up by autosave. journal-due also fires per-path.
 : > "$TEST_LOG"
 payload_post_patch_parity='{"hook_event_name":"PostToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"command":"*** Begin Patch\n*** Add File: companies/acme/skills/new.md\n+ok\n*** End Patch"},"tool_response":{"exit_code":0}}'
 run_adapter "$payload_post_patch_parity" >/dev/null
 log="$(cat "$TEST_LOG")"
-assert_contains "$log" "auto-mirror-company-skill:companies/acme/skills/new.md"
+assert_contains "$log" "reindex:companies/acme/skills/new.md"
 assert_contains "$log" "journal-due"
-mirror_line=$(grep -n "^auto-mirror-company-skill:companies/acme/skills/new.md$" "$TEST_LOG" | head -1 | cut -d: -f1)
+reindex_line=$(grep -n "^reindex:companies/acme/skills/new.md$" "$TEST_LOG" | head -1 | cut -d: -f1)
 autosave_line=$(grep -n "^autosave:companies/acme/skills/new.md$" "$TEST_LOG" | head -1 | cut -d: -f1)
-if [ -z "$mirror_line" ] || [ -z "$autosave_line" ] || [ "$mirror_line" -ge "$autosave_line" ]; then
-  echo "Expected auto-mirror-company-skill BEFORE hq-autocommit (mirror=$mirror_line autosave=$autosave_line)" >&2
+if [ -z "$reindex_line" ] || [ -z "$autosave_line" ] || [ "$reindex_line" -ge "$autosave_line" ]; then
+  echo "Expected reindex BEFORE hq-autocommit (reindex=$reindex_line autosave=$autosave_line)" >&2
   cat "$TEST_LOG" >&2
   exit 1
 fi
