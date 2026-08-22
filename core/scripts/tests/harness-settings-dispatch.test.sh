@@ -91,6 +91,37 @@ export HQ_ROOT="$FIX" HQ_ALLOW_HQ_WORKTREE=1
 CODEX="$FIX/.codex/hooks/hq-codex-hook-adapter.sh"
 GROK="$FIX/.grok/hooks/hq-grok-hook-adapter.sh"
 
+# Bash 3.2 on stock macOS cannot safely consume the literal SOH framing byte
+# the iterator used to place between matcher and command. Keep control bytes out
+# of the shell source; jq now emits validated, shell-escaped record words.
+if LC_ALL=C od -An -t x1 "$FIX/core/scripts/lib/hook-adapter-core.sh" \
+    | tr -s ' ' '\n' | grep -x '01' >/dev/null; then
+  fail "shared iterator source contains a literal SOH framing byte"
+else
+  pass "shared iterator source is free of literal SOH framing bytes"
+fi
+
+# A framing failure after settings validation must not look like a valid empty
+# hook set. Stub only the record-producing jq call and prove the iterator uses
+# the critical Bash fallback guards rather than emitting zero records.
+REAL_JQ="$(command -v jq)"
+framing_fallback="$({
+  set +u
+  . "$FIX/core/scripts/lib/hook-adapter-core.sh"
+  jq() {
+    case "${1:-}" in
+      -c|-r) printf '%s\n' 'not-a-json-record'; return 0 ;;
+      *) command "$REAL_JQ" "$@" ;;
+    esac
+  }
+  hqad_iter_settings "PreToolUse" "Bash"
+} 2>/dev/null)"
+if printf '%s\n' "$framing_fallback" | grep -q $'^gate\tmandatory-scope-authorizer\t'; then
+  pass "malformed iterator framing uses critical PreToolUse fallback"
+else
+  fail "malformed iterator framing silently emitted zero critical guards"
+fi
+
 expected_gate_ids() { # <event> <tool>
   ( set +u; . "$FIX/core/scripts/lib/hook-adapter-core.sh"
     HQ_ROOT="$FIX" hqad_iter_settings "$1" "$2" \

@@ -1,0 +1,7 @@
+{
+  "created_at": "20260822T124507Z",
+  "message": "Completed and committed the validated Bash 3.2 Codex safety-dispatch fix without pushing or releasing.",
+  "last_thread": "T-20260822-124507-bash32-hook-dispatch",
+  "thread_path": "workspace/threads/T-20260822-124507-bash32-hook-dispatch.json",
+  "context_notes": "Replaced control-byte hook record framing with validated shell-escaped records, added fail-closed fallback on producer or framing errors, and added Codex Bash 3.2 plus cross-runtime regression coverage; source committed at e599d942."
+}

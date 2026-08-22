@@ -255,24 +255,42 @@ session_append_reply_contract_reminder() {
   return 0
 }
 
-# session_append_mention_posture <direct_mention> <system_txt>
+# session_append_mention_posture <direct_mention> <system_txt> [channel] [sender_verified] [conv_key]
 #   States plainly whether THIS turn was a direct @-mention of the agent.
 #   People routinely tell a bot "only reply when I @ you" in a busy thread; the
 #   rehydrated history carries that order, so the model MUST be told whether the
 #   current message satisfies it. Without this it reads the stand-down and stays
 #   silent even when addressed (observed live 2026-07-26).
+#   A verified direct message is inherently addressed even without a literal
+#   @-mention, so it must never inherit the followed-conversation stand-down.
 session_append_mention_posture() {
-  local direct="${1:-unknown}" system_txt="${2:-}"
+  local direct="${1:-unknown}" system_txt="${2:-}" channel="${3:-}"
+  local sender_verified="${4:-false}" conv_key="${5:-}"
   [ -n "$system_txt" ] || return 0
-  # "unknown" (sender does not send the field yet) emits NOTHING, so the prompt
-  # is byte-identical to before this feature existed. Only a sender that has an
-  # actual opinion gets to constrain the agent.
+  # A literal mention is the strongest signal and retains its existing posture
+  # regardless of channel classification.
+  if [ "$direct" = "true" ]; then
+    printf '\n<!-- hq-section: mention-posture -->\n%s\n' \
+      'THIS message DIRECTLY @-mentioned you. If earlier in this conversation you were asked to stay quiet unless @-mentioned, that condition is MET now — answer normally.' \
+      >> "$system_txt"
+    return 0
+  fi
+  local verified_dm="false"
+  if [ "$sender_verified" = "true" ]; then
+    case "$channel:$conv_key" in
+      slack:*'#slack:D'*) verified_dm="true" ;;
+    esac
+  fi
+  if [ "$verified_dm" = "true" ]; then
+    printf '\n<!-- hq-section: mention-posture -->\n%s\n' \
+      'THIS is a verified direct message addressed to you. A literal @mention is not required in a direct message — answer normally.' \
+      >> "$system_txt"
+    return 0
+  fi
+  # "unknown" (sender does not send the field yet) emits NOTHING outside a
+  # verified DM, so the prompt is byte-identical to before this feature existed.
+  # Only a sender with usable addressing context gets to constrain the agent.
   case "$direct" in
-    true)
-      printf '\n<!-- hq-section: mention-posture -->\n%s\n' \
-        'THIS message DIRECTLY @-mentioned you. If earlier in this conversation you were asked to stay quiet unless @-mentioned, that condition is MET now — answer normally.' \
-        >> "$system_txt"
-      ;;
     false)
       printf '\n<!-- hq-section: mention-posture -->\n%s\n' \
         'This message did NOT @-mention you; you are seeing it because you follow this conversation. If you were asked to only speak when @-mentioned, stay silent this turn.' \
