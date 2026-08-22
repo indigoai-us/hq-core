@@ -179,7 +179,40 @@ cat_bytes="$(printf '%s' "$cat_body" | wc -c | tr -d '[:space:]')"
 [ "$cat_bytes" -le 1024 ] || fail "catalog section $cat_bytes bytes > 1024"
 avail2="$(echo "$OUT2" | jq -r '.skillsAvailable')"
 [ "$avail2" -ge 40 ] || fail "skillsAvailable should count all entries, got $avail2"
-pass "catalog byte cap (rendered=$cat_bytes, available=$avail2)"
+for i in $(seq 1 40); do
+  grep -Eq "^- /bulk-$i( —|$)" "$RUN2/system.txt" || \
+    fail "bulk-$i missing even though every name-only entry fits"
+done
+grep -Eq '^- /pack-skill( —|$)' "$RUN2/system.txt" || \
+  fail "tail package skill missing even though every name-only entry fits"
+bulk_descriptions="$(grep -c 'with enough text to consume catalog budget' "$RUN2/system.txt" || true)"
+[ "$bulk_descriptions" -lt 40 ] || \
+  fail "descriptions should be shortened before a skill name is omitted"
+
+# The exported rendered byte count matches the actual catalog body exactly.
+# Source the public catalog seam directly because the session response exposes
+# the available count, while consumers use this byte count from library state.
+# shellcheck source=../lib/session-skill-catalog.sh
+source "$FIXTURE/core/scripts/lib/session-skill-catalog.sh"
+HQ_SESSION_SKILL_CATALOG_MAX_BYTES=1024
+session_skill_catalog_build "$FIXTURE" indigo >/dev/null
+body_bytes="$(printf '%s\n' "$SESSION_SKILL_CATALOG_BODY" | wc -c | tr -d '[:space:]')"
+[ "$SESSION_SKILL_CATALOG_RENDERED_BYTES" = "$body_bytes" ] || \
+  fail "rendered byte count=$SESSION_SKILL_CATALOG_RENDERED_BYTES actual=$body_bytes"
+[ "$SESSION_SKILL_CATALOG_RENDERED_BYTES" -le 1024 ] || \
+  fail "exported rendered byte count exceeds cap"
+pass "catalog preserves tail names (rendered=$body_bytes, available=$avail2)"
+
+# If the name-only catalog itself cannot fit, say so within the same byte cap.
+HQ_SESSION_SKILL_CATALOG_MAX_BYTES=180
+session_skill_catalog_build "$FIXTURE" indigo >/dev/null
+printf '%s\n' "$SESSION_SKILL_CATALOG_BODY" | grep -q 'catalog truncated' || \
+  fail "name-only overflow must render a truncation indicator"
+overflow_bytes="$(printf '%s\n' "$SESSION_SKILL_CATALOG_BODY" | wc -c | tr -d '[:space:]')"
+[ "$SESSION_SKILL_CATALOG_RENDERED_BYTES" = "$overflow_bytes" ] || \
+  fail "overflow byte count=$SESSION_SKILL_CATALOG_RENDERED_BYTES actual=$overflow_bytes"
+[ "$overflow_bytes" -le 180 ] || fail "overflow catalog $overflow_bytes bytes > 180"
+pass "name-only overflow is explicit (rendered=$overflow_bytes)"
 
 echo
 echo "PASS (skill catalog)"

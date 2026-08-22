@@ -52,6 +52,12 @@
 #                     BE ignored. The root .gitignore is merged into the cloud
 #                     sync ignore filter, so a bare (unanchored) `repos/` rule
 #                     silently drops discover-generated knowledge from sync.
+#   instance-artifacts
+#                     fail if operator/session instance state is tracked under
+#                     workspace/ or personal/. workspace/ ships only .gitkeep
+#                     placeholders; personal/ ships only .gitkeep plus the
+#                     top-level personal/CLAUDE.md scaffold. Full-tree tripwire
+#                     (not diff-scoped) so pre-existing leakage is caught too.
 #
 # Exit codes: 0 = clean, 1 = leak/violation found, 2 = script error.
 #
@@ -62,7 +68,7 @@ set -euo pipefail
 
 mode="${1:-}"
 if [[ -z "$mode" ]]; then
-  echo "Usage: $0 <denylist|policy-rationale|slugs|users-path|provenance|vendor-public-ok|public-frontmatter|commands-skills-tripwire|core-yaml-locked|core-yaml-version-monotonic|special-case-files|denylist-drift|settings-local-not-ignored|repos-segment-not-ignored>" >&2
+  echo "Usage: $0 <denylist|policy-rationale|slugs|users-path|provenance|vendor-public-ok|public-frontmatter|commands-skills-tripwire|core-yaml-locked|core-yaml-version-monotonic|special-case-files|denylist-drift|settings-local-not-ignored|repos-segment-not-ignored|instance-artifacts>" >&2
   exit 2
 fi
 
@@ -648,6 +654,39 @@ case "$mode" in
       exit 1
     fi
     echo "repos-segment-not-ignored: clean (nested syncs, top-level clone excluded)"
+    ;;
+
+  instance-artifacts)
+    # Tripwire: operator/session instance state must never ship in hq-core.
+    #   - workspace/ is operator-owned session state (threads, checkpoints,
+    #     insights, learnings, reports, baseline, orchestrator indexes). Only
+    #     .gitkeep placeholders may be tracked — they preserve the scaffold
+    #     dirs without carrying any instance content.
+    #   - personal/ is the owner overlay (policies, projects, settings,
+    #     workers, knowledge, skills, hooks). Only .gitkeep placeholders and
+    #     the top-level personal/CLAUDE.md scaffold may be tracked.
+    # Any other tracked file under these trees is instance leakage — block,
+    # never warn. Full-tree scan (not diff-scoped) so files that slipped in on
+    # an earlier PR are caught on every subsequent run.
+    # Rule: hq-core-staging-no-instance-session-leakage.
+    leaks=0
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      [[ "${f##*/}" == ".gitkeep" ]] && continue
+      if [[ "$f" == workspace/* ]]; then
+        echo "::error file=$f::instance leakage under workspace/ (only .gitkeep may ship)"
+        leaks=$((leaks + 1))
+      elif [[ "$f" == personal/* ]]; then
+        [[ "$f" == "personal/CLAUDE.md" ]] && continue
+        echo "::error file=$f::instance leakage under personal/ (only .gitkeep and personal/CLAUDE.md may ship)"
+        leaks=$((leaks + 1))
+      fi
+    done < <(git ls-files workspace/ personal/ 2>/dev/null || true)
+    if [[ $leaks -gt 0 ]]; then
+      echo "instance-artifacts: $leaks instance file(s) found" >&2
+      exit 1
+    fi
+    echo "instance-artifacts: clean"
     ;;
 
   *)

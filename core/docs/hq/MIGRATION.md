@@ -3,6 +3,52 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.110-beta.3
+
+- **`/delegate` grants + reachability probe: three false-negative bugs fixed.**
+  (1) The vault-grant verifier now recognizes a recipient email that the vault
+  resolves to a `personUid` — it was grepping the ACL read-back for the literal
+  email and so false-failed every fully-provisioned member (only pending
+  invites, which stay email-keyed, ever passed). It now diffs the prefix's
+  direct grants before/after the share and is resolution-aware. (2) The
+  reachability probe browses each parent prefix once (memoized) with a retry on
+  a throttled empty page, instead of re-browsing per referenced file. (3) Its
+  file-presence check is now pipe-free, fixing a `set -o pipefail` + `grep -q`
+  SIGPIPE false-negative that marked a genuinely-present file "not in the vault"
+  whenever it sorted early in a large parent listing. No action required; the
+  scripts are replaced on `/update-hq`.
+
+## Release: v15.0.110-beta.1
+
+- **Hook timeouts raised to a 30s floor: a 5s budget was silently disabling
+  guards.** Every hook budget in `.claude/settings.json` dated from when hooks
+  were pure bash. Several are now Node-backed — the checkpoint Stop gate
+  delegates to `hq core checkpoint-stop-gate` — and Node startup alone can
+  exceed 5s on a loaded box. A hook killed at its timeout emits nothing, and no
+  output means **allow**, so an expired budget does not fail loudly: it turns
+  the hook off.
+
+  Measured on one live session (2026-08-20), hooks killed at their timeout:
+  `block-core-writes-bash` 217x (worst 15.2s), `block-hq-worktree-session`
+  155x (12.7s), `protect-core` 74x (14.9s), `block-hq-root-git-mutation` 45x
+  (10.0s), `block-unsafe-package-install` 34x (11.2s),
+  `mandatory-scope-authorizer` 25x (10.8s), `detect-secrets` 12x (10.0s),
+  `checkpoint-stop-gate` 4x (7.4s). Most of those are guards; the scope
+  authorizer is the one just hardened to fail **closed** for cross-tenant
+  safety, and a timeout kill bypasses it before that logic runs.
+
+  Every budget under 30s is now 30s (85 at 5/10/15s, plus the four 20s
+  `reindex.sh` registrations). The deliberately-long budgets (60s, 300s) are
+  unchanged. This costs nothing in the normal case — the Stop gate measures
+  1.4s on the real dispatch path, 1.5s with a cold capability cache — and only
+  matters under load, which is exactly when a guard should complete rather than
+  be skipped. `core/scripts/tests/hook-timeout-floor.test.sh` pins the floor so
+  a new registration cannot reintroduce a budget a Node-backed hook cannot meet.
+
+  Not fixed here: `inject-policy-on-trigger` already had a 60s budget and still
+  timed out at 70.4s. Raising it further would stall a prompt for over a minute,
+  so it needs a performance fix rather than more budget.
+
 ## Release: v15.0.106-beta.1
 
 - **The in-tree checkpoint Stop gate is now a delegating shim; the logic lives
