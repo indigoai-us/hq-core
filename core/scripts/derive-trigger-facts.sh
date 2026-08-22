@@ -67,8 +67,14 @@ jget() {
 # every word token present (case-insensitive), plus the non-literal derived
 # tokens (secret / shared_branch) and structured filename / slash-command tokens.
 match_keywords() {
-  awk -v text="$1" '
-    BEGIN {
+  # Feed text through stdin: BSD awk (including macOS /usr/bin/awk) rejects a
+  # literal newline inside a `-v name=value` assignment before the program runs.
+  printf '%s\n' "$1" | awk '
+    {
+      if (NR > 1) text = text "\n"
+      text = text $0
+    }
+    END {
       t = tolower(text)
 
       # open tokenization: every word token in the text becomes a fact, so a
@@ -214,23 +220,22 @@ fi
 if [ "$EVENT" = "AssistantIntent" ]; then
   TRANSCRIPT="$(jget '.transcript_path')"
   if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] && [ -n "$JQ" ]; then
-    LOOKBACK_TEXT="$("$JQ" -r '
+    LOOKBACK_TEXT="$("$JQ" -nr '
       # Real Claude Code transcript: each line is {type, message:{role,content}}
       # where assistant text lives at .message.content[] | select(.type=="text")
       # | .text. Fall back to a flat top-level .content (string) for simple
       # fixtures. (Mirrors enforce-capability-link-render.sh / capture-estimates.sh.)
-      . as $e
-      | ($e.type // "") as $ty
-      | (($e.message.content // $e.content) as $c
-         | if   ($c|type)=="array"  then ([$c[]? | select(.type=="text") | .text] | join(" "))
-           elif ($c|type)=="string" then $c
-           else "" end) as $txt
-      | if $ty == "assistant" then $txt else "" end
-      | "\($ty)\t\(.)"
-    ' "$TRANSCRIPT" 2>/dev/null | awk -F'\t' '
-      { type[NR] = $1; text[NR] = $2; last = NR; if ($1 == "user") lastuser = NR }
-      END { for (i = lastuser + 1; i <= last; i++) if (type[i] == "assistant") printf "%s ", text[i] }
-    ')"
+      reduce inputs as $e ("";
+        ($e.type // "") as $ty
+        | (($e.message.content // $e.content) as $c
+           | if   ($c|type)=="array"  then ([$c[]? | select(.type=="text") | .text] | join(" "))
+             elif ($c|type)=="string" then $c
+             else "" end) as $txt
+        | if $ty == "user" then ""
+          elif $ty == "assistant" then . + (if length > 0 then " " else "" end) + $txt
+          else . end
+      )
+    ' "$TRANSCRIPT" 2>/dev/null)"
     [ -n "$LOOKBACK_TEXT" ] && add "$(match_keywords "$LOOKBACK_TEXT")"
   fi
 else

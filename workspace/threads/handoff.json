@@ -1,0 +1,7 @@
+{
+  "created_at": "20260822T170711Z",
+  "message": "Completed the bounded deploy 401 refresh fix and local commit; manager validation is next.",
+  "last_thread": "T-20260822-170712-deploy-401-refresh-retry",
+  "thread_path": "workspace/threads/T-20260822-170712-deploy-401-refresh-retry.json",
+  "context_notes": "Fixed deploy API authentication recovery so a 401 forces identity refresh and retries exactly once; failures stop later stages with redacted live-content diagnostics. Added creation, completion, retry-limit, refresh-failure, and resolver regression coverage. Committed as 2bed416."
+}

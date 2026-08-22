@@ -1,0 +1,38 @@
+{
+  "thread_id": "T-20260822-170712-deploy-401-refresh-retry",
+  "version": 1,
+  "type": "handoff",
+  "created_at": "20260822T170711Z",
+  "updated_at": "20260822T170711Z",
+  "workspace_root": "/home/ec2-user/worktrees/issue-185-g7-hq-core-staging",
+  "cwd": "/home/ec2-user/worktrees/issue-185-g7-hq-core-staging",
+  "git": {
+    "branch": "fix/feedback-185-g7-deploy-does-not-refresh-an-expired-session",
+    "current_commit": "2bed416",
+    "dirty": false
+  },
+  "changeset_path": "workspace/threads/T-20260822-170712-deploy-401-refresh-retry.changeset.json",
+  "conversation_summary": "Fixed deploy API authentication recovery so a 401 forces identity refresh and retries exactly once; failures stop later stages with redacted live-content diagnostics. Added creation, completion, retry-limit, refresh-failure, and resolver regression coverage. Committed as 2bed416.",
+  "next_steps": [
+    {
+      "step": "Manager validates commit 2bed416; no push, PR, release, or deploy was performed."
+    }
+  ],
+  "files_touched": [
+    ".claude/skills/deploy/SKILL.md",
+    ".claude/skills/deploy/scripts/deploy-api-request.sh",
+    ".claude/skills/deploy/scripts/identity-resolve.sh",
+    ".claude/skills/deploy/scripts/tests/identity-resolve-skew.test.sh",
+    "core/scripts/tests/deploy-api-request.test.sh"
+  ],
+  "learnings": [],
+  "metadata": {
+    "title": "Handoff: deploy 401 refresh retry",
+    "tags": [
+      "handoff",
+      "hq-core",
+      "deploy-auth"
+    ],
+    "company": []
+  }
+}

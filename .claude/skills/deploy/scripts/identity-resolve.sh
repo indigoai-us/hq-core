@@ -18,8 +18,18 @@
 # expiresAt in the token file is epoch-MILLIS (e.g. 1777490340903), NOT ISO.
 # Bash access to ~/.hq/cognito-tokens.json is sanctioned: the harness
 # Read-tool deny rule is what forces this structured-access path.
+# Pass --force-refresh after an authenticated request returns 401 so a
+# future-dated but rejected cached token cannot be returned again.
 
 set -u
+
+FORCE_REFRESH=0
+case "${1:-}" in
+  "") ;;
+  --force-refresh) FORCE_REFRESH=1 ;;
+  *) printf 'usage: %s [--force-refresh]\n' "$0" >&2; exit 64 ;;
+esac
+[ "$#" -le 1 ] || { printf 'usage: %s [--force-refresh]\n' "$0" >&2; exit 64; }
 
 # bash 3.2-safe SCRIPT_DIR (no external dirname)
 _src="${BASH_SOURCE[0]}"
@@ -120,17 +130,20 @@ fi
 # guarantees a mid-deploy 401 once per token hour. Treat anything inside the
 # skew window as stale so the refresh path below runs first.
 SKEW_MS=300000  # 5 min — must exceed worst-case deploy duration after this call
+REJECTED_AT=""
 if [ -n "$TF" ]; then
   AT=$(token_field "$TF" "accessToken")
   IDT=$(token_field "$TF" "idToken")
   EXP=$(token_field "$TF" "expiresAt")
+  REJECTED_AT="$AT"
   [ -n "$EXP" ] || EXP=0
-  if [ -n "$AT" ] && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
+  if [ "$FORCE_REFRESH" -eq 0 ] && [ -n "$AT" ] \
+    && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
     emit "{\"status\":\"ok\",\"jwt\":\"$AT\",\"id_token\":\"$IDT\",\"expires_at\":$EXP,\"source\":\"cache\"}"
   fi
 fi
 
-# 3. Refresh path (token exists but stale)
+# 3. Refresh path (token exists but stale, or the API rejected it)
 if [ -n "$TF" ]; then
   RT=$(token_field "$TF" "refreshToken")
   if [ -n "$RT" ]; then
@@ -144,10 +157,17 @@ if [ -n "$TF" ]; then
       IDT=$(token_field "$TOKEN_FILE" "idToken")
       EXP=$(token_field "$TOKEN_FILE" "expiresAt")
       [ -n "$EXP" ] || EXP=0
+      TOKEN_CHANGED=1
+      if [ "$FORCE_REFRESH" -eq 1 ] && [ "$AT" = "$REJECTED_AT" ]; then
+        TOKEN_CHANGED=0
+      fi
       # Same skew applies: if hq-auth-refresh silently no-opped, the on-disk
       # token is unchanged and still inside the window. Fall through to login
       # rather than hand the caller a token that dies mid-deploy.
-      if [ -n "$AT" ] && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
+      # A forced refresh additionally requires a different access token: expiry
+      # alone cannot rehabilitate the token the API just rejected.
+      if [ "$TOKEN_CHANGED" -eq 1 ] && [ -n "$AT" ] \
+        && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
         emit "{\"status\":\"ok\",\"jwt\":\"$AT\",\"id_token\":\"$IDT\",\"expires_at\":$EXP,\"source\":\"refresh\"}"
       fi
     fi

@@ -388,10 +388,14 @@ write_op_targets_protected() {
 }
 
 redirect_targets_protected() {
-  local cmd="$1" token_re="$2" shell_record token
+  local cmd="$1" token_re="$2" shell_record segment token i
   local -a argv
+  WRITE_TARGET_PROTECTED_CWD="no"
+  WRITE_TARGET_PROTECTED_VARS=""
   while IFS= read -r shell_record; do
     [ -n "$shell_record" ] || continue
+    segment="${shell_record//$'\037'/ }"
+    record_segment_context "$segment" "$token_re"
     IFS=$'\037' read -r -a argv <<< "$shell_record"
     for ((i=0; i<${#argv[@]}; i++)); do
       case "${argv[$i]}" in

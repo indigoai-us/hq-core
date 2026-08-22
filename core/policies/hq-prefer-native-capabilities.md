@@ -5,7 +5,7 @@ when: always || artifact || canvas || share || deploy || publish || present || s
 on: [SessionStart, UserPromptSubmit, AssistantIntent]
 enforcement: hard
 tier: 1
-version: 1
+version: 2
 created: 2026-07-15
 source: prd:hq-prefer-native-capabilities/US-001
 public: true
@@ -13,18 +13,23 @@ public: true
 
 ## Rule
 
-Share results via /deploy or /hq-share and use secrets via /hq-secrets, hq run, or hq secrets exec — never runtime canvases, artifacts, or ad-hoc hosting.
+Use /deploy for URL-shaped deliverables and /hq-share for vault paths; explicitly requested local Slack attachments may use the native audited upload helper.
 
 Deliverables land on HQ-governed infrastructure in **every** runtime (Claude
-Code, Codex, Grok Build, Slack-connected agents). Do **NOT** deliver results
-through runtime-native surfaces:
+Code, Codex, Grok Build, Slack-connected agents). Do **NOT** publish or host
+results through runtime-native surfaces:
 
 - **Claude artifacts / Claude canvas** — rendering surfaces, not delivery
   channels. No access control, no vault, no tenant isolation.
 - **Grok message canvas** — same rule: the canvas may render a preview, but
   the deliverable still goes through `/deploy`.
-- **Slack canvas / Slack file attachments** — do not upload artifacts as
-  Slack files or canvases; deploy first, then share the link.
+- **Slack canvas** — a rendering surface, not a delivery channel. Deploy a
+  URL-shaped deliverable first, then share the link.
+- **Slack file attachments** — when the user explicitly asks to attach a local
+  file in Slack, use the native audited Slack upload helper. A requested file
+  attachment is delivery inside an already-authorized Slack conversation, not
+  publishing or hosting an artifact. This exception does not authorize posting
+  to a different or unrequested channel.
 - **Ad-hoc hosting** — one-off local servers, pastebins, gists, unmanaged
   buckets, or any hosting reached outside HQ commands.
 
@@ -34,6 +39,7 @@ HQ-native replacements:
 |------|-----|
 | Share a URL-shaped artifact (report, dashboard, deck, site) | `/deploy` |
 | Share a vault path | `/hq-share <path>` |
+| Attach a local file in the authorized Slack conversation, when explicitly requested | Native audited Slack upload helper |
 | Browse or grant vault access | `/hq-files` |
 | Use a credential / secret / token in a command | `/hq-secrets`, `hq run`, `hq secrets exec` |
 
@@ -41,9 +47,10 @@ Never paste secret values into any chat, canvas, artifact, or file surface —
 inject them by name through the secrets commands above.
 
 A runtime canvas MAY serve as an ephemeral preview while iterating. The moment
-something is a deliverable — the user asks to share, send, present, publish,
-or keep it — it goes through `/deploy` (URL artifacts) or `/hq-share` (vault
-paths).
+something is a URL-shaped deliverable — the user asks to publish, host,
+present, or keep it at a link — it goes through `/deploy`. Vault paths go
+through `/hq-share`. A request to attach a local file directly in the current
+Slack conversation uses the narrowly scoped attachment exception above.
 
 Deploy-flow detail lives in the companion policies; this rule adds the
 runtime-surface preference layer and intentionally does not duplicate them:
@@ -58,9 +65,10 @@ runtime-surface preference layer and intentionally does not duplicate them:
 `hq-deploy-reinforcement` steers agents away from external hosts (Vercel,
 Netlify, S3) but never mentions runtime artifact/canvas surfaces, so sessions
 in Claude, Codex, Grok, and Slack runtimes still defaulted to artifacts,
-message canvas, or file uploads — deliveries that bypass HQ ACLs, the vault,
-and tenant isolation. This policy closes that gap as a hard, always-injected
-baseline across all companies.
+message canvas, or unrequested file uploads — deliveries that bypass HQ ACLs,
+the vault, and tenant isolation. This policy closes that gap as a hard,
+always-injected baseline across all companies while preserving an explicitly
+authorized, audited Slack attachment path.
 
 `when:` carries an explicit `always` head because `on: [SessionStart]`
 policies are still gated by their `when:` expression at session start, and

@@ -48,9 +48,10 @@ session_skill_read_frontmatter() {
 #   Builds internal catalog state. Prints skillsAvailable on stdout.
 session_skill_catalog_build() {
   local root="${1:-}" company="${2:-}"
-  local max_bytes skill_dir f fm n d line lb
-  local count=0 rendered_bytes=0
-  local tsv_file render_file list_file
+  local max_bytes skill_dir f fm n d line lb name_line name_bytes
+  local full_line full_bytes remaining_name_bytes indicator indicator_bytes
+  local count=0 rendered_bytes=0 name_only_bytes=0
+  local tsv_file render_file list_file catalog_file
 
   SESSION_SKILLS_AVAILABLE=0
   SESSION_SKILL_CATALOG_TSV=""
@@ -68,9 +69,11 @@ session_skill_catalog_build() {
   tsv_file="$(mktemp)"
   render_file="$(mktemp)"
   list_file="$(mktemp)"
+  catalog_file="$(mktemp)"
   : > "$tsv_file"
   : > "$render_file"
   : > "$list_file"
+  : > "$catalog_file"
 
   # Build ordered candidate list: company first, then root, then packages.
   # Format per line: origin<TAB>path
@@ -115,26 +118,69 @@ session_skill_catalog_build() {
     esac
     names_blob="${names_blob}${n}"$'\n'
     printf '%s\t%s\t%s\n' "$n" "$f" "$origin" >> "$tsv_file"
+    printf '%s\t%s\n' "$n" "$d" >> "$catalog_file"
     count=$((count + 1))
-    if [ -n "$d" ]; then
-      line="- /$n — $d"
-    else
-      line="- /$n"
-    fi
-    lb="$(printf '%s\n' "$line" | wc -c | tr -d '[:space:]')"
-    case "$lb" in ''|*[!0-9]*) lb=0 ;; esac
-    if [ $((rendered_bytes + lb)) -le "$max_bytes" ]; then
+  done < "$list_file"
+
+  # Names are the catalog's discovery contract. Calculate their minimum total
+  # first, then spend only surplus bytes on descriptions. This prevents early
+  # verbose entries from silently crowding later skill names out of the prompt.
+  while IFS=$'\t' read -r n d || [ -n "${n:-}" ]; do
+    [ -n "${n:-}" ] || continue
+    name_line="- /$n"
+    name_bytes="$(printf '%s\n' "$name_line" | wc -c | tr -d '[:space:]')"
+    case "$name_bytes" in ''|*[!0-9]*) name_bytes=0 ;; esac
+    name_only_bytes=$((name_only_bytes + name_bytes))
+  done < "$catalog_file"
+
+  if [ "$name_only_bytes" -le "$max_bytes" ]; then
+    remaining_name_bytes="$name_only_bytes"
+    while IFS=$'\t' read -r n d || [ -n "${n:-}" ]; do
+      [ -n "${n:-}" ] || continue
+      name_line="- /$n"
+      name_bytes="$(printf '%s\n' "$name_line" | wc -c | tr -d '[:space:]')"
+      case "$name_bytes" in ''|*[!0-9]*) name_bytes=0 ;; esac
+      remaining_name_bytes=$((remaining_name_bytes - name_bytes))
+      line="$name_line"
+      lb="$name_bytes"
+      if [ -n "${d:-}" ]; then
+        full_line="$name_line — $d"
+        full_bytes="$(printf '%s\n' "$full_line" | wc -c | tr -d '[:space:]')"
+        case "$full_bytes" in ''|*[!0-9]*) full_bytes="$name_bytes" ;; esac
+        if [ $((rendered_bytes + full_bytes + remaining_name_bytes)) -le "$max_bytes" ]; then
+          line="$full_line"
+          lb="$full_bytes"
+        fi
+      fi
       printf '%s\n' "$line" >> "$render_file"
       rendered_bytes=$((rendered_bytes + lb))
+    done < "$catalog_file"
+  else
+    indicator="- (catalog truncated)"
+    indicator_bytes="$(printf '%s\n' "$indicator" | wc -c | tr -d '[:space:]')"
+    case "$indicator_bytes" in ''|*[!0-9]*) indicator_bytes=0 ;; esac
+    while IFS=$'\t' read -r n d || [ -n "${n:-}" ]; do
+      [ -n "${n:-}" ] || continue
+      name_line="- /$n"
+      name_bytes="$(printf '%s\n' "$name_line" | wc -c | tr -d '[:space:]')"
+      case "$name_bytes" in ''|*[!0-9]*) name_bytes=0 ;; esac
+      if [ $((rendered_bytes + name_bytes + indicator_bytes)) -le "$max_bytes" ]; then
+        printf '%s\n' "$name_line" >> "$render_file"
+        rendered_bytes=$((rendered_bytes + name_bytes))
+      fi
+    done < "$catalog_file"
+    if [ $((rendered_bytes + indicator_bytes)) -le "$max_bytes" ]; then
+      printf '%s\n' "$indicator" >> "$render_file"
+      rendered_bytes=$((rendered_bytes + indicator_bytes))
     fi
-  done < "$list_file"
+  fi
 
   SESSION_SKILLS_AVAILABLE="$count"
   SESSION_SKILL_CATALOG_TSV="$(cat "$tsv_file")"
   SESSION_SKILL_CATALOG_RENDERED_BYTES="$rendered_bytes"
   SESSION_SKILL_CATALOG_BODY="$(cat "$render_file")"
 
-  rm -f "$tsv_file" "$render_file" "$list_file"
+  rm -f "$tsv_file" "$render_file" "$list_file" "$catalog_file"
   echo "$count"
   return 0
 }

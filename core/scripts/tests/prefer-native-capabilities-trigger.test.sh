@@ -12,6 +12,8 @@
 #   4. Per-session dedupe: the slug fires at most once per session.
 #   5. The policy file passes .claude/hooks/validate-policy-frontmatter.sh
 #      (simulated Write PreToolUse payload).
+#   6. An explicitly requested local Slack file attachment may use the audited
+#      native upload helper without weakening /deploy or channel authorization.
 #
 # Explicitly wired into .github/workflows/pr-checks.yml — tests here are NOT
 # auto-discovered (indigo-hq-core-staging-pr-mechanics rule 3).
@@ -21,6 +23,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HOOK="$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
 VALIDATOR="$ROOT/.claude/hooks/validate-policy-frontmatter.sh"
 POLICY="$ROOT/core/policies/hq-prefer-native-capabilities.md"
+POLICY_TEXT="$(tr '\n' ' ' < "$POLICY" | tr -s '[:space:]' ' ')"
 SLUG="hq-prefer-native-capabilities"
 PASS=0; FAIL=0
 
@@ -87,6 +90,33 @@ if command -v jq >/dev/null 2>&1; then
   fi
 else
   fail "validate-policy-frontmatter.sh allows the policy" "jq unavailable to build hook payload"
+fi
+
+echo "== 6. Requested Slack attachment exception preserves sharing boundaries =="
+if grep -Fq "explicitly asks to attach a local file in Slack" <<< "$POLICY_TEXT" \
+  && grep -Fq "native audited Slack upload helper" <<< "$POLICY_TEXT"; then
+  ok "explicit local-file request permits the audited Slack upload helper"
+else
+  fail "explicit local-file request permits the audited Slack upload helper" \
+    "expected the policy to name both explicit authorization and the native audited helper"
+fi
+if grep -Fq "does not authorize posting to a different or unrequested channel" <<< "$POLICY_TEXT" \
+  && grep -Fq "not publishing or hosting an artifact" <<< "$POLICY_TEXT"; then
+  ok "attachment exception is scoped to the authorized conversation"
+else
+  fail "attachment exception is scoped to the authorized conversation" \
+    "expected channel authorization and attachment-vs-publishing boundaries"
+fi
+if grep -Fq '| Share a URL-shaped artifact (report, dashboard, deck, site) | `/deploy` |' "$POLICY"; then
+  ok "URL-shaped deliverables still prefer /deploy"
+else
+  fail "URL-shaped deliverables still prefer /deploy" \
+    "expected the HQ-native replacement table to retain the /deploy preference"
+fi
+if grep -Fq "do not upload artifacts as" "$POLICY"; then
+  fail "blanket Slack-file prohibition removed" "policy still prohibits every Slack file upload"
+else
+  ok "blanket Slack-file prohibition removed"
 fi
 
 echo
