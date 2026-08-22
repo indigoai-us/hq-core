@@ -7,6 +7,8 @@ ROOT="$(git rev-parse --show-toplevel)"
 CORE_YAML="$ROOT/core/core.yaml"
 SETTINGS="$ROOT/.claude/settings.json"
 LOCAL_SETTINGS="$ROOT/.claude/settings.local.json"
+CODEX_ADAPTER="$ROOT/.codex/hooks/hq-codex-hook-adapter.sh"
+GROK_ADAPTER="$ROOT/.grok/hooks/hq-grok-hook-adapter.sh"
 UPDATE_SKILL="$ROOT/.claude/skills/update-hq/SKILL.md"
 SETUP="$ROOT/core/scripts/setup.sh"
 DOC="$ROOT/core/docs/hq/HOOKS-NOT-FIRING.md"
@@ -35,6 +37,27 @@ else
     || fail "stable hq-core must not ship a checkpoint gate override"
 fi
 pass "tracked settings retain SessionStart + PreToolUse hooks without local shadowing"
+
+echo "[1b] company skills use only canonical namespaced reindexing"
+for matcher in Write Edit MultiEdit; do
+  count="$(jq --arg matcher "$matcher" '[
+    .hooks.PostToolUse[]
+    | select(.matcher == $matcher)
+    | .hooks[]
+    | select(.command | contains("/.claude/hooks/reindex.sh"))
+  ] | length' "$SETTINGS")"
+  [ "$count" -eq 1 ] \
+    || fail "$matcher must dispatch canonical reindex.sh exactly once (got $count)"
+done
+for runtime_wiring in "$SETTINGS" "$CODEX_ADAPTER" "$GROK_ADAPTER"; do
+  grep -Fq 'auto-mirror-company-skill' "$runtime_wiring" \
+    && fail "legacy company-skill mirror remains wired in ${runtime_wiring#$ROOT/}"
+done
+for adapter in "$CODEX_ADAPTER" "$GROK_ADAPTER"; do
+  grep -Fq 'hqad_iter_settings' "$adapter" \
+    || fail "${adapter#$ROOT/} does not dispatch the canonical settings hook list"
+done
+pass "all runtimes inherit canonical reindexing without the legacy prefix mirror"
 
 grep -Fq -- "--exclude='.claude/settings.local.json'" "$PROMOTE_WORKFLOW" \
   || fail "staging-local settings must be excluded from stable hq-core promotion"

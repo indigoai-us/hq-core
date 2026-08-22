@@ -34,6 +34,24 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/derive-trigger-facts.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# macOS /usr/bin/awk rejects literal newlines in `-v name=value` arguments.
+# Put a compatibility shim first on PATH so this regression is reproducible on
+# Linux too: normal awk invocations pass through, while newline-bearing argv
+# fails in the same way as BSD awk.
+REAL_AWK="$(command -v awk)"
+mkdir -p "$TMP/bin"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'previous=' \
+  'for arg in "$@"; do' \
+  "  if [ \"\$previous\" = -v ]; then case \"\$arg\" in *\$'\\n'*) exit 2 ;; esac; fi" \
+  '  previous="$arg"' \
+  'done' \
+  'exec "$REAL_AWK" "$@"' > "$TMP/bin/awk"
+chmod +x "$TMP/bin/awk"
+export REAL_AWK
+PATH="$TMP/bin:$PATH"
+export PATH
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # has <expected-token> <event> <json>  -> asserts token present in output
@@ -41,6 +59,15 @@ has() {
   local tok="$1" event="$2" json="$3" out
   out="$(printf '%s' "$json" | bash "$SRC" "$event" 2>/dev/null)" || fail "$event: script errored"
   printf '%s' " $out " | grep -qw "$tok" || fail "$event: expected token '$tok' in fact set, got: [$out]"
+}
+
+# has_all <event> <json> <expected-token...> -> one invocation, all facts present
+has_all() {
+  local event="$1" json="$2" out tok; shift 2
+  out="$(printf '%s' "$json" | bash "$SRC" "$event" 2>/dev/null)" || fail "$event: script errored"
+  for tok in "$@"; do
+    printf '%s' " $out " | grep -qw "$tok" || fail "$event: expected token '$tok' in fact set, got: [$out]"
+  done
 }
 
 # hasnot <unexpected-token> <event> <json>
@@ -82,6 +109,18 @@ has deploy UserPromptSubmit '{"prompt":"please deploy to prod"}'
 has push   UserPromptSubmit '{"prompt":"push my changes upstream"}'
 hasnot deploy UserPromptSubmit '{"prompt":"what does this function do?"}'
 
+# ---- Multi-line text survives the macOS awk boundary ----
+# Each text-bearing event must retain facts from every line. The prompt probe
+# mirrors the reported macOS reproduction exactly.
+J='{"tool_name":"Bash","tool_input":{"command":"alpha\nbravo charlie delta"}}'
+has_all PreToolUse "$J" alpha bravo charlie delta
+
+J='{"prompt":"alpha\nbravo charlie delta"}'
+has_all UserPromptSubmit "$J" alpha bravo charlie delta
+
+J='{"tool_name":"Bash","tool_response":"alpha\nbravo charlie delta"}'
+has_all PostToolUse "$J" alpha bravo charlie delta
+
 # ---- PostToolUse: tokens from tool OUTPUT, not just input ----
 J='{"tool_name":"Bash","tool_input":{"command":"./run"},"tool_response":{"stdout":"starting deploy to vercel"}}'
 has deploy PostToolUse "$J"
@@ -105,6 +144,14 @@ hasnot deploy UserPromptSubmit "$J"
 # the last user turn) and NOT "push" (which predates the last user turn).
 has deploy   AssistantIntent "$J"
 hasnot push  AssistantIntent "$J"
+
+MULTILINE_TRANSCRIPT="$TMP/multiline.jsonl"
+{
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"go"}}'
+  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"alpha\nbravo charlie delta"}]}}'
+} > "$MULTILINE_TRANSCRIPT"
+J="$(printf '{"prompt":"ok","transcript_path":"%s"}' "$MULTILINE_TRANSCRIPT")"
+has_all AssistantIntent "$J" alpha bravo charlie delta
 
 # AssistantIntent ignores the command and static facts entirely: a `git status`
 # command must NOT contribute `git` to the AssistantIntent fact set.
