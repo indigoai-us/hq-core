@@ -1,0 +1,53 @@
+{
+  "thread_id": "T-20260822-170712-deploy-401-refresh-retry",
+  "thread_path": "workspace/threads/T-20260822-170712-deploy-401-refresh-retry.json",
+  "created_at": "20260822T170711Z",
+  "intent": {
+    "title": "Handoff: deploy 401 refresh retry",
+    "summary": "Fixed deploy API authentication recovery so a 401 forces identity refresh and retries exactly once; failures stop later stages with redacted live-content diagnostics. Added creation, completion, retry-limit, refresh-failure, and resolver regression coverage. Committed as 2bed416."
+  },
+  "git": {
+    "branch": "fix/feedback-185-g7-deploy-does-not-refresh-an-expired-session",
+    "started_commit": "2bed416",
+    "finalized_commit": null,
+    "finalized_commit_note": "The exact handoff commit is emitted by handoff-finalize.sh as commit_after_finalize; a file cannot contain the hash of the commit that contains itself."
+  },
+  "files_touched": [
+    ".claude/skills/deploy/SKILL.md",
+    ".claude/skills/deploy/scripts/deploy-api-request.sh",
+    ".claude/skills/deploy/scripts/identity-resolve.sh",
+    ".claude/skills/deploy/scripts/tests/identity-resolve-skew.test.sh",
+    "core/scripts/tests/deploy-api-request.test.sh"
+  ],
+  "staged_paths": [
+    ".claude/skills/deploy/SKILL.md",
+    ".claude/skills/deploy/scripts/deploy-api-request.sh",
+    ".claude/skills/deploy/scripts/identity-resolve.sh",
+    ".claude/skills/deploy/scripts/tests/identity-resolve-skew.test.sh",
+    "core/scripts/tests/deploy-api-request.test.sh"
+  ],
+  "skipped_paths": [],
+  "verification": {
+    "notes": [],
+    "upstream_refs_compared": []
+  },
+  "status_summary": {
+    "counts": {
+      "tracked_changes": 0,
+      "session_touched_untracked": 0,
+      "baseline_untracked": 0,
+      "unrelated_untracked": 0,
+      "ignored": 1,
+      "baseline_noise": 0
+    },
+    "files": {
+      "tracked_changes": [],
+      "session_touched_untracked": [],
+      "baseline_untracked": [],
+      "unrelated_untracked": [],
+      "ignored": [
+        "workspace/threads/.handoff-tmp/"
+      ]
+    }
+  }
+}

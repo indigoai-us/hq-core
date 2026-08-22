@@ -93,7 +93,7 @@
     },
     "directMention": {
       "type": "boolean",
-      "description": "True when THIS inbound message directly @-mentioned the agent. Lets the model honour 'only reply when I @ you' instructions, which are unfollowable without it. Optional; absent means false."
+      "description": "True when THIS inbound message directly @-mentioned the agent. This is literal mention metadata, not whether the message was addressed; a verified Slack direct message is addressed without an @mention. Optional; absent means unknown."
     }
   }
 }
