@@ -185,9 +185,15 @@ function resolveBin(bin) {
     return process.env[envKey];
   }
   const home = homedir();
+  const managedToolchain =
+    process.env.HQ_TOOLCHAIN_DIR ||
+    join(home, "Library", "Application Support", "Indigo HQ", "toolchain");
   const candidates = [
     ...new Set([
       ...(process.env.PATH || "").split(":").filter(Boolean).map((p) => join(p, bin)),
+      join(managedToolchain, "npm-global", "bin", bin),
+      join(managedToolchain, "node", "bin", bin),
+      join(managedToolchain, "git", "bin", bin),
       join(home, ".cargo", "bin", bin),
       join(home, ".local", "bin", bin),
       join(home, "bin", bin),

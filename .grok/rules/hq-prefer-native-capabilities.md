@@ -17,9 +17,15 @@ land on HQ-governed infrastructure:
    credentials, tokens, or API keys. Never paste secret values into the
    canvas, a message, or a file.
 
-Never treat a canvas render, a message attachment, or ad-hoc hosting
-(pastebins, gists, temp servers) as the delivered result — those bypass HQ
-ACLs, the vault, and tenant isolation.
+An explicitly requested local file attachment is different from publishing or
+hosting an artifact. When the user asks to attach a local file in the current,
+authorized Slack conversation, use the native audited Slack upload helper.
+This does not authorize posting to another or unrequested channel.
+
+Never treat a canvas render, an unrequested message attachment, or ad-hoc
+hosting (pastebins, gists, temp servers) as the delivered result — those bypass
+HQ ACLs, the vault, and tenant isolation. URL-shaped deliverables still prefer
+`/deploy`.
 
 Source of truth (full rule + rationale):
 

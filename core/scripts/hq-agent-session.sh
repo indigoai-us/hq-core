@@ -585,8 +585,9 @@ main() {
   # instruction like "only reply when I @ you" is unfollowable: the rehydrated
   # thread shows the stand-down order but nothing says the current message
   # satisfies it, so the agent stays silent when it was in fact addressed
-  # (observed live 2026-07-26). Absent/false keeps the prior wording.
-  session_append_mention_posture "$direct_mention" "$run_dir/system.txt" || true
+  # (observed live 2026-07-26). Channel and trust distinguish an inherently
+  # addressed verified DM from an unmentioned turn in a followed channel.
+  session_append_mention_posture "$direct_mention" "$run_dir/system.txt" "$channel" "$sender_verified" "$conv_key" || true
   # Keep the live status line meaningful — see session_append_status_notes.
   session_append_status_notes "$run_dir/system.txt" || true
   session_timing_end

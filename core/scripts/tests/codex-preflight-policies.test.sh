@@ -7,8 +7,9 @@
 # synthetic SessionStart payload, so any on:[SessionStart] policy in
 # core/policies/ must surface through it. Asserts:
 #   1. `codex-preflight.sh policies` output contains hq-prefer-native-capabilities.
-#   2. .grok/rules/hq-prefer-native-capabilities.md exists and is non-empty
-#      (Grok auto-scans .grok/rules/ — the Grok-side pointer).
+#   2. .grok/rules/hq-prefer-native-capabilities.md exists, retains /deploy for
+#      URL artifacts, and permits explicitly requested local Slack attachments
+#      through the native audited upload helper.
 #   3. codex-skill-bridge.sh status still runs cleanly (no regression).
 #
 # Dedupe is session-scoped: the preflight stamps a per-session session_id
@@ -80,6 +81,13 @@ if grep -Fq "/deploy" "$GROK_RULE" 2>/dev/null && grep -Fq "canvas" "$GROK_RULE"
   ok "grok rule covers canvas-vs-/deploy distinction"
 else
   fail "grok rule covers canvas-vs-/deploy distinction" "expected 'canvas' and '/deploy' mentions"
+fi
+if grep -Fq "explicitly requested local file" "$GROK_RULE" 2>/dev/null \
+  && grep -Fq "native audited Slack upload helper" "$GROK_RULE" 2>/dev/null; then
+  ok "grok rule permits explicitly requested local Slack attachments"
+else
+  fail "grok rule permits explicitly requested local Slack attachments" \
+    "expected the scoped Slack-file exception and audited helper"
 fi
 
 echo "== 3. codex-skill-bridge.sh status regression smoke =="
