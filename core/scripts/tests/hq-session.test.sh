@@ -105,6 +105,16 @@ case "$real_out" in
   *"<company-policy-digest"*) : ;;
   *) fail "a real company bind must surface its hard-policy digest" ;;
 esac
+# The frontmatter id is deliberately different from the filename (realco-rule
+# vs r.md). Each surfaced rule must identify the real file that can be opened;
+# the company qmd collection indexes knowledge/, not policies/.
+case "$real_out" in
+  *'- [hard] **realco-rule**: Do the realco thing. Full text: `companies/realco/policies/r.md`.'*) : ;;
+  *) fail "digest must identify the real policy file when id and filename differ: $real_out" ;;
+esac
+case "$real_out" in
+  *"qmd get -c"*) fail "digest must not advertise qmd retrieval for company policies: $real_out" ;;
+esac
 
 personal_out="$("$HS" --session-id sess-personal set company_slug personal)"
 case "$personal_out" in
@@ -149,13 +159,23 @@ case "$cap_out" in
   *"1 more hard policy not shown"*) : ;;
   *) fail "count-cap overflow must be summarized, not silent: $cap_out" ;;
 esac
-bytes_out="$(HQ_COMPANY_BIND_POLICY_BYTES=40 "$HS" --session-id sess-bytes set company_slug bigco)"
+case "$cap_out" in
+  *"qmd get -c"*) fail "count-cap overflow must not advertise qmd policy retrieval: $cap_out" ;;
+esac
+assert_eq "$(printf '%s\n' "$cap_out" | grep -c 'Browse `companies/bigco/policies/` for the full set')" "2" \
+  "count-cap header and overflow must use the same valid retrieval guidance"
+bytes_out="$(HQ_COMPANY_BIND_POLICY_BYTES=160 "$HS" --session-id sess-bytes set company_slug bigco)"
 assert_eq "$(printf '%s\n' "$bytes_out" | grep -c '^- \[hard\]')" "1" \
   "byte cap must limit emitted policy lines"
 case "$bytes_out" in
   *"2 more hard policies not shown"*) : ;;
   *) fail "byte-cap overflow must be summarized, not silent: $bytes_out" ;;
 esac
+case "$bytes_out" in
+  *"qmd get -c"*) fail "byte-cap overflow must not advertise qmd policy retrieval: $bytes_out" ;;
+esac
+assert_eq "$(printf '%s\n' "$bytes_out" | grep -c 'Browse `companies/bigco/policies/` for the full set')" "2" \
+  "byte-cap header and overflow must use the same valid retrieval guidance"
 
 # ── Wrong-session bind regression ──────────────────────────────────────────────
 # .current still says sess-1 (another session fired the most recent hook), but
