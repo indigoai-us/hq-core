@@ -5,9 +5,9 @@ when: always
 on: [SessionStart]
 enforcement: soft
 public: true
-version: 2
+version: 3
 created: 2026-05-08
-updated: 2026-05-12
+updated: 2026-08-22
 source: session-learning; user-correction
 ---
 
@@ -72,11 +72,11 @@ The user's reasoning, as observed: each decision benefits from a focused educati
 
 Sequential one-at-a-time questioning is slower per-decision but produces decisively better decisions and richer working artifacts.
 
-## Relationship to `brainstorm-use-decision-mode`
+## Relationship to `/brainstorm`
 
-This policy is **additive** to [brainstorm-use-decision-mode](brainstorm-use-decision-mode.md):
+This policy is **additive** to the shipped [brainstorm workflow](../../.claude/skills/brainstorm/SKILL.md):
 
-- That policy says: `/brainstorm` MUST use `AskUserQuestion` (not markdown numbered lists).
+- The brainstorm workflow requires a structured picker whenever suitable and one question per call.
 - This policy says: `AskUserQuestion`, Codex `request_user_input`, or any equivalent picker MUST be invoked one question per call (not batched), in any skill.
 
 Together: the harness's interactive picker is the canonical input surface, and it's always used one question at a time.

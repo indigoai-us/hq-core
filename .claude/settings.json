@@ -27,7 +27,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-worktree-session \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-worktree-session.sh\" PreToolUse",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -37,12 +37,12 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-glob \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-glob.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -52,12 +52,12 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-grep \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-grep.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -67,12 +67,12 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" warn-cross-company-settings \"$CLAUDE_PROJECT_DIR/.claude/hooks/warn-cross-company-settings.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -82,37 +82,37 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" detect-secrets \"$CLAUDE_PROJECT_DIR/.claude/hooks/detect-secrets.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-core-writes-bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-core-writes-bash.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
-            "timeout": 10
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-root-git-mutation \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-root-git-mutation.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-foreground-timeout-over-harness-ceiling \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-foreground-timeout-over-harness-ceiling.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-on-active-run \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-on-active-run.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
@@ -122,12 +122,12 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-unsafe-package-install \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-unsafe-package-install.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" surface-company-infra-policy \"$CLAUDE_PROJECT_DIR/.claude/hooks/surface-company-infra-policy.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -137,42 +137,42 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" protect-core \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-core.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-core-writes \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-core-writes.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-inline-story-impl \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-inline-story-impl.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
-            "timeout": 10
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-on-active-run \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-on-active-run.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" env-file-no-trailing-newline \"$CLAUDE_PROJECT_DIR/.claude/hooks/env-file-no-trailing-newline.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-plans-dir-during-deep-plan \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-plans-dir-during-deep-plan.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" validate-policy-frontmatter \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate-policy-frontmatter.sh\"",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       },
@@ -182,47 +182,47 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" protect-core \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-core.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-core-writes \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-core-writes.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-inline-story-impl \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-inline-story-impl.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
-            "timeout": 10
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-on-active-run \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-on-active-run.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" env-file-no-trailing-newline \"$CLAUDE_PROJECT_DIR/.claude/hooks/env-file-no-trailing-newline.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" route-company-skill-creation \"$CLAUDE_PROJECT_DIR/.claude/hooks/route-company-skill-creation.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-plans-dir-during-deep-plan \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-plans-dir-during-deep-plan.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" validate-policy-frontmatter \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate-policy-frontmatter.sh\"",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       },
@@ -232,22 +232,22 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-core-writes \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-core-writes.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
-            "timeout": 10
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-plans-dir-during-deep-plan \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-plans-dir-during-deep-plan.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" validate-policy-frontmatter \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate-policy-frontmatter.sh\"",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       },
@@ -257,7 +257,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       },
@@ -267,7 +267,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-builtin-plan-mode-during-deep-plan \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-builtin-plan-mode-during-deep-plan.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -288,22 +288,22 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" auto-checkpoint-trigger \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto-checkpoint-trigger.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" hq-auto-acl-suggest \"$CLAUDE_PROJECT_DIR/.claude/hooks/hq-auto-acl-suggest.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" screenshot-resize-trigger \"$CLAUDE_PROJECT_DIR/.claude/hooks/screenshot-resize-trigger.sh\"",
-            "timeout": 10
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" journal-due \"$CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
@@ -313,7 +313,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh\"",
-            "timeout": 20
+            "timeout": 30
           }
         ]
       },
@@ -323,32 +323,27 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" auto-checkpoint-trigger \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto-checkpoint-trigger.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" hq-auto-acl-suggest \"$CLAUDE_PROJECT_DIR/.claude/hooks/hq-auto-acl-suggest.sh\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" auto-mirror-company-skill \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto-mirror-company-skill.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh\"",
-            "timeout": 20
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" hq-autocommit \"$CLAUDE_PROJECT_DIR/.claude/hooks/hq-autocommit.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" journal-due \"$CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -358,27 +353,27 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" auto-checkpoint-trigger \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto-checkpoint-trigger.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" hq-auto-acl-suggest \"$CLAUDE_PROJECT_DIR/.claude/hooks/hq-auto-acl-suggest.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh\"",
-            "timeout": 20
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" hq-autocommit \"$CLAUDE_PROJECT_DIR/.claude/hooks/hq-autocommit.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" journal-due \"$CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -388,22 +383,22 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" hq-auto-acl-suggest \"$CLAUDE_PROJECT_DIR/.claude/hooks/hq-auto-acl-suggest.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/reindex.sh\"",
-            "timeout": 20
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" hq-autocommit \"$CLAUDE_PROJECT_DIR/.claude/hooks/hq-autocommit.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" journal-due \"$CLAUDE_PROJECT_DIR/.claude/hooks/journal-due.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -413,7 +408,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" native-plan-project-sync \"$CLAUDE_PROJECT_DIR/.claude/hooks/native-plan-project-sync.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -423,7 +418,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" journal-autocapture \"$CLAUDE_PROJECT_DIR/.claude/hooks/journal-autocapture.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -433,7 +428,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" journal-autocapture \"$CLAUDE_PROJECT_DIR/.claude/hooks/journal-autocapture.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -443,7 +438,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" journal-autocapture \"$CLAUDE_PROJECT_DIR/.claude/hooks/journal-autocapture.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -453,7 +448,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" journal-autocapture \"$CLAUDE_PROJECT_DIR/.claude/hooks/journal-autocapture.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -474,7 +469,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" precompact-thrashing-detector \"$CLAUDE_PROJECT_DIR/.claude/hooks/precompact-thrashing-detector.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -484,12 +479,21 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" auto-checkpoint-precompact \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto-checkpoint-precompact.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" journal-precompact \"$CLAUDE_PROJECT_DIR/.claude/hooks/journal-precompact.sh\"",
-            "timeout": 5
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" purge-policy-ledger-precompact \"$CLAUDE_PROJECT_DIR/.claude/hooks/purge-policy-ledger-precompact.sh\"",
+            "timeout": 30
           }
         ]
       },
@@ -510,37 +514,37 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" observe-patterns \"$CLAUDE_PROJECT_DIR/.claude/hooks/observe-patterns.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" cleanup-mcp-processes \"$CLAUDE_PROJECT_DIR/.claude/hooks/cleanup-mcp-processes.sh\"",
-            "timeout": 10
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" context-warning-50 \"$CLAUDE_PROJECT_DIR/.claude/hooks/context-warning-50.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" checkpoint-stop-gate \"$CLAUDE_PROJECT_DIR/.claude/hooks/checkpoint-stop-gate.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" capture-estimates \"$CLAUDE_PROJECT_DIR/.claude/hooks/capture-estimates.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-capability-link-render \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-capability-link-render.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-humanize-before-send \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-humanize-before-send.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -561,7 +565,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-worktree-session \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-worktree-session.sh\" SessionStart",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
@@ -576,47 +580,47 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" check-bridge-health \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-claude-desktop-bridge-health.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" check-repo-active-runs \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-repo-active-runs.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" inject-local-context \"$CLAUDE_PROJECT_DIR/.claude/hooks/inject-local-context.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" auto-startwork \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto-startwork.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" check-core-yaml-parity \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-core-yaml-parity.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" load-journal-index-on-start \"$CLAUDE_PROJECT_DIR/.claude/hooks/load-journal-index-on-start.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" check-hq-update \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-hq-update.sh\"",
-            "timeout": 10
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" repair-stale-review-base \"$CLAUDE_PROJECT_DIR/.claude/hooks/repair-stale-review-base.sh\"",
-            "timeout": 15
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" session-title \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -637,32 +641,32 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-hq-worktree-session \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-hq-worktree-session.sh\" UserPromptSubmit",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" rewrite-resume-sentinel \"$CLAUDE_PROJECT_DIR/.claude/hooks/rewrite-resume-sentinel.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" route-deep-plan-to-skill \"$CLAUDE_PROJECT_DIR/.claude/hooks/route-deep-plan-to-skill.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" auto-session-project \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto-session-project.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" natural-language-router \"$CLAUDE_PROJECT_DIR/.claude/hooks/natural-language-router.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" session-title \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-title.sh\"",
-            "timeout": 5
+            "timeout": 30
           },
           {
             "type": "command",

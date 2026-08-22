@@ -23,11 +23,16 @@ set -euo pipefail
 body_file=""
 url=""
 method=GET
+authorization=""
 for ((i = 1; i <= $#; i++)); do
   arg="${!i}"
   case "$arg" in
     -o) next=$((i + 1)); body_file="${!next}" ;;
     -X) next=$((i + 1)); method="${!next}" ;;
+    -H)
+      next=$((i + 1))
+      case "${!next}" in Authorization:*) authorization="${!next}" ;; esac
+      ;;
     http://*|https://*) url="$arg" ;;
   esac
 done
@@ -46,7 +51,15 @@ case "$url" in
 esac
 
 status=200
-if [ "$stage" = "$FAIL_STAGE" ]; then
+printf '%s %s\n' "$stage" "$authorization" >> "$MOCK_DIR/auth-calls"
+stage_calls="$(grep -c "^$method $url$" "$MOCK_DIR/calls" || true)"
+if [ "$stage" = "${REFRESH_STAGE:-}" ] && [ "$stage_calls" = 1 ]; then
+  status=401
+  body='{"error":{"code":"TOKEN_EXPIRED","message":"Expired token-secret-should-not-leak X-Amz-Signature=presigned-secret-should-not-leak"},"requestId":"req-401"}'
+elif [ "$stage" = "${REFRESH_STAGE:-}" ] && [ "${RETRY_STATUS:-200}" != 200 ]; then
+  status="$RETRY_STATUS"
+  body='{"error":{"code":"RETRY_DENIED","message":"Retry denied refreshed-secret-should-not-leak X-Amz-Signature=presigned-secret-should-not-leak"},"requestId":"req-retry"}'
+elif [ "$stage" = "$FAIL_STAGE" ]; then
   status="${FAIL_STATUS:-403}"
   body='{"error":{"code":"FORBIDDEN","message":"Denied token-secret-should-not-leak X-Amz-Signature=presigned-secret-should-not-leak"},"requestId":"req-403"}'
 elif [ "$stage" = "${INVALID_STAGE:-}" ]; then
@@ -57,10 +70,23 @@ printf '%s' "$status"
 STUB
 chmod +x "$TMP/bin/curl"
 
+cat > "$TMP/identity-resolve" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$MOCK_DIR/identity-calls"
+if [ "${REFRESH_RESULT:-ok}" = ok ]; then
+  printf '%s\n' '{"status":"ok","jwt":"refreshed-secret-should-not-leak","id_token":"id-secret-should-not-leak","expires_at":9999999999999,"source":"refresh"}'
+else
+  printf '%s\n' '{"status":"login_required","reason":"refresh failed token-secret-should-not-leak"}'
+fi
+STUB
+chmod +x "$TMP/identity-resolve"
+
 run_phase_c() {
   local request app_response deploy_response presigned_url
   request() {
-    HQ_DEPLOY_JWT="$TOKEN" "$SRC" --org acme --scope company --header 'X-Org-Slug: acme' "$@"
+    HQ_DEPLOY_JWT="$TOKEN" HQ_DEPLOY_IDENTITY_RESOLVER="$TMP/identity-resolve" \
+      "$SRC" --org acme --scope company --header 'X-Org-Slug: acme' "$@"
   }
 
   request --stage app-list --method GET --url http://api.test/api/apps --expect '.apps | type == "array"' >/dev/null || return
@@ -74,6 +100,8 @@ run_phase_c() {
 assert_case() {
   local stage="$1" expected_calls="$2" expected_method="$3" expected_url="$4" output code calls
   : > "$TMP/calls"
+  : > "$TMP/auth-calls"
+  : > "$TMP/identity-calls"
   set +e
   output="$(PATH="$TMP/bin:$PATH" MOCK_DIR="$TMP" FAIL_STAGE="$stage" run_phase_c 2>&1)"
   code=$?
@@ -106,21 +134,25 @@ assert_case s3-upload 4 PUT https://upload.test/archive
 echo '[4] 403 at completion retains completion stage context'
 assert_case deploy-completion 5 POST http://api.test/api/deploys/deploy-1/complete
 
-echo '[5] 401 is marked as the stale-login preview-only path'
+echo '[5] failed 401 refresh stops with an explicit live-content outcome'
 : > "$TMP/calls"
+: > "$TMP/auth-calls"
+: > "$TMP/identity-calls"
 set +e
-output="$(PATH="$TMP/bin:$PATH" MOCK_DIR="$TMP" FAIL_STAGE=app-creation FAIL_STATUS=401 run_phase_c 2>&1)"
+output="$(PATH="$TMP/bin:$PATH" MOCK_DIR="$TMP" FAIL_STAGE=app-creation FAIL_STATUS=401 REFRESH_RESULT=fail run_phase_c 2>&1)"
 code=$?
 set -e
 [ "$code" -ne 0 ] || fail "stale login unexpectedly succeeded"
 printf '%s' "$output" | grep -Fq 'status=401' \
   || fail "401 diagnostic missing status: $output"
-printf '%s' "$output" | grep -Fq 'auth=stale-login action=preview-only' \
-  || fail "401 did not surface stale-login handling: $output"
-pass 'stale login follows the documented preview-only path'
+printf '%s' "$output" | grep -Fq 'live content was not updated' \
+  || fail "401 did not explicitly preserve live content: $output"
+pass 'failed refresh explicitly reports that live content was not updated'
 
 echo '[6] malformed 2xx JSON fails schema validation before S3 upload'
 : > "$TMP/calls"
+: > "$TMP/auth-calls"
+: > "$TMP/identity-calls"
 set +e
 output="$(PATH="$TMP/bin:$PATH" MOCK_DIR="$TMP" FAIL_STAGE=none INVALID_STAGE=deploy-creation run_phase_c 2>&1)"
 code=$?
@@ -132,5 +164,70 @@ printf '%s' "$output" | grep -Fq 'stage=deploy-creation' \
 printf '%s' "$output" | grep -Fq 'api_code=INVALID_SUCCESS_RESPONSE' \
   || fail "malformed response was not rejected by schema validation: $output"
 pass 'malformed 2xx response is rejected before later calls'
+
+assert_refresh_success() {
+  local stage="$1" expected_calls="$2" output code
+  : > "$TMP/calls"
+  : > "$TMP/auth-calls"
+  : > "$TMP/identity-calls"
+  set +e
+  output="$(PATH="$TMP/bin:$PATH" MOCK_DIR="$TMP" FAIL_STAGE=none REFRESH_STAGE="$stage" run_phase_c 2>&1)"
+  code=$?
+  set -e
+  [ "$code" -eq 0 ] || fail "$stage did not continue after successful refresh: $output"
+  [ "$(wc -l < "$TMP/calls" | tr -d ' ')" = "$expected_calls" ] \
+    || fail "$stage successful refresh made the wrong number of requests: $output"
+  [ "$(wc -l < "$TMP/identity-calls" | tr -d ' ')" = 1 ] \
+    || fail "$stage did not refresh identity exactly once: $output"
+  grep -Fxq -- '--force-refresh' "$TMP/identity-calls" \
+    || fail "$stage did not force identity refresh"
+  [ "$(grep -c "^$stage Authorization: Bearer $TOKEN$" "$TMP/auth-calls")" = 1 ] \
+    || fail "$stage did not make exactly one request with the original token"
+  [ "$(grep -c "^$stage Authorization: Bearer refreshed-secret-should-not-leak$" "$TMP/auth-calls")" = 1 ] \
+    || fail "$stage did not retry exactly once with the refreshed token"
+  pass "$stage refreshes once, retries once, and continues deployment"
+}
+
+echo '[7] 401 at deploy creation refreshes once and continues through completion'
+assert_refresh_success deploy-creation 6
+
+echo '[8] 401 at deploy completion refreshes once and finishes the publish'
+assert_refresh_success deploy-completion 6
+
+echo '[9] failed refresh stops after deploy creation and redacts diagnostics'
+: > "$TMP/calls"
+: > "$TMP/auth-calls"
+: > "$TMP/identity-calls"
+set +e
+output="$(PATH="$TMP/bin:$PATH" MOCK_DIR="$TMP" FAIL_STAGE=none REFRESH_STAGE=deploy-creation REFRESH_RESULT=fail run_phase_c 2>&1)"
+code=$?
+set -e
+[ "$code" -ne 0 ] || fail 'failed refresh unexpectedly continued'
+[ "$(wc -l < "$TMP/calls" | tr -d ' ')" = 3 ] || fail "failed refresh ran a later deploy stage: $output"
+[ "$(wc -l < "$TMP/identity-calls" | tr -d ' ')" = 1 ] || fail "failed refresh was attempted more than once: $output"
+printf '%s' "$output" | grep -Fq 'live content was not updated' || fail "failed refresh omitted live-content outcome: $output"
+printf '%s' "$output" | grep -Fq "$TOKEN" && fail "failed refresh leaked the original token: $output"
+printf '%s' "$output" | grep -Fq 'refreshed-secret-should-not-leak' && fail "failed refresh leaked a refreshed token: $output"
+printf '%s' "$output" | grep -Fq "$SIGNATURE" && fail "failed refresh leaked a presigned signature: $output"
+pass 'failed refresh stops deployment with credential-redacted diagnostics'
+
+echo '[10] 401 retry at completion is attempted once and then stops'
+: > "$TMP/calls"
+: > "$TMP/auth-calls"
+: > "$TMP/identity-calls"
+set +e
+output="$(PATH="$TMP/bin:$PATH" MOCK_DIR="$TMP" FAIL_STAGE=none REFRESH_STAGE=deploy-completion RETRY_STATUS=401 run_phase_c 2>&1)"
+code=$?
+set -e
+[ "$code" -ne 0 ] || fail 'failed completion retry unexpectedly succeeded'
+[ "$(wc -l < "$TMP/calls" | tr -d ' ')" = 6 ] || fail "completion retry ran more than once: $output"
+[ "$(grep -c '^POST http://api.test/api/deploys/deploy-1/complete$' "$TMP/calls")" = 2 ] \
+  || fail "completion was not attempted exactly twice: $output"
+[ "$(wc -l < "$TMP/identity-calls" | tr -d ' ')" = 1 ] || fail "completion refreshed more than once: $output"
+printf '%s' "$output" | grep -Fq 'live content was not updated' || fail "failed retry omitted live-content outcome: $output"
+printf '%s' "$output" | grep -Fq "$TOKEN" && fail "failed retry leaked the original token: $output"
+printf '%s' "$output" | grep -Fq 'refreshed-secret-should-not-leak' && fail "failed retry leaked the refreshed token: $output"
+printf '%s' "$output" | grep -Fq "$SIGNATURE" && fail "failed retry leaked a presigned signature: $output"
+pass 'completion enforces one retry and redacts failed-retry diagnostics'
 
 echo 'ALL PASS: deploy-api-request'
