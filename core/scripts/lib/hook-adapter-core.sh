@@ -139,11 +139,60 @@ hqad_iter_settings() {
     return 0
   fi
 
-  # \x01 (SOH) separates matcher from command — it occurs in neither.
-  local line matcher command
-  while IFS= read -r line; do
-    matcher="${line%%$'\001'*}"
-    command="${line#*$'\001'}"
+  # Use jq's shell-escaped words with a plain-text record prefix. A literal
+  # control-byte delimiter here is not portable to Bash 3.2 (stock macOS), and
+  # a producer behind process substitution can fail without making the while
+  # loop fail. Capture jq first so query and framing failures fail closed.
+  local rows="" line decoded matcher command frame_failed=0
+  if ! rows="$(jq -r --arg ev "$event" '
+    (.hooks[$ev] // [])[]
+    | (.matcher // "") as $m
+    | (.hooks // [])[]
+    | select(.type == "command" and (.command | type == "string"))
+    | if (($m | type) != "string")
+        or ([$m, .command] | any(contains("\u0000") or contains("\n")))
+      then error("hook dispatch record contains an unsupported byte")
+      else "hqad-record " + ([$m, .command] | @sh)
+      end
+  ' "$settings" 2>/dev/null)"; then
+    hqad_fallback_records "$event" "$tool"
+    return 0
+  fi
+
+  # Validate every frame before emitting anything. This prevents a malformed
+  # later row from partially dispatching settings and then duplicating guards
+  # through the fallback set.
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      "hqad-record "*) decoded="${line#hqad-record }" ;;
+      *) frame_failed=1; break ;;
+    esac
+    # jq's @sh output is shell-escaped data, not executable settings content;
+    # eval only restores the two original strings as positional parameters.
+    eval "set -- $decoded" 2>/dev/null || {
+      frame_failed=1
+      break
+    }
+    if [ "$#" -ne 2 ]; then
+      frame_failed=1
+      break
+    fi
+  done <<EOF
+$rows
+EOF
+
+  if [ "$frame_failed" -ne 0 ]; then
+    hqad_fallback_records "$event" "$tool"
+    return 0
+  fi
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    decoded="${line#hqad-record }"
+    eval "set -- $decoded" 2>/dev/null
+    matcher="$1"
+    command="$2"
     [ -n "$command" ] || continue
     hqad_matcher_matches "$matcher" "$tool" "$event" || continue
     # Expand $CLAUDE_PROJECT_DIR (quoted and bare) to the resolved HQ root so
@@ -151,15 +200,9 @@ hqad_iter_settings() {
     command="${command//\"\$CLAUDE_PROJECT_DIR\"/\"$HQ_ROOT\"}"
     command="${command//\$CLAUDE_PROJECT_DIR/$HQ_ROOT}"
     hqad_classify_command "$command"
-  done < <(
-    jq -r --arg ev "$event" '
-      (.hooks[$ev] // [])[]
-      | (.matcher // "") as $m
-      | (.hooks // [])[]
-      | select(.type == "command" and (.command | type == "string"))
-      | $m + "" + .command
-    ' "$settings" 2>/dev/null
-  )
+  done <<EOF
+$rows
+EOF
 }
 
 # blocking|advisory for a hook. Event default + optional per-hook frontmatter

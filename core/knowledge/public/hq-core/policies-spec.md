@@ -78,6 +78,7 @@ Optional. Concrete examples of correct and incorrect behavior under this policy.
 | `source` | string | Origin of the policy: `manual`, `migration`, `task-completion`, `back-pressure-failure`, `user-correction`, `pattern-repetition` |
 | `learned_from` | string | Task ID or session reference (for auto-generated policies) |
 | `command` | string | Command name for a command-scoped policy (e.g. `prd`, `email`); pair with a `when:` keyed on the `/command` token |
+| `inject` | enum | `once` (default) or `always`. Sets injection **cadence** — how *often* the policy re-surfaces — and is orthogonal to `enforcement:` (which sets **depth**). See **Injection Cadence** below. |
 
 > **Removed:** the `applies_to` field and its stack-based filtering have been removed from the policy schema. Scope stack-specificity through the `when:` expression instead (e.g. `when: vercel`).
 
@@ -246,6 +247,34 @@ and the injector skips it because it has no `when:` trigger. The script is
 **strictly idempotent**: a policy that already declares `when:` (authored or
 human-tuned) is never rewritten — so it backfills new policies only, with zero
 writes in steady state. Hand-tuning a generated trigger is therefore permanent.
+
+### Injection Cadence (`inject:` decides how often)
+
+`when:`/`on:` decide **whether** a policy is injected and `enforcement:` decides
+**how much** of it; `inject:` is a third, orthogonal switch that decides **how
+often** it re-surfaces:
+
+| `inject` | Cadence |
+|----------|---------|
+| `once` (or omitted) | The policy fires **at most once per session**. After it is injected, its slug is recorded in the per-session ledger (`workspace/orchestrator/policy-trigger-state/<session-id>.txt`) and it is not injected again for the life of the session. This is the historical default and remains the right choice for almost every policy. |
+| `always` | The policy re-injects **once per user turn**. It is deduped only within a turn (via a separate per-turn ledger `<session-id>.turn.txt` that is truncated at each `UserPromptSubmit`), so a turn's many mid-turn Bash calls never repeat it, but every new user message re-surfaces it. Reserve this for a small number of rules that must stay continuously present in context. |
+
+Both cadences are still gated by `when:`/`on:` — an `always` policy only
+re-injects on the turns where its trigger actually matches. Pairing
+`inject: always` with `when: always` + `on: [SessionStart]` yields a rule that
+is present on every single turn; pairing it with a reactive `when:` yields a
+rule that re-appears the first time its condition is met in each turn it applies.
+
+**Compaction resets the ledgers.** The injected `<policy-reminder>` text lives
+in the conversation turns, so when autocompact condenses older turns that text
+is dropped from context. A PreCompact hook
+([`purge-policy-ledger-precompact.sh`](../../../../.claude/hooks/purge-policy-ledger-precompact.sh))
+deletes the current session's ledgers just before the compaction, so the next
+event re-injects the **entire** SessionStart baseline and every once-per-session
+policy — the guardrails come back exactly as at session start, rather than
+staying suppressed by a ledger that still lists them as "already injected". The
+purge is scoped strictly to the session id in the hook payload; it never wipes
+another live session's state.
 
 ## Optional Sections
 

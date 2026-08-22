@@ -65,7 +65,7 @@ The engine is **three phases**, structured by data-dependency. Independent work 
 
 | Script | Purpose | Returns |
 |--------|---------|---------|
-| `.claude/skills/deploy/scripts/identity-resolve.sh` | Resolves Cognito JWT (cache → refresh → login); jq preferred, node via `hook-lib.sh` | `{"status":"ok"\|"login_required"\|"missing_dependency",...}` |
+| `.claude/skills/deploy/scripts/identity-resolve.sh` | Resolves Cognito JWT (cache → refresh → login); `--force-refresh` bypasses a rejected cache token; jq preferred, node via `hook-lib.sh` | `{"status":"ok"\|"login_required"\|"missing_dependency",...}` |
 | `.claude/skills/deploy/scripts/sensitivity-check.sh <path> [user_msg]` | Classifies artifact sensitivity (filename-list grep, no content surfaces) | `{"sensitive":bool,"trigger":string\|null}` |
 | `.claude/skills/deploy/scripts/guardrails-check.sh <output_dir>` | Caps + builds tarball | `{"pass":bool,"reason":string\|null,"tarball_path":string,...}` |
 | `.claude/skills/deploy/scripts/deploy-api-request.sh` | Makes a checked Phase C API/S3 request | validated body on stdout; safe failure diagnostic on stderr |
@@ -752,14 +752,17 @@ deploy_request ssr-deploy --method POST --url "$API/api/apps/$APP_ID/deploy" \
 
 #### 401 handling
 
-`deploy-api-request.sh` is the only Phase C request path. On a non-2xx response it
-stops the phase before a later request runs and reports the stage, method,
-sanitized URL, status, API code/message, request ID, and non-secret org/scope.
-It strips Authorization values and the full query string (including presigned S3
-credentials). A 401 is explicitly marked `auth=stale-login action=preview-only`:
-fall back to the no-upload branch, present preview, and do not re-trigger login
-mid-deploy. A 403 is marked `authorization=forbidden` with the target org/scope
-so authorization failures are not mistaken for malformed responses.
+`deploy-api-request.sh` is the only Phase C request path. On a 401 from an
+authenticated request it calls `identity-resolve.sh --force-refresh` and retries
+that request exactly once with the new access token. A successful retry continues
+the current deploy. If refresh or the retry fails, it stops before any later
+stage and explicitly reports that live content was not updated. Other non-2xx
+responses also stop the phase. Diagnostics include the stage, method, sanitized
+URL, status, API code/message, request ID, and non-secret org/scope while
+stripping old and refreshed Authorization values and the full query string
+(including presigned S3 credentials). A 403 is marked `authorization=forbidden`
+with the target org/scope so authorization failures are not mistaken for
+malformed responses.
 
 ### C.2.6 — Enable comments (opt-in)
 
@@ -1047,7 +1050,7 @@ Then move on. Deploy is never the main event.
 
 | Script | Input | Returns |
 |--------|-------|---------|
-| `identity-resolve.sh` | (none — reads `~/.hq/cognito-tokens.json`) | `{"status":"ok","jwt":"...","id_token":"...","expires_at":<epoch-ms>,"source":"cache\|refresh\|login"}` or `{"status":"login_required","reason":"..."}` or `{"status":"missing_dependency","dep":"jq\|node","install":"..."}` (agent must show install help, not login upsell). `id_token` is the only sanctioned source of the HQ Pro token — a raw `jq` read of the token file skips the expiry skew and the refresh path |
+| `identity-resolve.sh` | `[--force-refresh]` (reads `~/.hq/cognito-tokens.json`) | `{"status":"ok","jwt":"...","id_token":"...","expires_at":<epoch-ms>,"source":"cache\|refresh\|login"}` or `{"status":"login_required","reason":"..."}` or `{"status":"missing_dependency","dep":"jq\|node","install":"..."}` (agent must show install help, not login upsell). `--force-refresh` bypasses the cache after an API 401. `id_token` is the only sanctioned source of the HQ Pro token — a raw `jq` read of the token file skips the expiry skew and the refresh path |
 | `sensitivity-check.sh <path> [user_msg]` | artifact path + latest user message excerpt | `{"sensitive":bool,"trigger":"companies-data-path\|private-repo\|pii-detected\|financial-filename\|user-stated-private"\|null}` |
 | `guardrails-check.sh <output_dir>` | build output directory | `{"pass":bool,"reason":string\|null,"tarball_path":string,"size_bytes":int,"sha256":string,"file_count":int}` |
 | `og-inject.sh <output_dir> [base_url] [app_name]` | static build dir (+ live base URL) | `{"injected":int,"image":"generated\|existing\|none","changed":bool}` |

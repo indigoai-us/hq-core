@@ -11,6 +11,8 @@
 # (a) token with an hour left      -> cache hit, and id_token is emitted
 # (b) token inside the skew window -> NOT a cache hit (must refresh or re-login)
 # (c) token comfortably outside it -> still a cache hit (skew is not too greedy)
+# (d) --force-refresh bypasses a future-dated cache token rejected by the API
+# (e) a no-op forced refresh cannot return that rejected token as refreshed
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -85,7 +87,52 @@ else
   fail "token with 15m left should be a cache hit (got: $OUT)"
 fi
 
-# --- (d) no usable clock -> structured missing_dependency, never a token -----
+# --- (d) API-rejected token -> force refresh even when expiry is in the future
+BIN_REFRESH="$TMP/bin-refresh"; mkdir -p "$BIN_REFRESH"
+for t in jq node date mktemp; do
+  p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$BIN_REFRESH/$t"
+done
+cat > "$BIN_REFRESH/hq-auth-refresh" <<'STUB'
+#!/bin/bash
+printf '{"accessToken":"new.jwt","idToken":"new.id","refreshToken":"rt","expiresAt":%s}\n' \
+  "$REFRESHED_EXP" > "$HOME/.hq/cognito-tokens.json"
+STUB
+chmod +x "$BIN_REFRESH/hq-auth-refresh"
+HOME_REJECTED="$TMP/home-rejected"
+make_token "$HOME_REJECTED" 3600 "rejected.jwt"
+REFRESHED_EXP="$(( (NOW_S + 7200) * 1000 ))"
+OUT=$(env HOME="$HOME_REJECTED" PATH="$BIN_REFRESH" REFRESHED_EXP="$REFRESHED_EXP" \
+  /bin/bash "$RESOLVER" --force-refresh 2>/dev/null)
+if printf '%s\n' "$OUT" | jq -e \
+  '.status == "ok" and .source == "refresh" and .jwt == "new.jwt" and .id_token == "new.id"' >/dev/null; then
+  pass "--force-refresh bypasses a rejected future-dated cache token"
+else
+  fail "--force-refresh should return the refreshed token (got: $OUT)"
+fi
+
+# --- (e) no-op force refresh -> rejected token is never returned as refreshed
+BIN_NOOP="$TMP/bin-noop"; mkdir -p "$BIN_NOOP"
+for t in jq node date mktemp; do
+  p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$BIN_NOOP/$t"
+done
+cat > "$BIN_NOOP/hq-auth-refresh" <<'STUB'
+#!/bin/bash
+exit 0
+STUB
+chmod +x "$BIN_NOOP/hq-auth-refresh"
+HOME_NOOP="$TMP/home-noop"
+make_token "$HOME_NOOP" 3600 "still-rejected.jwt"
+touch "$TMPDIR_T/hq-deploy-login-attempted-nooptest"
+OUT=$(env -u USERNAME USER=nooptest HOME="$HOME_NOOP" TMPDIR="$TMPDIR_T" \
+  PATH="$BIN_NOOP" /bin/bash "$RESOLVER" --force-refresh 2>/dev/null)
+if printf '%s\n' "$OUT" | jq -e \
+  '.status == "ok" and .jwt == "still-rejected.jwt"' >/dev/null 2>&1; then
+  fail "REGRESSION: no-op forced refresh returned the rejected token (got: $OUT)"
+else
+  pass "no-op forced refresh never returns the rejected token"
+fi
+
+# --- (f) no usable clock -> structured missing_dependency, never a token -----
 # The skew comparison is $((NOW_MS + SKEW_MS)), and bash evaluates an empty
 # NOW_MS as 0 — which would collapse that bound to 300000 and make ANY real
 # expiresAt look current. This resolver already guards the clock (node first,

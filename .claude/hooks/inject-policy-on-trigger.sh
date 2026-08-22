@@ -67,13 +67,45 @@ mkdir -p "$DEDUPE_DIR" 2>/dev/null || true
 DEDUPE_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.txt"
 touch "$DEDUPE_FILE" 2>/dev/null || true
 
+# Second ledger for `inject: always` policies (see the frontmatter field of the
+# same name). Where the session ledger above fires a slug at most once for the
+# WHOLE session, this TURN ledger fires an `always` slug at most once per TURN:
+# it is truncated at the start of every UserPromptSubmit (turn boundary), so an
+# always-policy re-injects on each new user message, but is still deduped across
+# the mid-turn Bash calls of that same turn (no per-command spam). The two
+# ledgers are disjoint by policy: a `once` slug is only ever recorded in the
+# session ledger, an `always` slug only in the turn ledger.
+TURN_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.turn.txt"
+if [ "$EVENT" = "UserPromptSubmit" ]; then
+  : > "$TURN_FILE" 2>/dev/null || true
+fi
+touch "$TURN_FILE" 2>/dev/null || true
+
 # Accumulate "slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule<TAB>kind"
 # matches. `kind` is internal metadata for the default interactive cap; the TSV
 # contract remains its original five fields and retains its original ordering.
 # Default emit still prints only slug+rule as <policy-reminder> prose; tsv mode
 # (HQ_POLICY_EMIT=tsv, US-406) prints all five fields per line.
 MATCHES=""
-already() { grep -Fxq "$1" "$DEDUPE_FILE" 2>/dev/null; }
+# already <slug> [inject]  — has this slug already fired in the ledger that
+# governs its cadence? `once` (default) consults the session ledger; `always`
+# consults the per-turn ledger.
+already() {
+  if [ "${2:-once}" = "always" ]; then
+    grep -Fxq "$1" "$TURN_FILE" 2>/dev/null
+  else
+    grep -Fxq "$1" "$DEDUPE_FILE" 2>/dev/null
+  fi
+}
+# record_slug <slug> <inject>  — record a fired slug in the ledger that governs
+# its cadence, so it is not re-emitted before that ledger next resets.
+record_slug() {
+  if [ "${2:-once}" = "always" ]; then
+    printf '%s\n' "$1" >> "$TURN_FILE"
+  else
+    printf '%s\n' "$1" >> "$DEDUPE_FILE"
+  fi
+}
 # Bash-native membership: a `printf "$MATCHES" | grep -q` pipe races under
 # `set -o pipefail` — grep -q closes the pipe on first hit, printf takes SIGPIPE
 # (141), and the pipeline fails the script before any reminder is emitted. The
@@ -81,23 +113,25 @@ already() { grep -Fxq "$1" "$DEDUPE_FILE" 2>/dev/null; }
 pending_has() { case "$MATCHES" in *"$1"$'\t'*) return 0 ;; *) return 1 ;; esac; }
 
 add_match() {
-  # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline]
+  # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline] [once|always]
   # Back-compat: add_match <slug> <rule> → scope=core path= enf=unset
-  local slug="$1" scope rule path enf kind
+  local slug="$1" scope rule path enf kind injv
   if [ "$#" -ge 5 ]; then
     scope="$2"; path="$3"; enf="$4"; rule="$5"
     kind="${6:-reactive}"
+    injv="${7:-once}"
   else
-    scope="core"; path=""; enf="unset"; rule="${2:-}"; kind="reactive"
+    scope="core"; path=""; enf="unset"; rule="${2:-}"; kind="reactive"; injv="once"
   fi
   [ -n "$slug" ] || return 0
-  already "$slug" && return 0
+  [ "$injv" = "always" ] || injv="once"
+  already "$slug" "$injv" && return 0
   pending_has "$slug" && return 0
   [ -n "$enf" ] || enf="unset"
   [ "$kind" = "baseline" ] || kind="reactive"
   # Tabs inside rule would break the field layout — collapse them.
   rule="${rule//$'\t'/ }"
-  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}	${kind}
+  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}	${kind}	${injv}
 "
 }
 
@@ -210,9 +244,10 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # stays the spec'd standalone evaluator (tests + CLI); the hot path no longer
   # shells out to it.
   ALREADY="$(cat "$DEDUPE_FILE" 2>/dev/null || true)"
+  ALREADY_TURN="$(cat "$TURN_FILE" 2>/dev/null || true)"
   if [ "${#POLICY_FILES[@]}" -gt 0 ]; then
-    while IFS=$'\t' read -r slug scope path enf rule kind; do
-      add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind"
+    while IFS=$'\t' read -r slug scope path enf rule kind injv; do
+      add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv"
     done < <(
       # ALREADY (the dedupe ledger) is NEWLINE-separated and, after SessionStart
       # injects every on:[SessionStart] policy, routinely has many lines. It is
@@ -224,7 +259,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # Emit: slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule<TAB>kind.
       # `kind` is consumed only inside this hook before prose emission; the
       # public HQ_POLICY_EMIT=tsv path continues to print five fields below.
-      HQ_ALREADY="$ALREADY" awk -v EVENT="$EVENT" -v INTENT_MODE="$INTENT_MODE" \
+      HQ_ALREADY="$ALREADY" HQ_ALREADY_TURN="$ALREADY_TURN" \
+      awk -v EVENT="$EVENT" -v INTENT_MODE="$INTENT_MODE" \
           -v EVFACTS="$FACTS" -v AIFACTS="$INTENT_FACTS" '
       function skipsp() { while (substr(E, pos, 1) == " ") pos++ }
       function pOr(  v){ v=pAnd(); skipsp(); while(substr(E,pos,2)=="||"){pos+=2; if(pAnd()||v)v=1;else v=0} return v }
@@ -275,7 +311,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         C=out; cpos=1
         return (cOr()==1 && substr(C,cpos) ~ /^[ ]*$/)
       }
-      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind) {
+      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij) {
         if (whenx=="") return
         if (id=="") id=base(fname)
         if (onx=="") onx="PreToolUse"                              # default when on: omitted
@@ -289,7 +325,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # the per-session dedup ledger, so each fires at most once per session.
         ss_on = (index(onpad," SessionStart ")>0)
         if (!ev_on && !ss_on && !(ai_on && INTENT_MODE)) return
-        if (id in already) return                                  # per-session dedup ledger
+        # `inject: always` (default `once`) picks which ledger governs dedup:
+        # the per-turn ledger (re-injects each user turn) vs the per-session
+        # ledger (fires at most once for the whole session).
+        ij = (injx=="always" ? "always" : "once")
+        if (ij=="always") { if (id in turnalready) return }        # per-turn dedup ledger
+        else { if (id in already) return }                         # per-session dedup ledger
         if (id in emitted) return                                  # de-dup within this run
         matched=0
         if (ev_on || ss_on) { r=evalexpr(whenx,"ev"); if(r==0||r==2) matched=1 }
@@ -304,14 +345,15 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           # Only the unconditional SessionStart backfill is baseline.
           kind=((ss_on && !ev_on && !(ai_on && INTENT_MODE) && unconditional(whenx)) ? "baseline" : "reactive")
           gsub(/\t/," ",rule)
-          print id "\t" sc "\t" fname "\t" en "\t" rule "\t" kind
+          print id "\t" sc "\t" fname "\t" en "\t" rule "\t" kind "\t" ij
         }
       }
-      function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; rule=""; rsec=0; rcap=0 }
+      function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; injx=""; rule=""; rsec=0; rcap=0 }
       BEGIN {
         n=split(EVFACTS,fa,/[ ,]+/); for(i=1;i<=n;i++) if(fa[i]!="") evh[fa[i]]=1
         n=split(AIFACTS,ga,/[ ,]+/); for(i=1;i<=n;i++) if(ga[i]!="") aih[ga[i]]=1
         n=split(ENVIRON["HQ_ALREADY"],za,"\n"); for(i=1;i<=n;i++) if(za[i]!="") already[za[i]]=1
+        n=split(ENVIRON["HQ_ALREADY_TURN"],zt,"\n"); for(i=1;i<=n;i++) if(zt[i]!="") turnalready[zt[i]]=1
         reset_file()
       }
       FNR==1 { if (seen) finalize(); reset_file(); seen=1 }
@@ -323,6 +365,10 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       d==1 && /^enforcement:/ {
         s=$0; sub(/^enforcement:[ \t]*/,"",s); sub(/[ \t]+#.*/,"",s)
         gsub(/^["'"'"']|["'"'"']$/,"",s); enf=s; next
+      }
+      d==1 && /^inject:/ {
+        s=$0; sub(/^inject:[ \t]*/,"",s); sub(/[ \t]+#.*/,"",s)
+        gsub(/^["'"'"']|["'"'"']$/,"",s); injx=s; next
       }
       d>=2 && /^## Rule[ \t]*$/ { rsec=1; next }
       d>=2 && rsec && /^## / { rsec=0 }
@@ -379,10 +425,10 @@ fi
 # US-406: machine-readable records for the agent-session entrypoint. No prose
 # wrapper, no interactive 16-cap (consumer applies HQ_SESSION_POLICY_MAX_*).
 if [ "${HQ_POLICY_EMIT:-}" = "tsv" ]; then
-  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind; do
+  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv; do
     [ -z "$slug" ] && continue
     printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule"
-    printf '%s\n' "$slug" >> "$DEDUPE_FILE"
+    record_slug "$slug" "$injv"
   done
   exit 0
 fi
@@ -400,7 +446,7 @@ for match_kind in reactive baseline; do
   while IFS= read -r match; do
     [ -n "$match" ] || continue
     case "$match" in
-      *$'\t'"$match_kind") ORDERED_MATCHES="${ORDERED_MATCHES}${match}
+      *$'\t'"$match_kind"$'\t'*) ORDERED_MATCHES="${ORDERED_MATCHES}${match}
 " ;;
     esac
   done <<< "$MATCHES"
@@ -436,9 +482,9 @@ fi
 WITHHELD_NAMES=""
 WITHHELD_NAMED=0
 if [ -n "$WITHHELD_MATCHES" ]; then
-  while IFS=$'\t' read -r slug scope path enf rule kind; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv; do
     [ -n "$slug" ] || continue
-    printf '%s\n' "$slug" >> "$DEDUPE_FILE"
+    record_slug "$slug" "$injv"
     if [ "$WITHHELD_NAMED" -lt 10 ]; then
       WITHHELD_NAMES="${WITHHELD_NAMES}${WITHHELD_NAMES:+, }${slug}"
       WITHHELD_NAMED=$((WITHHELD_NAMED + 1))
@@ -481,9 +527,9 @@ printf '<policy-reminder>\n'
 printf '%s' "$MATCHES" | {
   spent=0
   shortened=""
-  while IFS=$'\t' read -r slug scope path enf rule kind; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv; do
     [ -z "$slug" ] && continue
-    printf '%s\n' "$slug" >> "$DEDUPE_FILE"
+    record_slug "$slug" "$injv"
     body=""
     if [ "$HARD_FULL" != "0" ] && [ "$enf" = "hard" ] && [ -n "$path" ] && [ -r "$path" ]; then
       body="$(policy_body "$path")"

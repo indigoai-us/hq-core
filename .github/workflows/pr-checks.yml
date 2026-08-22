@@ -129,6 +129,19 @@ jobs:
       - name: nested knowledge/repos/ must sync; only top-level repos/ excluded (DEV-1791)
         run: bash .leak-scan/scan.sh repos-segment-not-ignored
 
+  instance-artifacts:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: instance-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: workspace/ and personal/ ship only scaffold — no session/operator instance state
+        run: bash .leak-scan/scan.sh instance-artifacts
+      - name: Regression test (fixture clean/leak cases + live tree)
+        run: bash core/scripts/tests/leak-scan-instance-artifacts.test.sh
+
   skill-command-refs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # DEV-1716: a core skill must not instruct a slash-command that isn't
@@ -962,6 +975,8 @@ jobs:
         run: bash .claude/hooks/tests/inject-policy-on-trigger-emit.test.sh
       - name: Policy trigger end-to-end corpus coverage
         run: bash core/scripts/tests/inject-policy-e2e.test.sh
+      - name: Inject cadence (once vs always) + PreCompact ledger purge
+        run: bash core/scripts/tests/inject-policy-always-inject.test.sh
 
   personal-policy-overlay:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
