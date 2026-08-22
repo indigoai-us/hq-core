@@ -220,12 +220,14 @@ spawn_work_mesh_register() {
 
 # Print a company's hard-enforcement policies, read directly from the policy
 # files (the pre-built digest was retired — the when/on trigger hook is now the
-# sole policy-surfacing path). Emits one `- [hard] **slug**: rule` line each,
-# deduped (digest/README/example/sync-conflict copies are skipped) and budgeted
-# (HQ_COMPANY_BIND_POLICY_CAP lines / HQ_COMPANY_BIND_POLICY_BYTES bytes, with a
-# non-silent pointer for the overflow). An unbounded dump — observed at ~298
-# lines for a large tenant — buries the rules it exists to surface; the
-# reactive trigger hook re-injects any withheld policy when its trigger fires.
+# sole policy-surfacing path). Emits one `- [hard] **id**: rule` line per policy,
+# including its exact source path so IDs do not have to match filenames. Lines
+# are deduped (digest/README/example/sync-conflict copies are skipped) and
+# budgeted (HQ_COMPANY_BIND_POLICY_CAP lines / HQ_COMPANY_BIND_POLICY_BYTES
+# bytes, with a non-silent pointer for the overflow). An unbounded dump —
+# observed at ~298 lines for a large tenant — buries the rules it exists to
+# surface; the reactive trigger hook re-injects any withheld policy when its
+# trigger fires.
 emit_company_hard_policies() {
   local co="$1"
   local dir="$REPO_ROOT/companies/$co/policies"
@@ -246,9 +248,10 @@ emit_company_hard_policies() {
   done
   [ "${#files[@]}" -gt 0 ] || return 0
   local lines
-  lines="$(awk '
+  lines="$(awk -v co="$co" '
     function bn(p,  n,a,b){ n=split(p,a,"/"); b=a[n]; sub(/\.md$/,"",b); return b }
-    function flush(){ if(enf=="hard" && rule!=""){ if(id=="")id=bn(fn); printf "- [hard] **%s**: %s\n", id, rule } }
+    function policy_file(p,  n,a){ n=split(p,a,"/"); return a[n] }
+    function flush(){ if(enf=="hard" && rule!=""){ if(id=="")id=bn(fn); printf "- [hard] **%s**: %s Full text: `companies/%s/policies/%s`.\n", id, rule, co, policy_file(fn) } }
     FNR==1 { if(seen) flush(); d=0;id="";enf="";rule="";rsec=0;rcap=0;fn=FILENAME;seen=1 }
     /^---[ \t]*$/ { d++; next }
     d==1 && /^id:/          { s=$0; sub(/^id:[ \t]*/,"",s); gsub(/^["'"'"']|["'"'"']$/,"",s); id=s; next }
@@ -267,7 +270,7 @@ emit_company_hard_policies() {
   printf '\n<company-policy-digest co="%s">\n' "$co"
   printf '# %s hard-enforcement policies (auto-surfaced on company bind)\n' "$co"
   printf '> Company context just bound mid-session. These HARD rules now apply.\n'
-  printf '> Full text: `companies/%s/policies/{slug}.md` (or `qmd get -c %s {slug}`).\n\n' "$co" "$co"
+  printf '> Full text: open the file path shown on each policy line. Browse `companies/%s/policies/` for the full set.\n\n' "$co"
   printf '%s\n' "$lines" | awk -v cap="$cap" -v maxb="$max_bytes" -v co="$co" '
     NF {
       n++
@@ -279,8 +282,8 @@ emit_company_hard_policies() {
     END {
       dropped = n - kept
       if (dropped > 0)
-        printf "\n> %d more hard %s not shown (bind budget: %d policies / %d bytes). Full set: `companies/%s/policies/` or `qmd get -c %s {slug}`; matching rules re-surface via the policy trigger hook when they apply.\n", \
-          dropped, (dropped == 1 ? "policy" : "policies"), cap, maxb, co, co
+        printf "\n> %d more hard %s not shown (bind budget: %d policies / %d bytes). Browse `companies/%s/policies/` for the full set; matching rules re-surface via the policy trigger hook when they apply.\n", \
+          dropped, (dropped == 1 ? "policy" : "policies"), cap, maxb, co
     }'
   printf '</company-policy-digest>\n'
 }
