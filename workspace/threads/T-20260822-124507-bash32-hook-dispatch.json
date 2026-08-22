@@ -1,0 +1,42 @@
+{
+  "thread_id": "T-20260822-124507-bash32-hook-dispatch",
+  "version": 1,
+  "type": "handoff",
+  "created_at": "20260822T124507Z",
+  "updated_at": "20260822T124507Z",
+  "workspace_root": "/home/ec2-user/worktrees/issue-106-g25-hq-core-staging",
+  "cwd": "/home/ec2-user/worktrees/issue-106-g25-hq-core-staging",
+  "git": {
+    "branch": "fix/feedback-106-g25-macos-bash-3-2-corrupts-hook-dispatch-reco",
+    "current_commit": "e599d942",
+    "dirty": false
+  },
+  "changeset_path": "workspace/threads/T-20260822-124507-bash32-hook-dispatch.changeset.json",
+  "conversation_summary": "Replaced control-byte hook record framing with validated shell-escaped records, added fail-closed fallback on producer or framing errors, and added Codex Bash 3.2 plus cross-runtime regression coverage; source committed at e599d942.",
+  "next_steps": [],
+  "files_touched": [
+    {
+      "path": "core/scripts/lib/hook-adapter-core.sh",
+      "reason": "replace Bash 3.2-unsafe control-byte framing with validated shell-escaped records and fail-closed fallback"
+    },
+    {
+      "path": "core/scripts/test-codex-hook-adapter.sh",
+      "reason": "regression coverage for critical deny under Bash 3.2 compatibility"
+    },
+    {
+      "path": "core/scripts/tests/harness-settings-dispatch.test.sh",
+      "reason": "regression coverage for control-byte removal and malformed framing fallback"
+    }
+  ],
+  "learnings": [],
+  "metadata": {
+    "title": "Handoff: Bash 3.2 hook dispatch safety fix",
+    "tags": [
+      "handoff",
+      "hq-core",
+      "bash-3.2",
+      "hook-safety"
+    ],
+    "company": []
+  }
+}

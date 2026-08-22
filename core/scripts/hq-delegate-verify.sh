@@ -145,6 +145,31 @@ done
 # SPECIFIC referenced file is absent — the recipient then pulls a folder that
 # silently misses the note the brief points at. Probe each referenced file.)
 
+# Memoized, throttle-tolerant browse for the referenced-file loop. Multiple
+# referenced files can share a parent prefix (e.g. two policies under
+# policies/), and back-to-back vault browses of the same prefix can be throttled
+# to an EMPTY page — which the grep below would misread as "file not in vault".
+# Browse each distinct parent at most once, and retry an empty result a few
+# times before trusting it. (Cache dir cleaned on exit.)
+REF_BROWSE_CACHE="$(mktemp -d)"
+trap 'rm -rf "$REF_BROWSE_CACHE"' EXIT
+browse_parent() { # parent -> listing (memoized per run, retried on empty)
+  local parent="$1" key out attempt
+  key="$REF_BROWSE_CACHE/$(printf '%s' "$parent" | tr '/@:' '___')"
+  if [ -f "$key" ]; then cat "$key"; return 0; fi
+  attempt=1
+  out=""
+  while :; do
+    out="$(hq files browse "$parent" --company "$COMPANY" 2>/dev/null || true)"
+    [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] && break
+    [ "$attempt" -ge "${HQ_DELEGATE_BROWSE_RETRIES:-3}" ] && break
+    attempt=$((attempt + 1))
+    sleep "${HQ_DELEGATE_BROWSE_RETRY_SLEEP:-2}"
+  done
+  printf '%s' "$out" > "$key"
+  printf '%s' "$out"
+}
+
 REF_COUNT="$(jq -r --arg co "$COMPANY" \
   '[((.knowledge // []) + (.policies // []))[] | select(startswith("companies/" + $co + "/"))] | length' "$MANIFEST")"
 if [ "$REF_COUNT" -gt 0 ]; then
@@ -154,8 +179,12 @@ if [ "$REF_COUNT" -gt 0 ]; then
     REL="${kpath#companies/$COMPANY/}"
     PARENT="$(dirname "$REL")/"
     BASE="$(basename "$REL")"
-    LISTING="$(hq files browse "$PARENT" --company "$COMPANY" 2>/dev/null || true)"
-    if printf '%s\n' "$LISTING" | grep -qF "$BASE"; then
+    LISTING="$(browse_parent "$PARENT")"
+    # Pipe-free substring test: `printf | grep -q` lets grep close the pipe on an
+    # early match, which under `set -o pipefail` surfaces printf's SIGPIPE as a
+    # non-zero pipeline and FALSE-FAILS a file that is genuinely present (it bit
+    # exactly the referenced files that sort early in a large parent listing).
+    if [[ "$LISTING" == *"$BASE"* ]]; then
       echo "  pass  $REL"
     else
       echo "  FAIL  $REL — granted prefix is reachable but this referenced file is NOT in the vault (likely cause: it was never pushed — hq sync push $kpath --company $COMPANY and re-run)"
