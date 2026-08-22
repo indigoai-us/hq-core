@@ -1,0 +1,65 @@
+{
+  "thread_id": "T-20260822-124507-bash32-hook-dispatch",
+  "thread_path": "workspace/threads/T-20260822-124507-bash32-hook-dispatch.json",
+  "created_at": "20260822T124507Z",
+  "intent": {
+    "title": "Handoff: Bash 3.2 hook dispatch safety fix",
+    "summary": "Replaced control-byte hook record framing with validated shell-escaped records, added fail-closed fallback on producer or framing errors, and added Codex Bash 3.2 plus cross-runtime regression coverage; source committed at e599d942."
+  },
+  "git": {
+    "branch": "fix/feedback-106-g25-macos-bash-3-2-corrupts-hook-dispatch-reco",
+    "started_commit": "e599d942",
+    "finalized_commit": null,
+    "finalized_commit_note": "The exact handoff commit is emitted by handoff-finalize.sh as commit_after_finalize; a file cannot contain the hash of the commit that contains itself."
+  },
+  "files_touched": [
+    {
+      "path": "core/scripts/lib/hook-adapter-core.sh",
+      "reason": "replace Bash 3.2-unsafe control-byte framing with validated shell-escaped records and fail-closed fallback"
+    },
+    {
+      "path": "core/scripts/test-codex-hook-adapter.sh",
+      "reason": "regression coverage for critical deny under Bash 3.2 compatibility"
+    },
+    {
+      "path": "core/scripts/tests/harness-settings-dispatch.test.sh",
+      "reason": "regression coverage for control-byte removal and malformed framing fallback"
+    }
+  ],
+  "staged_paths": [
+    "core/scripts/lib/hook-adapter-core.sh",
+    "core/scripts/test-codex-hook-adapter.sh",
+    "core/scripts/tests/harness-settings-dispatch.test.sh"
+  ],
+  "skipped_paths": [],
+  "verification": {
+    "notes": [],
+    "upstream_refs_compared": []
+  },
+  "status_summary": {
+    "counts": {
+      "tracked_changes": 0,
+      "session_touched_untracked": 0,
+      "baseline_untracked": 0,
+      "unrelated_untracked": 0,
+      "ignored": 8,
+      "baseline_noise": 0
+    },
+    "files": {
+      "tracked_changes": [],
+      "session_touched_untracked": [],
+      "baseline_untracked": [],
+      "unrelated_untracked": [],
+      "ignored": [
+        ".claude/state/session-title-grok-2",
+        ".claude/state/session-title-grok-2.emitted",
+        ".claude/state/session-title.hq-titles",
+        "workspace/logs/",
+        "workspace/orchestrator/hook-state/",
+        "workspace/orchestrator/policy-trigger-state/",
+        "workspace/sessions/",
+        "workspace/threads/.handoff-tmp/"
+      ]
+    }
+  }
+}

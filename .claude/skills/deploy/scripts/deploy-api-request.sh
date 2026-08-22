@@ -7,6 +7,12 @@
 
 set -o pipefail
 
+_src="${BASH_SOURCE[0]}"
+_dir="${_src%/*}"
+[ "$_dir" = "$_src" ] && _dir="."
+SCRIPT_DIR="$(cd "$_dir" && pwd)"
+IDENTITY_RESOLVER="${HQ_DEPLOY_IDENTITY_RESOLVER:-$SCRIPT_DIR/identity-resolve.sh}"
+
 usage() {
   echo "usage: $0 --stage <stage> --method <method> --url <url> [--org <slug>] [--scope <scope>] [--header <header>] [--data <json>] [--upload-file <path>] [--expect <jq-expression>] [--no-auth]" >&2
   exit 64
@@ -66,6 +72,12 @@ scrub_value() {
   if [ -n "${HQ_DEPLOY_JWT:-}" ]; then
     value="${value//"$HQ_DEPLOY_JWT"/[REDACTED]}"
   fi
+  if [ -n "${REQUEST_TOKEN:-}" ]; then
+    value="${value//"$REQUEST_TOKEN"/[REDACTED]}"
+  fi
+  if [ -n "${REFRESHED_TOKEN:-}" ]; then
+    value="${value//"$REFRESHED_TOKEN"/[REDACTED]}"
+  fi
   value="$(printf '%s' "$value" | sed -E \
     -e 's/([Bb]earer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/g' \
     -e 's/([Aa]uthorization:[[:space:]]*)[^[:space:]]+/\1[REDACTED]/g' \
@@ -89,9 +101,10 @@ diagnostic() {
   safe_scope="$(scrub_value "${SCOPE:--}")"
 
   case "$status" in
-    401) extra=" auth=stale-login action=preview-only" ;;
+    401) extra=" auth=stale-login action=live-content-not-updated" ;;
     403) extra=" authorization=forbidden" ;;
   esac
+  [ -z "${AUTH_DIAGNOSTIC:-}" ] || extra="$AUTH_DIAGNOSTIC"
 
   printf '[deploy] stage=%s method=%s url=%s status=%s api_code=%s api_message=%s request_id=%s org=%s scope=%s%s\n' \
     "$safe_stage" "$safe_method" "$safe_url" "$status" \
@@ -99,31 +112,66 @@ diagnostic() {
     "$(scrub_value "$request_id")" "$safe_org" "$safe_scope" "$extra" >&2
 }
 
-CURL_ARGS=(-sS -o "$RESPONSE_BODY" -w '%{http_code}' -X "$METHOD")
-if [ "$USE_AUTH" -eq 1 ]; then
-  CURL_ARGS+=(-H "Authorization: Bearer $HQ_DEPLOY_JWT")
-fi
-for header in "${HEADERS[@]}"; do
-  CURL_ARGS+=(-H "$header")
-done
-if [ -n "$DATA" ]; then
-  CURL_ARGS+=(--data "$DATA")
-elif [ -n "$UPLOAD_FILE" ]; then
-  CURL_ARGS+=(--data-binary "@$UPLOAD_FILE")
-fi
-CURL_ARGS+=("$URL")
+request_once() {
+  local curl_args=(-sS -o "$RESPONSE_BODY" -w '%{http_code}' -X "$METHOD")
+  if [ "$USE_AUTH" -eq 1 ]; then
+    curl_args+=(-H "Authorization: Bearer $REQUEST_TOKEN")
+  fi
+  for header in "${HEADERS[@]}"; do
+    curl_args+=(-H "$header")
+  done
+  if [ -n "$DATA" ]; then
+    curl_args+=(--data "$DATA")
+  elif [ -n "$UPLOAD_FILE" ]; then
+    curl_args+=(--data-binary "@$UPLOAD_FILE")
+  fi
+  curl_args+=("$URL")
 
-CURL_EXIT=0
-STATUS="$(curl "${CURL_ARGS[@]}" 2>"$CURL_ERRORS")" || CURL_EXIT=$?
+  : > "$RESPONSE_BODY"
+  : > "$CURL_ERRORS"
+  CURL_EXIT=0
+  STATUS="$(curl "${curl_args[@]}" 2>"$CURL_ERRORS")" || CURL_EXIT=$?
+}
+
+REQUEST_TOKEN="${HQ_DEPLOY_JWT:-}"
+REFRESHED_TOKEN=""
+AUTH_DIAGNOSTIC=""
+RETRIED=0
+request_once
 if [ "$CURL_EXIT" -ne 0 ] || ! [[ "$STATUS" =~ ^[0-9]{3}$ ]]; then
   diagnostic "${STATUS:-000}" "TRANSPORT_ERROR" "request failed before an HTTP response" "-"
   exit 1
+fi
+
+if [ "$USE_AUTH" -eq 1 ] && [ "$STATUS" = 401 ]; then
+  REFRESH_JSON="$("$IDENTITY_RESOLVER" --force-refresh 2>/dev/null)" || REFRESH_JSON=""
+  REFRESH_STATUS="$(printf '%s' "$REFRESH_JSON" | jq -r '.status // empty' 2>/dev/null || true)"
+  REFRESHED_TOKEN="$(printf '%s' "$REFRESH_JSON" | jq -r '.jwt // empty' 2>/dev/null || true)"
+  if [ "$REFRESH_STATUS" != ok ] || [ -z "$REFRESHED_TOKEN" ] \
+    || [ "$REFRESHED_TOKEN" = "$REQUEST_TOKEN" ]; then
+    AUTH_DIAGNOSTIC=" auth=refresh-failed action=live-content-not-updated"
+    diagnostic 401 AUTH_REFRESH_FAILED "identity refresh failed; live content was not updated" "-"
+    exit 1
+  fi
+
+  REQUEST_TOKEN="$REFRESHED_TOKEN"
+  RETRIED=1
+  request_once
+  if [ "$CURL_EXIT" -ne 0 ] || ! [[ "$STATUS" =~ ^[0-9]{3}$ ]]; then
+    AUTH_DIAGNOSTIC=" auth=refresh-retry-failed action=live-content-not-updated"
+    diagnostic "${STATUS:-000}" "TRANSPORT_ERROR" "authentication retry failed; live content was not updated" "-"
+    exit 1
+  fi
 fi
 
 if [[ "$STATUS" != 2* ]]; then
   ERROR_CODE="$(json_string '(.error?.code? // .code? // .errorCode? // "HTTP_ERROR") | if type == "string" or type == "number" then tostring else "HTTP_ERROR" end')"
   ERROR_MESSAGE="$(json_string '(.error?.message? // .message? // .errorMessage? // "request failed") | if type == "string" then . else "request failed" end')"
   REQUEST_ID="$(json_string '(.requestId? // .request_id? // .error?.requestId? // .meta?.requestId? // "-") | if type == "string" or type == "number" then tostring else "-" end')"
+  if [ "$RETRIED" -eq 1 ]; then
+    AUTH_DIAGNOSTIC=" auth=refresh-retry-failed action=live-content-not-updated"
+    ERROR_MESSAGE="$ERROR_MESSAGE; live content was not updated"
+  fi
   diagnostic "$STATUS" "$ERROR_CODE" "$ERROR_MESSAGE" "$REQUEST_ID"
   exit 1
 fi
