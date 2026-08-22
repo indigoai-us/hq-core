@@ -82,9 +82,24 @@ run 2 "touch $C/new"                         'touch into core blocked'
 run 2 "D=$C; mv /tmp/y \"\$D/s.json\""       'VAR=core-path assignment + mv blocked (boundary fix)'
 run 2 "P=/x:$TMP/core/y; cp /tmp/z \$P"      'colon-joined core path + cp blocked (boundary fix)'
 
+# --- Blocked: variable context carries across simple commands ------------
+run 2 "f=$TMP/.codex/hooks/probe.sh; cp \"\$f\" \"\$f.bak\"; cat > \"\$f\"" \
+  'protected variable + backup copy + semicolon redirect blocked'
+run 2 "f=$TMP/.codex/hooks/probe.sh
+cp \"\$f\" \"\$f.bak\"
+cat > \"\$f\"" \
+  'protected variable + backup copy + newline redirect blocked'
+
 # --- Allowed: exceptions and non-protected targets -----------------------
 run 0 "echo x > $TMP/.claude/settings.local.json"  'settings.local.json writable'
 run 0 "echo x > $TMP/.claude/personal-context.md"   'personal-context.md writable'
+run 0 'f=/tmp/probe.sh; cp "$f" "$f.bak"; cat > "$f"' \
+  'unprotected variable + backup copy + redirect allowed'
+run 0 "f=$TMP/.claude/settings.local.json; cat > \"\$f\"" \
+  'settings.local.json variable redirect allowed'
+run 0 "f=$TMP/.claude/personal-context.md
+cat > \"\$f\"" \
+  'personal-context.md variable newline redirect allowed'
 run 0 "mv /tmp/y $TMP/repos/private/app/s"         'write into repos/ allowed'
 run 0 "mv /tmp/y $TMP/personal/p.md"               'write into personal/ allowed'
 run 0 "cat $C/s.json"                              'read-only cat of core allowed'

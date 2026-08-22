@@ -98,6 +98,9 @@ O="$(run_hook PreToolUse "$(bashbody 'docker buildx build --platform linux/amd64
 assert_has "docker build"      "$O" hq-docker-build-platform-amd64
 O="$(run_hook UserPromptSubmit "$(promptbody 'please deploy to prod')")"
 assert_has "deploy prompt"     "$O" hq-announce-before-irreversible
+O="$(run_hook UserPromptSubmit "$(promptbody 'please\ndeploy to prod')")"
+assert_has "second-line deploy prompt" "$O" hq-announce-before-irreversible
+assert_not "second-line deploy != mcp" "$O" mcp-transport-detection
 
 echo "== grep / search =="
 O="$(run_hook PreToolUse "$(bashbody 'grep -r TODO .')")"

@@ -142,6 +142,41 @@ if [ "$GRANT_PRINCIPAL" != "$PRINCIPAL" ]; then
 fi
 
 # --- 2+3. grant each prefix, then verify via ACL read-back -------------------
+#
+# Verification is resolution-aware. `hq files acl` prints a table and, crucially,
+# `hq files share --with <email>` RESOLVES a provisioned member's email to their
+# personUid — the ACL then lists that grant as `person  prs_…` and NEVER echoes
+# the email we passed. A literal grep for the email is therefore a guaranteed
+# false negative for any fully-provisioned member (it only "works" for a still-
+# pending invite, whose grant stays email-keyed). We instead diff the prefix's
+# DIRECT grants before/after the share and accept the grant when any of:
+#   (a) a direct row grants exactly $PERM to the literal $GRANT_PRINCIPAL —
+#       covers group ids, @all, and still-unresolved (pending) emails;
+#   (b) a NEW person/email direct row at $PERM appeared after the share —
+#       covers an email resolved to a prs_ uid we cannot predict here;
+#   (c) the share succeeded, the principal resolves to a known person, and a
+#       matching person direct row is already present — covers an idempotent
+#       re-run where the resolved row existed before this run (no diff to see).
+
+# Print DIRECT-entry rows as "GRANTEE PERMISSION TYPE", one per line: the lines
+# between the "Direct entries" header and the "Inherited"/EOF boundary, minus
+# the column header. Inherited grants are intentionally excluded — a delegation
+# must land its own direct grant, not rely on a pre-existing ancestor grant.
+acl_direct_rows() { # prefix
+  hq files acl "$1" --company "$COMPANY" 2>/dev/null | awk '
+    /^Direct entries/ { indir=1; next }
+    /^Inherited/      { indir=0; next }
+    indir==1 && $1=="TYPE" { next }
+    indir==1 && NF>=3 { print $2, $3, $1 }'
+}
+
+# True when the principal (an email or display name — never a group/@all)
+# resolves to a known company person.
+principal_is_known_person() { # principal
+  case "$1" in grp_*|@all) return 1 ;; esac
+  hq people resolve "$1" --json --company "$COMPANY" 2>/dev/null \
+    | jq -e '.status == "found"' >/dev/null 2>&1
+}
 
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 i=0
@@ -149,15 +184,38 @@ while [ "$i" -lt "$PREFIX_COUNT" ]; do
   PFX="$(jq -r ".vaultPrefixes[$i].prefix" "$MANIFEST")"
   PERM="$(jq -r ".vaultPrefixes[$i].permission" "$MANIFEST")"
 
-  if ! hq files share "$PFX" --with "$GRANT_PRINCIPAL" --permission "$PERM" --company "$COMPANY"; then
+  BEFORE="$(acl_direct_rows "$PFX" | sort -u)"
+
+  SHARE_RC=0
+  hq files share "$PFX" --with "$GRANT_PRINCIPAL" --permission "$PERM" --company "$COMPANY" || SHARE_RC=$?
+  if [ "$SHARE_RC" -ne 0 ]; then
     # The share may fail because an identical grant already exists — the
     # read-back below is the arbiter either way.
     echo "hq-delegate-grant: share reported an error on $PFX — checking whether the grant already exists" >&2
   fi
 
-  ACL_OUT="$(hq files acl "$PFX" --company "$COMPANY" 2>/dev/null || true)"
-  MATCH="$(printf '%s\n' "$ACL_OUT" | grep -F "$GRANT_PRINCIPAL" | grep -c "$PERM" || true)"
-  if [ "${MATCH:-0}" -eq 0 ]; then
+  AFTER="$(acl_direct_rows "$PFX" | sort -u)"
+
+  landed=0
+  # (a) literal grantee match — groups, @all, still-unresolved (pending) emails
+  if printf '%s\n' "$AFTER" | awk -v g="$GRANT_PRINCIPAL" -v p="$PERM" '$1==g && $2==p {f=1} END{exit f?0:1}'; then
+    landed=1
+  fi
+  # (b) a NEW person/email direct row at $PERM appeared (email -> resolved uid)
+  if [ "$landed" -eq 0 ]; then
+    NEW="$(comm -13 <(printf '%s\n' "$BEFORE") <(printf '%s\n' "$AFTER") \
+            | awk -v p="$PERM" '$2==p && $3!="group" {print}')"
+    [ -n "$NEW" ] && landed=1
+  fi
+  # (c) idempotent re-run: share ok, principal is a known person, matching
+  #     person direct row already present (no new row to diff)
+  if [ "$landed" -eq 0 ] && [ "$SHARE_RC" -eq 0 ] && principal_is_known_person "$PRINCIPAL"; then
+    if printf '%s\n' "$AFTER" | awk -v p="$PERM" '$2==p && $3!="group" {f=1} END{exit f?0:1}'; then
+      landed=1
+    fi
+  fi
+
+  if [ "$landed" -eq 0 ]; then
     die "grant did not land: '$PRINCIPAL' with '$PERM' not visible in ACL for '$PFX' — manifest status left unchanged"
   fi
   echo "hq-delegate-grant: verified $PERM on $PFX for $PRINCIPAL"
