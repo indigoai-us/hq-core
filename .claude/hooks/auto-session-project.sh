@@ -125,7 +125,20 @@ SESSION_KEY="$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9._-' '_')"
 SESSION_MARKER="$STATE_DIR/auto-session-project-${SESSION_KEY}"
 
 if [ -f "$SESSION_MARKER" ]; then
-  "$HELPER" append-event --kind user-prompt --summary "$title" >/dev/null 2>&1 || true
+  marker_project=""
+  IFS= read -r marker_project < "$SESSION_MARKER" || true
+  [ -n "$marker_project" ] || exit 0
+  append_result="$("$HELPER" append-event \
+    --project "$marker_project" \
+    --session-id "$SESSION_ID" \
+    --kind user-prompt \
+    --summary "$title" 2>/dev/null || true)"
+  case "$append_result" in
+    */prd.json)
+      relocated_project="${append_result%/prd.json}"
+      [ -n "$relocated_project" ] && printf '%s\n' "$relocated_project" > "$SESSION_MARKER" 2>/dev/null || true
+      ;;
+  esac
   exit 0
 fi
 

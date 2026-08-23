@@ -212,13 +212,17 @@ function redactedDiagnostic(detail, secrets = []) {
   return clamp(output, 500);
 }
 
-function failSoft(opts, reason, detail, secrets = []) {
+function printHumanSkip(opts, reason, detail, secrets = []) {
+  if (opts.silent) return;
   const safeDetail = detail ? redactedDiagnostic(detail, secrets) : undefined;
+  console.error(`work-mesh skipped: ${reason}${safeDetail ? ` (${safeDetail})` : ""}`);
+}
+
+function failSoft(opts, reason, detail, secrets = []) {
   if (opts.json) {
+    const safeDetail = detail ? redactedDiagnostic(detail, secrets) : undefined;
     console.log(JSON.stringify({ ok: false, skipped: true, reason, detail: safeDetail }));
-  } else if (!opts.silent && isTruthyEnv("HQ_WORK_MESH_DEBUG")) {
-    console.error(`work-mesh skipped: ${reason}${safeDetail ? ` (${safeDetail})` : ""}`);
-  }
+  } else printHumanSkip(opts, reason, detail, secrets);
   if (isTruthyEnv("HQ_WORK_MESH_STRICT")) process.exitCode = 1;
 }
 
@@ -2036,6 +2040,7 @@ async function main() {
 
   if (isTruthyEnv("HQ_WORK_MESH_DISABLED")) {
     if (opts.json) console.log(JSON.stringify({ ok: true, skipped: true, reason: "disabled" }));
+    else printHumanSkip(opts, "disabled");
     return;
   }
 

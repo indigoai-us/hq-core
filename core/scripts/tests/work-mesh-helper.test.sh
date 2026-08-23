@@ -27,8 +27,46 @@ assert_contains() {
   [[ "$haystack" == *"$needle"* ]] || fail "$label: missing '$needle' in $haystack"
 }
 
+assert_not_contains() {
+  local haystack="$1" needle="$2" label="$3"
+  [[ "$haystack" != *"$needle"* ]] || fail "$label: unexpectedly found '$needle' in $haystack"
+}
+
+assert_empty() {
+  local value="$1" label="$2"
+  [[ -z "$value" ]] || fail "$label: expected no output, got $value"
+}
+
 disabled_out="$(HQ_WORK_MESH_DISABLED=1 "$HELPER" check --company indigo --project demo --json)"
 assert_contains "$disabled_out" '"skipped":true' "disabled helper reports skipped"
+
+disabled_human_out="$(HQ_WORK_MESH_DISABLED=1 "$HELPER" start --company indigo --project demo 2>&1)"
+assert_contains "$disabled_human_out" 'work-mesh skipped: disabled' "disabled helper explains skipped write"
+
+if ! disabled_strict_out="$(HQ_WORK_MESH_DISABLED=1 HQ_WORK_MESH_STRICT=1 "$HELPER" start --company indigo --project demo 2>&1)"; then
+  fail "disabled helper must remain an exit-0 no-op in strict mode"
+fi
+assert_contains "$disabled_strict_out" 'work-mesh skipped: disabled' "strict disabled helper explains skipped write"
+
+disabled_silent_out="$(HQ_WORK_MESH_DISABLED=1 "$HELPER" start --company indigo --project demo --silent 2>&1)"
+assert_empty "$disabled_silent_out" "silent disabled helper"
+
+cat > "$TMP/logged-out.mjs" <<'JS'
+export async function ensureCognitoIdToken() {
+  throw new Error("Not signed in: Bearer super-secret-auth-token");
+}
+
+export const DEFAULT_VAULT_API_URL = "http://127.0.0.1:1";
+JS
+
+logged_out="$(HQ_ROOT="$TMP" HQ_COGNITO_SESSION_MODULE="$TMP/logged-out.mjs" "$HELPER" start --company indigo --project demo 2>&1)"
+assert_contains "$logged_out" 'work-mesh skipped: auth unavailable' "logged-out helper explains skipped write"
+assert_contains "$logged_out" 'Bearer [redacted]' "logged-out helper redacts authentication material"
+assert_not_contains "$logged_out" 'super-secret-auth-token' "logged-out helper hides authentication material"
+
+network_out="$(HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=network-secret-token HQ_WORK_MESH_API_URL=http://127.0.0.1:1 "$HELPER" start --company indigo --project demo 2>&1)"
+assert_contains "$network_out" 'work-mesh skipped: company unavailable (fetch failed)' "network failure explains skipped write"
+assert_not_contains "$network_out" 'network-secret-token' "network failure hides authentication material"
 
 cat > "$TMP/server.mjs" <<'JS'
 import fs from "node:fs";
@@ -108,6 +146,10 @@ const server = http.createServer((req, res) => {
 
     if (req.method === "POST" && req.url === "/v1/work-mesh/threads") {
       const body = JSON.parse(raw || "{}");
+      if (body.projectId === "api-failure") {
+        send(res, 503, { error: "Bearer api-secret-token" });
+        return;
+      }
       const thread = {
         threadId: "thr_1",
         threadStatus: "claimed",
@@ -148,6 +190,22 @@ done
 [[ -f "$TMP/port" ]] || fail "fake API server did not start"
 
 API_URL="http://127.0.0.1:$(cat "$TMP/port")"
+
+unresolved_out="$(HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" start --company missing --project demo 2>&1)"
+assert_contains "$unresolved_out" "work-mesh skipped: company unavailable (No cloud membership found for company 'missing')" "unresolved company explains skipped write"
+assert_not_contains "$unresolved_out" 'test-token' "unresolved company hides authentication material"
+
+api_out="$(HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" start --company indigo --project api-failure 2>&1)"
+assert_contains "$api_out" 'work-mesh skipped: start failed (Work Mesh API request failed with 503)' "API failure explains skipped write"
+assert_not_contains "$api_out" 'api-secret-token' "API failure hides response authentication material"
+assert_not_contains "$api_out" 'test-token' "API failure hides request authentication material"
+
+human_start_out="$(HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" start --company indigo --project human-success)"
+assert_contains "$human_start_out" 'Work mesh: created thr_1; claim event evt_1' "successful write reports thread and event"
+
+silent_start_out="$(HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" start --company indigo --project silent-success --silent 2>&1)"
+assert_empty "$silent_start_out" "silent successful write"
+
 start_out="$(HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" start --company indigo --project mesh-adoption --summary "Starting adoption" --json)"
 assert_contains "$start_out" '"threadId": "thr_1"' "start reports thread id"
 assert_contains "$start_out" '"eventKind": "claim"' "start appends claim"

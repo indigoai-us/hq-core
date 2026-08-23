@@ -76,10 +76,10 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
+import { execResolvedFile, resolveBin } from "./command-runner.mjs";
 
 // Throw a clear validation error when a required tool argument is missing.
 function requireArg(value, name, ctx) {
@@ -169,40 +169,6 @@ function boundedTimeoutMs(value) {
 function qmdFormatArgs(fmt) {
   const ok = new Set(["json", "md", "csv", "xml", "files"]);
   return ok.has(String(fmt || "").toLowerCase()) ? ["--" + String(fmt).toLowerCase()] : [];
-}
-
-function resolveBin(bin) {
-  const envKey = `${bin.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_BIN`;
-  // SECURITY (MEDIUM-2): only honor the ${BIN}_BIN override when it is an
-  // ABSOLUTE path that exists on disk. A relative override would be resolved
-  // against an attacker-influenced cwd and could shadow the real binary with a
-  // planted executable; require an absolute, existing path before trusting it.
-  if (
-    process.env[envKey] &&
-    isAbsolute(process.env[envKey]) &&
-    existsSync(process.env[envKey])
-  ) {
-    return process.env[envKey];
-  }
-  const home = homedir();
-  const managedToolchain =
-    process.env.HQ_TOOLCHAIN_DIR ||
-    join(home, "Library", "Application Support", "Indigo HQ", "toolchain");
-  const candidates = [
-    ...new Set([
-      ...(process.env.PATH || "").split(":").filter(Boolean).map((p) => join(p, bin)),
-      join(managedToolchain, "npm-global", "bin", bin),
-      join(managedToolchain, "node", "bin", bin),
-      join(managedToolchain, "git", "bin", bin),
-      join(home, ".cargo", "bin", bin),
-      join(home, ".local", "bin", bin),
-      join(home, "bin", bin),
-      join("/opt/homebrew/bin", bin),
-      join("/usr/local/bin", bin),
-      join("/usr/bin", bin),
-    ]),
-  ];
-  return candidates.find((p) => existsSync(p)) || bin;
 }
 
 // SECURITY (HIGH-1): the hq_cli escape hatch is a strict ALLOWLIST, not a
@@ -401,7 +367,7 @@ async function runBin(bin, args, opts = {}) {
   try {
     const exec = () =>
       new Promise((resolve, reject) => {
-        const child = execFile(
+        const child = execResolvedFile(
           resolvedBin,
           args,
           { cwd: HQ_ROOT, maxBuffer: 1 << 24, ...execOpts },
