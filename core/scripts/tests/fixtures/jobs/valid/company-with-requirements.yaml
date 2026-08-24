@@ -1,0 +1,21 @@
+id: sentry-triage-indigo
+name: Indigo Sentry triage
+schedule: "30 8 * * 1-5"
+timezone: America/Los_Angeles
+runtime: claude
+exec:
+  prompt: Triage new Sentry issues for indigo and draft a short summary.
+cwd: companies/indigo/projects/outpost-scheduled-jobs
+timeout_seconds: 1200
+notify: profile
+enabled: true
+owner: user@example.com
+created_at: "2026-08-23T15:30:00Z"
+requirements:
+  runtime: claude
+  secrets:
+    - SENTRY_API_TOKEN
+  company: indigo
+  cwd: companies/indigo/projects/outpost-scheduled-jobs
+  tools:
+    - hq-secrets

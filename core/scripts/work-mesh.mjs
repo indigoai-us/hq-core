@@ -64,18 +64,22 @@ function usage() {
   return `Usage: core/scripts/work-mesh.sh <command> [options]
 
 Commands:
-  check      Show active work-mesh threads for a company/project
-  start      Ensure a project thread exists and claim/report start
-  progress   Append a progress event to the project thread
-  blocked    Append a blocked event to the project thread
-  done       Append a done event to the project thread
-  note       Append a note event to the project thread
+  check      Show active work on a company/project
+  report     One call: seed the Board if missing, optional task move, update
+  start      Alias of report that claims the project
+  progress   Append an update to the project
+  blocked    Mark the project blocked
+  done       Mark the project done
+  note       Add a note (no status change)
   watch      Subscribe to work-mesh MQTT topics and update local live cache
+  story      Hidden alias of report --task/--status
 
 Options:
   --company <slug|uid>     Company slug or cloud uid
   --project <slug>         HQ project slug / projectId
-  --summary <text>         Progress/done/creation summary
+  --task <id>              Task id (Board column). --story is a hidden alias
+  --status <status>        todo|doing|waiting|done (or queued|in_progress|review)
+  --summary <text>         Short update (not the task title)
   --reason <text>          Blocked reason
   --ask <text>             Repeatable blocked ask
   --thread-id <id>         Explicit work thread id
@@ -153,6 +157,7 @@ function setOption(opts, key, value) {
   else if (normalized === "skill") opts.skills.push(String(value));
   else if (normalized === "skills") opts.skills.push(...String(value).split(","));
   else if (normalized === "ask") opts.asks.push(String(value));
+  else if (normalized === "task") opts.story = value;
   else opts[normalized] = value;
 }
 
@@ -189,7 +194,6 @@ function dedupe(values) {
 
 function normalizeCommand(command) {
   if (command === "status") return "check";
-  if (command === "report") return "progress";
   if (command === "finish" || command === "complete" || command === "completed") return "done";
   return command;
 }
@@ -789,12 +793,231 @@ async function resolveCompanyUid(apiUrl, token, company) {
   };
 }
 
-async function listThreads(apiUrl, token, companyUid, projectId) {
-  const data = await getJson(apiUrl, token, `/v1/work-mesh/threads?companyUid=${encodeURIComponent(companyUid)}&limit=100`);
+const STORY_STATUSES = new Set(["queued", "in_progress", "review", "done"]);
+const TASK_STATUS_ALIASES = new Map([
+  ["todo", "queued"],
+  ["queued", "queued"],
+  ["backlog", "queued"],
+  ["doing", "in_progress"],
+  ["wip", "in_progress"],
+  ["in_progress", "in_progress"],
+  ["inprogress", "in_progress"],
+  ["progress", "in_progress"],
+  ["waiting", "review"],
+  ["review", "review"],
+  ["in_review", "review"],
+  ["inreview", "review"],
+  ["done", "done"],
+  ["complete", "done"],
+  ["completed", "done"],
+  ["shipped", "done"],
+]);
+
+function normalizeTaskStatus(raw) {
+  const key = String(raw || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return TASK_STATUS_ALIASES.get(key) || "";
+}
+
+function isSafeCacheSegment(value) {
+  const trimmed = String(value || "").trim();
+  return Boolean(
+    trimmed &&
+    trimmed.length <= 128 &&
+    !trimmed.includes("..") &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed),
+  );
+}
+
+function writeProjectViewCache(view) {
+  const companyUid = String(view?.companyUid || "").trim();
+  const projectId = String(view?.projectId || "").trim();
+  if (!isSafeCacheSegment(companyUid) || !isSafeCacheSegment(projectId)) return null;
+  const dest = path.join(
+    process.env.HOME || os.homedir(),
+    ".hq",
+    "work-mesh",
+    "cache",
+    "projects",
+    companyUid,
+    `${projectId}.json`,
+  );
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const tmp = `${dest}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(view, null, 2)}\n`);
+  fs.renameSync(tmp, dest);
+  return dest;
+}
+
+async function listThreadPage(apiUrl, token, companyUid, { status, cursor } = {}) {
+  const qs = new URLSearchParams({ companyUid, limit: "100" });
+  if (status) qs.set("status", status);
+  if (cursor) qs.set("cursor", cursor);
+  const data = await getJson(apiUrl, token, `/v1/work-mesh/threads?${qs.toString()}`);
   const threads = Array.isArray(data.threads) ? data.threads : Array.isArray(data.items) ? data.items : [];
-  return threads
+  return { threads, nextCursor: data.nextCursor || "" };
+}
+
+async function listThreads(apiUrl, token, companyUid, projectId, { activeOnly = false } = {}) {
+  // Default list is newest-first by threadStatus on the GSI. Hundreds of
+  // work-session rows sit in `reconciled` and crowd out `in-progress` project
+  // threads if we only fetch page 1. Active lookups query each live status.
+  const statuses = activeOnly ? [...ACTIVE_STATUSES] : [undefined];
+  const collected = [];
+  for (const status of statuses) {
+    let cursor = "";
+    let pages = 0;
+    do {
+      const page = await listThreadPage(apiUrl, token, companyUid, { status, cursor });
+      collected.push(...page.threads);
+      cursor = page.nextCursor;
+      pages += 1;
+    } while (cursor && pages < 30);
+  }
+  return collected
     .filter((thread) => !projectId || thread.projectId === projectId)
     .sort((a, b) => String(b.lastActivityAt || b.createdAt || "").localeCompare(String(a.lastActivityAt || a.createdAt || "")));
+}
+
+async function patchJson(apiUrl, token, pathname, body) {
+  return fetchJson(`${apiUrl}${pathname}`, token, {
+    method: "PATCH",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(compact(body) ?? {}),
+  });
+}
+
+async function patchProjectStory(apiUrl, token, companyUid, projectId, storyId, status) {
+  const view = await patchJson(
+    apiUrl,
+    token,
+    `/v1/work-mesh/projects/${encodeURIComponent(projectId)}/stories/${encodeURIComponent(storyId)}`,
+    { companyUid, status },
+  );
+  writeProjectViewCache(view);
+  return view;
+}
+
+async function putJson(apiUrl, token, pathname, body) {
+  return fetchJson(`${apiUrl}${pathname}`, token, {
+    method: "PUT",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(compact(body) ?? {}),
+  });
+}
+
+function findLocalPrd(companySlug, projectId) {
+  const slug = safeProjectPathSegment(companySlug);
+  const project = safeProjectPathSegment(projectId);
+  if (!slug || !project) return null;
+  const candidate = path.join(resolveHqRoot(), "companies", slug, "projects", project, "prd.json");
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+function safeProjectPathSegment(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed || trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\")) return "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed)) return "";
+  return trimmed;
+}
+
+function projectViewBodyFromPrd(prdPath, companyUid, projectId) {
+  let prd = {};
+  if (prdPath && fs.existsSync(prdPath)) {
+    try {
+      prd = JSON.parse(fs.readFileSync(prdPath, "utf8"));
+    } catch {
+      prd = {};
+    }
+  }
+  const meta = prd.metadata && typeof prd.metadata === "object" ? prd.metadata : {};
+  const stories = [];
+  for (const story of Array.isArray(prd.userStories) ? prd.userStories : []) {
+    if (!story || typeof story !== "object" || !story.id) continue;
+    const ac = [];
+    for (const item of story.acceptanceCriteria || []) {
+      if (typeof item === "string" && item.trim()) ac.push(item.trim());
+      else if (item && typeof item === "object" && String(item.text || "").trim()) {
+        ac.push(String(item.text).trim());
+      }
+    }
+    const passes = story.passes === true;
+    const status = STORY_STATUSES.has(story.status) ? story.status : (passes ? "done" : "queued");
+    stories.push({
+      id: String(story.id).trim(),
+      title: String(story.title || "").trim(),
+      description: String(story.description || "").trim(),
+      acceptanceCriteria: ac,
+      status,
+      passes: status === "done",
+      priority: typeof story.priority === "number" ? story.priority : undefined,
+    });
+  }
+  const repos = [];
+  for (const raw of prd.repos || meta.repos || []) {
+    if (!raw || typeof raw !== "object") continue;
+    const repoPath = String(raw.path || raw.repoPath || raw.repo || "").trim();
+    if (!repoPath) continue;
+    repos.push({
+      path: repoPath,
+      branch: String(raw.branch || raw.branchName || "").trim(),
+    });
+  }
+  if (repos.length === 0) {
+    const repoPath = String(meta.repoPath || prd.repoPath || "").trim();
+    if (repoPath) {
+      repos.push({
+        path: repoPath,
+        branch: String(prd.branchName || meta.branchName || "").trim(),
+      });
+    }
+  }
+  return {
+    companyUid,
+    name: prd.name || projectId,
+    description: prd.description || "",
+    stories,
+    repos,
+  };
+}
+
+async function getProjectView(apiUrl, token, companyUid, projectId) {
+  const qs = new URLSearchParams({ companyUid });
+  return getJson(
+    apiUrl,
+    token,
+    `/v1/work-mesh/projects/${encodeURIComponent(projectId)}?${qs.toString()}`,
+  );
+}
+
+async function putProjectView(apiUrl, token, companyUid, projectId, body) {
+  const view = await putJson(
+    apiUrl,
+    token,
+    `/v1/work-mesh/projects/${encodeURIComponent(projectId)}`,
+    { ...body, companyUid },
+  );
+  writeProjectViewCache(view);
+  return view;
+}
+
+async function ensureProjectViewIfMissing(apiUrl, token, company, projectId) {
+  try {
+    const view = await getProjectView(apiUrl, token, company.companyUid, projectId);
+    writeProjectViewCache(view);
+    return { created: false, view };
+  } catch (err) {
+    if (!(err instanceof WorkMeshHttpError) || err.status !== 404) throw err;
+  }
+  const prdPath = findLocalPrd(company.companySlug, projectId);
+  if (!prdPath) return { created: false, skipped: "no local prd.json" };
+  const view = await putProjectView(
+    apiUrl,
+    token,
+    company.companyUid,
+    projectId,
+    projectViewBodyFromPrd(prdPath, company.companyUid, projectId),
+  );
+  return { created: true, view };
 }
 
 function activeProjectThreads(threads) {
@@ -1513,7 +1736,9 @@ async function ensureThread(apiUrl, token, company, projectId, opts) {
   }
 
   const statePath = stateFileFor(company.companySlug || company.companyUid, projectId);
-  const existing = activeProjectThreads(await listThreads(apiUrl, token, company.companyUid, projectId))[0];
+  const existing = activeProjectThreads(
+    await listThreads(apiUrl, token, company.companyUid, projectId, { activeOnly: true }),
+  )[0];
   if (existing?.threadId) {
     writeJson(statePath, {
       companyUid: company.companyUid,
@@ -1592,7 +1817,7 @@ function eventPayload(command, opts, token) {
   if (command === "progress") {
     const completion = opts.completion === undefined ? undefined : Number(opts.completion);
     return {
-      summary: clamp(opts.summary || "Project work is in progress.", 280),
+      summary: clamp(opts.summary || "Work is underway.", 280),
       completionEstimate: Number.isFinite(completion) ? Math.min(1, Math.max(0, completion)) : undefined,
     };
   }
@@ -2039,7 +2264,7 @@ async function main() {
     return;
   }
 
-  if (!["check", "start", "progress", "blocked", "done", "note", "watch"].includes(command)) {
+  if (!["check", "start", "progress", "blocked", "done", "note", "watch", "story", "report"].includes(command)) {
     console.error(usage());
     process.exitCode = 2;
     return;
@@ -2091,7 +2316,9 @@ async function main() {
 
   if (command === "check") {
     try {
-      const threads = activeProjectThreads(await listThreads(auth.apiUrl, auth.token, company.companyUid, opts.project));
+      const threads = activeProjectThreads(
+        await listThreads(auth.apiUrl, auth.token, company.companyUid, opts.project, { activeOnly: true }),
+      );
       printCheck(threads, company, opts.project, opts);
     } catch (err) {
       const cached = cachedActiveThreads(company.companyUid, opts.project, opts);
@@ -2104,25 +2331,92 @@ async function main() {
     return;
   }
 
-  try {
-    const ensured = await ensureThread(auth.apiUrl, auth.token, company, opts.project, opts);
-    const eventKind = command === "start" ? "claim" : command;
-    const payload = eventPayload(eventKind, opts, auth.token);
-    const event = opts.dry_run
-      ? { eventId: "dry-run-event", createdAt: new Date().toISOString() }
-      : await appendEvent(auth.apiUrl, auth.token, company.companyUid, ensured.threadId, eventKind, payload);
+  const storyId = String(opts.story || "").trim();
+  const storyStatus = normalizeTaskStatus(opts.status);
+  const wantsStory = Boolean(storyId);
+  if (wantsStory && !STORY_STATUSES.has(storyStatus)) {
+    failSoft(opts, "task requires --status todo|doing|waiting|done");
+    return;
+  }
+  if (command === "story" && !wantsStory) {
+    failSoft(opts, "task requires --task <id> and --status todo|doing|waiting|done");
+    return;
+  }
 
+  try {
+    let viewSeed;
+    if (!opts.dry_run) {
+      try {
+        viewSeed = await ensureProjectViewIfMissing(
+          auth.apiUrl,
+          auth.token,
+          company,
+          opts.project,
+        );
+      } catch (err) {
+        viewSeed = {
+          created: false,
+          skipped: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    let storyView;
+    if (wantsStory && !opts.dry_run) {
+      try {
+        storyView = await patchProjectStory(
+          auth.apiUrl,
+          auth.token,
+          company.companyUid,
+          opts.project,
+          storyId,
+          storyStatus,
+        );
+      } catch (err) {
+        if (!(err instanceof WorkMeshHttpError) || err.status !== 404) throw err;
+        if (!viewSeed?.view) throw err;
+        storyView = await patchProjectStory(
+          auth.apiUrl,
+          auth.token,
+          company.companyUid,
+          opts.project,
+          storyId,
+          storyStatus,
+        );
+      }
+    }
+
+    const wantsThread = command !== "story" || Boolean(opts.summary);
+    let ensured;
+    let event;
+    let eventKind;
+    if (wantsThread) {
+      ensured = await ensureThread(auth.apiUrl, auth.token, company, opts.project, opts);
+      eventKind = command === "start" ? "claim" : command === "report" ? "progress" : command;
+      if (eventKind === "story") eventKind = "progress";
+      const payload = eventPayload(eventKind, opts, auth.token);
+      event = opts.dry_run
+        ? { eventId: "dry-run-event", createdAt: new Date().toISOString() }
+        : await appendEvent(auth.apiUrl, auth.token, company.companyUid, ensured.threadId, eventKind, payload);
+    }
+
+    const patched = (storyView?.stories || []).find((row) => row.id === storyId) || null;
     printResult(
       {
         ok: true,
         action: command,
         eventKind,
         company,
-        projectId: opts.project,
-        threadId: ensured.threadId,
-        created: ensured.created,
-        eventId: event.eventId,
-        createdAt: event.createdAt,
+        projectId: storyView?.projectId || opts.project,
+        threadId: ensured?.threadId,
+        created: ensured?.created,
+        eventId: event?.eventId,
+        createdAt: event?.createdAt,
+        viewCreated: viewSeed?.created,
+        viewSkipped: viewSeed?.skipped,
+        storyId: wantsStory ? storyId : undefined,
+        status: patched?.status || (wantsStory ? storyStatus : undefined),
+        version: storyView?.version,
       },
       opts,
     );

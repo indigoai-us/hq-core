@@ -1,0 +1,15 @@
+id: probe-logged-out-cli
+name: Probe logged-out CLI
+schedule: "30 9 * * *"
+timezone: UTC
+runtime: claude
+exec:
+  prompt: Runtime auth intentionally missing for fixture.
+timeout_seconds: 600
+notify: none
+enabled: true
+owner: owner@example.com
+created_at: "2026-08-23T18:00:00Z"
+requirements:
+  runtime: claude
+  secrets: []

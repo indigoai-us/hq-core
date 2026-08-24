@@ -1,0 +1,23 @@
+id: nightly-repo-hygiene
+name: Nightly repo hygiene
+schedule: "0 2 * * *"
+timezone: UTC
+runtime: codex
+exec:
+  skill: garden-repo
+  args:
+    mode: quiet
+    max_prs: "3"
+timeout_seconds: 3600
+notify: none
+enabled: true
+owner: prs_exampleowner
+created_at: "2026-08-23T16:00:00Z"
+requirements:
+  runtime: codex
+  secrets:
+    - GITHUB_TOKEN
+  tools:
+    - gh
+# Informational only — readiness SoT is hq-pro (US-009). pending_probe is API status.
+readiness: pending_probe

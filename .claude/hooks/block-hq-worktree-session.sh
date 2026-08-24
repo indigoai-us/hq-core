@@ -25,6 +25,10 @@
 #       root — i.e. a worktree cut from the HQ repository.
 #
 # WHAT IS NOT BLOCKED:
+#   Task subagents launched with worktree isolation. Claude marks every hook
+#   call made inside a subagent with a non-empty agent_id, which distinguishes
+#   an intentional delegated child from an ordinary worktree session.
+#
 #   Worktrees of source repos under repos/ (the normal HQ editing flow lives
 #   in workspace/worktrees/<repo>/<name>/ — see block-core-writes-bash.sh,
 #   which REQUIRES them). Their main worktree is the repo checkout, never HQ
@@ -58,6 +62,13 @@ payload_field() {
 EVENT="${1:-}"
 [ -z "$EVENT" ] && EVENT="$(payload_field hook_event_name)"
 [ -z "$EVENT" ] && EVENT="UserPromptSubmit"
+
+# A Task subagent with `isolation: "worktree"` intentionally runs in a linked
+# worktree. Claude includes agent_id on hook events fired inside a subagent;
+# main-thread sessions (including manually started --worktree / --agent
+# sessions) do not have it. Exempt only this provider-owned discriminator —
+# agent_type alone is also present for manual --agent sessions.
+[ -n "$(payload_field agent_id)" ] && exit 0
 
 command -v git >/dev/null 2>&1 || exit 0
 

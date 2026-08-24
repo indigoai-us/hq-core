@@ -92,6 +92,16 @@ matching `hq` subcommand.
 - `qmd` CLI on PATH — `npm install -g @tobilu/qmd` (macOS also needs `brew install sqlite`)
 - A logged-in HQ session — `hq login`
 
+The launcher also discovers HQ's managed host toolchain and the usual per-user
+npm, pnpm, Bun, Volta, and Yarn install locations. On Windows it honors the
+semicolon-delimited `PATH` and safe executable entries from `PATHEXT`, including
+the `.cmd` shims created by npm and pnpm. Set `HQ_BIN` or `QMD_BIN` to an
+existing absolute path to override discovery.
+
+Windows command shims run through the packaged, fixed PowerShell adapter. Tool
+arguments remain a separate argv array; the server never builds a `cmd.exe /c`
+program string from caller input.
+
 ## Install
 
 ```bash
