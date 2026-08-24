@@ -334,6 +334,59 @@ $src"
   fi
 fi
 
+# ── 8. Import Claude Desktop connectors ────────────────────────────────────
+
+echo ""
+
+CLAUDE_DESKTOP_CONNECTORS=""
+CONNECTOR_IMPORT_SKIPPED=0
+CONNECTOR_IMPORT_COMPANY="${HQ_COMPANY:-}"
+
+case "$OSTYPE" in
+  darwin*)
+    CLAUDE_DESKTOP_CONNECTORS="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+    ;;
+  linux*)
+    CLAUDE_DESKTOP_CONNECTORS="${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude_desktop_config.json"
+    ;;
+  msys*|cygwin*|win32*)
+    if [[ -n "${APPDATA:-}" ]]; then
+      CLAUDE_DESKTOP_CONNECTORS="$APPDATA/Claude/claude_desktop_config.json"
+    fi
+    ;;
+esac
+
+if [[ -n "$CLAUDE_DESKTOP_CONNECTORS" && -f "$CLAUDE_DESKTOP_CONNECTORS" ]]; then
+  CONNECTOR_COUNT="$(jq -r 'if (.mcpServers | type == "object") then (.mcpServers | length) else 0 end' "$CLAUDE_DESKTOP_CONNECTORS" 2>/dev/null || printf '0')"
+else
+  CONNECTOR_COUNT=0
+fi
+
+if [[ "$CONNECTOR_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+  CONNECTOR_IMPORT_ARGS=()
+  CONNECTOR_IMPORT_TARGET="your HQ company"
+  if [[ -n "$CONNECTOR_IMPORT_COMPANY" ]]; then
+    CONNECTOR_IMPORT_ARGS+=(--company "$CONNECTOR_IMPORT_COMPANY")
+    CONNECTOR_IMPORT_TARGET="HQ company $CONNECTOR_IMPORT_COMPANY"
+  fi
+
+  if ask "Found $CONNECTOR_COUNT Claude Desktop connector(s). Import them into $CONNECTOR_IMPORT_TARGET integrations now?"; then
+    if check_cmd hq && hq integrations import "${CONNECTOR_IMPORT_ARGS[@]}"; then
+      ok "Claude Desktop connectors imported"
+    elif ! check_cmd hq && check_cmd npx && npx --yes @indigoai-us/hq-cli integrations import "${CONNECTOR_IMPORT_ARGS[@]}"; then
+      ok "Claude Desktop connectors imported"
+    else
+      skip "Claude Desktop connector import — Run 'hq integrations import' later once you're logged in."
+      CONNECTOR_IMPORT_SKIPPED=1
+    fi
+  else
+    skip "Claude Desktop connector import"
+    CONNECTOR_IMPORT_SKIPPED=1
+  fi
+else
+  skip "Claude Desktop connectors"
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -347,4 +400,7 @@ echo "    2. Run 'claude' to start a session"
 echo "    3. Run /setup for interactive personalization"
 echo "    4. Run /learn after each session to grow your knowledge base"
 echo "    5. Run 'hq install <source>' anytime to add content packs"
+if [[ "$CONNECTOR_IMPORT_SKIPPED" == "1" ]]; then
+  echo "    6. Run 'hq integrations import' later to import Claude Desktop connectors"
+fi
 echo "════════════════════════════════════════"

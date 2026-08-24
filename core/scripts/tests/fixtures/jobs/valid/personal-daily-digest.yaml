@@ -1,0 +1,18 @@
+id: daily-inbox-digest
+name: Daily inbox digest
+schedule: "0 9 * * 1-5"
+timezone: America/New_York
+runtime: claude
+exec:
+  prompt: Summarize new HQ DMs and email signals from the last 24 hours.
+cwd: personal
+timeout_seconds: 900
+notify: dm
+enabled: true
+owner: user@example.com
+created_at: "2026-08-23T14:00:00Z"
+requirements:
+  runtime: claude
+  secrets: []
+  tools:
+    - hq-dm

@@ -1,0 +1,12 @@
+id: bad-cron-job
+name: Bad cron
+schedule: "99 25 * * *"
+timezone: UTC
+runtime: claude
+exec:
+  prompt: Should not validate.
+timeout_seconds: 600
+notify: dm
+enabled: true
+owner: user@example.com
+created_at: "2026-08-23T14:00:00Z"

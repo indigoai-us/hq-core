@@ -17,5 +17,8 @@ core/scripts/work-mesh-lib.sh
 core/scripts/hook-lib.sh
 core/scripts/compute-checksums.sh
 
+# Outpost job runner is Linux-only and intentionally uses util-linux flock
+core/scripts/hq-job-run.sh
+
 # Docs-only sed example text
 .claude/hooks/check-core-yaml-parity.sh

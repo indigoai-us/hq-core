@@ -20,9 +20,20 @@ attempt to use the HQ work mesh before and during the work:
    same company/project with `bash core/scripts/work-mesh.sh check --company
    {co} --project {project}` and surface active owners or blockers before
    duplicating effort.
-2. When a project or PRD is created, report it with `start` or `progress`.
-3. During execution, report meaningful progress, blocked states, and completion
-   with `progress`, `blocked`, and `done`.
+2. When a project is created, and whenever a **task** starts, waits, or
+   finishes, make **one** call:
+
+   `bash core/scripts/work-mesh.sh report --company {co} --project {project}
+   [--task {id} --status doing|waiting|done] [--summary "…"]`
+
+   That single invocation seeds the Board from local `prd.json` if missing,
+   moves the task when `--task` is set, and records the update. Do not issue
+   a separate `start` plus `story` pair. Board columns are To do / Doing /
+   Waiting / Done (`queued` / `in_progress` / `review` / `done` on the wire).
+   `--story` is a hidden alias of `--task`.
+3. Use `blocked` or `done` only when you are not already passing that state
+   through `report --status` / `--summary`. `start`, `progress`, and `story`
+   remain aliases of the same helper.
 
 The attempt is mandatory; success is not. The helper is best-effort and exits
 zero when the install is local-only, logged out, not a company member, or the
@@ -35,8 +46,8 @@ For live awareness, local agents and HQ instances MAY run
 `bash core/scripts/work-mesh.sh watch` to subscribe to the authorized MQTT
 topics (`topics.work` and company `thread/#`) and maintain
 `workspace/work-mesh/live-cache.json`. The watcher is read/listen only for
-thread traffic; writes still go through `start`, `progress`, `blocked`, `done`,
-and `note`.
+thread traffic; writes still go through `report` (or the `start` / `progress` /
+`blocked` / `done` / `note` aliases).
 
 ## Rationale
 

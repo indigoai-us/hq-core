@@ -6,9 +6,9 @@ on: [AssistantIntent, PreToolUse]
 enforcement: hard
 tier: 1
 public: true
-version: 2
+version: 3
 created: 2026-04-21
-updated: 2026-07-28
+updated: 2026-08-22
 source: session-learning
 ---
 
@@ -38,3 +38,8 @@ The Task tool by default runs chips in the parent's working directory. Git's wor
 3. Parent commits while a chip is mid-edit → the chip's untracked changes get swept into the commit (or conversely, stranded).
 
 `isolation: "worktree"` routes each chip into a temporary `git worktree add` directory that's cleaned up on exit if the chip made no changes. This makes chip-local git state independent from the parent's and from siblings', which is the only safe model for concurrent git work. See also `hq-git-discipline.md` rule 10 for the defense-in-depth push pattern.
+
+The HQ worktree session guard permits these delegated children because Claude
+includes a non-empty `agent_id` on their hook payloads. That exemption is
+narrow: a manually opened HQ worktree, including a manual `--agent` session
+with only `agent_type`, remains blocked on UserPromptSubmit and PreToolUse.

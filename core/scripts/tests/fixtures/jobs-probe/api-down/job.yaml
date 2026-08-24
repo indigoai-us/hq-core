@@ -1,0 +1,19 @@
+id: probe-api-down
+name: Probe when status API is down
+schedule: "45 9 * * *"
+timezone: UTC
+runtime: claude
+exec:
+  prompt: Local checks green; ingest must fail closed.
+cwd: companies/indigo/projects/outpost-scheduled-jobs
+timeout_seconds: 600
+notify: dm
+enabled: true
+owner: owner@example.com
+created_at: "2026-08-23T18:00:00Z"
+requirements:
+  runtime: claude
+  secrets:
+    - SENTRY_API_TOKEN
+  company: indigo
+  cwd: companies/indigo/projects/outpost-scheduled-jobs
