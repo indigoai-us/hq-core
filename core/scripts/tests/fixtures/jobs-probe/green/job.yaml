@@ -1,0 +1,21 @@
+id: probe-green-digest
+name: Probe green digest
+schedule: "0 9 * * 1-5"
+timezone: America/New_York
+runtime: claude
+exec:
+  prompt: Summarize inbox; dry fixture for probe green path.
+cwd: companies/indigo/projects/outpost-scheduled-jobs
+timeout_seconds: 600
+notify: dm
+enabled: true
+owner: owner@example.com
+created_at: "2026-08-23T18:00:00Z"
+requirements:
+  runtime: claude
+  secrets:
+    - SENTRY_API_TOKEN
+  company: indigo
+  cwd: companies/indigo/projects/outpost-scheduled-jobs
+  tools:
+    - hq-secrets

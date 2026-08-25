@@ -1,0 +1,12 @@
+id: nl-schedule-job
+name: Natural language schedule rejected
+schedule: every weekday at 9am
+timezone: America/New_York
+runtime: claude
+exec:
+  prompt: NL must be resolved before write.
+timeout_seconds: 600
+notify: dm
+enabled: true
+owner: user@example.com
+created_at: "2026-08-23T14:00:00Z"

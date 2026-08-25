@@ -1,0 +1,12 @@
+id: too-long-timeout
+name: Timeout too large
+schedule: "0 9 * * *"
+timezone: UTC
+runtime: claude
+exec:
+  prompt: Runs forever theoretically.
+timeout_seconds: 20000
+notify: dm
+enabled: true
+owner: user@example.com
+created_at: "2026-08-23T14:00:00Z"

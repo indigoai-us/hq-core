@@ -81,4 +81,18 @@ assert_contains "$bad_pointer_out" "invalid active project pointer" "conflicted 
 grep -qxF '.claude/state/active-session-project merge=binary' "$ROOT/.gitattributes" \
   || fail "active project pointer lacks binary merge protection"
 
+# Regression: an explicit stale destination with no unique session match must
+# fail closed. In particular, append-event must not recreate the old project.
+set +e
+stale_out=$(HQ_ROOT="$TMP" "$HELPER" append-event \
+  --project personal/projects/moved-away \
+  --session-id missing-session \
+  --kind user-prompt \
+  --summary "follow-up after move" 2>&1)
+stale_status=$?
+set -e
+[[ "$stale_status" -ne 0 ]] || fail "stale project destination was accepted"
+assert_contains "$stale_out" "cannot uniquely reconcile project" "stale destination rejection"
+[[ ! -e "$TMP/personal/projects/moved-away" ]] || fail "stale destination recreated a project"
+
 echo "session-project smoke: ok"

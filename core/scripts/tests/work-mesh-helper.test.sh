@@ -38,6 +38,12 @@ const logPath = process.argv[2];
 const portPath = process.argv[3];
 const threads = [];
 let eventCount = 0;
+const projectViews = {};
+
+function projectIdFromUrl(url) {
+  const match = String(url || "").match(/\/v1\/work-mesh\/projects\/([^/?]+)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
 
 function send(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -109,7 +115,7 @@ const server = http.createServer((req, res) => {
     if (req.method === "POST" && req.url === "/v1/work-mesh/threads") {
       const body = JSON.parse(raw || "{}");
       const thread = {
-        threadId: "thr_1",
+        threadId: `thr_${threads.length + 1}`,
         threadStatus: "claimed",
         companyUid: body.companyUid,
         projectId: body.projectId,
@@ -123,9 +129,54 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/v1/work-mesh/threads/thr_1/events") {
+    if (req.method === "POST" && /\/v1\/work-mesh\/threads\/[^/]+\/events/.test(req.url)) {
       eventCount += 1;
       send(res, 200, { eventId: `evt_${eventCount}`, createdAt: "2026-07-05T00:00:01.000Z" });
+      return;
+    }
+
+    if (req.method === "GET" && req.url.startsWith("/v1/work-mesh/projects/")) {
+      const projectId = projectIdFromUrl(req.url);
+      const projectView = projectViews[projectId];
+      if (!projectView) {
+        send(res, 404, { error: "not found" });
+        return;
+      }
+      send(res, 200, projectView);
+      return;
+    }
+
+    if (req.method === "PUT" && req.url.startsWith("/v1/work-mesh/projects/")) {
+      const body = JSON.parse(raw || "{}");
+      const projectId = projectIdFromUrl(req.url);
+      projectViews[projectId] = {
+        companyUid: body.companyUid,
+        projectId,
+        version: 1,
+        stories: Array.isArray(body.stories) ? body.stories : [],
+        repos: Array.isArray(body.repos) ? body.repos : [],
+      };
+      send(res, 200, projectViews[projectId]);
+      return;
+    }
+
+    if (req.method === "PATCH" && req.url.includes("/v1/work-mesh/projects/") && req.url.includes("/stories/")) {
+      const projectId = projectIdFromUrl(req.url);
+      const projectView = projectViews[projectId];
+      if (!projectView) {
+        send(res, 404, { error: "not found" });
+        return;
+      }
+      const body = JSON.parse(raw || "{}");
+      const storyId = req.url.split("/stories/")[1]?.split("?")[0] || "US-000";
+      const stories = (projectView.stories || []).map((row) => (
+        row.id === storyId ? { ...row, status: body.status, passes: body.status === "done" } : row
+      ));
+      if (!stories.some((row) => row.id === storyId)) {
+        stories.push({ id: storyId, status: body.status, passes: body.status === "done" });
+      }
+      projectViews[projectId] = { ...projectView, version: (projectView.version || 1) + 1, stories };
+      send(res, 200, projectViews[projectId]);
       return;
     }
 
@@ -148,12 +199,38 @@ done
 [[ -f "$TMP/port" ]] || fail "fake API server did not start"
 
 API_URL="http://127.0.0.1:$(cat "$TMP/port")"
-start_out="$(HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" start --company indigo --project mesh-adoption --summary "Starting adoption" --json)"
+mkdir -p "$TMP/companies/indigo/projects/mesh-adoption"
+cat > "$TMP/companies/indigo/projects/mesh-adoption/prd.json" <<'PRD'
+{"name":"mesh-adoption","description":"Seed Board from start","userStories":[{"id":"US-000","title":"First","passes":false}]}
+PRD
+start_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" start --company indigo --project mesh-adoption --summary "Starting adoption" --json)"
 assert_contains "$start_out" '"threadId": "thr_1"' "start reports thread id"
 assert_contains "$start_out" '"eventKind": "claim"' "start appends claim"
+assert_contains "$start_out" '"viewCreated": true' "start seeds missing Board view from prd.json"
 
-progress_out="$(HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" progress --company indigo --project mesh-adoption --summary "Working" --json)"
+progress_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" progress --company indigo --project mesh-adoption --summary "Working" --json)"
 assert_contains "$progress_out" '"eventKind": "progress"' "progress appends event"
+
+reuse_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" start --company indigo --project mesh-adoption --summary "Again" --json)"
+assert_contains "$reuse_out" '"threadId": "thr_1"' "second start reuses thread"
+assert_contains "$reuse_out" '"created": false' "second start does not create"
+assert_contains "$reuse_out" '"viewCreated": false' "second start does not overwrite existing Board view"
+
+check_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" check --company indigo --project mesh-adoption --json)"
+assert_contains "$check_out" '"threadId": "thr_1"' "check finds the active project thread"
+
+story_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" story --company indigo --project mesh-adoption --story US-000 --status review --json)"
+assert_contains "$story_out" '"status": "review"' "story reports review"
+[[ -f "$TMP/.hq/work-mesh/cache/projects/cmp_indigo/mesh-adoption.json" ]] || fail "story writes machine cache"
+
+mkdir -p "$TMP/companies/indigo/projects/mesh-one-call"
+cat > "$TMP/companies/indigo/projects/mesh-one-call/prd.json" <<'PRD'
+{"name":"mesh-one-call","description":"One report call","userStories":[{"id":"US-001","title":"Only","passes":false}]}
+PRD
+report_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" report --company indigo --project mesh-one-call --task US-001 --status doing --summary "Working US-001" --json)"
+assert_contains "$report_out" '"viewCreated": true' "report seeds Board in the same call"
+assert_contains "$report_out" '"status": "in_progress"' "report maps doing → in_progress on the wire"
+assert_contains "$report_out" '"eventKind": "progress"' "report writes the work thread in the same call"
 
 watch_out="$(HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" watch --dry-run --json --cache-file "$TMP/live-cache.json")"
 assert_contains "$watch_out" '"action": "watch"' "watch dry-run reports action"
@@ -167,6 +244,7 @@ import sys
 rows = [json.loads(line) for line in open(sys.argv[1])]
 assert any(row["url"] == "/membership/me" for row in rows)
 assert any(row["method"] == "POST" and row["url"] == "/v1/work-mesh/threads" for row in rows)
+assert any(row["method"] == "PUT" and row["url"].startswith("/v1/work-mesh/projects/") for row in rows)
 assert any(row["body"] and row["body"].get("eventKind") == "claim" for row in rows)
 assert any(row["body"] and row["body"].get("eventKind") == "progress" for row in rows)
 assert any(row["method"] == "POST" and row["url"] == "/v1/realtime/credentials" for row in rows)
