@@ -2,7 +2,7 @@
 id: hq-worktree-retention
 title: HQ Worktree Retention — auto-GC stale worktrees, never lose work
 public: true
-when: worktree || git worktree
+when: worktree
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 tier: 2

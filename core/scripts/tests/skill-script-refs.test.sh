@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Regression coverage for WC-17: skills must not document local scripts that
-# were removed with a retired workflow. The checker must reject a broken
-# fixture, then pass against the release tree.
+# Regression coverage for local files referenced by shipped skills. Skills must
+# not document scripts removed with a retired workflow or link to policy files
+# outside the release tree. The checker must reject broken fixtures, then pass
+# against every shipped skill.
 
 set -euo pipefail
 
@@ -69,4 +70,26 @@ printf 'core/scripts/pending.sh\n' > "$FX2/core/scripts/lint-skill-script-refs.a
 out="$(run_lint_in "$FX2" demo 2>&1)" || fail "Case F: an allowlisted ref should pass; got:\n${out}"
 printf '%s\n' "$out" | grep -q '^OK:' || fail "Case F: expected OK once allowlisted; got:\n${out}"
 
-echo "PASS: skill-script-refs (fixture pass/fail + all-skills clean + allowlist + WC-17 regression)"
+# Case G: local Markdown policy links are release guidance too. A link to a
+# shipped policy passes, while a dangling target fails and names the bad href.
+FX3="$TMP/policy-links"
+mkdir -p "$FX3/.claude/skills/demo" "$FX3/core/policies"
+printf '# policy\n' > "$FX3/core/policies/safety.md"
+cat > "$FX3/.claude/skills/demo/SKILL.md" <<'GOODPOLICYF'
+# demo
+Follow the [safety policy](../../../core/policies/safety.md).
+GOODPOLICYF
+out="$(run_lint_in "$FX3" demo 2>&1)" \
+  || fail "Case G: an existing local policy link should pass; got:\n${out}"
+
+cat > "$FX3/.claude/skills/demo/SKILL.md" <<'BADPOLICYF'
+# demo
+Follow the [missing policy](../../../core/policies/missing.md).
+BADPOLICYF
+if out="$(run_lint_in "$FX3" demo 2>&1)"; then
+  fail "Case G: a missing local policy link should fail, but passed:\n${out}"
+fi
+grep -q '../../../core/policies/missing.md' <<<"$out" \
+  || fail "Case G: failure must name the missing policy href; got:\n${out}"
+
+echo "PASS: skill-script-refs (scripts + local policy links + all-skills clean + allowlist + WC-17 regression)"

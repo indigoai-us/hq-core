@@ -1,0 +1,11 @@
+id: incomplete-job
+name: Missing fields
+schedule: "0 9 * * *"
+timezone: America/New_York
+runtime: claude
+# exec intentionally missing
+timeout_seconds: 600
+notify: dm
+enabled: true
+owner: user@example.com
+created_at: "2026-08-23T14:00:00Z"

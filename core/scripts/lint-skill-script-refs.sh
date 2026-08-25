@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # lint-skill-script-refs.sh — fail if a selected release skill refers to a
-# local shell script that is absent from the same HQ scaffold.
+# local shell script or Markdown-linked policy absent from the HQ scaffold.
 #
-# Skills are executable guidance. A script path in a skill must resolve in a
-# fresh install, just as lint-skill-command-refs.sh guarantees slash commands
-# resolve. The selected skill keeps this validation focused on its documented
-# workflow and catches stale paths left behind when a script is retired.
+# Skills are executable guidance. Local script paths and policy links must
+# resolve in a fresh install, just as lint-skill-command-refs.sh guarantees
+# slash commands resolve. The selected skill keeps this validation focused on
+# its documented workflow and catches stale references left behind by moves.
 #
 # Allowlist: core/scripts/lint-skill-script-refs.allow (one normalized script
 # ref per line, `#` comments allowed). A ref listed there is a KNOWN pending
@@ -30,6 +30,7 @@ const root = path.resolve(process.argv[2]);
 const skillName = process.argv[3];
 const skillFile = path.join(root, ".claude", "skills", skillName, "SKILL.md");
 const scriptRef = /(?<![A-Za-z0-9_./-])((?:\.\/)?(?:core|\.claude)\/[A-Za-z0-9_./-]+\.sh)(?![A-Za-z0-9_./-])/g;
+const markdownLink = /\[[^\]]*\]\(<?([^\s)>]+)>?(?:\s+["'][^)]*["'])?\)/g;
 
 // Normalized (leading ./ stripped) refs that are known-pending and exempt.
 const allowFile = path.join(root, "core", "scripts", "lint-skill-script-refs.allow");
@@ -60,17 +61,38 @@ for (const match of source.matchAll(scriptRef)) {
       file: path.relative(root, skillFile).split(path.sep).join("/"),
       line,
       reference,
+      kind: "shell script",
+    });
+  }
+}
+
+for (const match of source.matchAll(markdownLink)) {
+  const reference = match[1];
+  if (/^[a-z][a-z0-9+.-]*:/i.test(reference) || reference.startsWith("#")) continue;
+
+  const localPath = reference.split(/[?#]/, 1)[0];
+  if (!localPath.split("/").includes("policies")) continue;
+
+  const target = path.resolve(path.dirname(skillFile), localPath);
+  const relativeTarget = path.relative(root, target);
+  const line = source.slice(0, match.index).split(/\r?\n/).length;
+  if (relativeTarget.startsWith("..") || path.isAbsolute(relativeTarget) || !fs.existsSync(target)) {
+    missing.push({
+      file: path.relative(root, skillFile).split(path.sep).join("/"),
+      line,
+      reference,
+      kind: "policy link",
     });
   }
 }
 
 if (missing.length > 0) {
-  console.error("FAIL: release skill guidance references missing local shell script(s):");
-  for (const { file, line, reference } of missing) {
-    console.error(`  ${file}:${line} -> ${reference}`);
+  console.error("FAIL: release skill guidance references missing local file(s):");
+  for (const { file, line, reference, kind } of missing) {
+    console.error(`  ${file}:${line} -> ${reference} (${kind})`);
   }
   process.exit(1);
 }
 
-console.log(`OK: every local shell script referenced by ${skillName} exists.`);
+console.log(`OK: every local shell script and policy linked by ${skillName} exists.`);
 JS

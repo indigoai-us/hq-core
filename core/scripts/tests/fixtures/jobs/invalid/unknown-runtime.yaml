@@ -1,0 +1,12 @@
+id: gemini-not-allowed
+name: Unknown runtime
+schedule: "0 9 * * *"
+timezone: UTC
+runtime: gemini
+exec:
+  prompt: Use an unsupported runtime.
+timeout_seconds: 600
+notify: dm
+enabled: true
+owner: user@example.com
+created_at: "2026-08-23T14:00:00Z"

@@ -234,10 +234,7 @@ function setActivePointer(projectDir) {
   fs.writeFileSync(path.join(state, "active-session-project"), String(projectDir) + "\n");
 }
 
-function readActivePointer(pointer) {
-  let raw;
-  try { raw = fs.readFileSync(pointer, "utf8"); } catch (e) { return null; }
-
+function resolveProjectPath(raw) {
   // This pointer is a one-line project directory, not arbitrary file content.
   // In particular, never reinterpret merge conflict markers as directory names.
   const match = raw.match(/^([^\r\n]+)(?:\r?\n)?$/);
@@ -252,6 +249,47 @@ function readActivePointer(pointer) {
       (!isPersonalProject && !isCompanyProject)) return null;
 
   return projectDir;
+}
+
+function readActivePointer(pointer) {
+  let raw;
+  try { raw = fs.readFileSync(pointer, "utf8"); } catch (e) { return null; }
+  return resolveProjectPath(raw);
+}
+
+function allProjectBases() {
+  const bases = [path.join(HQ_ROOT, "personal", "projects")];
+  const companiesDir = path.join(HQ_ROOT, "companies");
+  let companies;
+  try { companies = fs.readdirSync(companiesDir).sort(); } catch (e) { return bases; }
+  for (const company of companies) {
+    const base = path.join(companiesDir, company, "projects");
+    try {
+      if (fs.statSync(base).isDirectory()) bases.push(base);
+    } catch (e) {}
+  }
+  return bases;
+}
+
+function findProjectsBySession(sessionId) {
+  if (!sessionId) return [];
+  const matches = [];
+  for (const base of allProjectBases()) {
+    let children;
+    try { children = fs.readdirSync(base).sort(); } catch (e) { continue; }
+    for (const name of children) {
+      const projectDir = path.join(base, name);
+      const prd = readJson(path.join(projectDir, "prd.json"));
+      if (!prd || typeof prd !== "object" || Array.isArray(prd)) continue;
+      const sessions = prd.metadata && Array.isArray(prd.metadata.nativeSessions)
+        ? prd.metadata.nativeSessions
+        : [];
+      if (sessions.some((session) => session && session.sessionId === sessionId)) {
+        matches.push({ projectDir: projectDir, prd: prd });
+      }
+    }
+  }
+  return matches;
 }
 
 function ensureProject(args) {
@@ -311,7 +349,11 @@ function resolveProjectDir(project, requiredMsg) {
   const pointer = path.join(HQ_ROOT, ".claude", "state", "active-session-project");
   let projectDir;
   if (project) {
-    projectDir = path.join(HQ_ROOT, project);
+    projectDir = resolveProjectPath(project);
+    if (!projectDir) {
+      process.stderr.write("session-project: invalid project path\n");
+      process.exit(2);
+    }
   } else if (fs.existsSync(pointer)) {
     projectDir = readActivePointer(pointer);
     if (!projectDir) {
@@ -359,9 +401,16 @@ function ingestPlan(args) {
 }
 
 function appendEvent(args) {
-  const projectDir = resolveProjectDir(args.project, "");
-  const prdPath = path.join(projectDir, "prd.json");
-  const prd = readJson(prdPath) || {};
+  let projectDir = resolveProjectDir(args.project, "");
+  let prdPath = path.join(projectDir, "prd.json");
+  let prd = readJson(prdPath);
+  if (!prd || typeof prd !== "object" || Array.isArray(prd)) {
+    const matches = findProjectsBySession(args.session_id);
+    if (matches.length !== 1) die("cannot uniquely reconcile project");
+    projectDir = matches[0].projectDir;
+    prdPath = path.join(projectDir, "prd.json");
+    prd = matches[0].prd;
+  }
   const metadata = prd.metadata || (prd.metadata = {});
   const events = metadata.nativeEvents || (metadata.nativeEvents = []);
   events.push({ ts: nowIso(), kind: args.kind, summary: args.summary });

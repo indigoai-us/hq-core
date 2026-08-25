@@ -1,0 +1,13 @@
+id: cwd-dotdot
+name: Bad dotdot cwd
+schedule: "0 9 * * *"
+timezone: America/Los_Angeles
+runtime: claude
+exec:
+  prompt: "noop"
+requirements:
+  runtime: claude
+  cwd: ../personal
+enabled: true
+owner: owner@example.com
+created_at: "2026-08-23T00:00:00Z"

@@ -18,6 +18,7 @@ hq integrations catalog [query]                   # apps you can connect (alias:
 hq integrations inspect <app>                     # surfaces, credentials, warnings
 hq integrations discover <docsUrl>                # find a server from its docs page
 hq integrations connect <app>                     # connect it (alias: add)
+hq integrations import [--company <slug>] [--dry-run] [--only <name>] [--json]  # import Claude Desktop connectors
 hq integrations reconnect [app]                   # re-authenticate a broken app
 
 # use                                             (any member with access)
@@ -55,6 +56,10 @@ Two OAuth outcomes to relay accurately:
 
 - If the CLI prints **"Connected …"**, the app is live and usable now.
 - If it instead prints a sign-in URL and says the console will finish it, the backend does not accept the CLI's local callback. The app is **not connected yet** — the user must open that URL, and `hq integrations list` confirms afterwards. Never report this as success.
+
+## Importing Claude Desktop connectors
+
+`hq integrations import` reads the Claude Desktop connector configuration for the selected company. Remote connectors become company integrations; OAuth connectors may need a follow-up `hq integrations reconnect <app>` to finish sign-in. Local (stdio) connectors are written to `companies/{co}/settings/connectors/<name>.json`, with secrets stripped, so teammates can install them locally.
 
 ## The approval gate (important)
 

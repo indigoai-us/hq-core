@@ -80,6 +80,6 @@ AskUserQuestion([Q1, Q2, Q3])  ← never do this; even though the schema allows 
 
 ## Related
 
-- Global policy: `.claude/policies/decision-queue-one-at-a-time.md`
+- Global policy: [`decision-queue-one-at-a-time`](../../../core/policies/decision-queue-one-at-a-time.md)
 - Counterpart for accepted technical decisions worth not re-litigating: `/adr`
 - Counterpart for rejected ideas: `/out-of-scope`

@@ -7,6 +7,9 @@
   "bin": {
     "hq-cowork-mcp": "index.mjs"
   },
+  "scripts": {
+    "test": "node --test command-runner.test.mjs"
+  },
   "engines": {
     "node": ">=18.0.0"
   },
@@ -15,6 +18,8 @@
   },
   "files": [
     "index.mjs",
+    "command-runner.mjs",
+    "windows-command-shim.ps1",
     "README.md"
   ],
   "license": "MIT",

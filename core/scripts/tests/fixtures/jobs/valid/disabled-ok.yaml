@@ -1,0 +1,15 @@
+id: weekend-off-job
+name: Intentionally disabled
+schedule: "0 9 * * 1-5"
+timezone: UTC
+runtime: claude
+exec:
+  prompt: "Should not run while disabled."
+timeout_seconds: 600
+notify: none
+enabled: false
+owner: user@example.com
+created_at: "2026-08-23T14:00:00Z"
+requirements:
+  runtime: claude
+  secrets: []

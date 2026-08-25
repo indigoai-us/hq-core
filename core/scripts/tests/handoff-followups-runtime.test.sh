@@ -19,6 +19,17 @@ fail() {
 
 [[ -f "$SKILL" ]] || fail "handoff skill missing"
 
+# Handoff is routine closeout work, so Claude Code must run only this skill on
+# the bounded model/effort override instead of inheriting expensive session
+# defaults. Skill-scoped frontmatter restores those defaults after invocation.
+SKILL_FRONTMATTER=$(awk 'NR == 1 && $0 == "---" { inside = 1; next }
+  inside && $0 == "---" { exit }
+  inside { print }' "$SKILL")
+grep -qx 'model: sonnet' <<<"$SKILL_FRONTMATTER" \
+  || fail "handoff skill must use the Sonnet model override"
+grep -qx 'effort: low' <<<"$SKILL_FRONTMATTER" \
+  || fail "handoff skill must use the low effort override"
+
 # Cross-runtime dispatch must not stop at Codex, and the last fallback must be
 # synchronous only after the finalizer has written the durable learning array.
 grep -q 'Codex:.*`spawn_agent`' "$SKILL" \

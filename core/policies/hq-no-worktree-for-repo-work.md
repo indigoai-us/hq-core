@@ -5,9 +5,9 @@ when: /startwork || repo || worktree
 on: [UserPromptSubmit, SessionStart]
 enforcement: hard
 tier: 1
-version: 2
+version: 3
 created: 2026-04-03
-updated: 2026-07-28
+updated: 2026-08-22
 source: user-correction
 public: true
 ---
@@ -28,10 +28,16 @@ Creating worktrees in HQ causes: (1) unnecessary HQ branches that diverge from m
 half of this rule that a model cannot un-do once it has happened: a Claude
 session that is already *running* HQ from a linked worktree. It fires on
 SessionStart (banner), UserPromptSubmit (exit 2 — the prompt is erased) and
-PreToolUse (exit 2 — every tool call is refused), so a session started from an
-HQ worktree can do no work at all.
+PreToolUse (exit 2 — every tool call is refused), so an ordinary session
+started from an HQ worktree can do no work at all.
 
-It blocks exactly two shapes, and nothing else:
+Task subagents launched from the canonical HQ checkout with
+`isolation: "worktree"` are intentionally exempt. Claude identifies hook calls
+inside those delegated children with a non-empty `agent_id`; manually started
+worktree sessions do not receive that field and remain blocked. `agent_type`
+alone is not an exemption because manually started `--agent` sessions have it.
+
+Outside that delegated-task exemption, it blocks exactly two shapes:
 
 1. the session's project directory (`CLAUDE_PROJECT_DIR`) is itself a linked
    git worktree; or

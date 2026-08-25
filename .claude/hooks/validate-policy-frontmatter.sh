@@ -2,9 +2,11 @@
 # validate-policy-frontmatter.sh — PreToolUse (Write, Edit, MultiEdit).
 #
 # Blocks the create/edit of a POLICY file whose RESULTING frontmatter is missing
-# `when:` or `on:` — the two fields that drive just-in-time policy injection
-# (see core/knowledge/public/hq-core/policies-spec.md). Every policy authored or
-# edited must declare both.
+# `when:` or `on:`, or whose `when:` is outside the documented boolean grammar.
+# These fields drive just-in-time policy injection (see
+# core/knowledge/public/hq-core/policies-spec.md). Every policy authored or
+# edited must declare both, and malformed expressions must not reach the
+# runtime's intentional fail-open compatibility path.
 #
 # Targets: */policies/*.md (core/, companies/*/, repos/*/*/.claude/, personal/).
 # Excludes: README.md and the .claude/audit/ redaction-rule store (those are not
@@ -13,11 +15,11 @@
 # Advisory-safe: FAILS OPEN (exit 0) on any ambiguity — non-policy paths,
 # unparsable input, or when neither analyzer engine is usable — so it never
 # blocks an unrelated write. It only ever exits 2 when it is confident the
-# target is a policy file lacking when/on. Engines: node first (complex
-# analyzers run on node per the hooks-no-python migration), else a jq/awk port
-# of the same analyzer. python3 is no longer used — on Windows the Store alias
-# stub used to pass `command -v python3` while failing every invocation, which
-# silently disabled this validator.
+# target is a policy file lacking when/on or carrying malformed `when:` syntax.
+# Engines: node first (complex analyzers run on node per the hooks-no-python
+# migration), else a jq/awk port of the same analyzer. python3 is no longer used
+# — on Windows the Store alias stub used to pass `command -v python3` while
+# failing every invocation, which silently disabled this validator.
 #
 # Override: set HQ_ALLOW_POLICY_NO_TRIGGER=1 in .claude/settings.local.json env.
 #
@@ -95,9 +97,63 @@ const m = norm.match(/^\s*---[ \t]*\n([\s\S]*?)\n---[ \t]*(\n|$)/);
 if (!m) { console.log("BLOCK|no-frontmatter"); process.exit(0); }
 const fm = m[1];
 const missing = [];
-if (!/^\s*when:\s*\S/m.test(fm)) missing.push("when");
-if (!/^\s*on:\s*\S/m.test(fm)) missing.push("on");
-console.log(missing.length ? "BLOCK|" + missing.join(",") : "ALLOW");
+const whenLines = [...fm.matchAll(/^[ \t]*when:[ \t]*(.*)$/gm)].map((match) => match[1]);
+if (!whenLines.some((expr) => /\S/.test(expr))) missing.push("when");
+if (!/^[ \t]*on:[ \t]*\S/m.test(fm)) missing.push("on");
+if (missing.length) { console.log("BLOCK|" + missing.join(",")); process.exit(0); }
+
+// Grammar-only validation. Tokens remain open: this checks syntax, not whether
+// an identifier can be derived for a particular event. The runtime evaluators
+// deliberately stay fail-open for legacy malformed policies.
+const validWhen = (expr) => {
+  let pos = 0;
+  const skip = () => { while (pos < expr.length && /[ \t]/.test(expr[pos])) pos++; };
+  const identifier = () => {
+    skip();
+    const match = expr.slice(pos).match(/^[A-Za-z0-9_.\/][A-Za-z0-9_.\/-]*/);
+    if (!match) return false;
+    pos += match[0].length;
+    return true;
+  };
+  const atom = () => {
+    skip();
+    if (expr[pos] !== "(") return identifier();
+    pos++;
+    if (!orExpr()) return false;
+    skip();
+    if (expr[pos] !== ")") return false;
+    pos++;
+    return true;
+  };
+  const notExpr = () => {
+    skip();
+    if (expr[pos] === "!") { pos++; return notExpr(); }
+    return atom();
+  };
+  const andExpr = () => {
+    if (!notExpr()) return false;
+    while (true) {
+      skip();
+      if (expr.slice(pos, pos + 2) !== "&&") return true;
+      pos += 2;
+      if (!notExpr()) return false;
+    }
+  };
+  function orExpr() {
+    if (!andExpr()) return false;
+    while (true) {
+      skip();
+      if (expr.slice(pos, pos + 2) !== "||") return true;
+      pos += 2;
+      if (!andExpr()) return false;
+    }
+  }
+  if (!orExpr()) return false;
+  skip();
+  return pos === expr.length;
+};
+
+console.log(whenLines.every(validWhen) ? "ALLOW" : "BLOCK|invalid-when");
 JS
 
 # Literal replace-once (newline-safe) for the jq/awk fallback engine. Strings
@@ -156,6 +212,35 @@ analyze_with_jq() {
   esac
 
   printf '%s' "$text" | awk '
+    # Syntax-only parser for the documented when: grammar. It deliberately
+    # does not constrain identifier vocabulary; it only enforces token and
+    # operator placement, non-empty groups, and balanced parentheses.
+    function validwhen(s,   i,n,c,two,expect,depth) {
+      i=1; n=length(s); expect=1; depth=0
+      while (i<=n) {
+        c=substr(s,i,1)
+        if (c==" " || c=="\t") { i++; continue }
+        if (expect) {
+          if (c=="!") { i++; continue }
+          if (c=="(") { depth++; i++; continue }
+          if (c ~ /[A-Za-z0-9_.\/]/) {
+            i++
+            while (i<=n && substr(s,i,1) ~ /[A-Za-z0-9_.\/-]/) i++
+            expect=0
+            continue
+          }
+          return 0
+        }
+        two=substr(s,i,2)
+        if (two=="&&" || two=="||") { expect=1; i+=2; continue }
+        if (c==")") {
+          if (depth==0) return 0
+          depth--; i++; continue
+        }
+        return 0
+      }
+      return (!expect && depth==0)
+    }
     # normalize line endings (CRLF / stray CR) before structural checks —
     # mirrors the node engine and the python original'"'"'s \s* tolerance
     { line=$0; sub(/\r$/, "", line); L[NR]=line }
@@ -164,17 +249,22 @@ analyze_with_jq() {
       while (i<=NR && L[i] ~ /^[ \t]*$/) i++
       if (i>NR || L[i] !~ /^[ \t]*---[ \t]*$/) { print "BLOCK|no-frontmatter"; exit }
       i++
-      closed=0; w=0; o=0
+      closed=0; w=0; o=0; wi=0
       for (; i<=NR; i++) {
         if (L[i] ~ /^---[ \t]*$/) { closed=1; break }
-        if (L[i] ~ /^[ \t]*when:[ \t]*[^ \t]/) w=1
+        if (L[i] ~ /^[ \t]*when:[ \t]*[^ \t]/) {
+          w=1; wx=L[i]; sub(/^[ \t]*when:[ \t]*/, "", wx)
+          if (!validwhen(wx)) wi=1
+        }
         if (L[i] ~ /^[ \t]*on:[ \t]*[^ \t]/) o=1
       }
       if (!closed) { print "BLOCK|no-frontmatter"; exit }
       m=""
       if (!w) m="when"
       if (!o) m=(m=="" ? "on" : m ",on")
-      if (m!="") print "BLOCK|" m; else print "ALLOW"
+      if (m!="") print "BLOCK|" m
+      else if (wi) print "BLOCK|invalid-when"
+      else print "ALLOW"
     }'
 }
 
@@ -190,6 +280,25 @@ case "$RESULT" in
       exit 0
     fi
     reason="${RESULT#BLOCK|}"
+    if [ "$reason" = "invalid-when" ]; then
+      cat >&2 <<MSG
+BLOCKED: policy file has a malformed when: trigger expression.
+
+Use only identifiers joined by the documented boolean grammar:
+  when: <identifier>                 # e.g.  always  |  git  |  /deep-plan
+  when: <expr> && <expr>             # AND
+  when: <expr> || <expr>             # OR
+  when: ! <expr>                     # NOT
+  when: ( <expr> )                   # grouping
+Identifiers may contain letters, digits, _, ., /, and internal -. Quotes,
+YAML block scalars, adjacent identifiers without an operator, and other
+punctuation are not valid. See core/knowledge/public/hq-core/policies-spec.md
+("Trigger Expressions"). Fix the expression, then retry.
+
+(Operator override: set HQ_ALLOW_POLICY_NO_TRIGGER=1 in .claude/settings.local.json "env".)
+MSG
+      exit 2
+    fi
     cat >&2 <<MSG
 BLOCKED: policy file is missing required trigger frontmatter (missing: ${reason}).
 

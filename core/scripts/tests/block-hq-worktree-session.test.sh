@@ -85,9 +85,12 @@ FAIL=0
 run() {
   local expect="$1" project="$2" cwd="$3" event="$4" label="$5"
   shift 5
-  local payload rc=0
+  local payload rc=0 agent_id="${TEST_AGENT_ID:-}" agent_type="${TEST_AGENT_TYPE:-}"
   payload=$(jq -n --arg cwd "$cwd" --arg ev "$event" \
-    '{cwd: $cwd, hook_event_name: $ev, session_id: "test"}')
+    --arg agent_id "$agent_id" --arg agent_type "$agent_type" \
+    '{cwd: $cwd, hook_event_name: $ev, session_id: "test"}
+      + (if $agent_id == "" then {} else {agent_id: $agent_id} end)
+      + (if $agent_type == "" then {} else {agent_type: $agent_type} end)')
   LAST_STDOUT="$(printf '%s' "$payload" \
     | env CLAUDE_PROJECT_DIR="$project" HQ_ROOT= HQ_ALLOW_HQ_WORKTREE= "$@" \
       bash "$HOOK" "$event" 2>/dev/null)" || rc=$?
@@ -109,6 +112,21 @@ run 2 "$HQWT" "$HQWT" UserPromptSubmit 'project dir is a linked HQ worktree — 
 run 2 "$HQWT" "$HQWT" PreToolUse       'project dir is a linked HQ worktree — tool blocked'
 run 2 "$HQ"   "$HQWT" UserPromptSubmit 'cwd is a worktree cut from HQ — blocked'
 run 2 "$HQ"   "$HQWT" PreToolUse       'cwd is a worktree cut from HQ — tool blocked'
+
+# A manually selected --agent has agent_type but no subagent id. It is still an
+# ordinary worktree session and must not gain the background-task exemption.
+TEST_AGENT_TYPE=general-purpose \
+  run 2 "$HQWT" "$HQWT" UserPromptSubmit 'agent_type alone does not bypass the block'
+
+# --- Background tasks: isolated HQ worktrees are intentional ----------------
+# Claude marks hook calls made inside Task subagents with agent_id. These child
+# sessions must reach both their prompt and their tools, including repeat runs.
+TEST_AGENT_ID=agent-task-1 TEST_AGENT_TYPE=general-purpose \
+  run 0 "$HQWT" "$HQWT" UserPromptSubmit 'background task reaches its prompt'
+TEST_AGENT_ID=agent-task-1 TEST_AGENT_TYPE=general-purpose \
+  run 0 "$HQWT" "$HQWT" PreToolUse 'background task reaches its first tool call'
+TEST_AGENT_ID=agent-task-2 TEST_AGENT_TYPE=general-purpose \
+  run 0 "$HQWT" "$HQWT" UserPromptSubmit 'repeated background task launch is allowed'
 
 # SessionStart cannot stop a session: it must warn (exit 0) and say why.
 run 0 "$HQWT" "$HQWT" SessionStart 'SessionStart never blocks startup'
