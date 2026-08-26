@@ -1,0 +1,16 @@
+id: bad-surface-job
+name: Bad surface
+schedule: "0 9 * * *"
+timezone: UTC
+runtime: claude
+exec:
+  prompt: Should fail validation.
+  surface: desktop
+timeout_seconds: 300
+notify: dm
+enabled: true
+owner: user@example.com
+created_at: "2026-08-25T05:00:00Z"
+requirements:
+  runtime: claude
+  secrets: []

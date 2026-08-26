@@ -293,6 +293,19 @@ validate_job_file() {
         done < <(jq -r '.exec.args | .. | strings' <<<"$json" 2>/dev/null)
       fi
     fi
+    surface="$(jq -r '.exec.surface // empty' <<<"$json")"
+    case "$surface" in
+      ''|headless|remote) ;;
+      *) err "$file" "exec.surface" "unknown surface '$surface' (allowed: headless|remote)" ;;
+    esac
+    # reject unknown exec keys
+    while IFS= read -r ekey; do
+      [ -z "$ekey" ] && continue
+      case "$ekey" in
+        prompt|skill|args|surface) ;;
+        *) err "$file" "exec.$ekey" "unknown exec key (allowed: prompt, skill, args, surface)" ;;
+      esac
+    done < <(jq -r '.exec | keys[]' <<<"$json")
   fi
 
   # timeout

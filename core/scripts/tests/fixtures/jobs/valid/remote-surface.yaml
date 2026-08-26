@@ -1,0 +1,16 @@
+id: remote-surface-ok
+name: Remote surface ok
+schedule: "0 9 * * *"
+timezone: UTC
+runtime: claude
+exec:
+  prompt: Reply with exactly REMOTE-SURFACE-OK.
+  surface: remote
+timeout_seconds: 300
+notify: dm
+enabled: true
+owner: user@example.com
+created_at: "2026-08-25T05:00:00Z"
+requirements:
+  runtime: claude
+  secrets: []

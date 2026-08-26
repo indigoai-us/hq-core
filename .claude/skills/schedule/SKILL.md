@@ -113,6 +113,11 @@ updated_at: "2026-08-23T18:00:00Z"   # now UTC ISO-8601
    channel + any destination fields they provide, but **warn** that v1 delivery
    only implements **dm** and runtime falls back to dm (`channel_unimplemented`).
 4. Later mutations skip the prompt if the file exists.
+5. **execution_surface** (optional, same first-mutate prompt or follow-up):
+   `headless` (default, fire-and-forget) | `remote` (Claude Desktop remotes —
+   named `schedule/<job-id>`, prompt auto-started; finished runs move to
+   **Archived**). Write into the profile as `execution_surface: remote|headless`.
+   Per-job override: `exec.surface`.
 
 ## `/schedule add`
 
