@@ -130,7 +130,10 @@ empty_title="$(HQ_ROOT="$EMPTY" bash "$TITLE" --session-id "manifest-nested-pars
 assert_equals "$empty_hook_rc" "0" "empty manifest hook exits cleanly"
 assert_not_contains "$empty_out" "Companies (" "empty manifest emits no company line"
 assert_equals "$empty_title_rc" "0" "empty manifest session-title exits cleanly"
-assert_equals "$empty_title" "chat" "empty manifest leaves company unset"
+# Title grammar is "{icon} {CATEGORY} · {subject} · {phase}". With an empty
+# manifest there is no company to resolve, so the subject slot must be absent
+# and the category must fall back to the generic WORK bucket — never a slug.
+assert_equals "$empty_title" "🟦 WORK · chat" "empty manifest leaves company unset"
 
 echo "manifest-nested-parse: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

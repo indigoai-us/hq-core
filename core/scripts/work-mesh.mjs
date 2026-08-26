@@ -65,6 +65,7 @@ function usage() {
 
 Commands:
   check      Show active work on a company/project
+  ground     Bind a named project, list recents, or genesis with --create --confirm
   report     One call: seed the Board if missing, optional task move, update
   start      Alias of report that claims the project
   progress   Append an update to the project
@@ -78,6 +79,10 @@ Options:
   --company <slug|uid>     Company slug or cloud uid
   --project <slug>         HQ project slug / projectId
   --task <id>              Task id (Board column). --story is a hidden alias
+  --task-title <text>      Create or attach a Board task from this title
+  --prompt <text>          For ground: match recents against this gist
+  --create <slug>          For ground: new project slug (requires --confirm)
+  --confirm                Required with --create before any genesis write
   --status <status>        todo|doing|waiting|done (or queued|in_progress|review)
   --summary <text>         Short update (not the task title)
   --reason <text>          Blocked reason
@@ -130,7 +135,7 @@ function parseArgs(argv) {
 
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
-      if (["json", "silent", "dry-run", "help", "once"].includes(key)) {
+      if (["json", "silent", "dry-run", "help", "once", "confirm"].includes(key)) {
         setOption(opts, key, true);
       } else {
         i += 1;
@@ -1009,15 +1014,276 @@ async function ensureProjectViewIfMissing(apiUrl, token, company, projectId) {
     if (!(err instanceof WorkMeshHttpError) || err.status !== 404) throw err;
   }
   const prdPath = findLocalPrd(company.companySlug, projectId);
-  if (!prdPath) return { created: false, skipped: "no local prd.json" };
+  const body = prdPath
+    ? projectViewBodyFromPrd(prdPath, company.companyUid, projectId)
+    : {
+        companyUid: company.companyUid,
+        name: projectId,
+        description: "",
+        stories: [],
+        repos: [],
+      };
   const view = await putProjectView(
     apiUrl,
     token,
     company.companyUid,
     projectId,
-    projectViewBodyFromPrd(prdPath, company.companyUid, projectId),
+    body,
   );
-  return { created: true, view };
+  return { created: true, view, stub: !prdPath };
+}
+
+function cacheProjectsDir(companyUid) {
+  return path.join(process.env.HOME || os.homedir(), ".hq", "work-mesh", "cache", "projects", companyUid);
+}
+
+function sessionBindsPath(companyUid, projectId) {
+  return path.join(
+    process.env.HOME || os.homedir(),
+    ".hq",
+    "work-mesh",
+    "cache",
+    "sessions",
+    companyUid,
+    `${projectId}.json`,
+  );
+}
+
+function sessionBindAlive(bind) {
+  const m = /^pid-(\d+)$/.exec(String(bind?.sessionId || ""));
+  if (!m) return true;
+  try {
+    process.kill(Number(m[1]), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readSessionBinds(companyUid, projectId) {
+  const dest = sessionBindsPath(companyUid, projectId);
+  try {
+    const raw = JSON.parse(fs.readFileSync(dest, "utf8"));
+    const binds = Array.isArray(raw.binds) ? raw.binds.filter(sessionBindAlive) : [];
+    return binds;
+  } catch {
+    return [];
+  }
+}
+
+function writeSessionBinds(companyUid, projectId, binds) {
+  const dest = sessionBindsPath(companyUid, projectId);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const tmp = `${dest}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify({ binds }, null, 2)}\n`);
+  fs.renameSync(tmp, dest);
+}
+
+function currentSessionId() {
+  return (
+    process.env.HQ_WORK_MESH_SESSION_ID ||
+    process.env.HQ_SESSION_ID ||
+    process.env.CLAUDE_SESSION_ID ||
+    process.env.CODEX_THREAD_ID ||
+    `pid-${process.pid}`
+  );
+}
+
+function listCachedProjects(companyUid) {
+  const dir = cacheProjectsDir(companyUid);
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    const projectId = name.slice(0, -5);
+    try {
+      const view = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
+      out.push({
+        projectId,
+        name: view.name || projectId,
+        lastActivityAt: view.updatedAt || "",
+        stories: Array.isArray(view.stories) ? view.stories.length : 0,
+      });
+    } catch {
+      out.push({ projectId, name: projectId, lastActivityAt: "", stories: 0 });
+    }
+  }
+  return out;
+}
+
+function scoreProject(prompt, row) {
+  const p = String(prompt || "").toLowerCase();
+  if (!p) return 0;
+  const id = String(row.projectId || "").toLowerCase();
+  const name = String(row.name || "").toLowerCase();
+  if (p.includes(id) || id.includes(p.replace(/\s+/g, "-"))) return 1;
+  if (name && p.includes(name)) return 0.9;
+  const tokens = p.split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+  let hits = 0;
+  for (const t of tokens) {
+    if (id.includes(t) || name.includes(t)) hits += 1;
+  }
+  return tokens.length ? hits / tokens.length : 0;
+}
+
+function nextTaskId(stories) {
+  const used = new Set((stories || []).map((s) => String(s.id || "").toUpperCase()));
+  for (let i = 1; i < 1000; i += 1) {
+    const id = `T-${String(i).padStart(3, "0")}`;
+    if (!used.has(id)) return id;
+  }
+  return `T-${Date.now().toString(36)}`;
+}
+
+function openTaskStatuses() {
+  return new Set(["queued", "in_progress", "review"]);
+}
+
+function findSameWork(stories, { taskId, title }) {
+  const rows = Array.isArray(stories) ? stories : [];
+  if (taskId) {
+    const hit = rows.find((s) => String(s.id).toUpperCase() === String(taskId).toUpperCase());
+    if (hit) return hit;
+  }
+  const want = String(title || "").trim().toLowerCase();
+  if (!want) return null;
+  return (
+    rows.find(
+      (s) =>
+        openTaskStatuses().has(s.status) &&
+        String(s.title || "").trim().toLowerCase() === want,
+    ) || null
+  );
+}
+
+async function postCreateStory(apiUrl, token, companyUid, projectId, story) {
+  return postJson(apiUrl, token, `/v1/work-mesh/projects/${encodeURIComponent(projectId)}/stories`, {
+    companyUid,
+    id: story.id,
+    title: story.title,
+    description: story.description || "",
+  });
+}
+
+async function createOrAttachTask(apiUrl, token, companyUid, projectId, { taskId, title, status }) {
+  let view;
+  try {
+    view = await getProjectView(apiUrl, token, companyUid, projectId);
+  } catch (err) {
+    if (!(err instanceof WorkMeshHttpError) || err.status !== 404) throw err;
+    view = { stories: [], name: projectId, description: "", repos: [] };
+  }
+  const existing = findSameWork(view.stories, { taskId, title });
+  const targetStatus = normalizeTaskStatus(status || "doing");
+  if (existing) {
+    if (existing.status === targetStatus) {
+      writeProjectViewCache(view);
+      return { view, task: existing, created: false, attached: true };
+    }
+    const patched = await patchProjectStory(apiUrl, token, companyUid, projectId, existing.id, targetStatus);
+    const task = (patched.stories || []).find((s) => s.id === existing.id) || existing;
+    return { view: patched, task, created: false, attached: true };
+  }
+  const id = nextTaskId(view.stories);
+  const story = { id, title: String(title || id).trim(), description: "" };
+  try {
+    await postCreateStory(apiUrl, token, companyUid, projectId, story);
+    const patched = await patchProjectStory(apiUrl, token, companyUid, projectId, id, targetStatus);
+    const task = (patched.stories || []).find((s) => s.id === id);
+    return { view: patched, task, created: true, attached: false, posted: true };
+  } catch (err) {
+    if (err instanceof WorkMeshHttpError && (err.status === 404 || err.status === 405)) {
+      throw new Error(
+        "create-task not deployed (POST /v1/work-mesh/projects/{id}/stories missing); attach with --task or wait for the hq-pro create-task route",
+      );
+    }
+    throw err;
+  }
+}
+
+function bindSession(companyUid, projectId, taskId) {
+  const sessionId = currentSessionId();
+  const binds = readSessionBinds(companyUid, projectId).filter(
+    (b) => !(b.sessionId === sessionId && b.taskId === taskId),
+  );
+  binds.push({
+    taskId,
+    sessionId,
+    principalUid: process.env.HQ_PERSON_UID || "",
+    updatedAt: new Date().toISOString(),
+  });
+  writeSessionBinds(companyUid, projectId, binds);
+  try {
+    fs.writeFileSync(
+      path.join(process.env.HOME || os.homedir(), ".hq", "work-mesh", "cache", "sessions-bind.json"),
+      `${JSON.stringify({ companyUid, projectId, taskId, sessionId }, null, 2)}\n`,
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function unbindSession(companyUid, projectId, taskId) {
+  const sessionId = currentSessionId();
+  const binds = readSessionBinds(companyUid, projectId).filter(
+    (b) => !(b.sessionId === sessionId && (!taskId || b.taskId === taskId)),
+  );
+  writeSessionBinds(companyUid, projectId, binds);
+  return binds;
+}
+
+function otherBinds(companyUid, projectId, taskId) {
+  const sessionId = currentSessionId();
+  return readSessionBinds(companyUid, projectId).filter(
+    (b) => b.taskId === taskId && b.sessionId !== sessionId,
+  );
+}
+
+async function runGround(apiUrl, token, company, opts) {
+  const named = String(opts.project || "").trim();
+  const createSlug = String(opts.create || "").trim();
+  const prompt = String(opts.prompt || "").trim();
+  if (createSlug && !opts.confirm) {
+    return {
+      ok: true,
+      action: "ground",
+      created: false,
+      skipped: "create requires --confirm",
+      projectId: createSlug,
+    };
+  }
+  if (createSlug && opts.confirm) {
+    if (opts.dry_run) return { ok: true, action: "ground", dryRun: true, create: createSlug };
+    const seeded = await ensureProjectViewIfMissing(apiUrl, token, company, createSlug);
+    return {
+      ok: true,
+      action: "ground",
+      projectId: createSlug,
+      created: Boolean(seeded.created),
+      stub: Boolean(seeded.stub),
+      bound: true,
+    };
+  }
+  if (named) {
+    try {
+      const view = await getProjectView(apiUrl, token, company.companyUid, named);
+      writeProjectViewCache(view);
+      return { ok: true, action: "ground", projectId: named, bound: true, created: false };
+    } catch (err) {
+      if (!(err instanceof WorkMeshHttpError) || err.status !== 404) throw err;
+      return { ok: true, action: "ground", projectId: named, bound: false, missing: true };
+    }
+  }
+  const cached = listCachedProjects(company.companyUid)
+    .map((row) => ({ ...row, score: scoreProject(prompt, row) }))
+    .filter((row) => !prompt || row.score > 0)
+    .sort((a, b) => b.score - a.score || String(b.lastActivityAt).localeCompare(String(a.lastActivityAt)));
+  return {
+    ok: true,
+    action: "ground",
+    bound: false,
+    candidates: cached.slice(0, 8),
+  };
 }
 
 function activeProjectThreads(threads) {
@@ -2264,13 +2530,27 @@ async function main() {
     return;
   }
 
-  if (!["check", "start", "progress", "blocked", "done", "note", "watch", "story", "report"].includes(command)) {
+  if (command === "ground" && opts.create && !opts.confirm) {
+    printResult(
+      {
+        ok: true,
+        action: "ground",
+        created: false,
+        skipped: "create requires --confirm",
+        projectId: String(opts.create || "").trim(),
+      },
+      opts,
+    );
+    return;
+  }
+
+  if (!["check", "ground", "start", "progress", "blocked", "done", "note", "watch", "story", "report"].includes(command)) {
     console.error(usage());
     process.exitCode = 2;
     return;
   }
 
-  if (!["check", "watch"].includes(command) && !opts.project) {
+  if (!["check", "watch", "ground"].includes(command) && !opts.project) {
     failSoft(opts, "project is required");
     return;
   }
@@ -2314,6 +2594,16 @@ async function main() {
     return;
   }
 
+  if (command === "ground") {
+    try {
+      const result = await runGround(auth.apiUrl, auth.token, company, opts);
+      printResult(result, opts);
+    } catch (err) {
+      failSoft(opts, "ground failed", err instanceof Error ? err.message : err, [auth.token]);
+    }
+    return;
+  }
+
   if (command === "check") {
     try {
       const threads = activeProjectThreads(
@@ -2331,10 +2621,12 @@ async function main() {
     return;
   }
 
-  const storyId = String(opts.story || "").trim();
-  const storyStatus = normalizeTaskStatus(opts.status);
-  const wantsStory = Boolean(storyId);
-  if (wantsStory && !STORY_STATUSES.has(storyStatus)) {
+  const taskTitle = String(opts.task_title || "").trim();
+  let storyId = String(opts.story || "").trim();
+  let storyStatus = normalizeTaskStatus(opts.status);
+  if (taskTitle && !STORY_STATUSES.has(storyStatus)) storyStatus = "in_progress";
+  const wantsStory = Boolean(storyId) || Boolean(taskTitle);
+  if (wantsStory && !taskTitle && !STORY_STATUSES.has(storyStatus)) {
     failSoft(opts, "task requires --status todo|doing|waiting|done");
     return;
   }
@@ -2362,7 +2654,35 @@ async function main() {
     }
 
     let storyView;
-    if (wantsStory && !opts.dry_run) {
+    let taskCreated = false;
+    let taskAttached = false;
+    let skipTaskPatch = false;
+    if (taskTitle && !opts.dry_run) {
+      const result = await createOrAttachTask(
+        auth.apiUrl,
+        auth.token,
+        company.companyUid,
+        opts.project,
+        { taskId: storyId, title: taskTitle, status: storyStatus },
+      );
+      storyView = result.view;
+      storyId = result.task?.id || storyId;
+      taskCreated = Boolean(result.created);
+      taskAttached = Boolean(result.attached);
+      skipTaskPatch = true;
+      if (result.task?.id) bindSession(company.companyUid, opts.project, result.task.id);
+    } else if (wantsStory && storyStatus === "done" && !opts.dry_run) {
+      if (otherBinds(company.companyUid, opts.project, storyId).length > 0) {
+        unbindSession(company.companyUid, opts.project, storyId);
+        skipTaskPatch = true;
+        try {
+          storyView = await getProjectView(auth.apiUrl, auth.token, company.companyUid, opts.project);
+        } catch {
+          storyView = viewSeed?.view;
+        }
+      }
+    }
+    if (wantsStory && !opts.dry_run && !skipTaskPatch) {
       try {
         storyView = await patchProjectStory(
           auth.apiUrl,
@@ -2384,6 +2704,8 @@ async function main() {
           storyStatus,
         );
       }
+      if (storyStatus === "in_progress") bindSession(company.companyUid, opts.project, storyId);
+      if (storyStatus === "done") unbindSession(company.companyUid, opts.project, storyId);
     }
 
     const wantsThread = command !== "story" || Boolean(opts.summary);
@@ -2409,12 +2731,14 @@ async function main() {
         company,
         projectId: storyView?.projectId || opts.project,
         threadId: ensured?.threadId,
-        created: ensured?.created,
         eventId: event?.eventId,
         createdAt: event?.createdAt,
         viewCreated: viewSeed?.created,
         viewSkipped: viewSeed?.skipped,
         storyId: wantsStory ? storyId : undefined,
+        taskId: wantsStory ? storyId : undefined,
+        created: taskTitle ? taskCreated : ensured?.created,
+        attached: taskTitle ? taskAttached : undefined,
         status: patched?.status || (wantsStory ? storyStatus : undefined),
         version: storyView?.version,
       },

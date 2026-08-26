@@ -119,6 +119,7 @@ The high-frequency mappings. Group by work phase. Generalize from these — syno
 | User says (paraphrased) | Route — ⚠ = Risk Gate |
 |---|---|
 | "new company", "set up {co}" | ⚠ `/newcompany {slug}` |
+| "create a company skill", "turn this workflow into a team skill", "add an HQ skill" | `/create-skill` |
 | "new worker", "scaffold an agent for…" | `/newworker` |
 | "onboard", "join a company", "accept this invite" | `/onboard`, `/accept` |
 | "invite {person}", "add {person} to {co}" | ⚠ `/new-hire {email} {company}` |

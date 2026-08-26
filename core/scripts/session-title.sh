@@ -7,7 +7,7 @@
 # UserPromptSubmit wrapper (.claude/hooks/session-title.sh) wraps this output
 # in the hookSpecificOutput.sessionTitle envelope.
 #
-# Title convention:  {status-emoji }{company} · {project} · {command}
+# Title convention:  {icon} {CATEGORY} · {subject} · {phase}
 #   - emoji is a STATUS flag only (▶️ running, ✅ recently completed); it is
 #     omitted otherwise — the command word already conveys the mode.
 #   - company  : slug from the active project path, or "hq-core" for builder
@@ -19,7 +19,10 @@
 # Usage: session-title.sh --session-id <id> [--command <word>]
 set -uo pipefail
 
-HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
+# core/scripts/ -> ../.. is the HQ root. It was "/.." (i.e. core/), which
+# silently resolved every lookup against the wrong tree whenever
+# CLAUDE_PROJECT_DIR was unset, yielding a projectless title.
+HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 
 SESSION_ID="default"
 COMMAND=""
@@ -55,8 +58,12 @@ const firstLine = (p) => {
 };
 
 // --- resolve active project path (session-scoped, then global fallback) ---
+// Session-scoped ONLY. There used to be a fallback to the machine-global
+// .claude/state/active-session-project here; it made every session without its
+// own entry inherit whatever project was last active anywhere on the box (142
+// unrelated sessions all named "learn-policies-only · chat"). Session-scoped
+// state must fail to empty, never to a shared global.
 let projPath = firstLine(path.join(state, "auto-session-project-" + key));
-if (!projPath) projPath = firstLine(path.join(state, "active-session-project"));
 
 let company = "";
 let project = "";
@@ -130,20 +137,65 @@ if (project) {
   } catch (e) {}
 }
 
-// --- compose ---
-if (!command) command = "chat";
+// --- domain category ---
+// First match wins. Keyed on the project slug, then the command word, then the
+// company. Produces the "EMOJI CAT" lead-in of the HQ title grammar; see
+// personal/policies/hq-session-title-grammar.md.
+const CATEGORIES = [
+  [/(secur|(^|[-_])sec([-_]|$)|auth|acl|vault|secret|credential|risk|permission)/, "🔒", "SEC"],
+  [/(legal|contract|dispute|agreement|licen[cs]e|terms)/,                          "⚖️", "LEGAL"],
+  [/(deploy|infra|migration|migrate|ops|pipeline|(^|[-_])ci([-_]|$)|release|sync)/, "⚙️", "OPS"],
+  [/(bug|fix|debug|diagnose|repair|heal|incident|regression)/,                     "🔧", "FIX"],
+  [/(design|brand|visual|(^|[-_])ui([-_]|$)|(^|[-_])ux([-_]|$)|animation)/,        "🎨", "DESIGN"],
+  [/(doc|knowledge|policy|policies|learn|garden|charter|guide)/,                   "📚", "DOCS"],
+  [/(test|benchmark|eval|(^|[-_])qa([-_]|$)|smoke|verify)/,                        "🧪", "TEST"],
+  [/(data|report|analytic|metric|dashboard|signal)/,                               "📊", "DATA"],
+  [/(plan|prd|brainstorm|strategy|roadmap|scope)/,                                 "🗺️", "PLAN"],
+  [/(agent|worker|fleet|orchestrat|mesh)/,                                         "🤖", "FLEET"],
+];
 
-const core = [project, command].filter(Boolean);
-const full = company ? [company].concat(core) : core;
-
-const compose = (parts) => {
-  const s = parts.join(" · ");
-  return emoji ? emoji + " " + s : s;
+const classify = (text) => {
+  for (const [re, ic, label] of CATEGORIES) if (re.test(text)) return [ic, label];
+  return null;
 };
 
-const MAX = 44;
-let title = compose(full);
-if (title.length > MAX) title = compose(core);   // drop company first (project implies it)
+if (!command) command = "chat";
+
+let icon = "";
+let category = "";
+const hit = classify(project.toLowerCase()) ||
+            classify(command.toLowerCase()) ||
+            classify(company.toLowerCase());
+if (hit) { icon = hit[0]; category = hit[1]; }
+else if (company === "hq-core") { icon = "🏠"; category = "HQ"; }
+else if (company === "personal") { icon = "🟦"; category = "ME"; }
+else if (company) {
+  // Never mid-word-truncate a slug into something like "PERSON": take the
+  // first hyphenated token, and only hard-slice if that alone is still long.
+  const head = company.split("-")[0].toUpperCase();
+  icon = "🟦";
+  category = head.length <= 8 ? head : head.slice(0, 6);
+}
+else { icon = "🟦"; category = "WORK"; }
+
+// A live status flag outranks the domain icon — "is it running" beats "what
+// kind of work is it". Never render both; two emoji read as noise.
+const lead = emoji || icon;
+
+// --- compose ---
+// Grammar:  {icon} {CAT} · {subject} · {phase}
+// The hook can only ever supply a slug as the subject. A session that knows
+// what it is actually about should overwrite this with a written subject via
+// set_session_title, keeping the same grammar.
+const subject = project || company || "";
+const core = [category, subject, command].filter(Boolean);
+const short = [category, subject || command].filter(Boolean);
+
+const compose = (parts) => lead + " " + parts.join(" · ");
+
+const MAX = 56;
+let title = compose(core);
+if (title.length > MAX) title = compose(short);
 if (title.length > MAX) title = title.slice(0, MAX - 1).replace(/\s+$/, "") + "…";
 
 console.log(title);

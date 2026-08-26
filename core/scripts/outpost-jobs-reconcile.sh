@@ -501,9 +501,10 @@ units_fingerprint() {
 
 collect_job_files() {
   {
-    find "$HQ_ROOT/personal/jobs" \( -name '*.yaml' -o -name '*.yml' \) -type f 2>/dev/null || true
-    find "$HQ_ROOT/companies" -path '*/jobs/*' \( -name '*.yaml' -o -name '*.yml' \) -type f 2>/dev/null || true
-  } | sort -u
+    # Only top-level registry YAMLs — skip sync conflict sidecars and quarantine dirs.
+    find "$HQ_ROOT/personal/jobs" -maxdepth 1 \( -name '*.yaml' -o -name '*.yml' \) -type f 2>/dev/null || true
+    find "$HQ_ROOT/companies" -path '*/jobs/*' -maxdepth 3 \( -name '*.yaml' -o -name '*.yml' \) -type f 2>/dev/null || true
+  } | grep -Ev '\.conflict-|/\.conflicts/' | sort -u
 }
 
 is_company_job_path() {

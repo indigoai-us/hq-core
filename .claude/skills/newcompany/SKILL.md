@@ -132,8 +132,8 @@ The `design-styles/packs/` subdir is where company-scoped brand packs live.
 2. Read existing prefixes: `python3 -c "import yaml; d=yaml.safe_load(open('companies/manifest.yaml')); print('\n'.join(v.get('prefix','') for v in d['companies'].values()))"`.
 3. If your candidate collides, fall back to first 4 chars (no hyphens). If still collides, append `-2`, `-3`, ….
 4. Surface the chosen prefix in the final report.
-5. The `auto-mirror-company-skill` PostToolUse hook uses this prefix to bridge top-level
-   skills/commands at `.claude/skills/{prefix}-{name}/` and `.claude/commands/{prefix}-{name}.md`.
+5. Reindex uses this prefix to surface company skills as generated, namespaced
+   runtime wrappers. Never write those wrappers directly.
 
 ### 0.6 qmd Collection
 
@@ -300,10 +300,10 @@ Cluster the functions/workflows from Phase 1 into proposed workers, reusing the
    `worker.company: {slug}`, candidate skills, knowledge paths, description). It writes
    `companies/{slug}/workers/{name}/worker.yaml`; `core/workers/registry.yaml`
    regenerates automatically on reindex.
-3. Propose any function-specific **skills** → write to `companies/{slug}/skills/{name}/SKILL.md`.
-   The `auto-mirror-company-skill` hook bridges them to `.claude/skills/{prefix}-{name}/`
-   so they're callable as `/{prefix}-{name}`. Do NOT write the mirror symlink yourself —
-   the hook does it (and `route-company-skill-creation.sh` blocks direct prefix writes).
+3. Propose any function-specific **skills** → invoke `/create-skill` for each accepted
+   skill. That flow reserves its immutable ID before authoring, writes the canonical
+   `companies/{slug}/skills/{name}/SKILL.md`, and lets reindex surface the generated
+   namespaced runtime wrapper. Do NOT write a wrapper yourself.
 4. **Design-pack wiring:** if Phase 2.5 created packs, any pack-consuming worker
    (frontend-designer-style roles) MUST get a `dynamic` context entry pointing to
    `companies/{slug}/knowledge/design-styles/packs/` in its worker.yaml — without it the

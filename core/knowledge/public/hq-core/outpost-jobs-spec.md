@@ -72,7 +72,9 @@ requirements:                    # optional but recommended — fixed vocabulary
 - **`exec`**: object with either `prompt` (non-empty string) **or** `skill`
   (non-empty string) plus optional `args` (mapping). Both `prompt` and `skill`
   together is invalid. `args` values must be scalars or lists of scalars —
-  no nested secret blobs.
+  no nested secret blobs. Optional `surface`: `headless` | `remote`
+  (overrides profile `execution_surface`; see Alert profile). `remote` is
+  Claude-only — Codex always runs headless.
 - **`timeout_seconds`**: integer in **[60, 14400]** (15 minutes default
   recommendation is product guidance; bounds are hard).
 - **`notify`**:
@@ -134,6 +136,7 @@ destination:                   # channel-specific; names/ids only — no tokens
   # slack: { workspace: my-ws, channel: "#alerts" }
   # email: { to: user@example.com }
   # outpost-session: { mode: remediation-brief }
+execution_surface: headless    # headless | remote (Claude only; default headless)
 updated_at: "2026-08-23T18:00:00Z"
 ```
 
@@ -141,8 +144,17 @@ updated_at: "2026-08-23T18:00:00Z"
 - Setting `slack` / `email` / `outpost-session` is **stored** but `/schedule`
   warns unimplemented and delivery falls back to dm; runners log
   `channel_unimplemented`.
+- **`execution_surface`**:
+  - `headless` (default) — `claude -p` / `codex exec`; no Desktop remote.
+  - `remote` — Claude runs as `claude --remote-control schedule/<job-id>` in a
+    dedicated tmux session with the job prompt auto-started. When the job
+    finishes the session is torn down and appears under Claude Desktop
+    **Archived** remotes (named `schedule/<job-id>`). Codex ignores `remote`
+    and stays headless.
+  - Per-job `exec.surface` overrides this profile field when set.
 - First mutating `/schedule` prompts once and writes this profile (default
-  `dm`). Alerts never go only to the original create chat thread.
+  `dm` + `execution_surface: headless`, or `remote` when the user opts in for
+  observability). Alerts never go only to the original create chat thread.
 
 ## Sync conflict policy
 

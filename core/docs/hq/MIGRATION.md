@@ -272,6 +272,30 @@ release; the release workflow stamps it with the version at tag time.
 
 ## Release: v15.0.95-beta.1
 
+- **Session titles now carry a category and an icon:** the SessionStart /
+  UserPromptSubmit title hook emits `{icon} {CATEGORY} · {subject} · {phase}`
+  (for example `🔒 SEC · vault-acl-risk-reconciliation · deploy`) instead of
+  `{company} · {project} · {command}`. Three defects are fixed alongside it:
+  `core/scripts/session-title.sh` no longer falls back to the machine-global
+  `.claude/state/active-session-project` when a session has no project of its
+  own (that fallback made every unpinned session inherit whichever project was
+  last active anywhere on the box); its fallback HQ root is corrected from
+  `$(dirname $BASH_SOURCE)/..` to `/../..`, which previously resolved to
+  `core/` and made every state lookup silently miss whenever
+  `CLAUDE_PROJECT_DIR` was unset; and `session-title` is added to
+  `is_in_minimal_profile` in `.claude/hooks/hook-gate.sh`, where its absence
+  made the hook a silent no-op under the minimal profile. Title ownership is
+  now decided by grammar match rather than ledger membership alone, so a title
+  set mid-session via `set_session_title` is recognised as HQ's own instead of
+  being mistaken for a manual rename — previously the host's native session
+  autonaming permanently disabled HQ titling for that session. Free-form prose
+  titles are still treated as a user rename and still stop HQ from titling.
+  New policy `hq-session-title-grammar` asks the assistant to replace the
+  directory slug in the subject slot with a written subject once the session's
+  purpose is clear. No action required for existing installations; stale
+  `.claude/state/session-title-*.manual` markers may be deleted to re-enable
+  titling on sessions that backed off under the old ownership test.
+
 - **`/brainstorm` interviews properly again and stores research:** Step 3 is a
   decision-queue grilling — separate `AskUserQuestion` calls, one question at a
   time, covering every unresolved directional input (4-8 questions is normal;

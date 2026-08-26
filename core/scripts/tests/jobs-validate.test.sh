@@ -33,6 +33,7 @@ declare -a CASES=(
   "nl-schedule.yaml:schedule"
   "cwd-absolute.yaml:requirements.cwd"
   "cwd-dotdot.yaml:requirements.cwd"
+  "bad-surface.yaml:exec.surface"
 )
 for case in "${CASES[@]}"; do
   file="${case%%:*}"
@@ -75,5 +76,11 @@ rc=0
 "$VALIDATE" "$FIX/valid/company-with-requirements.yaml" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 0 ] || fail "company-with-requirements should pass"
 pass "requirements block valid"
+
+echo "[7] exec.surface remote is valid"
+rc=0
+"$VALIDATE" "$FIX/valid/remote-surface.yaml" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "remote-surface should pass"
+pass "exec.surface=remote valid"
 
 echo "PASS: jobs-validate"

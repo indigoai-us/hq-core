@@ -160,6 +160,32 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (req.method === "POST" && /\/v1\/work-mesh\/projects\/[^/?]+\/stories(?:\?|$)/.test(req.url)) {
+      const body = JSON.parse(raw || "{}");
+      const projectId = projectIdFromUrl(req.url);
+      const projectView = projectViews[projectId] || {
+        companyUid: body.companyUid,
+        projectId,
+        version: 0,
+        stories: [],
+        repos: [],
+      };
+      const stories = [...(projectView.stories || [])];
+      if (stories.some((row) => row.id === body.id)) {
+        send(res, 400, { error: "duplicate id" });
+        return;
+      }
+      stories.push({
+        id: body.id,
+        title: body.title,
+        description: body.description || "",
+        status: "queued",
+      });
+      projectViews[projectId] = { ...projectView, version: (projectView.version || 0) + 1, stories };
+      send(res, 200, projectViews[projectId]);
+      return;
+    }
+
     if (req.method === "PATCH" && req.url.includes("/v1/work-mesh/projects/") && req.url.includes("/stories/")) {
       const projectId = projectIdFromUrl(req.url);
       const projectView = projectViews[projectId];
@@ -232,6 +258,17 @@ assert_contains "$report_out" '"viewCreated": true' "report seeds Board in the s
 assert_contains "$report_out" '"status": "in_progress"' "report maps doing → in_progress on the wire"
 assert_contains "$report_out" '"eventKind": "progress"' "report writes the work thread in the same call"
 
+confirm_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" ground --company indigo --create wm-auto-nope --json)"
+assert_contains "$confirm_out" 'create requires --confirm' "ground --create without --confirm does not write"
+
+create_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" report --company indigo --project mesh-adoption --task-title "Probe add task" --status doing --json)"
+assert_contains "$create_out" '"created": true' "unrelated --task-title POSTs a new Board task"
+assert_contains "$create_out" '"taskId": "T-001"' "new live tasks use T-NNN ids"
+
+attach_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" report --company indigo --project mesh-adoption --task-title "Probe add task" --status doing --json)"
+assert_contains "$attach_out" '"attached": true' "matching open title attaches instead of duplicating"
+assert_contains "$attach_out" '"created": false' "matching open title does not POST again"
+
 watch_out="$(HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" watch --dry-run --json --cache-file "$TMP/live-cache.json")"
 assert_contains "$watch_out" '"action": "watch"' "watch dry-run reports action"
 assert_contains "$watch_out" '"hq/prs_01ARZ3NDEKTSV4RRFFQ69G5FAV/work"' "watch uses authoritative work topic"
@@ -245,6 +282,7 @@ rows = [json.loads(line) for line in open(sys.argv[1])]
 assert any(row["url"] == "/membership/me" for row in rows)
 assert any(row["method"] == "POST" and row["url"] == "/v1/work-mesh/threads" for row in rows)
 assert any(row["method"] == "PUT" and row["url"].startswith("/v1/work-mesh/projects/") for row in rows)
+assert any(row["method"] == "POST" and "/stories" in row["url"] and row["url"].rstrip("/").endswith("/stories") for row in rows)
 assert any(row["body"] and row["body"].get("eventKind") == "claim" for row in rows)
 assert any(row["body"] and row["body"].get("eventKind") == "progress" for row in rows)
 assert any(row["method"] == "POST" and row["url"] == "/v1/realtime/credentials" for row in rows)
