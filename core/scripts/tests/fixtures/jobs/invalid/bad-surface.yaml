@@ -9,7 +9,7 @@ exec:
 timeout_seconds: 300
 notify: dm
 enabled: true
-owner: user@example.com
+owner: [EMAIL]
 created_at: "2026-08-25T05:00:00Z"
 requirements:
   runtime: claude
