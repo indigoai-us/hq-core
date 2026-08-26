@@ -166,6 +166,11 @@
           },
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" route-company-skill-creation \"$CLAUDE_PROJECT_DIR/.claude/hooks/route-company-skill-creation.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-plans-dir-during-deep-plan \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-plans-dir-during-deep-plan.sh\"",
             "timeout": 30
           },
@@ -237,6 +242,11 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" route-company-skill-creation \"$CLAUDE_PROJECT_DIR/.claude/hooks/route-company-skill-creation.sh\"",
             "timeout": 30
           },
           {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create Company Skill"
+  short_description: "Create and register a shared HQ company skill"
+  default_prompt: "Use $create-skill to turn this workflow into a shared company skill."

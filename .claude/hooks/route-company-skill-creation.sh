@@ -1,13 +1,12 @@
 #!/bin/bash
-# route-company-skill-creation.sh — PreToolUse hook for Write
+# route-company-skill-creation.sh — PreToolUse hook for Write/Edit/MultiEdit
 #
-# Hard-blocks direct writes to .claude/skills/{prefix}-{name}/ and
-# .claude/commands/{prefix}-{name}.md when {prefix} resolves to a real company
-# in companies/manifest.yaml.
+# Hard-blocks two identity-bypassing paths:
+#   1. creating/editing an unstamped canonical company SKILL.md;
+#   2. writing a generated company skill/command mirror directly.
 #
-# These mirror paths are owned by auto-mirror-company-skill.sh — agents must
-# write to companies/{co}/skills/{name}/SKILL.md (or commands/{name}.md)
-# instead, and let the PostToolUse hook create the symlink.
+# Company skills must reserve an immutable skill_uid through `hq skill create`
+# before an agent authors them. Generated runtime wrappers are owned by reindex.
 #
 # Override: HQ_ALLOW_DIRECT_PREFIX_WRITE=1 lets the write through (rare).
 #
@@ -36,6 +35,50 @@ if [[ "$FILE_PATH" == /* ]]; then
   esac
 else
   REL="$FILE_PATH"
+fi
+
+# Canonical company skill. An existing, server-stamped file is safe to edit in
+# place. A new or legacy unstamped file must be registered first so normal sync
+# can never publish a skill without an immutable identity.
+if [[ "$REL" =~ ^companies/([a-z0-9][a-z0-9-]*)/skills/([a-z0-9][a-z0-9-]*)/SKILL\.md$ ]]; then
+  CO="${BASH_REMATCH[1]}"
+  NAME="${BASH_REMATCH[2]}"
+  CANONICAL="$PROJECT_DIR/$REL"
+  SKILL_UID=""
+  if [[ -f "$CANONICAL" ]]; then
+    SKILL_UID="$(awk '
+      NR == 1 && $0 ~ /^---\r?$/ { in_frontmatter = 1; next }
+      in_frontmatter && $0 ~ /^---\r?$/ { exit }
+      in_frontmatter && $0 ~ /^[[:space:]]*skill_uid:[[:space:]]*/ {
+        line = $0
+        sub(/^[[:space:]]*skill_uid:[[:space:]]*/, "", line)
+        sub(/[[:space:]\r]*$/, "", line)
+        print line
+        exit
+      }
+    ' "$CANONICAL" 2>/dev/null || true)"
+    case "$SKILL_UID" in
+      \"*\") SKILL_UID="${SKILL_UID#\"}"; SKILL_UID="${SKILL_UID%\"}" ;;
+      \'*\') SKILL_UID="${SKILL_UID#\'}"; SKILL_UID="${SKILL_UID%\'}" ;;
+    esac
+  fi
+
+  if [[ "$SKILL_UID" =~ ^skl_[A-Za-z0-9]+$ ]]; then
+    exit 0
+  fi
+
+  cat >&2 <<MSG
+BLOCKED: $REL does not have a registered skill_uid.
+
+Reserve and stamp the company skill before editing it:
+  hq skill --company $CO create $NAME --no-sync
+
+Then edit the stamped canonical file and finish with:
+  hq skill --company $CO create $NAME
+
+This keeps creation, FILE_ACL policy, reindexing, and sync on one authoritative path.
+MSG
+  exit 2
 fi
 
 # Match three mirror shapes:
@@ -75,10 +118,13 @@ fi
 
 cat >&2 <<MSG
 BLOCKED: Direct write to $REL is not allowed.
-This is a mirror path for $CANONICAL.
+This is a generated runtime path for $CANONICAL.
 
-Write to $CANONICAL instead — the auto-mirror PostToolUse hook will create
-the symlink at .claude/skills/${PREFIX}-${NAME}/ (or .claude/commands/${PREFIX}-${NAME}.md) for you.
+For a new company skill, run:
+  hq skill --company $CO create $NAME --no-sync
+
+Then edit $CANONICAL and run the create command again to reindex and sync it.
+Generated `.claude/skills/` wrappers are owned by HQ reindexing.
 
 Override (rare, audited): set HQ_ALLOW_DIRECT_PREFIX_WRITE=1 to bypass this check.
 MSG

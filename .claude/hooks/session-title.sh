@@ -3,7 +3,7 @@
 #
 # Sets the Claude Code session title (desktop sidebar "Recents" / terminal tab
 # title / `/resume` picker) to an HQ status string:
-#     {status-emoji }{company} · {project} · {command}
+#     {icon} {CATEGORY} · {subject} · {phase}
 #
 # The title string is computed by core/scripts/session-title.sh. This wrapper
 # detects the active slash command from the prompt, persists it across turns,
@@ -158,14 +158,28 @@ fi
 title="$("$HELPER" --session-id "$SESSION_ID" --command "$command" 2>/dev/null || true)"
 [ -n "$title" ] || exit 0
 
+hq_title_grammar() {
+  # Does TITLE ($1) follow the HQ title grammar — "{icon} {CAT} · {subject}"?
+  #
+  # This is the load-bearing test now that titles are also set mid-session by
+  # the model via set_session_title. Those titles are HQ's, but they are by
+  # design NOT in either ledger (the hook never computed them), so a
+  # ledger-only ownership test read them as a manual rename and permanently
+  # disabled titling for the session. A human rename is free-form prose
+  # ("AGI book translations"); it does not carry a SHOUTCASE category token
+  # followed by a middot separator.
+  printf '%s' "$1" | grep -qE '^([^ ]+ )?[A-Z][A-Z0-9]{1,7} · .+'
+}
+
 hq_owned_title() {
   # Is TITLE ($1) one of HQ's own, rather than a user's manual rename?
-  # Ledger hit, or an exact match against what HQ computes for this very turn
-  # (the latter survives a wiped/relocated .claude/state, where both ledgers
-  # are empty but the inherited title is still plainly ours).
+  # Ledger hit, an exact match against what HQ computes for this very turn
+  # (survives a wiped/relocated .claude/state, where both ledgers are empty but
+  # the inherited title is still plainly ours), or a title in HQ grammar.
   local t="$1"
   [ "$t" = "$title" ] && return 0
   [ -n "$last_title" ] && [ "$t" = "$last_title" ] && return 0
+  hq_title_grammar "$t" && return 0
   hq_emitted_title "$t"
 }
 

@@ -220,6 +220,20 @@ if [ -z "$OWNER" ] || [ "$OWNER" = "null" ]; then
     OWNER="$(hq whoami 2>/dev/null | awk -F': ' '/^email:/{print $2; exit}' || true)"
   fi
 fi
+# personUid / bare UUID is not a dm target — resolve to an email when possible.
+case "$OWNER" in
+  *@*) ;;
+  ''|null) ;;
+  *)
+    if command -v hq >/dev/null 2>&1; then
+      _email="$(hq whoami 2>/dev/null | tr ' ' '\n' | grep -E '^[^[:space:]]+@[^[:space:]]+$' | head -1 || true)"
+      if [ -n "$_email" ]; then
+        log "resolved owner uid/name to email for dm"
+        OWNER="$_email"
+      fi
+    fi
+    ;;
+esac
 if [ -z "$OWNER" ]; then
   log "no owner recipient — cannot dm (logged only); never fails the job"
   echo '{"delivered":false,"reason":"missing_owner"}' | tee -a "$DELIVERY_LOG" >/dev/null
