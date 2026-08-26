@@ -128,9 +128,9 @@ find_job_file_by_id() {
     fi
   done < <(
     {
-      find "$HQ_ROOT/personal/jobs" \( -name '*.yaml' -o -name '*.yml' \) -type f 2>/dev/null || true
-      find "$HQ_ROOT/companies" -path '*/jobs/*' \( -name '*.yaml' -o -name '*.yml' \) -type f 2>/dev/null || true
-    } | sort
+      find "$HQ_ROOT/personal/jobs" -maxdepth 1 \( -name '*.yaml' -o -name '*.yml' \) -type f 2>/dev/null || true
+      find "$HQ_ROOT/companies" -path '*/jobs/*' -maxdepth 3 \( -name '*.yaml' -o -name '*.yml' \) -type f 2>/dev/null || true
+    } | grep -Ev '\.conflict-|/\.conflicts/' | sort
   )
   [ -n "$found" ] || return 1
   printf '%s' "$found"
@@ -487,12 +487,33 @@ COMPANY="$(yq -r '.requirements.company // ""' "$JOB_FILE")"
 OWNER="$(yq -r '.owner // ""' "$JOB_FILE")"
 NOTIFY_MODE="$(yq -r '.notify // "profile"' "$JOB_FILE")"
 ENABLED="$(yq -o=json '.' "$JOB_FILE" | jq -r 'if has("enabled") then (.enabled|tostring) else "true" end')"
+# exec.surface overrides profile execution_surface; default headless.
+SURFACE="$(yq -r '.exec.surface // ""' "$JOB_FILE")"
+if [ -z "$SURFACE" ] || [ "$SURFACE" = "null" ]; then
+  ALERTS_FILE="${HQ_JOB_ALERTS_FILE:-${HQ_ROOT}/personal/settings/schedule-alerts.yaml}"
+  if [ -f "$ALERTS_FILE" ]; then
+    SURFACE="$(yq -r '.execution_surface // ""' "$ALERTS_FILE" 2>/dev/null || true)"
+  fi
+fi
+case "$SURFACE" in
+  remote) SURFACE="remote" ;;
+  *) SURFACE="headless" ;;
+esac
+# personUid owners break `hq dm` (treated as channel names) — prefer email.
+case "$OWNER" in
+  *@*) ;;
+  *)
+    if command -v hq >/dev/null 2>&1; then
+      _email="$(hq whoami 2>/dev/null | tr ' ' '\n' | grep -E '^[^[:space:]]+@[^[:space:]]+$' | head -1 || true)"
+      [ -n "$_email" ] && OWNER="$_email"
+    fi
+    ;;
+esac
 
 [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ] || die "job missing id: $JOB_FILE"
 [ -n "$RUNTIME" ] && [ "$RUNTIME" != "null" ] || die "job missing runtime: $JOB_FILE"
 [ -n "$JOB_NAME" ] || JOB_NAME="$JOB_ID"
 [ -n "$NOTIFY_MODE" ] && [ "$NOTIFY_MODE" != "null" ] || NOTIFY_MODE="profile"
-
 case "$TIMEOUT_SEC" in
   ''|*[!0-9]*) TIMEOUT_SEC=600 ;;
 esac
@@ -546,6 +567,7 @@ EXIT_CODE=0
   echo "started_at=$STARTED_AT"
   echo "runtime=$RUNTIME"
   echo "timeout_seconds=$TIMEOUT_SEC"
+  echo "surface=$SURFACE"
   echo "job_file=$JOB_FILE"
   echo "hq_root=$HQ_ROOT"
 } >>"$LOG_FILE"
@@ -720,11 +742,112 @@ if [ "$SECRET_COUNT" != "null" ] && [ "${SECRET_COUNT:-0}" -gt 0 ] 2>/dev/null; 
   done
 fi
 
+# Claude remote surface: TTY + --remote-control so the run appears in Desktop.
+# Auto-dismisses known startup dialogs; copies pane output into LOG_FILE.
+# Launcher is a temp script (not nested shell quoting) to keep prompts/safe.
+run_claude_remote() {
+  local cmd_rc=0
+  if ! command -v tmux >/dev/null 2>&1; then
+    echo "remote surface requested but tmux missing — falling back to headless" >>"$LOG_FILE"
+    SURFACE="headless"
+    return 99
+  fi
+  local sess="hq-job-${JOB_ID}-${RUN_STAMP}"
+  local rc_name="schedule/${JOB_ID}"
+  local deadline=$((TIMEOUT_SEC + 30))
+  local i=0
+  local pane=""
+  local exit_file="$LOG_DIR/${RUN_STAMP}.remote-exit"
+  local done_file="$LOG_DIR/${RUN_STAMP}.remote-done"
+  local launcher="$LOG_DIR/${RUN_STAMP}.remote-launch.sh"
+  # Completion is a sentinel file — not pane text (prompt instructions also
+  # contain marker words and caused false early teardown).
+  rm -f "$done_file"
+  local remote_prompt="${PROMPT_TEXT}
+
+When ALL work above is fully finished (success or failure), create this exact empty file with a shell tool (and do not create it earlier):
+  touch $(printf %q "$done_file")
+Then stop."
+  echo "surface=remote remote_name=$rc_name tmux_session=$sess done_file=$done_file" >>"$LOG_FILE"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'set -uo pipefail'
+    printf 'cd %q\n' "$RUN_CWD"
+    printf 'claude --remote-control %q --permission-mode bypassPermissions --dangerously-skip-permissions %q\n' "$rc_name" "$remote_prompt"
+    echo 'rc=$?'
+    printf 'echo EXIT=$rc > %q\n' "$exit_file"
+    echo 'sleep 15'
+    echo 'exit "$rc"'
+  } >"$launcher"
+  chmod 700 "$launcher"
+  tmux kill-session -t "$sess" 2>/dev/null || true
+  tmux new-session -d -s "$sess" -x 120 -y 40 "$launcher"
+  while [ "$i" -lt "$deadline" ]; do
+    sleep 2
+    i=$((i + 2))
+    pane="$(tmux capture-pane -t "$sess" -p -S -120 2>/dev/null || true)"
+    # Startup / tool-permission dialogs (remote TTY can still prompt)
+    if printf '%s\n' "$pane" | grep -q 'Yes, I accept'; then
+      tmux send-keys -t "$sess" "2" Enter
+      continue
+    fi
+    if printf '%s\n' "$pane" | grep -q 'Try the new fullscreen renderer'; then
+      tmux send-keys -t "$sess" "2" Enter
+      continue
+    fi
+    if printf '%s\n' "$pane" | grep -q 'Do you want to proceed'; then
+      # "2" = Yes, and don't ask again for similar commands
+      tmux send-keys -t "$sess" "2" Enter
+      echo "auto-accepted tool permission prompt" >>"$LOG_FILE"
+      continue
+    fi
+    if [ -f "$done_file" ]; then
+      echo "remote done sentinel present" >>"$LOG_FILE"
+      sleep 2
+      pane="$(tmux capture-pane -t "$sess" -p -S -300 2>/dev/null || true)"
+      cmd_rc=0
+      break
+    fi
+    if [ -f "$exit_file" ]; then
+      cmd_rc="$(tr -dc '0-9' <"$exit_file" | head -c 3)"
+      [ -n "$cmd_rc" ] || cmd_rc=0
+      break
+    fi
+  done
+  if [ "$i" -ge "$deadline" ]; then
+    echo "remote surface timed out after ${TIMEOUT_SEC}s" >>"$LOG_FILE"
+    cmd_rc=124
+  fi
+  {
+    echo "=== remote pane capture ==="
+    tmux capture-pane -t "$sess" -p -S -300 2>/dev/null || true
+  } >>"$LOG_FILE"
+  # End the Remote Control process so Desktop moves schedule/<job-id> to Archived.
+  echo "tearing down remote session ${rc_name} (review under Desktop Archived)" >>"$LOG_FILE"
+  tmux kill-session -t "$sess" 2>/dev/null || true
+  rm -f "$launcher"
+  return "$cmd_rc"
+}
+
 run_agent() {
   local cmd_rc=0
   if [ "${HQ_JOB_RUN_SKIP_EXEC:-}" = "1" ]; then
     echo "(HQ_JOB_RUN_SKIP_EXEC=1 — not invoking runtime CLI)" >>"$LOG_FILE"
     return 0
+  fi
+
+  if [ "$RUNTIME" = "claude" ] && [ "$SURFACE" = "remote" ]; then
+    set +e
+    run_claude_remote
+    cmd_rc=$?
+    set -e
+    if [ "$cmd_rc" -ne 99 ]; then
+      return "$cmd_rc"
+    fi
+    # 99 = fall through to headless
+  fi
+  if [ "$RUNTIME" = "codex" ] && [ "$SURFACE" = "remote" ]; then
+    echo "surface=remote ignored for codex — using headless" >>"$LOG_FILE"
   fi
 
   local -a agent_cmd
