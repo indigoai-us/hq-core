@@ -58,6 +58,38 @@ wm_safe_path_component() {
   LC_ALL=C printf '%s\n' "$value" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'
 }
 
+# True iff slug is a registered tenant in companies/manifest.yaml.
+# A leftover directory under companies/ is not a tenant — "ok …" used to
+# mint companies/ok because a folder existed, not because HQ designated it.
+wm_known_company_slug() {
+  local slug="${1:-}" root manifest
+  [ -n "$slug" ] || return 1
+  wm_safe_path_component "$slug" || return 1
+  root="$(wm_hq_root)" || return 1
+  manifest="$root/companies/manifest.yaml"
+  [ -f "$manifest" ] || return 1
+  awk -v want="$slug" '
+    function keep(s) {
+      return s != "" && s != "_template" && s != "companies" && s != "unaffiliated_repos"
+    }
+    /^companies:[[:space:]]*$/ { wrapped = 1; next }
+    wrapped && /^[^[:space:]][^:]*:[[:space:]]*$/ { wrapped = 0 }
+    wrapped && /^  [a-z][a-z0-9_-]*:/ {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      sub(/:.*/, "", line)
+      if (keep(line) && line == want) { found = 1; exit }
+      next
+    }
+    !wrapped && /^[a-z][a-z0-9_-]*:/ {
+      line = $0
+      sub(/:.*/, "", line)
+      if (keep(line) && line == want) { found = 1; exit }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$manifest"
+}
+
 # ---------------------------------------------------------------------------
 # Bounded, size-capped structured logging (never contains token contents)
 # ---------------------------------------------------------------------------
@@ -711,6 +743,11 @@ wm_copy_transcript() {
   [ -f "$tp" ] || return 1
   local root stage dstdir dst tmp rc n p
   root="$(wm_hq_root)" || return 1
+  # Never create a company tree. Staging is only allowed under an already-
+  # existing tenant directory (mkdir sessions/ is fine; mkdir companies/<slug>
+  # is not). A ghost folder is still refused by callers that check the manifest.
+  [ -d "$root/companies/$slug" ] || return 1
+  [ ! -L "$root/companies/$slug" ] || return 1
   stage="$root/companies/$slug/sessions"
   dstdir="$stage/$puid"
   # Do not follow attacker-controlled directory symlinks out of the HQ staging

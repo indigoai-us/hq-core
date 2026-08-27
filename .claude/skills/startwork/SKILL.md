@@ -99,10 +99,22 @@ Determine mode from the user's argument (first match wins):
 
 #### Project Mode (arg = project name)
 
-1. Read `personal/projects/{name}/prd.json` or `companies/{co}/projects/{name}/prd.json` — extract: `name`, `description`, `branchName`, incomplete stories (where `passes !== true`) with id + title + priority
+Board status comes from the work mesh, never local prd.passes. If ground/check and the project-view cache both fail, then and only then use local prd for description — still not as live Board columns.
+
+1. Resolve the project dir (`personal/projects/{name}` or `companies/{co}/projects/{name}`). Read `prd.json` only for `name`, `description`, `branchName`, and acceptance text — not story status.
 2. Extract `metadata.repoPath` — identify company by matching against manifest repos
 3. If repoPath exists: `git -C {repoPath} branch --show-current` and `git -C {repoPath} status --short`
-4. If company `{co}` is resolved, run `bash core/scripts/work-mesh.sh check --company {co} --project {name}`. Include any active owners, blockers, or in-progress threads in the orientation block. If the helper prints nothing or is unavailable, omit the line and continue. A local daemon may keep `workspace/work-mesh/live-cache.json` warm with `bash core/scripts/work-mesh.sh watch`; use that only as live context, not as a direct MQTT write path.
+4. If company `{co}` is resolved, load the live Board:
+   ```
+   bash core/scripts/work-mesh.sh ground --company {co} --project {name} --json
+   # fallback: bash core/scripts/work-mesh.sh check --company {co} --project {name} --json
+   ```
+   Present columns from `stories[]` (`id`, `title`, `status`). If JSON has no stories, read `~/.hq/work-mesh/cache/projects/{companyUid}/{projectId}.json`.
+   - `queued` = available next work
+   - `in_progress` / `review` = already claimed; do not offer as free next work
+   - `done` = done
+   Include active mesh thread owners/blockers in the orientation block. If the helper prints nothing, omit the mesh line and continue.
+   Do **not** `report --task-title` during orientation — that mints a T-NNN card. Session is presence. Attach later with `--task {id}`.
 5. **Read session journals** (spec: `core/knowledge/public/hq-core/journal-spec.md`). If `{project_dir}/journal/` exists:
    - `ls -t {project_dir}/journal/*.md 2>/dev/null | head -2` — most recent 2 files
    - For each: read frontmatter (`status`, `summary`) + `## Open threads` section only — skip `## Auto-capture` (reference material, too noisy for orientation)
@@ -227,7 +239,10 @@ Active work:
   - {project} -- {done}/{total} stories ({remaining} left)
   ...
 
-Work mesh:
+Board (work mesh):
+  - {id} {title} — {status}
+  ...
+Work mesh threads:
   {active mesh owners/blockers for the selected company/project, or omit if none/unavailable}
 ```
 
@@ -235,7 +250,7 @@ Then present numbered options built from context:
 
 - **Entry-gate mode (no arg)**: no orientation block is rendered before the gate — the AskUserQuestion gate (Gather Context → Entry-Gate Mode step 2) *is* the first interaction. Render an orientation block only *after* the user picks "Resume last session", using the loaded thread context; then offer next_steps items (up to 3) + "Pick a project" + "Something else".
 - **Company mode**: worker-recommended next actions + active projects for that company (up to 3) + "Run a worker" + "Something else"
-- **Project mode**: top 3 incomplete stories by priority via `/execute-task` + matching worker route + "Something else"
+- **Project mode**: top 3 **queued** Board stories from work-mesh `stories[]` via `/execute-task` + matching worker route + "Something else". Skip `in_progress` unless the user already owns that row.
 - **Repo mode**: related projects with incomplete work (up to 3) + "Open repo (no project)" + "Something else"
 - **Task mode**: proposed worker pipeline phases (up to 5) + "Run this worker pipeline" + "Modify pipeline" + "Do it directly (no worker)" + "Run /plan for full options" + "Something else"
 

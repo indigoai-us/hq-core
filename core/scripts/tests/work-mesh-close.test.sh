@@ -59,7 +59,7 @@ trap cleanup EXIT
 mkdir -p "$SANDBOX/core/hooks" "$SANDBOX/core/scripts" \
          "$SANDBOX/workspace/sessions" "$SANDBOX/workspace/metrics" \
          "$SANDBOX/workspace/logs" "$SANDBOX/workspace/work-mesh/cache" \
-         "$SANDBOX/companies" "$SANDBOX/stubbin" \
+         "$SANDBOX/companies/indigo" "$SANDBOX/stubbin" \
          "$SANDBOX/home/.claude/projects/proj"
 cp "$SRC_HOOK" "$SANDBOX/core/hooks/work-mesh-close.sh"
 cp "$SRC_LIB"  "$SANDBOX/core/scripts/work-mesh-lib.sh"
@@ -640,6 +640,14 @@ else
   pass "path-safety: symlinked staging directory rejected"
 fi
 assert_false "path-safety: symlink escape received no transcript" test -e "$outside19link/sid-safe.jsonl"
+
+if WM_ROOT="$SANDBOX" bash -c '. "$1"; wm_copy_transcript ghostco prs_test sid-safe "$2"' \
+  _ "$SRC_LIB" "$tp19" >/dev/null 2>&1; then
+  failc "no-create: missing company slug was accepted"
+else
+  pass "no-create: missing company slug rejected"
+fi
+assert_false "no-create: helper did not mkdir a company folder" test -d "$SANDBOX/companies/ghostco"
 
 # ===========================================================================
 echo "CASE 20: transcript discovery cannot select arbitrary files or symlinks"

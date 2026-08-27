@@ -244,6 +244,12 @@ assert_contains "$reuse_out" '"viewCreated": false' "second start does not overw
 
 check_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" check --company indigo --project mesh-adoption --json)"
 assert_contains "$check_out" '"threadId": "thr_1"' "check finds the active project thread"
+assert_contains "$check_out" '"stories"' "check JSON includes Board stories[]"
+assert_contains "$check_out" '"id": "US-000"' "check Board includes the seeded story"
+
+ground_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" ground --company indigo --project mesh-adoption --json)"
+assert_contains "$ground_out" '"bound": true' "ground binds the named project"
+assert_contains "$ground_out" '"id": "US-000"' "ground --json returns Board stories[]"
 
 story_out="$(HOME="$TMP" HQ_ROOT="$TMP" HQ_WORK_MESH_TOKEN=test-token HQ_WORK_MESH_API_URL="$API_URL" "$HELPER" story --company indigo --project mesh-adoption --story US-000 --status review --json)"
 assert_contains "$story_out" '"status": "review"' "story reports review"
@@ -300,5 +306,8 @@ assert cache["realtime"]["topics"]["work"] == "hq/prs_01ARZ3NDEKTSV4RRFFQ69G5FAV
 assert "thr_1" in cache["threadsById"]
 assert "cmp_indigo/mesh-adoption" in cache["projects"]
 PY
+
+[ ! -d "$TMP/companies/wm-auto-nope" ] || fail "helper must not mkdir a company folder"
+[ ! -d "$TMP/companies/ok" ] || fail "helper must not mkdir companies/ok"
 
 echo "work-mesh helper smoke: ok"

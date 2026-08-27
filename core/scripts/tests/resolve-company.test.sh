@@ -59,6 +59,9 @@ YAML
 # those here makes the sandbox's .current the only session signal, so the test
 # is identical whether it runs in CI or inside a live HQ session.
 unset HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CODEX_SESSION_ID CODEX_THREAD_ID
+# Force the in-tree hq-session, not `hq core hq-session` which would read the
+# live HQ session and ignore this sandbox's .current.
+export HQ_HQ_SESSION_NO_CLI=1
 
 resolve() {
   bash "$TMP/core/scripts/resolve-company.sh" --root "$TMP" --prompt "$1" </dev/null
@@ -125,6 +128,13 @@ assert_eq "$(company_of "$out")" "" "unknown slug rejected"
 
 out="$(resolve '_template scaffolding pass')"
 assert_eq "$(company_of "$out")" "" "_template is not a tenant"
+
+# A leftover companies/<word> directory is not a tenant. "ok really…" used
+# to misfile into companies/ok because auto-session-project stat'd that path.
+mkdir -p "$TMP/companies/ok/projects/junk"
+out="$(resolve 'ok really will fix sync try now please')"
+assert_eq "$(company_of "$out")" "" "ghost companies/ok dir is not a tenant"
+rmdir "$TMP/companies/ok/projects/junk" 2>/dev/null || true
 
 out="$(resolve 'update unaffiliated_repos listing')"
 assert_eq "$(company_of "$out")" "" "unaffiliated_repos is not a tenant"

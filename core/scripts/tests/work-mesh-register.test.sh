@@ -30,6 +30,7 @@
 #   12 token hygiene                              -> token string never in log or spool
 #   13 missing token                              -> no-op skip, no POST
 #   14 cwd inference (companies/<slug>/)          -> slug resolved from cwd
+#   14b ghost companies/<word> dir                -> not inferred (not in manifest)
 #   15 expired token file                         -> no-op skip, no POST
 #   17 unsafe session/company path components     -> no marker path escape
 
@@ -69,7 +70,12 @@ trap cleanup EXIT
 mkdir -p "$SANDBOX/core/hooks" "$SANDBOX/core/scripts" \
          "$SANDBOX/workspace/sessions" "$SANDBOX/workspace/metrics" \
          "$SANDBOX/workspace/logs" "$SANDBOX/workspace/work-mesh/cache" \
-         "$SANDBOX/stubbin" "$SANDBOX/home"
+         "$SANDBOX/stubbin" "$SANDBOX/home" "$SANDBOX/companies"
+cat > "$SANDBOX/companies/manifest.yaml" <<'YAML'
+companies:
+  indigo:
+    name: Indigo
+YAML
 cp "$SRC_HOOK" "$SANDBOX/core/hooks/work-mesh-register.sh"
 cp "$SRC_LIB"  "$SANDBOX/core/scripts/work-mesh-lib.sh"
 chmod +x "$SANDBOX/core/hooks/work-mesh-register.sh"
@@ -539,6 +545,20 @@ if jq -e --arg s "$sid" \
 else
   failc "cwd inference: attempt line did not carry companySlug=indigo"
 fi
+
+# ===========================================================================
+echo "CASE 14b: leftover companies/<word> dir is not a tenant"
+# ===========================================================================
+sid=sid-cwd-ghost
+mkdir -p "$SANDBOX/workspace/sessions/$sid"
+: > "$SANDBOX/workspace/sessions/$sid/meta.yaml"
+mkdir -p "$SANDBOX/companies/ghostco/projects/junk"
+ghost_cwd="$SANDBOX/companies/ghostco/projects/junk"
+out="$(mk_input "$sid" "$ghost_cwd" | HQ_WORK_MESH_TOKEN=tok HQ_WORK_MESH_COMPANY_UID=cmp_ghost \
+        WM_STUB_DIR="$SANDBOX/stub-cwd-ghost" WM_STUB_GATES="$GATES_TRUE" bash "$HOOK" SessionStart)"
+assert_eq    "ghost cwd: foreground stays silent" "$out" ""
+assert_false "ghost cwd: no marker for unregistered folder" test -f "$(marker_path "$sid" ghostco)"
+assert_eq    "ghost cwd: no attempt spooled" "$(count_event_sid attempt "$sid")" "0"
 
 # ===========================================================================
 echo "CASE 15: expired token file — no-op skip, no POST"

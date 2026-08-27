@@ -13,6 +13,7 @@ echo "$out" | grep -q '"skipped":true'
 unset HQ_WORK_MESH_DISABLED
 out="$(bash "$HELPER" ground --company indigo --create wm-auto-nope --json --silent)"
 echo "$out" | grep -q 'create requires --confirm'
+[ ! -d "$ROOT/companies/wm-auto-nope" ] || { echo "FAIL: ground --create mkdir company" >&2; exit 1; }
 
 help_out="$(bash "$HELPER" help)"
 echo "$help_out" | grep -q 'ground'

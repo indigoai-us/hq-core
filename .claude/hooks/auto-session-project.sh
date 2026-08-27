@@ -76,17 +76,11 @@ if (!skip) {
   if (content.length < 2) skip = true;
 }
 
+// Company is resolved AFTER skip, in bash, via resolve-company.sh:
+// session bind, then a manifest slug as a whole token. Never a first-word
+// companies/<token> directory — that minted ghost tenants from "ok …".
 let scope = "personal";
 let company = "";
-
-const first = (lower.split(/\s+/)[0] || "").replace(/[^a-z0-9_-]/g, "");
-try {
-  if (first && first !== "template" && first !== "_template" &&
-      fs.statSync(path.join(hq, "companies", first)).isDirectory()) {
-    scope = "company";
-    company = first;
-  }
-} catch (e) {}
 
 const hqSignals = [
   "hqwork", "hq core", "hq-core", ".claude/", ".codex/", "core/scripts",
@@ -118,6 +112,20 @@ scope="$(printf '%s' "$classification_json" | hq_json_get scope)"
 company="$(printf '%s' "$classification_json" | hq_json_get company)"
 title="$(printf '%s' "$classification_json" | hq_json_get title)"
 [ -n "$title" ] || title="Native session"
+
+# Tenant comes from the session bind or a manifest slug in the prompt — never
+# from "a folder named like the first word exists under companies/".
+if [ "$scope" != "hq-core" ]; then
+  resolved="$("$HQ_ROOT/core/scripts/resolve-company.sh" --root "$HQ_ROOT" --prompt "$PROMPT" 2>/dev/null || true)"
+  resolved_co="$(printf '%s' "$resolved" | hq_json_get company)"
+  if [ -n "$resolved_co" ]; then
+    scope="company"
+    company="$resolved_co"
+  else
+    scope="personal"
+    company=""
+  fi
+fi
 
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 SESSION_KEY="$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9._-' '_')"
@@ -168,6 +176,7 @@ Selection: $( [ "$reused" = "true" ] && printf 'reused related project' || print
 
 Use this project as the durable home for native work in this session. Before creating another project, search related projects first. After native Claude/Codex plan approval, update this PRD via:
   core/scripts/session-project.sh ingest-plan
+Task/Board status: work mesh first (`ground`/`check --json` stories[], or ~/.hq/work-mesh/cache/projects/). Local prd.json is spec, not live status.
 
 Disable with HQ_AUTO_SESSION_PROJECT=0 or HQ_DISABLED_HOOKS=auto-session-project."
 

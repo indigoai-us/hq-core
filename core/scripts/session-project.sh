@@ -93,8 +93,39 @@ function writeJson(p, data) {
 
 const relToRoot = (p) => path.relative(HQ_ROOT, p).replace(/\\/g, "/");
 
+function registeredCompanySlugs() {
+  let text;
+  try {
+    text = fs.readFileSync(path.join(HQ_ROOT, "companies", "manifest.yaml"), "utf8");
+  } catch (e) {
+    return new Set();
+  }
+  const slugs = new Set();
+  let wrapped = false;
+  for (const raw of text.split("\n")) {
+    if (/^companies:\s*$/.test(raw)) {
+      wrapped = true;
+      continue;
+    }
+    if (wrapped && /^\S/.test(raw)) wrapped = false;
+    const m = wrapped
+      ? raw.match(/^  ([a-z][a-z0-9_-]*):/)
+      : raw.match(/^([a-z][a-z0-9_-]*):/);
+    if (!m) continue;
+    const slug = m[1];
+    if (slug === "_template" || slug === "companies" || slug === "unaffiliated_repos") continue;
+    slugs.add(slug);
+  }
+  return slugs;
+}
+
 function projectBase(scope, company) {
-  if (scope === "company" && company) return path.join(HQ_ROOT, "companies", company, "projects");
+  // Never mkdir a ghost tenant. companies/<slug> on disk is not enough —
+  // the slug must be in companies/manifest.yaml. Unregistered names fall
+  // back to personal so "ok …" cannot create companies/ok.
+  if (scope === "company" && company && registeredCompanySlugs().has(company)) {
+    return path.join(HQ_ROOT, "companies", company, "projects");
+  }
   return path.join(HQ_ROOT, "personal", "projects");
 }
 
