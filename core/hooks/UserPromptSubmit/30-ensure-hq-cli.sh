@@ -9,7 +9,8 @@
 # shell's PATH is useless if it is not on the PATH the harness injects.
 #
 # On every prompt:
-#   * hq resolves on the settings PATH        -> fully silent no-op (common case).
+#   * a current, working hq resolves on PATH   -> fully silent no-op (common case).
+#   * hq resolves but is broken or too old     -> treat it as missing and repair.
 #   * hq is installed but NOT on that PATH     -> append its dir to env.PATH in
 #                                                 settings.local.json (auto-fix).
 #   * hq is missing entirely                   -> bounded, once-per-cooldown
@@ -72,6 +73,8 @@ STAMP="$STAMP_DIR/last-attempt.stamp"
 INSTALL_CMD="${HQ_ENSURE_CLI_INSTALL_CMD:-npm install -g @indigoai-us/hq-cli@latest}"
 COOLDOWN="${HQ_ENSURE_CLI_COOLDOWN:-21600}"   # 6h between install attempts
 INSTALL_TIMEOUT="${HQ_ENSURE_CLI_TIMEOUT:-120}"
+VERSION_TIMEOUT="${HQ_ENSURE_CLI_VERSION_TIMEOUT:-3}"
+MIN_VERSION="${HQ_ENSURE_CLI_MIN_VERSION:-5.103.26}"
 
 have_jq() { command -v jq >/dev/null 2>&1; }
 
@@ -87,14 +90,77 @@ settings_path() {
   printf '%s' "$p"
 }
 
-# Is `hq` executable in any dir of the colon-separated $1?
+settings_path_is_local() {
+  have_jq && [ -f "$LOCAL_SETTINGS" ] &&
+    [ -n "$(jq -r '.env.PATH // empty' "$LOCAL_SETTINGS" 2>/dev/null)" ]
+}
+
+version_at_least() {
+  local actual="$1" required="$2" a1 a2 a3 r1 r2 r3 oldifs
+  oldifs="$IFS"; IFS='.'
+  set -- $actual; a1="${1:-0}"; a2="${2:-0}"; a3="${3:-0}"
+  set -- $required; r1="${1:-0}"; r2="${2:-0}"; r3="${3:-0}"
+  IFS="$oldifs"
+  [ "$a1" -gt "$r1" ] && return 0
+  [ "$a1" -lt "$r1" ] && return 1
+  [ "$a2" -gt "$r2" ] && return 0
+  [ "$a2" -lt "$r2" ] && return 1
+  [ "$a3" -ge "$r3" ]
+}
+
+stop_watchdog() {
+  local watchdog_pid="$1"
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -P "$watchdog_pid" 2>/dev/null || true
+  fi
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+}
+
+capture_hq_version_bounded() {
+  local binary="$1" output_file cmd_pid watchdog_pid rc=0
+  output_file="${TMPDIR:-/tmp}/hq-cli-version.$$.out"
+  rm -f "$output_file" 2>/dev/null || true
+  HQ_NO_UPDATE_CHECK=1 "$binary" --version >"$output_file" 2>/dev/null &
+  cmd_pid=$!
+  ( sleep "$VERSION_TIMEOUT" 2>/dev/null; kill "$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
+  watchdog_pid=$!
+  wait "$cmd_pid" 2>/dev/null || rc=$?
+  stop_watchdog "$watchdog_pid"
+  if [ "$rc" -eq 0 ]; then
+    cat "$output_file" 2>/dev/null || rc=1
+  fi
+  rm -f "$output_file" 2>/dev/null || true
+  return "$rc"
+}
+
+hq_binary_usable() {
+  local binary="$1" output version
+  [ -x "$binary" ] || return 1
+  output="$(capture_hq_version_bounded "$binary")" || return 1
+  version="$(printf '%s' "$output" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+  [ -n "$version" ] || return 1
+  version_at_least "$version" "$MIN_VERSION"
+}
+
+# Is the independently discovered, sufficiently-current `hq` on the settings
+# PATH? Never execute a binary merely because a repo-controlled settings file
+# names its directory.
 hq_in_path() {
-  local sp="$1" d oldifs
+  local sp="$1" allow_configured="${2:-0}" d oldifs trusted_dir=""
   [ -n "$sp" ] || return 1
+  if [ "$allow_configured" != "1" ]; then
+    trusted_dir="$(locate_hq_dir)" || return 1
+  fi
   oldifs="$IFS"; IFS=':'
   for d in $sp; do
     IFS="$oldifs"
-    if [ -n "$d" ] && [ -x "$d/hq" ]; then return 0; fi
+    if [ -n "$d" ]; then
+      if [ "$allow_configured" = "1" ] && hq_binary_usable "$d/hq"; then
+        return 0
+      fi
+      if [ -n "$trusted_dir" ] && [ "$d" = "$trusted_dir" ]; then return 0; fi
+    fi
     IFS=':'
   done
   IFS="$oldifs"
@@ -113,11 +179,16 @@ npm_global_bin() {
 # Locate a dir that actually contains an `hq` binary: ambient PATH first, then
 # npm's global bin. Prints the dir (no trailing binary) or nothing.
 locate_hq_dir() {
-  local hqpath bin
+  local hqpath bin candidate
   hqpath="$(command -v hq 2>/dev/null)" || hqpath=""
-  if [ -n "$hqpath" ]; then dirname "$hqpath"; return 0; fi
+  if [ -n "$hqpath" ] && hq_binary_usable "$hqpath"; then dirname "$hqpath"; return 0; fi
   bin="$(npm_global_bin)" || bin=""
-  if [ -n "$bin" ] && [ -x "$bin/hq" ]; then printf '%s\n' "$bin"; return 0; fi
+  if [ -n "$bin" ] && hq_binary_usable "$bin/hq"; then printf '%s\n' "$bin"; return 0; fi
+  candidate="${HOME:-}/.local/bin/hq"
+  if [ -n "${HOME:-}" ] && hq_binary_usable "$candidate"; then
+    printf '%s\n' "${HOME}/.local/bin"
+    return 0
+  fi
   return 1
 }
 
@@ -213,21 +284,23 @@ run_bounded() {
   ( sleep "$secs" 2>/dev/null; kill "$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
   killer_pid=$!
   wait "$cmd_pid" 2>/dev/null
-  kill "$killer_pid" 2>/dev/null
-  wait "$killer_pid" 2>/dev/null
+  stop_watchdog "$killer_pid"
   return 0
 }
 
 # --- 1. already reachable on the settings PATH -> silent -----------------
 SP="$(settings_path)"
 if [ -n "$SP" ]; then
-  if hq_in_path "$SP"; then
+  SP_LOCAL=0
+  settings_path_is_local && SP_LOCAL=1
+  if hq_in_path "$SP" "$SP_LOCAL"; then
     [ -f "$STAMP" ] && rm -f "$STAMP" 2>/dev/null || true
     exit 0
   fi
 else
   # No configured PATH to read — fall back to the ambient one.
-  if command -v hq >/dev/null 2>&1; then
+  AMBIENT_HQ="$(command -v hq 2>/dev/null || true)"
+  if [ -n "$AMBIENT_HQ" ] && hq_binary_usable "$AMBIENT_HQ"; then
     [ -f "$STAMP" ] && rm -f "$STAMP" 2>/dev/null || true
     exit 0
   fi

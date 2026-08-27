@@ -176,7 +176,7 @@ Selection: $( [ "$reused" = "true" ] && printf 'reused related project' || print
 
 Use this project as the durable home for native work in this session. Before creating another project, search related projects first. After native Claude/Codex plan approval, update this PRD via:
   core/scripts/session-project.sh ingest-plan
-Task/Board status: work mesh first (`ground`/`check --json` stories[], or ~/.hq/work-mesh/cache/projects/). Local prd.json is spec, not live status.
+Task/Board status: work mesh first (\`ground\`/\`check --json\` stories[], or ~/.hq/work-mesh/cache/projects/). Local prd.json is spec, not live status.
 
 Disable with HQ_AUTO_SESSION_PROJECT=0 or HQ_DISABLED_HOOKS=auto-session-project."
 

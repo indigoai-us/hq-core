@@ -30,8 +30,10 @@ unstamped `companies/{company}/skills/{slug}/SKILL.md` directly.
    hq skill --company {company} create {slug}
    ```
 
-6. Report the canonical path and immutable skill ID. The skill is discovered by
-   HQ reindexing; never hand-write a generated `.claude/skills/` wrapper.
+6. Report the canonical path and immutable skill ID. The create command
+   surfaces only this skill into the local runtime; never hand-write a
+   generated `.claude/skills/` wrapper or run a full `hq reindex` just to make
+   one new skill available.
 
 ## Existing files
 

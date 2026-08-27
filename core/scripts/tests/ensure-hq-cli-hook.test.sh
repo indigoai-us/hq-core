@@ -33,7 +33,7 @@ BASH_BIN="$(command -v bash)"
 # PATH of "$BIN:$CORE" gives the hook its tools while letting us control whether
 # `hq`/`npm` are resolvable purely by what we drop into $BIN.
 CORE="$TMP/core"; mkdir -p "$CORE"
-for u in bash sh cat stat date mkdir rm mv dirname timeout chmod env grep jq sleep kill; do
+for u in bash sh cat stat date mkdir rm mv dirname timeout chmod env grep head jq sleep kill pkill; do
   p="$(command -v "$u" 2>/dev/null)" && ln -sf "$p" "$CORE/$u"
 done
 
@@ -51,6 +51,7 @@ reset_root() {
   mkdir -p "$ROOTDIR/workspace" "$ROOTDIR/.claude"
 }
 write_local_settings() { printf '%s\n' "$1" > "$ROOTDIR/.claude/settings.local.json"; }
+write_base_settings() { printf '%s\n' "$1" > "$ROOTDIR/.claude/settings.json"; }
 local_path() { jq -r '.env.PATH // empty' "$ROOTDIR/.claude/settings.local.json" 2>/dev/null; }
 
 run_hook() { # run_hook <PATH> [env assignments...]
@@ -61,17 +62,18 @@ run_hook() { # run_hook <PATH> [env assignments...]
 
 COREUTILS_PATH="$BIN:$CORE"
 
-# --- 1. hq resolves on the settings PATH -> silent -----------------------
+# --- 1. a trusted hq resolves on the settings PATH -> silent -------------
 reset_root
-mkdir -p "$TMP/hqbin"; : > "$TMP/hqbin/hq"; chmod +x "$TMP/hqbin/hq"
-write_local_settings "{\"env\":{\"PATH\":\"$TMP/hqbin:/usr/bin\"}}"
+stub hq 'echo 5.103.26'
+write_local_settings "{\"env\":{\"PATH\":\"$BIN:/usr/bin\"}}"
 out="$(run_hook "$COREUTILS_PATH")"
 [ -z "$out" ] || fail "hq on settings PATH should be silent, got: $out"
+rm -f "$BIN/hq"
 
 # --- 2. no settings PATH configured -> ambient fallback (silent) ---------
 reset_root
 write_local_settings '{}'
-stub hq 'exit 0'
+stub hq 'echo 5.103.26'
 out="$(run_hook "$COREUTILS_PATH")"   # hq stub is on ambient PATH
 [ -z "$out" ] || fail "ambient hq with no settings PATH should be silent, got: $out"
 rm -f "$BIN/hq"
@@ -80,7 +82,7 @@ rm -f "$BIN/hq"
 reset_root
 # settings PATH deliberately excludes where hq lives; add an unrelated key.
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\",\"FOO\":\"bar\"},\"other\":1}"
-stub hq 'exit 0'   # hq is on ambient PATH ($BIN) but not on the settings PATH
+stub hq 'echo 5.103.26'   # hq is on ambient PATH ($BIN) but not on the settings PATH
 out="$(run_hook "$COREUTILS_PATH")"
 printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
   || fail "off-settings-PATH hq should emit <hq-cli-path-updated>, got: $out"
@@ -101,7 +103,7 @@ write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
 mkdir -p "$TMP/prefix/bin"
 # npm stub: on install, drop hq into the global prefix bin (NOT on any PATH).
 stub npm "case \"\$*\" in
-  *install*) printf '#!/usr/bin/env bash\\nexit 0\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; exit 0 ;;
+  *install*) printf '#!/usr/bin/env bash\\necho 5.103.26\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; exit 0 ;;
   'config get prefix') echo '$TMP/prefix'; exit 0 ;;
   *) exit 0 ;;
 esac"
@@ -111,6 +113,46 @@ printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
 case ":$(local_path):" in *":$TMP/prefix/bin:"*) : ;; *) fail "install did not add global bin to env.PATH: $(local_path)";; esac
 [ ! -f "$ROOTDIR/workspace/.hq-cli-ensure/last-attempt.stamp" ] \
   || fail "successful install must clear the stamp"
+
+# A path entry is not health proof: stale and broken hq binaries must be
+# repaired instead of making the hook return a false healthy no-op.
+reset_root
+OLD_BIN="$TMP/old-hq-bin"; mkdir -p "$OLD_BIN"
+printf '#!/usr/bin/env bash\necho 5.77.10\n' > "$OLD_BIN/hq"
+chmod +x "$OLD_BIN/hq"
+rm -f "$TMP/prefix/bin/hq"
+write_local_settings "{\"env\":{\"PATH\":\"$OLD_BIN:/usr/bin:/bin\"}}"
+stub npm "case \"\$*\" in
+  *install*) printf '#!/usr/bin/env bash\\necho 5.103.26\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; echo installed > '$TMP/stale-repaired'; exit 0 ;;
+  'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+out="$(run_hook "$COREUTILS_PATH")"
+[ -f "$TMP/stale-repaired" ] || fail "a stale hq binary did not trigger repair"
+printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+  || fail "stale hq repair should emit <hq-cli-path-updated>, got: $out"
+case ":$(local_path):" in *":$TMP/prefix/bin:"*) : ;; *) fail "repaired hq bin was not preferred on settings PATH";; esac
+
+# A binary found only through repo-controlled settings is never executed. It
+# must be treated as untrusted and repaired from a known install location.
+reset_root
+HANG_BIN="$TMP/hanging-hq-bin"; mkdir -p "$HANG_BIN"
+printf '#!/usr/bin/env bash\necho executed > %s\nsleep 5\necho 5.103.26\n' "$TMP/untrusted-executed" > "$HANG_BIN/hq"
+chmod +x "$HANG_BIN/hq"
+rm -f "$TMP/prefix/bin/hq"
+write_base_settings "{\"env\":{\"PATH\":\"$HANG_BIN:/usr/bin:/bin\"}}"
+stub npm "case \"\$*\" in
+  *install*) printf '#!/usr/bin/env bash\\necho 5.103.26\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; exit 0 ;;
+  'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+start="$(date +%s)"
+out="$(run_hook "$COREUTILS_PATH" HQ_ENSURE_CLI_VERSION_TIMEOUT=1)"
+elapsed="$(( $(date +%s) - start ))"
+[ "$elapsed" -lt 4 ] || fail "untrusted settings hq was executed (took ${elapsed}s)"
+[ ! -f "$TMP/untrusted-executed" ] || fail "repo-controlled settings hq must never execute"
+printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+  || fail "an untrusted settings hq should trigger repair, got: $out"
 
 # --- 5. hq missing, npm missing -> manual-install remedy -----------------
 reset_root
@@ -141,7 +183,7 @@ rm -f "$BIN/npm"
 # .claude dir is read-only so the write fails -> the hook must advise instead.
 reset_root
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
-stub hq 'exit 0'
+stub hq 'echo 5.103.26'
 chmod 0500 "$ROOTDIR/.claude"
 out="$(run_hook "$COREUTILS_PATH")"
 chmod 0700 "$ROOTDIR/.claude"   # restore so the trap can clean up
@@ -163,7 +205,7 @@ out="$(run_hook "$COREUTILS_PATH" HQ_DISABLED_HOOKS='foo,ensure-hq-cli,bar')"
 reset_root
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
 NOTIMEOUT="$TMP/notimeout"; mkdir -p "$NOTIMEOUT"
-for u in bash sh cat stat date mkdir rm mv dirname chmod env grep jq sleep kill; do
+for u in bash sh cat stat date mkdir rm mv dirname chmod env grep head jq sleep kill pkill; do
   ln -sf "$CORE/$u" "$NOTIMEOUT/$u" 2>/dev/null || true
 done
 stub npm 'exit 0'   # npm present so the install branch is reached

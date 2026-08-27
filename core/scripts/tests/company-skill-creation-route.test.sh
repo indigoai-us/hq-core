@@ -57,6 +57,20 @@ for profile in minimal standard strict; do
     echo "FAIL: legacy unstamped skill passed in $profile" >&2
     exit 1
   fi
+
+  if run_gate "$profile" "$TMP/.claude/skills/acme:stamped/SKILL.md" \
+      >"$TMP/wrapper.out" 2>"$TMP/wrapper.err"; then
+    echo "FAIL: namespaced generated wrapper passed in $profile" >&2
+    exit 1
+  fi
+  grep -Fq 'companies/acme/skills/stamped/SKILL.md' "$TMP/wrapper.err" \
+    || { echo "FAIL: namespaced wrapper remedy missing in $profile" >&2; exit 1; }
+
+  if run_gate "$profile" "$TMP/.claude/skills/acme%3Astamped/SKILL.md" \
+      >"$TMP/windows-wrapper.out" 2>"$TMP/windows-wrapper.err"; then
+    echo "FAIL: Windows-encoded generated wrapper passed in $profile" >&2
+    exit 1
+  fi
 done
 
 echo "PASS: company skill creation is identity-gated in every hook profile"
