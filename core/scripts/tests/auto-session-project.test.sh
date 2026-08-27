@@ -48,12 +48,24 @@ assert not any(event.get("summary") == sys.argv[2] for event in events)
 PY
 }
 
-mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts" "$TMP/personal/projects/native-project-journaling"
+mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts" "$TMP/personal/projects/native-project-journaling" "$TMP/companies"
 cp "$ROOT/.claude/hooks/auto-session-project.sh" "$TMP/.claude/hooks/auto-session-project.sh"
 cp "$ROOT/core/scripts/session-project.sh" "$TMP/core/scripts/session-project.sh"
+cp "$ROOT/core/scripts/resolve-company.sh" "$TMP/core/scripts/resolve-company.sh"
 # The hook sources hook-lib.sh relative to its own location (../../core/scripts).
 cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/hook-lib.sh"
-chmod +x "$TMP/.claude/hooks/auto-session-project.sh" "$TMP/core/scripts/session-project.sh"
+chmod +x "$TMP/.claude/hooks/auto-session-project.sh" "$TMP/core/scripts/session-project.sh" \
+  "$TMP/core/scripts/resolve-company.sh"
+cat > "$TMP/companies/manifest.yaml" <<'YAML'
+companies:
+  acme:
+    name: Acme
+YAML
+# Isolate from the live HQ session so resolve-company does not inherit indigo.
+unset HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CODEX_SESSION_ID CODEX_THREAD_ID
+export HQ_HQ_SESSION_NO_CLI=1
+export HQ_ROOT="$TMP"
+export CLAUDE_PROJECT_DIR="$TMP"
 
 cat > "$TMP/personal/projects/native-project-journaling/prd.json" <<'JSON'
 {
@@ -168,5 +180,29 @@ assert_empty "$out_disabled" "disabled env is quiet"
 
 out_trivial=$(CLAUDE_PROJECT_DIR="$TMP" "$TMP/.claude/hooks/auto-session-project.sh" <<<'{"session_id":"s2","prompt":"thanks"}')
 assert_empty "$out_trivial" "trivial prompt is quiet"
+
+# Ghost tenant: a leftover companies/ok dir must NOT capture "ok …" prompts.
+mkdir -p "$TMP/companies/ok/projects/already-there"
+payload_ok='{"session_id":"s-ok-ghost","prompt":"ok really will fix sync try now please"}'
+out_ok=$(CLAUDE_PROJECT_DIR="$TMP" "$TMP/.claude/hooks/auto-session-project.sh" <<<"$payload_ok")
+assert_contains "$out_ok" "personal/projects" "ok-prefix prompt files personal, not companies/ok"
+case "$out_ok" in
+  *companies/ok*) fail "ok-prefix prompt must not mention companies/ok" ;;
+esac
+[ ! -d "$TMP/companies/ok/projects/really-will-fix-sync-try" ] || fail "ghost ok company grew a new project"
+
+# session-project must not mkdir an unregistered company even when asked.
+ensure_out="$("$TMP/core/scripts/session-project.sh" ensure \
+  --scope company --company ghostco --title "ghost tenant" \
+  --prompt "unique ghost-tenant fallback probe xyzzy" \
+  --session-id s-ghost-ensure --origin test --force-new)"
+case "$ensure_out" in
+  *personal/projects*) ;;
+  *) fail "unregistered company ensure should fall back to personal: $ensure_out" ;;
+esac
+case "$ensure_out" in
+  *companies/ghostco*) fail "ensure must not file under an unregistered company: $ensure_out" ;;
+esac
+[ ! -d "$TMP/companies/ghostco" ] || fail "ensure must not mkdir an unregistered company tree"
 
 echo "auto-session-project smoke: ok"

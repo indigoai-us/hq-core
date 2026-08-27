@@ -75,7 +75,15 @@ wm_infer_slug_from_cwd() {
       slug="${slug%%/*}"
       case "$slug" in
         ""|.|..) return 0 ;;
-        *) printf '%s' "$slug"; return 0 ;;
+        *)
+          # Disk folders are not tenants. Only a manifest slug may be inferred
+          # from cwd — otherwise leftover companies/<word> (e.g. "ok") becomes
+          # a false designation.
+          if wm_known_company_slug "$slug"; then
+            printf '%s' "$slug"
+          fi
+          return 0
+          ;;
       esac
       ;;
   esac

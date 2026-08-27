@@ -1139,6 +1139,33 @@ function openTaskStatuses() {
   return new Set(["queued", "in_progress", "review"]);
 }
 
+function summarizeBoardStories(stories) {
+  const rows = [];
+  for (const story of Array.isArray(stories) ? stories : []) {
+    if (!story || typeof story !== "object" || !story.id) continue;
+    const status = STORY_STATUSES.has(story.status)
+      ? story.status
+      : (story.passes === true ? "done" : "queued");
+    rows.push({
+      id: String(story.id).trim(),
+      title: String(story.title || "").trim(),
+      status,
+    });
+  }
+  return rows;
+}
+
+async function loadBoardStories(apiUrl, token, companyUid, projectId) {
+  if (!projectId) return [];
+  try {
+    const view = await getProjectView(apiUrl, token, companyUid, projectId);
+    writeProjectViewCache(view);
+    return summarizeBoardStories(view.stories);
+  } catch {
+    return [];
+  }
+}
+
 function findSameWork(stories, { taskId, title }) {
   const rows = Array.isArray(stories) ? stories : [];
   if (taskId) {
@@ -1262,16 +1289,24 @@ async function runGround(apiUrl, token, company, opts) {
       created: Boolean(seeded.created),
       stub: Boolean(seeded.stub),
       bound: true,
+      stories: summarizeBoardStories(seeded.view?.stories),
     };
   }
   if (named) {
     try {
       const view = await getProjectView(apiUrl, token, company.companyUid, named);
       writeProjectViewCache(view);
-      return { ok: true, action: "ground", projectId: named, bound: true, created: false };
+      return {
+        ok: true,
+        action: "ground",
+        projectId: named,
+        bound: true,
+        created: false,
+        stories: summarizeBoardStories(view.stories),
+      };
     } catch (err) {
       if (!(err instanceof WorkMeshHttpError) || err.status !== 404) throw err;
-      return { ok: true, action: "ground", projectId: named, bound: false, missing: true };
+      return { ok: true, action: "ground", projectId: named, bound: false, missing: true, stories: [] };
     }
   }
   const cached = listCachedProjects(company.companyUid)
@@ -2107,17 +2142,23 @@ function eventPayload(command, opts, token) {
   };
 }
 
-function printCheck(threads, company, projectId, opts) {
+function printCheck(threads, company, projectId, opts, stories = []) {
   if (opts.json) {
-    console.log(JSON.stringify({ ok: true, action: "check", company, projectId, threads }, null, 2));
+    console.log(JSON.stringify({ ok: true, action: "check", company, projectId, threads, stories }, null, 2));
     return;
   }
   if (opts.silent) return;
+  const scope = projectId ? `${company.companySlug || company.companyUid}/${projectId}` : company.companySlug || company.companyUid;
+  if (stories.length > 0) {
+    console.log(`Work mesh Board: ${stories.length} task(s) for ${scope}`);
+    for (const story of stories.slice(0, Number(opts.limit || 12))) {
+      console.log(`- ${story.status} ${story.id}${story.title ? ` ${story.title}` : ""}`);
+    }
+  }
   if (threads.length === 0) {
-    console.log("Work mesh: no active project threads found.");
+    if (stories.length === 0) console.log("Work mesh: no active project threads found.");
     return;
   }
-  const scope = projectId ? `${company.companySlug || company.companyUid}/${projectId}` : company.companySlug || company.companyUid;
   console.log(`Work mesh: ${threads.length} active thread(s) for ${scope}`);
   for (const thread of threads.slice(0, Number(opts.limit || 5))) {
     const owner = thread.ownerUid ? ` owner=${thread.ownerUid}` : "";
@@ -2605,15 +2646,16 @@ async function main() {
   }
 
   if (command === "check") {
+    const stories = await loadBoardStories(auth.apiUrl, auth.token, company.companyUid, opts.project);
     try {
       const threads = activeProjectThreads(
         await listThreads(auth.apiUrl, auth.token, company.companyUid, opts.project, { activeOnly: true }),
       );
-      printCheck(threads, company, opts.project, opts);
+      printCheck(threads, company, opts.project, opts, stories);
     } catch (err) {
       const cached = cachedActiveThreads(company.companyUid, opts.project, opts);
-      if (cached.length > 0) {
-        printCheck(cached, company, opts.project, opts);
+      if (cached.length > 0 || stories.length > 0) {
+        printCheck(cached, company, opts.project, opts, stories);
       } else {
         failSoft(opts, "check failed", err instanceof Error ? err.message : err, [auth.token]);
       }

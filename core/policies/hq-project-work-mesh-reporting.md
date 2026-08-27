@@ -5,7 +5,7 @@ when: project || prd || run-project || execute-task || startwork
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: hard
 public: true
-version: 1
+version: 2
 created: 2026-07-05
 source: user-request
 tags: [projects, collaboration, work-mesh, mqtt, hq-pro]
@@ -15,6 +15,15 @@ tags: [projects, collaboration, work-mesh, mqtt, hq-pro]
 
 For company-scoped project work on a cloud-connected HQ install, agents MUST
 attempt to use the HQ work mesh before and during the work:
+
+0. **Task / Board status comes from the work mesh, not local `prd.json`.**
+   Read `stories[]` (`id`, `title`, `status`) from
+   `bash core/scripts/work-mesh.sh ground --company {co} --project {project} --json`
+   (or `check --json`). Fallback file:
+   `~/.hq/work-mesh/cache/projects/{companyUid}/{projectId}.json`.
+   Local `prd.json` is spec (description, acceptance, files). Use it for Board
+   columns **only when** the helper skipped/failed **and** that cache file is
+   missing. Never treat `prd.passes` as remaining work.
 
 1. Before creating or starting a project, check for active mesh threads for the
    same company/project with `bash core/scripts/work-mesh.sh check --company

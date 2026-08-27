@@ -161,6 +161,7 @@ esac
 CMD="$(jget '.toolInput.command // .tool_input.command // empty')"
 FP="$(jget '.toolInput.file_path // .toolInput.path // .toolInput.target_file // .tool_input.file_path // .tool_input.path // .tool_input.target_file // empty')"
 CONTENT="$(jget '.toolInput.content // .toolInput.new_string // .tool_input.content // .tool_input.new_string // empty')"
+PROMPT="$(jget '.prompt // .userPrompt // .content // empty')"
 
 # Claude-shaped payload for HQ hooks.
 # Session identity: without a session_id the policy-injection dedupe collapses
@@ -178,6 +179,7 @@ CLAUDE_JSON="$(jq -n \
   --arg event "$EVENT" \
   --arg cwd "$CWD" \
   --arg sid "$SID" \
+  --arg prompt "$PROMPT" \
   '{
     hook_event_name: $event,
     tool_name: $t,
@@ -189,7 +191,7 @@ CLAUDE_JSON="$(jq -n \
       + (if $f != "" then {file_path: $f} else {} end)
       + (if $body != "" then {content: $body, new_string: $body} else {} end)
     )
-  }' 2>/dev/null)"
+  } + (if $prompt != "" then {prompt: $prompt} else {} end)' 2>/dev/null)"
 
 deny() {
   local reason="$1"

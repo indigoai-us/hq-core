@@ -72,7 +72,7 @@ trap cleanup EXIT
 mkdir -p "$SANDBOX/core/hooks" "$SANDBOX/core/scripts" \
          "$SANDBOX/workspace/sessions" "$SANDBOX/workspace/metrics" \
          "$SANDBOX/workspace/logs" "$SANDBOX/workspace/work-mesh/cache" \
-         "$SANDBOX/companies" "$SANDBOX/stubbin" \
+         "$SANDBOX/companies/indigo" "$SANDBOX/stubbin" \
          "$SANDBOX/home/.claude/projects/proj"
 cp "$SRC_HOOK" "$SANDBOX/core/hooks/work-mesh-close.sh"
 cp "$SRC_LIB"  "$SANDBOX/core/scripts/work-mesh-lib.sh"
