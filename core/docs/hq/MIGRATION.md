@@ -3,6 +3,13 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.114-beta.2
+
+- **Codex no longer forces Extra High reasoning for every HQ task.**
+  `.codex/config.toml` no longer sets `model_reasoning_effort`, so each install
+  inherits the operator's user-level choice or per-task selection. Existing
+  tasks retain their current setting; new tasks stop being forced to `xhigh`.
+
 ## Release: v15.0.110-beta.3
 
 - **`/delegate` grants + reachability probe: three false-negative bugs fixed.**
