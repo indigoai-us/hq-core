@@ -3,6 +3,112 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.117-beta.1
+
+- **Session naming reminder now reaches the assistant:** the session-title
+  grammar policy only triggered on prompts containing `session-title` or
+  `rename`, words that do not occur in ordinary use, so the assistant was
+  never told to name the session and titles fell back to the host autoname.
+  The policy is now a per-session baseline (`on: [SessionStart]`,
+  `when: always`) and states plainly that outside the terminal CLI — notably
+  the Claude Code desktop app, which ignores `hookSpecificOutput.sessionTitle`
+  and tracks sessions under its own ids — `set_session_title` is the only
+  mechanism that names a session. Honouring `enabled`/`mode` in
+  `settings/session-title.yaml` is unchanged; no action needed.
+
+- **Claude Desktop auto-titler no longer disables HQ session naming:** Claude
+  Desktop's built-in session auto-titler writes titles indistinguishable from
+  a manual rename, which permanently tripped HQ's rename back-off on every
+  desktop session. The session-title hook now ignores the first non-HQ title
+  seen in a session's transcript (the auto-titler) and retakes the title; a
+  second, different non-HQ title still counts as a real rename and backs off.
+  New `desktop_autoname` key in `settings/session-title.yaml`
+  (`ignore-first` default · `respect` restores the old behavior). No action
+  needed unless you prefer the desktop auto-titler — then set
+  `desktop_autoname: respect` in `personal/settings/session-title.yaml`.
+
+- **Session title grammar reworked (supersedes the version shipped in
+  v15.0.95-beta.1):** titles are now `{glyph} {COMPANY} · {subject}` with
+  **exactly one** glyph, chosen by a four-tier precedence ladder — first tier
+  that applies wins.
+
+  1. *Needs you or finished* — 🙋 waiting on the user, 🤝 handed off to a person
+     or fleet agent, 📤 closed with a handoff to resume from, ✅ shipped,
+     🧊 parked.
+  2. *Long-running by nature* — 🔁 recurring loop, 💬 standing channel.
+  3. *Workflow stage* — 💭 exploring, 📐 planning, ⚡ building, 👀 in review,
+     🧪 verifying.
+  4. *Craft* — 🎨 design, ⚖️ legal, 💰 money, 📊 data, 🔎 research, 🔒 access,
+     🛠️ tooling, ✍️ writing, 📣 growth, 🤖 agents, 📱 mobile, 🏗️ architecture,
+     🧭 strategy, 🐛 incident, 🎟️ client, 🎤 music and events. This tier is open
+     and is rendered *instead of* a stage glyph when the craft is the more
+     interesting fact.
+
+  v15.0.95-beta.1 shipped a `{icon} {CATEGORY} · {subject} · {phase}` form whose
+  category token conflated two axes — sometimes a domain, sometimes a company —
+  and fell back to a placeholder `🟦` when neither applied. The company now
+  always leads the text and is never substituted with a generic token; when no
+  company resolves, the token is omitted. `✅`, `📤` and `🤝` are three distinct
+  states and are not collapsed: the work shipped, the session closed with
+  resumable state, someone else owns it.
+
+  **⛔, 🚫 and ⚠️ are banned by name** for "waiting on the user". A session with
+  a question is working correctly; routinely spending a hazard glyph on a normal
+  condition is how a warning stops meaning anything.
+
+  `core/scripts/session-title.sh` emits a tier 2 or tier 3 glyph, the company
+  and a slug. It never emits 🙋 (it cannot know that) and never a craft glyph —
+  its only subject is a directory slug, so any keyword match against that slug
+  would be redundant with the slug by construction. Both are left to the
+  assistant, which sets a written subject via `set_session_title` once the
+  session's purpose is clear.
+
+  No action required for existing installations. Titles already emitted in the
+  superseded form are replaced on the session's next title change; there is no
+  migration step and no stored state to clear.
+
+- **Session auto-naming is now a setting you can turn off:**
+  `core/settings/session-title.yaml` ships the defaults; copy it to
+  `personal/settings/session-title.yaml` to change them.
+
+  - `enabled: false` — HQ never touches a session title. Claude Code's own
+    auto-naming still applies; this switch turns off HQ's layer, not all naming.
+  - `mode: auto` — the hook only. Titles are derived mechanically from the
+    project path and the active slash command, and the assistant never renames.
+  - `mode: full` (default) — the hook names the session immediately and the
+    assistant replaces the directory slug with a written subject.
+
+  Resolution is env → `personal/settings/` → `core/settings/` → built-in
+  defaults, so the existing `HQ_SESSION_TITLE=off` and
+  `HQ_DISABLED_HOOKS=session-title` escape hatches still win over both files.
+  `HQ_SESSION_TITLE=auto` is new and selects `mode: auto` for one shell.
+  Resolution is exposed as `core/scripts/session-title-config.sh`, which prints
+  `enabled=` and `mode=`; it is grep/sed only, so the hook path stays free of
+  both python3 and node.
+
+  The same file carries an `aliases:` block mapping long company slugs to short
+  forms (`aliases: {some-long-slug: SHORT}`). Without an entry a slug renders as
+  its first hyphenated token, upper-cased and capped at 8 characters. HQ ships
+  no company names in that block by design — release code must not carry tenant
+  slugs — so put yours in `personal/settings/`, which is never released.
+
+  No action required for existing installations; the defaults preserve current
+  behaviour.
+
+- **Session titles carry the repo or product, and a handoff shows two states:**
+  the grammar is now `{glyph} {COMPANY} · {Product} · {subject}`. The product
+  slot is optional and sits before the subject so identity survives truncation —
+  a sidebar shows roughly 33 characters. It is derived from the session cwd when
+  that sits inside `repos/`, with a leading company word dropped (under company
+  `HQ`, the repo `hq-work` renders as `Work`). Omit it when the company has only
+  one product or the subject already names it.
+
+  `/handoff` now distinguishes 📝 *wrapping up* (the handoff is being written)
+  from 📤 *handoff ready* (the session is closed; resume from the thread). The
+  hook emits 📝 because that is what the running command tells it; the assistant
+  sets 📤 once the handoff has actually landed. Both remain distinct from ✅ (the
+  work shipped) and 🤝 (a person or agent owns it).
+
 ## Release: v15.0.114-beta.2
 
 - **Codex no longer forces Extra High reasoning for every HQ task.**

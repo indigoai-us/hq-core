@@ -1,0 +1,67 @@
+# HQ session auto-naming — shipped defaults
+#
+# HQ renames your Claude Code sessions so the sidebar, the /resume picker and
+# the terminal tab read as "{glyph} {COMPANY} · {subject}" instead of a folder
+# slug. This file controls whether it does that, and how far it goes.
+#
+# To change it, copy this file to personal/settings/session-title.yaml and edit
+# there. Do not edit this one — it is release-owned and replaced by /update-hq.
+#
+# Resolution, first match wins:
+#   1. env  HQ_SESSION_TITLE=off        (one shell, one session — kills it)
+#   2. env  HQ_DISABLED_HOOKS=session-title
+#   3. personal/settings/session-title.yaml
+#   4. this file
+#
+# enabled:
+#   true   HQ names sessions.
+#   false  HQ never touches a session title. Claude Code's own auto-naming
+#          still applies — this switch turns off HQ's layer, not all naming.
+#
+# mode:
+#   full   The hook names the session immediately, and the assistant replaces
+#          the directory slug with a written subject once it knows what the
+#          session is about. Best titles; the assistant spends a little effort
+#          on naming.
+#   auto   The hook only. Titles are derived mechanically from the project path
+#          and the active slash command, and the assistant never renames.
+#          Fully deterministic, no judgement, no written subjects.
+#
+# HQ always backs off permanently once you rename a session yourself, in every
+# mode. See core/policies/hq-session-title-grammar.md for the naming rules.
+#
+# desktop_autoname:
+#   Claude Desktop ships its own session auto-titler, and its title writes are
+#   indistinguishable from a manual rename — left alone it silently disables
+#   HQ naming on every desktop session.
+#   ignore-first  (default) The first non-HQ title that shows up in a
+#                 session's transcript is treated as the desktop auto-titler
+#                 and ignored; HQ retakes the title. A second, different
+#                 non-HQ title is treated as a real rename and HQ backs off.
+#                 Trade-off: the first manual rename you make in a desktop
+#                 session may be overwritten once — rename it again and it
+#                 sticks.
+#   respect       Any non-HQ title backs HQ off immediately (pre-2026-08
+#                 behavior). On Claude Desktop this effectively hands naming
+#                 to the built-in auto-titler.
+version: 1
+enabled: true
+mode: full
+desktop_autoname: ignore-first
+
+# aliases: short forms for company slugs that do not abbreviate well on their
+# own. Without an entry, a slug renders as its first hyphenated token,
+# upper-cased and capped at 8 characters — which is unreadable for a long
+# single-word slug (a company called "consolidated" becomes "CONSOLID").
+#
+# Left side is the directory name under companies/, right side is what appears
+# in the title. Keep the short form under 8 characters.
+#
+# This file ships with HQ, so it carries NO real company names. Put yours in
+# personal/settings/session-title.yaml, which is never released:
+#
+#   aliases:
+#     acme-holdings: ACME
+#     north-star-labs: NORTH
+#
+aliases: {}

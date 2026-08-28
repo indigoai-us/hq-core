@@ -109,7 +109,10 @@ title_rc=0
 single_title="$(HQ_ROOT="$SINGLE" bash "$TITLE" --session-id "manifest-nested-parse-$$-single" 2>&1)" || title_rc=$?
 
 assert_equals "$title_rc" "0" "session-title exits cleanly"
-assert_contains "$single_title" "indigo" "session title uses the real single-company slug"
+# The org token is the slug upper-cased (or its ALIASES short form), so the
+# assertion is on the rendered token, not the raw slug. What is being protected
+# is that the REAL company is resolved from the manifest — not a placeholder.
+assert_contains "$single_title" "INDIGO" "session title uses the real single-company slug"
 assert_not_contains "$single_title" "companies" "session title does not use top-level companies key"
 assert_not_contains "$single_title" "_template" "_template excluded from session title"
 
@@ -130,10 +133,11 @@ empty_title="$(HQ_ROOT="$EMPTY" bash "$TITLE" --session-id "manifest-nested-pars
 assert_equals "$empty_hook_rc" "0" "empty manifest hook exits cleanly"
 assert_not_contains "$empty_out" "Companies (" "empty manifest emits no company line"
 assert_equals "$empty_title_rc" "0" "empty manifest session-title exits cleanly"
-# Title grammar is "{icon} {CATEGORY} · {subject} · {phase}". With an empty
-# manifest there is no company to resolve, so the subject slot must be absent
-# and the category must fall back to the generic WORK bucket — never a slug.
-assert_equals "$empty_title" "🟦 WORK · chat" "empty manifest leaves company unset"
+# Title grammar is "{mode} {COMPANY} · {subject}". With an empty manifest there
+# is no company and no project to resolve, and a bare `chat` carries no mode —
+# so the title degrades to the phase word alone. No placeholder org token, no
+# placeholder glyph: an empty slot renders as nothing.
+assert_equals "$empty_title" "chat" "empty manifest leaves company unset"
 
 echo "manifest-nested-parse: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
