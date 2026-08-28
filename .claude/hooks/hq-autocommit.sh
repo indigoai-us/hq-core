@@ -163,6 +163,52 @@ report_failure() {
   exit 0
 }
 
+is_stale_path() {
+  [[ -n "$(find "$1" -maxdepth 0 -mmin "+${STALE_LOCK_MINUTES}" 2>/dev/null)" ]]
+}
+
+# Return 0 when a process definitely holds the lock, or when this machine has
+# no trustworthy ownership probe. Unknown must fail closed: deleting a live
+# Git index lock can corrupt an in-flight write.
+lock_has_holder() {
+  local lock_path="$1" probe="${HQ_AUTOCOMMIT_LOCK_PROBE:-}"
+  if [[ -n "$probe" ]]; then
+    "$probe" "$lock_path" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof "$lock_path" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v fuser >/dev/null 2>&1; then
+    fuser "$lock_path" >/dev/null 2>&1
+    return $?
+  fi
+  return 0
+}
+
+process_birth_token() {
+  local pid="$1"
+  LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null | tr -d '[:space:]'
+}
+
+recover_stale_index_lock() {
+  local index_lock
+  index_lock="$(git -C "$HQ_ROOT" rev-parse --git-path index.lock 2>/dev/null || true)"
+  [[ -n "$index_lock" ]] || return 0
+  [[ "$index_lock" == /* ]] || index_lock="$HQ_ROOT/$index_lock"
+  [[ -f "$index_lock" ]] || return 0
+  is_stale_path "$index_lock" || return 0
+  lock_has_holder "$index_lock" && return 0
+
+  # Exact-file removal only, after age + live-holder checks. index.lock is a
+  # transaction sentinel, not repository data; an unowned stale copy can only
+  # block future Git writes.
+  if rm -f -- "$index_lock" 2>/dev/null; then
+    log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] RECOVER stage=index-lock path=${REL_PATH} session=${SESSION_KEY}"
+  fi
+}
+
 STATUS_OUT="$(git -C "$HQ_ROOT" status --porcelain -- "$REL_PATH" 2>&1)"
 STATUS_RC=$?
 if [[ $STATUS_RC -ne 0 ]]; then
@@ -182,19 +228,41 @@ if [[ -n "$PRESTAGED" ]]; then
   exit 0
 fi
 
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+LOCK_ACQUIRED=0
+if mkdir "$LOCK_DIR" 2>/dev/null; then
+  LOCK_ACQUIRED=1
+else
   # Contention with a concurrent autosave is normal and silent. A lock that
-  # outlives the staleness window is an orphan from a killed run, and it
-  # suppresses every autosave until someone removes it — say so once.
-  if [[ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin "+${STALE_LOCK_MINUTES}" 2>/dev/null)" ]]; then
-    log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] FAIL stage=lock exit=0 path=${REL_PATH} session=${SESSION_KEY}"
-    log_line "    lock: ${LOCK_DIR} is older than ${STALE_LOCK_MINUTES}m and is blocking every autosave"
-    warn_once "autocommit|stale-lock" \
-      "WARNING: HQ autosave is blocked by a stale lock at ${LOCK_DIR} (older than ${STALE_LOCK_MINUTES}m). Local HQ edits are NOT being committed. Remove the directory to restore autosave."
+  # outlives the staleness window is an orphan from a killed run. New locks
+  # carry their owner pid; old ownerless locks are safe to recover after age.
+  OWNER_PID="$(sed -n 's/^pid=//p' "$LOCK_DIR/owner" 2>/dev/null | head -1)"
+  OWNER_BIRTH="$(sed -n 's/^birth=//p' "$LOCK_DIR/owner" 2>/dev/null | head -1)"
+  OWNER_LIVE=0
+  if [[ "$OWNER_PID" =~ ^[0-9]+$ ]] && kill -0 "$OWNER_PID" 2>/dev/null; then
+    CURRENT_BIRTH="$(process_birth_token "$OWNER_PID")"
+    # Owner files from older HQ releases have no birth token. Fail closed for
+    # those live PIDs, while new locks distinguish the original process from a
+    # later process that reused the same numeric PID.
+    if [[ -z "$OWNER_BIRTH" || -z "$CURRENT_BIRTH" || "$OWNER_BIRTH" == "$CURRENT_BIRTH" ]]; then
+      OWNER_LIVE=1
+    fi
   fi
+  if is_stale_path "$LOCK_DIR" && [[ "$OWNER_LIVE" -eq 0 ]]; then
+    rm -f -- "$LOCK_DIR/owner" 2>/dev/null || true
+    if rmdir "$LOCK_DIR" 2>/dev/null && mkdir "$LOCK_DIR" 2>/dev/null; then
+      LOCK_ACQUIRED=1
+      log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] RECOVER stage=lock path=${REL_PATH} session=${SESSION_KEY}"
+    fi
+  fi
+fi
+if [[ "$LOCK_ACQUIRED" -ne 1 ]]; then
   exit 0
 fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+SELF_BIRTH="$(process_birth_token "$$")"
+printf 'pid=%s\nbirth=%s\n' "$$" "$SELF_BIRTH" >"$LOCK_DIR/owner" 2>/dev/null || true
+trap 'rm -f -- "$LOCK_DIR/owner" 2>/dev/null || true; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
+recover_stale_index_lock
 
 ADD_OUT="$(git -C "$HQ_ROOT" add -- "$REL_PATH" 2>&1)"
 ADD_RC=$?

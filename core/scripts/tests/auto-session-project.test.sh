@@ -79,7 +79,9 @@ cat > "$TMP/personal/projects/native-project-journaling/prd.json" <<'JSON'
 JSON
 
 payload='{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"in hqwork make native claude/codex executions automatically journal to project prd files"}'
-out=$(CLAUDE_PROJECT_DIR="$TMP" "$TMP/.claude/hooks/auto-session-project.sh" <<<"$payload")
+first_stderr="$TMP/first-prompt.stderr"
+out=$(CLAUDE_PROJECT_DIR="$TMP" "$TMP/.claude/hooks/auto-session-project.sh" <<<"$payload" 2>"$first_stderr")
+assert_empty "$(cat "$first_stderr")" "first prompt stderr"
 assert_contains "$out" "auto-session-project" "context wrapper"
 assert_contains "$out" "personal/projects/native-project-journaling" "reused related project"
 assert_contains "$(cat "$TMP/.claude/state/active-session-project")" "native-project-journaling" "active pointer"

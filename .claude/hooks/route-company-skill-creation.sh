@@ -6,7 +6,7 @@
 #   2. writing a generated company skill/command mirror directly.
 #
 # Company skills must reserve an immutable skill_uid through `hq skill create`
-# before an agent authors them. Generated runtime wrappers are owned by reindex.
+# before an agent authors them. Generated runtime wrappers are owned by HQ.
 #
 # Override: HQ_ALLOW_DIRECT_PREFIX_WRITE=1 lets the write through (rare).
 #
@@ -76,41 +76,50 @@ Reserve and stamp the company skill before editing it:
 Then edit the stamped canonical file and finish with:
   hq skill --company $CO create $NAME
 
-This keeps creation, FILE_ACL policy, reindexing, and sync on one authoritative path.
+This keeps creation, FILE_ACL policy, local discovery, and sync on one authoritative path.
 MSG
   exit 2
 fi
 
-# Match three mirror shapes:
-#   .claude/skills/{prefix}-{name}/...
-#   .claude/skills/{prefix}-{name}.md
-#   .claude/commands/{prefix}-{name}.md
+# Match current namespaced wrappers (including the Win32 filename encoding)
+# plus legacy prefix wrappers from older HQ releases.
 PREFIX=""
+CO=""
 NAME=""
+IS_COMMAND=0
 
-if [[ "$REL" =~ ^\.claude/skills/([a-z0-9]{2,4})-([a-z0-9_-]+)(/.*|\.md)?$ ]]; then
+if [[ "$REL" =~ ^\.claude/skills/([a-z0-9][a-z0-9-]*)(:|%3[Aa])([a-z0-9][a-z0-9-]*)(/.*|\.md)?$ ]]; then
+  CO="${BASH_REMATCH[1]}"
+  NAME="${BASH_REMATCH[3]}"
+elif [[ "$REL" =~ ^\.claude/commands/([a-z0-9][a-z0-9-]*)(:|%3[Aa])([a-z0-9][a-z0-9-]*)\.md$ ]]; then
+  CO="${BASH_REMATCH[1]}"
+  NAME="${BASH_REMATCH[3]}"
+  IS_COMMAND=1
+elif [[ "$REL" =~ ^\.claude/skills/([a-z0-9]{2,4})-([a-z0-9_-]+)(/.*|\.md)?$ ]]; then
   PREFIX="${BASH_REMATCH[1]}"
   NAME="${BASH_REMATCH[2]}"
 elif [[ "$REL" =~ ^\.claude/commands/([a-z0-9]{2,4})-([a-z0-9_-]+)\.md$ ]]; then
   PREFIX="${BASH_REMATCH[1]}"
   NAME="${BASH_REMATCH[2]}"
+  IS_COMMAND=1
 else
   exit 0
 fi
 
-# Resolve prefix → company via manifest (yq, same engine as the registry
-# hooks). If unknown prefix — or yq is unavailable — this isn't a bridged
-# path; let it through (some non-company skills like `hq-deploy` happen to
-# look like prefix-name but don't match any manifest entry).
-CO=$(cd "$PROJECT_DIR" && yq -r ".companies | to_entries[] | select(.value.prefix == \"$PREFIX\") | .key" companies/manifest.yaml 2>/dev/null | head -1 || true)
-[ "$CO" = "null" ] && CO=""
+# Current wrappers carry the company slug directly. Legacy wrappers still need
+# manifest prefix resolution. Unknown namespaces are non-company skills and
+# remain outside this hook's scope.
+if [[ -n "$PREFIX" ]]; then
+  CO=$(cd "$PROJECT_DIR" && yq -r ".companies | to_entries[] | select(.value.prefix == \"$PREFIX\") | .key" companies/manifest.yaml 2>/dev/null | head -1 || true)
+  [ "$CO" = "null" ] && CO=""
+fi
 
-if [[ -z "$CO" ]]; then
+if [[ -z "$CO" || ! -d "$PROJECT_DIR/companies/$CO" ]]; then
   exit 0
 fi
 
 # Decide whether this looks like a skill or command, for the redirect message.
-if [[ "$REL" == .claude/commands/* ]]; then
+if [[ "$IS_COMMAND" -eq 1 ]]; then
   CANONICAL="companies/$CO/commands/$NAME.md"
 else
   CANONICAL="companies/$CO/skills/$NAME/SKILL.md"
@@ -123,8 +132,8 @@ This is a generated runtime path for $CANONICAL.
 For a new company skill, run:
   hq skill --company $CO create $NAME --no-sync
 
-Then edit $CANONICAL and run the create command again to reindex and sync it.
-Generated `.claude/skills/` wrappers are owned by HQ reindexing.
+Then edit $CANONICAL and run the create command again to surface and sync it.
+Generated `.claude/skills/` wrappers are owned by HQ.
 
 Override (rare, audited): set HQ_ALLOW_DIRECT_PREFIX_WRITE=1 to bypass this check.
 MSG

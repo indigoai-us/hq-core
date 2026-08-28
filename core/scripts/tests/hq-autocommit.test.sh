@@ -209,6 +209,31 @@ fi
 
 rm -f "$TMP/.git/index.lock"
 
+# A stale index lock with no live holder is recovered automatically. The
+# probe seam returns non-zero for "unowned" so this remains deterministic on
+# CI images that do not install lsof/fuser.
+printf 'recovered index\n' > "$TMP/recovered-index.md"
+: > "$TMP/.git/index.lock"
+touch -t 202001010000 "$TMP/.git/index.lock"
+run_hook "sess-index-recover" "recovered-index.md" \
+  HQ_AUTOCOMMIT_LOCK_PROBE=false
+if [[ "$HOOK_RC" -ne 0 || -n "$HOOK_OUT" ]]; then
+  echo "an unowned stale index lock should self-heal silently; rc=$HOOK_RC out='$HOOK_OUT'" >&2
+  exit 1
+fi
+if [[ -e "$TMP/.git/index.lock" ]]; then
+  echo "the recovered stale index lock must be removed" >&2
+  exit 1
+fi
+if ! git -C "$TMP" show --name-only --format= HEAD | grep -q '^recovered-index.md$'; then
+  echo "autosave must continue after recovering a stale index lock" >&2
+  exit 1
+fi
+if ! grep -q "RECOVER stage=index-lock" "$LOG"; then
+  echo "stale index-lock recovery must be recorded in $LOG_REL" >&2
+  exit 1
+fi
+
 # A healthy commit stays completely silent and adds no failure record.
 fail_lines_healthy="$(grep -c "FAIL " "$LOG" || true)"
 printf 'healthy\n' > "$TMP/healthy.md"
@@ -244,21 +269,61 @@ if [[ "$HOOK_RC" -ne 0 || -n "$HOOK_OUT" ]]; then
   exit 1
 fi
 
+owner_birth="$(LC_ALL=C ps -p "$$" -o lstart= 2>/dev/null | tr -d '[:space:]' || true)"
+printf 'pid=%s\nbirth=%s\n' "$$" "$owner_birth" > "$TMPDIR/hq-autocommit.lock/owner"
+touch -t 202001010000 "$TMPDIR/hq-autocommit.lock"
+run_hook "sess-live-lock" "contended.md"
+if [[ "$HOOK_RC" -ne 0 || -n "$HOOK_OUT" ]]; then
+  echo "a stale-looking lock with a live owner must stay untouched and silent" >&2
+  exit 1
+fi
+if [[ ! -d "$TMPDIR/hq-autocommit.lock" ]]; then
+  echo "a live owner's autosave lock must never be recovered" >&2
+  exit 1
+fi
+
+if [[ -n "$owner_birth" ]]; then
+  # A stale lock carrying a live but reused PID must be recoverable when the
+  # process birth token does not match the original owner.
+  printf 'pid=%s\nbirth=%s\n' "$$" "different-process" > "$TMPDIR/hq-autocommit.lock/owner"
+  touch -t 202001010000 "$TMPDIR/hq-autocommit.lock"
+  run_hook "sess-reused-pid" "contended.md"
+  if [[ "$HOOK_RC" -ne 0 || -n "$HOOK_OUT" ]]; then
+    echo "a reused PID lock should self-heal silently; rc=$HOOK_RC out='$HOOK_OUT'" >&2
+    exit 1
+  fi
+  if [[ -d "$TMPDIR/hq-autocommit.lock" ]]; then
+    echo "a reused PID must not keep an orphaned autosave lock alive" >&2
+    exit 1
+  fi
+else
+  rm -f "$TMPDIR/hq-autocommit.lock/owner"
+  rmdir "$TMPDIR/hq-autocommit.lock"
+fi
+
+# Recreate an ownerless stale lock to exercise the legacy recovery path too.
+mkdir -p "$TMPDIR/hq-autocommit.lock"
+printf 'contended-again\n' > "$TMP/contended.md"
+
+rm -f "$TMPDIR/hq-autocommit.lock/owner"
 touch -t 202001010000 "$TMPDIR/hq-autocommit.lock"
 run_hook "sess-e" "contended.md"
-if [[ "$HOOK_RC" -ne 0 ]]; then
-  echo "a stale lock must not block the editor (expected exit 0, got $HOOK_RC)" >&2
+if [[ "$HOOK_RC" -ne 0 || -n "$HOOK_OUT" ]]; then
+  echo "an unowned stale autosave lock should self-heal silently; rc=$HOOK_RC out='$HOOK_OUT'" >&2
   exit 1
 fi
-if [[ "$HOOK_OUT" != *"stale lock"* ]]; then
-  echo "a stale autosave lock must be reported; got: '$HOOK_OUT'" >&2
+if [[ -d "$TMPDIR/hq-autocommit.lock" ]]; then
+  echo "the recovered stale autosave lock must be removed after the hook exits" >&2
   exit 1
 fi
-if ! grep -q "FAIL stage=lock" "$LOG"; then
-  echo "a stale autosave lock must be recorded in $LOG_REL" >&2
+if ! grep -q "RECOVER stage=lock" "$LOG"; then
+  echo "stale autosave-lock recovery must be recorded in $LOG_REL" >&2
   exit 1
 fi
-rmdir "$TMPDIR/hq-autocommit.lock"
+if ! git -C "$TMP" show --name-only --format= HEAD | grep -q '^contended.md$'; then
+  echo "autosave must continue after recovering its stale process lock" >&2
+  exit 1
+fi
 
 # --- macOS Finder Icon\r / control-character paths -------------------------
 # Finder writes a file literally named `Icon` + CR into every directory it
