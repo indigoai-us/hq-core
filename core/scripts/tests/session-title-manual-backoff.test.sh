@@ -18,8 +18,11 @@
 #       manual title — a real command change still emits
 #   T3  launcher --name (session_title set on first SessionStart) backs off
 #   T4  once a manual title is seen, back-off is permanent
-#   T5  mid-session /rename seen in the transcript (real customTitle shape)
-#       backs off — this is the headline symptom of feedback_0919db0c
+#   T5  first foreign transcript title (the Claude Desktop auto-titler) is
+#       ignored and retaken; a second, different foreign title (a real
+#       mid-session /rename, feedback_0919db0c) backs off
+#   T5r desktop_autoname=respect restores back-off on the first foreign title
+#   T5a resume inheriting the desktop auto-title via session_title keeps titling
 #   T6  a transcript custom-title HQ itself emitted does NOT back off
 #   T7  legacy/defensive: a custom-title line carrying a plain "title" key is
 #       still honored
@@ -70,6 +73,8 @@ done
 printf 'hq · %s\n' "$cmd"
 STUB
 chmod +x "$HQ_ROOT/core/scripts/session-title.sh"
+# Real config resolver, so desktop_autoname resolution is exercised for real.
+cp "$ROOT/core/scripts/session-title-config.sh" "$HQ_ROOT/core/scripts/"
 
 # run_hook <hook> <json-stdin> -> stdout of the hook
 run_hook() {
@@ -136,20 +141,51 @@ out="$(run_hook "$HOOK" "$(json_prompt S2 '/plan more work' 'My Named Session')"
 emitted "$out" && fail "T4: back-off must persist once a manual title is seen"
 ok "T4 manual back-off is permanent"
 
-# ── T5: headline case — mid-session /rename in a REAL transcript line ───────
-# The user renames the session mid-flight; Claude Code appends a custom-title
-# line. The next turn must back off instead of re-emitting HQ's title.
+# ── T5: transcript foreign titles — first is the desktop auto-titler and is ─
+# ignored (HQ retakes the title, force-emitting even though its computed
+# title is unchanged); a SECOND, different foreign title is a real rename
+# and backs off permanently.
 reset_state
 TR="$TMP/transcript-S3.jsonl"
 printf '%s\n' '{"type":"user","message":{"role":"user","content":"hi"}}' > "$TR"
 out="$(run_hook "$HOOK" "$(json_start S3 '' startup "$TR")")"
 emitted "$out" || fail "T5: setup — first turn should emit"
-custom_title_line 'hq · chat' S3 >> "$TR"          # HQ's own emission is logged
-custom_title_line 'My Manual Rename' S3 >> "$TR"   # then the user renames
+custom_title_line 'hq · chat' S3 >> "$TR"            # HQ's own emission is logged
+custom_title_line 'Desktop Auto Title' S3 >> "$TR"   # desktop auto-titler fires
+out="$(run_hook "$HOOK" "$(json_prompt S3 'still going' '' "$TR")")"
+emitted "$out" || fail "T5: first foreign transcript title must be ignored and retaken"
+[ -f "$(state_file S3).manual" ] && fail "T5: first foreign title must not mark manual"
+custom_title_line 'My Manual Rename' S3 >> "$TR"     # then the user really renames
 out="$(run_hook "$HOOK" "$(json_prompt S3 '/plan keep going' '' "$TR")")"
-emitted "$out" && fail "T5: a mid-session /rename must not be clobbered"
+emitted "$out" && fail "T5: a second foreign title (real rename) must not be clobbered"
 [ -f "$(state_file S3).manual" ] || fail "T5: expected manual marker (transcript path)"
-ok "T5 mid-session /rename in a real transcript line backs off"
+ok "T5 first foreign transcript title ignored, second backs off"
+
+# ── T5r: desktop_autoname=respect restores the pre-fix behavior ─────────────
+mkdir -p "$HQ_ROOT/personal/settings"
+printf 'version: 1\ndesktop_autoname: respect\n' > "$HQ_ROOT/personal/settings/session-title.yaml"
+reset_state
+TRR="$TMP/transcript-S3R.jsonl"
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"hi"}}' > "$TRR"
+out="$(run_hook "$HOOK" "$(json_start S3R '' startup "$TRR")")"
+emitted "$out" || fail "T5r: setup — first turn should emit"
+custom_title_line 'My Manual Rename' S3R >> "$TRR"
+out="$(run_hook "$HOOK" "$(json_prompt S3R 'still going' '' "$TRR")")"
+emitted "$out" && fail "T5r: under respect, the first foreign title must back off"
+[ -f "$(state_file S3R).manual" ] || fail "T5r: expected manual marker under respect"
+rm -f "$HQ_ROOT/personal/settings/session-title.yaml"
+ok "T5r desktop_autoname=respect backs off on the first foreign title"
+
+# ── T5a: resume inheriting the desktop auto-title via session_title ─────────
+# On resume the auto-title arrives in the SessionStart input; the transcript
+# proves its origin, so it is ignored and HQ retakes the title.
+reset_state
+TRA="$TMP/transcript-S3A.jsonl"
+custom_title_line 'Desktop Auto Title' S3A > "$TRA"
+out="$(run_hook "$HOOK" "$(json_start S3A 'Desktop Auto Title' resume "$TRA")")"
+emitted "$out" || fail "T5a: resumed desktop auto-title must be ignored and retaken"
+[ -f "$(state_file S3A).manual" ] && fail "T5a: resumed auto-title must not mark manual"
+ok "T5a resumed session inheriting the desktop auto-title keeps titling"
 
 # ── T6: a transcript custom-title HQ itself emitted does NOT back off ───────
 reset_state
@@ -167,9 +203,12 @@ reset_state
 out="$(run_hook "$HOOK" "$(json_start S5)")"
 emitted "$out" || fail "T7: setup — first turn should emit"
 TR3="$TMP/transcript-S5.jsonl"
-printf '%s\n' '{"type":"custom-title","title":"Legacy Shape Rename"}' > "$TR3"
+printf '%s\n' '{"type":"custom-title","title":"Legacy Shape Autoname"}' > "$TR3"
 out="$(run_hook "$HOOK" "$(json_prompt S5 'still going' '' "$TR3")")"
-emitted "$out" && fail "T7: a legacy-shaped custom-title rename must back off"
+emitted "$out" || fail "T7: first legacy-shaped foreign title gets the auto-titler pass"
+printf '%s\n' '{"type":"custom-title","title":"Legacy Shape Rename"}' >> "$TR3"
+out="$(run_hook "$HOOK" "$(json_prompt S5 'onward' '' "$TR3")")"
+emitted "$out" && fail "T7: a second legacy-shaped custom-title rename must back off"
 ok "T7 legacy title-key custom-title line is still honored"
 
 # ── T8: fork — new session id inheriting HQ's own title keeps titling ───────

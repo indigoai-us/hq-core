@@ -7,7 +7,7 @@
 # UserPromptSubmit wrapper (.claude/hooks/session-title.sh) wraps this output
 # in the hookSpecificOutput.sessionTitle envelope.
 #
-# Title convention:  {icon} {CATEGORY} · {subject} · {phase}
+# Title convention:  {glyph} {COMPANY} · {Product} · {subject}
 #   - emoji is a STATUS flag only (▶️ running, ✅ recently completed); it is
 #     omitted otherwise — the command word already conveys the mode.
 #   - company  : slug from the active project path, or "hq-core" for builder
@@ -26,17 +26,19 @@ HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.
 
 SESSION_ID="default"
 COMMAND=""
+SESSION_CWD=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --session-id) SESSION_ID="${2:-default}"; shift 2 ;;
     --command)    COMMAND="${2:-}"; shift 2 ;;
+    --cwd)        SESSION_CWD="${2:-}"; shift 2 ;;
     *)            shift ;;
   esac
 done
 
 command -v node >/dev/null 2>&1 || exit 0
 
-HQ_ROOT="$HQ_ROOT" SESSION_ID="$SESSION_ID" CMD="$COMMAND" node - <<'JS'
+HQ_ROOT="$HQ_ROOT" SESSION_ID="$SESSION_ID" CMD="$COMMAND" SESSION_CWD="$SESSION_CWD" node - <<'JS'
 const fs = require("fs");
 const path = require("path");
 
@@ -83,7 +85,7 @@ if (projPath) {
     company = parts[1];
     project = parts[parts.length - 1];
   } else if (parts.length && parts[0] === "personal") {
-    company = "";          // personal scope -> no company segment
+    company = "personal";  // rendered as the "ME" org token
     project = parts[parts.length - 1];
   } else if (parts.length) {
     project = parts[parts.length - 1];
@@ -137,65 +139,143 @@ if (project) {
   } catch (e) {}
 }
 
-// --- domain category ---
-// First match wins. Keyed on the project slug, then the command word, then the
-// company. Produces the "EMOJI CAT" lead-in of the HQ title grammar; see
-// personal/policies/hq-session-title-grammar.md.
-const CATEGORIES = [
-  [/(secur|(^|[-_])sec([-_]|$)|auth|acl|vault|secret|credential|risk|permission)/, "🔒", "SEC"],
-  [/(legal|contract|dispute|agreement|licen[cs]e|terms)/,                          "⚖️", "LEGAL"],
-  [/(deploy|infra|migration|migrate|ops|pipeline|(^|[-_])ci([-_]|$)|release|sync)/, "⚙️", "OPS"],
-  [/(bug|fix|debug|diagnose|repair|heal|incident|regression)/,                     "🔧", "FIX"],
-  [/(design|brand|visual|(^|[-_])ui([-_]|$)|(^|[-_])ux([-_]|$)|animation)/,        "🎨", "DESIGN"],
-  [/(doc|knowledge|policy|policies|learn|garden|charter|guide)/,                   "📚", "DOCS"],
-  [/(test|benchmark|eval|(^|[-_])qa([-_]|$)|smoke|verify)/,                        "🧪", "TEST"],
-  [/(data|report|analytic|metric|dashboard|signal)/,                               "📊", "DATA"],
-  [/(plan|prd|brainstorm|strategy|roadmap|scope)/,                                 "🗺️", "PLAN"],
-  [/(agent|worker|fleet|orchestrat|mesh)/,                                         "🤖", "FLEET"],
+// --- mode ---
+// The emoji encodes what the session IS DOING, not what domain it belongs to.
+// State is what a human scans a sidebar for ("does this need me?"); domain is
+// already implied by the subject line. Keyed on the active slash command,
+// which the wrapper hook already tracks turn to turn.
+//
+// Exactly ONE glyph, never two — a second glyph beside the first reads as a
+// badge pair and makes the left edge busier without making it more scannable.
+// The single slot shows the most USEFUL thing about the session right now,
+// picked by the precedence ladder in hq-session-title-grammar: work that needs
+// the user or has terminated outranks the session kind, which outranks the
+// workflow stage, which outranks the craft.
+//
+// This script only ever emits a stage or kind glyph. It never emits 🙋 (needs
+// the user) — it cannot know that — and never a craft glyph, since its only
+// subject is a directory slug and any keyword match against that slug is
+// redundant with the slug by construction. Both are the model's job.
+//
+// A handoff has two moments and they are different rows in a sidebar:
+// 📝 the handoff is being written (the session is wrapping up) and 📤 it is
+// ready (the session is closed; resume from the thread). This script emits 📝
+// while /handoff runs; only the model can know when it finished, so it sets 📤.
+// Both are distinct from ✅ "the work shipped" and 🤝 "a person owns it now".
+const MODES = [
+  [/^(brainstorm|idea|dream|discover|strategize)$/,                            "💭"],
+  [/^(plan|prd|deep-plan|storyboard|architect|review-plan|codebase-design)$/,  "📐"],
+  [/^(run-project|execute-task|ship|land|land-batch|run-pipeline|orchestrate|tdd|deploy)$/, "⚡"],
+  [/^(review|code-review|security-review)$/,                                   "👀"],
+  [/^(quality-gate|smoke|verify|diagnose|investigate)$/,                       "🧪"],
+  [/^(handoff|checkpoint-handoff|retro)$/,                                     "📝"],
+  [/^(delegate|new-hire|new-agent|promote)$/,                                  "🤝"],
+  [/^(dm|hq-slack|meeting-notes|work-broadcast|signals|hq-share)$/,            "💬"],
+  [/^(schedule|job|loop)$/,                                                    "🔁"],
 ];
 
-const classify = (text) => {
-  for (const [re, ic, label] of CATEGORIES) if (re.test(text)) return [ic, label];
-  return null;
+const modeFor = (word) => {
+  for (const [re, ic] of MODES) if (re.test(word)) return ic;
+  return "";
 };
 
 if (!command) command = "chat";
 
-let icon = "";
-let category = "";
-const hit = classify(project.toLowerCase()) ||
-            classify(command.toLowerCase()) ||
-            classify(company.toLowerCase());
-if (hit) { icon = hit[0]; category = hit[1]; }
-else if (company === "hq-core") { icon = "🏠"; category = "HQ"; }
-else if (company === "personal") { icon = "🟦"; category = "ME"; }
-else if (company) {
-  // Never mid-word-truncate a slug into something like "PERSON": take the
-  // first hyphenated token, and only hard-slice if that alone is still long.
-  const head = company.split("-")[0].toUpperCase();
-  icon = "🟦";
-  category = head.length <= 8 ? head : head.slice(0, 6);
-}
-else { icon = "🟦"; category = "WORK"; }
+// Precedence: a finished or running project outranks the command word — "it
+// shipped" and "it is executing right now" beat "you typed /plan an hour ago".
+// `emoji` is set above from orchestrator state (✅ recent completion, ▶️ running).
+const mode = emoji === "▶️" ? "⚡" : (emoji || modeFor(command));
 
-// A live status flag outranks the domain icon — "is it running" beats "what
-// kind of work is it". Never render both; two emoji read as noise.
-const lead = emoji || icon;
+// --- company ---
+// Always the first text token. Long slugs get an explicit short form from the
+// settings `aliases:` block rather than a mid-word truncation — a single-word
+// slug sliced at 8 characters is unreadable.
+// Built-ins only. Company short forms are USER data — a release-shipped file
+// must never carry tenant slugs (enforced by the slug-scan / denylist-scan CI
+// gates). Users map their own long slugs in personal/settings/session-title.yaml:
+//
+//   aliases:
+//     some-long-company-slug: SHORT
+//
+const ALIASES = { personal: "ME", "hq-core": "HQ" };
+
+// Merge user aliases from the settings files, lowest precedence first.
+const readAliases = (file) => {
+  let text = "";
+  try { text = fs.readFileSync(file, "utf8"); } catch (e) { return; }
+  let inBlock = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, "").replace(/\s+$/, "");
+    if (!line.trim()) continue;
+    if (/^aliases:\s*$/.test(line)) { inBlock = true; continue; }
+    if (!/^\s/.test(line)) { inBlock = false; continue; }   // any new top-level key ends it
+    if (!inBlock) continue;
+    const m = line.match(/^\s+["']?([A-Za-z0-9._-]+)["']?:\s*["']?([^"'\s]+)["']?\s*$/);
+    if (m) ALIASES[m[1]] = m[2];
+  }
+};
+readAliases(path.join(hq, "core", "settings", "session-title.yaml"));
+readAliases(path.join(hq, "personal", "settings", "session-title.yaml"));
+
+let org = "";
+if (company) {
+  org = ALIASES[company];
+  if (!org) {
+    const head = company.split("-")[0].toUpperCase();
+    org = head.length <= 8 ? head : head.slice(0, 8);
+  }
+}
 
 // --- compose ---
-// Grammar:  {icon} {CAT} · {subject} · {phase}
-// The hook can only ever supply a slug as the subject. A session that knows
-// what it is actually about should overwrite this with a written subject via
+// Grammar:  {glyph} {COMPANY} · {Product} · {subject}
+//
+// Every rendered glyph must mean something. When the mode is unknown the title
+// simply starts with the company — a placeholder icon (the old "🟦") is worse
+// than nothing, because it trains the eye to ignore the emoji column.
+//
+// The hook can only ever put a directory slug in the subject slot. A session
+// that knows what it is actually about should overwrite this via
 // set_session_title, keeping the same grammar.
-const subject = project || company || "";
-const core = [category, subject, command].filter(Boolean);
-const short = [category, subject || command].filter(Boolean);
+// --- product / repo ---
+// The repo or product the session is working in, rendered between the company
+// and the subject so identity survives a narrow sidebar's truncation. Derived
+// from the session cwd when it sits inside repos/; otherwise left to the model.
+//
+// A leading company prefix is stripped, because the company token already said
+// it: repos/public/hq-work under company HQ renders as "Work", not "Hq-work".
+let product = "";
+const cwd = process.env.SESSION_CWD || "";
+if (cwd) {
+  const rel = cwd.split(/[\\/]/).filter(Boolean);
+  const i = rel.lastIndexOf("repos");
+  if (i !== -1 && rel.length > i + 1) {
+    // repos/<public|private>/<repo>/... or repos/<repo>/...
+    let name = rel[i + 1];
+    if ((name === "public" || name === "private") && rel.length > i + 2) name = rel[i + 2];
+    if (name) {
+      // "hq-work" -> ["HQ", "Work"]. Two-letter tokens are acronyms, not words.
+      let words = name.split("-").filter(Boolean).map((w) =>
+        w.length <= 2 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)
+      );
+      // Drop a leading word the company token already said: under company HQ,
+      // "hq-work" is "Work", not "HQ Work".
+      if (org && words.length > 1 && words[0].toUpperCase() === org.toUpperCase()) {
+        words = words.slice(1);
+      }
+      product = words.join(" ");
+    }
+  }
+}
 
-const compose = (parts) => lead + " " + parts.join(" · ");
+const subject = project || "";
+const parts = [org, product, subject].filter(Boolean);
+if (!parts.length) parts.push(command);
+
+const compose = (ps) => (mode ? mode + " " : "") + ps.join(" · ");
 
 const MAX = 56;
-let title = compose(core);
-if (title.length > MAX) title = compose(short);
+let title = compose(parts);
+if (title.length > MAX && parts.length > 1) title = compose([parts[parts.length - 1]]);
 if (title.length > MAX) title = title.slice(0, MAX - 1).replace(/\s+$/, "") + "…";
 
 console.log(title);

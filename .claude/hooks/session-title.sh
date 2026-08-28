@@ -81,6 +81,21 @@ MANUAL="$STATE.manual"     # marker: a manual title was seen -> stop emitting
 # name so per-session pruning ("session-title-*") never sweeps it away.
 HQ_TITLES="$STATE_DIR/session-title.hq-titles"
 HQ_TITLES_MAX=400          # keep the ledger bounded; newest entries win
+AUTONAME="$STATE.autoname" # the one desktop auto-title HQ ignores per session
+
+# Claude Desktop's built-in auto-titler writes the SAME transcript
+# custom-title line as a user /rename — no field tells them apart, and there
+# is no host setting to disable it. Under desktop_autoname=ignore-first
+# (the default; set desktop_autoname: respect in settings/session-title.yaml
+# to restore the old behavior) the FIRST transcript-borne foreign title per
+# session is treated as the auto-titler and ignored — HQ retakes the title.
+# A second, different foreign title is a genuine rename and backs off.
+DESKTOP_AUTONAME="ignore-first"
+CONFIG_HELPER="$HQ_ROOT/core/scripts/session-title-config.sh"
+if [ -f "$CONFIG_HELPER" ]; then
+  cfg_line="$(bash "$CONFIG_HELPER" --root "$HQ_ROOT" 2>/dev/null | grep '^desktop_autoname=' || true)"
+  [ "${cfg_line#desktop_autoname=}" = "respect" ] && DESKTOP_AUTONAME="respect"
+fi
 
 # --- manual-rename back-off (BEGIN) -----------------------------------------
 # Permanent back-off once a manual title has been detected for this session.
@@ -183,6 +198,34 @@ hq_owned_title() {
   hq_emitted_title "$t"
 }
 
+transcript_has_custom_title() {
+  # Does the transcript carry TITLE ($1) as a custom-title line?
+  [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || return 1
+  grep -F '"custom-title"' "$TRANSCRIPT" 2>/dev/null |
+    grep -qF "\"customTitle\":\"$1\""
+}
+
+FORCE_EMIT=0
+ignore_desktop_autoname() {
+  # Foreign TITLE ($1) seen VIA ($2: "transcript" when it arrived as a
+  # transcript custom-title line). Returns 0 to ignore it as the desktop
+  # auto-titler's work; 1 means treat it as a genuine manual rename.
+  # Only a transcript-borne title can claim the one free pass — a launcher
+  # --name arrives via session_title with no matching transcript line and
+  # must keep backing off.
+  local t="$1" via="${2:-}"
+  [ "$DESKTOP_AUTONAME" = "ignore-first" ] || return 1
+  if [ -f "$AUTONAME" ] && grep -qxF -- "$t" "$AUTONAME" 2>/dev/null; then
+    FORCE_EMIT=1
+    return 0
+  fi
+  [ -f "$AUTONAME" ] && return 1   # the free pass is already spent
+  [ "$via" = "transcript" ] || return 1
+  printf '%s\n' "$t" > "$AUTONAME" 2>/dev/null || true
+  FORCE_EMIT=1
+  return 0
+}
+
 manual_title_backoff() {
   # Returns 0 when a title HQ does not own is in play — the user renamed the
   # session and owns it from here on.
@@ -190,7 +233,11 @@ manual_title_backoff() {
   # PRIMARY: the documented `session_title` SessionStart input. Empty on an
   # unnamed session; set to the user's title after --name or /rename.
   if [ -n "$SESSION_TITLE_INPUT" ] && ! hq_owned_title "$SESSION_TITLE_INPUT"; then
-    return 0
+    # A desktop auto-title inherited on resume shows up here too; it earns the
+    # transcript-borne free pass only when the transcript proves its origin.
+    local via=""
+    transcript_has_custom_title "$SESSION_TITLE_INPUT" && via="transcript"
+    ignore_desktop_autoname "$SESSION_TITLE_INPUT" "$via" || return 0
   fi
   # SECONDARY (labeled fallback): a mid-session /rename is not reflected in the
   # SessionStart input, so read the newest custom-title line in the transcript.
@@ -198,7 +245,7 @@ manual_title_backoff() {
     local ct
     ct="$(transcript_custom_title "$TRANSCRIPT")"
     if [ -n "$ct" ] && ! hq_owned_title "$ct"; then
-      return 0
+      ignore_desktop_autoname "$ct" "transcript" || return 0
     fi
   fi
   return 1
@@ -225,8 +272,10 @@ record_emitted() {
   fi
 }
 
-# Persist the command regardless; only emit when the title actually changed.
-if [ "$title" = "$last_title" ]; then
+# Persist the command regardless; only emit when the title actually changed —
+# unless a desktop auto-title was just ignored, in which case the host is
+# showing the foreign title and HQ must re-emit to retake it.
+if [ "$title" = "$last_title" ] && [ "$FORCE_EMIT" != "1" ]; then
   record_emitted "$title"
   printf '%s\n%s\n' "$command" "$last_title" > "$STATE" 2>/dev/null || true
   exit 0
