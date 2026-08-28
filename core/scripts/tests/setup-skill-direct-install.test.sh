@@ -17,6 +17,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SKILL="${ROOT}/.claude/skills/setup/SKILL.md"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -76,5 +78,49 @@ grep -qF 'brew install sqlite' <<<"$body" \
 # ── 7. Failures have somewhere to surface — the Phase 3 summary section ──────
 grep -qF 'Still needs attention:' <<<"$body" \
   || fail "7: the Phase 3 summary template must include a 'Still needs attention:' section for failed installs"
+
+# ── 8. Desktop-managed hq CLI wins before a system npm fallback ──────────────
+# A GUI-launched agent does not source the installer's shell-profile block. The
+# skill must therefore put the existing managed binary on PATH before probing
+# `hq`; otherwise it needlessly invokes the system-global npm install.
+grep -qF 'HQ_MANAGED_TOOLCHAIN="$HOME/Library/Application Support/Indigo HQ/toolchain"' <<<"$body" \
+  || fail "8: setup must locate the Desktop-managed toolchain"
+grep -qF 'HQ_MANAGED_NODE_BIN="$HQ_MANAGED_TOOLCHAIN/node/bin"' <<<"$body" \
+  || fail "8: setup must put the Desktop-managed Node runtime on PATH with hq"
+grep -qF '[ -x "$HQ_MANAGED_HQ_BIN/hq" ]' <<<"$body" \
+  || fail "8: setup must verify the managed hq executable before adding its bin directory"
+grep -qF 'for bin in "$HQ_MANAGED_HQ_BIN" "$HQ_MANAGED_NODE_BIN"; do' <<<"$body" \
+  || fail "8: setup must preserve managed Node before hq in PATH"
+
+managed_line="$(grep -nF 'HQ_MANAGED_HQ_BIN=' <<<"$body" | head -1 | cut -d: -f1)"
+fallback_line="$(grep -nF 'command -v hq >/dev/null 2>&1 || npm install -g @indigoai-us/hq-cli' <<<"$body" | head -1 | cut -d: -f1)"
+[[ -n "$managed_line" && -n "$fallback_line" && "$managed_line" -lt "$fallback_line" ]] \
+  || fail "8: setup must probe the managed CLI before its npm fallback"
+grep -qF 'Do not consult `~/.hq`' <<<"$body" \
+  || fail "8: setup must keep install-manifest state rooted in the current HQ directory"
+
+# Execute the live documented shell block in a GUI-style fixture with no
+# toolchain directories on PATH. The CLI launcher uses `env node`, so success
+# proves the snippet adds both managed directories in the right order and does
+# not fall through to npm.
+snippet="$(awk '
+  /^# hq-cli — honor the native installer/ { capture = 1 }
+  capture { print }
+  /^command -v hq >\/dev\/null 2>&1 \|\| npm install -g @indigoai-us\/hq-cli$/ { exit }
+' "$SKILL")"
+fixture_home="$TMP/home"
+fixture_toolchain="$fixture_home/Library/Application Support/Indigo HQ/toolchain"
+mkdir -p "$fixture_toolchain/node/bin" "$fixture_toolchain/npm-global/bin"
+cat > "$fixture_toolchain/node/bin/node" <<'NODE'
+#!/usr/bin/env sh
+printf 'managed-hq\n'
+NODE
+cat > "$fixture_toolchain/npm-global/bin/hq" <<'HQ'
+#!/usr/bin/env node
+HQ
+chmod +x "$fixture_toolchain/node/bin/node" "$fixture_toolchain/npm-global/bin/hq"
+fixture_out="$(HOME="$fixture_home" PATH='/usr/bin:/bin' bash -c "$snippet; hq")"
+[[ "$fixture_out" == 'managed-hq' ]] \
+  || fail "8: documented setup block did not run hq with the managed Node runtime: $fixture_out"
 
 echo "PASS: setup-skill-direct-install (direct-install invariant held; picker gone; auth/bootstrap carve-outs, platform-aware installs, and failure reporting present)"
