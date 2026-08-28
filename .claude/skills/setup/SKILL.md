@@ -109,7 +109,24 @@ the core tooling and install whatever is missing, best-effort and silently. Do
 wants HQ working, so install and move on:
 
 ```bash
-# hq-cli — npm global
+# hq-cli — honor the native installer's managed toolchain before system npm.
+# GUI-launched Claude/Codex sessions do not source the shell profile that the
+# installer writes, so `command -v hq` alone can miss this already-installed
+# binary. Do not consult `~/.hq`: the install manifest belongs to this HQ root.
+HQ_MANAGED_TOOLCHAIN="$HOME/Library/Application Support/Indigo HQ/toolchain"
+HQ_MANAGED_HQ_BIN="$HQ_MANAGED_TOOLCHAIN/npm-global/bin"
+HQ_MANAGED_NODE_BIN="$HQ_MANAGED_TOOLCHAIN/node/bin"
+if [ -x "$HQ_MANAGED_HQ_BIN/hq" ]; then
+  # Prepend in reverse order so the managed Node resolves the hq shebang.
+  for bin in "$HQ_MANAGED_HQ_BIN" "$HQ_MANAGED_NODE_BIN"; do
+    if [ -d "$bin" ]; then
+      case ":$PATH:" in
+        *":$bin:"*) ;;
+        *) export PATH="$bin:$PATH" ;;
+      esac
+    fi
+  done
+fi
 command -v hq >/dev/null 2>&1 || npm install -g @indigoai-us/hq-cli
 
 # qmd — npm global; on macOS it loads SQLite extensions the built-in sqlite3
