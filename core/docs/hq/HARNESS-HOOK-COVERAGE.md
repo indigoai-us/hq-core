@@ -32,7 +32,7 @@ The enforcement twin of this document is
 | Read / Grep / Glob | native names | `read_file`/`grep`/`list_dir` | aliased, full parity |
 | ExitPlanMode | `update_plan` | — (no plan tool) | Codex parity; Grok essential gap |
 | WebSearch | `web_search` (best-effort) | `web_search` | dispatched in both; the adapter rewrites the payload `tool_name` to canonical `WebSearch` (and forwards the full toolInput/response) so `journal-autocapture` records real content |
-| Agent | — (no Agent tool event; SubagentStop covers lifecycle) | `spawn_subagent` → Agent-matched hooks (payload canonicalized to `Agent` + full toolInput) | Grok parity; Codex essential gap |
+| Agent | `spawn_agent` → Agent-matched **PreToolUse** hooks; PostToolUse keeps native `spawn_agent` launch metadata; SubagentStop is normalized into the completed Agent result hooks and retains its native master fan-out | `spawn_subagent` → Agent-matched hooks (payload canonicalized to `Agent` + full toolInput) | Codex blocking and completion-journaling parity without misreporting the asynchronous launch acknowledgement as a completed Agent result; Grok full alias parity |
 | EnterPlanMode | — | — | essential gap in both (no plan-mode entry tool) |
 | MultiEdit / NotebookEdit | — | — | tool names never emitted; their hook sets are subsets of Edit/Write, which are dispatched — no guard coverage lost |
 | AskUserQuestion / WebFetch | — | — | essential gap in both (no such tool events) |

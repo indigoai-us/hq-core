@@ -94,19 +94,54 @@ STDOUT_ACCUM=""
 STDOUT_CHUNKS=()
 DIAG_ACCUM=""
 STOP_BLOCK_REASON=""
+PRE_TOOL_BLOCK_REASON=""
+
+# Return the control object from a hook's stdout. A direct hook commonly emits
+# one JSON document, while master-hook may emit plain context followed by one
+# compact JSON result from a company/personal guard. Codex must honor that
+# trailing result even though the combined stream is not itself valid JSON.
+control_json_object() {
+  local text="$1" parsed
+  parsed="$(printf '%s' "$text" | jq -c 'select(type == "object")' 2>/dev/null || true)"
+  if [ -z "$parsed" ]; then
+    parsed="$(printf '%s\n' "$text" \
+      | jq -Rrc 'fromjson? | select(type == "object")' 2>/dev/null \
+      | tail -1)"
+  fi
+  printf '%s' "$parsed"
+}
 
 append_stdout() {
   local text="$1"
   [ -z "$text" ] && return 0
   if [ "$HOOK_EVENT" = "Stop" ]; then
-    local block_reason
-    block_reason="$(printf '%s' "$text" | jq -r '
+    local block_reason control_json
+    control_json="$(control_json_object "$text")"
+    block_reason="$(printf '%s' "$control_json" | jq -r '
       if .decision == "block" and ((.reason? | type) == "string")
       then .reason
       else empty
       end
     ' 2>/dev/null || true)"
     [ -n "$block_reason" ] && STOP_BLOCK_REASON="$block_reason"
+  fi
+  if [ "$HOOK_EVENT" = "PreToolUse" ]; then
+    local deny_reason control_json
+    control_json="$(control_json_object "$text")"
+    deny_reason="$(printf '%s' "$control_json" | jq -r '
+      if (
+        .decision == "block"
+        or .permissionDecision == "deny"
+        or .hookSpecificOutput.permissionDecision == "deny"
+      ) then
+        .reason
+        // .permissionDecisionReason
+        // .hookSpecificOutput.permissionDecisionReason
+        // "Tool use denied by hook."
+      else empty
+      end
+    ' 2>/dev/null || true)"
+    [ -n "$deny_reason" ] && PRE_TOOL_BLOCK_REASON="$deny_reason"
   fi
   STDOUT_CHUNKS+=("$text")
   if [ -z "$STDOUT_ACCUM" ]; then
@@ -459,6 +494,22 @@ block_sensitive_read_if_needed() {
 emit_context() {
   [ -z "$STDOUT_ACCUM" ] && return 0
 
+  # A PreToolUse hook may return a structured denial with status 0. Preserve
+  # that as Codex control flow; treating it as display context would allow the
+  # operation the hook explicitly refused.
+  if [ "$HOOK_EVENT" = "PreToolUse" ] && [ -n "$PRE_TOOL_BLOCK_REASON" ]; then
+    jq -n --arg reason "$PRE_TOOL_BLOCK_REASON" '{
+      decision: "block",
+      reason: $reason,
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: $reason
+      }
+    }'
+    return 0
+  fi
+
   # Stop decisions are control flow, not display context. Codex requires one
   # top-level JSON document; wrapping the gate's decision in `systemMessage`
   # would show the instruction but still let the turn end.
@@ -489,6 +540,16 @@ emit_context() {
 run_pre_tool_use() {
   local cmd read_path grep_path glob_path
   case "$TOOL_NAME" in
+    spawn_agent)
+      # Codex's native collaboration tool is Claude's canonical `Agent`
+      # operation under a provider-specific name. Rewrite the payload as well
+      # as the settings matcher key so instance-local Agent hooks enforce the
+      # same decision on both runtimes.
+      local agent_payload
+      agent_payload="$(printf '%s' "$INPUT" | jq -c '.tool_name = "Agent"' 2>/dev/null)"
+      [ -n "$agent_payload" ] || agent_payload="$INPUT"
+      dispatch_settings_hooks "PreToolUse" "Agent" "$agent_payload"
+      ;;
     Bash)
       cmd="$(json_get '.tool_input.command // empty')"
       [ -n "$cmd" ] && block_sensitive_read_if_needed "$cmd"
@@ -530,11 +591,24 @@ run_pre_tool_use() {
         dispatch_settings_hooks "PreToolUse" "$canon" "$payload"
       done <<< "$paths"
       ;;
+    *)
+      # Provider, plugin, and MCP tools are an open set. Forward their native
+      # name unchanged so custom settings/master hooks can match them without
+      # requiring a release of this adapter for every new tool.
+      [ -n "$TOOL_NAME" ] && dispatch_settings_hooks "PreToolUse" "$TOOL_NAME" "$INPUT"
+      ;;
   esac
 }
 
 run_post_tool_use() {
   case "$TOOL_NAME" in
+    spawn_agent)
+      # spawn_agent returns launch metadata while the child is still running,
+      # not the completed Agent result expected by journal-autocapture. Keep
+      # the acknowledgement provider-native; SubagentStop carries lifecycle
+      # completion, and native/custom post hooks can still match spawn_agent.
+      dispatch_settings_hooks "PostToolUse" "spawn_agent" "$INPUT"
+      ;;
     Bash)
       # Adapter-only supplement (not registered in settings.json for Claude):
       # capture resource-registry entries from bash commands. Kept so faithful
@@ -574,6 +648,9 @@ run_post_tool_use() {
       [ -n "$ws_payload" ] || ws_payload="$INPUT"
       dispatch_settings_hooks "PostToolUse" "WebSearch" "$ws_payload"
       ;;
+    *)
+      [ -n "$TOOL_NAME" ] && dispatch_settings_hooks "PostToolUse" "$TOOL_NAME" "$INPUT"
+      ;;
   esac
 }
 
@@ -611,6 +688,34 @@ case "$HOOK_EVENT" in
     dispatch_settings_hooks "SessionEnd" "ANY" "$INPUT"
     ;;
   SubagentStop)
+    # Codex reports completion here, separately from spawn_agent's asynchronous
+    # launch acknowledgement. Feed the completed lifecycle payload through the
+    # Agent-matched PostToolUse hooks (not its master entry, which belongs to
+    # the native SubagentStop event below) so journal-autocapture records a real
+    # result exactly once.
+    agent_payload="$(printf '%s' "$INPUT" | jq -c '
+      .tool_name = "Agent"
+      | .tool_input = ((.tool_input // {}) + {
+          description: (
+            .tool_input.description
+            // .task_name
+            // .agent_type
+            // .agent_id
+            // "agent"
+          )
+        })
+      | .tool_response = (
+          .tool_response
+          // .result
+          // .last_assistant_message
+          // .output
+          // {
+            status: (.status // "completed"),
+            agent_id: (.agent_id // "")
+          }
+        )
+    ' 2>/dev/null || true)"
+    [ -n "$agent_payload" ] && dispatch_settings_hooks "PostToolUse" "Agent" "$agent_payload" skip_master
     dispatch_settings_hooks "SubagentStop" "ANY" "$INPUT"
     ;;
 esac
