@@ -8,6 +8,7 @@ CORE_YAML="$ROOT/core/core.yaml"
 SETTINGS="$ROOT/.claude/settings.json"
 LOCAL_SETTINGS="$ROOT/.claude/settings.local.json"
 CODEX_ADAPTER="$ROOT/.codex/hooks/hq-codex-hook-adapter.sh"
+CODEX_CONFIG="$ROOT/.codex/config.toml"
 GROK_ADAPTER="$ROOT/.grok/hooks/hq-grok-hook-adapter.sh"
 UPDATE_SKILL="$ROOT/.claude/skills/update-hq/SKILL.md"
 SETUP="$ROOT/core/scripts/setup.sh"
@@ -37,6 +38,21 @@ else
     || fail "stable hq-core must not ship a checkpoint gate override"
 fi
 pass "tracked settings retain SessionStart + PreToolUse hooks without local shadowing"
+
+codex_matcher_is_universal() {
+  local event="$1"
+  awk -v wanted="[[hooks.${event}]]" '
+    $0 == wanted { in_event = 1; next }
+    in_event && /^matcher = "\.\*"$/ { universal = 1 }
+    in_event && /^\[\[/ { exit }
+    END { exit universal ? 0 : 1 }
+  ' "$CODEX_CONFIG"
+}
+for event in PreToolUse PostToolUse; do
+  codex_matcher_is_universal "$event" \
+    || fail "Codex $event matcher must cover provider and plugin-defined tool names"
+done
+pass "Codex tool-hook registrations are open-ended for custom tools"
 
 echo "[1b] company skills use only canonical namespaced reindexing"
 for matcher in Write Edit MultiEdit; do

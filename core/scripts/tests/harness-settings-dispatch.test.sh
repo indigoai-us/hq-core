@@ -16,7 +16,9 @@
 #   both  : PreToolUse/PostToolUse MultiEdit, NotebookEdit
 #           (tool names never emitted; their hook sets are subsets of Edit/Write,
 #            which ARE dispatched, so no guard coverage is lost)
-#   codex : PostToolUse Agent, AskUserQuestion, WebFetch  (no such tool events)
+#   codex : PostToolUse AskUserQuestion, WebFetch  (no such tool events)
+#           Tool events are intentionally open-ended: native/custom tool names
+#           pass through unchanged, with spawn_agent canonicalized to Agent.
 #   codex : Notification event              (unsupported by Codex hooks)
 #   grok  : PostToolUse AskUserQuestion, WebFetch         (no such tool events)
 #           (Agent IS covered: grok spawn_subagent -> Agent-matched hooks)
@@ -43,6 +45,25 @@ cp "$SRC_SETTINGS" "$FIX/.claude/settings.json"
 cp "$SRC_CORE" "$FIX/core/scripts/lib/hook-adapter-core.sh"
 cp "$SRC_CODEX" "$FIX/.codex/hooks/hq-codex-hook-adapter.sh"
 cp "$SRC_GROK" "$FIX/.grok/hooks/hq-grok-hook-adapter.sh"
+
+# Instance-local custom guard: Codex calls this operation `spawn_agent`, while
+# Claude's canonical matcher is `Agent`. Keeping it in the fixture proves both
+# the alias and the general custom-tool dispatch path without adding a shipped
+# policy decision to the release settings.
+jq '.hooks.PreToolUse += [{
+  matcher: "Agent",
+  hooks: [{
+    type: "command",
+    command: "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-subagents \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-subagents.sh\" PreToolUse"
+  }]
+}, {
+  matcher: "company_deny_tool",
+  hooks: [{
+    type: "command",
+    command: "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" custom-json-deny \"$CLAUDE_PROJECT_DIR/.claude/hooks/custom-json-deny.sh\" PreToolUse"
+  }]
+}]' "$FIX/.claude/settings.json" > "$FIX/.claude/settings.json.next"
+mv "$FIX/.claude/settings.json.next" "$FIX/.claude/settings.json"
 : > "$FIX/core/scripts/hook-lib.sh"
 : > "$FIX/core/scripts/migrate-policy-triggers.sh"
 
@@ -59,12 +80,21 @@ if [ "$id" = "journal-autocapture" ]; then
   jt="$(printf '%s' "$payload" | jq -r '.tool_name // empty' 2>/dev/null)"
   { printf 'jtool:%s\n' "$jt" >> "${HQAD_TEST_LOG:-/dev/null}"; } 2>/dev/null || true
 fi
+if [ "$id" = "custom-json-deny" ]; then
+  printf '%s\n' '{"decision":"block","reason":"custom tool denied"}'
+fi
 exit 0
 STUB
 cat > "$FIX/.claude/hooks/master-hook.sh" <<'STUB'
 #!/bin/bash
-cat >/dev/null 2>&1 || true
+payload="$(cat 2>/dev/null || true)"
 { printf 'master:%s\n' "$1" >> "${HQAD_TEST_LOG:-/dev/null}"; } 2>/dev/null || true
+tool="$(printf '%s' "$payload" | jq -r '.tool_name // empty' 2>/dev/null)"
+{ printf 'mtool:%s\n' "$tool" >> "${HQAD_TEST_LOG:-/dev/null}"; } 2>/dev/null || true
+if [ "$1" = "PreToolUse" ] && [ "$tool" = "company_mixed_deny_tool" ]; then
+  printf '%s\n' 'context emitted before the company guard result'
+  printf '%s\n' '{"decision":"block","reason":"mixed company denial"}'
+fi
 exit 0
 STUB
 cat > "$FIX/.claude/hooks/reindex.sh" <<'STUB'
@@ -221,6 +251,59 @@ for spec in \
   assert_combo "grok" "$GROK" "PreToolUse" "$canon" "$gkp"
 done
 
+# Codex's native spawn name must reach Claude's canonical Agent matcher.
+assert_combo "codex" "$CODEX" "PreToolUse" "Agent" \
+  '{"hook_event_name":"PreToolUse","tool_name":"spawn_agent","cwd":"'"$FIX"'","session_id":"t","tool_input":{"task_name":"probe"}}'
+
+# An arbitrary provider/plugin tool name has no canonical alias. It must still
+# reach the unscoped master fan-out unchanged so personal custom hooks can match
+# it by its native name instead of being silently dropped by the adapter.
+custom_payload='{"hook_event_name":"PreToolUse","tool_name":"company_custom_tool","cwd":"'"$FIX"'","session_id":"t","tool_input":{"value":"x"}}'
+custom_recorded="$(run_recorded "$CODEX" "$custom_payload")"
+if printf '%s\n' "$custom_recorded" | grep -q '^master:PreToolUse$'; then
+  pass "codex custom PreToolUse reaches master fan-out"
+else
+  fail "codex custom PreToolUse was dropped before master fan-out"
+fi
+if printf '%s\n' "$custom_recorded" | grep -q '^mtool:company_custom_tool$'; then
+  pass "codex custom PreToolUse preserves its native tool name"
+else
+  fail "codex custom PreToolUse did not preserve its native tool name"
+fi
+
+# A custom PreToolUse hook can deny by returning structured JSON with status 0.
+# The adapter must preserve that as Codex control flow, not flatten or drop it.
+deny_payload='{"hook_event_name":"PreToolUse","tool_name":"company_deny_tool","cwd":"'"$FIX"'","session_id":"t","tool_input":{"value":"x"}}'
+ASSERTED="${ASSERTED}PreToolUse/company_deny_tool
+"
+deny_output="$(HQ_ROOT="$FIX" HQ_ALLOW_HQ_WORKTREE=1 bash "$CODEX" <<<"$deny_payload" 2>/dev/null || true)"
+if printf '%s' "$deny_output" | jq -e '
+  .decision == "block"
+  and .reason == "custom tool denied"
+  and .hookSpecificOutput.hookEventName == "PreToolUse"
+  and .hookSpecificOutput.permissionDecision == "deny"
+  and .hookSpecificOutput.permissionDecisionReason == "custom tool denied"
+' >/dev/null 2>&1; then
+  pass "codex custom PreToolUse preserves structured JSON denial"
+else
+  fail "codex custom PreToolUse swallowed structured JSON denial: $deny_output"
+fi
+
+# The master fan-out can emit plain context before a company hook's compact
+# structured denial. The adapter must recover the trailing control object
+# instead of treating the combined output as harmless display context.
+mixed_deny_payload='{"hook_event_name":"PreToolUse","tool_name":"company_mixed_deny_tool","cwd":"'"$FIX"'","session_id":"t","tool_input":{"value":"x"}}'
+mixed_deny_output="$(HQ_ROOT="$FIX" HQ_ALLOW_HQ_WORKTREE=1 bash "$CODEX" <<<"$mixed_deny_payload" 2>/dev/null || true)"
+if printf '%s' "$mixed_deny_output" | jq -e '
+  .decision == "block"
+  and .reason == "mixed company denial"
+  and .hookSpecificOutput.permissionDecision == "deny"
+' >/dev/null 2>&1; then
+  pass "codex custom PreToolUse preserves denial mixed with master context"
+else
+  fail "codex custom PreToolUse swallowed denial mixed with master context: $mixed_deny_output"
+fi
+
 echo "[PostToolUse tools]"
 for spec in \
   "Bash|Bash|run_terminal_command" \
@@ -238,6 +321,22 @@ for spec in \
   assert_combo "codex" "$CODEX" "PostToolUse" "$canon" "$cxp"
   assert_combo "grok" "$GROK" "PostToolUse" "$canon" "$gkp"
 done
+
+# The same open-ended contract applies after tool execution. A Codex
+# spawn_agent PostToolUse event is only a launch acknowledgement, so keep its
+# native name and do not send it through completed-Agent result hooks.
+custom_post_payload='{"hook_event_name":"PostToolUse","tool_name":"company_custom_tool","cwd":"'"$FIX"'","session_id":"t","tool_input":{"value":"x"},"tool_response":{"ok":true}}'
+custom_post_recorded="$(run_recorded "$CODEX" "$custom_post_payload")"
+if printf '%s\n' "$custom_post_recorded" | grep -q '^master:PostToolUse$'; then
+  pass "codex custom PostToolUse reaches master fan-out"
+else
+  fail "codex custom PostToolUse was dropped before master fan-out"
+fi
+if printf '%s\n' "$custom_post_recorded" | grep -q '^mtool:company_custom_tool$'; then
+  pass "codex custom PostToolUse preserves its native tool name"
+else
+  fail "codex custom PostToolUse did not preserve its native tool name"
+fi
 
 # Plan sync: codex update_plan -> ExitPlanMode. (Grok has no plan tool — exception.)
 assert_combo "codex" "$CODEX" "PostToolUse" "ExitPlanMode" \
@@ -270,6 +369,42 @@ assert_journal_tool "grok spawn_subagent" "$GROK" \
   '{"hookEventName":"PostToolUse","toolName":"spawn_subagent","cwd":"'"$FIX"'","sessionId":"t","toolInput":{"prompt":"x"}}' "Agent"
 assert_journal_tool "codex web_search" "$CODEX" \
   '{"hook_event_name":"PostToolUse","tool_name":"web_search","cwd":"'"$FIX"'","session_id":"t","tool_input":{"query":"x"}}' "WebSearch"
+codex_spawn_post='{"hook_event_name":"PostToolUse","tool_name":"spawn_agent","cwd":"'"$FIX"'","session_id":"t","tool_input":{"task_name":"probe"},"tool_response":{"agent_id":"agent-1","task_name":"probe","status":"running"}}'
+codex_spawn_post_recorded="$(run_recorded "$CODEX" "$codex_spawn_post")"
+if printf '%s\n' "$codex_spawn_post_recorded" | grep -q '^jtool:'; then
+  fail "codex spawn acknowledgement was journaled as a completed Agent result"
+else
+  pass "codex spawn acknowledgement bypasses completed-Agent journaling"
+fi
+if printf '%s\n' "$codex_spawn_post_recorded" | grep -q '^mtool:spawn_agent$'; then
+  pass "codex spawn acknowledgement preserves native tool_name for master hooks"
+else
+  fail "codex spawn acknowledgement did not preserve native tool_name"
+fi
+
+codex_subagent_stop='{"hook_event_name":"SubagentStop","cwd":"'"$FIX"'","session_id":"t","agent_id":"agent-1","agent_type":"explorer","last_assistant_message":"completed result"}'
+codex_subagent_stop_recorded="$(run_recorded "$CODEX" "$codex_subagent_stop")"
+if printf '%s\n' "$codex_subagent_stop_recorded" | grep -q '^jtool:Agent$'; then
+  pass "codex SubagentStop journals a completed Agent result"
+else
+  fail "codex SubagentStop did not journal a completed Agent result"
+fi
+if [ "$(printf '%s\n' "$codex_subagent_stop_recorded" | grep -c '^master:SubagentStop$' || true)" = "1" ]; then
+  pass "codex SubagentStop still runs its master fan-out exactly once"
+else
+  fail "codex SubagentStop did not run its master fan-out exactly once"
+fi
+
+master_tool_for() { # <adapter> <payload>
+  run_recorded "$1" "$2" | grep '^mtool:' | sed 's/^mtool://' | head -1
+}
+spawn_master_tool="$(master_tool_for "$CODEX" \
+  '{"hook_event_name":"PreToolUse","tool_name":"spawn_agent","cwd":"'"$FIX"'","session_id":"t","tool_input":{"task_name":"probe"}}')"
+if [ "$spawn_master_tool" = "Agent" ]; then
+  pass "codex spawn_agent forwards canonical tool_name=Agent to master hooks"
+else
+  fail "codex spawn_agent forwarded tool_name='$spawn_master_tool' (want Agent) to master hooks"
+fi
 
 # --------------------------------------------------------------------------
 # 3. Completeness check — every (event x tool-matcher) pair in settings.json is
@@ -280,7 +415,8 @@ echo "[matrix completeness]"
 # Runtime-agnostic exceptions the adapters genuinely cannot express, keyed by
 # "<event>/<tool>". Prints the reason (returns 0) for a declared exception, else
 # returns 1. Bash-3.2 safe (no associative arrays — HQ supports macOS system
-# bash). WebSearch/Agent are NOT here: they are exercised by assert_combo above.
+# bash). WebSearch and Agent are exercised above (Codex for Agent PreToolUse;
+# Grok for the completed Agent PostToolUse lifecycle).
 exception_reason() {
   case "$1" in
     PreToolUse/EnterPlanMode) echo "no native plan-mode entry tool in codex/grok" ;;

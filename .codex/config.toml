@@ -28,7 +28,7 @@ timeout = 30
 statusMessage = "Routing HQ prompt"
 
 [[hooks.PreToolUse]]
-matcher = "Bash|apply_patch|Edit|Write|Read|Grep|Glob"
+matcher = ".*"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
@@ -37,7 +37,7 @@ timeout = 30
 statusMessage = "Checking HQ safety rails"
 
 [[hooks.PostToolUse]]
-matcher = "Bash|apply_patch|Edit|Write|update_plan|web_search"
+matcher = ".*"
 
 [[hooks.PostToolUse.hooks]]
 type = "command"
