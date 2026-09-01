@@ -44,6 +44,8 @@
 #           - Otherwise the JSON outputs are shallow-merged in order; later
 #             keys overwrite earlier. hookSpecificOutput.updatedInput is
 #             merged the same way (later wins) so chained transforms compose.
+#             hookSpecificOutput.additionalContext is the exception: non-empty
+#             values compose in hook order, separated by a blank line.
 #   - Exit code: first non-zero exit, else 0.
 
 set -uo pipefail
@@ -246,9 +248,20 @@ elif [ ${#json_outputs[@]} -gt 1 ]; then
   else
     printf '%s\n' "${json_outputs[@]}" | jq -sc '
       reduce .[] as $h ({};
-        . * $h
-        | if (.hookSpecificOutput? and $h.hookSpecificOutput?)
-          then .hookSpecificOutput = (.hookSpecificOutput * $h.hookSpecificOutput)
+        . as $previous
+        | . * $h
+        | if ($previous.hookSpecificOutput? != null or $h.hookSpecificOutput? != null)
+          then
+            (($previous.hookSpecificOutput // {}) * ($h.hookSpecificOutput // {})) as $merged
+            | ([
+                 $previous.hookSpecificOutput.additionalContext?,
+                 $h.hookSpecificOutput.additionalContext?
+               ] | map(select(type == "string" and length > 0))) as $contexts
+            | .hookSpecificOutput =
+                (if ($contexts | length) > 0
+                 then $merged + {additionalContext: ($contexts | join("\n\n"))}
+                 else $merged | del(.additionalContext)
+                 end)
           else .
           end)
     '

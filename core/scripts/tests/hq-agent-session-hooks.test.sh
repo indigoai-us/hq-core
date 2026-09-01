@@ -140,7 +140,28 @@ SRC="$(echo "$HOUT" | jq -r '.hookSpecificOutput.hqSessionBlockedBy')"
 echo "$SRC" | grep -q '00-block.sh' || fail "first block should win: $SRC"
 pass "two-block first wins with provenance"
 
-# ── 5. non-zero non-block does not abort ────────────────────────────────────
+# ── 5. hook contexts compose in dispatch order ─────────────────────────────
+cat > "$FIXTURE/core/hooks/SessionStart/10-context-a.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"topLevelPrecedence":"first","hookSpecificOutput":{"additionalContext":"context from hook A","precedence":"first"}}'
+EOF
+cat > "$FIXTURE/core/hooks/SessionStart/20-context-b.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"topLevelPrecedence":"second","hookSpecificOutput":{"additionalContext":"context from hook B","precedence":"second"}}'
+EOF
+chmod +x "$FIXTURE/core/hooks/SessionStart/"*.sh
+SESSION_START_PAYLOAD="$(jq -nc --arg sid "context-merge-test" '{session_id:$sid,hook_event_name:"SessionStart"}')"
+HOUT="$(printf '%s' "$SESSION_START_PAYLOAD" | bash "$FIXTURE/.claude/hooks/master-hook.sh" SessionStart)"
+CONTEXT="$(echo "$HOUT" | jq -r '.hookSpecificOutput.additionalContext')"
+[ "$CONTEXT" = $'context from hook A\n\ncontext from hook B' ] \
+  || fail "SessionStart contexts did not compose in order: $HOUT"
+PRECEDENCE="$(echo "$HOUT" | jq -r '.hookSpecificOutput.precedence')"
+[ "$PRECEDENCE" = "second" ] || fail "later hook value did not win: $HOUT"
+TOP_LEVEL_PRECEDENCE="$(echo "$HOUT" | jq -r '.topLevelPrecedence')"
+[ "$TOP_LEVEL_PRECEDENCE" = "second" ] || fail "later top-level value did not win: $HOUT"
+pass "SessionStart contexts compose while other values retain later-wins behavior"
+
+# ── 6. non-zero non-block does not abort ────────────────────────────────────
 rm -f "$FIXTURE/companies/indigo/hooks/UserPromptSubmit/00-block.sh" \
   "$FIXTURE/companies/indigo/hooks/UserPromptSubmit/01-block-b.sh"
 cat > "$FIXTURE/companies/indigo/hooks/UserPromptSubmit/00-fail.sh" <<'EOF'
@@ -156,7 +177,7 @@ OUT="$(req | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/e3")" || R
 echo "$OUT" | jq -e '.disposition == "reply"' >/dev/null || fail "should complete: $OUT"
 pass "non-zero non-block continues"
 
-# ── 6. updatedInput replaces user.txt ───────────────────────────────────────
+# ── 7. updatedInput replaces user.txt ───────────────────────────────────────
 cat > "$FIXTURE/companies/indigo/hooks/UserPromptSubmit/05-update.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' '{"hookSpecificOutput":{"updatedInput":"REPLACED_USER_TEXT"}}'
@@ -170,7 +191,7 @@ RD="$(echo "$OUT" | jq -r .runDir)"
 grep -q 'REPLACED_USER_TEXT' "$RD/user.txt" || fail "user.txt not updated: $(cat "$RD/user.txt")"
 pass "updatedInput replaces user.txt"
 
-# ── 7. bootstrap survives a foreign session id in the environment ───────────
+# ── 8. bootstrap survives a foreign session id in the environment ───────────
 # An agent session spawned from inside another session inherits that parent's
 # session id. hq-session.sh resolves "current session" from the environment, so
 # the post-bootstrap verify must be pinned to this run — unpinned it reads the

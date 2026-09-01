@@ -195,6 +195,8 @@ jobs:
           fetch-depth: 0
       - name: /setup installs missing tools directly (no tool-choice prompt)
         run: bash core/scripts/tests/setup-skill-direct-install.test.sh
+      - name: Setup completeness checklist and SessionStart nag
+        run: bash core/scripts/tests/setup-completeness-nag.test.sh
 
   worktree-gc:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
