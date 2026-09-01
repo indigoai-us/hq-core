@@ -146,6 +146,10 @@ workspace/.context-warnings/
 workspace/.hook-launch-warnings/
 workspace/.autocommit-warnings/
 
+# Setup-completeness reminder throttle and lock are machine-local runtime state.
+.claude/state/setup-completeness-nag.last
+.claude/state/setup-completeness-nag.lock/
+
 # hq-kit-app engine state (SQLite WAL, release tarball cache, engine logs).
 # Belt-and-suspenders: the /repos/ line above already excludes the whole clone,
 # but hq-kit-app is referenced enough in HQ flows (orchestrator, /kit) that
