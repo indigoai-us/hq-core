@@ -188,3 +188,4 @@ workspace/orchestrator/policy-trigger-state/
 workspace/orchestrator/hook-state/
 workspace/.hq-update-check/
 /workspace/sessions/
+/workspace/

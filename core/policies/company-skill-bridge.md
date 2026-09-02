@@ -1,7 +1,7 @@
 ---
 id: company-skill-bridge
 title: Company skills are registered before authoring and synced by immutable identity
-when: company skill || SKILL.md
+when: (company && skill) || skill.md
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: hard
 version: 1

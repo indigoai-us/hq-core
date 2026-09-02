@@ -1,8 +1,8 @@
 ---
 id: hq-prefer-native-capabilities
 title: Prefer HQ-native capabilities over runtime-native surfaces for sharing and secrets
-when: always || artifact || canvas || share || deploy || publish || present || secret || credential || token
-on: [SessionStart, UserPromptSubmit, AssistantIntent]
+when: artifact || canvas || share || deploy || publish || present || secret || credential || token
+on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 tier: 1
 version: 2
