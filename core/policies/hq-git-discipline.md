@@ -28,171 +28,106 @@ merged_at: 2026-04-27
 
 ## Rule
 
-Verify branch + pull before commit; explicit paths (no `git add -A` with drift); `git checkout -- .` is destructive (not a probe); never push HQ; preserve WIP before reflog gc. Thirteen hard rules below; soft-enforcement git policies live in separate files (see Related).
+Verify branch + pull before commit; explicit paths (no `git add -A` with drift); `git checkout -- .` is destructive, not a probe; never push HQ; preserve WIP before reflog gc.
 
 ### 1. Verify branch before committing
 
-ALWAYS run `git branch --show-current` before committing to any repo. Never assume the current branch — inherited cwd or package installs can silently land you on an unintended branch. Recovery if wrong: create the correct branch, cherry-pick the commit, revert from the wrong branch.
+ALWAYS run `git branch --show-current` before committing. Never assume the current branch — inherited cwd or package installs can silently land you on an unintended one.
 
 ### 2. Pull latest before starting repo work
 
-ALWAYS `git fetch origin` then check `git rev-list --count HEAD..origin/<branch>` before making changes. If `> 0`, pull (or merge) before proceeding. If pull fails due to local changes, stash first (rule 13). For repos significantly behind origin (50+ commits), prefer merge over rebase. A `{your-project}` session in 2026-03-21 built a control plane on a local main 372 commits behind origin/main — merge produced 21 conflicted files that took hours; a session-start `git pull` would have cost 10 seconds.
+ALWAYS `git fetch origin`, then check `git rev-list --count HEAD..origin/<branch>`. If `> 0`, pull or merge before changing anything. If the pull fails on local changes, stash first (rule 13). For repos 50+ commits behind, prefer merge over rebase.
 
 ### 3. Create `.gitignore` before first commit in new projects
 
-ALWAYS create `.gitignore` (with `node_modules/`, `.next/`, `.vercel/`, build artifacts) BEFORE running `git init && git add -A && git commit`. If build artifacts enter git history, GitHub rejects pushes for files >100 MB and the only fix is nuking `.git` and reinitializing. On a research project, `npm install` ran before `git init` and the first commit captured `next-swc.darwin-arm64.node` (100.35 MB), forcing full repo reinitialization.
+ALWAYS write `.gitignore` (`node_modules/`, `.next/`, `.vercel/`, build artifacts) BEFORE `git init && git add -A && git commit`. Build artifacts in history mean GitHub rejects the push above 100 MB, and the only fix is nuking `.git`.
 
 ### 4. Never push HQ to a remote
 
-NEVER push HQ data to any remote repository. HQ is local-only. The `origin` remote (`indigoai-us/hq`) is used only for PULLING upstream updates. Only push repos inside `repos/` — never the HQ root. HQ contains private company credentials, projects, and orchestrator state that must not leave the local machine.
+NEVER push HQ to any remote. HQ is local-only; `origin` (`indigoai-us/hq`) is for PULLING upstream updates. Only repos inside `repos/` get pushed — never the HQ root. HQ holds private company credentials, projects, and orchestrator state.
 
 ### 5. Stage focused commits with explicit paths — no `git add -A` when drift exists
 
-Before committing a focused deliverable (PRD, policy, infra file, feature code), run `git status --short`. If unrelated modifications, untracked files, or submodule pointer drift exist alongside the intended change, stage **only the intended paths**:
+Run `git status --short` first. If unrelated modifications, untracked files, or submodule pointer drift sit alongside the intended change, stage **only the intended paths**:
 
 ```bash
-git add path/one path/two path/three
-git commit -m "..."
+git add path/one path/two && git commit -m "..."
 ```
 
-NEVER use `git add -A`, `git add .`, or `git add -u` when drift the commit shouldn't address is present. If drift is itself worth committing, commit it separately — one concern per commit. For submodule / knowledge-repo pointer drift (e.g. `m companies/{co}/tools/chart-renderer`), check whether it represents in-progress upstream work before staging.
-
-**Concurrent-session caveats.** If another session is editing the same repo, the working tree can change between `git add` and `git commit`:
-
-1. Verify commit content with `git show <sha>:<path>` (reads commit object directly, not the working tree).
-2. `git stash push --include-untracked -m "<label>" -- <paths>` to isolate before staging; pop after.
-
-**Vercel-build side effects.** `vercel build` mutates `next-env.d.ts`, `package-lock.json`, `.next/`, `.vercel/output/`, `tsconfig.tsbuildinfo`. Always use explicit `git add <path>` after a local build — `git add -A` rides those artifacts into the diff and can silently downgrade dep pins via lockfile drift.
+NEVER `git add -A`, `git add .`, or `git add -u` when drift the commit shouldn't address is present — commit that separately, one concern per commit. After a local `vercel build`, explicit paths are mandatory: it mutates `next-env.d.ts`, `package-lock.json`, `.next/`, `.vercel/output/`, `tsconfig.tsbuildinfo`, and `-A` rides those in and can silently downgrade dep pins. If another session shares the repo, verify with `git show <sha>:<path>` (reads the commit object, not the tree).
 
 ### 6. `git checkout {branch} -- .` is NOT a read-only probe
 
-`git checkout {branch} -- .` **overwrites your current working tree** with every file from `{branch}`, leaving HEAD pointing at your original branch. The result is a staged undo of every committed-and-pushed change that differs between the two branches — invisible from the commit graph alone.
-
-To inspect another branch without switching:
-
-```bash
-git show main:path/to/file              # single file content
-git diff main..HEAD -- path/to/file     # diff without modifying tree
-git diff --name-only main..HEAD         # list of differing files
-git worktree add /tmp/main-check main   # full-tree scratch space
-```
-
-To compare lint/build between branches: `git stash -u && git switch main && npm run lint && git switch - && git stash pop`.
-
-**Recovery if accidentally run.** Verify HEAD with `git rev-parse HEAD`; verify origin with `git rev-parse origin/{branch}`; if both intact, `git reset --hard HEAD` restores cleanly. If local has unpushed commits, confirm they're in `git reflog` first — `checkout -- .` only touches the working tree, never commits.
-
-The path form (`-- <pathspec>`) is a write operation dressed up as a read. When you catch yourself typing `git checkout {something} -- .`, STOP.
+The path form **overwrites your working tree** with every file from `{branch}` while HEAD stays put — a staged undo of every pushed change differing between the two, invisible from the commit graph. It is a write dressed up as a read. When you catch yourself typing `git checkout {something} -- .`, STOP. Read another branch with `git show main:<path>`, `git diff main..HEAD -- <path>`, or `git worktree add /tmp/check main` instead.
 
 ### 7. `git filter-repo --replace-text` requires explicit case variants
 
-`git filter-repo --replace-text` does exact literal matching. A rule for `secret-name` does NOT match `Secret-Name` or `SECRET-NAME`. ALWAYS add explicit replacement rules for every case variant of every term:
-
-```
-literal:term==>
-literal:Term==>
-literal:TERM==>
-```
-
-During a v9.0.0 history scrub, a lowercase-only first pass left 65 hits; the second pass needed 29 additional case variants (74 total rules) to fully scrub.
+`--replace-text` matches literally: a rule for `secret-name` does NOT match `Secret-Name` or `SECRET-NAME`. ALWAYS add a rule per case variant of every term (`literal:term==>`, `literal:Term==>`, `literal:TERM==>`).
 
 ### 8. Bulk archive/rename — single commit for rename detection
 
-ALWAYS stage bulk archive/rename operations as a single commit so git's rename detection produces `R100` records, preserving `git log --follow` history:
+Stage both sides of a bulk move in ONE commit so rename detection emits `R100` and `git log --follow` survives:
 
 ```bash
-mv companies/{old}/projects/{slug} companies/{old}/projects/_archive/{slug}
-git add -u companies/{old}/projects/{slug}          # the deletion
-git add companies/{old}/projects/_archive/{slug}    # the addition
-git commit -m "archive: move {slug} to _archive/"   # both sides in ONE commit
+mv {src} {dest}
+git add -u {src} && git add {dest}
+git commit -m "archive: move {slug} to _archive/"
 ```
 
-Anti-patterns that destroy history:
-
-- **Two separate commits** (deletion-commit then addition-commit) — rename detection runs per-commit and cannot bridge them.
-- **`cp -r` + `rm -r`** instead of `mv` — breaks inode continuity.
-- **`git mv` in a loop across thousands of files** — slow and occasionally mis-stages.
-
-For >10k-file renames, bump `git config diff.renameLimit 999999` for the commit; never disable detection.
+NEVER split the deletion and addition across two commits (detection runs per-commit and cannot bridge them), and never substitute `cp -r` + `rm -r` for `mv`. For >10k files, raise `git config diff.renameLimit 999999` — never disable detection.
 
 ### 9. Verify merges via raw plumbing, not shell-wrapper `git log`
 
-The HQ shell wrapper for `git log` (and oh-my-zsh git aliases) filter merge commits out of the default display. `git log --oneline -20` showing only regular commits does NOT prove a merge didn't land — it may exist on HEAD but be hidden.
-
-When verifying a merge landed, ALWAYS use plumbing that bypasses aliases:
-
-```bash
-git rev-parse HEAD
-git cat-file -p HEAD | head -5    # two `parent` lines = merge commit
-# or
-git log -1 --pretty=raw HEAD      # raw, always shows parents
-git log --merges -5               # merges-only, bypasses default filter
-```
-
-NEVER conclude "the merge didn't land" from a filtered `git log --oneline`. This produced at least one false-negative during swarm-mode branch validation where the orchestrator re-tried a merge that had already succeeded.
+The HQ `git log` wrapper and oh-my-zsh aliases filter merge commits out of the default display, so a clean `git log --oneline -20` does NOT prove a merge is absent. Verify with plumbing that bypasses aliases — `git cat-file -p HEAD` (two `parent` lines = merge), `git log -1 --pretty=raw HEAD`, or `git log --merges -5`. NEVER conclude "the merge didn't land" from a filtered `git log --oneline`.
 
 ### 10. Detached-HEAD + push refspec from worktrees with active chips
 
-When committing to a specific branch from a worktree where spawned-task chips may be active, use detached-HEAD + push refspec in a single bash invocation:
+When committing from a worktree where spawned-task chips may be active, pin the commit to a SHA and push it by refspec in one invocation:
 
 ```bash
-git checkout --detach origin/{target} && {edits or cherry-pick} && git push origin HEAD:{target}
+git checkout --detach origin/{target} && {edits} && git push origin HEAD:{target}
 ```
 
-NEVER rely on `git checkout {branch} && git commit && git push origin {branch}` when chips are active — a chip can swap the branch back mid-stream, silently landing the commit on the wrong branch and turning the push into a no-op (because `HEAD` now points at whatever branch the chip restored). The detached-HEAD form pins the commit to a SHA and the explicit `HEAD:{target}` refspec forwards that SHA directly to the remote, neither step depending on the local branch pointer surviving concurrent mutation. Composes safely with `isolation: "worktree"` chips — last-line safety net if isolation fails or isn't used.
+NEVER use `git checkout {branch} && git commit && git push origin {branch}` there — a chip can swap the branch mid-stream, landing the commit on the wrong branch and making the push a silent no-op.
 
 ### 11. Preserve at-risk WIP before `reflog expire --all` or `gc --prune=now`
 
-`git reflog expire --all` expires the reflog for *every* ref — including the synthetic `refs/stash`. Once gone, `git stash list` returns empty and the stash commits become unreachable; a subsequent `git gc --prune=now` deletes them. ALWAYS protect WIP first:
-
-1. Promote stashes to real branches:
-   ```bash
-   git stash list | awk -F: '{print $1}' | while read s; do
-     git stash branch "rescue/${s//[\/]/-}" "$s" || true
-   done
-   ```
-2. Or scope expiration to specific refs:
-   ```bash
-   git reflog expire --expire=now HEAD
-   git reflog expire --expire=now refs/heads/main
-   ```
-3. NEVER chain `reflog expire --all` with `gc --prune=now` without first verifying every stash has a corresponding branch (`git branch --list 'rescue/*'`).
-
-The `--all` flag's blast radius is non-obvious: stashes look like a separate data structure in porcelain (`git stash list`), but plumbing-wise they are reflog entries on `refs/stash`. The same `--all` that "cleans up old branch reflogs" wipes the stash reflog with no prompt.
+`reflog expire --all` expires *every* ref's reflog including the synthetic `refs/stash`, making stash commits unreachable; a following `gc --prune=now` deletes them. Protect WIP first — promote stashes to branches (`git stash branch`), or scope expiry to named refs (`git reflog expire --expire=now refs/heads/main`). NEVER chain `reflog expire --all` into `gc --prune=now` without confirming every stash has a branch.
 
 ### 12. Verify blob hash before resetting a staged-deletion + untracked pair
 
-When `git status` shows the confusing pair:
-
-```
-D  src/index.ts          # staged deletion
-?? src/index.ts          # same path, now untracked
-```
-
-DO NOT reach for `git checkout HEAD -- <path>` or `git reset --hard` — both are destructive. Verify whether the on-disk blob still matches HEAD first:
-
-```bash
-git ls-tree HEAD -- src/index.ts | awk '{print $3}'   # HEAD blob hash
-git hash-object src/index.ts                          # current on-disk hash
-```
-
-- **Hashes match** → someone ran `git rm --cached <path>`. File is unchanged on disk; only the index entry was dropped. Non-destructive fix:
-  ```bash
-  git reset HEAD -- src/index.ts
-  ```
-- **Hashes differ** → file was truly modified. Only then consider `git checkout` or manual merge, knowing on-disk content will change.
-
-`git reset HEAD -- <path>` when hashes match is idempotent and loses zero work. Same principle as rule 6: verify state before invoking an operation that writes.
+When `git status` shows the same path as both `D` (staged deletion) and `??` (untracked), DO NOT reach for `git checkout HEAD -- <path>` or `git reset --hard` — both are destructive. Compare `git ls-tree HEAD -- <path>` against `git hash-object <path>` first. Hashes match → it was `git rm --cached`; `git reset HEAD -- <path>` is idempotent and loses nothing. Hashes differ → the file really changed; only then consider a write. Same principle as rule 6: verify state before invoking an operation that writes.
 
 ### 13. `git stash push -u` to land focused PRs while WIP exists
 
-When you need to land a single-concern PR while uncommitted WIP exists, ALWAYS use `git stash push -u -m "<label>"` to capture both modified AND untracked files, then:
+To land a single-concern PR while uncommitted WIP exists: `git stash push -u -m "wip-<context>"`, branch from the clean tree, make the targeted edit, commit, push, open the PR, then `git stash pop`. The `-u` is the difference between saving your modified files and saving your whole working state — untracked fixtures and scratch scripts are lost without it. NEVER bundle unrelated WIP into a "while I'm in here" PR; a focused diff must contain exactly what its title describes, or revert safety breaks.
 
-1. `git stash push -u -m "wip-<context>"` — captures everything
-2. Branch from the now-clean tree, make the targeted edit, commit, push, open the PR
-3. `git checkout <previous-branch>` (or stay on the new branch if appropriate)
-4. `git stash pop` — restores the WIP intact
+## Examples
 
-NEVER bundle unrelated WIP into a "fix the test suite" / "while I'm in here" PR. A focused PR's diff must contain exactly the change its title describes — bundling collapses signal-to-noise for review and breaks revert safety. The `-u` flag is the difference between "saved my modified files" and "saved my entire working state" — untracked files (new test fixtures, scratch scripts, generated artifacts) are silently lost without it. A labeled stash entry (`-m`) makes recovery unambiguous when multiple stashes accumulate.
+Extended recovery procedures and the incidents each rule was paid for.
+
+**Rule 1 recovery.** Committed on the wrong branch: create the correct branch, cherry-pick the commit onto it, revert it from the wrong branch.
+
+**Rule 2.** A 2026-03-21 session built a control plane on a local main 372 commits behind origin/main; the merge produced 21 conflicted files and took hours. A session-start `git pull` would have cost 10 seconds.
+
+**Rule 3.** On a research project `npm install` ran before `git init`, so the first commit captured `next-swc.darwin-arm64.node` (100.35 MB) and the repo had to be reinitialized from scratch.
+
+**Rule 5.** For submodule / knowledge-repo pointer drift (e.g. `m companies/{co}/tools/chart-renderer`), check whether it represents in-progress upstream work before staging. To isolate before staging under concurrent edits: `git stash push --include-untracked -m "<label>" -- <paths>`, then pop after.
+
+**Rule 6 recovery.** Verify `git rev-parse HEAD` and `git rev-parse origin/{branch}`; if both are intact, `git reset --hard HEAD` restores cleanly. With unpushed commits, confirm they are in `git reflog` first — `checkout -- .` only touches the working tree, never commits. To compare lint/build across branches: `git stash -u && git switch main && npm run lint && git switch - && git stash pop`.
+
+**Rule 7.** A v9.0.0 history scrub left 65 hits after a lowercase-only first pass; the second pass needed 29 additional case variants (74 rules total).
+
+**Rule 11.** Promote every stash to a branch before expiring:
+
+```bash
+git stash list | awk -F: '{print $1}' | while read s; do
+  git stash branch "rescue/${s//[\/]/-}" "$s" || true
+done
+git branch --list 'rescue/*'    # verify before gc
+```
+
+The blast radius is non-obvious: stashes look like a separate structure in porcelain, but are reflog entries on `refs/stash`. The same `--all` that cleans up old branch reflogs wipes them with no prompt.
 
 ## Rationale
 

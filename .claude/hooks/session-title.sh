@@ -97,13 +97,46 @@ if [ -f "$CONFIG_HELPER" ]; then
   [ "${cfg_line#desktop_autoname=}" = "respect" ] && DESKTOP_AUTONAME="respect"
 fi
 
+hq_title_grammar() {
+  # Does TITLE ($1) follow the HQ title grammar — "{icon} {CAT} · {subject}"?
+  #
+  # This is the load-bearing ownership test now that titles are also set
+  # mid-session by the model via set_session_title. Those titles are HQ's, but
+  # they are by design NOT in either ledger (the hook never computed them), so
+  # a ledger-only test read them as a manual rename and permanently disabled
+  # titling for the session. A human rename is free-form prose ("AGI book
+  # translations"); it does not carry a SHOUTCASE category token followed by a
+  # middot separator.
+  #
+  # Defined up here, rather than beside its sibling helpers further down,
+  # because the stale-mute heal below runs before those definitions.
+  printf '%s' "$1" | grep -qE '^([^ ]+ )?[A-Z][A-Z0-9]{1,7} · .+'
+}
+
 # --- manual-rename back-off (BEGIN) -----------------------------------------
 # Permanent back-off once a manual title has been detected for this session.
 # Refresh the marker's mtime on the way out so a long-lived named session is
 # never swept by another session's 14-day prune below.
 if [ -f "$MANUAL" ]; then
-  touch "$MANUAL" 2>/dev/null || true
-  exit 0
+  # Stale-mute heal. Sessions muted by the withheld-free-pass bug (see
+  # ignore_desktop_autoname) carry a .manual marker with NO .autoname sibling —
+  # the pass was never granted, so nothing recorded why the session was muted.
+  # If such a session is currently showing a title in HQ grammar, the mute was
+  # provably wrong (a real manual rename is free-form prose), so clear it and
+  # let HQ resume naming. A mute with an .autoname sibling was a genuine second
+  # rename and is left alone.
+  healed=0
+  if [ ! -f "$AUTONAME" ] && [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+    live="$(grep -F '"custom-title"' "$TRANSCRIPT" 2>/dev/null | tail -n 1 |
+            hq_json_get 'customTitle')"
+    if [ -n "$live" ] && hq_title_grammar "$live"; then
+      rm -f "$MANUAL" 2>/dev/null && healed=1
+    fi
+  fi
+  if [ "$healed" != "1" ]; then
+    touch "$MANUAL" 2>/dev/null || true
+    exit 0
+  fi
 fi
 # --- manual-rename back-off (END) -------------------------------------------
 
@@ -170,21 +203,72 @@ if [ "$EVENT" = "UserPromptSubmit" ] && [ -n "$PROMPT" ]; then
   [ -n "$detected" ] && command="$detected"
 fi
 
-title="$("$HELPER" --session-id "$SESSION_ID" --command "$command" 2>/dev/null || true)"
-[ -n "$title" ] || exit 0
+# --- project-marker wait (BEGIN) --------------------------------------------
+# The auto-session-project hook (also UserPromptSubmit) writes the session's
+# project marker, but hooks in one event run in PARALLEL — computing the title
+# here often loses that race on the very first prompt and emits a projectless
+# stub ("HQ", "chat"). Wait briefly for the marker, once per session, so the
+# first emitted title already carries the project. The once-flag keeps
+# projectless sessions from paying the wait on every prompt.
+PROJ_MARKER="$STATE_DIR/auto-session-project-${SESSION_KEY}"
+PROJWAIT="$STATE.projwait"
+if [ "$EVENT" = "UserPromptSubmit" ] && [ ! -f "$PROJ_MARKER" ] && [ ! -f "$PROJWAIT" ]; then
+  : > "$PROJWAIT" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -f "$PROJ_MARKER" ] && break
+    sleep 0.1
+  done
+fi
+# --- project-marker wait (END) ----------------------------------------------
 
-hq_title_grammar() {
-  # Does TITLE ($1) follow the HQ title grammar — "{icon} {CAT} · {subject}"?
-  #
-  # This is the load-bearing test now that titles are also set mid-session by
-  # the model via set_session_title. Those titles are HQ's, but they are by
-  # design NOT in either ledger (the hook never computed them), so a
-  # ledger-only ownership test read them as a manual rename and permanently
-  # disabled titling for the session. A human rename is free-form prose
-  # ("AGI book translations"); it does not carry a SHOUTCASE category token
-  # followed by a middot separator.
-  printf '%s' "$1" | grep -qE '^([^ ]+ )?[A-Z][A-Z0-9]{1,7} · .+'
+title="$("$HELPER" --session-id "$SESSION_ID" --command "$command" 2>/dev/null || true)"
+
+# --- first-turn naming nudge (BEGIN) ----------------------------------------
+# Outside the terminal CLI the sessionTitle emitted below never lands: the
+# desktop host keeps its own title store and reads only its auto-titler and the
+# model's set_session_title call. So on the FIRST user prompt of a session (in
+# mode=full) inject an instruction telling the model to name the session now,
+# in HQ grammar, using whatever company/project this hook already resolved. It
+# fires once per session id, never on SessionStart, never once the user has
+# renamed the session (the .manual check above exits first), and never in
+# mode=auto, which is hook-only by definition. It fires even when the computed
+# title is a stub and nothing is emitted — that is exactly the session that
+# would otherwise sit on the host's auto-summary forever.
+NUDGED="$STATE.nudged"
+NUDGE=""
+SESSION_MODE="full"
+if [ -f "$CONFIG_HELPER" ]; then
+  mode_line="$(bash "$CONFIG_HELPER" --root "$HQ_ROOT" 2>/dev/null | grep '^mode=' || true)"
+  [ "${mode_line#mode=}" = "auto" ] && SESSION_MODE="auto"
+fi
+if [ "$EVENT" = "UserPromptSubmit" ] && [ "$SESSION_MODE" = "full" ] && [ ! -f "$NUDGED" ]; then
+  : > "$NUDGED" 2>/dev/null || true
+  hint="none resolved - derive company and subject from the user message"
+  [ -n "$title" ] && hint="$title"
+  NUDGE="HQ session naming (first turn): the host has no HQ-grammar title for this session yet. \
+If a session-rename tool is available (set_session_title, e.g. mcp__ccd_session_mgmt__set_session_title), \
+call it ONCE at the start of this turn, before other work, with a title in HQ grammar \
+'{glyph} {COMPANY} · {Product} · {subject}'. Hook-resolved hint: '${hint}'. Keep the COMPANY token \
+from the hint when present; write a short human subject (roughly 40 characters, prose, not a folder \
+slug) from what the user asked. At most one glyph, chosen per policy hq-session-title-grammar; \
+omit the glyph when none applies. Rename again later only if the subject changes. If no rename \
+tool exists, do nothing and do not mention this."
+fi
+
+emit_json() {
+  # $1 = sessionTitle or "" ; $2 = additionalContext or ""
+  jq -n --arg ev "$EVENT" --arg t "$1" --arg ctx "$2" '{
+    hookSpecificOutput: ({ hookEventName: $ev }
+      + (if $t   != "" then { sessionTitle: $t }        else {} end)
+      + (if $ctx != "" then { additionalContext: $ctx } else {} end))
+  }'
 }
+# --- first-turn naming nudge (END) ------------------------------------------
+
+if [ -z "$title" ]; then
+  [ -n "$NUDGE" ] && emit_json "" "$NUDGE"
+  exit 0
+fi
 
 hq_owned_title() {
   # Is TITLE ($1) one of HQ's own, rather than a user's manual rename?
@@ -210,9 +294,18 @@ ignore_desktop_autoname() {
   # Foreign TITLE ($1) seen VIA ($2: "transcript" when it arrived as a
   # transcript custom-title line). Returns 0 to ignore it as the desktop
   # auto-titler's work; 1 means treat it as a genuine manual rename.
-  # Only a transcript-borne title can claim the one free pass — a launcher
-  # --name arrives via session_title with no matching transcript line and
-  # must keep backing off.
+  #
+  # The free pass normally requires transcript proof, because a launcher
+  # --name also arrives via session_title with no transcript line and must
+  # keep backing off.
+  #
+  # One case cannot supply that proof: a desktop auto-title INHERITED ON
+  # RESUME. It arrives in session_title at SessionStart, when the transcript is
+  # frequently unreadable — the path may be absent, or the title line not yet
+  # flushed. Proof failed, the pass was withheld, and the session was muted
+  # permanently, leaving no .autoname behind to show why. Resumes are therefore
+  # allowed to claim the pass unproven; startup (where --name is the only way a
+  # title can exist before any turn) and every other event still require proof.
   local t="$1" via="${2:-}"
   [ "$DESKTOP_AUTONAME" = "ignore-first" ] || return 1
   if [ -f "$AUTONAME" ] && grep -qxF -- "$t" "$AUTONAME" 2>/dev/null; then
@@ -220,7 +313,9 @@ ignore_desktop_autoname() {
     return 0
   fi
   [ -f "$AUTONAME" ] && return 1   # the free pass is already spent
-  [ "$via" = "transcript" ] || return 1
+  if [ "$via" != "transcript" ]; then
+    [ "$EVENT" = "SessionStart" ] && [ "$SOURCE" = "resume" ] || return 1
+  fi
   printf '%s\n' "$t" > "$AUTONAME" 2>/dev/null || true
   FORCE_EMIT=1
   return 0
@@ -278,16 +373,12 @@ record_emitted() {
 if [ "$title" = "$last_title" ] && [ "$FORCE_EMIT" != "1" ]; then
   record_emitted "$title"
   printf '%s\n%s\n' "$command" "$last_title" > "$STATE" 2>/dev/null || true
+  [ -n "$NUDGE" ] && emit_json "" "$NUDGE"
   exit 0
 fi
 
 record_emitted "$title"
 printf '%s\n%s\n' "$command" "$title" > "$STATE" 2>/dev/null || true
 
-jq -n --arg ev "$EVENT" --arg t "$title" '{
-  hookSpecificOutput: {
-    hookEventName: $ev,
-    sessionTitle: $t
-  }
-}'
+emit_json "$title" "$NUDGE"
 exit 0

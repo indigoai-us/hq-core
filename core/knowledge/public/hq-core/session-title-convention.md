@@ -43,6 +43,24 @@ Each segment is included only when it carries information:
 The title is capped at 44 characters. When over budget, the company segment is
 dropped first (the project implies it).
 
+**Desktop hosts ignore the hook.** Outside the terminal CLI the emitted
+`sessionTitle` never lands — the desktop app keeps its own title store and
+honours only its built-in auto-titler and the assistant's `set_session_title`
+call. So in `mode: full` the hook injects a one-time instruction on the first
+user prompt telling the assistant to name the session right away in HQ grammar,
+carrying whatever company/project the hook resolved. That call is the *only*
+namer on desktop; the emitted title still serves the terminal tab and the
+`/resume` picker.
+
+**No stubs.** When neither a project nor a repo resolves, every remaining
+ingredient is information-free — a bare command word or a lone company token —
+so the helper prints *nothing* and HQ sets no title at all. The host's own
+auto-summary stands instead. This is deliberate: a stub is not merely useless,
+it overwrites a written summary with a word that distinguishes nothing, and
+because the stub never changes, the change-only cadence below would then keep
+the session silent for the rest of its life. As soon as a project or repo does
+resolve, the normal path takes the title back.
+
 ### Examples
 
 ```

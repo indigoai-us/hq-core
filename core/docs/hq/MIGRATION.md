@@ -3,6 +3,71 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.120-beta.7
+
+- **Desktop sessions now get named on the first turn:** outside the terminal
+  CLI the hook's `sessionTitle` never lands — the desktop host keeps its own
+  title store and honours only its auto-titler and the model's
+  `set_session_title` call. The three earlier session-title fixes therefore
+  only ever reached terminal sessions. In `mode: full` the hook now injects a
+  one-time instruction on the first user prompt telling the model to name the
+  session immediately in HQ grammar, carrying the company/project the hook
+  already resolved (or asking it to derive both from the message when nothing
+  resolved). It never fires on SessionStart, in `mode: auto`, or once a session
+  has been renamed by hand. No action needed.
+
+## Release: v15.0.120-beta.4
+
+- **HQ no longer names sessions `chat`:** when the hook could resolve neither a
+  project nor a repo for a session, it emitted whatever was left — a bare
+  command word (`chat`, `startwork`) or a lone org token (`HQ`). That is worse
+  than silence twice over: it overwrites the host's written summary ("HQ core
+  skill cloning") with a word that distinguishes nothing, and because the stub
+  never changes, the wrapper's change-only cadence then keeps the session quiet
+  for the rest of its life. Sessions were sitting on 1281 prompts still titled
+  `chat`. The helper now prints nothing in that state, so the host's own title
+  stands; the moment a project or repo resolves, HQ takes the title back. No
+  action needed, and sessions that already resolve a project are unaffected.
+
+## Release: v15.0.120-beta.4
+
+- **New `/conduct` skill:** orchestrator mode that dispatches every task to a
+  background worker agent on a user-chosen model (grok, opus, gpt, or native
+  Claude opus/sonnet/haiku) so the parent session stays free to accept and
+  route new messages. No migration steps required.
+
+## Release: v15.0.120-beta.3
+
+- **Desktop sessions no longer lose HQ naming permanently:** the one-time free
+  pass that lets HQ ignore Claude Desktop's built-in auto-titler required proof
+  that the title came from the session transcript. A desktop auto-title
+  *inherited on resume* arrives in the `session_title` SessionStart input, when
+  the transcript is often unreadable — the path may be absent, or the title line
+  not yet flushed. Proof failed, the pass was withheld, and the session was
+  muted for good with no `.autoname` file left behind to explain why. Resumes
+  may now claim the pass unproven; `startup` (where `claude --name` is the only
+  way a title can exist before any turn) and all other events still require
+  proof, so `--name` and mid-session `/rename` back off exactly as before.
+
+- **Sessions already muted by that bug now heal themselves:** the manual-rename
+  marker short-circuits before any of the fixed logic runs, so affected sessions
+  would have stayed muted forever. A mute carrying no `.autoname` sibling whose
+  live title is in HQ grammar is provably wrong — a real rename is free-form
+  prose — and is now cleared automatically so naming resumes. Mutes on prose
+  titles, and mutes with a spent free pass (the documented second-rename
+  back-off), are left untouched. No action needed.
+
+## Release: v15.0.120-beta.2
+
+- **First session title no longer drops the project:** `UserPromptSubmit` hooks
+  run in parallel, so the session-title hook regularly computed its title before
+  `auto-session-project` had written the session's project marker. The result
+  was a projectless stub (`HQ`, `chat`) on a session's first prompt that only
+  self-corrected on the following prompt. The hook now waits up to 2s — once per
+  session, guarded by a `.projwait` state flag — for that marker before
+  computing the title. Sessions that resolve no project pay the wait a single
+  time, never per prompt. No configuration change; no action needed.
+
 ## Release: v15.0.117-beta.1
 
 - **Session naming reminder now reaches the assistant:** the session-title
