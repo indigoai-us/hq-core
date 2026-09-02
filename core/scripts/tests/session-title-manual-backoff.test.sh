@@ -187,6 +187,37 @@ emitted "$out" || fail "T5a: resumed desktop auto-title must be ignored and reta
 [ -f "$(state_file S3A).manual" ] && fail "T5a: resumed auto-title must not mark manual"
 ok "T5a resumed session inheriting the desktop auto-title keeps titling"
 
+# ── T5b: resume inheriting the desktop auto-title with NO transcript proof ──
+# The regression this suite previously missed. On resume the transcript is
+# often unreadable — the path may be absent, or the auto-title line not yet
+# flushed — so the origin cannot be proven. Withholding the free pass there
+# muted the session permanently and left no .autoname behind to explain it,
+# which is exactly how live desktop sessions lost HQ naming for good.
+reset_state
+out="$(run_hook "$HOOK" "$(json_start S3B 'Desktop Auto Title' resume)")"
+emitted "$out" ||
+  fail "T5b: an unproven resumed auto-title must still be ignored and retaken"
+[ -f "$(state_file S3B).manual" ] &&
+  fail "T5b: an unproven resumed auto-title must not mute the session"
+[ -f "$(state_file S3B).autoname" ] ||
+  fail "T5b: the spent free pass must be recorded in .autoname"
+# ...and the pass is still only good once: a second, different title is real.
+out="$(run_hook "$HOOK" "$(json_start S3B 'A Different Rename' resume)")"
+emitted "$out" && fail "T5b: a second differing title must back off"
+[ -f "$(state_file S3B).manual" ] || fail "T5b: expected a manual marker"
+ok "T5b unproven resumed auto-title is ignored once, then backs off"
+
+# ── T5c: startup --name with no transcript proof still backs off ────────────
+# The resume allowance must not leak to startup: before any turn has run,
+# `claude --name` is the only way a session_title can exist.
+reset_state
+out="$(run_hook "$HOOK" "$(json_start S3C 'My Hand Written Name' startup)")"
+emitted "$out" && fail "T5c: launcher --name must back off, not be retaken"
+[ -f "$(state_file S3C).manual" ] || fail "T5c: expected a manual marker"
+[ -f "$(state_file S3C).autoname" ] &&
+  fail "T5c: --name must not consume the desktop free pass"
+ok "T5c launcher --name at startup still backs off without transcript proof"
+
 # ── T6: a transcript custom-title HQ itself emitted does NOT back off ───────
 reset_state
 out="$(run_hook "$HOOK" "$(json_start S4)")"          # emits + records "hq · chat"
@@ -316,5 +347,41 @@ emitted "$out" || fail "T15: the pruning session should title normally"
 [ -f "$(state_file SLIVE).manual" ] ||
   fail "T15: a live named session's marker was pruned — its title would be clobbered"
 ok "T15 an active named session's marker survives another session's prune"
+
+# ── T16: stale-mute heal for sessions muted by the withheld free pass ───────
+# Sessions already muted by the T5b bug would stay muted forever, because the
+# marker check short-circuits before any of the fixed logic runs. A mute with
+# NO .autoname sibling and a live title in HQ grammar is provably wrong — a
+# real manual rename is free-form prose — so it is cleared and naming resumes.
+reset_state
+TRH="$TMP/transcript-SHEAL.jsonl"
+custom_title_line '🔧 FIX · Session auto-naming in the app' SHEAL > "$TRH"
+: > "$(state_file SHEAL).manual"
+out="$(run_hook "$HOOK" "$(json_prompt SHEAL 'carry on' '' "$TRH")")"
+[ -f "$(state_file SHEAL).manual" ] &&
+  fail "T16: a wrongly muted session must be healed"
+emitted "$out" || fail "T16: a healed session must resume titling"
+ok "T16 a mute with no autoname and an HQ-grammar title is healed"
+
+# ── T17: the heal must not resurrect a genuine manual rename ────────────────
+# Two guards: free-form prose is a real rename, and a mute carrying an
+# .autoname sibling was the documented second-rename back-off.
+reset_state
+TRP="$TMP/transcript-SPROSE.jsonl"
+custom_title_line 'AGI book translations' SPROSE > "$TRP"
+: > "$(state_file SPROSE).manual"
+out="$(run_hook "$HOOK" "$(json_prompt SPROSE 'carry on' '' "$TRP")")"
+[ -f "$(state_file SPROSE).manual" ] ||
+  fail "T17: a prose title is a real rename and must stay muted"
+emitted "$out" && fail "T17: a genuinely renamed session must not be retitled"
+
+TRG="$TMP/transcript-SGEN.jsonl"
+custom_title_line '🔧 FIX · Session auto-naming in the app' SGEN > "$TRG"
+: > "$(state_file SGEN).manual"
+printf 'Some Earlier Auto Title\n' > "$(state_file SGEN).autoname"
+out="$(run_hook "$HOOK" "$(json_prompt SGEN 'carry on' '' "$TRG")")"
+[ -f "$(state_file SGEN).manual" ] ||
+  fail "T17: a mute with a spent free pass was a real rename and must persist"
+ok "T17 the heal spares prose renames and mutes with a spent free pass"
 
 printf '\nAll %s session-title manual back-off checks passed.\n' "$pass_count"

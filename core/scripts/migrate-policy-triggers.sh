@@ -83,6 +83,18 @@ fi
 ON_LIVE="[PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]"
 ON_START="[SessionStart]"
 
+# A synthesized `when:` is written to disk without a human ever reading it, and
+# the write-time validator does not see a `bash`-authored edit. So every derived
+# expression is checked against the canonical grammar before it lands — a tag
+# token carrying a character outside the identifier charset would otherwise
+# produce a `when:` the evaluator cannot parse, and the policy would never match
+# for the reason it was backfilled.
+EVAL_TRIGGER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/eval-trigger.sh"
+when_parses() {
+  [ -f "$EVAL_TRIGGER" ] || return 0                    # no evaluator -> don't block the backfill
+  [ "$(printf 'x\t%s\n' "$1" | bash "$EVAL_TRIGGER" --check | cut -f2)" = "ok" ]
+}
+
 # Meta / taxonomy tags that classify a policy but never appear as a word in a
 # command, prompt, or AI message — dropping them keeps `when:` to live signals.
 TAG_STOP=" infrastructure consolidated ux safety hq hq-core hq-cli hq-packages \
@@ -170,7 +182,7 @@ build_when() {
   fi
 }
 
-total=0; migrated=0; skipped=0; untriggered=0
+total=0; migrated=0; skipped=0; untriggered=0; unparseable=0
 declare -i n_session=0
 for dir in "${DIRS[@]}"; do
   [ -d "$dir" ] || continue
@@ -189,6 +201,12 @@ for dir in "${DIRS[@]}"; do
       continue
     fi
     IFS=$'\t' read -r WHEN ON <<< "$built"
+    if ! when_parses "$WHEN"; then
+      unparseable=$((unparseable+1))
+      printf 'migrate-policy-triggers: refusing to write unparseable when: %s -> `%s`\n' \
+        "$(basename "$f")" "$WHEN" >&2
+      continue
+    fi
     [ "$ON" = "$ON_START" ] && n_session=$((n_session+1))
 
     if [ "$DRY" = "1" ]; then
@@ -208,5 +226,5 @@ for dir in "${DIRS[@]}"; do
 done
 
 # Quiet in steady state: only report when something was actually backfilled.
-[ "$migrated" -gt 0 ] && echo "migrate-policy-triggers: backfilled $migrated policy trigger(s) ($n_session hard -> SessionStart, $untriggered non-hard triggerless left unchanged, $skipped already had when)" >&2
+[ "$migrated" -gt 0 ] && echo "migrate-policy-triggers: backfilled $migrated policy trigger(s) ($n_session hard -> SessionStart, $untriggered non-hard triggerless left unchanged, $unparseable unparseable derivations skipped, $skipped already had when)" >&2
 exit 0

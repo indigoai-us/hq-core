@@ -110,8 +110,30 @@ when: /brainstorm || /deep-plan        # slash-command tokens
   `_ . / -`, and may start with `.` or `/`. So a filename (`.mcp.json`,
   `settings.json`) or a slash-command (`/brainstorm`) is a single literal token.
 - **Operators:** `&&` (and), `||` (or), `!` (not), `( )` (grouping). Nothing else.
-- **Fail-open:** an empty or malformed/unsafe expression injects the policy
-  rather than silently hiding it (a typo never suppresses a hard rule).
+- **The whole expression must parse.** Two identifiers with nothing between them
+  is malformed, not a shorter expression. `when: merge || pull request` does not
+  mean "merge, or a pull request" — there is no operator before `request`, so it
+  is rejected. Write `merge || (pull && request)`, or pick the single token you
+  meant. Quoted phrases (`when: "gh pr checks"`), flags, globs, and shell sigils
+  are outside the charset and are rejected the same way.
+- **A malformed expression is reported, never silently obeyed.** The evaluator
+  returns "malformed" rather than true or false, and the injector then does the
+  narrowest safe thing:
+  - `enforcement: hard` — injected **once per session** as a baseline (a typo
+    must never suppress a binding rule), with a notice naming the policy and
+    telling you to run `bash core/scripts/lint-policy-triggers.sh`.
+  - `enforcement: soft` or unset — **not injected**, and named in the same
+    notice.
+
+  It is not treated as a match on every event. That older behaviour meant one
+  typo turned a narrow policy into an unconditional one, and a tree with many
+  broken triggers crowded out the policies that genuinely matched.
+- **Author-time and sweep-time checks.** `validate-policy-frontmatter.sh` blocks
+  a malformed `when:` as the file is written;
+  `bash core/scripts/lint-policy-triggers.sh` sweeps an existing tree (which the
+  write hook never saw) and reports every malformed, missing, loose, and
+  oversized trigger at once. `--strict` also exits non-zero on the warn-level
+  findings.
 
 **`on:` selects the evaluation site(s):**
 
@@ -187,7 +209,7 @@ are not treated as commands.
    takes the event from `hook_event_name`, derives facts, and for each in-scope
    policy whose `on:` includes the event evaluates `when:` via
    [`core/scripts/eval-trigger.sh`](../../../scripts/eval-trigger.sh) (exit 0=match,
-   1=skip, 2=fail-open).
+   1=skip, 2=malformed).
 2. **Scope is tenant-safe:** global `core/policies` always; the active company's
    and active repo's policies only when the session is in that company/repo — so
    one tenant's `when: git` never injects during another's session.
@@ -206,7 +228,7 @@ are not treated as commands.
 
 | `enforcement` | What the agent receives |
 |---------------|-------------------------|
-| `hard` | The policy's **entire body** — everything after the closing frontmatter `---`, verbatim, quoted into the `<policy-reminder>` block. Rule, Rationale, Examples, caveats, escape hatches: all of it. |
+| `hard` | The policy's **binding body**, verbatim, quoted into the `<policy-reminder>` block — everything after the closing frontmatter `---`, stopping at the first archival heading. Rule text, exceptions, override env vars, and escape hatches: all of it. |
 | `soft` (or omitted) | **Frontmatter-level only** — the slug plus a single ≤160-char excerpt of the first line of `## Rule`, with a pointer to the file. |
 
 The reason for the split: a hard policy is *binding*, and its binding content is
@@ -216,13 +238,30 @@ further down the file. Paraphrasing a hard rule down to one line is how an agent
 ends up confidently violating it. A soft policy is advisory, so a pointer is
 enough; the agent can open the file when it matters.
 
-**Bounded, and never silently.** Full text is capped by a byte budget across the
-whole injection (`HQ_POLICY_HARD_BUDGET_BYTES`, default 40960), consumed in
-precedence order (company > repo > personal > core) so a tenant's own hard rules
-claim it first. A hard policy that does not fit degrades to the soft one-line
-shape **and is named** in a trailing `Full-text budget … reached` notice, so a
-shortened set can never be misread as the complete text. A hard policy whose file
-is unreadable or has no body degrades the same way — fail-open, never dropped.
+**Where the binding body stops.** A hard policy is re-quoted into every session it
+fires in, so its archival half is pure recurring cost. Injection stops at the
+first heading named `Rationale`, `Background`, `Change History`, `Changelog`,
+`History`, `Examples`, `References`, `Related`, `See also`, `Sources`,
+`Provenance`, or `Evidence` (`HQ_POLICY_BODY_STOP` overrides the pattern). Write
+the rule — including its exceptions — above that line, and put worked examples,
+incident write-ups, and provenance below it. Nothing is lost: the agent has the
+path and can read the whole file when it needs the reasoning.
+
+**Bounded, and never silently.** Two limits apply. Each hard policy's body must
+fit `HQ_POLICY_HARD_MAX_BYTES` (default 6144) on its own, and the whole injection
+must fit `HQ_POLICY_HARD_BUDGET_BYTES` (default 16384) across all of them,
+consumed in precedence order (company > repo > personal > core) so a tenant's own
+hard rules claim it first. A hard policy that exceeds either limit degrades to the
+soft one-line shape **and is named** in a trailing notice, so a shortened set can
+never be misread as the complete text. A hard policy whose file is unreadable or
+has no body degrades the same way — never silently dropped.
+
+`bash core/scripts/lint-policy-triggers.sh` reports every hard policy over the
+per-policy limit across the whole install, so oversized rules surface as a list to
+fix rather than one notice at a time. The same limit is enforced at authoring
+time by `validate-policy-frontmatter.sh`
+(`HQ_POLICY_HARD_RULE_MAX_BYTES`), which blocks the write and points at the
+archival headings to move text below.
 
 **Escape hatches.** `HQ_POLICY_HARD_FULL_TEXT=0` restores summary-only output for
 hard policies; `HQ_POLICY_HARD_BUDGET_BYTES` resizes the budget. The

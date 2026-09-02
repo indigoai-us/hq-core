@@ -296,9 +296,20 @@ source: {back-pressure-failure|user-correction|success-pattern|task-completion|h
 
 **`when:` / `on:` trigger (just-in-time injection):**
 - `when:` is a boolean expression over an OPEN token set — any word that appears in the relevant command/prompt/AI-message text is a live token (`git && push`, `refactor`, `supabase`, `.tsx`, `/deep-plan`, `secret || credential`). Pick the word(s) that naturally show up when the rule is relevant. Operators: `&& || ! ( )`. Full grammar + fact derivation: `core/knowledge/public/hq-core/policies-spec.md`.
+- **Every token needs an operator between it and the next one.** `when: merge || pull request` is not "merge, or a pull request" — nothing joins `pull` and `request`, so the expression is rejected outright. Write `merge || (pull && request)`, or pick the single word you meant. Quoted phrases, flags, and globs are outside the charset and are rejected the same way. `validate-policy-frontmatter.sh` blocks this at write time; `bash core/scripts/lint-policy-triggers.sh` finds any that predate the check.
 - `on:` is where it is evaluated. Default for a real trigger: `[PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]` (the `when:` does the filtering). Use `[SessionStart]` **only** with `when: always` for ambient governance rules with no concrete signal.
+- **`enforcement: hard` + an unconditional `when:` on a reactive event is blocked.** `when: always` (or an OR-chain containing `always`) is TRUE for every command and every prompt, so on `PreToolUse`/`UserPromptSubmit`/`PostToolUse`/`AssistantIntent` it takes a session cap slot from a policy that actually matched. Either move it to `on: [SessionStart]`, or name the real signal — usually the OR-chain is already there and `always` is redundant noise in front of it.
 - If you genuinely can't name a signal, use `when: always` + `on: [SessionStart]` — but prefer a real trigger so the rule loads just-in-time, not every session.
 - You may omit both fields when `tags:` or `trigger:` supplies a derivable signal: the SessionStart `migrate-policy-triggers.sh` hook backfills them on the next session. If no signal is derivable, only an `enforcement: hard` policy receives the `when: always` + `on: [SessionStart]` fallback; soft or unset policies remain untriggered. Setting the fields at authoring time is better — the migrator never overwrites an existing `when:`.
+
+**Keep an `enforcement: hard` body short.** A hard policy is quoted verbatim into
+every session it fires in, so its length is a recurring context cost, and the
+write hook blocks a binding body over `HQ_POLICY_HARD_RULE_MAX_BYTES` (default
+6144). Only the text above the first archival heading counts and is injected:
+put the rule and its exceptions under `## Rule`, and move worked examples,
+incident write-ups, API detail, and provenance under `## Rationale`,
+`## Examples`, `## Reference`, or `## Related`. Nothing is lost — the agent gets
+the file path and can read the rest when it needs the reasoning.
 
 **Policy frontmatter validation:** `when:` and `on:` are required and automatically checked by the `validate-policy-frontmatter.sh` write/edit hook. For stack-specific rules, express the service token in `when:` (for example, `when: vercel`); do not add retired applicability metadata. See `core/knowledge/public/hq-core/policies-spec.md` for the complete schema.
 

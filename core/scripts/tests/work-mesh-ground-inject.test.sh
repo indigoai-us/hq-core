@@ -10,6 +10,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 mkdir -p "$TMP/core/hooks" "$TMP/core/scripts" "$TMP/companies/indigo/projects/work-desktop-dogfood"
 cp "$ROOT/core/hooks/work-mesh-ground.sh" "$TMP/core/hooks/work-mesh-ground.sh"
 cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/hook-lib.sh"
+cp "$ROOT/core/scripts/work-mesh-lib.sh" "$TMP/core/scripts/work-mesh-lib.sh"
 chmod +x "$TMP/core/hooks/work-mesh-ground.sh"
 
 cat > "$TMP/companies/manifest.yaml" <<'YAML'
@@ -26,7 +27,14 @@ chmod +x "$TMP/core/scripts/hq-session.sh"
 
 cat > "$TMP/core/scripts/work-mesh-session.sh" <<'SH'
 #!/usr/bin/env bash
-# Stub helper: emit a Board with one in_progress and one queued story.
+# Stub helper. Answers the capability probe explicitly (a real command list
+# including `ground`), then emits a Board with one in_progress and one queued
+# story for an actual `ground` call.
+if [ "${1:-}" = "help" ]; then
+  printf '%s\n' 'usage: work-mesh.sh <command>'
+  printf '%s\n' 'commands: check start progress blocked done ground watch'
+  exit 0
+fi
 cat <<'JSON'
 {"ok":true,"action":"ground","projectId":"work-desktop-dogfood","bound":true,"stories":[{"id":"US-001","title":"Live row","status":"in_progress"},{"id":"US-004","title":"Queued row","status":"queued"}]}
 JSON
@@ -46,8 +54,16 @@ grep -q 'in_progress US-001' "$TMP/.claude/state/work-mesh-board" || fail "state
 out_off="$(HQ_ROOT="$TMP" HQ_WORK_MESH_DISABLED=1 bash "$TMP/core/hooks/work-mesh-ground.sh" <<<"$payload")"
 [ -z "$out_off" ] || fail "disabled hook must stay silent"
 
+# Failing helper: still CAPABLE (its `help` lists `ground`) so the capability
+# probe passes and the hook reaches the downstream helper-failure branch, but
+# an actual `ground` call fails.
 cat > "$TMP/core/scripts/work-mesh-session.sh" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = "help" ]; then
+  printf '%s\n' 'usage: work-mesh.sh <command>'
+  printf '%s\n' 'commands: check start progress blocked done ground watch'
+  exit 0
+fi
 exit 1
 SH
 chmod +x "$TMP/core/scripts/work-mesh-session.sh"
