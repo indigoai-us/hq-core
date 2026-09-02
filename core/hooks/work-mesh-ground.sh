@@ -18,6 +18,21 @@ HELPER="$HQ_ROOT/core/scripts/work-mesh-session.sh"
 . "$HQ_ROOT/core/scripts/hook-lib.sh"
 command -v jq >/dev/null 2>&1 || exit 0
 
+# The selected helper is not necessarily capable of `ground`: work-mesh-session.sh
+# prefers an installed ~/.hq/work-mesh/bin/work-mesh.sh whose command list may
+# predate the verb. Invoking it anyway burns a full node startup on EVERY prompt
+# just to print usage and exit 2. Probe once (cached by helper path + mtime with
+# a TTL) and bail out before any node spawn — including the project-inference
+# `node -e` below — when the verb is unsupported. Fail-soft: if the shared lib is
+# unavailable the probe is skipped and behaviour is unchanged.
+if [ -f "$HQ_ROOT/core/scripts/work-mesh-lib.sh" ]; then
+  # shellcheck source=core/scripts/work-mesh-lib.sh
+  . "$HQ_ROOT/core/scripts/work-mesh-lib.sh" 2>/dev/null || true
+  if command -v wm_helper_supports_verb >/dev/null 2>&1; then
+    wm_helper_supports_verb "$HELPER" ground || exit 0
+  fi
+fi
+
 extract() {
   printf '%s' "$STDIN_JSON" | hq_json_get "$1"
 }

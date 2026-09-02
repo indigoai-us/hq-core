@@ -6,7 +6,7 @@
 #
 # Args:
 #   $1 — output directory (build artifact root, served at the deploy domain)
-#   $2 — base URL for absolute og:url / og:image (e.g. https://app.indigo-hq.com); optional
+#   $2 — base URL for absolute og:url / og:image (e.g. https://myapp.indigo-hq.com); optional
 #   $3 — app name, used as the og:site_name and title fallback; optional
 #
 # Output (one JSON line on stdout):

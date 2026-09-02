@@ -92,15 +92,25 @@ wmc_quarantine() {
 wmc_reconcile_and_copy_one() {
   local root="$1" sid="$2" slug="$3" tp="$4" ismulti="$5"
   local harness="$6" project="$7" category="$8" intent="$9" summary="${10}"
-  local base token uid gates outcome payload code puid rc n
-  local rmark cmark tflag=""
+  # NOTE: uid is referenced in the no-token branch below before it is
+  # resolved. bash >= 4.4 treats a declared-but-unset local as unset under
+  # `set -u` (bash 3.2 treated it as empty), so leaving it bare aborted the
+  # detached bg shell on Linux and the no_token pending line was never
+  # spooled. Initialise every local that can be read before assignment.
+  local base="" token="" uid="" gates="" outcome="" payload="" code=""
+  local puid="" rc="" n=""
+  local rmark cmark tmark tflag=""
   if ! wm_safe_path_component "$sid" || ! wm_safe_path_component "$slug"; then
     wm_log "close: unsafe session/company path component refused"
     return 0
   fi
   rmark="$(wm_reconciled_marker "$sid" "$slug")"
   cmark="$(wm_copied_marker "$sid" "$slug")"
+  tmark="$(wm_terminal_marker "$sid" "$slug")"
   base="$(wm_api_base)"
+
+  # Permanently-terminal (not a cloud-backed company): never retry.
+  [ -f "$tmark" ] && return 0
 
   # No token -> locally-logged no-op; leave everything pending for the sweep.
   if ! token="$(wm_read_token)" || [ -z "$token" ]; then
@@ -113,6 +123,16 @@ wmc_reconcile_and_copy_one() {
   uid="$(wm_registered_uid "$sid" "$slug")"
   [ -n "$uid" ] || uid="$(wm_resolve_uid "$base" "$token" "$slug")" || uid=""
   if [ -z "$uid" ]; then
+    # Permanent vs transient. ONLY an authoritative membership listing that does
+    # not contain this slug is permanent (the company is not cloud-backed); it
+    # gets a terminal marker so the SessionStart sweep stops retrying forever.
+    # Network/HTTP/token failures stay retryable exactly as before.
+    if wm_slug_absent_from_membership "$base" "$token" "$slug"; then
+      wm_log "close: slug=$slug is not a cloud-backed company sid=$sid (terminal skip)"
+      wm_spool "$(wm_spool_build reconcile-skipped "$sid" "$slug" "" "$project" "" "$category" "$intent" "$harness" reason no_uid_permanent)"
+      : > "$tmark" 2>/dev/null || true
+      return 0
+    fi
     wm_log "close: could not resolve uid for slug=$slug sid=$sid (pending)"
     wm_spool "$(wm_spool_build reconcile-pending "$sid" "$slug" "" "$project" "" "$category" "$intent" "$harness" reason no_uid)"
     return 0
@@ -248,7 +268,7 @@ wmc_close_bg() {
   [ -n "$sid" ] || return 0
   wm_safe_path_component "$sid" || { wm_log "close: unsafe session path component refused"; return 0; }
 
-  local slugs n_slugs ismulti tp slug
+  local slugs n_slugs ismulti tp slug cclaim
   slugs="$(wm_registered_slugs "$sid")"
   [ -n "$slugs" ] || { wm_log "close: sid=$sid has no registered company — nothing to reconcile"; return 0; }
   n_slugs="$(printf '%s\n' "$slugs" | grep -c . )"
@@ -263,8 +283,23 @@ wmc_close_bg() {
     if [ -f "$(wm_reconciled_marker "$sid" "$slug")" ] && [ -f "$(wm_copied_marker "$sid" "$slug")" ]; then
       continue
     fi
+    # Permanently terminal (not a cloud-backed company): never retry.
+    if [ -f "$(wm_terminal_marker "$sid" "$slug")" ]; then
+      continue
+    fi
+    # Same atomic claim the sweep takes, so a concurrent __sweep_bg__ and
+    # __close_bg__ on the same (sid, slug) do exactly ONE reconcile/copy
+    # instead of both spooling the same outcome.
+    if ! wm_sweep_try_claim "$sid" "$slug"; then
+      continue   # a LIVE sweep/close owns this (sid, slug)
+    fi
+    cclaim="$(wm_sweep_claim "$sid" "$slug")"
+    # Arm the signal trap so a kill between claim and release cannot leak the
+    # claim directory (which would make later runs skip this real work).
+    wm_hold_claim "$cclaim"
     wmc_reconcile_and_copy_one "$root" "$sid" "$slug" "$tp" "$ismulti" \
       "$harness" "$project" "$category" "$intent" "$summary" || true
+    wm_release_claim
   done
   return 0
 }
@@ -313,6 +348,10 @@ wmc_sweep_bg() {
       if [ -f "$(wm_reconciled_marker "$sid" "$slug")" ] && [ -f "$(wm_copied_marker "$sid" "$slug")" ]; then
         continue
       fi
+      # Permanently terminal (not a cloud-backed company) => never retry.
+      if [ -f "$(wm_terminal_marker "$sid" "$slug")" ]; then
+        continue
+      fi
       # Atomic claim so concurrent sweeps do exactly one reconcile/copy. A stale
       # claim orphaned by a killed sweep is reclaimed (crash recovery, AC6) so a
       # single mid-sweep crash cannot wedge this (sid, slug) forever.
@@ -320,10 +359,11 @@ wmc_sweep_bg() {
         continue   # a LIVE sweep owns this (sid, slug)
       fi
       claim="$(wm_sweep_claim "$sid" "$slug")"
+      wm_hold_claim "$claim"
       wmc_reconcile_and_copy_one "$root" "$sid" "$slug" "$tp" "$ismulti" \
         "claude-code" "$(wmc_meta_get "$root" "$sid" project)" "adhoc" "" \
         "work session $sid reconciled (sweep)" || true
-      rmdir "$claim" 2>/dev/null || true
+      wm_release_claim
     done
   done
   return 0
