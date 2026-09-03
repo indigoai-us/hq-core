@@ -624,6 +624,11 @@
           },
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" check-client-health \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-client-health.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" repair-stale-review-base \"$CLAUDE_PROJECT_DIR/.claude/hooks/repair-stale-review-base.sh\"",
             "timeout": 30
           },

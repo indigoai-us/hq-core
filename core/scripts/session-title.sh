@@ -268,6 +268,21 @@ if (cwd) {
 }
 
 const subject = project || "";
+
+// --- stub suppression -------------------------------------------------------
+// With no project AND no repo/product, every remaining ingredient is
+// information-free: a bare command word ("chat", "startwork") or a lone org
+// token ("HQ"). Emitting one of those is actively harmful — it is not merely
+// useless, it OVERWRITES the host's written summary ("HQ core skill cloning")
+// with a word that distinguishes nothing, and because the stub never changes,
+// the wrapper's change-only cadence then goes silent for the rest of the
+// session. Sessions were sitting on 1281 prompts still titled "chat".
+//
+// Printing nothing makes the wrapper exit before it emits or records anything,
+// so the host's own title stands. The moment a project or repo does resolve,
+// the normal path takes the title back.
+if (!project && !product) process.exit(0);
+
 const parts = [org, product, subject].filter(Boolean);
 if (!parts.length) parts.push(command);
 

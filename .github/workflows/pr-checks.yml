@@ -355,6 +355,23 @@ jobs:
       - name: Hook settings release contract
         run: bash core/scripts/tests/hook-settings-release-contract.test.sh
 
+  # US-015: check-client-health runs on EVERY session start, spawns detached
+  # background work, and can file bug reports on the user's behalf. Pin that a
+  # healthy install stays silent, a degraded one remediates exactly once per
+  # cooldown, HQ_DISABLED_HOOKS opts out, the hook never exits non-zero, and its
+  # doctor-JSON parsing is python-free on both engines.
+  client-health-hook:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: client-health-hook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: check-client-health behaviour (detection, cooldown, opt-out, engines)
+        run: bash core/scripts/tests/check-client-health.test.sh
+
   # feedback_4e67345c: an unquoted project-root path in a hook command is
   # word-split by /bin/sh, so every hook dies non-blocking and silent on an
   # install path containing a space. The guard existed but ran in no workflow.

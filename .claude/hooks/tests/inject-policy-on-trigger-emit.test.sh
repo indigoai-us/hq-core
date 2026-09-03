@@ -309,7 +309,7 @@ n11="$(printf '%s\n' "$OUT11" | grep -c $'^only-indigo\t' || true)"
 [ "$n11" = "1" ] || fail "company policy emitted $n11 times (expected exactly 1): $OUT11"
 ok "company dir appears exactly once when cwd and session meta agree"
 
-# ── Enforcement-tiered injection depth (hard = full text, soft = one-liner) ──
+# ── Enforcement-tiered injection depth (hard = binding rule, soft = one-liner) ──
 # write_policy_body <file> <id> <when> <on> <enforcement> — body read from stdin.
 write_policy_body() {
   mkdir -p "$(dirname "$1")"
@@ -346,12 +346,16 @@ SOFT_FIRST_LINE of the rule.
 SOFT_RATIONALE_MARKER — must NOT be injected.
 EOF
 OUT12="$(run_hook "$ROOT" "UserPromptSubmit" "x")"
-grep -q 'Policy `hard-pol` (HARD — full text' <<<"$OUT12" \
-  || fail "hard policy not marked as full text: $OUT12"
+grep -q 'Policy `hard-pol` (HARD — binding rule from' <<<"$OUT12" \
+  || fail "hard policy not marked as binding rule: $OUT12"
 grep -q 'CRITICAL_CAVEAT' <<<"$OUT12" \
   || fail "hard body beyond first line not injected: $OUT12"
+# A hard policy is quoted verbatim into every session it fires in, so the
+# injected span stops at the first archival heading: the binding rule reaches
+# the agent in full, the history behind it does not. The whole file is still
+# one Read away, and its path is printed on the line above.
 grep -q 'HARD_RATIONALE_MARKER' <<<"$OUT12" \
-  || fail "hard Rationale section not injected: $OUT12"
+  && fail "hard Rationale section injected — archival text must be trimmed: $OUT12"
 # frontmatter itself is metadata, not body — must not leak into the block
 grep -q 'scope: test' <<<"$OUT12" \
   && fail "frontmatter leaked into injected hard body: $OUT12"

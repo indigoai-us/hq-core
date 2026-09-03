@@ -1,0 +1,51 @@
+# Fixture for check-client-health.sh — the SessionStart self-healing hook
+# (client-sync-health-control-plane US-015). See core/hook-tests/README.md.
+#
+# WHY EVERY CASE IS `allow`, AND WHERE THE REAL COVERAGE LIVES
+#
+# The README's guidance ("give it at least one block case and one allow case")
+# exists so an always-block or always-allow hook cannot pass. It does not apply
+# here, because check-client-health is not a guard: it is a passive SessionStart
+# advisory that MUST NEVER block a session under any input. It has no block
+# behaviour to pin, and a `block` case would assert the opposite of the hook's
+# single most important property. So the decision surface pinned here is the
+# invariant itself — the hook allows, silently, on every shape of input,
+# including malformed payloads and a payload for a tool it knows nothing about.
+#
+# The hook's *behavioural* coverage — a healthy install staying silent, a
+# degraded install triggering remediation exactly once (including under
+# parallel SessionStarts, and never at all when the cooldown stamp cannot be
+# written), HQ_DISABLED_HOOKS opt-out, python-free `hq doctor --json` parsing
+# under both engines, bug reports that carry no absolute paths, and the
+# deliberate minimal-profile no-op — lives in
+# core/scripts/tests/check-client-health.test.sh,
+# wired into .github/workflows/pr-checks.yml. That test can set the environment
+# and filesystem state those properties depend on; the fixture schema (v1)
+# cannot express them, so it pins what it can and points at what it cannot.
+hookId: check-client-health
+schemaVersion: 1
+cases:
+  # The ordinary SessionStart dispatch: a session start is never blocked.
+  - name: allows-session-start
+    event: SessionStart
+    tool: Read
+    input:
+      source: startup
+    expect: allow
+
+  # A payload with no recognisable body must still be allowed, not blocked.
+  # The hook consumes stdin and falls through to its filesystem pre-checks.
+  - name: allows-empty-payload
+    event: SessionStart
+    tool: Read
+    input: {}
+    expect: allow
+
+  # A tool the hook has no opinion about. The hook is not tool-scoped at all;
+  # this pins that it never grows an incidental veto over one.
+  - name: allows-unrelated-tool
+    event: SessionStart
+    tool: Bash
+    input:
+      command: "git status"
+    expect: allow
