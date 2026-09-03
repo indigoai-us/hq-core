@@ -19,8 +19,10 @@
 #       incremental and never regresses coverage.
 #
 # Injection DEPTH is tiered by `enforcement:` (see the emit block at the bottom):
-#   hard → the policy's whole body is injected verbatim, under a byte budget
-#          whose overflow is reported, never silent.
+#   hard → the policy's BINDING body is injected verbatim (everything after the
+#          frontmatter up to the first archival heading), under a per-policy
+#          cap and a shared byte budget whose overflow is reported, never
+#          silent.
 #   soft/unset → the one-line `## Rule` excerpt, as always.
 #
 # Event: taken from `hook_event_name` in the stdin JSON (default PreToolUse).
@@ -81,8 +83,10 @@ if [ "$EVENT" = "UserPromptSubmit" ]; then
 fi
 touch "$TURN_FILE" 2>/dev/null || true
 
-# Accumulate "slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule<TAB>kind"
-# matches. `kind` is internal metadata for the default interactive cap; the TSV
+# Accumulate
+# "slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule<TAB>kind<TAB>inject<TAB>whenstate"
+# matches. `kind`, `inject` and `whenstate` are internal metadata (the cap, the
+# dedup ledger, and the malformed-trigger notice); the TSV
 # contract remains its original five fields and retains its original ordering.
 # Default emit still prints only slug+rule as <policy-reminder> prose; tsv mode
 # (HQ_POLICY_EMIT=tsv, US-406) prints all five fields per line.
@@ -113,15 +117,16 @@ record_slug() {
 pending_has() { case "$MATCHES" in *"$1"$'\t'*) return 0 ;; *) return 1 ;; esac; }
 
 add_match() {
-  # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline] [once|always]
+  # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline] [once|always] [ok|malformed]
   # Back-compat: add_match <slug> <rule> → scope=core path= enf=unset
-  local slug="$1" scope rule path enf kind injv
+  local slug="$1" scope rule path enf kind injv ws
   if [ "$#" -ge 5 ]; then
     scope="$2"; path="$3"; enf="$4"; rule="$5"
     kind="${6:-reactive}"
     injv="${7:-once}"
+    ws="${8:-ok}"
   else
-    scope="core"; path=""; enf="unset"; rule="${2:-}"; kind="reactive"; injv="once"
+    scope="core"; path=""; enf="unset"; rule="${2:-}"; kind="reactive"; injv="once"; ws="ok"
   fi
   [ -n "$slug" ] || return 0
   [ "$injv" = "always" ] || injv="once"
@@ -129,9 +134,10 @@ add_match() {
   pending_has "$slug" && return 0
   [ -n "$enf" ] || enf="unset"
   [ "$kind" = "baseline" ] || kind="reactive"
+  [ "$ws" = "malformed" ] || ws="ok"
   # Tabs inside rule would break the field layout — collapse them.
   rule="${rule//$'\t'/ }"
-  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}	${kind}	${injv}
+  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}	${kind}	${injv}	${ws}
 "
 }
 
@@ -246,8 +252,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   ALREADY="$(cat "$DEDUPE_FILE" 2>/dev/null || true)"
   ALREADY_TURN="$(cat "$TURN_FILE" 2>/dev/null || true)"
   if [ "${#POLICY_FILES[@]}" -gt 0 ]; then
-    while IFS=$'\t' read -r slug scope path enf rule kind injv; do
-      add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv"
+    while IFS=$'\t' read -r slug scope path enf rule kind injv ws; do
+      add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws"
     done < <(
       # ALREADY (the dedupe ledger) is NEWLINE-separated and, after SessionStart
       # injects every on:[SessionStart] policy, routinely has many lines. It is
@@ -263,12 +269,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       awk -v EVENT="$EVENT" -v INTENT_MODE="$INTENT_MODE" \
           -v EVFACTS="$FACTS" -v AIFACTS="$INTENT_FACTS" '
       function skipsp() { while (substr(E, pos, 1) == " ") pos++ }
-      function pOr(  v){ v=pAnd(); skipsp(); while(substr(E,pos,2)=="||"){pos+=2; if(pAnd()||v)v=1;else v=0} return v }
-      function pAnd(  v){ v=pNot(); skipsp(); while(substr(E,pos,2)=="&&"){pos+=2; if(pNot()&&v)v=1;else v=0} return v }
+      function pOr(  v){ v=pAnd(); skipsp(); while(substr(E,pos,2)=="||"){pos+=2; if(pAnd()||v)v=1;else v=0; skipsp()} return v }
+      function pAnd(  v){ v=pNot(); skipsp(); while(substr(E,pos,2)=="&&"){pos+=2; if(pNot()&&v)v=1;else v=0; skipsp()} return v }
       function pNot(  c){ skipsp(); c=substr(E,pos,1); if(c=="!"){pos++; return (pNot()?0:1)} return pAtom() }
       function pAtom(  v,c){ skipsp(); c=substr(E,pos,1); if(c=="("){pos++; v=pOr(); skipsp(); if(substr(E,pos,1)==")")pos++; return v} pos++; return (c=="1")?1:0 }
       # evalexpr(expr, which) -> 0 TRUE | 1 FALSE | 2 fail-open. which: "ev"|"ai".
-      function evalexpr(expr, which,   e,s,out,tok,present) {
+      function evalexpr(expr, which,   e,s,out,tok,present,v) {
         e=expr; gsub(/[ \t]/,"",e); if(e=="") return 2            # empty -> fail open
         s=expr; out=""
         while (match(s, "[A-Za-z0-9_./][A-Za-z0-9_./-]*")) {
@@ -278,9 +284,18 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           s = substr(s,RSTART+RLENGTH)
         }
         out = out s
-        if (out ~ /[^01&|!() ]/) return 2                          # unsafe -> fail open
+        if (out ~ /[^01&|!() ]/) return 2                          # unsafe -> malformed
         E=out; pos=1
-        return (pOr() ? 0 : 1)
+        v=pOr()
+        # Trailing garbage is malformed, NOT a shorter true expression. The
+        # recursive-descent parser stops at the first token it cannot continue
+        # from, so `merge || pull request` used to evaluate as `merge || pull`
+        # and silently discard every term after the bare space. Requiring the
+        # parse to consume the whole expression turns that into a detected
+        # malformation the authoring validator and the linter both name.
+        skipsp()
+        if (pos <= length(E)) return 2
+        return (v ? 0 : 1)
       }
       function base(p,   n,a,b){ n=split(p,a,"/"); b=a[n]; sub(/\.md$/,"",b); return b }
       function scopeof(p) {
@@ -295,8 +310,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # condition is reactive. This deliberately handles `always || token` as
       # baseline too, without making a non-tautological expression baseline.
       function cskipsp() { while (substr(C, cpos, 1) == " ") cpos++ }
-      function cOr(   v,w) { v=cAnd(); cskipsp(); while(substr(C,cpos,2)=="||"){cpos+=2; w=cAnd(); if(v==1||w==1)v=1; else if(v==0&&w==0)v=0; else v=2} return v }
-      function cAnd(  v,w) { v=cNot(); cskipsp(); while(substr(C,cpos,2)=="&&"){cpos+=2; w=cNot(); if(v==0||w==0)v=0; else if(v==1&&w==1)v=1; else v=2} return v }
+      function cOr(   v,w) { v=cAnd(); cskipsp(); while(substr(C,cpos,2)=="||"){cpos+=2; w=cAnd(); if(v==1||w==1)v=1; else if(v==0&&w==0)v=0; else v=2; cskipsp()} return v }
+      function cAnd(  v,w) { v=cNot(); cskipsp(); while(substr(C,cpos,2)=="&&"){cpos+=2; w=cNot(); if(v==0||w==0)v=0; else if(v==1&&w==1)v=1; else v=2; cskipsp()} return v }
       function cNot(  v,c) { cskipsp(); c=substr(C,cpos,1); if(c=="!"){cpos++; v=cNot(); return (v==2 ? 2 : (v ? 0 : 1))} return cAtom() }
       function cAtom( v,c) { cskipsp(); c=substr(C,cpos,1); if(c=="("){cpos++; v=cOr(); cskipsp(); if(substr(C,cpos,1)==")")cpos++; return v} cpos++; return (c=="1" ? 1 : (c=="0" ? 0 : 2)) }
       function unconditional(expr,   s,out,tok) {
@@ -311,7 +326,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         C=out; cpos=1
         return (cOr()==1 && substr(C,cpos) ~ /^[ ]*$/)
       }
-      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij) {
+      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij,degraded,ws) {
         if (whenx=="") return
         if (id=="") id=base(fname)
         if (onx=="") onx="PreToolUse"                              # default when on: omitted
@@ -332,20 +347,33 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         if (ij=="always") { if (id in turnalready) return }        # per-turn dedup ledger
         else { if (id in already) return }                         # per-session dedup ledger
         if (id in emitted) return                                  # de-dup within this run
-        matched=0
-        if (ev_on || ss_on) { r=evalexpr(whenx,"ev"); if(r==0||r==2) matched=1 }
-        if (!matched && ai_on && INTENT_MODE) { r=evalexpr(whenx,"ai"); if(r==0||r==2) matched=1 }
+        matched=0; degraded=0
+        if (ev_on || ss_on) { r=evalexpr(whenx,"ev"); if(r==0) matched=1; else if(r==2) degraded=1 }
+        if (!matched && ai_on && INTENT_MODE) { r=evalexpr(whenx,"ai"); if(r==0) matched=1; else if(r==2) degraded=1 }
+        # An expression the grammar cannot parse used to MATCH — a blanket
+        # fail-open that made every malformed policy fire on every event and
+        # crowd the cap with alphabetical noise, burying the policies that
+        # genuinely matched. The promise worth keeping is narrower: a typo must
+        # never SUPPRESS A HARD RULE. So a malformed `when:` on an
+        # enforcement: hard policy degrades to the once-per-session baseline
+        # (deprioritized behind real reactive matches, deduped by the session
+        # ledger) instead of re-firing forever, and a malformed soft/unset
+        # policy does not inject at all. Both are reported by
+        # core/scripts/lint-policy-triggers.sh and blocked at authoring time by
+        # validate-policy-frontmatter.sh.
+        if (!matched && degraded && enf=="hard") { matched=1 }
         if (matched) {
           emitted[id]=1
           sc=scopeof(fname)
           en=(enf=="" ? "unset" : enf)
+          ws=(degraded ? "malformed" : "ok")
           # Policies whose current event is explicitly listed are reactive even
           # if they also carry SessionStart. Conditional SessionStart-only
           # policies are reactive as well: they matched facts from this event.
           # Only the unconditional SessionStart backfill is baseline.
-          kind=((ss_on && !ev_on && !(ai_on && INTENT_MODE) && unconditional(whenx)) ? "baseline" : "reactive")
+          kind=((degraded || (ss_on && !ev_on && !(ai_on && INTENT_MODE) && unconditional(whenx))) ? "baseline" : "reactive")
           gsub(/\t/," ",rule)
-          print id "\t" sc "\t" fname "\t" en "\t" rule "\t" kind "\t" ij
+          print id "\t" sc "\t" fname "\t" en "\t" rule "\t" kind "\t" ij "\t" ws
         }
       }
       function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; injx=""; rule=""; rsec=0; rcap=0 }
@@ -425,7 +453,7 @@ fi
 # US-406: machine-readable records for the agent-session entrypoint. No prose
 # wrapper, no interactive 16-cap (consumer applies HQ_SESSION_POLICY_MAX_*).
 if [ "${HQ_POLICY_EMIT:-}" = "tsv" ]; then
-  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv; do
+  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws; do
     [ -z "$slug" ] && continue
     printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule"
     record_slug "$slug" "$injv"
@@ -482,7 +510,7 @@ fi
 WITHHELD_NAMES=""
 WITHHELD_NAMED=0
 if [ -n "$WITHHELD_MATCHES" ]; then
-  while IFS=$'\t' read -r slug scope path enf rule kind injv; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws; do
     [ -n "$slug" ] || continue
     record_slug "$slug" "$injv"
     if [ "$WITHHELD_NAMED" -lt 10 ]; then
@@ -510,35 +538,61 @@ fi
 # Escape hatches: HQ_POLICY_HARD_FULL_TEXT=0 restores summary-only for hard
 # policies; HQ_POLICY_HARD_BUDGET_BYTES resizes the budget.
 HARD_FULL="${HQ_POLICY_HARD_FULL_TEXT:-1}"
-HARD_BUDGET="${HQ_POLICY_HARD_BUDGET_BYTES:-40960}"
+HARD_BUDGET="${HQ_POLICY_HARD_BUDGET_BYTES:-16384}"
+# Per-policy ceiling. Without it a single long hard policy can swallow most of
+# the shared budget and push every other hard rule down to its summary line.
+HARD_MAX="${HQ_POLICY_HARD_MAX_BYTES:-6144}"
+# Everything from the first archival heading on is history and justification,
+# not the binding rule: it is what the agent must NOT be made to re-read on
+# every injection. `## Rule`, `## Scope`, `## Enforcement` and friends stay.
+# Set HQ_POLICY_BODY_STOP='' to inject whole files again.
+# Matched against a lowercased line, so keep the pattern lowercase.
+BODY_STOP="${HQ_POLICY_BODY_STOP-^#+[[:space:]]*(rationale|rationale and context|background|change history|changelog|history|examples?|references?|related|see also|sources?|provenance|evidence)[[:space:]]*$}"
 
 policy_body() {
-  # Print everything after the closing frontmatter `---`, leading blank lines
-  # trimmed. A file with no frontmatter (or an unreadable one) prints nothing,
-  # and the caller falls back to the summary line — fail-open to prior
+  # Print the binding part of the policy: everything after the closing
+  # frontmatter `---`, leading blank lines trimmed, stopping at the first
+  # archival heading. A file with no frontmatter (or an unreadable one) prints
+  # nothing, and the caller falls back to the summary line — fail-open to prior
   # behaviour, never a dropped policy.
-  awk '
+  awk -v stop="$BODY_STOP" '
     /^---[ \t]*$/ && d < 2 { d++; next }
-    d >= 2 { if (!started && $0 ~ /^[ \t]*$/) next; started = 1; print }
-  ' "$1" 2>/dev/null
+    d >= 2 {
+      if (!started && $0 ~ /^[ \t]*$/) next
+      if (stop != "" && tolower($0) ~ stop) exit
+      started = 1; print
+    }
+  ' "$1" 2>/dev/null | awk '
+    # trim trailing blank lines left behind by the cut
+    { L[NR]=$0 }
+    END { last=0; for(i=1;i<=NR;i++) if (L[i] ~ /[^ \t]/) last=i
+          for(i=1;i<=last;i++) print L[i] }
+  '
 }
 
 printf '<policy-reminder>\n'
 printf '%s' "$MATCHES" | {
   spent=0
   shortened=""
-  while IFS=$'\t' read -r slug scope path enf rule kind injv; do
+  oversize=""
+  malformed=""
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws; do
     [ -z "$slug" ] && continue
     record_slug "$slug" "$injv"
+    [ "$ws" = "malformed" ] && malformed="${malformed:+$malformed, }$slug"
     body=""
     if [ "$HARD_FULL" != "0" ] && [ "$enf" = "hard" ] && [ -n "$path" ] && [ -r "$path" ]; then
       body="$(policy_body "$path")"
     fi
     if [ -n "$body" ]; then
       size="$(printf '%s' "$body" | wc -c | tr -d ' ')"
-      if [ $((spent + size)) -le "$HARD_BUDGET" ]; then
+      if [ "$size" -gt "$HARD_MAX" ]; then
+        # One policy must not crowd out every other hard rule in the budget.
+        oversize="${oversize:+$oversize, }$slug"
+        body=""
+      elif [ $((spent + size)) -le "$HARD_BUDGET" ]; then
         spent=$((spent + size))
-        printf '> Policy `%s` (HARD — full text of `%s`):\n' "$slug" "${path#"$HQ_ROOT"/}"
+        printf '> Policy `%s` (HARD — binding rule from `%s`):\n' "$slug" "${path#"$HQ_ROOT"/}"
         # Quote every body line into the reminder block, and neutralise any
         # literal <policy-reminder> tag inside a policy body (one exists today)
         # so an injected body cannot close or nest this block.
@@ -548,13 +602,21 @@ printf '%s' "$MATCHES" | {
                 -e 's/^/> /' -e 's/^> $/>/'
         continue
       fi
-      shortened="${shortened:+$shortened, }$slug"
+      [ -n "$body" ] && shortened="${shortened:+$shortened, }$slug"
     fi
     printf '> Policy `%s` applies here: %s\n' "$slug" "$rule"
   done
   if [ -n "$shortened" ]; then
     printf '> Full-text budget of %s bytes reached: these HARD policies were shortened to one-line summaries — %s. Read each in full at its own file before acting on it.\n' \
       "$HARD_BUDGET" "$shortened"
+  fi
+  if [ -n "$oversize" ]; then
+    printf '> Over the %s-byte per-policy limit, so shortened to one-line summaries — %s. Read each in full at its own file before acting on it, and consider trimming the rule.\n' \
+      "$HARD_MAX" "$oversize"
+  fi
+  if [ -n "$malformed" ]; then
+    printf '> Malformed `when:` trigger (does not parse, so it cannot be matched against this event) — %s. These are surfaced as a once-per-session fallback, not because they matched. Repair with: bash core/scripts/lint-policy-triggers.sh\n' \
+      "$malformed"
   fi
 }
 if [ "$WITHHELD" -gt 0 ]; then

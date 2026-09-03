@@ -261,6 +261,25 @@ wm_file_mtime() {
   esac
 }
 
+# wm_file_ident <path> -> a cache-identity string for the file.
+#   mtime alone (second resolution) cannot distinguish a file rewritten within
+#   the same second, so fold in size and inode when the platform stat supports
+#   it. Falls back to bare mtime when neither stat form is available.
+wm_file_ident() {
+  local f="${1:-}" value
+  value="$(stat -f '%m %z %i' "$f" 2>/dev/null)" || value=""
+  case "$value" in
+    ''|*[!0-9\ ]*) ;;
+    *) printf '%s' "$value"; return 0 ;;
+  esac
+  value="$(stat -c '%Y %s %i' "$f" 2>/dev/null)" || value=""
+  case "$value" in
+    ''|*[!0-9\ ]*) ;;
+    *) printf '%s' "$value"; return 0 ;;
+  esac
+  wm_file_mtime "$f"
+}
+
 # wm_cache_fresh <file> [ttl] -> 0 if the file exists and is younger than ttl
 wm_cache_fresh() {
   local f="${1:-}" ttl="${2:-$(wm_gates_ttl)}" mtime now age
@@ -275,6 +294,39 @@ wm_cache_fresh() {
 # sanitize an arbitrary key into a safe cache filename fragment
 wm_keyfrag() {
   printf '%s' "${1:-}" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# ---------------------------------------------------------------------------
+# Claim trap — release a held sweep/close claim on signal (US-001 finding 2)
+# ---------------------------------------------------------------------------
+# A claim directory leaked by a process killed between claim and release makes
+# later runs skip real work until HQ_WORK_MESH_CLAIM_STALE_SEC ages it out. The
+# trap best-effort releases ONLY the claim this shell currently holds; genuine
+# crashes (SIGKILL, power loss) still fall through to the stale-reclaim path.
+WM_HELD_CLAIM=""
+
+# wm_hold_claim <claimPath> — record the claim this shell owns and arm the trap.
+wm_hold_claim() {
+  WM_HELD_CLAIM="${1:-}"
+  trap 'wm_release_claim; exit 0' INT TERM HUP
+  trap 'wm_release_claim' EXIT
+}
+
+# wm_release_claim — release the held claim (no-op when none is held). Silent.
+wm_release_claim() {
+  [ -n "${WM_HELD_CLAIM:-}" ] || return 0
+  rmdir "$WM_HELD_CLAIM" 2>/dev/null || true
+  WM_HELD_CLAIM=""
+  return 0
+}
+
+# wm_canon_slug <s> — canonical company-slug form: lowercase, `_`/space folded
+# to `-`, repeats collapsed, leading/trailing `-` trimmed.
+wm_canon_slug() {
+  printf '%s' "${1:-}" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr '_ ' '--' \
+    | sed -e 's/--*/-/g' -e 's/^-*//' -e 's/-*$//'
 }
 
 # ---------------------------------------------------------------------------
@@ -501,6 +553,127 @@ wm_reg_marker()    { printf '%s/work-mesh-registered-%s' "$(wm_sessions_dir "$1"
 wm_reconciled_marker() { printf '%s/work-mesh-reconciled-%s' "$(wm_sessions_dir "$1")" "$(wm_keyfrag "$2")"; }
 wm_copied_marker() { printf '%s/work-mesh-copied-%s' "$(wm_sessions_dir "$1")" "$(wm_keyfrag "$2")"; }
 wm_sweep_claim()   { printf '%s/work-mesh-sweep-claim-%s' "$(wm_sessions_dir "$1")" "$(wm_keyfrag "$2")"; }
+# Terminal marker: this (session, company) pair can NEVER be reconciled — the
+# slug is not a cloud-backed company. Distinct from the reconciled/copied
+# markers so a genuine reconcile is never confused with a permanent skip. The
+# close path and the SessionStart sweep both treat its presence as "done".
+wm_terminal_marker() { printf '%s/work-mesh-terminal-%s' "$(wm_sessions_dir "$1")" "$(wm_keyfrag "$2")"; }
+
+# wm_slug_absent_from_membership <base> <token> <slug>
+#   Returns 0 ONLY when the membership API answered authoritatively and the slug
+#   is genuinely absent from it (a permanent no_uid: the company is not
+#   cloud-backed). Any transient condition — no base/token, network or HTTP
+#   failure, malformed body, an explicit uid override — returns non-zero so the
+#   caller keeps the record retryable.
+wm_slug_absent_from_membership() {
+  local base="${1:-}" token="${2:-}" slug="${3:-}" body want hits
+  [ -n "$base" ] && [ -n "$token" ] && [ -n "$slug" ] || return 1
+  # An explicit uid override means uid resolution never consulted membership.
+  [ -n "${HQ_WORK_MESH_COMPANY_UID:-${HQ_COMPANY_UID:-}}" ] && return 1
+  case "$slug" in
+    cmp_*|co_*) return 1 ;;
+  esac
+  body="$(wm_http_get "$base" "$token" "/membership/me")" || return 1
+  [ -n "$body" ] || return 1
+  # Authoritative only when the body really is a membership listing.
+  printf '%s' "$body" | jq -e '(.memberships | type) == "array"' >/dev/null 2>&1 || return 1
+  # An EMPTY listing is never authoritative: a not-yet-provisioned account, a
+  # scoped token, or a degraded backend all answer `{"memberships":[]}`, and
+  # that matches every slug. Treat it as transient (retryable) rather than
+  # permanently discarding real work.
+  printf '%s' "$body" | jq -e '(.memberships | length) > 0' >/dev/null 2>&1 || return 1
+  # A PARTIAL (paginated) listing is not authoritative either: the slug could
+  # live on a page we never fetched. Any pagination indicator -> retryable.
+  if printf '%s' "$body" | jq -e '
+      def present($v): ($v != null) and ($v != false) and ($v != "") and ($v != 0);
+      . as $b
+      | [ "nextCursor","cursor","hasMore","more","next","nextPage","nextPageToken",
+          "nextOffset","nextLink","page","pageCount","totalPages","offset" ]
+        | map(present($b[.]))
+        | any
+      or (($b.total? // $b.totalCount? // $b.count? // null) as $t
+          | ($t | type) == "number" and $t > ($b.memberships | length))
+      or ((($b.pagination? // $b.meta? // $b.page? // null) | type) == "object")
+    ' >/dev/null 2>&1; then
+    return 1
+  fi
+  # Canonicalize BOTH sides before comparing. A company whose local slug differs
+  # from the server slug only by case or by `_`/space-vs-`-` (e.g. `acme_inc`
+  # locally, `acme-inc` server-side) is PRESENT, not permanently absent.
+  want="$(wm_canon_slug "$slug")"
+  [ -n "$want" ] || return 1
+  hits="$(printf '%s' "$body" | jq -r --arg want "$want" '
+    def canon: (. // "")
+      | tostring
+      | ascii_downcase
+      | gsub("[_ ]"; "-")
+      | gsub("-+"; "-")
+      | sub("^-+"; "")
+      | sub("-+$"; "");
+    (.memberships // [])
+    | map(select(
+        (.companyUid  | canon) == $want or
+        (.companySlug | canon) == $want or
+        (.slug        | canon) == $want or
+        (.companyName | canon) == $want or
+        (.name        | canon) == $want
+      ))
+    | length
+  ' 2>/dev/null)" || return 1
+  case "$hits" in
+    ''|*[!0-9]*) return 1 ;;   # malformed count -> fail safe (retryable)
+  esac
+  [ "$hits" = "0" ]
+}
+
+# ---------------------------------------------------------------------------
+# Helper capability probe (cached) — does <helper> support <verb>?
+# ---------------------------------------------------------------------------
+# A machine may have an OLDER installed work-mesh helper (~/.hq/work-mesh/bin)
+# that work-mesh-session.sh prefers but whose command list lacks a verb. Probing
+# it on every prompt would itself cost a node spawn, so the answer is cached
+# under wm_cache_dir(), keyed by helper path AND helper mtime, with a TTL.
+wm_caps_ttl() { printf '%s' "${HQ_WORK_MESH_CAPS_TTL:-3600}"; }
+
+# wm_helper_supports_verb <helperPath> <verb> -> 0 if supported.
+wm_helper_supports_verb() {
+  local helper="${1:-}" verb="${2:-}" cf ident cached out verbre cap truncated
+  [ -n "$helper" ] && [ -n "$verb" ] || return 1
+  [ -f "$helper" ] || return 1
+  # Identity is mtime+size+inode where available: second-resolution mtime alone
+  # lets a helper rewritten within the same second keep a stale verdict.
+  ident="$(wm_file_ident "$helper")" || ident=0
+  [ -n "$ident" ] || ident=0
+  cf="$(wm_cache_dir)/caps-$(wm_keyfrag "$verb")-$(wm_keyfrag "$helper")"
+  if wm_cache_fresh "$cf" "$(wm_caps_ttl)"; then
+    cached="$(cat "$cf" 2>/dev/null)" || cached=""
+    case "$cached" in
+      "$ident yes") return 0 ;;
+      "$ident no")  return 1 ;;
+    esac
+  fi
+  cap="${HQ_WORK_MESH_HELP_CAP:-65536}"
+  # Read one byte past the cap so a truncated read is detectable.
+  out="$(bash "$helper" help </dev/null 2>&1 | head -c "$(( cap + 1 ))")" || true
+  truncated=0
+  [ "${#out}" -gt "$cap" ] 2>/dev/null && truncated=1
+  mkdir -p "$(dirname "$cf")" 2>/dev/null || true
+  # Word-boundary match: a bare substring would let `ground` match `background`
+  # or `playground` anywhere in the help text.
+  verbre="$(printf '%s' "$verb" | sed 's/[^A-Za-z0-9_-]/\\&/g')"
+  if [ -n "$out" ] && printf '%s' "$out" | grep -qE "(^|[^A-Za-z0-9_-])${verbre}([^A-Za-z0-9_-]|$)"; then
+    printf '%s yes' "$ident" > "$cf" 2>/dev/null || true
+    return 0
+  fi
+  # A TRUNCATED read is not authoritative: the verb may appear past the cap
+  # behind a long banner. Never pin a negative verdict from a partial read.
+  if [ "$truncated" -eq 0 ] 2>/dev/null; then
+    printf '%s no' "$ident" > "$cf" 2>/dev/null || true
+  else
+    rm -f "$cf" 2>/dev/null || true
+  fi
+  return 1
+}
 
 # wm_sweep_try_claim <sessionId> <slug>
 #   Atomically acquire the sweep claim for (session, company). Returns 0 iff the

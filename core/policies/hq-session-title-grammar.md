@@ -7,16 +7,16 @@ when: always
 on: [SessionStart, UserPromptSubmit]
 enforcement: soft
 public: true
-version: 5
+version: 6
 created: 2026-08-26
-updated: 2026-08-28
+updated: 2026-09-02
 source: user-correction
 tags: [session, naming, ergonomics]
 ---
 
 ## Rule
 
-Name the session yourself with `set_session_title` once its subject is clear — outside the terminal CLI the hook's title never lands, so this call is the only namer.
+Name the session yourself with `set_session_title` on the first turn — outside the terminal CLI the hook's title never lands, so this call is the only namer. The hook injects a one-time first-turn reminder carrying its company/project hint; act on it before other work, then rename again only if the subject changes.
 
 HQ session titles follow one grammar:
 

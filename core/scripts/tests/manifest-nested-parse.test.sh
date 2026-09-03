@@ -106,7 +106,14 @@ settings:
 YAML
 
 title_rc=0
-single_title="$(HQ_ROOT="$SINGLE" bash "$TITLE" --session-id "manifest-nested-parse-$$-single" 2>&1)" || title_rc=$?
+# The single-company fallback fires only when no project resolved, and with no
+# project AND no repo the helper now deliberately prints nothing rather than a
+# stub (see session-title-no-stubs.test.sh). Run from inside a repo: that
+# supplies the product segment, so a title is produced and the manifest-derived
+# company token this test exists to protect is actually rendered.
+mkdir -p "$SINGLE/repos/public/probe-console/src"
+single_title="$(HQ_ROOT="$SINGLE" bash "$TITLE" --session-id "manifest-nested-parse-$$-single" \
+  --cwd "$SINGLE/repos/public/probe-console/src" 2>&1)" || title_rc=$?
 
 assert_equals "$title_rc" "0" "session-title exits cleanly"
 # The org token is the slug upper-cased (or its ALIASES short form), so the
@@ -134,10 +141,11 @@ assert_equals "$empty_hook_rc" "0" "empty manifest hook exits cleanly"
 assert_not_contains "$empty_out" "Companies (" "empty manifest emits no company line"
 assert_equals "$empty_title_rc" "0" "empty manifest session-title exits cleanly"
 # Title grammar is "{mode} {COMPANY} · {subject}". With an empty manifest there
-# is no company and no project to resolve, and a bare `chat` carries no mode —
-# so the title degrades to the phase word alone. No placeholder org token, no
-# placeholder glyph: an empty slot renders as nothing.
-assert_equals "$empty_title" "chat" "empty manifest leaves company unset"
+# is no company, no project and no repo to resolve — nothing but a bare command
+# word would be left, which is a stub, so the helper prints nothing at all and
+# the host's own summary stands. No placeholder org token, no placeholder glyph,
+# and no information-free `chat`.
+assert_equals "$empty_title" "" "empty manifest yields no title at all"
 
 echo "manifest-nested-parse: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
