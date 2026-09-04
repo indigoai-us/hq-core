@@ -60,7 +60,7 @@ OUT="$(req acme-fixture | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$T
 echo "$OUT" | jq -e '.disposition == "error"' >/dev/null || fail "unknown disposition"
 grep -q "requested='acme-fixture'" "$TMP/e1" || fail "stderr should name requested slug"
 grep -q "indigo" "$TMP/e1" || fail "stderr should name present slugs"
-echo "$OUT" | jq -r .text | grep -q acme-fixture || fail "envelope text should name refused company"
+grep -q acme-fixture <<< "$(jq -r .text <<< "$OUT")" || fail "envelope text should name refused company"
 pass "unknown slug"
 
 # ── 2. two-company box, explicit indigo ─────────────────────────────────────
@@ -153,9 +153,54 @@ session_company_has_marker "$MARKERLESS/companies/dotonly" \
 pass "dotfile-only content authorizes"
 
 PRESENT="$(session_list_present_companies "$MARKERLESS")"
-echo "$PRESENT" | grep -qx withcontent || fail "listing must include content-only company: $PRESENT"
-echo "$PRESENT" | grep -qx dotonly     || fail "listing must include dotfile-only company: $PRESENT"
-echo "$PRESENT" | grep -qx emptyco     && fail "listing must NOT include empty company: $PRESENT"
+grep -qx withcontent <<< "$PRESENT" || fail "listing must include content-only company: $PRESENT"
+grep -qx dotonly     <<< "$PRESENT" || fail "listing must include dotfile-only company: $PRESENT"
+grep -qx emptyco     <<< "$PRESENT" && fail "listing must NOT include empty company: $PRESENT"
 pass "session_list_present_companies reflects content-based presence"
+
+# ── pipefail/SIGPIPE regression ─────────────────────────────────────────────
+# `printf ... | grep -q` under `set -euo pipefail` is a race: grep exits on the
+# first match, the writer then takes SIGPIPE and exits 141, and pipefail
+# propagates that 141 as the pipeline's status — so a membership test that DID
+# match reports "no match". In session_resolve_company_dir this spuriously
+# REFUSED an authorized company on ~1.8% of calls, which compounded to ~20% of
+# hq-agent-session-parity runs. It fails closed, so the symptom is a wrongful
+# denial rather than a leak, but the same construct in a guard that fails open
+# would be one.
+#
+# The tell is a self-contradicting error message: "company refused:
+# requested='indigo' present=[indigo, otherco]" — the slug it could not find is
+# right there in the list it just printed. Read that as a pipeline-status bug,
+# not a data bug.
+#
+# What this asserts, and what it deliberately does NOT.
+#
+# It proves the hazard is genuine, DETERMINISTICALLY rather than by sampling.
+# The race only fires when grep can exit before the writer finishes: the match
+# must sort early AND the list must exceed the pipe buffer. Calling the product
+# function on a normal fixture reproduces it only ~0.25% of the time, far too
+# weak to gate a merge — a 600-iteration loop would still miss a reintroduced
+# pipe about one run in five. At ~389 KiB the writer is guaranteed to still be
+# blocked when grep exits, making it 30/30.
+#
+# It does NOT detect REINTRODUCTION elsewhere in the session libs. That needs a
+# scanner over the source, and a regex one was tried here and withdrawn: six
+# review rounds each found another shell construct it failed to model (split and
+# long-form flags, multiline pipelines, command prefixes, comments inside
+# pipelines, grouped stages, its own error propagation). Every individual fix was
+# correct; the pattern was not. Approximating a shell parser is the wrong tool,
+# and choosing a real one is a repo-level dependency decision, so it is tracked
+# separately rather than half-done here. If you are adding code to these libs:
+# never pipe into `grep -q` (or --quiet/--silent/-m) — use a here-string.
+LIST="$(printf 'aaa-first\n'; awk 'BEGIN { for (i = 1; i <= 40000; i++) print "pad-" i }')"
+PIPED_RC=0
+printf '%s\n' "$LIST" | grep -Fxq -- aaa-first || PIPED_RC=$?
+[ "$PIPED_RC" -ne 0 ] \
+  || fail "expected the piped form to report a false miss under pipefail; the hazard this guards against may no longer exist on this platform, so re-derive the guard rather than deleting it"
+HEREDOC_RC=0
+grep -Fxq -- aaa-first <<< "$LIST" || HEREDOC_RC=$?
+[ "$HEREDOC_RC" -eq 0 ] || fail "here-string form must find a present slug (rc=$HEREDOC_RC)"
+pass "pipe into grep -q reports a false miss under pipefail; here-string does not"
+
 
 echo "PASS: hq-agent-session-authz.test.sh"

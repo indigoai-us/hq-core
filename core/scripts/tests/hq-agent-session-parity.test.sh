@@ -92,6 +92,14 @@ mkdir -p "$HOME"
 export HQ_AGENT_WORKDIR="$FIXTURE"
 export HQ_AGENT_SESSION_SKIP_PROVIDER=1
 
+# Resolve node BEFORE the offline PATH reset below. It has to happen here: the
+# reset leaves only /usr/bin:/bin:/usr/sbin:/sbin, and node is routinely outside
+# those — GitHub runners put it in /usr/local/bin or the hosted toolcache, nvm
+# under ~/.nvm/versions/node/<v>/bin, Homebrew under /opt/homebrew/bin. Resolved
+# after the reset it silently yields "" on exactly those machines, the mirror
+# below omits node, and every golden compare dies on `node: command not found`.
+NODE_PATH_BIN="$(command -v node 2>/dev/null || true)"
+
 # Offline: strip provider binaries from PATH; no network required.
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 # Ensure jq still available
@@ -103,6 +111,8 @@ JQ_PATH="$(command -v jq)"
 JQ_DIR="$(dirname "$JQ_PATH")"
 # Keep python3 for timing helpers
 PY_PATH="$(command -v python3 2>/dev/null || true)"
+# NODE_PATH_BIN was captured above, before the PATH reset — see the note there.
+# session_parity_normalize_assembled runs node on every golden compare.
 
 # Build the offline PATH by MIRRORING the real tool directories into $SHADOW,
 # minus the provider binaries — do not just prepend $SHADOW to /usr/bin.
@@ -113,7 +123,8 @@ PY_PATH="$(command -v python3 2>/dev/null || true)"
 # machine actually running Claude Code) the assertion below tripped and the
 # suite failed — the test's own PATH put the binary back. CI passed only
 # because its runners have no provider binaries installed.
-for src in "$JQ_DIR" /usr/bin /bin ${PY_PATH:+"$(dirname "$PY_PATH")"}; do
+for src in "$JQ_DIR" /usr/bin /bin ${PY_PATH:+"$(dirname "$PY_PATH")"} \
+           ${NODE_PATH_BIN:+"$(dirname "$NODE_PATH_BIN")"}; do
   [ -d "$src" ] || continue
   for entry in "$src"/*; do
     name="${entry##*/}"
@@ -130,6 +141,14 @@ command -v claude >/dev/null 2>&1 && fail "claude must not be on PATH for offlin
 command -v codex >/dev/null 2>&1 && fail "codex must not be on PATH for offline harness"
 command -v grok >/dev/null 2>&1 && fail "grok must not be on PATH for offline harness"
 pass "offline PATH (no provider binaries)"
+
+# The shadow must still carry the interpreters the harness itself needs, or the
+# suite fails for a reason that has nothing to do with what it is testing.
+command -v node >/dev/null 2>&1 \
+  || fail "node must remain on the offline PATH (session_parity_normalize_assembled needs it)"
+command -v jq >/dev/null 2>&1 \
+  || fail "jq must remain on the offline PATH"
+pass "offline PATH keeps the harness interpreters (node, jq)"
 
 # Confirm TELEGRAM_FORMATTING + EMAIL_FORMATTING constant files exist (count guard already = 13).
 C_DIR="$(session_parity_constants_dir)"
