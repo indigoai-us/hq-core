@@ -208,7 +208,7 @@ session_resolve_company_dir() {
   fi
 
   # Explicit membership in the present list (no first-match fallback).
-  if ! printf '%s\n' "$present" | grep -Fxq -- "$slug"; then
+  if ! grep -Fxq -- "$slug" <<< "$present"; then
     echo "hq-agent-session: company refused: requested='$slug' present=[$present_csv]" >&2
     return 6
   fi

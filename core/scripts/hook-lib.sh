@@ -23,6 +23,26 @@
 
 HQ_LIB_JQ="$(command -v jq 2>/dev/null || true)"
 HQ_LIB_NODE="$(command -v node 2>/dev/null || true)"
+
+# Is "\" a path SEPARATOR on this host, or an ordinary filename character?
+#
+# On Windows-family shells (Git Bash/MSYS/Cygwin) it is a separator and must be
+# folded to "/". On POSIX it is a perfectly legal character IN a filename, and
+# folding it corrupts real paths — dangerously so in a guard: with a symlink
+# literally named `link\name` pointing into repos/, rewriting the input yields
+# the non-existent lexical path workspace/link/name/file.txt, which resolves to
+# nothing under repos/, so the hook exits 0 while the actual write follows the
+# symlink and lands in the checkout.
+#
+# Detected ONCE at source time — hq_normpath is on the hook hot path and must
+# not fork `uname` per call. Override with HQ_LIB_WINSEP=1|0 for tests.
+if [ -z "${HQ_LIB_WINSEP:-}" ]; then
+  HQ_LIB_WINSEP=0
+  case "${OSTYPE:-}" in msys*|cygwin*|win32*) HQ_LIB_WINSEP=1 ;; esac
+  if [ "$HQ_LIB_WINSEP" = "0" ]; then
+    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) HQ_LIB_WINSEP=1 ;; esac
+  fi
+fi
 case "${HQ_HOOK_ENGINE:-}" in
   jq)   HQ_LIB_NODE="" ;;
   node) HQ_LIB_JQ="" ;;
@@ -79,17 +99,31 @@ hq_json_encode() {
 
 # hq_normpath <path>
 #   Lexical normalization (no filesystem access): backslashes -> "/", collapse
-#   "//" and "/./", resolve "x/..", trim trailing "/" (keeps root). Both
-#   engines produce IDENTICAL output, so equality checks between two
+#   interior "//" and "/./", resolve "x/..", trim trailing "/" (keeps root).
+#   Both engines produce IDENTICAL output, so equality checks between two
 #   hq_normpath results are stable regardless of engine or platform.
+#
+#   A LEADING "//" is preserved ONLY where it names a genuinely DISTINCT root:
+#   Windows Git Bash/MSYS/Cygwin UNC shares (//server/share). POSIX leaves the
+#   exactly-two-slash case implementation-defined; Linux resolves //tmp and /tmp
+#   to the SAME directory, so preserving the distinction there protects nothing
+#   and instead guarantees a mismatch whenever the two sides of a prefix check
+#   are spelled differently. Both directions are live bypasses: a "//" project
+#   root with a "/" file path, and a "/" root with a "//" file path, each let a
+#   write into repos/ through. `pwd -P` does preserve "//", so the collapse must
+#   happen HERE, after the physical resolution both helpers end with -- that is
+#   what makes every spelling of one physical path compare equal, which is the
+#   only property the repo guard actually depends on.
 hq_normpath() {
-  printf '%s' "$1" | awk '
+  printf '%s' "$1" | awk -v winsep="${HQ_LIB_WINSEP:-0}" '
     {
       p = $0
-      gsub(/\\/, "/", p)
+      if (winsep) gsub(/\\/, "/", p)
       isabs = (p ~ /^\//) ? 1 : 0
       drive = ""
       if (p ~ /^[A-Za-z]:/) { drive = substr(p, 1, 2); p = substr(p, 3); isabs = (p ~ /^\//) ? 1 : 0 }
+      root = ""
+      if (isabs) root = (winsep && p ~ /^\/\/([^\/]|$)/) ? "//" : "/"
       n = split(p, seg, "/")
       out_n = 0
       for (i = 1; i <= n; i++) {
@@ -103,11 +137,89 @@ hq_normpath() {
       }
       r = ""
       for (i = 1; i <= out_n; i++) r = r (i > 1 ? "/" : "") out[i]
-      if (isabs) r = "/" r
+      if (isabs) r = root r
       if (drive != "") r = drive r
-      if (r == "") r = (isabs ? "/" : ".")
+      if (r == "") r = (isabs ? root : ".")
       print r
     }'
+}
+
+# hq_realpath_lenient <path>
+#   Symlink-resolved path that tolerates a leaf which does not exist yet, and
+#   an arbitrarily deep tail of missing parents. Mirrors the semantics the repo
+#   guard previously got from `python3 os.path.realpath(dirname(p))` + join
+#   leaf: the PARENT chain is symlink-resolved, the leaf is kept verbatim.
+#
+#   Implementation is `cd -P` + POSIX shell only. `readlink -f` is deliberately
+#   NOT used: macOS ships BSD readlink, which has no -f. python3 is deliberately
+#   NOT used: it is absent on many Windows machines, and there the Store alias
+#   stub resolves on PATH while failing every call, so a `command -v python3`
+#   guard around it silently disables whatever the resolution was protecting.
+#
+#   ORDER IS LOAD-BEARING. The existing part of the path is handed to `cd -P`
+#   with its `..` segments INTACT, because `..` must be applied by the OS after
+#   symlinks are resolved, not collapsed lexically first. Given
+#   workspace/link -> repos/private/app/dir, the path
+#   workspace/link/../secret.txt really means repos/private/app/secret.txt;
+#   normalizing first yields workspace/secret.txt, which escapes a repos/ prefix
+#   check entirely. For the same reason `cd` must be `cd -P` — bash's default
+#   logical `cd` collapses link/.. to the link's parent, reintroducing the bug.
+#   Only the not-yet-existing tail is normalized lexically, since there is no
+#   filesystem there to consult (this is what python's realpath does too).
+hq_realpath_lenient() {
+  local p="$1" leaf parent head tail resolved
+  [ -n "$p" ] || { printf '%s' "$p"; return 0; }
+  # Separator folding ONLY where "\" is actually a separator; NO `..` collapsing
+  # here — see above. On POSIX a backslash is part of the filename and folding it
+  # would make this resolve a path the write will never touch.
+  if [ "${HQ_LIB_WINSEP:-0}" = "1" ]; then
+    case "$p" in
+      *\\*) p="$(printf '%s' "$p" | tr '\\' '/')" ;;
+    esac
+  fi
+  case "$p" in
+    */*) leaf="${p##*/}"; parent="${p%/*}"; [ -n "$parent" ] || parent="/" ;;
+    *)   leaf="$p"; parent="." ;;
+  esac
+  # Walk up to the deepest ancestor that actually exists; remember the rest.
+  # `[ -d ]` follows symlinks, so a head ending in `link/..` tests the real dir.
+  head="$parent"; tail=""
+  while [ "$head" != "/" ] && [ "$head" != "." ] && [ ! -d "$head" ]; do
+    tail="${head##*/}${tail:+/}${tail}"
+    case "$head" in
+      */*) head="${head%/*}"; [ -n "$head" ] || head="/" ;;
+      *)   head="." ;;
+    esac
+  done
+  resolved="$(cd -P "$head" 2>/dev/null && pwd -P)" || resolved="$(hq_normpath "$head")"
+  [ -n "$tail" ] && resolved="${resolved%/}/$tail"
+  hq_normpath "${resolved%/}/$leaf"
+}
+
+# hq_realpath_dir <dir>
+#   FULL symlink resolution for a directory that exists, including its own leaf;
+#   echoes the input unchanged if it is not a directory.
+#
+#   Use this for the ROOT side of a prefix comparison. hq_realpath_lenient
+#   deliberately leaves the leaf alone, which is right for a write target but
+#   wrong for a root: when HQ itself is reached through a symlink (/home/me/hq
+#   -> /mnt/data/hq), a leaf-preserving root stays "/home/me/hq" while every
+#   fully-resolved file path under it reads "/mnt/data/hq/...", so the prefix
+#   test silently never matches and the guard passes everything.
+#   `cd -P`, not plain `cd`, for the same reason as hq_realpath_lenient — and it
+#   matters MORE here, because the two sides of the prefix test must agree. With
+#   link -> real/other and both real/hq and hq existing, a logical `cd` on
+#   link/../hq lands on hq while the file side resolves to real/hq/..., the
+#   prefix comparison misses, and the guard exits 0.
+#   The result is passed through hq_normpath for the same reason: BOTH operands
+#   of a prefix comparison must go through the identical normalizer, or a form
+#   one side preserves and the other rewrites (a leading "//", a trailing "/")
+#   silently breaks the match. Do not "simplify" this by returning pwd -P raw.
+hq_realpath_dir() {
+  local d="$1" p
+  [ -d "$d" ] || { hq_normpath "$d"; return 0; }
+  p="$(cd -P "$d" 2>/dev/null && pwd -P)" || p="$d"
+  hq_normpath "$p"
 }
 
 # hq_shell_simple_commands <command>

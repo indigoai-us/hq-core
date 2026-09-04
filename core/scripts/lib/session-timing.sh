@@ -39,21 +39,33 @@ SESSION_ASSEMBLY_MS_JSON="{}"
 SESSION_TIMING_BUDGET_REPORTED=0
 
 # session_timing_now_ms
-#   Monotonic-ish wall clock in milliseconds. Prefers python3, then perl,
-#   then second-resolution date fallback.
+#   Monotonic-ish wall clock in milliseconds. GNU `date +%s%3N` first (no
+#   interpreter to spawn), then node, then perl, then second-resolution date.
+#
+#   python3 is deliberately NOT in this chain: it is absent on many Windows
+#   machines, and every caller here measures sub-second phase budgets — falling
+#   through to whole-second resolution silently turns a "did assembly exceed
+#   200ms" check into a coin flip. Each candidate is validated as all-digits
+#   before use, which is also what rejects BSD date (macOS) echoing a literal
+#   "N" for the unsupported %N.
 session_timing_now_ms() {
   local ms
-  ms="$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null)" || ms=""
+  ms="$(date +%s%3N 2>/dev/null)" || ms=""
   case "$ms" in
     ''|*[!0-9]*) ;;
     *) printf '%s' "$ms"; return 0 ;;
   esac
-  ms="$(perl -MTime::HiRes=time -e 'printf \"%d\", time()*1000' 2>/dev/null)" || ms=""
+  ms="$(node -e 'process.stdout.write(String(Date.now()))' 2>/dev/null)" || ms=""
   case "$ms" in
     ''|*[!0-9]*) ;;
     *) printf '%s' "$ms"; return 0 ;;
   esac
-  # Second resolution only — adequate when python/perl unavailable.
+  ms="$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null)" || ms=""
+  case "$ms" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s' "$ms"; return 0 ;;
+  esac
+  # Second resolution only — adequate when node/perl are both unavailable.
   ms="$(date +%s 2>/dev/null || echo 0)"
   case "$ms" in
     ''|*[!0-9]*) ms=0 ;;
@@ -109,8 +121,12 @@ session_timing_begin() {
       ''|*[!0-9]*) sleep_ms=0 ;;
     esac
     if [ "$sleep_ms" -gt 0 ]; then
-      # Prefer python sleep for sub-second precision; fall back to sleep 1.
-      python3 -c "import time; time.sleep(${sleep_ms}/1000.0)" 2>/dev/null \
+      # Sub-second precision for the test stub. GNU/BSD `sleep` both accept a
+      # fractional argument; node covers hosts whose sleep is integer-only
+      # (busybox), and `sleep 1` is the last resort. No python3 — see
+      # session_timing_now_ms.
+      sleep "$(awk -v m="$sleep_ms" 'BEGIN{printf "%.3f", m/1000}')" 2>/dev/null \
+        || node -e "setTimeout(()=>{}, ${sleep_ms})" 2>/dev/null \
         || sleep 1
     fi
   fi
