@@ -25,6 +25,12 @@
 
 set -uo pipefail
 
+# Resolved from this file's own location, not CLAUDE_PROJECT_DIR: the hook ships
+# at core/hooks/PreToolUse/, so ../../.. is always the HQ root even when the
+# session's cwd is somewhere else entirely.
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || HOOK_DIR=""
+HOOK_LIB="${HOOK_DIR:+$HOOK_DIR/../../scripts/hook-lib.sh}"
+
 INPUT=$(cat)
 
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || true
@@ -45,22 +51,21 @@ RAW_PATH="$FILE_PATH"
 RAW_PROJECT_DIR="$PROJECT_DIR"
 
 # Resolve symlinks and `..` so dodges don't slip past the prefix check.
-# Use python3 realpath-with-strict=False so non-existent target files (Write
-# creating a new file) still resolve their parent chain.
-if command -v python3 >/dev/null 2>&1; then
-  FILE_PATH="$(python3 -c '
-import os, sys
-p = sys.argv[1]
-# Resolve parents that exist; preserve the leaf even if it does not.
-parent = os.path.dirname(p) or "/"
-leaf = os.path.basename(p)
-try:
-    parent = os.path.realpath(parent)
-except OSError:
-    pass
-sys.stdout.write(os.path.normpath(os.path.join(parent, leaf)))
-' "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
-  PROJECT_DIR="$(python3 -c 'import os,sys; sys.stdout.write(os.path.realpath(sys.argv[1]))' "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
+# hq_realpath_lenient tolerates a leaf that does not exist yet (Write creating a
+# new file) by resolving only the parent chain — the same semantics this hook
+# previously got from python3's realpath. It is pure POSIX shell on purpose:
+# python3 is missing on many Windows machines, and the Store alias stub there
+# satisfies `command -v python3` while failing every call, so the old guard
+# silently skipped resolution and let symlink/`..` dodges through unblocked.
+if [[ -f "$HOOK_LIB" ]]; then
+  # shellcheck source=core/scripts/hook-lib.sh
+  . "$HOOK_LIB"
+  FILE_PATH="$(hq_realpath_lenient "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
+  # Root side of the prefix test — resolved FULLY (leaf included), matching the
+  # strict realpath this previously used. A leaf-preserving root would keep an
+  # HQ reached via symlink as /home/me/hq while FILE_PATH above resolves to
+  # /mnt/data/hq/..., and the repos/ prefix check would never fire.
+  PROJECT_DIR="$(hq_realpath_dir "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
 fi
 
 REPOS_DIR="$PROJECT_DIR/repos"

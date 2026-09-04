@@ -691,6 +691,8 @@ jobs:
         run: bash core/scripts/tests/hq-agent-session-runtime-env.test.sh
       - name: Provider liveness heartbeat (idle-watchdog survival)
         run: bash core/scripts/tests/hq-agent-session-heartbeat.test.sh
+      - name: Company authorization (fail-closed guards + pipefail regression)
+        run: bash core/scripts/tests/hq-agent-session-authz.test.sh
 
   reindex-path-gate:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}

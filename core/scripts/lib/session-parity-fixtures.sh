@@ -268,29 +268,33 @@ session_parity_assert_constants() {
 session_parity_normalize_assembled() {
   local src="${1:-}" dest="${2:-}" root="${3:-${HQ_AGENT_WORKDIR:-}}"
   [ -f "$src" ] || return 1
-  python3 - "$src" "$dest" "$root" <<'PY'
-import os
-import sys
-
-src, dest, root = sys.argv[1], sys.argv[2], sys.argv[3]
-text = open(src, "r", encoding="utf-8").read()
-roots = set()
-for candidate in (
-    root,
-    os.path.realpath(root) if root else "",
-    os.path.abspath(root) if root else "",
-):
-    if not candidate:
-        continue
-    roots.add(candidate)
-    if candidate.startswith("/var/"):
-        roots.add("/private" + candidate)
-    if candidate.startswith("/private/var/"):
-        roots.add(candidate[len("/private") :])
-for r in sorted(roots, key=len, reverse=True):
-    text = text.replace(r, "<HQ_ROOT>")
-open(dest, "w", encoding="utf-8").write(text)
-PY
+  # node, not python3: HQ is npm-installed so node is always present, while
+  # python3 is absent on many Windows machines. Replacement is done with
+  # split/join rather than a regex so a root containing regex metacharacters
+  # (or a Windows drive letter) cannot corrupt the golden.
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const [src, dest, root] = process.argv.slice(1);
+    let text = fs.readFileSync(src, "utf8");
+    const roots = new Set();
+    const seeds = [root];
+    if (root) {
+      try { seeds.push(fs.realpathSync(root)); } catch (e) { /* may not exist */ }
+      seeds.push(path.resolve(root));
+    }
+    for (const c of seeds) {
+      if (!c) continue;
+      roots.add(c);
+      // macOS reports /var and /private/var for the same directory.
+      if (c.startsWith("/var/")) roots.add("/private" + c);
+      if (c.startsWith("/private/var/")) roots.add(c.slice("/private".length));
+    }
+    // Longest first, so a root that is a prefix of another cannot shadow it.
+    for (const r of [...roots].sort((a, b) => b.length - a.length)) {
+      text = text.split(r).join("<HQ_ROOT>");
+    }
+    fs.writeFileSync(dest, text);
+  ' "$src" "$dest" "$root"
 }
 
 # session_parity_compare_golden <fixture_id> <assembled_file> <kind:system|user> <update:0|1>
