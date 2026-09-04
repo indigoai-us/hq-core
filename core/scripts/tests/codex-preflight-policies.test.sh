@@ -2,11 +2,17 @@
 # codex-preflight-policies.test.sh — US-002 acceptance battery for the
 # cross-runtime reach of core/policies/hq-prefer-native-capabilities.md.
 #
-# Codex has no push injection: `core/scripts/codex-preflight.sh policies` is
-# the pull path — it re-runs .claude/hooks/inject-policy-on-trigger.sh with a
-# synthetic SessionStart payload, so any on:[SessionStart] policy in
-# core/policies/ must surface through it. Asserts:
-#   1. `codex-preflight.sh policies` output contains hq-prefer-native-capabilities.
+# Codex has no push injection. There are two paths and #666 moved this policy
+# from the first to the second:
+#   - `core/scripts/codex-preflight.sh policies` re-runs the trigger hook with a
+#     synthetic SessionStart payload. Only on:[SessionStart] policies surface
+#     here, so a reactive-only policy must NOT appear.
+#   - `.codex/hooks/hq-codex-hook-adapter.sh` forwards UserPromptSubmit to the
+#     same hook, which is how a reactive policy reaches Codex.
+# Cross-runtime reach (the point of US-002) is therefore asserted on the
+# reactive path. Asserts:
+#   1. preflight does NOT emit hq-prefer-native-capabilities (reactive-only),
+#      while two distinct Codex sessions BOTH receive it on a matching prompt.
 #   2. .grok/rules/hq-prefer-native-capabilities.md exists, retains /deploy for
 #      URL artifacts, and permits explicitly requested local Slack attachments
 #      through the native audited upload helper.
@@ -32,22 +38,53 @@ ok()   { PASS=$((PASS+1)); echo "ok   [$1]"; }
 fail() { FAIL=$((FAIL+1)); echo "FAIL [$1]: $2"; }
 
 # Remove only the ledgers this run creates; note whether default.txt predates us.
-trap 'rm -f "$LEDGER_DIR/$RUN-a.txt" "$LEDGER_DIR/$RUN-b.txt" "$LEDGER_DIR/$RUN-cx.txt" 2>/dev/null || true' EXIT
+# The adapter writes <id>.txt, <id>.turn.txt and <id>.nl-router-fired, and the
+# UserPromptSubmit fan-out also drops per-session markers under .claude/state.
+trap 'rm -f "$LEDGER_DIR/$RUN-a.txt" "$LEDGER_DIR/$RUN-b.txt" "$LEDGER_DIR"/*"$RUN"* \
+  "$ROOT/.claude/state"/*"$RUN"* 2>/dev/null || true' EXIT
+
+ADAPTER="$ROOT/.codex/hooks/hq-codex-hook-adapter.sh"
+# codex_prompt <session-suffix> -> adapter stdout for a policy-matching prompt.
+#
+# The adapter dispatches EVERY UserPromptSubmit hook in settings.json, not just
+# the policy injector. auto-session-project is one of them, and it would mint a
+# real project folder from the test prompt — so disable it here. This battery is
+# about policy reach; unrelated hooks must not write into the checkout.
+codex_prompt() {
+  printf '{"hook_event_name":"UserPromptSubmit","prompt":"share this as a canvas","cwd":"%s"}' "$ROOT" \
+    | CODEX_SESSION_ID="$RUN-$1" HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" \
+      HQ_AUTO_SESSION_PROJECT=0 HQ_DISABLED_HOOKS=auto-session-project \
+      bash "$ADAPTER" 2>/dev/null
+}
 DEFAULT_PREEXISTS=0
 [ -f "$DEFAULT_LEDGER" ] && DEFAULT_PREEXISTS=1
 
-echo "== 1. preflight policies: two distinct sessions BOTH emit $SLUG =="
+echo "== 1. preflight is SessionStart-only, so a reactive policy must not appear =="
 OUT_A="$( (cd "$ROOT" && bash core/scripts/codex-preflight.sh policies --session "$RUN-a") 2>/dev/null )"
-OUT_B="$( (cd "$ROOT" && bash core/scripts/codex-preflight.sh policies --session "$RUN-b") 2>/dev/null )"
 if printf '%s' "$OUT_A" | grep -Fq "$SLUG"; then
-  ok "session A emits $SLUG"
+  fail "preflight omits $SLUG (policy is reactive-only)" "slug present in the SessionStart pull path"
 else
-  fail "session A emits $SLUG" "slug missing; got: $(printf '%s' "$OUT_A" | tr '\n' ' ' | cut -c1-300)"
+  ok "preflight omits $SLUG (policy is reactive-only)"
 fi
-if printf '%s' "$OUT_B" | grep -Fq "$SLUG"; then
-  ok "session B emits $SLUG (dedupe is per-session, not per-machine)"
+
+echo "== 1a. Codex reactive path: two distinct sessions BOTH receive $SLUG =="
+if [ -f "$ADAPTER" ]; then
+  CX_A="$(codex_prompt cxa)"
+  CX_B="$(codex_prompt cxb)"
+  if printf '%s' "$CX_A" | grep -Fq "$SLUG"; then
+    ok "Codex session A receives $SLUG on a matching prompt"
+  else
+    fail "Codex session A receives $SLUG on a matching prompt" \
+      "slug missing; got: $(printf '%s' "$CX_A" | tr '\n' ' ' | cut -c1-300)"
+  fi
+  if printf '%s' "$CX_B" | grep -Fq "$SLUG"; then
+    ok "Codex session B receives $SLUG (dedupe is per-session, not per-machine)"
+  else
+    fail "Codex session B receives $SLUG (dedupe is per-session, not per-machine)" \
+      "slug missing — dedupe leaked across sessions"
+  fi
 else
-  fail "session B emits $SLUG (dedupe is per-session, not per-machine)" "slug missing — dedupe leaked across sessions"
+  fail "Codex reactive path" "adapter missing at $ADAPTER"
 fi
 if [ "$DEFAULT_PREEXISTS" = 0 ] && [ -f "$DEFAULT_LEDGER" ]; then
   fail "preflight never touches the shared default.txt ledger" "default.txt was created"
@@ -56,10 +93,8 @@ else
 fi
 
 echo "== 1b. codex adapter synthesizes a session_id when the payload lacks one =="
-ADAPTER="$ROOT/.codex/hooks/hq-codex-hook-adapter.sh"
 if [ -f "$ADAPTER" ]; then
-  AOUT="$(printf '{"hook_event_name":"SessionStart","source":"startup","cwd":"%s"}' "$ROOT" \
-    | CODEX_SESSION_ID="$RUN-cx" HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$ADAPTER" 2>/dev/null)"
+  AOUT="$(codex_prompt cx)"
   if printf '%s' "$AOUT" | grep -Fq "$SLUG" && [ -f "$LEDGER_DIR/codex-$RUN-cx.txt" ]; then
     ok "adapter injects $SLUG under a synthesized session ledger"
   else

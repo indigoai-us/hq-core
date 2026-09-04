@@ -14,7 +14,9 @@ cd "$REPO_ROOT"
 ok()   { printf '  ✓ %s\n' "$1"; }
 skip() { printf '  • %s (skipped)\n' "$1"; }
 fail() { printf '  ✗ %s\n' "$1" >&2; }
-ask()  { printf '\n%s [y/N] ' "$1"; read -r answer; [[ "$answer" =~ ^[Yy] ]]; }
+# ask: y/N prompt. Non-interactive (no tty on stdin) → returns false (no) so
+# `set -e` never hangs or aborts on a `read` from a closed/empty stdin.
+ask()  { [ -t 0 ] || return 1; printf '\n%s [y/N] ' "$1"; read -r answer; [[ "$answer" =~ ^[Yy] ]]; }
 
 check_cmd() {
   command -v "$1" &>/dev/null
@@ -68,10 +70,10 @@ fi
 
 # ── 2. Install qmd ──────────────────────────────────────────────────────────
 
-QMD_VERSION="1.0.7"
+QMD_VERSION="2.5.3"
 
 echo ""
-echo "Setting up qmd@$QMD_VERSION…"
+echo "Setting up qmd@${QMD_VERSION}…"
 
 INSTALLED_QMD="$(qmd --version 2>/dev/null | awk '{print $2}' || true)"
 
@@ -79,7 +81,7 @@ if [[ "$INSTALLED_QMD" == "$QMD_VERSION" ]]; then
   ok "qmd $QMD_VERSION already installed"
 else
   if [[ -n "$INSTALLED_QMD" ]]; then
-    echo "  Replacing qmd $INSTALLED_QMD with $QMD_VERSION…"
+    echo "  Replacing qmd $INSTALLED_QMD with ${QMD_VERSION}…"
   else
     echo "  Installing @tobilu/qmd@$QMD_VERSION globally…"
   fi
@@ -229,7 +231,7 @@ for dir in "$REPO_ROOT"/companies/*/knowledge; do
   # Only reindex if there are .md files
   if [[ -n "$(find "$dir" -name "*.md" -not -name "INDEX.md" -print -quit)" ]]; then
     company="$(basename "$(dirname "$dir")")"
-    echo "  Indexing $company…"
+    echo "  Indexing ${company}…"
     # Per-company reindex covered by the global `qmd update` call below.
   fi
 done
@@ -306,6 +308,9 @@ $src"
 
   if [[ -z "$RECS" ]]; then
     skip "no recommended_packages declared in core/core.yaml"
+  elif [[ ! -t 0 ]] || [[ ! -r /dev/tty ]]; then
+    # No tty: cannot prompt or hand the installer a terminal. Don't hang.
+    skip "recommended packs (non-interactive; run: hq install <source> later)"
   else
     # Iterate: skip already-installed, evaluate conditional, prompt, install.
     # Use a here-string so `read` inside the loop still reads stdin for `ask`.
