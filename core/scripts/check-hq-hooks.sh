@@ -167,6 +167,64 @@ EOF
   fi
 }
 
+# --- agents-v2 self-attestation ---------------------------------------------
+#
+# `hq doctor` classifies the hermes fleet host as platform "unknown" and, being
+# conservative, refuses to self-attest hook enforcement there — its
+# hooks.runtime.enforcement check reports non-PASS ("host platform is unknown,
+# so whether hooks actually dispatched this session cannot be verified") even
+# when the on-box adapter has provably written the policy-trigger ledger through
+# the same .claude hooks. That surfaced live on a v2.17 canary (A5-SMOKE,
+# 2026-09-05): a fresh, populated ledger + a fully wired .claude/settings.json
+# still read NOT OBSERVED because the checker relayed the doctor's host-unknown
+# verdict verbatim.
+#
+# On an agents-v2 box the ledger IS the proof of dispatch, so grant OBSERVED
+# when — and only when — all three hold:
+#   1. the runtime is agents-v2 (hq_runtime_mode, the SAME detection the
+#      guidance uses: runtime marker or the on-box adapter under the tree),
+#   2. .claude/settings.json actually wires the on-box adapter, and
+#   3. a policy-trigger ledger exists — the exact session's when --session-id is
+#      given, otherwise any ledger modified within the freshness window, so a
+#      long-dead tree cannot self-attest off a stale file.
+# hq_runtime_mode must return agents-v2 first, so this never changes the verdict
+# for any non-agents-v2 host: the default Claude-CLI path stays byte-identical.
+
+# Hours a ledger may age and still evidence a live turn when no exact
+# --session-id is given. Overridable (chiefly for tests).
+HQ_V2_LEDGER_MAX_AGE_HOURS="${HQ_V2_LEDGER_MAX_AGE_HOURS:-24}"
+
+# True when .claude/settings.json wires the on-box agents-v2 hook adapter.
+hq_settings_wires_v2_adapter() {
+  local settings="$HQ_ROOT/.claude/settings.json"
+  [ -f "$settings" ] || return 1
+  grep -q 'hq-agents-v2-hook-adapter\.sh' "$settings" 2>/dev/null
+}
+
+# True when a policy-trigger ledger evidencing a live agents-v2 turn is present:
+# the exact session's ledger when --session-id is given (freshness is implied by
+# the session identity), otherwise any ledger modified within the freshness
+# window so stale evidence cannot self-attest.
+hq_v2_ledger_present() {
+  local dir="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
+  [ -d "$dir" ] || return 1
+  if [ -n "$SESSION_ID" ]; then
+    [ -f "$dir/$SESSION_ID.txt" ]
+    return
+  fi
+  local max_min=$(( HQ_V2_LEDGER_MAX_AGE_HOURS * 60 ))
+  find "$dir" -type f -name '*.txt' -mmin "-${max_min}" -print -quit 2>/dev/null \
+    | grep -q .
+}
+
+# All three agents-v2 self-attestation conditions. Used only to GRANT OBSERVED
+# to a hermes box that hq doctor leaves host-unknown; never to withhold it.
+agents_v2_attested() {
+  [ "$(hq_runtime_mode)" = "agents-v2" ] || return 1
+  hq_settings_wires_v2_adapter || return 1
+  hq_v2_ledger_present || return 1
+}
+
 # --- Modern path: delegate to `hq doctor` -----------------------------------
 #
 # The doctor is a strict superset of this checker (Codex/Grok parity, exec bits,
@@ -189,6 +247,7 @@ DOCTOR_RUNTIME_CHECK_ID="hooks.runtime.enforcement"
 render_from_doctor() {
   local json="$1"
   local settings_issues runtime_status runtime_message
+  local AGENTS_V2_ATTESTED=0
   local -a issues=()
 
   settings_issues="$(printf '%s' "$json" | jq -r --argjson scope "$DOCTOR_SETTINGS_SCOPE" '
@@ -215,6 +274,14 @@ EOF
   if [ "$REQUIRE_LEDGER" -eq 1 ]; then
     if [ "$runtime_status" = "PASS" ]; then
       runtime_obs="OBSERVED"
+    elif agents_v2_attested; then
+      # hq doctor leaves the hermes host platform-unknown and won't self-attest,
+      # but the on-box adapter provably wrote the ledger through the same .claude
+      # hooks. See agents_v2_attested(). Grant the identical OBSERVED verdict and
+      # drop the doctor's host-unknown message rather than relaying it as a
+      # failure.
+      runtime_obs="OBSERVED"
+      AGENTS_V2_ATTESTED=1
     else
       runtime_obs="NOT OBSERVED"
       if [ -n "$runtime_message" ]; then
@@ -246,7 +313,11 @@ EOF
     if [ -n "$SESSION_ID" ]; then
       echo "  session: $SESSION_ID"
     fi
-    echo "HQ runtime enforcement: OBSERVED (policy-trigger ledger present)"
+    if [ "$AGENTS_V2_ATTESTED" -eq 1 ]; then
+      echo "HQ runtime enforcement: OBSERVED (agents-v2 on-box adapter wrote the policy-trigger ledger)"
+    else
+      echo "HQ runtime enforcement: OBSERVED (policy-trigger ledger present)"
+    fi
   else
     echo "  ledger: not checked (run with --require-ledger after a real Desktop/SDK session)"
   fi
