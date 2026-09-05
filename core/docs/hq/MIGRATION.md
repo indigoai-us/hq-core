@@ -3,6 +3,20 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.121-beta.8
+
+- promote 2026-09-04 (work-mesh progress noise): `core/scripts/work-mesh.mjs`
+  — `report` / `progress` / `story` with no `--summary` and no task transition
+  no longer post a thread event (local skip note, exit 0); task-only moves post
+  a specific synthesized line (`US-003 → doing: <title>`); identical summaries
+  for the same project within 10 minutes are coalesced client-side via
+  `~/.hq/work-mesh/cache/last-progress.json`; the "Project work is in
+  progress." / "Work is underway." placeholders are removed. **Impact:** skills
+  that called `report` without a summary now produce no channel row
+  (intended); board moves are unaffected. No action needed.
+- promote 2026-09-04: policy `hq-project-work-mesh-reporting` bumped to v3 —
+  progress reports must carry a real summary. No action needed.
+
 ## Release: v15.0.120-beta.7
 
 - **Desktop sessions now get named on the first turn:** outside the terminal

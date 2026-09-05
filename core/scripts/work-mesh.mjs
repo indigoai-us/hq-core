@@ -2105,6 +2105,90 @@ function decodeJwtPayload(token) {
   }
 }
 
+const PROGRESS_COALESCE_WINDOW_MS = 10 * 60 * 1000;
+const LAST_PROGRESS_MAX_ENTRIES = 200;
+const PROGRESS_STATUS_LABELS = new Map([
+  ["queued", "todo"],
+  ["in_progress", "doing"],
+  ["review", "waiting"],
+  ["done", "done"],
+]);
+
+function lastProgressFile() {
+  return path.join(process.env.HOME || os.homedir(), ".hq", "work-mesh", "cache", "last-progress.json");
+}
+
+/** Per-thread record of the last progress post. Corrupt or missing files read as empty. */
+function readLastProgress(file = lastProgressFile()) {
+  const parsed = readJson(file);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const store = {};
+  for (const [key, entry] of Object.entries(parsed)) {
+    if (!entry || typeof entry !== "object") continue;
+    const at = Number(entry.at);
+    if (!Number.isFinite(at)) continue;
+    store[key] = { summary: String(entry.summary ?? ""), at };
+  }
+  return store;
+}
+
+function recordLastProgress(key, summary, nowMs = Date.now(), file = lastProgressFile(), maxEntries = LAST_PROGRESS_MAX_ENTRIES) {
+  const store = readLastProgress(file);
+  store[String(key)] = { summary: String(summary ?? ""), at: nowMs };
+  const bounded = Object.fromEntries(
+    Object.entries(store)
+      .sort((left, right) => right[1].at - left[1].at)
+      .slice(0, Math.max(1, maxEntries)),
+  );
+  writeJson(file, bounded);
+  return bounded;
+}
+
+function progressStatusLabel(status) {
+  const key = String(status || "").trim();
+  return PROGRESS_STATUS_LABELS.get(key) || key;
+}
+
+/**
+ * Decide whether a progress-kind event carries enough signal to post.
+ * No summary and no task transition → skip (no_summary). A transition without a
+ * summary gets a synthesized "US-003 → doing: Title" line. An identical summary
+ * for the same thread inside windowMs → skip (coalesced). Other kinds always post.
+ */
+function decideProgressPost({
+  eventKind,
+  summary,
+  taskId,
+  taskStatus,
+  taskTitle,
+  lastPost,
+  nowMs = Date.now(),
+  windowMs = PROGRESS_COALESCE_WINDOW_MS,
+} = {}) {
+  const text = String(summary ?? "").trim();
+  if (eventKind !== "progress") return { post: true, reason: "ok", summary: text };
+  let resolved = text;
+  if (!resolved) {
+    const id = String(taskId ?? "").trim();
+    const status = progressStatusLabel(taskStatus);
+    if (!id || !status) return { post: false, reason: "no_summary", summary: "" };
+    const title = String(taskTitle ?? "").trim();
+    resolved = `${id} → ${status}${title ? `: ${title}` : ""}`;
+  }
+  if (lastPost && String(lastPost.summary ?? "") === resolved) {
+    const age = nowMs - Number(lastPost.at);
+    if (Number.isFinite(age) && age >= 0 && age < windowMs) {
+      return { post: false, reason: "coalesced", summary: resolved };
+    }
+  }
+  return { post: true, reason: "ok", summary: resolved };
+}
+
+function noteSkip(opts, reason) {
+  if (opts.silent) return;
+  console.error(`work-mesh skipped: ${reason}`);
+}
+
 function eventPayload(command, opts, token) {
   if (command === "claim") {
     const minutes = Number(opts.lease_minutes || "120");
@@ -2118,7 +2202,7 @@ function eventPayload(command, opts, token) {
   if (command === "progress") {
     const completion = opts.completion === undefined ? undefined : Number(opts.completion);
     return {
-      summary: clamp(opts.summary || "Work is underway.", 280),
+      summary: clamp(opts.summary, 280),
       completionEstimate: Number.isFinite(completion) ? Math.min(1, Math.max(0, completion)) : undefined,
     };
   }
@@ -2173,6 +2257,11 @@ function printResult(result, opts) {
     return;
   }
   if (opts.silent) return;
+  if (result.posted === false) {
+    const move = result.taskId ? `; task ${result.taskId} → ${result.status || "?"}` : "";
+    console.log(`Work mesh: ${result.action} not posted (${result.skipReason})${move}`);
+    return;
+  }
   const created = result.created ? "created" : "using";
   const event = result.eventKind ? `; ${result.eventKind} event ${result.eventId || "recorded"}` : "";
   console.log(`Work mesh: ${created} ${result.threadId}${event}`);
@@ -2750,21 +2839,35 @@ async function main() {
       if (storyStatus === "done") unbindSession(company.companyUid, opts.project, storyId);
     }
 
-    const wantsThread = command !== "story" || Boolean(opts.summary);
+    const patched = (storyView?.stories || []).find((row) => row.id === storyId) || null;
+    let eventKind = command === "start" ? "claim" : command === "report" ? "progress" : command;
+    if (eventKind === "story") eventKind = "progress";
+    const progressKey = `${company.companyUid}/${opts.project}`;
+    const decision = decideProgressPost({
+      eventKind,
+      summary: opts.summary,
+      taskId: wantsStory ? storyId : "",
+      taskStatus: wantsStory ? (patched?.status || storyStatus) : "",
+      taskTitle: taskTitle || patched?.title,
+      lastPost: readLastProgress()[progressKey],
+    });
     let ensured;
     let event;
-    let eventKind;
-    if (wantsThread) {
+    if (decision.post) {
       ensured = await ensureThread(auth.apiUrl, auth.token, company, opts.project, opts);
-      eventKind = command === "start" ? "claim" : command === "report" ? "progress" : command;
-      if (eventKind === "story") eventKind = "progress";
-      const payload = eventPayload(eventKind, opts, auth.token);
+      const payload = eventPayload(
+        eventKind,
+        eventKind === "progress" ? { ...opts, summary: decision.summary } : opts,
+        auth.token,
+      );
       event = opts.dry_run
         ? { eventId: "dry-run-event", createdAt: new Date().toISOString() }
         : await appendEvent(auth.apiUrl, auth.token, company.companyUid, ensured.threadId, eventKind, payload);
+      if (eventKind === "progress" && !opts.dry_run) recordLastProgress(progressKey, decision.summary);
+    } else {
+      noteSkip(opts, `${command} not posted (${decision.reason})`);
     }
 
-    const patched = (storyView?.stories || []).find((row) => row.id === storyId) || null;
     printResult(
       {
         ok: true,
@@ -2775,6 +2878,8 @@ async function main() {
         threadId: ensured?.threadId,
         eventId: event?.eventId,
         createdAt: event?.createdAt,
+        posted: decision.post,
+        skipReason: decision.post ? undefined : decision.reason,
         viewCreated: viewSeed?.created,
         viewSkipped: viewSeed?.skipped,
         storyId: wantsStory ? storyId : undefined,
@@ -2799,6 +2904,7 @@ export {
   createReconcileCoordinator,
   cursorBinding,
   cursorFileFor,
+  decideProgressPost,
   deterministicBackoffMs,
   deterministicJitterMs,
   fetchRealtimeConfig,
@@ -2809,6 +2915,8 @@ export {
   parseRealtimeV2Wake,
   parseWorkFeed,
   readBoundedResponseText,
+  readLastProgress,
+  recordLastProgress,
   reconcileV2,
   redactedDiagnostic,
   redactedRealtimeConfig,
