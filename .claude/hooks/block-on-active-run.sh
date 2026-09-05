@@ -34,7 +34,14 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo ""
 # default. Never hardcode ~/Documents/HQ as the sole source.
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)}}"
 HQ_ROOT="${HQ_ROOT:-${HOME}/Documents/HQ}"
-. "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
+# Guard the source with a readability test: `. missing 2>/dev/null || true`
+# is NOT safe — bash treats sourcing a nonexistent file as a fatal error in a
+# non-interactive shell, terminating the hook (rc=1) before it consults the
+# registry. That silently disabled active-run blocking under any resolved root
+# lacking core/scripts/hook-lib.sh (fresh installs, worktrees, test fixtures).
+if [ -r "$HQ_ROOT/core/scripts/hook-lib.sh" ]; then
+  . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
+fi
 REG="$HQ_ROOT/scripts/repo-run-registry.sh"
 [[ ! -x "$REG" ]] && exit 0
 

@@ -310,6 +310,12 @@ EOF
       bash "$HOOKS/$hook" "$event" <<<"$payload" >/dev/null 2>&1 ) || rc=$?
   [ -f "$FR/.registry-consulted" ] \
     || fail "$hook did not consult the registry under the resolved root (rc=$rc)"
+  # The fake root deliberately has NO core/scripts/hook-lib.sh. Sourcing a
+  # missing file is fatal in a non-interactive bash even behind `|| true`, so a
+  # hook that hard-sources its lib would exit before this point. Reaching a
+  # clean rc here (allow) proves the source is guarded and stays non-fatal.
+  [ "$rc" -eq 0 ] \
+    || fail "$hook aborted (rc=$rc) with core/scripts/hook-lib.sh absent — source must be guarded, not fatal"
   pass "$hook consulted the registry under the fake root"
   rm -rf "$FR"; trap - EXIT
 done
