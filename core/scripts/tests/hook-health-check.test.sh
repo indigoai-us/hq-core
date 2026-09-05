@@ -463,4 +463,127 @@ if printf '%s' "$out" | grep -Fq 'agents-v2 (hermes)'; then
 fi
 pass "the default Claude runtime keeps its own recovery steps"
 
+echo "[19] the doctor path self-attests an agents-v2 box off a wired, fresh ledger"
+# LIVE reproduction (A5-SMOKE, v2.17 canary, 2026-09-05): on a real HQ tree the
+# checker delegates to `hq doctor`, which classifies the hermes host as platform
+# "unknown" and reports hooks.runtime.enforcement as non-PASS — so a fresh,
+# populated policy-trigger ledger + a fully wired .claude/settings.json still
+# read NOT OBSERVED. The cases above never hit this because a mktemp root is not
+# an HQ tree, so `hq doctor` bails and the inline checker runs. Force the doctor
+# path with a stub `hq` that reproduces the exact host-unknown verdict.
+STUBBIN="$TMP/stub-bin"
+mkdir -p "$STUBBIN"
+cat >"$STUBBIN/hq" <<'STUB'
+#!/usr/bin/env bash
+# Minimal `hq doctor --json` stub: settings scope all PASS, runtime enforcement
+# FAIL with the live host-unknown message, platform id unknown. Ignores args
+# (incl. --session-id) — the ledger is asserted by check-hq-hooks.sh itself.
+cat <<'JSON'
+{
+  "schemaVersion": 2,
+  "platform": { "id": "unknown" },
+  "results": [
+    { "checkId": "hooks.settings-present", "status": "PASS", "message": "" },
+    { "checkId": "hooks.settings-valid-json", "status": "PASS", "message": "" },
+    { "checkId": "hooks.claude.settings-local-valid-json", "status": "PASS", "message": "" },
+    { "checkId": "hooks.claude.unquoted-project-dir", "status": "PASS", "message": "" },
+    { "checkId": "hooks.claude.script-missing", "status": "PASS", "message": "" },
+    { "checkId": "hooks.runtime.enforcement", "status": "FAIL", "message": "the policy-trigger ledger is present but the host platform is unknown, so whether hooks actually dispatched this session cannot be verified" }
+  ]
+}
+JSON
+STUB
+chmod +x "$STUBBIN/hq"
+
+# A tree whose settings.json wires the on-box adapter (what the checker greps for
+# to confirm an agents-v2 box is wired); the doctor stub reports settings healthy
+# regardless of the file contents.
+make_v2_wired_root() {
+  local root="$1"
+  mkdir -p "$root/.claude"
+  cat >"$root/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.agents-v2-hooks/hq-agents-v2-hook-adapter.sh\" SessionStart"}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.agents-v2-hooks/hq-agents-v2-hook-adapter.sh\" PreToolUse"}]}]
+  }
+}
+JSON
+}
+
+V2MARK="$TMP/v2-doctor-runtime.json"
+printf '{"runtimeMode":"agents-v2"}\n' >"$V2MARK"
+NOMARK="$TMP/nonexistent-runtime-marker.json"
+
+# 19c first — a non-v2 host proves the doctor path is exercised AND that the fix
+# does not fire there: unknown host + fresh ledger stays NOT OBSERVED (the prior
+# result, unchanged).
+UNKNOWN="$TMP/doctor-unknown-host"
+make_healthy_root "$UNKNOWN"   # settings.json does NOT wire the adapter
+mkdir -p "$UNKNOWN/workspace/orchestrator/policy-trigger-state"
+: >"$UNKNOWN/workspace/orchestrator/policy-trigger-state/turn.txt"
+set +e
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$NOMARK" bash "$CHECKER" --root "$UNKNOWN" --require-ledger 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "19c: unknown host + ledger via doctor should stay exit 2: $out"
+printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+  || fail "19c: unknown host must stay NOT OBSERVED under the doctor path: $out"
+printf '%s' "$out" | grep -Fq 'host platform is unknown' \
+  || fail "19c: doctor path was not exercised (host-unknown message absent): $out"
+if printf '%s' "$out" | grep -Fq 'agents-v2 on-box adapter wrote'; then
+  fail "19c: the v2 self-attestation leaked onto a non-v2 host: $out"
+fi
+pass "19c: doctor path is exercised and an unknown host with a ledger stays NOT OBSERVED"
+
+# 19a — v2 marker + adapter wiring + fresh ledger → OBSERVED (exit 0) via doctor.
+V2OK="$TMP/doctor-v2-ok"
+make_v2_wired_root "$V2OK"
+mkdir -p "$V2OK/workspace/orchestrator/policy-trigger-state"
+: >"$V2OK/workspace/orchestrator/policy-trigger-state/hermes-turn.txt"   # fresh
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" bash "$CHECKER" --root "$V2OK" --require-ledger 2>&1)"
+printf '%s' "$out" | grep -Fq 'checked via: hq doctor' \
+  || fail "19a: the doctor path must be the one exercised: $out"
+printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: OBSERVED' \
+  || fail "19a: a wired v2 box with a fresh ledger must read OBSERVED: $out"
+printf '%s' "$out" | grep -Fq 'agents-v2 on-box adapter wrote the policy-trigger ledger' \
+  || fail "19a: the OBSERVED line should name the v2 self-attestation: $out"
+if printf '%s' "$out" | grep -Fq 'host platform is unknown'; then
+  fail "19a: the doctor host-unknown message must be dropped, not relayed: $out"
+fi
+pass "19a: a wired agents-v2 box self-attests OBSERVED under the doctor path"
+
+# 19b — v2 marker + adapter wiring + MISSING ledger → NOT OBSERVED (exit 2).
+V2NOLEDGER="$TMP/doctor-v2-no-ledger"
+make_v2_wired_root "$V2NOLEDGER"
+set +e
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" bash "$CHECKER" --root "$V2NOLEDGER" --require-ledger 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "19b: v2 box with no ledger must exit 2: $out"
+printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+  || fail "19b: v2 box with no ledger must read NOT OBSERVED: $out"
+printf '%s' "$out" | grep -Fq 'agents-v2 (hermes)' \
+  || fail "19b: v2 box with no ledger should still get agents-v2 guidance: $out"
+pass "19b: a wired agents-v2 box with no ledger stays NOT OBSERVED"
+
+# 19d — freshness gate: a STALE ledger does not self-attest without --session-id,
+# but the exact --session-id (identity implies freshness) still does.
+V2STALE="$TMP/doctor-v2-stale"
+make_v2_wired_root "$V2STALE"
+mkdir -p "$V2STALE/workspace/orchestrator/policy-trigger-state"
+STALE_LEDGER="$V2STALE/workspace/orchestrator/policy-trigger-state/old-session.txt"
+: >"$STALE_LEDGER"
+touch -t 202001010000 "$STALE_LEDGER"   # far outside the freshness window
+set +e
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" bash "$CHECKER" --root "$V2STALE" --require-ledger 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "19d: a stale ledger must not self-attest without --session-id: $out"
+printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+  || fail "19d: a stale ledger must read NOT OBSERVED without --session-id: $out"
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" bash "$CHECKER" --root "$V2STALE" --session-id old-session 2>&1)"
+printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: OBSERVED' \
+  || fail "19d: the exact --session-id ledger should self-attest despite age: $out"
+printf '%s' "$out" | grep -Fq 'session: old-session' \
+  || fail "19d: the exact session identity should be reported: $out"
+pass "19d: freshness gates the no-session case; --session-id bypasses it by identity"
+
 echo "PASS: hook-health checker"

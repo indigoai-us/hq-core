@@ -137,6 +137,33 @@ gate_configured() {
   return 1
 }
 
+# Drop shell redirection tokens from an argument list.
+#
+# `2>&1`, `>file`, `>>file`, `<file`, `&>file`, `2>/dev/null` and the `N>&M`
+# forms are shell plumbing, not arguments to the package manager. Every token
+# loop below classifies anything not starting with '-' as a positional package
+# name, so an install written as `pnpm add -g <pkg> 2>&1` used to fail the
+# "every positional token is allow-listed" check and get blocked — which killed
+# the first-party override in practice, since agents almost always append
+# `2>&1 | tail`. A bare operator (`>`, `2>>`, `<`) also consumes the token that
+# follows it as its target.
+strip_redirection_tokens() {
+  local out="" tok skip_next=0
+  for tok in $1; do
+    if [ "$skip_next" = "1" ]; then
+      skip_next=0
+      continue
+    fi
+    if [[ "$tok" =~ ^([0-9]+|\&)?(\>\>?|\<) ]]; then
+      # Operator with no target attached — the next token is its target.
+      [[ "$tok" =~ ^([0-9]+|\&)?(\>\>?|\<)\&?$ ]] && skip_next=1
+      continue
+    fi
+    out="$out $tok"
+  done
+  printf '%s' "${out# }"
+}
+
 # Has at least one positional, non-flag argument after the subcommand?
 # Args: "<rest-of-command-after-subcmd>"
 has_positional_pkg_arg() {
@@ -233,6 +260,10 @@ check_segment() {
     # `rest` may include trailing content from later lines (heredoc body, etc.) —
     # we only need the FIRST line for positional-arg detection.
     rest="${rest%%$'\n'*}"
+    # Redirections are shell plumbing, never package arguments. Strip them once
+    # here so every token loop below (hydration detection, trusted-scope check,
+    # allow-list check) sees the same package-only argument list.
+    rest="$(strip_redirection_tokens "$rest")"
   else
     return 0
   fi
