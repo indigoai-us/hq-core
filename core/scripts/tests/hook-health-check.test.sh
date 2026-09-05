@@ -495,21 +495,42 @@ JSON
 STUB
 chmod +x "$STUBBIN/hq"
 
-# A tree whose settings.json wires the on-box adapter (what the checker greps for
-# to confirm an agents-v2 box is wired); the doctor stub reports settings healthy
-# regardless of the file contents.
+# A tree wired the way a REAL agents-v2 box is: the on-box adapter installed
+# under the tree AND the hermes runtime config (~/.hermes/config.yaml, here
+# redirected per-invocation via HQ_HERMES_CONFIG_FILE) invoking it in its
+# `hooks:` block. The classic .claude/settings.json deliberately wires the
+# CLASSIC hook-gate.sh hooks and does NOT name the adapter — on a real box the
+# adapter merely READS settings.json — so signal 2 must key on the runtime config,
+# never on settings.json (v2.17 canary 2026-09-05: settings.json had 0 adapter
+# refs / 94 hook-gate.sh refs; ~/.hermes/config.yaml wired the adapter across 7
+# events). The doctor stub reports settings healthy regardless of contents.
 make_v2_wired_root() {
   local root="$1"
-  mkdir -p "$root/.claude"
+  mkdir -p "$root/.claude" "$root/.agents-v2-hooks" "$root/.hermes"
   cat >"$root/.claude/settings.json" <<'JSON'
 {
   "hooks": {
-    "SessionStart": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.agents-v2-hooks/hq-agents-v2-hook-adapter.sh\" SessionStart"}]}],
-    "PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.agents-v2-hooks/hq-agents-v2-hook-adapter.sh\" PreToolUse"}]}]
+    "SessionStart": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" SessionStart"}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" PreToolUse"}]}]
   }
 }
 JSON
+  printf '#!/bin/bash\nexit 0\n' >"$root/.agents-v2-hooks/hq-agents-v2-hook-adapter.sh"
+  chmod +x "$root/.agents-v2-hooks/hq-agents-v2-hook-adapter.sh"
+  # The real wiring: the hermes `hooks:` block invokes the adapter per event
+  # (absolute HOOKS_DIR path, exactly as provision/render-config.sh emits).
+  cat >"$root/.hermes/config.yaml" <<YAML
+hooks:
+  pre_tool_call:
+    - command: "$root/.agents-v2-hooks/hq-agents-v2-hook-adapter.sh pre_tool_call"
+      fail_closed: true
+  on_session_start:
+    - command: "$root/.agents-v2-hooks/hq-agents-v2-hook-adapter.sh on_session_start"
+YAML
 }
+
+# The hermes config path a v2 tree exposes, for HQ_HERMES_CONFIG_FILE.
+v2_hermes_config() { printf '%s/.hermes/config.yaml' "$1"; }
 
 V2MARK="$TMP/v2-doctor-runtime.json"
 printf '{"runtimeMode":"agents-v2"}\n' >"$V2MARK"
@@ -540,7 +561,7 @@ V2OK="$TMP/doctor-v2-ok"
 make_v2_wired_root "$V2OK"
 mkdir -p "$V2OK/workspace/orchestrator/policy-trigger-state"
 : >"$V2OK/workspace/orchestrator/policy-trigger-state/hermes-turn.txt"   # fresh
-out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" bash "$CHECKER" --root "$V2OK" --require-ledger 2>&1)"
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" HQ_HERMES_CONFIG_FILE="$(v2_hermes_config "$V2OK")" bash "$CHECKER" --root "$V2OK" --require-ledger 2>&1)"
 printf '%s' "$out" | grep -Fq 'checked via: hq doctor' \
   || fail "19a: the doctor path must be the one exercised: $out"
 printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: OBSERVED' \
@@ -556,7 +577,7 @@ pass "19a: a wired agents-v2 box self-attests OBSERVED under the doctor path"
 V2NOLEDGER="$TMP/doctor-v2-no-ledger"
 make_v2_wired_root "$V2NOLEDGER"
 set +e
-out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" bash "$CHECKER" --root "$V2NOLEDGER" --require-ledger 2>&1)"; rc=$?
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" HQ_HERMES_CONFIG_FILE="$(v2_hermes_config "$V2NOLEDGER")" bash "$CHECKER" --root "$V2NOLEDGER" --require-ledger 2>&1)"; rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "19b: v2 box with no ledger must exit 2: $out"
 printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
@@ -574,12 +595,12 @@ STALE_LEDGER="$V2STALE/workspace/orchestrator/policy-trigger-state/old-session.t
 : >"$STALE_LEDGER"
 touch -t 202001010000 "$STALE_LEDGER"   # far outside the freshness window
 set +e
-out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" bash "$CHECKER" --root "$V2STALE" --require-ledger 2>&1)"; rc=$?
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" HQ_HERMES_CONFIG_FILE="$(v2_hermes_config "$V2STALE")" bash "$CHECKER" --root "$V2STALE" --require-ledger 2>&1)"; rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "19d: a stale ledger must not self-attest without --session-id: $out"
 printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
   || fail "19d: a stale ledger must read NOT OBSERVED without --session-id: $out"
-out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" bash "$CHECKER" --root "$V2STALE" --session-id old-session 2>&1)"
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" HQ_HERMES_CONFIG_FILE="$(v2_hermes_config "$V2STALE")" bash "$CHECKER" --root "$V2STALE" --session-id old-session 2>&1)"
 printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: OBSERVED' \
   || fail "19d: the exact --session-id ledger should self-attest despite age: $out"
 printf '%s' "$out" | grep -Fq 'session: old-session' \

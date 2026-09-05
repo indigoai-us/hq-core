@@ -175,15 +175,15 @@ EOF
 # so whether hooks actually dispatched this session cannot be verified") even
 # when the on-box adapter has provably written the policy-trigger ledger through
 # the same .claude hooks. That surfaced live on a v2.17 canary (A5-SMOKE,
-# 2026-09-05): a fresh, populated ledger + a fully wired .claude/settings.json
-# still read NOT OBSERVED because the checker relayed the doctor's host-unknown
-# verdict verbatim.
+# 2026-09-05): a fresh, populated ledger + a fully wired runtime still read NOT
+# OBSERVED because the checker relayed the doctor's host-unknown verdict verbatim.
 #
 # On an agents-v2 box the ledger IS the proof of dispatch, so grant OBSERVED
 # when — and only when — all three hold:
 #   1. the runtime is agents-v2 (hq_runtime_mode, the SAME detection the
 #      guidance uses: runtime marker or the on-box adapter under the tree),
-#   2. .claude/settings.json actually wires the on-box adapter, and
+#   2. the agents-v2 runtime actually wires the on-box adapter (see
+#      hq_runtime_config_wires_v2_adapter), and
 #   3. a policy-trigger ledger exists — the exact session's when --session-id is
 #      given, otherwise any ledger modified within the freshness window, so a
 #      long-dead tree cannot self-attest off a stale file.
@@ -194,11 +194,30 @@ EOF
 # --session-id is given. Overridable (chiefly for tests).
 HQ_V2_LEDGER_MAX_AGE_HOURS="${HQ_V2_LEDGER_MAX_AGE_HOURS:-24}"
 
-# True when .claude/settings.json wires the on-box agents-v2 hook adapter.
-hq_settings_wires_v2_adapter() {
-  local settings="$HQ_ROOT/.claude/settings.json"
-  [ -f "$settings" ] || return 1
-  grep -q 'hq-agents-v2-hook-adapter\.sh' "$settings" 2>/dev/null
+# Default path to the agents-v2 runtime (hermes) config whose `hooks:` block
+# wires the on-box adapter into every lifecycle event (rendered by
+# provision/render-config.sh to ~/.hermes/config.yaml). Overridable chiefly for
+# tests, mirroring HQ_RUNTIME_MARKER_FILE.
+HQ_HERMES_CONFIG_FILE="${HQ_HERMES_CONFIG_FILE:-$HOME/.hermes/config.yaml}"
+
+# True when the agents-v2 runtime actually wires the on-box hook adapter.
+#
+# The wiring lives in the RUNTIME's hook config, not .claude/settings.json. On a
+# real box the v2 runtime's shell-hook dispatcher (agent/shell_hooks.py) reads a
+# `hooks:` block from ~/.hermes/config.yaml with one entry per lifecycle event,
+# each invoking hq-agents-v2-hook-adapter.sh; the adapter in turn READS
+# .claude/settings.json (via hook-adapter-core.sh) to fan out to the classic
+# .claude/hooks set. So .claude/settings.json never NAMES the adapter — it wires
+# the classic hook-gate.sh hooks — and grepping it for the adapter always fails.
+# Verified on the v2.17 canary (i-0277243ad3aed8109, 2026-09-05): settings.json
+# had 0 adapter refs / 94 hook-gate.sh refs, while ~/.hermes/config.yaml wired
+# the adapter across 7 events. Require BOTH the adapter installed under the tree
+# AND the runtime config invoking it.
+hq_runtime_config_wires_v2_adapter() {
+  [ -f "$HQ_ROOT/.agents-v2-hooks/hq-agents-v2-hook-adapter.sh" ] || return 1
+  local cfg="$HQ_HERMES_CONFIG_FILE"
+  [ -f "$cfg" ] || return 1
+  grep -q 'hq-agents-v2-hook-adapter\.sh' "$cfg" 2>/dev/null
 }
 
 # True when a policy-trigger ledger evidencing a live agents-v2 turn is present:
@@ -221,7 +240,7 @@ hq_v2_ledger_present() {
 # to a hermes box that hq doctor leaves host-unknown; never to withhold it.
 agents_v2_attested() {
   [ "$(hq_runtime_mode)" = "agents-v2" ] || return 1
-  hq_settings_wires_v2_adapter || return 1
+  hq_runtime_config_wires_v2_adapter || return 1
   hq_v2_ledger_present || return 1
 }
 
