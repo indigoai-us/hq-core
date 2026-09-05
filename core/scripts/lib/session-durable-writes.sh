@@ -23,7 +23,7 @@ session_validate_project_slug() {
   case "$slug" in
     ''|*'/'*|*'..'*) return 1 ;;
   esac
-  printf '%s' "$slug" | grep -Eq '^[a-z0-9-]{1,64}$' || return 1
+  grep -Eq '^[a-z0-9-]{1,64}$' <<< "$slug" || return 1
   return 0
 }
 

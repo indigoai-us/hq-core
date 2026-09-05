@@ -124,3 +124,12 @@ JS
 rc=$?
 set -e
 exit "$rc"
+
+# ── Locale-safety guard (2026-09-03, install matrix finding) ─────────────────
+# A bare `$VAR` immediately followed by a non-ASCII byte (e.g. `$QMD_VERSION…`)
+# is parsed as a LONGER identifier when bash runs in the C locale (SSH, launchd,
+# hooks, agent shells) → "unbound variable" under `set -u`. Always brace: `${VAR}…`.
+if LC_ALL=C grep -nE '\$[A-Za-z_][A-Za-z0-9_]*[^ -~[:space:]]' core/scripts/setup.sh; then
+  echo "lint-install-deps.sh: FAIL: unbraced \$VAR followed by non-ASCII in core/scripts/setup.sh (use \${VAR}…)" >&2
+  exit 1
+fi

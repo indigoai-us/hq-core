@@ -486,6 +486,13 @@ main() {
   message_text="$(jq -r '.messageText' "$req_file")"
   provider="$(jq -r '.provider' "$req_file")"
   project_field="$(jq -r '.project // empty' "$req_file")"
+  # US-011: pass dispatch envelope to SessionStart as trusted spawn context.
+  export HQ_SPAWN_COMPANY="$company_slug"
+  export HQ_SPAWN_PROJECT="${project_field:-}"
+  # Optional task on the request (forward-compat); empty when absent.
+  _spawn_task="$(jq -r '.task // .taskId // empty' "$req_file" 2>/dev/null || true)"
+  export HQ_SPAWN_TASK="${_spawn_task:-}"
+  unset _spawn_task
   if [ "$(jq -r '.sender.verified' "$req_file")" = "true" ]; then
     sender_verified="true"
   else
@@ -645,7 +652,7 @@ main() {
   fi
 
   # Session meta bootstrap + verify before hooks
-  session_bootstrap_meta "$root" "$run_id" "$company_slug"
+  session_bootstrap_meta "$root" "$run_id" "$company_slug" "${project_field:-}" "${HQ_SPAWN_TASK:-}"
   # Ensure `hq-session.sh get company` works (AC18): write company: key
   local meta_file="$root/workspace/sessions/$run_id/meta.yaml"
   if [ -f "$meta_file" ] && ! grep -q '^company:' "$meta_file"; then
@@ -727,6 +734,15 @@ main() {
     : > "$transcript_path_file"
     export HQ_AGENT_CLAUDE_TRANSCRIPT_PATH_FILE="$transcript_path_file"
   fi
+
+  # US-013 / US-011: re-export the dispatch envelope immediately before the
+  # child runtime so SessionStart hooks see HQ_SPAWN_* even if an intermediate
+  # step unset them. hq-agent-session is invoked from a NON-login shell
+  # (indigo-hq-agent-dispatch-login-shell-strips-env); keep these on the
+  # process environment — never rely on a login profile to re-inject them.
+  export HQ_SPAWN_COMPANY="$company_slug"
+  export HQ_SPAWN_PROJECT="${project_field:-}"
+  export HQ_SPAWN_TASK="${HQ_SPAWN_TASK:-}"
 
   local prov_out prov_rc=0
   set +e

@@ -1,7 +1,7 @@
 ---
 name: deep-plan
 description: Deep project planning — research subagents (codebase / HQ / repo) + 3-tier 15-question interview (Strategic / Architecture / Quality) with smart-skip and pushback. Use for large or strategically important PRDs. For lightweight planning, use /plan instead. Adversarial spec review is delegated to /review-plan after generation.
-allowed-tools: Task, Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion
+allowed-tools: Task, Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion
 ---
 
 # Deep Plan — Research-First PRD Generation
@@ -9,6 +9,20 @@ allowed-tools: Task, Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Ba
 Create execution-ready PRDs with full HQ context awareness, parallel research subagents, and a structured three-tier deep interview. Use this skill when the project is large, strategically important, touches unfamiliar code, or warrants the 10-15 minute upfront cost. For small ideas, tweaks, or fast captures, use the lightweight `/plan` skill instead.
 
 **Important:** Do NOT implement. Just create the PRD.
+
+
+## Work Mesh Live — trusted bind (do this first)
+
+Before any other tool call that touches project work, bind the session per
+`.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
+
+```bash
+bash core/scripts/work-mesh-live-bind-trusted.sh \
+  --company "{co}" --project "{project}" --task "{task}"
+```
+
+Omit `--task` when unknown. This writes `workspace/sessions/<sid>/meta.yaml`
+and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
 
 ## Step 0: Company Anchor (from user input)
 

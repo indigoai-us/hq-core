@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Regression: hq-delegate-transfer.sh must reassign ownership everywhere HQ
-# tracks it — board, PRD metadata, work mesh, journal — idempotently, with
-# --share mode mutating nothing and offline installs still succeeding.
+# tracks it — board, PRD metadata, work mesh note (best-effort), journal —
+# idempotently, with --share mode mutating nothing and offline installs still
+# succeeding.
 #
 # Guards:
 #   1. Project already on the board -> owner set, updated_at bumped, array
@@ -10,9 +11,8 @@
 #      correct prd_path.
 #   3. Run twice -> still one board entry, exactly one journal stanza for
 #      the delegation id.
-#   4. work-mesh.sh present -> invoked with done + company + project + a
-#      summary naming the recipient; absent -> transfer still exits 0 and
-#      the board/PRD mutations land.
+#   4. hq present -> mesh session note invoked with summary naming recipient;
+#      absent -> transfer still exits 0 and the board/PRD mutations land.
 #   5. mode "share" -> board.json and prd.json byte-identical afterward.
 set -euo pipefail
 
@@ -27,10 +27,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # --- fixture -----------------------------------------------------------------
 
-make_fixture() { # root  (fresh HQ root with project + board + fake work-mesh)
+make_fixture() { # root
   local fix="$1"
   rm -rf "$fix"
-  mkdir -p "$fix/companies/acme/projects/widget" "$fix/core/scripts"
+  mkdir -p "$fix/companies/acme/projects/widget" "$fix/core/scripts" "$fix/bin"
   cat > "$fix/companies/acme/projects/widget/prd.json" <<'JSON'
 {"name": "widget", "description": "Build the widget.", "metadata": {"goal": "ship"}}
 JSON
@@ -40,12 +40,12 @@ JSON
   {"id": "ac-proj-7", "title": "widget", "prd_path": "companies/acme/projects/widget/prd.json", "updated_at": "2026-01-01T00:00:00Z"}
 ]}
 JSON
-  cat > "$fix/core/scripts/work-mesh.sh" <<'MESH'
+  cat > "$fix/bin/hq" <<'HQ'
 #!/usr/bin/env bash
 echo "$*" >> "$MESH_STUB_LOG"
 exit 0
-MESH
-  chmod +x "$fix/core/scripts/work-mesh.sh"
+HQ
+  chmod +x "$fix/bin/hq"
 }
 
 write_manifest() { # path mode
@@ -68,12 +68,12 @@ FIX="$TMP/hqroot"
 M="$TMP/manifest.json"
 export MESH_STUB_LOG="$TMP/mesh.log"
 
-# --- 1+4. existing board entry: in-place update; work-mesh invoked -----------
+# --- 1+4. existing board entry: in-place update; hq mesh note invoked --------
 
 make_fixture "$FIX"
 write_manifest "$M" transfer
 : > "$MESH_STUB_LOG"
-HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
+PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
   || fail "transfer exited non-zero"
 
 BOARD="$FIX/companies/acme/board.json"
@@ -86,10 +86,10 @@ PRD="$FIX/companies/acme/projects/widget/prd.json"
 jq -e '.metadata.owner == "alice@acme.test" and .metadata.delegatedFrom == "owner@acme.test" and .metadata.delegatedAt != null' \
   "$PRD" >/dev/null || fail "prd metadata must record owner/delegatedFrom/delegatedAt"
 
-grep -q '^done --company acme --project widget' "$MESH_STUB_LOG" \
-  || fail "work-mesh must be invoked with done for the company/project: $(cat "$MESH_STUB_LOG")"
+grep -q 'mesh session note' "$MESH_STUB_LOG" \
+  || fail "hq mesh session note must be invoked: $(cat "$MESH_STUB_LOG")"
 grep -q 'alice@acme.test' "$MESH_STUB_LOG" \
-  || fail "work-mesh summary must name the recipient"
+  || fail "mesh summary must name the recipient"
 
 JOURNAL="$FIX/companies/acme/projects/widget/journal/delegations.md"
 [ -f "$JOURNAL" ] || fail "journal delegation log must be created"
@@ -102,7 +102,7 @@ jq -e '.ownershipTransferredAt != null' "$M" >/dev/null \
 
 # --- 3. idempotent second run ------------------------------------------------
 
-HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
+PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
   || fail "second transfer run exited non-zero"
 jq -e '(.projects | length) == 2' "$BOARD" >/dev/null \
   || fail "second run must not add a board entry"
@@ -114,23 +114,24 @@ STANZAS="$(grep -c '^## ' "$JOURNAL")"
 make_fixture "$FIX"
 jq 'del(.projects[1])' "$FIX/companies/acme/board.json" > "$TMP/b" && mv "$TMP/b" "$FIX/companies/acme/board.json"
 write_manifest "$M" transfer
-HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
+PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
   || fail "transfer (absent from board) exited non-zero"
 COUNT="$(jq '[.projects[] | select(.prd_path == "companies/acme/projects/widget/prd.json")] | length' "$FIX/companies/acme/board.json")"
 [ "$COUNT" -eq 1 ] || fail "exactly one board entry must be created, got $COUNT"
 jq -e '.projects[] | select(.prd_path == "companies/acme/projects/widget/prd.json") | .owner == "alice@acme.test"' \
   "$FIX/companies/acme/board.json" >/dev/null || fail "created entry must carry the owner"
 
-# --- 4b. work-mesh unavailable -> still succeeds -----------------------------
+# --- 4b. hq unavailable -> still succeeds ------------------------------------
 
 make_fixture "$FIX"
-rm "$FIX/core/scripts/work-mesh.sh"
+rm -f "$FIX/bin/hq"
 write_manifest "$M" transfer
-HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
-  || fail "transfer must exit 0 when work-mesh.sh is unavailable"
+# Ensure ambient hq is not visible
+PATH="/usr/bin:/bin" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
+  || fail "transfer must exit 0 when hq is unavailable"
 jq -e '.projects[] | select(.prd_path == "companies/acme/projects/widget/prd.json") | .owner == "alice@acme.test"' \
   "$FIX/companies/acme/board.json" >/dev/null \
-  || fail "board mutation must land even without work-mesh"
+  || fail "board mutation must land even without hq"
 
 # --- 5. share mode mutates nothing -------------------------------------------
 
@@ -139,7 +140,7 @@ write_manifest "$M" share
 BOARD_BEFORE="$(cat "$FIX/companies/acme/board.json")"
 PRD_BEFORE="$(cat "$FIX/companies/acme/projects/widget/prd.json")"
 : > "$MESH_STUB_LOG"
-HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
+PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
   || fail "share mode must exit 0"
 [ "$(cat "$FIX/companies/acme/board.json")" = "$BOARD_BEFORE" ] \
   || fail "share mode must leave board.json byte-identical"
@@ -149,4 +150,4 @@ HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
 [ ! -d "$FIX/companies/acme/projects/widget/journal" ] \
   || fail "share mode must not write a journal stanza"
 
-echo "hq-delegate-transfer: ok (in-place board update, single created entry, idempotent journal, offline work-mesh tolerated, share mode inert)"
+echo "hq-delegate-transfer: ok (in-place board update, single created entry, idempotent journal, offline mesh tolerated, share mode inert)"

@@ -78,22 +78,7 @@ else
   log "document-release: skipped (no thread path)"
 fi
 
-# --- 3b. Work Mesh close: reconcile the session + (gated) transcript copy ---
-# US-004: fire the close hook DETACHED + non-blocking so /handoff posts the
-# authoritative outcome and hands off a vetted transcript. The hook resolves the
-# session from workspace/sessions/.current (no hook stdin on this path), is
-# fully fail-soft, and never blocks handoff. Guarded so an older checkout
-# without the hook simply skips it.
-WM_CLOSE_HOOK="$HQ_ROOT/core/hooks/work-mesh-close.sh"
-if [[ -f "$WM_CLOSE_HOOK" ]]; then
-  HQ_ROOT="$HQ_ROOT" nohup bash "$WM_CLOSE_HOOK" close >>"${LOG_DIR}/work-mesh-close.log" 2>&1 </dev/null &
-  disown 2>/dev/null || true
-  log "work-mesh-close: launched PID $!"
-else
-  log "work-mesh-close: skipped (hook absent)"
-fi
-
-# --- 3c. Push company handoff mirrors promptly (best effort) ---
+# --- 3b. Push company handoff mirrors promptly (best effort) ---
 # Session snapshots are intentionally gitignored, so a completed mirror needs
 # the sync client to make the handoff available to a second device. Trust only
 # the finalizer's lowercase company-slug metadata before constructing a path.
@@ -116,6 +101,8 @@ fi
 # (skipped-agent). Never dual-nohup raw cleanup+update+embed on agents.
 # Never invoke managed index wrappers — handoff owns no agent freshness.
 # Prefer Core US-001 helper; fleet binary only if Core file is missing.
+# Lock acquisition runs BEFORE the US-010 session_end spawn so a detached
+# session-end hook cannot delay or interleave with finalize+post single-flight.
 _QMD_BG="$HQ_ROOT/core/scripts/qmd-reindex-bg.sh"
 if [[ ! -f "$_QMD_BG" ]] && [[ -x /usr/local/bin/hq-agent-qmd-reindex-bg ]]; then
   _QMD_BG=/usr/local/bin/hq-agent-qmd-reindex-bg
@@ -128,6 +115,32 @@ elif [[ -d /var/lib/hq-agent ]]; then
   log "qmd: skipped-agent (no helper; indexer owns freshness)"
 else
   log "qmd: skipped (helper missing)"
+fi
+
+# --- 4b. Work Mesh Live: enqueue session_end (US-010) ---
+# Detached + non-blocking. Presence ends via spool; daemon flushes.
+# Same launch shape as the former work-mesh-close hook (nohup + disown).
+# Runs AFTER qmd reindex so this path cannot perturb single-flight lock
+# acquisition order or spawn count. Guarded: older checkouts skip quietly.
+WM_END_HOOK="$HQ_ROOT/core/hooks/SessionEnd/35-work-mesh-session-end.sh"
+if [[ -f "$WM_END_HOOK" ]]; then
+  sid=""
+  if [[ -f "$HQ_ROOT/workspace/sessions/.current" ]]; then
+    sid="$(tr -d '[:space:]' <"$HQ_ROOT/workspace/sessions/.current" 2>/dev/null || true)"
+  fi
+  if [[ -n "$sid" ]]; then
+    payload=$(printf '{"session_id":"%s"}' "$sid")
+  else
+    payload='{}'
+  fi
+  HQ_ROOT="$HQ_ROOT" CLAUDE_CODE_SESSION_ID="${sid:-}" \
+    nohup bash -c 'printf "%s\n" "$1" | bash "$2" SessionEnd' \
+    _ "$payload" "$WM_END_HOOK" \
+    >>"${LOG_DIR}/work-mesh-session-end.log" 2>&1 </dev/null &
+  disown 2>/dev/null || true
+  log "work-mesh-session-end: launched PID $!"
+else
+  log "work-mesh-session-end: skipped (hook absent)"
 fi
 
 # --- 5. Worktree GC (gated once-per-24h, detached, fully fail-soft) ---

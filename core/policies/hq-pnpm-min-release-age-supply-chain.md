@@ -76,6 +76,26 @@ Soft enforcement does not justify those odds.
 - **Soft advisory companion:** `.claude/hooks/inject-policy-on-trigger.sh` — surfaces this policy slug as a `<policy-reminder>` block on first match per session.
 - **Bypass audit:** every `HQ_ALLOW_UNSAFE_INSTALL=1` use appends to `workspace/learnings/unsafe-install-bypasses.jsonl` (timestamp, cwd, command).
 
+## Sanctioned global CLI pins
+
+HQ's own install surface (`core/scripts/setup.sh`, the desktop installer) installs a
+small set of global CLIs with npm — qmd, the hq CLI, Claude Code. pnpm +
+`minimumReleaseAge` is the wrong fix for a global CLI on a user machine, so these
+have a narrow, reviewed carve-out:
+
+- **Allow file:** `core/scripts/install-deps.allow` — one `name@exact-version` or
+  `name@*` per line. The pin is reviewed in-repo; bumping it goes through PR review,
+  which is the release-age gate for this surface.
+- **Rule:** an entry is allowed through the hook ONLY for a GLOBAL install
+  (`npm install -g` / `npm i -g` / `pnpm add -g`) where EVERY positional package is
+  an explicit pin matching an entry. `name@exact` allows only that version;
+  `name@*` allows any explicit pin. Unpinned (`npm i -g @tobilu/qmd`) or dist-tag
+  (`@latest`, `@next`) installs are never allowed. Non-global installs are not
+  covered. If the allow file is missing, nothing is allow-listed.
+- **Correct:** `npm install -g @tobilu/qmd@2.5.3`
+- **Blocked:** `npm install -g @tobilu/qmd`, `npm install -g @indigoai-us/hq-cli@latest`,
+  `npm install @tobilu/qmd@2.5.3` (not global)
+
 ## References
 
 - pnpm `minimumReleaseAge` setting: https://pnpm.io/settings#minimumreleaseage

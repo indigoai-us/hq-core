@@ -64,7 +64,7 @@ COREUTILS_PATH="$BIN:$CORE"
 
 # --- 1. a trusted hq resolves on the settings PATH -> silent -------------
 reset_root
-stub hq 'echo 5.103.26'
+stub hq 'echo 5.108.2'
 write_local_settings "{\"env\":{\"PATH\":\"$BIN:/usr/bin\"}}"
 out="$(run_hook "$COREUTILS_PATH")"
 [ -z "$out" ] || fail "hq on settings PATH should be silent, got: $out"
@@ -73,7 +73,7 @@ rm -f "$BIN/hq"
 # --- 2. no settings PATH configured -> ambient fallback (silent) ---------
 reset_root
 write_local_settings '{}'
-stub hq 'echo 5.103.26'
+stub hq 'echo 5.108.2'
 out="$(run_hook "$COREUTILS_PATH")"   # hq stub is on ambient PATH
 [ -z "$out" ] || fail "ambient hq with no settings PATH should be silent, got: $out"
 rm -f "$BIN/hq"
@@ -82,7 +82,7 @@ rm -f "$BIN/hq"
 reset_root
 # settings PATH deliberately excludes where hq lives; add an unrelated key.
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\",\"FOO\":\"bar\"},\"other\":1}"
-stub hq 'echo 5.103.26'   # hq is on ambient PATH ($BIN) but not on the settings PATH
+stub hq 'echo 5.108.2'   # hq is on ambient PATH ($BIN) but not on the settings PATH
 out="$(run_hook "$COREUTILS_PATH")"
 printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
   || fail "off-settings-PATH hq should emit <hq-cli-path-updated>, got: $out"
@@ -103,7 +103,7 @@ write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
 mkdir -p "$TMP/prefix/bin"
 # npm stub: on install, drop hq into the global prefix bin (NOT on any PATH).
 stub npm "case \"\$*\" in
-  *install*) printf '#!/usr/bin/env bash\\necho 5.103.26\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; exit 0 ;;
+  *install*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; exit 0 ;;
   'config get prefix') echo '$TMP/prefix'; exit 0 ;;
   *) exit 0 ;;
 esac"
@@ -123,7 +123,7 @@ chmod +x "$OLD_BIN/hq"
 rm -f "$TMP/prefix/bin/hq"
 write_local_settings "{\"env\":{\"PATH\":\"$OLD_BIN:/usr/bin:/bin\"}}"
 stub npm "case \"\$*\" in
-  *install*) printf '#!/usr/bin/env bash\\necho 5.103.26\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; echo installed > '$TMP/stale-repaired'; exit 0 ;;
+  *install*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; echo installed > '$TMP/stale-repaired'; exit 0 ;;
   'config get prefix') echo '$TMP/prefix'; exit 0 ;;
   *) exit 0 ;;
 esac"
@@ -137,12 +137,12 @@ case ":$(local_path):" in *":$TMP/prefix/bin:"*) : ;; *) fail "repaired hq bin w
 # must be treated as untrusted and repaired from a known install location.
 reset_root
 HANG_BIN="$TMP/hanging-hq-bin"; mkdir -p "$HANG_BIN"
-printf '#!/usr/bin/env bash\necho executed > %s\nsleep 5\necho 5.103.26\n' "$TMP/untrusted-executed" > "$HANG_BIN/hq"
+printf '#!/usr/bin/env bash\necho executed > %s\nsleep 5\necho 5.108.2\n' "$TMP/untrusted-executed" > "$HANG_BIN/hq"
 chmod +x "$HANG_BIN/hq"
 rm -f "$TMP/prefix/bin/hq"
 write_base_settings "{\"env\":{\"PATH\":\"$HANG_BIN:/usr/bin:/bin\"}}"
 stub npm "case \"\$*\" in
-  *install*) printf '#!/usr/bin/env bash\\necho 5.103.26\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; exit 0 ;;
+  *install*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; exit 0 ;;
   'config get prefix') echo '$TMP/prefix'; exit 0 ;;
   *) exit 0 ;;
 esac"
@@ -183,7 +183,7 @@ rm -f "$BIN/npm"
 # .claude dir is read-only so the write fails -> the hook must advise instead.
 reset_root
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
-stub hq 'echo 5.103.26'
+stub hq 'echo 5.108.2'
 chmod 0500 "$ROOTDIR/.claude"
 out="$(run_hook "$COREUTILS_PATH")"
 chmod 0700 "$ROOTDIR/.claude"   # restore so the trap can clean up
@@ -198,6 +198,43 @@ out="$(run_hook "$COREUTILS_PATH" HQ_NO_ENSURE_HQ_CLI=1)"
 [ -z "$out" ] || fail "HQ_NO_ENSURE_HQ_CLI=1 should be silent, got: $out"
 out="$(run_hook "$COREUTILS_PATH" HQ_DISABLED_HOOKS='foo,ensure-hq-cli,bar')"
 [ -z "$out" ] || fail "HQ_DISABLED_HOOKS should be silent, got: $out"
+
+# --- 8b. floor advisory: 5.108.2 ok; 5.108.1 repairs, always exit 0 ------
+# Floor is the shipped release 5.108.2. At-floor hq is a silent no-op.
+# One patch below (5.108.1) is treated as missing: cooldown-limited install
+# attempt, then still exit 0 (advisory — never blocks the prompt).
+reset_root
+stub hq 'echo 5.108.2'
+write_local_settings "{\"env\":{\"PATH\":\"$BIN:/usr/bin\"}}"
+set +e
+out="$(run_hook "$COREUTILS_PATH")"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "5.108.2 on PATH must exit 0, got rc=$rc"
+[ -z "$out" ] || fail "5.108.2 on settings PATH should be silent, got: $out"
+rm -f "$BIN/hq"
+
+reset_root
+BELOW_BIN="$TMP/below-floor-bin"; mkdir -p "$BELOW_BIN"
+printf '#!/usr/bin/env bash\necho 5.108.1\n' > "$BELOW_BIN/hq"
+chmod +x "$BELOW_BIN/hq"
+rm -f "$TMP/prefix/bin/hq" "$TMP/below-floor-install"
+mkdir -p "$TMP/prefix/bin"
+write_local_settings "{\"env\":{\"PATH\":\"$BELOW_BIN:/usr/bin:/bin\"}}"
+stub npm "case \"\$*\" in
+  *install*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; echo installed > '$TMP/below-floor-install'; exit 0 ;;
+  'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+set +e
+out="$(run_hook "$COREUTILS_PATH")"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "5.108.1 repair must exit 0 (advisory), got rc=$rc"
+[ -f "$TMP/below-floor-install" ] || fail "5.108.1 must trigger cooldown-limited install"
+printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+  || fail "5.108.1 repair should emit <hq-cli-path-updated>, got: $out"
+rm -f "$BIN/npm"
 
 # --- 9. install stays bounded when `timeout` is absent (macOS) -----------
 # Build a coreutils PATH WITHOUT `timeout`, so the hook takes the portable
@@ -232,4 +269,4 @@ printf '%s' "$out" | grep -q '<hq-cli-missing>' \
   || fail "locked-out session should still emit remedy, got: $out"
 rm -f "$BIN/npm"
 
-echo "PASS: ensure-hq-cli-hook (settings-PATH detection, ambient fallback, auto-fix local settings, install+fix, npm-missing, cooldown, unwritable remedy, kill-switch, bounded-install, atomic-lock)"
+echo "PASS: ensure-hq-cli-hook (settings-PATH detection, ambient fallback, auto-fix local settings, install+fix, npm-missing, cooldown, unwritable remedy, kill-switch, floor-advisory 5.108.1/5.108.2, bounded-install, atomic-lock)"

@@ -31,6 +31,29 @@ jget() { printf '%s' "$INPUT_RAW" | jq -r "$1" 2>/dev/null || true; }
 EVENT="$(jget '.hookEventName // .hook_event_name // empty')"
 [ -z "$EVENT" ] && EVENT="${GROK_HOOK_EVENT:-}"
 # Normalize event names (Grok docs use both pre_tool_use and PreToolUse).
+# US-010: live hooks run via settings→master with HQ_HARNESS=grok.
+# Pending decisions are recorded by turn-start (passive hooks cannot ask);
+# organize is deferred to `hq mesh context organize`.
+work_mesh_live_dispatch() {
+  local event="$1" script="$2" payload="${3:-$CLAUDE_JSON}"
+  local path="$HQ_ROOT/core/hooks/$event/$script"
+  [ -f "$path" ] || return 0
+  HQ_WORK_MESH_HARNESS=grok HQ_HARNESS=grok \
+    run_hook "work-mesh-live" "$path" "$payload" "advisory" 2>/dev/null || \
+  HQ_WORK_MESH_HARNESS=grok HQ_HARNESS=grok \
+    bash "$path" "$event" <<<"$payload" >/dev/null 2>&1 || true
+}
+
+if [ "${HQ_WORK_MESH_FORCE_ADAPTER_DISPATCH:-}" = "1" ]; then
+  case "$EVENT" in
+    SessionStart) work_mesh_live_dispatch SessionStart 35-work-mesh-session-start.sh ;;
+    UserPromptSubmit) work_mesh_live_dispatch UserPromptSubmit 35-work-mesh-turn-start.sh ;;
+    Stop) work_mesh_live_dispatch Stop 70-work-mesh-turn-end.sh ;;
+    SessionEnd) work_mesh_live_dispatch SessionEnd 35-work-mesh-session-end.sh ;;
+    PostToolUse) work_mesh_live_dispatch PostToolUse 35-work-mesh-tool-writes.sh ;;
+  esac
+fi
+
 case "$EVENT" in
   pre_tool_use|PreToolUse) EVENT=PreToolUse ;;
   post_tool_use|PostToolUse) EVENT=PostToolUse ;;
@@ -83,7 +106,9 @@ HOOK_DIR="${HQ_ROOT:+$HQ_ROOT/.claude/hooks}"
 if [ -n "$HQ_ROOT" ]; then
   CLAUDE_PROJECT_DIR="$HQ_ROOT"
   HQ_CHECKPOINT_RUNTIME=grok
-  export HQ_ROOT CLAUDE_PROJECT_DIR HQ_CHECKPOINT_RUNTIME
+  HQ_WORK_MESH_HARNESS=grok
+  HQ_HARNESS=grok
+  export HQ_ROOT CLAUDE_PROJECT_DIR HQ_CHECKPOINT_RUNTIME HQ_WORK_MESH_HARNESS HQ_HARNESS
   . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
   # Single-source dispatch: read .claude/settings.json live so Grok runs
   # exactly the hooks Claude runs (hqad_iter_settings / hqad_mode_for).

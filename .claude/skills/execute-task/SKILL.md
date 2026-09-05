@@ -1,7 +1,7 @@
 ---
 name: execute-task
 description: Execute a single PRD story through coordinated worker phases (Ralph pattern). Each worker handles its domain, passes context to the next, with back-pressure (tests/lint/typecheck) keeping code on rails.
-allowed-tools: Task, Read, Write, Glob, Grep, Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion
+allowed-tools: Task, Read, Write, Glob, Grep, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion
 ---
 
 # Execute Task - Worker-Coordinated Story Execution
@@ -84,6 +84,19 @@ Codex nesting rule: when `/execute-task` is invoked from a Codex sub-agent, `spa
 
 If Codex `spawn_agent` / `wait_agent` are unavailable, do not fake the worker sequence in the parent; stop and ask the user to use `--session-mode` for direct parent execution or resume in a runtime with Codex sub-agent support. Do not route Codex-triggered story execution through the Claude headless builder.
 
+## Work Mesh Live — trusted bind (do this first)
+
+Before any other tool call that touches project work, bind the session per
+`.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
+
+```bash
+bash core/scripts/work-mesh-live-bind-trusted.sh \
+  --company "{co}" --project "{project}" --task "{task}"
+```
+
+Omit `--task` when unknown. This writes `workspace/sessions/<sid>/meta.yaml`
+and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
+
 ## Process
 
 ### 1. Parse Arguments
@@ -101,6 +114,18 @@ Example: /execute-task campaign-migration/CAM-003
 ```
 
 Stop here.
+
+### 1.5 Trusted session bind (US-011)
+
+Once `{project}` and `{task-id}` are parsed (and company `{co}` is known from
+the PRD path `companies/{co}/projects/...` or session meta), bind immediately:
+
+```bash
+bash core/scripts/work-mesh-live-bind-trusted.sh \
+  --company "{co}" --project "{project}" --task "{task-id}"
+```
+
+Do this before loading workers or editing files.
 
 ### 2. Load Task Spec
 

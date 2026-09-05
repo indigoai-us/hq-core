@@ -400,6 +400,8 @@ jobs:
         run: bash core/scripts/tests/hook-path-resolution.test.sh
       - name: ensure-hq-cli hook detects/install/PATH-fixes the CLI
         run: bash core/scripts/tests/ensure-hq-cli-hook.test.sh
+      - name: ensure-hq-desktop hook detects/updates the desktop app
+        run: bash core/scripts/tests/ensure-hq-desktop-hook.test.sh
 
   # feedback_3cdd3064: deploy-summary.sh aborted under set -u when HQ_DEPLOY_API was unset.
   deploy-summary-nounset:
@@ -691,6 +693,8 @@ jobs:
         run: bash core/scripts/tests/hq-agent-session-runtime-env.test.sh
       - name: Provider liveness heartbeat (idle-watchdog survival)
         run: bash core/scripts/tests/hq-agent-session-heartbeat.test.sh
+      - name: Company authorization (fail-closed guards + pipefail regression)
+        run: bash core/scripts/tests/hq-agent-session-authz.test.sh
 
   reindex-path-gate:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1108,18 +1112,16 @@ jobs:
             bash "$t"
           done
 
-  work-mesh-v2:
+  work-mesh-live:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    name: work-mesh-v2
+    # US-010: enqueue-only live hooks. Timing asserts p95(user+sys CPU) < 20ms
+    # always; adj wall p95 < 20ms only when 1-min load < ncpu (else skipped).
+    name: work-mesh-live
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Work Mesh watcher unit contract
-        run: node --test core/scripts/__tests__/work-mesh.test.mjs
-      - name: Work Mesh watcher US-011 acceptance
-        run: node --test test/__tests__/stories/US-011.test.mjs
-      - name: Work Mesh helper compatibility smoke
-        run: bash core/scripts/tests/work-mesh-helper.test.sh
+      - name: Work Mesh Live hooks (US-010)
+        run: bash core/scripts/tests/work-mesh-live-hooks.test.sh
 
   doctor-advisory-summary:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}

@@ -13,11 +13,31 @@ completes.
 
 ## Phase 0a: Install Manifest Recovery
 
-Before anything else, check if the HQ Installer left a manifest.
+Before anything else, check if the HQ Installer left a manifest. HQ Desktop
+writes it to the USER'S home (`~/.hq/install-manifest.json`); older installers
+wrote it inside the HQ folder. Check both — reading only `.hq/` inside HQ made
+`/setup` believe nothing was installed and re-run `npm install -g` with the
+system npm on every run (prefix conflicts, permission errors, supply-chain
+block; reported 2026-08-28).
 
 ```bash
-cat .hq/install-manifest.json 2>/dev/null
+cat ~/.hq/install-manifest.json 2>/dev/null || cat .hq/install-manifest.json 2>/dev/null
 ```
+
+Then, BEFORE declaring any dependency missing, put HQ's managed toolchain on
+PATH for this session — the installer puts tools there, and a GUI-launched or
+hook-launched shell often does not see them:
+
+```bash
+export PATH="$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/git-shim:$HOME/.local/bin:$PATH"
+for t in node npm qmd hq git yq jq; do printf '%-5s %s\n' "$t" "$(command -v $t || echo MISSING)"; done
+```
+
+Newer manifests record the dependency stage only as `steps.deps` (the
+`dependencies` map is empty); use the PATH check above as the source of truth
+for what is actually present. On a Mac without Xcode Command Line Tools,
+`/usr/bin/git` and `/usr/bin/python3` are stubs that pop an install dialog —
+never call them; the managed `git-shim` is the real git.
 
 If no manifest exists, skip to Phase 0b — the user installed manually or is running setup for the first time.
 
@@ -32,10 +52,10 @@ If a manifest exists, this phase becomes the primary driver of setup. The manife
 - `steps.git-init` failed → no git repo; run `git init && git add . && git commit -m "init"`
 
 **P1 — Required (HQ works poorly without these):**
-- `dependencies.qmd` failed → no semantic search; install with `npm install -g @tobilu/qmd` (on macOS also run `brew install sqlite` — qmd loads SQLite extensions the built-in macOS SQLite can't), then `qmd index .`
-- `dependencies.claude-code` failed → can't run workers; `npm install -g @anthropic-ai/claude-code`
+- `dependencies.qmd` failed → no semantic search; install the SANCTIONED pin (see `core/scripts/install-deps.allow`): `npm install -g @tobilu/qmd@2.5.3`, then `qmd index .`. Unpinned installs are blocked by the supply-chain guard on purpose.
+- `dependencies.claude-code` failed → can't run workers; `npm install -g @anthropic-ai/claude-code@<version>` (explicit version pin required by the guard)
 - `dependencies.yq` failed → can't parse YAML configs; `brew install yq` or download binary
-- `dependencies.hq-cli` failed → can't install packs or sync; `npm install -g @indigoai-us/hq-cli`
+- `dependencies.hq-cli` failed → can't install packs or sync; `npm install -g @indigoai-us/hq-cli@<version>` (explicit version pin required by the guard)
 - `steps.indexing` failed → search won't work; run `qmd index .` directly
 - `packs` with status `"failed"` or `"running"` (interrupted) → retry each: `npx --package=@indigoai-us/hq-cli hq install {pack-name}`
 
@@ -59,7 +79,7 @@ For each issue found (in priority order):
    triage lists above), best-effort. Do not pause for permission, do not
    explain-then-ask, and do not offer install-method choices — pick the standard
    method and run it.
-2. **After each fix: verify.** Run `which {tool}` or equivalent. If it worked,
+2. **After each fix: verify.** Run `command -v {tool}` AND `{tool} --version` (a path alone is not proof — stubs and broken shims exist). If it worked,
    move on without narrating it. If it failed, try one alternative, then record
    it under "Still needs attention" in the summary and keep going — never block
    setup on a failed optional tool.

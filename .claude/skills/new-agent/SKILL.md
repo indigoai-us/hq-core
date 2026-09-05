@@ -59,8 +59,10 @@ produces the exact bootstrap block and verifies via probe instead.
 - If the agent exists → **repair mode**: diff what it has against what it
   needs, grant only the gaps.
 - If not → **create mode**: provision the paid agent box through the billing
-  gate — `hq agents provision {name} --company {co} [--provider codex|grok]`.
-  This prints the **$100/month** cost and requires `--yes` to proceed; approve it
+  gate — `hq agents provision {name} --company {co} [--provider codex|grok|agents-v2]`.
+  `--provider agents-v2` provisions a **create agent v2** box — see
+  §Agents v2 branch for the two-phase (provision → ready → runtime delivery)
+  flow. This prints the **$100/month** cost and requires `--yes` to proceed; approve it
   with the operator first. If the company has no card on file the command returns
   a Stripe card-capture link instead of provisioning — hand that link to whoever
   owns billing, wait until a card is added, then re-run. (If an agent email was
@@ -220,6 +222,77 @@ Blocked:   {list, each with an owner — or "none"}
 Done when: agent confirms probe checklist in {channel}.
 ```
 
+## Agents v2 branch (create agent v2)
+
+`--provider agents-v2` provisions an agent whose runtime is the pinned **v2
+runtime** — a full HQ citizen with hook enforcement, policy injection, HQ
+memory, the HQ DM adapter, and Slack Socket Mode. It is delivered in two phases,
+because agent capabilities are never added to user-data — they arrive post-boot
+over SSM. The v2 provider is flag-gated (email allowlist) and currently
+indigo-scoped; confirm the flag is on for the operator before you start.
+
+The flow is **provision → ready → install-agents-v2-runtime → v2 probe**:
+
+1. **Provision** (billing-gated, as in §1 create mode). The CLI provider value
+   is literally `agents-v2`:
+   ```bash
+   hq agents provision {name} --company {co} --provider agents-v2 --yes
+   ```
+   The box comes up as a standard codex/grok-brained agent — a safe intermediate
+   state. Its socket-mode Slack app has no request URL, so Slack simply stays
+   quiet while the dm/email/job lanes keep flowing through the legacy inbox
+   watcher. Nothing is broken while the box waits for its v2 runtime.
+
+   **Brain sign-in is a human step.** Provisioning stands up the box, but the
+   codex/grok brain's own CLI login (the Grok or codex sign-in) is interactive
+   and cannot be automated by this skill or the operator script — a human must
+   sign the brain in on the box before the §7 probe on the codex/grok brain can
+   pass. Treat it as a blocker to hand off, not something to wait on silently.
+
+2. **Ready.** Let the box finish standard provisioning and reach `ready` — the
+   §7 probe on the codex/grok brain passes (identity, team-sync, secrets). Only
+   then deliver the v2 runtime.
+
+3. **install-agents-v2-runtime** — the operator script in hq-pro
+   (`scripts/agents/install-agents-v2-runtime.ts`), **dry-run by default; add
+   `--commit` to act**. It SSM-delivers the release artifact's own
+   installer/activator (hq-pro only verifies control-plane state and runs the
+   artifact's scripts). From the hq-pro repo:
+   ```bash
+   # 1. dry-run: prints the resolved instance + commands, changes nothing
+   tsx scripts/agents/install-agents-v2-runtime.ts plan --agent agt_<ULID> --company {co}
+   # 2. deliver the pinned artifact over SSM (sha256-verified before it runs)
+   tsx scripts/agents/install-agents-v2-runtime.ts install --agent agt_<ULID> \
+     --company {co} --artifact-key <path/to/artifact.tar.gz> --sha256 <64-hex> --commit
+   # 3. flip the runtime marker to agents-v2 (auto-rolls back on a failed probe)
+   tsx scripts/agents/install-agents-v2-runtime.ts activate --agent agt_<ULID> --company {co} --commit
+   # box probe / rollback are the same script. status changes nothing on the box,
+   # but every op — status included — still needs --commit to reach it over SSM;
+   # without --commit it only prints the resolved-instance dry-run and returns:
+   tsx scripts/agents/install-agents-v2-runtime.ts status --agent agt_<ULID> --company {co} --commit
+   ```
+   The script installs only on `provider: "agents-v2"` agents (migrate the
+   provider first if it refuses) and is indigo-tenant-guarded. Box-level logic
+   (venv, config render, hooks, systemd unit, marker flip) lives in the
+   artifact, so a runtime fix never needs an hq-pro change.
+
+4. **v2 probe checklist** — the done gate for a v2 box, on top of §7:
+   - **Runtime delivered:** the `status` op observes the four operator
+     conditions — **unit active** (`hq-agents-v2.service`), **marker agents-v2**
+     (`runtimeMode=agents-v2`), **socket connected** (the gateway is holding its
+     Slack Socket Mode websocket), and **heartbeat healthy** — plus the
+     cross-stream invariant that the legacy inbox watcher is still active
+     (`activate` asserts all of these and rolls back otherwise).
+   - **Citizenship:** `activate` runs the artifact's `probe-agents-v2.sh`
+     (rolling back on failure), which proves the box is company-bound, mints a
+     scope capability on a fresh session's first tool call, resolves HQ skills,
+     keeps hook timeouts sane, and **fails closed** for an unbound session.
+   - **Live round-trip:** DM the agent and confirm it answers over the v2
+     runtime — hook-enforced, HQ context rendered — in its Slack channel.
+
+   Do not report a v2 agent as provisioned until both the operator `status`
+   probe and the agent-side live round-trip pass.
+
 ## Rules
 
 - Least privilege: `--permission read` unless the job requires writes; flag any
@@ -242,3 +315,4 @@ Done when: agent confirms probe checklist in {channel}.
 - `/accept` — how the agent's runtime claims a pending membership
 - `/hq-secrets`, `/hq-files` — the underlying grant primitives
 - `/delegate` — hand an existing project to a provisioned agent (or person): verified access, branch + secrets handover, ownership transfer, and a self-sufficient pickup DM
+- `scripts/agents/install-agents-v2-runtime.ts` (hq-pro) — the operator script that delivers the v2 runtime over SSM (§Agents v2 branch)

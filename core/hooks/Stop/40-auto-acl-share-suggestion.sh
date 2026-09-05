@@ -59,53 +59,51 @@ main() {
   pending="$("$helper" peek "$session_id" || true)"
   [ -n "$pending" ] || exit 0
 
+  # jq, not python3: this hook already hard-depends on jq for session_id above,
+  # while python3 is absent on many Windows machines (and the Store alias stub
+  # there passes `command -v` then fails every call). `nes` reproduces Python's
+  # truthiness for the `or` chains below — jq's `//` only falls through on null
+  # and false, so an empty-string field would otherwise win over its fallback.
   reminder="$(
-    PENDING_JSON="$pending" python3 - <<'PY'
-import json
-import os
-
-try:
-    pending = json.loads(os.environ.get("PENDING_JSON", ""))
-except Exception:
-    pending = {}
-
-if not pending or pending.get("shown_at"):
-    raise SystemExit(0)
-
-artifact = pending.get("artifact") if isinstance(pending.get("artifact"), dict) else {}
-candidate_hints = pending.get("candidate_hints") if isinstance(pending.get("candidate_hints"), dict) else {}
-recipients = pending.get("recipients") if isinstance(pending.get("recipients"), list) else []
-local_people = candidate_hints.get("local_people") if isinstance(candidate_hints.get("local_people"), list) else []
-display_people = recipients or local_people
-names = []
-for person in display_people[:3]:
-    if isinstance(person, dict):
-        label = person.get("name") or person.get("id") or ""
-        if label:
-            names.append(label)
-
-recipients_text = ", ".join(names) if names else "no exact recipients yet"
-artifact_ref = artifact.get("path") or artifact.get("label") or artifact.get("fingerprint", "")[:12]
-fingerprint = artifact.get("fingerprint", "")
-surface = pending.get("recommended_surface") or artifact.get("surface") or "vault"
-permission = pending.get("suggested_permission") or artifact.get("permission") or "read"
-
-print("<hq-share-suggestion>")
-print("A share suggestion is pending.")
-print(f"Artifact: {artifact_ref}")
-print(f"Fingerprint: {fingerprint}")
-print(f"Recommended surface: {surface}")
-print(f"Top candidate recipients: {recipients_text}")
-print(f"Suggested permission: {permission}")
-print("Next turn: ask exactly one structured decision with these options:")
-print("- Approve (recommended)")
-print("- Edit recipients")
-print("- Not now")
-print("- Never suggest this again")
-print("If approved, execute only with existing primitives: use `hq files share --permission read` for vault artifacts, or deploy access-policy/access-mode for deploy surfaces.")
-print("Do not persist any resulting capability URL.")
-print("</hq-share-suggestion>")
-PY
+    printf '%s' "$pending" | jq -r '
+      def nes(v): if (v | type) == "string" and (v | length) > 0 then v else null end;
+      def truthy(v): (v != null) and (v != false) and (v != "") and (v != 0)
+        and (v != []) and (v != {});
+      if (type != "object") or (length == 0) or truthy(.shown_at) then empty
+      else
+        . as $p
+        | (if (.artifact | type) == "object" then .artifact else {} end) as $a
+        | (if (.candidate_hints | type) == "object" then .candidate_hints else {} end) as $h
+        | (if (.recipients | type) == "array" then .recipients else [] end) as $r
+        | (if ($h.local_people | type) == "array" then $h.local_people else [] end) as $lp
+        | (if ($r | length) > 0 then $r else $lp end) as $people
+        | [ $people[0:3][]
+            | select(type == "object")
+            | (nes(.name) // nes(.id))
+            | select(. != null) ] as $names
+        | (if ($names | length) > 0 then ($names | join(", "))
+           else "no exact recipients yet" end) as $rtext
+        | (nes($a.fingerprint) // "") as $fp
+        | (nes($a.path) // nes($a.label) // $fp[0:12]) as $aref
+        | (nes($p.recommended_surface) // nes($a.surface) // "vault") as $surface
+        | (nes($p.suggested_permission) // nes($a.permission) // "read") as $perm
+        | [ "<hq-share-suggestion>",
+            "A share suggestion is pending.",
+            "Artifact: \($aref)",
+            "Fingerprint: \($fp)",
+            "Recommended surface: \($surface)",
+            "Top candidate recipients: \($rtext)",
+            "Suggested permission: \($perm)",
+            "Next turn: ask exactly one structured decision with these options:",
+            "- Approve (recommended)",
+            "- Edit recipients",
+            "- Not now",
+            "- Never suggest this again",
+            "If approved, execute only with existing primitives: use `hq files share --permission read` for vault artifacts, or deploy access-policy/access-mode for deploy surfaces.",
+            "Do not persist any resulting capability URL.",
+            "</hq-share-suggestion>" ]
+        | join("\n")
+      end' 2>/dev/null || true
   )"
 
   [ -n "$reminder" ] || exit 0

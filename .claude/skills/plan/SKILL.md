@@ -1,7 +1,7 @@
 ---
 name: plan
 description: Create an execution-ready PRD and README for an HQ project.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(core/scripts/work-mesh.sh:*), Bash(npx:*), Bash, AskUserQuestion
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(hq:*), Bash(npx:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, AskUserQuestion
 ---
 
 # Plan — Project Planning & PRD Generation
@@ -9,6 +9,20 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:
 Create execution-ready PRDs with full HQ context awareness. Lightweight flow — batched questions, fast capture, no research subagents. For deep planning on large or strategically important PRDs, use `/deep-plan` instead. For adversarial spec review of an already-generated PRD, use `/review-plan`.
 
 **Important:** Do NOT implement. Just create the PRD.
+
+
+## Work Mesh Live — trusted bind (do this first)
+
+Before any other tool call that touches project work, bind the session per
+`.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
+
+```bash
+bash core/scripts/work-mesh-live-bind-trusted.sh \
+  --company "{co}" --project "{project}" --task "{task}"
+```
+
+Omit `--task` when unknown. This writes `workspace/sessions/<sid>/meta.yaml`
+and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
 
 ## Step 0: Company Anchor (from user input)
 
@@ -55,8 +69,7 @@ If `{co}` is anchored, scope all searches to that company.
 **Existing Projects:**
 - If anchored: `qmd search "prd.json" --json -n 20 -c {co}` (scoped) or search `companies/{co}/projects/` directly
 - If not anchored: `qmd search "prd.json" --json -n 20` — existing projects across all companies and personal
-- If `{co}` is anchored and a candidate project slug is already clear from the input, also run `bash core/scripts/work-mesh.sh check --company {co} --project {candidate-slug}`. If it reports active owners, blockers, or in-progress threads, surface that before asking whether to create a new PRD. If it prints nothing or reports unavailable/offline, continue normally.
-- A local daemon or long-running HQ instance may run `bash core/scripts/work-mesh.sh watch` to keep `workspace/work-mesh/live-cache.json` current from MQTT. This is optional context; project creation still uses `check` and the reporting verbs below.
+- If `{co}` is anchored and a candidate project slug is already clear from the input, prefer live Board/presence from `hq mesh daemon` / Desktop live read. Do not call deleted `hq mesh session check|watch`. Presence is automatic; optional `hq mesh session note` only for a discrete milestone.
 
 **Knowledge (use single qmd hybrid query, not Grep, not vsearch+search pair):**
 - If anchored + company has `qmd_collections`: `qmd query "<description keywords>" -c {collection} --json -n 10`
@@ -528,17 +541,16 @@ If `board_path` exists, read `companies/{co}/board.json` and upsert a project en
 
 ## Step 5.7: Report to Work Mesh
 
-If `{co}` is resolved, report the new PRD to the cloud work mesh:
+Presence and per-turn activity are **automatic** (`hq mesh daemon` + hooks).
+If `{co}` is resolved and you need a discrete Board signal for the new PRD:
 
 ```bash
-bash core/scripts/work-mesh.sh start --company {co} --project {name} --summary "PRD created for {name}"
-bash core/scripts/work-mesh.sh done  --company {co} --project {name} --summary "Planning complete: {N} stories ready"
+hq mesh session note --session <sid> --enqueue --seq <n> --summary "PRD created for {name}: {N} stories ready"
 ```
 
-This is best-effort. If the helper no-ops because HQ is local-only, logged out,
-or not cloud connected, continue. Do not publish project events directly to
-MQTT; the helper writes through the hq-pro API and the server handles real-time
-fanout. Use `watch` only for live subscribe/cache behavior.
+Best-effort. Manual verbs only: `task-status`, `blocked`, `note`. Do not call
+deleted `start` / `done` / `watch` / pack `listen`. See
+`core/policies/hq-project-work-mesh-reporting.md` and `core/skills/work-mesh/`.
 
 ## Step 6: Register with Orchestrator
 
@@ -749,4 +761,4 @@ Splitting heuristics:
 - **Every story MUST have testable acceptance criteria** — "works correctly" is not acceptable
 - **Include testing stories** — For deployable projects, at least one story should be dedicated to E2E test infrastructure
 - **ALWAYS: Verify board.json write in Step 5.6** — After upserting the board entry, re-read board.json and confirm the new project ID exists. If the write failed silently (file parse error, missing board, manifest lookup miss), log the error and retry once. Silent failure leaves projects invisible in the HQ app — the orphan scanner catches them with an "Unregistered" badge, but proper registration is required
-- **ALWAYS: Attempt work-mesh reporting for company projects** — check active mesh work before creating a duplicate PRD, and report PRD creation/completion via `core/scripts/work-mesh.sh`. Failures are non-blocking; skipped reporting is acceptable only when the helper is unavailable/offline. `watch` is allowed for live MQTT awareness, but project event writes must still use the helper's API-backed verbs.
+- **ALWAYS: Prefer automatic work-mesh presence** — do not invent companies/projects from prompt text. Optional discrete milestones use `hq mesh session note|task-status|blocked` only. Failures are non-blocking.

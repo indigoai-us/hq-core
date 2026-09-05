@@ -18,7 +18,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HQ_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 TARGET="${HQ_ROOT}/.claude/scripts/run-project.sh"
-WORK_MESH="${HQ_ROOT}/core/scripts/work-mesh.sh"
 
 if [[ ! -f "$TARGET" ]]; then
   echo "ERROR: missing orchestrator script: $TARGET" >&2
@@ -85,24 +84,26 @@ mesh_project_complete() {
 
 mesh_report_start() {
   local project="$1" company="$2"
-  [[ -x "$WORK_MESH" ]] || return 0
-  "$WORK_MESH" start --company "$company" --project "$project" \
-    --summary "run-project started for $project" --silent >/dev/null 2>&1 || true
+  command -v hq >/dev/null 2>&1 || return 0
+  hq mesh session note --enqueue --session "${HQ_SESSION_ID:-run-project}" --seq 1 \
+    --harness claude-code --adapter-version 1.0.0 \
+    --summary "run-project started for $project" >/dev/null 2>&1 || true
 }
 
 mesh_report_finish() {
   local project="$1" company="$2" rc="$3" prd="$4"
-  [[ -x "$WORK_MESH" ]] || return 0
+  command -v hq >/dev/null 2>&1 || return 0
+  local summary
   if [[ "$rc" == "0" ]] && [[ -n "$prd" ]] && mesh_project_complete "$prd"; then
-    "$WORK_MESH" done --company "$company" --project "$project" \
-      --summary "run-project completed for $project" --silent >/dev/null 2>&1 || true
+    summary="run-project completed for $project"
   elif [[ "$rc" == "0" ]]; then
-    "$WORK_MESH" progress --company "$company" --project "$project" \
-      --summary "run-project made progress on $project" --silent >/dev/null 2>&1 || true
+    summary="run-project made progress on $project"
   else
-    "$WORK_MESH" blocked --company "$company" --project "$project" \
-      --reason "run-project exited with code $rc" --silent >/dev/null 2>&1 || true
+    summary="run-project exited with code $rc"
   fi
+  hq mesh session note --enqueue --session "${HQ_SESSION_ID:-run-project}" --seq 1 \
+    --harness claude-code --adapter-version 1.0.0 \
+    --summary "$summary" >/dev/null 2>&1 || true
 }
 
 PROJECT_FOR_MESH="$(mesh_project_arg "$@" || true)"

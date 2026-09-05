@@ -1,7 +1,7 @@
 ---
 name: idea
 description: Capture a lightweight project idea on the board.
-allowed-tools: Read, Write, Bash, Bash(core/scripts/work-mesh.sh:*), AskUserQuestion
+allowed-tools: Read, Write, Bash, Bash(hq:*), AskUserQuestion
 ---
 
 # /idea - Capture Project Idea
@@ -99,16 +99,14 @@ If company was unresolved in Step 2, prepend a company question:
 
 ## Step 5: Confirm & Reindex
 
-Before printing confirmation, attempt a best-effort work-mesh report:
+Before printing confirmation, optional best-effort note (presence is automatic):
 
 ```bash
-bash core/scripts/work-mesh.sh start --company {co} --project "{id}" --summary "Idea captured: {title}"
-bash core/scripts/work-mesh.sh done  --company {co} --project "{id}" --summary "Idea captured on the company board"
+hq mesh session note --session <sid> --enqueue --seq <n> --summary "Idea captured: {title}"
 ```
 
-If the helper is unavailable, local-only, logged out, or not cloud connected,
-continue silently. Do not publish directly to MQTT; `watch` is only for live
-subscribe/cache behavior.
+If the daemon/helper is unavailable, continue silently. Manual verbs only:
+`task-status`, `blocked`, `note`.
 
 Print:
 ```
@@ -135,7 +133,7 @@ Reindex: `qmd update 2>/dev/null || true`
 - **Board.json is the only file written** (plus manifest if board_path was empty)
 - **Follow existing ID conventions** — lowercase prefix, zero-padded 3-digit numbers
 - **Inline mode**: if all info is provided via args/flags, write the entry with zero questions
-- **Work mesh is best-effort** — for cloud-connected company boards, report the captured idea through `core/scripts/work-mesh.sh`; never block idea capture on mesh availability. Local watchers may subscribe with `work-mesh.sh watch`, but project events still use helper verbs.
+- **Work mesh is best-effort** — for cloud-connected company boards, report the captured idea through `hq mesh`; never block idea capture on mesh availability. Presence is automatic; use `hq mesh session note` for discrete milestones.
 
 ## See also
 
