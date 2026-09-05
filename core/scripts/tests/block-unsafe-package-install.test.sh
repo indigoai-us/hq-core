@@ -110,6 +110,42 @@ allow_case 2 'npm install -g @tobilu/qmd@latest'                "global qmd@late
 allow_case 2 'npm install @tobilu/qmd@2.5.3'                    "NON-global pinned qmd is blocked"
 allow_case 2 'npm install -g @tobilu/qmd@2.5.3 left-pad@1.0.0'  "global install with one non-allowed pkg is blocked"
 
+# 6b. Redirection tokens must not be mistaken for positional package args.
+#     Found 2026-09-05: the allow-list override was dead in practice because
+#     agents almost always write installs as `... 2>&1 | tail`. `2>&1` does not
+#     start with '-', so every token loop counted it as a package name, the
+#     "every positional token is allow-listed" check failed, and the install was
+#     blocked. Redirections are shell plumbing and must be ignored.
+allow_case 0 'npm install -g @tobilu/qmd@2.5.3 2>&1'               "allow-listed pin with trailing 2>&1 is allowed"
+allow_case 0 'npm install -g @tobilu/qmd@2.5.3 2>&1 | tail -2'     "allow-listed pin with 2>&1 and a pipe is allowed"
+allow_case 0 'npm install -g @tobilu/qmd@2.5.3 >/tmp/out.log 2>&1' "allow-listed pin with >file 2>&1 is allowed"
+allow_case 0 'npm install -g @tobilu/qmd@2.5.3 > /tmp/out.log'     "allow-listed pin with detached '> file' target is allowed"
+allow_case 0 'npm install -g @tobilu/qmd@2.5.3 >> /tmp/out.log'    "allow-listed pin with detached '>> file' target is allowed"
+allow_case 0 'npm install -g @tobilu/qmd@2.5.3 &>/tmp/out.log'     "allow-listed pin with &>file is allowed"
+allow_case 0 'npm install -g @tobilu/qmd@2.5.3 2>/dev/null'        "allow-listed pin with 2>/dev/null is allowed"
+allow_case 0 'npm install -g @tobilu/qmd@2.5.3 1>&2'               "allow-listed pin with 1>&2 is allowed"
+allow_case 0 'npm install -g @tobilu/qmd@2.5.3 </dev/null'         "allow-listed pin with <file is allowed"
+allow_case 0 'pnpm add -g @tobilu/qmd@2.5.3 2>&1'                  "pnpm allow-listed pin with 2>&1 is allowed"
+
+# 6c. Redirections must NOT launder an install that would otherwise be blocked.
+allow_case 2 'npm i -g @tobilu/qmd 2>&1'                           "UNPINNED qmd with 2>&1 is still blocked"
+allow_case 2 'npm install -g @tobilu/qmd@latest 2>&1'              "qmd@latest dist-tag with 2>&1 is still blocked"
+allow_case 2 'npm install -g @tobilu/qmd@2.5.2 2>&1'               "wrong exact pin with 2>&1 is still blocked"
+allow_case 2 'npm install @tobilu/qmd@2.5.3 2>&1'                  "NON-global pinned qmd with 2>&1 is still blocked"
+allow_case 2 'npm install -g @tobilu/qmd@2.5.3 left-pad@1.0.0 2>&1' "mixed install with 2>&1 is still blocked"
+allow_case 2 'npm install left-pad 2>&1'                           "third-party install with 2>&1 is still blocked"
+allow_case 2 'npm install left-pad >/tmp/out.log 2>&1'             "third-party install with >file 2>&1 is still blocked"
+allow_case 2 'pnpm add left-pad 2>&1'                              "pnpm third-party install with 2>&1 is still blocked"
+
+# 6d. The same token loop feeds hydration detection, so a redirection must not
+#     turn a bare `npm install` into a "has a positional package" install.
+ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook 'npm install 2>&1')"
+[ "$ec" = "0" ] && pass "'npm install 2>&1' (hydration + redirect) is allowed (exit 0)" \
+                 || fail "'npm install 2>&1' should be allowed (exit 0), got $ec"
+ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook 'pnpm install >/tmp/out.log 2>&1')"
+[ "$ec" = "0" ] && pass "'pnpm install >file 2>&1' (hydration + redirect) is allowed (exit 0)" \
+                 || fail "'pnpm install >file 2>&1' should be allowed (exit 0), got $ec"
+
 # 7. Missing allow file: behave exactly as before (blocked).
 ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook 'npm install -g @tobilu/qmd@2.5.3')"
 [ "$ec" = "2" ] && pass "missing allow file still blocks 'npm install -g @tobilu/qmd@2.5.3' (exit 2)" \
