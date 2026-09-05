@@ -17,6 +17,11 @@
 #   - pnpm install / pnpm i  (same — lockfile hydration only)
 #   - yarn install (no `add`)
 #   - bun install / bun i    (no positional pkg)
+#   - GLOBAL installs (-g/--global) where EVERY positional package token matches
+#     an entry in core/scripts/install-deps.allow (HQ's sanctioned CLI deps:
+#     qmd, hq CLI, Claude Code). `name@exact` allows only that version;
+#     `name@*` allows any explicit pin but never a bare name or dist-tag.
+#     If the allow file is missing, nothing is allow-listed.
 #   - Anything when HQ_ALLOW_UNSAFE_INSTALL=1 is set in THIS hook's process
 #     environment (via .claude/settings.local.json "env", or exported before
 #     launching Claude Code). NOTE: prefixing that assignment onto the install
@@ -82,6 +87,11 @@ BLOCKED — supply-chain guard (.claude/policies/hq-pnpm-min-release-age-supply-
         --config.node-linker=hoisted so pnpm keeps a flat, npm-compatible node_modules)
     3. Or workspace-wide:             add  minimumReleaseAge: 1440  to pnpm-workspace.yaml
 
+  Installing an HQ dependency CLI (qmd, hq CLI, Claude Code)? Use the sanctioned
+  pinned form from core/scripts/install-deps.allow, e.g.
+    npm install -g @tobilu/qmd@2.5.3
+  — the guard allows exact pins listed there. Do NOT install these unpinned.
+
   Emergency bypass (audited): set HQ_ALLOW_UNSAFE_INSTALL=1 in THIS hook's
   ENVIRONMENT — prefixing the assignment onto the command itself does NOT work
   (it never reaches the hook, so the block still fires). Either:
@@ -142,6 +152,63 @@ has_positional_pkg_arg() {
     esac
   done
   return 1
+}
+
+# ── Sanctioned global CLI allow-list (core/scripts/install-deps.allow) ────────
+ALLOW_FILE="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}/core/scripts/install-deps.allow"
+
+# Does one positional token match an allow entry?
+# Args: "<token>"  — e.g. @tobilu/qmd@2.5.3
+allow_matches_token() {
+  local tok="$1" name ver entry ename ever
+  [ -f "$ALLOW_FILE" ] || return 1
+  # Split token into name / version: the LAST '@' that is not at position 0.
+  # Scoped names start with '@', so strip that first.
+  local body="$tok" prefix=""
+  if [[ "$body" == @* ]]; then prefix="@"; body="${body#@}"; fi
+  if [[ "$body" != *@* ]]; then
+    return 1   # bare name — never allowed
+  fi
+  name="${prefix}${body%@*}"
+  ver="${body##*@}"
+  [ -z "$ver" ] && return 1
+  case "$ver" in
+    latest|next|beta|alpha|canary|rc|'*'|x) return 1 ;;   # dist-tags / wildcards
+  esac
+  while IFS= read -r entry || [ -n "$entry" ]; do
+    entry="${entry%%#*}"
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    entry="${entry%"${entry##*[![:space:]]}"}"
+    [ -z "$entry" ] && continue
+    local ebody="$entry" eprefix=""
+    if [[ "$ebody" == @* ]]; then eprefix="@"; ebody="${ebody#@}"; fi
+    [[ "$ebody" == *@* ]] || continue
+    ename="${eprefix}${ebody%@*}"
+    ever="${ebody##*@}"
+    [ "$ename" = "$name" ] || continue
+    if [ "$ever" = "*" ] || [ "$ever" = "$ver" ]; then
+      return 0
+    fi
+  done < "$ALLOW_FILE"
+  return 1
+}
+
+# Is this a GLOBAL install whose every positional package token is allow-listed?
+# Args: "<rest-of-command-after-subcmd>"
+allowed_global_install() {
+  local rest="$1" tok is_global=0 npos=0
+  [ -f "$ALLOW_FILE" ] || return 1
+  for tok in $rest; do
+    case "$tok" in
+      -g|--global) is_global=1 ;;
+      -*) ;;
+      *)
+        npos=$((npos+1))
+        allow_matches_token "$tok" || return 1
+        ;;
+    esac
+  done
+  [ "$is_global" = "1" ] && [ "$npos" -gt 0 ]
 }
 
 check_segment() {
@@ -213,6 +280,11 @@ check_segment() {
     esac
   done
   if [ "$saw_pkg" = "1" ] && [ "$all_trusted" = "1" ]; then
+    return 0
+  fi
+
+  # Sanctioned HQ CLI deps: global install, every pkg pinned + allow-listed.
+  if allowed_global_install "$rest"; then
     return 0
   fi
 

@@ -71,7 +71,9 @@ GATE="$HOOK_DIR/hook-gate.sh"
 if [ -n "$HQ_ROOT" ]; then
   CLAUDE_PROJECT_DIR="$HQ_ROOT"
   HQ_CHECKPOINT_RUNTIME=codex
-  export HQ_ROOT CLAUDE_PROJECT_DIR HQ_CHECKPOINT_RUNTIME
+  HQ_WORK_MESH_HARNESS=codex
+  HQ_HARNESS=codex
+  export HQ_ROOT CLAUDE_PROJECT_DIR HQ_CHECKPOINT_RUNTIME HQ_WORK_MESH_HARNESS HQ_HARNESS
   . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
   # Single-source dispatch: read .claude/settings.json live so Codex runs
   # exactly the hooks Claude runs (hqad_iter_settings / hqad_mode_for).
@@ -654,15 +656,43 @@ run_post_tool_use() {
   esac
 }
 
+# US-010: explicitly dispatch Work Mesh Live enqueue hooks with harness=codex.
+# settings/master also pick them up; this keeps dispatch correct if settings lag.
+# Unit tests set HQ_WORK_MESH_FORCE_ADAPTER_DISPATCH=1 to exercise this path
+# without mirroring the full settings.json fan-out.
+work_mesh_live_dispatch() {
+  local event="$1" script="$2" payload="${3:-$INPUT}"
+  local path="$HQ_ROOT/core/hooks/$event/$script"
+  [ -f "$path" ] || return 0
+  HQ_WORK_MESH_HARNESS=codex HQ_HARNESS=codex \
+    run_hook "work-mesh-live" "$path" "$payload" "advisory"
+}
+
+if [ "${HQ_WORK_MESH_FORCE_ADAPTER_DISPATCH:-}" = "1" ]; then
+  case "$HOOK_EVENT" in
+    SessionStart) work_mesh_live_dispatch SessionStart 35-work-mesh-session-start.sh ;;
+    UserPromptSubmit) work_mesh_live_dispatch UserPromptSubmit 35-work-mesh-turn-start.sh ;;
+    Stop) work_mesh_live_dispatch Stop 70-work-mesh-turn-end.sh ;;
+    SessionEnd) work_mesh_live_dispatch SessionEnd 35-work-mesh-session-end.sh ;;
+    PostToolUse) work_mesh_live_dispatch PostToolUse 35-work-mesh-tool-writes.sh ;;
+  esac
+  # Unit-test / settings-lag path: do not also mirror the full settings fan-out.
+  emit_diag
+  emit_context
+  exit 0
+fi
+
 case "$HOOK_EVENT" in
   SessionStart)
     # Codex-only supplement: nudge Codex to honor HQ checkpoint cadence. No
     # Claude analog, so it is not in settings.json. Runs before the mirrored
     # SessionStart hooks (migrate -> inject -> ... in settings.json order).
     run_hook "inject-codex-checkpoint-reprompt" "$HOOK_DIR/inject-codex-checkpoint-reprompt.sh" "$INPUT" "advisory"
+    # Production: settings → master → core/hooks with HQ_HARNESS=codex exported.
     dispatch_settings_hooks "SessionStart" "ANY" "$INPUT"
     ;;
   UserPromptSubmit)
+    # Clarification uses request_user_input (instructed by turn-start additionalContext).
     dispatch_settings_hooks "UserPromptSubmit" "ANY" "$INPUT"
     ;;
   PreToolUse)

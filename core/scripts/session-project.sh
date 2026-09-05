@@ -22,6 +22,11 @@ const path = require("path");
 const HQ_ROOT = fs.realpathSync(process.argv[2]);
 const ARGS = process.argv.slice(3);
 
+// Words that must never, on their own, make two pieces of work "the same
+// project". The original list held 48 entries and omitted the vocabulary that
+// actually recurs in engineering prompts, so slugs built from ordinary
+// instructions ("not-ask-changes-pr-revert", "many-folders-root-hq-not")
+// became attractors that swallowed hundreds of unrelated sessions.
 const STOPWORDS = new Set([
   "about", "after", "again", "almost", "always", "and", "any", "are",
   "basically", "before", "being", "can", "claude", "codex", "create",
@@ -29,7 +34,28 @@ const STOPWORDS = new Set([
   "from", "have", "how", "into", "mode", "native", "ones", "plan",
   "project", "projects", "session", "sessions", "should", "that",
   "the", "this", "update", "updated", "when", "with", "work", "would",
+  // Instruction scaffolding and generic engineering verbs/nouns. These carry
+  // no signal about *which* piece of work a session belongs to.
+  "actually", "add", "added", "adding", "all", "also", "back", "but",
+  "change", "changed", "changes", "check", "checked", "checking", "could",
+  "current", "currently", "error", "errors", "failed", "failing", "file",
+  "files", "find", "fix", "fixed", "fixes", "fixing", "get", "got", "here",
+  "issue", "issues", "just", "keep", "let", "lets", "like", "look", "looking",
+  "looks", "made", "make", "makes", "making", "more", "need", "needs", "new",
+  "not", "now", "old", "only", "our", "out", "over", "please", "put", "report",
+  "reports", "root", "run", "running", "runs", "same", "see", "some", "still",
+  "sure", "take", "test", "tested", "testing", "tests", "than", "them", "then",
+  "there", "they", "thing", "things", "try", "trying", "use", "used", "using",
+  "very", "want", "wants", "was", "way", "were", "what", "where", "which",
+  "who", "why", "will", "your",
 ]);
+
+// A project that has already absorbed this many sessions is an attractor, not
+// a match. Past this point only a strong slug match may add to it.
+const MAX_REUSE_SESSIONS = 25;
+// Fraction of a project's own slug words the query must cover to override the
+// saturation breaker above.
+const STRONG_SLUG_COVERAGE = 0.6;
 
 const pad = (x) => String(x).padStart(2, "0");
 function nowIso() {
@@ -82,8 +108,56 @@ function words(value) {
   return out;
 }
 
+// Slug words, split on the hyphen boundary. `words()` keeps hyphens inside a
+// token, so a directory name like "a-b-c" is one opaque token to it; matching
+// needs the individual words. Deliberately NOT a substring test — the previous
+// rule was `name.includes(word)`, which scored "git" against "github" and gave
+// long slugs a large accidental match surface.
+function slugWords(name) {
+  const out = new Set();
+  for (const t of (((name || "").toLowerCase().match(/[a-z0-9]+/g)) || [])) {
+    if (t.length >= 3 && !STOPWORDS.has(t)) out.add(t);
+  }
+  return out;
+}
+
+// Returns null for an absent file. An unreadable or unparseable file is
+// reported and skipped — never silently treated as an empty project, because
+// callers that write the result back would then destroy its contents.
 function readJson(p) {
-  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { return null; }
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch (e) {
+    if (e && e.code === "ENOENT") return null;
+    process.stderr.write("session-project: skipping unreadable " + p + ": " +
+      (e && e.message ? e.message : String(e)) + "\n");
+    return null;
+  }
+}
+
+// Strict variant for the read-modify-write paths. Absent is fine (null);
+// present-but-corrupt is fatal, so a temporarily unreadable prd.json — which
+// is exactly what a sync conflict produces — is never overwritten with a stub.
+function readJsonForWrite(p) {
+  let raw;
+  try {
+    raw = fs.readFileSync(p, "utf8");
+  } catch (e) {
+    if (e && e.code === "ENOENT") return null;
+    die("cannot read " + p + ": " + (e && e.message ? e.message : String(e)));
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    die("refusing to overwrite unparseable " + p + ": " +
+      (e && e.message ? e.message : String(e)) +
+      " — repair or remove the file, then retry");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    die("refusing to overwrite " + p + ": expected a JSON object");
+  }
+  return parsed;
 }
 
 function writeJson(p, data) {
@@ -166,10 +240,30 @@ function findCandidates(scope, company, query, limit = 5) {
       const prd = readJson(prdPath);
       if (!prd || typeof prd !== "object" || Array.isArray(prd)) continue;
       const hayWords = words(projectText(prd, prdPath));
-      const overlap = [...queryWords].filter((w) => hayWords.has(w)).sort();
-      const slugHits = [...queryWords].filter((w) => name.toLowerCase().includes(w));
-      const score = overlap.length + slugHits.length;
+      const slugTokens = slugWords(name);
+      // Score each distinct query word ONCE. The previous rule summed
+      // `overlap.length + slugHits.length` over the same query-word set, and a
+      // project's slug is derived from its own originating prompt — which is
+      // also stored as its description — so nearly every slug word was counted
+      // twice. One shared word scored 2 and cleared the default threshold on
+      // its own, which is how ~900 unrelated sessions landed in one project.
+      const overlap = [...queryWords].filter((w) => hayWords.has(w) || slugTokens.has(w)).sort();
+      const score = overlap.length;
       if (score === 0) continue;
+
+      // Saturation breaker: once a project has absorbed a lot of sessions it
+      // is almost certainly an accidental attractor. Keep adding to it only
+      // when the query really is about that project, measured as coverage of
+      // the project's own slug words rather than raw hit count.
+      const sessions = prd.metadata && Array.isArray(prd.metadata.nativeSessions)
+        ? prd.metadata.nativeSessions
+        : [];
+      if (sessions.length > MAX_REUSE_SESSIONS) {
+        const slugHits = [...slugTokens].filter((w) => queryWords.has(w)).length;
+        const coverage = slugTokens.size ? slugHits / slugTokens.size : 0;
+        if (coverage < STRONG_SLUG_COVERAGE) continue;
+      }
+
       candidates.push({
         path: relToRoot(prdPath),
         projectDir: relToRoot(child),
@@ -186,10 +280,11 @@ function findCandidates(scope, company, query, limit = 5) {
 
 function loadOrCreatePrd(projectDir, title, scope, company, prompt, origin, repoPath) {
   const prdPath = path.join(projectDir, "prd.json");
-  if (fs.existsSync(prdPath)) {
-    const prd = readJson(prdPath);
-    return (prd && typeof prd === "object" && !Array.isArray(prd)) ? prd : {};
-  }
+  // A slug collision can land us on a directory that already holds a prd.json.
+  // Reuse it if it parses; refuse loudly if it does not. Returning `{}` here
+  // used to overwrite a real PRD with a metadata-only stub.
+  const existing = readJsonForWrite(prdPath);
+  if (existing) return existing;
 
   const slug = path.basename(projectDir);
   const description = prompt || title;
@@ -404,7 +499,9 @@ function resolveProjectDir(project, requiredMsg) {
 function ingestPlan(args) {
   const projectDir = resolveProjectDir(args.project, "session-project: no active project; run ensure first");
   const prdPath = path.join(projectDir, "prd.json");
-  const prd = readJson(prdPath) || {};
+  // Absent is fine (fresh project); corrupt must not be flattened into a
+  // metadata-only stub by the writeJson() below.
+  const prd = readJsonForWrite(prdPath) || {};
 
   let body;
   if (args.plan_file) body = fs.readFileSync(args.plan_file, "utf8");
@@ -434,8 +531,11 @@ function ingestPlan(args) {
 function appendEvent(args) {
   let projectDir = resolveProjectDir(args.project, "");
   let prdPath = path.join(projectDir, "prd.json");
-  let prd = readJson(prdPath);
-  if (!prd || typeof prd !== "object" || Array.isArray(prd)) {
+  // Absent means the project moved and we reconcile by session id. Corrupt
+  // means the file is damaged: readJsonForWrite exits rather than letting the
+  // event land in some other project and the damage go unnoticed.
+  let prd = readJsonForWrite(prdPath);
+  if (!prd) {
     const matches = findProjectsBySession(args.session_id);
     if (matches.length !== 1) die("cannot uniquely reconcile project");
     projectDir = matches[0].projectDir;
@@ -467,11 +567,11 @@ for (let i = 1; i < ARGS.length; i++) {
 const defaults = {
   scope: "personal", company: "", title: "", prompt: "", slug: "",
   repo_path: "", session_id: "", origin: "native-session",
-  reuse_threshold: 2, force_new: false, query: "", limit: 5,
+  reuse_threshold: 3, force_new: false, query: "", limit: 5,
   project: "", plan_file: "", source: "native-plan", kind: "", summary: "",
 };
 const args = Object.assign({}, defaults, flags);
-args.reuse_threshold = parseInt(args.reuse_threshold, 10) || 2;
+args.reuse_threshold = parseInt(args.reuse_threshold, 10) || 3;
 args.limit = parseInt(args.limit, 10) || 5;
 
 if (cmd === "find") {

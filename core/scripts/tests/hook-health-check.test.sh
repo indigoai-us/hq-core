@@ -390,4 +390,77 @@ printf '%s' "$out" | grep -Fq '2 hook command(s)' \
   || fail "two broken commands should count twice: $out"
 pass "the reported number is a count of broken commands"
 
+echo "[18] an agents-v2 (hermes) box gets v2-appropriate ledger guidance, not Claude-CLI steps"
+# The ledger ASSERTION is identical across runtimes (present => OBSERVED / exit
+# 0, missing => NOT OBSERVED / exit 2); only the recovery guidance differs.
+# Detection is either the runtime marker (runtimeMode=agents-v2) or the on-box
+# adapter under the tree. A v2 box legitimately has no ledger until the agent's
+# first live turn writes it through the same .claude hooks, so the Claude
+# Desktop/SDK repair steps are wrong there (they send the operator in a circle).
+NO_MARKER="$TMP/no-such-runtime-marker.json"   # isolate from the host's marker
+
+# 18a: detected via the runtime marker file (HQ_RUNTIME_MARKER_FILE override).
+V2ROOT="$TMP/agents-v2-marker"
+make_healthy_root "$V2ROOT"
+V2MARKER="$TMP/agents-v2-runtime.json"
+printf '{"runtimeMode":"agents-v2"}\n' >"$V2MARKER"
+set +e
+out="$(HQ_RUNTIME_MARKER_FILE="$V2MARKER" bash "$CHECKER" --root "$V2ROOT" --require-ledger 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "v2 marker + missing ledger should exit 2: $out"
+printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+  || fail "v2 missing ledger must keep the identical NOT OBSERVED assertion: $out"
+printf '%s' "$out" | grep -Fq 'agents-v2 (hermes)' \
+  || fail "v2 box did not get agents-v2 guidance: $out"
+printf '%s' "$out" | grep -Fq 'live turn' \
+  || fail "v2 guidance should tell the operator to drive a live turn: $out"
+if printf '%s' "$out" | grep -Fq 'For Claude Desktop'; then
+  fail "v2 box was shown the wrong Claude Desktop recovery steps: $out"
+fi
+if printf '%s' "$out" | grep -Fq 'settingSources: ["project"]'; then
+  fail "v2 box was shown the wrong SDK recovery steps: $out"
+fi
+pass "v2 marker box: identical NOT OBSERVED assertion, v2 guidance, no Claude-CLI steps"
+
+# 18b: detected via the on-box adapter marker under the tree (no runtime marker).
+V2ADP="$TMP/agents-v2-adapter"
+make_healthy_root "$V2ADP"
+mkdir -p "$V2ADP/.agents-v2-hooks"
+printf '#!/bin/bash\nexit 0\n' >"$V2ADP/.agents-v2-hooks/hq-agents-v2-hook-adapter.sh"
+set +e
+out="$(HQ_RUNTIME_MARKER_FILE="$NO_MARKER" bash "$CHECKER" --root "$V2ADP" --require-ledger 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "v2 adapter-marker + missing ledger should exit 2: $out"
+printf '%s' "$out" | grep -Fq 'agents-v2 (hermes)' \
+  || fail "adapter-marker box did not get agents-v2 guidance: $out"
+if printf '%s' "$out" | grep -Fq 'For Claude Desktop'; then
+  fail "adapter-marker box was shown the wrong Claude Desktop steps: $out"
+fi
+pass "v2 adapter-marker box is detected from the tree alone"
+
+# 18c: once the ledger is present the v2 box reads OBSERVED — byte-identical to
+# the Claude runtime's OBSERVED verdict.
+mkdir -p "$V2ADP/workspace/orchestrator/policy-trigger-state"
+: >"$V2ADP/workspace/orchestrator/policy-trigger-state/hermes-turn.txt"
+out="$(HQ_RUNTIME_MARKER_FILE="$NO_MARKER" bash "$CHECKER" --root "$V2ADP" --require-ledger 2>&1)"
+printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: OBSERVED' \
+  || fail "present ledger on a v2 box must read OBSERVED: $out"
+printf '%s' "$out" | grep -Fq 'ledger: present' || fail "v2 present ledger not reported: $out"
+pass "v2 box with a live-turn ledger reads OBSERVED (identical assertion)"
+
+# 18d: a plain Claude tree (no marker, no adapter) still gets the Claude-CLI
+# recovery steps — the v2 branch must not leak into the default runtime.
+CLAUDEROOT="$TMP/claude-default"
+make_healthy_root "$CLAUDEROOT"
+set +e
+out="$(HQ_RUNTIME_MARKER_FILE="$NO_MARKER" bash "$CHECKER" --root "$CLAUDEROOT" --require-ledger 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "claude default + missing ledger should exit 2: $out"
+printf '%s' "$out" | grep -Fq 'For Claude Desktop' \
+  || fail "the default runtime lost its Claude Desktop guidance: $out"
+if printf '%s' "$out" | grep -Fq 'agents-v2 (hermes)'; then
+  fail "a plain Claude tree wrongly got agents-v2 guidance: $out"
+fi
+pass "the default Claude runtime keeps its own recovery steps"
+
 echo "PASS: hook-health checker"

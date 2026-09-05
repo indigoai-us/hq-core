@@ -43,7 +43,7 @@ const INTENTIONALLY_APPROVAL_GATED_COMMANDS = new Map([
     "The same entry point can apply runtime configuration changes, so it keeps an approval prompt.",
   ],
   [
-    ".claude/skills/idea/SKILL.md::bash core/scripts/work-mesh.sh",
+    ".claude/skills/idea/SKILL.md::hq mesh",
     "Work Mesh writes are best-effort cloud updates and remain approval-gated.",
   ],
   [
@@ -63,7 +63,7 @@ const INTENTIONALLY_APPROVAL_GATED_COMMANDS = new Map([
     "The runtime-selected project journal remains approval-gated.",
   ],
   [
-    ".claude/skills/plan/SKILL.md::bash core/scripts/work-mesh.sh",
+    ".claude/skills/plan/SKILL.md::hq mesh",
     "Work Mesh writes are best-effort cloud updates and remain approval-gated.",
   ],
   [
@@ -75,7 +75,7 @@ const INTENTIONALLY_APPROVAL_GATED_COMMANDS = new Map([
     "Session context mutation remains visible and approval-gated.",
   ],
   [
-    ".claude/skills/run/SKILL.md::bash core/scripts/work-mesh.sh",
+    ".claude/skills/run/SKILL.md::hq mesh",
     "Work Mesh reads and writes remain approval-gated at the network boundary.",
   ],
   [

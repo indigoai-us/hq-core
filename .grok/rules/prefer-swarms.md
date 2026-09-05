@@ -95,7 +95,7 @@ Before spawning a research/dev/ops/review swarm:
 3. Prefer `/run {worker} {skill}` semantics (see skill `run`): isolated child,
    parent owns integration + memory write.
 4. Respect tenant isolation — never cross-company credentials or knowledge.
-5. Work-mesh when project-scoped: `bash core/scripts/work-mesh.sh check|progress|…`
+5. Work-mesh when project-scoped: `hq mesh session note|task-status|blocked --enqueue …`
 
 ### Role → typical workers (start here)
 

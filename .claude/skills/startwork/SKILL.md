@@ -1,7 +1,7 @@
 ---
 name: startwork
 description: Resolve current HQ context and surface useful next work options.
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(core/scripts/work-mesh.sh:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash, AskUserQuestion
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, AskUserQuestion
 ---
 
 # Start Work Session
@@ -11,6 +11,19 @@ Lightweight session entry point. Resolves context fast, presents smart options, 
 ## When to Use
 
 Beginning of every session. Replaces ad-hoc orientation.
+
+## Work Mesh Live — trusted bind (do this first)
+
+Before any other tool call that touches project work, bind the session per
+`.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
+
+```bash
+bash core/scripts/work-mesh-live-bind-trusted.sh \
+  --company "{co}" --project "{project}" --task "{task}"
+```
+
+Omit `--task` when unknown. This writes `workspace/sessions/<sid>/meta.yaml`
+and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
 
 ## Process
 
@@ -104,17 +117,11 @@ Board status comes from the work mesh, never local prd.passes. If ground/check a
 1. Resolve the project dir (`personal/projects/{name}` or `companies/{co}/projects/{name}`). Read `prd.json` only for `name`, `description`, `branchName`, and acceptance text — not story status.
 2. Extract `metadata.repoPath` — identify company by matching against manifest repos
 3. If repoPath exists: `git -C {repoPath} branch --show-current` and `git -C {repoPath} status --short`
-4. If company `{co}` is resolved, load the live Board:
-   ```
-   bash core/scripts/work-mesh.sh ground --company {co} --project {name} --json
-   # fallback: bash core/scripts/work-mesh.sh check --company {co} --project {name} --json
-   ```
-   Present columns from `stories[]` (`id`, `title`, `status`). If JSON has no stories, read `~/.hq/work-mesh/cache/projects/{companyUid}/{projectId}.json`.
+4. If company `{co}` is resolved, load the live Board from cache / Desktop live read (presence is automatic via `hq mesh daemon`). Prefer `~/.hq/work-mesh/cache/projects/{companyUid}/{projectId}.json` when present. Do not call deleted `hq mesh session ground|check|watch`.
    - `queued` = available next work
    - `in_progress` / `review` = already claimed; do not offer as free next work
    - `done` = done
-   Include active mesh thread owners/blockers in the orientation block. If the helper prints nothing, omit the mesh line and continue.
-   Do **not** `report --task-title` during orientation — that mints a T-NNN card. Session is presence. Attach later with `--task {id}`.
+   Include active mesh thread owners/blockers in the orientation block when available. Session presence is automatic — do not mint cards during orientation.
 5. **Read session journals** (spec: `core/knowledge/public/hq-core/journal-spec.md`). If `{project_dir}/journal/` exists:
    - `ls -t {project_dir}/journal/*.md 2>/dev/null | head -2` — most recent 2 files
    - For each: read frontmatter (`status`, `summary`) + `## Open threads` section only — skip `## Auto-capture` (reference material, too noisy for orientation)
@@ -153,11 +160,12 @@ session's metadata so per-company hooks and other context-aware skills can
 find it:
 
 ```bash
-bash core/scripts/hq-session.sh set company_slug "{co}"
-# Optional, when applicable:
-bash core/scripts/hq-session.sh set project "{project_name}"
+bash core/scripts/work-mesh-live-bind-trusted.sh \
+  --company "{co}" --project "{project_name}" --task "{task_id}"
+# Optional extras:
 bash core/scripts/hq-session.sh set repo    "{repo_name}"
 bash core/scripts/hq-session.sh set mode    "{Resume|Company|Project|Repo|Task}"
+# (bind-trusted already sets company_slug / project / task when provided)
 ```
 
 This file lives at `workspace/sessions/<session_id>/meta.yaml`. The current

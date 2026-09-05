@@ -877,13 +877,12 @@ rm -f "$TMP/r3-finalize-out.json" "$TMP/r3-post-pid" "$TMP/logs/handoff-post.log
     >"$TMP/r3-post-out.txt" 2>&1 &
   post_pid=$!
 
-  # Keep hold until: one raw pipeline started AND both callers scheduled helper.
-  # Otherwise a fast post can finish before finalize reaches qmd (2 pipelines).
-  # Budget 600 (30s), not 200: R3 is the heaviest case in the suite — two real
-  # forwarder chains each spawn a detached `hq index background` worker, so up to
-  # four CLI cold-boots (~1.5s each) contend for a 2-core CI runner. 10s left no
-  # tail headroom and flaked ~once a day here; the other concurrent cases (C1/C4,
-  # laptop launchers) already use 600 for the same reason.
+  # Keep hold until both launchers have scheduled a helper AND one raw pipeline
+  # has started. The launcher ALWAYS spawns a detached worker (lock lives in
+  # the worker): releasing the hold before the loser boots and fails
+  # acquireLock turns single-flight into two sequential pipelines under
+  # DEDUPE_SEC=0 (same class of flake L2 documents for slow node boots).
+  # Budget 600 (30s): two forwarder chains × detached workers on 2-core CI.
   for _ in $(seq 1 600); do
     sched_n=0
     if [[ -f "$TMP/helper-scheduled.log" ]]; then
@@ -900,7 +899,35 @@ rm -f "$TMP/r3-finalize-out.json" "$TMP/r3-post-pid" "$TMP/logs/handoff-post.log
     || fail "R3: expected both finalize+post to schedule helper under hold (sched=$sched_n log=$(cat "$TMP/helper-scheduled.log" 2>/dev/null || true))"
   grep -q '^qmd cleanup' "$MUTATION_LOG" \
     || fail "R3: no pipeline started under hold ($(cat "$MUTATION_LOG"))"
-  # Brief window so the second worker observes the live lock.
+
+  # Resolve both detached worker PIDs, then wait until the loser has exited
+  # (busy) while the winner stays alive under the hold — proof both contended.
+  r3_fin_tok=""
+  r3_post_tok=""
+  for _ in $(seq 1 600); do
+    if [[ -f "$TMP/r3-finalize-out.json" ]]; then
+      r3_fin_tok=$(jq -r '.qmd_pid // empty' <"$TMP/r3-finalize-out.json" 2>/dev/null || true)
+    fi
+    if [[ -f "$TMP/logs/handoff-post.log" ]]; then
+      r3_post_tok=$(grep -oE 'reindex-bg → [0-9]+' "$TMP/logs/handoff-post.log" | awk '{print $3}' | tail -1 || true)
+    fi
+    if [[ "$r3_fin_tok" =~ ^[0-9]+$ && "$r3_post_tok" =~ ^[0-9]+$ ]]; then
+      break
+    fi
+    sleep 0.05
+  done
+  [[ "$r3_fin_tok" =~ ^[0-9]+$ && "$r3_post_tok" =~ ^[0-9]+$ ]] \
+    || fail "R3: need numeric worker pids under hold (fin=$r3_fin_tok post=$r3_post_tok; finjson=$(cat "$TMP/r3-finalize-out.json" 2>/dev/null || true); postlog=$(cat "$TMP/logs/handoff-post.log" 2>/dev/null || true))"
+  alive_workers=2
+  for _ in $(seq 1 600); do
+    alive_workers=0
+    kill -0 "$r3_fin_tok" 2>/dev/null && alive_workers=$((alive_workers + 1))
+    kill -0 "$r3_post_tok" 2>/dev/null && alive_workers=$((alive_workers + 1))
+    [[ "$alive_workers" -le 1 ]] && break
+    sleep 0.05
+  done
+  [[ "$alive_workers" -eq 1 ]] \
+    || fail "R3: expected loser to exit busy under hold, got alive=$alive_workers (fin=$r3_fin_tok post=$r3_post_tok mut=$(cat "$MUTATION_LOG"))"
   sleep 0.1
   rm -f "$HOLD"
   wait "$fin_pid" || true

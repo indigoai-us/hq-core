@@ -125,11 +125,11 @@ jq \
 # --- 3. work mesh: close the delegator's thread, broadcast reassignment ------
 # Silently tolerated when unavailable (local/offline installs no-op).
 
-WORK_MESH="$HQ_ROOT/core/scripts/work-mesh.sh"
-if [ -f "$WORK_MESH" ]; then
-  bash "$WORK_MESH" done --company "$COMPANY" --project "$PROJECT" \
+if command -v hq >/dev/null 2>&1; then
+  hq mesh session note --enqueue --session "${HQ_SESSION_ID:-delegate}" --seq 1 \
+    --harness claude-code --adapter-version 1.0.0 \
     --summary "Delegated to $DISPLAY ($PRINCIPAL) — delegation $DELEGATION_ID; ownership transferred" \
-    --silent >/dev/null 2>&1 || true
+    >/dev/null 2>&1 || true
 fi
 
 # --- 4. journal: one dated stanza per delegation id --------------------------

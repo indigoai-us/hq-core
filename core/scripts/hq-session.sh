@@ -196,6 +196,29 @@ cmd_set() {
       spawn_work_mesh_register "$id" || true
     fi
   fi
+
+  # US-011: mid-session project change closes the old card and opens a new one.
+  # First bind (empty prev) only updates the live-binding marker — SessionStart
+  # already emitted session_start (or reconcile will bind without a card flip).
+  if [ "$key" = "project" ] && [ -n "$value" ] && [ "$value" != "$prev" ]; then
+    local co tk
+    co="$(cmd_get company_slug 2>/dev/null || true)"
+    tk="$(cmd_get task 2>/dev/null || true)"
+    if [ -f "$REPO_ROOT/core/scripts/lib/work-mesh-enqueue.sh" ] && \
+       [ -f "$REPO_ROOT/core/scripts/lib/work-mesh-live-rebind.sh" ]; then
+      # shellcheck source=lib/work-mesh-enqueue.sh
+      . "$REPO_ROOT/core/scripts/lib/work-mesh-enqueue.sh" 2>/dev/null || true
+      # shellcheck source=lib/work-mesh-live-hook.sh
+      . "$REPO_ROOT/core/scripts/lib/work-mesh-live-hook.sh" 2>/dev/null || true
+      # shellcheck source=lib/work-mesh-live-rebind.sh
+      . "$REPO_ROOT/core/scripts/lib/work-mesh-live-rebind.sh" 2>/dev/null || true
+      if [ -n "$prev" ] && command -v work_mesh_live_rebind >/dev/null 2>&1; then
+        work_mesh_live_rebind "$id" "$co" "$prev" "$tk" "$co" "$value" "$tk" || true
+      elif command -v work_mesh_live_write_binding_marker >/dev/null 2>&1; then
+        work_mesh_live_write_binding_marker "$id" "$co" "$value" "$tk" || true
+      fi
+    fi
+  fi
 }
 
 # Spawn the client-side Work Mesh registration hook, detached, for a mid-session
@@ -204,15 +227,16 @@ cmd_set() {
 # and this backgrounds even its fast foreground path off cmd_set's return path.
 spawn_work_mesh_register() {
   local sid="$1"
-  local hook="$REPO_ROOT/core/hooks/work-mesh-register.sh"
+  local hook="$REPO_ROOT/core/hooks/SessionStart/35-work-mesh-session-start.sh"
   local logf="$REPO_ROOT/workspace/logs/work-mesh-hook.log"
-  [ -x "$hook" ] || return 0
+  [ -f "$hook" ] || return 0
   command -v jq >/dev/null 2>&1 || return 0
   local ev
   ev="$(jq -nc --arg sid "$sid" --arg cwd "${PWD:-}" '{session_id:$sid,cwd:$cwd}' 2>/dev/null)" || return 0
   [ -n "$ev" ] || return 0
   mkdir -p "$(dirname "$logf")" 2>/dev/null || true
-  HQ_ROOT="$REPO_ROOT" nohup bash -c 'printf "%s" "$1" | "$2" company_slug' _ "$ev" "$hook" \
+  HQ_ROOT="$REPO_ROOT" CLAUDE_CODE_SESSION_ID="$sid" \
+    nohup bash -c 'printf "%s" "$1" | bash "$2" SessionStart' _ "$ev" "$hook" \
     >>"$logf" 2>&1 </dev/null &
   disown 2>/dev/null || true
   return 0

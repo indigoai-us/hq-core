@@ -78,6 +78,95 @@ if [ ! -d "$HQ_ROOT" ]; then
 fi
 HQ_ROOT="$(cd "$HQ_ROOT" && pwd -P)"
 
+# --- Runtime-aware recovery guidance ----------------------------------------
+#
+# The ledger ASSERTION itself is runtime-independent and stays byte-identical
+# everywhere below: a present policy-trigger ledger => OBSERVED (exit 0), a
+# missing one => NOT OBSERVED (exit 2). Only the *recovery guidance* differs by
+# runtime.
+#
+# An agents-v2 (hermes) fleet box writes this SAME ledger through the SAME
+# .claude hooks — dispatched by the on-box hq-agents-v2-hook-adapter.sh — but
+# only during a live hermes turn (pre_llm_call, or a Bash pre_tool_call). So on
+# such a box a freshly-provisioned tree legitimately has no ledger until the
+# agent takes its first turn, and the Claude Desktop/SDK repair steps ("open the
+# HQ root as the project", "settingSources: [project]") are wrong: they send the
+# operator in a circle. Detect the box and print v2-appropriate steps instead.
+#
+# Detection (either signal): the runtime marker at
+# ${HQ_RUNTIME_MARKER_FILE:-/var/lib/hq-agent/runtime.json} reads
+# runtimeMode=="agents-v2" (written by activate-agents-v2.sh), OR the adapter is
+# installed under the tree at .agents-v2-hooks/hq-agents-v2-hook-adapter.sh.
+hq_runtime_mode() {
+  local marker="${HQ_RUNTIME_MARKER_FILE:-/var/lib/hq-agent/runtime.json}"
+  if [ -f "$marker" ] && command -v jq >/dev/null 2>&1 \
+     && [ "$(jq -r '.runtimeMode // empty' "$marker" 2>/dev/null)" = "agents-v2" ]; then
+    printf 'agents-v2'; return 0
+  fi
+  if [ -f "$HQ_ROOT/.agents-v2-hooks/hq-agents-v2-hook-adapter.sh" ]; then
+    printf 'agents-v2'; return 0
+  fi
+  printf 'claude'
+}
+
+# The two-line explanation printed under "HQ runtime enforcement: NOT OBSERVED".
+emit_runtime_off_explanation() {
+  if [ "$(hq_runtime_mode)" = "agents-v2" ]; then
+    echo "  The policy-trigger hook has not written a ledger yet this session. On an" >&2
+    echo "  agents-v2 (hermes) box the on-box adapter writes this SAME ledger via the" >&2
+    echo "  SAME .claude hooks, but only during a live turn — so a box with no live" >&2
+    echo "  turn yet is expected to read NOT OBSERVED until the agent takes one." >&2
+  else
+    echo "  The policy-trigger hook did not run in this session. In the affected" >&2
+    echo "  Claude Code app/SDK runtime, command hooks are not dispatched." >&2
+  fi
+}
+
+# The trailing repair block printed on any FAIL.
+emit_repair_guidance() {
+  if [ "$(hq_runtime_mode)" = "agents-v2" ]; then
+    cat >&2 <<'EOF'
+
+This is an agents-v2 (hermes) fleet box. Hook enforcement runs through the
+on-box adapter (.agents-v2-hooks/hq-agents-v2-hook-adapter.sh), which writes the
+policy-trigger ledger through the same .claude hooks Claude Code uses — but only
+on a live hermes turn (pre_llm_call, or a Bash pre_tool_call). To evidence the
+ledger, drive one live turn and re-run this check right after it:
+
+  1. Send the agent a live turn — a Slack @mention / DM, or `hq dm <agent>`.
+  2. Re-run immediately afterward:
+       bash core/scripts/check-hq-hooks.sh --root "$PWD" --require-ledger
+
+If the ledger is still missing after a live turn, confirm the runtime is active
+(runtimeMode=agents-v2 in /var/lib/hq-agent/runtime.json, the v2 unit up) and
+that .agents-v2-hooks/hq-agents-v2-hook-adapter.sh is installed and executable.
+
+If a SETTINGS issue is listed above (not the ledger), repair the shipped config:
+  hq rescue -y --paths .claude
+
+See core/docs/hq/HOOKS-NOT-FIRING.md for the complete recovery procedure.
+EOF
+  else
+    cat >&2 <<'EOF'
+
+Repair the shipped project configuration:
+  hq rescue -y --paths .claude
+
+For Claude Desktop, open the HQ root itself as the project (not a parent or a
+child folder), then start a new session.
+
+For an SDK launch, set both project root and settings source:
+  const hqRoot = "/absolute/path/to/HQ";
+  query({ prompt: "...", options: { cwd: hqRoot, settingSources: ["project"] } });
+
+After a real terminal CLI session, verify that the policy-trigger hook ran:
+  bash core/scripts/check-hq-hooks.sh --root "$PWD" --require-ledger
+
+See core/docs/hq/HOOKS-NOT-FIRING.md for the complete recovery procedure.
+EOF
+  fi
+}
+
 # --- Modern path: delegate to `hq doctor` -----------------------------------
 #
 # The doctor is a strict superset of this checker (Codex/Grok parity, exec bits,
@@ -142,27 +231,10 @@ EOF
     echo "HQ hook health: FAIL" >&2
     if [ "$REQUIRE_LEDGER" -eq 1 ] && [ "$runtime_obs" = "NOT OBSERVED" ]; then
       echo "HQ runtime enforcement: NOT OBSERVED" >&2
-      echo "  The policy-trigger hook did not run in this session. In the affected" >&2
-      echo "  Claude Code app/SDK runtime, command hooks are not dispatched." >&2
+      emit_runtime_off_explanation
     fi
     printf '  - %s\n' "${issues[@]}" >&2
-    cat >&2 <<'EOF'
-
-Repair the shipped project configuration:
-  hq rescue -y --paths .claude
-
-For Claude Desktop, open the HQ root itself as the project (not a parent or a
-child folder), then start a new session.
-
-For an SDK launch, set both project root and settings source:
-  const hqRoot = "/absolute/path/to/HQ";
-  query({ prompt: "...", options: { cwd: hqRoot, settingSources: ["project"] } });
-
-After a real terminal CLI session, verify that the policy-trigger hook ran:
-  bash core/scripts/check-hq-hooks.sh --root "$PWD" --require-ledger
-
-See core/docs/hq/HOOKS-NOT-FIRING.md for the complete recovery procedure.
-EOF
+    emit_repair_guidance
     exit 2
   fi
 
@@ -328,27 +400,10 @@ run_inline() {
     echo "HQ hook health: FAIL" >&2
     if [ "$REQUIRE_LEDGER" -eq 1 ] && [ "$LEDGER_STATE" = "missing" ]; then
       echo "HQ runtime enforcement: NOT OBSERVED" >&2
-      echo "  The policy-trigger hook did not run in this session. In the affected" >&2
-      echo "  Claude Code app/SDK runtime, command hooks are not dispatched." >&2
+      emit_runtime_off_explanation
     fi
     printf '  - %s\n' "${ISSUES[@]}" >&2
-    cat >&2 <<'EOF'
-
-Repair the shipped project configuration:
-  hq rescue -y --paths .claude
-
-For Claude Desktop, open the HQ root itself as the project (not a parent or a
-child folder), then start a new session.
-
-For an SDK launch, set both project root and settings source:
-  const hqRoot = "/absolute/path/to/HQ";
-  query({ prompt: "...", options: { cwd: hqRoot, settingSources: ["project"] } });
-
-After a real terminal CLI session, verify that the policy-trigger hook ran:
-  bash core/scripts/check-hq-hooks.sh --root "$PWD" --require-ledger
-
-See core/docs/hq/HOOKS-NOT-FIRING.md for the complete recovery procedure.
-EOF
+    emit_repair_guidance
     exit 2
   fi
 

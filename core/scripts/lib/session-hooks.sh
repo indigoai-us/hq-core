@@ -10,17 +10,23 @@
 
 # session_bootstrap_meta <root> <runId> <companySlug>
 session_bootstrap_meta() {
-  local root="${1:-}" run_id="${2:-}" company="${3:-}"
+  local root="${1:-}" run_id="${2:-}" company="${3:-}" project="${4:-}" task="${5:-}"
   local sessions_dir meta_dir meta_file current_file
   sessions_dir="$root/workspace/sessions"
   meta_dir="$sessions_dir/$run_id"
   meta_file="$meta_dir/meta.yaml"
   current_file="$sessions_dir/.current"
 
+  # Prefer spawn env when caller did not pass project/task (US-011).
+  [ -n "$project" ] || project="${HQ_SPAWN_PROJECT:-}"
+  [ -n "$task" ] || task="${HQ_SPAWN_TASK:-}"
+
   mkdir -p "$meta_dir"
   {
     printf 'session_id: %s\n' "$run_id"
     printf 'company_slug: %s\n' "$company"
+    [ -n "$project" ] && printf 'project: %s\n' "$project"
+    [ -n "$task" ] && printf 'task: %s\n' "$task"
     printf 'started_at: "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$meta_file"
   printf '%s\n' "$run_id" > "$current_file"

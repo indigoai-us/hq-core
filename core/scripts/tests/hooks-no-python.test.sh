@@ -56,9 +56,61 @@ has_slug() {
 echo "== 1. tripwire: no python3 invocations in runtime hooks/scripts =="
 # Strip comment lines, then look for the interpreter name. The single
 # allowlisted file carries it only as a QUOTED CLASSIFICATION LITERAL.
+#
+# SCOPE — every surface that executes as part of a normal session. The original
+# scope stopped at .claude/hooks + core/scripts/*.sh, which silently exempted
+# core/hooks/** and core/scripts/lib/**. Both were shipping python3 callers:
+# the repo-edit guard skipped symlink/`..` resolution without it (letting dodges
+# through unblocked) and session-timing fell back to whole-second resolution.
+# Widen this list rather than adding allowlist entries — an exemption here is
+# indistinguishable from the gap it was added to paper over.
+#
+# core/scripts/tests/** is deliberately NOT in scope: nothing there executes in
+# a user session, and CI runners always have python3. Several suites do still
+# call it, and only three (inject-surface-policies, manifest-nested-parse,
+# validate-policy-frontmatter) guard the call with a clean SKIP — so a
+# python-less DEVELOPER machine will see the rest error rather than skip. That
+# is a contributor-experience wart, not a runtime hole, and is tracked
+# separately; do not "fix" it by pulling tests into the tripwire above, which
+# would conflate the two.
+#
+# The walk is RECURSIVE, not a fixed set of globs. A `lib/*.sh` glob matches
+# only immediate children, so core/scripts/lib/provider-adapters/{claude,codex,
+# grok}.sh — which provider-adapter.sh sources at runtime via hq_adapter_load —
+# sat outside the scan even after the scope was widened to lib/. Any new nested
+# runtime directory would have landed in the same blind spot. Enumerate the
+# roots and let find descend; subtract tests explicitly.
+# An ARRAY, not a space-joined string: a checkout path containing a space would
+# word-split an unquoted expansion into fragments that match nothing. find would
+# then error, stderr is suppressed below, and the loop would read zero files —
+# so the suite would report "no runtime python3 invocation" having scanned
+# NOTHING. A guard test that silently passes without inspecting anything is
+# worse than no guard, because it reads as evidence.
+#
+# Package HOOK subtrees are in scope: master-hook.sh dispatches
+# core/packages/*/hooks/<event> on every session ("always-on per installed
+# pack"), which makes a pack hook runtime code by the same definition as
+# core/hooks. Scoped to */hooks rather than all of core/packages on purpose —
+# a pack's MCP server is a separate npm-run process, and sweeping it in produces
+# false positives on files that merely NAME python as a denylisted interpreter
+# (hq-pack-cowork's SECRET_EXEC_BLOCKED_BINS is a guard that blocks python, not
+# one that runs it). Widening scope until it forces an allowlist entry defeats
+# the point; the entry would be indistinguishable from a real exemption.
+#
+# personal/hooks and companies/*/hooks are ALSO dispatched but stay out: they
+# are user-authored and not release-shipped, so a python3 call there is the
+# author's own choice on their own machine. This tripwire governs what HQ ships.
+SCAN_ROOTS=()
+for d in .claude/hooks .grok/hooks .codex/hooks core/hooks core/scripts; do
+  [ -d "$ROOT/$d" ] && SCAN_ROOTS+=("$ROOT/$d")
+done
+for d in "$ROOT"/core/packages/*/hooks; do
+  [ -d "$d" ] && SCAN_ROOTS+=("$d")
+done
+[ ${#SCAN_ROOTS[@]} -gt 0 ] || fail "no runtime python3 invocation" "no scan roots resolved under $ROOT"
 VIOLATIONS=""
-for f in "$ROOT"/.claude/hooks/*.sh "$ROOT"/.grok/hooks/*.sh "$ROOT"/.codex/hooks/*.sh "$ROOT"/core/scripts/*.sh "$ROOT"/core/scripts/*.js; do
-  [ -f "$f" ] || continue
+while IFS= read -r f; do
+  [ -n "$f" ] && [ -f "$f" ] || continue
   hits="$(grep -n "python3" "$f" 2>/dev/null | grep -vE '^[0-9]+:\s*(#|//)' || true)"
   [ -n "$hits" ] || continue
   case "$(basename "$f")" in
@@ -74,7 +126,21 @@ $f: $bad"
 $f: $hits"
       ;;
   esac
-done
+done <<EOF
+$(find "${SCAN_ROOTS[@]}" -type f \( -name '*.sh' -o -name '*.js' -o -name '*.mjs' \) \
+    -not -path "$ROOT/core/scripts/tests/*" 2>/dev/null | sort)
+EOF
+
+# The scan must have actually looked at files. Without this, every failure mode
+# that yields an empty file list — a bad root, a find error, a future refactor —
+# is indistinguishable from a clean tree.
+SCANNED=$(find "${SCAN_ROOTS[@]}" -type f \( -name '*.sh' -o -name '*.js' -o -name '*.mjs' \) \
+    -not -path "$ROOT/core/scripts/tests/*" 2>/dev/null | wc -l | tr -d ' ')
+if [ "${SCANNED:-0}" -gt 50 ]; then
+  ok "tripwire scanned $SCANNED runtime files"
+else
+  fail "tripwire scanned $SCANNED runtime files" "expected >50; the scan found almost nothing, so a pass below would be vacuous"
+fi
 if [ -z "$VIOLATIONS" ]; then
   ok "no runtime python3 invocation"
 else

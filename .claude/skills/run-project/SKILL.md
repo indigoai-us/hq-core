@@ -1,7 +1,7 @@
 ---
 name: run-project
 description: Codex-native router for executing HQ PRD stories. Default inline uses filesystem-mediated worker-phase spawn_agent workers; explicit interactive mode runs directly in the parent; Ralph/headless runs the same inline worker loop unattended (auto-advance, no pauses).
-allowed-tools: Read, spawn_agent, wait_agent, Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash, Write, AskUserQuestion, Task
+allowed-tools: Read, spawn_agent, wait_agent, Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Write, AskUserQuestion, Task
 argument-hint: "{project} [--status] [--resume] [--dry-run] [--inline] [--interactive] [--ralph-mode] [--in-place] [--timeout N]"
 ---
 
@@ -20,6 +20,19 @@ Resolve the shell orchestrator before any shell delegation:
 3. If neither exists, stop with a clear error.
 
 Store the chosen path as `{run_project_script}`. In this HQ workspace today, the expected path is `.claude/scripts/run-project.sh`.
+
+## Work Mesh Live — trusted bind (do this first)
+
+Before any other tool call that touches project work, bind the session per
+`.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
+
+```bash
+bash core/scripts/work-mesh-live-bind-trusted.sh \
+  --company "{co}" --project "{project}" --task "{task}"
+```
+
+Omit `--task` when unknown. This writes `workspace/sessions/<sid>/meta.yaml`
+and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
 
 ## Step 1 — Parse Arguments
 

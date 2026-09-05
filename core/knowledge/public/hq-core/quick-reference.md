@@ -119,6 +119,18 @@ garden-scout, garden-auditor, garden-curator
 **Linear:** `/check-linear-acme-recover`, `/{product}-prd`
 **Deploy:** `/pr`
 
+## CLI: `hq mesh` (Work Mesh Live)
+
+Presence and per-turn activity are automatic via hooks + `hq mesh daemon`. Manual verbs only: `task-status`, `blocked`, `note`. See `core/knowledge/public/hq-core/work-mesh-live.md` and `core/skills/work-mesh/`.
+
+| Command | Use |
+|---------|-----|
+| `hq mesh daemon install\|status\|doctor` | Resident presence + spool flush (replaces pack listen) |
+| `hq mesh context reconcile` (`--observation-file`/`--observation-json`) | Resolve company/project (no `--session`) |
+| `hq mesh context organize\|correct\|untracked` (`--session` / sessionId arg) | Bind, correct, or mark untracked |
+| `hq mesh context default get\|set\|clear` | Device default company |
+| `hq mesh session task-status\|blocked\|note\|flush` (`--session-id`) | Discrete Board signals |
+
 ## CLI: `hq files` (vault sharing)
 
 Not slash commands — direct CLI surface for HQ vault access control. Skill: `.claude/skills/hq-files/SKILL.md`.

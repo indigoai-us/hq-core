@@ -1,7 +1,7 @@
 ---
 name: run
 description: Run or list HQ workers, preferring isolated Codex subagents when available.
-allowed-tools: Read, Grep, Bash(qmd:*), Bash(grep:*), Bash(ls:*), Bash(git:*), Bash(cat:*), Bash(which:*), Bash(wc:*), Bash(core/scripts/work-mesh.sh:*), Edit, Write, Task, Glob, Bash, WebSearch, WebFetch, AskUserQuestion
+allowed-tools: Read, Grep, Bash(qmd:*), Bash(grep:*), Bash(ls:*), Bash(git:*), Bash(cat:*), Bash(which:*), Bash(wc:*), Bash(hq:*), Edit, Write, Task, Glob, Bash, WebSearch, WebFetch, AskUserQuestion
 ---
 
 # Run - Worker Execution
@@ -166,26 +166,18 @@ Or read knowledge files directly via Read tool if paths are specified in worker.
 
 ## Step 6 — Execute Skill
 
-### Project work-mesh check
+### Project work-mesh
 
-If the worker execution is tied to a resolved company project, first run:
-
-```bash
-bash core/scripts/work-mesh.sh check --company {co} --project {project}
-```
-
-If active mesh work is reported, surface it before dispatching so the user can
-avoid duplicate effort or coordinate ownership. If a live local watcher/daemon
-is needed, `bash core/scripts/work-mesh.sh watch` subscribes to the authorized
-MQTT topics and maintains `workspace/work-mesh/live-cache.json`; do not publish
-thread events directly to MQTT. Then report this worker run:
+Presence is automatic via `hq mesh daemon`. Do not call deleted
+`hq mesh session check|watch|progress`. For a discrete Board signal only:
 
 ```bash
-bash core/scripts/work-mesh.sh progress --company {co} --project {project} --summary "Running {worker_id}/{skill}"
+hq mesh session note --session <sid> --enqueue --seq <n> --summary "Running {worker_id}/{skill}"
+# or on a hard stop:
+hq mesh session blocked --session <sid> --enqueue --seq <n> --reason "<short>"
 ```
 
-On completion, append `progress` or `blocked` with the worker outcome. These
-calls are best-effort and must not block local/offline work.
+Best-effort; must not block local/offline work. See `core/skills/work-mesh/`.
 
 ### Preferred: isolated Codex worker
 

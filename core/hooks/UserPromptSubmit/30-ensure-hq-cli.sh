@@ -74,7 +74,8 @@ INSTALL_CMD="${HQ_ENSURE_CLI_INSTALL_CMD:-npm install -g @indigoai-us/hq-cli@lat
 COOLDOWN="${HQ_ENSURE_CLI_COOLDOWN:-21600}"   # 6h between install attempts
 INSTALL_TIMEOUT="${HQ_ENSURE_CLI_TIMEOUT:-120}"
 VERSION_TIMEOUT="${HQ_ENSURE_CLI_VERSION_TIMEOUT:-3}"
-MIN_VERSION="${HQ_ENSURE_CLI_MIN_VERSION:-5.103.26}"
+# US-010: hooks need hq-cli >= 5.108.2 (ships US-008/US-009 mesh daemon + flush).
+MIN_VERSION="${HQ_ENSURE_CLI_MIN_VERSION:-5.108.2}"
 
 have_jq() { command -v jq >/dev/null 2>&1; }
 

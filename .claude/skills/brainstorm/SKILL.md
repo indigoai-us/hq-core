@@ -1,7 +1,7 @@
 ---
 name: brainstorm
 description: Compare approaches, surface unknowns, and draft a recommendation before PRD work.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash, AskUserQuestion, WebSearch
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, AskUserQuestion, WebSearch
 ---
 
 # Brainstorm - Structured Exploration
@@ -11,6 +11,20 @@ Think through a problem before committing to a PRD. Research HQ context, compare
 **Input:** The user's argument — typically `[company] <idea description or board idea ID>`.
 
 **Pipeline:** idea capture --> **brainstorm** --> PRD --> run-project
+
+
+## Work Mesh Live — trusted bind (do this first)
+
+Before any other tool call that touches project work, bind the session per
+`.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
+
+```bash
+bash core/scripts/work-mesh-live-bind-trusted.sh \
+  --company "{co}" --project "{project}" --task "{task}"
+```
+
+Omit `--task` when unknown. This writes `workspace/sessions/<sid>/meta.yaml`
+and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
 
 ## Step 0: Parse Input & Company Anchor
 
