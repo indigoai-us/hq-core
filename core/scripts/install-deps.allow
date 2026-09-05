@@ -1,0 +1,25 @@
+# install-deps.allow — HQ's sanctioned global CLI dependencies.
+#
+# WHY: HQ's own install surface (core/scripts/setup.sh, the desktop installer)
+# legitimately installs a small set of global CLIs with npm — qmd, the hq CLI,
+# Claude Code. The supply-chain guard (.claude/hooks/block-unsafe-package-install.sh)
+# hard-blocks every `npm install <pkg>` and points at pnpm + minimumReleaseAge,
+# which is the wrong fix for a global CLI on a user machine and left agents
+# unable to repair broken user installs.
+#
+# An entry listed here is allowed through the guard ONLY when installed
+# GLOBALLY — `npm install -g` / `npm i -g` / `pnpm add -g` — and ONLY with an
+# explicit version pin. The pin is reviewed in-repo: bumping it goes through PR
+# review, which is the release-age gate for this surface. Non-global installs
+# and unpinned installs are still blocked.
+#
+# Two entry forms, one per line, `#` starts a comment:
+#   name@1.2.3   exact pin — only that exact version is allowed.
+#   name@*       any EXPLICIT version pin is allowed (name@1.2.3). A bare
+#                `name` or a dist-tag (name@latest, name@next) is still blocked.
+#
+# Referenced by: .claude/hooks/block-unsafe-package-install.sh
+@tobilu/qmd@2.5.3
+@indigoai-us/hq-cli@*
+@anthropic-ai/claude-code@*
+indigo-cli@*

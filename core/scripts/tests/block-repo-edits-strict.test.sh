@@ -99,6 +99,155 @@ expect "a knowledge tree via its repos/ path is blocked" \
 expect "traversal into a checkout is blocked" \
   "$HQ/workspace/worktrees/app-code/feature/../../../../repos/private/app-code/src/main.ts" 2
 
+# --- Path resolution must not depend on python3 ------------------------------
+# The guard resolves symlinks and `..` before the repos/ prefix test. That
+# resolution used to be a `python3 -c realpath` call behind `command -v python3`
+# — which is not a usable probe on Windows, where the Store alias stub resolves
+# on PATH and then fails every invocation. On any machine without a working
+# python3 the resolution was skipped silently and dodges sailed through. These
+# two assertions pin the replacement.
+
+# run_at <project_dir> <file_path> -> exit code. Unlike run(), the HQ root is a
+# parameter, so a root reached through a symlink can be exercised.
+run_at() {
+  local proj="$1" path="$2" payload rc=0
+  payload="$(jq -nc --arg p "$path" '{tool_name:"Write", tool_input:{file_path:$p}}')"
+  ( cd "$proj" && printf '%s' "$payload" | \
+      env -u HQ_BYPASS_REPO_WORKTREE CLAUDE_PROJECT_DIR="$proj" \
+      bash "$HOOK" PreToolUse ) >/dev/null 2>"$ERR" || rc=$?
+  printf '%s' "$rc"
+}
+
+# An HQ root reached through a symlink. The ROOT side of the prefix comparison
+# must be resolved as fully as the file side: if the root stays "$HQ_LINK" while
+# the file path resolves to "$HQ", the prefix test never matches and the guard
+# passes everything under repos/.
+HQ_LINK="$TMP/hq-via-symlink"
+ln -s "$HQ" "$HQ_LINK"
+
+got="$(run_at "$HQ_LINK" "$HQ_LINK/repos/private/app-code/src/main.ts")"
+if [ "$got" = "2" ]; then
+  ok "repos/ write is blocked when HQ root is reached via a symlink"
+else
+  fail "repos/ write is blocked when HQ root is reached via a symlink" "expected 2, got $got"
+fi
+
+got="$(run_at "$HQ_LINK" "$HQ_LINK/workspace/worktrees/app-code/feature/src/main.ts")"
+if [ "$got" = "0" ]; then
+  ok "sanctioned worktree stays writable when HQ root is reached via a symlink"
+else
+  fail "sanctioned worktree stays writable when HQ root is reached via a symlink" "expected 0, got $got"
+fi
+
+# A symlink followed by `..`. This is the case that distinguishes real symlink
+# resolution from lexical normalization, and it is a live bypass if you get the
+# order wrong: with workspace/via-link -> repos/private/app-code/src, the path
+# workspace/via-link/../main.ts really means repos/private/app-code/main.ts, but
+# collapsing `..` textually first yields workspace/main.ts — which is not under
+# repos/, so the guard exits 0 and the write lands in the checkout anyway.
+# Resolution must therefore hand `..` to the OS with symlinks already resolved
+# (`cd -P`), never pre-collapse it.
+ln -s "$HQ/repos/private/app-code/src" "$HQ/workspace/via-link"
+
+expect "a symlink followed by \`..\` is blocked, not collapsed lexically" \
+  "$HQ/workspace/via-link/../main.ts" 2
+
+expect "a symlink into a checkout is blocked" \
+  "$HQ/workspace/via-link/main.ts" 2
+
+# A "//"-prefixed root. `pwd -P` preserves exactly two leading slashes, so the
+# two sides of the guard's prefix comparison can disagree on the SPELLING of one
+# physical path — the root reads //x/hq while files under it read /x/hq/repos/...,
+# nothing matches, and the guard exits 0. On Linux //tmp and /tmp are the same
+# directory, so every spelling must normalize to one form; the //server/share
+# case that is genuinely distinct only exists on Windows Git Bash/MSYS/Cygwin.
+# All four root/file spelling combinations are asserted below because each
+# mismatched pair is independently a full bypass.
+if [ -d //tmp ]; then
+  DS="//tmp/hq-guard-ds-$$"
+  mkdir -p "$DS/repos/private/app-code/src" "$DS/workspace/worktrees/app-code/feature"
+  got="$(run_at "$DS" "$DS/repos/private/app-code/src/main.ts")"
+  if [ "$got" = "2" ]; then
+    ok "repos/ write is blocked under a // (UNC-style) project root"
+  else
+    fail "repos/ write is blocked under a // (UNC-style) project root" "expected 2, got $got"
+  fi
+  got="$(run_at "$DS" "$DS/workspace/worktrees/app-code/feature/main.ts")"
+  if [ "$got" = "0" ]; then
+    ok "sanctioned worktree stays writable under a // project root"
+  else
+    fail "sanctioned worktree stays writable under a // project root" "expected 0, got $got"
+  fi
+
+  # MIXED spellings of that same physical directory: "/tmp/..." on one side,
+  # "//tmp/..." on the other. Preserving "//" on POSIX makes these two strings
+  # unequal even though they name one directory, so the prefix check misses and
+  # the write lands in the checkout. Both orderings are separate bypasses.
+  SS="${DS#/}"
+  got="$(run_at "$SS" "$DS/repos/private/app-code/src/main.ts")"
+  if [ "$got" = "2" ]; then
+    ok "repos/ write is blocked with a / root and a // file path"
+  else
+    fail "repos/ write is blocked with a / root and a // file path" "expected 2, got $got"
+  fi
+  got="$(run_at "$DS" "$SS/repos/private/app-code/src/main.ts")"
+  if [ "$got" = "2" ]; then
+    ok "repos/ write is blocked with a // root and a / file path"
+  else
+    fail "repos/ write is blocked with a // root and a / file path" "expected 2, got $got"
+  fi
+  got="$(run_at "$SS" "$DS/workspace/worktrees/app-code/feature/main.ts")"
+  if [ "$got" = "0" ]; then
+    ok "sanctioned worktree stays writable across mixed / and // spellings"
+  else
+    fail "sanctioned worktree stays writable across mixed / and // spellings" "expected 0, got $got"
+  fi
+  rm -rf "$DS"
+fi
+
+# A backslash in a filename. On POSIX "\" is an ordinary legal character, NOT a
+# separator, so folding it to "/" before filesystem resolution makes the guard
+# inspect a path the write will never touch: with a symlink literally named
+# `link\name` pointing into repos/, the folded form workspace/link/name/file.txt
+# exists nowhere, resolves to nothing under repos/, and the hook exits 0 while
+# the write follows the real symlink into the checkout. Skipped on Windows-family
+# shells, where "\" genuinely IS a separator and such a name cannot exist.
+if [ "$(uname -s 2>/dev/null || true)" = "Linux" ] || [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
+  BS_LINK="$HQ/workspace/link\\name"
+  if ln -s "$HQ/repos/private/app-code" "$BS_LINK" 2>/dev/null; then
+    got="$(run "$BS_LINK/src/main.ts" -u HQ_BYPASS_REPO_WORKTREE)"
+    if [ "$got" = "2" ]; then
+      ok "a backslash-named symlink into a checkout is blocked"
+    else
+      fail "a backslash-named symlink into a checkout is blocked" "expected 2, got $got"
+    fi
+    rm -f "$BS_LINK"
+  fi
+fi
+
+# The worst case is not "python3 absent" but "python3 present and broken": it
+# satisfies command -v, so a guard written around that probe takes the branch
+# and then silently gets nothing back.
+PYSTUB="$TMP/pystub"
+mkdir -p "$PYSTUB"
+printf '#!/bin/sh\necho "python3: cannot execute" >&2\nexit 1\n' > "$PYSTUB/python3"
+cp "$PYSTUB/python3" "$PYSTUB/python"
+chmod +x "$PYSTUB/python3" "$PYSTUB/python"
+
+got="$(PATH="$PYSTUB:$PATH" run "$HQ/repos/private/app-code/src/main.ts" -u HQ_BYPASS_REPO_WORKTREE)"
+if [ "$got" = "2" ]; then
+  ok "repos/ write stays blocked when python3 on PATH is a broken stub"
+else
+  fail "repos/ write stays blocked when python3 on PATH is a broken stub" "expected 2, got $got"
+fi
+
+got="$(PATH="$PYSTUB:$PATH" run "$HQ/workspace/worktrees/app-code/feature/../../../../repos/private/app-code/src/main.ts" -u HQ_BYPASS_REPO_WORKTREE)"
+if [ "$got" = "2" ]; then
+  ok "\`..\` traversal stays blocked when python3 on PATH is a broken stub"
+else
+  fail "\`..\` traversal stays blocked when python3 on PATH is a broken stub" "expected 2, got $got"
+fi
+
 # Shape 3: the env-var escape hatch must not exist.
 got="$(run "$HQ/repos/private/app-code/src/main.ts" HQ_BYPASS_REPO_WORKTREE=1)"
 if [ "$got" = "2" ]; then

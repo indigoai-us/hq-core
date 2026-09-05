@@ -4,8 +4,11 @@
 #
 # Drives the REAL hook (.claude/hooks/inject-policy-on-trigger.sh) with fresh
 # session ids (a never-used session id == an empty dedupe ledger) and asserts:
-#   1. A SessionStart payload injects slug hq-prefer-native-capabilities
-#      (always-injected baseline — the `when:` carries an `always` head).
+#   1. The policy is REACTIVE-ONLY and stays that way: `on:` does not list
+#      SessionStart and `when:` carries no `always` head, so a SessionStart
+#      payload does NOT inject the slug. It was an always-injected baseline
+#      until #666 narrowed it; this case pins the narrower scope so neither
+#      direction can drift again silently.
 #   2. A UserPromptSubmit payload containing the token 'canvas' injects the slug.
 #   3. The surfaced one-liner is the untruncated first ## Rule line (< 160 chars,
 #      so the hook never appends "...").
@@ -45,11 +48,25 @@ fail() { FAIL=$((FAIL+1)); echo "FAIL [$1]: $2"; }
 # extract the reminder line for our slug from hook output ("" if absent)
 slug_line() { printf '%s\n' "$1" | grep -F "> Policy \`$SLUG\`" || true; }
 
-echo "== 1. SessionStart payload (fresh dedupe ledger) injects the policy =="
+echo "== 1. Policy is reactive-only: no SessionStart baseline =="
+# The frontmatter is the contract. A policy is an always-injected baseline only
+# when `on:` lists SessionStart AND `when:` reduces to TRUE via an `always`
+# head; assert both are absent so a re-widening cannot slip in unnoticed.
+FM="$(awk '/^---$/{d++; next} d==1' "$POLICY")"
+FM_ON="$(printf '%s\n' "$FM" | grep -E '^on:' || true)"
+FM_WHEN="$(printf '%s\n' "$FM" | grep -E '^when:' || true)"
+if printf '%s' "$FM_ON" | grep -Fq SessionStart; then
+  fail "frontmatter is reactive-only" "on: still lists SessionStart -> $FM_ON"
+elif printf '%s' "$FM_WHEN" | grep -Eq '^when:[[:space:]]*always([[:space:]]*\|\||[[:space:]]*$)'; then
+  fail "frontmatter is reactive-only" "when: still carries an 'always' head -> $FM_WHEN"
+else
+  ok "frontmatter is reactive-only (no SessionStart, no 'always' head)"
+fi
+# ...and the hook agrees: a SessionStart payload must not inject the slug.
 O="$(run_hook SessionStart ss "$(printf '"cwd":"%s"' "$ROOT")")"
 LINE="$(slug_line "$O")"
-if [ -n "$LINE" ]; then ok "SessionStart injects $SLUG"; else
-  fail "SessionStart injects $SLUG" "slug missing; got: $(printf '%s' "$O" | tr '\n' ' ' | cut -c1-300)"
+if [ -z "$LINE" ]; then ok "SessionStart does not inject $SLUG"; else
+  fail "SessionStart does not inject $SLUG" "unexpected baseline injection: $LINE"
 fi
 
 echo "== 2. UserPromptSubmit containing 'canvas' injects the policy =="
@@ -67,14 +84,18 @@ if [ -n "$RULE_LINE" ] && [ "${RULE_LEN:-999}" -lt 160 ]; then
 else
   fail "first ## Rule line <160 chars" "len=${RULE_LEN:-unset}"
 fi
-case "$LINE" in
-  *'...') fail "reminder untruncated" "hook truncated the one-liner: $LINE" ;;
-  '') fail "reminder untruncated" "no reminder line captured in case 1" ;;
+# Read the line the policy actually surfaces on — the reactive path (case 2).
+case "$LINE2" in
+  *'...') fail "reminder untruncated" "hook truncated the one-liner: $LINE2" ;;
+  '') fail "reminder untruncated" "no reminder line captured in case 2" ;;
   *) ok "reminder line is the full one-liner (no '...' truncation)" ;;
 esac
 
 echo "== 4. Per-session dedupe: slug fires at most once per session =="
-O3="$(run_hook UserPromptSubmit ss "$(printf '"prompt":"share this as a canvas","cwd":"%s"' "$ROOT")")"
+# Session 'up' already matched in case 2, so a second matching prompt in that
+# same session must be suppressed by the session ledger. (Session 'ss' is not
+# usable here: it never fires at all now, so it could not prove dedupe.)
+O3="$(run_hook UserPromptSubmit up "$(printf '"prompt":"share this as a canvas","cwd":"%s"' "$ROOT")")"
 if [ -z "$(slug_line "$O3")" ]; then ok "deduped on 2nd event of same session"; else
   fail "deduped on 2nd event of same session" "slug re-fired: $(slug_line "$O3")"
 fi

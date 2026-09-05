@@ -37,6 +37,22 @@ run_hook() {
   echo "$ec"
 }
 
+# run_hook_with_allow <command-string> — same as run_hook, but the real
+# core/scripts/install-deps.allow is copied into the throwaway HQ_ROOT so the
+# hook's sanctioned-global-CLI allow-list is active.
+ALLOW_SRC="$ROOT/core/scripts/install-deps.allow"
+run_hook_with_allow() {
+  local cmd="$1" tmp ec json
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/core/scripts"
+  cp "$ALLOW_SRC" "$tmp/core/scripts/install-deps.allow"
+  json="$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.stdin.read()}}))')"
+  ( cd "$tmp" && printf '%s' "$json" | env HQ_ROOT="$tmp" bash "$HOOK" >/dev/null 2>&1 )
+  ec=$?
+  rm -rf "$tmp"
+  echo "$ec"
+}
+
 # 1. Baseline: raw `npm install <pkg>` with no gate configured is BLOCKED (exit 2).
 ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook 'npm install left-pad')"
 [ "$ec" = "2" ] && pass "raw 'npm install left-pad' is blocked (exit 2)" \
@@ -71,6 +87,33 @@ if grep -Eq '`HQ_ALLOW_UNSAFE_INSTALL=1 <command>`' "$POLICY"; then
 else
   pass "policy no longer advertises the inline-prefix bypass form"
 fi
+
+# 6. Sanctioned global CLI allow-list (core/scripts/install-deps.allow).
+[ -f "$ALLOW_SRC" ] && pass "core/scripts/install-deps.allow exists" \
+                    || fail "core/scripts/install-deps.allow missing"
+
+allow_case() {  # <expected-ec> <cmd> <label>
+  local want="$1" cmd="$2" label="$3" ec
+  ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook_with_allow "$cmd")"
+  [ "$ec" = "$want" ] && pass "$label (exit $want)" \
+                      || fail "$label: expected exit $want, got $ec"
+}
+allow_case 0 'npm install -g @tobilu/qmd@2.5.3'                 "global exact-pinned qmd is allowed"
+allow_case 2 'npm i -g @tobilu/qmd'                             "global UNPINNED qmd is blocked"
+allow_case 2 'npm install -g @tobilu/qmd@2.5.2'                 "global qmd with wrong exact pin is blocked"
+allow_case 0 'npm install -g @indigoai-us/hq-cli@1.2.3'         "global hq-cli with explicit pin (name@*) is allowed"
+# The first-party trusted-scope rule (HQ_TRUSTED_INSTALL_SCOPES, default @indigoai-us)
+# allows HQ's own scope even unpinned, so hq-cli@latest passes here by design;
+# dist-tags on NON-trusted allow-listed packages must still block.
+allow_case 0 'npm install -g @indigoai-us/hq-cli@latest'        "global hq-cli@latest is allowed via the trusted scope"
+allow_case 2 'npm install -g @tobilu/qmd@latest'                "global qmd@latest dist-tag is blocked"
+allow_case 2 'npm install @tobilu/qmd@2.5.3'                    "NON-global pinned qmd is blocked"
+allow_case 2 'npm install -g @tobilu/qmd@2.5.3 left-pad@1.0.0'  "global install with one non-allowed pkg is blocked"
+
+# 7. Missing allow file: behave exactly as before (blocked).
+ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook 'npm install -g @tobilu/qmd@2.5.3')"
+[ "$ec" = "2" ] && pass "missing allow file still blocks 'npm install -g @tobilu/qmd@2.5.3' (exit 2)" \
+                 || fail "missing allow file should block (exit 2), got $ec"
 
 if [ "$fails" -gt 0 ]; then
   echo "block-unsafe-package-install.test.sh: $fails check(s) failed" >&2

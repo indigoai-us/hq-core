@@ -5,7 +5,7 @@ when: project || prd || run-project || execute-task || startwork
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: hard
 public: true
-version: 2
+version: 3
 created: 2026-07-05
 source: user-request
 tags: [projects, collaboration, work-mesh, mqtt, hq-pro]
@@ -33,13 +33,24 @@ attempt to use the HQ work mesh before and during the work:
    finishes, make **one** call:
 
    `bash core/scripts/work-mesh.sh report --company {co} --project {project}
-   [--task {id} --status doing|waiting|done] [--summary "…"]`
+   [--task {id} --status doing|waiting|done] --summary "…"`
 
    That single invocation seeds the Board from local `prd.json` if missing,
    moves the task when `--task` is set, and records the update. Do not issue
    a separate `start` plus `story` pair. Board columns are To do / Doing /
    Waiting / Done (`queued` / `in_progress` / `review` / `done` on the wire).
    `--story` is a hidden alias of `--task`.
+
+   **`--summary` is required for `report` / `progress`.** State what actually
+   happened: story id, phase, and outcome (for example
+   `--summary "US-003 doing: company card renders; tests green"`). There is no
+   placeholder default any more. A `report` with no summary and no `--task`
+   transition is a no-op (`posted:false`, `skipReason:no_summary`, exit 0);
+   with a `--task` transition but no summary the helper posts a synthesized
+   `"{id} → {status}: {title}"` line and still moves the Board. An identical
+   summary for the same project inside 10 minutes is coalesced client-side
+   (`skipReason:coalesced`) because the mesh API is append-only. Do not call
+   `report` on a timer or per tool call; call it when something changed.
 3. Use `blocked` or `done` only when you are not already passing that state
    through `report --status` / `--summary`. `start`, `progress`, and `story`
    remain aliases of the same helper.
