@@ -1,4 +1,4 @@
 <policy-reminder>
 > Policy `fixture-pol` applies here: FIXTURE_RULE_MARKER prose.
-> Read the full rule(s) at `core/policies/{slug}.md` if you need rationale.
+> This is an index. Before acting in an area a HARD rule covers, read that rule in full: `qmd get <slug>` or the policy file (companies/<co>/policies, personal/policies, core/policies). One-line entries are summaries, not the rule.
 </policy-reminder>

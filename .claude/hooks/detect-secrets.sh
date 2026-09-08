@@ -1,16 +1,41 @@
 #!/bin/bash
-# Detect and block secrets in Bash commands (API keys, tokens, private keys).
-# PreToolUse hook for Bash tool — blocks execution if secrets found.
+# Detect and block secrets (API keys, tokens, private keys) before they land in
+# a shell command OR in a file.
+#
+# PreToolUse hook for Bash, Write, Edit, MultiEdit, NotebookEdit — blocks the
+# call if a secret-shaped value is found.
+#
+# History: from 2026-03 to 2026-09 this scanned only Bash commands. The threat
+# model was "secrets in shell commands leak into transcripts, logs and process
+# lists". Three policies then documented false positives and sanctioned "use
+# the Write tool instead" as the recovery — which meant a secret written into a
+# file under companies/ (synced to the vault and to teammates) was never
+# scanned at all. As of 2026-09-07 the same patterns and the same
+# false-positive escapes apply to file content. Example keys in docs and tests
+# must look fake, or be assembled from fragments, which is what an example
+# should be.
 
 INPUT=$(cat)
-TOOL=$(echo "$INPUT" | jq -r '.tool_name')
+TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
 
-# Only check Bash tool
-if [ "$TOOL" != "Bash" ]; then
-  exit 0
-fi
-
-COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+case "$TOOL" in
+  Bash)
+    COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+    WHAT="Bash command" ;;
+  Write)
+    COMMAND=$(echo "$INPUT" | jq -r '.tool_input.content // empty')
+    WHAT="file content (Write)" ;;
+  Edit)
+    COMMAND=$(echo "$INPUT" | jq -r '.tool_input.new_string // empty')
+    WHAT="file content (Edit)" ;;
+  MultiEdit)
+    COMMAND=$(echo "$INPUT" | jq -r '[.tool_input.edits[]?.new_string // empty] | join("\n")')
+    WHAT="file content (MultiEdit)" ;;
+  NotebookEdit)
+    COMMAND=$(echo "$INPUT" | jq -r '.tool_input.new_source // empty')
+    WHAT="notebook cell (NotebookEdit)" ;;
+  *) exit 0 ;;
+esac
 
 if [ -z "$COMMAND" ]; then
   exit 0
@@ -71,10 +96,11 @@ for pattern_entry in "${PATTERNS[@]}"; do
           # for short/low-entropy tokens a first8...last4 preview can reveal most
           # or all of the secret into the transcript. Report only the pattern name.
           cat >&2 <<EOF
-🚨 SECRET DETECTED — Blocking Bash command
+🚨 SECRET DETECTED — Blocking $WHAT
 Pattern matched: $PATTERN_NAME
 
-Remove the secret from the command and use environment variables or config files instead.
+Remove the secret. Put real credentials in the HQ vault (/hq-secrets, hq run,
+hq secrets exec) and reference them by name; make example keys look fake.
 EOF
           exit 2
         fi

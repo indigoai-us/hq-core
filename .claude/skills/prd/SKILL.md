@@ -391,6 +391,7 @@ This is the **source of truth**. `/run-project` and `/execute-task` consume this
       "title": "{Story title}",
       "description": "{As a [user], I want [feature] so that [benefit]}",
       "acceptanceCriteria": ["{Specific verifiable criterion}"],
+      "deliverables": ["repo-path:{path relative to repoPath}", "url:{https://…}"],   // OPTIONAL — only when the output is known up front; workers record actual `evidence` at completion
       "e2eTests": [],
       "priority": 1,
       "passes": false,
@@ -535,6 +536,29 @@ If `board_path` exists, read `companies/{co}/board.json` and upsert a project en
 - If no `metadata.company` in prd.json or no board_path, skip silently
 
 **Verify:** After upserting the board entry, re-read board.json and confirm the new project ID exists. If the write failed silently (file parse error, missing board, manifest lookup miss), log the error and retry once. Silent failure leaves projects invisible in the HQ app — the orphan scanner catches them with an "Unregistered" badge, but proper registration is required.
+
+## Step 5.7: Register the canonical project in Work Mesh
+
+For a cloud-backed company, local `board.json` does not establish the server
+`PROJECT_VIEW`. Follow `core/skills/work-mesh/SKILL.md` → **Project registration
+after planning** in order: authenticated GET of the canonical tenant/project,
+then `PUT /v1/work-mesh/projects/{projectId}` with the full planned stories and
+repos when needed, then authenticated GET verification of the exact company,
+project, story IDs/content, and repo identities/paths. Preserve live story
+statuses and server entries; do not blindly overwrite an existing view. Reuse an
+already matching server view without PUT. Stop if a safe existing-view merge or
+verification cannot be completed.
+
+Only after the server view is verified, call
+`POST /v1/work-mesh/projects/{projectId}/register` with the resolved `companyUid`
+using supported HQ authentication. Reuse the approved plan's exact project ID.
+Require returned `threadId` and `channelId`, and verify channel read access before
+reporting registration complete. Preserve the plan and report any failure as
+incomplete; do not create a replacement project.
+
+Presence and per-turn activity are automatic through hooks and `hq mesh daemon`.
+They do not replace project registration or channel verification. Optional
+milestone notes are best-effort and do not establish registration.
 
 ## Step 6: Register with Orchestrator
 

@@ -615,6 +615,14 @@ run_post_tool_use() {
       # Canonical tool_name Agent + full toolInput (the prompt/metadata).
       dispatch_settings_hooks "PostToolUse" "Agent" "$(payload_passthrough Agent)"
       ;;
+    Read)
+      # Grok read_file -> Claude Read (record-policy-retrieval: a pulled policy
+      # is the usage signal retirement keys on). Passive; never blocks.
+      if [ -n "$FP" ]; then
+        dispatch_settings_hooks "PostToolUse" "Read" "$(payload_for_path "$FP")" skip_master
+        run_master "PostToolUse" "$CLAUDE_JSON" advisory
+      fi
+      ;;
     Write|Edit)
       if [ -n "$FP" ]; then
         local payload canon

@@ -398,3 +398,13 @@ enforcement: soft
 | **Global Policies** | Cross-cutting rules | `core/policies/` |
 | **Worker Instructions** | Worker-specific behavioral rules | `worker.yaml instructions:` block |
 | **Knowledge** | Reference material (facts, schemas, guides) | `companies/{co}/knowledge/` or `knowledge/public/` |
+
+## Retirement (`status: retired`)
+
+A policy is retired, never deleted. `bash core/scripts/policy-retire.sh <slug> --reason "<why>"` adds
+`status: retired`, `retired_at`, `retired_by`, `retired_reason` to the frontmatter; `--restore` removes them.
+Every consumer skips a retired policy: the trigger loader, the company-bind digest, and
+`policy-age-report.sh`. Candidates come from `policy-age-report.sh --candidates` (never fired, dormant,
+stale references, old single-incident rules); `policy-retire.sh --from-report <json> --class <class> --yes`
+retires a class in one pass. Usage is measured two ways: `fired` (emitted in the index) and `retrieved`
+(the session pulled the full text), and only the second means the rule was actually read.

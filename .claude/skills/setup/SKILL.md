@@ -688,7 +688,7 @@ Present this (adapt wording, keep it tight):
 ```
 How HQ works — the 60-second model:
 
-  • Sessions are disposable; context is precious. Start with /startwork,
+  • Sessions are disposable. Start with /startwork,
     do one focused thing, end with /handoff (it saves where you left off so
     the next session resumes exactly there). A fresh session is a feature,
     not a reset.

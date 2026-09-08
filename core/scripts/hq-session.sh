@@ -280,6 +280,7 @@ emit_company_hard_policies() {
     /^---[ \t]*$/ { d++; next }
     d==1 && /^id:/          { s=$0; sub(/^id:[ \t]*/,"",s); gsub(/^["'"'"']|["'"'"']$/,"",s); id=s; next }
     d==1 && /^enforcement:/ { s=$0; sub(/^enforcement:[ \t]*/,"",s); gsub(/[ \t]/,"",s); enf=s; next }
+    d==1 && /^status:[ \t]*retired/ { enf="" ; next }
     d>=2 && /^## Rule[ \t]*$/ { rsec=1; next }
     d>=2 && rsec && /^## / { rsec=0 }
     d>=2 && rsec && !rcap && NF { line=$0; gsub(/\*\*/,"",line); if(length(line)>160)line=substr(line,1,157)"..."; rule=line; rcap=1 }
@@ -290,7 +291,10 @@ emit_company_hard_policies() {
   # (glob order), never silent — overflow is summarized with a pointer so the
   # withheld policies stay one command away.
   local cap="${HQ_COMPANY_BIND_POLICY_CAP:-32}"
-  local max_bytes="${HQ_COMPANY_BIND_POLICY_BYTES:-40960}"
+  # 2026-09-07: was 40960. Claude Code persists hook output above ~10,000
+  # bytes and shows the model a 2 KB preview, so a 40 KB digest was never
+  # read. Keep the whole digest under the host ceiling with margin.
+  local max_bytes="${HQ_COMPANY_BIND_POLICY_BYTES:-7168}"
   printf '\n<company-policy-digest co="%s">\n' "$co"
   printf '# %s hard-enforcement policies (auto-surfaced on company bind)\n' "$co"
   printf '> Company context just bound mid-session. These HARD rules now apply.\n'

@@ -142,8 +142,14 @@ Return ONLY this JSON object — no prose, no markdown fences, nothing before or
     "build": "pass" | "fail" | "skip"
   },
   "workers_run": ["architect", "backend-dev", ...],
+  "evidence": ["repo-path:src/lib/foo.ts", "path:companies/{co}/projects/{project}/report.md", "url:https://...", ...],
   "notes": "<1-2 sentence summary; include blocker description if status != passed>"
 }
+"evidence" lists what you actually produced, in these forms: path:<hq-relative> ·
+repo-path:<relative to the repo> · branch:<name> · url:<https://…>. Commits go
+in "commits" and count as evidence automatically. List only things that exist —
+every item is verified on disk/git before the story is marked done, and a claim
+that does not exist fails the story. An empty list is allowed.
 PROMPT
 })
 wait_agent(...)
@@ -152,7 +158,10 @@ wait_agent(...)
 4. Validate the reply as JSON with `jq -e .` (or equivalent). If invalid, retry exactly once with this stricter prompt addition: `Your previous reply was not valid JSON. Emit ONLY the JSON object specified above. No prose, no fences, no trailing newline.` If still invalid, mark the story `blocked` with reason `INVALID_RETURN_FORMAT`, surface to user, do NOT advance to the next story. (Enforced by [ralph-orchestrator-context-discipline](../../../core/policies/ralph-orchestrator-context-discipline.md).)
 5. Enforce the worker proof gate: passed stories must include at least one real HQ worker ID in `workers_run`; reject placeholder-only values like `codex`, `worker`, `general-purpose`, or `commit`.
 6. Verify commits are parent-visible with `git log --oneline -n {len(commits)}`. If the worker produced an integration patch instead of a visible commit, review/integrate it in the parent and create the story commit before continuing.
-7. Mark `passes: true` only after status is `passed`, worker proof passes, back-pressure is acceptable, and commit verification succeeds.
+7. Verify the worker's evidence and mark the story. Run
+   `bash core/scripts/verify-story-deliverables.sh --prd <prd.json> --story <id> [--repo <repoPath>] --evidence-json '<reply.evidence>' --commits-json '<reply.commits>' --write`.
+   Exit 0 records the verified references on the story as `evidence[]` (audit trail) and you may write `passes: true`. Exit 3 names what does not exist — a claimed path/branch/commit/URL that is missing, or a deliverable the PRD declared that was never produced — and the story is NOT done: do not write the flag, treat it like a failed back-pressure check. A worker that returns no evidence and a PRD that declares none is allowed (the story is marked done but unverified); this gate is deliberately not strict.
+   Mark `passes: true` only after status is `passed`, worker proof passes, back-pressure is acceptable, commit verification succeeds, and this evidence check exits 0.
 8. Update `workspace/orchestrator/{project}/state.json`.
 9. Narrate one line per story to the user: `[{story_id}] {status} · {files_changed} files · {first_commit_short_sha}`. Anything longer goes to `workspace/threads/journal/<date>/<story-id>.md`, not the parent transcript.
 10. Auto-continue to the next incomplete story until the queue is empty or a story is `failed`/`blocked` (then surface and stop). Pause only per the recommendation-posture exceptions in Step 1: >10 incomplete stories (single preflight approval) or a story that requires session mode (pause before that story only).
@@ -200,7 +209,7 @@ Process:
    - make edits directly
    - run back-pressure checks
    - commit per story
-   - mark `passes: true` only after verification
+   - mark `passes: true` only after verification (worker proof, commits, and the evidence check `verify-story-deliverables.sh --evidence-json … --commits-json … --write` exit 0)
    - do not claim `workers_run` or worker-backed completion unless `/execute-task` actually ran through the worker system
    - update `workspace/orchestrator/{project}/state.json`
 6. Pause between stories and ask continue / adjust / stop.

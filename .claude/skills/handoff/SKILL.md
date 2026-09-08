@@ -3,7 +3,7 @@ name: handoff
 description: Preserve session state for a follow-up agent with handoff files and commits.
 model: sonnet
 effort: low
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(nohup:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(core/scripts/handoff-finalize.sh:*), Bash(nohup bash core/scripts/handoff-post.sh:*), Bash, AskUserQuestion, Task, Agent, Skill
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(nohup:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(bash core/scripts/handoff-open-steps.sh:*), Bash(core/scripts/handoff-finalize.sh:*), Bash(nohup bash core/scripts/handoff-post.sh:*), Bash, AskUserQuestion, Task, Agent, Skill
 ---
 
 # Fresh Session Continuity
@@ -99,6 +99,15 @@ core/scripts/handoff-finalize.sh \
   --slug "{short-hyphenated-slug}" || rc=$?
 rm -f "$CHANGESET_TMP"   # clean up on both success and failure
 [ "$rc" -eq 0 ] || { echo "handoff-finalize failed (rc=$rc)" >&2; exit "$rc"; }
+```
+
+Every next step is stored with an `id` (`<thread_id>#<n>`) and `status: open`.
+Before writing the new thread's next steps, close the ones this session actually
+finished so they stop being copied forward:
+
+```bash
+bash core/scripts/handoff-open-steps.sh list                    # what is still open across recent handoffs
+bash core/scripts/handoff-open-steps.sh close <step-id> --note "<what closed it>"
 ```
 
 The script also copies the next-step command to the user's clipboard (fail-soft; pbcopy/wl-copy/xclip). Default is `/resumework {thread_id}`. If a different command is the right continuation, pass it explicitly via `--next-command "{command}"`.

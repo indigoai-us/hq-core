@@ -163,7 +163,6 @@ Save current work state as a thread to survive context loss.
 
 - Threads ensure work survives context clears
 - Run frequently during long sessions
-- If session feels long, suggest `/handoff`
 - Threads are searchable via `/search`
 
 ## See also

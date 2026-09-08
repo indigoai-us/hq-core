@@ -234,7 +234,7 @@ Session Start
 --------------
 {Mode: Resume | Company: {slug} | Project: {name}}
 
-{If resume: "Last session: {summary}" + "Next steps: {next_steps}"}
+{If resume: "Last session: {summary}" + "Next steps: {next_steps with status: open}" + "Still open from earlier handoffs: {bash core/scripts/handoff-open-steps.sh list --limit 10, excluding this thread}"; any delegation manifest under workspace/delegations/ still at status `sent` gets `bash core/scripts/hq-delegate-pickup.sh --manifest <m> --check` and its result shown as verified / waiting / FAILED}
 {If company: "Repos: {list}" + "Workers: {list}"}
 {If project: "Goal: {description}" + "Branch: {branchName}"}
 {If repo: "Repo: {repoPath}" + "Company: {slug}" + "Branch: {branch}"}

@@ -1,7 +1,7 @@
 ---
 name: execute-task
 description: Execute a single PRD story through coordinated worker phases (Ralph pattern). Each worker handles its domain, passes context to the next, with back-pressure (tests/lint/typecheck) keeping code on rails.
-allowed-tools: Task, Read, Write, Glob, Grep, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion
+allowed-tools: Task, Read, Write, Glob, Grep, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/verify-story-deliverables.sh:*), Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion
 ---
 
 # Execute Task - Worker-Coordinated Story Execution
@@ -39,6 +39,7 @@ Execute a single user story from a PRD through coordinated worker phases. Each w
     "build": "pass" | "fail" | "skip"
   },
   "workers_run": ["<worker-id>", ...],
+  "evidence": ["repo-path:<relative to repo>", "path:<hq-relative>", "branch:<name>", "url:<https://…>", ...],
   "notes": "<=240 chars; on non-passed status, name the blocker concisely>"
 }
 ```
@@ -942,6 +943,22 @@ task.passes = true
 ```
 
 Sub-agents may only update the current story's `passes`, `notes`, and `linearIssueId` fields. Never restructure, rename, add, or remove stories.
+
+#### 7a.2 Record Evidence (what this story actually produced)
+
+A done-mark should mean "work exists", not "a step ran". At completion, list what the story produced — the same things you would show a reviewer — as `evidence`: `path:<hq-relative or absolute>`, `repo-path:<relative to repoPath>`, `branch:<name>`, `url:<https://…>`. Commits are evidence automatically. List only things that exist; the check below fails on a claim that does not.
+
+- **Invoked by orchestrator**: put the list in the output JSON `evidence` field (the orchestrator verifies and records it — `/run-project` Step 3b.7).
+- **Standalone**: verify and record it yourself before writing `passes: true`:
+
+```bash
+bash core/scripts/verify-story-deliverables.sh --prd "{prd.json path}" --story "{task-id}" [--repo "{repoPath}"] \
+  --evidence-json '["repo-path:…", "path:…"]' --commits-json '["<short-sha>", …]' --write
+```
+
+- Exit `0`: everything claimed exists (and any `deliverables` the PRD declared up front exist too). The verified references are written on the story as `evidence[]`. Proceed.
+- Exit `3`: something claimed or declared does not exist, named on stderr. Do NOT write `passes: true`; produce it or correct the claim, then re-run. If it cannot be produced this run, fall through to the failure path in step 8.
+- No evidence and no declared deliverables: allowed (reported as unverified). This gate is deliberately not strict; it catches fabricated or hollow done-marks, not honest ones.
 
 #### 7a.3 Run Quality Gates
 

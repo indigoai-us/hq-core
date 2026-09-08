@@ -136,6 +136,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" detect-secrets \"$CLAUDE_PROJECT_DIR/.claude/hooks/detect-secrets.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" protect-core \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-core.sh\"",
             "timeout": 30
           },
@@ -184,6 +194,16 @@
       {
         "matcher": "Write",
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" detect-secrets \"$CLAUDE_PROJECT_DIR/.claude/hooks/detect-secrets.sh\"",
+            "timeout": 30
+          },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" protect-core \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-core.sh\"",
@@ -236,6 +256,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" detect-secrets \"$CLAUDE_PROJECT_DIR/.claude/hooks/detect-secrets.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" block-core-writes \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-core-writes.sh\"",
             "timeout": 30
           },
@@ -266,6 +296,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" detect-secrets \"$CLAUDE_PROJECT_DIR/.claude/hooks/detect-secrets.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-vault-write-access \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-vault-write-access.sh\"",
             "timeout": 30
           }
@@ -293,8 +333,23 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" record-policy-retrieval \"$CLAUDE_PROJECT_DIR/.claude/hooks/record-policy-retrieval.sh\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" record-policy-retrieval \"$CLAUDE_PROJECT_DIR/.claude/hooks/record-policy-retrieval.sh\"",
+            "timeout": 30
+          },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" auto-checkpoint-trigger \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto-checkpoint-trigger.sh\"",
@@ -529,11 +584,6 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" cleanup-mcp-processes \"$CLAUDE_PROJECT_DIR/.claude/hooks/cleanup-mcp-processes.sh\"",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" context-warning-50 \"$CLAUDE_PROJECT_DIR/.claude/hooks/context-warning-50.sh\"",
             "timeout": 30
           },
           {
