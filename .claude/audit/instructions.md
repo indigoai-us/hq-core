@@ -54,7 +54,14 @@ are scaffolding placeholders. Don't treat them as denylist hits.
 ## When in doubt
 
 If a finding looks like it might be documentation about a rule rather
-than a real violation, **err on the side of flagging it** but include in
-the comment: "this may be a documentation reference rather than a real
-finding — please verify." A false positive that asks the reviewer is
-better than a false negative that misses a real leak.
+than a real violation, **report it, do not fix it.** Include it in the
+findings comment on the PR with: "this may be a documentation reference
+rather than a real finding — please verify." Classify it as
+`manual_review_required` so it never becomes a redaction in a remediation
+PR. A false positive that asks the reviewer is better than a false
+negative that misses a real leak — but a false positive that rewrites a
+documentation example into `[EMAIL]` is worse than either, and this repo
+merged three of those before the distinction was made explicit.
+
+Values on IETF-reserved placeholder domains (`example.com`, `.test`,
+`.invalid`, …) are not in doubt: the org PII policy excludes them outright.

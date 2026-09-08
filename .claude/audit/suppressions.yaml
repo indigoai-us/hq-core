@@ -9,6 +9,12 @@
 #
 # Suppressions are evaluated AFTER scanning, so the bot logs each dropped
 # finding for the run summary but never includes them in the PR comment.
+#
+# Not needed here: IETF-reserved placeholder values. The org PII policy
+# (hq-pr-review-settings defaults/policies/pii.md) excludes example.com/.net/
+# .org and the .test/.example/.invalid/.localhost TLDs, loopback and TEST-NET
+# IPs, and 555-01XX numbers before they become findings. Throwaway git
+# identities on those domains no longer need a per-file entry.
 
 - path: "audit-fixtures/**"
   reason: "Test fixtures for hq-audit-bot itself. Patterns here are deliberately constructed to exercise scanners; all values are fake (RFC-5733 phone, Visa test card, all-zero SSN, etc)."
@@ -29,14 +35,6 @@
   scanners: [pii]
   reason: "Vitest/Jest snapshot files; not human-authored content. Re-running tests regenerates them."
 
-- path: "core/scripts/tests/hook-path-resolution.test.sh"
-  scanners: [pii]
-  reason: "Disposable git-config identity in throwaway test fixtures uses an RFC 2606 reserved .test address (example.test — never resolvable in DNS, no real mailbox); placeholder, not PII."
-
-- path: "core/scripts/tests/handoff-finalize-large-changeset.test.sh"
-  scanners: [pii]
-  reason: "Disposable git-config identity in throwaway test fixtures uses an RFC 2606 reserved .invalid address (example.invalid — never resolvable in DNS, no real mailbox); placeholder, not PII."
-
 - path: "core/scripts/tests/qmd-handoff-reindex.test.sh"
   scanners: [pii]
   reason: "Throwaway qmd reindex fixtures only: disposable git-config identity uses an RFC 2606 reserved example.com address (documentation-only, no real mailbox); DEAD_PID sentinels are synthetic process IDs for stale-lock reclaim cases (not phone numbers or personal data)."
@@ -49,6 +47,3 @@
   rules: [pii/email]
   reason: "Metadata validator tests assert a pinned js-yaml package version; the npm specifier resembles an email address but is not PII."
 
-- path: "test/__tests__/stories/US-011.test.mjs"
-  scanners: [pii]
-  reason: "Work Mesh acceptance tests bind an ephemeral in-process server to the IPv4 loopback address; the address is infrastructure test data, not PII."
