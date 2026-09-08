@@ -1,0 +1,139 @@
+# hq-pr-review-settings — Audit Cleanup Workflow Template
+# Companion to audit.yml. Copy into an enrolled repo as
+# .github/workflows/audit-cleanup.yml (the installer only reconciles
+# audit.yml today; this file is distributed by hand).
+#
+# When a pull request closes — merged or not — any open remediation PR the
+# audit bot opened FOR it is obsolete: it targets the closed PR's head branch,
+# which is about to be deleted or has already landed. Nothing else closes
+# those. Before this workflow existed, 4 of the 6 open remediation PRs across
+# hq-core and hq-core-staging were orphans; one was opened three minutes after
+# its parent merged and sat for weeks.
+#
+# Two jobs, two directions of the same race:
+#   sweep  — a PARENT closed: close every open remediation PR opened for it.
+#   verify — a REMEDIATION PR opened: if its parent is already merged/closed
+#            (the audit run was in flight when the parent went away — a run
+#            takes up to 35 minutes and opens its PR near the end), close it.
+#
+# The scripts are NOT bundled here. They are fetched at runtime via
+# sparse-checkout of the settings repo, same as audit.yml does.
+
+name: PR Audit Cleanup
+
+on:
+  pull_request:
+    types: [closed, opened]
+
+permissions:
+  contents: write        # delete the orphaned audit/* branches
+  pull-requests: write   # comment on and close the orphaned PRs
+
+jobs:
+  sweep:
+    name: Close orphaned remediation PRs
+    # Remediation PRs live on audit/* branches. When one of THOSE closes, its
+    # parent is still open and there is nothing to sweep.
+    if: ${{ github.event.action == 'closed' && !startsWith(github.head_ref, 'audit/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HQ_AUDIT_BOT_APP_ID: ${{ vars.HQ_AUDIT_BOT_APP_ID || secrets.HQ_AUDIT_BOT_APP_ID }}
+      HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+
+    steps:
+      - name: Audit credentials unavailable
+        if: env.HQ_AUDIT_BOT_APP_ID == '' || env.HQ_AUDIT_BOT_PRIVATE_KEY == ''
+        run: |
+          echo "::warning::HQ audit bot credentials are not configured; skipping audit cleanup"
+
+      # Same App identity as audit.yml, so the closing comment and the branch
+      # deletion are attributed to hq-audit-bot[bot] — the account that opened
+      # the PR in the first place.
+      - name: Generate hq-audit-bot token
+        id: app-token
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            hq-pr-review-settings
+            ${{ github.event.repository.name }}
+
+      - name: Fetch audit scripts
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/hq-pr-review-settings
+          path: .audit-settings
+          sparse-checkout: |
+            workflow-template/scripts/
+          sparse-checkout-cone-mode: true
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Close orphaned remediation PRs
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PARENT_PR: ${{ github.event.pull_request.number }}
+          PARENT_HEAD_REF: ${{ github.head_ref }}
+          PARENT_OUTCOME: ${{ github.event.pull_request.merged && 'merged' || 'closed' }}
+        run: |
+          bash .audit-settings/workflow-template/scripts/close-orphaned-audit-prs.sh \
+            "$PARENT_PR" "$PARENT_HEAD_REF" "$PARENT_OUTCOME"
+
+      - name: Cleanup settings
+        if: always()
+        run: rm -rf .audit-settings
+
+  verify:
+    name: Close a remediation PR whose parent is already gone
+    if: ${{ github.event.action == 'opened' && startsWith(github.head_ref, 'audit/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HQ_AUDIT_BOT_APP_ID: ${{ vars.HQ_AUDIT_BOT_APP_ID || secrets.HQ_AUDIT_BOT_APP_ID }}
+      HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+
+    steps:
+      - name: Audit credentials unavailable
+        if: env.HQ_AUDIT_BOT_APP_ID == '' || env.HQ_AUDIT_BOT_PRIVATE_KEY == ''
+        run: |
+          echo "::warning::HQ audit bot credentials are not configured; skipping audit cleanup"
+
+      - name: Generate hq-audit-bot token
+        id: app-token
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            hq-pr-review-settings
+            ${{ github.event.repository.name }}
+
+      - name: Fetch audit scripts
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/hq-pr-review-settings
+          path: .audit-settings
+          sparse-checkout: |
+            workflow-template/scripts/
+          sparse-checkout-cone-mode: true
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Close if the parent is already merged or closed
+        if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          AUDIT_PR: ${{ github.event.pull_request.number }}
+        run: |
+          bash .audit-settings/workflow-template/scripts/close-if-parent-gone.sh "$AUDIT_PR"
+
+      - name: Cleanup settings
+        if: always()
+        run: rm -rf .audit-settings

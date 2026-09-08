@@ -69,6 +69,16 @@ jobs:
         if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
         uses: actions/checkout@v4
         with:
+          # Check out the PR's head commit, NOT the default refs/pull/N/merge
+          # ref. The merge ref is a synthetic merge of the PR into its base, and
+          # the audit branch is cut from wherever HEAD is — so every base-branch
+          # commit the PR had not yet picked up landed in the remediation diff
+          # (hq-core#142: 4 redactions, 75 files, 2,833 deletions). Pinning to
+          # the event's head SHA also means a push racing this run cannot move
+          # the commit under audit; the `synchronize` event re-runs it instead.
+          # The checkout is detached, so the prompt takes the branch name from
+          # $GITHUB_HEAD_REF rather than `git rev-parse --abbrev-ref HEAD`.
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
@@ -101,8 +111,8 @@ jobs:
       # Reads the PR branch name:
       #   audit/* branch  → mode=loop  (remediation pass already in progress)
       #   any other branch → mode=entry (first-pass audit)
-      # Also strips the "audit/" prefix and trailing "-<hexsha>" suffix to
-      # recover the original source branch name for loop mode.
+      # Also recovers the original source branch name for loop mode (strips
+      # the "audit/" prefix and, on legacy branches, the "-<hexsha>" suffix).
       - name: Detect audit mode
         id: mode
         if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
@@ -128,16 +138,19 @@ jobs:
 
       # ── 5b. Count iterations (loop mode only) ────────────────────────────
       #
-      # Counts bot-authored commits on the audit branch since diverging from
-      # origin/main. This tells the prompt which iteration we are on without
-      # requiring Claude to re-run git log. Skipped in entry mode (count is
-      # always 0 and cap is never reached on the very first scan).
+      # Counts bot-authored non-merge commits on the audit branch since it
+      # diverged from the audit PR's base (the parent PR's head branch). This
+      # tells the prompt which iteration we are on without requiring Claude to
+      # re-run git log. Skipped in entry mode (count is always 0 and cap is
+      # never reached on the very first scan).
       - name: Count iterations
         id: iterations
         if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != '' && steps.mode.outputs.mode == 'loop'
+        env:
+          AUDIT_BASE_REF: origin/${{ github.base_ref }}
         run: |
           bash .audit-settings/workflow-template/scripts/count-iterations.sh \
-            "${{ steps.config.outputs.iteration_cap }}"
+            "${{ steps.config.outputs.iteration_cap }}" "$AUDIT_BASE_REF"
 
       # ── 6. Run Claude Code audit ─────────────────────────────────────────
       - name: Claude Code Audit
