@@ -177,6 +177,8 @@ jobs:
           bash core/scripts/lint-skill-script-refs.sh startwork
       - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
         run: bash core/scripts/tests/skill-script-refs.test.sh
+      - name: HQ feedback summary and verbatim report contract
+        run: bash core/scripts/tests/hq-bug-skill.test.sh
       - name: Company resolver (session bind + whole-token prompt scan)
         run: bash core/scripts/tests/resolve-company.test.sh
       - name: /resumework requires explicit confirmation for locked threads
@@ -662,6 +664,26 @@ jobs:
         run: bash core/scripts/tests/session-scope-capability.test.sh
       - name: Mandatory scope authorizer blocks cross-company access
         run: bash core/scripts/tests/mandatory-scope-authorizer.test.sh
+      - name: Secret detector scans Write/Edit/MultiEdit/NotebookEdit content
+        run: bash core/scripts/tests/detect-secrets-file-tools.test.sh
+      - name: Policy reminder stays under the host output ceiling; hard rules rank first
+        run: bash core/scripts/tests/inject-policy-output-ceiling.test.sh
+      - name: Policy age report flags retirement candidates
+        run: bash core/scripts/tests/policy-age-report.test.sh
+      - name: Story deliverables gate on passes:true
+        run: bash core/scripts/tests/verify-story-deliverables.test.sh
+      - name: Delegation pickup receipt / FAILED state
+        run: bash core/scripts/tests/hq-delegate-pickup.test.sh
+      - name: Handoff next-step ids and closure
+        run: bash core/scripts/tests/handoff-open-steps.test.sh
+      - name: Policy retire / restore and consumers skip retired
+        run: bash core/scripts/tests/policy-retire.test.sh
+      - name: Policy retrieval ledger hook
+        run: bash core/scripts/tests/record-policy-retrieval.test.sh
+      - name: Policy delivery benchmark (live + scenarios)
+        run: bash core/scripts/tests/policy-benchmark.test.sh
+      - name: Live runtime smoke (skips when no runtime CLI is installed on the runner)
+        run: bash core/scripts/tests/harness-live-smoke.sh --runtimes claude,codex,grok
       - name: hq-session mints scope capability on company bind
         run: bash core/scripts/tests/hq-session.test.sh
       - name: Bounded-action scope contract (Claude+Codex shared text)

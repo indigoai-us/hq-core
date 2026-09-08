@@ -117,17 +117,19 @@ record_slug() {
 pending_has() { case "$MATCHES" in *"$1"$'\t'*) return 0 ;; *) return 1 ;; esac; }
 
 add_match() {
-  # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline] [once|always] [ok|malformed]
+  # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline] [once|always] [ok|malformed] [specificity]
   # Back-compat: add_match <slug> <rule> → scope=core path= enf=unset
-  local slug="$1" scope rule path enf kind injv ws
+  local slug="$1" scope rule path enf kind injv ws spec
   if [ "$#" -ge 5 ]; then
     scope="$2"; path="$3"; enf="$4"; rule="$5"
     kind="${6:-reactive}"
     injv="${7:-once}"
     ws="${8:-ok}"
+    spec="${9:-0}"
   else
-    scope="core"; path=""; enf="unset"; rule="${2:-}"; kind="reactive"; injv="once"; ws="ok"
+    scope="core"; path=""; enf="unset"; rule="${2:-}"; kind="reactive"; injv="once"; ws="ok"; spec=0
   fi
+  case "$spec" in ''|*[!0-9]*) spec=0 ;; esac
   [ -n "$slug" ] || return 0
   [ "$injv" = "always" ] || injv="once"
   already "$slug" "$injv" && return 0
@@ -137,7 +139,7 @@ add_match() {
   [ "$ws" = "malformed" ] || ws="ok"
   # Tabs inside rule would break the field layout — collapse them.
   rule="${rule//$'\t'/ }"
-  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}	${kind}	${injv}	${ws}
+  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}	${kind}	${injv}	${ws}	${spec}
 "
 }
 
@@ -233,6 +235,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         example-policy.md|README.md) continue ;;
         *" "*) continue ;;              # any space => sync conflict/drift copy
         *.sync-conflict-*.md) continue ;;  # Syncthing-style conflict copy
+        *.conflict-*) continue ;;          # HQ Sync conflict twin (<slug>.md.conflict-<ts>-<id>.md)
       esac
       POLICY_FILES+=("$f")
     done
@@ -252,8 +255,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   ALREADY="$(cat "$DEDUPE_FILE" 2>/dev/null || true)"
   ALREADY_TURN="$(cat "$TURN_FILE" 2>/dev/null || true)"
   if [ "${#POLICY_FILES[@]}" -gt 0 ]; then
-    while IFS=$'\t' read -r slug scope path enf rule kind injv ws; do
-      add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws"
+    while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+      add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec"
     done < <(
       # ALREADY (the dedupe ledger) is NEWLINE-separated and, after SessionStart
       # injects every on:[SessionStart] policy, routinely has many lines. It is
@@ -347,9 +350,10 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         if (ij=="always") { if (id in turnalready) return }        # per-turn dedup ledger
         else { if (id in already) return }                         # per-session dedup ledger
         if (id in emitted) return                                  # de-dup within this run
-        matched=0; degraded=0
-        if (ev_on || ss_on) { r=evalexpr(whenx,"ev"); if(r==0) matched=1; else if(r==2) degraded=1 }
-        if (!matched && ai_on && INTENT_MODE) { r=evalexpr(whenx,"ai"); if(r==0) matched=1; else if(r==2) degraded=1 }
+        if (statx=="retired") return                               # retired policies never inject (policy-retire.sh)
+        matched=0; degraded=0; spec=0
+        if (ev_on || ss_on) { r=evalexpr(whenx,"ev"); if(r==0) { matched=1; spec=specificity(whenx,"ev") } else if(r==2) degraded=1 }
+        if (!matched && ai_on && INTENT_MODE) { r=evalexpr(whenx,"ai"); if(r==0) { matched=1; spec=specificity(whenx,"ai") } else if(r==2) degraded=1 }
         # An expression the grammar cannot parse used to MATCH — a blanket
         # fail-open that made every malformed policy fire on every event and
         # crowd the cap with alphabetical noise, burying the policies that
@@ -373,10 +377,23 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           # Only the unconditional SessionStart backfill is baseline.
           kind=((degraded || (ss_on && !ev_on && !(ai_on && INTENT_MODE) && unconditional(whenx))) ? "baseline" : "reactive")
           gsub(/\t/," ",rule)
-          print id "\t" sc "\t" fname "\t" en "\t" rule "\t" kind "\t" ij "\t" ws
+          print id "\t" sc "\t" fname "\t" en "\t" rule "\t" kind "\t" ij "\t" ws "\t" spec
         }
       }
-      function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; injx=""; rule=""; rsec=0; rcap=0 }
+      function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; injx=""; statx=""; rule=""; rsec=0; rcap=0 }
+      # specificity(expr, which): how many distinct identifiers in the `when:`
+      # expression are present in the fact set. A policy keyed on
+      # `deploy && vercel && indigo` outranks one keyed on `deploy` alone when
+      # both match — it is more specific to this event. Used only for ordering.
+      function specificity(expr, which,   s,tok,n,seen) {
+        s=expr; n=0; delete seen
+        while (match(s, "[A-Za-z0-9_./][A-Za-z0-9_./-]*")) {
+          tok=substr(s,RSTART,RLENGTH); s=substr(s,RSTART+RLENGTH)
+          if (tok=="always" || tok=="never") continue
+          if (!(tok in seen)) { seen[tok]=1; if ((which=="ev") ? (tok in evh) : (tok in aih)) n++ }
+        }
+        return n
+      }
       BEGIN {
         n=split(EVFACTS,fa,/[ ,]+/); for(i=1;i<=n;i++) if(fa[i]!="") evh[fa[i]]=1
         n=split(AIFACTS,ga,/[ ,]+/); for(i=1;i<=n;i++) if(ga[i]!="") aih[ga[i]]=1
@@ -388,6 +405,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       { fname=FILENAME }
       /^---[ \t]*$/ { if (d<2) { d++; next } }
       d==1 && /^id:/   { s=$0; sub(/^id:[ \t]*/,"",s);   gsub(/^["'"'"']|["'"'"']$/,"",s); id=s; next }
+      d==1 && /^status:/ { s=$0; sub(/^status:[ \t]*/,"",s); gsub(/[ \t"]/,"",s); statx=s; next }
       d==1 && /^when:/ { s=$0; sub(/^when:[ \t]*/,"",s); sub(/[ \t]+#.*/,"",s); gsub(/^["'"'"']|["'"'"']$/,"",s); whenx=s; next }
       d==1 && /^on:/   { s=$0; sub(/^on:[ \t]*/,"",s);   gsub(/[][, ]/," ",s); onx=s; next }
       d==1 && /^enforcement:/ {
@@ -453,7 +471,7 @@ fi
 # US-406: machine-readable records for the agent-session entrypoint. No prose
 # wrapper, no interactive 16-cap (consumer applies HQ_SESSION_POLICY_MAX_*).
 if [ "${HQ_POLICY_EMIT:-}" = "tsv" ]; then
-  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws; do
+  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
     [ -z "$slug" ] && continue
     printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule"
     record_slug "$slug" "$injv"
@@ -469,15 +487,41 @@ fi
 #
 # This is Bash-native (portable to Bash 3.2) rather than sort -s so the stable
 # ordering does not depend on GNU/BSD sort differences.
+#
+# Within each group, `enforcement: hard` policies are stable-partitioned ahead
+# of soft/unset ones (2026-09-07). Before this, the 16-slot cap cut in glob
+# order, so a hard rule about production credentials could lose its slot to a
+# soft style note that happened to sort earlier in the same directory. Scope
+# order (company > repo > personal > core) is still preserved inside each
+# enforcement tier.
 ORDERED_MATCHES=""
+GROUP=""
 for match_kind in reactive baseline; do
-  while IFS= read -r match; do
-    [ -n "$match" ] || continue
-    case "$match" in
-      *$'\t'"$match_kind"$'\t'*) ORDERED_MATCHES="${ORDERED_MATCHES}${match}
-" ;;
-    esac
-  done <<< "$MATCHES"
+  for match_tier in hard other; do
+    while IFS= read -r match; do
+      [ -n "$match" ] || continue
+      case "$match" in
+        *$'\t'"$match_kind"$'\t'*) ;;
+        *) continue ;;
+      esac
+      IFS=$'\t' read -r _m_slug _m_scope _m_path _m_enf _m_rest <<< "$match"
+      if [ "$match_tier" = "hard" ]; then
+        [ "$_m_enf" = "hard" ] || continue
+      else
+        [ "$_m_enf" != "hard" ] || continue
+      fi
+      GROUP="${GROUP}${match}
+"
+    done <<< "$MATCHES"
+    # Within a (kind, tier) group, more specific triggers first (field 9,
+    # numeric, descending); `sort -s` keeps scope order for ties. Rows without
+    # the field sort as 0.
+    if [ -n "$GROUP" ]; then
+      ORDERED_MATCHES="${ORDERED_MATCHES}$(printf '%s' "$GROUP" | sort -t "$(printf '\t')" -k9,9nr -s)
+"
+    fi
+    GROUP=""
+  done
 done
 MATCHES="$ORDERED_MATCHES"
 
@@ -485,11 +529,19 @@ MATCHES="$ORDERED_MATCHES"
 # record them now: the SessionStart baseline is a one-time introduction, so a
 # policy that lost the cap was considered and dropped, not deferred to the next
 # event where it could crowd out new reactive work again.
-SESSION_POLICY_CAP="${HQ_SESSION_POLICY_CAP:-16}"
+# INDEX MODE (2026-09-07, default): there is no count cap. Every matching
+# policy is listed as a one-line index entry (id, tier, scope, summary), and
+# only reactive HARD matches carry full text, inside HARD_BUDGET. The whole
+# emission is bounded by OUTPUT_CEILING below, so nothing is withheld by rank:
+# at ~120 bytes a line, 50+ policies fit under the host ceiling, and the agent
+# pulls any rule's full text on demand (`qmd get <slug>` or the file).
+# Setting HQ_SESSION_POLICY_CAP to a positive number restores the legacy
+# count cap (used by the box-preflight bounds tests).
+SESSION_POLICY_CAP="${HQ_SESSION_POLICY_CAP:-0}"
 MATCH_COUNT="$(printf '%s' "$MATCHES" | grep -c . || true)"
 WITHHELD=0
 WITHHELD_MATCHES=""
-if [ "$MATCH_COUNT" -gt "$SESSION_POLICY_CAP" ]; then
+if [ "$SESSION_POLICY_CAP" -gt 0 ] && [ "$MATCH_COUNT" -gt "$SESSION_POLICY_CAP" ]; then
   WITHHELD=$((MATCH_COUNT - SESSION_POLICY_CAP))
   KEPT_MATCHES=""
   kept=0
@@ -510,7 +562,7 @@ fi
 WITHHELD_NAMES=""
 WITHHELD_NAMED=0
 if [ -n "$WITHHELD_MATCHES" ]; then
-  while IFS=$'\t' read -r slug scope path enf rule kind injv ws; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
     [ -n "$slug" ] || continue
     record_slug "$slug" "$injv"
     if [ "$WITHHELD_NAMED" -lt 10 ]; then
@@ -538,10 +590,20 @@ fi
 # Escape hatches: HQ_POLICY_HARD_FULL_TEXT=0 restores summary-only for hard
 # policies; HQ_POLICY_HARD_BUDGET_BYTES resizes the budget.
 HARD_FULL="${HQ_POLICY_HARD_FULL_TEXT:-1}"
-HARD_BUDGET="${HQ_POLICY_HARD_BUDGET_BYTES:-16384}"
+# Host ceiling (2026-09-07): Claude Code persists any hook stdout above ~10,000
+# bytes to a file and shows the model a ~2 KB preview — everything past it is
+# lost for that turn. 3,341 such truncated outputs were found on one install,
+# most of them this hook. The full-text budget therefore lives well under that
+# ceiling, and the WHOLE emission is capped by OUTPUT_CEILING below, with a
+# non-silent fallback to summaries when the cap would otherwise be exceeded.
+HARD_BUDGET="${HQ_POLICY_HARD_BUDGET_BYTES:-5120}"
 # Per-policy ceiling. Without it a single long hard policy can swallow most of
 # the shared budget and push every other hard rule down to its summary line.
-HARD_MAX="${HQ_POLICY_HARD_MAX_BYTES:-6144}"
+HARD_MAX="${HQ_POLICY_HARD_MAX_BYTES:-2048}"
+# Absolute ceiling on this hook's stdout. Must stay below the host's ~10,000
+# byte persist threshold with margin; core/scripts/tests/inject-policy-output-ceiling.test.sh
+# fails if either default is raised past it.
+OUTPUT_CEILING="${HQ_POLICY_OUTPUT_CEILING_BYTES:-8000}"
 # Everything from the first archival heading on is history and justification,
 # not the binding rule: it is what the agent must NOT be made to re-read on
 # every injection. `## Rule`, `## Scope`, `## Enforcement` and friends stay.
@@ -570,17 +632,29 @@ policy_body() {
   '
 }
 
+# Record every emitted slug in its ledger exactly once, BEFORE emission: the
+# emission below may run twice (full text, then summary-only fallback) and
+# must not double-record.
+printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+  [ -z "$slug" ] && continue
+  record_slug "$slug" "$injv"
+done
+
+emit_reminder() {
 printf '<policy-reminder>\n'
 printf '%s' "$MATCHES" | {
   spent=0
   shortened=""
   oversize=""
   malformed=""
-  while IFS=$'\t' read -r slug scope path enf rule kind injv ws; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
     [ -z "$slug" ] && continue
-    record_slug "$slug" "$injv"
     [ "$ws" = "malformed" ] && malformed="${malformed:+$malformed, }$slug"
     body=""
+    # HARD rules carry full text while the budget lasts. MATCHES is already
+    # ordered reactive-before-baseline and by specificity, so rules that
+    # matched THIS event claim the budget first; a baseline hard rule that
+    # loses the budget is still an index line, one read away.
     if [ "$HARD_FULL" != "0" ] && [ "$enf" = "hard" ] && [ -n "$path" ] && [ -r "$path" ]; then
       body="$(policy_body "$path")"
     fi
@@ -604,7 +678,11 @@ printf '%s' "$MATCHES" | {
       fi
       [ -n "$body" ] && shortened="${shortened:+$shortened, }$slug"
     fi
-    printf '> Policy `%s` applies here: %s\n' "$slug" "$rule"
+    if [ "$enf" = "hard" ]; then
+      printf '> Policy `%s` applies here: %s  [HARD · %s]\n' "$slug" "$rule" "$scope"
+    else
+      printf '> Policy `%s` applies here: %s\n' "$slug" "$rule"
+    fi
   done
   if [ -n "$shortened" ]; then
     printf '> Full-text budget of %s bytes reached: these HARD policies were shortened to one-line summaries — %s. Read each in full at its own file before acting on it.\n' \
@@ -629,7 +707,41 @@ if [ "$WITHHELD" -gt 0 ]; then
   printf '> Session policy cap withheld %s policies (cap %s): %s%s. Reactive matches were prioritized over the SessionStart baseline.\n' \
     "$WITHHELD" "$SESSION_POLICY_CAP" "$WITHHELD_NAMES" "$more"
 fi
-printf '> Read the full rule(s) at `core/policies/{slug}.md` if you need rationale.\n'
+printf '> This is an index. Before acting in an area a HARD rule covers, read that rule in full: `qmd get <slug>` or the policy file (companies/<co>/policies, personal/policies, core/policies). One-line entries are summaries, not the rule.\n'
 printf '</policy-reminder>\n'
+}
+
+OUT="$(emit_reminder)"
+OUT_BYTES="$(printf '%s' "$OUT" | wc -c | tr -d ' ')"
+if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ] && [ "$HARD_FULL" != "0" ]; then
+  # Too big for the host to deliver: fall back to one-line summaries for
+  # every policy, and say so. A shortened set the model can read beats a full
+  # set it never sees.
+  OUT="$(HARD_FULL=0 emit_reminder)"
+  OUT="${OUT%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes would have been exceeded (${OUT_BYTES} bytes with full text): every HARD policy above is shortened to its summary line. Read each in full at its own file before acting on it.
+</policy-reminder>"
+  OUT_BYTES="$(printf '%s' "$OUT" | wc -c | tr -d ' ')"
+fi
+if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ]; then
+  # Still over even as summaries: drop trailing policy lines until it fits,
+  # naming how many were cut. Never emit something the host will truncate
+  # silently.
+  cut=0
+  while [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ]; do
+    last_line="$(printf '%s\n' "$OUT" | grep -n '^> Policy `' | tail -1 | cut -d: -f1)"
+    [ -n "$last_line" ] || break
+    OUT="$(printf '%s\n' "$OUT" | sed "${last_line}d")"
+    cut=$((cut + 1))
+    OUT_BYTES="$(printf '%s' "$OUT" | wc -c | tr -d ' ')"
+  done
+  [ "$cut" -gt 0 ] && OUT="${OUT%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes: ${cut} lower-ranked policy line(s) cut from this reminder. They stay in the ledger as fired; see the policy files.
+</policy-reminder>"
+fi
+# Emission stats (2026-09-07): one line per event so a live smoke or benchmark
+# can prove, per session and per runtime, that every reminder stayed under the
+# host ceiling. Cheap append; failure is ignored.
+{ STATS_DIR="$HQ_ROOT/workspace/orchestrator/policy-emit-stats"; mkdir -p "$STATS_DIR" 2>/dev/null \
+  && printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$EVENT" "$OUT_BYTES" "$MATCH_COUNT" >> "$STATS_DIR/${SESSION_ID:-unknown}.txt"; } 2>/dev/null || true
+printf '%s\n' "$OUT"
 
 exit 0

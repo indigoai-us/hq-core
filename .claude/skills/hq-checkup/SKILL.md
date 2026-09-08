@@ -33,6 +33,10 @@ No need to ask first — these are safe and reversible:
 - The HQ app is closed → opens it
 - Work hasn't backed up in over a week → backs it up, one workspace at a time
 - HQ's safety checks are off → turns them back on (it makes a backup first)
+- Rules that never fire, went quiet, or point at things that no longer exist →
+  retires them, with the reason written next to each one in
+  `workspace/reports/policy-retirement-<date>.md` (reversible with
+  `core/scripts/policy-retire.sh <slug> --restore`)
 
 After each fix it **re-checks**, so it only ever claims something is fixed when
 it actually is. If a fix didn't take, it says so instead of pretending.

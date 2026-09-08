@@ -6,9 +6,18 @@
 # Always assert p95(user+sys CPU ms) < 20 (bash TIMEFORMAT='%3U %3S'; immune
 # to runnable-queue wall inflation under load). Always print wall p50/p95 and
 # adj wall (wall - empty `bash --noprofile --norc -c true` p50). Assert adj
-# wall p95 < 20 only when 1-min load avg < CPU count (Linux /proc/loadavg +
-# nproc; macOS sysctl vm.loadavg + hw.ncpu); else print
-# "timing: wall assertion skipped (load X on N cpus)".
+# wall p95 < 20 only when the host is genuinely quiet: not a CI runner
+# (GITHUB_ACTIONS/CI unset), 1-min load avg < 0.5 x CPU count (Linux
+# /proc/loadavg + nproc; macOS sysctl vm.loadavg + hw.ncpu), AND the bash-true
+# baseline p50 itself is <= 10ms (macOS spawns cost ~8ms; linux ~1ms); else
+# print "timing: wall assertion skipped (...)" and keep wall informational.
+# Why: on GitHub's shared 2-CPU runners the wall assertion flaked on
+# 2026-09-07/08 (PRs #698 and #701: "session_end adj_p95=229ms >= 20 (wall
+# quiet load=0.72/2)", "tool_writes adj_p95=230ms") while cpu_p95 stayed
+# under 20 and the identical job passed on re-run and on main. A load average
+# under the CPU count does not mean an uncontended hypervisor slice, so wall
+# p95 is never asserted on CI; cpu_p95 (user+sys, immune to runnable-queue
+# inflation) remains the always-on contract.
 # Recorded on this linux host (feature/work-mesh-live, quiet, load 3.79/4):
 #   bash-true baseline overhead p50 = 1ms (subtracted from wall only)
 #   turn_end cpu_p95=7 wall_p95=8 adj_p95=7 | turn_start cpu_p95=7 wall_p95=7 adj_p95=6
@@ -441,16 +450,30 @@ _wm_load_and_ncpu() {
 }
 
 _wm_load_and_ncpu
-WALL_ASSERT=0
-if awk -v l="$_WM_LOAD" -v n="$_WM_NCPU" 'BEGIN{exit !(l + 0 < n + 0)}'; then
-  WALL_ASSERT=1
-  echo "timing: wall assertion enabled (load ${_WM_LOAD} on ${_WM_NCPU} cpus)"
-else
-  echo "timing: wall assertion skipped (load ${_WM_LOAD} on ${_WM_NCPU} cpus)"
-fi
-
 BASELINE_MS="$(bash_true_overhead_ms)"
 echo "timing bash-true baseline_overhead_p50=${BASELINE_MS}ms (subtracted from wall samples)"
+
+# Wall p95 is asserted only off CI, under half-loaded CPUs, with a sane
+# baseline (see header: PRs #698/#701 flaked at load 0.72/2 on a GitHub
+# runner). HQ_WORK_MESH_FORCE_WALL_ASSERT=1 re-enables it anywhere.
+WALL_ASSERT=0
+WALL_SKIP_REASON=""
+if [ "${HQ_WORK_MESH_FORCE_WALL_ASSERT:-0}" = "1" ]; then
+  WALL_ASSERT=1
+elif [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${CI:-}" ]; then
+  WALL_SKIP_REASON="CI runner; wall p95 informational only"
+elif ! awk -v l="$_WM_LOAD" -v n="$_WM_NCPU" 'BEGIN{exit !(l + 0 < 0.5 * (n + 0))}'; then
+  WALL_SKIP_REASON="load ${_WM_LOAD} >= 0.5 x ${_WM_NCPU} cpus"
+elif [ "${BASELINE_MS:-0}" -gt 10 ]; then
+  WALL_SKIP_REASON="bash-true baseline p50 ${BASELINE_MS}ms > 10ms"
+else
+  WALL_ASSERT=1
+fi
+if [ "$WALL_ASSERT" -eq 1 ]; then
+  echo "timing: wall assertion enabled (load ${_WM_LOAD} on ${_WM_NCPU} cpus, baseline ${BASELINE_MS}ms)"
+else
+  echo "timing: wall assertion skipped (${WALL_SKIP_REASON}; load ${_WM_LOAD} on ${_WM_NCPU} cpus)"
+fi
 
 measure_p95() {
   local hook="$1" payload="$2" label="$3"

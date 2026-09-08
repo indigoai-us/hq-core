@@ -321,3 +321,28 @@ rc="$(run_hook "$payload")"
 [ "$rc" = "0" ] || fail "a quoted literal joining to an in-tenant path must stay allowed, got $rc"
 
 echo "PASS: mandatory-scope-authorizer.test.sh"
+
+echo "[24] bound indigo blocks cross-company Write / Edit / MultiEdit / NotebookEdit"
+install_fixture "indigo"
+for tool in Write Edit MultiEdit; do
+  payload='{"tool_name":"'"$tool"'","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/otherco/settings/foo.yaml","content":"x","old_string":"a","new_string":"b","edits":[]}}'
+  rc="$(run_hook "$payload")"
+  [ "$rc" = "2" ] || fail "expected exit 2 for cross-company $tool, got $rc"
+  grep -q "Cross-company scope violation" "$TMP/err.txt" || fail "missing block message for $tool"
+done
+payload='{"tool_name":"NotebookEdit","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"notebook_path":"'"$TMP"'/companies/otherco/settings/n.ipynb","new_source":"x"}}'
+rc="$(run_hook "$payload")"
+[ "$rc" = "2" ] || fail "expected exit 2 for cross-company NotebookEdit, got $rc"
+
+echo "[25] bound indigo allows same-company, core, personal writes"
+for rel in "companies/indigo/settings/foo.yaml" "core/docs/readme.md" "personal/note.md"; do
+  payload='{"tool_name":"Write","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/'"$rel"'","content":"x"}}'
+  rc="$(run_hook "$payload")"
+  [ "$rc" = "0" ] || fail "expected exit 0 for Write $rel, got $rc"
+done
+
+echo "[26] unbound session blocks Write under companies/*"
+install_fixture ""
+payload='{"tool_name":"Write","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml","content":"x"}}'
+rc="$(run_hook "$payload")"
+[ "$rc" = "2" ] || fail "expected exit 2 for unbound Write, got $rc"

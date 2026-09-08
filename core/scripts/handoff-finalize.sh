@@ -274,6 +274,19 @@ new_tmp STAGED_PATHS_FILE
 printf '%s\n' "${SAFE_STAGE_PATHS[@]:-}" | jq -R -s 'split("\n") | map(select(length > 0))' > "$STAGED_PATHS_FILE"
 
 mkdir -p workspace/threads
+# Every next step carries an id and a closure status (2026-09-07). Handoffs
+# used to record steps with no way to close one; an audit found a task copied
+# forward through three consecutive handoffs and never started. Ids are
+# `<thread_id>#<n>`; status starts "open" and is closed by
+# core/scripts/handoff-open-steps.sh close. Strings and {step:...} objects are
+# both accepted; already-normalized objects keep their fields.
+NEXT_STEPS_NORMALIZED_JSON="$(jq -c --arg tid "$THREAD_ID" '
+  to_entries | map(.key as $k |
+    (if (.value|type) == "string" then {step: .value} else .value end)
+    | .id = (.id // ($tid + "#" + (($k + 1)|tostring)))
+    | .status = (.status // "open")
+  ) | map(del(.key))' <<<"$NEXT_STEPS_JSON" 2>/dev/null || printf '%s' "$NEXT_STEPS_JSON")"
+
 jq -n \
   --arg thread_id "$THREAD_ID" \
   --arg ts "$TS" \
@@ -285,7 +298,7 @@ jq -n \
   --argjson dirty "$DIRTY" \
   --arg summary "$SUMMARY" \
   --arg title "$TITLE" \
-  --argjson next_steps "$NEXT_STEPS_JSON" \
+  --argjson next_steps "$NEXT_STEPS_NORMALIZED_JSON" \
   --slurpfile files_touched "$FILES_TOUCHED_FILE" \
   --argjson learnings "$LEARNINGS_JSON" \
   --argjson tags "$TAGS_JSON" \

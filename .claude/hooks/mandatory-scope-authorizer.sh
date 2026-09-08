@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Mandatory company-scope authorizer — blocks cross-company filesystem reads.
-# PreToolUse for Read, Grep, Glob, Bash.
+# Mandatory company-scope authorizer — blocks cross-company filesystem access.
+# PreToolUse for Read, Grep, Glob, Bash, and (since 2026-09-07) Write, Edit,
+# MultiEdit, NotebookEdit. Reads were guarded from the start; file mutations
+# through the editing tools were not, so a bound session could write into
+# another tenant's folder with the Write tool while the same path was blocked
+# in Bash. The write side now uses the same session-identity and path rules.
 #
 # Resolves the active company from workspace/sessions (scope-capability.json,
 # then meta.yaml company_slug). Unbound sessions may not read companies/{co}/
@@ -51,7 +55,7 @@ scope_mask_literal_expansions() {
 }
 
 case "$TOOL" in
-  Read|Grep|Glob|Bash) ;;
+  Read|Grep|Glob|Bash|Write|Edit|MultiEdit|NotebookEdit) ;;
   *) exit 0 ;;
 esac
 
@@ -300,8 +304,11 @@ scope_check_raw() {
 }
 
 case "$TOOL" in
-  Read)
+  Read|Write|Edit|MultiEdit)
     scope_check_raw "$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')"
+    ;;
+  NotebookEdit)
+    scope_check_raw "$(printf '%s' "$INPUT" | jq -r '.tool_input.notebook_path // empty')"
     ;;
   Grep|Glob)
     scope_check_raw "$(printf '%s' "$INPUT" | jq -r '.tool_input.path // empty')"

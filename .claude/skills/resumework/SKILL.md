@@ -85,7 +85,7 @@ Keep the first command's output as `session_id` (use `unknown-session` if it is 
 Read the resolved thread file (it's small — one Read). Extract:
 
 - `conversation_summary` — what the prior session accomplished
-- `next_steps[]` — the ordered todo handed off
+- `next_steps[]` — the ordered todo handed off. Each step carries `id` and `status`; show only `status: open` ones, and run `bash core/scripts/handoff-open-steps.sh list --limit 10` so steps left open by OTHER recent handoffs surface too instead of being silently re-copied. Close a step with `bash core/scripts/handoff-open-steps.sh close <id>` when it is actually done.
 - `git.branch`, `git.current_commit`, `git.dirty`
 - `files_touched[]` — the changeset boundary
 - `learnings[]` — operational notes (do **not** re-`/learn` them; they're already applied)

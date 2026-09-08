@@ -309,6 +309,7 @@ for spec in \
   "Bash|Bash|run_terminal_command" \
   "Edit|Edit|search_replace" \
   "Write|Write|write" \
+  "Read|Read|read_file" \
 ; do
   canon="${spec%%|*}"; rest="${spec#*|}"; ctool="${rest%%|*}"; gtool="${rest#*|}"
   if [ "$canon" = "Bash" ]; then

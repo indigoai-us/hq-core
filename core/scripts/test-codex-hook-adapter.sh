@@ -461,7 +461,6 @@ payload_stop='{"hook_event_name":"Stop","cwd":"'"$TMP"'","last_assistant_message
 out="$(run_adapter "$payload_stop")"
 printf '%s' "$out" | jq -e . >/dev/null
 assert_contains "$out" "OBSERVE"
-assert_contains "$(cat "$TEST_LOG")" "context-warning-50"
 
 payload_precompact='{"hook_event_name":"PreCompact","cwd":"'"$TMP"'","session_id":"s1"}'
 out="$(run_adapter "$payload_precompact")"

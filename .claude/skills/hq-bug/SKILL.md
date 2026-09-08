@@ -6,7 +6,7 @@ allowed-tools: AskUserQuestion, Write, Bash(mktemp:*), Bash(bash:*), Bash(rm:*),
 
 # HQ Feedback
 
-Submit a bug report or feature request. Assembles a structured body and submits via the `hq feedback` CLI.
+Submit a bug report or feature request. Assemble a structured body and submit via the `hq feedback` CLI. Slack shows the title as a short channel summary, with the full report and diagnostics in its thread.
 
 **Input:** `$ARGUMENTS` — expected format: `bug|feature [title text]`  
 If the type is omitted, default to `bug`. If the title is absent, use **AskUserQuestion** to ask before proceeding.
@@ -18,8 +18,8 @@ If the type is omitted, default to `bug`. If the title is absent, use **AskUserQ
 From `$ARGUMENTS`, extract:
 
 - **User Message** (for Step 6 body template) — the full `$ARGUMENTS` text verbatim. This is the raw user input and is captured independently of TITLE. It becomes the `## User Message` section of the body in Step 6.
-- `TYPE` — `bug` or `feature`. **If the first whitespace-delimited token of `$ARGUMENTS` is neither `bug` nor `feature`, treat the ENTIRE `$ARGUMENTS` string as TITLE and default TYPE to `bug` — do not consume the first token.** If `$ARGUMENTS` is empty, default TYPE to `bug`.
-- `TITLE` — the one-line title passed via `--title`. Strip the leading TYPE token from `$ARGUMENTS` if present to get TITLE; if the entire string was treated as TITLE (no type token), TITLE equals that full string. If TITLE is missing or empty after parsing, use the **AskUserQuestion** tool: _"What is the title for this feedback?"_
+- `TYPE` — `bug` or `feature`. **If the first whitespace-delimited token of `$ARGUMENTS` is neither `bug` nor `feature`, use the ENTIRE `$ARGUMENTS` string as the report description and default TYPE to `bug` — do not consume the first token.** If `$ARGUMENTS` is empty, default TYPE to `bug`.
+- `TITLE` — a concise one-line summary passed via `--title`, ideally under 120 characters. Describe the observed failure or requested behavior using the full report description (after removing an explicit TYPE token). Preserve a short, clear supplied title; summarize long input without inventing a cause or losing the affected surface. The full input stays verbatim in User Message. If the report description is missing or empty, use the **AskUserQuestion** tool: _"What is the title for this feedback?"_
 
 ### 2. Allocate body file
 
@@ -108,7 +108,7 @@ Print the `Submitted: feedback_<uuid>` line returned by the CLI. If the command 
 
 - **Literal substitution only in Step 8.** Never rely on shell variables from a prior Bash tool call — they do not survive across invocations. Paste the captured values directly into the command string.
 - **Always pass `--title` explicitly.** Do not pass the title as a positional to the `bug`/`feature` subcommand — the subcommand's positional parser would either reject it or swallow it depending on Commander's mode. Always use `--title "<title>"`.
-- **Title-only `$ARGUMENTS` → treat as TITLE.** If `$ARGUMENTS` does not begin with `bug` or `feature`, the whole string is the title; do not consume any token as TYPE.
+- **Input without a type → use the whole description.** If `$ARGUMENTS` does not begin with `bug` or `feature`, do not consume any token as TYPE. Derive a concise TITLE and preserve the whole input in User Message.
 - Run the submit chain directly (no `bash -c '...'` wrapper) — single-quoting user-supplied values like TITLE inside `bash -c '...'` breaks on apostrophes. The `hq` call is covered by `Bash(hq:*)`; `rm -f` by `Bash(rm:*)`. No exit-trap dependency.
 - Use **AskUserQuestion** for any missing title — never inline questions in chat text.
 - Company slug comes from `core/scripts/hq-session.sh get company_slug` only; omit `--company` when the result is empty.

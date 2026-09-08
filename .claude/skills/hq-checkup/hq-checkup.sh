@@ -314,6 +314,17 @@ if [ "$N_FIXED" -gt 0 ]; then
   printf '\n'
 fi
 
+# Policies that aged out or point at things that no longer exist are retired
+# automatically (human on the loop): every one is listed with its reason in
+# workspace/reports/policy-retirement-<date>.md and can be restored.
+if [ "$FIX" = 1 ] && [ -x "$HQ_ROOT/core/scripts/policy-retire.sh" ]; then
+  _ret="$(bash "$HQ_ROOT/core/scripts/policy-retire.sh" --auto 2>/dev/null | tail -1)"
+  case "$_ret" in
+    *" retired, "*" report "*) LINES="${LINES}INFO	Retired policies that aged out or point at things that no longer exist (${_ret#policy-retire --auto: })	
+" ;;
+  esac
+fi
+
 if printf '%s' "$LINES" | grep -q '^INFO'; then
   printf '  Worth knowing:\n'
   printf '%s' "$LINES" | while IFS=$'\t' read -r s head act; do

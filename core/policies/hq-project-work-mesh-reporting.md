@@ -27,7 +27,16 @@ helper. Do not invent companies or projects from prompt text.
   is required.
 - Channel cards and presence are owned by the daemon + server.
 
-### Manual verbs only
+### Register an approved project
+
+Presence hooks do not create project genesis or verify channel creation. After
+planning creates the company Board view, follow the explicit authenticated
+registration operation in `core/skills/work-mesh/SKILL.md`, preserving the exact
+canonical project ID and resolved tenant. Report success only with both returned
+`threadId` and `channelId` and verified channel access. A failed registration is
+incomplete even when automatic presence or a Board note succeeds.
+
+### Manual activity verbs only
 
 When the agent must record a discrete Board/task signal, use the CLI:
 
@@ -47,6 +56,10 @@ If additionalContext instructs a Work Mesh clarification:
   then `hq mesh context organize --session <sid> --decision <id> --option <id>`.
 - Codex: ask once via `request_user_input` with the same options, then organize.
 - Grok: run `hq mesh context organize` (passive hooks cannot ask).
+
+For create options, append `--create-project '<approved project title>'` or
+`--create-task '<approved task title>'` to organize. Reuse an approved title, or
+obtain it before submission. Existing project/task selections need neither flag.
 
 Never create a project from a hook or from a guessed prompt token. Prefer
 leaving the session `unresolved` over inventing a tenant or project.

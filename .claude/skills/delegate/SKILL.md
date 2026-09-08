@@ -1,7 +1,7 @@
 ---
 name: delegate
 description: Hand a project to a named person or fleet agent in one command — freezes state, grants vault access, hands over the branch and secrets, transfers ownership, and sends a self-sufficient pickup DM. The recipient pastes one prompt and has everything; no /hq-sync run, no follow-up questions.
-allowed-tools: Read, AskUserQuestion, Skill, Bash(hq:*), Bash(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/hq-delegate-resolve.sh:*), Bash(bash core/scripts/hq-delegate-bundle.sh:*), Bash(bash core/scripts/hq-delegate-grant.sh:*), Bash(bash core/scripts/hq-delegate-repo.sh:*), Bash(bash core/scripts/hq-delegate-secrets.sh:*), Bash(bash core/scripts/hq-delegate-transfer.sh:*), Bash(bash core/scripts/hq-delegate-verify.sh:*), Bash(bash core/scripts/hq-delegate-send.sh:*), Bash(rm:*)
+allowed-tools: Read, AskUserQuestion, Skill, Bash(hq:*), Bash(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/hq-delegate-resolve.sh:*), Bash(bash core/scripts/hq-delegate-bundle.sh:*), Bash(bash core/scripts/hq-delegate-grant.sh:*), Bash(bash core/scripts/hq-delegate-repo.sh:*), Bash(bash core/scripts/hq-delegate-secrets.sh:*), Bash(bash core/scripts/hq-delegate-transfer.sh:*), Bash(bash core/scripts/hq-delegate-verify.sh:*), Bash(bash core/scripts/hq-delegate-send.sh:*), Bash(bash core/scripts/hq-delegate-pickup.sh:*), Bash(rm:*)
 ---
 
 # /delegate — one-command project handoff
@@ -154,7 +154,24 @@ bash core/scripts/hq-delegate-send.sh --manifest <manifest> --send --headline "<
 One DM, prompt and brief attached from files. The helper refuses to send
 unless the probe passed.
 
-### 10. Report
+### 10. Close the loop: receipt or FAILED
+
+"Sent" is a send receipt, not a delivery receipt. The delegation is not done
+until the recipient demonstrably has it. Record the receipt the moment there is
+evidence, and let silence turn into a FAILED state instead of an open question:
+
+```bash
+bash core/scripts/hq-delegate-pickup.sh --manifest <manifest> --ack "<their reply, verbatim>"   # they acknowledged
+bash core/scripts/hq-delegate-pickup.sh --manifest <manifest> --check                            # probe: recipient commit on the branch? (exit 0 picked-up, 6 waiting, 5 FAILED past the window)
+bash core/scripts/hq-delegate-pickup.sh --manifest <manifest> --status                           # one-line state
+```
+
+Default window is 72h (`HQ_DELEGATE_PICKUP_WINDOW_HOURS`). A FAILED result names
+why (no acknowledgement, no commit by the recipient) so the delegator can
+re-send with a direct ask or hand it to someone else. `/startwork` should run
+`--check` on any manifest still at `sent`.
+
+### 11. Report
 
 One plain sentence naming the recipient and what they now have — no step log,
 no jargon. Example:

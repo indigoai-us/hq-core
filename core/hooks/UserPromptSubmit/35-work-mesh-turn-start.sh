@@ -99,6 +99,8 @@ if [ "$SKIP_ASK" -eq 0 ]; then
   [ "$#" -lt 3 ] && SKIP_ASK=1
 fi
 
+# Create options require a title in addition to the stable option id.
+CREATE_GUIDANCE="For a create-project option, append --create-project '<approved project title>' to organize before &&; for a create-task option, append --create-task '<approved task title>'. Use the title already approved in this session; if absent, obtain it before submitting. Existing-project/task choices need neither flag. If a canonical project already exists, register/reuse its exact id instead of creating another project."
 CTX=""
 WC_HOME="${WORK_MESH_HOME:-$HOME}"
 STATE="$WC_HOME/.hq/work-context/sessions/$SID.json"
@@ -118,14 +120,14 @@ if [ "$SKIP_ASK" -eq 0 ] && [ -f "$STATE" ] && [ ! -f "$SURFACED" ] && command -
             >"$PENDING" 2>/dev/null || printf '{"decisionId":"%s"}\n' "$DECISION_ID" >"$PENDING"
           chmod 600 -- "$PENDING" 2>/dev/null || true
           : >"$SURFACED" 2>/dev/null || true
-          CTX="WORK MESH: a project/task clarification is pending (decisionId=${DECISION_ID}). Run: hq mesh context organize --session ${SID} list  then submit with hq mesh context organize --session ${SID} --decision <decisionId> --option <optionId> && bash core/scripts/work-mesh-live-rebind.sh --session ${SID} --from-state. Do not invent a project."
+          CTX="WORK MESH: a project/task clarification is pending (decisionId=${DECISION_ID}). Run: hq mesh context organize --session ${SID} list  then submit with hq mesh context organize --session ${SID} --decision <decisionId> --option <optionId> && bash core/scripts/work-mesh-live-rebind.sh --session ${SID} --from-state. Do not invent a project. ${CREATE_GUIDANCE}"
           ;;
         codex)
-          CTX="WORK MESH CLARIFICATION (once): call request_user_input with exactly these stable options from decision ${DECISION_ID}: ${OPTIONS_JSON}. After the user picks, run: hq mesh context organize --session ${SID} --decision ${DECISION_ID} --option <optionId> && bash core/scripts/work-mesh-live-rebind.sh --session ${SID} --from-state. Do not create a project yourself."
+          CTX="WORK MESH CLARIFICATION (once): call request_user_input with exactly these stable options from decision ${DECISION_ID}: ${OPTIONS_JSON}. After the user picks, run: hq mesh context organize --session ${SID} --decision ${DECISION_ID} --option <optionId> && bash core/scripts/work-mesh-live-rebind.sh --session ${SID} --from-state. Do not create a project yourself. ${CREATE_GUIDANCE}"
           : >"$SURFACED" 2>/dev/null || true
           ;;
         *)
-          CTX="WORK MESH CLARIFICATION (once): use AskUserQuestion with exactly these stable options from decision ${DECISION_ID}: ${OPTIONS_JSON}. After the user picks, run: hq mesh context organize --session ${SID} --decision ${DECISION_ID} --option <optionId> && bash core/scripts/work-mesh-live-rebind.sh --session ${SID} --from-state. Do not create a project yourself."
+          CTX="WORK MESH CLARIFICATION (once): use AskUserQuestion with exactly these stable options from decision ${DECISION_ID}: ${OPTIONS_JSON}. After the user picks, run: hq mesh context organize --session ${SID} --decision ${DECISION_ID} --option <optionId> && bash core/scripts/work-mesh-live-rebind.sh --session ${SID} --from-state. Do not create a project yourself. ${CREATE_GUIDANCE}"
           : >"$SURFACED" 2>/dev/null || true
           ;;
       esac
