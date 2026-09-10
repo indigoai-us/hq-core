@@ -707,6 +707,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Session bootstrap scope capability and entrypoint regressions
+        run: bash core/scripts/tests/hq-agent-session.test.sh
       - name: Assembly timing budget (US-411)
         run: bash core/scripts/tests/hq-agent-session-timing.test.sh
       - name: Golden-turn parity harness (US-412)

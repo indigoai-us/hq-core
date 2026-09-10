@@ -142,6 +142,7 @@ Not slash commands — direct CLI surface for HQ vault access control. Skill: `.
 | `hq files share <prefix> --with <email\|grp_*\|@all> --permission <read\|write>` | Direct grant |
 | `hq files unshare <prefix> --with <principal>` | Revoke (idempotent) |
 | `hq files acl <prefix>` | Inspect ACL + your effective permission |
+| `hq access <path-or-query>` | Cannot find or open a file? Reports never-existed / not-synced / no-access (exit 2/0/3), fetches + pins when you have access, otherwise asks the grantor via DM after one confirmation. Skill: `/hq-access`. hq-cli >= 5.109.0 |
 
 Share-session URLs are encrypted single-use 15-minute capabilities — never persist them in commits, threads, or logs. See `core/policies/hq-share-session-urls-are-capabilities.md`.
 

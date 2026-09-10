@@ -37,6 +37,7 @@ The browse/retrieve commands let you reach a file you have **access** to without
 
 - `browse` / `search` / `cat` read straight from the cloud — nothing lands on disk (except `cat --out`, which you choose).
 - `get` materializes exactly the path you ask for, on demand.
+- `hq access <path-or-query>` (hq-cli >= 5.109.0) wraps all of this for the "I can't find or open it" case: it reports never-existed / not-synced / no-access, runs `get` (and pins) when you have access, and asks the grantor otherwise. Agent sessions reach it as `/hq-access`.
 
 Owners and admins keep full role-bypass *access* regardless of `syncMode` — narrowing `syncMode` only shrinks what a sync downloads, never what you can browse or get. The engine's scope filter is a footprint/UX optimization, **not** a security boundary: a member who lacks access is still blocked by STS no matter the local filter.
 
@@ -312,11 +313,13 @@ hq files share services/logs/ --with grp_backend-team --permission read
 | `403 Forbidden: only owner or admin role may revoke 'admin' entries` | Member with write tried to revoke an entry whose permission is `admin` — that ceiling is reserved for owner/admin role |
 | `404` | For `acl`: no ACL record exists yet for this prefix. For `unshare`: grant already absent — the CLI converts this to a no-op and exits 0. `share` no longer surfaces 404 (the row is auto-created on first grant). |
 | `409` | Concurrent modification — retry |
+| any `403` on a read (`browse`, `cat`, `get`, `search`) | You lack a grant on that exact prefix. Every 403 ends with `Run: hq access <path>`; run it (or `/hq-access`) to confirm the file exists, and to ask the grantor for read access with one confirmation. |
 | `5xx` | Server error |
 
 When `share` returns `400 PolicyNestingUnrepresentable`, the ACL write is rejected because granting the principal both a broad allow AND a nested allow (with a carve-out Deny in between) would produce an IAM policy exceeding the representability limit. Resolution: grant the principal at the intermediate prefix first (`hq files share <carve-out-prefix> --with <principal> --permission read`), then retry the nested grant.
 
 ## See also
 
+- `/hq-access` — a teammate cannot find or open a path: diagnose (never existed / not synced / no access), self-heal, and ask the owner for a grant
 - `/hq-share` — mint a single-use share link
 - `/hq-secrets` — same vault, for secrets

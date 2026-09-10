@@ -40,6 +40,23 @@ chmod +x "$FIXTURE/core/scripts/hq-agent-session.sh" \
   "$FIXTURE/.claude/hooks/master-hook.sh"
 chmod +x "$FIXTURE/core/scripts/lib/"*.sh
 
+# Resident boxes require the capability during SessionStart, before any provider
+# call. Metadata alone is insufficient, including for an unverified Slack sender.
+mkdir -p "$FIXTURE/core/hooks/SessionStart"
+cat > "$FIXTURE/core/hooks/SessionStart/00-require-scope.sh" <<'HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+input="$(cat)"
+sid="$(printf '%s' "$input" | jq -r .session_id)"
+root="$(printf '%s' "$input" | jq -r .cwd)"
+cap="$root/workspace/sessions/$sid/scope-capability.json"
+if ! jq -e --arg sid "$sid" --arg co "${TEST_EXPECTED_COMPANY:-indigo}" \
+  '.session_id == $sid and .company_slug == $co' "$cap" >/dev/null 2>&1; then
+  printf '{"decision":"block","reason":"session scope capability mismatch"}\n'
+  exit 2
+fi
+HOOK
+
 export HOME="$TMP/home"
 mkdir -p "$HOME"
 export HQ_AGENT_WORKDIR="$FIXTURE"
@@ -85,6 +102,27 @@ RUNDIR="$(echo "$OUT" | jq -r .runDir)"
 MODE="$(stat -c %a "$RUNDIR" 2>/dev/null || stat -f %Lp "$RUNDIR" 2>/dev/null)"
 [ "$MODE" = "700" ] || fail "runDir mode not 700: $MODE"
 pass "valid request"
+
+RUN_ID="$(basename "$RUNDIR")"
+jq -e --arg sid "$RUN_ID" \
+  '.session_id == $sid and .company_slug == "indigo" and (.minted_at | length > 0)' \
+  "$FIXTURE/workspace/sessions/$RUN_ID/scope-capability.json" >/dev/null \
+  || fail "session bootstrap did not mint its matching scope capability"
+pass "scope capability exists before the resident SessionStart gate"
+
+OUT="$(valid_req | jq '.sender.verified = false' \
+  | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/unverified.err")" \
+  || fail "unverified sender could not bootstrap the resolved company"
+echo "$OUT" | jq -e '.disposition == "reply"' >/dev/null \
+  || fail "unverified sender was blocked by missing session scope: $OUT"
+pass "sender verification does not change the resolved session scope"
+
+OUT="$(valid_req | TEST_EXPECTED_COMPANY=other \
+  bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/mismatch.err")" \
+  || fail "scope mismatch did not produce the hook response envelope"
+echo "$OUT" | jq -e '.disposition == "no_reply" and (.blockedBy | endswith("00-require-scope.sh"))' >/dev/null \
+  || fail "bootstrap bypassed a mismatched-company hook: $OUT"
+pass "mismatched-company hook remains enforced"
 
 # ── 2. missing companySlug ──────────────────────────────────────────────────
 BAD="$(valid_req | jq 'del(.companySlug)')"
@@ -153,5 +191,23 @@ OUT="$(valid_req | jq '.provider = "grok"' \
 grep -q 'command not found' "$TMP/err6" && fail "provider CLI not resolved: $(cat "$TMP/err6")"
 assert_envelope "$OUT"
 pass "provider CLI resolves from per-user bin dir"
+
+# Mint failure must stop startup before publishing .current or calling a
+# provider. It must not recreate the silent-success path through a hook.
+PREVIOUS_CURRENT="$(cat "$FIXTURE/workspace/sessions/.current")"
+printf 'session_scope_mint() { return 1; }\n' \
+  > "$FIXTURE/core/scripts/lib/session-scope-capability.sh"
+rm -f "$SENTINEL"
+RC=0
+OUT="$(valid_req | jq '.provider = "grok"' \
+  | HQ_AGENT_SESSION_SKIP_PROVIDER=0 bash "$FIXTURE/core/scripts/hq-agent-session.sh" \
+    2>"$TMP/mint-failure.err")" || RC=$?
+[ "$RC" -ne 0 ] || fail "failed capability mint was accepted"
+echo "$OUT" | jq -e '.disposition == "error"' >/dev/null \
+  || fail "failed capability mint did not return an error: $OUT"
+[ ! -f "$SENTINEL" ] || fail "provider ran after failed capability mint"
+[ "$(cat "$FIXTURE/workspace/sessions/.current")" = "$PREVIOUS_CURRENT" ] \
+  || fail "failed bootstrap published an incomplete current session"
+pass "failed capability mint stops before hooks and provider"
 
 echo "PASS: hq-agent-session.test.sh"
