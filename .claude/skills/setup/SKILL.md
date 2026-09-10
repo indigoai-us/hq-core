@@ -11,7 +11,66 @@ who you are, and a private welcome page that hands you your first moves. One
 question at a time; nothing here is mandatory — skip anything and setup still
 completes.
 
+## Guided mode (HQ Desktop): `--guided`
+
+HQ Desktop runs this skill inside its #welcome channel as a native, stepped
+card — not as a chat. It starts the session with `/setup --guided`. When the
+arguments contain `--guided`:
+
+- **Emit a step marker at every phase boundary**, on its own line, exactly:
+  `[hq-setup] step=<id> status=<running|done>`. The ids, in order, and the
+  phases they cover:
+
+  | step      | phases                                   |
+  |-----------|------------------------------------------|
+  | `tools`   | 0a, 0b                                   |
+  | `cloud`   | 0c                                       |
+  | `import`  | 0d (adopt prior AI footprint)            |
+  | `you`     | 1, 1.5, 2, 3, 4, 4.5, 5a, 5b             |
+  | `connect` | 5b.5 (secrets), 5b.6 (apps)              |
+  | `moves`   | 5c, 5d, 5e, 5f, 6                        |
+
+  Emit `status=running` when a phase group starts and `status=done` when it
+  ends. Never go backwards; skipping a whole group is fine — mark it `done`.
+- **Emit a card marker right before the question it belongs to**, on its own
+  line: `[hq-setup] card=<one-line JSON>`. The desktop draws the card in place
+  of the plain option list and answers the *same* AskUserQuestion. Three kinds:
+  - `{"kind":"found","title":"…","items":[{"label":"…","count":12,"detail":"…"}]}`
+    — "Here's what I found", paired with the Import question (0d).
+  - `{"kind":"secret","name":"DATABASE_URL","label":"…","hint":"…","scope":"personal|company","company":"<slug>"}`
+    — one credential; the desktop stores it straight into the vault and
+    answers `Done`. Paired with a `header: "Secret"` question with options
+    `Done` / `Skip` (5b.5). **In guided mode do not mint a `generate-link`
+    URL** — the card is the intake.
+  - `{"kind":"integrations","items":[{"id":"<entryId>","name":"…","description":"…","auth":"oauth|none","status":"connected|available"}]}`
+    — app tiles, paired with a multi-select `header: "Integrations"` question
+    whose option labels are the app names plus `Skip for now` (5b.6).
+- **Two ways to ask, and only two.** A choice (2–4 options) is one
+  AskUserQuestion call. A fill-in-the-blank (name, what you do, goals,
+  challenges, systems of record, role, typical day, a URL) is asked in plain
+  words as the **last line of the message, in bold, ending with a question
+  mark** — one question per message, then stop and wait; the person types
+  the answer in the chat. Never bundle several questions into one message,
+  never number them, and never ask a fill-in-the-blank through AskUserQuestion
+  (the runtime needs real options; a fake "Skip" option is not a question).
+- **Speak only to the person, never about the mechanics.** The desktop shows
+  your words as a "Setup Agent" chat. Do not mention pickers, tools,
+  AskUserQuestion, markers, phases, modes, "the desktop", or why you are
+  asking a question one way rather than another ("that one's a
+  fill-in-the-blank, so I'll ask it straight" is exactly what not to say).
+  Say what you are doing for them and ask the question — nothing else.
+- **Markers are plain lines, never in backticks or code fences**, one per
+  line, at the start of the message. A marker line is never the whole message
+  — put a one-sentence plain status beside it so the card has something to say.
+- One question at a time, plain words. The finish: emit
+  `[hq-setup] step=moves status=done` on its own line, then the closing
+  summary in ordinary Markdown (headings, bullets), not a code block.
+- Without `--guided` (a terminal), emit no markers and no cards, and use the
+  terminal flows described in each phase (e.g. the secret link in 5b.5).
+
 ## Phase 0a: Install Manifest Recovery
+
+*(guided: `[hq-setup] step=tools status=running`)*
 
 Before anything else, check if the HQ Installer left a manifest. HQ Desktop
 writes it to the USER'S home (`~/.hq/install-manifest.json`); older installers
@@ -184,7 +243,11 @@ policy (e.g. `core/policies/hq-vercel.md`), not in setup.
 
 Post-install: run `qmd index .` if qmd was just installed or no index exists.
 
+*(guided: `[hq-setup] step=tools status=done` once 0a/0b are through)*
+
 ## Phase 0c: HQ Cloud — login, claim invites, ensure sync
+
+*(guided: `[hq-setup] step=cloud status=running`)*
 
 Connect this HQ to HQ Cloud so the user lands logged in, with any cloud-company
 invites claimed and sync working. Do this **before** identity so synced company
@@ -273,9 +336,133 @@ Then report:
 
 Keep Phase 0c to a few plain lines; the heavy lifting is the reused skills.
 
+*(guided: `[hq-setup] step=cloud status=done`)*
+
+## Phase 0d: Adopt prior AI footprint
+
+*(guided: `[hq-setup] step=import status=running`)*
+
+If the user already used AI tools before HQ — Claude Code, Codex, Grok, or
+claude.ai chat — they have two kinds of prior context worth adopting: artifacts
+on disk (skills, hooks, policies, plans, MCP servers, repos in `~/.claude/` and
+common code dirs) and **conversation history** (Claude Code, Codex, and Grok
+session stores, plus claude.ai chats via export). Hydrating both into HQ now
+means the rest of the wizard — Dream Big (4.5), the action interview (5) —
+reflects the companies, knowledge, policies, and projects they already have,
+instead of starting from a blank slate. This is the `/import-context` skill
+(formerly `/import-claude`), surfaced as a first-class setup step, and it runs
+**before** identity so the rest of the wizard already knows what they brought.
+One question at a time; never block setup — a clean install with no prior
+footprint flows straight past this.
+
+### 1. Detect a prior footprint (cheap, read-only)
+
+`/import-context` requires `companies/manifest.yaml` to exist (a fresh `hq init`
+ships it). If it's missing, skip this phase. Otherwise do a quick existence probe
+of the scanner's main allowlist plus the conversation stores — do **not** run
+the full scan here, just decide whether there's plausibly anything to import:
+
+```bash
+test -f companies/manifest.yaml || echo "no-manifest-skip"
+# Probe the highest-signal locations; any non-empty hit means "offer the import".
+for d in "$HOME/.claude/plans" "$HOME/.claude/commands" "$HOME/.claude/skills" \
+         "$HOME/.claude/projects" "$HOME/.claude/agents" \
+         "$HOME/.codex/sessions" "$HOME/.grok/sessions"; do
+  [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null
+done
+```
+
+- **No manifest, or every probe is empty** → print one plain line ("No prior
+  AI footprint to import — starting fresh.") and continue to Phase 1.
+- **Any probe returns a path** → there's plausibly something to adopt; offer it
+  in step 2. (The authoritative scan, with counts and redaction, happens inside
+  `/import-context` itself — keep this probe lightweight.)
+
+**Guided mode:** before offering, count what the probe hit (still read-only,
+still cheap) and emit a `found` card with only the non-zero rows, then the
+step-2 question. For example:
+
+```bash
+for pair in "Claude Code sessions:$HOME/.claude/projects:*.jsonl" \
+            "Plans:$HOME/.claude/plans:*" "Commands:$HOME/.claude/commands:*" \
+            "Skills:$HOME/.claude/skills:*" "Agents:$HOME/.claude/agents:*" \
+            "Codex sessions:$HOME/.codex/sessions:*" "Grok sessions:$HOME/.grok/sessions:*"; do
+  label=${pair%%:*}; rest=${pair#*:}; dir=${rest%%:*}; glob=${rest#*:}
+  [ -d "$dir" ] && n=$(find "$dir" -mindepth 1 -maxdepth 3 -name "$glob" 2>/dev/null | wc -l | tr -d ' ') || n=0
+  [ "$n" -gt 0 ] && echo "$label=$n"
+done
+```
+
+```
+[hq-setup] card={"kind":"found","title":"Here's what I found","items":[{"label":"Claude Code sessions","count":12},{"label":"Plans","count":3}]}
+```
+
+### 2. Offer the import (AskUserQuestion)
+
+One AskUserQuestion call:
+
+- `question`: "Looks like you've used Claude Code, Codex, or Grok before. Want
+  me to import your existing skills, plans, and repos — and mine your past
+  conversations for proposed companies, knowledge, and projects — now? You
+  approve every item before it's created."
+- `header`: "Import"
+- `multiSelect`: false
+- `options`:
+  - `Import now` — "Run /import-context inline — discovers your artifacts,
+    mines your conversation history across tools, and proposes companies,
+    knowledge, policies, and projects (you confirm each step)"
+  - `Preview first` — "Scan and show me what's there, import nothing yet
+    (/import-context --dry-run)"
+  - `Skip` — "Don't import; I'll run /import-context later if I want"
+
+### 3. Run it
+
+- **Import now** → inline-invoke the `/import-context` skill via the Skill tool.
+  It runs its own preflight, scan, redaction, conversation mining, and
+  per-category triage — every write is gated by its own AskUserQuestion prompts,
+  so you don't re-ask here. If the user mentions claude.ai chats, pass
+  `--claude-export=<path>` once they have a data export (claude.ai → Settings →
+  Privacy → Export data). When it returns, briefly note what landed (companies
+  created, knowledge seeded, projects proposed, workers synthesized, repos
+  adopted) in one plain line, then continue to Phase 1.
+
+  **Guided mode:** show what landed as a card, not a sentence. Emit a `found`
+  card titled "What landed" with one row per outcome that is non-zero
+  (companies created, knowledge files seeded, projects proposed, workers,
+  repos adopted — `detail` names them, e.g. `"detail":"acme, northwind"`),
+  then one AskUserQuestion — `header`: "Import", `question`: "Here's what the
+  import brought in. Good to go on?", options `Looks good` / `Let me review`
+  ("Open the import report before moving on"). On `Let me review`, print the
+  report path and the per-category list, then re-ask once.
+- **Preview first** → inline-invoke `/import-context --dry-run`. It scans and
+  reports counts without importing. After it returns, ask once whether to run the
+  real import now (re-invoke `/import-context` without the flag) or defer. If they
+  defer, treat it as Skip.
+
+  **Guided mode:** the person chose Preview to *see* what is there, so the
+  scan result must be the card, not prose. Build a `found` card titled
+  "What's there" from the dry-run's counts-per-category summary — one row
+  per non-zero category in plain words (`Plans`, `MCP servers`, `Settings`,
+  `Commands`, `Skills`, `Hooks`, `Policies`, `CLAUDE.md files`, `Knowledge
+  folders`, `Repos`, `Agents`, `Conversations` with the per-tool breakdown as
+  `detail`) — emit it, then ask the run-now-or-skip question (`header`:
+  "Import", options `Import now` / `Skip for now`).
+- **Skip** → note that `/import-context` is available anytime, and add it to the
+  Phase 5 recommended-commands list so it resurfaces in their launch block.
+
+Because `/import-context` already creates companies (`/newcompany`) and workers
+(`/newworker`) inline and confirms every write, running it here is the canonical
+way to hydrate the skeleton — do not hand-roll an equivalent import. Whatever it
+brings in becomes context for Dream Big (4.5) and the action interview (5).
+
+*(guided: `[hq-setup] step=import status=done`)*
+
 ## Phase 1: Identity
 
-Ask these 5 questions. One at a time. These answers are the strategic frame for
+*(guided: `[hq-setup] step=you status=running`)*
+
+Ask these 5 questions. One at a time — one message per question, the
+question as its bold last line. These answers are the strategic frame for
 the whole wizard — they feed the knowledge files (Phase 2), the Dream Big vision
 block (Phase 4.5), and every tailored command in the action interview (Phase 5).
 So gather all five before moving on.
@@ -378,83 +565,6 @@ _Synthesized during /setup from the profiles below. Refresh anytime._
 
 Hold this understanding in working memory — Phase 2 weaves it into `profile.md`,
 `agents-profile.md`, and `voice-style.md`, and Phase 4.5 + Phase 6 draw on it.
-
-## Phase 1.6: Adopt prior AI footprint
-
-If the user already used AI tools before HQ — Claude Code, Codex, Grok, or
-claude.ai chat — they have two kinds of prior context worth adopting: artifacts
-on disk (skills, hooks, policies, plans, MCP servers, repos in `~/.claude/` and
-common code dirs) and **conversation history** (Claude Code, Codex, and Grok
-session stores, plus claude.ai chats via export). Hydrating both into HQ now
-means the rest of the wizard — Dream Big (4.5), the action interview (5) —
-reflects the companies, knowledge, policies, and projects they already have,
-instead of starting from a blank slate. This is the `/import-context` skill
-(formerly `/import-claude`), surfaced as a first-class setup step. One question
-at a time; never block setup — a clean install with no prior footprint flows
-straight past this.
-
-### 1. Detect a prior footprint (cheap, read-only)
-
-`/import-context` requires `companies/manifest.yaml` to exist (a fresh `hq init`
-ships it). If it's missing, skip this phase. Otherwise do a quick existence probe
-of the scanner's main allowlist plus the conversation stores — do **not** run
-the full scan here, just decide whether there's plausibly anything to import:
-
-```bash
-test -f companies/manifest.yaml || echo "no-manifest-skip"
-# Probe the highest-signal locations; any non-empty hit means "offer the import".
-for d in "$HOME/.claude/plans" "$HOME/.claude/commands" "$HOME/.claude/skills" \
-         "$HOME/.claude/projects" "$HOME/.claude/agents" \
-         "$HOME/.codex/sessions" "$HOME/.grok/sessions"; do
-  [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null
-done
-```
-
-- **No manifest, or every probe is empty** → print one plain line ("No prior
-  AI footprint to import — starting fresh.") and continue to Phase 2.
-- **Any probe returns a path** → there's plausibly something to adopt; offer it
-  in step 2. (The authoritative scan, with counts and redaction, happens inside
-  `/import-context` itself — keep this probe lightweight.)
-
-### 2. Offer the import (AskUserQuestion)
-
-One AskUserQuestion call:
-
-- `question`: "Looks like you've used Claude Code, Codex, or Grok before. Want
-  me to import your existing skills, plans, and repos — and mine your past
-  conversations for proposed companies, knowledge, and projects — now? You
-  approve every item before it's created."
-- `header`: "Import"
-- `multiSelect`: false
-- `options`:
-  - `Import now` — "Run /import-context inline — discovers your artifacts,
-    mines your conversation history across tools, and proposes companies,
-    knowledge, policies, and projects (you confirm each step)"
-  - `Preview first` — "Scan and show me what's there, import nothing yet
-    (/import-context --dry-run)"
-  - `Skip` — "Don't import; I'll run /import-context later if I want"
-
-### 3. Run it
-
-- **Import now** → inline-invoke the `/import-context` skill via the Skill tool.
-  It runs its own preflight, scan, redaction, conversation mining, and
-  per-category triage — every write is gated by its own AskUserQuestion prompts,
-  so you don't re-ask here. If the user mentions claude.ai chats, pass
-  `--claude-export=<path>` once they have a data export (claude.ai → Settings →
-  Privacy → Export data). When it returns, briefly note what landed (companies
-  created, knowledge seeded, projects proposed, workers synthesized, repos
-  adopted) in one plain line, then continue to Phase 2.
-- **Preview first** → inline-invoke `/import-context --dry-run`. It scans and
-  reports counts without importing. After it returns, ask once whether to run the
-  real import now (re-invoke `/import-context` without the flag) or defer. If they
-  defer, treat it as Skip.
-- **Skip** → note that `/import-context` is available anytime, and add it to the
-  Phase 5 recommended-commands list so it resurfaces in their launch block.
-
-Because `/import-context` already creates companies (`/newcompany`) and workers
-(`/newworker`) inline and confirms every write, running it here is the canonical
-way to hydrate the skeleton — do not hand-roll an equivalent import. Whatever it
-brings in becomes context for Dream Big (4.5) and the action interview (5).
 
 ## Phase 2: Generate Files
 
@@ -765,7 +875,8 @@ challenges, systems of record) — never re-ask what's captured.
 ### 5a. Role discovery (FIRST — before any scope question)
 
 Go one level deeper than Phase 1's high-level "what do you do". Conversational,
-free-text (a picker would flatten the nuance). Phase 1 Q4 already captured pain
+free-text (a picker would flatten the nuance) — one message per question,
+the question as its bold last line. Phase 1 Q4 already captured pain
 points — don't re-ask. Focus here on the day-to-day texture that shapes which
 commands to suggest:
 
@@ -784,11 +895,34 @@ One AskUserQuestion call, four options:
 - `Learn / explore HQ first`
 - `Bring in an existing codebase`
 
+*(guided: `[hq-setup] step=you status=done` then `[hq-setup] step=connect status=running`
+before 5b.5)*
+
 ### 5b.5. Connect a system of record (inline, optional)
 
 For each Q5 system the user said has a credential, offer to wire it up **now** so
 they leave setup with a real connection, not just a note. This is the one
-write-side connection primitive HQ has (`hq sources` is read-only):
+write-side connection primitive HQ has (`hq sources` is read-only).
+
+**Guided mode (HQ Desktop):** do not mint a link. For each system, emit a
+`secret` card and then one AskUserQuestion — the desktop shows a masked field,
+stores the value with `hq secrets set --from-stdin` itself (the value never
+enters this session), and answers `Done`:
+
+```
+[hq-setup] card={"kind":"secret","name":"DATABASE_URL","label":"Postgres connection string","hint":"Starts with postgres://","scope":"company","company":"{slug}"}
+```
+
+- `question`: "Add your {label} now? It goes straight into the HQ vault."
+- `header`: "Secret"
+- `multiSelect`: false
+- `options`: `Done` — "It's stored in the vault" · `Skip` — "Leave it for later"
+
+On `Done`, confirm the name now appears in `hq secrets list [--personal |
+--company {slug}]` (names only — never `get` the value) before flipping the
+system to `connected`. On `Skip`, it stays `capture-only`.
+
+**Terminal mode:** mint a one-time link instead:
 
 ```bash
 hq secrets generate-link <SECRET_PATH> [--personal | --company {slug}]
@@ -806,6 +940,47 @@ hq secrets generate-link <SECRET_PATH> [--personal | --company {slug}]
   `personal/knowledge/systems-of-record.md` from `capture-only` to `connected`.
 - Accept "skip" for any system → it stays `capture-only`; add `/hq-secrets` to
   the recommended-commands list so they can connect it later.
+
+### 5b.6. Connect apps (inline, optional — company scope only)
+
+If 5b chose a company scope and the company is cloud-backed, offer the apps HQ
+recommends for that company so agents can use them from day one. Derive the
+list from the authoritative catalog — never a hand-kept list:
+
+```bash
+hq integrations catalog --company {slug} --json   # candidates
+hq integrations list --company {slug} --json      # already connected
+```
+
+- Keep catalog rows with `"source": "hq-recommended"` and `"mcpReady": true`
+  whose `authClass` is `oauth` or `none` (API-key apps need a key intake the
+  guided run does not have yet — mention `/hq-integrations` for those). Cap
+  at six, catalog order. Mark any whose provider is already in `list` as
+  `connected`.
+- Nothing left to offer, or personal scope, or solo HQ → skip this step
+  silently.
+
+**Guided mode:** emit an `integrations` card, then one multi-select
+AskUserQuestion whose option labels are exactly the app names plus
+`Skip for now`:
+
+```
+[hq-setup] card={"kind":"integrations","items":[{"id":"hq-recommended-linear","name":"Linear","description":"Issues and projects","auth":"oauth","status":"available"},{"id":"…","name":"GitHub","auth":"oauth","status":"connected"}]}
+```
+
+- `header`: "Integrations" · `question`: "Which apps should HQ connect now?"
+
+**Terminal mode:** the same question without the card.
+
+For each picked app run `hq integrations connect --entry-id <id> --company
+{slug}` one at a time. OAuth opens the browser; relay the two outcomes exactly
+as `/hq-integrations` describes ("Connected …" is live; a printed sign-in URL
+means **not connected yet**). After the batch, re-emit the `integrations` card
+with updated `status` values in guided mode, and add `/hq-integrations` to the
+recommended-commands list for anything skipped.
+
+*(guided: `[hq-setup] step=connect status=done` then
+`[hq-setup] step=moves status=running` before 5c)*
 
 ### 5c. Team / cloud detection (shapes the strongest recommendation)
 
@@ -853,7 +1028,7 @@ to the launch list, do NOT run inline). See the Rules for the inline/handoff lin
 
 - **Companies / clients** → "Is the company already in HQ?"
   - *Do now:* `/newcompany {slug}` (new — lightweight scaffold) or `/onboard`
-    (join existing). If Phase 1.6 was skipped and they're an existing Claude
+    (join existing). If Phase 0d was skipped and they're an existing Claude
     user, re-offer `/import-context` here to hydrate the skeleton.
   - **Never offer `/newcompany` for a slug the user already has an active
     membership in.** Check the membership list resolved in Phase 0c step 3
@@ -1011,10 +1186,17 @@ bare setup with nothing substantive done yet, teaching the habit is enough and
 starting fresh with the first prompt is fine. Either way, they should leave
 setup knowing what `/handoff` is, why it matters, and how to run it.
 
+*(guided: `[hq-setup] step=moves status=done` as the last line of Phase 6)*
+
 ## Rules
 
+- **Guided mode markers are part of the contract.** With `--guided`, every
+  step boundary and every card question carries its marker line (see "Guided
+  mode" above); without it, none do.
 - Ask questions one at a time — every phase, including the Phase 0c login prompt
-  and each Phase 1.5 social URL. Never batch.
+  and each Phase 1.5 social URL. Never batch. In guided mode a choice is an
+  AskUserQuestion call, a fill-in-the-blank is the bold last line of its own
+  message, and you never narrate how or why you are asking.
 - **Never block setup on HQ Cloud.** Login, invite-claim, and sync (Phase 0c) are
   best-effort; a solo or offline HQ completes setup fine. There is no
   list-pending-invites command — invites are claimed by running sync.

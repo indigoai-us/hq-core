@@ -49,9 +49,12 @@ skills/workers, or decide durable write locations for a contract-mode turn.
    `<runDir>/user.txt`. Charter, agent contract, company charter, channel
    format, posture, and policy sections land here with machine-checkable
    section delimiters.
-2. **Hook execution** — Bootstrap session meta, then invoke SessionStart and
-   UserPromptSubmit through the native master-hook path so company hooks and
-   injectors fire for real (not fabricated watcher-side payloads).
+2. **Hook execution** — Bootstrap session metadata and its matching
+   `scope-capability.json` for the resolved company before publishing the
+   current session or invoking SessionStart. A failed capability mint stops
+   startup. Invoke SessionStart and UserPromptSubmit through the native
+   master-hook path so company hooks and injectors fire for real (not
+   fabricated watcher-side payloads).
 3. **Policy injection** — Materialize triggered policies into the system
    prompt under the policies section, with an observable budget and company
    precedence over core on id collision.

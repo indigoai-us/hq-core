@@ -41,6 +41,7 @@ Unless `--class` is set, walk the pattern table top-to-bottom; first match wins.
 | `autocompact` | `Autocompact is thrashing`, `Prompt is too long`, `Conversation too long`, `Error during compaction`, `context refilled to the limit` |
 | `hook` | `hook .* failed`, `PreToolUse .* blocked`, `PostToolUse hook`, `hook-gate.sh`, `non-zero exit from hook` |
 | `sync` | `hq sync .* conflict`, `conflictPath`, `resolve-conflicts`, `hq-sync.*error`, `originalPath.*conflict` |
+| `access` | `caller lacks '.*' on '.*'`, `403 Forbidden`, `Access denied`, `AccessDenied`, `no such key`, `NoSuchKey`, `not found` (when the path is under `companies/`) |
 | `denylist` | `Read access blocked`, `denied by settings`, `~/.ssh`, `~/.aws/credentials`, `~/.zshrc`, `permission rule .* deny` |
 | `mcp` | `MCP server .* (failed|disconnected|timeout)`, `Error connecting to MCP`, `tool .* not found` (when the tool name matches a known MCP) |
 | `qmd` | `qmd: error`, `qmd .* index`, `collection .* not found`, `qmd update` failures |
@@ -102,6 +103,18 @@ Checks:
 - `ls workspace/sync/conflicts/ 2>/dev/null | head`
 
 Fix proposal: invoke `/resolve-conflicts`. Surface the count of pending conflicts so the user sees scope. Apply the *learned rule* from charter: keep local when `originalPath` is a symlink or an auto-generated artifact (registries, INDEX).
+
+#### `access`
+
+A vault path could not be found or opened. Do not diagnose this by hand — the
+`/hq-access` skill owns the full ladder.
+
+Run `/hq-access <path>` (or `hq access <path> --json` directly). It resolves the
+target, reports one of `never-existed`, `local`, `not-synced`, or `no-access`,
+fetches and pins the file when the caller has access, repairs sync when the
+fetch fails, and asks the prefix owner for a read grant after exactly one
+confirmation. Record its outcome in the heal report and stop; there is no
+separate heal fix for this class.
 
 #### `denylist`
 Checks:

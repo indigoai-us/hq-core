@@ -3,6 +3,60 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.126-beta.2
+
+- promote 2026-09-09 (goals and tasks board): tasks are a first-class list on the board
+  rather than user stories inside a standing bucket project. A board's `tasks[]` holds
+  loose work with its own small shape (`id`, `title`, `description`,
+  `status: open|blocked|done`, `priority`, `objective_id`, `criteria[]`, `contacts[]`);
+  `prd.json` user stories remain the shape for project-scoped work. This drops the
+  `metadata.kind: "task_board"` bucket convention introduced in v15.0.126-beta.1 — a
+  bucket project never completes and pollutes the project registry, and `prd.json`
+  carries `branchName` / `e2eTests` / `files` / `dependsOn`, none of which mean anything
+  for an errand.
+- promote 2026-09-09 (goals and tasks board): the owner's board is `personal/board.json`
+  in the overlay at the HQ root, not under `companies/personal/`. The personal vault's
+  `.hqinclude` allowlist does not cover the reserved personal company scope, so a board
+  kept there is invisible to an agent reading that vault; `personal/board.json` must
+  itself be listed in `.hqinclude`. `core/scripts/hq-task.sh` gains
+  `list|add|done|block|reopen|goals`, defaults to `personal/board.json`, and takes
+  `--company <slug>` for `companies/<slug>/board.json`. Corrects the default and the
+  guidance shipped in v15.0.126-beta.1. Anyone who created a bucket project under that
+  release should move its stories into their board's `tasks[]` and delete the bucket;
+  other companies are unaffected.
+
+## Release: v15.0.126-beta.1
+
+- promote 2026-09-09 (goals and tasks board): new concept doc
+  `core/knowledge/public/hq-core/goals-and-tasks-board.md` — documents the three-layer
+  pattern for recording intent on a company board (objectives and key results in
+  `board.json` v2 → projects → tasks as `prd.json` user stories), the standing
+  "task bucket" convention for errands too small to deserve a project
+  (`metadata.kind: "task_board"`, conventionally named `life-admin`), and the read/write
+  contract an agent follows when working a board. No new file formats; it reuses
+  `board.json` v2 and ordinary project `prd.json` files, so existing board tooling needs
+  no changes.
+- promote 2026-09-09 (goals and tasks board): new scripts `core/scripts/hq-task.sh` and
+  `core/scripts/hq-task.mjs` — `hq-task.sh list|add|done|reopen` manages tasks on a standing
+  task-bucket project without hand-editing `prd.json`, assigning story ids and keeping the
+  story shape consistent. Defaults to `--company personal --project life-admin`; works
+  against any company and bucket name. No action required; existing projects are untouched
+  unless the script is pointed at them.
+- promote 2026-09-08 (access ladder): new core skill `.claude/skills/hq-access/SKILL.md`
+  — `/hq-access <path-or-query>` diagnoses a vault file you cannot find or open as exactly
+  one of never-existed / not-synced / no-access, fetches and pins when you have access,
+  repairs sync when the fetch fails, and asks the prefix owner for a read grant after one
+  confirmation via a DM with a one-click `hq files share` prompt. Runs `hq access` from
+  `@indigoai-us/hq-cli` >= 5.109.0 and falls back to the same ladder over existing
+  commands on older CLIs. No action required; upgrade the CLI to get the native command.
+- promote 2026-09-08 (access ladder): new hard policy
+  `core/policies/hq-failed-file-open-runs-access-ladder.md` — a failed Read/cat/open of a
+  `companies/<slug>/…` path must run `/hq-access` before replying "file does not exist".
+- promote 2026-09-08 (access ladder): `hq-files`, `hq-sync`, and `hq-heal` skills gain
+  one-to-two-line pointers at `/hq-access`; `hq-heal` gains an `access` error class whose
+  recipe is the ladder. No behavior change for existing flows.
+- promote 2026-09-08 (quick reference): `core/knowledge/public/hq-core/quick-reference.md` gains an `hq access <path-or-query>` row in the `hq files` table. Docs only.
+
 ## Release: v15.0.121-beta.8
 
 - promote 2026-09-04 (work-mesh progress noise): `core/scripts/work-mesh.mjs`

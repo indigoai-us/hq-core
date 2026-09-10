@@ -4,7 +4,7 @@
 #
 # Ordering (US-402 / US-404):
 #   1. Write workspace/sessions/<runId>/meta.yaml (session_id + company_slug)
-#   2. Write workspace/sessions/.current with runId
+#   2. Mint the matching scope capability, then publish .current with runId
 #   3. Verify via hq-session.sh get company
 #   4. master-hook SessionStart, then UserPromptSubmit
 
@@ -29,6 +29,14 @@ session_bootstrap_meta() {
     [ -n "$task" ] && printf 'task: %s\n' "$task"
     printf 'started_at: "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$meta_file"
+
+  # The entrypoint has already resolved and authorized this company. Resident
+  # SessionStart hooks require its capability as well as metadata. Rebinding
+  # through hq-session set is insufficient: the slug is already present, so
+  # that command's changed-company mint path would not run.
+  # shellcheck source=session-scope-capability.sh
+  . "$root/core/scripts/lib/session-scope-capability.sh" || return 1
+  session_scope_mint "$root" "$run_id" "$company" || return 1
   printf '%s\n' "$run_id" > "$current_file"
 }
 
