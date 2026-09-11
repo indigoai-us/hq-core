@@ -2,6 +2,8 @@
 
 ### Fixed
 
+- Delegation verifies exact ACL identities using HQ CLI 5.109.7+, recovers grants that committed despite an error response, and publishes the final owner and dossier before sending. Stale receipts, concurrent verification and delivery, and failed state writes block notification. Uncertain DM outcomes remain pending reconciliation; recipient access and Work Mesh ownership are reported separately.
+
 - `work-mesh-live-hooks.test.sh` no longer flakes on loaded CI runners. The
   wall-clock `adj_p95 < 20ms` assertion is now informational on CI
   (`GITHUB_ACTIONS`/`CI` set), and off CI it runs only when the 1-minute load

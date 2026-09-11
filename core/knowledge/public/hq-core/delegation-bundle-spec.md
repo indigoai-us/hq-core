@@ -27,7 +27,7 @@ Builder: `core/scripts/hq-delegate-bundle.sh build --company <slug>
 | `delegationId` | string | `dlg-<UTCstamp>-<project>` — also the bundle directory name. |
 | `createdAt` | string | ISO-8601 UTC creation time. |
 | `mode` | `"transfer"` \| `"share"` | `transfer` reassigns ownership (board, PRD, work mesh); `share` grants access but leaves ownership with the delegator. |
-| `from` | object | `{email, personUid}` of the delegator — resolved from `hq whoami` when available, else `null`s (filled before send). |
+| `from` | object | Sender identity from `hq whoami --json`; a missing or expired identity blocks bundle creation. |
 | `to` | object | `{kind, principal, displayName}` — `kind` is `person` or `agent`; `principal` is a **confirmed** email, `prs_…`, or `agt_…` (resolved by `hq-delegate-resolve.sh`, never a guessed name). |
 | `company` | string | Company slug. Delegation never crosses a company boundary. |
 | `project` | object | `{name, prdPath, boardId}` — `prdPath` is HQ-root-relative; `boardId` is the `companies/<co>/board.json` project id or `null`. |
@@ -52,7 +52,9 @@ Builder: `core/scripts/hq-delegate-bundle.sh build --company <slug>
 - `permission` — `write` on the project dossier, `read` on referenced
   knowledge/policy folders. Individual knowledge *files* are mapped to their
   containing folder.
-- `reason` — human-readable justification, surfaced in the confirmation step.
+- `reason` — human-readable justification, surfaced in the plan the skill
+  states before it executes (there is no confirmation step; invoking
+  `/delegate` is the authorization).
 
 After the grant step verifies a prefix via ACL read-back, it may annotate the
 entry with `verifiedAt` and the confirmed permission.
@@ -74,16 +76,28 @@ in `vaultPrefixes[]` and repo content is never pushed to the vault.
 ## `status` state machine
 
 ```
-building → granted → verified → sent
+building → granted → verified → sending → sent
 ```
 
 - `building` — bundle written, nothing granted yet.
 - `granted` — vault ACL grants written and read back successfully (US-003).
-- `verified` — every prefix probed reachable via `hq files browse` (US-008).
+- `verified` — sender-side prefix checks and canonical dossier read-back passed. This is not recipient-access proof.
+- `sending` — DM attempted; if no event receipt returns, reconcile history before retrying.
 - `sent` — DM delivered; manifest records the DM `eventId`.
 
 A failed step leaves the last successful status, so a re-run resumes instead
 of repeating grants. `--dry-run` never creates a bundle at all.
+
+Each confirmed prefix carries a `grantReceipt` with canonical company/grantee
+identity, share exit code, and read-back time. An exact grant can be confirmed
+even when the share response fails; unrelated or descendant grants cannot.
+
+After local transfer, verification publishes `delegation/<delegationId>/manifest.json`
+and `BRIEF.md` inside the project. `checksums` then describes the final PRD,
+README and delegation journal when present, plus the brief. The mutable local
+`publication` receipt records canonical read-back hashes, including the published
+manifest; the manifest does not hash itself. `recipientAccess` and
+`workMeshOwnership` remain `unconfirmed` until separately established.
 
 ## Hard safety rules
 

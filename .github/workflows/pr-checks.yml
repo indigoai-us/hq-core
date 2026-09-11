@@ -175,6 +175,13 @@ jobs:
           bash core/scripts/lint-skill-script-refs.sh learn
           bash core/scripts/lint-skill-script-refs.sh resumework
           bash core/scripts/lint-skill-script-refs.sh startwork
+          bash core/scripts/lint-skill-script-refs.sh conduct
+      - name: /conduct session worker pool (cap, resume, recycle)
+        run: bash core/scripts/tests/conduct-pool.test.sh
+      - name: /conduct lane drop box (queue, claim, per-event hook output)
+        run: bash core/scripts/tests/conduct-inbox.test.sh
+      - name: /conduct worker selection (registry fields, definition load, launch quoting)
+        run: bash core/scripts/tests/conduct-worker-selection.test.sh
       - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
         run: bash core/scripts/tests/skill-script-refs.test.sh
       - name: HQ feedback summary and verbatim report contract
@@ -244,6 +251,8 @@ jobs:
         run: bash core/scripts/tests/hq-delegate-send.test.sh
       - name: Reachability probe + inert dry run
         run: bash core/scripts/tests/hq-delegate-verify.test.sh
+      - name: Final dossier publication and canonical content verification
+        run: bash core/scripts/tests/hq-delegate-publish.test.sh
       - name: /delegate skill structural contract
         run: bash core/scripts/tests/hq-delegate-skill.test.sh
       - name: /delegate script references resolve

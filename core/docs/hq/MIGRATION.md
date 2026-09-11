@@ -3,6 +3,111 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.127-beta.6
+
+- promote 2026-09-11 (conduct worker definitions): `/conduct` now **loads the worker it picks**.
+  Previously the worker id was only a pool-slot label: the registry was consulted, a name was
+  chosen, and then a generic lane was launched — so dispatching to `code-reviewer` and dispatching
+  to `unmatched` produced identical lanes. `/conduct` now reads `{path}/worker.yaml` for the matched
+  worker and builds the brief from it: the worker's name and description open the brief, its
+  `instructions` are carried verbatim, and the paths to its `skills[].file`, `context.base` and
+  `knowledge` entries are passed so the lane reads its own procedures. The lane's `timeoutSecs` now
+  comes from `execution.max_runtime` instead of a fixed 15 minutes.
+- promote 2026-09-11 (conduct worker definitions): a worker's `verification.approval_required` and
+  `verification.human_checkpoints` are now **binding**. A worker that declares
+  `before_merge_production` has that checkpoint carried into its brief as an explicit
+  stop-and-report, and the parent asks the user before telling the lane to proceed. A declared human
+  gate that does not happen is a defect, not a shortcut.
+- promote 2026-09-11 (conduct worker definitions): the Step 2 selection filter was unfollowable. It
+  told the agent to consider workers "whose `scope` is the active company, `public`, or personal",
+  but registry entries have never carried a `scope` field — they carry `company`, `visibility` and
+  `team`. The filter is now written against the real fields: `status` must be `active`, and
+  `company` must be empty (a core or personal worker, available to every tenant) or exactly the
+  active company slug. An entry naming a different company is out of scope, stated as a tenancy
+  boundary rather than a preference.
+- promote 2026-09-11 (conduct worker definitions): `execution.model`, `codex_model` and
+  `codex_flags` are deliberately NOT applied. They name models for a delivery path `/conduct` no
+  longer uses; the engine is the operator's session-wide choice and the tier follows the task.
+- promote 2026-09-11 (conduct worker definitions): `context.base` paths are resolved before they
+  reach the brief rather than passed through. They are not uniformly rooted — some are relative to
+  the HQ root, some to `core/` — and many are stale: of 175 distinct entries shipped today, 109
+  resolve from the HQ root, 17 only under `core/`, and 49 point at nothing at all. Each entry is
+  tried against the HQ root, then `core/`, then the worker's own directory, and an entry that
+  resolves nowhere is dropped instead of being handed to the lane as a missing path.
+  `skills[].file` needs no such treatment: all 44 shipped entries resolve against the worker's own
+  directory.
+- promote 2026-09-11 (conduct worker definitions): new test
+  `core/scripts/tests/conduct-worker-selection.test.sh` pins the skill to both schemas it reads, and
+  parses the detached lane launch at **both** levels — the outer script and the inner `bash -c`
+  body. An unbalanced quote inside that body is just a character to the outer shell, so it survives
+  an ordinary syntax check and only fails at dispatch, in a detached process whose output goes to a
+  log nobody is watching yet.
+
+## Release: v15.0.127-beta.5
+
+- promote 2026-09-11 (conduct lane drop box): a `/conduct` lane is no longer sealed once it
+  launches. Every lane now carries a drop box, and a hook inside the lane delivers from it on
+  the lane's next tool event, so a correction reaches a worker **while it is still working** —
+  no kill, no relaunch, no waiting for the task to finish.
+  `bash core/scripts/conduct-inbox.sh send --run-dir <dir> --text "..."` queues a message; the
+  lane picks it up on its next tool call and treats it as an operator instruction outranking
+  its brief. The channel is one-way: the lane cannot reply, and its answer still arrives in its
+  final output. Messages queue, so sending before the lane's first tool call is safe, and each
+  is delivered exactly once with the consumed copy retained under `inbox/claimed/` as a record
+  of what the lane was actually told.
+- promote 2026-09-11 (conduct lane drop box): **every engine is reachable mid-task, but not the
+  same way.** Codex and Claude lanes take the message quietly on `PostToolUse`, as context before
+  the model's next step, with `Stop` as a backstop for anything queued late. Grok cannot be handed
+  context on any event — its adapter routes passive-hook output to diagnostics and cannot block a
+  `Stop` — so a Grok lane is reached on `PreToolUse` instead: the message arrives as a denied tool
+  call whose reason is the text, and the lane is told the call was not blocked on its merits and to
+  retry. That costs the interrupted call, so prefer Codex for work you expect to steer often. Grok
+  deny reasons truncate near 1200 characters; keep messages to that engine short.
+- promote 2026-09-11 (conduct lane drop box): a message is only ever consumed on an event that can
+  actually reach the model. Draining on an event that cannot would not delay it — it would destroy
+  it, silently, while the operator believed a correction had landed. The lane exports
+  `HQ_CONDUCT_ENGINE` at launch so the hook can tell which route applies; a lane predating that
+  export is treated as Codex.
+- promote 2026-09-11 (conduct lane drop box): new script `core/scripts/conduct-inbox.sh`
+  (`send | drain | list | clear`) and new hook `.claude/hooks/conduct-lane-inbox.sh`, registered in
+  `.claude/settings.json` on `PostToolUse` (matcher `*`), `Stop`, and `PreToolUse` for the six tool
+  matchers Grok dispatches (Bash, Read, Write, Edit, Grep, Glob), and allowlisted in all three
+  `hook-gate.sh` profiles. The hook is gated on `HQ_CONDUCT_RUN_DIR`, which only a `/conduct` lane
+  exports, and exits before touching disk when that variable is absent — so it is inert in every
+  ordinary session despite the wildcard matcher, and it never blocks a lane that is legitimately
+  finished.
+
+## Release: v15.0.127-beta.2
+
+- promote 2026-09-10 (conduct worker pool): `/conduct` no longer starts a new in-session
+  subagent for every task. Each task is now matched to a long-lived HQ worker from a capped
+  session pool and run as a detached `core/scripts/workflow-runner.mjs` lane on a chosen
+  engine (Codex, Grok, or Claude) — the same runner `/orchestrate` already uses. Two things
+  change for you. Lanes are ordinary OS processes, so they survive a compaction or a session
+  restart, and `/conduct` now works on hosts with no in-session subagent support at all.
+  And the number of live children is bounded: typical 8 or fewer, worst case
+  `CONDUCT_POOL_CAP` (default 8), instead of one per task. Fifty tasks map onto at most
+  eight workers.
+- promote 2026-09-10 (conduct worker pool): new script `core/scripts/conduct-pool.sh` —
+  `list | assign | record | recycle | clear` over the `conduct_pool` list on
+  `workspace/sessions/<id>/meta.yaml`. `assign` is the only command that decides anything:
+  it returns spawn or resume, retires the least-recently-used idle worker when the pool is
+  full, and refuses without changing anything in two cases: exit 3 when every slot is
+  running, and exit 4 when the requested worker's own lane is still going (only an idle slot
+  is resumable — relaunching into a live lane's run directory would overwrite the artifacts
+  of a process still working). Every read-modify-write holds a per-session lock for the whole
+  transaction, because `/conduct` dispatches independent tasks concurrently and the atomic
+  file replace at the end is not enough on its own. Override the cap with `CONDUCT_POOL_CAP`. The pool is deliberately not written through `hq-session.sh set`,
+  which replaces a single-line `key: value` and cannot round-trip a nested list.
+- promote 2026-09-10 (conduct worker pool): the session key `/conduct` persists is now
+  `conduct_engine` (codex, grok, or claude), replacing `conduct_agent` (grok, opus, gpt,
+  claude-*), which named in-session subagent types that no longer exist on this path. A
+  session still carrying `conduct_agent` is harmless — `/conduct` ignores it and asks once
+  for an engine. `/conduct off` clears both the pool and the engine.
+- promote 2026-09-10 (conduct worker pool): `/run-project` inline and ralph modes are NOT
+  changed in this release and still spawn per story; `/run-project --interactive` is
+  unchanged. Catalog suggest-create is not part of this work.
+
 ## Release: v15.0.126-beta.2
 
 - promote 2026-09-09 (goals and tasks board): tasks are a first-class list on the board

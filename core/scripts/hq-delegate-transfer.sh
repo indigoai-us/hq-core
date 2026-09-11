@@ -63,7 +63,10 @@ if [ "$MODE" = "share" ]; then
   exit 0
 fi
 
-NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+jq -e '.status == "granted"' "$MANIFEST" >/dev/null || die "transfer requires confirmed grants (status granted)"
+[ "$FROM" != "unknown" ] && [ -n "$FROM" ] || die "sender identity missing; rebuild the bundle"
+NOW="$(jq -r '.ownershipTransferredAt // empty' "$MANIFEST")"
+[ -n "$NOW" ] || NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 TODAY="$(date -u +%Y-%m-%d)"
 PRD_PATH="companies/$COMPANY/projects/$PROJECT/prd.json"
 PRD_ABS="$HQ_ROOT/$PRD_PATH"
@@ -129,7 +132,7 @@ if command -v hq >/dev/null 2>&1; then
   hq mesh session note --enqueue --session "${HQ_SESSION_ID:-delegate}" --seq 1 \
     --harness claude-code --adapter-version 1.0.0 \
     --summary "Delegated to $DISPLAY ($PRINCIPAL) — delegation $DELEGATION_ID; ownership transferred" \
-    >/dev/null 2>&1 || true
+    || echo "hq-delegate-transfer: mesh note failed; authoritative mesh ownership remains unconfirmed" >&2
 fi
 
 # --- 4. journal: one dated stanza per delegation id --------------------------
@@ -155,14 +158,14 @@ if ! grep -qF "$DELEGATION_ID" "$JOURNAL_FILE"; then
     echo "- From: $FROM"
     echo "- To: $DISPLAY ($PRINCIPAL)"
     echo "- Transferred scope: $SCOPE"
-    echo "- Board and work-mesh ownership reassigned; the delegator retains read access."
+    echo "- Local board and PRD ownership updated; Work Mesh ownership is unconfirmed. Existing delegator access is unchanged."
   } >> "$JOURNAL_FILE"
 fi
 
 # --- record on the manifest ---------------------------------------------------
 
 TMP_MANIFEST="$(mktemp)"
-jq --arg now "$NOW" '.ownershipTransferredAt = $now' "$MANIFEST" > "$TMP_MANIFEST" \
+jq --arg now "$NOW" '.ownershipTransferredAt = $now | .workMeshOwnership = "unconfirmed"' "$MANIFEST" > "$TMP_MANIFEST" \
   && mv "$TMP_MANIFEST" "$MANIFEST"
 
-echo "hq-delegate-transfer: ownership of '$PROJECT' transferred to $DISPLAY ($PRINCIPAL) — board, PRD, work mesh, and journal updated"
+echo "hq-delegate-transfer: ownership of '$PROJECT' transferred to $DISPLAY ($PRINCIPAL) — local board, PRD, and journal updated; Work Mesh ownership unconfirmed"

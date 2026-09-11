@@ -39,7 +39,7 @@ hq_scan_secrets() {
     for entry in "${SECRET_PATTERNS[@]}"; do
       pattern="${entry%%:*}"
       name="${entry#*:}"
-      if grep -Eq "$pattern" "$f" 2>/dev/null; then
+      if grep -Eq -- "$pattern" "$f" 2>/dev/null; then
         echo "secret-scan: pattern '$name' matched in $f" >&2
         hit=1
       fi

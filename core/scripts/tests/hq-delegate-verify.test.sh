@@ -34,6 +34,11 @@ cat > "$TMP/bin/hq" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$HQ_STUB_LOG"
 case "$1 $2" in
+  "sync push")
+    mkdir -p "$HQ_STUB_CLOUD/projects"
+    cp -R "$HQ_ROOT/companies/acme/projects/widget" "$HQ_STUB_CLOUD/projects/"
+    exit 0 ;;
+  "files cat") cat "$HQ_STUB_CLOUD/$3"; exit $? ;;
   "files browse")
     pfx="$3"
     if [ "$pfx" = "${HQ_STUB_BROWSE_FAIL:-}" ]; then
@@ -90,6 +95,7 @@ STUB
 chmod +x "$TMP/bin/hq"
 export PATH="$TMP/bin:$PATH"
 export HQ_STUB_LOG="$INVOKE_LOG"
+export HQ_STUB_CLOUD="$TMP/cloud"
 
 # --- fixture -----------------------------------------------------------------
 
@@ -99,7 +105,7 @@ mkdir -p "$PROJ" "$FIX/workspace/delegations"
 cat > "$PROJ/prd.json" <<'JSON'
 {
   "name": "widget", "description": "Build the widget.", "branchName": "feature/widget",
-  "metadata": {"goal": "ship", "repoPath": "repos/public/widget-repo", "baseBranch": "main",
+  "metadata": {"goal": "ship", "owner":"alice@acme.test", "repoPath": "repos/public/widget-repo", "baseBranch": "main",
     "knowledge": ["companies/acme/knowledge/insights/notes.md"]},
   "userStories": [{"id": "US-001", "title": "Frame", "description": "d", "priority": 1, "passes": false}]
 }
@@ -109,11 +115,12 @@ WIDGET_API_KEY=
 SCHEMA
 
 M="$TMP/manifest.json"
+echo "# Brief" > "$TMP/BRIEF.md"
 write_manifest() { # status
   cat > "$M" <<JSON
 {
   "schemaVersion": 1, "delegationId": "dlg-test-widget", "mode": "transfer",
-  "company": "acme",
+  "company": "acme", "ownershipTransferredAt":"2026-09-11T00:00:00Z",
   "to": {"kind": "person", "principal": "alice@acme.test"},
   "project": {"name": "widget", "prdPath": "companies/acme/projects/widget/prd.json"},
   "vaultPrefixes": [
@@ -199,7 +206,7 @@ write_manifest_shared() { # status
   cat > "$M" <<JSON
 {
   "schemaVersion": 1, "delegationId": "dlg-test-widget", "mode": "transfer",
-  "company": "acme",
+  "company": "acme", "ownershipTransferredAt":"2026-09-11T00:00:00Z",
   "to": {"kind": "person", "principal": "alice@acme.test"},
   "project": {"name": "widget", "prdPath": "companies/acme/projects/widget/prd.json"},
   "vaultPrefixes": [
@@ -240,7 +247,7 @@ write_manifest_big() { # status
   cat > "$M" <<JSON
 {
   "schemaVersion": 1, "delegationId": "dlg-test-widget", "mode": "transfer",
-  "company": "acme",
+  "company": "acme", "ownershipTransferredAt":"2026-09-11T00:00:00Z",
   "to": {"kind": "person", "principal": "alice@acme.test"},
   "project": {"name": "widget", "prdPath": "companies/acme/projects/widget/prd.json"},
   "vaultPrefixes": [
