@@ -33,7 +33,8 @@
 #   3. CLAUDE_SESSION_ID       — Claude Code (alternate/legacy)
 #   4. CODEX_SESSION_ID        — Codex
 #   5. CODEX_THREAD_ID         — Codex, thread-scoped runs
-#   6. workspace/sessions/.current — no session env; last-writer-wins fallback
+#   6. GROK_SESSION_ID         — Grok Build (Desktop / CLI)
+#   7. workspace/sessions/.current — no session env; last-writer-wins fallback
 #
 # The env precedence list matches .claude/skills/_shared/journal.sh so every
 # per-session artifact (journal, session meta, scope capability) keys off the
@@ -59,7 +60,7 @@ session_id_is_valid() {
 session_id_from_env() {
   local var val
   for var in HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
-             CODEX_SESSION_ID CODEX_THREAD_ID; do
+             CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID; do
     val="${!var:-}"
     val="$(printf '%s' "$val" | tr -d '[:space:]')"
     if session_id_is_valid "$val"; then

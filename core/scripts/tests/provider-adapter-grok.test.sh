@@ -45,8 +45,9 @@ _assert_grok_render() {
   [[ "$r" == *'K="$(cat /home/ec2-user/.grok/key 2>/dev/null || true)"'* ]] || ok=0
   [[ "$r" == *'export XAI_API_KEY="$K"'* ]] || ok=0
   [[ "$r" == *"/home/ec2-user/.grok/bin/grok -p"* ]] || ok=0
-  [[ "$r" == *"--yolo"* ]] || ok=0
-  [[ "$r" == *"--no-auto-update"* ]] || ok=0
+  [[ "$r" == *"--always-approve"* ]] || ok=0
+  [[ "$r" == *"--output-format json"* ]] || ok=0
+  [[ "$r" == *"--permission-mode bypassPermissions"* ]] || ok=0
   [[ "$r" == *"$task"* ]] || ok=0
   if [[ "$ok" -eq 1 ]]; then
     pass "grok render ($label)"

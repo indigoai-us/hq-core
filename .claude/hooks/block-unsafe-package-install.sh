@@ -164,6 +164,35 @@ strip_redirection_tokens() {
   printf '%s' "${out# }"
 }
 
+# Drop value-taking flags AND their separate value token from an argument list.
+#
+# npm/pnpm/yarn/bun accept flags that consume the FOLLOWING token as their value
+# (`--prefix /path`, `--registry <url>`, `--cache <dir>`, `--userconfig <f>`, …).
+# Every token loop below classifies anything not starting with '-' as a
+# positional package name, so a bare value like `~/.local` (from
+# `npm i -g --prefix ~/.local <pkg>`) was misread as an untrusted package
+# and BLOCKED an otherwise sanctioned first-party / allow-listed global install.
+# The `--flag=value` form is already a single '-'-prefixed token and needs no
+# handling; this only collapses the space-separated form. Boolean flags such as
+# `-g` / `--global` are NOT in the set, so global-install detection still works.
+strip_flag_values() {
+  local out="" tok skip_next=0
+  for tok in $1; do
+    if [ "$skip_next" = "1" ]; then
+      skip_next=0
+      continue
+    fi
+    case "$tok" in
+      --prefix|-C|--registry|--cache|--userconfig|--globalconfig|--dir|--cwd|--store-dir|--virtual-store-dir|--node-linker|--otp|-w|--workspace)
+        skip_next=1
+        continue
+        ;;
+    esac
+    out="$out $tok"
+  done
+  printf '%s' "${out# }"
+}
+
 # Has at least one positional, non-flag argument after the subcommand?
 # Args: "<rest-of-command-after-subcmd>"
 has_positional_pkg_arg() {
@@ -264,6 +293,9 @@ check_segment() {
     # here so every token loop below (hydration detection, trusted-scope check,
     # allow-list check) sees the same package-only argument list.
     rest="$(strip_redirection_tokens "$rest")"
+    # Collapse value-taking flags (`--prefix /path`, `--registry <url>`, …) so a
+    # space-separated value is never mistaken for a positional package name.
+    rest="$(strip_flag_values "$rest")"
   else
     return 0
   fi

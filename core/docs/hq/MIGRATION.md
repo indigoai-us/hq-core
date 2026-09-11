@@ -3,6 +3,172 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.128-beta.3
+
+- promote 2026-09-11 (conduct pool): **`record` no longer accepts `--status recycled`.** That path
+  marked a running slot recycled and cleared its sub-agent id directly, routing around both the
+  running-lane guard and the handoff purge — a caller could retire a live lane and be granted its
+  replacement while the original kept working. Retirement is `recycle` (with `--force` only after a
+  confirmed stop) or `cancel`.
+- promote 2026-09-11 (orchestrator skills use the pool): the dispatch sequence is now executable on
+  both runtimes, and says which is which. Codex gets an id between `spawn_agent` and `wait_agent`, so
+  `record --status running` goes there. Claude Code's `Task` dispatches and blocks in one call, so
+  record first with `--subagent-id pending` and replace it on return. Recording *after* the wait
+  would leave live work marked `claimed` for its whole duration — exactly the state `cancel` is
+  allowed to retire.
+
+- promote 2026-09-11 (conduct pool): **a slot now has four states, not three.** `assign` grants a
+  lane as `claimed`; `record --status running` is what attaches a sub-agent and makes it `running`.
+  `cancel` keys on `claimed`, and on nothing else. The emptiness of `subagent_id` would not have
+  worked as the test: a
+  *resume* claim keeps the previous lane's id while it waits to be dispatched, so keying on
+  emptiness refused exactly the cross-tenant reset `cancel` exists for. `claimed` counts against the
+  cap and makes a second `assign` for that worker exit 4, so the slot is held from the moment it is
+  granted. `recycle` still works on a `claimed` lane — there is no sub-agent to strand — so the
+  guard does not block its own remedy.
+- promote 2026-09-11 (conduct pool): `assign`'s own exit-3 and exit-4 diagnostics no longer
+  recommend an unforced `recycle`, which the running-lane guard makes fail deterministically. They
+  now say to wait, and name `--force` (after a confirmed stop) or `cancel` (for an undispatched
+  claim) as the applicable escapes.
+- promote 2026-09-11 (conduct pool): **`/conduct` lanes are namespaced `conduct:{worker-id}`.** A
+  `/conduct` lane stores a workflow-runner run directory as its `subagent_id` while an
+  `/execute-task` phase lane stores a `Task` / `spawn_agent` handle, and only the latter carries an
+  `owner.json` stamp. Sharing the bare worker id meant a session that used both would hand one
+  runtime's handle to the other's adapter, and let `/conduct` resume a phase lane with no ownership
+  check. Three namespaces now: bare id for phases, `story:` for coordinators, `conduct:` for
+  `/conduct`.
+
+- promote 2026-09-11 (conduct pool): new verb `conduct-pool.sh cancel --worker-id <id>` — retire a
+  claim that was never dispatched. `assign` grants every slot as `claimed`, so a caller that backs
+  out (most often because the slot's ownership stamp names another tenant) hit the running-lane
+  refusal and the ownership reset had no way to complete. `cancel` keys solely on `status ==
+  claimed`, and refuses with exit 5 for anything else. It does **not** test whether `subagent_id` is
+  empty: a resume claim keeps the previous lane's id, so emptiness would refuse exactly the reset
+  this verb exists for. Status is a fact the helper records at grant time rather than an assertion
+  it accepts, which is why `cancel` needs no `--force` and cannot abandon a live lane. It clears the
+  slot's `handoffs.jsonl` and `owner.json` like `recycle` does.
+- promote 2026-09-11 (conduct pool): `/conduct` step 3's exit-3 guidance no longer advertises an
+  unforced `recycle`, which the new guard makes exit 5 deterministically. It offers waiting, or
+  `--force` once the user has stopped the lane, or `cancel` for a claim it never launched.
+
+- promote 2026-09-11 (conduct pool): **`conduct-pool.sh recycle` now refuses a running lane with
+  exit 5.** Retiring a slot frees the pool entry and leaves the sub-agent alone — the pool records
+  ids, it does not own processes — so retiring a live lane put the real child count over the cap and
+  let the next claimant share a run directory with a process still writing to it. Wait for the lane
+  and mark it `idle`, or stop it and pass `--force` to assert you did. The exit-3 guidance no longer
+  points at `recycle` as an escape hatch.
+- promote 2026-09-11 (conduct pool): recycling now **clears the lane's `handoffs.jsonl` and
+  `owner.json`**, on both the explicit path and the LRU retirement inside `assign`. Recycling is how
+  a fat lane is discarded; leaving the file behind meant the next claim of the same worker — same
+  company, same project, so the ownership stamp matched — read back the whole transcript the recycle
+  was meant to drop, growing without bound across recycles. A recycled lane always restarts cold.
+- promote 2026-09-11 (orchestrator skills use the pool): the coordinator budget is
+  `max(1, (CONDUCT_POOL_CAP - 2) / 2)`. The bare formula yields 0 at a cap of 2 or 3 — both accepted
+  by the helper — which would permit no coordinator and stall `/run-project` before its first story.
+  At those caps the reserved explorer/gate pair is what does not fit: recycle those slots once used
+  and run one coordinator serially. A cap of 1 cannot host a coordinator and its phase at all, so the
+  skill stops and offers a higher cap or `--interactive` rather than improvising.
+
+- promote 2026-09-11 (orchestrator skills use the pool): the lane protocol is now stated **once**, in
+  `.claude/skills/_shared/pool-lane-protocol.md`, and `/execute-task` and `/run-project` follow it
+  rather than restating it. Every time the two descriptions drifted during review, one of them was
+  wrong — a coordinator id the pool rejects outright, an ownership check that existed on only one
+  dispatch path, a resume branch with no executable body. The protocol covers namespaces and the id
+  charset, the `assign` exit codes, `mkdir -p` before any slot-directory access (`assign` writes a
+  pool entry in `meta.yaml` and nothing on disk, so the first use has no directory), the ownership
+  stamp, the disk-backed restart for runtimes with no resume primitive, release, and the nesting
+  budget.
+- promote 2026-09-11 (orchestrator skills use the pool): `/run-project`'s own lanes are
+  ownership-checked too. `explorer` and `regression-gate` are constant ids shared across every
+  project and company, which makes them the lanes most likely to hand one tenant's context to
+  another — a second `/run-project` in one session would otherwise resume the first one's planning
+  transcript, or a gate lane carrying another company's repo list.
+- promote 2026-09-11 (orchestrator skills use the pool): the coordinator `resume` branch has a
+  concrete body. Codex `spawn_agent` always starts a new agent, and `assign` has already marked the
+  slot `running` by the time `resume` comes back, so a coordinator that could not act on it left the
+  lane stuck and every later claim for that worker at exit 4.
+
+- promote 2026-09-11 (orchestrator skills use the pool): story coordinator lanes are namespaced
+  `story:{worker-id}` (a colon, because the pool rejects ids outside `[A-Za-z0-9._:-]`); the phases inside them claim the bare worker id. A coordinator holding
+  `backend-dev` would send its own `api_development` phase to `assign` exit 4 — waiting on a lane the
+  coordinator itself holds, with the coordinator waiting on that phase. Neither ever finishes.
+  Concurrent stories are capped at `(CONDUCT_POOL_CAP - 2) / 2` (**3** at the default cap of 8) so
+  every live coordinator can still claim the one phase lane it needs; fill the pool with coordinators
+  and every one blocks on exit 3 with nothing running that could release a slot.
+- promote 2026-09-11 (orchestrator skills use the pool): lane continuity moved from
+  `workspace/orchestrator/{project}/pool/…` to `workspace/sessions/{session-id}/pool/…`, beside the
+  pool state that owns the slot. A project slug is not unique across companies, and a project-keyed
+  file outlives the session that wrote it — either way a lane reads another tenant's or another day's
+  history as its own and skips live work. The directory carries an `owner.json` stamp (company,
+  project, session); a missing or mismatched stamp means `cancel` the claim, delete its
+  `handoffs.jsonl`, re-stamp, and dispatch cold. The check runs before the spawn/resume split, so a
+  runtime with a native resume primitive cannot skip it, and the reinitialise matters because 6d's
+  append is unconditional — leaving the file would file this owner's phases under the previous
+  owner's stamp.
+
+- promote 2026-09-11 (orchestrator skills use the pool): `/execute-task` step 6c no longer spawns a
+  sub-agent per phase. It claims the worker's lane with `conduct-pool.sh assign --worker-id <id>`
+  first, resumes on `action=resume`, and records the lane `running` around the blocking call and
+  `idle` once the phase JSON validates. `assign` exit 3 (pool at cap, all running) and exit 4 (this
+  worker's lane is already running) both mean wait — neither changes the pool, so dispatching past
+  them is how a run exceeds the cap or relaunches into a directory a live process still owns.
+- promote 2026-09-11 (orchestrator skills use the pool): neither Claude Code's `Task` nor Codex
+  `spawn_agent` can re-enter an existing sub-agent, so 6c documents the honest fallback instead of a
+  fake resume — dispatch afresh, point the worker at
+  `workspace/sessions/{session-id}/pool/{worker.id}/handoffs.jsonl`, and record the new sub-agent id
+  against the **same** slot. The cap counts lanes, not restarts. The inline codex-reviewer path is
+  unchanged and takes no slot, because it runs in the parent.
+- promote 2026-09-11 (orchestrator skills use the pool): `/run-project` fan-out is now bounded by the
+  pool rather than by the story count. The preflight explorer, each story's classified worker, and
+  the regression gate are named slots that resume. **Typical run: 3-4 live lanes. Worst case:
+  `CONDUCT_POOL_CAP`, default 8** — a 40-story PRD opens no more lanes than a 4-story one. Stories
+  that classify to the same worker id serialize on that one lane. Parallel swarming survives but is
+  capped at the pool's remaining capacity instead of dispatching one worker per story.
+- promote 2026-09-11 (orchestrator skills use the pool): `--interactive` is unchanged — it runs in
+  the parent and claims no slots. The JSON return path is unchanged and pinned by a test:
+  `RETURN CONTRACT: json`, `jq -e` validation, `INVALID_RETURN_FORMAT`, the `workers_run` proof gate
+  and `verify-story-deliverables.sh` all still apply.
+
+- promote 2026-09-11 (ralph orchestrator policy): the hard policy
+  `ralph-orchestrator-context-discipline` no longer mandates a fresh worker per story. Rules 6 and 8
+  previously required "one preflight explorer, one story worker per story" — which directly
+  contradicted the session worker pool the orchestrator skills now use. They now require **one live
+  slot per HQ worker id**, claimed through `core/scripts/conduct-pool.sh` and reused across stories,
+  with compaction or recycling at cap rather than a new child each time. Two stories that classify
+  to the same worker **serialize on that slot**; they do not get one each.
+- promote 2026-09-11 (ralph orchestrator policy): everything that made the policy worth having is
+  unchanged and is pinned by a test — `RETURN CONTRACT: json`, `jq` parsing, one retry,
+  `INVALID_RETURN_FORMAT`, one-line narration, no parent phase simulation, bounded parent log reads,
+  and budget-aware regression gates. Extra slots beyond one per worker still require a high-risk
+  trigger or an explicit user opt-in after stating the token and runtime cost.
+- promote 2026-09-11 (ralph orchestrator policy): the rationale is rewritten. Fresh-context-per-story
+  is no longer presented as the token-saving mechanism; parent thinness, JSON returns and the pool
+  cap are. Resuming a slot is now the point rather than a compromise — it reuses the prompt cache and
+  keeps the worker identity the operator chose, where a cold start pays for both again every story.
+- promote 2026-09-11 (ralph orchestrator policy): the policy `when:` trigger now covers `/conduct`
+  and `/execute-task` alongside `/run-project` and `/run-pipeline`, so the JSON contract applies
+  everywhere the pool is used to orchestrate.
+- promote 2026-09-11 (ralph orchestrator policy): `core/knowledge/public/workers/README.md` records
+  the divergence rather than leaving "Fresh context per task (no context rot)" reading as absolute.
+  `/run-project --interactive` is unaffected and stays parent-driven.
+
+## Release: v15.0.128-beta.1
+
+- promote 2026-09-10 (Grok HQ execution): Grok sessions auto-bind `company_slug` + scope-capability on SessionStart from a safe source only (parent session, `HQ_SPAWN_COMPANY`, or already-written meta — never cwd guessing). Unbound company-path tools were the dominant Grok failure (mandatory-scope denials).
+- promote 2026-09-10 (Grok HQ execution): `GROK_SESSION_ID` is a first-class session-id env var. Empty Glob/`list_dir` deny with "pass a scoped path" instead of the HQ-root timeout dump. SessionStart writes `workspace/sessions/<sid>/skill-catalog.txt`.
+- promote 2026-09-10 (Grok HQ execution): headless Grok spawn (workflow-runner + fleet adapter) uses `--always-approve`, `--output-format json`, and `--json-schema` when the CLI supports it. `/conduct` detaches with `core/scripts/hq-detach.sh` (Python `os.setsid` on macOS; stock Darwin has no `setsid(1)`).
+- promote 2026-09-10 (Grok HQ execution): new `.grok/rules/` notes for skill catalog, prompt-queue `task_already_running`, worktrees vs `repos/`, session bind, and MCP default-on (`hq-work` only in the project file). Operator action: disable or auth unused Superhuman MCP profiles in user Grok config if start banners bother you.
+- promote 2026-09-11 (supply-chain guard): the `npm/pnpm/yarn/bun` install guard
+  (`.claude/hooks/block-unsafe-package-install.sh`) no longer mis-reads the value
+  of a space-separated flag as a package name. `npm i -g --prefix /path <pkg>`
+  used to have `/path` treated as an untrusted positional package, which blocked
+  the sanctioned first-party / allow-listed global install (e.g. upgrading the hq
+  CLI into `~/.local`). Value-taking flags (`--prefix`, `-C`, `--registry`,
+  `--cache`, `--dir`, ...) now have their value token skipped. The guard is
+  unchanged for genuinely untrusted installs -- a new 12-case regression suite
+  (`.claude/hooks/tests/block-unsafe-package-install.test.sh`) pins that
+  `--prefix /path left-pad` still blocks. No operator action required.
+
 ## Release: v15.0.127-beta.6
 
 - promote 2026-09-11 (conduct worker definitions): `/conduct` now **loads the worker it picks**.

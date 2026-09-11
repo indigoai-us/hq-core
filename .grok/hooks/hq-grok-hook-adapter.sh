@@ -194,7 +194,10 @@ PROMPT="$(jget '.prompt // .userPrompt // .content // empty')"
 # Prefer whatever session field Grok supplies; else synthesize from the
 # invoking process ($PPID - stable within a Grok session, distinct across).
 SID="$(jget '.session_id // .sessionId // .conversationId // .threadId // empty')"
-[ -z "$SID" ] && SID="grok-${GROK_SESSION_ID:-$PPID}"
+[ -z "$SID" ] && SID="${GROK_SESSION_ID:-}"
+[ -z "$SID" ] && SID="grok-${PPID}"
+PARENT_SID="$(jget '.parent_session_id // .parentSessionId // empty')"
+[ -z "$PARENT_SID" ] && PARENT_SID="${HQ_PARENT_SESSION_ID:-}"
 
 CLAUDE_JSON="$(jq -n \
   --arg t "$CTOOL" \
@@ -479,6 +482,18 @@ hqad_gate_override() {
       local gpath gpattern gpayload
       gpath="$(jget '.toolInput.target_directory // .tool_input.target_directory // .toolInput.path // .tool_input.path // empty')"
       gpattern="$(jget '.toolInput.pattern // .tool_input.pattern // empty')"
+      [ "$gpath" = "null" ] && gpath=""
+      [ "$gpattern" = "null" ] && gpattern=""
+      if [ -z "$gpath" ]; then
+        case "$GTOOL" in
+          list_dir|ListDir)
+            deny "BLOCKED: list_dir needs target_directory. Pass target_directory scoped to a subdirectory (not HQ root). Example: target_directory=\"core/\" or target_directory=\"workspace/\"."
+            ;;
+          *)
+            deny "BLOCKED: Glob needs a path. Pass path scoped to a subdirectory (not HQ root). Example: Glob pattern=\"*.md\" path=\"core/\"."
+            ;;
+        esac
+      fi
       if [ -n "$gpath" ]; then
         case "$gpath" in
           /*|[A-Za-z]:/*|[A-Za-z]:\\*) : ;;
@@ -640,7 +655,44 @@ run_post_tool_use() {
   esac
 }
 
+write_skill_catalog() {
+  [ -n "$HQ_ROOT" ] && [ -n "$SID" ] || return 0
+  local dest dir skills phys
+  dest="$HQ_ROOT/workspace/sessions/$SID/skill-catalog.txt"
+  dir="$(dirname "$dest")"
+  skills="$HQ_ROOT/.agents/skills"
+  [ -d "$skills" ] || return 0
+  phys="$(cd "$skills" 2>/dev/null && pwd -P)" || return 0
+  [ -n "$phys" ] || return 0
+  mkdir -p "$dir" 2>/dev/null || return 0
+  {
+    echo "# Canonical HQ skills: .agents/skills/ (not .claude/skills/)."
+    echo "# Invoke with /name. Paths are relative to HQ root."
+    # .agents/skills may be a symlink (often to .claude/skills). Follow it for
+    # discovery, but emit canonical .agents/skills/ paths.
+    find "$phys" -mindepth 2 -maxdepth 3 -name SKILL.md 2>/dev/null \
+      | LC_ALL=C sort \
+      | while IFS= read -r f; do
+          rel=".agents/skills/${f#"$phys"/}"
+          name="$(basename "$(dirname "$f")")"
+          printf '%s\t%s\n' "$name" "$rel"
+        done
+  } >"$dest" 2>/dev/null || true
+}
+
 run_session_start() {
+  # Grok cannot inject a bind nudge. Bind from a safe source before the first
+  # company-path tool (inherit parent / HQ_SPAWN_COMPANY / already-written meta).
+  if [ -n "$HQ_ROOT" ] && [ -n "$SID" ]; then
+    # shellcheck source=../../core/scripts/lib/session-scope-capability.sh
+    . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" 2>/dev/null || true
+    # shellcheck source=../../core/scripts/lib/session-auto-bind.sh
+    . "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" 2>/dev/null || true
+    if command -v session_auto_bind_apply >/dev/null 2>&1; then
+      session_auto_bind_apply "$HQ_ROOT" "$SID" "$PARENT_SID" || true
+    fi
+    write_skill_catalog
+  fi
   dispatch_settings_hooks "SessionStart" "ANY" "$CLAUDE_JSON"
 }
 

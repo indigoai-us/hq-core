@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# hq-core: public
 # Mandatory company-scope authorizer — blocks cross-company filesystem access.
 # PreToolUse for Read, Grep, Glob, Bash, and (since 2026-09-07) Write, Edit,
 # MultiEdit, NotebookEdit. Reads were guarded from the start; file mutations
@@ -102,13 +103,14 @@ LIB_DIR="$HQ_ROOT/core/scripts/lib"
 # Such a call cannot be attributed to any session and is denied below.
 SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty')"
 
-BOUND_CO=""
-if [ -n "$SESSION_ID" ]; then
-  BOUND_CO="$(session_scope_read "$HQ_ROOT" "$SESSION_ID")"
-  if [ -z "$BOUND_CO" ]; then
-    meta="$HQ_ROOT/workspace/sessions/$SESSION_ID/meta.yaml"
+scope_read_bound_company() {
+  local sid="${1:-}" co=""
+  [ -n "$sid" ] || return 0
+  co="$(session_scope_read "$HQ_ROOT" "$sid")"
+  if [ -z "$co" ]; then
+    local meta="$HQ_ROOT/workspace/sessions/$sid/meta.yaml"
     if [ -f "$meta" ]; then
-      BOUND_CO="$(awk '
+      co="$(awk '
         $1 == "company_slug:" {
           sub(/^[^:]+:[[:space:]]*/, "")
           gsub(/^"|"$/, "")
@@ -117,6 +119,17 @@ if [ -n "$SESSION_ID" ]; then
         }
       ' "$meta" 2>/dev/null || true)"
     fi
+  fi
+  printf '%s' "$co"
+}
+
+BOUND_CO=""
+if [ -n "$SESSION_ID" ]; then
+  BOUND_CO="$(scope_read_bound_company "$SESSION_ID")"
+  # SessionStart bind can land in the same turn as the first companies/ Read.
+  # Re-read once rather than weakening the deny.
+  if [ -z "$BOUND_CO" ]; then
+    BOUND_CO="$(scope_read_bound_company "$SESSION_ID")"
   fi
 fi
 

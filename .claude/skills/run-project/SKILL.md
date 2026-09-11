@@ -1,13 +1,21 @@
 ---
 name: run-project
-description: Codex-native router for executing HQ PRD stories. Default inline uses filesystem-mediated worker-phase spawn_agent workers; explicit interactive mode runs directly in the parent; Ralph/headless runs the same inline worker loop unattended (auto-advance, no pauses).
-allowed-tools: Read, spawn_agent, wait_agent, Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Write, AskUserQuestion, Task
+description: Codex-native router for executing HQ PRD stories. Default inline dispatches into pooled per-worker lanes claimed through conduct-pool.sh — typically 3-4 live lanes (preflight explorer, story worker, regression gate), never more than CONDUCT_POOL_CAP (default 8), regardless of how many stories the PRD holds; explicit interactive mode runs directly in the parent and takes no pool slots; Ralph/headless runs the same pooled worker loop unattended (auto-advance, no pauses).
+allowed-tools: Read, spawn_agent, wait_agent, Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Write, AskUserQuestion, Task
 argument-hint: "{project} [--status] [--resume] [--dry-run] [--inline] [--interactive] [--ralph-mode] [--in-place] [--timeout N]"
 ---
 
 # Run Project — Codex Router
 
 Codex does not use Claude Code's `Task`, `Plan` sub-agents, `ExitPlanMode`, `/checkpoint`, or `/compact` primitives. It does have `spawn_agent` / `wait_agent`, so the default inline path maps Claude's per-story `Task` boundary to a Codex `worker` agent and maps read-only plan preflight to a Codex `explorer` agent.
+
+**Live children: typical 3–4, worst case `CONDUCT_POOL_CAP` (default 8).** Every
+agent this skill dispatches is a pooled lane claimed through
+`core/scripts/conduct-pool.sh`, so the count is set by the pool, not by the
+number of stories — a 40-story PRD opens no more lanes than a 4-story one.
+Story coordinators claim `story:{worker-id}`; the phases inside them claim the
+bare worker id, so a story can never block on a lane it is holding itself.
+`--interactive` runs in the parent and claims none.
 
 **User's input:** $ARGUMENTS
 
@@ -85,11 +93,27 @@ This is advisory, not a hard stop — many projects (CLIs, infra, libraries) hav
 
 ## Step 3 — Default Inline Codex Execution
 
-Inline mode is story-delegated. The Codex parent session plans and coordinates; each story runs in one fresh `worker` agent that invokes `/execute-task {project}/{story-id}` internally. `/execute-task` then maps its worker phases to nested Codex `spawn_agent` calls via `.claude/skills/execute-task/SKILL.md`.
+Inline mode is story-delegated and **pooled**. The Codex parent session plans and coordinates; each story runs in a `worker` lane claimed from the session pool — one live lane per HQ worker id, reused across stories rather than a fresh child per story — that invokes `/execute-task {project}/{story-id}` internally. `/execute-task` then maps its worker phases to nested Codex `spawn_agent` calls via `.claude/skills/execute-task/SKILL.md`.
 
 ### 3a. Preflight Plan
 
-Spawn exactly one read-only explorer:
+The preflight explorer is a **named pool slot**, not a throwaway. Claim and
+validate it exactly as `.claude/skills/_shared/pool-lane-protocol.md` describes
+— `assign`, honour exits 3 and 4, `mkdir -p` the slot dir, check `owner.json`
+before the spawn/resume split, and `record` running **before** `wait_agent`
+blocks — a lane left `claimed` while work is live is one `cancel` may retire as
+undispatched (protocol §4):
+
+```bash
+bash core/scripts/conduct-pool.sh assign --worker-id "explorer" --task "{project} preflight"
+```
+
+The ownership check is not optional here just because the id is a constant — it
+is *more* necessary. `explorer` is the same lane id for every project and every
+company, so a second `/run-project` in one session resumes the first one's
+planning transcript unless the stamp is checked. On a company or project
+mismatch: `cancel` (not `recycle` — nothing has been dispatched into this claim
+yet), clear, re-stamp, dispatch cold. Then:
 
 ```
 spawn_agent({
@@ -108,7 +132,60 @@ For each approved incomplete story:
 
 1. Announce story ID, title, and planned worker sequence.
 2. Perform only lightweight parent orchestration: branch setup, state file update, and best-effort Linear sync.
-3. Spawn exactly one story worker:
+3. Claim the story worker's lane, then dispatch into it. Classify the story to
+   an HQ worker id first (same classification `/execute-task` uses), then:
+
+   ```bash
+   bash core/scripts/conduct-pool.sh assign \
+     --worker-id "story:{worker-id}" --task "{project}/{story-id}"
+   ```
+
+   **The `story:` prefix is not cosmetic.** This wrapper does no domain work; it
+   runs `/execute-task`, whose phases claim the **bare** worker id in their own
+   `assign`. A wrapper holding `backend-dev` would send its own
+   `api_development` phase to exit 4 — waiting for a lane the wrapper itself is
+   holding, with the wrapper waiting on that phase. Neither ever finishes.
+   Coordinator lanes live in the `story:` namespace; phase lanes use the bare
+   id; they can never collide. The delimiter is a colon, not a slash:
+   `conduct-pool.sh` restricts worker ids to `[A-Za-z0-9._:-]`, so
+   `story/backend-dev` exits 1 and no coordinator lane is claimed at all.
+
+   Then follow `.claude/skills/_shared/pool-lane-protocol.md` for everything
+   that comes next — the exit codes (3 and 4 both mean **wait**), the `mkdir -p`
+   and `owner.json` check before the spawn/resume split, and `record` running in
+   the gap between `spawn_agent` returning its id and `wait_agent` blocking —
+   never after the wait, which would leave live work marked `claimed` and
+   therefore cancellable (protocol §4). `record … --status idle` the moment
+   `wait_agent` returns — **before** parsing its JSON and before deciding whether
+   to retry. Step 3b.4's one retry on malformed JSON re-dispatches through
+   `assign`, so a lane released only after the JSON validates sends exactly that
+   retry to exit 4, waiting on a coordinator that has already returned.
+
+   `{"action":"spawn",...}` means send the full prompt below via `spawn_agent`.
+
+   `{"action":"resume",...}` means that coordinator already has an idle lane
+   holding everything it learned on earlier stories of this class. **Codex
+   `spawn_agent` always starts a new agent — it has no resume primitive — so do
+   not treat this branch as unimplementable and do not leave it.** `assign` has
+   already marked the slot `running`; a coordinator that cannot act on a
+   `resume` leaves the lane stuck there and every later claim for that worker
+   exits 4. Use the protocol's disk-backed restart: `spawn_agent` with the full
+   prompt below, prefixed by
+
+   ```
+   You are resuming your own lane. Every story you already ran in this session is
+   recorded in {slot dir}/handoffs.jsonl — read it first and do not redo anything
+   it shows as done. That file belongs to this session and this company only; if
+   it is absent, start from the brief.
+   ```
+
+   then `record` the new agent id against the **same** slot. The cap counts
+   lanes, not restarts. Append each validated story JSON to that file so the next
+   restart can see it.
+
+   Two stories that classify to the same worker id share one coordinator lane
+   and therefore **serialize** on it. That is the intended behaviour, not a
+   stall — their phases would have serialized on the bare worker lane anyway.
 
 ```
 spawn_agent({
@@ -168,7 +245,7 @@ wait_agent(...)
 
 ### 3c. Regression Gates
 
-Every 3 completed stories, run budget-aware `metadata.qualityGates` in one Codex `worker` agent with `reasoning_effort: "low"` and require compact JSON. Default to gates for repos touched since the last gate; run the full matrix at final completion, before deploy, after high-risk cross-repo contract changes, or when explicitly requested. Capture detailed logs to files and keep the parent transcript to the compact return:
+Every 3 completed stories, run budget-aware `metadata.qualityGates` in the **regression-gate pool slot** — `conduct-pool.sh assign --worker-id "regression-gate"`, resumed at every gate rather than respawned — as a Codex `worker` agent with `reasoning_effort: "low"`, and require compact JSON. A resumed gate lane already knows which repos it checked last time, which is what makes "repos touched since the last gate" cheap. `regression-gate` is another constant id shared across every project, so run the same `owner.json` check from `.claude/skills/_shared/pool-lane-protocol.md` before resuming it; a gate lane carrying another company's repo list is both a wrong answer and a leak. Default to gates for repos touched since the last gate; run the full matrix at final completion, before deploy, after high-risk cross-repo contract changes, or when explicitly requested. Capture detailed logs to files and keep the parent transcript to the compact return:
 
 ```json
 {"passed": true, "scope": "changed-repos", "gate_results": {"<gate>": "pass"}, "failures": []}
@@ -180,9 +257,12 @@ On failure, surface the summary and ask whether to fix, adjust, stop, or switch 
 
 ### 3d. Budget Guardrails
 
-- Use exactly one preflight explorer, one story worker per story, and one regression-gate worker at gate cadence.
+- Every agent this skill dispatches comes from the session pool and follows `.claude/skills/_shared/pool-lane-protocol.md`: the preflight explorer, each story's coordinator lane, and the regression gate are **named slots that resume**, not new children per story. All three are ownership-checked before reuse — `explorer` and `regression-gate` are constant ids shared across every project and company, so they are the lanes most likely to hand one tenant's context to another. Typical run: 3-4 live lanes. Hard ceiling: `CONDUCT_POOL_CAP` (default 8), enforced by `conduct-pool.sh assign`, and it does not move with the story count.
+- **A coordinator lane holds a slot while its phases need one, so concurrency has to leave them room** (protocol §7). Run at most `max(1, (CONDUCT_POOL_CAP - 2) / 2)` stories concurrently — **3 at the default cap of 8**. At a cap of 2 or 3 the reserved explorer/gate pair is what does not fit: recycle those slots once used and run one coordinator serially. At a cap of 1, nested execution is impossible — say so and stop, offering a higher cap or `--interactive`. The `- 2` is the explorer and regression-gate slots, which stay claimed as `idle` and still count; the `/ 2` guarantees every live coordinator can still claim the one phase lane it needs. Exceed it and the pool fills with coordinators that are each waiting on a phase lane that can no longer be granted — exit 3 for everyone, forever, with nothing running that could release a slot.
+- Leave a lane `idle`, never `running`, once its reply is validated. A lane stuck `running` makes every later `assign` for that worker exit 4 and stalls the queue.
+- When a lane's context grows fat — many stories on one worker, or a return that shows it losing earlier detail — compact or recycle that slot. Do not open a second lane for the same worker to escape it.
 - Do not simulate `/execute-task` by spawning worker-phase agents from the parent. If the story worker cannot run `/execute-task`, pause and switch modes.
-- **Prefer sub-agent swarming for speed.** When incomplete stories are mutually independent (no dependency edges between them and no overlapping declared files), spawn their story workers **in parallel** — one worker per story, dispatched in the same batch — instead of serially. Validate each returned JSON, worker proof, and commit per story as replies arrive; run regression gates after the batch. Stories with dependencies or file overlap still run sequentially. Extra review or QA agents beyond the story workers still require a high-risk trigger or explicit user opt-in after naming the cost.
+- **Swarm only as far as the pool allows.** When incomplete stories are mutually independent (no dependency edges, no overlapping declared files) **and classify to different worker ids**, dispatch them concurrently — but only up to the concurrent-story limit above, and only on lanes `assign` actually granted. Independent stories that share a worker id serialize on that one lane. Validate each returned JSON, worker proof, and commit per story as replies arrive; run the regression gate after the batch. Stories with dependencies or file overlap still run sequentially. A second lane for a worker that already has one, or an extra review or QA agent beyond the story workers, still requires a high-risk trigger or explicit user opt-in after naming the cost.
 - Do not read raw test logs, full `*.output.json`, or long command output in the parent. Use compact JSON, strip `stdout_tail` / `stderr_tail`, or cap inspection with `tail -c`.
 
 ## Step 4 — Parent-Driven Interactive Codex Execution
@@ -232,7 +312,7 @@ If any pre-flight check cannot be satisfied, stop and surface it; do not start t
 
 The operational differences from default inline are then:
 
-1. **Skip the preflight approval gate (Step 3a).** Still spawn the one read-only explorer to build the plan, but do not pause for approval — log the plan to `workspace/orchestrator/{project}/codex-session-plan.md` and proceed.
+1. **Skip the preflight approval gate (Step 3a).** Still run the preflight explorer slot to build the plan (claimed or resumed the same way), but do not pause for approval — log the plan to `workspace/orchestrator/{project}/codex-session-plan.md` and proceed.
 2. **Auto-advance.** Run the Step 3b story loop for every approved incomplete story back to back. Do not pause between stories (Step 3b.10 already auto-advances; ralph-mode also skips the >10-story and session-mode pauses). All per-story invariants still hold: JSON-validate the worker return, enforce the worker-proof gate, verify parent-visible commits, mark `passes: true` only after verification, and update `state.json` after each story.
 3. **Run regression gates on cadence.** Apply Step 3c every 3 completed stories exactly as in inline mode.
 4. **Report once.** Emit one compact line per story to the transcript (`[{story_id}] {status} · {files_changed} files · {first_commit_short_sha}`); send anything longer to `workspace/threads/journal/<date>/<story-id>.md`. Surface a single summary at the end rather than pausing throughout.

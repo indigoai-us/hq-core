@@ -12,9 +12,23 @@
 #   conduct-pool.sh [--session-id <id>] list
 #   conduct-pool.sh [--session-id <id>] assign  --worker-id <id> [--task <text>]
 #   conduct-pool.sh [--session-id <id>] record  --worker-id <id> --subagent-id <id>
-#                                               --status running|idle|recycled [--task <text>]
-#   conduct-pool.sh [--session-id <id>] recycle --worker-id <id>
+#                                               --status running|idle [--task <text>]
+#   conduct-pool.sh [--session-id <id>] recycle --worker-id <id> [--force]
+#   conduct-pool.sh [--session-id <id>] cancel  --worker-id <id>
 #   conduct-pool.sh [--session-id <id>] clear
+#
+# A slot moves through four states, and every verb below keys on the status —
+# never on whether some other field happens to be filled in:
+#
+#   claimed   `assign` granted the lane; nothing is dispatched into it yet
+#   running   `record --status running` attached a sub-agent; work is live
+#   idle      `record --status idle` released it; the next assign resumes it
+#   recycled  retired. A tombstone, kept for provenance, not counted against cap
+#
+# `record` does NOT accept `--status recycled`. Retirement is `recycle` or
+# `cancel`, both of which enforce the running-lane guard and purge the slot's
+# persisted handoffs; a `record` path into the same state would route around
+# both.
 #
 # `assign` is the only command that decides anything. It prints one JSON object:
 #
@@ -23,13 +37,36 @@
 #   {"action":"spawn","worker_id":"...","recycled":"<other>"}   the pool was full,
 #       so the least-recently-used IDLE slot was retired to make room
 #
-# `assign` refuses in two cases, and changes nothing in either:
+# `cancel` is the counterpart to an `assign` you decided not to act on. A caller
+# that claims a lane and backs out — most often because the slot's ownership
+# stamp names another company or project — needs to release it, and cannot use
+# `recycle`, which refuses a dispatched lane. `cancel` covers exactly that
+# window: it retires a slot while it is still `claimed`, and refuses once
+# `record --status running` has moved it on.
 #
-#   exit 3  the pool is at cap and every slot is running. The caller waits for a
-#           lane to finish, or retires one deliberately with `recycle`.
-#   exit 4  this worker already has a lane running. Resuming would relaunch into
-#           a live lane's run directory and overwrite the artifacts of a process
-#           that is still working. Only an IDLE slot is resumable.
+# It keys on the status deliberately. An empty `subagent_id` would NOT have
+# worked as the test: a RESUME claim keeps the previous lane's id while it waits
+# to be dispatched, so keying on emptiness refuses exactly the cross-tenant reset
+# this verb exists for.
+#
+# Refusals, none of which change anything:
+#
+#   exit 3  the pool is at cap and no slot is idle. Wait for a lane to report and
+#           be marked idle. Retiring a running one does not stop its sub-agent,
+#           so `recycle` refuses it; only after you have stopped it does
+#           `recycle --force` apply.
+#
+#   exit 4  this worker already has a lane `running` or `claimed`. Resuming a
+#           running one would relaunch into the run directory of a process that
+#           is still working and overwrite its artifacts; a claimed one is held
+#           by another caller about to dispatch. Only an IDLE slot is resumable.
+#
+#   exit 5  `recycle` was asked to retire a RUNNING lane, or `cancel` was asked
+#           to drop a lane that is not `claimed`. Retiring a live lane frees its
+#           slot in the pool but does NOT stop the sub-agent: it keeps working,
+#           so the real number of live children exceeds the cap and the old lane
+#           can write on top of whatever claims the slot next. Confirm the lane
+#           finished, or stop it, then re-run `recycle` with --force.
 #
 # A caller that ignores those exit codes spawns past the cap or on top of a live
 # lane, which are the two failures this script exists to prevent.
@@ -51,7 +88,7 @@
 # `hq-session.sh set`: that command replaces a single-line `key: value`, and a
 # nested list cannot round-trip through it.
 #
-# CAP is 8 live (running + idle) slots, override with CONDUCT_POOL_CAP.
+# CAP is 8 live (claimed + running + idle) slots, override with CONDUCT_POOL_CAP.
 # Recycled slots are tombstones: they stay listed for provenance and do not
 # count against the cap.
 #
@@ -72,6 +109,7 @@ SESSIONS_DIR="$REPO_ROOT/workspace/sessions"
 CAP="${CONDUCT_POOL_CAP:-8}"
 EXIT_CAP_FULL=3
 EXIT_WORKER_BUSY=4
+EXIT_LANE_RUNNING=5
 LOCK_HELD=0
 LOCK_DIR=""
 
@@ -249,8 +287,14 @@ save_slots() {
 
 find_slot() { awk -v FS="$SEP" -v w="$1" '$1 == w { print; exit }' "$SLOTS"; }
 slot_field() { printf '%s' "$1" | cut -d"$SEP" -f"$2"; }
-live_count() { awk -v FS="$SEP" '$3 == "running" || $3 == "idle" { n++ } END { print n+0 }' "$SLOTS"; }
-live_ids() { awk -v FS="$SEP" '$3 == "running" || $3 == "idle" { print $1 }' "$SLOTS" | tr '\n' ' ' | sed -e 's/ $//'; }
+# A slot is live from the moment it is claimed. `claimed` is the window between
+# `assign` granting a lane and `record` attaching a sub-agent to it: the slot is
+# held and counts against the cap, but nothing is running in it yet. Keeping that
+# distinct from `running` is what lets `cancel` tell "I claimed this and backed
+# out" apart from "a sub-agent is working in here", without having to take the
+# caller's word for it.
+live_count() { awk -v FS="$SEP" '$3 == "running" || $3 == "claimed" || $3 == "idle" { n++ } END { print n+0 }' "$SLOTS"; }
+live_ids() { awk -v FS="$SEP" '$3 == "running" || $3 == "claimed" || $3 == "idle" { print $1 }' "$SLOTS" | tr '\n' ' ' | sed -e 's/ $//'; }
 
 # ISO-8601 UTC is fixed width, so lexicographic order is chronological order. A
 # slot with no timestamp sorts first, which is the behaviour we want: an
@@ -269,6 +313,17 @@ put_slot() {
     END { if (!found) print w, sid, st, t, ts }
   ' "$SLOTS" > "$out"
   mv "$out" "$SLOTS"
+}
+
+# A retired slot must not be able to hand its history back. Recycling is how a
+# fat lane is discarded, so leaving its handoff file in place means the next
+# claim of the same worker id — which passes the ownership check, because it is
+# the same company and project — reads back the entire transcript the recycle
+# was meant to drop, and it grows without bound across recycles.
+purge_slot_dir() {
+  local dir="$SESSIONS_DIR/$SESSION_ID/pool/$1"
+  [ -d "$dir" ] || return 0
+  rm -f "$dir/handoffs.jsonl" "$dir/owner.json"
 }
 
 retire_slot() {
@@ -307,17 +362,24 @@ cmd_assign() {
     sub="$(slot_field "$existing" 2)"
     prev="$(slot_field "$existing" 4)"
     [ -n "$task" ] || task="$prev"
-    if [ "$status" = "running" ]; then
+    if [ "$status" = "running" ] || [ "$status" = "claimed" ]; then
       # Resuming here would relaunch into the run directory of a lane that is
-      # still working and overwrite its artifacts mid-flight.
-      echo "conduct-pool: worker '$wid' already has a lane running (run id: ${sub:-unrecorded})." >&2
-      echo "conduct-pool: wait for it to report and mark it idle, or retire it with: conduct-pool.sh recycle --worker-id $wid" >&2
+      # still working and overwrite its artifacts mid-flight. A `claimed` lane is
+      # equally unavailable: another caller holds it and is about to dispatch.
+      echo "conduct-pool: worker '$wid' already has a lane $status (run id: ${sub:-unrecorded})." >&2
+      if [ "$status" = "claimed" ]; then
+        echo "conduct-pool: another caller claimed it and has not dispatched yet. Wait, or if that" >&2
+        echo "conduct-pool: claim was yours and you backed out: conduct-pool.sh cancel --worker-id $wid" >&2
+      else
+        echo "conduct-pool: wait for it to report and mark it idle. Retiring it does NOT stop the" >&2
+        echo "conduct-pool: sub-agent, so only after you have stopped it: recycle --worker-id $wid --force" >&2
+      fi
       exit "$EXIT_WORKER_BUSY"
     fi
     if [ "$status" = "idle" ]; then
       # Idle and still in the pool: the same worker keeps the same lane. This is
       # the case the pool exists for.
-      put_slot "$wid" "$sub" running "$task" "$now"
+      put_slot "$wid" "$sub" claimed "$task" "$now"
       save_slots "$meta"
       release_lock
       printf '{"action":"resume","worker_id":"%s","subagent_id":"%s"}\n' "$wid" "$sub"
@@ -330,20 +392,23 @@ cmd_assign() {
   if [ "$(live_count)" -ge "$CAP" ]; then
     retired="$(lru_idle)"
     if [ -z "$retired" ]; then
-      echo "conduct-pool: pool is full at cap $CAP and every slot is running — cannot start '$wid'." >&2
+      echo "conduct-pool: pool is full at cap $CAP and no slot is idle — cannot start '$wid'." >&2
       echo "conduct-pool: live workers: $(live_ids)" >&2
-      echo "conduct-pool: wait for one to report, or retire one with: conduct-pool.sh recycle --worker-id <id>" >&2
+      echo "conduct-pool: wait for one to report and be marked idle. Retiring a running lane does" >&2
+      echo "conduct-pool: NOT stop its sub-agent, so 'recycle' refuses one; only after you have" >&2
+      echo "conduct-pool: stopped it does 'recycle --worker-id <id> --force' apply." >&2
       exit "$EXIT_CAP_FULL"
     fi
     retire_slot "$retired" "$now"
-    put_slot "$wid" "" running "$task" "$now"
+    purge_slot_dir "$retired"
+    put_slot "$wid" "" claimed "$task" "$now"
     save_slots "$meta"
     release_lock
     printf '{"action":"spawn","worker_id":"%s","recycled":"%s"}\n' "$wid" "$retired"
     return 0
   fi
 
-  put_slot "$wid" "" running "$task" "$now"
+  put_slot "$wid" "" claimed "$task" "$now"
   save_slots "$meta"
   release_lock
   printf '{"action":"spawn","worker_id":"%s"}\n' "$wid"
@@ -354,8 +419,15 @@ cmd_record() {
   valid_id "$wid" || die "record: --worker-id must be non-empty and match [A-Za-z0-9._:-]"
   valid_id "$sub" || die "record: --subagent-id must be non-empty and match [A-Za-z0-9._:-]"
   case "$status" in
-    running|idle|recycled) : ;;
-    *) die "record: --status must be running, idle, or recycled (got '${status:-}')" ;;
+    running|idle) : ;;
+    recycled)
+      # Retirement is not a status you can assert your way into. This path used
+      # to mark a running slot recycled and clear its sub-agent id directly,
+      # which skipped the running-lane guard AND the handoff purge — a caller
+      # could retire a live lane and be granted its replacement while the
+      # original kept working.
+      die "record: --status recycled is not accepted. Retire a lane with 'recycle --worker-id $wid' (add --force only after you have stopped a running one), or 'cancel --worker-id $wid' for a claim you never dispatched." ;;
+    *) die "record: --status must be running or idle (got '${status:-}')" ;;
   esac
   meta="$(meta_path)"
   acquire_lock
@@ -364,21 +436,70 @@ cmd_record() {
   [ -n "$existing" ] || die "record: no pool slot for '$wid' — run 'assign --worker-id $wid' first (assign is where the cap is enforced)"
   prev="$(slot_field "$existing" 4)"
   [ -n "$task" ] || task="$prev"
-  if [ "$status" = "recycled" ]; then sub=""; fi
   put_slot "$wid" "$sub" "$status" "$task" "$(now_utc)"
   save_slots "$meta"
 }
 
+# Retiring a slot is a pool operation, not a process operation: it frees the
+# entry and leaves the sub-agent alone. For an idle slot that is exactly right.
+# For a running one it is a lie the rest of the system believes — the cap is
+# enforced against the pool, so a retired-but-live lane puts the real child
+# count over the cap, and whatever claims the slot next shares a run directory
+# with a process still writing to it. Refuse unless the caller says it has
+# already confirmed the lane stopped.
 cmd_recycle() {
-  local wid="$1" meta existing
+  local wid="$1" force="$2" meta existing status
   valid_id "$wid" || die "recycle: --worker-id must be non-empty and match [A-Za-z0-9._:-]"
   meta="$(meta_path)"
   acquire_lock
   load_slots "$meta"
   existing="$(find_slot "$wid")"
   [ -n "$existing" ] || die "recycle: no pool slot for '$wid'"
+  status="$(slot_field "$existing" 3)"
+  # `claimed` has no sub-agent, so retiring it is safe and stays allowed. Only a
+  # dispatched lane is refused.
+  if [ "$status" = "running" ] && [ "$force" != "1" ]; then
+    echo "conduct-pool: recycle: lane '$wid' is still running." >&2
+    echo "conduct-pool: retiring it frees the slot but does not stop the sub-agent, so the" >&2
+    echo "conduct-pool: real child count would exceed the cap and the next claimant would share" >&2
+    echo "conduct-pool: a run directory with a live writer." >&2
+    echo "conduct-pool: wait for it and mark it idle, or stop it and re-run with --force." >&2
+    release_lock
+    exit "$EXIT_LANE_RUNNING"
+  fi
   retire_slot "$wid" "$(now_utc)"
   save_slots "$meta"
+  purge_slot_dir "$wid"
+}
+
+# Retire a claim that was never dispatched. The `claimed` status is the evidence
+# and it is a fact this script owns: `assign` writes it, and only
+# `record --status running` moves a lane out of it. An empty subagent_id would
+# NOT have worked — a resume claim keeps the previous lane's id while it waits to
+# be dispatched, so keying on emptiness would have refused exactly the
+# cross-tenant reset this verb exists for.
+cmd_cancel() {
+  local wid="$1" meta existing status sub
+  valid_id "$wid" || die "cancel: --worker-id must be non-empty and match [A-Za-z0-9._:-]"
+  meta="$(meta_path)"
+  acquire_lock
+  load_slots "$meta"
+  existing="$(find_slot "$wid")"
+  [ -n "$existing" ] || die "cancel: no pool slot for '$wid'"
+  status="$(slot_field "$existing" 3)"
+  sub="$(slot_field "$existing" 2)"
+  if [ "$status" != "claimed" ]; then
+    echo "conduct-pool: cancel: lane '$wid' is '$status', not 'claimed'." >&2
+    echo "conduct-pool: cancel only drops a claim between assign and dispatch. A running lane" >&2
+    echo "conduct-pool: (sub-agent: ${sub:-unrecorded}) must be waited out and marked idle, or" >&2
+    echo "conduct-pool: stopped and retired with: recycle --worker-id $wid --force" >&2
+    echo "conduct-pool: an idle lane is retired with: recycle --worker-id $wid" >&2
+    release_lock
+    exit "$EXIT_LANE_RUNNING"
+  fi
+  retire_slot "$wid" "$(now_utc)"
+  save_slots "$meta"
+  purge_slot_dir "$wid"
 }
 
 cmd_clear() {
@@ -412,12 +533,14 @@ ARG_WORKER=""
 ARG_SUBAGENT=""
 ARG_STATUS=""
 ARG_TASK=""
+ARG_FORCE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --worker-id)   ARG_WORKER="${2:-}"; shift 2 ;;
     --subagent-id) ARG_SUBAGENT="${2:-}"; shift 2 ;;
     --status)      ARG_STATUS="${2:-}"; shift 2 ;;
     --task)        ARG_TASK="$(sanitize_task "${2:-}")"; shift 2 ;;
+    --force)       ARG_FORCE=1; shift ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -426,7 +549,8 @@ case "$SUBCOMMAND" in
   list)    cmd_list ;;
   assign)  cmd_assign "$ARG_WORKER" "$ARG_TASK" ;;
   record)  cmd_record "$ARG_WORKER" "$ARG_SUBAGENT" "$ARG_STATUS" "$ARG_TASK" ;;
-  recycle) cmd_recycle "$ARG_WORKER" ;;
+  recycle) cmd_recycle "$ARG_WORKER" "$ARG_FORCE" ;;
+  cancel)  cmd_cancel "$ARG_WORKER" ;;
   clear)   cmd_clear ;;
   *)       usage >&2; exit 1 ;;
 esac

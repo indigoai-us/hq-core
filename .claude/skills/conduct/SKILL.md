@@ -173,8 +173,19 @@ asked for a human gate and did not get one is a defect, not a shortcut.
 ## Step 3: Assign a pool slot
 
 ```bash
-bash core/scripts/conduct-pool.sh assign --worker-id "{worker}" --task "{short label}"
+bash core/scripts/conduct-pool.sh assign --worker-id "conduct:{worker}" --task "{short label}"
 ```
+
+**The `conduct:` prefix is load-bearing.** A `/conduct` lane and an
+`/execute-task` phase lane are not interchangeable even when they name the same
+worker: `/conduct` stores a workflow-runner run directory as the `subagent_id`
+and `/execute-task` stores a `Task` / `spawn_agent` handle, so a lane claimed by
+one and resumed by the other would hand its id to the wrong adapter. They also
+answer to different ownership rules — `/execute-task` lanes carry the
+`owner.json` stamp from `.claude/skills/_shared/pool-lane-protocol.md`. Keeping
+the namespaces apart means a session can use both without either reading the
+other's state. Phase lanes use the bare id, story coordinators use `story:`, and
+`/conduct` uses `conduct:`.
 
 Read the JSON it prints and honour it:
 
@@ -187,8 +198,13 @@ Read the JSON it prints and honour it:
   least-recently-used idle worker was retired to make room. Mention the retired
   worker when you report back; a silently dropped worker is a defect.
 - **Exit 3** → the pool is at cap and every slot is running. Do not launch.
-  Tell the user which workers are live and offer to wait or to retire one with
-  `bash core/scripts/conduct-pool.sh recycle --worker-id {id}`.
+  Tell the user which workers are live and offer to wait. Do **not** reach for
+  `recycle`: it frees the pool entry and cannot stop the sub-agent, so it now
+  refuses a running lane with exit 5. Retiring one is only correct once that
+  lane has reported and been marked `idle`, or the user has stopped it — in
+  which case `bash core/scripts/conduct-pool.sh recycle --worker-id conduct:{id} --force`
+  asserts that. A claim you made but never launched is a different case: drop it
+  with `bash core/scripts/conduct-pool.sh cancel --worker-id conduct:{id}`.
 - **Exit 4** → this worker's own lane is still running. Do not launch: relaunching
   into a live lane's run directory overwrites the artifacts of a process that is
   still working. Queue the task behind the running one and dispatch it from that
@@ -279,7 +295,7 @@ ps -eo pid,pgid,sid,args= | grep workflow-runner | grep -v grep
 Record the lane against its slot, then end the turn:
 
 ```bash
-bash core/scripts/conduct-pool.sh record --worker-id "{worker}" \
+bash core/scripts/conduct-pool.sh record --worker-id "conduct:{worker}" \
   --subagent-id "$(basename "$RUN_DIR")" --status running
 ```
 
@@ -400,7 +416,7 @@ Then:
    rounds, then surface it to the user.
 3. Mark the slot idle so the worker is reusable and the cap frees up:
    ```bash
-   bash core/scripts/conduct-pool.sh record --worker-id "{worker}" \
+   bash core/scripts/conduct-pool.sh record --worker-id "conduct:{worker}" \
      --subagent-id "{run id}" --status idle
    ```
 4. Relay the outcome plainly — done, blocked, or needs a decision — with any

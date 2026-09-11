@@ -118,6 +118,20 @@ assert_contains "$ADAPTER_OUT" '"decision":"allow"' "allow JSON for personal wri
 run_adapter '{"hookEventName":"SessionStart","cwd":"'"$ROOT"'"}'
 assert_exit "$ADAPTER_ST" 0 "SessionStart exit 0"
 
+# 5b) SessionStart writes a compact .agents/skills catalog for this session id.
+CATSID="grok-skillcat-$$"
+run_adapter '{"hookEventName":"SessionStart","cwd":"'"$ROOT"'","session_id":"'"$CATSID"'"}'
+assert_exit "$ADAPTER_ST" 0 "SessionStart with session_id exit 0"
+CATFILE="$ROOT/workspace/sessions/$CATSID/skill-catalog.txt"
+if [ -f "$CATFILE" ] && grep -q '.agents/skills' "$CATFILE" && grep -q $'\t' "$CATFILE"; then
+  echo "PASS: SessionStart wrote skill-catalog.txt"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: SessionStart did not write compact skill-catalog.txt" >&2
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$ROOT/workspace/sessions/$CATSID"
+
 # 6) Outside HQ fail-open via bridge when no adapter found
 OUTSIDE="$(mktemp -d)"
 set +e
@@ -148,10 +162,21 @@ run_adapter '{"hookEventName":"PreToolUse","toolName":"list_dir","toolInput":{"t
 assert_exit "$ADAPTER_ST" 2 "root list_dir still blocked"
 assert_contains "$ADAPTER_OUT" '"decision":"deny"' "deny JSON for root list_dir"
 
-# 10) A genuinely unscoped Glob (pattern only, no path, cwd = HQ root) still blocks.
+# 10) A genuinely unscoped Glob (pattern only, no path, cwd = HQ root) still blocks
+#     with the empty-path message (not the 1.38M-file root dump).
 run_adapter '{"hookEventName":"PreToolUse","toolName":"Glob","toolInput":{"pattern":"**/*.md"},"cwd":"'"$ROOT"'"}'
 assert_exit "$ADAPTER_ST" 2 "unscoped root Glob still blocked"
 assert_contains "$ADAPTER_OUT" '"decision":"deny"' "deny JSON for unscoped root Glob"
+assert_contains "$ADAPTER_OUT" 'Glob needs a path' "empty Glob asks for path, not root-timeout dump"
+
+# 10z) Empty list_dir target_directory at HQ root asks for target_directory.
+run_adapter '{"hookEventName":"PreToolUse","toolName":"list_dir","toolInput":{},"cwd":"'"$ROOT"'"}'
+assert_exit "$ADAPTER_ST" 2 "empty list_dir blocked"
+assert_contains "$ADAPTER_OUT" 'list_dir needs target_directory' "empty list_dir asks for target_directory"
+
+run_adapter '{"hookEventName":"PreToolUse","toolName":"Glob","toolInput":{"pattern":"**/*","path":"null"},"cwd":"'"$ROOT"'"}'
+assert_exit "$ADAPTER_ST" 2 "Glob path=null blocked"
+assert_contains "$ADAPTER_OUT" 'Glob needs a path' "null Glob path asks for path"
 
 # 10a) A RELATIVE list_dir target that resolves to the HQ root still blocks. The
 #      guard compares absolute paths, so "." (relative to cwd = HQ root) must be
@@ -225,10 +250,17 @@ fi
 #     analysis reported on the global bridge path).
 STATE_DIR="$ROOT/workspace/orchestrator/hook-state"
 mkdir -p "$STATE_DIR"
-rm -f "$STATE_DIR"/grok-debounce-inject-policy-on-trigger-grok-bridge-*.stamp 2>/dev/null || true
+rm -f "$STATE_DIR"/grok-debounce-inject-policy-on-trigger-bridge-*.stamp \
+      "$STATE_DIR"/grok-debounce-inject-policy-on-trigger-grok-bridge-*.stamp 2>/dev/null || true
 export HQ_GROK_POLICY_DEBOUNCE_SECS=3600
+# Live Grok sessions leak GROK_SESSION_ID; isolate so the bridge fallback key
+# (bridge-$PPID) is what this assertion exercises.
+_saved_grok_sid="${GROK_SESSION_ID-}"
+_saved_hq_sid="${HQ_SESSION_ID-}"
+unset GROK_SESSION_ID HQ_SESSION_ID || true
 run_bridge '{"hookEventName":"PreToolUse","toolName":"Shell","toolInput":{"command":"echo hi"},"cwd":"'"$ROOT"'"}'
-BSTAMP="$(ls -t "$STATE_DIR"/grok-debounce-inject-policy-on-trigger-grok-bridge-*.stamp 2>/dev/null | head -1 || true)"
+# Bridge exports GROK_SESSION_ID=bridge-$PPID (adapter does not grok-prefix that).
+BSTAMP="$(ls -t "$STATE_DIR"/grok-debounce-inject-policy-on-trigger-bridge-*.stamp 2>/dev/null | head -1 || true)"
 if [ -n "$BSTAMP" ] && [ -f "$BSTAMP" ]; then
   echo "PASS: bridge path created a stable-key debounce stamp"; PASS=$((PASS + 1))
   BMT1="$(file_mtime "$BSTAMP")"
@@ -244,7 +276,10 @@ else
   echo "FAIL: bridge path did not create a stable-key debounce stamp" >&2; FAIL=$((FAIL + 1))
 fi
 unset HQ_GROK_POLICY_DEBOUNCE_SECS
-rm -f "$STATE_DIR"/grok-debounce-inject-policy-on-trigger-grok-bridge-*.stamp 2>/dev/null || true
+if [ -n "${_saved_grok_sid:-}" ]; then export GROK_SESSION_ID="$_saved_grok_sid"; else unset GROK_SESSION_ID || true; fi
+if [ -n "${_saved_hq_sid:-}" ]; then export HQ_SESSION_ID="$_saved_hq_sid"; else unset HQ_SESSION_ID || true; fi
+rm -f "$STATE_DIR"/grok-debounce-inject-policy-on-trigger-bridge-*.stamp \
+      "$STATE_DIR"/grok-debounce-inject-policy-on-trigger-grok-bridge-*.stamp 2>/dev/null || true
 
 # Finding 2.1 cross-backend coverage: a Grok run_terminal_command declaring an
 # over-ceiling foreground `timeout` is denied by the block-foreground-timeout

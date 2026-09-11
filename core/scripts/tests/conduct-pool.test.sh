@@ -70,7 +70,8 @@ assert_contains "$(cat "$META")" "conduct_pool:" "meta has the list key"
 assert_contains "$(cat "$META")" 'last_task: "now fix the test"' "meta keeps the last task"
 out="$(pool list)"
 assert_contains "$out" '"worker_id":"backend-dev"' "list names the worker"
-assert_contains "$out" '"status":"running"' "list reports status"
+# assign grants a slot as `claimed`; only `record --status running` moves it on.
+assert_contains "$out" '"status":"claimed"' "list reports status"
 ok "conduct_pool list round-trips through meta.yaml"
 
 echo "conduct-pool: an unrelated meta key survives a pool write"
@@ -99,7 +100,7 @@ assert_contains "$out" '"recycled":"worker-1"' "the LRU idle slot is the one ret
 assert_contains "$(pool list)" '"worker_id":"worker-1","subagent_id":"","status":"recycled"' \
   "retired slot keeps its name, loses its lane id"
 assert_eq "$(slot_count)" "9" "the tombstone stays listed"
-live="$(pool list | grep -c '"status":"running"\|"status":"idle"')"
+live="$(pool list | grep -c '"status":"running"\|"status":"claimed"\|"status":"idle"')"
 assert_eq "$live" "8" "live slots still capped at 8"
 ok "cap recycles the LRU idle slot"
 
@@ -121,11 +122,42 @@ assert_eq "$(cat "$META")" "$before" "cap-full assign must not touch meta.yaml"
 assert_eq "$(slot_count)" "8" "still eight slots"
 ok "cap-full assign refuses and leaves state untouched"
 
-echo "conduct-pool: recycle frees a slot for the next worker"
-pool recycle --worker-id worker-3
+echo "conduct-pool: recycle refuses a running lane, because it cannot stop one"
+# Retiring a slot frees the pool entry and leaves the sub-agent alone. Do that to
+# a running lane and the real child count goes over the cap while the next
+# claimant shares a run directory with a live writer.
+# worker-3 is only `claimed` at this point — retiring that is safe and allowed.
+# Dispatch into it first, so the refusal under test is the one that matters.
+pool record --worker-id worker-3 --subagent-id lane-3 --status running
+set +e
+err="$(pool recycle --worker-id worker-3 2>&1)"; rc=$?
+set -e
+[ "$rc" = "5" ] || fail "recycling a running lane must exit 5, got $rc"
+assert_contains "$err" "still running" "the refusal must say why"
+out="$(pool list)"
+assert_contains "$out" '"worker_id":"worker-3","subagent_id":"lane-3","status":"running"' \
+  "a refused recycle must change nothing"
+ok "a running lane cannot be retired out from under its sub-agent"
+
+echo "conduct-pool: --force retires a running lane for a caller that stopped it"
+pool recycle --worker-id worker-3 --force
 out="$(pool assign --worker-id worker-9)"
 assert_contains "$out" '"action":"spawn"' "assign succeeds once a slot is freed"
-ok "explicit recycle makes room"
+ok "explicit forced recycle makes room"
+
+echo "conduct-pool: recycling clears the lane's persisted handoffs"
+# Recycling is how a fat lane is discarded. Leave the handoff file behind and the
+# next claim of the same worker — same company, same project, so the ownership
+# stamp matches — reads back the whole transcript the recycle was meant to drop.
+slot_dir="$TMP/workspace/sessions/$SID/pool/worker-9"
+mkdir -p "$slot_dir"
+printf '{"phase":1}\n' > "$slot_dir/handoffs.jsonl"
+printf '{"company":"acme"}\n' > "$slot_dir/owner.json"
+pool record --worker-id worker-9 --subagent-id s9 --status idle
+pool recycle --worker-id worker-9
+[ -e "$slot_dir/handoffs.jsonl" ] && fail "recycle left the lane's handoff history in place"
+[ -e "$slot_dir/owner.json" ] && fail "recycle left the lane's ownership stamp in place"
+ok "a recycled lane restarts cold, with no history to hand back"
 
 echo "conduct-pool: a worker whose lane is still running is not resumable"
 reset_pool
@@ -174,7 +206,7 @@ for round in 1 2 3 4 5; do
   assert_eq "$spawns" "8" "round $round: spawns approved"
   assert_eq "$refused" "4" "round $round: cap-full refusals"
   assert_eq "$(slot_count)" "8" "round $round: slots actually recorded"
-  assert_eq "$(pool list | grep -c '"status":"running"')" "8" "round $round: live slots"
+  assert_eq "$(pool list | grep -c '"status":"claimed"')" "8" "round $round: live slots"
 done
 ok "12 concurrent assigns against cap 8 yield exactly 8 spawns, over 5 rounds"
 
@@ -198,6 +230,76 @@ set -e
 [ "$code" -ne 0 ] || fail "record on an unknown worker should fail"
 assert_contains "$out" "assign" "record error points at assign"
 ok "record cannot insert around the cap"
+
+echo "conduct-pool: cancel drops a claim that was never dispatched"
+# assign marks a new slot running before anything launches, so a caller that
+# backs out — most often because the slot's ownership stamp names another tenant
+# — cannot use recycle. cancel covers exactly that window.
+reset_pool
+pool assign --worker-id claimed-then-dropped --task 'wrong tenant' >/dev/null
+slot_dir="$TMP/workspace/sessions/$SID/pool/claimed-then-dropped"
+mkdir -p "$slot_dir"
+printf '{"phase":1}\n' > "$slot_dir/handoffs.jsonl"
+pool cancel --worker-id claimed-then-dropped
+out="$(pool assign --worker-id claimed-then-dropped)"
+assert_contains "$out" '"action":"spawn"' "a cancelled claim comes back cold, never as a resume"
+[ -e "$slot_dir/handoffs.jsonl" ] && fail "cancel left the lane's history in place"
+ok "cancel retires an undispatched claim and clears its history"
+
+echo "conduct-pool: cancel drops a resume claim, which still carries a lane id"
+# The reset this verb exists for most often happens on a resume, and a resume
+# claim keeps the previous lane's subagent_id. Keying cancel on an empty id
+# would have refused exactly that case.
+reset_pool
+pool assign --worker-id reclaimed >/dev/null
+pool record --worker-id reclaimed --subagent-id lane-42 --status running
+pool record --worker-id reclaimed --subagent-id lane-42 --status idle
+out="$(pool assign --worker-id reclaimed)"
+assert_contains "$out" '"action":"resume"' "the second assign resumes"
+assert_contains "$out" '"subagent_id":"lane-42"' "a resume claim carries the old lane id"
+pool cancel --worker-id reclaimed
+out="$(pool assign --worker-id reclaimed)"
+assert_contains "$out" '"action":"spawn"' "a cancelled resume claim comes back cold"
+ok "cancel keys on the claimed status, not on an empty lane id"
+
+echo "conduct-pool: cancel refuses a lane that already has a sub-agent"
+# The emptiness of subagent_id is evidence, not an assertion — which is why
+# cancel needs no --force and cannot be used to abandon a live lane.
+reset_pool
+pool assign --worker-id live-lane >/dev/null
+pool record --worker-id live-lane --subagent-id lane-77 --status running
+set +e
+err="$(pool cancel --worker-id live-lane 2>&1)"; rc=$?
+set -e
+[ "$rc" = "5" ] || fail "cancelling a dispatched lane must exit 5, got $rc"
+assert_contains "$err" "not 'claimed'" "the refusal must name the state it found"
+assert_contains "$err" "--force" "the refusal must point at the correct escape"
+out="$(pool list)"
+assert_contains "$out" '"worker_id":"live-lane","subagent_id":"lane-77","status":"running"' \
+  "a refused cancel must change nothing"
+ok "cancel cannot abandon a lane that has been dispatched"
+
+echo "conduct-pool: record cannot retire a lane behind the guard's back"
+# record --status recycled used to mark a running slot recycled and clear its
+# sub-agent id directly, skipping both the running-lane guard and the handoff
+# purge: retire a live lane, then be granted its replacement.
+reset_pool
+pool assign --worker-id guarded >/dev/null
+pool record --worker-id guarded --subagent-id lane-9 --status running
+set +e
+err="$(pool record --worker-id guarded --subagent-id lane-9 --status recycled 2>&1)"; rc=$?
+set -e
+[ "$rc" != "0" ] || fail "record --status recycled must be refused"
+assert_contains "$err" "not accepted" "the refusal must say the status is gone"
+assert_contains "$err" "recycle --worker-id guarded" "the refusal must name the guarded verb"
+assert_contains "$(pool list)" '"worker_id":"guarded","subagent_id":"lane-9","status":"running"' \
+  "a refused record must change nothing"
+set +e
+pool assign --worker-id replacement-for-guarded >/dev/null 2>&1
+set -e
+assert_contains "$(pool list)" '"worker_id":"guarded","subagent_id":"lane-9","status":"running"' \
+  "the original lane is still live and still holding its slot"
+ok "retirement cannot be asserted through record"
 
 echo "conduct-pool: ids are validated, not invented"
 reset_pool
