@@ -54,7 +54,7 @@ resolve_grantee() {
   case "$1" in
     grp_*)              printf 'group %s' "$1" ;;
     alice@acme.test)    printf 'person prs_ALICE' ;;
-    *@*)                printf 'email %s' "$1" ;;
+    *@*)                printf 'email %s' "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" ;;
     *)                  printf 'person prs_%s' "$1" ;;
   esac
 }
@@ -82,32 +82,23 @@ case "$1 $2" in
       grep -qxF "$line" "$f" 2>/dev/null || printf '%s\n' "$line" >> "$f"
     fi
     echo "Granted $perm on ${pfx}* to $who"
-    exit 0 ;;
+    exit "${HQ_STUB_SHARE_RC:-0}" ;;
   "files acl")
     pfx="$3"
     f="$(pfx_file "$pfx")"
-    echo "ACL for ${pfx}* (restricted)"
-    echo "Creator: prs_CREATOR"
-    echo "Your effective permission: admin"
-    echo ""
-    echo "Direct entries (granted on this prefix):"
-    echo "TYPE    GRANTEE                         PERMISSION  GRANTED_BY  GRANTED_AT"
+    rows='[]'
     if [ -f "$f" ]; then
-      while read -r type grantee perm; do
-        [ -n "$type" ] || continue
-        printf '%s  %s  %s  prs_CREATOR  2026-08-21\n' "$type" "$grantee" "$perm"
-      done < "$f"
+      rows="$(while read -r type grantee perm; do
+        jq -cn --arg t "$type" --arg g "$grantee" --arg p "$perm" '{granteeType:$t,granteeId:$g,permission:$p}'
+      done < "$f" | jq -s '.')"
     fi
-    echo ""
-    echo "Inherited (granted on an ancestor prefix):"
-    echo "TYPE    GRANTEE   PERMISSION  GRANTED_BY  SOURCE  GRANTED_AT"
-    echo "group   grp_core  admin       prs_CREATOR  *       2026-04-29"
+    jq -cn --arg p "${pfx}*" --argjson rows "$rows" '{schemaVersion:1,companyUid:"cmp_acme",prefix:$p,direct:$rows,exists:($rows|length>0),inherited:[],children:[]}'
     exit 0 ;;
   "people resolve")
     tok="$3"
     case "$tok" in
       alice@acme.test|Alice)
-        echo '{"status":"found","email":"alice@acme.test","person":{"name":"Alice","email":"alice@acme.test","role":"admin"}}' ;;
+        echo '{"status":"found","email":"alice@acme.test","person":{"name":"Alice","email":"alice@acme.test","role":"admin","personUid":"prs_ALICE","companyUid":"cmp_acme"}}' ;;
       *)
         echo '{"status":"not_found"}' ;;
     esac
@@ -305,4 +296,24 @@ grep -q '^files share projects/widget/ --with grp_dlg-ktxdeacon --permission wri
 jq -e '.status == "granted" and .grantPrincipal == "grp_dlg-ktxdeacon"' "$M" >/dev/null \
   || fail "manifest must record the group grant principal"
 
-echo "hq-delegate-grant: ok (plan/confirm gate, push+share+readback, resolution-aware verify, folder-form enforced, fail-closed on unverified grant, direct grants only, agent-via-group)"
+# A committed write with a failed response is confirmed by exact read-back.
+reset_acl_state
+write_manifest "$M" building
+HQ_STUB_SHARE_RC=1 bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "committed grant plus error must recover"
+jq -e 'all(.vaultPrefixes[]; .grantReceipt.granteeId == "prs_ALICE" and .grantReceipt.shareExitCode == 1)' "$M" >/dev/null || fail "exact receipts missing"
+# The same existing grant must remain recognizable after another failed response.
+HQ_STUB_SHARE_RC=1 HQ_STUB_SHARE_NOOP=1 bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "existing exact grant plus error must recover"
+
+# An unrelated person's same-permission grant must never satisfy the target.
+reset_acl_state
+write_manifest "$M" building
+echo 'person prs_BOB write' > "$ACL_STATE/projects_widget_"
+if HQ_STUB_SHARE_NOOP=1 bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1; then fail "wrong person's grant accepted"; fi
+jq -e '.status == "building" and .vaultPrefixes[0].grantReceipt == null' "$M" >/dev/null || fail "wrong-person result advanced state"
+
+reset_acl_state
+write_manifest "$M" building
+jq '.to.principal="Pending@Example.test"' "$M" > "$TMP/m" && mv "$TMP/m" "$M"
+bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail 'mixed-case pending email grant rejected'
+jq -e 'all(.vaultPrefixes[]; .grantReceipt.granteeId == "pending@example.test")' "$M" >/dev/null || fail 'pending email not canonicalized'
+echo "hq-delegate-grant: ok (exact identity, committed errors, replay, false-success rejection, direct grants, agent group)"

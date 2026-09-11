@@ -1,16 +1,19 @@
 ---
 name: delegate
-description: Hand a project to a named person or fleet agent in one command — freezes state, grants vault access, hands over the branch and secrets, transfers ownership, and sends a self-sufficient pickup DM. The recipient pastes one prompt and has everything; no /hq-sync run, no follow-up questions.
+description: Hand a project to a named person or fleet agent with exact grant receipts, a published dossier, local ownership updates, and a pickup DM. Track recipient access separately through their acknowledgment.
 allowed-tools: Read, AskUserQuestion, Skill, Bash(hq:*), Bash(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/hq-delegate-resolve.sh:*), Bash(bash core/scripts/hq-delegate-bundle.sh:*), Bash(bash core/scripts/hq-delegate-grant.sh:*), Bash(bash core/scripts/hq-delegate-repo.sh:*), Bash(bash core/scripts/hq-delegate-secrets.sh:*), Bash(bash core/scripts/hq-delegate-transfer.sh:*), Bash(bash core/scripts/hq-delegate-verify.sh:*), Bash(bash core/scripts/hq-delegate-send.sh:*), Bash(bash core/scripts/hq-delegate-pickup.sh:*), Bash(rm:*)
 ---
 
 # /delegate — one-command project handoff
 
-Transfer a project to a teammate or fleet agent so completely that they never
-have to ask for anything: the dossier lands in the vault with verified access,
-the branch is on the remote, the secrets they need are granted by name, the
-board and work mesh point at them, and their DM carries a pickup prompt that
-pulls every file on demand.
+Transfer a project with exact grant receipts, a published dossier, and a pickup
+DM. Local board and PRD ownership are updated. Work Mesh ownership remains
+unconfirmed until its authoritative system supplies a receipt. Sender-side
+checks prove publication, not recipient access; record actual pickup separately.
+
+Requires HQ CLI 5.109.7 or newer, with `whoami --json`, `files acl --json`, and
+`people resolve --membership-only`. If those options are unsupported, update
+the CLI before retrying; never fall back to parsing display tables.
 
 ## Usage
 
@@ -24,13 +27,15 @@ pulls every file on demand.
   the session's active project (`bash core/scripts/hq-session.sh get project`).
 - `--share` — grant access and send the brief but keep ownership (board, PRD,
   work mesh untouched). Default is a full transfer.
-- `--no-secrets` — skip the credential handover entirely.
+- `--no-secrets` — skip the credential handover entirely. Escape hatch only:
+  honoured when the user types it, never proposed or asked about by the skill.
 - `--dry-run` — print the full plan and change nothing.
 - `--company <slug>` — defaults to the session's bound company
   (`bash core/scripts/hq-session.sh get company_slug`).
 
-The heavy lifting lives in eight tested helpers; this skill orchestrates them
-and owns the user-facing confirmation. Do not reimplement their logic inline.
+The heavy lifting lives in tested helpers; this skill orchestrates them
+and reports what they did. Do not reimplement their logic inline.
+Invoking `/delegate` is the authorization — the skill asks the user nothing.
 
 ## Process
 
@@ -95,50 +100,70 @@ never work around it.
 ### 6. Collect the plan (no mutations yet)
 
 Run the three gated helpers WITHOUT `--yes`. Each prints its plan and exits 2;
-none of them touches anything:
+none of them touches anything. This is how the skill learns the vault prefixes,
+the secret names, and whether the branch needs pushing — it is not a gate, and
+nothing waits on the user here:
 
 ```bash
 bash core/scripts/hq-delegate-grant.sh --manifest <manifest>          # vault grants incl. write escalation
 bash core/scripts/hq-delegate-repo.sh --manifest <manifest>           # exit 2 only when a local-only branch needs pushing
-bash core/scripts/hq-delegate-secrets.sh --manifest <manifest>        # secret NAMES that would be granted (skip when --no-secrets)
+bash core/scripts/hq-delegate-secrets.sh --manifest <manifest>        # secret NAMES that will be granted (only skipped when the user typed --no-secrets)
 ```
 
-### 7. The one confirmation
+### 7. State the plan, then proceed — no confirmation
 
-Present exactly one structured confirmation (AskUserQuestion) before any
-mutation, in full prose — no shorthand here. It must name:
+There is no confirmation step.
+The invocation is the authorization for everything the flow does: the user
+typed `/delegate` with a recipient, and that is the whole approval. Do NOT present a
+Proceed/Cancel picker, do NOT offer alternatives or a reduced variant, and do
+NOT raise the vault write grant, the credential handover, the branch push, or
+the DM as questions. Nothing here waits on the user.
+
+State — do not ask — what is about to happen, in one compact full-prose block:
 
 - the recipient as resolved: display name + principal, and whether they are a
   person or a fleet agent
 - the mode: full ownership transfer, or share (ownership stays)
-- every vault prefix with its permission — stating plainly that **write** lets
+- every vault prefix with its permission — noting plainly that **write** lets
   the recipient upload, overwrite, and delete under the project prefix, and
   that access persists until manually revoked
-- every secret name that will be granted (read) — values never move, the
-  recipient consumes them via `hq run` / `hq secrets exec`
+- every secret name being granted (read) — this always happens, values never
+  move, and the recipient consumes them via `hq run` / `hq secrets exec`
 - the repo and branch, including "the branch exists only locally and will be
   pushed" when the repo helper said so
-- that a DM will be sent to the recipient when everything verifies
+- that a DM goes to the recipient once everything verifies
 
-Offer **Proceed** / **Proceed without secrets** / **Cancel**. On cancel:
-delete `workspace/delegations/<delegationId>/`, confirm nothing was granted,
-transferred, or sent, and stop. This single gate carries the write-grant and
-secret-handover confirmations — the helpers are then invoked with `--yes`.
+Then go straight to step 8 in the same turn. `--dry-run` is the preview path
+for anyone who wants the plan without the mutation, and `--no-secrets` is the
+credential opt-out; both are the user's to type and neither is ever suggested
+mid-run.
+
+AskUserQuestion survives for exactly two things, and neither is a permission
+prompt: an ambiguous recipient (step 2, exit 3) and a company or project that
+could not be resolved (step 1). Those are missing inputs — the skill cannot
+name a recipient it cannot resolve. Everything else proceeds unasked.
 
 ### 8. Execute, in order, stopping at the first failure
 
 ```bash
 bash core/scripts/hq-delegate-grant.sh --manifest <manifest> --yes
 bash core/scripts/hq-delegate-repo.sh --manifest <manifest> --yes        # when the project has a repo
-bash core/scripts/hq-delegate-secrets.sh --manifest <manifest> --yes     # or --no-secrets
+bash core/scripts/hq-delegate-secrets.sh --manifest <manifest> --yes     # always, unless the user typed --no-secrets
 bash core/scripts/hq-delegate-transfer.sh --manifest <manifest>          # skipped automatically in share mode
 bash core/scripts/hq-delegate-verify.sh --manifest <manifest>            # reachability probe — gates the send
 ```
 
+Verification invokes `core/scripts/hq-delegate-publish.sh` to publish the final
+PRD, brief, manifest, and journal. It compares canonical cloud bytes with local
+checksums before allowing the send. Conflicts or stale canonical files fail
+verification; resolve them through HQ sync and reuse the same manifest.
+
 If any step fails: report **which step** in plain language with the specific
 fix from its stderr, send nothing, and never claim partial success. The
 manifest keeps its last successful status, so re-running `/delegate` for the
-same project resumes instead of re-granting.
+same project resumes instead of re-granting. Never delete
+`workspace/delegations/<delegationId>/` on failure — that record is what makes
+the resume work.
 
 ### 9. Send
 
@@ -153,6 +178,10 @@ bash core/scripts/hq-delegate-send.sh --manifest <manifest> --send --headline "<
 
 One DM, prompt and brief attached from files. The helper refuses to send
 unless the probe passed.
+
+If a DM call fails or returns no event receipt, status stays `sending`.
+Inspect HQ DM history and reconcile the actual event before retrying. Never
+reset that status merely to resend; the previous call may have delivered.
 
 ### 10. Close the loop: receipt or FAILED
 
@@ -176,8 +205,8 @@ re-send with a direct ask or hand it to someone else. `/startwork` should run
 One plain sentence naming the recipient and what they now have — no step log,
 no jargon. Example:
 
-> Done — Alice owns the widget project now. Her DM has the brief and a prompt
-> that pulls everything she needs; nothing for her to ask for.
+> Alice's grants and dossier are verified, and her pickup DM was sent.
+> Recipient acknowledgement is pending.
 
 ## Rules
 
@@ -187,16 +216,25 @@ no jargon. Example:
 2. **Never let a secret value into any artifact, DM, or output.** Names only;
    the helpers fail closed on secret-shaped content — respect the failure,
    never work around it.
-3. **Confirm before granting, once.** Exactly one structured confirmation
-   covers write grants, secret names, branch push, and the DM. Decline means
-   nothing mutates.
-4. **Never send blind.** The recipient must come from
+3. **Never ask for permission.** The invocation is the authorization. No
+   confirmation picker, no "want me to proceed?", no offered alternatives, no
+   per-step approval — for the vault grants (write included), the secret
+   handover, the branch push, or the DM. The only questions this skill may
+   ever ask are for missing inputs it cannot resolve: an ambiguous recipient
+   and an unresolvable company or project.
+4. **Always hand over the required secrets.** A delegation the recipient
+   cannot run is not a delegation. Grant every secret the project needs, by
+   name, read-only — never as its own question, never as an alternative
+   option, never a per-secret prompt. The only opt-out is the user typing
+   `--no-secrets`; if they do, say plainly in the report that the recipient
+   has no credential access and will have to ask for it.
+5. **Never send blind.** The recipient must come from
    `hq-delegate-resolve.sh` output or be an exact principal the user typed.
    On ambiguity, use the picker; on not-found, stop.
-5. **A failed probe means no DM.** A delegation that cannot be picked up
+6. **A failed probe means no DM.** A delegation that cannot be picked up
    fails in front of the delegator — that is the feature working, not a step
    to skip.
-6. **Tenancy.** Everything is scoped to one company. Cross-company delegation
+7. **Tenancy.** Everything is scoped to one company. Cross-company delegation
    is out of scope and must be refused plainly.
 
 ## See also

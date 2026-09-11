@@ -74,6 +74,7 @@ DIRTY_JSON="$(git -C "$REPO_DIR" status --porcelain | sed 's/^...//' | jq -R . |
 
 BRANCH_PUSHED=false HEAD_SHA=""
 if [ -n "$BRANCH" ]; then
+  git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || die "invalid branch name in PRD: $BRANCH"
   LOCAL_SHA="$(git -C "$REPO_DIR" rev-parse --verify --quiet "refs/heads/$BRANCH" || true)"
   REMOTE_SHA="$(git -C "$REPO_DIR" rev-parse --verify --quiet "refs/remotes/origin/$BRANCH" || true)"
 

@@ -34,6 +34,8 @@ cat > "$TMP/bin/hq" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$HQ_STUB_LOG"
 if [ "$1" = "dm" ]; then
+  [ "${HQ_STUB_DM_FAIL:-0}" = 0 ] || exit 1
+  [ "${HQ_STUB_DM_NO_RECEIPT:-0}" = 0 ] || exit 0
   echo "DM sent to $2 (eventId evt_stub123)"
 fi
 exit 0
@@ -80,9 +82,20 @@ write_manifest() { # status repo_json
   ],
   "repo": $2,
   "secrets": ["DATABASE_URL", "WIDGET_API_KEY"],
+  "publication":{"verifiedAt":"now","files":{"companies/acme/projects/widget/prd.json":"fixture"}},
   "status": "$1"
 }
 JSON
+  local rel="companies/acme/projects/widget/delegation/dlg-test-widget"
+  mkdir -p "$FIX/$rel"
+  cp "$BUNDLE/BRIEF.md" "$FIX/$rel/BRIEF.md"
+  jq '.status="granted" | .recipientAccess="unconfirmed" | del(.publication,.verifiedAt,.sentAt,.dmEventId)' "$MANIFEST" > "$FIX/$rel/manifest.json"
+  jq --arg mp "$rel/manifest.json" \
+    --arg mh "$(sha256sum "$FIX/$rel/manifest.json" | cut -d ' ' -f1)" \
+    --arg bp "$rel/BRIEF.md" --arg bh "$(sha256sum "$FIX/$rel/BRIEF.md" | cut -d ' ' -f1)" \
+    --arg ph "$(sha256sum "$PROJ/prd.json" | cut -d ' ' -f1)" \
+    '.publication={verifiedAt:"now",manifestPath:$mp,files:{($mp):$mh,($bp):$bh,"companies/acme/projects/widget/prd.json":$ph}}' "$MANIFEST" > "$TMP/updated"
+  mv "$TMP/updated" "$MANIFEST"
 }
 REPO_JSON='{"path": "repos/public/widget-repo", "remote": "git@github.test:acme/widget-repo.git", "branch": "feature/widget", "baseBranch": "main", "headSha": "abc1234", "dirtyFiles": [], "accessVerified": true, "accessNote": ""}'
 echo "# Delegation brief — widget" > "$BUNDLE/BRIEF.md"
@@ -106,12 +119,12 @@ done
 # ordered essentials: goal, state, next steps, repo, secrets consumption
 for needle in "Widgets ship." "1 of 2 stories" "US-002" \
   "git -C repos/public/widget-repo fetch origin" \
-  "git -C repos/public/widget-repo switch feature/widget" \
+  "git -C repos/public/widget-repo switch -- feature/widget" \
   "hq secrets exec --only DATABASE_URL,WIDGET_API_KEY" \
   "hq run --"; do
   grep -qF "$needle" "$PROMPT" || fail "prompt missing: $needle"
 done
-grep -q "no /hq-sync run" "$PROMPT" || fail "prompt must state no sync is needed"
+grep -q "Sender-side checks do not prove your access" "$PROMPT" || fail "prompt must state recipient access is unconfirmed"
 
 # generation alone must not send
 [ ! -s "$INVOKE_LOG" ] || fail "generation without --send must invoke nothing: $(cat "$INVOKE_LOG")"
@@ -175,4 +188,51 @@ set -e
 [ "$RC" -ne 0 ] || fail "a share-session URL in the brief must abort the send"
 if grep -q '^dm ' "$INVOKE_LOG"; then fail "no dm may be sent when a share-session URL is present"; fi
 
-echo "hq-delegate-send: ok (one-to-one prefix coverage, single file-flag dm, verify-before-send, repo-null clean, secret/share-session fail-closed)"
+echo '# Brief' > "$BUNDLE/BRIEF.md"
+for failure in HQ_STUB_DM_FAIL HQ_STUB_DM_NO_RECEIPT; do
+  write_manifest verified null
+  : > "$INVOKE_LOG"
+  if env "$failure=1" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --send >/dev/null 2>&1; then fail 'uncertain delivery accepted'; fi
+  jq -e '.status == "sending" and .dmEventId == null' "$MANIFEST" >/dev/null || fail 'uncertain delivery state lost'
+  if HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --send >/dev/null 2>&1; then fail 'uncertain delivery blindly retried'; fi
+  [ "$(grep -c '^dm ' "$INVOKE_LOG")" = 1 ] || fail 'duplicate DM after uncertain response'
+done
+write_manifest verified null
+jq 'del(.publication)' "$MANIFEST" > "$TMP/m" && mv "$TMP/m" "$MANIFEST"
+: > "$INVOKE_LOG"
+if HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --send >/dev/null 2>&1; then fail 'legacy verified status without publication accepted'; fi
+[ ! -s "$INVOKE_LOG" ] || fail 'DM sent without publication receipt'
+echo "hq-delegate-send: ok (single DM, truthful probe, publication required, uncertain delivery cannot duplicate)"
+for artifact in prd brief manifest; do
+  write_manifest verified null
+  case "$artifact" in
+    prd) echo ' ' >> "$PROJ/prd.json" ;;
+    brief) echo 'New unpublished detail' >> "$BUNDLE/BRIEF.md" ;;
+    manifest) jq '.repo={branch:"feature/changed"}' "$MANIFEST" > "$TMP/m" && mv "$TMP/m" "$MANIFEST" ;;
+  esac
+  : > "$INVOKE_LOG"
+  if HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --send >/dev/null 2>&1; then fail "unpublished $artifact accepted"; fi
+  [ ! -s "$INVOKE_LOG" ] || fail "DM sent with unpublished $artifact"
+done
+write_manifest verified null
+mkdir "$MANIFEST.send-lock"
+: > "$INVOKE_LOG"
+if HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --send >/dev/null 2>&1; then fail 'send ignored verification lock'; fi
+[ ! -s "$INVOKE_LOG" ] || fail 'DM sent during verification'
+rmdir "$MANIFEST.send-lock"
+write_manifest verified null
+REAL_JQ="$(command -v jq)"
+export REAL_JQ
+cat > "$TMP/bin/jq" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = '.status = "sending"' ]; then
+  echo 'partial'
+  exit 1
+fi
+exec "$REAL_JQ" "$@"
+STUB
+chmod +x "$TMP/bin/jq"
+: > "$INVOKE_LOG"
+if HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --send >/dev/null 2>&1; then fail 'failed sending-state write accepted'; fi
+[ ! -s "$INVOKE_LOG" ] || fail 'DM sent without durable sending marker'
+jq -e '.status == "verified"' "$MANIFEST" >/dev/null || fail 'failed state write destroyed manifest'

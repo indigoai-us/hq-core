@@ -79,14 +79,11 @@ jq -e . "$PRD" >/dev/null 2>&1 || die "prd.json is not valid JSON: $PRD"
 
 CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 DELEGATION_ID="dlg-$(date -u +%Y%m%d-%H%M%S)-$PROJECT"
-FROM_EMAIL="" FROM_UID=""
-if command -v hq >/dev/null 2>&1; then
-  WHOAMI_JSON="$(hq whoami --json 2>/dev/null || true)"
-  if [ -n "$WHOAMI_JSON" ] && printf '%s' "$WHOAMI_JSON" | jq -e . >/dev/null 2>&1; then
-    FROM_EMAIL="$(printf '%s' "$WHOAMI_JSON" | jq -r '.email // empty')"
-    FROM_UID="$(printf '%s' "$WHOAMI_JSON" | jq -r '.personUid // .uid // empty')"
-  fi
-fi
+WHOAMI_JSON="$(hq whoami --json)" || die "could not read sender identity; update hq-cli if --json is unsupported"
+printf '%s' "$WHOAMI_JSON" | jq -e '.authenticated != false and ((.email // .personUid // .agentUid // "") | length > 0)' >/dev/null \
+  || die "sender identity is missing or expired; run hq login"
+FROM_EMAIL="$(printf '%s' "$WHOAMI_JSON" | jq -r '.email // empty')"
+FROM_UID="$(printf '%s' "$WHOAMI_JSON" | jq -r '.personUid // .agentUid // empty')"
 
 # --- checksum helper (macOS + Linux) -----------------------------------------
 
@@ -237,7 +234,7 @@ TRAPS="$(jq -r '[.metadata.securityNotes // empty, (.metadata.executionConventio
 {
   echo "# Delegation brief — $PROJECT"
   echo
-  echo "You are receiving ownership of the **$PROJECT** project in the **$COMPANY** company. This brief is written assuming you have never seen the project before. Everything referenced here is covered by the access you have already been granted — nothing below requires asking the delegator for permissions."
+  echo "This brief describes the **$PROJECT** project in the **$COMPANY** company. Completed handoff steps are recorded in the manifest. Pull the files and acknowledge receipt; report any access error to the sender."
   echo
   echo "## What this project is"
   echo

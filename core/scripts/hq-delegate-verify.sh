@@ -110,6 +110,10 @@ fi
 jq -e . "$MANIFEST" >/dev/null 2>&1 || die "manifest is not valid JSON: $MANIFEST"
 
 COMPANY="$(jq -r '.company // empty' "$MANIFEST")"
+LOCK="$MANIFEST.send-lock"
+mkdir "$LOCK" 2>/dev/null || die "verification or delivery is active; retry after it finishes"
+REF_BROWSE_CACHE=""
+trap '[[ -z "$REF_BROWSE_CACHE" ]] || rm -rf "$REF_BROWSE_CACHE"; rmdir "$LOCK"' EXIT
 STATUS="$(jq -r '.status // empty' "$MANIFEST")"
 [ -n "$COMPANY" ] || die "manifest has no company"
 
@@ -152,7 +156,6 @@ done
 # Browse each distinct parent at most once, and retry an empty result a few
 # times before trusting it. (Cache dir cleaned on exit.)
 REF_BROWSE_CACHE="$(mktemp -d)"
-trap 'rm -rf "$REF_BROWSE_CACHE"' EXIT
 browse_parent() { # parent -> listing (memoized per run, retried on empty)
   local parent="$1" key out attempt
   key="$REF_BROWSE_CACHE/$(printf '%s' "$parent" | tr '/@:' '___')"
@@ -200,6 +203,8 @@ if [ "$FAILED" -ne 0 ]; then
   exit 1
 fi
 
+HQ_ROOT="$HQ_ROOT" bash "$SCRIPT_DIR/hq-delegate-publish.sh" --manifest "$MANIFEST" --lock-held \
+  || die "final dossier publication failed; notification blocked"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 TMP_MANIFEST="$(mktemp)"
 jq --arg now "$NOW" '.status = "verified" | .verifiedAt = $now' \

@@ -43,6 +43,11 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" conduct-lane-inbox \"$CLAUDE_PROJECT_DIR/.claude/hooks/conduct-lane-inbox.sh\"",
+            "timeout": 30
           }
         ]
       },
@@ -58,6 +63,11 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" mandatory-scope-authorizer \"$CLAUDE_PROJECT_DIR/.claude/hooks/mandatory-scope-authorizer.sh\"",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" conduct-lane-inbox \"$CLAUDE_PROJECT_DIR/.claude/hooks/conduct-lane-inbox.sh\"",
+            "timeout": 30
           }
         ]
       },
@@ -72,6 +82,11 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" warn-cross-company-settings \"$CLAUDE_PROJECT_DIR/.claude/hooks/warn-cross-company-settings.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" conduct-lane-inbox \"$CLAUDE_PROJECT_DIR/.claude/hooks/conduct-lane-inbox.sh\"",
             "timeout": 30
           }
         ]
@@ -127,6 +142,11 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" surface-company-infra-policy \"$CLAUDE_PROJECT_DIR/.claude/hooks/surface-company-infra-policy.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" conduct-lane-inbox \"$CLAUDE_PROJECT_DIR/.claude/hooks/conduct-lane-inbox.sh\"",
             "timeout": 30
           }
         ]
@@ -188,6 +208,11 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" validate-policy-frontmatter \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate-policy-frontmatter.sh\"",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" conduct-lane-inbox \"$CLAUDE_PROJECT_DIR/.claude/hooks/conduct-lane-inbox.sh\"",
+            "timeout": 30
           }
         ]
       },
@@ -247,6 +272,11 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" validate-policy-frontmatter \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate-policy-frontmatter.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" conduct-lane-inbox \"$CLAUDE_PROJECT_DIR/.claude/hooks/conduct-lane-inbox.sh\"",
             "timeout": 30
           }
         ]
@@ -525,6 +555,16 @@
             "timeout": 300
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" conduct-lane-inbox \"$CLAUDE_PROJECT_DIR/.claude/hooks/conduct-lane-inbox.sh\"",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "PreCompact": [
@@ -604,6 +644,11 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" enforce-humanize-before-send \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-humanize-before-send.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" conduct-lane-inbox \"$CLAUDE_PROJECT_DIR/.claude/hooks/conduct-lane-inbox.sh\"",
             "timeout": 30
           }
         ]
