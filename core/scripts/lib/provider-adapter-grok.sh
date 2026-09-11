@@ -4,7 +4,7 @@
 #
 # System prompt: --system-prompt-override "$(cat system.txt)" (native).
 # Resume: --resume <sessionId> when HQ_AGENT_SESSION_RESUME_ID is set (matrix).
-# Keeps --yolo (and --no-auto-update) from user-data.ts fleet invocation.
+# Keeps --always-approve (current CLI; --yolo was the old synonym).
 # User text from user.txt via -p (single-turn). Never concatenates system
 # text into the positional prompt argument.
 # Sets SESSION_SYSTEM_PROMPT_MODE=native.
@@ -35,8 +35,9 @@ provider_adapter_grok() {
     grok
     -p
     "$user_text"
-    --yolo
-    --no-auto-update
+    --permission-mode
+    bypassPermissions
+    --always-approve
     --output-format
     json
     --system-prompt-override

@@ -22,7 +22,7 @@ assert_eq() { [ "$1" = "$2" ] || fail "$3: expected '$2', got '$1'"; }
 
 # The test process may itself carry a session id; start from a clean slate.
 unset HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
-      CODEX_SESSION_ID CODEX_THREAD_ID || true
+      CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID || true
 
 # shellcheck source=../lib/session-id.sh
 . "$LIB"
@@ -48,14 +48,14 @@ assert_eq "$(session_id_resolve "$TMP")" "from-current" ".current fallback"
 
 echo "[4] every supported env var beats .current"
 for var in HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
-           CODEX_SESSION_ID CODEX_THREAD_ID; do
+           CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID; do
   got="$(env "$var=from-$var" bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
   assert_eq "$got" "from-$var" "$var must beat .current"
 done
 
-echo "[5] precedence runs HQ_SESSION_ID -> Claude -> Codex, first wins"
+echo "[5] precedence runs HQ_SESSION_ID -> Claude -> Codex -> Grok, first wins"
 got="$(env HQ_SESSION_ID=a CLAUDE_CODE_SESSION_ID=b CLAUDE_SESSION_ID=c \
-        CODEX_SESSION_ID=d CODEX_THREAD_ID=e \
+        CODEX_SESSION_ID=d CODEX_THREAD_ID=e GROK_SESSION_ID=g \
         bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
 assert_eq "$got" "a" "HQ_SESSION_ID outranks all"
 got="$(env CLAUDE_CODE_SESSION_ID=b CLAUDE_SESSION_ID=c CODEX_SESSION_ID=d \
@@ -64,9 +64,15 @@ assert_eq "$got" "b" "CLAUDE_CODE_SESSION_ID outranks CLAUDE_SESSION_ID and Code
 got="$(env CLAUDE_SESSION_ID=c CODEX_SESSION_ID=d CODEX_THREAD_ID=e \
         bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
 assert_eq "$got" "c" "CLAUDE_SESSION_ID outranks Codex"
-got="$(env CODEX_SESSION_ID=d CODEX_THREAD_ID=e \
+got="$(env CODEX_SESSION_ID=d CODEX_THREAD_ID=e GROK_SESSION_ID=g \
         bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
-assert_eq "$got" "d" "CODEX_SESSION_ID outranks CODEX_THREAD_ID"
+assert_eq "$got" "d" "CODEX_SESSION_ID outranks CODEX_THREAD_ID and Grok"
+got="$(env CODEX_THREAD_ID=e GROK_SESSION_ID=g \
+        bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
+assert_eq "$got" "e" "CODEX_THREAD_ID outranks Grok"
+got="$(env GROK_SESSION_ID=g \
+        bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
+assert_eq "$got" "g" "GROK_SESSION_ID beats .current"
 
 echo "[6] a malformed or empty env value is skipped, not fatal"
 got="$(env HQ_SESSION_ID=../escape CLAUDE_CODE_SESSION_ID=good-one \

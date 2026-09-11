@@ -72,7 +72,11 @@ SESSION_SYSTEM_PROMPT_MODE=""
 provider_adapter_grok "$RUN" "$TMP/company" || fail "grok render failed"
 read_args "$RUN/provider.argv.lines"
 [ "${ARGS[0]}" = "grok" ] || fail "grok argv0=${ARGS[0]}"
-printf '%s\n' "${ARGS[@]}" | grep -qx -- '--yolo' || fail "missing --yolo"
+printf '%s\n' "${ARGS[@]}" | grep -qx -- '--always-approve' || fail "missing --always-approve"
+printf '%s\n' "${ARGS[@]}" | grep -qx -- '--permission-mode' || fail "missing --permission-mode"
+printf '%s\n' "${ARGS[@]}" | grep -qx -- 'bypassPermissions' || fail "missing bypassPermissions"
+printf '%s\n' "${ARGS[@]}" | grep -qx -- '--output-format' || fail "missing --output-format"
+printf '%s\n' "${ARGS[@]}" | grep -qx -- 'json' || fail "missing json output format"
 printf '%s\n' "${ARGS[@]}" | grep -qx -- '-p' || fail "missing -p"
 printf '%s\n' "${ARGS[@]}" | grep -qx -- '--system-prompt-override' || fail "missing system-prompt-override"
 [ "$SESSION_SYSTEM_PROMPT_MODE" = "native" ] || fail "grok mode=$SESSION_SYSTEM_PROMPT_MODE"
@@ -99,11 +103,14 @@ echo "$user_arg" | grep -q 'SYSTEM_CANARY_TEXT' && fail "grok system leaked into
 GROK_SKEL="$(printf '%s\n' "${ARGS[@]}" | awk '
   $0=="grok"{print}
   $0=="-p"{print}
-  $0=="--yolo"{print}
-  $0=="--no-auto-update"{print}
+  $0=="--permission-mode"{print}
+  $0=="bypassPermissions"{print}
+  $0=="--always-approve"{print}
+  $0=="--output-format"{print}
+  $0=="json"{print}
   $0=="--system-prompt-override"{print}
 ')"
-EXPECTED_GROK=$'grok\n-p\n--yolo\n--no-auto-update\n--system-prompt-override'
+EXPECTED_GROK=$'grok\n-p\n--permission-mode\nbypassPermissions\n--always-approve\n--output-format\njson\n--system-prompt-override'
 [ "$GROK_SKEL" = "$EXPECTED_GROK" ] || fail "grok skeleton:
 $GROK_SKEL"
 printf '%s\n' "$EXPECTED_GROK" > "$FIXTURE_DIR/grok-argv-skeleton.txt"

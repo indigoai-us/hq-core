@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/** # hq-core: public */
 /**
  * workflow-runner.mjs — multi-agent workflow orchestration over headless
  * coding-agent CLIs (Codex, Grok, Claude), with human gates.
@@ -13,10 +14,10 @@
  *      --dangerously-bypass-approvals-and-sandbox); result read from a
  *     dedicated --output-last-message file (transcripts are huge — never
  *     tailed); structured output via --output-schema.
- *   engine "grok" — `grok -p` (single-turn headless) with
- *     --permission-mode bypassPermissions --always-approve; result captured
- *     from stdout; structured output via a schema instruction appended to the
- *     prompt (the CLI has no schema flag), parsed from the reply.
+ *   engine "grok" — `grok --single` / `grok -p` (aliases) with
+ *     --permission-mode bypassPermissions --always-approve --output-format json;
+ *     result unwrapped from the JSON envelope; structured output via
+ *     --json-schema when the CLI supports it (in-prompt fallback otherwise).
  *   engine "claude" — `claude -p` (single-turn headless) with
  *     --permission-mode bypassPermissions --output-format json; the result
  *     envelope ({type,subtype,is_error,result,stop_reason,permission_denials})
@@ -137,7 +138,7 @@
  * The script's top-level return value prints to stdout as JSON.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -227,7 +228,23 @@ function childEnv() {
   const disabled = new Set(
     String(process.env.HQ_DISABLED_HOOKS || '').split(',').map((s) => s.trim()).filter(Boolean));
   for (const hook of CHILD_DISABLED_HOOKS) disabled.add(hook);
-  return { ...process.env, HQ_DISABLED_HOOKS: [...disabled].join(',') };
+  const env = { ...process.env, HQ_DISABLED_HOOKS: [...disabled].join(',') };
+  return env;
+}
+
+let grokJsonSchemaCached = null;
+function grokSupportsJsonSchema(bin) {
+  if (process.env.HQ_WORKFLOW_GROK_JSON_SCHEMA === '0') return false;
+  if (process.env.HQ_WORKFLOW_GROK_JSON_SCHEMA === '1') return true;
+  if (grokJsonSchemaCached !== null) return grokJsonSchemaCached;
+  try {
+    const help = spawnSync(bin, ['--help'], { encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'pipe'] });
+    const text = `${help.stdout || ''}${help.stderr || ''}`;
+    grokJsonSchemaCached = /--json-schema/.test(text);
+  } catch {
+    grokJsonSchemaCached = true;
+  }
+  return grokJsonSchemaCached;
 }
 
 const MANDATED_CODEX_FLAGS = [
@@ -940,7 +957,8 @@ async function buildRuntime(cli) {
       // guard) prints NOTHING in plain mode and still exits 0, so the failure
       // would surface downstream as a bogus parse error instead of the real
       // reason. The envelope carries {text, stopReason} and is unwrapped
-      // below. No schema flag exists — instruct in the prompt, parse the text.
+      // below. Prefer --json-schema when the CLI advertises it; otherwise
+      // instruct in the prompt (older grok builds).
       if (schema) {
         spawnPrompt += '\n\nReturn ONLY JSON matching this JSON Schema — no prose, no code fences:\n'
           + JSON.stringify(schema);
@@ -950,6 +968,9 @@ async function buildRuntime(cli) {
            '--disallowed-tools', RESTRICTED_DENY_TOOLS, '--output-format', 'json']
         : ['--single', spawnPrompt, '--permission-mode', 'bypassPermissions',
            '--always-approve', '--output-format', 'json'];
+      if (schema && grokSupportsJsonSchema(engine.bin)) {
+        argv.push('--json-schema', JSON.stringify(schema));
+      }
       if (model) argv.push('-m', String(model));
       if (effort) argv.push('--reasoning-effort', String(effort));
       if (Array.isArray(opts.extraArgs)) argv.push(...opts.extraArgs.map(String));
@@ -1403,9 +1424,33 @@ function compileScript(source, name) {
 // can always reach the active children.
 let RT = null;
 
+function writeCancelledHandoff(st) {
+  try {
+    const dest = process.env.HQ_CONDUCT_HANDOFF_PATH
+      || path.join(st.runDir || '', 'cancelled-handoff.json');
+    if (!dest) return;
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const body = {
+      status: 'cancelled',
+      summary: 'Workflow runner received a cancel/abort signal; child agents were terminated. Partial work may exist on disk.',
+      files_read: [],
+      files_changed: [],
+      findings_path: dest,
+      decisions: [],
+      risks: ['Cancelled mid-run; do not treat as a completed lane.'],
+      back_pressure: { tests: 'not_run', lint: 'not_run', typecheck: 'not_run', build: 'not_run' },
+      context_for_next: 'Resume from the run dir and any files already written. This is a best-effort cancel handoff.',
+    };
+    fs.writeFileSync(dest, JSON.stringify(body, null, 2));
+  } catch {
+    /* best-effort */
+  }
+}
+
 function terminateAndExit(code) {
   if (!RT) process.exit(code);
   const st = RT.state;
+  writeCancelledHandoff(st);
   if (st.aborted) {
     for (const child of st.activeChildren) killTree(child, 'SIGKILL');
     process.exit(code);

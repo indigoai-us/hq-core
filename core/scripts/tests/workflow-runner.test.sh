@@ -1,4 +1,5 @@
 #!/bin/bash
+# hq-core: public
 # Regression test for core/scripts/workflow-runner.mjs — the multi-engine
 # workflow orchestrator (Codex + Grok + Claude) with human gates.
 #
@@ -167,7 +168,7 @@ prompt=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --single) prompt="$2"; shift 2 ;;
-    -m|--reasoning-effort|--output-format|--permission-mode) shift 2 ;;
+    -m|--reasoning-effort|--output-format|--permission-mode|--json-schema) shift 2 ;;
     *) shift ;;
   esac
 done
@@ -237,6 +238,7 @@ run_wf() { # run_wf <script-file> [extra runner args...] -> $OUT, $RC
   OUT="$(HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" HQ_WORKFLOW_GROK_BIN="$TMP/bin/grok" \
     HQ_WORKFLOW_CLAUDE_BIN="$TMP/bin/claude" \
     FAKE_REC_DIR="$TMP/rec" HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" \
+    HQ_WORKFLOW_GROK_JSON_SCHEMA=1 \
     HQ_WORKFLOW_GATES_DIR="$TMP/gates-default" \
     node "$RUNNER" "$script" --quiet --run-dir "$TMP/run-$RANDOM" "$@" 2>"$TMP/stderr.last")"
   RC=$?
@@ -427,6 +429,14 @@ if [ -n "$gf" ]; then
   grep -A1 -x -- '--output-format' "$gf" | tail -1 | grep -qx -- 'json' && env_fmt=0
 fi
 check "grok: always requested with --output-format json (envelope, not plain)" "$env_fmt"
+
+# --json-schema is passed when opts.schema is set (CLI flag, not prompt-only)
+schema_flag=1
+sgf="$(grep -l -- 'shape this' "$TMP/rec"/grok-argv.* 2>/dev/null | head -1)"
+if [ -n "$sgf" ] && grep -qx -- '--json-schema' "$sgf"; then
+  schema_flag=0
+fi
+check "grok: schema spawn includes --json-schema" "$schema_flag"
 
 # ---- 2b: grok envelope failure modes ----------------------------------------
 # A denied tool call (HQ hooks deny e.g. Glob-from-root) ends the run with

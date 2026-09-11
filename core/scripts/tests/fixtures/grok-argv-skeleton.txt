@@ -1,5 +1,8 @@
 grok
 -p
---yolo
---no-auto-update
+--permission-mode
+bypassPermissions
+--always-approve
+--output-format
+json
 --system-prompt-override
