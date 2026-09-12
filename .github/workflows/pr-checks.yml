@@ -1037,6 +1037,8 @@ jobs:
         run: bash core/scripts/tests/inject-policy-e2e.test.sh
       - name: Inject cadence (once vs always) + PreCompact ledger purge
         run: bash core/scripts/tests/inject-policy-always-inject.test.sh
+      - name: Policy scan forks no helper process per policy file
+        run: bash core/scripts/tests/inject-policy-no-per-file-fork.test.sh
 
   personal-policy-overlay:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
