@@ -231,7 +231,14 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     [ -d "$dir" ] || continue
     for f in "$dir"/*.md; do
       [ -f "$f" ] || continue
-      case "$(basename "$f")" in
+      # `${f##*/}`, NOT `$(basename "$f")`. The command substitution forked a
+      # process per candidate file: on a 3,419-policy install that was 3,419
+      # forks on EVERY Bash tool call and EVERY prompt, and it dominated the
+      # hook's wall time (18.4s in the loop vs 176ms to actually read and parse
+      # the same files). Bash suffix removal is the exact equivalent for every
+      # path a glob can produce, at zero processes. Regression test:
+      # core/scripts/tests/inject-policy-no-per-file-fork.test.sh.
+      case "${f##*/}" in
         example-policy.md|README.md) continue ;;
         *" "*) continue ;;              # any space => sync conflict/drift copy
         *.sync-conflict-*.md) continue ;;  # Syncthing-style conflict copy
