@@ -180,12 +180,14 @@ jobs:
         run: bash core/scripts/tests/conduct-pool.test.sh
       - name: /conduct lane drop box (queue, claim, per-event hook output)
         run: bash core/scripts/tests/conduct-inbox.test.sh
-      - name: /conduct worker selection (registry fields, definition load, launch quoting)
+      - name: /conduct worker selection (registry fields, definition load)
         run: bash core/scripts/tests/conduct-worker-selection.test.sh
       - name: Ralph orchestrator policy (JSON contract kept, spawn-per-story gone)
         run: bash core/scripts/tests/ralph-orchestrator-policy.test.sh
       - name: Orchestrator skills claim pool slots (execute-task + run-project)
         run: bash core/scripts/tests/orchestrator-skills-use-pool.test.sh
+      - name: Orchestrator skills dispatch detached lanes (run-project + conduct)
+        run: bash core/scripts/tests/orchestrator-skills-dispatch-lanes.test.sh
       - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
         run: bash core/scripts/tests/skill-script-refs.test.sh
       - name: HQ feedback summary and verbatim report contract
