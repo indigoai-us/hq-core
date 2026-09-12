@@ -3,6 +3,288 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: TBD
+
+- promote 2026-09-12 (lane dispatch): **the detached launch body is
+  single-quoted and interpolates nothing.** It was a double-quoted `bash -c`
+  string with `$PWD`, `$RUN_DIR` and `$SID` substituted into single-quoted
+  values inside it. An apostrophe anywhere in the HQ checkout path — the one
+  value here a user genuinely controls — closes those quotes early. Verified
+  empirically from a path containing one: the old form dies with
+  `unexpected EOF while looking for matching \`'\`` and writes no `lane.log` at
+  all, so the lane fails before it exists and the error lands where nothing is
+  watching. Everything the body needs now goes through the environment
+  (`LANE_RUN_DIR`, `LANE_RUN_DIR_ABS`, `LANE_TIMEOUT`, `HQ_SESSION_ID`,
+  `HQ_CONDUCT_ENGINE`); the same path runs clean. This also removes the
+  two-level escaping that made this the most error-prone block in the protocol.
+
+- promote 2026-09-12 (lane dispatch): **`$SID` is the run's owner, not whoever
+  is dispatching.** The mint site recomputed it from the current session, which
+  undid the recovery fix one entry above: a resumed story would export the new
+  session's id, mint its run dir there, and an unqualified `record` would write
+  into a pool that never assigned the slot — a live lane untracked, the original
+  slot stuck `claimed`. A caller holding an owning session id uses it at the
+  mint site and passes `--session-id <owner>` on every pool call for the lane.
+  One session id per run, chosen once, end to end.
+
+- promote 2026-09-12 (lane dispatch): **both callers withhold release on an
+  unconfirmed engine, on every outcome.** The shared protocol confirms the
+  engine group after every exit, but `/conduct` Step 6 and `/run-project`'s
+  recycle gate still described the carve-out as timeout-only — so a coordinator
+  could mark a `died` lane idle and retry on top of a live engine. Both now gate
+  on `engine_gone`.
+
+- promote 2026-09-12 (lane dispatch): **the engine-group confirmation observes
+  first and only forces after a refused request.** Generalising the check last
+  entry put it *before* the branch handling and had it SIGKILL on sight, which
+  meant the deadline branch never got to ask the runner politely — the graceful
+  path it exists to protect became unreachable and a timed-out worker was torn
+  down mid-write. The block is now ordered after any branch teardown and gated
+  on `graceful_attempted`, which only the deadline branch sets, and only after
+  the runner has had its 30 seconds. On `exited`, `died` and `never-started`
+  there was no request to refuse, so a survivor is observed and reported —
+  never killed — and the slot parks as unconfirmed for a human to decide.
+
+- promote 2026-09-12 (lane dispatch): **a run records the session that owns its
+  lanes, and recovery passes it back.** `conduct-pool.sh` resolves the session
+  from the environment and run dirs are minted under the session id, so a new
+  session resuming a project read *its own* empty pool, concluded there were no
+  live lanes, and could re-dispatch a story whose original lane was still
+  committing. `/run-project` now writes `session_id` into `state.json` beside
+  `engine` before the first dispatch and never rewrites it on a resume, records
+  each story's run dir at dispatch rather than on return, and resumes with
+  `conduct-pool.sh --session-id <sid>`. A story marked incomplete whose lane is
+  still up is a story mid-flight, not a story to start again.
+
+- promote 2026-09-12 (lane dispatch): **`args.json` is built with `jq -n
+  --arg`, not `printf`.** A double quote or backslash anywhere in the HQ install
+  path or the target work dir made the `%s` substitution emit invalid JSON, and
+  the runner then failed on `--args` before the lane existed — in a log nobody
+  was watching yet.
+
+- promote 2026-09-12 (lane dispatch): **the engine-group confirmation applies to
+  every waiter outcome, not just the timeout.** The previous entry added the
+  check to the `deadline` branch only, which left the more common one wrong:
+  `died` and `never-started` are statements about the *wrapper* process, and a
+  SIGKILLed wrapper cannot take its runner's detached child with it. Releasing
+  the slot on `died` therefore started a replacement worker on top of a live
+  engine still committing to the same repo. The confirmation is now one block
+  that runs on whatever outcome the waiter produced and sets `engine_gone`; the
+  deadline branch folds that result in rather than keeping its own copy, and the
+  pool protocol's unconfirmed-lane carve-out is reworded to cover every outcome.
+  "Gone", for the purpose of releasing a slot, now means both halves: the waiter
+  reached an outcome *and* the engine group is empty.
+
+- promote 2026-09-12 (lane dispatch): **`/run-project` no longer claims a run
+  that drives itself after its session ends.** Detaching the stories made the
+  in-flight story survive a compaction or a restart, and the skill generalised
+  that into "a run survives the parent session". Only the story does. The
+  waiter, the result validation, the slot release and the dispatch of story N+1
+  are all parent-side, so a session that ends mid-run finishes one story and
+  then stops — it does not auto-advance. The frontmatter, Step 3's rationale
+  and the Ralph/headless section now say exactly that, and name what the
+  stronger guarantee would take (the coordinator loop dispatched as its own
+  lane, which does not exist). "Unattended" is scoped to no prompts between
+  stories *within* a session, and the recovery note says a new session picks
+  the run back up rather than implying it resumes itself.
+
+- promote 2026-09-12 (lane dispatch): **a lane's result is read from
+  `agent-1.result.json`, never from `lane.log`.** `lane.log` is the runner's
+  whole stdout — narration plus `JSON.stringify(result)` — and a schema-less
+  `agent()` returns the engine's reply as *text*, so the value there is a JSON
+  **string** containing the worker's JSON, not the worker's object. `jq -e .`
+  against it succeeds while `.status`, `.workers_run` and `.evidence` all come
+  back empty: `/run-project` would have waved through a story it never read, and
+  its worker-proof gate would have rejected a worker that did run its phases.
+  The protocol now names the runner's result envelope
+  (`workflow-runner.mjs:1169-1173`) and shows the two-step unwrap — `jq -r
+  '.value'` to strip the envelope, then parse the contract — with
+  `agent-1.last.md` as the fallback when a lane died before the envelope was
+  written. `/conduct`'s outcome table and all three `/run-project` call sites
+  point at the same file.
+
+- promote 2026-09-12 (lane dispatch): **the runner journals the engine's process
+  group, and the deadline handler verifies it before authorising a recycle.**
+  `CONDUCT_EXIT=` proves the *runner* exited; it does not prove the tree is
+  down. If the engine's group leader dies on SIGTERM but a descendant ignores
+  it, `child.on('close')` (`workflow-runner.mjs:1057-1061`) removes the child and
+  calls `onAllChildrenGone` immediately — retiring the runner before its own
+  five-second SIGKILL escalation (`:1462-1465`) ever fires, so the survivor
+  outlives the marker. Nothing outside the runner can name that group, because
+  the runner is what spawned it detached. It now writes
+  `{ event: 'agent-spawned', pgid }` to `journal.jsonl`, and the handler reads
+  that pgid back, kills the group if it is still populated, and downgrades the
+  stop to unconfirmed if anything survives. An unconfirmed stop still blocks the
+  recycle rather than authorising it.
+
+- promote 2026-09-12 (lane dispatch): **every dispatch mints a fresh run dir,
+  including a resume.** Relaunching into a completed lane's directory looked
+  tidy and was a race: the old `lane.log` still held `CONDUCT_EXIT=` and the pid
+  files still named the finished process, while the new child does not truncate
+  that log until it is already detached. A waiter armed in between read the
+  *old* marker, called the new lane finished, and released a slot that was still
+  live. Clearing the files first only narrows the window. Lane continuity never
+  needed the directory anyway — it lives in the slot's `handoffs.jsonl`, which
+  is keyed by worker and outlives any single run. `/conduct`'s resume branch now
+  reuses the **slot**, not the directory, and records the new run id against it.
+
+- promote 2026-09-12 (lane dispatch): **no caller spells its own run-dir path.**
+  The previous entry moved the run dir into the protocol but left three call
+  sites still naming `workspace/tmp/workflow-runner/{caller}-{lane}-$TS` — against
+  a `$TS` that no longer existed — so a reader following the more specific
+  instruction recreated the exact cross-session collision the fix removed.
+  Callers now supply `{caller}` and `{lane}` only; the protocol mints the path.
+  A check fails the build if either skill contains a `workspace/tmp/workflow-runner/`
+  path at all, because a caller-side copy is the drift, not a particular wrong
+  value.
+
+- promote 2026-09-12 (lane dispatch): **run directories are session-scoped and
+  minted with `mktemp -d`.** The path was
+  `workspace/tmp/workflow-runner/{caller}-{lane}-$TS` at second resolution, and
+  `explorer` / `regression-gate` are constant lane ids while story ids like
+  `US-001` repeat across projects — so two sessions dispatching in the same
+  second computed the *same* path and the second overwrote the first's brief,
+  `args.json`, pids, deadline and log. Pools are session-scoped, so nothing
+  serialised those launches. The consequence is a lane executing another tenant's
+  brief, not merely a clobbered log. `$SID` separates sessions; `mktemp -d`
+  closes the race inside one. Existing run dirs are unaffected; the change
+  applies to newly minted ones.
+- promote 2026-09-12 (conduct): **`/conduct` releases its slot before verifying
+  and retrying.** Step 6 verified the result, re-`assign`ed the same worker on
+  failure, and only then recorded the slot idle — so the retry hit exit 4 and
+  recovery stalled on a lane that had already exited. The release is now step 1,
+  matching `pool-lane-protocol.md` §6 and the two other callers. Its hung-lane
+  row also stopped recommending `kill -- -<pid>` on the group named in the
+  runner's warning: the engine runs detached in a group of its own, so that
+  leaves it alive while appearing to succeed. It now routes to the dispatch
+  protocol's stop procedure.
+
+- promote 2026-09-12 (lane dispatch): **stopping a timed-out lane goes through
+  the runner, not through the process group.** `workflow-runner.mjs` spawns the
+  engine CLI with `detached: true`, so the engine leads its *own* process group —
+  signalling the wrapper's group never reaches it, and `pgrep -g` on the wrapper
+  cannot see it, so an "empty" group proved nothing. Worse, the runner's own
+  SIGTERM handler escalates to SIGKILL after exactly 5 seconds, which the
+  previous handler's 5-second sleep raced: SIGKILLing the runner at t=5s could
+  stop that escalation from ever firing and orphan the engine mid-write. The
+  launch now records `runner.pid` alongside `lane.pid`, and the deadline handler
+  signals the runner and waits up to 30s for the wrapper's `CONDUCT_EXIT` marker
+  — the runner's `killTree` is the only code that holds the engine's group id,
+  and its exit is the only honest proof the tree is down.
+- promote 2026-09-12 (lane dispatch): **an unconfirmed stop no longer authorises
+  a recycle.** If the marker never arrives, SIGKILLing the wrapper group is a
+  last resort that explicitly does not clear the engine (a SIGKILLed runner
+  cannot run `killTree`). The slot stays `running`, the operator is told the
+  engine may still be live, and a human decides. Only a clean stop earns
+  `recycle --force`. `pool-lane-protocol.md` §6 carries the same carve-out.
+- promote 2026-09-12 (pool protocol): **§6 now says release on process
+  completion, not on result validation.** It still read "once the reply is back
+  and validated", which contradicted both callers: `/run-project`'s one retry on
+  malformed JSON and `/execute-task`'s debugger recovery both re-`assign` the
+  same worker, so a slot released only after the JSON validated sent exactly
+  those retries to exit 4, stalling instead of producing `INVALID_RETURN_FORMAT`.
+  One ordering now, stated in the file both callers read: release first, then
+  parse.
+
+- promote 2026-09-12 (lane dispatch): **the deadline is persisted to
+  `{run dir}/deadline`.** Launch and wait are two separate calls in two
+  processes, so the previous shell variable was empty in the waiter and
+  `[ "$(date +%s)" -ge "" ]` errored on every iteration — an inert guard that
+  read as a working one. On disk it also survives a parent restart re-arming a
+  waiter against a lane already in flight. A waiter that finds no deadline file
+  now refuses to start rather than degrading to an unbounded wait.
+- promote 2026-09-12 (lane dispatch): **the deadline handler signals the process
+  group, not the recorded pid.** `lane.pid` is the wrapper `bash -c`;
+  `workflow-runner.mjs` and the engine CLI are its descendants. `kill -TERM
+  "$pid"` removed the wrapper and left the runner working, after which
+  `kill -0 "$pid"` failed and the lane was reported gone — a false clearance that
+  authorised recycling a slot whose agent was still writing to the repo. Verified
+  directly: killing a `setsid` wrapper left both children running while the
+  liveness check said "gone". Now `kill -- -"$pgid"` and `pgrep -g "$pgid"`, and
+  the slot may only be retired once the **group** is confirmed empty. This is
+  what the existing proof-of-escape check (pgid == sid == pid) was always for.
+- promote 2026-09-12 (lane dispatch): **the engine roster moved into the dispatch
+  protocol, with a deterministic rule.** `/run-project` pointed at "the dispatch
+  protocol's roster", which did not exist there — the roster lived only in
+  `/conduct`, so a bare `/run-project` on a host with several CLIs had no defined
+  choice and could reach the launch with `{engine}` unexpanded. Resolution is now
+  stated once: an engine the user named, else the caller's declared default, else
+  the first of `codex`/`grok`/`claude` that resolves — **resolved once per run and
+  reused for every lane in it**, recorded in `state.json`. Mixed engines across
+  one run's stories give results that are not comparable and a failure you cannot
+  attribute. `/conduct`'s roster section now references the shared one.
+
+- promote 2026-09-12 (lane dispatch): **the waiter now enforces a wall-clock
+  deadline.** `workflow-runner.mjs`'s `timeoutSecs` is a *soft* timeout — it
+  prints a repeating `TIMEOUT WARNING` and explicitly does not kill the child —
+  so a waiter looping for the `CONDUCT_EXIT` marker waited forever on a hung
+  lane, and `/run-project --ralph-mode`'s `blocked: TIMEOUT` contract could never
+  fire. The waiter now exits with one of three outcomes (`exited`, `died`,
+  `deadline`), and `deadline` is the only one that leaves a live process: stop
+  it, **confirm the pid is gone**, and only then `recycle --force` its slot.
+  Retiring a slot on an unverified pid puts two workers in one lane, which is
+  exactly what the running-lane guard exists to prevent. `--timeout N` is wired
+  to this deadline, not to `timeoutSecs`.
+- promote 2026-09-12 (lane dispatch): **the lane tier is a caller-supplied
+  placeholder.** It was hardcoded `exec`, so `/run-project`'s preflight explorer
+  — which the skill requires to run at `plan` — silently did its analysis on the
+  throughput model. Every caller now names its tier, and both skills say why it
+  is never implicit.
+- promote 2026-09-12 (lane dispatch): `/run-project`'s Step 1 reconciled with the
+  detached default. `--inline` still meant "story-level Codex sub-agent
+  execution" and the legacy note still read "Ralph now runs inline in the active
+  session" — both false, and a reader following Step 1 would have kept the old
+  in-session path alive. `--inline` now means *story-delegated* (as opposed to
+  `--interactive`'s parent-driven editing), and the legacy note distinguishes the
+  retired `nohup run-project.sh --engine claude` subprocess from today's pooled,
+  capped, worker-authoritative lanes.
+
+- promote 2026-09-12 (run-project detached lanes): **`/run-project` now dispatches
+  each story as a detached lane, not an in-session sub-agent.** The default path
+  claims its `story:{worker-id}` pool slot exactly as before, then launches a
+  `setsid` `workflow-runner.mjs` process per
+  `.claude/skills/_shared/lane-dispatch-protocol.md` — the same mechanism
+  `/conduct` has always used. Three consequences, in order of how much they
+  matter: a run now **survives the parent session** (compaction, restart, or an
+  ended session used to kill work mid-story, leaving the slot marked running); a
+  story can be **corrected while it runs** through the lane's drop box instead of
+  being killed and relaunched; and a host with **no in-session sub-agent
+  primitive** can run a project at all. The preflight explorer and the regression
+  gate moved the same way. Ralph/headless is the same loop unattended, and its
+  old claim that it "does not launch a detached subprocess" is now false and has
+  been removed.
+- promote 2026-09-12 (run-project detached lanes): **in-session `spawn_agent` is
+  now the documented fallback, not the default.** It is correct only where no
+  `codex`/`grok`/`claude` CLI resolves. Probe once per run, before the first
+  dispatch, and say which path you took — the failure this ordering prevents is
+  discovering a missing engine once per story, halfway through a PRD. Everything
+  around the dispatch is identical on both paths: the pool claim, the
+  `RETURN CONTRACT: json`, the one retry on malformed JSON, the worker-proof
+  gate, and the evidence check. Operator action: none, unless you run HQ on a box
+  with no coding-agent CLI installed, in which case behaviour is unchanged.
+- promote 2026-09-12 (run-project detached lanes): new
+  `.claude/skills/_shared/lane-dispatch-protocol.md` owns the launch mechanism —
+  brief on disk, `args.json`, the `setsid` block with its proof-of-escape check,
+  `record --status running` against the run-dir basename, the background waiter
+  with its liveness clause, the drop box, and reading the outcome. `/conduct`
+  Step 5 collapsed to a reference plus its own specifics. Two skills performing
+  the same protocol from two copies is the exact shape that produced three review
+  rounds of drift on the pool work; this is the same structural fix.
+- promote 2026-09-12 (run-project detached lanes): **a lane now exports
+  `HQ_SESSION_ID`.** The runner passes its environment to the engine, and
+  anything the lane runs that touches the pool — `/execute-task` claiming phase
+  slots inside a story lane, above all — resolves its session from that variable
+  first and the `.current` file only as a fallback. Without the export a lane
+  that outlived its parent session claimed slots in whatever session `.current`
+  named by then, so the cap silently stopped holding. This also fixes the same
+  latent gap in `/conduct`, whose launch block never exported it.
+- promote 2026-09-12 (run-project detached lanes): the two launch-quoting checks
+  moved from `conduct-worker-selection.test.sh` to the new
+  `orchestrator-skills-dispatch-lanes.test.sh`, which is where the launch block
+  now lives. The block is validated once, at its definition, rather than from
+  whichever caller happens to quote it. New CI step: **Orchestrator skills
+  dispatch detached lanes (run-project + conduct)**.
+
 ## Release: v15.0.128-beta.3
 
 - promote 2026-09-11 (conduct pool): **`record` no longer accepts `--status recycled`.** That path
