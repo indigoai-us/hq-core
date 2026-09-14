@@ -233,11 +233,18 @@ lanes, not restarts, so a fallback restart never consumes a second slot.
 
 ## 6. Release the lane, and record what it did
 
-Once the reply is back and validated, record the real sub-agent id alongside the
-release if you dispatched with `pending`, append the handoff or return JSON as
-one line to `{slot dir}/handoffs.jsonl` — this append is unconditional, which is why
-§3 reinitialises on a mismatch rather than merely declining to read — and
-release the slot:
+**Release on process completion, not on result validation.** The two are
+separate facts and only the first governs the slot: the moment the sub-agent or
+lane is gone, the slot is reusable, whatever it returned. Gating the release on a
+valid reply strands the slot exactly when a caller needs it most — every retry
+path (`/run-project`'s one retry on malformed JSON, `/execute-task`'s debugger
+recovery) re-`assign`s the same worker and gets exit 4, waiting on something that
+has already exited. Release first, then parse.
+
+So: release the slot, recording the real sub-agent id alongside it if you
+dispatched with `pending`. Then append the handoff or return JSON as one line to
+`{slot dir}/handoffs.jsonl` — this append is unconditional, which is why §3
+reinitialises on a mismatch rather than merely declining to read.
 
 ```bash
 bash core/scripts/conduct-pool.sh record --worker-id "{lane-id}" \
@@ -246,8 +253,18 @@ bash core/scripts/conduct-pool.sh record --worker-id "{lane-id}" \
 
 A lane left marked `running` after its work returns is **never resumable**:
 every later `assign` for that worker exits 4 and the run stalls. Release it even
-when the work failed or the sub-agent died — or `recycle` the slot — before
-moving on.
+when the work failed, returned garbage, or the sub-agent died — or `recycle` the
+slot — before moving on.
+
+**The one exception is a lane you could not confirm dead.** "The sub-agent died"
+is a claim about the wrapper process, and the engine is not in its group — the
+runner spawns it detached. So a lane that missed its deadline without stopping
+cleanly, *and equally* one the waiter reported as `died` or `never-started`,
+may still be running with a handle nobody holds. Dispatch protocol §5 has the
+confirmation to run — the journalled engine pgid — and it applies to every
+outcome, not just the timeout. Until it reports the group empty, do not release
+or force-recycle that slot: an unconfirmed process and its replacement would
+write over each other. Leave it `running`, say so, and let a human decide.
 
 When a lane's context grows fat enough to hurt — long phases, many stories on
 one worker, or a return that shows it losing earlier detail — compact or recycle

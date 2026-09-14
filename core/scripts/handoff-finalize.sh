@@ -442,8 +442,23 @@ for p in "${EXPLICIT_PATHS[@]}"; do
     git add -- "$p" >/dev/null 2>&1 || add_rc=$?
     if [[ $add_rc -eq 0 ]]; then
       STAGED=$((STAGED+1))
-    elif git check-ignore -q -- "$p" 2>/dev/null; then
-      # A gitignored path is a deliberate exclusion, not a failed write.
+    elif git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+      # The path is already TRACKED but a broad later ignore rule now shadows it
+      # (the scaffold's /workspace/ entry over the tracked handoff pointer/index
+      # files), so a plain `git add` refuses it. A tracked file must still be
+      # committed, so force-add it. Only a force-add that ALSO fails (e.g. a held
+      # .git/index.lock) is a genuine stage failure.
+      if git add -f -- "$p" >/dev/null 2>&1; then
+        STAGED=$((STAGED+1))
+      else
+        STAGE_FAILURES="${STAGE_FAILURES}${p}"$'\n'
+        STAGE_FAILURE_COUNT=$((STAGE_FAILURE_COUNT+1))
+      fi
+    elif git check-ignore --no-index -q -- "$p" 2>/dev/null; then
+      # An UNtracked, gitignored path is a deliberate exclusion, not a failed
+      # write. --no-index is required: plain `git check-ignore` SKIPS tracked
+      # files (it would wrongly report a tracked-but-ignored path as not-ignored,
+      # the bug that made this a stage-failure); the tracked case is handled above.
       :
     else
       STAGE_FAILURES="${STAGE_FAILURES}${p}"$'\n'

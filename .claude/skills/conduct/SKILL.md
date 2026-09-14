@@ -36,33 +36,20 @@ Two properties matter more than the rest:
 
 ## Engine roster
 
-| Choice | `engine` | Best for |
-|---|---|---|
-| `codex` (default) | `codex` | implementation, landing work, CI babysitting, fixes |
-| `grok` | `grok` | fast implementation, a cheap second opinion |
-| `claude` | `claude` | review, design, judgment-heavy work |
-
-One difference that is not about quality: all three can be **corrected while
-they run** (Step 5b), but only codex and claude take a message quietly. A grok
-lane has to be interrupted — the message arrives as a denied tool call — which
-costs it the step it was about to take. For work you expect to steer often, that
-is a reason to prefer codex.
+The roster and the resolution rule live in
+`.claude/skills/_shared/lane-dispatch-protocol.md` §2 — `codex` (default),
+`grok`, `claude`, resolved once per run and reused for every lane in it. That is
+also where the per-engine steering difference is recorded: codex and claude take
+a mid-flight message quietly, grok has to be interrupted.
 
 Each `agent()` call also names a `tier`: `exec` for execution (the throughput
 model) or `plan` for analysis, review, and design (the flagship model). The tier
 is required — the model choice is never implicit.
 
-Before committing a brief to an engine, confirm it can actually run:
-
-```bash
-command -v codex grok claude
-```
-
-Configuration is not availability. An engine whose CLI resolves can still refuse
-on a quota or balance error, and a refusal costs the same sixty seconds whether
-it interrupts a throwaway probe or a fully briefed lane. If every engine is
-unavailable, that is a blocker to hand back to the user immediately — naming
-which engines were tried and what each returned — not something to retry around.
+An engine the user names in the argument wins over the default. Confirm it can
+actually run before you brief it (protocol §2); if every engine is unavailable,
+that is a blocker to hand back immediately — naming which were tried and what
+each returned — not something to retry around.
 
 ## Step 1: Parse the argument
 
@@ -191,9 +178,12 @@ Read the JSON it prints and honour it:
 
 - `{"action":"spawn",...}` → launch a new lane (Step 4).
 - `{"action":"resume","subagent_id":"{run id}",...}` → that worker already has a
-  lane history. Reuse it: launch into the SAME run directory and give the brief
-  the previous lane's result file so the worker picks up its own thread instead
-  of starting cold.
+  lane history. Reuse the **slot**, not the directory: launch a fresh run dir
+  into the same slot and give the brief the previous lane's result file — the
+  `subagent_id` names it — so the worker picks up its own thread instead of
+  starting cold. Relaunching into the old directory races the waiter against its
+  stale completion marker (protocol §3). Record the new run id against the same
+  slot afterwards.
 - `{"action":"spawn","recycled":"{other}",...}` → the pool was full, so the
   least-recently-used idle worker was retired to make room. Mention the retired
   worker when you report back; a silently dropped worker is a defect.
@@ -205,10 +195,11 @@ Read the JSON it prints and honour it:
   which case `bash core/scripts/conduct-pool.sh recycle --worker-id conduct:{id} --force`
   asserts that. A claim you made but never launched is a different case: drop it
   with `bash core/scripts/conduct-pool.sh cancel --worker-id conduct:{id}`.
-- **Exit 4** → this worker's own lane is still running. Do not launch: relaunching
-  into a live lane's run directory overwrites the artifacts of a process that is
-  still working. Queue the task behind the running one and dispatch it from that
-  lane's completion, or pick a different worker.
+- **Exit 4** → this worker's own lane is still running. Do not launch: a second
+  live lane in one recorded slot exceeds the advertised cap and has both
+  processes appending to the same `handoffs.jsonl`. Queue the task behind the
+  running one and dispatch it from that lane's completion, or pick a different
+  worker.
 
 Only an **idle** slot resumes. A running slot is never resumable, which is also
 what stops repeated same-worker tasks from stacking lanes inside one recorded
@@ -257,86 +248,40 @@ lane returns in a minute having changed nothing.
 
 ## Step 5: Launch the lane, detached
 
-Write the brief to disk and pass only its **path** through `--args`. The runner
-takes `--args` as a JSON string on the command line, so inlining a full brief
-there is what makes the invocation fragile under nested quoting and long inputs.
-The lane can read files; give it a path and keep the command line short.
+Follow `.claude/skills/_shared/lane-dispatch-protocol.md` — it owns the whole
+mechanism: brief on disk, `args.json`, the `setsid` launch with its proof-of-
+escape check, the `HQ_SESSION_ID` export, `record --status running` against the
+run-dir basename, and the background waiter. `/run-project` dispatches its
+stories the same way, so the launch block lives in one file rather than drifting
+between two.
 
-```bash
-TS="$(date -u +%Y%m%d-%H%M%S)"
-RUN_DIR="workspace/tmp/workflow-runner/conduct-{worker}-$TS"   # on resume: the existing run dir
-mkdir -p "$RUN_DIR"
+The conduct-specific parts are only these:
 
-# The worker's execution.max_runtime, in seconds. 15m -> 900, 5m -> 300, 60m ->
-# 3600. Default to 900 when the worker does not declare one, or for `unmatched`.
-LANE_TIMEOUT={worker max_runtime in seconds, else 900}
+- **Run dir:** the protocol mints it — `{caller}` = `conduct`,
+  `{lane}` = `{worker}`. Do not spell a path here, and mint a fresh one on a
+  resume too (protocol §3): the old dir's `CONDUCT_EXIT=` marker is still on
+  disk when the waiter arms, so reusing it releases the slot while the new lane
+  is still live. The `subagent_id` you record moves to the new run id; the
+  worker's continuity comes from the slot's `handoffs.jsonl` and its previous
+  result file, both of which outlive the run dir.
+- **Lane id:** `conduct:{worker}` — the namespace from pool protocol §1, which
+  is what keeps a `/conduct` lane from colliding with an `/execute-task` phase
+  lane for the same worker.
+- **Engine:** whatever Step 1 resolved, from the roster above.
+- **`{tier}`:** `exec` for a task that changes things; `plan` for review, design,
+  or analysis. Never leave it implicit — it picks the model.
+- **Timeout:** the worker's `execution.max_runtime` in seconds — 15m → 900,
+  5m → 300, 60m → 3600. Default 900 when the worker declares none, or for
+  `unmatched`. This is both `timeoutSecs` and the waiter's the `deadline` file; only the
+  second one actually bounds the lane.
+- **Label:** the worker id.
 
-cat > "$RUN_DIR/brief.md" <<'BRIEF'
-{the brief from Step 4}
-BRIEF
-
-printf '{"brief":"%s","cd":"%s"}\n' "$PWD/$RUN_DIR/brief.md" "{absolute work dir}" > "$RUN_DIR/args.json"
-
-setsid nohup bash -c "
-  echo \$\$ > '$RUN_DIR/lane.pid'
-  export HQ_CONDUCT_RUN_DIR='$PWD/$RUN_DIR'
-  export HQ_CONDUCT_ENGINE='{engine}'
-  node core/scripts/workflow-runner.mjs --eval \
-    'return await agent(\"Read your brief at \" + args.brief + \" and carry it out now.\", { engine: \"{engine}\", tier: \"exec\", cd: args.cd, label: \"{worker}\", timeoutSecs: $LANE_TIMEOUT })' \
-    --args \"\$(cat '$RUN_DIR/args.json')\" --run-dir '$RUN_DIR' > '$RUN_DIR/lane.log' 2>&1
-  echo \"CONDUCT_EXIT=\$?\" >> '$RUN_DIR/lane.log'
-" > /dev/null 2>&1 < /dev/null &
-disown
-
-# Proof of escape: pgid and sid must equal the child's own pid.
-ps -eo pid,pgid,sid,args= | grep workflow-runner | grep -v grep
-```
-
-Record the lane against its slot, then end the turn:
-
-```bash
-bash core/scripts/conduct-pool.sh record --worker-id "conduct:{worker}" \
-  --subagent-id "$(basename "$RUN_DIR")" --status running
-```
-
-Reply to the user in one line — what was dispatched, to which worker, on which
-engine — and stop. Do not poll in the foreground.
+Then reply to the user in one line — what was dispatched, to which worker, on
+which engine — and stop. Do not poll in the foreground.
 
 Independent tasks go out together in one response, up to the remaining pool
 capacity. Dependent tasks chain: launch the next from the previous lane's
 completion.
-
-Then arm a waiter as a **background** Bash call so the harness notifies you when
-it exits:
-
-```bash
-L="{run dir}/lane.log"
-P="{run dir}/lane.pid"
-starts=0
-until grep -q 'CONDUCT_EXIT=' "$L" 2>/dev/null; do
-  if [ -s "$P" ]; then
-    kill -0 "$(cat "$P")" 2>/dev/null || { echo "lane died without writing its marker"; break; }
-  else
-    starts=$((starts + 1))
-    [ "$starts" -gt 6 ] && { echo "lane never started"; break; }
-  fi
-  sleep 10
-done
-tail -30 "$L"
-```
-
-The liveness clause is load-bearing: a lane killed before it writes its marker
-would otherwise leave the loop unsatisfied forever, and silence must never read
-as success. Test the **recorded pid**, not `pgrep -f "{run id}"` — `-f` matches
-the whole command line, and the waiter's own `bash -c` contains the run id, so
-`pgrep` finds the waiter itself and the killed-lane branch never fires.
-
-Never build the waiter as `tail -f | sed | grep` either — `sed` block-buffers
-into a pipe and the completion line never reaches the last stage, so a healthy
-lane looks like a hung one. Poll the log; do not stream it.
-
-The waiter is a convenience, not the source of truth. If it is swept, the lane
-keeps running and `/conduct status` still finds it.
 
 ## Step 5b: Send a message to a lane that is already running
 
@@ -397,28 +342,43 @@ blocks a lane that is legitimately done.
 
 ## Step 6: Read the outcome, then verify it
 
-The last lines of `lane.log` say which of several very different things happened:
+`lane.log` is the *status* channel, not the result channel. Its last lines say
+which of several very different things happened:
 
 | Log tail | Meaning |
 |---|---|
-| `CONDUCT_EXIT=0` | finished — the runner's stdout is the lane's report |
+| `CONDUCT_EXIT=0` | finished — read the report from `agent-1.result.json` per dispatch protocol §7 (`jq -r '.value'`), not from this log, which wraps it in narration and a layer of JSON string quoting |
 | `CONDUCT_EXIT` non-zero | died — read the tail before blaming the code; a quota or balance refusal (`402`, `403`) looks identical to a build failure from the exit code alone |
 | no marker, no process | killed from outside — inspect the work directory before believing nothing happened |
-| `TIMEOUT WARNING` repeating, log not growing | hung — kill the process group named in the warning (`kill -- -<pid>`); never pattern-kill |
+| `TIMEOUT WARNING` repeating, log not growing | hung — stop it per dispatch protocol §5 (signal `runner.pid`, wait for the marker). Do **not** kill the group named in the warning: the engine runs detached in a group of its own, so that leaves it alive while looking successful. Never pattern-kill. |
 
-Then:
+Then, in this order:
 
-1. **Verify independently.** A lane's self-reported success is a claim. Check the
-   artifact, the git state, and the repo's own typecheck, lint, and tests
-   yourself.
-2. On failure, send the errors back to the **same worker** — assign again, which
-   resumes its slot — rather than fixing it in the parent. Cap it at three
-   rounds, then surface it to the user.
-3. Mark the slot idle so the worker is reusable and the cap frees up:
+1. **Release the slot first.** The lane is gone, so the slot is reusable —
+   whatever it returned (pool protocol §6):
    ```bash
    bash core/scripts/conduct-pool.sh record --worker-id "conduct:{worker}" \
      --subagent-id "{run id}" --status idle
    ```
+   This is before verification, not after, and the ordering is load bearing:
+   step 3 re-`assign`s the same worker on failure, and a slot still marked
+   `running` sends that retry to exit 4 — recovery stalls waiting on a lane that
+   has already exited. Release is a fact about the process, not a verdict on its
+   work.
+
+   **The exception is any lane whose engine group you could not confirm empty —
+   on any outcome, not only a deadline.** Dispatch protocol §5 runs that
+   confirmation after every exit; `engine_gone=no` means a process is still
+   working in the repo, and `died` or `never-started` say nothing about it
+   because the engine is not in the wrapper's group. Releasing there hands the
+   slot to a retry that starts on top of a live engine. Leave the slot
+   `running`, say so, and stop.
+2. **Verify independently.** A lane's self-reported success is a claim. Check the
+   artifact, the git state, and the repo's own typecheck, lint, and tests
+   yourself.
+3. On failure, send the errors back to the **same worker** — assign again, which
+   resumes its released slot — rather than fixing it in the parent. Cap it at
+   three rounds, then surface it to the user.
 4. Relay the outcome plainly — done, blocked, or needs a decision — with any
    links. If the lane needs a decision, ask with `AskUserQuestion`, then continue
    the same worker with the answer.

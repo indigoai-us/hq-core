@@ -224,14 +224,16 @@ grep -qi 'another company.s repo list' "$RUN_FLAT" \
 ok "explorer and regression-gate are validated before reuse, not just the story lanes"
 
 echo "run-project: the resume branch is executable, not a dangling instruction"
-# assign has already marked the slot running by the time resume comes back. A
-# coordinator that cannot act on it leaves the lane stuck and every later claim
-# for that worker exits 4.
-grep -qi 'has no resume primitive' "$RUN_FLAT" \
-  || fail "run-project must say plainly that spawn_agent cannot resume"
+# assign has already granted the slot by the time resume comes back. A
+# coordinator that cannot act on it leaves the slot stuck and every later claim
+# for that worker exits 4. The reason no runtime can literally reattach changed
+# when stories became detached lanes (a lane is an exited process, not a live
+# sub-agent), so match the invariant rather than the old mechanism's wording.
+grep -qi 'has no resume primitive\|nothing to reattach to' "$RUN_FLAT" \
+  || fail "run-project must say plainly that the runtime cannot reattach to a prior worker"
 grep -q 'handoffs.jsonl' "$RUN_PROJECT" \
   || fail "run-project must define the disk-backed restart, not just point at resume"
-grep -qi 'leaves the lane stuck there' "$RUN_FLAT" \
+grep -qi 'leaves the lane stuck there\|leaves the slot stuck' "$RUN_FLAT" \
   || fail "run-project must name what happens if the resume branch is skipped"
 ok "the coordinator resume branch has a concrete, executable fallback"
 
@@ -375,7 +377,11 @@ sp="$(awk -v s="$sec6c" 'NR>s && /wait_agent\(\.\.\.\)/ {print NR; exit}' "$EXEC
 rec="$(awk -v s="$sec6c" 'NR>s && /--subagent-id "\{agent id\}" --status running/ {print NR; exit}' "$EXEC_TASK")"
 [ -n "$sp" ] && [ -n "$rec" ] && [ "$rec" -lt "$sp" ] \
   || fail "execute-task must record running (line ${rec:-?}) before wait_agent blocks (line ${sp:-?})"
-grep -qi 'never after the wait' "$RUN_FLAT" \
+# run-project's coordinator lanes are detached processes, so the gap execute-task
+# records in (between spawn_agent and wait_agent) does not exist there — the
+# equivalent is "immediately after launch". Same invariant: never leave a live
+# lane sitting in `claimed`, where cancel may retire it as undispatched.
+grep -qi 'never after the wait\|against the run-dir basename immediately after launch' "$RUN_FLAT" \
   || fail "run-project must carry the same ordering for its coordinator lanes"
 ok "running is recorded before anything blocks, on both runtimes"
 

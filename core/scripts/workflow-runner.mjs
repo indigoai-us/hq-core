@@ -1040,6 +1040,13 @@ async function buildRuntime(cli) {
         settle(new Error(`failed to spawn ${engine.bin}: ${errMsg(e)}`));
         return;
       }
+      // The engine is detached, so it leads a process group this runner is the
+      // only party that can name. Journal it: an external supervisor that has
+      // to confirm the tree is really down after a timeout has no other way to
+      // find it, and the runner's own exit is not proof — child.on('close')
+      // fires when the group LEADER goes, which can retire this runner before
+      // its SIGKILL escalation ever runs on a surviving descendant.
+      journal({ event: 'agent-spawned', n, label, phase: phaseName, pid: child.pid, pgid: child.pid });
       state.activeChildren.add(child);
       const warnTimer = setInterval(() => {
         const elapsed = Math.round((Date.now() - startedAt) / 1000);

@@ -115,38 +115,11 @@ grep -qi 'approval_required' "$SKILL" \
   || fail "the skill must honour verification.approval_required"
 ok "approval_required and human_checkpoints are carried into the brief"
 
-echo "conduct: the lane launch snippet is valid shell, outside and inside"
-# The launch block is a quoting minefield: a detached `setsid bash -c "..."`
-# whose body itself contains a single-quoted --eval string. Two separate parses
-# happen, and only the outer one is visible to `bash -n` on the whole snippet —
-# an unbalanced quote INSIDE the body is just a character to the outer shell and
-# sails through. It fails later, at dispatch, in a detached process whose output
-# goes to a log nobody is watching yet. So check both levels.
-snippet="$TMPD/launch.sh"
-# shellcheck disable=SC2016  # the $ is part of the literal anchor in SKILL.md
-sed -n '/^TS="\$(date/,/^" > \/dev\/null 2>&1 < \/dev\/null &/p' "$SKILL" \
-  | sed -e 's/{engine}/codex/g' \
-        -e 's/{worker}/demo/g' \
-        -e 's/{the brief from Step 4}/BRIEF/' \
-        -e 's|{absolute work dir}|/tmp|' \
-        -e 's/{worker max_runtime in seconds, else 900}/900/' \
-  > "$snippet"
-[ -s "$snippet" ] || fail "could not extract the launch snippet — its anchors moved"
-grep -q 'LANE_TIMEOUT' "$snippet" || fail "the launch no longer honours the worker's max_runtime"
-bash -n "$snippet" || fail "the lane launch snippet is not valid bash (outer)"
-ok "the launch snippet parses and passes the worker's timeout"
-
-echo "conduct: the detached bash -c body is valid shell in its own right"
-inner="$TMPD/inner.sh"
-# Body of the `bash -c "` string, with the outer double-quote escaping undone.
-sed -n '/^setsid nohup bash -c "$/,/^" > \/dev\/null/p' "$snippet" \
-  | sed -e '1d' -e '$d' \
-  | sed -e 's/\\\$/$/g' -e 's/\\"/"/g' \
-  > "$inner"
-[ -s "$inner" ] || fail "could not extract the bash -c body — the launch block's shape changed"
-grep -q 'workflow-runner.mjs' "$inner" || fail "the bash -c body no longer launches the runner"
-bash -n "$inner" || fail "the detached bash -c body is not valid bash"
-ok "the inner script parses too"
+# The lane launch snippet moved to .claude/skills/_shared/lane-dispatch-protocol.md
+# when /run-project started dispatching the same way. Its shell-validity checks
+# moved with it, to orchestrator-skills-dispatch-lanes.test.sh — the launch block
+# is validated where it now lives, once, rather than from whichever caller
+# happens to quote it.
 
 echo
 echo "conduct-worker-selection.test.sh: $PASS checks passed"

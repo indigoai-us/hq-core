@@ -176,4 +176,90 @@ grep -q "git add failed" "$err_file" || fail "locked-index run must warn loudly 
 assert_eq "$(git rev-parse HEAD)" "$head_before" "locked-index run must not move HEAD"
 rm -f .git/index.lock
 
+# ── 5. Gitignored /workspace/ (deacon's box): user content commits, the
+#       handoff's OWN metadata is skipped, and the run stays a SUCCESS (exit 0).
+#       Regression lock for hq-agent-ritual.service exit-4 on a box whose ignore
+#       rules exclude /workspace/ — a gitignored own-metadata path is a
+#       deliberate exclusion, never a staging failure.
+IGNORED_WS_REPO="$TMP_ROOT/ignored-workspace"
+scaffold_repo "$IGNORED_WS_REPO"
+cd "$IGNORED_WS_REPO"
+printf 'workspace/\n' > .gitignore
+git add .gitignore
+git commit -qm "box excludes /workspace/ from git"
+echo "agent changed a real file" > tracked.txt
+
+rc=0
+err_file="$TMP_ROOT/ignored-workspace.err"
+out=$(bash core/scripts/handoff-finalize.sh \
+  --title "Handoff: gitignored workspace" \
+  --summary "workspace excluded" \
+  --message "workspace excluded" \
+  --files-touched-json '["tracked.txt"]' \
+  --slug "ignored-workspace" 2>"$err_file") || rc=$?
+
+assert_eq "$rc" "0" "gitignored-workspace finalize exit code (must not fail)"
+assert_eq "$(jq -r '.hq_commit_status' <<<"$out")" "committed" "gitignored-workspace status"
+assert_eq "$(jq -r '.hq_committed' <<<"$out")" "true" "gitignored-workspace hq_committed"
+assert_eq "$(jq -r '.stage_failures | length' <<<"$out")" "0" \
+  "a gitignored own-metadata path is a deliberate exclusion, not a staging failure"
+jq -e '.committed_paths | index("tracked.txt")' <<<"$out" >/dev/null \
+  || fail "gitignored-workspace run must commit the user content outside workspace/"
+if git ls-files --error-unmatch workspace/threads/handoff.json >/dev/null 2>&1; then
+  fail "the handoff's own metadata under a gitignored /workspace/ must be skipped, not committed"
+fi
+git show HEAD:tracked.txt | grep -q "agent changed a real file" \
+  || fail "gitignored-workspace run did not commit the user file"
+
+# ── 6. TRACKED-but-ignored handoff metadata still stages and commits (exit 0).
+#       The fleet-wide hq-agent-ritual.service exit-4 root cause: the handoff
+#       pointer/index files under workspace/ are TRACKED (committed before the
+#       broad /workspace/ ignore was added), so a plain `git add` refuses them
+#       AND the old `git check-ignore -q` fallback SKIPS tracked files, reporting
+#       them not-ignored — the finalizer then misclassified them as a stage
+#       failure and exited 4. A tracked file must be force-added and committed.
+TRK_REPO="$TMP_ROOT/tracked-ignored"
+scaffold_repo "$TRK_REPO"
+cd "$TRK_REPO"
+# The pointer/index files exist and are TRACKED before the ignore rule lands.
+mkdir -p workspace/threads workspace/orchestrator
+echo '{"old":true}' > workspace/threads/handoff.json
+echo "old recent"   > workspace/threads/recent.md
+echo "old threads"  > workspace/threads/INDEX.md
+echo "old orch"     > workspace/orchestrator/INDEX.md
+git add workspace/threads/handoff.json workspace/threads/recent.md \
+        workspace/threads/INDEX.md workspace/orchestrator/INDEX.md
+git commit -qm "tracked handoff pointer/index files (pre-ignore)"
+# A broad later ignore rule now shadows the whole workspace/ tree.
+printf 'workspace/\nINDEX.md\n' > .gitignore
+git add .gitignore
+git commit -qm "box excludes /workspace/ from git (after the files were tracked)"
+# Preconditions: the four paths are now tracked AND matched by the ignore rule.
+git ls-files --error-unmatch workspace/threads/handoff.json >/dev/null 2>&1 \
+  || fail "precondition: handoff.json must be tracked"
+git check-ignore --no-index -q workspace/threads/handoff.json \
+  || fail "precondition: handoff.json must match the ignore rule"
+head_before="$(git rev-parse HEAD)"
+
+rc=0
+err_file="$TMP_ROOT/tracked-ignored.err"
+out=$(bash core/scripts/handoff-finalize.sh \
+  --title "Handoff: tracked-but-ignored" \
+  --summary "tracked but ignored" \
+  --message "tracked but ignored" \
+  --files-touched-json '[]' \
+  --slug "tracked-ignored" 2>"$err_file") || rc=$?
+
+assert_eq "$rc" "0" "tracked-ignored finalize exit code (must NOT be stage-failed exit 4)"
+assert_eq "$(jq -r '.hq_commit_status' <<<"$out")" "committed" "tracked-ignored status"
+assert_eq "$(jq -r '.hq_committed' <<<"$out")" "true" "tracked-ignored hq_committed"
+assert_eq "$(jq -r '.stage_failures | length' <<<"$out")" "0" \
+  "a tracked-but-ignored path is force-added, never a stage failure"
+[[ "$(git rev-parse HEAD)" != "$head_before" ]] \
+  || fail "tracked-ignored run must move HEAD (the tracked handoff metadata was committed)"
+git show "HEAD:workspace/threads/handoff.json" >/dev/null 2>&1 \
+  || fail "tracked-ignored run must commit the regenerated handoff.json"
+git show "HEAD:workspace/threads/handoff.json" | grep -q '"old"' \
+  && fail "tracked-ignored run committed the STALE handoff.json (the regenerated pointer was not staged)"
+
 echo "handoff-finalize commit status: ok"
