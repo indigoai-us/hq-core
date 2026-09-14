@@ -176,4 +176,39 @@ grep -q "git add failed" "$err_file" || fail "locked-index run must warn loudly 
 assert_eq "$(git rev-parse HEAD)" "$head_before" "locked-index run must not move HEAD"
 rm -f .git/index.lock
 
+# ── 5. Gitignored /workspace/ (deacon's box): user content commits, the
+#       handoff's OWN metadata is skipped, and the run stays a SUCCESS (exit 0).
+#       Regression lock for hq-agent-ritual.service exit-4 on a box whose ignore
+#       rules exclude /workspace/ — a gitignored own-metadata path is a
+#       deliberate exclusion, never a staging failure.
+IGNORED_WS_REPO="$TMP_ROOT/ignored-workspace"
+scaffold_repo "$IGNORED_WS_REPO"
+cd "$IGNORED_WS_REPO"
+printf 'workspace/\n' > .gitignore
+git add .gitignore
+git commit -qm "box excludes /workspace/ from git"
+echo "agent changed a real file" > tracked.txt
+
+rc=0
+err_file="$TMP_ROOT/ignored-workspace.err"
+out=$(bash core/scripts/handoff-finalize.sh \
+  --title "Handoff: gitignored workspace" \
+  --summary "workspace excluded" \
+  --message "workspace excluded" \
+  --files-touched-json '["tracked.txt"]' \
+  --slug "ignored-workspace" 2>"$err_file") || rc=$?
+
+assert_eq "$rc" "0" "gitignored-workspace finalize exit code (must not fail)"
+assert_eq "$(jq -r '.hq_commit_status' <<<"$out")" "committed" "gitignored-workspace status"
+assert_eq "$(jq -r '.hq_committed' <<<"$out")" "true" "gitignored-workspace hq_committed"
+assert_eq "$(jq -r '.stage_failures | length' <<<"$out")" "0" \
+  "a gitignored own-metadata path is a deliberate exclusion, not a staging failure"
+jq -e '.committed_paths | index("tracked.txt")' <<<"$out" >/dev/null \
+  || fail "gitignored-workspace run must commit the user content outside workspace/"
+if git ls-files --error-unmatch workspace/threads/handoff.json >/dev/null 2>&1; then
+  fail "the handoff's own metadata under a gitignored /workspace/ must be skipped, not committed"
+fi
+git show HEAD:tracked.txt | grep -q "agent changed a real file" \
+  || fail "gitignored-workspace run did not commit the user file"
+
 echo "handoff-finalize commit status: ok"
