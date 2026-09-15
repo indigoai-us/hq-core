@@ -24,10 +24,32 @@ set -uo pipefail
 # No hq on PATH → nothing to enforce here; allow.
 command -v hq >/dev/null 2>&1 || exit 0
 
+# Most Bash calls cannot possibly be blocked by timeout-guard. When jq is
+# available, inspect the payload just enough to eliminate those calls before
+# starting the CLI (which otherwise loads its full command graph). Keep this
+# deliberately broader than the CLI parser: a false positive merely invokes the
+# existing guard, while a false negative would let a blockable call through.
+# Without jq, preserve the original stdin-forwarding behaviour exactly.
+if command -v jq >/dev/null 2>&1; then
+  payload="$(cat)"
+  if jq -e '
+    (.tool_input? // {}) as $input
+    | (
+        (($input.timeout? | if type == "number" then . > 600000 else false end) | not)
+        and
+        (($input.command? // "") | if type == "string" then (contains("timeout") or contains("gtimeout") or contains("alarm")) else false end | not)
+      )
+  ' >/dev/null 2>/dev/null <<<"$payload"; then
+    exit 0
+  fi
+  printf '%s' "$payload" | hq core timeout-guard
+else
+  hq core timeout-guard
+fi
+
 # Forward the payload; block ONLY on an explicit guard block (exit 2). Any other
 # status (0 allow, or a non-2 error from an older CLI without the subcommand)
 # fails open.
-hq core timeout-guard
 rc=$?
 [ "$rc" -eq 2 ] && exit 2
 exit 0

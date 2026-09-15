@@ -1115,6 +1115,8 @@ jobs:
           fi
       - name: Policy fires on SessionStart + canvas prompt (trigger battery)
         run: bash core/scripts/tests/prefer-native-capabilities-trigger.test.sh
+      - name: Background-shell pressure-reap policy trigger + run_in_background fact
+        run: bash core/scripts/tests/claude-bg-shell-pressure-reap-trigger.test.sh
       - name: Codex preflight pull path emits the policy + Grok rules pointer
         run: bash core/scripts/tests/codex-preflight-policies.test.sh
       - name: Codex output-style bridge

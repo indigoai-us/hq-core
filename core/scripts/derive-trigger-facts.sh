@@ -20,6 +20,7 @@
 #   shared_branch  <- a shared branch name (main/master/staging/production/release/)
 #   <basename>+.ext <- a file reference (see Filename tokens below)
 #   /command       <- a slash-command mention (see Slash-command tokens below)
+#   run_in_background <- PreToolUse Bash with tool_input.run_in_background: true
 # Per-event source text:
 #   PreToolUse  Bash  -> the command. (`gh pr create` -> the word `pr`, etc.)
 #   PreToolUse  other -> lowercased tool name (Glob->glob, Grep->grep, ...).
@@ -155,6 +156,10 @@ case "$EVENT" in
         CMD="$(jget '.tool_input.command')"
         if [ "$EVENT" = "PreToolUse" ]; then
           add "$(match_keywords "$CMD")"
+          # structured: a harness-tracked background task (`run_in_background:
+          # true`) -> `run_in_background`, so a policy can tell a backgrounded
+          # poll loop from the same command run in the foreground.
+          [ "$(jget '.tool_input.run_in_background')" = "true" ] && add run_in_background
         else
           # PostToolUse: derive from the tool OUTPUT, not the input command.
           OUT="$(jget '.tool_response | if type=="string" then . else tostring end')"

@@ -152,7 +152,49 @@ alive "$mentioner" || fail "the hook matched a pattern mentioned in an argument"
 pass "argument mention did not match"
 
 # ---------------------------------------------------------------------------
-echo "[6] the hook contains no machine-wide pattern sweep"
+echo "[6] process scanning uses one process-table pass, not a fork per line"
+# Feed the hook a large, inert process table through shims that count its ps
+# snapshots and external grep calls. The production hook must make one full
+# process-table read and no per-row grep process. The previous implementation
+# read the table four times and forked grep once per row per pattern.
+mkdir -p "$TMP/counting-bin"
+PS_CALLS="$TMP/ps-calls"
+PS_TABLE_CALLS="$TMP/ps-table-calls"
+GREP_CALLS="$TMP/grep-calls"
+PS_TABLE="$TMP/process-table"
+: > "$PS_CALLS"
+: > "$PS_TABLE_CALLS"
+: > "$GREP_CALLS"
+for i in $(seq 1 200); do
+  printf '%d /usr/local/bin/ordinary-process-%d --inert\n' "$((100000 + i))" "$i" >> "$PS_TABLE"
+done
+cat > "$TMP/counting-bin/ps" <<'SH'
+#!/usr/bin/env bash
+printf 'ps\n' >> "$PS_CALLS"
+if [ "${1:-}" = "-eo" ]; then
+  printf 'table\n' >> "$PS_TABLE_CALLS"
+  cat "$PS_TABLE"
+else
+  exec "$REAL_PS" "$@"
+fi
+SH
+cat > "$TMP/counting-bin/grep" <<'SH'
+#!/usr/bin/env bash
+printf 'grep\n' >> "$GREP_CALLS"
+exec "$REAL_GREP" "$@"
+SH
+chmod +x "$TMP/counting-bin/ps" "$TMP/counting-bin/grep"
+PS_CALLS="$PS_CALLS" PS_TABLE_CALLS="$PS_TABLE_CALLS" GREP_CALLS="$GREP_CALLS" \
+  PS_TABLE="$PS_TABLE" REAL_PS="$(command -v ps)" REAL_GREP="$(command -v grep)" \
+  PATH="$TMP/counting-bin:$PATH" run_hook
+table_calls="$(wc -l < "$PS_TABLE_CALLS" | tr -d ' ')"
+grep_calls="$(wc -l < "$GREP_CALLS" | tr -d ' ')"
+[ "$table_calls" -eq 1 ] || fail "expected one process-table scan, got $table_calls"
+[ "$grep_calls" -le 1 ] || fail "expected no per-process grep forks, got $grep_calls"
+pass "one process-table scan and no per-process grep forks"
+
+# ---------------------------------------------------------------------------
+echo "[7] the hook contains no machine-wide pattern sweep"
 # Comments deliberately NAME the banned calls to explain why they are banned,
 # so check executable lines only.
 CODE="$TMP/hook-code.sh"
@@ -168,7 +210,7 @@ grep -q 'no-machine-wide-process-pattern-kills' "$HOOK" \
 pass "no pkill/killall/pgrep sweep"
 
 # ---------------------------------------------------------------------------
-echo "[7] the header no longer claims scoping it does not implement"
+echo "[8] the header no longer claims scoping it does not implement"
 if grep -q 'Use the Claude session.s PPID to find MCP server processes' "$HOOK"; then
   grep -q 'is_ours' "$HOOK" || fail "header claims PPID scoping but none is implemented"
 fi

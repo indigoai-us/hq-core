@@ -89,31 +89,53 @@ is_ours() {
 }
 
 # --- Collect eligible PIDs ---------------------------------------------------
-collect() {
-  local pattern="$1" pid cmd
-  # `ps` once per pattern; never `pgrep -f` straight into a kill.
-  while read -r pid cmd; do
-    [ -z "$pid" ] && continue
-    [ "$pid" = "$$" ] && continue
-    printf '%s\n' "$cmd" | grep -qE "$pattern" || continue
+# Capture the process table once, then test every pattern in one awk pass. Keep
+# one output record per matching pattern: that preserves the original counter
+# and kill-list behaviour for the (unusual) case where a command matches more
+# than one MCP pattern.
+export MCP_PATTERN_1="${MCP_PATTERNS[0]}"
+export MCP_PATTERN_2="${MCP_PATTERNS[1]}"
+export MCP_PATTERN_3="${MCP_PATTERNS[2]}"
+export MCP_PATTERN_4="${MCP_PATTERNS[3]}"
+export PROTECTED_PATTERN
 
-    if printf '%s\n' "$cmd" | grep -qE "$PROTECTED_PATTERN"; then
+while read -r disposition pid; do
+  [ -n "$pid" ] || continue
+  case "$disposition" in
+    protected)
       SKIPPED_PROTECTED=$((SKIPPED_PROTECTED + 1))
-      continue
-    fi
-    if ! is_ours "$pid"; then
-      SKIPPED_FOREIGN=$((SKIPPED_FOREIGN + 1))
-      continue
-    fi
-    printf '%s\n' "$pid"
-  done < <(ps -eo pid=,args= 2>/dev/null)
-}
+      ;;
+    candidate)
+      if is_ours "$pid"; then
+        KILLED_PIDS+=("$pid")
+      else
+        SKIPPED_FOREIGN=$((SKIPPED_FOREIGN + 1))
+      fi
+      ;;
+  esac
+done < <(
+  ps -eo pid=,args= 2>/dev/null | awk -v self="$$" '
+    BEGIN {
+      patterns[1] = ENVIRON["MCP_PATTERN_1"]
+      patterns[2] = ENVIRON["MCP_PATTERN_2"]
+      patterns[3] = ENVIRON["MCP_PATTERN_3"]
+      patterns[4] = ENVIRON["MCP_PATTERN_4"]
+      protected = ENVIRON["PROTECTED_PATTERN"]
+    }
+    {
+      pid = $1
+      cmd = $0
+      sub(/^[[:space:]]*[0-9]+[[:space:]]*/, "", cmd)
+      if (pid == self) next
 
-for pattern in "${MCP_PATTERNS[@]}"; do
-  while read -r pid; do
-    [ -n "$pid" ] && KILLED_PIDS+=("$pid")
-  done < <(collect "$pattern")
-done
+      for (i = 1; i <= 4; i++) {
+        if (cmd !~ patterns[i]) continue
+        if (cmd ~ protected) print "protected", pid
+        else print "candidate", pid
+      }
+    }
+  '
+)
 
 # --- Terminate, then force-kill survivors ------------------------------------
 if [ "${#KILLED_PIDS[@]}" -gt 0 ]; then

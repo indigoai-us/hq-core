@@ -174,7 +174,7 @@ keys on whatever word naturally appears when it is relevant (`refactor`,
 
 | Source | Tokens |
 |--------|--------|
-| `PreToolUse` Bash command | every word of the command (`git`, `push`, `commit`, …); `gh pr`→`pr`; `op://`/`AWS_PROFILE`/`.env`→`secret`; a shared branch name→`shared_branch` |
+| `PreToolUse` Bash command | every word of the command (`git`, `push`, `commit`, …); `gh pr`→`pr`; `op://`/`AWS_PROFILE`/`.env`→`secret`; a shared branch name→`shared_branch`; `run_in_background: true`→`run_in_background` |
 | `PreToolUse` other tools | lowercased tool name (`glob`, `grep`, `read`, `write`, `edit`) |
 | `UserPromptSubmit` | every word token of the user's message |
 | `PostToolUse` | every word token of the tool's **output** |
