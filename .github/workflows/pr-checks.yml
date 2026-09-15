@@ -1041,6 +1041,8 @@ jobs:
         run: bash core/scripts/tests/inject-policy-always-inject.test.sh
       - name: Policy scan forks no helper process per policy file
         run: bash core/scripts/tests/inject-policy-no-per-file-fork.test.sh
+      - name: Policy trigger linter streams ARG_MAX-scale corpora
+        run: bash core/scripts/tests/lint-policy-triggers.test.sh
 
   personal-policy-overlay:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}

@@ -38,16 +38,25 @@
 #
 # Exit: 0 clean, 1 findings (see --strict), 2 usage error.
 
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
+# This script lives under core/scripts, so its repository/HQ root is two levels
+# up. Resolving only one level made no-argument invocations look under
+# core/core/policies and report that no policy directories existed.
+HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
 EVAL="$SCRIPT_DIR/eval-trigger.sh"
 
 HARD_RULE_MAX="${HQ_POLICY_HARD_RULE_MAX_BYTES:-6144}"
 QUIET=0
 STRICT=0
 DIRS=()
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/lint-policy-triggers.XXXXXX")" \
+  || { echo "failed to create temporary directory" >&2; exit 1; }
+trap 'rm -rf "$TMPROOT"' EXIT
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -64,10 +73,18 @@ if [ "${#DIRS[@]}" -eq 0 ]; then
   for d in "$HQ_ROOT/core/policies" "$HQ_ROOT/personal/policies"; do
     [ -d "$d" ] && DIRS+=("$d")
   done
-  while IFS= read -r d; do [ -n "$d" ] && DIRS+=("$d"); done < <(
-    find "$HQ_ROOT/companies" -maxdepth 2 -type d -name policies 2>/dev/null
-    find "$HQ_ROOT/repos" -maxdepth 4 -type d -path '*/.claude/policies' 2>/dev/null
-  )
+  if [ -d "$HQ_ROOT/companies" ]; then
+    find "$HQ_ROOT/companies" -maxdepth 2 -type d -name policies -print0 \
+      > "$TMPROOT/company-policy-dirs" \
+      || die "failed to discover policy directories under $HQ_ROOT/companies"
+    while IFS= read -r -d '' d; do DIRS+=("$d"); done < "$TMPROOT/company-policy-dirs"
+  fi
+  if [ -d "$HQ_ROOT/repos" ]; then
+    find "$HQ_ROOT/repos" -maxdepth 4 -type d -path '*/.claude/policies' -print0 \
+      > "$TMPROOT/repo-policy-dirs" \
+      || die "failed to discover policy directories under $HQ_ROOT/repos"
+    while IFS= read -r -d '' d; do DIRS+=("$d"); done < "$TMPROOT/repo-policy-dirs"
+  fi
 fi
 if [ "${#DIRS[@]}" -eq 0 ]; then
   echo "no policy directories found under $HQ_ROOT" >&2
@@ -78,14 +95,18 @@ if [ ! -f "$EVAL" ]; then
   exit 2
 fi
 
-# Collect the files first so both passes see exactly the same set.
-FILES="$(
-  for dir in "${DIRS[@]}"; do
-    [ -d "$dir" ] || continue
-    find "$dir" -maxdepth 1 -name '*.md' -type f 2>/dev/null
-  done | grep -v '/README\.md$' | grep -v '/example-policy\.md$' | grep -v '/audit/' | sort
-)"
-[ -n "$FILES" ] || { echo "policies scanned: 0 | malformed when: 0 | missing trigger: 0 | loose hard trigger: 0 | oversized hard body: 0"; exit 0; }
+# Collect the files first so both passes see exactly the same set. Keep the
+# list NUL-delimited: policy paths are filesystem data, not shell arguments.
+FILES_NUL="$TMPROOT/policy-files.nul"
+: > "$FILES_NUL"
+for dir in "${DIRS[@]}"; do
+  [ -d "$dir" ] || { echo "policy directory not found: $dir" >&2; exit 2; }
+  find "$dir" -maxdepth 1 -type f -name '*.md' \
+    ! -name 'README.md' ! -name 'example-policy.md' ! -path '*/audit/*' -print0 \
+    >> "$FILES_NUL" \
+    || die "failed to enumerate policy files under $dir"
+done
+[ -s "$FILES_NUL" ] || die "policy directories were found but no policy files were scanned"
 
 # ── Pass 1: one awk over every file → path <TAB> when <TAB> on <TAB> enf <TAB> bytes
 # `bytes` is the span inject-policy-on-trigger.sh would actually quote: body
@@ -93,8 +114,8 @@ FILES="$(
 # in sync with BODY_STOP in that hook and STOP in validate-policy-frontmatter.sh.
 STOP='^#+[ \t]*(rationale|rationale and context|background|change history|changelog|history|examples?|references?|related|see also|sources?|provenance|evidence)[ \t]*$'
 
-FACTS_TSV="$(
-  printf '%s\n' "$FILES" | tr '\n' '\0' | xargs -0 awk -v stop="$STOP" '
+FACTS_TSV="$TMPROOT/policy-facts.tsv"
+if ! xargs -0 awk -v stop="$STOP" '
     function flush() {
       if (fn != "") printf "%s\t%s\t%s\t%s\t%s\n", fn, w, o, tolower(enf), bytes+0
     }
@@ -114,24 +135,68 @@ FACTS_TSV="$(
       bytes += length($0) + 1
     }
     END { flush() }
-  '
-)"
+  ' < "$FILES_NUL" > "$FACTS_TSV"; then
+  die "failed to extract policy facts"
+fi
+[ -s "$FACTS_TSV" ] || die "policy files were found but no policy facts were extracted"
 
 # ── Pass 2: one batched syntax check through the canonical evaluator, joined
 # back onto the records by line number — so the whole tree costs one awk and
 # one evaluator process, not one of each per policy. There is deliberately no
 # second copy of the grammar here: --check runs the same parser the runtime does.
-RECORDS="$(
-  printf '%s\n' "$FACTS_TSV" \
-    | awk -F'\t' '$2!="" { print NR "\t" $2 }' \
-    | bash "$EVAL" --check \
-    | awk -F'\t' -v tsv="$FACTS_TSV" '
-        { st[$1]=$2 }
-        END {
-          n=split(tsv, rows, "\n")
-          for (i=1; i<=n; i++) if (rows[i] != "") print rows[i] "\t" (i in st ? st[i] : "ok")
-        }'
-)"
+CHECK_INPUT="$TMPROOT/trigger-check-input.tsv"
+CHECK_OUTPUT="$TMPROOT/trigger-check-output.tsv"
+RECORDS="$TMPROOT/policy-records.tsv"
+if ! awk -F'\t' '$2 != "" { print NR "\t" $2 }' "$FACTS_TSV" > "$CHECK_INPUT"; then
+  die "failed to prepare policy trigger checks"
+fi
+if ! bash "$EVAL" --check < "$CHECK_INPUT" > "$CHECK_OUTPUT"; then
+  die "policy trigger evaluator failed"
+fi
+if ! awk -F'\t' -v status_file="$CHECK_OUTPUT" '
+  FILENAME == status_file {
+    if ($1 !~ /^[1-9][0-9]*$/ || ($2 != "ok" && $2 != "malformed") || NF != 2) {
+      print "invalid evaluator output: " $0 > "/dev/stderr"
+      failed = 1
+      next
+    }
+    if ($1 in state) {
+      print "duplicate evaluator result for record " $1 > "/dev/stderr"
+      failed = 1
+      next
+    }
+    state[$1] = $2
+    next
+  }
+  {
+    rows[FNR] = $0
+    split($0, fields, FS)
+    if (fields[2] != "") expected[FNR] = 1
+    count = FNR
+  }
+  END {
+    for (id in expected) {
+      if (!(id in state)) {
+        print "evaluator produced no result for record " id > "/dev/stderr"
+        failed = 1
+      }
+    }
+    for (id in state) {
+      if (!(id in expected)) {
+        print "evaluator produced an unexpected result for record " id > "/dev/stderr"
+        failed = 1
+      }
+    }
+    if (failed) exit 1
+    for (i = 1; i <= count; i++) {
+      split(rows[i], fields, FS)
+      print rows[i] "\t" (fields[2] != "" ? state[i] : "ok")
+    }
+  }
+' "$CHECK_OUTPUT" "$FACTS_TSV" > "$RECORDS"; then
+  die "failed to join policy trigger evaluator results"
+fi
+[ -s "$RECORDS" ] || die "policy facts were found but no policy records were produced"
 
 REACTIVE_EVENTS="PreToolUse PostToolUse UserPromptSubmit AssistantIntent"
 total=0; bad_when=0; loose=0; oversized=0; no_trigger=0
@@ -183,7 +248,9 @@ while IFS=$'\t' read -r path when on enf bytes state; do
       say "OVERSIZE  $rel — ${bytes} bytes injected verbatim (limit $HARD_RULE_MAX)"
     fi
   fi
-done <<< "$RECORDS"
+done < "$RECORDS"
+
+[ "$total" -gt 0 ] || die "policy records were produced but zero policies were scanned"
 
 printf 'policies scanned: %s | malformed when: %s | missing trigger: %s | loose hard trigger: %s | oversized hard body: %s\n' \
   "$total" "$bad_when" "$no_trigger" "$loose" "$oversized"
