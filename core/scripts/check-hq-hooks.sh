@@ -260,6 +260,17 @@ agents_v2_attested() {
 DOCTOR_SETTINGS_SCOPE='["hooks.settings-present","hooks.settings-valid-json","hooks.claude.settings-local-valid-json","hooks.claude.unquoted-project-dir","hooks.claude.script-missing"]'
 DOCTOR_RUNTIME_CHECK_ID="hooks.runtime.enforcement"
 
+# Every id above belongs to the doctor's `hooks` family, so that is the only
+# family this wrapper needs run. Asking for the rest means paying for them and
+# discarding every result: the per-company sync journal scan alone dominates a
+# full run, while the hooks family is milliseconds. `hq reindex` invokes this
+# checker on every pass, so the difference is felt on every agent turn.
+#
+# An `hq` too old to know `--only` exits non-zero on the unknown option, which
+# try_doctor already treats as "use the inline fallback" — the same graceful
+# degradation as an `hq` with no `doctor` at all.
+DOCTOR_FAMILY_SCOPE="hooks"
+
 # Render this checker's contract from a validated `hq doctor --json` document,
 # scoped to the settings-load + ledger concerns, then exit. Mirrors
 # deriveCheckHqHooksVerdict() in compat.ts.
@@ -350,7 +361,7 @@ try_doctor() {
   command -v hq >/dev/null 2>&1 || return 1
   command -v jq >/dev/null 2>&1 || return 1
 
-  local -a doctor_args=(doctor --json)
+  local -a doctor_args=(doctor --json --only "$DOCTOR_FAMILY_SCOPE")
   if [ -n "$SESSION_ID" ]; then
     doctor_args+=(--session-id "$SESSION_ID")
   fi

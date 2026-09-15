@@ -115,33 +115,120 @@ hq_json_encode() {
 #   what makes every spelling of one physical path compare equal, which is the
 #   only property the repo guard actually depends on.
 hq_normpath() {
-  printf '%s' "$1" | awk -v winsep="${HQ_LIB_WINSEP:-0}" '
-    {
-      p = $0
-      if (winsep) gsub(/\\/, "/", p)
-      isabs = (p ~ /^\//) ? 1 : 0
-      drive = ""
-      if (p ~ /^[A-Za-z]:/) { drive = substr(p, 1, 2); p = substr(p, 3); isabs = (p ~ /^\//) ? 1 : 0 }
-      root = ""
-      if (isabs) root = (winsep && p ~ /^\/\/([^\/]|$)/) ? "//" : "/"
-      n = split(p, seg, "/")
-      out_n = 0
-      for (i = 1; i <= n; i++) {
-        s = seg[i]
-        if (s == "" || s == ".") continue
-        if (s == "..") {
-          if (out_n > 0 && out[out_n] != "..") { out_n--; continue }
-          if (isabs) continue
-          out[++out_n] = ".."
-        } else out[++out_n] = s
-      }
-      r = ""
-      for (i = 1; i <= out_n; i++) r = r (i > 1 ? "/" : "") out[i]
-      if (isabs) r = root r
-      if (drive != "") r = drive r
-      if (r == "") r = (isabs ? root : ".")
-      print r
-    }'
+  local input="$1" p line remaining s out last r drive root
+  local isabs winsep
+  local nl='
+'
+  [ -n "$input" ] || return 0
+  winsep="${HQ_LIB_WINSEP:-0}"
+
+  # Preserve the prior record-by-record behavior for embedded newlines while
+  # keeping this hot path entirely within bash.
+  while :; do
+    case "$input" in
+      *"$nl"*)
+        line=${input%%"$nl"*}
+        input=${input#*"$nl"}
+        ;;
+      *)
+        line=$input
+        input=""
+        ;;
+    esac
+
+    p=$line
+    if [ "$winsep" = "1" ]; then
+      p=${p//\\//}
+    fi
+    isabs=0
+    drive=""
+    case "$p" in
+      /*) isabs=1 ;;
+    esac
+    case "$p" in
+      [A-Za-z]:*)
+        drive=${p:0:2}
+        p=${p:2}
+        case "$p" in
+          /*) isabs=1 ;;
+          *) isabs=0 ;;
+        esac
+        ;;
+    esac
+    root=""
+    if [ "$isabs" = "1" ]; then
+      if [ "$winsep" = "1" ]; then
+        case "$p" in
+          //|//[!/]*) root="//" ;;
+          *) root="/" ;;
+        esac
+      else
+        root="/"
+      fi
+    fi
+
+    out=""
+    remaining=$p
+    while :; do
+      case "$remaining" in
+        */*)
+          s=${remaining%%/*}
+          remaining=${remaining#*/}
+          ;;
+        *)
+          s=$remaining
+          remaining=""
+          ;;
+      esac
+      case "$s" in
+        ''|.) ;;
+        ..)
+          if [ -n "$out" ]; then
+            last=${out##*/}
+          else
+            last=""
+          fi
+          if [ -n "$out" ] && [ "$last" != ".." ]; then
+            case "$out" in
+              */*) out=${out%/*} ;;
+              *) out="" ;;
+            esac
+          elif [ "$isabs" != "1" ]; then
+            if [ -n "$out" ]; then
+              out="$out/.."
+            else
+              out=".."
+            fi
+          fi
+          ;;
+        *)
+          if [ -n "$out" ]; then
+            out="$out/$s"
+          else
+            out=$s
+          fi
+          ;;
+      esac
+      [ -n "$remaining" ] || break
+    done
+
+    r=$out
+    if [ "$isabs" = "1" ]; then
+      r="$root$r"
+    fi
+    if [ -n "$drive" ]; then
+      r="$drive$r"
+    fi
+    if [ -z "$r" ]; then
+      if [ "$isabs" = "1" ]; then
+        r=$root
+      else
+        r="."
+      fi
+    fi
+    printf '%s\n' "$r"
+    [ -n "$input" ] || break
+  done
 }
 
 # hq_realpath_lenient <path>
