@@ -241,8 +241,12 @@ hq_shell_simple_commands() {
       for (j in argv) delete argv[j]
       argc = 0
     }
-    {
-      text = $0 "\n"
+    { source = source $0 "\n" }
+    END {
+      # Parse the complete payload, not one physical input line at a time.
+      # A quoted `bash -c` program and a heredoc can span newlines; resetting
+      # quote state at each line silently discarded the command before it.
+      text = source
       n = length(text); quote = ""; escaped = 0; word = ""; argc = 0
       for (i = 1; i <= n; i++) {
         c = substr(text, i, 1)
@@ -267,7 +271,12 @@ hq_shell_simple_commands() {
         }
         if (c == ">" || c == "<") {
           push_word(); argv[++argc] = c
-          if (substr(text, i + 1, 1) == c) { argv[argc] = argv[argc] c; i++ }
+          # Keep the Bash noclobber-override redirection (>|) with its target.
+          # Treating the pipe byte as a command boundary would otherwise split
+          # `printf x >| target` into two harmless-looking records.
+          if (substr(text, i + 1, 1) == c || (c == ">" && substr(text, i + 1, 1) == "|")) {
+            argv[argc] = argv[argc] substr(text, i + 1, 1); i++
+          }
           continue
         }
         word = word c
@@ -286,14 +295,18 @@ hq_shell_command_executable() {
   local i=0
   while [ "$i" -lt "${#argv[@]}" ]; do
     token="${argv[$i]}"
+    if [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      i=$((i + 1)); continue
+    fi
     case "$token" in
-      [A-Za-z_][A-Za-z0-9_]*=*) i=$((i + 1)); continue ;;
       env)
         i=$((i + 1))
         while [ "$i" -lt "${#argv[@]}" ]; do
           token="${argv[$i]}"
+          if [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            i=$((i + 1)); continue
+          fi
           case "$token" in
-            [A-Za-z_][A-Za-z0-9_]*=*) i=$((i + 1)); continue ;;
             -*) i=$((i + 1)); continue ;;
           esac
           break

@@ -5,7 +5,7 @@ when: run_in_background || ((oom || (low && memory)) && (background || poller ||
 on: [PreToolUse, UserPromptSubmit]
 enforcement: hard
 public: true
-version: 1
+version: 2
 created: 2026-09-15
 updated: 2026-09-15
 source: incident-response
@@ -20,13 +20,20 @@ Scope: Claude Code sessions only. The `run_in_background` fact is emitted only f
    - the user has not interacted for 30 minutes,
    - the main loop is not busy, and
    - no subagent, teammate, or workflow task is running.
-   Monitors, print-mode/SDK sessions, and processes the harness does not track (`setsid nohup … & disown`) are exempt.
+   Monitors, print-mode/SDK sessions, and processes genuinely detached from the harness (forked into a new session, see rule 3) are exempt.
 
 2. **Do not diagnose it with `free`.** Free and available RAM are never compared. A host with 30+ GB "available" still trips the trigger when page-cache refaults or CPU saturation stretch reclaim. Use `/proc/pressure/memory` (avg10/avg60), `/proc/pressure/cpu`, and `workingset_refault_file` in `/proc/vmstat`. Before blaming the kernel, confirm with `journalctl -k | grep -i oom` and the cgroup's `memory.events`.
 
-3. **HARD: do not re-arm the same background sleep loop after a memory-pressure kill.** It will be reaped again at the next stall burst. Pick a poller that survives:
+3. **HARD: do not idle-wait on external state with a harness-tracked background task, and never re-arm one after a memory-pressure kill.** A `sleep`/`until`/`tail` loop waiting on a log, CI run, deploy, or lane is exactly what the reap targets once the session goes idle, and a re-armed loop is reaped again at the next stall burst. Long builds and test suites that do real work may still run as background tasks (see `hq-foreground-timeout-killed-by-harness-deadline`). Write their output to a log so a reaped run can be diagnosed and re-run. For waiting, pick something that survives:
    - **Preferred:** the Monitor tool, whose tasks never get the pressure-reap listener.
-   - A **bounded** detached process that writes a status file, plus a wake path that reads it (Monitor, `ScheduleWakeup`, or a cron job). It must have a hard deadline, a recorded PID, and a stop path, so it cannot outlive its purpose and pile up orphans: `setsid nohup timeout 2h <script> >"$dir/poll.log" 2>&1 & echo $! >"$dir/poll.pid"; disown`. Stop it with `kill "$(cat "$dir/poll.pid")"`, never with a pattern kill.
+   - A **bounded** detached waiter that writes a status file, plus a wake path that reads it (Monitor, `ScheduleWakeup`, or a cron job). It needs a hard deadline, a recorded PID, and a stop path, so it cannot pile up orphans. On Linux:
+     ```bash
+     rm -f "$dir/poll.pid"   # a stale PID file would satisfy the wait below
+     setsid --fork sh -c 'd=$1; shift; echo $$ >"$d/poll.pid"; exec timeout 2h "$@"' _ "$dir" <command> [args...] >"$dir/poll.log" 2>&1 </dev/null
+     for _ in $(seq 50); do [ -s "$dir/poll.pid" ] && break; sleep 0.1; done
+     ps -o ppid= -p "$(cat "$dir/poll.pid")"   # must not be this shell ($$); usually 1
+     ```
+     `setsid --fork` returns before the PID file is written, hence the wait. Stop it with `kill "$(cat "$dir/poll.pid")"`, never with a pattern kill. Do not use `setsid nohup … &`: from the tool shell `setsid` is not a process-group leader, so it calls setsid(2) in place and stays the shell's child (`pgid == sid`, but `ppid` is still the shell). macOS has no setsid(1); use a double fork there.
    - For long unattended polls that must be harness-tracked, set `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1` in the user-scope `env` block of `~/.claude/settings.json` or in the session launcher. It applies only to sessions started afterwards. The trade-off: on real exhaustion the kernel OOM killer becomes the backstop. That decision belongs to the operator; do not set it silently.
 
 4. **Never promise a result that depends on a reapable background task.** If the only wake path is a `run_in_background` sleep loop in a session the user will leave idle, the result will not arrive. Use one of the survivable pollers above, or tell the user plainly that no wake path exists.

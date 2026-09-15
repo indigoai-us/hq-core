@@ -32,6 +32,9 @@
 # output; lists what would change and requires --yes to write.
 set -uo pipefail
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VALIDATOR_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+POLICY_VALIDATOR="$VALIDATOR_ROOT/.claude/hooks/validate-policy-frontmatter.sh"
 TARGET=""; REASON=""; BY="${HQ_SESSION_ID:-${USER:-unknown}}"; RESTORE=0; REPORT=""; CLASS=""; YES=0
 AUTO=0; DRY=0; AUTO_DIRS=(); REPORT_DIR=""; CLASSES=""
 while [ $# -gt 0 ]; do
@@ -65,9 +68,27 @@ resolve() { # slug-or-path -> real file path or empty
   [ -L "$f" ] && f="$(cd "$(dirname "$f")" && realpath "$(readlink "$f")" 2>/dev/null || readlink "$f")"
   printf '%s' "$f"
 }
+validate_policy_before_write() { # <policy-file>
+  # Do not replicate frontmatter extraction here. The authoring hook validates
+  # every resulting `when:` key (including duplicates), hard-policy limits,
+  # and the canonical trigger grammar. A retirement write must meet that exact
+  # contract or a sanctioned route could modify a policy normal authoring
+  # rejects.
+  local f="$1" payload result
+  [ -f "$POLICY_VALIDATOR" ] || { echo "policy-retire: missing policy validator: $POLICY_VALIDATOR" >&2; return 1; }
+  command -v jq >/dev/null 2>&1 || { echo "policy-retire: jq is required for canonical policy validation" >&2; return 1; }
+  payload="$(jq -nc --arg file "$f" --rawfile content "$f" '{tool_input:{file_path:$file,content:$content}}')" \
+    || { echo "policy-retire: could not prepare policy validation input for $f" >&2; return 1; }
+  result="$(HQ_ROOT="$VALIDATOR_ROOT" CLAUDE_PROJECT_DIR="$VALIDATOR_ROOT" HQ_ALLOW_POLICY_NO_TRIGGER= \
+    bash "$POLICY_VALIDATOR" <<<"$payload" 2>&1)" || {
+      printf 'policy-retire: refusing to write %s; canonical policy validation failed:\n%s\n' "$f" "$result" >&2
+      return 1
+    }
+}
 set_status() { # <file> <retired|active> <reason>
   local f="$1" st="$2" why="$3" now; now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   head -1 "$f" | grep -q '^---' || { echo "policy-retire: $f has no frontmatter" >&2; return 1; }
+  validate_policy_before_write "$f" || return 1
   awk -v st="$st" -v why="$why" -v by="$BY" -v now="$now" '
     BEGIN { d=0; done=0 }
     /^---[ \t]*$/ { d++; if (d==2 && !done) {
@@ -100,7 +121,7 @@ if [ "$AUTO" = 1 ]; then
     } > "$out.tmp"
   fi
   { echo "## Run $(date -u +%H:%M:%SZ) — dirs: ${AUTO_DIRS[*]}"; echo; } >> "$out.tmp"
-  retired=0; needfix=0
+  retired=0; failed=0; needfix=0; would_retire=0
   while IFS=$'	' read -r id path classes fired last age stale judged stale_n renamed; do
     [ -n "$path" ] || continue
     f="$HQ_ROOT/$path"; [ -f "$f" ] || f="$path"; [ -f "$f" ] || continue
@@ -121,31 +142,51 @@ if [ "$AUTO" = 1 ]; then
     case ",$classes," in *,dormant,*) why="${why:+$why; }last emitted $last, more than the dormant window ago" ;; esac
     case ",$classes," in *,single-incident-old,*) why="${why:+$why; }one-off correction, ${age} days old, fired ${fired}x" ;; esac
     [ -n "$why" ] || continue
-    if [ "$DRY" = 1 ]; then echo "would retire: $id — $why"
-    else set_status "$f" retired "auto: $why" && echo "retired: $id — $why"; fi
-    printf -- '- **%s** (%s): %s
-' "$id" "$path" "$why" >> "$out.tmp"
-    retired=$((retired+1))
+    if [ "$DRY" = 1 ]; then
+      echo "would retire: $id — $why"
+      would_retire=$((would_retire+1))
+      continue
+    fi
+    if set_status "$f" retired "auto: $why"; then
+      echo "retired: $id — $why"
+      printf -- '- **%s** (%s): %s\n' "$id" "$path" "$why" >> "$out.tmp"
+      retired=$((retired+1))
+    else
+      echo "failed: $id ($path); policy was not retired" >&2
+      printf -- '- failed (not retired) **%s** (%s): canonical policy validation failed\n' "$id" "$path" >> "$out.tmp"
+      failed=$((failed+1))
+    fi
   done < <(jq -r '.[] | [.id, .path, (.candidate_classes|join(",")), (.fired|tostring), (.last_fired // "never"), (.age_days|tostring), (.stale_refs|join(", ")), ((.refs_judged // 0)|tostring), ((.stale_refs|length)|tostring), ((.renamed_refs // [])|join(", "))] | @tsv' <<<"$json")
-  if [ "$DRY" = 1 ]; then rm -f "$out.tmp"; echo "policy-retire --auto: $retired of $n candidates would be retired (dry run)"
+  if [ "$DRY" = 1 ]; then rm -f "$out.tmp"; echo "policy-retire --auto: $would_retire of $n candidates would be retired (dry run)"
   else
-    if [ "$retired" -gt 0 ] || [ "$needfix" -gt 0 ]; then cat "$out.tmp" >> "$out"; rm -f "$out.tmp"; echo "policy-retire --auto: $retired retired, $needfix need a fix; report ${out#"$HQ_ROOT"/}"; else rm -f "$out.tmp"; echo "policy-retire --auto: nothing to retire"; fi
+    if [ "$retired" -gt 0 ] || [ "$failed" -gt 0 ] || [ "$needfix" -gt 0 ]; then cat "$out.tmp" >> "$out"; rm -f "$out.tmp"; echo "policy-retire --auto: $retired retired, $failed failed, $needfix need a fix; report ${out#"$HQ_ROOT"/}"; else rm -f "$out.tmp"; echo "policy-retire --auto: nothing to retire"; fi
   fi
+  [ "$failed" -eq 0 ] || exit 1
   exit 0
 fi
 if [ -n "$REPORT" ]; then
   [ -n "$CLASS" ] && [ -n "$REASON" ] || { echo "--from-report needs --class and --reason" >&2; exit 2; }
   [ -r "$REPORT" ] || { echo "cannot read $REPORT" >&2; exit 2; }
-  n=0
+  retired=0; failed=0; selected=0
   while IFS=$'\t' read -r id path; do
     [ -n "$path" ] || continue
     f="$HQ_ROOT/$path"; [ -f "$f" ] || continue
     grep -q '^status: retired' "$f" && continue
-    n=$((n+1))
-    if [ "$YES" = 1 ]; then set_status "$f" retired "$REASON [$CLASS]" && echo "retired: $id ($path)"
+    selected=$((selected+1))
+    if [ "$YES" = 1 ]; then
+      if set_status "$f" retired "$REASON [$CLASS]"; then
+        retired=$((retired+1)); echo "retired: $id ($path)"
+      else
+        failed=$((failed+1)); echo "failed: $id ($path); policy was not retired" >&2
+      fi
     else echo "would retire: $id ($path)"; fi
   done < <(jq -r --arg c "$CLASS" '.[] | select(.candidate_classes | index($c)) | "\(.id)\t\(.path)"' "$REPORT")
-  [ "$YES" = 1 ] && echo "policy-retire: $n retired [$CLASS]" || echo "policy-retire: $n would be retired [$CLASS] (add --yes)"
+  if [ "$YES" = 1 ]; then
+    echo "policy-retire: $retired retired [$CLASS]; $failed failed"
+    [ "$failed" -eq 0 ] || exit 1
+  else
+    echo "policy-retire: $selected would be retired [$CLASS] (add --yes)"
+  fi
   exit 0
 fi
 [ -n "$TARGET" ] || { sed -n 2,22p "$0"; exit 2; }

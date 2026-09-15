@@ -34,7 +34,9 @@
 # jq/awk port of the frontmatter/resulting-text analyzer. Neither port parses
 # trigger expressions; core/scripts/eval-trigger.sh owns that grammar.
 #
-# Override: set HQ_ALLOW_POLICY_NO_TRIGGER=1 in .claude/settings.local.json env.
+# HQ_ALLOW_POLICY_NO_TRIGGER is an emergency operator override. It requires
+# explicit human permission; an agent must never set, export, or write it on
+# its own initiative.
 #
 # Exit codes: 0 = allow, 2 = block.
 #
@@ -404,7 +406,8 @@ Pick one:
 Name the word(s) that actually appear when the rule is relevant. See
 core/knowledge/public/hq-core/policies-spec.md ("Trigger Expressions").
 
-(Operator override: set HQ_ALLOW_POLICY_NO_TRIGGER=1 in .claude/settings.local.json "env".)
+(The HQ_ALLOW_POLICY_NO_TRIGGER override requires explicit human permission.
+An agent must never set, export, or write it on its own initiative.)
 MSG
         exit 2
         ;;
@@ -424,7 +427,8 @@ If the rule genuinely needs more than that, either split it into separate
 policies with distinct triggers, or raise HQ_POLICY_HARD_RULE_MAX_BYTES in
 .claude/settings.local.json "env".
 
-(Operator override: set HQ_ALLOW_POLICY_NO_TRIGGER=1 in .claude/settings.local.json "env".)
+(The HQ_ALLOW_POLICY_NO_TRIGGER override requires explicit human permission.
+An agent must never set, export, or write it on its own initiative.)
 MSG
         exit 2
         ;;
@@ -452,7 +456,8 @@ YAML block scalars, adjacent identifiers without an operator, and other
 punctuation are not valid. See core/knowledge/public/hq-core/policies-spec.md
 ("Trigger Expressions"). Fix the expression, then retry.
 
-(Operator override: set HQ_ALLOW_POLICY_NO_TRIGGER=1 in .claude/settings.local.json "env".)
+(The HQ_ALLOW_POLICY_NO_TRIGGER override requires explicit human permission.
+An agent must never set, export, or write it on its own initiative.)
 MSG
       exit 2
     fi
@@ -466,7 +471,8 @@ These drive just-in-time policy injection. See
 core/knowledge/public/hq-core/policies-spec.md ("Trigger Expressions").
 Add both fields to the frontmatter, then retry.
 
-(Operator override: set HQ_ALLOW_POLICY_NO_TRIGGER=1 in .claude/settings.local.json "env".)
+(The HQ_ALLOW_POLICY_NO_TRIGGER override requires explicit human permission.
+An agent must never set, export, or write it on its own initiative.)
 MSG
     exit 2
     ;;

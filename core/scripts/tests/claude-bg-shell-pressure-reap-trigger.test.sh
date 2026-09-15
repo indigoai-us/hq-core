@@ -71,5 +71,45 @@ fires UserPromptSubmit '{"prompt":"Background command was stopped because the sy
 fires UserPromptSubmit '{"prompt":"my poller keeps dying, OOM?"}' 1 'oom poller prompt'
 fires UserPromptSubmit '{"prompt":"refactor the memory cache helper"}' 0 'unrelated memory prompt -> silent'
 
+# 3. detach recipe: run the documented Linux recipe verbatim (short deadline,
+#    multi-argument command) and assert it really detaches, records the waiter's
+#    PID, and passes every argument through. Never the in-place `setsid nohup`.
+if grep -qF 'setsid nohup timeout' "$POLICY"; then FAIL=$((FAIL+1)); echo "FAIL [no in-place setsid recipe]"
+else PASS=$((PASS+1)); echo "ok   [no in-place setsid recipe]"; fi
+
+LAUNCH="$(grep -m1 -E '^[[:space:]]*setsid --fork ' "$POLICY" | sed -E 's/^[[:space:]]+//')"
+WAIT="$(grep -m1 -E '^[[:space:]]*for _ in .*poll\.pid' "$POLICY" | sed -E 's/^[[:space:]]+//')"
+CLEAR="$(grep -m1 -E '^[[:space:]]*rm -f "\$dir/poll\.pid"' "$POLICY" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+#.*$//')"
+if [ -z "$LAUNCH" ] || [ -z "$WAIT" ] || [ -z "$CLEAR" ]; then
+  FAIL=$((FAIL+1)); echo "FAIL [recipe present]: clear, launch or wait line missing from $POLICY"
+elif [ "$(uname -s)" != "Linux" ] || ! setsid --help 2>&1 | grep -q -- '--fork'; then
+  echo "skip [recipe executes]: needs Linux util-linux setsid --fork"
+else
+  PASS=$((PASS+1)); echo "ok   [recipe present]"
+  dir="$(mktemp -d)"
+  LAUNCH="${LAUNCH//timeout 2h/timeout 30}"
+  # a literal `}` in an inline replacement would close the expansion early
+  cmd_ref='"${CMD[@]}"'
+  LAUNCH="${LAUNCH//<command> \[args...\]/$cmd_ref}"
+  CMD=(sh -c 'printf "%s|%s|%s\n" "$1" "$2" "$3" >"$0"; sleep 20' "$dir/args.out" "one two" three four)
+  # directory reuse: a stale PID from a previous waiter must not satisfy the wait
+  echo 999999 >"$dir/poll.pid"
+  eval "$CLEAR"
+  eval "$LAUNCH"
+  eval "$WAIT"
+  pid="$(cat "$dir/poll.pid" 2>/dev/null || true)"
+  if [ -n "$pid" ] && [ "$pid" != 999999 ]; then PASS=$((PASS+1)); echo "ok   [fresh pid file written]"
+  else FAIL=$((FAIL+1)); echo "FAIL [pid file written]: $dir/poll.pid empty after bounded wait"; fi
+  ppid="$( [ -n "$pid" ] && ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+  # detached == reparented away from the launching shell (1, or a subreaper)
+  if [ -n "$ppid" ] && [ "$ppid" != "$$" ]; then PASS=$((PASS+1)); echo "ok   [detached from shell ppid=$ppid]"
+  else FAIL=$((FAIL+1)); echo "FAIL [detached from shell]: ppid='$ppid' shell=$$ pid='$pid'"; fi
+  for _ in $(seq 50); do [ -s "$dir/args.out" ] && break; sleep 0.1; done
+  if [ "$(cat "$dir/args.out" 2>/dev/null)" = "one two|three|four" ]; then PASS=$((PASS+1)); echo "ok   [all args passed]"
+  else FAIL=$((FAIL+1)); echo "FAIL [all args passed]: got '$(cat "$dir/args.out" 2>/dev/null)'"; fi
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null
+  rm -rf "$dir"
+fi
+
 echo "claude-bg-shell-pressure-reap-trigger: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

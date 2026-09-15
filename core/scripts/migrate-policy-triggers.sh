@@ -49,6 +49,26 @@
 # Usage: bash core/scripts/migrate-policy-triggers.sh [--dry-run] [dir ...]
 #   With no dir, scans core/policies plus the active company/repo policy dir
 #   derived from the cwd (the SessionStart behaviour). Pass dir(s) to override.
+#
+# COOLDOWN
+#
+# A full policy scan is idempotent but expensive, and this script runs on every
+# SessionStart. Completed non-dry runs are therefore limited to one per
+# cooldown window (default 60 minutes). The stamp records only a SUCCESSFUL
+# completion — never a run in progress — so an interrupted SessionStart cannot
+# suppress the next migration.
+#
+# Env overrides:
+#   HQ_MIGRATE_POLICY_TRIGGERS_COOLDOWN_SECONDS  default 3600; 0 disables cooldown
+#   HQ_MIGRATE_POLICY_TRIGGERS_FORCE=1           run now regardless of cooldown
+#   HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR          where the per-host stamp lives
+#
+# The stamp is per-host runtime state, so it lives under $XDG_STATE_HOME
+# (default $HOME/.local/state), never under this repo or workspace/, which HQ
+# Sync reconciles. It is scoped to both HQ_ROOT and the resolved policy
+# directories, so one tenant cannot suppress another tenant's first scan. If
+# neither a state override, XDG_STATE_HOME, nor HOME is available, the script
+# safely runs without a cooldown. --dry-run neither consults nor updates it.
 
 set -uo pipefail
 
@@ -78,6 +98,97 @@ if [ "${#DIRS[@]}" -eq 0 ]; then
       rname="$(printf '%s' "$CWD" | sed -nE 's#.*repos/[^/]+/([^/]+).*#\1#p')"
       [ -n "$rscope" ] && [ -n "$rname" ] && DIRS+=("$HQ_ROOT/repos/$rscope/$rname/.claude/policies") ;;
   esac
+fi
+
+STATE_DIR="${HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR:-}"
+if [ -z "$STATE_DIR" ]; then
+  if [ -n "${XDG_STATE_HOME:-}" ]; then
+    STATE_DIR="$XDG_STATE_HOME/hq-migrate-policy-triggers"
+  elif [ -n "${HOME:-}" ]; then
+    STATE_DIR="$HOME/.local/state/hq-migrate-policy-triggers"
+  fi
+fi
+COOLDOWN_SECONDS="${HQ_MIGRATE_POLICY_TRIGGERS_COOLDOWN_SECONDS:-3600}"
+STAMP=""
+LOCK=""
+STATE_READY=0
+
+# Hash the resolved scope rather than using a shared per-root stamp: the
+# default scan deliberately includes tenant-specific directories.
+scope_key() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s\0' "$HQ_ROOT" "${DIRS[@]}" | sha256sum | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s\0' "$HQ_ROOT" "${DIRS[@]}" | shasum -a 256 | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+if [ -n "$STATE_DIR" ] && SCOPE_KEY="$(scope_key)"; then
+  STAMP="$STATE_DIR/$SCOPE_KEY/last-success"
+  LOCK="$STATE_DIR/$SCOPE_KEY/migrate.lock"
+  mkdir -p "$(dirname "$STAMP")" 2>/dev/null && STATE_READY=1
+fi
+
+cooldown_note() {
+  printf 'migrate-policy-triggers: cooldown stamp %s; running\n' "$1" >&2
+}
+
+# Three stamp states are intentionally distinct:
+#   absent                         -> this scope has not completed a run; run
+#   present but unreadable/future   -> cannot trust the clock; log and run
+#   present and fresh               -> exit quietly
+cooldown_blocks_run() {
+  [ "$DRY" = "1" ] && return 1
+  [ "$STATE_READY" = "1" ] || return 1
+  [ "${HQ_MIGRATE_POLICY_TRIGGERS_FORCE:-0}" = "1" ] && return 1
+  [ "$COOLDOWN_SECONDS" -gt 0 ] 2>/dev/null || return 1
+  { [ -e "$STAMP" ] || [ -L "$STAMP" ]; } || return 1
+
+  local last now age
+  last="$(cat "$STAMP" 2>/dev/null)"
+  case "$last" in
+    ''|*[!0-9]*) cooldown_note "is unreadable"; return 1 ;;
+  esac
+
+  now="$(date -u '+%s')"
+  age=$((now - last))
+  if [ "$age" -lt 0 ]; then
+    cooldown_note "is in the future"
+    return 1
+  fi
+  [ "$age" -lt "$COOLDOWN_SECONDS" ]
+}
+
+write_success_stamp() {
+  local stamp_tmp
+  [ "$DRY" = "1" ] && return 0
+  [ "$STATE_READY" = "1" ] || return 0
+  stamp_tmp="$(mktemp "$(dirname "$STAMP")/.last-success.XXXXXX")" || return 0
+  if printf '%s\n' "$(date -u '+%s')" >"$stamp_tmp" && mv "$stamp_tmp" "$STAMP"; then
+    return 0
+  fi
+  rm -f "$stamp_tmp"
+}
+
+if cooldown_blocks_run; then
+  exit 0
+fi
+
+# A scope-local advisory lock prevents concurrent SessionStart hooks from both
+# observing the same absent/stale stamp. Recheck after acquiring it because a
+# prior holder may have completed while this invocation waited to acquire it.
+if [ "$STATE_READY" = "1" ] && [ "$DRY" != "1" ] && command -v flock >/dev/null 2>&1; then
+  if ! exec 9>"$LOCK"; then
+    exit 0
+  fi
+  if ! flock -n 9; then # command -v flock checked above
+    exit 0
+  fi
+  if cooldown_blocks_run; then
+    exit 0
+  fi
 fi
 
 ON_LIVE="[PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]"
@@ -216,15 +327,23 @@ for dir in "${DIRS[@]}"; do
 
     # insert when:/on: after trigger: (or id: if no trigger line exists)
     anchor='^trigger:'; grep -q '^trigger:' "$f" || anchor='^id:'
-    tmp="$(mktemp)"
-    awk -v w="$WHEN" -v o="$ON" -v anc="$anchor" '
+    tmp="$(mktemp)" || exit 1
+    if ! awk -v w="$WHEN" -v o="$ON" -v anc="$anchor" '
       { print }
       !ins && $0 ~ anc { print "when: " w; print "on: " o; ins=1 }
-    ' "$f" > "$tmp" && mv "$tmp" "$f"
+    ' "$f" > "$tmp"; then
+      rm -f "$tmp"
+      exit 1
+    fi
+    if ! mv "$tmp" "$f"; then
+      rm -f "$tmp"
+      exit 1
+    fi
     migrated=$((migrated+1))
   done
 done
 
 # Quiet in steady state: only report when something was actually backfilled.
 [ "$migrated" -gt 0 ] && echo "migrate-policy-triggers: backfilled $migrated policy trigger(s) ($n_session hard -> SessionStart, $untriggered non-hard triggerless left unchanged, $unparseable unparseable derivations skipped, $skipped already had when)" >&2
+write_success_stamp
 exit 0

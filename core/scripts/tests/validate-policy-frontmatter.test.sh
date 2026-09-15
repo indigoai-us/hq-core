@@ -5,7 +5,7 @@
 # and leaves everything else alone. Also verifies the hook is live under all
 # three hook-gate profiles (per hq-hook-gate-three-profile-lists).
 set -euo pipefail
-ROOT="$(git rev-parse --show-toplevel)"
+ROOT="${HQ_TEST_ROOT:-$(git rev-parse --show-toplevel)}"
 HOOK="${HOOK:-$ROOT/.claude/hooks/validate-policy-frontmatter.sh}"
 GATE="$ROOT/.claude/hooks/hook-gate.sh"
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not available"; exit 0; }
@@ -118,6 +118,34 @@ output="$(printf '%s' "$payload" | HQ_ROOT="$disabled_root" HQ_ALLOW_POLICY_NO_T
 [ "$got" = "0" ] || fail "non-executable evaluator with override: want rc 0 got $got"
 printf '%s\n' "$output" | grep -F -- "override active" >/dev/null || fail "override path must be noted on stderr"
 pass "non-executable evaluator with override -> allow and note degraded validation"
+
+echo "[2d] every deny message hardens the validator override"
+HARD_ALWAYS_REACTIVE=$'---\nid: hq-x\nwhen: always\non: [PreToolUse]\nenforcement: hard\n---\n## Rule\nx\n'
+HARD_TOO_LONG=$'---\nid: hq-x\nwhen: deploy\non: [PreToolUse]\nenforcement: hard\n---\n## Rule\nThis binding rule is deliberately longer than one byte.\n'
+assert_hardened_override_deny() {
+  local label="$1" payload="$2" output got
+  shift 2
+  output="$(printf '%s' "$payload" | env "$@" bash "$HOOK" 2>&1)" && got=0 || got=$?
+  [ "$got" = "2" ] || fail "$label: want rc 2 got $got"
+  if ! printf '%s\n' "$output" | grep -F -- "explicit human permission" >/dev/null; then
+    fail "$label: deny message omits explicit human permission: $output"
+  fi
+  if ! printf '%s\n' "$output" | grep -F -- "never set, export, or write it on its own initiative" >/dev/null; then
+    fail "$label: deny message permits autonomous override: $output"
+  fi
+  if printf '%s\n' "$output" | grep -F -- "(Operator override: set HQ_ALLOW_POLICY_NO_TRIGGER=1" >/dev/null; then
+    fail "$label: deny message still contains a bare override recipe: $output"
+  fi
+  pass "$label: override wording requires human permission without a bare recipe"
+}
+assert_hardened_override_deny "hard always/reactive" \
+  "$(wp "$PROJ/core/policies/hard-always.md" "$HARD_ALWAYS_REACTIVE")"
+assert_hardened_override_deny "hard body limit" \
+  "$(wp "$PROJ/core/policies/hard-long.md" "$HARD_TOO_LONG")" HQ_POLICY_HARD_RULE_MAX_BYTES=1
+assert_hardened_override_deny "malformed when" \
+  "$(wp "$PROJ/core/policies/bad-override-wording.md" "$BAD_QUOTED")"
+assert_hardened_override_deny "missing trigger frontmatter" \
+  "$(wp "$PROJ/core/policies/missing-override-wording.md" "$NOWHENON")"
 
 echo "[3] scope coverage: company + repo policies enforced too"
 exp 2 "$(wp "$PROJ/companies/acme/policies/x.md" "$NOWHENON")"     "company policy missing -> block"

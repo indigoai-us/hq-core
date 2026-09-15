@@ -118,7 +118,8 @@ Route it instead:
        repos/private/hq-core-staging/ + /promote-hq-core (staging gate)
 
 See core/policies/hq-customizations-live-in-personal-or-company.md.
-(Sanctioned tooling override: prefix the command with HQ_ALLOW_CORE_POLICY_WRITE=1.)
+(A sanctioned tooling override exists, but it requires explicit human permission.
+An agent must never set, export, or write it on its own initiative.)
 MSG
         exit 2
       fi
