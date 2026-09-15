@@ -51,10 +51,42 @@ extract() {
   printf '%s' "$STDIN_JSON" | hq_json_get "$1"
 }
 
-EVENT="$(extract hook_event_name)"; [ -z "$EVENT" ] && EVENT="PreToolUse"
-SESSION_ID="$(extract session_id)"
-TOOL_NAME="$(extract tool_name)"
-CWD="$(extract cwd)"; [ -z "$CWD" ] && CWD="$HQ_ROOT"
+# These four scalar values are required on every invocation. When jq is
+# available (the same prerequisite for policy evaluation below), extract them
+# in one process rather than launching jq four times. NUL delimiters keep
+# whitespace and embedded newlines intact; command substitution then matches
+# hq_json_get's existing trailing-newline behavior. Fall back to the shared
+# helper when jq or a complete scalar result is unavailable.
+INITIAL_FIELDS=()
+if [ -n "$JQ" ]; then
+  while IFS= read -r -d '' initial_field; do
+    INITIAL_FIELDS+=("$initial_field")
+  done < <(
+    # shellcheck disable=SC2016 # jq program intentionally uses single quotes.
+    printf '%s' "$STDIN_JSON" | "$JQ" -j '
+      def scalar($path):
+        try (getpath($path) | if . == null or type == "object" or type == "array" then "" else tostring end)
+        catch "";
+      scalar(["hook_event_name"]) + "\u0000",
+      scalar(["session_id"]) + "\u0000",
+      scalar(["tool_name"]) + "\u0000",
+      scalar(["cwd"]) + "\u0000"
+    ' 2>/dev/null
+  )
+fi
+if [ "${#INITIAL_FIELDS[@]}" -eq 4 ]; then
+  EVENT="$(printf '%s' "${INITIAL_FIELDS[0]}")"
+  SESSION_ID="$(printf '%s' "${INITIAL_FIELDS[1]}")"
+  TOOL_NAME="$(printf '%s' "${INITIAL_FIELDS[2]}")"
+  CWD="$(printf '%s' "${INITIAL_FIELDS[3]}")"
+else
+  EVENT="$(extract hook_event_name)"
+  SESSION_ID="$(extract session_id)"
+  TOOL_NAME="$(extract tool_name)"
+  CWD="$(extract cwd)"
+fi
+[ -z "$EVENT" ] && EVENT="PreToolUse"
+[ -z "$CWD" ] && CWD="$HQ_ROOT"
 
 # Tool-event trigger evaluation is scoped to CLI/Bash only — the frequent
 # Read/Write/Edit/Glob tool calls don't pay the policy scan. The message path
@@ -145,15 +177,32 @@ add_match() {
 
 # ── (A) Frontmatter when:/on: evaluation ──────────────────────────────────
 if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-trigger-facts.sh" ]; then
-  FACTS="$(printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$EVENT" 2>/dev/null || true)"
-
   # AssistantIntent channel: AI-message-only facts, available where there is a
   # transcript look-back (PreToolUse + UserPromptSubmit). Policies with
   # `on: [AssistantIntent]` are evaluated against THIS set, not the event facts.
   INTENT_FACTS=""; INTENT_MODE=0
   if [ "$EVENT" = "PreToolUse" ] || [ "$EVENT" = "UserPromptSubmit" ]; then
     INTENT_MODE=1
-    INTENT_FACTS="$(printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" AssistantIntent 2>/dev/null || true)"
+    # Derive both fact channels from one payload parse and one helper launch.
+    # The two records are deliberately newline-delimited: fact sets are
+    # space-separated tokens, and the helper normalizes all text-derived
+    # newlines before returning. Retain the older two-call fallback for a
+    # partial/read-only installation where derive-trigger-facts.sh has not yet
+    # gained paired-mode support; correctness wins over the optimization.
+    FACT_PAIR="$(printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$EVENT" --with-assistant-intent 2>/dev/null || true)"
+    case "$FACT_PAIR" in
+      *$'\n'*)
+        FACTS="${FACT_PAIR%%$'\n'*}"
+        INTENT_FACTS="${FACT_PAIR#*$'\n'}"
+        INTENT_FACTS="${INTENT_FACTS%%$'\n'*}"
+        ;;
+      *)
+        FACTS="$FACT_PAIR"
+        INTENT_FACTS="$(printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" AssistantIntent 2>/dev/null || true)"
+        ;;
+    esac
+  else
+    FACTS="$(printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$EVENT" 2>/dev/null || true)"
   fi
 
   # Policies whose `on:` includes SessionStart form an always-injected per-session
@@ -248,6 +297,121 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     done
   done
 
+  # Parsed policy frontmatter is stable across hook fires far more often than
+  # the event facts or session ledger. Cache that parsed representation in the
+  # established per-machine hook-state directory, never beside policies. The
+  # cache key is the ordered scope list and the invalidation fingerprint is a
+  # SHA-256 digest of each selected regular file's pathname, inode, size,
+  # nanosecond mtime, and nanosecond ctime. ctime is the important field: an
+  # ordinary user can restore mtime after a content edit, but cannot restore
+  # the kernel-maintained ctime. This catches content-only same-size edits,
+  # additions, removals, replacement, and precedence-order changes without
+  # trusting directory mtimes, which do not change for an in-place child-file
+  # edit on many filesystems.
+  #
+  # SHA-256 and GNU stat are intentionally cache prerequisites on the fast
+  # path: on a host without either we take the existing uncached path rather
+  # than accept a weaker stale signal. GNU stat accepts every policy path in
+  # one process, so metadata validation is thousands of stat syscalls but not
+  # thousands of shell forks. -L is required because the scanner's -f test and
+  # awk both follow a policy symlink: fingerprint the target, not the link, so
+  # a target edit changes ctime and a retarget changes the reported inode.
+  # macOS falls back to a content-hash fingerprint; it keeps correctness where
+  # BSD stat lacks nanosecond ctime formatting.
+  POLICY_HASH_MODE=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    POLICY_HASH_MODE="sha256sum"
+  elif command -v shasum >/dev/null 2>&1; then
+    POLICY_HASH_MODE="shasum"
+  fi
+  POLICY_FINGERPRINT_MODE=""
+  if stat -Lc '%n\t%i\t%s\t%y\t%z' "$SCRIPT_DIR" >/dev/null 2>&1; then
+    POLICY_FINGERPRINT_MODE="metadata"
+  elif [ -n "$POLICY_HASH_MODE" ]; then
+    POLICY_FINGERPRINT_MODE="content"
+  fi
+  policy_hash() {
+    case "$POLICY_HASH_MODE" in
+      sha256sum) sha256sum "$@" 2>/dev/null ;;
+      shasum) shasum -a 256 "$@" 2>/dev/null ;;
+      *) return 1 ;;
+    esac
+  }
+  policy_fingerprint() {
+    local manifest digest
+    case "$POLICY_FINGERPRINT_MODE" in
+      metadata)
+        # Stream the stat manifest straight into SHA-256. Holding the roughly
+        # half-megabyte manifest in a command-substitution variable doubled the
+        # warm-path fingerprint cost on a 3,476-policy corpus; pipefail keeps a
+        # partial stat failure fail-open just as the old assignment did.
+        digest="$(stat -Lc '%n\t%i\t%s\t%y\t%z' "$@" 2>/dev/null | policy_hash)" || return 1
+        printf '%s\n' "${digest%% *}"
+        return 0
+        ;;
+      content)
+        manifest="$(policy_hash "$@")" || return 1
+        ;;
+      *) return 1 ;;
+    esac
+    digest="$(printf '%s\n' "$manifest" | policy_hash)" || return 1
+    printf '%s\n' "${digest%% *}"
+  }
+  policy_cache_state_dir() {
+    # A few standalone hook fixtures provide only hq_json_get. Keep those
+    # lightweight callers fail-open while using hook-lib's standard location
+    # whenever the full helper is available.
+    if declare -F hq_hook_state_dir >/dev/null 2>&1; then
+      hq_hook_state_dir "$HQ_ROOT"
+    else
+      local state_dir="$HQ_ROOT/workspace/orchestrator/hook-state"
+      mkdir -p "$state_dir" 2>/dev/null || true
+      printf '%s\n' "$state_dir"
+    fi
+  }
+
+  # The cached records use ASCII FS (0x1c), outside valid policy frontmatter
+  # syntax. The writer refuses to publish a cache if it sees this separator in
+  # a record, retaining the uncached path instead of risking a lossy decode.
+  CACHE_SEP=$'\034'
+  CACHE_RECORDS=0
+  CACHE_WRITE=0
+  CACHE_TMP=""
+  CACHE_STATUS=""
+  CACHE_FILE=""
+  EVAL_INPUTS=("${POLICY_FILES[@]}")
+  if [ "${#POLICY_FILES[@]}" -gt 0 ] && [ -n "$POLICY_HASH_MODE" ] && [ -n "$POLICY_FINGERPRINT_MODE" ]; then
+    POLICY_FINGERPRINT="$(policy_fingerprint "${POLICY_FILES[@]}" 2>/dev/null || true)"
+    if [ -n "$POLICY_FINGERPRINT" ]; then
+      scope_hash="$(printf '%s\n' "${DIRS[@]}" | policy_hash 2>/dev/null || true)"
+      scope_key="${scope_hash%% *}"
+      CACHE_DIR="$(policy_cache_state_dir)/policy-trigger-cache"
+      if [ -n "$scope_key" ] && mkdir -p "$CACHE_DIR" 2>/dev/null; then
+        CACHE_FILE="$CACHE_DIR/${scope_key}.cache"
+        CACHE_HEADER="hq-policy-cache-v1${CACHE_SEP}${POLICY_FINGERPRINT}"
+        cache_header=""
+        if [ -r "$CACHE_FILE" ]; then
+          IFS= read -r cache_header < "$CACHE_FILE" || true
+        fi
+        if [ "$cache_header" = "$CACHE_HEADER" ]; then
+          CACHE_RECORDS=1
+          EVAL_INPUTS=("$CACHE_FILE")
+        else
+          # mktemp creates a unique, private inode. The completed file below is
+          # renamed over CACHE_FILE atomically, so a concurrent reader sees the
+          # old complete cache or this complete one, never a partial write.
+          CACHE_TMP="$(mktemp "$CACHE_DIR/.${scope_key}.tmp.XXXXXX" 2>/dev/null || true)"
+          if [ -n "$CACHE_TMP" ] && printf '%s\n' "$CACHE_HEADER" > "$CACHE_TMP"; then
+            CACHE_STATUS="${CACHE_TMP}.status"
+            CACHE_WRITE=1
+          else
+            CACHE_TMP=""
+          fi
+        fi
+      fi
+    fi
+  fi
+
   # SINGLE-PASS evaluator. One awk process parses every policy's frontmatter and
   # evaluates its `when:` boolean expression INTERNALLY — the eval-trigger.sh
   # recursive-descent grammar + safety gate are ported verbatim into evalexpr()
@@ -261,10 +425,54 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # shells out to it.
   ALREADY="$(cat "$DEDUPE_FILE" 2>/dev/null || true)"
   ALREADY_TURN="$(cat "$TURN_FILE" 2>/dev/null || true)"
+
+  # The parsed-record cache still evaluates every policy for a new event. A
+  # second small cache remembers that evaluation for the current session's
+  # exact facts and ledger state. It has 64 fixed slots per scope, selected by
+  # the first byte of the session digest modulo 64, rather than creating an unbounded
+  # file per session. The full session digest remains in the header, so a slot
+  # collision is a cache miss and reevaluation, never a cross-session hit.
+  # Writers publish with rename; a concurrent reader sees a complete old entry
+  # or a complete replacement, and never needs an unsafe deletion sweep.
+  EVAL_CACHE_HIT=0
+  EVAL_CACHE_WRITE=0
+  EVAL_CACHE_TMP=""
+  EVAL_CACHE_STATUS=""
+  EVAL_CACHE_FILE=""
+  EVAL_CACHE_DIR=""
+  if [ -n "$CACHE_FILE" ] && [ "$CACHE_WRITE" != "1" ]; then
+    eval_session_hash="$(printf '%s' "${SESSION_ID:-default}" | policy_hash 2>/dev/null || true)"
+    eval_session_key="${eval_session_hash%% *}"
+    eval_input_hash="$(printf '%s\034%s\034%s\034%s\034%s\034%s\n' \
+      "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS" "$ALREADY" "$ALREADY_TURN" \
+      | policy_hash 2>/dev/null || true)"
+    eval_input_key="${eval_input_hash%% *}"
+    if [ -n "$eval_session_key" ] && [ -n "$eval_input_key" ]; then
+      EVAL_CACHE_DIR="$CACHE_DIR/eval-v2"
+      if mkdir -p "$EVAL_CACHE_DIR" 2>/dev/null; then
+        eval_slot="$(printf '%02x' "$((16#${eval_session_key:0:2} % 64))")"
+        EVAL_CACHE_FILE="$EVAL_CACHE_DIR/${scope_key}.${eval_slot}.eval"
+        EVAL_CACHE_HEADER="hq-policy-eval-v2${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
+        eval_cache_header=""
+        if [ -r "$EVAL_CACHE_FILE" ]; then
+          IFS= read -r eval_cache_header < "$EVAL_CACHE_FILE" || true
+        fi
+        if [ "$eval_cache_header" = "$EVAL_CACHE_HEADER" ]; then
+          EVAL_CACHE_HIT=1
+        else
+          EVAL_CACHE_TMP="$(mktemp "$EVAL_CACHE_DIR/.${scope_key}.${eval_slot}.eval.tmp.XXXXXX" 2>/dev/null || true)"
+          if [ -n "$EVAL_CACHE_TMP" ] && printf '%s\n' "$EVAL_CACHE_HEADER" > "$EVAL_CACHE_TMP"; then
+            EVAL_CACHE_STATUS="${EVAL_CACHE_TMP}.status"
+            EVAL_CACHE_WRITE=1
+          else
+            EVAL_CACHE_TMP=""
+          fi
+        fi
+      fi
+    fi
+  fi
   if [ "${#POLICY_FILES[@]}" -gt 0 ]; then
-    while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
-      add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec"
-    done < <(
+    policy_evaluator() {
       # ALREADY (the dedupe ledger) is NEWLINE-separated and, after SessionStart
       # injects every on:[SessionStart] policy, routinely has many lines. It is
       # passed via the environment, NOT `awk -v`: onetrueawk/mawk (the default
@@ -277,7 +485,10 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # public HQ_POLICY_EMIT=tsv path continues to print five fields below.
       HQ_ALREADY="$ALREADY" HQ_ALREADY_TURN="$ALREADY_TURN" \
       awk -v EVENT="$EVENT" -v INTENT_MODE="$INTENT_MODE" \
-          -v EVFACTS="$FACTS" -v AIFACTS="$INTENT_FACTS" '
+          -v EVFACTS="$FACTS" -v AIFACTS="$INTENT_FACTS" \
+          -v CACHE_RECORDS="$CACHE_RECORDS" -v CACHE_WRITE="$CACHE_WRITE" \
+          -v CACHE_TMP="$CACHE_TMP" -v CACHE_STATUS="$CACHE_STATUS" \
+          -v CSEP="$CACHE_SEP" '
       function skipsp() { while (substr(E, pos, 1) == " ") pos++ }
       function pOr(  v){ v=pAnd(); skipsp(); while(substr(E,pos,2)=="||"){pos+=2; if(pAnd()||v)v=1;else v=0; skipsp()} return v }
       function pAnd(  v){ v=pNot(); skipsp(); while(substr(E,pos,2)=="&&"){pos+=2; if(pNot()&&v)v=1;else v=0; skipsp()} return v }
@@ -336,10 +547,19 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         C=out; cpos=1
         return (cOr()==1 && substr(C,cpos) ~ /^[ ]*$/)
       }
-      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij,degraded,ws) {
+      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij,degraded,ws,cache_rule) {
         if (whenx=="") return
         if (id=="") id=base(fname)
         if (onx=="") onx="PreToolUse"                              # default when on: omitted
+        # On a cache miss, write the parsed record while this same pass has the
+        # policy file open. A malformed cache record is never published: the
+        # parent only renames the temp file when END writes an "ok" status.
+        if (CACHE_WRITE) {
+          cache_rule=rule
+          gsub(/\t/," ",cache_rule)
+          if (index(id,CSEP) || index(fname,CSEP) || index(whenx,CSEP) || index(onx,CSEP) || index(enf,CSEP) || index(injx,CSEP) || index(statx,CSEP) || index(cache_rule,CSEP)) cache_unsafe=1
+          else print id CSEP scopeof(fname) CSEP fname CSEP whenx CSEP onx CSEP enf CSEP injx CSEP statx CSEP cache_rule CSEP "." >> CACHE_TMP
+        }
         onpad=" " onx " "
         ev_on = (index(onpad," " EVENT " ")>0)
         ai_on = (index(onpad," AssistantIntent ")>0)
@@ -408,6 +628,18 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         n=split(ENVIRON["HQ_ALREADY_TURN"],zt,"\n"); for(i=1;i<=n;i++) if(zt[i]!="") turnalready[zt[i]]=1
         reset_file()
       }
+      # Cache files have one validated header followed by parsed records. The
+      # cache is an optimization only; final matching still runs for current
+      # event facts and current session dedupe ledgers.
+      CACHE_RECORDS {
+        if (FNR==1) next
+        n=split($0,cr,CSEP)
+        if (n < 10) next
+        id=cr[1]; fname=cr[3]; whenx=cr[4]; onx=cr[5]; enf=cr[6]
+        injx=cr[7]; statx=cr[8]; rule=cr[9]
+        finalize()
+        next
+      }
       FNR==1 { if (seen) finalize(); reset_file(); seen=1 }
       { fname=FILENAME }
       /^---[ \t]*$/ { if (d<2) { d++; next } }
@@ -426,13 +658,70 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       d>=2 && /^## Rule[ \t]*$/ { rsec=1; next }
       d>=2 && rsec && /^## / { rsec=0 }
       d>=2 && rsec && !rcap && NF { line=$0; gsub(/\*\*/,"",line); if(length(line)>160) line=substr(line,1,157)"..."; rule=line; rcap=1 }
-      END { if (seen) finalize() }
-      ' "${POLICY_FILES[@]}" | {
+      END {
+        if (!CACHE_RECORDS && seen) finalize()
+        if (CACHE_WRITE) print (cache_unsafe ? "unsafe" : "ok") > CACHE_STATUS
+      }
+      ' "${EVAL_INPUTS[@]}" | {
         # Byte-oriented awk can cut through a multibyte code point. Some iconv
         # implementations still return nonzero after -c repairs the output.
         iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || true
       }
-    )
+    }
+    POLICY_EVALUATION_OK=1
+    if [ "$EVAL_CACHE_HIT" = "1" ]; then
+      eval_cache_first_line=1
+      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+        if [ "$eval_cache_first_line" = "1" ]; then
+          eval_cache_first_line=0
+          continue
+        fi
+        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec"
+      done < "$EVAL_CACHE_FILE"
+    elif [ "$EVAL_CACHE_WRITE" = "1" ]; then
+      EVAL_RESULTS_TMP="${EVAL_CACHE_TMP}.results"
+      POLICY_EVALUATION_OK=0
+      if policy_evaluator > "$EVAL_RESULTS_TMP"; then
+        POLICY_EVALUATION_OK=1
+        if cat "$EVAL_RESULTS_TMP" >> "$EVAL_CACHE_TMP" \
+          && printf 'ok\n' > "$EVAL_CACHE_STATUS"; then
+          :
+        else
+          POLICY_EVALUATION_OK=0
+        fi
+      fi
+      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec"
+      done < "$EVAL_RESULTS_TMP"
+      rm -f "$EVAL_RESULTS_TMP" 2>/dev/null || true
+    else
+      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec"
+      done < <(policy_evaluator)
+    fi
+    # The evaluator has completed before the process substitution returns. A
+    # failed/unrepresentable cache write is discarded; policy output already
+    # came from the original uncached evaluator in that case.
+    if [ "$CACHE_WRITE" = "1" ]; then
+      cache_status=""
+      [ -r "$CACHE_STATUS" ] && IFS= read -r cache_status < "$CACHE_STATUS" || true
+      if [ "$cache_status" = "ok" ] && [ "$POLICY_EVALUATION_OK" = "1" ]; then
+        mv -f "$CACHE_TMP" "$CACHE_FILE" 2>/dev/null || true
+      else
+        rm -f "$CACHE_TMP" 2>/dev/null || true
+      fi
+      rm -f "$CACHE_STATUS" 2>/dev/null || true
+    fi
+    if [ "$EVAL_CACHE_WRITE" = "1" ]; then
+      eval_cache_status=""
+      [ -r "$EVAL_CACHE_STATUS" ] && IFS= read -r eval_cache_status < "$EVAL_CACHE_STATUS" || true
+      if [ "$eval_cache_status" = "ok" ] && [ "$POLICY_EVALUATION_OK" = "1" ]; then
+        mv -f "$EVAL_CACHE_TMP" "$EVAL_CACHE_FILE" 2>/dev/null || true
+      else
+        rm -f "$EVAL_CACHE_TMP" 2>/dev/null || true
+      fi
+      rm -f "$EVAL_CACHE_STATUS" 2>/dev/null || true
+    fi
   fi
 fi
 
@@ -611,6 +900,15 @@ HARD_MAX="${HQ_POLICY_HARD_MAX_BYTES:-2048}"
 # byte persist threshold with margin; core/scripts/tests/inject-policy-output-ceiling.test.sh
 # fails if either default is raised past it.
 OUTPUT_CEILING="${HQ_POLICY_OUTPUT_CEILING_BYTES:-8000}"
+# A configured ceiling is an absolute stdout bound, not a request we may round
+# up to a more convenient value. Refuse a malformed value explicitly instead
+# of falling through to an arithmetic comparison (and a silent hook failure).
+case "$OUTPUT_CEILING" in
+  ''|*[!0-9]*)
+    printf 'inject-policy-on-trigger: HQ_POLICY_OUTPUT_CEILING_BYTES must be a non-negative integer; emitted no stdout.\n' >&2
+    exit 0
+    ;;
+esac
 # Everything from the first archival heading on is history and justification,
 # not the binding rule: it is what the agent must NOT be made to re-read on
 # every injection. `## Rule`, `## Scope`, `## Enforcement` and friends stay.
@@ -718,8 +1016,19 @@ printf '> This is an index. Before acting in an area a HARD rule covers, read th
 printf '</policy-reminder>\n'
 }
 
+# The smallest useful delivery keeps the valid reminder wrapper and tells the
+# model that policies matched, while directing it to the source files. Its
+# measured size (including the final newline printed below) is the floor for a
+# structured reminder. A lower configured ceiling emits no stdout and gets an
+# explicit stderr explanation rather than a partial tag or an oversized blob.
+compact_reminder() {
+  printf '<policy-reminder>\n> Policies matched; read policy files.\n</policy-reminder>'
+}
+
 OUT="$(emit_reminder)"
-OUT_BYTES="$(printf '%s' "$OUT" | wc -c | tr -d ' ')"
+# Measure precisely what the final `printf '%s\n'` below will write; command
+# substitution strips emit_reminder's final newline.
+OUT_BYTES="$(printf '%s\n' "$OUT" | wc -c | tr -d ' ')"
 if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ] && [ "$HARD_FULL" != "0" ]; then
   # Too big for the host to deliver: fall back to one-line summaries for
   # every policy, and say so. A shortened set the model can read beats a full
@@ -727,28 +1036,75 @@ if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ] && [ "$HARD_FULL" != "0" ]; then
   OUT="$(HARD_FULL=0 emit_reminder)"
   OUT="${OUT%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes would have been exceeded (${OUT_BYTES} bytes with full text): every HARD policy above is shortened to its summary line. Read each in full at its own file before acting on it.
 </policy-reminder>"
-  OUT_BYTES="$(printf '%s' "$OUT" | wc -c | tr -d ' ')"
+  OUT_BYTES="$(printf '%s\n' "$OUT" | wc -c | tr -d ' ')"
 fi
 if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ]; then
   # Still over even as summaries: drop trailing policy lines until it fits,
-  # naming how many were cut. Never emit something the host will truncate
-  # silently.
+  # naming how many were cut. Rebuild and measure the complete final candidate
+  # on every pass, including its notice and printf's newline, so a 9 -> 10
+  # cut-count transition cannot cross the ceiling after the last measurement.
   cut=0
-  while [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ]; do
-    last_line="$(printf '%s\n' "$OUT" | grep -n '^> Policy `' | tail -1 | cut -d: -f1)"
-    [ -n "$last_line" ] || break
+  while :; do
+    if [ "$cut" -gt 0 ]; then
+      candidate="${OUT%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes: ${cut} lower-ranked policy line(s) cut from this reminder. They stay in the ledger as fired; see the policy files.
+</policy-reminder>"
+    else
+      candidate="$OUT"
+    fi
+    candidate_bytes="$(printf '%s\n' "$candidate" | wc -c | tr -d ' ')"
+    if [ "$candidate_bytes" -le "$OUTPUT_CEILING" ]; then
+      OUT="$candidate"
+      OUT_BYTES="$candidate_bytes"
+      break
+    fi
+    last_line="$(printf '%s\n' "$OUT" | grep -n '^> Policy `' | tail -1 | cut -d: -f1 || true)"
+    if [ -z "$last_line" ]; then
+      # Policy lines cannot make room for an oversized withheld/malformed
+      # notice. Preserve the more informative existing fallback whenever it
+      # fits; only then shrink again to the compact form, and measure both.
+      if [ "$cut" -gt 0 ]; then
+        last_resort="<policy-reminder>
+> Output ceiling of ${OUTPUT_CEILING} bytes: ${cut} lower-ranked policy line(s) cut from this reminder. Remaining reminder text was omitted to keep this event deliverable; see the policy files.
+</policy-reminder>"
+      else
+        last_resort="<policy-reminder>
+> Output ceiling of ${OUTPUT_CEILING} bytes: remaining reminder text was omitted to keep this event deliverable; see the policy files.
+</policy-reminder>"
+      fi
+      last_resort_bytes="$(printf '%s\n' "$last_resort" | wc -c | tr -d ' ')"
+      if [ "$last_resort_bytes" -le "$OUTPUT_CEILING" ]; then
+        OUT="$last_resort"
+        OUT_BYTES="$last_resort_bytes"
+      else
+        # The compact reminder is deliberately measured too: a ceiling below
+        # its useful 76-byte floor must not leak a fixed-size fallback.
+        compact_out="$(compact_reminder)"
+        compact_bytes="$(printf '%s\n' "$compact_out" | wc -c | tr -d ' ')"
+        if [ "$compact_bytes" -le "$OUTPUT_CEILING" ]; then
+          OUT="$compact_out"
+          OUT_BYTES="$compact_bytes"
+        else
+          OUT=""
+          OUT_BYTES=0
+          NO_STDOUT_REASON="HQ_POLICY_OUTPUT_CEILING_BYTES=${OUTPUT_CEILING} is below the ${compact_bytes}-byte minimum reminder"
+        fi
+      fi
+      break
+    fi
     OUT="$(printf '%s\n' "$OUT" | sed "${last_line}d")"
     cut=$((cut + 1))
-    OUT_BYTES="$(printf '%s' "$OUT" | wc -c | tr -d ' ')"
   done
-  [ "$cut" -gt 0 ] && OUT="${OUT%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes: ${cut} lower-ranked policy line(s) cut from this reminder. They stay in the ledger as fired; see the policy files.
-</policy-reminder>"
 fi
 # Emission stats (2026-09-07): one line per event so a live smoke or benchmark
 # can prove, per session and per runtime, that every reminder stayed under the
-# host ceiling. Cheap append; failure is ignored.
+# host ceiling. OUT_BYTES is the final `printf '%s\n'` byte count. Cheap append;
+# failure is ignored.
 { STATS_DIR="$HQ_ROOT/workspace/orchestrator/policy-emit-stats"; mkdir -p "$STATS_DIR" 2>/dev/null \
   && printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$EVENT" "$OUT_BYTES" "$MATCH_COUNT" >> "$STATS_DIR/${SESSION_ID:-unknown}.txt"; } 2>/dev/null || true
-printf '%s\n' "$OUT"
+if [ -n "${NO_STDOUT_REASON:-}" ]; then
+  printf 'inject-policy-on-trigger: %s; emitted no stdout.\n' "$NO_STDOUT_REASON" >&2
+else
+  printf '%s\n' "$OUT"
+fi
 
 exit 0

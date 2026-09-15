@@ -9,9 +9,11 @@
 #       says so rather than truncating silently
 #   [3] hard policies are ranked ahead of soft ones under the count cap
 #   [4] the company-bind digest default byte budget sits under the ceiling
+#   [5] the final cut notice and trailing newline are counted before emission,
+#       including a 9 -> 10 cut-count transition and the no-lines-left fallback
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
-HOOK="$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
+HOOK="${HQ_POLICY_HOOK_UNDER_TEST:-$ROOT/.claude/hooks/inject-policy-on-trigger.sh}"
 CEILING=8000
 HOST_LIMIT=10000
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -42,6 +44,63 @@ run() { # <extra env...>
   local input; input="$(jq -cn --arg sid "ceil-$$-$RANDOM" --arg cwd "$FX" '{session_id:$sid,hook_event_name:"UserPromptSubmit",cwd:$cwd,prompt:"x"}')"
   env HQ_ROOT="$FX" CLAUDE_PROJECT_DIR="$FX" "$@" bash "$FX/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input" 2>/dev/null
 }
+run_to_file() { # <stdout-file> <session-id> <extra env...>
+  local output="$1" sid="$2" input
+  shift 2
+  input="$(jq -cn --arg sid "$sid" --arg cwd "$FX" '{session_id:$sid,hook_event_name:"UserPromptSubmit",cwd:$cwd,prompt:"x"}')"
+  env HQ_ROOT="$FX" CLAUDE_PROJECT_DIR="$FX" "$@" bash "$FX/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input" > "$output" 2>/dev/null
+}
+run_to_files() { # <stdout-file> <stderr-file> <session-id> <extra env...>
+  local output="$1" error="$2" sid="$3" input
+  shift 3
+  input="$(jq -cn --arg sid "$sid" --arg cwd "$FX" '{session_id:$sid,hook_event_name:"UserPromptSubmit",cwd:$cwd,prompt:"x"}')"
+  env HQ_ROOT="$FX" CLAUDE_PROJECT_DIR="$FX" "$@" bash "$FX/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input" > "$output" 2> "$error"
+}
+
+echo "[ceiling-floor] every configured ceiling bounds stdout without silencing the reminder"
+wp "$FX/core/policies/ceiling-soft.md" ceiling-soft soft "CEILING rule"
+tiny_out="$FX/tiny-ceiling.out"
+tiny_err="$FX/tiny-ceiling.err"
+tiny_sid="ceil-tiny-$$-$RANDOM"
+run_to_files "$tiny_out" "$tiny_err" "$tiny_sid" HQ_POLICY_OUTPUT_CEILING_BYTES=100
+tiny_bytes="$(wc -c < "$tiny_out" | tr -d ' ')"
+[ "$tiny_bytes" -le 100 ] || fail "100-byte ceiling emitted $tiny_bytes stdout bytes: $(cat "$tiny_out")"
+[ "$tiny_bytes" -gt 1 ] || fail "100-byte ceiling silently emitted no reminder: $(cat "$tiny_err")"
+grep -q '<policy-reminder>' "$tiny_out" || fail "100-byte ceiling did not emit a reminder: $(cat "$tiny_out")"
+grep -q 'Policies matched; read policy files.' "$tiny_out" \
+  || fail "100-byte ceiling did not emit the compact fallback: $(cat "$tiny_out")"
+[ ! -s "$tiny_err" ] || fail "100-byte ceiling should not need stderr: $(cat "$tiny_err")"
+
+# The old fixed fallback happens to fit at 300 bytes, but the current hook
+# emits only the command-substitution newline there. Keep a real reminder
+# present at a ceiling just above that old fallback, not merely under budget.
+near_out="$FX/near-ceiling.out"
+near_err="$FX/near-ceiling.err"
+near_sid="ceil-near-$$-$RANDOM"
+run_to_files "$near_out" "$near_err" "$near_sid" HQ_POLICY_OUTPUT_CEILING_BYTES=300
+near_bytes="$(wc -c < "$near_out" | tr -d ' ')"
+[ "$near_bytes" -le 300 ] || fail "300-byte ceiling emitted $near_bytes stdout bytes: $(cat "$near_out")"
+[ "$near_bytes" -gt 1 ] || fail "300-byte ceiling silently emitted no reminder: $(cat "$near_err")"
+grep -q '<policy-reminder>' "$near_out" || fail "300-byte ceiling did not emit a reminder: $(cat "$near_out")"
+[ ! -s "$near_err" ] || fail "300-byte ceiling should not need stderr: $(cat "$near_err")"
+
+# Below the 76-byte useful-reminder floor, stdout stays empty rather than
+# leaking an oversized tag or a bare newline; stderr makes that suppression
+# explicit for the hook host and operator.
+floor_out="$FX/below-floor.out"
+floor_err="$FX/below-floor.err"
+floor_sid="ceil-floor-$$-$RANDOM"
+run_to_files "$floor_out" "$floor_err" "$floor_sid" HQ_POLICY_OUTPUT_CEILING_BYTES=75
+floor_bytes="$(wc -c < "$floor_out" | tr -d ' ')"
+[ "$floor_bytes" = 0 ] || fail "75-byte ceiling emitted $floor_bytes stdout bytes: $(cat "$floor_out")"
+grep -q 'below the 76-byte minimum reminder; emitted no stdout.' "$floor_err" \
+  || fail "75-byte ceiling did not explain its suppressed reminder: $(cat "$floor_err")"
+printf 'ceiling-floor reproduction: 100=%s bytes, 300=%s bytes, 75=%s bytes\n' \
+  "$tiny_bytes" "$near_bytes" "$floor_bytes"
+rm -f "$FX/core/policies/ceiling-soft.md"
+# Keep the pre-existing corpus test's ledger assertion isolated from the three
+# one-policy runs above.
+rm -f "$FX/workspace/orchestrator/policy-trigger-state/"*.txt
 
 echo "[2] oversize hard corpus emits under the ceiling, non-silently"
 big="$(printf 'HARDBODY %.0s' $(seq 1 150))"   # ~1.4 KB body, under HARD_MAX
@@ -64,7 +123,39 @@ grep -q '</policy-reminder>' <<<"$out" || fail "reminder block must close"
 led="$(ls "$FX/workspace/orchestrator/policy-trigger-state/"*.txt | tail -1)"
 [ "$(grep -c '^hard-01$' "$led")" = 1 ] || fail "hard-01 recorded $(grep -c '^hard-01$' "$led") times in the ledger"
 
-echo "[3] hard policies rank ahead of soft under the cap"
+echo "[3] cut notice and stats count the emitted newline, across 9 -> 10 cuts"
+rm -f "$FX/core/policies/"*.md
+long_rule="$(printf 'R%.0s' $(seq 1 160))"
+for n in $(seq 1 80); do wp "$FX/core/policies/digit-$n.md" "digit-$n" soft "$long_rule"; done
+digit_out="$FX/digit-boundary.out"
+digit_sid="ceil-digit-$$-$RANDOM"
+run_to_file "$digit_out" "$digit_sid" HQ_POLICY_HARD_FULL_TEXT=0
+bytes="$(wc -c < "$digit_out" | tr -d ' ')"
+[ "$bytes" -le "$CEILING" ] || fail "digit-boundary emission is $bytes bytes, over the $CEILING ceiling"
+cut_count="$(sed -nE 's/^> Output ceiling of [0-9]+ bytes: ([1-9][0-9]*) lower-ranked policy line\(s\) cut from this reminder\..*/\1/p' "$digit_out")"
+[ -n "$cut_count" ] || fail "digit-boundary cut notice missing or reports zero cuts"
+[ "$cut_count" -ge 10 ] || fail "digit-boundary did not cross 9 -> 10 cuts (got $cut_count)"
+stats_file="$FX/workspace/orchestrator/policy-emit-stats/$digit_sid.txt"
+[ -f "$stats_file" ] || fail "missing emission stats for $digit_sid"
+stats_bytes="$(awk -F '\t' 'END { print $3 }' "$stats_file")"
+[ "$stats_bytes" = "$bytes" ] || fail "stats recorded $stats_bytes bytes but stdout emitted $bytes"
+
+echo "[4] when no policy lines remain, emit a bounded metadata-fallback reminder"
+rm -f "$FX/core/policies/"*.md
+metadata_tail="$(printf 'M%.0s' $(seq 1 900))"
+for n in $(seq 1 12); do
+  wp "$FX/core/policies/metadata-$n.md" "metadata-$n-$metadata_tail" soft "short rule"
+done
+metadata_out="$FX/metadata-boundary.out"
+metadata_sid="ceil-metadata-$$-$RANDOM"
+run_to_file "$metadata_out" "$metadata_sid" HQ_POLICY_HARD_FULL_TEXT=0 HQ_SESSION_POLICY_CAP=1
+bytes="$(wc -c < "$metadata_out" | tr -d ' ')"
+[ "$bytes" -le "$CEILING" ] || fail "metadata fallback emission is $bytes bytes, over the $CEILING ceiling"
+[ "$(grep -c '^> Policy `' "$metadata_out" || true)" = 0 ] || fail "metadata fallback should have no policy lines left"
+grep -q 'Remaining reminder text was omitted to keep this event deliverable' "$metadata_out" \
+  || fail "metadata fallback was not announced: $(cat "$metadata_out")"
+
+echo "[5] hard policies rank ahead of soft under the cap"
 rm -f "$FX/core/policies/"*.md
 for n in $(seq 1 6); do wp "$FX/core/policies/a-soft-$n.md" "a-soft-$n" soft "soft rule $n"; done
 wp "$FX/core/policies/z-hard.md" "z-hard" hard "ZHARD rule"
@@ -76,7 +167,7 @@ case "$first" in *'z-hard'*) ;; *) fail "hard policy should be listed first, got
 echo "inject-policy-output-ceiling: ok"
 
 # ---- index mode (2026-09-07) -------------------------------------------------
-echo "[4] index mode: no count cap by default — 40 matching policies all listed"
+echo "[6] index mode: no count cap by default — 40 matching policies all listed"
 rm -f "$FX/core/policies/"*.md
 for n in $(seq 1 40); do wp "$FX/core/policies/idx-$(printf '%02d' $n).md" "idx-$(printf '%02d' $n)" soft "index rule $n"; done
 out="$(run)"
@@ -86,12 +177,12 @@ grep -q 'Session policy cap withheld' <<<"$out" && fail "no count-cap notice in 
 bytes="$(printf '%s' "$out" | wc -c | tr -d ' ')"; [ "$bytes" -le "$CEILING" ] || fail "index over ceiling: $bytes"
 grep -q 'This is an index' <<<"$out" || fail "retrieval instruction missing"
 
-echo "[5] index mode: explicit HQ_SESSION_POLICY_CAP restores the legacy count cap"
+echo "[7] index mode: explicit HQ_SESSION_POLICY_CAP restores the legacy count cap"
 out="$(run HQ_SESSION_POLICY_CAP=5)"
 [ "$(grep -c '^> Policy `idx-' <<<"$out")" = 5 ] || fail "legacy cap not honoured"
 grep -q 'withheld 35 policies' <<<"$out" || fail "legacy withheld notice missing: $out"
 
-echo "[6] under a tight budget the reactive hard rule gets full text and the baseline hard rule is an index line"
+echo "[8] under a tight budget the reactive hard rule gets full text and the baseline hard rule is an index line"
 rm -f "$FX/core/policies/"*.md
 wp "$FX/core/policies/base-hard.md" base-hard hard "BASEHARD summary line"
 printf -- '---\nid: react-hard\ntitle: "react-hard"\nscope: test\nwhen: always\non: [UserPromptSubmit]\nenforcement: hard\n---\n\n## Rule\n\nREACTHARD summary line\n\nREACTHARD body detail.\n' > "$FX/core/policies/react-hard.md"
@@ -101,7 +192,7 @@ grep -q 'REACTHARD body detail' <<<"$out" || fail "reactive hard rule should car
 grep -q 'BASEHARD body detail' <<<"$out" && fail "baseline hard rule should be an index line only: $out"
 grep -q '^> Policy `base-hard` applies here: BASEHARD summary line  \[HARD · core\]' <<<"$out" || fail "hard index line format: $out"
 
-echo "[7] specificity: a trigger matching more facts ranks first within its tier"
+echo "[9] specificity: a trigger matching more facts ranks first within its tier"
 rm -f "$FX/core/policies/"*.md
 # facts stub returns 'always' only, so key both on 'always' plus tokens; use the
 # derive stub to emit richer facts for this case
@@ -116,7 +207,7 @@ first="$(grep -m1 '^> Policy `' <<<"$out")"
 case "$first" in *'z-specific'*) ;; *) fail "more specific trigger should rank first, got: $first" ;; esac
 printf '#!/bin/bash\necho always\n' > "$FX/core/scripts/derive-trigger-facts.sh"
 
-echo "[8] retired policies and sync conflict twins never inject"
+echo "[10] retired policies and sync conflict twins never inject"
 rm -f "$FX/core/policies/"*.md
 wp "$FX/core/policies/live.md" live soft "LIVE rule"
 printf -- '---\nid: gone\ntitle: "gone"\nscope: test\nwhen: always\non: [UserPromptSubmit]\nenforcement: hard\nstatus: retired\n---\n\n## Rule\n\nGONE rule\n' > "$FX/core/policies/gone.md"

@@ -3,9 +3,11 @@
 # evaluated against, for a given hook event.
 #
 # Usage:
-#   <hook-json on stdin> | derive-trigger-facts.sh <EVENT>
+#   <hook-json on stdin> | derive-trigger-facts.sh <EVENT> [--with-assistant-intent]
 #     EVENT in {PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent}
 #   -> prints a space-separated, de-duplicated fact set to stdout.
+#   With --with-assistant-intent (PreToolUse and UserPromptSubmit only), prints
+#   the primary and AssistantIntent fact sets as two newline-delimited records.
 #
 # Facts = event tokens + best-effort static facts (company / repo / shared_branch),
 # EXCEPT AssistantIntent, which is AI-message tokens only (no static facts).
@@ -49,20 +51,67 @@
 set -euo pipefail
 
 EVENT="${1:-}"
-STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
+WITH_ASSISTANT_INTENT=0
+[ "${2:-}" = "--with-assistant-intent" ] && WITH_ASSISTANT_INTENT=1
+
+# Bash can read the hook pipe directly without the separate `cat` process. An
+# empty pipe retains the old best-effort empty-object behavior.
+STDIN_JSON="$(</dev/stdin)" || STDIN_JSON='{}'
+[ -n "$STDIN_JSON" ] || STDIN_JSON='{}'
 JQ="$(command -v jq || true)"
 
 # HQ root — used only to resolve the session's meta.yaml for the company fact
 # (US-004). Prefer an explicit HQ_ROOT / CLAUDE_PROJECT_DIR; otherwise walk up
 # from this script (core/scripts/derive-trigger-facts.sh -> ../.. == HQ root).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+case "$SCRIPT_PATH" in
+  */*) SCRIPT_DIR="${SCRIPT_PATH%/*}" ;;
+  *) SCRIPT_DIR="." ;;
+esac
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
 
-# jget <jq-filter> — extract a field, empty string on miss / no jq.
-jget() {
-  [ -n "$JQ" ] || { printf ''; return 0; }
-  printf '%s' "$STDIN_JSON" | "$JQ" -r "$1 // empty" 2>/dev/null || printf ''
-}
+# Parse the hook payload once. The old per-field jget() helper launched jq for
+# every scalar, then the policy hook launched this script twice for a single
+# PreToolUse/UserPromptSubmit fire. NUL-delimited records preserve embedded
+# newlines in commands and prompts; JSON strings containing NUL were already
+# unsupported by bash command substitution on the old path.
+JSON_FIELDS=()
+if [ -n "$JQ" ]; then
+  while IFS= read -r -d '' json_field; do
+    JSON_FIELDS+=("$json_field")
+  done < <(
+    printf '%s' "$STDIN_JSON" | "$JQ" -rj '
+      def text:
+        if . == null then ""
+        elif type == "string" then .
+        else tostring
+        end;
+      [
+        (.tool_name // ""),
+        (.tool_input.command // ""),
+        (.tool_input.run_in_background // ""),
+        (if .tool_response == null then ""
+         elif (.tool_response | type) == "string" then .tool_response
+         else (.tool_response | tostring)
+         end),
+        (.prompt // ""),
+        (.cwd // ""),
+        (.session_id // ""),
+        (.transcript_path // "")
+      ] | .[] | text + "\u0000"
+    ' 2>/dev/null
+  )
+fi
+
+TOOL="${JSON_FIELDS[0]:-}"
+COMMAND="${JSON_FIELDS[1]:-}"
+RUN_IN_BACKGROUND="${JSON_FIELDS[2]:-}"
+TOOL_RESPONSE="${JSON_FIELDS[3]:-}"
+PROMPT="${JSON_FIELDS[4]:-}"
+PAYLOAD_CWD="${JSON_FIELDS[5]:-}"
+PAYLOAD_SESSION_ID="${JSON_FIELDS[6]:-}"
+TRANSCRIPT_PATH="${JSON_FIELDS[7]:-}"
 
 # match_keywords <text> — emit (newline-separated) the OPEN fact set for <text>:
 # every word token present (case-insensitive), plus the non-literal derived
@@ -141,122 +190,141 @@ match_keywords() {
   '
 }
 
-FACTS=""
-add() { FACTS="$FACTS $*"; }
-
-# `always` is present in every fact set so `when: always` is the canonical
-# "no condition" expression (used by SessionStart-introduced advisory policies).
-add always
-
-case "$EVENT" in
-  PreToolUse|PostToolUse)
-    TOOL="$(jget '.tool_name')"
-    case "$TOOL" in
-      Bash)
-        CMD="$(jget '.tool_input.command')"
-        if [ "$EVENT" = "PreToolUse" ]; then
-          add "$(match_keywords "$CMD")"
-          # structured: a harness-tracked background task (`run_in_background:
-          # true`) -> `run_in_background`, so a policy can tell a backgrounded
-          # poll loop from the same command run in the foreground.
-          [ "$(jget '.tool_input.run_in_background')" = "true" ] && add run_in_background
-        else
-          # PostToolUse: derive from the tool OUTPUT, not the input command.
-          OUT="$(jget '.tool_response | if type=="string" then . else tostring end')"
-          add "$(match_keywords "$OUT")"
-        fi
-        ;;
-      "" ) : ;;
-      * )
-        # non-Bash tool -> lowercased tool name token (PreToolUse mainly)
-        if [ "$EVENT" = "PreToolUse" ]; then
-          add "$(printf '%s' "$TOOL" | tr '[:upper:]' '[:lower:]')"
-        else
-          OUT="$(jget '.tool_response | if type=="string" then . else tostring end')"
-          add "$(match_keywords "$OUT")"
-        fi
-        ;;
-    esac
-    ;;
-  UserPromptSubmit)
-    PROMPT="$(jget '.prompt')"
-    add "$(match_keywords "$PROMPT")"
-    ;;
-esac
-
-# --- company: a SESSION-IDENTITY fact, resolved on EVERY event (US-004) ---
+# --- company: a SESSION-IDENTITY fact, resolved once per payload (US-004) ---
 # Company is not look-back content; it identifies the active tenant. It is
 # derived with the SAME precedence as inject-policy-on-trigger.sh DIRS —
 #   HQ_POLICY_COMPANY env override > cwd companies/<slug> > session-meta
-#   company_slug (workspace/sessions/$session_id/meta.yaml)
-# — so a `when: company` policy (e.g. hq-load-company-hard-policies-on-mid-
-# session-bind) matches in HQ-root sessions, and matches identically whether it
-# is gated on the primary channel or the AssistantIntent channel. Exactly one
-# branch resolves the slug. Fail-open: any miss leaves company absent, i.e. the
-# behaviour identical to today's unresolved-company path. Unlike company, `repo`
-# and `shared_branch` stay primary-event-only (see below) — they are cwd/git
-# facts with no session-identity meaning on the AI-message channel.
-CWD="$(jget '.cwd')"; [ -z "$CWD" ] && CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
+#   company_slug (workspace/sessions/$session_id/meta.yaml).
+# A paired primary/AssistantIntent derivation shares this resolution, but each
+# resulting fact set still receives the same `company` token it would alone.
+CWD="$PAYLOAD_CWD"; [ -z "$CWD" ] && CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
+SESSION_ID="$PAYLOAD_SESSION_ID"
 co_scope=""
 if [ -n "${HQ_POLICY_COMPANY:-}" ]; then
   co_scope="$HQ_POLICY_COMPANY"
 else
   case "$CWD" in
-    *companies/*) co_scope="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')" ;;
+    *companies/*)
+      co_path="${CWD##*companies/}"
+      co_scope="${co_path%%/*}"
+      ;;
   esac
-  if [ -z "$co_scope" ]; then
-    SESSION_ID="$(jget '.session_id')"
-    if [ -n "$SESSION_ID" ]; then
-      # Read the session's own meta.yaml directly (awk idiom from
-      # master-hook.sh:119); READ ONLY, never via hq-session.sh get.
-      META="$HQ_ROOT/workspace/sessions/$SESSION_ID/meta.yaml"
-      [ -f "$META" ] && co_scope="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META")"
+  if [ -z "$co_scope" ] && [ -n "$SESSION_ID" ]; then
+    # Read the session's own meta.yaml directly (awk idiom from
+    # master-hook.sh:119); READ ONLY, never via hq-session.sh get.
+    META="$HQ_ROOT/workspace/sessions/$SESSION_ID/meta.yaml"
+    [ -f "$META" ] && co_scope="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META")"
+  fi
+fi
+COMPANY_FACT=""
+[ -n "$co_scope" ] && COMPANY_FACT="company"
+
+FACTS=""
+FACTS_OUTPUT=""
+add() { FACTS="$FACTS $*"; }
+
+# Preserve the existing splitting and first-seen ordering but do it in one awk
+# process instead of awk | tr | sed. `FACTS` only contains space/newline token
+# boundaries from the existing match_keywords contract.
+normalize_facts() {
+  FACTS_OUTPUT="$(printf '%s\n' $FACTS | awk '
+    NF && !seen[$0]++ {
+      if (out != "") out = out " "
+      out = out $0
+    }
+    END { printf "%s", out }
+  ')"
+}
+
+# derive_event <event> sets FACTS_OUTPUT. It does not write stdout so paired
+# mode can run both channels in this one process without a second hook launch.
+derive_event() {
+  local event="$1" lookback_text branch
+  FACTS=""
+
+  # `always` is present in every fact set so `when: always` is the canonical
+  # "no condition" expression (used by SessionStart-introduced advisory policies).
+  add always
+
+  case "$event" in
+    PreToolUse|PostToolUse)
+      case "$TOOL" in
+        Bash)
+          if [ "$event" = "PreToolUse" ]; then
+            add "$(match_keywords "$COMMAND")"
+            # structured: a harness-tracked background task (`run_in_background:
+            # true`) -> `run_in_background`, so a policy can tell a backgrounded
+            # poll loop from the same command run in the foreground.
+            [ "$RUN_IN_BACKGROUND" = "true" ] && add run_in_background
+          else
+            # PostToolUse: derive from the tool OUTPUT, not the input command.
+            add "$(match_keywords "$TOOL_RESPONSE")"
+          fi
+          ;;
+        "" ) : ;;
+        * )
+          # non-Bash tool -> lowercased tool name token (PreToolUse mainly)
+          if [ "$event" = "PreToolUse" ]; then
+            add "$(printf '%s' "$TOOL" | tr '[:upper:]' '[:lower:]')"
+          else
+            add "$(match_keywords "$TOOL_RESPONSE")"
+          fi
+          ;;
+      esac
+      ;;
+    UserPromptSubmit)
+      add "$(match_keywords "$PROMPT")"
+      ;;
+  esac
+
+  [ -n "$COMPANY_FACT" ] && add "$COMPANY_FACT"
+
+  # The dedicated channel for "what the assistant said it would do" — assistant
+  # text emitted since the last user turn in transcript_path. No command/prompt
+  # tokens are mixed in; the raw PreToolUse/UserPromptSubmit fact sets deliberately
+  # exclude this look-back so the two channels stay crisp. (Company, above, is the
+  # one session-identity fact shared across channels.)
+  if [ "$event" = "AssistantIntent" ]; then
+    if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] && [ -n "$JQ" ]; then
+      lookback_text="$("$JQ" -nr '
+        # Real Claude Code transcript: each line is {type, message:{role,content}}
+        # where assistant text lives at .message.content[] | select(.type=="text")
+        # | .text. Fall back to a flat top-level .content (string) for simple
+        # fixtures. (Mirrors enforce-capability-link-render.sh / capture-estimates.sh.)
+        reduce inputs as $e ("";
+          ($e.type // "") as $ty
+          | (($e.message.content // $e.content) as $c
+             | if   ($c|type)=="array"  then ([$c[]? | select(.type=="text") | .text] | join(" "))
+               elif ($c|type)=="string" then $c
+               else "" end) as $txt
+          | if $ty == "user" then ""
+            elif $ty == "assistant" then . + (if length > 0 then " " else "" end) + $txt
+            else . end
+        )
+      ' "$TRANSCRIPT_PATH" 2>/dev/null)"
+      [ -n "$lookback_text" ] && add "$(match_keywords "$lookback_text")"
     fi
+  else
+    # Best-effort static session facts (repo / shared_branch), primary events
+    # only. AssistantIntent is facts-from-AI-only except for `company` above.
+    case "$CWD" in
+      *repos/public/*|*repos/private/*) add repo ;;
+    esac
+    branch="$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    case "$branch" in
+      main|master|staging|production|release/*) add shared_branch ;;
+    esac
   fi
-fi
-[ -n "$co_scope" ] && add company
 
-# --- AssistantIntent: remaining facts come ONLY from the AI-message look-back ---
-# The dedicated channel for "what the assistant said it would do" — assistant
-# text emitted since the last user turn in transcript_path. No command/prompt
-# tokens are mixed in; the raw PreToolUse/UserPromptSubmit fact sets deliberately
-# exclude this look-back so the two channels stay crisp. (Company, above, is the
-# one session-identity fact shared across channels.)
-if [ "$EVENT" = "AssistantIntent" ]; then
-  TRANSCRIPT="$(jget '.transcript_path')"
-  if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] && [ -n "$JQ" ]; then
-    LOOKBACK_TEXT="$("$JQ" -nr '
-      # Real Claude Code transcript: each line is {type, message:{role,content}}
-      # where assistant text lives at .message.content[] | select(.type=="text")
-      # | .text. Fall back to a flat top-level .content (string) for simple
-      # fixtures. (Mirrors enforce-capability-link-render.sh / capture-estimates.sh.)
-      reduce inputs as $e ("";
-        ($e.type // "") as $ty
-        | (($e.message.content // $e.content) as $c
-           | if   ($c|type)=="array"  then ([$c[]? | select(.type=="text") | .text] | join(" "))
-             elif ($c|type)=="string" then $c
-             else "" end) as $txt
-        | if $ty == "user" then ""
-          elif $ty == "assistant" then . + (if length > 0 then " " else "" end) + $txt
-          else . end
-      )
-    ' "$TRANSCRIPT" 2>/dev/null)"
-    [ -n "$LOOKBACK_TEXT" ] && add "$(match_keywords "$LOOKBACK_TEXT")"
-  fi
+  normalize_facts
+}
+
+derive_event "$EVENT"
+PRIMARY_FACTS="$FACTS_OUTPUT"
+if [ "$WITH_ASSISTANT_INTENT" = "1" ] \
+  && { [ "$EVENT" = "PreToolUse" ] || [ "$EVENT" = "UserPromptSubmit" ]; }; then
+  derive_event AssistantIntent
+  printf '%s\n%s\n' "$PRIMARY_FACTS" "$FACTS_OUTPUT"
 else
-  # --- Best-effort static session facts (repo / shared_branch) ---
-  # Primary events only — AssistantIntent is facts-from-AI-only except for the
-  # session-identity `company` fact resolved above. CWD is already resolved.
-  case "$CWD" in
-    *repos/public/*|*repos/private/*) add repo ;;
-  esac
-  # current branch (best-effort; ignore errors / non-repos)
-  BR="$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  case "$BR" in
-    main|master|staging|production|release/*) add shared_branch ;;
-  esac
+  printf '%s\n' "$PRIMARY_FACTS"
 fi
-
-# --- De-duplicate, normalize whitespace ---
-printf '%s\n' $FACTS | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/[[:space:]]*$//'
-echo

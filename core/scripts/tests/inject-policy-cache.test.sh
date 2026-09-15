@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# hq-core: public
+# Regression coverage for the persistent parsed-policy cache used by
+# inject-policy-on-trigger.sh. The fixture deliberately spans company,
+# personal, and core scope plus both hard and soft tiers.
+set -euo pipefail
+
+HQ_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+HOOK="$HQ_SRC/.claude/hooks/inject-policy-on-trigger.sh"
+
+pass=0
+fail() { echo "FAIL: $*" >&2; exit 1; }
+ok() { pass=$((pass + 1)); printf '  ok %s\n' "$1"; }
+
+[ -f "$HOOK" ] || fail "hook not found: $HOOK"
+command -v jq >/dev/null || fail "jq required"
+
+TMPROOT="$(mktemp -d)"
+ROOT="$TMPROOT/hq"
+CORE_SOFT_EXPECTED=CORE_SOFT_V1
+REAL_BASH="$(command -v bash)"
+export REAL_BASH
+trap 'rm -rf "$TMPROOT"' EXIT
+
+write_policy() {
+  # write_policy <relative-path> <id> <enforcement> <rule> [body]
+  local rel="$1" id="$2" enforcement="$3" rule="$4" body="${5:-}"
+  mkdir -p "$(dirname "$ROOT/$rel")"
+  cat >"$ROOT/$rel" <<EOF
+---
+id: $id
+title: "$id"
+scope: test
+when: always
+on: [SessionStart]
+enforcement: $enforcement
+---
+
+## Rule
+
+$rule
+$body
+EOF
+}
+
+setup_tree() {
+  mkdir -p "$ROOT/core/policies" "$ROOT/personal/policies" \
+    "$ROOT/companies/acme/policies" "$ROOT/core/scripts" \
+    "$ROOT/workspace/orchestrator/policy-trigger-state" "$TMPROOT/bin"
+  cat >"$TMPROOT/bin/bash" <<'EOF'
+#!/usr/bin/bash
+if [ "${1:-}" = "${DERIVE_SCRIPT:-}" ] && [ -n "${DERIVE_CALL_LOG:-}" ]; then
+  printf '%s\n' "${*:2}" >> "$DERIVE_CALL_LOG"
+fi
+exec "$REAL_BASH" "$@"
+EOF
+  chmod +x "$TMPROOT/bin/bash"
+  cp "$HQ_SRC/core/scripts/hook-lib.sh" "$ROOT/core/scripts/hook-lib.sh"
+  cat >"$ROOT/core/scripts/derive-trigger-facts.sh" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${DERIVE_CALL_LOG:-}" ] || printf '%s\n' "$*" >> "$DERIVE_CALL_LOG"
+if [ "${2:-}" = "--with-assistant-intent" ]; then
+  printf 'always\nalways\n'
+else
+  printf 'always\n'
+fi
+EOF
+  cat >"$ROOT/core/scripts/eval-trigger.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$ROOT/core/scripts/derive-trigger-facts.sh" "$ROOT/core/scripts/eval-trigger.sh"
+  write_policy core/policies/core-hard.md core-hard hard CORE_HARD_V1 'CORE_HARD_BODY_V1'
+  write_policy core/policies/core-soft.md core-soft soft CORE_SOFT_V1
+  write_policy personal/policies/personal-soft.md personal-soft soft PERSONAL_SOFT_V1
+  write_policy companies/acme/policies/company-hard.md company-hard hard COMPANY_HARD_V1 'COMPANY_HARD_BODY_V1'
+}
+
+payload() {
+  jq -cn --arg sid "$1" --arg cwd "$ROOT" \
+    '{hook_event_name:"UserPromptSubmit",session_id:$sid,tool_name:"Bash",cwd:$cwd,prompt:"cache fixture"}'
+}
+
+run_hook() {
+  local sid="$1" out="$2" emit_mode="${3:-}" status=0
+  payload "$sid" | env HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" HQ_POLICY_COMPANY=acme \
+    DERIVE_SCRIPT="$HQ_SRC/core/scripts/derive-trigger-facts.sh" \
+    DERIVE_CALL_LOG="$TMPROOT/derive-calls.log" PATH="$TMPROOT/bin:$PATH" \
+    HQ_POLICY_EMIT="$emit_mode" \
+    bash "$HOOK" >"$out" 2>"$out.stderr" || status=$?
+  [ "$status" -eq 0 ] || fail "hook exited $status: $(cat "$out.stderr")"
+}
+
+assert_full_output() {
+  local out="$1"
+  for marker in COMPANY_HARD_BODY_V1 CORE_HARD_BODY_V1 "$CORE_SOFT_EXPECTED" PERSONAL_SOFT_V1; do
+    grep -Fq "$marker" "$out" || fail "expected $marker in output: $(cat "$out"); stderr: $(cat "$out.stderr")"
+  done
+}
+
+cache_dir() { printf '%s\n' "$ROOT/workspace/orchestrator/hook-state/policy-trigger-cache"; }
+
+assert_cache_written() {
+  local count cache_file
+  count="$({ find "$(cache_dir)" -type f -name '*.cache' 2>/dev/null || true; } | wc -l | tr -d ' ')"
+  [ "$count" -gt 0 ] || fail "expected parsed-policy cache file in $(cache_dir)"
+  cache_file="$(find "$(cache_dir)" -type f -name '*.cache' -print -quit)"
+  head -n 1 "$cache_file" | grep -Fq 'hq-policy-cache-v1' \
+    || fail "cache file is missing its complete-version header"
+}
+
+assert_evaluation_cache_written() {
+  local eval_file
+  eval_file="$(find "$(cache_dir)" -type f -name '*.eval' -print -quit)"
+  [ -n "$eval_file" ] || fail "expected per-session evaluation cache file"
+  head -n 1 "$eval_file" | grep -Fq 'hq-policy-eval-v2' \
+    || fail "evaluation cache file is missing its complete-version header"
+}
+
+setup_tree
+
+# 1. First fire has no state directory. It must still emit all tiers/scopes and
+# create a cache whose second fire is byte-identical.
+[ ! -d "$(cache_dir)" ] || fail "fixture cache directory must start absent"
+run_hook cold "$TMPROOT/cold.out"
+assert_full_output "$TMPROOT/cold.out"
+grep -Fxq 'UserPromptSubmit --with-assistant-intent' "$TMPROOT/derive-calls.log" \
+  || fail "hook did not request paired primary and AssistantIntent facts"
+grep -Fxq 'AssistantIntent' "$TMPROOT/derive-calls.log" \
+  && fail "hook fell back to a second AssistantIntent helper launch" || true
+assert_cache_written
+run_hook warm "$TMPROOT/warm.out"
+cmp -s "$TMPROOT/cold.out" "$TMPROOT/warm.out" \
+  || fail "cached output differs from cold output"
+assert_evaluation_cache_written
+# A ledger changes when first records are emitted, so its first repeat mints
+# the empty-result entry; the following identical repeat is an evaluation-cache
+# hit and must retain the same empty output.
+run_hook warm "$TMPROOT/warm-repeat-1.out"
+run_hook warm "$TMPROOT/warm-repeat-2.out"
+[ ! -s "$TMPROOT/warm-repeat-1.out" ] || fail "deduped repeat unexpectedly emitted policies"
+cmp -s "$TMPROOT/warm-repeat-1.out" "$TMPROOT/warm-repeat-2.out" \
+  || fail "evaluation-cache hit changed the deduped output"
+ok "cold and cached output are byte-identical across hard/soft and three scopes"
+
+# 2. A content-only edit must invalidate the parsed cache even though no file is
+# added or removed.
+write_policy core/policies/core-soft.md core-soft soft CORE_SOFT_V2
+CORE_SOFT_EXPECTED=CORE_SOFT_V2
+run_hook modified "$TMPROOT/modified.out"
+grep -Fq CORE_SOFT_V2 "$TMPROOT/modified.out" || fail "content edit did not invalidate cache"
+grep -Fq CORE_SOFT_V1 "$TMPROOT/modified.out" && fail "stale policy content survived cache hit"
+assert_cache_written
+ok "content-only modification invalidates the cache"
+
+# 3. A policy symlink is a valid candidate because the scanner's -f test and
+# awk both follow it. Its target must therefore be fingerprinted too: changing
+# target content without touching the link itself must invalidate the cache.
+write_policy ../symlink-policy-target.md symlink-hard hard SYMLINK_TARGET_V1 'SYMLINK_HARD_BODY_V1'
+ln -s "$TMPROOT/symlink-policy-target.md" "$ROOT/personal/policies/symlink-hard.md"
+run_hook symlink-before "$TMPROOT/symlink-before.out" tsv
+grep -Fq SYMLINK_TARGET_V1 "$TMPROOT/symlink-before.out" \
+  || fail "symlinked hard policy was not surfaced"
+write_policy ../symlink-policy-target.md symlink-hard hard SYMLINK_TARGET_V2 'SYMLINK_HARD_BODY_V2'
+run_hook symlink-after "$TMPROOT/symlink-after.out" tsv
+grep -Fq SYMLINK_TARGET_V2 "$TMPROOT/symlink-after.out" \
+  || fail "symlink target edit did not invalidate cache"
+grep -Fq SYMLINK_TARGET_V1 "$TMPROOT/symlink-after.out" \
+  && fail "stale symlink target content survived cache hit"
+assert_cache_written
+ok "symlink target content modification invalidates the cache"
+
+# 4. Added and deleted files both change the cache input set.
+write_policy personal/policies/personal-added.md personal-added soft PERSONAL_ADDED_V1
+run_hook added "$TMPROOT/added.out"
+grep -Fq PERSONAL_ADDED_V1 "$TMPROOT/added.out" || fail "added policy was not surfaced"
+rm -f "$ROOT/personal/policies/personal-added.md"
+run_hook deleted "$TMPROOT/deleted.out"
+grep -Fq PERSONAL_ADDED_V1 "$TMPROOT/deleted.out" && fail "deleted policy remained cached"
+assert_cache_written
+ok "add and delete invalidate the cache"
+
+# 5. A cache-state path that resolves to a non-directory makes cache creation
+# impossible for every uid, including root. The hook must treat that state as
+# advisory and retain the exact uncached policy output.
+rm -rf "$(cache_dir)"
+rm -rf "$ROOT/workspace/orchestrator/hook-state"
+ln -s /dev/null "$ROOT/workspace/orchestrator/hook-state"
+run_hook unwritable "$TMPROOT/unwritable.out"
+assert_full_output "$TMPROOT/unwritable.out"
+[ ! -e "$(cache_dir)" ] || fail "unwritable cache state unexpectedly published a cache"
+ok "unwritable cache state falls back to correct uncached output"
+
+# 6. Parallel first fires sharing one cache directory must each see a complete
+# reminder; an interrupted/partial cache reader would miss one of these bodies.
+rm -f "$ROOT/workspace/orchestrator/hook-state"
+mkdir -p "$ROOT/workspace/orchestrator/hook-state"
+rm -rf "$(cache_dir)"
+for n in 1 2 3 4 5 6 7 8; do
+  run_hook "parallel-$n" "$TMPROOT/parallel-$n.out" &
+done
+wait
+for n in 1 2 3 4 5 6 7 8; do
+  assert_full_output "$TMPROOT/parallel-$n.out"
+done
+assert_cache_written
+ok "concurrent fires never emit a partial cache result"
+
+# 7. Session-specific evaluation state is kept in 64 fixed atomic slots per
+# scope. More unique sessions than slots must not grow the cache without bound.
+for n in $(seq 1 80); do
+  run_hook "bounded-$n" "$TMPROOT/bounded-$n.out" tsv
+done
+eval_count="$({ find "$(cache_dir)/eval-v2" -maxdepth 1 -type f -name '*.eval' 2>/dev/null || true; } | wc -l | tr -d ' ')"
+[ "$eval_count" -gt 0 ] || fail "expected bounded evaluation cache entries"
+[ "$eval_count" -le 64 ] \
+  || fail "evaluation cache grew to $eval_count entries; expected at most 64 per scope"
+ok "evaluation cache remains bounded across more than 64 sessions"
+
+echo "PASS ($pass checks) inject-policy-cache"

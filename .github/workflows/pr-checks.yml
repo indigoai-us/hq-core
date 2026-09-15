@@ -1037,6 +1037,10 @@ jobs:
         run: bash .claude/hooks/tests/inject-policy-on-trigger-emit.test.sh
       - name: Policy trigger end-to-end corpus coverage
         run: bash core/scripts/tests/inject-policy-e2e.test.sh
+      - name: inject-policy-cache.test.sh
+        run: bash core/scripts/tests/inject-policy-cache.test.sh
+      - name: derive-trigger-facts.test.sh
+        run: bash core/scripts/tests/derive-trigger-facts.test.sh
       - name: Inject cadence (once vs always) + PreCompact ledger purge
         run: bash core/scripts/tests/inject-policy-always-inject.test.sh
       - name: Policy scan forks no helper process per policy file

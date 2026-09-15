@@ -300,4 +300,39 @@ printf ' %s ' "$OUT" | grep -qw repo && fail "US-004: repo fact leaked onto Assi
 OUT="$(co_facts AssistantIntent "$(printf '{"prompt":"ok","session_id":"nope","cwd":"%s","transcript_path":"%s"}' "$CO_ROOT" "$AI_TR")")"
 co_hasnot "$OUT" "US-004: missing meta wrongly produced company on AssistantIntent"
 
+# ---- Paired primary + AssistantIntent derivation ----
+# PreToolUse and UserPromptSubmit need both fact channels in the policy hook.
+# The paired mode must preserve the exact individual outputs while returning
+# them from one derivation invocation as two newline-delimited records.
+pair_facts() { # pair_facts <event> <json> -> PAIR_PRIMARY / PAIR_INTENT
+  local event="$1" json="$2" pair
+  pair="$(printf '%s' "$json" | bash "$SRC" "$event" --with-assistant-intent 2>/dev/null)" \
+    || fail "paired $event: script errored"
+  case "$pair" in
+    *$'\n'*) ;;
+    *) fail "paired $event: expected primary and AssistantIntent records, got: [$pair]" ;;
+  esac
+  PAIR_PRIMARY="${pair%%$'\n'*}"
+  PAIR_INTENT="${pair#*$'\n'}"
+  PAIR_INTENT="${PAIR_INTENT%%$'\n'*}"
+}
+
+PAIR_JSON="$(printf '{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"%s","transcript_path":"%s"}' "$CO_ROOT" "$AI_TR")"
+pair_facts PreToolUse "$PAIR_JSON"
+EXPECTED_PRIMARY="$(printf '%s' "$PAIR_JSON" | HQ_ROOT="$CO_ROOT" bash "$SRC" PreToolUse 2>/dev/null)"
+EXPECTED_INTENT="$(printf '%s' "$PAIR_JSON" | HQ_ROOT="$CO_ROOT" bash "$SRC" AssistantIntent 2>/dev/null)"
+[ "$PAIR_PRIMARY" = "$EXPECTED_PRIMARY" ] \
+  || fail "paired PreToolUse primary facts changed: [$PAIR_PRIMARY] != [$EXPECTED_PRIMARY]"
+[ "$PAIR_INTENT" = "$EXPECTED_INTENT" ] \
+  || fail "paired PreToolUse AssistantIntent facts changed: [$PAIR_INTENT] != [$EXPECTED_INTENT]"
+
+PAIR_PROMPT="$(printf '{"prompt":"please deploy","cwd":"%s","transcript_path":"%s"}' "$CO_ROOT" "$AI_TR")"
+pair_facts UserPromptSubmit "$PAIR_PROMPT"
+EXPECTED_PRIMARY="$(printf '%s' "$PAIR_PROMPT" | HQ_ROOT="$CO_ROOT" bash "$SRC" UserPromptSubmit 2>/dev/null)"
+EXPECTED_INTENT="$(printf '%s' "$PAIR_PROMPT" | HQ_ROOT="$CO_ROOT" bash "$SRC" AssistantIntent 2>/dev/null)"
+[ "$PAIR_PRIMARY" = "$EXPECTED_PRIMARY" ] \
+  || fail "paired UserPromptSubmit primary facts changed: [$PAIR_PRIMARY] != [$EXPECTED_PRIMARY]"
+[ "$PAIR_INTENT" = "$EXPECTED_INTENT" ] \
+  || fail "paired UserPromptSubmit AssistantIntent facts changed: [$PAIR_INTENT] != [$EXPECTED_INTENT]"
+
 echo "PASS: derive-trigger-facts.sh"
