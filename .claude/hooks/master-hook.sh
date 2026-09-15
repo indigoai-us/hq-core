@@ -438,8 +438,12 @@ done
 # A block deliberately wins master aggregation. It must also leave timeout
 # breadcrumbs pending, because a warning merged into any other JSON object
 # would be suppressed by that correct block behavior.
+# Empty-array [@] expansion aborts under bash 3.2 + set -u (stock macOS).
+# Use the same ${arr[@]+"${arr[@]}"} guard as the hooks dispatch loop above;
+# otherwise a layered PreToolUse blocker that exits 2 with plain-text stderr
+# (no JSON) never reaches `exit "$exit_code"` and the process returns 1.
 has_blocking_json=0
-for jo in "${json_outputs[@]}"; do
+for jo in ${json_outputs[@]+"${json_outputs[@]}"}; do
   if printf '%s' "$jo" | jq -e '.decision == "block"' >/dev/null 2>&1; then
     has_blocking_json=1
     break
@@ -465,8 +469,8 @@ if [ -n "$pending_timeout_warning" ]; then
       # Prepend context so the immediate warning is read before child context.
       # Adding a source keeps json_outputs/json_sources index-aligned for the
       # existing first-block provenance logic below.
-      json_outputs=("$timeout_warning_json" "${json_outputs[@]}")
-      json_sources=("$HOOK_TIMEOUT_WATCHDOG" "${json_sources[@]}")
+      json_outputs=("$timeout_warning_json" ${json_outputs[@]+"${json_outputs[@]}"})
+      json_sources=("$HOOK_TIMEOUT_WATCHDOG" ${json_sources[@]+"${json_sources[@]}"})
       timeout_warning_emitted=1
     else
       restore_timeout_breadcrumbs
@@ -490,7 +494,7 @@ elif [ ${#json_outputs[@]} -gt 1 ]; then
   # Find first block (if any) and its source path; otherwise shallow-merge.
   block_idx=""
   i=0
-  for jo in "${json_outputs[@]}"; do
+  for jo in ${json_outputs[@]+"${json_outputs[@]}"}; do
     if printf '%s' "$jo" | jq -e '.decision == "block"' >/dev/null 2>&1; then
       block_idx="$i"
       break
@@ -502,7 +506,7 @@ elif [ ${#json_outputs[@]} -gt 1 ]; then
       .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
     ')"
   else
-    json_result="$(printf '%s\n' "${json_outputs[@]}" | jq -sc '
+    json_result="$(printf '%s\n' ${json_outputs[@]+"${json_outputs[@]}"} | jq -sc '
       reduce .[] as $h ({};
         . as $previous
         | . * $h

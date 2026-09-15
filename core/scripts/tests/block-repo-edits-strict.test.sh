@@ -320,5 +320,16 @@ if [ "$got" = "2" ]; then ok "real git reset against a repo remains blocked"; el
 got="$(run_bash 'rm -rf repos/private/app-code')"
 if [ "$got" = "2" ]; then ok "real repo deletion remains blocked"; else fail "repo rm remains blocked" "expected 2, got $got"; fi
 
+# The blocker is only as strong as master-hook's exit-code propagation. On
+# bash 3.2 an empty json_outputs[@] expansion used to abort and return 1
+# (non-blocking) after this hook had already set exit 2. Dedicated suite:
+# core/scripts/tests/master-hook-empty-json-outputs.test.sh. Invoked here so
+# pr-checks core-write-protection runs it without a workflow-file edit.
+if bash "$ROOT/core/scripts/tests/master-hook-empty-json-outputs.test.sh"; then
+  ok "master-hook keeps this guard's exit 2 when json_outputs is empty"
+else
+  fail "master-hook empty json_outputs" "see master-hook-empty-json-outputs.test.sh"
+fi
+
 echo "block-repo-edits-strict: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
