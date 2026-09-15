@@ -14,6 +14,15 @@
 #
 # Entries are "<extended-regex>:<human name>". The regex part may not contain
 # a colon; the name may.
+#
+# Entries are the bare token patterns. SECRET_PATTERN_BOUNDARY below is
+# prepended at match time -- keep them in this form so they stay comparable
+# verbatim with the runtime hook's array (see the drift test named above).
+
+# Left token boundary. Without it the sk- pattern matches mid-word and ordinary
+# HQ filenames (a-ri|sk-..., hq-ta|sk-..., controller-di|sk-...) scan as
+# credentials. Mirrors SECRET_BOUNDARY in .claude/hooks/detect-secrets.sh.
+SECRET_PATTERN_BOUNDARY='(^|[^a-zA-Z0-9])'
 
 SECRET_PATTERNS=(
   "sk-[a-zA-Z0-9._-]{20,}:OpenAI/Stripe key"
@@ -37,7 +46,7 @@ hq_scan_secrets() {
   for f in "$@"; do
     [ -f "$f" ] || continue
     for entry in "${SECRET_PATTERNS[@]}"; do
-      pattern="${entry%%:*}"
+      pattern="${SECRET_PATTERN_BOUNDARY}${entry%%:*}"
       name="${entry#*:}"
       if grep -Eq -- "$pattern" "$f" 2>/dev/null; then
         echo "secret-scan: pattern '$name' matched in $f" >&2

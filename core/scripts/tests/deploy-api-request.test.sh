@@ -58,7 +58,7 @@ if [ "$stage" = "${REFRESH_STAGE:-}" ] && [ "$stage_calls" = 1 ]; then
   body='{"error":{"code":"TOKEN_EXPIRED","message":"Expired token-secret-should-not-leak X-Amz-Signature=presigned-secret-should-not-leak"},"requestId":"req-401"}'
 elif [ "$stage" = "${REFRESH_STAGE:-}" ] && [ "${RETRY_STATUS:-200}" != 200 ]; then
   status="$RETRY_STATUS"
-  body='{"error":{"code":"RETRY_DENIED","message":"Retry denied refreshed-secret-should-not-leak X-Amz-Signature=presigned-secret-should-not-leak"},"requestId":"req-retry"}'
+  body='{"error":{"code":"RETRY_DENIED","message":"Retry denied refreshed-no-leak X-Amz-Signature=presigned-secret-should-not-leak"},"requestId":"req-retry"}'
 elif [ "$stage" = "$FAIL_STAGE" ]; then
   status="${FAIL_STATUS:-403}"
   body='{"error":{"code":"FORBIDDEN","message":"Denied token-secret-should-not-leak X-Amz-Signature=presigned-secret-should-not-leak"},"requestId":"req-403"}'
@@ -75,7 +75,7 @@ cat > "$TMP/identity-resolve" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >> "$MOCK_DIR/identity-calls"
 if [ "${REFRESH_RESULT:-ok}" = ok ]; then
-  printf '%s\n' '{"status":"ok","jwt":"refreshed-secret-should-not-leak","id_token":"id-secret-should-not-leak","expires_at":9999999999999,"source":"refresh"}'
+  printf '%s\n' '{"status":"ok","jwt":"refreshed-no-leak","id_token":"id-secret-should-not-leak","expires_at":9999999999999,"source":"refresh"}'
 else
   printf '%s\n' '{"status":"login_required","reason":"refresh failed token-secret-should-not-leak"}'
 fi
@@ -183,7 +183,7 @@ assert_refresh_success() {
     || fail "$stage did not force identity refresh"
   [ "$(grep -c "^$stage Authorization: Bearer $TOKEN$" "$TMP/auth-calls")" = 1 ] \
     || fail "$stage did not make exactly one request with the original token"
-  [ "$(grep -c "^$stage Authorization: Bearer refreshed-secret-should-not-leak$" "$TMP/auth-calls")" = 1 ] \
+  [ "$(grep -c "^$stage Authorization: Bearer refreshed-no-leak$" "$TMP/auth-calls")" = 1 ] \
     || fail "$stage did not retry exactly once with the refreshed token"
   pass "$stage refreshes once, retries once, and continues deployment"
 }
@@ -207,7 +207,7 @@ set -e
 [ "$(wc -l < "$TMP/identity-calls" | tr -d ' ')" = 1 ] || fail "failed refresh was attempted more than once: $output"
 printf '%s' "$output" | grep -Fq 'live content was not updated' || fail "failed refresh omitted live-content outcome: $output"
 printf '%s' "$output" | grep -Fq "$TOKEN" && fail "failed refresh leaked the original token: $output"
-printf '%s' "$output" | grep -Fq 'refreshed-secret-should-not-leak' && fail "failed refresh leaked a refreshed token: $output"
+printf '%s' "$output" | grep -Fq 'refreshed-no-leak' && fail "failed refresh leaked a refreshed token: $output"
 printf '%s' "$output" | grep -Fq "$SIGNATURE" && fail "failed refresh leaked a presigned signature: $output"
 pass 'failed refresh stops deployment with credential-redacted diagnostics'
 
@@ -226,7 +226,7 @@ set -e
 [ "$(wc -l < "$TMP/identity-calls" | tr -d ' ')" = 1 ] || fail "completion refreshed more than once: $output"
 printf '%s' "$output" | grep -Fq 'live content was not updated' || fail "failed retry omitted live-content outcome: $output"
 printf '%s' "$output" | grep -Fq "$TOKEN" && fail "failed retry leaked the original token: $output"
-printf '%s' "$output" | grep -Fq 'refreshed-secret-should-not-leak' && fail "failed retry leaked the refreshed token: $output"
+printf '%s' "$output" | grep -Fq 'refreshed-no-leak' && fail "failed retry leaked the refreshed token: $output"
 printf '%s' "$output" | grep -Fq "$SIGNATURE" && fail "failed retry leaked a presigned signature: $output"
 pass 'completion enforces one retry and redacts failed-retry diagnostics'
 

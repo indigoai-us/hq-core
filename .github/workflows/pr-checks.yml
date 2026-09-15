@@ -681,6 +681,10 @@ jobs:
         run: bash core/scripts/tests/mandatory-scope-authorizer.test.sh
       - name: Secret detector scans Write/Edit/MultiEdit/NotebookEdit content
         run: bash core/scripts/tests/detect-secrets-file-tools.test.sh
+      - name: Secret detector has no command-keyword escape; token boundary holds
+        run: bash core/scripts/tests/detect-secrets-escape-hardening.test.sh
+      - name: Secret detector block message never echoes the matched value
+        run: bash core/scripts/tests/detect-secrets-no-value-leak.test.sh
       - name: Policy reminder stays under the host output ceiling; hard rules rank first
         run: bash core/scripts/tests/inject-policy-output-ceiling.test.sh
       - name: Policy age report flags retirement candidates

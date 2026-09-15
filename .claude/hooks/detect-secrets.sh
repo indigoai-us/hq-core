@@ -51,11 +51,6 @@ is_false_positive() {
     return 0  # It's a comment, safe
   fi
 
-  # Check if the line contains pattern-discussion keywords near the match
-  if [[ "$line" =~ (echo|grep|sed|awk|regex|pattern)[[:space:]] ]]; then
-    return 0  # Likely pattern reference, not a real secret
-  fi
-
   # Check if match is inside quotes with wildcards (pattern reference like sk-*)
   if [[ "$line" =~ [\"\'](.*\*.*)[\"\'](.*)"$match" ]] || [[ "$line" =~ [\"\'](.*)"$match"(.*\*.*)[\"\'](.*) ]]; then
     return 0  # Pattern reference with wildcard
@@ -63,6 +58,19 @@ is_false_positive() {
 
   return 1  # Real secret detected
 }
+
+# Left token boundary, applied to every pattern at match time (NOT stored in the
+# entries below). Without it the sk- pattern matches mid-word, so ordinary HQ
+# filenames -- a-ri|sk-..., hq-ta|sk-..., controller-di|sk-... -- read as
+# credentials and routine file work gets blocked.
+#
+# It is applied at match time rather than baked into the entries so that the
+# entries stay the bare token patterns. `grep -oE` on a bounded pattern captures
+# the boundary CHARACTER too (e.g. the opening quote of 'sk-aaaa...*'), and
+# is_false_positive() compares $match against the surrounding text -- a match
+# carrying a stray leading quote silently defeats the quoted-wildcard
+# suppression. Extraction below therefore uses the unbounded pattern.
+SECRET_BOUNDARY='(^|[^a-zA-Z0-9])'
 
 # Array of patterns to check
 declare -a PATTERNS=(
@@ -81,13 +89,15 @@ declare -a PATTERNS=(
 for pattern_entry in "${PATTERNS[@]}"; do
   PATTERN="${pattern_entry%:*}"
   PATTERN_NAME="${pattern_entry#*:}"
+  BOUNDED="${SECRET_BOUNDARY}${PATTERN}"
 
   # Use grep with extended regex to find matches
-  if echo "$COMMAND" | grep -E "$PATTERN" >/dev/null 2>&1; then
+  if echo "$COMMAND" | grep -E "$BOUNDED" >/dev/null 2>&1; then
     # Found a match, but check if it's a false positive
     while IFS= read -r line; do
-      if echo "$line" | grep -E "$PATTERN" >/dev/null 2>&1; then
-        # Get the matched value
+      if echo "$line" | grep -E "$BOUNDED" >/dev/null 2>&1; then
+        # Get the matched value. Extract with the UNBOUNDED pattern so $MATCHED
+        # is the token alone -- see the SECRET_BOUNDARY note above.
         MATCHED=$(echo "$line" | grep -oE "$PATTERN" | head -1)
 
         # Check if this is a false positive

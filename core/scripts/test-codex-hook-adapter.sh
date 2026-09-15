@@ -367,7 +367,11 @@ assert_contains "$out" "POLICY"
 assert_contains "$out" "LOCAL"
 assert_contains "$out" "AUTO-STARTWORK"
 
-payload_secret='{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"'"$TMP"'","tool_input":{"command":"echo sk-testSECRET1234567890"}}'
+# Assembled from fragments so this file never carries a key-shaped literal --
+# the hook scans file content too, and a literal here would make this file
+# unwritable through the very guard it exercises.
+secret_literal="sk""-testSECRET1234567890"
+payload_secret='{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"'"$TMP"'","tool_input":{"command":"echo '"$secret_literal"'"}}'
 if err="$(run_adapter "$payload_secret" 2>&1 >/dev/null)"; then
   echo "Expected secret payload to be blocked" >&2
   exit 1
