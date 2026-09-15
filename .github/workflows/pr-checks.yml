@@ -896,6 +896,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: hook-gate self-heals a non-executable (sync-stripped) hook
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+      - name: Hook timeout Sentry watchdog
+        run: bash core/scripts/tests/hook-timeout-sentry.test.sh
       - name: Runtime adapters repair hooks or emit bounded diagnostics
         run: bash core/scripts/tests/hook-runtime-diagnostics.test.sh
       - name: hook-gate augments PATH for version-manager node (nvm/volta/fnm/asdf)

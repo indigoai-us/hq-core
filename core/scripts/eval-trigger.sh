@@ -43,15 +43,25 @@ set -euo pipefail
 # second implementation of the grammar to drift from.
 if [ "${1-}" = "--check" ]; then
   awk -F'\t' '
-    function skip() { while (substr(E, pos, 1) == " ") pos++ }
+    function skip() { while (substr(E, pos, 1) ~ /[ \t]/) pos++ }
     function parseOr(  v) {
       v = parseAnd(); skip()
-      while (substr(E, pos, 2) == "||") { pos += 2; if (parseAnd() || v) v = 1; else v = 0; skip() }
+      while (valid && substr(E, pos, 2) == "||") {
+        pos += 2
+        rhs = parseAnd()
+        v = (v || rhs)
+        skip()
+      }
       return v
     }
     function parseAnd(  v) {
       v = parseNot(); skip()
-      while (substr(E, pos, 2) == "&&") { pos += 2; if (parseNot() && v) v = 1; else v = 0; skip() }
+      while (valid && substr(E, pos, 2) == "&&") {
+        pos += 2
+        rhs = parseNot()
+        v = (v && rhs)
+        skip()
+      }
       return v
     }
     function parseNot(  c) {
@@ -61,8 +71,13 @@ if [ "${1-}" = "--check" ]; then
     }
     function parseAtom(  v, c) {
       skip(); c = substr(E, pos, 1)
-      if (c == "(") { pos++; v = parseOr(); skip(); if (substr(E, pos, 1) == ")") pos++; return v }
-      pos++; return (c == "1") ? 1 : 0
+      if (c == "(") {
+        pos++; v = parseOr(); skip()
+        if (substr(E, pos, 1) != ")") { valid = 0; return 0 }
+        pos++; return v
+      }
+      if (c == "0" || c == "1") { pos++; return (c == "1") ? 1 : 0 }
+      valid = 0; return 0
     }
     function check(expr,   e, s, out, tok) {
       e = expr; gsub(/[ \t]/, "", e)
@@ -74,14 +89,22 @@ if [ "${1-}" = "--check" ]; then
         s = substr(s, RSTART + RLENGTH)
       }
       out = out s
-      if (out ~ /[^01&|!() ]/) return 0
-      E = out; pos = 1
+      if (out ~ /[^01&|!() \t]/) return 0
+      E = out; pos = 1; valid = 1
       parseOr()
       skip()
-      if (pos <= length(E)) return 0          # trailing garbage
+      if (!valid || pos <= length(E)) return 0 # trailing garbage / bad atom
       return 1
     }
-    { print $1 "\t" (check($2) ? "ok" : "malformed") }
+    # The first tab separates the caller id from the expression. Rejoin any
+    # remaining fields so tabs inside an expression retain their documented
+    # whitespace meaning instead of being silently discarded by the awk field
+    # separator.
+    {
+      expr = $2
+      for (field = 3; field <= NF; field++) expr = expr "\t" $field
+      print $1 "\t" (check(expr) ? "ok" : "malformed")
+    }
   '
   exit 0
 fi
@@ -96,15 +119,25 @@ esac
 # (the case above is a readability no-op; the real empty check is in awk)
 
 awk -v expr="$EXPR" -v facts="$FACTS" '
-function skip() { while (substr(E, pos, 1) == " ") pos++ }
+function skip() { while (substr(E, pos, 1) ~ /[ \t]/) pos++ }
 function parseOr(  v) {
   v = parseAnd(); skip()
-  while (substr(E, pos, 2) == "||") { pos += 2; if (parseAnd() || v) v = 1; else v = 0; skip() }
+  while (valid && substr(E, pos, 2) == "||") {
+    pos += 2
+    rhs = parseAnd()
+    v = (v || rhs)
+    skip()
+  }
   return v
 }
 function parseAnd(  v) {
   v = parseNot(); skip()
-  while (substr(E, pos, 2) == "&&") { pos += 2; if (parseNot() && v) v = 1; else v = 0; skip() }
+  while (valid && substr(E, pos, 2) == "&&") {
+    pos += 2
+    rhs = parseNot()
+    v = (v && rhs)
+    skip()
+  }
   return v
 }
 function parseNot(  c) {
@@ -114,8 +147,13 @@ function parseNot(  c) {
 }
 function parseAtom(  v, c) {
   skip(); c = substr(E, pos, 1)
-  if (c == "(") { pos++; v = parseOr(); skip(); if (substr(E, pos, 1) == ")") pos++; return v }
-  pos++; return (c == "1") ? 1 : 0
+  if (c == "(") {
+    pos++; v = parseOr(); skip()
+    if (substr(E, pos, 1) != ")") { valid = 0; return 0 }
+    pos++; return v
+  }
+  if (c == "0" || c == "1") { pos++; return (c == "1") ? 1 : 0 }
+  valid = 0; return 0
 }
 BEGIN {
   # empty / whitespace-only expression → fail open
@@ -136,10 +174,10 @@ BEGIN {
   out = out s
 
   # safety gate: only 0 1 & | ! ( ) and spaces may remain
-  if (out ~ /[^01&|!() ]/) exit 2
+  if (out ~ /[^01&|!() \t]/) exit 2
 
   # evaluate
-  E = out; pos = 1
+  E = out; pos = 1; valid = 1
   v = parseOr()
 
   # The parse must consume the WHOLE expression. Recursive descent stops at the
@@ -148,7 +186,7 @@ BEGIN {
   # the policy then fires (or fails to) on a prefix nobody authored. Leftover
   # input means the expression is malformed, not shorter.
   skip()
-  if (pos <= length(E)) exit 2
+  if (!valid || pos <= length(E)) exit 2
 
   exit (v ? 0 : 1)
 }

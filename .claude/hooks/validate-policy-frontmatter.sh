@@ -2,7 +2,8 @@
 # validate-policy-frontmatter.sh — PreToolUse (Write, Edit, MultiEdit).
 #
 # Blocks the create/edit of a POLICY file whose RESULTING frontmatter is missing
-# `when:` or `on:`, or whose `when:` is outside the documented boolean grammar.
+# `when:` or `on:`, or whose `when:` is rejected by the canonical boolean
+# trigger grammar.
 # These fields drive just-in-time policy injection (see
 # core/knowledge/public/hq-core/policies-spec.md). Every policy authored or
 # edited must declare both, and malformed expressions must not reach the
@@ -24,14 +25,14 @@
 # Excludes: README.md and the .claude/audit/ redaction-rule store (those are not
 # trigger-injected policies). The retired `_digest.md` path has no exemption.
 #
-# Advisory-safe: FAILS OPEN (exit 0) on any ambiguity — non-policy paths,
-# unparsable input, or when neither analyzer engine is usable — so it never
-# blocks an unrelated write. It only ever exits 2 when it is confident the
-# target is a policy file lacking when/on or carrying malformed `when:` syntax.
-# Engines: node first (complex analyzers run on node per the hooks-no-python
-# migration), else a jq/awk port of the same analyzer. python3 is no longer used
-# — on Windows the Store alias stub used to pass `command -v python3` while
-# failing every invocation, which silently disabled this validator.
+# Advisory-safe: FAILS OPEN (exit 0) on ambiguity about whether a write targets
+# a policy (non-policy paths, unparsable tool input, or no analyzer engine), so
+# it never blocks an unrelated write. Once it has identified a policy with a
+# `when:`, it FAILS CLOSED if the canonical evaluator is unavailable: silently
+# skipping that dependency would admit malformed hard rules. Engines: node first
+# (complex analyzers run on node per the hooks-no-python migration), else a
+# jq/awk port of the frontmatter/resulting-text analyzer. Neither port parses
+# trigger expressions; core/scripts/eval-trigger.sh owns that grammar.
 #
 # Override: set HQ_ALLOW_POLICY_NO_TRIGGER=1 in .claude/settings.local.json env.
 #
@@ -45,6 +46,9 @@ set -uo pipefail
 INPUT="$(cat)"
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)"
+HQ_ROOT="${HQ_ROOT:-$HOOK_ROOT}"
+EVAL_TRIGGER="$HQ_ROOT/core/scripts/eval-trigger.sh"
 JQ="$(command -v jq || true)"
 NODE="$(command -v node || true)"
 case "${HQ_HOOK_ENGINE:-}" in
@@ -114,59 +118,6 @@ if (!whenLines.some((expr) => /\S/.test(expr))) missing.push("when");
 if (!/^[ \t]*on:[ \t]*\S/m.test(fm)) missing.push("on");
 if (missing.length) { console.log("BLOCK|" + missing.join(",")); process.exit(0); }
 
-// Grammar-only validation. Tokens remain open: this checks syntax, not whether
-// an identifier can be derived for a particular event. The runtime evaluators
-// deliberately stay fail-open for legacy malformed policies.
-const validWhen = (expr) => {
-  let pos = 0;
-  const skip = () => { while (pos < expr.length && /[ \t]/.test(expr[pos])) pos++; };
-  const identifier = () => {
-    skip();
-    const match = expr.slice(pos).match(/^[A-Za-z0-9_.\/][A-Za-z0-9_.\/-]*/);
-    if (!match) return false;
-    pos += match[0].length;
-    return true;
-  };
-  const atom = () => {
-    skip();
-    if (expr[pos] !== "(") return identifier();
-    pos++;
-    if (!orExpr()) return false;
-    skip();
-    if (expr[pos] !== ")") return false;
-    pos++;
-    return true;
-  };
-  const notExpr = () => {
-    skip();
-    if (expr[pos] === "!") { pos++; return notExpr(); }
-    return atom();
-  };
-  const andExpr = () => {
-    if (!notExpr()) return false;
-    while (true) {
-      skip();
-      if (expr.slice(pos, pos + 2) !== "&&") return true;
-      pos += 2;
-      if (!notExpr()) return false;
-    }
-  };
-  function orExpr() {
-    if (!andExpr()) return false;
-    while (true) {
-      skip();
-      if (expr.slice(pos, pos + 2) !== "||") return true;
-      pos += 2;
-      if (!andExpr()) return false;
-    }
-  }
-  if (!orExpr()) return false;
-  skip();
-  return pos === expr.length;
-};
-
-if (!whenLines.every(validWhen)) { console.log("BLOCK|invalid-when"); process.exit(0); }
-
 // ── Strictness rules for enforcement: hard ────────────────────────────────
 // A hard policy is injected in FULL TEXT and, when its trigger is loose, on
 // every event. Both cost is paid out of the same context the user is trying to
@@ -210,7 +161,9 @@ if (isHard) {
   }
 }
 
-console.log("ALLOW");
+// Leave syntax to the canonical batch evaluator below. Emit one record for
+// every `when:` so duplicate frontmatter keys do not escape validation.
+for (const when of whenLines) console.log("CHECK|" + when);
 JS
 
 # Literal replace-once (newline-safe) for the jq/awk fallback engine. Strings
@@ -269,35 +222,6 @@ analyze_with_jq() {
   esac
 
   printf '%s' "$text" | awk '
-    # Syntax-only parser for the documented when: grammar. It deliberately
-    # does not constrain identifier vocabulary; it only enforces token and
-    # operator placement, non-empty groups, and balanced parentheses.
-    function validwhen(s,   i,n,c,two,expect,depth) {
-      i=1; n=length(s); expect=1; depth=0
-      while (i<=n) {
-        c=substr(s,i,1)
-        if (c==" " || c=="\t") { i++; continue }
-        if (expect) {
-          if (c=="!") { i++; continue }
-          if (c=="(") { depth++; i++; continue }
-          if (c ~ /[A-Za-z0-9_.\/]/) {
-            i++
-            while (i<=n && substr(s,i,1) ~ /[A-Za-z0-9_.\/-]/) i++
-            expect=0
-            continue
-          }
-          return 0
-        }
-        two=substr(s,i,2)
-        if (two=="&&" || two=="||") { expect=1; i+=2; continue }
-        if (c==")") {
-          if (depth==0) return 0
-          depth--; i++; continue
-        }
-        return 0
-      }
-      return (!expect && depth==0)
-    }
     # normalize line endings (CRLF / stray CR) before structural checks —
     # mirrors the node engine and the python original'"'"'s \s* tolerance
     { line=$0; sub(/\r$/, "", line); L[NR]=line }
@@ -306,12 +230,13 @@ analyze_with_jq() {
       while (i<=NR && L[i] ~ /^[ \t]*$/) i++
       if (i>NR || L[i] !~ /^[ \t]*---[ \t]*$/) { print "BLOCK|no-frontmatter"; exit }
       i++
-      closed=0; w=0; o=0; wi=0; taut=0; onx=""; enf=""
+      closed=0; w=0; wc=0; o=0; taut=0; onx=""; enf=""
       for (; i<=NR; i++) {
         if (L[i] ~ /^---[ \t]*$/) { closed=1; break }
-        if (L[i] ~ /^[ \t]*when:[ \t]*[^ \t]/) {
-          w=1; wx=L[i]; sub(/^[ \t]*when:[ \t]*/, "", wx)
-          if (!validwhen(wx)) wi=1
+        if (L[i] ~ /^[ \t]*when:[ \t]*/) {
+          wx=L[i]; sub(/^[ \t]*when:[ \t]*/, "", wx)
+          whens[++wc]=wx
+          if (wx ~ /[^ \t]/) w=1
           # a pure OR-chain containing `always` is a tautology; && / ! make it
           # conditional and it is left alone
           if (wx !~ /[&!]/ && wx ~ /(^|[^A-Za-z0-9_.\/-])always([^A-Za-z0-9_.\/-]|$)/) taut=1
@@ -327,8 +252,6 @@ analyze_with_jq() {
       if (!w) m="when"
       if (!o) m=(m=="" ? "on" : m ",on")
       if (m!="") { print "BLOCK|" m; exit }
-      if (wi) { print "BLOCK|invalid-when"; exit }
-
       if (enf == "hard") {
         # (1) unconditional trigger on a reactive event — see the node engine
         react=""
@@ -347,7 +270,9 @@ analyze_with_jq() {
         max=ENVIRON["HQ_POLICY_HARD_RULE_MAX_BYTES"]; if (max=="") max=6144
         if (max+0 > 0 && bytes > max+0) { print "BLOCK|hard-too-long|" bytes "|" max; exit }
       }
-      print "ALLOW"
+      # Grammar validation belongs solely to eval-trigger.sh. Emit every
+      # populated when: line so duplicate keys are checked too.
+      for (k=1; k<=wc; k++) print "CHECK|" whens[k]
     }'
 }
 
@@ -357,9 +282,106 @@ else
   RESULT="$(analyze_with_jq)"
 fi
 
+# The evaluator is deliberately checked only after the frontmatter analyzer
+# identifies a policy with at least one populated `when:`. A missing evaluator
+# must block that policy write: allowing it would recreate the malformed-rule
+# bypass this hook exists to prevent. Non-policy writes remain advisory-safe.
+override_enabled() {
+  [ "${HQ_ALLOW_POLICY_NO_TRIGGER:-}" = "1" ] || [ "${HQ_ALLOW_POLICY_NO_TRIGGER:-}" = "true" ]
+}
+
+block_missing_evaluator() {
+  # This is an operator-selected emergency override, deliberately as broad as
+  # the existing override below: it permits a policy write even when structural
+  # checks would otherwise block. Keeping only presence checks in this path
+  # would make the same documented override behave differently based on whether
+  # the evaluator happened to be executable, and could still prevent a repair
+  # write during an evaluator outage. Never make that degradation silent.
+  if override_enabled; then
+    cat >&2 <<MSG
+NOTE: HQ_ALLOW_POLICY_NO_TRIGGER override active. Allowing this policy write
+without canonical trigger syntax validation because the evaluator is unavailable:
+${EVAL_TRIGGER}
+MSG
+    exit 0
+  fi
+  cat >&2 <<MSG
+BLOCKED: cannot validate this policy's when: expression because the canonical
+trigger evaluator is unavailable.
+
+Checked: ${EVAL_TRIGGER}
+Expected: an executable core/scripts/eval-trigger.sh resolved from HQ_ROOT.
+
+This write is blocked fail-closed rather than silently skipping syntax
+validation. Restore that executable (or correct HQ_ROOT / CLAUDE_PROJECT_DIR)
+and retry; allowing the write would permit rules that can never parse or fire.
+MSG
+  exit 2
+}
+
+case "$RESULT" in
+  CHECK\|*)
+    [ -x "$EVAL_TRIGGER" ] || block_missing_evaluator
+
+    CHECK_EXPRESSIONS=()
+    check_count=0
+    while IFS= read -r check_line; do
+      case "$check_line" in
+        CHECK\|*)
+          CHECK_EXPRESSIONS[check_count]="${check_line#CHECK|}"
+          check_count=$((check_count + 1))
+          ;;
+        *)
+          # The analyzer's protocol is internal and deterministic. A mixed
+          # response after identifying a policy is unsafe to interpret as an
+          # allow, so use the same explicit fail-closed diagnostic.
+          block_missing_evaluator
+          ;;
+      esac
+    done <<EOF
+$RESULT
+EOF
+
+    [ "$check_count" -gt 0 ] || block_missing_evaluator
+    CHECK_OUTPUT="$({
+      check_index=0
+      while [ "$check_index" -lt "$check_count" ]; do
+        id="when-$check_index"
+        when="${CHECK_EXPRESSIONS[check_index]}"
+        printf '%s\t%s\n' "$id" "$when"
+        check_index=$((check_index + 1))
+      done
+    } | bash "$EVAL_TRIGGER" --check 2>&1)" || block_missing_evaluator
+
+    check_index=0
+    malformed_when_found=0
+    bad_when=""
+    while IFS=$'\t' read -r checked_id checked_status checked_extra || [ -n "${checked_id:-}${checked_status:-}${checked_extra:-}" ]; do
+      [ "$checked_id" = "when-$check_index" ] && [ -z "$checked_extra" ] || block_missing_evaluator
+      case "$checked_status" in
+        ok) ;;
+        malformed)
+          malformed_when_found=1
+          bad_when="${CHECK_EXPRESSIONS[check_index]}"
+          ;;
+        *) block_missing_evaluator ;;
+      esac
+      check_index=$((check_index + 1))
+    done <<EOF
+$CHECK_OUTPUT
+EOF
+    [ "$check_index" = "$check_count" ] || block_missing_evaluator
+    if [ "$malformed_when_found" = "1" ]; then
+      RESULT="BLOCK|invalid-when|$bad_when"
+    else
+      RESULT="ALLOW"
+    fi
+    ;;
+esac
+
 case "$RESULT" in
   BLOCK*)
-    if [ "${HQ_ALLOW_POLICY_NO_TRIGGER:-}" = "1" ] || [ "${HQ_ALLOW_POLICY_NO_TRIGGER:-}" = "true" ]; then
+    if override_enabled; then
       exit 0
     fi
     reason="${RESULT#BLOCK|}"
@@ -407,9 +429,17 @@ MSG
         exit 2
         ;;
     esac
-    if [ "$reason" = "invalid-when" ]; then
+    if [ "${reason%%|*}" = "invalid-when" ]; then
+      when_expression="${reason#invalid-when|}"
       cat >&2 <<MSG
-BLOCKED: policy file has a malformed when: trigger expression.
+BLOCKED: policy file has a malformed when: trigger expression:
+
+  when: ${when_expression}
+
+The canonical trigger evaluator rejected it. A space is NOT an AND, and quoted
+phrases are NOT tokens. Use explicit boolean operators instead:
+  "pull request"  -> (pull && request)
+  "force-push"    -> force-push
 
 Use only identifiers joined by the documented boolean grammar:
   when: <identifier>                 # e.g.  always  |  git  |  /deep-plan

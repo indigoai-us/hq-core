@@ -6,7 +6,7 @@
 # three hook-gate profiles (per hq-hook-gate-three-profile-lists).
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
-HOOK="$ROOT/.claude/hooks/validate-policy-frontmatter.sh"
+HOOK="${HOOK:-$ROOT/.claude/hooks/validate-policy-frontmatter.sh}"
 GATE="$ROOT/.claude/hooks/hook-gate.sh"
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not available"; exit 0; }
 command -v node >/dev/null 2>&1 || { echo "SKIP: node not available"; exit 0; }
@@ -14,6 +14,13 @@ command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 not available"; exit
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
 [ -f "$HOOK" ] || fail "hook not found: $HOOK"
+
+# The hook normally receives CLAUDE_PROJECT_DIR as its HQ root. This test uses
+# a synthetic project dir to exercise path coverage, so anchor the canonical
+# evaluator to this checkout instead. Clear ambient policy knobs: this test's
+# expected blocks must not depend on the invoking shell.
+export HQ_ROOT="${HQ_ROOT:-$ROOT}"
+unset HQ_ALLOW_POLICY_NO_TRIGGER HQ_POLICY_HARD_RULE_MAX_BYTES HQ_HOOK_ENGINE || true
 
 PROJ="$(mktemp -d)"; trap 'rm -rf "$PROJ"' EXIT
 mkdir -p "$PROJ/core/policies" "$PROJ/companies/acme/policies" "$PROJ/.claude/audit/policies" "$PROJ/repos/private/x/.claude/policies"
@@ -33,6 +40,11 @@ BAD_LEADING_DASH=$'---\nid: hq-x\nwhen: --test || test\non: [PreToolUse]\nenforc
 BAD_COLON=$'---\nid: hq-x\nwhen: node:test\non: [PreToolUse]\nenforcement: soft\n---\nx\n'
 BAD_AT=$'---\nid: hq-x\nwhen: @layer\non: [PreToolUse]\nenforcement: soft\n---\nx\n'
 BAD_BLOCK=$'---\nid: hq-x\nwhen: >-\n  git || push\non: [PreToolUse]\nenforcement: soft\n---\nx\n'
+BAD_PULL_REQUEST=$'---\nid: hq-x\nwhen: (pr || "pull request")\non: [PreToolUse]\nenforcement: soft\n---\nx\n'
+GOOD_PULL_REQUEST=$'---\nid: hq-x\nwhen: (pr || (pull && request))\non: [PreToolUse]\nenforcement: soft\n---\nx\n'
+BAD_MULTIWORD=$'---\nid: hq-x\nwhen: root cause\non: [PreToolUse]\nenforcement: soft\n---\nx\n'
+GOOD_AMBIENT=$'---\nid: hq-x\nwhen: always\non: [SessionStart]\nenforcement: soft\n---\nx\n'
+DUPLICATE_EMPTY_WHEN=$'---\nid: hq-x\nwhen: git && push\nwhen:\non: [PreToolUse]\nenforcement: soft\n---\nx\n'
 
 wrc() { printf '%s' "$1" | bash "$HOOK" >/dev/null 2>&1; echo $?; }
 wp() { jq -nc --arg fp "$1" --arg c "$2" '{tool_input:{file_path:$fp,content:$c}}'; }
@@ -55,7 +67,18 @@ for engine in node jq; do
     [ "$got" = "$want" ] || fail "$engine: want $want got $got :: $label"
     pass "$engine: $label"
   }
+  exp_engine_names_expression() {
+    local engine="$1" payload="$2" expression="$3" label="$4" got output
+    output="$(printf '%s' "$payload" | HQ_HOOK_ENGINE="$engine" bash "$HOOK" 2>&1)" && got=0 || got=$?
+    [ "$got" = "2" ] || fail "$engine: want rc 2 got $got :: $label"
+    printf '%s\n' "$output" | grep -F -- "when: $expression" >/dev/null || fail "$engine: block message must name '$expression' :: $label"
+    pass "$engine: $label"
+  }
   exp_engine 0 "$engine" "$(wp "$PROJ/core/policies/complex.md" "$GOOD_COMPLEX")" "nested valid expression -> allow"
+  exp_engine_names_expression "$engine" "$(wp "$PROJ/core/policies/pull-request.md" "$BAD_PULL_REQUEST")" '(pr || "pull request")' "quoted multiword expression -> block and name expression"
+  exp_engine 0 "$engine" "$(wp "$PROJ/core/policies/pull-request-good.md" "$GOOD_PULL_REQUEST")" "explicit AND for multiword expression -> allow"
+  exp_engine_names_expression "$engine" "$(wp "$PROJ/core/policies/root-cause.md" "$BAD_MULTIWORD")" 'root cause' "bare multiword expression -> block and name expression"
+  exp_engine 0 "$engine" "$(wp "$PROJ/core/policies/ambient.md" "$GOOD_AMBIENT")" "always with SessionStart -> allow"
   exp_engine 2 "$engine" "$(wp "$PROJ/core/policies/quoted.md" "$BAD_QUOTED")" "quoted atom -> block"
   exp_engine 2 "$engine" "$(wp "$PROJ/core/policies/adjacent.md" "$BAD_ADJACENT")" "adjacent atoms -> block"
   exp_engine 2 "$engine" "$(wp "$PROJ/core/policies/dangling.md" "$BAD_DANGLING")" "dangling operator -> block"
@@ -66,6 +89,35 @@ for engine in node jq; do
   exp_engine 2 "$engine" "$(wp "$PROJ/core/policies/at.md" "$BAD_AT")" "at-sign atom -> block"
   exp_engine 2 "$engine" "$(wp "$PROJ/core/policies/block.md" "$BAD_BLOCK")" "YAML block scalar -> block"
 done
+
+echo "[2a] every duplicate when: entry is checked, including an empty one"
+for engine in node jq; do
+  exp_engine 2 "$engine" "$(wp "$PROJ/core/policies/duplicate-empty-when.md" "$DUPLICATE_EMPTY_WHEN")" \
+    "valid when followed by empty when -> block"
+done
+
+echo "[2b] missing canonical evaluator fails closed with its resolved path"
+missing_root="$PROJ/no-evaluator-root"
+output="$(printf '%s' "$(wp "$PROJ/core/policies/missing-evaluator.md" "$GOOD")" | HQ_ROOT="$missing_root" bash "$HOOK" 2>&1)" && got=0 || got=$?
+[ "$got" = "2" ] || fail "missing evaluator: want rc 2 got $got"
+printf '%s\n' "$output" | grep -F -- "$missing_root/core/scripts/eval-trigger.sh" >/dev/null || fail "missing evaluator message must name checked path"
+printf '%s\n' "$output" | grep -F -- "blocked fail-closed" >/dev/null || fail "missing evaluator message must name fail-closed path"
+pass "missing canonical evaluator -> explicit fail-closed block"
+
+echo "[2c] a non-executable evaluator honors the operator override"
+disabled_root="$PROJ/non-executable-evaluator-root"
+mkdir -p "$disabled_root/core/scripts"
+cp "$ROOT/core/scripts/eval-trigger.sh" "$disabled_root/core/scripts/eval-trigger.sh"
+chmod -x "$disabled_root/core/scripts/eval-trigger.sh"
+payload="$(wp "$PROJ/core/policies/non-executable-evaluator.md" "$GOOD")"
+output="$(printf '%s' "$payload" | HQ_ROOT="$disabled_root" bash "$HOOK" 2>&1)" && got=0 || got=$?
+[ "$got" = "2" ] || fail "non-executable evaluator without override: want rc 2 got $got"
+printf '%s\n' "$output" | grep -F -- "$disabled_root/core/scripts/eval-trigger.sh" >/dev/null || fail "non-executable evaluator message must name checked path"
+pass "non-executable evaluator without override -> block"
+output="$(printf '%s' "$payload" | HQ_ROOT="$disabled_root" HQ_ALLOW_POLICY_NO_TRIGGER=1 bash "$HOOK" 2>&1)" && got=0 || got=$?
+[ "$got" = "0" ] || fail "non-executable evaluator with override: want rc 0 got $got"
+printf '%s\n' "$output" | grep -F -- "override active" >/dev/null || fail "override path must be noted on stderr"
+pass "non-executable evaluator with override -> allow and note degraded validation"
 
 echo "[3] scope coverage: company + repo policies enforced too"
 exp 2 "$(wp "$PROJ/companies/acme/policies/x.md" "$NOWHENON")"     "company policy missing -> block"

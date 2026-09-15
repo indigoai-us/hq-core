@@ -148,6 +148,7 @@ fi
 hq_highest_node_version() {
   local versions_dir="${1:-}"
   [ -d "$versions_dir" ] || return 0
+  # shellcheck disable=SC2012 # We intentionally need only immediate entries.
   ls -1 "$versions_dir" 2>/dev/null | awk -F. '
     {
       major=$1; sub(/^[^0-9]*/, "", major); major+=0
@@ -248,6 +249,86 @@ hq_augment_path() {
   return 0
 }
 hq_augment_path
+
+# The watchdog is deliberately armed only after the gate has decided this hook
+# will run. It is a background sleeper and is reaped by the EXIT trap, so it
+# never changes the delegated hook's stdout, stderr, exit status, or blocking
+# decision. The helper reads the registration timeout from settings itself,
+# keeping configuration work off this hot path.
+HOOK_TIMEOUT_WATCHDOG="$HQ_ROOT_RESOLVED/.claude/hooks/hook-timeout-watchdog.sh"
+hook_timeout_watchdog_pid=""
+hook_timeout_watchdog_session=0
+
+hook_timeout_watchdog_disabled() {
+  local entry remaining
+  remaining="${HQ_DISABLED_HOOKS:-}"
+  while [ -n "$remaining" ]; do
+    case "$remaining" in
+      *,*) entry="${remaining%%,*}"; remaining="${remaining#*,}" ;;
+      *) entry="$remaining"; remaining="" ;;
+    esac
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    entry="${entry%"${entry##*[![:space:]]}"}"
+    [ "$entry" = "hook-timeout-sentry" ] && return 0
+  done
+  return 1
+}
+
+hook_timeout_watchdog_enabled() {
+  case "${HQ_HOOK_TIMEOUT_SENTRY:-1}" in
+    0|false|FALSE|no|NO|off|OFF) return 1 ;;
+  esac
+  hook_timeout_watchdog_disabled && return 1
+  [ -f "$HOOK_TIMEOUT_WATCHDOG" ]
+}
+
+# shellcheck disable=SC2329 # Invoked by the EXIT trap below.
+stop_hook_timeout_watchdog() {
+  [ -n "$hook_timeout_watchdog_pid" ] || return 0
+  if [ "$hook_timeout_watchdog_session" -eq 1 ]; then
+    # Signal the setsid launcher as well as its group. The direct signal closes
+    # the short race before setsid has created that group; once it has, the
+    # group signal also interrupts the helper's sleep immediately.
+    kill -TERM "$hook_timeout_watchdog_pid" >/dev/null 2>&1 || true
+    kill -TERM -- "-$hook_timeout_watchdog_pid" >/dev/null 2>&1 || true
+  else
+    kill "$hook_timeout_watchdog_pid" >/dev/null 2>&1 || true
+  fi
+  # Reap only the session leader. The helper begins with an interruptible sleep,
+  # so this is a cheap synchronization point that makes the no-orphan guarantee
+  # deterministic without putting configuration parsing on the fast path.
+  wait "$hook_timeout_watchdog_pid" >/dev/null 2>&1 || true
+  hook_timeout_watchdog_pid=""
+  hook_timeout_watchdog_session=0
+}
+
+if hook_timeout_watchdog_enabled; then
+  # Test-only arming receipt. It is deliberately written by the foreground
+  # gate, rather than the asynchronous helper, so disable coverage does not
+  # depend on scheduler timing.
+  [ -z "${HQ_HOOK_TIMEOUT_SENTRY_TEST_ARMED_FILE:-}" ] \
+    || : > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_ARMED_FILE}" 2>/dev/null || true
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash "$HOOK_TIMEOUT_WATCHDOG" \
+      --root "$HQ_ROOT_RESOLVED" \
+      --source hook-gate \
+      --hook-path "$HOOK_SCRIPT" \
+      --hook-id "$HOOK_ID" \
+      --parent-pid "$$" \
+      >/dev/null 2>&1 <<<"$HOOK_PAYLOAD" &
+    hook_timeout_watchdog_session=1
+  else
+    bash "$HOOK_TIMEOUT_WATCHDOG" \
+      --root "$HQ_ROOT_RESOLVED" \
+      --source hook-gate \
+      --hook-path "$HOOK_SCRIPT" \
+      --hook-id "$HOOK_ID" \
+      --parent-pid "$$" \
+      >/dev/null 2>&1 <<<"$HOOK_PAYLOAD" &
+  fi
+  hook_timeout_watchdog_pid=$!
+  trap stop_hook_timeout_watchdog EXIT
+fi
 
 # Hook should run: delegate through the shared launch contract. It only mutates
 # files under the resolved HQ root, preserves delegated exit codes, and emits

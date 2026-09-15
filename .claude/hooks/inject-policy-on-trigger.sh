@@ -448,11 +448,16 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       | policy_hash 2>/dev/null || true)"
     eval_input_key="${eval_input_hash%% *}"
     if [ -n "$eval_session_key" ] && [ -n "$eval_input_key" ]; then
-      EVAL_CACHE_DIR="$CACHE_DIR/eval-v2"
+      # Evaluation entries contain grammar verdicts, unlike the parsed-policy
+      # cache above. A parser change can therefore make an otherwise matching
+      # v2 entry wrong. Keep parsed records at v1, but namespace evaluation
+      # results by parser revision so a previous permissive verdict is never
+      # replayed after a stricter grammar ships.
+      EVAL_CACHE_DIR="$CACHE_DIR/eval-v3"
       if mkdir -p "$EVAL_CACHE_DIR" 2>/dev/null; then
         eval_slot="$(printf '%02x' "$((16#${eval_session_key:0:2} % 64))")"
         EVAL_CACHE_FILE="$EVAL_CACHE_DIR/${scope_key}.${eval_slot}.eval"
-        EVAL_CACHE_HEADER="hq-policy-eval-v2${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
+        EVAL_CACHE_HEADER="hq-policy-eval-v3${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
         eval_cache_header=""
         if [ -r "$EVAL_CACHE_FILE" ]; then
           IFS= read -r eval_cache_header < "$EVAL_CACHE_FILE" || true
@@ -489,11 +494,31 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           -v CACHE_RECORDS="$CACHE_RECORDS" -v CACHE_WRITE="$CACHE_WRITE" \
           -v CACHE_TMP="$CACHE_TMP" -v CACHE_STATUS="$CACHE_STATUS" \
           -v CSEP="$CACHE_SEP" '
-      function skipsp() { while (substr(E, pos, 1) == " ") pos++ }
-      function pOr(  v){ v=pAnd(); skipsp(); while(substr(E,pos,2)=="||"){pos+=2; if(pAnd()||v)v=1;else v=0; skipsp()} return v }
-      function pAnd(  v){ v=pNot(); skipsp(); while(substr(E,pos,2)=="&&"){pos+=2; if(pNot()&&v)v=1;else v=0; skipsp()} return v }
-      function pNot(  c){ skipsp(); c=substr(E,pos,1); if(c=="!"){pos++; return (pNot()?0:1)} return pAtom() }
-      function pAtom(  v,c){ skipsp(); c=substr(E,pos,1); if(c=="("){pos++; v=pOr(); skipsp(); if(substr(E,pos,1)==")")pos++; return v} pos++; return (c=="1")?1:0 }
+      # Keep this hot-path parser structurally identical to eval-trigger.sh.
+      # In particular, an opening paren needs a closing paren: accepting it
+      # here while --check rejects it makes authoring and runtime disagree.
+      function skipsp() { while (substr(E, pos, 1) ~ /[ \t]/) pos++ }
+      function pOr(  v) {
+        v=pAnd(); skipsp()
+        while (valid && substr(E,pos,2)=="||") { pos+=2; rhs=pAnd(); v=(v || rhs); skipsp() }
+        return v
+      }
+      function pAnd(  v) {
+        v=pNot(); skipsp()
+        while (valid && substr(E,pos,2)=="&&") { pos+=2; rhs=pNot(); v=(v && rhs); skipsp() }
+        return v
+      }
+      function pNot(  c) { skipsp(); c=substr(E,pos,1); if(c=="!"){pos++; return (pNot()?0:1)} return pAtom() }
+      function pAtom(  v,c) {
+        skipsp(); c=substr(E,pos,1)
+        if(c=="(") {
+          pos++; v=pOr(); skipsp()
+          if(substr(E,pos,1)!=")") { valid=0; return 0 }
+          pos++; return v
+        }
+        if(c=="0" || c=="1") { pos++; return (c=="1") ? 1 : 0 }
+        valid=0; return 0
+      }
       # evalexpr(expr, which) -> 0 TRUE | 1 FALSE | 2 fail-open. which: "ev"|"ai".
       function evalexpr(expr, which,   e,s,out,tok,present,v) {
         e=expr; gsub(/[ \t]/,"",e); if(e=="") return 2            # empty -> fail open
@@ -505,8 +530,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           s = substr(s,RSTART+RLENGTH)
         }
         out = out s
-        if (out ~ /[^01&|!() ]/) return 2                          # unsafe -> malformed
-        E=out; pos=1
+        if (out ~ /[^01&|!() \t]/) return 2                       # unsafe -> malformed
+        E=out; pos=1; valid=1
         v=pOr()
         # Trailing garbage is malformed, NOT a shorter true expression. The
         # recursive-descent parser stops at the first token it cannot continue
@@ -515,7 +540,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # parse to consume the whole expression turns that into a detected
         # malformation the authoring validator and the linter both name.
         skipsp()
-        if (pos <= length(E)) return 2
+        if (!valid || pos <= length(E)) return 2
         return (v ? 0 : 1)
       }
       function base(p,   n,a,b){ n=split(p,a,"/"); b=a[n]; sub(/\.md$/,"",b); return b }

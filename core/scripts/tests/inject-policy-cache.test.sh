@@ -113,7 +113,7 @@ assert_evaluation_cache_written() {
   local eval_file
   eval_file="$(find "$(cache_dir)" -type f -name '*.eval' -print -quit)"
   [ -n "$eval_file" ] || fail "expected per-session evaluation cache file"
-  head -n 1 "$eval_file" | grep -Fq 'hq-policy-eval-v2' \
+  head -n 1 "$eval_file" | grep -Fq 'hq-policy-eval-v3' \
     || fail "evaluation cache file is missing its complete-version header"
 }
 
@@ -211,10 +211,47 @@ ok "concurrent fires never emit a partial cache result"
 for n in $(seq 1 80); do
   run_hook "bounded-$n" "$TMPROOT/bounded-$n.out" tsv
 done
-eval_count="$({ find "$(cache_dir)/eval-v2" -maxdepth 1 -type f -name '*.eval' 2>/dev/null || true; } | wc -l | tr -d ' ')"
+eval_count="$({ find "$(cache_dir)/eval-v3" -maxdepth 1 -type f -name '*.eval' 2>/dev/null || true; } | wc -l | tr -d ' ')"
 [ "$eval_count" -gt 0 ] || fail "expected bounded evaluation cache entries"
 [ "$eval_count" -le 64 ] \
   || fail "evaluation cache grew to $eval_count entries; expected at most 64 per scope"
 ok "evaluation cache remains bounded across more than 64 sessions"
+
+# 8. A grammar change changes evaluation semantics even when policy files and
+# facts do not. A v2 cache from the permissive parser must therefore never be
+# read by the stricter parser: it could replay a now-invalid policy match.
+setup_tree parser-revision
+cat >"$ROOT/core/policies/legacy-permissive.md" <<'EOF'
+---
+id: legacy-permissive
+title: "legacy-permissive"
+scope: test
+when: always && (always || never
+on: [SessionStart]
+enforcement: soft
+---
+
+## Rule
+
+OLD_PARSER_CACHE_MARKER
+EOF
+run_hook parser-revision "$TMPROOT/parser-revision-first.out"
+: > "$ROOT/workspace/orchestrator/policy-trigger-state/parser-revision.txt"
+run_hook parser-revision "$TMPROOT/parser-revision-second.out"
+v3_file="$(find "$(cache_dir)/eval-v3" -type f -name '*.eval' -print -quit)"
+[ -n "$v3_file" ] || fail "expected a v3 evaluation cache before stale-cache test"
+mkdir -p "$(cache_dir)/eval-v2"
+v2_file="$(cache_dir)/eval-v2/$(basename "$v3_file")"
+sed '1s/hq-policy-eval-v3/hq-policy-eval-v2/' "$v3_file" > "$v2_file"
+printf 'legacy-permissive\tcore\t%s\tsoft\tOLD_PARSER_CACHE_MARKER\treactive\tonce\tok\t2\n' \
+  "$ROOT/core/policies/legacy-permissive.md" >> "$v2_file"
+rm -rf "$(cache_dir)/eval-v3"
+: > "$ROOT/workspace/orchestrator/policy-trigger-state/parser-revision.txt"
+run_hook parser-revision "$TMPROOT/parser-revision-stale-v2.out"
+grep -Fq OLD_PARSER_CACHE_MARKER "$TMPROOT/parser-revision-stale-v2.out" \
+  && fail "a v2 evaluation-cache verdict survived the parser revision"
+find "$(cache_dir)/eval-v3" -type f -name '*.eval' -print -quit | grep -q . \
+  || fail "parser revision did not create a v3 evaluation cache"
+ok "parser revision ignores stale v2 evaluation-cache verdicts"
 
 echo "PASS ($pass checks) inject-policy-cache"
