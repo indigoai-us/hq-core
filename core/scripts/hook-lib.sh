@@ -737,7 +737,9 @@ hq_launch_shell_path() {
   fi
 
   if [ -x "$path" ]; then
-    printf '%s' "$payload" | "$path" "$@"
+    # A no-op hook may exit without reading stdin. A pipeline plus pipefail
+    # reports the producer's SIGPIPE instead of the hook's actual decision.
+    "$path" "$@" <<< "$payload"
     HQ_HOOK_LAST_STATUS=$?
     return "$HQ_HOOK_LAST_STATUS"
   fi
@@ -747,7 +749,7 @@ hq_launch_shell_path() {
     bash_bin="$(command -v bash 2>/dev/null || true)"
   fi
   if [ -r "$path" ] && [ -n "$bash_bin" ]; then
-    printf '%s' "$payload" | "$bash_bin" "$path" "$@"
+    "$bash_bin" "$path" "$@" <<< "$payload"
     HQ_HOOK_LAST_STATUS=$?
     return "$HQ_HOOK_LAST_STATUS"
   fi
