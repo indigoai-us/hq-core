@@ -15,40 +15,17 @@
 # Exit codes:
 #   0 - Hook skipped (not in profile or disabled), pass-through to Claude Code
 #   Other - Delegated hook's exit code (2 = blocked, etc.)
+#
+# Library mode: `. hook-gate.sh --lib` defines the three profile lists,
+# hq_hook_profile_allows, and hq_augment_path, then returns without running
+# the gate. master-hook.sh uses this to gate many registry hooks in one
+# process (the per-registration gate+watchdog+body startup is ~1 s on
+# Windows Git Bash). Definitions stay in this file so a copied hook-gate.sh
+# is always self-contained.
 
-set -euo pipefail
-
-# Validate arguments
-if [ $# -lt 2 ]; then
-  echo "USAGE: hook-gate.sh <hook-id> <actual-hook-script> [args...]" >&2
-  exit 1
-fi
-
-HOOK_ID="$1"
-HOOK_SCRIPT="$2"
-shift 2
-# Remaining args passed to actual hook script (if any)
-
-self_src="${BASH_SOURCE[0]:-$0}"
-self_dir="$(cd "$(dirname "$self_src")" 2>/dev/null && pwd -P || true)"
-HQ_ROOT_RESOLVED=""
-if [ -n "$self_dir" ]; then
-  cand="$(cd "$self_dir/../.." 2>/dev/null && pwd -P || true)"
-  if [ -n "$cand" ] && [ -f "$cand/core/scripts/hook-lib.sh" ]; then
-    HQ_ROOT_RESOLVED="$cand"
-  fi
-fi
-[ -z "$HQ_ROOT_RESOLVED" ] && HQ_ROOT_RESOLVED="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}"
-if [ -n "$HQ_ROOT_RESOLVED" ] && [ -f "$HQ_ROOT_RESOLVED/core/scripts/hook-lib.sh" ]; then
-  # Shared HQ-owned launch helpers: bounded warnings, safe chmod repair, bash fallback.
-  . "$HQ_ROOT_RESOLVED/core/scripts/hook-lib.sh"
-fi
-
-# Determine profile (default: standard)
-PROFILE="${HQ_HOOK_PROFILE:-standard}"
-
-# Parse disabled hooks (comma-separated)
-DISABLED_HOOKS="${HQ_DISABLED_HOOKS:-}"
+# ---------------------------------------------------------------------------
+# Definitions (shared with master-hook.sh via `. hook-gate.sh --lib`)
+# ---------------------------------------------------------------------------
 
 # Define hook membership per profile (using case statements for POSIX compatibility)
 # Minimal: critical safety hooks
@@ -87,62 +64,35 @@ is_in_strict_profile() {
   esac
 }
 
-# Determine if hook should run based on profile
-should_run=0
-case "$PROFILE" in
-  minimal)
-    if is_in_minimal_profile "$HOOK_ID"; then
-      should_run=1
-    fi
-    ;;
-  standard)
-    if is_in_standard_profile "$HOOK_ID"; then
-      should_run=1
-    fi
-    ;;
-  strict)
-    if is_in_strict_profile "$HOOK_ID"; then
-      should_run=1
-    fi
-    ;;
-  *)
-    echo "ERROR: Unknown profile '$PROFILE'. Use minimal|standard|strict" >&2
-    exit 1
-    ;;
-esac
 
-# Check if hook is explicitly disabled
-if [ -n "$DISABLED_HOOKS" ]; then
-  # Parse comma-separated list
-  IFS=',' read -ra DISABLED_ARRAY <<<"$DISABLED_HOOKS"
-  for disabled_id in "${DISABLED_ARRAY[@]}"; do
-    # Trim whitespace
-    disabled_id="$(echo "$disabled_id" | xargs)"
-    if [ "$disabled_id" = "$HOOK_ID" ]; then
-      should_run=0
-      break
-    fi
+# hq_hook_profile_allows <hook-id> [profile]
+#   Return 0 when the hook id is enabled under the profile (default
+#   HQ_HOOK_PROFILE, else standard) and not listed in HQ_DISABLED_HOOKS.
+#   Return 2 on an unknown profile name.
+hq_hook_profile_allows() {
+  local id="$1" profile="${2:-${HQ_HOOK_PROFILE:-standard}}"
+  case "$profile" in
+    minimal) is_in_minimal_profile "$id" || return 1 ;;
+    standard) is_in_standard_profile "$id" || return 1 ;;
+    strict) is_in_strict_profile "$id" || return 1 ;;
+    *) return 2 ;;
+  esac
+  local entry remaining="${HQ_DISABLED_HOOKS:-}"
+  while [ -n "$remaining" ]; do
+    case "$remaining" in
+      *,*) entry="${remaining%%,*}"; remaining="${remaining#*,}" ;;
+      *) entry="$remaining"; remaining="" ;;
+    esac
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    entry="${entry%"${entry##*[![:space:]]}"}"
+    [ "$entry" = "$id" ] && return 1
   done
-fi
+  return 0
+}
 
-# If hook should not run, pass-through (exit 0)
-HOOK_PAYLOAD="$(cat 2>/dev/null || true)"
-if [ $should_run -eq 0 ]; then
-  exit 0
-fi
-
-# Harden PATH so the delegated hook can find node/hq/qmd even when the user
-# installed Node via a version manager (nvm/volta/fnm/asdf) or into ~/.local/bin
-# rather than Homebrew. Claude Code runs hooks with the minimal PATH the GUI
-# inherited; an old HQ install pins the stock Homebrew-only PATH
-# (/opt/homebrew/bin:/usr/local/bin:...). If node/hq/qmd live outside that PATH,
-# EVERY hook fails to find them, errors, and Claude appears dead in the HQ root
-# (real incident: a non-Homebrew Node user, DEV task-198633788). We probe a set
-# of well-known install dirs and prepend the ones that actually hold a tool.
-#
-# We DELIBERATELY never source shell rc/profile files (~/.bashrc, ~/.zshrc,
-# ~/.profile) to discover PATH — that is a denied sensitive-path read and could
-# execute arbitrary user startup code. Directory probing is sufficient and safe.
+# PATH augmentation so hooks can find node/hq/qmd under version managers and
+# on Windows Git Bash. Never sources rc/profile files (sensitive-path policy);
+# probes well-known directories only.
 # Print the highest vMAJOR.MINOR.PATCH directory name without GNU sort -V.
 # macOS ships BSD sort; awk numeric comparison works on all supported shells.
 hq_highest_node_version() {
@@ -248,6 +198,103 @@ hq_augment_path() {
   [ -n "$prefix" ] && export PATH="$prefix:$PATH"
   return 0
 }
+
+# Library mode ends here; nothing above has side effects.
+if [ "${1:-}" = "--lib" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+set -euo pipefail
+
+# Validate arguments
+if [ $# -lt 2 ]; then
+  echo "USAGE: hook-gate.sh <hook-id> <actual-hook-script> [args...]" >&2
+  exit 1
+fi
+
+HOOK_ID="$1"
+HOOK_SCRIPT="$2"
+shift 2
+# Remaining args passed to actual hook script (if any)
+
+self_src="${BASH_SOURCE[0]:-$0}"
+self_dir="$(cd "$(dirname "$self_src")" 2>/dev/null && pwd -P || true)"
+HQ_ROOT_RESOLVED=""
+if [ -n "$self_dir" ]; then
+  cand="$(cd "$self_dir/../.." 2>/dev/null && pwd -P || true)"
+  if [ -n "$cand" ] && [ -f "$cand/core/scripts/hook-lib.sh" ]; then
+    HQ_ROOT_RESOLVED="$cand"
+  fi
+fi
+[ -z "$HQ_ROOT_RESOLVED" ] && HQ_ROOT_RESOLVED="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}"
+if [ -n "$HQ_ROOT_RESOLVED" ] && [ -f "$HQ_ROOT_RESOLVED/core/scripts/hook-lib.sh" ]; then
+  # Shared HQ-owned launch helpers: bounded warnings, safe chmod repair, bash fallback.
+  . "$HQ_ROOT_RESOLVED/core/scripts/hook-lib.sh"
+fi
+
+# Determine profile (default: standard)
+PROFILE="${HQ_HOOK_PROFILE:-standard}"
+
+# Parse disabled hooks (comma-separated)
+DISABLED_HOOKS="${HQ_DISABLED_HOOKS:-}"
+
+
+# Determine if hook should run based on profile
+should_run=0
+case "$PROFILE" in
+  minimal)
+    if is_in_minimal_profile "$HOOK_ID"; then
+      should_run=1
+    fi
+    ;;
+  standard)
+    if is_in_standard_profile "$HOOK_ID"; then
+      should_run=1
+    fi
+    ;;
+  strict)
+    if is_in_strict_profile "$HOOK_ID"; then
+      should_run=1
+    fi
+    ;;
+  *)
+    echo "ERROR: Unknown profile '$PROFILE'. Use minimal|standard|strict" >&2
+    exit 1
+    ;;
+esac
+
+# Check if hook is explicitly disabled
+if [ -n "$DISABLED_HOOKS" ]; then
+  # Parse comma-separated list
+  IFS=',' read -ra DISABLED_ARRAY <<<"$DISABLED_HOOKS"
+  for disabled_id in "${DISABLED_ARRAY[@]}"; do
+    # Trim whitespace
+    disabled_id="$(echo "$disabled_id" | xargs)"
+    if [ "$disabled_id" = "$HOOK_ID" ]; then
+      should_run=0
+      break
+    fi
+  done
+fi
+
+# If hook should not run, pass-through (exit 0)
+HOOK_PAYLOAD="$(cat 2>/dev/null || true)"
+if [ $should_run -eq 0 ]; then
+  exit 0
+fi
+
+# Harden PATH so the delegated hook can find node/hq/qmd even when the user
+# installed Node via a version manager (nvm/volta/fnm/asdf) or into ~/.local/bin
+# rather than Homebrew. Claude Code runs hooks with the minimal PATH the GUI
+# inherited; an old HQ install pins the stock Homebrew-only PATH
+# (/opt/homebrew/bin:/usr/local/bin:...). If node/hq/qmd live outside that PATH,
+# EVERY hook fails to find them, errors, and Claude appears dead in the HQ root
+# (real incident: a non-Homebrew Node user, DEV task-198633788). We probe a set
+# of well-known install dirs and prepend the ones that actually hold a tool.
+#
+# We DELIBERATELY never source shell rc/profile files (~/.bashrc, ~/.zshrc,
+# ~/.profile) to discover PATH — that is a denied sensitive-path read and could
+# execute arbitrary user startup code. Directory probing is sufficient and safe.
 hq_augment_path
 
 # The watchdog is deliberately armed only after the gate has decided this hook

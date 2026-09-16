@@ -15,6 +15,10 @@
 #     is resolved. Until that happens, only top-level .claude/hooks fire.
 #
 # Discovery (in dispatch order):
+#   .claude/hooks/hook-registry.json              — the gated project hooks
+#                                                   (formerly one settings.json
+#                                                   registration each; now run
+#                                                   in-process, see below)
 #   core/hooks/<event-name>/*.sh                  — always-on repo defaults
 #   personal/hooks/<event-name>/*.sh              — always-on user-global
 #   core/packages/*/hooks/<event-name>/*.sh       — always-on per installed pack
@@ -46,7 +50,21 @@
 #             merged the same way (later wins) so chained transforms compose.
 #             hookSpecificOutput.additionalContext is the exception: non-empty
 #             values compose in hook order, separated by a blank line.
-#   - Exit code: first non-zero exit, else 0.
+#   - Exit code: any blocking exit (2) wins; otherwise the first non-zero exit,
+#     else 0.
+#
+# Registry dispatch (performance, Windows Git Bash in particular):
+#   Every settings.json registration costs a gate bash, a watchdog, and a body
+#   bash before the hook does any work; on Windows that floor is ~1 s per hook
+#   and a Bash tool call carried 34 of them (~66 s measured). The registry
+#   moves those hooks under this one dispatcher: stdin is read once, the
+#   profile and HQ_DISABLED_HOOKS are evaluated in-process via
+#   hook-gate.sh --lib, PATH is augmented once, one watchdog is armed for the
+#   whole fire, and each entry's optional prefilter (a POSIX ERE over the tool_input
+#   JSON text or prompt, an env var, or a file that must exist) skips hooks whose input
+#   cannot trigger them. Prefilters must be supersets of the hook's own
+#   trigger; the hook body is still the decision maker. Each child runs under
+#   its own registry timeout (coreutils timeout, else perl alarm).
 
 set -uo pipefail
 
@@ -56,21 +74,38 @@ if [ -z "$EVENT" ]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# One subshell each; dirname is avoided (a fork costs ~50 ms on Windows).
+case "$0" in
+  */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+  *) SCRIPT_DIR="$(pwd)" ;;
+esac
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+MASTER_TRACE_START="${EPOCHREALTIME:-}"
 INPUT="$(cat)"
 
+# Shared gate helpers (profile lists, disabled list, PATH augmentation),
+# loaded from hook-gate.sh in library mode so there is a single definition.
+if [ -f "$SCRIPT_DIR/hook-gate.sh" ]; then
+  . "$SCRIPT_DIR/hook-gate.sh" --lib
+  hq_augment_path
+fi
+
+# Windows Git Bash: process creation is 10-30x macOS cost and the watchdog
+# sentry is two extra setsid processes per fire. Default it off there unless
+# the operator set HQ_HOOK_TIMEOUT_SENTRY explicitly.
+case "${OSTYPE:-}" in
+  msys*|cygwin*|win32*) : "${HQ_HOOK_TIMEOUT_SENTRY:=0}" ;;
+esac
+
 # Master registrations own one timeout budget, while their discovered children
-# have none of their own. Keep a dispatcher watchdog active during discovery
-# (and the no-child path); replace it with a child-specific watchdog while a
-# child is running. Every replacement shares this registration's original start
-# time, so a slow child warns roughly one lead interval before the parent's
-# deadline.
+# have none of their own. A single dispatcher watchdog covers discovery, the
+# no-child path, and every child execution. This avoids per-child watchdog
+# process startup on the hot path and reports the master registration deadline.
 HOOK_TIMEOUT_WATCHDOG="$SCRIPT_DIR/hook-timeout-watchdog.sh"
 master_timeout_watchdog_pids=()
 master_timeout_watchdog_sessions=()
-master_timeout_started_at="$(date +%s 2>/dev/null || printf '0')"
+master_timeout_started_at="0"
 
 master_timeout_watchdog_disabled() {
   local entry remaining
@@ -160,6 +195,7 @@ arm_master_timeout_watchdog() {
 }
 
 if master_timeout_watchdog_enabled; then
+  master_timeout_started_at="${EPOCHSECONDS:-$(date +%s 2>/dev/null || printf '0')}"
   arm_master_timeout_watchdog master-dispatch "$SCRIPT_DIR/master-hook.sh"
   trap stop_master_timeout_watchdog EXIT
 fi
@@ -182,7 +218,19 @@ parse_matcher() {
     # empty (always-run) when absent, identical to prior behaviour for plain
     # <NN>-<name>.sh hooks.
     if [ -n "$full" ] && [ -f "$full" ]; then
-      sed -n 's/^#[[:space:]]*hq-hook-match:[[:space:]]*//p' "$full" | head -n1 | tr -d '\n'
+      # Scan the leading comment block in-process (no sed/head/tr forks).
+      local line n=0
+      while IFS= read -r line && [ "$n" -lt 40 ]; do
+        n=$((n + 1))
+        case "$line" in
+          \#*hq-hook-match:*)
+            line="${line#*hq-hook-match:}"
+            line="${line#"${line%%[![:space:]]*}"}"
+            printf '%s' "$line"
+            return
+            ;;
+        esac
+      done < "$full"
     fi
     return
   fi
@@ -203,13 +251,44 @@ matches_tool() {
   [[ "$tool" =~ ^(${re})$ ]]
 }
 
+# One jq call extracts every payload field the dispatcher needs.
 TOOL_NAME=""
-if is_tool_event "$EVENT"; then
-  TOOL_NAME="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || true)"
-fi
+MATCH_KEY=""
+SESSION_ID=""
+PREFILTER_TEXT=""
+PAYLOAD_CWD=""
+PAYLOAD_AGENT_ID=""
+{
+  IFS=$'\x1f' read -r TOOL_NAME MATCH_KEY SESSION_ID PAYLOAD_CWD PAYLOAD_AGENT_ID PREFILTER_TEXT || true
+} < <(printf '%s' "$INPUT" | jq -r --arg ev "$EVENT" '
+  [ (.tool_name // ""),
+    (if ($ev == "PreToolUse" or $ev == "PostToolUse") then (.tool_name // "")
+     elif $ev == "PreCompact" then (.trigger // "")
+     elif $ev == "SessionStart" then (.source // "")
+     else "" end),
+    (.session_id // ""),
+    (.cwd // ""),
+    (.agent_id // "" | tostring),
+    ((if (.tool_input | type) == "object" then (.tool_input | tojson) else (.prompt // "") end)
+     + (if $ev == "PostToolUse" and .tool_response != null then " " + (.tool_response | tojson) else "" end))
+  ] | map(gsub("\u001f|\n"; " ")) | join("\u001f")' 2>/dev/null || printf '\n')
+is_tool_event "$EVENT" || TOOL_NAME=""
+
+# Hand the already-parsed fields to children. A hook can use
+# "${HQ_HOOK_TOOL_NAME+set}" style checks to skip its own jq parse (one jq is
+# ~130 ms on Windows Git Bash). Values are exported even when empty so a hook
+# can distinguish "known empty" from "not provided".
+export HQ_HOOK_EVENT="$EVENT"
+export HQ_HOOK_TOOL_NAME="$TOOL_NAME"
+export HQ_HOOK_SESSION_ID="$SESSION_ID"
+export HQ_HOOK_CWD="$PAYLOAD_CWD"
+export HQ_HOOK_AGENT_ID="$PAYLOAD_AGENT_ID"
+# Prefilters match against the tool input (command, file_path, content, ...)
+# or the prompt, never the whole payload: cwd/session paths must not trigger
+# path-shaped regexes. Newlines inside the text are flattened to spaces, which
+# is fine for superset matching.
 
 # --- Resolve active company via workspace/sessions/<session_id>/meta.yaml ---
-SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
 ACTIVE_COMPANY=""
 if [ -n "$SESSION_ID" ]; then
   SESSIONS_DIR="$REPO_ROOT/workspace/sessions"
@@ -344,8 +423,365 @@ collect_from_dir() {
 sort_group() {
   local -a group=("$@")
   [ ${#group[@]} -gt 0 ] || return 0
-  printf '%s\n' "${group[@]}" | awk -F/ '{print $NF"\t"$0}' | sort | cut -f2-
+  if [ ${#group[@]} -eq 1 ]; then
+    printf '%s\n' "${group[0]}"
+    return 0
+  fi
+  # Insertion sort by basename in-process: groups hold a handful of hooks and
+  # the awk|sort|cut pipeline cost three forks per group on every event.
+  local -a sorted=()
+  local item key i j
+  for item in "${group[@]}"; do
+    key="${item##*/}"
+    i=${#sorted[@]}
+    while [ "$i" -gt 0 ] && [[ "${sorted[$((i-1))]##*/}" > "$key" ]]; do
+      sorted[$i]="${sorted[$((i-1))]}"
+      i=$((i-1))
+    done
+    sorted[$i]="$item"
+  done
+  printf '%s\n' "${sorted[@]}"
 }
+
+
+# --- Registry dispatch (gated project hooks, in-process) --------------------
+REGISTRY="$SCRIPT_DIR/hook-registry.json"
+exit_code=0
+plain_buf=""
+json_outputs=()
+json_sources=()
+
+is_json_object() {
+  # Cheap shape check first so plain-text outputs never fork jq.
+  case "$1" in
+    \{*) ;;
+    *[![:space:]]*) return 1 ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$1" | jq -e 'type == "object"' >/dev/null 2>&1
+}
+
+# Per-child timeout runner. Prefers coreutils timeout (Linux, Git Bash), then
+# perl alarm (macOS); otherwise runs unbounded under the master budget.
+child_timeout_cmd=""
+if command -v timeout >/dev/null 2>&1; then
+  child_timeout_cmd="timeout"
+elif command -v perl >/dev/null 2>&1; then
+  child_timeout_cmd="perl"
+fi
+run_child() { # <timeout-seconds> <script-path> [args...]  (stdout captured by caller)
+  local t="$1" path="$2"; shift 2
+  local runner=()
+  if [ -x "$path" ]; then runner=("$path"); else runner=(bash "$path"); fi
+  case "$child_timeout_cmd" in
+    timeout) printf '%s' "$INPUT" | timeout "$t" "${runner[@]}" "$@" ;;
+    perl) printf '%s' "$INPUT" | perl -e 'alarm shift; exec @ARGV' "$t" "${runner[@]}" "$@" ;;
+    *) printf '%s' "$INPUT" | "${runner[@]}" "$@" ;;
+  esac
+}
+
+trace_ran() { # <id> <rc> <start-epochrealtime>
+  local id="$1" rc="$2" start="$3" ms=""
+  if [ -n "$start" ] && [ -n "${EPOCHREALTIME:-}" ]; then
+    ms="$(( (${EPOCHREALTIME/./} - ${start/./}) / 1000 ))ms"
+  fi
+  printf 'master-hook: run %s rc=%s %s\n' "$id" "$rc" "$ms" >&2
+}
+
+collect_output() { # <rc> <stdout> <source-path>
+  local rc="$1" out="$2" src="$3"
+  if [ -n "$out" ]; then
+    if is_json_object "$out"; then
+      json_outputs+=("$out")
+      json_sources+=("$src")
+    else
+      plain_buf+="$out"$'\n'
+    fi
+  fi
+  if [ "$rc" -eq 2 ]; then
+    # Claude Code treats 2 as a block. Preserve it even if an earlier advisory
+    # hook failed, so a broken sibling cannot downgrade a later guard.
+    exit_code=2
+  elif [ "$rc" -ne 0 ] && [ "$exit_code" -eq 0 ]; then
+    exit_code=$rc
+  fi
+}
+
+# The Codex and Grok adapters dispatch registry hooks themselves (through
+# hook-gate.sh, via hook-adapter-core.sh) so they keep per-hook
+# blocking/advisory semantics; skip the registry here for those harnesses.
+registry_dispatch=1
+case "${HQ_HARNESS:-}" in
+  codex|grok) registry_dispatch=0 ;;
+esac
+# --- Policy trigger vocabulary prefilter (for inject-policy-on-trigger) -----
+# The policy injector evaluates every policy's `when:` expression against
+# word tokens derived from the tool input (PreToolUse: the Bash command;
+# PostToolUse: the tool output). On Windows Git Bash that costs 4 to 7 s per
+# fire. Most commands contain none of the words any tool-event policy keys
+# on, so the dispatcher compiles, from the same policy directories the
+# injector scans, the set of tokens at least one of which must appear for
+# any tool-event policy to be true, and skips the injector when the tool
+# text contains none of them. Structural facts the injector derives without
+# text (`company`, `repo`) are handled by name: a policy that depends only
+# on them runs until its slug is in the session ledger. Anything the
+# compiler cannot prove (a `!` negation, `always`) disables the skip for
+# that event. Recompiled when a policy directory's mtime changes (a policy
+# file added, removed or renamed) or after HQ_POLICY_PREFILTER_TTL seconds
+# (default 300); an in-place edit to an existing policy's `when:` line is
+# therefore picked up within that window.
+policy_prefilter_dirs() { # prints one policy dir per line, injector order
+  local co="" cwd="${PAYLOAD_CWD:-}" rscope rname rest
+  if [ -n "${HQ_POLICY_COMPANY:-}" ]; then
+    co="$HQ_POLICY_COMPANY"
+  else
+    case "$cwd" in
+      *companies/*) rest="${cwd#*companies/}"; co="${rest%%/*}" ;;
+    esac
+    [ -n "$co" ] || co="$ACTIVE_COMPANY"
+  fi
+  [ -n "$co" ] && printf '%s\n' "$REPO_ROOT/companies/$co/policies"
+  case "$cwd" in
+    *repos/public/*|*repos/private/*)
+      rest="${cwd#*repos/}"; rscope="${rest%%/*}"; rest="${rest#*/}"; rname="${rest%%/*}"
+      [ -n "$rscope" ] && [ -n "$rname" ] && printf '%s\n' "$REPO_ROOT/repos/$rscope/$rname/.claude/policies" ;;
+  esac
+  printf '%s\n%s\n' "$REPO_ROOT/personal/policies" "$REPO_ROOT/core/policies"
+}
+
+policy_prefilter_now() {
+  if [ -n "${EPOCHSECONDS:-}" ]; then printf '%s' "$EPOCHSECONDS"; else date +%s 2>/dev/null || printf '0'; fi
+}
+
+# policy_prefilter_check <event>  -> 0 run the injector, 1 skip it
+policy_prefilter_check() {
+  local ev="$1" dir dirs=() key="" cache stale=0 now line
+  case "$ev" in PreToolUse|PostToolUse) ;; *) return 0 ;; esac
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    dirs+=("$dir")
+    key="$key${dir#"$REPO_ROOT"/}|"
+  done < <(policy_prefilter_dirs)
+  key="${key//\//_}"; key="${key//|/+}"
+  case "$key" in *[!A-Za-z0-9_.+-]*) return 0 ;; esac
+  cache="$REPO_ROOT/workspace/orchestrator/hook-state/policy-prefilter/${key}${ev}.v1"
+  now="$(policy_prefilter_now)"
+  if [ -f "$cache" ]; then
+    # Fresh only when the cache is strictly newer than every policy dir. A
+    # policy created in the same second as the build (bash 3.2 compares
+    # mtimes at second granularity) therefore forces one extra rebuild
+    # instead of going unnoticed until the TTL.
+    for dir in "${dirs[@]}"; do
+      [ -d "$dir" ] || continue
+      [ "$cache" -nt "$dir" ] || stale=1
+    done
+    if [ "$stale" -eq 0 ]; then
+      IFS= read -r line < "$cache" || line=""
+      case "$line" in
+        built=*) [ $(( now - ${line#built=} )) -lt "${HQ_POLICY_PREFILTER_TTL:-300}" ] || stale=1 ;;
+        *) stale=1 ;;
+      esac
+    fi
+  else
+    stale=1
+  fi
+  if [ "$stale" -eq 1 ]; then
+    mkdir -p "${cache%/*}" 2>/dev/null || return 0
+    local files=() f
+    for dir in "${dirs[@]}"; do
+      [ -d "$dir" ] || continue
+      for f in "$dir"/*.md; do
+        [ -f "$f" ] || continue
+        case "${f##*/}" in
+          example-policy.md|README.md|*" "*|*.sync-conflict-*.md|*.conflict-*) continue ;;
+        esac
+        files+=("$f")
+      done
+    done
+    # One awk pass: frontmatter on:/when: per file -> required-token analysis.
+    # Output: built=<epoch>, then lines re=<ere>, struct=<slug>:<company|repo>,
+    # unsafe=<slug>. Missing/empty when: is treated as unsafe (fail-open).
+    if ! awk -v ev="$ev" -v now="$now" '
+      function tokenize(s,    n, m) {
+        split("", tok); ntok = 0
+        while (length(s) > 0) {
+          if (match(s, /^[[:space:]]+/)) { s = substr(s, RLENGTH + 1); continue }
+          if (substr(s, 1, 2) == "&&" || substr(s, 1, 2) == "||") { tok[++ntok] = substr(s, 1, 2); s = substr(s, 3); continue }
+          if (substr(s, 1, 1) == "(" || substr(s, 1, 1) == ")" || substr(s, 1, 1) == "!") { tok[++ntok] = substr(s, 1, 1); s = substr(s, 2); continue }
+          if (match(s, /^[A-Za-z0-9_.\/][A-Za-z0-9_.\/-]*/)) { tok[++ntok] = tolower(substr(s, 1, RLENGTH)); s = substr(s, RLENGTH + 1); continue }
+          tok[++ntok] = "?"; s = substr(s, 2)   # unknown byte -> unsafe
+        }
+      }
+      function leaf(t) {
+        if (t == "company" || t == "repo") { structural = structural " " t; return "NONE" }
+        if (t == "always" || t == "?") { bad = 1; return "NONE" }
+        return t
+      }
+      function pf(    t, r) {
+        t = tok[pos]
+        if (t == "!") { pos++; pf(); return "NONE" }   # a negation proves nothing; the other AND branch may
+        if (t == "(") { pos++; r = pe(); if (tok[pos] == ")") pos++; else bad = 1; return r }
+        if (t == "" ) { bad = 1; return "NONE" }
+        pos++; return leaf(t)
+      }
+      function pt(    l, r) {
+        l = pf()
+        while (tok[pos] == "&&") {
+          pos++; r = pf()
+          if (l == "NONE") l = r
+          else if (r != "NONE" && split(r, ra, " ") < split(l, la, " ")) l = r
+        }
+        return l
+      }
+      function pe(    l, r) {
+        l = pt()
+        while (tok[pos] == "||") {
+          pos++; r = pt()
+          if (l == "NONE" || r == "NONE") l = "NONE"; else l = l " " r
+        }
+        return l
+      }
+      function esc(t,    o, i, c) {
+        o = ""
+        for (i = 1; i <= length(t); i++) { c = substr(t, i, 1); if (c ~ /[.\/]/) o = o "\\" c; else o = o c }
+        return o
+      }
+      BEGIN { print "built=" now }
+      FNR == 1 { infm = 0; onl = ""; whenl = ""; fm_done = 0 }
+      FNR == 1 && $0 == "---" { infm = 1; next }
+      infm && $0 == "---" { infm = 0; fm_done = 1 }
+      infm && /^on:/ { onl = $0 }
+      infm && /^when:/ { whenl = $0; sub(/^when:[[:space:]]*/, "", whenl); sub(/[[:space:]]+$/, "", whenl) }
+      fm_done && !seen[FILENAME]++ {
+        slug = FILENAME; sub(/.*\//, "", slug); sub(/\.md$/, "", slug)
+        if (index(onl, ev) == 0) next
+        if (whenl == "") { print "unsafe=" slug; next }
+        gsub(/^"|"$/, "", whenl)
+        tokenize(whenl); pos = 1; bad = 0; structural = ""
+        res = pe()
+        if (pos <= ntok) bad = 1
+        if (bad) { print "unsafe=" slug; next }
+        if (res == "NONE") {
+          n = split(structural, st, " ")
+          if (n == 0) { print "unsafe=" slug; next }
+          for (i = 1; i <= n; i++) print "struct=" slug ":" st[i]
+          next
+        }
+        n = split(res, rt, " ")
+        for (i = 1; i <= n; i++) {
+          t = rt[i]
+          if (t == "secret") { vocab["secret"] = 1; vocab["op://"] = 1; vocab["aws_profile"] = 1; vocab["\\.env"] = 1 }
+          else if (t == "shared_branch") { vocab["shared_branch"] = 1; vocab["main"] = 1; vocab["master"] = 1; vocab["staging"] = 1; vocab["production"] = 1; vocab["release/"] = 1 }
+          else vocab[esc(t)] = 1
+        }
+      }
+      END {
+        re = ""
+        for (t in vocab) re = (re == "" ? t : re "|" t)
+        if (re != "") print "re=" re
+      }
+    ' ${files[@]+"${files[@]}"} > "$cache.tmp.$$" 2>/dev/null; then
+      rm -f "$cache.tmp.$$" 2>/dev/null; return 0
+    fi
+    mv -f "$cache.tmp.$$" "$cache" 2>/dev/null || { rm -f "$cache.tmp.$$" 2>/dev/null; return 0; }
+  fi
+  # Evaluate the compiled file: fork-free.
+  local re="" ledger="" slug tokn bound=0
+  [ -n "$ACTIVE_COMPANY" ] && bound=1
+  case "${PAYLOAD_CWD:-}" in *companies/*) bound=1 ;; esac
+  [ -n "${HQ_POLICY_COMPANY:-}" ] && bound=1
+  if [ -n "$SESSION_ID" ] && [ -f "$REPO_ROOT/workspace/orchestrator/policy-trigger-state/$SESSION_ID.txt" ]; then
+    ledger="$(<"$REPO_ROOT/workspace/orchestrator/policy-trigger-state/$SESSION_ID.txt")"
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      unsafe=*) return 0 ;;
+      re=*) re="${line#re=}" ;;
+      struct=*)
+        slug="${line#struct=}"; tokn="${slug##*:}"; slug="${slug%:*}"
+        case "$tokn" in
+          company) [ "$bound" -eq 1 ] || continue ;;
+          repo) case "${PAYLOAD_CWD:-}" in *repos/public/*|*repos/private/*) ;; *) continue ;; esac ;;
+        esac
+        case "$ledger" in *"$slug"*) continue ;; esac
+        return 0 ;;
+    esac
+  done < "$cache"
+  [ -n "$re" ] || return 1
+  shopt -s nocasematch
+  if [[ "$PREFILTER_TEXT" =~ $re ]]; then shopt -u nocasematch; return 0; fi
+  shopt -u nocasematch
+  return 1
+}
+
+# Registry rows for (event, match key), cached as a file while it is newer
+# than the registry so the jq parse (one fork, ~130 ms on Windows) runs once
+# per registry change instead of once per tool call.
+registry_rows() {
+  local key_safe="${MATCH_KEY//[^A-Za-z0-9_.-]/_}"
+  local cache="$REPO_ROOT/workspace/orchestrator/hook-state/registry-rows/${EVENT}.${key_safe:-none}.rows"
+  if [ -f "$cache" ] && [ "$cache" -nt "$REGISTRY" ] && [ "$cache" -nt "$SCRIPT_DIR/master-hook.sh" ]; then
+    cat "$cache"
+    return 0
+  fi
+  local rows
+  rows="$(jq -r --arg ev "$EVENT" --arg key "$MATCH_KEY" '
+    (.hooks[$ev] // [])[] as $entry
+    | ($entry.matcher // "") as $m
+    | select($m == "" or $m == "*" or ($key | test("^(" + $m + ")$")))
+    | $entry.hooks[]
+    | [ .id, .script, ((.timeout // 30) | tostring),
+        (if .gated == false then "0" else "1" end),
+        (.prefilter.re // ""), (.prefilter.env // ""), (.prefilter.file // ""),
+        (if .prefilter.policy_vocab == true then "1" else "" end),
+        ((.args // []) | join(" ")) ] | join("")' "$REGISTRY" 2>/dev/null)" || rows=""
+  printf '%s\n' "$rows"
+  if mkdir -p "${cache%/*}" 2>/dev/null; then
+    printf '%s\n' "$rows" > "$cache.tmp.$$" 2>/dev/null && mv -f "$cache.tmp.$$" "$cache" 2>/dev/null || rm -f "$cache.tmp.$$" 2>/dev/null
+  fi
+}
+
+if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_profile_allows >/dev/null 2>&1; then
+  # Unit separator (0x1f) framing: tab is IFS whitespace, so consecutive empty
+  # fields would collapse and shift later columns (a hook's args would land in
+  # the prefilter slot and silently skip it).
+  while IFS=$'\x1f' read -r rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs; do
+    [ -n "$rid" ] || continue
+    if [ "$rgated" = "1" ]; then
+      hq_hook_profile_allows "$rid"
+      case $? in
+        0) ;;
+        2) echo "ERROR: Unknown profile '${HQ_HOOK_PROFILE:-}'. Use minimal|standard|strict" >&2; continue ;;
+        *) continue ;;
+      esac
+    fi
+    if [ -n "$rpf_env" ] && [ -z "${!rpf_env:-}" ]; then continue; fi
+    if [ -n "$rpf_file" ] && [ ! -e "$REPO_ROOT/$rpf_file" ]; then continue; fi
+    # Case-insensitive: hooks lowercase their signals; a superset match must too.
+    shopt -s nocasematch
+    prefilter_hit=1
+    if [ -n "$rpf_re" ] && ! [[ "$PREFILTER_TEXT" =~ $rpf_re ]]; then prefilter_hit=0; fi
+    shopt -u nocasematch
+    if [ "$prefilter_hit" -eq 1 ] && [ -n "$rpf_vocab" ] && ! policy_prefilter_check "$EVENT"; then
+      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (policy-vocab)\n' "$rid" >&2
+      continue
+    fi
+    if [ "$prefilter_hit" -eq 0 ]; then
+      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (prefilter)\n' "$rid" >&2
+      continue
+    fi
+    if [ ! -f "$REPO_ROOT/$rscript" ]; then
+      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (missing-script)\n' "$rid" >&2
+      continue
+    fi
+    rc=0
+    trace_start="${EPOCHREALTIME:-}"
+    # shellcheck disable=SC2086 # args are space-separated literals from the registry.
+    out="$(run_child "$rtimeout" "$REPO_ROOT/$rscript" $rargs)" || rc=$?
+    [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$rid" "$rc" "$trace_start"
+    collect_output "$rc" "$out" "$REPO_ROOT/$rscript"
+  done < <(registry_rows)
+fi
 
 hooks=()
 ordered_hooks=()
@@ -385,17 +821,9 @@ fi
 
 hooks=("${ordered_hooks[@]+${ordered_hooks[@]}}")
 
-exit_code=0
-plain_buf=""
-json_outputs=()
-# Parallel array: absolute path of the hook that produced each json_outputs entry.
-# Used so a selected {"decision":"block"} can be stamped with
-# hookSpecificOutput.hqSessionBlockedBy (US-402 / agent-session blockedBy).
-json_sources=()
-
-is_json_object() {
-  printf '%s' "$1" | jq -e 'type == "object"' >/dev/null 2>&1
-}
+# json_sources is index-aligned with json_outputs so a selected
+# {"decision":"block"} can be stamped with hookSpecificOutput.hqSessionBlockedBy
+# (US-402 / agent-session blockedBy).
 
 for hook in ${hooks[@]+"${hooks[@]}"}; do
   base="$(basename "$hook")"
@@ -408,31 +836,12 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
   fi
 
   rc=0
-  # The dispatcher watchdog protects discovery before the first child. While a
-  # child runs, replace it with a child-specific watchdog that shares the
-  # registration deadline and therefore names the actual slow script. Do not
-  # re-arm the dispatcher after a child: if that child consumed the budget, a
-  # newly armed dispatcher would fire immediately and create a misleading,
-  # duplicate master-hook warning during cheap output aggregation.
-  stop_master_timeout_watchdog
-  arm_master_timeout_watchdog master-child "$hook"
-  if [ -x "$hook" ]; then
-    out="$(printf '%s' "$INPUT" | "$hook" "$EVENT")" || rc=$?
-  else
-    out="$(printf '%s' "$INPUT" | bash "$hook" "$EVENT")" || rc=$?
-  fi
-  stop_master_timeout_watchdog
-  if [ -n "$out" ]; then
-    if is_json_object "$out"; then
-      json_outputs+=("$out")
-      json_sources+=("$hook")
-    else
-      plain_buf+="$out"$'\n'
-    fi
-  fi
-  if [ "$rc" -ne 0 ] && [ "$exit_code" -eq 0 ]; then
-    exit_code=$rc
-  fi
+  trace_start="${EPOCHREALTIME:-}"
+  # The single dispatcher watchdog armed at the top covers every child; the
+  # previous per-child re-arm cost two setsid bash processes per hook.
+  out="$(run_child "${HQ_MASTER_CHILD_TIMEOUT:-120}" "$hook" "$EVENT")" || rc=$?
+  [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$(basename "$hook")" "$rc" "$trace_start"
+  collect_output "$rc" "$out" "$hook"
 done
 
 # A block deliberately wins master aggregation. It must also leave timeout
@@ -444,6 +853,7 @@ done
 # (no JSON) never reaches `exit "$exit_code"` and the process returns 1.
 has_blocking_json=0
 for jo in ${json_outputs[@]+"${json_outputs[@]}"}; do
+  case "$jo" in *'"decision"'*) ;; *) continue ;; esac
   if printf '%s' "$jo" | jq -e '.decision == "block"' >/dev/null 2>&1; then
     has_blocking_json=1
     break
@@ -483,7 +893,7 @@ fi
 json_result=""
 if [ ${#json_outputs[@]} -eq 1 ]; then
   # Single JSON result: if it is a block, stamp provenance.
-  if printf '%s' "${json_outputs[0]}" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+  if [[ "${json_outputs[0]}" == *'"decision"'* ]] && printf '%s' "${json_outputs[0]}" | jq -e '.decision == "block"' >/dev/null 2>&1; then
     json_result="$(printf '%s\n' "${json_outputs[0]}" | jq -c --arg src "${json_sources[0]}" '
       .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
     ')"
@@ -495,7 +905,7 @@ elif [ ${#json_outputs[@]} -gt 1 ]; then
   block_idx=""
   i=0
   for jo in ${json_outputs[@]+"${json_outputs[@]}"}; do
-    if printf '%s' "$jo" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+    if [[ "$jo" == *'"decision"'* ]] && printf '%s' "$jo" | jq -e '.decision == "block"' >/dev/null 2>&1; then
       block_idx="$i"
       break
     fi
@@ -536,4 +946,5 @@ if [ -n "$json_result" ]; then
   fi
 fi
 
+[ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "master-hook:$EVENT total" "$exit_code" "${MASTER_TRACE_START:-}"
 exit "$exit_code"

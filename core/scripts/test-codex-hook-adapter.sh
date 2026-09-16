@@ -16,11 +16,12 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/.codex/hooks" "$TMP/.claude/hooks" "$TMP/core/scripts/lib"
 cp "$ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
 chmod +x "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
-# The adapter reads dispatch live from .claude/settings.json via the shared lib.
-# Provide both so the fixture exercises the real dispatch table (hooks the
-# fixture does not stub are skipped by the missing-script guard).
+# The adapter reads the registry dispatch table through the shared library.
+# Keep settings.json too because it still carries the per-event master commands.
+# Hooks the fixture does not stub are skipped by the missing-script guard.
 cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$TMP/core/scripts/lib/hook-adapter-core.sh"
 cp "$ROOT/.claude/settings.json" "$TMP/.claude/settings.json"
+cp "$ROOT/.claude/hooks/hook-registry.json" "$TMP/.claude/hooks/hook-registry.json"
 
 git -C "$TMP" init -q
 

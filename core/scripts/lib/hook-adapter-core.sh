@@ -121,6 +121,45 @@ hqad_fallback_records() {
   done
 }
 
+# Emit gate/script records for (event, canonical_tool) from hook-registry.json.
+hqad_iter_registry() {
+  local event="$1" tool="$2"
+  local registry="$HQ_ROOT/.claude/hooks/hook-registry.json"
+  [ -f "$registry" ] || return 0
+  local rows="" line decoded matcher id script gated args
+  rows="$(jq -r --arg ev "$event" '
+    (.hooks[$ev] // [])[]
+    | (.matcher // "") as $m
+    | (.hooks // [])[]
+    | select((.id | type) == "string" and (.script | type) == "string")
+    | "hqad-reg " + ([$m, .id, .script, (if .gated == false then "0" else "1" end), ((.args // []) | join(" "))] | @sh)
+  ' "$registry" 2>/dev/null)" || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "hqad-reg "*) decoded="${line#hqad-reg }" ;;
+      *) continue ;;
+    esac
+    eval "set -- $decoded" 2>/dev/null || continue
+    [ "$#" -eq 5 ] || continue
+    matcher="$1"; id="$2"; script="$HQ_ROOT/$3"; gated="$4"; args="$5"
+    hqad_matcher_matches "$matcher" "$tool" "$event" || continue
+    [ -f "$script" ] || continue
+    if [ "$gated" = "1" ]; then
+      printf 'gate\t%s\t%s' "$id" "$script"
+      if [ -n "$args" ]; then
+        # shellcheck disable=SC2086 # registry args are space-separated literals.
+        set -- $args
+        printf '\t%s' "$@"
+      fi
+      printf '\n'
+    else
+      printf 'script\t%s\n' "$script"
+    fi
+  done <<HQAD_ROWS
+$rows
+HQAD_ROWS
+}
+
 # Emit the classified dispatch records for (event, canonical_tool) from
 # settings.json, in registration order (settings.json array order == Claude's
 # dispatch order), which this preserves.
@@ -186,6 +225,15 @@ EOF
     hqad_fallback_records "$event" "$tool"
     return 0
   fi
+
+  # Gated project hooks live in .claude/hooks/hook-registry.json and are
+  # dispatched in-process by master-hook.sh for Claude Code. The adapters keep
+  # dispatching them one by one through hook-gate.sh (their per-hook
+  # blocking/advisory handling depends on that), so emit registry records
+  # here in registry order, ahead of the settings records. master-hook.sh
+  # skips the registry when HQ_HARNESS is codex or grok, so nothing double
+  # fires. A missing or unreadable registry simply contributes no records.
+  hqad_iter_registry "$event" "$tool"
 
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue

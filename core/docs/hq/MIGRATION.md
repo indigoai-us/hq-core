@@ -3,6 +3,33 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.140-beta.1
+
+- promote 2026-09-16 (hook dispatch, Windows performance): **the gated
+  project hooks now run in-process from `.claude/hooks/hook-registry.json`
+  instead of one `settings.json` registration each.** Every registration
+  cost a gate bash, a watchdog and a body bash before the hook did any
+  work; on Windows Git Bash that floor is about a second per hook and a
+  Bash tool call carried 34 of them (66 s measured per tool call on a
+  Windows Server VM, 3.5 s on macOS). `settings.json` keeps one
+  `master-hook.sh` line per event; `master-hook.sh` reads stdin once,
+  evaluates profile and `HQ_DISABLED_HOOKS` in-process (`hook-gate.sh
+  --lib`), skips hooks whose prefilter cannot match the tool input, skips
+  the policy injector when the tool text contains none of the tokens any
+  tool-event policy requires, caches the worktree guard verdict per
+  session, and runs each child under its registry timeout. Codex and Grok
+  adapters read the registry through `hook-adapter-core.sh` and keep
+  dispatching each gated hook through `hook-gate.sh`. Measured per Bash
+  tool call: macOS 3500 to 131 ms, Windows 66,450 to under 5,000 ms. New:
+  `core/scripts/bench-hooks.sh` (replays one tool call through the real
+  hook wiring), `HQ_HOOK_TRACE=1` (per-hook run/skip lines with timing).
+  Operators who registered extra hooks by hand in `settings.json` should
+  move them to the registry (same event/matcher shape, plus `id`, `script`,
+  `timeout`); `settings.local.json` hooks are unchanged. Found and left
+  as-is: four gated ids were already absent from every profile list and
+  never ran (`capture-estimates`, `check-core-yaml-parity`,
+  `env-file-no-trailing-newline`, `record-policy-retrieval`).
+
 ## Release: v15.0.139-beta.2
 
 - promote 2026-09-15 (dispatch-lane tests): **the prose assertions no longer

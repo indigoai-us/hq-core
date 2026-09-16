@@ -55,15 +55,21 @@ done
 pass "Codex tool-hook registrations are open-ended for custom tools"
 
 echo "[1b] company skills use only canonical namespaced reindexing"
+REGISTRY="$ROOT/.claude/hooks/hook-registry.json"
 for matcher in Write Edit MultiEdit; do
+  # Canonical reindex is a registry entry dispatched by master-hook (one
+  # settings.json master-hook line per event); count it there and make sure
+  # settings.json does not also register it (double dispatch).
   count="$(jq --arg matcher "$matcher" '[
     .hooks.PostToolUse[]
     | select(.matcher == $matcher)
     | .hooks[]
-    | select(.command | contains("/.claude/hooks/reindex.sh"))
-  ] | length' "$SETTINGS")"
+    | select(.script == ".claude/hooks/reindex.sh")
+  ] | length' "$REGISTRY")"
   [ "$count" -eq 1 ] \
-    || fail "$matcher must dispatch canonical reindex.sh exactly once (got $count)"
+    || fail "$matcher must dispatch canonical reindex.sh exactly once in hook-registry.json (got $count)"
+  dup="$(jq '[.hooks.PostToolUse[]? | .hooks[] | select(.command | contains("/.claude/hooks/reindex.sh"))] | length' "$SETTINGS")"
+  [ "$dup" -eq 0 ] || fail "settings.json must not also register reindex.sh (got $dup)"
 done
 for runtime_wiring in "$SETTINGS" "$CODEX_ADAPTER" "$GROK_ADAPTER"; do
   grep -Fq 'auto-mirror-company-skill' "$runtime_wiring" \

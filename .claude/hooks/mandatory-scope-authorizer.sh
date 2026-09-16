@@ -14,7 +14,11 @@
 set -euo pipefail
 
 INPUT="$(cat)"
-TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')"
+if [ -n "${HQ_HOOK_TOOL_NAME+set}" ]; then
+  TOOL="$HQ_HOOK_TOOL_NAME"   # parsed once by master-hook.sh
+else
+  TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')"
+fi
 
 scope_mask_literal_expansions() {
   local raw="${1:-}" out="" ch backtick
@@ -101,7 +105,11 @@ LIB_DIR="$HQ_ROOT/core/scripts/lib"
 #
 # A payload with no session id is produced by `claude -p --session-id <uuid>`.
 # Such a call cannot be attributed to any session and is denied below.
-SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty')"
+if [ -n "${HQ_HOOK_SESSION_ID+set}" ]; then
+  SESSION_ID="$HQ_HOOK_SESSION_ID"
+else
+  SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty')"
+fi
 
 scope_read_bound_company() {
   local sid="${1:-}" co=""

@@ -109,21 +109,27 @@ done
 ok "the hook id is allowlisted in minimal, standard and strict"
 
 echo "conduct-lane-inbox: registered on the events each engine can receive on"
+# Gated hooks are dispatched by master-hook.sh from hook-registry.json (one
+# settings.json master-hook line per event); registration lives there.
+REGISTRY="$ROOT/.claude/hooks/hook-registry.json"
 for ev in PreToolUse PostToolUse Stop; do
   jq -e --arg ev "$ev" '
-    .hooks[$ev][]?.hooks[]? | select(.command | test("conduct-lane-inbox"))' \
+    .hooks[$ev][]?.hooks[]? | select(.id == "conduct-lane-inbox")' \
+    "$REGISTRY" >/dev/null \
+    || fail "no $ev registration in hook-registry.json"
+  jq -e --arg ev "$ev" '
+    .hooks[$ev][]?.hooks[]? | select(.command | test("master-hook.sh"))' \
     "$ROOT/.claude/settings.json" >/dev/null \
-    || fail "no $ev registration in settings.json"
+    || fail "no $ev master-hook registration in settings.json"
 done
-# Grok only dispatches PreToolUse under these six tool matchers.
-for tool in Bash Read Write Edit Grep Glob; do
+for tool in Glob Grep Read Bash Edit Write; do
   jq -e --arg t "$tool" '
     .hooks.PreToolUse[] | select(.matcher == $t) | .hooks[]
-    | select(.command | test("conduct-lane-inbox"))' \
-    "$ROOT/.claude/settings.json" >/dev/null \
+    | select(.id == "conduct-lane-inbox")' \
+    "$REGISTRY" >/dev/null \
     || fail "PreToolUse/$tool has no registration — a grok lane using that tool never receives"
 done
-ok "settings.json covers PreToolUse (six tools), PostToolUse and Stop"
+ok "hook-registry.json covers PreToolUse (six tools), PostToolUse and Stop"
 
 echo "conduct-lane-inbox: inert outside a lane"
 inbox send --run-dir "$RUN" --text "should-not-be-delivered" >/dev/null

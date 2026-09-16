@@ -55,6 +55,8 @@ cp "$ROOT/core/scripts/hook-lib.sh" "$FIXTURE/core/scripts/hook-lib.sh"
 # lib; provide both so checkpoint-stop-gate is dispatched exactly as in Codex.
 cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$FIXTURE/core/scripts/lib/hook-adapter-core.sh"
 cp "$ROOT/.claude/settings.json" "$FIXTURE/.claude/settings.json"
+mkdir -p "$FIXTURE/.claude/hooks"
+cp "$ROOT/.claude/hooks/hook-registry.json" "$FIXTURE/.claude/hooks/hook-registry.json"
 cp "$HOOK" "$FIXTURE/.claude/hooks/checkpoint-stop-gate.sh"
 cp "$ROOT/.claude/hooks/hook-gate.sh" "$FIXTURE/.claude/hooks/hook-gate.sh"
 cp "$ADAPTER" "$FIXTURE/.codex/hooks/hq-codex-hook-adapter.sh"
@@ -366,8 +368,10 @@ pass "the shim carries no gate logic of its own"
 # ---------------------------------------------------------------------------
 
 # 11. Registration is routed through hook-gate and all profiles contain it.
-grep -qF 'hook-gate.sh\" checkpoint-stop-gate \"$CLAUDE_PROJECT_DIR/.claude/hooks/checkpoint-stop-gate.sh\"' \
-  "$ROOT/.claude/settings.json" || fail "settings.json has no checkpoint Stop-gate registration"
+jq -e '.hooks.Stop[]?.hooks[]? | select(.id == "checkpoint-stop-gate" and .script == ".claude/hooks/checkpoint-stop-gate.sh")' \
+  "$ROOT/.claude/hooks/hook-registry.json" >/dev/null || fail "hook-registry.json has no checkpoint Stop-gate registration"
+jq -e '.hooks.Stop[]?.hooks[]? | select(.command | test("master-hook.sh"))' \
+  "$ROOT/.claude/settings.json" >/dev/null || fail "settings.json has no Stop master-hook registration"
 for profile in standard strict; do
   profile_body="$(sed -n "/is_in_${profile}_profile()/,/^}/p" "$ROOT/.claude/hooks/hook-gate.sh")"
   printf '%s' "$profile_body" | grep -q 'checkpoint-stop-gate' || fail "$profile hook profile omits checkpoint-stop-gate"

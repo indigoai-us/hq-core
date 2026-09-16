@@ -5,21 +5,21 @@ when: .sh || hook
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 public: true
-version: 2
+version: 3
 created: 2026-05-18
-updated: 2026-07-28
+updated: 2026-09-16
 source: user-correction
 tags: [infrastructure, safety, knowledge]
 ---
 
 ## Rule
 
-`.claude/hooks/hook-gate.sh` defines THREE separate allowlist functions — `is_in_minimal_profile`, `is_in_standard_profile`, `is_in_strict_profile`. They are **independent case lists, NOT supersets** of each other. The default runtime profile is `standard`. A hook id added only to the minimal list (or only one list) silently no-ops under the default profile: the gate reads stdin, discards it, and returns pass-through `exit 0` — the hook never runs and there is no error.
+`.claude/hooks/hook-gate.sh` (also sourced by `master-hook.sh` in `--lib` mode) defines THREE separate allowlist functions — `is_in_minimal_profile`, `is_in_standard_profile`, `is_in_strict_profile`. They are **independent case lists, NOT supersets** of each other. The default runtime profile is `standard`. A hook id added only to the minimal list (or only one list) silently no-ops under the default profile: the gate reads stdin, discards it, and returns pass-through `exit 0` — the hook never runs and there is no error.
 
 When adding a safety-critical hook:
 
 1. Add the hook id to **all three** case lists in `hook-gate.sh` (minimal, standard, strict).
-2. Wire it into the tracked `.claude/settings.json` (not `settings.local.json`).
+2. Register it in the tracked `.claude/hooks/hook-registry.json` under the right event and matcher (not `settings.json`, which carries only the per-event `master-hook.sh` line, and not `settings.local.json`). Give it a `prefilter` only if the regex is a strict superset of every input the hook could act on.
 3. Verify mechanically before trusting it — pipe a known-block input through the gate under every profile:
    ```bash
    for p in minimal standard strict; do

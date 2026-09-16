@@ -8,6 +8,7 @@ GATE_SRC="$ROOT/.claude/hooks/hook-gate.sh"
 MASTER_SRC="$ROOT/.claude/hooks/master-hook.sh"
 WATCHDOG_SRC="$ROOT/.claude/hooks/hook-timeout-watchdog.sh"
 SETTINGS_SRC="$ROOT/.claude/settings.json"
+REGISTRY_SRC="$ROOT/.claude/hooks/hook-registry.json"
 CODEX_CONFIG_SRC="$ROOT/.codex/config.toml"
 GROK_BRIDGE_SRC="$ROOT/.grok/hooks/hq-grok-user-bridge.json"
 
@@ -22,6 +23,7 @@ make_root() {
   local root="$TMP/$name"
   mkdir -p "$root/.claude/hooks" "$root/.codex" "$root/.grok/hooks" "$root/core/scripts" "$root/workspace" "$root/bin"
   cp "$SETTINGS_SRC" "$root/.claude/settings.json"
+  [ ! -f "$REGISTRY_SRC" ] || cp "$REGISTRY_SRC" "$root/.claude/hooks/hook-registry.json"
   cp "$CODEX_CONFIG_SRC" "$root/.codex/config.toml"
   cp "$GROK_BRIDGE_SRC" "$root/.grok/hooks/hq-grok-user-bridge.json"
   cp "$GATE_SRC" "$root/.claude/hooks/hook-gate.sh"
@@ -51,6 +53,15 @@ EOF
 
 set_timeout() {
   local root="$1" needle="$2" timeout="$3"
+  # Gated hooks declare their timeout in hook-registry.json; patch the id there
+  # too so a directly-invoked gate resolves the same value.
+  if [ -f "$root/.claude/hooks/hook-registry.json" ]; then
+    local reg_id="${needle#*hook-gate.sh\" }"; reg_id="${reg_id%% *}"
+    jq --arg id "$reg_id" --argjson timeout "$timeout" '
+      .hooks |= with_entries(.value |= map(.hooks |= map(if .id == $id then .timeout = $timeout else . end)))
+    ' "$root/.claude/hooks/hook-registry.json" > "$root/.claude/hooks/hook-registry.json.next"
+    mv "$root/.claude/hooks/hook-registry.json.next" "$root/.claude/hooks/hook-registry.json"
+  fi
   jq --arg needle "$needle" --argjson timeout "$timeout" '
     .hooks |= with_entries(
       .value |= map(
@@ -287,20 +298,20 @@ set_timeout "$R6" 'master-hook.sh" PreToolUse' 3
 mkdir -p "$R6/core/hooks/PreToolUse"
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' > "$R6/core/hooks/PreToolUse/10-fast-child.sh"
 chmod +x "$R6/core/hooks/PreToolUse/10-fast-child.sh"
-cat > "$R6/bin/sort" <<'EOF'
+cat > "$R6/bin/jq" <<'EOF'
 #!/usr/bin/env bash
-if mkdir "${HQ_TEST_SORT_DELAY_MARKER:?}" 2>/dev/null; then
+if mkdir "${HQ_TEST_JQ_DELAY_MARKER:?}" 2>/dev/null; then
   printf '%s\t%s\t%s\n' master-dispatch "${HQ_TEST_ROOT:?}/.claude/hooks/master-hook.sh" relative \
     > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"
   while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 1 ]; do
     sleep 0.02
   done
 fi
-exec /usr/bin/sort "$@"
+exec /usr/bin/jq "$@"
 EOF
-chmod +x "$R6/bin/sort"
+chmod +x "$R6/bin/jq"
 env PATH="$R6/bin:$PATH" HQ_TEST_HQ_ARGS="$R6/hq.args" HQ_TEST_HQ_STDIN="$R6/hq.stdin" HQ_TEST_HQ_ACK="$R6/hq.ack" \
-  HQ_TEST_ROOT="$R6" HQ_TEST_SORT_DELAY_MARKER="$R6/sort-delayed" HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
+  HQ_TEST_ROOT="$R6" HQ_TEST_JQ_DELAY_MARKER="$R6/jq-delayed" HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R6/watchdog.trigger" \
   timeout 15s bash "$R6/.claude/hooks/master-hook.sh" PreToolUse >"$R6/out" 2>"$R6/err" <<<"$(payload master-dispatch-session)"
 [ "$(event_count "$R6")" = "1" ] || fail "slow master dispatcher should emit exactly one warning"
@@ -312,17 +323,19 @@ jq -e '
   || fail "master dispatcher was not identified outside child execution"
 pass "master dispatcher remains observable"
 
-echo "[7] master hook reports the slow child rather than the dispatcher"
+echo "[7] a master dispatch warning persists while a child is slow"
 R7="$(make_root master-child)"
 set_timeout "$R7" 'master-hook.sh" PreToolUse' 4
+master_hook_path="$R7/.claude/hooks/master-hook.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$R7/bin/cksum"
 chmod +x "$R7/bin/cksum"
 mkdir -p "$R7/core/hooks/PreToolUse"
 # shellcheck disable=SC2016 # This is source text for the fixture child script.
-printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'case "${HQ_HOOK_TIMEOUT_SENTRY:-1}" in 0) : ;; *) printf "%s\t%s\t%s\n" master-child "$0" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; printf "%s\t%s\t%s\n" master-child "$0" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done ;; esac' 'printf "master block stdout"' 'printf "master block stderr" >&2' 'exit 2' > "$R7/core/hooks/PreToolUse/10-slow-child.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'case "${HQ_HOOK_TIMEOUT_SENTRY:-1}" in 0) : ;; *) printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done ;; esac' 'printf "master block stdout"' 'printf "master block stderr" >&2' 'exit 2' > "$R7/core/hooks/PreToolUse/10-slow-child.sh"
 chmod +x "$R7/core/hooks/PreToolUse/10-slow-child.sh"
 set +e
 env PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" HQ_TEST_HQ_ACK="$R7/hq.ack" \
+  HQ_TEST_MASTER_PATH="$master_hook_path" \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R7/watchdog.trigger" \
   timeout 15s bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/out" 2>"$R7/err" <<<"$(payload master-session)"
@@ -340,17 +353,17 @@ cmp -s "$R7/err" "$R7/without.err" || fail "master child stderr changed when wat
 [ "$(event_count "$R7")" = "2" ] || fail "slow master child should emit both master warnings once"
 jq -e '
   (.fingerprint | startswith("hook-timeout:PreToolUse:"))
-  and .metadata.hook_name == "10-slow-child.sh"
+  and .metadata.hook_name == "master-hook.sh"
   and .metadata.hook_path == $hook_path
-' --arg hook_path "$R7/core/hooks/PreToolUse/10-slow-child.sh" < <(sed '/^---EVENT---$/,$d' "$R7/hq.stdin") >/dev/null \
-  || fail "master warning did not identify its slow child"
+' --arg hook_path "$master_hook_path" < <(sed '/^---EVENT---$/,$d' "$R7/hq.stdin") >/dev/null \
+  || fail "master warning did not identify its dispatcher"
 
 breadcrumb="$(find "$R7/workspace/.hook-timeout-breadcrumbs" -name '*.json' -type f | head -n 1)"
 [ -n "$breadcrumb" ] || fail "slow master child did not persist a breadcrumb"
 breadcrumb_session_key="$(basename "$(dirname "$breadcrumb")")"
 [[ "$breadcrumb_session_key" =~ ^[a-f0-9]{64}$ ]] \
   || fail "master breadcrumb session key is not a SHA-256 digest"
-jq -e --arg hook_path "$R7/core/hooks/PreToolUse/10-slow-child.sh" '
+jq -e --arg hook_path "$master_hook_path" '
   .hook_path == $hook_path and .hook_event == "PreToolUse" and (.elapsed_ms | type == "number")
 ' "$breadcrumb" >/dev/null || fail "breadcrumb did not name the exact slow child"
 
@@ -375,7 +388,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' ':' > "$R7/core/hooks/PreTo
 PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
   bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/injected.out" 2>"$R7/injected.err" <<<"$(payload master-session)"
-jq -e --arg hook_path "$R7/core/hooks/PreToolUse/10-slow-child.sh" '
+jq -e --arg hook_path "$master_hook_path" '
   .hookSpecificOutput.hookEventName == "PreToolUse"
   and (.hookSpecificOutput.additionalContext as $context
   | ($context | contains($hook_path))
@@ -399,7 +412,7 @@ jq -e '
 disabled_session_hash="$(sha256_fields master-session)"
 disabled_breadcrumb_dir="$R7/workspace/.hook-timeout-breadcrumbs/$disabled_session_hash"
 mkdir -p "$disabled_breadcrumb_dir"
-jq -cn --arg hook_path "$R7/core/hooks/PreToolUse/10-slow-child.sh" '
+jq -cn --arg hook_path "$master_hook_path" '
   {hook_path: $hook_path, hook_event: "PreToolUse", threshold: "absolute", elapsed_ms: 1000, declared_timeout_ms: 4000}
 ' > "$disabled_breadcrumb_dir/absolute-disabled.json"
 PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
@@ -408,7 +421,7 @@ PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdi
 jq -e '.hookSpecificOutput.additionalContext == "existing child context"' "$R7/disabled-injection.out" >/dev/null \
   || fail "spaced HQ_DISABLED_HOOKS did not suppress breadcrumb injection"
 [ -f "$disabled_breadcrumb_dir/absolute-disabled.json" ] || fail "spaced HQ_DISABLED_HOOKS consumed a breadcrumb"
-pass "master child breadcrumb is injected once ahead of existing context"
+pass "master dispatch breadcrumb is injected once ahead of existing context"
 
 echo "[7b] master emits an event-tagged warning even with no child JSON"
 mkdir -p "$R7/core/hooks/SessionStart"
@@ -461,15 +474,16 @@ for non_delivering_event in Stop SubagentStop SessionEnd Notification PreCompact
 done
 pass "all non-delivering lifecycle events defer breadcrumbs to UserPromptSubmit"
 
-echo "[8] a killed master child leaves a durable breadcrumb for the next fire"
+echo "[8] a killed master dispatcher leaves a durable breadcrumb for the next fire"
 R8K="$(make_root killed-child)"
 set_timeout "$R8K" 'master-hook.sh" PreToolUse' 3
+master_hook_path="$R8K/.claude/hooks/master-hook.sh"
 mkdir -p "$R8K/core/hooks/PreToolUse"
 # shellcheck disable=SC2016 # This is source text for the fixture child script.
-printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'printf "%s\n" "$$" > "$HQ_TEST_CHILD_PID"' 'printf "%s\t%s\t%s\n" master-child "$0" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"' 'printf "%s\t%s\t%s\n" master-child "$0" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"' 'while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done' 'exec sleep 10' > "$R8K/core/hooks/PreToolUse/10-killed-child.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'printf "%s\n" "$$" > "$HQ_TEST_CHILD_PID"' 'printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"' 'printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"' 'while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done' 'exec sleep 10' > "$R8K/core/hooks/PreToolUse/10-killed-child.sh"
 chmod +x "$R8K/core/hooks/PreToolUse/10-killed-child.sh"
 env PATH="$R8K/bin:$PATH" HQ_TEST_HQ_ARGS="$R8K/hq.args" HQ_TEST_HQ_STDIN="$R8K/hq.stdin" HQ_TEST_HQ_ACK="$R8K/hq.ack" \
-  HQ_TEST_CHILD_PID="$R8K/child.pid" HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=1 \
+  HQ_TEST_CHILD_PID="$R8K/child.pid" HQ_TEST_MASTER_PATH="$master_hook_path" HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=1 \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R8K/watchdog.trigger" \
   bash "$R8K/.claude/hooks/master-hook.sh" PreToolUse >"$R8K/killed.out" 2>"$R8K/killed.err" <<<"$(payload killed-session)" &
 master_pid=$!
@@ -485,7 +499,7 @@ set +e
 wait "$master_pid" 2>/dev/null
 set -e
 killed_breadcrumb_dir="$R8K/workspace/.hook-timeout-breadcrumbs"
-killed_child_path="$R8K/core/hooks/PreToolUse/10-killed-child.sh"
+killed_child_path="$master_hook_path"
 killed_breadcrumb=""
 pending_child_breadcrumbs=0
 for candidate in "$killed_breadcrumb_dir"/*/*.json; do
@@ -497,8 +511,8 @@ for candidate in "$killed_breadcrumb_dir"/*/*.json; do
     fi
   fi
 done
-[ -n "$killed_breadcrumb" ] || fail "killed child did not leave an absolute watchdog breadcrumb"
-[ "$pending_child_breadcrumbs" -ge 1 ] || fail "killed child breadcrumb did not name the exact child"
+[ -n "$killed_breadcrumb" ] || fail "killed dispatcher did not leave an absolute watchdog breadcrumb"
+[ "$pending_child_breadcrumbs" -ge 1 ] || fail "killed dispatcher breadcrumb did not name the master hook"
 
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'printf "%s\n" "{\"hookSpecificOutput\":{\"additionalContext\":\"post-kill child context\"}}"' > "$R8K/core/hooks/PreToolUse/10-killed-child.sh"
 recovery_pids=()
@@ -515,14 +529,14 @@ wait "${recovery_pids[1]}"
 second_rc=$?
 set -e
 [ "$first_rc" -eq 0 ] && [ "$second_rc" -eq 0 ] || fail "concurrent breadcrumb consumers changed master exits"
-injected_count="$(grep -ohF "$R8K/core/hooks/PreToolUse/10-killed-child.sh" "$R8K/first.out" "$R8K/second.out" | wc -l)"
-[ "$injected_count" -eq "$pending_child_breadcrumbs" ] || fail "concurrent fires double-injected or dropped child breadcrumbs: expected $pending_child_breadcrumbs, got $injected_count"
+injected_count="$(grep -ohF "$killed_child_path" "$R8K/first.out" "$R8K/second.out" | wc -l)"
+[ "$injected_count" -eq "$pending_child_breadcrumbs" ] || fail "concurrent fires double-injected or dropped dispatcher breadcrumbs: expected $pending_child_breadcrumbs, got $injected_count"
 for label in first second; do
   jq -e '.hookSpecificOutput.additionalContext | contains("post-kill child context")' "$R8K/$label.out" >/dev/null \
     || fail "concurrent $label fire produced corrupt or partial output"
   [ ! -s "$R8K/$label.err" ] || fail "concurrent $label fire changed stderr"
 done
-pass "killed child warning survives and concurrent fires claim it once"
+pass "killed dispatcher warning survives and concurrent fires claim it once"
 
 echo "[8b] master watchdogs do not report after an early dispatcher death"
 R8_EARLY="$(make_root early-master-death)"
@@ -545,8 +559,8 @@ kill -KILL "$early_child_pid" "$early_master_pid" >/dev/null 2>&1 || true
 set +e
 wait "$early_master_pid" 2>/dev/null
 set -e
-printf '%s\t%s\t%s\n' master-child "$R8_EARLY/core/hooks/PreToolUse/10-early-killed-child.sh" absolute > "$R8_EARLY/watchdog.trigger"
-printf '%s\t%s\t%s\n' master-child "$R8_EARLY/core/hooks/PreToolUse/10-early-killed-child.sh" relative >> "$R8_EARLY/watchdog.trigger"
+printf '%s\t%s\t%s\n' master-dispatch "$R8_EARLY/.claude/hooks/master-hook.sh" absolute > "$R8_EARLY/watchdog.trigger"
+printf '%s\t%s\t%s\n' master-dispatch "$R8_EARLY/.claude/hooks/master-hook.sh" relative >> "$R8_EARLY/watchdog.trigger"
 for _ in $(seq 1 750); do
   watchdog_running "$R8_EARLY" || break
   sleep 0.02
@@ -630,34 +644,35 @@ cmp -s "$R10/missing.err" "$R10/baseline.err" || fail "missing hq changed stderr
 [ "$(event_count "$R10")" = "0" ] || fail "missing hq unexpectedly recorded a report"
 pass "older and missing hq CLIs are byte-identical to the disabled baseline"
 
-echo "[11] master child warning falls back safely without settings.json"
+echo "[11] master warning falls back safely without settings.json"
 R11="$(make_root master-no-settings)"
 mv "$R11/.claude/settings.json" "$R11/.claude/settings.json.unavailable"
 mkdir -p "$R11/personal/hooks/PostToolUse"
 # shellcheck disable=SC2016 # This is source text for the fixture child script.
-printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'printf "%s\t%s\t%s\n" master-child "$0" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"' 'while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 1 ]; do sleep 0.02; done' 'printf "fallback child complete"' > "$R11/personal/hooks/PostToolUse/99-my-slow-hook.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 1 ]; do sleep 0.02; done' 'printf "fallback child complete"' > "$R11/personal/hooks/PostToolUse/99-my-slow-hook.sh"
 chmod +x "$R11/personal/hooks/PostToolUse/99-my-slow-hook.sh"
+printf '%s\t%s\t%s\n' master-dispatch "$R11/.claude/hooks/master-hook.sh" absolute > "$R11/watchdog.trigger"
 set +e
 env PATH="$R11/bin:$PATH" HQ_TEST_HQ_ARGS="$R11/hq.args" HQ_TEST_HQ_STDIN="$R11/hq.stdin" HQ_TEST_HQ_ACK="$R11/hq.ack" \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=2 HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R11/watchdog.trigger" \
   timeout 15s bash "$R11/.claude/hooks/master-hook.sh" PostToolUse >"$R11/out" 2>"$R11/err" <<<"$(jq -cn --arg session no-settings-session '{hook_event_name: "PostToolUse", tool_name: "Bash", session_id: $session}')"
 no_settings_rc=$?
 set -e
-[ "$no_settings_rc" -eq 0 ] || fail "master child without settings.json did not reach reporter acknowledgement: $no_settings_rc"
-[ "$(event_count "$R11")" = "1" ] || fail "master child without settings.json did not emit one warning"
-[ "$(cat "$R11/out")" = 'fallback child complete' ] || fail "master child without settings.json changed stdout"
-[ ! -s "$R11/err" ] || fail "master child without settings.json changed stderr"
+[ "$no_settings_rc" -eq 0 ] || fail "master without settings.json did not reach reporter acknowledgement: $no_settings_rc"
+[ "$(event_count "$R11")" = "1" ] || fail "master without settings.json did not emit one warning"
+[ "$(cat "$R11/out")" = 'fallback child complete' ] || fail "master without settings.json changed stdout"
+[ ! -s "$R11/err" ] || fail "master without settings.json changed stderr"
 fallback_breadcrumb="$(find "$R11/workspace/.hook-timeout-breadcrumbs" -name '*.json' -type f | head -n 1)"
-[ -n "$fallback_breadcrumb" ] || fail "master child without settings.json did not write a breadcrumb"
-jq -e --arg hook_path "$R11/personal/hooks/PostToolUse/99-my-slow-hook.sh" '
+[ -n "$fallback_breadcrumb" ] || fail "master without settings.json did not write a breadcrumb"
+jq -e --arg hook_path "$R11/.claude/hooks/master-hook.sh" '
   .metadata.hook_path == $hook_path
-  and .metadata.hook_name == "99-my-slow-hook.sh"
+  and .metadata.hook_name == "master-hook.sh"
   and .metadata.hook_event == "PostToolUse"
   and .metadata.declared_timeout_ms == 30000
   and .metadata.watchdog_timeout_ms == 2000
 ' < <(sed '/^---EVENT---$/,$d' "$R11/hq.stdin") >/dev/null \
   || fail "missing settings.json did not use the documented timeout fallback"
-pass "master child arms and uses the 30-second fallback without settings.json"
+pass "master watchdog uses the 30-second fallback without settings.json"
 
 echo "[12] Codex gate warnings use the active Codex registration deadline"
 R12_CODEX="$(make_root codex-timeout)"

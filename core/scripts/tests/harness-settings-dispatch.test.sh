@@ -42,6 +42,7 @@ trap 'rm -rf "$FIX"' EXIT
 mkdir -p "$FIX/.claude/hooks" "$FIX/.codex/hooks" "$FIX/.grok/hooks" \
          "$FIX/core/scripts/lib"
 cp "$SRC_SETTINGS" "$FIX/.claude/settings.json"
+cp "$ROOT/.claude/hooks/hook-registry.json" "$FIX/.claude/hooks/hook-registry.json"
 cp "$SRC_CORE" "$FIX/core/scripts/lib/hook-adapter-core.sh"
 cp "$SRC_CODEX" "$FIX/.codex/hooks/hq-codex-hook-adapter.sh"
 cp "$SRC_GROK" "$FIX/.grok/hooks/hq-grok-hook-adapter.sh"
@@ -104,8 +105,10 @@ cat >/dev/null 2>&1 || true
 exit 0
 STUB
 # Stub every referenced hook script so the missing-script guard keeps them all.
-for id in $(jq -r '.hooks[][]?.hooks[]?.command' "$FIX/.claude/settings.json" \
-              | grep -oE '/[a-z0-9-]+\.sh"' | tr -d '/"' | sort -u); do
+for id in $( { jq -r '.hooks[][]?.hooks[]?.command' "$FIX/.claude/settings.json" \
+              | grep -oE '/[a-z0-9-]+\.sh"' | tr -d '/"';
+              jq -r '.hooks[][]?.hooks[]?.script' "$FIX/.claude/hooks/hook-registry.json" \
+              | sed 's#.*/##'; } | sort -u); do
   f="$FIX/.claude/hooks/$id"
   [ -e "$f" ] && continue
   printf '#!/bin/bash\nexit 0\n' > "$f"

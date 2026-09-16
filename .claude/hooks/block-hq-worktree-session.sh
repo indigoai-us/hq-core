@@ -54,6 +54,13 @@ INPUT="$(cat 2>/dev/null || true)"
 if [ "${HQ_ALLOW_HQ_WORKTREE:-}" = "1" ]; then exit 0; fi
 
 payload_field() {
+  # master-hook.sh exports the fields it already parsed; use them and skip jq.
+  case "$1" in
+    hook_event_name) if [ -n "${HQ_HOOK_EVENT+set}" ]; then printf '%s' "$HQ_HOOK_EVENT"; return 0; fi ;;
+    agent_id) if [ -n "${HQ_HOOK_AGENT_ID+set}" ]; then printf '%s' "$HQ_HOOK_AGENT_ID"; return 0; fi ;;
+    cwd) if [ -n "${HQ_HOOK_CWD+set}" ]; then printf '%s' "$HQ_HOOK_CWD"; return 0; fi ;;
+    session_id) if [ -n "${HQ_HOOK_SESSION_ID+set}" ]; then printf '%s' "$HQ_HOOK_SESSION_ID"; return 0; fi ;;
+  esac
   [ -n "$INPUT" ] || return 0
   printf '%s' "$INPUT" | jq -r ".$1 // empty" 2>/dev/null || true
 }
@@ -69,6 +76,33 @@ EVENT="${1:-}"
 # sessions) do not have it. Exempt only this provider-owned discriminator —
 # agent_type alone is also present for manual --agent sessions.
 [ -n "$(payload_field agent_id)" ] && exit 0
+
+# Fast path: a cached allow verdict for this session, root and cwd (written
+# below) answers before git or hook-lib.sh are touched.
+guard_now() {
+  if [ -n "${EPOCHSECONDS:-}" ]; then printf '%s' "$EPOCHSECONDS"; else date +%s 2>/dev/null || printf '0'; fi
+}
+GUARD_SESSION="$(payload_field session_id)"
+GUARD_CACHE=""
+GUARD_TTL="${HQ_WORKTREE_GUARD_TTL:-600}"
+EARLY_ROOT="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}"
+EARLY_CWD="$(payload_field cwd)"
+if [ -n "$GUARD_SESSION" ] && [ -n "$EARLY_ROOT" ] && [ "$GUARD_TTL" != "0" ]; then
+  case "$GUARD_SESSION" in
+    *[!A-Za-z0-9._-]*) ;;
+    *) GUARD_CACHE="$EARLY_ROOT/workspace/orchestrator/hook-state/worktree-guard/$GUARD_SESSION" ;;
+  esac
+fi
+if [ -n "$GUARD_CACHE" ] && [ -f "$GUARD_CACHE" ]; then
+  cached_root=""; cached_cwd=""; cached_ts=0
+  while IFS='=' read -r k v; do
+    case "$k" in root) cached_root="$v" ;; cwd) cached_cwd="$v" ;; ts) cached_ts="$v" ;; esac
+  done < "$GUARD_CACHE"
+  if [ "$cached_root" = "$EARLY_ROOT" ] && [ -n "$EARLY_CWD" ] && [ "$cached_cwd" = "$EARLY_CWD" ] \
+     && [ $(( $(guard_now) - cached_ts )) -lt "$GUARD_TTL" ]; then
+    exit 0
+  fi
+fi
 
 command -v git >/dev/null 2>&1 || exit 0
 
@@ -100,11 +134,6 @@ norm() {
 SESSION_CWD="$(payload_field cwd)"
 [ -z "$SESSION_CWD" ] && SESSION_CWD="$(pwd 2>/dev/null || true)"
 
-# Print the MAIN worktree path when $1 sits inside a LINKED worktree; return 1
-# for a main worktree, a non-repo, or an unreadable path.
-#
-# A linked worktree has its own git dir (<main>/.git/worktrees/<name>) while its
-# common dir stays <main>/.git; in a main worktree the two are the same path.
 linked_worktree_main() {
   local dir="${1:-}" gd cdir main
   [ -n "$dir" ] && [ -d "$dir" ] || return 1
@@ -155,7 +184,14 @@ else
   fi
 fi
 
-[ -n "$REASON" ] || exit 0
+if [ -z "$REASON" ]; then
+  if [ -n "$GUARD_CACHE" ]; then
+    mkdir -p "${GUARD_CACHE%/*}" 2>/dev/null \
+      && printf 'root=%s\ncwd=%s\nts=%s\n' "$HQ_ROOT" "$SESSION_CWD" "$(guard_now)" > "$GUARD_CACHE.tmp.$$" 2>/dev/null \
+      && mv -f "$GUARD_CACHE.tmp.$$" "$GUARD_CACHE" 2>/dev/null || true
+  fi
+  exit 0
+fi
 
 if [ "$REASON" = "project-dir" ]; then
   WHERE="This Claude session's project directory is a linked git worktree of the HQ repository."

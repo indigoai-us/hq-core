@@ -902,6 +902,8 @@ jobs:
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: Master-hook registry dispatch preserves blocking exits
+        run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
       - name: Runtime adapters repair hooks or emit bounded diagnostics
         run: bash core/scripts/tests/hook-runtime-diagnostics.test.sh
       - name: hook-gate augments PATH for version-manager node (nvm/volta/fnm/asdf)

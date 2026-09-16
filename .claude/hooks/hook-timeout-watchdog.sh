@@ -216,6 +216,21 @@ resolve_claude_timeout() {
         | unique
         | if length == 1 then .[0] else empty end
       ' "$root/.claude/settings.json" 2>/dev/null || true)"
+      # Gated hooks now live in hook-registry.json (dispatched by master-hook);
+      # a directly-invoked gate (adapter fallback, local settings, tests) finds
+      # its declared timeout there when settings.json no longer carries it.
+      if [ -z "$result" ] && [ -f "$root/.claude/hooks/hook-registry.json" ]; then
+        result="$(jq -r --arg event "$event_name" --arg hook_id "$hook_id" --arg hook_name "$hook_name" '
+          [
+            .hooks[$event][]?.hooks[]?
+            | select(.id == $hook_id and ((.script // "") | endswith("/" + $hook_name)))
+            | .timeout
+          ]
+          | map(select(type == "number" and . >= 1))
+          | unique
+          | if length == 1 then .[0] else empty end
+        ' "$root/.claude/hooks/hook-registry.json" 2>/dev/null || true)"
+      fi
       ;;
     master-dispatch|master-child)
       result="$(jq -r --arg event "$event_name" '

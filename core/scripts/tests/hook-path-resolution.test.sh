@@ -63,6 +63,22 @@ pass "master-hook.sh and reindex.sh anchored to \$CLAUDE_PROJECT_DIR"
 # EVERY shipped command from a root containing a space. Both are functions so
 # the negative controls at the end can prove they reject the broken forms.
 hook_commands="$(jq -r '.. | objects | select(.type? == "command") | .command' "$SETTINGS")"
+# Gated hooks moved from settings.json to hook-registry.json (master-hook
+# dispatches them, and the Codex/Grok adapters run them through hook-gate).
+# Reconstruct the equivalent gate command for each registry entry so every
+# shipped hook script is still exercised from a spaced project root.
+REGISTRY="$ROOT/.claude/hooks/hook-registry.json"
+if [ -f "$REGISTRY" ]; then
+  registry_commands="$(jq -r '
+    [.hooks[][] | .hooks[]
+     | if .gated == false
+       then "bash \"$CLAUDE_PROJECT_DIR/" + .script + "\""
+       else "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" " + .id + " \"$CLAUDE_PROJECT_DIR/" + .script + "\""
+              + ((.args // []) | map(" " + .) | join(""))
+       end]
+    | unique | .[]' "$REGISTRY")"
+  hook_commands="$(printf '%s\n%s\n' "$hook_commands" "$registry_commands")"
+fi
 
 # The static guard is the same quote-aware scanner the runtime doctor
 # (core/scripts/check-hq-hooks.sh) uses, sourced rather than re-implemented so
@@ -110,7 +126,15 @@ touch "$CLAUDE_PROJECT_DIR/.representative-hook-ran"
 EOF
 chmod 0644 "$REP_ROOT/.claude/hooks/hook-gate.sh" "$REP_ROOT/.claude/hooks/session-title.sh"
 representative_command="$(jq -r '[.. | objects | select(.type? == "command") | .command | select(contains(" session-title "))][0] // empty' "$SETTINGS")"
-[ -n "$representative_command" ] || fail "session-title command missing from settings.json"
+if [ -z "$representative_command" ]; then
+  # Gated hooks moved to hook-registry.json (master-hook dispatches them);
+  # rebuild the equivalent gate command the registry entry describes.
+  representative_command="$(jq -r '[.hooks[][] | .hooks[] | select(.id == "session-title")][0]
+    | select(. != null)
+    | "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" " + .id + " \"$CLAUDE_PROJECT_DIR/" + .script + "\""' \
+    "$ROOT/.claude/hooks/hook-registry.json" 2>/dev/null || true)"
+fi
+[ -n "$representative_command" ] || fail "session-title registration missing from settings.json and hook-registry.json"
 rc=0
 CLAUDE_PROJECT_DIR="$REP_ROOT" /bin/sh -c "$representative_command" || rc=$?
 [ "$rc" -eq 0 ] || fail "representative command failed from a project root containing spaces (rc=$rc)"

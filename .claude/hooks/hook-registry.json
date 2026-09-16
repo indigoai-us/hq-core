@@ -1,0 +1,1051 @@
+{
+  "$schema": "hq-hook-registry@1",
+  "description": "Gated hooks dispatched in-process by .claude/hooks/master-hook.sh. Same event/matcher semantics as settings.json hooks. prefilter.re is a POSIX ERE tested against the JSON text of tool_input (or the prompt for UserPromptSubmit); the hook only runs when it matches (must be a superset of the hook's own trigger). prefilter.env requires a non-empty env var; prefilter.file requires a path under the HQ root to exist. prefilter.policy_vocab=true skips the policy injector when the tool text contains none of the tokens any tool-event policy requires (compiled by master-hook from the policy dirs).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "id": "block-hq-worktree-session",
+            "script": ".claude/hooks/block-hq-worktree-session.sh",
+            "timeout": 30,
+            "gated": true,
+            "args": [
+              "PreToolUse"
+            ]
+          }
+        ]
+      },
+      {
+        "matcher": "Glob",
+        "hooks": [
+          {
+            "id": "block-hq-glob",
+            "script": ".claude/hooks/block-hq-glob.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "mandatory-scope-authorizer",
+            "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "conduct-lane-inbox",
+            "script": ".claude/hooks/conduct-lane-inbox.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "env": "HQ_CONDUCT_RUN_DIR"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "id": "block-hq-grep",
+            "script": ".claude/hooks/block-hq-grep.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "prd\\.json|worker\\.yaml"
+            }
+          },
+          {
+            "id": "mandatory-scope-authorizer",
+            "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "conduct-lane-inbox",
+            "script": ".claude/hooks/conduct-lane-inbox.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "env": "HQ_CONDUCT_RUN_DIR"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "id": "mandatory-scope-authorizer",
+            "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "warn-cross-company-settings",
+            "script": ".claude/hooks/warn-cross-company-settings.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "companies/[^/\"]+/settings/"
+            }
+          },
+          {
+            "id": "conduct-lane-inbox",
+            "script": ".claude/hooks/conduct-lane-inbox.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "env": "HQ_CONDUCT_RUN_DIR"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "id": "mandatory-scope-authorizer",
+            "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "detect-secrets",
+            "script": ".claude/hooks/detect-secrets.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
+            }
+          },
+          {
+            "id": "block-core-writes-bash",
+            "script": ".claude/hooks/block-core-writes-bash.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template|(^|[^A-Za-z0-9_])(rm|rmdir|mv|cp|tee|dd|rsync|ln|sed|awk|truncate|install|touch|mkdir|chmod|chown|git|tar|find|xargs|perl|python[0-9]*|node|bash|sh|zsh|eval|source)([^A-Za-z0-9_]|$)|>"
+            }
+          },
+          {
+            "id": "block-policy-writes-bash",
+            "script": ".claude/hooks/block-policy-writes-bash.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "polic|HQ_ALLOW_POLICY_WRITE|(^|[^A-Za-z0-9_])(tar|find|git|cp|mv|rsync|xargs)([^A-Za-z0-9_]|$)"
+            }
+          },
+          {
+            "id": "enforce-vault-write-access",
+            "script": ".claude/hooks/enforce-vault-write-access.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "file": ".hq/vault-access.json"
+            }
+          },
+          {
+            "id": "block-hq-root-git-mutation",
+            "script": ".claude/hooks/block-hq-root-git-mutation.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
+            }
+          },
+          {
+            "id": "block-foreground-timeout-over-harness-ceiling",
+            "script": ".claude/hooks/block-foreground-timeout-over-harness-ceiling.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "timeout|alarm"
+            }
+          },
+          {
+            "id": "block-qmd-model-download",
+            "script": ".claude/hooks/block-qmd-model-download.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "qmd"
+            }
+          },
+          {
+            "id": "block-on-active-run",
+            "script": ".claude/hooks/block-on-active-run.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "file": "scripts/repo-run-registry.sh"
+            }
+          },
+          {
+            "id": "inject-policy-on-trigger",
+            "script": ".claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 60,
+            "gated": true,
+            "prefilter": {
+              "policy_vocab": true
+            }
+          },
+          {
+            "id": "block-unsafe-package-install",
+            "script": ".claude/hooks/block-unsafe-package-install.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "(^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun|npx|bunx|pip[0-9]*|uv|poetry|pipx|gem|cargo|go|brew|apt|apt-get|curl|wget)([^A-Za-z0-9_]|$)"
+            }
+          },
+          {
+            "id": "surface-company-infra-policy",
+            "script": ".claude/hooks/surface-company-infra-policy.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "sst|deploy|cdk|serverless|sls|terraform|aws|secrets"
+            }
+          },
+          {
+            "id": "conduct-lane-inbox",
+            "script": ".claude/hooks/conduct-lane-inbox.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "env": "HQ_CONDUCT_RUN_DIR"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "id": "mandatory-scope-authorizer",
+            "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "detect-secrets",
+            "script": ".claude/hooks/detect-secrets.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
+            }
+          },
+          {
+            "id": "protect-core",
+            "script": ".claude/hooks/protect-core.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
+            }
+          },
+          {
+            "id": "block-core-writes",
+            "script": ".claude/hooks/block-core-writes.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
+            }
+          },
+          {
+            "id": "block-inline-story-impl",
+            "script": ".claude/hooks/block-inline-story-impl.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "repos/(private|public)/"
+            }
+          },
+          {
+            "id": "enforce-vault-write-access",
+            "script": ".claude/hooks/enforce-vault-write-access.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "file": ".hq/vault-access.json"
+            }
+          },
+          {
+            "id": "block-on-active-run",
+            "script": ".claude/hooks/block-on-active-run.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "file": "scripts/repo-run-registry.sh"
+            }
+          },
+          {
+            "id": "env-file-no-trailing-newline",
+            "script": ".claude/hooks/env-file-no-trailing-newline.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "env"
+            }
+          },
+          {
+            "id": "route-company-skill-creation",
+            "script": ".claude/hooks/route-company-skill-creation.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "skills/|commands/|SKILL\\.md"
+            }
+          },
+          {
+            "id": "block-plans-dir-during-deep-plan",
+            "script": ".claude/hooks/block-plans-dir-during-deep-plan.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "\\.claude/plans/"
+            }
+          },
+          {
+            "id": "validate-policy-frontmatter",
+            "script": ".claude/hooks/validate-policy-frontmatter.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "policies/"
+            }
+          },
+          {
+            "id": "conduct-lane-inbox",
+            "script": ".claude/hooks/conduct-lane-inbox.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "env": "HQ_CONDUCT_RUN_DIR"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "id": "mandatory-scope-authorizer",
+            "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "detect-secrets",
+            "script": ".claude/hooks/detect-secrets.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
+            }
+          },
+          {
+            "id": "protect-core",
+            "script": ".claude/hooks/protect-core.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
+            }
+          },
+          {
+            "id": "block-core-writes",
+            "script": ".claude/hooks/block-core-writes.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
+            }
+          },
+          {
+            "id": "block-inline-story-impl",
+            "script": ".claude/hooks/block-inline-story-impl.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "repos/(private|public)/"
+            }
+          },
+          {
+            "id": "enforce-vault-write-access",
+            "script": ".claude/hooks/enforce-vault-write-access.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "file": ".hq/vault-access.json"
+            }
+          },
+          {
+            "id": "block-on-active-run",
+            "script": ".claude/hooks/block-on-active-run.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "file": "scripts/repo-run-registry.sh"
+            }
+          },
+          {
+            "id": "env-file-no-trailing-newline",
+            "script": ".claude/hooks/env-file-no-trailing-newline.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "env"
+            }
+          },
+          {
+            "id": "route-company-skill-creation",
+            "script": ".claude/hooks/route-company-skill-creation.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "skills/|commands/|SKILL\\.md"
+            }
+          },
+          {
+            "id": "block-plans-dir-during-deep-plan",
+            "script": ".claude/hooks/block-plans-dir-during-deep-plan.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "\\.claude/plans/"
+            }
+          },
+          {
+            "id": "validate-policy-frontmatter",
+            "script": ".claude/hooks/validate-policy-frontmatter.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "policies/"
+            }
+          },
+          {
+            "id": "conduct-lane-inbox",
+            "script": ".claude/hooks/conduct-lane-inbox.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "env": "HQ_CONDUCT_RUN_DIR"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "MultiEdit",
+        "hooks": [
+          {
+            "id": "mandatory-scope-authorizer",
+            "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "detect-secrets",
+            "script": ".claude/hooks/detect-secrets.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
+            }
+          },
+          {
+            "id": "block-core-writes",
+            "script": ".claude/hooks/block-core-writes.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
+            }
+          },
+          {
+            "id": "enforce-vault-write-access",
+            "script": ".claude/hooks/enforce-vault-write-access.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "file": ".hq/vault-access.json"
+            }
+          },
+          {
+            "id": "route-company-skill-creation",
+            "script": ".claude/hooks/route-company-skill-creation.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "skills/|commands/|SKILL\\.md"
+            }
+          },
+          {
+            "id": "block-plans-dir-during-deep-plan",
+            "script": ".claude/hooks/block-plans-dir-during-deep-plan.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "\\.claude/plans/"
+            }
+          },
+          {
+            "id": "validate-policy-frontmatter",
+            "script": ".claude/hooks/validate-policy-frontmatter.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "policies/"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "NotebookEdit",
+        "hooks": [
+          {
+            "id": "mandatory-scope-authorizer",
+            "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "detect-secrets",
+            "script": ".claude/hooks/detect-secrets.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
+            }
+          },
+          {
+            "id": "enforce-vault-write-access",
+            "script": ".claude/hooks/enforce-vault-write-access.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "file": ".hq/vault-access.json"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "EnterPlanMode",
+        "hooks": [
+          {
+            "id": "block-builtin-plan-mode-during-deep-plan",
+            "script": ".claude/hooks/block-builtin-plan-mode-during-deep-plan.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "id": "record-policy-retrieval",
+            "script": ".claude/hooks/record-policy-retrieval.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "/policies/|qmd"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "id": "record-policy-retrieval",
+            "script": ".claude/hooks/record-policy-retrieval.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "/policies/|qmd"
+            }
+          },
+          {
+            "id": "auto-checkpoint-trigger",
+            "script": ".claude/hooks/auto-checkpoint-trigger.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "git commit|git push|gh pr (create|merge)|vercel (deploy|--prod)|(npm|bun) publish|bun run test|npm test|bun test|curl -X (POST|PUT|DELETE)"
+            }
+          },
+          {
+            "id": "hq-auto-acl-suggest",
+            "script": ".claude/hooks/hq-auto-acl-suggest.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "deploy|appid|run-project|execute-task|checkpoint|handoff|hq-share|hq-files|hq files |companies/[^\"]*/data/|deliverables/|workspace/threads/|workspace/checkpoints/"
+            }
+          },
+          {
+            "id": "screenshot-resize-trigger",
+            "script": ".claude/hooks/screenshot-resize-trigger.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "agent-browser.*screenshot"
+            }
+          },
+          {
+            "id": "journal-due",
+            "script": ".claude/hooks/journal-due.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "git commit|(npm|pnpm|yarn|bun) (test|run test|t)|pytest|cargo test|go test|tsc|eslint|biome check|ruff check"
+            }
+          },
+          {
+            "id": "inject-policy-on-trigger",
+            "script": ".claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 60,
+            "gated": true,
+            "prefilter": {
+              "policy_vocab": true
+            }
+          },
+          {
+            "id": "reindex",
+            "script": ".claude/hooks/reindex.sh",
+            "timeout": 30,
+            "gated": false,
+            "prefilter": {
+              "re": "(companies/[^/\"]+/(skills|workers)|core/(skills|workers)|core/packages/[^/\"]+/(skills|workers)|personal/(skills|workers|knowledge|policies|settings)|\\.claude/skills)/"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "id": "auto-checkpoint-trigger",
+            "script": ".claude/hooks/auto-checkpoint-trigger.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "workspace/threads/|companies/.*/workspace/|workspace/reports/|workspace/social-drafts/|companies/.*/data/"
+            }
+          },
+          {
+            "id": "hq-auto-acl-suggest",
+            "script": ".claude/hooks/hq-auto-acl-suggest.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "companies/|deliverables/"
+            }
+          },
+          {
+            "id": "reindex",
+            "script": ".claude/hooks/reindex.sh",
+            "timeout": 30,
+            "gated": false,
+            "prefilter": {
+              "re": "(companies/[^/\"]+/(skills|workers)|core/(skills|workers)|core/packages/[^/\"]+/(skills|workers)|personal/(skills|workers|knowledge|policies|settings)|\\.claude/skills)/"
+            }
+          },
+          {
+            "id": "hq-autocommit",
+            "script": ".claude/hooks/hq-autocommit.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "journal-due",
+            "script": ".claude/hooks/journal-due.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "id": "auto-checkpoint-trigger",
+            "script": ".claude/hooks/auto-checkpoint-trigger.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "hq-auto-acl-suggest",
+            "script": ".claude/hooks/hq-auto-acl-suggest.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "companies/|deliverables/"
+            }
+          },
+          {
+            "id": "reindex",
+            "script": ".claude/hooks/reindex.sh",
+            "timeout": 30,
+            "gated": false,
+            "prefilter": {
+              "re": "(companies/[^/\"]+/(skills|workers)|core/(skills|workers)|core/packages/[^/\"]+/(skills|workers)|personal/(skills|workers|knowledge|policies|settings)|\\.claude/skills)/"
+            }
+          },
+          {
+            "id": "hq-autocommit",
+            "script": ".claude/hooks/hq-autocommit.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "journal-due",
+            "script": ".claude/hooks/journal-due.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      },
+      {
+        "matcher": "MultiEdit",
+        "hooks": [
+          {
+            "id": "hq-auto-acl-suggest",
+            "script": ".claude/hooks/hq-auto-acl-suggest.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "companies/|deliverables/"
+            }
+          },
+          {
+            "id": "reindex",
+            "script": ".claude/hooks/reindex.sh",
+            "timeout": 30,
+            "gated": false,
+            "prefilter": {
+              "re": "(companies/[^/\"]+/(skills|workers)|core/(skills|workers)|core/packages/[^/\"]+/(skills|workers)|personal/(skills|workers|knowledge|policies|settings)|\\.claude/skills)/"
+            }
+          },
+          {
+            "id": "hq-autocommit",
+            "script": ".claude/hooks/hq-autocommit.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "journal-due",
+            "script": ".claude/hooks/journal-due.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "id": "native-plan-project-sync",
+            "script": ".claude/hooks/native-plan-project-sync.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "id": "journal-autocapture",
+            "script": ".claude/hooks/journal-autocapture.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "id": "journal-autocapture",
+            "script": ".claude/hooks/journal-autocapture.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      },
+      {
+        "matcher": "WebFetch",
+        "hooks": [
+          {
+            "id": "journal-autocapture",
+            "script": ".claude/hooks/journal-autocapture.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      },
+      {
+        "matcher": "WebSearch",
+        "hooks": [
+          {
+            "id": "journal-autocapture",
+            "script": ".claude/hooks/journal-autocapture.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "id": "conduct-lane-inbox",
+            "script": ".claude/hooks/conduct-lane-inbox.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "env": "HQ_CONDUCT_RUN_DIR"
+            }
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "id": "precompact-thrashing-detector",
+            "script": ".claude/hooks/precompact-thrashing-detector.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "auto-checkpoint-precompact",
+            "script": ".claude/hooks/auto-checkpoint-precompact.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "journal-precompact",
+            "script": ".claude/hooks/journal-precompact.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "id": "purge-policy-ledger-precompact",
+            "script": ".claude/hooks/purge-policy-ledger-precompact.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "id": "observe-patterns",
+            "script": ".claude/hooks/observe-patterns.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "cleanup-mcp-processes",
+            "script": ".claude/hooks/cleanup-mcp-processes.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "checkpoint-stop-gate",
+            "script": ".claude/hooks/checkpoint-stop-gate.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "capture-estimates",
+            "script": ".claude/hooks/capture-estimates.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "enforce-capability-link-render",
+            "script": ".claude/hooks/enforce-capability-link-render.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "enforce-humanize-before-send",
+            "script": ".claude/hooks/enforce-humanize-before-send.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "conduct-lane-inbox",
+            "script": ".claude/hooks/conduct-lane-inbox.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "env": "HQ_CONDUCT_RUN_DIR"
+            }
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "id": "block-hq-worktree-session",
+            "script": ".claude/hooks/block-hq-worktree-session.sh",
+            "timeout": 30,
+            "gated": true,
+            "args": [
+              "SessionStart"
+            ]
+          },
+          {
+            "id": "migrate-policy-triggers",
+            "script": "core/scripts/migrate-policy-triggers.sh",
+            "timeout": 60,
+            "gated": true
+          },
+          {
+            "id": "inject-policy-on-trigger",
+            "script": ".claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 60,
+            "gated": true
+          },
+          {
+            "id": "check-bridge-health",
+            "script": ".claude/hooks/check-claude-desktop-bridge-health.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "check-repo-active-runs",
+            "script": ".claude/hooks/check-repo-active-runs.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "inject-local-context",
+            "script": ".claude/hooks/inject-local-context.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "auto-startwork",
+            "script": ".claude/hooks/auto-startwork.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "check-core-yaml-parity",
+            "script": ".claude/hooks/check-core-yaml-parity.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "load-journal-index-on-start",
+            "script": ".claude/hooks/load-journal-index-on-start.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "check-hq-update",
+            "script": ".claude/hooks/check-hq-update.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "check-client-health",
+            "script": ".claude/hooks/check-client-health.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "repair-stale-review-base",
+            "script": ".claude/hooks/repair-stale-review-base.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "session-title",
+            "script": ".claude/hooks/session-title.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "id": "block-hq-worktree-session",
+            "script": ".claude/hooks/block-hq-worktree-session.sh",
+            "timeout": 30,
+            "gated": true,
+            "args": [
+              "UserPromptSubmit"
+            ]
+          },
+          {
+            "id": "rewrite-resume-sentinel",
+            "script": ".claude/hooks/rewrite-resume-sentinel.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "route-deep-plan-to-skill",
+            "script": ".claude/hooks/route-deep-plan-to-skill.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "auto-session-project",
+            "script": ".claude/hooks/auto-session-project.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "natural-language-router",
+            "script": ".claude/hooks/natural-language-router.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "session-title",
+            "script": ".claude/hooks/session-title.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "inject-policy-on-trigger",
+            "script": ".claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 60,
+            "gated": true
+          }
+        ]
+      }
+    ]
+  }
+}

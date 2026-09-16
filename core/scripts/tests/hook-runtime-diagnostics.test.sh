@@ -124,6 +124,8 @@ cp "$GATE_SRC" "$CODEX_FIX/.claude/hooks/hook-gate.sh"
 cp "$HOOK_LIB" "$CODEX_FIX/core/scripts/hook-lib.sh"
 cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$CODEX_FIX/core/scripts/lib/hook-adapter-core.sh"
 cp "$ROOT/.claude/settings.json" "$CODEX_FIX/.claude/settings.json"
+mkdir -p "$CODEX_FIX/.claude/hooks"
+cp "$ROOT/.claude/hooks/hook-registry.json" "$CODEX_FIX/.claude/hooks/hook-registry.json"
 chmod +x \
   "$CODEX_FIX/.codex/hooks/hq-codex-hook-adapter.sh" \
   "$CODEX_FIX/.claude/hooks/hook-gate.sh" \
@@ -191,6 +193,8 @@ cp "$GATE_SRC" "$GROK_FIX/.claude/hooks/hook-gate.sh"
 cp "$HOOK_LIB" "$GROK_FIX/core/scripts/hook-lib.sh"
 cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$GROK_FIX/core/scripts/lib/hook-adapter-core.sh"
 cp "$ROOT/.claude/settings.json" "$GROK_FIX/.claude/settings.json"
+mkdir -p "$GROK_FIX/.claude/hooks"
+cp "$ROOT/.claude/hooks/hook-registry.json" "$GROK_FIX/.claude/hooks/hook-registry.json"
 chmod +x \
   "$GROK_FIX/.grok/hooks/hq-grok-hook-adapter.sh" \
   "$GROK_FIX/.claude/hooks/hook-gate.sh" \
