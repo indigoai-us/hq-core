@@ -69,7 +69,12 @@ ok "no engine CLI is a stated precondition, not a per-story surprise"
 echo "the protocol orders dispatch against the pool, and releases on every path"
 grep -q 'pool-lane-protocol.md' "$DISPATCH" \
   || fail "the dispatch protocol must defer slot accounting to the pool protocol rather than restating it"
-grep -qi 'assign . dispatch . record running . wait . record idle' "$DIS_FLAT" \
+# The separator in the protocol's prose is an em-arrow, which is three bytes in
+# UTF-8 and one character only under a UTF-8 locale. A bare `.` therefore matches
+# it on CI (LANG=C.UTF-8) and fails on a stock macOS shell, where LANG is unset
+# and the C locale makes `.` a single byte. `.\{1,3\}` matches either way, so the
+# suite does not depend on the caller's locale.
+grep -qi 'assign .\{1,3\} dispatch .\{1,3\} record running .\{1,3\} wait .\{1,3\} record idle' "$DIS_FLAT" \
   || fail "the dispatch protocol must state its ordering against the pool protocol"
 grep -qi 'before branching on what it returned' "$DIS_FLAT" \
   || fail "the dispatch protocol must release the slot before branching on the outcome"
@@ -351,7 +356,7 @@ echo "a resume mints a fresh run dir instead of reusing the finished one"
 # A completed run dir still holds CONDUCT_EXIT= and the old pid files. The new
 # child does not truncate lane.log until it is already detached, so a waiter
 # armed in between reads the old marker and releases a slot that is still live.
-grep -qi 'every dispatch mints a fresh run dir . including a resume' "$DIS_FLAT" \
+grep -qi 'every dispatch mints a fresh run dir .\{1,3\} including a resume' "$DIS_FLAT" \
   || fail "the protocol does not require a fresh run dir on resume"
 grep -qi 'handoffs.jsonl' "$DIS_FLAT" \
   || fail "the protocol must say where lane continuity lives once the run dir stops being reused"
@@ -401,7 +406,7 @@ grep -qi 'does not auto-advance to story N+1 unattended' "$RUN_FLAT" \
   || fail "ralph mode must say the loop stops with its session, not merely omit it"
 grep -qi 'do not tell a user their run will finish on its own' "$RUN_FLAT" \
   || fail "the skill must forbid the overclaim to the user, not just avoid making it itself"
-grep -qi 'can pick the run back up . nothing picks itself back up' "$RUN_FLAT" \
+grep -qi 'can pick the run back up .\{1,3\} nothing picks itself back up' "$RUN_FLAT" \
   || fail "the recovery note still reads as automatic resumption"
 grep -qi 'so a run survives session compaction' "$RUN_FLAT" \
   && fail "the frontmatter description still promises whole-run survival"
@@ -468,8 +473,14 @@ echo "the nested launch body interpolates nothing"
 # substituted into single-quoted values inside it. An apostrophe in the HQ
 # checkout path -- the one value here a user controls -- closes those quotes
 # early and the lane dies before it starts, in a log nobody is watching yet.
-grep -q "setsid nohup bash -c '" "$DISPATCH" \
+grep -q "hq-detach.sh -- bash -c '" "$DISPATCH" \
   || fail "the nested body is not single-quoted; path text is still parsed as shell"
+# Stock macOS has no setsid(1), and the Homebrew util-linux copy is keg-only and
+# off a non-interactive PATH -- a literal `setsid ...` here dies with `command
+# not found` before the lane exists. hq-detach.sh probes both and falls back to
+# node, so the launch must go through it.
+grep -qE '^[[:space:]]*setsid ' "$DISPATCH" \
+  && fail "the launch calls setsid directly; it must go through core/scripts/hq-detach.sh"
 # shellcheck disable=SC2016  # literal protocol text, not a shell expansion
 grep -q 'export LANE_RUN_DIR_ABS="\$PWD/\$RUN_DIR"' "$DISPATCH" \
   || fail "the absolute run dir is not passed through the environment"
@@ -509,7 +520,7 @@ grep -qi 'runs on every outcome, not just this one' "$RUN_FLAT" \
 ok "both callers gate release on the confirmation, on every path"
 
 echo "the lane launch snippet is valid shell, outside and inside"
-# The launch block is a quoting minefield: a detached `setsid bash -c "..."`
+# The launch block is a quoting minefield: a detached `hq-detach.sh -- bash -c`
 # whose body itself contains a single-quoted --eval string. Two separate parses
 # happen, and only the outer one is visible to `bash -n` on the whole snippet —
 # an unbalanced quote INSIDE the body is just a character to the outer shell and
@@ -522,7 +533,7 @@ snippet="$TMP/launch.sh"
 # shellcheck disable=SC2016  # deliberately unexpanded: this line is written into the snippet
 { echo 'RUN_DIR="$TMP/run"; mkdir -p "$RUN_DIR"; SID=s1'; } > "$snippet"
 # shellcheck disable=SC2016  # the $ is part of the literal anchor in the protocol
-sed -n "/^LANE_TIMEOUT=/,/^' > \/dev\/null 2>&1 < \/dev\/null &/p" "$DISPATCH" \
+sed -n "/^LANE_TIMEOUT=/,/^'$/p" "$DISPATCH" \
   | sed -e 's/{engine}/codex/g' \
         -e 's/{lane}/demo/g' \
         -e 's/{caller}/conduct/g' \
@@ -539,7 +550,7 @@ ok "the launch snippet parses and carries the timeout and session id"
 
 echo "the detached bash -c body is valid shell in its own right"
 inner="$TMP/inner.sh"
-sed -n "/^setsid nohup bash -c '$/,/^' > \/dev\/null/p" "$snippet" \
+sed -n "/ -- bash -c '$/,/^'$/p" "$snippet" \
   | sed -e '1d' -e '$d' \
   > "$inner"
 [ -s "$inner" ] || fail "could not extract the bash -c body — the launch block's shape changed"

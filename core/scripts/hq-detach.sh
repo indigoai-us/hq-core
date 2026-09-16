@@ -8,7 +8,7 @@
 #
 # The child leads its own session (sid == pgid == pid of the session leader).
 # stdin is /dev/null. stdout/stderr go to --logfile or /dev/null.
-# Runtime: setsid(1) or node child.detached.
+# Runtime: setsid(1) (PATH or Homebrew util-linux keg) or node child.detached.
 
 set -euo pipefail
 
@@ -44,8 +44,21 @@ write_pid() {
   printf '%s\n' "$pid" > "$PIDFILE"
 }
 
-if [ "${HQ_DETACH_FORCE_NODE:-}" != "1" ] && command -v setsid >/dev/null 2>&1; then
-  setsid "${CMD[@]}" </dev/null >>"$LOGFILE" 2>&1 &
+# setsid(1) lookup. Linux has it on PATH. On macOS it arrives only via Homebrew
+# util-linux, which is keg-only — not symlinked into the PATH — so probe the keg
+# prefixes directly rather than assuming an interactive shell exported them.
+SETSID_BIN=""
+if [ "${HQ_DETACH_FORCE_NODE:-}" != "1" ]; then
+  for candidate in setsid /opt/homebrew/opt/util-linux/bin/setsid /usr/local/opt/util-linux/bin/setsid; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      SETSID_BIN="$candidate"
+      break
+    fi
+  done
+fi
+
+if [ -n "$SETSID_BIN" ]; then
+  "$SETSID_BIN" "${CMD[@]}" </dev/null >>"$LOGFILE" 2>&1 &
   write_pid "$!"
   disown "$!" 2>/dev/null || true
   exit 0

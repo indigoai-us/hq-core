@@ -83,6 +83,18 @@ echo "unsafe-package-check" >> "$TEST_LOG"
 exit 0
 SH
 
+cat > "$TMP/.claude/hooks/block-qmd-model-download.sh" <<'SH'
+#!/bin/bash
+input="$(cat)"
+cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty')"
+echo "block-qmd-model-download" >> "$TEST_LOG"
+if printf '%s' "$cmd" | grep -Eq 'qmd[[:space:]]+vsearch'; then
+  echo "blocked cold qmd vsearch" >&2
+  exit 2
+fi
+exit 0
+SH
+
 cat > "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" <<'SH'
 #!/bin/bash
 input="$(cat)"
@@ -394,6 +406,7 @@ assert_contains "$(cat "$TEST_LOG")" "block-unsafe-package-install"
 assert_contains "$(cat "$TEST_LOG")" "mandatory-scope-authorizer:Bash"
 assert_contains "$(cat "$TEST_LOG")" "enforce-vault-write-access:Bash"
 assert_contains "$(cat "$TEST_LOG")" "block-foreground-timeout-over-harness-ceiling"
+assert_contains "$(cat "$TEST_LOG")" "block-qmd-model-download"
 
 # Codex shell tool call declaring an over-ceiling foreground timeout is blocked
 # by the same guard Claude uses (finding 2.1 cross-backend coverage).

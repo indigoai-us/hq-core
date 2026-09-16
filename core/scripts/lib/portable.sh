@@ -102,3 +102,110 @@ require_jq() {
   portable_jq_install_hint >&2
   return 1
 }
+
+# portable_native_path <path>
+#   Print a path a native (non-MSYS) Windows binary can open. Git Bash mktemp
+#   and $TMPDIR often yield /tmp/... which Node's hq.exe cannot read, so
+#   --body-file looks empty. cygpath -m produces C:/... mixed paths. On
+#   POSIX hosts this is identity. Empty input returns 1.
+portable_native_path() {
+  local p="${1:-}"
+  [ -n "$p" ] || return 1
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$p" 2>/dev/null || printf '%s' "$p"
+    return 0
+  fi
+  printf '%s' "$p"
+}
+
+# portable_qmd_models_dir
+#   Print qmd's GGUF cache directory (no trailing slash). Override with
+#   QMD_MODELS_DIR. Otherwise XDG_CACHE_HOME/qmd/models, then
+#   HOME/.cache/qmd/models, then USERPROFILE/.cache/qmd/models (Windows).
+portable_qmd_models_dir() {
+  local d
+  if [ -n "${QMD_MODELS_DIR:-}" ]; then
+    d="$QMD_MODELS_DIR"
+  elif [ -n "${XDG_CACHE_HOME:-}" ]; then
+    d="$XDG_CACHE_HOME/qmd/models"
+  elif [ -n "${HOME:-}" ]; then
+    d="$HOME/.cache/qmd/models"
+  elif [ -n "${USERPROFILE:-}" ]; then
+    d="$USERPROFILE/.cache/qmd/models"
+    if command -v cygpath >/dev/null 2>&1; then
+      d="$(cygpath -u "$d" 2>/dev/null || printf '%s' "$d")"
+    fi
+  else
+    return 1
+  fi
+  case "$d" in
+    */) d="${d%/}" ;;
+  esac
+  printf '%s' "$d"
+}
+
+# portable_qmd_embed_model_ready
+#   Return 0 when a usable GGUF already sits in the qmd models dir so
+#   vsearch/query/embed will not start a multi-hundred-MB download. A file
+#   named by QMD_EMBED_MODEL (basename after the last /) counts; otherwise
+#   any *.gguf of at least 1 MiB counts. Missing dir or tiny placeholders
+#   return 1.
+portable_qmd_embed_model_ready() {
+  local dir want f sz
+  dir="$(portable_qmd_models_dir)" || return 1
+  [ -d "$dir" ] || return 1
+  if [ -n "${QMD_EMBED_MODEL:-}" ]; then
+    want="${QMD_EMBED_MODEL##*/}"
+    if [ -n "$want" ] && [ -f "$dir/$want" ]; then
+      sz="$(wc -c < "$dir/$want" | tr -d '[:space:]')"
+      case "$sz" in
+        ''|*[!0-9]*) ;;
+        *) [ "$sz" -ge 1048576 ] && return 0 ;;
+      esac
+    fi
+  fi
+  for f in "$dir"/*.gguf; do
+    [ -f "$f" ] || continue
+    sz="$(wc -c < "$f" | tr -d '[:space:]')"
+    case "$sz" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    [ "$sz" -ge 1048576 ] && return 0
+  done
+  return 1
+}
+
+# portable_qmd_cmd_would_download_model <command>
+#   Return 0 when a shell command would invoke qmd vsearch, query, embed, or
+#   pull — the subcommands that auto-download GGUF models on first use.
+#   First non-flag argument after a qmd token is the subcommand, so
+#   `qmd search "how to vsearch"` is NOT a match.
+portable_qmd_cmd_would_download_model() {
+  local cmd="${1:-}"
+  [ -n "$cmd" ] || return 1
+  case "$cmd" in
+    *qmd*) ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "$cmd" | awk '
+    BEGIN { found = 0 }
+    {
+      n = split($0, raw, /[[:space:];|&]+/)
+      for (i = 1; i <= n; i++) {
+        tok = raw[i]
+        if (tok == "") continue
+        base = tok
+        sub(/^.*\//, "", base)
+        if (base == "qmd" || base == "qmd.exe") {
+          j = i + 1
+          while (j <= n && raw[j] ~ /^-/) j++
+          if (j <= n && raw[j] ~ /^(vsearch|query|embed|pull)$/) {
+            found = 1
+            exit
+          }
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }
+  '
+}

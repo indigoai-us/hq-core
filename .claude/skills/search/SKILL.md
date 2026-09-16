@@ -42,22 +42,41 @@ If qmd is not available, skip to **Fallback** section.
 
 ## Execute Search
 
-Run the matching qmd command. Add `-c $COLLECTION` if a collection was specified or auto-detected:
+Run the matching qmd command. Add `-c $COLLECTION` if a collection was specified or auto-detected.
 
-**Default (BM25 full-text):**
+**Default in-turn path is BM25.** `qmd vsearch` / `qmd query` auto-download a ~300MB–2GB GGUF model on first use and have stalled a single Windows HQ prompt for more than two hours. Only use those modes when the model is already on disk.
+
+**Default (BM25 full-text — no model download):**
 ```bash
 qmd search "$QUERY" -n $N --json [-c $COLLECTION]
 ```
 
-**Semantic (conceptual match):**
+**Semantic (conceptual match) — only if embeddings are already cached:**
+
+In the same Bash call as the availability check, probe the GGUF cache and skip vsearch when it is empty:
+
 ```bash
-qmd vsearch "$QUERY" -n $N --json [-c $COLLECTION]
+MODELS="${QMD_MODELS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/qmd/models}"
+if ls "$MODELS"/*.gguf >/dev/null 2>&1; then
+  qmd vsearch "$QUERY" -n $N --json [-c $COLLECTION]
+else
+  echo "qmd embeddings not cached; using BM25. Run: hq index background"
+  qmd search "$QUERY" -n $N --json [-c $COLLECTION]
+fi
 ```
 
-**Hybrid (BM25 + vector + re-rank — best quality, slower):**
+**Hybrid (BM25 + vector + re-rank) — same cache gate as semantic:**
 ```bash
-qmd query "$QUERY" -n $N --json [-c $COLLECTION]
+MODELS="${QMD_MODELS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/qmd/models}"
+if ls "$MODELS"/*.gguf >/dev/null 2>&1; then
+  qmd query "$QUERY" -n $N --json [-c $COLLECTION]
+else
+  echo "qmd embeddings not cached; using BM25. Run: hq index background"
+  qmd search "$QUERY" -n $N --json [-c $COLLECTION]
+fi
 ```
+
+Never run `qmd pull`, `qmd embed`, or a cold `qmd vsearch`/`qmd query` in the foreground of a user turn. To build embeddings: `hq index background`, or `qmd pull`/`qmd embed` with `run_in_background: true`. On Windows, keep this probe and the search in **one** Bash call — each spawn is expensive.
 
 ## Display Results
 
@@ -125,9 +144,10 @@ search "case study"                             # Auto-detects → -c {company}
 
 ## Notes
 
-- Default `search` mode is fastest — use for exact keywords
-- Use `--mode vsearch` for conceptual/semantic queries
-- Use `--mode query` for highest quality (slower, uses LLM re-ranking)
+- Default `search` mode is fastest and does **not** download models — use it for in-turn HQ search
+- Use `--mode vsearch` for conceptual/semantic queries **only when** `~/.cache/qmd/models/` already has a GGUF; otherwise fall back to `qmd search`
+- Use `--mode query` for highest quality (slower, uses LLM re-ranking) **only when** that same cache is present
+- Never download GGUF models in a user-facing turn. Use `hq index background` instead.
 - Use `-c` to scope to a collection: `hq-infra`, `hq-workers`, `hq-knowledge`, `hq-projects`, `{product}`, + company collections (run `qmd status` for full list)
 - Without `-c`, auto-detects company from context; falls back to all collections
 - Scores 0.0–1.0; above 0.5 is a good match

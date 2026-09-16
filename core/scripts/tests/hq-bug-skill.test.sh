@@ -19,5 +19,10 @@ assert.match(parse, /User Message.*full `\$ARGUMENTS` text verbatim.*independent
 assert.match(body, /## User Message\n<User Message verbatim from Step 1.*full \$ARGUMENTS text>/);
 assert.match(submit, /hq feedback "<type>" --title "<title>" --body-file "<body-path>"/);
 assert.match(parse, /missing or empty.*AskUserQuestion/);
-console.log('hq-bug prompt contract: concise title, independent verbatim body, typed/untyped input, explicit CLI flags');
+const alloc = skill.split('### 2. Allocate body file')[1].split('### 3.')[0];
+assert.match(alloc, /cygpath -m/);
+assert.match(alloc, /body must not be empty/);
+assert.match(alloc, /single.*Bash call/i);
+assert.match(alloc, /Never pass a Git Bash `\/tmp\/\.\.\.` path to `hq`/);
+console.log('hq-bug prompt contract: concise title, independent verbatim body, typed/untyped input, explicit CLI flags, Windows-native body path');
 JS

@@ -533,11 +533,13 @@ grep -q '5.108.2' "$REPO_ROOT/core/hooks/UserPromptSubmit/30-ensure-hq-cli.sh" \
   || fail "ensure-hq-cli min version not set"
 
 # --- old client layer gone ---------------------------------------------------
+# work-mesh-close.sh is re-shipped as a bounded leftover-overwrite: hq rescue
+# preserved the pre-v15.0.121 copy on agent boxes, and SessionStart/36 still
+# nohup's __sweep_bg__ from it. Other old-client paths stay deleted.
 for gone in \
   core/hooks/work-mesh-register.sh \
   core/hooks/work-mesh-ground.sh \
   core/hooks/work-mesh-done.sh \
-  core/hooks/work-mesh-close.sh \
   core/scripts/work-mesh.mjs \
   core/scripts/work-mesh.sh \
   core/scripts/work-mesh-session.sh \
@@ -547,7 +549,12 @@ do
     fail "should be deleted: $gone"
   fi
 done
-pass "old client layer deleted"
+if [ -f "$REPO_ROOT/core/hooks/work-mesh-close.sh" ]; then
+  pass "work-mesh-close.sh re-shipped as bounded leftover overwrite"
+else
+  fail "work-mesh-close.sh missing (needed to overwrite leaked box copies)"
+fi
+pass "old client layer deleted (close.sh overwrite shim excepted)"
 
 echo
 echo "work-mesh-live-hooks: ${PASS} passed, ${FAIL} failed"
