@@ -989,6 +989,12 @@ jobs:
         run: bash core/scripts/tests/hook-gate-path-augment.test.sh
       - name: hook-gate exec-bit self-heal
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+      - name: Hook timeout Sentry watchdog
+        run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: Master-hook registry dispatch preserves blocking exits
+        run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
+      - name: Codex hook adapter routes mandatory scope authorizer
+        run: bash core/scripts/test-codex-hook-adapter.sh
       - name: install pinned YAML parser for agent runtime contracts
         run: |
           set -euo pipefail

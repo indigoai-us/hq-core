@@ -62,9 +62,13 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 # `realpath` ships with GNU coreutils (Linux, Git Bash) and modern macOS; fall
 # back to the lexical hq_normpath when it is missing or the path is dangling.
 norm() {
-  local p="$1"
+  local p="$1" resolved
   case "$p" in "~") p="$HOME" ;; "~/"*) p="$HOME${p#\~}" ;; esac
-  realpath "$p" 2>/dev/null || hq_normpath "$p" 2>/dev/null || echo "$p"
+  resolved="$(realpath "$p" 2>/dev/null || hq_normpath "$p" 2>/dev/null || printf '%s' "$p")"
+  # Git for Windows reports repository roots as D:/..., while Git Bash may
+  # receive the same path as /d/.... Canonicalize after physical resolution so
+  # equality checks cannot mistake the HQ root for an unrelated repository.
+  hq_canonical_path "$resolved"
 }
 HQ_ROOT="$(norm "$PROJECT_DIR")"
 

@@ -68,45 +68,47 @@ payload_write() { jq -nc --arg p "$1" --arg root "$ROOT" '{session_id:"mh-regist
 echo "[3] known triggers still reach their guard through the prefilter"
 K1="AKIA"; K2="ABCDEFGHIJKLMNOP"   # assembled so the literal never appears in this file
 run_master PreToolUse "$(payload_bash "echo ${K1}${K2} > note.txt")"
-[ "$RC" = "2" ] && printf '%s' "$ERR" | grep -q "SECRET DETECTED" && pass "detect-secrets blocks through the dispatcher" \
+# Avoid a producer-side SIGPIPE from `grep -q` under pipefail: ERR is already
+# captured, so a here-string checks the identical stderr content directly.
+[ "$RC" = "2" ] && grep -q "SECRET DETECTED" <<<"$ERR" && pass "detect-secrets blocks through the dispatcher" \
   || fail "detect-secrets did not block (rc=$RC): $ERR"
 run_master PreToolUse "$(payload_write "$ROOT/.claude/CLAUDE.md")"
-[ "$RC" = "2" ] && printf '%s' "$ERR" | grep -q "locked HQ charter" && pass "protect-core blocks the charter through the dispatcher" \
+[ "$RC" = "2" ] && grep -q "locked HQ charter" <<<"$ERR" && pass "protect-core blocks the charter through the dispatcher" \
   || fail "protect-core did not block (rc=$RC): $ERR"
 run_master PreToolUse "$(payload_bash "git -C $ROOT push --force")"
 [ "$RC" = "2" ] && pass "block-hq-root-git-mutation blocks through the dispatcher" \
   || fail "git mutation guard did not block (rc=$RC): $ERR"
 run_master PreToolUse "$(payload_bash "qmd vsearch hello")"
-printf '%s' "$ERR" | grep -q "GGUF" && pass "block-qmd-model-download reached through the prefilter" \
+grep -q "GGUF" <<<"$ERR" && pass "block-qmd-model-download reached through the prefilter" \
   || pass "block-qmd-model-download ran (model present or guard allowed): rc=$RC"
 
 echo "[4] a benign Bash payload skips prefiltered guards"
 HQ_HOOK_TRACE=1 run_master PreToolUse "$(payload_bash "echo bench")"
 [ "$RC" = "0" ] && pass "benign command passes (rc=0)" || fail "benign command rc=$RC: $ERR"
 for id in detect-secrets block-hq-root-git-mutation block-qmd-model-download block-unsafe-package-install; do
-  printf '%s' "$ERR" | grep -q "skip $id (prefilter)" && pass "$id skipped by prefilter" || fail "$id was not skipped for a benign command"
+  grep -q "skip $id (prefilter)" <<<"$ERR" && pass "$id skipped by prefilter" || fail "$id was not skipped for a benign command"
 done
-printf '%s' "$ERR" | grep -q "run mandatory-scope-authorizer" && pass "mandatory-scope-authorizer always runs" \
+grep -q "run mandatory-scope-authorizer" <<<"$ERR" && pass "mandatory-scope-authorizer always runs" \
   || fail "mandatory-scope-authorizer did not run"
 
 echo "[5] disabled list and minimal profile are honoured in-process"
 HQ_HOOK_TRACE=1 HQ_DISABLED_HOOKS=detect-secrets run_master PreToolUse "$(payload_bash "echo ${K1}${K2} > note.txt")"
 [ "$RC" = "0" ] && pass "HQ_DISABLED_HOOKS skips detect-secrets" || fail "HQ_DISABLED_HOOKS not honoured (rc=$RC)"
 HQ_HOOK_TRACE=1 HQ_HOOK_PROFILE=minimal run_master PreToolUse "$(payload_bash "echo bench")"
-printf '%s' "$ERR" | grep -q "run inject-policy-on-trigger" && fail "minimal profile still ran inject-policy-on-trigger" \
+grep -q "run inject-policy-on-trigger" <<<"$ERR" && fail "minimal profile still ran inject-policy-on-trigger" \
   || pass "minimal profile drops non-safety hooks"
 HQ_HOOK_PROFILE=bogus run_master PreToolUse "$(payload_bash "echo bench")"
-printf '%s' "$ERR" | grep -q "Unknown profile" && pass "unknown profile reports an error" || fail "unknown profile silently accepted"
+grep -q "Unknown profile" <<<"$ERR" && pass "unknown profile reports an error" || fail "unknown profile silently accepted"
 
 echo "[6] policy-vocabulary prefilter skips the injector only when no policy token is present"
 PF_DIR="$ROOT/workspace/orchestrator/hook-state/policy-prefilter"
 rm -rf "$PF_DIR"
 HQ_HOOK_TRACE=1 run_master PreToolUse "$(payload_bash "cat README.md")"
-printf '%s' "$ERR" | grep -q "skip inject-policy-on-trigger (policy-vocab)" && pass "token-free command skips the injector" \
+grep -q "skip inject-policy-on-trigger (policy-vocab)" <<<"$ERR" && pass "token-free command skips the injector" \
   || fail "token-free command did not skip the injector: $(printf '%s' "$ERR" | grep inject-policy)"
 ls "$PF_DIR"/*PreToolUse.v1 >/dev/null 2>&1 && pass "compiled vocabulary written" || fail "no compiled vocabulary file"
 HQ_HOOK_TRACE=1 run_master PreToolUse "$(payload_bash "git -C $ROOT status")"
-printf '%s' "$ERR" | grep -q "run inject-policy-on-trigger" && pass "git command still runs the injector" \
+grep -q "run inject-policy-on-trigger" <<<"$ERR" && pass "git command still runs the injector" \
   || fail "git command was skipped by the vocabulary prefilter"
 # A new policy keyed on a fresh token must invalidate the compiled vocabulary
 # (directory mtime) and make that token run the injector.
@@ -126,7 +128,7 @@ POLICY
 sleep 1
 HQ_HOOK_TRACE=1 run_master PreToolUse "$(payload_bash "echo zzqqregistrytoken")"
 rc_new=$?
-printf '%s' "$ERR" | grep -q "run inject-policy-on-trigger" && pass "new policy token recompiles the vocabulary and runs the injector" \
+grep -q "run inject-policy-on-trigger" <<<"$ERR" && pass "new policy token recompiles the vocabulary and runs the injector" \
   || fail "new policy token did not run the injector: $(printf '%s' "$ERR" | grep inject-policy)"
 # A policy the compiler cannot prove (bare negation) must disable the skip.
 # Staleness is detected by policy-directory mtime (a file added, removed or
@@ -147,7 +149,7 @@ Test-only policy; safe to delete.
 POLICY
 sleep 1
 HQ_HOOK_TRACE=1 run_master PreToolUse "$(payload_bash "cat README.md")"
-printf '%s' "$ERR" | grep -q "run inject-policy-on-trigger" && pass "unprovable policy disables the skip" \
+grep -q "run inject-policy-on-trigger" <<<"$ERR" && pass "unprovable policy disables the skip" \
   || fail "unprovable (negated) policy did not disable the skip"
 rm -f "$TMP_POLICY"; rm -rf "$PF_DIR"
 rm -f "$ROOT/workspace/orchestrator/policy-trigger-state/mh-registry-test"* 2>/dev/null
@@ -194,14 +196,14 @@ write_fixture_registry() { # <first script> <second script, or empty>
 
 write_fixture_registry ".claude/hooks/advisory.sh" ".claude/hooks/guard.sh"
 run_fixture_master
-[ "$FIXTURE_RC" = "2" ] && printf '%s' "$FIXTURE_ERR" | grep -q "fixture guard blocked" \
+[ "$FIXTURE_RC" = "2" ] && grep -q "fixture guard blocked" <<<"$FIXTURE_ERR" \
   && pass "later block wins over an earlier advisory error" \
   || fail "advisory before block must exit 2 and preserve guard stderr (rc=$FIXTURE_RC): $FIXTURE_ERR"
 
 write_fixture_registry ".claude/hooks/absent.sh" ".claude/hooks/guard.sh"
 run_fixture_master
-[ "$FIXTURE_RC" = "2" ] && printf '%s' "$FIXTURE_ERR" | grep -q "fixture guard blocked" \
-  && printf '%s' "$FIXTURE_ERR" | grep -q "skip first (missing-script)" \
+[ "$FIXTURE_RC" = "2" ] && grep -q "fixture guard blocked" <<<"$FIXTURE_ERR" \
+  && grep -q "skip first (missing-script)" <<<"$FIXTURE_ERR" \
   && pass "missing registry script is skipped and later block wins" \
   || fail "missing script before block must exit 2, trace skip, and preserve guard stderr (rc=$FIXTURE_RC): $FIXTURE_ERR"
 

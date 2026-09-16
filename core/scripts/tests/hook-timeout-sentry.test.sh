@@ -4,6 +4,7 @@
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
+PORTABLE_LIB="$ROOT/core/scripts/lib/portable.sh"
 GATE_SRC="$ROOT/.claude/hooks/hook-gate.sh"
 MASTER_SRC="$ROOT/.claude/hooks/master-hook.sh"
 WATCHDOG_SRC="$ROOT/.claude/hooks/hook-timeout-watchdog.sh"
@@ -11,6 +12,16 @@ SETTINGS_SRC="$ROOT/.claude/settings.json"
 REGISTRY_SRC="$ROOT/.claude/hooks/hook-registry.json"
 CODEX_CONFIG_SRC="$ROOT/.codex/config.toml"
 GROK_BRIDGE_SRC="$ROOT/.grok/hooks/hq-grok-user-bridge.json"
+SYSTEM_JQ="$(command -v jq)"
+
+# shellcheck source=core/scripts/lib/portable.sh
+. "$PORTABLE_LIB"
+
+# master-hook.sh keeps the watchdog off by default in Git Bash because it is
+# costly on Windows. This suite exercises watchdog behavior deliberately; the
+# explicit disabled-path fixtures below still override this with 0.
+export HQ_HOOK_TIMEOUT_SENTRY=1
+export HQ_TEST_SYSTEM_JQ="$SYSTEM_JQ"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
@@ -164,11 +175,68 @@ event_count() {
   grep -c '^---EVENT---$' "$root/hq.stdin" || true
 }
 
+if ps -eww -o args= >/dev/null 2>&1; then
+  WATCHDOG_PROCESS_PROBE_MODE="ps -eww -o args="
+else
+  # Git Bash's MSYS ps does not implement GNU `-o args=`.
+  WATCHDOG_PROCESS_PROBE_MODE="ps -ef"
+fi
+
+watchdog_process_listing() {
+  case "$WATCHDOG_PROCESS_PROBE_MODE" in
+    'ps -eww -o args=')
+      # shellcheck disable=SC2009 # -ww keeps the exact watcher path visible.
+      ps -eww -o args=
+      ;;
+    'ps -ef')
+      # shellcheck disable=SC2009 # MSYS fallback, verified by the positive control below.
+      ps -ef
+      ;;
+  esac
+}
+
+watchdog_process_visible() {
+  local marker="$1" listing
+  listing="$(watchdog_process_listing)" || return 1
+  case "$listing" in *"$marker"*) return 0 ;; esac
+  return 1
+}
+
 watchdog_running() {
   local root="$1"
-  # shellcheck disable=SC2009 # Assert the exact watcher command is gone.
-  ps -eo args= | grep -F "$root/.claude/hooks/hook-timeout-watchdog.sh" | grep -v grep >/dev/null
+  watchdog_process_visible "$root/.claude/hooks/hook-timeout-watchdog.sh"
 }
+
+assert_watchdog_process_probe() {
+  local probe_root="$TMP/process-probe"
+  local probe_script="$probe_root/.claude/hooks/hook-timeout-watchdog-probe.sh"
+  local probe_pid
+  mkdir -p "${probe_script%/*}"
+  cat > "$probe_script" <<'EOF'
+#!/usr/bin/env bash
+while :; do sleep 0.1; done
+EOF
+  chmod +x "$probe_script"
+  bash "$probe_script" &
+  probe_pid=$!
+
+  for _ in $(seq 1 100); do
+    if watchdog_process_visible "$probe_script"; then
+      kill "$probe_pid" >/dev/null 2>&1 || true
+      wait "$probe_pid" 2>/dev/null || true
+      pass "process probe sees a live watchdog-shaped bash command ($WATCHDOG_PROCESS_PROBE_MODE)"
+      return 0
+    fi
+    sleep 0.02
+  done
+
+  kill "$probe_pid" >/dev/null 2>&1 || true
+  wait "$probe_pid" 2>/dev/null || true
+  fail "watchdog process probe is blind on this platform: $WATCHDOG_PROCESS_PROBE_MODE could not see live $probe_script"
+}
+
+echo "[probe] process table can observe a live watchdog-shaped command"
+assert_watchdog_process_probe
 
 echo "[1] fast gate hook leaves no watcher and sends no warning"
 R1="$(make_root fast)"
@@ -307,11 +375,11 @@ if mkdir "${HQ_TEST_JQ_DELAY_MARKER:?}" 2>/dev/null; then
     sleep 0.02
   done
 fi
-exec /usr/bin/jq "$@"
+exec "${HQ_TEST_SYSTEM_JQ:?}" "$@"
 EOF
 chmod +x "$R6/bin/jq"
 env PATH="$R6/bin:$PATH" HQ_TEST_HQ_ARGS="$R6/hq.args" HQ_TEST_HQ_STDIN="$R6/hq.stdin" HQ_TEST_HQ_ACK="$R6/hq.ack" \
-  HQ_TEST_ROOT="$R6" HQ_TEST_JQ_DELAY_MARKER="$R6/jq-delayed" HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
+  HQ_TEST_ROOT="$R6" HQ_TEST_SYSTEM_JQ="$SYSTEM_JQ" HQ_TEST_JQ_DELAY_MARKER="$R6/jq-delayed" HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R6/watchdog.trigger" \
   timeout 15s bash "$R6/.claude/hooks/master-hook.sh" PreToolUse >"$R6/out" 2>"$R6/err" <<<"$(payload master-dispatch-session)"
 [ "$(event_count "$R6")" = "1" ] || fail "slow master dispatcher should emit exactly one warning"
@@ -453,6 +521,8 @@ for non_delivering_event in Stop SubagentStop SessionEnd Notification PreCompact
   R7_EVENT="$(make_root "pending-${non_delivering_event}")"
   pending_session="pending-${non_delivering_event}-session"
   pending_hook_path="$R7_EVENT/personal/hooks/$non_delivering_event/99-pending-child.sh"
+  delivered_hook_path="$(portable_native_path "$pending_hook_path")" \
+    || fail "could not normalize $non_delivering_event breadcrumb path"
   write_timeout_breadcrumb "$R7_EVENT" "$pending_session" "$pending_hook_path" "$non_delivering_event" absolute
   pending_hash="$(sha256_fields "$pending_session")"
   pending_record="$R7_EVENT/workspace/.hook-timeout-breadcrumbs/$pending_hash/absolute-fixture.json"
@@ -460,15 +530,18 @@ for non_delivering_event in Stop SubagentStop SessionEnd Notification PreCompact
     bash "$R7_EVENT/.claude/hooks/master-hook.sh" "$non_delivering_event" >"$R7_EVENT/non-delivering.out" 2>"$R7_EVENT/non-delivering.err" \
       <<<"$(payload_for_event "$non_delivering_event" "$pending_session")"
   [ -f "$pending_record" ] || fail "$non_delivering_event consumed a breadcrumb without delivering additionalContext"
-  if grep -Fq "$pending_hook_path" "$R7_EVENT/non-delivering.out"; then
+  if grep -Fq "$delivered_hook_path" "$R7_EVENT/non-delivering.out"; then
     fail "$non_delivering_event emitted additionalContext instead of retaining it"
   fi
   [ ! -s "$R7_EVENT/non-delivering.err" ] || fail "$non_delivering_event changed master stderr"
   env PATH="$R7_EVENT/bin:$PATH" HQ_TEST_HQ_ARGS="$R7_EVENT/hq.args" HQ_TEST_HQ_STDIN="$R7_EVENT/hq.stdin" HQ_TEST_HQ_ACK="$R7_EVENT/hq.ack" \
     bash "$R7_EVENT/.claude/hooks/master-hook.sh" UserPromptSubmit >"$R7_EVENT/delivering.out" 2>"$R7_EVENT/delivering.err" \
       <<<"$(payload_for_event UserPromptSubmit "$pending_session")"
-  [ "$(grep -oF "$pending_hook_path" "$R7_EVENT/delivering.out" | wc -l)" -eq 1 ] \
-    || fail "$non_delivering_event breadcrumb was not delivered exactly once on UserPromptSubmit"
+  # A missing match is the condition under test, not a shell error. Keep it
+  # observable as count=0 so the assertion below emits its diagnostic.
+  delivered_count="$(grep -oF "$delivered_hook_path" "$R7_EVENT/delivering.out" | wc -l || true)"
+  [ "$delivered_count" -eq 1 ] \
+    || fail "$non_delivering_event breadcrumb delivery count=$delivered_count (stdout: $(tr '\n' ' ' < "$R7_EVENT/delivering.out"); stderr: $(tr '\n' ' ' < "$R7_EVENT/delivering.err"))"
   [ ! -f "$pending_record" ] || fail "$non_delivering_event breadcrumb remained after delivering fire"
   [ ! -s "$R7_EVENT/delivering.err" ] || fail "UserPromptSubmit delivery after $non_delivering_event changed master stderr"
 done
@@ -500,11 +573,13 @@ wait "$master_pid" 2>/dev/null
 set -e
 killed_breadcrumb_dir="$R8K/workspace/.hook-timeout-breadcrumbs"
 killed_child_path="$master_hook_path"
+delivered_killed_child_path="$(portable_native_path "$killed_child_path")" \
+  || fail "could not normalize killed dispatcher breadcrumb path"
 killed_breadcrumb=""
 pending_child_breadcrumbs=0
 for candidate in "$killed_breadcrumb_dir"/*/*.json; do
   [ -f "$candidate" ] || continue
-  if jq -e --arg hook_path "$killed_child_path" '.hook_path == $hook_path' "$candidate" >/dev/null 2>&1; then
+  if jq -e --arg hook_path "$delivered_killed_child_path" '.hook_path == $hook_path' "$candidate" >/dev/null 2>&1; then
     pending_child_breadcrumbs=$((pending_child_breadcrumbs + 1))
     if jq -e '.threshold == "absolute"' "$candidate" >/dev/null 2>&1; then
       killed_breadcrumb="$candidate"
@@ -529,7 +604,7 @@ wait "${recovery_pids[1]}"
 second_rc=$?
 set -e
 [ "$first_rc" -eq 0 ] && [ "$second_rc" -eq 0 ] || fail "concurrent breadcrumb consumers changed master exits"
-injected_count="$(grep -ohF "$killed_child_path" "$R8K/first.out" "$R8K/second.out" | wc -l)"
+injected_count="$(grep -ohF "$delivered_killed_child_path" "$R8K/first.out" "$R8K/second.out" | wc -l || true)"
 [ "$injected_count" -eq "$pending_child_breadcrumbs" ] || fail "concurrent fires double-injected or dropped dispatcher breadcrumbs: expected $pending_child_breadcrumbs, got $injected_count"
 for label in first second; do
   jq -e '.hookSpecificOutput.additionalContext | contains("post-kill child context")' "$R8K/$label.out" >/dev/null \
@@ -603,6 +678,11 @@ R10="$(make_root missing-hq)"
 set_timeout "$R10" 'hook-gate.sh" detect-secrets ' 2
 # shellcheck disable=SC2016 # This fixture expands when the delegated hook runs.
 make_gate_hook "$R10" 'printf "%s\t%s\t%s\n" hook-gate "$0" relative > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; while [ ! -f "${HQ_TEST_HQ_OLD_ATTEMPT:?}" ]; do sleep 0.02; done; printf "missing-hq-out"; printf "missing-hq-err" >&2; exit 2'
+cat > "$R10/bin/jq" <<'EOF'
+#!/usr/bin/env bash
+exec "${HQ_TEST_SYSTEM_JQ:?}" "$@"
+EOF
+chmod +x "$R10/bin/jq"
 cat > "$R10/bin/hq" <<'EOF'
 #!/usr/bin/env bash
 # Simulates an installed pre-feature client which rejects the new subcommand.
