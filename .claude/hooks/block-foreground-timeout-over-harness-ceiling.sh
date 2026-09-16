@@ -21,8 +21,12 @@
 
 set -uo pipefail
 
-# No hq on PATH → nothing to enforce here; allow.
-command -v hq >/dev/null 2>&1 || exit 0
+# No hq on PATH → nothing to enforce here; allow. Drain the payload first: this
+# guard runs before the hook reads stdin, and exiting with the pipe unread kills
+# the dispatcher's payload writer with SIGPIPE. A dispatcher under `pipefail`
+# that records the pipeline status then reports this hook as failing with 141
+# even though it exited 0 (the hq-core 15.0.139 fleet-box symptom).
+command -v hq >/dev/null 2>&1 || { cat >/dev/null 2>&1 || true; exit 0; }
 
 # Most Bash calls cannot possibly be blocked by timeout-guard. When jq is
 # available, inspect the payload just enough to eliminate those calls before

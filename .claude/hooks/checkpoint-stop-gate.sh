@@ -31,10 +31,17 @@
 
 set -uo pipefail
 
-[ "${HQ_CHECKPOINT_GATE_NO_CLI:-}" = "1" ] && exit 0
+# Each bail-out below happens before anything reads the payload, and the
+# dispatcher is still writing it into our stdin. Exiting with the pipe unread
+# kills that writer with SIGPIPE, and a dispatcher under `pipefail` reports the
+# resulting 141 as this hook's own status. Drain first (the `exec` path does not
+# need this — the delegated CLI inherits and reads stdin itself).
+__cp_bail() { cat >/dev/null 2>&1 || true; exit 0; }
+
+[ "${HQ_CHECKPOINT_GATE_NO_CLI:-}" = "1" ] && __cp_bail
 
 __cp_hq="$(command -v hq 2>/dev/null || true)"
-[ -n "$__cp_hq" ] || exit 0
+[ -n "$__cp_hq" ] || __cp_bail
 
 # `hq core --help` costs seconds of node startup, so probe it at most once per
 # CLI build and cache the answer. Key by resolved path + mtime + size so a PATH
@@ -68,5 +75,6 @@ case "$__cp_caps" in
   *checkpoint-stop-gate*) exec hq core checkpoint-stop-gate ;;
 esac
 
-# No gate available: emit no decision and let the turn end.
-exit 0
+# No gate available: emit no decision and let the turn end. Still drain, for the
+# same reason as the guards above — nothing has read the payload on this path.
+__cp_bail

@@ -71,6 +71,10 @@ set -uo pipefail
 EVENT="${1:-}"
 if [ -z "$EVENT" ]; then
   echo "USAGE: master-hook.sh <event-name>" >&2
+  # Drain first so a misregistered dispatcher reports THIS usage error (1)
+  # rather than SIGPIPE-killing the harness's payload writer and surfacing as
+  # 141 under pipefail.
+  cat >/dev/null 2>&1 || true
   exit 1
 fi
 
@@ -473,11 +477,22 @@ run_child() { # <timeout-seconds> <script-path> [args...]  (stdout captured by c
   local t="$1" path="$2"; shift 2
   local runner=()
   if [ -x "$path" ]; then runner=("$path"); else runner=(bash "$path"); fi
+  # Build the command first so there is exactly ONE pipeline, and its status is
+  # read from PIPESTATUS[1] on the line immediately after it. A hook that exits
+  # before reading stdin kills `printf` with SIGPIPE; `pipefail` (set at the top
+  # of this file) would otherwise make the pipeline 141 and report a hook that
+  # exited 0 as a failure that fails the whole batch. Locals are declared BEFORE
+  # the pipeline because every simple command resets PIPESTATUS.
+  local cmd=()
   case "$child_timeout_cmd" in
-    timeout) printf '%s' "$INPUT" | timeout "$t" "${runner[@]}" "$@" ;;
-    perl) printf '%s' "$INPUT" | perl -e 'alarm shift; exec @ARGV' "$t" "${runner[@]}" "$@" ;;
-    *) printf '%s' "$INPUT" | "${runner[@]}" "$@" ;;
+    timeout) cmd=(timeout "$t" "${runner[@]}") ;;
+    perl) cmd=(perl -e 'alarm shift; exec @ARGV' "$t" "${runner[@]}") ;;
+    *) cmd=("${runner[@]}") ;;
   esac
+  local rc=0
+  printf '%s' "$INPUT" | "${cmd[@]}" "$@"
+  rc=${PIPESTATUS[1]}
+  return "$rc"
 }
 
 trace_ran() { # <id> <rc> <start-epochrealtime>

@@ -209,6 +209,9 @@ set -euo pipefail
 # Validate arguments
 if [ $# -lt 2 ]; then
   echo "USAGE: hook-gate.sh <hook-id> <actual-hook-script> [args...]" >&2
+  # Drain first so a misregistered gate reports THIS usage error (1) rather than
+  # SIGPIPE-killing its payload writer and surfacing as 141 under pipefail.
+  cat >/dev/null 2>&1 || true
   exit 1
 fi
 
@@ -399,10 +402,14 @@ if command -v hq_launch_shell_path >/dev/null 2>&1 \
   exit "$status"
 fi
 
+# Inline fallback for an install whose hook-lib.sh could not be sourced. Same
+# PIPESTATUS[1] contract as hq_launch_shell_path: a hook that exits before
+# reading stdin kills the payload writer with SIGPIPE, and `pipefail` (set
+# above) would otherwise report that writer's 141 as the hook's status.
 chmod u+x "$HOOK_SCRIPT" 2>/dev/null || true
 if [ -x "$HOOK_SCRIPT" ]; then
   printf '%s' "$HOOK_PAYLOAD" | "$HOOK_SCRIPT" "$@"
-  exit $?
+  exit "${PIPESTATUS[1]}"
 fi
 printf '%s' "$HOOK_PAYLOAD" | bash "$HOOK_SCRIPT" "$@"
-exit $?
+exit "${PIPESTATUS[1]}"

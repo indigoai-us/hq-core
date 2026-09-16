@@ -323,6 +323,8 @@ jobs:
             core/scripts/tests/agent-runtime-skill-metadata.test.sh \
             core/scripts/tests/agent-runtime-permissions.test.sh \
             core/scripts/tests/hook-runtime-diagnostics.test.sh \
+            core/scripts/tests/hook-launch-sigpipe-status.test.sh \
+            core/scripts/tests/hooks-drain-stdin-before-early-exit.test.sh \
             core/scripts/tests/agent-runtime-contracts-e2e.test.sh \
             .claude/hooks/hook-gate.sh \
             .claude/hooks/check-claude-desktop-bridge-health.sh \
@@ -367,6 +369,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install hq CLI for doctor-path coverage
+        run: |
+          set -euo pipefail
+          npm install -g @indigoai-us/hq-cli
+          if ! command -v hq >/dev/null 2>&1; then
+            echo "ERROR: hook-health prevention requires hq on PATH to exercise the doctor path." >&2
+            exit 1
+          fi
+          hq doctor --help >/dev/null 2>&1
       - name: Hook health checker behavior
         run: bash core/scripts/tests/hook-health-check.test.sh
       - name: Hook settings release contract
@@ -419,6 +433,22 @@ jobs:
         run: bash core/scripts/tests/ensure-hq-cli-hook.test.sh
       - name: ensure-hq-desktop hook detects/updates the desktop app
         run: bash core/scripts/tests/ensure-hq-desktop-hook.test.sh
+
+  # A hook that exits before reading stdin used to be reported as having FAILED
+  # with 141: the dispatcher piped the payload in, the hook closed the read end,
+  # the writer died of SIGPIPE, and `pipefail` promoted that to the pipeline
+  # status. It refused an agent's first company read on a fresh session and
+  # failed 2 of 3 v1->v2 fleet migration probes on hq-core 15.0.139.
+  hook-launch-status:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: hook-launch-status
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: A hook's recorded status is the hook's, not its payload writer's
+        run: bash core/scripts/tests/hook-launch-sigpipe-status.test.sh
+      - name: Hooks that exit before reading stdin still drain it
+        run: bash core/scripts/tests/hooks-drain-stdin-before-early-exit.test.sh
 
   # feedback_3cdd3064: deploy-summary.sh aborted under set -u when HQ_DEPLOY_API was unset.
   deploy-summary-nounset:

@@ -74,6 +74,12 @@ human decisions, irreversible actions, security signals, and at most one
 milestone per major phase. Technical operators can opt into fuller narration
 with `/output-style hq-operator`.
 
+Write flat and factual in every surface — chat, Slack and DM bot replies, PR
+bodies, commit messages, deliverables. No aphoristic closers, antithesis
+("not X, but Y"), rhythm triads, portentous fragments, or metaphor standing in
+for explanation. Rule: `core/policies/hq-no-mannered-prose.md`. Deliverable-level
+pass: `/humanize`.
+
 ## Git Discipline
 
 - Every git or gh mutation must include an explicit repo anchor in the same

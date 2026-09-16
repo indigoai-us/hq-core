@@ -27,6 +27,8 @@ jq -e '
 jq -e '
   [.hooks.PreToolUse[]?.hooks[]? | select(.type == "command" and (.command | type == "string") and (.command | length > 0))] | length > 0
 ' "$SETTINGS" >/dev/null || fail "settings.json has no PreToolUse command hook"
+jq -e '.permissions.defaultMode == "plan"' "$SETTINGS" >/dev/null \
+  || fail "shipped settings.json must default permissions.defaultMode to plan"
 jq -e 'has("hooks") | not' "$LOCAL_SETTINGS" >/dev/null \
   || fail "shipped settings.local.json must not shadow project hook registrations"
 REPOSITORY="${GITHUB_REPOSITORY:-$(git config --get remote.origin.url || true)}"

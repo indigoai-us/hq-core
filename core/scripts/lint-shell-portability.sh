@@ -12,6 +12,9 @@
 #     literally — so the defect never appears in Linux CI. Assign the pattern to
 #     a variable and quote it: p=$'\\\\\\n'; "${var//"$p"/}". Single-escape
 #     patterns ($'\\t', $'\\037') expand to one character and are not flagged.
+#   - bare "${array[@]}" expansions in nounset hook-health checks. Stock macOS
+#     bash 3.2 treats an empty array as unbound; use
+#     ${array[@]+"${array[@]}"} so a healthy empty issue list remains a PASS.
 #
 # Allowlist: core/scripts/lint-shell-portability.allow (path substring per line).
 # /tmp and bare $USER are documented contributor rules; full auto-lint for those
@@ -60,6 +63,34 @@ scan_file() {
   done < "$HITS"
 }
 
+# Scope this new static rule to the health checker that triggered the regression.
+# A repository-wide scan finds many candidate expansions, most with
+# array-initialization invariants outside a shell parser's reach. Keeping the
+# scope narrow blocks a third recurrence here without falsely banning those
+# existing call sites; expand it only with a reviewed allowlist or dataflow rule.
+scan_nounset_array_expansions() {
+  local f="$1" hit body name bare guarded
+
+  # The expansion is only hazardous where nounset is active.
+  grep -Eq '^[[:space:]]*set[[:space:]]+[^#]*-[[:alnum:]]*u' "$f" || return 0
+
+  : > "$HITS"
+  grep -nE '"\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\}"' "$f" > "$HITS" 2>/dev/null || true
+  while IFS= read -r hit || [ -n "$hit" ]; do
+    [ -z "$hit" ] && continue
+    body="${hit#*:}"
+    case "${body#"${body%%[![:space:]]*}"}" in \#*) continue ;; esac
+    name="$(printf '%s\n' "$body" | sed -n 's/.*"\${\([A-Za-z_][A-Za-z0-9_]*\)\[@\]}".*/\1/p')"
+    [ -n "$name" ] || continue
+    bare='"${'"$name"'[@]}"'
+    guarded='${'"$name"'[@]+"${'"$name"'[@]}"}'
+    case "$body" in
+      *"$guarded"*) continue ;;
+    esac
+    report "$f" "${hit%%:*}" "bare $bare under set -u aborts on an empty array in macOS bash 3.2; use $guarded"
+  done < "$HITS"
+}
+
 git ls-files -- '*.sh' > "$LIST"
 
 while IFS= read -r f || [ -n "$f" ]; do
@@ -99,6 +130,9 @@ while IFS= read -r f || [ -n "$f" ]; do
     report "$f" "${hit%%:*}" "brew-only jq install message (use require_jq / multi-OS guidance)"
   done < "$HITS"
   scan_file "$f" "readlink[[:space:]]+-f" "readlink -f is GNU-only"
+  case "$f" in
+    core/scripts/check-hq-hooks.sh) scan_nounset_array_expansions "$f" ;;
+  esac
   # An unquoted ANSI-C pattern holding a LITERAL backslash silently no-ops on
   # bash 3.2 (stock macOS) while working on bash 5, so it fails only off-CI.
   # Shipped instance: the scope guard's line-continuation strip, which left a

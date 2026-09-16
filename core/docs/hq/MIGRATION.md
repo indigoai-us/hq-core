@@ -3,6 +3,126 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.142-beta.4
+
+- promote 2026-09-16 (hooks, exit status): **A hook that exits before reading
+  its payload is no longer reported as having failed.** Every HQ dispatch path
+  fed the payload through a pipe (`printf '%s' "$payload" | "$hook"`). A hook
+  that exits early — `conduct-lane-inbox.sh`'s
+  `[ -n "${HQ_CONDUCT_RUN_DIR:-}" ] || exit 0` guard is the canonical shape —
+  closes the read end while `printf` is still writing, so `printf` dies of
+  SIGPIPE and the `pipefail` set by `hook-gate.sh`, `master-hook.sh`, and both
+  cross-runtime adapters promotes 141 to the pipeline status. A hook that exited
+  0 was then reported as failing with 141. The race needs the payload to exceed
+  the pipe buffer (64 KiB on Linux, 8 KiB on stock macOS), which made it
+  intermittent: on an untouched v1 fleet box the citizenship probe failed 2 of 3
+  runs with `PROBE_FAIL - pre-bind: first company read on a fresh session was
+  refused (rc=141): Hook 'conduct-lane-inbox' exited 141`, blocking the v1->v2
+  migration. Only exit-0 hooks were corrupted: `pipefail` returns the rightmost
+  non-zero status, so a genuine block (2) or error already won over the writer's
+  141.
+
+  Fixed on both halves. Every dispatcher now records `PIPESTATUS[1]` — the
+  hook's own element — instead of `$?`: `core/scripts/hook-lib.sh`
+  (`hq_launch_shell_path`, exec path and bash-fallback path),
+  `.claude/hooks/hook-gate.sh` (inline fallback), `.claude/hooks/master-hook.sh`
+  (`run_child`, the in-process registry and directory dispatch), and the
+  `.codex/` and `.grok/` adapter fallbacks. Payload bytes are unchanged — the
+  pipe stays, only the status read moves. Separately, hooks that can exit before
+  their `cat` now drain stdin first, so they stay safe under an OLD dispatcher
+  they cannot upgrade: `conduct-lane-inbox.sh`, `checkpoint-stop-gate.sh`,
+  `block-foreground-timeout-over-harness-ceiling.sh`,
+  `inject-codex-checkpoint-reprompt.sh`, and the usage guards in
+  `hook-gate.sh` and `master-hook.sh`.
+
+  Regression coverage: `core/scripts/tests/hook-launch-sigpipe-status.test.sh`
+  (1 MiB payload through hook-lib's two paths, hook-gate, and master-hook's
+  registry dispatch, plus guards that a genuine 2 or 3 still propagates) and
+  `core/scripts/tests/hooks-drain-stdin-before-early-exit.test.sh` (each
+  early-exit hook under a bare `printf | hook` pipeline with `pipefail`). Both
+  run in the new `hook-launch-status` CI job.
+
+  **Fleet rollout:** boxes do not pick this up automatically. After this release
+  ships, run on each box:
+  `hq rescue --hq-root /home/ec2-user/hq-agent --yes`.
+
+## Release: v15.0.142-beta.2
+
+- promote 2026-09-16 (voice, mannered prose): **HQ now has an explicit rule
+  against the aphoristic register, and it is enforced on outbound sends.**
+  Plain-language guidance already existed, but it covered vocabulary, not
+  cadence. Output could be free of jargon and still read as an essay: antithesis
+  ("not a bug, a boundary problem"), closers that land a note instead of a fact,
+  three adjectives where one was needed, portentous fragments, metaphor standing
+  in for the mechanism. It is the strongest default on Opus-class models, and it
+  reached users through chat, Slack bot replies, and email drafts alike.
+
+  New policy `core/policies/hq-no-mannered-prose.md` (soft, SessionStart) is the
+  canonical rule. Both output styles gained a "No mannered prose" section plus a
+  table of `/humanize` tells that leak into conversation (sycophancy,
+  signposting, filler, over-hedging, AI vocabulary, copula avoidance, elegant
+  variation, false ranges, generic closes, boldface scatter, inline-header
+  lists). The charter's Communication section points at the rule. `/humanize`
+  gained a MANNERED PROSE group, patterns 31-39, with before/after pairs.
+
+  Enforcement: the `enforce-humanize-before-send` Stop hook previously watched
+  `hq dm`, `hq cowork dm`, Slack `chat.postMessage`, Post-Bridge, and
+  `mcp__hq__hq_dm`. It now also covers email (Superhuman and Gmail draft/send),
+  WhatsApp, SMS/Twilio, iMessage, Telegram, and social publishers, matching
+  either the tool verb after the final `__` or a channel name in the server
+  segment, so a channel added later is covered without another edit. Four tell
+  categories were added (antithesis, rhythm triads, portentous fragments,
+  throat-clearing) on top of the existing six. The two-distinct-category cluster
+  bar is unchanged, so a single em dash or one plain three-item list still does
+  not trip it. Regression coverage grew from 9 cases to 16.
+
+  The Slack bot worker system prompt
+  (`core/packages/hq-pack-slack-bot/workers/slack-mention-worker/system-prompt.md`)
+  gained a Voice section carrying the same rules inline, because bot workers run
+  with an appended system prompt and never load an output style.
+
+  No migration action required. Sessions pick up the new styles at next start.
+  Operators who find the hook too strict can widen the cluster bar in
+  `.claude/hooks/enforce-humanize-before-send.sh`; it fails open on any error
+  and never blocks more than once per stop chain.
+
+## Release: v15.0.142-beta.1
+
+- promote 2026-09-16 (conduct lanes, machine load): **detached conduct lanes
+  whose orchestrating session has exited are now swept up instead of running
+  forever.** `hq-detach.sh` deliberately starts a lane in its own POSIX
+  session so a parent turn sweep cannot reap it — a lane has to outlive the
+  turn that launched it. Nothing existed on the other side of that door, so a
+  lane whose owner exited was reparented to launchd and kept working
+  unsupervised, each one fanning out a test suite at roughly one process per
+  core. They accumulated silently across days. Measured on an 18-core macOS
+  host before this change: load average 246, 99 node processes, a runner
+  orphaned mid-task, a pool lane idle for 15h51m, and node processes orphaned
+  for three days; one single orphaned lane held 20 processes. The desktop app
+  was blamed first and was using 55 MB at 0.2% CPU.
+
+  New `core/scripts/conduct-reap.sh` classifies every registered lane and
+  reports by default; `--apply` clears the liveness markers of finished lanes
+  (logs and args are deliberately kept — they are the only record of what a
+  lane did), and `--apply --kill` additionally stops orphaned ones. Ownership
+  is tested by walking the whole ancestor chain for a live `claude` process,
+  not by checking the immediate parent: a lane is a small tree, so its parent
+  is usually just another piece of the same orphaned lane. **A lane whose
+  owning session is alive is never touched, at any age.** An age gate
+  (`--min-age`, default 30 minutes) keeps a just-started lane out of scope.
+
+  New `core/hooks/SessionStart/40-conduct-reap.sh` runs the sweep when a
+  session opens — the best available signal that an earlier one ended. It is
+  detached so session start never waits on it, single-flighted via an atomic
+  `mkdir` lock so a burst of sessions cannot race to signal the same pids, and
+  rate-limited to one sweep per 30 minutes. Disable with
+  `HQ_DISABLED_HOOKS=conduct-reap`; tune the gate with
+  `HQ_CONDUCT_REAP_MIN_AGE`.
+
+  Note for anyone extending this: `promote-hq-core-scan.sh` does not walk
+  `core/hooks/`, so hooks in that directory do not appear in a promotion scan
+  and have to be carried across deliberately.
+
 ## Release: v15.0.140-beta.1
 
 - promote 2026-09-16 (hook dispatch, Windows performance): **the gated

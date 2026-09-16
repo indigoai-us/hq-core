@@ -42,15 +42,28 @@
 
 set -uo pipefail
 
-[ -n "${HQ_CONDUCT_RUN_DIR:-}" ] || exit 0
+# EVERY GUARD BELOW RUNS BEFORE THIS HOOK READS ITS PAYLOAD, and the dispatcher
+# is still writing that payload into our stdin. Exiting with the pipe unread
+# kills the writer with SIGPIPE; a dispatcher under `pipefail` that records the
+# pipeline status then reports this hook as having failed with 141 even though
+# it exited 0. On fleet boxes at hq-core 15.0.139 that refused an agent's first
+# company read on a fresh session:
+#   PROBE_FAIL - pre-bind: ... (rc=141): Hook 'conduct-lane-inbox' exited 141.
+# hook-lib.sh now reads PIPESTATUS[1] so a current install is immune, but this
+# hook must also be safe under an OLD dispatcher it cannot upgrade. Draining
+# costs one read of an already-buffered payload, so bail out through this.
+bail() { cat >/dev/null 2>&1 || true; exit "${1:-0}"; }
 
-self_hq="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)" || exit 0
-[ -n "$self_hq" ] || exit 0
+[ -n "${HQ_CONDUCT_RUN_DIR:-}" ] || bail 0
+
+self_hq="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)" || bail 0
+[ -n "$self_hq" ] || bail 0
 
 inbox_sh="$self_hq/core/scripts/conduct-inbox.sh"
-[ -x "$inbox_sh" ] || exit 0
-[ -d "$HQ_CONDUCT_RUN_DIR/inbox/pending" ] || exit 0
+[ -x "$inbox_sh" ] || bail 0
+[ -d "$HQ_CONDUCT_RUN_DIR/inbox/pending" ] || bail 0
 
+# Past this point stdin is at EOF, so a plain `exit` is already SIGPIPE-safe.
 input="$(cat 2>/dev/null || printf '{}')"
 hook_event="$(printf '%s' "$input" | jq -r '.hook_event_name // .hookEventName // ""' 2>/dev/null || true)"
 

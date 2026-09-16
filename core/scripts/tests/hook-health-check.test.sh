@@ -15,13 +15,65 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
 
+# Avoid a false failure under `set -o pipefail`: `grep -q` intentionally closes
+# its input after a match, which can leave the preceding printf with SIGPIPE.
+# A shell substring assertion tests the same literal condition without a pipe.
+assert_contains() { [[ "$1" == *"$2"* ]]; }
+
+# Linux CI uses bash 4/5, which accepts an empty-array expansion that aborts
+# stock macOS bash 3.2 under `set -u`. Keep a source-level assertion alongside
+# the healthy-root behavior so the macOS-only failure cannot return unnoticed.
+assert_array_expansions_guarded() {
+  local name="$1" line quoted guarded found=0
+  quoted='"${'"$name"'[@]}"'
+  guarded='${'"$name"'[@]+"${'"$name"'[@]}"}'
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" == *"$quoted"* ]] || continue
+    case "${line#"${line%%[![:space:]]*}"}" in \#*) continue ;; esac
+    found=1
+    case "$line" in
+      *"$guarded"*) ;;
+      *) fail "unguarded empty-array expansion for $name in $CHECKER: $line" ;;
+    esac
+  done < "$CHECKER"
+
+  [ "$found" -eq 1 ] || fail "did not find an array expansion for $name in $CHECKER"
+}
+
 run_expect() {
   local expected="$1" root="$2" output rc
   set +e
-  output="$(bash "$CHECKER" --root "$root" "${@:3}" 2>&1)"
+  output="$(PATH="$INLINE_STUB_BIN:$PATH" bash "$CHECKER" --root "$root" "${@:3}" 2>&1)"
   rc=$?
   set -e
   [ "$rc" -eq "$expected" ] || fail "expected exit $expected, got $rc: $output"
+  printf '%s' "$output"
+}
+
+# The zero-hooks regression only existed when the modern `hq doctor` path was
+# used. Pin a real installed CLI ahead of PATH rather than exercising the
+# inline fallback or a stub, and make the healthy control prove that route.
+REAL_HQ="$(command -v hq)" || fail "hook-health regression requires a real hq CLI on PATH"
+REAL_HQ_DIR="$(dirname "$REAL_HQ")"
+# Most cases are intentionally isolated to the inline path: their mktemp roots
+# omit real HQ content. The focused case below places REAL_HQ before this stub
+# and proves the modern doctor path against a minimal valid HQ root.
+INLINE_STUB_BIN="$TMP/inline-stub-bin"
+mkdir -p "$INLINE_STUB_BIN"
+cat >"$INLINE_STUB_BIN/hq" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$INLINE_STUB_BIN/hq"
+
+run_expect_via_real_hq() {
+  local expected="$1" root="$2" output rc
+  set +e
+  output="$(PATH="$REAL_HQ_DIR:$PATH" bash "$CHECKER" --root "$root" "${@:3}" 2>&1)"
+  rc=$?
+  set -e
+  [ "$rc" -eq "$expected" ] || fail "expected exit $expected via real hq ($REAL_HQ), got $rc: $output"
   printf '%s' "$output"
 }
 
@@ -42,17 +94,56 @@ echo "[1] a healthy project configuration passes without relying on hooks"
 HEALTHY="$TMP/healthy"
 make_healthy_root "$HEALTHY"
 out="$(run_expect 0 "$HEALTHY")"
-printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' || fail "healthy root did not pass: $out"
-printf '%s' "$out" | grep -Fq 'ledger: not checked' || fail "default check should not falsely require a fresh-session ledger: $out"
+assert_contains "$out" 'HQ hook health: PASS' || fail "healthy root did not pass: $out"
+assert_contains "$out" 'ledger: not checked' || fail "default check should not falsely require a fresh-session ledger: $out"
 pass "healthy settings pass and fresh installs are not falsely warned"
+
+echo "[1a] an empty healthy-root issue list remains portable under macOS bash 3.2"
+assert_array_expansions_guarded REQUIRED_COMMAND_HOOK_ISSUES
+out="$(run_expect 0 "$HEALTHY")"
+assert_contains "$out" 'HQ hook health: PASS' || fail "healthy root did not pass after an empty issue list: $out"
+pass "healthy settings retain a guarded empty issue list"
+
+echo "[1b] a real hq doctor path rejects empty or absent hook registrations"
+DOCTOR_HEALTHY="$TMP/doctor-healthy"
+make_healthy_root "$DOCTOR_HEALTHY"
+# `hq doctor` deliberately accepts only roots containing both `.claude` and
+# `core`; make these focused fixtures real HQ roots without copying the source
+# tree or substituting a test double for the installed CLI.
+mkdir -p "$DOCTOR_HEALTHY/core"
+out="$(run_expect_via_real_hq 0 "$DOCTOR_HEALTHY")"
+assert_contains "$out" 'checked via: hq doctor' \
+  || fail "healthy control did not exercise hq doctor: $out"
+
+EMPTY_HOOKS="$TMP/empty-hooks"
+mkdir -p "$EMPTY_HOOKS/.claude" "$EMPTY_HOOKS/core"
+jq -n '{hooks: {
+  SessionStart: [], PreToolUse: [], PostToolUse: [], PreCompact: [], Stop: [],
+  UserPromptSubmit: [], Notification: [], SubagentStop: [], SessionEnd: []
+}}' >"$EMPTY_HOOKS/.claude/settings.json"
+out="$(run_expect_via_real_hq 2 "$EMPTY_HOOKS")"
+assert_contains "$out" 'SessionStart has no command hook' \
+  || fail "empty hooks did not report SessionStart: $out"
+assert_contains "$out" 'PreToolUse has no command hook' \
+  || fail "empty hooks did not report PreToolUse: $out"
+
+ABSENT_HOOKS="$TMP/absent-hooks"
+mkdir -p "$ABSENT_HOOKS/.claude" "$ABSENT_HOOKS/core"
+printf '{"model":"fixture"}\n' >"$ABSENT_HOOKS/.claude/settings.json"
+out="$(run_expect_via_real_hq 2 "$ABSENT_HOOKS")"
+assert_contains "$out" 'SessionStart has no command hook' \
+  || fail "absent hooks did not report SessionStart: $out"
+assert_contains "$out" 'PreToolUse has no command hook' \
+  || fail "absent hooks did not report PreToolUse: $out"
+pass "real hq doctor path rejects empty and absent hook registrations"
 
 echo "[2] a missing settings file produces an actionable desktop/SDK repair"
 MISSING="$TMP/missing"
 mkdir -p "$MISSING/.claude"
 out="$(run_expect 2 "$MISSING")"
-printf '%s' "$out" | grep -Fq '.claude/settings.json is missing' || fail "missing settings diagnosis absent: $out"
-printf '%s' "$out" | grep -Fq 'settingSources: ["project"]' || fail "SDK settingSources repair absent: $out"
-printf '%s' "$out" | grep -Fq 'hq rescue -y --paths .claude' || fail "targeted rescue repair absent: $out"
+assert_contains "$out" '.claude/settings.json is missing' || fail "missing settings diagnosis absent: $out"
+assert_contains "$out" 'settingSources: ["project"]' || fail "SDK settingSources repair absent: $out"
+assert_contains "$out" 'hq rescue -y --paths .claude' || fail "targeted rescue repair absent: $out"
 pass "missing settings fail with a copy-paste remediation"
 
 echo "[3] missing required hook events fail clearly"
@@ -62,7 +153,7 @@ cat >"$NO_START/.claude/settings.json" <<'JSON'
 {"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"echo pre-tool"}]}]}}
 JSON
 out="$(run_expect 2 "$NO_START")"
-printf '%s' "$out" | grep -Fq 'SessionStart has no command hook' || fail "missing SessionStart diagnosis absent: $out"
+assert_contains "$out" 'SessionStart has no command hook' || fail "missing SessionStart diagnosis absent: $out"
 pass "missing SessionStart hook fails"
 
 NO_PRE="$TMP/no-pre"
@@ -71,7 +162,7 @@ cat >"$NO_PRE/.claude/settings.json" <<'JSON'
 {"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo session-start"}]}]}}
 JSON
 out="$(run_expect 2 "$NO_PRE")"
-printf '%s' "$out" | grep -Fq 'PreToolUse has no command hook' || fail "missing PreToolUse diagnosis absent: $out"
+assert_contains "$out" 'PreToolUse has no command hook' || fail "missing PreToolUse diagnosis absent: $out"
 pass "missing PreToolUse hook fails"
 
 echo "[4] malformed JSON fails instead of being treated as hook-ready"
@@ -79,31 +170,31 @@ BAD_JSON="$TMP/bad-json"
 mkdir -p "$BAD_JSON/.claude"
 printf '{not json\n' >"$BAD_JSON/.claude/settings.json"
 out="$(run_expect 2 "$BAD_JSON")"
-printf '%s' "$out" | grep -Fq 'is not valid JSON' || fail "invalid JSON diagnosis absent: $out"
+assert_contains "$out" 'is not valid JSON' || fail "invalid JSON diagnosis absent: $out"
 pass "invalid JSON fails"
 
 echo "[5] ledger verification detects a runtime that never wrote policy state"
 LEDGER="$TMP/ledger"
 make_healthy_root "$LEDGER"
 out="$(run_expect 2 "$LEDGER" --require-ledger)"
-printf '%s' "$out" | grep -Fq 'policy-trigger ledger was not found' || fail "missing ledger diagnosis absent: $out"
-printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+assert_contains "$out" 'policy-trigger ledger was not found' || fail "missing ledger diagnosis absent: $out"
+assert_contains "$out" 'HQ runtime enforcement: NOT OBSERVED' \
   || fail "missing ledger did not emit the runtime-off warning: $out"
 mkdir -p "$LEDGER/workspace/orchestrator/policy-trigger-state"
 : >"$LEDGER/workspace/orchestrator/policy-trigger-state/desktop-session.txt"
 out="$(run_expect 0 "$LEDGER" --require-ledger)"
-printf '%s' "$out" | grep -Fq 'ledger: present' || fail "present ledger not reported: $out"
-printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: OBSERVED' \
+assert_contains "$out" 'ledger: present' || fail "present ledger not reported: $out"
+assert_contains "$out" 'HQ runtime enforcement: OBSERVED' \
   || fail "present ledger did not emit the runtime-on signal: $out"
 pass "ledger requirement distinguishes hook-ready from hooks-observed"
 
 echo "[6] session-scoped verification cannot be satisfied by a stale ledger"
 out="$(run_expect 2 "$LEDGER" --session-id app-sdk-session)"
-printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+assert_contains "$out" 'HQ runtime enforcement: NOT OBSERVED' \
   || fail "missing session ledger did not emit runtime-off warning: $out"
 : >"$LEDGER/workspace/orchestrator/policy-trigger-state/app-sdk-session.txt"
 out="$(run_expect 0 "$LEDGER" --session-id app-sdk-session)"
-printf '%s' "$out" | grep -Fq 'session: app-sdk-session' \
+assert_contains "$out" 'session: app-sdk-session' \
   || fail "exact session identity was not reported: $out"
 pass "session-scoped ledger check rejects stale evidence"
 
@@ -141,8 +232,8 @@ set -e
 [ "$split_rc" -ne 0 ] || fail "expected the unquoted command to fail on a spaced root, but it succeeded"
 
 out="$(run_expect 2 "$SPACED")"
-printf '%s' "$out" | grep -Fq 'without quotes' || fail "unquoted reference diagnosis absent: $out"
-printf '%s' "$out" | grep -Fq "$SPACED" || fail "diagnosis did not name the spaced root: $out"
+assert_contains "$out" 'without quotes' || fail "unquoted reference diagnosis absent: $out"
+assert_contains "$out" "$SPACED" || fail "diagnosis did not name the spaced root: $out"
 pass "unquoted references on a spaced root fail instead of passing silently"
 
 echo "[8] the same root passes once every reference is quoted"
@@ -158,7 +249,7 @@ quoted_cmd="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$SPACED/.claude/set
 CLAUDE_PROJECT_DIR="$SPACED" /bin/sh -c "$quoted_cmd" >/dev/null 2>&1 \
   || fail "the quoted command should run cleanly from a spaced root"
 out="$(run_expect 0 "$SPACED")"
-printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' || fail "quoted spaced root did not pass: $out"
+assert_contains "$out" 'HQ hook health: PASS' || fail "quoted spaced root did not pass: $out"
 pass "quoted references pass on a path containing a space"
 
 echo "[9] braced and embedded references are caught too"
@@ -176,7 +267,7 @@ do
     }
   }' >"$BRACED/.claude/settings.json"
   out="$(run_expect 2 "$BRACED")"
-  printf '%s' "$out" | grep -Fq 'without quotes' \
+  assert_contains "$out" 'without quotes' \
     || fail "variant not detected as unquoted: $variant :: $out"
 done
 pass "braced and embedded project-dir references are detected"
@@ -199,7 +290,7 @@ braced_quoted_cmd="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$SPACED/.cla
 CLAUDE_PROJECT_DIR="$SPACED" /bin/sh -c "$braced_quoted_cmd" >/dev/null 2>&1 \
   || fail "the quoted braced command should run cleanly from a spaced root"
 out="$(run_expect 0 "$SPACED")"
-printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+assert_contains "$out" 'HQ hook health: PASS' \
   || fail "quoted braced reference was wrongly reported as broken: $out"
 pass "a quoted \${CLAUDE_PROJECT_DIR} reference passes on a spaced root"
 
@@ -219,9 +310,9 @@ cat >"$LOCAL/.claude/settings.json" <<'JSON'
 JSON
 # With no overlay present at all the root is healthy: absence must stay benign.
 out="$(run_expect 0 "$LOCAL")"
-printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+assert_contains "$out" 'HQ hook health: PASS' \
   || fail "a root without a local overlay should pass: $out"
-if printf '%s' "$out" | grep -Fq 'settings.local.json'; then
+if assert_contains "$out" 'settings.local.json'; then
   fail "an absent overlay must not be reported as scanned: $out"
 fi
 
@@ -240,9 +331,9 @@ set -e
 [ "$overlay_rc" -ne 0 ] || fail "expected the overlay command to fail on a spaced root, but it succeeded"
 
 out="$(run_expect 2 "$LOCAL")"
-printf '%s' "$out" | grep -Fq '.claude/settings.local.json' \
+assert_contains "$out" '.claude/settings.local.json' \
   || fail "overlay diagnosis did not name the local settings file: $out"
-printf '%s' "$out" | grep -Fq 'without quotes' \
+assert_contains "$out" 'without quotes' \
   || fail "unquoted overlay reference not detected: $out"
 pass "an unquoted hook that lives only in the local overlay is detected"
 
@@ -259,13 +350,13 @@ cat >"$GONE/.claude/settings.json" <<'JSON'
 }
 JSON
 out="$(run_expect 2 "$GONE")"
-printf '%s' "$out" | grep -Fq 'runs a script that does not exist: .claude/hooks/probe.sh' \
+assert_contains "$out" 'runs a script that does not exist: .claude/hooks/probe.sh' \
   || fail "missing hook script diagnosis absent: $out"
 pass "a hook command pointing at a deleted script fails"
 
 echo "[13] the shipped project settings satisfy the checker"
 out="$(run_expect 0 "$ROOT")"
-printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' || fail "shipped settings did not pass: $out"
+assert_contains "$out" 'HQ hook health: PASS' || fail "shipped settings did not pass: $out"
 pass "shipped .claude/settings.json is quote-safe and fully resolvable"
 
 echo "[14] a quoted token that merely CONTAINS the variable is split-safe"
@@ -289,7 +380,7 @@ embed_cmd="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$EMBED/.claude/setti
 CLAUDE_PROJECT_DIR="$EMBED" /bin/sh -c "$embed_cmd" >/dev/null 2>&1 \
   || fail "the embedded-but-quoted command should run cleanly from a spaced root"
 out="$(run_expect 0 "$EMBED")"
-printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+assert_contains "$out" 'HQ hook health: PASS' \
   || fail "a quoted token containing the variable was wrongly called unquoted: $out"
 
 cat >"$EMBED/.claude/settings.local.json" <<'JSON'
@@ -303,7 +394,7 @@ overlay_embed_cmd="$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$EMBED/.cla
 CLAUDE_PROJECT_DIR="$EMBED" /bin/sh -c "$overlay_embed_cmd" >/dev/null 2>&1 \
   || fail "the embedded-but-quoted overlay command should run cleanly from a spaced root"
 out="$(run_expect 0 "$EMBED")"
-printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+assert_contains "$out" 'HQ hook health: PASS' \
   || fail "a quoted token containing the variable was wrongly called unquoted in the overlay: $out"
 pass "\"--root=\$CLAUDE_PROJECT_DIR\" passes in both the shipped file and the overlay"
 
@@ -326,7 +417,7 @@ while IFS= read -r optional_cmd; do
     || fail "an optional/runtime path command should run cleanly: $optional_cmd"
 done < <(jq -r '.. | objects | select(.type? == "command") | .command' "$OPTIONAL/.claude/settings.json")
 out="$(run_expect 0 "$OPTIONAL")"
-printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+assert_contains "$out" 'HQ hook health: PASS' \
   || fail "a guarded optional path or runtime data path was wrongly failed: $out"
 pass "guarded optional hooks and runtime data paths do not fail a healthy install"
 
@@ -350,12 +441,12 @@ spaced_rel_cmd="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$SPACED_REL/.cl
 CLAUDE_PROJECT_DIR="$SPACED_REL" /bin/sh -c "$spaced_rel_cmd" >/dev/null 2>&1 \
   || fail "a quoted path with a spaced segment should run cleanly"
 out="$(run_expect 0 "$SPACED_REL")"
-printf '%s' "$out" | grep -Fq 'HQ hook health: PASS' \
+assert_contains "$out" 'HQ hook health: PASS' \
   || fail "a present hook script with a spaced path segment was reported missing: $out"
 
 rm -f "$SPACED_REL/.claude/hooks/my dir/x.sh"
 out="$(run_expect 2 "$SPACED_REL")"
-printf '%s' "$out" | grep -Fq 'runs a script that does not exist: .claude/hooks/my dir/x.sh' \
+assert_contains "$out" 'runs a script that does not exist: .claude/hooks/my dir/x.sh' \
   || fail "the missing spaced path was not named in full: $out"
 if printf '%s\n' "$out" | grep -Eq 'does not exist: \.claude/hooks/my$'; then
   fail "the spaced path was truncated at the space: $out"
@@ -376,7 +467,7 @@ jq -n --arg cmd "$multiline_cmd" '{
   }
 }' >"$COUNT/.claude/settings.json"
 out="$(run_expect 2 "$COUNT")"
-printf '%s' "$out" | grep -Fq '1 hook command(s)' \
+assert_contains "$out" '1 hook command(s)' \
   || fail "one multi-line command should count once: $out"
 
 jq -n '{
@@ -386,7 +477,7 @@ jq -n '{
   }
 }' >"$COUNT/.claude/settings.json"
 out="$(run_expect 2 "$COUNT")"
-printf '%s' "$out" | grep -Fq '2 hook command(s)' \
+assert_contains "$out" '2 hook command(s)' \
   || fail "two broken commands should count twice: $out"
 pass "the reported number is a count of broken commands"
 
@@ -408,16 +499,16 @@ set +e
 out="$(HQ_RUNTIME_MARKER_FILE="$V2MARKER" bash "$CHECKER" --root "$V2ROOT" --require-ledger 2>&1)"; rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "v2 marker + missing ledger should exit 2: $out"
-printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+assert_contains "$out" 'HQ runtime enforcement: NOT OBSERVED' \
   || fail "v2 missing ledger must keep the identical NOT OBSERVED assertion: $out"
-printf '%s' "$out" | grep -Fq 'agents-v2 (hermes)' \
+assert_contains "$out" 'agents-v2 (hermes)' \
   || fail "v2 box did not get agents-v2 guidance: $out"
-printf '%s' "$out" | grep -Fq 'live turn' \
+assert_contains "$out" 'live turn' \
   || fail "v2 guidance should tell the operator to drive a live turn: $out"
-if printf '%s' "$out" | grep -Fq 'For Claude Desktop'; then
+if assert_contains "$out" 'For Claude Desktop'; then
   fail "v2 box was shown the wrong Claude Desktop recovery steps: $out"
 fi
-if printf '%s' "$out" | grep -Fq 'settingSources: ["project"]'; then
+if assert_contains "$out" 'settingSources: ["project"]'; then
   fail "v2 box was shown the wrong SDK recovery steps: $out"
 fi
 pass "v2 marker box: identical NOT OBSERVED assertion, v2 guidance, no Claude-CLI steps"
@@ -431,9 +522,9 @@ set +e
 out="$(HQ_RUNTIME_MARKER_FILE="$NO_MARKER" bash "$CHECKER" --root "$V2ADP" --require-ledger 2>&1)"; rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "v2 adapter-marker + missing ledger should exit 2: $out"
-printf '%s' "$out" | grep -Fq 'agents-v2 (hermes)' \
+assert_contains "$out" 'agents-v2 (hermes)' \
   || fail "adapter-marker box did not get agents-v2 guidance: $out"
-if printf '%s' "$out" | grep -Fq 'For Claude Desktop'; then
+if assert_contains "$out" 'For Claude Desktop'; then
   fail "adapter-marker box was shown the wrong Claude Desktop steps: $out"
 fi
 pass "v2 adapter-marker box is detected from the tree alone"
@@ -443,9 +534,9 @@ pass "v2 adapter-marker box is detected from the tree alone"
 mkdir -p "$V2ADP/workspace/orchestrator/policy-trigger-state"
 : >"$V2ADP/workspace/orchestrator/policy-trigger-state/hermes-turn.txt"
 out="$(HQ_RUNTIME_MARKER_FILE="$NO_MARKER" bash "$CHECKER" --root "$V2ADP" --require-ledger 2>&1)"
-printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: OBSERVED' \
+assert_contains "$out" 'HQ runtime enforcement: OBSERVED' \
   || fail "present ledger on a v2 box must read OBSERVED: $out"
-printf '%s' "$out" | grep -Fq 'ledger: present' || fail "v2 present ledger not reported: $out"
+assert_contains "$out" 'ledger: present' || fail "v2 present ledger not reported: $out"
 pass "v2 box with a live-turn ledger reads OBSERVED (identical assertion)"
 
 # 18d: a plain Claude tree (no marker, no adapter) still gets the Claude-CLI
@@ -456,9 +547,9 @@ set +e
 out="$(HQ_RUNTIME_MARKER_FILE="$NO_MARKER" bash "$CHECKER" --root "$CLAUDEROOT" --require-ledger 2>&1)"; rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "claude default + missing ledger should exit 2: $out"
-printf '%s' "$out" | grep -Fq 'For Claude Desktop' \
+assert_contains "$out" 'For Claude Desktop' \
   || fail "the default runtime lost its Claude Desktop guidance: $out"
-if printf '%s' "$out" | grep -Fq 'agents-v2 (hermes)'; then
+if assert_contains "$out" 'agents-v2 (hermes)'; then
   fail "a plain Claude tree wrongly got agents-v2 guidance: $out"
 fi
 pass "the default Claude runtime keeps its own recovery steps"
@@ -547,11 +638,11 @@ set +e
 out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$NOMARK" bash "$CHECKER" --root "$UNKNOWN" --require-ledger 2>&1)"; rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "19c: unknown host + ledger via doctor should stay exit 2: $out"
-printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+assert_contains "$out" 'HQ runtime enforcement: NOT OBSERVED' \
   || fail "19c: unknown host must stay NOT OBSERVED under the doctor path: $out"
-printf '%s' "$out" | grep -Fq 'host platform is unknown' \
+assert_contains "$out" 'host platform is unknown' \
   || fail "19c: doctor path was not exercised (host-unknown message absent): $out"
-if printf '%s' "$out" | grep -Fq 'agents-v2 on-box adapter wrote'; then
+if assert_contains "$out" 'agents-v2 on-box adapter wrote'; then
   fail "19c: the v2 self-attestation leaked onto a non-v2 host: $out"
 fi
 pass "19c: doctor path is exercised and an unknown host with a ledger stays NOT OBSERVED"
@@ -562,13 +653,13 @@ make_v2_wired_root "$V2OK"
 mkdir -p "$V2OK/workspace/orchestrator/policy-trigger-state"
 : >"$V2OK/workspace/orchestrator/policy-trigger-state/hermes-turn.txt"   # fresh
 out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" HQ_HERMES_CONFIG_FILE="$(v2_hermes_config "$V2OK")" bash "$CHECKER" --root "$V2OK" --require-ledger 2>&1)"
-printf '%s' "$out" | grep -Fq 'checked via: hq doctor' \
+assert_contains "$out" 'checked via: hq doctor' \
   || fail "19a: the doctor path must be the one exercised: $out"
-printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: OBSERVED' \
+assert_contains "$out" 'HQ runtime enforcement: OBSERVED' \
   || fail "19a: a wired v2 box with a fresh ledger must read OBSERVED: $out"
-printf '%s' "$out" | grep -Fq 'agents-v2 on-box adapter wrote the policy-trigger ledger' \
+assert_contains "$out" 'agents-v2 on-box adapter wrote the policy-trigger ledger' \
   || fail "19a: the OBSERVED line should name the v2 self-attestation: $out"
-if printf '%s' "$out" | grep -Fq 'host platform is unknown'; then
+if assert_contains "$out" 'host platform is unknown'; then
   fail "19a: the doctor host-unknown message must be dropped, not relayed: $out"
 fi
 pass "19a: a wired agents-v2 box self-attests OBSERVED under the doctor path"
@@ -580,9 +671,9 @@ set +e
 out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" HQ_HERMES_CONFIG_FILE="$(v2_hermes_config "$V2NOLEDGER")" bash "$CHECKER" --root "$V2NOLEDGER" --require-ledger 2>&1)"; rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "19b: v2 box with no ledger must exit 2: $out"
-printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+assert_contains "$out" 'HQ runtime enforcement: NOT OBSERVED' \
   || fail "19b: v2 box with no ledger must read NOT OBSERVED: $out"
-printf '%s' "$out" | grep -Fq 'agents-v2 (hermes)' \
+assert_contains "$out" 'agents-v2 (hermes)' \
   || fail "19b: v2 box with no ledger should still get agents-v2 guidance: $out"
 pass "19b: a wired agents-v2 box with no ledger stays NOT OBSERVED"
 
@@ -598,12 +689,12 @@ set +e
 out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" HQ_HERMES_CONFIG_FILE="$(v2_hermes_config "$V2STALE")" bash "$CHECKER" --root "$V2STALE" --require-ledger 2>&1)"; rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "19d: a stale ledger must not self-attest without --session-id: $out"
-printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: NOT OBSERVED' \
+assert_contains "$out" 'HQ runtime enforcement: NOT OBSERVED' \
   || fail "19d: a stale ledger must read NOT OBSERVED without --session-id: $out"
 out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$V2MARK" HQ_HERMES_CONFIG_FILE="$(v2_hermes_config "$V2STALE")" bash "$CHECKER" --root "$V2STALE" --session-id old-session 2>&1)"
-printf '%s' "$out" | grep -Fq 'HQ runtime enforcement: OBSERVED' \
+assert_contains "$out" 'HQ runtime enforcement: OBSERVED' \
   || fail "19d: the exact --session-id ledger should self-attest despite age: $out"
-printf '%s' "$out" | grep -Fq 'session: old-session' \
+assert_contains "$out" 'session: old-session' \
   || fail "19d: the exact session identity should be reported: $out"
 pass "19d: freshness gates the no-session case; --session-id bypasses it by identity"
 

@@ -341,7 +341,11 @@ run_script_advisory() { # <script> [payload] [stdout_mode]
         "$HQ_HOOK_LAST_CAUSE")"
     fi
   else
-    printf '%s' "$payload" | "$script" >"$out" 2>"$err" || status=$?
+    # PIPESTATUS[1]: a hook that exits before reading stdin kills the payload
+    # writer with SIGPIPE, and `pipefail` would report that 141 as the hook's
+    # own status. Same contract as hq_launch_shell_path above.
+    printf '%s' "$payload" | "$script" >"$out" 2>"$err"
+    status=${PIPESTATUS[1]}
   fi
 
   out_text="$(cat "$out" 2>/dev/null || true)"

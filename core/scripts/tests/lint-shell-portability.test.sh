@@ -113,5 +113,41 @@ for safe_line in 4 5 7 8; do
 done
 echo "  ok   single-escape, quoted-variable and prose forms are not flagged"
 
+# ---- Empty-array expansions under nounset (bash 3.2) ------------------------
+# bash 3.2 treats a bare "${items[@]}" expansion as unbound when `set -u` is
+# active and the array is empty. Linux CI's newer Bash does not, so exercise the
+# real linter against both the broken and established guarded forms.
+ARRAY_REPO="$TMP/array-repo"
+mkdir -p "$ARRAY_REPO/core/scripts"
+git -C "$ARRAY_REPO" init -q
+git -C "$ARRAY_REPO" config user.email t@example.com
+git -C "$ARRAY_REPO" config user.name t
+cp "$ROOT/core/scripts/lint-shell-portability.sh" "$ARRAY_REPO/core/scripts/"
+
+cat >"$ARRAY_REPO/core/scripts/check-hq-hooks.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+items=()
+printf '%s\\n' "${items[@]}"
+guarded_items=()
+printf '%s\\n' "${guarded_items[@]+"${guarded_items[@]}"}"
+SH
+git -C "$ARRAY_REPO" add core/scripts
+
+array_out="$(cd "$ARRAY_REPO" && bash core/scripts/lint-shell-portability.sh 2>&1 || true)"
+if printf '%s' "$array_out" | grep -q 'check-hq-hooks.sh:4:'; then
+  echo "  ok   real linter flags an unguarded array expansion in a nounset script"
+else
+  echo "FAIL: linter did not flag the nounset empty-array expansion" >&2
+  printf '%s\\n' "$array_out" >&2
+  exit 1
+fi
+if printf '%s' "$array_out" | grep -q 'check-hq-hooks.sh:6:'; then
+  echo "FAIL: linter false-flagged the guarded empty-array expansion" >&2
+  printf '%s\\n' "$array_out" >&2
+  exit 1
+fi
+echo "  ok   established empty-array guard is accepted"
+
 echo "ALL PASS: lint-shell-portability"
 exit 0

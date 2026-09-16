@@ -1,4 +1,5 @@
 #!/bin/bash
+# hq-core: public
 # Stop hook: backstop for humanize-before-send.
 #
 # Scans ONLY the just-finished assistant message. If that turn performed an
@@ -45,7 +46,13 @@ process.stdin.on("data", (c) => d += c).on("end", () => {
   // A send signature: an hq dm / hq cowork dm CLI call, a Slack
   // chat.postMessage, a Post-Bridge post, or the host-side mcp__hq__hq_dm
   // tool. For each, build the haystack of human-readable text to scrutinise.
-  const SEND_BASH = /\bhq\s+(?:cowork\s+)?dm\b|chat\.postMessage|api\.post-bridge\.com\/v1\/posts/i;
+  const SEND_BASH = /\bhq\s+(?:cowork\s+)?dm\b|chat\.postMessage|chat\.update|api\.post-bridge\.com\/v1\/posts|hq-slack[a-z-]*\.(?:sh|py)\b|graph\.facebook\.com\/[^\s"']*\/messages|api\.twilio\.com\/[^\s"']*\/Messages|\bosascript\b[^\n]*\b(?:Messages|WhatsApp)\b/i;
+  // Outbound MCP tool names. Broad on purpose: a channel added later (a new
+  // WhatsApp or SMS server) is covered without editing this hook again.
+  // Matches either the tool verb after the final "__" (email/slack/sms/social
+  // send + draft surfaces) or a channel name anywhere in the server segment.
+  const SEND_TOOL = /__(?:send_email|send_draft|create_or_update_draft|send_message|post_message|create_post|publish_post|schedule_post|send_sms|send_text|send_whatsapp|send_dm|send_reply)$|(?:whatsapp|imessage|twilio|telegram|post[-_]?bridge|slack)/i;
+  const TEXT_FIELDS = ["body", "text", "message", "content", "caption", "subject", "details", "prompt", "instructions", "markdown", "html_body", "plain_body"];
   const URL = /https?:\/\/\S+/g;
 
   const bodies = [];
@@ -60,6 +67,14 @@ process.stdin.on("data", (c) => d += c).on("end", () => {
     } else if (name.endsWith("hq_dm") || name === "mcp__hq__hq_dm") {
       if (inp && typeof inp === "object")
         bodies.push(["message", "details", "prompt"].map((k) => String(inp[k] == null ? "" : inp[k])).join(" "));
+    } else if (SEND_TOOL.test(name)) {
+      // Outbound MCP surfaces: email (superhuman/gmail), Slack, WhatsApp,
+      // SMS/iMessage, Telegram, and social publishers. Scrutinise only the
+      // human-readable fields; never recipients, ids, or scheduling flags.
+      if (inp && typeof inp === "object") {
+        const t = TEXT_FIELDS.map((k) => (typeof inp[k] === "string" ? inp[k] : "")).join(" ");
+        if (t.trim()) bodies.push(t.replace(URL, " "));
+      }
     }
   }
   if (!bodies.length) { console.log(""); return; }
@@ -70,6 +85,15 @@ process.stdin.on("data", (c) => d += c).on("end", () => {
   const COLLAB = /\bI hope this helps\b|\blet me know if\b|\bfeel free to\b|\bgreat question\b|\bcertainly!|\bof course!|\bhappy to help\b|\byou'?re absolutely right\b|\bdon'?t hesitate to\b/i;
   const PROMO = /\bexcited to announce\b|\bthrilled to\b|\bdelighted to\b|\bproud to announce\b|\brevolutionar(?:y|ize)\b|\bbest-in-class\b|\bworld-class\b|\btake .* to the next level\b/i;
   const NEGPAR = /\bnot only\b[^.]*\bbut\b|\bit'?s not (?:just|merely) about\b|\bit'?s not just\b[^.]*\bit'?s\b/i;
+  // --- mannered-prose tells (core/policies/hq-no-mannered-prose.md) --------
+  // Antithesis: "not a X, it's a Y" / "less a X than a Y".
+  const ANTITHESIS = /\bnot (?:a|an|the)\b[^.!?]{2,60}?,\s*(?:it'?s|but)\b|\bless (?:a|an)\b[^.!?]{2,60}?\bthan (?:a|an)\b|\bisn'?t (?:a|an|about)\b[^.!?]{2,60}?,\s*it'?s\b/i;
+  // Rhythm triad: "faster, cleaner, and safer" — three short adjectives/nouns.
+  const TRIAD = /\b[a-z]{3,14},\s+[a-z]{3,14},\s+(?:and|or)\s+[a-z]{3,14}\b/i;
+  // Portentous fragment: a sentence-initial subordinator standing alone.
+  const FRAGMENT = /(?:^|[.!?]\s)(?:Which is (?:the|why|what)|And that'?s (?:the|why)|That'?s the (?:whole )?point|Hence the)\b/;
+  // Throat-clearing before the answer.
+  const THROAT = /\b(?:here'?s the thing|the short version|the tl;?dr|worth noting|to be clear|at the end of the day|that said,)\b/i;
   // Unicode emoji (pictographic ranges) — NOT Slack :shortcode: ASCII text, so
   // the work-broadcast :chart_with_upwards_trend: signature is never counted.
   const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/u;
@@ -81,6 +105,10 @@ process.stdin.on("data", (c) => d += c).on("end", () => {
     if (COLLAB.test(t)) c.add("collab");
     if (PROMO.test(t)) c.add("promo");
     if (NEGPAR.test(t)) c.add("neg_parallel");
+    if (ANTITHESIS.test(t)) c.add("antithesis");
+    if (TRIAD.test(t)) c.add("triad");
+    if (FRAGMENT.test(t)) c.add("portentous_fragment");
+    if (THROAT.test(t)) c.add("throat_clearing");
     if (EMOJI.test(t)) c.add("emoji");
     return c;
   };
@@ -113,7 +141,7 @@ JS
 
   [ "$VERDICT" != "BLOCK" ] && exit 0
 
-  REASON='POLICY VIOLATION — humanize-generated-content (hard) + humanize-before-send. The turn that just finished sent (or composed for send) an outbound message whose body still carries a cluster of AI-writing tells (em/en dashes, AI vocabulary, promotional or sycophantic framing, negative parallelisms, or decorative emoji). Per core/knowledge/public/hq-core/humanize-before-send.md the human-readable body MUST run the channel-aware humanize pass BEFORE it is sent. Do this now: (1) run the /humanize audit on the body at the channel intensity (dm/cowork-dm default light, work-broadcast light, social full), (2) re-issue the corrected message — for a store-and-forward DM that already went out, send the corrected version only if the original was clearly slop, otherwise apply the pass to every future send. Do NOT rewrite recipients, emails/personUids, URLs, scheduling flags, account IDs, or the work-broadcast :chart_with_upwards_trend: signature emoji — only the prose a person reads.'
+  REASON='POLICY VIOLATION — humanize-generated-content (hard) + humanize-before-send. The turn that just finished sent (or composed for send) an outbound message whose body still carries a cluster of AI-writing tells (em/en dashes, AI vocabulary, promotional or sycophantic framing, negative parallelisms, decorative emoji, or mannered prose: antithesis, rhythm triads, portentous fragments, throat-clearing). Per core/knowledge/public/hq-core/humanize-before-send.md the human-readable body MUST run the channel-aware humanize pass BEFORE it is sent. Do this now: (1) run the /humanize audit on the body at the channel intensity (dm/cowork-dm default light, work-broadcast light, email/social full), also applying core/policies/hq-no-mannered-prose.md, (2) re-issue the corrected message — for a store-and-forward DM that already went out, send the corrected version only if the original was clearly slop, otherwise apply the pass to every future send. Do NOT rewrite recipients, emails/personUids, URLs, scheduling flags, account IDs, or the work-broadcast :chart_with_upwards_trend: signature emoji — only the prose a person reads.'
 
   jq -nc --arg r "$REASON" '{decision:"block", reason:$r}' 2>/dev/null \
     || printf '{"decision":"block","reason":%s}' "$(printf '%s' "$REASON" | hq_json_encode)"

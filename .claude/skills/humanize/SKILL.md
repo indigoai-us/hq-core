@@ -472,6 +472,125 @@ Before returning the final rewrite, scan it for `—` and `–`. Any hit means t
 > This function uses a hash map for O(1) lookups, avoiding the O(n²) cost of naive iteration.
 
 
+## MANNERED PROSE (the "Claude speak" register)
+
+The patterns above are mostly *vocabulary and structure*. This group is *cadence* — the
+essay-ish, aphoristic register a model reaches for when it wants to sound wise. Prose can be
+clean of every tell in sections 1-30 and still be obviously machine-written because it is
+shaped for rhythm rather than for the reader. It is the strongest default on Opus-class
+models. Canonical rule: `core/policies/hq-no-mannered-prose.md`.
+
+### 31. Antithesis ("not X, but Y")
+
+**Problem:** A false contrast used to manufacture insight. The negated half carries no
+information; it exists to set up the cadence of the second half.
+
+**Before:**
+> This isn't a bug, it's a boundary problem. The failure is less a race condition than a
+> contract gap.
+
+**After:**
+> Two components disagree about who loads the session first, so one reads it before it exists.
+
+### 32. Aphoristic Closers
+
+**Problem:** A final line that lands a note rather than conveying a fact. It reads as a
+curtain drop and adds nothing the reader can act on. Structural cousin of #25 (Generic
+Positive Conclusions), but subtler: it sounds earned rather than cheerful.
+
+**Before:**
+> We shipped the smaller fix. Sometimes the simplest change is the one you already had.
+
+**After:**
+> We shipped the smaller fix.
+
+### 33. Rhythm Triads
+
+**Problem:** Distinct from #10 (Rule of Three Overuse), which is about listing three items.
+This is three *modifiers* chosen for cadence, where only one is doing work.
+
+**Before:**
+> The new pipeline is faster, cleaner, and easier to reason about.
+
+**After:**
+> The new pipeline cuts the build from nine minutes to two.
+
+### 34. Em-Dash Appositive Stacking
+
+**Problem:** A parenthetical inserted mid-sentence purely for texture. Related to #14 (Em
+Dashes), but the fix is deletion of the content, not replacement of the punctuation.
+
+**Before:**
+> The fix — small, surgical, almost boring — went out this morning.
+
+**After:**
+> The fix went out this morning.
+
+### 35. Portentous Fragments
+
+**Problem:** A subordinate clause promoted to its own sentence to imply weight. Distinct
+from #13 (subjectless fragments), which is about terseness; this is about drama.
+
+**Before:**
+> The retry never fires. Which is the whole point. And that's the catch.
+
+**After:**
+> The retry never fires because the guard clause returns early.
+
+### 36. Metaphor in Place of Explanation
+
+**Problem:** An image substituted for the mechanism. The reader finishes the sentence
+feeling informed without having learned what actually happens.
+
+**Before:**
+> Think of the queue as a relay race where the baton is a promise.
+
+**After:**
+> Each worker holds the job until the next one acknowledges it, then releases it.
+
+### 37. Restating the Ask as a Principle
+
+**Problem:** Reframing the reader's question at a higher altitude before answering it. It
+delays the answer and flatters the question.
+
+**Before:**
+> What you're really asking is how ownership propagates through the system.
+
+**After:**
+> The owner is whoever holds the write grant; it transfers on delegation.
+
+### 38. Self-Summary
+
+**Problem:** A sentence that restates the paragraph it closes, one level more abstract.
+Once the fact is stated, the paragraph is over.
+
+**Before:**
+> The deploy failed because the secret was missing. In other words, the problem was
+> configuration, not code.
+
+**After:**
+> The deploy failed because the secret was missing.
+
+### 39. Aesthetic Symmetry
+
+**Problem:** Two clauses balanced against each other for cadence rather than content —
+matched length, matched structure, no added meaning in the second half.
+
+**Before:**
+> We built it fast, and we built it to last.
+
+**After:**
+> It took two days and it handles the current load.
+
+### Applying this group
+
+Read the draft aloud. Any sentence with a rhythm you would *notice* is a candidate. Then
+reread the last line of every paragraph and every message: if it exists to land a note
+rather than convey a fact, cut it. If a sentence felt satisfying to write, suspect it.
+
+Carveout: security warnings, irreversible-action confirmations, and plans a reader approves
+stay complete and explicit. "Complete" is not "ornamental" — this group still applies there.
+
 ## DETECTION GUIDANCE
 
 ### What NOT to flag (false positives)

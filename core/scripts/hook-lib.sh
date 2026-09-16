@@ -738,7 +738,12 @@ hq_launch_shell_path() {
 
   if [ -x "$path" ]; then
     printf '%s' "$payload" | "$path" "$@"
-    HQ_HOOK_LAST_STATUS=$?
+    # PIPESTATUS[1], never $?. A hook that exits before reading stdin (the
+    # `[ -n "${HQ_CONDUCT_RUN_DIR:-}" ] || exit 0` guard shape) closes the read
+    # end while printf is still writing, so printf dies with SIGPIPE. Under the
+    # `pipefail` that every HQ dispatcher sets, $? is then 141 and a hook that
+    # exited 0 is reported as having failed. Read the hook's own element.
+    HQ_HOOK_LAST_STATUS=${PIPESTATUS[1]}
     return "$HQ_HOOK_LAST_STATUS"
   fi
 
@@ -748,7 +753,8 @@ hq_launch_shell_path() {
   fi
   if [ -r "$path" ] && [ -n "$bash_bin" ]; then
     printf '%s' "$payload" | "$bash_bin" "$path" "$@"
-    HQ_HOOK_LAST_STATUS=$?
+    # Same contract as the exec path above: the hook's status, not the writer's.
+    HQ_HOOK_LAST_STATUS=${PIPESTATUS[1]}
     return "$HQ_HOOK_LAST_STATUS"
   fi
 

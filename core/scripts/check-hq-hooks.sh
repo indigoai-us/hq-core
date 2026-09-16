@@ -256,6 +256,38 @@ agents_v2_attested() {
 # twin of deriveCheckHqHooksVerdict() in hq-cli's src/lib/doctor/compat.ts; the
 # agreement test there pins the two together.
 
+# `hq doctor` reports whether settings.json is present and parseable, but older
+# shipped CLIs deliberately do not fail that check when every event array is
+# empty. This command is the hook-independent proof users are told to trust,
+# so it owns the minimum dispatch assertion instead of depending on a
+# versioned doctor check id. Keep this separate from run_inline(): both the
+# doctor and fallback paths must reject a settings file with no executable
+# SessionStart or PreToolUse command hook.
+REQUIRED_COMMAND_HOOK_ISSUES=()
+check_required_command_hooks() {
+  local settings="$HQ_ROOT/.claude/settings.json" event
+
+  # File presence, JSON validity, and the availability of jq retain their
+  # established diagnoses in the doctor or inline paths below. Only make the
+  # extra assertion once the document is inspectable.
+  [ -f "$settings" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq empty "$settings" >/dev/null 2>&1 || return 0
+
+  for event in SessionStart PreToolUse; do
+    if ! jq -e --arg event "$event" '
+      [
+        .hooks[$event][]?.hooks[]?
+        | select(.type == "command" and (.command | type == "string") and (.command | length > 0))
+      ] | length > 0
+    ' "$settings" >/dev/null 2>&1; then
+      REQUIRED_COMMAND_HOOK_ISSUES+=("${event} has no command hook in .claude/settings.json")
+    fi
+  done
+}
+
+check_required_command_hooks
+
 # The `hq doctor --json` check ids that make up this checker's settings scope.
 DOCTOR_SETTINGS_SCOPE='["hooks.settings-present","hooks.settings-valid-json","hooks.claude.settings-local-valid-json","hooks.claude.unquoted-project-dir","hooks.claude.script-missing"]'
 DOCTOR_RUNTIME_CHECK_ID="hooks.runtime.enforcement"
@@ -278,7 +310,7 @@ render_from_doctor() {
   local json="$1"
   local settings_issues runtime_status runtime_message
   local AGENTS_V2_ATTESTED=0
-  local -a issues=()
+  local -a issues=("${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}")
 
   settings_issues="$(printf '%s' "$json" | jq -r --argjson scope "$DOCTOR_SETTINGS_SCOPE" '
     .results[]
@@ -330,13 +362,14 @@ EOF
       echo "HQ runtime enforcement: NOT OBSERVED" >&2
       emit_runtime_off_explanation
     fi
-    printf '  - %s\n' "${issues[@]}" >&2
+    printf '  - %s\n' "${issues[@]+"${issues[@]}"}" >&2
     emit_repair_guidance
     exit 2
   fi
 
   echo "HQ hook health: PASS"
   echo "  root: $HQ_ROOT"
+  echo "  settings: SessionStart and PreToolUse command hooks present"
   echo "  checked via: hq doctor (scoped to hook load + policy-trigger ledger)"
   if [ "$REQUIRE_LEDGER" -eq 1 ]; then
     echo "  ledger: present"
@@ -371,7 +404,7 @@ try_doctor() {
   # (e.g. an old CLI's "unknown command", or "not inside an HQ tree") must not
   # abort this script under `set -e`, so swallow it and validate the output.
   local json=""
-  json="$( cd "$HQ_ROOT" && hq "${doctor_args[@]}" 2>/dev/null )" || true
+  json="$( cd "$HQ_ROOT" && hq "${doctor_args[@]+"${doctor_args[@]}"}" 2>/dev/null )" || true
   printf '%s' "$json" | jq -e '.schemaVersion and (.results | type == "array")' >/dev/null 2>&1 || return 1
 
   render_from_doctor "$json"
@@ -448,20 +481,11 @@ run_inline() {
   elif ! jq empty "$SETTINGS" >/dev/null 2>&1; then
     ISSUES+=(".claude/settings.json is not valid JSON")
   else
-    for event in SessionStart PreToolUse; do
-      if ! jq -e --arg event "$event" '
-        [
-          .hooks[$event][]?.hooks[]?
-          | select(.type == "command" and (.command | type == "string") and (.command | length > 0))
-        ] | length > 0
-      ' "$SETTINGS" >/dev/null 2>&1; then
-        ISSUES+=("${event} has no command hook in .claude/settings.json")
-      fi
-    done
-
     scan_hook_commands "$SETTINGS" ".claude/settings.json"
     SCANNED+=(".claude/settings.json")
   fi
+
+  ISSUES+=("${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}")
 
   # The local overlay is optional, so its absence is never an issue — but when it
   # is present Claude Code loads its hooks too, and an unquoted command hiding
@@ -503,7 +527,7 @@ run_inline() {
       echo "HQ runtime enforcement: NOT OBSERVED" >&2
       emit_runtime_off_explanation
     fi
-    printf '  - %s\n' "${ISSUES[@]}" >&2
+    printf '  - %s\n' "${ISSUES[@]+"${ISSUES[@]}"}" >&2
     emit_repair_guidance
     exit 2
   fi

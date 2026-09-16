@@ -5,7 +5,10 @@ set -uo pipefail
 
 {
   self_hq="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)"
-  [ -n "$self_hq" ] || exit 0
+  # Drain before bailing: this is the one guard that precedes the `cat` below,
+  # and exiting with the payload unread kills the dispatcher's writer with
+  # SIGPIPE, which `pipefail` reports as this hook failing with 141.
+  [ -n "$self_hq" ] || { cat >/dev/null 2>&1 || true; exit 0; }
   . "$self_hq/core/scripts/hook-lib.sh"
 
   input="$(cat 2>/dev/null || printf '{}')"

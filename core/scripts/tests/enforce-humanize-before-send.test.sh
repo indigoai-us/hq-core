@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# hq-core: public
 # Regression tests for the enforce-humanize-before-send Stop hook.
 #
 # The hook is the backstop for humanize-before-send: it scans ONLY the
@@ -54,7 +55,7 @@ pass "clean hq dm passed"
 
 echo "[3] single tell only on a send -> no block (cluster bar)"
 # One em dash, nothing else AI-ish: below the >=2 category threshold.
-out="$(run_hook "$(bash_send 'hq dm corey "Quick one — can you review the doc today?"')")"
+out="$(run_hook "$(bash_send 'hq dm alice "Quick one — can you review the doc today?"')")"
 [ "$(decision_of "$out")" = "none" ] || fail "[3] expected no block, got: $out"
 pass "single-tell send passed"
 
@@ -89,5 +90,49 @@ echo "[9] missing/unreadable transcript -> fail-open (no block)"
 out="$(jq -nc '{transcript_path:"/no/such/file", stop_hook_active:false}' | bash "$HOOK")"
 [ "$(decision_of "$out")" = "none" ] || fail "[9] expected fail-open, got: $out"
 pass "fail-open on bad transcript"
+
+# --- channel coverage beyond dm/slack: email, whatsapp, sms ----------------
+tool_send() { jq -nc --arg n "$1" --argjson i "$2" '[{type:"tool_use",name:$n,input:$i}]'; }
+
+echo "[10] superhuman email draft with tells -> block"
+out="$(run_hook "$(tool_send mcp__superhuman-mail__create_or_update_draft \
+  "$(jq -nc '{to:"a@example.com",subject:"Quick note",body:"Hi — thrilled to share this seamless new flow."}')")")"
+[ "$(decision_of "$out")" = "block" ] || fail "[10] expected block, got: $out"
+pass "sloppy email draft blocked"
+
+echo "[11] clean email draft -> no block"
+out="$(run_hook "$(tool_send mcp__superhuman-mail__send_draft \
+  "$(jq -nc '{to:"a@example.com",subject:"Deploy at 3pm",body:"Deploy goes out at 3pm. Tell me if that timing is bad."}')")")"
+[ "$(decision_of "$out")" = "none" ] || fail "[11] expected no block, got: $out"
+pass "clean email draft passed"
+
+echo "[12] whatsapp send with tells -> block"
+out="$(run_hook "$(tool_send mcp__whatsapp__send_message \
+  "$(jq -nc '{to:"+15550000000",text:"Excited to announce we can leverage this."}')")")"
+[ "$(decision_of "$out")" = "block" ] || fail "[12] expected block, got: $out"
+pass "sloppy whatsapp send blocked"
+
+echo "[13] recipients/ids are never scrutinised (no text tells -> no block)"
+out="$(run_hook "$(tool_send mcp__twilio__send_sms \
+  "$(jq -nc '{to:"+15550000000",account_sid:"AC-crucial-seamless-robust",body:"Running late, 10 min."}')")")"
+[ "$(decision_of "$out")" = "none" ] || fail "[13] non-prose fields wrongly scrutinised, got: $out"
+pass "non-prose fields ignored"
+
+# --- mannered-prose categories (core/policies/hq-no-mannered-prose.md) -----
+echo "[14] antithesis + portentous fragment on a dm -> block"
+out="$(run_hook "$(bash_send 'hq dm alice "This is not a bug, it'"'"'s a boundary problem. Which is the point."')")"
+[ "$(decision_of "$out")" = "block" ] || fail "[14] expected block, got: $out"
+pass "mannered prose blocked"
+
+echo "[15] throat-clearing + rhythm triad on a dm -> block"
+out="$(run_hook "$(bash_send 'hq dm alice "Here'"'"'s the thing. It is faster, cleaner, and safer now."')")"
+[ "$(decision_of "$out")" = "block" ] || fail "[15] expected block, got: $out"
+pass "throat-clearing + triad blocked"
+
+echo "[16] ordinary three-item list is not a rhythm triad on its own"
+# One category at most: a plain enumeration with no other tells stays under the bar.
+out="$(run_hook "$(bash_send 'hq dm alice "Ship order is staging, canary, and prod."')")"
+[ "$(decision_of "$out")" = "none" ] || fail "[16] plain enumeration wrongly blocked, got: $out"
+pass "plain enumeration passed"
 
 echo "ALL PASS"
