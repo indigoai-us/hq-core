@@ -1,7 +1,7 @@
 ---
 name: run-project
 description: Router for executing HQ PRD stories. Default dispatches each story as a detached workflow-runner lane — the same mechanism /conduct uses — into a pooled per-worker slot claimed through conduct-pool.sh, so work in flight survives session compaction and can be corrected mid-flight (the coordinator loop stays parent-side, so a lost session leaves the run resumable, not self-advancing). Typically 3-4 live lanes (preflight explorer, story worker, regression gate), never more than CONDUCT_POOL_CAP (default 8), regardless of how many stories the PRD holds. In-session spawn_agent is the fallback for a host with no engine CLI; explicit interactive mode runs directly in the parent and takes no pool slots; Ralph/headless runs the same pooled lane loop unattended (auto-advance, no pauses).
-allowed-tools: Read, spawn_agent, wait_agent, Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/conduct-inbox.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Bash(setsid:*), Bash(ps:*), Bash(grep:*), Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Write, AskUserQuestion, Task
+allowed-tools: Read, spawn_agent, wait_agent, Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/conduct-inbox.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Bash(bash core/scripts/hq-detach.sh:*), Bash(ps:*), Bash(grep:*), Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Write, AskUserQuestion, Task
 argument-hint: "{project} [--status] [--resume] [--dry-run] [--inline] [--interactive] [--ralph-mode] [--in-place] [--timeout N]"
 ---
 
@@ -104,7 +104,7 @@ per story — that invokes `/execute-task {project}/{story-id}` internally.
 
 **A lane is a detached OS process, not an in-session sub-agent.** Dispatch
 follows `.claude/skills/_shared/lane-dispatch-protocol.md`, the same mechanism
-`/conduct` uses: a brief on disk, a `setsid` `workflow-runner.mjs` process, and a
+`/conduct` uses: a brief on disk, a detached `workflow-runner.mjs` process, and a
 background waiter. Three things follow from that, and they are the reason this is
 the default:
 
@@ -130,6 +130,30 @@ of this session, and they claim their bare-worker-id slots from the **same** poo
 an engine the user named, else `codex`, else the first of `grok`/`claude` that
 resolves. Record it in `workspace/orchestrator/{project}/state.json` and reuse it
 for the preflight, every story, and the regression gate.
+
+**CONFIRM the engine, model and effort with the user before the first dispatch.**
+Resolution above picks a *default*; it is not a decision the user has made. A run
+is many hours of lane time on whatever model this picks, and the wrong pick is
+only visible once the work comes back — so ask once, up front, and never silently
+default into a long run. Skip the question ONLY when the user named an engine or
+model in the invocation itself.
+
+Ask with a single `AskUserQuestion` (text fallback per
+`core/policies/hq-codex-decision-gate-fallback.md`) naming concrete options —
+the resolved default first, labelled as such — and covering engine, model, and
+reasoning effort together. Then record all three in `state.json` as `engine`,
+`engine_model`, and `engine_effort`, and pass them on every lane dispatch.
+
+Passing model and effort to a lane (dispatch protocol §4's `agent()` opts):
+
+| Engine | Model | Effort |
+|---|---|---|
+| `codex` | `model:` opt, else tier map (`gpt-5.6-sol` plan / `gpt-5.6-terra` exec) | `effort:` opt → `-c model_reasoning_effort=…` |
+| `grok` | `model:` opt, else `grok-4.6` | `effort:` opt → `--reasoning-effort` |
+| `claude` | `model:` opt, else tier map (`opus` plan / `sonnet` exec) | **not wired** — `workflow-runner.mjs` skips `effort` for claude. Pass it yourself as `extraArgs: ["--effort", "low"]`; the installed CLI accepts `low\|medium\|high\|xhigh\|max` |
+
+Do not assume `effort` reaches a claude lane through the normal opt. It does not,
+and a run asked for at low effort will quietly execute at the CLI default.
 
 **Record the session id next to it, in the same write.** Both the pool and the
 run dirs are keyed by the session that created them: `conduct-pool.sh` resolves

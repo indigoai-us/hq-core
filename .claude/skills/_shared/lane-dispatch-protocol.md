@@ -21,10 +21,16 @@ wait → record idle.**
   the reason `/run-project` defaults here rather than to `spawn_agent`.
 - **A lane can be corrected while it runs** (§6) instead of being killed and
   relaunched.
-- **`setsid` is mandatory, not decorative.** A child left inside the session's
+- **Detaching is mandatory, not decorative.** A child left inside the session's
   process tree is swept at the turn boundary, minutes after the turn that
-  launched it — which reads as an unexplained silent failure. `setsid` puts the
-  lane in its own process session, where the sweep cannot reach it.
+  launched it — which reads as an unexplained silent failure. Launching through
+  `core/scripts/hq-detach.sh` puts the lane in its own process session, where
+  the sweep cannot reach it. Always go through that helper, never through a bare
+  `setsid`: stock macOS does not ship `setsid(1)` at all, and when Homebrew
+  util-linux provides it, it is keg-only and absent from a non-interactive
+  PATH — so a literal `setsid …` here fails with `command not found` on every
+  Mac. The helper probes both keg prefixes and otherwise detaches via node, so
+  the same block works on Linux and macOS.
 
 ## 2. Resolve one engine per run, before you brief anything
 
@@ -152,7 +158,7 @@ export LANE_TIMEOUT
 export HQ_SESSION_ID="$SID"
 export HQ_CONDUCT_ENGINE='{engine}'
 
-setsid nohup bash -c '
+bash core/scripts/hq-detach.sh -- bash -c '
   echo $$ > "$LANE_RUN_DIR/lane.pid"
   export HQ_CONDUCT_RUN_DIR="$LANE_RUN_DIR_ABS"
   node core/scripts/workflow-runner.mjs --eval \
@@ -161,13 +167,12 @@ setsid nohup bash -c '
   echo $! > "$LANE_RUN_DIR/runner.pid"
   wait $(cat "$LANE_RUN_DIR/runner.pid")
   echo "CONDUCT_EXIT=$?" >> "$LANE_RUN_DIR/lane.log"
-' > /dev/null 2>&1 < /dev/null &
-disown
+'
 
 # Proof of escape: pgid and sid must equal the child's own pid.
 #
 # Two pids are recorded, and §5 needs both. lane.pid is the wrapper and, because
-# setsid made it a group leader, also the pgid. runner.pid is node — the ONLY
+# hq-detach.sh made it a session leader, also the pgid. runner.pid is node — the ONLY
 # process that can shut this lane down cleanly, because the engine CLI is
 # spawned detached: true (its own process group) and the runner's killTree is
 # the only code that holds that group id.

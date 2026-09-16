@@ -92,6 +92,8 @@ Source this for:
 - `portable_tmpdir` — `${TMPDIR:-/tmp}`
 - `portable_date_epoch_to_iso`
 - `portable_user` — `USER` / `USERNAME` fallback
+- `portable_native_path` — `cygpath -m` so native Windows binaries can open Git Bash `/tmp` paths
+- `portable_qmd_models_dir` / `portable_qmd_embed_model_ready` / `portable_qmd_cmd_would_download_model` — refuse in-turn GGUF pulls
 - `require_jq` — hard-fail with multi-OS install guidance
 
 ### JSON — `core/scripts/hook-lib.sh`

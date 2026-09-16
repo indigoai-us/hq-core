@@ -3,6 +3,50 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.139-beta.2
+
+- promote 2026-09-15 (dispatch-lane tests): **the prose assertions no longer
+  depend on the caller's locale.** Three checks matched the protocol's em-arrow
+  separator with a bare `.`. That is one character under a UTF-8 locale and one
+  BYTE under C, and the arrow is three bytes — so the suite passed on CI
+  (`LANG=C.UTF-8`) and failed on a stock macOS shell, where `LANG` is unset and
+  a non-interactive shell falls back to C. The suite was therefore green in CI
+  and unrunnable on the machine most likely to be editing the protocol.
+  `.\{1,3\}` matches either way. Verified 38/38 both with `LANG` unset and under
+  `en_US.UTF-8`.
+
+## Release: v15.0.139-beta.1
+
+- promote 2026-09-15 (lane dispatch): **lanes launch through
+  `core/scripts/hq-detach.sh`, never through a bare `setsid`.** §4 called
+  `setsid nohup bash -c ...` literally. Stock macOS ships no `setsid(1)` at all,
+  and when Homebrew util-linux supplies one it is keg-only — deliberately left
+  out of the PATH — so the launch died with `command not found` on every Mac,
+  in a log nobody was watching yet, which reads as a lane that silently never
+  started. The launch is now `bash core/scripts/hq-detach.sh -- bash -c '...'`;
+  the helper redirects stdin/stdout and detaches on its own, so the trailing
+  `> /dev/null 2>&1 < /dev/null &` and `disown` are gone. The proof-of-escape
+  check is unchanged and still passes: the wrapper is its own group leader
+  (`pgid == pid`) on both paths.
+
+- promote 2026-09-15 (`hq-detach.sh`): **the `setsid(1)` probe now covers the
+  Homebrew keg prefixes.** It tested `command -v setsid` only, so a Mac with
+  util-linux installed still fell through to the node path, and a caller that
+  had put the keg on an interactive PATH got different behaviour than a hook or
+  detached process did. It now probes `setsid`, then
+  `/opt/homebrew/opt/util-linux/bin/setsid`, then
+  `/usr/local/opt/util-linux/bin/setsid`, and falls back to node
+  `child.detached` when none resolve. Both paths were verified to produce a
+  session leader. `HQ_DETACH_FORCE_NODE=1` still forces the node path.
+
+- promote 2026-09-15 (`/run-project`): **the engine, model and reasoning effort
+  are confirmed with the user before the first dispatch.** Resolution picks a
+  default; it is not a decision the user made, and a run is many hours of lane
+  time on whatever that default is. Ask once, up front, unless the invocation
+  named one. Includes the per-engine model/effort forwarding table and the
+  caveat that `effort` is not wired for claude lanes — it must be passed as
+  `extraArgs: ["--effort", ...]`.
+
 ## Release: v15.0.130-beta.2
 
 - promote 2026-09-12 (lane dispatch): **the detached launch body is

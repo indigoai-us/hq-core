@@ -204,7 +204,7 @@ awk 'BEGIN { for (i = 0; i < 900; i++) printf "y" }'
 printf '\n'
 exit 0
 EOF
-for hook_name in detect-secrets block-core-writes-bash block-hq-root-git-mutation block-on-active-run block-unsafe-package-install; do
+for hook_name in detect-secrets block-core-writes-bash block-hq-root-git-mutation block-on-active-run block-unsafe-package-install block-qmd-model-download; do
   cat >"$GROK_FIX/.claude/hooks/$hook_name.sh" <<'EOF'
 #!/bin/bash
 cat >/dev/null

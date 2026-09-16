@@ -132,7 +132,7 @@ If the input starts with `[` (JSON array), enter batch mode:
 **Batch processing rules:**
 
 1. **Detect batch input:** if the input is a JSON array (starts with `[`), enter batch mode
-2. **Run qmd vsearch dedup ONCE for all items:** concatenate all item `content` fields as a single query string for a single `qmd vsearch` call, then match results against each item individually
+2. **Run qmd search dedup ONCE for all items:** concatenate all item `content` fields as a single query string for a single `qmd search` call (BM25; never `qmd vsearch` in-turn — first use downloads a ~300MB–2GB GGUF model and has stalled Windows prompts for hours), then match results against each item individually
 3. **Process each item through Steps 2–6 normally:** extract rules, classify scope, create/update policy files — one item at a time using the shared dedup results
 4. **Write a single event log entry** covering all items processed in the batch
 5. **Backward compatibility:** all existing modes (1, 2, 3) work exactly as before — batch is a new detection branch only
@@ -203,8 +203,10 @@ For each extracted rule, determine scope (most specific wins):
 
 **Primary (if qmd available):**
 ```bash
-qmd vsearch "{rule text}" --json -n 5
+qmd search "{rule text}" --json -n 5
 ```
+
+In-turn dedup is BM25 (`qmd search`) only. **Never run `qmd vsearch`, `qmd query`, `qmd embed`, or `qmd pull` during `/learn`.** Those subcommands auto-download local GGUF models (~300MB–2GB) on first use and have stalled a single Windows HQ prompt for more than two hours. If embeddings are already cached under `~/.cache/qmd/models/` you may still prefer `qmd search` here — keyword overlap is enough to catch duplicate rules. Kick off `hq index background` out of band if semantic search is wanted later.
 
 Check results for similarity to the new rule:
 - Similarity > 0.85 → **Skip** (already captured somewhere)
@@ -233,7 +235,7 @@ Before creating a new rule, check if an existing policy file already covers this
    # Grep policy titles and rules for keyword overlap
    grep -rl "{key terms from rule}" {policy_dir}/*.md 2>/dev/null
    ```
-   Also check `qmd vsearch` results from Step 4 for hits in policy files.
+   Also check `qmd search` results from Step 4 for hits in policy files.
 
 3. **If matching policy found:**
    - Read the policy file
@@ -425,6 +427,8 @@ The event log write is mandatory for every invocation (even skipped/trivial ones
 ```bash
 qmd update 2>/dev/null || true
 ```
+
+`qmd update` is FTS-only and does not download GGUF models. Do **not** follow it with `qmd embed` or `qmd vsearch` in this turn. If the index should grow embeddings, run `hq index background` (or `qmd embed` with `run_in_background: true`) after the report.
 
 No manual digest rebuild is needed: policies surface automatically via the SessionStart trigger hook (`inject-policy-on-trigger.sh`) and the `migrate-policy-triggers.sh` backfill. Ensure any new policy file carries `when:`/`on:` frontmatter so it gets injected. (Personal entries under `personal/policies/` are read directly by the trigger hook — there is no mirror step, so a new file loads on the next qualifying event without any reindex.)
 
