@@ -58,4 +58,17 @@ assert_not_contains \
   'trigger: {when this applies}' \
   'learn policy template omits the retired trigger field'
 
+assert_contains \
+  'qmd search "{rule text}" --json -n 5' \
+  'in-turn learn dedup uses BM25 qmd search'
+assert_not_contains \
+  'qmd vsearch "{rule text}"' \
+  'learn must not run in-turn qmd vsearch (GGUF download stall)'
+assert_contains \
+  'Never run `qmd vsearch`, `qmd query`, `qmd embed`, or `qmd pull` during `/learn`' \
+  'learn forbids cold GGUF downloads in-turn'
+assert_contains \
+  'single `qmd search` call' \
+  'batch learn dedup uses qmd search not vsearch'
+
 echo "learn-company-context-scope: ok"

@@ -29,10 +29,13 @@ Two properties matter more than the rest:
 - **Lanes are OS processes, not in-session subagents.** Nothing here uses the
   `Agent` tool. A lane keeps running when this session compacts, restarts, or
   ends, and a host without in-session subagents can still run `/conduct`.
-- **`setsid` is mandatory, not decorative.** A child left inside the session's
+- **Detaching is mandatory, not decorative.** A child left inside the session's
   process tree is swept at the turn boundary, minutes after the turn that
-  launched it — which reads as an unexplained silent failure. `setsid` puts the
-  lane in its own session where the sweep cannot reach it.
+  launched it — which reads as an unexplained silent failure. Launch every lane
+  through `core/scripts/hq-detach.sh`, which puts it in its own session where
+  the sweep cannot reach it. Never call `setsid` directly — stock macOS has no
+  `setsid(1)`, and the Homebrew util-linux copy is keg-only and off a
+  non-interactive PATH; the helper covers both and falls back to node.
 
 ## Engine roster
 
@@ -249,7 +252,7 @@ lane returns in a minute having changed nothing.
 ## Step 5: Launch the lane, detached
 
 Follow `.claude/skills/_shared/lane-dispatch-protocol.md` — it owns the whole
-mechanism: brief on disk, `args.json`, the `setsid` launch with its proof-of-
+mechanism: brief on disk, `args.json`, the `hq-detach.sh` launch with its proof-of-
 escape check, the `HQ_SESSION_ID` export, `record --status running` against the
 run-dir basename, and the background waiter. `/run-project` dispatches its
 stories the same way, so the launch block lives in one file rather than drifting

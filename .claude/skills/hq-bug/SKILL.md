@@ -1,7 +1,7 @@
 ---
 name: hq-bug
 description: Submit HQ bug reports or feature requests with session context.
-allowed-tools: AskUserQuestion, Write, Bash(mktemp:*), Bash(bash:*), Bash(rm:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(pwd:*), Bash(ls:*)
+allowed-tools: AskUserQuestion, Write, Bash(mktemp:*), Bash(cygpath:*), Bash(bash:*), Bash(rm:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(pwd:*), Bash(ls:*)
 ---
 
 # HQ Feedback
@@ -23,14 +23,17 @@ From `$ARGUMENTS`, extract:
 
 ### 2. Allocate body file
 
-Run:
+Run this as a **single** Bash call (do not split mktemp and cygpath across tool calls — each spawn is expensive on Windows):
 
 ```bash
-BODY_PATH=$(mktemp -t hq-feedback-body) || { echo "mktemp failed" >&2; exit 1; }
-echo "$BODY_PATH"
+BODY_PATH=$(mktemp -t hq-feedback-body.XXXXXX) || { echo "mktemp failed" >&2; exit 1; }
+if command -v cygpath >/dev/null 2>&1; then
+  BODY_PATH=$(cygpath -m "$BODY_PATH") || { echo "cygpath failed" >&2; exit 1; }
+fi
+printf '%s\n' "$BODY_PATH"
 ```
 
-Capture the absolute path printed to stdout. **You will substitute this literal path into Steps 6 and 8 directly — do not rely on it as a shell variable across separate Bash tool calls, as each call runs in a fresh subprocess.**
+Capture the absolute path printed to stdout. **On Windows Git Bash, `mktemp` yields an MSYS `/tmp/...` path that the native `hq` binary cannot read — `--body-file` then fails with "body must not be empty." `cygpath -m` converts it to a `C:/...` path the native binary can open. On macOS/Linux the `cygpath` branch is a no-op.** Substitute this literal path into Steps 6 and 8 directly — do not rely on it as a shell variable across separate Bash tool calls, as each call runs in a fresh subprocess. Never pass a Git Bash `/tmp/...` path to `hq`.
 
 ### 3. Capture CWD
 
@@ -132,7 +135,7 @@ hq feedback "<type>" --title "<title>" --body-file "<body-path>" [--company "<sl
 Substitution map:
 - `<type>` → TYPE from Step 1 (e.g., `bug`)
 - `<title>` → TITLE from Step 1 (e.g., `Login broken on mobile`) — always pass via `--title`, never as a positional argument to `hq feedback`
-- `<body-path>` → absolute path printed in Step 2 (e.g., `/tmp/hq-feedback-body.AbCdEf`)
+- `<body-path>` → absolute path printed in Step 2 (native-visible; e.g. `/tmp/hq-feedback-body.AbCdEf` on POSIX, `C:/Temp/hq-feedback-body.AbCdEf` on Windows Git Bash after `cygpath -m`)
 - `[--company "<slug>"]` → `--company "indigo"` if Step 7 returned a non-empty slug; omit entirely if empty
 - `[--screenshot "<path>" ...]` → one `--screenshot "<abs-path>"` per image from Step 5b, repeated (the flag is repeatable, max 5). Omit entirely when Step 5b collected none.
 

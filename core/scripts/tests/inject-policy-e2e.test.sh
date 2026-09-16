@@ -105,6 +105,8 @@ assert_not "second-line deploy != mcp" "$O" mcp-transport-detection
 echo "== grep / search =="
 O="$(run_hook PreToolUse "$(bashbody 'grep -r TODO .')")"
 assert_has "grep"              "$O" hq-qmd-first-for-hq-search hq-no-grep-discovery
+O="$(run_hook PreToolUse "$(bashbody 'qmd vsearch auth --json -n 5')")"
+assert_has "qmd vsearch"       "$O" hq-qmd-first-for-hq-search hq-no-in-turn-qmd-model-download
 
 echo "== secret / credential =="
 O="$(run_hook PreToolUse "$(bashbody 'AWS_PROFILE=x aws s3 ls')")"

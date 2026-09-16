@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed — Windows sequential qmd vsearch no longer downloads a GGUF model in-turn (2026-09-15)
+- **Cold `qmd vsearch` / `query` / `embed` / `pull` is blocked in the foreground** when `~/.cache/qmd/models/` has no GGUF. First use auto-downloads ~300MB–2GB and stalled a Windows Git Bash prompt for more than two hours (cli 5.114.0, core 15.0.136) after `/learn` ran an in-turn vsearch dedup. In-turn search and `/learn` dedup use `qmd search` (BM25). Embeddings go through `hq index background` or `run_in_background: true`. Hook: `.claude/hooks/block-qmd-model-download.sh`. Escape hatch: `HQ_ALLOW_QMD_MODEL_DOWNLOAD=1`.
+- **`hq feedback --body-file` on Windows Git Bash now passes a native path.** `mktemp -t` yields `/tmp/...` which the native `hq` binary cannot read (`body must not be empty`). `/hq-bug` converts with `cygpath -m` in the same Bash call. Helper: `portable_native_path` in `core/scripts/lib/portable.sh`.
+
 ### Fixed — master-hook empty json_outputs no longer downgrades PreToolUse exit 2 (2026-09-15)
 - **Layered PreToolUse blockers that exit 2 with plain-text stderr keep exit 2 on macOS bash 3.2.** `.claude/hooks/master-hook.sh` ran `for jo in "${json_outputs[@]}"` under `set -u` with no empty-array guard. When no dispatched child emitted a JSON object — the normal path for `10-Edit,Write,MultiEdit--block-repo-edits-use-worktree.sh` plus the browser-nudge sibling — bash 3.2 aborted after `exit_code` was already 2, and the process returned 1 (a non-blocking error). The scan, timeout-warning prepend, and multi-JSON merge now use the same `${arr[@]+"${arr[@]}"}` idiom as the hooks dispatch loop. Hooks registered directly through `hook-gate.sh` were never affected. Regression suite: `core/scripts/tests/master-hook-empty-json-outputs.test.sh`.
 
