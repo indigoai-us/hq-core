@@ -16,6 +16,17 @@ set -uo pipefail
 
 INPUT=$(cat)
 
+# Registration normally scopes this hook to write tools, but do not treat that
+# external matcher as the only boundary. Reads are safe to allow when a
+# dispatcher misroutes this hook; unknown tools intentionally continue through
+# the existing fail-closed protection below.
+TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // .toolName // empty' 2>/dev/null) || TOOL=""
+case "$TOOL" in
+  Read|NotebookRead|Glob|Grep|LS|list_dir|ListDir|list|read_file|grep)
+    exit 0
+    ;;
+esac
+
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || true
 
 if [[ -z "$FILE_PATH" ]]; then

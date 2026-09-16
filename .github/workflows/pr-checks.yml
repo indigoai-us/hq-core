@@ -188,6 +188,10 @@ jobs:
         run: bash core/scripts/tests/orchestrator-skills-use-pool.test.sh
       - name: Orchestrator skills dispatch detached lanes (run-project + conduct)
         run: bash core/scripts/tests/orchestrator-skills-dispatch-lanes.test.sh
+      - name: Detached lanes are reaped when their orchestrator is gone
+        run: bash core/scripts/tests/conduct-reap.test.sh
+      - name: SessionStart reap hook is non-blocking, single-flight and rate-limited
+        run: bash core/scripts/tests/conduct-reap-hook.test.sh
       - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
         run: bash core/scripts/tests/skill-script-refs.test.sh
       - name: HQ feedback summary and verbatim report contract
@@ -934,6 +938,8 @@ jobs:
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
+      - name: Hook guards assert their own tool scope
+        run: bash core/scripts/tests/hook-tool-scope-self-assert.test.sh
       - name: Runtime adapters repair hooks or emit bounded diagnostics
         run: bash core/scripts/tests/hook-runtime-diagnostics.test.sh
       - name: hook-gate augments PATH for version-manager node (nvm/volta/fnm/asdf)
@@ -1066,6 +1072,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Hooks run python-free (tripwire + parity + broken-stub runtime)
         run: bash core/scripts/tests/hooks-no-python.test.sh
+      - name: Stray matcher-less hook-gate registrations are removed (jq + node)
+        run: bash core/scripts/tests/remove-stray-gate-hooks.test.sh
 
   policy-trigger-migration:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}

@@ -1,9 +1,10 @@
 #!/bin/bash
 # check-hq-update.sh — SessionStart hook
 #
-# Two responsibilities:
-#   1. hq CLI floor: if the installed `hq` binary is below 5.35.0 (the release
-#      that introduced `hq reindex`, which the reindex hook shim calls),
+# Responsibilities:
+#   0. Remove matcher-less hook-gate registrations an old doctor wrote.
+#   1. hq CLI floor: if the installed `hq` binary is below 5.117.3 (the first
+#      release whose doctor no longer writes those registrations),
 #      auto-update it in the background via npm. Detached so it never blocks
 #      session start; 6h cooldown stamp so it doesn't relaunch every session.
 #   2. hq-core release: compares local hqVersion (core/core.yaml) to the latest
@@ -46,14 +47,25 @@ version_gt() {
   [ "$a" \> "$b" ]
 }
 
-# --- (1) hq CLI auto-update floor (>= 5.35 required for `hq reindex`) ---
-# Runs FIRST, before the core.yaml gate below, so it fires even on a fresh
-# install with no core.yaml. The reindex hook shim execs `hq reindex`,
-# introduced in @indigoai-us/hq-cli 5.35.0; older CLIs make the shim a no-op,
-# so bring them up to date automatically. Fully detached + 6h cooldown so a
-# slow npm/network never blocks session start and we don't relaunch on every
-# SessionStart. All failures silent — advisory infra.
-HQ_CLI_FLOOR="5.35.0"
+# --- (0) Heal settings broken by an old `hq doctor --fix` ---
+# hq-cli 5.99.0 through 5.117.2 wrote matcher-less hook-gate.sh registrations
+# that run every guard on every tool call and block Bash, Skill and Read.
+# Remove exactly those, with a backup. Runs first so the next session starts
+# healed. See core/scripts/remove-stray-gate-hooks.sh.
+STRAY_OUT=$(bash "$HQ_ROOT/core/scripts/remove-stray-gate-hooks.sh" "$HQ_ROOT" 2>/dev/null || true)
+if [ -n "$STRAY_OUT" ]; then
+  printf '<hq-settings-healed>\n%s\nThese entries were written by an older hq doctor --fix and blocked tools with "Glob needs a path" or "Edit to locked path". If tools were blocked in this session, restart it. Tell the user in one plain sentence.\n</hq-settings-healed>\n' "$STRAY_OUT"
+fi
+
+# --- (1) hq CLI auto-update floor ---
+# Runs before the core.yaml gate below, so it fires even on a fresh install
+# with no core.yaml. 5.117.3 is the first release whose `hq doctor --fix` no
+# longer writes matcher-less hook registrations (and removes existing ones);
+# older CLIs re-create the breakage whenever client-health runs the doctor.
+# (It also covers the original 5.35 floor for `hq reindex`.) Fully detached +
+# 6h cooldown so a slow npm/network never blocks session start and we don't
+# relaunch on every SessionStart. All failures silent — advisory infra.
+HQ_CLI_FLOOR="5.117.3"
 CLI_STAMP="$CACHE_DIR/hq-cli-autoupdate.stamp"
 if command -v hq >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
   CLI_VER=$(HQ_NO_UPDATE_CHECK=1 hq --version 2>/dev/null \
@@ -77,9 +89,9 @@ if command -v hq >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
       fi
       cat <<EOF
 <hq-cli-auto-update>
-Your hq CLI ($CLI_VER) is below the required 5.35 and is being updated in the
-background (npm install -g @indigoai-us/hq-cli@latest). New 5.35+ commands such
-as \`hq reindex\` will be available next session.
+Your hq CLI ($CLI_VER) is below the required $HQ_CLI_FLOOR and is being updated in
+the background (npm install -g @indigoai-us/hq-cli@latest). The update is picked
+up next session.
 </hq-cli-auto-update>
 EOF
     fi

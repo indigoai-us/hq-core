@@ -5,6 +5,26 @@
 # 2. Block unscoped Glob from HQ root (causes 20s timeouts)
 
 INPUT=$(cat)
+# master-hook exports HQ_HOOK_TOOL_NAME for every child, even when it is empty.
+# Prefer it when present so non-Glob calls avoid a jq fork (notably on Windows).
+if [ "${HQ_HOOK_TOOL_NAME+set}" = "set" ]; then
+  TOOL="$HQ_HOOK_TOOL_NAME"
+else
+  TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // .toolName // empty')
+fi
+
+# list_dir / ListDir is a shallow readdir — never subject to the recursive Glob guard.
+case "$TOOL" in
+  list_dir|ListDir|LS|list)
+    exit 0
+    ;;
+esac
+
+# This is a performance/hygiene guard, not a security control. A dispatcher
+# mismatch or payload with no tool name must fail open: an unscoped search is
+# recoverable, but blocking an unrelated tool makes the session unusable.
+[ "$TOOL" = "Glob" ] || exit 0
+
 HQ="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 # Prefer HQ_ROOT from the Grok adapter when git toplevel is a nested repo.
 if [ -n "${HQ_ROOT:-}" ] && [ -d "$HQ_ROOT" ]; then
@@ -24,14 +44,6 @@ PATTERN=$(echo "$INPUT" | jq -r '
   .tool_input.pattern // .tool_input.glob // .toolInput.pattern // empty
 ')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
-TOOL=$(echo "$INPUT" | jq -r '.tool_name // .toolName // empty')
-
-# list_dir / ListDir is a shallow readdir — never subject to the recursive Glob guard.
-case "$TOOL" in
-  list_dir|ListDir|LS|list)
-    exit 0
-    ;;
-esac
 
 # Block prd.json and worker.yaml discovery — always use qmd or direct Read
 if echo "$PATTERN" | grep -qE 'prd\.json|worker\.yaml'; then
