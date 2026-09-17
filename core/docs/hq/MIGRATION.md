@@ -13,9 +13,12 @@ release; the release workflow stamps it with the version at tag time.
   are sourced from `indigoai-us/hq-packages` via `github:` shorthand, lists the
   `diagrams`, `charts` and `engineering` packs, and points at
   `core/scripts/scan-packages.sh` as the wiring ground truth. Documentation only.
-- staging hygiene: seven `.claude/state/session-title-*` and
-  `auto-session-project-*` files committed to staging by mistake are flagged for
-  deletion (`.staging-deletion-list.txt`). Per-session scratch; never ships.
+- staging hygiene: `.claude/state/active-session-project` and
+  `.claude/state/auto-session-project-*` were tracked in core by mistake. They
+  are per-machine pointers written by `core/scripts/session-project.sh`; they
+  are now untracked and ignored. `.staging-deletion-list.txt` (added by #755) is
+  removed: nothing reads it, and six of its seven paths were never tracked.
+  Existing installs keep their local copies; the next update stops shipping them.
 
 ## Release: v15.0.142-beta.4
 

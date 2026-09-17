@@ -192,3 +192,8 @@ workspace/.hq-update-check/
 
 # Excluded by the HQ desktop git-mirror to keep the pushed repo under its size cap.
 /workspace/.session-logs/
+
+# Session-project pointers are per-machine runtime state written by
+# core/scripts/session-project.sh; never ship them in core.
+.claude/state/active-session-project
+.claude/state/auto-session-project-*
