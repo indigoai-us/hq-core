@@ -3,6 +3,14 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.146-beta.2
+
+- promote 2026-09-17 (dm-bind): new core skill `/dm-bind`
+  (`.claude/skills/dm-bind/SKILL.md`) and helper `core/scripts/hq-dm-bind.sh`.
+  Binds a session to one HQ DM channel, posts status updates in a fixed shape
+  (title and state, short bullets, `Next:` / `Need from you:` lines), and
+  listens for replies as steering input. Additive; nothing to do on update.
+
 ## Release: v15.0.144-beta.1
 
 - promote 2026-09-17 (starter-plan-hard-limits landing): `.gitignore` now

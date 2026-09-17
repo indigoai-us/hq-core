@@ -163,6 +163,31 @@ run_gate() {
       >"$out" 2>"$err" <<<"$(payload "$session")"
 }
 
+run_watchdog_for_fingerprint() {
+  local root="$1" hook_path="$2" event="$3" label="$4" root_arg="${5:-$1}"
+  local report="$root/$label.hq.stdin" acknowledgement="$root/$label.hq.ack"
+
+  printf '%s\t%s\t%s\n' master-child "$hook_path" relative > "$root/watchdog.trigger"
+  env \
+    PATH="$root/bin:$PATH" \
+    HQ_TEST_HQ_ARGS="$root/$label.hq.args" \
+    HQ_TEST_HQ_STDIN="$report" \
+    HQ_TEST_HQ_ACK="$acknowledgement" \
+    HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
+    HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$root/watchdog.trigger" \
+    timeout 15s bash "$root/.claude/hooks/hook-timeout-watchdog.sh" \
+      --root "$root_arg" --source master-child --hook-path "$hook_path" \
+      --event "$event" --threshold relative --started-at 0 \
+      >"$root/$label.out" 2>"$root/$label.err" <<<"$(payload_for_event "$event" "$label-session")"
+  [ "$(grep -c '^---EVENT---$' "$report")" = "1" ] \
+    || fail "$label watchdog did not report exactly one event"
+  [ ! -s "$root/$label.err" ] || fail "$label watchdog wrote to stderr"
+}
+
+fingerprint_from_report() {
+  jq -r '.fingerprint' < <(sed '/^---EVENT---$/,$d' "$1")
+}
+
 # Fixtures reach the watchdog's deterministic test seam, then wait for the
 # fake reporter's observable acknowledgement. The timeout in run_gate is only
 # a diagnostic escape hatch; no assertion depends on a duration elapsing.
@@ -790,5 +815,45 @@ jq -e '
 ' < <(sed '/^---EVENT---$/,$d' "$R13_GROK/hq.stdin") >/dev/null \
   || fail "Grok master-child warning did not use .grok/hooks/hq-grok-user-bridge.json's timeout"
 pass "Grok master-child watchdog reads its active harness registration"
+
+echo "[14] timeout warning fingerprints identify hooks independently of the install root"
+R14_A="$(make_root fingerprint-a)"
+R14_B="$(make_root fingerprint-b)"
+relative_hook_path=".claude/hooks/identity-hook.sh"
+hook_a="$R14_A/./$relative_hook_path"
+hook_b="$R14_B/$relative_hook_path"
+
+# Exercise both a trailing slash on --root and a leading ./ in the relative
+# portion of the hook path. These spellings still identify the same hook.
+run_watchdog_for_fingerprint "$R14_A" "$hook_a" PreToolUse same-hook-a "$R14_A/"
+run_watchdog_for_fingerprint "$R14_B" "$hook_b" PreToolUse same-hook-b "$R14_B"
+run_watchdog_for_fingerprint "$R14_A" "$R14_A/.claude/hooks/other-hook.sh" PreToolUse different-hook "$R14_A/"
+run_watchdog_for_fingerprint "$R14_A" "$hook_a" PostToolUse different-event "$R14_A/"
+
+outside_hook_path="$TMP/outside-install/.claude/hooks/outside-hook.sh"
+run_watchdog_for_fingerprint "$R14_A" "$outside_hook_path" PreToolUse outside-root "$R14_A/"
+
+same_hook_a_fingerprint="$(fingerprint_from_report "$R14_A/same-hook-a.hq.stdin")"
+same_hook_b_fingerprint="$(fingerprint_from_report "$R14_B/same-hook-b.hq.stdin")"
+different_hook_fingerprint="$(fingerprint_from_report "$R14_A/different-hook.hq.stdin")"
+different_event_fingerprint="$(fingerprint_from_report "$R14_A/different-event.hq.stdin")"
+outside_root_fingerprint="$(fingerprint_from_report "$R14_A/outside-root.hq.stdin")"
+expected_relative_fingerprint="hook-timeout:PreToolUse:$(sha256_fields "$relative_hook_path")"
+expected_outside_fingerprint="hook-timeout:PreToolUse:$(sha256_fields "outside-hook.sh")"
+
+[ "$same_hook_a_fingerprint" = "$same_hook_b_fingerprint" ] \
+  || fail "the same hook under two install roots produced different fingerprints"
+[ "$same_hook_a_fingerprint" = "$expected_relative_fingerprint" ] \
+  || fail "a hook under the root did not fingerprint from its relative path"
+[ "$same_hook_a_fingerprint" != "$different_hook_fingerprint" ] \
+  || fail "different hooks under one root shared a fingerprint"
+[ "$same_hook_a_fingerprint" != "$different_event_fingerprint" ] \
+  || fail "one hook on different events shared a fingerprint"
+[ "$outside_root_fingerprint" = "$expected_outside_fingerprint" ] \
+  || fail "a hook outside the root did not fingerprint from its basename"
+case "$outside_root_fingerprint" in
+  *"$outside_hook_path"*) fail "outside-root fingerprint embedded the absolute hook path" ;;
+esac
+pass "fingerprints are stable across install roots and remain condition-specific"
 
 echo "ALL PASS: hook-timeout-sentry"

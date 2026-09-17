@@ -83,6 +83,58 @@ sha256_fields() {
   fi
 }
 
+# The fingerprint is a grouping key, so it must not contain an installation-
+# specific absolute path. Normalize only the spellings that can change the
+# lexical root boundary; diagnostics retain the original hook_path unchanged.
+normalize_fingerprint_path() {
+  local path="$1" original="$1" normalized
+  while [ "${path#./}" != "$path" ]; do
+    path="${path#./}"
+  done
+  while :; do
+    normalized="${path//\/\.\//\/}"
+    [ "$normalized" = "$path" ] && break
+    path="$normalized"
+  done
+  while [ "$path" != "/" ] && [ "${path%/}" != "$path" ]; do
+    path="${path%/}"
+  done
+  [ -n "$path" ] || [ -z "$original" ] || path="."
+  printf '%s' "$path"
+}
+
+hook_fingerprint_identity() {
+  local normalized_root normalized_hook relative_path=""
+  normalized_root="$(normalize_fingerprint_path "$root")"
+  normalized_hook="$(normalize_fingerprint_path "$hook_path")"
+
+  case "$normalized_root" in
+    "") ;;
+    "/")
+      case "$normalized_hook" in
+        /*) relative_path="${normalized_hook#/}" ;;
+      esac
+      ;;
+    ".")
+      case "$normalized_hook" in
+        /*) ;;
+        *) relative_path="$normalized_hook" ;;
+      esac
+      ;;
+    *)
+      case "$normalized_hook" in
+        "$normalized_root"/*) relative_path="${normalized_hook#"$normalized_root"/}" ;;
+      esac
+      ;;
+  esac
+
+  if [ -n "$relative_path" ]; then
+    normalize_fingerprint_path "$relative_path"
+  else
+    basename "$normalized_hook"
+  fi
+}
+
 # shellcheck disable=SC2329 # Invoked by TERM/INT/HUP traps below.
 cleanup() {
   # Dispatchers may send a direct signal and a process-group signal in quick
@@ -445,7 +497,8 @@ fi
 hq_version="$(grep -E '^hqVersion:' "$root/core/core.yaml" 2>/dev/null | head -n 1 | tr -d ' "' | cut -d: -f2)"
 [ -n "$hq_version" ] || hq_version="unknown"
 platform="$(uname -s 2>/dev/null || printf 'unknown')"
-hook_fingerprint_hash="$(sha256_fields "$hook_path")"
+hook_fingerprint_identity="$(hook_fingerprint_identity)"
+hook_fingerprint_hash="$(sha256_fields "$hook_fingerprint_identity")"
 [ -n "$hook_fingerprint_hash" ] || exit 0
 
 event_json="$(jq -cn \
