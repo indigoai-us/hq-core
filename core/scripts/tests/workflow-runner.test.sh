@@ -207,7 +207,7 @@ prompt=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -p|--print) prompt="$2"; shift 2 ;;
-    --model|--output-format|--permission-mode) shift 2 ;;
+    --model|--output-format|--permission-mode|--effort) shift 2 ;;
     *) shift ;;
   esac
 done
@@ -534,6 +534,29 @@ if [ -n "$cf" ]; then
   grep -A1 -x -- '--output-format' "$cf" | tail -1 | grep -qx -- 'json' && env_fmt_c=0
 fi
 check "claude: always requested with --output-format json (envelope, not text)" "$env_fmt_c"
+
+# 2e. claude effort: the CLI takes `--effort <level>`; the default is low
+# (HQ_WORKFLOW_CLAUDE_EFFORT overrides; opts.effort wins). Codex's own default
+# (high) must not leak into the claude argv.
+eff_c=1
+if [ -n "$cf" ]; then
+  grep -A1 -x -- '--effort' "$cf" | tail -1 | grep -qx -- 'low' && eff_c=0
+fi
+check "claude: --effort low by default" "$eff_c"
+cat > "$TMP/wf-claude-effort.mjs" <<'WF'
+await agent('claude-effort-opt', { engine: 'claude', tier: 'plan', effort: 'max', timeoutSecs: 30 })
+await agent('claude-effort-env', { engine: 'claude', tier: 'plan', timeoutSecs: 30 })
+return 'ok'
+WF
+export HQ_WORKFLOW_CLAUDE_EFFORT="medium"
+run_wf "$TMP/wf-claude-effort.mjs"
+unset HQ_WORKFLOW_CLAUDE_EFFORT
+eff_opt=1; eff_env=1
+for f in "$TMP/rec"/claude-argv.*; do
+  if grep -qx -- 'claude-effort-opt' "$f"; then grep -A1 -x -- '--effort' "$f" | tail -1 | grep -qx -- 'max' && eff_opt=0; fi
+  if grep -qx -- 'claude-effort-env' "$f"; then grep -A1 -x -- '--effort' "$f" | tail -1 | grep -qx -- 'medium' && eff_env=0; fi
+done
+check "claude: opts.effort and HQ_WORKFLOW_CLAUDE_EFFORT drive --effort" "$(( eff_opt + eff_env ))"
 
 cc="$(ls "$TMP/rec"/claude-cwd.* 2>/dev/null | head -1)"
 [ -n "$cc" ] && grep -qx -- "$HQROOT" "$cc"

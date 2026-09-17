@@ -89,8 +89,10 @@
  *                              claude tier models (defaults opus / sonnet)
  *   HQ_WORKFLOW_MODEL          Global model pin overriding every tier map;
  *                              empty string -> engine CLI default (no -m)
- *   HQ_WORKFLOW_EFFORT         Default reasoning effort (default high; empty
- *                              string -> engine CLI default)
+ *   HQ_WORKFLOW_EFFORT         Default reasoning effort for codex and grok
+ *                              (default high; empty string -> engine CLI default)
+ *   HQ_WORKFLOW_CLAUDE_EFFORT  Default reasoning effort for claude, passed as
+ *                              `--effort` (default low; empty string -> CLI default)
  *   HQ_WORKFLOW_FAST_MODE      Codex fast mode override (1/0). Per-tier
  *                              default: exec on, plan off. Ignored by grok.
  *   HQ_WORKFLOW_REPAIR         Repair passes for an off-contract reply
@@ -206,6 +208,11 @@ const ENGINES = {
       plan: process.env.HQ_WORKFLOW_CLAUDE_PLAN_MODEL || 'opus',
       exec: process.env.HQ_WORKFLOW_CLAUDE_EXEC_MODEL || 'sonnet',
     },
+    // Claude's flagship models default to low effort here: lane work is
+    // brief-driven and tool-heavy, and the operator chose low as the default.
+    // `HQ_WORKFLOW_EFFORT` is deliberately NOT consulted for claude — it is
+    // the codex/grok default and "high" there means something else.
+    defaultEffort: process.env.HQ_WORKFLOW_CLAUDE_EFFORT ?? 'low',
   },
 };
 const VALID_ENGINES = Object.keys(ENGINES);
@@ -984,7 +991,7 @@ async function buildRuntime(cli) {
       // PreToolUse hooks still fire, so a denied tool call lands in the
       // envelope's permission_denials and is surfaced by the unwrapper. No
       // schema flag exists — instruct in the prompt, parse the reply text.
-      // claude has no reasoning-effort CLI flag, so `effort` is not applied.
+      // `--effort <level>` sets the session's reasoning effort (claude >= 2.1).
       if (schema) {
         spawnPrompt += '\n\nReturn ONLY JSON matching this JSON Schema — no prose, no code fences:\n'
           + JSON.stringify(schema);
@@ -995,6 +1002,7 @@ async function buildRuntime(cli) {
         : ['-p', spawnPrompt, '--permission-mode', 'bypassPermissions',
            '--output-format', 'json'];
       if (model) argv.push('--model', String(model));
+      if (effort) argv.push('--effort', String(effort));
       if (Array.isArray(opts.extraArgs)) argv.push(...opts.extraArgs.map(String));
       resultFromStdout = true;
       envelopeUnwrap = unwrapClaudeEnvelope;
@@ -1152,7 +1160,9 @@ async function buildRuntime(cli) {
     if (opts.model !== undefined) model = opts.model;
     else if (MODEL_OVERRIDE !== undefined) model = MODEL_OVERRIDE;
     else model = engine.tierModels[tier];
-    const effort = opts.effort !== undefined ? opts.effort : DEFAULT_EFFORT;
+    const effort = opts.effort !== undefined
+      ? opts.effort
+      : (engine.defaultEffort !== undefined ? engine.defaultEffort : DEFAULT_EFFORT);
     // Resolved here, not inside runEngine, because it changes the codex argv
     // and therefore has to be part of the resume key — the key's contract is
     // "everything that decides what the agent would do".

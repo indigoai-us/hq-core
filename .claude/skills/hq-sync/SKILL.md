@@ -1,7 +1,7 @@
 ---
 name: hq-sync
 description: Run a full bidirectional sync for cloud-backed HQ companies.
-allowed-tools: Bash, Read
+allowed-tools: Bash, Read, Bash(. .claude/skills/hq-sync/scripts/hq-sync-events.sh:*)
 ---
 
 # /hq-sync — Full HQ sync from the CLI
@@ -29,8 +29,16 @@ Fast path: if cwd contains a `core/core.yaml`, use cwd. Otherwise read `~/.hq/me
 
 ### Step 2 — Auth check
 
-Confirm `~/.hq/cognito-tokens.json` exists and isn't expired. If absent or
-expired, tell the user "Not signed in — run /hq-login first" and stop.
+Confirm `~/.hq/cognito-tokens.json` exists. If it is absent, tell the user
+"Not signed in — run /hq-login" and exit 2.
+
+Do not inspect the token's contents or judge whether it is expired. The runner
+owns token validity: it refreshes an expired access token from the stored
+refresh token on its own, and `expiresAt` is typed `string | number`, so any
+arithmetic here is both redundant and liable to fail on the ISO-string form.
+When the runner cannot get a valid token it emits an `auth-error` event on
+stderr — that event, not a local clock comparison, is the signal to send the
+user to `/hq-login`.
 
 ### Step 3 — Spawn the runner
 
@@ -53,27 +61,68 @@ the user:
 - `{"type":"progress", path, bytes, message?}` → quiet (just count)
 - `{"type":"conflict", path, direction, resolution}` → "⚠️ Conflict: {path} ({direction}) — {resolution}"
 - `{"type":"complete", company, filesDownloaded, filesUploaded, conflicts, ...}` → "✓ {company}: {filesDownloaded}↓ {filesUploaded}↑ {conflicts}⚠"
-- `{"type":"all-complete", companiesAttempted, conflictPaths, errors}` → final summary
+- `{"type":"all-complete", companiesAttempted, conflictPaths, errors, partial, transient, companies}` → final summary. `partial` and `companies[].status` are the canonical completeness signals — see Step 4.
+- `{"type":"conflicts-remaining", count, samplePaths}` → emitted once after
+  `all-complete` when the post-sync ledger prune preserved conflict rows a
+  human still has to resolve. See Step 4.
 - `{"type":"setup-needed", reason, pendingInviteCount?}` → the run could not
   proceed. NOT a silent success — see Step 5b.
 
+On stderr:
+- `{"type":"auth-error", message}` → no valid token. Print
+  "Not signed in — run /hq-login" and exit 2.
+- `{"type":"error", ...}` → per-file or per-company diagnostics, surfaced at
+  Step 5d.
+
 ### Step 4 — Final summary
 
-Print:
+Print the totals from `all-complete`:
 
 ```
-Synced N companies. M files transferred. K conflicts.
-
-Conflicts:
-  - companies/foo/bar.md (pull)
-  - ...
-
-Run /resolve-conflicts to walk pending conflicts.
+=== Summary ===
+Companies synced: N
+Files: D ↓ / U ↑
+Conflicts: K
+Errors: E
 ```
 
-If `K === 0`, omit the conflicts list and `/resolve-conflicts` suggestion.
+If `K === 0`, omit the conflicts list and the `/resolve-conflicts` suggestion.
+If `errors[]` is non-empty, list each entry.
 
-If `errors[]` is non-empty, surface them in red.
+Then report completeness honestly. `errors.length > 0` is not sufficient: a
+company that cleanly conflict-aborted never lands in `errors`. Read `partial`
+and `companies[].status`. When `partial` is true, list every company whose
+status is not `complete` with that status (`aborted`, `errored`, or
+`transient-network`), list the `transient[]` diagnostics, and exit 3.
+
+Map the runner's exit codes to plain language:
+
+| Runner exit | What it means | What the skill prints |
+|---|---|---|
+| 0 | the protocol finished | the summary above |
+| 1 | bad arguments, or a failure before the sync started | the runner's diagnostics |
+| 2 | at least one company failed deterministically | the partial block |
+| 75 | a retryable network failure interrupted the run | "The network interrupted the sync. Nothing is corrupt. Run /hq-sync again." |
+
+The skill's own exit codes: 0 clean, 2 not signed in, 3 partial (at least one
+company did not complete), and the runner's code passed through otherwise.
+
+Finally, report conflict residue from both places it lives:
+
+- The `conflicts-remaining` event carries the ledger rows the post-sync prune
+  preserved. Print `count`, the sample paths, and the `/resolve-conflicts`
+  pointer.
+- Legacy `.conflict-<timestamp>-<machine>` twins sit on disk outside the
+  ledger, so `/resolve-conflicts` cannot see them. Count them under the HQ root
+  (skipping `node_modules`, `.git`, and `workspace/tmp`) and, when the count is
+  nonzero, print it with the command that previews folding them back:
+
+```
+hq sync doctor --reconcile-conflicts --hq-root <hqRoot>
+```
+
+That form is a dry run; it reports what it would do and changes nothing.
+Adding `--yes` is what applies it.
 
 ## Implementation
 
@@ -101,15 +150,31 @@ if [ -z "$hq_root" ]; then
 fi
 echo "HQ root: $hq_root"
 
-# Step 2: auth check
-if [ ! -f "$HOME/.hq/cognito-tokens.json" ]; then
-  echo "ERROR: not signed in — run /hq-login first" >&2
-  exit 2
+# Event handling lives in a sibling script so the code path a user gets is the
+# one the test suite exercises against recorded ndjson fixtures
+# (the tests folder beside this skill). The skill body runs pasted into a shell,
+# so BASH_SOURCE may not point at the skill folder — the resolved HQ root is the
+# reliable anchor, with the per-user skills tree as the fallback. Source it with
+# one plain command, run from the directory that holds it, so allowed-tools can
+# name that exact command instead of a shell construct.
+events_home="$hq_root"
+test -f "$hq_root/.claude/skills/hq-sync/scripts/hq-sync-events.sh" || events_home="$HOME"
+cd "$events_home"
+# shellcheck source=/dev/null
+. .claude/skills/hq-sync/scripts/hq-sync-events.sh || true
+cd "$hq_root"
+if ! command -v hq_sync_report_summary >/dev/null 2>&1; then
+  echo "ERROR: hq-sync-events.sh not found — reinstall the hq-sync skill" >&2
+  exit 1
 fi
-expires_ms="$(jq -r '.expiresAt // 0' "$HOME/.hq/cognito-tokens.json")"
-now_ms=$(($(date +%s) * 1000))
-if [ "$expires_ms" -le "$now_ms" ]; then
-  echo "ERROR: HQ session expired — run /hq-login to refresh" >&2
+
+# Step 2: auth check. File presence only — the runner owns token validity. It
+# refreshes an expired access token from the stored refresh token, and the
+# expiresAt field is typed `string | number`, so comparing it here both
+# duplicated that logic and died under `set -e` on the ISO-string form. An
+# actually-unusable token arrives as an `auth-error` event, handled at Step 4b.
+if [ ! -f "$HOME/.hq/cognito-tokens.json" ]; then
+  hq_sync_print_auth_error
   exit 2
 fi
 
@@ -152,30 +217,25 @@ cli_status=$?
 set +o pipefail 2>/dev/null || true
 set -e
 
-# Step 5: parse final all-complete event for summary
-final_event="$(grep -E '^\{"type":"all-complete"' "$output_file" | tail -1 || true)"
-if [ -n "$final_event" ]; then
-  companies=$(printf '%s' "$final_event" | jq -r '.companiesAttempted // 0')
-  files_d=$(printf '%s' "$final_event" | jq -r '.filesDownloaded // 0')
-  files_u=$(printf '%s' "$final_event" | jq -r '.filesUploaded // 0')
-  conflicts=$(printf '%s' "$final_event" | jq -r '.conflictPaths | length')
-  errors=$(printf '%s' "$final_event" | jq -r '.errors | length')
-
-  echo ""
-  echo "=== Summary ==="
-  echo "Companies synced: $companies"
-  echo "Files: $files_d ↓ / $files_u ↑"
-  echo "Conflicts: $conflicts"
-  echo "Errors: $errors"
-
-  if [ "$conflicts" -gt 0 ]; then
-    echo ""
-    echo "Conflicts:"
-    printf '%s' "$final_event" | jq -r '.conflictPaths[] | "  - \(.company)/\(.path) (\(.direction))"'
-    echo ""
-    echo "Run /resolve-conflicts to walk them interactively."
-  fi
+# Step 4b: auth-error. The runner routes it to stderr, so it never reaches the
+# ndjson stream on stdout. This is the only expired/absent-token signal the
+# skill trusts.
+if hq_sync_has_auth_error "$err_file"; then
+  hq_sync_print_auth_error
+  rm -f "$output_file" "$err_file"
+  exit 2
 fi
+
+# Step 5: summary + honest completeness read. hq_sync_report_summary returns
+# HQ_SYNC_PARTIAL_EXIT when the runner reported partial: true, so the `||`
+# keeps `set -e` from killing the script on that expected status.
+final_event="$(grep -E '^\{"type":"all-complete"' "$output_file" | tail -1 || true)"
+files_d=0
+if [ -n "$final_event" ]; then
+  files_d=$(printf '%s' "$final_event" | jq -r '.filesDownloaded // 0' 2>/dev/null || echo 0)
+fi
+summary_status=0
+hq_sync_report_summary "$output_file" || summary_status=$?
 
 # Step 5b: setup-needed. The runner exits 0 here on purpose (a non-zero exit
 # would make the watch loop report spurious crashes), so without this branch a
@@ -241,6 +301,12 @@ if [ -s "$err_file" ]; then
   cat "$err_file"
 fi
 
+# Step 5e: conflict residue. Two sources, because they disagree: the runner's
+# conflicts-remaining event covers ledger rows the post-sync prune preserved,
+# while legacy `.conflict-*` twins sit on disk outside the ledger where
+# /resolve-conflicts cannot reach them.
+hq_sync_report_conflicts_remaining "$output_file" "$hq_root" || true
+
 # Step 6: reindex qmd so freshly-synced knowledge is searchable immediately.
 # Lexical update is fast (mtime-incremental) and auto-registers any new
 # company knowledge collection — kills the "I forgot to re-index after sync"
@@ -250,7 +316,15 @@ if [ -z "${final_event:-}" ] || [ "${files_d:-0}" != "0" ]; then
   hq core qmd-reindex-after-sync "$hq_root" >/dev/null 2>&1 || true
 fi
 
-rm -f "$output_file"
+# Step 7: exit. A partial run is not a clean one, so exit 3 (documented in
+# scripts/hq-sync-events.sh) even when the runner itself exited 0 after a clean
+# conflict-abort. Exit 75 is retryable and gets a plain explanation before the
+# code is passed through.
+hq_sync_exit_note "$cli_status"
+rm -f "$output_file" "$err_file"
+if [ "$summary_status" != "0" ]; then
+  exit "$summary_status"
+fi
 exit "$cli_status"
 ```
 

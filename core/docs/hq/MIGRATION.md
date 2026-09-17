@@ -3,6 +3,16 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.147-beta.1
+
+- promote 2026-09-17 (workflow-runner claude effort): `core/scripts/workflow-runner.mjs`
+  now passes `--effort <level>` to the `claude` engine (the CLI has taken it since
+  2.1). The claude default is `low`, set by new env `HQ_WORKFLOW_CLAUDE_EFFORT`;
+  `opts.effort` on an `agent()` call still wins. `HQ_WORKFLOW_EFFORT` keeps its
+  meaning for codex and grok and is no longer read for claude. Claude lanes that
+  relied on the CLI's implicit default now run at low effort; set
+  `HQ_WORKFLOW_CLAUDE_EFFORT=high` (or pass `effort`) to restore the old cost.
+
 ## Release: v15.0.146-beta.2
 
 - promote 2026-09-17 (dm-bind): new core skill `/dm-bind`
