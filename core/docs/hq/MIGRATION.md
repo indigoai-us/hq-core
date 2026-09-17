@@ -3,6 +3,20 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.144-beta.1
+
+- promote 2026-09-17 (starter-plan-hard-limits landing): `.gitignore` now
+  excludes `/workspace/.session-logs/`, which the HQ desktop git-mirror also
+  excludes to keep the pushed repo under its size cap. No action needed;
+  installs that had session logs tracked stop tracking them on the next update.
+- promote 2026-09-17 (packages): `core/packages/README.md` documents that packs
+  are sourced from `indigoai-us/hq-packages` via `github:` shorthand, lists the
+  `diagrams`, `charts` and `engineering` packs, and points at
+  `core/scripts/scan-packages.sh` as the wiring ground truth. Documentation only.
+- staging hygiene: seven `.claude/state/session-title-*` and
+  `auto-session-project-*` files committed to staging by mistake are flagged for
+  deletion (`.staging-deletion-list.txt`). Per-session scratch; never ships.
+
 ## Release: v15.0.142-beta.4
 
 - promote 2026-09-16 (hooks, exit status): **A hook that exits before reading

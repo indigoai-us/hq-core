@@ -189,3 +189,6 @@ workspace/orchestrator/hook-state/
 workspace/.hq-update-check/
 /workspace/sessions/
 /workspace/
+
+# Excluded by the HQ desktop git-mirror to keep the pushed repo under its size cap.
+/workspace/.session-logs/

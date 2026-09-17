@@ -1,0 +1,7 @@
+.claude/state/auto-session-project-f3481558-d71a-402d-8093-1cb2580ecd8a
+.claude/state/session-title-01a05e88-bbdd-7da1-9edf-9a50992aaebf
+.claude/state/session-title-01a05e88-bbdd-7da1-9edf-9a50992aaebf.emitted
+.claude/state/session-title-01a05ffb-3ad1-7631-82b6-554877d6b58d
+.claude/state/session-title-01a05ffb-abd1-7840-8035-7f0f3b017183
+.claude/state/session-title-4c08e7e4-b5c8-4f35-be54-152928b86cb6
+.claude/state/session-title-4c08e7e4-b5c8-4f35-be54-152928b86cb6.emitted
