@@ -24,6 +24,34 @@ cases:
       command: "env | grep -c ."
     expect: block
 
+  - name: blocks-env-redirected-to-file
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "env > /tmp/dump.txt"
+    expect: block
+
+  - name: blocks-printenv-teed-to-file
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "printenv | tee /tmp/dump.txt"
+    expect: block
+
+  - name: blocks-env-in-command-substitution
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "x=$(env); echo done"
+    expect: block
+
+  - name: allows-printenv-named-var-redirected
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "printenv HOME > /tmp/home.txt"
+    expect: allow
+
   - name: allows-printenv-named-var
     event: PreToolUse
     tool: Bash

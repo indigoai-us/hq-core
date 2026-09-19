@@ -10,6 +10,8 @@
 #   docker exec <container> env                        — dumps all env vars
 #   printenv / env (bare)                              — dumps host env vars
 #   env | grep -c / printenv | wc -l                   — dump piped into another command
+#   env > file / printenv >> file / env 2>/dev/null    — dump redirected to disk
+#   env | tee file / $(env) / `env` / (env)            — dump captured or tee'd
 #   set (no args) / export -p / declare -x             — dump exported/shell vars
 #   cat /proc/self/environ                             — dumps process environ
 #   cat .env / cat *.env                               — dumps env files with secrets
@@ -131,36 +133,43 @@ EOF
   exit 2
 fi
 
-# Host dumps: printenv / env with no operand (or only dump flags), including
-# when piped into another command. env VAR=x cmd and printenv VAR are allowed.
-# A leading path or `command` prefix still counts as the same dump.
-DUMP_PREFIX='(^|[[:space:];&|])(command[[:space:]]+)?'
+# Host dumps: printenv / env with no operand (or only dump flags). The dump is
+# blocked regardless of what follows it: end of command, `;`, `&`, a pipe, a
+# redirect into a file (`>`, `>>`, `2>`, `&>`), a closing `)` of a
+# subshell or `$(...)`, or a closing backtick. Writing the dump to disk is worse
+# than printing it (the file can be read back in pieces through paths this
+# hook never inspects), so redirects are dumps too (feedback_ca842a26).
+# env VAR=x cmd and printenv VAR are allowed. A leading path, `command`
+# prefix, `$(`, `(`, or backtick still counts as the same dump.
+DUMP_PREFIX='(^|[[:space:];&|(`])(command[[:space:]]+)?'
+# What may follow the dump command for it to still be a dump.
+DUMP_END='($|[;&|)`]|&&|\|\||[0-9]?>>?|&>)'
 
-if echo "$FLAT" | grep -qE "${DUMP_PREFIX}(/usr/bin/|/bin/)?printenv([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*($|[;&]|&&|\|\||\|)"; then
+if echo "$FLAT" | grep -qE "${DUMP_PREFIX}(/usr/bin/|/bin/)?printenv([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*${DUMP_END}"; then
   block
 fi
 
-if echo "$FLAT" | grep -qE "${DUMP_PREFIX}(/usr/bin/|/bin/)?env([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*($|[;&]|&&|\|\||\|)"; then
+if echo "$FLAT" | grep -qE "${DUMP_PREFIX}(/usr/bin/|/bin/)?env([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*${DUMP_END}"; then
   block
 fi
 
 # `set` with no args dumps the shell environment.
-if echo "$FLAT" | grep -qE "${DUMP_PREFIX}(builtin[[:space:]]+)?set[[:space:]]*($|[;&]|&&|\|\||\|)"; then
+if echo "$FLAT" | grep -qE "${DUMP_PREFIX}(builtin[[:space:]]+)?set[[:space:]]*${DUMP_END}"; then
   block
 fi
 
 # `export -p` dumps exported variables.
-if echo "$FLAT" | grep -qE "${DUMP_PREFIX}export[[:space:]]+-p([[:space:]]|$|[;&]|&&|\|\||\|)"; then
+if echo "$FLAT" | grep -qE "${DUMP_PREFIX}export[[:space:]]+-p([[:space:]]*${DUMP_END}|[[:space:]])"; then
   block
 fi
 
 # `declare -x` with no assignment dumps exported variables.
-if echo "$FLAT" | grep -qE "${DUMP_PREFIX}declare[[:space:]]+-x[[:space:]]*($|[;&]|&&|\|\||\|)"; then
+if echo "$FLAT" | grep -qE "${DUMP_PREFIX}declare[[:space:]]+-x[[:space:]]*${DUMP_END}"; then
   block
 fi
 
 # Linux process environ file.
-if echo "$FLAT" | grep -qE '(^|[[:space:];&|])cat[[:space:]]+/proc/(self|[0-9]+)/environ([[:space:]]|$|[;&]|&&|\|\||\|)'; then
+if echo "$FLAT" | grep -qE "${DUMP_PREFIX}cat[[:space:]]+/proc/(self|[0-9]+)/environ([[:space:]]*${DUMP_END}|[[:space:]])"; then
   block
 fi
 

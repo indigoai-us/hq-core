@@ -55,6 +55,24 @@ expect_hook 2 "set with no args blocks" "set"
 expect_hook 2 "export -p blocks" "export -p"
 expect_hook 2 "declare -x dump blocks" "declare -x"
 expect_hook 2 "cat /proc/self/environ blocks" "cat /proc/self/environ"
+# feedback_ca842a26: a dump written to disk is still a dump. Every shape that
+# captures the output somewhere other than chat must block the same way.
+expect_hook 2 "env redirected to a file blocks" "env > /tmp/dump.txt"
+expect_hook 2 "printenv appended to a file blocks" "printenv >> /tmp/dump.txt"
+expect_hook 2 "env with stderr redirect then file blocks" "env 2>/dev/null > /tmp/dump.txt"
+expect_hook 2 "env with &> redirect blocks" "env &> /tmp/dump.txt"
+expect_hook 2 "env tee'd to a file blocks" "env | tee /tmp/dump.txt"
+expect_hook 2 "printenv tee'd inside a compound command blocks" "cd /tmp && printenv | tee dump.txt"
+expect_hook 2 "env in command substitution blocks" "x=\$(env); echo done"
+expect_hook 2 "env in backticks blocks" "x=\`env\`"
+expect_hook 2 "env in a subshell redirected blocks" "(env) > /tmp/dump.txt"
+expect_hook 2 "set redirected to a file blocks" "set > /tmp/dump.txt"
+expect_hook 2 "export -p redirected blocks" "export -p > /tmp/dump.txt"
+expect_hook 2 "declare -x redirected blocks" "declare -x > /tmp/dump.txt"
+expect_hook 2 "cat /proc/self/environ redirected blocks" "cat /proc/self/environ > /tmp/dump.txt"
+expect_hook 2 "absolute printenv redirected blocks" "/usr/bin/printenv > /tmp/dump.txt"
+expect_hook 0 "printenv HOME redirected allowed" "printenv HOME > /tmp/home.txt"
+expect_hook 0 "env assignment form redirected allowed" "env FOO=bar ls > /tmp/ls.txt"
 expect_hook 0 "printenv HOME allowed" "printenv HOME"
 expect_hook 0 "env VAR=x cmd allowed" "env FOO=bar ls"
 expect_hook 0 "benign ls allowed" "ls"
@@ -70,7 +88,7 @@ jq -nc '{tool_name:"Read",tool_input:{file_path:"/tmp/x"}}' \
 
 echo "[2] hook-gate: every profile blocks printenv and allows ls / printenv HOME"
 for p in minimal standard strict; do
-  for case_spec in "printenv:2" "ls:0" "printenv HOME:0"; do
+  for case_spec in "printenv:2" "env > /tmp/dump.txt:2" "env | tee /tmp/dump.txt:2" "ls:0" "printenv HOME:0"; do
     cmd="${case_spec%:*}"; want="${case_spec##*:}"
     rc=0
     payload "$cmd" \
@@ -89,7 +107,7 @@ export CLAUDE_PROJECT_DIR="$ROOT"
 export HQ_HOOK_TIMEOUT_SENTRY=0
 export HQ_ALLOW_HQ_WORKTREE=1
 for p in minimal standard strict; do
-  for case_spec in "printenv:2" "ls:0" "printenv HOME:0"; do
+  for case_spec in "printenv:2" "env > /tmp/dump.txt:2" "env | tee /tmp/dump.txt:2" "ls:0" "printenv HOME:0"; do
     cmd="${case_spec%:*}"; want="${case_spec##*:}"
     rc=0
     payload "$cmd" \

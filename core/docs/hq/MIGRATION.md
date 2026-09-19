@@ -5,6 +5,12 @@ release; the release workflow stamps it with the version at tag time.
 
 ## Release: v15.0.148-beta.18
 
+- fix 2026-09-19 (feedback_ca842a26, DEF-026 follow-up): `block-env-dump.sh`
+  now blocks a dump regardless of what follows it: redirected to a file
+  (`>`, `>>`, `2>`, `&>`), piped to `tee`, captured with `$(...)` or backticks,
+  or run in a subshell. v15.0.148 only caught the bare and piped shapes, so a
+  dump written to disk passed and left secrets on disk. `printenv VAR > file`
+  and `env VAR=x cmd > file` still work.
 - fix 2026-09-19 (DEF-026 env dumps): `block-env-dump.sh` is now on the live
   PreToolUse path. Bare `printenv` / `env` / `set` / `export -p` / `declare -x`
   and env dumps piped into other commands are blocked (exit 2) under every
