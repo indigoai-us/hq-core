@@ -7,7 +7,7 @@
     "bgIsolation": "none"
   },
   "permissions": {
-    "defaultMode": "plan",
+    "defaultMode": "auto",
     "deny": [
       "EnterWorktree",
       "ExitWorktree"

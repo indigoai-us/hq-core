@@ -81,11 +81,14 @@ run_master PreToolUse "$(payload_bash "git -C $ROOT push --force")"
 run_master PreToolUse "$(payload_bash "qmd vsearch hello")"
 grep -q "GGUF" <<<"$ERR" && pass "block-qmd-model-download reached through the prefilter" \
   || pass "block-qmd-model-download ran (model present or guard allowed): rc=$RC"
+run_master PreToolUse "$(payload_bash "printenv")"
+[ "$RC" = "2" ] && grep -q "environment dump" <<<"$ERR" && pass "block-env-dump blocks printenv through the dispatcher" \
+  || fail "block-env-dump did not block printenv (rc=$RC): $ERR"
 
 echo "[4] a benign Bash payload skips prefiltered guards"
 HQ_HOOK_TRACE=1 run_master PreToolUse "$(payload_bash "echo bench")"
 [ "$RC" = "0" ] && pass "benign command passes (rc=0)" || fail "benign command rc=$RC: $ERR"
-for id in detect-secrets block-hq-root-git-mutation block-qmd-model-download block-unsafe-package-install; do
+for id in detect-secrets block-env-dump block-hq-root-git-mutation block-qmd-model-download block-unsafe-package-install; do
   grep -q "skip $id (prefilter)" <<<"$ERR" && pass "$id skipped by prefilter" || fail "$id was not skipped for a benign command"
 done
 grep -q "run mandatory-scope-authorizer" <<<"$ERR" && pass "mandatory-scope-authorizer always runs" \

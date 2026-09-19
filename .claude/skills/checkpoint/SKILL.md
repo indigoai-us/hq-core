@@ -139,6 +139,13 @@ Save current work state as a thread to survive context loss.
     Best-effort — skip silently on failure.
 
 9. **Report**
+   Chat report follows the active output style (`core/policies/hq-audience-mode.md`). Files this skill writes stay full prose. The templates below are chat-only.
+
+   **Default (`HQ`, and any style that is not `hq-operator`):** one or two short plain sentences. Do not print Scope, Dedup, Action, file paths, thread IDs, or PIDs. Do not paste the operator template.
+
+   `Progress saved. Keep going here, or open a new chat later and I'll pick this up.`
+
+   **Operator (`/output-style hq-operator`):**
    ```
    Thread saved: workspace/threads/{thread_id}.json
 

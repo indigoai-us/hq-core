@@ -1,0 +1,40 @@
+<!-- Conduct monitoring board template. Fill the rows; keep the CSS. Render via mcp__visualize__show_widget (HTML mode). -->
+<h2 class="sr-only">Status board: {one-sentence summary for screen readers}</h2>
+<style>
+.sb2{font-family:var(--font-sans);color:var(--text-primary);font-size:12.5px}
+.sb2 .top{display:flex;gap:12px;align-items:baseline;margin-bottom:8px;flex-wrap:wrap}
+.sb2 .top b{font-size:14px;font-weight:600}
+.sb2 .top .k{font-family:var(--font-mono);font-size:11px;color:var(--text-muted)}
+.sb2 .pill{font-size:11px;padding:1px 8px;border-radius:999px;background:var(--bg-success);color:var(--text-success)}
+.sb2 table{width:100%;border-collapse:collapse}
+.sb2 th{text-align:left;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-secondary);font-weight:600;padding:4px 6px;border-bottom:0.5px solid var(--border-strong)}
+.sb2 td{padding:4px 6px;border-bottom:0.5px solid var(--border);vertical-align:top}
+.sb2 td.s{width:14px}
+.sb2 td.n{font-family:var(--font-mono);font-size:11px;color:var(--text-muted);white-space:nowrap}
+.sb2 .d{display:inline-block;width:8px;height:8px;border-radius:50%}
+.sb2 .g{background:var(--fill-success)}
+.sb2 .y{background:var(--fill-warning)}
+.sb2 .r{background:var(--fill-danger)}
+.sb2 .chg{color:var(--text-accent);font-size:11px;margin-left:6px}
+.sb2 .sec td{padding-top:8px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-secondary);border-bottom:none}
+</style>
+<div class="sb2">
+  <div class="top">
+    <b>{Project}</b>
+    <span class="k">{HH:MM UTC}</span>
+    <span class="pill">{public/prod version}</span>
+    <span class="k">Δ since {last tick}: {one-line delta}</span>
+  </div>
+  <table>
+    <tr><th></th><th>Item</th><th>State</th><th>Ref</th></tr>
+
+    <tr class="sec"><td colspan="4">Resolved this tick</td></tr>
+    <tr><td class="s"><i class="d g"></i></td><td>{plain-language item}<span class="chg">Δ {what changed}</span></td><td>{merged / verified / sent}</td><td class="n">{#123}</td></tr>
+
+    <tr class="sec"><td colspan="4">Blocked, being handled</td></tr>
+    <tr><td class="s"><i class="d r"></i></td><td>{item}<span class="chg">Δ {new: conflicts / red checks}</span></td><td>{re-merging / fixing}</td><td class="n">{#123 #124}</td></tr>
+
+    <tr class="sec"><td colspan="4">Running</td></tr>
+    <tr><td class="s"><i class="d y"></i></td><td>{item} · {item} · {item}</td><td>{building / checks / diagnosing}</td><td class="n">{refs}</td></tr>
+  </table>
+</div>

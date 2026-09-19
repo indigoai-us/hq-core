@@ -14,7 +14,7 @@ Never use Grep to find `prd.json`, `worker.yaml`, or discover project/company/wo
 
 **Use instead:**
 - **Project PRDs:** `qmd search "{name} prd.json" --json -n 5` → parse results → `Read` the file
-- **Workers:** `Read core/workers/registry.yaml` → find path → `Read {path}/worker.yaml`
+- **Workers:** `Read core/workers/registry.yaml` → find path → `Read {path}/worker.yaml`. If the path is missing, the worker is not available — do not fall back to a raw repo script.
 - **Companies:** `Read companies/manifest.yaml` — all companies listed there
 - **Known exact path:** `Read companies/{co}/projects/{name}/prd.json` directly
 

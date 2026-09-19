@@ -330,6 +330,14 @@ if bash "$ROOT/core/scripts/tests/master-hook-empty-json-outputs.test.sh"; then
 else
   fail "master-hook empty json_outputs" "see master-hook-empty-json-outputs.test.sh"
 fi
+# Perl timeout fallback used to drop exit 2 when the HQ root contained a
+# space. Dedicated suite, invoked here so core-write-protection runs it
+# without a workflow-file edit.
+if bash "$ROOT/core/scripts/tests/master-hook-perl-timeout-space.test.sh"; then
+  ok "master-hook perl timeout keeps status on a spaced HQ root"
+else
+  fail "master-hook perl timeout space" "see master-hook-perl-timeout-space.test.sh"
+fi
 
 echo "block-repo-edits-strict: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

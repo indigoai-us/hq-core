@@ -67,6 +67,38 @@ agent-browser get url
 # If URL contains "login" or "signin" → auth expired, re-auth in --headed mode
 ```
 
+## Canvas-rendered apps (Google Docs and similar)
+
+Google Docs, Sheets, Slides, Figma, and other canvas editors do not expose
+the document body as ordinary DOM controls. Screenshot-measured coordinate
+clicks from a browser MCP (`computer:left_click` against a reported
+coordinate frame) miss the canvas — observed ~30% low/right on Google Docs
+at 1277x952. Do not aim clicks from the screenshot.
+
+Use:
+
+1. **DOM refs** from `snapshot -i` / `find` for real controls (Find-and-replace
+   dialog, link editor, menus). Then `fill @eN` / `form_input`, not a global
+   `type`.
+2. **Keyboard** for canvas text: arrows, cmd+Left, shift+Right, cmd+f, cmd+k.
+
+`computer:type` / unscoped `type` follows current focus. On Google Docs that
+is often the document body, so text meant for the find box can land in a live
+heading and autosave. Confirm the target with a ref or a keyboard-opened
+control before typing.
+
+## Google Workspace auth
+
+agent-browser starts its own Chrome-for-Testing browser. It **cannot reuse**
+the user's already-logged-in Google Chrome or Claude-in-Chrome session.
+Google Workspace docs need an interactive `--headed` sign-in the first time,
+then `state save` for later `state load`. There is no silent pickup of the
+host Chrome Google login.
+
+If agent-browser is missing, install it (`npm install -g agent-browser &&
+agent-browser install`) rather than falling back to coordinate clicks in
+Claude-in-Chrome.
+
 ## The canonical browser tool — governed by policy
 
 `agent-browser` is the **canonical, sanctioned** browser tool for HQ. Use it for

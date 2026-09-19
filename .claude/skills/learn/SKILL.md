@@ -219,7 +219,7 @@ Use Grep to search for key terms from the rule across the policy directories:
 - Files: `*.md` in `companies/*/policies/`, `personal/policies/`, `core/policies/` (the release-shipped set), and any repo policy dirs
 - If matching content found → review and decide whether to merge or skip
 
-Report dedup action taken.
+Record the dedup action for the Step 9 report. Do not print it to the user in the default HQ style.
 
 ## Step 4.5: Scan Existing Policies
 
@@ -438,6 +438,19 @@ Insight-only runs (content_type: insight) write no policy file, so there is noth
 
 ## Step 9: Report
 
+Chat report follows the active output style (`core/policies/hq-audience-mode.md`). Files this skill writes stay full prose. The templates below are chat-only.
+
+For any `scope: company` rule, **surface the resolved company slug and the full target path and confirm them before writing** — this is the visible checkpoint that catches a misroute before it reaches a tenant vault (`hq-company-scoped-writes-verify-company`). After the write, the chat report still follows the audience below.
+
+**Default (`HQ`, and any style that is not `hq-operator`):** one short plain sentence. Do not print Scope, Dedup, Action, file paths, thread IDs, or PIDs. Do not paste the operator template.
+
+- New or updated rule/insight: `Saved. I'll remember that next time.`
+- Multiple items: `Saved {n} lessons so I'll remember them next time.`
+- Skipped as duplicate: stay silent, or `Already had that. No change.`
+- Stopped because company could not be resolved: keep the one clarifying question (that is a decision, not a report).
+
+**Operator (`/output-style hq-operator`):**
+
 **For rules (content_type: rule):**
 ```
 Learning captured:
@@ -449,8 +462,6 @@ Learning captured:
   Dedup: {new|merged|skipped}
   Event: workspace/learnings/learn-{timestamp}.json
 ```
-
-For any `scope: company` rule, **surface the resolved company slug and the full target path and confirm them before writing** — this is the visible checkpoint that catches a misroute before it reaches a tenant vault (`hq-company-scoped-writes-verify-company`).
 
 **For insights (content_type: insight):**
 ```

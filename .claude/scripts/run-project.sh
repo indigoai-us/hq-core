@@ -1629,7 +1629,7 @@ RULES:
       cmd=(gtimeout "${TIMEOUT}m" "${cmd[@]}")
     else
       # perl-based timeout fallback for macOS
-      cmd=(perl -e "alarm(${TIMEOUT}*60); exec @ARGV" "${cmd[@]}")
+      cmd=(perl -e "alarm(${TIMEOUT}*60); exec {\$ARGV[0]} @ARGV" "${cmd[@]}")
     fi
   fi
 
@@ -3283,7 +3283,7 @@ RULES:
     elif command -v gtimeout &>/dev/null; then
       cmd=(gtimeout "${TIMEOUT}m" "${cmd[@]}")
     else
-      cmd=(perl -e "alarm(${TIMEOUT}*60);exec @ARGV" "${cmd[@]}")
+      cmd=(perl -e "alarm(${TIMEOUT}*60); exec {\$ARGV[0]} @ARGV" "${cmd[@]}")
     fi
   fi
 

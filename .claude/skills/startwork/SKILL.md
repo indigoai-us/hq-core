@@ -202,7 +202,7 @@ Rules:
 
 After policies are known, build a compact Worker Packet for the resolved context.
 
-1. Read `core/workers/registry.yaml` (auto-generated read-only index) once and keep only entries relevant to the current company, project, repo, or task intent.
+1. Read `core/workers/registry.yaml` (auto-generated read-only index) once and keep only entries relevant to the current company, project, repo, or task intent. Skip any entry whose `path` is not a directory containing `worker.yaml`. If an active company worker is listed but missing, say so in the orientation block — do not invent a raw-script fallback.
 2. If company `{co}` is resolved, include any registry entries whose `company:` field is `{co}` (sourced from `worker.company` in each `worker.yaml`) or whose path starts with `companies/{co}/workers/`.
 3. If project mode and `prd.json` story metadata includes declared workers or worker hints, include those first.
 4. If task mode, map the classified intent to a worker route before offering direct execution:

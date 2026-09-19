@@ -99,6 +99,30 @@ hq secrets exec --company <co> --only APP_PASSWORD -- bash -c '
 
 Use the vault path for token/password-bearing services. Fall back to the manual headed-login + state-file path (above) only for cookie/SSO/2FA sites where no reusable secret exists.
 
+## Google Workspace (Docs / Drive / Sheets)
+
+agent-browser **cannot reuse a logged-in Google Chrome session**. Claude-in-Chrome
+sees the user's existing Google login; agent-browser does not. There is no
+cookie import from the host Chrome profile.
+
+First access to `docs.google.com` (or any Google Workspace URL) needs an
+interactive headed sign-in, then a saved state file:
+
+```bash
+agent-browser --headed open "https://docs.google.com"
+# Complete Google sign-in in the visible window (SSO / 2FA as prompted)
+agent-browser state save core/settings/{company}/browser-state/google-auth.json
+agent-browser close
+
+# Later
+agent-browser state load core/settings/{company}/browser-state/google-auth.json
+agent-browser open "https://docs.google.com/document/d/..."
+```
+
+If the loaded session redirects to `accounts.google.com` / `signin`, re-run the
+headed flow. Do not fall back to screenshot-coordinate clicks on the Docs
+canvas — see `core/knowledge/public/agent-browser/README.md`.
+
 ## Security
 
 - State files contain session cookies/tokens — NEVER commit to git

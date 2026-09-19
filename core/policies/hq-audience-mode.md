@@ -6,7 +6,7 @@ on: [SessionStart]
 enforcement: soft
 version: 1
 created: 2026-05-30
-updated: 2026-05-30
+updated: 2026-09-18
 source: user-correction
 tags: [voice, narration, ux, basic-users, audience]
 public: true
@@ -34,7 +34,7 @@ For a technical operator who is actively building or debugging HQ and wants the 
 Regardless of audience, these always hold (they are about safety and capability, not register):
 
 - **Auto-Clarity → full prose.** Security warnings, irreversible-action confirmations, multi-step destructive sequences, and plan-mode plans are always written in careful, complete prose. Plain-language never means dropping a warning.
-- **Files written to disk → full prose.** Policies, ADRs, handoffs, checkpoints, plans, deploy reports, PRDs. The quiet/plain register is a conversation mode, not a content mode.
+- **Files written to disk → full prose.** Policies, ADRs, handoffs, checkpoints, plans, deploy reports, PRDs. The quiet/plain register is a conversation mode, not a content mode. `/handoff`, `/learn`, and `/checkpoint` chat reports follow the active audience; the files those commands write stay full prose.
 - **Capability URLs surface.** The `/hq-share` minting-turn URL prints inline; the `/deploy` preview link surfaces in one line.
 - **Decisions are clickable.** User choices use the runtime structured picker (numbered options), per `decision-queue-one-at-a-time`.
 
@@ -71,3 +71,4 @@ The mental model: the agent is a friendly teammate who works heads-down and then
 3. `/output-style hq-operator` restores the terse-technical play-by-play.
 4. Auto-Clarity (destructive/security/plan) renders full prose in both modes; `/hq-share` and `/deploy` URLs still surface.
 5. `grep -E '^(when|on):' core/policies/hq-audience-mode.md` hits, confirming the policy carries the trigger frontmatter that the SessionStart hook (`inject-policy-on-trigger.sh`) uses to surface it.
+6. In the default `HQ` style, `/handoff`, `/learn`, and `/checkpoint` end with a short plain summary — no Scope / Dedup / Action labels, thread IDs, file paths, or PIDs. `/output-style hq-operator` still prints the technical report templates.

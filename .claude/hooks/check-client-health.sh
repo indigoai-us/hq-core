@@ -11,7 +11,7 @@
 #      fully detached background remediation (`--remediate` mode of this same
 #      script) corroborates with `hq doctor --json` (the sync family, US-015
 #      hq-cli), runs `hq doctor --fix --yes` for auto-fixable findings,
-#      re-verifies, and files ONE deduplicated bug per unresolved check id per
+#      re-verifies, and files ONE summary of unresolved checks per install per
 #      24h window via `hq feedback bug` (diagnostics attach component versions
 #      server-side).
 #
@@ -93,7 +93,8 @@ if [ "${1:-}" = "--remediate" ]; then
       # wedged call, with no kill switch and stray processes left behind. A
       # self-healing hook must never be able to make a machine worse — so bound
       # it with a portable watchdog on the SAME deadline instead.
-      "$@" &
+      # Explicit stdin preserves --body-file - in the background child.
+      "$@" <&0 &
       local cmd_pid=$!
       (
         waited=0
@@ -183,65 +184,53 @@ if [ "${1:-}" = "--remediate" ]; then
     REMAINING=$(doctor_degraded)
     [ -n "$REMAINING" ] || exit 0
 
-    # File one deduplicated bug per unresolved check id per 24h window.
+    # One bounded summary per install, not one report per company/check.
+    # Reserve the attempt BEFORE sending: a timeout may mean the server accepted
+    # the report but the response was lost. Retrying must not flood Slack.
     NOW=$(date +%s)
-    printf '%s\n' "$REMAINING" | while read -r CHECK_ID; do
-      [ -n "$CHECK_ID" ] || continue
-      # Sanitised id: this is the ONLY variable that reaches the report, so it
-      # is constrained to a path-free, shell-inert character set.
-      SAFE_ID=$(printf '%s' "$CHECK_ID" | tr -c 'A-Za-z0-9._-' '_')
-      BUG_STAMP="$STATE_DIR/bugs/$SAFE_ID.stamp"
-      BUG_LOCK="$STATE_DIR/bugs/$SAFE_ID.lock"
-
-      # Release a lock abandoned by a killed remediation, so one crash cannot
-      # mute a check id forever.
-      if [ -f "$BUG_LOCK" ]; then
-        LOCK_MTIME=$(stat -c %Y "$BUG_LOCK" 2>/dev/null || stat -f %m "$BUG_LOCK" 2>/dev/null || echo "$NOW")
-        [ "$((NOW - LOCK_MTIME))" -gt 3600 ] && rm -f "$BUG_LOCK" 2>/dev/null
+    BUG_LOCK="$STATE_DIR/bugs/summary.lock"
+    ATTEMPT_STAMP="$STATE_DIR/bugs/report-attempt.stamp"
+    if [ -f "$BUG_LOCK" ]; then
+      LOCK_MTIME=$(stat -c %Y "$BUG_LOCK" 2>/dev/null || stat -f %m "$BUG_LOCK" 2>/dev/null || echo "$NOW")
+      [ "$((NOW - LOCK_MTIME))" -gt 3600 ] && rm -f "$BUG_LOCK" 2>/dev/null
+    fi
+    ( set -C; : > "$BUG_LOCK" ) 2>/dev/null || exit 0
+    if [ -f "$ATTEMPT_STAMP" ]; then
+      STAMP_MTIME=$(stat -c %Y "$ATTEMPT_STAMP" 2>/dev/null || stat -f %m "$ATTEMPT_STAMP" 2>/dev/null || echo "$NOW")
+      if [ "$((NOW - STAMP_MTIME))" -lt 86400 ]; then
+        rm -f "$BUG_LOCK" 2>/dev/null
+        exit 0
       fi
-
-      # Claim this check id atomically BEFORE reading the dedupe stamp. Two
-      # overlapping remediations would otherwise both see "no stamp" and both
-      # file the same bug. `set -C` makes this an open(O_CREAT|O_EXCL) by the
-      # shell itself — the same exclusive create the cooldown claim uses.
-      ( set -C; : > "$BUG_LOCK" ) 2>/dev/null || continue
-
-      if [ -f "$BUG_STAMP" ]; then
-        STAMP_MTIME=$(stat -c %Y "$BUG_STAMP" 2>/dev/null || stat -f %m "$BUG_STAMP" 2>/dev/null || echo 0)
-        if [ "$((NOW - STAMP_MTIME))" -lt 86400 ]; then
-          rm -f "$BUG_LOCK" 2>/dev/null
-          continue
-        fi
-      fi
-
-      # Stamp only after the submission lands — a failed filing retries next
-      # window instead of being recorded as done.
-      #
-      # The body is a FIXED template plus the sanitised check id. No doctor
-      # message, no findings dump, no paths: support correlates by check id and
-      # the component versions the feedback pipeline attaches server-side.
-      if ( cd "$HQ_ROOT" 2>/dev/null && bounded 60 hq feedback bug \
-            --title "Client health: $SAFE_ID unresolved after hq doctor --fix" \
-            --body-file - >/dev/null 2>&1 <<EOF
-Automated report from the check-client-health SessionStart hook (US-015).
-
-The local doctor reported a sync-family check that \`hq doctor --fix --yes\`
-could not repair:
-
-- check: \`$SAFE_ID\`
-- status: FAIL or WARN, still present after the safe repair pass
-
-Only the stable check id is reported. Doctor messages and the raw findings
-dump are deliberately withheld: they embed local absolute paths, which this
-project does not send off-box. Reproduce locally with \`hq doctor --json\`.
-
-Component versions are attached automatically by the feedback pipeline.
-EOF
-      ); then
-        ( : > "$BUG_STAMP" ) 2>/dev/null || true
-      fi
+    fi
+    if ! ( : > "$ATTEMPT_STAMP" ) 2>/dev/null; then
       rm -f "$BUG_LOCK" 2>/dev/null
-    done
+      exit 0
+    fi
+
+    # Only sanitised IDs leave the machine. Cap both rows and ID length so a
+    # large install still produces a small report; raw messages stay local.
+    CHECK_IDS=$(printf '%s\n' "$REMAINING" | tr -c 'A-Za-z0-9._\n-' '_' | cut -c 1-160 | sort -u)
+    CHECK_COUNT=$(printf '%s\n' "$CHECK_IDS" | wc -l | tr -d ' ')
+    CHECK_LIST=$(printf '%s\n' "$CHECK_IDS" | head -50 | sed 's/^/- /')
+    # Automatic reports must opt out explicitly: the feedback CLI otherwise
+    # collects and uploads the same log bundle for every report.
+    if ( cd "$HQ_ROOT" 2>/dev/null && bounded 60 hq feedback bug \
+          --title "Client health: sync checks unresolved after hq doctor --fix" \
+          --no-logs --body-file - >/dev/null 2>&1 <<EOF
+Automated report from the check-client-health SessionStart hook.
+
+After the safe repair pass, $CHECK_COUNT sync checks still report FAIL or WARN.
+Check IDs (up to 50 shown):
+$CHECK_LIST
+
+Doctor messages and log bundles are not attached. Reproduce locally with
+\`hq doctor --json\`. Component versions are attached by the feedback pipeline.
+Automatic reporting is limited to one attempt per HQ install every 24 hours.
+EOF
+    ); then
+      ( : > "$STATE_DIR/bugs/summary.stamp" ) 2>/dev/null || true
+    fi
+    rm -f "$BUG_LOCK" 2>/dev/null
   } 2>/dev/null || true
   exit 0
 fi

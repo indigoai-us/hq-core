@@ -33,26 +33,9 @@ done
 
 HQ_SESSION="$ROOT/core/scripts/hq-session.sh"
 
-pin=()
-if [ -n "$SESSION_ID" ]; then
-  pin=(--session-id "$SESSION_ID")
-fi
-
-if [ -n "$COMPANY" ]; then
-  bash "$HQ_SESSION" "${pin[@]}" set company_slug "$COMPANY"
-fi
-if [ -n "$PROJECT" ]; then
-  bash "$HQ_SESSION" "${pin[@]}" set project "$PROJECT"
-fi
-if [ -n "$TASK" ]; then
-  bash "$HQ_SESSION" "${pin[@]}" set task "$TASK"
-fi
-
-if [ "$NO_RECONCILE" -eq 1 ]; then
-  exit 0
-fi
-
-# Resolve session id for observation when not passed.
+# Resolve session id before metadata writes so a known session is pinned even
+# when the caller omitted --session-id. Empty `pin` must still be safe on
+# macOS Bash 3.2 (`set -u` + `"${pin[@]}"` is an unbound-variable abort).
 if [ -z "$SESSION_ID" ]; then
   SESSION_ID="${HQ_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}}}}"
   SESSION_ID="$(printf '%s' "$SESSION_ID" | tr -d '[:space:]')"
@@ -60,6 +43,26 @@ if [ -z "$SESSION_ID" ]; then
     SESSION_ID="$(tr -d '[:space:]' <"$ROOT/workspace/sessions/.current")"
   fi
 fi
+
+pin=()
+if [ -n "$SESSION_ID" ]; then
+  pin=(--session-id "$SESSION_ID")
+fi
+
+if [ -n "$COMPANY" ]; then
+  bash "$HQ_SESSION" ${pin[@]+"${pin[@]}"} set company_slug "$COMPANY"
+fi
+if [ -n "$PROJECT" ]; then
+  bash "$HQ_SESSION" ${pin[@]+"${pin[@]}"} set project "$PROJECT"
+fi
+if [ -n "$TASK" ]; then
+  bash "$HQ_SESSION" ${pin[@]+"${pin[@]}"} set task "$TASK"
+fi
+
+if [ "$NO_RECONCILE" -eq 1 ]; then
+  exit 0
+fi
+
 [ -n "$SESSION_ID" ] || exit 0
 
 # shellcheck source=lib/work-mesh-enqueue.sh

@@ -234,4 +234,101 @@ set -e
 assert_contains "$corrupt_event_out" "refusing to overwrite unparseable" "append-event corrupt refusal"
 assert_corrupt_intact "append-event"
 
+# ---------------------------------------------------------------------------
+# Regression: owner-identity tokens and generic topical words must not reuse
+# an unrelated project. Score was overlap.length with threshold 3, so
+# "scott"+"thielmann" plus "review" cleared it. Identity comes from
+# personal/agents-profile.md; description-only noise (content/review) does
+# not count, but the project's own slug still can.
+# ---------------------------------------------------------------------------
+
+ID_ROOT="$TMP/identity"
+mkdir -p "$ID_ROOT/personal/projects/content-workbench-platform"
+printf '# Scott Thielmann - Profile\n\nOwner of this HQ install.\n' \
+  > "$ID_ROOT/personal/agents-profile.md"
+cat > "$ID_ROOT/personal/projects/content-workbench-platform/prd.json" <<'JSON'
+{
+  "name": "content-workbench-platform",
+  "description": "Scott Thielmann content workbench platform for data review and research.",
+  "metadata": { "goal": "content data review research" },
+  "userStories": []
+}
+JSON
+
+owner_out=$(HQ_ROOT="$ID_ROOT" "$HELPER" ensure \
+  --title "Scott review" \
+  --prompt "scott thielmann content review" \
+  --session-id test-owner-noise)
+assert_contains "$owner_out" '"reused": false' "owner name plus generic words must not reuse"
+
+slug_out=$(HQ_ROOT="$ID_ROOT" "$HELPER" ensure \
+  --title "Content workbench platform follow-up" \
+  --prompt "content workbench platform follow-up" \
+  --session-id test-owner-slug)
+assert_contains "$slug_out" '"reused": true' "slug-covering query must still reuse"
+assert_contains "$slug_out" 'content-workbench-platform' "slug reuse path"
+
+# ---------------------------------------------------------------------------
+# Regression: unattended sessions reuse only on a strong slug match. A
+# description-only overlap that would pass the interactive threshold must
+# not claim the folder from a scheduled or checkpoint run.
+# ---------------------------------------------------------------------------
+
+UNATT_ROOT="$TMP/unattended"
+mkdir -p "$UNATT_ROOT/personal/projects/billing-importer-retry-backoff"
+cat > "$UNATT_ROOT/personal/projects/billing-importer-retry-backoff/prd.json" <<'JSON'
+{
+  "name": "billing-importer-retry-backoff",
+  "description": "stripe webhooks ledger reconciliation notes for the importer",
+  "metadata": { "goal": "stripe webhooks ledger reconciliation" },
+  "userStories": []
+}
+JSON
+
+unatt_out=$(HQ_ROOT="$UNATT_ROOT" "$HELPER" ensure \
+  --title "Stripe webhooks ledger reconciliation" \
+  --prompt "stripe webhooks ledger reconciliation" \
+  --session-id test-unattended-weak \
+  --unattended)
+assert_contains "$unatt_out" '"reused": false' "unattended weak match must not reuse"
+
+unatt_strong_out=$(HQ_ROOT="$UNATT_ROOT" "$HELPER" ensure \
+  --title "Billing importer retry backoff" \
+  --prompt "billing importer retry backoff" \
+  --session-id test-unattended-strong \
+  --unattended)
+assert_contains "$unatt_strong_out" '"reused": true' "unattended strong slug match may reuse"
+assert_contains "$unatt_strong_out" 'billing-importer-retry-backoff' "unattended strong reuse path"
+
+# ---------------------------------------------------------------------------
+# Regression: two equally good matches are ambiguous. Fail closed (new
+# folder) rather than picking one at random.
+# ---------------------------------------------------------------------------
+
+AMB_ROOT="$TMP/ambiguous"
+mkdir -p "$AMB_ROOT/personal/projects/photon-cascade-helical" \
+  "$AMB_ROOT/personal/projects/photon-cascade-torsion"
+cat > "$AMB_ROOT/personal/projects/photon-cascade-helical/prd.json" <<'JSON'
+{
+  "name": "photon-cascade-helical",
+  "description": "photon cascade helical torsion quartz nickel",
+  "metadata": { "goal": "photon cascade helical torsion quartz nickel" },
+  "userStories": []
+}
+JSON
+cat > "$AMB_ROOT/personal/projects/photon-cascade-torsion/prd.json" <<'JSON'
+{
+  "name": "photon-cascade-torsion",
+  "description": "photon cascade helical torsion quartz nickel",
+  "metadata": { "goal": "photon cascade helical torsion quartz nickel" },
+  "userStories": []
+}
+JSON
+
+amb_out=$(HQ_ROOT="$AMB_ROOT" "$HELPER" ensure \
+  --title "Photon cascade helical torsion quartz nickel" \
+  --prompt "photon cascade helical torsion quartz nickel" \
+  --session-id test-ambiguous)
+assert_contains "$amb_out" '"reused": false' "ambiguous equal scores must not reuse"
+
 echo "session-project smoke: ok"

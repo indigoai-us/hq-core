@@ -39,7 +39,7 @@ Extract from `$ARGUMENTS`:
 
 ### No Arguments → List Workers
 
-Read `core/workers/registry.yaml` and display all workers:
+Read `core/workers/registry.yaml` and display workers whose `path` exists on disk (directory containing `worker.yaml`). Skip `status: active` rows whose path is absent — name them as missing instead of listing them as runnable.
 
 ```
 Available Workers:
@@ -106,6 +106,8 @@ Error: Worker '{worker_id}' not found in registry.
 Run 'run' (no args) to list available workers.
 ```
 Stop.
+
+If the entry exists but `{worker_path}/worker.yaml` is not on disk, stop. Tell the user the worker is listed in the registry but the directory is missing. Do not run a raw repo script as a substitute. Suggest `hq sync` to fetch the worker, `/hq-access {worker_path}` for a single path, or `hq reindex` to drop the stale row.
 
 ### 3b. Read worker.yaml
 

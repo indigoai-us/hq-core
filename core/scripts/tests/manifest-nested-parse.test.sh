@@ -149,3 +149,8 @@ assert_equals "$empty_title" "" "empty manifest yields no title at all"
 
 echo "manifest-nested-parse: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
+
+# Same SessionStart hook: stale registry rows with missing directories.
+# Kept as its own file so the 2283 fixture stays isolated; invoked here so
+# pr-checks picks it up without a workflow-file edit.
+bash "$ROOT/core/scripts/tests/workers-registry-missing.test.sh"

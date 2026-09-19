@@ -100,6 +100,7 @@ pass "healthy settings pass and fresh installs are not falsely warned"
 
 echo "[1a] an empty healthy-root issue list remains portable under macOS bash 3.2"
 assert_array_expansions_guarded REQUIRED_COMMAND_HOOK_ISSUES
+assert_array_expansions_guarded LOCAL_HOOK_SHADOW_ISSUES
 out="$(run_expect 0 "$HEALTHY")"
 assert_contains "$out" 'HQ hook health: PASS' || fail "healthy root did not pass after an empty issue list: $out"
 pass "healthy settings retain a guarded empty issue list"
@@ -136,6 +137,19 @@ assert_contains "$out" 'SessionStart has no command hook' \
 assert_contains "$out" 'PreToolUse has no command hook' \
   || fail "absent hooks did not report PreToolUse: $out"
 pass "real hq doctor path rejects empty and absent hook registrations"
+
+echo "[1c] master-hook.sh in settings.local.json is a fail even when settings.json is healthy"
+SHADOW="$TMP/local-shadow"
+make_healthy_root "$SHADOW"
+cat >"$SHADOW/.claude/settings.local.json" <<'JSON'
+{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" PreToolUse"}]}]}}
+JSON
+out="$(run_expect 2 "$SHADOW")"
+assert_contains "$out" 'settings.local.json shadows project hook registrations' \
+  || fail "local master-hook shadow was not reported: $out"
+assert_contains "$out" 'restore-hook-settings.sh' \
+  || fail "local master-hook shadow did not name the healer: $out"
+pass "local master-hook overlay fails with restore guidance"
 
 echo "[2] a missing settings file produces an actionable desktop/SDK repair"
 MISSING="$TMP/missing"

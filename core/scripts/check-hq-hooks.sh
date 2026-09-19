@@ -37,6 +37,21 @@ EOF
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 HQ_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+# Windows Git Bash chmod can leave NTFS DENY ACEs so this file's helpers
+# exist but cannot be sourced. Try icacls before the required source.
+if [ ! -r "$SCRIPT_DIR/lib/hook-command-scan.sh" ] && command -v icacls >/dev/null 2>&1; then
+  _hq_scan_native="$SCRIPT_DIR"
+  if command -v cygpath >/dev/null 2>&1; then
+    _hq_scan_native="$(cygpath -w "$SCRIPT_DIR" 2>/dev/null || printf '%s' "$SCRIPT_DIR")"
+  fi
+  _hq_scan_user="${USERNAME:-${USER:-}}"
+  icacls "$_hq_scan_native" /reset /T /C >/dev/null 2>&1 || true
+  if [ -n "$_hq_scan_user" ]; then
+    icacls "$_hq_scan_native" /remove:d "$_hq_scan_user" /T >/dev/null 2>&1 || true
+    icacls "$_hq_scan_native" /grant:r "${_hq_scan_user}:(RX)" /T >/dev/null 2>&1 || true
+  fi
+  unset _hq_scan_native _hq_scan_user
+fi
 # shellcheck source=core/scripts/lib/hook-command-scan.sh
 . "$SCRIPT_DIR/lib/hook-command-scan.sh"
 REQUIRE_LEDGER=0
@@ -141,16 +156,28 @@ If the ledger is still missing after a live turn, confirm the runtime is active
 (runtimeMode=agents-v2 in /var/lib/hq-agent/runtime.json, the v2 unit up) and
 that .agents-v2-hooks/hq-agents-v2-hook-adapter.sh is installed and executable.
 
-If a SETTINGS issue is listed above (not the ledger), repair the shipped config:
+If a SETTINGS issue is listed above (not the ledger), restore hook wiring
+then re-check (do not rely on a second rescue alone — rescue is what
+relocated the hooks):
+  bash core/scripts/restore-hook-settings.sh
+  bash core/scripts/check-hq-hooks.sh --root "$PWD"
+
+If .claude/settings.json is missing:
   hq rescue -y --paths .claude
+  bash core/scripts/restore-hook-settings.sh
 
 See core/docs/hq/HOOKS-NOT-FIRING.md for the complete recovery procedure.
 EOF
   else
     cat >&2 <<'EOF'
 
-Repair the shipped project configuration:
+Repair emptied or relocated hook wiring without another rescue pass:
+  bash core/scripts/restore-hook-settings.sh
+  bash core/scripts/check-hq-hooks.sh --root "$PWD"
+
+If .claude/settings.json is missing, restore the released .claude tree first:
   hq rescue -y --paths .claude
+  bash core/scripts/restore-hook-settings.sh
 
 For Claude Desktop, open the HQ root itself as the project (not a parent or a
 child folder), then start a new session.
@@ -288,6 +315,30 @@ check_required_command_hooks() {
 
 check_required_command_hooks
 
+# Rescue relocates master-hook.sh into settings.local.json and can empty
+# settings.json (feedback 2282). Claude Code unions the overlay, so doctor
+# still PASSed while the release contract was broken — and deleting the
+# local hooks key then disabled every hook. Fail when the overlay carries
+# the shipped dispatcher, even if settings.json still has a command hook.
+LOCAL_HOOK_SHADOW_ISSUES=()
+check_local_hook_shadow() {
+  local local_settings="$HQ_ROOT/.claude/settings.local.json"
+
+  [ -f "$local_settings" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq empty "$local_settings" >/dev/null 2>&1 || return 0
+
+  if jq -e '
+    [
+      .hooks | .. | objects | .command?
+      | select(type == "string" and test("master-hook\\.sh"))
+    ] | length > 0
+  ' "$local_settings" >/dev/null 2>&1; then
+    LOCAL_HOOK_SHADOW_ISSUES+=(".claude/settings.local.json shadows project hook registrations with master-hook.sh")
+  fi
+}
+check_local_hook_shadow
+
 # The `hq doctor --json` check ids that make up this checker's settings scope.
 DOCTOR_SETTINGS_SCOPE='["hooks.settings-present","hooks.settings-valid-json","hooks.claude.settings-local-valid-json","hooks.claude.unquoted-project-dir","hooks.claude.script-missing"]'
 DOCTOR_RUNTIME_CHECK_ID="hooks.runtime.enforcement"
@@ -310,7 +361,7 @@ render_from_doctor() {
   local json="$1"
   local settings_issues runtime_status runtime_message
   local AGENTS_V2_ATTESTED=0
-  local -a issues=("${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}")
+  local -a issues=("${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}" "${LOCAL_HOOK_SHADOW_ISSUES[@]+"${LOCAL_HOOK_SHADOW_ISSUES[@]}"}")
 
   settings_issues="$(printf '%s' "$json" | jq -r --argjson scope "$DOCTOR_SETTINGS_SCOPE" '
     .results[]
@@ -486,6 +537,7 @@ run_inline() {
   fi
 
   ISSUES+=("${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}")
+  ISSUES+=("${LOCAL_HOOK_SHADOW_ISSUES[@]+"${LOCAL_HOOK_SHADOW_ISSUES[@]}"}")
 
   # The local overlay is optional, so its absence is never an issue — but when it
   # is present Claude Code loads its hooks too, and an unquoted command hiding

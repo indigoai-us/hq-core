@@ -575,7 +575,7 @@ hq_bash_strip_core_yaml_exclude_tokens() {
   local cmd="$1"
   local hq_root="$2"
   local core_yaml="${3:-$hq_root/core/core.yaml}"
-  local exc_path rel abs esc esc_dir sed_script exclude_paths
+  local exc_path rel abs esc esc_dir esc_abs sed_script exclude_paths stripped nl
 
   [ -n "$cmd" ] || { printf '%s' "$cmd"; return 0; }
   [ -f "$core_yaml" ] || { printf '%s' "$cmd"; return 0; }
@@ -583,6 +583,7 @@ hq_bash_strip_core_yaml_exclude_tokens() {
 
   hq_root="$(hq_canonical_path "$hq_root")"
   sed_script=''
+  nl=$'\n'
   exclude_paths="$(yq eval '.rules.exclude[]' "$core_yaml" 2>/dev/null)" || exclude_paths=""
   while IFS= read -r exc_path; do
     [ -n "$exc_path" ] || continue
@@ -590,20 +591,30 @@ hq_bash_strip_core_yaml_exclude_tokens() {
     [ -n "$rel" ] || continue
 
     esc="$(printf '%s' "$rel" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
-    sed_script="${sed_script}s|[^[:space:]]*${esc}[^[:space:]]*||g; s|${esc}||g;"
+    # Newline-separated expressions: BSD sed rejects a long semicolon-joined
+    # single-line script once exclude counts grow (~32 expressions / ~2KB).
+    sed_script="${sed_script}s|[^[:space:]]*${esc}[^[:space:]]*||g${nl}s|${esc}||g${nl}"
 
     if [[ "$exc_path" == */ ]]; then
       esc_dir="$(printf '%s' "$exc_path" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
-      sed_script="${sed_script}s|[^[:space:]]*${esc_dir}[^[:space:]]*||g; s|${esc_dir}||g;"
+      sed_script="${sed_script}s|[^[:space:]]*${esc_dir}[^[:space:]]*||g${nl}s|${esc_dir}||g${nl}"
     fi
 
     abs="$(hq_canonical_path "${hq_root}/${rel}")"
     esc_abs="$(printf '%s' "$abs" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
-    sed_script="${sed_script}s|[^[:space:]]*${esc_abs}[^[:space:]]*||g; s|${esc_abs}||g;"
+    sed_script="${sed_script}s|[^[:space:]]*${esc_abs}[^[:space:]]*||g${nl}s|${esc_abs}||g${nl}"
   done <<< "$exclude_paths"
 
   [ -n "$sed_script" ] || { printf '%s' "$cmd"; return 0; }
-  printf '%s' "$cmd" | sed "$sed_script"
+  # Never fail open. An empty or failed sed would make block-core-writes-bash
+  # treat the command as touching no protected paths and allow the write.
+  # Hand the original command back so the caller still sees the real targets.
+  stripped="$(printf '%s' "$cmd" | sed "$sed_script" 2>/dev/null)" || stripped=""
+  if [ -z "$stripped" ]; then
+    printf '%s' "$cmd"
+    return 0
+  fi
+  printf '%s' "$stripped"
 }
 
 
@@ -646,6 +657,36 @@ hq_path_label() {
   esac
 }
 
+# Git Bash/MSYS chmod rewrites NTFS ACLs with DENY ACEs. That can make the
+# owner unable to read a file whose POSIX mode still looks like -rw-r--r--.
+# Never chmod HQ files on Windows; launch with bash instead.
+hq_windows_native_path() {
+  local p="${1:-}"
+  [ -n "$p" ] || return 1
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$p" 2>/dev/null || printf '%s' "$p"
+    return 0
+  fi
+  printf '%s' "$p"
+}
+
+hq_repair_windows_acl() {
+  local path="${1:-}" native user
+  [ -n "$path" ] || return 1
+  [ -e "$path" ] || return 1
+  [ -r "$path" ] && return 0
+  [ "${HQ_LIB_WINSEP:-0}" = 1 ] || return 1
+  command -v icacls >/dev/null 2>&1 || return 1
+  native="$(hq_windows_native_path "$path")" || return 1
+  user="${USERNAME:-${USER:-}}"
+  icacls "$native" /reset >/dev/null 2>&1 || true
+  if [ -n "$user" ]; then
+    icacls "$native" /remove:d "$user" >/dev/null 2>&1 || true
+    icacls "$native" /grant:r "${user}:(RX)" >/dev/null 2>&1 || true
+  fi
+  [ -r "$path" ]
+}
+
 hq_hook_repair_command() {
   local root="$1"
   local path="$2"
@@ -655,6 +696,10 @@ hq_hook_repair_command() {
   fi
   rel="$(hq_path_label "$root" "$path")"
   [ -n "$rel" ] || return 0
+  if [ "${HQ_LIB_WINSEP:-0}" = 1 ]; then
+    printf 'icacls "$(cygpath -w "$HQ_ROOT/%s")" /grant:r "%%USERNAME%%:(RX)"' "$rel"
+    return 0
+  fi
   printf 'chmod u+x "$HQ_ROOT/%s"' "$rel"
 }
 
@@ -732,7 +777,13 @@ hq_launch_shell_path() {
     return 127
   fi
 
-  if [ ! -x "$path" ] && hq_path_within_root "$root" "$path"; then
+  if [ ! -r "$path" ] && hq_path_within_root "$root" "$path"; then
+    hq_repair_windows_acl "$path" || true
+  fi
+
+  # chmod on Git Bash writes NTFS DENY ACEs; skip it on Windows.
+  if [ ! -x "$path" ] && hq_path_within_root "$root" "$path" \
+    && [ "${HQ_LIB_WINSEP:-0}" != 1 ]; then
     chmod u+x "$path" 2>/dev/null || true
   fi
 
@@ -760,7 +811,7 @@ hq_launch_shell_path() {
 
   if [ ! -r "$path" ]; then
     if hq_path_within_root "$root" "$path"; then
-      HQ_HOOK_LAST_CAUSE="chmod u+x could not repair the file and bash could not read it"
+      HQ_HOOK_LAST_CAUSE="the file is not readable (on Windows, NTFS DENY ACEs can hide it while ls still shows -rw-r--r--)"
     else
       HQ_HOOK_LAST_CAUSE="file is not executable or readable"
     fi

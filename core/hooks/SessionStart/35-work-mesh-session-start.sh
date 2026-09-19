@@ -17,8 +17,6 @@ INPUT=""
 IFS= read -r -d '' INPUT || true
 [ -n "$INPUT" ] || INPUT='{}'
 
-SID="${HQ_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}}}}"
-SID="${SID//[[:space:]]/}"
 CWD="${PWD:-}"
 _wm_json_str() {
   local json=$1 key=$2 rest
@@ -35,13 +33,34 @@ _wm_json_str() {
       ;;
   esac
 }
-if [ -z "$SID" ]; then
-  _wm_json_str "$INPUT" session_id; SID=$REPLY
-  [ -n "$SID" ] || { _wm_json_str "$INPUT" sessionId; SID=$REPLY; }
+_wm_json_str "$INPUT" session_id; ENGINE_SID=$REPLY
+[ -n "$ENGINE_SID" ] || { _wm_json_str "$INPUT" sessionId; ENGINE_SID=$REPLY; }
+ENGINE_SID="${ENGINE_SID//[[:space:]]/}"
+PARENT_SID="${HQ_PARENT_SESSION_ID:-${HQ_SESSION_ID:-}}"
+PARENT_SID="${PARENT_SID//[[:space:]]/}"
+
+# Conduct lanes retain HQ_SESSION_ID for parent pool accounting. Their engine
+# supplies a new session id in SessionStart stdin; use that child id for mesh
+# binding and reconciliation instead of relabeling the already-bound parent.
+if [ -n "${HQ_SPAWN_COMPANY:-}" ] && [ -n "$ENGINE_SID" ]; then
+  SID="$ENGINE_SID"
+else
+  SID="${HQ_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}}}}"
   SID="${SID//[[:space:]]/}"
+  [ -n "$SID" ] || SID="$ENGINE_SID"
 fi
 _wm_json_str "$INPUT" cwd; [ -n "$REPLY" ] && CWD=$REPLY
 [ -n "$SID" ] || exit 0
+
+BOUND_COMPANY=""
+if [ -n "${HQ_SPAWN_COMPANY:-}" ] && [ -f "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" ]; then
+  # shellcheck source=core/scripts/lib/session-auto-bind.sh
+  . "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" 2>/dev/null || true
+  if command -v session_auto_bind_apply >/dev/null 2>&1; then
+    session_auto_bind_apply "$HQ_ROOT" "$SID" "$PARENT_SID" || true
+    BOUND_COMPANY="$(session_auto_bind_meta_slug "$HQ_ROOT" "$SID" 2>/dev/null || true)"
+  fi
+fi
 
 HARNESS="${HQ_HARNESS:-${HQ_WORK_MESH_HARNESS:-${HQ_CHECKPOINT_RUNTIME:-claude-code}}}"
 case "$HARNESS" in
@@ -52,7 +71,7 @@ esac
 ADAPTER="${HQ_ADAPTER_CONTRACT_VERSION:-1.0.0}"
 RUNTIME="${HQ_RUNTIME_VERSION:-${CLAUDE_CODE_VERSION:-${CODEX_VERSION:-${GROK_VERSION:-}}}}"
 
-COMPANY="${HQ_SPAWN_COMPANY:-}"
+COMPANY="${BOUND_COMPANY:-${HQ_SPAWN_COMPANY:-}}"
 PROJECT="${HQ_SPAWN_PROJECT:-}"
 TASK="${HQ_SPAWN_TASK:-}"
 # Skip meta.yaml forks unless spawn context is incomplete and a session meta exists.

@@ -20,6 +20,7 @@
 # reference them (keep this minimal so a typo of a real skill name still fails).
 clear
 compact
+output-style
 
 # ── Harness-provided commands ─────────────────────────────────────────────
 # Shipped by the Claude Code harness or a first-party plugin, not by a skill

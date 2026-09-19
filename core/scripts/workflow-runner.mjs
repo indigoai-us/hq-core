@@ -37,7 +37,8 @@
  *   - every agent is anchored at the HQ root (codex via -C, grok and claude via
  *     spawn cwd) so project-level agent config and safety hooks load; opts.cd names
  *     the task's directory and is injected as a prompt preamble, and must
- *     resolve inside the HQ root
+ *     resolve inside the HQ root (or to a company repo symlink registered
+ *     under repos/ or companies/manifest.yaml)
  *   - stderr (and codex's combined output) streamed to a per-agent log file
  *   - CPU governor: at high load, resolved concurrency is halved (floor 1)
  *
@@ -121,7 +122,9 @@
  *           back, so results are engine-neutral: see
  *           core/scripts/lib/codex-output-schema.mjs),
  *           model (explicit override), effort, fastMode (codex only),
- *           cd (task directory inside the HQ root; injected into the prompt),
+ *           cd (task directory inside the HQ root, or a company repo symlink
+ *           registered under repos/ / companies/manifest.yaml; injected into
+ *           the prompt),
  *           timeoutSecs (soft), extraArgs (string[])
  *     A reply that will not parse, or that violates opts.schema, is not the
  *     end of the call: the engine is asked once to RESTATE its own reply as
@@ -171,6 +174,130 @@ function findHqRoot() {
   process.exit(2);
 }
 const HQ_ROOT = findHqRoot();
+
+function realpathSafe(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+function pathIsInside(root, candidate) {
+  const rel = path.relative(root, candidate);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function collectHqRepoAnchors(root) {
+  const anchors = [];
+  const add = (logical) => {
+    anchors.push({ logical: path.resolve(logical), real: realpathSafe(logical) });
+  };
+  for (const bucket of ['repos/public', 'repos/private']) {
+    const dir = path.join(root, bucket);
+    let ents;
+    try {
+      ents = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of ents) {
+      if (ent.name === '.' || ent.name === '..') continue;
+      add(path.join(dir, ent.name));
+    }
+  }
+  let text = '';
+  try {
+    text = fs.readFileSync(path.join(root, 'companies', 'manifest.yaml'), 'utf8');
+  } catch {
+    text = '';
+  }
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const inline = line.match(/^repos:\s*\[([^\]]*)\]/);
+    if (inline) {
+      for (const part of inline[1].split(',')) {
+        const token = part.trim().replace(/^['"]|['"]$/g, '');
+        if (token) add(path.isAbsolute(token) ? token : path.resolve(root, token));
+      }
+      continue;
+    }
+    const dash = line.match(/^-\s+(\S+)\s*$/);
+    if (!dash) continue;
+    let token = dash[1].replace(/^['"]|['"]$/g, '');
+    if (!token || token === '[]') continue;
+    if (token.startsWith('~/')) token = path.join(os.homedir(), token.slice(2));
+    add(path.isAbsolute(token) ? token : path.resolve(root, token));
+  }
+  return anchors;
+}
+
+let _hqRepoAnchors;
+function hqRepoAnchors() {
+  if (!_hqRepoAnchors) _hqRepoAnchors = collectHqRepoAnchors(HQ_ROOT);
+  return _hqRepoAnchors;
+}
+
+// Logical HQ path if workDir is inside the root, or the HQ-side symlink for a
+// company repo that lives outside the root (repos/* or manifest.yaml).
+function resolveAllowedWorkDir(workDir) {
+  const resolved = path.resolve(workDir);
+  const hqLogical = path.resolve(HQ_ROOT);
+  if (pathIsInside(hqLogical, resolved)) return resolved;
+  const realWork = realpathSafe(resolved);
+  if (pathIsInside(realpathSafe(hqLogical), realWork)) return resolved;
+  for (const anchor of hqRepoAnchors()) {
+    if (realWork === anchor.real || pathIsInside(anchor.real, realWork)) {
+      return anchor.logical;
+    }
+  }
+  return null;
+}
+
+function readSessionField(sid, key) {
+  if (!sid) return '';
+  const meta = path.join(HQ_ROOT, 'workspace', 'sessions', sid, 'meta.yaml');
+  try {
+    const text = fs.readFileSync(meta, 'utf8');
+    const re = new RegExp('^' + key + ':\\s*"?([^"\\n]+)"?\\s*$', 'm');
+    const m = text.match(re);
+    return m ? m[1].trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function parentSessionId() {
+  return String(
+    process.env.HQ_PARENT_SESSION_ID
+    || process.env.HQ_SESSION_ID
+    || process.env.CLAUDE_CODE_SESSION_ID
+    || process.env.CLAUDE_SESSION_ID
+    || process.env.CODEX_SESSION_ID
+    || process.env.CODEX_THREAD_ID
+    || '',
+  ).replace(/\s+/g, '');
+}
+
+function engineChildEnv() {
+  const extra = {};
+  const parent = parentSessionId();
+  if (!process.env.HQ_PARENT_SESSION_ID && parent) extra.HQ_PARENT_SESSION_ID = parent;
+  if (!process.env.HQ_SPAWN_COMPANY) {
+    const slug = readSessionField(parent, 'company_slug') || readSessionField(parent, 'company');
+    if (slug) extra.HQ_SPAWN_COMPANY = slug;
+  }
+  if (!process.env.HQ_SPAWN_PROJECT) {
+    const project = readSessionField(parent, 'project');
+    if (project) extra.HQ_SPAWN_PROJECT = project;
+  }
+  if (!process.env.HQ_SPAWN_TASK) {
+    const task = readSessionField(parent, 'task');
+    if (task) extra.HQ_SPAWN_TASK = task;
+  }
+  return extra;
+}
 
 // ------------------------------------------------------------------- engines
 
@@ -231,12 +358,11 @@ const VALID_ENGINES = Object.keys(ENGINES);
 const CHILD_DISABLED_HOOKS = ['checkpoint-stop-gate'];
 
 // Child env = ours plus those suppressions, preserving any the operator set.
-function childEnv() {
+function childEnv(extra = {}) {
   const disabled = new Set(
     String(process.env.HQ_DISABLED_HOOKS || '').split(',').map((s) => s.trim()).filter(Boolean));
   for (const hook of CHILD_DISABLED_HOOKS) disabled.add(hook);
-  const env = { ...process.env, HQ_DISABLED_HOOKS: [...disabled].join(',') };
-  return env;
+  return { ...process.env, HQ_DISABLED_HOOKS: [...disabled].join(','), ...extra };
 }
 
 let grokJsonSchemaCached = null;
@@ -258,6 +384,9 @@ const MANDATED_CODEX_FLAGS = [
   '--dangerously-bypass-hook-trust',
   '--skip-git-repo-check',
   '--dangerously-bypass-approvals-and-sandbox',
+  // Explicit posture: newer Codex still opens a workspace sandbox around
+  // ~/.codex/state_*.sqlite unless sandbox_mode is danger-full-access.
+  '--sandbox', 'danger-full-access',
 ];
 
 // Flags for a spawn that must not be able to ACT — currently only the repair
@@ -1042,7 +1171,7 @@ async function buildRuntime(cli) {
           stdio: ['ignore', outFd, logFd],
           detached: true,
           cwd: HQ_ROOT,
-          env: childEnv(),
+          env: childEnv(engineChildEnv()),
         });
       } catch (e) {
         settle(new Error(`failed to spawn ${engine.bin}: ${errMsg(e)}`));
@@ -1129,17 +1258,21 @@ async function buildRuntime(cli) {
     // inside the HQ root, and is injected as a prompt preamble.
     const explicitCd = opts.cd !== undefined && opts.cd !== null && String(opts.cd) !== '';
     let workDir = path.resolve(explicitCd ? String(opts.cd) : process.cwd());
-    const rel = path.relative(HQ_ROOT, workDir);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    const allowedCd = resolveAllowedWorkDir(workDir);
+    if (!allowedCd) {
       if (explicitCd) {
         throw new Error(
           `agent() opts.cd must resolve inside the HQ root (${HQ_ROOT}) — got ` +
           `${workDir} for "${label}". Agents always anchor at the HQ root so ` +
           `its safety hooks load; put the working path in opts.cd (it is ` +
-          `injected into the prompt) or in the prompt itself.`);
+          `injected into the prompt) or in the prompt itself. A company repo ` +
+          `symlinked out of the HQ root is allowed when it lives under repos/ ` +
+          `or is listed in companies/manifest.yaml.`);
       }
       narr(`! cwd ${workDir} is outside the HQ root — "${label}" targets ${HQ_ROOT} instead`);
       workDir = HQ_ROOT;
+    } else {
+      workDir = allowedCd;
     }
     const spawnPrompt = workDir === HQ_ROOT ? prompt : [
       `Working directory for this task: ${workDir}`,

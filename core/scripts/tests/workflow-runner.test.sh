@@ -102,6 +102,8 @@ rec="${FAKE_REC_DIR:?}"
 n="$$-$RANDOM"
 printf '%s\n' "$@" > "$rec/codex-argv.$n"
 printenv HQ_DISABLED_HOOKS > "$rec/codex-hooksenv.$n" 2>/dev/null || : > "$rec/codex-hooksenv.$n"
+printenv HQ_SPAWN_COMPANY > "$rec/codex-spawnco.$n" 2>/dev/null || : > "$rec/codex-spawnco.$n"
+printenv HQ_PARENT_SESSION_ID > "$rec/codex-parent.$n" 2>/dev/null || : > "$rec/codex-parent.$n"
 { readlink /proc/self/fd/0 2>/dev/null || lsof -a -p $$ -d 0 -Fn 2>/dev/null | sed -n 's/^n//p'; } > "$rec/codex-stdin.$n"
 [ -s "$rec/codex-stdin.$n" ] || echo "unknown" > "$rec/codex-stdin.$n"
 last=""; schema=""; prompt=""
@@ -280,6 +282,7 @@ for f in "$TMP/rec"/codex-argv.*; do
   for flag in --dangerously-bypass-hook-trust --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox; do
     grep -qx -- "$flag" "$f" || flags_ok=1
   done
+  grep -qx -- '--sandbox' "$f" && grep -qx -- 'danger-full-access' "$f" || flags_ok=1
   grep -qx '/dev/null' "${f/argv/stdin}" || flags_ok=1
   tail -2 "$f" | head -1 | grep -qx -- '--' || flags_ok=1
   grep -qx -- '-C' "$f" || flags_ok=1
@@ -767,6 +770,48 @@ WF
 run_wf "$TMP/wf-anchor-escape.mjs"
 [ "$RC" -ne 0 ] && grep -q 'must resolve inside the HQ root' "$TMP/stderr.last"
 check "opts.cd outside the HQ root throws" "$?"
+
+# A company repo may be a symlink whose realpath sits outside the HQ root.
+# The runner must accept the resolved path and rewrite it to the HQ-side link.
+OUTSIDE_REPO="$TMP/Coding/withtrestle"
+mkdir -p "$OUTSIDE_REPO" "$HQROOT/repos/private" "$HQROOT/companies"
+ln -s "$OUTSIDE_REPO" "$HQROOT/repos/private/withtrestle"
+printf 'companies:\n  withtrestle:\n    repos:\n      - repos/private/withtrestle\n' > "$HQROOT/companies/manifest.yaml"
+cat > "$TMP/wf-anchor-symlink.mjs" <<WF
+await agent('anchor-symlink', { tier: 'exec', timeoutSecs: 30, cd: '$OUTSIDE_REPO' })
+return 'ok'
+WF
+run_wf "$TMP/wf-anchor-symlink.mjs"
+check "symlink company repo opts.cd exits 0" "$RC"
+sy="$(grep -l -x -- 'anchor-symlink' "$TMP/rec"/codex-argv.* 2>/dev/null | head -1)"
+if [ -z "$sy" ]; then sy="$(grep -l -- 'anchor-symlink' "$TMP/rec"/codex-argv.* 2>/dev/null | head -1)"; fi
+[ -n "$sy" ] && grep -q "Working directory for this task: $HQROOT/repos/private/withtrestle" "$sy"
+check "symlink opts.cd is rewritten to the HQ-side repo path" "$?"
+
+# Parent session company is exported so a detached Codex lane is not unbound.
+mkdir -p "$HQROOT/workspace/sessions/parent-sid"
+printf 'session_id: parent-sid\ncompany_slug: withtrestle\nproject: download-file-organization\n' \
+  > "$HQROOT/workspace/sessions/parent-sid/meta.yaml"
+cat > "$TMP/wf-inherit.mjs" <<'WF'
+await agent('inherit-bind', { tier: 'plan', timeoutSecs: 30 })
+return 'ok'
+WF
+OUT="$(HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$TMP/rec" \
+  HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" HQ_SESSION_ID=parent-sid \
+  HQ_WORKFLOW_GATES_DIR="$TMP/gates-default" \
+  node "$RUNNER" "$TMP/wf-inherit.mjs" --quiet --run-dir "$TMP/run-inherit" 2>/dev/null)"
+RC=$?
+check "inherit-bind workflow exits 0" "$RC"
+ih="$(grep -l -x -- 'inherit-bind' "$TMP/rec"/codex-argv.* 2>/dev/null | head -1)"
+if [ -z "$ih" ]; then ih="$(grep -l -- 'inherit-bind' "$TMP/rec"/codex-argv.* 2>/dev/null | head -1)"; fi
+suf="${ih##*/codex-argv.}"
+grep -qx -- 'withtrestle' "$TMP/rec/codex-spawnco.$suf"
+check "child inherits parent company_slug as HQ_SPAWN_COMPANY" "$?"
+grep -qx -- 'parent-sid' "$TMP/rec/codex-parent.$suf"
+check "child gets HQ_PARENT_SESSION_ID from the parent session" "$?"
+ih_argv="$TMP/rec/codex-argv.$suf"
+grep -qx -- '--sandbox' "$ih_argv" && grep -qx -- 'danger-full-access' "$ih_argv"
+check "plan-tier explorer spawn uses danger-full-access sandbox" "$?"
 
 # Without HQ_ROOT env the runner anchors to ITS OWN install's HQ root (walking
 # up from the script location — here, this checkout) no matter the cwd. That is

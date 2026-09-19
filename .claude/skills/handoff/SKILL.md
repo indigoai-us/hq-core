@@ -209,6 +209,27 @@ If any active pipelines surface, mention them in the report and suggest `core/sc
 
 ### 6. Report
 
+Chat report follows the active output style (`core/policies/hq-audience-mode.md`). Files this skill writes stay full prose. The templates below are chat-only.
+
+**Default (`HQ`, and any style that is not `hq-operator`):** one or two short plain sentences. Do not print Scope, Dedup, Action, file paths, thread IDs, or PIDs. Do not paste the operator template.
+
+- Clipboard copied: `All saved. To pick up later, open a new chat and paste what's on your clipboard.`
+- Clipboard not copied: `All saved. To pick up later, open a new chat and run {next_command}.`
+- Active pipelines: add one plain sentence that some work is still running and a new chat can pick it up.
+- `git_bg_errors` non-empty: add one plain sentence that one knowledge folder did not save, and they can ask you to retry. No raw git dump.
+
+If any eligible follow-up is still uncompleted after the synchronous Skill fallback, put this warning first (Auto-Clarity — the person must run a command). In the default style, lead with one plain sentence that something still needs finishing, then the recovery commands:
+
+```
+WARN: Follow-up recovery required
+- Learnings: {learning_count} item(s) are durably pending in thread {thread_id} at {thread_path}.
+  Run exactly: /learn {learnings_json}
+- Documentation: release follow-up is pending for thread {thread_id} at {thread_path}.
+  Run exactly: /document-release {thread_path}
+```
+
+**Operator (`/output-style hq-operator`):**
+
 ```
 Handoff ready.
 
@@ -238,15 +259,7 @@ If `git_bg_errors` was non-empty, append:
 ⚠ Knowledge repo git errors: {git_bg_errors}
 ```
 
-If any eligible follow-up is still uncompleted after the synchronous Skill fallback, put this warning at the top of the report (before `Handoff ready.`), substituting actual values and including only applicable commands:
-
-```
-WARN: Follow-up recovery required
-- Learnings: {learning_count} item(s) are durably pending in thread {thread_id} at {thread_path}.
-  Run exactly: /learn {learnings_json}
-- Documentation: release follow-up is pending for thread {thread_id} at {thread_path}.
-  Run exactly: /document-release {thread_path}
-```
+If recovery is still needed in operator mode, put the same `WARN: Follow-up recovery required` block at the top (before `Handoff ready.`), substituting actual values and including only applicable commands.
 
 ## Thread vs Checkpoint
 

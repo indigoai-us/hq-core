@@ -719,6 +719,8 @@ jobs:
         run: bash core/scripts/tests/detect-secrets-escape-hardening.test.sh
       - name: Secret detector block message never echoes the matched value
         run: bash core/scripts/tests/detect-secrets-no-value-leak.test.sh
+      - name: Env-dump hook blocks printenv on the live PreToolUse path (DEF-026)
+        run: bash core/scripts/tests/block-env-dump.test.sh
       - name: Policy reminder stays under the host output ceiling; hard rules rank first
         run: bash core/scripts/tests/inject-policy-output-ceiling.test.sh
       - name: Policy age report flags retirement candidates
@@ -1223,6 +1225,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Work Mesh trusted bind remains compatible with macOS Bash 3.2
+        run: bash core/scripts/tests/work-mesh-live-bind-bash32.test.sh
+      - name: Conduct lanes inherit parent company onto engine session
+        run: bash core/scripts/tests/conduct-mesh-inherit.test.sh
       - name: Work Mesh Live hooks (US-010)
         run: bash core/scripts/tests/work-mesh-live-hooks.test.sh
 

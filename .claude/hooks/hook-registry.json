@@ -120,6 +120,15 @@
             }
           },
           {
+            "id": "block-env-dump",
+            "script": ".claude/hooks/block-env-dump.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "printenv|(^|[^A-Za-z0-9_])(env|set)([^A-Za-z0-9_]|$)|export[[:space:]]+-p|declare[[:space:]]+-x|/proc/self/environ|/proc/[0-9]+/environ|docker inspect|docker exec|\\.env"
+            }
+          },
+          {
             "id": "block-core-writes-bash",
             "script": ".claude/hooks/block-core-writes-bash.sh",
             "timeout": 30,

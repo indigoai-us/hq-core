@@ -1,7 +1,7 @@
 ---
 name: update-hq
 description: Upgrade HQ from the latest hq-core release.
-allowed-tools: Read, Bash, Bash(bash core/scripts/check-hq-hooks.sh:*), AskUserQuestion
+allowed-tools: Read, Bash, Bash(bash core/scripts/check-hq-hooks.sh:*), Bash(bash core/scripts/restore-hook-settings.sh:*), AskUserQuestion
 ---
 
 # /update-hq — HQ Upgrade
@@ -67,22 +67,24 @@ Keep the pre-op backup: do **not** pass `--no-backup` unless the user explicitly
 
 ## Phase 4: Verify project hooks, repair if needed, and report
 
-`hq rescue` preserves user drift and replaces release-owned paths. The terminal
-CLI can run HQ hooks only when the resulting project still has
-`.claude/settings.json` and loads it as a project setting source. Check that
-postcondition with the hook-independent checker:
+`hq rescue` preserves user drift and replaces release-owned paths. Its settings
+reconcile can empty `.claude/settings.json` hook arrays and copy `master-hook.sh`
+into `.claude/settings.local.json`. Restore shipped hook wiring before checking
+health — a second rescue repeats the same relocate:
 
 ```bash
+bash core/scripts/restore-hook-settings.sh {hq-root}
 bash core/scripts/check-hq-hooks.sh --root {hq-root}
 ```
 
-If it reports a missing/invalid settings file or missing `SessionStart` or
-`PreToolUse` hook, repair the released `.claude` tree and check again. Keep any
-other mapped release flags such as `--ref` / `--staging`; omit a user-provided
-`--paths` restriction because this repair must include `.claude`:
+If settings.json is missing or still invalid, repair the released `.claude` tree,
+restore hooks again, and re-check. Keep any other mapped release flags such as
+`--ref` / `--staging`; omit a user-provided `--paths` restriction because this
+repair must include `.claude`:
 
 ```bash
 hq rescue -y --paths .claude {mapped release flags}
+bash core/scripts/restore-hook-settings.sh {hq-root}
 bash core/scripts/check-hq-hooks.sh --root {hq-root}
 ```
 

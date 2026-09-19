@@ -139,6 +139,18 @@ if command -v yq >/dev/null 2>&1; then
   mkdir -p "$TMP/.claude/hooks" "$TMP/core/packages"
   run 2 "touch $TMP/.claude/hooks/toolkit.sh" 'kit exclude must not strip toolkit substring'
   run 2 "touch $TMP/core/packages/promote-hq-core-scan.sh.copy" 'scan exclude must not strip .copy variant'
+  # Growth-triggered BSD sed failure: many exclude entries must not empty the
+  # command and fail the guard open.
+  {
+    printf 'rules:\n  exclude:\n'
+    i=1
+    while [ "$i" -le 40 ]; do
+      printf '    - .claude/exclude-%02d.dat\n' "$i"
+      i=$((i + 1))
+    done
+  } > "$TMP/core/core.yaml"
+  run 2 "rm -rf $TMP/core/" 'rm -rf core blocked with 40 core.yaml excludes'
+  run 2 "echo x > $TMP/core/FAILOPEN-PROBE.txt" 'redirect into core blocked with 40 core.yaml excludes'
 else
   echo "SKIP: core.yaml exclude cases (yq not available)"
 fi
@@ -155,3 +167,8 @@ fi
 
 echo "block-core-writes-bash: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
+
+# Fail-open strip-helper coverage (40 excludes + simulated BSD sed error).
+# Kept in a sibling file so it can use a stub yq; invoked here so the existing
+# core-write-protection CI job runs it without a workflow edit.
+bash "$ROOT/core/scripts/tests/hook-lib-strip-exclude-tokens.test.sh"

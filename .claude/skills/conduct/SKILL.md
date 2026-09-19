@@ -1,7 +1,7 @@
 ---
 name: conduct
 description: Put the session into orchestrator mode — every task is assigned to a long-lived HQ worker from a capped session pool and run as a detached workflow-runner lane on a user-chosen engine (Codex, Grok, or Claude), so the parent session stays free to accept and route new messages. Use when the user says "/conduct", "run everything in the background", "keep the session free", "orchestrate through workers", or names an engine for delegated work.
-allowed-tools: Bash, Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/conduct-inbox.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Read, Grep, Glob, AskUserQuestion
+allowed-tools: Bash, Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/conduct-inbox.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_COMPANY="$(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_PROJECT="$(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_TASK="$(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Read, Grep, Glob, AskUserQuestion, mcp__visualize__read_me, mcp__visualize__show_widget
 argument-hint: "[engine] [task description] | status | off"
 ---
 
@@ -251,12 +251,27 @@ lane returns in a minute having changed nothing.
 
 ## Step 5: Launch the lane, detached
 
+Before following the shared launch block, resolve and carry the parent binding
+into the detached environment. `HQ_SPAWN_COMPANY` is mandatory and comes only
+from trusted session state; do not infer a slug from cwd. `project` and `task`
+are optional metadata on that same parent session:
+
+```bash
+HQ_SPAWN_COMPANY="$(bash core/scripts/hq-session.sh --session-id "$SID" get company_slug 2>/dev/null || true)"
+[ -n "$HQ_SPAWN_COMPANY" ] || {
+  echo "cannot launch conduct lane: bind a company first" >&2
+  exit 1
+}
+HQ_SPAWN_PROJECT="$(bash core/scripts/hq-session.sh --session-id "$SID" get project 2>/dev/null || true)"
+HQ_SPAWN_TASK="$(bash core/scripts/hq-session.sh --session-id "$SID" get task 2>/dev/null || true)"
+```
+
 Follow `.claude/skills/_shared/lane-dispatch-protocol.md` — it owns the whole
 mechanism: brief on disk, `args.json`, the `hq-detach.sh` launch with its proof-of-
-escape check, the `HQ_SESSION_ID` export, `record --status running` against the
-run-dir basename, and the background waiter. `/run-project` dispatches its
-stories the same way, so the launch block lives in one file rather than drifting
-between two.
+escape check, the inherited `HQ_SPAWN_*` and `HQ_PARENT_SESSION_ID` exports,
+`record --status running` against the run-dir basename, and the background
+waiter. `/run-project` dispatches its stories the same way, so the launch block
+lives in one file rather than drifting between two.
 
 The conduct-specific parts are only these:
 
@@ -383,8 +398,10 @@ Then, in this order:
    resumes its released slot — rather than fixing it in the parent. Cap it at
    three rounds, then surface it to the user.
 4. Relay the outcome plainly — done, blocked, or needs a decision — with any
-   links. If the lane needs a decision, ask with `AskUserQuestion`, then continue
-   the same worker with the answer.
+   links. Anything the owner has to answer goes through `/decision-queue`: one
+   `AskUserQuestion` per decision, recommended option first, wait for each answer
+   before asking the next. Never hand the owner a markdown list of open
+   questions. When the answer arrives, continue the same worker with it.
 
 For `status`, print the pool and the live lanes; launch nothing:
 
@@ -393,7 +410,10 @@ bash core/scripts/conduct-pool.sh list
 ```
 
 Render it as worker id, status, last task, and run id — the JSON is for you, not
-for the user.
+for the user. With two or more lanes live, render the board widget as well —
+template `.claude/skills/conduct/status-board.html`, filled with one row per
+lane and the CSS left alone. Decisions never go inside the widget; they follow it
+through `/decision-queue`.
 
 ## Rules
 
@@ -403,6 +423,13 @@ for the user.
   are what keeps the child count bounded and the session survivable.
 - **The cap is mechanical.** `conduct-pool.sh` owns it. Exit 3 means stop, not
   "launch anyway".
+- **Every owner-facing need goes through `/decision-queue`.** One
+  `AskUserQuestion` per decision, on every surface — status ticks, loop wakeups,
+  lane completions, cross-session requests — not only at session close. A
+  markdown list of questions is a defect.
+- **Two or more lanes in motion means every status reply carries the board
+  widget** (`.claude/skills/conduct/status-board.html`). A text-only status with
+  multiple lanes running is a defect.
 - **Irreversible actions stay with the user** — merging, publishing a release,
   force-pushing, deleting, sending messages. The lane prepares and reports; the
   parent asks once, then tells the worker to proceed.

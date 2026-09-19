@@ -1,13 +1,13 @@
 ---
 id: hq-prefer-agent-browser
 title: Use agent-browser for any browser task — and auto-install it without asking
-when: browser || browse || website || webpage || scrape || smoke
+when: browser || browse || website || webpage || scrape || smoke || (google && docs)
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 tier: 1
-version: 3
+version: 4
 created: 2026-03-24
-updated: 2026-06-29
+updated: 2026-09-18
 source: user-correction
 public: true
 ---
@@ -42,6 +42,23 @@ Usage notes:
 - **CSR/Wix/SPA scraping:** `WebFetch` returns only JS bootstrap from
   client-rendered sites. Use agent-browser with `--headed` + `wait --load
   networkidle`, then `get text body` / `screenshot --full`.
+- **Canvas apps (Google Docs, Sheets, Slides, Figma, and similar):** use
+  snapshot/find refs for real DOM controls (Find-and-replace, link editor,
+  dialogs) and keyboard for canvas text (arrows, cmd+Left, shift+Right,
+  cmd+f, cmd+k). Do **not** click from screenshot-measured coordinates.
+  Browser MCP screenshot frames and the click coordinate space can disagree
+  by tens of percent, so a `computer:left_click` aimed at the canvas lands
+  elsewhere.
+- **Never type until the target is confirmed.** `computer:type` / unscoped
+  `type` follows whatever currently has focus. On Google Docs that is often
+  the document body, so a find-box type can silently insert into a live
+  document (and autosave). Confirm focus with a DOM ref (`fill @eN`,
+  `form_input`) or a keyboard-opened control before typing.
+- **Google auth is not inherited from Chrome.** agent-browser cannot reuse
+  the user's logged-in Google Chrome or Claude-in-Chrome session. Opening a
+  Google Workspace doc needs an interactive `--headed` sign-in (then
+  `state save`). Missing agent-browser is not a reason to skip the install —
+  install it, then sign in headed if the task needs Google.
 
 Auth and downloads stay deliberate: `state save|load` (writes/loads a logged-in
 session) and any file **download** verb are intentional steps, not things to

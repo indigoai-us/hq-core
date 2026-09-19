@@ -6,7 +6,7 @@
 #
 # Sources:
 #   companies/manifest.yaml → company slugs + qmd collections
-#   core/workers/registry.yaml → company worker counts
+#   core/workers/registry.yaml → company worker counts + missing-path drift
 #   agents-profile.md       → owner name + ## Challenges section
 #
 # Falls back gracefully if files are missing (fresh install).
@@ -14,10 +14,18 @@
 set -euo pipefail
 
 HQ_ROOT="${CLAUDE_PROJECT_DIR:-.}"
+HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 MANIFEST="$HQ_ROOT/companies/manifest.yaml"
 REGISTRY="$HQ_ROOT/core/workers/registry.yaml"
 PROFILE="$HQ_ROOT/agents-profile.md"
+
+MISSING_WORKERS=""
+if [ -r "$HOOK_ROOT/core/scripts/lib/workers-registry.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$HOOK_ROOT/core/scripts/lib/workers-registry.sh"
+  MISSING_WORKERS="$(hq_workers_registry_missing "$HQ_ROOT" || true)"
+fi
 
 # --- Owner name ---
 OWNER="(not configured)"
@@ -89,6 +97,15 @@ if [ -n "$COMPANIES" ]; then
 fi
 if [ -n "$WORKER_COUNTS" ]; then
   echo "Company workers: $WORKER_COUNTS"
+fi
+if [ -n "$MISSING_WORKERS" ]; then
+  # Cap the banner: a long stale registry must not blow the SessionStart budget.
+  MISSING_LINE="$(printf '%s\n' "$MISSING_WORKERS" | awk -F '\t' '
+    NF >= 2 && n < 8 { printf "%s%s → %s", (n ? "; " : ""), $1, $2; n++ }
+    END { if (NR > 8) printf " (+%d more)", NR - 8 }
+  ')"
+  echo "Missing workers (registry path absent): $MISSING_LINE"
+  echo "Do not treat missing workers as available and do not fall back to a raw ingest script. Run hq sync to fetch the directories, or hq reindex to drop stale registry rows."
 fi
 echo "QMD collections: $QMD_COLLECTIONS"
 echo "</local-context>"

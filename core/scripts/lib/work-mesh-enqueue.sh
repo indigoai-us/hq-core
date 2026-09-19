@@ -100,7 +100,8 @@ work_mesh_ulid() {
     bytes=$(dd if=/dev/urandom bs=10 count=1 2>/dev/null | od -An -tu1 | tr -s ' ' '\n' | grep -E '^[0-9]+$' | head -n 10 | tr '\n' ' ')
     # shellcheck disable=SC2206
     local -a bb=($bytes)
-    b=("${bb[@]}")
+    # Bash 3.2 + set -u: empty bb[@] is unbound; keep the copy portable.
+    b=(${bb[@]+"${bb[@]}"})
     while [ "${#b[@]}" -lt 10 ]; do
       b+=($((RANDOM % 256)))
     done

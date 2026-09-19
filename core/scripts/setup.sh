@@ -94,9 +94,16 @@ fi
 echo ""
 echo "Setting permissions…"
 
-find "$REPO_ROOT/.claude/hooks" -name '*.sh' -exec chmod +x {} \;
-find "$REPO_ROOT/core/scripts" -name '*.sh' -exec chmod +x {} \;
-ok "scripts marked executable"
+case "$(uname -s 2>/dev/null || true)" in
+  MINGW*|MSYS*|CYGWIN*)
+    skip "chmod +x (Windows Git Bash chmod writes NTFS DENY ACEs; bash launch does not need +x)"
+    ;;
+  *)
+    find "$REPO_ROOT/.claude/hooks" -name '*.sh' -exec chmod +x {} \;
+    find "$REPO_ROOT/core/scripts" -name '*.sh' -exec chmod +x {} \;
+    ok "scripts marked executable"
+    ;;
+esac
 
 # ── 3b. Snapshot user's PATH into settings.json ────────────────────────────
 # Claude Code's env block does literal assignment (no $PATH expansion).
@@ -126,10 +133,11 @@ fi
 # it is the post-install signal when Desktop/SDK did not load project hooks at
 # all. Do not abort setup here; report the repair while allowing the remaining
 # bootstrap steps to finish.
+bash "$REPO_ROOT/core/scripts/restore-hook-settings.sh" "$REPO_ROOT" >/dev/null || true
 if bash "$REPO_ROOT/core/scripts/check-hq-hooks.sh" --root "$REPO_ROOT"; then
   ok "HQ project hook settings verified"
 else
-  fail "HQ project hooks need repair — run: hq rescue -y --paths .claude"
+  fail "HQ project hooks need repair — run: bash core/scripts/restore-hook-settings.sh"
 fi
 
 # ── 4. Create personal scaffold ─────────────────────────────────────────────

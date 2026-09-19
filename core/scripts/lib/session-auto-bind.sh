@@ -5,8 +5,8 @@
 #
 # Safe sources (first hit wins):
 #   1. This session's existing meta.yaml / scope-capability.json
-#   2. HQ_SPAWN_COMPANY (explicit spawn / conduct / fleet)
-#   3. Parent session id (payload or HQ_PARENT_SESSION_ID) — inherit that slug
+#   2. Parent session id (payload or HQ_PARENT_SESSION_ID) — inherit that slug
+#   3. HQ_SPAWN_COMPANY (explicit standalone spawn / conduct / fleet)
 #
 # Never invent a tenant from cwd path fragments (category-1). If nothing
 # resolves, leave the session unbound (authorizer stays fail-closed).
@@ -44,7 +44,7 @@ session_auto_bind_is_known_slug() {
 # session_auto_bind_resolve <root> <sid> [parent_sid]
 #   Print the slug to bind, or empty.
 session_auto_bind_resolve() {
-  local root="${1:-}" sid="${2:-}" parent="${3:-}" slug=""
+  local root="${1:-}" sid="${2:-}" parent="${3:-}" slug="" spawn="" parent_slug=""
   [ -n "$root" ] && [ -n "$sid" ] || return 0
 
   if command -v session_scope_read >/dev/null 2>&1; then
@@ -56,25 +56,30 @@ session_auto_bind_resolve() {
     return 0
   fi
 
+  [ -z "$parent" ] && parent="${HQ_PARENT_SESSION_ID:-}"
+  parent="$(printf '%s' "$parent" | tr -d '[:space:]')"
+  if [ -n "$parent" ] && [ "$parent" != "$sid" ]; then
+    parent_slug=""
+    if command -v session_scope_read >/dev/null 2>&1; then
+      parent_slug="$(session_scope_read "$root" "$parent" 2>/dev/null || true)"
+    fi
+    [ -z "$parent_slug" ] && parent_slug="$(session_auto_bind_meta_slug "$root" "$parent")"
+    if session_auto_bind_is_known_slug "$root" "$parent_slug"; then
+      spawn="${HQ_SPAWN_COMPANY:-}"
+      spawn="$(printf '%s' "$spawn" | tr -d '[:space:]"')"
+      if [ -n "$spawn" ] && [ "$spawn" != "$parent_slug" ]; then
+        printf '%s\n' "session-auto-bind: ignoring HQ_SPAWN_COMPANY=$spawn because it mismatches parent company_slug=$parent_slug" >&2
+      fi
+      printf '%s' "$parent_slug"
+      return 0
+    fi
+  fi
+
   slug="${HQ_SPAWN_COMPANY:-}"
   slug="$(printf '%s' "$slug" | tr -d '[:space:]"')"
   if session_auto_bind_is_known_slug "$root" "$slug"; then
     printf '%s' "$slug"
     return 0
-  fi
-
-  [ -z "$parent" ] && parent="${HQ_PARENT_SESSION_ID:-}"
-  parent="$(printf '%s' "$parent" | tr -d '[:space:]')"
-  if [ -n "$parent" ] && [ "$parent" != "$sid" ]; then
-    slug=""
-    if command -v session_scope_read >/dev/null 2>&1; then
-      slug="$(session_scope_read "$root" "$parent" 2>/dev/null || true)"
-    fi
-    [ -z "$slug" ] && slug="$(session_auto_bind_meta_slug "$root" "$parent")"
-    if session_auto_bind_is_known_slug "$root" "$slug"; then
-      printf '%s' "$slug"
-      return 0
-    fi
   fi
   return 0
 }

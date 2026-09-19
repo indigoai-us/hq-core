@@ -6,7 +6,7 @@ on: [SessionStart]
 enforcement: soft
 version: 1
 created: 2026-05-12
-updated: 2026-05-12
+updated: 2026-09-18
 source: user-correction
 tags: [voice, narration, ux, basic-users]
 public: true
@@ -85,6 +85,7 @@ Commands in scope:
 - `/tdd` — RED → GREEN → REFACTOR transitions
 - `/architect` — candidate scoring, deepening grilling
 - `/deep-plan`, `/review`, `/security-review`, `/discover` — auditing/designing surfaces
+- `/handoff`, `/learn`, `/checkpoint` — completion reports (plain summary in the default audience; operator Report fields only in `hq-operator`)
 
 (Files written to disk by these flows — verification reports, plans, DEBUG REPORTs — stay full prose in **both** audiences, per the files-to-disk carveout below.)
 

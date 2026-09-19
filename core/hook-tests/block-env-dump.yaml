@@ -1,0 +1,46 @@
+# Fixture for block-env-dump.sh — blocks Bash commands that dump process env.
+# See core/hook-tests/README.md for the schema.
+hookId: block-env-dump
+schemaVersion: 1
+cases:
+  - name: blocks-bare-printenv
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "printenv"
+    expect: block
+
+  - name: blocks-bare-env
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "env"
+    expect: block
+
+  - name: blocks-env-piped-to-grep
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "env | grep -c ."
+    expect: block
+
+  - name: allows-printenv-named-var
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "printenv HOME"
+    expect: allow
+
+  - name: allows-env-assignment-form
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "env FOO=bar ls"
+    expect: allow
+
+  - name: allows-benign-ls
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "ls"
+    expect: allow

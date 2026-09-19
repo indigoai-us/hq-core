@@ -1,0 +1,12 @@
+---
+description: HQ charter — same rules Claude Code and Codex load
+alwaysApply: true
+---
+
+This is an HQ workspace. Follow the HQ charter in `.claude/CLAUDE.md`
+(the same file Claude Code loads). `AGENTS.md` at the repo root is a
+symlink to that charter.
+
+Cursor project rules live in `.cursor/rules/*.mdc` (MDC format used by
+Cursor 0.47+ / 3.x). This file is the Cursor equivalent of `.codex/claude`
+→ `.claude` and `.agents/skills` → `.claude/skills`.

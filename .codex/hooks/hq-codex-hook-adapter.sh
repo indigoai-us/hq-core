@@ -688,6 +688,17 @@ fi
 
 case "$HOOK_EVENT" in
   SessionStart)
+    # Detached Codex lanes mint a new engine session id. Bind the parent's
+    # company onto that id before PreToolUse, or company-path reads fail closed.
+    if [ -n "$HQ_ROOT" ] && [ -n "$SESSION_ID" ]; then
+      # shellcheck source=../../core/scripts/lib/session-scope-capability.sh
+      . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" 2>/dev/null || true
+      # shellcheck source=../../core/scripts/lib/session-auto-bind.sh
+      . "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" 2>/dev/null || true
+      if command -v session_auto_bind_apply >/dev/null 2>&1; then
+        session_auto_bind_apply "$HQ_ROOT" "$SESSION_ID" "${HQ_PARENT_SESSION_ID:-}" || true
+      fi
+    fi
     # Codex-only supplement: nudge Codex to honor HQ checkpoint cadence. No
     # Claude analog, so it is not in settings.json. Runs before the mirrored
     # SessionStart hooks (migrate -> inject -> ... in settings.json order).

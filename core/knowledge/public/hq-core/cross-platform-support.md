@@ -34,7 +34,7 @@ macOS:               brew install jq
 
 - **`/deploy` identity** can parse tokens with **jq or node** (`identity-resolve.sh` → `hook-lib.sh`). If both are missing it returns `status=missing_dependency` (not a false login prompt).
 - **Later deploy steps** in `deploy/SKILL.md` still call `jq` directly. Full upload path expects jq installed.
-- Execute bits: every shipped `*.sh` should be git mode `100755`. CI enforces this; the shared hook launcher also attempts `chmod u+x` and falls back to `bash` for readable HQ-owned shell hooks.
+- Execute bits: every shipped `*.sh` should be git mode `100755`. CI enforces this. On Linux/macOS the shared hook launcher attempts `chmod u+x` and falls back to `bash` for readable HQ-owned shell hooks. **Do not `chmod` HQ files in Git Bash** — MSYS rewrites NTFS ACLs with DENY ACEs and can make the owner unable to read the file (POSIX `ls` still shows `-rw-r--r--`). Windows launch uses `bash file.sh` instead of `chmod`. If core files are unreadable, run `bash core/scripts/repair-windows-core-acls.sh`.
 
 ## Runtime contract troubleshooting
 
@@ -69,8 +69,16 @@ Runtime recovery is automatic when safe. If both chmod and the readable-shell fa
 
 For an installed checkout:
 
+On Linux/macOS:
+
 ```bash
 chmod u+x "$HQ_ROOT/.claude/hooks/<hook>.sh"
+```
+
+On Windows Git Bash, do not chmod. Reset NTFS ACLs instead:
+
+```bash
+bash core/scripts/repair-windows-core-acls.sh --root "$HQ_ROOT"
 ```
 
 For an HQ Core source checkout, preserve the mode in Git as well:

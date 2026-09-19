@@ -25,6 +25,8 @@ If a skill is skipped as invalid YAML or a hook reports a launch failure, use th
 | `/delegate <recipient> [project]` | Hand a project to a teammate or fleet agent with exact grant receipts, a published dossier, local board and PRD ownership updates, and a pickup DM. Recipient access and Work Mesh ownership require separate confirmation. Requires HQ CLI 5.109.7+. `--share` keeps ownership; `--dry-run` changes nothing |
 | `/recover-session` | Recover dead sessions that hit context limits |
 | `/learn` | Auto-capture learnings from task execution |
+| `/pin` | Anchor the session to one goal with done criteria, re-read at every wake and resume |
+| `/dm-bind` | Bind the session to one HQ DM channel: post status there, take replies as steering |
 
 ### Planning & Projects
 | Command | What it does |

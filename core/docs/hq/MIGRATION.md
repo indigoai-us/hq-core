@@ -3,6 +3,97 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.148-beta.18
+
+- fix 2026-09-19 (DEF-026 env dumps): `block-env-dump.sh` is now on the live
+  PreToolUse path. Bare `printenv` / `env` / `set` / `export -p` / `declare -x`
+  and env dumps piped into other commands are blocked (exit 2) under every
+  hook profile. `printenv VAR` and `env VAR=x cmd` still work. After
+  `/update-hq` or a create-hq from this template, those dumps no longer reach
+  chat output. Also adds `.cursor/rules/hq.mdc` so Cursor loads the same
+  charter as Claude Code (DEF-002).
+
+## Release: v15.0.148-beta.15
+
+- promote 2026-09-18 (dm-bind always mentions): `core/scripts/hq-dm-bind.sh post`
+  no longer accepts `--no-mention`; every post @-mentions someone. New
+  `--to <name>` (repeatable) narrows the mention line to named channel members,
+  matched case-insensitively against the roster. `post` now exits 2 instead of
+  posting unmentioned when the roster cannot be read or a `--to` name does not
+  match exactly one member. Callers that passed `--no-mention` must drop it or
+  switch to `--to`.
+  Posts also thread by topic now: the first post on a topic (`--topic`, else the
+  title) is a root and later posts on it go out as replies (`rootEventId`);
+  `--new-thread` starts a new root. `post` sends through the notify API directly
+  (the `hq` CLI has no thread flag), so it needs `node` and a signed-in session.
+
+## Release: v15.0.148-beta.13
+
+- fix 2026-09-18 (Auto hatch): shipped `permissions.defaultMode` is `auto`
+  again and rescue no longer rewrites it to `plan`. Claude Code still ignores
+  `auto` from project and `.claude/settings.local.json`. Operators still in
+  Plan after `/update-hq` should use the mode picker or set
+  `permissions.defaultMode: "auto"` in `~/.claude/settings.json`. Do not put
+  Auto only in the local file. Policy `hq-claude-code-default-mode-plan-not-auto`
+  v4 documents that hatch.
+
+## Release: v15.0.148-beta.9
+
+- fix 2026-09-18 (Google Docs canvas clicks): browser MCP screenshot-coordinate
+  clicks miss canvas apps (Google Docs) and unscoped `type` can insert into the
+  live document body. Policy `hq-prefer-agent-browser` v4 plus
+  `core/knowledge/public/agent-browser/` now require refs/keyboard on canvas
+  apps, warn that type follows focus, and note that agent-browser cannot reuse
+  a logged-in Chrome Google session (headed sign-in, then `state save`). The
+  PreToolUse MCP nudge fires even when agent-browser is missing. Nothing to do
+  on update except `/update-hq`; existing Google Chrome logins are still not
+  inherited.
+
+## Release: v15.0.148-beta.4
+
+- promote 2026-09-18 (/conduct owner-facing surface): `/conduct` now routes every
+  owner-facing need through `/decision-queue` — one `AskUserQuestion` per
+  decision, recommended option first, on every surface (status ticks, loop
+  wakeups, lane completions, cross-session requests), never a markdown list of
+  questions. When two or more lanes are live, every status reply also renders the
+  board widget from the new template `.claude/skills/conduct/status-board.html`;
+  a text-only status with multiple lanes running is a defect. Adds
+  `mcp__visualize__read_me` / `mcp__visualize__show_widget` to the skill's
+  allowed tools. Documentation + template only; no script or hook behaviour
+  changes.
+
+## Release: v15.0.148-beta.2
+
+- promote 2026-09-17 (/pin): new core skill `/pin`
+  (`.claude/skills/pin/SKILL.md`) and helper `core/scripts/hq-pin.sh` (`set`,
+  `show`, `check`, `note`, `done`, `clear`). Anchors a session to one goal with
+  done criteria, re-read at every wake, loop tick and resume so a long session
+  does not drift or stop early. Bash only; stores `workspace/sessions/<sid>/pin.md`
+  plus a `pin:` key in the session meta via `hq-session.sh`. Additive.
+- fix 2026-09-17 (hq-sync reporting): the `/hq-sync` skill no longer reads
+  `expiresAt` out of `~/.hq/cognito-tokens.json`. `CognitoTokens.expiresAt` is
+  `string | number`, so on the ISO-string form the numeric comparison errored
+  and `set -euo pipefail` killed the script with `integer expression expected` —
+  on a perfectly valid token. The engine already refreshes an expired access
+  token from the stored refresh token, so the check was also wrong in principle.
+  Step 2 now checks only that the token file exists; the runner's `auth-error`
+  event is the signal that the user is actually signed out. Partial and
+  conflicted syncs are reported honestly rather than as success.
+- fix 2026-09-17 (hook timeout warnings): the timeout-warning fingerprint now
+  hashes the hook path normalized against the HQ root, falling back to the hook
+  basename when the path is outside it. Warnings for the same hook group
+  together across installs instead of fragmenting on absolute paths.
+
+## Release: v15.0.148-beta.1
+
+- promote 2026-09-17 (dm-bind mentions): `core/scripts/hq-dm-bind.sh post` now
+  opens every post with an @-mention of every other channel member (read from
+  the channel roster at bind time and refreshed per post; `--no-mention` opts
+  out) and gains a `roster` subcommand. Mentions are resolved by the `hq` CLI
+  into structured mentions, so members are notified. Needs `node` on PATH and
+  a signed-in `hq` session; without either, posts go out unmentioned with a
+  warning on stderr.
+
 ## Release: v15.0.147-beta.1
 
 - promote 2026-09-17 (workflow-runner claude effort): `core/scripts/workflow-runner.mjs`

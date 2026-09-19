@@ -33,9 +33,10 @@ The checker confirms valid `.claude/settings.json` plus non-empty
 `SessionStart` and `PreToolUse` command hooks, that every `$CLAUDE_PROJECT_DIR`
 reference in those commands is quoted, and that the script each command actually
 runs exists. It applies the same command scan to `.claude/settings.local.json`
-when that optional overlay is present, since Claude Code loads its hooks too. It
-is an ordinary shell command, so it works even when every lifecycle hook is
-unavailable.
+when that optional overlay is present, since Claude Code loads its hooks too.
+It fails when that overlay contains `master-hook.sh` (rescue relocated the
+shipped dispatcher). It is an ordinary shell command, so it works even when
+every lifecycle hook is unavailable.
 
 The scan splits each command the way `/bin/sh` would rather than matching text,
 so it reports only the references the shell would really split, and it reads a
@@ -58,11 +59,19 @@ an unquoted reference splits. The released `.claude/settings.json` quotes every
 one of them. A settings file can still drift out of that shape through an old
 install, a hand edit, a merge, or a hook added to
 `.claude/settings.local.json`. The checker reports that condition by name and
-says which file it came from. For the shipped file, the targeted rescue below
-restores the released, quote-safe copy:
+says which file it came from. Restore shipped hook wiring first:
+
+```bash
+bash core/scripts/restore-hook-settings.sh
+```
+
+If `.claude/settings.json` itself is missing, the targeted rescue below restores
+the released, quote-safe copy, then run the healer again so rescue cannot leave
+empty hook arrays:
 
 ```bash
 hq rescue -y --paths .claude
+bash core/scripts/restore-hook-settings.sh
 ```
 
 `.claude/settings.local.json` is machine-local: `core/core.yaml` excludes it
@@ -90,17 +99,25 @@ bash core/scripts/check-hq-hooks.sh --root "$PWD" --session-id "$SESSION_ID"
 
 ## Restore the released project settings
 
-If the checker fails, restore the release-owned `.claude` tree. This replaces
-the missing project settings while retaining the machine-local
-`.claude/settings.local.json` override:
+If the checker fails because hook arrays are empty or `settings.local.json`
+carries `master-hook.sh`, restore wiring in place. This does not replace the
+`.claude` tree and keeps machine-local permissions and `env` overrides:
 
 ```bash
-hq rescue -y --paths .claude
+bash core/scripts/restore-hook-settings.sh
 bash core/scripts/check-hq-hooks.sh --root "$PWD"
 ```
 
-`/update-hq` runs this postcheck automatically and repeats the targeted rescue
-when needed.
+If `.claude/settings.json` is missing, restore the release-owned `.claude` tree
+and run the healer again (a rescue-only repair can empty the hook arrays):
+
+```bash
+hq rescue -y --paths .claude
+bash core/scripts/restore-hook-settings.sh
+bash core/scripts/check-hq-hooks.sh --root "$PWD"
+```
+
+`/update-hq` runs the healer and the postcheck automatically.
 
 ## Make Desktop and SDK load the project
 
@@ -129,3 +146,26 @@ the runtime to load native project context such as the durable
 causes command-hook events to dispatch. Restart the session after changing
 either value, then rerun the `--require-ledger` check; a `NOT OBSERVED` result
 means use the terminal CLI or host-side enforcement for safety-critical work.
+
+## Windows: core files unreadable (`Permission denied`)
+
+Git Bash `chmod` maps POSIX modes onto NTFS DENY ACEs. A subset of `core/`
+files can then fail `bash`/`head`/`cat` with `Permission denied` while
+`ls -la` still shows `-rw-r--r--`. `core/scripts/hook-lib.sh` in that state
+aborts the hook gate, so every registered hook fails to dispatch.
+
+If `bash core/scripts/check-hq-hooks.sh --help` itself is `Permission denied`,
+reset ACLs first (does not source other core files):
+
+```bash
+bash core/scripts/repair-windows-core-acls.sh --root "$PWD"
+```
+
+Or from Command Prompt as the HQ owner:
+
+```text
+icacls core /reset /T /C /Q
+icacls core /grant:r "%USERNAME%:(OI)(CI)(RX)" /T
+```
+
+Then rerun `bash core/scripts/check-hq-hooks.sh --root "$PWD"`.

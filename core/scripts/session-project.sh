@@ -50,12 +50,26 @@ const STOPWORDS = new Set([
   "who", "why", "will", "your",
 ]);
 
+// Generic topical words that show up in almost every PRD description. They
+// must not count toward reuse when they appear only in project prose — a
+// slug token with the same spelling can still match, so "content workbench
+// platform" can reuse that project, while "scott content review" cannot.
+const MATCH_NOISE = new Set([
+  "analysis", "article", "articles", "background", "brainstorm", "client",
+  "clients", "company", "content", "context", "data", "document", "documents",
+  "draft", "followup", "information", "linkedin", "management", "notes",
+  "personal", "research", "review", "summary", "workflow",
+]);
+
 // A project that has already absorbed this many sessions is an attractor, not
 // a match. Past this point only a strong slug match may add to it.
 const MAX_REUSE_SESSIONS = 25;
 // Fraction of a project's own slug words the query must cover to override the
-// saturation breaker above.
+// saturation breaker above. Unattended sessions use the same bar to reuse.
 const STRONG_SLUG_COVERAGE = 0.6;
+// Winner must beat the runner-up by this much or we create a new folder
+// rather than guess. Wrong reuse is worse than a new thin project.
+const REUSE_MARGIN = 1;
 
 const pad = (x) => String(x).padStart(2, "0");
 function nowIso() {
@@ -101,11 +115,73 @@ function topicSlug(text, maxWords = 5) {
   return slugify(content.slice(0, maxWords).join("-"));
 }
 
-function words(value) {
+function words(value, extraSkip) {
   const found = ((value || "").toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g)) || [];
   const out = new Set();
-  for (const w of found) if (!STOPWORDS.has(w)) out.add(w);
+  for (const w of found) {
+    if (STOPWORDS.has(w)) continue;
+    if (extraSkip && extraSkip.has(w)) continue;
+    out.add(w);
+  }
   return out;
+}
+
+function unionSets(...sets) {
+  const out = new Set();
+  for (const s of sets) {
+    if (!s) continue;
+    for (const w of s) out.add(w);
+  }
+  return out;
+}
+
+let _identityWords = null;
+function ownerIdentityWords() {
+  if (_identityWords) return _identityWords;
+  const out = new Set();
+  const files = [
+    path.join(HQ_ROOT, "personal", "agents-profile.md"),
+    path.join(HQ_ROOT, "personal", "profile.md"),
+    path.join(HQ_ROOT, "agents-profile.md"),
+  ];
+  for (const p of files) {
+    let text;
+    try { text = fs.readFileSync(p, "utf8"); } catch (e) { continue; }
+    for (const line of text.split("\n").slice(0, 40)) {
+      let name = "";
+      const heading = line.match(/^#\s+(.+?)(?:\s+-\s+Profile)?\s*$/i);
+      if (heading) name = heading[1];
+      const labeled = line.match(/^(?:name|owner|full name)\s*[:\-]\s*(.+)$/i);
+      if (labeled) name = labeled[1];
+      if (!name) continue;
+      name = name.replace(/\(.*?\)/g, " ");
+      for (const t of (name.toLowerCase().match(/[a-z][a-z-]{2,}/g) || [])) {
+        if (!STOPWORDS.has(t) && t !== "profile") out.add(t);
+      }
+    }
+  }
+  _identityWords = out;
+  return out;
+}
+
+function truthyFlag(value) {
+  return /^(1|true|yes|on)$/i.test(String(value || "").trim());
+}
+
+function sessionIsUnattended(args) {
+  if (args && (args.unattended === true || truthyFlag(args.unattended))) return true;
+  if (truthyFlag(process.env.HQ_SESSION_UNATTENDED) || truthyFlag(process.env.HQ_UNATTENDED)) {
+    return true;
+  }
+  const origin = String((args && args.origin) || "");
+  return /\b(scheduled|checkpoint|cron|job|background|unattended|maintenance)\b/i.test(origin);
+}
+
+function slugCoverage(slugTokens, queryWords) {
+  if (!slugTokens.size) return 0;
+  let hits = 0;
+  for (const w of slugTokens) if (queryWords.has(w)) hits += 1;
+  return hits / slugTokens.size;
 }
 
 // Slug words, split on the hyphen boundary. `words()` keeps hyphens inside a
@@ -113,10 +189,12 @@ function words(value) {
 // needs the individual words. Deliberately NOT a substring test — the previous
 // rule was `name.includes(word)`, which scored "git" against "github" and gave
 // long slugs a large accidental match surface.
-function slugWords(name) {
+function slugWords(name, extraSkip) {
   const out = new Set();
   for (const t of (((name || "").toLowerCase().match(/[a-z0-9]+/g)) || [])) {
-    if (t.length >= 3 && !STOPWORDS.has(t)) out.add(t);
+    if (t.length < 3 || STOPWORDS.has(t)) continue;
+    if (extraSkip && extraSkip.has(t)) continue;
+    out.add(t);
   }
   return out;
 }
@@ -224,10 +302,11 @@ function projectText(prd, prdPath) {
 }
 
 function findCandidates(scope, company, query, limit = 5) {
-  const queryWords = words(query);
+  const identity = ownerIdentityWords();
+  const queryWords = words(query, identity);
   if (!queryWords.size) return [];
 
-  const candidates = [];
+  const scanned = [];
   for (const base of candidateBases(scope, company)) {
     let children;
     try { children = fs.readdirSync(base).sort(); } catch (e) { continue; }
@@ -239,39 +318,48 @@ function findCandidates(scope, company, query, limit = 5) {
       if (!stat.isFile()) continue;
       const prd = readJson(prdPath);
       if (!prd || typeof prd !== "object" || Array.isArray(prd)) continue;
-      const hayWords = words(projectText(prd, prdPath));
-      const slugTokens = slugWords(name);
-      // Score each distinct query word ONCE. The previous rule summed
-      // `overlap.length + slugHits.length` over the same query-word set, and a
-      // project's slug is derived from its own originating prompt — which is
-      // also stored as its description — so nearly every slug word was counted
-      // twice. One shared word scored 2 and cleared the default threshold on
-      // its own, which is how ~900 unrelated sessions landed in one project.
-      const overlap = [...queryWords].filter((w) => hayWords.has(w) || slugTokens.has(w)).sort();
-      const score = overlap.length;
-      if (score === 0) continue;
-
-      // Saturation breaker: once a project has absorbed a lot of sessions it
-      // is almost certainly an accidental attractor. Keep adding to it only
-      // when the query really is about that project, measured as coverage of
-      // the project's own slug words rather than raw hit count.
-      const sessions = prd.metadata && Array.isArray(prd.metadata.nativeSessions)
-        ? prd.metadata.nativeSessions
-        : [];
-      if (sessions.length > MAX_REUSE_SESSIONS) {
-        const slugHits = [...slugTokens].filter((w) => queryWords.has(w)).length;
-        const coverage = slugTokens.size ? slugHits / slugTokens.size : 0;
-        if (coverage < STRONG_SLUG_COVERAGE) continue;
-      }
-
-      candidates.push({
-        path: relToRoot(prdPath),
-        projectDir: relToRoot(child),
-        name: prd.name || name,
-        score: score,
-        overlap: overlap.slice(0, 12),
-      });
+      // Description/goal/story prose drops MATCH_NOISE; slug tokens do not,
+      // so a project named content-workbench-platform still matches that
+      // phrase while "content review" against its description does not.
+      const hayWords = words(projectText(prd, prdPath), unionSets(identity, MATCH_NOISE));
+      const slugTokens = slugWords(name, identity);
+      scanned.push({ child, name, prd, prdPath, hayWords, slugTokens });
     }
+  }
+
+  const df = new Map();
+  for (const item of scanned) {
+    const vocab = unionSets(item.hayWords, item.slugTokens);
+    for (const w of vocab) df.set(w, (df.get(w) || 0) + 1);
+  }
+
+  const candidates = [];
+  for (const item of scanned) {
+    const overlap = [...queryWords].filter((w) => item.hayWords.has(w) || item.slugTokens.has(w)).sort();
+    if (!overlap.length) continue;
+    // Weight by inverse document frequency across the candidate set. A word
+    // that lives in one project scores 1; a word that lives in five scores
+    // 0.2. With a single candidate this equals overlap.length, so existing
+    // distinctive-match tests keep the same integer scores.
+    let score = 0;
+    for (const w of overlap) score += 1 / (df.get(w) || 1);
+    score = Math.round(score * 1000) / 1000;
+
+    const sessions = item.prd.metadata && Array.isArray(item.prd.metadata.nativeSessions)
+      ? item.prd.metadata.nativeSessions
+      : [];
+    if (sessions.length > MAX_REUSE_SESSIONS) {
+      if (slugCoverage(item.slugTokens, queryWords) < STRONG_SLUG_COVERAGE) continue;
+    }
+
+    candidates.push({
+      path: relToRoot(item.prdPath),
+      projectDir: relToRoot(item.child),
+      name: item.prd.name || item.name,
+      score: score,
+      overlap: overlap.slice(0, 12),
+      slugCoverage: slugCoverage(item.slugTokens, queryWords),
+    });
   }
 
   candidates.sort((a, b) => (b.score - a.score) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
@@ -420,10 +508,17 @@ function findProjectsBySession(sessionId) {
 
 function ensureProject(args) {
   const query = [args.title || "", args.prompt || ""].join(" ").trim();
+  const unattended = sessionIsUnattended(args);
   let reuse = null;
   if (!args.force_new) {
     const candidates = findCandidates(args.scope, args.company, query, 3);
-    if (candidates.length && candidates[0].score >= args.reuse_threshold) reuse = candidates[0];
+    const best = candidates[0];
+    const second = candidates[1];
+    if (best && best.score >= args.reuse_threshold) {
+      const ambiguous = second && (best.score - second.score) < REUSE_MARGIN;
+      const weakUnattended = unattended && (best.slugCoverage || 0) < STRONG_SLUG_COVERAGE;
+      if (!ambiguous && !weakUnattended) reuse = best;
+    }
   }
 
   let projectDir, reused;
@@ -558,6 +653,7 @@ const flags = {};
 for (let i = 1; i < ARGS.length; i++) {
   const a = ARGS[i];
   if (a === "--force-new") { flags.force_new = true; continue; }
+  if (a === "--unattended") { flags.unattended = true; continue; }
   if (a.startsWith("--")) {
     flags[a.slice(2).replace(/-/g, "_")] = ARGS[i + 1] !== undefined ? ARGS[++i] : "";
     continue;
@@ -567,7 +663,7 @@ for (let i = 1; i < ARGS.length; i++) {
 const defaults = {
   scope: "personal", company: "", title: "", prompt: "", slug: "",
   repo_path: "", session_id: "", origin: "native-session",
-  reuse_threshold: 3, force_new: false, query: "", limit: 5,
+  reuse_threshold: 3, force_new: false, unattended: false, query: "", limit: 5,
   project: "", plan_file: "", source: "native-plan", kind: "", summary: "",
 };
 const args = Object.assign({}, defaults, flags);

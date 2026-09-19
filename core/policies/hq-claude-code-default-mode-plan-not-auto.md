@@ -1,13 +1,13 @@
 ---
 id: hq-claude-code-default-mode-plan-not-auto
-title: "Claude Code defaults to plan mode; auto mode is operator opt-in, advised against"
+title: "Claude Code shipped default permission mode is auto; Plan stays Plan; operators override per machine"
 when: settings.json || settings.local.json
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
-version: 2
+version: 4
 created: 2026-05-28
-updated: 2026-05-28
+updated: 2026-09-18
 source: user-correction
 ---
 
@@ -19,51 +19,58 @@ ALWAYS: HQ-shipped `.claude/settings.json` MUST set, exactly:
 {
   "useAutoModeDuringPlan": false,
   "permissions": {
-    "defaultMode": "plan"
+    "defaultMode": "auto"
   }
 }
 ```
 
-- `permissions.defaultMode: "plan"` — every new HQ session boots into Plan mode (position 3 in the Shift+Tab picker). **Hard.**
-- `useAutoModeDuringPlan: false` — Plan mode does NOT inherit Auto-mode classifier semantics. Plan stays Plan: nothing mutates until the plan is approved. **Hard.**
+- `permissions.defaultMode: "auto"` is the shipped default. **Hard.** The release contract test (`core/scripts/tests/hook-settings-release-contract.test.sh`) fails on any other value.
+- `useAutoModeDuringPlan: false` — when an operator is in Plan mode, Plan does NOT inherit Auto-mode classifier semantics. Plan stays Plan: nothing mutates until the plan is approved. **Hard.**
 
-NEVER: ship `"acceptEdits"`, `"auto"`, `"bypassPermissions"`, `"dontAsk"`, or `"default"` as `permissions.defaultMode` in the HQ-shipped `.claude/settings.json`. Plan-as-default is the conservative boot posture every new HQ install needs.
+NEVER: change `permissions.defaultMode` in the shipped `.claude/settings.json` as a side effect of another change. A change to the shipped default is a product decision. It needs its own commit, a `CHANGELOG.md` entry, and a release note telling operators what changed and how to get their previous mode back.
 
-SHOULD AVOID (advisory, not mechanically enforced): running HQ in Auto mode (Shift+Tab position 4). Auto's classifier is an opaque second policy engine that can disagree with HQ's hooks and deny-lists, creating confusing UX (Auto-approved → hook-blocked). It is not strictly *less* safe than Bypass mode, which HQ also allows; the case against Auto is consistency-of-policy-source, not safety. Operators who want Auto mode may opt in per-machine via `.claude/settings.local.json` (see below) — the shipped default does not mechanically remove it from the picker.
+NEVER: have `hq rescue`, `/update-hq`, `setup.sh`, or any healer script (`core/scripts/restore-hook-settings.sh`) rewrite `permissions.defaultMode`. Healers restore hook wiring; they do not touch the permission mode.
 
-Per-machine `.claude/settings.local.json` MAY override `defaultMode` for an individual operator with explicit, considered intent (owner running `"bypassPermissions"` on their personal machine, power user trying Auto on a specific workload, etc.). Local override is not a violation of this rule; shipping a permissive project default IS.
+## Operator override
+
+Operators pick their own mode per machine. What actually works:
+
+1. **The mode picker in Claude Code** (Shift+Tab in the CLI; the mode menu by the message box in the desktop app). The desktop app remembers the last mode picked and can apply it to new sessions even when project `settings.json` says `auto`.
+2. **User settings — `~/.claude/settings.json`.** This is the operator-writable file where `defaultMode: "auto"` takes effect. Merge `{"permissions":{"defaultMode":"auto"}}` into the existing file; do not replace it wholesale.
+3. **`.claude/settings.local.json`** (per machine, never committed, preserved across `hq rescue` via `core/core.yaml` `preserve_subpaths`). May set `permissions.defaultMode` to `"default"`, `"acceptEdits"`, `"plan"`, or `"bypassPermissions"`. **It cannot set `"auto"`:** Claude Code (v2.1.142+) ignores `defaultMode: "auto"` at project and local scope as an anti-supply-chain measure. Do not tell operators to set `auto` in this file; it silently does nothing.
+
+Do NOT edit the shipped `.claude/settings.json` to change your mode. It is release-owned, and `hq rescue` replaces it (moving your edited copy to `personal/` as drift), so the edit lasts until the next update.
 
 ## Rationale
 
-HQ's runtime safety surface — deploy preview confirmations, share-session URL minting, destructive-op gates, cross-company credential isolation, irreversible-action protocols, sub-agent commit discipline — assumes Claude will pause and surface choices to a human when the model encounters one of those gates. Auto mode and the accept/bypass modes systematically skip those surfaces. Auto-during-Plan (default-on upstream) lets Auto semantics leak into Plan mode, so even "plan mode" wasn't safe without the explicit override. The combined effect of the unshipped defaults: a teammate runs `npx create-hq`, drops into Claude Code with no further config, and starts shipping mutations through HQ's confirmation-required flows without seeing them. That defeats the rest of HQ.
+**Why `auto` is the shipped default.** HQ ran with `auto` shipped through at least August 2026. On 2026-09-16 the value flipped to `plan` as an unrelated one-line change inside a hooks fix (`020f891f`, shipped in v15.0.146). It was not a knowing change. Within a day, operators who ran `hq rescue` were booted into Plan mode on every new session and reported the app as unusable. The author confirmed the intended value is `auto`, and it was restored on 2026-09-18. v2 of this policy documented Plan as the hard default; that text never matched what shipped, and v3 corrects the record.
 
-Plan mode is the conservative shipped default because (a) it forces a written plan before any file mutation, which composes with HQ's "Vague → Verifiable" core principle and with `/plan`, `/prd`, `/brainstorm`, `/architect`; (b) the operator downgrades per-session with one keystroke (Shift+Tab → 1, 2, 4, or 5) when they want execution, but new operators never start in an execute-first posture.
+**Why Plan stays Plan.** `useAutoModeDuringPlan` defaults on upstream, which lets Auto's classifier approve mutations while the operator believes they are in a read-only planning mode. When an operator chooses Plan, that choice must mean no mutations until the plan is approved. This composes with `/plan`, `/prd`, `/brainstorm`, `/architect`, and the "Vague → Verifiable" principle.
 
-**Why this policy does NOT mechanically disable Auto mode** (via `permissions.disableAutoMode: "disable"`): HQ allows Bypass mode (Shift+Tab position 5), which is *more* permissive than Auto (position 4). Bypass skips all prompts; Auto skips some based on a classifier. If Bypass is acceptable in HQ because the hook layer fences the danger surface, then Auto is acceptable by the same reasoning. Mechanically disabling the less-permissive of the two while allowing the more-permissive one is internally inconsistent and paternalistic. The Auto-mode concern is real but smaller than its picker placement implies: it is a *coherence* concern (two competing policy engines: HQ's hooks/deny-lists vs Auto's classifier) rather than a *safety* concern. We surface it here as advisory and trust operators to make the call.
+**Why the shipped value matters less than it looks.** Claude Code ignores `auto` at project scope, so the shipped `auto` mostly acts as a statement of intent and a guard against a permissive-or-restrictive value being smuggled in. The desktop app applies its own remembered mode. Neither fact excuses changing the shipped value silently: the September incident showed that the file is still applied in some paths and that a silent flip generates support load.
 
 **HQ's hook layer is the safety floor, not the permission picker.** The mechanical guarantees that survive any Claude Code permission mode:
 
 - `permissions.deny` Read-blocks on `~/.ssh/**`, `~/.aws/credentials`, `~/.gnupg/**`, `~/.env`, `~/.netrc`, all rc files
 - PreToolUse hooks: secret-scan on every Bash, `core/` write protection, every git mutation requires explicit `git -C` anchor, cross-company credential warnings, package-install vetting, env-file safety
 - Hard policies loaded into model context every session: share-session URL discipline, no-push-HQ-to-remote, cross-company isolation, hq-share token redaction, auto-checkpoint, image-context isolation
-- HQ autocommit: every change in HQ is committed locally as it happens — anything bad is reversible
+- HQ autocommit: every change in HQ is committed locally as it happens, so anything bad is reversible
 
-Vanilla Claude Code + permissive mode = trust the model. HQ + permissive mode = trust the model + the hooks + the deny list + the policy layer. Different threat model.
+Vanilla Claude Code + permissive mode = trust the model. HQ + permissive mode = trust the model + the hooks + the deny list + the policy layer. That is the threat model the shipped `auto` default relies on. Auto's classifier can disagree with HQ's hooks (Auto-approved → hook-blocked); that is a coherence annoyance, not a safety gap, and Bypass mode (which HQ also allows) is more permissive than Auto.
 
-Precedence (Claude Code, as of v2.1.142+): managed enterprise policy → CLI `--permission-mode` → `.claude/settings.local.json` → `.claude/settings.json` (project) → `~/.claude/settings.json` (user). Shipping at project scope therefore overrides any permissive user-scope default an operator may have set globally, while preserving per-machine override via `settings.local.json`. There is no env-var equivalent for `defaultMode`; settings.json is the only configuration surface.
-
-Note: as of Claude Code v2.1.142, `defaultMode: "auto"` is ignored when set in project or local scope (anti-supply-chain). The threat surface is therefore narrower than it first appears — but Plan-as-shipped-default still matters because the upstream default has shifted toward more permissive postures in recent versions, and a user-scope `~/.claude/settings.json` *can* set permissive defaults that this project-scope shipped value overrides.
-
-Captured as a user correction: HQ owner explicitly directed that users default to Plan mode and Plan stays Plan. The original v1 of this policy also mechanically disabled Auto mode; v2 softened that to advisory after the consistency-with-Bypass argument was raised.
+**Precedence** (Claude Code, v2.1.142+): managed enterprise policy → CLI `--permission-mode` → `.claude/settings.local.json` → `.claude/settings.json` (project) → `~/.claude/settings.json` (user). The desktop app's remembered picker mode sits alongside the CLI flag in practice. There is no env-var equivalent for `defaultMode`.
 
 ## How to comply
 
-- Project `.claude/settings.json` shipped with HQ: include the two keys above. Verify via `jq '.permissions.defaultMode, .useAutoModeDuringPlan' .claude/settings.json` — must print `"plan"` and `false`.
-- Per-machine override (operator-personal, never committed): `.claude/settings.local.json` may set any value the operator wants, including `permissions.defaultMode: "bypassPermissions"` or `"auto"` at the local scope. That is the operator's choice; the shipped project default is the policy concern.
-- Audits (`/harness-audit`, `/garden`, manual review of a teammate's HQ install): flag any HQ project `.claude/settings.json` whose `permissions.defaultMode` is not `"plan"`, or whose root `useAutoModeDuringPlan` is not `false`. Replace and prompt the operator to move their preferred mode to `settings.local.json` if they want a permissive default on their own machine.
+- Shipped `.claude/settings.json`: the two keys above. Verify with `jq '.permissions.defaultMode, .useAutoModeDuringPlan' .claude/settings.json` — must print `"auto"` and `false`.
+- Changing the shipped default: own commit, `CHANGELOG.md` entry under Unreleased, release note with the recovery path. Update this policy and the release contract test in the same PR.
+- Healer and rescue scripts: never read or write `permissions.defaultMode`. `core/scripts/tests/restore-hook-settings.test.sh` asserts the value is preserved.
+- Audits (`/harness-audit`, `/garden`, review of a teammate's install): flag a shipped `.claude/settings.json` whose `permissions.defaultMode` is not `"auto"` or whose root `useAutoModeDuringPlan` is not `false`. If the operator edited the shipped file to change their mode, point them to the mode picker or `~/.claude/settings.json` instead.
+- Support: an operator "stuck in Plan mode" should first switch the mode picker in a new session and confirm the next new session keeps it. If Plan still returns, set `permissions.defaultMode` to `"auto"` in `~/.claude/settings.json`. Never tell them that `.claude/settings.local.json` alone restores Auto.
 
 ## References
 
 - Claude Code settings reference: https://code.claude.com/docs/en/settings.md
 - Claude Code IAM / permissions: https://code.claude.com/docs/en/iam.md
+- Incident: hq-core-staging `020f891f` (unintended flip), `3cdb7f12` / #772 (healer rewrite), #775 (restore); HQ feedback `feedback_01d256bb-8e7c-402a-b613-bbb0a99882e5`
 - Parallel precedent: `core/policies/hq-disable-claude-code-auto-memory.md`

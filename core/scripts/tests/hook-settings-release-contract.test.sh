@@ -27,8 +27,8 @@ jq -e '
 jq -e '
   [.hooks.PreToolUse[]?.hooks[]? | select(.type == "command" and (.command | type == "string") and (.command | length > 0))] | length > 0
 ' "$SETTINGS" >/dev/null || fail "settings.json has no PreToolUse command hook"
-jq -e '.permissions.defaultMode == "plan"' "$SETTINGS" >/dev/null \
-  || fail "shipped settings.json must default permissions.defaultMode to plan"
+jq -e '.permissions.defaultMode == "auto"' "$SETTINGS" >/dev/null \
+  || fail "shipped settings.json must default permissions.defaultMode to auto"
 jq -e 'has("hooks") | not' "$LOCAL_SETTINGS" >/dev/null \
   || fail "shipped settings.local.json must not shadow project hook registrations"
 REPOSITORY="${GITHUB_REPOSITORY:-$(git config --get remote.origin.url || true)}"
@@ -111,6 +111,29 @@ for safety_rule in \
 done
 pass "overlay restores staged settings and preserves native personal context"
 
+POLICY="$ROOT/core/policies/hq-claude-code-default-mode-plan-not-auto.md"
+echo "[2b] Auto hatch is user-scope; local auto is not documented as working"
+[ -f "$POLICY" ] || fail "default-mode policy is missing"
+jq -e '.permissions.defaultMode == "auto"' "$SETTINGS" >/dev/null \
+  || fail "shipped settings.json must keep permissions.defaultMode auto"
+jq -e '(.permissions.defaultMode | not)' "$LOCAL_SETTINGS" >/dev/null \
+  || fail "shipped settings.local.json must not set defaultMode"
+for required in \
+  '~/.claude/settings.json' \
+  'It cannot set `"auto"`' \
+  'Do not tell operators to set `auto` in this file'
+do
+  grep -Fq "$required" "$POLICY" \
+    || fail "default-mode policy missing required hatch text: $required"
+done
+if grep -Fq 'This is the only way to get `auto` as a starting mode' "$POLICY"; then
+  fail "default-mode policy still claims the picker is the only Auto hatch"
+fi
+if grep -Fq 'settings.local.json may set any value the operator wants, including' "$POLICY"; then
+  fail "default-mode policy still claims local auto/bypassPermissions take effect"
+fi
+pass "policy documents user-scope Auto hatch; local-only auto is rejected"
+
 echo "[3] setup and rescue both assert hook health independently of hooks"
 grep -Fq 'check-hq-hooks.sh" --root "$REPO_ROOT"' "$SETUP" \
   || fail "setup does not run the hook-health postcheck"
@@ -118,6 +141,10 @@ grep -Fq 'check-hq-hooks.sh --root' "$UPDATE_SKILL" \
   || fail "/update-hq does not run the hook-health postcheck"
 grep -Fq 'Bash(bash core/scripts/check-hq-hooks.sh:*)' "$UPDATE_SKILL" \
   || fail "/update-hq does not grant its checker command a narrow Bash permission"
+grep -Fq 'restore-hook-settings.sh' "$UPDATE_SKILL" \
+  || fail "/update-hq does not restore hook wiring after rescue"
+grep -Fq 'Bash(bash core/scripts/restore-hook-settings.sh:*)' "$UPDATE_SKILL" \
+  || fail "/update-hq does not grant its restore command a narrow Bash permission"
 grep -Fq 'hq rescue -y' "$UPDATE_SKILL" \
   || fail "/update-hq has no rescue repair command"
 grep -Fq -- '--paths .claude' "$UPDATE_SKILL" \
@@ -136,6 +163,13 @@ for event in SessionStart UserPromptSubmit PreToolUse PostToolUse; do
   grep -Fq "\`$event\`" "$DOC" \
     || fail "documentation does not name non-dispatched app/SDK event: $event"
 done
+grep -Fq 'restore-hook-settings.sh' "$DOC" \
+  || fail "documentation does not name the hook-settings healer"
 pass "documentation is shipped, discoverable, and explains the runtime-off warning"
+
+echo "[5] emptied settings.json hook arrays are restored without a second rescue"
+bash "$ROOT/core/scripts/tests/restore-hook-settings.test.sh" \
+  || fail "restore-hook-settings healer regression failed"
+pass "rescue-relocated hook wiring is restored"
 
 echo "PASS: hook settings release contract"

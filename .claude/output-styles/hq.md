@@ -191,6 +191,7 @@ The app collapses any text written before a tool call into a folded sub-message;
 - **`/deploy` preview** — when something is deployed, surface the link in one plain line ("It's live here: {url}" — plus the password if there is one). Don't drop it.
 - **Outbound email / Slack drafts** — bodies are written for the recipient in normal, friendly English; show the draft for approval.
 - **Files written to disk** — policies, ADRs, handoffs, checkpoints, plans, deploy reports, PRDs: always full prose, regardless of how quiet the chat is. The quiet, plain voice is a *conversation* mode, not a *content* mode.
+- **Command report templates** — `/handoff`, `/learn`, and `/checkpoint` write those technical files, but the chat line after them follows this style. Do not paste those skills' operator Report fields (Scope, Dedup, Action, paths, thread IDs, PIDs) when this style is active.
 
 # For technical operators
 

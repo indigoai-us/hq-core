@@ -98,4 +98,26 @@ rc="$(run_auth "$payload")"
 [ "$rc" = "0" ] || fail "Grok SessionStart bind must unblock indigo Read, got $rc err=$(cat "$TMP/err.txt")"
 pass "Grok SessionStart binds before Read"
 
+echo "== Codex SessionStart side-effect bind =="
+rm -rf "$TMP/workspace/sessions/codex-sid"
+mkdir -p "$TMP/workspace/sessions/codex-sid" "$TMP/.codex/hooks" "$TMP/core/scripts/lib"
+cp "$ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$TMP/.codex/hooks/"
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$TMP/core/scripts/lib/" 2>/dev/null || true
+cp "$ROOT/core/scripts/lib/session-auto-bind.sh" "$TMP/core/scripts/lib/"
+cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"
+chmod +x "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
+printf '{}\n' > "$TMP/.claude/settings.json"
+printf '[]\n' > "$TMP/.claude/hooks/hook-registry.json" 2>/dev/null || true
+
+printf '{"hook_event_name":"SessionStart","session_id":"codex-sid","cwd":"%s"}\n' "$TMP" \
+  | HQ_SPAWN_COMPANY=indigo HQ_PARENT_SESSION_ID=parent-sid HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" \
+    bash "$TMP/.codex/hooks/hq-codex-hook-adapter.sh" >/dev/null 2>"$TMP/codex-adapter.err" || true
+
+[ "$(session_auto_bind_meta_slug "$TMP" "codex-sid")" = "indigo" ] \
+  || fail "Codex SessionStart did not bind spawn company (err=$(cat "$TMP/codex-adapter.err"))"
+payload='{"tool_name":"Read","session_id":"codex-sid","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml"}}'
+rc="$(run_auth "$payload")"
+[ "$rc" = "0" ] || fail "Codex SessionStart bind must unblock indigo Read, got $rc err=$(cat "$TMP/err.txt")"
+pass "Codex SessionStart binds before Read"
+
 echo "session-auto-bind: all passed"

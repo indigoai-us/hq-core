@@ -316,6 +316,14 @@ if [ -z "${final_event:-}" ] || [ "${files_d:-0}" != "0" ]; then
   hq core qmd-reindex-after-sync "$hq_root" >/dev/null 2>&1 || true
 fi
 
+# Step 6b: regenerate the workers registry after a completed sync.
+# `hq reindex` is path-gated on in-session Write/Edit/rm and does not run
+# after an out-of-band pull, so a stale core/workers/registry.yaml can list
+# active workers whose directories were never downloaded (or were pruned).
+# The generator is derived from worker.yaml files on disk: new workers appear,
+# missing directories drop. Best-effort; never mask sync.
+hq core --hq-root "$hq_root" generate-workers-registry >/dev/null 2>&1 || true
+
 # Step 7: exit. A partial run is not a clean one, so exit 3 (documented in
 # scripts/hq-sync-events.sh) even when the runner itself exited 0 after a clean
 # conflict-abort. Exit 75 is retryable and gets a plain explanation before the
@@ -335,6 +343,7 @@ exit "$cli_status"
 - Auth is shared with `/deploy`, `/designate-team`, `/hq-login`, and the HQ Desktop App — single Cognito token at `~/.hq/cognito-tokens.json`.
 - For a single-company sync, use `hq sync push <company>` (already in hq-cli) — this command is the "all companies, both directions" full sync that the HQ Desktop App runs.
 - **Post-sync qmd reindex (Step 6):** after a sync that pulled files, the skill runs `hq core qmd-reindex-after-sync`, which auto-registers any new company knowledge collection and runs an incremental lexical `qmd update`. This is what makes freshly-synced knowledge searchable without a manual re-index, and keeps teammates' personal indexes converged. Embeddings are intentionally deferred (run `qmd embed`, or the reindex script with `--embed`, on an idle pass) so sync stays fast. The qmd index is per-machine (large binary, absolute local paths) and is **not** itself synced — only its freshness is automated. The HQ Desktop App sync gets the same behavior via the `hq-sync-runner` seam.
+- **Post-sync workers registry (Step 6b):** after a completed sync, regenerate `core/workers/registry.yaml` from on-disk `worker.yaml` files. A pulled worker must become listable, and a registry row whose directory was not downloaded must not stay discoverable. SessionStart also warns if any `status: active` path is still absent.
 
 - **Selective download (`syncMode`) — access ≠ download.** What a sync *downloads* is governed per-membership by `syncMode`: `all` (full bucket — the default, and what owners get on upgrade), `shared` (only your explicit ACL grants), or `custom` (an explicit prefix list). Set it with `hq sync mode <all|shared|custom>` and narrow an existing local tree with `hq sync narrow`. This is purely about local footprint — it does **not** change your *access*. Owners/admins keep full role-bypass access regardless of mode; `shared`/`custom` just stop a sync from materializing the whole vault locally. The scope is resolved per company in `sync-runner.ts::resolvePullScope` (degrades to `all` on any error so a transient failure never prunes the tree). To reach a file you have access to but didn't download, use `hq files browse`/`cat`/`search`/`get` (see the `hq-files` skill) — no full sync required.
 

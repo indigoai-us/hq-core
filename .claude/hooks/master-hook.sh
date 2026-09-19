@@ -486,7 +486,11 @@ run_child() { # <timeout-seconds> <script-path> [args...]  (stdout captured by c
   local cmd=()
   case "$child_timeout_cmd" in
     timeout) cmd=(timeout "$t" "${runner[@]}") ;;
-    perl) cmd=(perl -e 'alarm shift; exec @ARGV' "$t" "${runner[@]}") ;;
+    # Indirect-object exec never routes a one-element LIST through /bin/sh.
+    # Bare `exec @ARGV` does when that element contains a space, the shell
+    # word-splits, exec fails, and perl exits 0, so every argless registry
+    # hook no-ops on macOS HQ roots like "SE HQ Pilot".
+    perl) cmd=(perl -e 'alarm shift; exec {$ARGV[0]} @ARGV' "$t" "${runner[@]}") ;;
     *) cmd=("${runner[@]}") ;;
   esac
   local rc=0

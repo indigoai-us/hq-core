@@ -433,9 +433,12 @@ writes_to_protected() {
   local stripped core_yaml="$PROJECT_DIR/core/core.yaml"
   stripped="$(hq_bash_strip_core_yaml_exclude_tokens "$cmd" "$PROJECT_DIR" "$core_yaml")"
   # Fixed exceptions — writable even when yq/core.yaml parsing is unavailable.
-  stripped=$(echo "$stripped" | sed 's|[^[:space:]]*settings\.local\.json[^[:space:]]*||g; s|settings\.local\.json||g')
+  stripped=$(printf '%s' "$stripped" | sed 's|[^[:space:]]*settings\.local\.json[^[:space:]]*||g; s|settings\.local\.json||g' 2>/dev/null) || stripped=""
   # personal-context.md is preserve_subpaths (not rules.exclude) but still writable.
-  stripped=$(echo "$stripped" | sed 's|[^[:space:]]*personal-context\.md[^[:space:]]*||g; s|personal-context\.md||g')
+  stripped=$(printf '%s' "$stripped" | sed 's|[^[:space:]]*personal-context\.md[^[:space:]]*||g; s|personal-context\.md||g' 2>/dev/null) || stripped=""
+  # A strip/sed that errors used to return empty, so every protected-path check
+  # ran against nothing and allowed the write. Keep the original command.
+  [ -n "$stripped" ] || stripped="$cmd"
 
   # Absolute/live-root forms are always enforced; relative forms only outside a
   # repos/ checkout.

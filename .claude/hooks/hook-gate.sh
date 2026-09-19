@@ -31,7 +31,7 @@
 # Minimal: critical safety hooks
 is_in_minimal_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|block-unsafe-package-install|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|conduct-lane-inbox)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-env-dump|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|block-unsafe-package-install|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|conduct-lane-inbox)
       return 0
       ;;
     *)
@@ -43,7 +43,7 @@ is_in_minimal_profile() {
 # Standard: minimal + checkpoint/handoff + pattern learning + core governance + policy loading
 is_in_standard_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox)
       return 0
       ;;
     *)
@@ -55,7 +55,7 @@ is_in_standard_profile() {
 # Strict: standard + future quality hooks (reserved for expansion)
 is_in_strict_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox)
       return 0
       ;;
     *)
@@ -230,9 +230,40 @@ if [ -n "$self_dir" ]; then
   fi
 fi
 [ -z "$HQ_ROOT_RESOLVED" ] && HQ_ROOT_RESOLVED="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}"
-if [ -n "$HQ_ROOT_RESOLVED" ] && [ -f "$HQ_ROOT_RESOLVED/core/scripts/hook-lib.sh" ]; then
-  # Shared HQ-owned launch helpers: bounded warnings, safe chmod repair, bash fallback.
-  . "$HQ_ROOT_RESOLVED/core/scripts/hook-lib.sh"
+# hook-lib.sh can exist but be unreadable on Windows when Git Bash chmod
+# left NTFS DENY ACEs. Sourcing it then aborts this gate (set -e) and every
+# registered hook silently fails to dispatch. Repair, then source only if
+# readable; the inline fallback below still launches the hook.
+hq_gate_repair_windows_acl() {
+  local path="${1:-}" native user
+  [ -n "$path" ] && [ -e "$path" ] || return 1
+  [ -r "$path" ] && return 0
+  case "${OSTYPE:-}" in msys*|cygwin*|win32*) ;; *)
+    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) ;; *) return 1 ;; esac
+    ;;
+  esac
+  command -v icacls >/dev/null 2>&1 || return 1
+  if command -v cygpath >/dev/null 2>&1; then
+    native="$(cygpath -w "$path" 2>/dev/null || printf '%s' "$path")"
+  else
+    native="$path"
+  fi
+  user="${USERNAME:-${USER:-}}"
+  icacls "$native" /reset >/dev/null 2>&1 || true
+  if [ -n "$user" ]; then
+    icacls "$native" /remove:d "$user" >/dev/null 2>&1 || true
+    icacls "$native" /grant:r "${user}:(RX)" >/dev/null 2>&1 || true
+  fi
+  [ -r "$path" ]
+}
+HOOK_LIB="$HQ_ROOT_RESOLVED/core/scripts/hook-lib.sh"
+if [ -n "$HQ_ROOT_RESOLVED" ] && [ -f "$HOOK_LIB" ]; then
+  [ -r "$HOOK_LIB" ] || hq_gate_repair_windows_acl "$HOOK_LIB" || true
+  if [ -r "$HOOK_LIB" ]; then
+    # Shared HQ-owned launch helpers: bounded warnings, bash fallback.
+    # shellcheck disable=SC1091
+    . "$HOOK_LIB" || true
+  fi
 fi
 
 # Determine profile (default: standard)
@@ -406,8 +437,18 @@ fi
 # PIPESTATUS[1] contract as hq_launch_shell_path: a hook that exits before
 # reading stdin kills the payload writer with SIGPIPE, and `pipefail` (set
 # above) would otherwise report that writer's 141 as the hook's status.
-chmod u+x "$HOOK_SCRIPT" 2>/dev/null || true
-if [ -x "$HOOK_SCRIPT" ]; then
+# Do not chmod on Windows Git Bash: that writes NTFS DENY ACEs.
+hq_gate_win=0
+case "${OSTYPE:-}" in msys*|cygwin*|win32*) hq_gate_win=1 ;; esac
+if [ "$hq_gate_win" -eq 0 ]; then
+  case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) hq_gate_win=1 ;; esac
+fi
+if [ "$hq_gate_win" -eq 1 ]; then
+  [ -r "$HOOK_SCRIPT" ] || hq_gate_repair_windows_acl "$HOOK_SCRIPT" || true
+else
+  chmod u+x "$HOOK_SCRIPT" 2>/dev/null || true
+fi
+if [ "$hq_gate_win" -eq 0 ] && [ -x "$HOOK_SCRIPT" ]; then
   printf '%s' "$HOOK_PAYLOAD" | "$HOOK_SCRIPT" "$@"
   exit "${PIPESTATUS[1]}"
 fi

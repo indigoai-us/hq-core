@@ -25,7 +25,11 @@ reuse a related project when there is a plausible match:
 - Repo or personal prompt without a resolved company: search `personal/projects/`.
 
 Only create a new lightweight native-session project when no related project
-matches. Automatic creation must stay thin: it may create `prd.json`,
+matches. Prefer no reuse over a weak or ambiguous match: owner-identity tokens
+and generic topical words do not count, distinctive overlap is weighted, and
+unattended or maintenance sessions reuse only on a strong slug match.
+
+Automatic creation must stay thin: it may create `prd.json`,
 `README.md`, `journal/`, and `sessions/`, but it must not run the full `/prd`
 interview or silently register external task trackers.
 

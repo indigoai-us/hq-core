@@ -28,12 +28,12 @@
 # SessionStart uses HQ_WORK_MESH_RECONCILE_STUB=1 so reconcile stays detached.
 # Record macOS numbers in the PR when available.
 #
-# Pinned enqueue digest (byte-identical to hq-cli scaffold copy):
-#   cc3d86fcd7d3934cf59091f7be16eb58193616e9790434b63e8f628d7018f734
+# Pinned enqueue digest (Bash 3.2 empty-array copy guard):
+#   db440318b8933b7c436c7b7172adffc9e8fd00c92f0e1745ed5da76871accbe7
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-PINNED_ENQUEUE_SHA256="cc3d86fcd7d3934cf59091f7be16eb58193616e9790434b63e8f628d7018f734"
+PINNED_ENQUEUE_SHA256="db440318b8933b7c436c7b7172adffc9e8fd00c92f0e1745ed5da76871accbe7"
 
 SESSION_START="$REPO_ROOT/core/hooks/SessionStart/35-work-mesh-session-start.sh"
 TURN_START="$REPO_ROOT/core/hooks/UserPromptSubmit/35-work-mesh-turn-start.sh"

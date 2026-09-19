@@ -143,3 +143,8 @@ fi
 echo
 echo "==== prefer-native-capabilities-trigger: $PASS passed, $FAIL failed ===="
 [ "$FAIL" = 0 ] || exit 1
+
+# feedback 2297: canvas/type/Google-auth guidance. Invoked here so the
+# prefer-native-capabilities pr-checks job runs it without a workflow-file
+# edit (GitHub App has no workflows permission).
+bash "$ROOT/core/scripts/tests/prefer-agent-browser-canvas.test.sh"

@@ -178,4 +178,8 @@ if grep -qF 'hq groups|secrets|files|invite' "${ROOT}/.claude/skills/newcompany/
   fail "Case E: stale hq ...|invite summary remains in newcompany"
 fi
 
+# Case F: feedback 2286 — /handoff, /learn, /checkpoint chat reports follow
+# the default HQ plain-language style instead of dumping operator Report fields.
+bash "$ROOT/core/scripts/tests/skill-plain-report.test.sh"
+
 echo "PASS: skill-command-refs (release guidance pass/fail + live-tree clean + invite guidance fix present)"

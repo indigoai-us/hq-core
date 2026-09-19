@@ -152,10 +152,26 @@ echo $(( $(date +%s) + LANE_TIMEOUT )) > "$RUN_DIR/deadline"
 
 # Everything the detached body needs goes through the ENVIRONMENT. Nothing is
 # interpolated into the nested shell string — see below.
+# The caller resolves company from trusted session state before this block. A
+# detached lane never guesses a company from its cwd: without a resolved slug,
+# do not launch it. Project and task are optional parent-session bindings.
+[ -n "${HQ_SPAWN_COMPANY:-}" ] || {
+  echo "refusing detached lane without HQ_SPAWN_COMPANY" >&2
+  exit 1
+}
 export LANE_RUN_DIR="$RUN_DIR"
 export LANE_RUN_DIR_ABS="$PWD/$RUN_DIR"
 export LANE_TIMEOUT
 export HQ_SESSION_ID="$SID"
+export HQ_PARENT_SESSION_ID="${HQ_PARENT_SESSION_ID:-$SID}"
+# Detached lanes mint a new engine session. Carry the parent's company so
+# Codex SessionStart can bind it; without a slug, PreToolUse is fail-closed.
+if [ -z "${HQ_SPAWN_COMPANY:-}" ] && [ -n "$SID" ]; then
+  HQ_SPAWN_COMPANY="$(bash core/scripts/hq-session.sh --session-id "$SID" get company_slug 2>/dev/null || true)"
+fi
+[ -n "${HQ_SPAWN_COMPANY:-}" ] && export HQ_SPAWN_COMPANY
+[ -n "${HQ_SPAWN_PROJECT:-}" ] && export HQ_SPAWN_PROJECT
+[ -n "${HQ_SPAWN_TASK:-}" ] && export HQ_SPAWN_TASK
 export HQ_CONDUCT_ENGINE='{engine}'
 
 bash core/scripts/hq-detach.sh -- bash -c '
@@ -213,6 +229,14 @@ its session from `HQ_SESSION_ID` first and the `.current` file only as a
 fallback. Without the export, a lane that outlives its parent session reads
 whatever `.current` names by then and claims slots in a **different session's**
 pool, which is how the cap silently stops holding.
+
+**Spawn context is separate from the pool owner.** `HQ_SESSION_ID` remains the
+parent run owner for pool accounting. `HQ_PARENT_SESSION_ID` plus
+`HQ_SPAWN_COMPANY` (and optional project/task) tell the child engine's
+SessionStart hook what to bind to its own engine session id. Resolve the
+company with `hq-session.sh --session-id "$SID" get company_slug`, never from
+the lane cwd. The workflow runner also copies those values from the parent
+session metadata when the environment omitted them.
 
 ## 5. Record, then wait in the background
 

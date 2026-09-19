@@ -33,6 +33,8 @@ to `AGENTS.md`) references this file as the canonical directory map under its
   `audit/`.
 - **`.codex/`** — the Codex adapter: `config.toml`, hook adapter, and symlinks
   that route Codex lifecycle events through the same `.claude/hooks/` gate.
+- **`.cursor/`** — Cursor project rules (`.cursor/rules/hq.mdc`, MDC format
+  used by Cursor 0.47+ / 3.x) pointing at `.claude/CLAUDE.md`.
 - **`.agents/`**, **`.obsidian/`** — overlay symlinks and Obsidian vault config.
 - **`AGENTS.md`** — symlink to `.claude/CLAUDE.md` so Codex and other agents read
   the same Charter.

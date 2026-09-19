@@ -26,7 +26,7 @@
 #      sandbox) is never remediated — in hook mode OR via `--remediate`.
 #   6b. NOTHING free-text leaves the machine. A doctor message containing an
 #      absolute path must not reach the bug report, and concurrent remediations
-#      must still file exactly one bug per check id.
+#      must still file exactly one summary.
 #   6c. Remediation does not depend on GNU coreutils: `timeout(1)` is absent on
 #      a stock macOS, and its absence must not silently disable self-healing —
 #      nor leave remediation UNBOUNDED, which on that same common Mac install
@@ -398,22 +398,24 @@ for eng in $ENGINES; do
   REM_STATE="$TMP/rem-stub-$label"
   mkdir -p "$REM_STATE"
 
-  # Findings survive `--fix`: exactly the three sync FAIL/WARN checks must be
-  # reported, and nothing from another family or a PASS status. The count is
+  # Findings survive `--fix`: the three sync FAIL/WARN checks must be
+  # reported together, and nothing from another family or a PASS status. The count is
   # also what pins record integrity — a multi-line doctor message that leaked
   # into the record stream would show up here as a fourth, bogus filing.
   run_remediate "$RR" "$eng"
   [ "$REM_RC" = 0 ] && ok "remediate($label) exits 0" \
     || bad "remediate($label) exits 0" "exit $REM_RC"
   FILED=$(count_lines "$REM_STATE/bugs-filed")
-  [ "${FILED:-0}" = 3 ] \
-    && ok "remediate($label) files one bug per unresolved sync finding" \
-    || bad "remediate($label) files one bug per unresolved sync finding" "filed ${FILED:-0}, expected 3"
+  [ "${FILED:-0}" = 1 ] \
+    && ok "remediate($label) files one summary for unresolved sync findings" \
+    || bad "remediate($label) files one summary for unresolved sync findings" "filed ${FILED:-0}, expected 1"
   BUGS="$RR/workspace/.hq-client-health/bugs"
-  [ -f "$BUGS/sync.journal.stale.stamp" ] && [ -f "$BUGS/sync.vault.drift.stamp" ] \
-    && [ -f "$BUGS/sync.vault.missing.stamp" ] \
-    && ok "remediate($label) stamps each filed check id" \
-    || bad "remediate($label) stamps each filed check id" "stamps: $(ls "$BUGS" 2>/dev/null | tr '\n' ' ')"
+  [ -f "$BUGS/summary.stamp" ] && [ -f "$BUGS/report-attempt.stamp" ] \
+    && ok "remediate($label) records summary and attempt" \
+    || bad "remediate($label) records summary and attempt" "missing stamp"
+  grep -Fq -- '--no-logs' "$STUB_LOG" \
+    && ok "automatic reports disable log uploads" \
+    || bad "automatic reports disable log uploads" "missing --no-logs"
   if grep -Fq "hooks.other.family" "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
     bad "remediate($label) ignores non-sync families" "hooks.other.family was reported"
   else
@@ -489,7 +491,7 @@ RC9=$?
 set -e
 [ "$RC9" = 0 ] && ok "remediate exits 0 when filing fails" \
   || bad "remediate exits 0 when filing fails" "exit $RC9"
-if ls "$RBAD/workspace/.hq-client-health/bugs/"*.stamp >/dev/null 2>&1; then
+if [ -f "$RBAD/workspace/.hq-client-health/bugs/summary.stamp" ]; then
   bad "a failed filing writes no dedupe stamp" "stamps exist; the retry would be lost"
 else
   ok "a failed filing writes no dedupe stamp"
@@ -669,10 +671,14 @@ set -e
 [ "$RC14" = 0 ] && ok "remediate exits 0 with no timeout(1) on PATH" \
   || bad "remediate exits 0 with no timeout(1) on PATH" "exit $RC14"
 FILED14=$(count_lines "$REM_STATE/bugs-filed")
-[ "${FILED14:-0}" = 3 ] \
+[ "${FILED14:-0}" = 1 ] \
   && ok "remediate still self-heals with no timeout(1) on PATH" \
   || bad "remediate still self-heals with no timeout(1) on PATH" \
-    "filed ${FILED14:-0}, expected 3 — bounding failed open and did nothing"
+    "filed ${FILED14:-0}, expected 1 — bounding failed open and did nothing"
+
+grep -Fq 'sync.vault.missing' "$REM_STATE/bug-bodies.txt" \
+  && ok "portable timeout preserves report stdin" \
+  || bad "portable timeout preserves report stdin" "empty report body"
 
 echo "== 15. no JSON engine at all: degrade silently, act on nothing =="
 # With NEITHER jq nor node the shared engine order runs out. This is the
@@ -697,7 +703,7 @@ set -e
   || bad "no JSON engine files no bug (degrades, never guesses)" \
     "$(count_lines "$REM_STATE/bugs-filed") filed"
 
-echo "== 16. concurrent remediations file exactly one bug per check id =="
+echo "== 16. concurrent remediations file exactly one summary =="
 # Two detached remediations can overlap (a long doctor run, an expired
 # cooldown). Reading the dedupe stamp and then writing it is not dedupe: both
 # see "no stamp" and both file. HQ_STUB_FEEDBACK_SLEEP widens that window so
@@ -715,14 +721,14 @@ done
 wait
 set -e
 FILED16=$(count_lines "$REM_STATE/bugs-filed")
-[ "${FILED16:-0}" = 3 ] \
-  && ok "concurrent remediations file exactly one bug per check id" \
-  || bad "concurrent remediations file exactly one bug per check id" \
-    "filed ${FILED16:-0}, expected 3"
+[ "${FILED16:-0}" = 1 ] \
+  && ok "concurrent remediations file exactly one summary" \
+  || bad "concurrent remediations file exactly one summary" \
+    "filed ${FILED16:-0}, expected 1"
 if ls "$R16/workspace/.hq-client-health/bugs/"*.lock >/dev/null 2>&1; then
-  bad "per-check-id claims are released" "lock dirs left behind"
+  bad "summary claims are released" "lock dirs left behind"
 else
-  ok "per-check-id claims are released"
+  ok "summary claims are released"
 fi
 
 echo "== 17. with no timeout(1), a hanging command is still killed at the deadline =="
@@ -768,15 +774,58 @@ R17_ELAPSED=$(( $(date +%s) - R17_START ))
 #     feedback` calls that follow the killed fix all complete normally under
 #     the same fallback, each well inside the deadline.
 FILED17=$(count_lines "$REM_STATE/bugs-filed")
-[ "${FILED17:-0}" = 3 ] \
+[ "${FILED17:-0}" = 1 ] \
   && ok "fast commands still complete under the portable fallback" \
   || bad "fast commands still complete under the portable fallback" \
-    "filed ${FILED17:-0}, expected 3 — a watchdog outlived its command"
+    "filed ${FILED17:-0}, expected 1 — a watchdog outlived its command"
 STAMPS17=$(ls "$R17/workspace/.hq-client-health/bugs/"*.stamp 2>/dev/null | wc -l | tr -d ' ')
-[ "${STAMPS17:-0}" = 3 ] \
+[ "${STAMPS17:-0}" = 2 ] \
   && ok "the fallback propagates a completed command's exit status" \
   || bad "the fallback propagates a completed command's exit status" \
-    "${STAMPS17:-0} dedupe stamps, expected 3 — a success was read as a failure"
+    "${STAMPS17:-0} summary/attempt stamps, expected 2 — a success was read as a failure"
+
+echo "== 18. failed sends respect cooldown and retry after expiry =="
+REM_STATE="$TMP/rem-stub-badfile"
+run_remediate "$RBAD" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+  && ok "failed send is not immediately retried" || bad "failed send is not immediately retried" "duplicate attempt"
+touch -t "$ANCIENT" "$RBAD/workspace/.hq-client-health/bugs/report-attempt.stamp"
+run_remediate "$RBAD" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 2 ] \
+  && ok "failed send retries after cooldown" || bad "failed send retries after cooldown" "retry missing"
+
+echo "== 19. many company checks and changing findings cannot flood =="
+MANY="$TMP/many.json"
+printf '{"results":[' > "$MANY"
+for ((i=1; i<=45; i++)); do
+  [ "$i" = 1 ] || printf ',' >> "$MANY"
+  printf '{"family":"sync","status":"WARN","checkId":"sync.journal.company%s"}' "$i" >> "$MANY"
+done
+printf ']}' >> "$MANY"
+R18="$TMP/many-companies"
+build_root "$R18"
+REM_STATE="$TMP/rem-many"
+mkdir -p "$REM_STATE"
+SAVED_DOCTOR="$DOCTOR_DEGRADED"
+DOCTOR_DEGRADED="$MANY"
+run_remediate "$R18" "-"
+DOCTOR_DEGRADED="$SAVED_DOCTOR"
+run_remediate "$R18" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+  && ok "45 companies and changed findings share one daily report" \
+  || bad "45 companies and changed findings share one daily report" "flood"
+grep -Fq 'sync.journal.company45' "$REM_STATE/bug-bodies.txt" \
+  && ok "summary retains all company checks" || bad "summary retains all company checks" "last finding missing"
+
+echo "== 20. an unwritable attempt stamp prevents submission =="
+R19="$TMP/report-stamp-blocked"
+build_root "$R19"
+mkdir -p "$R19/workspace/.hq-client-health/bugs/report-attempt.stamp"
+REM_STATE="$TMP/rem-blocked"
+mkdir -p "$REM_STATE"
+run_remediate "$R19" "-"
+[ ! -s "$REM_STATE/bugs-filed" ] \
+  && ok "cannot send without durable cooldown" || bad "cannot send without durable cooldown" "sent without stamp"
 
 echo
 echo "==== check-client-health: $PASS passed, $FAIL failed ===="

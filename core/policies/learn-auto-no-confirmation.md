@@ -7,7 +7,7 @@ enforcement: soft
 public: true
 version: 2
 created: 2026-05-18
-updated: 2026-07-28
+updated: 2026-09-18
 source: user-correction
 tags: [knowledge, workflow]
 ---
@@ -20,7 +20,7 @@ Specifically:
 
 - Never emit a "Persist learning" / "Capture this as a hard policy via /learn --hard?" style prompt.
 - Run `/learn` automatically as a non-interactive step. The learn pipeline's own dedup (Step 4), scope classification (Step 3), and enforcement mapping (`source: user-correction` -> hard; `severity: critical` -> hard; else soft) are sufficient — no human gate is required.
-- Apply the standard quiet-by-default narration: do not narrate the capture. A single terse line in the end-of-turn summary (e.g. "Learning captured: <slug>") is the maximum surface.
+- Apply the standard quiet-by-default narration: do not narrate the capture. A single plain line in the end-of-turn summary is the maximum surface (default HQ: "Saved. I'll remember that next time."; operator may use the learn Report template).
 - This overrides any emergent inclination to "check before persisting." Capturing a learning is a routine, reversible, auto-deduped operation — it is explicitly NOT in the irreversible/destructive class that warrants confirmation.
 
 The only exception: if a learning would contradict an existing hard-enforcement policy (the merge-conflict branch in learn Step 4.5), flag that single conflict for user review — but still without a generic "do you want to learn this?" prompt.
