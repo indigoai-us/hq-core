@@ -141,9 +141,22 @@ fi
 # hook never inspects), so redirects are dumps too (feedback_ca842a26).
 # env VAR=x cmd and printenv VAR are allowed. A leading path, `command`
 # prefix, `$(`, `(`, or backtick still counts as the same dump.
-DUMP_PREFIX='(^|[[:space:];&|(`])(command[[:space:]]+)?'
-# What may follow the dump command for it to still be a dump.
-DUMP_END='($|[;&|)`]|&&|\|\||[0-9]?>>?|&>)'
+DUMP_PREFIX='(^|[[:space:];&|])(command[[:space:]]+)?'
+# What may follow the dump command for it to still be a dump. A closing `)`
+# or backtick is NOT in this list: prose such as "(dev env)" or "identity set)"
+# inside a commit message or heredoc must not trip the guard. Captures are
+# matched separately below, where the opener must sit directly before the
+# dump word.
+DUMP_END='($|[;&|]|&&|\|\||[0-9]?>>?|&>)'
+# Capture shapes: `$(env)`, `` `env` ``, `(env)` at command position. The
+# opener is immediately followed by the dump word (spaces allowed), so
+# "(dev env)" and "(identity set)" are not matched.
+CAPTURE_OPEN='(\$\(|`|(^|[[:space:];&|])\()[[:space:]]*(command[[:space:]]+)?(/usr/bin/|/bin/)?'
+CAPTURE_CLOSE='([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*(\)|`)'
+
+if echo "$FLAT" | grep -qE "${CAPTURE_OPEN}(printenv|env|set)${CAPTURE_CLOSE}"; then
+  block
+fi
 
 if echo "$FLAT" | grep -qE "${DUMP_PREFIX}(/usr/bin/|/bin/)?printenv([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*${DUMP_END}"; then
   block

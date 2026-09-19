@@ -45,6 +45,13 @@ cases:
       command: "x=$(env); echo done"
     expect: block
 
+  - name: allows-prose-paren-after-env-word
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git commit -m 'switch to (dev env)'"
+    expect: allow
+
   - name: allows-printenv-named-var-redirected
     event: PreToolUse
     tool: Bash

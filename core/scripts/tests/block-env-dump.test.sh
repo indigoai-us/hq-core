@@ -71,6 +71,17 @@ expect_hook 2 "export -p redirected blocks" "export -p > /tmp/dump.txt"
 expect_hook 2 "declare -x redirected blocks" "declare -x > /tmp/dump.txt"
 expect_hook 2 "cat /proc/self/environ redirected blocks" "cat /proc/self/environ > /tmp/dump.txt"
 expect_hook 2 "absolute printenv redirected blocks" "/usr/bin/printenv > /tmp/dump.txt"
+# A closing paren or backtick after a dump word in PROSE is not a capture.
+# v15.0.149 blocked these (feedback follow-up); the opener must sit directly
+# before the dump word for it to count.
+expect_hook 0 "prose '(dev env)' in a commit message allowed" "git commit -m 'switch to (dev env)'"
+expect_hook 0 "prose 'identity set)' in a heredoc allowed" "cat > /tmp/brief.md <<'B'
+run it once with no identity, once with identity set) and record it
+B"
+expect_hook 0 "prose 'set)' after a word allowed" "echo 'options (once set) stay'"
+expect_hook 0 "printenv NAME in command substitution allowed" "x=\$(printenv HOME); echo \$x"
+expect_hook 0 "env assignment form in command substitution allowed" "x=\$(env FOO=bar ls)"
+expect_hook 2 "printenv in command substitution with flags blocks" "x=\$(printenv -0)"
 expect_hook 0 "printenv HOME redirected allowed" "printenv HOME > /tmp/home.txt"
 expect_hook 0 "env assignment form redirected allowed" "env FOO=bar ls > /tmp/ls.txt"
 expect_hook 0 "printenv HOME allowed" "printenv HOME"
