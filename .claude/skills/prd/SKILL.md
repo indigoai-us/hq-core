@@ -18,18 +18,19 @@ Resolve the company with the shared resolver — never by hand, and never from t
 bash core/scripts/resolve-company.sh --prompt "{the user's full input}"
 ```
 
-It returns `{"company":"<slug>","source":"session|prompt|none"}` and resolves in this order:
+It returns `{"company":"<slug>","source":"prompt|session|device_default|none"}` and resolves in this order:
 
-1. **`session`** — the company already bound for this session (`workspace/sessions/<id>/meta.yaml`, written by `/startwork`). This is authoritative. The user already told HQ where they are, so no prompt heuristic may override it.
-2. **`prompt`** — a manifest slug appearing as a whole token anywhere in the input, not just at position 0. Longest slug wins; an exact length tie breaks on earliest occurrence.
-3. **`none`** — nothing resolved.
+1. **`prompt`** — an explicit manifest slug appearing as a whole token anywhere in the input. Longest slug wins; an exact length tie breaks on earliest occurrence.
+2. **`session`** — the company already bound for this session (`workspace/sessions/<id>/meta.yaml`). It always wins over the device default.
+3. **`device_default`** — the enabled default returned by `hq mesh context default get --json`. Disabled and `needsChoice` states are deliberately treated as unset.
+4. **`none`** — nothing resolved; use the structured picker before creating project files.
 
 If the resolver is unavailable (older HQ install), fall back to the previous behavior: match the first word against `companies/manifest.yaml` top-level keys.
 
 If `company` is non-empty:
 
 1. **Set `{co}`** = the resolved slug for the entire flow. If the slug was the leading word of the input, strip it — the remaining text is the project description. If it appeared mid-sentence, leave the input intact
-2. **Announce:** "Anchored on **{co}**" (add "— from this session's `/startwork`" when `source` is `session`)
+2. **Announce:** "Anchored on **{co}**" (add "— from this session's `/startwork`" when `source` is `session`, or "— from this device's default company" when `source` is `device_default`)
 3. **Load policies (frontmatter-only)** — For each file in `companies/{co}/policies/` (skip `example-policy.md`, `README.md`, and any `_digest.md` leftover), run `bash core/scripts/read-policy-frontmatter.sh {file}`. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. Policy digests (`**/policies/_digest.md`) are **retired** — SessionStart now injects matching policies via `inject-policy-on-trigger`; do not look for or prefer a digest file. Apply hard rules as constraints throughout the PRD
 4. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}` for all `qmd` calls
 5. **Pre-load repos** — Extract `{co}.repos[]` from manifest. Present as repo options in Batch 3 Q10

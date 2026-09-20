@@ -36,7 +36,7 @@ Why this needs explicit handling: the SessionStart trigger hook (`inject-policy-
 
 So when intent resolves to company/project/repo work, **silently anchor first** (no menu, no banner — this is `/startwork`'s context-gathering minus the interactive surface):
 
-1. **Bind the company.** Resolve from explicit mention → cwd → repo's owning company in `companies/manifest.yaml` → handoff state. If genuinely ambiguous, ask one tight question (structured picker) before proceeding.
+1. **Bind the company.** Resolve from an explicit mention → cwd → repo's owning company in `companies/manifest.yaml` → bound session/handoff state → enabled device default (`bash core/scripts/resolve-company.sh --prompt "{full user input}"`). The device default is a final human-workstation fallback only: a bound session always wins over it, and disabled/`needsChoice` results are unset. If still ambiguous, ask one tight structured-picker question before proceeding.
 2. **Load company-scoped policies.** Read the hard-enforcement policy files under `companies/{co}/policies/` (and the active repo's policy files under `repos/{scope}/{repo}/.claude/policies/`) directly so company + repo rules are in context. An HQ-root start has no cwd signal, so these are not loaded automatically.
 3. **Load infra context.** Read the company's `companies/manifest.yaml` entry — `services`, `aws_profile`, `dns_zones`, repos, workers — so credentials and isolation resolve correctly. Never guess or fall back to another company's creds (`credential-access-protocol`).
 4. **Read in-flight state.** Check `workspace/threads/handoff.json` (and the thread it references) for where work left off.

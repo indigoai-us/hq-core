@@ -98,3 +98,6 @@ ok "the README qualifies the principle and links the governing policy"
 
 echo
 echo "ralph-orchestrator-policy.test.sh: $PASS checks passed"
+
+# Also pin hq-load-company-hard-policies-on-mid-session-bind (feedback 2305).
+bash "$(dirname "${BASH_SOURCE[0]}")/hq-load-company-hard-policies-on-mid-session-bind.test.sh"

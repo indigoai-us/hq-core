@@ -41,7 +41,8 @@ make_token() {
 # --- (a) an hour of life -> cache hit, id_token present ----------------------
 HOME_OK="$TMP/home-ok"
 make_token "$HOME_OK" 3600 "fresh.jwt"
-OUT=$(env HOME="$HOME_OK" "$RESOLVER" 2>/dev/null)
+OUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  HOME="$HOME_OK" "$RESOLVER" 2>/dev/null)
 if printf '%s\n' "$OUT" | jq -e \
   '.status == "ok" and .source == "cache" and .jwt == "fresh.jwt"' >/dev/null; then
   pass "token with 1h left is a cache hit"
@@ -68,7 +69,8 @@ touch "$TMPDIR_T/hq-deploy-login-attempted-skewtest"
 
 HOME_SOON="$TMP/home-soon"
 make_token "$HOME_SOON" 120 "doomed.jwt"   # 2 min left, inside the 5 min skew
-OUT=$(env -u USERNAME USER=skewtest HOME="$HOME_SOON" TMPDIR="$TMPDIR_T" \
+OUT=$(env -u USERNAME -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  USER=skewtest HOME="$HOME_SOON" TMPDIR="$TMPDIR_T" \
   PATH="$BIN" /bin/bash "$RESOLVER" 2>/dev/null)
 if printf '%s\n' "$OUT" | jq -e '.status == "ok" and .jwt == "doomed.jwt"' >/dev/null; then
   fail "REGRESSION: token expiring in 2 min was served as usable (got: $OUT)"
@@ -79,7 +81,8 @@ fi
 # --- (c) just outside the window -> still a cache hit ------------------------
 HOME_EDGE="$TMP/home-edge"
 make_token "$HOME_EDGE" 900 "edge.jwt"     # 15 min left, clear of the 5 min skew
-OUT=$(env HOME="$HOME_EDGE" "$RESOLVER" 2>/dev/null)
+OUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  HOME="$HOME_EDGE" "$RESOLVER" 2>/dev/null)
 if printf '%s\n' "$OUT" | jq -e \
   '.status == "ok" and .source == "cache" and .jwt == "edge.jwt"' >/dev/null; then
   pass "token with 15m left is still a cache hit (skew does not over-refresh)"
@@ -101,7 +104,8 @@ chmod +x "$BIN_REFRESH/hq-auth-refresh"
 HOME_REJECTED="$TMP/home-rejected"
 make_token "$HOME_REJECTED" 3600 "rejected.jwt"
 REFRESHED_EXP="$(( (NOW_S + 7200) * 1000 ))"
-OUT=$(env HOME="$HOME_REJECTED" PATH="$BIN_REFRESH" REFRESHED_EXP="$REFRESHED_EXP" \
+OUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  HOME="$HOME_REJECTED" PATH="$BIN_REFRESH" REFRESHED_EXP="$REFRESHED_EXP" \
   /bin/bash "$RESOLVER" --force-refresh 2>/dev/null)
 if printf '%s\n' "$OUT" | jq -e \
   '.status == "ok" and .source == "refresh" and .jwt == "new.jwt" and .id_token == "new.id"' >/dev/null; then
@@ -123,7 +127,8 @@ chmod +x "$BIN_NOOP/hq-auth-refresh"
 HOME_NOOP="$TMP/home-noop"
 make_token "$HOME_NOOP" 3600 "still-rejected.jwt"
 touch "$TMPDIR_T/hq-deploy-login-attempted-nooptest"
-OUT=$(env -u USERNAME USER=nooptest HOME="$HOME_NOOP" TMPDIR="$TMPDIR_T" \
+OUT=$(env -u USERNAME -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  USER=nooptest HOME="$HOME_NOOP" TMPDIR="$TMPDIR_T" \
   PATH="$BIN_NOOP" /bin/bash "$RESOLVER" --force-refresh 2>/dev/null)
 if printf '%s\n' "$OUT" | jq -e \
   '.status == "ok" and .jwt == "still-rejected.jwt"' >/dev/null 2>&1; then
@@ -143,7 +148,8 @@ BIN_NOCLOCK="$TMP/bin-noclock"; mkdir -p "$BIN_NOCLOCK"
 p=$(command -v jq 2>/dev/null) && ln -sf "$p" "$BIN_NOCLOCK/jq"   # jq only: no node, no date
 HOME_EXPIRED="$TMP/home-expired"
 make_token "$HOME_EXPIRED" -7200 "long.dead.jwt"   # expired two hours ago
-OUT=$(env HOME="$HOME_EXPIRED" PATH="$BIN_NOCLOCK" /bin/bash "$RESOLVER" 2>/dev/null)
+OUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  HOME="$HOME_EXPIRED" PATH="$BIN_NOCLOCK" /bin/bash "$RESOLVER" 2>/dev/null)
 if printf '%s\n' "$OUT" | jq -e '.status == "ok"' >/dev/null 2>&1; then
   fail "REGRESSION: with no usable clock the resolver served a token (got: $OUT)"
 elif printf '%s\n' "$OUT" | jq -e '.status == "missing_dependency"' >/dev/null 2>&1; then

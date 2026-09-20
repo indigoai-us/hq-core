@@ -63,6 +63,7 @@ Soft enforcement does not justify those odds.
 - `pnpm install` (lockfile hydration) — uses the version already pinned, no fresh resolution
 - `npm ci` — strict lockfile install, no fresh resolution
 - `pnpm add lodash --config.minimumReleaseAge=1440` (per-invocation override when no `.npmrc` is present; in a non-pnpm repo also add `--config.node-linker=hoisted`)
+- `pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440` (CLI restore / heal)
 
 **Incorrect (blocked):**
 - `npm install left-pad` — npm does not support the gate, switch to pnpm

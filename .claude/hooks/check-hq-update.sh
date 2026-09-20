@@ -67,7 +67,7 @@ fi
 # relaunch on every SessionStart. All failures silent — advisory infra.
 HQ_CLI_FLOOR="5.117.3"
 CLI_STAMP="$CACHE_DIR/hq-cli-autoupdate.stamp"
-if command -v hq >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+if command -v hq >/dev/null 2>&1 && { command -v pnpm >/dev/null 2>&1 || command -v npm >/dev/null 2>&1; }; then
   CLI_VER=$(HQ_NO_UPDATE_CHECK=1 hq --version 2>/dev/null \
     | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
   if [ -n "$CLI_VER" ] && version_gt "$HQ_CLI_FLOOR" "$CLI_VER"; then
@@ -82,15 +82,20 @@ if command -v hq >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
       mkdir -p "$CACHE_DIR"
       : > "$CLI_STAMP"
       # Detach fully so the install outlives this hook process.
-      if command -v setsid >/dev/null 2>&1; then
-        setsid sh -c 'npm install -g @indigoai-us/hq-cli@latest >/dev/null 2>&1' >/dev/null 2>&1 &
+      if command -v pnpm >/dev/null 2>&1; then
+        UPDATE_CMD='pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440'
       else
-        nohup npm install -g @indigoai-us/hq-cli@latest >/dev/null 2>&1 &
+        UPDATE_CMD='npm install -g @indigoai-us/hq-cli@latest'
+      fi
+      if command -v setsid >/dev/null 2>&1; then
+        setsid sh -c "$UPDATE_CMD >/dev/null 2>&1" >/dev/null 2>&1 &
+      else
+        nohup sh -c "$UPDATE_CMD >/dev/null 2>&1" >/dev/null 2>&1 &
       fi
       cat <<EOF
 <hq-cli-auto-update>
 Your hq CLI ($CLI_VER) is below the required $HQ_CLI_FLOOR and is being updated in
-the background (npm install -g @indigoai-us/hq-cli@latest). The update is picked
+the background ($UPDATE_CMD). The update is picked
 up next session.
 </hq-cli-auto-update>
 EOF

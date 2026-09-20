@@ -96,6 +96,13 @@ Fix proposals:
 3. Switch profile: `export HQ_HOOK_PROFILE=minimal` — useful for hook-storm scenarios
 4. Patch the hook script if the bug is local and obvious (e.g. missing `2>/dev/null`, unquoted path, missing `mkdir -p`) — apply via Edit only if the fix is one or two lines, otherwise propose
 5. If the failing hook is `reindex.sh` (or legacy `master-sync.sh`), escalate to the `reindex` recipe instead
+6. **CLI restore (supply-chain):** if `ERR` mentions `hq-pnpm-min-release-age-supply-chain`, `block-unsafe-package-install`, or a blocked `npm install -g @indigoai-us/hq-cli`, the CLI is missing or was removed as a duplicate. Do **not** retry npm — PreToolUse blocks it because npm cannot honor `minimumReleaseAge`. Restore with:
+
+   ```
+   pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440
+   ```
+
+   Then confirm `command -v hq` and `HQ_NO_UPDATE_CHECK=1 hq --version`. If pnpm is missing, install pnpm first. An explicit version pin (`npm install -g @indigoai-us/hq-cli@<x.y.z>`) is the only npm fallback; `@latest` is never the restore command.
 
 #### `sync`
 Checks:
@@ -308,6 +315,7 @@ If the proposed fix requires re-launching the session (e.g. autocompact, reindex
 - Recipe context budget is 5 KB per class — if a probe would return more, summarize
 - The classifier is pure pattern matching — do not run subagents or do any HQ-wide search before classification
 - Never auto-apply fixes for `denylist`, `git-root`, `reindex`, or `git-object-store` classes — always require user confirmation, the consequences are too broad. For `git-object-store` the probe is safe to run unattended because it only reports; it is the `--fix` rename that needs confirmation
+- Never restore the `hq` CLI with `npm install -g @indigoai-us/hq-cli@latest`. That command is blocked by `hq-pnpm-min-release-age-supply-chain`. Use `pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440`.
 - The heal report is the single durable artifact — it is what `/handoff` and future `/hq-heal` invocations consult to detect repeat failures
 - The `/hq-bug` filing in Step 6 is the *signal* artifact — durable artifact stays local, signal goes to HQ engineering so recurring error classes get systemized fixes upstream. `--no-bug` suppresses the filing only; the report still writes
 - Core-mirror writes are off by default. The `--allow-core` flag is required even when the user explicitly confirms a fix that touches `core/`. This is intentional friction — the bypass should be auditable per-invocation, not implicit

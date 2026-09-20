@@ -363,6 +363,7 @@ if [ -z "$HQ_LIB_JQ" ] && [ -z "$HQ_LIB_NODE" ]; then
 else
   IDENTITY_STATUS=$(printf '%s' "$IDENTITY_JSON" | hq_json_get status)
   JWT=$(printf '%s' "$IDENTITY_JSON" | hq_json_get jwt)
+  IDENTITY_KIND=$(printf '%s' "$IDENTITY_JSON" | hq_json_get identity)
   # id_token is the HQ Pro / grantee-validation token used by C.3. Take it from
   # the resolver output, never from a raw read of ~/.hq/cognito-tokens.json —
   # only the resolver applies the expiry skew and the refresh path.
@@ -416,13 +417,15 @@ if [ -z "$ORG_SLUG" ] && [ "$IDENTITY_STATUS" = "ok" ] && [ -n "$JWT" ]; then
   # /membership/person/{personUid}) returned NOTHING for an agent — agents have
   # no person entity — so an agent deploy silently downgraded to personal scope,
   # blocking company-scoped deploys for machine identities
-  # (feedback_1e8d78ed / DEV-1843: Nanit dashboard). resolve-deploy-org.sh turns
+  # (feedback_1e8d78ed / DEV-1843: Nanit dashboard). For a machine identity,
+  # JWT is the resolver's ID token, so both hq-deploy and vault see the agt_
+  # claims. resolve-deploy-org.sh turns
   # the /membership/me body into ORG_SLUG / ORG_RESOLUTION_STATE / PERSONAL_SCOPE
   # / ACTIVE_SLUGS / ACTIVE_COMPANY_UID (single active -> slug; none -> personal;
   # many -> multi-org CTA; missing jq -> missing_dependency, NEVER personal).
   MEMBERSHIPS_JSON=$(curl -s -H "Authorization: Bearer $JWT" "$VAULT_API/membership/me")
   eval "$(printf '%s' "$MEMBERSHIPS_JSON" \
-    | .claude/skills/deploy/scripts/resolve-deploy-org.sh)"
+    | DEPLOY_IDENTITY="${IDENTITY_KIND:-person}" .claude/skills/deploy/scripts/resolve-deploy-org.sh)"
 
   # Single active membership whose companySlug wasn't enriched → resolve it via
   # the entity lookup (fallback only).
@@ -454,7 +457,7 @@ elif [ "$PERSONAL_SCOPE" = "true" ]; then
 fi
 ```
 
-After A.5, Phase C upload proceeds when **either** `$ORG_SLUG` is set (company deploy) **or** `PERSONAL_SCOPE=true` (signed-in user with no company → personal deploy). Every hq-deploy API call passes `"${DEPLOY_CONTEXT_ARGS[@]}"` to `deploy-api-request.sh`, which adds `X-Org-Slug` for company deploys and `X-HQ-Deploy-Scope: personal` for personal deploys. Never silently fall back to a hardcoded org. The remaining unresolved states (`multi-org`, `missing_dependency`, vault-unreachable) skip the upload and hit the state-aware CTA at C.5, which reads `$ORG_RESOLUTION_STATE`.
+After A.5, Phase C upload proceeds when **either** `$ORG_SLUG` is set (company deploy) **or** `PERSONAL_SCOPE=true` (a signed-in person with no company → personal deploy). Every hq-deploy API call passes `"${DEPLOY_CONTEXT_ARGS[@]}"` to `deploy-api-request.sh`, which adds `X-Org-Slug` for company deploys and `X-HQ-Deploy-Scope: personal` for personal deploys. A machine identity can never use the personal fallback: zero memberships set `machine_no_orgs` and skip upload. Never silently fall back to a hardcoded org. The remaining unresolved states (`multi-org`, `missing_dependency`, `machine_no_orgs`, vault-unreachable) skip the upload and hit the state-aware CTA at C.5, which reads `$ORG_RESOLUTION_STATE`.
 
 A personal deploy has no company to gate against, so `company` / `selected` access modes are impossible. Normalize the access mode chosen in A.4 before Phase C:
 
@@ -557,7 +560,7 @@ Always print this — it's the guaranteed-working feedback:
 
 ## Phase C — Upload + Password + Link (sequential, hard-gated)
 
-Every API call carries `Authorization: Bearer $JWT`.
+Every API call carries `Authorization: Bearer $JWT`. For a person, `$JWT` is the Cognito access token. For a fleet machine identity, it is the Cognito ID token so hq-deploy and `/membership/me` receive the agent claims (`custom:entityType=agent`, `custom:entityUid=agt_*`).
 
 **Pre-conditions:**
 - Phase A: `BUILD_STATUS="ok"`, `IDENTITY_STATUS="ok"` (otherwise skip upload, jump to C.5 with preview-only outcome)
@@ -1029,6 +1032,9 @@ case "$ORG_RESOLUTION_STATE" in
     # Memberships could not be inspected. Never infer personal scope.
     echo "I couldn't inspect your HQ memberships because jq is missing. Install jq (Windows: winget/choco/scoop; Linux: apt/dnf; macOS: brew), then rerun /deploy. Preview: $PREVIEW_URL"
     ;;
+  machine_no_orgs)
+    echo "This agent is not a member of any company, so it cannot create a personal deploy. Ask a company admin to add the agent to the target company, then rerun /deploy. Preview: $PREVIEW_URL"
+    ;;
   *)
     # Defensive — JWT was valid but vault was unreachable. Don't silently
     # default to indigo; surface a recoverable next step.
@@ -1050,7 +1056,7 @@ Then move on. Deploy is never the main event.
 
 | Script | Input | Returns |
 |--------|-------|---------|
-| `identity-resolve.sh` | `[--force-refresh]` (reads `~/.hq/cognito-tokens.json`) | `{"status":"ok","jwt":"...","id_token":"...","expires_at":<epoch-ms>,"source":"cache\|refresh\|login"}` or `{"status":"login_required","reason":"..."}` or `{"status":"missing_dependency","dep":"jq\|node","install":"..."}` (agent must show install help, not login upsell). `--force-refresh` bypasses the cache after an API 401. `id_token` is the only sanctioned source of the HQ Pro token — a raw `jq` read of the token file skips the expiry skew and the refresh path |
+| `identity-resolve.sh` | `[--force-refresh]` (reads `~/.hq/cognito-tokens.json`) | `{"status":"ok","jwt":"...","id_token":"...","identity":"person\|machine","expires_at":<epoch-ms>,"source":"cache\|refresh\|login\|machine_mint"}` or `{"status":"login_required","reason":"..."}` or `{"status":"missing_dependency","dep":"jq\|node","install":"..."}`. A machine identity is detected from `HQ_MACHINE_CREDS_FILE` or `~/.hq-agent/machine-creds.json`, calls `hq-auth-refresh` without a browser, and returns its ID token in both `jwt` and `id_token` so agent claims reach hq-deploy and vault. A person keeps the access-token `jwt` path. `--force-refresh` bypasses a person's cache after an API 401. `id_token` is the only sanctioned source of the HQ Pro token — a raw `jq` read of the token file skips the expiry skew and the refresh path |
 | `sensitivity-check.sh <path> [user_msg]` | artifact path + latest user message excerpt | `{"sensitive":bool,"trigger":"companies-data-path\|private-repo\|pii-detected\|financial-filename\|user-stated-private"\|null}` |
 | `guardrails-check.sh <output_dir>` | build output directory | `{"pass":bool,"reason":string\|null,"tarball_path":string,"size_bytes":int,"sha256":string,"file_count":int}` |
 | `og-inject.sh <output_dir> [base_url] [app_name]` | static build dir (+ live base URL) | `{"injected":int,"image":"generated\|existing\|none","changed":bool}` |
@@ -1072,6 +1078,10 @@ All scripts:
 - For Vercel-managed projects, skip entirely.
 - Respects company isolation — credentials resolved from active company context.
 - Shared HQ Identity pool means one sign-in works across HQ's deploy, vault, and onboarding surfaces.
+
+## Fleet agents (machine identity)
+
+Fleet agents deploy through their own machine identity. When the agent runtime exposes a readable `HQ_MACHINE_CREDS_FILE` (or the standard `~/.hq-agent/machine-creds.json`), `/deploy` runs `hq-auth-refresh` to mint or refresh its cached session without opening a browser. The resolver supplies the Cognito ID token to both hq-deploy and vault membership resolution because that is where the agent identity claims live. The agent must be an active member of the target company; it cannot deploy to a personal scope. This ships in the next hq-core release. The fleet self-update runs about every six hours and re-runs `hq rescue --hq-root` to refresh the agent's HQ root.
 
 ## See also
 

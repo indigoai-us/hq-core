@@ -30,6 +30,7 @@ ORG_RESOLUTION_STATE=""
 PERSONAL_SCOPE=""
 ACTIVE_SLUGS=""
 ACTIVE_COMPANY_UID=""
+IDENTITY_KIND="${DEPLOY_IDENTITY:-person}"
 
 _emit_defaults() {
   printf "ORG_SLUG='%s'\n" "$ORG_SLUG"
@@ -61,8 +62,16 @@ case "$COUNT" in
     ACTIVE_COMPANY_UID="$(printf '%s' "$ACTIVE" | jq -r '.[0].companyUid // empty' 2>/dev/null || true)"
     ;;
   0)
-    ORG_RESOLUTION_STATE="no-orgs"
-    PERSONAL_SCOPE="true"
+    if [ "$IDENTITY_KIND" = "machine" ]; then
+      # A fleet agent has no personal deploy namespace. Sending a machine
+      # caller through the personal fallback loses its agent claims and causes
+      # an opaque authorization failure downstream. Make the missing company
+      # membership explicit so the skill can give the admin action to take.
+      ORG_RESOLUTION_STATE="machine_no_orgs"
+    else
+      ORG_RESOLUTION_STATE="no-orgs"
+      PERSONAL_SCOPE="true"
+    fi
     ;;
   *)
     ORG_RESOLUTION_STATE="multi-org"

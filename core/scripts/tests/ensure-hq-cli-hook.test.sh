@@ -9,7 +9,7 @@
 #   3. Auto-fix: hq installed but off the settings PATH -> append its dir to
 #      env.PATH in settings.local.json (NOT settings.json), preserving other keys.
 #   4. Install when hq is missing, then auto-fix the PATH; announce it.
-#   5. Emit the manual-install remedy when hq is missing and npm is absent.
+# 5. Emit the manual-install remedy when hq is missing and no installer is present.
 #   6. Not re-run the install command while the cooldown stamp is fresh.
 #   7. Emit the add-to-PATH remedy when settings cannot be written (no jq).
 #   8. Honor its kill switches.
@@ -269,4 +269,38 @@ printf '%s' "$out" | grep -q '<hq-cli-missing>' \
   || fail "locked-out session should still emit remedy, got: $out"
 rm -f "$BIN/npm"
 
-echo "PASS: ensure-hq-cli-hook (settings-PATH detection, ambient fallback, auto-fix local settings, install+fix, npm-missing, cooldown, unwritable remedy, kill-switch, floor-advisory 5.108.1/5.108.2, bounded-install, atomic-lock)"
+# --- 11. pnpm present -> restore uses pnpm, not npm --------------------------
+reset_root
+write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
+mkdir -p "$TMP/pnpm-prefix/bin"
+rm -f "$TMP/prefix/bin/hq" "$TMP/pnpm-ran" "$TMP/npm-ran"
+stub pnpm "case \"\$*\" in
+  *add*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/pnpm-prefix/bin/hq'; chmod +x '$TMP/pnpm-prefix/bin/hq'; echo ran > '$TMP/pnpm-ran'; exit 0 ;;
+  'bin -g') echo '$TMP/pnpm-prefix/bin'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+stub npm "case \"\$*\" in
+  *install*) echo ran > '$TMP/npm-ran'; exit 0 ;;
+  'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+out="$(run_hook "$COREUTILS_PATH")"
+[ -f "$TMP/pnpm-ran" ] || fail "pnpm present must drive CLI restore, got: $out"
+[ ! -f "$TMP/npm-ran" ] || fail "pnpm present must not fall back to npm"
+printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+  || fail "pnpm restore should emit <hq-cli-path-updated>, got: $out"
+case ":$(local_path):" in *":$TMP/pnpm-prefix/bin:"*) : ;; *) fail "pnpm restore did not add pnpm bin to env.PATH: $(local_path)";; esac
+rm -f "$BIN/pnpm" "$BIN/npm"
+
+# --- 12. documented restore is the pnpm age-gated command --------------------
+grep -F 'pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440' "$HOOK" >/dev/null \
+  || fail "ensure-hq-cli must document pnpm restore with minimumReleaseAge=1440"
+if grep -E 'npm install -g @indigoai-us/hq-cli@latest' "$HOOK" | grep -v 'NPM_RESTORE_CMD=' | grep -v 'Do not run' >/dev/null; then
+  fail "ensure-hq-cli still advertises npm @latest as the restore command"
+fi
+
+echo "PASS: ensure-hq-cli-hook (settings-PATH detection, ambient fallback, auto-fix local settings, install+fix, npm-missing, cooldown, unwritable remedy, kill-switch, floor-advisory 5.108.1/5.108.2, bounded-install, atomic-lock, pnpm-preferred restore)"
+
+# Prompt-contract coverage lives in a sibling file; run it here so CI picks it
+# up without a workflow-permission edit.
+bash "$ROOT/core/scripts/tests/hq-heal-cli-restore.test.sh"

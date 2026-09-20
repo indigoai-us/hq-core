@@ -1,7 +1,7 @@
 ---
 name: plan
 description: Create an execution-ready PRD and README for an HQ project.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(hq:*), Bash(npx:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, AskUserQuestion
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(hq:*), Bash(npx:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash, AskUserQuestion
 ---
 
 # Plan — Project Planning & PRD Generation
@@ -13,7 +13,7 @@ Create execution-ready PRDs with full HQ context awareness. Lightweight flow —
 
 ## Work Mesh Live — trusted bind (do this first)
 
-Before any other tool call that touches project work, bind the session per
+After Step 0 resolves `{co}` and before any other tool call that touches project work, bind the session per
 `.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
 
 ```bash
@@ -24,13 +24,19 @@ bash core/scripts/work-mesh-live-bind-trusted.sh \
 Omit `--task` when unknown. This writes `workspace/sessions/<sid>/meta.yaml`
 and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
 
-## Step 0: Company Anchor (from user input)
+## Step 0: Company Anchor (shared resolver)
 
-Check if the **first word** of the user's input matches a company slug in `companies/manifest.yaml`.
+Resolve the company before creating any project files:
 
-**How to check:** Read `companies/manifest.yaml`. Extract top-level keys (company slugs). If the first word exactly matches one of those slugs:
+```bash
+bash core/scripts/resolve-company.sh --prompt "{the user's full input}"
+```
 
-1. **Set `{co}`** = matched slug for the entire flow. Strip the slug — the remaining text is the project description
+It returns `{"company":"<slug>","source":"prompt|session|device_default|none"}`. The order is: an explicit whole-token company slug in the input, the bound session `company_slug`, then the enabled device default. A disabled default or `needsChoice` resolves as `none`.
+
+**If `company` is non-empty:**
+
+1. **Set `{co}`** = resolved slug for the entire flow. Strip it from the description only when it was the leading token
 2. **Announce:** "Anchored on **{co}**"
 3. **Load policies (frontmatter-only)** — For each file in `companies/{co}/policies/` (skip `example-policy.md`), run `bash core/scripts/read-policy-frontmatter.sh {file}`. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. Apply as constraints throughout the PRD
 4. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}` for all `qmd` calls
@@ -38,7 +44,7 @@ Check if the **first word** of the user's input matches a company slug in `compa
 6. **Scope workers** — Filter to company workers (`companies/{co}/workers/`) + public workers (`core/workers/public/`)
 7. **Scope projects** — Only search `companies/{co}/projects/` for existing project collision check
 
-**If no match** (first word is not a company slug) — proceed normally. The full input text is the project description.
+**If `source` is `none`** — ask the user to choose a company or confirm personal/HQ work with the structured picker. Never silently create a personal project because company registration would be skipped.
 
 ## Step 1: Get Project Description
 

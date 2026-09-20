@@ -75,7 +75,18 @@ capped() { local s="$1"; shift
 
 # ===================== HQ tools (the `hq` command) ===========================
 CLI_VER=""
-install_cli() { capped 180 npm install -g "${HQ_CLI_PKG}@latest" >/dev/null 2>&1; }
+# pnpm + minimumReleaseAge is the restore that PreToolUse allows. npm @latest
+# is blocked by hq-pnpm-min-release-age-supply-chain (npm cannot honor the gate).
+install_cli() {
+  if command -v pnpm >/dev/null 2>&1; then
+    capped 180 pnpm add -g "${HQ_CLI_PKG}@latest" --config.minimumReleaseAge=1440 >/dev/null 2>&1
+  elif command -v npm >/dev/null 2>&1; then
+    capped 180 npm install -g "${HQ_CLI_PKG}@latest" >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+CLI_RESTORE="pnpm add -g ${HQ_CLI_PKG}@latest --config.minimumReleaseAge=1440"
 
 if command -v hq >/dev/null 2>&1; then
   CLI_VER=$(HQ_NO_UPDATE_CHECK=1 hq --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
@@ -86,13 +97,13 @@ if [ -z "$CLI_VER" ]; then
     CLI_VER=$(HQ_NO_UPDATE_CHECK=1 hq --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     say FIXED "Installed HQ — it was missing" ""
   else
-    say YOU "HQ isn't installed on this computer" "Run: npm install -g ${HQ_CLI_PKG}"
+    say YOU "HQ isn't installed on this computer" "Run: ${CLI_RESTORE}"
   fi
 elif newer "$HQ_CLI_FLOOR" "$CLI_VER"; then
   if [ "$FIX" -eq 1 ] && install_cli; then
     say FIXED "Updated HQ — the old version had parts switched off" ""
   else
-    say YOU "Your HQ is too old and parts of it are switched off" "Run: npm install -g ${HQ_CLI_PKG}@latest"
+    say YOU "Your HQ is too old and parts of it are switched off" "Run: ${CLI_RESTORE}"
   fi
 elif [ "$OFFLINE" -eq 1 ]; then
   say SKIP "Didn't check for an HQ update" ""
@@ -104,7 +115,7 @@ else
     if [ "$FIX" -eq 1 ] && install_cli; then
       say FIXED "Updated HQ to the newest version" ""
     else
-      say YOU "There's a newer version of HQ" "Run: npm install -g ${HQ_CLI_PKG}@latest"
+      say YOU "There's a newer version of HQ" "Run: ${CLI_RESTORE}"
     fi
   fi
 fi

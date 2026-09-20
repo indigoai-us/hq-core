@@ -48,7 +48,8 @@ fi
 if [ -z "$HOST_NODE" ]; then
   fail "host needs node to run node-fallback case"
 else
-  OUTPUT=$(PATH="$BIN_NODE$PATH_EXTRA" HOME="$HOME_A" USER=testuser \
+  OUTPUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+    PATH="$BIN_NODE$PATH_EXTRA" HOME="$HOME_A" USER=testuser \
     TMPDIR="${TMPDIR:-/tmp}" \
     /bin/bash "$RESOLVER" 2>"$TMP/a.err")
   STATUS=$?
@@ -75,7 +76,8 @@ mkdir -p "$HOME_B/.hq"
 printf '{"accessToken":"should-not-read.jwt","expiresAt":%s}\n' "$FUTURE_MS" \
   > "$HOME_B/.hq/cognito-tokens.json"
 
-OUTPUT=$(PATH="$BIN_NONE" HOME="$HOME_B" USER=testuser \
+OUTPUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  PATH="$BIN_NONE" HOME="$HOME_B" USER=testuser \
   TMPDIR="${TMPDIR:-/tmp}" \
   /bin/bash "$RESOLVER" 2>"$TMP/b.err")
 STATUS=$?
@@ -139,7 +141,8 @@ mkdir -p "$HOME_C/.hq"
 printf '{"accessToken":"expired.jwt","expiresAt":1}\n' > "$HOME_C/.hq/cognito-tokens.json"
 LOCK_C="${TMPDIR:-/tmp}/hq-deploy-login-attempted-testuser"
 touch "$LOCK_C"
-OUTPUT=$(PATH="$BIN_BROKEN_NODE" HOME="$HOME_C" USER=testuser \
+OUTPUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  PATH="$BIN_BROKEN_NODE" HOME="$HOME_C" USER=testuser \
   TMPDIR="${TMPDIR:-/tmp}" \
   /bin/bash "$RESOLVER" 2>"$TMP/c.err")
 rm -f "$LOCK_C"
@@ -169,7 +172,8 @@ if [ -n "$date_path" ]; then
   chmod +x "$BIN_BROKEN_ONLY/date"
 fi
 
-OUTPUT=$(PATH="$BIN_BROKEN_ONLY" HOME="$HOME_A" USER=testuser \
+OUTPUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  PATH="$BIN_BROKEN_ONLY" HOME="$HOME_A" USER=testuser \
   TMPDIR="${TMPDIR:-/tmp}" \
   /bin/bash "$RESOLVER" 2>"$TMP/d.err")
 if printf '%s\n' "$OUTPUT" | "$HOST_JQ" -e \

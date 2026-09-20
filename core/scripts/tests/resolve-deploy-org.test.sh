@@ -19,6 +19,10 @@ run() { # <json> <var>
   ( eval "$(printf '%s' "$1" | bash "$SRC")"; eval "printf '%s' \"\$$2\"" )
 }
 
+run_machine() { # <json> <var>
+  ( eval "$(printf '%s' "$1" | DEPLOY_IDENTITY=machine bash "$SRC")"; eval "printf '%s' \"\$$2\"" )
+}
+
 echo "[1] AGENT single active membership (companySlug enriched) → resolves ORG_SLUG"
 J='{"memberships":[{"companyUid":"cmp_nanit","companySlug":"nanit","role":"member","status":"active"}]}'
 [ "$(run "$J" ORG_SLUG)" = "nanit" ] || fail "agent single active did not resolve ORG_SLUG=nanit"
@@ -36,6 +40,16 @@ J='{"memberships":[{"companyUid":"cmp_x","companySlug":"x","status":"invited"}]}
 [ "$(run "$J" ORG_RESOLUTION_STATE)" = "no-orgs" ] || fail "no-active state should be no-orgs"
 [ -z "$(run "$J" ORG_SLUG)" ] || fail "no-active wrongly resolved an ORG_SLUG"
 pass "no active membership → personal / no-orgs"
+
+echo "[3b] machine with no active membership → explicit state, never personal"
+J='{"memberships":[]}'
+[ "$(run_machine "$J" ORG_RESOLUTION_STATE)" = "machine_no_orgs" ] \
+  || fail "machine no-membership should set machine_no_orgs"
+[ -z "$(run_machine "$J" PERSONAL_SCOPE)" ] \
+  || fail "machine no-membership must not set PERSONAL_SCOPE=true"
+grep -q 'machine_no_orgs)' "$SKILL" \
+  || fail "SKILL C.5 must give a machine no-membership CTA"
+pass "machine no membership → explicit company-admin CTA, never personal"
 
 echo "[4] multi active membership → multi-org CTA with slug list"
 J='{"memberships":[{"companyUid":"c1","companySlug":"alpha","status":"active"},{"companyUid":"c2","companySlug":"beta","status":"active"}]}'

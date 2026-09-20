@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# identity-resolve.sh — resolve a Cognito access token (JWT) for hq-deploy.
+# identity-resolve.sh — resolve a Cognito token (JWT) for hq-deploy.
 # Inlined replacement for the former Identity sub-agent: same JSON contract,
 # zero Task-tool overhead, deterministic.
 #
 # Output (one JSON line on stdout):
-#   {"status":"ok","jwt":"...","id_token":"...","expires_at":<epoch-ms>,"source":"cache|refresh|login"}
+#   {"status":"ok","jwt":"...","id_token":"...","identity":"person|machine","expires_at":<epoch-ms>,"source":"cache|refresh|login|machine_mint"}
 #
 # `id_token` is the HQ Pro / grantee-validation token (X-HQ-Pro-Authorization).
 # Callers MUST take it from here rather than re-reading the token file with a
@@ -55,6 +55,24 @@ _find_hook_lib() {
 
 TOKEN_FILE="$HOME/.hq/cognito-tokens.json"
 LEGACY_FILE="$HOME/.hq/auth/session.json"
+MACHINE_CREDS_FILE="${HQ_MACHINE_CREDS_FILE:-$HOME/.hq-agent/machine-creds.json}"
+# Keep this in lockstep with hq-cloud's machineTokenStateDir/
+# machineTokenCacheFile. Machine tokens must never be taken from the person's
+# ~/.hq cache: a shared box can legitimately have both identity types present.
+_mtsd() {
+  if [ -n "${HQ_MACHINE_TOKEN_STATE_DIR:-}" ]; then
+    printf '%s' "$HQ_MACHINE_TOKEN_STATE_DIR"
+  elif [ -n "${HQ_WORK_MESH_ROOT:-}" ]; then
+    printf '%s/daemon' "$HQ_WORK_MESH_ROOT"
+  else
+    printf '%s/.hq/work-mesh/daemon' "$HOME"
+  fi
+}
+MACHINE_TOKEN_FILE="$(_mtsd)/cognito-tokens.json"
+# Accepting a token with seconds of life left guarantees a mid-deploy 401.
+# Define this before machine mode too: both machine and person paths validate
+# the cached session after hq-auth-refresh returns.
+SKEW_MS=300000  # 5 min — must exceed worst-case deploy duration after this call
 DEPLOY_USER_KEY=${USER:-${USERNAME:-unknown}}
 DEPLOY_USER_KEY=${DEPLOY_USER_KEY//[^[:alnum:]_.-]/_}
 _DEPLOY_TMPDIR="${TMPDIR:-/tmp}"
@@ -114,6 +132,60 @@ token_field() {
   hq_json_get "$key" < "$file"
 }
 
+emit_person_ok() {
+  local jwt=$1 id_token=$2 expires_at=$3 source=$4
+  emit "{\"status\":\"ok\",\"jwt\":\"$jwt\",\"id_token\":\"$id_token\",\"identity\":\"person\",\"expires_at\":$expires_at,\"source\":\"$source\"}"
+}
+
+emit_machine_ok() {
+  local id_token=$1 expires_at=$2
+  # Agent identity claims exist only on Cognito's ID token. Use it for both
+  # fields so hq-deploy and vault membership resolution see the agt_ principal.
+  emit "{\"status\":\"ok\",\"jwt\":\"$id_token\",\"id_token\":\"$id_token\",\"identity\":\"machine\",\"expires_at\":$expires_at,\"source\":\"machine_mint\"}"
+}
+
+# Fleet agents authenticate non-interactively with machine credentials. Match
+# the CLI's signal: HQ_MACHINE_CREDS_FILE overrides the standard agent path.
+# Do not read or parse the credential file here; hq-auth-refresh owns that
+# validation and minting path. Crucially, a machine identity must never reach
+# the human browser-login branch below.
+#
+# An explicitly configured credentials path is itself a machine-mode signal,
+# even when the file cannot be read. A pre-existing machine cache is also a
+# signal, so a damaged credentials file cannot silently switch an agent to a
+# human browser sign-in on a shared box.
+MACHINE_IDENTITY_EXPECTED=0
+if [ -n "${HQ_MACHINE_CREDS_FILE:-}" ] \
+  || [ -r "$HOME/.hq-agent/machine-creds.json" ] \
+  || [ -e "$MACHINE_TOKEN_FILE" ]; then
+  MACHINE_IDENTITY_EXPECTED=1
+fi
+if [ "$MACHINE_IDENTITY_EXPECTED" -eq 1 ]; then
+  [ -r "$MACHINE_CREDS_FILE" ] || err "machine_mint_failed"
+  MINT_OK=1
+  if command -v hq-auth-refresh >/dev/null 2>&1; then
+    hq-auth-refresh >/dev/null 2>&1 || MINT_OK=0
+  elif command -v npx >/dev/null 2>&1; then
+    npx -y --package=@indigoai-us/hq-cli hq-auth-refresh >/dev/null 2>&1 || MINT_OK=0
+  else
+    err "machine_mint_unavailable"
+  fi
+
+  # hq-auth-refresh writes the canonical cache after either a healthy machine
+  # cache hit or a fresh USER_PASSWORD_AUTH mint. Never accept a stale file if
+  # the mint command itself failed.
+  if [ "$MINT_OK" -ne 1 ] || [ ! -f "$MACHINE_TOKEN_FILE" ]; then
+    err "machine_mint_failed"
+  fi
+  IDT=$(token_field "$MACHINE_TOKEN_FILE" "idToken")
+  EXP=$(token_field "$MACHINE_TOKEN_FILE" "expiresAt")
+  [ -n "$EXP" ] || EXP=0
+  if [ -n "$IDT" ] && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
+    emit_machine_ok "$IDT" "$EXP"
+  fi
+  err "machine_mint_failed"
+fi
+
 # 1. Find token file
 if [ -f "$TOKEN_FILE" ]; then
   TF="$TOKEN_FILE"
@@ -129,7 +201,6 @@ fi
 # which routinely takes minutes. Accepting a token with seconds of life left
 # guarantees a mid-deploy 401 once per token hour. Treat anything inside the
 # skew window as stale so the refresh path below runs first.
-SKEW_MS=300000  # 5 min — must exceed worst-case deploy duration after this call
 REJECTED_AT=""
 if [ -n "$TF" ]; then
   AT=$(token_field "$TF" "accessToken")
@@ -139,7 +210,7 @@ if [ -n "$TF" ]; then
   [ -n "$EXP" ] || EXP=0
   if [ "$FORCE_REFRESH" -eq 0 ] && [ -n "$AT" ] \
     && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
-    emit "{\"status\":\"ok\",\"jwt\":\"$AT\",\"id_token\":\"$IDT\",\"expires_at\":$EXP,\"source\":\"cache\"}"
+    emit_person_ok "$AT" "$IDT" "$EXP" "cache"
   fi
 fi
 
@@ -168,7 +239,7 @@ if [ -n "$TF" ]; then
       # alone cannot rehabilitate the token the API just rejected.
       if [ "$TOKEN_CHANGED" -eq 1 ] && [ -n "$AT" ] \
         && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
-        emit "{\"status\":\"ok\",\"jwt\":\"$AT\",\"id_token\":\"$IDT\",\"expires_at\":$EXP,\"source\":\"refresh\"}"
+        emit_person_ok "$AT" "$IDT" "$EXP" "refresh"
       fi
     fi
   fi
@@ -203,7 +274,7 @@ if [ -f "$TOKEN_FILE" ]; then
   EXP=$(token_field "$TOKEN_FILE" "expiresAt")
   [ -n "$EXP" ] || EXP=0
   if [ -n "$AT" ]; then
-    emit "{\"status\":\"ok\",\"jwt\":\"$AT\",\"id_token\":\"$IDT\",\"expires_at\":$EXP,\"source\":\"login\"}"
+    emit_person_ok "$AT" "$IDT" "$EXP" "login"
   fi
 fi
 err "login_attempt_failed"

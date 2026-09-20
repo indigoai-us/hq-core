@@ -13,7 +13,7 @@ Create execution-ready PRDs with full HQ context awareness, parallel research su
 
 ## Work Mesh Live — trusted bind (do this first)
 
-Before any other tool call that touches project work, bind the session per
+After Step 0 resolves `{co}` and before any other tool call that touches project work, bind the session per
 `.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
 
 ```bash
@@ -32,11 +32,11 @@ Resolve the company with the shared resolver — never by hand, and never from t
 bash core/scripts/resolve-company.sh --prompt "{the user's full input}"
 ```
 
-It returns `{"company":"<slug>","source":"session|prompt|none"}`: the company bound for this session by `/startwork` wins, then a whole-token scan of the entire input (longest slug wins), then nothing. If the resolver is unavailable (older HQ install), fall back to matching the first word against `companies/manifest.yaml` top-level keys.
+It returns `{"company":"<slug>","source":"prompt|session|device_default|none"}`: an explicit whole-token slug in the input wins, then the bound session company, then the enabled device default. A session company always wins over the default; disabled and `needsChoice` defaults resolve as `none`. If `source` is `none`, use the structured picker before creating project files.
 
-**How to check:** Read `companies/manifest.yaml`. Extract top-level keys (company slugs). If the first word exactly matches one of those slugs:
+**If `company` is non-empty:** Read `companies/manifest.yaml` for company metadata, then:
 
-1. **Set `{co}`** = matched slug for the entire flow. Strip the slug — the remaining text is the project description
+1. **Set `{co}`** = resolved slug for the entire flow. Strip it from the description only when it was the leading token
 2. **Announce:** "Anchored on **{co}**"
 3. **Load policies (frontmatter-only)** — For each file in `companies/{co}/policies/` (skip `example-policy.md`, `README.md`, and any `_digest.md` leftover), run `bash core/scripts/read-policy-frontmatter.sh {file}`. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. Policy digests (`**/policies/_digest.md`) are **retired** — SessionStart now injects matching policies via `inject-policy-on-trigger`; do not look for or prefer a digest file. Apply hard rules as constraints throughout the PRD
 4. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}` for all `qmd` calls

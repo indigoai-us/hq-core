@@ -126,6 +126,10 @@ allow_case 0 'npm install -g @tobilu/qmd@2.5.3 2>/dev/null'        "allow-listed
 allow_case 0 'npm install -g @tobilu/qmd@2.5.3 1>&2'               "allow-listed pin with 1>&2 is allowed"
 allow_case 0 'npm install -g @tobilu/qmd@2.5.3 </dev/null'         "allow-listed pin with <file is allowed"
 allow_case 0 'pnpm add -g @tobilu/qmd@2.5.3 2>&1'                  "pnpm allow-listed pin with 2>&1 is allowed"
+# Feedback 2313: hq-heal CLI restore. npm @latest is what the agent used to
+# run and the supply-chain hook blocked. The age-gated pnpm form must pass.
+allow_case 0 'pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440' \
+  "heal CLI restore (pnpm + minimumReleaseAge=1440) is allowed"
 
 # 6c. Redirections must NOT launder an install that would otherwise be blocked.
 allow_case 2 'npm i -g @tobilu/qmd 2>&1'                           "UNPINNED qmd with 2>&1 is still blocked"

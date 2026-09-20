@@ -3,6 +3,10 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.151-beta.4
+
+- **Device default company fallback (US-008).** Set a default on each human device with `hq mesh context default set <slug>`. HQ SessionStart, `/plan`, `/prd`, `/deep-plan`, `/startwork`, and natural-language routing use it only when no explicit company or bound session company exists. Fleet dispatches never use this fallback. Use `hq mesh context default clear` to return to the company picker.
+
 ## Release: v15.0.148-beta.18
 
 - fix 2026-09-19 (feedback_ca842a26, DEF-026 follow-up): `block-env-dump.sh`

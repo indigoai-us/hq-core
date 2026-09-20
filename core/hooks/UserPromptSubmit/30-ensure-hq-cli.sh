@@ -14,7 +14,9 @@
 #   * hq is installed but NOT on that PATH     -> append its dir to env.PATH in
 #                                                 settings.local.json (auto-fix).
 #   * hq is missing entirely                   -> bounded, once-per-cooldown
-#                                                 `npm install -g @indigoai-us/hq-cli`,
+#                                                 pnpm global add with
+#                                                 minimumReleaseAge=1440 (npm
+#                                                 only if pnpm is absent),
 #                                                 then auto-fix the PATH as above.
 #   * cannot install / cannot write settings   -> inject a context line telling
 #                                                 the user how to install it and/or
@@ -70,7 +72,11 @@ BASE_SETTINGS="$CLAUDE_DIR/settings.json"
 STAMP_DIR="$HQ_ROOT/workspace/.hq-cli-ensure"
 STAMP="$STAMP_DIR/last-attempt.stamp"
 
-INSTALL_CMD="${HQ_ENSURE_CLI_INSTALL_CMD:-npm install -g @indigoai-us/hq-cli@latest}"
+# Override wins. Otherwise prefer pnpm + minimumReleaseAge so restore is not
+# blocked by hq-pnpm-min-release-age-supply-chain (npm cannot honor that gate).
+INSTALL_CMD="${HQ_ENSURE_CLI_INSTALL_CMD:-}"
+PNPM_RESTORE_CMD="pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440"
+NPM_RESTORE_CMD="npm install -g @indigoai-us/hq-cli@latest"
 COOLDOWN="${HQ_ENSURE_CLI_COOLDOWN:-21600}"   # 6h between install attempts
 INSTALL_TIMEOUT="${HQ_ENSURE_CLI_TIMEOUT:-120}"
 VERSION_TIMEOUT="${HQ_ENSURE_CLI_VERSION_TIMEOUT:-3}"
@@ -177,12 +183,31 @@ npm_global_bin() {
   if [ -d "$prefix/bin" ]; then printf '%s\n' "$prefix/bin"; else printf '%s\n' "$prefix"; fi
 }
 
+# pnpm's global bin dir (where `pnpm add -g` lands binaries). macOS default is
+# ~/Library/pnpm; Linux is often ~/.local/share/pnpm.
+pnpm_global_bin() {
+  local bin candidate
+  if command -v pnpm >/dev/null 2>&1; then
+    bin="$(pnpm bin -g 2>/dev/null)" || bin=""
+    if [ -n "$bin" ] && [ -d "$bin" ]; then printf '%s\n' "$bin"; return 0; fi
+  fi
+  if [ -n "${HOME:-}" ]; then
+    for candidate in "${HOME}/Library/pnpm" "${HOME}/.local/share/pnpm"; do
+      if [ -x "$candidate/hq" ]; then printf '%s\n' "$candidate"; return 0; fi
+    done
+  fi
+  return 1
+}
+
 # Locate a dir that actually contains an `hq` binary: ambient PATH first, then
-# npm's global bin. Prints the dir (no trailing binary) or nothing.
+# pnpm's global bin (the usual managed install), then npm's. Prints the dir
+# (no trailing binary) or nothing.
 locate_hq_dir() {
   local hqpath bin candidate
   hqpath="$(command -v hq 2>/dev/null)" || hqpath=""
   if [ -n "$hqpath" ] && hq_binary_usable "$hqpath"; then dirname "$hqpath"; return 0; fi
+  bin="$(pnpm_global_bin)" || bin=""
+  if [ -n "$bin" ] && hq_binary_usable "$bin/hq"; then printf '%s\n' "$bin"; return 0; fi
   bin="$(npm_global_bin)" || bin=""
   if [ -n "$bin" ] && hq_binary_usable "$bin/hq"; then printf '%s\n' "$bin"; return 0; fi
   candidate="${HOME:-}/.local/bin/hq"
@@ -226,7 +251,7 @@ add_dir_to_settings_path() {
 emit_path_updated() { # $1=dir  $2=installed(1/0)
   local dir="$1" installed="$2" lead
   if [ "$installed" = "1" ]; then
-    lead="The \`hq\` CLI was not found, so HQ installed it (npm install -g @indigoai-us/hq-cli) at \`$dir/hq\`."
+    lead="The \`hq\` CLI was not found, so HQ installed it at \`$dir/hq\`."
   else
     lead="The \`hq\` CLI at \`$dir/hq\` was not on the PATH Claude Code uses."
   fi
@@ -258,15 +283,18 @@ emit_manual_install() {
   cat <<'EOF'
 <hq-cli-missing>
 The `hq` CLI is not installed and HQ could not install it automatically.
-Install it manually:
+Install it manually with pnpm so the supply-chain age gate is honored:
 
-  npm install -g @indigoai-us/hq-cli@latest
+  pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440
 
-Then make sure it is reachable by Claude Code: add npm's global bin directory
-(find it with `npm config get prefix` — the binary lives in `<prefix>/bin`) to
-`env.PATH` in .claude/settings.local.json, and to your shell for this session:
+Do not run `npm install -g @indigoai-us/hq-cli@latest` — PreToolUse blocks npm
+because it cannot honor pnpm minimumReleaseAge.
 
-  export PATH="$(npm config get prefix)/bin:$PATH"
+Then make sure it is reachable by Claude Code: add pnpm's global bin directory
+(`pnpm bin -g`) to `env.PATH` in .claude/settings.local.json, and to your shell
+for this session:
+
+  export PATH="$(pnpm bin -g):$PATH"
 
 HQ CLI-backed features stay unavailable until `hq` resolves on that PATH.
 </hq-cli-missing>
@@ -324,7 +352,7 @@ if [ -f "$STAMP" ]; then
   STAMP_MTIME="$(stat -c %Y "$STAMP" 2>/dev/null || stat -f %m "$STAMP" 2>/dev/null || echo 0)"
   NOW="$(date +%s 2>/dev/null || echo 0)"
   if [ "$NOW" -gt 0 ] && [ "$((NOW - STAMP_MTIME))" -lt "$COOLDOWN" ]; then
-    # Still missing, but do not hammer npm — keep surfacing the remedy.
+    # Still missing, but do not hammer the installer — keep surfacing the remedy.
     emit_manual_install
     exit 0
   fi
@@ -334,7 +362,7 @@ mkdir -p "$STAMP_DIR" 2>/dev/null || true
 
 # Atomic claim (mkdir is atomic): only one concurrent session runs the global
 # install; a loser — two first-prompts racing while hq is absent — takes the
-# remedy path instead of contending over the shared global npm prefix. The lock
+# remedy path instead of contending over the shared global prefix. The lock
 # is released on ANY exit via the trap below, so a crashed installer cannot
 # deadlock later attempts (which a bare timestamp stamp could not guarantee).
 LOCK_DIR="$STAMP_DIR/installing.lock"
@@ -345,9 +373,15 @@ fi
 trap 'rmdir "$LOCK_DIR" 2>/dev/null; exit 0' EXIT
 : > "$STAMP" 2>/dev/null || true
 
-if ! command -v npm >/dev/null 2>&1; then
-  emit_manual_install
-  exit 0
+if [ -z "$INSTALL_CMD" ]; then
+  if command -v pnpm >/dev/null 2>&1; then
+    INSTALL_CMD="$PNPM_RESTORE_CMD"
+  elif command -v npm >/dev/null 2>&1; then
+    INSTALL_CMD="$NPM_RESTORE_CMD"
+  else
+    emit_manual_install
+    exit 0
+  fi
 fi
 
 # Bound the install so a stalled npm cannot hang the prompt. `timeout` is absent

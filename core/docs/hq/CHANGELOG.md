@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+### Fixed — default company anchors sessions and planning (US-008)
+
+- Sessions and company-anchoring skills now use an enabled device default company when no explicit prompt or session company exists. SessionStart records `company_source: device_default`; fleet identities, disabled defaults, and `needsChoice` states remain unbound and open the normal chooser. At HQ root, `/plan` now files company work under the selected company and can complete Work Mesh registration.
+
+### Fixed — owner-authorized local AWS profile is not blocked in interactive sessions (feedback 2305, 2026-09-19)
+- **`hq-load-company-hard-policies-on-mid-session-bind` no longer treats every session as a vault-only HQ agent.** Unattended HQ agents (fleet, Outpost jobs, scheduled/cron/background, `HQ_UNATTENDED`) still take production AWS credentials only via `hq secrets exec` and still have no local AWS-profile fallback. An interactive assistant may use a named local AWS profile when a verified company member explicitly names it, the name matches the company manifest `aws_profile` (or a company-documented profile), and `aws sts get-caller-identity` confirms the account — without reading `~/.aws/credentials` or printing secrets. Cross-company profile fallback stays forbidden. `credential-access-protocol` cites the same split.
+- Regression suite: `core/scripts/tests/hq-load-company-hard-policies-on-mid-session-bind.test.sh` (run from `ralph-orchestrator-policy.test.sh` in pr-checks).
+
+### Fixed — fleet agents can use `/deploy` with their machine identity (2026-09-19)
+- **`/deploy` now recognizes readable machine credentials and uses `hq-auth-refresh` to mint a session without browser login.** It sends the Cognito ID token to hq-deploy and vault membership resolution so the agent identity claims select its company membership. Agents with no active company membership now receive an explicit administrator action instead of attempting a personal-scope deploy. This ships in the next hq-core release; the fleet self-update runs about every six hours and re-runs `hq rescue --hq-root` to refresh the agent HQ root.
+
+### Fixed — env-dump hook blocks redirected dumps (DEF-026 follow-up, 2026-09-19)
+- **`block-env-dump.sh` no longer lets a dump through just because stdout is redirected.** The matcher treated end-of-command or a pipe as the only dump tail, so `printenv > file`, `printenv >> file`, `printenv>/file`, `printenv 1>file`, `env > file`, `set > file`, `declare -x > file`, and `docker exec … printenv > file` returned 0 and could write the process environment to disk. Piped forms (`printenv | tee file`) were already blocked. The dump tail now includes redirection (`>`, `>>`, `1>`). `printenv VAR` and `env VAR=x cmd` still pass, including `printenv HOME > file`.
+- Regression suite: `core/scripts/tests/block-env-dump.test.sh` (bare, piped, redirected, tee'd; hook-gate + master-hook under every profile).
+
 ### Fixed — env-dump hook is on the live PreToolUse path (DEF-026, 2026-09-19)
 - **`block-env-dump.sh` now ships in the scaffold and is registered.** Launch QA found the owner's copy blocked bare `printenv`/`env` when invoked directly, but the hook was missing from `hook-registry.json` and the three `hook-gate.sh` profile lists, so `master-hook.sh PreToolUse` allowed the dumps. The hook now blocks bare `printenv`/`env`, `set` with no args, `export -p`, `declare -x`, `cat /proc/self/environ`, and dumps piped into other commands (`env | grep -c`); `printenv VAR` and `env VAR=x cmd` still pass. Wired in `hook-registry.json` (Bash matcher, next to `detect-secrets`), all three hook-gate profiles, and the Codex/Grok adapter fallback list. JSON block payloads use `jq --arg`.
 - **Cursor scaffold (DEF-002).** The template now includes `.cursor/rules/hq.mdc` (Cursor 0.47+ / 3.x MDC project rules, `alwaysApply`) pointing at `.claude/CLAUDE.md`, and `core/core.yaml` lists `.cursor/` as locked + replace-from-staging so `create-hq` / `/update-hq` ship it.

@@ -1,7 +1,7 @@
 ---
 name: startwork
 description: Resolve current HQ context and surface useful next work options.
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, AskUserQuestion
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash, AskUserQuestion
 ---
 
 # Start Work Session
@@ -26,6 +26,16 @@ Omit `--task` when unknown. This writes `workspace/sessions/<sid>/meta.yaml`
 and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
 
 ## Process
+
+### 0.5 Default-company fallback
+
+When the argument does not itself select a company, resolve context before entering an unbound path:
+
+```bash
+bash core/scripts/resolve-company.sh --prompt "{the user's full input}"
+```
+
+Use its company when `source` is `prompt`, `session`, or `device_default`; an existing session company always wins over the device default. `none` (including disabled or `needsChoice` default state) must open the structured company/personal picker, never silently proceed unbound.
 
 ### 1. Resolve Argument
 
