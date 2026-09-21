@@ -77,3 +77,20 @@ repo_coordination:
   # If true, foreign sessions may edit freely inside a git worktree sibling
   # of the owned repo (scope: "repo" entries do not cover worktree paths).
   allow_worktree_override: true
+
+# =============================================================================
+# /conduct as the session default
+# =============================================================================
+# When enabled, every fresh session opens in /conduct mode: each task is
+# dispatched to a detached worker lane and the parent session stays free to
+# accept and route new messages. Enforced by:
+#   - .claude/hooks/auto-conduct.sh   (SessionStart: persists the engine, tells
+#                                      the assistant to run /conduct <engine>)
+# Per-machine override: copy this file to personal/settings/orchestrator.yaml.
+# Per-session override: HQ_AUTO_CONDUCT=1|0, or HQ_DISABLED_HOOKS=auto-conduct.
+# Leave the mode mid-session with `/conduct off`.
+conduct:
+  default_enabled: false
+
+  # Engine used when the session auto-enters conduct mode: codex | grok | claude
+  default_engine: codex
