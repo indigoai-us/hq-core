@@ -2,10 +2,10 @@
 # auto-conduct.sh — SessionStart hook that opens fresh sessions in /conduct mode.
 #
 # Reads the `conduct:` block of the orchestrator settings. When
-# `default_enabled: true`, the session's conduct engine is persisted in
-# workspace/sessions/<id>/meta.yaml and the assistant is told to run
-# `/conduct <engine>` as its first action, so every task in the session is
-# dispatched to detached worker lanes and the parent stays free.
+# `default_enabled: true`, the assistant is told to run `/conduct` as its first
+# action, so every task in the session is dispatched to detached worker lanes
+# and the parent stays free. There is deliberately no default engine: /conduct
+# asks the user which engine to use unless one is named in the argument.
 #
 # Settings file (first one that exists wins):
 #   personal/settings/orchestrator.yaml   # per-machine override
@@ -13,10 +13,9 @@
 #
 #   conduct:
 #     default_enabled: false
-#     default_engine: codex   # codex | grok | claude
 #
 # Per-session override:
-#   HQ_AUTO_CONDUCT=1            force on (uses default_engine, or codex)
+#   HQ_AUTO_CONDUCT=1            force on
 #   HQ_AUTO_CONDUCT=0            force off
 #   HQ_DISABLED_HOOKS=auto-conduct
 
@@ -65,7 +64,6 @@ read_conduct_key() {
 }
 
 enabled="$(read_conduct_key default_enabled)"
-engine="$(read_conduct_key default_engine)"
 
 case "${HQ_AUTO_CONDUCT:-}" in
   1|true|TRUE|on|ON|yes|YES) enabled="true" ;;
@@ -77,28 +75,10 @@ case "$enabled" in
   *) exit 0 ;;
 esac
 
-case "$engine" in
-  codex|grok|claude) ;;
-  "") engine="codex" ;;
-  *)
-    echo "auto-conduct: unknown conduct.default_engine '$engine' (expected codex, grok, or claude); using codex" >&2
-    engine="codex"
-    ;;
-esac
-
-# Persist the engine so later turns see the mode even before /conduct runs.
-# Best effort: a session the hook cannot resolve still gets the instruction.
-SESSION_ID="${HQ_HOOK_SESSION_ID:-$(printf '%s' "$STDIN_JSON" | sed -nE 's/.*"session_id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -1)}"
-if [ -n "$SESSION_ID" ] && [ -f "$HQ_ROOT/core/scripts/hq-session.sh" ]; then
-  HQ_HQ_SESSION_NO_CLI=1 bash "$HQ_ROOT/core/scripts/hq-session.sh" --session-id "$SESSION_ID" \
-    set conduct_engine "$engine" >/dev/null 2>&1 \
-    || echo "auto-conduct: could not persist conduct_engine for session $SESSION_ID" >&2
-fi
-
-cat <<EOT
+cat <<'EOT'
 <auto-conduct>
 Conduct mode is on by default for this HQ (orchestrator settings: conduct.default_enabled).
-Run \`/conduct $engine\` now as the first session action, before any task work. If slash commands are unavailable in this runtime, execute the conduct skill with argument "$engine" instead. Every task in this session is then dispatched to detached worker lanes; the parent session only briefs, routes, and reports.
-The user can leave the mode with \`/conduct off\`. Disable the default with \`HQ_AUTO_CONDUCT=0\`, \`HQ_DISABLED_HOOKS=auto-conduct\`, or \`conduct.default_enabled: false\` in personal/settings/orchestrator.yaml.
+Run `/conduct` now as the first session action, before any task work. If slash commands are unavailable in this runtime, execute the conduct skill with an empty argument instead. No engine is preset: unless the user has already named one, ask which engine to use (one AskUserQuestion, listing the installed engines) and persist the answer as the session's conduct_engine. Every task in this session is then dispatched to detached worker lanes; the parent session only briefs, routes, and reports.
+The user can leave the mode with `/conduct off`. Disable the default with `HQ_AUTO_CONDUCT=0`, `HQ_DISABLED_HOOKS=auto-conduct`, or `conduct.default_enabled: false` in personal/settings/orchestrator.yaml.
 </auto-conduct>
 EOT
