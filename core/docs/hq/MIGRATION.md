@@ -3,6 +3,15 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.155-beta.1
+
+- promote 2026-09-21 (conduct default: no preset engine): `conduct.default_engine`
+  is removed from `core/settings/orchestrator.yaml`. When `conduct.default_enabled`
+  is on, `.claude/hooks/auto-conduct.sh` now tells the assistant to run `/conduct`
+  with no engine, and `/conduct` asks which engine to use (codex, grok, or
+  claude) unless one is named in the argument. A leftover `default_engine` key
+  in a personal override is ignored.
+
 ## Release: v15.0.153-beta.1
 
 - promote 2026-09-20 (conduct as the session default): new `conduct:` block in
