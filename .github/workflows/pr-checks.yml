@@ -192,6 +192,8 @@ jobs:
         run: bash core/scripts/tests/conduct-reap.test.sh
       - name: SessionStart reap hook is non-blocking, single-flight and rate-limited
         run: bash core/scripts/tests/conduct-reap-hook.test.sh
+      - name: Conduct mode as the session default (auto-conduct SessionStart hook)
+        run: bash core/scripts/tests/auto-conduct.test.sh
       - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
         run: bash core/scripts/tests/skill-script-refs.test.sh
       - name: HQ feedback summary and verbatim report contract

@@ -966,6 +966,12 @@
             "gated": true
           },
           {
+            "id": "auto-conduct",
+            "script": ".claude/hooks/auto-conduct.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
             "id": "check-core-yaml-parity",
             "script": ".claude/hooks/check-core-yaml-parity.sh",
             "timeout": 30,

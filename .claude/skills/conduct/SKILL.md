@@ -70,6 +70,11 @@ each returned — not something to retry around.
   `AskUserQuestion` (options: the engines whose CLI is actually installed, codex
   recommended), then persist the answer.
 - No task text → confirm the mode and wait.
+- Session opened with an `<auto-conduct>` block → the mode is the HQ default
+  (`conduct.default_enabled: true` in `core/settings/orchestrator.yaml`, or the
+  `personal/settings/orchestrator.yaml` override). `conduct_engine` is already
+  persisted; treat the named engine as chosen, skip the engine question, and
+  confirm the mode in one line. `/conduct off` still leaves it for the session.
 
 ## Step 2: Choose the worker (per task, every turn while the mode is set)
 
@@ -443,6 +448,11 @@ through `/decision-queue`.
 - **The mode persists for the session** in `workspace/sessions/<id>/meta.yaml`
   under `conduct_engine`, alongside the `conduct_pool` list. Later turns read
   both; `/conduct off` clears them.
+- **The mode can be the HQ default.** `conduct.default_enabled` and
+  `conduct.default_engine` in `core/settings/orchestrator.yaml` (per-machine
+  override: `personal/settings/orchestrator.yaml`) make every fresh session
+  start in conduct mode via `.claude/hooks/auto-conduct.sh`. Per session:
+  `HQ_AUTO_CONDUCT=1|0` or `HQ_DISABLED_HOOKS=auto-conduct`.
 
 ## See also
 

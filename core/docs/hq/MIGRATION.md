@@ -3,6 +3,17 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.153-beta.1
+
+- promote 2026-09-20 (conduct as the session default): new `conduct:` block in
+  `core/settings/orchestrator.yaml` (`default_enabled`, `default_engine`). When
+  enabled, the new SessionStart hook `.claude/hooks/auto-conduct.sh` persists
+  `conduct_engine` for the fresh session and instructs the assistant to run
+  `/conduct <engine>` first, so every task goes to detached worker lanes. Off by
+  default; override per machine in `personal/settings/orchestrator.yaml`, per
+  session with `HQ_AUTO_CONDUCT=1|0` or `HQ_DISABLED_HOOKS=auto-conduct`. No
+  action needed after `/update-hq` unless you want the default on.
+
 ## Release: v15.0.151-beta.4
 
 - **Device default company fallback (US-008).** Set a default on each human device with `hq mesh context default set <slug>`. HQ SessionStart, `/plan`, `/prd`, `/deep-plan`, `/startwork`, and natural-language routing use it only when no explicit company or bound session company exists. Fleet dispatches never use this fallback. Use `hq mesh context default clear` to return to the company picker.
