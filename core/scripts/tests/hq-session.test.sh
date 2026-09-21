@@ -29,7 +29,7 @@ trap 'rm -rf "$TMP"' EXIT
 # whole precedence list so the .current-fallback cases below exercise the
 # fallback rather than the ambient session.
 unset HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
-      CODEX_SESSION_ID CODEX_THREAD_ID || true
+      CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID || true
 # Pin the root resolution to the fixture's self-relative walk (the depth guard
 # below), independent of any injected root the ambient environment carries.
 unset HQ_ROOT CLAUDE_PROJECT_DIR || true
@@ -230,5 +230,100 @@ rc=0
 "$HS" set company_slug indigo >/dev/null 2>&1 || rc=$?
 [ "$rc" = "1" ] || fail "expected exit 1 for set with no resolvable session, got $rc"
 [ ! -e "$TMP/workspace/sessions/../escape" ] || fail "traversal target was created"
+
+# ── senior field (authority-walk hop 2) ─────────────────────────────────────
+# --session-id is used throughout: test 12 left .current malformed.
+
+# 13. cmd_set seed includes senior: user (the copy that is not the hook).
+"$HS" --session-id sess-senior-seed set project foo
+seed_meta="$TMP/workspace/sessions/sess-senior-seed/meta.yaml"
+grep -qx 'senior: user' "$seed_meta" \
+  || fail "cmd_set seed missing senior: user in $seed_meta"
+assert_eq "$("$HS" --session-id sess-senior-seed get senior)" "user" \
+  "get senior after cmd_set seed"
+
+# 14. Accepted forms write; anything else is rejected BEFORE write.
+"$HS" --session-id sess-senior-val set senior user
+assert_eq "$("$HS" --session-id sess-senior-val get senior)" "user" \
+  "set senior user"
+"$HS" --session-id sess-senior-val set senior session:0026e2dd-7fff-4733-8d61-9a6fe7004908
+assert_eq "$("$HS" --session-id sess-senior-val get senior)" \
+  "session:0026e2dd-7fff-4733-8d61-9a6fe7004908" "set senior session:<uuid>"
+"$HS" --session-id sess-senior-val set senior lane:01M30KHSEX50K0G203QNV2590N_ip-172-31-47-133-ec2-internal
+assert_eq "$("$HS" --session-id sess-senior-val get senior)" \
+  "lane:01M30KHSEX50K0G203QNV2590N_ip-172-31-47-133-ec2-internal" \
+  "set senior lane:<ulid_hostname>"
+"$HS" --session-id sess-senior-val set senior session:run.2026_08
+assert_eq "$("$HS" --session-id sess-senior-val get senior)" "session:run.2026_08" \
+  "set senior session id with dot and underscore"
+
+# Restore a known previous value so a refused write can be checked against it.
+"$HS" --session-id sess-senior-val set senior user
+val_meta="$TMP/workspace/sessions/sess-senior-val/meta.yaml"
+prev_meta="$(cat "$val_meta")"
+
+reject_senior() {
+  local value="$1" label="$2" rc=0 err
+  err="$(mktemp)"
+  "$HS" --session-id sess-senior-val set senior "$value" >/dev/null 2>"$err" || rc=$?
+  [ "$rc" = "1" ] || fail "$label: expected exit 1, got $rc (value='$value')"
+  grep -q 'accepted forms: user, session:<id>, lane:<id>' "$err" \
+    || fail "$label: rejection must name accepted forms: $(cat "$err")"
+  rm -f "$err"
+  assert_eq "$("$HS" --session-id sess-senior-val get senior)" "user" \
+    "$label: previous senior must survive a refused write"
+  [ "$(cat "$val_meta")" = "$prev_meta" ] \
+    || fail "$label: meta.yaml changed after refused write"
+}
+
+reject_senior "bogus value" "set senior bogus value"
+reject_senior "session:" "session: with empty id"
+reject_senior "lane:" "lane: with empty id"
+reject_senior "" "empty senior"
+reject_senior "session: " "session: with space id"
+reject_senior $'user\nextra' "senior with newline"
+reject_senior "parent:foo" "unknown prefix"
+reject_senior "session:../escape" "session: traversal id"
+reject_senior "session:." "session: dot id"
+reject_senior "session:.." "session: dotdot id"
+
+# 15. Unrelated keys are unchanged: company_slug still mints, project still
+#     accepts values that would be invalid as senior, and neither path exits.
+"$HS" --session-id sess-unrel set company_slug indigo >/dev/null
+assert_eq "$("$HS" --session-id sess-unrel get company_slug)" "indigo" \
+  "company_slug set still works with senior validation present"
+cap_unrel="$TMP/workspace/sessions/sess-unrel/scope-capability.json"
+[ -f "$cap_unrel" ] || fail "company_slug must still mint scope-capability.json"
+assert_eq "$(jq -r '.company_slug' "$cap_unrel")" "indigo" \
+  "unrelated company_slug capability"
+"$HS" --session-id sess-unrel set project "bogus value"
+assert_eq "$("$HS" --session-id sess-unrel get project)" "bogus value" \
+  "project with a space (invalid as senior) must still write"
+
+# 16. Absent senior on a pre-field record: get returns empty, exit 0.
+#     Distinct from an unreadable file, which must not exit 0.
+mkdir -p "$TMP/workspace/sessions/sess-old"
+printf 'session_id: sess-old\nstarted_at: "2020-01-01T00:00:00Z"\n' \
+  > "$TMP/workspace/sessions/sess-old/meta.yaml"
+old_out="$("$HS" --session-id sess-old get senior)"
+assert_eq "$old_out" "" "absent senior returns empty (pre-field record)"
+old_rc=0
+"$HS" --session-id sess-old get senior >/dev/null || old_rc=$?
+[ "$old_rc" = "0" ] || fail "absent senior must be a successful read, got $old_rc"
+
+missing_out="$("$HS" --session-id sess-no-meta get senior)"
+assert_eq "$missing_out" "" "missing meta.yaml get senior returns empty"
+missing_rc=0
+"$HS" --session-id sess-no-meta get senior >/dev/null || missing_rc=$?
+[ "$missing_rc" = "0" ] || fail "missing meta.yaml must not fail get, got $missing_rc"
+
+if [ "$(id -u)" != "0" ]; then
+  chmod 000 "$TMP/workspace/sessions/sess-old/meta.yaml"
+  unread_rc=0
+  "$HS" --session-id sess-old get senior >/dev/null 2>/dev/null || unread_rc=$?
+  chmod 644 "$TMP/workspace/sessions/sess-old/meta.yaml"
+  [ "$unread_rc" != "0" ] \
+    || fail "unreadable meta.yaml must not look like an absent key (exit 0)"
+fi
 
 echo "PASS: hq-session.sh ($(basename "$HS"))"

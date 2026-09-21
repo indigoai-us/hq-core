@@ -115,7 +115,19 @@ cmd_get() {
   [ -n "$key" ] || { echo "usage: hq-session.sh get <key>" >&2; exit 1; }
   local meta
   meta="$(current_meta)"
+  # Missing meta.yaml: no keys to read. Print nothing, exit 0.
+  # Unreadable meta.yaml: awk fails and this function exits non-zero under
+  # set -e. Those two are not the same case — do not default either.
   [ -n "$meta" ] && [ -f "$meta" ] || return 0
+  # Absent key: print nothing. For `senior`, a record written before that
+  # field existed has no line; that is a successful read of a file that does
+  # not contain the key, not a failed read. §3.1 defaults `senior` to `user`
+  # at write time (the seed in cmd_set / master-hook.sh). This getter does
+  # not invent that default, so "never written" stays distinguishable from
+  # an explicit `senior: user`. Authority walkers apply the §3.1 default at
+  # the walk site. Substituting `user` here would collapse absence into the
+  # permissive value that hq-never-swallow-errors and
+  # monitor-unknown-paths-must-not-resolve-to-healthy forbid.
   awk -v k="$key" '
     $1 == k":" {
       sub(/^[^:]+:[[:space:]]*/, "")
@@ -143,6 +155,38 @@ cmd_set() {
     esac
   fi
 
+  # Reject an invalid senior BEFORE writing anything. Otherwise a bad value
+  # lands in meta.yaml and only fails later when the authority walk reads it,
+  # leaving corrupt state that hop 2 would treat as a real parent. Same shape
+  # as the company_slug guard above.
+  #
+  # Accepted forms: user | session:<id> | lane:<id>.
+  # <id> charset is A-Za-z0-9._- — company_slug's a-z0-9_- plus `.` (hostnames
+  # contain dots) plus A-Z because lane ids on this box are ULID_hostname
+  # (e.g. 01M30KHSEX50K0G203QNV2590N_ip-172-31-47-133-ec2-internal; ULIDs are
+  # Crockford base32, typically uppercase) and session ids are UUID hex
+  # (e.g. 0026e2dd-7fff-4733-8d61-9a6fe7004908). `.` and `..` are rejected as
+  # ids: they are path segments under workspace/sessions/.
+  if [ "$key" = "senior" ]; then
+    local senior_ok=0 senior_id
+    case "$value" in
+      user)
+        senior_ok=1
+        ;;
+      session:*|lane:*)
+        senior_id="${value#*:}"
+        case "$senior_id" in
+          ""|.|..|*[!A-Za-z0-9._-]*) ;;
+          *) senior_ok=1 ;;
+        esac
+        ;;
+    esac
+    if [ "$senior_ok" != 1 ]; then
+      echo "hq-session: invalid senior: '$value' (accepted forms: user, session:<id>, lane:<id>)" >&2
+      exit 1
+    fi
+  fi
+
   local id meta
   id="$(current_id)"
   if [ -z "$id" ]; then
@@ -152,9 +196,10 @@ cmd_set() {
   meta="$SESSIONS_DIR/$id/meta.yaml"
   mkdir -p "$(dirname "$meta")"
   # Seed the same header master-hook.sh writes, so binding a session the hook
-  # has not bootstrapped yet still produces a well-formed record.
+  # has not bootstrapped yet still produces a well-formed record. `senior: user`
+  # is the §3.1 default so hop 2 of the authority walk has a field to read.
   if [ ! -f "$meta" ]; then
-    printf 'session_id: %s\nstarted_at: "%s"\n' \
+    printf 'session_id: %s\nstarted_at: "%s"\nsenior: user\n' \
       "$id" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$meta"
   fi
 
