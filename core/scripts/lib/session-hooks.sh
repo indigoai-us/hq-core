@@ -3,7 +3,7 @@
 # session-hooks.sh — bootstrap session meta and invoke master-hook for agent sessions.
 #
 # Ordering (US-402 / US-404):
-#   1. Write workspace/sessions/<runId>/meta.yaml (session_id + company_slug)
+#   1. Write workspace/sessions/<runId>/meta.yaml (session_id + company_slug + senior: user)
 #   2. Mint the matching scope capability, then publish .current with runId
 #   3. Verify via hq-session.sh get company
 #   4. master-hook SessionStart, then UserPromptSubmit
@@ -25,6 +25,7 @@ session_bootstrap_meta() {
   {
     printf 'session_id: %s\n' "$run_id"
     printf 'company_slug: %s\n' "$company"
+    printf 'senior: user\n'
     [ -n "$project" ] && printf 'project: %s\n' "$project"
     [ -n "$task" ] && printf 'task: %s\n' "$task"
     printf 'started_at: "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -97,6 +97,8 @@ HQ_DEFAULT_COMPANY_JSON='{"ok":true,"slug":"indigo","enabled":true,"needsChoice"
   || fail "enabled device default did not bind indigo"
 grep -qx 'company_source: device_default' "$TMP/workspace/sessions/child-sid/meta.yaml" \
   || fail "device-default source missing from meta.yaml"
+grep -qx 'senior: user' "$TMP/workspace/sessions/child-sid/meta.yaml" \
+  || fail "device-default bootstrap missing senior: user"
 pass "unbound session binds the enabled device default with its source"
 
 printf 'session_id: child-sid\ncompany_slug: otherco\ncompany_source: session\n' \

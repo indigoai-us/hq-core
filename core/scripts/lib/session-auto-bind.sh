@@ -205,7 +205,7 @@ session_auto_bind_apply() {
   mkdir -p "$meta_dir" 2>/dev/null || return 0
 
   if [ ! -f "$meta" ]; then
-    printf 'session_id: %s\ncompany_slug: %s\ncompany_source: %s\nstarted_at: "%s"\n' \
+    printf 'session_id: %s\ncompany_slug: %s\ncompany_source: %s\nstarted_at: "%s"\nsenior: user\n' \
       "$sid" "$slug" "$source" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
       > "$meta" || return 0
   elif ! grep -q '^company_slug:' "$meta" 2>/dev/null; then
@@ -235,7 +235,7 @@ session_auto_bind_apply_validated_default() {
   meta="$meta_dir/meta.yaml"
   mkdir -p "$meta_dir" 2>/dev/null || return 0
   if [ ! -f "$meta" ]; then
-    printf 'session_id: %s\ncompany_slug: %s\ncompany_source: device_default\n' "$sid" "$slug" > "$meta" || return 0
+    printf 'session_id: %s\ncompany_slug: %s\ncompany_source: device_default\nsenior: user\n' "$sid" "$slug" > "$meta" || return 0
     [ "$state_existed" = "0" ] || printf 'company_confidence: device_default_repair\n' >> "$meta" || return 0
     printf 'started_at: "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$meta" || return 0
   elif ! grep -q '^company_slug:' "$meta" 2>/dev/null; then

@@ -7,7 +7,7 @@
 # Active company resolution (fail-closed for tenant isolation):
 #   - Read session_id from stdin payload.
 #   - Bootstrap workspace/sessions/<session_id>/meta.yaml on first event of
-#     the session (with session_id and started_at). Update
+#     the session (with session_id, started_at, and senior: user). Update
 #     workspace/sessions/.current to point at it.
 #   - Read company_slug from meta.yaml. If unset, run NO company hooks.
 #     This is intentional — startwork (or any skill) is responsible for
@@ -300,7 +300,7 @@ if [ -n "$SESSION_ID" ]; then
   META_FILE="$SESSION_DIR/meta.yaml"
   mkdir -p "$SESSION_DIR"
   if [ ! -f "$META_FILE" ]; then
-    printf 'session_id: %s\nstarted_at: "%s"\n' \
+    printf 'session_id: %s\nstarted_at: "%s"\nsenior: user\n' \
       "$SESSION_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$META_FILE"
   fi
   printf '%s\n' "$SESSION_ID" > "$SESSIONS_DIR/.current"

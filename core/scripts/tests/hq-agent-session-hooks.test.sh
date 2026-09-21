@@ -16,7 +16,11 @@ pass() { echo "  ok: $1"; }
 # environment before falling back to the fixture's workspace/sessions/.current,
 # so clear the whole precedence list to keep the fixture authoritative.
 unset HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
-      CODEX_SESSION_ID CODEX_THREAD_ID || true
+      CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID || true
+# Pin root resolution to the fixture. An ambient HQ_ROOT from the parent
+# session would make `hq-session.sh get company` read the live tree's
+# sessions dir instead of the fixture's.
+unset HQ_ROOT CLAUDE_PROJECT_DIR || true
 
 FIXTURE="$TMP/hq"
 mkdir -p "$FIXTURE/core/schemas" "$FIXTURE/core/scripts" \
@@ -85,6 +89,7 @@ META="$FIXTURE/workspace/sessions/$RUN_ID/meta.yaml"
 [ -f "$META" ] || fail "missing meta.yaml"
 grep -q "session_id: $RUN_ID" "$META" || fail "meta session_id"
 grep -q "company_slug: indigo" "$META" || fail "meta company_slug"
+grep -qx "senior: user" "$META" || fail "meta senior"
 GOT="$(cd "$FIXTURE" && bash "$FIXTURE/core/scripts/hq-session.sh" get company)"
 [ "$GOT" = "indigo" ] || fail "hq-session get company got '$GOT'"
 # Pinning to the run id must resolve the same record — this is the path
