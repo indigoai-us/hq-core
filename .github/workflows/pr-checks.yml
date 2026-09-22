@@ -205,6 +205,21 @@ jobs:
       - name: /resumework requires explicit confirmation for locked threads
         run: bash core/scripts/tests/resume-thread-lock.test.sh
 
+  skill-command-script:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    # A skill's command.sh runs on /<skill> with its output shown to the
+    # operator only. Guards the two properties that make that safe: the output
+    # never reaches model context, and a company's script never runs for
+    # another company's session.
+    name: skill-command-script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: UserPromptSubmit command.sh dispatch (scope, isolation, bounds)
+        run: bash core/scripts/tests/skill-command-script.test.sh
+
   setup-skill-direct-install:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # /setup must install missing CLI tools directly, never re-introduce the

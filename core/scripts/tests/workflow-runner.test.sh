@@ -103,6 +103,8 @@ n="$$-$RANDOM"
 printf '%s\n' "$@" > "$rec/codex-argv.$n"
 printenv HQ_DISABLED_HOOKS > "$rec/codex-hooksenv.$n" 2>/dev/null || : > "$rec/codex-hooksenv.$n"
 printenv HQ_SPAWN_COMPANY > "$rec/codex-spawnco.$n" 2>/dev/null || : > "$rec/codex-spawnco.$n"
+printenv HQ_SPAWN_PROJECT > "$rec/codex-spawnproject.$n" 2>/dev/null || : > "$rec/codex-spawnproject.$n"
+printenv HQ_SPAWN_TASK > "$rec/codex-spawntask.$n" 2>/dev/null || : > "$rec/codex-spawntask.$n"
 printenv HQ_PARENT_SESSION_ID > "$rec/codex-parent.$n" 2>/dev/null || : > "$rec/codex-parent.$n"
 { readlink /proc/self/fd/0 2>/dev/null || lsof -a -p $$ -d 0 -Fn 2>/dev/null | sed -n 's/^n//p'; } > "$rec/codex-stdin.$n"
 [ -s "$rec/codex-stdin.$n" ] || echo "unknown" > "$rec/codex-stdin.$n"
@@ -395,6 +397,45 @@ check "hook-suppression workflow exits 0 (operator env set)" "$RC"
 f="$(ls "$TMP/rec"/codex-hooksenv.* 2>/dev/null | head -1)"
 [ -n "$f" ] && grep -q 'operator-chosen-hook' "$f" && grep -q 'checkpoint-stop-gate' "$f"
 check "an operator's HQ_DISABLED_HOOKS is preserved, not clobbered" "$?"
+
+# ---- 1d: task binding comes only from the dispatching launcher ---------------
+# A parent run can remain on a completed story while it dispatches unrelated
+# backend/review lanes. The runner may carry company and project context, but
+# it must never read a task from the parent's metadata.
+mkdir -p "$HQROOT/workspace/sessions/parent-task-bound"
+cat > "$HQROOT/workspace/sessions/parent-task-bound/meta.yaml" <<'META'
+company_slug: acme
+project: work-mesh-live
+task: US-008
+META
+cat > "$TMP/wf-task-binding.mjs" <<'WF'
+export const meta = { name: 'task-binding', description: 'detached task binding' }
+return await agent('task binding check', { label: 'task-binding', tier: 'exec', timeoutSecs: 30 })
+WF
+export HQ_PARENT_SESSION_ID=parent-task-bound
+unset HQ_SPAWN_TASK
+run_wf "$TMP/wf-task-binding.mjs"
+unset HQ_PARENT_SESSION_ID
+check "task-binding workflow exits 0" "$RC"
+task_env_file="$(grep -l 'task binding check' "$TMP/rec"/codex-argv.* 2>/dev/null | head -1)"
+task_env_file="${task_env_file/argv/spawntask}"
+[ -n "$task_env_file" ] && [ -f "$task_env_file" ] && ! grep -q '[^[:space:]]' "$task_env_file"
+check "detached lane does not inherit parent meta.yaml task" "$?"
+
+cat > "$TMP/wf-explicit-task-binding.mjs" <<'WF'
+export const meta = { name: 'explicit-task-binding', description: 'explicit detached task binding' }
+return await agent('explicit task binding check', { label: 'explicit-task-binding', tier: 'exec', timeoutSecs: 30 })
+WF
+export HQ_PARENT_SESSION_ID=parent-task-bound
+export HQ_SPAWN_TASK=work-mesh-to-market/US-005
+run_wf "$TMP/wf-explicit-task-binding.mjs"
+unset HQ_PARENT_SESSION_ID HQ_SPAWN_TASK
+check "explicit task-binding workflow exits 0" "$RC"
+task_env_file="$(grep -l 'explicit task binding check' "$TMP/rec"/codex-argv.* 2>/dev/null | head -1)"
+task_env_file="${task_env_file/argv/spawntask}"
+[ -n "$task_env_file" ] && [ -f "$task_env_file" ] \
+  && grep -qx 'work-mesh-to-market/US-005' "$task_env_file"
+check "detached lane forwards launcher HQ_SPAWN_TASK" "$?"
 
 # ---- 2: grok engine ----------------------------------------------------------
 cat > "$TMP/wf-grok.mjs" <<'WF'
@@ -796,7 +837,8 @@ cat > "$TMP/wf-inherit.mjs" <<'WF'
 await agent('inherit-bind', { tier: 'plan', timeoutSecs: 30 })
 return 'ok'
 WF
-OUT="$(HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$TMP/rec" \
+OUT="$(env -u HQ_SPAWN_COMPANY -u HQ_SPAWN_PROJECT -u HQ_SPAWN_TASK \
+  HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$TMP/rec" \
   HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" HQ_SESSION_ID=parent-sid \
   HQ_WORKFLOW_GATES_DIR="$TMP/gates-default" \
   node "$RUNNER" "$TMP/wf-inherit.mjs" --quiet --run-dir "$TMP/run-inherit" 2>/dev/null)"

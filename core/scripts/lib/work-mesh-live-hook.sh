@@ -172,56 +172,191 @@ work_mesh_live_is_slash_or_short() {
 
 # work_mesh_live_bump_tool_writes <sid>
 #   Atomically increment toolWrites on the state JSON (create stub if absent).
-#   Sets REPLY to the new count. Uses temp+mv; no jq required on hot path when
-#   the file is simple, but prefers jq when available for safe JSON edit.
+#   Sets REPLY to the new count. Uses temp+mv and chmod 600.
+#   Merge-safe: only toolWrites and updatedAt change; every other field the
+#   hq-cli reconcile/ack path wrote (companyUid, companySlug, projectId, taskId,
+#   startedAt, bindingEpisodeId, decision, contextStatus, ...) is preserved
+#   byte-for-byte. Prefers jq; the no-jq fallback edits the two values in place
+#   in pure bash (compact or pretty-printed JSON, any key order) and only
+#   appends a missing key. contextStatus is set to "unresolved" only on a fresh
+#   stub. Bash 3.2 compatible; no sed/awk/GNU flags.
+#   Concurrency: hq-cli writes the same path with same-dir tmp + rename and has
+#   no lock convention (hq-cli src/lib/work-context/atomic.ts). Two lines of
+#   defense against a reconcile write landing between our read and mv:
+#     1. mkdir lock at <path>.lock (Bash 3.2 safe), bounded wait ~200ms, stale
+#        lock reclaimed by age (>5s). If the lock cannot be taken, the bump is
+#        skipped (return 1) rather than risk a clobber.
+#     2. Re-read immediately before mv; if the file changed since the first
+#        read, rebuild from the new body.
+#   Test seam: WORK_MESH_BUMP_TEST_SLEEP_AFTER_READ=<secs> sleeps between the
+#   first read and the re-read so a test can inject a concurrent writer.
 work_mesh_live_bump_tool_writes() {
-  local sid="$1" path dir tmp cur=0 next ts
+  local sid="$1" path dir lock rc
   path="$(work_mesh_live_state_path "$sid")"
   dir="${path%/*}"
   if [ ! -d "$dir" ]; then
     mkdir -p -- "$dir" 2>/dev/null || true
     chmod 700 -- "$dir" 2>/dev/null || true
   fi
-  if [ -f "$path" ]; then
-    if command -v jq >/dev/null 2>&1; then
-      cur="$(jq -r '.toolWrites // 0' "$path" 2>/dev/null || printf '0')"
-    else
-      local body rest
-      body="$(<"$path")"
-      case "$body" in
-        *"\"toolWrites\""*)
-          rest="${body#*\"toolWrites\"}"; rest="${rest#*:}"
-          while [ "${rest#"${rest%%[![:space:]]*}"}" != "$rest" ]; do rest="${rest#?}"; done
-          cur="${rest%%[!0-9]*}"
-          ;;
-      esac
+  lock="$path.lock"
+  _work_mesh_live_lock_acquire "$lock" || return 1
+  _work_mesh_live_bump_locked "$sid" "$path"
+  rc=$?
+  rm -rf -- "$lock" 2>/dev/null || true
+  return $rc
+}
+
+# _work_mesh_live_lock_acquire <lockdir>
+#   mkdir lock; ~20 x 10ms bounded wait; reclaim when the holder's stamp is
+#   older than 5s (or missing after the full wait). 0 = held, 1 = give up.
+_work_mesh_live_lock_acquire() {
+  local lock="$1" i=0 now stamp
+  while :; do
+    if mkdir -- "$lock" 2>/dev/null; then
+      date +%s >"$lock/ts" 2>/dev/null || true
+      return 0
     fi
-    case "$cur" in
-      ""|*[!0-9]*) cur=0 ;;
+    i=$((i + 1))
+    if [ "$i" -ge 20 ]; then
+      now="$(date +%s 2>/dev/null || printf '0')"
+      stamp="$(cat "$lock/ts" 2>/dev/null || printf '')"
+      case "$stamp" in ""|*[!0-9]*) stamp=0 ;; esac
+      if [ "$stamp" -eq 0 ] || [ $((now - stamp)) -gt 5 ]; then
+        rm -rf -- "$lock" 2>/dev/null || true
+        if mkdir -- "$lock" 2>/dev/null; then
+          date +%s >"$lock/ts" 2>/dev/null || true
+          return 0
+        fi
+      fi
+      return 1
+    fi
+    sleep 0.01 2>/dev/null || sleep 1
+  done
+}
+
+# _work_mesh_live_bump_render <sid> <path> <tmp>
+#   Read <path> (if any), build the bumped document into <tmp>.
+#   Sets _WM_SEEN to the body that was read ("" when absent) and REPLY to the
+#   new count. Returns 1 when the file must not be touched.
+_work_mesh_live_bump_render() {
+  local sid="$1" path="$2" tmp="$3" cur="" next ts body="" rest have_jq=0 written=0
+  _WM_SEEN=""
+  command -v jq >/dev/null 2>&1 && have_jq=1
+  if [ -f "$path" ]; then
+    body="$(<"$path")"
+    _WM_SEEN="$body"
+    case "$body" in
+      *"\"toolWrites\""*)
+        rest="${body#*\"toolWrites\"}"; rest="${rest#*:}"
+        while [ "${rest#"${rest%%[![:space:]]*}"}" != "$rest" ]; do rest="${rest#?}"; done
+        cur="${rest%%[!0-9]*}"
+        ;;
     esac
   fi
+  case "$cur" in ""|*[!0-9]*) cur=0 ;; esac
   next=$((cur + 1))
-  if ! TZ=UTC printf -v ts '%(%Y-%m-%dT%H:%M:%S)T.000Z' -1 2>/dev/null; then
-    ts="1970-01-01T00:00:00.000Z"
-  fi
-  tmp="$path.tmp.$$"
-  if [ -f "$path" ] && command -v jq >/dev/null 2>&1; then
-    jq --argjson n "$next" --arg ts "$ts" \
-      '.toolWrites = $n | .updatedAt = $ts' "$path" >"$tmp" 2>/dev/null \
-      || printf '{"sessionId":"%s","toolWrites":%s,"updatedAt":"%s"}\n' "$sid" "$next" "$ts" >"$tmp"
-  elif [ -f "$path" ]; then
-    if grep -q '"toolWrites"' "$path" 2>/dev/null; then
-      sed "s/\"toolWrites\"[[:space:]]*:[[:space:]]*[0-9][0-9]*/\"toolWrites\":$next/" "$path" >"$tmp"
-    else
-      sed "s/}$/,\"toolWrites\":$next}/" "$path" >"$tmp"
-    fi
-  else
+  ts=""
+  # %(...)T needs Bash 4.2+; macOS Bash 3.2 falls back to date -u (BSD + GNU).
+  TZ=UTC printf -v ts '%(%Y-%m-%dT%H:%M:%S)T.000Z' -1 2>/dev/null || ts=""
+  case "$ts" in
+    ""|*%*) ts="$(TZ=UTC date -u '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || true)" ;;
+  esac
+  [ -n "$ts" ] || ts="1970-01-01T00:00:00.000Z"
+  if [ ! -f "$path" ]; then
     printf '{"contractVersion":1,"sessionId":"%s","contextStatus":"unresolved","toolWrites":%s,"updatedAt":"%s"}\n' \
-      "$sid" "$next" "$ts" >"$tmp"
+      "$sid" "$next" "$ts" >"$tmp" || return 1
+    REPLY="$next"
+    return 0
+  fi
+  if [ "$have_jq" -eq 1 ]; then
+    if printf '%s' "$body" | jq --argjson n "$next" --arg ts "$ts" \
+        '.toolWrites = $n | .updatedAt = $ts' >"$tmp" 2>/dev/null \
+       && [ -s "$tmp" ]; then
+      written=1
+    elif jq -n empty >/dev/null 2>&1; then
+      # jq works but could not parse the file (malformed/partial JSON).
+      # Never replace the CLI's file with a stub: leave it untouched and skip.
+      rm -f -- "$tmp" 2>/dev/null
+      return 1
+    fi
+    # else: jq on PATH is unusable; take the pure-bash path below.
+  fi
+  if [ "$written" -eq 0 ]; then
+    # No-jq fallback: pure-bash in-place edit of the two values (no extra
+    # spawns, Bash 3.2 safe). Works for compact and pretty JSON in any key
+    # order; every other byte of the CLI's file is left as is.
+    local pre digits add
+    case "$body" in
+      *"\"toolWrites\""*)
+        pre="${body%%\"toolWrites\"*}"
+        rest="${body#*\"toolWrites\"}"
+        while [ "${rest#"${rest%%[![:space:]:]*}"}" != "$rest" ]; do rest="${rest#?}"; done
+        digits="${rest%%[!0-9]*}"
+        rest="${rest#"$digits"}"
+        body="$pre\"toolWrites\": $next$rest"
+        ;;
+    esac
+    case "$body" in
+      *"\"updatedAt\""*)
+        pre="${body%%\"updatedAt\"*}"
+        rest="${body#*\"updatedAt\"}"
+        while [ "${rest#"${rest%%[![:space:]:]*}"}" != "$rest" ]; do rest="${rest#?}"; done
+        case "$rest" in
+          \"*) rest="${rest#\"}"; rest="${rest#*\"}" ;;
+        esac
+        body="$pre\"updatedAt\": \"$ts\"$rest"
+        ;;
+    esac
+    add=""
+    case "$body" in *"\"toolWrites\""*) ;; *) add="\"toolWrites\": $next" ;; esac
+    case "$body" in *"\"updatedAt\""*) ;; *) add="${add:+$add, }\"updatedAt\": \"$ts\"" ;; esac
+    if [ -n "$add" ]; then
+      # Insert right after the opening brace so the closing brace stays put.
+      case "$body" in
+        *\{*)
+          pre="${body%%\{*}"
+          rest="${body#*\{}"
+          local peek="$rest"
+          while [ "${peek#"${peek%%[![:space:]]*}"}" != "$peek" ]; do peek="${peek#?}"; done
+          case "$peek" in
+            \}*) body="$pre{$add$peek" ;;
+            *)   body="$pre{$add, $rest" ;;
+          esac
+          ;;
+        *) body="{$add}" ;;
+      esac
+    fi
+    if printf '%s\n' "$body" >"$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+      written=1
+    fi
+  fi
+  if [ "$written" -eq 0 ]; then
+    rm -f -- "$tmp" 2>/dev/null
+    return 1
+  fi
+  REPLY="$next"
+  return 0
+}
+
+# _work_mesh_live_bump_locked <sid> <path>  (caller holds the lock)
+_work_mesh_live_bump_locked() {
+  local sid="$1" path="$2" tmp seen again
+  tmp="$path.tmp.$$"
+  _work_mesh_live_bump_render "$sid" "$path" "$tmp" || return 1
+  seen="$_WM_SEEN"
+  if [ -n "${WORK_MESH_BUMP_TEST_SLEEP_AFTER_READ:-}" ]; then
+    sleep "$WORK_MESH_BUMP_TEST_SLEEP_AFTER_READ" 2>/dev/null || true
+  fi
+  # Second line of defense: re-read right before mv; if a concurrent writer
+  # (hq-cli reconcile/ack) changed the file since our read, rebuild from it.
+  again=""
+  [ -f "$path" ] && again="$(<"$path")"
+  if [ "$again" != "$seen" ]; then
+    rm -f -- "$tmp" 2>/dev/null
+    _work_mesh_live_bump_render "$sid" "$path" "$tmp" || return 1
   fi
   mv -f -- "$tmp" "$path" 2>/dev/null || { rm -f -- "$tmp"; return 1; }
   chmod 600 -- "$path" 2>/dev/null || true
-  REPLY="$next"
   return 0
 }
 

@@ -264,7 +264,7 @@ cmd_status() {
 
 cmd_post() {
   local ch; ch="$(require_channel)"
-  local title="" state="" body_from_stdin=0 topic="" new_thread=0 under=""
+  local title="" state="" body_from_stdin=0 topic="" new_thread=0 under="" allow_long=0
   local -a lines=() nexts=() asks=() tos=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -278,11 +278,55 @@ cmd_post() {
       --line)  lines+=("$2"); shift 2 ;;
       --next)  nexts+=("$2"); shift 2 ;;
       --ask)   asks+=("$2"); shift 2 ;;
+      --allow-long) allow_long=1; shift ;;
       -)       body_from_stdin=1; shift ;;
       *) die "post: unknown arg $1" ;;
     esac
   done
   [ -n "$title" ] || die "post needs --title"
+
+  # Length guard — refuse before any network call so nothing partial is sent.
+  # Override with --allow-long only when the post genuinely must be longer.
+  if [ "$allow_long" != 1 ] && [ "$body_from_stdin" != 1 ]; then
+    local _guard_fail=0 _len _preview
+    if [ "${#lines[@]}" -gt 6 ]; then
+      echo "hq-dm-bind: too many --line bullets (${#lines[@]}, limit 6). Put extra detail in workspace/reports/<name>.md and link it in one bullet. Use --allow-long to override." >&2
+      _guard_fail=1
+    fi
+    if [ "${#nexts[@]}" -gt 2 ]; then
+      echo "hq-dm-bind: too many --next items (${#nexts[@]}, limit 2). Use --allow-long to override." >&2
+      _guard_fail=1
+    fi
+    if [ "${#asks[@]}" -gt 1 ]; then
+      echo "hq-dm-bind: too many --ask items (${#asks[@]}, limit 1). Use --allow-long to override." >&2
+      _guard_fail=1
+    fi
+    for _l in "${lines[@]}"; do
+      _len="$(printf '%s' "$_l" | wc -c | tr -d ' ')"
+      if [ "$_len" -gt 140 ]; then
+        _preview="$(printf '%s' "$_l" | cut -c1-60)"
+        echo "hq-dm-bind: --line too long ($_len chars, limit 140): \"$_preview\". Put the detail in workspace/reports/<name>.md and reference the path in one line. Use --allow-long to override." >&2
+        _guard_fail=1
+      fi
+    done
+    for _l in "${nexts[@]}"; do
+      _len="$(printf '%s' "$_l" | wc -c | tr -d ' ')"
+      if [ "$_len" -gt 140 ]; then
+        _preview="$(printf '%s' "$_l" | cut -c1-60)"
+        echo "hq-dm-bind: --next too long ($_len chars, limit 140): \"$_preview\". Put the detail in workspace/reports/<name>.md and reference the path in one line. Use --allow-long to override." >&2
+        _guard_fail=1
+      fi
+    done
+    for _l in "${asks[@]}"; do
+      _len="$(printf '%s' "$_l" | wc -c | tr -d ' ')"
+      if [ "$_len" -gt 140 ]; then
+        _preview="$(printf '%s' "$_l" | cut -c1-60)"
+        echo "hq-dm-bind: --ask too long ($_len chars, limit 140): \"$_preview\". Put the detail in workspace/reports/<name>.md and reference the path in one line. Use --allow-long to override." >&2
+        _guard_fail=1
+      fi
+    done
+    [ "$_guard_fail" = 0 ] || exit 2
+  fi
   local msg="$title"; [ -n "$state" ] && msg="$title — $state"
   if [ "$body_from_stdin" = 1 ]; then
     msg="$msg"$'\n\n'"$(cat)"
@@ -310,6 +354,15 @@ cmd_post() {
   shown="$(printf '%s' "$ml" | sed -E 's/@"([^"]+)"/@\1/g')"
   names_nl="$(printf '%s' "$ml" | grep -oE '@"[^"]+"' | sed -E 's/^@"//; s/"$//')"
   msg="$shown"$'\n\n'"$msg"
+
+  # Total body length check (counts what the receipt prints — mention line included).
+  if [ "$allow_long" != 1 ]; then
+    local _total; _total="$(printf '%s' "$msg" | wc -c | tr -d ' ')"
+    if [ "$_total" -gt 600 ]; then
+      echo "hq-dm-bind: post body too long ($_total chars, limit 600). Put the detail in workspace/reports/<name>.md and reference the path in one line. Use --allow-long to override." >&2
+      exit 2
+    fi
+  fi
 
   # One thread per topic: the first post on a topic is the root, every later
   # post on it is a reply under that root, so the room stays scannable.

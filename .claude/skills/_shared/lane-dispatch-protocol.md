@@ -154,7 +154,12 @@ echo $(( $(date +%s) + LANE_TIMEOUT )) > "$RUN_DIR/deadline"
 # interpolated into the nested shell string — see below.
 # The caller resolves company from trusted session state before this block. A
 # detached lane never guesses a company from its cwd: without a resolved slug,
-# do not launch it. Project and task are optional parent-session bindings.
+# do not launch it. Project may be carried as parent-session context. A task is
+# forwarded only when the dispatching launcher explicitly exports
+# HQ_SPAWN_TASK for this lane.
+# A caller that does not own a task must not export one, including a task it
+# inherited from its own lane environment. For example, a /conduct session that
+# is itself a lane must `unset HQ_SPAWN_TASK` before dispatching unrelated work.
 [ -n "${HQ_SPAWN_COMPANY:-}" ] || {
   echo "refusing detached lane without HQ_SPAWN_COMPANY" >&2
   exit 1
@@ -232,11 +237,13 @@ pool, which is how the cap silently stops holding.
 
 **Spawn context is separate from the pool owner.** `HQ_SESSION_ID` remains the
 parent run owner for pool accounting. `HQ_PARENT_SESSION_ID` plus
-`HQ_SPAWN_COMPANY` (and optional project/task) tell the child engine's
+`HQ_SPAWN_COMPANY` (and an optional project or task) tell the child engine's
 SessionStart hook what to bind to its own engine session id. Resolve the
 company with `hq-session.sh --session-id "$SID" get company_slug`, never from
-the lane cwd. The workflow runner also copies those values from the parent
-session metadata when the environment omitted them.
+the lane cwd. The workflow runner never reads a task from the parent session's
+`meta.yaml`. A task reaches the child only when the dispatching launcher exports
+`HQ_SPAWN_TASK` explicitly for that lane. `/run-project` does this for story
+lanes so their `/execute-task` children stay bound to the assigned story.
 
 ## 5. Record, then wait in the background
 

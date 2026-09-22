@@ -558,5 +558,81 @@ grep -q 'workflow-runner.mjs' "$inner" || fail "the bash -c body no longer launc
 bash -n "$inner" || fail "the detached bash -c body is not valid bash"
 ok "the inner script parses too"
 
+echo "the shared launch preserves an explicit story task and drops an inherited one"
+# The runner tests cover its child-environment forwarding, but they start after
+# this protocol seam. Exercise the actual markdown launch block with a fake
+# runner so a story's explicit binding cannot be cleared before the runner sees
+# it. The parent fixture deliberately contains US-008: a launch without an
+# owned task must still reach the runner with the variable unset.
+PARENT_HQ="$TMP/parent-hq"
+mkdir -p "$PARENT_HQ/workspace/sessions/parent-with-task" "$TMP/protocol-bin"
+printf 'session_id: parent-with-task\ncompany_slug: acme\nproject: inherited-project\ntask: US-008\n' \
+  > "$PARENT_HQ/workspace/sessions/parent-with-task/meta.yaml"
+cat > "$TMP/protocol-bin/setsid" <<'SETSID'
+#!/usr/bin/env bash
+exec "$@"
+SETSID
+cat > "$TMP/protocol-bin/node" <<'NODE'
+#!/usr/bin/env bash
+run_dir=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --run-dir) run_dir="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$run_dir" ] || exit 2
+if [ "${HQ_SPAWN_TASK+x}" = x ]; then
+  printf 'set:%s\n' "$HQ_SPAWN_TASK" > "$run_dir/received-spawn-task"
+else
+  printf 'unset\n' > "$run_dir/received-spawn-task"
+fi
+NODE
+chmod +x "$TMP/protocol-bin/setsid" "$TMP/protocol-bin/node"
+
+launch_protocol_task_case() {
+  local case_name="$1"
+  local explicit_task="$2"
+  local run_dir="$TMP/protocol-$case_name"
+  local launch="$TMP/protocol-$case_name.sh"
+  local attempt
+  mkdir -p "$run_dir"
+  {
+    printf 'RUN_DIR=%q\n' "$run_dir"
+    printf 'SID=%q\n' 'parent-with-task'
+  } > "$launch"
+  sed -n "/^LANE_TIMEOUT=/,/^'$/p" "$DISPATCH" \
+    | sed -e 's/{engine}/codex/g' \
+          -e 's/{tier}/exec/g' \
+          -e 's/{lane}/task-binding-test/g' \
+          -e 's/{caller}/run-project/g' \
+          -e 's/{the brief}/BRIEF/' \
+          -e 's|{absolute work dir}|/tmp|' \
+          -e 's/{worker max_runtime in seconds, else 900}/30/' \
+    >> "$launch"
+  if [ -n "$explicit_task" ]; then
+    env PATH="$TMP/protocol-bin:$PATH" HQ_DETACH_FORCE_NODE=0 \
+      HQ_ROOT="$PARENT_HQ" HQ_SPAWN_COMPANY=acme HQ_SPAWN_TASK="$explicit_task" \
+      bash "$launch"
+  else
+    env -u HQ_SPAWN_TASK PATH="$TMP/protocol-bin:$PATH" HQ_DETACH_FORCE_NODE=0 \
+      HQ_ROOT="$PARENT_HQ" HQ_SPAWN_COMPANY=acme \
+      bash "$launch"
+  fi
+  for attempt in $(seq 1 100); do
+    [ -f "$run_dir/received-spawn-task" ] && break
+    sleep 0.05
+  done
+  cat "$run_dir/received-spawn-task" 2>/dev/null || true
+}
+
+explicit_task_result="$(launch_protocol_task_case explicit 'work-mesh-to-market/US-005')"
+[ "$explicit_task_result" = 'set:work-mesh-to-market/US-005' ] \
+  || fail "an explicit story task was not forwarded through the shared launch: ${explicit_task_result:-missing}"
+no_task_result="$(launch_protocol_task_case no-task '')"
+[ "$no_task_result" = 'unset' ] \
+  || fail "a lane without an owned task inherited parent meta.yaml task: ${no_task_result:-missing}"
+ok "the protocol launch forwards only the story-owned task binding"
+
 echo
 echo "orchestrator-skills-dispatch-lanes.test.sh: $PASS checks passed"
