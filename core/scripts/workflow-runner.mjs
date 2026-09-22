@@ -292,10 +292,6 @@ function engineChildEnv() {
     const project = readSessionField(parent, 'project');
     if (project) extra.HQ_SPAWN_PROJECT = project;
   }
-  if (!process.env.HQ_SPAWN_TASK) {
-    const task = readSessionField(parent, 'task');
-    if (task) extra.HQ_SPAWN_TASK = task;
-  }
   return extra;
 }
 

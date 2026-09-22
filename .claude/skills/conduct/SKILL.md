@@ -269,7 +269,9 @@ HQ_SPAWN_COMPANY="$(bash core/scripts/hq-session.sh --session-id "$SID" get comp
   exit 1
 }
 HQ_SPAWN_PROJECT="$(bash core/scripts/hq-session.sh --session-id "$SID" get project 2>/dev/null || true)"
-HQ_SPAWN_TASK="$(bash core/scripts/hq-session.sh --session-id "$SID" get task 2>/dev/null || true)"
+# /conduct does not own a story binding. A conductor that is itself a lane must
+# not leak that lane's task to unrelated work it dispatches.
+unset HQ_SPAWN_TASK
 ```
 
 Follow `.claude/skills/_shared/lane-dispatch-protocol.md` — it owns the whole

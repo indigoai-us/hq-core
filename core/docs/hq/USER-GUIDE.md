@@ -149,6 +149,53 @@ Receiving is handled by the **HQ Desktop App** (it's receive-only — there's no
 | `/personal-interview` | Deep interview to populate profile / voice |
 | `/ascii-graphic` | Generate ASCII block-art banners for posts and OG images |
 
+## Attaching a script to a command (`command.sh`)
+
+A slash command is normally a prompt: Claude reads the skill and decides what to
+do. Sometimes you want a plain, deterministic step to run on invocation instead
+— print the current deploy status, stamp a timestamp, warm a cache.
+
+Drop an executable `command.sh` next to a skill's `SKILL.md`:
+
+```
+personal/skills/deploy-status/
+├── SKILL.md
+└── command.sh
+```
+
+When you type `/deploy-status`, the `UserPromptSubmit` hook
+`core/hooks/UserPromptSubmit/40-skill-command-script.sh` runs that script and
+shows its output to you. The turn then proceeds normally — the script does not
+replace or block the skill.
+
+**The output is shown to you only.** It is delivered as `systemMessage`, which
+the harness renders in your terminal and does not add to the model's context.
+If Claude should see the output instead, write your own hook that returns
+`hookSpecificOutput.additionalContext`.
+
+Folders searched, highest precedence first:
+
+| Folder | Invoked as |
+|---|---|
+| `companies/<active-company>/skills/<name>/` | `/<name>` or `/<company>:<name>` |
+| `personal/skills/<name>/` | `/<name>` or `/personal:<name>` |
+| `core/packages/<pack>/skills/<name>/` | `/<name>` or `/<pack>:<name>` |
+| `.claude/skills/<name>/` | `/<name>` |
+| `core/skills/<name>/` | `/<name>` |
+
+A company's `command.sh` runs only when that company is the session's active
+company. `/othercompany:thing` is refused rather than searched for.
+
+The script gets the hook payload on stdin, plus `HQ_ROOT`, `HQ_COMMAND_NAME`,
+`HQ_COMMAND_ARGS` (everything you typed after the command), `HQ_COMMAND_SCOPE`,
+and `HQ_ACTIVE_COMPANY`. Output is capped and the script is stopped after 5
+seconds, so a slow or runaway script cannot wedge your turn. A non-zero exit is
+reported to you and the turn still proceeds.
+
+Knobs: `HQ_SKILL_COMMAND_SCRIPTS=0` turns the whole thing off,
+`HQ_SKILL_COMMAND_FILE` changes the filename, `HQ_SKILL_COMMAND_TIMEOUT` and
+`HQ_SKILL_COMMAND_MAX_BYTES` change the bounds.
+
 ## hq doctor — hook guardrail diagnostics
 
 `hq doctor` is the single command that answers whether your HQ hook guardrails

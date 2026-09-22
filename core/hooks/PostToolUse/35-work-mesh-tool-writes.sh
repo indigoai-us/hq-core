@@ -51,33 +51,16 @@ if [ -z "$SID" ]; then
 fi
 [ -n "$SID" ] || exit 0
 
-WC_HOME="${WORK_MESH_HOME:-$HOME}"
-PATH_JSON="$WC_HOME/.hq/work-context/sessions/$SID.json"
-DIR_JSON="${PATH_JSON%/*}"
-if [ ! -d "$DIR_JSON" ]; then
-  mkdir -p -- "$DIR_JSON" 2>/dev/null || true
-  chmod 700 -- "$DIR_JSON" 2>/dev/null || true
+# Merge-safe bump via the shared helper: only toolWrites and updatedAt change;
+# companyUid/companySlug/projectId/taskId/startedAt/bindingEpisodeId/decision/
+# contextStatus written by the hq-cli reconcile/ack path are preserved. The
+# helper creates the minimal stub when the file is absent, keeps temp+mv and
+# chmod 600, and leaves a file it cannot parse untouched.
+HOOK_FILE="${BASH_SOURCE[0]}"
+if [ -z "${HQ_ROOT:-}" ]; then
+  HQ_ROOT="$(cd "${HOOK_FILE%/*}/../../.." 2>/dev/null && pwd)" || exit 0
 fi
-CUR=0
-if [ -f "$PATH_JSON" ]; then
-  _body="$(<"$PATH_JSON")"
-  case "$_body" in
-    *"\"toolWrites\""*)
-      _rest="${_body#*\"toolWrites\"}"
-      _rest="${_rest#*:}"
-      while [ "${_rest#"${_rest%%[![:space:]]*}"}" != "$_rest" ]; do _rest="${_rest#?}"; done
-      CUR="${_rest%%[!0-9]*}"
-      ;;
-  esac
-fi
-case "$CUR" in ""|*[!0-9]*) CUR=0 ;; esac
-NEXT=$((CUR + 1))
-TMP="$PATH_JSON.tmp.$$"
-if ! TZ=UTC printf -v TS '%(%Y-%m-%dT%H:%M:%S)T.000Z' -1 2>/dev/null; then
-  TS=""
-fi
-[ -n "$TS" ] || TS="1970-01-01T00:00:00.000Z"
-printf '{"contractVersion":1,"sessionId":"%s","contextStatus":"unresolved","toolWrites":%s,"updatedAt":"%s"}\n' "$SID" "$NEXT" "$TS" >"$TMP"
-mv -f -- "$TMP" "$PATH_JSON" 2>/dev/null || rm -f -- "$TMP"
-chmod 600 -- "$PATH_JSON" 2>/dev/null || true
+# shellcheck source=core/scripts/lib/work-mesh-live-hook.sh
+. "$HQ_ROOT/core/scripts/lib/work-mesh-live-hook.sh" 2>/dev/null || exit 0
+work_mesh_live_bump_tool_writes "$SID" || true
 exit 0
