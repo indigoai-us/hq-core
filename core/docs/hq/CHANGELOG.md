@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Fixed — writing in a project folder binds the session (US-040, 2026-09-23)
+- `core/hooks/PostToolUse/35-work-mesh-tool-writes.sh` reads `file_path` on Write/Edit/MultiEdit. A path under `companies/<co>/projects/<slug>/` in the session company binds a `needs_project` session through `hq mesh context bind-project`, detached. The success marker is written only after the bind exits 0; a backoff file limits retries. Writing that project's `prd.json` runs `hq mesh context prd-sync` when supported, one flight per session with coalescing.
+
 ### Fixed — register-project on an older hq-cli (US-039, 2026-09-22)
 - `core/scripts/register-project.sh` needs `hq mesh project ensure`, which shipped in hq-cli 5.139.0. It probes `hq mesh project ensure --help` instead of parsing a version string. When that probe fails it exits non-zero, says the project stays local until hq-cli 5.139.0 or newer is installed, and sets `pending_registration` on the company `board.json` entry. SessionStart (`core/hooks/SessionStart/35-work-mesh-session-start.sh`) retries at most three pending projects for the bound company once the CLI has the subcommand. The retry is detached (`nohup`, log under the temp dir, mkdir lock so only one retry runs per company) and is not on the session-start path.
 
