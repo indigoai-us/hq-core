@@ -49,10 +49,70 @@ recent_dir() {
   fi
 }
 
+# hq mesh project ensure shipped in hq-cli 5.139.0. Probe the subcommand,
+# not the version string: a laptop can be one release behind the supply-chain
+# install guard for up to 24h.
+MIN_HQ_CLI="5.139.0"
+
+cli_has_project_ensure() {
+  hq mesh project ensure --help >/dev/null 2>&1
+}
+
+board_path() {
+  printf '%s\n' "$ROOT/companies/$1/board.json"
+}
+
+mark_pending() {
+  local company="$1" project="$2"
+  local board prd rel now title tmp
+  board="$(board_path "$company")"
+  prd="$ROOT/companies/$company/projects/$project/prd.json"
+  rel="companies/$company/projects/$project/prd.json"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  title="$(jq -r '.name // empty' "$prd" 2>/dev/null || true)"
+  [ -n "$title" ] || title="$project"
+  mkdir -p "$(dirname "$board")"
+  if [ ! -f "$board" ]; then
+    jq -n --arg company "$company" '{company:$company, projects:[]}' > "$board"
+  fi
+  tmp="$(mktemp)"
+  jq \
+    --arg id "$project" \
+    --arg path "$rel" \
+    --arg now "$now" \
+    --arg title "$title" \
+    '
+      .projects = (.projects // []) |
+      if any(.projects[]; .id == $id or .prd_path == $path or .mesh_project_id == $id) then
+        .projects |= map(
+          if .id == $id or .prd_path == $path or .mesh_project_id == $id then
+            . + {pending_registration:true, updated_at:$now, prd_path:(.prd_path // $path)}
+          else . end
+        )
+      else
+        .projects += [{
+          id:$id,
+          title:$title,
+          status:"prd_created",
+          scope:"company",
+          prd_path:$path,
+          pending_registration:true,
+          created_at:$now,
+          updated_at:$now
+        }]
+      end
+    ' "$board" > "$tmp"
+  mv "$tmp" "$board"
+}
+
 register_one() {
   local company="$1" project="$2"
   local prd="$ROOT/companies/$company/projects/$project/prd.json"
   [ -f "$prd" ] || die "registration incomplete: missing $prd"
+  if ! cli_has_project_ensure; then
+    mark_pending "$company" "$project"
+    die "hq-cli ${MIN_HQ_CLI} or newer is required; ${company}/${project} stays local until then"
+  fi
   local ensure_json
   if ! ensure_json="$(hq mesh project ensure "$project" --company "$company" --stories-file "$prd" --json)"; then
     echo "registration incomplete: hq mesh project ensure failed for $company/$project" >&2
@@ -87,7 +147,7 @@ register_one() {
       if any(.projects[]; .id == $id or .prd_path == $path or .mesh_project_id == $id) then
         .projects |= map(
           if .id == $id or .prd_path == $path or .mesh_project_id == $id then
-            . + {threadId:$thread, channelId:$channel, updated_at:$now, prd_path:(.prd_path // $path), mesh_project_id:$id}
+            . + {threadId:$thread, channelId:$channel, updated_at:$now, prd_path:(.prd_path // $path), mesh_project_id:$id} | del(.pending_registration)
           else . end
         )
       else
@@ -172,13 +232,31 @@ backfill() {
   done
 }
 
+retry_pending() {
+  local company="${1:-}"
+  [ -n "$company" ] || die "usage: register-project.sh --retry-pending <company>"
+  cli_has_project_ensure || return 0
+  local board
+  board="$(board_path "$company")"
+  [ -f "$board" ] || return 0
+  local id count=0
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    count=$((count + 1))
+    [ "$count" -le 3 ] || break
+    ( register_one "$company" "$id" ) || true
+  done < <(jq -r '[.projects[]? | select(.pending_registration == true) | .id // empty] | .[]' "$board" 2>/dev/null || true)
+}
+
 if [ "${1:-}" = "--audit" ]; then
   audit "${2:-}"
 elif [ "${1:-}" = "--backfill" ]; then
   shift
   backfill "$@"
+elif [ "${1:-}" = "--retry-pending" ]; then
+  retry_pending "${2:-}"
 elif [ $# -eq 2 ]; then
   register_one "$1" "$2"
 else
-  die "usage: register-project.sh <company> <project> | --audit <company> | --backfill <company> --only-active [--yes]"
+  die "usage: register-project.sh <company> <project> | --audit <company> | --backfill <company> --only-active [--yes] | --retry-pending <company>"
 fi

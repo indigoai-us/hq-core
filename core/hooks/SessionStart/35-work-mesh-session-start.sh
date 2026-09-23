@@ -126,6 +126,53 @@ if [ -n "$PROJECT" ] && [ -f "$HQ_ROOT/core/scripts/lib/work-mesh-live-rebind.sh
   fi
 fi
 
+# US-039: a CLI older than 5.139.0 leaves pending_registration on board.json.
+# The retry runs up to three `hq mesh project ensure` calls. That work is
+# detached (nohup, log file) and single-flight (mkdir lock per company).
+# The session-start path only takes or skips the lock; it never waits.
+_wm_retry_pending_child() {
+  local lock=$1 script=$2 company=$3
+  printf '%s\n' "$$" >"$lock/pid" 2>/dev/null || true
+  trap 'rm -rf -- "$lock"' EXIT INT TERM
+  bash "$script" --retry-pending "$company" || true
+}
+
+_wm_retry_pending_detached() {
+  local company=$1 script safe dir lock log take pid
+  [ -n "$company" ] || return 0
+  script="${HQ_REGISTER_PENDING_SCRIPT:-$HQ_ROOT/core/scripts/register-project.sh}"
+  [ -f "$script" ] || return 0
+  safe="${company//[^A-Za-z0-9._-]/_}"
+  [ -n "$safe" ] || return 0
+  dir="${HQ_REGISTER_PENDING_DIR:-${TMPDIR:-/tmp}/hq-register-pending}"
+  mkdir -p -- "$dir" 2>/dev/null || return 0
+  chmod 700 -- "$dir" 2>/dev/null || true
+  lock="$dir/${safe}.lock"
+  log="$dir/${safe}.log"
+  take=0
+  if mkdir -- "$lock" 2>/dev/null; then
+    take=1
+  else
+    pid=""
+    if [ -f "$lock/pid" ]; then
+      pid="$(tr -cd '0-9' <"$lock/pid" 2>/dev/null || true)"
+    fi
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+      rm -rf -- "$lock" 2>/dev/null || true
+      if mkdir -- "$lock" 2>/dev/null; then
+        take=1
+      fi
+    fi
+  fi
+  [ "$take" -eq 1 ] || return 0
+  export -f _wm_retry_pending_child
+  nohup bash -c '_wm_retry_pending_child "$@"' _ "$lock" "$script" "$company" >>"$log" 2>&1 </dev/null &
+  printf '%s\n' "$!" >"$lock/pid" 2>/dev/null || true
+  disown 2>/dev/null || true
+}
+
+_wm_retry_pending_detached "$COMPANY" || true
+
 # Timing / test stub: still record reconcile intent without building a large obs.
 if [ "${HQ_WORK_MESH_RECONCILE_STUB:-}" = "1" ]; then
   if [ -n "${HQ_WORK_MESH_RECONCILE_LOG:-}" ]; then

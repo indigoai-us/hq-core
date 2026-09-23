@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Fixed — register-project on an older hq-cli (US-039, 2026-09-22)
+- `core/scripts/register-project.sh` needs `hq mesh project ensure`, which shipped in hq-cli 5.139.0. It probes `hq mesh project ensure --help` instead of parsing a version string. When that probe fails it exits non-zero, says the project stays local until hq-cli 5.139.0 or newer is installed, and sets `pending_registration` on the company `board.json` entry. SessionStart (`core/hooks/SessionStart/35-work-mesh-session-start.sh`) retries at most three pending projects for the bound company once the CLI has the subcommand. The retry is detached (`nohup`, log under the temp dir, mkdir lock so only one retry runs per company) and is not on the session-start path.
+
 ### Added — offline preflight fixtures (US-016, 2026-09-22)
 - SessionStart accepts only the classifications hq-cli emits for offline preflight. The allow-list is `core/hooks/SessionStart/preflight-fixtures.json`, vendored from `hq-cli` `contracts/preflight/v1/fixtures.json` (contractVersion 1). A result outside that set is rejected and does not bind the device default. `core/scripts/check-preflight-fixtures.sh` diffs the vendored copy against an installed hq-cli when one is present. Bump contractVersion on both sides together.
 
