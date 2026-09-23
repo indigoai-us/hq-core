@@ -10,7 +10,7 @@ Manage per-prefix file access controls in the HQ vault via the `hq files` CLI. A
 
 ## Requires
 
-- `@indigoai-us/hq-cli` **≥ 5.12.x (post-`f71dbf3`)** — the browser-launch share flow (`hq files share <paths...>` with no `--with`) and `--with @all` for company-wide grants both ship in the post-5.12.2 commits. For the legacy direct-grant CLI surface alone, `≥ 5.8.4` is sufficient. Check with `hq --version`; upgrade via `npm i -g @indigoai-us/hq-cli@latest`.
+- `@indigoai-us/hq-cli` **≥ 5.142.0** — the first release that preserves the private-folder `foo/` pattern and distinguishes it from the shared glob `foo/*` across direct, browser, ACL, browse, and shared-with-me flows. Older clients rewrite a trailing slash to `/*`; upgrade before using private-folder ACLs. Check with `hq --version`; upgrade via `npm i -g @indigoai-us/hq-cli@latest`.
 
 ## Commands
 
@@ -20,12 +20,12 @@ Manage per-prefix file access controls in the HQ vault via the `hq files` CLI. A
 | `hq files share <prefix> --with <principal> --permission <level>` | **Direct grant.** Grant `read` or `write` access on a prefix to a person, group, or `@all`. If no ACL row exists for the prefix, one is auto-created with this grant as its first entry; success message is `Created ACL and granted ...` instead of `Granted ...`. |
 | `hq files share <prefix> --with @all --permission <level>` | **Company-wide grant.** Writes a single ACL entry with `granteeType: 'company-wide'` covering every active member. Distinct from the legacy `open` flag (see "Company-wide vs `open` flag" below). |
 | `hq files unshare <prefix> --with <principal>` | Revoke a grant on a prefix from a person, group, or `@all` |
-| `hq files acl <prefix>` | Show the ACL for a prefix: creator, grantees, permissions, open/restricted status, your effective permission |
-| `hq files browse [path]` | **Read, no sync.** List vault objects under `[path]` without materializing them locally. Each row is tagged `shared-with-you` (a grant covers it) or `role-bypass` (owner/admin reach only). `--personal` browses your personal vault. |
+| `hq files acl <prefix>` | Show the ACL for a prefix: exact pattern (`foo/` private or `foo/*` shared), creator, grantees, permissions, open/restricted status, your effective permission |
+| `hq files browse [path]` | **Read, no sync.** List vault objects under `[path]` without materializing them locally. Each row is tagged `shared-with-you`, `creator` (a creator-only child row), `private folder` (the `foo/` marker), or `role-bypass` (owner/admin reach only). `--personal` browses your personal vault. |
 | `hq files cat <path>` | Stream a single vault object to stdout (or `--out <file>`) without syncing it. Refuses `--out` destinations under `<hqRoot>/companies/`. |
 | `hq files search <query>` | Case-insensitive path/name search over a company (or `--personal`) vault listing, no download. `--company <slug>` required (or `--personal`). |
 | `hq files get <path>` | **On-demand materialize.** Download a file/prefix into local HQ. Default writes in place under `companies/<slug>/<path>` and registers a pin (see "Pins") so a scoped sync keeps it; `--into <dir>` writes elsewhere (no pin). |
-| `hq files shared-with-me [--company]` | List the prefixes explicitly shared with you. Omit `--company` for a cross-company roll-up. Pure read — owner/admin role-bypass reach is NOT listed (explicit grants only). |
+| `hq files shared-with-me [--company]` | List the exact prefixes explicitly shared with you, retaining `foo/` private-folder rows separately from `foo/*` shared globs. Omit `--company` for a cross-company roll-up. Pure read — owner/admin role-bypass reach is NOT listed (explicit grants only). |
 
 All commands accept `--company <slug>` to target a specific company. If omitted, the CLI resolves the company from your membership.
 
@@ -60,28 +60,47 @@ Under the hood, browse/cat/search/get vend through the multi-tenant `/sts/vend` 
 
 A **prefix** is an S3-style path fragment, **relative to the company's vault bucket root**. The bucket is already scoped to the company — never prepend `companies/<slug>/`, the company's name, or any other company-identifying segment. A grant on `companies/myco/reports/` does not cover `reports/` (those are different keys, and the former does not exist in the bucket).
 
-The CLI normalizes the prefix before sending to the API:
+The CLI sends the prefix exactly as typed. There are two deliberately different
+folder patterns:
 
-- **Trailing slash** — automatically appended with `*`. `reports/q3/` → `reports/q3/*`
-- **Bare folder with `*`** — passed through unchanged. `reports/q3/*`
-- **Exact key** — passed through unchanged. `reports/q3/summary.pdf`
+- **Shared folder glob (`reports/q3/*`)** — grants ordinary read/write access
+  to every object below that folder.
+- **Private folder (`reports/q3/`)** — creates a private-by-default folder.
+  `read` lets a grantee see the folder itself, not its children. `write` lets a
+  grantee create one new direct child, but never list, read, overwrite, or
+  delete children. The first authorized upload locks that child to its creator:
+  a file gets a creator-only exact row and a subfolder gets a creator-only
+  `/*` row. Other people need an explicit grant on that child row.
+- **Exact key (`reports/q3/summary.pdf`)** — passed through unchanged.
 
-A **bare prefix without a trailing slash and without `/*`** (e.g. `reports`) is treated as an exact key — it covers only an object literally named `reports`. It does **not** cover `reports/q3.pdf` or anything else under it. To share a folder, always use the trailing slash or explicit `/*`.
+`reports/q3/` and `reports/q3/*` are mutually exclusive at every depth. The
+server returns `409 ACL_PATTERN_CONFLICT` if either pattern already has its
+sibling row. A **bare prefix without a trailing slash and without `/*`** (for
+example `reports`) is an exact key; it does not cover anything below it.
 
-The API rejects prefixes that start with `/` (returns 400). S3-key character constraints (no `\0`, `\n`, traversal patterns) are also enforced server-side.
+The API rejects prefixes that start with `/` (returns 400). In a shell, quote a
+shared glob (`'reports/q3/*'`) so pathname expansion does not turn it into a
+different local argument. S3-key character constraints (no `\0`, `\n`, traversal
+patterns) are also enforced server-side.
 
 Examples:
-- `reports/` → normalized to `reports/*` — grants access to all keys under `reports/`
-- `invoices/2025/*` → grants access to all keys matching that glob
+- `reports/` → private folder; new direct children become creator-only
+- `invoices/2025/*` → shared folder glob; grants access to all matching keys
 - `README.md` → grants access to exactly that key
 - `reports` (bare, no slash, no `*`) → grants access to **only** the key literally named `reports` — almost certainly not what you want for a folder
 
 ## Permission Model
 
-Each ACL entry grants one of two permission levels via the `--permission` flag:
+Each ACL entry grants one of two permission levels via the `--permission` flag.
+For exact keys and `/*` shared-folder globs:
 
 - **`read`** — caller may list, download, and view metadata for files matching the prefix.
 - **`write`** — full `read` plus upload, overwrite, and delete.
+
+For a trailing-slash **private folder** (`foo/`), the same words are narrower:
+`read` exposes only `foo/`, and `write` creates one new direct child only. It
+does not grant any child read/list/overwrite/delete authority; child access
+locks to the first uploader until someone creates an explicit child grant.
 
 The CLI accepts only `read` or `write` for `--permission`. The ACL row's **creator** additionally gets effective `admin` automatically via creator-bypass at resolution time — visible as `Your effective permission: admin` in `hq files acl` output even when no entry grants admin explicitly. Company **owners and admins** additionally get role-bypass at resolution time — they resolve to `admin` on any prefix, ACL row or not, so `hq files share`-session minting works for them even on prefixes they have no explicit grant on.
 
@@ -158,16 +177,24 @@ before the next sync rejects or clobbers them.
   owner/admin/unknown means no local enforcement — the server-side STS/ACL
   layer remains the authoritative boundary.
 - Grant matching mirrors the ACL prefix semantics above: `*`, `prefix/*`
-  (covers the bare `prefix` directory too), or an exact key; the most
-  specific matching grant wins, so a specific read grant carves down a
-  broader write grant.
+  (covers the bare `prefix` directory too), or an exact key; a private-folder
+  row (`prefix/`) matches the folder marker only and does not authorize a
+  local child write. The most specific matching grant wins, so a specific read
+  grant carves down a broader write grant. The hook cannot prove the server's
+  first-upload creator decision before a child row exists; create-only private
+  writes therefore must go through an authorized server/CLI upload path, or an
+  explicitly approved bypass, until the creator row is visible in the manifest.
 - Bypass requires the user's explicit approval:
   `"HQ_BYPASS_VAULT_WRITE_PROTECT": "1"` under `env` in
   `.claude/settings.local.json` — never set it autonomously.
 
 ## Rules for Agent Workflows
 
-1. **Normalize prefixes before calling `share`.** Pass a trailing slash or an explicit `/*` suffix for folder-level grants. The CLI normalizes for you, but be deliberate: granting `reports/q3.pdf` (exact key) is very different from granting `reports/q3/` (folder), and granting bare `reports` (no slash, no `*`) is an exact-key grant that covers nothing inside the folder.
+1. **Choose the folder pattern deliberately before calling `share`.** Pass
+   `reports/q3/*` when everyone granted the row should access its children.
+   Pass `reports/q3/` when people should only create a direct child that locks
+   to its first uploader. The CLI preserves both forms; a bare `reports` (no
+   slash, no `*`) is an exact-key grant that covers nothing inside the folder.
 
 2. **Prefixes are bucket-relative — never include the company name or `companies/<slug>/`.** The vault bucket is already scoped to the company; prepending the slug points the grant at a path that doesn't exist. If the user asks you to "share `companies/myco/reports/` with X", translate that to `reports/` before calling `hq files share`.
 
@@ -175,7 +202,7 @@ before the next sync rejects or clobbers them.
 
 4. **Always confirm the target company.** Run `hq files acl <prefix> --company <slug>` to inspect before mutating. A grant on the wrong company uid is hard to clean up.
 
-5. **Verify after sharing.** Immediately after `hq files share`, run `hq files acl <prefix> --company <slug>` and confirm the displayed pattern ends in `/*` (for folder grants) or matches the exact key you intended. If it shows a bare prefix without `/*`, the grant only covers a literal key match and almost certainly does nothing — `unshare` and re-grant with the correct pattern.
+5. **Verify after sharing.** Immediately after `hq files share`, run `hq files acl <prefix> --company <slug>` and confirm the displayed pattern is exactly the one intended: `/*` for a shared folder, `/` for a private create-only folder, or an exact key. If the sibling pattern already exists, do not retry blindly: resolve the `ACL_PATTERN_CONFLICT` by choosing the one intended model. To convert an existing sibling, read its entries, `unshare` every entry (including `@all` where present), verify the old ACL row is absent, then create the new pattern. If other grants must remain, create a replacement shared/private row only after an owner/admin deletes the empty conflicting row through the ACL delete route; never leave both siblings in place.
 
 6. **To share everything in a vault, prefer one grant on `*` over many per-folder grants.** Every vault is provisioned with a `*` ACL row; granting the principal `read` on `*` covers all current and future keys. Per-folder fan-out is fragile (easy to miss new top-level folders) and harder to audit.
 
@@ -185,7 +212,10 @@ before the next sync rejects or clobbers them.
 
 9. **Check your effective permission before attempting mutation.** `hq files acl <prefix>` shows `Your effective permission:` in the output. Granting requires that effective level be ≥ the permission you're granting (owner/admin always pass via role bypass; non-bypass roles cannot grant `admin`). Revoking requires effective `write` or higher, plus owner/admin role for revoking `admin` entries. Creating or deleting the ACL row itself is owner/admin-only.
 
-10. **Do not share exact keys when a folder-level grant is intended.** `reports/q3/summary.pdf` only covers that one file; `reports/q3/` (normalized to `reports/q3/*`) covers the whole folder.
+10. **Do not confuse private folders with shared globs.**
+    `reports/q3/summary.pdf` covers one file; `reports/q3/*` shares every child;
+    `reports/q3/` lets a writer create one direct child that then becomes
+    creator-only. `reports/q3/` and `reports/q3/*` cannot coexist.
 
 11. **Carve-out awareness.** If a broad prefix (`reports/*`) is open and you also need to restrict `reports/q3/*` for a subset of members, that narrowing is expressed as a more-specific ACL with fewer grants — the vend layer automatically denies the sub-tree for callers without a matching entry. Do not attempt to revoke a broad grant to achieve narrowing; instead, ensure the more-specific prefix has the right entries.
 
@@ -213,11 +243,12 @@ before the next sync rejects or clobbers them.
 # If the folder was created locally, upload it first; sharing only writes ACLs.
 hq sync push companies/myco/reports/q3/ --hq-root ~/HQ --company myco --on-conflict keep
 
-# Opens default browser to a share-session page; pick recipients + permissions, click Submit
-hq files share reports/q3/ docs/handbook/ --company myco
+# Opens default browser to a share-session page; pick recipients + permissions, click Submit.
+# These explicit globs share the existing trees.
+hq files share 'reports/q3/*' 'docs/handbook/*' --company myco
 
 # Print the URL without launching a browser (useful in headless contexts)
-hq files share reports/q3/ --no-open --company myco
+hq files share 'reports/q3/*' --no-open --company myco
 # → Share-session URL generated:
 #     https://hq.myco.com/share-session/<TOKEN_REDACTED>
 #     Paths:   reports/q3/*
@@ -227,11 +258,12 @@ hq files share reports/q3/ --no-open --company myco
 ### Share a folder with the entire company (`@all`)
 
 ```bash
-hq files share announcements/ --with @all --permission read --company myco
+hq files share 'announcements/*' --with @all --permission read --company myco
 # → Granted read on announcements/* to @all (granteeType: company-wide)
+#   This is a shared folder: recipients can read every object under announcements/.
 
 # Revoke later — single ACL row, single command
-hq files unshare announcements/ --with @all --company myco
+hq files unshare 'announcements/*' --with @all --company myco
 ```
 
 ### Share the entire vault with a teammate
@@ -247,46 +279,48 @@ hq files acl '*' --company myco
 
 ```bash
 hq files share reports/q3/ --with alice@example.com --permission read --company myco
-# → Granted read on reports/q3/* to alice@example.com
+# → Granted read on reports/q3/ to alice@example.com
 
-# Always verify — the displayed pattern should end in /*
+# Always verify — this is a private folder, not a shared glob
 hq files acl reports/q3/ --company myco
-# ACL for reports/q3/* (restricted)   ← /* is the pattern actually written
+# ACL for reports/q3/ (private folder, restricted)
+# Children remain creator-only; use reports/q3/* when the recipient needs them.
 ```
 
 ### Share a folder with a team group
 
 ```bash
-hq files share invoices/ --with grp_finance --permission read --company myco
+hq files share 'invoices/*' --with grp_finance --permission read --company myco
 ```
 
 ### Give write access on a subfolder
 
 ```bash
-hq files share uploads/inbox/ --with bob@example.com --permission write
+hq files share 'uploads/inbox/*' --with bob@example.com --permission write
 ```
 
 ### Revoke access
 
 ```bash
 hq files unshare reports/q3/ --with alice@example.com --company myco
-# → Removed grant for alice@example.com on 'reports/q3/*'
+# → Removed grant for alice@example.com on 'reports/q3/'
 ```
 
 ### Revoke a grant that may or may not exist (idempotent)
 
 ```bash
 hq files unshare reports/q3/ --with alice@example.com
-# → Grant already absent for 'reports/q3/*' / alice@example.com   (exits 0)
+# → Grant already absent for 'reports/q3/' / alice@example.com   (exits 0)
 ```
 
 ### Inspect an ACL
 
 ```bash
 hq files acl reports/q3/ --company myco
-# ACL for reports/q3/* (restricted)
+# ACL for reports/q3/ (private folder, restricted)
 # Creator: person_xxx
 # Your effective permission: read
+# Children are creator-only; use reports/q3/* for a shared folder.
 # Entries:
 # TYPE   GRANTEE              PERMISSION  GRANTED_BY   GRANTED_AT
 # email  alice@example.com    read        person_xxx   2025-09-01
@@ -299,7 +333,7 @@ hq files acl reports/q3/ --company myco
 hq groups create grp_backend-team --name "Backend team"
 hq groups add grp_backend-team alice@example.com
 hq groups add grp_backend-team bob@example.com
-hq files share services/logs/ --with grp_backend-team --permission read
+hq files share 'services/logs/*' --with grp_backend-team --permission read
 ```
 
 ## Error Reference
@@ -312,7 +346,8 @@ hq files share services/logs/ --with grp_backend-team --permission read
 | `403 Forbidden: caller lacks '<perm>' on '<prefix>'` | Granting/revoking but your effective permission on the prefix is below the requested level (members need a grant ≥ what they're handing out; revoke needs write+) |
 | `403 Forbidden: only owner or admin role may revoke 'admin' entries` | Member with write tried to revoke an entry whose permission is `admin` — that ceiling is reserved for owner/admin role |
 | `404` | For `acl`: no ACL record exists yet for this prefix. For `unshare`: grant already absent — the CLI converts this to a no-op and exits 0. `share` no longer surfaces 404 (the row is auto-created on first grant). |
-| `409` | Concurrent modification — retry |
+| `409 ACL_PATTERN_CONFLICT` | A private folder (`foo/`) conflicts with its shared-glob sibling (`foo/*`). Keep the one access model you intend; they cannot coexist. |
+| other `409` | Concurrent modification — retry |
 | any `403` on a read (`browse`, `cat`, `get`, `search`) | You lack a grant on that exact prefix. Every 403 ends with `Run: hq access <path>`; run it (or `/hq-access`) to confirm the file exists, and to ask the grantor for read access with one confirmation. |
 | `5xx` | Server error |
 

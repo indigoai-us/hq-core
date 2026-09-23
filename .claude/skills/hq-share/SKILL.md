@@ -39,13 +39,14 @@ Examples:
 # Share-session link (browser flow) — no recipient named
 /hq-share reports/q3/
 /hq-share reports/q3/ docs/handbook/ --company {company}
-/hq-share announcements/ --no-open               # print URL, headless contexts
+/hq-share 'announcements/*' --no-open            # recursive; print URL, headless contexts
 /hq-share reports/q3/ --no-draft                 # skip the LLM-drafted note step
 
 # Direct ACL grant — a single principal named with --with
 /hq-share reports/q3/ --with [EMAIL] --permission read
-/hq-share invoices/ --with grp_finance --permission read --company {company}
-/hq-share announcements/ --with @all --permission read   # company-wide
+/hq-share 'invoices/*' --with grp_finance --permission read --company {company}
+/hq-share 'announcements/*' --with @all --permission read   # company-wide recursive
+# `/hq-share announcements/` is the separate private create-only marker.
 ```
 
 `--with <principal>` selects the **direct-grant** path. `<principal>` must be a
@@ -73,10 +74,12 @@ If absent, stop and report `Not signed in. Run /hq-login first.`
 
 Split `$ARGUMENTS` into:
 
-- one or more `<path>` positionals (required; trailing slash → folder prefix
-  per [`hq-files`](../hq-files/SKILL.md) "Prefix Conventions"). Never prepend
+- one or more `<path>` positionals (required; a trailing slash is a private
+  folder and `/*` is a shared-folder glob, per
+  [`hq-files`](../hq-files/SKILL.md) "Prefix Conventions"). Never prepend
   `companies/<slug>/` — prefixes are bucket-relative (policy
-  `hq-files-share-prefix-company-relative`).
+  `hq-files-share-prefix-company-relative`). Quote `/*` globs in a shell so
+  pathname expansion cannot change the path before `hq` receives it.
 - optional flags: `--with <principal>`, `--permission <read|write>`,
   `--company <slug>`, `--no-open`, `--no-draft`
 
@@ -202,8 +205,8 @@ if [ -z "$USER_NO_OPEN" ]; then
 fi
 ```
 
-The CLI prints `Share-session URL generated:` followed by the URL,
-normalized paths, and `Expires:` timestamp. Default TTL is 15 minutes,
+The CLI prints `Share-session URL generated:` followed by the URL, the paths
+exactly as requested, and `Expires:` timestamp. Default TTL is 15 minutes,
 bounded `60s..7d`. The skill always reads the URL from `--no-open` output
 and handles browser launch itself so the `?note=` param can be appended
 without a CLI release.
@@ -212,20 +215,26 @@ without a CLI release.
 
 ```bash
 hq files share <prefix> --with <principal> --permission <level> [--company <slug>]
-# → Granted read on reports/q3/* to [EMAIL]
+# → Granted read on reports/q3/ to [EMAIL]
 #   (or "Created ACL and granted ..." if no ACL row existed yet)
 
-# Verify the grant landed — the displayed pattern should end in /* for a folder
+# Verify the grant landed — the displayed pattern must match the intended model
 hq files acl <prefix> --company <slug>
 ```
 
 Confirm the `hq files acl` output shows the grantee with the expected
-permission and the pattern you intended (folder grants normalize to `/*` — a
-bare prefix with no `/*` covers only a literal key and almost certainly does
-nothing; if so, `unshare` and re-grant with the trailing slash). Then surface
+permission and the pattern you intended: `foo/` is a private folder where
+children are creator-only, while `foo/*` is a shared folder. A bare prefix
+with no slash or `/*` covers only a literal key and almost certainly does
+nothing. `foo/` and `foo/*` cannot coexist; resolve an
+`ACL_PATTERN_CONFLICT` by reading the conflicting row, revoking every entry
+that can be removed with `hq files unshare`, verifying the old row is gone,
+and only then sharing the replacement pattern. If an empty row remains,
+an owner/admin must delete that ACL row through the ACL delete route before
+retrying. Then surface
 a plain, one-line confirmation in chat:
 
-> Granted **read** on `reports/q3/*` to **[EMAIL]**.
+> Granted **read** on private folder `reports/q3/` to **[EMAIL]**.
 
 This path produces **no URL** — the share-session capability / Markdown-render
 / redaction rules (Step 5, Rules #1–2) do **not** apply here. `hq files share`
@@ -250,7 +259,8 @@ point of running `/hq-share` in share-session mode. Report:
   href. Full rule:
   [`hq-secure-link-render-as-markdown`](../../../core/policies/hq-secure-link-render-as-markdown.md).
 - `Expires:` timestamp from the CLI output (fold it into the link label)
-- resolved paths (normalized form, e.g. `reports/q3/*`)
+- resolved paths exactly as requested (for example `reports/q3/` for a private
+  folder or `reports/q3/*` for a shared-folder glob)
 - company slug
 
 Do **not** echo the URL again in any *subsequent* assistant turn, summary,
@@ -341,9 +351,10 @@ artifact — in those contexts use the redacted form
 
 ## Requires
 
-- `@indigoai-us/hq-cli` **≥ 5.12.x (post-`f71dbf3`)** — the no-`--with`
-  browser flow first ships in those commits. Check `hq --version`; upgrade
-  via `npm i -g @indigoai-us/hq-cli@latest`.
+- `@indigoai-us/hq-cli` **≥ 5.142.0** — the browser flow preserves private
+  `foo/` rows and shared `foo/*` globs distinctly. Older clients rewrite a
+  trailing slash to `/*`; upgrade before using private-folder ACLs. Check
+  `hq --version`; upgrade via `npm i -g @indigoai-us/hq-cli@latest`.
 
 ## See Also
 
