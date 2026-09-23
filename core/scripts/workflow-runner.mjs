@@ -295,6 +295,122 @@ function engineChildEnv() {
   return extra;
 }
 
+// Codex and Grok lanes have no HQ hooks, so the runner is the only thing that
+// can put them on the Board. Claude lanes keep their hook path and emit nothing
+// here. Every call is --enqueue and fail-soft: a missing hq or a non-zero exit
+// is one journal line, never a lane failure.
+const MESH_ADAPTER_VERSION = 'workflow-runner-1';
+const meshRuntimeCache = new Map();
+
+function meshRuntimeVersion(bin) {
+  if (meshRuntimeCache.has(bin)) return meshRuntimeCache.get(bin);
+  let version = 'unknown';
+  try {
+    const probed = spawnSync(bin, ['--version'], {
+      encoding: 'utf8',
+      timeout: 1500,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const line = String(probed.stdout || probed.stderr || '').trim().split('\n')[0] || '';
+    if (probed.status === 0 && line) version = line.slice(0, 80);
+  } catch {
+    version = 'unknown';
+  }
+  meshRuntimeCache.set(bin, version);
+  return version;
+}
+
+function mentionsPullRequest(text) {
+  return /https?:\/\/[^\s)'"]+\/pull\/\d+/i.test(String(text || ''));
+}
+
+function createMeshAdapter({ engineName, journal, runDir, hqRoot }) {
+  const company = process.env.HQ_SPAWN_COMPANY || '';
+  const enabled = Boolean(company) && (engineName === 'codex' || engineName === 'grok');
+  const sessionId = path.basename(runDir);
+  let seq = 0;
+  let closed = false;
+  let runtime = 'unknown';
+  const emit = (kind, sub, extra = []) => {
+    if (!enabled) return;
+    seq += 1;
+    const args = [
+      'mesh', 'session', sub,
+      '--enqueue',
+      '--harness', engineName,
+      '--adapter-version', MESH_ADAPTER_VERSION,
+      '--runtime-version', runtime,
+      '--seq', String(seq),
+      '--session-id', sessionId,
+      '--company-slug', company,
+      '--project', process.env.HQ_SPAWN_PROJECT || '',
+      '--task', process.env.HQ_SPAWN_TASK || '',
+      '--cwd', process.cwd(),
+      '--hq-root', hqRoot,
+      ...extra,
+    ];
+    let ok = false;
+    try {
+      const result = spawnSync('hq', args, {
+        encoding: 'utf8',
+        timeout: 8000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      ok = result.status === 0;
+      if (!ok) {
+        const why = result.error ? result.error.message : `exit ${result.status}`;
+        process.stderr.write(`[mesh] ${kind} enqueue failed (${why})\n`);
+      }
+    } catch (e) {
+      ok = false;
+      process.stderr.write(`[mesh] ${kind} enqueue failed (${errMsg(e)})\n`);
+    }
+    try {
+      journal({ event: 'mesh-emit', kind, ok });
+    } catch {
+      /* journal failure must not fail the lane */
+    }
+  };
+  return {
+    enabled,
+    begin(bin) {
+      if (!enabled || closed) return;
+      runtime = meshRuntimeVersion(bin);
+      const extra = [];
+      if (process.env.HQ_SPAWN_TASK) extra.push('--task-id', process.env.HQ_SPAWN_TASK);
+      emit('session_start', 'start', extra);
+    },
+    inProgress() {
+      if (!enabled || closed) return;
+      const extra = ['--status', 'in_progress'];
+      if (process.env.HQ_SPAWN_TASK) extra.push('--task-id', process.env.HQ_SPAWN_TASK);
+      emit('task_status', 'task-status', extra);
+    },
+    turnEnd() {
+      if (!enabled || closed) return;
+      emit('turn_end', 'turn-end');
+    },
+    afterResult(text) {
+      if (!enabled || closed) return;
+      if (mentionsPullRequest(text)) {
+        const extra = ['--status', 'review'];
+        if (process.env.HQ_SPAWN_TASK) extra.push('--task-id', process.env.HQ_SPAWN_TASK);
+        emit('task_status', 'task-status', extra);
+      } else {
+        const summary = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+        emit('note', 'note', ['--summary', summary]);
+      }
+      emit('session_end', 'end');
+      closed = true;
+    },
+    abort() {
+      if (!enabled || closed) return;
+      emit('session_end', 'end');
+      closed = true;
+    },
+  };
+}
+
 // ------------------------------------------------------------------- engines
 
 // Codex fast mode: elevated-credit speed tier, ChatGPT-auth only. Per-tier
@@ -1138,6 +1254,8 @@ async function buildRuntime(cli) {
     if (attempt !== 'main') {
       journal({ event: 'agent-spawn', n, label, phase: phaseName, engine: engineName, attempt, logFile, lastFile });
     }
+    const mesh = attempt === 'main' ? spec.mesh : null;
+    if (mesh) mesh.begin(engine.bin);
 
     await new Promise((resolve, reject) => {
       const logFd = fs.openSync(logFile, 'w');
@@ -1170,9 +1288,11 @@ async function buildRuntime(cli) {
           env: childEnv(engineChildEnv()),
         });
       } catch (e) {
+        if (mesh) mesh.abort();
         settle(new Error(`failed to spawn ${engine.bin}: ${errMsg(e)}`));
         return;
       }
+      if (mesh) mesh.inProgress();
       // The engine is detached, so it leads a process group this runner is the
       // only party that can name. Journal it: an external supervisor that has
       // to confirm the tree is really down after a timeout has no other way to
@@ -1192,11 +1312,13 @@ async function buildRuntime(cli) {
       child.on('error', (e) => {
         clearInterval(warnTimer);
         state.activeChildren.delete(child);
+        if (mesh) mesh.abort();
         settle(new Error(`failed to spawn ${engine.bin}: ${errMsg(e)}`));
       });
       child.on('close', (code, signal) => {
         clearInterval(warnTimer);
         state.activeChildren.delete(child);
+        if (mesh) mesh.turnEnd();
         if (state.aborted && state.activeChildren.size === 0 && state.onAllChildrenGone) {
           state.onAllChildrenGone();
         }
@@ -1348,9 +1470,12 @@ async function buildRuntime(cli) {
     narr(`${phaseName ? `[${phaseName}] ` : ''}▶ ${label} started (${engineName}, warn-after ${timeoutSecs}s, log ${logFile})`);
     journal({ event: 'agent-start', n, label, phase: phaseName, engine: engineName, timeoutSecs, logFile, lastFile, spawnCwd: HQ_ROOT, workDir, promptHead: prompt.slice(0, 200) });
 
+    const mesh = createMeshAdapter({
+      engineName, journal, runDir: state.runDir, hqRoot: HQ_ROOT,
+    });
     try {
       const spec = { engineName, engine, model, effort, tier, fastMode, schema: opts.schema, opts,
-        timeoutSecs, label, phaseName, n };
+        timeoutSecs, label, phaseName, n, mesh };
       const main = await runEngine({ ...spec, prompt: spawnPrompt, suffix: '', attempt: 'main' });
 
       let result;
@@ -1398,12 +1523,15 @@ async function buildRuntime(cli) {
       narr(`${phaseName ? `[${phaseName}] ` : ''}✔ ${label} done (${secs}s)`);
       state.completed++;
       journal({ event: 'agent-done', n, label, phase: phaseName, secs, key, resultFile, ...(repaired ? { repaired: true } : {}) });
+      const resultText = typeof result === 'string' ? result : JSON.stringify(result);
+      mesh.afterResult(resultText);
       return result;
     } catch (e) {
       const secs = Math.round((Date.now() - startedAt) / 1000);
       state.failures++;
       narr(`${phaseName ? `[${phaseName}] ` : ''}✖ ${label} FAILED (${secs}s): ${errMsg(e).split('\n')[0]}`);
       journal({ event: 'agent-fail', n, label, phase: phaseName, secs, error: errMsg(e) });
+      mesh.abort();
       throw e;
     } finally {
       state.semaphore.release();

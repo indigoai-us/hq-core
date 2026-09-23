@@ -1,0 +1,87 @@
+{
+  "contractVersion": 1,
+  "source": "hq-cli contracts/preflight/v1/fixtures.json",
+  "classifications": [
+    "unresolved",
+    "needs_company",
+    "company_conflict",
+    "needs_project",
+    "needs_task",
+    "bound",
+    "untracked"
+  ],
+  "fixtures": [
+    {
+      "contractVersion": 1,
+      "kind": "queued",
+      "classification": "unresolved",
+      "delivery": "queued",
+      "lifecycle": "open",
+      "sessionId": "sid-preflight-fixture",
+      "clientOperationId": "op-preflight-fixture"
+    },
+    {
+      "contractVersion": 1,
+      "kind": "needs_company",
+      "classification": "needs_company",
+      "delivery": "clean",
+      "lifecycle": "open",
+      "sessionId": "sid-preflight-fixture",
+      "clientOperationId": "op-preflight-fixture"
+    },
+    {
+      "contractVersion": 1,
+      "kind": "company_conflict",
+      "classification": "company_conflict",
+      "delivery": "clean",
+      "lifecycle": "open",
+      "sessionId": "sid-preflight-fixture",
+      "clientOperationId": "op-preflight-fixture"
+    },
+    {
+      "contractVersion": 1,
+      "kind": "queued",
+      "classification": "needs_project",
+      "delivery": "queued",
+      "lifecycle": "open",
+      "sessionId": "sid-preflight-fixture",
+      "clientOperationId": "op-preflight-fixture",
+      "companySlug": "acme",
+      "companyUid": "cmp_acme"
+    },
+    {
+      "contractVersion": 1,
+      "kind": "queued",
+      "classification": "needs_task",
+      "delivery": "queued",
+      "lifecycle": "open",
+      "sessionId": "sid-preflight-fixture",
+      "clientOperationId": "op-preflight-fixture",
+      "companySlug": "acme",
+      "companyUid": "cmp_acme",
+      "projectId": "dispatch-proj"
+    },
+    {
+      "contractVersion": 1,
+      "kind": "queued",
+      "classification": "bound",
+      "delivery": "queued",
+      "lifecycle": "open",
+      "sessionId": "sid-preflight-fixture",
+      "clientOperationId": "op-preflight-fixture",
+      "companySlug": "acme",
+      "companyUid": "cmp_acme",
+      "projectId": "dispatch-proj",
+      "taskId": "US-9"
+    },
+    {
+      "contractVersion": 1,
+      "kind": "untracked",
+      "classification": "untracked",
+      "delivery": "clean",
+      "lifecycle": "open",
+      "sessionId": "sid-preflight-fixture",
+      "clientOperationId": "op-preflight-fixture"
+    }
+  ]
+}

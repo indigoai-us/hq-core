@@ -1,7 +1,7 @@
 ---
 name: prd
 description: Create an execution-ready PRD for a project. Creates prd.json + README.md with full HQ context awareness. Runtime-agnostic — executes identically in Claude Code and Codex. Lightweight by default — uses batched questions and adapts interview depth to brainstorm context if available. For deep research subagents + 3-tier 15-question interview, use /deep-plan instead.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion
 ---
 
 # PRD — Project Planning & PRD Generation
@@ -540,26 +540,13 @@ If `board_path` exists, read `companies/{co}/board.json` and upsert a project en
 
 ## Step 5.7: Register the canonical project in Work Mesh
 
-For a cloud-backed company, local `board.json` does not establish the server
-`PROJECT_VIEW`. Follow `core/skills/work-mesh/SKILL.md` → **Project registration
-after planning** in order: authenticated GET of the canonical tenant/project,
-then `PUT /v1/work-mesh/projects/{projectId}` with the full planned stories and
-repos when needed, then authenticated GET verification of the exact company,
-project, story IDs/content, and repo identities/paths. Preserve live story
-statuses and server entries; do not blindly overwrite an existing view. Reuse an
-already matching server view without PUT. Stop if a safe existing-view merge or
-verification cannot be completed.
+Local `board.json` does not establish the server project. Registration is one script call. Do not GET, PUT, or POST the Work Mesh project by hand.
 
-Only after the server view is verified, call
-`POST /v1/work-mesh/projects/{projectId}/register` with the resolved `companyUid`
-using supported HQ authentication. Reuse the approved plan's exact project ID.
-Require returned `threadId` and `channelId`, and verify channel read access before
-reporting registration complete. Preserve the plan and report any failure as
-incomplete; do not create a replacement project.
+```bash
+bash core/scripts/register-project.sh {co} {name}
+```
 
-Presence and per-turn activity are automatic through hooks and `hq mesh daemon`.
-They do not replace project registration or channel verification. Optional
-milestone notes are best-effort and do not establish registration.
+The script runs `hq mesh project ensure`, writes `threadId` and `channelId` onto the company `board.json` entry, re-reads that entry, and prints one line: `registered {co}/{name} thread=<threadId> channel=<channelId>`. That line is the verify line. If the script exits non-zero, or stdout is not that line, registration is incomplete. Say "registration incomplete" in the Step 9 report and do not continue as if the project is on the Board. Do not create a replacement project.
 
 ## Step 6: Register with Orchestrator
 

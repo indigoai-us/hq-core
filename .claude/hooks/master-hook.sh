@@ -1,4 +1,8 @@
 #!/bin/bash
+# Hosts like Claude Code export BASH_ENV to a user profile; each non-interactive
+# bash on the hook path then pays nvm (~1-11s). Measured 2026-09-21 macOS:
+# adapter 18-32s, bridge 28s, master-hook 4.5s; with BASH_ENV=/dev/null: 4.0s / 3.5s.
+export BASH_ENV=/dev/null
 # Master hook — dispatches a hook event to the active company's hook scripts.
 #
 # Usage (from settings.json):
@@ -68,6 +72,54 @@
 
 set -uo pipefail
 
+master_now_ms() {
+  local realtime seconds fraction now
+  realtime="${EPOCHREALTIME:-}"
+  if [ -n "$realtime" ]; then
+    seconds="${realtime%%.*}"
+    fraction="${realtime#*.}"
+    fraction="${fraction}000"
+    fraction="${fraction:0:3}"
+    if [[ "$seconds" =~ ^[0-9]+$ ]] && [[ "$fraction" =~ ^[0-9]{3}$ ]]; then
+      printf '%s%s' "$seconds" "$fraction"
+      return 0
+    fi
+  fi
+  now="$(date +%s%3N 2>/dev/null || true)"
+  if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
+    printf '%s' "$now"
+    return 0
+  fi
+  if command -v perl >/dev/null 2>&1; then
+    now="$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
+    if [[ "$now" =~ ^[0-9]+$ ]]; then
+      printf '%s' "$now"
+      return 0
+    fi
+  fi
+  now="$(date +%s 2>/dev/null || printf '0')"
+  [[ "$now" =~ ^[0-9]+$ ]] || now=0
+  printf '%s000' "$now"
+}
+
+master_timing_precision() {
+  local candidate=""
+  [ -n "${EPOCHREALTIME:-}" ] && { printf 'ms'; return; }
+  candidate="$(date +%s%3N 2>/dev/null || true)"
+  if [[ "$candidate" =~ ^[0-9]+$ ]] && [ "${#candidate}" -gt 10 ]; then
+    printf 'ms'
+    return
+  fi
+  if command -v perl >/dev/null 2>&1; then
+    candidate="$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
+    if [[ "$candidate" =~ ^[0-9]+$ ]]; then
+      printf 'ms'
+      return
+    fi
+  fi
+  printf 's'
+}
+
 EVENT="${1:-}"
 if [ -z "$EVENT" ]; then
   echo "USAGE: master-hook.sh <event-name>" >&2
@@ -87,6 +139,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 MASTER_TRACE_START="${EPOCHREALTIME:-}"
 INPUT="$(cat)"
+MASTER_STARTED_MS="$(master_now_ms)"
+MASTER_TIMING_PRECISION="$(master_timing_precision)"
 
 # Shared gate helpers (profile lists, disabled list, PATH augmentation),
 # loaded from hook-gate.sh in library mode so there is a single definition.
@@ -144,6 +198,9 @@ master_timeout_sha256() {
   fi
 }
 
+MASTER_INVOCATION_ID="$(master_timeout_sha256 "$$" "$MASTER_STARTED_MS" "$EVENT" 2>/dev/null || true)"
+[ -n "$MASTER_INVOCATION_ID" ] || MASTER_INVOCATION_ID="$$-$MASTER_STARTED_MS"
+
 stop_master_timeout_watchdog() {
   local i pid session
   for i in "${!master_timeout_watchdog_pids[@]}"; do
@@ -179,6 +236,7 @@ arm_master_timeout_watchdog() {
         --event "$EVENT" \
         --threshold "$threshold" \
         --started-at "$master_timeout_started_at" \
+        --invocation-id "$MASTER_INVOCATION_ID" \
         --parent-pid "$$" \
         >/dev/null 2>&1 <<<"$INPUT" &
       session=1
@@ -190,6 +248,7 @@ arm_master_timeout_watchdog() {
         --event "$EVENT" \
         --threshold "$threshold" \
         --started-at "$master_timeout_started_at" \
+        --invocation-id "$MASTER_INVOCATION_ID" \
         --parent-pid "$$" \
         >/dev/null 2>&1 <<<"$INPUT" &
     fi
@@ -306,6 +365,166 @@ if [ -n "$SESSION_ID" ]; then
   printf '%s\n' "$SESSION_ID" > "$SESSIONS_DIR/.current"
   ACTIVE_COMPANY="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META_FILE")"
 fi
+
+master_bash_env_state() {
+  if [ -n "${BASH_ENV:-}" ]; then
+    printf 'set'
+  else
+    printf 'unset'
+  fi
+}
+
+master_shell_descriptor() {
+  local shell_name="${BASH:-bash}" shell_version="${BASH_VERSION:-unknown}"
+  shell_name="${shell_name##*/}"
+  case "$shell_name" in
+    *[!A-Za-z0-9._+-]*|'') shell_name="unknown" ;;
+  esac
+  printf '%s %s' "$shell_name" "$shell_version"
+}
+
+master_cwd_kind() {
+  local cwd_root="$REPO_ROOT"
+  while [ "$cwd_root" != "/" ] && [ "${cwd_root%/}" != "$cwd_root" ]; do
+    cwd_root="${cwd_root%/}"
+  done
+  case "$PAYLOAD_CWD" in
+    "$cwd_root") printf 'hq-root' ;;
+    "$cwd_root/repos/public/"*|"$cwd_root/repos/private/"*) printf 'repo' ;;
+    "$cwd_root/workspace/worktrees/"*) printf 'worktree' ;;
+    *) printf 'other' ;;
+  esac
+}
+
+master_nproc() {
+  local result=""
+  if command -v getconf >/dev/null 2>&1; then
+    result="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+  fi
+  if ! [[ "$result" =~ ^[0-9]+$ ]] || [ "$result" -lt 1 ]; then
+    if command -v sysctl >/dev/null 2>&1; then
+      result="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+    fi
+  fi
+  if ! [[ "$result" =~ ^[0-9]+$ ]] || [ "$result" -lt 1 ]; then
+    result=1
+  fi
+  printf '%s' "$result"
+}
+
+timeout_journal_file=""
+if master_timeout_watchdog_enabled && [ -n "$SESSION_ID" ]; then
+  journal_session_hash="$(master_timeout_sha256 "$SESSION_ID")"
+  if [ -n "$journal_session_hash" ]; then
+    timeout_journal_file="$REPO_ROOT/workspace/.hook-timeout-journal/$journal_session_hash.tsv"
+    mkdir -p "${timeout_journal_file%/*}" >/dev/null 2>&1 || timeout_journal_file=""
+  fi
+fi
+
+journal_hook_event() {
+  local hook_path="$1" elapsed_ms="$2" script
+  [ -n "$timeout_journal_file" ] || return 0
+  script="${hook_path##*/}"
+  case "$script" in
+    ''|*[!A-Za-z0-9._-]*) return 0 ;;
+  esac
+  case "$EVENT" in
+    ''|*[!A-Za-z0-9._-]*) return 0 ;;
+  esac
+  case "$elapsed_ms" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  printf '%s\t%s\t%s\n' "$script" "$EVENT" "$elapsed_ms" >> "$timeout_journal_file" 2>/dev/null || true
+}
+
+acquire_journal_compaction_lock() {
+  local lock_dir="$timeout_journal_file.lock" owner attempt
+  [ -n "$timeout_journal_file" ] || return 1
+  for attempt in 1 2; do
+    if mkdir "$lock_dir" >/dev/null 2>&1; then
+      printf '%s\n' "$$" > "$lock_dir/pid" 2>/dev/null || {
+        rm -f "$lock_dir/pid" >/dev/null 2>&1 || true
+        rmdir "$lock_dir" >/dev/null 2>&1 || true
+        return 1
+      }
+      return 0
+    fi
+    owner="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+    if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" >/dev/null 2>&1; then
+      return 1
+    fi
+    [ "$attempt" -eq 1 ] || break
+    sleep 0.01 >/dev/null 2>&1 || true
+  done
+  rm -f "$lock_dir/pid" >/dev/null 2>&1 || true
+  rmdir "$lock_dir" >/dev/null 2>&1 || return 1
+  if mkdir "$lock_dir" >/dev/null 2>&1; then
+    printf '%s\n' "$$" > "$lock_dir/pid" 2>/dev/null || {
+      rm -f "$lock_dir/pid" >/dev/null 2>&1 || true
+      rmdir "$lock_dir" >/dev/null 2>&1 || true
+      return 1
+    }
+    return 0
+  fi
+  return 1
+}
+
+release_journal_compaction_lock() {
+  local lock_dir="$timeout_journal_file.lock"
+  rm -f "$lock_dir/pid" >/dev/null 2>&1 || true
+  rmdir "$lock_dir" >/dev/null 2>&1 || true
+}
+
+compact_timeout_journal() {
+  local temporary
+  [ -n "$timeout_journal_file" ] || return 0
+  [ -f "$timeout_journal_file" ] || return 0
+  acquire_journal_compaction_lock || return 0
+  temporary="$timeout_journal_file.tmp.$$"
+  if ! tail -n 20 "$timeout_journal_file" > "$temporary" 2>/dev/null; then
+    rm -f "$temporary" >/dev/null 2>&1 || true
+    release_journal_compaction_lock
+    return 0
+  fi
+  mv -f "$temporary" "$timeout_journal_file" >/dev/null 2>&1 || rm -f "$temporary" >/dev/null 2>&1 || true
+  release_journal_compaction_lock
+}
+
+master_hook_sequence_json() {
+  local sequence
+  [ -f "$timeout_journal_file" ] || { printf '[]'; return; }
+  compact_timeout_journal
+  sequence="$(tail -n 20 "$timeout_journal_file" 2>/dev/null | jq -Rsc '
+    split("\n")
+    | map(select(length > 0) | split("\t")
+      | select(length == 3)
+      | {script: .[0], event: .[1], ms: (.[2] | tonumber)})
+  ' 2>/dev/null || true)"
+  if [ -n "$sequence" ]; then
+    printf '%s' "$sequence"
+  else
+    printf '[]'
+  fi
+}
+
+write_journal_runtime_metadata() {
+  local metadata_file temporary journal_dir
+  [ -n "$timeout_journal_file" ] || return 0
+  journal_dir="${timeout_journal_file%/*}"
+  mkdir -p "$journal_dir" >/dev/null 2>&1 || return 0
+  metadata_file="$timeout_journal_file.meta"
+  temporary="$metadata_file.tmp.$$"
+  printf 'bash_env_set=%s\ntiming_precision=%s\n' "$(master_bash_env_state)" "$MASTER_TIMING_PRECISION" > "$temporary" 2>/dev/null || {
+    rm -f "$temporary" >/dev/null 2>&1 || true
+    return 0
+  }
+  mv -f "$temporary" "$metadata_file" >/dev/null 2>&1 || {
+    rm -f "$temporary" >/dev/null 2>&1 || true
+    return 0
+  }
+}
+
+write_journal_runtime_metadata
 
 # A watchdog cannot safely write to the slow hook's stdout: stdout is captured
 # until the child exits and is discarded if the harness kills it. Instead it
@@ -454,6 +673,11 @@ exit_code=0
 plain_buf=""
 json_outputs=()
 json_sources=()
+timed_out_child_paths=()
+timed_out_child_elapsed_ms=()
+timed_out_child_exit_codes=()
+timed_out_child_timeout_seconds=()
+late_finish_seen_paths=()
 
 is_json_object() {
   # Cheap shape check first so plain-text outputs never fork jq.
@@ -473,8 +697,13 @@ if command -v timeout >/dev/null 2>&1; then
 elif command -v perl >/dev/null 2>&1; then
   child_timeout_cmd="perl"
 fi
-run_child() { # <timeout-seconds> <script-path> [args...]  (stdout captured by caller)
-  local t="$1" path="$2"; shift 2
+child_completion_dir="$REPO_ROOT/workspace/.hook-timeout-completions"
+if [ -n "$child_timeout_cmd" ]; then
+  mkdir -p "$child_completion_dir" >/dev/null 2>&1 || child_completion_dir=""
+fi
+child_sequence=0
+run_child() { # <timeout-seconds> <script-path> <completion-marker> [args...]
+  local t="$1" path="$2" completion_marker="$3"; shift 3
   local runner=()
   if [ -x "$path" ]; then runner=("$path"); else runner=(bash "$path"); fi
   # Build the command first so there is exactly ONE pipeline, and its status is
@@ -485,18 +714,67 @@ run_child() { # <timeout-seconds> <script-path> [args...]  (stdout captured by c
   # the pipeline because every simple command resets PIPESTATUS.
   local cmd=()
   case "$child_timeout_cmd" in
-    timeout) cmd=(timeout "$t" "${runner[@]}") ;;
+    timeout)
+      if [ -n "$completion_marker" ]; then
+        cmd=(timeout "$t" bash -c 'marker="$1"; shift; "$@"; rc=$?; : > "$marker"; exit "$rc"' -- "$completion_marker" "${runner[@]}")
+      else
+        cmd=(timeout "$t" "${runner[@]}")
+      fi
+      ;;
     # Indirect-object exec never routes a one-element LIST through /bin/sh.
     # Bare `exec @ARGV` does when that element contains a space, the shell
     # word-splits, exec fails, and perl exits 0, so every argless registry
     # hook no-ops on macOS HQ roots like "SE HQ Pilot".
-    perl) cmd=(perl -e 'alarm shift; exec {$ARGV[0]} @ARGV' "$t" "${runner[@]}") ;;
-    *) cmd=("${runner[@]}") ;;
+    perl)
+      if [ -n "$completion_marker" ]; then
+        cmd=(perl -e 'alarm shift; my $marker=shift; system { $ARGV[0] } @ARGV; my $rc=$?; open my $fh, ">", $marker; close $fh; exit($rc == -1 ? 128 : (($rc & 127) ? 128 + ($rc & 127) : ($rc >> 8)));' "$t" "$completion_marker" "${runner[@]}")
+      else
+        cmd=(perl -e 'alarm shift; exec {$ARGV[0]} @ARGV' "$t" "${runner[@]}")
+      fi
+      ;;
+    *)
+      cmd=("${runner[@]}")
+      ;;
   esac
   local rc=0
   printf '%s' "$INPUT" | "${cmd[@]}" "$@"
   rc=${PIPESTATUS[1]}
   return "$rc"
+}
+
+record_child_execution() {
+  local path="$1" started_ms="$2" ended_ms="$3" rc="$4" completion_marker="$5" timeout_seconds="$6" elapsed_ms=0 timed_out=0
+  if [[ "$started_ms" =~ ^[0-9]+$ ]] && [[ "$ended_ms" =~ ^[0-9]+$ ]]; then
+    elapsed_ms=$((ended_ms - started_ms))
+    [ "$elapsed_ms" -ge 0 ] || elapsed_ms=0
+  fi
+  journal_hook_event "$path" "$elapsed_ms"
+  if [ -n "$completion_marker" ] && [ ! -f "$completion_marker" ]; then
+    case "$rc" in
+      124|142) timed_out=1 ;;
+    esac
+  fi
+  [ -n "$completion_marker" ] || timed_out=0
+  rm -f "$completion_marker" >/dev/null 2>&1 || true
+  if [ "$timed_out" -eq 1 ]; then
+    timed_out_child_paths+=("$path")
+    timed_out_child_elapsed_ms+=("$elapsed_ms")
+    timed_out_child_exit_codes+=("$rc")
+    timed_out_child_timeout_seconds+=("$timeout_seconds")
+  fi
+}
+
+prepare_child_completion_marker() {
+  local marker_name
+  child_sequence=$((child_sequence + 1))
+  child_completion_marker=""
+  [ -n "$child_completion_dir" ] || return 0
+  case "$MASTER_INVOCATION_ID" in
+    ''|*[!A-Za-z0-9._-]*) return 0 ;;
+  esac
+  marker_name="${MASTER_INVOCATION_ID}.${child_sequence}.done"
+  child_completion_marker="$child_completion_dir/$marker_name"
+  rm -f "$child_completion_marker" >/dev/null 2>&1 || true
 }
 
 trace_ran() { # <id> <rc> <start-epochrealtime>
@@ -524,6 +802,329 @@ collect_output() { # <rc> <stdout> <source-path>
   elif [ "$rc" -ne 0 ] && [ "$exit_code" -eq 0 ]; then
     exit_code=$rc
   fi
+}
+
+master_normalize_fingerprint_path() {
+  local path="$1" original="$1" normalized
+  while [ "${path#./}" != "$path" ]; do
+    path="${path#./}"
+  done
+  while :; do
+    normalized="${path//\/\.\//\/}"
+    [ "$normalized" = "$path" ] && break
+    path="$normalized"
+  done
+  while [ "$path" != "/" ] && [ "${path%/}" != "$path" ]; do
+    path="${path%/}"
+  done
+  [ -n "$path" ] || [ -z "$original" ] || path="."
+  printf '%s' "$path"
+}
+
+master_hook_fingerprint_identity() {
+  local hook_path="$1" normalized_root normalized_hook relative_path=""
+  normalized_root="$(master_normalize_fingerprint_path "$REPO_ROOT")"
+  normalized_hook="$(master_normalize_fingerprint_path "$hook_path")"
+  case "$normalized_root" in
+    "") ;;
+    "/")
+      case "$normalized_hook" in
+        /*) relative_path="${normalized_hook#/}" ;;
+      esac
+      ;;
+    ".")
+      case "$normalized_hook" in
+        /*) ;;
+        *) relative_path="$normalized_hook" ;;
+      esac
+      ;;
+    *)
+      case "$normalized_hook" in
+        "$normalized_root"/*) relative_path="${normalized_hook#"$normalized_root"/}" ;;
+      esac
+      ;;
+  esac
+  if [ -n "$relative_path" ]; then
+    master_normalize_fingerprint_path "$relative_path"
+  else
+    basename "$normalized_hook"
+  fi
+}
+
+master_safe_hook_script() {
+  local value="${1##*/}"
+  case "$value" in
+    ''|*[!A-Za-z0-9._-]*) printf 'unknown' ;;
+    *) value="${value:0:128}"; printf '%s' "$value" ;;
+  esac
+}
+
+master_timeout_record_exists() {
+  local session_hash breadcrumb_dir record
+  [ -n "$SESSION_ID" ] || return 1
+  session_hash="$(master_timeout_sha256 "$SESSION_ID")"
+  [ -n "$session_hash" ] || return 1
+  breadcrumb_dir="$REPO_ROOT/workspace/.hook-timeout-breadcrumbs/$session_hash"
+  [ -d "$breadcrumb_dir" ] || return 1
+  for record in "$breadcrumb_dir"/*.json; do
+    [ -f "$record" ] || continue
+    if jq -e --arg hook_path "$SCRIPT_DIR/master-hook.sh" --arg event "$EVENT" --arg invocation_id "$MASTER_INVOCATION_ID" '
+      .hook_path == $hook_path and .hook_event == $event and .invocation_id == $invocation_id
+    ' "$record" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+master_declared_timeout_ms() {
+  local override="${1:-}" result="" harness
+  if [[ "$override" =~ ^[0-9]+$ ]] && [ "$override" -ge 1 ]; then
+    printf '%s000' "$override"
+    return
+  fi
+  harness="$(printf '%s' "${HQ_HARNESS:-claude}" | tr '[:upper:]' '[:lower:]')"
+  case "$harness" in
+    ''|claude)
+      if [ -f "$REPO_ROOT/.claude/settings.json" ]; then
+        result="$(jq -r --arg event "$EVENT" '
+          [
+            .hooks[$event][]?.hooks[]?
+            | select(.type == "command" and ((.command // "") | contains("master-hook.sh")))
+            | .timeout
+          ]
+          | map(select(type == "number" and . >= 1))
+          | unique
+          | if length == 1 then .[0] else empty end
+        ' "$REPO_ROOT/.claude/settings.json" 2>/dev/null || true)"
+      fi
+      ;;
+    codex)
+      if [ -f "$REPO_ROOT/.codex/config.toml" ]; then
+        result="$(awk -v event="$EVENT" '
+          $0 == "[[hooks." event ".hooks]]" { in_event = 1; next }
+          in_event && /^\[\[hooks\./ { exit }
+          in_event && /^[[:space:]]*timeout[[:space:]]*=/ {
+            sub(/^[^=]*=[[:space:]]*/, "")
+            sub(/[[:space:]]*(#.*)?$/, "")
+            if ($0 ~ /^[0-9]+$/) print
+            exit
+          }
+        ' "$REPO_ROOT/.codex/config.toml" 2>/dev/null || true)"
+      fi
+      ;;
+    grok)
+      if [ -f "$REPO_ROOT/.grok/hooks/hq-grok-user-bridge.json" ]; then
+        result="$(jq -r --arg event "$EVENT" '
+          [
+            .hooks[$event][]?.hooks[]?
+            | .timeout
+          ]
+          | map(select(type == "number" and . >= 1))
+          | unique
+          | if length == 1 then .[0] else empty end
+        ' "$REPO_ROOT/.grok/hooks/hq-grok-user-bridge.json" 2>/dev/null || true)"
+      fi
+      ;;
+  esac
+  if [[ "$result" =~ ^[0-9]+$ ]] && [ "$result" -ge 1 ]; then
+    printf '%s000' "$result"
+  else
+    printf '30000'
+  fi
+}
+
+master_watchdog_timeout_ms() {
+  local declared_ms declared_seconds lead_seconds absolute_seconds relative_seconds selected
+  declared_ms="$(master_declared_timeout_ms "${1:-}")"
+  declared_seconds=$((declared_ms / 1000))
+  lead_seconds="${HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS:-20}"
+  [[ "$lead_seconds" =~ ^[0-9]+$ ]] || lead_seconds=20
+  absolute_seconds="${HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS:-120}"
+  [[ "$absolute_seconds" =~ ^[0-9]+$ ]] || absolute_seconds=120
+  relative_seconds=$((declared_seconds - lead_seconds))
+  [ "$relative_seconds" -ge 0 ] || relative_seconds=0
+  selected="$absolute_seconds"
+  [ "$relative_seconds" -lt "$selected" ] && selected="$relative_seconds"
+  printf '%s000' "$selected"
+}
+
+wait_for_timeout_reporters() {
+  local session_hash breadcrumb_dir record marker deadline now
+  [ -z "${HQ_HOOK_TIMEOUT_SENTRY_TEST_WAIT_FILE:-}" ] \
+    || : > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_WAIT_FILE}" 2>/dev/null || true
+  [ -n "$SESSION_ID" ] || return 0
+  session_hash="$(master_timeout_sha256 "$SESSION_ID")"
+  [ -n "$session_hash" ] || return 0
+  breadcrumb_dir="$REPO_ROOT/workspace/.hook-timeout-breadcrumbs/$session_hash"
+  [ -d "$breadcrumb_dir" ] || return 0
+  deadline=$(( $(date +%s 2>/dev/null || printf '0') + 2 ))
+  for record in "$breadcrumb_dir"/*.json; do
+    [ -f "$record" ] || continue
+    if ! jq -e --arg hook_path "$SCRIPT_DIR/master-hook.sh" --arg event "$EVENT" --arg invocation_id "$MASTER_INVOCATION_ID" '
+      .hook_path == $hook_path and .hook_event == $event and .invocation_id == $invocation_id
+    ' "$record" >/dev/null 2>&1; then
+      continue
+    fi
+    marker="$record.reported"
+    while [ ! -e "$marker" ]; do
+      now="$(date +%s 2>/dev/null || printf '0')"
+      [ "$now" -lt "$deadline" ] || break
+      sleep 0.02 >/dev/null 2>&1 || break
+    done
+    [ -e "$marker" ] && rm -f "$marker" >/dev/null 2>&1 || true
+  done
+}
+
+master_load_average() {
+  local load_one="" load_five="" load_fifteen=""
+  if [ -r /proc/loadavg ]; then
+    read -r load_one load_five load_fifteen _ < /proc/loadavg || true
+    printf '%s,%s,%s' "${load_one:-}" "${load_five:-}" "${load_fifteen:-}"
+  elif command -v sysctl >/dev/null 2>&1; then
+    sysctl -n vm.loadavg 2>/dev/null || true
+  fi
+}
+
+master_elapsed_ms() {
+  local now="$MASTER_STARTED_MS" current elapsed
+  current="$(master_now_ms)"
+  elapsed=0
+  if [[ "$now" =~ ^[0-9]+$ ]] && [[ "$current" =~ ^[0-9]+$ ]]; then
+    elapsed=$((current - now))
+    [ "$elapsed" -ge 0 ] || elapsed=0
+  fi
+  printf '%s' "$elapsed"
+}
+
+master_report_late_event() {
+  local event_type="$1" hook_path="$2" final_elapsed_ms="$3" late_exit_code="$4"
+  local child_timeout_seconds="${5:-}" declared_timeout_ms watchdog_timeout_ms
+  local hook_name message hq_version platform load_average fingerprint_identity fingerprint_hash
+  local bash_env_set shell_info cwd_kind_value nproc_count hook_sequence report_exit event_json
+  command -v hq >/dev/null 2>&1 || return 0
+  hook_name="$(master_safe_hook_script "$hook_path")"
+  case "$event_type" in
+    hook_timeout_exceeded) message="HQ hook exceeded configured timeout" ;;
+    *) message="HQ hook completed after timeout warning" ;;
+  esac
+  hq_version="$(grep -E '^hqVersion:' "$REPO_ROOT/core/core.yaml" 2>/dev/null | head -n 1 | tr -d ' "' | cut -d: -f2)"
+  [ -n "$hq_version" ] || hq_version="unknown"
+  platform="$(uname -s 2>/dev/null || printf 'unknown')"
+  load_average="$(master_load_average)"
+  fingerprint_identity="$(master_hook_fingerprint_identity "$hook_path")"
+  fingerprint_hash="$(master_timeout_sha256 "$fingerprint_identity")"
+  [ -n "$fingerprint_hash" ] || return 0
+  bash_env_set="$(master_bash_env_state)"
+  shell_info="$(master_shell_descriptor)"
+  cwd_kind_value="$(master_cwd_kind)"
+  nproc_count="$(master_nproc)"
+  hook_sequence="$(master_hook_sequence_json)"
+  if [[ "$child_timeout_seconds" =~ ^[0-9]+$ ]] && [ "$child_timeout_seconds" -ge 1 ]; then
+    declared_timeout_ms=$((child_timeout_seconds * 1000))
+    watchdog_timeout_ms="$declared_timeout_ms"
+  else
+    declared_timeout_ms="$(master_declared_timeout_ms)"
+    watchdog_timeout_ms="$(master_watchdog_timeout_ms)"
+  fi
+  report_exit="$late_exit_code"
+  [[ "$report_exit" =~ ^[0-9]+$ ]] || report_exit=1
+  [[ "$final_elapsed_ms" =~ ^[0-9]+$ ]] || final_elapsed_ms=0
+  event_json="$(jq -cn \
+    --arg type "$event_type" \
+    --arg message "$message" \
+    --arg fingerprint "hook-timeout:$EVENT:$fingerprint_hash" \
+    --arg level "warning" \
+    --arg hook_name "$hook_name" \
+    --arg hook_event "$EVENT" \
+    --arg tool_name "${TOOL_NAME:-unknown}" \
+    --arg session_id "${SESSION_ID:-unknown}" \
+    --arg hook_path "$hook_path" \
+    --arg hq_version "$hq_version" \
+    --arg platform "$platform" \
+    --arg load_average "$load_average" \
+    --arg bash_env_set "$bash_env_set" \
+    --arg shell "$shell_info" \
+    --arg cwd_kind "$cwd_kind_value" \
+    --arg timing_precision "$MASTER_TIMING_PRECISION" \
+    --arg hook_script "$hook_name" \
+    --argjson declared_timeout_ms "$declared_timeout_ms" \
+    --argjson elapsed_ms "$final_elapsed_ms" \
+    --argjson remaining_ms 0 \
+    --argjson watchdog_timeout_ms "$watchdog_timeout_ms" \
+    --argjson final_elapsed_ms "$final_elapsed_ms" \
+    --argjson exit_code "$report_exit" \
+    --argjson nproc "$nproc_count" \
+    --argjson hook_sequence "$hook_sequence" '
+      {
+        type: $type,
+        message: $message,
+        fingerprint: $fingerprint,
+        level: $level,
+        metadata: {
+          hook_name: $hook_name,
+          hook_event: $hook_event,
+          tool_name: $tool_name,
+          session_id: $session_id,
+          hook_path: $hook_path,
+          declared_timeout_ms: $declared_timeout_ms,
+          elapsed_ms: $elapsed_ms,
+          remaining_ms: $remaining_ms,
+          watchdog_timeout_ms: $watchdog_timeout_ms,
+          final_elapsed_ms: $final_elapsed_ms,
+          exit_code: $exit_code,
+          hq_version: $hq_version,
+          platform: $platform,
+          load_average: $load_average,
+          bash_env_set: $bash_env_set,
+          shell: $shell,
+          cwd_kind: $cwd_kind,
+          timing_precision: $timing_precision,
+          nproc: $nproc,
+          hook_script: $hook_script,
+          hook_sequence: $hook_sequence
+        }
+      }
+    ')" || return 0
+  [ -n "$event_json" ] || return 0
+  hq core sentry report --timeout-ms 750 <<<"$event_json" >/dev/null 2>&1 || true
+}
+
+late_finish_path_seen() {
+  local candidate="$1" seen
+  for seen in ${late_finish_seen_paths[@]+"${late_finish_seen_paths[@]}"}; do
+    [ "$seen" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+emit_late_finish_event() {
+  local event_type="$1" hook_path="$2" final_elapsed_ms="$3" late_exit_code="$4" timeout_seconds="${5:-}"
+  late_finish_path_seen "$hook_path" && return 0
+  late_finish_seen_paths+=("$hook_path")
+  master_report_late_event "$event_type" "$hook_path" "$final_elapsed_ms" "$late_exit_code" "$timeout_seconds"
+}
+
+emit_pending_late_finish_events() {
+  local pending=0 i final_elapsed_ms
+  if master_timeout_record_exists; then pending=1; fi
+  [ ${#timed_out_child_paths[@]} -gt 0 ] && pending=1
+  [ "$pending" -eq 1 ] || return 0
+  # The threshold workers may still be sending their warning report. Wait for
+  # their bounded completion marker before stopping the process group.
+  wait_for_timeout_reporters
+  stop_master_timeout_watchdog
+  if master_timeout_record_exists; then
+    final_elapsed_ms="$(master_elapsed_ms)"
+    emit_late_finish_event hook_late_finish "$SCRIPT_DIR/master-hook.sh" "$final_elapsed_ms" "$exit_code"
+  fi
+  for i in "${!timed_out_child_paths[@]}"; do
+    emit_late_finish_event hook_timeout_exceeded \
+      "${timed_out_child_paths[$i]}" \
+      "${timed_out_child_elapsed_ms[$i]}" \
+      "${timed_out_child_exit_codes[$i]}" \
+      "${timed_out_child_timeout_seconds[$i]}"
+  done
 }
 
 # The Codex and Grok adapters dispatch registry hooks themselves (through
@@ -795,8 +1396,12 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     fi
     rc=0
     trace_start="${EPOCHREALTIME:-}"
+    child_started_ms="$(master_now_ms)"
+    prepare_child_completion_marker
     # shellcheck disable=SC2086 # args are space-separated literals from the registry.
-    out="$(run_child "$rtimeout" "$REPO_ROOT/$rscript" $rargs)" || rc=$?
+    out="$(run_child "$rtimeout" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
+    child_ended_ms="$(master_now_ms)"
+    record_child_execution "$REPO_ROOT/$rscript" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$rtimeout"
     [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$rid" "$rc" "$trace_start"
     collect_output "$rc" "$out" "$REPO_ROOT/$rscript"
   done < <(registry_rows)
@@ -856,12 +1461,19 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
 
   rc=0
   trace_start="${EPOCHREALTIME:-}"
+  child_started_ms="$(master_now_ms)"
+  prepare_child_completion_marker
+  master_child_timeout="${HQ_MASTER_CHILD_TIMEOUT:-120}"
   # The single dispatcher watchdog armed at the top covers every child; the
   # previous per-child re-arm cost two setsid bash processes per hook.
-  out="$(run_child "${HQ_MASTER_CHILD_TIMEOUT:-120}" "$hook" "$EVENT")" || rc=$?
+  out="$(run_child "$master_child_timeout" "$hook" "$child_completion_marker" "$EVENT")" || rc=$?
+  child_ended_ms="$(master_now_ms)"
+  record_child_execution "$hook" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$master_child_timeout"
   [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$(basename "$hook")" "$rc" "$trace_start"
   collect_output "$rc" "$out" "$hook"
 done
+
+emit_pending_late_finish_events
 
 # A block deliberately wins master aggregation. It must also leave timeout
 # breadcrumbs pending, because a warning merged into any other JSON object

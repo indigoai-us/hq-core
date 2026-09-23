@@ -174,10 +174,15 @@ unset HQ_SPAWN_COMPANY HQ_SPAWN_PROJECT HQ_SPAWN_TASK
 reset_spool
 SID=sid-device-default-1
 cp "$SESSION_START" "$HQ/core/hooks/SessionStart/"
+cp "$REPO_ROOT/core/hooks/SessionStart/preflight-fixtures.json" "$HQ/core/hooks/SessionStart/"
 chmod +x "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh"
+preflight_fixture() {
+  jq -c --arg c "$1" '.fixtures[] | select(.classification == $c)' \
+    "$REPO_ROOT/core/hooks/SessionStart/preflight-fixtures.json"
+}
 env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" WORK_MESH_SPOOL="$WORK_MESH_SPOOL" \
   WORK_MESH_SEQ_DIR="$WORK_MESH_SEQ_DIR" HQ_ROOT="$HQ" HQ_WORK_MESH_RECONCILE_STUB=0 \
-  HQ_RECONCILE_RESULT='{"contractVersion":1,"kind":"needs_project","classification":"needs_project","delivery":"queued","lifecycle":"open","sessionId":"sid-device-default-1","clientOperationId":"op-device-default","companySlug":"acme","companyUid":"cmp_acme"}' \
+  HQ_RECONCILE_RESULT="$(preflight_fixture needs_project)" \
   HQ_DEFAULT_COMPANY_JSON='{"ok":true,"slug":"acme","enabled":true,"needsChoice":false,"source":"configured"}' \
   CLAUDE_CODE_SESSION_ID="$SID" \
   bash "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh" <<<"{\"session_id\":\"$SID\",\"cwd\":\"/tmp\"}" >/dev/null
@@ -200,15 +205,7 @@ err="$SANDBOX/device-default-conflict.err"
 env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" WORK_MESH_SPOOL="$WORK_MESH_SPOOL" \
   WORK_MESH_SEQ_DIR="$WORK_MESH_SEQ_DIR" HQ_ROOT="$HQ" HQ_RECONCILE_CAPTURE="$capture" \
   HQ_WORK_MESH_RECONCILE_STUB=0 \
-  HQ_RECONCILE_RESULT='{
-    "contractVersion": 1,
-    "kind": "company_conflict",
-    "classification": "company_conflict",
-    "delivery": "clean",
-    "lifecycle": "open",
-    "sessionId": "sid-device-default-conflict",
-    "clientOperationId": "op-company-conflict"
-  }' \
+  HQ_RECONCILE_RESULT="$(preflight_fixture company_conflict)" \
   HQ_DEFAULT_COMPANY_JSON='{"ok":true,"slug":"acme","enabled":true,"needsChoice":false,"source":"configured"}' \
   CLAUDE_CODE_SESSION_ID="$SID" \
   bash "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh" \
@@ -236,7 +233,7 @@ for preflight_case in garbage timeout; do
   reconcile_result='not json at all'
   reconcile_sleep=0
   if [ "$preflight_case" = "timeout" ]; then
-    reconcile_result='{"contractVersion":1,"kind":"needs_project","classification":"needs_project","delivery":"queued","lifecycle":"open","sessionId":"sid-device-default-timeout","clientOperationId":"op-timeout"}'
+    reconcile_result="$(preflight_fixture needs_project)"
     reconcile_sleep=5
   fi
   env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" WORK_MESH_SPOOL="$WORK_MESH_SPOOL" \
@@ -261,7 +258,7 @@ err="$SANDBOX/device-default-none.err"
 env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" WORK_MESH_SPOOL="$WORK_MESH_SPOOL" \
   WORK_MESH_SEQ_DIR="$WORK_MESH_SEQ_DIR" HQ_ROOT="$HQ" HQ_WORK_CONTEXT_ROOT="$HOME_DIR/.hq/work-context" \
   HQ_WORK_MESH_RECONCILE_STUB=0 \
-  HQ_RECONCILE_RESULT='{"contractVersion":1,"kind":"needs_company","classification":"needs_company","delivery":"clean","lifecycle":"open","sessionId":"placeholder","clientOperationId":"placeholder"}' \
+  HQ_RECONCILE_RESULT="$(preflight_fixture needs_company)" \
   HQ_DEFAULT_COMPANY_JSON='{"ok":true,"enabled":false,"needsChoice":false,"source":"disabled"}' \
   CLAUDE_CODE_SESSION_ID="$SID" \
   bash "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh" \
@@ -275,7 +272,7 @@ SID=sid-device-default-preflight-state
 env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" WORK_MESH_SPOOL="$WORK_MESH_SPOOL" \
   WORK_MESH_SEQ_DIR="$WORK_MESH_SEQ_DIR" HQ_ROOT="$HQ" HQ_WORK_CONTEXT_ROOT="$HOME_DIR/.hq/work-context" \
   HQ_WORK_MESH_RECONCILE_STUB=0 HQ_RECONCILE_WRITE_STATE=1 \
-  HQ_RECONCILE_RESULT='{"contractVersion":1,"kind":"needs_project","classification":"needs_project","delivery":"queued","lifecycle":"open","sessionId":"sid-device-default-preflight-state","clientOperationId":"op-preflight-state","companySlug":"acme","companyUid":"cmp_acme"}' \
+  HQ_RECONCILE_RESULT="$(preflight_fixture needs_project)" \
   HQ_DEFAULT_COMPANY_JSON='{"ok":true,"slug":"acme","enabled":true,"needsChoice":false,"source":"configured"}' \
   CLAUDE_CODE_SESSION_ID="$SID" \
   bash "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh" \
@@ -286,6 +283,74 @@ grep -qx 'company_slug: acme' "$HQ/workspace/sessions/$SID/meta.yaml" \
 jq -e '.company_slug == "acme"' "$HQ/workspace/sessions/$SID/scope-capability.json" >/dev/null \
   && pass "preflight-created state does not block new-session scope binding" \
   || fail "preflight-created state blocked new-session scope binding"
+
+# --- 2f) every CLI preflight fixture is accepted; shapes outside the set are not ---
+# contractVersion pin is 1. To bump: change this assertion, preflight-fixtures.json,
+# and hq-cli WORK_CONTEXT_CONTRACT_VERSION plus contracts/preflight/v<N>/. A bump
+# on only one side fails that side's pin (and check-preflight-fixtures.sh when
+# an installed hq-cli is on the machine).
+jq -e '.contractVersion == 1 and .source == "hq-cli contracts/preflight/v1/fixtures.json"' \
+  "$REPO_ROOT/core/hooks/SessionStart/preflight-fixtures.json" >/dev/null \
+  && pass "vendored fixtures pin contractVersion 1 and name the hq-cli source" \
+  || fail "vendored fixture pin"
+while IFS= read -r classification; do
+  reset_spool
+  SID="sid-fixture-$classification"
+  err="$SANDBOX/fixture-$classification.err"
+  env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" WORK_MESH_SPOOL="$WORK_MESH_SPOOL" \
+    WORK_MESH_SEQ_DIR="$WORK_MESH_SEQ_DIR" HQ_ROOT="$HQ" HQ_WORK_CONTEXT_ROOT="$HOME_DIR/.hq/work-context" \
+    HQ_WORK_MESH_RECONCILE_STUB=0 \
+    HQ_RECONCILE_RESULT="$(preflight_fixture "$classification")" \
+    HQ_DEFAULT_COMPANY_JSON='{"ok":true,"slug":"acme","enabled":true,"needsChoice":false,"source":"configured"}' \
+    CLAUDE_CODE_SESSION_ID="$SID" \
+    bash "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh" \
+    <<<"{\"session_id\":\"$SID\",\"cwd\":\"/tmp\"}" >/dev/null 2>"$err"
+  case "$classification" in
+    needs_project|needs_task|bound)
+      grep -qx 'company_slug: acme' "$HQ/workspace/sessions/$SID/meta.yaml" \
+        && pass "fixture $classification binds" \
+        || fail "fixture $classification was rejected"
+      grep -q 'preflight rejected' "$err" && fail "fixture $classification rejected notice" || true
+      ;;
+    company_conflict)
+      [ ! -f "$HQ/workspace/sessions/$SID/meta.yaml" ] \
+        && grep -q 'company_conflict; leaving device-default session unbound' "$err" \
+        && pass "fixture company_conflict accepted and left unbound" \
+        || fail "fixture company_conflict: $(cat "$err" 2>/dev/null)"
+      ;;
+    needs_company)
+      [ ! -s "$err" ] && [ ! -f "$HQ/workspace/sessions/$SID/meta.yaml" ] \
+        && pass "fixture needs_company accepted and silent" \
+        || fail "fixture needs_company: $(cat "$err" 2>/dev/null)"
+      ;;
+    unresolved|untracked)
+      [ ! -f "$HQ/workspace/sessions/$SID/meta.yaml" ] \
+        && grep -q 'preflight unresolved; leaving device-default session unbound' "$err" \
+        && ! grep -q 'preflight rejected' "$err" \
+        && pass "fixture $classification accepted without binding" \
+        || fail "fixture $classification: $(cat "$err" 2>/dev/null)"
+      ;;
+    *)
+      fail "unexpected fixture classification $classification"
+      ;;
+  esac
+done < <(jq -r '.classifications[]' "$REPO_ROOT/core/hooks/SessionStart/preflight-fixtures.json")
+
+reset_spool
+SID=sid-fixture-outside
+err="$SANDBOX/fixture-outside.err"
+env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" WORK_MESH_SPOOL="$WORK_MESH_SPOOL" \
+  WORK_MESH_SEQ_DIR="$WORK_MESH_SEQ_DIR" HQ_ROOT="$HQ" HQ_WORK_CONTEXT_ROOT="$HOME_DIR/.hq/work-context" \
+  HQ_WORK_MESH_RECONCILE_STUB=0 \
+  HQ_RECONCILE_RESULT='{"contractVersion":1,"kind":"queued","classification":"migration_pending","delivery":"queued","lifecycle":"open","sessionId":"sid-fixture-outside","clientOperationId":"op-outside"}' \
+  HQ_DEFAULT_COMPANY_JSON='{"ok":true,"slug":"acme","enabled":true,"needsChoice":false,"source":"configured"}' \
+  CLAUDE_CODE_SESSION_ID="$SID" \
+  bash "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh" \
+  <<<"{\"session_id\":\"$SID\",\"cwd\":\"/tmp\"}" >/dev/null 2>"$err"
+[ ! -f "$HQ/workspace/sessions/$SID/meta.yaml" ] \
+  && grep -q 'preflight rejected; classification not in contract' "$err" \
+  && pass "migration_pending is not accepted" \
+  || fail "outside-set shape was accepted: $(cat "$err" 2>/dev/null)"
 
 # --- 3) Deterministic cwd mapping stays a reconcile concern; hooks pass cwd ---
 reset_spool

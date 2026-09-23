@@ -79,6 +79,65 @@ self_email() {
   hq whoami 2>/dev/null | grep -oE '[[:alnum:]._+-]+@[[:alnum:].-]+\.[[:alpha:]]+' | head -1 || true
 }
 
+CLI_MIN_VERSION="5.137.0"
+
+# Human sessions have both legacy local Cognito files. Machine-principal
+# sessions use the hq CLI's machine token and do not have those files.
+has_cognito_session() {
+  [ -r "$HOME/.hq/config.json" ] && [ -r "$HOME/.hq/cognito-tokens.json" ]
+}
+
+uses_cli_auth() { ! has_cognito_session; }
+
+cli_version() {
+  local output version
+  if ! output="$(hq --version 2>/dev/null)"; then
+    echo "hq-dm-bind: could not read the installed hq-cli version" >&2
+    return 1
+  fi
+  version="$(printf '%s\n' "$output" | sed -nE 's/^CLI[[:space:]]+([0-9]+(\.[0-9]+){2}).*$/\1/p' | head -1)"
+  if [ -z "$version" ]; then
+    version="$(printf '%s\n' "$output" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+  fi
+  printf '%s' "$version"
+}
+
+version_at_least() {
+  local actual="$1" required="$2"
+  local a=0 b=0 c=0 ra=0 rb=0 rc=0
+  IFS=. read -r a b c <<< "$actual"
+  IFS=. read -r ra rb rc <<< "$required"
+  [ "${a:-0}" -gt "${ra:-0}" ] || {
+    [ "${a:-0}" -eq "${ra:-0}" ] && {
+      [ "${b:-0}" -gt "${rb:-0}" ] || {
+        [ "${b:-0}" -eq "${rb:-0}" ] && [ "${c:-0}" -ge "${rc:-0}" ]
+      }
+    }
+  }
+}
+
+require_cli_version() {
+  local actual
+  actual="$(cli_version)" || return 2
+  if [ -z "$actual" ] || ! version_at_least "$actual" "$CLI_MIN_VERSION"; then
+    echo "hq-dm-bind: hq-cli >= $CLI_MIN_VERSION is required for machine-principal DM binding (found ${actual:-unknown}); update hq-cli and retry." >&2
+    return 2
+  fi
+}
+
+cli_identity() {
+  local identity
+  if ! identity="$(hq whoami --json 2>/dev/null)"; then
+    echo "hq-dm-bind: could not read the hq-cli identity" >&2
+    return 1
+  fi
+  if ! printf '%s' "$identity" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "hq-dm-bind: hq-cli returned an invalid identity" >&2
+    return 1
+  fi
+  printf '%s' "$identity"
+}
+
 # Normalise `hq dm channel --json` to a JSON array of messages.
 fetch_items() {
   local ch="$1" limit="${2:-30}"
@@ -90,12 +149,18 @@ fetch_items() {
 latest_sk() { fetch_items "$1" 5 | jq -r 'last // empty | .sk // empty'; }
 roster_file() { echo "$(session_dir)/dm-bind.roster"; }
 
-# The channel's members other than us, one display name per line. Reads the
-# same local session files the `hq` CLI uses (the token is sent only as an
-# Authorization header, never printed). Resolves the bound channel token to a
-# channel id by slug, the way `hq dm <name>` does. Fails soft: prints nothing.
+# The channel's members other than us, one display name<TAB>uid per line.
+# Machine-principal sessions use the CLI, while human sessions retain the
+# local-file path for compatibility. Fails soft after logging a CLI read error.
 fetch_roster() {
   local ch="$1" me; me="$(self_email)"
+  if uses_cli_auth; then
+    require_cli_version || return $?
+    if ! hq channels members "$ch"; then
+      echo "hq-dm-bind: could not read the channel roster through hq-cli" >&2
+    fi
+    return 0
+  fi
   command -v node >/dev/null 2>&1 || return 0
   node - roster "$ch" "$me" <<'NODE' 2>/dev/null || true
 const fs = require("fs"), os = require("os"), path = require("path");
@@ -126,6 +191,7 @@ NODE
 # Refresh the cached roster; fall back to the cache when the fetch fails.
 roster() {
   local ch="$1" rf; rf="$(roster_file)"
+  if uses_cli_auth; then require_cli_version || return $?; fi
   local fresh; fresh="$(fetch_roster "$ch")"
   if [ -n "$fresh" ]; then printf '%s\n' "$fresh" > "$rf"; fi
   cut -f1 "$rf" 2>/dev/null || true
@@ -146,10 +212,9 @@ threads_file() { echo "$(session_dir)/dm-bind.threads"; }
 topic_slug() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g'; }
 thread_root() { awk -F'\t' -v k="$1" '$1==k{v=$2} END{if(v!="")print v}' "$(threads_file)" 2>/dev/null || true; }
 
-# POST one message to the channel through the notify API (the `hq` CLI has no
-# thread flag, and a threaded reply needs `rootEventId`). Reads the JSON payload
-# from $1, prints the new message's eventId. Same local session files and the
-# same slug resolution as fetch_roster; the token is only ever a header.
+# POST one message to the channel through the legacy notify API. Reads the JSON
+# payload from $1 and prints the new message's eventId. Machine-principal
+# sessions use send_cli_channel below.
 send_channel() {
   local ch="$1" payload="$2"
   node - send "$ch" "$payload" <<'NODE'
@@ -174,6 +239,53 @@ const slug = (n) => String(n).trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").r
   process.stdout.write(String(id || ""));
 })().catch((e) => { process.stderr.write("hq-dm-bind: " + e.message + "\n"); process.exit(1); });
 NODE
+}
+
+# The CLI prints a human confirmation rather than the created event id. Read
+# the channel back and use the newest message from this CLI identity so topic
+# replies can keep using the existing thread map.
+latest_cli_event_id() {
+  local ch="$1" identity agent username person email
+  identity="$(cli_identity)" || return 1
+  agent="$(printf '%s' "$identity" | jq -r '.agentUid // empty')"
+  username="$(printf '%s' "$identity" | jq -r '.username // empty')"
+  person="$(printf '%s' "$identity" | jq -r '.personUid // empty')"
+  email="$(printf '%s' "$identity" | jq -r '.email // empty')"
+  fetch_items "$ch" 50 | jq -r \
+    --arg agent "$agent" --arg username "$username" --arg person "$person" --arg email "$email" '
+      [ .[]
+        | select(
+            if ($agent != "" or $username != "") then
+              (((.senderMachineUid // .fromMachineUid // "") == $agent)
+                or ((.senderMachineUid // .fromMachineUid // "") == $username))
+            elif $person != "" then
+              ((.fromPersonUid // "") == $person)
+            elif $email != "" then
+              ((.fromEmail // "" | ascii_downcase) == ($email | ascii_downcase))
+            else false
+            end
+          )
+        | (.eventId // .messageId // "")
+      ] | last // empty'
+}
+
+send_cli_channel() {
+  local ch="$1" body="$2" root="$3"
+  require_cli_version || return $?
+  local -a args=(dm "$ch")
+  if [ -n "$root" ]; then args+=(--thread "$root"); fi
+  args+=("$body")
+  if ! hq "${args[@]}" >/dev/null; then
+    echo "hq-dm-bind: hq dm failed — nothing was sent" >&2
+    return 1
+  fi
+  local event_id
+  event_id="$(latest_cli_event_id "$ch")" || return 1
+  if [ -z "$event_id" ]; then
+    echo "hq-dm-bind: post succeeded but its event id could not be read back" >&2
+    return 1
+  fi
+  printf '%s' "$event_id"
 }
 
 # The @-mention line: one quoted token per member so multi-word names resolve.
@@ -349,11 +461,14 @@ cmd_post() {
   else ml="$(mention_line "$ch")" || rc=$?; fi
   [ "$rc" != 5 ] || exit 2
   [ "$rc" = 0 ] && [ -n "$ml" ] || die "could not read the channel roster — not posting an update that notifies nobody (check \`hq whoami\` and that node is on PATH, then retry)"
-  # The room shows `@Ada Lovelace`; the quotes only ever existed as CLI syntax.
-  local shown names_nl
+  # The room shows `@Ada Lovelace`; the quotes only ever existed as CLI syntax
+  # for the hq CLI path. Keep the quoted form for CLI mention resolution.
+  local shown names_nl posted_msg cli_msg
   shown="$(printf '%s' "$ml" | sed -E 's/@"([^"]+)"/@\1/g')"
   names_nl="$(printf '%s' "$ml" | grep -oE '@"[^"]+"' | sed -E 's/^@"//; s/"$//')"
-  msg="$shown"$'\n\n'"$msg"
+  posted_msg="$shown"$'\n\n'"$msg"
+  cli_msg="$ml"$'\n\n'"$msg"
+  msg="$posted_msg"
 
   # Total body length check (counts what the receipt prints — mention line included).
   if [ "$allow_long" != 1 ]; then
@@ -375,12 +490,16 @@ cmd_post() {
   elif [ "$new_thread" != 1 ]; then
     root="$(thread_root "$key")"
   fi
-  local payload
-  payload="$(printf '%s\n' "$names_nl" | mentions_json | jq -c --arg body "$msg" --arg root "$root" \
-    '{body:$body, mentions:.} + (if $root != "" then {rootEventId:$root} else {} end)')"
-  [ "$(printf '%s' "$payload" | jq '.mentions | length')" -gt 0 ] || die "no mention resolved to a channel member id — not posting an update that notifies nobody"
   local eid
-  eid="$(send_channel "$ch" "$payload")" || die "post failed — nothing was sent"
+  if uses_cli_auth; then
+    eid="$(send_cli_channel "$ch" "$cli_msg" "$root")" || die "post failed — nothing was sent"
+  else
+    local payload
+    payload="$(printf '%s\n' "$names_nl" | mentions_json | jq -c --arg body "$msg" --arg root "$root" \
+      '{body:$body, mentions:.} + (if $root != "" then {rootEventId:$root} else {} end)')"
+    [ "$(printf '%s' "$payload" | jq '.mentions | length')" -gt 0 ] || die "no mention resolved to a channel member id — not posting an update that notifies nobody"
+    eid="$(send_channel "$ch" "$payload")" || die "post failed — nothing was sent"
+  fi
   if [ -z "$root" ]; then
     [ -n "$eid" ] && printf '%s\t%s\n' "$key" "$eid" >> "$(threads_file)"
     echo "thread: new topic '$key'${eid:+ (root $eid)}"
@@ -398,14 +517,37 @@ cmd_poll() {
   local ch; ch="$(require_channel)"
   local cf; cf="$(cursor_file)"
   local cursor; cursor="$(cat "$cf" 2>/dev/null || true)"
-  local me; me="$(self_email)"
   local items; items="$(fetch_items "$ch" 50)"
   local last; last="$(printf '%s' "$items" | jq -r 'last // empty | .sk // empty')"
   local msgs
-  msgs="$(printf '%s' "$items" | jq -r --arg cur "$cursor" --arg me "$me" '
-    map(select((.sk // "") > $cur and ($me == "" or .fromEmail != $me)))
-    | .[]
-    | ((.sk // "")[0:16] | sub("T"; " ")) + "Z " + (.fromDisplayName // .fromEmail // "?") + ": " + ((.body // "") | gsub("^\\s+|\\s+$"; ""))')"
+  if uses_cli_auth; then
+    local identity agent username person email
+    identity="$(cli_identity)" || die "could not read the hq-cli identity — not polling"
+    agent="$(printf '%s' "$identity" | jq -r '.agentUid // empty')"
+    username="$(printf '%s' "$identity" | jq -r '.username // empty')"
+    person="$(printf '%s' "$identity" | jq -r '.personUid // empty')"
+    email="$(printf '%s' "$identity" | jq -r '.email // empty')"
+    msgs="$(printf '%s' "$items" | jq -r \
+      --arg cur "$cursor" --arg agent "$agent" --arg username "$username" --arg person "$person" --arg email "$email" '
+        map(select((.sk // "") > $cur and
+          (if ($agent != "" or $username != "") then
+             (((.senderMachineUid // .fromMachineUid // "") != $agent)
+               and ((.senderMachineUid // .fromMachineUid // "") != $username))
+           elif $person != "" then
+             ((.fromPersonUid // "") != $person)
+           elif $email != "" then
+             ((.fromEmail // "" | ascii_downcase) != ($email | ascii_downcase))
+           else true
+           end)))
+        | .[]
+        | ((.sk // "")[0:16] | sub("T"; " ")) + "Z " + (.fromDisplayName // .fromEmail // "?") + ": " + ((.body // "") | gsub("^\\s+|\\s+$"; ""))')"
+  else
+    local me; me="$(self_email)"
+    msgs="$(printf '%s' "$items" | jq -r --arg cur "$cursor" --arg me "$me" '
+      map(select((.sk // "") > $cur and ($me == "" or .fromEmail != $me)))
+      | .[]
+      | ((.sk // "")[0:16] | sub("T"; " ")) + "Z " + (.fromDisplayName // .fromEmail // "?") + ": " + ((.body // "") | gsub("^\\s+|\\s+$"; ""))')"
+  fi
   [ -n "$last" ] && printf '%s\n' "$last" > "$cf"
   if [ -n "$(printf '%s' "$msgs" | tr -d '[:space:]')" ]; then printf '%s\n' "$msgs"; return 0; fi
   return 3

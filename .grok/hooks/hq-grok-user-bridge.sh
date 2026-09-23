@@ -1,4 +1,8 @@
 #!/bin/bash
+# Hosts like Claude Code export BASH_ENV to a user profile; each non-interactive
+# bash on the hook path then pays nvm (~1-11s). Measured 2026-09-21 macOS:
+# adapter 18-32s, bridge 28s, master-hook 4.5s; with BASH_ENV=/dev/null: 4.0s / 3.5s.
+export BASH_ENV=/dev/null
 # hq-core: public
 # hq-grok-user-bridge.sh — user-global Grok hook bridge for HQ trees.
 #

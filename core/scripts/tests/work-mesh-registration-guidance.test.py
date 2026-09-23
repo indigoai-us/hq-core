@@ -29,20 +29,16 @@ class RegistrationGuidanceTest(unittest.TestCase):
                             'expectedVersion', 'stop'):
             self.assertIn(requirement, text)
 
-    def test_both_planning_entry_points_require_server_view_prerequisite(self):
+    def test_both_planning_entry_points_call_register_project(self):
         for name in ('plan', 'prd'):
             with self.subTest(skill=name):
                 text = (ROOT / f'.claude/skills/{name}/SKILL.md').read_text()
                 step = text.split('## Step 5.7:', 1)[1].split('## Step 6:', 1)[0]
-                self.assertIn('local `board.json` does not establish the server', step)
-                put = step.index('PUT /v1/work-mesh/projects/{projectId}')
-                verify = step.index('GET verification')
-                register = step.index('POST /v1/work-mesh/projects/{projectId}/register')
-                self.assertLess(put, verify)
-                self.assertLess(verify, register)
-                for requirement in ('stories', 'repos', 'exact company', 'story IDs/content',
-                                    'repo identities/paths', 'Preserve live story', 'Stop'):
-                    self.assertIn(requirement, step)
+                self.assertIn('Local `board.json` does not establish the server project', step)
+                self.assertIn('bash core/scripts/register-project.sh {co} {name}', step)
+                self.assertIn('registration incomplete', step)
+                self.assertIn('registered {co}/{name} thread=<threadId> channel=<channelId>', step)
+                self.assertNotIn('PUT /v1/work-mesh/projects/{projectId}', step)
 
 
 if __name__ == '__main__':

@@ -180,13 +180,20 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
     PREFLIGHT_SLUG=""
     PREFLIGHT_UID=""
     if [ "$PREFLIGHT_STATUS" -eq 0 ] && command -v jq >/dev/null 2>&1; then
-      PREFLIGHT_CLASSIFICATION="$(printf '%s' "$PREFLIGHT_RESULT" | jq -er --arg sid "$SID" --arg op "$CLIENT_OP" '
+      # Allow-list is the vendored CLI fixture file, not a hand-written enum.
+      # contractVersion is whatever that file pins. Bump both repos together:
+      # hq-cli WORK_CONTEXT_CONTRACT_VERSION + contracts/preflight/v<N>/,
+      # this file, and the == 1 pin in preflight-contract-fixtures.test.sh.
+      PREFLIGHT_FIXTURES_FILE="${HOOK_FILE%/*}/preflight-fixtures.json"
+      PREFLIGHT_CLASSIFICATION="$(printf '%s' "$PREFLIGHT_RESULT" | jq -er --arg sid "$SID" --arg op "$CLIENT_OP" --slurpfile pf "$PREFLIGHT_FIXTURES_FILE" '
         if type == "object"
-          and .contractVersion == 1
+          and ($pf[0].contractVersion | type == "number")
+          and .contractVersion == $pf[0].contractVersion
           and (.sessionId | type == "string") and .sessionId == $sid
           and (.clientOperationId | type == "string") and .clientOperationId == $op
           and (.kind | type == "string")
           and (.classification | type == "string")
+          and (.classification as $c | (($pf[0].classifications // []) | index($c)) != null)
           and (.delivery | type == "string") and (.delivery == "clean" or .delivery == "queued" or .delivery == "acked" or .delivery == "quarantined")
           and (.lifecycle | type == "string") and (.lifecycle == "open" or .lifecycle == "terminal")
         then .classification else empty end
@@ -216,8 +223,18 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
       needs_company)
         # No configured/validated default is an ordinary no-op, not an error.
         ;;
-      *)
+      unresolved|untracked)
         printf '%s\n' 'work-mesh: preflight unresolved; leaving device-default session unbound' >&2
+        ;;
+      "")
+        if printf '%s' "$PREFLIGHT_RESULT" | jq -e 'type == "object"' >/dev/null 2>&1; then
+          printf '%s\n' 'work-mesh: preflight rejected; classification not in contract' >&2
+        else
+          printf '%s\n' 'work-mesh: preflight unresolved; leaving device-default session unbound' >&2
+        fi
+        ;;
+      *)
+        printf '%s\n' 'work-mesh: preflight rejected; classification not in contract' >&2
         ;;
     esac
   fi
