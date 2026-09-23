@@ -1123,6 +1123,8 @@ jobs:
         run: bash .claude/hooks/tests/inject-policy-on-trigger-emit.test.sh
       - name: Policy trigger end-to-end corpus coverage
         run: bash core/scripts/tests/inject-policy-e2e.test.sh
+      - name: Large policy trigger inputs stay out of argv
+        run: bash core/scripts/tests/inject-policy-arg-size.test.sh
       - name: inject-policy-cache.test.sh
         run: bash core/scripts/tests/inject-policy-cache.test.sh
       - name: derive-trigger-facts.test.sh

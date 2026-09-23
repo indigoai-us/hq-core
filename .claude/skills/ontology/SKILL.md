@@ -5,7 +5,7 @@ description: Read a company ontology brief, entity graph, and freshness signals 
 
 # Ontology (HQ-shared)
 
-Read the ontology gardener's output for the active company. Background on the gardener pipeline lives at `core/knowledge/public/hq-core/ontology-gardener.md` — read that ONCE per session if you need mechanism details; this skill is the runtime API.
+Read the active company's ontology — local first, the cloud gardener's output only as a fallback. Background on the gardener pipeline lives at `core/knowledge/public/hq-core/ontology-gardener.md` — read that ONCE per session if you need mechanism details; this skill is the runtime API.
 
 ## When to use
 
@@ -22,7 +22,30 @@ Do NOT use this for:
 - Triaging action items / commitments (use `/indigo:signals` or `/indigo:action-items`)
 - Reading raw `knowledge/`, `sources/`, or `signals/` files individually (slow + noisy — read the brief)
 
-## Step 0 — resolve active company
+## Step 0 — local brief first
+
+Ontology is local-first (spec: `core/knowledge/public/hq-core/ontology-local-spec.md`).
+Resolve the company from `bash core/scripts/hq-session.sh get company_slug`,
+then render the brief from the local tree:
+
+```bash
+node core/scripts/ontology-brief.mjs --company {co}
+```
+
+It reads `ontology/entities/`, every `ontology/facts/@*/`, and every signal
+folder you have locally. Sync only delivers what you may read, so the brief
+shows exactly the facts and signals you were privy to; each line is tagged
+`company` or `scoped`. It writes nothing — never save a rendered brief into the
+company tree, because another reader may not be entitled to its scoped lines.
+
+If it prints "no local ontology yet" **and** the company is cloud-backed with
+the cloud gardener still enabled, fall back to Step 1 below and say so in one
+line ("local ontology empty — reading the cloud brief"). Otherwise stop here.
+
+Entity lookup (local): `ontology/entities/{type}/{slug}.md` for identity, and
+`ontology/facts/@*/{type}/{slug}.md` for what is known about it.
+
+## Step 0.5 — cloud fallback: resolve active company
 
 The gardener output lives in the company's per-entity vault bucket. Resolve:
 

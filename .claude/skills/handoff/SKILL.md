@@ -57,6 +57,16 @@ Format:
 
 Choose one concrete learnings file path, such as `/tmp/handoff-learnings-{short-slug}.json`, write the array there, and retain the same serialized array as `{learnings_json}`. Reuse the exact path in Steps 4 and 4.5. Empty array is fine. **Do not call `/learn` here — Step 4.5 dispatches it after the learning array is durable.**
 
+### 2.2 Capture signal and entity candidates (opt-in companies only)
+
+If the bound company has `signals_capture` or `ontology_capture` on
+(`core/scripts/knowledge-prefs.sh get {co} <field>`), follow
+`.claude/skills/_shared/session-close-capture.md`: from the summary you are
+about to pass to `handoff-finalize.sh`, write up to 15 candidates — decisions,
+commitments, risks, open questions, action items, and the people / projects /
+companies they name — with `core/scripts/ontology-candidate.sh`, source ref
+`handoff:{thread_id}`. Both switches off: skip silently. Fail-soft.
+
 ### 2.5 Close active session journal (if any)
 
 Spec: `core/knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, `/prd`, or `/plan`, close it now so its frontmatter records `status: closed` + a one-line summary.

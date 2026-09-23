@@ -23,7 +23,7 @@ rules, invited teammates, and (optionally) cloud agents.
   `decision-queue-one-at-a-time`). Offer a "skip"/"not now" choice on every optional phase.
 - **Tenant isolation.** Every `hq` call is company-scoped with `--company {slug}`.
 - **Reuse, don't reinvent.** This skill orchestrates existing primitives
-  (`/designate-team`, `/newworker`, `/idea`, `/plan`, `hq groups`, `hq secrets`,
+  (`/designate-team`, `/newworker`, `/idea`, `/prd`, `hq groups`, `hq secrets`,
   `hq files`, `hq members invite`, cloud-agent provisioning). It adds the interview + the
   tool-classification logic, nothing more.
 - **Secret hygiene.** Never collect a raw credential in chat. Mint a submission link
@@ -52,7 +52,26 @@ Ask (batch is fine here — these are simple facts):
 ### 0.3 Scaffold Directory
 
 ```bash
-mkdir -p companies/{slug}/{settings,data}
+# Full company layout, mirrored from companies/_template/ (minus knowledge/,
+# which 0.4 creates as its own git repo). Every native store gets its folder
+# from day one so /signals, /meeting-notes, /learn, /prd, and worker
+# discovery have a real path to read or write:
+#   policies/ workers/ skills/ projects/ people/ data/ settings/
+#   signals/{_index}/            — extracted decisions, action items, risks
+#   sources/{meetings,_index}/   — meeting-bot transcripts
+#   ontology/{entities/{person,project,company,concept},facts,_candidates}/ and
+#     signals/_candidates/ — local ontology gardened by the ontology worker
+#     (core/knowledge/public/hq-core/ontology-local-spec.md)
+mkdir -p companies/{slug}
+(cd companies/_template && find . -type d -not -path './.obsidian*' -not -path './knowledge*' \
+   -not -path '*/_example*') | while read -r d; do mkdir -p "companies/{slug}/$d"; done
+(cd companies/_template && find . -type f -name .gitkeep -not -path './knowledge/*' -not -path '*/_example/*') \
+  | while read -r f; do : > "companies/{slug}/$f"; done
+cp companies/_template/settings/auto-share.yaml companies/{slug}/settings/auto-share.yaml
+cp companies/_template/settings/communication/preferences.yaml companies/{slug}/settings/communication/preferences.yaml
+sed 's/{company}/{slug}/g' companies/_template/settings/knowledge/preferences.yaml \
+  > companies/{slug}/settings/knowledge/preferences.yaml
+cp companies/_template/sources/meetings/source.yaml companies/{slug}/sources/meetings/source.yaml
 mkdir -p companies/{slug}/workspace/sessions
 printf '# HQ workspace mirror — sessions are gitignored, index.jsonl is committed\nsessions/\n' \
   > companies/{slug}/workspace/.gitignore
@@ -63,7 +82,7 @@ printf "slug: %s\ncloud: false\n" "{slug}" > companies/{slug}/company.yaml
 # Seed an empty board.json so the company's board EXISTS from day one. The
 # board lives at the vault root (key `board.json`) and is synced verbatim from
 # this file; without it the desktop/console board lookup 404s every poll
-# (HQ-77). /idea, /plan, /goals populate it later. Stamp the slug + a UTC
+# (HQ-77). /idea, /prd, /goals populate it later. Stamp the slug + a UTC
 # timestamp; keep the empty objectives/initiatives/projects arrays.
 printf '{\n  "company": "%s",\n  "schema_version": 2,\n  "updated_at": "%s",\n  "objectives": [],\n  "initiatives": [],\n  "projects": []\n}\n' \
   "{slug}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > companies/{slug}/board.json
@@ -195,7 +214,7 @@ From Phase 1, populate the folder so it isn't empty:
   Keep seeds short and clearly marked `status: draft` where synthesized.
 - **Projects:** for each stated priority, create a board idea via the `/idea` shape
   (append to `companies/{slug}/board.json`, id `{prefix}-proj-{NNN}`, `status: idea`).
-  Offer to `/plan` the top one into a full PRD (skippable — that's a heavier flow).
+  Offer to `/prd` the top one into a full PRD (skippable — that's a heavier flow).
 
 Skip → leave knowledge/projects empty (still valid).
 
@@ -361,9 +380,14 @@ Turn the team/functions into **groups with streamlined, rule-based access** — 
    - `hq files share <function>/ --with grp_<function> --permission read --company {slug}`
    - `hq secrets share <FUNCTION>/<FULL/PATH> --with grp_<function> --permission read --company {slug}`
      (full key path required — policy `hq-secrets-share-needs-full-key-path`).
-   - Company-wide baseline: `hq files share <prefix>/ --with @all --permission read --company {slug}`
-     for things everyone should see (`--with @all` shares with the whole company team).
-   - Wildcards (`reports/*`, `*`) cover current + future keys, so new files inherit the rule.
+   - Company-wide baseline is already written by `/designate-team` (Phase 4): `@all write`
+     on `knowledge/`, `projects/`, `policies/`, `skills/` as four separate prefix grants.
+     Do not repeat it here and never widen it to a bucket-wide `*`. To keep part of a
+     folder private, run `/team-access {slug}` — it narrows the baseline to chosen
+     subfolders, granting the new paths before it removes the broad one.
+   - Every folder grant covers its whole subtree (the ACL model has no non-recursive
+     folder grant); `reports/*` and `reports/` behave the same. Keep sensitive material
+     out of the four baseline folders or move it under a group-scoped prefix.
 3. **Role reminder (hybrid ACL split):** owners/admins get role-bypass on files; **secrets
    are owner-only** (admins do NOT bypass secrets). Don't promise admins secret-grant power —
    this files/secrets asymmetry is intentional.
@@ -431,7 +455,7 @@ Skip → no agents (the most likely default; it's a deliberate step).
 - Every `hq` call carries `--company {slug}`. Never collect raw secrets in chat — mint links.
 - Don't fake integrations: tools without an easy key become tracked tasks (manual export / ingestion script), not silent no-ops.
 - Design packs go in `companies/{slug}/knowledge/design-styles/packs/` (never the shared public packs dir), get registered per §2.5.4 (shared registry only when it is a real HQ-tracked file; company-scoped `registry.yaml` when design-styles is an immutable package mount), and bind to surfaces via company-scoped policies — never through a knowledge repository under `repos/` or by editing core deploy infra.
-- Reuse `/designate-team`, `/newworker`, `/idea`, `/plan`, `hq groups|secrets|files|members invite`, and the cloud-agent provisioning path — don't reimplement them.
+- Reuse `/designate-team`, `/newworker`, `/idea`, `/prd`, `hq groups|secrets|files|members invite`, and the cloud-agent provisioning path — don't reimplement them.
 
 ## See also
 

@@ -1,0 +1,9 @@
+# Meeting notes from the HQ meeting bot. Spec:
+# core/knowledge/public/hq-core/source-yaml-spec.md
+channel: meetings
+kind: meeting
+arrives: cloud
+audience_rule: attendees
+processor: ontology/process-source
+run: local
+schedule: "0 6 * * *"

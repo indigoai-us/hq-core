@@ -38,6 +38,8 @@
 set -euo pipefail
 
 STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
+STDIN_FILE=""
+POLICY_TRIGGER_INPUT_FILE_LIMIT=65536
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPERS="$(cd "$SCRIPT_DIR/../.." && pwd)/core/scripts"
@@ -46,6 +48,34 @@ HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
 JQ="$(command -v jq || true)"
 
 . "$HELPERS/hook-lib.sh"
+
+# The timeout watchdog and master hook use this exact session-hash convention
+# for their per-dispatch journal. Adapter runtimes execute this hook before the
+# master hook exports HQ_HOOK_TIMEOUT_JOURNAL_FILE, so derive the same path when
+# the environment handoff has not happened yet.
+policy_trigger_sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s\0' "$@" | shasum -a 256 2>/dev/null | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s\0' "$@" | sha256sum 2>/dev/null | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    printf '%s\0' "$@" | openssl dgst -sha256 2>/dev/null | awk '{print $NF}'
+  else
+    return 1
+  fi
+}
+
+policy_trigger_journal_file() {
+  local journal_file="${HQ_HOOK_TIMEOUT_JOURNAL_FILE:-}" session_hash=""
+  if [ -n "$journal_file" ]; then
+    printf '%s' "$journal_file"
+    return 0
+  fi
+  [ -n "${SESSION_ID:-}" ] || return 0
+  session_hash="$(policy_trigger_sha256 "$SESSION_ID" 2>/dev/null || true)"
+  [ -n "$session_hash" ] || return 0
+  printf '%s/workspace/.hook-timeout-journal/%s.tsv' "$HQ_ROOT" "$session_hash"
+}
 
 extract() {
   printf '%s' "$STDIN_JSON" | hq_json_get "$1"
@@ -133,13 +163,221 @@ already() {
     grep -Fxq "$1" "$DEDUPE_FILE" 2>/dev/null
   fi
 }
+# The ledgers are newline-separated policy slugs. Keep the normal path at the
+# same process cost as before, but compact a ledger once it grows past 64 KiB.
+# Compaction removes duplicate slugs without dropping an older policy, so the
+# session-level dedupe contract remains intact while a noisy writer cannot make
+# every later awk invocation scan an unbounded duplicate set. Both compaction
+# and append take the same lock: replacing a ledger inode while another hook
+# appends to the old inode would otherwise lose the new slug.
+POLICY_LEDGER_COMPACT_THRESHOLD=65536
+POLICY_LEDGER_LOCK_WAIT_ATTEMPTS=200
+POLICY_LEDGER_LOCK_STALE_SECONDS=30
+
+policy_ledger_lock_is_stale() {
+  local lock_dir="$1" mtime="" now="" age=""
+  if stat -c '%Y' "$lock_dir" >/dev/null 2>&1; then
+    mtime="$(stat -c '%Y' "$lock_dir" 2>/dev/null || true)"
+  elif stat -f '%m' "$lock_dir" >/dev/null 2>&1; then
+    mtime="$(stat -f '%m' "$lock_dir" 2>/dev/null || true)"
+  else
+    return 1
+  fi
+  case "$mtime" in ''|*[!0-9]*) return 1 ;; esac
+  now="$(date +%s 2>/dev/null || true)"
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  age=$((now - mtime))
+  [ "$age" -ge "$POLICY_LEDGER_LOCK_STALE_SECONDS" ]
+}
+
+acquire_policy_ledger_lock() {
+  local ledger="$1" lock_dir="${1}.lock" stale_dir="" attempt=0
+  while [ "$attempt" -lt "$POLICY_LEDGER_LOCK_WAIT_ATTEMPTS" ]; do
+    if mkdir "$lock_dir" 2>/dev/null; then
+      if printf '%s\n' "$$" > "$lock_dir/pid" 2>/dev/null; then
+        return 0
+      fi
+      rm -f "$lock_dir/pid" 2>/dev/null || true
+      rmdir "$lock_dir" 2>/dev/null || true
+      return 1
+    fi
+
+    # A fresh directory may not have its pid file yet. Preserve it through the
+    # grace period and retry. Once a lock is older than the bounded critical
+    # section, rename it away before reclaiming it so a new owner cannot be
+    # deleted after the stale check.
+    if policy_ledger_lock_is_stale "$lock_dir"; then
+      stale_dir="${lock_dir}.stale.$$.$attempt"
+      if mv "$lock_dir" "$stale_dir" 2>/dev/null; then
+        rm -f "$stale_dir/pid" 2>/dev/null || true
+        rmdir "$stale_dir" 2>/dev/null || true
+        attempt=$((attempt + 1))
+        continue
+      fi
+    fi
+    sleep 0.01
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+release_policy_ledger_lock() {
+  local ledger="$1" lock_dir="${1}.lock" owner=""
+  owner="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+  [ "$owner" = "$$" ] || return 0
+  rm -f "$lock_dir/pid" 2>/dev/null || true
+  rmdir "$lock_dir" 2>/dev/null || true
+}
+
 # record_slug <slug> <inject>  — record a fired slug in the ledger that governs
 # its cadence, so it is not re-emitted before that ledger next resets.
 record_slug() {
+  local ledger
   if [ "${2:-once}" = "always" ]; then
-    printf '%s\n' "$1" >> "$TURN_FILE"
+    ledger="$TURN_FILE"
   else
-    printf '%s\n' "$1" >> "$DEDUPE_FILE"
+    ledger="$DEDUPE_FILE"
+  fi
+  if ! acquire_policy_ledger_lock "$ledger"; then
+    printf 'inject-policy-on-trigger: could not lock policy ledger %s; slug was not recorded.\n' "$ledger" >&2
+    return 0
+  fi
+  if ! printf '%s\n' "$1" >> "$ledger" 2>/dev/null; then
+    printf 'inject-policy-on-trigger: could not append slug to policy ledger %s.\n' "$ledger" >&2
+  fi
+  release_policy_ledger_lock "$ledger"
+}
+
+policy_file_bytes() {
+  local bytes=""
+  bytes="$(wc -c < "$1" 2>/dev/null || true)"
+  bytes="${bytes//[!0-9]/}"
+  printf '%s' "${bytes:-0}"
+}
+
+policy_bytes_bucket() {
+  local bytes="$1"
+  case "$bytes" in
+    ''|*[!0-9]*) bytes=0 ;;
+  esac
+  if [ "$bytes" -lt 16384 ]; then
+    printf '<16K'
+  elif [ "$bytes" -lt 65536 ]; then
+    printf '16-64K'
+  elif [ "$bytes" -lt 131072 ]; then
+    printf '64-128K'
+  else
+    printf '>128K'
+  fi
+}
+
+compact_policy_ledger() {
+  local ledger="$1" bytes="$2" temporary=""
+  case "$bytes" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$bytes" -gt "$POLICY_LEDGER_COMPACT_THRESHOLD" ] || return 0
+  [ -f "$ledger" ] || return 0
+  acquire_policy_ledger_lock "$ledger" || return 0
+  temporary="$(mktemp "${ledger}.compact.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$temporary" ]; then
+    release_policy_ledger_lock "$ledger"
+    return 0
+  fi
+  if awk '!seen[$0]++' "$ledger" > "$temporary" 2>/dev/null; then
+    mv -f "$temporary" "$ledger" 2>/dev/null || rm -f "$temporary" 2>/dev/null || true
+  else
+    rm -f "$temporary" 2>/dev/null || true
+  fi
+  release_policy_ledger_lock "$ledger"
+}
+
+# c015 already gives the hook-timeout journal a per-session metadata file.
+# Append the current policy-input sizes there so a subsequent timeout warning
+# carries the context that was observed by this hook. The master hook resets
+# this metadata file at the start of each event, so the append remains bounded
+# to the current dispatch and does not become a second unbounded ledger.
+record_policy_trigger_sizes() {
+  local journal_file metadata_file journal_dir temporary
+  journal_file="$(policy_trigger_journal_file)"
+  [ -n "$journal_file" ] || return 0
+  metadata_file="${journal_file}.meta"
+  journal_dir="${journal_file%/*}"
+  mkdir -p "$journal_dir" 2>/dev/null || return 0
+  if [ ! -f "$metadata_file" ]; then
+    temporary="$(mktemp "${metadata_file}.XXXXXX" 2>/dev/null || true)"
+    if [ -n "$temporary" ]; then
+      if printf 'bash_env_set=unset\ntiming_precision=ms\n' > "$temporary" 2>/dev/null; then
+        mv -f "$temporary" "$metadata_file" 2>/dev/null || rm -f "$temporary" 2>/dev/null || true
+      else
+        rm -f "$temporary" 2>/dev/null || true
+      fi
+    fi
+  fi
+  [ -f "$metadata_file" ] || return 0
+  printf 'policy_trigger_script=inject-policy-on-trigger.sh\npolicy_trigger_event=%s\nledger_bytes_bucket=%s\nfacts_bytes_bucket=%s\n' \
+    "$EVENT" "$LEDGER_BYTES_BUCKET" "$FACTS_BYTES_BUCKET" >> "$metadata_file" 2>/dev/null || true
+}
+
+FACTS_FILE=""
+INTENT_FACTS_FILE=""
+FACT_PAIR_FILE=""
+FACTS_TMP_DIR=""
+POLICY_ARG_INLINE_LIMIT=65536
+
+cleanup_policy_fact_files() {
+  [ -z "$STDIN_FILE" ] || rm -f "$STDIN_FILE" 2>/dev/null || true
+  [ -z "$FACTS_FILE" ] || rm -f "$FACTS_FILE" 2>/dev/null || true
+  [ -z "$INTENT_FACTS_FILE" ] || rm -f "$INTENT_FACTS_FILE" 2>/dev/null || true
+  [ -z "$FACT_PAIR_FILE" ] || rm -f "$FACT_PAIR_FILE" 2>/dev/null || true
+}
+
+trap cleanup_policy_fact_files EXIT
+
+prepare_policy_trigger_input() {
+  local temporary=""
+  [ "${#STDIN_JSON}" -gt "$POLICY_TRIGGER_INPUT_FILE_LIMIT" ] || return 0
+  [ -n "$STDIN_FILE" ] && return 0
+  [ -n "$FACTS_TMP_DIR" ] || FACTS_TMP_DIR="$HQ_ROOT/workspace/orchestrator/hook-state"
+  mkdir -p "$FACTS_TMP_DIR" 2>/dev/null || return 0
+  temporary="$(mktemp "$FACTS_TMP_DIR/.policy-trigger-input.XXXXXX" 2>/dev/null || true)"
+  [ -n "$temporary" ] || return 0
+  if printf '%s' "$STDIN_JSON" > "$temporary" 2>/dev/null; then
+    STDIN_FILE="$temporary"
+  else
+    rm -f "$temporary" 2>/dev/null || true
+  fi
+}
+
+run_derive_trigger_facts() {
+  local event="$1" with_intent="${2:-0}"
+  if [ -n "$STDIN_FILE" ]; then
+    if [ "$with_intent" = "1" ]; then
+      bash "$HELPERS/derive-trigger-facts.sh" "$event" --with-assistant-intent < "$STDIN_FILE" 2>/dev/null || true
+    else
+      bash "$HELPERS/derive-trigger-facts.sh" "$event" < "$STDIN_FILE" 2>/dev/null || true
+    fi
+  elif [ "$with_intent" = "1" ]; then
+    printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$event" --with-assistant-intent 2>/dev/null || true
+  else
+    printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$event" 2>/dev/null || true
+  fi
+}
+
+spill_policy_facts() {
+  local value="$1" label="$2" temporary=""
+  [ "${#value}" -gt "$POLICY_ARG_INLINE_LIMIT" ] || return 0
+  [ -n "$FACTS_TMP_DIR" ] || return 0
+  [ -d "$FACTS_TMP_DIR" ] || mkdir -p "$FACTS_TMP_DIR" 2>/dev/null || return 0
+  temporary="$(mktemp "$FACTS_TMP_DIR/.policy-trigger-$label.XXXXXX" 2>/dev/null || true)"
+  [ -n "$temporary" ] || return 0
+  if printf '%s\n' "$value" > "$temporary"; then
+    case "$label" in
+      facts) FACTS_FILE="$temporary" ;;
+      intent-facts) INTENT_FACTS_FILE="$temporary" ;;
+    esac
+  else
+    rm -f "$temporary" 2>/dev/null || true
   fi
 }
 # Bash-native membership: a `printf "$MATCHES" | grep -q` pipe races under
@@ -177,6 +415,12 @@ add_match() {
 
 # ── (A) Frontmatter when:/on: evaluation ──────────────────────────────────
 if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-trigger-facts.sh" ]; then
+  # Bash 3.2's command-substitution reader consumes a pipe one byte at a time
+  # for this helper. Large tool commands therefore spend the entire adapter
+  # deadline moving an already-buffered JSON string through a pipe. Hand the
+  # helper a regular file once the payload crosses the inline threshold.
+  FACTS_TMP_DIR="$HQ_ROOT/workspace/orchestrator/hook-state"
+  prepare_policy_trigger_input
   # AssistantIntent channel: AI-message-only facts, available where there is a
   # transcript look-back (PreToolUse + UserPromptSubmit). Policies with
   # `on: [AssistantIntent]` are evaluated against THIS set, not the event facts.
@@ -186,24 +430,56 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     # Derive both fact channels from one payload parse and one helper launch.
     # The two records are deliberately newline-delimited: fact sets are
     # space-separated tokens, and the helper normalizes all text-derived
-    # newlines before returning. Retain the older two-call fallback for a
-    # partial/read-only installation where derive-trigger-facts.sh has not yet
-    # gained paired-mode support; correctness wins over the optimization.
-    FACT_PAIR="$(printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$EVENT" --with-assistant-intent 2>/dev/null || true)"
-    case "$FACT_PAIR" in
-      *$'\n'*)
-        FACTS="${FACT_PAIR%%$'\n'*}"
-        INTENT_FACTS="${FACT_PAIR#*$'\n'}"
-        INTENT_FACTS="${INTENT_FACTS%%$'\n'*}"
-        ;;
-      *)
-        FACTS="$FACT_PAIR"
-        INTENT_FACTS="$(printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" AssistantIntent 2>/dev/null || true)"
-        ;;
-    esac
+    # newlines before returning. Read the records from a file rather than using
+    # `${pair#*newline}`; Bash's shortest-prefix matcher becomes quadratic on a
+    # 200 KB first line and can consume the entire adapter deadline.
+    mkdir -p "$FACTS_TMP_DIR" 2>/dev/null || true
+    FACT_PAIR_FILE="$(mktemp "$FACTS_TMP_DIR/.policy-trigger-pair.XXXXXX" 2>/dev/null || true)"
+    if [ -n "$FACT_PAIR_FILE" ]; then
+      run_derive_trigger_facts "$EVENT" 1 > "$FACT_PAIR_FILE"
+      FACTS=""
+      INTENT_FACTS=""
+      pair_lines=0
+      while IFS= read -r pair_line; do
+        if [ "$pair_lines" -eq 0 ]; then
+          FACTS="$pair_line"
+          pair_lines=1
+        else
+          INTENT_FACTS="$pair_line"
+          pair_lines=2
+          break
+        fi
+      done < "$FACT_PAIR_FILE"
+      if [ "$pair_lines" -lt 2 ]; then
+        INTENT_FACTS="$(run_derive_trigger_facts AssistantIntent)"
+      fi
+    else
+      FACTS="$(run_derive_trigger_facts "$EVENT")"
+      INTENT_FACTS="$(run_derive_trigger_facts AssistantIntent)"
+    fi
   else
-    FACTS="$(printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$EVENT" 2>/dev/null || true)"
+    FACTS="$(run_derive_trigger_facts "$EVENT")"
   fi
+
+  # Keep large fact sets out of awk -v. Derived facts are ASCII tokens, so the
+  # Bash lengths are byte lengths here and avoid adding wc subprocesses to the
+  # fact derivation hot path. The ledger byte counts replace the two old cat
+  # reads that previously materialized the whole ledgers in shell variables.
+  spill_policy_facts "$FACTS" facts
+  spill_policy_facts "$INTENT_FACTS" intent-facts
+  FACTS_INLINE="$FACTS"
+  INTENT_FACTS_INLINE="$INTENT_FACTS"
+  [ -z "$FACTS_FILE" ] || FACTS_INLINE=""
+  [ -z "$INTENT_FACTS_FILE" ] || INTENT_FACTS_INLINE=""
+  FACTS_BYTES=$((${#FACTS} + ${#INTENT_FACTS}))
+  DEDUPE_BYTES="$(policy_file_bytes "$DEDUPE_FILE")"
+  TURN_BYTES="$(policy_file_bytes "$TURN_FILE")"
+  LEDGER_BYTES=$((DEDUPE_BYTES + TURN_BYTES))
+  LEDGER_BYTES_BUCKET="$(policy_bytes_bucket "$LEDGER_BYTES")"
+  FACTS_BYTES_BUCKET="$(policy_bytes_bucket "$FACTS_BYTES")"
+  record_policy_trigger_sizes
+  compact_policy_ledger "$DEDUPE_FILE" "$DEDUPE_BYTES"
+  compact_policy_ledger "$TURN_FILE" "$TURN_BYTES"
 
   # Policies whose `on:` includes SessionStart form an always-injected per-session
   # BASELINE: they are injected on the FIRST qualifying event of a session (the
@@ -423,9 +699,6 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # prompt, so that fork count was the dominant latency. eval-trigger.sh itself
   # stays the spec'd standalone evaluator (tests + CLI); the hot path no longer
   # shells out to it.
-  ALREADY="$(cat "$DEDUPE_FILE" 2>/dev/null || true)"
-  ALREADY_TURN="$(cat "$TURN_FILE" 2>/dev/null || true)"
-
   # The parsed-record cache still evaluates every policy for a new event. A
   # second small cache remembers that evaluation for the current session's
   # exact facts and ledger state. It has 64 fixed slots per scope, selected by
@@ -443,9 +716,15 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   if [ -n "$CACHE_FILE" ] && [ "$CACHE_WRITE" != "1" ]; then
     eval_session_hash="$(printf '%s' "${SESSION_ID:-default}" | policy_hash 2>/dev/null || true)"
     eval_session_key="${eval_session_hash%% *}"
-    eval_input_hash="$(printf '%s\034%s\034%s\034%s\034%s\034%s\n' \
-      "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS" "$ALREADY" "$ALREADY_TURN" \
-      | policy_hash 2>/dev/null || true)"
+    eval_input_hash="$(
+      {
+        printf '%s\034%s\034%s\034' "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS"
+        cat "$DEDUPE_FILE" 2>/dev/null || true
+        printf '\034'
+        cat "$TURN_FILE" 2>/dev/null || true
+        printf '\n'
+      } | policy_hash 2>/dev/null || true
+    )"
     eval_input_key="${eval_input_hash%% *}"
     if [ -n "$eval_session_key" ] && [ -n "$eval_input_key" ]; then
       # Evaluation entries contain grammar verdicts, unlike the parsed-policy
@@ -478,19 +757,18 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   fi
   if [ "${#POLICY_FILES[@]}" -gt 0 ]; then
     policy_evaluator() {
-      # ALREADY (the dedupe ledger) is NEWLINE-separated and, after SessionStart
-      # injects every on:[SessionStart] policy, routinely has many lines. It is
-      # passed via the environment, NOT `awk -v`: onetrueawk/mawk (the default
-      # awk on macOS/BSD) abort with "newline in string" on a `-v` value that
-      # contains a literal newline, which silently kills this whole evaluation
-      # for the rest of the session. ENVIRON has no such restriction. Keep it on
-      # the env — do NOT move it back to `-v ALREADY=`.
+      # The ledgers are read from files with getline. This preserves the
+      # newline-safe behavior that motivated the old ENVIRON handoff and also
+      # avoids the Linux MAX_ARG_STRLEN limit when a long session has many
+      # dedupe entries. Large fact sets are spilled to the same hook-state
+      # directory and read through the same file-backed path.
       # Emit: slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule<TAB>kind.
       # `kind` is consumed only inside this hook before prose emission; the
       # public HQ_POLICY_EMIT=tsv path continues to print five fields below.
-      HQ_ALREADY="$ALREADY" HQ_ALREADY_TURN="$ALREADY_TURN" \
       awk -v EVENT="$EVENT" -v INTENT_MODE="$INTENT_MODE" \
-          -v EVFACTS="$FACTS" -v AIFACTS="$INTENT_FACTS" \
+          -v EVFACTS="$FACTS_INLINE" -v AIFACTS="$INTENT_FACTS_INLINE" \
+          -v EVFACTS_FILE="$FACTS_FILE" -v AIFACTS_FILE="$INTENT_FACTS_FILE" \
+          -v ALREADY_FILE="$DEDUPE_FILE" -v ALREADY_TURN_FILE="$TURN_FILE" \
           -v CACHE_RECORDS="$CACHE_RECORDS" -v CACHE_WRITE="$CACHE_WRITE" \
           -v CACHE_TMP="$CACHE_TMP" -v CACHE_STATUS="$CACHE_STATUS" \
           -v CSEP="$CACHE_SEP" '
@@ -647,10 +925,30 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         return n
       }
       BEGIN {
-        n=split(EVFACTS,fa,/[ ,]+/); for(i=1;i<=n;i++) if(fa[i]!="") evh[fa[i]]=1
-        n=split(AIFACTS,ga,/[ ,]+/); for(i=1;i<=n;i++) if(ga[i]!="") aih[ga[i]]=1
-        n=split(ENVIRON["HQ_ALREADY"],za,"\n"); for(i=1;i<=n;i++) if(za[i]!="") already[za[i]]=1
-        n=split(ENVIRON["HQ_ALREADY_TURN"],zt,"\n"); for(i=1;i<=n;i++) if(zt[i]!="") turnalready[zt[i]]=1
+        if (EVFACTS_FILE != "") {
+          while ((getline factline < EVFACTS_FILE) > 0) {
+            n=split(factline,fa,/[ ,]+/)
+            for(i=1;i<=n;i++) if(fa[i]!="") evh[fa[i]]=1
+          }
+          close(EVFACTS_FILE)
+        } else {
+          n=split(EVFACTS,fa,/[ ,]+/)
+          for(i=1;i<=n;i++) if(fa[i]!="") evh[fa[i]]=1
+        }
+        if (AIFACTS_FILE != "") {
+          while ((getline intentline < AIFACTS_FILE) > 0) {
+            n=split(intentline,ga,/[ ,]+/)
+            for(i=1;i<=n;i++) if(ga[i]!="") aih[ga[i]]=1
+          }
+          close(AIFACTS_FILE)
+        } else {
+          n=split(AIFACTS,ga,/[ ,]+/)
+          for(i=1;i<=n;i++) if(ga[i]!="") aih[ga[i]]=1
+        }
+        while ((getline ledgerline < ALREADY_FILE) > 0) if(ledgerline!="") already[ledgerline]=1
+        close(ALREADY_FILE)
+        while ((getline turnline < ALREADY_TURN_FILE) > 0) if(turnline!="") turnalready[turnline]=1
+        close(ALREADY_TURN_FILE)
         reset_file()
       }
       # Cache files have one validated header followed by parsed records. The

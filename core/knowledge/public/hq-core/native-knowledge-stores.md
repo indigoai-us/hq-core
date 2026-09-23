@@ -32,6 +32,14 @@ HQ captures **native, per-company stores** for meeting notes, meeting/comms inte
 - **Produced by:** signal extraction over ingested meeting notes (and other sources) — runs on HQ cloud once a company is provisioned.
 - **Skill:** `/signals` (generic, all companies). A company may also ship its own namespaced interface (e.g. `{co}:signals` / `{co}:action-items`) over the same store — those are company-specific conveniences; `/signals` is the generic reader.
 
+### Local stores and audience scoping
+
+Signals, facts, and sources written locally follow `ontology-local-spec.md`:
+every scoped item lives under an `@{audienceKey}/` folder readable only by the
+people privy to its source (email chain, Slack channel members, meeting
+attendees on the call). Session-close skills write candidates; the ontology
+worker promotes them.
+
 ### 3. Ontology — vault-backed entity graph
 - **Path:** vault S3 `ontology/entities/{type}/{slug}.md` (types: person/project/company/concept) + `company-brief.md` at bucket root; watermark `ontology/.last-run`.
 - **Produced by:** the ontology gardener (scheduled + event-driven Lambda). Mechanism: `ontology-gardener.md`.
@@ -43,7 +51,7 @@ A user's meaning of "meeting notes" can differ by company. Resolve it from two o
 
 1. `companies/{co}/settings/knowledge/preferences.yaml` (per-company override)
 2. `personal/settings/knowledge-preferences.yaml` (global default; read directly from `personal/settings/` — no `core/` mirror)
-3. Built-in defaults when neither sets a field: `meeting_notes_source: hq-native`, `notetaker: recall`, `signals_enabled: true`, `ontology_enabled: true` — so a brand-new company works with no file.
+3. Built-in defaults when neither sets a field: `meeting_notes_source: hq-native`, `notetaker: recall`, `signals_enabled: true`, `ontology_enabled: true`, `signals_capture: false`, `ontology_capture: false` — so a brand-new company works with no file, and session-close capture stays off until a company opts in. Resolve any field with `core/scripts/knowledge-prefs.sh get <co> <field>`.
 
 Schema:
 ```yaml

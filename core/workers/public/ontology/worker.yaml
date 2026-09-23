@@ -1,0 +1,34 @@
+worker:
+  id: ontology
+  name: "Ontology"
+  description: "Gardens a company's local ontology and signals: promotes session-close and source candidates into entities, audience-scoped facts, and signals; processes declared sources"
+  type: OpsWorker
+  version: "1.0"
+
+execution:
+  mode: on_demand
+  max_runtime: 20m
+  retry_attempts: 1
+  model: opus
+
+context:
+  base:
+    - core/workers/public/ontology/skills/
+    - core/knowledge/public/hq-core/ontology-local-spec.md
+    - core/knowledge/public/hq-core/source-yaml-spec.md
+  dynamic:
+    - pattern: "companies/{company}/ontology/"
+      when: always
+    - pattern: "companies/{company}/signals/"
+      when: always
+    - pattern: "companies/{company}/sources/*/source.yaml"
+      when: always
+  exclude:
+    - "companies/*/ontology/_candidates/_done/"
+    - "companies/*/signals/_candidates/_done/"
+
+skills:
+  - id: garden
+    file: skills/garden.md
+  - id: process-source
+    file: skills/process-source.md

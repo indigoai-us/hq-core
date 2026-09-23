@@ -36,6 +36,16 @@ delegating cloud provisioning to the canonical CLI subcommand
   response, the company will appear in the HQ console for the current operator.
   This is the same endpoint the console calls, so a green check here is a
   deterministic guarantee of console visibility.
+- After the CLI succeeds, write the baseline member grants: `@all write` on
+  each of `knowledge/`, `projects/`, `policies/`, `skills/` as four separate
+  prefix grants (`hq files share <prefix>/ --with @all --permission write
+  --company {slug}`). Never a bucket-wide `*` grant. Members hold no implicit
+  file access (only owner/admin bypass the ACL walk), so without these rows a
+  member cannot push the knowledge they create or pull what teammates wrote.
+  A failed grant is a warning with the exact re-run command, not a hard exit.
+  Narrow it afterward with `/team-access` when a folder mixes shared and
+  private material. `ontology/`, `signals/`, and `sources/` are never in the
+  baseline; the ontology worker grants them per audience.
 - Append one JSONL audit row to `workspace/learnings/designate-team-runs.jsonl`
   capturing the structured result from the CLI plus the `membership_visible`
   flag from the self-check.
@@ -224,6 +234,25 @@ echo "Designated $slug for cloud sync."
 [ -n "$cloud_uid" ] && echo "Cloud UID: $cloud_uid"
 [ -n "$bucket_name" ] && echo "Bucket: $bucket_name"
 [ "$sync_ok" = "true" ] && echo "Initial sync: $files_uploaded files uploaded"
+
+# Baseline member grants — one @all WRITE grant per synced top-level folder.
+# Plain members (role=member) get NO implicit file access: owner/admin bypass
+# the ACL walk, members do not, and invite/accept writes no grants. Without
+# these rows a member who creates knowledge locally cannot push it (presign
+# PUT needs write on the key) and cannot pull what teammates wrote. Grants are
+# per-folder on purpose: never a bucket-wide '*' grant. Each prefix grant
+# covers its own subtree (the ACL model has no non-recursive folder grant).
+# Idempotent: re-granting an existing @all entry is a no-op on the server.
+baseline_grant_failures=0
+for prefix in knowledge projects policies skills; do
+  if hq files share "$prefix/" --with @all --permission write --company "$slug" >/dev/null 2>&1; then
+    echo "Baseline grant: @all write on $prefix/"
+  else
+    echo "WARN: baseline grant failed for $prefix/ — re-run: hq files share $prefix/ --with @all --permission write --company $slug" >&2
+    baseline_grant_failures=$((baseline_grant_failures + 1))
+  fi
+done
+[ "$baseline_grant_failures" -eq 0 ] || echo "WARN: $baseline_grant_failures baseline grant(s) failed; members may be unable to sync until re-run." >&2
 
 case "$membership_visible" in
   true)

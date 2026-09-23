@@ -9,3 +9,13 @@
 # the machine, even when a sync run walks an entire company directory.
 companies/*/settings/
 companies/*/settings/**
+
+# Ontology working files stay on the writer's machine until the ontology worker
+# promotes them (core/knowledge/public/hq-core/ontology-local-spec.md).
+companies/*/signals/_candidates/
+companies/*/signals/_candidates/**
+companies/*/ontology/_candidates/
+companies/*/ontology/_candidates/**
+companies/*/ontology/_rejected/
+companies/*/ontology/_rejected/**
+companies/*/sources/*/.processed

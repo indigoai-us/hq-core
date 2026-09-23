@@ -3,6 +3,44 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.158-beta.1
+
+- promote 2026-09-23 (local ontology + signals): opt-in session-close capture.
+  New switches in `settings/knowledge/preferences.yaml`: `signals_capture`,
+  `ontology_capture` (default false; resolve with
+  `core/scripts/knowledge-prefs.sh`). When on, `/handoff`, `/checkpoint`, and
+  `/learn` write candidates under `signals/_candidates/` and
+  `ontology/_candidates/`; the new `ontology` worker (`garden`,
+  `process-source`) promotes them into identity-only entity files,
+  audience-scoped facts (`ontology/facts/@{key}/`), and signals
+  (`signals/@{key}/`). Every scoped item is readable only by people privy to its
+  source (email chain, Slack channel, meeting attendees). Sources are declared
+  with `sources/{channel}/source.yaml` (spec `source-yaml-spec.md`). `/ontology`
+  renders from the local tree first. `.hqignore` keeps `_candidates/`,
+  `_rejected/`, and `.processed` local. Installs that sync through an
+  `.hqinclude` allowlist should add `companies/*/ontology/`,
+  `companies/*/signals/`, `companies/*/sources/` to it. No action needed for
+  companies that leave capture off.
+
+- promote 2026-09-22 (member access baseline + `/team-access`): `/designate-team`
+  now writes four `@all write` prefix grants (`knowledge/`, `projects/`,
+  `policies/`, `skills/`) right after provisioning, so plain members can push
+  what they create and pull what teammates wrote. Members hold no implicit
+  file access; only owner/admin bypass the ACL walk. Never a bucket-wide `*`.
+  New skill `/team-access <slug>` lets an owner narrow that baseline to chosen
+  subfolders (grant new paths first, revoke the broad one last, readback
+  verification on every grant) and records the intent in the company's
+  `settings/team-access.yaml`. Companies cloud-backed before this release have
+  no baseline; run `/team-access <slug>` once to set it.
+- promote 2026-09-22 (full company seed): the company template gains
+  `signals/`, `sources/{meetings,_index}/`,
+  `ontology/entities/{person,project,company,concept}/`, and
+  `settings/knowledge/preferences.yaml`. `/newcompany` Phase 0 now mirrors the
+  whole template layout (policies, workers, skills, projects, people, data,
+  settings, the three native stores) instead of a hand-picked subset, and its
+  Phase 6 no longer suggests a second `@all read` baseline. No action needed
+  for existing companies; create missing folders by hand if a skill expects them.
+
 ## Release: v15.0.155-beta.1
 
 - promote 2026-09-21 (conduct default: no preset engine): `conduct.default_engine`
