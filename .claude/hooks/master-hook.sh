@@ -420,6 +420,11 @@ if master_timeout_watchdog_enabled && [ -n "$SESSION_ID" ]; then
     mkdir -p "${timeout_journal_file%/*}" >/dev/null 2>&1 || timeout_journal_file=""
   fi
 fi
+if [ -n "$timeout_journal_file" ]; then
+  export HQ_HOOK_TIMEOUT_JOURNAL_FILE="$timeout_journal_file"
+else
+  unset HQ_HOOK_TIMEOUT_JOURNAL_FILE || true
+fi
 
 journal_hook_event() {
   local hook_path="$1" elapsed_ms="$2" script
@@ -505,6 +510,29 @@ master_hook_sequence_json() {
   else
     printf '[]'
   fi
+}
+
+master_policy_trigger_metadata_json() {
+  local metadata_file="$timeout_journal_file.meta" key value
+  local trigger_script="" trigger_event="" ledger_bucket="" facts_bucket=""
+  [ -f "$metadata_file" ] || { printf '{}'; return; }
+  while IFS='=' read -r key value; do
+    case "$key" in
+      policy_trigger_script) trigger_script="$value" ;;
+      policy_trigger_event) trigger_event="$value" ;;
+      ledger_bytes_bucket) ledger_bucket="$value" ;;
+      facts_bytes_bucket) facts_bucket="$value" ;;
+    esac
+  done < "$metadata_file"
+  [ "$trigger_script" = "inject-policy-on-trigger.sh" ] || { printf '{}'; return; }
+  case "$ledger_bucket" in '<16K'|'16-64K'|'64-128K'|'>128K') ;; *) printf '{}'; return ;; esac
+  case "$facts_bucket" in '<16K'|'16-64K'|'64-128K'|'>128K') ;; *) printf '{}'; return ;; esac
+  jq -cn \
+    --arg script "$trigger_script" \
+    --arg event "$trigger_event" \
+    --arg ledger "$ledger_bucket" \
+    --arg facts "$facts_bucket" \
+    '{policy_trigger_script: $script, policy_trigger_event: $event, ledger_bytes_bucket: $ledger, facts_bytes_bucket: $facts}'
 }
 
 write_journal_runtime_metadata() {
@@ -1001,7 +1029,7 @@ master_report_late_event() {
   local event_type="$1" hook_path="$2" final_elapsed_ms="$3" late_exit_code="$4"
   local child_timeout_seconds="${5:-}" declared_timeout_ms watchdog_timeout_ms
   local hook_name message hq_version platform load_average fingerprint_identity fingerprint_hash
-  local bash_env_set shell_info cwd_kind_value nproc_count hook_sequence report_exit event_json
+  local bash_env_set shell_info cwd_kind_value nproc_count hook_sequence policy_trigger_metadata report_exit event_json
   command -v hq >/dev/null 2>&1 || return 0
   hook_name="$(master_safe_hook_script "$hook_path")"
   case "$event_type" in
@@ -1020,6 +1048,10 @@ master_report_late_event() {
   cwd_kind_value="$(master_cwd_kind)"
   nproc_count="$(master_nproc)"
   hook_sequence="$(master_hook_sequence_json)"
+  policy_trigger_metadata='{}'
+  case "$hook_name" in
+    inject-policy-on-trigger.sh) policy_trigger_metadata="$(master_policy_trigger_metadata_json)" ;;
+  esac
   if [[ "$child_timeout_seconds" =~ ^[0-9]+$ ]] && [ "$child_timeout_seconds" -ge 1 ]; then
     declared_timeout_ms=$((child_timeout_seconds * 1000))
     watchdog_timeout_ms="$declared_timeout_ms"
@@ -1087,6 +1119,10 @@ master_report_late_event() {
       }
     ')" || return 0
   [ -n "$event_json" ] || return 0
+  if [ "$policy_trigger_metadata" != '{}' ]; then
+    event_json="$(jq -c --argjson policy_trigger "$policy_trigger_metadata" \
+      '.metadata += $policy_trigger' <<<"$event_json")" || return 0
+  fi
   hq core sentry report --timeout-ms 750 <<<"$event_json" >/dev/null 2>&1 || true
 }
 

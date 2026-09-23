@@ -1,0 +1,20 @@
+# Example /schedule job: garden {company}'s ontology every morning on the
+# owner's Outpost. Copy to companies/{company}/jobs/ontology-garden.yaml,
+# replace the placeholders, then `bash core/scripts/jobs-validate.sh <file>`.
+id: ontology-garden
+name: Ontology garden
+schedule: "0 6 * * *"
+timezone: America/Denver
+runtime: claude
+exec:
+  prompt: "Run /run ontology process-source --company {company} --channel meetings, then /run ontology garden --company {company}. Report one line."
+cwd: companies/{company}
+timeout_seconds: 1200
+notify: profile
+enabled: true
+owner: owner@example.com
+created_at: "2026-09-23T00:00:00Z"
+requirements:
+  runtime: claude
+  company: "{company}"
+  cwd: companies/{company}

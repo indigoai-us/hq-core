@@ -1,0 +1,37 @@
+# Knowledge-source preferences — COMPANY OVERRIDE for {company}
+#
+# Resolution is COMPANY-over-GLOBAL, per field. Anything left commented out
+# here falls through to personal/settings/knowledge-preferences.yaml, then to
+# HQ's built-in defaults.
+#
+# Read by /meeting-notes, /signals, and the hq-native-knowledge-first policy.
+# Full reference: core/knowledge/public/hq-core/native-knowledge-stores.md
+version: 1
+
+# Where "meeting notes" come from for this company.
+#   hq-native = HQ meeting bot store at companies/{company}/sources/meetings/
+#   email     = an email inbox
+#   external  = another system you point sessions to
+# meeting_notes_source: hq-native
+
+# Which notetaker to assume/activate. recall = the HQ meeting bot.
+# notetaker: recall
+
+# Read companies/{company}/signals/ for action items, decisions, wins, risks.
+# signals_enabled: true
+
+# Use the `ontology` skill for company situational context.
+# ontology_enabled: true
+
+# Session-close capture (opt-in). When true, /handoff, /checkpoint, and /learn
+# write signal / entity candidates for the ontology worker to garden.
+# Resolve with: core/scripts/knowledge-prefs.sh get {company} signals_capture
+# signals_capture: false
+# ontology_capture: false
+
+# Vocabulary → capability mapping. Add this company's own phrasing.
+# aliases:
+#   meeting_notes:
+#     - call notes
+#   signals:
+#     - action items

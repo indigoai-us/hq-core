@@ -8,7 +8,7 @@ allowed-tools: Bash, Read, Grep, Glob
 
 Signals are an **HQ-native, per-company store** of meeting/comms intelligence — discrete, cited items extracted from meeting notes and other sources. This is the generic, multi-company reader. A company may also ship its own namespaced interface (e.g. `{co}:signals`, `{co}:action-items`) over the *same* store; this skill serves **all** companies.
 
-**Canonical store:** `companies/{co}/signals/{type}/{sha256}.md`, daily index `companies/{co}/signals/_index/{YYYY-MM-DD}.json`.
+**Canonical store:** `companies/{co}/signals/{type}/{sha256}.md` (company-wide) and `companies/{co}/signals/@{audienceKey}/{type}/{sha256}.md` (visible only to the people privy to the source — spec `core/knowledge/public/hq-core/ontology-local-spec.md`), daily index `companies/{co}/signals/_index/{YYYY-MM-DD}.json`.
 **Mechanism/schema detail (read once if needed):** `core/knowledge/public/hq-core/native-knowledge-stores.md`.
 
 ## Signal types (8)
@@ -40,7 +40,7 @@ HQ-native first. Read the signals store to answer these asks. **Never** default 
 
 ## Reading
 
-- **Recency:** use the latest `_index/{date}.json` files (newest dates first) to find recently-written signals; or list newest files under `companies/{co}/signals/{type}/`.
+- **Recency:** use the latest `_index/{date}.json` files (newest dates first) to find recently-written signals; or list newest files under both `companies/{co}/signals/{type}/` and `companies/{co}/signals/@*/{type}/`. Skip `_candidates/` (not yet gardened). Mark each scoped item as scoped when presenting it, and never repeat a scoped item into a shared surface (a channel post, a company doc).
 - **Filter:** by type (dir), by owner/person (`entity_refs` contains `person/{slug}`), by project (`project/{slug}`), by date.
 - **Present:** group by type; show `canonical_content` per item with its owner/source; cite the meeting (`source_ref`) and timestamp from `citations[]` when useful. For mutable action-item tracking with status lifecycle, note that a company may ship a dedicated namespaced tracker (e.g. `{co}:action-items`); this skill is read-only.
 

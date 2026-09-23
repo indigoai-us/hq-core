@@ -20,6 +20,14 @@ Save current work state as a thread to survive context loss.
     Skip if session just started or no explanatory content generated.
     Call `/learn` with source: "session-insight" for each.
 
+0d. **Capture signal and entity candidates (opt-in companies only)**
+    If the bound company has `signals_capture` or `ontology_capture` on
+    (`core/scripts/knowledge-prefs.sh get {co} <field>`), follow
+    `.claude/skills/_shared/session-close-capture.md` and write up to 10
+    candidates from this checkpoint's conversation summary with
+    `core/scripts/ontology-candidate.sh`, source ref `checkpoint:{thread_id}`.
+    Both switches off: skip silently. Fail-soft.
+
 1. **Check for recent auto-checkpoint** (upgrade instead of duplicate)
    ```bash
    # Find auto-checkpoints from last 5 minutes

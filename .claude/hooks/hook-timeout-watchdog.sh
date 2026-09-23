@@ -409,6 +409,37 @@ hook_sequence_json() {
   fi
 }
 
+policy_trigger_metadata_json() {
+  local session_hash journal_file metadata_file key value
+  local trigger_script="" trigger_event="" ledger_bucket="" facts_bucket=""
+  journal_file="${HQ_HOOK_TIMEOUT_JOURNAL_FILE:-}"
+  if [ -z "$journal_file" ]; then
+    [ -d "$root/workspace/.hook-timeout-journal" ] || { printf '{}'; return; }
+    session_hash="$(sha256_fields "$session_id")"
+    [ -n "$session_hash" ] || { printf '{}'; return; }
+    journal_file="$root/workspace/.hook-timeout-journal/$session_hash.tsv"
+  fi
+  metadata_file="$journal_file.meta"
+  [ -f "$metadata_file" ] || { printf '{}'; return; }
+  while IFS='=' read -r key value; do
+    case "$key" in
+      policy_trigger_script) trigger_script="$value" ;;
+      policy_trigger_event) trigger_event="$value" ;;
+      ledger_bytes_bucket) ledger_bucket="$value" ;;
+      facts_bytes_bucket) facts_bucket="$value" ;;
+    esac
+  done < "$metadata_file"
+  [ "$trigger_script" = "inject-policy-on-trigger.sh" ] || { printf '{}'; return; }
+  case "$ledger_bucket" in '<16K'|'16-64K'|'64-128K'|'>128K') ;; *) printf '{}'; return ;; esac
+  case "$facts_bucket" in '<16K'|'16-64K'|'64-128K'|'>128K') ;; *) printf '{}'; return ;; esac
+  jq -cn \
+    --arg script "$trigger_script" \
+    --arg event "$trigger_event" \
+    --arg ledger "$ledger_bucket" \
+    --arg facts "$facts_bucket" \
+    '{policy_trigger_script: $script, policy_trigger_event: $event, ledger_bytes_bucket: $ledger, facts_bytes_bucket: $facts}'
+}
+
 resolve_claude_timeout() {
   local result=""
   case "$source_kind" in
@@ -676,6 +707,14 @@ cwd_kind_value="$(cwd_kind)"
 nproc_count="$(nproc_value)"
 hook_sequence="$(hook_sequence_json)"
 hook_script="$(safe_hook_script)"
+policy_trigger_metadata='{}'
+case "$hook_name" in
+  inject-policy-on-trigger.sh)
+    if [ -n "${HQ_HOOK_TIMEOUT_JOURNAL_FILE:-}" ] || [ -d "$root/workspace/.hook-timeout-journal" ]; then
+      policy_trigger_metadata="$(policy_trigger_metadata_json)"
+    fi
+    ;;
+esac
 
 event_json="$(jq -cn \
   --arg type "hook_timeout_warning" \
@@ -731,6 +770,11 @@ event_json="$(jq -cn \
       }
     }
   ')" || { mark_report_done; exit 0; }
+
+if [ "$policy_trigger_metadata" != '{}' ]; then
+  event_json="$(jq -c --argjson policy_trigger "$policy_trigger_metadata" \
+    '.metadata += $policy_trigger' <<<"$event_json")" || { mark_report_done; exit 0; }
+fi
 
 # `hq` is only invoked after the hook is already slow. Its public
 # `--timeout-ms` contract bounds the send; the dispatcher cancels this worker's

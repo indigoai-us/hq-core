@@ -392,6 +392,16 @@ then ensure it lives as a **hard-enforcement policy file** at global scope:
 
 Set `enforcement: hard` in the policy frontmatter and ensure the file carries `when:`/`on:` frontmatter so the SessionStart trigger hook surfaces it (Step 8). Do **not** touch `CLAUDE.md`.
 
+## Step 6.5: Capture entity candidates (opt-in companies only)
+
+If the bound company has `ontology_capture` on
+(`core/scripts/knowledge-prefs.sh get {co} ontology_capture`), follow
+`.claude/skills/_shared/session-close-capture.md`: for each person, project,
+company, or concept a new or merged rule names, write one entity candidate
+(max 5 per run) with `core/scripts/ontology-candidate.sh --kind entity`, source
+ref `learn:{event_id}`. Audience is `company` when the rule's scope is
+`company:{co}` and the session user otherwise. Off: skip silently. Fail-soft.
+
 ## Step 7: Log Event
 
 ```bash
