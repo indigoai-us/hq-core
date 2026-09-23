@@ -20,8 +20,10 @@ hook_id=""
 event_name=""
 started_at=""
 parent_pid=""
+invocation_id=""
 sleep_pid=""
 lock_dir=""
+report_done_file=""
 threshold_kind="relative"
 test_trigger_file="${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:-}"
 test_lock_ready_file="${HQ_HOOK_TIMEOUT_SENTRY_TEST_LOCK_READY_FILE:-}"
@@ -39,6 +41,7 @@ while [ "$#" -gt 0 ]; do
     --event) event_name="${2:-}"; shift 2 ;;
     --started-at) started_at="${2:-}"; shift 2 ;;
     --parent-pid) parent_pid="${2:-}"; shift 2 ;;
+    --invocation-id) invocation_id="${2:-}"; shift 2 ;;
     --threshold) threshold_kind="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
@@ -46,6 +49,54 @@ done
 
 is_nonnegative_integer() {
   [[ "${1:-}" =~ ^[0-9]+$ ]]
+}
+
+timing_precision_value() {
+  local candidate=""
+  [ -n "${EPOCHREALTIME:-}" ] && { printf 'ms'; return; }
+  candidate="$(date +%s%3N 2>/dev/null || true)"
+  if [[ "$candidate" =~ ^[0-9]+$ ]] && [ "${#candidate}" -gt 10 ]; then
+    printf 'ms'
+    return
+  fi
+  if command -v perl >/dev/null 2>&1; then
+    candidate="$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
+    if [[ "$candidate" =~ ^[0-9]+$ ]]; then
+      printf 'ms'
+      return
+    fi
+  fi
+  printf 's'
+}
+
+now_ms() {
+  local realtime seconds fraction now
+  realtime="${EPOCHREALTIME:-}"
+  if [ -n "$realtime" ]; then
+    seconds="${realtime%%.*}"
+    fraction="${realtime#*.}"
+    fraction="${fraction}000"
+    fraction="${fraction:0:3}"
+    if [[ "$seconds" =~ ^[0-9]+$ ]] && [[ "$fraction" =~ ^[0-9]{3}$ ]]; then
+      printf '%s%s' "$seconds" "$fraction"
+      return 0
+    fi
+  fi
+  now="$(date +%s%3N 2>/dev/null || true)"
+  if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
+    printf '%s' "$now"
+    return 0
+  fi
+  if command -v perl >/dev/null 2>&1; then
+    now="$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
+    if [[ "$now" =~ ^[0-9]+$ ]]; then
+      printf '%s' "$now"
+      return 0
+    fi
+  fi
+  now="$(date +%s 2>/dev/null || printf '0')"
+  [[ "$now" =~ ^[0-9]+$ ]] || now=0
+  printf '%s000' "$now"
 }
 
 is_timeout_watchdog_disabled() {
@@ -218,7 +269,8 @@ metadata="$(jq -c '
   {
     event: (.hook_event_name // .hookEventName // ""),
     tool: (.tool_name // .toolName // ""),
-    session: (.session_id // .sessionId // "")
+    session: (.session_id // .sessionId // ""),
+    cwd: (.cwd // "")
   }
   | with_entries(if (.value | type) == "string" then . else .value = "" end)
 ' <<<"$input" 2>/dev/null || true)"
@@ -232,11 +284,15 @@ else
   payload_event=""
   tool_name=""
   session_id=""
+  cwd=""
 fi
 [ -n "$event_name" ] || event_name="$payload_event"
 [ -n "$event_name" ] || event_name="unknown"
 [ -n "$tool_name" ] || tool_name="unknown"
 [ -n "$session_id" ] || session_id="unknown"
+if [ -n "$metadata" ]; then
+  cwd="$(jq -r '.cwd' <<<"$metadata" 2>/dev/null || true)"
+fi
 
 # Bound caller-derived scalar strings before passing them to the CLI's strict
 # metadata allowlist. These values are metadata only; no hook payload values are
@@ -247,8 +303,111 @@ bounded() {
 event_name="$(bounded "$event_name")"
 tool_name="$(bounded "$tool_name")"
 session_id="$(bounded "$session_id")"
+cwd="$(bounded "$cwd")"
+timing_precision="$(timing_precision_value)"
+
+bash_env_state() {
+  if [ -n "${BASH_ENV:-}" ]; then
+    printf 'set'
+  else
+    printf 'unset'
+  fi
+}
+
+shell_descriptor() {
+  local shell_name="${BASH:-bash}" shell_version="${BASH_VERSION:-unknown}"
+  # Git Bash on Windows can expose SHELL with backslash separators. Normalize
+  # those separators before taking the basename so the descriptor remains a
+  # bounded shell label on every supported host.
+  shell_name="${shell_name//\\//}"
+  shell_name="${shell_name##*/}"
+  case "$shell_name" in
+    *[!A-Za-z0-9._+-]*|'') shell_name="unknown" ;;
+  esac
+  printf '%s %s' "$shell_name" "$shell_version"
+}
+
+normalize_cwd_path() {
+  local value="$1" os drive converted
+  value="${value//\\//}"
+  os="$(uname -s 2>/dev/null || printf 'unknown')"
+  case "$os" in
+    MINGW*|MSYS*|CYGWIN*)
+      if command -v cygpath >/dev/null 2>&1; then
+        converted="$(cygpath -u "$value" 2>/dev/null || true)"
+        [ -n "$converted" ] && value="$converted"
+      fi
+      case "$value" in
+        /[A-Za-z]/*)
+          drive="${value:1:1}"
+          value="$drive:${value:2}"
+          ;;
+      esac
+      value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+      ;;
+  esac
+  while [ "$value" != "/" ] && [ "${value%/}" != "$value" ]; do
+    value="${value%/}"
+  done
+  printf '%s' "$value"
+}
+
+cwd_kind() {
+  local cwd_root cwd_value
+  cwd_root="$(normalize_cwd_path "$root")"
+  cwd_value="$(normalize_cwd_path "$cwd")"
+  case "$cwd_value" in
+    "$cwd_root") printf 'hq-root' ;;
+    "$cwd_root/repos/public/"*|"$cwd_root/repos/private/"*) printf 'repo' ;;
+    "$cwd_root/workspace/worktrees/"*) printf 'worktree' ;;
+    *) printf 'other' ;;
+  esac
+}
+
+nproc_value() {
+  local result=""
+  if command -v getconf >/dev/null 2>&1; then
+    result="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+  fi
+  if ! is_nonnegative_integer "$result" || [ "$result" -lt 1 ]; then
+    if command -v sysctl >/dev/null 2>&1; then
+      result="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+    fi
+  fi
+  if ! is_nonnegative_integer "$result" || [ "$result" -lt 1 ]; then
+    result=1
+  fi
+  printf '%s' "$result"
+}
 
 hook_name="$(basename "$hook_path")"
+
+safe_hook_script() {
+  local value="$hook_name"
+  case "$value" in
+    ''|*[!A-Za-z0-9._-]*) printf 'unknown' ;;
+    *) value="${value:0:128}"; printf '%s' "$value" ;;
+  esac
+}
+
+hook_sequence_json() {
+  local session_hash journal_file sequence
+  session_hash="$(sha256_fields "$session_id")"
+  [ -n "$session_hash" ] || { printf '[]'; return; }
+  journal_file="$root/workspace/.hook-timeout-journal/$session_hash.tsv"
+  [ -f "$journal_file" ] || { printf '[]'; return; }
+  sequence="$(tail -n 20 "$journal_file" 2>/dev/null | jq -Rsc '
+    split("\n")
+    | map(select(length > 0) | split("\t")
+      | select(length == 3)
+      | {script: .[0], event: .[1], ms: (.[2] | tonumber)})
+  ' 2>/dev/null || true)"
+  if [ -n "$sequence" ]; then
+    printf '%s' "$sequence"
+  else
+    printf '[]'
+  fi
+}
 
 resolve_claude_timeout() {
   local result=""
@@ -414,12 +573,12 @@ fi
 
 warning_seconds="$(date +%s 2>/dev/null || printf '%s' "$now_seconds")"
 is_nonnegative_integer "$warning_seconds" || warning_seconds="$now_seconds"
-elapsed_ms=$((warning_seconds - started_at))
+warning_now_ms="$(now_ms)"
+started_at_ms=$((started_at * 1000))
+elapsed_ms=$((warning_now_ms - started_at_ms))
 [ "$elapsed_ms" -ge 0 ] || elapsed_ms=0
-elapsed_ms=$((elapsed_ms * 1000))
-remaining_seconds=$((started_at + declared_timeout - warning_seconds))
-[ "$remaining_seconds" -ge 0 ] || remaining_seconds=0
-remaining_ms=$((remaining_seconds * 1000))
+remaining_ms=$((started_at_ms + declared_timeout * 1000 - warning_now_ms))
+[ "$remaining_ms" -ge 0 ] || remaining_ms=0
 [ "$watchdog_timeout_seconds" -ge 0 ] || watchdog_timeout_seconds=0
 watchdog_timeout_ms=$((watchdog_timeout_seconds * 1000))
 declared_timeout_ms=$((declared_timeout * 1000))
@@ -462,29 +621,40 @@ allow_warning || exit 0
 write_master_breadcrumb() {
   local session_hash record_hash breadcrumb_dir temporary record
   session_hash="$(sha256_fields "$session_id")"
-  record_hash="$(sha256_fields "$hook_path" "$threshold_kind" "$warning_seconds" "$$")"
+  record_hash="$(sha256_fields "$hook_path" "$threshold_kind" "$warning_seconds" "$$" "$invocation_id")"
   [ -n "$session_hash" ] && [ -n "$record_hash" ] || return 1
   breadcrumb_dir="$root/workspace/.hook-timeout-breadcrumbs/$session_hash"
   mkdir -p "$breadcrumb_dir" >/dev/null 2>&1 || return 1
   temporary="$breadcrumb_dir/.${record_hash}.$$.tmp"
   record="$breadcrumb_dir/${threshold_kind}-${record_hash}.json"
+  report_done_file="$record.reported"
+  rm -f "$report_done_file" >/dev/null 2>&1 || true
   jq -cn \
     --arg hook_path "$hook_path" \
     --arg hook_event "$event_name" \
     --arg threshold "$threshold_kind" \
+    --arg invocation_id "$invocation_id" \
     --argjson elapsed_ms "$elapsed_ms" \
     --argjson declared_timeout_ms "$declared_timeout_ms" \
-    '{hook_path: $hook_path, hook_event: $hook_event, threshold: $threshold, elapsed_ms: $elapsed_ms, declared_timeout_ms: $declared_timeout_ms}' \
+    '{hook_path: $hook_path, hook_event: $hook_event, threshold: $threshold, invocation_id: $invocation_id, elapsed_ms: $elapsed_ms, declared_timeout_ms: $declared_timeout_ms}' \
     > "$temporary" 2>/dev/null || { rm -f "$temporary"; return 1; }
   mv "$temporary" "$record" 2>/dev/null || { rm -f "$temporary"; return 1; }
   return 0
+}
+
+mark_report_done() {
+  [ -n "$report_done_file" ] || return 0
+  : > "$report_done_file" 2>/dev/null || true
 }
 
 case "$source_kind" in
   master-dispatch|master-child) write_master_breadcrumb || true ;;
 esac
 
-command -v hq >/dev/null 2>&1 || exit 0
+if ! command -v hq >/dev/null 2>&1; then
+  mark_report_done
+  exit 0
+fi
 
 load_average=""
 if [ -r /proc/loadavg ]; then
@@ -500,6 +670,12 @@ platform="$(uname -s 2>/dev/null || printf 'unknown')"
 hook_fingerprint_identity="$(hook_fingerprint_identity)"
 hook_fingerprint_hash="$(sha256_fields "$hook_fingerprint_identity")"
 [ -n "$hook_fingerprint_hash" ] || exit 0
+bash_env_set="$(bash_env_state)"
+shell_info="$(shell_descriptor)"
+cwd_kind_value="$(cwd_kind)"
+nproc_count="$(nproc_value)"
+hook_sequence="$(hook_sequence_json)"
+hook_script="$(safe_hook_script)"
 
 event_json="$(jq -cn \
   --arg type "hook_timeout_warning" \
@@ -514,10 +690,18 @@ event_json="$(jq -cn \
   --arg hq_version "$hq_version" \
   --arg platform "$platform" \
   --arg load_average "$load_average" \
+  --arg bash_env_set "$bash_env_set" \
+  --arg shell "$shell_info" \
+  --arg cwd_kind "$cwd_kind_value" \
+  --arg timing_precision "$timing_precision" \
+  --arg hook_script "$hook_script" \
+  --arg exit_code "running" \
   --argjson declared_timeout_ms "$declared_timeout_ms" \
   --argjson elapsed_ms "$elapsed_ms" \
   --argjson remaining_ms "$remaining_ms" \
-  --argjson watchdog_timeout_ms "$watchdog_timeout_ms" '
+  --argjson watchdog_timeout_ms "$watchdog_timeout_ms" \
+  --argjson nproc "$nproc_count" \
+  --argjson hook_sequence "$hook_sequence" '
     {
       type: $type,
       message: $message,
@@ -535,15 +719,24 @@ event_json="$(jq -cn \
         watchdog_timeout_ms: $watchdog_timeout_ms,
         hq_version: $hq_version,
         platform: $platform,
-        load_average: $load_average
+        load_average: $load_average,
+        bash_env_set: $bash_env_set,
+        shell: $shell,
+        cwd_kind: $cwd_kind,
+        timing_precision: $timing_precision,
+        nproc: $nproc,
+        hook_script: $hook_script,
+        exit_code: $exit_code,
+        hook_sequence: $hook_sequence
       }
     }
-  ')" || exit 0
+  ')" || { mark_report_done; exit 0; }
 
 # `hq` is only invoked after the hook is already slow. Its public
 # `--timeout-ms` contract bounds the send; the dispatcher cancels this worker's
 # process session when the delegated hook exits, so this can never delay it.
 hq core sentry report --timeout-ms 750 <<<"$event_json" >/dev/null 2>&1 || true
+mark_report_done
 
 # Keep the session leader alive until its dispatcher exits. This makes the
 # dispatcher's unconditional process-group cancellation safe even if reporting

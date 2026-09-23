@@ -70,6 +70,10 @@
 
 set -uo pipefail
 
+# Ambient company bind must not enqueue mesh events from this suite.
+# Lane presence is covered by workflow-runner-mesh-adapter.test.sh.
+unset HQ_SPAWN_COMPANY
+
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 RUNNER="$REPO_ROOT/core/scripts/workflow-runner.mjs"
 

@@ -1,4 +1,8 @@
 #!/bin/bash
+# Hosts like Claude Code export BASH_ENV to a user profile; each non-interactive
+# bash on the hook path then pays nvm (~1-11s). Measured 2026-09-21 macOS:
+# adapter 18-32s, bridge 28s, master-hook 4.5s; with BASH_ENV=/dev/null: 4.0s / 3.5s.
+export BASH_ENV=/dev/null
 # Hook Profile Gate - Controls hook execution based on HQ_HOOK_PROFILE and HQ_DISABLED_HOOKS.
 #
 # Usage: hook-gate.sh <hook-id> <actual-hook-script>
@@ -31,7 +35,7 @@
 # Minimal: critical safety hooks
 is_in_minimal_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-env-dump|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|block-unsafe-package-install|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|conduct-lane-inbox)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-env-dump|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|lanes-senior-monitor-stop-gate|block-unsafe-package-install|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|conduct-lane-inbox)
       return 0
       ;;
     *)
@@ -43,7 +47,7 @@ is_in_minimal_profile() {
 # Standard: minimal + checkpoint/handoff + pattern learning + core governance + policy loading
 is_in_standard_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-conduct|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-conduct|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox)
       return 0
       ;;
     *)
@@ -55,7 +59,7 @@ is_in_standard_profile() {
 # Strict: standard + future quality hooks (reserved for expansion)
 is_in_strict_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-conduct|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-conduct|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox)
       return 0
       ;;
     *)
@@ -199,7 +203,7 @@ hq_augment_path() {
   return 0
 }
 
-# Library mode ends here; nothing above has side effects.
+# Library mode ends here. The only side effect above is BASH_ENV=/dev/null.
 if [ "${1:-}" = "--lib" ]; then
   return 0 2>/dev/null || exit 0
 fi

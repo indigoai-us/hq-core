@@ -912,6 +912,12 @@
             "prefilter": {
               "env": "HQ_CONDUCT_RUN_DIR"
             }
+          },
+          {
+            "id": "lanes-senior-monitor-stop-gate",
+            "script": ".claude/hooks/lanes-senior-monitor-stop-gate.sh",
+            "timeout": 30,
+            "gated": true
           }
         ]
       }

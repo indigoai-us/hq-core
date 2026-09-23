@@ -349,6 +349,8 @@ jobs:
             core/scripts/tests/hook-launch-sigpipe-status.test.sh \
             core/scripts/tests/hooks-drain-stdin-before-early-exit.test.sh \
             core/scripts/tests/agent-runtime-contracts-e2e.test.sh \
+            core/scripts/lib/lanes-senior-monitor.sh \
+            core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh \
             .claude/hooks/hook-gate.sh \
             .claude/hooks/check-claude-desktop-bridge-health.sh \
             .codex/hooks/hq-codex-hook-adapter.sh \
@@ -724,6 +726,8 @@ jobs:
       # The Stop-gate regression supplies its own hq shim; do not install hq here.
       - name: Checkpoint Stop gate
         run: bash core/scripts/tests/checkpoint-stop-gate.test.sh
+      - name: Lane senior Monitor Stop/reminder shim wiring
+        run: bash core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh
       - name: Checkpoint and journal hooks do not over-trigger
         run: bash core/scripts/tests/checkpoint-journal-noise.test.sh
       - name: Session id resolves to this process, not .current
@@ -955,6 +959,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: hook-gate self-heals a non-executable (sync-stripped) hook
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+      - name: Hook path does not source BASH_ENV in child bash
+        run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
@@ -1013,7 +1019,8 @@ jobs:
             core/scripts/repo-run-registry.sh
             core/scripts/rebuild-social-drafts-index.sh
             core/scripts/audit-log.sh
-            .claude/hooks/hook-gate.sh
+            .claude/hooks/hook-gate.sh \
+            .claude/hooks/lanes-senior-monitor-stop-gate.sh
             .claude/skills/deploy/scripts/identity-resolve.sh
             .claude/skills/deploy/scripts/password-helper.sh
             .claude/skills/deploy/scripts/resolve-deploy-org.sh
@@ -1046,6 +1053,8 @@ jobs:
         run: bash core/scripts/tests/hook-gate-path-augment.test.sh
       - name: hook-gate exec-bit self-heal
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+      - name: Hook path does not source BASH_ENV in child bash
+        run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
@@ -1079,6 +1088,8 @@ jobs:
         run: bash core/scripts/tests/hook-gate-path-augment.test.sh
       - name: hook-gate exec-bit self-heal
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+      - name: Hook path does not source BASH_ENV in child bash
+        run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
 
   hooks-no-python:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1248,6 +1259,8 @@ jobs:
         run: bash core/scripts/tests/work-mesh-live-bind-bash32.test.sh
       - name: Work Mesh SessionStart context paths
         run: bash core/scripts/tests/work-context-real-launch.test.sh
+      - name: Offline preflight fixtures match the CLI contract
+        run: bash core/scripts/tests/preflight-contract-fixtures.test.sh
       - name: Conduct lanes inherit parent company onto engine session
         run: bash core/scripts/tests/conduct-mesh-inherit.test.sh
       - name: Work Mesh Live hooks (US-010)

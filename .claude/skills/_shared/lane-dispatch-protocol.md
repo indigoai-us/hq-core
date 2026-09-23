@@ -245,6 +245,18 @@ the lane cwd. The workflow runner never reads a task from the parent session's
 `HQ_SPAWN_TASK` explicitly for that lane. `/run-project` does this for story
 lanes so their `/execute-task` children stay bound to the assigned story.
 
+Codex and Grok lanes do not run the Claude Code hooks, so they would otherwise
+be invisible on the Board. When `HQ_SPAWN_COMPANY` is set, `workflow-runner.mjs`
+enqueues that lane's presence itself (`--enqueue`, fail-soft): `session_start`
+before the engine starts, `task_status in_progress` once it is up, `turn_end`
+when it exits, then `task_status review` if the reply contains a pull-request
+URL or a `note` with the first 200 characters of the reply, then `session_end`.
+The lane session id is the run-dir basename, the harness is the engine name,
+and `--task-id` is `HQ_SPAWN_TASK` when the launcher bound one. Each lane must
+export its own `HQ_SPAWN_TASK`; a parent lane's task is not inherited. Claude
+lanes still report only through their hooks. The runner records each emit as
+`{"event":"mesh-emit","kind":...,"ok":bool}` in the run dir's `journal.jsonl`.
+
 ## 5. Record, then wait in the background
 
 ```bash

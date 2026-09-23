@@ -7,6 +7,9 @@ SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
 mkdir -p "$SANDBOX/root/core/scripts" "$SANDBOX/bin" "$SANDBOX/home"
 cp "$ROOT/core/scripts/hq-dm-bind.sh" "$SANDBOX/root/core/scripts/"
+mkdir -p "$SANDBOX/home/.hq"
+printf '{}\n' > "$SANDBOX/home/.hq/config.json"
+printf '{}\n' > "$SANDBOX/home/.hq/cognito-tokens.json"
 
 # Stub session helper: fixed session id, channel already bound.
 cat > "$SANDBOX/root/core/scripts/hq-session.sh" <<'S'

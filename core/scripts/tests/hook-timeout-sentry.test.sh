@@ -133,6 +133,17 @@ payload_for_event() {
   }'
 }
 
+payload_for_event_with_cwd() {
+  local event="$1" session="$2" cwd="$3"
+  jq -cn --arg event "$event" --arg session "$session" --arg cwd "$cwd" '{
+    hook_event_name: $event,
+    tool_name: "Bash",
+    session_id: $session,
+    cwd: $cwd,
+    tool_input: {command: "SUPER_SECRET_COMMAND_VALUE"}
+  }'
+}
+
 write_timeout_breadcrumb() {
   local root="$1" session="$2" hook_path="$3" hook_event="$4" threshold="$5"
   local session_hash breadcrumb_dir
@@ -153,6 +164,7 @@ run_gate() {
   shift 4
   env \
     PATH="$root/bin:$PATH" \
+    BASH_ENV= \
     HQ_TEST_HQ_ARGS="$root/hq.args" \
     HQ_TEST_HQ_STDIN="$root/hq.stdin" \
     HQ_TEST_HQ_ACK="$root/hq.ack" \
@@ -303,7 +315,16 @@ jq -e '
   and .metadata.session_id == "slow-session"
   and (.metadata.platform | type == "string" and length > 0)
   and (.metadata.load_average | type == "string")
-  and ([.metadata[] | type] | all(. == "string" or . == "number" or . == "boolean"))
+  and .metadata.bash_env_set == "set"
+  and (.metadata.shell | type == "string" and contains("bash"))
+  and .metadata.cwd_kind == "other"
+  and (.metadata.timing_precision == "ms" or .metadata.timing_precision == "s")
+  and (.metadata.nproc | type == "number" and . >= 1)
+  and .metadata.hook_script == "detect-secrets.sh"
+  and .metadata.exit_code == "running"
+  and (.metadata.hook_sequence | type == "array" and length == 0)
+  and ([.metadata | to_entries[] | select(.key != "hook_sequence") | .value | type]
+       | all(. == "string" or . == "number" or . == "boolean"))
   and (.metadata | has("hook_scope") | not)
 ' --arg hook_path "$R2/.claude/hooks/detect-secrets.sh" < <(sed '/^---EVENT---$/,$d' "$R2/hq.stdin") >/dev/null \
   || fail "warning omitted required safe fields or contained nested metadata"
@@ -443,7 +464,7 @@ set -e
 [ "$without_master_rc" -eq 2 ] || fail "master child baseline exit wrong: $without_master_rc"
 cmp -s "$R7/out" "$R7/without.out" || fail "master child stdout changed when watchdog fired"
 cmp -s "$R7/err" "$R7/without.err" || fail "master child stderr changed when watchdog fired"
-[ "$(event_count "$R7")" = "2" ] || fail "slow master child should emit both master warnings once"
+[ "$(event_count "$R7")" = "3" ] || fail "slow master child should emit two warnings and one late finish"
 jq -e '
   (.fingerprint | startswith("hook-timeout:PreToolUse:"))
   and .metadata.hook_name == "master-hook.sh"
@@ -613,6 +634,9 @@ for candidate in "$killed_breadcrumb_dir"/*/*.json; do
 done
 [ -n "$killed_breadcrumb" ] || fail "killed dispatcher did not leave an absolute watchdog breadcrumb"
 [ "$pending_child_breadcrumbs" -ge 1 ] || fail "killed dispatcher breadcrumb did not name the master hook"
+jq -e '.invocation_id | type == "string" and length > 0' "$killed_breadcrumb" >/dev/null \
+  || fail "killed dispatcher breadcrumb did not carry its invocation id"
+killed_event_count="$(event_count "$R8K")"
 
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'printf "%s\n" "{\"hookSpecificOutput\":{\"additionalContext\":\"post-kill child context\"}}"' > "$R8K/core/hooks/PreToolUse/10-killed-child.sh"
 recovery_pids=()
@@ -631,6 +655,8 @@ set -e
 [ "$first_rc" -eq 0 ] && [ "$second_rc" -eq 0 ] || fail "concurrent breadcrumb consumers changed master exits"
 injected_count="$(grep -ohF "$delivered_killed_child_path" "$R8K/first.out" "$R8K/second.out" | wc -l || true)"
 [ "$injected_count" -eq "$pending_child_breadcrumbs" ] || fail "concurrent fires double-injected or dropped dispatcher breadcrumbs: expected $pending_child_breadcrumbs, got $injected_count"
+[ "$(event_count "$R8K")" = "$killed_event_count" ] \
+  || fail "a later invocation emitted hook_late_finish for an earlier invocation's breadcrumb"
 for label in first second; do
   jq -e '.hookSpecificOutput.additionalContext | contains("post-kill child context")' "$R8K/$label.out" >/dev/null \
     || fail "concurrent $label fire produced corrupt or partial output"
@@ -764,7 +790,7 @@ env PATH="$R11/bin:$PATH" HQ_TEST_HQ_ARGS="$R11/hq.args" HQ_TEST_HQ_STDIN="$R11/
 no_settings_rc=$?
 set -e
 [ "$no_settings_rc" -eq 0 ] || fail "master without settings.json did not reach reporter acknowledgement: $no_settings_rc"
-[ "$(event_count "$R11")" = "1" ] || fail "master without settings.json did not emit one warning"
+[ "$(event_count "$R11")" = "2" ] || fail "master without settings.json did not emit warning and late finish"
 [ "$(cat "$R11/out")" = 'fallback child complete' ] || fail "master without settings.json changed stdout"
 [ ! -s "$R11/err" ] || fail "master without settings.json changed stderr"
 fallback_breadcrumb="$(find "$R11/workspace/.hook-timeout-breadcrumbs" -name '*.json' -type f | head -n 1)"
@@ -855,5 +881,347 @@ case "$outside_root_fingerprint" in
   *"$outside_hook_path"*) fail "outside-root fingerprint embedded the absolute hook path" ;;
 esac
 pass "fingerprints are stable across install roots and remain condition-specific"
+
+echo "[15] threshold metadata records shell, environment, cwd, and running state"
+R15_META="$(make_root metadata-fields)"
+touch "$R15_META/bash-env"
+
+run_watchdog_metadata_case() {
+  local root="$1" label="$2" env_mode="$3"
+  local hook_path="$root/.claude/hooks/$label-hook.sh"
+  local report="$root/$label.hq.stdin"
+  printf '%s\t%s\t%s\n' master-child "$hook_path" relative > "$root/watchdog.trigger"
+  if [ "$env_mode" = set ]; then
+    env \
+      BASH_ENV="$root/bash-env" \
+      SHELL='C:\Program Files\Git\bin\zsh.EXE' \
+      PATH="$root/bin:$PATH" \
+      HQ_TEST_HQ_ARGS="$root/$label.hq.args" \
+      HQ_TEST_HQ_STDIN="$report" \
+      HQ_TEST_HQ_ACK="$root/$label.hq.ack" \
+      HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
+      HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$root/watchdog.trigger" \
+      timeout 15s bash "$root/.claude/hooks/hook-timeout-watchdog.sh" \
+        --root "$root" --source master-child --hook-path "$hook_path" \
+        --event PreToolUse --threshold relative --started-at 0 \
+        >"$root/$label.out" 2>"$root/$label.err" \
+        <<<"$(payload_for_event_with_cwd PreToolUse "$label-session" "$root")"
+  else
+    env \
+      -u BASH_ENV \
+      PATH="$root/bin:$PATH" \
+      HQ_TEST_HQ_ARGS="$root/$label.hq.args" \
+      HQ_TEST_HQ_STDIN="$report" \
+      HQ_TEST_HQ_ACK="$root/$label.hq.ack" \
+      HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
+      HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$root/watchdog.trigger" \
+      timeout 15s bash "$root/.claude/hooks/hook-timeout-watchdog.sh" \
+        --root "$root" --source master-child --hook-path "$hook_path" \
+        --event PreToolUse --threshold relative --started-at 0 \
+        >"$root/$label.out" 2>"$root/$label.err" \
+        <<<"$(payload_for_event_with_cwd PreToolUse "$label-session" "$root")"
+  fi
+  [ "$(grep -c '^---EVENT---$' "$report" || true)" -ge 1 ] || fail "$label metadata case did not report"
+  [ ! -s "$root/$label.err" ] || fail "$label metadata case wrote to stderr"
+}
+
+run_watchdog_metadata_case "$R15_META" metadata-set set
+run_watchdog_metadata_case "$R15_META" metadata-unset unset
+if ! jq -e '
+  .type == "hook_timeout_warning"
+  and .metadata.bash_env_set == "set"
+  and (.metadata.shell | startswith("bash "))
+  and (.metadata.timing_precision == "ms" or .metadata.timing_precision == "s")
+  and .metadata.cwd_kind == "hq-root"
+  and (.metadata.nproc | type == "number" and . >= 1)
+  and .metadata.hook_script == "metadata-set-hook.sh"
+  and .metadata.exit_code == "running"
+  and (.metadata.hook_sequence | type == "array")
+' < <(sed '/^---EVENT---$/,$d' "$R15_META/metadata-set.hq.stdin") >/dev/null; then
+  jq -c '{type, metadata: (.metadata | {bash_env_set, shell, cwd_kind, nproc, hook_script, exit_code, hook_sequence})}' \
+    < <(sed '/^---EVENT---$/,$d' "$R15_META/metadata-set.hq.stdin") >&2 || true
+  fail "BASH_ENV=set metadata was incomplete or unsafe"
+fi
+jq -e '
+  .type == "hook_timeout_warning"
+  and .metadata.bash_env_set == "unset"
+  and (.metadata.timing_precision == "ms" or .metadata.timing_precision == "s")
+  and .metadata.cwd_kind == "hq-root"
+  and .metadata.hook_script == "metadata-unset-hook.sh"
+  and .metadata.exit_code == "running"
+' < <(sed '/^---EVENT---$/,$d' "$R15_META/metadata-unset.hq.stdin") >/dev/null \
+  || fail "BASH_ENV=unset metadata was incomplete or unsafe"
+pass "threshold metadata exposes bounded runtime context without payload values"
+
+echo "[16] late finish reporting includes a bounded hook journal"
+R16="$(make_root late-finish)"
+set_timeout "$R16" 'master-hook.sh" PreToolUse' 4
+mkdir -p "$R16/core/hooks/PreToolUse"
+for index in $(seq -w 1 25); do
+  printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'exit 0' \
+    > "$R16/core/hooks/PreToolUse/${index}-journal-fast.sh"
+  chmod +x "$R16/core/hooks/PreToolUse/${index}-journal-fast.sh"
+done
+late_master_path="$R16/.claude/hooks/master-hook.sh"
+# Normal child dispatch must append to the journal without taking the warning
+# compaction path for every child. Count filesystem operations whose arguments
+# name this journal so the test catches a reintroduction of per-child churn.
+system_mkdir="$(command -v mkdir)"
+system_tail="$(command -v tail)"
+system_mv="$(command -v mv)"
+: > "$R16/journal-fs-ops"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'case " $* " in *hook-timeout-journal*) printf "%s\n" mkdir >> "${HQ_TEST_JOURNAL_FS_OPS:?}" ;; esac' \
+  "exec \"$system_mkdir\" \"\$@\"" > "$R16/bin/mkdir"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'case " $* " in *hook-timeout-journal*) printf "%s\n" tail >> "${HQ_TEST_JOURNAL_FS_OPS:?}" ;; esac' \
+  "exec \"$system_tail\" \"\$@\"" > "$R16/bin/tail"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'case " $* " in *hook-timeout-journal*) printf "%s\n" mv >> "${HQ_TEST_JOURNAL_FS_OPS:?}" ;; esac' \
+  "exec \"$system_mv\" \"\$@\"" > "$R16/bin/mv"
+chmod +x "$R16/bin/mkdir" "$R16/bin/tail" "$R16/bin/mv"
+# shellcheck disable=SC2016 # These quoted lines are source text for the fixture child.
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'cat >/dev/null' \
+  'printf "%s\t%s\t%s\n" master-dispatch "$HQ_TEST_MASTER_PATH" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"' \
+  'printf "%s\t%s\t%s\n" master-dispatch "$HQ_TEST_MASTER_PATH" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"' \
+  'while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done' \
+  'printf "late stdout"' \
+  'exit 7' > "$R16/core/hooks/PreToolUse/99-late-finish.sh"
+chmod +x "$R16/core/hooks/PreToolUse/99-late-finish.sh"
+# Git Bash startup cost across the deliberate 25-hook journal fixture can
+# exceed the Linux-oriented 15-second harness budget on Windows.
+set +e
+env \
+  BASH_ENV= \
+  PATH="$R16/bin:$PATH" \
+  HQ_TEST_HQ_ARGS="$R16/hq.args" \
+  HQ_TEST_HQ_STDIN="$R16/hq.stdin" \
+  HQ_TEST_HQ_ACK="$R16/hq.ack" \
+  HQ_TEST_JOURNAL_FS_OPS="$R16/journal-fs-ops" \
+  HQ_TEST_MASTER_PATH="$late_master_path" \
+  HQ_HARNESS=codex \
+  SHELL=/bin/zsh \
+  HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 \
+  HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=1 \
+  HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R16/watchdog.trigger" \
+  timeout 45s bash "$R16/.claude/hooks/master-hook.sh" PreToolUse \
+  >"$R16/out" 2>"$R16/err" <<<"$(payload_for_event PreToolUse late-finish-session)"
+late_finish_rc=$?
+set -e
+[ "$late_finish_rc" -eq 7 ] || fail "late-finish fixture changed its child exit code: $late_finish_rc"
+[ "$(event_count "$R16")" = "3" ] || fail "late-finish fixture should emit two warnings and one completion event"
+jq -s -e --arg hook_path "$late_master_path" '
+  length == 3
+  and ([.[] | select(.type == "hook_timeout_warning")] | length == 2)
+  and ([.[] | select(.type == "hook_late_finish")] | length == 1)
+  and (all(.[]; .metadata.hook_path == $hook_path))
+  and (all(.[]; .metadata.hook_script == "master-hook.sh"))
+  and (all(.[]; (.metadata.hook_sequence | type == "array" and length == 20)))
+  and (all(.[]; ([.metadata.hook_sequence[] | .script] | all(contains("/") | not))))
+  and (all(.[]; ([.metadata.hook_sequence[] | .event] | all(. == "PreToolUse"))))
+  and (all(.[]; ([.metadata.hook_sequence[] | .ms] | all(type == "number"))))
+  and (all(.[]; .metadata.declared_timeout_ms == 30000))
+  and ([.[] | .metadata.watchdog_timeout_ms] | sort == [1000, 1000, 29000])
+  and (all(.[]; (.metadata.shell | startswith("bash "))))
+  and (all(.[]; (.metadata.timing_precision == "ms" or .metadata.timing_precision == "s")))
+  and ([.[] | .fingerprint] | unique | length == 1)
+  and ([.[] | select(.type == "hook_late_finish") | .metadata.final_elapsed_ms]
+       | all(type == "number" and . >= 0))
+  and ([.[] | select(.type == "hook_late_finish") | .metadata.exit_code] == [7])
+' < <(sed '/^---EVENT---$/d' "$R16/hq.stdin") >/dev/null \
+  || fail "late-finish event or bounded journal metadata was incomplete"
+[ ! -s "$R16/err" ] || fail "late-finish instrumentation changed master stderr"
+late_journal_hash="$(sha256_fields late-finish-session)"
+late_journal_meta="$R16/workspace/.hook-timeout-journal/$late_journal_hash.tsv.meta"
+grep -Fxq 'bash_env_set=set' "$late_journal_meta" \
+  || fail "master journal did not record its BASH_ENV state"
+grep -Eq '^timing_precision=(ms|s)$' "$late_journal_meta" \
+  || fail "master journal did not record timing precision"
+journal_fs_ops_count="$(wc -l < "$R16/journal-fs-ops")"
+[ "$journal_fs_ops_count" -le 10 ] \
+  || fail "normal dispatch performed per-child journal filesystem churn: $journal_fs_ops_count operations"
+pass "late finish is emitted once with final duration, exit code, and last 20 hooks"
+
+echo "[17] child timeout emits one completion event with the timeout exit code"
+R17="$(make_root child-timeout)"
+mkdir -p "$R17/core/hooks/PreToolUse"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'sleep 2' \
+  > "$R17/core/hooks/PreToolUse/10-timeout-child.sh"
+chmod +x "$R17/core/hooks/PreToolUse/10-timeout-child.sh"
+set +e
+env \
+  BASH_ENV= \
+  PATH="$R17/bin:$PATH" \
+  HQ_TEST_HQ_ARGS="$R17/hq.args" \
+  HQ_TEST_HQ_STDIN="$R17/hq.stdin" \
+  HQ_TEST_HQ_ACK="$R17/hq.ack" \
+  HQ_HOOK_TIMEOUT_SENTRY=0 \
+  HQ_MASTER_CHILD_TIMEOUT=1 \
+  timeout 15s bash "$R17/.claude/hooks/master-hook.sh" PreToolUse \
+  >"$R17/out" 2>"$R17/err" <<<"$(payload_for_event PreToolUse child-timeout-session)"
+child_timeout_rc=$?
+set -e
+[ "$child_timeout_rc" -eq 124 ] || fail "child timeout changed its declared timeout exit: $child_timeout_rc"
+[ "$(event_count "$R17")" = "1" ] || fail "child timeout should emit one completion event"
+jq -e --arg hook_path "$R17/core/hooks/PreToolUse/10-timeout-child.sh" '
+  .type == "hook_timeout_exceeded"
+  and (.fingerprint | startswith("hook-timeout:PreToolUse:"))
+  and .metadata.hook_path == $hook_path
+  and .metadata.hook_script == "10-timeout-child.sh"
+  and .metadata.exit_code == 124
+  and .metadata.declared_timeout_ms == 1000
+  and .metadata.watchdog_timeout_ms == 1000
+  and (.metadata.timing_precision == "ms" or .metadata.timing_precision == "s")
+  and (.metadata.final_elapsed_ms | type == "number" and . >= 900)
+  and (.metadata.hook_sequence | type == "array")
+' < <(sed '/^---EVENT---$/,$d' "$R17/hq.stdin") >/dev/null \
+  || fail "child timeout event omitted final duration or exit code"
+[ ! -s "$R17/err" ] || fail "child timeout instrumentation changed master stderr"
+pass "declared child timeout is reported with its measured completion details"
+
+echo "[17b] a child that returns 124 is not misclassified as a timeout"
+R17_STATUS="$(make_root child-status-124)"
+mkdir -p "$R17_STATUS/core/hooks/PreToolUse"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'exit 124' \
+  > "$R17_STATUS/core/hooks/PreToolUse/10-status-124-child.sh"
+chmod +x "$R17_STATUS/core/hooks/PreToolUse/10-status-124-child.sh"
+set +e
+env \
+  BASH_ENV= \
+  PATH="$R17_STATUS/bin:$PATH" \
+  HQ_TEST_HQ_ARGS="$R17_STATUS/hq.args" \
+  HQ_TEST_HQ_STDIN="$R17_STATUS/hq.stdin" \
+  HQ_TEST_HQ_ACK="$R17_STATUS/hq.ack" \
+  HQ_HOOK_TIMEOUT_SENTRY=0 \
+  HQ_MASTER_CHILD_TIMEOUT=1 \
+  timeout 15s bash "$R17_STATUS/.claude/hooks/master-hook.sh" PreToolUse \
+  >"$R17_STATUS/out" 2>"$R17_STATUS/err" <<<"$(payload_for_event PreToolUse child-status-124-session)"
+status_124_rc=$?
+set -e
+[ "$status_124_rc" -eq 124 ] || fail "legitimate child status 124 was changed: $status_124_rc"
+[ "$(event_count "$R17_STATUS")" = "0" ] || fail "legitimate child status 124 was reported as a timeout"
+[ ! -s "$R17_STATUS/err" ] || fail "legitimate child status 124 changed master stderr"
+pass "out-of-band completion marker distinguishes status 124 from a timeout"
+
+echo "[18] warning compaction recovers an abandoned journal lock"
+R18_LOCK="$(make_root stale-journal-lock)"
+set_timeout "$R18_LOCK" 'master-hook.sh" PreToolUse' 4
+mkdir -p "$R18_LOCK/core/hooks/PreToolUse"
+stale_lock_session="stale-journal-lock-session"
+stale_lock_hash="$(sha256_fields "$stale_lock_session")"
+stale_lock_journal_dir="$R18_LOCK/workspace/.hook-timeout-journal"
+stale_lock_journal="$stale_lock_journal_dir/$stale_lock_hash.tsv"
+mkdir -p "$stale_lock_journal_dir"
+for index in $(seq -w 1 20); do
+  printf 'pre-%s\tPreToolUse\t1\n' "$index"
+done > "$stale_lock_journal"
+mkdir "$stale_lock_journal.lock"
+printf '999999999\n' > "$stale_lock_journal.lock/pid"
+stale_lock_child="$R18_LOCK/core/hooks/PreToolUse/10-stale-lock-child.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' \
+  'printf "%s\\t%s\\t%s\\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"' \
+  'printf "%s\\t%s\\t%s\\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"' \
+  'while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done' \
+  > "$stale_lock_child"
+chmod +x "$stale_lock_child"
+set +e
+env \
+  PATH="$R18_LOCK/bin:$PATH" \
+  HQ_TEST_HQ_ARGS="$R18_LOCK/hq.args" \
+  HQ_TEST_HQ_STDIN="$R18_LOCK/hq.stdin" \
+  HQ_TEST_HQ_ACK="$R18_LOCK/hq.ack" \
+  HQ_TEST_MASTER_PATH="$R18_LOCK/.claude/hooks/master-hook.sh" \
+  HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 \
+  HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=1 \
+  HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R18_LOCK/watchdog.trigger" \
+  timeout 15s bash "$R18_LOCK/.claude/hooks/master-hook.sh" PreToolUse \
+  >"$R18_LOCK/out" 2>"$R18_LOCK/err" <<<"$(payload_for_event PreToolUse "$stale_lock_session")"
+stale_lock_rc=$?
+set -e
+[ "$stale_lock_rc" -eq 0 ] || fail "stale journal lock fixture changed master exit: $stale_lock_rc"
+[ "$(event_count "$R18_LOCK")" = "3" ] || fail "stale journal lock fixture did not emit both warnings and late finish"
+[ ! -e "$stale_lock_journal.lock" ] || fail "stale journal lock was not reclaimed"
+jq -s -e --arg child "$(basename "$stale_lock_child")" '
+  length == 3
+  and any(.[]; any(.metadata.hook_sequence[]; .script == $child))
+' < <(sed '/^---EVENT---$/d' "$R18_LOCK/hq.stdin") >/dev/null \
+  || fail "stale journal lock prevented compaction from preserving the current child"
+[ ! -s "$R18_LOCK/err" ] || fail "stale journal lock recovery changed master stderr"
+pass "stale journal lock recovery preserves the bounded hook sequence"
+
+echo "[19] warning reporting completes before the watchdog group is stopped"
+R19_REPORT="$(make_root reporter-completion)"
+set_timeout "$R19_REPORT" 'master-hook.sh" PreToolUse' 4
+mkdir -p "$R19_REPORT/core/hooks/PreToolUse"
+cat > "$R19_REPORT/bin/hq" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+trap 'printf "killed\\n" >> "${HQ_TEST_HQ_KILLED_FILE:?}"; exit 143' TERM
+printf '%s\n' "$*" >> "${HQ_TEST_HQ_ARGS:?}"
+event_json="$(cat)"
+printf '%s' "$event_json" >> "${HQ_TEST_HQ_STDIN:?}"
+printf 'reported\n' >> "${HQ_TEST_HQ_ACK:?}"
+case "$event_json" in
+  *'"type":"hook_timeout_warning"'*)
+  : > "${HQ_TEST_HQ_ENTERED_FILE:?}"
+  while [ ! -e "${HQ_TEST_HQ_RELEASE_FILE:?}" ]; do sleep 0.02; done
+  ;;
+esac
+printf '\n---EVENT---\n' >> "${HQ_TEST_HQ_STDIN:?}"
+EOF
+chmod +x "$R19_REPORT/bin/hq"
+reporter_child="$R19_REPORT/core/hooks/PreToolUse/10-reporter-completion-child.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' \
+  'printf "%s\\t%s\\t%s\\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"' \
+  'printf "%s\\t%s\\t%s\\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"' \
+  'while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done' \
+  > "$reporter_child"
+chmod +x "$reporter_child"
+: > "$R19_REPORT/reporter-entered"
+: > "$R19_REPORT/reporter-killed"
+env \
+  PATH="$R19_REPORT/bin:$PATH" \
+  HQ_TEST_HQ_ARGS="$R19_REPORT/hq.args" \
+  HQ_TEST_HQ_STDIN="$R19_REPORT/hq.stdin" \
+  HQ_TEST_HQ_ACK="$R19_REPORT/hq.ack" \
+  HQ_TEST_HQ_RELEASE_FILE="$R19_REPORT/release-reporters" \
+  HQ_TEST_HQ_ENTERED_FILE="$R19_REPORT/reporter-entered" \
+  HQ_TEST_HQ_KILLED_FILE="$R19_REPORT/reporter-killed" \
+  HQ_HOOK_TIMEOUT_SENTRY_TEST_WAIT_FILE="$R19_REPORT/wait-entered" \
+  HQ_TEST_MASTER_PATH="$R19_REPORT/.claude/hooks/master-hook.sh" \
+  HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 \
+  HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=1 \
+  HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R19_REPORT/watchdog.trigger" \
+  bash "$R19_REPORT/.claude/hooks/master-hook.sh" PreToolUse \
+  >"$R19_REPORT/out" 2>"$R19_REPORT/err" <<<"$(payload_for_event PreToolUse reporter-completion-session)" &
+reporter_master_pid=$!
+for _ in $(seq 1 750); do
+  [ -e "$R19_REPORT/reporter-entered" ] && break
+  sleep 0.02
+done
+[ -e "$R19_REPORT/reporter-entered" ] || fail "reporter completion fixture did not block warning delivery"
+for _ in $(seq 1 750); do
+  [ -e "$R19_REPORT/wait-entered" ] && break
+  sleep 0.02
+done
+[ -e "$R19_REPORT/wait-entered" ] || fail "master did not enter the reporter completion wait"
+sleep 0.5
+if kill -0 "$reporter_master_pid" >/dev/null 2>&1; then
+  : > "$R19_REPORT/master-waited"
+fi
+sleep 0.25
+: > "$R19_REPORT/release-reporters"
+set +e
+wait "$reporter_master_pid"
+reporter_completion_rc=$?
+set -e
+[ "$reporter_completion_rc" -eq 0 ] || fail "reporter completion fixture changed master exit: $reporter_completion_rc"
+[ -e "$R19_REPORT/master-waited" ] || fail "master stopped before warning reporters completed"
+[ ! -s "$R19_REPORT/reporter-killed" ] || fail "warning reporter was killed before it completed"
+[ "$(event_count "$R19_REPORT")" = "3" ] || fail "master stopped the warning reporters before they completed"
+[ ! -s "$R19_REPORT/err" ] || fail "reporter completion wait changed master stderr"
+pass "warning reporters finish before their process group is stopped"
 
 echo "ALL PASS: hook-timeout-sentry"
