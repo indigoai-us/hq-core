@@ -21,11 +21,13 @@ and sensitive material.
 
 ## The one rule the owner must understand
 
-**Every folder grant covers everything inside it, now and in the future.** There is no
-"this folder but not its subfolders" grant. Granting `knowledge/` covers
-`knowledge/anything/at/any/depth`. The way to keep something out of a team-wide grant is
-to grant a narrower path (`knowledge/shared/` instead of `knowledge/`) or to keep the
-sensitive material under a sibling path that is not granted.
+**Every shared-folder glob covers everything inside it, now and in the future.** Use
+`knowledge/*` when the team should read and write the whole tree. A trailing slash,
+such as `knowledge/`, is a private create-only folder: `write` permits one new direct
+child and the first upload locks that child to its creator; it does not share existing
+children. There is no "shared folder but not its subfolders" glob. To keep sensitive
+material out of a team-wide grant, grant a narrower shared glob (`knowledge/shared/*`)
+or keep it under a sibling path that is not granted.
 
 Say this to the owner in plain words before the first decision. Do not let them grant a
 root folder believing they can carve pieces out later by name.
@@ -34,7 +36,7 @@ root folder believing they can carve pieces out later by name.
 
 `ontology/`, `signals/`, and `sources/` are never part of the member baseline.
 Access to them is per audience: the ontology worker grants each
-`@{audienceKey}/` folder to exactly the people who were privy to its source
+`@{audienceKey}/*` shared glob to exactly the people who were privy to its source
 (`core/knowledge/public/hq-core/ontology-local-spec.md`). If an owner asks to
 give the team those folders, explain that and stop.
 
@@ -75,6 +77,7 @@ that covers it and the folders directly inside it:
 
 ```bash
 hq files acl "$root/" --company "$slug" --json
+hq files acl "$root/*" --company "$slug" --json
 hq files browse "companies/$slug/$root/" --company "$slug"
 ```
 
@@ -94,11 +97,11 @@ For each root, in order, one question:
 
 Options (recommended first, adjusted to what step 2 found):
 
-1. **Everyone, the whole folder** — one `@all write` grant on `{root}/`. Right for
+1. **Everyone, the whole folder** — one `@all write` grant on `{root}/*`. Right for
    folders that are meant to be shared by construction (`skills/`, `policies/`,
    usually `projects/`).
 2. **Everyone, but only these subfolders** — follow-up multi-select over the folders
-   found in step 2. One `@all write` grant per chosen subfolder. Right for `knowledge/`
+   found in step 2. One `@all write` grant per chosen subfolder using `{subfolder}/*`. Right for `knowledge/`
    when it holds both team material and private material.
 3. **Only a group** — follow-up: which `grp_*` (list from `hq groups list --company
    {slug}`), then whole folder or subfolders as above.
@@ -121,7 +124,7 @@ moving to subfolders:
 1. Write every new narrower grant first.
 2. Read each one back (step 5) and confirm it landed.
 3. Only then remove the broad grant:
-   `hq files unshare "$root/" --with @all --company "$slug"`.
+   `hq files unshare "$root/*" --with @all --company "$slug"`.
 
 Never revoke first. A member mid-sync between the revoke and the new grant loses access
 to files they are editing.
@@ -147,8 +150,9 @@ hq files acl "$path" --company "$slug" --json \
       '.direct[]? | select((.granteeId==$p or ($p=="@all" and .granteeType=="company-wide")) and .permission==$perm)'
 ```
 
-The `prefix` field in the output is normalized (`knowledge/` reads back as
-`knowledge/*`); that is the same grant, not a wider one.
+The `prefix` field in the output is the exact pattern sent: `knowledge/` remains a
+private create-only row, while `knowledge/*` is the shared recursive row. They are
+different ACL rows and cannot coexist.
 
 A grant that returned success but is absent on readback is a failure. Report it as one,
 with the exact command to re-run. Do not report the baseline as set until every path
@@ -164,23 +168,23 @@ version: 1
 updated: <ISO date>
 baseline:
   knowledge:
-    - path: knowledge/shared/
+    - path: knowledge/shared/*
       with: "@all"
       permission: write
   projects:
-    - path: projects/
+    - path: projects/*
       with: "@all"
       permission: write
   policies:
-    - path: policies/
+    - path: policies/*
       with: "@all"
       permission: write
   skills:
-    - path: skills/
+    - path: skills/*
       with: "@all"
       permission: write
 excluded:
-  - knowledge/finance/   # kept out of the team-wide grant on purpose
+  - knowledge/finance/   # private-folder marker; not a shared recursive grant
 ```
 
 `settings/` does not sync to the vault; this file is the owner's record on their own
@@ -192,10 +196,10 @@ Plain words, one line per root, then the exclusions:
 
 ```
 Team access for {Name}
-  knowledge/  everyone can write in shared/ and onboarding/  (finance/ stays private)
-  projects/   everyone can write the whole folder
-  policies/   everyone can write the whole folder
-  skills/     everyone can write the whole folder
+  knowledge/  everyone can write in shared/* and onboarding/*  (finance/ stays private)
+  projects/   everyone can write the whole folder via projects/*
+  policies/   everyone can write the whole folder via policies/*
+  skills/     everyone can write the whole folder via skills/*
 All 5 grants verified by readback.
 ```
 

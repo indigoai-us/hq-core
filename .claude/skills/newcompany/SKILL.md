@@ -381,13 +381,16 @@ Turn the team/functions into **groups with streamlined, rule-based access** — 
    - `hq secrets share <FUNCTION>/<FULL/PATH> --with grp_<function> --permission read --company {slug}`
      (full key path required — policy `hq-secrets-share-needs-full-key-path`).
    - Company-wide baseline is already written by `/designate-team` (Phase 4): `@all write`
-     on `knowledge/`, `projects/`, `policies/`, `skills/` as four separate prefix grants.
+   on `knowledge/*`, `projects/*`, `policies/*`, `skills/*` as four separate shared-folder
+   prefix grants. A trailing slash without `*` is the private create-only pattern.
      Do not repeat it here and never widen it to a bucket-wide `*`. To keep part of a
      folder private, run `/team-access {slug}` — it narrows the baseline to chosen
      subfolders, granting the new paths before it removes the broad one.
-   - Every folder grant covers its whole subtree (the ACL model has no non-recursive
-     folder grant); `reports/*` and `reports/` behave the same. Keep sensitive material
-     out of the four baseline folders or move it under a group-scoped prefix.
+   - A `/*` shared-folder glob covers its whole subtree; a trailing slash is a private
+   create-only folder whose first uploaded child is locked to its creator. `reports/*`
+   and `reports/` are mutually exclusive patterns, not equivalent grants. Keep
+   sensitive material out of the four baseline folders or move it under a group-scoped
+   prefix.
 3. **Role reminder (hybrid ACL split):** owners/admins get role-bypass on files; **secrets
    are owner-only** (admins do NOT bypass secrets). Don't promise admins secret-grant power —
    this files/secrets asymmetry is intentional.
