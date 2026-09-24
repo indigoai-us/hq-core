@@ -73,8 +73,14 @@ if [ "${#DIRS[@]}" -eq 0 ]; then
   for d in "$HQ_ROOT/core/policies" "$HQ_ROOT/personal/policies"; do
     [ -d "$d" ] && DIRS+=("$d")
   done
+  if [ -d "$HQ_ROOT/personal/workers" ]; then
+    find "$HQ_ROOT/personal/workers" -mindepth 2 -maxdepth 2 -type d -name policies -print0 \
+      > "$TMPROOT/personal-worker-policy-dirs" \
+      || die "failed to discover personal worker policy directories under $HQ_ROOT/personal/workers"
+    while IFS= read -r -d '' d; do DIRS+=("$d"); done < "$TMPROOT/personal-worker-policy-dirs"
+  fi
   if [ -d "$HQ_ROOT/companies" ]; then
-    find "$HQ_ROOT/companies" -maxdepth 2 -type d -name policies -print0 \
+    find "$HQ_ROOT/companies" -maxdepth 4 -type d -name policies -print0 \
       > "$TMPROOT/company-policy-dirs" \
       || die "failed to discover policy directories under $HQ_ROOT/companies"
     while IFS= read -r -d '' d; do DIRS+=("$d"); done < "$TMPROOT/company-policy-dirs"
@@ -225,10 +231,11 @@ while IFS=$'\t' read -r path when on enf bytes state; do
   if [ "$enf" = "hard" ]; then
     # A pure OR-chain containing `always` is TRUE for every event; && / ! make
     # the expression conditional, so those are left alone.
-    case "$when" in
+    when_lower="$(printf '%s' "$when" | tr '[:upper:]' '[:lower:]')"
+    case "$when_lower" in
       *'&'*|*'!'*) : ;;
       *)
-        case " $when " in
+        case " $when_lower " in
           *[!A-Za-z0-9_./-]always[!A-Za-z0-9_./-]*)
             hit=""
             for e in $REACTIVE_EVENTS; do

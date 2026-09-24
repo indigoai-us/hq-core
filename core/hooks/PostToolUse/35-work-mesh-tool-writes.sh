@@ -131,7 +131,10 @@ IS_THIS=0
 if [ "$SHOULD_BIND" -eq 1 ] || [ "$SESS_PID" = "$SLUG" ] || [ "$SESS_PSLUG" = "$SLUG" ]; then
   IS_THIS=1
 fi
-[ "$IS_THIS" -eq 1 ] || exit 0
+# F14: same-company other-project prd.json still reaches prd-sync. hq-cli
+# rebinds the session (PR 759). Other files in another project stay skipped.
+# Cross-company already exited above.
+[ "$IS_THIS" -eq 1 ] || [ "$TAIL" = "prd.json" ] || exit 0
 
 WM_DIR="${STATE%/*}"
 WM_LOG="$WM_DIR/${SID}.wm-mesh.log"

@@ -54,6 +54,12 @@ run 1 "( a || b ) && ( c || d )"  "b x"           "two paren groups one false"
 run 1 "git && frobnicate"      "git"              "unknown token -> false"
 run 0 "git || frobnicate"      "git"              "unknown token OR present"
 
+# Derived fact tokens are lowercase, so policy identifiers compare without
+# case sensitivity and existing policy spellings such as ENOENT still match.
+run 0 "ENOENT"                  "enoent"           "uppercase identifier matches lowercase fact"
+run 0 "toContain && PATH"       "tocontain path"   "mixed-case identifiers match lowercase facts"
+run 1 "SIGTERM"                 "sigterm_not"      "identifier remains false when normalized fact is absent"
+
 # --- dot/slash identifiers: filenames and slash-commands are literal tokens ---
 run 0 ".mcp.json"                       "always .mcp.json .json"     "dotfile token present"
 run 1 ".mcp.json"                       "always settings.json"       "dotfile token absent"

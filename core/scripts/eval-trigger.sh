@@ -17,8 +17,8 @@
 #                 (`/brainstorm`) is a single literal token. Operators
 #                 (`&& || ! ( )`) and whitespace are the only delimiters.
 #
-# Tokens are OPEN — no vocabulary. An identifier is TRUE iff it appears in the
-# fact set; absent or misspelled identifiers are FALSE.
+# Tokens are OPEN — no vocabulary. Identifiers are compared with the fact set
+# case-insensitively; absent or misspelled identifiers are FALSE.
 #
 # Exit codes:
 #   0 — expression is TRUE  given the facts
@@ -168,7 +168,7 @@ BEGIN {
   s = expr; out = ""
   while (match(s, "[A-Za-z0-9_./][A-Za-z0-9_./-]*")) {
     tok = substr(s, RSTART, RLENGTH)
-    out = out substr(s, 1, RSTART - 1) ((tok in have) ? "1" : "0")
+    out = out substr(s, 1, RSTART - 1) ((tolower(tok) in have) ? "1" : "0")
     s = substr(s, RSTART + RLENGTH)
   }
   out = out s

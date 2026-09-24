@@ -28,7 +28,14 @@ if [ -z "$EVENT" ]; then
 fi
 [ -n "$EVENT" ] || EVENT="SessionStart"
 
-SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)"
+PAYLOAD_FIELDS=()
+while IFS= read -r -d '' payload_field; do
+  PAYLOAD_FIELDS+=("$payload_field")
+done < <(printf '%s' "$INPUT" | jq -jr '
+  (.session_id // .sessionId // empty), "\u0000",
+  (.engine // .engine_name // empty), "\u0000"
+' 2>/dev/null || true)
+SESSION_ID="${PAYLOAD_FIELDS[0]:-}"
 # NO_SESSION_ID_MUST_STAY_SILENT
 [ -n "$SESSION_ID" ] || exit 0
 case "$SESSION_ID" in
@@ -38,7 +45,7 @@ case "$SESSION_ID" in
     ;;
 esac
 
-PAYLOAD_ENGINE="$(printf '%s' "$INPUT" | jq -r '.engine // .engine_name // empty' 2>/dev/null || true)"
+PAYLOAD_ENGINE="${PAYLOAD_FIELDS[1]:-}"
 ENGINE_RAW="${PAYLOAD_ENGINE:-${HQ_HARNESS:-${HQ_WORK_MESH_HARNESS:-${HQ_CHECKPOINT_RUNTIME:-claude}}}}"
 ENGINE="$(printf '%s' "$ENGINE_RAW" | tr '[:upper:]' '[:lower:]')"
 case "$ENGINE" in
@@ -115,13 +122,16 @@ CACHE_CACHED_RESULT=""
 CACHE_CACHED_REMINDER=""
 
 load_monitor_cache() {
-  local document checked_at now age
+  local checked_at now age fields_file cache_field
+  local -a cache_fields=()
   # SESSION_START_MUST_BYPASS_CACHE
   [ "$EVENT" = "UserPromptSubmit" ] || return 0
   [ -n "$HQ_FINGERPRINT" ] || return 0
   [ -f "$MONITOR_CACHE_FILE" ] || return 0
 
-  if ! document="$(jq -c --arg sid "$SESSION_ID" --arg engine "$ENGINE" \
+  fields_file="$(mktemp "${TMPDIR:-/tmp}/hq-monitor-cache-fields.XXXXXX" 2>/dev/null || true)"
+  [ -n "$fields_file" ] || return 0
+  if ! jq -j --arg sid "$SESSION_ID" --arg engine "$ENGINE" \
     --arg fingerprint "$HQ_FINGERPRINT" '
     # An empty reminder is valid when this refresh finds no unseen lanes; the
     # per-session seen cache controls whether a reminder is emitted.
@@ -137,12 +147,20 @@ load_monitor_cache() {
     then error("invalid monitor-check cache")
     else .
     end
-  ' "$MONITOR_CACHE_FILE" 2>/dev/null)"; then
+    | (.checked_at_epoch | tostring), "\u0000",
+      (.result | tojson), "\u0000",
+      .reminder, "\u0000"
+  ' "$MONITOR_CACHE_FILE" > "$fields_file" 2>/dev/null; then
+    rm -f "$fields_file" 2>/dev/null || true
     # STALE_OR_UNREADABLE_CACHE_MUST_REFRESH
     return 0
   fi
-
-  checked_at="$(printf '%s' "$document" | jq -r '.checked_at_epoch')"
+  while IFS= read -r -d '' cache_field; do
+    cache_fields+=("$cache_field")
+  done < "$fields_file"
+  rm -f "$fields_file" 2>/dev/null || true
+  [ "${#cache_fields[@]}" -eq 3 ] || return 0
+  checked_at="${cache_fields[0]}"
   case "$checked_at" in
     ''|*[!0-9]*) return 0 ;;
   esac
@@ -155,8 +173,8 @@ load_monitor_cache() {
   # STALE_CACHE_MUST_REFRESH
   [ "$age" -lt "$LANES_MONITOR_CHECK_CACHE_TTL_SECONDS" ] || return 0
 
-  CACHE_CACHED_RESULT="$(printf '%s' "$document" | jq -c '.result')"
-  CACHE_CACHED_REMINDER="$(printf '%s' "$document" | jq -r '.reminder')"
+  CACHE_CACHED_RESULT="${cache_fields[1]}"
+  CACHE_CACHED_REMINDER="${cache_fields[2]}"
   SESSION_RESULT="$CACHE_CACHED_RESULT"
   if ! monitor_result_is_valid; then
     SESSION_RESULT=""
@@ -244,9 +262,7 @@ if ! monitor_result_is_valid; then
   exit 1
 fi
 
-ACTIVE_LANE_IDS="$(printf '%s' "$SESSION_RESULT" | jq -c '.active_lane_ids')"
-UNCOVERED_LANE_IDS="$(printf '%s' "$SESSION_RESULT" | jq -c '.uncovered_lane_ids')"
-ACTIVE_COUNT="$(printf '%s' "$ACTIVE_LANE_IDS" | jq 'length')"
+ACTIVE_COUNT="$(printf '%s' "$SESSION_RESULT" | jq '.active_lane_ids | length')"
 if [ "$ACTIVE_COUNT" -eq 0 ]; then
   if [ "$CACHE_HIT" -eq 0 ]; then
     persist_monitor_cache_or_fail ""
@@ -254,6 +270,7 @@ if [ "$ACTIVE_COUNT" -eq 0 ]; then
   # ACTIVE_LANES_EMPTY_MUST_STAY_SILENT
   exit 0
 fi
+UNCOVERED_LANE_IDS="$(printf '%s' "$SESSION_RESULT" | jq -c '.uncovered_lane_ids')"
 
 SEEN_CACHE_FILE="$CACHE_DIR/$SESSION_ID.seen.json"
 if [ -e "$SEEN_CACHE_FILE" ] && [ ! -f "$SEEN_CACHE_FILE" ]; then

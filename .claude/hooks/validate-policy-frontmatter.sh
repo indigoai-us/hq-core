@@ -135,8 +135,10 @@ if (isHard) {
   // matched. SessionStart is the documented home for unconditional rules.
   // A pure OR-chain containing `always` is a tautology; anything with && or !
   // is conditional and left alone.
-  const tautological = whenLines.some((w) =>
-    !/[&!]/.test(w) && /(^|[^A-Za-z0-9_./-])always([^A-Za-z0-9_./-]|$)/.test(w));
+  const tautological = whenLines.some((w) => {
+    const normalized = w.toLowerCase();
+    return !/[&!]/.test(normalized) && /(^|[^A-Za-z0-9_./-])always([^A-Za-z0-9_./-]|$)/.test(normalized);
+  });
   const onLine = (fm.match(/^[ \t]*on:[ \t]*(.*)$/m) || [, ""])[1];
   const reactive = ["PreToolUse", "PostToolUse", "UserPromptSubmit", "AssistantIntent"]
     .filter((e) => onLine.includes(e));
@@ -237,6 +239,7 @@ analyze_with_jq() {
         if (L[i] ~ /^---[ \t]*$/) { closed=1; break }
         if (L[i] ~ /^[ \t]*when:[ \t]*/) {
           wx=L[i]; sub(/^[ \t]*when:[ \t]*/, "", wx)
+          wx=tolower(wx)
           whens[++wc]=wx
           if (wx ~ /[^ \t]/) w=1
           # a pure OR-chain containing `always` is a tautology; && / ! make it

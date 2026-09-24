@@ -8,11 +8,14 @@ PORTABLE_LIB="$ROOT/core/scripts/lib/portable.sh"
 GATE_SRC="$ROOT/.claude/hooks/hook-gate.sh"
 MASTER_SRC="$ROOT/.claude/hooks/master-hook.sh"
 WATCHDOG_SRC="$ROOT/.claude/hooks/hook-timeout-watchdog.sh"
+PROBE_SRC="$ROOT/.claude/hooks/hook-timeout-probe.sh"
 SETTINGS_SRC="$ROOT/.claude/settings.json"
 REGISTRY_SRC="$ROOT/.claude/hooks/hook-registry.json"
 CODEX_CONFIG_SRC="$ROOT/.codex/config.toml"
 GROK_BRIDGE_SRC="$ROOT/.grok/hooks/hq-grok-user-bridge.json"
 SYSTEM_JQ="$(command -v jq)"
+SYSTEM_NODE="$(command -v node 2>/dev/null || true)"
+SYSTEM_QMD="$(command -v qmd 2>/dev/null || true)"
 
 # shellcheck source=core/scripts/lib/portable.sh
 . "$PORTABLE_LIB"
@@ -22,12 +25,62 @@ SYSTEM_JQ="$(command -v jq)"
 # explicit disabled-path fixtures below still override this with 0.
 export HQ_HOOK_TIMEOUT_SENTRY=1
 export HQ_TEST_SYSTEM_JQ="$SYSTEM_JQ"
+export HQ_TEST_SYSTEM_NODE="$SYSTEM_NODE"
+export HQ_TEST_SYSTEM_QMD="$SYSTEM_QMD"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
 
 TMP="$(mktemp -d)"
+export HQ_TEST_HQ_UPDATE_CHECK="$TMP/hq-update-check"
 trap 'rm -rf "$TMP"' EXIT
+
+mkdir -p "$TMP/bin"
+timeout_version=""
+timeout_bin="$(command -v timeout 2>/dev/null || true)"
+if command -v timeout >/dev/null 2>&1; then
+  timeout_version="$("$timeout_bin" --version 2>/dev/null || true)"
+fi
+case "$timeout_version" in
+  *"GNU coreutils"*) ;;
+  *)
+    # Git Bash may have GNU timeout.exe installed even when Windows' native
+    # timeout.exe shadows it earlier on PATH.
+    for candidate in /usr/bin/timeout.exe /usr/bin/timeout /bin/timeout.exe /bin/timeout; do
+      [ -x "$candidate" ] || continue
+      candidate_version="$("$candidate" --version 2>/dev/null || true)"
+      case "$candidate_version" in
+        *"GNU coreutils"*) timeout_bin="$candidate"; timeout_version="$candidate_version"; break ;;
+      esac
+    done
+    ;;
+esac
+case "$timeout_version" in
+  *"GNU coreutils"*)
+    if [ "$timeout_bin" != "$(command -v timeout 2>/dev/null || true)" ]; then
+      export HQ_TEST_GNU_TIMEOUT_BIN="$timeout_bin"
+      cat > "$TMP/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+exec "${HQ_TEST_GNU_TIMEOUT_BIN:?}" "$@"
+EOF
+      chmod +x "$TMP/bin/timeout"
+      PATH="$TMP/bin:$PATH"
+      export PATH
+    fi
+    ;;
+  *)
+    command -v perl >/dev/null 2>&1 || fail 'neither GNU timeout nor Perl is available for bounded hook tests'
+    cat > "$TMP/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+seconds="${1%s}"
+shift
+exec perl -e 'alarm shift; exec @ARGV or exit 127' "$seconds" "$@"
+EOF
+    chmod +x "$TMP/bin/timeout"
+    PATH="$TMP/bin:$PATH"
+    export PATH
+    ;;
+esac
 
 make_root() {
   local name="$1"
@@ -39,6 +92,7 @@ make_root() {
   cp "$GROK_BRIDGE_SRC" "$root/.grok/hooks/hq-grok-user-bridge.json"
   cp "$GATE_SRC" "$root/.claude/hooks/hook-gate.sh"
   cp "$MASTER_SRC" "$root/.claude/hooks/master-hook.sh"
+  [ ! -f "$PROBE_SRC" ] || cp "$PROBE_SRC" "$root/.claude/hooks/hook-timeout-probe.sh"
   # The production watchdog is copied when it exists. Leaving it absent is the
   # intended RED state for this test file against the unmodified scripts.
   [ ! -f "$WATCHDOG_SRC" ] || cp "$WATCHDOG_SRC" "$root/.claude/hooks/hook-timeout-watchdog.sh"
@@ -49,6 +103,7 @@ make_root() {
   cat > "$root/bin/hq" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "${HQ_NO_UPDATE_CHECK:-unset}" >> "${HQ_TEST_HQ_UPDATE_CHECK:?}"
 printf '%s\n' "$*" >> "${HQ_TEST_HQ_ARGS:?}"
 cat >> "${HQ_TEST_HQ_STDIN:?}"
 printf '\n---EVENT---\n' >> "${HQ_TEST_HQ_STDIN:?}"
@@ -58,6 +113,26 @@ if [ "${HQ_TEST_HQ_FAIL:-0}" = "1" ]; then
 fi
 EOF
   chmod +x "$root/bin/hq"
+  # Keep hq_augment_path on its fast path so fixture hq remains the reporter.
+  # Delegate any actual node/qmd call to the host tool rather than changing its
+  # behavior; fail clearly if the host does not provide that optional tool.
+  cat > "$root/bin/node" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${HQ_TEST_SYSTEM_NODE:-}" ]; then
+  exec "$HQ_TEST_SYSTEM_NODE" "$@"
+fi
+printf 'node unavailable in isolated hook fixture\n' >&2
+exit 127
+EOF
+  cat > "$root/bin/qmd" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${HQ_TEST_SYSTEM_QMD:-}" ]; then
+  exec "$HQ_TEST_SYSTEM_QMD" "$@"
+fi
+printf 'qmd unavailable in isolated hook fixture\n' >&2
+exit 127
+EOF
+  chmod +x "$root/bin/node" "$root/bin/qmd"
   : > "$root/hq.ack"
   printf '%s' "$root"
 }
@@ -170,6 +245,8 @@ run_gate() {
     HQ_TEST_HQ_ACK="$root/hq.ack" \
     HQ_HOOK_TIMEOUT_SENTRY_LEAD_SECONDS=2 \
     HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$root/watchdog.trigger" \
+    HQ_HOOK_TIMEOUT_SENTRY_TEST_ARMED_FILE="$root/watchdog.armed" \
+    HQ_HOOK_TIMEOUT_SENTRY_TEST_STATUS_FILE="$root/watchdog.status" \
     "$@" \
     timeout 15s bash "$root/.claude/hooks/hook-gate.sh" detect-secrets "$root/.claude/hooks/detect-secrets.sh" \
       >"$out" 2>"$err" <<<"$(payload "$session")"
@@ -275,6 +352,151 @@ EOF
 echo "[probe] process table can observe a live watchdog-shaped command"
 assert_watchdog_process_probe
 
+if [ "${HQ_HOOK_TIMEOUT_SENTRY_SKIP_PLATFORM_PROBE_TEST:-0}" != "1" ]; then
+echo "[probe] load and Windows spawn probes cover all supported platforms"
+probe_failures=0
+probe_assert_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [ "$actual" = "$expected" ]; then
+    pass "$label"
+  else
+    probe_failures=$((probe_failures + 1))
+    printf 'FAIL: %s expected <%s>, got <%s>\n' "$label" "$expected" "$actual" >&2
+  fi
+}
+if [ -f "$PROBE_SRC" ]; then
+  . "$PROBE_SRC"
+  probe_root="$TMP/platform-probe"
+  mkdir -p "$probe_root/bin"
+  printf '1.25 0.75 3.50 1/20 100\n' > "$probe_root/linux-loadavg"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "{ 2.75 1.50 0.40 }\\n"' \
+    > "$probe_root/bin/sysctl"
+  chmod +x "$probe_root/bin/sysctl"
+  probe_assert_eq 'Linux load average reads /proc/loadavg' '1.25' \
+    "$(hook_timeout_load_average Linux "$probe_root/linux-loadavg" "$probe_root/bin/sysctl")"
+  probe_assert_eq 'Darwin load average parses sysctl braces' '2.75' \
+    "$(hook_timeout_load_average Darwin "$probe_root/missing-loadavg" "$probe_root/bin/sysctl")"
+  probe_assert_eq 'Windows has an explicit no-load-average value' 'unavailable' \
+    "$(hook_timeout_load_average MINGW64_NT-10.0 "$probe_root/missing-loadavg" "$probe_root/bin/sysctl")"
+  probe_assert_eq 'Linux platform name is bounded' 'linux' \
+    "$(hook_timeout_os_name Linux)"
+  probe_assert_eq 'Darwin platform name is bounded' 'macos' \
+    "$(hook_timeout_os_name Darwin)"
+  probe_assert_eq 'Git Bash platform name is bounded' 'windows' \
+    "$(hook_timeout_os_name MINGW64_NT-10.0)"
+  if hook_timeout_has_gnu_timeout; then
+    printf '%s\n' '#!/usr/bin/env bash' 'trap "" TERM' 'exec sleep 4' \
+      > "$probe_root/bin/term-resistant"
+    chmod +x "$probe_root/bin/term-resistant"
+    bounded_probe_rc=0
+    hook_timeout_run_bounded 1 "$probe_root/bin/term-resistant" 2>/dev/null || bounded_probe_rc=$?
+    probe_assert_eq 'GNU bounded probe kills a TERM-resistant command' 137 "$bounded_probe_rc"
+  fi
+  printf '%s\n' '#!/bin/sh' \
+    'printf x >> "${HQ_TEST_SPAWN_CALLS:?}"' \
+    > "$probe_root/bin/fake-bash"
+  chmod +x "$probe_root/bin/fake-bash"
+  export HQ_TEST_SPAWN_CALLS="$probe_root/spawn-calls"
+  export HQ_TEST_POWERSHELL_CALLS="$probe_root/powershell-calls"
+  cat > "$probe_root/bin/powershell-fixture" <<'EOF'
+#!/usr/bin/env bash
+[ -n "${HQ_HOOK_TIMEOUT_SPAWN_SHELL:-}" ] || exit 127
+printf x >> "${HQ_TEST_POWERSHELL_CALLS:?}"
+printf '17'
+EOF
+  chmod +x "$probe_root/bin/powershell-fixture"
+  spawn_cache="$probe_root/session.spawn-ms"
+  spawn_first="$(hook_timeout_spawn_ms "$spawn_cache" "$probe_root/bin/fake-bash" MINGW64_NT-10.0 "$probe_root/bin/powershell-fixture")"
+  spawn_second="$(hook_timeout_spawn_ms "$spawn_cache" "$probe_root/bin/fake-bash" MINGW64_NT-10.0 "$probe_root/bin/powershell-fixture")"
+  case "$spawn_first" in ''|*[!0-9]*) probe_failures=$((probe_failures + 1)); echo 'FAIL: Windows spawn probe did not return milliseconds' >&2 ;; esac
+  probe_assert_eq 'Windows spawn probe cache is stable' "$spawn_first" "$spawn_second"
+  probe_assert_eq 'Windows spawn probe runs once per session' 1 "$(wc -c < "$HQ_TEST_POWERSHELL_CALLS" | tr -d ' ')"
+  interrupted_spawn_cache="$probe_root/session.spawn-interrupted-ms"
+  interrupted_spawn_started="$probe_root/interrupted-spawn-started"
+  interrupted_spawn_release="$probe_root/interrupted-spawn-release"
+  export HQ_TEST_INTERRUPTED_SPAWN_STARTED="$interrupted_spawn_started"
+  export HQ_TEST_INTERRUPTED_SPAWN_RELEASE="$interrupted_spawn_release"
+  (
+    hook_timeout_run_bounded() {
+      : > "$HQ_TEST_INTERRUPTED_SPAWN_STARTED"
+      while [ ! -e "$HQ_TEST_INTERRUPTED_SPAWN_RELEASE" ]; do sleep 0.01; done
+      return 0
+    }
+    hook_timeout_spawn_ms "$interrupted_spawn_cache" "$probe_root/bin/fake-bash" Linux
+  ) > "$probe_root/interrupted-spawn.out" 2>/dev/null &
+  interrupted_spawn_pid=$!
+  for _ in {1..200}; do
+    [ -e "$interrupted_spawn_started" ] && break
+    sleep 0.01
+  done
+  if [ ! -e "$interrupted_spawn_started" ]; then
+    probe_failures=$((probe_failures + 1))
+    echo 'FAIL: interrupted spawn probe did not reach the bounded child call' >&2
+  fi
+  kill -TERM "$interrupted_spawn_pid" 2>/dev/null || true
+  if wait "$interrupted_spawn_pid"; then interrupted_spawn_rc=0; else interrupted_spawn_rc=$?; fi
+  : > "$interrupted_spawn_release"
+  sleep 0.02
+  [ ! -e "$interrupted_spawn_cache.lock" ] \
+    || { probe_failures=$((probe_failures + 1)); echo 'FAIL: interrupted spawn probe left its cache lock behind' >&2; }
+  export HQ_TEST_SPAWN_CALLS="$probe_root/interrupted-spawn-retry-calls"
+  interrupted_spawn_retry="$(hook_timeout_spawn_ms "$interrupted_spawn_cache" "$probe_root/bin/fake-bash" Linux)"
+  case "$interrupted_spawn_retry" in ''|*[!0-9]*) probe_failures=$((probe_failures + 1)); echo 'FAIL: spawn probe could not retry after interruption' >&2 ;; esac
+  probe_assert_eq 'interrupted spawn probe can be retried' x "$(<"$HQ_TEST_SPAWN_CALLS")"
+  [ "$interrupted_spawn_rc" -ne 0 ] \
+    || { probe_failures=$((probe_failures + 1)); echo 'FAIL: interrupted spawn probe unexpectedly completed' >&2; }
+  if [ "$(hook_timeout_os_name "$(uname -s 2>/dev/null || true)")" = windows ]; then
+    real_powershell=""
+    for candidate in powershell.exe powershell pwsh.exe pwsh; do
+      real_powershell="$(command -v "$candidate" 2>/dev/null || true)"
+      [ -n "$real_powershell" ] && break
+    done
+    real_bash="$(command -v bash 2>/dev/null || true)"
+    real_spawn_cache="$probe_root/session.spawn-windows-real-ms"
+    real_spawn="$(hook_timeout_spawn_ms "$real_spawn_cache" "$real_bash" MINGW64_NT-10.0 "$real_powershell")"
+    case "$real_spawn" in ''|*[!0-9]*) probe_failures=$((probe_failures + 1)); echo 'FAIL: Windows PowerShell spawn probe did not return milliseconds' >&2 ;; esac
+    real_spawn_cached="$(hook_timeout_spawn_ms "$real_spawn_cache" "$real_bash" MINGW64_NT-10.0 "$real_powershell")"
+    probe_assert_eq 'Windows PowerShell spawn result is cached' "$real_spawn" "$real_spawn_cached"
+  fi
+  if [ "$(hook_timeout_os_name "$(uname -s 2>/dev/null || true)")" != windows ] && command -v perl >/dev/null 2>&1; then
+    fallback_bin="$probe_root/no-timeout-bin"
+    mkdir -p "$fallback_bin"
+    for fallback_tool in perl date rm mv; do
+      fallback_path="$(command -v "$fallback_tool" 2>/dev/null || true)"
+      if [ -n "$fallback_path" ]; then
+        ln -s "$fallback_path" "$fallback_bin/$fallback_tool"
+      else
+        probe_failures=$((probe_failures + 1))
+        printf 'FAIL: Perl timeout fallback requires %s\n' "$fallback_tool" >&2
+      fi
+    done
+cat > "$fallback_bin/timeout" <<'EOF'
+#!/bin/sh
+printf 'Windows timeout usage help\n'
+exit 1
+EOF
+    chmod +x "$fallback_bin/timeout"
+    if PATH="$fallback_bin" hook_timeout_has_gnu_timeout; then
+      probe_failures=$((probe_failures + 1))
+      echo 'FAIL: non-GNU timeout was treated as GNU coreutils' >&2
+    fi
+    export HQ_TEST_SPAWN_CALLS="$probe_root/spawn-fallback-calls"
+    fallback_cache="$probe_root/session.spawn-fallback-ms"
+    spawn_fallback="$(PATH="$fallback_bin" hook_timeout_spawn_ms "$fallback_cache" "$probe_root/bin/fake-bash")"
+    spawn_fallback_cached="$(PATH="$fallback_bin" hook_timeout_spawn_ms "$fallback_cache" "$probe_root/bin/fake-bash")"
+    case "$spawn_fallback" in ''|*[!0-9]*) probe_failures=$((probe_failures + 1)); echo 'FAIL: Perl spawn fallback did not return milliseconds' >&2 ;; esac
+    probe_assert_eq 'Perl spawn fallback cache is stable without GNU timeout' "$spawn_fallback" "$spawn_fallback_cached"
+    probe_assert_eq 'Perl fallback measures the child shell once per session' 1 "$(wc -c < "$HQ_TEST_SPAWN_CALLS" | tr -d ' ')"
+  fi
+  unset HQ_TEST_SPAWN_CALLS
+else
+  probe_failures=$((probe_failures + 9))
+  echo 'FAIL: Linux, Darwin, and Windows probe helpers are absent on the base revision' >&2
+fi
+[ "$probe_failures" -eq 0 ] || fail "platform probe regressions: $probe_failures assertion(s) failed"
+pass 'load probes return fixture values and Windows spawn timing is cached'
+fi
+
 echo "[1] fast gate hook leaves no watcher and sends no warning"
 R1="$(make_root fast)"
 set_timeout "$R1" 'hook-gate.sh" detect-secrets ' 2
@@ -294,7 +516,19 @@ set +e
 run_gate "$R2" slow-session "$R2/out" "$R2/err"
 slow_gate_rc=$?
 set -e
-[ "$slow_gate_rc" -eq 0 ] || fail "slow gate fixture did not reach reporter acknowledgement: $slow_gate_rc"
+if [ "$slow_gate_rc" -ne 0 ]; then
+  trigger_state=absent; [ ! -s "$R2/watchdog.trigger" ] || trigger_state=present
+  armed_state=absent; [ ! -s "$R2/watchdog.armed" ] || armed_state=present
+  watchdog_state="$(cat "$R2/watchdog.status" 2>/dev/null || printf 'none')"
+  args_state=absent; [ ! -s "$R2/hq.args" ] || args_state=present
+  report_lines=0; [ ! -f "$R2/hq.stdin" ] || report_lines="$(wc -l < "$R2/hq.stdin" | tr -d ' ')"
+  ack_lines="$(wc -l < "$R2/hq.ack" | tr -d ' ')"
+  printf 'diagnostic: trigger=%s watchdog_armed=%s watchdog_state=%s reporter_args=%s report_lines=%s acknowledgement_lines=%s\n' \
+    "$trigger_state" "$armed_state" "$watchdog_state" "$args_state" "$report_lines" "$ack_lines" >&2
+  fail "slow gate fixture did not reach reporter acknowledgement: $slow_gate_rc"
+fi
+[ "$(cat "$R2/watchdog.status" 2>/dev/null || true)" = report-returned ] \
+  || fail "slow gate reporter returned without completing its watchdog state marker"
 [ "$(event_count "$R2")" = "1" ] || fail "slow hook should emit exactly one warning"
 [ "$(cat "$R2/hq.args")" = 'core sentry report --timeout-ms 750' ] || fail "event fields leaked onto hq argv: $(cat "$R2/hq.args")"
 jq -e '
@@ -444,9 +678,17 @@ master_hook_path="$R7/.claude/hooks/master-hook.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$R7/bin/cksum"
 chmod +x "$R7/bin/cksum"
 mkdir -p "$R7/core/hooks/PreToolUse"
+fast_child_path="$R7/core/hooks/PreToolUse/10-fast-child.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'sleep 0.01' > "$fast_child_path"
+chmod +x "$fast_child_path"
+slow_child_path="$R7/core/hooks/PreToolUse/check-hq-update.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'printf MINGW64_NT-10.0' > "$R7/bin/uname"
+printf '%s\n' '#!/usr/bin/env bash' '[ -n "${HQ_HOOK_TIMEOUT_SPAWN_SHELL:-}" ] || exit 127' 'printf 17' \
+  > "$R7/bin/powershell.exe"
+chmod +x "$R7/bin/uname" "$R7/bin/powershell.exe"
 # shellcheck disable=SC2016 # This is source text for the fixture child script.
-printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'case "${HQ_HOOK_TIMEOUT_SENTRY:-1}" in 0) : ;; *) printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done ;; esac' 'printf "master block stdout"' 'printf "master block stderr" >&2' 'exit 2' > "$R7/core/hooks/PreToolUse/10-slow-child.sh"
-chmod +x "$R7/core/hooks/PreToolUse/10-slow-child.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'case "${HQ_HOOK_TIMEOUT_SENTRY:-1}" in 0) : ;; *) printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done ;; esac' 'printf "master block stdout"' 'printf "master block stderr" >&2' 'exit 2' > "$slow_child_path"
+chmod +x "$slow_child_path"
 set +e
 env PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" HQ_TEST_HQ_ACK="$R7/hq.ack" \
   HQ_TEST_MASTER_PATH="$master_hook_path" \
@@ -463,7 +705,17 @@ set -e
 [ "$with_master_rc" -eq 2 ] || fail "master child changed blocking exit with watchdog: $with_master_rc"
 [ "$without_master_rc" -eq 2 ] || fail "master child baseline exit wrong: $without_master_rc"
 cmp -s "$R7/out" "$R7/without.out" || fail "master child stdout changed when watchdog fired"
-cmp -s "$R7/err" "$R7/without.err" || fail "master child stderr changed when watchdog fired"
+with_stderr_bytes="$(wc -c < "$R7/err" | tr -d '[:space:]')"
+without_stderr_bytes="$(wc -c < "$R7/without.err" | tr -d '[:space:]')"
+stderr_parity="match"
+cmp -s "$R7/err" "$R7/without.err" || stderr_parity="mismatch"
+printf 'master child stderr parity: %s (watchdog=%s bytes, baseline=%s bytes)\n' \
+  "$stderr_parity" "$with_stderr_bytes" "$without_stderr_bytes"
+if [ "$stderr_parity" != "match" ]; then
+  printf 'master child stderr with watchdog (%s bytes):\n' "$(wc -c < "$R7/err" | tr -d '[:space:]')" >&2
+  diff -u "$R7/without.err" "$R7/err" >&2 || true
+  fail "master child stderr changed when watchdog fired"
+fi
 [ "$(event_count "$R7")" = "3" ] || fail "slow master child should emit two warnings and one late finish"
 jq -e '
   (.fingerprint | startswith("hook-timeout:PreToolUse:"))
@@ -471,6 +723,32 @@ jq -e '
   and .metadata.hook_path == $hook_path
 ' --arg hook_path "$master_hook_path" < <(sed '/^---EVENT---$/,$d' "$R7/hq.stdin") >/dev/null \
   || fail "master warning did not identify its dispatcher"
+if ! jq -s -e --arg slow_child "${slow_child_path##*/}" --arg fast_child "${fast_child_path##*/}" '
+  [ .[] | select(.type == "hook_late_finish"
+    and .metadata.hook_script == "master-hook.sh") ] as $master_late
+  | ($master_late | length) == 1
+    and $master_late[0].metadata.slow_child == $slow_child
+    and ($master_late[0].metadata.slow_child_ms | type == "number" and . > 0)
+    and ($master_late[0].metadata.slow_child_ms >
+      ([$master_late[0].metadata.hook_sequence[] | select(.script == $fast_child) | .ms][0]))
+' < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >/dev/null; then
+  jq -s '[.[] | {type, metadata: (.metadata | {hook_script, slow_child, slow_child_ms, hook_sequence})}]' \
+    < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >&2 || true
+  fail "master late event did not attribute the slowest completed child"
+fi
+pass "master late event attributes the slowest completed child"
+if ! jq -s -e '
+  [ .[] | select(.type == "hook_late_finish"
+    and .metadata.hook_script == "master-hook.sh") ] as $master_late
+  | ($master_late | length) == 1
+    and $master_late[0].metadata.platform == "MINGW64_NT-10.0"
+    and ($master_late[0].metadata.spawn_ms | type == "number" and . == 17)
+' < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >/dev/null; then
+  jq -s '[.[] | select(.type == "hook_late_finish" and .metadata.hook_script == "master-hook.sh")
+    | .metadata | {platform, spawn_ms}]' < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >&2 || true
+  fail "master Windows late event did not report the spawn-probe measurement"
+fi
+pass "master late event carries Windows spawn timing"
 
 breadcrumb="$(find "$R7/workspace/.hook-timeout-breadcrumbs" -name '*.json' -type f | head -n 1)"
 [ -n "$breadcrumb" ] || fail "slow master child did not persist a breadcrumb"
@@ -484,7 +762,7 @@ jq -e --arg hook_path "$master_hook_path" '
 # The following fire is deliberately fast. It must consume the persisted
 # breadcrumb into the existing additionalContext aggregation, then never repeat
 # that warning after consumption.
-printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'printf "%s\n" "{\"hookSpecificOutput\":{\"additionalContext\":\"existing child context\"}}"' > "$R7/core/hooks/PreToolUse/10-slow-child.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'printf "%s\n" "{\"hookSpecificOutput\":{\"additionalContext\":\"existing child context\"}}"' > "$slow_child_path"
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'printf "%s\n" "{\"decision\":\"block\",\"reason\":\"fixture block\"}"' > "$R7/core/hooks/PreToolUse/20-blocker.sh"
 chmod +x "$R7/core/hooks/PreToolUse/20-blocker.sh"
 PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
@@ -492,7 +770,7 @@ PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdi
   bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/blocked.out" 2>"$R7/blocked.err" <<<"$(payload master-session)"
 jq -e '(.decision == "block") and (.hookSpecificOutput.hqSessionBlockedBy | endswith("20-blocker.sh"))' "$R7/blocked.out" >/dev/null \
   || fail "blocking child did not preserve master block output"
-if grep -Fq "$R7/core/hooks/PreToolUse/10-slow-child.sh" "$R7/blocked.out"; then
+if grep -Fq "$slow_child_path" "$R7/blocked.out"; then
   fail "warning was mixed into a block response instead of staying pending"
 fi
 [ "$(find "$R7/workspace/.hook-timeout-breadcrumbs" -name '*.json' -type f | wc -l)" -ge 1 ] \
@@ -743,13 +1021,13 @@ exit 2
 EOF
 chmod +x "$R10/bin/hq"
 set +e
-env PATH="$R10/bin:/usr/bin:/bin" HQ_TEST_HQ_ARGS="$R10/hq.args" HQ_TEST_HQ_STDIN="$R10/hq.stdin" HQ_TEST_HQ_ACK="$R10/hq.ack" \
+env PATH="$R10/bin:$TMP/bin:/usr/bin:/bin" HQ_TEST_HQ_ARGS="$R10/hq.args" HQ_TEST_HQ_STDIN="$R10/hq.stdin" HQ_TEST_HQ_ACK="$R10/hq.ack" \
   HQ_TEST_HQ_OLD_ATTEMPT="$R10/old-cli-attempt" HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R10/watchdog.trigger" \
   HQ_HOOK_TIMEOUT_SENTRY_LEAD_SECONDS=2 \
   timeout 15s bash "$R10/.claude/hooks/hook-gate.sh" detect-secrets "$R10/.claude/hooks/detect-secrets.sh" \
     >"$R10/old-cli.out" 2>"$R10/old-cli.err" <<<"$(payload old-cli-session)"
 old_cli_rc=$?
-env PATH="$R10/bin:/usr/bin:/bin" HQ_TEST_HQ_ARGS="$R10/hq.args" HQ_TEST_HQ_STDIN="$R10/hq.stdin" HQ_TEST_HQ_ACK="$R10/hq.ack" \
+env PATH="$R10/bin:$TMP/bin:/usr/bin:/bin" HQ_TEST_HQ_ARGS="$R10/hq.args" HQ_TEST_HQ_STDIN="$R10/hq.stdin" HQ_TEST_HQ_ACK="$R10/hq.ack" \
   HQ_TEST_HQ_OLD_ATTEMPT="$R10/old-cli-attempt" HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R10/watchdog.trigger" \
   HQ_HOOK_TIMEOUT_SENTRY=0 \
   timeout 15s bash "$R10/.claude/hooks/hook-gate.sh" detect-secrets "$R10/.claude/hooks/detect-secrets.sh" \
@@ -763,7 +1041,7 @@ cmp -s "$R10/old-cli.err" "$R10/baseline.err" || fail "older hq changed stderr"
 mv "$R10/bin/hq" "$R10/bin/not-hq"
 make_gate_hook "$R10" 'printf "missing-hq-out"; printf "missing-hq-err" >&2; exit 2'
 set +e
-env PATH="$R10/bin:/usr/bin:/bin" HQ_TEST_HQ_ARGS="$R10/hq.args" HQ_TEST_HQ_STDIN="$R10/hq.stdin" HQ_TEST_HQ_ACK="$R10/hq.ack" \
+env PATH="$R10/bin:$TMP/bin:/usr/bin:/bin" HQ_TEST_HQ_ARGS="$R10/hq.args" HQ_TEST_HQ_STDIN="$R10/hq.stdin" HQ_TEST_HQ_ACK="$R10/hq.ack" \
   HQ_HOOK_TIMEOUT_SENTRY_LEAD_SECONDS=2 \
   timeout 15s bash "$R10/.claude/hooks/hook-gate.sh" detect-secrets "$R10/.claude/hooks/detect-secrets.sh" \
     >"$R10/missing.out" 2>"$R10/missing.err" <<<"$(payload missing-hq-session)"
@@ -859,6 +1137,19 @@ run_watchdog_for_fingerprint "$R14_A" "$hook_a" PostToolUse different-event "$R1
 outside_hook_path="$TMP/outside-install/.claude/hooks/outside-hook.sh"
 run_watchdog_for_fingerprint "$R14_A" "$outside_hook_path" PreToolUse outside-root "$R14_A/"
 
+symlinked_root_fingerprint=""
+if [ "$(hook_timeout_os_name "$(uname -s 2>/dev/null || true)")" != windows ]; then
+  R14_SYMLINK="$(make_root fingerprint-symlink)"
+  R14_SYMLINK_ALIAS="$TMP/fingerprint-symlink-alias"
+  ln -s "$R14_SYMLINK" "$R14_SYMLINK_ALIAS" || fail 'could not create fingerprint symlink fixture'
+  resolved_symlink_root="$(cd "$R14_SYMLINK_ALIAS" && pwd -P)"
+  [ "$resolved_symlink_root" != "$R14_SYMLINK_ALIAS" ] \
+    || fail 'fingerprint symlink fixture did not create distinct path spellings'
+  symlink_hook_path="$R14_SYMLINK_ALIAS/.claude/hooks/identity-hook.sh"
+  run_watchdog_for_fingerprint "$R14_SYMLINK" "$symlink_hook_path" PreToolUse symlink-root "$R14_SYMLINK"
+  symlinked_root_fingerprint="$(fingerprint_from_report "$R14_SYMLINK/symlink-root.hq.stdin")"
+fi
+
 same_hook_a_fingerprint="$(fingerprint_from_report "$R14_A/same-hook-a.hq.stdin")"
 same_hook_b_fingerprint="$(fingerprint_from_report "$R14_B/same-hook-b.hq.stdin")"
 different_hook_fingerprint="$(fingerprint_from_report "$R14_A/different-hook.hq.stdin")"
@@ -868,7 +1159,7 @@ expected_relative_fingerprint="hook-timeout:PreToolUse:$(sha256_fields "$relativ
 expected_outside_fingerprint="hook-timeout:PreToolUse:$(sha256_fields "outside-hook.sh")"
 
 [ "$same_hook_a_fingerprint" = "$same_hook_b_fingerprint" ] \
-  || fail "the same hook under two install roots produced different fingerprints"
+  || fail "the same hook under two install roots produced different fingerprints: A=$same_hook_a_fingerprint B=$same_hook_b_fingerprint"
 [ "$same_hook_a_fingerprint" = "$expected_relative_fingerprint" ] \
   || fail "a hook under the root did not fingerprint from its relative path"
 [ "$same_hook_a_fingerprint" != "$different_hook_fingerprint" ] \
@@ -877,6 +1168,8 @@ expected_outside_fingerprint="hook-timeout:PreToolUse:$(sha256_fields "outside-h
   || fail "one hook on different events shared a fingerprint"
 [ "$outside_root_fingerprint" = "$expected_outside_fingerprint" ] \
   || fail "a hook outside the root did not fingerprint from its basename"
+[ -z "$symlinked_root_fingerprint" ] || [ "$symlinked_root_fingerprint" = "$expected_relative_fingerprint" ] \
+  || fail "a symlinked temp-root spelling did not fingerprint from its relative hook path"
 case "$outside_root_fingerprint" in
   *"$outside_hook_path"*) fail "outside-root fingerprint embedded the absolute hook path" ;;
 esac
@@ -1042,10 +1335,30 @@ grep -Eq '^timing_precision=(ms|s)$' "$late_journal_meta" \
 journal_fs_ops_count="$(wc -l < "$R16/journal-fs-ops")"
 [ "$journal_fs_ops_count" -le 10 ] \
   || fail "normal dispatch performed per-child journal filesystem churn: $journal_fs_ops_count operations"
+late_journal_file="${late_journal_meta%.meta}"
+journal_line_count="$(wc -l < "$late_journal_file" 2>/dev/null || printf '0')"
+[ "$journal_line_count" -le 40 ] || fail "completed hook history exceeded its 40-row bound: $journal_line_count rows"
+if awk -F '\t' 'NF == 5 && $3 == "running" { found = 1 } END { exit(found ? 0 : 1) }' "$late_journal_file"; then
+  fail "completed hook history retained per-child running records"
+fi
 pass "late finish is emitted once with final duration, exit code, and last 20 hooks"
 
 echo "[17] child timeout emits one completion event with the timeout exit code"
 R17="$(make_root child-timeout)"
+case "$(uname -s 2>/dev/null || printf unknown)" in
+  MINGW*|MSYS*|CYGWIN*) ;;
+  *)
+    # Exercise the macOS-style Perl alarm timeout shim even when GNU timeout
+    # exists on the test host. Its SIGALRM status must map to the hook contract.
+    cat > "$R17/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+seconds="${1%s}"
+shift
+exec perl -e 'alarm shift; exec @ARGV or exit 127' "$seconds" "$@"
+EOF
+    chmod +x "$R17/bin/timeout"
+    ;;
+esac
 mkdir -p "$R17/core/hooks/PreToolUse"
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'sleep 2' \
   > "$R17/core/hooks/PreToolUse/10-timeout-child.sh"
@@ -1114,7 +1427,7 @@ stale_lock_hash="$(sha256_fields "$stale_lock_session")"
 stale_lock_journal_dir="$R18_LOCK/workspace/.hook-timeout-journal"
 stale_lock_journal="$stale_lock_journal_dir/$stale_lock_hash.tsv"
 mkdir -p "$stale_lock_journal_dir"
-for index in $(seq -w 1 20); do
+for index in $(seq -w 1 50); do
   printf 'pre-%s\tPreToolUse\t1\n' "$index"
 done > "$stale_lock_journal"
 mkdir "$stale_lock_journal.lock"
@@ -1159,6 +1472,7 @@ cat > "$R19_REPORT/bin/hq" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 trap 'printf "killed\\n" >> "${HQ_TEST_HQ_KILLED_FILE:?}"; exit 143' TERM
+printf '%s\n' "${HQ_NO_UPDATE_CHECK:-unset}" >> "${HQ_TEST_HQ_UPDATE_CHECK:?}"
 printf '%s\n' "$*" >> "${HQ_TEST_HQ_ARGS:?}"
 event_json="$(cat)"
 printf '%s' "$event_json" >> "${HQ_TEST_HQ_STDIN:?}"
@@ -1223,5 +1537,12 @@ set -e
 [ "$(event_count "$R19_REPORT")" = "3" ] || fail "master stopped the warning reporters before they completed"
 [ ! -s "$R19_REPORT/err" ] || fail "reporter completion wait changed master stderr"
 pass "warning reporters finish before their process group is stopped"
+
+echo "[20] every timeout reporter disables hq self-update"
+[ -s "$HQ_TEST_HQ_UPDATE_CHECK" ] || fail "no hq timeout reporter invocation was recorded"
+if grep -qv '^1$' "$HQ_TEST_HQ_UPDATE_CHECK"; then
+  fail "a timeout reporter invoked hq without HQ_NO_UPDATE_CHECK=1"
+fi
+pass "every timeout reporter sets HQ_NO_UPDATE_CHECK=1"
 
 echo "ALL PASS: hook-timeout-sentry"

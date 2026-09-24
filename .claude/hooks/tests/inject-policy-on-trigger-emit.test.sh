@@ -55,6 +55,7 @@ setup_tree() {
   ROOT="$(mktemp -d)"
   mkdir -p "$ROOT/core/policies" "$ROOT/companies/indigo/policies" \
     "$ROOT/personal/policies" \
+    "$ROOT/personal/workers" "$ROOT/companies/other/workers" \
     "$ROOT/workspace/orchestrator/policy-trigger-state" \
     "$ROOT/core/scripts" "$ROOT/.claude/hooks"
   # Minimal helpers the hook sources
@@ -68,10 +69,11 @@ hq_json_get() {
   '
 }
 EOF
-  printf '#!/bin/bash\necho always\n' > "$ROOT/core/scripts/derive-trigger-facts.sh"
+  cp "$HQ_SRC/core/scripts/derive-trigger-facts.sh" "$ROOT/core/scripts/derive-trigger-facts.sh"
   printf '#!/bin/bash\nexit 0\n' > "$ROOT/core/scripts/eval-trigger.sh"
   chmod +x "$ROOT/core/scripts/"*.sh
   cp "$HOOK" "$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
+  cp "$HQ_SRC/.claude/hooks/purge-policy-ledger-precompact.sh" "$ROOT/.claude/hooks/purge-policy-ledger-precompact.sh"
   HOOK_COPY="$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
 }
 
@@ -81,11 +83,12 @@ run_hook() {
   shift 3 || true
   local sid="emit-test-$$-$RANDOM"
   local input
+  printf '%s\n' "$sid" > "$ROOT/.last-run-hook-session-id"
   input="$(jq -cn --arg sid "$sid" --arg cwd "$cwd" --arg p "$prompt" --arg e "$event" \
     '{session_id:$sid,hook_event_name:$e,cwd:$cwd,prompt:$p}')"
   local status=0
   env HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" "$@" \
-    bash "$HOOK_COPY" <<<"$input" >"$ROOT/.last-run-hook-output" 2>/dev/null || status=$?
+    bash "$HOOK_COPY" <<<"$input" >"$ROOT/.last-run-hook-output" 2>"$ROOT/.last-run-hook-diagnostic" || status=$?
   printf '%s\n' "$status" > "$ROOT/.last-run-hook-status"
   cat "$ROOT/.last-run-hook-output"
 }
@@ -97,11 +100,12 @@ run_hook_sid() {
   local cwd="$1" event="$2" prompt="$3" sid="$4"
   shift 4 || true
   local input
+  printf '%s\n' "$sid" > "$ROOT/.last-run-hook-session-id"
   input="$(jq -cn --arg sid "$sid" --arg cwd "$cwd" --arg p "$prompt" --arg e "$event" \
     '{session_id:$sid,hook_event_name:$e,cwd:$cwd,prompt:$p}')"
   local status=0
   env HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" "$@" \
-    bash "$HOOK_COPY" <<<"$input" >"$ROOT/.last-run-hook-output" 2>/dev/null || status=$?
+    bash "$HOOK_COPY" <<<"$input" >"$ROOT/.last-run-hook-output" 2>"$ROOT/.last-run-hook-diagnostic" || status=$?
   printf '%s\n' "$status" > "$ROOT/.last-run-hook-status"
   cat "$ROOT/.last-run-hook-output"
 }
@@ -173,7 +177,7 @@ DEFAULT_OUT="$(run_hook "$ROOT/companies/indigo" "UserPromptSubmit" "anything")"
 mkdir -p "$FIXTURE_DIR"
 # Command substitution strips trailing newlines; the hook emits one final \n
 # after </policy-reminder>. Compare the stable body (no trailing newline).
-EXPECTED=$'<policy-reminder>\n> Policy `fixture-pol` applies here: FIXTURE_RULE_MARKER prose.\n> This is an index. Before acting in an area a HARD rule covers, read that rule in full: `qmd get <slug>` or the policy file (companies/<co>/policies, personal/policies, core/policies). One-line entries are summaries, not the rule.\n</policy-reminder>'
+EXPECTED=$'<policy-reminder>\n> Policy `fixture-pol` applies here: FIXTURE_RULE_MARKER prose.\n> This is an index. Before acting in an area a HARD rule covers, read that rule in full: `qmd get <slug>` or the policy file (personal/workers/<id>/policies, companies/<co>/workers/<id>/policies, companies/<co>/policies, repo policies, personal/policies, core/policies). One-line entries are summaries, not the rule.\n</policy-reminder>'
 # Checked-in fixture includes the trailing newline the hook prints on stdout.
 printf '%s\n' "$EXPECTED" > "$FIXTURE_PROSE"
 if [ "$DEFAULT_OUT" != "$EXPECTED" ]; then
@@ -544,6 +548,149 @@ OUT21="$(run_hook "$ROOT" "UserPromptSubmit" "x" HQ_SESSION_POLICY_CAP=1 HQ_POLI
 grep -q 'REACTIVE_HARD_BODY_MARKER' <<<"$OUT21" || fail "reactive hard policy did not claim full-text budget first: $OUT21"
 grep -q 'BASELINE_HARD_BODY_MARKER' <<<"$OUT21" && fail "baseline hard policy consumed the reactive budget: $OUT21"
 ok "reactive hard policy receives full-text budget before baseline"
+
+# ── Case 22: worker profile policies load with an explicit worker scope ──────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/personal/workers/worker-match/policies/worker-match.md" \
+  "worker-match" "workerprobe" "[UserPromptSubmit]" "soft" "WORKER_MATCH_MARKER"
+OUT22="$(run_hook "$ROOT" "UserPromptSubmit" "workerprobe" HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR=personal/workers/worker-match/)"
+grep -Eq $'^worker-match\tworker:worker-match\t.*WORKER_MATCH_MARKER' <<<"$OUT22" \
+  || fail "worker policy did not emit with its worker scope label: $OUT22; status=$(cat "$ROOT/.last-run-hook-status"); diagnostic=$(cat "$ROOT/.last-run-hook-diagnostic")"
+ok "worker profile policy emits with worker scope label"
+
+# ── Case 23: a worker policy with a non-matching trigger stays absent ────────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/personal/workers/worker-nonmatch/policies/worker-nonmatch.md" \
+  "worker-nonmatch" "onlyneedle" "[UserPromptSubmit]" "soft" "WORKER_NONMATCH_MARKER"
+OUT23="$(run_hook "$ROOT" "UserPromptSubmit" "unrelated words" HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR=personal/workers/worker-nonmatch)"
+grep -q WORKER_NONMATCH_MARKER <<<"$OUT23" \
+  && fail "non-matching worker policy was emitted: $OUT23"
+[ -z "$OUT23" ] || fail "unexpected output for a non-matching worker policy: $OUT23"
+ok "non-matching worker policy is not emitted"
+
+# ── Case 24: worker copy wins a colliding personal policy id ────────────────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/personal/policies/worker-collision.md" \
+  "worker-collision" "workerprobe" "[UserPromptSubmit]" "soft" "PERSONAL_COLLISION_MARKER"
+write_policy "$ROOT/personal/workers/worker-precedence/policies/worker-collision.md" \
+  "worker-collision" "workerprobe" "[UserPromptSubmit]" "soft" "WORKER_COLLISION_MARKER"
+OUT24="$(run_hook "$ROOT" "UserPromptSubmit" "workerprobe" HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR=personal/workers/worker-precedence)"
+n24="$(printf '%s\n' "$OUT24" | grep -c $'^worker-collision\t' || true)"
+[ "$n24" = "1" ] || fail "worker/personal collision emitted $n24 lines: $OUT24"
+grep -Eq $'^worker-collision\tworker:worker-precedence\t.*WORKER_COLLISION_MARKER' <<<"$OUT24" \
+  || fail "worker policy did not win the collision: $OUT24"
+grep -q PERSONAL_COLLISION_MARKER <<<"$OUT24" && fail "personal copy won the worker collision: $OUT24"
+ok "worker policy has precedence over personal policy"
+
+# ── Case 25: only the resolved company may load company worker policies ─────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/companies/other/workers/foreign-worker/policies/foreign-worker.md" \
+  "foreign-worker" "workerprobe" "[UserPromptSubmit]" "soft" "FOREIGN_WORKER_MARKER"
+SID25="foreign-company-worker-$$-$RANDOM"
+OUT25="$(run_hook_sid "$ROOT/companies/indigo" "UserPromptSubmit" "workerprobe" "$SID25" HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR=companies/other/workers/foreign-worker/policies)"
+[ -z "$OUT25" ] || fail "another company's worker policy leaked into this session: $OUT25"
+grep -q 'company worker policies do not match the session company' "$ROOT/.last-run-hook-diagnostic" \
+  || fail "company worker mismatch did not emit a diagnostic: $(cat "$ROOT/.last-run-hook-diagnostic")"
+OUT25B="$(run_hook_sid "$ROOT/companies/indigo" "UserPromptSubmit" "workerprobe" "$SID25" HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR=companies/other/workers/foreign-worker/policies)"
+[ -z "$OUT25B" ] && [ ! -s "$ROOT/.last-run-hook-diagnostic" ] \
+  || fail "company worker mismatch diagnostic repeated within one session"
+diag_count25="$(grep -Fc '__worker-policy-dir-diagnostic-company-scope-mismatch-other' \
+  "$ROOT/workspace/orchestrator/policy-trigger-state/$SID25.txt" || true)"
+[ "$diag_count25" = "1" ] || fail "company worker mismatch ledger marker count was $diag_count25"
+grep -Fxq '__worker-policy-dir-diagnostic-company-scope-mismatch-other' \
+  "$ROOT/workspace/orchestrator/policy-trigger-state/$SID25.txt" \
+  || fail "company worker mismatch was not recorded in the session ledger"
+ok "company worker directory is skipped for a different session company"
+
+# ── Case 26: malformed, missing, and outside-root paths fail open ───────────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/personal/workers/traversal-worker/policies/traversal-worker.md" \
+  "traversal-worker" "workerprobe" "[UserPromptSubmit]" "soft" "TRAVERSAL_WORKER_MARKER"
+mkdir -p "$ROOT/personal/workers/traversal-worker/extra"
+OUT26A="$(run_hook "$ROOT" "UserPromptSubmit" "workerprobe" HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR=personal/workers/missing-worker)"
+status26a="$(cat "$ROOT/.last-run-hook-status")"
+[ "$status26a" = "0" ] && [ -z "$OUT26A" ] \
+  || fail "missing worker directory failed the hook or emitted output: status=$status26a output=$OUT26A"
+grep -q 'configured directory does not exist' "$ROOT/.last-run-hook-diagnostic" \
+  || fail "missing worker path diagnostic absent"
+OUTSIDE_DIR="${ROOT}.outside"
+mkdir -p "$OUTSIDE_DIR/policies"
+write_policy "$OUTSIDE_DIR/policies/outside-worker.md" \
+  "outside-worker" "workerprobe" "[UserPromptSubmit]" "soft" "OUTSIDE_WORKER_MARKER"
+OUT26B="$(run_hook "$ROOT" "UserPromptSubmit" "workerprobe" HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR="$OUTSIDE_DIR/policies")"
+status26b="$(cat "$ROOT/.last-run-hook-status")"
+[ "$status26b" = "0" ] && [ -z "$OUT26B" ] \
+  || fail "outside-root worker directory failed the hook or emitted output: status=$status26b output=$OUT26B"
+grep -q 'resolved directory is outside HQ_ROOT' "$ROOT/.last-run-hook-diagnostic" \
+  || fail "outside-root worker path diagnostic absent"
+OUT26C="$(run_hook "$ROOT" "UserPromptSubmit" "workerprobe" HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR=personal/workers/traversal-worker/extra/../policies)"
+[ -z "$OUT26C" ] || fail "path containing '..' loaded a worker policy: $OUT26C"
+grep -q "configured path contains a '..' segment" "$ROOT/.last-run-hook-diagnostic" \
+  || fail "path traversal diagnostic absent"
+rm -rf "$OUTSIDE_DIR"
+ok "missing, outside-root, and traversal paths are ignored without hook failure"
+
+# ── Case 27: company worker policy loads for its own session company ────────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/companies/indigo/workers/company-worker/policies/company-worker.md" \
+  "company-worker" "workerprobe" "[UserPromptSubmit]" "soft" "COMPANY_WORKER_MARKER"
+OUT27="$(run_hook "$ROOT/companies/indigo" "UserPromptSubmit" "workerprobe" HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR=companies/indigo/workers/company-worker)"
+grep -Eq $'^company-worker\tworker:company-worker\t.*COMPANY_WORKER_MARKER' <<<"$OUT27" \
+  || fail "same-company worker policy did not load: $OUT27"
+ok "company worker policy loads for its own session company"
+
+# A company worker and its active company can define the same policy id. The
+# worker profile is more specific and must win the first-match-wins scan.
+write_policy "$ROOT/companies/indigo/policies/company-worker-collision.md" \
+  "company-worker-collision" "workerprobe" "[UserPromptSubmit]" "soft" "COMPANY_COLLISION_MARKER"
+write_policy "$ROOT/companies/indigo/workers/company-worker/policies/company-worker-collision.md" \
+  "company-worker-collision" "workerprobe" "[UserPromptSubmit]" "soft" "WORKER_COMPANY_COLLISION_MARKER"
+OUT27B="$(run_hook "$ROOT/companies/indigo" "UserPromptSubmit" "workerprobe" \
+  HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR=companies/indigo/workers/company-worker/policies)"
+n27b="$(printf '%s\n' "$OUT27B" | grep -c $'^company-worker-collision\t' || true)"
+[ "$n27b" = "1" ] || fail "company worker/company collision emitted $n27b lines: $OUT27B"
+grep -Eq $'^company-worker-collision\tworker:company-worker\t.*WORKER_COMPANY_COLLISION_MARKER' <<<"$OUT27B" \
+  || fail "company worker policy did not win its active-company collision: $OUT27B"
+if printf '%s\n' "$OUT27B" | awk -F '\t' '$1 == "company-worker-collision" && $5 == "COMPANY_COLLISION_MARKER" { found=1 } END { exit found ? 0 : 1 }'; then
+  fail "company policy won the worker collision: $OUT27B"
+fi
+ok "company worker policy has precedence over its active company policy"
+
+# ── Case 28: PreCompact ledger purge re-arms worker policies ────────────────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/personal/workers/worker-rearm/policies/worker-rearm.md" \
+  "worker-rearm" "workerprobe" "[UserPromptSubmit]" "soft" "WORKER_REARM_MARKER"
+SID28="worker-rearm-$$-$RANDOM"
+OUT28A="$(run_hook_sid "$ROOT" "UserPromptSubmit" "workerprobe" "$SID28" HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR=personal/workers/worker-rearm)"
+grep -q WORKER_REARM_MARKER <<<"$OUT28A" || fail "worker policy did not inject before compaction: $OUT28A"
+grep -Fxq worker-rearm "$ROOT/workspace/orchestrator/policy-trigger-state/$SID28.txt" \
+  || fail "worker policy did not use the session policy ledger"
+purge_input="$(jq -cn --arg sid "$SID28" '{session_id:$sid,hook_event_name:"PreCompact"}')"
+env HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" \
+  bash "$ROOT/.claude/hooks/purge-policy-ledger-precompact.sh" <<<"$purge_input" >/dev/null 2>&1 \
+  || fail "PreCompact ledger purge failed"
+[ ! -f "$ROOT/workspace/orchestrator/policy-trigger-state/$SID28.txt" ] \
+  || fail "PreCompact did not remove the session ledger"
+OUT28B="$(run_hook_sid "$ROOT" "UserPromptSubmit" "workerprobe" "$SID28" HQ_POLICY_EMIT=tsv HQ_POLICY_WORKER_DIR=personal/workers/worker-rearm)"
+grep -q WORKER_REARM_MARKER <<<"$OUT28B" || fail "worker policy did not re-arm after compaction: $OUT28B"
+ok "worker policy re-arms after PreCompact ledger purge"
+
+# ── Case 29: inline trigger evaluation normalizes policy identifiers ────────
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/core/policies/uppercase-trigger.md" \
+  "uppercase-trigger" "ENOENT" "[UserPromptSubmit]" "soft" "UPPERCASE_TRIGGER_MARKER"
+OUT29="$(run_hook "$ROOT" "UserPromptSubmit" "ENOENT" HQ_POLICY_EMIT=tsv)"
+grep -Eq $'^uppercase-trigger\tcore\t.*UPPERCASE_TRIGGER_MARKER' <<<"$OUT29" \
+  || fail "uppercase trigger identifier did not match lowercase derived fact: $OUT29"
+ok "inline trigger evaluator matches uppercase identifiers"
 
 echo
 echo "PASS ($pass assertions)"

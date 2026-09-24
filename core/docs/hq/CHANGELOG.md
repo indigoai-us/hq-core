@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+### Fixed — tool-write hook passes same-company project switches to prd-sync (F14, 2026-09-23)
+- `core/hooks/PostToolUse/35-work-mesh-tool-writes.sh` used to exit when the written project slug differed from the session's bound project. A write of `companies/<same-company>/projects/<other-slug>/prd.json` now still calls `hq mesh context prd-sync` (one flight per session, same lock as today) so hq-cli can rebind and emit against the new project. Writes to other files in another project stay skipped. Cross-company stays skipped.
+- Regression: `core/scripts/tests/work-mesh-tool-writes-bind.test.sh` (bound to A, write B/prd.json same company → prd-sync; B/note.md → not invoked; other company → not invoked).
+
+### Added — worker-folder policy injection (2026-09-23)
+- `inject-policy-on-trigger.sh` now accepts `HQ_POLICY_WORKER_DIR` for a worker profile's `policies/` directory. Worker policies take precedence over company, repo, personal, and core policies; company worker directories load only for the matching session company. The hook exposes `# hq-capability: worker-policy-dir v1` for lane launchers.
+
+### Fixed — case-insensitive policy trigger identifiers (2026-09-23)
+- Trigger identifiers now match the lowercase facts produced by `derive-trigger-facts.sh`, including in the inline hook evaluator and trigger linter. Existing policy files remain unchanged.
+
+### Fixed: UserPromptSubmit hook latency (2026-09-23)
+- An exact Monitor timeout notice skips request routing, session titles, update checks, repo sync, lane monitoring, and grounding. Policy injection and turn-start still run. Other prompts use the normal dispatch. The injector reads matched hard-policy bodies in one AWK pass. The lane monitor makes fewer `jq` calls and includes AssistantIntent facts in its evaluation-cache key.
+- Regression coverage: `core/scripts/tests/inject-policy-batched-bodies.test.sh`, `core/scripts/tests/master-hook-monitor-notification-fast-path.test.sh`, and `core/scripts/tests/lanes-senior-monitor-cache-budget.test.sh`.
+
 ### Fixed — writing in a project folder binds the session (US-040, 2026-09-23)
 - `core/hooks/PostToolUse/35-work-mesh-tool-writes.sh` reads `file_path` on Write/Edit/MultiEdit. A path under `companies/<co>/projects/<slug>/` in the session company binds a `needs_project` session through `hq mesh context bind-project`, detached. The success marker is written only after the bind exits 0; a backoff file limits retries. Writing that project's `prd.json` runs `hq mesh context prd-sync` when supported, one flight per session with coalescing.
 

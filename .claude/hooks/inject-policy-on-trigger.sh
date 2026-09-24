@@ -1,5 +1,6 @@
 #!/bin/bash
 # inject-policy-on-trigger.sh — the sole policy-surfacing path.
+# hq-capability: worker-policy-dir v1
 #
 # The pre-built policy digest (and its always-on / stack-filtered tiers) was
 # retired; this hook now both injects every on:[SessionStart] policy whose
@@ -26,9 +27,10 @@
 #   soft/unset → the one-line `## Rule` excerpt, as always.
 #
 # Event: taken from `hook_event_name` in the stdin JSON (default PreToolUse).
-# Scope (tenant-safe): global core/policies ALWAYS; the active repo's policies
-#   ONLY when the session's cwd is in that repo; exactly ONE company's policies,
-#   that company being the session's own active tenant — resolved as
+# Scope (tenant-safe) and precedence: worker > company > repo > personal > core.
+#   Company worker policies load only when their company is the session's own
+#   active tenant. Repo policies load only when the session cwd is in that repo;
+#   exactly ONE company's policies load, for the session's active tenant — resolved as
 #   HQ_POLICY_COMPANY > cwd companies/<slug> > session-meta company_slug (US-004,
 #   see the DIRS block). The session-meta step is what lets an HQ-root session
 #   load its bound company; it never widens scope to a second company.
@@ -248,6 +250,17 @@ record_slug() {
   release_policy_ledger_lock "$ledger"
 }
 
+# Invalid worker-policy configuration is advisory, but keep one diagnostic per
+# reason in the existing per-session ledger so repeated hook events stay quiet.
+worker_policy_diagnostic() {
+  local marker="__worker-policy-dir-diagnostic-${1}"
+  if grep -Fxq "$marker" "$DEDUPE_FILE" 2>/dev/null; then
+    return 0
+  fi
+  record_slug "$marker" once
+  printf 'inject-policy-on-trigger: ignored HQ_POLICY_WORKER_DIR (%s).\n' "$2" >&2
+}
+
 policy_file_bytes() {
   local bytes=""
   bytes="$(wc -c < "$1" 2>/dev/null || true)"
@@ -323,6 +336,7 @@ FACTS_FILE=""
 INTENT_FACTS_FILE=""
 FACT_PAIR_FILE=""
 FACTS_TMP_DIR=""
+POLICY_BODY_TMP_DIR=""
 POLICY_ARG_INLINE_LIMIT=65536
 
 cleanup_policy_fact_files() {
@@ -330,6 +344,7 @@ cleanup_policy_fact_files() {
   [ -z "$FACTS_FILE" ] || rm -f "$FACTS_FILE" 2>/dev/null || true
   [ -z "$INTENT_FACTS_FILE" ] || rm -f "$INTENT_FACTS_FILE" 2>/dev/null || true
   [ -z "$FACT_PAIR_FILE" ] || rm -f "$FACT_PAIR_FILE" 2>/dev/null || true
+  [ -z "$POLICY_BODY_TMP_DIR" ] || rm -rf "$POLICY_BODY_TMP_DIR" 2>/dev/null || true
 }
 
 trap cleanup_policy_fact_files EXIT
@@ -494,10 +509,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   #
   # ORDER IS LOAD-BEARING (US-003): both match paths downstream are
   # first-match-wins on the policy id, so DIRS order IS the precedence order.
-  # HQ's documented precedence is company > repo > global — company and repo
-  # dirs must therefore precede core, or a core policy sharing an id silently
-  # overrides the company copy (observed live with three core/indigo id
-  # collisions; regression test: inject-policy-scope-precedence.test.sh).
+  # Worker policies extend the existing precedence: worker > company > repo >
+  # personal > core. A worker policy sharing an id with another source wins.
   DIRS=()
   # Company-scope precedence (highest first), US-004 / US-406:
   #   HQ_POLICY_COMPANY env override  (caller outside companies/<slug>)
@@ -528,6 +541,93 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       [ -f "$META" ] && co_scope="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META")"
     fi
   fi
+  # HQ_POLICY_WORKER_DIR may name a worker profile directory or its policies
+  # child. Relative paths are rooted at HQ_ROOT. Reject lexical traversal
+  # before resolving symlinks, then check the physical directory remains under
+  # the physical HQ root. Company worker trees are admitted only for the one
+  # company resolved above.
+  if [ -n "${HQ_POLICY_WORKER_DIR:-}" ]; then
+    worker_root="$(cd "$HQ_ROOT" 2>/dev/null && pwd -P || true)"
+    worker_configured="$HQ_POLICY_WORKER_DIR"
+    while [ "$worker_configured" != "/" ] && [ "${worker_configured%/}" != "$worker_configured" ]; do
+      worker_configured="${worker_configured%/}"
+    done
+    case "/$worker_configured/" in
+      *"/../"*)
+        worker_policy_diagnostic "path-dotdot" "the configured path contains a '..' segment"
+        worker_configured=""
+        ;;
+    esac
+    if [ -n "$worker_configured" ] && [ -n "$worker_root" ]; then
+      case "$worker_configured" in
+        /*) worker_candidate="$worker_configured" ;;
+        *) worker_candidate="$worker_root/$worker_configured" ;;
+      esac
+      if [ ! -d "$worker_candidate" ]; then
+        worker_policy_diagnostic "missing-directory" "the configured directory does not exist"
+      else
+        worker_candidate_resolved="$(cd "$worker_candidate" 2>/dev/null && pwd -P || true)"
+        case "$worker_candidate_resolved" in
+          "$worker_root"/*)
+            case "$worker_candidate_resolved" in
+              */policies) worker_policy_candidate="$worker_candidate_resolved" ;;
+              *) worker_policy_candidate="$worker_candidate_resolved/policies" ;;
+            esac
+            if [ ! -d "$worker_policy_candidate" ]; then
+              worker_policy_diagnostic "missing-policy-directory" "the worker's policies directory does not exist"
+            else
+              worker_policy_dir="$(cd "$worker_policy_candidate" 2>/dev/null && pwd -P || true)"
+              case "$worker_policy_dir" in
+                "$worker_root"/*)
+                  worker_relative="${worker_policy_dir#"$worker_root"/}"
+                  worker_company=""
+                  worker_tail=""
+                  case "$worker_relative" in
+                    personal/workers/*)
+                      worker_tail="${worker_relative#personal/workers/}"
+                      ;;
+                    companies/*/workers/*)
+                      worker_company="$(printf '%s' "$worker_relative" | sed -nE 's#^companies/([^/]+)/workers/.*#\1#p')"
+                      worker_tail="$(printf '%s' "$worker_relative" | sed -nE 's#^companies/[^/]+/workers/(.*)#\1#p')"
+                      ;;
+                    *)
+                      worker_policy_diagnostic "not-worker-profile" "the directory is not inside personal/workers or companies/<company>/workers"
+                      worker_tail=""
+                      ;;
+                  esac
+                  if [ -n "$worker_tail" ]; then
+                    case "$worker_tail" in
+                      */policies) worker_id="${worker_tail%/policies}" ;;
+                      *) worker_id="$worker_tail" ;;
+                    esac
+                    case "$worker_id" in
+                      ''|.|..|*/*)
+                        worker_policy_diagnostic "invalid-worker-profile" "the worker profile path is malformed"
+                        ;;
+                      *)
+                        if [ -n "$worker_company" ] && [ "$co_scope" != "$worker_company" ]; then
+                          worker_policy_diagnostic "company-scope-mismatch-$worker_company" "company worker policies do not match the session company"
+                        else
+                          DIRS+=("$worker_policy_dir")
+                        fi
+                        ;;
+                    esac
+                  fi
+                  ;;
+                *)
+                  worker_policy_diagnostic "outside-hq-root" "the resolved directory is outside HQ_ROOT"
+                  ;;
+              esac
+            fi
+            ;;
+          *)
+            worker_policy_diagnostic "outside-hq-root" "the resolved directory is outside HQ_ROOT"
+            ;;
+        esac
+      fi
+    fi
+  fi
+
   [ -n "$co_scope" ] && DIRS+=("$HQ_ROOT/companies/$co_scope/policies")
   case "$CWD" in
     *repos/public/*|*repos/private/*)
@@ -718,7 +818,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     eval_session_key="${eval_session_hash%% *}"
     eval_input_hash="$(
       {
-        printf '%s\034%s\034%s\034' "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS"
+        printf '%s\034%s\034%s\034%s\034' "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS"
         cat "$DEDUPE_FILE" 2>/dev/null || true
         printf '\034'
         cat "$TURN_FILE" 2>/dev/null || true
@@ -729,14 +829,14 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     if [ -n "$eval_session_key" ] && [ -n "$eval_input_key" ]; then
       # Evaluation entries contain grammar verdicts, unlike the parsed-policy
       # cache above. A parser change can therefore make an otherwise matching
-      # v2 entry wrong. Keep parsed records at v1, but namespace evaluation
-      # results by parser revision so a previous permissive verdict is never
-      # replayed after a stricter grammar ships.
-      EVAL_CACHE_DIR="$CACHE_DIR/eval-v3"
+      # v3 entries were produced by a case-sensitive evaluator. Keep parsed
+      # records at v1, but namespace evaluation results by evaluator semantics
+      # so old verdicts cannot survive case-insensitive trigger matching.
+      EVAL_CACHE_DIR="$CACHE_DIR/eval-v4"
       if mkdir -p "$EVAL_CACHE_DIR" 2>/dev/null; then
         eval_slot="$(printf '%02x' "$((16#${eval_session_key:0:2} % 64))")"
         EVAL_CACHE_FILE="$EVAL_CACHE_DIR/${scope_key}.${eval_slot}.eval"
-        EVAL_CACHE_HEADER="hq-policy-eval-v3${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
+        EVAL_CACHE_HEADER="hq-policy-eval-v4${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
         eval_cache_header=""
         if [ -r "$EVAL_CACHE_FILE" ]; then
           IFS= read -r eval_cache_header < "$EVAL_CACHE_FILE" || true
@@ -803,7 +903,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         s=expr; out=""
         while (match(s, "[A-Za-z0-9_./][A-Za-z0-9_./-]*")) {
           tok=substr(s,RSTART,RLENGTH)
-          present = (which=="ev") ? (tok in evh) : (tok in aih)
+          present = (which=="ev") ? (tolower(tok) in evh) : (tolower(tok) in aih)
           out = out substr(s,1,RSTART-1) (present?"1":"0")
           s = substr(s,RSTART+RLENGTH)
         }
@@ -822,7 +922,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         return (v ? 0 : 1)
       }
       function base(p,   n,a,b){ n=split(p,a,"/"); b=a[n]; sub(/\.md$/,"",b); return b }
-      function scopeof(p) {
+      function scopeof(p,   n,a,i) {
+        n=split(p,a,"/")
+        for (i=1; i<=n; i++) {
+          if (a[i]=="personal" && a[i+1]=="workers" && a[i+2]!="") return "worker:" a[i+2]
+          if (a[i]=="companies" && a[i+2]=="workers" && a[i+3]!="") return "worker:" a[i+3]
+        }
         if (p ~ /\/companies\//) return "company"
         if (p ~ /\/repos\//) return "repo"
         if (p ~ /\/personal\//) return "personal"
@@ -842,7 +947,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         s=expr; out=""
         while (match(s, "[A-Za-z0-9_./][A-Za-z0-9_./-]*")) {
           tok=substr(s,RSTART,RLENGTH)
-          out=out substr(s,1,RSTART-1) (tok=="always" ? "1" : "x")
+          out=out substr(s,1,RSTART-1) (tolower(tok)=="always" ? "1" : "x")
           s=substr(s,RSTART+RLENGTH)
         }
         out=out s
@@ -915,12 +1020,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # expression are present in the fact set. A policy keyed on
       # `deploy && vercel && indigo` outranks one keyed on `deploy` alone when
       # both match — it is more specific to this event. Used only for ordering.
-      function specificity(expr, which,   s,tok,n,seen) {
+      function specificity(expr, which,   s,tok,tok_lc,n,seen) {
         s=expr; n=0; delete seen
         while (match(s, "[A-Za-z0-9_./][A-Za-z0-9_./-]*")) {
           tok=substr(s,RSTART,RLENGTH); s=substr(s,RSTART+RLENGTH)
-          if (tok=="always" || tok=="never") continue
-          if (!(tok in seen)) { seen[tok]=1; if ((which=="ev") ? (tok in evh) : (tok in aih)) n++ }
+          tok_lc=tolower(tok)
+          if (tok_lc=="always" || tok_lc=="never") continue
+          if (!(tok_lc in seen)) { seen[tok_lc]=1; if ((which=="ev") ? (tok_lc in evh) : (tok_lc in aih)) n++ }
         }
         return n
       }
@@ -1239,6 +1345,103 @@ esac
 # Matched against a lowercased line, so keep the pattern lowercase.
 BODY_STOP="${HQ_POLICY_BODY_STOP-^#+[[:space:]]*(rationale|rationale and context|background|change history|changelog|history|examples?|references?|related|see also|sources?|provenance|evidence)[[:space:]]*$}"
 
+# Build the full-text bodies and byte sizes for all matched hard rules in one
+# awk process. The per-policy function below remains the fallback when a path
+# cannot be represented safely in the temporary TSV or batch extraction fails.
+POLICY_BODY_BATCH_MODE=0
+POLICY_BODY_SIZES=()
+prepare_policy_bodies() {
+  local map_file="" size_file="" row_index=0 slug scope path enf rule kind injv ws spec
+  [ "$HARD_FULL" != "0" ] || return 0
+  [ -n "$MATCHES" ] || return 0
+  [ -n "$FACTS_TMP_DIR" ] || FACTS_TMP_DIR="$HQ_ROOT/workspace/orchestrator/hook-state"
+  mkdir -p "$FACTS_TMP_DIR" 2>/dev/null || return 0
+  POLICY_BODY_TMP_DIR="$(mktemp -d "$FACTS_TMP_DIR/.policy-bodies.XXXXXX" 2>/dev/null || true)"
+  [ -n "$POLICY_BODY_TMP_DIR" ] || return 0
+  map_file="$POLICY_BODY_TMP_DIR/map.tsv"
+  size_file="$POLICY_BODY_TMP_DIR/sizes.tsv"
+  : > "$map_file" || return 0
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+    [ -n "$slug" ] || continue
+    row_index=$((row_index + 1))
+    if [ "$enf" = "hard" ] && [ -n "$path" ] && [ -r "$path" ]; then
+      case "$path" in
+        *$'\t'*|*$'\n'*)
+          rm -rf "$POLICY_BODY_TMP_DIR" 2>/dev/null || true
+          POLICY_BODY_TMP_DIR=""
+          return 0
+          ;;
+      esac
+      printf '%s\t%s\n' "$row_index" "$path" >> "$map_file" || return 0
+    else
+      printf '%s\t\n' "$row_index" >> "$map_file" || return 0
+    fi
+  done <<< "$MATCHES"
+
+  if ! LC_ALL=C awk -v map_file="$map_file" -v body_dir="$POLICY_BODY_TMP_DIR" \
+    -v stop="$BODY_STOP" '
+    BEGIN {
+      while ((getline row < map_file) > 0) {
+        split(row, fields, "\t")
+        row_id=fields[1]
+        path=fields[2]
+        bytes=0
+        if (path != "") {
+          depth=0; started=0; count=0
+          while ((getline line < path) > 0) {
+            if (line ~ /^---[ \t]*$/ && depth < 2) { depth++; continue }
+            if (depth >= 2) {
+              if (!started && line ~ /^[ \t]*$/) continue
+              if (stop != "" && tolower(line) ~ stop) break
+              started=1
+              body[++count]=line
+            }
+          }
+          close(path)
+          while (count > 0 && body[count] ~ /^[ \t]*$/) { delete body[count]; count-- }
+          if (count > 0) {
+            output=body_dir "/" row_id ".body"
+            for (i=1; i<=count; i++) {
+              if (i > 1) { printf "\n" >> output; bytes++ }
+              printf "%s", body[i] >> output
+              bytes += length(body[i])
+              delete body[i]
+            }
+            close(output)
+          }
+        }
+        print row_id "\t" bytes
+      }
+      close(map_file)
+    }
+  ' "$map_file" > "$size_file" 2>/dev/null; then
+    rm -rf "$POLICY_BODY_TMP_DIR" 2>/dev/null || true
+    POLICY_BODY_TMP_DIR=""
+    return 0
+  fi
+
+  while IFS=$'\t' read -r row_index row_size; do
+    case "$row_index" in ''|*[!0-9]*)
+      rm -rf "$POLICY_BODY_TMP_DIR" 2>/dev/null || true
+      POLICY_BODY_TMP_DIR=""
+      POLICY_BODY_SIZES=()
+      return 0
+      ;;
+    esac
+    case "$row_size" in ''|*[!0-9]*)
+      rm -rf "$POLICY_BODY_TMP_DIR" 2>/dev/null || true
+      POLICY_BODY_TMP_DIR=""
+      POLICY_BODY_SIZES=()
+      return 0
+      ;;
+    esac
+    POLICY_BODY_SIZES[$row_index]="$row_size"
+  done < "$size_file"
+  POLICY_BODY_BATCH_MODE=1
+}
+
+prepare_policy_bodies
+
 policy_body() {
   # Print the binding part of the policy: everything after the closing
   # frontmatter `---`, leading blank lines trimmed, stopping at the first
@@ -1272,11 +1475,13 @@ emit_reminder() {
 printf '<policy-reminder>\n'
 printf '%s' "$MATCHES" | {
   spent=0
+  match_index=0
   shortened=""
   oversize=""
   malformed=""
   while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
     [ -z "$slug" ] && continue
+    match_index=$((match_index + 1))
     [ "$ws" = "malformed" ] && malformed="${malformed:+$malformed, }$slug"
     body=""
     # HARD rules carry full text while the budget lasts. MATCHES is already
@@ -1284,10 +1489,16 @@ printf '%s' "$MATCHES" | {
     # matched THIS event claim the budget first; a baseline hard rule that
     # loses the budget is still an index line, one read away.
     if [ "$HARD_FULL" != "0" ] && [ "$enf" = "hard" ] && [ -n "$path" ] && [ -r "$path" ]; then
-      body="$(policy_body "$path")"
+      if [ "$POLICY_BODY_BATCH_MODE" -eq 1 ]; then
+        body_file="$POLICY_BODY_TMP_DIR/$match_index.body"
+        [ ! -f "$body_file" ] || body="$(< "$body_file")"
+        size="${POLICY_BODY_SIZES[$match_index]:-0}"
+      else
+        body="$(policy_body "$path")"
+        size="$(printf '%s' "$body" | wc -c | tr -d ' ')"
+      fi
     fi
     if [ -n "$body" ]; then
-      size="$(printf '%s' "$body" | wc -c | tr -d ' ')"
       if [ "$size" -gt "$HARD_MAX" ]; then
         # One policy must not crowd out every other hard rule in the budget.
         oversize="${oversize:+$oversize, }$slug"
@@ -1308,6 +1519,8 @@ printf '%s' "$MATCHES" | {
     fi
     if [ "$enf" = "hard" ]; then
       printf '> Policy `%s` applies here: %s  [HARD · %s]\n' "$slug" "$rule" "$scope"
+    elif [[ "$scope" == worker:* ]]; then
+      printf '> Policy `%s` applies here: %s  [%s]\n' "$slug" "$rule" "$scope"
     else
       printf '> Policy `%s` applies here: %s\n' "$slug" "$rule"
     fi
@@ -1335,7 +1548,7 @@ if [ "$WITHHELD" -gt 0 ]; then
   printf '> Session policy cap withheld %s policies (cap %s): %s%s. Reactive matches were prioritized over the SessionStart baseline.\n' \
     "$WITHHELD" "$SESSION_POLICY_CAP" "$WITHHELD_NAMES" "$more"
 fi
-printf '> This is an index. Before acting in an area a HARD rule covers, read that rule in full: `qmd get <slug>` or the policy file (companies/<co>/policies, personal/policies, core/policies). One-line entries are summaries, not the rule.\n'
+printf '> This is an index. Before acting in an area a HARD rule covers, read that rule in full: `qmd get <slug>` or the policy file (personal/workers/<id>/policies, companies/<co>/workers/<id>/policies, companies/<co>/policies, repo policies, personal/policies, core/policies). One-line entries are summaries, not the rule.\n'
 printf '</policy-reminder>\n'
 }
 

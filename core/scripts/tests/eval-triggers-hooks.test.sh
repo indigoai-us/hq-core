@@ -57,7 +57,7 @@ trigger: prose only
 This must never be injected by the trigger hook.
 EOF
 
-call() { printf '%s' "$1" | CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>/dev/null || true; }
+call() { printf '%s' "$1" | HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>/dev/null || true; }
 
 DEPLOY_PRE='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"vercel deploy --prod"},"session_id":"sess-1"}'
 
@@ -179,7 +179,7 @@ echo "$outS" | grep -q "demo-hard-start" || fail "SessionStart should inject har
 LEDGER_S="$TMP/workspace/orchestrator/policy-trigger-state/sessS.txt"
 [ "$(grep -c . "$LEDGER_S")" -ge 2 ] || fail "precondition: SessionStart should seed >=2 ledger slugs, got: [$(cat "$LEDGER_S" 2>/dev/null)]"
 ERRF="$TMP/awk-err.txt"
-out8b="$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git status"},"session_id":"sessS"}' | CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>"$ERRF" || true)"
+out8b="$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git status"},"session_id":"sessS"}' | HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>"$ERRF" || true)"
 grep -q 'newline in string' "$ERRF" && fail "awk aborted on multi-line ledger (regressed to -v ALREADY): [$(cat "$ERRF")]" || true
 echo "$out8b" | grep -q "demo-git-pre" || fail "reactive when:/on: must still fire after a multi-slug SessionStart ledger, got: [$out8b]"
 echo "$out8b" | grep -q "demo-soft-start" && fail "SessionStart slug re-injected — ledger not honored, got: [$out8b]" || true
@@ -201,7 +201,7 @@ EOF
   printf '%s—suffix\n' "$ASCII_156"
 } > "$TMP/core/policies/demo-utf8-boundary.md"
 
-out_utf8="$(printf '%s' "$DEPLOY_PRE" | LC_ALL=C CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>/dev/null || true)"
+out_utf8="$(printf '%s' "$DEPLOY_PRE" | LC_ALL=C HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>/dev/null || true)"
 printf '%s' "$out_utf8" | python3 -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' 2>/dev/null \
   || fail "policy reminder is not valid UTF-8 under byte-oriented awk"
 expected_utf8="> Policy \`demo-utf8-boundary\` applies here: ${ASCII_156}..."

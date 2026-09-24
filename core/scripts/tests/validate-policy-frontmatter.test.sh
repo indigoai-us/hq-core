@@ -5,7 +5,8 @@
 # and leaves everything else alone. Also verifies the hook is live under all
 # three hook-gate profiles (per hq-hook-gate-three-profile-lists).
 set -euo pipefail
-ROOT="${HQ_TEST_ROOT:-$(git rev-parse --show-toplevel)}"
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${HQ_TEST_ROOT:-$(cd "$TEST_DIR/../../.." && pwd)}"
 HOOK="${HOOK:-$ROOT/.claude/hooks/validate-policy-frontmatter.sh}"
 GATE="$ROOT/.claude/hooks/hook-gate.sh"
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not available"; exit 0; }
@@ -121,6 +122,7 @@ pass "non-executable evaluator with override -> allow and note degraded validati
 
 echo "[2d] every deny message hardens the validator override"
 HARD_ALWAYS_REACTIVE=$'---\nid: hq-x\nwhen: always\non: [PreToolUse]\nenforcement: hard\n---\n## Rule\nx\n'
+HARD_UPPER_ALWAYS_REACTIVE=$'---\nid: hq-x\nwhen: ALWAYS\non: [UserPromptSubmit]\nenforcement: hard\n---\n## Rule\nx\n'
 HARD_TOO_LONG=$'---\nid: hq-x\nwhen: deploy\non: [PreToolUse]\nenforcement: hard\n---\n## Rule\nThis binding rule is deliberately longer than one byte.\n'
 assert_hardened_override_deny() {
   local label="$1" payload="$2" output got
@@ -140,6 +142,11 @@ assert_hardened_override_deny() {
 }
 assert_hardened_override_deny "hard always/reactive" \
   "$(wp "$PROJ/core/policies/hard-always.md" "$HARD_ALWAYS_REACTIVE")"
+for engine in node jq; do
+  assert_hardened_override_deny "uppercase ALWAYS/reactive ($engine)" \
+    "$(wp "$PROJ/core/policies/hard-upper-always.md" "$HARD_UPPER_ALWAYS_REACTIVE")" \
+    "HQ_HOOK_ENGINE=$engine"
+done
 assert_hardened_override_deny "hard body limit" \
   "$(wp "$PROJ/core/policies/hard-long.md" "$HARD_TOO_LONG")" HQ_POLICY_HARD_RULE_MAX_BYTES=1
 assert_hardened_override_deny "malformed when" \

@@ -47,6 +47,30 @@ version_gt() {
   [ "$a" \> "$b" ]
 }
 
+# GitHub's network-backed checks are advisory. Bound each call independently so
+# a stalled DNS, auth, or API request cannot consume the SessionStart budget.
+# On hosts without either timeout mechanism, skip the network check entirely.
+bounded_gh_command() {
+  local seconds="$1" timeout_version="" os_name=""
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_version="$(timeout --version 2>/dev/null || true)"
+    case "$timeout_version" in
+      *"GNU coreutils"*) timeout -k 1s "${seconds}s" "$@"; return $? ;;
+    esac
+  fi
+  if command -v perl >/dev/null 2>&1; then
+    # Perl's alarm does not reliably interrupt exec'd children under Git Bash.
+    os_name="$(uname -s 2>/dev/null)" || return 125
+    case "$os_name" in
+      MINGW*|MSYS*|CYGWIN*) return 125 ;;
+    esac
+    perl -e 'alarm shift; exec { $ARGV[0] } @ARGV' "$seconds" "$@"
+    return $?
+  fi
+  return 125
+}
+
 # --- (0) Heal settings broken by an old `hq doctor --fix` ---
 # hq-cli 5.99.0 through 5.117.2 wrote matcher-less hook-gate.sh registrations
 # that run every guard on every tool call and block Bash, Skill and Read.
@@ -130,9 +154,9 @@ fi
 
 if [ "$USE_CACHE" -eq 0 ]; then
   command -v gh >/dev/null 2>&1 || exit 0
-  gh auth status >/dev/null 2>&1 || exit 0
+  bounded_gh_command 5 gh auth status >/dev/null 2>&1 || exit 0
 
-  RAW_TAG=$(gh release view -R indigoai-us/hq-core --json tagName -q .tagName 2>/dev/null || true)
+  RAW_TAG=$(bounded_gh_command 5 gh release view -R indigoai-us/hq-core --json tagName -q .tagName 2>/dev/null) || exit 0
   [ -n "$RAW_TAG" ] || exit 0
 
   LATEST_VERSION=$(echo "$RAW_TAG" | sed -E 's/^v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/')

@@ -49,14 +49,6 @@ CODEX_ABS="$PROJECT_DIR/.codex/"
 OBSIDIAN_ABS="$PROJECT_DIR/.obsidian/"
 TEMPLATE_ABS="$PROJECT_DIR/companies/_template/"
 
-esc() { printf '%s' "$1" | sed 's/[][\\.*^$(){}?+|]/\\&/g'; }
-CORE_ABS_ESC="$(esc "$CORE_ABS")"
-CLAUDE_ABS_ESC="$(esc "$CLAUDE_ABS")"
-AGENTS_ABS_ESC="$(esc "$AGENTS_ABS")"
-CODEX_ABS_ESC="$(esc "$CODEX_ABS")"
-OBSIDIAN_ABS_ESC="$(esc "$OBSIDIAN_ABS")"
-TEMPLATE_ABS_ESC="$(esc "$TEMPLATE_ABS")"
-
 # Per-dir path alternation patterns, split by how unambiguously each form
 # denotes the LIVE HQ root:
 #
@@ -76,12 +68,12 @@ TEMPLATE_ABS_ESC="$(esc "$TEMPLATE_ABS")"
 # companies/_template/ is a locked path per core.yaml; it follows the same
 # ABS/REL split so the Bash guard matches the Edit/Write guard while still
 # allowing legitimate edits to the prototype from inside a repos/ checkout.
-CORE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/core/|\$\{?HQ_ROOT\}?/core/|'"$CORE_ABS_ESC"')'
-CLAUDE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.claude/|\$\{?HQ_ROOT\}?/\.claude/|'"$CLAUDE_ABS_ESC"')'
-AGENTS_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.agents/|\$\{?HQ_ROOT\}?/\.agents/|'"$AGENTS_ABS_ESC"')'
-CODEX_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.codex/|\$\{?HQ_ROOT\}?/\.codex/|'"$CODEX_ABS_ESC"')'
-OBSIDIAN_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.obsidian/|\$\{?HQ_ROOT\}?/\.obsidian/|'"$OBSIDIAN_ABS_ESC"')'
-TEMPLATE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/companies/_template/|\$\{?HQ_ROOT\}?/companies/_template/|'"$TEMPLATE_ABS_ESC"')'
+CORE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/core/|\$\{?HQ_ROOT\}?/core/)'
+CLAUDE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.claude/|\$\{?HQ_ROOT\}?/\.claude/)'
+AGENTS_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.agents/|\$\{?HQ_ROOT\}?/\.agents/)'
+CODEX_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.codex/|\$\{?HQ_ROOT\}?/\.codex/)'
+OBSIDIAN_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.obsidian/|\$\{?HQ_ROOT\}?/\.obsidian/)'
+TEMPLATE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/companies/_template/|\$\{?HQ_ROOT\}?/companies/_template/)'
 
 CORE_REL_ALTS='((\./)?core/|\$\{?REPO_ROOT\}?/core/)'
 CLAUDE_REL_ALTS='((\./)?\.claude/|\$\{?REPO_ROOT\}?/\.claude/)'
@@ -98,8 +90,6 @@ ALL_PATH_ALTS="($ABS_PATH_ALTS|$REL_PATH_ALTS)"
 BND='(^|[[:space:]]|[;|&(=:]|["'\''])'
 AGENTS_MD_TOKEN_RE='(^|[[:space:]]|[;|&(=:]|["'\''])AGENTS\.md'
 
-WRITE_OPS='(^|[[:space:]])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|sed[[:space:]]+-i[^[:space:]]*|sed[[:space:]]+--in-place|awk[[:space:]]+-i[[:space:]]+inplace|ln)([[:space:]]|$)'
-
 # True when the command changes directory into a checked-out repo tree -- either
 # a source checkout under repos/ or a git worktree under workspace/worktrees/
 # (cd/pushd whose target path contains a repos/ or workspace/worktrees/ segment).
@@ -108,12 +98,58 @@ WRITE_OPS='(^|[[:space:]])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|r
 # live HQ root -- same rationale as repos/. ONLY cd/pushd qualify: they move the
 # shell cwd, so subsequent relative scaffold tokens refer to the checkout's tree.
 # `git -C <path>` does NOT change the cwd (and git subcommands never match the
-# shell WRITE_OPS scanner anyway), so it is deliberately excluded to avoid
+# shell write-op scanner anyway), so it is deliberately excluded to avoid
 # leaking the exemption to unrelated relative tokens in the same command. The
 # "([^...]*/)?" requires any chars before the segment to end at a slash, so
 # "/tmp/myrepos/" and "/tmp/myworkspace/worktrees/" do NOT match.
+text_has_regex_line() {
+  local text="$1" regex="$2" line
+  while IFS= read -r line; do
+    [[ "$line" =~ $regex ]] && return 0
+  done <<< "$text"
+  return 1
+}
+
+# Dynamic absolute roots are matched as literal shell patterns rather than
+# interpolated into Bash's ERE engine. The latter differs between GNU libc and
+# macOS's system Bash/libc when roots contain regex metacharacters.
+absolute_root_path_matches() {
+  local text="$1" normalized_text="$1" path remaining before before_length last
+  # Absolute paths may contain repeated separators (notably when TMPDIR ends
+  # with '/'). Project roots are normalized above, so normalize the command text
+  # for comparison as well; repeated separators are equivalent in filesystem
+  # paths and must not bypass the protected-root check.
+  while :; do
+    case "$normalized_text" in
+      *//* ) normalized_text="${normalized_text//\/\///}" ;;
+      *) break ;;
+    esac
+  done
+  for path in "$CORE_ABS" "$CLAUDE_ABS" "$AGENTS_ABS" "$CODEX_ABS" "$OBSIDIAN_ABS" "$TEMPLATE_ABS"; do
+    remaining="$normalized_text"
+    while :; do
+      case "$remaining" in
+        *"$path"*) ;;
+        *) break ;;
+      esac
+      before="${remaining%%"$path"*}"
+      remaining="${remaining#*"$path"}"
+      if [ -z "$before" ]; then
+        return 0
+      fi
+      before_length="${#before}"
+      last="${before:$((before_length - 1)):1}"
+      case "$last" in
+        [[:space:]]|';'|'|'|'&'|'('| '='|':'|'"'|"'") return 0 ;;
+      esac
+    done
+  done
+  return 1
+}
+
 in_repo_context() {
-  echo "$1" | grep -Eq '(^|[[:space:]])(cd|pushd)[[:space:]]+["'\'']?([^;&|[:space:]"'\'']*/)?(repos/|workspace/worktrees/)'
+  local regex='(^|[[:space:]])(cd|pushd)[[:space:]]+["'\'']?([^;&|[:space:]"'\'']*/)?(repos/|workspace/worktrees/)'
+  text_has_regex_line "$1" "$regex"
 }
 
 strip_token_quotes() {
@@ -130,7 +166,8 @@ WRITE_TARGET_PROTECTED_VARS=""
 
 raw_token_matches_re() {
   local token="$1" token_re="$2"
-  printf ' %s' "$token" | grep -Eq "$token_re"
+  [[ " $token" =~ $token_re ]] && return 0
+  absolute_root_path_matches "$token"
 }
 
 target_matches_re() {
@@ -155,7 +192,8 @@ target_matches_re() {
 
 segment_fallback_matches() {
   local segment="$1" token_re="$2"
-  echo "$segment" | grep -Eq "$token_re"
+  text_has_regex_line "$segment" "$token_re" && return 0
+  absolute_root_path_matches "$segment"
 }
 
 record_segment_context() {
@@ -195,7 +233,7 @@ record_segment_context() {
 write_targets_match() {
   local segment="$1" token_re="$2"
   local words=() clean=() targets=() positionals=()
-  local word op="" op_i=-1 i j tok next positional_count has_inplace has_ef
+  local op="" op_i=-1 i j tok next positional_count has_inplace has_ef
   local target_dir="" target_count=0
 
   # Whitespace tokenization is deliberate: this is a best-effort guard and
@@ -433,22 +471,19 @@ writes_to_protected() {
   local stripped core_yaml="$PROJECT_DIR/core/core.yaml"
   stripped="$(hq_bash_strip_core_yaml_exclude_tokens "$cmd" "$PROJECT_DIR" "$core_yaml")"
   # Fixed exceptions — writable even when yq/core.yaml parsing is unavailable.
-  stripped=$(printf '%s' "$stripped" | sed 's|[^[:space:]]*settings\.local\.json[^[:space:]]*||g; s|settings\.local\.json||g' 2>/dev/null) || stripped=""
-  # personal-context.md is preserve_subpaths (not rules.exclude) but still writable.
-  stripped=$(printf '%s' "$stripped" | sed 's|[^[:space:]]*personal-context\.md[^[:space:]]*||g; s|personal-context\.md||g' 2>/dev/null) || stripped=""
-  # A strip/sed that errors used to return empty, so every protected-path check
-  # ran against nothing and allowed the write. Keep the original command.
+  # Strip them with the same in-process token scanner rather than two sed forks.
+  stripped="$(hq_strip_tokens_containing_literals "$stripped" settings.local.json personal-context.md)"
+  # A failed/empty strip must not make every protected-path check run against
+  # nothing and allow the write. Keep the original command.
   [ -n "$stripped" ] || stripped="$cmd"
 
   # Absolute/live-root forms are always enforced; relative forms only outside a
   # repos/ checkout.
-  local path_alts token_re repo_ctx="no"
+  local token_re repo_ctx="no"
   if in_repo_context "$cmd" || in_external_cwd_context "$cmd"; then
     repo_ctx="yes"
-    path_alts="$ABS_PATH_ALTS"
     token_re="$BND$ABS_PATH_ALTS"
   else
-    path_alts="$ALL_PATH_ALTS"
     token_re="$BND$ALL_PATH_ALTS"
   fi
 
@@ -463,7 +498,8 @@ writes_to_protected() {
   # AGENTS.md (single file). In a repos/ checkout the bare AGENTS.md token is the
   # repo's own file, so skip it there -- same rationale as the relative alts.
   if [ "$repo_ctx" = "no" ]; then
-    if echo "$cmd" | grep -Eq '(^|[[:space:]])>{1,2}[[:space:]]*["'\'']?AGENTS\.md'; then
+    local agents_redirect_re='(^|[[:space:]])>{1,2}[[:space:]]*["'\'']?AGENTS\.md'
+    if text_has_regex_line "$cmd" "$agents_redirect_re"; then
       return 0
     fi
     if write_op_targets_protected "$cmd" "$AGENTS_MD_TOKEN_RE"; then
