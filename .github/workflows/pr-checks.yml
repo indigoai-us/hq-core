@@ -1016,6 +1016,10 @@ jobs:
         run: bash core/scripts/tests/enforce-vault-write-access.test.sh
       - name: refresh-vault-access builds the manifest the write-access hook consumes
         run: bash core/scripts/tests/refresh-vault-access.test.sh
+      - name: ontology-audience-grant shares the recursive folder/* glob, never a bare private folder
+        run: bash core/scripts/tests/ontology-audience-grant.test.sh
+      - name: run-project work-mesh notes use options the hq CLI accepts (--session-id)
+        run: bash core/scripts/tests/run-project-mesh-note.test.sh
 
   # US-005: shell portability lint + shellcheck + cross-platform smoke.
   shell-portability:

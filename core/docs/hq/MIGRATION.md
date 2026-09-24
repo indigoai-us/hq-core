@@ -3,6 +3,21 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.166-beta.1
+
+- fix 2026-09-24 (vault prefix grants + work-mesh notes): hq-pro #3662 made
+  the server echo the requested ACL pattern verbatim and treat a bare
+  trailing-slash `foo/` as a private create-only folder, so `/delegate` grants,
+  ontology audience grants, and the `/newcompany` group share now always send
+  the recursive `foo/*` pattern and read it back by that exact pattern. The
+  vault write-access hook and `refresh-vault-access.sh` now understand
+  private-folder `foo/` rows (write/admin covers direct children only; read
+  covers none). `hq mesh session note|blocked|task-status` calls in
+  `/delegate`, `run-project.sh`, and the `/idea`, `/run`, and Grok rule
+  examples use `--session-id` (hq-cli 5.157+ rejects `--session`). No action
+  beyond `/update-hq`. A `/delegate` that stopped at "ACL preflight failed"
+  since 2026-09-23 can be re-run.
+
 ## Release: v15.0.158-beta.1
 
 - promote 2026-09-23 (local ontology + signals): opt-in session-close capture.

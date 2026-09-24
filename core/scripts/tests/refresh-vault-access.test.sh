@@ -31,7 +31,9 @@ case "$*" in
     printf '───────  ───────────────  ──────────  ──────\n'
     printf 'acme     reports/*        write       direct\n'
     printf 'acme     private/*        read        direct\n'
+    printf 'acme     inbox/ (private folder)  write  direct\n'
     printf 'other    docs/plan.md     read        group\n'
+    printf 'Private folders expose the folder only; children are creator-only.\n'
     ;;
   "members --company acme list")
     printf 'EMAIL                ROLE    NAME\n'
@@ -72,9 +74,12 @@ check() { # label jq-expr expected
 check "version"                 '.version'                                        '1'
 check "acme role from members"  '.companies.acme.role'                            'member'
 check "other role unknown"      '.companies.other.role'                           'unknown'
-check "acme grant count"        '.companies.acme.grants | length'                 '2'
+check "acme grant count"        '.companies.acme.grants | length'                 '3'
 check "acme write grant"        '.companies.acme.grants[] | select(.path == "reports/*") | .permission' 'write'
 check "acme read grant"         '.companies.acme.grants[] | select(.path == "private/*") | .permission' 'read'
+# Regression (hq-pro #3662): a private-folder row keeps its verbatim `foo/`
+# pattern and is not dropped by the "(private folder)" table label.
+check "acme private-folder grant" '.companies.acme.grants[] | select(.path == "inbox/") | .permission' 'write'
 check "other exact-key grant"   '.companies.other.grants[0].path'                 'docs/plan.md'
 
 # The manifest must round-trip through the hook's own permission logic.
@@ -94,6 +99,10 @@ hook_rc() {
   && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "FAIL [roundtrip write grant allows]" >&2; }
 [[ "$(hook_rc "$TMP/hqroot/companies/acme/private/x.md")" == "2" ]] \
   && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "FAIL [roundtrip read grant blocks]" >&2; }
+[[ "$(hook_rc "$TMP/hqroot/companies/acme/inbox/new.md")" == "0" ]] \
+  && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "FAIL [roundtrip private-folder write allows direct child]" >&2; }
+[[ "$(hook_rc "$TMP/hqroot/companies/acme/inbox/sub/x.md")" == "2" ]] \
+  && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "FAIL [roundtrip private-folder write blocks nested path]" >&2; }
 [[ "$(hook_rc "$TMP/hqroot/companies/other/docs/plan.md")" == "0" ]] \
   && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "FAIL [roundtrip unknown role fail-open]" >&2; }
 

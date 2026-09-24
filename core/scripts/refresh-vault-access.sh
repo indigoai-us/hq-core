@@ -106,7 +106,10 @@ fetch_grants_tsv() {
   else
     out="$(hq files shared-with-me 2>/dev/null | strip_ansi)" || return 1
   fi
+  # hq-cli >= 5.142 renders a private-folder row as "foo/ (private folder)";
+  # drop the label so the PATH column stays the verbatim `foo/` pattern.
   printf '%s\n' "$out" | awk '
+    { sub(/ \(private folder\)/, "") }
     /^COMPANY[[:space:]]/ { next }
     /^─/ { next }
     /^[[:space:]]*$/ { next }

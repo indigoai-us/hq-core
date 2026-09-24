@@ -25,9 +25,9 @@ Do not invent a project. Do not mkdir `companies/<slug>`.
 ## Manual Board signals only
 
 ```bash
-hq mesh session task-status --session <sid> --enqueue --seq <n> --task-id <id> --status in_progress
-hq mesh session blocked --session <sid> --enqueue --seq <n> --reason "<reason>"
-hq mesh session note --session <sid> --enqueue --seq <n> --summary "<milestone>"
+hq mesh session task-status --session-id <sid> --enqueue --seq <n> --task-id <id> --status in_progress
+hq mesh session blocked --session-id <sid> --enqueue --seq <n> --reason "<reason>"
+hq mesh session note --session-id <sid> --enqueue --seq <n> --summary "<milestone>"
 ```
 
 Board snapshot (when present): `~/.hq/work-context/sessions/<sid>/board.md`

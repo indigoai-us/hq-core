@@ -40,9 +40,21 @@ JSON
   {"id": "ac-proj-7", "title": "widget", "prd_path": "companies/acme/projects/widget/prd.json", "updated_at": "2026-01-01T00:00:00Z"}
 ]}
 JSON
+  # Stub mirrors the real `hq mesh session note` option parser (hq-cli 5.171
+  # --help): an unknown option such as `--session` exits 1 with commander's
+  # "error: unknown option" like the live CLI does.
   cat > "$fix/bin/hq" <<'HQ'
 #!/usr/bin/env bash
 echo "$*" >> "$MESH_STUB_LOG"
+if [ "${1:-} ${2:-} ${3:-}" = "mesh session note" ]; then
+  shift 3
+  for a in "$@"; do
+    case "$a" in
+      --enqueue|--session-id|--harness|--adapter-version|--runtime-version|--seq|--event-id|--at|--task-id|--status|--reason|--summary|--cwd|--hq-root|--company-slug|--project|--task|--touched-path|--repo-path|--tool-writes|--json) ;;
+      --*) echo "error: unknown option '$a'" >&2; exit 1 ;;
+    esac
+  done
+fi
 exit 0
 HQ
   chmod +x "$fix/bin/hq"
@@ -73,8 +85,14 @@ export MESH_STUB_LOG="$TMP/mesh.log"
 make_fixture "$FIX"
 write_manifest "$M" transfer
 : > "$MESH_STUB_LOG"
-PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
+PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>"$TMP/transfer.err" \
   || fail "transfer exited non-zero"
+! grep -q 'mesh note failed' "$TMP/transfer.err" \
+  || fail "mesh note must be accepted by the CLI option parser: $(cat "$TMP/transfer.err")"
+grep -q -- '--session-id ' "$MESH_STUB_LOG" \
+  || fail "mesh note must pass --session-id (not --session): $(cat "$MESH_STUB_LOG")"
+grep -q -- '--company-slug acme --project widget' "$MESH_STUB_LOG" \
+  || fail "mesh note must attribute company + project: $(cat "$MESH_STUB_LOG")"
 
 BOARD="$FIX/companies/acme/board.json"
 jq -e '(.projects | length) == 2' "$BOARD" >/dev/null \

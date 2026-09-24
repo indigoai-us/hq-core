@@ -129,7 +129,7 @@ attendees.
 
 - `_candidates/` and `_rejected/` are not synced. They belong to the writer's
   machine until the worker promotes them.
-- On a cloud-backed company, the worker grants read on each `@{key}/` prefix to
+- On a cloud-backed company, the worker grants read on each `@{key}/*` shared glob (never the bare `@{key}/` private-folder pattern) to
   each principal in that audience, and `@all` read only on company-audience
   paths. No member-baseline grant covers `ontology/`, `signals/`, or `sources/`.
 - Because sync pull only delivers what the caller may read, a reader's local

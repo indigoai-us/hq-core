@@ -29,14 +29,19 @@ check "local-only grants nothing" "$(wc -l < "$t/ledger" | tr -d ' ')" 0
 
 printf 'slug: acme\ncloud: true\n' > "$A/company.yaml"
 out="$(bash "$s" --company acme 2>&1)"; check "cloud run exits 0" "$?" 0
-check "a granted on signals" "$(grep -c '^signals/@k1/ a@x.com$' "$t/ledger")" 1
-check "b lowercased + granted on facts" "$(grep -c '^ontology/facts/@k1/ b@x.com$' "$t/ledger")" 1
-check "sources scoped folder granted" "$(grep -c '^sources/meetings/@k1/ a@x.com$' "$t/ledger")" 1
-check "person uid granted" "$(grep -c "^signals/@k1/ prs_01ABC$" "$t/ledger")" 1
+check "a granted on signals" "$(grep -c '^signals/@k1/\* a@x.com$' "$t/ledger")" 1
+check "b lowercased + granted on facts" "$(grep -c '^ontology/facts/@k1/\* b@x.com$' "$t/ledger")" 1
+check "sources scoped folder granted" "$(grep -c '^sources/meetings/@k1/\* a@x.com$' "$t/ledger")" 1
+check "person uid granted" "$(grep -c "^signals/@k1/\\* prs_01ABC$" "$t/ledger")" 1
 check "non-member skipped" "$(grep -c outsider "$t/ledger")" 0
-check "company facts @all" "$(grep -c '^ontology/facts/@company/ @all$' "$t/ledger")" 1
+check "company facts @all" "$(grep -c '^ontology/facts/@company/\* @all$' "$t/ledger")" 1
 check "no @all on scoped" "$(grep '@k1' "$t/ledger" | grep -c '@all')" 0
 check "no per-file grants" "$(grep -c '\.md ' "$t/ledger")" 0
+# Regression (hq-pro #3662): a bare trailing-slash share is a private create-only
+# folder, not a recursive share. Every grant must be the `/*` shared glob.
+check "no bare trailing-slash grants" "$(grep -c '/ ' "$t/ledger")" 0
+check "company type folder uses shared glob" "$(grep -c '^signals/decision/\* @all$' "$t/ledger")" 1
+check "dry-run prints shared glob" "$(bash "$s" --company acme --dry-run 2>/dev/null | grep -cF 'would grant read signals/@k1/* -> a@x.com')" 1
 
 : > "$t/ledger"; STUB_DROP=b@x.com bash "$s" --company acme >/dev/null 2>&1
 check "failed readback exits 3" "$?" 3

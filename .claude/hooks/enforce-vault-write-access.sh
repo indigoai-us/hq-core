@@ -33,7 +33,10 @@
 #   - role member/guest  →  effective permission = most-specific matching
 #     grant (longest pattern wins; tie → higher permission). Grant patterns
 #     are company-relative: "*" (whole vault), "prefix/*" (subtree, also
-#     matches the bare "prefix" directory itself), or an exact key. No match
+#     matches the bare "prefix" directory itself), "prefix/" (private
+#     create-only folder, hq-pro #3662: a write/admin grant covers direct
+#     children only, since write there creates a new creator-owned child; a
+#     read grant covers no children), or an exact key. No match
 #     → no access. write/admin → allow; read/none → BLOCK.
 #   - companies/manifest.yaml and companies/_template/ are exempt.
 #
@@ -112,6 +115,11 @@ effective_permission() {
               or ($g.path == $rel)
               or (($g.path | endswith("/*")) and ($rel | startswith($g.path[0:-1])))
               or (($g.path | endswith("/*")) and ($rel == $g.path[0:-2]))
+              or (($g.path | endswith("/"))
+                  and ($g.permission == "write" or $g.permission == "admin")
+                  and ($rel | startswith($g.path))
+                  and (($rel | ltrimstr($g.path)) as $child
+                       | ($child | length) > 0 and ($child | contains("/") | not)))
             ) ]
         | if length == 0 then "none"
           else (sort_by([(.path | length), (.permission | rank)]) | last | .permission)

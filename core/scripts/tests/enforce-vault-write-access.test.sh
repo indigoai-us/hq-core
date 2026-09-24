@@ -7,7 +7,8 @@
 #     blocked when the .hq/vault-access.json manifest gives the caller only
 #     read (or no) permission on that vault path, and allowed on write grants;
 #   - grant matching semantics: "*", "prefix/*" (including the bare prefix
-#     dir itself), exact keys, and most-specific-wins (a specific read grant
+#     dir itself), "prefix/" private folders (write covers direct children
+#     only; read covers none), exact keys, and most-specific-wins (a specific read grant
 #     carves a broader write grant down, and vice versa);
 #   - fail-open behavior: missing manifest, unparseable manifest, company not
 #     in manifest, role owner/admin/unknown, enforced=false;
@@ -48,7 +49,9 @@ write_manifest() {
         { "path": "reports/locked/*", "permission": "read" },
         { "path": "docs/plan.md", "permission": "read" },
         { "path": "docs/open.md", "permission": "write" },
-        { "path": "private/*", "permission": "read" }
+        { "path": "private/*", "permission": "read" },
+        { "path": "dropbox/", "permission": "write" },
+        { "path": "reports/peek/", "permission": "read" }
       ]
     },
     "beta": { "role": "owner", "grants": [] },
@@ -98,6 +101,10 @@ run 2 NotebookEdit notebook_path "$A/private/n.ipynb" 'notebook edit read-only b
 run 2 MultiEdit file_path "$A/private/multi.md"     'multiedit read-only blocked'
 run 0 Edit  file_path "$W/anything/x.md"            'star write grant allows anywhere'
 run 2 Edit  file_path "$W/frozen/x.md"              'specific read carve under star write blocked'
+# Private create-only folder rows ("foo/", hq-pro #3662)
+run 0 Write file_path "$A/dropbox/new.md"           'private-folder write allows direct child'
+run 2 Write file_path "$A/dropbox/sub/new.md"       'private-folder write does not cover nested path'
+run 0 Edit  file_path "$A/reports/peek/x.md"        'private-folder read does not carve broader write'
 
 # --- Fail-open paths ------------------------------------------------------
 run 0 Edit file_path "$TMP/companies/beta/x.md"     'owner role fail-open'
