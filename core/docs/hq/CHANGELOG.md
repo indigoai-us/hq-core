@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Changed — narrower triggers for two broad policies (2026-09-24)
+- `hq-github` fired on every command containing `git`, including `git status` and `git log`, and on no `gh` command. It now fires on repository-scoped `gh` families (`pr`, `run`, `issue`, `release`, `workflow`, `api`, `label`, `repo`, `secret`, `variable`, `ruleset`, `cache`) and on `git` with `push`, `fetch` or `remote`.
+- The repo policy `hq-core-staging-changes-via-new-worktrees` fired on any mention of `repo`, `git`, `branch` or `pr`. It now fires on every `git` command that moves HEAD, changes the working tree or index, or updates refs (`worktree`, `branch`, `commit`, `push`, `fetch`, `pull`, `switch`, `checkout`, `merge`, `rebase`, `reset`, `stash`, `restore`, `cherry-pick`, `revert`, `am`, `apply`, `add`, `rm`, `mv`, `clean`, `tag`), on `gh pr`, and on edits naming `hq-core-staging`. Read-only commands such as `git status`, `git log` and `git diff` no longer fire it. It is evaluated on UserPromptSubmit, PreToolUse and AssistantIntent. `SessionStart` is dropped from `on:`: SessionStart facts are only `always`, which the old expression never matched, so no session-start reminder is lost.
+- Regression: `core/scripts/tests/git-policy-trigger-coverage.test.sh` evaluates both policies' current `when:` against 49 commands with the production fact deriver and evaluator. It fails on the first draft of this change, which missed `git checkout`, `git switch`, `git merge`, `git rebase` and the `gh label`/`repo`/`secret`/`variable` families.
+- Every expression passes `eval-trigger.sh --check` and `lint-policy-triggers.sh`. `hq-qmd-first-for-hq-search` is unchanged because `inject-policy-e2e.test.sh` requires it to fire on `grep`.
+
 ### Fixed: policy reminder trimming avoids per-line process launches (2026-09-24)
 - `.claude/hooks/inject-policy-on-trigger.sh` now chooses the first output-ceiling fit in one AWK invocation. Local C-locale Bash arithmetic counts UTF-8 output bytes correctly. Policy order, cut notices, and fallback output keep their previous behavior.
 - Regression: `core/scripts/tests/inject-policy-output-trim-performance.test.sh` measured 248 `tail` launches with the base hook and 0 with the optimized hook on 250 synthetic matches. It also checks UTF-8 output ceilings and emission stats.

@@ -2,14 +2,14 @@
 id: hq-core-staging-changes-via-new-worktrees
 title: All hq-core-staging changes happen in a fresh dedicated worktree
 scope: repo
-when: repo || github || git || worktree || branch || commit || push || pr
-on: [UserPromptSubmit, PreToolUse, SessionStart]
+when: (git && (worktree || branch || commit || push || fetch || pull || switch || checkout || merge || rebase || reset || stash || restore || cherry-pick || revert || am || apply || add || rm || mv || clean || tag)) || (gh && pr) || (hq-core-staging && (edit || delete || write))
+on: [UserPromptSubmit, PreToolUse, AssistantIntent]
 trigger: any session or worker about to create, edit, or delete files in hq-core-staging, or run a git/gh mutation against it (branch, commit, push, PR)
 enforcement: hard
 public: false
-version: 1
+version: 2
 created: 2026-08-17
-updated: 2026-08-17
+updated: 2026-09-24
 source: user-correction
 applies_to: [git, github]
 ---

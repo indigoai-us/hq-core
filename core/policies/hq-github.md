@@ -2,12 +2,12 @@
 id: hq-github
 title: GitHub — always pass an explicit repo to gh
 scope: global
-when: git
+when: (gh && (pr || run || issue || release || workflow || api || label || repo || secret || variable || ruleset || cache)) || (git && (push || fetch || remote))
 on: [PreToolUse]
 enforcement: hard
-version: 2
+version: 3
 created: 2026-04-29
-updated: 2026-07-28
+updated: 2026-09-24
 applies_to: [github]
 public: true
 vendor_public_ok: true
