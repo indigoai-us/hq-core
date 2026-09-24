@@ -1185,6 +1185,8 @@ jobs:
         run: bash core/scripts/tests/inject-policy-batched-bodies.test.sh
       - name: Policy trigger linter streams ARG_MAX-scale corpora
         run: bash core/scripts/tests/lint-policy-triggers.test.sh
+      - name: Narrowed git and gh policy triggers still cover every mutation
+        run: bash core/scripts/tests/git-policy-trigger-coverage.test.sh
 
   personal-policy-overlay:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
