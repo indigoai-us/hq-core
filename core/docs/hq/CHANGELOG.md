@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed: policy reminder trimming avoids per-line process launches (2026-09-24)
+- `.claude/hooks/inject-policy-on-trigger.sh` now chooses the first output-ceiling fit in one AWK invocation. Local C-locale Bash arithmetic counts UTF-8 output bytes correctly. Policy order, cut notices, and fallback output keep their previous behavior.
+- Regression: `core/scripts/tests/inject-policy-output-trim-performance.test.sh` measured 248 `tail` launches with the base hook and 0 with the optimized hook on 250 synthetic matches. It also checks UTF-8 output ceilings and emission stats.
+
 ### Fixed — tool-write hook passes same-company project switches to prd-sync (F14, 2026-09-23)
 - `core/hooks/PostToolUse/35-work-mesh-tool-writes.sh` used to exit when the written project slug differed from the session's bound project. A write of `companies/<same-company>/projects/<other-slug>/prd.json` now still calls `hq mesh context prd-sync` (one flight per session, same lock as today) so hq-cli can rebind and emit against the new project. Writes to other files in another project stay skipped. Cross-company stays skipped.
 - Regression: `core/scripts/tests/work-mesh-tool-writes-bind.test.sh` (bound to A, write B/prd.json same company → prd-sync; B/note.md → not invoked; other company → not invoked).

@@ -268,6 +268,14 @@ policy_file_bytes() {
   printf '%s' "${bytes:-0}"
 }
 
+# Store the byte length in POLICY_VALUE_BYTES without spawning a counting
+# utility. Bash counts characters under a multibyte locale, so keep this
+# function's locale local and byte-oriented.
+policy_value_bytes() {
+  local LC_ALL=C
+  POLICY_VALUE_BYTES=${#1}
+}
+
 policy_bytes_bucket() {
   local bytes="$1"
   case "$bytes" in
@@ -1495,7 +1503,8 @@ printf '%s' "$MATCHES" | {
         size="${POLICY_BODY_SIZES[$match_index]:-0}"
       else
         body="$(policy_body "$path")"
-        size="$(printf '%s' "$body" | wc -c | tr -d ' ')"
+        policy_value_bytes "$body"
+        size="$POLICY_VALUE_BYTES"
       fi
     fi
     if [ -n "$body" ]; then
@@ -1564,7 +1573,8 @@ compact_reminder() {
 OUT="$(emit_reminder)"
 # Measure precisely what the final `printf '%s\n'` below will write; command
 # substitution strips emit_reminder's final newline.
-OUT_BYTES="$(printf '%s\n' "$OUT" | wc -c | tr -d ' ')"
+policy_value_bytes "$OUT"
+OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
 if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ] && [ "$HARD_FULL" != "0" ]; then
   # Too big for the host to deliver: fall back to one-line summaries for
   # every policy, and say so. A shortened set the model can read beats a full
@@ -1572,64 +1582,146 @@ if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ] && [ "$HARD_FULL" != "0" ]; then
   OUT="$(HARD_FULL=0 emit_reminder)"
   OUT="${OUT%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes would have been exceeded (${OUT_BYTES} bytes with full text): every HARD policy above is shortened to its summary line. Read each in full at its own file before acting on it.
 </policy-reminder>"
-  OUT_BYTES="$(printf '%s\n' "$OUT" | wc -c | tr -d ' ')"
+  policy_value_bytes "$OUT"
+  OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
 fi
 if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ]; then
-  # Still over even as summaries: drop trailing policy lines until it fits,
-  # naming how many were cut. Rebuild and measure the complete final candidate
-  # on every pass, including its notice and printf's newline, so a 9 -> 10
-  # cut-count transition cannot cross the ceiling after the last measurement.
-  cut=0
-  while :; do
-    if [ "$cut" -gt 0 ]; then
-      candidate="${OUT%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes: ${cut} lower-ranked policy line(s) cut from this reminder. They stay in the ledger as fired; see the policy files.
-</policy-reminder>"
+  # Still over even as summaries: calculate the first fitting cut count in
+  # one byte-oriented awk pass. The old loop rebuilt, measured, searched and
+  # edited the reminder once per dropped policy line.
+  TRIM_SEPARATOR=""
+  TRIM_SEPARATOR_CANDIDATES=($'\034' $'\035' $'\036' $'\037')
+  for candidate_separator in "${TRIM_SEPARATOR_CANDIDATES[@]}"; do
+    case "$OUT" in
+      *"$candidate_separator"*) ;;
+      *) TRIM_SEPARATOR="$candidate_separator"; break ;;
+    esac
+  done
+  if [ -z "$TRIM_SEPARATOR" ]; then
+    OUT=""
+    OUT_BYTES=0
+    NO_STDOUT_REASON="policy reminder contains all reserved output-trim separators"
+  else
+    TRIM_RESULT=""
+    if ! TRIM_RESULT="$(LC_ALL=C awk -v ceiling="$OUTPUT_CEILING" -v sep="$TRIM_SEPARATOR" '
+        {
+          lines[NR]=$0
+          total_bytes += length($0) + 1
+          if ($0 ~ /^> Policy `/) policy_line[NR]=1
+        }
+        END {
+          removed_bytes=0
+          candidate_cut=0
+          chosen_cut=0
+          for (i=NR; i>=1; i--) {
+            if (!(i in policy_line)) continue
+            removed_bytes += length(lines[i]) + 1
+            candidate_cut++
+            notice = "> Output ceiling of " ceiling " bytes: " candidate_cut " lower-ranked policy line(s) cut from this reminder. They stay in the ledger as fired; see the policy files."
+            candidate_bytes = total_bytes - removed_bytes + length(notice) + 1
+            if (candidate_bytes <= ceiling) {
+              chosen_cut=candidate_cut
+              chosen_bytes=candidate_bytes
+              chosen_notice=notice
+              break
+            }
+          }
+          if (!chosen_cut) {
+            printf "%snone%s%d%s0", sep, sep, candidate_cut, sep
+            exit
+          }
+          remaining=chosen_cut
+          for (i=NR; i>=1; i--) {
+            if (remaining > 0 && (i in policy_line)) {
+              drop[i]=1
+              remaining--
+            }
+          }
+          for (i=1; i<=NR; i++) {
+            if (lines[i] == "</policy-reminder>") {
+              printf "%s\n", chosen_notice
+              printf "%s", lines[i]
+              if (i < NR) printf "\n"
+            } else if (!(i in drop)) {
+              printf "%s\n", lines[i]
+            }
+          }
+          printf "%sfit%s%d%s%d", sep, sep, chosen_cut, sep, chosen_bytes
+        }
+    ' <<<"$OUT")"; then
+      OUT=""
+      OUT_BYTES=0
+      NO_STDOUT_REASON="output ceiling trim calculation failed"
     else
-      candidate="$OUT"
-    fi
-    candidate_bytes="$(printf '%s\n' "$candidate" | wc -c | tr -d ' ')"
-    if [ "$candidate_bytes" -le "$OUTPUT_CEILING" ]; then
-      OUT="$candidate"
-      OUT_BYTES="$candidate_bytes"
-      break
-    fi
-    last_line="$(printf '%s\n' "$OUT" | grep -n '^> Policy `' | tail -1 | cut -d: -f1 || true)"
-    if [ -z "$last_line" ]; then
-      # Policy lines cannot make room for an oversized withheld/malformed
-      # notice. Preserve the more informative existing fallback whenever it
-      # fits; only then shrink again to the compact form, and measure both.
-      if [ "$cut" -gt 0 ]; then
-        last_resort="<policy-reminder>
+      trim_bytes="${TRIM_RESULT##*"$TRIM_SEPARATOR"}"
+      trim_before_bytes="${TRIM_RESULT%"$TRIM_SEPARATOR"*}"
+      trim_cut="${trim_before_bytes##*"$TRIM_SEPARATOR"}"
+      trim_before_cut="${trim_before_bytes%"$TRIM_SEPARATOR"*}"
+      trim_status="${trim_before_cut##*"$TRIM_SEPARATOR"}"
+      trimmed_out="${trim_before_cut%"$TRIM_SEPARATOR"*}"
+      case "$trim_cut" in ''|*[!0-9]*)
+        OUT=""
+        OUT_BYTES=0
+        NO_STDOUT_REASON="output ceiling trim result had an invalid cut count"
+        trim_status="invalid"
+        ;;
+      esac
+      case "$trim_status" in
+        fit)
+          case "$trim_bytes" in ''|*[!0-9]*)
+            OUT=""
+            OUT_BYTES=0
+            NO_STDOUT_REASON="output ceiling trim result had an invalid byte count"
+            ;;
+          *)
+            OUT="$trimmed_out"
+            OUT_BYTES="$trim_bytes"
+            ;;
+          esac
+          ;;
+        none)
+          # Policy lines cannot make room for an oversized withheld/malformed
+          # notice. Preserve the more informative existing fallback whenever
+          # it fits; only then shrink again to the compact form.
+          cut="$trim_cut"
+          if [ "$cut" -gt 0 ]; then
+            last_resort="<policy-reminder>
 > Output ceiling of ${OUTPUT_CEILING} bytes: ${cut} lower-ranked policy line(s) cut from this reminder. Remaining reminder text was omitted to keep this event deliverable; see the policy files.
 </policy-reminder>"
-      else
-        last_resort="<policy-reminder>
+          else
+            last_resort="<policy-reminder>
 > Output ceiling of ${OUTPUT_CEILING} bytes: remaining reminder text was omitted to keep this event deliverable; see the policy files.
 </policy-reminder>"
-      fi
-      last_resort_bytes="$(printf '%s\n' "$last_resort" | wc -c | tr -d ' ')"
-      if [ "$last_resort_bytes" -le "$OUTPUT_CEILING" ]; then
-        OUT="$last_resort"
-        OUT_BYTES="$last_resort_bytes"
-      else
-        # The compact reminder is deliberately measured too: a ceiling below
-        # its useful 76-byte floor must not leak a fixed-size fallback.
-        compact_out="$(compact_reminder)"
-        compact_bytes="$(printf '%s\n' "$compact_out" | wc -c | tr -d ' ')"
-        if [ "$compact_bytes" -le "$OUTPUT_CEILING" ]; then
-          OUT="$compact_out"
-          OUT_BYTES="$compact_bytes"
-        else
+          fi
+          policy_value_bytes "$last_resort"
+          last_resort_bytes=$((POLICY_VALUE_BYTES + 1))
+          if [ "$last_resort_bytes" -le "$OUTPUT_CEILING" ]; then
+            OUT="$last_resort"
+            OUT_BYTES="$last_resort_bytes"
+          else
+            # The compact reminder is deliberately measured too: a ceiling
+            # below its useful 76-byte floor must not leak a fixed-size fallback.
+            compact_out="$(compact_reminder)"
+            policy_value_bytes "$compact_out"
+            compact_bytes=$((POLICY_VALUE_BYTES + 1))
+            if [ "$compact_bytes" -le "$OUTPUT_CEILING" ]; then
+              OUT="$compact_out"
+              OUT_BYTES="$compact_bytes"
+            else
+              OUT=""
+              OUT_BYTES=0
+              NO_STDOUT_REASON="HQ_POLICY_OUTPUT_CEILING_BYTES=${OUTPUT_CEILING} is below the ${compact_bytes}-byte minimum reminder"
+            fi
+          fi
+          ;;
+        *)
           OUT=""
           OUT_BYTES=0
-          NO_STDOUT_REASON="HQ_POLICY_OUTPUT_CEILING_BYTES=${OUTPUT_CEILING} is below the ${compact_bytes}-byte minimum reminder"
-        fi
-      fi
-      break
+          NO_STDOUT_REASON="output ceiling trim result had an unknown status"
+          ;;
+      esac
     fi
-    OUT="$(printf '%s\n' "$OUT" | sed "${last_line}d")"
-    cut=$((cut + 1))
-  done
+  fi
 fi
 # Emission stats (2026-09-07): one line per event so a live smoke or benchmark
 # can prove, per session and per runtime, that every reminder stayed under the

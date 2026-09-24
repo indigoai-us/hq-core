@@ -759,6 +759,8 @@ jobs:
         run: bash core/scripts/tests/block-env-dump.test.sh
       - name: Policy reminder stays under the host output ceiling; hard rules rank first
         run: bash core/scripts/tests/inject-policy-output-ceiling.test.sh
+      - name: Policy reminder output trimming avoids per-line tail launches
+        run: bash core/scripts/tests/inject-policy-output-trim-performance.test.sh
       - name: Policy age report flags retirement candidates
         run: bash core/scripts/tests/policy-age-report.test.sh
       - name: Story deliverables gate on passes:true
