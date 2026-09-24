@@ -377,7 +377,7 @@ Turn the team/functions into **groups with streamlined, rule-based access** — 
    contractor; editable). `hq groups create grp_<name> --name "<Human>" --company {slug}`
    (ids must match `grp_*`).
 2. **ACL rules (prefix-based, streamlined):** grant by prefix tree, not file-by-file:
-   - `hq files share <function>/ --with grp_<function> --permission read --company {slug}`
+   - `hq files share '<function>/*' --with grp_<function> --permission read --company {slug}` (the `/*` shared glob; a bare `<function>/` is a private create-only folder)
    - `hq secrets share <FUNCTION>/<FULL/PATH> --with grp_<function> --permission read --company {slug}`
      (full key path required — policy `hq-secrets-share-needs-full-key-path`).
    - Company-wide baseline is already written by `/designate-team` (Phase 4): `@all write`

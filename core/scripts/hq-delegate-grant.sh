@@ -166,7 +166,7 @@ esac
 read_acl() {
   local result
   result="$(hq files acl "$1" --company "$COMPANY" --json)" || return 1
-  printf '%s' "$result" | jq -e --arg prefix "${1}*" --arg company "$EXPECTED_COMPANY" '
+  printf '%s' "$result" | jq -e --arg prefix "$1" --arg company "$EXPECTED_COMPANY" '
     .schemaVersion == 1 and .prefix == $prefix and
     (.companyUid | type == "string") and ($company == "" or .companyUid == $company) and
     (.direct | type == "array") and (.exists | type == "boolean")
@@ -179,15 +179,20 @@ i=0
 while [ "$i" -lt "$PREFIX_COUNT" ]; do
   PFX="$(jq -r ".vaultPrefixes[$i].prefix" "$MANIFEST")"
   PERM="$(jq -r ".vaultPrefixes[$i].permission" "$MANIFEST")"
-  BEFORE="$(read_acl "$PFX")" || die "ACL preflight failed; no share attempted for $PFX"
+  # Always address the recursive "folder/*" pattern explicitly. Since hq-pro
+  # #3662 (2026-09-23) the server echoes the raw pattern back on read, and a
+  # bare trailing "/" can mean a PRIVATE folder pattern when that flag is on.
+  # A delegation grant is always the recursive share, never a private folder.
+  ACL_PATTERN="${PFX}*"
+  BEFORE="$(read_acl "$ACL_PATTERN")" || die "ACL preflight failed; no share attempted for $PFX"
   EXPECTED_COMPANY="$(printf '%s' "$BEFORE" | jq -r '.companyUid')"
   SHARE_RC=0
-  hq files share "$PFX" --with "$GRANT_PRINCIPAL" --permission "$PERM" --company "$COMPANY" || SHARE_RC=$?
+  hq files share "$ACL_PATTERN" --with "$GRANT_PRINCIPAL" --permission "$PERM" --company "$COMPANY" || SHARE_RC=$?
   [ "$SHARE_RC" -eq 0 ] || echo "hq-delegate-grant: share reported an error on $PFX; checking exact grant" >&2
   landed=0
   for delay in 0 1 2; do
     [ "$delay" -eq 0 ] || sleep "$delay"
-    if AFTER="$(read_acl "$PFX")" && printf '%s' "$AFTER" | jq -e \
+    if AFTER="$(read_acl "$ACL_PATTERN")" && printf '%s' "$AFTER" | jq -e \
       --arg id "$EXPECTED_ID" --arg type "$EXPECTED_TYPE" --arg perm "$PERM" \
       '.exists and any(.direct[]; .granteeType == $type and .granteeId == $id and .permission == $perm)' >/dev/null; then
       landed=1

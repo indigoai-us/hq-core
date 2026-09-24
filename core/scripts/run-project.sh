@@ -85,8 +85,9 @@ mesh_project_complete() {
 mesh_report_start() {
   local project="$1" company="$2"
   command -v hq >/dev/null 2>&1 || return 0
-  hq mesh session note --enqueue --session "${HQ_SESSION_ID:-run-project}" --seq 1 \
+  hq mesh session note --enqueue --session-id "${HQ_SESSION_ID:-run-project}" --seq 1 \
     --harness claude-code --adapter-version 1.0.0 \
+    --company-slug "$company" --project "$project" \
     --summary "run-project started for $project" >/dev/null 2>&1 || true
 }
 
@@ -101,8 +102,9 @@ mesh_report_finish() {
   else
     summary="run-project exited with code $rc"
   fi
-  hq mesh session note --enqueue --session "${HQ_SESSION_ID:-run-project}" --seq 1 \
+  hq mesh session note --enqueue --session-id "${HQ_SESSION_ID:-run-project}" --seq 1 \
     --harness claude-code --adapter-version 1.0.0 \
+    --company-slug "$company" --project "$project" \
     --summary "$summary" >/dev/null 2>&1 || true
 }
 

@@ -174,9 +174,9 @@ Presence is automatic via `hq mesh daemon`. Do not call deleted
 `hq mesh session check|watch|progress`. For a discrete Board signal only:
 
 ```bash
-hq mesh session note --session <sid> --enqueue --seq <n> --summary "Running {worker_id}/{skill}"
+hq mesh session note --session-id <sid> --enqueue --seq <n> --summary "Running {worker_id}/{skill}"
 # or on a hard stop:
-hq mesh session blocked --session <sid> --enqueue --seq <n> --reason "<short>"
+hq mesh session blocked --session-id <sid> --enqueue --seq <n> --reason "<short>"
 ```
 
 Best-effort; must not block local/offline work. See `core/skills/work-mesh/`.

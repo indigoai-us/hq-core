@@ -129,8 +129,12 @@ jq \
 # Silently tolerated when unavailable (local/offline installs no-op).
 
 if command -v hq >/dev/null 2>&1; then
-  hq mesh session note --enqueue --session "${HQ_SESSION_ID:-delegate}" --seq 1 \
+  # `--session-id` is the CLI option (hq-cli 5.157+ rejects `--session` with
+  # "unknown option"); --company-slug/--project attribute the note to the
+  # delegated project.
+  hq mesh session note --enqueue --session-id "${HQ_SESSION_ID:-delegate}" --seq 1 \
     --harness claude-code --adapter-version 1.0.0 \
+    --company-slug "$COMPANY" --project "$PROJECT" \
     --summary "Delegated to $DISPLAY ($PRINCIPAL) — delegation $DELEGATION_ID; ownership transferred" \
     || echo "hq-delegate-transfer: mesh note failed; authoritative mesh ownership remains unconfirmed" >&2
 fi

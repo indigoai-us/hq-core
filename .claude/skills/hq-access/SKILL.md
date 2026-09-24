@@ -100,6 +100,10 @@ that answer, never send twice for the same (requester, prefix, grantor) within
 24 hours (`<hqRoot>/.hq/access-requests.json` is the ledger; say "already asked
 <name> <time ago>" instead), and never print share-session URLs or secrets.
 
+`<prefix>` is the exact file key, or `<folder>/*` when the request covers a
+folder. Never put a bare trailing-slash `<folder>/` in the prompt: that pattern
+creates a private create-only folder and does not grant read on its contents.
+
 ## Step 5 — Report in plain language
 
 End with exactly one of:

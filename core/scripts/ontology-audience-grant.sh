@@ -10,6 +10,8 @@
 #     sources/{channel}/@{key}/ that exists, to each principal that is an
 #     active company member (non-members are skipped with a warning);
 #   - one prefix grant per principal per folder, never per file;
+#   - each grant is the recursive shared glob `<folder>/*` (a bare `<folder>/`
+#     is a private create-only folder since hq-pro #3662);
 #   - reads every grant back with `hq files acl --json`; a missing grant exits 3.
 # Company-audience paths get @all read on signals/{type}/ and
 # ontology/facts/@company/ only. Nothing else under ontology/, signals/,
@@ -38,8 +40,11 @@ members="$("$HQ" members --company "$co" list 2>/dev/null | awk 'NR>1{print tolo
 [ -n "$members" ] || { echo "could not list members of $co" >&2; exit 3; }
 
 granted=0 skipped=0 failed=0
-grant() { # <prefix> <principal>
-  local p="$1" who="$2"
+grant() { # <folder/> <principal>
+  # Grant the recursive shared glob `<folder>/*`, never the bare `<folder>/`:
+  # since hq-pro #3662 a bare trailing slash is a private create-only folder
+  # (read on it exposes no children) and ACL reads echo the pattern verbatim.
+  local p="${1%/}/*" who="$2"
   if [ "$dry" = 1 ]; then echo "would grant read $p -> $who"; return 0; fi
   "$HQ" files --company "$co" share "$p" --with "$who" --permission read >/dev/null 2>&1 || true
   if "$HQ" files --company "$co" acl "$p" --json 2>/dev/null | jq -e --arg w "$who" \

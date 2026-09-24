@@ -81,7 +81,7 @@ case "$1 $2" in
       line="$row $perm"
       grep -qxF "$line" "$f" 2>/dev/null || printf '%s\n' "$line" >> "$f"
     fi
-    echo "Granted $perm on ${pfx}* to $who"
+    echo "Granted $perm on ${pfx} to $who"
     exit "${HQ_STUB_SHARE_RC:-0}" ;;
   "files acl")
     pfx="$3"
@@ -92,7 +92,8 @@ case "$1 $2" in
         jq -cn --arg t "$type" --arg g "$grantee" --arg p "$perm" '{granteeType:$t,granteeId:$g,permission:$p}'
       done < "$f" | jq -s '.')"
     fi
-    jq -cn --arg p "${pfx}*" --argjson rows "$rows" '{schemaVersion:1,companyUid:"cmp_acme",prefix:$p,direct:$rows,exists:($rows|length>0),inherited:[],children:[]}'
+    # hq-pro #3662 (2026-09-23): the server echoes the requested pattern verbatim.
+    jq -cn --arg p "${pfx}" --argjson rows "$rows" '{schemaVersion:1,companyUid:"cmp_acme",prefix:$p,direct:$rows,exists:($rows|length>0),inherited:[],children:[]}'
     exit 0 ;;
   "people resolve")
     tok="$3"
@@ -180,18 +181,18 @@ fi
 
 SHARE_COUNT="$(grep -c '^files share' "$INVOKE_LOG")"
 [ "$SHARE_COUNT" -eq 3 ] || fail "expected exactly 3 share calls, got $SHARE_COUNT"
-grep -q '^files share projects/widget/ --with alice@acme.test --permission write --company acme$' "$INVOKE_LOG" \
+grep -q '^files share projects/widget/\* --with alice@acme.test --permission write --company acme$' "$INVOKE_LOG" \
   || fail "missing write share on projects/widget/"
-grep -q '^files share knowledge/insights/ --with alice@acme.test --permission read --company acme$' "$INVOKE_LOG" \
+grep -q '^files share knowledge/insights/\* --with alice@acme.test --permission read --company acme$' "$INVOKE_LOG" \
   || fail "missing read share on knowledge/insights/"
-grep -q '^files share policies/ --with alice@acme.test --permission read --company acme$' "$INVOKE_LOG" \
+grep -q '^files share policies/\* --with alice@acme.test --permission read --company acme$' "$INVOKE_LOG" \
   || fail "missing read share on policies/"
 
 # 1b. The ACL stored the grant under a prs_ uid, NOT the literal email — the
 # regression that broke production. Verification must still have passed.
-grep -qxF 'person prs_ALICE write' "$ACL_STATE/projects_widget_" \
+grep -qxF 'person prs_ALICE write' "$ACL_STATE/projects_widget_*" \
   || fail "member email should have resolved to a prs_ uid in the ACL store"
-if grep -q 'alice@acme.test' "$ACL_STATE/projects_widget_" 2>/dev/null; then
+if grep -q 'alice@acme.test' "$ACL_STATE/projects_widget_*" 2>/dev/null; then
   fail "resolved member must NOT be stored under the literal email"
 fi
 
@@ -200,11 +201,12 @@ if grep '^files share' "$INVOKE_LOG" | grep -vq -- '--with'; then
   fail "a share call omitted --with (browser/share-session flow is forbidden here)"
 fi
 
-# every shared prefix is folder form
+# every shared prefix is the explicit recursive folder pattern (never a bare
+# trailing "/", which hq-pro #3662 can treat as a private-folder pattern)
 grep '^files share' "$INVOKE_LOG" | awk '{print $3}' | while IFS= read -r p; do
   case "$p" in
-    */) ;;
-    *) fail "shared prefix not folder form: $p" ;;
+    */\*) ;;
+    *) fail "shared prefix not explicit folder/* form: $p" ;;
   esac
 done
 
@@ -229,7 +231,7 @@ TMP_M="$(mktemp)"
 jq '.to = {"kind":"person","principal":"bob@pending.test","displayName":"Bob"}' "$M" > "$TMP_M" && mv "$TMP_M" "$M"
 : > "$INVOKE_LOG"
 bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "pending-email grant must verify (email-keyed)"
-grep -qxF 'email bob@pending.test write' "$ACL_STATE/projects_widget_" \
+grep -qxF 'email bob@pending.test write' "$ACL_STATE/projects_widget_*" \
   || fail "pending email must stay email-keyed in the ACL store"
 jq -e '.status == "granted"' "$M" >/dev/null || fail "pending-email run must advance to granted"
 
@@ -291,7 +293,7 @@ grep -q '^groups add grp_dlg-ktxdeacon agt_01KTXDEACON --company acme$' "$INVOKE
 if grep '^files share' "$INVOKE_LOG" | grep -q 'agt_'; then
   fail "files share must never receive a raw agt_ principal"
 fi
-grep -q '^files share projects/widget/ --with grp_dlg-ktxdeacon --permission write --company acme$' "$INVOKE_LOG" \
+grep -q '^files share projects/widget/\* --with grp_dlg-ktxdeacon --permission write --company acme$' "$INVOKE_LOG" \
   || fail "agent write grant must target the delegation group"
 jq -e '.status == "granted" and .grantPrincipal == "grp_dlg-ktxdeacon"' "$M" >/dev/null \
   || fail "manifest must record the group grant principal"
@@ -307,7 +309,7 @@ HQ_STUB_SHARE_RC=1 HQ_STUB_SHARE_NOOP=1 bash "$GRANT" --manifest "$M" --yes >/de
 # An unrelated person's same-permission grant must never satisfy the target.
 reset_acl_state
 write_manifest "$M" building
-echo 'person prs_BOB write' > "$ACL_STATE/projects_widget_"
+echo 'person prs_BOB write' > "$ACL_STATE/projects_widget_*"
 if HQ_STUB_SHARE_NOOP=1 bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1; then fail "wrong person's grant accepted"; fi
 jq -e '.status == "building" and .vaultPrefixes[0].grantReceipt == null' "$M" >/dev/null || fail "wrong-person result advanced state"
 

@@ -102,7 +102,7 @@ If company was unresolved in Step 2, prepend a company question:
 Before printing confirmation, optional best-effort note (presence is automatic):
 
 ```bash
-hq mesh session note --session <sid> --enqueue --seq <n> --summary "Idea captured: {title}"
+hq mesh session note --session-id <sid> --enqueue --seq <n> --summary "Idea captured: {title}"
 ```
 
 If the daemon/helper is unavailable, continue silently. Manual verbs only:
