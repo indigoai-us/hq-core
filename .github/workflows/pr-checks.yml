@@ -588,6 +588,19 @@ jobs:
       - name: De-extensioned packfile detection and repair
         run: bash core/scripts/tests/git-pack-extension-check.test.sh
 
+  auto-tag-release-parse:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    # US-048: auto-tag-release.yml used to read only the head subject, so a
+    # merge-commit merge of `release: v<semver>` never tagged. Parse lives in
+    # core/scripts/parse-release-tag.sh so squash, parent-2, and PR-title
+    # paths can be regression-tested without a live push to hq-core main.
+    name: auto-tag-release-parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse release tag from squash and merge-commit subjects
+        run: bash core/scripts/tests/parse-release-tag.test.sh
+
   git-mutation-guard:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # DEV-1765: the HQ-root git-mutation guard must FIRE correctly under BOTH
@@ -985,6 +998,8 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
         run: bash core/scripts/tests/block-core-writes-bash-fanout.test.sh
+      - name: block-core-writes-bash skips cold-path work and parses once
+        run: bash core/scripts/tests/block-core-writes-bash-fast-path.test.sh
       - name: block-core-writes permits only the durable native personal context
         run: bash core/scripts/tests/block-core-writes-native-context.test.sh
       - name: block-core-writes keeps package contribution links immutable
@@ -1024,6 +1039,7 @@ jobs:
             core/scripts/tests/check-hq-update-bounded-network.test.sh
             core/scripts/tests/hook-lib-strip-exclude-tokens.test.sh
             core/scripts/tests/block-core-writes-bash-fanout.test.sh
+            core/scripts/tests/block-core-writes-bash-fast-path.test.sh
             .claude/hooks/block-core-writes-bash.sh
             .claude/hooks/check-hq-update.sh
             .claude/hooks/hook-timeout-probe.sh

@@ -2,7 +2,10 @@ name: Auto-tag release commit
 
 # When a commit lands on hq-core main whose subject is exactly
 # `release: v<semver>` (optionally followed by ` (#<pr>)` from a squash merge),
-# create and push the matching `v<semver>` tag. That tag push transitively
+# create and push the matching `v<semver>` tag. Merge-commit merges of the
+# same PR (GitHub "Create a merge commit") have subject
+# `Merge pull request #N from …`; parse-release-tag.sh then reads the second
+# parent's subject or the associated PR title. That tag push transitively
 # triggers release.yml, which cuts the GitHub release — so merging a
 # `release: v<ver>` promote PR is all an operator needs to do; tagging is
 # automatic.
@@ -30,6 +33,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   # One tagger per ref; never cancel — each release commit must get its tag.
@@ -45,27 +49,17 @@ jobs:
       HQ_AUDIT_BOT_APP_ID: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
       HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Parse release version from head commit subject
         id: parse
         env:
           MSG: ${{ github.event.head_commit.message }}
-        run: |
-          set -euo pipefail
-          SUBJECT="$(printf '%s' "$MSG" | head -1)"
-          echo "head commit subject: ${SUBJECT}"
-          # `release: v<semver>` with optional `-prerelease` and optional
-          # squash-merge ` (#123)` suffix. Anchored so unrelated commits skip.
-          if printf '%s' "$SUBJECT" | grep -Eq '^release: v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?( \(#[0-9]+\))?$'; then
-            VER="$(printf '%s' "$SUBJECT" | sed -E 's/^release: v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?).*/\1/')"
-            {
-              echo "match=true"
-              echo "tag=v${VER}"
-            } >> "$GITHUB_OUTPUT"
-            echo "::notice::Release commit detected → will tag v${VER}"
-          else
-            echo "match=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Head commit subject is not 'release: v<semver>'; no tag created."
-          fi
+          GH_TOKEN: ${{ github.token }}
+        run: bash core/scripts/parse-release-tag.sh
 
       - name: Fail fast if App credentials missing
         if: steps.parse.outputs.match == 'true' && (env.HQ_AUDIT_BOT_APP_ID == '' || env.HQ_AUDIT_BOT_PRIVATE_KEY == '')
@@ -96,9 +90,10 @@ jobs:
             echo "::notice::${TAG} already exists; nothing to do."
             exit 0
           fi
-          # Create the tag via the REST API using the App token. No checkout /
-          # local git needed, and an App-token-created ref DOES trigger
-          # release.yml (unlike a GITHUB_TOKEN-created one).
+          # Create the tag via the REST API using the App token. An
+          # App-token-created ref DOES trigger release.yml (unlike a
+          # GITHUB_TOKEN-created one). The checkout above is only so
+          # parse-release-tag.sh is on disk; tagging does not use local git.
           gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
             -f "ref=refs/tags/${TAG}" \
             -f "sha=${GITHUB_SHA}"

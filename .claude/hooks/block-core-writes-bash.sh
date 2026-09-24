@@ -20,6 +20,27 @@ INPUT=$(cat)
 CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
 [[ -z "$CMD" ]] && exit 0
 
+# This lexical candidate check is deliberately a superset of every deny path
+# below. Each deny path needs one protected directory name (or AGENTS.md) in
+# its target token: fixed HQ-root prefixes, CLAUDE_PROJECT_DIR/HQ_ROOT/REPO_ROOT
+# forms, colon lists, and assignment-carried variables all preserve that name.
+# Remove shell quote and escape syntax first because hq_shell_simple_commands
+# does the same while building argv. This also covers a path split across
+# adjacent quoted fragments. The registry prefilter has these names plus broad
+# write verbs and is therefore broader than the blocking target predicate.
+has_protected_path_candidate() {
+  local candidate="$1"
+  candidate="${candidate//\'/}"
+  candidate="${candidate//\"/}"
+  candidate="${candidate//\\/}"
+  case "$candidate" in
+    *core/*|*.claude/*|*.agents/*|*.codex/*|*.obsidian/*|*companies/_template*|*AGENTS.md*) return 0 ;;
+  esac
+  return 1
+}
+
+has_protected_path_candidate "$CMD" || exit 0
+
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
 PROJECT_DIR="$(hq_normpath "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
@@ -158,7 +179,18 @@ strip_token_quotes() {
     \"*\") tok="${tok#\"}"; tok="${tok%\"}" ;;
     \'*\') tok="${tok#\'}"; tok="${tok%\'}" ;;
   esac
-  printf '%s' "$tok"
+  STRIP_TOKEN_RESULT="$tok"
+}
+
+SHELL_COMMAND_RECORDS=()
+
+parse_shell_commands_once() {
+  local parsed shell_record
+  parsed="$(hq_shell_simple_commands "$1")"
+  SHELL_COMMAND_RECORDS=()
+  while IFS= read -r shell_record; do
+    SHELL_COMMAND_RECORDS+=("$shell_record")
+  done <<< "$parsed"
 }
 
 WRITE_TARGET_PROTECTED_CWD="no"
@@ -202,7 +234,8 @@ record_segment_context() {
 
   read -r -a words <<< "$segment"
   for ((i=0; i<${#words[@]}; i++)); do
-    clean[$i]="$(strip_token_quotes "${words[$i]}")"
+    strip_token_quotes "${words[$i]}"
+    clean[i]="$STRIP_TOKEN_RESULT"
   done
 
   for ((i=0; i<${#clean[@]}; i++)); do
@@ -240,7 +273,8 @@ write_targets_match() {
   # matches the documented parser contract for the hook.
   read -r -a words <<< "$segment"
   for ((i=0; i<${#words[@]}; i++)); do
-    clean[$i]="$(strip_token_quotes "${words[$i]}")"
+    strip_token_quotes "${words[$i]}"
+    clean[i]="$STRIP_TOKEN_RESULT"
   done
 
   for ((i=0; i<${#clean[@]}; i++)); do
@@ -399,11 +433,11 @@ write_targets_match() {
 }
 
 write_op_targets_protected() {
-  local cmd="$1" token_re="$2"
+  local token_re="$1"
   local shell_record segment shell_exe rc
   WRITE_TARGET_PROTECTED_CWD="no"
   WRITE_TARGET_PROTECTED_VARS=""
-  while IFS= read -r shell_record; do
+  for shell_record in "${SHELL_COMMAND_RECORDS[@]}"; do
     [ -n "$shell_record" ] || continue
     segment="${shell_record//$'\037'/ }"
     record_segment_context "$segment" "$token_re"
@@ -421,16 +455,16 @@ write_op_targets_protected() {
     if [[ "$rc" -eq 2 ]] && segment_fallback_matches "$segment" "$token_re"; then
       return 0
     fi
-  done < <(hq_shell_simple_commands "$cmd")
+  done
   return 1
 }
 
 redirect_targets_protected() {
-  local cmd="$1" token_re="$2" shell_record segment token i
+  local token_re="$1" shell_record segment token i
   local -a argv
   WRITE_TARGET_PROTECTED_CWD="no"
   WRITE_TARGET_PROTECTED_VARS=""
-  while IFS= read -r shell_record; do
+  for shell_record in "${SHELL_COMMAND_RECORDS[@]}"; do
     [ -n "$shell_record" ] || continue
     segment="${shell_record//$'\037'/ }"
     record_segment_context "$segment" "$token_re"
@@ -443,13 +477,13 @@ redirect_targets_protected() {
           ;;
       esac
     done
-  done < <(hq_shell_simple_commands "$cmd")
+  done
   return 1
 }
 
 in_external_cwd_context() {
-  local cmd="$1" shell_record exe arg resolved
-  while IFS= read -r shell_record; do
+  local shell_record exe arg resolved
+  for shell_record in "${SHELL_COMMAND_RECORDS[@]}"; do
     [ -n "$shell_record" ] || continue
     exe="$(hq_shell_command_executable "$shell_record" || true)"
     case "$exe" in cd|pushd) ;; *) continue ;; esac
@@ -461,7 +495,7 @@ in_external_cwd_context() {
       *) resolved="$(hq_normpath "$PROJECT_DIR/$arg")" ;;
     esac
     case "$resolved" in "$PROJECT_DIR"|"$PROJECT_DIR"/*) return 1 ;; *) return 0 ;; esac
-  done < <(hq_shell_simple_commands "$cmd")
+  done
   return 1
 }
 
@@ -480,7 +514,8 @@ writes_to_protected() {
   # Absolute/live-root forms are always enforced; relative forms only outside a
   # repos/ checkout.
   local token_re repo_ctx="no"
-  if in_repo_context "$cmd" || in_external_cwd_context "$cmd"; then
+  parse_shell_commands_once "$stripped"
+  if in_repo_context "$cmd" || in_external_cwd_context; then
     repo_ctx="yes"
     token_re="$BND$ABS_PATH_ALTS"
   else
@@ -488,11 +523,11 @@ writes_to_protected() {
   fi
 
   # Redirect (>) or append (>>) into any protected dir.
-  if redirect_targets_protected "$stripped" "$token_re"; then
+  if redirect_targets_protected "$token_re"; then
     return 0
   fi
   # Write-op tool + protected write target token.
-  if write_op_targets_protected "$stripped" "$token_re"; then
+  if write_op_targets_protected "$token_re"; then
     return 0
   fi
   # AGENTS.md (single file). In a repos/ checkout the bare AGENTS.md token is the
@@ -502,7 +537,12 @@ writes_to_protected() {
     if text_has_regex_line "$cmd" "$agents_redirect_re"; then
       return 0
     fi
-    if write_op_targets_protected "$cmd" "$AGENTS_MD_TOKEN_RE"; then
+    # Keep the secondary AGENTS scan on the original command text. Historically
+    # this scan also catches absolute protected-root writes after an exclude
+    # token was stripped from the main scans; the differential contract keeps
+    # that decision stable while the redirect/write/cd scans share one parse.
+    parse_shell_commands_once "$cmd"
+    if write_op_targets_protected "$AGENTS_MD_TOKEN_RE"; then
       return 0
     fi
   fi
