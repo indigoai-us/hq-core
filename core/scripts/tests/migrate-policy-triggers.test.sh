@@ -4,7 +4,8 @@
 # reactive trigger derivation/injection remain unchanged.
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 MIGRATOR="$ROOT/core/scripts/migrate-policy-triggers.sh"
 HOOK="$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
 TMP="$(mktemp -d)"
@@ -279,6 +280,42 @@ HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP/companies/b" \
 assert_migrated "$SCOPE_B_DIR/b.md" "company A stamp suppressed company B"
 [ "$(find "$SCOPE_STATE" -type f -name last-success | wc -l)" -eq 2 ] || \
   fail "default scopes did not receive independent stamps"
+
+# Default scans include every personal worker profile and only the active
+# company's worker profiles. A run in company A must never modify company B.
+PERSONAL_WORKER_POLICY="$TMP/personal/workers/default-worker/policies/personal-worker.md"
+COMPANY_A_WORKER_POLICY="$TMP/companies/a/workers/default-worker/policies/company-a-worker.md"
+COMPANY_B_WORKER_POLICY="$TMP/companies/b/workers/default-worker/policies/company-b-worker.md"
+mkdir -p "$(dirname "$PERSONAL_WORKER_POLICY")" \
+  "$(dirname "$COMPANY_A_WORKER_POLICY")" \
+  "$(dirname "$COMPANY_B_WORKER_POLICY")"
+write_migratable_policy "$PERSONAL_WORKER_POLICY"
+write_migratable_policy "$COMPANY_A_WORKER_POLICY"
+write_migratable_policy "$COMPANY_B_WORKER_POLICY"
+DEFAULT_WORKER_STATE="$TMP/default-worker-scope/state"
+HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP/companies/a" \
+  HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR="$DEFAULT_WORKER_STATE" \
+  HQ_MIGRATE_POLICY_TRIGGERS_COOLDOWN_SECONDS=0 bash "$MIGRATOR"
+assert_migrated "$PERSONAL_WORKER_POLICY" "default personal worker scan"
+assert_migrated "$COMPANY_A_WORKER_POLICY" "active company worker scan"
+assert_unmigrated "$COMPANY_B_WORKER_POLICY" "inactive company worker tenant isolation"
+HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP/companies/b" \
+  HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR="$DEFAULT_WORKER_STATE" \
+  HQ_MIGRATE_POLICY_TRIGGERS_COOLDOWN_SECONDS=0 bash "$MIGRATOR"
+assert_migrated "$COMPANY_B_WORKER_POLICY" "company B worker scan in its own scope"
+
+# A trusted active-company override takes precedence when the session project
+# directory is outside that tenant's company tree.
+OVERRIDE_A_POLICY="$TMP/companies/override-a/workers/default-worker/policies/company-override-worker.md"
+OVERRIDE_B_POLICY="$TMP/companies/override-b/workers/default-worker/policies/company-override-control.md"
+mkdir -p "$(dirname "$OVERRIDE_A_POLICY")" "$(dirname "$OVERRIDE_B_POLICY")"
+write_migratable_policy "$OVERRIDE_A_POLICY"
+write_migratable_policy "$OVERRIDE_B_POLICY"
+HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP/companies/override-b" HQ_POLICY_COMPANY=override-a \
+  HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR="$DEFAULT_WORKER_STATE" \
+  HQ_MIGRATE_POLICY_TRIGGERS_COOLDOWN_SECONDS=0 bash "$MIGRATOR"
+assert_migrated "$OVERRIDE_A_POLICY" "HQ_POLICY_COMPANY worker scope override"
+assert_unmigrated "$OVERRIDE_B_POLICY" "HQ_POLICY_COMPANY excludes cwd tenant workers"
 
 # A second SessionStart that begins before the first completion must not scan
 # concurrently. The first process holds its lock in grep; the policy added

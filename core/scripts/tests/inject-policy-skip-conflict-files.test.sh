@@ -69,13 +69,13 @@ write_policy "$ROOT/core/policies/weird.sync-conflict-hostA.md" "conflict-sync" 
 
 OUT="$(run_hook "$ROOT" "$ROOT" "UserPromptSubmit" "anything at all")"
 
-echo "$OUT" | grep -q "REAL_MARKER" \
+[[ "$OUT" == *REAL_MARKER* ]] \
   || fail "case1: canonical policy was NOT emitted. Output was:
 $OUT"
 ok "canonical <slug>.md still injects"
 
 for marker in CONFLICT2_MARKER CONFLICT100_MARKER SYNCCONFLICT_MARKER; do
-  echo "$OUT" | grep -q "$marker" \
+  [[ "$OUT" == *"$marker"* ]] \
     && fail "case1: conflict/drift copy WAS scanned ($marker present). Output was:
 $OUT"
   ok "conflict/drift copy skipped ($marker absent)"
@@ -94,12 +94,12 @@ for n in $(seq 2 26); do
 done
 
 OUT2="$(run_hook "$ROOT2" "$ROOT2" "UserPromptSubmit" "anything")"
-echo "$OUT2" | grep -q "DUPE_CANON" \
+[[ "$OUT2" == *DUPE_CANON* ]] \
   || fail "case2: canonical dupe-me was dropped. Output was:
 $OUT2"
 ok "canonical survives amid many same-slug conflict copies"
 
-echo "$OUT2" | grep -q "DUPE_CONFLICT_" \
+[[ "$OUT2" == *DUPE_CONFLICT_* ]] \
   && fail "case2: a conflict-copy body leaked into output. Output was:
 $OUT2"
 ok "no conflict-copy body leaked"

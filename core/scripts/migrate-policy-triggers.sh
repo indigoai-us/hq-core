@@ -80,17 +80,30 @@ for a in "$@"; do case "$a" in
   *)         DIRS+=("$a") ;;
 esac; done
 
-# Default scope: global core/policies + the active company's / repo's policies
-# (tenant-safe — only the dir the session is actually in). Mirrors the scope the
-# inject-policy-on-trigger hook evaluates.
+# Default scope: global core and personal policies, every personal worker
+# profile, and only the active company's and repo's policies. Company worker
+# profiles remain tenant-scoped to the active company.
 if [ "${#DIRS[@]}" -eq 0 ]; then
   # personal/policies is read DIRECTLY (the reindex symlink mirror into
   # core/policies is retired). Mirrors the scope inject-policy-on-trigger reads.
   DIRS=("$HQ_ROOT/core/policies" "$HQ_ROOT/personal/policies")
-  case "$CWD" in
-    *companies/*)
-      co="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')"
-      [ -n "$co" ] && DIRS+=("$HQ_ROOT/companies/$co/policies") ;;
+  for d in "$HQ_ROOT"/personal/workers/*/policies; do
+    [ -d "$d" ] && DIRS+=("$d")
+  done
+  co="${HQ_POLICY_COMPANY:-}"
+  if [ -z "$co" ]; then
+    case "$CWD" in
+      *companies/*) co="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')" ;;
+    esac
+  fi
+  case "$co" in
+    ''|.|..|*/*) ;;
+    *)
+      DIRS+=("$HQ_ROOT/companies/$co/policies")
+      for d in "$HQ_ROOT/companies/$co"/workers/*/policies; do
+        [ -d "$d" ] && DIRS+=("$d")
+      done
+      ;;
   esac
   case "$CWD" in
     *repos/public/*|*repos/private/*)

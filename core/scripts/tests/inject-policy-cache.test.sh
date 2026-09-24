@@ -44,6 +44,7 @@ EOF
 }
 
 setup_tree() {
+  ROOT="$TMPROOT/hq${1:+-$1}"
   mkdir -p "$ROOT/core/policies" "$ROOT/personal/policies" \
     "$ROOT/companies/acme/policies" "$ROOT/core/scripts" \
     "$ROOT/workspace/orchestrator/policy-trigger-state" "$TMPROOT/bin"
@@ -59,10 +60,12 @@ EOF
   cat >"$ROOT/core/scripts/derive-trigger-facts.sh" <<'EOF'
 #!/usr/bin/env bash
 [ -z "${DERIVE_CALL_LOG:-}" ] || printf '%s\n' "$*" >> "$DERIVE_CALL_LOG"
-if [ "${2:-}" = "--with-assistant-intent" ]; then
-  printf 'always\nalways\n'
+if [ "${1:-}" = "AssistantIntent" ]; then
+  printf '%s\n' "${HQ_TEST_INTENT_FACTS:-always}"
+elif [ "${2:-}" = "1" ] || [ "${2:-}" = "--with-assistant-intent" ]; then
+  printf '%s\n%s\n' "${HQ_TEST_EVENT_FACTS:-always}" "${HQ_TEST_INTENT_FACTS:-always}"
 else
-  printf 'always\n'
+  printf '%s\n' "${HQ_TEST_EVENT_FACTS:-always}"
 fi
 EOF
   cat >"$ROOT/core/scripts/eval-trigger.sh" <<'EOF'
@@ -77,15 +80,19 @@ EOF
 }
 
 payload() {
-  jq -cn --arg sid "$1" --arg cwd "$ROOT" \
-    '{hook_event_name:"UserPromptSubmit",session_id:$sid,tool_name:"Bash",cwd:$cwd,prompt:"cache fixture"}'
+  jq -cn --arg sid "$1" --arg cwd "$ROOT" --arg prompt "${2:-cache fixture}" \
+    --arg transcript "${3:-}" \
+    '{hook_event_name:"UserPromptSubmit",session_id:$sid,tool_name:"Bash",cwd:$cwd,prompt:$prompt,transcript_path:$transcript}'
 }
 
 run_hook() {
-  local sid="$1" out="$2" emit_mode="${3:-}" status=0
-  payload "$sid" | env HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" HQ_POLICY_COMPANY=acme \
+  local sid="$1" out="$2" emit_mode="${3:-}" prompt="${4:-cache fixture}"
+  local facts="${5:-always}" transcript="${6:-}" status=0
+  local intent_facts="${7:-$facts}"
+  payload "$sid" "$prompt" "$transcript" | env HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" HQ_POLICY_COMPANY=acme \
     DERIVE_SCRIPT="$HQ_SRC/core/scripts/derive-trigger-facts.sh" \
     DERIVE_CALL_LOG="$TMPROOT/derive-calls.log" PATH="$TMPROOT/bin:$PATH" \
+    HQ_TEST_EVENT_FACTS="$facts" HQ_TEST_INTENT_FACTS="$intent_facts" \
     HQ_POLICY_EMIT="$emit_mode" \
     bash "$HOOK" >"$out" 2>"$out.stderr" || status=$?
   [ "$status" -eq 0 ] || fail "hook exited $status: $(cat "$out.stderr")"
@@ -113,7 +120,7 @@ assert_evaluation_cache_written() {
   local eval_file
   eval_file="$(find "$(cache_dir)" -type f -name '*.eval' -print -quit)"
   [ -n "$eval_file" ] || fail "expected per-session evaluation cache file"
-  head -n 1 "$eval_file" | grep -Fq 'hq-policy-eval-v3' \
+  head -n 1 "$eval_file" | grep -Fq 'hq-policy-eval-v4' \
     || fail "evaluation cache file is missing its complete-version header"
 }
 
@@ -211,7 +218,7 @@ ok "concurrent fires never emit a partial cache result"
 for n in $(seq 1 80); do
   run_hook "bounded-$n" "$TMPROOT/bounded-$n.out" tsv
 done
-eval_count="$({ find "$(cache_dir)/eval-v3" -maxdepth 1 -type f -name '*.eval' 2>/dev/null || true; } | wc -l | tr -d ' ')"
+eval_count="$({ find "$(cache_dir)/eval-v4" -maxdepth 1 -type f -name '*.eval' 2>/dev/null || true; } | wc -l | tr -d ' ')"
 [ "$eval_count" -gt 0 ] || fail "expected bounded evaluation cache entries"
 [ "$eval_count" -le 64 ] \
   || fail "evaluation cache grew to $eval_count entries; expected at most 64 per scope"
@@ -238,20 +245,106 @@ EOF
 run_hook parser-revision "$TMPROOT/parser-revision-first.out"
 : > "$ROOT/workspace/orchestrator/policy-trigger-state/parser-revision.txt"
 run_hook parser-revision "$TMPROOT/parser-revision-second.out"
-v3_file="$(find "$(cache_dir)/eval-v3" -type f -name '*.eval' -print -quit)"
-[ -n "$v3_file" ] || fail "expected a v3 evaluation cache before stale-cache test"
+v4_file="$(find "$(cache_dir)/eval-v4" -type f -name '*.eval' -print -quit)"
+[ -n "$v4_file" ] || fail "expected a v4 evaluation cache before stale-cache test"
 mkdir -p "$(cache_dir)/eval-v2"
-v2_file="$(cache_dir)/eval-v2/$(basename "$v3_file")"
-sed '1s/hq-policy-eval-v3/hq-policy-eval-v2/' "$v3_file" > "$v2_file"
+v2_file="$(cache_dir)/eval-v2/$(basename "$v4_file")"
+sed '1s/hq-policy-eval-v4/hq-policy-eval-v2/' "$v4_file" > "$v2_file"
 printf 'legacy-permissive\tcore\t%s\tsoft\tOLD_PARSER_CACHE_MARKER\treactive\tonce\tok\t2\n' \
   "$ROOT/core/policies/legacy-permissive.md" >> "$v2_file"
-rm -rf "$(cache_dir)/eval-v3"
+rm -rf "$(cache_dir)/eval-v4"
 : > "$ROOT/workspace/orchestrator/policy-trigger-state/parser-revision.txt"
 run_hook parser-revision "$TMPROOT/parser-revision-stale-v2.out"
 grep -Fq OLD_PARSER_CACHE_MARKER "$TMPROOT/parser-revision-stale-v2.out" \
   && fail "a v2 evaluation-cache verdict survived the parser revision"
-find "$(cache_dir)/eval-v3" -type f -name '*.eval' -print -quit | grep -q . \
-  || fail "parser revision did not create a v3 evaluation cache"
+find "$(cache_dir)/eval-v4" -type f -name '*.eval' -print -quit | grep -q . \
+  || fail "parser revision did not create a v4 evaluation cache"
 ok "parser revision ignores stale v2 evaluation-cache verdicts"
+
+# A case-sensitive v3 cache can contain an empty verdict for a policy whose
+# uppercase trigger should now match lowercase prompt facts. Recreate the same
+# v3 key with an empty body and prove the runtime ignores that old verdict.
+setup_tree case-fold-revision
+cat >"$ROOT/core/policies/uppercase-trigger.md" <<'EOF'
+---
+id: uppercase-trigger
+title: "uppercase-trigger"
+scope: test
+when: ENOENT
+on: [UserPromptSubmit]
+enforcement: soft
+---
+
+## Rule
+
+CASE_FOLD_CACHE_MARKER
+EOF
+CASE_FOLD_SESSION="case-fold-cache-session"
+run_hook "$CASE_FOLD_SESSION" "$TMPROOT/case-fold-first.out" tsv "enoent" "enoent"
+grep -Fq CASE_FOLD_CACHE_MARKER "$TMPROOT/case-fold-first.out" \
+  || fail "case-insensitive trigger did not match on the cold evaluation"
+CASE_FOLD_DEDUPE="$ROOT/workspace/orchestrator/policy-trigger-state/$CASE_FOLD_SESSION.txt"
+CASE_FOLD_TURN="$ROOT/workspace/orchestrator/policy-trigger-state/$CASE_FOLD_SESSION.turn.txt"
+: > "$CASE_FOLD_DEDUPE"
+: > "$CASE_FOLD_TURN"
+run_hook "$CASE_FOLD_SESSION" "$TMPROOT/case-fold-cache-seed.out" tsv "enoent" "enoent"
+grep -Fq CASE_FOLD_CACHE_MARKER "$TMPROOT/case-fold-cache-seed.out" \
+  || fail "case-insensitive trigger did not match after parsed-cache warmup"
+case_v4="$(find "$(cache_dir)/eval-v4" -type f -name '*.eval' -print -quit)"
+[ -n "$case_v4" ] || fail "expected v4 evaluation entry for case-folded facts"
+mkdir -p "$(cache_dir)/eval-v3"
+case_v3="$(cache_dir)/eval-v3/$(basename "$case_v4")"
+sed -n '1p' "$case_v4" | sed 's/hq-policy-eval-v4/hq-policy-eval-v3/' > "$case_v3"
+rm -rf "$(cache_dir)/eval-v4"
+: > "$CASE_FOLD_DEDUPE"
+: > "$CASE_FOLD_TURN"
+run_hook "$CASE_FOLD_SESSION" "$TMPROOT/case-fold-stale-v3.out" tsv "enoent" "enoent"
+grep -Fq CASE_FOLD_CACHE_MARKER "$TMPROOT/case-fold-stale-v3.out" \
+  || fail "stale case-sensitive v3 cache suppressed a case-insensitive policy match"
+find "$(cache_dir)/eval-v4" -type f -name '*.eval' -print -quit | grep -q . \
+  || fail "case-folded evaluation did not replace the stale namespace with v4"
+ok "case-folding evaluator ignores stale v3 no-match verdicts"
+
+# The evaluation cache key includes both derived fact channels. Clearing the
+# ledgers holds every other key input constant so a change in AssistantIntent
+# alone must invalidate the cached no-match result.
+setup_tree assistant-intent-cache
+cat >"$ROOT/core/policies/assistant-intent-cache.md" <<'EOF'
+---
+id: assistant-intent-cache
+title: "assistant-intent-cache"
+scope: test
+when: assistant_intent_marker
+on: [AssistantIntent]
+enforcement: soft
+---
+
+## Rule
+
+ASSISTANT_INTENT_CACHE_MARKER
+EOF
+INTENT_SESSION="assistant-intent-cache-session"
+INTENT_TRANSCRIPT="$TMPROOT/assistant-intent-transcript.jsonl"
+printf '{"type":"assistant","content":"unrelated intent"}\n' > "$INTENT_TRANSCRIPT"
+run_hook "$INTENT_SESSION" "$TMPROOT/assistant-intent-cold.out" tsv \
+  "intent cache fixture" "steady_event" "$INTENT_TRANSCRIPT" "steady_event"
+grep -Fq ASSISTANT_INTENT_CACHE_MARKER "$TMPROOT/assistant-intent-cold.out" \
+  && fail "AssistantIntent policy matched without its trigger fact"
+INTENT_DEDUPE="$ROOT/workspace/orchestrator/policy-trigger-state/$INTENT_SESSION.txt"
+INTENT_TURN="$ROOT/workspace/orchestrator/policy-trigger-state/$INTENT_SESSION.turn.txt"
+: > "$INTENT_DEDUPE"
+: > "$INTENT_TURN"
+run_hook "$INTENT_SESSION" "$TMPROOT/assistant-intent-prime.out" tsv \
+  "intent cache fixture" "steady_event" "$INTENT_TRANSCRIPT" "steady_event"
+grep -Fq ASSISTANT_INTENT_CACHE_MARKER "$TMPROOT/assistant-intent-prime.out" \
+  && fail "AssistantIntent policy matched while priming the unchanged facts"
+: > "$INTENT_DEDUPE"
+: > "$INTENT_TURN"
+printf '{"type":"assistant","content":"assistant_intent_marker"}\n' > "$INTENT_TRANSCRIPT"
+run_hook "$INTENT_SESSION" "$TMPROOT/assistant-intent-changed.out" tsv \
+  "intent cache fixture" "steady_event" "$INTENT_TRANSCRIPT" "assistant_intent_marker"
+grep -Fq ASSISTANT_INTENT_CACHE_MARKER "$TMPROOT/assistant-intent-changed.out" \
+  || fail "changed AssistantIntent fact reused the previous no-match evaluation"
+ok "evaluation cache invalidates when AssistantIntent facts change"
 
 echo "PASS ($pass checks) inject-policy-cache"

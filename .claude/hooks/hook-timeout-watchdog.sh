@@ -7,6 +7,12 @@
 
 set -u
 
+case "$0" in
+  */*) WATCHDOG_SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+  *) WATCHDOG_SCRIPT_DIR="$(pwd)" ;;
+esac
+. "$WATCHDOG_SCRIPT_DIR/hook-timeout-probe.sh"
+
 DEFAULT_TIMEOUT_SECONDS=30
 DEFAULT_GATE_LEAD_SECONDS=10
 DEFAULT_MASTER_LEAD_SECONDS=20
@@ -27,6 +33,7 @@ report_done_file=""
 threshold_kind="relative"
 test_trigger_file="${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:-}"
 test_lock_ready_file="${HQ_HOOK_TIMEOUT_SENTRY_TEST_LOCK_READY_FILE:-}"
+test_status_file="${HQ_HOOK_TIMEOUT_SENTRY_TEST_STATUS_FILE:-}"
 
 usage() {
   exit 0
@@ -155,9 +162,19 @@ normalize_fingerprint_path() {
 }
 
 hook_fingerprint_identity() {
-  local normalized_root normalized_hook relative_path=""
-  normalized_root="$(normalize_fingerprint_path "$root")"
-  normalized_hook="$(normalize_fingerprint_path "$hook_path")"
+  local normalized_root normalized_hook relative_path="" hook_parent canonical_hook_parent
+  # macOS exposes /var and /tmp through symlinks into /private. Resolve the
+  # existing root and hook parent before comparing their prefixes so a root
+  # reported through one spelling still groups with its hook's other spelling.
+  normalized_root="$(cd "$root" 2>/dev/null && pwd -P || true)"
+  [ -n "$normalized_root" ] || normalized_root="$(normalize_fingerprint_path "$root")"
+  hook_parent="$(dirname "$hook_path")"
+  canonical_hook_parent="$(cd "$hook_parent" 2>/dev/null && pwd -P || true)"
+  if [ -n "$canonical_hook_parent" ]; then
+    normalized_hook="$canonical_hook_parent/$(basename "$hook_path")"
+  else
+    normalized_hook="$(normalize_fingerprint_path "$hook_path")"
+  fi
 
   case "$normalized_root" in
     "") ;;
@@ -201,9 +218,24 @@ cleanup() {
 
 trap cleanup TERM INT HUP
 
-is_enabled || exit 0
-[ -n "$root" ] && [ -n "$source_kind" ] && [ -n "$hook_path" ] || exit 0
-command -v jq >/dev/null 2>&1 || exit 0
+test_status() {
+  [ -n "$test_status_file" ] || return 0
+  printf '%s\n' "$1" > "$test_status_file" 2>/dev/null || true
+}
+
+test_status parsed-arguments
+if ! is_enabled; then
+  test_status disabled
+  exit 0
+fi
+if [ -z "$root" ] || [ -z "$source_kind" ] || [ -z "$hook_path" ]; then
+  test_status incomplete-arguments
+  exit 0
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  test_status missing-jq
+  exit 0
+fi
 
 # The behavioral suite supplies a targeted trigger rather than racing this
 # worker against wall-clock sleeps on a loaded CI host. It is deliberately
@@ -254,7 +286,12 @@ hold_test_lock() {
 # only after it, so the foreground dispatcher need only signal and reap a
 # sleeping process. The eventual warning still uses the original start time.
 if [ -n "$test_trigger_file" ]; then
-  wait_for_test_trigger || exit 0
+  test_status waiting-for-trigger
+  if ! wait_for_test_trigger; then
+    test_status trigger-not-seen
+    exit 0
+  fi
+  test_status trigger-seen
 else
   sleep 1 >/dev/null 2>&1 &
   sleep_pid=$!
@@ -396,11 +433,12 @@ hook_sequence_json() {
   [ -n "$session_hash" ] || { printf '[]'; return; }
   journal_file="$root/workspace/.hook-timeout-journal/$session_hash.tsv"
   [ -f "$journal_file" ] || { printf '[]'; return; }
-  sequence="$(tail -n 20 "$journal_file" 2>/dev/null | jq -Rsc '
+  sequence="$(tail -n 40 "$journal_file" 2>/dev/null | jq -Rsc '
     split("\n")
     | map(select(length > 0) | split("\t")
-      | select(length == 3)
+      | select((length == 3 or length == 4) and (.[2] | test("^[0-9]+$")))
       | {script: .[0], event: .[1], ms: (.[2] | tonumber)})
+    | .[-20:]
   ' 2>/dev/null || true)"
   if [ -n "$sequence" ]; then
     printf '%s' "$sequence"
@@ -599,6 +637,7 @@ fi
 # every write, so it cannot consume or erase that evidence.
 if is_nonnegative_integer "$parent_pid" \
   && ! kill -0 "$parent_pid" >/dev/null 2>&1; then
+  test_status parent-exited
   exit 0
 fi
 
@@ -647,7 +686,11 @@ allow_warning() {
   return 0
 }
 
-allow_warning || exit 0
+if ! allow_warning; then
+  test_status warning-throttled
+  exit 0
+fi
+test_status warning-allowed
 
 write_master_breadcrumb() {
   local session_hash record_hash breadcrumb_dir temporary record
@@ -683,21 +726,18 @@ case "$source_kind" in
 esac
 
 if ! command -v hq >/dev/null 2>&1; then
+  test_status missing-hq
   mark_report_done
   exit 0
 fi
-
-load_average=""
-if [ -r /proc/loadavg ]; then
-  read -r load_one load_five load_fifteen _ < /proc/loadavg || true
-  load_average="${load_one:-},${load_five:-},${load_fifteen:-}"
-elif command -v sysctl >/dev/null 2>&1; then
-  load_average="$(sysctl -n vm.loadavg 2>/dev/null || true)"
-fi
+test_status hq-found
 
 hq_version="$(grep -E '^hqVersion:' "$root/core/core.yaml" 2>/dev/null | head -n 1 | tr -d ' "' | cut -d: -f2)"
 [ -n "$hq_version" ] || hq_version="unknown"
 platform="$(uname -s 2>/dev/null || printf 'unknown')"
+os_name="$(hook_timeout_os_name "$platform")"
+load_average="$(hook_timeout_load_average "$platform" /proc/loadavg \
+  "$(command -v sysctl 2>/dev/null || printf 'sysctl')")"
 hook_fingerprint_identity="$(hook_fingerprint_identity)"
 hook_fingerprint_hash="$(sha256_fields "$hook_fingerprint_identity")"
 [ -n "$hook_fingerprint_hash" ] || exit 0
@@ -707,6 +747,36 @@ cwd_kind_value="$(cwd_kind)"
 nproc_count="$(nproc_value)"
 hook_sequence="$(hook_sequence_json)"
 hook_script="$(safe_hook_script)"
+spawn_ms=""
+slow_child=""
+slow_child_ms=""
+session_hash="$(sha256_fields "$session_id")"
+if [ "$os_name" = windows ] && [ -n "$session_hash" ]; then
+  mkdir -p "$root/workspace/.hook-timeout-journal" >/dev/null 2>&1 || true
+  spawn_ms="$(hook_timeout_spawn_ms \
+    "$root/workspace/.hook-timeout-journal/$session_hash.tsv.spawn-ms" \
+    "$(command -v bash 2>/dev/null || printf 'bash')")"
+fi
+if [ "$source_kind" = master-dispatch ] \
+  && [ -n "$session_hash" ] \
+  && [[ "$invocation_id" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+  journal_file="$root/workspace/.hook-timeout-journal/$session_hash.tsv"
+  active_child_file="$journal_file.$invocation_id.active"
+  if [ -r "$active_child_file" ]; then
+    active_child_record="$(awk -F '\t' '
+      NF == 3 && $3 ~ /^[0-9]+$/ { printf "%s\t%s", $1, $3 }
+    ' "$active_child_file" 2>/dev/null || true)"
+    IFS=$'\t' read -r active_child_script active_child_started_ms <<< "$active_child_record" || true
+    if [[ "${active_child_script:-}" =~ ^[A-Za-z0-9._-]{1,128}$ ]] \
+      && is_nonnegative_integer "${active_child_started_ms:-}"; then
+      active_child_now_ms="$(now_ms)"
+      if is_nonnegative_integer "$active_child_now_ms" && [ "$active_child_now_ms" -ge "$active_child_started_ms" ]; then
+        slow_child="$active_child_script"
+        slow_child_ms=$((active_child_now_ms - active_child_started_ms))
+      fi
+    fi
+  fi
+fi
 policy_trigger_metadata='{}'
 case "$hook_name" in
   inject-policy-on-trigger.sh)
@@ -716,6 +786,10 @@ case "$hook_name" in
     ;;
 esac
 
+event_json_error_file=/dev/null
+if [ -n "$test_status_file" ]; then
+  event_json_error_file="$test_status_file.$$.jq-error"
+fi
 event_json="$(jq -cn \
   --arg type "hook_timeout_warning" \
   --arg message "HQ hook is approaching configured timeout" \
@@ -729,6 +803,9 @@ event_json="$(jq -cn \
   --arg hq_version "$hq_version" \
   --arg platform "$platform" \
   --arg load_average "$load_average" \
+  --arg spawn_ms "$spawn_ms" \
+  --arg slow_child "$slow_child" \
+  --arg slow_child_ms "$slow_child_ms" \
   --arg bash_env_set "$bash_env_set" \
   --arg shell "$shell_info" \
   --arg cwd_kind "$cwd_kind_value" \
@@ -746,7 +823,7 @@ event_json="$(jq -cn \
       message: $message,
       fingerprint: $fingerprint,
       level: $level,
-      metadata: {
+      metadata: ({
         hook_name: $hook_name,
         hook_event: $hook_event,
         tool_name: $tool_name,
@@ -768,8 +845,27 @@ event_json="$(jq -cn \
         exit_code: $exit_code,
         hook_sequence: $hook_sequence
       }
+      + (if ($spawn_ms | test("^[0-9]+$")) then {spawn_ms: ($spawn_ms | tonumber)} else {} end)
+      + (if ($slow_child | length) > 0 and ($slow_child_ms | test("^[0-9]+$"))
+         then {slow_child: $slow_child, slow_child_ms: ($slow_child_ms | tonumber)} else {} end))
     }
-  ')" || { mark_report_done; exit 0; }
+  ' 2>"$event_json_error_file")" || {
+  if [ -n "$test_status_file" ]; then
+    event_json_error=""
+    IFS= read -r event_json_error < "$event_json_error_file" || true
+    event_json_error="${event_json_error:0:240}"
+    [ -n "$event_json_error" ] || event_json_error="jq failed without a diagnostic"
+    test_status "invalid-event: $event_json_error"
+    rm -f "$event_json_error_file" >/dev/null 2>&1 || true
+  else
+    test_status invalid-event
+  fi
+  mark_report_done
+  exit 0
+}
+if [ -n "$test_status_file" ]; then
+  rm -f "$event_json_error_file" >/dev/null 2>&1 || true
+fi
 
 if [ "$policy_trigger_metadata" != '{}' ]; then
   event_json="$(jq -c --argjson policy_trigger "$policy_trigger_metadata" \
@@ -779,7 +875,9 @@ fi
 # `hq` is only invoked after the hook is already slow. Its public
 # `--timeout-ms` contract bounds the send; the dispatcher cancels this worker's
 # process session when the delegated hook exits, so this can never delay it.
-hq core sentry report --timeout-ms 750 <<<"$event_json" >/dev/null 2>&1 || true
+test_status report-started
+HQ_NO_UPDATE_CHECK=1 hq core sentry report --timeout-ms 750 <<<"$event_json" >/dev/null 2>&1 || true
+test_status report-returned
 mark_report_done
 
 # Keep the session leader alive until its dispatcher exits. This makes the

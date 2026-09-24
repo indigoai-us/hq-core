@@ -963,8 +963,14 @@ jobs:
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: check-hq-update bounds GitHub network calls
+        run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
+      - name: Bare Monitor expiry skips prompt-path maintenance enrichers
+        run: bash core/scripts/tests/master-hook-monitor-notification-fast-path.test.sh
+      - name: Warm lane Monitor cache process budget
+        run: bash core/scripts/tests/lanes-senior-monitor-cache-budget.test.sh
       - name: Hook guards assert their own tool scope
         run: bash core/scripts/tests/hook-tool-scope-self-assert.test.sh
       - name: Runtime adapters repair hooks or emit bounded diagnostics
@@ -977,6 +983,8 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-repos-exempt.test.sh
       - name: block-core-writes-bash target-aware write detection
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
+      - name: block-core-writes-bash avoids grep/sed process fanout
+        run: bash core/scripts/tests/block-core-writes-bash-fanout.test.sh
       - name: block-core-writes permits only the durable native personal context
         run: bash core/scripts/tests/block-core-writes-native-context.test.sh
       - name: block-core-writes keeps package contribution links immutable
@@ -1011,6 +1019,16 @@ jobs:
           # Scope to the cross-platform surface introduced/touched by this work.
           # Full-tree shellcheck is a separate burn-down (pre-existing SC noise).
           files=(
+            core/scripts/hook-lib.sh
+            core/scripts/tests/hook-timeout-sentry.test.sh
+            core/scripts/tests/check-hq-update-bounded-network.test.sh
+            core/scripts/tests/hook-lib-strip-exclude-tokens.test.sh
+            core/scripts/tests/block-core-writes-bash-fanout.test.sh
+            .claude/hooks/block-core-writes-bash.sh
+            .claude/hooks/check-hq-update.sh
+            .claude/hooks/hook-timeout-probe.sh
+            .claude/hooks/hook-timeout-watchdog.sh
+            .claude/hooks/master-hook.sh
             core/scripts/lib/portable.sh
             core/scripts/lint-shell-portability.sh
             core/scripts/rebuild-threads-index.sh
@@ -1057,6 +1075,10 @@ jobs:
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: check-hq-update bounds GitHub network calls
+        run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
+      - name: block-core-writes-bash avoids grep/sed process fanout
+        run: bash core/scripts/tests/block-core-writes-bash-fanout.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
       - name: Codex hook adapter routes mandatory scope authorizer
@@ -1090,6 +1112,12 @@ jobs:
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
       - name: Hook path does not source BASH_ENV in child bash
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
+      - name: Hook timeout Sentry watchdog
+        run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: check-hq-update bounds GitHub network calls
+        run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
+      - name: block-core-writes-bash avoids grep/sed process fanout
+        run: bash core/scripts/tests/block-core-writes-bash-fanout.test.sh
 
   hooks-no-python:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1121,6 +1149,8 @@ jobs:
         run: bash core/scripts/tests/validate-policy-frontmatter.test.sh
       - name: Emit contract — tsv shape, scope precedence, enforcement-tiered depth
         run: bash .claude/hooks/tests/inject-policy-on-trigger-emit.test.sh
+      - name: Case-insensitive policy trigger identifier matching
+        run: bash core/scripts/tests/eval-trigger.test.sh
       - name: Policy trigger end-to-end corpus coverage
         run: bash core/scripts/tests/inject-policy-e2e.test.sh
       - name: Large policy trigger inputs stay out of argv
@@ -1133,6 +1163,8 @@ jobs:
         run: bash core/scripts/tests/inject-policy-always-inject.test.sh
       - name: Policy scan forks no helper process per policy file
         run: bash core/scripts/tests/inject-policy-no-per-file-fork.test.sh
+      - name: Matched hard policy bodies are parsed in one batch
+        run: bash core/scripts/tests/inject-policy-batched-bodies.test.sh
       - name: Policy trigger linter streams ARG_MAX-scale corpora
         run: bash core/scripts/tests/lint-policy-triggers.test.sh
 

@@ -566,6 +566,34 @@ hq_path_matches_core_yaml_exclude() {
   return 1
 }
 
+# hq_strip_tokens_containing_literals <command> <literal>...
+#   Remove whitespace-delimited command tokens containing any literal needle,
+#   preserving separators. This stays in Bash so hook hot paths do not spawn a
+#   sed process per configured exclude entry.
+hq_strip_tokens_containing_literals() {
+  local input="$1" remaining token after_token separator consumed needle match
+  local whitespace_chars=$' \t\n\r'
+  shift
+  local -a needles=("$@")
+  local -a output_parts=()
+  remaining="$input"
+  while [ -n "$remaining" ]; do
+    token="${remaining%%[$whitespace_chars]*}"
+    after_token="${remaining:${#token}}"
+    separator="${after_token%%[!$whitespace_chars]*}"
+    match=no
+    for needle in "${needles[@]}"; do
+      [ -n "$needle" ] || continue
+      case "$token" in *"$needle"*) match=yes; break ;; esac
+    done
+    [ "$match" = yes ] || output_parts+=("$token")
+    output_parts+=("$separator")
+    consumed=$((${#token} + ${#separator}))
+    remaining="${remaining:$consumed}"
+  done
+  printf '%s' "${output_parts[@]}"
+}
+
 # hq_bash_strip_core_yaml_exclude_tokens <command> <hq_root> [<core_yaml>]
 #   Best-effort removal of command tokens that reference rules.exclude paths.
 #   Match full root-relative (and absolute) exclude paths — never basename
@@ -575,41 +603,39 @@ hq_bash_strip_core_yaml_exclude_tokens() {
   local cmd="$1"
   local hq_root="$2"
   local core_yaml="${3:-$hq_root/core/core.yaml}"
-  local exc_path rel abs esc esc_dir esc_abs sed_script exclude_paths stripped nl
+  local exc_path rel abs exclude_paths stripped abs_paths_text normalized_abs_paths
+  local -a exclude_needles=()
 
   [ -n "$cmd" ] || { printf '%s' "$cmd"; return 0; }
   [ -f "$core_yaml" ] || { printf '%s' "$cmd"; return 0; }
   command -v yq >/dev/null 2>&1 || { printf '%s' "$cmd"; return 0; }
 
   hq_root="$(hq_canonical_path "$hq_root")"
-  sed_script=''
-  nl=$'\n'
   exclude_paths="$(yq eval '.rules.exclude[]' "$core_yaml" 2>/dev/null)" || exclude_paths=""
+  abs_paths_text=""
   while IFS= read -r exc_path; do
     [ -n "$exc_path" ] || continue
     rel="${exc_path%/}"
     [ -n "$rel" ] || continue
-
-    esc="$(printf '%s' "$rel" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
-    # Newline-separated expressions: BSD sed rejects a long semicolon-joined
-    # single-line script once exclude counts grow (~32 expressions / ~2KB).
-    sed_script="${sed_script}s|[^[:space:]]*${esc}[^[:space:]]*||g${nl}s|${esc}||g${nl}"
-
+    exclude_needles+=("$rel")
     if [[ "$exc_path" == */ ]]; then
-      esc_dir="$(printf '%s' "$exc_path" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
-      sed_script="${sed_script}s|[^[:space:]]*${esc_dir}[^[:space:]]*||g${nl}s|${esc_dir}||g${nl}"
+      exclude_needles+=("$exc_path")
     fi
-
-    abs="$(hq_canonical_path "${hq_root}/${rel}")"
-    esc_abs="$(printf '%s' "$abs" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
-    sed_script="${sed_script}s|[^[:space:]]*${esc_abs}[^[:space:]]*||g${nl}s|${esc_abs}||g${nl}"
+    # hq_root is already in canonical slash form. Normalize all absolute
+    # exclude paths in one Bash pass below instead of launching one command
+    # substitution (and, on MSYS, cygpath process) per entry.
+    abs_paths_text+="${hq_root%/}/${rel}"$'\n'
   done <<< "$exclude_paths"
 
-  [ -n "$sed_script" ] || { printf '%s' "$cmd"; return 0; }
-  # Never fail open. An empty or failed sed would make block-core-writes-bash
+  [ "${#exclude_needles[@]}" -gt 0 ] || { printf '%s' "$cmd"; return 0; }
+  normalized_abs_paths="$(hq_normpath "$abs_paths_text")" || normalized_abs_paths=""
+  while IFS= read -r abs; do
+    [ -n "$abs" ] && exclude_needles+=("$abs")
+  done <<< "$normalized_abs_paths"
+  stripped="$(hq_strip_tokens_containing_literals "$cmd" "${exclude_needles[@]}")" || stripped=""
+  # Never fail open. An empty helper result would make block-core-writes-bash
   # treat the command as touching no protected paths and allow the write.
   # Hand the original command back so the caller still sees the real targets.
-  stripped="$(printf '%s' "$cmd" | sed "$sed_script" 2>/dev/null)" || stripped=""
   if [ -z "$stripped" ]; then
     printf '%s' "$cmd"
     return 0

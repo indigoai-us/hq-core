@@ -3,6 +3,9 @@
 # US-040: a Write/Edit/MultiEdit under companies/<co>/projects/<slug>/ binds
 # the session (once per slug) when it still needs a project, and a write of
 # that project's prd.json syncs progress only when the CLI supports prd-sync.
+# F14: a session already bound to project A still runs prd-sync when the write
+# is companies/<same-co>/projects/<B>/prd.json (CLI rebinds). Other files in B
+# stay skipped. Cross-company stays skipped.
 # Bash redirects are not path-bound. Non-write tools return before any of this.
 set -uo pipefail
 
@@ -259,6 +262,50 @@ if [ ! -s "$LOG" ]; then
   pass "already bound: other project does not rebind"
 else
   fail "already bound: unexpected $(cat "$LOG")"
+fi
+
+# --- F14: bound to A, same-company B/prd.json -> prd-sync (CLI rebinds) ------
+sid=sid-f14-prd
+seed "$sid" bound indigo wm-smoke
+reset_log
+run_hook "$sid" Write "$HQ_ROOT/companies/indigo/projects/other/prd.json" \
+  "HQ_PRD_SYNC_SUPPORTED=yes HQ_STUB_VERSION=hq-9.9.9-f14"
+if poll_log "prd-sync --session $sid --file $HQ_ROOT/companies/indigo/projects/other/prd.json"; then
+  pass "f14 same-company switch: prd-sync invoked for other/prd.json"
+else
+  fail "f14 same-company switch: prd-sync missing. log=$(cat "$LOG" 2>/dev/null)"
+fi
+wait_sid_quiet "$sid"
+if grep -F -q "bind-project" "$LOG"; then
+  fail "f14 same-company switch: bind-project should not run; prd-sync rebinds. log=$(cat "$LOG")"
+else
+  pass "f14 same-company switch: no bind-project (cli prd-sync rebinds)"
+fi
+
+# --- F14: bound to A, same-company B/note.md stays skipped -------------------
+sid=sid-f14-note
+seed "$sid" bound indigo wm-smoke
+reset_log
+run_hook "$sid" Write "$HQ_ROOT/companies/indigo/projects/other/note.md" \
+  "HQ_PRD_SYNC_SUPPORTED=yes HQ_STUB_VERSION=hq-9.9.9-f14"
+wait_sid_quiet "$sid"
+if [ ! -s "$LOG" ]; then
+  pass "f14 other-project note.md: hq not invoked"
+else
+  fail "f14 other-project note.md: unexpected $(cat "$LOG")"
+fi
+
+# --- F14: bound to A, other-company prd.json stays skipped -------------------
+sid=sid-f14-xco
+seed "$sid" bound indigo wm-smoke
+reset_log
+run_hook "$sid" Write "$HQ_ROOT/companies/acme/projects/wm-smoke/prd.json" \
+  "HQ_PRD_SYNC_SUPPORTED=yes HQ_STUB_VERSION=hq-9.9.9-f14"
+wait_sid_quiet "$sid"
+if [ ! -s "$LOG" ]; then
+  pass "f14 cross-company prd.json: hq not invoked"
+else
+  fail "f14 cross-company prd.json: unexpected $(cat "$LOG")"
 fi
 
 # --- prd.json syncs only when the CLI supports it ----------------------------
