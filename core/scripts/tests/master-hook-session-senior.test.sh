@@ -36,6 +36,7 @@ FIX="$TMP/hq"
 mkdir -p "$FIX/.claude/hooks" "$FIX/core/hooks" "$FIX/core/scripts" \
   "$FIX/workspace/sessions"
 cp "$MASTER" "$FIX/.claude/hooks/master-hook.sh"
+cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIX/.claude/hooks/"
 chmod +x "$FIX/.claude/hooks/master-hook.sh"
 
 SID="s-senior-seed"

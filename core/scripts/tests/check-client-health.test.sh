@@ -123,6 +123,10 @@ case "$1" in
         exit 0
         ;;
       *--json*)
+        if [[ "$*" == *--client-health-report* ]] && [ -n "${HQ_STUB_DOCTOR_JSON_REASON_CODES:-}" ]; then
+          cat "$HQ_STUB_DOCTOR_JSON_REASON_CODES"
+          exit 0
+        fi
         if [ -f "$HQ_STUB_STATE/fixed" ] && [ -n "${HQ_STUB_DOCTOR_JSON_AFTER_FIX:-}" ]; then
           cat "$HQ_STUB_DOCTOR_JSON_AFTER_FIX"
         else
@@ -220,9 +224,35 @@ cat > "$DOCTOR_DEGRADED" <<JSON
 }
 JSON
 
+DOCTOR_REASON_CODES="$TMP/doctor-reason-codes.json"
+cat > "$DOCTOR_REASON_CODES" <<JSON
+{
+  "clientHealthReasonCodesEnabled": true,
+  "results": [
+    { "family": "sync", "status": "WARN", "checkId": "sync.journal.personal", "reasonCode": "stale-threshold", "clientHealthReasonCodesEnabled": true,
+      "target": "$LEAK_PATH", "message": "private path $LEAK_PATH and private prose" },
+    { "family": "sync", "status": "FAIL", "checkId": "sync.manifest.personal", "reasonCode": "stale-threshold",
+      "clientHealthReasonCodesEnabled": true, "message": "private manifest prose $LEAK_PATH" },
+    { "family": "sync", "status": "WARN", "checkId": "sync.journal.other-company", "reasonCode": "never-synced",
+      "message": "private company prose must stay local" },
+    { "family": "hooks", "status": "FAIL", "checkId": "hooks.private", "reasonCode": "never-synced" }
+  ]
+}
+JSON
+
 DOCTOR_HEALTHY="$TMP/doctor-healthy.json"
 cat > "$DOCTOR_HEALTHY" <<'JSON'
 { "results": [ { "family": "sync", "status": "PASS", "checkId": "sync.auth.ok", "message": "ok" } ] }
+JSON
+
+DOCTOR_UPDATE_WARN="$TMP/doctor-update-warn.json"
+cat > "$DOCTOR_UPDATE_WARN" <<'JSON'
+{ "results": [ { "family": "sync", "status": "WARN", "checkId": "sync.update.core", "message": "A newer HQ Core release is available." } ] }
+JSON
+
+DOCTOR_UPDATE_FAIL="$TMP/doctor-update-fail.json"
+cat > "$DOCTOR_UPDATE_FAIL" <<'JSON'
+{ "results": [ { "family": "sync", "status": "FAIL", "checkId": "sync.update.core", "message": "The installed HQ Core state is invalid." } ] }
 JSON
 
 # run_hook <label-vars...> — invokes the hook in SessionStart mode against
@@ -373,11 +403,11 @@ make_broken_python "$STUB_BIN"
 ENGINES="-"
 command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && ENGINES="jq node"
 
-# run_remediate <root> <engine> — runs the detached remediation pass in the
+# run_remediate <root> <engine> [doctor-json] — runs the detached remediation pass in the
 # foreground (it is the same script with --remediate) with a broken python3 on
 # PATH, and returns its exit code in REM_RC.
 run_remediate() {
-  local root="$1" engine="$2"
+  local root="$1" engine="$2" doctor_json="${3:-$DOCTOR_DEGRADED}"
   local -a extra=()
   [ "$engine" = "-" ] || extra+=("HQ_HOOK_ENGINE=$engine")
   set +e
@@ -385,7 +415,7 @@ run_remediate() {
     PATH="$STUB_BIN:$PATH" \
     HQ_STUB_LOG="$STUB_LOG" \
     HQ_STUB_STATE="$REM_STATE" \
-    HQ_STUB_DOCTOR_JSON="$DOCTOR_DEGRADED" \
+    HQ_STUB_DOCTOR_JSON="$doctor_json" \
     bash "$root/.claude/hooks/check-client-health.sh" --remediate "$root" >/dev/null 2>&1
   REM_RC=$?
   set -e
@@ -443,6 +473,11 @@ for eng in $ENGINES; do
   else
     ok "remediate($label) reports the check id only, never the doctor message"
   fi
+  if grep -Fq "sync.journal.stale: stale-threshold" "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
+    bad "reason codes stay off when the hq-flags gate is off" "unexpected reason code in default report"
+  else
+    ok "reason codes stay off when the hq-flags gate is off"
+  fi
   # The check id itself still has to be there, or the report is useless.
   grep -Fq "sync.vault.missing" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
     && ok "remediate($label) still identifies the failing check by id" \
@@ -461,6 +496,70 @@ for eng in $ENGINES; do
     && ok "remediate($label) dedupes inside the 24h window" \
     || bad "remediate($label) dedupes inside the 24h window" "refiled ${REFILED:-0}"
 done
+
+echo "== 7b. the ordinary sync.update.core WARN is not a defect report =="
+for eng in $ENGINES; do
+  label="$eng"; [ "$eng" = "-" ] && label="default"
+
+  WARN_ROOT="$TMP/update-warn-$label"
+  build_root "$WARN_ROOT"
+  REM_STATE="$TMP/rem-update-warn-$label"
+  mkdir -p "$REM_STATE"
+  run_remediate "$WARN_ROOT" "$eng" "$DOCTOR_UPDATE_WARN"
+  [ "$REM_RC" = 0 ] && ok "remediate($label) handles sync.update.core WARN" \
+    || bad "remediate($label) handles sync.update.core WARN" "exit $REM_RC"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "sync.update.core WARN alone files no client-health report ($label)" \
+    || bad "sync.update.core WARN alone files no client-health report ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  FAIL_ROOT="$TMP/update-fail-$label"
+  build_root "$FAIL_ROOT"
+  REM_STATE="$TMP/rem-update-fail-$label"
+  mkdir -p "$REM_STATE"
+  run_remediate "$FAIL_ROOT" "$eng" "$DOCTOR_UPDATE_FAIL"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && ok "sync.update.core FAIL still files a client-health report ($label)" \
+    || bad "sync.update.core FAIL still files a client-health report ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  grep -Fq "sync.update.core" "$REM_STATE/bug-bodies.txt" \
+    && ok "sync.update.core FAIL remains in the report body ($label)" \
+    || bad "sync.update.core FAIL remains in the report body ($label)" "check id missing"
+done
+echo "== 7c. opted-in diagnostics carry only checkId: reasonCode pairs =="
+RDIAG="$TMP/rem-diagnostics"
+build_root "$RDIAG"
+REM_STATE="$TMP/rem-stub-diagnostics"
+mkdir -p "$REM_STATE"
+set +e
+env PATH="$STUB_BIN:$PATH" HQ_STUB_LOG="$STUB_LOG" HQ_STUB_STATE="$REM_STATE" \
+  HQ_STUB_DOCTOR_JSON="$DOCTOR_DEGRADED" \
+  HQ_STUB_DOCTOR_JSON_REASON_CODES="$DOCTOR_REASON_CODES" \
+  bash "$RDIAG/.claude/hooks/check-client-health.sh" --remediate "$RDIAG" >/dev/null 2>&1
+RDIAG_RC=$?
+set -e
+[ "$RDIAG_RC" = 0 ] && ok "opted-in remediation exits 0" \
+  || bad "opted-in remediation exits 0" "exit $RDIAG_RC"
+grep -Fq "sync.journal.personal: stale-threshold" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && ok "opted-in report includes journal reason code" \
+  || bad "opted-in report includes journal reason code" "missing checkId: reasonCode pair"
+grep -Fq "sync.manifest.personal: stale-threshold" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && ok "opted-in report includes manifest reason code" \
+  || bad "opted-in report includes manifest reason code" "missing checkId: reasonCode pair"
+grep -Fq "sync.journal.other-company" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && ok "non-opted-in company finding remains reportable" \
+  || bad "non-opted-in company finding remains reportable" "bare check id missing"
+if grep -Fq "sync.journal.other-company: never-synced" "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
+  bad "non-opted-in company finding has no reason code" "reason code leaked from another company's opt-in"
+else
+  ok "non-opted-in company finding has no reason code"
+fi
+if grep -Fq "$LEAK_PATH" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  || grep -Fq "private prose" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  || grep -Fq "hooks.private" "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
+  bad "opted-in report excludes paths, free text, and non-sync findings" \
+    "unexpected diagnostic data reached the body"
+else
+  ok "opted-in report excludes paths, free text, and non-sync findings"
+fi
 
 echo "== 8. a repair that succeeds files no bug =="
 RFIX="$TMP/rem-fixed"

@@ -92,7 +92,7 @@ First write the changeset to a workspace temp file, then pass its path — never
 ```bash
 # Unique path under the gitignored handoff tmp dir — never slug-only beside threads.
 mkdir -p workspace/threads/.handoff-tmp
-CHANGESET_TMP=$(mktemp workspace/threads/.handoff-tmp/.handoff-changeset-XXXXXX.json)
+CHANGESET_TMP=$(mktemp workspace/threads/.handoff-tmp/.handoff-changeset-XXXXXX)
 cat > "$CHANGESET_TMP" <<'CHANGESET_JSON'
 [{"...json array of relative paths edited..."}]
 CHANGESET_JSON

@@ -8,7 +8,8 @@ ROOT="${HQ_TEST_ROOT:-$(git rev-parse --show-toplevel)}"
 HOOK="${POLICY_BASH_HOOK:-$ROOT/.claude/hooks/block-policy-writes-bash.sh}"
 CORE_GUARD="$ROOT/.claude/hooks/protect-core.sh"
 GATE="$ROOT/.claude/hooks/hook-gate.sh"
-SETTINGS="$ROOT/.claude/settings.json"
+REGISTRY="$ROOT/.claude/hooks/hook-registry.json"
+POLICY_TEST_BASH="${POLICY_TEST_BASH:-bash}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -20,6 +21,21 @@ pass() { echo "  ok: $*"; PASS=$((PASS + 1)); }
 
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not available"; exit 0; }
 [[ -f "$HOOK" ]] || { echo "FAIL: policy Bash guard is missing: $HOOK" >&2; exit 1; }
+
+echo "[0] array snapshots stay safe under Bash 3.2 nounset semantics"
+for safe_copy in \
+  'saved_argv=(${ARGV[@]+"${ARGV[@]}"})' \
+  'saved_names=(${TRACKED_VAR_NAMES[@]+"${TRACKED_VAR_NAMES[@]}"})' \
+  'saved_values=(${TRACKED_VAR_VALUES[@]+"${TRACKED_VAR_VALUES[@]}"})' \
+  'TRACKED_VAR_NAMES=(${saved_names[@]+"${saved_names[@]}"})' \
+  'TRACKED_VAR_VALUES=(${saved_values[@]+"${saved_values[@]}"})' \
+  'ARGV=(${saved_argv[@]+"${saved_argv[@]}"})'; do
+  if grep -Fq -- "$safe_copy" "$HOOK"; then
+    pass "empty-array snapshot is nounset-safe: $safe_copy"
+  else
+    fail "nounset-safe empty-array snapshot is missing: $safe_copy"
+  fi
+done
 
 mkdir -p \
   "$TMP/core/scripts" \
@@ -35,7 +51,7 @@ run() {
   payload="$(jq -nc --arg cmd "$cmd" '{tool_input:{command:$cmd}}')"
   stderr="$(mktemp)"
   printf '%s' "$payload" | env -i PATH="$PATH" HOME="$HOME" \
-    CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" >/dev/null 2>"$stderr" || rc=$?
+    CLAUDE_PROJECT_DIR="$TMP" "$POLICY_TEST_BASH" "$HOOK" >/dev/null 2>"$stderr" || rc=$?
   if [[ "$rc" == "$want" ]]; then
     pass "$label"
   else
@@ -170,7 +186,7 @@ echo "[5] deny wording and existing core-policy guard wording are hardened"
 payload="$(jq -nc --arg cmd "cat > $P <<EOF
 x
 EOF" '{tool_input:{command:$cmd}}')"
-policy_err="$(printf '%s' "$payload" | env -i PATH="$PATH" HOME="$HOME" CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>&1 >/dev/null || true)"
+policy_err="$(printf '%s' "$payload" | env -i PATH="$PATH" HOME="$HOME" CLAUDE_PROJECT_DIR="$TMP" "$POLICY_TEST_BASH" "$HOOK" 2>&1 >/dev/null || true)"
 if grep -Fq 'Use the Write/Edit tool or /learn instead; those paths are validated.' <<<"$policy_err"; then
   pass 'policy guard names the validated alternatives'
 else
@@ -179,7 +195,7 @@ fi
 
 core_payload="$(jq -nc --arg fp "$TMP/core/policies/new.md" --arg content '---\nid: x\nwhen: test\non: [PreToolUse]\n---\n' '{tool_input:{file_path:$fp,content:$content}}')"
 core_rc=0
-core_err="$(printf '%s' "$core_payload" | env -i PATH="$PATH" HOME="$HOME" CLAUDE_PROJECT_DIR="$TMP" bash "$CORE_GUARD" 2>&1 >/dev/null)" || core_rc=$?
+core_err="$(printf '%s' "$core_payload" | env -i PATH="$PATH" HOME="$HOME" CLAUDE_PROJECT_DIR="$TMP" "$POLICY_TEST_BASH" "$CORE_GUARD" 2>&1 >/dev/null)" || core_rc=$?
 if [[ "$core_rc" == 2 ]] && grep -Fq 'explicit human permission' <<<"$core_err" \
   && grep -Fq 'never set, export, or write it on its own initiative' <<<"$core_err" \
   && ! grep -Fq 'prefix the command with HQ_ALLOW_CORE_POLICY_WRITE=1' <<<"$core_err"; then
@@ -193,16 +209,16 @@ else
   fail 'Bash core guard contains a bare narrow-override recipe'
 fi
 
-echo "[6] release registration is complete and the new guard is profile-live"
+echo "[6] hook registry registration is complete and the new guard is profile-live"
 for matcher in Write Edit MultiEdit; do
-  count="$(jq --arg matcher "$matcher" '[.hooks.PreToolUse[] | select(.matcher == $matcher) | .hooks[] | select(.command | contains("validate-policy-frontmatter"))] | length' "$SETTINGS")"
+  count="$(jq --arg matcher "$matcher" '[.hooks.PreToolUse[] | select(.matcher == $matcher) | .hooks[] | select(.id == "validate-policy-frontmatter")] | length' "$REGISTRY")"
   if [[ "$count" == 1 ]]; then
     pass "validate-policy-frontmatter is registered once for $matcher"
   else
     fail "validate-policy-frontmatter must be registered once for $matcher (got $count)"
   fi
 done
-bash_count="$(jq '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[] | select(.command | contains("block-policy-writes-bash"))] | length' "$SETTINGS")"
+bash_count="$(jq '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[] | select(.id == "block-policy-writes-bash")] | length' "$REGISTRY")"
 if [[ "$bash_count" == 1 ]]; then
   pass 'policy Bash guard is registered once'
 else
@@ -211,7 +227,7 @@ fi
 for profile in minimal standard strict; do
   rc=0
   printf '%s' "$payload" | env -i PATH="$PATH" HOME="$HOME" CLAUDE_PROJECT_DIR="$TMP" \
-    HQ_HOOK_PROFILE="$profile" bash "$GATE" block-policy-writes-bash "$HOOK" >/dev/null 2>&1 || rc=$?
+    HQ_HOOK_PROFILE="$profile" "$POLICY_TEST_BASH" "$GATE" block-policy-writes-bash "$HOOK" >/dev/null 2>&1 || rc=$?
   if [[ "$rc" == 2 ]]; then
     pass "policy Bash guard blocks through $profile profile"
   else

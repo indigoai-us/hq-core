@@ -121,6 +121,7 @@ cp "$SRC_ROOT/core/scripts/hq-agent-session.sh" "$FIXTURE/core/scripts/"
 cp -R "$SRC_ROOT/core/scripts/lib" "$FIXTURE/core/scripts/lib"
 cp "$SRC_ROOT/core/scripts/hq-session.sh" "$FIXTURE/core/scripts/" 2>/dev/null || true
 cp "$SRC_ROOT/.claude/hooks/master-hook.sh" "$FIXTURE/.claude/hooks/" 2>/dev/null || true
+cp "$SRC_ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIXTURE/.claude/hooks/"
 printf '# Formats\n\n## slack\n\nSlack.\n' \
   > "$FIXTURE/core/knowledge/public/hq-core/channel-writing-formats.md"
 printf 'CHARTER\n' > "$FIXTURE/AGENTS.md"

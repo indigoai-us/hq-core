@@ -159,9 +159,12 @@ rm -f "$ROOT/workspace/orchestrator/policy-trigger-state/mh-registry-test"* 2>/d
 
 echo "[7] a blocking registry hook wins over earlier errors or missing scripts"
 FIXTURE="$(mktemp -d)"
-mkdir -p "$FIXTURE/.claude/hooks"
+mkdir -p "$FIXTURE/.claude/hooks" "$FIXTURE/core/scripts/lib"
 cp "$MASTER" "$FIXTURE/.claude/hooks/master-hook.sh"
+cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIXTURE/.claude/hooks/"
 cp "$ROOT/.claude/hooks/hook-gate.sh" "$FIXTURE/.claude/hooks/hook-gate.sh"
+cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIXTURE/.claude/hooks/hook-timeout-probe.sh"
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$FIXTURE/core/scripts/lib/hook-adapter-core.sh"
 cat > "$FIXTURE/.claude/hooks/advisory.sh" <<'SH'
 #!/usr/bin/env bash
 cat >/dev/null

@@ -131,20 +131,35 @@ if [ "${1:-}" = "--remediate" ]; then
     . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
 
     # stdin: an `hq doctor --json` document. stdout: the bare `checkId` of every
-    # FAIL/WARN result in the sync family, one per line.
+    # FAIL/WARN result in the sync family, or an opt-in `checkId: reasonCode`
+    # pair when that result's company enabled the hq-flags gate.
     #
     # The doctor's `message` is deliberately DROPPED here rather than carried
     # and redacted later: it is free-text diagnostics that routinely embeds
     # absolute paths (home dir, HQ root, vault paths), and this value's only
-    # consumer ships it off-box in a bug report. Emitting the stable check id
-    # alone removes the leak surface entirely — and makes the record format
-    # single-token, so no message can ever inject an extra record either.
+    # consumer ships it off-box in a bug report. The opt-in path adds only a
+    # whitelisted reason enum beside the stable id; paths, messages, and targets
+    # remain local even if a doctor JSON producer returns unexpected text.
     sync_findings() {
       if [ -n "${HQ_LIB_JQ:-}" ]; then
         "$HQ_LIB_JQ" -r '
+          ["core-version-unavailable", "core-update-available", "no-local-tree",
+             "never-synced", "invalid-last-sync", "stale-threshold",
+             "manifest-unavailable", "manifest-state-unavailable",
+             "no-manifest-scopes", "never-uploaded", "invalid-upload-time",
+             "unresolved-company-uid"] as $allowed
+          |
           (.results // [])[]
           | select(.family == "sync" and (.status == "FAIL" or .status == "WARN"))
-          | (.checkId // "unknown")
+          | select(.checkId != "sync.update.core" or .status == "FAIL")
+          | . as $row
+          | ($row.checkId // "") as $candidate_id
+          | (if ($candidate_id | test("^sync\\.[A-Za-z0-9._-]{1,160}$"))
+             then $candidate_id else "unknown" end) as $check_id
+          | if $row.clientHealthReasonCodesEnabled == true and (($allowed | index($row.reasonCode)) != null)
+            then "\($check_id): \($row.reasonCode)"
+            else $check_id
+            end
         ' 2>/dev/null || true
         return 0
       fi
@@ -155,10 +170,24 @@ if [ "${1:-}" = "--remediate" ]; then
             let doc;
             try { doc = JSON.parse(d); } catch (e) { return; }
             const rows = (doc && doc.results) || [];
+            const allowed = new Set([
+              "core-version-unavailable", "core-update-available", "no-local-tree",
+              "never-synced", "invalid-last-sync", "stale-threshold",
+              "manifest-unavailable", "manifest-state-unavailable",
+              "no-manifest-scopes", "never-uploaded", "invalid-upload-time",
+              "unresolved-company-uid"
+            ]);
             for (const r of rows) {
               if (!r || r.family !== "sync") continue;
               if (r.status !== "FAIL" && r.status !== "WARN") continue;
-              process.stdout.write(String(r.checkId || "unknown") + "\n");
+              if (r.checkId === "sync.update.core" && r.status === "WARN") continue;
+              const id = typeof r.checkId === "string" && /^sync\.[A-Za-z0-9._-]{1,160}$/.test(r.checkId)
+                ? r.checkId
+                : "unknown";
+              const value = r.clientHealthReasonCodesEnabled === true && allowed.has(r.reasonCode)
+                ? `${id}: ${r.reasonCode}`
+                : id;
+              process.stdout.write(value + "\n");
             }
           });' 2>/dev/null || true
         return 0
@@ -167,11 +196,18 @@ if [ "${1:-}" = "--remediate" ]; then
     }
 
     doctor_degraded() {
-      # Emit the checkId of every FAIL/WARN result in the sync family of
-      # `hq doctor --json`. Bounded where possible so a hung doctor cannot
-      # leave a stray process behind.
-      ( cd "$HQ_ROOT" 2>/dev/null && bounded 120 hq doctor --json 2>/dev/null ) \
-        | sync_findings
+      # Newer CLI versions resolve the opt-in hq-flags gate. Older versions
+      # reject the private option, so fall back to ordinary JSON output. Both
+      # invocations are bounded and raw JSON stays in this process.
+      local document rc
+      document=$(cd "$HQ_ROOT" 2>/dev/null && bounded 120 hq doctor --json --client-health-report 2>/dev/null)
+      rc=$?
+      if [ "$rc" -ne 0 ] || [ -z "$document" ]; then
+        document=$(cd "$HQ_ROOT" 2>/dev/null && bounded 120 hq doctor --json 2>/dev/null)
+        rc=$?
+      fi
+      [ "$rc" -eq 0 ] || return 0
+      printf '%s\n' "$document" | sync_findings
     }
 
     # Corroborate: the foreground signal alone is not enough to act on.
@@ -180,7 +216,7 @@ if [ "${1:-}" = "--remediate" ]; then
 
     # Attempt the allowlisted safe repairs, then re-verify. Only findings that
     # SURVIVE the fix pass are report-worthy — a fixed issue files no bug.
-    ( cd "$HQ_ROOT" 2>/dev/null && bounded 300 hq doctor --fix --yes >/dev/null 2>&1 )
+    ( cd "$HQ_ROOT" 2>/dev/null && bounded 300 hq doctor --fix --yes --json >/dev/null 2>&1 )
     REMAINING=$(doctor_degraded)
     [ -n "$REMAINING" ] || exit 0
 
@@ -209,7 +245,7 @@ if [ "${1:-}" = "--remediate" ]; then
 
     # Only sanitised IDs leave the machine. Cap both rows and ID length so a
     # large install still produces a small report; raw messages stay local.
-    CHECK_IDS=$(printf '%s\n' "$REMAINING" | tr -c 'A-Za-z0-9._\n-' '_' | cut -c 1-160 | sort -u)
+    CHECK_IDS=$(printf '%s\n' "$REMAINING" | tr -c 'A-Za-z0-9._:\n -' '_' | cut -c 1-200 | sort -u)
     CHECK_COUNT=$(printf '%s\n' "$CHECK_IDS" | wc -l | tr -d ' ')
     CHECK_LIST=$(printf '%s\n' "$CHECK_IDS" | head -50 | sed 's/^/- /')
     # Automatic reports must opt out explicitly: the feedback CLI otherwise
@@ -220,7 +256,7 @@ if [ "${1:-}" = "--remediate" ]; then
 Automated report from the check-client-health SessionStart hook.
 
 After the safe repair pass, $CHECK_COUNT sync checks still report FAIL or WARN.
-Check IDs (up to 50 shown):
+Check IDs or opted-in checkId: reasonCode pairs (up to 50 shown):
 $CHECK_LIST
 
 Doctor messages and log bundles are not attached. Reproduce locally with

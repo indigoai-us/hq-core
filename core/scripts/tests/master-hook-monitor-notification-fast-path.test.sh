@@ -9,15 +9,20 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 MASTER="$HQ_SRC/.claude/hooks/master-hook.sh"
 GATE="$HQ_SRC/.claude/hooks/hook-gate.sh"
+PROBE="$HQ_SRC/.claude/hooks/hook-timeout-probe.sh"
+ADAPTER_CORE="$HQ_SRC/core/scripts/lib/hook-adapter-core.sh"
 [ -f "$MASTER" ] || fail "master hook is missing"
 [ -f "$GATE" ] || fail "hook gate is missing"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 ROOT="$TMP/hq"
 mkdir -p "$ROOT/.claude/hooks" "$ROOT/core/hooks/UserPromptSubmit" \
-  "$ROOT/personal/hooks/UserPromptSubmit" "$ROOT/workspace/sessions" "$TMP/bin"
+  "$ROOT/personal/hooks/UserPromptSubmit" "$ROOT/workspace/sessions" "$ROOT/core/scripts/lib" "$TMP/bin"
 cp "$MASTER" "$ROOT/.claude/hooks/master-hook.sh"
+cp "$HQ_SRC/.claude/hooks/hook-timeout-probe.sh" "$ROOT/.claude/hooks/"
 cp "$GATE" "$ROOT/.claude/hooks/hook-gate.sh"
+cp "$PROBE" "$ROOT/.claude/hooks/hook-timeout-probe.sh"
+cp "$ADAPTER_CORE" "$ROOT/core/scripts/lib/hook-adapter-core.sh"
 chmod +x "$ROOT/.claude/hooks/master-hook.sh" "$ROOT/.claude/hooks/hook-gate.sh"
 
 cat > "$ROOT/.claude/hooks/rewrite-resume-sentinel.sh" <<'SH'

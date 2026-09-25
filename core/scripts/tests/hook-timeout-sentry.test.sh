@@ -85,13 +85,14 @@ esac
 make_root() {
   local name="$1"
   local root="$TMP/$name"
-  mkdir -p "$root/.claude/hooks" "$root/.codex" "$root/.grok/hooks" "$root/core/scripts" "$root/workspace" "$root/bin"
+  mkdir -p "$root/.claude/hooks" "$root/.codex" "$root/.grok/hooks" "$root/core/scripts/lib" "$root/workspace" "$root/bin"
   cp "$SETTINGS_SRC" "$root/.claude/settings.json"
   [ ! -f "$REGISTRY_SRC" ] || cp "$REGISTRY_SRC" "$root/.claude/hooks/hook-registry.json"
   cp "$CODEX_CONFIG_SRC" "$root/.codex/config.toml"
   cp "$GROK_BRIDGE_SRC" "$root/.grok/hooks/hq-grok-user-bridge.json"
   cp "$GATE_SRC" "$root/.claude/hooks/hook-gate.sh"
   cp "$MASTER_SRC" "$root/.claude/hooks/master-hook.sh"
+  cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$root/core/scripts/lib/hook-adapter-core.sh"
   [ ! -f "$PROBE_SRC" ] || cp "$PROBE_SRC" "$root/.claude/hooks/hook-timeout-probe.sh"
   # The production watchdog is copied when it exists. Leaving it absent is the
   # intended RED state for this test file against the unmodified scripts.
@@ -103,6 +104,10 @@ make_root() {
   cat > "$root/bin/hq" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  printf '%s\n' "${HQ_TEST_HQ_VERSION:-5.183.0}"
+  exit 0
+fi
 printf '%s\n' "${HQ_NO_UPDATE_CHECK:-unset}" >> "${HQ_TEST_HQ_UPDATE_CHECK:?}"
 printf '%s\n' "$*" >> "${HQ_TEST_HQ_ARGS:?}"
 cat >> "${HQ_TEST_HQ_STDIN:?}"
@@ -364,10 +369,26 @@ probe_assert_eq() {
     printf 'FAIL: %s expected <%s>, got <%s>\n' "$label" "$expected" "$actual" >&2
   fi
 }
+make_fixture_gnu_timeout() {
+  local bin_dir="$1"
+  cat > "$bin_dir/timeout" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'timeout (GNU coreutils) 9.1\n'
+  exit 0
+fi
+while [ "${1:-}" = "-k" ] || [ "${1:-}" = "-s" ]; do shift 2; done
+[ "$#" -ge 2 ] || exit 2
+shift
+exec "$@"
+EOF
+  chmod +x "$bin_dir/timeout"
+}
 if [ -f "$PROBE_SRC" ]; then
   . "$PROBE_SRC"
   probe_root="$TMP/platform-probe"
   mkdir -p "$probe_root/bin"
+  make_fixture_gnu_timeout "$probe_root/bin"
   printf '1.25 0.75 3.50 1/20 100\n' > "$probe_root/linux-loadavg"
   printf '%s\n' '#!/usr/bin/env bash' 'printf "{ 2.75 1.50 0.40 }\\n"' \
     > "$probe_root/bin/sysctl"
@@ -398,6 +419,7 @@ if [ -f "$PROBE_SRC" ]; then
   chmod +x "$probe_root/bin/fake-bash"
   export HQ_TEST_SPAWN_CALLS="$probe_root/spawn-calls"
   export HQ_TEST_POWERSHELL_CALLS="$probe_root/powershell-calls"
+  : > "$HQ_TEST_POWERSHELL_CALLS"
   cat > "$probe_root/bin/powershell-fixture" <<'EOF'
 #!/usr/bin/env bash
 [ -n "${HQ_HOOK_TIMEOUT_SPAWN_SHELL:-}" ] || exit 127
@@ -406,11 +428,21 @@ printf '17'
 EOF
   chmod +x "$probe_root/bin/powershell-fixture"
   spawn_cache="$probe_root/session.spawn-ms"
-  spawn_first="$(hook_timeout_spawn_ms "$spawn_cache" "$probe_root/bin/fake-bash" MINGW64_NT-10.0 "$probe_root/bin/powershell-fixture")"
-  spawn_second="$(hook_timeout_spawn_ms "$spawn_cache" "$probe_root/bin/fake-bash" MINGW64_NT-10.0 "$probe_root/bin/powershell-fixture")"
+  spawn_first="$(PATH="$probe_root/bin:$PATH" hook_timeout_spawn_ms "$spawn_cache" "$probe_root/bin/fake-bash" MINGW64_NT-10.0 "$probe_root/bin/powershell-fixture")"
+  spawn_second="$(PATH="$probe_root/bin:$PATH" hook_timeout_spawn_ms "$spawn_cache" "$probe_root/bin/fake-bash" MINGW64_NT-10.0 "$probe_root/bin/powershell-fixture")"
   case "$spawn_first" in ''|*[!0-9]*) probe_failures=$((probe_failures + 1)); echo 'FAIL: Windows spawn probe did not return milliseconds' >&2 ;; esac
   probe_assert_eq 'Windows spawn probe cache is stable' "$spawn_first" "$spawn_second"
-  probe_assert_eq 'Windows spawn probe runs once per session' 1 "$(wc -c < "$HQ_TEST_POWERSHELL_CALLS" | tr -d ' ')"
+  probe_assert_eq 'Windows spawn probe does not start PowerShell' 0 "$(wc -c < "$HQ_TEST_POWERSHELL_CALLS" | tr -d ' ')"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" bash.exe node.exe node.exe git.exe' > "$probe_root/bin/fake-ps"
+  chmod +x "$probe_root/bin/fake-ps"
+  probe_assert_eq 'Windows process probe counts only bash and node' 3 \
+    "$(PATH="$probe_root/bin:$PATH" hook_timeout_windows_process_count "$probe_root/bin/fake-ps")"
+  windows_probe="$(PATH="$probe_root/bin:$PATH" hook_timeout_windows_probe_json "$probe_root/bin/fake-bash" "$probe_root/bin/fake-ps")"
+  jq -e '.spawn_ms | type == "number" and . >= 0 and . <= 2000' <<<"$windows_probe" >/dev/null \
+    || { probe_failures=$((probe_failures + 1)); echo 'FAIL: Windows probe fixture omitted bounded bash spawn time' >&2; }
+  jq -e '.process_count == 3' <<<"$windows_probe" >/dev/null \
+    || { probe_failures=$((probe_failures + 1)); echo 'FAIL: Windows probe fixture omitted bash/node count' >&2; }
+  probe_assert_eq 'Windows context probe still avoids PowerShell' 0 "$(wc -c < "$HQ_TEST_POWERSHELL_CALLS" | tr -d ' ')"
   interrupted_spawn_cache="$probe_root/session.spawn-interrupted-ms"
   interrupted_spawn_started="$probe_root/interrupted-spawn-started"
   interrupted_spawn_release="$probe_root/interrupted-spawn-release"
@@ -446,17 +478,12 @@ EOF
   [ "$interrupted_spawn_rc" -ne 0 ] \
     || { probe_failures=$((probe_failures + 1)); echo 'FAIL: interrupted spawn probe unexpectedly completed' >&2; }
   if [ "$(hook_timeout_os_name "$(uname -s 2>/dev/null || true)")" = windows ]; then
-    real_powershell=""
-    for candidate in powershell.exe powershell pwsh.exe pwsh; do
-      real_powershell="$(command -v "$candidate" 2>/dev/null || true)"
-      [ -n "$real_powershell" ] && break
-    done
     real_bash="$(command -v bash 2>/dev/null || true)"
     real_spawn_cache="$probe_root/session.spawn-windows-real-ms"
-    real_spawn="$(hook_timeout_spawn_ms "$real_spawn_cache" "$real_bash" MINGW64_NT-10.0 "$real_powershell")"
-    case "$real_spawn" in ''|*[!0-9]*) probe_failures=$((probe_failures + 1)); echo 'FAIL: Windows PowerShell spawn probe did not return milliseconds' >&2 ;; esac
-    real_spawn_cached="$(hook_timeout_spawn_ms "$real_spawn_cache" "$real_bash" MINGW64_NT-10.0 "$real_powershell")"
-    probe_assert_eq 'Windows PowerShell spawn result is cached' "$real_spawn" "$real_spawn_cached"
+    real_spawn="$(hook_timeout_spawn_ms "$real_spawn_cache" "$real_bash" MINGW64_NT-10.0)"
+    case "$real_spawn" in ''|*[!0-9]*) probe_failures=$((probe_failures + 1)); echo 'FAIL: bounded Git Bash spawn probe did not return milliseconds' >&2 ;; esac
+    real_spawn_cached="$(hook_timeout_spawn_ms "$real_spawn_cache" "$real_bash" MINGW64_NT-10.0)"
+    probe_assert_eq 'Git Bash spawn result is cached without PowerShell' "$real_spawn" "$real_spawn_cached"
   fi
   if [ "$(hook_timeout_os_name "$(uname -s 2>/dev/null || true)")" != windows ] && command -v perl >/dev/null 2>&1; then
     fallback_bin="$probe_root/no-timeout-bin"
@@ -494,7 +521,7 @@ else
   echo 'FAIL: Linux, Darwin, and Windows probe helpers are absent on the base revision' >&2
 fi
 [ "$probe_failures" -eq 0 ] || fail "platform probe regressions: $probe_failures assertion(s) failed"
-pass 'load probes return fixture values and Windows spawn timing is cached'
+pass 'load and bounded Windows process probes return fixture values without PowerShell'
 fi
 
 echo "[1] fast gate hook leaves no watcher and sends no warning"
@@ -508,7 +535,7 @@ if watchdog_running "$R1"; then
 fi
 pass "fast hook has no report and reaps its watchdog"
 
-echo "[2] slow gate hook reports exactly one flat, payload-free event"
+echo "[2] slow gate hook reports one bounded event without hook payload"
 R2="$(make_root slow)"
 set_timeout "$R2" 'hook-gate.sh" detect-secrets ' 2
 make_gate_hook "$R2" "$gate_trigger_and_wait; printf \"slow stdout\"; printf \"slow stderr\" >&2"
@@ -557,8 +584,17 @@ jq -e '
   and .metadata.hook_script == "detect-secrets.sh"
   and .metadata.exit_code == "running"
   and (.metadata.hook_sequence | type == "array" and length == 0)
-  and ([.metadata | to_entries[] | select(.key != "hook_sequence") | .value | type]
+  and ([.metadata | to_entries[] | select(.key != "hook_sequence" and .key != "hook_timeout_debug_context") | .value | type]
        | all(. == "string" or . == "number" or . == "boolean"))
+  and (.metadata.hook_timeout_debug_context | type == "object")
+  and ((.metadata.hook_timeout_debug_context | keys | sort) == ["budget_ms", "elapsed_ms", "hook_event", "hook_name", "load_average", "phase_timings", "process_count", "remaining_ms", "spawn_ms", "wait_point", "waiting_child_basename", "waiting_child_elapsed_ms"])
+  and .metadata.hook_timeout_debug_context.hook_name == "other"
+  and .metadata.hook_timeout_debug_context.wait_point == "child_wait"
+  and .metadata.hook_timeout_debug_context.waiting_child_basename == "other"
+  and (.metadata.hook_timeout_debug_context.waiting_child_elapsed_ms | type == "number" and . > 0)
+  and (.metadata.hook_timeout_debug_context.phase_timings | type == "array" and length <= 24)
+  and (.metadata.hook_timeout_debug_context.load_average == "unavailable" or (.metadata.hook_timeout_debug_context.load_average | type == "number"))
+  and ((.metadata.hook_timeout_debug_context | tojson | utf8bytelength) <= 2048)
   and (.metadata | has("hook_scope") | not)
 ' --arg hook_path "$R2/.claude/hooks/detect-secrets.sh" < <(sed '/^---EVENT---$/,$d' "$R2/hq.stdin") >/dev/null \
   || fail "warning omitted required safe fields or contained nested metadata"
@@ -568,7 +604,7 @@ fi
 if grep -Fq "$R2/companies/" "$R2/hq.stdin"; then
   fail "company filesystem path leaked to reporter stdin"
 fi
-pass "slow hook emits one flat event with the expected safe metadata"
+pass "slow hook emits one bounded event with the expected safe metadata"
 
 echo "[3] watchdog preserves passing and blocking gate stdout, stderr, and exit"
 for kind in passing blocking; do
@@ -648,7 +684,14 @@ printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' > "$R6/core/hooks/PreToolUs
 chmod +x "$R6/core/hooks/PreToolUse/10-fast-child.sh"
 cat > "$R6/bin/jq" <<'EOF'
 #!/usr/bin/env bash
-if mkdir "${HQ_TEST_JQ_DELAY_MARKER:?}" 2>/dev/null; then
+delay_master_payload_parse=0
+for arg in "$@"; do
+  if [[ "$arg" == *'(.agent_id // "" | tostring)'* ]]; then
+    delay_master_payload_parse=1
+    break
+  fi
+done
+if [ "$delay_master_payload_parse" -eq 1 ] && mkdir "${HQ_TEST_JQ_DELAY_MARKER:?}" 2>/dev/null; then
   printf '%s\t%s\t%s\n' master-dispatch "${HQ_TEST_ROOT:?}/.claude/hooks/master-hook.sh" relative \
     > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"
   while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 1 ]; do
@@ -658,10 +701,15 @@ fi
 exec "${HQ_TEST_SYSTEM_JQ:?}" "$@"
 EOF
 chmod +x "$R6/bin/jq"
+set +e
 env PATH="$R6/bin:$PATH" HQ_TEST_HQ_ARGS="$R6/hq.args" HQ_TEST_HQ_STDIN="$R6/hq.stdin" HQ_TEST_HQ_ACK="$R6/hq.ack" \
   HQ_TEST_ROOT="$R6" HQ_TEST_SYSTEM_JQ="$SYSTEM_JQ" HQ_TEST_JQ_DELAY_MARKER="$R6/jq-delayed" HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
+  HQ_HOOK_TIMEOUT_SENTRY_TEST_STATUS_FILE="$R6/watchdog.status" \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R6/watchdog.trigger" \
   timeout 15s bash "$R6/.claude/hooks/master-hook.sh" PreToolUse >"$R6/out" 2>"$R6/err" <<<"$(payload master-dispatch-session)"
+r6_rc=$?
+set -e
+[ "$r6_rc" -eq 0 ] || fail "master dispatcher timed out outside child execution (rc=$r6_rc, watchdog=$(cat "$R6/watchdog.status" 2>/dev/null || printf unavailable), triggers=$(wc -l < "$R6/watchdog.trigger" 2>/dev/null || printf 0), acknowledgements=$(wc -l < "$R6/hq.ack" 2>/dev/null || printf 0))"
 [ "$(event_count "$R6")" = "1" ] || fail "slow master dispatcher should emit exactly one warning"
 jq -e '
   (.fingerprint | startswith("hook-timeout:PreToolUse:"))
@@ -673,6 +721,8 @@ pass "master dispatcher remains observable"
 
 echo "[7] a master dispatch warning persists while a child is slow"
 R7="$(make_root master-child)"
+R7_OUTER_TIMEOUT="$(type -P timeout 2>/dev/null || true)"
+[ -n "$R7_OUTER_TIMEOUT" ] || fail "master-child test requires the host timeout executable"
 set_timeout "$R7" 'master-hook.sh" PreToolUse' 4
 master_hook_path="$R7/.claude/hooks/master-hook.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$R7/bin/cksum"
@@ -683,23 +733,27 @@ printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'sleep 0.01' > "$fast_child
 chmod +x "$fast_child_path"
 slow_child_path="$R7/core/hooks/PreToolUse/check-hq-update.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'printf MINGW64_NT-10.0' > "$R7/bin/uname"
-printf '%s\n' '#!/usr/bin/env bash' '[ -n "${HQ_HOOK_TIMEOUT_SPAWN_SHELL:-}" ] || exit 127' 'printf 17' \
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" bash.exe node.exe' > "$R7/bin/ps"
+make_fixture_gnu_timeout "$R7/bin"
+printf '%s\n' '#!/usr/bin/env bash' '[ -n "${HQ_HOOK_TIMEOUT_SPAWN_SHELL:-}" ] || exit 127' 'printf x >> "${HQ_TEST_POWERSHELL_CALLS:?}"' 'printf 17' \
   > "$R7/bin/powershell.exe"
-chmod +x "$R7/bin/uname" "$R7/bin/powershell.exe"
+chmod +x "$R7/bin/uname" "$R7/bin/ps" "$R7/bin/powershell.exe"
 # shellcheck disable=SC2016 # This is source text for the fixture child script.
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'case "${HQ_HOOK_TIMEOUT_SENTRY:-1}" in 0) : ;; *) printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done ;; esac' 'printf "master block stdout"' 'printf "master block stderr" >&2' 'exit 2' > "$slow_child_path"
 chmod +x "$slow_child_path"
 set +e
 env PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" HQ_TEST_HQ_ACK="$R7/hq.ack" \
   HQ_TEST_MASTER_PATH="$master_hook_path" \
+  HQ_TEST_POWERSHELL_CALLS="$R7/powershell-calls" \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R7/watchdog.trigger" \
-  timeout 15s bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/out" 2>"$R7/err" <<<"$(payload master-session)"
+  "$R7_OUTER_TIMEOUT" 15s bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/out" 2>"$R7/err" <<<"$(payload master-session)"
 with_master_rc=$?
 env PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" HQ_TEST_HQ_ACK="$R7/hq.ack" \
   HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
+  HQ_TEST_POWERSHELL_CALLS="$R7/powershell-calls" \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R7/watchdog.trigger" \
-  timeout 15s bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/without.out" 2>"$R7/without.err" <<<"$(payload master-without-session)"
+  "$R7_OUTER_TIMEOUT" 15s bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/without.out" 2>"$R7/without.err" <<<"$(payload master-without-session)"
 without_master_rc=$?
 set -e
 [ "$with_master_rc" -eq 2 ] || fail "master child changed blocking exit with watchdog: $with_master_rc"
@@ -723,6 +777,30 @@ jq -e '
   and .metadata.hook_path == $hook_path
 ' --arg hook_path "$master_hook_path" < <(sed '/^---EVENT---$/,$d' "$R7/hq.stdin") >/dev/null \
   || fail "master warning did not identify its dispatcher"
+if ! jq -s -e --arg child "${slow_child_path##*/}" '
+  [ .[] | select(.type == "hook_timeout_warning")
+    | .metadata.hook_timeout_debug_context ] as $contexts
+  | any($contexts[];
+      . as $context
+      | .hook_name == "master-hook.sh"
+      and .hook_event == "PreToolUse"
+      and .wait_point == "external_command"
+      and .waiting_child_basename == $child
+      and (.waiting_child_elapsed_ms | type == "number" and . > 0)
+      and (if ($context.phase_timings | length) == 0 then true else
+        any($context.phase_timings[]; .phase == "external_command" and .elapsed_ms > 0)
+        and (["startup", "source", "config_load", "policy_load", "output_write"]
+          - [$context.phase_timings[].phase] | length == 0)
+      end)
+      and .load_average == "unavailable"
+      and (.spawn_ms | type == "number" and . >= 0 and . <= 2000)
+      and .process_count == 2)
+' < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >/dev/null; then
+  jq -s '[.[] | select(.type == "hook_timeout_warning")
+    | .metadata.hook_timeout_debug_context]' < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >&2 || true
+  fail "watchdog did not capture bounded active-child phase context"
+fi
+pass "watchdog captures phase timing, wait point, child basename, and Windows probe fixture"
 if ! jq -s -e --arg slow_child "${slow_child_path##*/}" --arg fast_child "${fast_child_path##*/}" '
   [ .[] | select(.type == "hook_late_finish"
     and .metadata.hook_script == "master-hook.sh") ] as $master_late
@@ -742,13 +820,20 @@ if ! jq -s -e '
     and .metadata.hook_script == "master-hook.sh") ] as $master_late
   | ($master_late | length) == 1
     and $master_late[0].metadata.platform == "MINGW64_NT-10.0"
-    and ($master_late[0].metadata.spawn_ms | type == "number" and . == 17)
+    and ($master_late[0].metadata.spawn_ms | type == "number" and . >= 0 and . <= 2000)
+    and ($master_late[0].metadata.hook_timeout_debug_context.spawn_ms | type == "number")
+    and $master_late[0].metadata.hook_timeout_debug_context.process_count == 2
+    and (if ($master_late[0].metadata.hook_timeout_debug_context.phase_timings | length) == 0 then true else
+      any($master_late[0].metadata.hook_timeout_debug_context.phase_timings[];
+        .phase == "output_write" and .elapsed_ms >= 0)
+    end)
 ' < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >/dev/null; then
   jq -s '[.[] | select(.type == "hook_late_finish" and .metadata.hook_script == "master-hook.sh")
     | .metadata | {platform, spawn_ms}]' < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >&2 || true
   fail "master Windows late event did not report the spawn-probe measurement"
 fi
-pass "master late event carries Windows spawn timing"
+[ ! -s "$R7/powershell-calls" ] || fail "Windows reporter started PowerShell on the timeout path"
+pass "master late event carries bounded Windows probes without PowerShell"
 
 breadcrumb="$(find "$R7/workspace/.hook-timeout-breadcrumbs" -name '*.json' -type f | head -n 1)"
 [ -n "$breadcrumb" ] || fail "slow master child did not persist a breadcrumb"
@@ -1256,21 +1341,23 @@ for index in $(seq -w 1 25); do
   chmod +x "$R16/core/hooks/PreToolUse/${index}-journal-fast.sh"
 done
 late_master_path="$R16/.claude/hooks/master-hook.sh"
-# Normal child dispatch must append to the journal without taking the warning
-# compaction path for every child. Count filesystem operations whose arguments
-# name this journal so the test catches a reintroduction of per-child churn.
+# Normal child dispatch must append to the hook-history journal without taking
+# the warning compaction path for every child. Phase timings use a separate
+# per-invocation .debug.tsv file, and the Windows spawn probe can re-create the
+# journal directory, so exclude those instrumentation paths and count only
+# hook-history compaction churn.
 system_mkdir="$(command -v mkdir)"
 system_tail="$(command -v tail)"
 system_mv="$(command -v mv)"
 : > "$R16/journal-fs-ops"
 printf '%s\n' '#!/usr/bin/env bash' \
-  'case " $* " in *hook-timeout-journal*) printf "%s\n" mkdir >> "${HQ_TEST_JOURNAL_FS_OPS:?}" ;; esac' \
+  'case " $* " in *hook-timeout-journal*) case " $* " in *".debug.tsv"*|*"/.hook-timeout-journal "*) ;; *) printf "%s\n" mkdir >> "${HQ_TEST_JOURNAL_FS_OPS:?}" ;; esac ;; esac' \
   "exec \"$system_mkdir\" \"\$@\"" > "$R16/bin/mkdir"
 printf '%s\n' '#!/usr/bin/env bash' \
-  'case " $* " in *hook-timeout-journal*) printf "%s\n" tail >> "${HQ_TEST_JOURNAL_FS_OPS:?}" ;; esac' \
+  'case " $* " in *hook-timeout-journal*) case " $* " in *".debug.tsv"*|*"/.hook-timeout-journal "*) ;; *) printf "%s\n" tail >> "${HQ_TEST_JOURNAL_FS_OPS:?}" ;; esac ;; esac' \
   "exec \"$system_tail\" \"\$@\"" > "$R16/bin/tail"
 printf '%s\n' '#!/usr/bin/env bash' \
-  'case " $* " in *hook-timeout-journal*) printf "%s\n" mv >> "${HQ_TEST_JOURNAL_FS_OPS:?}" ;; esac' \
+  'case " $* " in *hook-timeout-journal*) case " $* " in *".debug.tsv"*|*"/.hook-timeout-journal "*) ;; *) printf "%s\n" mv >> "${HQ_TEST_JOURNAL_FS_OPS:?}" ;; esac ;; esac' \
   "exec \"$system_mv\" \"\$@\"" > "$R16/bin/mv"
 chmod +x "$R16/bin/mkdir" "$R16/bin/tail" "$R16/bin/mv"
 # shellcheck disable=SC2016 # These quoted lines are source text for the fixture child.
@@ -1471,6 +1558,10 @@ mkdir -p "$R19_REPORT/core/hooks/PreToolUse"
 cat > "$R19_REPORT/bin/hq" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  printf '5.183.0\n'
+  exit 0
+fi
 trap 'printf "killed\\n" >> "${HQ_TEST_HQ_KILLED_FILE:?}"; exit 143' TERM
 printf '%s\n' "${HQ_NO_UPDATE_CHECK:-unset}" >> "${HQ_TEST_HQ_UPDATE_CHECK:?}"
 printf '%s\n' "$*" >> "${HQ_TEST_HQ_ARGS:?}"
@@ -1544,5 +1635,103 @@ if grep -qv '^1$' "$HQ_TEST_HQ_UPDATE_CHECK"; then
   fail "a timeout reporter invoked hq without HQ_NO_UPDATE_CHECK=1"
 fi
 pass "every timeout reporter sets HQ_NO_UPDATE_CHECK=1"
+
+echo "[21] debug-context names are bounded, scrubbed, version-gated, and capped"
+probe_assert_eq 'known child basename drops path and arguments' 'check-hq-update.sh' \
+  "$(hook_timeout_normalize_basename "$TMP/home User/.claude/hooks/check-hq-update.sh --token /home/alice/secret")"
+probe_assert_eq 'Python child name is classified without invoking Python' 'python3.exe' \
+  "$(hook_timeout_normalize_basename "$TMP/bin/python3.exe --version")"
+probe_assert_eq 'unknown child basename normalizes to other' 'other' \
+  "$(hook_timeout_normalize_basename "$TMP/bin/unlisted-runner --password hidden")"
+probe_assert_eq 'unknown phase normalizes to other' 'other' \
+  "$(hook_timeout_normalize_phase 'secret-phase-name')"
+
+phase_file="$TMP/phase-timings.tsv"
+: > "$phase_file"
+for phase_index in $(seq 1 26); do
+  printf 'external_command\t%s\n' "$phase_index" >> "$phase_file"
+done
+phase_timings="$(hook_timeout_phase_timings_json "$phase_file" "$TMP/no-active-phase")"
+[ "$(jq 'length' <<<"$phase_timings")" -eq 24 ] || fail "phase timing list was not capped at 24"
+debug_context="$(hook_timeout_debug_context_json \
+  "$TMP/home User/.claude/hooks/check-hq-update.sh --private /home/alice" \
+  'UnknownEvent' 30000 15000 15000 "$phase_timings" 'unknown-wait' \
+  "$TMP/home User/bin/unlisted-runner --password hidden" 1200 1.25 unavailable unavailable)"
+jq -e '
+  (keys | sort) == ["budget_ms", "elapsed_ms", "hook_event", "hook_name", "load_average", "phase_timings", "process_count", "remaining_ms", "spawn_ms", "wait_point", "waiting_child_basename", "waiting_child_elapsed_ms"]
+  and .hook_name == "check-hq-update.sh"
+  and .hook_event == "other"
+  and .wait_point == "other"
+  and .waiting_child_basename == "other"
+  and (.phase_timings | length == 24)
+' <<<"$debug_context" >/dev/null || fail "debug context was not normalized to the accepted fields"
+if printf '%s' "$debug_context" | grep -Eq '(/home/|home User|--private|--password|hidden|alice|secret)'; then
+  fail "debug context leaked a path, home directory, or argument"
+fi
+base_report="$(jq -cn --arg hook_path "$TMP/repos/private/hq-core-staging/.claude/hooks/master-hook.sh" \
+  --arg session_id 'session-test-abc123' --arg event 'PreToolUse' \
+  --argjson sequence '[{"script":"check-hq-update.sh","event":"PreToolUse","ms":10}]' \
+  '{type:"hook_timeout_warning",message:"HQ hook is approaching configured timeout",fingerprint:"hook-timeout:PreToolUse:abc",level:"warning",metadata:{hook_name:"master-hook.sh",hook_path:$hook_path,hook_event:$event,session_id:$session_id,hook_sequence:$sequence}}')"
+bounded_report="$(hook_timeout_attach_debug_context "$base_report" "$debug_context")"
+[ "$(printf '%s' "$bounded_report" | wc -c | tr -d '[:space:]')" -le 2048 ] \
+  || fail "24-phase hook timeout report exceeded the 2,048-byte CLI limit"
+jq -e '.metadata.hook_timeout_debug_context.phase_timings | length <= 24' \
+  <<<"$bounded_report" >/dev/null || fail "payload bound dropped phase limit"
+
+old_cli="$TMP/bin/hq-old-version"
+new_cli="$TMP/bin/hq-new-version"
+printf '%s\n' '#!/usr/bin/env bash' '[ "${HQ_NO_UPDATE_CHECK:-}" = 1 ] || exit 90' 'printf 5.182.0' > "$old_cli"
+printf '%s\n' '#!/usr/bin/env bash' '[ "${HQ_NO_UPDATE_CHECK:-}" = 1 ] || exit 90' 'printf 5.183.0' > "$new_cli"
+prefixed_hq_cli="$TMP/bin/hq-prefixed-version"
+prefixed_cli_cli="$TMP/bin/cli-prefixed-version"
+printf '%s\n' '#!/usr/bin/env bash' '[ "${HQ_NO_UPDATE_CHECK:-}" = 1 ] || exit 90' 'echo "hq 5.200.0"' > "$prefixed_hq_cli"
+printf '%s\n' '#!/usr/bin/env bash' '[ "${HQ_NO_UPDATE_CHECK:-}" = 1 ] || exit 90' 'echo "CLI 5.183.0"' > "$prefixed_cli_cli"
+chmod +x "$old_cli" "$new_cli" "$prefixed_hq_cli" "$prefixed_cli_cli"
+hook_timeout_cli_supports_debug_context "$old_cli" "$TMP/old-cli-version" Linux \
+  && fail "pre-#801 hq-cli version was allowed to receive nested metadata"
+hook_timeout_cli_supports_debug_context "$new_cli" "$TMP/new-cli-version" Linux \
+  || fail "hq-cli 5.183.0 receiver version was not allowed"
+hook_timeout_cli_supports_debug_context "$prefixed_hq_cli" "$TMP/prefixed-hq-version" Linux \
+  || fail "prefixed hq version output was not parsed"
+[ "$(cat "$TMP/prefixed-hq-version")" = "5.200.0" ] \
+  || fail "prefixed hq version cache did not store only the semantic version"
+hook_timeout_cli_supports_debug_context "$prefixed_cli_cli" "$TMP/prefixed-cli-version" Linux \
+  || fail "prefixed CLI version output was not parsed"
+[ "$(cat "$TMP/prefixed-cli-version")" = "5.183.0" ] \
+  || fail "prefixed CLI version cache did not store only the semantic version"
+printf '%s\n' 'hq 5.200.0' > "$TMP/prefixed-cache-hit-version"
+hook_timeout_cli_supports_debug_context "$TMP/bin/must-not-run" "$TMP/prefixed-cache-hit-version" Linux \
+  || fail "prefixed cached CLI version output was not parsed"
+pass "nested metadata is version-gated and every report stays within the receiver limit"
+
+echo "[22] master debug phase markers do not fork and persist one bounded snapshot"
+phase_trace="$TMP/master-debug-phase.trace"
+phase_state="$TMP/master-debug-phase.state"
+if ! bash -c '
+  PS4="+${BASH_SUBSHELL}: "
+  set -x
+  . "$1"
+  MASTER_DEBUG_PHASE_BUFFER=()
+  MASTER_DEBUG_PHASE_FILE=""
+  MASTER_DEBUG_ACTIVE_PHASE_FILE="$2"
+  MASTER_DEBUG_ACTIVE_PHASE=""
+  MASTER_DEBUG_ACTIVE_STARTED=""
+  master_debug_phase_buffer_record startup 3
+  master_debug_phase_buffer_record source 5
+  master_debug_phase_start external_command
+  master_debug_phase_finish external_command
+  set +x
+' _ "$PROBE_SRC" "$phase_state" 2>"$phase_trace"; then
+  fail "debug phase helpers were not callable from the probe library"
+fi
+if grep -Eq '^\+[1-9]' "$phase_trace"; then
+  cat "$phase_trace" >&2
+  fail "master_debug_phase_start/finish forked a Bash subshell"
+fi
+IFS=$'\t' read -r saved_phase _ saved_completed < "$phase_state" || true
+[ "$saved_phase" = external_command ] \
+  && [ "$saved_completed" = 'startup:3,source:5' ] \
+  || fail "active phase snapshot omitted completed timings"
+pass "phase helpers stay in the caller and persist one active-state line"
 
 echo "ALL PASS: hook-timeout-sentry"

@@ -117,6 +117,9 @@ if [ -n "$HQ_ROOT" ]; then
   # Single-source dispatch: read .claude/settings.json live so Grok runs
   # exactly the hooks Claude runs (hqad_iter_settings / hqad_mode_for).
   . "$HQ_ROOT/core/scripts/lib/hook-adapter-core.sh" 2>/dev/null || true
+  # Share the existing profile gate in-process so each registry hook does not
+  # start another hook-gate.sh process.
+  . "$GATE" --lib 2>/dev/null || true
 fi
 
 # Fail-open outside HQ trees (never wedge non-HQ projects). Gate presence is
@@ -191,6 +194,8 @@ CMD="$(jget '.toolInput.command // .tool_input.command // empty')"
 FP="$(jget '.toolInput.file_path // .toolInput.path // .toolInput.target_file // .tool_input.file_path // .tool_input.path // .tool_input.target_file // empty')"
 CONTENT="$(jget '.toolInput.content // .toolInput.new_string // .tool_input.content // .tool_input.new_string // empty')"
 PROMPT="$(jget '.prompt // .userPrompt // .content // empty')"
+TOOL_RESPONSE="$(printf '%s' "$INPUT_RAW" | jq -c '.toolResponse // .tool_response // .toolOutput // .tool_output // null' 2>/dev/null || printf 'null')"
+RUN_IN_BACKGROUND="$(jget '.toolInput.run_in_background // .tool_input.run_in_background // false')"
 
 # Claude-shaped payload for HQ hooks.
 # Session identity: without a session_id the policy-injection dedupe collapses
@@ -200,6 +205,7 @@ PROMPT="$(jget '.prompt // .userPrompt // .content // empty')"
 SID="$(jget '.session_id // .sessionId // .conversationId // .threadId // empty')"
 [ -z "$SID" ] && SID="${GROK_SESSION_ID:-}"
 [ -z "$SID" ] && SID="grok-${PPID}"
+export HQAD_EVENT_SESSION_ID="$SID"
 PARENT_SID="$(jget '.parent_session_id // .parentSessionId // empty')"
 [ -z "$PARENT_SID" ] && PARENT_SID="${HQ_PARENT_SESSION_ID:-}"
 
@@ -212,6 +218,8 @@ CLAUDE_JSON="$(jq -n \
   --arg cwd "$CWD" \
   --arg sid "$SID" \
   --arg prompt "$PROMPT" \
+  --arg run_background "$RUN_IN_BACKGROUND" \
+  --argjson response "$TOOL_RESPONSE" \
   '{
     hook_event_name: $event,
     tool_name: $t,
@@ -222,8 +230,10 @@ CLAUDE_JSON="$(jq -n \
       + (if $c != "" then {command: $c} else {} end)
       + (if $f != "" then {file_path: $f} else {} end)
       + (if $body != "" then {content: $body, new_string: $body} else {} end)
+      + (if $run_background == "true" then {run_in_background: true} else {} end)
     )
-  } + (if $prompt != "" then {prompt: $prompt} else {} end)' 2>/dev/null)"
+  } + (if $prompt != "" then {prompt: $prompt} else {} end)
+    + (if $response != null then {tool_response: $response} else {} end)' 2>/dev/null)"
 
 deny() {
   local reason="$1"
@@ -245,16 +255,16 @@ run_block() { # <hook-id> <hook-script> [payload] [extra-gate-args...]
   status=0
   warning=""
 
-  if command -v hq_launch_shell_path >/dev/null 2>&1; then
-    hq_launch_shell_path "$HQ_ROOT" "$GATE" "$payload" "$id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
+  if command -v hqad_launch_registered_hook >/dev/null 2>&1; then
+    hqad_launch_registered_hook "$HQ_ROOT" "$EVENT" "$payload" "$id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
     if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
       warning="$(hq_hook_launch_warning_text \
         "$payload" \
         "$HQ_ROOT" \
         "blocking" \
-        "hook gate" \
+        "hook" \
         "$id" \
-        "$GATE" \
+        "$script" \
         "$HQ_HOOK_LAST_CAUSE")"
     fi
   else
@@ -288,16 +298,16 @@ run_advisory() { # <hook-id> <hook-script> [payload] [stdout_mode]
   status=0
   warning=""
 
-  if command -v hq_launch_shell_path >/dev/null 2>&1; then
-    hq_launch_shell_path "$HQ_ROOT" "$GATE" "$payload" "$id" "$script" >"$out" 2>"$err" || status=$?
+  if command -v hqad_launch_registered_hook >/dev/null 2>&1; then
+    hqad_launch_registered_hook "$HQ_ROOT" "$EVENT" "$payload" "$id" "$script" >"$out" 2>"$err" || status=$?
     if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
       warning="$(hq_hook_launch_warning_text \
         "$payload" \
         "$HQ_ROOT" \
         "advisory" \
-        "hook gate" \
+        "hook" \
         "$id" \
-        "$GATE" \
+        "$script" \
         "$HQ_HOOK_LAST_CAUSE")"
     fi
   else
@@ -578,7 +588,7 @@ dispatch_settings_hooks() {
           run_script_advisory "$a" "$payload"
           ;;
       esac
-    done < <(hqad_iter_settings "$event" "$tool")
+    done < <(hqad_iter_settings "$event" "$tool" "$payload")
   done
 }
 

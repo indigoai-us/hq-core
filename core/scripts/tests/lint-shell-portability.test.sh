@@ -149,5 +149,48 @@ if printf '%s' "$array_out" | grep -q 'check-hq-hooks.sh:6:'; then
 fi
 echo "  ok   established empty-array guard is accepted"
 
+# ---- mktemp templates with suffixes after XXXXXX ----------------------------
+# BSD/macOS mktemp replaces a trailing run of Xs. A suffix after that run is
+# not portable: shell-script examples such as XXXXXX).tar.gz fail to expand.
+MK_REPO="$TMP/mktemp-repo"
+mkdir -p "$MK_REPO/core/scripts" "$MK_REPO/.claude/skills/deploy/scripts"
+git -C "$MK_REPO" init -q
+git -C "$MK_REPO" config user.email t@example.com
+git -C "$MK_REPO" config user.name t
+cp "$ROOT/core/scripts/lint-shell-portability.sh" "$MK_REPO/core/scripts/"
+cat >"$MK_REPO/.claude/skills/deploy/scripts/mktemp-probe.sh" <<'SH'
+#!/usr/bin/env bash
+BAD_TARBALL="$(mktemp -t hq-deploy-tar.XXXXXX).tar.gz"
+GOOD_TARBALL="$(mktemp -t hq-deploy-tar.XXXXXX)"
+SH
+git -C "$MK_REPO" add core/scripts .claude/skills
+
+mktemp_out="$(cd "$MK_REPO" && bash core/scripts/lint-shell-portability.sh 2>&1 || true)"
+if printf '%s' "$mktemp_out" | grep -q 'mktemp-probe.sh:2:.*suffix'; then
+  echo "  ok   real linter flags a mktemp suffix after XXXXXX"
+else
+  echo "FAIL: linter did not flag a mktemp suffix after XXXXXX" >&2
+  printf '%s\n' "$mktemp_out" >&2
+  exit 1
+fi
+if printf '%s' "$mktemp_out" | grep -q 'mktemp-probe.sh:3:'; then
+  echo "FAIL: linter false-flagged a trailing-X mktemp template" >&2
+  printf '%s\n' "$mktemp_out" >&2
+  exit 1
+fi
+echo "  ok   trailing-X mktemp template is accepted"
+
+MK_TEMP_SUFFIX_RE='mktemp[[:space:]][^#]*X{6}[^[:space:]]*[.][[:alnum:]]'
+for doc in \
+  .claude/skills/handoff/SKILL.md \
+  .claude/skills/journal/SKILL.md \
+  .claude/skills/deploy/SKILL.md; do
+  if grep -nE "$MK_TEMP_SUFFIX_RE" "$ROOT/$doc"; then
+    echo "FAIL: documentation contains a mktemp suffix after XXXXXX: $doc" >&2
+    exit 1
+  fi
+done
+echo "  ok   shipped skill examples use portable mktemp templates"
+
 echo "ALL PASS: lint-shell-portability"
 exit 0

@@ -71,6 +71,9 @@ mv "$FIX/.claude/settings.json.next" "$FIX/.claude/settings.json"
 # Stub gate: drain stdin FIRST (avoid SIGPIPE under pipefail), then record.
 cat > "$FIX/.claude/hooks/hook-gate.sh" <<'STUB'
 #!/bin/bash
+if [ "${1:-}" = "--lib" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 id="$1"
 payload="$(cat 2>/dev/null || true)"
 { printf 'gate:%s\n' "$id" >> "${HQAD_TEST_LOG:-/dev/null}"; } 2>/dev/null || true

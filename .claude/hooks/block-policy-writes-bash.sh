@@ -187,13 +187,15 @@ argv_leading_command() {
 scan_argv_as_simple_command() { # <parent isolate flag> <argv...>
   local parent_isolate="${1:-0}" rc child_cwd="$CURRENT_CWD"
   shift
-  local -a saved_argv=("${ARGV[@]}") saved_names=("${TRACKED_VAR_NAMES[@]}") saved_values=("${TRACKED_VAR_VALUES[@]}")
+  local -a saved_argv=(${ARGV[@]+"${ARGV[@]}"}) \
+    saved_names=(${TRACKED_VAR_NAMES[@]+"${TRACKED_VAR_NAMES[@]}"}) \
+    saved_values=(${TRACKED_VAR_VALUES[@]+"${TRACKED_VAR_VALUES[@]}"})
   ARGV=("$@")
   scan_current_argv "$parent_isolate"; rc=$?
   CURRENT_CWD="$child_cwd"
-  TRACKED_VAR_NAMES=("${saved_names[@]}")
-  TRACKED_VAR_VALUES=("${saved_values[@]}")
-  ARGV=("${saved_argv[@]}")
+  TRACKED_VAR_NAMES=(${saved_names[@]+"${saved_names[@]}"})
+  TRACKED_VAR_VALUES=(${saved_values[@]+"${saved_values[@]}"})
+  ARGV=(${saved_argv[@]+"${saved_argv[@]}"})
   return "$rc"
 }
 

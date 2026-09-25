@@ -137,9 +137,11 @@ pass "hook-gate.sh propagates exit 2"
 
 echo "[7] master-hook.sh registry dispatch: early-exit-0 hook does not fail the batch"
 FIX="$TMP/fixture"
-mkdir -p "$FIX/.claude/hooks" "$FIX/core/scripts"
+mkdir -p "$FIX/.claude/hooks" "$FIX/core/scripts/lib"
 cp "$MASTER" "$GATE" "$FIX/.claude/hooks/"
 cp "$LIB" "$FIX/core/scripts/"
+cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIX/.claude/hooks/"
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$FIX/core/scripts/lib/"
 cp "$TMP/early-exit.sh" "$FIX/.claude/hooks/sigpipe-probe.sh"
 chmod +x "$FIX/.claude/hooks/sigpipe-probe.sh"
 cat > "$FIX/.claude/hooks/hook-registry.json" <<'REG'

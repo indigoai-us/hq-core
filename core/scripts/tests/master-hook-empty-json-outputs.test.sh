@@ -76,6 +76,7 @@ FIX="$TMP/hq"
 mkdir -p "$FIX/.claude/hooks" "$FIX/core/hooks/PreToolUse" \
   "$FIX/core/scripts" "$FIX/workspace/sessions" "$FIX/repos/private/app"
 cp "$MASTER" "$FIX/.claude/hooks/master-hook.sh"
+cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIX/.claude/hooks/"
 chmod +x "$FIX/.claude/hooks/master-hook.sh"
 
 cat > "$FIX/core/hooks/PreToolUse/10-Edit,Write,MultiEdit--block.sh" <<'EOF'

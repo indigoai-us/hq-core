@@ -18,7 +18,8 @@
 # relevant (`refactor`, `monitor`, `docker`, `linear`, ...) without the engine
 # having to know it in advance. On top of the literal words, a few NON-LITERAL
 # / structured facts are derived (a word that is not itself present in the text):
-#   secret         <- op:// | AWS_PROFILE | a .env path
+#   secret + apikey <- credential locations and key-shaped strings
+#   completed      <- clear completion messages in tool output or assistant text
 #   shared_branch  <- a shared branch name (main/master/staging/production/release/)
 #   <basename>+.ext <- a file reference (see Filename tokens below)
 #   /command       <- a slash-command mention (see Slash-command tokens below)
@@ -70,6 +71,11 @@ case "$SCRIPT_PATH" in
 esac
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
+TRIGGER_FACT_TEXT_AWK="$SCRIPT_DIR/lib/trigger-fact-text.awk"
+if [ ! -r "$TRIGGER_FACT_TEXT_AWK" ]; then
+  printf '%s\n' 'ERROR: derive-trigger-facts: missing core/scripts/lib/trigger-fact-text.awk' >&2
+  exit 1
+fi
 
 # Parse the hook payload once. The old per-field jget() helper launched jq for
 # every scalar, then the policy hook launched this script twice for a single
@@ -117,77 +123,7 @@ TRANSCRIPT_PATH="${JSON_FIELDS[7]:-}"
 # every word token present (case-insensitive), plus the non-literal derived
 # tokens (secret / shared_branch) and structured filename / slash-command tokens.
 match_keywords() {
-  # Feed text through stdin: BSD awk (including macOS /usr/bin/awk) rejects a
-  # literal newline inside a `-v name=value` assignment before the program runs.
-  printf '%s\n' "$1" | awk '
-    {
-      if (NR > 1) text = text "\n"
-      text = text $0
-    }
-    END {
-      t = tolower(text)
-
-      # open tokenization: every word token in the text becomes a fact, so a
-      # policy `when:` can key on ANY word that naturally appears when it is
-      # relevant — no curated vocabulary to maintain. Letter-led and length >= 2
-      # (regex needs >=2 chars), so single characters and pure numbers are
-      # dropped. Underscores and internal hyphens are kept (`aws_profile`,
-      # `deep-plan`). Filename/slash tokens are added separately below.
-      tw = t
-      while (match(tw, /[a-z][a-z0-9_-]+/)) {
-        print substr(tw, RSTART, RLENGTH)
-        tw = substr(tw, RSTART + RLENGTH)
-      }
-
-      # derived (non-literal) tokens — words NOT themselves present in the text
-      if (t ~ /(^|[^a-z0-9_])aws_profile/ || t ~ /op:\/\// || t ~ /\.env([^a-z0-9]|$)/) print "secret"
-      if (t ~ /(^|[^a-z0-9_])(main|master|staging|production)([^a-z0-9_]|$)/ || t ~ /release\//) print "shared_branch"
-
-      # derived: API-key / token shaped strings -> `apikey` + `secret`, so a pasted
-      # or named key trips the secrets policy even when the words secret/password/api
-      # are absent (the key itself open-tokenizes to one meaningless word). Prefix
-      # shapes only, interval-free for portable awk (BSD/onetrueawk/mawk).
-      if (t ~ /(^|[^a-z0-9])sk-[a-z0-9]/ \
-         || t ~ /(^|[^a-z0-9])(gh[opsur]_|github_pat_)[a-z0-9_]/ \
-         || t ~ /(^|[^a-z0-9])akia[a-z0-9][a-z0-9]/ \
-         || t ~ /(^|[^a-z0-9])xox[bpsa]-[a-z0-9]/ \
-         || t ~ /(^|[^a-z0-9])glpat-[a-z0-9]/ \
-         || t ~ /-----begin[a-z -]*private key/ \
-         || t ~ /(^|[^a-z0-9])bearer[ ][a-z0-9._-][a-z0-9._-][a-z0-9._-]/) { print "apikey"; print "secret" }
-
-      # derived: clear completion markers in an agent message or command output ->
-      # `completed`, so the share-on-completion policy fires even when phrased
-      # differently than the literal when: tokens.
-      if (t ~ /successfully (merged|deployed|pushed|published|created)/ \
-         || t ~ /(deployment|deploy|build|release) (complete|completed|succeeded|ready)/ \
-         || t ~ /merged pull request/ \
-         || t ~ /pull request #?[0-9]+ .* merged/) print "completed"
-
-      # file references in the text -> literal basename + `.ext` tokens. The
-      # eval-trigger grammar allows dots and slashes in identifiers, so a policy
-      # keys on the file directly: `when: .mcp.json`, `when: settings.json`,
-      # `when: .png || .jpg`. `.claude/settings.json` -> `settings.json` + `.json`
-      # (the leading dot of the directory is dropped with the path); a dotfile
-      # like `.mcp.json` keeps its leading dot. Extensions must be letter-led, so
-      # dotted version numbers (`v1.5`, `3.13`) are not treated as files.
-      tmp = t
-      while (match(tmp, "\\.?[a-z0-9_][a-z0-9_./-]*\\.[a-z][a-z0-9]+")) {
-        fn = substr(tmp, RSTART, RLENGTH); tmp = substr(tmp, RSTART + RLENGTH)
-        bn = fn; sub(/.*\//, "", bn)            # strip directory -> basename
-        ext = bn; sub(/.*\./, "", ext)          # extension (after last dot)
-        print "." ext
-        print bn
-      }
-
-      # slash-command mentions -> `/command` tokens (when: /brainstorm). Anchored
-      # to a space/start boundary so path segments (`repos/public`) are excluded.
-      tmp2 = " " t
-      while (match(tmp2, " /[a-z][a-z0-9-]*")) {
-        sc = substr(tmp2, RSTART + 1, RLENGTH - 1); tmp2 = substr(tmp2, RSTART + RLENGTH)
-        print sc
-      }
-    }
-  '
+  printf '%s\n' "$1" | awk -v mode=all -f "$TRIGGER_FACT_TEXT_AWK"
 }
 
 # --- company: a SESSION-IDENTITY fact, resolved once per payload (US-004) ---
@@ -227,19 +163,13 @@ add() { FACTS="$FACTS $*"; }
 # process instead of awk | tr | sed. `FACTS` only contains space/newline token
 # boundaries from the existing match_keywords contract.
 normalize_facts() {
-  FACTS_OUTPUT="$(printf '%s\n' $FACTS | awk '
-    NF && !seen[$0]++ {
-      if (out != "") out = out " "
-      out = out $0
-    }
-    END { printf "%s", out }
-  ')"
+  FACTS_OUTPUT="$(printf '%s\n' $FACTS | awk -v mode=normalize -v branch="$branch" -f "$TRIGGER_FACT_TEXT_AWK")"
 }
 
 # derive_event <event> sets FACTS_OUTPUT. It does not write stdout so paired
 # mode can run both channels in this one process without a second hook launch.
 derive_event() {
-  local event="$1" lookback_text branch
+  local event="$1" lookback_text branch=""
   FACTS=""
 
   # `always` is present in every fact set so `when: always` is the canonical
@@ -311,9 +241,6 @@ derive_event() {
       *repos/public/*|*repos/private/*) add repo ;;
     esac
     branch="$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    case "$branch" in
-      main|master|staging|production|release/*) add shared_branch ;;
-    esac
   fi
 
   normalize_facts

@@ -57,7 +57,7 @@ setup_tree() {
     "$ROOT/personal/policies" \
     "$ROOT/personal/workers" "$ROOT/companies/other/workers" \
     "$ROOT/workspace/orchestrator/policy-trigger-state" \
-    "$ROOT/core/scripts" "$ROOT/.claude/hooks"
+    "$ROOT/core/scripts" "$ROOT/core/scripts/lib" "$ROOT/.claude/hooks"
   # Minimal helpers the hook sources
   cat > "$ROOT/core/scripts/hook-lib.sh" <<'EOF'
 hq_json_get() {
@@ -70,6 +70,7 @@ hq_json_get() {
 }
 EOF
   cp "$HQ_SRC/core/scripts/derive-trigger-facts.sh" "$ROOT/core/scripts/derive-trigger-facts.sh"
+  cp "$HQ_SRC/core/scripts/lib/trigger-fact-text.awk" "$ROOT/core/scripts/lib/trigger-fact-text.awk"
   printf '#!/bin/bash\nexit 0\n' > "$ROOT/core/scripts/eval-trigger.sh"
   chmod +x "$ROOT/core/scripts/"*.sh
   cp "$HOOK" "$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
