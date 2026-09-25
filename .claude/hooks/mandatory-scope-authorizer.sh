@@ -64,6 +64,50 @@ case "$TOOL" in
   *) exit 0 ;;
 esac
 
+# Resolve an absolute path one component at a time. This mirrors filesystem
+# traversal for existing symlinks while retaining a normalized missing tail,
+# without relying on GNU-only realpath flags or changing the process cwd.
+scope_resolve_absolute_path() {
+  local input="${1:-}" resolved="/" pending segment candidate target hops=0
+  [ -n "$input" ] || return 1
+  case "$input" in /*) ;; *) return 1 ;; esac
+
+  pending="${input#/}"
+  while [ -n "$pending" ]; do
+    case "$pending" in
+      */*) segment="${pending%%/*}"; pending="${pending#*/}" ;;
+      *) segment="$pending"; pending="" ;;
+    esac
+    case "$segment" in
+      ""|.) continue ;;
+      ..)
+        [ "$resolved" = "/" ] || resolved="${resolved%/*}"
+        [ -n "$resolved" ] || resolved="/"
+        continue
+        ;;
+    esac
+
+    candidate="${resolved%/}/$segment"
+    if [ -L "$candidate" ]; then
+      hops=$((hops + 1))
+      [ "$hops" -le 40 ] || return 1
+      target="$(readlink "$candidate" 2>/dev/null)" || return 1
+      case "$target" in
+        /*) resolved="/"; target="${target#/}" ;;
+      esac
+      [ -n "$target" ] || continue
+      if [ -n "$pending" ]; then
+        pending="$target/$pending"
+      else
+        pending="$target"
+      fi
+      continue
+    fi
+    resolved="$candidate"
+  done
+  printf '%s' "$resolved"
+}
+
 self_src="${BASH_SOURCE[0]:-$0}"
 self_dir="$(cd "$(dirname "$self_src")" 2>/dev/null && pwd -P || true)"
 HQ_ROOT=""
@@ -74,7 +118,22 @@ if [ -n "$self_dir" ]; then
   fi
 fi
 [ -n "$HQ_ROOT" ] || HQ_ROOT="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}"
+if [ -z "$HQ_ROOT" ]; then
+  logical_pwd="$(pwd -L 2>/dev/null || true)"
+  while [ -n "$logical_pwd" ]; do
+    if [ -f "$logical_pwd/core/scripts/lib/session-authz.sh" ] && [ -d "$logical_pwd/companies" ]; then
+      HQ_ROOT="$logical_pwd"
+      break
+    fi
+    [ "$logical_pwd" != "/" ] || break
+    logical_pwd="${logical_pwd%/*}"
+    [ -n "$logical_pwd" ] || logical_pwd="/"
+  done
+fi
 [ -n "$HQ_ROOT" ] && [ -d "$HQ_ROOT/companies" ] || exit 0
+physical_root="$(scope_resolve_absolute_path "$HQ_ROOT" 2>/dev/null || true)"
+[ -n "$physical_root" ] && HQ_ROOT="$physical_root"
+[ -f "$HQ_ROOT/core/scripts/lib/session-authz.sh" ] || exit 0
 
 LIB_DIR="$HQ_ROOT/core/scripts/lib"
 # shellcheck source=../../core/scripts/lib/session-authz.sh
@@ -142,7 +201,7 @@ if [ -n "$SESSION_ID" ]; then
 fi
 
 scope_normalize_hq_relative() {
-  local raw="${1:-}"
+  local raw="${1:-}" abs physical
   [ -n "$raw" ] || { printf '%s' ""; return 0; }
   raw="${raw//\\//}"
 
@@ -157,54 +216,29 @@ scope_normalize_hq_relative() {
       ;;
   esac
 
-  local rel="$raw"
   case "$raw" in
-    "$HQ_ROOT"/*) rel="${raw#"$HQ_ROOT"/}" ;;
-    "$HQ_ROOT") rel="" ;;
-    /*) printf '%s' ""; return 0 ;;
+    /*) abs="$raw" ;;
+    *) abs="$HQ_ROOT/$raw" ;;
   esac
 
-  local out="" seg
-  IFS='/' read -r -a parts <<< "$rel"
-  for seg in "${parts[@]}"; do
-    [ -n "$seg" ] || continue
-    case "$seg" in
-      .) ;;
-      ..)
-        if [ -n "$out" ]; then
-          out="${out%/*}"
-        fi
-        ;;
-      *)
-        out="${out:+$out/}$seg"
-        ;;
-    esac
-  done
-  printf '%s' "$out"
+  # Resolve each component before interpreting `..`. A symlink followed by a
+  # parent segment is relative to the link target, not the lexical path.
+  physical="$(scope_resolve_absolute_path "$abs" 2>/dev/null || true)"
+  case "$physical" in
+    "$HQ_ROOT"/*) printf '%s' "${physical#"$HQ_ROOT"/}" ;;
+    "$HQ_ROOT") printf '%s' "" ;;
+    *) printf '%s' "" ;;
+  esac
 }
 
 scope_resolve_rel_symlinks() {
   local rel="${1:-}"
   [ -n "$rel" ] || { printf '%s' ""; return 0; }
-  local abs="$HQ_ROOT/$rel"
-  [ -e "$abs" ] || [ -L "$abs" ] || { printf '%s' "$rel"; return 0; }
-
-  local cur="$abs" target base hops=0
-  while [ -L "$cur" ] && [ "$hops" -lt 20 ]; do
-    target="$(readlink "$cur" 2>/dev/null || true)"
-    [ -n "$target" ] || break
-    case "$target" in
-      /*) cur="$target" ;;
-      *)
-        base="$(dirname "$cur")"
-        cur="$base/$target"
-        ;;
-    esac
-    hops=$((hops + 1))
-  done
-
+  local cur
+  cur="$(scope_resolve_absolute_path "$HQ_ROOT/$rel" 2>/dev/null || true)"
   case "$cur" in
     "$HQ_ROOT"/*) rel="${cur#"$HQ_ROOT"/}" ;;
+    "$HQ_ROOT") rel="" ;;
     *) rel="" ;;
   esac
   printf '%s' "$rel"

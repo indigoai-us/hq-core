@@ -346,3 +346,73 @@ install_fixture ""
 payload='{"tool_name":"Write","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml","content":"x"}}'
 rc="$(run_hook "$payload")"
 [ "$rc" = "2" ] || fail "expected exit 2 for unbound Write, got $rc"
+
+echo "[27] a symlinked HQ root keeps absolute Read paths in tenant scope"
+install_fixture "indigo"
+ROOT_ALIAS="$TMP/logical-root"
+ln -s "$TMP" "$ROOT_ALIAS"
+run_hook_from_root_alias() {
+  local payload="$1"
+  local rc=0
+  : > "$TMP/err.txt"
+  printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$ROOT_ALIAS" bash "$ROOT_ALIAS/.claude/hooks/mandatory-scope-authorizer.sh" 2>"$TMP/err.txt" || rc=$?
+  printf '%s' "$rc"
+}
+payload="$(jq -cn --arg path "$ROOT_ALIAS/companies/otherco/settings/secret.yaml" --arg cwd "$ROOT_ALIAS" \
+  '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:$path}}')"
+rc="$(run_hook_from_root_alias "$payload")"
+[ "$rc" = "2" ] || fail "expected cross-company Read through symlinked root to block, got $rc"
+grep -q "Cross-company scope violation" "$TMP/err.txt" || fail "missing block message for symlinked root Read"
+
+payload="$(jq -cn --arg path "$ROOT_ALIAS/companies/indigo/settings/foo.yaml" --arg cwd "$ROOT_ALIAS" \
+  '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:$path}}')"
+rc="$(run_hook_from_root_alias "$payload")"
+[ "$rc" = "0" ] || fail "expected same-company Read through symlinked root to allow, got $rc"
+
+ln -s "$TMP/companies/otherco/settings/.keep" "$TMP/companies/indigo/settings/cross-company-link"
+payload="$(jq -cn --arg path "$ROOT_ALIAS/companies/indigo/settings/cross-company-link" --arg cwd "$ROOT_ALIAS" \
+  '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:$path}}')"
+rc="$(run_hook_from_root_alias "$payload")"
+[ "$rc" = "2" ] || fail "expected symlink into another company through symlinked root to block, got $rc"
+
+echo "[28] pwd -L root alias is honored when CLAUDE_PROJECT_DIR is unset"
+(
+  cd "$ROOT_ALIAS"
+  logical_root="$(pwd -L)"
+  payload="$(jq -cn --arg path "$logical_root/companies/otherco/settings/secret.yaml" --arg cwd "$logical_root" \
+    '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:$path}}')"
+  rc=0
+  : > "$TMP/err.txt"
+  printf '%s' "$payload" | env -u CLAUDE_PROJECT_DIR bash "$ROOT_ALIAS/.claude/hooks/mandatory-scope-authorizer.sh" 2>"$TMP/err.txt" || rc=$?
+  [ "$rc" = "2" ] || fail "expected cross-company Read from pwd -L root alias to block, got $rc"
+)
+
+echo "[29] a parent segment after a symlink is resolved against the symlink target"
+install_fixture "indigo"
+ln -s "$TMP/companies/otherco/settings" "$TMP/companies/indigo/settings/link"
+payload="$(jq -cn --arg path "companies/indigo/settings/link/../secret.yaml" --arg cwd "$TMP" \
+  '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:$path}}')"
+rc="$(run_hook "$payload")"
+[ "$rc" = "2" ] || fail "expected cross-company Read after symlink/.. to block, got $rc"
+
+echo "[30] CLAUDE_PROJECT_DIR fallback accepts a logical HQ root"
+install_fixture "indigo"
+ROOT_ALIAS="$TMP/logical-root"
+ln -s "$TMP" "$ROOT_ALIAS"
+cp "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/hook-copy.sh"
+payload="$(jq -cn --arg path "$ROOT_ALIAS/companies/otherco/settings/secret.yaml" --arg cwd "$ROOT_ALIAS" \
+  '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:$path}}')"
+rc=0
+printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$ROOT_ALIAS" bash "$TMP/hook-copy.sh" 2>"$TMP/err.txt" || rc=$?
+[ "$rc" = "2" ] || fail "expected CLAUDE_PROJECT_DIR root fallback to block cross-company read, got $rc"
+
+echo "[31] pwd -L fallback accepts a logical HQ root"
+(
+  cd "$ROOT_ALIAS"
+  logical_root="$(pwd -L)"
+  payload="$(jq -cn --arg path "$logical_root/companies/otherco/settings/secret.yaml" --arg cwd "$logical_root" \
+    '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:$path}}')"
+  rc=0
+  printf '%s' "$payload" | env -u CLAUDE_PROJECT_DIR bash "$TMP/hook-copy.sh" 2>"$TMP/err.txt" || rc=$?
+  [ "$rc" = "2" ] || fail "expected pwd -L root fallback to block cross-company read, got $rc"
+)
