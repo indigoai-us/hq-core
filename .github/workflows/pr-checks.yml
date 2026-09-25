@@ -1017,6 +1017,8 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-package-mount.test.sh
       - name: block-repo-edits admits only workspace/worktrees, no exemptions
         run: bash core/scripts/tests/block-repo-edits-strict.test.sh
+      - name: active-run guard blocks cross-session edits with the shipped registry
+        run: bash core/scripts/tests/block-on-active-run.test.sh
       - name: HQ worktree guard distinguishes canonical Windows path aliases
         run: bash core/scripts/tests/block-hq-worktree-session.test.sh
       - name: hq_normpath stays fork-free and byte-identical to its awk contract
@@ -1153,6 +1155,8 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-bash-fanout.test.sh
       - name: policy Bash write guard handles empty arrays under Bash 3.2 nounset
         run: POLICY_TEST_BASH=/bin/bash bash core/scripts/tests/block-policy-writes-bash.test.sh
+      - name: active-run guard blocks cross-session edits (BSD date, Bash 3.2)
+        run: /bin/bash core/scripts/tests/block-on-active-run.test.sh
 
   hooks-no-python:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}

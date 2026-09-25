@@ -134,6 +134,18 @@ if grep -Fq 'settings.local.json may set any value the operator wants, including
 fi
 pass "policy documents user-scope Auto hatch; local-only auto is rejected"
 
+echo "[2c] shipped model settings follow new model releases"
+# Covers `model` and every env key containing MODEL. Any value that starts with
+# `claude-` (dated IDs such as claude-opus-4-8 or claude-3-5-sonnet-20241022) or
+# contains `anthropic.` (Bedrock-style IDs such as us.anthropic.claude-...) fails.
+jq -e '
+  [ (.model // empty),
+    ((.env // {}) | to_entries[] | select(.key | test("MODEL")) | .value | strings) ]
+  | all((test("^claude-") or test("anthropic\\.")) | not)
+' "$SETTINGS" >/dev/null \
+  || fail "shipped settings.json must not pin a model ID (claude-* or *anthropic.*) in model or any *MODEL* env key; use an alias such as opus"
+pass "shipped model settings use aliases, not pinned model IDs"
+
 echo "[3] setup and rescue both assert hook health independently of hooks"
 grep -Fq 'check-hq-hooks.sh" --root "$REPO_ROOT"' "$SETUP" \
   || fail "setup does not run the hook-health postcheck"

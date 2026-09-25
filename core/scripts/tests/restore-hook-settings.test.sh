@@ -22,7 +22,7 @@ make_broken() {
   cp "$ROOT/core/scripts/hook-lib.sh" "$dir/core/scripts/hook-lib.sh"
   cat > "$dir/.claude/settings.json" <<'JSON'
 {
-  "model": "claude-opus-4-8",
+  "model": "opus",
   "permissions": {"defaultMode": "auto", "deny": ["EnterWorktree"]},
   "env": {"PATH": "/machine/bin:/usr/bin", "MAX_THINKING_TOKENS": "31999"},
   "hooks": {

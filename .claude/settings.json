@@ -1,5 +1,5 @@
 {
-  "model": "claude-opus-4-8",
+  "model": "opus",
   "autoMemoryEnabled": false,
   "useAutoModeDuringPlan": false,
   "disableArtifact": true,
@@ -17,7 +17,7 @@
     "MAX_THINKING_TOKENS": "31999",
     "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "60",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-4-8",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
     "CLAUDE_CODE_NO_FLICKER": "1"
   },
   "hooks": {

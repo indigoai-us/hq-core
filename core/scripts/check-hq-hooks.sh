@@ -339,6 +339,22 @@ check_local_hook_shadow() {
 }
 check_local_hook_shadow
 
+# A guard hook that cannot find its helper exits 0 and allows everything, so
+# the missing helper is invisible from inside a session. The active-run guard
+# (block-on-active-run.sh) read $HQ_ROOT/scripts/repo-run-registry.sh, which
+# does not exist, and was off on every install until that path was corrected.
+# Report a missing or non-executable guard helper here instead.
+GUARD_HELPER_ISSUES=()
+check_guard_helpers() {
+  local helper="core/scripts/repo-run-registry.sh"
+  # Only a tree that ships the guard needs its helper.
+  [ -f "$HQ_ROOT/.claude/hooks/block-on-active-run.sh" ] || return 0
+  if [ ! -x "$HQ_ROOT/$helper" ]; then
+    GUARD_HELPER_ISSUES+=("guard helper $helper is missing or not executable, so the active-run guard allows every edit")
+  fi
+}
+check_guard_helpers
+
 # The `hq doctor --json` check ids that make up this checker's settings scope.
 DOCTOR_SETTINGS_SCOPE='["hooks.settings-present","hooks.settings-valid-json","hooks.claude.settings-local-valid-json","hooks.claude.unquoted-project-dir","hooks.claude.script-missing"]'
 DOCTOR_RUNTIME_CHECK_ID="hooks.runtime.enforcement"
@@ -361,7 +377,7 @@ render_from_doctor() {
   local json="$1"
   local settings_issues runtime_status runtime_message
   local AGENTS_V2_ATTESTED=0
-  local -a issues=("${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}" "${LOCAL_HOOK_SHADOW_ISSUES[@]+"${LOCAL_HOOK_SHADOW_ISSUES[@]}"}")
+  local -a issues=("${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}" "${LOCAL_HOOK_SHADOW_ISSUES[@]+"${LOCAL_HOOK_SHADOW_ISSUES[@]}"}" "${GUARD_HELPER_ISSUES[@]+"${GUARD_HELPER_ISSUES[@]}"}")
 
   settings_issues="$(printf '%s' "$json" | jq -r --argjson scope "$DOCTOR_SETTINGS_SCOPE" '
     .results[]
@@ -538,6 +554,7 @@ run_inline() {
 
   ISSUES+=("${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}")
   ISSUES+=("${LOCAL_HOOK_SHADOW_ISSUES[@]+"${LOCAL_HOOK_SHADOW_ISSUES[@]}"}")
+  ISSUES+=("${GUARD_HELPER_ISSUES[@]+"${GUARD_HELPER_ISSUES[@]}"}")
 
   # The local overlay is optional, so its absence is never an issue — but when it
   # is present Claude Code loads its hooks too, and an unquoted command hiding

@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+### Fixed — cross-session repo guard works again (hq-harness-crud US-016, 2026-09-25)
+- `block-on-active-run.sh`, `check-repo-active-runs.sh` and `codex-preflight.sh` looked for `$HQ_ROOT/scripts/repo-run-registry.sh`, which no install has, and exited 0. They now use `core/scripts/repo-run-registry.sh`, so an Edit, Write or writing Bash command in a repo owned by another session's `/run-project` is blocked again, and SessionStart warns inside such a repo.
+- `repo-run-registry.sh` parsed timestamps with BSD `date -j` only. On Linux every live run read as stale and was deleted on the first check. It now falls back to GNU `date -d`. Its lock also failed on an install without `workspace/orchestrator/`, so the first `register` timed out.
+- `list`, `owner-of` and `check` pruned stale entries without the registry lock, so a check running beside a `register` or `heartbeat` could write an older snapshot over it and drop the new owner. They now prune under the lock, and skip the prune if the lock stays busy.
+- The registry prefilter now keys on `workspace/orchestrator/active-runs.json` instead of the helper script, so the guard does not start on an install where no run was ever registered. SessionStart no longer creates that file. When the file exists but lists no runs, the guard exits in-process before parsing the payload or walking its process ancestry.
+- `check-hq-hooks.sh` reports FAIL when `core/scripts/repo-run-registry.sh` is missing or not executable; the guard also prints a stderr line instead of exiting silently.
+- Operator impact: edits into a repo held by another session's `/run-project` are blocked. Bypass for one command: `HQ_IGNORE_ACTIVE_RUNS=1`. Stale owners clear when the owning process exits or after the heartbeat timeout (15 minutes by default).
+- Regression: `core/scripts/tests/block-on-active-run.test.sh` runs the shipped registry in a temp root. It fails with the old hook path, with the BSD-only date parse, and with the old lock. Three existing tests that stubbed the wrong path now use the real one.
+
+### Fixed — shipped settings follow the newest Opus instead of pinning Opus 4.8 (2026-09-23)
+- `.claude/settings.json` pinned `"model": "claude-opus-4-8"` and `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8` (added in #201, 2026-05-28). Every Claude Code session started on Opus 4.8 unless the user picked another model, and every Claude Code subagent ran on Opus 4.8 whatever the session model was. Codex and Grok sessions do not read these keys and are unaffected. Both keys now use the `opus` alias, which Claude Code resolves to its newest Opus model. `core/policies/model-context-window.md` now describes the alias default and uses `opus[1m]` for the per-command 1M-context opt-in.
+- Cost and behavior: Claude Code subagents now follow the newest Opus, so their cost and behavior can change when a new Opus model ships.
+- Operator impact: new sessions pick up the change after `/update-hq`. To run a different model, pick it per session with `/model` or start Claude Code with `--model`.
+- Regression: `core/scripts/tests/hook-settings-release-contract.test.sh` check [2c] fails when `model` or any `*MODEL*` env key in the shipped settings starts with `claude-` or contains `anthropic.`.
+
 ### Fixed — portable mktemp templates in shipped skills
 - Handoff, journal, and deploy examples no longer place a filename suffix after the `mktemp` X run. The shell portability linter now catches suffixes in shell scripts, and its regression test pins the shipped skill examples.
 - Deploy guardrails now check `tar` exit status, remove partial archives, and report `tar_create_failed`; the documented Open Graph rebuild follows the same failure path.
