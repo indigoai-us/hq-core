@@ -353,6 +353,7 @@ jobs:
             core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh \
             .claude/hooks/hook-gate.sh \
             .claude/hooks/check-claude-desktop-bridge-health.sh \
+            .claude/skills/deploy/scripts/tests/guardrails-tar-failure.test.sh \
             .codex/hooks/hq-codex-hook-adapter.sh \
             .grok/hooks/hq-grok-hook-adapter.sh
       - name: Claude Codex Grok Cowork runtime contract matrix
@@ -516,6 +517,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: identity-resolve USER/USERNAME lock path
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
+      - name: guardrails reports and removes a failed tarball
+        run: bash .claude/skills/deploy/scripts/tests/guardrails-tar-failure.test.sh
 
   # US-001: identity-resolve jq→node fallback; missing engines → missing_dependency not login_required.
   identity-resolve-missing-jq:
@@ -978,6 +981,12 @@ jobs:
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: Master-hook success path process budget
+        env:
+          HQ_HOOK_PERF_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          timeout 60s git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$HQ_HOOK_PERF_BASE_SHA"
+          timeout 60s bash core/scripts/tests/master-hook-hot-path-process-budget.test.sh
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
@@ -1046,7 +1055,9 @@ jobs:
             core/scripts/tests/hook-lib-strip-exclude-tokens.test.sh
             core/scripts/tests/block-core-writes-bash-fanout.test.sh
             core/scripts/tests/block-core-writes-bash-fast-path.test.sh
+            core/scripts/tests/block-policy-writes-bash.test.sh
             .claude/hooks/block-core-writes-bash.sh
+            .claude/hooks/block-policy-writes-bash.sh
             .claude/hooks/check-hq-update.sh
             .claude/hooks/hook-timeout-probe.sh
             .claude/hooks/hook-timeout-watchdog.sh
@@ -1140,6 +1151,8 @@ jobs:
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
         run: bash core/scripts/tests/block-core-writes-bash-fanout.test.sh
+      - name: policy Bash write guard handles empty arrays under Bash 3.2 nounset
+        run: POLICY_TEST_BASH=/bin/bash bash core/scripts/tests/block-policy-writes-bash.test.sh
 
   hooks-no-python:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}

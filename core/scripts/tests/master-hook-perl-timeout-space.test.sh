@@ -11,6 +11,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 MASTER="$ROOT/.claude/hooks/master-hook.sh"
 GATE="$ROOT/.claude/hooks/hook-gate.sh"
+PROBE="$ROOT/.claude/hooks/hook-timeout-probe.sh"
+ADAPTER_CORE="$ROOT/core/scripts/lib/hook-adapter-core.sh"
 RUN_PROJECT="$ROOT/.claude/scripts/run-project.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -42,9 +44,12 @@ assert_indirect_exec "$RUN_PROJECT" "run-project.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/SE HQ.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 FIX="$TMP/root"
-mkdir -p "$FIX/.claude/hooks" "$FIX/bin"
+mkdir -p "$FIX/.claude/hooks" "$FIX/core/scripts/lib" "$FIX/bin"
 cp "$MASTER" "$FIX/.claude/hooks/master-hook.sh"
+cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIX/.claude/hooks/"
 cp "$GATE" "$FIX/.claude/hooks/hook-gate.sh"
+cp "$PROBE" "$FIX/.claude/hooks/hook-timeout-probe.sh"
+cp "$ADAPTER_CORE" "$FIX/core/scripts/lib/hook-adapter-core.sh"
 chmod +x "$FIX/.claude/hooks/master-hook.sh" "$FIX/.claude/hooks/hook-gate.sh"
 
 cat > "$FIX/.claude/hooks/guard.sh" <<'SH'

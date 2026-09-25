@@ -29,6 +29,7 @@ cp "$SCRIPT" "$FIXTURE/core/scripts/hq-agent-session.sh"
 cp -R "$SRC_ROOT/core/scripts/lib" "$FIXTURE/core/scripts/lib"
 cp "$SRC_ROOT/core/scripts/hq-session.sh" "$FIXTURE/core/scripts/hq-session.sh"
 cp "$SRC_ROOT/.claude/hooks/master-hook.sh" "$FIXTURE/.claude/hooks/master-hook.sh"
+cp "$SRC_ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIXTURE/.claude/hooks/"
 cp "$SRC_ROOT/core/knowledge/public/hq-core/channel-writing-formats.md" \
   "$FIXTURE/core/knowledge/public/hq-core/channel-writing-formats.md" 2>/dev/null || \
   printf '# Channel Writing Formats\n\n## slack\n\nslack format\n' \

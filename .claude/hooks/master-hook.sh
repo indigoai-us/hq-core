@@ -136,18 +136,39 @@ case "$0" in
   *) SCRIPT_DIR="$(pwd)" ;;
 esac
 . "$SCRIPT_DIR/hook-timeout-probe.sh"
+# shellcheck disable=SC2034 # Shared with phase helpers loaded from hook-timeout-probe.sh.
+MASTER_DEBUG_PHASE_BUFFER=()
+MASTER_DEBUG_PHASE_FILE=""
+MASTER_DEBUG_ACTIVE_PHASE_FILE=""
+MASTER_DEBUG_CLI_VERSION_FILE=""
+# shellcheck disable=SC2034 # Shared with phase helpers loaded from hook-timeout-probe.sh.
+MASTER_DEBUG_ACTIVE_PHASE=""
+# shellcheck disable=SC2034 # Shared with phase helpers loaded from hook-timeout-probe.sh.
+MASTER_DEBUG_ACTIVE_STARTED=""
+
+master_debug_phase_start startup
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Shared registry prefilter semantics also power the Codex and Grok adapters.
+# shellcheck source=../../core/scripts/lib/hook-adapter-core.sh
+MASTER_PREFILTER_AVAILABLE=1
+if ! . "$REPO_ROOT/core/scripts/lib/hook-adapter-core.sh" 2>/dev/null; then
+  MASTER_PREFILTER_AVAILABLE=0
+  printf 'master-hook: WARNING hook-adapter-core.sh did not load; registry prefilters are disabled\n' >&2
+fi
 
 MASTER_TRACE_START="${EPOCHREALTIME:-}"
 INPUT="$(cat)"
 MASTER_STARTED_MS="$(master_now_ms)"
 MASTER_TIMING_PRECISION="$(master_timing_precision)"
+master_debug_phase_finish startup
 
 # Shared gate helpers (profile lists, disabled list, PATH augmentation),
 # loaded from hook-gate.sh in library mode so there is a single definition.
 if [ -f "$SCRIPT_DIR/hook-gate.sh" ]; then
+  master_debug_phase_start source
   . "$SCRIPT_DIR/hook-gate.sh" --lib
   hq_augment_path
+  master_debug_phase_finish source
 fi
 
 # Windows Git Bash: process creation is 10-30x macOS cost and the watchdog
@@ -201,7 +222,6 @@ master_timeout_sha256() {
 
 MASTER_INVOCATION_ID="$(master_timeout_sha256 "$$" "$MASTER_STARTED_MS" "$EVENT" 2>/dev/null || true)"
 [ -n "$MASTER_INVOCATION_ID" ] || MASTER_INVOCATION_ID="$$-$MASTER_STARTED_MS"
-
 stop_master_timeout_watchdog() {
   local i pid session
   for i in "${!master_timeout_watchdog_pids[@]}"; do
@@ -223,7 +243,17 @@ stop_master_timeout_watchdog() {
   master_timeout_watchdog_pids=()
   master_timeout_watchdog_sessions=()
   if [ -n "${timeout_journal_file:-}" ] && [ -n "${MASTER_INVOCATION_ID:-}" ]; then
-    rm -f "$timeout_journal_file.$MASTER_INVOCATION_ID.active" >/dev/null 2>&1 || true
+    local -a debug_files=()
+    if [ -n "$MASTER_DEBUG_PHASE_FILE" ]; then
+      debug_files=(
+        "$MASTER_DEBUG_PHASE_FILE"
+        "$MASTER_DEBUG_ACTIVE_PHASE_FILE"
+        "$MASTER_DEBUG_CLI_VERSION_FILE"
+        "$MASTER_DEBUG_CLI_VERSION_FILE.tmp.$$"
+      )
+    fi
+    rm -f "$timeout_journal_file.$MASTER_INVOCATION_ID.active" \
+      ${debug_files[@]+"${debug_files[@]}"} >/dev/null 2>&1 || true
   fi
 }
 
@@ -325,6 +355,7 @@ SESSION_ID=""
 PREFILTER_TEXT=""
 PAYLOAD_CWD=""
 PAYLOAD_AGENT_ID=""
+master_debug_phase_start parse
 {
   IFS=$'\x1f' read -r TOOL_NAME MATCH_KEY SESSION_ID PAYLOAD_CWD PAYLOAD_AGENT_ID PREFILTER_TEXT || true
 } < <(printf '%s' "$INPUT" | jq -r --arg ev "$EVENT" '
@@ -336,10 +367,13 @@ PAYLOAD_AGENT_ID=""
     (.session_id // ""),
     (.cwd // ""),
     (.agent_id // "" | tostring),
-    ((if (.tool_input | type) == "object" then (.tool_input | tojson) else (.prompt // "") end)
+    ((if $ev == "UserPromptSubmit" then (.prompt // "")
+      elif (.tool_input | type) == "object" then (.tool_input | tojson)
+      else (.prompt // "") end)
      + (if $ev == "PostToolUse" and .tool_response != null then " " + (.tool_response | tojson) else "" end))
   ] | map(gsub("\u001f|\n"; " ")) | join("\u001f")' 2>/dev/null || printf '\n')
 is_tool_event "$EVENT" || TOOL_NAME=""
+master_debug_phase_finish parse
 
 # A Monitor timeout notice is system status text, not a user request. Keep
 # request-routing/title and slow maintenance/status enrichers off this exact
@@ -437,6 +471,7 @@ if master_timeout_watchdog_enabled && [ -n "$SESSION_ID" ]; then
   fi
 fi
 if [ -n "$timeout_journal_file" ]; then
+  master_debug_initialize "$REPO_ROOT" "$MASTER_INVOCATION_ID"
   export HQ_HOOK_TIMEOUT_JOURNAL_FILE="$timeout_journal_file"
 else
   unset HQ_HOOK_TIMEOUT_JOURNAL_FILE || true
@@ -472,8 +507,7 @@ journal_active_child_start() {
 }
 
 journal_active_child_end() {
-  [ -n "$active_child_file" ] || return 0
-  : > "$active_child_file" 2>/dev/null || true
+  [ -z "$active_child_file" ] || : > "$active_child_file" 2>/dev/null || true
 }
 
 acquire_journal_compaction_lock() {
@@ -1076,7 +1110,10 @@ master_report_late_event() {
   local hook_name message hq_version platform load_average fingerprint_identity fingerprint_hash
   local bash_env_set shell_info cwd_kind_value nproc_count hook_sequence policy_trigger_metadata report_exit event_json
   local os_name spawn_ms slow_child="" slow_child_ms="" slow_child_duration=0 i
+  local hq_bin debug_process_count=unavailable debug_spawn_ms=unavailable debug_context=""
+  local debug_phase_timings='[]' debug_wait_point=wait debug_child_name=other debug_child_elapsed=0 debug_remaining_ms
   command -v hq >/dev/null 2>&1 || return 0
+  hq_bin="$(command -v hq 2>/dev/null || printf 'hq')"
   hook_name="$(master_safe_hook_script "$hook_path")"
   case "$event_type" in
     hook_timeout_exceeded) message="HQ hook exceeded configured timeout" ;;
@@ -1122,6 +1159,23 @@ master_report_late_event() {
   report_exit="$late_exit_code"
   [[ "$report_exit" =~ ^[0-9]+$ ]] || report_exit=1
   [[ "$final_elapsed_ms" =~ ^[0-9]+$ ]] || final_elapsed_ms=0
+  debug_remaining_ms=$((declared_timeout_ms - final_elapsed_ms))
+  debug_phase_timings="$(hook_timeout_phase_timings_json "$MASTER_DEBUG_PHASE_FILE" "$MASTER_DEBUG_ACTIVE_PHASE_FILE")"
+  if [ "$os_name" = windows ]; then
+    [[ "$spawn_ms" =~ ^[0-9]+$ ]] && debug_spawn_ms="$spawn_ms"
+    debug_process_count="$(hook_timeout_windows_process_count "$(command -v ps 2>/dev/null || printf 'ps')")"
+  fi
+  if [ -n "$slow_child" ]; then
+    debug_wait_point=child_wait
+    debug_child_name="$slow_child"
+    debug_child_elapsed="${slow_child_ms:-$final_elapsed_ms}"
+  fi
+  if hook_timeout_cli_supports_debug_context "$hq_bin" "$MASTER_DEBUG_CLI_VERSION_FILE" "$platform"; then
+    debug_context="$(hook_timeout_debug_context_json \
+      "$hook_name" "$EVENT" "$declared_timeout_ms" "$final_elapsed_ms" "$debug_remaining_ms" \
+      "$debug_phase_timings" "$debug_wait_point" "$debug_child_name" "$debug_child_elapsed" \
+      "$load_average" "$debug_spawn_ms" "$debug_process_count")"
+  fi
   event_json="$(jq -cn \
     --arg type "$event_type" \
     --arg message "$message" \
@@ -1189,7 +1243,10 @@ master_report_late_event() {
     event_json="$(jq -c --argjson policy_trigger "$policy_trigger_metadata" \
       '.metadata += $policy_trigger' <<<"$event_json")" || return 0
   fi
-  HQ_NO_UPDATE_CHECK=1 hq core sentry report --timeout-ms 750 <<<"$event_json" >/dev/null 2>&1 || true
+  if [ -n "$debug_context" ]; then
+    event_json="$(hook_timeout_attach_debug_context "$event_json" "$debug_context")" || return 0
+  fi
+  HQ_NO_UPDATE_CHECK=1 "$hq_bin" core sentry report --timeout-ms 750 <<<"$event_json" >/dev/null 2>&1 || true
 }
 
 late_finish_path_seen() {
@@ -1236,206 +1293,8 @@ registry_dispatch=1
 case "${HQ_HARNESS:-}" in
   codex|grok) registry_dispatch=0 ;;
 esac
-# --- Policy trigger vocabulary prefilter (for inject-policy-on-trigger) -----
-# The policy injector evaluates every policy's `when:` expression against
-# word tokens derived from the tool input (PreToolUse: the Bash command;
-# PostToolUse: the tool output). On Windows Git Bash that costs 4 to 7 s per
-# fire. Most commands contain none of the words any tool-event policy keys
-# on, so the dispatcher compiles, from the same policy directories the
-# injector scans, the set of tokens at least one of which must appear for
-# any tool-event policy to be true, and skips the injector when the tool
-# text contains none of them. Structural facts the injector derives without
-# text (`company`, `repo`) are handled by name: a policy that depends only
-# on them runs until its slug is in the session ledger. Anything the
-# compiler cannot prove (a `!` negation, `always`) disables the skip for
-# that event. Recompiled when a policy directory's mtime changes (a policy
-# file added, removed or renamed) or after HQ_POLICY_PREFILTER_TTL seconds
-# (default 300); an in-place edit to an existing policy's `when:` line is
-# therefore picked up within that window.
-policy_prefilter_dirs() { # prints one policy dir per line, injector order
-  local co="" cwd="${PAYLOAD_CWD:-}" rscope rname rest
-  if [ -n "${HQ_POLICY_COMPANY:-}" ]; then
-    co="$HQ_POLICY_COMPANY"
-  else
-    case "$cwd" in
-      *companies/*) rest="${cwd#*companies/}"; co="${rest%%/*}" ;;
-    esac
-    [ -n "$co" ] || co="$ACTIVE_COMPANY"
-  fi
-  [ -n "$co" ] && printf '%s\n' "$REPO_ROOT/companies/$co/policies"
-  case "$cwd" in
-    *repos/public/*|*repos/private/*)
-      rest="${cwd#*repos/}"; rscope="${rest%%/*}"; rest="${rest#*/}"; rname="${rest%%/*}"
-      [ -n "$rscope" ] && [ -n "$rname" ] && printf '%s\n' "$REPO_ROOT/repos/$rscope/$rname/.claude/policies" ;;
-  esac
-  printf '%s\n%s\n' "$REPO_ROOT/personal/policies" "$REPO_ROOT/core/policies"
-}
-
-policy_prefilter_now() {
-  if [ -n "${EPOCHSECONDS:-}" ]; then printf '%s' "$EPOCHSECONDS"; else date +%s 2>/dev/null || printf '0'; fi
-}
-
-# policy_prefilter_check <event>  -> 0 run the injector, 1 skip it
-policy_prefilter_check() {
-  local ev="$1" dir dirs=() key="" cache stale=0 now line
-  case "$ev" in PreToolUse|PostToolUse) ;; *) return 0 ;; esac
-  while IFS= read -r dir; do
-    [ -n "$dir" ] || continue
-    dirs+=("$dir")
-    key="$key${dir#"$REPO_ROOT"/}|"
-  done < <(policy_prefilter_dirs)
-  key="${key//\//_}"; key="${key//|/+}"
-  case "$key" in *[!A-Za-z0-9_.+-]*) return 0 ;; esac
-  cache="$REPO_ROOT/workspace/orchestrator/hook-state/policy-prefilter/${key}${ev}.v1"
-  now="$(policy_prefilter_now)"
-  if [ -f "$cache" ]; then
-    # Fresh only when the cache is strictly newer than every policy dir. A
-    # policy created in the same second as the build (bash 3.2 compares
-    # mtimes at second granularity) therefore forces one extra rebuild
-    # instead of going unnoticed until the TTL.
-    for dir in "${dirs[@]}"; do
-      [ -d "$dir" ] || continue
-      [ "$cache" -nt "$dir" ] || stale=1
-    done
-    if [ "$stale" -eq 0 ]; then
-      IFS= read -r line < "$cache" || line=""
-      case "$line" in
-        built=*) [ $(( now - ${line#built=} )) -lt "${HQ_POLICY_PREFILTER_TTL:-300}" ] || stale=1 ;;
-        *) stale=1 ;;
-      esac
-    fi
-  else
-    stale=1
-  fi
-  if [ "$stale" -eq 1 ]; then
-    mkdir -p "${cache%/*}" 2>/dev/null || return 0
-    local files=() f
-    for dir in "${dirs[@]}"; do
-      [ -d "$dir" ] || continue
-      for f in "$dir"/*.md; do
-        [ -f "$f" ] || continue
-        case "${f##*/}" in
-          example-policy.md|README.md|*" "*|*.sync-conflict-*.md|*.conflict-*) continue ;;
-        esac
-        files+=("$f")
-      done
-    done
-    # One awk pass: frontmatter on:/when: per file -> required-token analysis.
-    # Output: built=<epoch>, then lines re=<ere>, struct=<slug>:<company|repo>,
-    # unsafe=<slug>. Missing/empty when: is treated as unsafe (fail-open).
-    if ! awk -v ev="$ev" -v now="$now" '
-      function tokenize(s,    n, m) {
-        split("", tok); ntok = 0
-        while (length(s) > 0) {
-          if (match(s, /^[[:space:]]+/)) { s = substr(s, RLENGTH + 1); continue }
-          if (substr(s, 1, 2) == "&&" || substr(s, 1, 2) == "||") { tok[++ntok] = substr(s, 1, 2); s = substr(s, 3); continue }
-          if (substr(s, 1, 1) == "(" || substr(s, 1, 1) == ")" || substr(s, 1, 1) == "!") { tok[++ntok] = substr(s, 1, 1); s = substr(s, 2); continue }
-          if (match(s, /^[A-Za-z0-9_.\/][A-Za-z0-9_.\/-]*/)) { tok[++ntok] = tolower(substr(s, 1, RLENGTH)); s = substr(s, RLENGTH + 1); continue }
-          tok[++ntok] = "?"; s = substr(s, 2)   # unknown byte -> unsafe
-        }
-      }
-      function leaf(t) {
-        if (t == "company" || t == "repo") { structural = structural " " t; return "NONE" }
-        if (t == "always" || t == "?") { bad = 1; return "NONE" }
-        return t
-      }
-      function pf(    t, r) {
-        t = tok[pos]
-        if (t == "!") { pos++; pf(); return "NONE" }   # a negation proves nothing; the other AND branch may
-        if (t == "(") { pos++; r = pe(); if (tok[pos] == ")") pos++; else bad = 1; return r }
-        if (t == "" ) { bad = 1; return "NONE" }
-        pos++; return leaf(t)
-      }
-      function pt(    l, r) {
-        l = pf()
-        while (tok[pos] == "&&") {
-          pos++; r = pf()
-          if (l == "NONE") l = r
-          else if (r != "NONE" && split(r, ra, " ") < split(l, la, " ")) l = r
-        }
-        return l
-      }
-      function pe(    l, r) {
-        l = pt()
-        while (tok[pos] == "||") {
-          pos++; r = pt()
-          if (l == "NONE" || r == "NONE") l = "NONE"; else l = l " " r
-        }
-        return l
-      }
-      function esc(t,    o, i, c) {
-        o = ""
-        for (i = 1; i <= length(t); i++) { c = substr(t, i, 1); if (c ~ /[.\/]/) o = o "\\" c; else o = o c }
-        return o
-      }
-      BEGIN { print "built=" now }
-      FNR == 1 { infm = 0; onl = ""; whenl = ""; fm_done = 0 }
-      FNR == 1 && $0 == "---" { infm = 1; next }
-      infm && $0 == "---" { infm = 0; fm_done = 1 }
-      infm && /^on:/ { onl = $0 }
-      infm && /^when:/ { whenl = $0; sub(/^when:[[:space:]]*/, "", whenl); sub(/[[:space:]]+$/, "", whenl) }
-      fm_done && !seen[FILENAME]++ {
-        slug = FILENAME; sub(/.*\//, "", slug); sub(/\.md$/, "", slug)
-        if (index(onl, ev) == 0) next
-        if (whenl == "") { print "unsafe=" slug; next }
-        gsub(/^"|"$/, "", whenl)
-        tokenize(whenl); pos = 1; bad = 0; structural = ""
-        res = pe()
-        if (pos <= ntok) bad = 1
-        if (bad) { print "unsafe=" slug; next }
-        if (res == "NONE") {
-          n = split(structural, st, " ")
-          if (n == 0) { print "unsafe=" slug; next }
-          for (i = 1; i <= n; i++) print "struct=" slug ":" st[i]
-          next
-        }
-        n = split(res, rt, " ")
-        for (i = 1; i <= n; i++) {
-          t = rt[i]
-          if (t == "secret") { vocab["secret"] = 1; vocab["op://"] = 1; vocab["aws_profile"] = 1; vocab["\\.env"] = 1 }
-          else if (t == "shared_branch") { vocab["shared_branch"] = 1; vocab["main"] = 1; vocab["master"] = 1; vocab["staging"] = 1; vocab["production"] = 1; vocab["release/"] = 1 }
-          else vocab[esc(t)] = 1
-        }
-      }
-      END {
-        re = ""
-        for (t in vocab) re = (re == "" ? t : re "|" t)
-        if (re != "") print "re=" re
-      }
-    ' ${files[@]+"${files[@]}"} > "$cache.tmp.$$" 2>/dev/null; then
-      rm -f "$cache.tmp.$$" 2>/dev/null; return 0
-    fi
-    mv -f "$cache.tmp.$$" "$cache" 2>/dev/null || { rm -f "$cache.tmp.$$" 2>/dev/null; return 0; }
-  fi
-  # Evaluate the compiled file: fork-free.
-  local re="" ledger="" slug tokn bound=0
-  [ -n "$ACTIVE_COMPANY" ] && bound=1
-  case "${PAYLOAD_CWD:-}" in *companies/*) bound=1 ;; esac
-  [ -n "${HQ_POLICY_COMPANY:-}" ] && bound=1
-  if [ -n "$SESSION_ID" ] && [ -f "$REPO_ROOT/workspace/orchestrator/policy-trigger-state/$SESSION_ID.txt" ]; then
-    ledger="$(<"$REPO_ROOT/workspace/orchestrator/policy-trigger-state/$SESSION_ID.txt")"
-  fi
-  while IFS= read -r line; do
-    case "$line" in
-      unsafe=*) return 0 ;;
-      re=*) re="${line#re=}" ;;
-      struct=*)
-        slug="${line#struct=}"; tokn="${slug##*:}"; slug="${slug%:*}"
-        case "$tokn" in
-          company) [ "$bound" -eq 1 ] || continue ;;
-          repo) case "${PAYLOAD_CWD:-}" in *repos/public/*|*repos/private/*) ;; *) continue ;; esac ;;
-        esac
-        case "$ledger" in *"$slug"*) continue ;; esac
-        return 0 ;;
-    esac
-  done < "$cache"
-  [ -n "$re" ] || return 1
-  shopt -s nocasematch
-  if [[ "$PREFILTER_TEXT" =~ $re ]]; then shopt -u nocasematch; return 0; fi
-  shopt -u nocasematch
-  return 1
-}
-
+# Policy vocabulary compilation and all registry prefilter checks live in
+# core/scripts/lib/hook-adapter-core.sh so adapters and Claude share one path.
 # Registry rows for (event, match key), cached as a file while it is newer
 # than the registry so the jq parse (one fork, ~130 ms on Windows) runs once
 # per registry change instead of once per tool call.
@@ -1447,6 +1306,7 @@ registry_rows() {
     return 0
   fi
   local rows
+  master_debug_phase_start config_load
   rows="$(jq -r --arg ev "$EVENT" --arg key "$MATCH_KEY" '
     (.hooks[$ev] // [])[] as $entry
     | ($entry.matcher // "") as $m
@@ -1457,6 +1317,7 @@ registry_rows() {
         (.prefilter.re // ""), (.prefilter.env // ""), (.prefilter.file // ""),
         (if .prefilter.policy_vocab == true then "1" else "" end),
         ((.args // []) | join(" ")) ] | join("")' "$REGISTRY" 2>/dev/null)" || rows=""
+  master_debug_phase_finish config_load
   printf '%s\n' "$rows"
   if mkdir -p "${cache%/*}" 2>/dev/null; then
     printf '%s\n' "$rows" > "$cache.tmp.$$" 2>/dev/null && mv -f "$cache.tmp.$$" "$cache" 2>/dev/null || rm -f "$cache.tmp.$$" 2>/dev/null
@@ -1477,20 +1338,20 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
         *) continue ;;
       esac
     fi
-    if [ -n "$rpf_env" ] && [ -z "${!rpf_env:-}" ]; then continue; fi
-    if [ -n "$rpf_file" ] && [ ! -e "$REPO_ROOT/$rpf_file" ]; then continue; fi
-    # Case-insensitive: hooks lowercase their signals; a superset match must too.
-    shopt -s nocasematch
-    prefilter_hit=1
-    if [ -n "$rpf_re" ] && ! [[ "$PREFILTER_TEXT" =~ $rpf_re ]]; then prefilter_hit=0; fi
-    shopt -u nocasematch
-    if [ "$prefilter_hit" -eq 1 ] && [ -n "$rpf_vocab" ] && ! policy_prefilter_check "$EVENT"; then
-      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (policy-vocab)\n' "$rid" >&2
-      continue
-    fi
-    if [ "$prefilter_hit" -eq 0 ]; then
-      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (prefilter)\n' "$rid" >&2
-      continue
+    if [ "$MASTER_PREFILTER_AVAILABLE" -eq 1 ]; then
+      [ -z "$rpf_vocab" ] || master_debug_phase_start policy_load
+      prefilter_match_rc=0
+      hqad_registry_prefilter_match \
+        "$EVENT" "$REPO_ROOT" "$ACTIVE_COMPANY" "$PAYLOAD_CWD" "$SESSION_ID" "$PREFILTER_TEXT" \
+        "$rpf_re" "$rpf_env" "$rpf_file" "$rpf_vocab" "$rid" || prefilter_match_rc=$?
+      [ -z "$rpf_vocab" ] || master_debug_phase_finish policy_load
+      if [ "$prefilter_match_rc" -ne 0 ]; then
+        case "$HQAD_PREFILTER_REASON" in
+          policy-vocab) [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (policy-vocab)\n' "$rid" >&2 ;;
+          prefilter) [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (prefilter)\n' "$rid" >&2 ;;
+        esac
+        continue
+      fi
     fi
     if [ "$MONITOR_EXPIRY_NOTIFICATION" -eq 1 ]; then
       case "${rscript##*/}" in
@@ -1510,12 +1371,16 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     trace_start="${EPOCHREALTIME:-}"
     child_started_ms="$(master_now_ms)"
     prepare_child_completion_marker
+    master_debug_phase_start external_command
     # shellcheck disable=SC2086 # args are space-separated literals from the registry.
     out="$(run_child "$rtimeout" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
+    master_debug_phase_finish external_command
     child_ended_ms="$(master_now_ms)"
     record_child_execution "$REPO_ROOT/$rscript" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$rtimeout"
     [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$rid" "$rc" "$trace_start"
+    master_debug_phase_start parse
     collect_output "$rc" "$out" "$REPO_ROOT/$rscript"
+    master_debug_phase_finish parse
   done < <(registry_rows)
 fi
 
@@ -1590,14 +1455,16 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
   master_child_timeout="${HQ_MASTER_CHILD_TIMEOUT:-120}"
   # The single dispatcher watchdog armed at the top covers every child; the
   # previous per-child re-arm cost two setsid bash processes per hook.
+  master_debug_phase_start external_command
   out="$(run_child "$master_child_timeout" "$hook" "$child_completion_marker" "$EVENT")" || rc=$?
+  master_debug_phase_finish external_command
   child_ended_ms="$(master_now_ms)"
   record_child_execution "$hook" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$master_child_timeout"
   [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$(basename "$hook")" "$rc" "$trace_start"
+  master_debug_phase_start parse
   collect_output "$rc" "$out" "$hook"
+  master_debug_phase_finish parse
 done
-
-emit_pending_late_finish_events
 
 # A block deliberately wins master aggregation. It must also leave timeout
 # breadcrumbs pending, because a warning merged into any other JSON object
@@ -1606,6 +1473,7 @@ emit_pending_late_finish_events
 # Use the same ${arr[@]+"${arr[@]}"} guard as the hooks dispatch loop above;
 # otherwise a layered PreToolUse blocker that exits 2 with plain-text stderr
 # (no JSON) never reaches `exit "$exit_code"` and the process returns 1.
+master_debug_phase_start output_write
 has_blocking_json=0
 for jo in ${json_outputs[@]+"${json_outputs[@]}"}; do
   case "$jo" in *'"decision"'*) ;; *) continue ;; esac
@@ -1700,6 +1568,8 @@ if [ -n "$json_result" ]; then
     [ "$timeout_warning_emitted" -eq 0 ] || restore_timeout_breadcrumbs
   fi
 fi
+master_debug_phase_finish output_write
+emit_pending_late_finish_events
 
 [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "master-hook:$EVENT total" "$exit_code" "${MASTER_TRACE_START:-}"
 exit "$exit_code"

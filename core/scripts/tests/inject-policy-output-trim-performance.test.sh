@@ -17,10 +17,12 @@ TAIL_COUNT="$TMP/tail-count"
 REAL_TAIL="$(command -v tail)"
 mkdir -p "$ROOT/.claude/hooks" "$ROOT/core/scripts" "$ROOT/core/policies" \
   "$ROOT/personal/policies" "$ROOT/workspace/orchestrator/policy-trigger-state" "$SHIMS"
+mkdir -p "$ROOT/core/scripts/lib"
 cp "$HOOK" "$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
 cp "$HQ_SRC/core/scripts/hook-lib.sh" "$ROOT/core/scripts/hook-lib.sh"
 cp "$HQ_SRC/core/scripts/eval-trigger.sh" "$ROOT/core/scripts/eval-trigger.sh"
 cp "$HQ_SRC/core/scripts/derive-trigger-facts.sh" "$ROOT/core/scripts/derive-trigger-facts.sh"
+cp "$HQ_SRC/core/scripts/lib/trigger-fact-text.awk" "$ROOT/core/scripts/lib/trigger-fact-text.awk"
 chmod +x "$ROOT/.claude/hooks/inject-policy-on-trigger.sh" "$ROOT/core/scripts/"*.sh
 
 cat > "$SHIMS/tail" <<'SH'

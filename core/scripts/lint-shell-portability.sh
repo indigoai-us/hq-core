@@ -12,6 +12,8 @@
 #     literally — so the defect never appears in Linux CI. Assign the pattern to
 #     a variable and quote it: p=$'\\\\\\n'; "${var//"$p"/}". Single-escape
 #     patterns ($'\\t', $'\\037') expand to one character and are not flagged.
+#   - mktemp templates that put a suffix after the X run. BSD/macOS and GNU
+#     mktemp require template Xs at the end; omit extensions from temporary paths.
 #   - bare "${array[@]}" expansions in nounset hook-health checks. Stock macOS
 #     bash 3.2 treats an empty array as unbound; use
 #     ${array[@]+"${array[@]}"} so a healthy empty issue list remains a PASS.
@@ -130,6 +132,16 @@ while IFS= read -r f || [ -n "$f" ]; do
     report "$f" "${hit%%:*}" "brew-only jq install message (use require_jq / multi-OS guidance)"
   done < "$HITS"
   scan_file "$f" "readlink[[:space:]]+-f" "readlink -f is GNU-only"
+  # BSD/macOS mktemp requires its X run at the end of an explicit template.
+  # GNU mktemp does as well; a filename extension must not follow the Xs.
+  : > "$HITS"
+  grep -nE 'mktemp[[:space:]][^#]*X{6}[^[:space:]]*[.][[:alnum:]]' "$f" > "$HITS" 2>/dev/null || true
+  while IFS= read -r hit || [ -n "$hit" ]; do
+    [ -z "$hit" ] && continue
+    body="${hit#*:}"
+    case "${body#"${body%%[![:space:]]*}"}" in \#*) continue ;; esac
+    report "$f" "${hit%%:*}" "mktemp template has a suffix after its trailing X run (remove the extension)"
+  done < "$HITS"
   case "$f" in
     core/scripts/check-hq-hooks.sh) scan_nounset_array_expansions "$f" ;;
   esac

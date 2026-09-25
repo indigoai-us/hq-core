@@ -17,6 +17,7 @@ MASTER_SRC="$SRC/.claude/hooks/master-hook.sh"
 PROBE_SRC="$SRC/.claude/hooks/hook-timeout-probe.sh"
 GATE_SRC="$SRC/.claude/hooks/hook-gate.sh"
 REGISTRY_SRC="$SRC/.claude/hooks/hook-registry.json"
+ADAPTER_CORE_SRC="$SRC/core/scripts/lib/hook-adapter-core.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -46,9 +47,10 @@ command -v jq >/dev/null 2>&1 || { echo "SKIP: jq unavailable" >&2; exit 0; }
 
 FIX="$TMP/fixture"
 BIN="$TMP/bin"
-mkdir -p "$FIX/.claude/hooks" "$FIX/core/hooks" "$BIN"
+mkdir -p "$FIX/.claude/hooks" "$FIX/core/hooks" "$FIX/core/scripts/lib" "$BIN"
 cp "$MASTER_SRC" "$FIX/.claude/hooks/master-hook.sh"
 cp "$PROBE_SRC" "$FIX/.claude/hooks/hook-timeout-probe.sh"
+cp "$ADAPTER_CORE_SRC" "$FIX/core/scripts/lib/hook-adapter-core.sh"
 cp "$GATE_SRC" "$FIX/.claude/hooks/hook-gate.sh"
 cp "$STOP_SRC" "$FIX/.claude/hooks/lanes-senior-monitor-stop-gate.sh"
 
@@ -365,6 +367,7 @@ mkdir -p "$SIBLING_FIX/.claude/hooks" "$SIBLING_FIX/core/hooks/SessionStart" \
   "$SIBLING_FIX/core/scripts/lib"
 cp "$MASTER_SRC" "$SIBLING_FIX/.claude/hooks/master-hook.sh"
 cp "$PROBE_SRC" "$SIBLING_FIX/.claude/hooks/hook-timeout-probe.sh"
+cp "$ADAPTER_CORE_SRC" "$SIBLING_FIX/core/scripts/lib/hook-adapter-core.sh"
 cp "$GATE_SRC" "$SIBLING_FIX/.claude/hooks/hook-gate.sh"
 cp "$FIX/.claude/hooks/hook-registry.json" "$SIBLING_FIX/.claude/hooks/hook-registry.json"
 cp "$REMINDER_SRC" "$SIBLING_FIX/core/scripts/lib/lanes-senior-monitor.sh"

@@ -198,6 +198,9 @@ mkdir -p "$TMP/workspace/sessions/grok-sid"
 # Adapter needs hook-gate.sh to not fail-open; create a stub gate that exits 0.
 cat > "$TMP/.claude/hooks/hook-gate.sh" <<'GATE'
 #!/usr/bin/env bash
+if [ "${1:-}" = "--lib" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 exit 0
 GATE
 chmod +x "$TMP/.claude/hooks/hook-gate.sh"

@@ -376,14 +376,14 @@ run_derive_trigger_facts() {
   local event="$1" with_intent="${2:-0}"
   if [ -n "$STDIN_FILE" ]; then
     if [ "$with_intent" = "1" ]; then
-      bash "$HELPERS/derive-trigger-facts.sh" "$event" --with-assistant-intent < "$STDIN_FILE" 2>/dev/null || true
+      bash "$HELPERS/derive-trigger-facts.sh" "$event" --with-assistant-intent < "$STDIN_FILE" || true
     else
-      bash "$HELPERS/derive-trigger-facts.sh" "$event" < "$STDIN_FILE" 2>/dev/null || true
+      bash "$HELPERS/derive-trigger-facts.sh" "$event" < "$STDIN_FILE" || true
     fi
   elif [ "$with_intent" = "1" ]; then
-    printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$event" --with-assistant-intent 2>/dev/null || true
+    printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$event" --with-assistant-intent || true
   else
-    printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$event" 2>/dev/null || true
+    printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$event" || true
   fi
 }
 

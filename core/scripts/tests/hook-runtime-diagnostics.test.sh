@@ -165,7 +165,7 @@ codex_payload="$(jq -n --arg cwd "$CODEX_FIX" '{
   cwd: $cwd,
   session_id: "codex-diag",
   tool_input: {
-    command: "*** Begin Patch\n*** Add File: docs/diag.md\n+ok\n*** End Patch"
+    command: "*** Begin Patch\n*** Add File: workspace/threads/personal/skills/diag.md\n+ok\n*** End Patch"
   },
   tool_response: {exit_code: 0}
 }')"
@@ -261,7 +261,7 @@ grok_pre_payload="$(jq -n --arg cwd "$GROK_FIX" '{
   toolName: "Read",
   cwd: $cwd,
   sessionId: "grok-pre",
-  toolInput: {file_path: "docs/diag.md"}
+  toolInput: {file_path: "companies/acme/settings/diag.yaml"}
 }')"
 grok_pre_out="$TMP/grok-pre.out"
 grok_pre_err="$TMP/grok-pre.err"

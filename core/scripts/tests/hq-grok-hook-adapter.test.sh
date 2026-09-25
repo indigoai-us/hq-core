@@ -204,12 +204,12 @@ DSID="grok-debounce-$$"
 STAMP="$ROOT/workspace/orchestrator/hook-state/grok-debounce-inject-policy-on-trigger-${DSID}.stamp"
 rm -f "$STAMP"
 export HQ_GROK_POLICY_DEBOUNCE_SECS=3600
-run_adapter '{"hookEventName":"PreToolUse","toolName":"Shell","toolInput":{"command":"echo hi"},"cwd":"'"$ROOT"'","session_id":"'"$DSID"'"}'
+run_adapter '{"hookEventName":"PreToolUse","toolName":"Shell","toolInput":{"command":"echo secret"},"cwd":"'"$ROOT"'","session_id":"'"$DSID"'"}'
 if [ -f "$STAMP" ]; then
   echo "PASS: debounce stamp created on first Bash call"; PASS=$((PASS + 1))
   MT1="$(file_mtime "$STAMP")"
   sleep 2
-  run_adapter '{"hookEventName":"PreToolUse","toolName":"Shell","toolInput":{"command":"echo hi again"},"cwd":"'"$ROOT"'","session_id":"'"$DSID"'"}'
+  run_adapter '{"hookEventName":"PreToolUse","toolName":"Shell","toolInput":{"command":"echo secret again"},"cwd":"'"$ROOT"'","session_id":"'"$DSID"'"}'
   MT2="$(file_mtime "$STAMP")"
   if [ "$MT1" = "$MT2" ]; then
     echo "PASS: second Bash call within window is debounced (scan skipped)"; PASS=$((PASS + 1))
@@ -258,14 +258,14 @@ export HQ_GROK_POLICY_DEBOUNCE_SECS=3600
 _saved_grok_sid="${GROK_SESSION_ID-}"
 _saved_hq_sid="${HQ_SESSION_ID-}"
 unset GROK_SESSION_ID HQ_SESSION_ID || true
-run_bridge '{"hookEventName":"PreToolUse","toolName":"Shell","toolInput":{"command":"echo hi"},"cwd":"'"$ROOT"'"}'
+run_bridge '{"hookEventName":"PreToolUse","toolName":"Shell","toolInput":{"command":"echo secret"},"cwd":"'"$ROOT"'"}'
 # Bridge exports GROK_SESSION_ID=bridge-$PPID (adapter does not grok-prefix that).
 BSTAMP="$(ls -t "$STATE_DIR"/grok-debounce-inject-policy-on-trigger-bridge-*.stamp 2>/dev/null | head -1 || true)"
 if [ -n "$BSTAMP" ] && [ -f "$BSTAMP" ]; then
   echo "PASS: bridge path created a stable-key debounce stamp"; PASS=$((PASS + 1))
   BMT1="$(file_mtime "$BSTAMP")"
   sleep 2
-  run_bridge '{"hookEventName":"PreToolUse","toolName":"Shell","toolInput":{"command":"echo hi again"},"cwd":"'"$ROOT"'"}'
+  run_bridge '{"hookEventName":"PreToolUse","toolName":"Shell","toolInput":{"command":"echo secret again"},"cwd":"'"$ROOT"'"}'
   BMT2="$(file_mtime "$BSTAMP")"
   if [ "$BMT1" = "$BMT2" ]; then
     echo "PASS: second bridge call shares the debounce key (scan skipped)"; PASS=$((PASS + 1))

@@ -13,7 +13,7 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-mkdir -p "$TMP/.codex/hooks" "$TMP/.claude/hooks" "$TMP/core/scripts/lib"
+mkdir -p "$TMP/.codex/hooks" "$TMP/.claude/hooks" "$TMP/core/scripts/lib" "$TMP/core/policies"
 cp "$ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
 chmod +x "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
 # The adapter reads the registry dispatch table through the shared library.
@@ -22,12 +22,22 @@ chmod +x "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
 cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$TMP/core/scripts/lib/hook-adapter-core.sh"
 cp "$ROOT/.claude/settings.json" "$TMP/.claude/settings.json"
 cp "$ROOT/.claude/hooks/hook-registry.json" "$TMP/.claude/hooks/hook-registry.json"
+cat > "$TMP/core/policies/prefilter-fixture.md" <<'POLICY'
+---
+on: PreToolUse
+when: git
+---
+Synthetic policy vocabulary fixture.
+POLICY
 
 git -C "$TMP" init -q
 
 cat > "$TMP/.claude/hooks/hook-gate.sh" <<'SH'
 #!/bin/bash
 set -euo pipefail
+if [ "${1:-}" = "--lib" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 hook_id="$1"
 script="$2"
 shift 2
@@ -399,7 +409,9 @@ if err="$(run_adapter_bash32 "$payload_secret" 2>&1 >/dev/null)"; then
 fi
 assert_contains "$err" "blocked secret"
 
-payload_bash_safe='{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"'"$TMP"'","tool_input":{"command":"echo ok"}}'
+payload_bash_safe='{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"'"$TMP"'","tool_input":{"command":"echo git core pnpm timeout qmd"}}'
+mkdir -p "$TMP/.hq"
+printf '{}\n' > "$TMP/.hq/vault-access.json"
 run_adapter "$payload_bash_safe" >/dev/null
 assert_contains "$(cat "$TEST_LOG")" "block-core-writes-bash"
 assert_contains "$(cat "$TEST_LOG")" "block-hq-root-git-mutation"
@@ -462,13 +474,15 @@ case "$err" in
 esac
 
 payload_patch_input='{"hook_event_name":"PreToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"input":"*** Begin Patch\n*** Update File: blocked.txt\n@@\n x\n*** End Patch"}}'
+mkdir -p "$TMP/scripts"
+printf '#!/usr/bin/env bash\n' > "$TMP/scripts/repo-run-registry.sh"
 if err="$(run_adapter "$payload_patch_input" 2>&1 >/dev/null)"; then
   echo "Expected tool_input.input apply_patch payload to be blocked" >&2
   exit 1
 fi
 assert_contains "$err" "blocked active run"
 
-payload_post_patch='{"hook_event_name":"PostToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"command":"*** Begin Patch\n*** Add File: docs/test.md\n+ok\n*** End Patch"},"tool_response":{"exit_code":0}}'
+payload_post_patch='{"hook_event_name":"PostToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"command":"*** Begin Patch\n*** Add File: workspace/threads/personal/skills/test.md\n+ok\n*** Add File: docs/test.md\n+ok\n*** End Patch"},"tool_response":{"exit_code":0}}'
 out="$(run_adapter "$payload_post_patch")"
 printf '%s' "$out" | jq -e . >/dev/null
 assert_contains "$out" "AUTO-CHECKPOINT REQUIRED"
@@ -503,7 +517,7 @@ assert_contains "$(cat "$TEST_LOG")" "inject-policy-on-trigger"
 
 # PreToolUse apply_patch — every per-path edit-class parity hook fires.
 : > "$TEST_LOG"
-payload_patch_edit='{"hook_event_name":"PreToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"command":"*** Begin Patch\n*** Add File: docs/parity.md\n+ok\n*** End Patch"}}'
+payload_patch_edit='{"hook_event_name":"PreToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"command":"*** Begin Patch\n*** Add File: repos/private/env/.claude/plans/skills/parity.md\n+ok\n*** End Patch"}}'
 run_adapter "$payload_patch_edit" >/dev/null
 log="$(cat "$TEST_LOG")"
 # Claude's settings.json does NOT register inject-policy-on-trigger on the
@@ -527,7 +541,7 @@ assert_contains "$err" "blocked skill route"
 
 # PostToolUse Bash: screenshot + journal nudges fire.
 : > "$TEST_LOG"
-payload_post_bash='{"hook_event_name":"PostToolUse","tool_name":"Bash","cwd":"'"$TMP"'","tool_input":{"command":"echo ok"},"tool_response":{"exit_code":0}}'
+payload_post_bash='{"hook_event_name":"PostToolUse","tool_name":"Bash","cwd":"'"$TMP"'","tool_input":{"command":"agent-browser screenshot; git commit"},"tool_response":{"exit_code":0}}'
 run_adapter "$payload_post_bash" >/dev/null
 log="$(cat "$TEST_LOG")"
 assert_contains "$log" "screenshot-resize-trigger"

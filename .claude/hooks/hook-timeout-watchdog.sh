@@ -730,6 +730,7 @@ if ! command -v hq >/dev/null 2>&1; then
   mark_report_done
   exit 0
 fi
+HQ_BIN="$(command -v hq 2>/dev/null || printf 'hq')"
 test_status hq-found
 
 hq_version="$(grep -E '^hqVersion:' "$root/core/core.yaml" 2>/dev/null | head -n 1 | tr -d ' "' | cut -d: -f2)"
@@ -785,6 +786,50 @@ case "$hook_name" in
     fi
     ;;
 esac
+
+debug_phase_file=""
+debug_active_phase_file=""
+debug_cli_version_file=""
+debug_phase_timings='[]'
+debug_wait_point='wait'
+debug_child_name=other
+debug_child_elapsed=0
+debug_process_count=unavailable
+debug_spawn_ms=unavailable
+debug_context=''
+if [ "$source_kind" = master-dispatch ] \
+  && [[ "$invocation_id" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+  debug_phase_file="$root/workspace/.hook-timeout-journal/$invocation_id.debug.tsv"
+  debug_active_phase_file="$debug_phase_file.active"
+  debug_cli_version_file="$debug_phase_file.cli-version"
+elif [ -n "$session_hash" ]; then
+  debug_cli_version_file="$root/workspace/.hook-timeout-journal/$session_hash.cli-version"
+fi
+debug_phase_timings="$(hook_timeout_phase_timings_json "$debug_phase_file" "$debug_active_phase_file")"
+active_debug_phase_record=""
+if [ -r "$debug_active_phase_file" ]; then
+  active_debug_phase_record="$(awk -F '\t' 'NF >= 1 { print $1; exit }' "$debug_active_phase_file" 2>/dev/null || true)"
+  IFS= read -r active_debug_phase <<< "$active_debug_phase_record" || true
+  [ -z "${active_debug_phase:-}" ] || debug_wait_point="$active_debug_phase"
+fi
+if [ "$source_kind" = hook-gate ]; then
+  debug_child_name="$hook_path"
+  debug_child_elapsed="$elapsed_ms"
+  debug_wait_point=child_wait
+elif [ -n "$slow_child" ]; then
+  debug_child_name="$slow_child"
+  debug_child_elapsed="${slow_child_ms:-0}"
+fi
+if [ "$os_name" = windows ]; then
+  [[ "$spawn_ms" =~ ^[0-9]+$ ]] && debug_spawn_ms="$spawn_ms"
+  debug_process_count="$(hook_timeout_windows_process_count "$(command -v ps 2>/dev/null || printf 'ps')")"
+fi
+if hook_timeout_cli_supports_debug_context "$HQ_BIN" "$debug_cli_version_file" "$platform"; then
+  debug_context="$(hook_timeout_debug_context_json \
+    "$hook_name" "$event_name" "$declared_timeout_ms" "$elapsed_ms" "$remaining_ms" \
+    "$debug_phase_timings" "$debug_wait_point" "$debug_child_name" "$debug_child_elapsed" \
+    "$load_average" "$debug_spawn_ms" "$debug_process_count")"
+fi
 
 event_json_error_file=/dev/null
 if [ -n "$test_status_file" ]; then
@@ -870,6 +915,9 @@ fi
 if [ "$policy_trigger_metadata" != '{}' ]; then
   event_json="$(jq -c --argjson policy_trigger "$policy_trigger_metadata" \
     '.metadata += $policy_trigger' <<<"$event_json")" || { mark_report_done; exit 0; }
+fi
+if [ -n "$debug_context" ]; then
+  event_json="$(hook_timeout_attach_debug_context "$event_json" "$debug_context")" || { mark_report_done; exit 0; }
 fi
 
 # `hq` is only invoked after the hook is already slow. Its public

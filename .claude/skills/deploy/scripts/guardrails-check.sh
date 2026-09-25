@@ -61,10 +61,9 @@ if [ "$FILE_COUNT" -gt 100 ]; then
 fi
 
 # 3. Build tarball
-TARBALL=$(mktemp -t hq-deploy-tar.XXXXXX).tar.gz
-tar -czf "$TARBALL" -C "$OUT_DIR" . 2>/dev/null
-
-if [ ! -f "$TARBALL" ]; then
+TARBALL=$(mktemp -t hq-deploy-tar.XXXXXX)
+if ! tar -czf "$TARBALL" -C "$OUT_DIR" . 2>/dev/null; then
+  rm -f "$TARBALL"
   emit_fail "tar_create_failed"
 fi
 

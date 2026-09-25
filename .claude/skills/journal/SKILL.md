@@ -42,7 +42,7 @@ Write a structured working-memory entry for the current Claude session. Entries 
 3. Pass the synthesized body via `--body-file` to `core/scripts/session-journal.sh write`:
 
 ```bash
-mktemp_body=$(mktemp -t journal-body.XXXXXX.md)
+mktemp_body=$(mktemp -t journal-body.XXXXXX)
 cat > "$mktemp_body" <<'EOF'
 ## Goal
 ...

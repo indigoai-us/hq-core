@@ -82,6 +82,10 @@ if [ -n "$HQ_ROOT" ]; then
   # Single-source dispatch: read .claude/settings.json live so Codex runs
   # exactly the hooks Claude runs (hqad_iter_settings / hqad_mode_for).
   . "$HQ_ROOT/core/scripts/lib/hook-adapter-core.sh" 2>/dev/null || true
+  # Share the existing profile gate in-process so each registry hook does not
+  # start another hook-gate.sh process.
+  . "$GATE" --lib 2>/dev/null || true
+  export HQAD_EVENT_SESSION_ID="$SESSION_ID"
 fi
 
 if [ -z "$HQ_ROOT" ] || [ ! -d "$HOOK_DIR" ] || [ ! -f "$GATE" ]; then
@@ -235,16 +239,16 @@ run_hook() {
   status=0
   warning=""
 
-  if command -v hq_launch_shell_path >/dev/null 2>&1; then
-    hq_launch_shell_path "$HQ_ROOT" "$GATE" "$payload" "$hook_id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
+  if command -v hqad_launch_registered_hook >/dev/null 2>&1; then
+    hqad_launch_registered_hook "$HQ_ROOT" "$HOOK_EVENT" "$payload" "$hook_id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
     if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
       warning="$(hq_hook_launch_warning_text \
         "$payload" \
         "$HQ_ROOT" \
         "$mode" \
-        "hook gate" \
+        "hook" \
         "$hook_id" \
-        "$GATE" \
+        "$script" \
         "$HQ_HOOK_LAST_CAUSE")"
     fi
   else
@@ -402,7 +406,7 @@ dispatch_settings_hooks() {
           run_script "$a" "$payload" "advisory"
           ;;
       esac
-    done < <(hqad_iter_settings "$event" "$tool")
+    done < <(hqad_iter_settings "$event" "$tool" "$payload")
   done
 }
 
@@ -582,10 +586,12 @@ run_pre_tool_use() {
       ;;
     apply_patch|Edit|Write)
       local paths path payload canon
-      # Edit's hook set is a strict subset of Write's, so apply_patch (generic)
-      # maps to Write to cover both without dedup-ordering hazards.
+      # apply_patch payloads are edits. Query Edit first and then Write so
+      # Edit-specific hooks keep their semantics while the Write set remains
+      # covered; dispatch_settings_hooks de-duplicates shared records.
       case "$TOOL_NAME" in
         Edit) canon="Edit" ;;
+        apply_patch) canon="Edit Write" ;;
         *) canon="Write" ;;
       esac
       paths="$(patch_paths)"
@@ -631,7 +637,8 @@ run_post_tool_use() {
       local paths path payload canon
       case "$TOOL_NAME" in
         Edit) canon="Edit" ;;
-        *) canon="Write" ;;  # Edit's hooks ⊂ Write's; apply_patch -> Write
+        apply_patch) canon="Edit Write" ;;
+        *) canon="Write" ;;
       esac
       paths="$(patch_paths)"
       [ -z "$paths" ] && return 0
@@ -640,6 +647,10 @@ run_post_tool_use() {
       while IFS= read -r path; do
         [ -z "$path" ] && continue
         payload="$(payload_for_path "$path")"
+        # apply_patch payloads are edits. Query the Edit matcher first so
+        # Edit-specific hooks still run when a Write prefilter would skip
+        # them, then query Write for the superset; dispatch_settings_hooks
+        # de-duplicates shared hook records across both matcher sets.
         dispatch_settings_hooks "PostToolUse" "$canon" "$payload" skip_master
       done <<< "$paths"
       run_master_hook "PostToolUse" "$INPUT" "advisory"

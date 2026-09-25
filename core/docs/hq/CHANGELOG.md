@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+### Fixed — portable mktemp templates in shipped skills
+- Handoff, journal, and deploy examples no longer place a filename suffix after the `mktemp` X run. The shell portability linter now catches suffixes in shell scripts, and its regression test pins the shipped skill examples.
+- Deploy guardrails now check `tar` exit status, remove partial archives, and report `tar_create_failed`; the documented Open Graph rebuild follows the same failure path.
+
+### Fixed — policy write guard handles empty arrays under Bash 3.2 nounset (2026-09-25)
+- `block-policy-writes-bash.sh` now snapshots and restores empty argument and tracked-variable arrays without aborting under `set -u`. Regression coverage also checks the active hook registry and Bash profile wiring.
+
 ### Changed — narrower triggers for two broad policies (2026-09-24)
 - `hq-github` fired on every command containing `git`, including `git status` and `git log`, and on no `gh` command. It now fires on repository-scoped `gh` families (`pr`, `run`, `issue`, `release`, `workflow`, `api`, `label`, `repo`, `secret`, `variable`, `ruleset`, `cache`) and on `git` with `push`, `fetch` or `remote`.
 - The repo policy `hq-core-staging-changes-via-new-worktrees` fired on any mention of `repo`, `git`, `branch` or `pr`. It now fires on every `git` command that moves HEAD, changes the working tree or index, or updates refs (`worktree`, `branch`, `commit`, `push`, `fetch`, `pull`, `switch`, `checkout`, `merge`, `rebase`, `reset`, `stash`, `restore`, `cherry-pick`, `revert`, `am`, `apply`, `add`, `rm`, `mv`, `clean`, `tag`), on `gh pr`, and on edits naming `hq-core-staging`. Read-only commands such as `git status`, `git log` and `git diff` no longer fire it. It is evaluated on UserPromptSubmit, PreToolUse and AssistantIntent. `SessionStart` is dropped from `on:`: SessionStart facts are only `always`, which the old expression never matched, so no session-start reminder is lost.
@@ -9,6 +16,12 @@
 ### Fixed: policy reminder trimming avoids per-line process launches (2026-09-24)
 - `.claude/hooks/inject-policy-on-trigger.sh` now chooses the first output-ceiling fit in one AWK invocation. Local C-locale Bash arithmetic counts UTF-8 output bytes correctly. Policy order, cut notices, and fallback output keep their previous behavior.
 - Regression: `core/scripts/tests/inject-policy-output-trim-performance.test.sh` measured 248 `tail` launches with the base hook and 0 with the optimized hook on 250 synthetic matches. It also checks UTF-8 output ceilings and emission stats.
+
+### Fixed — Codex and Grok hook adapter dispatch overhead (HP-1, 2026-09-24)
+- Shared registry prefilters and event-level watchdog dispatch across the Codex and Grok adapters, avoiding per-hook gate and watchdog processes while preserving hook order, policy checks, disabled-hook handling, and fail-closed matcher behavior. The Claude registry uses the same prefilter helpers.
+- Policy-vocabulary matching now shares derived text facts with the policy injector, including completion and key-shaped token signals. First-session injection and in-place policy edits invalidate safely; master-hook runs every registry hook if its shared dispatcher library cannot load.
+- Codex `apply_patch` per-file events query Edit before Write so Edit-specific hooks still run when a Write prefilter would skip them; shared hook records remain de-duplicated.
+- Regression coverage: `core/scripts/tests/hook-adapter-prefilter-watchdog.test.sh`; adapter integration fixtures now include the shared helpers and exercise matching, non-matching, and dual-matcher payloads.
 
 ### Fixed — tool-write hook passes same-company project switches to prd-sync (F14, 2026-09-23)
 - `core/hooks/PostToolUse/35-work-mesh-tool-writes.sh` used to exit when the written project slug differed from the session's bound project. A write of `companies/<same-company>/projects/<other-slug>/prd.json` now still calls `hq mesh context prd-sync` (one flight per session, same lock as today) so hq-cli can rebind and emit against the new project. Writes to other files in another project stay skipped. Cross-company stays skipped.

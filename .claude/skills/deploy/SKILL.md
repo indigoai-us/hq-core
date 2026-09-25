@@ -626,8 +626,12 @@ if [ "$DEPLOY_TYPE" = "static" ]; then
   BASE_URL="https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}"
   OG_JSON=$(.claude/skills/deploy/scripts/og-inject.sh "$OUTPUT_DIR" "$BASE_URL" "$APP_NAME")
   if [ "$(echo "$OG_JSON" | jq -r '.changed')" = "true" ]; then
-    NEW_TAR=$(mktemp -t hq-deploy-tar.XXXXXX).tar.gz
-    tar -czf "$NEW_TAR" -C "$OUTPUT_DIR" . 2>/dev/null
+    NEW_TAR=$(mktemp -t hq-deploy-tar.XXXXXX)
+    if ! tar -czf "$NEW_TAR" -C "$OUTPUT_DIR" . 2>/dev/null; then
+      rm -f "$NEW_TAR"
+      echo "tar_create_failed" >&2
+      exit 1
+    fi
     rm -f "$TARBALL_PATH"
     TARBALL_PATH="$NEW_TAR"
     TARBALL_SIZE=$(stat -c%s "$TARBALL_PATH" 2>/dev/null || stat -f%z "$TARBALL_PATH" 2>/dev/null || echo 0)

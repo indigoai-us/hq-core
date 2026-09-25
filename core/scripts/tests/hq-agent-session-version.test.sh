@@ -25,6 +25,7 @@ setup_fixture() {
   cp -R "$SRC_ROOT/core/scripts/lib" "$fx/core/scripts/lib"
   cp "$SRC_ROOT/core/scripts/hq-session.sh" "$fx/core/scripts/"
   cp "$SRC_ROOT/.claude/hooks/master-hook.sh" "$fx/.claude/hooks/"
+  cp "$SRC_ROOT/.claude/hooks/hook-timeout-probe.sh" "$fx/.claude/hooks/"
   cp "$SRC_ROOT/core/knowledge/public/hq-core/channel-writing-formats.md" \
     "$fx/core/knowledge/public/hq-core/" 2>/dev/null || true
   printf '# AGENTS\n' > "$fx/AGENTS.md"
