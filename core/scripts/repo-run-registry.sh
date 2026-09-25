@@ -49,11 +49,14 @@ _die() { echo "ERROR: $*" >&2; exit 1; }
 
 _iso_now() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
-# BSD-compatible ISO8601 → epoch seconds
+# ISO8601 (UTC, trailing Z) → epoch seconds. BSD date first, then GNU date.
+# A BSD-only parse returned 0 on Linux, so _prune_stale treated every live
+# run as stale and deleted it before any check could block on it.
 _iso_to_epoch() {
   local iso="$1"
-  # strip trailing Z, split on T
-  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null || echo 0
+  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null \
+    || date -u -d "$iso" +%s 2>/dev/null \
+    || echo 0
 }
 
 _hostname() { hostname -s 2>/dev/null || echo "unknown"; }
@@ -75,9 +78,15 @@ _ensure_reg() {
 }
 
 # Atomic mutex via mkdir — single-machine only
-_lock() {
+_lock() { _try_lock || _die "registry lock timeout"; }
+
+# Returns 1 instead of exiting when the lock stays busy (~5s).
+_try_lock() {
   local tries=0
   local max=50
+  # register takes the lock before _ensure_reg; without its parent the mkdir
+  # below can never succeed and the first register on a fresh install timed out.
+  mkdir -p "$REG_DIR" 2>/dev/null || true
   while ! mkdir "$LOCK_DIR" 2>/dev/null; do
     tries=$((tries + 1))
     if [[ $tries -ge $max ]]; then
@@ -91,12 +100,23 @@ _lock() {
           continue
         fi
       fi
-      _die "registry lock timeout"
+      return 1
     fi
     sleep 0.1
   done
 }
 _unlock() { rm -rf "$LOCK_DIR" 2>/dev/null || true; }
+
+# list, owner-of and check prune too. Hold the lock so a reader cannot write an
+# older snapshot over a concurrent register or heartbeat. If the lock stays
+# busy, skip the prune and answer from the file as it is.
+_prune_stale_locked() {
+  _try_lock || return 0
+  trap '_unlock' EXIT
+  _prune_stale >/dev/null 2>&1 || true
+  _unlock
+  trap - EXIT
+}
 
 _is_pid_alive() {
   local pid="$1"
@@ -284,7 +304,7 @@ _cmd_heartbeat() {
 
 _cmd_list() {
   _ensure_reg
-  _prune_stale >/dev/null 2>&1 || true
+  _prune_stale_locked
   jq '.runs' "$REG_FILE"
 }
 
@@ -309,7 +329,7 @@ _cmd_owner_of() {
   repo=$(_find_owning_repo "$path")
   [[ -z "$repo" ]] && { echo ""; return; }
   _ensure_reg
-  _prune_stale >/dev/null 2>&1 || true
+  _prune_stale_locked
   jq --arg repo "$repo" --arg target "$(_abs_path "$path")" \
     '[.runs[] | select(
        (.scope == "repo" and .repo_path == $repo)
@@ -333,7 +353,7 @@ _cmd_check() {
   [[ -z "$target" ]] && _die "check requires --target"
 
   _ensure_reg
-  _prune_stale >/dev/null 2>&1 || true
+  _prune_stale_locked
 
   local abs_target
   abs_target=$(_abs_path "$target")

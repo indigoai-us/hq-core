@@ -295,13 +295,15 @@ fi
 # The active-run guard is the Bash counterpart of this repo-write policy. Give
 # it a foreign owner for every target so a real mutation must block.
 ACTIVE_HOOK="$ROOT/.claude/hooks/block-on-active-run.sh"
-mkdir -p "$HQ/scripts" "$HQ/core/scripts"
+mkdir -p "$HQ/core/scripts" "$HQ/workspace/orchestrator"
 cp "$ROOT/core/scripts/hook-lib.sh" "$HQ/core/scripts/hook-lib.sh"
-cat > "$HQ/scripts/repo-run-registry.sh" <<'EOF'
+printf '%s\n' '{"version":1,"runs":[{"run_id":"foreign","pid":999999,"session_id":"other","scope":"repo"}]}' \
+  > "$HQ/workspace/orchestrator/active-runs.json"
+cat > "$HQ/core/scripts/repo-run-registry.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' '[{"pid":"999999","session_id":"other","run_id":"foreign","command":"run","project":"p","scope":"repo","started_at":"now"}]'
 EOF
-chmod +x "$HQ/scripts/repo-run-registry.sh"
+chmod +x "$HQ/core/scripts/repo-run-registry.sh"
 
 run_bash() {
   local command="$1" payload rc=0

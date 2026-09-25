@@ -474,8 +474,9 @@ case "$err" in
 esac
 
 payload_patch_input='{"hook_event_name":"PreToolUse","tool_name":"apply_patch","cwd":"'"$TMP"'","tool_input":{"input":"*** Begin Patch\n*** Update File: blocked.txt\n@@\n x\n*** End Patch"}}'
-mkdir -p "$TMP/scripts"
-printf '#!/usr/bin/env bash\n' > "$TMP/scripts/repo-run-registry.sh"
+# block-on-active-run's registry prefilter keys on the registry data file.
+mkdir -p "$TMP/workspace/orchestrator"
+printf '%s\n' '{"version":1,"runs":[]}' > "$TMP/workspace/orchestrator/active-runs.json"
 if err="$(run_adapter "$payload_patch_input" 2>&1 >/dev/null)"; then
   echo "Expected tool_input.input apply_patch payload to be blocked" >&2
   exit 1

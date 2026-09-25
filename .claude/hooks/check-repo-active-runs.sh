@@ -25,9 +25,13 @@ cat >/dev/null 2>&1 || true
 # default. Never hardcode ~/Documents/HQ as the sole source.
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)}}"
 HQ_ROOT="${HQ_ROOT:-${HOME}/Documents/HQ}"
-REGISTRY="$HQ_ROOT/scripts/repo-run-registry.sh"
+REGISTRY="$HQ_ROOT/core/scripts/repo-run-registry.sh"
 
 [[ ! -x "$REGISTRY" ]] && exit 0
+# Nothing has ever registered a run. Calling the registry would create an
+# empty active-runs.json, which switches on block-on-active-run's prefilter
+# for every later tool call on this install.
+[[ -f "$HQ_ROOT/workspace/orchestrator/active-runs.json" ]] || exit 0
 
 CWD="$(pwd)"
 

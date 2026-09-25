@@ -171,7 +171,7 @@ cmd_repo() {
     esac
   done
 
-  local registry="${HQ_ROOT}/scripts/repo-run-registry.sh"
+  local registry="${HQ_ROOT}/core/scripts/repo-run-registry.sh"
   if [[ ! -x "${registry}" ]]; then
     echo "skip: repo-run-registry.sh is not executable"
     return 0

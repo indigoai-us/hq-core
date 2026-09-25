@@ -2,7 +2,7 @@
 name: model-context-window
 when: always
 on: [SessionStart]
-description: Default Opus model uses 200K context; the [1m] (1M context) variant is opt-in per command, not the global default
+description: The default model is the plain opus alias, which follows new Opus releases; the opus[1m] (1M context) variant is opt-in per command, not the global default
 enforcement: soft
 vendor_public_ok: true
 public: true
@@ -11,7 +11,7 @@ created: 2026-05-12
 
 ## Rule
 
-The global default model in `.claude/settings.json` is `claude-opus-4-8` (200K context). The `[1m]` variant (`claude-opus-4-8[1m]`, 1M context) is **opt-in per command**, not the default.
+The global default model in `.claude/settings.json` is the plain `opus` alias, and `CLAUDE_CODE_SUBAGENT_MODEL` is `opus` too. Claude Code resolves the alias to its newest Opus model, so new Opus releases apply without an edit. Do not pin a dated model ID such as `claude-opus-4-8` in the shipped settings: a dated pin freezes every install and every subagent on that model. The `opus[1m]` variant (1M context) is **opt-in per command**, not the default.
 
 Commands that opt into `[1m]`:
 
@@ -22,9 +22,9 @@ Commands that opt into `[1m]`:
 
 How a command opts in (mechanism resolved by US-015):
 
-1. Per-command frontmatter `model: claude-opus-4-8[1m]` if the runtime honors it, or
-2. Slash-command runtime flag (e.g. `/run-project foo --model claude-opus-4-8[1m]`), or
-3. Soft fallback: command's first step prompts the user to restart the session with `--model claude-opus-4-8[1m]` if long context is needed; otherwise proceeds with 200K.
+1. Per-command frontmatter `model: opus[1m]` if the runtime honors it, or
+2. Slash-command runtime flag (e.g. `/run-project foo --model opus[1m]`), or
+3. Soft fallback: command's first step prompts the user to restart the session with `--model opus[1m]` if long context is needed; otherwise proceeds with the default context window.
 
 ## Rationale
 

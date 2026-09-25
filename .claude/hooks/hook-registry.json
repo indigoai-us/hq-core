@@ -188,7 +188,7 @@
             "timeout": 30,
             "gated": true,
             "prefilter": {
-              "file": "scripts/repo-run-registry.sh"
+              "file": "workspace/orchestrator/active-runs.json"
             }
           },
           {
@@ -289,7 +289,7 @@
             "timeout": 30,
             "gated": true,
             "prefilter": {
-              "file": "scripts/repo-run-registry.sh"
+              "file": "workspace/orchestrator/active-runs.json"
             }
           },
           {
@@ -399,7 +399,7 @@
             "timeout": 30,
             "gated": true,
             "prefilter": {
-              "file": "scripts/repo-run-registry.sh"
+              "file": "workspace/orchestrator/active-runs.json"
             }
           },
           {

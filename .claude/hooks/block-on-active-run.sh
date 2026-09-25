@@ -25,9 +25,6 @@ if [[ "${HQ_IGNORE_ACTIVE_RUNS:-}" == "1" ]]; then
   exit 0
 fi
 
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || echo "")
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
-
 # Resolve the active HQ root regardless of install path or session cwd:
 # explicit HQ_ROOT env → CLAUDE_PROJECT_DIR (set by Claude Code) → the hook's
 # own location (always <HQ>/.claude/hooks/, matching master-hook.sh) → legacy
@@ -42,8 +39,28 @@ HQ_ROOT="${HQ_ROOT:-${HOME}/Documents/HQ}"
 if [ -r "$HQ_ROOT/core/scripts/hook-lib.sh" ]; then
   . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
 fi
-REG="$HQ_ROOT/scripts/repo-run-registry.sh"
-[[ ! -x "$REG" ]] && exit 0
+REG="$HQ_ROOT/core/scripts/repo-run-registry.sh"
+if [[ ! -x "$REG" ]]; then
+  # Fail open, but not silently: check-hq-hooks.sh reports this as FAIL.
+  echo "block-on-active-run: $REG is missing or not executable; active-run guard skipped." >&2
+  exit 0
+fi
+# No registered runs means nothing to block. Checked in-process before the
+# payload parse and the ancestor walk below (one ps fork per ancestor), so a
+# session with no active runs pays no extra process per guarded tool call.
+# repo-run-registry.sh writes the file with jq; whitespace is not significant.
+ACTIVE_RUNS_FILE="$HQ_ROOT/workspace/orchestrator/active-runs.json"
+[[ -f "$ACTIVE_RUNS_FILE" ]] || exit 0
+ACTIVE_RUNS_JSON="$(<"$ACTIVE_RUNS_FILE")"
+ACTIVE_RUNS_JSON="${ACTIVE_RUNS_JSON//[[:space:]]/}"
+case "$ACTIVE_RUNS_JSON" in
+  *'"runs":[]'*|'') exit 0 ;;
+  *'"runs":['*) ;;
+  *) exit 0 ;;
+esac
+
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || echo "")
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 
 # ---- ancestor pid chain (for self-match) ----
 _ancestor_pids() {

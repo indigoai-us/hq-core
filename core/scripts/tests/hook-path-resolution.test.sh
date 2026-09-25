@@ -318,12 +318,17 @@ echo "[6] block-on-active-run.sh + check-repo-active-runs.sh: consult the regist
 for hook_event in "block-on-active-run.sh:PreToolUse" "check-repo-active-runs.sh:SessionStart"; do
   hook="${hook_event%%:*}"; event="${hook_event##*:}"
   FR="$(make_fake_root)"; trap 'rm -rf "$FR"' EXIT
-  cat >"$FR/scripts/repo-run-registry.sh" <<EOF
+  # The registry helper ships at core/scripts/. The guard skips work unless
+  # workspace/orchestrator/active-runs.json lists at least one run.
+  mkdir -p "$FR/core/scripts" "$FR/workspace/orchestrator"
+  cat >"$FR/core/scripts/repo-run-registry.sh" <<EOF
 #!/bin/bash
 touch "$FR/.registry-consulted"
 echo "[]"
 EOF
-  chmod +x "$FR/scripts/repo-run-registry.sh"
+  chmod +x "$FR/core/scripts/repo-run-registry.sh"
+  printf '%s\n' '{"version":1,"runs":[{"run_id":"r1","pid":1,"session_id":"other","scope":"repo","repo_path":"/nowhere"}]}' \
+    >"$FR/workspace/orchestrator/active-runs.json"
   if [ "$hook" = "block-on-active-run.sh" ]; then
     payload="$(printf '{"tool_name":"Edit","session_id":"s-bar","tool_input":{"file_path":"%s/deep/nested/cwd/x.txt"}}' "$FR")"
   else
