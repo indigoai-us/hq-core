@@ -4,6 +4,9 @@
 - `hq-job-run.sh` and `hq-job-probe.sh` now give curl the instance-auth header through a mode-600 temporary file. The file is removed after the request and by an exit trap, including transport failures. Identity resolution and header creation suppress xtrace while handling the token, so `bash -x` does not print its value. Request headers, timeouts, retries, and exit behavior are unchanged.
 - The CI regression verifies curl argv and `/proc` cmdline, xtrace and output, the header received by the curl stub, file permissions, and cleanup after success and failure. Rotate existing instance tokens after this fix is released.
 
+### Fixed: tenant checks resolve symlinked HQ paths (US-018)
+- Absolute paths now resolve through a symlinked HQ root and symlinked path components before the authorizer checks tenant scope. Missing file tails remain supported. Regression cases cover cross-company denial, same-company access, and a file symlink into another company.
+
 ### Fixed — cross-session repo guard works again (hq-harness-crud US-016, 2026-09-25)
 - `block-on-active-run.sh`, `check-repo-active-runs.sh` and `codex-preflight.sh` looked for `$HQ_ROOT/scripts/repo-run-registry.sh`, which no install has, and exited 0. They now use `core/scripts/repo-run-registry.sh`, so an Edit, Write or writing Bash command in a repo owned by another session's `/run-project` is blocked again, and SessionStart warns inside such a repo.
 - `repo-run-registry.sh` parsed timestamps with BSD `date -j` only. On Linux every live run read as stale and was deleted on the first check. It now falls back to GNU `date -d`. Its lock also failed on an install without `workspace/orchestrator/`, so the first `register` timed out.
