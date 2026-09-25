@@ -343,6 +343,10 @@ jobs:
           shellcheck -S warning \
             core/scripts/hook-lib.sh \
             core/scripts/lint-shell-portability.sh \
+            core/scripts/hq-job-run.sh \
+            core/scripts/hq-job-probe.sh \
+            core/scripts/tests/hq-job-run.test.sh \
+            core/scripts/tests/hq-job-probe.test.sh \
             core/scripts/tests/agent-runtime-skill-metadata.test.sh \
             core/scripts/tests/agent-runtime-permissions.test.sh \
             core/scripts/tests/hook-runtime-diagnostics.test.sh \
@@ -955,6 +959,30 @@ jobs:
       - name: Pack scan worker-id collision
         run: bash core/scripts/tests/scan-packages-id-collision.test.sh
 
+  outpost-instance-token-argv:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: outpost-instance-token-argv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mikefarah/yq for the Outpost script fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl --fail --silent --show-error --location \
+            https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 \
+            --output "$RUNNER_TEMP/bin/yq"
+          chmod 0755 "$RUNNER_TEMP/bin/yq"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/yq" --version
+          command -v jq >/dev/null
+      - name: Run-token argv, xtrace, and cleanup regressions
+        run: |
+          set -euo pipefail
+          command -v yq >/dev/null
+          bash core/scripts/tests/hq-job-run.test.sh
+          bash core/scripts/tests/hq-job-probe.test.sh
+
   previously-unrun-suites:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # These suites existed but were never wired into CI, so they rotted
@@ -975,6 +1003,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Agent secret reveal guard covers Bash and Codex PreToolUse
+        run: bash core/scripts/tests/block-agent-secrets-reveal.test.sh
       - name: hook-gate self-heals a non-executable (sync-stripped) hook
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
       - name: Hook path does not source BASH_ENV in child bash
@@ -1058,6 +1088,8 @@ jobs:
             core/scripts/tests/block-core-writes-bash-fanout.test.sh
             core/scripts/tests/block-core-writes-bash-fast-path.test.sh
             core/scripts/tests/block-policy-writes-bash.test.sh
+            core/scripts/tests/block-agent-secrets-reveal.test.sh
+            .claude/hooks/block-agent-secrets-reveal.sh
             .claude/hooks/block-core-writes-bash.sh
             .claude/hooks/block-policy-writes-bash.sh
             .claude/hooks/check-hq-update.sh

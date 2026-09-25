@@ -42,6 +42,15 @@ HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 . "$SCRIPT_DIR/hook-lib.sh"
 NOTIFY_BIN="${HQ_JOB_NOTIFY_BIN:-$SCRIPT_DIR/hq-job-notify.sh}"
 REMEDIATE_BIN="${HQ_JOB_REMEDIATE_BIN:-$SCRIPT_DIR/hq-job-remediate.sh}"
+AUTH_HEADER_FILE=""
+
+cleanup_auth_header_file() {
+  if [ -n "${AUTH_HEADER_FILE:-}" ]; then
+    rm -f -- "$AUTH_HEADER_FILE" 2>/dev/null || true
+    AUTH_HEADER_FILE=""
+  fi
+}
+trap cleanup_auth_header_file EXIT
 
 JOB_TARGET=""
 JOB_ID_ARG=""
@@ -248,7 +257,13 @@ api_base() {
 }
 
 resolve_box_identity() {
+  local xtrace_was_set=0
+  case "$-" in
+    *x*) xtrace_was_set=1; set +x ;;
+  esac
+
   if [ -n "${OUTPOST_USER_ID:-}" ] && [ -n "${OUTPOST_INSTANCE_TOKEN:-}" ]; then
+    [ "$xtrace_was_set" -eq 0 ] || set -x
     return 0
   fi
   local envf="/etc/outpost/codex-identity.env"
@@ -256,6 +271,7 @@ resolve_box_identity() {
     # shellcheck disable=SC1090
     . "$envf" 2>/dev/null || true
     if [ -n "${OUTPOST_USER_ID:-}" ] && [ -n "${OUTPOST_INSTANCE_TOKEN:-}" ]; then
+      [ "$xtrace_was_set" -eq 0 ] || set -x
       return 0
     fi
   fi
@@ -266,9 +282,27 @@ resolve_box_identity() {
     OUTPOST_ID="${OUTPOST_ID:-$(sed -n 's/^OUTPOST_ID="\(.*\)"$/\1/p' "$runner" 2>/dev/null | head -1)}"
   fi
   if [ -n "${OUTPOST_USER_ID:-}" ] && [ -n "${OUTPOST_INSTANCE_TOKEN:-}" ]; then
+    [ "$xtrace_was_set" -eq 0 ] || set -x
     return 0
   fi
+  [ "$xtrace_was_set" -eq 0 ] || set -x
   return 1
+}
+
+create_auth_header_file() {
+  local xtrace_was_set=0 write_rc=0
+  AUTH_HEADER_FILE="$(mktemp "${TMPDIR:-/tmp}/hq-job-run-auth-header.XXXXXX")"
+  chmod 600 "$AUTH_HEADER_FILE"
+  case "$-" in
+    *x*) xtrace_was_set=1; set +x ;;
+  esac
+  if printf 'x-outpost-instance-token: %s\n' "$OUTPOST_INSTANCE_TOKEN" >"$AUTH_HEADER_FILE"; then
+    write_rc=0
+  else
+    write_rc=$?
+  fi
+  [ "$xtrace_was_set" -eq 0 ] || set -x
+  return "$write_rc"
 }
 
 # Classify exit + log tail → auth|secrets|timeout|agent_error|infra
@@ -389,10 +423,11 @@ ingest_run_status() {
   fi
   tmp_body="$(mktemp "${TMPDIR:-/tmp}/hq-job-run-ingest-body.XXXXXX")"
   tmp_hdr="$(mktemp "${TMPDIR:-/tmp}/hq-job-run-ingest-hdr.XXXXXX")"
+  create_auth_header_file
   set +e
   "$curl_bin" -sS -m 20 -X POST "$url" \
     -H "content-type: application/json" \
-    -H "x-outpost-instance-token: ${OUTPOST_INSTANCE_TOKEN}" \
+    -H "@${AUTH_HEADER_FILE}" \
     --data "$payload" \
     -D "$tmp_hdr" \
     -o "$tmp_body"
@@ -401,7 +436,8 @@ ingest_run_status() {
   if [ "$curl_rc" -eq 0 ]; then
     http="$(awk 'BEGIN{c=0} /^HTTP\//{c=$2} END{print c+0}' "$tmp_hdr" 2>/dev/null || echo 0)"
   fi
-  rm -f "$tmp_body" "$tmp_hdr"
+  rm -f "$tmp_body" "$tmp_hdr" "$AUTH_HEADER_FILE"
+  AUTH_HEADER_FILE=""
   if [ "$http" -ge 200 ] && [ "$http" -lt 300 ]; then
     log "run status ingested job=$job_id failure_class=${failure_class:-null} http=$http"
   else
@@ -763,7 +799,8 @@ run_claude_remote() {
   # Completion is a sentinel file — not pane text (prompt instructions also
   # contain marker words and caused false early teardown).
   rm -f "$done_file"
-  local remote_prompt="${PROMPT_TEXT}
+  local remote_prompt
+  remote_prompt="${PROMPT_TEXT}
 
 When ALL work above is fully finished (success or failure), create this exact empty file with a shell tool (and do not create it earlier):
   touch $(printf %q "$done_file")
