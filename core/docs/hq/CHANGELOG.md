@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed — Outpost instance tokens stay out of process arguments
+- `hq-job-run.sh` and `hq-job-probe.sh` now give curl the instance-auth header through a mode-600 temporary file. The file is removed after the request and by an exit trap, including transport failures. Identity resolution and header creation suppress xtrace while handling the token, so `bash -x` does not print its value. Request headers, timeouts, retries, and exit behavior are unchanged.
+- The CI regression verifies curl argv and `/proc` cmdline, xtrace and output, the header received by the curl stub, file permissions, and cleanup after success and failure. Rotate existing instance tokens after this fix is released.
+
 ### Fixed — cross-session repo guard works again (hq-harness-crud US-016, 2026-09-25)
 - `block-on-active-run.sh`, `check-repo-active-runs.sh` and `codex-preflight.sh` looked for `$HQ_ROOT/scripts/repo-run-registry.sh`, which no install has, and exited 0. They now use `core/scripts/repo-run-registry.sh`, so an Edit, Write or writing Bash command in a repo owned by another session's `/run-project` is blocked again, and SessionStart warns inside such a repo.
 - `repo-run-registry.sh` parsed timestamps with BSD `date -j` only. On Linux every live run read as stale and was deleted on the first check. It now falls back to GNU `date -d`. Its lock also failed on an install without `workspace/orchestrator/`, so the first `register` timed out.
@@ -8,6 +12,11 @@
 - `check-hq-hooks.sh` reports FAIL when `core/scripts/repo-run-registry.sh` is missing or not executable; the guard also prints a stderr line instead of exiting silently.
 - Operator impact: edits into a repo held by another session's `/run-project` are blocked. Bypass for one command: `HQ_IGNORE_ACTIVE_RUNS=1`. Stale owners clear when the owning process exits or after the heartbeat timeout (15 minutes by default).
 - Regression: `core/scripts/tests/block-on-active-run.test.sh` runs the shipped registry in a temp root. It fails with the old hook path, with the BSD-only date parse, and with the old lock. Three existing tests that stubbed the wrong path now use the real one.
+
+### Fixed: agent secret reveal hook (US-015)
+- Added support for the default-off hq-flags key `secrets.agent-reveal-block` in the Bash PreToolUse hook. Only an explicit true value in a loaded snapshot denies agent tool calls that invoke secret-reveal commands or their supported shell wrappers, with guidance to use `hq secrets exec` or `hq run`. The key must be registered and enabled before the hook blocks reveal. Missing keys and false values use the default-off behavior silently; lookup errors and timeouts use the same default and print one sanitized error-class notice. Direct CLI output remains unchanged.
+- Updated the hq-secrets skill: `generate-link` accepts personal scope in the CLI and forwards that scope to the API.
+- Regression test: `core/scripts/tests/block-agent-secrets-reveal.test.sh` covers the hook registry, Claude dispatch, the Codex adapter, shell wrappers, and allowed commands.
 
 ### Fixed — shipped settings follow the newest Opus instead of pinning Opus 4.8 (2026-09-23)
 - `.claude/settings.json` pinned `"model": "claude-opus-4-8"` and `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8` (added in #201, 2026-05-28). Every Claude Code session started on Opus 4.8 unless the user picked another model, and every Claude Code subagent ran on Opus 4.8 whatever the session model was. Codex and Grok sessions do not read these keys and are unaffected. Both keys now use the `opus` alias, which Claude Code resolves to its newest Opus model. `core/policies/model-context-window.md` now describes the alias default and uses `opus[1m]` for the per-command 1M-context opt-in.

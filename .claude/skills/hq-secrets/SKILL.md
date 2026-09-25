@@ -6,7 +6,7 @@ allowed-tools: Bash(hq:*), Bash(source:*), Bash(bash:*)
 
 # HQ Secrets
 
-Manage secrets stored in AWS SSM Parameter Store via the `hq secrets` CLI. Secrets are scoped to either a **company** (shared, with per-secret ACLs and groups) or the **calling person** (`--personal`, owner-only with no sharing). Access happens through Cognito-authenticated API calls. Company secrets support per-secret ACLs with `read`/`write`/`admin` permissions, granted to individuals or groups; personal secrets have no sharing surface in v1.
+Manage secrets stored in AWS SSM Parameter Store via the `hq secrets` CLI. Secrets are scoped to either a **company** (shared, with per-secret ACLs and groups) or the **calling person** (`--personal`, owner-only with no sharing). Access happens through Cognito-authenticated API calls. Company secrets support per-secret ACLs with `read`/`write`/`admin` permissions, granted to individuals or groups; personal secrets have no ACL or group sharing in v1.
 
 See also [`hq-files`](../hq-files/SKILL.md) for managing file-prefix access controls in the HQ vault — same groups model, different ACL domain.
 
@@ -84,7 +84,7 @@ Use `hq run` instead of `hq secrets exec` when your repo has a `.env.schema`. Us
 | `hq groups list` | List all groups in the company |
 | `hq groups members <groupId>` | List members of a group |
 
-All commands accept `--company <slug>` to target a specific company; if omitted, the CLI resolves your company from your membership. Pass `--personal` instead to operate on your **personal vault** — secrets scoped to your `prs_*` person entity, owner-only, no sharing. `--personal` and `--company` are mutually exclusive. Sharing-related subcommands (`share`, `unshare`, `acl`, `generate-link`) reject when `--personal` is set.
+All commands accept `--company <slug>` to target a specific company; if omitted, the CLI resolves your company from your membership. Pass `--personal` instead to operate on your **personal vault**, scoped to your `prs_*` person entity. Personal secrets have no ACL or group sharing. `--personal` and `--company` are mutually exclusive. The CLI rejects `share`, `unshare`, and `acl` under `--personal`. It accepts `generate-link` and forwards the selected personal scope to the API; the API response determines whether the link is created.
 
 Secret names must match `^[A-Z][A-Z0-9_]*(/[A-Z][A-Z0-9_]+)*$`. Each `/`-separated segment follows the original naming rule. Examples: `MY_API_KEY`, `STRIPE_SECRET`, `PROD/DB_PASSWORD`, `BACKEND/SERVICE/TOKEN`.
 
@@ -179,14 +179,14 @@ hq secrets --personal get MY_GITHUB_PAT --reveal
 hq secrets --personal delete MY_GITHUB_PAT
 ```
 
-Subcommands disabled under `--personal`:
+Subcommand behavior under `--personal`:
 
 | Subcommand | Behaviour |
 |------------|-----------|
 | `share` | Errors: "share is not supported with --personal." |
 | `unshare` | Errors: "unshare is not supported with --personal." |
 | `acl` | Errors: "acl is not supported with --personal." |
-| `generate-link` | Errors: "generate-link is not supported with --personal." |
+| `generate-link` | The CLI accepts the command and sends personal scope to the API. Check the API response to see whether a link was created. |
 
 If a teammate needs access to a secret, store it in a company scope and `share` it. `--personal` is for credentials that are genuinely yours alone.
 

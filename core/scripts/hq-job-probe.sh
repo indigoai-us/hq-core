@@ -51,6 +51,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/hook-lib.sh"
+AUTH_HEADER_FILE=""
+
+cleanup_auth_header_file() {
+  if [ -n "${AUTH_HEADER_FILE:-}" ]; then
+    rm -f -- "$AUTH_HEADER_FILE" 2>/dev/null || true
+    AUTH_HEADER_FILE=""
+  fi
+}
+trap cleanup_auth_header_file EXIT
 
 DRY_RUN=0
 PROBE_ALL=0
@@ -140,7 +149,13 @@ api_base() {
 
 # Load box identity into OUTPOST_USER_ID / OUTPOST_INSTANCE_TOKEN / OUTPOST_ID.
 resolve_box_identity() {
+  local xtrace_was_set=0
+  case "$-" in
+    *x*) xtrace_was_set=1; set +x ;;
+  esac
+
   if [ -n "${OUTPOST_USER_ID:-}" ] && [ -n "${OUTPOST_INSTANCE_TOKEN:-}" ]; then
+    [ "$xtrace_was_set" -eq 0 ] || set -x
     return 0
   fi
 
@@ -149,6 +164,7 @@ resolve_box_identity() {
     # shellcheck disable=SC1090
     . "$envf" 2>/dev/null || true
     if [ -n "${OUTPOST_USER_ID:-}" ] && [ -n "${OUTPOST_INSTANCE_TOKEN:-}" ]; then
+      [ "$xtrace_was_set" -eq 0 ] || set -x
       return 0
     fi
   fi
@@ -161,9 +177,27 @@ resolve_box_identity() {
   fi
 
   if [ -n "${OUTPOST_USER_ID:-}" ] && [ -n "${OUTPOST_INSTANCE_TOKEN:-}" ]; then
+    [ "$xtrace_was_set" -eq 0 ] || set -x
     return 0
   fi
+  [ "$xtrace_was_set" -eq 0 ] || set -x
   return 1
+}
+
+create_auth_header_file() {
+  local xtrace_was_set=0 write_rc=0
+  AUTH_HEADER_FILE="$(mktemp "${TMPDIR:-/tmp}/hq-job-probe-auth-header.XXXXXX")"
+  chmod 600 "$AUTH_HEADER_FILE"
+  case "$-" in
+    *x*) xtrace_was_set=1; set +x ;;
+  esac
+  if printf 'x-outpost-instance-token: %s\n' "$OUTPOST_INSTANCE_TOKEN" >"$AUTH_HEADER_FILE"; then
+    write_rc=0
+  else
+    write_rc=$?
+  fi
+  [ "$xtrace_was_set" -eq 0 ] || set -x
+  return "$write_rc"
 }
 
 find_job_file_by_id() {
@@ -301,7 +335,8 @@ write_status_cache() {
   chmod 600 "$base/${id}.json" 2>/dev/null || true
 }
 
-# POST probe ingest with bounded backoff. Sets INGEST_OK, INGEST_HTTP, INGEST_BODY.
+# POST probe ingest with bounded backoff. Sets INGEST_HTTP, INGEST_BODY,
+# and INGEST_RETRYABLE.
 ingest_probe() {
   local payload="$1"
   local max_attempts base_sec attempt delay http body curl_bin url tmp_body tmp_hdr
@@ -310,7 +345,6 @@ ingest_probe() {
   curl_bin="${HQ_JOB_PROBE_CURL:-curl}"
   url="$(api_base)/outpost/internal/jobs-status"
 
-  INGEST_OK=0
   INGEST_HTTP=0
   INGEST_BODY=""
   INGEST_RETRYABLE=0
@@ -327,11 +361,12 @@ ingest_probe() {
   while [ "$attempt" -le "$max_attempts" ]; do
     tmp_body="$(mktemp "${TMPDIR:-/tmp}/hq-job-probe-body.XXXXXX")"
     tmp_hdr="$(mktemp "${TMPDIR:-/tmp}/hq-job-probe-hdr.XXXXXX")"
+    create_auth_header_file
     http=0
     set +e
     "$curl_bin" -sS -m 20 -X POST "$url" \
       -H "content-type: application/json" \
-      -H "x-outpost-instance-token: ${OUTPOST_INSTANCE_TOKEN}" \
+      -H "@${AUTH_HEADER_FILE}" \
       --data "$payload" \
       -D "$tmp_hdr" \
       -o "$tmp_body"
@@ -344,13 +379,13 @@ ingest_probe() {
       http=0
       body="$(printf '{"error":true,"code":"StatusIngestError","step":"lookup","message":"curl failed rc=%s (API unreachable)","retryable":true}' "$curl_rc")"
     fi
-    rm -f "$tmp_body" "$tmp_hdr"
+    rm -f "$tmp_body" "$tmp_hdr" "$AUTH_HEADER_FILE"
+    AUTH_HEADER_FILE=""
 
     INGEST_HTTP="$http"
     INGEST_BODY="$body"
 
     if [ "$http" -ge 200 ] && [ "$http" -lt 300 ]; then
-      INGEST_OK=1
       INGEST_RETRYABLE=0
       return 0
     fi
@@ -375,7 +410,6 @@ ingest_probe() {
     attempt=$((attempt + 1))
   done
 
-  INGEST_OK=0
   return 1
 }
 

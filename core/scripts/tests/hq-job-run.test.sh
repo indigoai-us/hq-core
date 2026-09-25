@@ -168,16 +168,15 @@ exit 0
 STUB
 chmod +x "$BIN/claude"
 
-export HQ_JOB_FLOCK_BIN="$(command -v flock)"
+HQ_JOB_FLOCK_BIN="$(command -v flock)"
+export HQ_JOB_FLOCK_BIN
 START_A=$(date +%s)
 bash "$RUN" --hq-root "$HQ" --job-id test-daily-digest >"$TMP/a.out" 2>"$TMP/a.err" &
 PID_A=$!
 sleep 0.3
-START_B=$(date +%s)
 bash "$RUN" --hq-root "$HQ" --job-id test-daily-digest >"$TMP/b.out" 2>"$TMP/b.err" &
 PID_B=$!
 wait $PID_A; RA=$?
-END_A=$(date +%s)
 wait $PID_B; RB=$?
 END_B=$(date +%s)
 [ "$RA" -eq 0 ] && [ "$RB" -eq 0 ] || fail "flock runs should both exit 0 ($RA,$RB)"
@@ -215,5 +214,94 @@ YAML
 bash "$RUN" --hq-root "$HQ" --job-id test-with-secret
 grep -q 'hq-secrets-exec only=SENTRY_API_TOKEN' "$HQ_STUB_LOG" || fail "expected hq secrets exec --only"
 pass "requirements.secrets injected via hq secrets exec --only"
+
+# 6) Instance auth stays out of curl argv, proc cmdline, logs, and xtrace.
+cat >"$BIN/curl" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\0' "$@" >"$HQ_STUB_CURL_ARGV"
+while IFS= read -r -d '' cmd_arg; do
+  printf '%s\0' "$cmd_arg"
+done </proc/self/cmdline >"$HQ_STUB_CURL_PROC_CMDLINE" || true
+
+out="/dev/null"
+hdr="/dev/null"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -H)
+      header_spec="${2:-}"
+      case "$header_spec" in
+        @*)
+          header_file="${header_spec#@}"
+          printf '%s\n' "$header_file" >"$HQ_STUB_CURL_HEADER_PATH"
+          cat "$header_file" >"$HQ_STUB_CURL_HEADER"
+          stat -c '%a' "$header_file" >"$HQ_STUB_CURL_HEADER_MODE"
+          ;;
+      esac
+      shift 2
+      ;;
+    -o) out="${2:-}"; shift 2 ;;
+    -D) hdr="${2:-}"; shift 2 ;;
+    --data|-d|-m|-X) shift 2 ;;
+    -sS|-s|-S|-f|-fsS) shift ;;
+    *) shift ;;
+  esac
+done
+
+if [ "${HQ_STUB_CURL_MODE:-ok}" = "fail" ]; then
+  echo "curl stub: transport failure" >&2
+  exit 7
+fi
+printf 'HTTP/1.1 200 OK\r\n\r\n' >"$hdr"
+printf '{"ok":true}\n' >"$out"
+STUB
+chmod +x "$BIN/curl"
+
+TOKEN="tok-us017-run-test-aaaaaaaa"
+export OUTPOST_USER_ID="user_test_owner"
+export OUTPOST_INSTANCE_TOKEN="$TOKEN"
+export HQ_JOB_RUN_CURL="$BIN/curl"
+export HQ_JOB_RUN_NO_INGEST=0
+export HQ_JOB_RUN_SKIP_EXEC=1
+export HQ_STUB_CURL_ARGV="$TMP/curl.argv"
+export HQ_STUB_CURL_PROC_CMDLINE="$TMP/curl.proc-cmdline"
+export HQ_STUB_CURL_HEADER_PATH="$TMP/curl.header-path"
+export HQ_STUB_CURL_HEADER="$TMP/curl.header"
+export HQ_STUB_CURL_HEADER_MODE="$TMP/curl.header-mode"
+
+assert_token_absent() {
+  local file
+  for file in "$@"; do
+    [ -e "$file" ] || continue
+    if grep -R -aFq -- "$TOKEN" "$file"; then
+      fail "instance token appeared in $file"
+    fi
+  done
+}
+
+run_auth_case() {
+  local mode="$1" label="$2" rc=0 header_file
+  rm -f "$HQ_STUB_CURL_ARGV" "$HQ_STUB_CURL_PROC_CMDLINE" "$HQ_STUB_CURL_HEADER_PATH" \
+    "$HQ_STUB_CURL_HEADER" "$HQ_STUB_CURL_HEADER_MODE"
+  export HQ_STUB_CURL_MODE="$mode"
+  : >"$TMP/run-auth-$label.stdout"
+  : >"$TMP/run-auth-$label.stderr"
+  bash -x "$RUN" --hq-root "$HQ" --job-id test-daily-digest \
+    >"$TMP/run-auth-$label.stdout" 2>"$TMP/run-auth-$label.stderr" || rc=$?
+  [ "$rc" -eq 0 ] || fail "run auth $label should preserve successful job exit, got $rc"
+  [ -s "$HQ_STUB_CURL_ARGV" ] || fail "curl argv not captured for run auth $label"
+  [ -s "$HQ_STUB_CURL_PROC_CMDLINE" ] || fail "curl /proc cmdline not captured for run auth $label"
+  assert_token_absent "$HQ_STUB_CURL_ARGV" "$HQ_STUB_CURL_PROC_CMDLINE" \
+    "$TMP/run-auth-$label.stdout" "$TMP/run-auth-$label.stderr" "$HOME_DIR/.hq/jobs/logs"
+  grep -Fxq "x-outpost-instance-token: $TOKEN" "$HQ_STUB_CURL_HEADER" || \
+    fail "run auth $label did not deliver the expected header"
+  [ "$(cat "$HQ_STUB_CURL_HEADER_MODE")" = "600" ] || fail "run auth $label header file was not mode 600"
+  header_file="$(cat "$HQ_STUB_CURL_HEADER_PATH")"
+  [ ! -e "$header_file" ] || fail "run auth $label header file remained after curl returned"
+}
+
+run_auth_case ok success
+run_auth_case fail failure
+pass "instance token stays out of run curl argv, proc cmdline, logs, and xtrace; header file is private and cleaned"
 
 echo "ALL PASSED (hq-job-run)"

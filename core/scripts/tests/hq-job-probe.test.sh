@@ -94,6 +94,10 @@ chmod +x "$BIN/codex"
 cat > "$BIN/curl" <<'STUB'
 #!/usr/bin/env bash
 # Minimal curl stub for POST ingest. Honors -o / -D / -H / --data.
+printf '%s\0' "$@" >"${HQ_STUB_CURL_ARGV_CAPTURE:-/dev/null}"
+while IFS= read -r -d '' cmd_arg; do
+  printf '%s\0' "$cmd_arg"
+done </proc/self/cmdline >"${HQ_STUB_CURL_PROC_CAPTURE:-/dev/null}" || true
 out="/dev/null"
 hdr="/dev/null"
 data=""
@@ -103,7 +107,20 @@ while [ $# -gt 0 ]; do
     -o) out="${2:-}"; shift 2 ;;
     -D) hdr="${2:-}"; shift 2 ;;
     --data|-d) data="${2:-}"; shift 2 ;;
-    -H) shift 2 ;;
+    -H)
+      header_spec="${2:-}"
+      case "$header_spec" in
+        @*)
+          header_file="${header_spec#@}"
+          if [ -n "${HQ_STUB_CURL_HEADER_PATHS:-}" ]; then
+            printf '%s\n' "$header_file" >>"$HQ_STUB_CURL_HEADER_PATHS"
+            cat "$header_file" >"$HQ_STUB_CURL_HEADER_CAPTURE"
+            stat -c '%a' "$header_file" >>"$HQ_STUB_CURL_HEADER_MODES"
+          fi
+          ;;
+      esac
+      shift 2
+      ;;
     -sS|-s|-S|-f|-fsS) shift ;;
     -m) shift 2 ;;
     -X) shift 2 ;;
@@ -287,5 +304,55 @@ out="$(bash "$PROBE" --hq-root "$HQ" --dry-run probe-green-digest 2>"$TMP/err7.t
 [ "$rc" -eq 0 ] || fail "id resolve expected 0: $(cat "$TMP/err7.txt")"
 echo "$out" | jq -e '.job_id == "probe-green-digest"' >/dev/null || fail "id resolve: $out"
 pass "resolve job id from personal/jobs"
+
+# =============================================================================
+echo "[8] instance auth stays out of curl argv, proc cmdline, output, and xtrace"
+TOKEN="tok-us017-probe-test-bbbbbbbb"
+export OUTPOST_INSTANCE_TOKEN="$TOKEN"
+export HQ_JOB_PROBE_MAX_ATTEMPTS=1
+export HQ_STUB_CURL_ARGV_CAPTURE="$TMP/curl.argv"
+export HQ_STUB_CURL_PROC_CAPTURE="$TMP/curl.proc-cmdline"
+export HQ_STUB_CURL_HEADER_PATHS="$TMP/curl.header-paths"
+export HQ_STUB_CURL_HEADER_CAPTURE="$TMP/curl.header"
+export HQ_STUB_CURL_HEADER_MODES="$TMP/curl.header-modes"
+
+assert_probe_token_absent() {
+  local file
+  for file in "$@"; do
+    [ -e "$file" ] || continue
+    if grep -R -aFq -- "$TOKEN" "$file"; then
+      fail "instance token appeared in $file"
+    fi
+  done
+}
+
+run_probe_auth_case() {
+  local mode="$1" fixture="$2" label="$3" expected_rc="$4" rc=0 header_file
+  rm -f "$HQ_STUB_CURL_ARGV_CAPTURE" "$HQ_STUB_CURL_PROC_CAPTURE" "$HQ_STUB_CURL_HEADER_PATHS" \
+    "$HQ_STUB_CURL_HEADER_CAPTURE" "$HQ_STUB_CURL_HEADER_MODES"
+  export HQ_STUB_CURL_MODE="$mode"
+  : >"$TMP/probe-auth-$label.stdout"
+  : >"$TMP/probe-auth-$label.stderr"
+  bash -x "$PROBE" --hq-root "$HQ" "$fixture" \
+    >"$TMP/probe-auth-$label.stdout" 2>"$TMP/probe-auth-$label.stderr" || rc=$?
+  [ "$rc" -eq "$expected_rc" ] || fail "probe auth $label expected exit $expected_rc, got $rc"
+  [ -s "$HQ_STUB_CURL_ARGV_CAPTURE" ] || fail "curl argv not captured for probe auth $label"
+  [ -s "$HQ_STUB_CURL_PROC_CAPTURE" ] || fail "curl /proc cmdline not captured for probe auth $label"
+  assert_probe_token_absent "$HQ_STUB_CURL_ARGV_CAPTURE" "$HQ_STUB_CURL_PROC_CAPTURE" \
+    "$TMP/probe-auth-$label.stdout" "$TMP/probe-auth-$label.stderr" "$STATE_DIR"
+  grep -Fxq "x-outpost-instance-token: $TOKEN" "$HQ_STUB_CURL_HEADER_CAPTURE" || \
+    fail "probe auth $label did not deliver the expected header"
+  [ "$(cat "$HQ_STUB_CURL_HEADER_MODES")" = "600" ] || fail "probe auth $label header file was not mode 600"
+  while IFS= read -r header_file; do
+    [ -n "$header_file" ] || continue
+    [ ! -e "$header_file" ] || fail "probe auth $label header file remained after curl returned"
+  done <"$HQ_STUB_CURL_HEADER_PATHS"
+}
+
+export HQ_STUB_CURL_MODE=ok
+run_probe_auth_case ok "$FIX/green/job.yaml" success 0
+pass "probe auth header is private, delivered, and cleaned on success"
+run_probe_auth_case down "$FIX/api-down/job.yaml" failure 3
+pass "probe auth header is private, delivered, and cleaned after transport failure"
 
 echo "PASS: hq-job-probe"

@@ -120,6 +120,15 @@
             }
           },
           {
+            "id": "block-agent-secrets-reveal",
+            "script": ".claude/hooks/block-agent-secrets-reveal.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "(^|[^A-Za-z0-9_])(hq|npx|secrets|bash|sh|eval)([^A-Za-z0-9_]|$)|--reveal"
+            }
+          },
+          {
             "id": "block-env-dump",
             "script": ".claude/hooks/block-env-dump.sh",
             "timeout": 30,
