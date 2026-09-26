@@ -27,8 +27,14 @@
 #       "# hq-hook-mode: advisory" (or blocking) frontmatter line — this is how
 #       context-injecting PreToolUse hooks (inject-policy-on-trigger,
 #       warn-cross-company-settings, surface-company-infra-policy) stay advisory
-#       so a non-zero exit never blocks a tool. Grok can only block PreToolUse,
-#       so non-PreToolUse always resolves advisory regardless.
+#       so a non-zero exit never blocks a tool.
+#
+#       "blocking" here means exactly one thing: a non-zero exit denies the tool
+#       call. That contract is PreToolUse-only in every runtime, so every other
+#       event resolves advisory. It is NOT a claim that other events cannot
+#       gate: Codex and Grok both hold a turn on Stop/SubagentStop, but they do
+#       it on the {"decision":"block"} a hook WRITES, which the adapters read
+#       out of advisory dispatch, not on its exit status.
 #
 # Requires: HQ_ROOT exported by the caller, and jq on PATH. Reads
 # $HQ_ROOT/.claude/settings.json. Emits nothing (returns 0) if either is absent,
@@ -846,7 +852,8 @@ EOF
 }
 
 # blocking|advisory for a hook. Event default + optional per-hook frontmatter
-# override. Never returns blocking for a non-PreToolUse event.
+# override. Never returns blocking for a non-PreToolUse event — see the header
+# note: "blocking" is the exit-code-denies contract, which only PreToolUse has.
 hqad_mode_for() {
   local event="$1" script="$2" id fm=""
   case "$event" in

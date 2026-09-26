@@ -8,19 +8,45 @@ export BASH_ENV=/dev/null
 # .claude/hooks gate, so HQ guardrails enforce for Grok as they do for Claude
 # and Codex.
 #
-# Grok differs from Claude in three ways this adapter bridges:
-#   1. Payload shape: camelCase (toolName / toolInput / hookEventName) plus
-#      Claude-compat snake_case. Tool names include Shell / StrReplace / Read /
-#      Write and the alias set run_terminal_command / search_replace / write.
+# Grok differs from Claude in four ways this adapter bridges. Each claim below
+# is checked against the hook reference embedded in the Grok binary
+# (`strings -n 20 <grok> | grep -n additionalContext`), verified for 1.0.34.
+#   1. Payload shape: camelCase (toolName / toolInput / hookEventName /
+#      stopHookActive) plus Claude-compat snake_case. Tool names include Shell /
+#      StrReplace / Read / Write and the alias set run_terminal_command /
+#      search_replace / write.
 #   2. Block protocol: PreToolUse blocks via stdout
 #      {"decision":"deny","reason":...} (exit 2 also denies). HQ hooks signal
 #      block via non-zero exit + stderr message.
 #   3. Context: Grok delivers hookSpecificOutput.additionalContext from
 #      settings-file command hooks on PreToolUse and PostToolUse, next to the
 #      tool result. This adapter collects that field from the HQ hooks it runs
-#      and returns it (hq monitor events, policy notes). SessionStart and
-#      UserPromptSubmit cannot inject context under Grok; they still run
-#      side-effect hooks (autocommit, checkpoints, policy eval).
+#      and returns it (hq monitor events, policy notes). A deny drops it, so
+#      deny() folds it into the deny reason instead.
+#   4. Stop protocol: Grok's Stop and SubagentStop gates CAN hold a turn open,
+#      the same way Claude's can. run_stop translates an HQ Stop hook's
+#      {"decision":"block","reason":...} (or its exit 2 + stderr) into Grok's
+#      Stop block output, guarded by stopHookActive.
+#
+#      Which HQ gates actually hold a Grok turn today: the CLI checkpoint gate
+#      and the conduct inbox backstop. enforce-humanize-before-send and
+#      enforce-capability-link-render do NOT — they read the session transcript,
+#      and Grok writes an ACP-style updates.jsonl
+#      ({"method":"_x.ai/session/update",...}) rather than Claude's
+#      {"type":"assistant",...} records, so their jq finds nothing and they exit
+#      0. Verified by capturing a live Stop payload, 2026-09-26. The adapter
+#      forwards transcript_path AND last_assistant_message (Grok supplies both
+#      on a real turn end) so closing that gap is a change to those two hooks,
+#      not another payload change here.
+#
+# Two events stay diagnostics-only, and this is a Grok limit, not an HQ choice:
+#   - SessionStart is passive; Grok ignores its stdout entirely.
+#   - UserPromptSubmit can only REJECT a prompt. An allowing hook's stdout,
+#     additionalContext included, is discarded, and even a block reason is shown
+#     to the operator rather than added to the model's context.
+# Both still run their side-effect hooks (autocommit, checkpoints, policy eval),
+# and this adapter routes their notes to bounded stderr diagnostics so they stay
+# visible in the scrollback instead of vanishing.
 #
 # Canonical policy stays in .claude/hooks/. Claude settings.json, Codex
 # (.codex/), and Grok (.grok/ + optional user bridge installed by hq reindex) all
@@ -174,6 +200,79 @@ ${ctx}"
   return 0
 }
 
+STOP_BLOCK_REASON=""
+STOP_BLOCK_SOURCE=""
+STOP_BLOCK_COUNT=0
+
+# Accumulate rather than keep the first. Every Stop gate that blocks has already
+# had its side effects by the time we read its decision — conduct-lane-inbox in
+# particular has DRAINED its queue — so discarding a later reason destroys the
+# message it just consumed. Grok caps Stop feedback at 10,000 characters, which
+# is ample for the handful of gates that can fire at once.
+append_stop_block() { # <hook-id> <reason>
+  local id="$1" reason="$2"
+  [ -n "$reason" ] || return 1
+  if [ -z "$STOP_BLOCK_REASON" ]; then
+    STOP_BLOCK_REASON="$reason"
+    STOP_BLOCK_SOURCE="$id"
+  else
+    STOP_BLOCK_REASON="${STOP_BLOCK_REASON}
+
+${reason}"
+    STOP_BLOCK_SOURCE="${STOP_BLOCK_SOURCE}, ${id}"
+  fi
+  STOP_BLOCK_COUNT=$((STOP_BLOCK_COUNT + 1))
+  return 0
+}
+
+
+# Grok's Stop and SubagentStop gates keep the agent working on
+# {"decision":"block","reason":...} or on exit 2 with the feedback on stderr
+# (Grok 1.0.34 hook reference, "Stop Decision Control"). So on these two events a
+# hook's block is control flow, not a diagnostic, and the adapter reads it out.
+event_is_stop_gate() {
+  case "$EVENT" in Stop|SubagentStop) return 0 ;; esac
+  return 1
+}
+
+# Read a Stop/SubagentStop block decision out of one hook's stdout. HQ hooks and
+# master-hook both emit a single compact object; master-hook may print plain
+# context first, so fall back to the last JSON line. Every block is kept, in the
+# order the hooks ran; see append_stop_block for why first-wins is unsafe here.
+collect_stop_block() { # <hook-id> <stdout-text>
+  local id="$1" text="$2" obj reason
+  event_is_stop_gate || return 1
+  [ -n "$text" ] || return 1
+  # Bash prefilter: a Stop event fans out to ~10 hooks, and paying two jq
+  # processes for each one's stdout is most of what the parse costs. Only a
+  # document that mentions a decision can carry a block.
+  case "$text" in *'"decision"'*) : ;; *) return 1 ;; esac
+  obj="$(printf '%s' "$text" | jq -c 'select(type == "object")' 2>/dev/null || true)"
+  if [ -z "$obj" ]; then
+    obj="$(printf '%s\n' "$text" \
+      | jq -Rrc 'fromjson? | select(type == "object")' 2>/dev/null | tail -1)"
+  fi
+  [ -n "$obj" ] || return 1
+  reason="$(printf '%s' "$obj" | jq -r '
+    if .decision == "block"
+    then (if (.reason? | type) == "string" and (.reason | length) > 0
+          then .reason else "Blocked by HQ Stop gate" end)
+    else empty end' 2>/dev/null || true)"
+  [ -n "$reason" ] || return 1
+  append_stop_block "$id" "$reason"
+}
+
+# Exit 2 on a Stop gate blocks with stderr as the feedback (same reference).
+# Only 2 — every other non-zero exit is a fail-open failure that must not hold a
+# turn, which is what keeps a crashing hook from stranding a session.
+collect_stop_block_stderr() { # <hook-id> <status> <stderr-text>
+  local id="$1" status="$2" text="$3"
+  event_is_stop_gate || return 1
+  [ "$status" = "2" ] || return 1
+  [ -n "$text" ] || return 1
+  append_stop_block "$id" "$text"
+}
+
 append_diag() {
   local text="$1"
   [ -z "$text" ] && return 0
@@ -199,6 +298,14 @@ emit_diag() {
     printf '%s\n' "$(hq_text_compact 420 "$DIAG_ACCUM")" >&2
   else
     printf '%s\n' "$DIAG_ACCUM" >&2
+  fi
+}
+
+compact_stop_reason() {
+  if command -v hq_text_compact >/dev/null 2>&1; then
+    hq_text_compact 8000 "$1"
+  else
+    printf '%s' "$1"
   fi
 }
 
@@ -243,6 +350,36 @@ export HQAD_EVENT_SESSION_ID="$SID"
 PARENT_SID="$(jget '.parent_session_id // .parentSessionId // empty')"
 [ -z "$PARENT_SID" ] && PARENT_SID="${HQ_PARENT_SESSION_ID:-}"
 
+# Stop/SubagentStop control inputs. stopHookActive is true once a previous stop
+# gate has already forced a continuation this turn; every HQ Stop gate that can
+# block (enforce-humanize-before-send, enforce-capability-link-render, the CLI
+# checkpoint gate) reads it as `stop_hook_active` to block at most once per
+# chain, so failing to forward it would turn each of them into an unguarded
+# blocker under Grok. `reason` distinguishes a real turn end ("end_turn") from
+# the extra observe-only Stop that fires at session close.
+# Parsed only on the two events that carry them: each jget is a jq process, and
+# PreToolUse runs on every tool call.
+STOP_HOOK_ACTIVE=false
+STOP_REASON=""
+TRANSCRIPT_PATH=""
+LAST_ASSISTANT=""
+case "$EVENT" in
+  Stop|SubagentStop)
+    STOP_HOOK_ACTIVE="$(jget '.stopHookActive // .stop_hook_active // empty')"
+    [ "$STOP_HOOK_ACTIVE" = "true" ] || STOP_HOOK_ACTIVE="false"
+    STOP_REASON="$(jget '.reason // empty')"
+    # Grok supplies both on the Stop envelope (verified by capturing a live
+    # payload, 2026-09-26). Claude-shaped hooks key on transcript_path; the
+    # last assistant message rides alongside because Grok hands it over
+    # directly and reading it costs nothing.
+    TRANSCRIPT_PATH="$(jget '.transcriptPath // .transcript_path // empty')"
+    LAST_ASSISTANT="$(jget '.lastAssistantMessage // .last_assistant_message // empty')"
+    ;;
+  SessionEnd)
+    TRANSCRIPT_PATH="$(jget '.transcriptPath // .transcript_path // empty')"
+    ;;
+esac
+
 CLAUDE_JSON="$(jq -n \
   --arg t "$CTOOL" \
   --arg c "$CMD" \
@@ -253,6 +390,9 @@ CLAUDE_JSON="$(jq -n \
   --arg sid "$SID" \
   --arg prompt "$PROMPT" \
   --arg run_background "$RUN_IN_BACKGROUND" \
+  --arg stop_active "$STOP_HOOK_ACTIVE" \
+  --arg transcript "$TRANSCRIPT_PATH" \
+  --arg last_assistant "$LAST_ASSISTANT" \
   --argjson response "$TOOL_RESPONSE" \
   '{
     hook_event_name: $event,
@@ -267,7 +407,11 @@ CLAUDE_JSON="$(jq -n \
       + (if $run_background == "true" then {run_in_background: true} else {} end)
     )
   } + (if $prompt != "" then {prompt: $prompt} else {} end)
-    + (if $response != null then {tool_response: $response} else {} end)' 2>/dev/null)"
+    + (if $response != null then {tool_response: $response} else {} end)
+    + (if ($event == "Stop" or $event == "SubagentStop")
+       then {stop_hook_active: ($stop_active == "true")} else {} end)
+    + (if $transcript != "" then {transcript_path: $transcript} else {} end)
+    + (if $last_assistant != "" then {last_assistant_message: $last_assistant} else {} end)' 2>/dev/null)"
 
 deny() {
   local reason="$1"
@@ -384,7 +528,13 @@ run_advisory() { # <hook-id> <hook-script> [payload] [stdout_mode]
   err_text="$(cat "$err" 2>/dev/null || true)"
   rm -f "$out" "$err"
 
+  # Stop/SubagentStop: a decision on stdout wins over the exit code, so read
+  # stdout before branching on status (Grok 1.0.34 hook reference). Both calls
+  # return 1 immediately on every other event, so this costs nothing elsewhere.
+  collect_stop_block "$id" "$out_text" && return 0
+
   if [ "$status" -ne 0 ]; then
+    collect_stop_block_stderr "$id" "$status" "$err_text" && return 0
     [ -n "$warning" ] && append_diag "$warning"
     if [ -n "$err_text" ]; then
       append_diag "$(compact_diag "$err_text")"
@@ -433,7 +583,13 @@ run_script_advisory() { # <script> [payload] [stdout_mode]
   err_text="$(cat "$err" 2>/dev/null || true)"
   rm -f "$out" "$err"
 
+  # Stop/SubagentStop: a decision on stdout wins over the exit code, so read
+  # stdout before branching on status (Grok 1.0.34 hook reference). Both calls
+  # return 1 immediately on every other event, so this costs nothing elsewhere.
+  collect_stop_block "$label" "$out_text" && return 0
+
   if [ "$status" -ne 0 ]; then
+    collect_stop_block_stderr "$label" "$status" "$err_text" && return 0
     [ -n "$warning" ] && append_diag "$warning"
     if [ -n "$err_text" ]; then
       append_diag "$(compact_diag "$err_text")"
@@ -607,11 +763,15 @@ run_master() {
   out_text="$(cat "$out" 2>/dev/null || true)"
   err_text="$(cat "$err" 2>/dev/null || true)"
   rm -f "$out" "$err"
+  # A Stop gate registered under master-hook (checkpoint-stop-gate, the conduct
+  # inbox backstop) emits its block in master's merged JSON result.
+  collect_stop_block "master-hook:$event_arg" "$out_text" && return 0
   if [ "$status" -eq 0 ]; then
     collect_context "$out_text" || true
     return 0
   fi
   if [ "$mode" = "advisory" ]; then
+    collect_stop_block_stderr "master-hook:$event_arg" "$status" "$err_text" && return 0
     [ -n "$err_text" ] && append_diag "$(compact_diag "$err_text")"
     return 0
   fi
@@ -622,8 +782,11 @@ run_master() {
 # through Grok's protocol handlers. Reading settings.json live keeps Grok in
 # lockstep with Claude (single-source dispatch). `tools` is a space-separated
 # set of canonical tool names ("ANY" for non-tool events); records are
-# de-duplicated across the set. Only PreToolUse can deny under Grok, which is
-# exactly what hqad_mode_for returns "blocking" for.
+# de-duplicated across the set. "blocking" mode — the mode in which a hook's
+# non-zero exit denies — applies to PreToolUse only, which is exactly what
+# hqad_mode_for returns it for. Stop and SubagentStop also gate under Grok, but
+# they gate on the decision a hook WRITES, which run_stop reads out of advisory
+# dispatch; see emit_stop_decision.
 dispatch_settings_hooks() {
   local event="$1" tools="$2" payload="$3" skip_master="${4:-}"
   command -v hqad_iter_settings >/dev/null 2>&1 || return 0
@@ -742,6 +905,15 @@ run_post_tool_use() {
         run_master "PostToolUse" "$CLAUDE_JSON" advisory
       fi
       ;;
+    *)
+      # Every remaining tool (Grep, list_dir, and any Grok tool this adapter has
+      # no special payload shape for). PostToolUse hooks registered with matcher
+      # `*` — conduct-lane-inbox is the live one — must fire on these too, or a
+      # lane that spends a stretch doing nothing but greps never gets its queued
+      # messages until the turn ends. Claude dispatches PostToolUse on every
+      # tool; this is that parity.
+      dispatch_settings_hooks "PostToolUse" "$CTOOL" "$CLAUDE_JSON"
+      ;;
   esac
   emit_post_context
 }
@@ -772,8 +944,10 @@ write_skill_catalog() {
 }
 
 run_session_start() {
-  # Grok cannot inject a bind nudge. Bind from a safe source before the first
-  # company-path tool (inherit parent / HQ_SPAWN_COMPANY / already-written meta).
+  # SessionStart is passive under Grok: it ignores the hook's stdout entirely,
+  # so there is no way to hand the model a bind nudge here. Bind from a safe
+  # source instead, before the first company-path tool (inherit parent /
+  # HQ_SPAWN_COMPANY / already-written meta).
   if [ -n "$HQ_ROOT" ] && [ -n "$SID" ]; then
     # shellcheck source=../../core/scripts/lib/session-scope-capability.sh
     . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" 2>/dev/null || true
@@ -788,14 +962,107 @@ run_session_start() {
 }
 
 run_user_prompt_submit() {
+  # UserPromptSubmit can only REJECT a prompt under Grok. An allowing hook's
+  # stdout and additionalContext are discarded, and a block reason is shown to
+  # the operator rather than added to the model's context — so nothing written
+  # here reaches the model either way. The hooks run for their side effects;
+  # their notes surface as stderr diagnostics.
   dispatch_settings_hooks "UserPromptSubmit" "ANY" "$CLAUDE_JSON"
 }
 
+# Third loop guard on the Stop gate, behind Grok's own ceiling (8 continuations
+# per turn, then the turn is forced to end) and behind each HQ gate's own
+# stop_hook_active check. It counts the blocks THIS adapter emitted since the
+# last free stop, so a gate whose condition never clears — one whose remedy the
+# lane cannot perform, say — cannot spin a Grok turn all the way to Grok's cap.
+# Reset happens whenever a Stop arrives with stopHookActive false, which is the
+# first stop of every fresh chain. 0 disables the adapter-level cap and leaves
+# only Grok's.
+HQ_GROK_STOP_BLOCK_MAX="${HQ_GROK_STOP_BLOCK_MAX:-3}"
+
+stop_block_counter_path() {
+  command -v hq_hook_state_dir >/dev/null 2>&1 || return 1
+  command -v hq_hook_safe_session_key >/dev/null 2>&1 || return 1
+  local state_dir key
+  state_dir="$(hq_hook_state_dir "$HQ_ROOT" 2>/dev/null)" || return 1
+  [ -n "$state_dir" ] || return 1
+  key="$(hq_hook_safe_session_key "$SID" 2>/dev/null)" || return 1
+  printf '%s/grok-stop-blocks-%s.count' "$state_dir" "$key"
+}
+
+# 0 = the adapter may emit another Stop block. Fail-open: with no usable state
+# dir we defer to Grok's own cap rather than refuse to gate at all.
+stop_block_allowed() {
+  [ "${HQ_GROK_STOP_BLOCK_MAX}" -gt 0 ] 2>/dev/null || return 0
+  local path count
+  path="$(stop_block_counter_path)" || return 0
+  if [ "$STOP_HOOK_ACTIVE" != "true" ]; then
+    printf '0' >"$path" 2>/dev/null || true
+    return 0
+  fi
+  count="$(cat "$path" 2>/dev/null || printf '0')"
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  [ "$count" -lt "$HQ_GROK_STOP_BLOCK_MAX" ]
+}
+
+stop_block_record() {
+  local path count
+  path="$(stop_block_counter_path)" || return 0
+  count="$(cat "$path" 2>/dev/null || printf '0')"
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  printf '%s' "$((count + 1))" >"$path" 2>/dev/null || true
+}
+
+# Grok fires an extra observe-only Stop at session close (reason
+# "channel_closed" / "shutdown") whose decision it parses and discards. Verified
+# against a live payload: that fire also carries no lastAssistantMessage, while
+# a real turn end carries reason "end_turn" and the message text.
+stop_decision_is_deliverable() {
+  case "$STOP_REASON" in ''|end_turn) return 0 ;; esac
+  return 1
+}
+
+# Translate a collected HQ Stop block into Grok's Stop block output.
+#
+# additionalContext is deliberately NOT emitted here. On Stop it is not passive
+# context: Grok treats it as non-error feedback that ALSO keeps the agent
+# working. Relaying a hook's incidental note would silently turn a diagnostic
+# into a continuation, so Stop-hook stdout that is not a block decision stays in
+# the stderr diagnostics stream. HQ Stop gates that want the turn held already
+# say so with decision:block, which is the path this honors.
+emit_stop_decision() {
+  event_is_stop_gate || return 0
+  [ -n "$STOP_BLOCK_REASON" ] || return 0
+  # There is no turn left to continue on the session-close fire, so do not
+  # pretend to hold one. Hooks were already told via HQ_STOP_DECISION_DELIVERABLE.
+  stop_decision_is_deliverable || return 0
+  if ! stop_block_allowed; then
+    append_diag "WARNING: HQ Stop gate '${STOP_BLOCK_SOURCE:-unknown}' asked to hold the turn again after ${HQ_GROK_STOP_BLOCK_MAX} consecutive blocks; letting it end. Reason: $(compact_diag "$STOP_BLOCK_REASON")"
+    return 0
+  fi
+  jq -c -n --arg r "$(compact_stop_reason "$STOP_BLOCK_REASON")" '{decision:"block", reason:$r}'
+  stop_block_record
+}
+
 run_stop() {
-  # checkpoint-stop-gate now runs under Grok too. Grok cannot hard-block a Stop
-  # (only PreToolUse denies), so it runs advisory: its checkpoint side-effects
-  # fire but the turn is not blocked.
-  dispatch_settings_hooks "Stop" "ANY" "$CLAUDE_JSON"
+  # Grok's Stop and SubagentStop gates can hold the turn open, so the HQ Stop
+  # gates that block under Claude block here too. Dispatch stays advisory: that
+  # is the mode in which a hook's non-zero exit fails open, and a Stop block is
+  # carried by the decision the hook writes, not by its exit status.
+  #
+  # HQ_STOP_DECISION_DELIVERABLE is the contract a consuming hook needs before
+  # it destroys anything. Grok fires an extra Stop at session close whose
+  # decision it parses and discards, and a hook that DRAINS a queue on that fire
+  # moves the message out of the queue into nothing — the operator then believes
+  # a correction landed that the model never saw. Unset means an engine that
+  # always delivers, so Claude and Codex are unaffected.
+  if stop_decision_is_deliverable; then
+    export HQ_STOP_DECISION_DELIVERABLE=1
+  else
+    export HQ_STOP_DECISION_DELIVERABLE=0
+  fi
+  dispatch_settings_hooks "$EVENT" "ANY" "$CLAUDE_JSON"
+  emit_stop_decision
 }
 
 run_precompact() {
@@ -809,11 +1076,13 @@ case "$EVENT" in
   PostToolUse)      run_post_tool_use ;;
   Stop)             run_stop ;;
   PreCompact)       run_precompact ;;
+  # SubagentStop is a real gate in Grok (it fires inside the subagent with the
+  # same decision control as Stop), so it goes through run_stop.
+  SubagentStop)     run_stop ;;
   # Grok supports these lifecycle events natively; settings.json registers the
   # master-hook company/personal/pack fan-out on each (SessionEnd has live
   # listeners). Side-effect only — output is dropped, exit ignored by Grok.
   SessionEnd)       dispatch_settings_hooks "SessionEnd" "ANY" "$CLAUDE_JSON" ;;
-  SubagentStop)     dispatch_settings_hooks "SubagentStop" "ANY" "$CLAUDE_JSON" ;;
   Notification)     dispatch_settings_hooks "Notification" "ANY" "$CLAUDE_JSON" ;;
   *) ;;
 esac

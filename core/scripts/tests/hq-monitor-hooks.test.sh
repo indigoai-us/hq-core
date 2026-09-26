@@ -359,6 +359,196 @@ if [ "$rc" = 0 ] && [ ! -s "$TMP/stdout" ] && grep -Fq 'POST-NOTE-5521' "$TMP/st
 cp "$TMP/registry.json.orig" "$TMP_ROOT/.claude/hooks/hook-registry.json"
 rm -f "$TMP_ROOT/.claude/hooks/test-post-context.sh"
 
+echo '[9c] the Grok adapter gates Stop and SubagentStop'
+# Grok 1.0.34 Stop Decision Control: {"decision":"block","reason":...} on stdout
+# keeps the agent working, exit 2 blocks with stderr as the feedback, and any
+# other non-zero exit fails open. The adapter dispatched Stop advisory and
+# dropped all three until 2026-09-26.
+grok_stop_payload() { # <event> <stopHookActive> [reason] [session-id]
+  jq -nc --arg event "$1" --argjson active "$2" --arg reason "${3:-end_turn}" \
+    --arg root "$TMP_ROOT" --arg sid "${4:-grok-stop-session}" \
+    '{hookEventName:$event,cwd:$root,session_id:$sid,stopHookActive:$active,reason:$reason}'
+}
+run_grok_stop() { # <event> <stopHookActive> [reason] [session-id] -> rc, writes $TMP/stdout,$TMP/stderr
+  local rc=0
+  grok_stop_payload "$1" "$2" "${3:-end_turn}" "${4:-grok-stop-session}" \
+    | env -u HQ_LANE_ID "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=grok HQ_TEST_MONITOR_ENABLED=false \
+        bash "$TMP_ROOT/.grok/hooks/hq-grok-hook-adapter.sh" >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
+  printf '%s' "$rc"
+}
+
+# A Stop gate that blocks, and echoes back the stop_hook_active it was handed.
+# Every HQ Stop gate that can block reads that field to block at most once per
+# chain, so the adapter failing to forward Grok's stopHookActive would turn each
+# of them into an unguarded blocker.
+cat > "$TMP_ROOT/.claude/hooks/test-stop-block.sh" <<'SH'
+#!/bin/bash
+payload="$(cat 2>/dev/null || printf '{}')"
+active="$(printf '%s' "$payload" | jq -r 'if has("stop_hook_active") then (.stop_hook_active | tostring) else "absent" end' 2>/dev/null || printf 'absent')"
+printf '{"decision":"block","reason":"STOP-GATE-7781 checkpoint required (stop_hook_active=%s)"}\n' "$active"
+SH
+# Pretty-printed, spaced JSON: the bash prefilter in collect_stop_block keys on
+# the literal `"decision"`, which must not be defeated by a hook that formats
+# its output differently from the compact form jq emits.
+cat > "$TMP_ROOT/.claude/hooks/test-stop-block-spaced.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+printf '%s\n' '{'
+printf '%s\n' '  "decision" : "block" ,'
+printf '%s\n' '  "reason"   : "STOP-SPACED-7785 formatted differently"'
+printf '%s\n' '}'
+SH
+cat > "$TMP_ROOT/.claude/hooks/test-stop-block-second.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+printf '%s\n' '{"decision":"block","reason":"STOP-SECOND-7786 conductor message"}'
+SH
+cat > "$TMP_ROOT/.claude/hooks/test-stop-exit2.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+printf 'STOP-STDERR-7782 run the linter before finishing\n' >&2
+exit 2
+SH
+cat > "$TMP_ROOT/.claude/hooks/test-stop-crash.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+printf 'STOP-CRASH-7783 the gate itself broke\n' >&2
+exit 3
+SH
+cat > "$TMP_ROOT/.claude/hooks/test-stop-context.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"STOP-NOTE-7784"}}'
+SH
+chmod +x "$TMP_ROOT/.claude/hooks/test-stop-block.sh" "$TMP_ROOT/.claude/hooks/test-stop-exit2.sh" \
+  "$TMP_ROOT/.claude/hooks/test-stop-crash.sh" "$TMP_ROOT/.claude/hooks/test-stop-context.sh" \
+  "$TMP_ROOT/.claude/hooks/test-stop-block-spaced.sh" "$TMP_ROOT/.claude/hooks/test-stop-block-second.sh"
+
+set_stop_hook() { # <event> <script-basename>: the only registry hook for <event>
+  jq --arg ev "$1" --arg script ".claude/hooks/$2" \
+    '.hooks[$ev] = [{matcher:"",hooks:[{id:"hq-monitor-session-start",script:$script,timeout:30,gated:true}]}]' \
+    "$TMP/registry.json.orig" > "$TMP_ROOT/.claude/hooks/hook-registry.json"
+}
+
+set_stop_hook Stop test-stop-block.sh
+rc="$(run_grok_stop Stop false)"
+if [ "$rc" = 0 ] && jq -e '.decision == "block" and (.reason | contains("STOP-GATE-7781"))' "$TMP/stdout" >/dev/null; then ok 'Grok Stop turns a hook block decision into a Stop block'; else bad "Grok Stop turns a hook block decision into a Stop block (rc=$rc stdout=$(cat "$TMP/stdout") stderr=$(cat "$TMP/stderr"))"; fi
+if jq -e '.reason | contains("stop_hook_active=false")' "$TMP/stdout" >/dev/null; then ok 'Grok stopHookActive reaches the hook as stop_hook_active'; else bad "Grok stopHookActive reaches the hook as stop_hook_active (stdout=$(cat "$TMP/stdout"))"; fi
+rc="$(run_grok_stop Stop true '' grok-stop-forward)"
+if jq -e '.reason | contains("stop_hook_active=true")' "$TMP/stdout" >/dev/null; then ok 'a true stopHookActive is forwarded, not defaulted to false'; else bad "a true stopHookActive is forwarded, not defaulted to false (stdout=$(cat "$TMP/stdout"))"; fi
+
+# Grok fires an extra observe-only Stop at session close whose decision it
+# discards; blocking a turn that no longer exists is noise.
+rc="$(run_grok_stop Stop false channel_closed)"
+if [ "$rc" = 0 ] && [ ! -s "$TMP/stdout" ]; then ok 'the session-close Stop emits no block'; else bad "the session-close Stop emits no block (rc=$rc stdout=$(cat "$TMP/stdout"))"; fi
+
+set_stop_hook SubagentStop test-stop-block.sh
+rc="$(run_grok_stop SubagentStop false)"
+if [ "$rc" = 0 ] && jq -e '.decision == "block" and (.reason | contains("STOP-GATE-7781"))' "$TMP/stdout" >/dev/null; then ok 'Grok SubagentStop gates like Stop'; else bad "Grok SubagentStop gates like Stop (rc=$rc stdout=$(cat "$TMP/stdout") stderr=$(cat "$TMP/stderr"))"; fi
+
+# Codex review P1: a later gate's block used to be discarded by a first-wins
+# guard. Every Stop gate has already had its side effects by then —
+# conduct-lane-inbox has DRAINED its queue — so dropping the reason destroys the
+# message it just consumed.
+jq --arg a ".claude/hooks/test-stop-block.sh" --arg b ".claude/hooks/test-stop-block-second.sh" \
+  '.hooks.Stop = [{matcher:"",hooks:[
+     {id:"hq-monitor-session-start",script:$a,timeout:30,gated:true},
+     {id:"hq-monitor-session-hook",script:$b,timeout:30,gated:true}]}]' \
+  "$TMP/registry.json.orig" > "$TMP_ROOT/.claude/hooks/hook-registry.json"
+rc="$(run_grok_stop Stop false)"
+if [ "$rc" = 0 ] && jq -e '(.reason | contains("STOP-GATE-7781")) and (.reason | contains("STOP-SECOND-7786"))' "$TMP/stdout" >/dev/null; then ok 'a later Stop gate block is merged, not discarded'; else bad "a later Stop gate block is merged, not discarded (rc=$rc stdout=$(cat "$TMP/stdout") stderr=$(cat "$TMP/stderr"))"; fi
+
+set_stop_hook Stop test-stop-block-spaced.sh
+rc="$(run_grok_stop Stop false)"
+if [ "$rc" = 0 ] && jq -e '.decision == "block" and (.reason | contains("STOP-SPACED-7785"))' "$TMP/stdout" >/dev/null; then ok 'a block survives multi-line, spaced JSON from a hook'; else bad "a block survives multi-line, spaced JSON from a hook (rc=$rc stdout=$(cat "$TMP/stdout") stderr=$(cat "$TMP/stderr"))"; fi
+
+set_stop_hook Stop test-stop-exit2.sh
+rc="$(run_grok_stop Stop false)"
+if [ "$rc" = 0 ] && jq -e '.decision == "block" and (.reason | contains("STOP-STDERR-7782"))' "$TMP/stdout" >/dev/null; then ok 'Grok Stop turns exit 2 + stderr into a block'; else bad "Grok Stop turns exit 2 + stderr into a block (rc=$rc stdout=$(cat "$TMP/stdout") stderr=$(cat "$TMP/stderr"))"; fi
+
+set_stop_hook Stop test-stop-crash.sh
+rc="$(run_grok_stop Stop false)"
+if [ "$rc" = 0 ] && [ ! -s "$TMP/stdout" ] && grep -Fq 'STOP-CRASH-7783' "$TMP/stderr"; then ok 'a Stop hook crashing with a non-2 exit fails open'; else bad "a Stop hook crashing with a non-2 exit fails open (rc=$rc stdout=$(cat "$TMP/stdout") stderr=$(cat "$TMP/stderr"))"; fi
+
+# additionalContext on Stop is not passive context in Grok: it also keeps the
+# agent working. Relaying a hook's incidental note would silently convert a
+# diagnostic into a continuation, so it stays in the stderr stream.
+set_stop_hook Stop test-stop-context.sh
+rc="$(run_grok_stop Stop false)"
+if [ "$rc" = 0 ] && [ ! -s "$TMP/stdout" ] && grep -Fq 'STOP-NOTE-7784' "$TMP/stderr"; then ok 'Stop-hook additionalContext stays a diagnostic and never forces a continuation'; else bad "Stop-hook additionalContext stays a diagnostic and never forces a continuation (rc=$rc stdout=$(cat "$TMP/stdout") stderr=$(cat "$TMP/stderr"))"; fi
+
+# Codex review P1: on the session-close Stop the adapter must tell hooks that
+# nothing they write can reach the model, BEFORE they run. A hook that drains a
+# queue on that fire destroys the message instead of delaying it.
+cat > "$TMP_ROOT/.claude/hooks/test-stop-deliverable.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+printf 'DELIVERABLE=%s\n' "${HQ_STOP_DECISION_DELIVERABLE:-unset}"
+SH
+chmod +x "$TMP_ROOT/.claude/hooks/test-stop-deliverable.sh"
+set_stop_hook Stop test-stop-deliverable.sh
+rc="$(run_grok_stop Stop false end_turn)"
+if grep -Fq 'DELIVERABLE=1' "$TMP/stderr"; then ok 'a real turn end tells hooks their decision is deliverable'; else bad "a real turn end tells hooks their decision is deliverable (stderr=$(cat "$TMP/stderr"))"; fi
+rc="$(run_grok_stop Stop false shutdown)"
+if grep -Fq 'DELIVERABLE=0' "$TMP/stderr"; then ok 'the session-close Stop warns hooks before they run'; else bad "the session-close Stop warns hooks before they run (stderr=$(cat "$TMP/stderr"))"; fi
+
+# Codex review P1: transcript_path and last_assistant_message must reach the
+# Claude-shaped payload; the Stop gates that read a transcript get nothing
+# without them.
+cat > "$TMP_ROOT/.claude/hooks/test-stop-payload.sh" <<'SH'
+#!/bin/bash
+payload="$(cat 2>/dev/null || printf '{}')"
+printf 'PAYLOAD=%s\n' "$(printf '%s' "$payload" | jq -c '{t:(.transcript_path // "ABSENT"),l:(.last_assistant_message // "ABSENT")}')"
+SH
+chmod +x "$TMP_ROOT/.claude/hooks/test-stop-payload.sh"
+set_stop_hook Stop test-stop-payload.sh
+rc=0
+jq -nc --arg root "$TMP_ROOT" --arg sid grok-stop-payload \
+  '{hookEventName:"Stop",cwd:$root,session_id:$sid,stopHookActive:false,reason:"end_turn",transcriptPath:"/tmp/grok-transcript.jsonl",lastAssistantMessage:"THE-LAST-WORD"}' \
+  | env -u HQ_LANE_ID "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=grok HQ_TEST_MONITOR_ENABLED=false \
+      bash "$TMP_ROOT/.grok/hooks/hq-grok-hook-adapter.sh" >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
+if grep -Fq '"t":"/tmp/grok-transcript.jsonl"' "$TMP/stderr" && grep -Fq '"l":"THE-LAST-WORD"' "$TMP/stderr"; then ok 'Grok transcriptPath and lastAssistantMessage reach the Claude-shaped payload'; else bad "Grok transcriptPath and lastAssistantMessage reach the Claude-shaped payload (stderr=$(cat "$TMP/stderr"))"; fi
+
+# Loop guard: a gate whose condition never clears must not spin the turn all the
+# way to Grok's own 8-continuation ceiling.
+set_stop_hook Stop test-stop-block.sh
+rm -f "$TMP_ROOT/workspace/orchestrator/hook-state/grok-stop-blocks-"*
+blocks=0
+rc="$(run_grok_stop Stop false '' grok-stop-loop)"
+jq -e '.decision == "block"' "$TMP/stdout" >/dev/null 2>&1 && blocks=$((blocks + 1))
+for _ in 1 2 3 4 5; do
+  rc="$(run_grok_stop Stop true '' grok-stop-loop)"
+  jq -e '.decision == "block"' "$TMP/stdout" >/dev/null 2>&1 && blocks=$((blocks + 1))
+done
+if [ "$blocks" = 3 ]; then ok 'the adapter stops blocking after HQ_GROK_STOP_BLOCK_MAX consecutive blocks'; else bad "the adapter stops blocking after HQ_GROK_STOP_BLOCK_MAX consecutive blocks (emitted $blocks)"; fi
+if [ ! -s "$TMP/stdout" ] && grep -Fq 'asked to hold the turn again' "$TMP/stderr"; then ok 'the suppressed block is reported instead of swallowed'; else bad "the suppressed block is reported instead of swallowed (stdout=$(cat "$TMP/stdout") stderr=$(cat "$TMP/stderr"))"; fi
+# A fresh chain (stopHookActive false) resets the count.
+rc="$(run_grok_stop Stop false '' grok-stop-loop)"
+if jq -e '.decision == "block"' "$TMP/stdout" >/dev/null 2>&1; then ok 'a new stop chain resets the block budget'; else bad "a new stop chain resets the block budget (stdout=$(cat "$TMP/stdout"))"; fi
+
+# PostToolUse must dispatch for tools the adapter has no special payload shape
+# for, or a matcher-`*` hook (conduct-lane-inbox) never fires for a lane that
+# spends a stretch doing nothing but greps.
+cat > "$TMP_ROOT/.claude/hooks/test-post-context.sh" <<'SH'
+#!/bin/bash
+cat >/dev/null
+printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"POST-NOTE-5521"}}'
+SH
+add_test_hook PostToolUse
+rc=0
+jq -nc --arg root "$TMP_ROOT" --arg sid grok-adapter-session \
+  '{hookEventName:"PostToolUse",toolName:"grep",cwd:$root,session_id:$sid,toolInput:{pattern:"x",path:"core/"}}' \
+  | env -u HQ_LANE_ID "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=grok HQ_TEST_MONITOR_ENABLED=false \
+      bash "$TMP_ROOT/.grok/hooks/hq-grok-hook-adapter.sh" >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
+if [ "$rc" = 0 ] && jq -e '.hookSpecificOutput.additionalContext == "POST-NOTE-5521"' "$TMP/stdout" >/dev/null; then ok 'Grok PostToolUse dispatches for an unmapped tool'; else bad "Grok PostToolUse dispatches for an unmapped tool (rc=$rc stdout=$(cat "$TMP/stdout") stderr=$(cat "$TMP/stderr"))"; fi
+
+cp "$TMP/registry.json.orig" "$TMP_ROOT/.claude/hooks/hook-registry.json"
+rm -f "$TMP_ROOT/.claude/hooks/test-stop-block.sh" "$TMP_ROOT/.claude/hooks/test-stop-exit2.sh" \
+  "$TMP_ROOT/.claude/hooks/test-stop-crash.sh" "$TMP_ROOT/.claude/hooks/test-stop-context.sh" \
+  "$TMP_ROOT/.claude/hooks/test-stop-block-spaced.sh" "$TMP_ROOT/.claude/hooks/test-post-context.sh" \
+  "$TMP_ROOT/.claude/hooks/test-stop-block-second.sh" "$TMP_ROOT/.claude/hooks/test-stop-deliverable.sh" \
+  "$TMP_ROOT/.claude/hooks/test-stop-payload.sh"
+
 echo '[10] monitor hooks are enabled in the same profiles as the wait guard'
 for profile in minimal standard strict; do
   for id in hq-monitor-guard hq-monitor-session-hook hq-monitor-session-start; do
