@@ -227,7 +227,7 @@ it, which is the exact failure mode it exists to prevent.
 | `FAIL` | Verified broken — fix it. |
 | `WARN` | Non-blocking concern worth a look (e.g. an orphaned hook, a stale allowed-divergence entry). |
 | `UNTESTED` | Wired but never exercised: the hook is registered but has no fixture, so its behaviour has not been proven. Coverage is reported as a `tested/total` line so this stays visible. |
-| `NA` | Untestable on this platform (e.g. a Grok passive-event hook that cannot inject model-facing context). Not a pass and not a failure — the platform simply cannot run the check. |
+| `NA` | Untestable on this platform (e.g. a Grok `SessionStart` hook, whose stdout Grok ignores). Not a pass and not a failure — the platform simply cannot run the check. |
 | `UNKNOWN` | Could not be determined — the host platform was unidentifiable, or a check could not run. Fails the command rather than claiming a verdict it cannot support. |
 | `KNOWN-DEFECT` | A tracked, unfixed defect pinned by an `expectedFailure` fixture marker. Always printed and counted separately, but never fails the command; if it starts passing, the doctor warns that the marker is stale. |
 

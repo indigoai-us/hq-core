@@ -55,7 +55,7 @@ If additionalContext instructs a Work Mesh clarification:
 - Claude Code: ask once via `AskUserQuestion` with the **exact stable options**,
   then `hq mesh context organize --session <sid> --decision <id> --option <id>`.
 - Codex: ask once via `request_user_input` with the same options, then organize.
-- Grok: run `hq mesh context organize` (passive hooks cannot ask).
+- Grok: run `hq mesh context organize` (no hook can put a question to you).
 
 For create options, append `--create-project '<approved project title>'` or
 `--create-task '<approved task title>'` to organize. Reuse an approved title, or

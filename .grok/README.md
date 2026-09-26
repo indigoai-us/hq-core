@@ -29,13 +29,27 @@ The adapter handles:
 | `SessionStart` | Policy inject, local context, startwork, update check, … |
 | `UserPromptSubmit` | Resume sentinel, deep-plan route, session project, policy |
 | `PreToolUse` | **Blocking** secrets / core-write / HQ-root git / active-run / packages / skill routing / … |
-| `PostToolUse` | Checkpoint, registry capture, autocommit, journal due |
-| `Stop` | Observe patterns, cleanup, estimates |
+| `PostToolUse` | Checkpoint, registry capture, autocommit, journal due; **carries hook `additionalContext` to the model** |
+| `Stop` | **Blocking** checkpoint gate and conduct inbox backstop; plus observe patterns, cleanup, estimates |
+| `SubagentStop` | **Blocking**, same translation as `Stop`; no HQ hook is registered on it today |
 | `PreCompact` | Thrashing detector, precompact checkpoint + journal |
 
-Grok cannot inject Claude-style “additional context” from passive hooks the way
-Codex can; side-effect hooks still run. Blocking safety is PreToolUse-only
-(platform constraint).
+Two Grok events are genuinely passive, and only two. `SessionStart` ignores hook
+stdout outright. `UserPromptSubmit` can reject a prompt but nothing it writes
+reaches the model — an allowing hook's stdout is discarded, and a block reason
+goes to the operator. The adapter runs both for their side effects and surfaces
+their notes as bounded stderr diagnostics.
+
+Everywhere else Grok behaves like Claude. `PreToolUse` and `PostToolUse` deliver
+`hookSpecificOutput.additionalContext` to the model next to the tool result
+(10,000-character cap; a `PreToolUse` deny drops it, so the adapter folds it into
+the deny reason). `Stop` and `SubagentStop` accept `{"decision":"block"}` — or
+exit 2 with the feedback on stderr — and keep the agent working. Checked against
+the hook reference in the Grok binary, verified for 1.0.34:
+
+```sh
+strings -n 20 "$(command -v grok)" | grep -n additionalContext
+```
 
 ## One-time setup (required)
 
@@ -147,8 +161,10 @@ With the user bridge installed, PreToolUse still enforces under `bypassPermissio
 
 ## Parity note
 
-This is **guardrail + lifecycle side-effect** parity with Codex’s adapter, not
-a line-for-line clone of every Claude `settings.json` hook (Claude still has
-the richest event surface and context-injection path). When Grok’s project-hook
-loader is fixed upstream, `hq-grok.json` is already registered for the same
-events so double-firing is harmless (idempotent / fail-open advisory hooks).
+This is **guardrail + lifecycle** parity with Codex’s adapter, not a
+line-for-line clone of every Claude `settings.json` hook. The remaining gaps are
+`SessionStart` and `UserPromptSubmit` context injection, and the tools Grok has
+no equivalent for (`ExitPlanMode`, `AskUserQuestion`, `WebFetch`). When Grok’s
+project-hook loader is fixed upstream, `hq-grok.json` is already registered for
+the same events so double-firing is harmless (idempotent / fail-open advisory
+hooks).

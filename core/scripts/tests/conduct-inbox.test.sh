@@ -108,11 +108,11 @@ for profile in minimal standard strict; do
 done
 ok "the hook id is allowlisted in minimal, standard and strict"
 
-echo "conduct-lane-inbox: registered on the events each engine can receive on"
+echo "conduct-lane-inbox: registered on the events that can reach a model"
 # Gated hooks are dispatched by master-hook.sh from hook-registry.json (one
 # settings.json master-hook line per event); registration lives there.
 REGISTRY="$ROOT/.claude/hooks/hook-registry.json"
-for ev in PreToolUse PostToolUse Stop; do
+for ev in PostToolUse Stop; do
   jq -e --arg ev "$ev" '
     .hooks[$ev][]?.hooks[]? | select(.id == "conduct-lane-inbox")' \
     "$REGISTRY" >/dev/null \
@@ -122,14 +122,32 @@ for ev in PreToolUse PostToolUse Stop; do
     "$ROOT/.claude/settings.json" >/dev/null \
     || fail "no $ev master-hook registration in settings.json"
 done
-for tool in Glob Grep Read Bash Edit Write; do
-  jq -e --arg t "$tool" '
-    .hooks.PreToolUse[] | select(.matcher == $t) | .hooks[]
-    | select(.id == "conduct-lane-inbox")' \
-    "$REGISTRY" >/dev/null \
-    || fail "PreToolUse/$tool has no registration — a grok lane using that tool never receives"
-done
-ok "hook-registry.json covers PreToolUse (six tools), PostToolUse and Stop"
+# PostToolUse carries the message on every engine, so the matcher must be the
+# wildcard: a per-tool list would silently skip whatever tool it forgot.
+jq -e '
+  .hooks.PostToolUse[] | select(.matcher == "*") | .hooks[]
+  | select(.id == "conduct-lane-inbox")' \
+  "$REGISTRY" >/dev/null \
+  || fail "PostToolUse registration is not on matcher '*' — some tools would never deliver"
+# The PreToolUse registrations existed only to deny a grok lane's tool call.
+# That route is gone, so the registrations are too; leaving them would spawn a
+# hook process per tool call in every session on the machine for nothing.
+if jq -e '.hooks.PreToolUse[]?.hooks[]? | select(.id == "conduct-lane-inbox")' \
+  "$REGISTRY" >/dev/null 2>&1; then
+  fail "conduct-lane-inbox is still registered on PreToolUse, where it can no longer deliver"
+fi
+ok "hook-registry.json covers PostToolUse (matcher *) and Stop, and not PreToolUse"
+
+# A conductor's message is for the lane, not for a subagent the lane spawned,
+# so there is deliberately no SubagentStop registration. The docs used to
+# promise one. Both halves are asserted here so they cannot drift apart again.
+if jq -e '.hooks.SubagentStop[]?.hooks[]? | select(.id == "conduct-lane-inbox")' \
+  "$REGISTRY" >/dev/null 2>&1; then
+  fail "conduct-lane-inbox gained a SubagentStop registration; update the conduct skill and .grok/README.md to match"
+fi
+grep -q 'no `SubagentStop` registration' "$ROOT/.claude/skills/conduct/SKILL.md" \
+  || fail "the conduct skill no longer records that SubagentStop delivery is absent"
+ok "no SubagentStop backstop is registered, and the conduct skill says so"
 
 echo "conduct-lane-inbox: inert outside a lane"
 inbox send --run-dir "$RUN" --text "should-not-be-delivered" >/dev/null
@@ -172,40 +190,87 @@ out="$(gate Stop)"
 assert_eq "$out" "" "no output when there is nothing to deliver"
 ok "the Stop backstop is self-limiting"
 
-# --- grok lanes: PreToolUse only -------------------------------------------
+# --- grok lanes take the same route as every other engine -------------------
 #
-# .grok/hooks/hq-grok-hook-adapter.sh states it plainly: "Grok cannot inject
-# context on any event", and it routes passive-hook stdout to stderr
-# diagnostics. So draining on PostToolUse or Stop under grok does not deliver
-# late — it DESTROYS the message, silently, while the operator believes a
-# correction landed. These three checks are the guard against that.
+# Grok used to be delivered on PreToolUse, by denying the tool call so the
+# message could ride the deny reason. That cost the lane a call every time, and
+# it rested on a claim about Grok that is not true: its adapter passes a hook's
+# additionalContext through on PostToolUse, and its Stop gate blocks. The checks
+# below are the guard against the branch coming back.
 export HQ_CONDUCT_ENGINE=grok
 inbox send --run-dir "$RUN" --text "grok-must-receive-this" >/dev/null
 
-echo "grok lane: PostToolUse must not consume — it cannot reach the model"
+echo "grok lane: PostToolUse delivers as additionalContext, costing no tool call"
 out="$(gate PostToolUse)"
-assert_eq "$out" "" "no output"
-assert_eq "$(pending_count)" "1" "message preserved for a delivery event that works"
-ok "grok PostToolUse leaves the message queued instead of destroying it"
-
-echo "grok lane: Stop must not consume — grok cannot block a Stop"
-out="$(gate Stop)"
-assert_eq "$out" "" "no output"
-assert_eq "$(pending_count)" "1" "message still preserved"
-ok "grok Stop leaves the message queued"
-
-echo "grok lane: PreToolUse delivers via a deny reason on stderr"
-err="$TMP/grok.err"
-out="$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","session_id":"s1"}' \
-  | bash "$GATE" conduct-lane-inbox "$HOOK" 2>"$err")"
-rc=$?
-assert_eq "$rc" "2" "non-zero exit is what the grok adapter turns into a deny"
-assert_contains "$(cat "$err")" "grok-must-receive-this" "the message rides on stderr, which becomes the deny reason"
-assert_contains "$(cat "$err")" "not blocked on its merits" "the lane is told to retry rather than abandon the step"
+ctx="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext // ""')"
+assert_eq "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" "PostToolUse" "event name echoed"
+assert_contains "$ctx" "grok-must-receive-this" "the message text"
+assert_contains "$ctx" "taking precedence over your brief" "framing so the lane can tell this from its orders"
+assert_lacks "$out" '"decision"' "PostToolUse must not block or deny anything"
 assert_eq "$(pending_count)" "0" "delivery consumes the queue"
-ok "grok receives on PreToolUse, the one event its adapter feeds back"
+ok "grok PostToolUse delivers as context, like codex and claude"
+
+echo "grok lane: Stop still backstops a late message"
+inbox send --run-dir "$RUN" --text "grok-late-message" >/dev/null
+out="$(gate Stop)"
+assert_eq "$(printf '%s' "$out" | jq -r '.decision')" "block" "Stop blocks"
+assert_contains "$(printf '%s' "$out" | jq -r '.reason')" "grok-late-message" "reason carries the message"
+assert_eq "$(pending_count)" "0" "delivery consumes the queue"
+ok "grok Stop delivers by blocking the turn end"
+
+echo "grok lane: PreToolUse is inert — the deny path is gone"
+inbox send --run-dir "$RUN" --text "grok-must-not-be-denied" >/dev/null
+err="$TMP/grok.err"
+rc=0
+out="$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","session_id":"s1"}' \
+  | bash "$GATE" conduct-lane-inbox "$HOOK" 2>"$err")" || rc=$?
+assert_eq "$rc" "0" "PreToolUse must not deny a lane's tool call to deliver"
+assert_eq "$out" "" "no stdout"
+assert_lacks "$(cat "$err")" "grok-must-not-be-denied" "nothing rides on stderr any more"
+assert_eq "$(pending_count)" "1" "the message stays queued for PostToolUse"
+ok "grok PreToolUse costs the lane nothing and preserves the message"
+
+out="$(gate PostToolUse)"
+assert_contains "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext // ""')" "grok-must-not-be-denied" "the preserved message lands on the next PostToolUse"
+assert_eq "$(pending_count)" "0" "and is consumed there"
+ok "a message skipped by PreToolUse is delivered, not destroyed"
+
+echo "grok lane: a Stop whose decision is discarded must not consume the queue"
+# Grok fires a second, observe-only Stop at session close and throws its
+# decision away. Draining there does not deliver late, it destroys the message
+# while the operator believes a correction landed. The adapter flags that fire.
+inbox send --run-dir "$RUN" --text "grok-session-close-message" >/dev/null
+out="$(HQ_STOP_DECISION_DELIVERABLE=0 gate Stop)"
+assert_eq "$out" "" "no block is emitted for a decision nobody reads"
+assert_eq "$(pending_count)" "1" "the message is preserved, not consumed"
+ok "a non-deliverable Stop leaves the queue intact"
+
+out="$(HQ_STOP_DECISION_DELIVERABLE=1 gate Stop)"
+assert_eq "$(printf '%s' "$out" | jq -r '.decision')" "block" "a deliverable Stop still blocks"
+assert_contains "$(printf '%s' "$out" | jq -r '.reason')" "grok-session-close-message" "carrying the preserved message"
+assert_eq "$(pending_count)" "0" "which is when it is finally consumed"
+ok "the preserved message lands on the next deliverable Stop"
+
+echo "an engine that sets no deliverability flag keeps draining on Stop"
+inbox send --run-dir "$RUN" --text "unflagged-engine-message" >/dev/null
+out="$(gate Stop)"
+assert_eq "$(printf '%s' "$out" | jq -r '.decision')" "block" "an unset flag means deliverable"
+assert_eq "$(pending_count)" "0" "claude and codex are unchanged"
+ok "the guard defaults to deliverable"
 
 unset HQ_CONDUCT_ENGINE
+
+# --- the engine no longer changes the route ---------------------------------
+echo "every engine drains on the same three events"
+for engine in claude codex grok ""; do
+  export HQ_CONDUCT_ENGINE="$engine"
+  inbox send --run-dir "$RUN" --text "uniform-$engine" >/dev/null
+  out="$(gate PostToolUse)"
+  assert_contains "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext // ""')" "uniform-$engine" "PostToolUse delivers for engine $engine"
+  assert_eq "$(pending_count)" "0" "queue consumed for engine $engine"
+done
+unset HQ_CONDUCT_ENGINE
+ok "delivery is engine-uniform, including for a lane that exports no engine"
 
 echo
 echo "conduct-inbox.test.sh: $PASS checks passed"

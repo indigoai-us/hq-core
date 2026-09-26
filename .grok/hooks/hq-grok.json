@@ -1,5 +1,5 @@
 {
-  "_comment": "Project-scoped registration. PreToolUse ONLY: the user-global bridge (~/.grok/hooks/hq-hq-bridge.json, installed by `hq reindex`) is the reliable path and carries ALL lifecycle events. Passive/side-effect events (SessionStart, PostToolUse, Stop, PreCompact, SessionEnd, SubagentStop, Notification, UserPromptSubmit) are registered on the bridge ONLY so they never double-run when a Grok build loads both this project file and the bridge. PreToolUse is intentionally on BOTH: blocking is idempotent, so redundant enforcement is safe and desirable.",
+  "_comment": "Project-scoped registration. PreToolUse ONLY: the user-global bridge (~/.grok/hooks/hq-hq-bridge.json, installed by `hq reindex`) is the reliable path and carries ALL lifecycle events. Every other event (SessionStart, PostToolUse, Stop, PreCompact, SessionEnd, SubagentStop, Notification, UserPromptSubmit) is registered on the bridge ONLY so it never double-runs when a Grok build loads both this project file and the bridge. That matters more than it used to: PostToolUse carries additionalContext to the model and Stop/SubagentStop can hold the turn, so a double fire would duplicate a note or a block, not just a side effect. PreToolUse is intentionally on BOTH: blocking is idempotent, so redundant enforcement is safe and desirable.",
   "hooks": {
     "PreToolUse": [
       {

@@ -3,6 +3,30 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.172-beta.1
+
+- fix 2026-09-26 (Grok hook capabilities): the v15.0.127-beta.5 entry below says
+  a Grok lane cannot be handed context and that its `Stop` cannot block. Both
+  are wrong, checked against the hook reference embedded in Grok 1.0.34. Grok
+  delivers `hookSpecificOutput.additionalContext` on `PreToolUse` and
+  `PostToolUse`, and its `Stop`/`SubagentStop` gates block on
+  `{"decision":"block"}` or exit 2. So a `/conduct` message now reaches a Grok
+  lane the same way it reaches a Codex or Claude lane — as context on
+  `PostToolUse`, with `Stop` as the backstop — and no longer costs the lane a
+  denied tool call. The Grok adapter translates a Stop hook's block into Grok's
+  stop protocol and forwards `stopHookActive` as `stop_hook_active`, so a gate
+  that blocks keeps its one-block-per-chain guard. The gates that hold a Grok
+  turn today are the CLI checkpoint gate and the conduct inbox backstop.
+  `enforce-humanize-before-send` and `enforce-capability-link-render` still
+  no-op under Grok: they read the session transcript, and Grok writes an
+  `updates.jsonl` in its own schema rather than Claude's, so their parse finds
+  no assistant records. The adapter now forwards `transcript_path` and
+  `last_assistant_message` so that gap can be closed without another payload
+  change. `HQ_GROK_STOP_BLOCK_MAX` (default 3) caps consecutive
+  adapter-emitted Stop blocks, and the session-close Stop neither blocks nor
+  lets a delivery hook drain its queue. `SessionStart` and `UserPromptSubmit`
+  remain diagnostics-only under Grok. No action beyond `/update-hq`.
+
 ## Release: v15.0.171-beta.4
 
 - promote 2026-09-25 (hq monitor policy and hooks): `hq-core-staging` now guides
@@ -20,7 +44,6 @@ release; the release workflow stamps it with the version at tag time.
   and always returns 403 outside a browser, and that `commentsEnabled` must be
   set before the upload for the current deploy to include the widget. No action
   beyond `/update-hq`.
-
 ## Release: v15.0.166-beta.1
 
 - fix 2026-09-24 (vault prefix grants + work-mesh notes): hq-pro #3662 made
@@ -922,7 +945,8 @@ release; the release workflow stamps it with the version at tag time.
   is delivered exactly once with the consumed copy retained under `inbox/claimed/` as a record
   of what the lane was actually told.
 - promote 2026-09-11 (conduct lane drop box): **every engine is reachable mid-task, but not the
-  same way.** Codex and Claude lanes take the message quietly on `PostToolUse`, as context before
+  same way.** (Superseded 2026-09-26 — see the Grok hook capabilities entry at the top. The Grok
+  claims in this paragraph were wrong; delivery is now uniform across engines.) Codex and Claude lanes take the message quietly on `PostToolUse`, as context before
   the model's next step, with `Stop` as a backstop for anything queued late. Grok cannot be handed
   context on any event — its adapter routes passive-hook output to diagnostics and cannot block a
   `Stop` — so a Grok lane is reached on `PreToolUse` instead: the message arrives as a denied tool

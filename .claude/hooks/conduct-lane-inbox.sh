@@ -10,30 +10,28 @@
 # lane deep in a long edit still receives one on its very next tool event.
 #
 # ────────────────────────────────────────────────────────────────────────────
-# THE ENGINES DO NOT AGREE ON HOW A HOOK TALKS TO A MODEL, so which event
-# carries the message depends on which engine the lane is running.
+# EVERY ENGINE TAKES THE MESSAGE THE SAME WAY: PostToolUse, via
+# hookSpecificOutput.additionalContext, with Stop as the backstop for anything
+# queued while the lane writes its final answer. Non-disruptive — the message
+# simply appears before the model's next step, and the lane keeps the tool call
+# it was about to make. SubagentStop is handled below but is NOT registered: a
+# conductor's message is for the lane, not for a subagent the lane spawned.
 #
-#   claude, codex   PostToolUse, via hookSpecificOutput.additionalContext.
-#                   Non-disruptive: the message simply appears before the
-#                   model's next step. Stop is also honoured as a backstop, so
-#                   a message queued while the lane writes its final answer is
-#                   still delivered instead of being dropped.
+# Grok used to be the exception, delivered on PreToolUse by DENYING the tool
+# call so the message could ride the deny reason. That cost the lane a call
+# every time, and it was built on a claim about Grok that is not true: the
+# adapter now passes a hook's additionalContext through on PostToolUse, and
+# Grok's Stop gate blocks like Claude's (Grok 1.0.34 hook reference). So the
+# engine branch is gone, and PreToolUse is inert everywhere.
 #
-#   grok            PreToolUse ONLY, via a non-zero exit with the message on
-#                   stderr, which .grok/hooks/hq-grok-hook-adapter.sh turns into
-#                   {"decision":"deny","reason":<stderr>}. This is disruptive —
-#                   it costs the lane the tool call it was about to make — but
-#                   it is the only path that reaches the model at all. The Grok
-#                   adapter says so in its own words: "Grok cannot inject
-#                   context on any event", and it routes passive-hook stdout to
-#                   stderr diagnostics. Its Stop cannot block either.
-#
-# CONSEQUENCE, and the reason this file is engine-aware rather than uniform:
+# THE RULE THAT SURVIVES, and the reason this file reasons about events at all:
 # draining on an event that cannot reach the model DESTROYS the message. It
 # moves out of the queue, the payload goes to a diagnostics stream nobody reads,
 # and the operator believes a correction was delivered that the lane never saw.
-# So the rule here is absolute: never drain unless this event, on this engine,
-# can actually feed the text back to the model.
+# So: never drain unless this event can actually feed the text back to the
+# model. The three events below are the ones that can, on all three engines.
+# UserPromptSubmit and SessionStart are NOT among them under Grok, which is why
+# this hook is not registered on either.
 #
 # THE GUARD MATTERS. This hook is registered with matcher `*`, so it runs on
 # every tool call in every session on the machine. HQ_CONDUCT_RUN_DIR is set
@@ -67,20 +65,21 @@ inbox_sh="$self_hq/core/scripts/conduct-inbox.sh"
 input="$(cat 2>/dev/null || printf '{}')"
 hook_event="$(printf '%s' "$input" | jq -r '.hook_event_name // .hookEventName // ""' 2>/dev/null || true)"
 
-# The lane exports its engine at launch. An unset value means a lane predating
-# that export; treat it as the default engine (codex) rather than guessing the
-# disruptive path, since delivering late is recoverable and denying a tool call
-# on an engine that did not need it is not.
-engine="$(printf '%s' "${HQ_CONDUCT_ENGINE:-codex}" | tr '[:upper:]' '[:lower:]')"
-
-case "$engine" in
-  grok) deliver_on="PreToolUse" ;;
-  *)    deliver_on="PostToolUse Stop SubagentStop" ;;
-esac
+deliver_on="PostToolUse Stop SubagentStop"
 
 case " $deliver_on " in
   *" $hook_event "*) : ;;
   *) exit 0 ;;
+esac
+
+# A Stop whose decision the engine throws away cannot carry this message, and
+# draining on it would destroy the message rather than delay it. Grok fires one
+# such Stop at session close; its adapter sets this to 0 for that fire. An unset
+# value means an engine that always delivers, so claude and codex are unchanged.
+case "$hook_event" in
+  Stop|SubagentStop)
+    [ "${HQ_STOP_DECISION_DELIVERABLE:-1}" = "0" ] && exit 0
+    ;;
 esac
 
 messages="$(bash "$inbox_sh" drain --run-dir "$HQ_CONDUCT_RUN_DIR" 2>/dev/null || true)"
@@ -96,15 +95,6 @@ two conflict. Do not reply to the conductor; act on it and carry on.
 $messages"
 
 case "$hook_event" in
-  PreToolUse)
-    # Grok only. The adapter reads stderr as the deny reason, so this is the
-    # payload — not stdout. Say plainly that the tool call was interrupted to
-    # carry a message, or the lane reads the denial as "this tool is forbidden"
-    # and abandons a step it should simply retry.
-    printf '%s\n\nYour tool call was not blocked on its merits — it was interrupted to hand you this message. Apply the instruction above, then continue, retrying that call if it is still the right next step.\n' \
-      "$body" >&2
-    exit 2
-    ;;
   PostToolUse)
     jq -n --arg ctx "$body" '{
       hookSpecificOutput: {
@@ -114,10 +104,11 @@ case "$hook_event" in
     }' 2>/dev/null || true
     ;;
   *)
-    # Stop/SubagentStop on claude and codex: block the finish so the message is
-    # acted on rather than delivered into a turn that has already ended.
-    # Self-limiting — the drain consumed the queue, so the next Stop has nothing
-    # to deliver and the lane finishes normally.
+    # Stop/SubagentStop: block the finish so the message is acted on rather than
+    # delivered into a turn that has already ended. Self-limiting — the drain
+    # consumed the queue, so the next Stop has nothing to deliver and the lane
+    # finishes normally. This is why the hook does not read stop_hook_active:
+    # the queue, not a flag, is what stops it repeating.
     jq -n --arg reason "$body" '{decision: "block", reason: $reason}' 2>/dev/null || true
     ;;
 esac

@@ -13,6 +13,13 @@
 # passes its engine explicitly; those engines have no Claude Monitor tool and
 # therefore never receive a block from this shim.
 #
+# That engine check is load-bearing, not belt-and-braces. Both adapters now
+# translate a Stop hook's decision into their own stop protocol, so a block
+# emitted here WOULD hold a Codex or Grok turn — demanding a Monitor call the
+# engine has no tool to make. The non-zero returns below are what keep it off
+# them: the Grok adapter treats exit 2 as a block and every other non-zero exit
+# as fail-open, and these paths return 3.
+#
 # stop_hook_active is the recursion guard supplied by Claude Code. When it is
 # true, do not issue a second block: report the unresolved coverage/error on
 # stderr and return non-zero so the session can perform the named remedy.
@@ -111,9 +118,10 @@ gate_error() {
   local reason
   printf 'ERROR: lanes Stop gate could not verify Monitor coverage: %s\n' "$detail" >&2
 
-  # Codex/Grok cannot satisfy this Claude-only gate. Their adapters dispatch
-  # Stop advisory, but do not rely on that implementation detail: never emit a
-  # Claude block for an engine that has no Monitor tool.
+  # Codex/Grok cannot satisfy this Claude-only gate: neither has a Monitor tool
+  # to arm. Their adapters DO translate a Stop block now, so this check is the
+  # only thing standing between them and a demand they cannot meet. Return 3 —
+  # non-zero and not 2 — which both adapters read as fail-open.
   case "$ENGINE" in
     codex|grok)
     return 3

@@ -342,20 +342,24 @@ bash core/scripts/conduct-inbox.sh list --run-dir "{run dir}"
 # {"run_dir":"...","pending":1,"delivered":3}
 ```
 
-**How it lands, by engine.** Every lane is reachable mid-task, but not by the
-same route — the engines disagree about how a hook talks to a model, so the
-delivery event follows the engine:
+**How it lands.** Every lane takes the message the same way, on every engine:
+`PostToolUse`, as context before the model's next step, with `Stop` as a
+backstop for anything queued while the lane writes its final answer. It costs
+the lane nothing — no interrupted tool call, no retry.
 
 | Engine | Event | How it arrives | Cost |
 |---|---|---|---|
-| codex, claude | `PostToolUse`, plus `Stop` as a backstop | as context, before the model's next step | none |
-| grok | `PreToolUse` | as a denied tool call whose reason is the message | the interrupted call |
+| claude, codex, grok | `PostToolUse`, plus `Stop` as a backstop | as context, before the model's next step | none |
 
-Grok cannot be handed context on any event — its adapter says so outright and
-routes passive-hook output to diagnostics — so the only way to reach a grok lane
-is to interrupt it. The message tells it the call was not blocked on its merits
-and to retry, so nothing is lost but the round trip. A grok deny reason is
-truncated around 1200 characters; keep messages to that engine short.
+There is deliberately no `SubagentStop` delivery. A conductor's message is for
+the lane, not for a subagent the lane spawned, so `conduct-lane-inbox` carries
+no `SubagentStop` registration.
+
+Grok used to be the exception: it was reached by denying a tool call so the
+message could ride the deny reason, which cost a call every time. That was built
+on a claim about Grok that turned out to be wrong. Its adapter now passes hook
+`additionalContext` through on `PostToolUse`, and its `Stop` gate blocks like
+Claude's, so the engine branch is gone.
 
 The corollary is a safety rule the hook enforces: a message is **only** consumed
 on an event that can actually reach the model. Draining on an event that cannot

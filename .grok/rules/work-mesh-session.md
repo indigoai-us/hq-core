@@ -10,7 +10,8 @@ bump `toolWrites`. A detached `hq mesh context reconcile` runs at session start.
 
 ## When clarification is pending
 
-Grok hooks are passive (cannot inject AskUserQuestion). If
+No Grok hook can put a question to you — there is no hook-side ask on any
+event. If
 `~/.hq/work-context/sessions/<sid>.pending-decision` exists (or additionalContext
 says a decision is pending):
 

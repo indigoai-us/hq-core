@@ -17,10 +17,10 @@ The enforcement twin of this document is
 | UserPromptSubmit | native | adapter | adapter (+ bridge) | full parity |
 | PreToolUse | native | adapter | adapter (+ bridge) | full parity (blocking) |
 | PostToolUse | native | adapter | adapter (+ bridge) | full parity |
-| Stop | native | adapter (can block) | adapter (advisory only — Grok can only block PreToolUse) | parity; Grok Stop hooks run side-effects but cannot hold the turn |
+| Stop | native | adapter (can block) | adapter (can block) | full parity; all three translate a Stop hook's `decision: block` into their own stop protocol |
 | PreCompact | native | adapter | adapter (+ bridge) | full parity |
 | SessionEnd | native | adapter (Codex clamps hook budget to 3s) | adapter (+ bridge) | master-hook fan-out runs in all three |
-| SubagentStop | native | adapter | adapter (+ bridge) | master-hook fan-out runs in all three |
+| SubagentStop | native | adapter | adapter (+ bridge, can block) | master-hook fan-out runs in all three; Grok gates it like Stop |
 | Notification | native | **unsupported by Codex hooks** | adapter (+ bridge) | Codex: essential gap, declared in the parity test |
 
 ## Tool matchers (PreToolUse / PostToolUse)
@@ -47,10 +47,13 @@ The enforcement twin of this document is
 2. **Unsupported ⇒ declared.** A combination the runtime cannot express lives in
    the parity test's exception list with a one-line reason. An undeclared gap —
    including any NEW matcher added to `settings.json` — fails the build.
-3. **Semantics degrade explicitly, not silently.** Grok cannot block non-
-   PreToolUse events and cannot inject model context; its adapter runs those
-   hooks for side-effects and surfaces their output as bounded stderr
-   diagnostics. Codex Stop blocks are translated to Codex's Stop protocol.
+3. **Semantics degrade explicitly, not silently.** Grok's remaining gaps are
+   `SessionStart` (stdout ignored) and `UserPromptSubmit` (can reject a prompt,
+   but nothing it writes reaches the model). The adapter runs those two for
+   side-effects and surfaces their output as bounded stderr diagnostics.
+   Everything else is translated, not degraded: `PreToolUse`/`PostToolUse`
+   `additionalContext` reaches the model, and Codex and Grok Stop blocks are
+   both translated to their own stop protocols.
 4. **Grok's user bridge mirrors every event; the project registration is
    PreToolUse-only.** Project `.grok/hooks` often never load (observed Grok
    0.2.93), so the user bridge installed under `~/.grok/hooks/` by `hq reindex`

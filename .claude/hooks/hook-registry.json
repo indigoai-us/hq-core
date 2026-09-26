@@ -41,15 +41,6 @@
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
             "timeout": 30,
             "gated": true
-          },
-          {
-            "id": "conduct-lane-inbox",
-            "script": ".claude/hooks/conduct-lane-inbox.sh",
-            "timeout": 30,
-            "gated": true,
-            "prefilter": {
-              "env": "HQ_CONDUCT_RUN_DIR"
-            }
           }
         ]
       },
@@ -70,15 +61,6 @@
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
             "timeout": 30,
             "gated": true
-          },
-          {
-            "id": "conduct-lane-inbox",
-            "script": ".claude/hooks/conduct-lane-inbox.sh",
-            "timeout": 30,
-            "gated": true,
-            "prefilter": {
-              "env": "HQ_CONDUCT_RUN_DIR"
-            }
           }
         ]
       },
@@ -98,15 +80,6 @@
             "gated": true,
             "prefilter": {
               "re": "companies/[^/\"]+/settings/"
-            }
-          },
-          {
-            "id": "conduct-lane-inbox",
-            "script": ".claude/hooks/conduct-lane-inbox.sh",
-            "timeout": 30,
-            "gated": true,
-            "prefilter": {
-              "env": "HQ_CONDUCT_RUN_DIR"
             }
           }
         ]
@@ -245,15 +218,6 @@
             "prefilter": {
               "re": "sst|deploy|cdk|serverless|sls|terraform|aws|secrets"
             }
-          },
-          {
-            "id": "conduct-lane-inbox",
-            "script": ".claude/hooks/conduct-lane-inbox.sh",
-            "timeout": 30,
-            "gated": true,
-            "prefilter": {
-              "env": "HQ_CONDUCT_RUN_DIR"
-            }
           }
         ]
       },
@@ -355,15 +319,6 @@
             "prefilter": {
               "re": "policies/"
             }
-          },
-          {
-            "id": "conduct-lane-inbox",
-            "script": ".claude/hooks/conduct-lane-inbox.sh",
-            "timeout": 30,
-            "gated": true,
-            "prefilter": {
-              "env": "HQ_CONDUCT_RUN_DIR"
-            }
           }
         ]
       },
@@ -464,15 +419,6 @@
             "gated": true,
             "prefilter": {
               "re": "policies/"
-            }
-          },
-          {
-            "id": "conduct-lane-inbox",
-            "script": ".claude/hooks/conduct-lane-inbox.sh",
-            "timeout": 30,
-            "gated": true,
-            "prefilter": {
-              "env": "HQ_CONDUCT_RUN_DIR"
             }
           }
         ]
