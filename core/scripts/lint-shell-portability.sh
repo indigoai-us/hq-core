@@ -101,6 +101,9 @@ while IFS= read -r f || [ -n "$f" ]; do
   case "$f" in
     *lint-shell-portability*) continue ;;
     *portable-lib.test.sh) continue ;;
+    # Builds a BSD-like sort stub and must invoke the GNU-only flag to prove
+    # the stub rejects it.
+    *grok-min-version.test.sh) continue ;;
   esac
   # Prefix allow-list (string prefix, not nested globs — shellcheck SC2221).
   keep=0
@@ -132,6 +135,21 @@ while IFS= read -r f || [ -n "$f" ]; do
     report "$f" "${hit%%:*}" "brew-only jq install message (use require_jq / multi-OS guidance)"
   done < "$HITS"
   scan_file "$f" "readlink[[:space:]]+-f" "readlink -f is GNU-only"
+  # BSD sort (stock macOS) has no version sort. A pipeline that relies on it
+  # does not merely misorder: under `set -o pipefail` the substitution comes
+  # back empty and the caller reads that as a definite answer. Shipped
+  # instance: a Grok minimum-version check that would have called every
+  # install too old on macOS. Comment lines are skipped — hook-gate.sh
+  # documents the spelling it deliberately avoids, and a rule that cannot tell
+  # prose from code punishes the file that got it right.
+  : > "$HITS"
+  grep -nE 'sort[[:space:]]+(-V|--version-sort)' "$f" > "$HITS" 2>/dev/null || true
+  while IFS= read -r hit || [ -n "$hit" ]; do
+    [ -z "$hit" ] && continue
+    body="${hit#*:}"
+    case "${body#"${body%%[![:space:]]*}"}" in \#*) continue ;; esac
+    report "$f" "${hit%%:*}" "sort -V / --version-sort is GNU-only (compare version components instead)"
+  done < "$HITS"
   # BSD/macOS mktemp requires its X run at the end of an explicit template.
   # GNU mktemp does as well; a filename extension must not follow the Xs.
   : > "$HITS"

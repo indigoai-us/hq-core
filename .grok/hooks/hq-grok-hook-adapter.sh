@@ -2,11 +2,29 @@
 # Hosts like Claude Code export BASH_ENV to a user profile; each non-interactive
 # bash on the hook path then pays nvm (~1-11s). Measured 2026-09-21 macOS:
 # adapter 18-32s, bridge 28s, master-hook 4.5s; with BASH_ENV=/dev/null: 4.0s / 3.5s.
+#
+# This export protects the CHILDREN this script spawns, not this script itself:
+# by the time line 1 runs, our own bash has already sourced $BASH_ENV. The
+# registrations in hq-grok.json and hq-grok-user-bridge.json therefore also set
+# env.BASH_ENV=/dev/null, which Grok applies at spawn (verified 1.0.41). Keep
+# both: the export covers a hand-rolled or legacy registration that lacks the
+# env map.
 export BASH_ENV=/dev/null
 # hq-core: public
 # hq-grok-hook-adapter.sh - route Grok lifecycle hooks through HQ's existing
 # .claude/hooks gate, so HQ guardrails enforce for Grok as they do for Claude
 # and Codex.
+#
+# MINIMUM SUPPORTED GROK: 1.0.34. Do not run HQ lanes on a 0.2.x build.
+# On 0.2.56 a PreToolUse `deny` does not block one tool call -- it ends the whole
+# turn (session events.jsonl records
+# {"type":"turn_ended","outcome":"cancelled","cancellation_category":"hook_denied"}),
+# and under `grok --single` (how `hq lanes` invokes Grok) that exits the process
+# with stopReason "Cancelled" and no envelope, so the lane dies on the first
+# guard that says no. Two indigo lanes were lost this way on 2026-09-25, both to
+# block-hq-glob rejecting `list_dir` on the HQ root. On 1.0.41 the same deny
+# blocks only that tool call and the turn continues (stopReason "end_turn").
+# Evidence: workspace/reports/grok-hook-latency.md.
 #
 # Grok differs from Claude in four ways this adapter bridges. Each claim below
 # is checked against the hook reference embedded in the Grok binary

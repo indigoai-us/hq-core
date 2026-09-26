@@ -27,6 +27,26 @@ else
   exit 1
 fi
 
+# Fixture: GNU-only version sort must be flagged in both spellings, and a plain
+# `sort -u` must not be.
+SORTV_RE="sort[[:space:]]+(-V|--version-sort)"
+printf '#!/bin/bash\nprintf "%%s\\n" 1.2 1.10 | sort -V | head -1\n' > "$TMP/core/scripts/bad-sortv.sh"
+printf '#!/bin/bash\nprintf "%%s\\n" b a | sort --version-sort\n' > "$TMP/core/scripts/bad-sortlong.sh"
+printf '#!/bin/bash\nprintf "%%s\\n" b a | sort -u\n' > "$TMP/core/scripts/ok-sortu.sh"
+for bad in bad-sortv bad-sortlong; do
+  if grep -nE "$SORTV_RE" "$TMP/core/scripts/$bad.sh" >/dev/null; then
+    echo "  ok   detects GNU-only version sort ($bad)"
+  else
+    echo "FAIL: detector missed GNU-only version sort in $bad" >&2
+    exit 1
+  fi
+done
+if grep -nE "$SORTV_RE" "$TMP/core/scripts/ok-sortu.sh" >/dev/null; then
+  echo "FAIL: version-sort detector false-positives on sort -u" >&2
+  exit 1
+fi
+echo "  ok   version-sort detector ignores plain sort -u"
+
 # Fixture: a bare `flock` command word (Linux-only) must be flagged — this is
 # the exact macOS failure ("flock: command not found") from the team harness
 # analysis. A `command -v flock` probe must NOT be flagged. Mirror the linter's

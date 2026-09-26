@@ -53,6 +53,29 @@ strings -n 20 "$(command -v grok)" | grep -n additionalContext
 
 ## One-time setup (required)
 
+### Requires Grok >= 1.0.34
+
+Check before anything else, and `grok update` if the build is older:
+
+```sh
+grok --version
+```
+
+On a 0.2.x build a `PreToolUse` deny does **not** block one tool call — it
+cancels the whole turn (the session records
+`cancellation_category: "hook_denied"`). `hq lanes` runs `grok --single`, where
+the end of the turn is the end of the process, so the lane exits with
+`stopReason: "Cancelled"` and never writes its envelope. Any HQ guard then
+kills the worker on its first objection: two indigo lanes were lost this way on
+2026-09-25, both to `block-hq-glob` correctly refusing a recursive `list_dir`
+on the HQ root. On 1.0.41 the identical deny blocks only that tool call and the
+turn continues.
+
+`core/scripts/codex-preflight.sh doctor` reports the installed version and
+warns when it is below the minimum.
+
+### Converge hook trust
+
 ```sh
 hq reindex
 ```

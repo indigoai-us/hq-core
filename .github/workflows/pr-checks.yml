@@ -1073,6 +1073,8 @@ jobs:
         run: bash core/scripts/lint-shell-portability.sh
       - name: lint-shell-portability regression test
         run: bash core/scripts/tests/lint-shell-portability.test.sh
+      - name: Grok minimum-version gate is correct without GNU sort
+        run: bash core/scripts/tests/grok-min-version.test.sh
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
       - name: shellcheck portability surface (warning; this-PR shell paths)

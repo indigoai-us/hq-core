@@ -14,6 +14,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HQ_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HOOKS_DIR="${HQ_ROOT}/.claude/hooks"
 
+# Oldest Grok build HQ's hook adapter supports. See .grok/README.md and the
+# header of .grok/hooks/hq-grok-hook-adapter.sh.
+GROK_MIN_VERSION="1.0.34"
+
+# Portable "is $1 older than $2" for dotted numeric versions. macOS ships BSD
+# sort, which has no --version-sort, and the repo forbids the GNU-only spelling
+# (core/scripts/tests/hook-gate-path-augment.test.sh asserts it, and
+# lint-shell-portability.sh flags it tree-wide). A failed comparison here would
+# be worse than none: the empty result would read as "older" and tell the
+# operator to downgrade-chase a version that is already fine. Compare component
+# by component instead, so the answer never depends on which sort is on PATH.
+version_lt() {
+  local left="$1" right="$2" lpart rpart
+  while [ -n "$left" ] || [ -n "$right" ]; do
+    lpart="${left%%.*}"
+    rpart="${right%%.*}"
+    case "$left" in *.*) left="${left#*.}" ;; *) left="" ;; esac
+    case "$right" in *.*) right="${right#*.}" ;; *) right="" ;; esac
+    lpart="$(printf '%s' "$lpart" | tr -cd '0-9')"
+    rpart="$(printf '%s' "$rpart" | tr -cd '0-9')"
+    [ -n "$lpart" ] || lpart=0
+    [ -n "$rpart" ] || rpart=0
+    if [ "$((10#$lpart))" -lt "$((10#$rpart))" ]; then return 0; fi
+    if [ "$((10#$lpart))" -gt "$((10#$rpart))" ]; then return 1; fi
+  done
+  return 1
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -329,18 +357,31 @@ cmd_doctor() {
   if [ "$grok_trusted" -eq 1 ]; then
     echo "  grok: project trusted (OK)."
   else
-    echo "  grok: NOT trusted — run `hq reindex` (writes trusted_folders.toml + installs user bridge)." >&2
+    echo "  grok: NOT trusted — run \`hq reindex\` (writes trusted_folders.toml + installs user bridge)." >&2
   fi
   if [ -d "$root/.grok/hooks" ]; then echo "  grok: .grok/hooks present (OK)."; else echo "  grok: .grok/hooks MISSING." >&2; fi
   if [ -x "$HOME/.grok/hooks/hq-hq-bridge.sh" ] && [ -f "$HOME/.grok/hooks/hq-hq-bridge.json" ]; then
     echo "  grok: user bridge installed (OK)."
   else
-    echo "  grok: user bridge MISSING — run `hq reindex` so HQ guards enforce (project hooks often do not load)." >&2
+    echo "  grok: user bridge MISSING — run \`hq reindex\` so HQ guards enforce (project hooks often do not load)." >&2
   fi
   if command -v grok >/dev/null 2>&1; then
-    local gv
+    local gv gnum
     gv="$(grok --version 2>/dev/null | head -1 || true)"
-    echo "  grok: ${gv:-installed}."
+    # HQ needs Grok >= GROK_MIN_VERSION. On 0.2.x a PreToolUse deny does not
+    # block one tool call, it cancels the whole turn
+    # (cancellation_category "hook_denied"), and `hq lanes` runs
+    # `grok --single`, where the turn ending ends the process: the lane exits
+    # with stopReason "Cancelled" and writes no envelope. Two lanes were lost
+    # that way on 2026-09-25 to block-hq-glob correctly refusing a recursive
+    # list_dir on the HQ root. Report it here so the documented doctor path
+    # cannot come back clean on a build that will kill lanes.
+    gnum="$(printf '%s' "$gv" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+    if [ -n "$gnum" ] && version_lt "$gnum" "$GROK_MIN_VERSION"; then
+      echo "  grok: ${gv} — TOO OLD, HQ lanes need >= ${GROK_MIN_VERSION}. A denied tool call cancels the whole run on this build. Run \`grok update\`." >&2
+    else
+      echo "  grok: ${gv:-installed}${gnum:+ (>= ${GROK_MIN_VERSION}, OK)}."
+    fi
   else
     echo "  grok: not installed."
   fi
