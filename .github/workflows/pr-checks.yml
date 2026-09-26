@@ -23,10 +23,28 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: denylist-scan
     runs-on: ubuntu-latest
+    outputs:
+      macos_shell_smoke: ${{ steps.shell_smoke_macos_paths.outputs.run }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Detect changes covered by the macOS shell smoke job
+        id: shell_smoke_macos_paths
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == 'pull_request' ]]; then
+            base_sha="$PR_BASE_SHA"
+          else
+            base_sha="$PUSH_BEFORE_SHA"
+          fi
+          bash core/scripts/ci/should-run-macos-shell-smoke.sh \
+            "$base_sha" "$GITHUB_SHA" "$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
+      - name: macOS shell smoke path filter regression test
+        run: bash core/scripts/tests/shell-smoke-macos-paths.test.sh
       - name: Run denylist scan
         run: bash .leak-scan/scan.sh denylist
 
@@ -1062,6 +1080,22 @@ jobs:
       - name: run-project work-mesh notes use options the hq CLI accepts (--session-id)
         run: bash core/scripts/tests/run-project-mesh-note.test.sh
 
+  bash-guard-process-budgets:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: bash-guard-process-budgets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Measure pinned hook forks and compare every existing fixture
+        run: |
+          set -euo pipefail
+          command -v strace
+          timeout 240s bash core/scripts/tests/block-unsafe-package-install-process-budget.test.sh | tail -200
+          timeout 240s bash core/scripts/tests/block-core-writes-bash-process-budget.test.sh | tail -200
+          timeout 600s bash core/scripts/tests/block-guard-hooks-parity.test.sh | tail -200
+
   # US-005: shell portability lint + shellcheck + cross-platform smoke.
   shell-portability:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1084,6 +1118,10 @@ jobs:
           # Full-tree shellcheck is a separate burn-down (pre-existing SC noise).
           files=(
             core/scripts/hook-lib.sh
+            core/scripts/tests/hook-process-budget-common.sh
+            core/scripts/tests/block-unsafe-package-install-process-budget.test.sh
+            core/scripts/tests/block-core-writes-bash-process-budget.test.sh
+            core/scripts/tests/block-guard-hooks-parity.test.sh
             core/scripts/tests/hook-timeout-sentry.test.sh
             core/scripts/tests/check-hq-update-bounded-network.test.sh
             core/scripts/tests/hook-lib-strip-exclude-tokens.test.sh
@@ -1092,6 +1130,7 @@ jobs:
             core/scripts/tests/block-policy-writes-bash.test.sh
             core/scripts/tests/block-agent-secrets-reveal.test.sh
             .claude/hooks/block-agent-secrets-reveal.sh
+            .claude/hooks/block-unsafe-package-install.sh
             .claude/hooks/block-core-writes-bash.sh
             .claude/hooks/block-policy-writes-bash.sh
             .claude/hooks/check-hq-update.sh
@@ -1162,8 +1201,11 @@ jobs:
         run: node core/scripts/validate-agent-runtime-contracts.mjs
 
   shell-smoke-macos:
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: shell-smoke-macos
+    needs: [denylist-scan]
+    if: >-
+      ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+          && needs['denylist-scan'].outputs.macos_shell_smoke == 'true' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
