@@ -63,6 +63,12 @@ jq '.hooks.PreToolUse += [{
     type: "command",
     command: "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" custom-json-deny \"$CLAUDE_PROJECT_DIR/.claude/hooks/custom-json-deny.sh\" PreToolUse"
   }]
+}, {
+  matcher: "Bash",
+  hooks: [{
+    type: "command",
+    command: "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" custom-bash-json-deny \"$CLAUDE_PROJECT_DIR/.claude/hooks/custom-bash-json-deny.sh\" PreToolUse"
+  }]
 }]' "$FIX/.claude/settings.json" > "$FIX/.claude/settings.json.next"
 mv "$FIX/.claude/settings.json.next" "$FIX/.claude/settings.json"
 : > "$FIX/core/scripts/hook-lib.sh"
@@ -85,7 +91,10 @@ if [ "$id" = "journal-autocapture" ]; then
   { printf 'jtool:%s\n' "$jt" >> "${HQAD_TEST_LOG:-/dev/null}"; } 2>/dev/null || true
 fi
 if [ "$id" = "custom-json-deny" ]; then
-  printf '%s\n' '{"decision":"block","reason":"custom tool denied"}'
+  printf '%s\n' '{"hookEventName":"PreToolUse","hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"custom tool denied"}}'
+fi
+if [ "$id" = "custom-bash-json-deny" ] && [ "$(printf '%s' "$payload" | jq -r '.tool_input.command // empty')" = "echo test" ]; then
+  printf '%s\n' '{"hookEventName":"PreToolUse","hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"custom tool denied"}}'
 fi
 exit 0
 STUB
@@ -293,6 +302,14 @@ if printf '%s' "$deny_output" | jq -e '
   pass "codex custom PreToolUse preserves structured JSON denial"
 else
   fail "codex custom PreToolUse swallowed structured JSON denial: $deny_output"
+fi
+
+grok_deny_payload='{"hookEventName":"PreToolUse","toolName":"Shell","cwd":"'"$FIX"'","session_id":"t","toolInput":{"command":"echo test"}}'
+grok_deny_output="$(HQ_ROOT="$FIX" bash "$GROK" <<<"$grok_deny_payload" 2>/dev/null || true)"
+if printf '%s' "$grok_deny_output" | jq -e '.decision == "deny" and .reason == "custom tool denied"' >/dev/null 2>&1; then
+  pass "grok custom PreToolUse preserves structured JSON denial"
+else
+  fail "grok custom PreToolUse swallowed structured JSON denial: $grok_deny_output"
 fi
 
 # The master fan-out can emit plain context before a company hook's compact

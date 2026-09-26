@@ -657,9 +657,14 @@ finalize_timeout_breadcrumbs() {
 timeout_warning_event_delivers_context() {
   local harness
   harness="$(printf '%s' "${HQ_HARNESS:-claude}" | tr '[:upper:]' '[:lower:]')"
-  # The Grok adapter documents that passive-hook output is diagnostics only and
-  # its PreToolUse channel is a deny decision, not additionalContext.
-  [ "$harness" = "grok" ] && return 1
+  # The Grok adapter passes additionalContext through on PreToolUse and
+  # PostToolUse only; Grok discards it on every other event.
+  if [ "$harness" = "grok" ]; then
+    case "$EVENT" in
+      PreToolUse|PostToolUse) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
   # Repository hook producers establish these as the events whose
   # hookSpecificOutput.additionalContext reaches the model: SessionStart and
   # UserPromptSubmit producers, a PreToolUse producer, and the Codex/Claude
@@ -1486,7 +1491,8 @@ done
 timeout_warning_emitted=0
 if [ -n "$pending_timeout_warning" ]; then
   # A successful stdout write is not sufficient evidence of delivery. Several
-  # lifecycle events discard additionalContext (and Grok never delivers it),
+  # lifecycle events discard additionalContext (Grok delivers it only on
+  # PreToolUse and PostToolUse),
   # so retain the claimed records until a demonstrated context-delivering event
   # can carry this warning. Delaying a warning is recoverable; deleting one
   # before the model can see it is not.

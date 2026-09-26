@@ -59,6 +59,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hq-monitor-session-hook.sh\" wait",
+            "asyncRewake": true,
+            "timeout": 86400
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" Stop",
             "timeout": 300
           }

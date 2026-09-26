@@ -3,6 +3,24 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.171-beta.4
+
+- promote 2026-09-25 (hq monitor policy and hooks): `hq-core-staging` now guides
+  Claude, Codex, and Grok toward `hq monitor` for long waits, with check-ins
+  every 55 minutes. The guard and hook registrations query `monitor.enabled`
+  through hq-cli; hq-cli owns the flag value. Event delivery requires
+  hq-cli 5.203.0 or later.
+
+- promote 2026-09-25 (`/deploy` owner comment routes): the deploy skill now
+  documents the owner comment routes on hq-deploy —
+  `GET/POST /api/apps/:id/manage/comments` and
+  `PATCH /api/apps/:id/manage/comments/:commentId` — so an agent or CLI can
+  read, add, and resolve comments with the normal HQ login, including on gated
+  deploys. It warns that `/api/apps/:id/comments` is the in-page widget route
+  and always returns 403 outside a browser, and that `commentsEnabled` must be
+  set before the upload for the current deploy to include the widget. No action
+  beyond `/update-hq`.
+
 ## Release: v15.0.166-beta.1
 
 - fix 2026-09-24 (vault prefix grants + work-mesh notes): hq-pro #3662 made

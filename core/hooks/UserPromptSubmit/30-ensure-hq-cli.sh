@@ -11,6 +11,7 @@
 # On every prompt:
 #   * a current, working hq resolves on PATH   -> fully silent no-op (common case).
 #   * hq resolves but is broken or too old     -> treat it as missing and repair.
+#   * hq --version times out                   -> unknown; stay silent and do not install.
 #   * hq is installed but NOT on that PATH     -> append its dir to env.PATH in
 #                                                 settings.local.json (auto-fix).
 #   * hq is missing entirely                   -> bounded, once-per-cooldown
@@ -27,10 +28,10 @@
 #
 # Contract:
 #   * Advisory only — ALWAYS exits 0 (fail-soft); never blocks the prompt.
-#   * The npm install is bounded by `timeout` and gated by a cooldown stamp so a
-#     persistently-broken environment never re-runs npm on every prompt. The
-#     cheap auto-fix (a JSON edit) is NOT cooldown-gated — it self-heals to
-#     silence on the next prompt once the settings PATH includes hq.
+#   * The global install is bounded by `timeout` and gated by a cooldown stamp,
+#     so a persistently-broken environment never re-runs an installer on every
+#     prompt. The cheap auto-fix (a JSON edit) is NOT cooldown-gated — it
+#     self-heals to silence once the settings PATH includes hq.
 #   * stdout is added to the model's context by Claude Code, so anything printed
 #     is deliberate, tagged context. Silence = print nothing.
 #
@@ -125,26 +126,44 @@ stop_watchdog() {
 }
 
 capture_hq_version_bounded() {
-  local binary="$1" output_file cmd_pid watchdog_pid rc=0
+  local binary="$1" output_file timeout_file cmd_pid watchdog_pid rc=0
   output_file="${TMPDIR:-/tmp}/hq-cli-version.$$.out"
+  timeout_file="${output_file}.timeout"
   rm -f "$output_file" 2>/dev/null || true
+  rm -f "$timeout_file" 2>/dev/null || true
   HQ_NO_UPDATE_CHECK=1 "$binary" --version >"$output_file" 2>/dev/null &
   cmd_pid=$!
-  ( sleep "$VERSION_TIMEOUT" 2>/dev/null; kill "$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
+  (
+    if sleep "$VERSION_TIMEOUT" 2>/dev/null; then
+      : > "$timeout_file" 2>/dev/null
+      if command -v pkill >/dev/null 2>&1; then pkill -TERM -P "$cmd_pid" 2>/dev/null || true; fi
+      kill "$cmd_pid" 2>/dev/null
+    fi
+  ) >/dev/null 2>&1 &
   watchdog_pid=$!
   wait "$cmd_pid" 2>/dev/null || rc=$?
   stop_watchdog "$watchdog_pid"
+  if [ -f "$timeout_file" ]; then
+    rm -f "$output_file" "$timeout_file" 2>/dev/null || true
+    return 124
+  fi
   if [ "$rc" -eq 0 ]; then
     cat "$output_file" 2>/dev/null || rc=1
   fi
-  rm -f "$output_file" 2>/dev/null || true
+  rm -f "$output_file" "$timeout_file" 2>/dev/null || true
   return "$rc"
 }
 
 hq_binary_usable() {
-  local binary="$1" output version
+  local binary="$1" output version probe_rc
   [ -x "$binary" ] || return 1
-  output="$(capture_hq_version_bounded "$binary")" || return 1
+  if output="$(capture_hq_version_bounded "$binary")"; then
+    :
+  else
+    probe_rc=$?
+    [ "$probe_rc" -eq 124 ] && return 2
+    return 1
+  fi
   version="$(printf '%s' "$output" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   [ -n "$version" ] || return 1
   version_at_least "$version" "$MIN_VERSION"
@@ -154,7 +173,7 @@ hq_binary_usable() {
 # PATH? Never execute a binary merely because a repo-controlled settings file
 # names its directory.
 hq_in_path() {
-  local sp="$1" allow_configured="${2:-0}" d oldifs trusted_dir=""
+  local sp="$1" allow_configured="${2:-0}" d oldifs trusted_dir="" probe_rc saw_unknown=0
   [ -n "$sp" ] || return 1
   if [ "$allow_configured" != "1" ]; then
     trusted_dir="$(locate_hq_dir)" || return 1
@@ -163,14 +182,20 @@ hq_in_path() {
   for d in $sp; do
     IFS="$oldifs"
     if [ -n "$d" ]; then
-      if [ "$allow_configured" = "1" ] && hq_binary_usable "$d/hq"; then
-        return 0
+      if [ "$allow_configured" = "1" ] && [ -x "$d/hq" ]; then
+        if hq_binary_usable "$d/hq"; then
+          return 0
+        else
+          probe_rc=$?
+          [ "$probe_rc" -eq 2 ] && saw_unknown=1
+        fi
       fi
       if [ -n "$trusted_dir" ] && [ "$d" = "$trusted_dir" ]; then return 0; fi
     fi
     IFS=':'
   done
   IFS="$oldifs"
+  [ "$saw_unknown" -eq 1 ] && return 2
   return 1
 }
 
@@ -203,18 +228,30 @@ pnpm_global_bin() {
 # pnpm's global bin (the usual managed install), then npm's. Prints the dir
 # (no trailing binary) or nothing.
 locate_hq_dir() {
-  local hqpath bin candidate
+  local hqpath bin candidate probe_rc saw_unknown=0
   hqpath="$(command -v hq 2>/dev/null)" || hqpath=""
-  if [ -n "$hqpath" ] && hq_binary_usable "$hqpath"; then dirname "$hqpath"; return 0; fi
-  bin="$(pnpm_global_bin)" || bin=""
-  if [ -n "$bin" ] && hq_binary_usable "$bin/hq"; then printf '%s\n' "$bin"; return 0; fi
-  bin="$(npm_global_bin)" || bin=""
-  if [ -n "$bin" ] && hq_binary_usable "$bin/hq"; then printf '%s\n' "$bin"; return 0; fi
-  candidate="${HOME:-}/.local/bin/hq"
-  if [ -n "${HOME:-}" ] && hq_binary_usable "$candidate"; then
-    printf '%s\n' "${HOME}/.local/bin"
-    return 0
+  if [ -n "$hqpath" ]; then
+    if hq_binary_usable "$hqpath"; then dirname "$hqpath"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
   fi
+  bin="$(pnpm_global_bin)" || bin=""
+  if [ -n "$bin" ] && [ -x "$bin/hq" ]; then
+    if hq_binary_usable "$bin/hq"; then printf '%s\n' "$bin"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
+  fi
+  bin="$(npm_global_bin)" || bin=""
+  if [ -n "$bin" ] && [ -x "$bin/hq" ]; then
+    if hq_binary_usable "$bin/hq"; then printf '%s\n' "$bin"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
+  fi
+  candidate="${HOME:-}/.local/bin/hq"
+  if [ -n "${HOME:-}" ] && [ -x "$candidate" ]; then
+    if hq_binary_usable "$candidate"; then
+      printf '%s\n' "${HOME}/.local/bin"
+      return 0
+    else
+      probe_rc=$?
+      [ "$probe_rc" -eq 2 ] && saw_unknown=1
+    fi
+  fi
+  [ "$saw_unknown" -eq 1 ] && return 2
   return 1
 }
 
@@ -325,18 +362,35 @@ if [ -n "$SP" ]; then
   if hq_in_path "$SP" "$SP_LOCAL"; then
     [ -f "$STAMP" ] && rm -f "$STAMP" 2>/dev/null || true
     exit 0
+  else
+    PATH_PROBE_RC=$?
+    # A slow version command is unknown, not evidence that the installed CLI
+    # is broken. Leave it untouched and do not start a global restore.
+    [ "$PATH_PROBE_RC" -eq 2 ] && exit 0
   fi
 else
   # No configured PATH to read — fall back to the ambient one.
   AMBIENT_HQ="$(command -v hq 2>/dev/null || true)"
-  if [ -n "$AMBIENT_HQ" ] && hq_binary_usable "$AMBIENT_HQ"; then
-    [ -f "$STAMP" ] && rm -f "$STAMP" 2>/dev/null || true
-    exit 0
+  if [ -n "$AMBIENT_HQ" ]; then
+    if hq_binary_usable "$AMBIENT_HQ"; then
+      [ -f "$STAMP" ] && rm -f "$STAMP" 2>/dev/null || true
+      exit 0
+    else
+      AMBIENT_PROBE_RC=$?
+      [ "$AMBIENT_PROBE_RC" -eq 2 ] && exit 0
+    fi
   fi
 fi
 
 # --- 2. hq exists somewhere, just not on the settings PATH -> auto-fix ----
-HQ_DIR="$(locate_hq_dir)" || HQ_DIR=""
+HQ_DIR="$(locate_hq_dir)"
+LOCATE_HQ_RC=$?
+if [ "$LOCATE_HQ_RC" -eq 2 ]; then
+  # At least one existing hq candidate timed out and no known-good install was
+  # found. A probe timeout alone must never trigger a package-manager install.
+  exit 0
+fi
+if [ "$LOCATE_HQ_RC" -ne 0 ]; then HQ_DIR=""; fi
 if [ -n "$HQ_DIR" ]; then
   if add_dir_to_settings_path "$HQ_DIR" "$SP"; then
     rm -f "$STAMP" 2>/dev/null || true
@@ -384,8 +438,8 @@ if [ -z "$INSTALL_CMD" ]; then
   fi
 fi
 
-# Bound the install so a stalled npm cannot hang the prompt. `timeout` is absent
-# on stock macOS, so fall back to the portable watchdog above.
+# Bound the install so a stalled package manager cannot hang the prompt.
+# `timeout` is absent on stock macOS, so use the portable watchdog above.
 if command -v timeout >/dev/null 2>&1; then
   timeout "$INSTALL_TIMEOUT" sh -c "$INSTALL_CMD" >/dev/null 2>&1 || true
 else
@@ -395,7 +449,14 @@ fi
 # PATH may cache the old lookup within this shell.
 hash -r 2>/dev/null || true
 
-HQ_DIR="$(locate_hq_dir)" || HQ_DIR=""
+HQ_DIR="$(locate_hq_dir)"
+POST_INSTALL_LOCATE_RC=$?
+if [ "$POST_INSTALL_LOCATE_RC" -eq 2 ]; then
+  # The install may have completed, but a slow version response cannot prove
+  # that its binary is still missing.
+  exit 0
+fi
+if [ "$POST_INSTALL_LOCATE_RC" -ne 0 ]; then HQ_DIR=""; fi
 if [ -n "$HQ_DIR" ]; then
   rm -f "$STAMP" 2>/dev/null || true
   if add_dir_to_settings_path "$HQ_DIR" "$SP"; then

@@ -1,5 +1,21 @@
 ## [Unreleased]
 
+### Added: hq monitor policies and hook delivery (MON-2, 2026-09-25)
+- Added the `monitor.enabled` hq-flags gate, resolved by hq-cli's
+  `hq monitor enabled` command, for the cross-runtime wait guard and event
+  delivery hooks. The guard covers long foreground sleeps,
+  polling loops, and GitHub watch commands. Delivery hooks drain events only
+  when a monitor is active or its inbox has content.
+- Added the hard `hq-monitor-for-long-running-waits` policy with check-ins every
+  55 minutes. Updated `claude-bg-shell-pressure-reap` to prefer persistent hq
+  monitor watches.
+- The Claude Stop waiter uses `asyncRewake`; Codex and Grok get events at their
+  next interaction. The key is owned by hq-cli; event delivery needs
+  hq-cli 5.203.0 or later.
+
+### Fixed — hq CLI hooks preserve newer global installs
+- The UserPromptSubmit repair hook now treats a timed-out `hq --version` probe as unknown and leaves the install untouched. The SessionStart floor updater bounds its probe and skips pnpm restore when an equal or newer `hq` is available elsewhere on PATH or in npm-global. Regression coverage proves timeout silence, newer npm-global preservation, and restore when `hq` is truly missing.
+
 ### Fixed — Outpost instance tokens stay out of process arguments
 - `hq-job-run.sh` and `hq-job-probe.sh` now give curl the instance-auth header through a mode-600 temporary file. The file is removed after the request and by an exit trap, including transport failures. Identity resolution and header creation suppress xtrace while handling the token, so `bash -x` does not print its value. Request headers, timeouts, retries, and exit behavior are unchanged.
 - The CI regression verifies curl argv and `/proc` cmdline, xtrace and output, the header received by the curl stub, file permissions, and cleanup after success and failure. Rotate existing instance tokens after this fix is released.

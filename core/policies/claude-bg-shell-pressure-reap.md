@@ -1,13 +1,13 @@
 ---
 id: claude-bg-shell-pressure-reap
-title: Idle background Bash tasks are reaped by Claude Code's PSI watcher, not by OOM — poll with Monitor or a detached process
+title: Idle background Bash tasks are reaped by Claude Code's PSI watcher, not by OOM — poll with hq monitor or a detached process
 when: run_in_background || ((oom || (low && memory)) && (background || poller || killed || stopped))
 on: [PreToolUse, UserPromptSubmit]
 enforcement: hard
 public: true
-version: 2
+version: 3
 created: 2026-09-15
-updated: 2026-09-15
+updated: 2026-09-25
 source: incident-response
 learned_from: bg-task-memory-kill-investigation-2026-09-14
 ---
@@ -20,12 +20,12 @@ Scope: Claude Code sessions only. The `run_in_background` fact is emitted only f
    - the user has not interacted for 30 minutes,
    - the main loop is not busy, and
    - no subagent, teammate, or workflow task is running.
-   Monitors, print-mode/SDK sessions, and processes genuinely detached from the harness (forked into a new session, see rule 3) are exempt.
+   hq monitor tasks, print-mode/SDK sessions, and processes genuinely detached from the harness (forked into a new session, see rule 3) are exempt.
 
 2. **Do not diagnose it with `free`.** Free and available RAM are never compared. A host with 30+ GB "available" still trips the trigger when page-cache refaults or CPU saturation stretch reclaim. Use `/proc/pressure/memory` (avg10/avg60), `/proc/pressure/cpu`, and `workingset_refault_file` in `/proc/vmstat`. Before blaming the kernel, confirm with `journalctl -k | grep -i oom` and the cgroup's `memory.events`.
 
 3. **HARD: do not idle-wait on external state with a harness-tracked background task, and never re-arm one after a memory-pressure kill.** A `sleep`/`until`/`tail` loop waiting on a log, CI run, deploy, or lane is exactly what the reap targets once the session goes idle, and a re-armed loop is reaped again at the next stall burst. Long builds and test suites that do real work may still run as background tasks (see `hq-foreground-timeout-killed-by-harness-deadline`). Write their output to a log so a reaped run can be diagnosed and re-run. For waiting, pick something that survives:
-   - **Preferred:** the Monitor tool, whose tasks never get the pressure-reap listener.
+   - **Preferred:** `hq monitor start --description '<what changed>' --command 'until <check>; do sleep 30; done' --persistent` for waits that may pass 30 minutes. Its delivery path is separate from harness-tracked background Bash tasks.
    - A **bounded** detached waiter that writes a status file, plus a wake path that reads it (Monitor, `ScheduleWakeup`, or a cron job). It needs a hard deadline, a recorded PID, and a stop path, so it cannot pile up orphans. On Linux:
      ```bash
      rm -f "$dir/poll.pid"   # a stale PID file would satisfy the wait below

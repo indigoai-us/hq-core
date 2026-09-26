@@ -5,12 +5,38 @@ ROOT="$(git rev-parse --show-toplevel)"
 HOOK="$ROOT/.claude/hooks/check-hq-update.sh"
 BASH_BIN="$(type -P bash)"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+cleanup() {
+  if [ -f "$TMP/hq-probe.pid" ]; then
+    probe_pid="$(cat "$TMP/hq-probe.pid" 2>/dev/null || true)"
+    [ -z "$probe_pid" ] || kill "$probe_pid" 2>/dev/null || true
+  fi
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 pass() { printf '  ok: %s\n' "$*"; }
 
 mkdir -p "$TMP/bin" "$TMP/core/scripts" "$TMP/workspace"
+mkdir -p "$TMP/shadow-tools"
+for utility in awk bash cat date dirname grep head mkdir mv nohup perl pkill rm sed setsid sh sleep stat timeout; do
+  utility_path="$(command -v "$utility" 2>/dev/null || true)"
+  [ -n "$utility_path" ] && ln -s "$utility_path" "$TMP/shadow-tools/$utility"
+done
+# Restricted PATH for the shadow cases. Git Bash copies executables on `ln -s`,
+# and the copies cannot load the MSYS runtime DLL unless its directory is on
+# PATH, so every utility in the hook would fail there. Add that directory on
+# Windows only, after checking it holds no hq, npm or pnpm that could leak in.
+SHADOW_PATH="$TMP/bin:$TMP/shadow-tools"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    msys_runtime_dir="$(dirname "$BASH_BIN")"
+    for leaked in hq npm pnpm; do
+      [ ! -e "$msys_runtime_dir/$leaked" ] || fail "MSYS runtime dir $msys_runtime_dir contains $leaked"
+    done
+    SHADOW_PATH="$SHADOW_PATH:$msys_runtime_dir"
+    ;;
+esac
 if ! command -v timeout >/dev/null 2>&1; then
   command -v perl >/dev/null 2>&1 || fail 'neither timeout nor Perl is available for bounded hook tests'
   cat > "$TMP/bin/timeout" <<'EOF'
@@ -51,8 +77,8 @@ EOF
 chmod +x "$TMP/non-gnu-bin/timeout"
 
 run_hook() {
-  local mode="$1" label="$2" extra_path="${3:-}" rc=0 hook_path
-  hook_path="$TMP/bin:$PATH"
+  local mode="$1" label="$2" extra_path="${3:-}" runtime_path="${4:-}" rc=0 hook_path
+  hook_path="${runtime_path:-$TMP/bin:$PATH}"
   [ -z "$extra_path" ] || hook_path="$extra_path:$hook_path"
   set +e
   timeout 8s env \
@@ -61,7 +87,7 @@ run_hook() {
     HQ_TEST_GH_MODE="$mode" \
     HQ_TEST_GH_CALLS="$TMP/$label.gh.calls" \
     PATH="$hook_path" \
-    bash "$HOOK" > "$TMP/$label.out" 2> "$TMP/$label.err"
+    "$BASH_BIN" "$HOOK" > "$TMP/$label.out" 2> "$TMP/$label.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || fail "$label check returned $rc instead of completing within eight seconds"
@@ -170,3 +196,93 @@ jq -e '.latest == "15.0.200"' "$TMP/workspace/.hq-update-check/last-check.json" 
 grep -Fq '<hq-update-available>' "$TMP/success.out" \
   || fail 'successful release lookup did not preserve the update banner'
 pass 'successful release lookup retains the existing banner and cache behavior'
+
+# A current pnpm-bin shadow must not be replaced when npm-global already has a
+# newer hq. The npm prefix is intentionally outside PATH to exercise discovery.
+mkdir -p "$TMP/npm-global/bin"
+printf '%s\n' '#!/usr/bin/env bash' 'if [ "${1:-}" = "--version" ]; then printf "hq 5.200.0\\n"; fi' \
+  > "$TMP/npm-global/bin/hq"
+chmod +x "$TMP/npm-global/bin/hq"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'if [ "${1:-}" = "config" ] && [ "${2:-}" = "get" ] && [ "${3:-}" = "prefix" ]; then printf "%s\\n" "'"$TMP/npm-global"'"; exit 0; fi' \
+  'exit 0' > "$TMP/bin/npm"
+chmod +x "$TMP/bin/npm"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "pnpm-called\\n" >> "'"$TMP/pnpm.calls"'"' 'exit 0' \
+  > "$TMP/bin/pnpm"
+chmod +x "$TMP/bin/pnpm"
+printf '%s\n' '#!/usr/bin/env bash' 'if [ "${1:-}" = "--version" ]; then printf "hq 5.110.0\\n"; fi' \
+  > "$TMP/bin/hq"
+chmod +x "$TMP/bin/hq"
+rm -f "$TMP/pnpm.calls" "$TMP/workspace/.hq-update-check/hq-cli-autoupdate.stamp"
+run_hook ok newer-npm-global "" "$SHADOW_PATH"
+[ ! -s "$TMP/pnpm.calls" ] \
+  || fail 'pnpm restore ran despite a newer npm-global hq'
+if grep -Fq '<hq-cli-auto-update>' "$TMP/newer-npm-global.out"; then
+  fail 'newer npm-global hq did not suppress the floor update'
+fi
+pass 'newer npm-global hq prevents pnpm restore'
+
+# Control: with no npm-global prefix and no other hq on PATH, the same old hq
+# still gets the floor update. Without this, the suppression cases above and
+# below could pass because the fixture never reaches the update at all.
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$TMP/bin/npm"
+chmod +x "$TMP/bin/npm"
+rm -f "$TMP/pnpm.calls" "$TMP/workspace/.hq-update-check/hq-cli-autoupdate.stamp"
+run_hook ok old-hq-no-alternate "" "$SHADOW_PATH"
+grep -Fq '<hq-cli-auto-update>' "$TMP/old-hq-no-alternate.out" \
+  || fail 'old hq with no equal-or-newer alternate did not get the floor update'
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) ;;
+  *)
+    # The restore is detached; give it a few seconds to reach the pnpm stub.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$TMP/pnpm.calls" ] && break; sleep 0.5; done
+    [ -s "$TMP/pnpm.calls" ] \
+      || fail 'old hq with no equal-or-newer alternate did not run the pnpm restore'
+    ;;
+esac
+pass 'old hq with no equal-or-newer alternate still gets the floor update'
+
+# An alternate hq whose --version times out is unknown, not older. The updater
+# must not replace the active hq while that install may be newer.
+mkdir -p "$TMP/slow-global/bin"
+cat > "$TMP/slow-global/bin/hq" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then exec sleep 30; fi
+EOF
+chmod +x "$TMP/slow-global/bin/hq"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'if [ "${1:-}" = "config" ] && [ "${2:-}" = "get" ] && [ "${3:-}" = "prefix" ]; then printf "%s\\n" "'"$TMP/slow-global"'"; exit 0; fi' \
+  'exit 0' > "$TMP/bin/npm"
+chmod +x "$TMP/bin/npm"
+rm -f "$TMP/pnpm.calls" "$TMP/workspace/.hq-update-check/hq-cli-autoupdate.stamp"
+HQ_CLI_VERSION_TIMEOUT=1 run_hook ok alternate-version-timeout "" "$SHADOW_PATH"
+if grep -Fq '<hq-cli-auto-update>' "$TMP/alternate-version-timeout.out"; then
+  fail 'timed-out alternate hq version probe allowed the floor update'
+fi
+pass 'timed-out alternate hq version probe does not trigger an update'
+
+# A slow --version result is unknown. It must not hold SessionStart or cause an
+# automatic floor update based on a partial/empty probe result. No npm-global
+# prefix here, so only the active probe can suppress the update.
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$TMP/bin/npm"
+chmod +x "$TMP/bin/npm"
+cat > "$TMP/bin/hq" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then
+  printf '%s\\n' "\$\$" > "$TMP/hq-probe.pid"
+  exec sleep 30
+fi
+EOF
+chmod +x "$TMP/bin/hq"
+rm -f "$TMP/pnpm.calls" "$TMP/workspace/.hq-update-check/hq-cli-autoupdate.stamp"
+SECONDS=0
+HQ_CLI_VERSION_TIMEOUT=1 run_hook ok cli-version-timeout "" "$SHADOW_PATH"
+version_timeout_seconds="$SECONDS"
+[ "$version_timeout_seconds" -lt 8 ] \
+  || fail "timed-out hq version probe was not bounded (${version_timeout_seconds}s)"
+[ ! -s "$TMP/pnpm.calls" ] \
+  || fail 'timed-out hq version probe triggered pnpm restore'
+if grep -Fq '<hq-cli-auto-update>' "$TMP/cli-version-timeout.out"; then
+  fail 'timed-out hq version probe emitted an auto-update banner'
+fi
+pass 'timed-out CLI version probe does not trigger an update'

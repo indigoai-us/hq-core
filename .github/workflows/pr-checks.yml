@@ -1220,6 +1220,8 @@ jobs:
         run: bash core/scripts/tests/validate-policy-frontmatter.test.sh
       - name: Emit contract — tsv shape, scope precedence, enforcement-tiered depth
         run: bash .claude/hooks/tests/inject-policy-on-trigger-emit.test.sh
+      - name: check-stale-model-pin hook regression test
+        run: bash .claude/hooks/tests/check-stale-model-pin.test.sh
       - name: Case-insensitive policy trigger identifier matching
         run: bash core/scripts/tests/eval-trigger.test.sh
       - name: Policy trigger end-to-end corpus coverage
@@ -1316,6 +1318,10 @@ jobs:
         run: bash core/scripts/tests/prefer-native-capabilities-trigger.test.sh
       - name: Background-shell pressure-reap policy trigger + run_in_background fact
         run: bash core/scripts/tests/claude-bg-shell-pressure-reap-trigger.test.sh
+      - name: hq monitor policy trigger contract
+        run: bash core/scripts/tests/hq-monitor-policy-trigger.test.sh
+      - name: hq monitor guard and delivery hook contract
+        run: bash core/scripts/tests/hq-monitor-hooks.test.sh
       - name: Codex preflight pull path emits the policy + Grok rules pointer
         run: bash core/scripts/tests/codex-preflight-policies.test.sh
       - name: Codex output-style bridge
