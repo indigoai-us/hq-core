@@ -11,9 +11,9 @@
 #      fully detached background remediation (`--remediate` mode of this same
 #      script) corroborates with `hq doctor --json` (the sync family, US-015
 #      hq-cli), runs `hq doctor --fix --yes` for auto-fixable findings,
-#      re-verifies, and files ONE summary of unresolved checks per install per
-#      24h window via `hq feedback bug` (diagnostics attach component versions
-#      server-side).
+#      re-verifies, then sends normalized client-health events directly to
+#      Sentry when the company flag is on. Flag-off and older CLI installs keep
+#      filing the existing `hq feedback bug` summary.
 #
 # Cautions paid for in blood:
 #   - The cooldown window is claimed ATOMICALLY and the stamp is written BEFORE
@@ -51,6 +51,7 @@
 if [ "${1:-}" = "--remediate" ]; then
   # Best-effort throughout; every failure is silent.
   {
+    umask 077
     HQ_ROOT="${2:-$PWD}"
     STATE_DIR="$HQ_ROOT/workspace/.hq-client-health"
 
@@ -199,7 +200,7 @@ if [ "${1:-}" = "--remediate" ]; then
       # Newer CLI versions resolve the opt-in hq-flags gate. Older versions
       # reject the private option, so fall back to ordinary JSON output. Both
       # invocations are bounded and raw JSON stays in this process.
-      local document rc
+      local output_file="${1:-}" document rc
       document=$(cd "$HQ_ROOT" 2>/dev/null && bounded 120 hq doctor --json --client-health-report 2>/dev/null)
       rc=$?
       if [ "$rc" -ne 0 ] || [ -z "$document" ]; then
@@ -207,6 +208,9 @@ if [ "${1:-}" = "--remediate" ]; then
         rc=$?
       fi
       [ "$rc" -eq 0 ] || return 0
+      if [ -n "$output_file" ]; then
+        (umask 077; printf '%s\n' "$document" > "$output_file") 2>/dev/null || true
+      fi
       printf '%s\n' "$document" | sync_findings
     }
 
@@ -217,12 +221,22 @@ if [ "${1:-}" = "--remediate" ]; then
     # Attempt the allowlisted safe repairs, then re-verify. Only findings that
     # SURVIVE the fix pass are report-worthy — a fixed issue files no bug.
     ( cd "$HQ_ROOT" 2>/dev/null && bounded 300 hq doctor --fix --yes --json >/dev/null 2>&1 )
-    REMAINING=$(doctor_degraded)
-    [ -n "$REMAINING" ] || exit 0
+    FIX_RC=$?
+    case "$FIX_RC" in
+      124|137|143) FIX_OUTCOME="fix_timed_out" ;;
+      0) FIX_OUTCOME="not_auto_fixable" ;;
+      *) FIX_OUTCOME="fix_failed" ;;
+    esac
+    POST_FIX_JSON_FILE=$(mktemp "$STATE_DIR/post-fix.XXXXXX" 2>/dev/null || true)
+    REMAINING=$(doctor_degraded "$POST_FIX_JSON_FILE")
+    if [ -z "$REMAINING" ]; then
+      [ -n "$POST_FIX_JSON_FILE" ] && rm -f "$POST_FIX_JSON_FILE" 2>/dev/null
+      exit 0
+    fi
 
-    # One bounded summary per install, not one report per company/check.
-    # Reserve the attempt BEFORE sending: a timeout may mean the server accepted
-    # the report but the response was lost. Retrying must not flood Slack.
+    # One bounded attempt per install, not one attempt per company/check.
+    # Reserve it BEFORE sending: a timeout may mean either route accepted the
+    # report but the response was lost. Retrying could duplicate the report.
     NOW=$(date +%s)
     BUG_LOCK="$STATE_DIR/bugs/summary.lock"
     ATTEMPT_STAMP="$STATE_DIR/bugs/report-attempt.stamp"
@@ -230,18 +244,38 @@ if [ "${1:-}" = "--remediate" ]; then
       LOCK_MTIME=$(stat -c %Y "$BUG_LOCK" 2>/dev/null || stat -f %m "$BUG_LOCK" 2>/dev/null || echo "$NOW")
       [ "$((NOW - LOCK_MTIME))" -gt 3600 ] && rm -f "$BUG_LOCK" 2>/dev/null
     fi
-    ( set -C; : > "$BUG_LOCK" ) 2>/dev/null || exit 0
+    if ! ( set -C; : > "$BUG_LOCK" ) 2>/dev/null; then
+      [ -n "$POST_FIX_JSON_FILE" ] && rm -f "$POST_FIX_JSON_FILE" 2>/dev/null
+      exit 0
+    fi
     if [ -f "$ATTEMPT_STAMP" ]; then
       STAMP_MTIME=$(stat -c %Y "$ATTEMPT_STAMP" 2>/dev/null || stat -f %m "$ATTEMPT_STAMP" 2>/dev/null || echo "$NOW")
       if [ "$((NOW - STAMP_MTIME))" -lt 86400 ]; then
         rm -f "$BUG_LOCK" 2>/dev/null
+        [ -n "$POST_FIX_JSON_FILE" ] && rm -f "$POST_FIX_JSON_FILE" 2>/dev/null
         exit 0
       fi
     fi
     if ! ( : > "$ATTEMPT_STAMP" ) 2>/dev/null; then
       rm -f "$BUG_LOCK" 2>/dev/null
+      [ -n "$POST_FIX_JSON_FILE" ] && rm -f "$POST_FIX_JSON_FILE" 2>/dev/null
       exit 0
     fi
+
+    # Newer hq-cli sends the normalized event directly to Sentry when every
+    # affected company has enabled the default-off flag. Older CLIs, a disabled
+    # flag, or a failed send retain the existing feedback report path below.
+    if [ -n "$POST_FIX_JSON_FILE" ] && [ -s "$POST_FIX_JSON_FILE" ]; then
+      if ( cd "$HQ_ROOT" 2>/dev/null && bounded 60 hq doctor \
+          --client-health-sentry \
+          --json-input "$POST_FIX_JSON_FILE" \
+          --client-health-fix-outcome "$FIX_OUTCOME" >/dev/null 2>&1 ); then
+        ( : > "$STATE_DIR/bugs/summary.stamp" ) 2>/dev/null || true
+        rm -f "$POST_FIX_JSON_FILE" "$BUG_LOCK" 2>/dev/null
+        exit 0
+      fi
+    fi
+    [ -n "$POST_FIX_JSON_FILE" ] && rm -f "$POST_FIX_JSON_FILE" 2>/dev/null
 
     # Only sanitised IDs leave the machine. Cap both rows and ID length so a
     # large install still produces a small report; raw messages stay local.
@@ -304,6 +338,80 @@ command -v hq >/dev/null 2>&1 || exit 0
 # any hooks-only copy of the tree.
 [ -f "$HQ_ROOT/core/core.yaml" ] || exit 0
 [ -f "$HQ_ROOT/companies/manifest.yaml" ] || exit 0
+
+# Display the latest locally stored next step once. The display claim uses a
+# lock and a result id, so parallel SessionStarts cannot print it twice.
+show_last_result_once() {
+  local result_file="$STATE_DIR/last-result.json"
+  local lock_file="$STATE_DIR/last-result-show.lock"
+  local shown_file="$STATE_DIR/last-result.shown"
+  local data result_id check_class step previous temp_file now lock_mtime
+  [ -f "$result_file" ] || return 0
+
+  # A killed hook can leave the exclusive display claim behind. This section
+  # only reads a small local file and exits quickly, so age out abandoned claims.
+  if [ -f "$lock_file" ]; then
+    now=$(date +%s)
+    lock_mtime=$(stat -c %Y "$lock_file" 2>/dev/null || stat -f %m "$lock_file" 2>/dev/null || echo "$now")
+    [ "$((now - lock_mtime))" -gt 300 ] && rm -f "$lock_file" 2>/dev/null
+  fi
+  ( set -C; : > "$lock_file" ) 2>/dev/null || return 0
+
+  data=""
+  if command -v jq >/dev/null 2>&1; then
+    data=$(jq -er '
+      select(type == "object" and (.result_id | type == "string") and (.check_class | type == "string"))
+      | [.result_id, .check_class] | @tsv
+    ' "$result_file" 2>/dev/null) || data=""
+  elif command -v node >/dev/null 2>&1; then
+    data=$(node -e '
+      try {
+        const fs = require("node:fs");
+        const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        if (value && typeof value.result_id === "string" && typeof value.check_class === "string") {
+          process.stdout.write(`${value.result_id}\t${value.check_class}`);
+        }
+      } catch {}
+    ' "$result_file" 2>/dev/null) || data=""
+  fi
+  result_id="${data%%$'\t'*}"
+  check_class="${data#*$'\t'}"
+  if ! [[ "$result_id" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+    rm -f "$lock_file" 2>/dev/null
+    return 0
+  fi
+
+  case "$check_class" in
+    sync.update.core)
+      step="HQ couldn't update itself automatically. Run hq update or /update-hq, then restart this session." ;;
+    sync.journal.personal|sync.journal.personal_vault)
+      step="HQ hasn't synced your personal files in over 7 days and the automatic fix did not work. Run hq sync and check the result. If it fails, run hq doctor and send the output to support." ;;
+    sync.journal.company)
+      step="HQ hasn't synced this company's files in over 7 days and the automatic fix did not work. Run hq sync and check the result. If it fails, run hq doctor and send the output to support." ;;
+    sync.manifest.personal|sync.manifest.personal_vault)
+      step="HQ couldn't read your personal sync list. Run hq doctor --fix. If it still fails, run hq login again." ;;
+    sync.manifest.company)
+      step="HQ couldn't read a company sync manifest. Run hq doctor --fix. If it still fails, run hq login again." ;;
+    other)
+      step="HQ still reports a sync health issue after its automatic fix. Run hq doctor and send the output to support." ;;
+    *)
+      rm -f "$lock_file" 2>/dev/null
+      return 0 ;;
+  esac
+
+  previous=$(cat "$shown_file" 2>/dev/null || true)
+  if [ "$previous" != "$result_id" ]; then
+    temp_file="$shown_file.$$"
+    if (umask 077; printf '%s\n' "$result_id" > "$temp_file") 2>/dev/null \
+        && mv -f "$temp_file" "$shown_file" 2>/dev/null; then
+      printf '<hq-client-health-result>\n%s\n</hq-client-health-result>\n' "$step"
+    else
+      rm -f "$temp_file" 2>/dev/null
+    fi
+  fi
+  rm -f "$lock_file" 2>/dev/null
+}
+show_last_result_once
 
 # Cheap cooldown fast path. This is an OPTIMISATION, not the guard: the
 # authoritative cooldown decision is re-made below under the exclusive claim.
@@ -396,8 +504,9 @@ rm -f "$LOCK" 2>/dev/null
 cat <<EOF
 <hq-client-health>
 Detected a possible local health issue ($SIGNAL). Background remediation is
-running: hq doctor will corroborate, apply safe fixes (hq doctor --fix), and
-file a deduplicated bug via hq feedback if the issue is not auto-fixable.
+running: hq doctor will corroborate and apply safe fixes (hq doctor --fix).
+Unresolved checks go to Sentry when the company flag is on, or to the existing
+feedback report path on older installs and while the flag is off.
 No action needed in this session.
 </hq-client-health>
 EOF
