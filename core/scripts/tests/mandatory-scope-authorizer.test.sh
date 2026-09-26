@@ -21,9 +21,21 @@ fail() {
   exit 1
 }
 
+REGRESSION_FAILURES=0
+
+expect_exit() {
+  local expected="$1" actual="$2" case_name="$3"
+  if [ "$expected" = "$actual" ]; then
+    echo "PASS: $case_name"
+  else
+    echo "FAIL: $case_name (expected exit $expected, got $actual)" >&2
+    REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1))
+  fi
+}
+
 install_fixture() {
   local bound="${1:-}"
-  rm -rf "$TMP"/*
+  rm -rf "${TMP:?}"/*
   mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts/lib" \
     "$TMP/companies/indigo/settings" "$TMP/companies/otherco/settings" \
     "$TMP/companies/_template" "$TMP/core/docs" "$TMP/personal" \
@@ -100,11 +112,11 @@ payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_in
 rc="$(run_hook "$payload")"
 [ "$rc" = "0" ] || fail "expected allow for literal same-company path with unrelated expansion, got $rc"
 
-echo "[6] Bash allows an unresolved company segment"
+echo "[6] Bash blocks an unresolved company variable fail-closed"
 install_fixture "indigo"
 payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"command":"co=otherco; cat companies/$co/settings/x"}}'
 rc="$(run_hook "$payload")"
-[ "$rc" = "0" ] || fail "expected allow for unresolved company segment, got $rc"
+expect_exit 2 "$rc" "unresolved company variable fails closed"
 
 echo "[7] Bash blocks expansion in the remainder of a company path"
 install_fixture "indigo"
@@ -112,13 +124,13 @@ payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_in
 rc="$(run_hook "$payload")"
 [ "$rc" = "2" ] || fail "expected block for an expansion in a company path, got $rc"
 
-echo "[8] Bash allows a line-continued unresolved company segment"
+echo "[8] Bash blocks a line-continued foreign company variable"
 install_fixture "indigo"
 command=$'co=otherco; cat companies/\\\n$co/settings/x'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name: "Bash", session_id: "sess-bound", cwd: $cwd, tool_input: {command: $command}}')"
 rc="$(run_hook "$payload")"
-[ "$rc" = "0" ] || fail "expected allow for line-continued unresolved company segment, got $rc"
+[ "$rc" = "2" ] || fail "expected block for line-continued foreign company variable, got $rc"
 
 echo "[9] Bash blocks normalized company traversal"
 install_fixture "indigo"
@@ -320,8 +332,6 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$quoted_same" \
 rc="$(run_hook "$payload")"
 [ "$rc" = "0" ] || fail "a quoted literal joining to an in-tenant path must stay allowed, got $rc"
 
-echo "PASS: mandatory-scope-authorizer.test.sh"
-
 echo "[24] bound indigo blocks cross-company Write / Edit / MultiEdit / NotebookEdit"
 install_fixture "indigo"
 for tool in Write Edit MultiEdit; do
@@ -416,3 +426,176 @@ echo "[31] pwd -L fallback accepts a logical HQ root"
   printf '%s' "$payload" | env -u CLAUDE_PROJECT_DIR bash "$TMP/hook-copy.sh" 2>"$TMP/err.txt" || rc=$?
   [ "$rc" = "2" ] || fail "expected pwd -L root fallback to block cross-company read, got $rc"
 )
+
+echo "[32] a bind that becomes visible after the initial reads is rechecked"
+install_fixture ""
+mkdir -p "$TMP/test-bin"
+cat > "$TMP/test-bin/sleep" <<EOF
+#!/usr/bin/env bash
+/bin/sleep "\${1:-0}"
+printf 'company_slug: indigo\\n' > "$TMP/workspace/sessions/sess-bound/meta.yaml"
+EOF
+chmod +x "$TMP/test-bin/sleep"
+payload="$(jq -cn --arg cwd "$TMP" \
+  '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:($cwd + "/companies/indigo/settings/foo.yaml")}}')"
+rc="$(PATH="$TMP/test-bin:$PATH" run_hook "$payload")"
+expect_exit 0 "$rc" "delayed bind is rechecked for the same session"
+if [ ! -f "$TMP/workspace/sessions/sess-bound/meta.yaml" ]; then
+  echo "FAIL: delayed bind became visible" >&2
+  REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1))
+fi
+
+echo "[33] Bash resolves a statically assigned same-company path variable"
+install_fixture "indigo"
+command='p=settings/x; cat companies/indigo/$p'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "statically assigned same-company variable is allowed"
+
+echo "[34] Bash resolves each safe value from a bounded company-path loop"
+install_fixture "indigo"
+command='for p in settings/x settings/y; do cat companies/indigo/$p; done'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "safe company-path loop values are allowed"
+
+echo "[35] Bash blocks a statically resolved other-company variable"
+install_fixture "indigo"
+command='co=otherco; cat companies/$co/settings/x'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "variable resolving to another company is blocked"
+
+echo "[36] Bash blocks a loop value that traverses out of the bound company"
+install_fixture "indigo"
+command='for p in settings/x ../../otherco/settings/secret.yaml; do cat companies/indigo/$p; done'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "loop value traversing outside the bound company is blocked"
+
+echo "[37] Bash ignores a foreign-company path in inert heredoc text"
+install_fixture "indigo"
+command=$'gh pr create --body "$(cat <<\'BODY\'\ncompanies/otherco/settings/secret.yaml\nBODY\n)"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "foreign-company path in inert heredoc text is ignored"
+
+echo "[38] Bash blocks a heredoc that redirects output into another company"
+install_fixture "indigo"
+command=$'cat <<\'BODY\' > companies/otherco/settings/generated.yaml\nconfig\nBODY'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "heredoc redirected into another company is blocked"
+
+echo "[39] Bash scans a heredoc executed as a shell script"
+install_fixture "indigo"
+command=$'bash <<\'SCRIPT\'\ncat companies/otherco/settings/secret.yaml\nSCRIPT'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "foreign path in an executed heredoc remains blocked"
+
+echo "[40] Bash blocks company-root globs that can span tenants"
+install_fixture "indigo"
+command='for repo in companies/*/knowledge; do printf %s "$repo"; done'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "company-root glob spanning tenants is blocked"
+
+echo "[41] manifest is allowed beside a foreign company path, which remains blocked"
+install_fixture "indigo"
+command='cat companies/manifest.yaml companies/otherco/settings/x'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "foreign path beside the manifest remains blocked"
+
+echo "[42] Bash ignores a foreign path in a direct GitHub body-file heredoc"
+install_fixture "indigo"
+command=$'gh pr create --body-file - <<\'BODY\'\ncompanies/otherco/settings/secret.yaml\nBODY'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "foreign-company path in a GitHub body-file heredoc is ignored"
+
+echo "[43] Bash does not treat an echoed assignment as a shell variable value"
+install_fixture "indigo"
+command='echo "p=settings/x"; cat companies/indigo/$p'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "text that resembles an assignment does not resolve a variable"
+
+echo "[44] Bash blocks a variable that is reassigned to a traversal"
+install_fixture "indigo"
+command='p=settings/x; p=../../otherco/settings/x; cat companies/indigo/$p'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "reassigned path variable fails closed"
+
+echo "[45] Bash blocks a variable changed by eval before the company path"
+install_fixture "indigo"
+command="p=settings/x; eval 'p=../../otherco/settings/x'; cat companies/indigo/\$p"
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "variable mutation by eval fails closed"
+
+echo "[46] Bash blocks a loop variable reassigned before the company path"
+install_fixture "indigo"
+command='for p in settings/x; do p=../../otherco/settings/x; cat companies/indigo/$p; done'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "reassigned loop variable fails closed"
+
+echo "[47] Bash does not ignore a foreign path inside backtick command substitution"
+install_fixture "indigo"
+command='echo `cat companies/otherco/settings/secret.yaml`'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "backtick command substitution still checks the foreign path"
+
+echo "[48] Bash does not ignore a foreign path inside dollar command substitution"
+install_fixture "indigo"
+command='printf "$(cat companies/otherco/settings/secret.yaml)"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "dollar command substitution still checks the foreign path"
+
+echo "[49] Bash scans unquoted GitHub body-file heredocs for shell expansion"
+install_fixture "indigo"
+command=$'gh pr create --body-file - <<BODY\n$(cat companies/otherco/settings/secret.yaml)\nBODY'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "command substitution in an unquoted GitHub body heredoc is blocked"
+
+echo "[50] Bash blocks a foreign path echoed into a pipeline consumer"
+install_fixture "indigo"
+command='echo companies/otherco/settings/secret.yaml | xargs cat'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "piped echo path is checked against company scope"
+
+echo "[51] Bash resolves repeated path occurrences from their own prefixes"
+install_fixture "indigo"
+command='p=settings/x; cat companies/indigo/$p; p=../../otherco/settings/secret.yaml; cat companies/indigo/$p'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "later repeated path with mutated variable is blocked"
+
+[ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
+echo "PASS: mandatory-scope-authorizer.test.sh"
