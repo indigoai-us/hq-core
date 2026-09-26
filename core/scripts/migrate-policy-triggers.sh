@@ -306,16 +306,27 @@ build_when() {
   fi
 }
 
+policy_has_when() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      when:*) return 0 ;;
+    esac
+  done < "$1"
+  return 1
+}
+
 total=0; migrated=0; skipped=0; untriggered=0; unparseable=0
 declare -i n_session=0
 for dir in "${DIRS[@]}"; do
   [ -d "$dir" ] || continue
   for f in "$dir"/*.md; do
     [ -f "$f" ] || continue
-    case "$(basename "$f")" in example-policy.md|README.md) continue ;; esac
+    file_name="${f##*/}"
+    case "$file_name" in example-policy.md|README.md) continue ;; esac
     total=$((total+1))
     # STRICTLY IDEMPOTENT: a policy that already declares a trigger is left as-is.
-    if grep -q '^when:' "$f"; then skipped=$((skipped+1)); continue; fi
+    if policy_has_when "$f"; then skipped=$((skipped+1)); continue; fi
 
     trig="$(fm trigger "$f")"
     tags="$(fm tags "$f" | sed 's/^\[//; s/\]$//')"
@@ -328,13 +339,13 @@ for dir in "${DIRS[@]}"; do
     if ! when_parses "$WHEN"; then
       unparseable=$((unparseable+1))
       printf 'migrate-policy-triggers: refusing to write unparseable when: %s -> `%s`\n' \
-        "$(basename "$f")" "$WHEN" >&2
+        "$file_name" "$WHEN" >&2
       continue
     fi
     [ "$ON" = "$ON_START" ] && n_session=$((n_session+1))
 
     if [ "$DRY" = "1" ]; then
-      printf '%-52s when: %-44s on: %s\n' "$(basename "$f")" "$WHEN" "$ON"
+      printf '%-52s when: %-44s on: %s\n' "$file_name" "$WHEN" "$ON"
       migrated=$((migrated+1)); continue
     fi
 

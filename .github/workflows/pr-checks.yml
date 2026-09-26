@@ -1214,6 +1214,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: 300-policy hook process budget and output equivalence
+        env:
+          # The baseline must exist in the repo running the check. Staging's
+          # backmerge cead9f4f and hq-core's v15.0.172 commit 64179657 carry
+          # byte-identical copies of the two files the test compares. Only
+          # staging has cead9f4f; hq-core and its forks get the public commit.
+          HQ_HOOK_PERF_BASE_SHA: ${{ github.repository == 'indigoai-us/hq-core-staging' && 'cead9f4fce5f762ee08d169d4d47e912c1ef0bee' || '641796571f18e870a2e4cdd24575fda6b93dc4c3' }}
+        run: |
+          timeout 30s git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$HQ_HOOK_PERF_BASE_SHA"
+          timeout 240s bash core/scripts/tests/sessionstart-policy-latency-process-budget.test.sh
       - name: Enforcement-gated policy trigger backfill
         run: bash core/scripts/tests/migrate-policy-triggers.test.sh
       - name: Retired digest path has no frontmatter exemption

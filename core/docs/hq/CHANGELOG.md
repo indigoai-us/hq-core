@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Fixed — Bash scope authorizer handles shell path variables and PR body heredocs (US-033)
+- The Bash guard resolves one simple assignment and bounded `for` values before checking company paths. It blocks unresolved expansions and values that leave the bound company.
+- Heredoc text is treated as data for recognized `gh pr create` body options. Executed heredocs and redirects into another company's files remain checked.
+- A single delayed read picks up a company bind that completes between parallel tool calls.
+- Regression coverage checks the manifest allowlist, safe shell values, foreign-company paths, and heredoc writes.
+
 ### Added: hq monitor policies and hook delivery (MON-2, 2026-09-25)
 - Added the `monitor.enabled` hq-flags gate, resolved by hq-cli's
   `hq monitor enabled` command, for the cross-runtime wait guard and event

@@ -5,9 +5,9 @@
 # `[ -d "$HQ_ROOT/companies" ] || exit 0` when no companies/ tree is present.
 # The --deep-test sandbox (SANDBOX_COPY_RELPATHS) copies only .claude/, .codex/,
 # .grok/ and core/ — NOT companies/ — so in the sandbox the hook cannot run its
-# scope check and allows every path. The cross-company block case is therefore
-# pinned with expectedFailure (reports KNOWN-DEFECT, never FAIL), and the
-# manifest case is pinned to the extension-stripping defect it documents.
+# scope check and allows every path. Cross-company block cases are therefore
+# pinned with expectedFailure (reports KNOWN-DEFECT, never FAIL). The seeded
+# shell regression suite verifies the manifest parser behavior directly.
 hookId: mandatory-scope-authorizer
 schemaVersion: 1
 cases:
@@ -19,26 +19,31 @@ cases:
       file_path: "repos/public/hq-core/README.md"
     expect: allow
 
-  # Reading companies/manifest.yaml must be allowed. This pins the
-  # extension-stripping defect: the hook's Bash branch extracts
-  # `companies/manifest` from `companies/manifest.yaml` (dropping the `.yaml`)
-  # and treats "manifest" as a company slug, wrongly blocking a Bash reference
-  # to the manifest. The Read path itself now allows it (scope_is_manifest_rel),
-  # and the sandbox does not seed companies/, so this reports rather than FAIL.
+  # Reading companies/manifest.yaml is an allowlisted path. The deep-test
+  # sandbox does not seed companies/, so its hook run short-circuits before the
+  # scope parser. The seeded shell regression suite exercises this with a real
+  # companies tree and pairs the allow with a foreign-company block.
   - name: manifest-read-is-allowed
     event: PreToolUse
     tool: Read
     input:
       file_path: "companies/manifest.yaml"
     expect: allow
+
+  # A Bash command that mentions the manifest and another tenant must block.
+  # The deep-test sandbox cannot exercise this because it has no companies tree.
+  - name: manifest-plus-foreign-company-is-blocked
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "cat companies/manifest.yaml companies/otherco/secret.md"
+    expect: block
     expectedFailure:
       reason: >
-        mandatory-scope-authorizer strips a manifest path's extension and treats
-        the stem as a company slug (Bash branch: companies/manifest.yaml ->
-        company "manifest"), so a bare manifest reference is wrongly blocked.
-        Tracked, and only partly fixed (the Read branch now allows it via
-        scope_is_manifest_rel). The --deep-test sandbox seeds no companies/ tree,
-        so the hook cannot exercise the scope check here.
+        The --deep-test sandbox does not seed companies/, so the hook exits
+        before scope parsing and allows this command. The seeded
+        mandatory-scope-authorizer shell test verifies the manifest allowlist
+        and foreign-company denial together.
 
   # A cross-company read must be blocked in a live tree with a bound session.
   # The sandbox cannot exercise this (no companies/), so it is pinned.

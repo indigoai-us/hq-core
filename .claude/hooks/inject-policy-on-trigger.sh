@@ -231,23 +231,49 @@ release_policy_ledger_lock() {
   rmdir "$lock_dir" 2>/dev/null || true
 }
 
-# record_slug <slug> <inject>  — record a fired slug in the ledger that governs
-# its cadence, so it is not re-emitted before that ledger next resets.
+# record_slugs <ledger> <newline-separated-slugs> — append a batch to the
+# cadence ledger while holding its lock once.
+record_slugs() {
+  local ledger="$1" slugs="$2"
+  [ -n "$slugs" ] || return 0
+  if ! acquire_policy_ledger_lock "$ledger"; then
+    printf 'inject-policy-on-trigger: could not lock policy ledger %s; slug was not recorded.\n' "$ledger" >&2
+    return 0
+  fi
+  if ! printf '%s' "$slugs" >> "$ledger" 2>/dev/null; then
+    printf 'inject-policy-on-trigger: could not append slug to policy ledger %s.\n' "$ledger" >&2
+  fi
+  release_policy_ledger_lock "$ledger"
+}
+
+# record_slug <slug> <inject> — record a one-off diagnostic in the ledger
+# selected by its cadence.
 record_slug() {
-  local ledger
+  local ledger slug_line
   if [ "${2:-once}" = "always" ]; then
     ledger="$TURN_FILE"
   else
     ledger="$DEDUPE_FILE"
   fi
-  if ! acquire_policy_ledger_lock "$ledger"; then
-    printf 'inject-policy-on-trigger: could not lock policy ledger %s; slug was not recorded.\n' "$ledger" >&2
-    return 0
-  fi
-  if ! printf '%s\n' "$1" >> "$ledger" 2>/dev/null; then
-    printf 'inject-policy-on-trigger: could not append slug to policy ledger %s.\n' "$ledger" >&2
-  fi
-  release_policy_ledger_lock "$ledger"
+  slug_line="$1"$'\n'
+  record_slugs "$ledger" "$slug_line"
+}
+
+# Record a batch of evaluator rows with one lock and append per ledger. The
+# evaluator already returns unique policy slugs in its established order.
+record_match_rows() {
+  local rows="$1" slug scope path enf rule kind injv ws spec
+  local once_slugs="" always_slugs=""
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+    [ -n "$slug" ] || continue
+    if [ "$injv" = "always" ]; then
+      always_slugs+="$slug"$'\n'
+    else
+      once_slugs+="$slug"$'\n'
+    fi
+  done <<< "$rows"
+  [ -z "$once_slugs" ] || record_slugs "$DEDUPE_FILE" "$once_slugs"
+  [ -z "$always_slugs" ] || record_slugs "$TURN_FILE" "$always_slugs"
 }
 
 # Invalid worker-policy configuration is advisory, but keep one diagnostic per
@@ -1204,10 +1230,10 @@ fi
 # US-406: machine-readable records for the agent-session entrypoint. No prose
 # wrapper, no interactive 16-cap (consumer applies HQ_SESSION_POLICY_MAX_*).
 if [ "${HQ_POLICY_EMIT:-}" = "tsv" ]; then
+  record_match_rows "$MATCHES"
   printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
     [ -z "$slug" ] && continue
     printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule"
-    record_slug "$slug" "$injv"
   done
   exit 0
 fi
@@ -1295,9 +1321,9 @@ fi
 WITHHELD_NAMES=""
 WITHHELD_NAMED=0
 if [ -n "$WITHHELD_MATCHES" ]; then
+  record_match_rows "$WITHHELD_MATCHES"
   while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
     [ -n "$slug" ] || continue
-    record_slug "$slug" "$injv"
     if [ "$WITHHELD_NAMED" -lt 10 ]; then
       WITHHELD_NAMES="${WITHHELD_NAMES}${WITHHELD_NAMES:+, }${slug}"
       WITHHELD_NAMED=$((WITHHELD_NAMED + 1))
@@ -1474,10 +1500,7 @@ policy_body() {
 # Record every emitted slug in its ledger exactly once, BEFORE emission: the
 # emission below may run twice (full text, then summary-only fallback) and
 # must not double-record.
-printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
-  [ -z "$slug" ] && continue
-  record_slug "$slug" "$injv"
-done
+record_match_rows "$MATCHES"
 
 emit_reminder() {
 printf '<policy-reminder>\n'
