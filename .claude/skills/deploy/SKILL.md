@@ -40,6 +40,13 @@ Pick `company` when the user asks for org/company/internal restriction. Pick `pr
 - Wire it in Phase C after upload returns `appId` (see C.2.6): `PATCH /api/apps/:id {commentsEnabled: true|false}`.
 - **Off by default.** Without the flag `commentsEnabled` stays unset and the injector is a strict no-op — the served HTML is byte-identical to a pre-feature deploy (no widget markup, no script, no network calls). The flag takes effect on the *next* deploy.
 
+**Reading and answering comments as the owner (no browser needed).** When the user asks to see, answer, or resolve comments on a deploy, use the owner routes. They take the same `Authorization: Bearer $JWT` + `X-Org-Slug` headers as every other Phase C call (send them through `deploy-api-request.sh`), work on gated deploys, and work whether `commentsEnabled` is on or off. Only the app owner or an org admin can call them (others get `403 FORBIDDEN`).
+- `GET   /api/apps/:id/manage/comments` — every comment on the app. Returns `{commentsEnabled, comments: [{id, body, author{email,name}, anchor, status, deployId, createdAt}]}`.
+- `POST  /api/apps/:id/manage/comments {body, anchor, deployId?}` — add a comment as the caller. The author is always the verified caller; the body cannot set it.
+- `PATCH /api/apps/:id/manage/comments/:commentId {status: "resolved"|"open"}` — resolve or reopen.
+
+Do **not** use `/api/apps/:id/comments` for this. That route serves the in-page widget only: it needs the deploy's browser `Origin` plus the `hq-access` cookie from signing in on the page, and returns `403 COMMENT_ORIGIN_REQUIRED` / `COMMENT_ACCESS_REQUIRED` to a CLI or agent. A 403 from it does not mean the owner can't read comments. The `hq-deploy` CLI has no comments command, so these HTTP routes are the only non-browser path. If the local `repos/private/hq-deploy` checkout lacks `src/api/routes/comments-manage.ts`, it is stale; read `origin/main` before concluding a capability doesn't exist.
+
 ---
 
 ## Architecture: Three Phases, Inline Parallel Scripts
@@ -785,6 +792,8 @@ fi
 ```
 
 `commentsEnabled` is orthogonal to `ACCESS_MODE` — the comment surface enforces the SAME gate as the deploy (a gated deploy's thread is only readable/writable by viewers who pass the gate; access revocation reaches comments too), so no extra access wiring is needed here. Mention it once in C.5 when it was toggled ("comments are on for this deploy").
+
+Because the flag only takes effect on the *next* deploy, run this PATCH **before** the upload in C.2 when the app already exists (or right after `POST /api/apps` for a new app) so the current deploy ships with the widget. To read or resolve the comments afterwards, use the owner routes under "Reading and answering comments as the owner" in the Access modes section.
 
 ### C.3 — Wire access mode (sensitive only)
 

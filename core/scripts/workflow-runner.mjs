@@ -426,6 +426,62 @@ const FAST_MODE_ENV = (() => {
 })();
 
 const VALID_TIERS = ['plan', 'exec'];
+// Conduct child default for claude lanes, read from orchestrator.yaml
+// (personal/settings wins over core/settings). Uses the FIRST
+// `conduct.child_defaults` row whose children engine is claude; the runner
+// does not know the launching session's model, so it cannot key on `main:`.
+// Returns { model, effort, source } with undefined fields when nothing is set.
+function readClaudeLaneDefault(root) {
+  const out = { model: undefined, effort: undefined, source: undefined };
+  for (const rel of ['personal/settings/orchestrator.yaml', 'core/settings/orchestrator.yaml']) {
+    const file = path.join(root, rel);
+    let text;
+    try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
+    // Take the `conduct:` top-level block: from its header to the next
+    // non-indented line (JS regex has no \Z, so walk lines).
+    const lines = text.split('\n');
+    const start = lines.findIndex((l) => /^conduct:\s*(#.*)?$/.test(l));
+    if (start < 0) continue;
+    const block = [];
+    for (let i = start + 1; i < lines.length && !/^\S/.test(lines[i]); i++) block.push(lines[i]);
+    const row = /^\s+children:\s*\{([^}]*)\}/gm;
+    let r;
+    while ((r = row.exec(block.join('\n'))) !== null) {
+      const body = r[1];
+      const engine = /\bengine:\s*([^,\s}]+)/.exec(body);
+      if (!engine || engine[1] !== 'claude') continue;
+      const model = /\bmodel:\s*([^,\s}]+)/.exec(body);
+      const effort = /\beffort:\s*([^,\s}]+)/.exec(body);
+      if (model) {
+        out.model = model[1];
+        out.effort = effort ? effort[1] : undefined;
+        out.source = rel;
+        return out;
+      }
+    }
+  }
+  return out;
+}
+const CLAUDE_LANE_DEFAULT = readClaudeLaneDefault(HQ_ROOT);
+
+// One stderr line per (tier, model) the first time a claude lane runs without
+// an explicit HQ_WORKFLOW_CLAUDE_{PLAN,EXEC}_MODEL pin. Never silent.
+const _warnedUnpinned = new Set();
+function warnUnpinnedClaudeLane(tier, model) {
+  const envKey = tier === 'plan' ? 'HQ_WORKFLOW_CLAUDE_PLAN_MODEL' : 'HQ_WORKFLOW_CLAUDE_EXEC_MODEL';
+  if (process.env[envKey]) return;
+  const key = `${tier}:${model}`;
+  if (_warnedUnpinned.has(key)) return;
+  _warnedUnpinned.add(key);
+  const source = (tier === 'exec' && CLAUDE_LANE_DEFAULT.model === model && CLAUDE_LANE_DEFAULT.source)
+    ? `conduct.child_defaults in ${CLAUDE_LANE_DEFAULT.source}`
+    : 'the runner built-in fallback';
+  process.stderr.write(
+    `[workflow-runner] WARNING: claude ${tier} lane is not pinned (${envKey} unset); `
+    + `running on "${model}" from ${source}. Export ${envKey} in the lane launcher to pin it.\n`,
+  );
+}
+
 const ENGINES = {
   codex: {
     bin: process.env.HQ_WORKFLOW_CODEX_BIN || 'codex',
@@ -445,7 +501,15 @@ const ENGINES = {
     bin: process.env.HQ_WORKFLOW_CLAUDE_BIN || 'claude',
     tierModels: {
       plan: process.env.HQ_WORKFLOW_CLAUDE_PLAN_MODEL || 'opus',
-      exec: process.env.HQ_WORKFLOW_CLAUDE_EXEC_MODEL || 'sonnet',
+      // No env pin -> the operator's conduct child default from
+      // orchestrator.yaml (personal overrides core), else the built-in
+      // 'sonnet'. Either fallback is announced on stderr at spawn time
+      // (see warnUnpinnedClaudeLane) — a lane quietly dropping to sonnet
+      // because a launcher forgot the export is exactly the failure this
+      // guards against (observed 2026-09-24: ~12 lanes on claude-sonnet-5).
+      exec: process.env.HQ_WORKFLOW_CLAUDE_EXEC_MODEL
+        || CLAUDE_LANE_DEFAULT.model
+        || 'sonnet',
     },
     // Claude's flagship models default to low effort here: lane work is
     // brief-driven and tool-heavy, and the operator chose low as the default.
@@ -1410,7 +1474,10 @@ async function buildRuntime(cli) {
     let model;
     if (opts.model !== undefined) model = opts.model;
     else if (MODEL_OVERRIDE !== undefined) model = MODEL_OVERRIDE;
-    else model = engine.tierModels[tier];
+    else {
+      model = engine.tierModels[tier];
+      if (engineName === 'claude') warnUnpinnedClaudeLane(tier, model);
+    }
     const effort = opts.effort !== undefined
       ? opts.effort
       : (engine.defaultEffort !== undefined ? engine.defaultEffort : DEFAULT_EFFORT);

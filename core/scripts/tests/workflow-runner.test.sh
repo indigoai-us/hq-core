@@ -36,6 +36,9 @@
 #      gpt-5.6-sol / gpt-5.6-terra, grok to grok-4.6, claude to opus/sonnet; the
 #      HQ_WORKFLOW_{CODEX,GROK,CLAUDE}_{PLAN,EXEC}_MODEL envs re-point them; an
 #      unknown engine or tier throws
+#   7z. an unpinned claude exec lane never drops to sonnet silently: it takes
+#      the conduct child default from orchestrator.yaml when one exists and
+#      always announces the fallback (model + missing env var) on stderr
 #   4. parallel(): a failing thunk resolves to null, siblings survive
 #   5. soft timeout: a slow agent is NOT killed — repeating TIMEOUT WARNING
 #   6. HQ root: HQ_ROOT env wins; without it an HQ-shaped cwd is detected;
@@ -1195,6 +1198,53 @@ grep -q -- '--dangerously-bypass-approvals-and-sandbox' "$main_argv"
 check "the ordinary spawn is unchanged (still fully privileged)" "$?"
 grep -q 'UNTRUSTED DATA' "$repair_argv"
 check "the repair prompt marks the embedded reply as untrusted data" "$?"
+
+# ---- 7z: claude exec lane never drops to sonnet silently -------------------
+# No env pin + no orchestrator.yaml -> built-in 'sonnet', but a WARNING names
+# the model and the missing env var on stderr. With a conduct child default in
+# personal/settings/orchestrator.yaml, the lane runs on THAT model (and the
+# warning names the yaml as the source). An explicit env pin is silent.
+cat > "$TMP/wf-unpinned.mjs" <<'WF'
+await agent('unpinned-claude-doer', { engine: 'claude', tier: 'exec', timeoutSecs: 30 })
+return 'ok'
+WF
+unset HQ_WORKFLOW_CLAUDE_EXEC_MODEL HQ_WORKFLOW_CLAUDE_PLAN_MODEL
+run_wf "$TMP/wf-unpinned.mjs"
+grep -q 'WARNING: claude exec lane is not pinned (HQ_WORKFLOW_CLAUDE_EXEC_MODEL unset); running on "sonnet" from the runner built-in fallback' "$TMP/stderr.last"
+check "unpinned claude exec lane: built-in sonnet fallback is announced on stderr" "$?"
+
+mkdir -p "$HQROOT/personal/settings"
+cat > "$HQROOT/personal/settings/orchestrator.yaml" <<'YML'
+swarm:
+  max_concurrency: 4
+conduct:
+  default_enabled: true
+  child_defaults:
+    - main:     { model: claude-fable-5-1, effort: low }
+      children: { engine: claude, model: claude-opus-5-5, effort: low }
+YML
+rm -f "$TMP/rec"/claude-argv.*
+run_wf "$TMP/wf-unpinned.mjs"
+orch_ok=1
+for f in "$TMP/rec"/claude-argv.*; do
+  if grep -qx -- 'unpinned-claude-doer' "$f"; then grep -qx -- 'claude-opus-5-5' "$f" && orch_ok=0; fi
+done
+check "unpinned claude exec lane: runs on the conduct child default from personal/settings/orchestrator.yaml" "$orch_ok"
+grep -q 'running on "claude-opus-5-5" from conduct.child_defaults in personal/settings/orchestrator.yaml' "$TMP/stderr.last"
+check "unpinned claude exec lane: warning names orchestrator.yaml as the source" "$?"
+
+rm -f "$TMP/rec"/claude-argv.*
+export HQ_WORKFLOW_CLAUDE_EXEC_MODEL="pinned-claude-exec"
+run_wf "$TMP/wf-unpinned.mjs"
+unset HQ_WORKFLOW_CLAUDE_EXEC_MODEL
+pin_ok=1
+for f in "$TMP/rec"/claude-argv.*; do
+  if grep -qx -- 'unpinned-claude-doer' "$f"; then grep -qx -- 'pinned-claude-exec' "$f" && pin_ok=0; fi
+done
+check "pinned claude exec lane: env pin beats orchestrator.yaml" "$pin_ok"
+grep -q 'WARNING: claude exec lane is not pinned' "$TMP/stderr.last"
+check "pinned claude exec lane: no unpinned warning" "$(( ! $? ))"
+rm -f "$HQROOT/personal/settings/orchestrator.yaml"
 
 # ---- 8: every schema this suite handed codex is strict-valid ----------------
 # A sweep over the schema files the runner wrote across ALL the codex runs

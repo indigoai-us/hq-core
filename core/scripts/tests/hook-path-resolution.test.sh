@@ -50,6 +50,20 @@ for needle in 'master-hook.sh' 'reindex.sh'; do
 done
 pass "master-hook.sh and reindex.sh anchored to \$CLAUDE_PROJECT_DIR"
 
+direct_monitor_hooks="$(jq -c '[.. | objects | select(.type? == "command") | .command | select(test("hq-monitor-(guard|session-hook|session-start)\\.sh"))]' "$SETTINGS")"
+stop_waiter_command='bash "$CLAUDE_PROJECT_DIR/.claude/hooks/hq-monitor-session-hook.sh" wait'
+if jq -e --arg command "$stop_waiter_command" 'length == 1 and .[0] == $command' <<<"$direct_monitor_hooks" >/dev/null; then
+  pass "Claude Stop is the only direct monitor hook registration"
+else
+  fail "expected only the direct Claude Stop monitor hook, got: $direct_monitor_hooks"
+fi
+stop_waiter="$(jq -c '[.hooks.Stop[]?.hooks[]? | select(.command == $command)]' --arg command "$stop_waiter_command" "$SETTINGS")"
+if jq -e 'length == 1 and .[0].asyncRewake == true and .[0].timeout == 86400' <<<"$stop_waiter" >/dev/null; then
+  pass "Claude Stop monitor waiter is asyncRewake with a 24-hour timeout"
+else
+  fail "Claude Stop monitor waiter lost its asyncRewake contract"
+fi
+
 # Every project-root-derived path must be quoted, and each shipped hook
 # entrypoint must be launched through Bash so setup can recover even when an
 # archive or update strips executable bits.
@@ -104,7 +118,7 @@ if unquoted_project_dir_refs "$hook_commands"; then
   fail "settings.json has an unquoted \$CLAUDE_PROJECT_DIR-derived path (dies on a root containing a space)"
 fi
 if printf '%s\n' "$hook_commands" \
-    | grep -vE '^bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/(hook-gate|master-hook|reindex)\.sh"([[:space:]]|$)'; then
+    | grep -vE '^bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/(hook-gate|master-hook|reindex|hq-monitor-session-hook)\.sh"([[:space:]]|$)'; then
   fail "settings.json has a hook entrypoint that is not invoked through bash"
 fi
 pass "all project-root paths are quoted and hook entrypoints use bash"

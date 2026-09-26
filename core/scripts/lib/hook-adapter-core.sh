@@ -773,11 +773,13 @@ hqad_iter_settings() {
   # a producer behind process substitution can fail without making the while
   # loop fail. Capture jq first so query and framing failures fail closed.
   local rows="" line decoded matcher command frame_failed=0
-  if ! rows="$(jq -r --arg ev "$event" '
+  local runtime="${HQ_CHECKPOINT_RUNTIME:-codex}"
+  if ! rows="$(jq -r --arg ev "$event" --arg runtime "$runtime" '
     (.hooks[$ev] // [])[]
     | (.matcher // "") as $m
     | (.hooks // [])[]
     | select(.type == "command" and (.command | type == "string"))
+    | select($ev != "Stop" or .asyncRewake != true or $runtime == "claude")
     | if (($m | type) != "string")
         or ([$m, .command] | any(contains("\u0000") or contains("\n")))
       then error("hook dispatch record contains an unsupported byte")

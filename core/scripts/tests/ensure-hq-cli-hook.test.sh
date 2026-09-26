@@ -269,7 +269,7 @@ printf '%s' "$out" | grep -q '<hq-cli-missing>' \
   || fail "locked-out session should still emit remedy, got: $out"
 rm -f "$BIN/npm"
 
-# --- 11. pnpm present -> restore uses pnpm, not npm --------------------------
+# --- 11. truly missing hq still restores through pnpm ------------------------
 reset_root
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
 mkdir -p "$TMP/pnpm-prefix/bin"
@@ -290,9 +290,32 @@ out="$(run_hook "$COREUTILS_PATH")"
 printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
   || fail "pnpm restore should emit <hq-cli-path-updated>, got: $out"
 case ":$(local_path):" in *":$TMP/pnpm-prefix/bin:"*) : ;; *) fail "pnpm restore did not add pnpm bin to env.PATH: $(local_path)";; esac
+printf '%s\n' 'PASS: truly missing hq still restores through pnpm'
 rm -f "$BIN/pnpm" "$BIN/npm"
 
-# --- 12. documented restore is the pnpm age-gated command --------------------
+# --- 12. a timed-out hq probe is unknown, not proof it needs reinstalling ---
+reset_root
+TIMEOUT_BIN="$TMP/timeout-hq-bin"; mkdir -p "$TIMEOUT_BIN" "$TMP/pnpm-empty/bin"
+printf '#!/usr/bin/env bash\nsleep 5\necho 5.108.2\n' > "$TIMEOUT_BIN/hq"
+chmod +x "$TIMEOUT_BIN/hq"
+write_local_settings "{\"env\":{\"PATH\":\"$TIMEOUT_BIN:/usr/bin:/bin\"}}"
+rm -f "$TMP/timeout-install-ran"
+stub pnpm "case \"\$*\" in
+  *add*) echo ran > '$TMP/timeout-install-ran'; exit 0 ;;
+  'bin -g') echo '$TMP/pnpm-empty/bin'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+start="$(date +%s)"
+out="$(run_hook "$TIMEOUT_BIN:$COREUTILS_PATH" HQ_ENSURE_CLI_VERSION_TIMEOUT=1)"
+elapsed="$(( $(date +%s) - start ))"
+[ "$elapsed" -lt 4 ] || fail "timed-out hq probe took too long (${elapsed}s)"
+[ ! -f "$TMP/timeout-install-ran" ] \
+  || fail "a timed-out hq version probe must not trigger an install"
+[ -z "$out" ] || fail "a timed-out hq probe should remain silent, got: $out"
+rm -f "$BIN/pnpm"
+printf '%s\n' 'PASS: timeout does not trigger install'
+
+# --- 13. documented restore is the pnpm age-gated command --------------------
 grep -F 'pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440' "$HOOK" >/dev/null \
   || fail "ensure-hq-cli must document pnpm restore with minimumReleaseAge=1440"
 if grep -E 'npm install -g @indigoai-us/hq-cli@latest' "$HOOK" | grep -v 'NPM_RESTORE_CMD=' | grep -v 'Do not run' >/dev/null; then

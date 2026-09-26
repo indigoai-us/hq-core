@@ -189,12 +189,17 @@ SH
 write_standard_qmd_stub
 
 # Shared env for helper runs (isolated HOME + PATH; no real agent markers).
+# The hq CLI defers `qmd embed` while host CPU or memory is above its load
+# limit. This suite checks ownership and step order, so the gate is off here
+# and in every other hermetic block that sets HQ_QMD_BIN; otherwise a busy CI
+# runner drops the embed step and the step-count assertions fail.
 helper_env() {
   # shellcheck disable=SC2086
   env -i \
     PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
     HQ_QMD_BIN="$BIN/qmd" \
+    HQ_INDEX_MAX_LOAD_PERCENT=off \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
     QMD_HANDOFF_LOG="$LOG" \
@@ -706,7 +711,7 @@ chmod +x "$REAL_HELPER" "$TMP/repo/core/scripts/qmd-reindex-bg.real.sh"
   out=$(
     env -i PATH="$BIN:/usr/bin:/bin:$(dirname "$(command -v jq || echo /usr/bin)")" \
       HOME="$HOME_DIR" \
-      HQ_QMD_BIN="$BIN/qmd" \
+      HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
       MUTATION_LOG="$MUTATION_LOG" \
       QMD_REINDEX_LOG="$LOG" \
       QMD_HANDOFF_LOG="$LOG" \
@@ -752,7 +757,7 @@ rm -f "$TMP/helper-scheduled.log"
   out=$(
     env -i PATH="$BIN:/usr/bin:/bin:$(dirname "$(command -v jq || echo /usr/bin)")" \
       HOME="$HOME_DIR" \
-      HQ_QMD_BIN="$BIN/qmd" \
+      HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
       MUTATION_LOG="$MUTATION_LOG" \
       QMD_REINDEX_LOG="$LOG" \
       HQ_AGENT_BOX=1 \
@@ -779,7 +784,7 @@ reset_state
   cd "$TMP/repo"
   env -i PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
-    HQ_QMD_BIN="$BIN/qmd" \
+    HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
     HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
@@ -813,7 +818,7 @@ reset_state
   cd "$TMP/repo"
   env -i PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
-    HQ_QMD_BIN="$BIN/qmd" \
+    HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
     HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
@@ -843,7 +848,7 @@ rm -f "$TMP/r3-finalize-out.json" "$TMP/r3-post-pid" "$TMP/logs/handoff-post.log
   # Real finalize in background (launcher path → detached worker; holds on qmd).
   env -i PATH="$BIN:/usr/bin:/bin:$JQ_DIR" \
     HOME="$HOME_DIR" \
-    HQ_QMD_BIN="$BIN/qmd" \
+    HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
     QMD_HANDOFF_LOG="$LOG" \
@@ -866,7 +871,7 @@ rm -f "$TMP/r3-finalize-out.json" "$TMP/r3-post-pid" "$TMP/logs/handoff-post.log
   # helper while the hold is still active (finalize is slower than post).
   env -i PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
-    HQ_QMD_BIN="$BIN/qmd" \
+    HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
     HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
@@ -970,7 +975,7 @@ reset_state
   set +e
   env -i PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
-    HQ_QMD_BIN="$BIN/qmd" \
+    HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
     HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
@@ -1124,7 +1129,7 @@ chmod +x "$BIN/qmd"
 env -i \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
-  HQ_QMD_BIN="$BIN/qmd" \
+  HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
   MUTATION_LOG="$MUTATION_LOG" \
   QMD_REINDEX_LOG="$LOG" \
   QMD_HANDOFF_LOG="$LOG" \
@@ -1495,7 +1500,7 @@ rm -f "$READY"
 env -i \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
-  HQ_QMD_BIN="$BIN/qmd" \
+  HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
   MUTATION_LOG="$MUTATION_LOG" \
   QMD_REINDEX_LOG="$LOG" \
   QMD_HANDOFF_LOG="$LOG" \
@@ -1520,7 +1525,7 @@ set +e
 env -i \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
-  HQ_QMD_BIN="$BIN/qmd" \
+  HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
   MUTATION_LOG="$MUTATION_LOG" \
   QMD_REINDEX_LOG="$LOG" \
   QMD_HANDOFF_LOG="$LOG" \
@@ -1734,7 +1739,7 @@ rm -f "$READY"
 env -i \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
-  HQ_QMD_BIN="$BIN/qmd" \
+  HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
   MUTATION_LOG="$MUTATION_LOG" \
   QMD_REINDEX_LOG="$LOG" \
   QMD_HANDOFF_LOG="$LOG" \

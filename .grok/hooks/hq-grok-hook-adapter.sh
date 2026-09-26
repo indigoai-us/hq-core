@@ -15,9 +15,12 @@ export BASH_ENV=/dev/null
 #   2. Block protocol: PreToolUse blocks via stdout
 #      {"decision":"deny","reason":...} (exit 2 also denies). HQ hooks signal
 #      block via non-zero exit + stderr message.
-#   3. Passive events: SessionStart / UserPromptSubmit / PostToolUse / Stop /
-#      PreCompact cannot inject model context the way Claude/Codex do; they
-#      still run side-effect hooks (autocommit, checkpoints, policy eval).
+#   3. Context: Grok delivers hookSpecificOutput.additionalContext from
+#      settings-file command hooks on PreToolUse and PostToolUse, next to the
+#      tool result. This adapter collects that field from the HQ hooks it runs
+#      and returns it (hq monitor events, policy notes). SessionStart and
+#      UserPromptSubmit cannot inject context under Grok; they still run
+#      side-effect hooks (autocommit, checkpoints, policy eval).
 #
 # Canonical policy stays in .claude/hooks/. Claude settings.json, Codex
 # (.codex/), and Grok (.grok/ + optional user bridge installed by hq reindex) all
@@ -139,6 +142,37 @@ if [ -z "$HQ_ROOT" ] || [ ! -f "${GATE:-}" ]; then
 fi
 
 DIAG_ACCUM=""
+CONTEXT_ACCUM=""
+
+# Grok delivers additionalContext only on these events (Grok 1.0.34 hook docs).
+event_delivers_context() {
+  case "$EVENT" in PreToolUse|PostToolUse) return 0 ;; esac
+  return 1
+}
+
+# Collect hookSpecificOutput.additionalContext from one hook's stdout. Accepts
+# one JSON document or several (one per line). Prints nothing and returns 1
+# when the event cannot carry context or the stdout has none.
+collect_context() {
+  local text="$1" ctx
+  event_delivers_context || return 1
+  [ -n "$text" ] || return 1
+  ctx="$(printf '%s' "$text" | jq -rs '
+    [ .[] | objects | .hookSpecificOutput?.additionalContext? // empty
+      | strings | select(length > 0) ] | join("\n\n")' 2>/dev/null)" \
+    || ctx="$(printf '%s\n' "$text" | jq -rR '
+      fromjson? | objects | .hookSpecificOutput?.additionalContext? // empty
+      | strings | select(length > 0)' 2>/dev/null)" || ctx=""
+  [ -n "$ctx" ] || return 1
+  if [ -z "$CONTEXT_ACCUM" ]; then
+    CONTEXT_ACCUM="$ctx"
+  else
+    CONTEXT_ACCUM="${CONTEXT_ACCUM}
+
+${ctx}"
+  fi
+  return 0
+}
 
 append_diag() {
   local text="$1"
@@ -237,12 +271,31 @@ CLAUDE_JSON="$(jq -n \
 
 deny() {
   local reason="$1"
+  # Grok drops additionalContext on a deny. Context already collected (for
+  # example hq monitor events a drain removed from the inbox) rides in the
+  # deny reason instead, so it still reaches the model.
+  if [ -n "$CONTEXT_ACCUM" ]; then
+    reason="${reason}
+
+${CONTEXT_ACCUM}"
+  fi
   jq -c -n --arg r "$reason" '{decision:"deny", reason:$r}'
   exit 2
 }
 
 allow_pre() {
-  echo '{"decision":"allow"}'
+  if [ -n "$CONTEXT_ACCUM" ]; then
+    jq -c -n --arg c "$CONTEXT_ACCUM" \
+      '{decision:"allow", hookSpecificOutput:{hookEventName:"PreToolUse", additionalContext:$c}}'
+  else
+    echo '{"decision":"allow"}'
+  fi
+}
+
+emit_post_context() {
+  [ -n "$CONTEXT_ACCUM" ] || return 0
+  jq -c -n --arg c "$CONTEXT_ACCUM" \
+    '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$c}}'
 }
 
 run_block() { # <hook-id> <hook-script> [payload] [extra-gate-args...]
@@ -275,7 +328,20 @@ run_block() { # <hook-id> <hook-script> [payload] [extra-gate-args...]
   err_text="$(cat "$err" 2>/dev/null || true)"
   rm -f "$out" "$err"
 
-  [ "$status" -eq 0 ] && return 0
+  if [ "$status" -eq 0 ]; then
+    reason="$(printf '%s' "$out_text" | jq -r '
+      if .hookSpecificOutput?.permissionDecision? == "deny" then
+        (.hookSpecificOutput.permissionDecisionReason // "Blocked by HQ guard")
+      elif .permissionDecision? == "deny" then
+        (.permissionDecisionReason // "Blocked by HQ guard")
+      elif .decision? == "deny" or .decision? == "block" then
+        (.reason // "Blocked by HQ guard")
+      else empty end
+    ' 2>/dev/null || true)"
+    if [ -n "$reason" ]; then deny "$(compact_reason "$reason")"; fi
+    collect_context "$out_text" || true
+    return 0
+  fi
 
   reason="$err_text"
   if [ -n "$warning" ]; then
@@ -328,6 +394,7 @@ run_advisory() { # <hook-id> <hook-script> [payload] [stdout_mode]
     return 0
   fi
 
+  collect_context "$out_text" && return 0
   if [ "$stdout_mode" = "diag" ] && [ -n "$out_text" ]; then
     append_diag "$(compact_diag "$out_text")"
   fi
@@ -376,6 +443,7 @@ run_script_advisory() { # <script> [payload] [stdout_mode]
     return 0
   fi
 
+  collect_context "$out_text" && return 0
   if [ "$stdout_mode" = "diag" ] && [ -n "$out_text" ]; then
     append_diag "$(compact_diag "$out_text")"
   fi
@@ -533,12 +601,16 @@ run_master() {
   local event_arg="$1" payload="${2:-$CLAUDE_JSON}" mode="${3:-advisory}"
   local script="$HOOK_DIR/master-hook.sh"
   [ -f "$script" ] || return 0
-  local out err status err_text
+  local out err status err_text out_text
   out="$(mktemp)"; err="$(mktemp)"; status=0
   printf '%s' "$payload" | bash "$script" "$event_arg" >"$out" 2>"$err" || status=$?
+  out_text="$(cat "$out" 2>/dev/null || true)"
   err_text="$(cat "$err" 2>/dev/null || true)"
   rm -f "$out" "$err"
-  [ "$status" -eq 0 ] && return 0
+  if [ "$status" -eq 0 ]; then
+    collect_context "$out_text" || true
+    return 0
+  fi
   if [ "$mode" = "advisory" ]; then
     [ -n "$err_text" ] && append_diag "$(compact_diag "$err_text")"
     return 0
@@ -574,9 +646,9 @@ dispatch_settings_hooks() {
             # shellcheck disable=SC2086
             run_block "$a" "$b" "$payload" $rest
           else
-            # Grok cannot inject context on any event, so surface a successful
-            # advisory hook's stdout as bounded stderr diagnostics rather than
-            # dropping it (preserves e.g. bridge-health / policy warnings).
+            # A successful advisory hook's additionalContext goes to the model
+            # on PreToolUse/PostToolUse; any other stdout becomes bounded
+            # stderr diagnostics (e.g. bridge-health / policy warnings).
             run_advisory "$a" "$b" "$payload" "diag"
           fi
           ;;
@@ -671,6 +743,7 @@ run_post_tool_use() {
       fi
       ;;
   esac
+  emit_post_context
 }
 
 write_skill_catalog() {

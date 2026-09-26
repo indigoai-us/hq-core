@@ -1,0 +1,18 @@
+# Current-model catalog for the stale-model-pin warning
+# (.claude/hooks/check-stale-model-pin.sh, SessionStart).
+#
+# One line per model family, NEWEST FIRST: `family: newest, older, oldest`.
+# A model pin that appears in a family list but is not its first entry is
+# out of date, and the hook prints one line at session start naming the
+# pinned model and the newer one. Models not listed anywhere are ignored, so
+# short aliases like `opus` / `sonnet` are never flagged.
+#
+# Per-machine override: copy to personal/settings/current-models.yaml (that
+# file wins when present). Update the shipped copy when a new model ships.
+claude-fable: claude-fable-5-1, claude-fable-5
+claude-opus: claude-opus-5-5, claude-opus-5, claude-opus-4-8, claude-opus-4-7
+claude-sonnet: claude-sonnet-5, claude-sonnet-4-6, claude-sonnet-4-5
+claude-haiku: claude-haiku-4-5-20251001
+codex-sol: gpt-5.6-sol-pro, gpt-5.6-sol
+codex-terra: gpt-5.6-terra
+grok: grok-4.6, grok-4.5

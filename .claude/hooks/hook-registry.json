@@ -14,6 +14,16 @@
             "args": [
               "PreToolUse"
             ]
+          },
+          {
+            "id": "hq-monitor-session-hook",
+            "script": ".claude/hooks/hq-monitor-session-hook.sh",
+            "timeout": 10,
+            "gated": true,
+            "args": [
+              "drain",
+              "PreToolUse"
+            ]
           }
         ]
       },
@@ -180,6 +190,15 @@
             "gated": true,
             "prefilter": {
               "re": "timeout|alarm"
+            }
+          },
+          {
+            "id": "hq-monitor-guard",
+            "script": ".claude/hooks/hq-monitor-guard.sh",
+            "timeout": 5,
+            "gated": true,
+            "prefilter": {
+              "re": "sleep|watch|until|while"
             }
           },
           {
@@ -987,6 +1006,12 @@
             "gated": true
           },
           {
+            "id": "check-stale-model-pin",
+            "script": ".claude/hooks/check-stale-model-pin.sh",
+            "timeout": 15,
+            "gated": true
+          },
+          {
             "id": "check-core-yaml-parity",
             "script": ".claude/hooks/check-core-yaml-parity.sh",
             "timeout": 30,
@@ -1021,6 +1046,12 @@
             "script": ".claude/hooks/session-title.sh",
             "timeout": 30,
             "gated": true
+          },
+          {
+            "id": "hq-monitor-session-start",
+            "script": ".claude/hooks/hq-monitor-session-start.sh",
+            "timeout": 5,
+            "gated": true
           }
         ]
       }
@@ -1035,6 +1066,16 @@
             "timeout": 30,
             "gated": true,
             "args": [
+              "UserPromptSubmit"
+            ]
+          },
+          {
+            "id": "hq-monitor-session-hook",
+            "script": ".claude/hooks/hq-monitor-session-hook.sh",
+            "timeout": 10,
+            "gated": true,
+            "args": [
+              "drain",
               "UserPromptSubmit"
             ]
           },
