@@ -123,4 +123,34 @@ run_entry "$TMP/codex.out" "$TMP/codex.err" "$CODEX"
 [ "$RC" -eq 0 ] || fail "hq-codex-hook-adapter.sh expected allow exit 0, got $RC stderr=$(cat "$TMP/codex.err")"
 assert_no_child_profile_load "hq-codex-hook-adapter.sh"
 
+# [6] guards the OTHER half of the fix. Tests 1-5 prove the entry scripts do not
+# leak the profile to their children, but they invoke those scripts directly, so
+# they can never observe how Grok itself spawns them. A script's own bash sources
+# the startup profile before line 1, so the only way to spare the entry process
+# is the `env` map in the registration JSON, which Grok applies at spawn.
+# Deleting or misspelling one of those maps would leave tests 1-5 green while
+# quietly restoring ~1.5-2s of profile load per hook process.
+echo "[6] grok registrations neutralize BASH_ENV at spawn for every command handler"
+REG_GROK="$ROOT/.grok/hooks/hq-grok.json"
+REG_BRIDGE="$ROOT/.grok/hooks/hq-grok-user-bridge.json"
+for reg in "$REG_GROK" "$REG_BRIDGE"; do
+  [ -f "$reg" ] || fail "missing registration $reg"
+  bad="$(jq -r '
+    [ .hooks
+      | to_entries[]
+      | .key as $event
+      | .value[]?
+      | .hooks[]?
+      | select(.type == "command")
+      | select((.env.BASH_ENV // "") != "/dev/null")
+      | "\($event): \(.command)"
+    ] | .[]' "$reg")" || fail "$reg: not valid JSON"
+  if [ -n "$bad" ]; then
+    fail "$(basename "$reg"): command handler(s) missing spawn-time neutralization: $(printf '%s' "$bad" | tr '\n' ';')"
+  fi
+  n="$(jq '[ .hooks | to_entries[] | .value[]? | .hooks[]? | select(.type == "command") ] | length' "$reg")"
+  [ "${n:-0}" -gt 0 ] || fail "$(basename "$reg"): no command handlers found -- registration shape changed"
+  pass "$(basename "$reg"): $n command handler(s) neutralized at spawn"
+done
+
 echo "hooks-bash-env-neutralize: ok"

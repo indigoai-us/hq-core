@@ -1,5 +1,5 @@
 {
-  "_comment": "Project-scoped registration. PreToolUse ONLY: the user-global bridge (~/.grok/hooks/hq-hq-bridge.json, installed by `hq reindex`) is the reliable path and carries ALL lifecycle events. Every other event (SessionStart, PostToolUse, Stop, PreCompact, SessionEnd, SubagentStop, Notification, UserPromptSubmit) is registered on the bridge ONLY so it never double-runs when a Grok build loads both this project file and the bridge. That matters more than it used to: PostToolUse carries additionalContext to the model and Stop/SubagentStop can hold the turn, so a double fire would duplicate a note or a block, not just a side effect. PreToolUse is intentionally on BOTH: blocking is idempotent, so redundant enforcement is safe and desirable.",
+  "_comment": "Project-scoped registration. PreToolUse ONLY: the user-global bridge (~/.grok/hooks/hq-hq-bridge.json, installed by `hq reindex`) is the reliable path and carries ALL lifecycle events. Every other event (SessionStart, PostToolUse, Stop, PreCompact, SessionEnd, SubagentStop, Notification, UserPromptSubmit) is registered on the bridge ONLY so it never double-runs when a Grok build loads both this project file and the bridge. That matters more than it used to: PostToolUse carries additionalContext to the model and Stop/SubagentStop can hold the turn, so a double fire would duplicate a note or a block, not just a side effect. PreToolUse is intentionally on BOTH: blocking is idempotent, so redundant enforcement is safe and desirable. Every handler sets env.BASH_ENV=/dev/null: a host that exports BASH_ENV to a user profile makes the hook's OWN bash source that profile before line 1 of the script runs, so the script's internal `export BASH_ENV=/dev/null` is already too late to save its own startup. Grok applies the env map at spawn, which is early enough (verified on 1.0.41: hook observed BASH_ENV=/dev/null with the parent at ~/.bashrc).",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,10 @@
           {
             "type": "command",
             "command": "./hq-grok-hook-adapter.sh",
-            "timeout": 120
+            "timeout": 120,
+            "env": {
+              "BASH_ENV": "/dev/null"
+            }
           }
         ]
       }
