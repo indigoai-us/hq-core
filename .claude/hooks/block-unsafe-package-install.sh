@@ -105,7 +105,7 @@ EOF
 
 # Detect whether the command (or env) supplies the release-age gate.
 has_release_age_in_cmd() {
-  printf '%s' "$1" | grep -Eq -- '--config\.minimumReleaseAge=|--config\.minimum-release-age='
+  [[ "$1" =~ --config\.(minimumReleaseAge|minimum-release-age)= ]]
 }
 
 has_release_age_in_env() {
@@ -115,17 +115,24 @@ has_release_age_in_env() {
 has_release_age_in_repo() {
   # Walk up to 6 levels looking for a .npmrc with minimum-release-age or
   # a pnpm-workspace.yaml with minimumReleaseAge.
-  local dir
-  dir="$(pwd)"
+  local dir line
+  dir="$PWD"
   for _ in 1 2 3 4 5 6; do
-    if [ -f "$dir/.npmrc" ] && grep -Eq '^[[:space:]]*minimum-release-age[[:space:]]*=' "$dir/.npmrc" 2>/dev/null; then
-      return 0
+    if [ -f "$dir/.npmrc" ]; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^[[:space:]]*minimum-release-age[[:space:]]*= ]] && return 0
+      done < "$dir/.npmrc"
     fi
-    if [ -f "$dir/pnpm-workspace.yaml" ] && grep -Eq '^[[:space:]]*minimumReleaseAge[[:space:]]*:' "$dir/pnpm-workspace.yaml" 2>/dev/null; then
-      return 0
+    if [ -f "$dir/pnpm-workspace.yaml" ]; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^[[:space:]]*minimumReleaseAge[[:space:]]*: ]] && return 0
+      done < "$dir/pnpm-workspace.yaml"
     fi
     [ "$dir" = "/" ] && break
-    dir="$(dirname "$dir")"
+    case "$dir" in
+      */*) dir="${dir%/*}"; [ -n "$dir" ] || dir="/" ;;
+      *) dir="." ;;
+    esac
   done
   return 1
 }
@@ -161,7 +168,7 @@ strip_redirection_tokens() {
     fi
     out="$out $tok"
   done
-  printf '%s' "${out# }"
+  STRIP_REDIRECTION_RESULT="${out# }"
 }
 
 # Drop value-taking flags AND their separate value token from an argument list.
@@ -190,7 +197,7 @@ strip_flag_values() {
     esac
     out="$out $tok"
   done
-  printf '%s' "${out# }"
+  STRIP_FLAG_VALUES_RESULT="${out# }"
 }
 
 # Has at least one positional, non-flag argument after the subcommand?
@@ -292,10 +299,12 @@ check_segment() {
     # Redirections are shell plumbing, never package arguments. Strip them once
     # here so every token loop below (hydration detection, trusted-scope check,
     # allow-list check) sees the same package-only argument list.
-    rest="$(strip_redirection_tokens "$rest")"
+    strip_redirection_tokens "$rest"
+    rest="$STRIP_REDIRECTION_RESULT"
     # Collapse value-taking flags (`--prefix /path`, `--registry <url>`, …) so a
     # space-separated value is never mistaken for a positional package name.
-    rest="$(strip_flag_values "$rest")"
+    strip_flag_values "$rest"
+    rest="$STRIP_FLAG_VALUES_RESULT"
   else
     return 0
   fi
@@ -393,9 +402,26 @@ while [[ "$FIRST" =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]] ]]; do
   FIRST="${FIRST#* }"
 done
 # Take the first two tokens to recognize "git commit", "gh pr create", etc.
-FIRST_TWO="$(printf '%s' "$FIRST" | awk '{print $1, $2}')"
-FIRST_THREE="$(printf '%s' "$FIRST" | awk '{print $1, $2, $3}')"
-FIRST_ONE="$(printf '%s' "$FIRST" | awk '{print $1}')"
+FIRST_TWO=""
+FIRST_THREE=""
+FIRST_ONE=""
+FIRST_LINE_COUNT=0
+while IFS= read -r first_line || [ -n "$first_line" ]; do
+  first_words=()
+  read -r -a first_words <<< "$first_line"
+  first_two="${first_words[0]:-} ${first_words[1]:-}"
+  first_three="${first_words[0]:-} ${first_words[1]:-} ${first_words[2]:-}"
+  first_one="${first_words[0]:-}"
+  if [ "$FIRST_LINE_COUNT" -gt 0 ]; then
+    FIRST_TWO+=$'\n'
+    FIRST_THREE+=$'\n'
+    FIRST_ONE+=$'\n'
+  fi
+  FIRST_TWO+="$first_two"
+  FIRST_THREE+="$first_three"
+  FIRST_ONE+="$first_one"
+  FIRST_LINE_COUNT=$((FIRST_LINE_COUNT + 1))
+done <<< "$FIRST"
 
 case "$FIRST_ONE" in
   echo|printf|cat|osascript|awk|sed) exit 0 ;;
@@ -414,7 +440,17 @@ esac
 # of that unit, which prevents false positives on text like
 # `git commit -m "... npm install x ..."`.
 DELIM=$'\x01'
-NORMALIZED=$(printf '%s' "$CMD" | sed -E "s/[[:space:]]*(&&|\\|\\||;|\\|)[[:space:]]*/${DELIM}/g")
+normalize_shell_separators() {
+  local input="$1"
+
+  # Bash's global substitutions process the whole payload in native code.
+  # Split two-character operators first to avoid turning them into two delimiters.
+  NORMALIZED="${input//&&/$DELIM}"
+  NORMALIZED="${NORMALIZED//||/$DELIM}"
+  NORMALIZED="${NORMALIZED//;/$DELIM}"
+  NORMALIZED="${NORMALIZED//|/$DELIM}"
+}
+normalize_shell_separators "$CMD"
 remaining="$NORMALIZED"
 while [ -n "$remaining" ]; do
   if [[ "$remaining" == *"${DELIM}"* ]]; then

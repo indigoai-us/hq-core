@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Changed: macOS shell smoke uses path detection (GH-2)
+- The `shell-smoke-macos` job runs for shell source changes, chmod-only shell changes, its workflow, and non-shell inputs read by its tests: `.claude/settings.json`, `.claude/hooks/**`, `.grok/hooks/**`, `core/core.yaml`, `.claude/skills/deploy/SKILL.md`, and `core/scripts/lib/**`. Missing base history runs the job.
+- The regression test compares each single-path commit to its immediate parent and covers the non-shell inputs, shell additions and removals, mode-only changes, unrelated documentation, and missing-base fallback. The required `denylist-scan` check still runs on every ready PR.
+
 ### Fixed — Bash scope authorizer handles shell path variables and PR body heredocs (US-033)
 - The Bash guard resolves one simple assignment and bounded `for` values before checking company paths. It blocks unresolved expansions and values that leave the bound company.
 - Heredoc text is treated as data for recognized `gh pr create` body options. Executed heredocs and redirects into another company's files remain checked.
