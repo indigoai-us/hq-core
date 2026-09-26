@@ -111,6 +111,11 @@ printf '%s\n' "$*" >> "$HQ_STUB_LOG"
 case "$1" in
   doctor)
     case "$*" in
+      *--client-health-sentry*)
+        # Return zero only for the opt-in direct-Sentry path; every non-zero
+        # result models flag-off, an unavailable transport, or an older CLI.
+        exit "${HQ_STUB_SENTRY_RC:-2}"
+        ;;
       *--fix*)
         # HQ_STUB_FIX_HANG models a wedged repair (a doctor stuck on a network
         # call). The completion marker is written only if the sleep RETURNS, so
@@ -925,6 +930,121 @@ mkdir -p "$REM_STATE"
 run_remediate "$R19" "-"
 [ ! -s "$REM_STATE/bugs-filed" ] \
   && ok "cannot send without durable cooldown" || bad "cannot send without durable cooldown" "sent without stamp"
+
+echo "== 21. direct Sentry handling preserves the old path when unavailable =="
+R20="$TMP/sentry-fallback"
+build_root "$R20"
+REM_STATE="$TMP/sentry-fallback-state"
+mkdir -p "$REM_STATE"
+export HQ_STUB_SENTRY_RC=10
+run_remediate "$R20" "-"
+unset HQ_STUB_SENTRY_RC
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+  && ok "flag-off direct report falls back to hq feedback bug" \
+  || bad "flag-off direct report falls back to hq feedback bug" "feedback was not filed"
+grep -Fq -- '--client-health-sentry' "$STUB_LOG" \
+  && ok "flag-off CLI attempt is explicit and bounded" \
+  || bad "flag-off CLI attempt is explicit and bounded" "direct command missing"
+
+echo "== 22. successful direct Sentry handling skips the feedback API =="
+R21="$TMP/sentry-handled"
+build_root "$R21"
+REM_STATE="$TMP/sentry-handled-state"
+mkdir -p "$REM_STATE"
+export HQ_STUB_SENTRY_RC=0
+run_remediate "$R21" "-"
+unset HQ_STUB_SENTRY_RC
+[ ! -s "$REM_STATE/bugs-filed" ] \
+  && ok "handled Sentry event skips hq feedback bug" \
+  || bad "handled Sentry event skips hq feedback bug" "feedback API was called"
+[ -f "$R21/workspace/.hq-client-health/bugs/summary.stamp" ] \
+  && ok "handled Sentry event records the shared daily cooldown" \
+  || bad "handled Sentry event records the shared daily cooldown" "summary stamp missing"
+
+echo "== 23. an older CLI falls back to hq feedback bug =="
+R22="$TMP/sentry-old-cli"
+build_root "$R22"
+REM_STATE="$TMP/sentry-old-cli-state"
+mkdir -p "$REM_STATE"
+export HQ_STUB_SENTRY_RC=2
+run_remediate "$R22" "-"
+unset HQ_STUB_SENTRY_RC
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+  && ok "older CLI falls back to hq feedback bug" \
+  || bad "older CLI falls back to hq feedback bug" "feedback was not filed"
+
+echo "== 24. a local next-step message is displayed once =="
+R23="$TMP/result-message"
+build_root "$R23"
+mkdir -p "$R23/workspace/.hq-client-health"
+cat > "$R23/workspace/.hq-client-health/last-result.json" <<'JSON'
+{
+  "check_class": "sync.journal.personal",
+  "outcome": "fix_failed",
+  "next_step": "untrusted text /private/path must not print",
+  "result_id": "71ec3c3a-a0ce-4e38-9a45-9c3770d32f10"
+}
+JSON
+run_hook "$R23" HQ_STATE_DIR="$TMP/result-message-state"
+case "$HOOK_OUT" in
+  *"HQ hasn't synced your personal files"*) ok "SessionStart prints the local next step in plain words" ;;
+  *) bad "SessionStart prints the local next step in plain words" "message missing: [$HOOK_OUT]" ;;
+esac
+case "$HOOK_OUT" in
+  *"untrusted text"*|*"/private/path"*) bad "SessionStart does not print stored free text" "unsafe value was printed" ;;
+  *) ok "SessionStart ignores stored free text" ;;
+esac
+run_hook "$R23" HQ_STATE_DIR="$TMP/result-message-state"
+case "$HOOK_OUT" in
+  *"<hq-client-health-result>"*) bad "SessionStart marks the result shown" "message printed twice" ;;
+  *) ok "SessionStart marks the result shown" ;;
+esac
+
+echo "== 25. a contended report lock removes the local raw post-fix document =="
+R24="$TMP/sentry-lock-contended"
+build_root "$R24"
+mkdir -p "$R24/workspace/.hq-client-health/bugs"
+: > "$R24/workspace/.hq-client-health/bugs/summary.lock"
+REM_STATE="$TMP/sentry-lock-contended-state"
+mkdir -p "$REM_STATE"
+run_remediate "$R24" "-"
+POST_FIX_FILES=$(compgen -G "$R24/workspace/.hq-client-health/post-fix.*" || true)
+[ -z "$POST_FIX_FILES" ] \
+  && ok "contended report lock removes the raw post-fix document" \
+  || bad "contended report lock removes the raw post-fix document" "temporary doctor JSON remained on disk"
+
+echo "== 26. a stale local-message lock is recovered =="
+R25="$TMP/result-message-stale-lock"
+build_root "$R25"
+mkdir -p "$R25/workspace/.hq-client-health"
+cat > "$R25/workspace/.hq-client-health/last-result.json" <<'JSON'
+{
+  "check_class": "sync.update.core",
+  "outcome": "fix_failed",
+  "next_step": "ignored free text",
+  "result_id": "71ec3c3a-a0ce-4e38-9a45-9c3770d32f10"
+}
+JSON
+: > "$R25/workspace/.hq-client-health/last-result-show.lock"
+touch -t "$ANCIENT" "$R25/workspace/.hq-client-health/last-result-show.lock"
+run_hook "$R25" HQ_STATE_DIR="$TMP/result-message-stale-lock-state"
+case "$HOOK_OUT" in
+  *"HQ couldn't update itself automatically"*) ok "stale local-message lock is reclaimed" ;;
+  *) bad "stale local-message lock is reclaimed" "stored next step was not displayed" ;;
+esac
+
+echo "== 27. a recent report cooldown removes the local raw post-fix document =="
+R26="$TMP/sentry-cooldown"
+build_root "$R26"
+mkdir -p "$R26/workspace/.hq-client-health/bugs"
+: > "$R26/workspace/.hq-client-health/bugs/report-attempt.stamp"
+REM_STATE="$TMP/sentry-cooldown-state"
+mkdir -p "$REM_STATE"
+run_remediate "$R26" "-"
+POST_FIX_FILES=$(compgen -G "$R26/workspace/.hq-client-health/post-fix.*" || true)
+[ -z "$POST_FIX_FILES" ] \
+  && ok "recent report cooldown removes the raw post-fix document" \
+  || bad "recent report cooldown removes the raw post-fix document" "temporary doctor JSON remained on disk"
 
 echo
 echo "==== check-client-health: $PASS passed, $FAIL failed ===="
