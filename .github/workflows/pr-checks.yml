@@ -198,6 +198,14 @@ jobs:
         run: bash core/scripts/tests/skill-script-refs.test.sh
       - name: HQ feedback summary and verbatim report contract
         run: bash core/scripts/tests/hq-bug-skill.test.sh
+      - name: Pricing drift and refresh scripts (offline regression)
+        run: bash core/scripts/tests/pricing-drift.test.sh
+      - name: Shipped pricing.json matches the live GET /v1/pricing endpoint
+        # Drift always fails. HQ_PRICING_DRIFT_ALLOW_UNREACHABLE=1 only covers the
+        # window before the endpoint is deployed; remove it once it answers 200.
+        env:
+          HQ_PRICING_DRIFT_ALLOW_UNREACHABLE: "1"
+        run: bash core/scripts/check-pricing-drift.sh
       - name: Company resolver (session bind + whole-token prompt scan)
         run: bash core/scripts/tests/resolve-company.test.sh
       - name: Session auto-bind honors device-default company boundaries

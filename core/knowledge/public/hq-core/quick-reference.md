@@ -184,6 +184,10 @@ Every command exists as `.claude/commands/{name}.md` (the slash-command entry po
 
 **Rule for new commands:** start with the consolidated shape — write the canonical logic in `SKILL.md`, leave `.md` as a stub copying `.claude/commands/startwork.md`'s shape (frontmatter → H1 → intro → `## Steps` → `## After`). Only fork if you have a genuine thin-router reason like `run-project`.
 
+## Pricing and Billing
+
+What HQ costs and how billing works: `core/knowledge/public/hq-core/pricing-and-billing.md`. Numbers: `core/knowledge/public/hq-core/pricing.json` (copy of `GET https://hqapi.getindigo.ai/v1/pricing`). Quote only from those or the endpoint (policy `hq-pricing-source-of-truth`).
+
 ## Knowledge Bases
 
 **Public** (`core/knowledge/public/`): Ralph, ai-security-framework, agent-browser, curious-minds, dev-team, hq-core, loom, projects, workers. Optional packs (install via `hq install @indigoai-us/hq-pack-*`) add: design-styles, design-quality, gemini-cli.

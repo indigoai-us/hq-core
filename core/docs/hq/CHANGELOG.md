@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+### Added: pricing and billing reference with a drift check (workforce-no-included-agents US-011)
+- `core/knowledge/public/hq-core/pricing-and-billing.md` explains plans, the member rule, per-box agent billing, the legacy Workforce rule, meeting hours, outposts, trials, cancelling and invoices. Its numbers section is generated from `core/knowledge/public/hq-core/pricing.json`, a copy of the `GET /v1/pricing` statement.
+- `core/scripts/refresh-pricing.sh` fetches the endpoint, rewrites `pricing.json`, and regenerates only the text between the numbers markers.
+- `core/scripts/check-pricing-drift.sh` fails when `pricing.json` differs from the endpoint on any plan price, allowance, agent rung, add-on or the legacy Workforce rule, and names each field. It exits 2 when the endpoint is unreachable. pr-checks runs it on every PR and push to main.
+- New hard policy `core/policies/hq-pricing-source-of-truth.md`: quote pricing only from `pricing.json` or the endpoint; the endpoint wins on disagreement.
+- The quick reference links the pricing reference.
+- The drift check goes live with the endpoint. Until `GET /v1/pricing` is deployed, CI sets `HQ_PRICING_DRIFT_ALLOW_UNREACHABLE=1` so an unreachable endpoint warns; drift still fails. Remove the flag, then run `refresh-pricing.sh`, once the endpoint answers 200. The shipped copy was generated from the statement builder with only the basic rung live and meeting hours priced.
+- Regression: `core/scripts/tests/pricing-drift.test.sh`.
+
 ### Fixed — Bash scope authorizer handles shell path variables and PR body heredocs (US-033)
 - The Bash guard resolves one simple assignment and bounded `for` values before checking company paths. It blocks unresolved expansions and values that leave the bound company.
 - Heredoc text is treated as data for recognized `gh pr create` body options. Executed heredocs and redirects into another company's files remain checked.
