@@ -73,7 +73,7 @@ norm() {
 HQ_ROOT="$(norm "$PROJECT_DIR")"
 
 GIT_RE_MUTATION='^(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)$'
-GIT_RE_READONLY='^(status|log|diff|show|shortlog|whatchanged|rev-parse|rev-list|describe|blame|annotate|cat-file|ls-files|ls-remote|ls-tree|for-each-ref|symbolic-ref|name-rev|var|version|help|count-objects|verify-pack|grep|bisect|branch|tag|stash|remote|notes|config|worktree|submodule)$'
+GIT_RE_READONLY='^(status|log|diff|show|shortlog|whatchanged|rev-parse|rev-list|describe|blame|annotate|cat-file|ls-files|ls-remote|ls-tree|for-each-ref|symbolic-ref|name-rev|var|version|help|count-objects|verify-pack|grep|bisect|branch|tag|stash|remote|notes|config|worktree|submodule|check-ignore)$'
 
 git_subcommand() {
   local arr; read -r -a arr <<<"$1"

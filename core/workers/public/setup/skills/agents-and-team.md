@@ -114,16 +114,29 @@ console, and they sign in in the browser.
 
 ## Inviting a teammate
 
+Every invite runs through HQ's new-hire flow. Read
+`.claude/skills/new-hire/SKILL.md` in the HQ folder before the first invite and
+follow its steps: check `hq members list` first, set the role, invite, then
+the access that person needs (groups, shared apps and keys) and the
+acceptance follow-through. It is your playbook, not something to show them:
+ask its questions in plain words, one at a time, skip what setup has not
+created yet (groups, an onboarding packet), and never name the skill or its
+command. If that file is not in this HQ, the steps below are enough.
+
 1. Ask for one email and whether they should be a member or an admin
-   (member is the default; admins can only invite members).
+   (member is the default; admins can only invite members). If they already
+   said who, do not ask again.
 2. Confirm in one line that an invitation email will go to that address, and
    wait for yes.
-3. Run `hq members invite <email> --company <slug> --role member`.
+3. Send the invite the way the new-hire flow says
+   (`hq members invite <email> --company <slug> --role member`).
 4. Tell them what happens next: the teammate opens the email, signs in with
    Google or Microsoft, and gets the company in their own HQ, so their Claude
    Code or Codex knows the business from their first session. Say what they
-   will see that matters to this person (the connected calls, the client
-   homes).
+   will see that matters to this person (the client homes, and any app you
+   have shared with them; a connected app stays private to the person who
+   connected it until it is shared). Always add: "Tell them to check their
+   spam folder if the email doesn't show up in a few minutes."
 5. Check with `hq members list` (pending until they accept). If they never
    got it, `--resend` sends it again.
 

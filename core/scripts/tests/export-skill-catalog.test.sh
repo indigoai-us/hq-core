@@ -24,6 +24,21 @@ body
 EOF
 }
 
+write_scalar_skill() {
+  local dir="$1" name="$2" marker="$3" continuation="$4"
+  mkdir -p "$dir"
+  cat >"$dir/SKILL.md" <<EOF
+---
+name: $name
+description: $marker
+$continuation
+category: following key must not enter the description
+---
+
+body
+EOF
+}
+
 scaffold_hq() {
   local root="$1"
   mkdir -p "$root/.claude/skills" "$root/companies/demo/skills" "$root/core/packages/hq-pack-engineering/skills"
@@ -70,5 +85,39 @@ set -e
 [ "$rc" -eq 6 ] || fail "traversal slug expected exit 6 got $rc: $err"
 printf '%s\n' "$err" | grep -Fq 'company refused' || fail "expected company refused: $err"
 pass "traversal slug rejected"
+
+echo "[5] block-scalar descriptions fold; inline descriptions stay unchanged"
+HQ="$TMP/hq-frontmatter-scalars"
+scaffold_hq "$HQ"
+write_scalar_skill "$HQ/.claude/skills/folded-strip" folded-strip '>-' $'  folded first\n  folded second'
+write_scalar_skill "$HQ/.claude/skills/folded-clip" folded-clip '>' $'  clip first\n  clip second'
+write_scalar_skill "$HQ/.claude/skills/literal-clip" literal-clip '|' $'  literal first\n  literal second'
+write_scalar_skill "$HQ/.claude/skills/literal-strip" literal-strip '|-' $'  strip first\n  strip second'
+write_skill "$HQ/.claude/skills/inline" inline 'inline stays exact'
+write_skill "$HQ/.claude/skills/quoted-inline" quoted-inline '"quoted stays exact"'
+out="$(bash "$EXPORTER" --root "$HQ" --company demo)"
+scalar_failures=0
+check_catalog_line() {
+  local expected="$1" label="$2"
+  if printf '%s\n' "$out" | grep -Fq -- "$expected"; then
+    pass "$label"
+  else
+    echo "FAIL: $label missing: $expected" >&2
+    scalar_failures=$((scalar_failures+1))
+  fi
+}
+check_catalog_line '/folded-strip — folded first folded second' 'folded strip scalar joined with spaces'
+check_catalog_line '/folded-clip — clip first clip second' 'folded clip scalar joined with spaces'
+check_catalog_line '/literal-clip — literal first literal second' 'literal clip scalar joined with spaces'
+check_catalog_line '/literal-strip — strip first strip second' 'literal strip scalar joined with spaces'
+check_catalog_line '/inline — inline stays exact' 'plain inline description preserved'
+check_catalog_line '/quoted-inline — quoted stays exact' 'quoted inline description preserved'
+if printf '%s\n' "$out" | grep -Fq -- 'following key must not enter the description'; then
+  echo 'FAIL: following frontmatter key leaked into a block description' >&2
+  scalar_failures=$((scalar_failures+1))
+else
+  pass 'following frontmatter key is excluded from block description'
+fi
+[[ "$scalar_failures" -eq 0 ]] || exit 1
 
 echo "export-skill-catalog tests passed"
