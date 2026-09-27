@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Changed: setup bot invites teammates through the new-hire flow
+- When the setup bot invites someone, it follows the new-hire skill's steps (membership check, role, invite, access, follow-through) without naming the skill, and tells the person to have the invitee check their spam folder.
+
+### Changed: setup bot confirms a connected app and says where connections live
+- After the first app it connects, once it reads real data from it, the setup bot says "Great, <Tool> is connected" with a link to the company's integrations page on hq.computer, and says the person can ask it or any other AI in HQ to connect another.
+
+### Fixed: root git guard and skill catalog frontmatter parsing (US-067)
+- The HQ-root guard now allows the read-only `git check-ignore` command.
+- Skill catalog descriptions written with YAML block scalars are folded into one line. Inline descriptions keep their existing output.
+
 ### Fixed: handoff post syncs workspace mirrors to the thread company
 - Workspace sync now passes the thread's company slug to hq sync push.
 - The document-release gate counts string paths and objects with a string path. Unsupported entries are logged and skipped.

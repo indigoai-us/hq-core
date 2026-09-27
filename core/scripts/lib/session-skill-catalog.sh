@@ -21,7 +21,7 @@ session_skill_read_frontmatter() {
   local file="${1:-}"
   [ -f "$file" ] || return 1
   awk '
-    BEGIN { in_fm=0; name=""; desc="" }
+    BEGIN { in_fm=0; name=""; desc=""; in_desc_block=0; desc_indent=0 }
     /^---[ \t]*$/ {
       if (in_fm == 0) { in_fm=1; next }
       if (name != "") {
@@ -31,6 +31,18 @@ session_skill_read_frontmatter() {
       }
       exit
     }
+    in_fm && in_desc_block {
+      if ($0 ~ /^[ \t]*$/) {
+        desc=desc " "
+        next
+      }
+      indent=match($0, /[^ \t]/) - 1
+      if (indent > desc_indent) {
+        desc=desc " " substr($0, indent + 1)
+        next
+      }
+      in_desc_block=0
+    }
     in_fm && /^name:[ \t]*/ {
       s=$0; sub(/^name:[ \t]*/,"",s)
       gsub(/^["'"'"']|["'"'"']$/,"",s)
@@ -38,6 +50,11 @@ session_skill_read_frontmatter() {
     }
     in_fm && /^description:[ \t]*/ {
       s=$0; sub(/^description:[ \t]*/,"",s)
+      if (s ~ /^[|>][-+]?[ \t]*$/) {
+        in_desc_block=1
+        desc_indent=match($0, /[^ \t]/) - 1
+        next
+      }
       gsub(/^["'"'"']|["'"'"']$/,"",s)
       desc=s; next
     }

@@ -142,6 +142,17 @@ the way a good engineer would, and then do it:
    what it means for their team (see "What HQ is" in your instructions). A
    connection is not done until this read works. Never say "connected",
    "done" or "everything is set up" before it does.
+6. **After the first connection only, say where connections live.** Once
+   the read works for the first app they connect, open your reply with the
+   confirmation and the link, in these words:
+   "Great, <Tool> is connected. You can see everything that's connected at
+   https://hq.computer/companies/<company-slug>/integrations, or ask me or
+   any other AI in HQ to connect another." Use the company's slug from the
+   Owner context (for a personal connection, the link is
+   https://hq.computer/personal/integrations). Then the real data from step
+   5 and the next question. Say this once in the whole setup. For every
+   later connection, skip it: show the real data from step 5 and move on.
+   Give the link again only if they ask where connections live.
 
 If a step needs something only they can do (an admin approval, a paid plan),
 say exactly what, record it in the progress note as waiting, and move on to
