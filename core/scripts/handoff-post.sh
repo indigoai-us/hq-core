@@ -66,11 +66,32 @@ else
 fi
 
 if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]]; then
-  scope_match=$(jq -r '
-    [.files_touched[]? // empty] | map(select(test("^(companies|repos)/"))) | length
-  ' "$THREAD_PATH" 2>/dev/null || echo 0)
-  if [[ "${scope_match:-0}" -gt 0 ]]; then
-    log "document-release: eligible and pending runtime dispatch by handoff skill (${scope_match} scoped files; no dispatch proof)"
+  if scope_counts=$(jq -r '
+    (.files_touched // []) as $files
+    | (if ($files | type) == "array" then
+         [$files[] |
+           if type == "string" then .
+           elif type == "object" and (.path | type) == "string" then .path
+           else null
+           end]
+       else [] end) as $paths
+    | [
+        ($paths | map(select(if type == "string" then test("^(companies|repos)/") else false end)) | length),
+        ($paths | map(select(. == null)) | length)
+      ]
+    | @tsv
+  ' "$THREAD_PATH" 2>/dev/null); then
+    IFS=$'\t' read -r scope_match skipped_count <<< "$scope_counts"
+  else
+    scope_match=0
+    skipped_count=0
+    log "document-release: skipped (invalid thread JSON)"
+  fi
+  for ((skipped_index = 0; skipped_index < skipped_count; skipped_index++)); do
+    log "document-release: skipped unsupported files_touched entry"
+  done
+  if [[ "$scope_match" -gt 0 ]]; then
+    log "document-release: eligible and pending runtime dispatch by handoff skill ($scope_match scoped files; no dispatch proof)"
   else
     log "document-release: skipped (no company/repo files in files_touched)"
   fi
@@ -86,7 +107,7 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1
   while IFS= read -r company; do
     [[ "$company" =~ ^[a-z][a-z0-9_-]*$ ]] || continue
     [[ -d "$HQ_ROOT/companies/$company/workspace" ]] || continue
-    if hq sync push "companies/$company/workspace" >>"$LOG_MAIN" 2>&1; then
+    if hq sync push --company "$company" "companies/$company/workspace" >>"$LOG_MAIN" 2>&1; then
       log "workspace-sync: pushed companies/$company/workspace"
     else
       log "workspace-sync: failed companies/$company/workspace"

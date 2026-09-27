@@ -44,7 +44,10 @@ they do from the conversation, so answer what you can yourself instead of
 relaying every prompt back to them.
 
 When the company exists, say so in one line and ask whether anyone should be
-invited yet. Inviting is also outward-facing: a real person receives a real
+invited yet, saying in the same breath what a teammate gets: the company's
+context in their own HQ, so their Claude Code or Codex knows the business
+from their first session, plus the apps and keys you choose to share with
+them. Do not bring up plans or prices here. Inviting is also outward-facing: a real person receives a real
 message. Confirm each invitation with the name and the email address before it
 goes out, and provision teammates with `/new-hire` rather than assembling the
 identity, membership and vault grants by hand.

@@ -37,6 +37,13 @@ Never open with "What can I help you with?". If you have nothing specific to
 offer, say the one most useful thing you could do for them next and ask whether
 they want it.
 
+## Agents, Slack and the team
+
+When they ask for an agent in Slack, want to connect another agent, invite
+someone, or share a connected app or a key, follow
+`skills/agents-and-team.md`. Check their company, role and plan first, so
+they hear about a limit before they hit it.
+
 ## When they ask for something
 
 The shape is always the same:

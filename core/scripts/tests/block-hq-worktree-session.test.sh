@@ -18,6 +18,11 @@ ROOT="$(git rev-parse --show-toplevel)"
 HOOK="$ROOT/.claude/hooks/block-hq-worktree-session.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+BASE_SHA="${HQ_HOOK_GUARD_BASE_SHA:-}"
+[ -n "$BASE_SHA" ] || BASE_SHA="$(git -C "$ROOT" merge-base HEAD origin/main)"
+BASE_HOOK="$TMP/base-block-hq-worktree-session.sh"
+git -C "$ROOT" show "$BASE_SHA:.claude/hooks/block-hq-worktree-session.sh" > "$BASE_HOOK" \
+  || { echo "FAIL: could not load base guard at $BASE_SHA" >&2; exit 1; }
 
 git_quiet() { git -c init.defaultBranch=main -c user.email=t@t -c user.name=t "$@"; }
 
@@ -28,6 +33,8 @@ printf 'hq\n' > "$TMP/hq/README.md"
 git_quiet -C "$TMP/hq" add README.md
 git_quiet -C "$TMP/hq" commit -qm init
 git_quiet -C "$TMP/hq" worktree add -q -b wt "$TMP/hq-worktree" >/dev/null 2>&1
+git_quiet -C "$TMP/hq" worktree add -q -b wt-two "$TMP/hq-worktree-two" >/dev/null 2>&1
+git_quiet -C "$TMP/hq" worktree add -q -b wt-three "$TMP/hq-worktree-three" >/dev/null 2>&1
 
 # --- Nested source repo + its own worktree (the sanctioned editing flow) ----
 mkdir -p "$TMP/hq/repos/private/app"
@@ -85,15 +92,26 @@ FAIL=0
 run() {
   local expect="$1" project="$2" cwd="$3" event="$4" label="$5"
   shift 5
-  local payload rc=0 agent_id="${TEST_AGENT_ID:-}" agent_type="${TEST_AGENT_TYPE:-}"
+  local payload rc=0 err_file run_cwd="${TEST_RUN_CWD:-$ROOT}" agent_id="${TEST_AGENT_ID:-}" agent_type="${TEST_AGENT_TYPE:-}" session_id="${TEST_SESSION_ID:-test}"
   payload=$(jq -n --arg cwd "$cwd" --arg ev "$event" \
-    --arg agent_id "$agent_id" --arg agent_type "$agent_type" \
-    '{cwd: $cwd, hook_event_name: $ev, session_id: "test"}
+    --arg agent_id "$agent_id" --arg agent_type "$agent_type" --arg sid "$session_id" \
+    '{cwd: $cwd, hook_event_name: $ev, session_id: $sid}
       + (if $agent_id == "" then {} else {agent_id: $agent_id} end)
       + (if $agent_type == "" then {} else {agent_type: $agent_type} end)')
-  LAST_STDOUT="$(printf '%s' "$payload" \
-    | env CLAUDE_PROJECT_DIR="$project" HQ_ROOT= HQ_ALLOW_HQ_WORKTREE= "$@" \
-      bash "$HOOK" "$event" 2>/dev/null)" || rc=$?
+  err_file="$(mktemp)"
+  LAST_STDOUT="$(
+    run_cdpath_set=0; run_cdpath=""
+    if [ "${CDPATH+x}" = x ]; then run_cdpath_set=1; run_cdpath="$CDPATH"; fi
+    unset CDPATH
+    cd -P -- "$run_cwd" || exit 125
+    [ "$run_cdpath_set" -eq 0 ] || export CDPATH="$run_cdpath"
+    printf '%s' "$payload" \
+      | env -u HQ_HOOK_AGENT_ID -u HQ_HOOK_SESSION_ID -u HQ_HOOK_CWD -u HQ_HOOK_EVENT \
+        CLAUDE_PROJECT_DIR="$project" HQ_ROOT= HQ_ALLOW_HQ_WORKTREE= "$@" \
+        bash "$HOOK" "$event" 2>"$err_file"
+  )" || rc=$?
+  LAST_STDERR="$(cat "$err_file")"
+  rm -f "$err_file"
   if [[ "$rc" -eq "$expect" ]]; then
     PASS=$((PASS + 1))
   else
@@ -104,14 +122,62 @@ run() {
 
 HQ="$TMP/hq"
 HQWT="$TMP/hq-worktree"
+HQWT2="$TMP/hq-worktree-two"
+HQWT3="$TMP/hq-worktree-three"
+HQWT_LAST="$(git_quiet -C "$HQ" worktree list --porcelain \
+  | awk '/^worktree / { path=substr($0, 10) } END { print path }')"
 APP="$TMP/hq/repos/private/app"
 APPWT="$TMP/hq/workspace/worktrees/app/x"
+[ "$HQWT_LAST" != "$HQ" ] || { echo 'FAIL: multi-worktree fixture has no linked worktree' >&2; exit 1; }
 
 # --- The block: HQ itself running from a worktree ---------------------------
 run 2 "$HQWT" "$HQWT" UserPromptSubmit 'project dir is a linked HQ worktree — prompt blocked'
 run 2 "$HQWT" "$HQWT" PreToolUse       'project dir is a linked HQ worktree — tool blocked'
 run 2 "$HQ"   "$HQWT" UserPromptSubmit 'cwd is a worktree cut from HQ — blocked'
 run 2 "$HQ"   "$HQWT" PreToolUse       'cwd is a worktree cut from HQ — tool blocked'
+
+# The last listed linked worktree must not be mistaken for the main checkout.
+# Run the same multi-worktree cwd denial on the PR base and candidate guard.
+HOOK="$BASE_HOOK"
+TEST_SESSION_ID=c153-multi-worktree
+run 2 "$HQ" "$HQWT_LAST" UserPromptSubmit 'base denies cwd in the last of several HQ worktrees'
+base_multi_worktree_stdout="$LAST_STDOUT"
+base_multi_worktree_stderr="$LAST_STDERR"
+HOOK="$ROOT/.claude/hooks/block-hq-worktree-session.sh"
+TEST_SESSION_ID=c153-multi-worktree \
+  run 2 "$HQ" "$HQWT_LAST" UserPromptSubmit 'candidate denies cwd in the last of several HQ worktrees'
+[ "$LAST_STDOUT" = "$base_multi_worktree_stdout" ] \
+  && [ "$LAST_STDERR" = "$base_multi_worktree_stderr" ] \
+  && { PASS=$((PASS + 1)); echo 'ok: base and candidate both deny the multi-worktree session'; } \
+  || { FAIL=$((FAIL + 1)); echo 'FAIL [multi-worktree parity]: base and candidate output differ' >&2; }
+
+# An exported CDPATH must not contaminate norm's captured output for a relative
+# project path.
+HOOK="$BASE_HOOK"
+TEST_SESSION_ID=c153-cdpath \
+  TEST_RUN_CWD="$TMP" CDPATH="$TMP" \
+  run 2 hq-worktree-two hq-worktree-two UserPromptSubmit 'base denies relative path with CDPATH'
+base_cdpath_stdout="$LAST_STDOUT"
+base_cdpath_stderr="$LAST_STDERR"
+HOOK="$ROOT/.claude/hooks/block-hq-worktree-session.sh"
+TEST_SESSION_ID=c153-cdpath \
+  TEST_RUN_CWD="$TMP" CDPATH="$TMP" \
+  run 2 hq-worktree-two hq-worktree-two UserPromptSubmit 'candidate denies relative path with CDPATH'
+[ "$LAST_STDOUT" = "$base_cdpath_stdout" ] \
+  && [ "$LAST_STDERR" = "$base_cdpath_stderr" ] \
+  && { PASS=$((PASS + 1)); echo 'ok: base and candidate keep relative path output clean with CDPATH'; } \
+  || { FAIL=$((FAIL + 1)); echo 'FAIL [CDPATH parity]: base and candidate output differ' >&2; }
+
+# Direct calls carry session_id and cwd only in stdin. Both fields must survive
+# the later command substitutions that feed the deny and cached-allow paths.
+TEST_SESSION_ID=c153-direct-deny \
+  run 2 "$HQ" "$HQWT" UserPromptSubmit 'direct payload retains cwd for linked-worktree denial'
+cache_session=c153-direct-cache
+cache_path="$HQWT/workspace/orchestrator/hook-state/worktree-guard/$cache_session"
+mkdir -p "${cache_path%/*}"
+printf 'root=%s\ncwd=%s\nts=%s\n' "$HQWT" "$HQWT" "$(date +%s)" > "$cache_path"
+TEST_SESSION_ID="$cache_session" \
+  run 0 "$HQWT" "$HQWT" UserPromptSubmit 'direct payload retains cwd for cached allow'
 
 # A manually selected --agent has agent_type but no subagent id. It is still an
 # ordinary worktree session and must not gain the background-task exemption.

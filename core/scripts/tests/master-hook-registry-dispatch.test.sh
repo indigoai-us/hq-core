@@ -104,20 +104,58 @@ HQ_HOOK_PROFILE=bogus run_master PreToolUse "$(payload_bash "echo bench")"
 grep -q "Unknown profile" <<<"$ERR" && pass "unknown profile reports an error" || fail "unknown profile silently accepted"
 
 echo "[6] policy-vocabulary prefilter skips the injector only when no policy token is present"
-PF_DIR="$ROOT/workspace/orchestrator/hook-state/policy-prefilter"
-rm -rf "$PF_DIR"
-HQ_HOOK_TRACE=1 run_master PreToolUse "$(payload_bash "cat README.md")"
-grep -q "skip inject-policy-on-trigger (policy-vocab)" <<<"$ERR" && pass "token-free command skips the injector" \
-  || fail "token-free command did not skip the injector: $(printf '%s' "$ERR" | grep inject-policy)"
-ls "$PF_DIR"/*PreToolUse.v1 >/dev/null 2>&1 && pass "compiled vocabulary written" || fail "no compiled vocabulary file"
-HQ_HOOK_TRACE=1 run_master PreToolUse "$(payload_bash "git -C $ROOT status")"
-grep -q "run inject-policy-on-trigger" <<<"$ERR" && pass "git command still runs the injector" \
+PF_FIXTURE="$(mktemp -d)"
+mkdir -p "$PF_FIXTURE/.claude/hooks" "$PF_FIXTURE/core/scripts/lib"   "$PF_FIXTURE/core/policies" "$PF_FIXTURE/personal/policies"   "$PF_FIXTURE/workspace/orchestrator/policy-trigger-state"
+cp "$MASTER" "$PF_FIXTURE/.claude/hooks/master-hook.sh"
+cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$PF_FIXTURE/.claude/hooks/"
+cp "$ROOT/.claude/hooks/hook-timeout-watchdog.sh" "$PF_FIXTURE/.claude/hooks/"
+cp "$ROOT/.claude/hooks/hook-gate.sh" "$PF_FIXTURE/.claude/hooks/"
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$PF_FIXTURE/core/scripts/lib/"
+cp "$ROOT/core/scripts/lib/trigger-fact-text.awk" "$PF_FIXTURE/core/scripts/lib/"
+printf 'hqVersion: "15.0.131"\n' > "$PF_FIXTURE/core/core.yaml"
+cat > "$PF_FIXTURE/core/policies/test-git-trigger.md" <<'POLICY'
+---
+id: test-git-trigger
+title: fixture git trigger
+when: git
+on: [PreToolUse]
+enforcement: soft
+---
+Fixture trigger for the dispatcher prefilter test.
+POLICY
+cat > "$PF_FIXTURE/.claude/hooks/injector.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '{"injector":"ran"}'
+SH
+chmod +x "$PF_FIXTURE/.claude/hooks/injector.sh"
+cat > "$PF_FIXTURE/.claude/hooks/hook-registry.json" <<'JSON'
+{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[
+  {"id":"inject-policy-on-trigger","script":".claude/hooks/injector.sh","timeout":30,"gated":false,"prefilter":{"policy_vocab":true}}
+]}]}}
+JSON
+: > "$PF_FIXTURE/workspace/orchestrator/policy-trigger-state/mh-prefilter-test.txt"
+run_pf_master() { # <command> -> sets PF_ERR and PF_RC
+  local payload
+  payload="$(jq -nc --arg c "$1" --arg root "$PF_FIXTURE" '{session_id:"mh-prefilter-test",hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$root,tool_input:{command:$c}}')"
+  PF_ERR_FILE="$(mktemp)"
+  PF_OUT="$(printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$PF_FIXTURE" HQ_ROOT="$PF_FIXTURE" \
+    HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_TRACE=1 bash "$PF_FIXTURE/.claude/hooks/master-hook.sh" PreToolUse 2>"$PF_ERR_FILE")"
+  PF_RC=$?
+  PF_ERR="$(cat "$PF_ERR_FILE")"
+  rm -f "$PF_ERR_FILE"
+}
+run_pf_master "zzqqc153prefilterfixture"
+grep -q "skip inject-policy-on-trigger (policy-vocab)" <<<"$PF_ERR" \
+  && pass "token-free command skips the injector" \
+  || fail "token-free command did not skip the injector: $PF_ERR"
+PF_CACHE="$PF_FIXTURE/workspace/orchestrator/hook-state/policy-prefilter/personal_policies+core_policies+PreToolUse.v1"
+[ -s "$PF_CACHE" ] && pass "compiled vocabulary written" || fail "no compiled vocabulary file at $PF_CACHE"
+run_pf_master "git status"
+grep -q "run inject-policy-on-trigger" <<<"$PF_ERR" \
+  && pass "git command still runs the injector" \
   || fail "git command was skipped by the vocabulary prefilter"
-# A new policy keyed on a fresh token must invalidate the compiled vocabulary
-# (directory mtime) and make that token run the injector.
-TMP_POLICY="$ROOT/personal/policies/zz-registry-test-token.md"
-mkdir -p "$ROOT/personal/policies"
-cat > "$TMP_POLICY" <<'POLICY'
+cat > "$PF_FIXTURE/personal/policies/zz-registry-test-token.md" <<'POLICY'
 ---
 id: zz-registry-test-token
 title: registry dispatch test token
@@ -125,21 +163,15 @@ when: zzqqregistrytoken
 on: [PreToolUse]
 enforcement: soft
 ---
-## Rule
-Test-only policy; safe to delete.
+Test-only policy.
 POLICY
 sleep 1
-HQ_HOOK_TRACE=1 run_master PreToolUse "$(payload_bash "echo zzqqregistrytoken")"
-rc_new=$?
-grep -q "run inject-policy-on-trigger" <<<"$ERR" && pass "new policy token recompiles the vocabulary and runs the injector" \
-  || fail "new policy token did not run the injector: $(printf '%s' "$ERR" | grep inject-policy)"
-# A policy the compiler cannot prove (bare negation) must disable the skip.
-# Staleness is detected by policy-directory mtime (a file added, removed or
-# renamed) or the 5 minute TTL; an in-place edit alone is picked up at the
-# TTL. Replace the file under a new name so the directory mtime changes.
-rm -f "$TMP_POLICY"
-TMP_POLICY="$ROOT/personal/policies/zz-registry-test-negated.md"
-cat > "$TMP_POLICY" <<'POLICY'
+run_pf_master "echo zzqqregistrytoken"
+grep -q "run inject-policy-on-trigger" <<<"$PF_ERR" \
+  && pass "new policy token recompiles the vocabulary and runs the injector" \
+  || fail "new policy token did not run the injector: $PF_ERR"
+rm -f "$PF_FIXTURE/personal/policies/zz-registry-test-token.md"
+cat > "$PF_FIXTURE/personal/policies/zz-registry-test-negated.md" <<'POLICY'
 ---
 id: zz-registry-test-negated
 title: registry dispatch test negated
@@ -147,15 +179,14 @@ when: !zzqqregistrytoken
 on: [PreToolUse]
 enforcement: soft
 ---
-## Rule
-Test-only policy; safe to delete.
+Test-only policy.
 POLICY
 sleep 1
-HQ_HOOK_TRACE=1 run_master PreToolUse "$(payload_bash "cat README.md")"
-grep -q "run inject-policy-on-trigger" <<<"$ERR" && pass "unprovable policy disables the skip" \
+run_pf_master "cat README.md"
+grep -q "run inject-policy-on-trigger" <<<"$PF_ERR" \
+  && pass "unprovable policy disables the skip" \
   || fail "unprovable (negated) policy did not disable the skip"
-rm -f "$TMP_POLICY"; rm -rf "$PF_DIR"
-rm -f "$ROOT/workspace/orchestrator/policy-trigger-state/mh-registry-test"* 2>/dev/null
+rm -rf "$PF_FIXTURE"
 
 echo "[7] a blocking registry hook wins over earlier errors or missing scripts"
 FIXTURE="$(mktemp -d)"
@@ -180,8 +211,8 @@ chmod +x "$FIXTURE/.claude/hooks/advisory.sh" "$FIXTURE/.claude/hooks/guard.sh"
 fixture_payload="$(jq -nc --arg root "$FIXTURE" '{session_id:"mh-exit-code-test",hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$root,tool_input:{command:"echo registry test"}}')"
 run_fixture_master() { # registry has already been written to $FIXTURE
   FIXTURE_ERR_FILE="$(mktemp)"
-  printf '%s' "$fixture_payload" | HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_TRACE=1 \
-    bash "$FIXTURE/.claude/hooks/master-hook.sh" PreToolUse > /dev/null 2>"$FIXTURE_ERR_FILE"
+  FIXTURE_OUT="$(printf '%s' "$fixture_payload" | HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_TRACE=1 \
+    bash "$FIXTURE/.claude/hooks/master-hook.sh" PreToolUse 2>"$FIXTURE_ERR_FILE")"
   FIXTURE_RC=$?
   FIXTURE_ERR="$(cat "$FIXTURE_ERR_FILE")"
   rm -f "$FIXTURE_ERR_FILE"
@@ -217,6 +248,84 @@ write_fixture_registry ".claude/hooks/advisory.sh" ""
 run_fixture_master
 [ "$FIXTURE_RC" -ne 0 ] && pass "advisory errors remain non-zero when no hook blocks" \
   || fail "advisory error was downgraded to success (rc=$FIXTURE_RC)"
+
+cat > "$FIXTURE/.claude/hooks/exit-zero.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+set -euo pipefail
+trap ':' EXIT
+CHILD_STATE=first-child
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"exit-zero"}}'
+exit "${1:-0}"
+SH
+cat > "$FIXTURE/.claude/hooks/exit-one.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+[ -z "${CHILD_STATE:-}" ] || exit 9
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"exit-one"}}'
+exit "${1:-1}"
+SH
+cat > "$FIXTURE/.claude/hooks/exit-two.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"exit-two"}}'
+exit "${1:-2}"
+SH
+chmod +x "$FIXTURE/.claude/hooks/exit-zero.sh" "$FIXTURE/.claude/hooks/exit-one.sh" "$FIXTURE/.claude/hooks/exit-two.sh"
+jq -n \
+  --arg first ".claude/hooks/exit-zero.sh" \
+  --arg second ".claude/hooks/exit-one.sh" \
+  --arg third ".claude/hooks/exit-two.sh" \
+  '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[
+    {id:"exit-zero",script:$first,timeout:30,gated:false,args:["0"],runner:"source"},
+    {id:"exit-one",script:$second,timeout:30,gated:false,args:["1"],runner:"source"},
+    {id:"exit-two",script:$third,timeout:30,gated:false,args:["2"],runner:"source"}
+  ]}]}}' > "$FIXTURE/.claude/hooks/hook-registry.json"
+rm -f "$FIXTURE/workspace/orchestrator/hook-state/registry-rows/PreToolUse.Bash.rows"
+run_fixture_master
+[ "$FIXTURE_RC" = "2" ] || fail "child exit 0/1/2 composition should finish at rc=2 (rc=$FIXTURE_RC)"
+jq -e '.hookSpecificOutput.additionalContext == "exit-zero\n\nexit-one\n\nexit-two"' \
+  <<<"$FIXTURE_OUT" >/dev/null \
+  && pass "source-runner exits 0/1/2 compose every child's output in registry order" \
+  || fail "source-runner stopped after an exit or changed composition: $FIXTURE_OUT"
+
+# Exercise the timeout runner's completion-marker branch. The shim runs the
+# child command directly, then records whether the branch wrote its marker
+# before master-hook removes it in record_child_execution.
+MARKER_BIN="$FIXTURE/timeout-bin"
+MARKER_TRACE="$FIXTURE/completion-trace"
+mkdir -p "$MARKER_BIN"
+cat > "$MARKER_BIN/timeout" <<'SH'
+#!/usr/bin/env bash
+set -u
+[ "$#" -gt 1 ] || exit 125
+shift
+"$@"
+rc=$?
+if [ "${1:-}" = "bash" ] && [ "${2:-}" = "-c" ] \
+   && [[ "${3:-}" == *'marker="$1"'* ]]; then
+  marker="${5:-}"
+  child="${6:-}"
+  if [ -f "$marker" ]; then state=recorded-completed; else state=missing; fi
+  printf '%s\t%s\n' "${child##*/}" "$state" >> "${HQ_TEST_COMPLETION_TRACE:?}"
+fi
+exit "$rc"
+SH
+chmod +x "$MARKER_BIN/timeout"
+: > "$MARKER_TRACE"
+PATH="$MARKER_BIN:$PATH" HQ_TEST_COMPLETION_TRACE="$MARKER_TRACE" run_fixture_master
+[ "$FIXTURE_RC" = "2" ] || fail "timeout-marker source exits should finish at rc=2 (rc=$FIXTURE_RC)"
+jq -e '.hookSpecificOutput.additionalContext == "exit-zero\n\nexit-one\n\nexit-two"' \
+  <<<"$FIXTURE_OUT" >/dev/null \
+  && pass "timeout-marker source exits still run later children and preserve output order" \
+  || fail "timeout-marker source exits changed composition: $FIXTURE_OUT"
+for child in exit-zero.sh exit-one.sh exit-two.sh; do
+  grep -F "$child"$'\t'recorded-completed "$MARKER_TRACE" >/dev/null \
+    || fail "timeout-marker branch did not record $child as completed"
+done
+[ "$(wc -l < "$MARKER_TRACE" | tr -d '[:space:]')" = "3" ] \
+  && pass "timeout-marker branch checks all three source children before recording them" \
+  || fail "expected completion-marker evidence for all three source children: $(cat "$MARKER_TRACE")"
 rm -rf "$FIXTURE"
 
 if [ "$FAIL" -eq 0 ]; then echo "master-hook-registry-dispatch: all checks passed"; exit 0; fi

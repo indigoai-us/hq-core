@@ -49,7 +49,20 @@
 
 set -uo pipefail
 
-INPUT="$(cat 2>/dev/null || true)"
+INPUT=""
+INPUT_LOADED=0
+load_input() {
+  [ "$INPUT_LOADED" -eq 1 ] && return 0
+  INPUT_LOADED=1
+  IFS= read -r -d '' INPUT </dev/stdin || true
+}
+
+# Direct invocations have no master-hook field exports. Read their payload
+# once in the parent shell so later field lookups can safely use command
+# substitutions without losing the cached input.
+if [ -z "${HQ_HOOK_AGENT_ID+set}" ] || [ -z "${HQ_HOOK_SESSION_ID+set}" ] || [ -z "${HQ_HOOK_CWD+set}" ]; then
+  load_input
+fi
 
 if [ "${HQ_ALLOW_HQ_WORKTREE:-}" = "1" ]; then exit 0; fi
 
@@ -61,6 +74,7 @@ payload_field() {
     cwd) if [ -n "${HQ_HOOK_CWD+set}" ]; then printf '%s' "$HQ_HOOK_CWD"; return 0; fi ;;
     session_id) if [ -n "${HQ_HOOK_SESSION_ID+set}" ]; then printf '%s' "$HQ_HOOK_SESSION_ID"; return 0; fi ;;
   esac
+  load_input
   [ -n "$INPUT" ] || return 0
   printf '%s' "$INPUT" | jq -r ".$1 // empty" 2>/dev/null || true
 }
@@ -106,7 +120,10 @@ fi
 
 command -v git >/dev/null 2>&1 || exit 0
 
-HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+HOOK_SOURCE="${BASH_SOURCE[0]:-$0}"
+HOOK_DIR="${HOOK_SOURCE%/*}"
+[ "$HOOK_DIR" != "$HOOK_SOURCE" ] || HOOK_DIR="."
+HOOK_DIR="$(cd "$HOOK_DIR" 2>/dev/null && pwd -P)"
 HQ_ROOT="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}"
 [ -z "$HQ_ROOT" ] && HQ_ROOT="$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd)"
 [ -n "$HQ_ROOT" ] || exit 0
@@ -118,12 +135,22 @@ if [ -f "$HQ_ROOT/core/scripts/hook-lib.sh" ]; then
 fi
 
 norm() {
-  local p="${1:-}" resolved
+  local p="${1:-}" resolved="" old_pwd="${PWD:-}"
   [ -n "$p" ] || return 0
   case "$p" in "~") p="$HOME" ;; "~/"*) p="$HOME${p#\~}" ;; esac
-  resolved="$(realpath "$p" 2>/dev/null \
-    || hq_normpath "$p" 2>/dev/null \
-    || printf '%s\n' "$p")"
+  if [ -d "$p" ] && CDPATH= cd -P -- "$p" 2>/dev/null; then
+    resolved="$PWD"
+    [ -n "$old_pwd" ] && cd -- "$old_pwd" 2>/dev/null || true
+  fi
+  if [ -z "$resolved" ]; then
+    # Git Bash may report an alternate drive-letter spelling for the same
+    # checkout. Resolve only paths that cannot be reached with `cd`; normal
+    # existing paths stay on the builtin fast path.
+    if command -v realpath >/dev/null 2>&1; then
+      resolved="$(realpath "$p" 2>/dev/null || true)"
+    fi
+    [ -n "$resolved" ] || resolved="$(hq_normpath "$p" 2>/dev/null || printf '%s\n' "$p")"
+  fi
   if declare -F hq_canonical_path >/dev/null 2>&1; then
     hq_canonical_path "$resolved"
   else
@@ -132,10 +159,10 @@ norm() {
 }
 
 SESSION_CWD="$(payload_field cwd)"
-[ -z "$SESSION_CWD" ] && SESSION_CWD="$(pwd 2>/dev/null || true)"
+[ -z "$SESSION_CWD" ] && SESSION_CWD="${PWD:-}"
 
 linked_worktree_main() {
-  local dir="${1:-}" gd cdir main
+  local dir="${1:-}" gd cdir main listing line
   [ -n "$dir" ] && [ -d "$dir" ] || return 1
 
   gd="$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null)" || gd=""
@@ -153,8 +180,12 @@ linked_worktree_main() {
   [ "$gd" != "$cdir" ] || return 1
 
   # `git worktree list` always reports the main worktree first.
-  main="$(git -C "$dir" worktree list --porcelain 2>/dev/null \
-    | awk '/^worktree /{print substr($0, 10); exit}')"
+  listing="$(git -C "$dir" worktree list --porcelain 2>/dev/null)" || listing=""
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *) main="${line#worktree }"; break ;;
+    esac
+  done <<< "$listing"
   if [ -z "$main" ]; then
     case "$cdir" in
       */.git) main="${cdir%/.git}" ;;

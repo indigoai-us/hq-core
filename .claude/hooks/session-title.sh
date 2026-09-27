@@ -34,8 +34,13 @@
 # Opt out:  HQ_SESSION_TITLE=off (or 0/false/no)  |  HQ_DISABLED_HOOKS=session-title
 set -uo pipefail
 
-STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
-HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
+STDIN_JSON=""
+IFS= read -r -d '' STDIN_JSON </dev/stdin || true
+HOOK_SOURCE="${BASH_SOURCE[0]:-$0}"
+HOOK_DIR="${HOOK_SOURCE%/*}"
+[ "$HOOK_DIR" != "$HOOK_SOURCE" ] || HOOK_DIR="."
+HOOK_REPO_ROOT="$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd -P)"
+HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$HOOK_DIR/.." 2>/dev/null && pwd -P)}}"
 HELPER="$HQ_ROOT/core/scripts/session-title.sh"
 STATE_DIR="$HQ_ROOT/.claude/state"
 
@@ -45,9 +50,13 @@ esac
 
 [ -x "$HELPER" ] || exit 0
 
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+. "$HOOK_REPO_ROOT/core/scripts/hook-lib.sh"
 
 extract() {
+  case "$1" in
+    hook_event_name) if [ -n "${HQ_HOOK_EVENT+set}" ]; then printf '%s' "$HQ_HOOK_EVENT"; return 0; fi ;;
+    session_id) if [ -n "${HQ_HOOK_SESSION_ID+set}" ]; then printf '%s' "$HQ_HOOK_SESSION_ID"; return 0; fi ;;
+  esac
   printf '%s' "$STDIN_JSON" | hq_json_get "$1"
 }
 
@@ -71,8 +80,8 @@ if [ "$EVENT" = "SessionStart" ]; then
   case "$SOURCE" in clear|compact) exit 0 ;; esac
 fi
 
-mkdir -p "$STATE_DIR" 2>/dev/null || true
-SESSION_KEY="$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9._-' '_')"
+[ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR" 2>/dev/null || true
+SESSION_KEY="${SESSION_ID//[^A-Za-z0-9._-]/_}"
 [ -n "$SESSION_KEY" ] || SESSION_KEY="default"
 STATE="$STATE_DIR/session-title-${SESSION_KEY}"
 EMITTED="$STATE.emitted"   # ledger of titles HQ has emitted this session
@@ -92,10 +101,66 @@ AUTONAME="$STATE.autoname" # the one desktop auto-title HQ ignores per session
 # A second, different foreign title is a genuine rename and backs off.
 DESKTOP_AUTONAME="ignore-first"
 CONFIG_HELPER="$HQ_ROOT/core/scripts/session-title-config.sh"
-if [ -f "$CONFIG_HELPER" ]; then
-  cfg_line="$(bash "$CONFIG_HELPER" --root "$HQ_ROOT" 2>/dev/null | grep '^desktop_autoname=' || true)"
-  [ "${cfg_line#desktop_autoname=}" = "respect" ] && DESKTOP_AUTONAME="respect"
-fi
+SESSION_MODE="full"
+strip_setting_quotes() {
+  local value="$1" first last
+  [ "${#value}" -ge 2 ] || { printf '%s' "$value"; return 0; }
+  first="${value:0:1}"
+  last="${value: -1}"
+  if [ "$first" = '"' ] && [ "$last" = '"' ]; then
+    value="${value:1:${#value}-2}"
+  elif [ "$first" = "'" ] && [ "$last" = "'" ]; then
+    value="${value:1:${#value}-2}"
+  fi
+  SETTING_VALUE="$value"
+}
+read_title_settings() {
+  local file line key value mode_seen desktop_seen SETTING_VALUE
+  for file in "$HQ_ROOT/core/settings/session-title.yaml" "$HQ_ROOT/personal/settings/session-title.yaml"; do
+    [ -f "$file" ] || continue
+    mode_seen=0
+    desktop_seen=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        mode:*)
+          [ "$mode_seen" -eq 0 ] || continue
+          mode_seen=1
+          value="${line#*:}"
+          value="${value%%#*}"
+          while [[ "$value" == [[:space:]]* ]]; do value="${value:1}"; done
+          while [[ "$value" == *[[:space:]] ]]; do value="${value%?}"; done
+          strip_setting_quotes "$value"
+          value="$SETTING_VALUE"
+          [ -n "$value" ] && SESSION_MODE="$value"
+          ;;
+        desktop_autoname:*)
+          [ "$desktop_seen" -eq 0 ] || continue
+          desktop_seen=1
+          value="${line#*:}"
+          value="${value%%#*}"
+          while [[ "$value" == [[:space:]]* ]]; do value="${value:1}"; done
+          while [[ "$value" == *[[:space:]] ]]; do value="${value%?}"; done
+          strip_setting_quotes "$value"
+          value="$SETTING_VALUE"
+          [ -n "$value" ] && DESKTOP_AUTONAME="$value"
+          ;;
+      esac
+    done < "$file"
+  done
+}
+if [ -f "$CONFIG_HELPER" ]; then read_title_settings; fi
+case "$SESSION_MODE" in
+  auto|AUTO|hook|deterministic) SESSION_MODE="auto" ;;
+  *) SESSION_MODE="full" ;;
+esac
+case "$DESKTOP_AUTONAME" in
+  respect|RESPECT|off|OFF|false|FALSE|no|NO) DESKTOP_AUTONAME="respect" ;;
+  *) DESKTOP_AUTONAME="ignore-first" ;;
+esac
+# The documented environment override has precedence over both settings files.
+case "${HQ_SESSION_TITLE:-}" in
+  auto|AUTO) SESSION_MODE="auto" ;;
+esac
 
 hq_title_grammar() {
   # Does TITLE ($1) follow the HQ title grammar — "{icon} {CAT} · {subject}"?
@@ -110,7 +175,24 @@ hq_title_grammar() {
   #
   # Defined up here, rather than beside its sibling helpers further down,
   # because the stale-mute heal below runs before those definitions.
-  printf '%s' "$1" | grep -qE '^([^ ]+ )?[A-Z][A-Z0-9]{1,7} · .+'
+  local pattern='^([^ ]+ )?[A-Z][A-Z0-9]{1,7} · .+'
+  [[ "$1" =~ $pattern ]]
+}
+
+transcript_custom_title() {
+  # Newest custom-title value from a Claude Code transcript .jsonl, or "".
+  # Real transcript lines carry the title under "customTitle":
+  #   {"type":"custom-title","customTitle":"…","sessionId":"…"}
+  # The plain "title" key is read as a defensive fallback only. The transcript
+  # format is internal/version-fragile — this whole path is a net, not the API.
+  local f="$1" last="" value=""
+  # Keep the large-file scan in native grep/tail. Reading a multi-megabyte
+  # JSONL transcript line-by-line in Bash makes every prompt slower as it grows.
+  last="$(grep -F '"custom-title"' "$f" 2>/dev/null | tail -n 1 || true)"
+  [ -n "$last" ] || { printf '%s' ""; return 0; }
+  value="$(printf '%s' "$last" | hq_json_get 'customTitle')"
+  [ -n "$value" ] || value="$(printf '%s' "$last" | hq_json_get 'title')"
+  printf '%s' "$value"
 }
 
 # --- manual-rename back-off (BEGIN) -----------------------------------------
@@ -127,14 +209,13 @@ if [ -f "$MANUAL" ]; then
   # rename and is left alone.
   healed=0
   if [ ! -f "$AUTONAME" ] && [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
-    live="$(grep -F '"custom-title"' "$TRANSCRIPT" 2>/dev/null | tail -n 1 |
-            hq_json_get 'customTitle')"
+    live="$(transcript_custom_title "$TRANSCRIPT")"
     if [ -n "$live" ] && hq_title_grammar "$live"; then
       rm -f "$MANUAL" 2>/dev/null && healed=1
     fi
   fi
   if [ "$healed" != "1" ]; then
-    touch "$MANUAL" 2>/dev/null || true
+    : > "$MANUAL" 2>/dev/null || true
     exit 0
   fi
 fi
@@ -149,14 +230,23 @@ prune_stale_state() {
 }
 [ "$EVENT" = "SessionStart" ] && prune_stale_state
 
+file_contains_line() {
+  local file="$1" wanted="$2" line
+  [ -f "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ "$line" = "$wanted" ] && return 0
+  done < "$file"
+  return 1
+}
+
 hq_emitted_title() {
   # Has HQ emitted TITLE ($1) — in this session, or in any session on this
   # machine? The cross-session ledger is what keeps a forked or resumed session
   # (new session id, inherited title) from mistaking HQ's own title for a
   # manual rename.
   local t="$1"
-  if [ -f "$EMITTED" ] && grep -qxF -- "$t" "$EMITTED" 2>/dev/null; then return 0; fi
-  if [ -f "$HQ_TITLES" ] && grep -qxF -- "$t" "$HQ_TITLES" 2>/dev/null; then return 0; fi
+  if file_contains_line "$EMITTED" "$t"; then return 0; fi
+  if file_contains_line "$HQ_TITLES" "$t"; then return 0; fi
   return 1
 }
 
@@ -164,42 +254,40 @@ mark_manual() {
   : > "$MANUAL" 2>/dev/null || true
 }
 
-transcript_custom_title() {
-  # Newest custom-title value from a Claude Code transcript .jsonl, or "".
-  # Real transcript lines carry the title under "customTitle":
-  #   {"type":"custom-title","customTitle":"…","sessionId":"…"}
-  # The plain "title" key is read as a defensive fallback only. The transcript
-  # format is internal/version-fragile — this whole path is a net, not the API.
-  local f="$1" last="" value=""
-  last="$(grep -F '"custom-title"' "$f" 2>/dev/null | tail -n 1)"
-  [ -n "$last" ] || { printf '%s' ""; return 0; }
-  value="$(printf '%s' "$last" | hq_json_get 'customTitle')"
-  [ -n "$value" ] || value="$(printf '%s' "$last" | hq_json_get 'title')"
-  printf '%s' "$value"
-}
 
 # State file: line 1 = last command word, line 2 = last emitted title.
 last_command=""; last_title=""
 if [ -f "$STATE" ]; then
-  last_command="$(sed -n '1p' "$STATE" 2>/dev/null || true)"
-  last_title="$(sed -n '2p' "$STATE" 2>/dev/null || true)"
+  {
+    IFS= read -r last_command || true
+    IFS= read -r last_title || true
+  } < "$STATE"
 fi
 
 # Detect a leading slash command in this prompt (UserPromptSubmit only); the
 # command word persists across turns until a new command is issued.
 command="$last_command"
 if [ "$EVENT" = "UserPromptSubmit" ] && [ -n "$PROMPT" ]; then
-  # First non-blank content must open with /command; keep the last :segment
-  # (mirrors the old lstrip + regex + split(":")[-1] semantics).
-  detected="$(printf '%s' "$PROMPT" | awk '
-    !found && /[^ \t]/ {
-      found = 1
-      line = $0; sub(/^[ \t]+/, "", line)
-      if (match(line, /^\/[A-Za-z0-9:_-]+/)) {
-        s = substr(line, RSTART + 1, RLENGTH - 1)
-        n = split(s, a, ":"); print a[n]
-      }
-    }' 2>/dev/null || true)"
+  # Only the first non-blank line can start a slash command; keep the last
+  # :segment (mirrors the old lstrip + regex + split(":")[-1] semantics).
+  prompt_rest="$PROMPT"
+  detected=""
+  while [[ -n "$prompt_rest" ]]; do
+    if [[ "$prompt_rest" == *$'\n'* ]]; then
+      prompt_line="${prompt_rest%%$'\n'*}"
+      prompt_rest="${prompt_rest#*$'\n'}"
+    else
+      prompt_line="$prompt_rest"
+      prompt_rest=""
+    fi
+    while [[ "$prompt_line" == ' '* || "$prompt_line" == $'\t'* ]]; do prompt_line="${prompt_line:1}"; done
+    [ -n "$prompt_line" ] || continue
+    if [[ "$prompt_line" =~ ^/([A-Za-z0-9:_-]+) ]]; then
+      detected="${BASH_REMATCH[1]}"
+      detected="${detected##*:}"
+    fi
+    break
+  done
   [ -n "$detected" ] && command="$detected"
 fi
 
@@ -236,11 +324,6 @@ title="$("$HELPER" --session-id "$SESSION_ID" --command "$command" 2>/dev/null |
 # would otherwise sit on the host's auto-summary forever.
 NUDGED="$STATE.nudged"
 NUDGE=""
-SESSION_MODE="full"
-if [ -f "$CONFIG_HELPER" ]; then
-  mode_line="$(bash "$CONFIG_HELPER" --root "$HQ_ROOT" 2>/dev/null | grep '^mode=' || true)"
-  [ "${mode_line#mode=}" = "auto" ] && SESSION_MODE="auto"
-fi
 if [ "$EVENT" = "UserPromptSubmit" ] && [ "$SESSION_MODE" = "full" ] && [ ! -f "$NUDGED" ]; then
   : > "$NUDGED" 2>/dev/null || true
   hint="none resolved - derive company and subject from the user message"
@@ -285,8 +368,13 @@ hq_owned_title() {
 transcript_has_custom_title() {
   # Does the transcript carry TITLE ($1) as a custom-title line?
   [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || return 1
-  grep -F '"custom-title"' "$TRANSCRIPT" 2>/dev/null |
-    grep -qF "\"customTitle\":\"$1\""
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *'"custom-title"'*\"customTitle\":\""$1"\"*) return 0 ;;
+    esac
+  done < "$TRANSCRIPT"
+  return 1
 }
 
 FORCE_EMIT=0
@@ -308,7 +396,7 @@ ignore_desktop_autoname() {
   # title can exist before any turn) and every other event still require proof.
   local t="$1" via="${2:-}"
   [ "$DESKTOP_AUTONAME" = "ignore-first" ] || return 1
-  if [ -f "$AUTONAME" ] && grep -qxF -- "$t" "$AUTONAME" 2>/dev/null; then
+  if file_contains_line "$AUTONAME" "$t"; then
     FORCE_EMIT=1
     return 0
   fi
@@ -359,11 +447,19 @@ record_emitted() {
   printf '%s\n' "$1" >> "$EMITTED" 2>/dev/null || true
   printf '%s\n' "$1" >> "$HQ_TITLES" 2>/dev/null || true
   # Bound the shared ledger: keep the newest HQ_TITLES_MAX entries.
-  local lines
-  lines="$(wc -l < "$HQ_TITLES" 2>/dev/null || echo 0)"
-  if [ "${lines:-0}" -gt "$((HQ_TITLES_MAX * 2))" ] 2>/dev/null; then
-    tail -n "$HQ_TITLES_MAX" "$HQ_TITLES" > "$HQ_TITLES.tmp" 2>/dev/null &&
-      mv -f "$HQ_TITLES.tmp" "$HQ_TITLES" 2>/dev/null || true
+  local line lines=0 start i
+  local -a entries=()
+  if [ -f "$HQ_TITLES" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      entries+=("$line")
+      lines=$((lines + 1))
+    done < "$HQ_TITLES"
+  fi
+  if [ "$lines" -gt "$((HQ_TITLES_MAX * 2))" ]; then
+    start=$((lines - HQ_TITLES_MAX))
+    : > "$HQ_TITLES.tmp" 2>/dev/null || return 0
+    for ((i=start; i<lines; i++)); do printf '%s\n' "${entries[i]}" >> "$HQ_TITLES.tmp"; done
+    mv -f "$HQ_TITLES.tmp" "$HQ_TITLES" 2>/dev/null || true
   fi
 }
 

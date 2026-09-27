@@ -17,6 +17,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HELPER="$ROOT/core/scripts/qmd-reindex-bg.sh"
 FINALIZE="$ROOT/core/scripts/handoff-finalize.sh"
 POST="$ROOT/core/scripts/handoff-post.sh"
+source "$ROOT/core/scripts/tests/lib/handoff-post-test-helpers.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
@@ -662,6 +663,12 @@ ok "S4: laptop launcher prints pid and worker mutates once"
 # =============================================================================
 reset_state
 cp "$FINALIZE" "$TMP/repo/core/scripts/handoff-finalize.sh"
+sed \
+  -e "s|/tmp/handoff-git-bg.pid|$TMP/handoff-git-bg.pid|g" \
+  -e "s|/tmp/handoff-git-bg.log|$TMP/handoff-git-bg.log|g" \
+  -e "s|/tmp/qmd-handoff.log|$TMP/qmd-handoff.log|g" \
+  "$TMP/repo/core/scripts/handoff-finalize.sh" > "$TMP/handoff-finalize.sh"
+mv "$TMP/handoff-finalize.sh" "$TMP/repo/core/scripts/handoff-finalize.sh"
 cp "$HELPER" "$TMP/repo/core/scripts/qmd-reindex-bg.sh"
 cp "$POST" "$TMP/repo/core/scripts/handoff-post.sh"
 cp "$ROOT/core/scripts/hq-status-summary.sh" "$TMP/repo/core/scripts/hq-status-summary.sh"
@@ -782,15 +789,14 @@ ok "R1b: agent finalize → qmd_pid=skipped-agent, inv=0"
 reset_state
 (
   cd "$TMP/repo"
-  env -i PATH="$BIN:/usr/bin:/bin" \
+  handoff_post_test_run --clean-env "$TMP/repo" "workspace/threads/T-missing.json" "" \
+    PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
     HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
-    HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
     HANDOFF_LOG_DIR="$TMP/logs" \
-    QMD_HANDOFF_DEDUPE_SEC=0 \
-    bash core/scripts/handoff-post.sh workspace/threads/T-missing.json ""
+    QMD_HANDOFF_DEDUPE_SEC=0
   # Capture launcher token from post log for reaping (numeric pid or skipped*).
   if [[ -f "$TMP/logs/handoff-post.log" ]]; then
     post_tok=$(grep -oE 'reindex-bg → [0-9]+' "$TMP/logs/handoff-post.log" | awk '{print $3}' | tail -1 || true)
@@ -816,15 +822,14 @@ ok "R2: post routes helper; laptop mutates; log has reindex-bg"
 reset_state
 (
   cd "$TMP/repo"
-  env -i PATH="$BIN:/usr/bin:/bin" \
+  handoff_post_test_run --clean-env "$TMP/repo" "workspace/threads/T-missing.json" "" \
+    PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
     HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
-    HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
     HANDOFF_LOG_DIR="$TMP/logs" \
-    HQ_AGENT_BOX=1 \
-    bash core/scripts/handoff-post.sh workspace/threads/T-missing.json ""
+    HQ_AGENT_BOX=1
 )
 grep -q 'reindex-bg → skipped-agent\|skipped-agent' "$TMP/logs/handoff-post.log" \
   || fail "agent post want skipped-agent log (got $(cat "$TMP/logs/handoff-post.log" 2>/dev/null || true))"
@@ -869,16 +874,15 @@ rm -f "$TMP/r3-finalize-out.json" "$TMP/r3-post-pid" "$TMP/logs/handoff-post.log
   # Real post concurrently (same HOME lock domain + hold).
   # Run in background so we can wait for *both* call sites to schedule the
   # helper while the hold is still active (finalize is slower than post).
-  env -i PATH="$BIN:/usr/bin:/bin" \
+  handoff_post_test_run --clean-env "$TMP/repo" "workspace/threads/T-missing.json" "" \
+    PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
     HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
-    HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
     HANDOFF_LOG_DIR="$TMP/logs" \
     QMD_HOLD_FILE="$HOLD" \
     QMD_HANDOFF_DEDUPE_SEC=0 \
-    bash core/scripts/handoff-post.sh workspace/threads/T-missing.json "" \
     >"$TMP/r3-post-out.txt" 2>&1 &
   post_pid=$!
 
@@ -973,17 +977,16 @@ reset_state
 (
   cd "$TMP/repo"
   set +e
-  env -i PATH="$BIN:/usr/bin:/bin" \
+  handoff_post_test_run --clean-env "$TMP/repo" "workspace/threads/T-missing.json" "" \
+    PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
     HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
-    HQ_ROOT="$TMP/repo" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
     HANDOFF_LOG_DIR="$TMP/logs" \
     QMD_FAIL_CMD=update \
     QMD_FAIL_RC=7 \
-    QMD_HANDOFF_DEDUPE_SEC=0 \
-    bash core/scripts/handoff-post.sh workspace/threads/T-missing.json ""
+    QMD_HANDOFF_DEDUPE_SEC=0
   rc=$?
   set -e
   [[ "$rc" -eq 0 ]] || fail "post with failing qmd must exit 0, got $rc"

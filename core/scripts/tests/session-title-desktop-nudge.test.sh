@@ -19,13 +19,14 @@ set -uo pipefail
 command -v jq >/dev/null 2>&1 || { echo "session-title-desktop-nudge: skipped (jq missing)"; exit 0; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-HOOK="$ROOT/.claude/hooks/session-title.sh"
+HOOK="${SESSION_TITLE_HOOK:-$ROOT/.claude/hooks/session-title.sh}"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/session-title-nudge.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 n=0; ok() { n=$((n + 1)); printf 'ok %s — %s\n' "$n" "$1"; }
 
 SD="$ROOT/.claude/state"
+mkdir -p "$SD"
 run() { printf '%s' "$1" | CLAUDE_PROJECT_DIR="$ROOT" HQ_ROOT="$ROOT" bash "$HOOK"; }
 clean() { rm -f "$SD/session-title-$1" "$SD/session-title-$1".* "$SD/auto-session-project-$1" 2>/dev/null; }
 prompt() { printf '{"hook_event_name":"UserPromptSubmit","prompt":"%s","session_id":"%s"}' "$2" "$1"; }
@@ -93,6 +94,18 @@ out="$(run "$(prompt "$S" "hi")")"
 printf '%s' "$out" | jq -e '.hookSpecificOutput.sessionTitle and .hookSpecificOutput.additionalContext' >/dev/null ||
   fail "T7: title and nudge must share one valid envelope, got: $out"
 ok "T7 title and nudge travel in one valid JSON envelope"
+clean "$S"
+
+# T8: the environment override beats file settings and disables the model nudge.
+PS="$ROOT/personal/settings/session-title.yaml"; BK8="$TMP/session-title-t8.yaml.bak"
+[ -f "$PS" ] && cp "$PS" "$BK8"
+mkdir -p "$(dirname "$PS")"; printf 'version: 1\nenabled: true\nmode: full\n' > "$PS"
+S=nudge8_$$; clean "$S"
+out="$(HQ_SESSION_TITLE=auto run "$(prompt "$S" "hello")")"
+if [ -f "$BK8" ]; then cp "$BK8" "$PS"; else rm -f "$PS"; fi
+[ -z "$(ctx "$out")" ] || fail "T8: HQ_SESSION_TITLE=auto must override mode=full and suppress the nudge"
+[ -f "$SD/session-title-$S.nudged" ] && fail "T8: auto mode must not spend the nudge"
+ok "T8 HQ_SESSION_TITLE=auto overrides file mode"
 clean "$S"
 
 printf '\nAll %s session-title desktop-nudge checks passed.\n' "$n"

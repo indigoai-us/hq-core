@@ -15,6 +15,7 @@ fail() {
 mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/companies/acme/workspace" "$TMP_ROOT/bin" "$TMP_ROOT/logs"
 cp "$SRC_ROOT/scripts/handoff-post.sh" "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
 chmod +x "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
+source "$SRC_ROOT/scripts/tests/lib/handoff-post-test-helpers.sh"
 
 cat > "$TMP_ROOT/repo/core/scripts/archive-old-threads.sh" <<'SH'
 #!/usr/bin/env bash
@@ -29,6 +30,10 @@ cat > "$TMP_ROOT/repo/core/scripts/rebuild-orchestrator-index.sh" <<'SH'
 #!/usr/bin/env bash
 mkdir -p workspace/orchestrator
 echo "# Orchestrator" > workspace/orchestrator/INDEX.md
+SH
+cat > "$TMP_ROOT/repo/core/scripts/qmd-reindex-bg.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
 SH
 chmod +x "$TMP_ROOT/repo/core/scripts/"*.sh
 
@@ -59,17 +64,14 @@ cat > "$TMP_ROOT/learnings.json" <<'JSON'
 ]
 JSON
 
-(
-  cd "$TMP_ROOT/repo"
+handoff_post_test_run "$TMP_ROOT/repo" "workspace/threads/T-test.json" "$TMP_ROOT/learnings.json" \
   CLAUDE_SENTINEL="$TMP_ROOT/claude-called" \
   HQ_SYNC_SENTINEL="$TMP_ROOT/hq-sync-called" \
   HANDOFF_LOG_DIR="$TMP_ROOT/logs" \
-  PATH="$TMP_ROOT/bin:/usr/bin:/bin" \
-    bash core/scripts/handoff-post.sh workspace/threads/T-test.json "$TMP_ROOT/learnings.json"
-)
+  PATH="$TMP_ROOT/bin:/usr/bin:/bin"
 
 [[ ! -e "$TMP_ROOT/claude-called" ]] || fail "handoff-post invoked claude"
-grep -qx 'sync push companies/acme/workspace' "$TMP_ROOT/hq-sync-called" \
+grep -qx 'sync push --company acme companies/acme/workspace' "$TMP_ROOT/hq-sync-called" \
   || fail "handoff-post did not push the mirrored company workspace"
 grep -q "learn: eligible and pending runtime dispatch" "$TMP_ROOT/logs/handoff-post.log" \
   || fail "eligible learnings were not logged as pending"

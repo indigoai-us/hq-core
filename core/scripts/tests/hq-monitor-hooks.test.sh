@@ -73,7 +73,11 @@ fi
 if [ "${1:-}" = monitor ]; then
   [ "${HQ_TEST_MONITOR_ENABLED:-false}" = true ] || exit 0
   cat > "$HQ_TEST_HQ_INPUT"
-  if [ "${2:-}" = wait ]; then printf '{"wake":true}\n'; exit 2; fi
+  if [ "${2:-}" = wait ]; then
+    [ -n "${HQ_TEST_WAIT_RC:-}" ] && { [ "$HQ_TEST_WAIT_RC" = 0 ] || printf 'partial-output\n'; exit "$HQ_TEST_WAIT_RC"; }
+    if [ -n "${HQ_TEST_WAIT_FAIL_ONCE:-}" ] && [ ! -e "$HQ_TEST_WAIT_FAIL_ONCE" ]; then : > "$HQ_TEST_WAIT_FAIL_ONCE"; printf 'partial-output\n'; exit 1; fi
+    printf '{"wake":true}\n'; exit 2
+  fi
   if [ -n "${HQ_TEST_DRAIN_CONTEXT:-}" ]; then
     jq -nc --arg event "${6:-PreToolUse}" --arg c "$HQ_TEST_DRAIN_CONTEXT" '{hookSpecificOutput:{hookEventName:$event,additionalContext:$c}}'
     exit 0
@@ -588,6 +592,38 @@ if [ "$rc" = 0 ] && [ ! -s "$TMP/no-hq.out" ] && [ ! -s "$TMP/no-hq.err" ] && [ 
 echo '[14] mutation guards: lane exemption and the inbox fast path'
 if grep -Fq '[ "${HQ_LANE_ID+x}" = x ] && exit 0' "$GUARD"; then ok 'lane exemption is explicit and test-covered'; else bad 'lane exemption is explicit and test-covered'; fi
 if grep -Fq '[ "$active" -eq 0 ] && [ ! -s "$inbox" ]; then' "$SESSION"; then ok 'stat fast path is explicit and test-covered'; else bad 'stat fast path is explicit and test-covered'; fi
+
+echo '[15] Claude Stop waiter retries a missing or failing CLI instead of ending'
+# Regression (2026-09-27): hq was mid self-update when a turn ended, the waiter
+# found no binary and exited 0, and events queued for six hours until the user
+# wrote. The waiter is the only idle wake path, so it must retry.
+retry_env=(HQ_MONITOR_WAIT_RETRY_SECS=0.2 HQ_MONITOR_WAIT_RETRY_MAX=50)
+mkdir -p "$TMP/late-bin"
+( sleep 1; ln -s "$TMP/bin/hq" "$TMP/late-bin/hq" ) &
+late_pid=$!
+rc=0
+printf '%s' "$stop_payload" | env "${base_env[@]}" PATH="$TMP/late-bin:/usr/bin:/bin" "${retry_env[@]}" HQ_CHECKPOINT_RUNTIME=claude HQ_TEST_MONITOR_ENABLED=true bash "$SESSION" wait >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
+wait "$late_pid"
+if [ "$rc" = 2 ] && jq -e '.wake == true' "$TMP/stdout" >/dev/null; then ok 'waiter retries until hq is back on PATH, then wakes'; else bad "waiter retries until hq is back on PATH, then wakes (rc=$rc stdout=$(cat "$TMP/stdout"))"; fi
+rm -f "$TMP/wait-failed-once"
+rc=0
+printf '%s' "$stop_payload" | env "${base_env[@]}" "${retry_env[@]}" HQ_TEST_WAIT_FAIL_ONCE="$TMP/wait-failed-once" HQ_CHECKPOINT_RUNTIME=claude HQ_TEST_MONITOR_ENABLED=true bash "$SESSION" wait >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
+if [ "$rc" = 2 ] && [ -e "$TMP/wait-failed-once" ] && [ "$(cat "$TMP/stdout")" = '{"wake":true}' ]; then ok 'waiter retries after hq monitor wait fails, then wakes with only the terminal output'; else bad "waiter retries after hq monitor wait fails, then wakes (rc=$rc)"; fi
+: > "$TMP_ROOT/workspace/logs/hq-monitor-hook.log"
+rc=0
+printf '%s' "$stop_payload" | env "${base_env[@]}" HQ_MONITOR_WAIT_RETRY_SECS=0 HQ_MONITOR_WAIT_RETRY_MAX=3 HQ_TEST_WAIT_RC=1 HQ_CHECKPOINT_RUNTIME=claude HQ_TEST_MONITOR_ENABLED=true bash "$SESSION" wait >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
+if [ "$rc" = 0 ] && grep -q 'gave up after 3 failed attempts' "$TMP_ROOT/workspace/logs/hq-monitor-hook.log"; then ok 'waiter gives up after its retry budget and logs it'; else bad "waiter gives up after its retry budget and logs it (rc=$rc log=$(cat "$TMP_ROOT/workspace/logs/hq-monitor-hook.log" 2>/dev/null))"; fi
+rc=0
+: > "$TMP_ROOT/workspace/logs/hq-monitor-hook.log"
+printf '%s' "$stop_payload" | env "${base_env[@]}" HQ_MONITOR_WAIT_RETRY_SECS=0 HQ_MONITOR_WAIT_RETRY_MAX=not-a-number HQ_TEST_WAIT_RC=1 HQ_CHECKPOINT_RUNTIME=claude HQ_TEST_MONITOR_ENABLED=true timeout 60 bash "$SESSION" wait >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
+if [ "$rc" = 0 ] && [ ! -s "$TMP/stdout" ]; then ok 'malformed retry budget falls back to the default and still ends'; else bad "malformed retry budget falls back to the default and still ends (rc=$rc)"; fi
+rm -f "$TMP_ROOT/workspace/logs/hq-monitor-hook.log"; rm -rf "$TMP_ROOT/workspace/.hook-warnings" 2>/dev/null
+rc=0
+printf '%s' "$stop_payload" | env "${base_env[@]}" HQ_MONITOR_WAIT_RETRY_SECS=0 HQ_MONITOR_WAIT_RETRY_MAX=2 HQ_TEST_NO_MONITOR=true HQ_CHECKPOINT_RUNTIME=claude HQ_TEST_MONITOR_ENABLED=true bash "$SESSION" wait >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
+if grep -q 'no monitor command yet; the Stop waiter is retrying' "$TMP_ROOT/workspace/logs/hq-monitor-hook.log" && ! grep -q 'monitor delivery is disabled' "$TMP_ROOT/workspace/logs/hq-monitor-hook.log"; then ok 'waiter logs a not-ready CLI as a retry'; else bad "waiter logs a not-ready CLI as a retry (log=$(cat "$TMP_ROOT/workspace/logs/hq-monitor-hook.log" 2>/dev/null))"; fi
+rc=0
+printf '%s' "$stop_payload" | env "${base_env[@]}" "${retry_env[@]}" HQ_TEST_WAIT_RC=0 HQ_CHECKPOINT_RUNTIME=claude HQ_TEST_MONITOR_ENABLED=true bash "$SESSION" wait >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
+if [ "$rc" = 0 ] && [ ! -s "$TMP/stdout" ]; then ok 'waiter exit 0 (nothing to deliver) is not retried'; else bad "waiter exit 0 (nothing to deliver) is not retried (rc=$rc)"; fi
 
 echo "hq-monitor-hooks: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
