@@ -13,7 +13,8 @@
             "gated": true,
             "args": [
               "PreToolUse"
-            ]
+            ],
+            "runner": "source"
           },
           {
             "id": "hq-monitor-session-hook",
@@ -34,13 +35,15 @@
             "id": "block-hq-glob",
             "script": ".claude/hooks/block-hq-glob.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           },
           {
             "id": "mandatory-scope-authorizer",
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           }
         ]
       },
@@ -54,13 +57,15 @@
             "gated": true,
             "prefilter": {
               "re": "prd\\.json|worker\\.yaml"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "mandatory-scope-authorizer",
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           }
         ]
       },
@@ -71,7 +76,8 @@
             "id": "mandatory-scope-authorizer",
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           },
           {
             "id": "warn-cross-company-settings",
@@ -80,7 +86,8 @@
             "gated": true,
             "prefilter": {
               "re": "companies/[^/\"]+/settings/"
-            }
+            },
+            "runner": "source"
           }
         ]
       },
@@ -91,7 +98,8 @@
             "id": "mandatory-scope-authorizer",
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           },
           {
             "id": "detect-secrets",
@@ -100,7 +108,8 @@
             "gated": true,
             "prefilter": {
               "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-agent-secrets-reveal",
@@ -109,7 +118,8 @@
             "gated": true,
             "prefilter": {
               "re": "(^|[^A-Za-z0-9_])(hq|npx|secrets|bash|sh|eval)([^A-Za-z0-9_]|$)|--reveal"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-env-dump",
@@ -118,7 +128,8 @@
             "gated": true,
             "prefilter": {
               "re": "printenv|(^|[^A-Za-z0-9_])(env|set)([^A-Za-z0-9_]|$)|export[[:space:]]+-p|declare[[:space:]]+-x|/proc/self/environ|/proc/[0-9]+/environ|docker inspect|docker exec|\\.env"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-core-writes-bash",
@@ -127,7 +138,8 @@
             "gated": true,
             "prefilter": {
               "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template|(^|[^A-Za-z0-9_])(rm|rmdir|mv|cp|tee|dd|rsync|ln|sed|awk|truncate|install|touch|mkdir|chmod|chown|git|tar|find|xargs|perl|python[0-9]*|node|bash|sh|zsh|eval|source)([^A-Za-z0-9_]|$)|>"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-policy-writes-bash",
@@ -136,7 +148,8 @@
             "gated": true,
             "prefilter": {
               "re": "polic|HQ_ALLOW_POLICY_WRITE|(^|[^A-Za-z0-9_])(tar|find|git|cp|mv|rsync|xargs)([^A-Za-z0-9_]|$)"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "enforce-vault-write-access",
@@ -145,7 +158,8 @@
             "gated": true,
             "prefilter": {
               "file": ".hq/vault-access.json"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-hq-root-git-mutation",
@@ -154,7 +168,8 @@
             "gated": true,
             "prefilter": {
               "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-foreground-timeout-over-harness-ceiling",
@@ -163,7 +178,8 @@
             "gated": true,
             "prefilter": {
               "re": "timeout|alarm"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "hq-monitor-guard",
@@ -181,7 +197,8 @@
             "gated": true,
             "prefilter": {
               "re": "qmd"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-on-active-run",
@@ -190,7 +207,8 @@
             "gated": true,
             "prefilter": {
               "file": "workspace/orchestrator/active-runs.json"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "inject-policy-on-trigger",
@@ -208,7 +226,8 @@
             "gated": true,
             "prefilter": {
               "re": "(^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun|npx|bunx|pip[0-9]*|uv|poetry|pipx|gem|cargo|go|brew|apt|apt-get|curl|wget)([^A-Za-z0-9_]|$)"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "surface-company-infra-policy",
@@ -228,7 +247,8 @@
             "id": "mandatory-scope-authorizer",
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           },
           {
             "id": "detect-secrets",
@@ -237,7 +257,8 @@
             "gated": true,
             "prefilter": {
               "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "protect-core",
@@ -246,7 +267,8 @@
             "gated": true,
             "prefilter": {
               "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-core-writes",
@@ -255,7 +277,8 @@
             "gated": true,
             "prefilter": {
               "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-inline-story-impl",
@@ -264,7 +287,8 @@
             "gated": true,
             "prefilter": {
               "re": "repos/(private|public)/"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "enforce-vault-write-access",
@@ -273,7 +297,8 @@
             "gated": true,
             "prefilter": {
               "file": ".hq/vault-access.json"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-on-active-run",
@@ -282,7 +307,8 @@
             "gated": true,
             "prefilter": {
               "file": "workspace/orchestrator/active-runs.json"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "env-file-no-trailing-newline",
@@ -291,7 +317,8 @@
             "gated": true,
             "prefilter": {
               "re": "env"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "route-company-skill-creation",
@@ -300,7 +327,8 @@
             "gated": true,
             "prefilter": {
               "re": "skills/|commands/|SKILL\\.md"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-plans-dir-during-deep-plan",
@@ -309,7 +337,8 @@
             "gated": true,
             "prefilter": {
               "re": "\\.claude/plans/"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "validate-policy-frontmatter",
@@ -318,7 +347,8 @@
             "gated": true,
             "prefilter": {
               "re": "policies/"
-            }
+            },
+            "runner": "source"
           }
         ]
       },
@@ -329,7 +359,8 @@
             "id": "mandatory-scope-authorizer",
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           },
           {
             "id": "detect-secrets",
@@ -338,7 +369,8 @@
             "gated": true,
             "prefilter": {
               "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "protect-core",
@@ -347,7 +379,8 @@
             "gated": true,
             "prefilter": {
               "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-core-writes",
@@ -356,7 +389,8 @@
             "gated": true,
             "prefilter": {
               "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-inline-story-impl",
@@ -365,7 +399,8 @@
             "gated": true,
             "prefilter": {
               "re": "repos/(private|public)/"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "enforce-vault-write-access",
@@ -374,7 +409,8 @@
             "gated": true,
             "prefilter": {
               "file": ".hq/vault-access.json"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-on-active-run",
@@ -383,7 +419,8 @@
             "gated": true,
             "prefilter": {
               "file": "workspace/orchestrator/active-runs.json"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "env-file-no-trailing-newline",
@@ -392,7 +429,8 @@
             "gated": true,
             "prefilter": {
               "re": "env"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "route-company-skill-creation",
@@ -401,7 +439,8 @@
             "gated": true,
             "prefilter": {
               "re": "skills/|commands/|SKILL\\.md"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-plans-dir-during-deep-plan",
@@ -410,7 +449,8 @@
             "gated": true,
             "prefilter": {
               "re": "\\.claude/plans/"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "validate-policy-frontmatter",
@@ -419,7 +459,8 @@
             "gated": true,
             "prefilter": {
               "re": "policies/"
-            }
+            },
+            "runner": "source"
           }
         ]
       },
@@ -430,7 +471,8 @@
             "id": "mandatory-scope-authorizer",
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           },
           {
             "id": "detect-secrets",
@@ -439,7 +481,8 @@
             "gated": true,
             "prefilter": {
               "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-core-writes",
@@ -448,7 +491,8 @@
             "gated": true,
             "prefilter": {
               "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "enforce-vault-write-access",
@@ -457,7 +501,8 @@
             "gated": true,
             "prefilter": {
               "file": ".hq/vault-access.json"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "route-company-skill-creation",
@@ -466,7 +511,8 @@
             "gated": true,
             "prefilter": {
               "re": "skills/|commands/|SKILL\\.md"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "block-plans-dir-during-deep-plan",
@@ -475,7 +521,8 @@
             "gated": true,
             "prefilter": {
               "re": "\\.claude/plans/"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "validate-policy-frontmatter",
@@ -484,7 +531,8 @@
             "gated": true,
             "prefilter": {
               "re": "policies/"
-            }
+            },
+            "runner": "source"
           }
         ]
       },
@@ -495,7 +543,8 @@
             "id": "mandatory-scope-authorizer",
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           },
           {
             "id": "detect-secrets",
@@ -504,7 +553,8 @@
             "gated": true,
             "prefilter": {
               "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
-            }
+            },
+            "runner": "source"
           },
           {
             "id": "enforce-vault-write-access",
@@ -513,7 +563,8 @@
             "gated": true,
             "prefilter": {
               "file": ".hq/vault-access.json"
-            }
+            },
+            "runner": "source"
           }
         ]
       },
@@ -524,7 +575,8 @@
             "id": "block-builtin-plan-mode-during-deep-plan",
             "script": ".claude/hooks/block-builtin-plan-mode-during-deep-plan.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           }
         ]
       }
@@ -907,7 +959,8 @@
             "gated": true,
             "args": [
               "SessionStart"
-            ]
+            ],
+            "runner": "source"
           },
           {
             "id": "migrate-policy-triggers",
@@ -937,7 +990,8 @@
             "id": "inject-local-context",
             "script": ".claude/hooks/inject-local-context.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           },
           {
             "id": "auto-startwork",
@@ -991,7 +1045,8 @@
             "id": "session-title",
             "script": ".claude/hooks/session-title.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           },
           {
             "id": "hq-monitor-session-start",
@@ -1013,7 +1068,8 @@
             "gated": true,
             "args": [
               "UserPromptSubmit"
-            ]
+            ],
+            "runner": "source"
           },
           {
             "id": "hq-monitor-session-hook",
@@ -1053,7 +1109,8 @@
             "id": "session-title",
             "script": ".claude/hooks/session-title.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           },
           {
             "id": "inject-policy-on-trigger",

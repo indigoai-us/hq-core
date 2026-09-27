@@ -9,6 +9,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SKILL="$ROOT/.claude/skills/handoff/SKILL.md"
+source "$ROOT/core/scripts/tests/lib/handoff-post-test-helpers.sh"
 TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -53,6 +54,18 @@ mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/workspace/baseline" \
 cp "$ROOT/core/scripts/handoff-finalize.sh" "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh"
 cp "$ROOT/core/scripts/handoff-post.sh" "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
 cp "$ROOT/core/scripts/hq-status-summary.sh" "$TMP_ROOT/repo/core/scripts/hq-status-summary.sh"
+# Keep the fixture finalizer's legacy fixed /tmp paths inside this test's temp root.
+sed \
+  -e "s|/tmp/handoff-git-bg.pid|$TMP_ROOT/handoff-git-bg.pid|g" \
+  -e "s|/tmp/handoff-git-bg.log|$TMP_ROOT/handoff-git-bg.log|g" \
+  -e "s|/tmp/qmd-handoff.log|$TMP_ROOT/qmd-handoff.log|g" \
+  "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh" > "$TMP_ROOT/handoff-finalize.sh"
+mv "$TMP_ROOT/handoff-finalize.sh" "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh"
+cat > "$TMP_ROOT/repo/core/scripts/qmd-reindex-bg.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$TMP_ROOT/repo/core/scripts/qmd-reindex-bg.sh"
 
 cat > "$TMP_ROOT/repo/core/scripts/archive-old-threads.sh" <<'SH'
 #!/usr/bin/env bash
@@ -87,7 +100,7 @@ JSON
 
   learnings='[{"type":"rule","content":"ALWAYS: retain handoff learnings before dispatch","scope":"global","source":"test"}]'
   printf '%s\n' "$learnings" > "$TMP_ROOT/learnings.json"
-  out=$(PATH=/usr/bin:/bin bash core/scripts/handoff-finalize.sh \
+  out=$(HQ_ROOT="$TMP_ROOT/repo" PATH=/usr/bin:/bin bash core/scripts/handoff-finalize.sh \
     --title "Handoff: runtime follow-ups" \
     --summary "Exercise durable pending follow-ups" \
     --message "runtime follow-ups" \
@@ -102,8 +115,8 @@ JSON
   jq -e --argjson expected "$learnings" '.learnings == $expected' "$thread_path" >/dev/null \
     || fail "collected learnings were not made durable before dispatch"
 
-  HANDOFF_LOG_DIR="$TMP_ROOT/logs" PATH=/usr/bin:/bin \
-    bash core/scripts/handoff-post.sh "$thread_path" "$TMP_ROOT/learnings.json"
+  handoff_post_test_run "$TMP_ROOT/repo" "$thread_path" "$TMP_ROOT/learnings.json" \
+    HANDOFF_LOG_DIR="$TMP_ROOT/logs" PATH=/usr/bin:/bin
 )
 
 grep -q 'learn: eligible and pending runtime dispatch.*no dispatch proof' "$TMP_ROOT/logs/handoff-post.log" \

@@ -193,6 +193,44 @@ parse_shell_commands_once() {
   done <<< "$parsed"
 }
 
+# Resolve the command name with the existing hook-lib rules, but return it in a
+# variable instead of command substitution. Callers scan one record at a time;
+# the substitution used to start one Bash child for every command segment.
+SHELL_COMMAND_EXECUTABLE_RESULT=""
+shell_command_executable_result() {
+  local record="$1" token
+  local -a argv
+  IFS=$'\037' read -r -a argv <<< "$record"
+  local i=0
+  SHELL_COMMAND_EXECUTABLE_RESULT=""
+  while [ "$i" -lt "${#argv[@]}" ]; do
+    token="${argv[$i]}"
+    if [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      i=$((i + 1)); continue
+    fi
+    case "$token" in
+      env)
+        i=$((i + 1))
+        while [ "$i" -lt "${#argv[@]}" ]; do
+          token="${argv[$i]}"
+          if [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            i=$((i + 1)); continue
+          fi
+          case "$token" in
+            -*) i=$((i + 1)); continue ;;
+          esac
+          break
+        done
+        continue
+        ;;
+      command|builtin|exec|sudo)
+        i=$((i + 1)); continue ;;
+      *) SHELL_COMMAND_EXECUTABLE_RESULT="$token"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
 WRITE_TARGET_PROTECTED_CWD="no"
 WRITE_TARGET_PROTECTED_VARS=""
 
@@ -441,7 +479,8 @@ write_op_targets_protected() {
     [ -n "$shell_record" ] || continue
     segment="${shell_record//$'\037'/ }"
     record_segment_context "$segment" "$token_re"
-    shell_exe="$(hq_shell_command_executable "$shell_record" || true)"
+    shell_command_executable_result "$shell_record" || :
+    shell_exe="$SHELL_COMMAND_EXECUTABLE_RESULT"
     case "$shell_exe" in
       rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|sed|awk|ln) ;;
       *) continue ;;
@@ -485,7 +524,8 @@ in_external_cwd_context() {
   local shell_record exe arg resolved
   for shell_record in "${SHELL_COMMAND_RECORDS[@]}"; do
     [ -n "$shell_record" ] || continue
-    exe="$(hq_shell_command_executable "$shell_record" || true)"
+    shell_command_executable_result "$shell_record" || :
+    exe="$SHELL_COMMAND_EXECUTABLE_RESULT"
     case "$exe" in cd|pushd) ;; *) continue ;; esac
     shell_record="${shell_record//$'\037'/ }"
     read -r _ arg _ <<< "$shell_record"

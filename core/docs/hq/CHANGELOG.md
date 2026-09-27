@@ -1,5 +1,27 @@
 ## [Unreleased]
 
+### Fixed: handoff post syncs workspace mirrors to the thread company
+- Workspace sync now passes the thread's company slug to hq sync push.
+- The document-release gate counts string paths and objects with a string path. Unsupported entries are logged and skipped.
+
+### Fixed: npm hq-cli install windows no longer trigger a pnpm shadow restore
+- Before restoring hq, the UserPromptSubmit hook checks for a matching npm or pnpm install process and an npm staging directory. If hq is still missing, it waits two seconds and checks again.
+- If npm owns the package, the restore pins the version in its `package.json`. If that version cannot be read, or neither manager owns an install, the hook uses pnpm with `minimumReleaseAge=1440` and logs why it fell back.
+- When both global copies contain hq, PATH repair selects npm's directory first. Tests use temporary prefixes and fake npm and pnpm commands.
+
+### Fixed: /team-access repairs member folder access that older rules block
+- Step 2 reads the legacy bare `<root>` row alongside `<root>/` and `<root>/*`. A bare row outranks `<root>/*`, so a whole-folder grant now also writes `@all` on an existing bare row. The skill never removes entries from a bare row or creates one, because an emptied legacy row is kept and locks members out.
+- Before writing a new row, the skill lists the person, email, group, and app grants the row would hide from `*` and asks whether to copy them. App grants cannot be copied with the CLI and are reported.
+- An `ACL_PATTERN_CONFLICT` from an empty `<root>/` private-folder row stops that folder and tells the owner to contact Indigo support about DEV-3405. The skill does not attempt a workaround.
+- Readback checks `.direct` on the row that wins for members. `effectivePermission` is no longer accepted as proof, since it reflects the caller's owner or admin role.
+- After a root grant, the skill lists subfolder rows with their own grants (left unchanged) and probes direct subfolders for empty locked rows, asking before opening each. Empty rows deeper than one level cannot be listed from the CLI; the skill says so.
+- `--all-owned` walks every cloud company where the caller is an owner, one company per question. Hosts without `AskUserQuestion` get the same questions in chat.
+- `core/scripts/tests/team-access-skill.test.sh` covers the contract and the shipped jq programs on fixture ACL output.
+
+### Changed: macOS shell smoke uses path detection (GH-2)
+- The `shell-smoke-macos` job runs for shell source changes, chmod-only shell changes, its workflow, and non-shell inputs read by its tests: `.claude/settings.json`, `.claude/hooks/**`, `.grok/hooks/**`, `core/core.yaml`, `.claude/skills/deploy/SKILL.md`, and `core/scripts/lib/**`. Missing base history runs the job.
+- The regression test compares each single-path commit to its immediate parent and covers the non-shell inputs, shell additions and removals, mode-only changes, unrelated documentation, and missing-base fallback. The required `denylist-scan` check still runs on every ready PR.
+
 ### Fixed — Bash scope authorizer handles shell path variables and PR body heredocs (US-033)
 - The Bash guard resolves one simple assignment and bounded `for` values before checking company paths. It blocks unresolved expansions and values that leave the bound company.
 - Heredoc text is treated as data for recognized `gh pr create` body options. Executed heredocs and redirects into another company's files remain checked.

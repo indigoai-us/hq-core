@@ -33,7 +33,7 @@ BASH_BIN="$(command -v bash)"
 # PATH of "$BIN:$CORE" gives the hook its tools while letting us control whether
 # `hq`/`npm` are resolvable purely by what we drop into $BIN.
 CORE="$TMP/core"; mkdir -p "$CORE"
-for u in bash sh cat stat date mkdir rm mv dirname timeout chmod env grep head jq sleep kill pkill; do
+for u in bash sh cat stat date mkdir rm mv dirname timeout chmod env grep head jq sleep kill pkill ps awk; do
   p="$(command -v "$u" 2>/dev/null)" && ln -sf "$p" "$CORE/$u"
 done
 
@@ -100,19 +100,23 @@ rm -f "$BIN/hq"
 # --- 4. hq missing -> install, then auto-fix + announce ------------------
 reset_root
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
-mkdir -p "$TMP/prefix/bin"
-# npm stub: on install, drop hq into the global prefix bin (NOT on any PATH).
+mkdir -p "$TMP/prefix/bin" "$TMP/pnpm-prefix/bin"
 stub npm "case \"\$*\" in
-  *install*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; exit 0 ;;
-  'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  'prefix -g') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+stub pnpm "case \"\$*\" in
+  *add*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/pnpm-prefix/bin/hq'; chmod +x '$TMP/pnpm-prefix/bin/hq'; exit 0 ;;
+  'bin -g') echo '$TMP/pnpm-prefix/bin'; exit 0 ;;
   *) exit 0 ;;
 esac"
 out="$(run_hook "$COREUTILS_PATH")"
 printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
   || fail "install+fix should emit <hq-cli-path-updated>, got: $out"
-case ":$(local_path):" in *":$TMP/prefix/bin:"*) : ;; *) fail "install did not add global bin to env.PATH: $(local_path)";; esac
+case ":$(local_path):" in *":$TMP/pnpm-prefix/bin:"*) : ;; *) fail "install did not add global bin to env.PATH: $(local_path)";; esac
 [ ! -f "$ROOTDIR/workspace/.hq-cli-ensure/last-attempt.stamp" ] \
   || fail "successful install must clear the stamp"
+rm -f "$BIN/npm" "$BIN/pnpm"
 
 # A path entry is not health proof: stale and broken hq binaries must be
 # repaired instead of making the hook return a false healthy no-op.
@@ -123,8 +127,12 @@ chmod +x "$OLD_BIN/hq"
 rm -f "$TMP/prefix/bin/hq"
 write_local_settings "{\"env\":{\"PATH\":\"$OLD_BIN:/usr/bin:/bin\"}}"
 stub npm "case \"\$*\" in
-  *install*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; echo installed > '$TMP/stale-repaired'; exit 0 ;;
-  'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  'prefix -g') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+stub pnpm "case \"\$*\" in
+  *add*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; echo installed > '$TMP/stale-repaired'; exit 0 ;;
+  'bin -g') echo '$TMP/prefix/bin'; exit 0 ;;
   *) exit 0 ;;
 esac"
 out="$(run_hook "$COREUTILS_PATH")"
@@ -132,6 +140,7 @@ out="$(run_hook "$COREUTILS_PATH")"
 printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
   || fail "stale hq repair should emit <hq-cli-path-updated>, got: $out"
 case ":$(local_path):" in *":$TMP/prefix/bin:"*) : ;; *) fail "repaired hq bin was not preferred on settings PATH";; esac
+rm -f "$BIN/npm" "$BIN/pnpm"
 
 # A binary found only through repo-controlled settings is never executed. It
 # must be treated as untrusted and repaired from a known install location.
@@ -142,8 +151,12 @@ chmod +x "$HANG_BIN/hq"
 rm -f "$TMP/prefix/bin/hq"
 write_base_settings "{\"env\":{\"PATH\":\"$HANG_BIN:/usr/bin:/bin\"}}"
 stub npm "case \"\$*\" in
-  *install*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; exit 0 ;;
-  'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  'prefix -g') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+stub pnpm "case \"\$*\" in
+  *add*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; exit 0 ;;
+  'bin -g') echo '$TMP/prefix/bin'; exit 0 ;;
   *) exit 0 ;;
 esac"
 start="$(date +%s)"
@@ -153,11 +166,12 @@ elapsed="$(( $(date +%s) - start ))"
 [ ! -f "$TMP/untrusted-executed" ] || fail "repo-controlled settings hq must never execute"
 printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
   || fail "an untrusted settings hq should trigger repair, got: $out"
+rm -f "$BIN/npm" "$BIN/pnpm"
 
 # --- 5. hq missing, npm missing -> manual-install remedy -----------------
 reset_root
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
-rm -f "$BIN/hq" "$BIN/npm"
+rm -f "$BIN/hq" "$BIN/npm" "$BIN/pnpm"
 out="$(run_hook "$COREUTILS_PATH")"
 printf '%s' "$out" | grep -q '<hq-cli-missing>' \
   || fail "npm missing should emit <hq-cli-missing>, got: $out"
@@ -169,14 +183,14 @@ mkdir -p "$ROOTDIR/workspace/.hq-cli-ensure"
 : > "$ROOTDIR/workspace/.hq-cli-ensure/last-attempt.stamp"
 stub npm "case \"\$*\" in
   *install*) echo 'INSTALL_RAN' >&2; exit 1 ;;
-  'config get prefix') echo '$TMP/noprefix'; exit 0 ;;
+  'prefix -g') echo '$TMP/noprefix'; exit 0 ;;
   *) exit 0 ;;
 esac"
 out="$(run_hook "$COREUTILS_PATH" 2> "$TMP/stderr")"
 grep -q 'INSTALL_RAN' "$TMP/stderr" && fail "cooldown active must NOT re-run install"
 printf '%s' "$out" | grep -q '<hq-cli-missing>' \
   || fail "cooldown active + hq missing should still emit remedy, got: $out"
-rm -f "$BIN/npm"
+rm -f "$BIN/npm" "$BIN/pnpm"
 
 # --- 7. hq off-PATH but settings dir unwritable -> add-to-PATH remedy -----
 # jq can READ the settings PATH (so we reach the auto-fix branch), but the
@@ -222,8 +236,12 @@ rm -f "$TMP/prefix/bin/hq" "$TMP/below-floor-install"
 mkdir -p "$TMP/prefix/bin"
 write_local_settings "{\"env\":{\"PATH\":\"$BELOW_BIN:/usr/bin:/bin\"}}"
 stub npm "case \"\$*\" in
-  *install*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; echo installed > '$TMP/below-floor-install'; exit 0 ;;
-  'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  'prefix -g') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+stub pnpm "case \"\$*\" in
+  *add*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; echo installed > '$TMP/below-floor-install'; exit 0 ;;
+  'bin -g') echo '$TMP/prefix/bin'; exit 0 ;;
   *) exit 0 ;;
 esac"
 set +e
@@ -234,15 +252,16 @@ set -e
 [ -f "$TMP/below-floor-install" ] || fail "5.108.1 must trigger cooldown-limited install"
 printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
   || fail "5.108.1 repair should emit <hq-cli-path-updated>, got: $out"
-rm -f "$BIN/npm"
+rm -f "$BIN/npm" "$BIN/pnpm"
 
 # --- 9. install stays bounded when `timeout` is absent (macOS) -----------
 # Build a coreutils PATH WITHOUT `timeout`, so the hook takes the portable
-# watchdog branch. A stalled 5s install with a 1s bound must return in ~1s.
+# watchdog branch. A stalled 5s install with a 1s bound must return after the
+# new 2s missing-hq re-probe plus bounded install work.
 reset_root
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
 NOTIMEOUT="$TMP/notimeout"; mkdir -p "$NOTIMEOUT"
-for u in bash sh cat stat date mkdir rm mv dirname chmod env grep head jq sleep kill pkill; do
+for u in bash sh cat stat date mkdir rm mv dirname chmod env grep head jq sleep kill pkill ps awk; do
   ln -sf "$CORE/$u" "$NOTIMEOUT/$u" 2>/dev/null || true
 done
 stub npm 'exit 0'   # npm present so the install branch is reached
@@ -250,7 +269,7 @@ start="$(date +%s)"
 out="$(run_hook "$BIN:$NOTIMEOUT" \
   HQ_ENSURE_CLI_INSTALL_CMD='sleep 5' HQ_ENSURE_CLI_TIMEOUT=1)"
 elapsed="$(( $(date +%s) - start ))"
-[ "$elapsed" -lt 4 ] || fail "watchdog did not bound the install (took ${elapsed}s, expected ~1s)"
+[ "$elapsed" -lt 6 ] || fail "watchdog did not bound the install (took ${elapsed}s, expected under 6s including the re-probe)"
 printf '%s' "$out" | grep -q '<hq-cli-missing>' \
   || fail "bounded-but-failed install should emit remedy, got: $out"
 rm -f "$BIN/npm"
@@ -259,21 +278,21 @@ rm -f "$BIN/npm"
 reset_root
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
 mkdir -p "$ROOTDIR/workspace/.hq-cli-ensure/installing.lock"   # a peer holds it
-stub npm "case \"\$*\" in
-  *install*) echo 'INSTALL_RAN' > '$TMP/lock-marker'; exit 0 ;;
+stub pnpm "case \"\$*\" in
+  *add*) echo 'INSTALL_RAN' > '$TMP/lock-marker'; exit 0 ;;
   *) exit 0 ;;
 esac"
 out="$(run_hook "$COREUTILS_PATH")"
 [ ! -f "$TMP/lock-marker" ] || fail "install ran despite a held lock (concurrent race)"
 printf '%s' "$out" | grep -q '<hq-cli-missing>' \
   || fail "locked-out session should still emit remedy, got: $out"
-rm -f "$BIN/npm"
+rm -f "$BIN/pnpm"
 
 # --- 11. truly missing hq still restores through pnpm ------------------------
 reset_root
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
 mkdir -p "$TMP/pnpm-prefix/bin"
-rm -f "$TMP/prefix/bin/hq" "$TMP/pnpm-ran" "$TMP/npm-ran"
+rm -f "$TMP/prefix/bin/hq" "$TMP/pnpm-prefix/bin/hq" "$TMP/pnpm-ran" "$TMP/npm-ran"
 stub pnpm "case \"\$*\" in
   *add*) printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/pnpm-prefix/bin/hq'; chmod +x '$TMP/pnpm-prefix/bin/hq'; echo ran > '$TMP/pnpm-ran'; exit 0 ;;
   'bin -g') echo '$TMP/pnpm-prefix/bin'; exit 0 ;;
@@ -281,7 +300,7 @@ stub pnpm "case \"\$*\" in
 esac"
 stub npm "case \"\$*\" in
   *install*) echo ran > '$TMP/npm-ran'; exit 0 ;;
-  'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  'prefix -g') echo '$TMP/prefix'; exit 0 ;;
   *) exit 0 ;;
 esac"
 out="$(run_hook "$COREUTILS_PATH")"
@@ -315,14 +334,185 @@ elapsed="$(( $(date +%s) - start ))"
 rm -f "$BIN/pnpm"
 printf '%s\n' 'PASS: timeout does not trigger install'
 
-# --- 13. documented restore is the pnpm age-gated command --------------------
+# --- 13. a live npm install owns the missing-package window ---------------
+reset_root
+write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
+mkdir -p "$TMP/prefix/bin" "$TMP/pnpm-prefix/bin"
+rm -f "$TMP/prefix/bin/hq" "$TMP/pnpm-prefix/bin/hq"
+rm -f "$TMP/active-install-ran" "$TMP/active-pnpm-ran"
+stub npm "case \"\$*\" in
+  *'@indigoai-us/hq-cli@5.223.0'*)
+    sleep 30 &
+    child=\$!
+    trap 'kill \"\$child\" 2>/dev/null || true; wait \"\$child\" 2>/dev/null || true; exit 0' TERM INT
+    wait \"\$child\" ;;
+  *install*) echo ran > '$TMP/active-install-ran'; exit 0 ;;
+  'prefix -g'|'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+stub pnpm "case \"\$*\" in
+  *add*) echo ran > '$TMP/active-pnpm-ran'; exit 0 ;;
+  'bin -g') echo '$TMP/pnpm-prefix/bin'; exit 0 ;;
+  'root -g') echo '$TMP/pnpm-prefix/global/5/node_modules'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+"$BIN/npm" install -g @indigoai-us/hq-cli@5.223.0 &
+installer_pid=$!
+sleep 0.2
+processes="$(ps -eww -o args= 2>/dev/null)"
+case "$processes" in
+  *"@indigoai-us/hq-cli@5.223.0"*) : ;;
+  *) kill "$installer_pid" 2>/dev/null || true; wait "$installer_pid" 2>/dev/null || true; fail "installer process ignored: fake npm install was not visible to ps" ;;
+esac
+out="$(run_hook "$COREUTILS_PATH")"
+kill "$installer_pid" 2>/dev/null || true
+wait "$installer_pid" 2>/dev/null || true
+[ ! -f "$TMP/active-install-ran" ] || fail "installer process ignored: hook started a second npm install"
+[ ! -f "$TMP/active-pnpm-ran" ] || fail "installer process ignored: hook started pnpm during npm install"
+case "$out" in *'<hq-cli-install-in-progress>'*) : ;; *) fail "installer process ignored: expected a named deferred-install message, got: $out";; esac
+printf '%s\n' 'PASS: installer process ignored'
+rm -f "$BIN/npm" "$BIN/pnpm"
+
+# --- 14. npm staging directory is also an active install window -----------
+reset_root
+write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
+mkdir -p "$TMP/prefix/lib/node_modules/.hq-cli-staging-123" "$TMP/pnpm-prefix/bin"
+rm -f "$TMP/prefix/bin/hq" "$TMP/pnpm-prefix/bin/hq"
+rm -f "$TMP/staging-npm-ran" "$TMP/staging-pnpm-ran"
+stub npm "case \"\$*\" in
+  *install*) echo ran > '$TMP/staging-npm-ran'; exit 0 ;;
+  'prefix -g'|'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+stub pnpm "case \"\$*\" in
+  *add*) echo ran > '$TMP/staging-pnpm-ran'; exit 0 ;;
+  'bin -g') echo '$TMP/pnpm-prefix/bin'; exit 0 ;;
+  'root -g') echo '$TMP/pnpm-prefix/global/5/node_modules'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+out="$(run_hook "$COREUTILS_PATH")"
+[ ! -f "$TMP/staging-npm-ran" ] || fail "npm staging dir ignored: hook started npm while staging exists"
+[ ! -f "$TMP/staging-pnpm-ran" ] || fail "npm staging dir ignored: hook started pnpm while staging exists"
+case "$out" in *'<hq-cli-install-in-progress>'*) : ;; *) fail "npm staging dir ignored: expected a named deferred-install message, got: $out";; esac
+printf '%s\n' 'PASS: npm staging dir ignored'
+rm -f "$BIN/npm" "$BIN/pnpm"
+rmdir "$TMP/prefix/lib/node_modules/.hq-cli-staging-123"
+
+# --- 15. an hq binary that reappears during the wait avoids restore --------
+reset_root
+write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
+mkdir -p "$TMP/prefix/bin" "$TMP/pnpm-prefix/bin"
+rm -f "$TMP/prefix/bin/hq" "$TMP/pnpm-prefix/bin/hq"
+rm -f "$TMP/reprobe-count" "$TMP/reprobe-install-ran"
+stub npm "case \"\$*\" in
+  'prefix -g'|'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  *install*) echo ran > '$TMP/reprobe-install-ran'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+stub pnpm "case \"\$*\" in
+  'bin -g')
+    if [ ! -f '$TMP/reprobe-start' ]; then date +%s > '$TMP/reprobe-start'; fi
+    started=\$(cat '$TMP/reprobe-start')
+    now=\$(date +%s)
+    if [ \"\$now\" -gt \"\$started\" ]; then printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/pnpm-prefix/bin/hq'; chmod +x '$TMP/pnpm-prefix/bin/hq'; fi
+    echo '$TMP/pnpm-prefix/bin'; exit 0 ;;
+  *add*) echo ran > '$TMP/reprobe-install-ran'; exit 0 ;;
+  'root -g') echo '$TMP/pnpm-prefix/global/5/node_modules'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+start="$(date +%s)"
+out="$(run_hook "$COREUTILS_PATH")"
+elapsed="$(( $(date +%s) - start ))"
+[ "$elapsed" -le 5 ] || fail "no re-probe: wait exceeded 5s (elapsed ${elapsed}s)"
+[ -x "$TMP/pnpm-prefix/bin/hq" ] || fail "no re-probe: test hq did not reappear"
+[ ! -f "$TMP/reprobe-install-ran" ] || fail "no re-probe: restore ran after hq reappeared"
+case ":$(local_path):" in *":$TMP/pnpm-prefix/bin:"*) : ;; *) fail "no re-probe: restored hq path was not added after it reappeared";; esac
+printf '%s\n' 'PASS: hq reappears within the re-probe wait'
+rm -f "$BIN/npm" "$BIN/pnpm"
+
+# --- 16. npm-global ownership wins over pnpm for restore ------------------
+reset_root
+write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
+mkdir -p "$TMP/prefix/lib/node_modules/@indigoai-us/hq-cli" "$TMP/prefix/bin" "$TMP/pnpm-prefix/bin"
+printf '{"version":"5.223.0"}\n' > "$TMP/prefix/lib/node_modules/@indigoai-us/hq-cli/package.json"
+rm -f "$TMP/prefix/bin/hq" "$TMP/pnpm-prefix/bin/hq"
+rm -f "$TMP/npm-owner-ran" "$TMP/pnpm-owner-ran"
+stub npm "case \"\$*\" in
+  *install*) echo \"\$*\" > '$TMP/npm-owner-ran'; printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/prefix/bin/hq'; chmod +x '$TMP/prefix/bin/hq'; exit 0 ;;
+  'prefix -g') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+stub pnpm "case \"\$*\" in
+  *add*) echo ran > '$TMP/pnpm-owner-ran'; exit 0 ;;
+  'bin -g') echo '$TMP/pnpm-prefix/bin'; exit 0 ;;
+  'root -g') echo '$TMP/pnpm-prefix/global/5/node_modules'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+out="$(run_hook "$COREUTILS_PATH")"
+[ -f "$TMP/npm-owner-ran" ] || fail "restore prefers pnpm over npm owner: npm-owned package was not restored by npm, got: $out"
+grep -Fxq 'install -g @indigoai-us/hq-cli@5.223.0' "$TMP/npm-owner-ran" \
+  || fail "npm restore did not pin the version from npm's installed package"
+[ ! -f "$TMP/pnpm-owner-ran" ] || fail "restore prefers pnpm over npm owner: pnpm ran despite npm ownership"
+printf '%s\n' 'PASS: npm-global restore is pinned to the installed package version'
+rm -f "$BIN/npm" "$BIN/pnpm"
+
+# --- 16b. unreadable npm owner version falls back to age-gated pnpm --------
+reset_root
+write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
+mkdir -p "$TMP/prefix/lib/node_modules/@indigoai-us/hq-cli" "$TMP/prefix/bin" "$TMP/pnpm-prefix/bin"
+printf '{"name":"@indigoai-us/hq-cli"}\n' > "$TMP/prefix/lib/node_modules/@indigoai-us/hq-cli/package.json"
+rm -f "$TMP/prefix/bin/hq" "$TMP/pnpm-fallback-ran" "$TMP/npm-fallback-ran"
+stub npm "case \"\$*\" in
+  *install*) echo ran > '$TMP/npm-fallback-ran'; exit 0 ;;
+  'prefix -g') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+stub pnpm "case \"\$*\" in
+  *add*) echo \"\$*\" > '$TMP/pnpm-fallback-ran'; printf '#!/usr/bin/env bash\\necho 5.108.2\\n' > '$TMP/pnpm-prefix/bin/hq'; chmod +x '$TMP/pnpm-prefix/bin/hq'; exit 0 ;;
+  'bin -g') echo '$TMP/pnpm-prefix/bin'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+out="$(run_hook "$COREUTILS_PATH" 2> "$TMP/fallback-stderr")"
+[ -f "$TMP/pnpm-fallback-ran" ] || fail "unreadable npm version did not fall back to pnpm, got: $out"
+grep -Fq 'minimumReleaseAge=1440' "$TMP/pnpm-fallback-ran" \
+  || fail "npm version fallback did not retain pnpm minimumReleaseAge"
+[ ! -f "$TMP/npm-fallback-ran" ] || fail "unreadable npm version must not use an unpinned npm restore"
+grep -Fq 'exact version could not be read' "$TMP/fallback-stderr" \
+  || fail "npm version fallback did not log why it used pnpm"
+printf '%s\n' 'PASS: unreadable npm owner version falls back to logged age-gated pnpm'
+rm -f "$BIN/npm" "$BIN/pnpm"
+
+# --- 17. auto-fix places npm-global hq before pnpm hq ----------------------
+reset_root
+write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
+mkdir -p "$TMP/prefix/bin" "$TMP/pnpm-prefix/bin"
+rm -f "$TMP/prefix/bin/hq" "$TMP/pnpm-prefix/bin/hq"
+printf '#!/usr/bin/env bash\necho 5.108.2\n' > "$TMP/prefix/bin/hq"
+printf '#!/usr/bin/env bash\necho 5.108.2\n' > "$TMP/pnpm-prefix/bin/hq"
+chmod +x "$TMP/prefix/bin/hq" "$TMP/pnpm-prefix/bin/hq"
+stub npm "case \"\$*\" in
+  'prefix -g'|'config get prefix') echo '$TMP/prefix'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+stub pnpm "case \"\$*\" in
+  'bin -g') echo '$TMP/pnpm-prefix/bin'; exit 0 ;;
+  'root -g') echo '$TMP/pnpm-prefix/global/5/node_modules'; exit 0 ;;
+  *) exit 0 ;;
+esac"
+out="$(run_hook "$TMP/pnpm-prefix/bin:$COREUTILS_PATH")"
+case "$(local_path)" in "$TMP/prefix/bin:"*) : ;; *) fail "pnpm prepended to PATH: auto-fix did not place npm-global hq first: $(local_path)";; esac
+case "$(local_path)" in *"$TMP/pnpm-prefix/bin:"*) fail "pnpm prepended to PATH: pnpm precedes npm-global in settings";; esac
+printf '%s\n' 'PASS: PATH auto-fix keeps npm-global hq first'
+rm -f "$BIN/npm" "$BIN/pnpm"
+
+# --- 18. documented restores include the pnpm age-gated fallback ------------
 grep -F 'pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440' "$HOOK" >/dev/null \
   || fail "ensure-hq-cli must document pnpm restore with minimumReleaseAge=1440"
 if grep -E 'npm install -g @indigoai-us/hq-cli@latest' "$HOOK" | grep -v 'NPM_RESTORE_CMD=' | grep -v 'Do not run' >/dev/null; then
   fail "ensure-hq-cli still advertises npm @latest as the restore command"
 fi
 
-echo "PASS: ensure-hq-cli-hook (settings-PATH detection, ambient fallback, auto-fix local settings, install+fix, npm-missing, cooldown, unwritable remedy, kill-switch, floor-advisory 5.108.1/5.108.2, bounded-install, atomic-lock, pnpm-preferred restore)"
+echo "PASS: ensure-hq-cli-hook (settings-PATH detection, ambient fallback, auto-fix local settings, install+fix, npm-missing, cooldown, unwritable remedy, kill-switch, floor-advisory 5.108.1/5.108.2, bounded-install, atomic-lock, install-window guards, re-probe, npm owner restore, npm-first PATH)"
 
 # Prompt-contract coverage lives in a sibling file; run it here so CI picks it
 # up without a workflow-permission edit.

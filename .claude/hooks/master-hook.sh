@@ -808,10 +808,19 @@ if [ -n "$child_timeout_cmd" ]; then
   mkdir -p "$child_completion_dir" >/dev/null 2>&1 || child_completion_dir=""
 fi
 child_sequence=0
-run_child() { # <timeout-seconds> <script-path> <completion-marker> [args...]
-  local t="$1" path="$2" completion_marker="$3"; shift 3
+run_child() { # <timeout-seconds> <runner-mode> <script-path> <completion-marker> [args...]
+  local t="$1" mode="$2" path="$3" completion_marker="$4"; shift 4
   local runner=()
-  if [ -x "$path" ]; then runner=("$path"); else runner=(bash "$path"); fi
+  if [ "$mode" = "source" ]; then
+    # A fresh Bash process is the child's isolation boundary. The subshell
+    # contains `exit`, traps, variables and shell options while sourcing the
+    # hook avoids a second Bash exec for the hook file.
+    runner=(bash -c 'child="$1"; shift; ( . "$child" "$@" )' "$path" "$path")
+  elif [ -x "$path" ]; then
+    runner=("$path")
+  else
+    runner=(bash "$path")
+  fi
   journal_active_child_start "$path"
   # Build the command first so there is exactly ONE pipeline, and its status is
   # read from PIPESTATUS[1] on the line immediately after it. A hook that exits
@@ -822,7 +831,11 @@ run_child() { # <timeout-seconds> <script-path> <completion-marker> [args...]
   local cmd=()
   case "$child_timeout_cmd" in
     timeout)
-      if [ -n "$completion_marker" ]; then
+      if [ "$mode" = "source" ] && [ -n "$completion_marker" ]; then
+        cmd=(timeout "$t" bash -c 'marker="$1"; child="$2"; shift 2; ( . "$child" "$@" ); rc=$?; : > "$marker"; exit "$rc"' "$path" "$completion_marker" "$path")
+      elif [ "$mode" = "source" ]; then
+        cmd=(timeout "$t" bash -c 'child="$1"; shift; ( . "$child" "$@" )' "$path" "$path")
+      elif [ -n "$completion_marker" ]; then
         cmd=(timeout "$t" bash -c 'marker="$1"; shift; "$@"; rc=$?; : > "$marker"; exit "$rc"' -- "$completion_marker" "${runner[@]}")
       else
         cmd=(timeout "$t" "${runner[@]}")
@@ -1321,7 +1334,7 @@ registry_rows() {
         (if .gated == false then "0" else "1" end),
         (.prefilter.re // ""), (.prefilter.env // ""), (.prefilter.file // ""),
         (if .prefilter.policy_vocab == true then "1" else "" end),
-        ((.args // []) | join(" ")) ] | join("")' "$REGISTRY" 2>/dev/null)" || rows=""
+        ((.args // []) | join(" ")), (.runner // "exec")] | join("")' "$REGISTRY" 2>/dev/null)" || rows=""
   master_debug_phase_finish config_load
   printf '%s\n' "$rows"
   if mkdir -p "${cache%/*}" 2>/dev/null; then
@@ -1333,7 +1346,7 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
   # Unit separator (0x1f) framing: tab is IFS whitespace, so consecutive empty
   # fields would collapse and shift later columns (a hook's args would land in
   # the prefilter slot and silently skip it).
-  while IFS=$'\x1f' read -r rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs; do
+  while IFS=$'\x1f' read -r rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs rrunner; do
     [ -n "$rid" ] || continue
     if [ "$rgated" = "1" ]; then
       hq_hook_profile_allows "$rid"
@@ -1378,7 +1391,7 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     prepare_child_completion_marker
     master_debug_phase_start external_command
     # shellcheck disable=SC2086 # args are space-separated literals from the registry.
-    out="$(run_child "$rtimeout" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
+    out="$(run_child "$rtimeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
     master_debug_phase_finish external_command
     child_ended_ms="$(master_now_ms)"
     record_child_execution "$REPO_ROOT/$rscript" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$rtimeout"
@@ -1461,7 +1474,7 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
   # The single dispatcher watchdog armed at the top covers every child; the
   # previous per-child re-arm cost two setsid bash processes per hook.
   master_debug_phase_start external_command
-  out="$(run_child "$master_child_timeout" "$hook" "$child_completion_marker" "$EVENT")" || rc=$?
+  out="$(run_child "$master_child_timeout" "exec" "$hook" "$child_completion_marker" "$EVENT")" || rc=$?
   master_debug_phase_finish external_command
   child_ended_ms="$(master_now_ms)"
   record_child_execution "$hook" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$master_child_timeout"

@@ -14,11 +14,11 @@
 #   * hq --version times out                   -> unknown; stay silent and do not install.
 #   * hq is installed but NOT on that PATH     -> append its dir to env.PATH in
 #                                                 settings.local.json (auto-fix).
-#   * hq is missing entirely                   -> bounded, once-per-cooldown
-#                                                 pnpm global add with
-#                                                 minimumReleaseAge=1440 (npm
-#                                                 only if pnpm is absent),
-#                                                 then auto-fix the PATH as above.
+#   * hq is missing entirely                   -> wait briefly and re-probe;
+#                                                 then bounded, once-per-cooldown
+#                                                 restore with npm pinned to the
+#                                                 installed npm-global version,
+#                                                 or pnpm with minimumReleaseAge=1440.
 #   * cannot install / cannot write settings   -> inject a context line telling
 #                                                 the user how to install it and/or
 #                                                 add it to env.PATH themselves.
@@ -73,14 +73,15 @@ BASE_SETTINGS="$CLAUDE_DIR/settings.json"
 STAMP_DIR="$HQ_ROOT/workspace/.hq-cli-ensure"
 STAMP="$STAMP_DIR/last-attempt.stamp"
 
-# Override wins. Otherwise prefer pnpm + minimumReleaseAge so restore is not
-# blocked by hq-pnpm-min-release-age-supply-chain (npm cannot honor that gate).
+# Override wins. Otherwise preserve npm-global ownership with an exact version
+# pin; if npm does not own an install, use pnpm + minimumReleaseAge so restore
+# is not blocked by hq-pnpm-min-release-age-supply-chain.
 INSTALL_CMD="${HQ_ENSURE_CLI_INSTALL_CMD:-}"
 PNPM_RESTORE_CMD="pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440"
-NPM_RESTORE_CMD="npm install -g @indigoai-us/hq-cli@latest"
 COOLDOWN="${HQ_ENSURE_CLI_COOLDOWN:-21600}"   # 6h between install attempts
 INSTALL_TIMEOUT="${HQ_ENSURE_CLI_TIMEOUT:-120}"
 VERSION_TIMEOUT="${HQ_ENSURE_CLI_VERSION_TIMEOUT:-3}"
+REPROBE_WAIT=2
 # US-010: hooks need hq-cli >= 5.108.2 (ships US-008/US-009 mesh daemon + flush).
 MIN_VERSION="${HQ_ENSURE_CLI_MIN_VERSION:-5.108.2}"
 
@@ -106,8 +107,13 @@ settings_path_is_local() {
 version_at_least() {
   local actual="$1" required="$2" a1 a2 a3 r1 r2 r3 oldifs
   oldifs="$IFS"; IFS='.'
-  set -- $actual; a1="${1:-0}"; a2="${2:-0}"; a3="${3:-0}"
-  set -- $required; r1="${1:-0}"; r2="${2:-0}"; r3="${3:-0}"
+  # Version strings are numeric dot-separated components; word splitting is intentional.
+  # shellcheck disable=SC2086
+  set -- $actual
+  a1="${1:-0}"; a2="${2:-0}"; a3="${3:-0}"
+  # shellcheck disable=SC2086
+  set -- $required
+  r1="${1:-0}"; r2="${2:-0}"; r3="${3:-0}"
   IFS="$oldifs"
   [ "$a1" -gt "$r1" ] && return 0
   [ "$a1" -lt "$r1" ] && return 1
@@ -199,12 +205,50 @@ hq_in_path() {
   return 1
 }
 
-# npm's global bin dir (where `npm i -g` lands binaries), without assuming PATH.
-npm_global_bin() {
+# Run an argv command with a deadline and return its stdout.  This is used for
+# package-manager metadata queries so a broken manager cannot stall a prompt.
+capture_command_bounded() {
+  local secs="$1" output_file timeout_file cmd_pid watchdog_pid rc=0
+  shift
+  output_file="${TMPDIR:-/tmp}/hq-cli-command.$$.out"
+  timeout_file="${output_file}.timeout"
+  rm -f "$output_file" "$timeout_file" 2>/dev/null || true
+  "$@" >"$output_file" 2>/dev/null &
+  cmd_pid=$!
+  (
+    if sleep "$secs" 2>/dev/null; then
+      : > "$timeout_file" 2>/dev/null
+      if command -v pkill >/dev/null 2>&1; then pkill -TERM -P "$cmd_pid" 2>/dev/null || true; fi
+      kill "$cmd_pid" 2>/dev/null
+    fi
+  ) >/dev/null 2>&1 &
+  watchdog_pid=$!
+  wait "$cmd_pid" 2>/dev/null || rc=$?
+  stop_watchdog "$watchdog_pid"
+  if [ -f "$timeout_file" ]; then
+    rm -f "$output_file" "$timeout_file" 2>/dev/null || true
+    return 124
+  fi
+  if [ "$rc" -eq 0 ]; then
+    cat "$output_file" 2>/dev/null || rc=1
+  fi
+  rm -f "$output_file" "$timeout_file" 2>/dev/null || true
+  return "$rc"
+}
+
+# npm's global prefix and bin dir, without assuming PATH. `npm prefix -g` is
+# bounded because step 3 runs inside an interactive hook.
+npm_global_prefix() {
   command -v npm >/dev/null 2>&1 || return 1
   local prefix
-  prefix="$(npm config get prefix 2>/dev/null)" || return 1
+  prefix="$(capture_command_bounded "$VERSION_TIMEOUT" npm prefix -g)" || return 1
   [ -n "$prefix" ] && [ "$prefix" != "undefined" ] || return 1
+  printf '%s\n' "$prefix"
+}
+
+npm_global_bin() {
+  local prefix
+  prefix="$(npm_global_prefix)" || return 1
   if [ -d "$prefix/bin" ]; then printf '%s\n' "$prefix/bin"; else printf '%s\n' "$prefix"; fi
 }
 
@@ -213,7 +257,7 @@ npm_global_bin() {
 pnpm_global_bin() {
   local bin candidate
   if command -v pnpm >/dev/null 2>&1; then
-    bin="$(pnpm bin -g 2>/dev/null)" || bin=""
+    bin="$(capture_command_bounded "$VERSION_TIMEOUT" pnpm bin -g)" || bin=""
     if [ -n "$bin" ] && [ -d "$bin" ]; then printf '%s\n' "$bin"; return 0; fi
   fi
   if [ -n "${HOME:-}" ]; then
@@ -224,22 +268,29 @@ pnpm_global_bin() {
   return 1
 }
 
-# Locate a dir that actually contains an `hq` binary: ambient PATH first, then
-# pnpm's global bin (the usual managed install), then npm's. Prints the dir
-# (no trailing binary) or nothing.
+# Locate a dir that actually contains an `hq` binary: unrelated ambient PATH
+# entries first, then npm-global, then pnpm. A pnpm ambient candidate is held
+# until after npm-global so auto-fix cannot put pnpm ahead of npm. Prints the
+# dir (no trailing binary) or nothing.
 locate_hq_dir() {
-  local hqpath bin candidate probe_rc saw_unknown=0
+  local hqpath bin candidate probe_rc saw_unknown=0 pnpm_bin npm_bin
+  # npm-global wins over pnpm when both managers hold an hq installation.
+  # Keep unrelated ambient installations first to preserve existing behavior.
+  npm_bin="$(npm_global_bin)" || npm_bin=""
+  pnpm_bin="$(pnpm_global_bin)" || pnpm_bin=""
   hqpath="$(command -v hq 2>/dev/null)" || hqpath=""
-  if [ -n "$hqpath" ]; then
+  if [ -n "$hqpath" ] && { [ -z "$pnpm_bin" ] || [ "$hqpath" != "$pnpm_bin/hq" ]; }; then
     if hq_binary_usable "$hqpath"; then dirname "$hqpath"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
   fi
-  bin="$(pnpm_global_bin)" || bin=""
-  if [ -n "$bin" ] && [ -x "$bin/hq" ]; then
-    if hq_binary_usable "$bin/hq"; then printf '%s\n' "$bin"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
+  if [ -n "$npm_bin" ] && [ -x "$npm_bin/hq" ]; then
+    if hq_binary_usable "$npm_bin/hq"; then printf '%s\n' "$npm_bin"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
   fi
-  bin="$(npm_global_bin)" || bin=""
-  if [ -n "$bin" ] && [ -x "$bin/hq" ]; then
-    if hq_binary_usable "$bin/hq"; then printf '%s\n' "$bin"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
+  if [ -n "$pnpm_bin" ] && [ -x "$pnpm_bin/hq" ]; then
+    if hq_binary_usable "$pnpm_bin/hq"; then printf '%s\n' "$pnpm_bin"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
+  fi
+  # If the ambient binary was the pnpm copy, try it only after npm-global.
+  if [ -n "$hqpath" ] && [ -n "$pnpm_bin" ] && [ "$hqpath" = "$pnpm_bin/hq" ]; then
+    if hq_binary_usable "$hqpath"; then dirname "$hqpath"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
   fi
   candidate="${HOME:-}/.local/bin/hq"
   if [ -n "${HOME:-}" ] && [ -x "$candidate" ]; then
@@ -253,6 +304,88 @@ locate_hq_dir() {
   fi
   [ "$saw_unknown" -eq 1 ] && return 2
   return 1
+}
+
+# An installer command owns the short interval in which npm/pnpm temporarily
+# removes the old package directory and link. Use ps -eww so long command lines
+# retain the package name on platforms that otherwise truncate argv output.
+installer_process_active() {
+  local processes
+  command -v ps >/dev/null 2>&1 || return 2
+  processes="$(ps -eww -o args= 2>/dev/null)" || return 2
+  printf '%s\n' "$processes" | awk '
+    function is_manager(value) {
+      return value ~ /(^|\/)(npm|pnpm)$/ ||
+             value ~ /(^|\/)npm-cli\.js$/ ||
+             value ~ /(^|\/)pnpm\.(cjs|js)$/
+    }
+    index($0, "@indigoai-us/hq-cli") == 0 { next }
+    {
+      count = split($0, argv, /[[:space:]]+/)
+      for (i = 1; i <= count && i <= 3; i++) {
+        if (is_manager(argv[i])) {
+          operation = argv[i + 1]
+          if (operation ~ /^(i|install|add|update|up|upgrade|uninstall|un|remove|rm)$/) found = 1
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }
+  '
+}
+
+npm_install_window_active() {
+  local prefix staging node_modules_dir
+  prefix="$(npm_global_prefix)" || return 1
+  for node_modules_dir in "$prefix/lib/node_modules" "$prefix/node_modules"; do
+    for staging in "$node_modules_dir"/.hq-cli-* "$node_modules_dir/@indigoai-us/".hq-cli-*; do
+      [ -d "$staging" ] && return 0
+    done
+  done
+  return 1
+}
+
+defer_if_install_window_active() {
+  local process_status
+  installer_process_active
+  process_status=$?
+  if [ "$process_status" -eq 0 ]; then
+    emit_install_deferred "a matching npm or pnpm install command is active"
+    return 0
+  fi
+  if [ "$process_status" -eq 2 ]; then
+    emit_install_deferred "the process list could not be checked safely"
+    return 0
+  fi
+  if npm_install_window_active; then
+    emit_install_deferred "npm has a staged hq-cli package"
+    return 0
+  fi
+  return 1
+}
+
+emit_install_deferred() {
+  local reason="$1"
+  cat <<EOF
+<hq-cli-install-in-progress>
+HQ deferred the global restore because $reason. It will check again on a later prompt.
+</hq-cli-install-in-progress>
+EOF
+}
+
+npm_global_package_dir() {
+  local prefix="$1" candidate
+  for candidate in "$prefix/lib/node_modules/@indigoai-us/hq-cli" "$prefix/node_modules/@indigoai-us/hq-cli"; do
+    if [ -d "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+  done
+  return 1
+}
+
+npm_owned_cli_version() {
+  local package_json="$1/package.json" version
+  [ -f "$package_json" ] && have_jq || return 1
+  version="$(jq -r '.version // empty' "$package_json" 2>/dev/null)" || return 1
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || return 1
+  printf '%s\n' "$version"
 }
 
 # Append $1 to env.PATH in settings.local.json (never settings.json). Seeds the
@@ -402,6 +535,26 @@ if [ -n "$HQ_DIR" ]; then
 fi
 
 # --- 3. hq missing entirely -> bounded, once-per-cooldown install ---------
+if defer_if_install_window_active; then exit 0; fi
+
+# npm removes its old package and link briefly while replacing them. Give that
+# transaction one short chance to finish before treating hq as truly missing.
+sleep "$REPROBE_WAIT" 2>/dev/null || true
+HQ_DIR="$(locate_hq_dir)"
+REPROBE_LOCATE_RC=$?
+if [ "$REPROBE_LOCATE_RC" -eq 2 ]; then exit 0; fi
+if [ "$REPROBE_LOCATE_RC" -ne 0 ]; then HQ_DIR=""; fi
+if [ -n "$HQ_DIR" ]; then
+  rm -f "$STAMP" 2>/dev/null || true
+  if add_dir_to_settings_path "$HQ_DIR" "$SP"; then
+    emit_path_updated "$HQ_DIR" 0
+  else
+    emit_needs_path "$HQ_DIR"
+  fi
+  exit 0
+fi
+if defer_if_install_window_active; then exit 0; fi
+
 if [ -f "$STAMP" ]; then
   STAMP_MTIME="$(stat -c %Y "$STAMP" 2>/dev/null || stat -f %m "$STAMP" 2>/dev/null || echo 0)"
   NOW="$(date +%s 2>/dev/null || echo 0)"
@@ -428,11 +581,22 @@ trap 'rmdir "$LOCK_DIR" 2>/dev/null; exit 0' EXIT
 : > "$STAMP" 2>/dev/null || true
 
 if [ -z "$INSTALL_CMD" ]; then
-  if command -v pnpm >/dev/null 2>&1; then
-    INSTALL_CMD="$PNPM_RESTORE_CMD"
-  elif command -v npm >/dev/null 2>&1; then
-    INSTALL_CMD="$NPM_RESTORE_CMD"
+  NPM_PREFIX="$(npm_global_prefix)" || NPM_PREFIX=""
+  NPM_PACKAGE_DIR=""
+  if [ -n "$NPM_PREFIX" ]; then
+    NPM_PACKAGE_DIR="$(npm_global_package_dir "$NPM_PREFIX")" || NPM_PACKAGE_DIR=""
+  fi
+  if [ -n "$NPM_PACKAGE_DIR" ]; then
+    if NPM_OWNED_VERSION="$(npm_owned_cli_version "$NPM_PACKAGE_DIR")"; then
+      INSTALL_CMD="npm install -g @indigoai-us/hq-cli@$NPM_OWNED_VERSION"
+    else
+      printf '%s\n' 'ensure-hq-cli: npm owns hq-cli but its exact version could not be read; falling back to pnpm with minimumReleaseAge=1440.' >&2
+      INSTALL_CMD="$PNPM_RESTORE_CMD"
+    fi
   else
+    INSTALL_CMD="$PNPM_RESTORE_CMD"
+  fi
+  if ! command -v pnpm >/dev/null 2>&1 && [ "$INSTALL_CMD" = "$PNPM_RESTORE_CMD" ]; then
     emit_manual_install
     exit 0
   fi

@@ -23,10 +23,28 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: denylist-scan
     runs-on: ubuntu-latest
+    outputs:
+      macos_shell_smoke: ${{ steps.shell_smoke_macos_paths.outputs.run }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Detect changes covered by the macOS shell smoke job
+        id: shell_smoke_macos_paths
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == 'pull_request' ]]; then
+            base_sha="$PR_BASE_SHA"
+          else
+            base_sha="$PUSH_BEFORE_SHA"
+          fi
+          bash core/scripts/ci/should-run-macos-shell-smoke.sh \
+            "$base_sha" "$GITHUB_SHA" "$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
+      - name: macOS shell smoke path filter regression test
+        run: bash core/scripts/tests/shell-smoke-macos-paths.test.sh
       - name: Run denylist scan
         run: bash .leak-scan/scan.sh denylist
 
@@ -198,6 +216,8 @@ jobs:
         run: bash core/scripts/tests/skill-script-refs.test.sh
       - name: HQ feedback summary and verbatim report contract
         run: bash core/scripts/tests/hq-bug-skill.test.sh
+      - name: /team-access heal contract (bare rows, hidden grants, DEV-3405, readback)
+        run: bash core/scripts/tests/team-access-skill.test.sh
       - name: Company resolver (session bind + whole-token prompt scan)
         run: bash core/scripts/tests/resolve-company.test.sh
       - name: Session auto-bind honors device-default company boundaries
@@ -355,6 +375,8 @@ jobs:
             core/scripts/tests/agent-runtime-contracts-e2e.test.sh \
             core/scripts/lib/lanes-senior-monitor.sh \
             core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh \
+            core/scripts/tests/handoff-post-hq-root.test.sh \
+            core/scripts/tests/lib/handoff-post-test-helpers.sh \
             .claude/hooks/hook-gate.sh \
             .claude/hooks/check-claude-desktop-bridge-health.sh \
             .claude/skills/deploy/scripts/tests/guardrails-tar-failure.test.sh \
@@ -682,6 +704,14 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-smoke.sh
       - name: Handoff finalizer accepts a large file-backed changeset
         run: bash core/scripts/tests/handoff-finalize-large-changeset.test.sh
+      - name: Handoff follow-ups stay pending without dispatch proof
+        run: bash core/scripts/tests/handoff-followups-runtime.test.sh
+      - name: Handoff post never launches Claude CLI jobs
+        run: bash core/scripts/tests/handoff-post-no-claude.test.sh
+      - name: Handoff post keeps company sync and document-release scope
+        run: bash core/scripts/tests/handoff-post-company-scope.test.sh
+      - name: Handoff post ignores the caller's HQ_ROOT
+        run: bash core/scripts/tests/handoff-post-hq-root.test.sh
 
   autosave-failure-visibility-qmd-reindex:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -888,6 +918,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Manual /rename and --name titles are not clobbered
         run: bash core/scripts/tests/session-title-manual-backoff.test.sh
+      - name: Session title mode override and desktop nudge
+        run: bash core/scripts/tests/session-title-desktop-nudge.test.sh
 
   knowledge-repo-glob-shells:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1017,10 +1049,21 @@ jobs:
         run: |
           timeout 60s git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$HQ_HOOK_PERF_BASE_SHA"
           timeout 60s bash core/scripts/tests/master-hook-hot-path-process-budget.test.sh
+      - name: Master-hook per-event process budget
+        env:
+          HQ_HOOK_PERF_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          timeout 60s git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$HQ_HOOK_PERF_BASE_SHA"
+          timeout 240s bash core/scripts/tests/master-hook-event-process-budget.test.sh | tail -200
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
+      - name: Session title mode and transcript regressions
+        run: |
+          bash core/scripts/tests/session-title-manual-backoff.test.sh
+          bash core/scripts/tests/session-title-desktop-nudge.test.sh
       - name: Bare Monitor expiry skips prompt-path maintenance enrichers
         run: bash core/scripts/tests/master-hook-monitor-notification-fast-path.test.sh
       - name: Warm lane Monitor cache process budget
@@ -1039,6 +1082,10 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
         run: bash core/scripts/tests/block-core-writes-bash-fanout.test.sh
+      - name: Session title mode and transcript regressions
+        run: |
+          bash core/scripts/tests/session-title-manual-backoff.test.sh
+          bash core/scripts/tests/session-title-desktop-nudge.test.sh
       - name: block-core-writes-bash skips cold-path work and parses once
         run: bash core/scripts/tests/block-core-writes-bash-fast-path.test.sh
       - name: block-core-writes permits only the durable native personal context
@@ -1049,8 +1096,13 @@ jobs:
         run: bash core/scripts/tests/block-repo-edits-strict.test.sh
       - name: active-run guard blocks cross-session edits with the shipped registry
         run: bash core/scripts/tests/block-on-active-run.test.sh
-      - name: HQ worktree guard distinguishes canonical Windows path aliases
-        run: bash core/scripts/tests/block-hq-worktree-session.test.sh
+      - name: HQ worktree guard preserves multi-worktree denial parity
+        env:
+          HQ_HOOK_GUARD_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          timeout 60s git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$HQ_HOOK_GUARD_BASE_SHA"
+          timeout 120s bash core/scripts/tests/block-hq-worktree-session.test.sh
       - name: hq_normpath stays fork-free and byte-identical to its awk contract
         run: bash core/scripts/tests/hook-lib-normpath.test.sh
       - name: enforce-vault-write-access blocks mutations without vault write permission
@@ -1061,6 +1113,22 @@ jobs:
         run: bash core/scripts/tests/ontology-audience-grant.test.sh
       - name: run-project work-mesh notes use options the hq CLI accepts (--session-id)
         run: bash core/scripts/tests/run-project-mesh-note.test.sh
+
+  bash-guard-process-budgets:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: bash-guard-process-budgets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Measure pinned hook forks and compare every existing fixture
+        run: |
+          set -euo pipefail
+          command -v strace
+          timeout 240s bash core/scripts/tests/block-unsafe-package-install-process-budget.test.sh | tail -200
+          timeout 240s bash core/scripts/tests/block-core-writes-bash-process-budget.test.sh | tail -200
+          timeout 600s bash core/scripts/tests/block-guard-hooks-parity.test.sh | tail -200
 
   # US-005: shell portability lint + shellcheck + cross-platform smoke.
   shell-portability:
@@ -1084,6 +1152,10 @@ jobs:
           # Full-tree shellcheck is a separate burn-down (pre-existing SC noise).
           files=(
             core/scripts/hook-lib.sh
+            core/scripts/tests/hook-process-budget-common.sh
+            core/scripts/tests/block-unsafe-package-install-process-budget.test.sh
+            core/scripts/tests/block-core-writes-bash-process-budget.test.sh
+            core/scripts/tests/block-guard-hooks-parity.test.sh
             core/scripts/tests/hook-timeout-sentry.test.sh
             core/scripts/tests/check-hq-update-bounded-network.test.sh
             core/scripts/tests/hook-lib-strip-exclude-tokens.test.sh
@@ -1092,6 +1164,7 @@ jobs:
             core/scripts/tests/block-policy-writes-bash.test.sh
             core/scripts/tests/block-agent-secrets-reveal.test.sh
             .claude/hooks/block-agent-secrets-reveal.sh
+            .claude/hooks/block-unsafe-package-install.sh
             .claude/hooks/block-core-writes-bash.sh
             .claude/hooks/block-policy-writes-bash.sh
             .claude/hooks/check-hq-update.sh
@@ -1102,6 +1175,9 @@ jobs:
             core/scripts/lint-shell-portability.sh
             core/scripts/rebuild-threads-index.sh
             core/scripts/tests/rebuild-threads-index.test.sh
+            core/scripts/handoff-post.sh
+            core/scripts/tests/handoff-post-no-claude.test.sh
+            core/scripts/tests/handoff-post-company-scope.test.sh
             core/scripts/setup.sh
             core/scripts/repo-run-registry.sh
             core/scripts/rebuild-social-drafts-index.sh
@@ -1162,8 +1238,11 @@ jobs:
         run: node core/scripts/validate-agent-runtime-contracts.mjs
 
   shell-smoke-macos:
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: shell-smoke-macos
+    needs: [denylist-scan]
+    if: >-
+      ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+          && needs['denylist-scan'].outputs.macos_shell_smoke == 'true' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

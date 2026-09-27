@@ -129,6 +129,15 @@ contains "$out" 'hq · plan' || fail "T2: expected new command title"
 [ -f "$(state_file S1).manual" ] && fail "T2: our own prior title must not mark manual"
 ok "T2 own emitted title echoed via session_title is not manual"
 
+# ── T2b: only the first non-blank line may identify a slash command ─────────
+reset_state
+out="$(run_hook "$HOOK" "$(json_prompt S2B 'ordinary request\n/plan later')")"
+contains "$out" 'hq · chat' || fail "T2b: later slash command must not replace the first line"
+stored_command="unset"
+IFS= read -r stored_command < "$(state_file S2B)" || true
+[ -z "$stored_command" ] || fail "T2b: expected no command persisted, got '$stored_command'"
+ok "T2b a later slash command does not override ordinary first-line text"
+
 # ── T3: launcher --name backs off on the first SessionStart ─────────────────
 reset_state
 out="$(run_hook "$HOOK" "$(json_start S2 'My Named Session')")"
@@ -152,8 +161,27 @@ out="$(run_hook "$HOOK" "$(json_start S3 '' startup "$TR")")"
 emitted "$out" || fail "T5: setup — first turn should emit"
 custom_title_line 'hq · chat' S3 >> "$TR"            # HQ's own emission is logged
 custom_title_line 'Desktop Auto Title' S3 >> "$TR"   # desktop auto-titler fires
-out="$(run_hook "$HOOK" "$(json_prompt S3 'still going' '' "$TR")")"
+NATIVE_TOOLS="$TMP/native-transcript-tools"; NATIVE_LOG="$TMP/native-transcript-scan.log"
+mkdir -p "$NATIVE_TOOLS"
+GREP_BIN="$(type -P grep)"; TAIL_BIN="$(type -P tail)"
+cat > "$NATIVE_TOOLS/grep" <<'SH'
+#!/usr/bin/env bash
+printf 'grep\n' >> "$SESSION_TITLE_NATIVE_SCAN_LOG"
+exec "$SESSION_TITLE_NATIVE_SCAN_GREP" "$@"
+SH
+cat > "$NATIVE_TOOLS/tail" <<'SH'
+#!/usr/bin/env bash
+printf 'tail\n' >> "$SESSION_TITLE_NATIVE_SCAN_LOG"
+exec "$SESSION_TITLE_NATIVE_SCAN_TAIL" "$@"
+SH
+chmod +x "$NATIVE_TOOLS/grep" "$NATIVE_TOOLS/tail"
+out="$(PATH="$NATIVE_TOOLS:$PATH" SESSION_TITLE_NATIVE_SCAN_LOG="$NATIVE_LOG" \
+  SESSION_TITLE_NATIVE_SCAN_GREP="$GREP_BIN" SESSION_TITLE_NATIVE_SCAN_TAIL="$TAIL_BIN" \
+  run_hook "$HOOK" "$(json_prompt S3 'still going' '' "$TR")")"
 emitted "$out" || fail "T5: first foreign transcript title must be ignored and retaken"
+[ -f "$NATIVE_LOG" ] || fail "T5: transcript title lookup did not use the native scan"
+grep -qx 'grep' "$NATIVE_LOG" && grep -qx 'tail' "$NATIVE_LOG" ||
+  fail "T5: newest transcript title must use native grep/tail lookup"
 [ -f "$(state_file S3).manual" ] && fail "T5: first foreign title must not mark manual"
 custom_title_line 'My Manual Rename' S3 >> "$TR"     # then the user really renames
 out="$(run_hook "$HOOK" "$(json_prompt S3 '/plan keep going' '' "$TR")")"
