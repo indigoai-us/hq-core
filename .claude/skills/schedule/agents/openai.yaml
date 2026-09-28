@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Schedule
+  short_description: >-
+    Schedule recurring Claude/Codex agent jobs on the user's Outpost

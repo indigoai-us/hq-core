@@ -167,7 +167,11 @@ read_acl() {
   local result
   result="$(hq files acl "$1" --company "$COMPANY" --json)" || return 1
   printf '%s' "$result" | jq -e --arg prefix "$1" --arg company "$EXPECTED_COMPANY" '
-    .schemaVersion == 1 and .prefix == $prefix and
+    .schemaVersion == 1 and
+    (
+      .prefix == $prefix or
+      (($prefix | endswith("/*")) and .prefix == ($prefix | sub("\\*$"; "")))
+    ) and
     (.companyUid | type == "string") and ($company == "" or .companyUid == $company) and
     (.direct | type == "array") and (.exists | type == "boolean")
   ' >/dev/null || { echo "hq-delegate-grant: invalid structured ACL response for $1" >&2; return 1; }

@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Ship
+  short_description: >-
+    Meta pipeline: review → land → deploy → smoke → heal → monitor.

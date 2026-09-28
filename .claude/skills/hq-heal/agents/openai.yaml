@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Hq Heal
+  short_description: >-
+    Triage and repair HQ session errors such as hook crashes, sync

@@ -1,0 +1,578 @@
+#!/bin/bash
+# block-core-writes-bash.sh — PreToolUse hook for Bash.
+#
+# Companion to block-core-writes.sh. Scans Bash command text and rejects
+# high-confidence direct writes into core/ or .claude/ (except
+# .claude/settings.local.json and .claude/personal-context.md).
+#
+# Bypass: HQ_BYPASS_CORE_PROTECT="1" under "env" in .claude/settings.local.json.
+# This is a real escape hatch, but enabling it disables protection for EVERY
+# later write — so it must NEVER be set autonomously by an agent. The block
+# message below instructs the agent to ask the user for explicit approval first.
+# Inline env-var prefixes are NOT accepted.
+#
+# This is best-effort — exhaustive shell-command analysis is intractable.
+# Exit codes: 0 = allow, 2 = block.
+
+set -uo pipefail
+
+INPUT=$(cat)
+CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
+[[ -z "$CMD" ]] && exit 0
+
+# This lexical candidate check is deliberately a superset of every deny path
+# below. Each deny path needs one protected directory name (or AGENTS.md) in
+# its target token: fixed HQ-root prefixes, CLAUDE_PROJECT_DIR/HQ_ROOT/REPO_ROOT
+# forms, colon lists, and assignment-carried variables all preserve that name.
+# Remove shell quote and escape syntax first because hq_shell_simple_commands
+# does the same while building argv. This also covers a path split across
+# adjacent quoted fragments. The registry prefilter has these names plus broad
+# write verbs and is therefore broader than the blocking target predicate.
+has_protected_path_candidate() {
+  local candidate="$1"
+  candidate="${candidate//\'/}"
+  candidate="${candidate//\"/}"
+  candidate="${candidate//\\/}"
+  case "$candidate" in
+    *core/*|*.claude/*|*.agents/*|*.codex/*|*.obsidian/*|*companies/_template*|*AGENTS.md*) return 0 ;;
+  esac
+  return 1
+}
+
+has_protected_path_candidate "$CMD" || exit 0
+
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+PROJECT_DIR="$(hq_normpath "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
+
+SETTINGS_LOCAL="$PROJECT_DIR/.claude/settings.local.json"
+
+# Bypass: must be declared in .claude/settings.local.json env section.
+# NOTE: agents must ask the user before enabling this (see block message).
+is_bypass_authorized() {
+  [[ -f "$SETTINGS_LOCAL" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  local val
+  val=$(jq -r '.env.HQ_BYPASS_CORE_PROTECT // empty' "$SETTINGS_LOCAL" 2>/dev/null) || return 1
+  [[ "$val" == "1" || "$val" == "true" ]] && return 0
+  return 1
+}
+
+if is_bypass_authorized; then
+  exit 0
+fi
+
+# Build absolute path prefixes.
+CORE_ABS="$PROJECT_DIR/core/"
+CLAUDE_ABS="$PROJECT_DIR/.claude/"
+AGENTS_ABS="$PROJECT_DIR/.agents/"
+CODEX_ABS="$PROJECT_DIR/.codex/"
+OBSIDIAN_ABS="$PROJECT_DIR/.obsidian/"
+TEMPLATE_ABS="$PROJECT_DIR/companies/_template/"
+
+# Per-dir path alternation patterns, split by how unambiguously each form
+# denotes the LIVE HQ root:
+#
+#   *_ABS_ALTS  -- absolute prefixes and the ${CLAUDE_PROJECT_DIR}/${HQ_ROOT}
+#                  env forms. These ALWAYS point at the live HQ scaffold, so
+#                  they are enforced unconditionally.
+#   *_REL_ALTS  -- bare-relative ("(\./)?.claude/") and ${REPO_ROOT}/ forms.
+#                  From inside a checked-out repo under repos/ these denote the
+#                  REPO's own scaffold (legitimate dev work -- e.g. editing
+#                  hq-core-staging/.claude/hooks/*), not the live root. They are
+#                  enforced only when the command is NOT operating inside a
+#                  repos/ checkout (see in_repo_context). The command-text
+#                  scanner cannot see the shell cwd, so without this split a
+#                  relative ".claude/" typed from a repos/ checkout
+#                  false-positives as a live-root write.
+#
+# companies/_template/ is a locked path per core.yaml; it follows the same
+# ABS/REL split so the Bash guard matches the Edit/Write guard while still
+# allowing legitimate edits to the prototype from inside a repos/ checkout.
+CORE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/core/|\$\{?HQ_ROOT\}?/core/)'
+CLAUDE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.claude/|\$\{?HQ_ROOT\}?/\.claude/)'
+AGENTS_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.agents/|\$\{?HQ_ROOT\}?/\.agents/)'
+CODEX_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.codex/|\$\{?HQ_ROOT\}?/\.codex/)'
+OBSIDIAN_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/\.obsidian/|\$\{?HQ_ROOT\}?/\.obsidian/)'
+TEMPLATE_ABS_ALTS='(\$\{?CLAUDE_PROJECT_DIR\}?/companies/_template/|\$\{?HQ_ROOT\}?/companies/_template/)'
+
+CORE_REL_ALTS='((\./)?core/|\$\{?REPO_ROOT\}?/core/)'
+CLAUDE_REL_ALTS='((\./)?\.claude/|\$\{?REPO_ROOT\}?/\.claude/)'
+AGENTS_REL_ALTS='((\./)?\.agents/|\$\{?REPO_ROOT\}?/\.agents/)'
+CODEX_REL_ALTS='((\./)?\.codex/|\$\{?REPO_ROOT\}?/\.codex/)'
+OBSIDIAN_REL_ALTS='((\./)?\.obsidian/|\$\{?REPO_ROOT\}?/\.obsidian/)'
+TEMPLATE_REL_ALTS='((\./)?companies/_template/|\$\{?REPO_ROOT\}?/companies/_template/)'
+
+ABS_PATH_ALTS="($CORE_ABS_ALTS|$CLAUDE_ABS_ALTS|$AGENTS_ABS_ALTS|$CODEX_ABS_ALTS|$OBSIDIAN_ABS_ALTS|$TEMPLATE_ABS_ALTS)"
+REL_PATH_ALTS="($CORE_REL_ALTS|$CLAUDE_REL_ALTS|$AGENTS_REL_ALTS|$CODEX_REL_ALTS|$OBSIDIAN_REL_ALTS|$TEMPLATE_REL_ALTS)"
+ALL_PATH_ALTS="($ABS_PATH_ALTS|$REL_PATH_ALTS)"
+# Boundary set includes = and : so VAR=<path> assignments and colon-joined
+# PATH-style lists (...:/abs/core/...) are caught, not just whitespace-delimited args.
+BND='(^|[[:space:]]|[;|&(=:]|["'\''])'
+AGENTS_MD_TOKEN_RE='(^|[[:space:]]|[;|&(=:]|["'\''])AGENTS\.md'
+
+# True when the command changes directory into a checked-out repo tree -- either
+# a source checkout under repos/ or a git worktree under workspace/worktrees/
+# (cd/pushd whose target path contains a repos/ or workspace/worktrees/ segment).
+# A worktree under workspace/worktrees/<repo>/<name>/ is a checkout of <repo>, so
+# its scaffold tokens (.claude/, core/, ...) are the repo's own tree, NOT the
+# live HQ root -- same rationale as repos/. ONLY cd/pushd qualify: they move the
+# shell cwd, so subsequent relative scaffold tokens refer to the checkout's tree.
+# `git -C <path>` does NOT change the cwd (and git subcommands never match the
+# shell write-op scanner anyway), so it is deliberately excluded to avoid
+# leaking the exemption to unrelated relative tokens in the same command. The
+# "([^...]*/)?" requires any chars before the segment to end at a slash, so
+# "/tmp/myrepos/" and "/tmp/myworkspace/worktrees/" do NOT match.
+text_has_regex_line() {
+  local text="$1" regex="$2" line
+  while IFS= read -r line; do
+    [[ "$line" =~ $regex ]] && return 0
+  done <<< "$text"
+  return 1
+}
+
+# Dynamic absolute roots are matched as literal shell patterns rather than
+# interpolated into Bash's ERE engine. The latter differs between GNU libc and
+# macOS's system Bash/libc when roots contain regex metacharacters.
+absolute_root_path_matches() {
+  local text="$1" normalized_text="$1" path remaining before before_length last
+  # Absolute paths may contain repeated separators (notably when TMPDIR ends
+  # with '/'). Project roots are normalized above, so normalize the command text
+  # for comparison as well; repeated separators are equivalent in filesystem
+  # paths and must not bypass the protected-root check.
+  while :; do
+    case "$normalized_text" in
+      *//* ) normalized_text="${normalized_text//\/\///}" ;;
+      *) break ;;
+    esac
+  done
+  for path in "$CORE_ABS" "$CLAUDE_ABS" "$AGENTS_ABS" "$CODEX_ABS" "$OBSIDIAN_ABS" "$TEMPLATE_ABS"; do
+    remaining="$normalized_text"
+    while :; do
+      case "$remaining" in
+        *"$path"*) ;;
+        *) break ;;
+      esac
+      before="${remaining%%"$path"*}"
+      remaining="${remaining#*"$path"}"
+      if [ -z "$before" ]; then
+        return 0
+      fi
+      before_length="${#before}"
+      last="${before:$((before_length - 1)):1}"
+      case "$last" in
+        [[:space:]]|';'|'|'|'&'|'('| '='|':'|'"'|"'") return 0 ;;
+      esac
+    done
+  done
+  return 1
+}
+
+in_repo_context() {
+  local regex='(^|[[:space:]])(cd|pushd)[[:space:]]+["'\'']?([^;&|[:space:]"'\'']*/)?(repos/|workspace/worktrees/)'
+  text_has_regex_line "$1" "$regex"
+}
+
+strip_token_quotes() {
+  local tok="$1"
+  case "$tok" in
+    \"*\") tok="${tok#\"}"; tok="${tok%\"}" ;;
+    \'*\') tok="${tok#\'}"; tok="${tok%\'}" ;;
+  esac
+  STRIP_TOKEN_RESULT="$tok"
+}
+
+SHELL_COMMAND_RECORDS=()
+
+parse_shell_commands_once() {
+  local parsed shell_record
+  parsed="$(hq_shell_simple_commands "$1")"
+  SHELL_COMMAND_RECORDS=()
+  while IFS= read -r shell_record; do
+    SHELL_COMMAND_RECORDS+=("$shell_record")
+  done <<< "$parsed"
+}
+
+WRITE_TARGET_PROTECTED_CWD="no"
+WRITE_TARGET_PROTECTED_VARS=""
+
+raw_token_matches_re() {
+  local token="$1" token_re="$2"
+  [[ " $token" =~ $token_re ]] && return 0
+  absolute_root_path_matches "$token"
+}
+
+target_matches_re() {
+  local token="$1" token_re="$2" var
+  if raw_token_matches_re "$token" "$token_re"; then
+    return 0
+  fi
+  for var in $WRITE_TARGET_PROTECTED_VARS; do
+    case "$token" in
+      "\$$var"|"\$$var/"*|"\${$var}"|"\${$var}/"*) return 0 ;;
+    esac
+  done
+  if [[ "$WRITE_TARGET_PROTECTED_CWD" = "yes" ]]; then
+    case "$token" in
+      /*) ;;
+      \$*) ;;
+      *) return 0 ;;
+    esac
+  fi
+  return 1
+}
+
+segment_fallback_matches() {
+  local segment="$1" token_re="$2"
+  text_has_regex_line "$segment" "$token_re" && return 0
+  absolute_root_path_matches "$segment"
+}
+
+record_segment_context() {
+  local segment="$1" token_re="$2"
+  local words=() clean=() i tok key val next
+
+  read -r -a words <<< "$segment"
+  for ((i=0; i<${#words[@]}; i++)); do
+    strip_token_quotes "${words[$i]}"
+    clean[i]="$STRIP_TOKEN_RESULT"
+  done
+
+  for ((i=0; i<${#clean[@]}; i++)); do
+    tok="${clean[$i]}"
+    case "$tok" in
+      [A-Za-z_]*=*)
+        key="${tok%%=*}"
+        val="${tok#*=}"
+        if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && raw_token_matches_re "$val" "$token_re"; then
+          case " $WRITE_TARGET_PROTECTED_VARS " in
+            *" $key "*) ;;
+            *) WRITE_TARGET_PROTECTED_VARS="$WRITE_TARGET_PROTECTED_VARS $key" ;;
+          esac
+        fi
+        ;;
+      cd|pushd)
+        next="${clean[$((i+1))]:-}"
+        if [[ -n "$next" ]] && raw_token_matches_re "$next" "$token_re"; then
+          WRITE_TARGET_PROTECTED_CWD="yes"
+        elif [[ "$tok" = "cd" && -n "$next" ]]; then
+          WRITE_TARGET_PROTECTED_CWD="no"
+        fi
+        ;;
+    esac
+  done
+}
+
+write_targets_match() {
+  local segment="$1" token_re="$2"
+  local words=() clean=() targets=() positionals=()
+  local op="" op_i=-1 i j tok next positional_count has_inplace has_ef
+  local target_dir="" target_count=0
+
+  # Whitespace tokenization is deliberate: this is a best-effort guard and
+  # matches the documented parser contract for the hook.
+  read -r -a words <<< "$segment"
+  for ((i=0; i<${#words[@]}; i++)); do
+    strip_token_quotes "${words[$i]}"
+    clean[i]="$STRIP_TOKEN_RESULT"
+  done
+
+  for ((i=0; i<${#clean[@]}; i++)); do
+    case "${clean[$i]}" in
+      rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|sed|awk|ln)
+        op="${clean[$i]}"
+        op_i=$i
+        break
+        ;;
+    esac
+  done
+
+  [[ "$op_i" -ge 0 ]] || return 1
+
+  case "$op" in
+    rm|rmdir|touch|mkdir|tee)
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        [[ -z "$tok" || "$tok" == -* ]] && continue
+        targets[${#targets[@]}]="$tok"
+      done
+      ;;
+
+    cp|rsync|mv)
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        case "$tok" in
+          -t)
+            i=$((i+1))
+            if [[ "$i" -lt "${#clean[@]}" ]]; then
+              target_dir="${clean[$i]}"
+            else
+              return 2
+            fi
+            ;;
+          --target-directory=*)
+            target_dir="${tok#--target-directory=}"
+            ;;
+          --target-directory)
+            i=$((i+1))
+            if [[ "$i" -lt "${#clean[@]}" ]]; then
+              target_dir="${clean[$i]}"
+            else
+              return 2
+            fi
+            ;;
+          -*)
+            ;;
+          *)
+            positionals[${#positionals[@]}]="$tok"
+            ;;
+        esac
+      done
+      if [[ -n "$target_dir" ]]; then
+        targets[${#targets[@]}]="$target_dir"
+      elif [[ "$op" = "mv" ]]; then
+        for ((i=0; i<${#positionals[@]}; i++)); do
+          targets[${#targets[@]}]="${positionals[$i]}"
+        done
+      elif [[ "${#positionals[@]}" -gt 0 ]]; then
+        targets[${#targets[@]}]="${positionals[$((${#positionals[@]}-1))]}"
+      else
+        return 2
+      fi
+      ;;
+
+    ln)
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        [[ -z "$tok" || "$tok" == -* ]] && continue
+        positionals[${#positionals[@]}]="$tok"
+      done
+      if [[ "${#positionals[@]}" -gt 0 ]]; then
+        targets[${#targets[@]}]="${positionals[$((${#positionals[@]}-1))]}"
+      else
+        return 2
+      fi
+      ;;
+
+    chmod|chown|chgrp)
+      positional_count=0
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        [[ -z "$tok" || "$tok" == -* ]] && continue
+        positional_count=$((positional_count+1))
+        [[ "$positional_count" -eq 1 ]] && continue
+        targets[${#targets[@]}]="$tok"
+      done
+      ;;
+
+    dd)
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        case "$tok" in
+          of=*) targets[${#targets[@]}]="${tok#of=}" ;;
+        esac
+      done
+      ;;
+
+    sed)
+      has_inplace="no"
+      has_ef="no"
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        case "$tok" in
+          -i|--in-place|-i*) has_inplace="yes" ;;
+          -e|-f) has_ef="yes"; i=$((i+1)) ;;
+          -e*|-f*) has_ef="yes" ;;
+          --expression|--file) has_ef="yes"; i=$((i+1)) ;;
+          --expression=*|--file=*) has_ef="yes" ;;
+          --*) ;;
+          -*) ;;
+          *) positionals[${#positionals[@]}]="$tok" ;;
+        esac
+      done
+      [[ "$has_inplace" = "yes" ]] || return 1
+      j=0
+      if [[ "$has_ef" = "no" ]]; then
+        j=1
+      fi
+      for ((i=j; i<${#positionals[@]}; i++)); do
+        targets[${#targets[@]}]="${positionals[$i]}"
+      done
+      ;;
+
+    awk)
+      has_inplace="no"
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        next="${clean[$((i+1))]:-}"
+        if [[ "$tok" = "-i" && "$next" = "inplace" ]]; then
+          has_inplace="yes"
+          i=$((i+1))
+          continue
+        fi
+        [[ -z "$tok" || "$tok" == -* ]] && continue
+        positionals[${#positionals[@]}]="$tok"
+      done
+      [[ "$has_inplace" = "yes" ]] || return 1
+      for ((i=1; i<${#positionals[@]}; i++)); do
+        targets[${#targets[@]}]="${positionals[$i]}"
+      done
+      ;;
+  esac
+
+  target_count="${#targets[@]}"
+  if [[ "$target_count" -eq 0 ]]; then
+    return 2
+  fi
+  for ((i=0; i<target_count; i++)); do
+    if target_matches_re "${targets[$i]}" "$token_re"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+write_op_targets_protected() {
+  local token_re="$1"
+  local shell_record segment shell_exe rc
+  WRITE_TARGET_PROTECTED_CWD="no"
+  WRITE_TARGET_PROTECTED_VARS=""
+  for shell_record in "${SHELL_COMMAND_RECORDS[@]}"; do
+    [ -n "$shell_record" ] || continue
+    segment="${shell_record//$'\037'/ }"
+    record_segment_context "$segment" "$token_re"
+    shell_exe="$(hq_shell_command_executable "$shell_record" || true)"
+    case "$shell_exe" in
+      rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|sed|awk|ln) ;;
+      *) continue ;;
+    esac
+    [[ -z "$segment" ]] && continue
+    write_targets_match "$segment" "$token_re"
+    rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+      return 0
+    fi
+    if [[ "$rc" -eq 2 ]] && segment_fallback_matches "$segment" "$token_re"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+redirect_targets_protected() {
+  local token_re="$1" shell_record segment token i
+  local -a argv
+  WRITE_TARGET_PROTECTED_CWD="no"
+  WRITE_TARGET_PROTECTED_VARS=""
+  for shell_record in "${SHELL_COMMAND_RECORDS[@]}"; do
+    [ -n "$shell_record" ] || continue
+    segment="${shell_record//$'\037'/ }"
+    record_segment_context "$segment" "$token_re"
+    IFS=$'\037' read -r -a argv <<< "$shell_record"
+    for ((i=0; i<${#argv[@]}; i++)); do
+      case "${argv[$i]}" in
+        '>'|'>>')
+          token="${argv[$((i+1))]:-}"
+          [ -n "$token" ] && target_matches_re "$token" "$token_re" && return 0
+          ;;
+      esac
+    done
+  done
+  return 1
+}
+
+in_external_cwd_context() {
+  local shell_record exe arg resolved
+  for shell_record in "${SHELL_COMMAND_RECORDS[@]}"; do
+    [ -n "$shell_record" ] || continue
+    exe="$(hq_shell_command_executable "$shell_record" || true)"
+    case "$exe" in cd|pushd) ;; *) continue ;; esac
+    shell_record="${shell_record//$'\037'/ }"
+    read -r _ arg _ <<< "$shell_record"
+    [ -n "${arg:-}" ] || return 1
+    case "$arg" in
+      /*) resolved="$(hq_normpath "$arg")" ;;
+      *) resolved="$(hq_normpath "$PROJECT_DIR/$arg")" ;;
+    esac
+    case "$resolved" in "$PROJECT_DIR"|"$PROJECT_DIR"/*) return 1 ;; *) return 0 ;; esac
+  done
+  return 1
+}
+
+writes_to_protected() {
+  local cmd="$1"
+  # Strip core.yaml exclude paths — machine-local artifacts are writable.
+  local stripped core_yaml="$PROJECT_DIR/core/core.yaml"
+  stripped="$(hq_bash_strip_core_yaml_exclude_tokens "$cmd" "$PROJECT_DIR" "$core_yaml")"
+  # Fixed exceptions — writable even when yq/core.yaml parsing is unavailable.
+  # Strip them with the same in-process token scanner rather than two sed forks.
+  stripped="$(hq_strip_tokens_containing_literals "$stripped" settings.local.json personal-context.md)"
+  # A failed/empty strip must not make every protected-path check run against
+  # nothing and allow the write. Keep the original command.
+  [ -n "$stripped" ] || stripped="$cmd"
+
+  # Absolute/live-root forms are always enforced; relative forms only outside a
+  # repos/ checkout.
+  local token_re repo_ctx="no"
+  parse_shell_commands_once "$stripped"
+  if in_repo_context "$cmd" || in_external_cwd_context; then
+    repo_ctx="yes"
+    token_re="$BND$ABS_PATH_ALTS"
+  else
+    token_re="$BND$ALL_PATH_ALTS"
+  fi
+
+  # Redirect (>) or append (>>) into any protected dir.
+  if redirect_targets_protected "$token_re"; then
+    return 0
+  fi
+  # Write-op tool + protected write target token.
+  if write_op_targets_protected "$token_re"; then
+    return 0
+  fi
+  # AGENTS.md (single file). In a repos/ checkout the bare AGENTS.md token is the
+  # repo's own file, so skip it there -- same rationale as the relative alts.
+  if [ "$repo_ctx" = "no" ]; then
+    local agents_redirect_re='(^|[[:space:]])>{1,2}[[:space:]]*["'\'']?AGENTS\.md'
+    if text_has_regex_line "$cmd" "$agents_redirect_re"; then
+      return 0
+    fi
+    # Keep the secondary AGENTS scan on the original command text. Historically
+    # this scan also catches absolute protected-root writes after an exclude
+    # token was stripped from the main scans; the differential contract keeps
+    # that decision stable while the redirect/write/cd scans share one parse.
+    parse_shell_commands_once "$cmd"
+    if write_op_targets_protected "$AGENTS_MD_TOKEN_RE"; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+if writes_to_protected "$CMD"; then
+  cat >&2 <<EOF
+BLOCKED: Bash command appears to write into protected scaffold paths.
+  Command: $CMD
+
+Protected: core/, .claude/, .agents/, .codex/, .obsidian/, companies/_template/, AGENTS.md
+Exceptions: .claude/settings.local.json and .claude/personal-context.md are
+always writable. Put durable personal voice and preferences in
+.claude/personal-context.md.
+
+Preferred fix: author the content under personal/. The personal overlay
+(policies/knowledge/workers/settings) is read directly from personal/ — there
+is no mirror into core/ — so no bypass is needed.
+
+A bypass exists, but DO NOT enable it on your own. Setting
+"HQ_BYPASS_CORE_PROTECT": "1" under "env" in .claude/settings.local.json turns
+OFF this protection for EVERY later write in the session, so it requires the
+user's explicit approval. Ask the user to confirm first; only with their
+go-ahead set the flag (and offer to turn it back off when done). Inline
+env-var prefixes are not accepted.
+
+If this block is wrong or surprising, report it with /hq-bug.
+EOF
+  exit 2
+fi
+
+exit 0

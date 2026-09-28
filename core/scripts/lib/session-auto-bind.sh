@@ -23,15 +23,98 @@ session_auto_bind_meta_slug() {
   ' "$meta" 2>/dev/null || true
 }
 
+session_auto_bind_has_exact_company_dir() {
+  local root="${1:-}" slug="${2:-}" company_dir
+  [ -n "$root" ] && [ -n "$slug" ] || return 1
+  # Compare against directory entries instead of testing the requested path:
+  # on case-insensitive filesystems, -d companies/acme can resolve companies/Acme.
+  # Company directories are not supported as symlinks (session-authz rejects them).
+  for company_dir in "$root"/companies/*; do
+    [ -d "$company_dir" ] || continue
+    [ -L "$company_dir" ] && continue
+    [ "${company_dir##*/}" = "$slug" ] && return 0
+  done
+  return 1
+}
+
 session_auto_bind_is_known_slug() {
   local root="${1:-}" slug="${2:-}"
   [ -n "$root" ] && [ -n "$slug" ] || return 1
   case "$slug" in
-    ''|*[!a-z0-9_-]*) return 1 ;;
+    ''|*[!a-zA-Z0-9_-]*) return 1 ;;
   esac
   [ "$slug" = "personal" ] && return 0
-  [ -d "$root/companies/$slug" ] && return 0
+  session_auto_bind_has_exact_company_dir "$root" "$slug"
+}
+
+# Reject a non-canonical spelling when it case-folds to a real company entry.
+# Manual session binding uses this to preserve unknown-slug behavior without
+# accepting a case alias on case-insensitive filesystems.
+session_auto_bind_has_case_alias() {
+  local root="${1:-}" slug="${2:-}" company_dir company_slug slug_fold company_fold
+  [ -n "$root" ] && [ -n "$slug" ] || return 1
+
+  # SessionStart most often sees the exact bound name. Prove that with shell
+  # builtins before paying for any case-fold subprocesses.
+  for company_dir in "$root"/companies/*; do
+    [ -d "$company_dir" ] || continue
+    company_slug="${company_dir##*/}"
+    [ "$company_slug" = "$slug" ] && [ ! -L "$company_dir" ] && return 1
+  done
+
+  slug_fold="$(printf '%s' "$slug" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  for company_dir in "$root"/companies/*; do
+    [ -d "$company_dir" ] || continue
+    company_slug="${company_dir##*/}"
+    [ "$company_slug" = "$slug" ] && continue
+    company_fold="$(printf '%s' "$company_slug" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    [ "$company_fold" = "$slug_fold" ] && return 0
+  done
   return 1
+}
+
+session_auto_bind_write_binding_meta() {
+  local meta="${1:-}" slug="${2:-}" source="${3:-}" meta_dir tmp
+  [ -n "$meta" ] && [ -n "$slug" ] && [ -n "$source" ] || return 1
+  meta_dir="$(dirname "$meta")"
+  tmp="$(mktemp "$meta_dir/.meta.XXXXXX")" || return 1
+  awk -v slug="$slug" -v source="$source" '
+    BEGIN { slug_found = 0; source_found = 0 }
+    /^[[:space:]]*company_slug:/ { print "company_slug: " slug; slug_found = 1; next }
+    /^[[:space:]]*company_source:/ { print "company_source: " source; source_found = 1; next }
+    { print }
+    END {
+      if (!slug_found) print "company_slug: " slug
+      if (!source_found) print "company_source: " source
+    }
+  ' "$meta" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$meta"
+}
+
+# Remove only stale aliases. Other unrecognized or opaque identifiers retain
+# their existing behavior and are not rewritten by this cleanup.
+session_auto_bind_clear_case_alias() {
+  local root="${1:-}" sid="${2:-}" meta meta_slug scope_slug tmp meta_dir cap
+  [ -n "$root" ] && [ -n "$sid" ] || return 1
+  meta="$root/workspace/sessions/$sid/meta.yaml"
+  meta_slug="$(session_auto_bind_meta_slug "$root" "$sid")"
+  if session_auto_bind_has_case_alias "$root" "$meta_slug"; then
+    meta_dir="$(dirname "$meta")"
+    tmp="$(mktemp "$meta_dir/.meta.XXXXXX")" || return 1
+    awk '
+      /^[[:space:]]*company_slug:/ { next }
+      /^[[:space:]]*company_source:/ { next }
+      { print }
+    ' "$meta" > "$tmp" || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$meta" || return 1
+  fi
+  if command -v session_scope_read >/dev/null 2>&1; then
+    scope_slug="$(session_scope_read "$root" "$sid" 2>/dev/null || true)"
+    if session_auto_bind_has_case_alias "$root" "$scope_slug"; then
+      cap="$(session_scope_capability_path "$root" "$sid" 2>/dev/null || true)"
+      [ -n "$cap" ] && rm -f "$cap"
+    fi
+  fi
 }
 
 # A human workstation may have ordinary hq CLI state. These markers identify
@@ -176,10 +259,20 @@ session_auto_bind_resolve() {
 
 session_auto_bind_apply() {
   local root="${1:-}" sid="${2:-}" parent="${3:-}" state_existed_before_preflight="${4:-}" resolved="" slug="" source="" source_tail="" repair="false"
+  local stale_alias=false existing_scope_slug="" existing_meta_slug=""
   [ -n "$root" ] && [ -n "$sid" ] || return 0
   case "$sid" in
     .|..|*/*|*[!A-Za-z0-9._-]*) return 0 ;;
   esac
+
+  if command -v session_scope_read >/dev/null 2>&1; then
+    existing_scope_slug="$(session_scope_read "$root" "$sid" 2>/dev/null || true)"
+  fi
+  existing_meta_slug="$(session_auto_bind_meta_slug "$root" "$sid")"
+  if session_auto_bind_has_case_alias "$root" "$existing_scope_slug" || \
+     session_auto_bind_has_case_alias "$root" "$existing_meta_slug"; then
+    stale_alias=true
+  fi
 
   resolved="$(session_auto_bind_resolve_source "$root" "$sid" "$parent")"
   slug="${resolved%%$'\t'*}"
@@ -187,8 +280,10 @@ session_auto_bind_apply() {
   source="${source_tail%%$'\t'*}"
   repair="${source_tail#*$'\t'}"
   [ "$repair" = "$source_tail" ] && repair=false
-  [ "$slug" = "$resolved" ] && return 0
-  [ -n "$slug" ] || return 0
+  if [ "$slug" = "$resolved" ] || [ -z "$slug" ]; then
+    [ "$stale_alias" = "true" ] && session_auto_bind_clear_case_alias "$root" "$sid" || true
+    return 0
+  fi
 
   local meta_dir meta
   meta_dir="$root/workspace/sessions/$sid"
@@ -200,11 +295,17 @@ session_auto_bind_apply() {
     work_context_root="${HQ_WORK_CONTEXT_ROOT:-${HOME:-}/.hq/work-context}"
     # SessionStart records this before its resolver preflight. The preflight
     # itself writes local state, which must not relabel a new session as held.
-    [ "$state_existed_before_preflight" = "0" ] || [ ! -f "$work_context_root/sessions/$sid.json" ] || return 0
+    if [ "$state_existed_before_preflight" != "0" ] && [ -f "$work_context_root/sessions/$sid.json" ]; then
+      [ "$stale_alias" = "true" ] && session_auto_bind_clear_case_alias "$root" "$sid" || true
+      return 0
+    fi
   fi
   mkdir -p "$meta_dir" 2>/dev/null || return 0
 
-  if [ ! -f "$meta" ]; then
+  if [ "$stale_alias" = "true" ]; then
+    [ -f "$meta" ] || : > "$meta" || return 0
+    session_auto_bind_write_binding_meta "$meta" "$slug" "$source" || return 0
+  elif [ ! -f "$meta" ]; then
     printf 'session_id: %s\ncompany_slug: %s\ncompany_source: %s\nstarted_at: "%s"\nsenior: user\n' \
       "$sid" "$slug" "$source" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
       > "$meta" || return 0
@@ -225,16 +326,34 @@ session_auto_bind_apply() {
 # configuration again, so SessionStart has one reader and no TOCTOU window.
 session_auto_bind_apply_validated_default() {
   local root="${1:-}" sid="${2:-}" slug="${3:-}" uid="${4:-}" state_existed="${5:-1}" repair="${6:-false}" meta_dir meta
+  local stale_alias=false existing_scope_slug="" existing_meta_slug=""
   [ -n "$root" ] && [ -n "$sid" ] && [ -n "$slug" ] && [ -n "$uid" ] || return 0
   case "$sid" in .|..|*/*|*[!A-Za-z0-9._-]*) return 0 ;; esac
-  session_auto_bind_is_known_slug "$root" "$slug" || return 0
+  if command -v session_scope_read >/dev/null 2>&1; then
+    existing_scope_slug="$(session_scope_read "$root" "$sid" 2>/dev/null || true)"
+  fi
+  existing_meta_slug="$(session_auto_bind_meta_slug "$root" "$sid")"
+  if session_auto_bind_has_case_alias "$root" "$existing_scope_slug" || \
+     session_auto_bind_has_case_alias "$root" "$existing_meta_slug"; then
+    stale_alias=true
+  fi
+  if ! session_auto_bind_is_known_slug "$root" "$slug"; then
+    [ "$stale_alias" = "true" ] && session_auto_bind_clear_case_alias "$root" "$sid" || true
+    return 0
+  fi
   # A historical held state predates this SessionStart. Device defaults are weak
   # evidence, so never relabel it unless this device explicitly opted in.
-  [ "$state_existed" = "0" ] || [ "$repair" = "true" ] || return 0
+  if [ "$state_existed" != "0" ] && [ "$repair" != "true" ]; then
+    [ "$stale_alias" = "true" ] && session_auto_bind_clear_case_alias "$root" "$sid" || true
+    return 0
+  fi
   meta_dir="$root/workspace/sessions/$sid"
   meta="$meta_dir/meta.yaml"
   mkdir -p "$meta_dir" 2>/dev/null || return 0
-  if [ ! -f "$meta" ]; then
+  if [ "$stale_alias" = "true" ]; then
+    [ -f "$meta" ] || : > "$meta" || return 0
+    session_auto_bind_write_binding_meta "$meta" "$slug" "device_default" || return 0
+  elif [ ! -f "$meta" ]; then
     printf 'session_id: %s\ncompany_slug: %s\ncompany_source: device_default\nsenior: user\n' "$sid" "$slug" > "$meta" || return 0
     [ "$state_existed" = "0" ] || printf 'company_confidence: device_default_repair\n' >> "$meta" || return 0
     printf 'started_at: "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$meta" || return 0

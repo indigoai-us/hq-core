@@ -1,4 +1,18 @@
+---
+type: reference
+domain: [engineering, product]
+status: historical
+tags: [desktop-app, historical, project-system-mapping]
+relates_to: [knowledge/public/hq-core/hq-desktop-app.md]
+---
+
 # Project System to Desktop UX Mapping
+
+> **Historical (February 2026).** This page is a spec or audit written for a React
+> version of HQ Desktop that was not shipped. The component names, Tauri commands
+> (for example `files.rs`, `orchestrator.rs`, `terminal.rs`) and file paths it
+> describes do not exist in the current app. The shipped app is Svelte 5 + Tauri 2
+> (hq-desktop-app). For current behavior, read `../hq-desktop-app.md`.
 
 Maps the PRD lifecycle, orchestrator state machine, Ralph loop execution stages, story states, and quality gates to Desktop representation. Produced for US-010 of hq-desktop-epics.
 

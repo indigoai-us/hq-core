@@ -96,6 +96,19 @@ case "$CDIR" in
 esac
 pass "two-company present acme-fixture"
 
+# ── 3b. a present opaque company ID keeps its exact case through session auth ──
+mkdir -p "$FIXTURE/companies/cmp_FIXTURE/knowledge"
+printf 'synthetic content\n' > "$FIXTURE/companies/cmp_FIXTURE/knowledge/note.md"
+RC=0
+OUT="$(req cmp_FIXTURE | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/e3b")" || RC=$?
+[ "$RC" -eq 0 ] || fail "case-sensitive company ID exit $RC err=$(cat "$TMP/e3b")"
+CDIR="$(session_resolve_company_dir "$FIXTURE" cmp_FIXTURE)"
+case "$CDIR" in
+  */companies/cmp_FIXTURE) ;;
+  *) fail "case-sensitive company ID resolved to the wrong directory: $CDIR" ;;
+esac
+pass "present case-sensitive company ID resolves with exact directory identity"
+
 # ── 4. sender.verified false — same resolution ──────────────────────────────
 RC=0
 OUT="$(req indigo false | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/e4")" || RC=$?

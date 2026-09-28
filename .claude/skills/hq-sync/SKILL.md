@@ -8,9 +8,11 @@ allowed-tools: Bash, Read, Bash(. .claude/skills/hq-sync/scripts/hq-sync-events.
 
 Runs the same sync engine the HQ Desktop App uses, from the
 terminal. Walks every cloud-backed company in your local HQ, syncs in
-both directions against the vault, and writes conflict mirror files +
-`<hqRoot>/.hq-conflicts/index.json` when divergence is detected so
-`/resolve-conflicts` can walk them.
+both directions against the vault, and records divergence in
+`<hqRoot>/.hq-conflicts/index.json` so `/resolve-conflicts` can walk it.
+
+Sync modes, ignore rules, conflicts, the journal, session logs, and
+`hq daemon`: see `core/knowledge/public/hq-core/hq-sync-model.md`.
 
 **Args:** `$ARGUMENTS` — optional flags. Defaults: `--direction both --on-conflict keep`.
 
@@ -42,7 +44,11 @@ user to `/hq-login`.
 
 ### Step 3 — Spawn the runner
 
-Same invocation as the HQ Desktop App's `commands/sync.rs::HQ_CLOUD_VERSION`:
+Same runner and flags the HQ Desktop App spawns. The version differs: the
+desktop app pins `@indigoai-us/hq-cloud@~6.18.5` (>=6.18.5 <6.19.0) via
+`HQ_CLOUD_VERSION` in `crates/hq-desktop-core/src/hq_cloud.rs` (hq-desktop-app
+origin/main `c621a6a`, 2026-09-27), while this skill requests `@latest`, which
+can resolve to a newer minor than the desktop runs:
 
 ```bash
 npx -y --package=@indigoai-us/hq-cloud@latest hq-sync-runner \
@@ -338,14 +344,14 @@ exit "$cli_status"
 
 ## Notes
 
-- Uses the **same `hq-sync-runner` invocation pattern** as the HQ Desktop App (`commands/sync.rs::HQ_CLOUD_VERSION`). The npx pin to `@latest` matches the HQ Desktop App's runtime spawn so behavior stays consistent across the two surfaces.
-- `--on-conflict keep` is the default — local wins on divergence, cloud version mirrored to a `.conflict-*` sidecar so `/resolve-conflicts` can walk it later. Same default the HQ Desktop App uses.
+- Uses the **same `hq-sync-runner` invocation pattern** as the HQ Desktop App, with a different version spec. The desktop app pins the tilde range `~6.18.5` in `crates/hq-desktop-core/src/hq_cloud.rs::HQ_CLOUD_VERSION` and only moves when that constant is raised; this skill uses `@latest`. The two can run different hq-cloud minors.
+- `--on-conflict keep` is the default, same as the HQ Desktop App. It is version-aware: identical bytes are not a conflict, a higher frontmatter `version:` wins, then the newer mtime, otherwise the cloud copy. A losing local body is parked under `.hq/conflict-backups/` and the conflict is recorded in `.hq-conflicts/index.json`. Legacy `.conflict-*` twins from older engines are folded back with `hq sync doctor --reconcile-conflicts`. Details: `core/knowledge/public/hq-core/hq-sync-model.md`.
 - Auth is shared with `/deploy`, `/designate-team`, `/hq-login`, and the HQ Desktop App — single Cognito token at `~/.hq/cognito-tokens.json`.
 - For a single-company sync, use `hq sync push <company>` (already in hq-cli) — this command is the "all companies, both directions" full sync that the HQ Desktop App runs.
 - **Post-sync qmd reindex (Step 6):** after a sync that pulled files, the skill runs `hq core qmd-reindex-after-sync`, which auto-registers any new company knowledge collection and runs an incremental lexical `qmd update`. This is what makes freshly-synced knowledge searchable without a manual re-index, and keeps teammates' personal indexes converged. Embeddings are intentionally deferred (run `qmd embed`, or the reindex script with `--embed`, on an idle pass) so sync stays fast. The qmd index is per-machine (large binary, absolute local paths) and is **not** itself synced — only its freshness is automated. The HQ Desktop App sync gets the same behavior via the `hq-sync-runner` seam.
 - **Post-sync workers registry (Step 6b):** after a completed sync, regenerate `core/workers/registry.yaml` from on-disk `worker.yaml` files. A pulled worker must become listable, and a registry row whose directory was not downloaded must not stay discoverable. SessionStart also warns if any `status: active` path is still absent.
 
-- **Selective download (`syncMode`) — access ≠ download.** What a sync *downloads* is governed per-membership by `syncMode`: `all` (full bucket — the default, and what owners get on upgrade), `shared` (only your explicit ACL grants), or `custom` (an explicit prefix list). Set it with `hq sync mode <all|shared|custom>` and narrow an existing local tree with `hq sync narrow`. This is purely about local footprint — it does **not** change your *access*. Owners/admins keep full role-bypass access regardless of mode; `shared`/`custom` just stop a sync from materializing the whole vault locally. The scope is resolved per company in `sync-runner.ts::resolvePullScope` (degrades to `all` on any error so a transient failure never prunes the tree). To reach a file you have access to but didn't download, use `hq files browse`/`cat`/`search`/`get` (see the `hq-files` skill) — no full sync required.
+- **Selective download (`syncMode`) — access ≠ download.** What a sync *downloads* is governed per-membership by `syncMode`: `all` (full bucket — the default, and what owners get on upgrade), `shared` (only your explicit ACL grants), or `custom` (an explicit prefix list). Set it with `hq sync mode <all|shared|custom>` and narrow an existing local tree with `hq sync narrow`. This is purely about local footprint — it does **not** change your *access*. Owners always sync as `all` regardless of the stored mode; admins stay grant-scoped for sync; `shared`/`custom` just stop a sync from materializing the whole vault locally. The scope is resolved per company in hq-cloud `src/sync/pull-scope.ts::resolvePullScope` (degrades to `all` on any error so a transient failure never prunes the tree). To reach a file you have access to but didn't download, use `hq files browse`/`cat`/`search`/`get` (see the `hq-files` skill) — no full sync required.
 
 - **Pins keep an on-demand `get` from being pruned.** `hq files get <path>` materializes a path and records it in `<hqRoot>/.hq/pins.json`; `resolvePullScope` unions a company's pins into its `shared`/`custom` pull scope, so a got-file survives subsequent scoped syncs instead of being deleted as an out-of-scope orphan.
 

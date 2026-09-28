@@ -3,6 +3,24 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.178-beta.3
+
+- promote 2026-09-27 (product docs refresh): core now ships reference docs
+  for the HQ product surfaces, checked against the product repos on
+  2026-09-27: `hq-product-model.md` (start here), `hq-desktop-app.md`,
+  `desktop-rich-messages.md`, `agents-and-bots.md`, `external-agents-mcp.md`,
+  `hq-console.md`, `plans-and-pricing.md`, `hq-cli-reference.md` and
+  `hq-sync-model.md`, all under `core/knowledge/public/hq-core/`. Stale claims
+  were corrected: the desktop app has full messaging and enforces company
+  isolation, and in-app sessions are gone; billing is live and the $500 plan
+  is HQ Workforce; `/deploy` documents comment anchors, replies and a
+  review-and-resolve loop, and the comments toggle must be set before the
+  upload completes; `/new-agent` has current pricing, providers and Slack
+  setup; `quick-reference.md` drops commands that do not exist. The February
+  `hq-desktop/` specs are marked historical. `.claude/CLAUDE.md` gains routes
+  for `hq search`, connected apps, bots and agents, and billing. No action
+  beyond `/update-hq`.
+
 ## Release: v15.0.172-beta.1
 
 - fix 2026-09-26 (Grok hook capabilities): the v15.0.127-beta.5 entry below says

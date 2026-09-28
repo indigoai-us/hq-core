@@ -42,8 +42,9 @@ Tokens go into the HQ console, codes go into the other agent, keys go through
 
 The current way is a cloud agent created in HQ that gets its own Slack app in
 the company's workspace. Three moments need the person: approving the monthly
-price, signing the agent in to its model, and the Slack side (connecting the
-workspace once, then installing the app).
+price, signing the agent in to its model, and the Slack side. The Slack side
+is one of two flows; the console picks which one the company sees, so follow
+what the Bots page shows.
 
 1. Ask what they want the agent to do and what to call it. Suggest a name and
    a job drawn from their business.
@@ -55,42 +56,58 @@ workspace once, then installing the app).
 3. Follow it with `hq agents status <name> --company <slug> --json`. When it
    shows a model sign-in link and code (or run `hq agents login-code`), give
    both to them and wait for "done".
-4. **Connecting the Slack workspace, once per company.** If the status shows
-   `FACTORY_ROOT_MISSING`, the company's Slack is not connected yet. Send them
-   to `https://hq.computer/companies/<slug>/agents` (the page is called Bots).
-   There they open api.slack.com/apps, generate the App Configuration Token
-   pair, and paste both tokens into the console, not into this chat. Only an
-   owner or admin can do this; there is no command for it.
-5. **Installing the app.** When the status shows a `slack-install` action,
-   give them the install link. Someone in their Slack workspace clicks
-   Install. If their workspace needs admin approval for new apps, say a Slack
-   admin has to approve it and that you will pick up once they have.
-6. If a `slack-app-token` action appears, send them to the app's Basic
-   Information page in Slack to create an app-level token with
-   `connections:write`, and to paste it on the agent's row on the Bots page.
-7. When the status shows the agent is ready, have them invite it to a Slack
+4. **Slack, guided flow (they create the app).** If the Bots page at
+   `https://hq.computer/companies/<slug>/agents` shows a Slack setup page for
+   the agent, walk them through it. It has five steps, all in the console and
+   in Slack, none in this chat:
+   - open Slack with the template (a link that pre-fills the app; if their
+     workspace blocks it, the page shows text to copy into Slack instead);
+   - create the app and click Install to Workspace (a Slack admin may need to
+     approve; the page has a plain explanation of the permissions they can
+     forward);
+   - in the app's Basic Information, App-Level Tokens, generate a token with
+     the `connections:write` scope;
+   - in OAuth & Permissions, copy the Bot User OAuth Token;
+   - paste both tokens on the setup page.
+   Only an owner or admin can do this. If HQ says the token rotates, they
+   turn token rotation off in the Slack app's settings and copy the bot token
+   again.
+5. **Slack, older flow (HQ creates the app).** If the status shows
+   `FACTORY_ROOT_MISSING` instead, the company's Slack workspace is not
+   connected yet. An owner or admin connects it once from the Bots page;
+   there is no command for it. After that, when the status shows a
+   `slack-install` action, give them the install link; someone in their Slack
+   workspace clicks Install. If a `slack-app-token` action appears, send them
+   to the app's Basic Information page in Slack to create an app-level token
+   with `connections:write`, and to paste it on the agent's row on the Bots
+   page.
+6. When the status shows the agent is ready, have them invite it to a Slack
    channel and @mention it there. Check from your side with
    `hq agents message <name> "hello" --company <slug>`.
 
 When something goes wrong:
 
-- The Slack tokens are rejected or expired: generate a fresh pair at
-  api.slack.com/apps and paste it again. The pair belongs to the Slack user
-  who made it.
+- HQ rejects the pasted Slack tokens: it checks the bot token's permissions
+  against the template and opens a connection with the app-level token before
+  storing either. Have them re-copy both from the same app and paste again.
+  A token that starts `xoxe.` means token rotation is on; turn it off.
 - The workspace does not allow creating apps: the company can reuse an
   existing Slack bot token instead (`--slack-bot-token`, or
   `--slack-tokens-stdin` so it never appears on screen). Ask whether they
   have one before suggesting it.
-- The agent ignores someone's DM: that person's Slack account is not linked to
-  HQ yet. They open the link the agent sent them and sign in.
+- Anyone in a connected channel or DM can talk to the agent. Whether HQ
+  treats them as a verified member is separate: someone HQ cannot match to a
+  current member is answered as unverified and cannot use member-only
+  controls or act with the owner's permissions.
 - `hq agents retry` does not clear a step that is waiting on a person. Say
   which person action is still open instead.
 
 ## Another agent, connected from the console
 
-Agents HQ does not host (grokbot, OpenClaw, Hermes, Muse, or anything that can
+Agents HQ does not host (grokbot, OpenClaw, Muse, or anything that can
 use MCP) connect as an "External bot". Creating one happens only in the
-console; you guide, they click.
+console; you guide, they click. External bots are not available on Starter; on
+paid plans they add no per-bot charge.
 
 1. Ask which agent it is and where it runs.
 2. Send them to `https://hq.computer/companies/<slug>/agents`, then Add bot,

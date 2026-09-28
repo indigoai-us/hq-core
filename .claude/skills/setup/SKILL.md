@@ -11,11 +11,46 @@ who you are, and a private welcome page that hands you your first moves. One
 question at a time; nothing here is mandatory — skip anything and setup still
 completes.
 
-## Guided mode (HQ Desktop): `--guided`
+## HQ Desktop: the Setup bot
 
-HQ Desktop runs this skill inside its #welcome channel as a native, stepped
-card — not as a chat. It starts the session with `/setup --guided`. When the
-arguments contain `--guided`:
+Current HQ Desktop (0.10.347, verified against hq-desktop-app
+`origin/main@c621a6a1` on 2026-09-27) runs guided setup as a chat with the
+**Setup bot**, not as a stepped card. Run Setup on `#welcome` creates a
+personal local bot named `setup` from the worker template
+`core/workers/public/setup` (`hq bot create setup --worker setup`). The
+person talks to it in its DM. The bot walks the phases of this skill in plain
+words and follows `core/workers/public/setup/worker.yaml`, which overrides the
+guided-mode rules below: it never prints `[hq-setup]` lines and never uses
+multiple-choice pickers.
+
+The Setup bot can end a message with `hq-block` fences that the desktop turns
+into UI. The fence is three backticks followed by `hq-block` on the same line,
+the JSON on its own line, then three closing backticks, not indented, and
+nothing after it:
+
+- **Suggested replies** — `{"v":1,"blocks":[{"kind":"suggestions","items":["For a company","Just for me"]}]}`.
+  Two to four short replies; the app keeps at most 4, drops duplicates, and
+  caps each at 80 characters. They show as buttons under the bot's newest
+  message and a click sends the text as the person's reply. The app always
+  adds its own "Something else" button, so do not add an "Other" item. Leave
+  them out when only the person can type the answer (names, emails, URLs).
+- **Setup finished** — `{"v":1,"blocks":[{"kind":"setupDone"}]}`, or
+  `{"v":1,"blocks":[{"kind":"setupDone","slackAgent":true}]}` for someone who
+  started their own company, which adds a "put the bot in Slack" offer. Send
+  it once, as the last thing in the closing message, never together with
+  `suggestions`. The app shows a finish card until the person writes again.
+
+In the current app the desktop acts on these two blocks only in the Setup
+bot's DM. Full contract: `core/knowledge/public/hq-core/desktop-rich-messages.md`.
+
+## Guided mode (legacy scripted run): `--guided`
+
+Older HQ Desktop builds ran this skill as a scripted session on `#welcome`,
+drawn as a stepped card, started with `/setup --guided`. The step and card
+parsers are still in the app source, but the current app no longer starts
+that session (the in-app session engine was removed in 0.10.270), and the
+Setup bot's DM does not strip marker lines. Follow these rules only when the
+arguments actually contain `--guided`:
 
 - **Emit a step marker at every phase boundary**, on its own line, exactly:
   `[hq-setup] step=<id> status=<running|done>`. The ids, in order, and the

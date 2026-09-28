@@ -110,6 +110,7 @@ hq integrations policy notion --set confirm
 - *401 / session errors* → `hq auth refresh`, then retry (`hq login` if refresh fails).
 - *needs sign-in* flag on `list` → the connection lost its credentials; `hq integrations reconnect <app>`.
 - *Integration factory is not enabled for this company* → the connect flow is off for that tenant; the existing connections still work.
+- *402 / "Starter plan limit reached" / `plan_limit_reached`* → the company's plan caps connected apps. Starter includes 1; HQ Workforce and Enterprise have no cap. Only a brand-new connection is refused (the check runs before the sign-in is exchanged, so no stray token is created). `reconnect`, `list`, `call`, `disconnect`, and sharing an existing app are not affected. Relay the upgrade link HQ returns; do not quote a price HQ did not show. Whether HQ refuses or only reminds depends on HQ's current enforcement setting, so do not predict it. Plan details: `core/knowledge/public/hq-core/plans-and-pricing.md`.
 
 ## Care
 

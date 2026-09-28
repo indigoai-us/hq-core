@@ -55,6 +55,7 @@ set -euo pipefail
 
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$HQ_ROOT"
+HQ_ROOT="$(pwd -P)"
 
 # -------- args --------
 TITLE="Handoff: session continuation"
@@ -379,19 +380,58 @@ jq -n \
   }' > "$CHANGESET_PATH"
 
 # -------- handoff.json pointer --------
-jq -n \
-  --arg ts "$TS" \
-  --arg msg "$MESSAGE" \
-  --arg thread_id "$THREAD_ID" \
-  --arg thread_path "$THREAD_PATH" \
-  --arg summary "$SUMMARY" \
-  '{
+# Keep the pointer readable as one complete file at all times. The temp is in
+# the destination directory so mv publishes it with a same-filesystem rename.
+# The pointer path is checkout-relative so the synced handoff stays portable.
+write_handoff_pointer() {
+  local destination="$1" thread_path="$2" destination_dir pointer_tmp
+  destination_dir="$(dirname "$destination")"
+  mkdir -p "$destination_dir"
+  pointer_tmp="$(mktemp "$destination_dir/.handoff-pointer.XXXXXX")"
+  FINALIZE_TMP_FILES+=("$pointer_tmp")
+  if ! jq -n --arg ts "$TS" --arg msg "$MESSAGE" --arg thread_id "$THREAD_ID" --arg thread_path "$thread_path" --arg summary "$SUMMARY" '{
     created_at: $ts,
     message: $msg,
     last_thread: $thread_id,
     thread_path: $thread_path,
     context_notes: $summary
-  }' > workspace/threads/handoff.json
+  }' > "$pointer_tmp"; then
+    rm -f "$pointer_tmp"
+    return 1
+  fi
+  if ! mv -f "$pointer_tmp" "$destination"; then
+    rm -f "$pointer_tmp"
+    return 1
+  fi
+}
+
+copy_handoff_thread() {
+  local destination="$1" destination_dir thread_tmp
+  destination_dir="$(dirname "$destination")"
+  mkdir -p "$destination_dir"
+  thread_tmp="$(mktemp "$destination_dir/.handoff-thread.XXXXXX")"
+  FINALIZE_TMP_FILES+=("$thread_tmp")
+  if ! cp "$HQ_ROOT/$THREAD_PATH" "$thread_tmp"; then
+    rm -f "$thread_tmp"
+    return 1
+  fi
+  if ! mv -f "$thread_tmp" "$destination"; then
+    rm -f "$thread_tmp"
+    return 1
+  fi
+}
+
+write_handoff_pointer "workspace/threads/handoff.json" "$THREAD_PATH"
+COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
+case "$COMMON_GIT_DIR" in
+  /*|[A-Za-z]:/*) ;;
+  *) COMMON_GIT_DIR="$HQ_ROOT/$COMMON_GIT_DIR" ;;
+esac
+MAIN_CHECKOUT_ROOT="$(cd "$COMMON_GIT_DIR/.." && pwd -P)"
+if [[ "$MAIN_CHECKOUT_ROOT" != "$HQ_ROOT" ]]; then
+  copy_handoff_thread "$MAIN_CHECKOUT_ROOT/$THREAD_PATH"
+  write_handoff_pointer "$MAIN_CHECKOUT_ROOT/workspace/threads/handoff.json" "$THREAD_PATH"
+fi
 
 # -------- regen INDEX files via dedicated scripts --------
 # Inline INDEX regen replaced with delegations to reusable bash scripts.

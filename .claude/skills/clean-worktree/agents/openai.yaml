@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Clean Worktree
+  short_description: >-
+    Clean up an HQ git worktree — merge a detached worktree branch

@@ -2,12 +2,12 @@
 # Shared process-count fixture for the c138c Bash guard budgets.
 
 c138c_init_process_budget() {
+  local script_dir
+  script_dir="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
   C138C_ROOT="${ROOT:-$(git rev-parse --show-toplevel)}"
-  C138C_BASE_SHA="d3c1726c831181f43cf90731b916db4d36b5172b"
+  C138C_BASE_ROOT="$script_dir/fixtures/hook-process-budgets/d3c1726c831181f43cf90731b916db4d36b5172b"
   C138C_STRACE="$(type -P strace || true)"
   [ -n "$C138C_STRACE" ] || { echo 'FAIL: strace is required for c138c process budgets' >&2; return 1; }
-  timeout 20s git -C "$C138C_ROOT" cat-file -e "$C138C_BASE_SHA^{commit}" \
-    || { echo "FAIL: pinned c138c baseline is unavailable: $C138C_BASE_SHA" >&2; return 1; }
 
   C138C_TMP_PARENT="$C138C_ROOT/workspace"
   mkdir -p "$C138C_TMP_PARENT"
@@ -24,14 +24,15 @@ c138c_init_process_budget() {
     .claude/hooks/block-core-writes-bash.sh; do
     mkdir -p "$C138C_TMP/source/base/${relative%/*}" \
       "$C138C_TMP/source/candidate/${relative%/*}"
-    timeout 20s git -C "$C138C_ROOT" show "$C138C_BASE_SHA:$relative" \
-      > "$C138C_TMP/source/base/$relative" \
-      || { echo "FAIL: pinned baseline is missing $relative" >&2; return 1; }
+    [ -f "$C138C_BASE_ROOT/$relative" ] \
+      || { echo "FAIL: c138c baseline fixture is missing $relative" >&2; return 1; }
+    cp "$C138C_BASE_ROOT/$relative" "$C138C_TMP/source/base/$relative"
     cp "$C138C_ROOT/$relative" "$C138C_TMP/source/candidate/$relative"
   done
-  timeout 20s git -C "$C138C_ROOT" show "$C138C_BASE_SHA:core/scripts/hook-lib.sh" \
-    > "$C138C_TMP/fixture/core/scripts/hook-lib.sh" \
-    || { echo 'FAIL: pinned baseline is missing core/scripts/hook-lib.sh' >&2; return 1; }
+  [ -f "$C138C_BASE_ROOT/core/scripts/hook-lib.sh" ] \
+    || { echo 'FAIL: c138c baseline fixture is missing core/scripts/hook-lib.sh' >&2; return 1; }
+  cp "$C138C_BASE_ROOT/core/scripts/hook-lib.sh" \
+    "$C138C_TMP/fixture/core/scripts/hook-lib.sh"
   cp "$C138C_ROOT/core/scripts/install-deps.allow" \
     "$C138C_TMP/fixture/core/scripts/install-deps.allow"
   mkdir -p "$C138C_TMP/fixture/core"

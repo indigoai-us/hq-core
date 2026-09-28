@@ -1,4 +1,18 @@
+---
+type: reference
+domain: [engineering, product]
+status: historical
+tags: [desktop-app, historical, notification-event-system-specs]
+relates_to: [knowledge/public/hq-core/hq-desktop-app.md]
+---
+
 # Notification & Event System Specs
+
+> **Historical (February 2026).** This page is a spec or audit written for a React
+> version of HQ Desktop that was not shipped. The component names, Tauri commands
+> (for example `files.rs`, `orchestrator.rs`, `terminal.rs`) and file paths it
+> describes do not exist in the current app. The shipped app is Svelte 5 + Tauri 2
+> (hq-desktop-app). For current behavior, read `../hq-desktop-app.md`.
 
 > US-020: Detailed specs for the notification center, event stream, toast system, badge counts, and file watcher architecture. Builds on the event sources inventory from US-019.
 

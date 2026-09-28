@@ -46,7 +46,6 @@ DRY_RUN=0
 NO_PROBE=0
 PROBE_ONLY=0
 ENSURE_HOOK=0
-AFTER_SYNC=0
 
 usage() {
   sed -n '3,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -85,7 +84,6 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --after-sync)
-      AFTER_SYNC=1
       shift
       ;;
     -h|--help)
@@ -342,7 +340,7 @@ pad2() {
 # Convert a single cron field that is a fixed number or */n or a-b into
 # systemd calendar fragment for hour/minute. Returns empty for '*'.
 cron_time_field() {
-  local field="$1" width="$2"  # width unused; kept for clarity
+  local field="$1"
   case "$field" in
     '*') printf ''; return ;;
     */*)
@@ -383,8 +381,8 @@ cron_to_oncalendar() {
   esac
   date_s="*-${mon_s}-${day_s}"
 
-  m="$(cron_time_field "$minute" 2)"
-  h="$(cron_time_field "$hour" 2)"
+  m="$(cron_time_field "$minute")"
+  h="$(cron_time_field "$hour")"
   [ -n "$m" ] || m='00'
   [ -n "$h" ] || h='*'
   # Normalize pure numbers already padded; handle hour=*
@@ -410,9 +408,83 @@ cron_to_oncalendar() {
 unit_service_path() { printf '%s/hq-job-%s.service' "$UNIT_DIR" "$1"; }
 unit_timer_path() { printf '%s/hq-job-%s.timer' "$UNIT_DIR" "$1"; }
 
+normalize_service_path() {
+  local remaining="$1" entry existing normalized="" has_more seen
+  local -a entries=()
+  while :; do
+    if [[ "$remaining" == *:* ]]; then
+      entry="${remaining%%:*}"
+      remaining="${remaining#*:}"
+      has_more=1
+    else
+      entry="$remaining"
+      remaining=""
+      has_more=0
+    fi
+    case "$entry" in
+      /*)
+        seen=0
+        for existing in "${entries[@]}"; do
+          if [ "$existing" = "$entry" ]; then
+            seen=1
+            break
+          fi
+        done
+        if [ "$seen" -eq 0 ]; then
+          entries+=("$entry")
+        fi
+        ;;
+    esac
+    [ "$has_more" -eq 1 ] || break
+  done
+  if [ "${#entries[@]}" -gt 0 ]; then
+    local IFS=:
+    normalized="${entries[*]}"
+  fi
+  printf '%s' "$normalized"
+}
+
+unit_service_path_value() {
+  local service_path hq_bin npm_prefix hq_bin_dir
+  service_path="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+  service_path="$(normalize_service_path "$service_path")"
+  hq_bin=""
+  if [ -n "$service_path" ]; then
+    hq_bin="$(PATH="$service_path" type -P hq 2>/dev/null || true)"
+  fi
+  if [ -z "$hq_bin" ] && PATH="$service_path" command -v npm >/dev/null 2>&1; then
+    npm_prefix="$(PATH="$service_path" npm prefix -g 2>/dev/null || true)"
+    if [ -n "$npm_prefix" ] && [ -x "$npm_prefix/bin/hq" ]; then
+      hq_bin="$npm_prefix/bin/hq"
+    fi
+  fi
+  if [ -n "$hq_bin" ] && [ -x "$hq_bin" ]; then
+    hq_bin_dir="$(cd "$(dirname "$hq_bin")" 2>/dev/null && pwd -P || true)"
+    if [ -n "$hq_bin_dir" ]; then
+      case ":$service_path:" in
+        *":$hq_bin_dir:"*) ;;
+        *) service_path="$hq_bin_dir:$service_path" ;;
+      esac
+    fi
+  fi
+  printf '%s' "$service_path"
+}
+
+systemd_quote() {
+  local value="$1"
+  value="${value//%/%%}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '"%s"' "$value"
+}
+
 write_service_unit() {
-  local id="$1" path
+  local id="$1" path service_path
   path="$(unit_service_path "$id")"
+  service_path="$(unit_service_path_value)"
   local runner_abs
   runner_abs="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")"
   cat >"$path" <<EOF
@@ -426,6 +498,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 Environment=HQ_ROOT=${HQ_ROOT}
+Environment=$(systemd_quote "PATH=$service_path")
 ExecStart=${runner_abs} --hq-root ${HQ_ROOT} --job-id ${id}
 Nice=10
 

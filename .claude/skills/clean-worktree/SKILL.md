@@ -1,7 +1,7 @@
 ---
 name: clean-worktree
 description: Clean up an HQ git worktree — merge a detached worktree branch back into local main in the primary HQ tree, then remove the worktree and delete the branch. Use when HQ work happened in a separate worktree (e.g. .claude/worktrees/<name> on claude/*, or workspace/worktrees/<name> on codex/*) and needs to land and be cleaned up — including right after /handoff when HQ itself is running from a separate worktree. HQ is local-only; this workflow never pushes to a remote.
-allowed-tools: Bash(git:*), Bash(docker:*), Bash(ls:*), Bash(rmdir:*), Read, AskUserQuestion
+allowed-tools: Bash(git:*), Bash(docker:*), Bash(ls:*), Bash(rmdir:*), Bash(bash "${HQ_ROOT}/core/scripts/clean-worktree-reconcile-handoff.sh:*), Read, AskUserQuestion
 ---
 
 # Clean HQ Worktree
@@ -69,6 +69,20 @@ HQ_ALLOW_HQ_ROOT_GIT=1 git -C <WT> commit -m "clean-worktree: capture uncommitte
 If `git commit` reports nothing to commit (changes were only ignored/session files), note it and continue. Do not force-add ignored paths.
 
 ### 3. Pre-merge safety check on the primary tree
+
+Before checking status, reconcile the handoff mirror left by `/handoff` in a
+linked worktree. This removes `workspace/threads/handoff.json` and its copied
+thread only when each main-checkout file is byte-identical to the version on
+the branch being merged. It leaves differing files in place and exits non-zero;
+surface those files to the user and stop before merging.
+
+```bash
+bash "${HQ_ROOT}/core/scripts/clean-worktree-reconcile-handoff.sh" \
+  "${HQ_ROOT}" "<BRANCH>"
+```
+
+Replace `<BRANCH>` with the branch selected in step 1. Continue only after the
+script exits successfully. It does not stage files or create commits.
 
 ```bash
 git -C ${HQ_ROOT} status --short

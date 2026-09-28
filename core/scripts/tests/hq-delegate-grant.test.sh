@@ -92,8 +92,13 @@ case "$1 $2" in
         jq -cn --arg t "$type" --arg g "$grantee" --arg p "$perm" '{granteeType:$t,granteeId:$g,permission:$p}'
       done < "$f" | jq -s '.')"
     fi
-    # hq-pro #3662 (2026-09-23): the server echoes the requested pattern verbatim.
-    jq -cn --arg p "${pfx}" --argjson rows "$rows" '{schemaVersion:1,companyUid:"cmp_acme",prefix:$p,direct:$rows,exists:($rows|length>0),inherited:[],children:[]}'
+    # Mirror `hq files acl --json`: it returns the server's tree prefix (the
+    # canonical row prefix, without the shared-folder `*`) plus the tree fields
+    # the CLI validates before printing JSON. The query still uses `foo/*`.
+    jq -cn --arg p "${pfx%\*}" --argjson rows "$rows" '
+      {prefix:$p,direct:$rows,inherited:[],children:[],
+       directRow:(if ($rows|length)>0 then {creatorUid:"prs_FIXTURE",open:false,createdAt:"fixture",updatedAt:"fixture"} else null end),
+       effectivePermission:null,schemaVersion:1,companyUid:"cmp_acme",exists:(($rows|length)>0)}'
     exit 0 ;;
   "people resolve")
     tok="$3"

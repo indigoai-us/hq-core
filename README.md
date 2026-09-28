@@ -21,7 +21,7 @@
 ## What is HQ?
 
 HQ is an open-source **team AI operating system** — a shared, synced context and capability
-layer over **Claude Code, Cursor, and Codex**. It gives your AI coding agents your whole
+layer over **Claude Code, Codex, Cursor, and Grok**. It gives your AI coding agents your whole
 company's memory — knowledge, decisions, people, skills, and policies — so they stop
 forgetting everything every session.
 

@@ -22,13 +22,15 @@ jobs:
   denylist-scan:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: denylist-scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     outputs:
       macos_shell_smoke: ${{ steps.shell_smoke_macos_paths.outputs.run }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Assert cost-efficient Linux runner labels
+        run: bash core/scripts/tests/runner-cost-arm-labels.test.sh
       - name: Detect changes covered by the macOS shell smoke job
         id: shell_smoke_macos_paths
         shell: bash
@@ -51,7 +53,7 @@ jobs:
   policy-rationale-scan:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: policy-rationale-scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,7 +64,7 @@ jobs:
   slug-scan:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: slug-scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,7 +75,7 @@ jobs:
   users-path-tripwire:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: users-path-tripwire
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,7 +86,7 @@ jobs:
   provenance-stripped:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: provenance-stripped
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -95,7 +97,7 @@ jobs:
   vendor-public-ok:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: vendor-public-ok
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -106,7 +108,7 @@ jobs:
   public-frontmatter-revalidate:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: public-frontmatter-revalidate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,7 +119,7 @@ jobs:
   denylist-drift:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: denylist-drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -128,7 +130,7 @@ jobs:
   settings-local-not-ignored:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: settings-local-not-ignored
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -139,7 +141,7 @@ jobs:
   repos-segment-not-ignored:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: repos-segment-not-ignored
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -150,7 +152,7 @@ jobs:
   instance-artifacts:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: instance-artifacts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -169,7 +171,7 @@ jobs:
     # install line), never presented as always-available. Catches FUTURE
     # dangling references, not just the originally-reported skills.
     name: skill-command-refs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -183,7 +185,7 @@ jobs:
     # retired workflow; commands and local script references are both released
     # guidance that must resolve on a fresh scaffold.
     name: skill-script-refs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -218,6 +220,12 @@ jobs:
         run: bash core/scripts/tests/hq-bug-skill.test.sh
       - name: /team-access heal contract (bare rows, hidden grants, DEV-3405, readback)
         run: bash core/scripts/tests/team-access-skill.test.sh
+      - name: Pricing drift and refresh scripts (offline regression)
+        run: bash core/scripts/tests/pricing-drift.test.sh
+      - name: Shipped pricing.json matches the live GET /v1/pricing endpoint
+        run: bash core/scripts/check-pricing-drift.sh
+      - name: Auto-session project uses the exact company directory entry
+        run: bash core/scripts/tests/auto-session-project.test.sh
       - name: Company resolver (session bind + whole-token prompt scan)
         run: bash core/scripts/tests/resolve-company.test.sh
       - name: Session auto-bind honors device-default company boundaries
@@ -232,7 +240,7 @@ jobs:
     # never reaches model context, and a company's script never runs for
     # another company's session.
     name: skill-command-script
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -246,7 +254,7 @@ jobs:
     # install-all/some/none prompt that made onboarding pause mid-flow. Pins the
     # direct-install invariant plus the auth/bootstrap carve-outs the fix relies on.
     name: setup-skill-direct-install
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -263,7 +271,7 @@ jobs:
     # dry-run) are enforced by this offline fixture test, not reviewer vigilance.
     # Policy: core/policies/hq-worktree-retention.md
     name: worktree-gc
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -279,7 +287,7 @@ jobs:
     # artifact) are enforced by these tests, not reviewer vigilance. Policy:
     # core/policies/hq-delegate-never-inlines-secrets-or-share-urls.md
     name: hq-delegate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -315,7 +323,7 @@ jobs:
     # /deploy never uses (it targets hq-deploy). Denylist: core/scripts/
     # install-deps.deny. Catches FUTURE re-introductions, not just vercel.
     name: install-deps
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -334,7 +342,7 @@ jobs:
   agent-runtime-skill-metadata:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: agent-runtime-skill-metadata
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -350,6 +358,14 @@ jobs:
         run: node core/scripts/validate-agent-runtime-contracts.mjs
       - name: Skill metadata regression test
         run: bash core/scripts/tests/agent-runtime-skill-metadata.test.sh
+      - name: Discover shallow clone fetch refspec regression test
+        run: bash core/scripts/tests/discover-shallow-clone-fetch-all.test.sh
+      - name: Execute-task Codex model source regression test
+        run: bash core/scripts/tests/execute-task-codex-model-source.test.sh
+      - name: OpenAI YAML generator root regression test
+        run: bash core/scripts/tests/generate-openai-yaml-root.test.sh
+      - name: Codex skill metadata coverage regression test
+        run: bash core/scripts/tests/codex-skill-metadata-coverage.test.sh
       - name: export-skill-catalog wrapper regression test
         run: bash core/scripts/tests/export-skill-catalog.test.sh
       - name: Validate concrete shipped skill command permissions
@@ -364,10 +380,20 @@ jobs:
             core/scripts/hook-lib.sh \
             core/scripts/lint-shell-portability.sh \
             core/scripts/hq-job-run.sh \
+            core/scripts/hq-job-notify.sh \
+            core/scripts/outpost-jobs-reconcile.sh \
+            core/scripts/handoff-finalize.sh \
             core/scripts/hq-job-probe.sh \
             core/scripts/tests/hq-job-run.test.sh \
             core/scripts/tests/hq-job-probe.test.sh \
+            core/scripts/tests/outpost-job-failure-alerts.test.sh \
+            core/scripts/tests/handoff-finalize-pointer.test.sh \
             core/scripts/tests/agent-runtime-skill-metadata.test.sh \
+            core/scripts/generate-openai-yaml.sh \
+            core/scripts/tests/discover-shallow-clone-fetch-all.test.sh \
+            core/scripts/tests/execute-task-codex-model-source.test.sh \
+            core/scripts/tests/generate-openai-yaml-root.test.sh \
+            core/scripts/tests/codex-skill-metadata-coverage.test.sh \
             core/scripts/tests/agent-runtime-permissions.test.sh \
             core/scripts/tests/hook-runtime-diagnostics.test.sh \
             core/scripts/tests/hook-launch-sigpipe-status.test.sh \
@@ -388,7 +414,7 @@ jobs:
   compose-settings-path:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: compose-settings-path
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: settings.json PATH snapshot composition
@@ -400,7 +426,7 @@ jobs:
     # its records are the only handle any sweep has on a conversation. These
     # suites existed but nothing ran them on a PR — this job is that gate.
     name: agent-session-resume
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Resume store round-trip, TTL, and discard paths
@@ -418,7 +444,7 @@ jobs:
     # Desktop/SDK sessions. Keep the independent doctor, release-overlay
     # contract, and remediation docs from drifting together.
     name: hook-health-prevention
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -446,7 +472,7 @@ jobs:
   client-health-hook:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: client-health-hook
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -461,7 +487,7 @@ jobs:
   hook-path-resolution:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: hook-path-resolution
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -494,7 +520,7 @@ jobs:
   hook-launch-status:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: hook-launch-status
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: A hook's recorded status is the hook's, not its payload writer's
@@ -506,7 +532,7 @@ jobs:
   deploy-summary-nounset:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: deploy-summary-nounset
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: deploy-summary.sh tolerates unset HQ_DEPLOY_API under set -u
@@ -517,7 +543,7 @@ jobs:
   resolve-deploy-api:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: resolve-deploy-api
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: deploy API base always resolves (public-default fallback)
@@ -528,7 +554,7 @@ jobs:
   resolve-deploy-org:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: resolve-deploy-org
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: deploy org resolves for agent + human callers (via /membership/me)
@@ -538,7 +564,7 @@ jobs:
   identity-resolve:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: identity-resolve
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: identity-resolve USER/USERNAME lock path
@@ -550,7 +576,7 @@ jobs:
   identity-resolve-missing-jq:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: identity-resolve-missing-jq
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: identity-resolve node fallback + missing_dependency
@@ -560,7 +586,7 @@ jobs:
   portable-lib:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: portable-lib
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: portable.sh helpers
@@ -570,7 +596,7 @@ jobs:
   manifest-nested-parse:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: manifest-nested-parse
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Nested company manifest parsing
@@ -580,7 +606,7 @@ jobs:
   ontology-readme-drift:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: ontology-readme-drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -611,7 +637,7 @@ jobs:
     # real repos and real packfiles — it builds the breakage, proves git fails,
     # then proves the repair makes git healthy again.
     name: git-pack-extension
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: De-extensioned packfile detection and repair
@@ -624,7 +650,7 @@ jobs:
     # core/scripts/parse-release-tag.sh so squash, parent-2, and PR-title
     # paths can be regression-tested without a live push to hq-core main.
     name: auto-tag-release-parse
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Parse release tag from squash and merge-commit subjects
@@ -639,7 +665,7 @@ jobs:
     # nested cwd. Claude side: block-hq-root-git-mutation.test.sh. Codex side:
     # codex-git-mutation-firing.test.sh (real adapter + gate + hook, no stubs).
     name: git-mutation-guard
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Claude-harness git-mutation guard
@@ -678,7 +704,7 @@ jobs:
   autosave-failure-visibility-handoff:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: autosave-failure-visibility (handoff)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -698,6 +724,8 @@ jobs:
           fi
       - name: Autocommit hook surfaces git failures and stays quiet otherwise
         run: bash core/scripts/tests/hq-autocommit.test.sh
+      - name: Handoff pointer is atomic and worktree-resumable
+        run: bash core/scripts/tests/handoff-finalize-pointer.test.sh
       - name: Handoff finalizer never reports a failed commit as success
         run: bash core/scripts/tests/handoff-finalize-commit-status.test.sh
       - name: Handoff finalizer smoke
@@ -716,7 +744,7 @@ jobs:
   autosave-failure-visibility-qmd-reindex:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: autosave-failure-visibility (qmd-reindex)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -745,7 +773,7 @@ jobs:
       - autosave-failure-visibility-handoff
       - autosave-failure-visibility-qmd-reindex
     if: ${{ (always()) && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Every autosave-failure-visibility leg passed
         run: |
@@ -764,7 +792,7 @@ jobs:
   journal-session-isolation:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: journal-session-isolation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Session-scoped journal pointers and ownership validation
@@ -824,7 +852,7 @@ jobs:
   mcp-cleanup-session-scope:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: mcp-cleanup-session-scope
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Stop-hook cleanup stays inside its own session tree
@@ -834,7 +862,7 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # US-411 assembly timing budget + US-412 golden-turn parity harness.
     name: hq-agent-session-harness
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Session bootstrap scope capability and entrypoint regressions
@@ -857,7 +885,7 @@ jobs:
     # edited, or deleted — not on every turn/prompt/session. Guards the gate in
     # .claude/hooks/reindex.sh against regressions.
     name: reindex-path-gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: reindex hook fires only on relevant file changes
@@ -868,7 +896,7 @@ jobs:
     # Changeset sidecars share the T-*.json prefix but must never consume
     # INDEX.md rows or recent.md's 15-thread limit.
     name: rebuild-threads-index
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -900,7 +928,7 @@ jobs:
     # Item 2: /brainstorm and /plan must auto-checkpoint at command end so users
     # do not have to manually /handoff before a fresh session. Structural guard.
     name: auto-checkpoint-cmds
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Planning commands auto-checkpoint on completion
@@ -913,7 +941,7 @@ jobs:
     # rename). Primary back-off is the documented session_title SessionStart
     # input; the transcript custom-title scan is a labeled secondary net.
     name: session-title-manual-backoff
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Manual /rename and --name titles are not clobbered
@@ -926,7 +954,7 @@ jobs:
     # knowledge-repo-loop-zsh-unmatched-glob: the checkpoint and cleanup
     # snippets must not let zsh NOMATCH abort on an empty knowledge directory.
     name: knowledge-repo-glob-shells
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Install zsh for NOMATCH regression coverage
@@ -939,7 +967,7 @@ jobs:
     # Knowledge repositories must be real canonical directories everywhere;
     # setup/import/docs may never recreate the legacy repo-symlink layout.
     name: knowledge-scaffold-real-dir
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Knowledge repositories use real directories with sync-visible content
@@ -952,7 +980,7 @@ jobs:
     # sending — never send to an unconfirmed name. Structural guard over the
     # dm SKILL.md instruction contract.
     name: dm-people-resolve
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: /dm confirms recipient email via hq people resolve before sending
@@ -961,7 +989,7 @@ jobs:
   auto-acl-share-hooks:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: auto-acl-share-hooks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Install hq CLI for forwarded scaffold scripts
@@ -994,15 +1022,18 @@ jobs:
   outpost-instance-token-argv:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: outpost-instance-token-argv
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - name: yq asset matches the runner architecture
+        run: bash core/scripts/tests/yq-linux-asset.test.sh
       - name: Install mikefarah/yq for the Outpost script fixtures
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/bin"
+          yq_asset="$(bash core/scripts/ci/yq-linux-asset.sh)"
           curl --fail --silent --show-error --location \
-            https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 \
+            "https://github.com/mikefarah/yq/releases/download/v4.45.1/$yq_asset" \
             --output "$RUNNER_TEMP/bin/yq"
           chmod 0755 "$RUNNER_TEMP/bin/yq"
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
@@ -1014,6 +1045,7 @@ jobs:
           command -v yq >/dev/null
           bash core/scripts/tests/hq-job-run.test.sh
           bash core/scripts/tests/hq-job-probe.test.sh
+          bash core/scripts/tests/outpost-job-failure-alerts.test.sh
 
   previously-unrun-suites:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1021,7 +1053,7 @@ jobs:
     # unnoticed: audit-log-mkdir had been failing outright since audit-log.sh
     # gained a lib/portable.sh dependency the fixture never copied.
     name: previously-unrun-suites
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: audit-log append creates its metrics dir on a clean tree
@@ -1032,7 +1064,7 @@ jobs:
   core-write-protection:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: core-write-protection
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Agent secret reveal guard covers Bash and Codex PreToolUse
@@ -1043,6 +1075,8 @@ jobs:
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: Hook timeout attribution tags and compact sequence
+        run: bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
       - name: Master-hook success path process budget
         env:
           HQ_HOOK_PERF_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -1056,6 +1090,8 @@ jobs:
           set -euo pipefail
           timeout 60s git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$HQ_HOOK_PERF_BASE_SHA"
           timeout 240s bash core/scripts/tests/master-hook-event-process-budget.test.sh | tail -200
+      - name: Master-hook per-event budget handles equal and pre-optimization bases
+        run: timeout 600s bash core/scripts/tests/master-hook-event-process-budget-base-equal.test.sh
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
@@ -1117,7 +1153,7 @@ jobs:
   bash-guard-process-budgets:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: bash-guard-process-budgets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1134,13 +1170,15 @@ jobs:
   shell-portability:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: shell-portability
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: lint-shell-portability
         run: bash core/scripts/lint-shell-portability.sh
       - name: lint-shell-portability regression test
         run: bash core/scripts/tests/lint-shell-portability.test.sh
+      - name: lanes repo merge-hold shim regression
+        run: bash core/scripts/tests/lanes-hold-check-shim.test.sh
       - name: Grok minimum-version gate is correct without GNU sort
         run: bash core/scripts/tests/grok-min-version.test.sh
       - name: Install shellcheck
@@ -1157,13 +1195,16 @@ jobs:
             core/scripts/tests/block-core-writes-bash-process-budget.test.sh
             core/scripts/tests/block-guard-hooks-parity.test.sh
             core/scripts/tests/hook-timeout-sentry.test.sh
+            core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
             core/scripts/tests/check-hq-update-bounded-network.test.sh
             core/scripts/tests/hook-lib-strip-exclude-tokens.test.sh
             core/scripts/tests/block-core-writes-bash-fanout.test.sh
             core/scripts/tests/block-core-writes-bash-fast-path.test.sh
             core/scripts/tests/block-policy-writes-bash.test.sh
             core/scripts/tests/block-agent-secrets-reveal.test.sh
+            core/scripts/tests/lanes-hold-check-shim.test.sh
             .claude/hooks/block-agent-secrets-reveal.sh
+            .claude/hooks/lanes-repo-merge-hold.sh
             .claude/hooks/block-unsafe-package-install.sh
             .claude/hooks/block-core-writes-bash.sh
             .claude/hooks/block-policy-writes-bash.sh
@@ -1220,6 +1261,8 @@ jobs:
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: Hook timeout attribution tags and compact sequence
+        run: bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
@@ -1262,6 +1305,8 @@ jobs:
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: Hook timeout attribution tags and compact sequence
+        run: bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
@@ -1279,7 +1324,7 @@ jobs:
     # hook-lib engine parity (jq vs node), and broken-python3 runtime proof
     # for policy injection + the frontmatter validator.
     name: hooks-no-python
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Hooks run python-free (tripwire + parity + broken-stub runtime)
@@ -1292,7 +1337,7 @@ jobs:
     # Trigger-less soft/unset policies must not be promoted into the always-on
     # SessionStart baseline; hard fallback and normal reactive injection stay live.
     name: policy-trigger-migration
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: 300-policy hook process budget and output equivalence
@@ -1341,7 +1386,7 @@ jobs:
     # drift detector must classify + prune only behavior-neutral orphan copies
     # while never touching a diverged twin or a core-only shipped policy.
     name: personal-policy-overlay
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -1373,7 +1418,7 @@ jobs:
     # The detector must flag those refs and repair them WITHOUT touching local
     # branches, the configured remote, or any repos/ clone.
     name: stale-review-base
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: stale review-base detector reports + repairs safely
@@ -1387,7 +1432,7 @@ jobs:
     # baseline) and on canvas/share/secret prompts, stay untruncated in the
     # policy-reminder, and pass frontmatter validation (US-001).
     name: prefer-native-capabilities
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -1423,7 +1468,7 @@ jobs:
     # Forwarder tests depend on the released hq CLI. This contract keeps the
     # workflow install steps synchronized with every test that references one.
     name: forwarder-ci-contract
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Every forwarder-dependent test has an hq CLI job
@@ -1434,7 +1479,7 @@ jobs:
     # Wire the company-work-corpus hook suites explicitly without enabling
     # unrelated legacy scripts in the broader tests directory.
     name: work-mesh-tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Run Work Mesh client-hook test scripts
@@ -1456,7 +1501,7 @@ jobs:
     # US-010: enqueue-only live hooks. Timing asserts p95(user+sys CPU) < 20ms
     # always; adj wall p95 < 20ms only when 1-min load < ncpu (else skipped).
     name: work-mesh-live
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Work Mesh trusted bind remains compatible with macOS Bash 3.2
@@ -1478,7 +1523,7 @@ jobs:
     # workflow contract (paths filter, advisory exit-0, github-script wiring)
     # against regressions.
     name: doctor-advisory-summary
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -1497,7 +1542,7 @@ jobs:
     # `required` (HTTP 400 invalid_json_schema), which killed the first agent of
     # every codex-engine run, so the guard belongs somewhere mechanical.
     name: workflow-runner
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -1518,7 +1563,7 @@ jobs:
     # staging churns intra-version without bumping hqVersion.
     name: core-yaml-version-monotonic
     if: ${{ (github.event_name == 'pull_request' && github.repository == 'indigoai-us/hq-core') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1540,7 +1585,7 @@ jobs:
     # hq-core's main_protect ruleset.
     name: pr-author-hq-audit-bot
     if: ${{ (github.event_name == 'pull_request' && github.repository == 'indigoai-us/hq-core') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: PR author must be the hq-audit-bot App
         env:
@@ -1565,7 +1610,7 @@ jobs:
   collect-policy-changes:
     name: collect-policy-changes
     if: ${{ (github.event_name == 'pull_request') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     outputs:
       files: ${{ steps.collect.outputs.files }}
       count: ${{ steps.collect.outputs.count }}
@@ -1598,7 +1643,7 @@ jobs:
       github.event.pull_request.draft == false &&
       needs.collect-policy-changes.outputs.count != '0' &&
       !contains(github.event.pull_request.labels.*.name, 'skip-codex-rubric')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     strategy:
       max-parallel: 10
       fail-fast: false
@@ -1641,7 +1686,7 @@ jobs:
   provider-adapter-contract:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: provider-adapter-contract
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:

@@ -34,7 +34,11 @@ scaffolds, supervises, and syncs work across repos and companies.
 - Identity: `/hq-login`, `/hq-logout`, `/hq-whoami`.
 - Bugs and feature requests: `/hq-bug`.
 - Work Mesh Live presence is automatic (enqueue hooks + `hq mesh daemon`). Manual signals only: `hq mesh session task-status|blocked|note --enqueue …`. Clarification: `hq mesh context organize`.
-- Search: `/search` or `qmd`.
+- Search: `/search`, `hq search`, or `qmd`.
+- Connected apps: `/hq-integrations` or `hq integrations`.
+- Bots and agents: `hq bot` for local bots, `/new-agent` for hosted agents,
+  `hq agent enroll` for external bots.
+- Billing: `hq billing`.
 - Meetings, signals, and company context: `/meeting-notes`, `/signals`,
   `/ontology`.
 - Specialized design, content, security, data, and deploy work: check
@@ -106,6 +110,8 @@ pass: `/humanize`.
 - User guide: `core/docs/hq/USER-GUIDE.md`.
 - Owner and company routing: `personal/agents-profile.md`,
   `personal/agents-companies.md`.
+- Product model: `core/knowledge/public/hq-core/hq-product-model.md`.
+- CLI reference: `core/knowledge/public/hq-core/hq-cli-reference.md`.
 - Quick reference: `core/knowledge/public/hq-core/quick-reference.md`.
 - Policies: `core/policies/`, repo `.claude/policies/`, and
   `companies/{co}/policies/`.

@@ -535,16 +535,7 @@ case "$SURFACE" in
   remote) SURFACE="remote" ;;
   *) SURFACE="headless" ;;
 esac
-# personUid owners break `hq dm` (treated as channel names) — prefer email.
-case "$OWNER" in
-  *@*) ;;
-  *)
-    if command -v hq >/dev/null 2>&1; then
-      _email="$(hq whoami 2>/dev/null | tr ' ' '\n' | grep -E '^[^[:space:]]+@[^[:space:]]+$' | head -1 || true)"
-      [ -n "$_email" ] && OWNER="$_email"
-    fi
-    ;;
-esac
+# hq dm accepts personUid recipients; do not replace a job owner with this Outpost's identity.
 
 [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ] || die "job missing id: $JOB_FILE"
 [ -n "$RUNTIME" ] && [ "$RUNTIME" != "null" ] || die "job missing runtime: $JOB_FILE"

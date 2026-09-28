@@ -3,18 +3,34 @@ type: reference
 domain: [operations, engineering]
 status: canonical
 tags: [quick-reference, directory-structure, commands, workers, knowledge-bases]
-relates_to: []
+relates_to: [knowledge/public/hq-core/hq-product-model.md, knowledge/public/hq-core/hq-cli-reference.md]
 ---
 
 # HQ Quick Reference
+
+## Product surfaces
+
+HQ is the folder plus the `hq` CLI, the desktop app, the console
+(hq.computer), bots and agents, chat-app connectors, deploy, and cloud sync.
+Map and "which surface for which task": [hq-product-model.md](hq-product-model.md).
+
+| Topic | Reference |
+|---|---|
+| Every `hq` command (generated) | [hq-cli-reference.md](hq-cli-reference.md) |
+| Sync, vaults, company lifecycle | [hq-sync-model.md](hq-sync-model.md) |
+| Bots and agents | [agents-and-bots.md](agents-and-bots.md), [external-agents-mcp.md](external-agents-mcp.md) |
+| Console pages | [hq-console.md](hq-console.md) |
+| Plans and billing | [plans-and-pricing.md](plans-and-pricing.md) |
+| Desktop app | [hq-desktop-app.md](hq-desktop-app.md) |
+| Deploy | [deploy SKILL.md](../../../../.claude/skills/deploy/SKILL.md) |
 
 ## Directory Structure
 
 ```
 HQ/
-├── .claude/commands/   # Slash commands (44)
+├── .claude/commands/   # Slash commands
 ├── AGENTS.md           # Runtime entrypoint (symlink to .claude/CLAUDE.md)
-├── companies/          # Company-scoped resources (14 companies)
+├── companies/          # Company-scoped resources (registry: companies/manifest.yaml)
 │   └── {co}/
 │       ├── knowledge/  # Embedded git repo (company knowledge)
 │       ├── policies/   # Standing operational rules
@@ -49,7 +65,6 @@ HQ/
     ├── checkpoints/    # Session saves
     ├── orchestrator/   # Ralph loop workflow state
     ├── reports/        # Generated reports
-    ├── social-drafts/  # Social content pipeline
     └── threads/        # Session threads + handoff.json
 ```
 
@@ -66,23 +81,12 @@ HQ/
 
 Collision rule: with the mirror retired there is no link path to collide on. Both the personal and the core copy are read; a consumer that dedups by identity resolves same-id twins with personal first (e.g. the policy trigger hook scans `personal/policies/` ahead of `core/policies/`, so an operator's global rule wins over a same-id core copy).
 
-## Companies (14)
+## Companies
 
-| Company | Workers | Key Resources |
-|---------|---------|---------------|
-| {company} | cfo, analyst, infobip-admin, gtm, qa, deploy | Stripe, Gusto, Deel, QB, Shopify, Linear (acme-recover) |
-| {company} | cmo | AWS (Route 53), Linear, LinkedIn, Loops |
-| personal | x-user, invoices, social-council | Slack, Gmail, LinkedIn, X |
-| acmework | site-builder, research-agent | Stripe |
-| acmestudio | — | Band/music |
-| acme-haven | — | Artist site + admin |
-| acme-mgmt | — | Artist manager monorepo |
-| acmebrands | — | AcmeBrands AI |
-| acme-estate | — | Estate platform |
-| acmebrand | — | Shopify store |
-| acmeflow | — | Expo mobile app |
-| acmedom | — | Domain management |
-| acme-rebrand | — | GTM/growth |
+Companies differ per install. Read `companies/manifest.yaml` for the list of
+companies on this machine and their cloud state (`cloud_uid` when
+cloud-backed). Each company's workers, repos, knowledge, and policies live
+under `companies/{co}/`, which follows `companies/_template/`.
 
 ## Workers
 
@@ -105,19 +109,19 @@ garden-scout, garden-auditor, garden-curator
 
 **Company Workers:** Located at `companies/{co}/workers/`. See manifest.yaml for full list per company.
 
-## Commands (44)
+## Commands
+
+Slash commands live in `.claude/commands/` and `.claude/skills/`; packs and
+companies add more. The list below is the common set, not a full inventory.
 
 **Session:** `/startwork`, `/reanchor`, `/checkpoint`, `/handoff`, `/recover-session`, `/remember`, `/learn`
 **Handoff:** `/delegate <recipient> [project]` — transfer a project to a person or fleet agent: vault grants (verified), branch push, secrets by name, board + work-mesh reassignment, and a self-pulling pickup DM (no `/hq-sync` needed on their side). Skill: `.claude/skills/delegate/SKILL.md`; manifest spec: `core/knowledge/public/hq-core/delegation-bundle-spec.md`.
 **Workers:** `/run`, `/newworker`
 **Projects:** `/plan`, `/run-project`, `/execute-task`, `/understand-project`, `/idea`, `/goals`, `/dashboard`, `/tdd`, `/quality-gate`
-**Content:** `/contentidea`, `/suggestposts`, `/preview-post`, `/post`, `/post-results`, `/social-setup`
-**Communication:** `/email`, `/checkemail`, `/imessage`
-**Design:** `/generateimage`
 **System:** `/cleanup`, `/garden`, `/search`, `/search-reindex`, `/harness-audit`, `/model-route`, `/update-hq`
-**Company:** `/newcompany`, `/launch-brand`, `/pb-connect`, `/bootcamp-student`, `/personal-interview`
-**Linear:** `/check-linear-acme-recover`, `/{product}-prd`
-**Deploy:** `/pr`
+**Company:** `/newcompany`, `/personal-interview`, `/onboard`, `/new-hire`, `/new-agent`
+**HQ services:** `/hq-sync`, `/hq-files`, `/hq-share`, `/hq-secrets`, `/hq-integrations`, `/dm`
+**Ship:** `/pr` (pull request operations), `/deploy` (publish an artifact; there is no `hq deploy` command)
 
 ## CLI: `hq mesh` (Work Mesh Live)
 
@@ -148,29 +152,34 @@ Share-session URLs are encrypted single-use 15-minute capabilities — never per
 
 ## CLI: `hq db` (vault databases)
 
-Local SQLite per company (always) + optional remote Postgres-class on **HQ Team** ($500/mo). Guide: `core/knowledge/public/hq-core/vault-databases.md`. Requires `@indigoai-us/hq-cli` ≥ 5.62.0.
+Local SQLite per company (always) + optional remote Postgres-class on **HQ Workforce** ($500/mo per company; internal id `paid-500`). Billing is live. Guide: `core/knowledge/public/hq-core/vault-databases.md`. Requires `@indigoai-us/hq-cli` ≥ 5.62.0.
 
 | Command | Use |
 |---------|-----|
 | `hq db status --company {co}` | Ensure local `~/.hq/db/{co}/vault.db` (WAL); report schema version |
 | `hq db sql --company {co} -- 'SELECT …'` | Query local DB (read-only default; `--write` for mutations) |
 | `hq db migrate --company {co} --hq-root {HQ}` | Apply `companies/{co}/db/migrations/*.sql` |
-| `hq db provision --company {co}` | Remote binding — **Team plan only** (when control plane live) |
+| `hq db provision --company {co}` | Remote binding — **HQ Workforce plan only** |
+| `hq db sql --company {co} --remote -- '…'` | Flag exists but always fails today (no remote executor wired); use local SQL |
 
 Migrations are vault **text**; binary `.db` files stay machine-local (never under `companies/`). Never print connection strings. Local and remote are not auto-replicated in v1.
 
 ## CLI: `hq dm` (direct messages)
 
-Send a person-to-person notification to a teammate's HQ Desktop App. Skill: `.claude/skills/dm/SKILL.md` (`/dm`).
+Full messaging: DMs, group messages, channels, and threads, in the HQ Desktop App (macOS and Windows) or from a session. Skill: `.claude/skills/dm/SKILL.md` (`/dm`).
 
 | Command | Use |
 |---------|-----|
-| `hq dm <email\|prs_*> "<message>"` | Plain DM — recipient gets an HQ Desktop App notification |
+| `hq dm <recipient-or-channel> "<message>"` | Send to a person (email, `prs_*`), bot, or channel |
 | `hq dm <r> "<m>" --prompt "<ctx>"` | Attach agent context — recipient gets a one-click "Copy prompt" action |
-| `hq dm <r> "<m>" --details "<text>"` / `--details-file <path>` | Longer text shown in the recipient's "Open details" window |
+| `hq dm <r> "<m>" --details "<text>"` / `--details-file <path>` | Longer text shown in an "Open details" view |
 | `hq dm <r> "<m>" --at <iso>` / `--in <30s\|10m\|2h\|1d>` | Schedule delivery (store-and-forward) |
+| `hq dm inbox` | Recent incoming messages |
+| `hq dm thread <person>` (alias `read`) | Two-way conversation with a person or bot |
+| `hq dm channel <name>` (alias `history`) | Recent messages in a channel or group DM; `hq channels` lists them |
+| `hq dm requests` / `accept` / `decline` / `block` | Connection requests from people outside your companies |
 
-Receive-only in the app — sending is session/CLI only. You can only DM someone you share an active company with; DM your own email for a note-to-self/reminder. Never put secrets in a DM (stored server-side).
+DM your own email for a note-to-self or reminder. Never put secrets in a DM (stored server-side).
 
 ## Command ↔ Skill Shapes
 
@@ -184,16 +193,20 @@ Every command exists as `.claude/commands/{name}.md` (the slash-command entry po
 
 **Rule for new commands:** start with the consolidated shape — write the canonical logic in `SKILL.md`, leave `.md` as a stub copying `.claude/commands/startwork.md`'s shape (frontmatter → H1 → intro → `## Steps` → `## After`). Only fork if you have a genuine thin-router reason like `run-project`.
 
+## Pricing and Billing
+
+What HQ costs and how billing works: `core/knowledge/public/hq-core/pricing-and-billing.md`. Numbers: `core/knowledge/public/hq-core/pricing.json` (copy of the HQ API pricing endpoint (`GET /v1/pricing` on the HQ API base, default https://hqapi.hq.computer)). Quote only from those or the endpoint (policy `hq-pricing-source-of-truth`).
+
 ## Knowledge Bases
 
 **Public** (`core/knowledge/public/`): Ralph, ai-security-framework, agent-browser, curious-minds, dev-team, hq-core, loom, projects, workers. Optional packs (install via `hq install @indigoai-us/hq-pack-*`) add: design-styles, design-quality, gemini-cli.
 
 **Private** (`core/knowledge/private/`): linear
 
-**Company-level** (`companies/{co}/knowledge/`): All 14 companies have embedded git repos.
+**Company-level** (`companies/{co}/knowledge/`): one per company; see `companies/manifest.yaml`.
 
 ## Policies
 
 Standing operational rules per company. Location: `companies/{co}/policies/*.md`
-Cross-cutting rules: `core/policies/*.md` (47 policies)
+Cross-cutting rules: `core/policies/*.md`
 Spec: `core/knowledge/public/hq-core/policies-spec.md`. Template: `companies/_template/policies/example-policy.md`

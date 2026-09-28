@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Worktree
+  short_description: >-
+    Create a git worktree under workspace/worktrees/ and route all

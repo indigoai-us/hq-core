@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Hq Checkup
+  short_description: >-
+    Check that HQ is working and fix what can be fixed safely

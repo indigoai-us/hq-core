@@ -10,13 +10,18 @@ the YAML.
 
 | | **Outpost scheduled jobs** (this spec) | **Fleet Agent Scheduled Jobs** |
 |---|---|---|
-| Who | End-user personal/company jobs | HQ/Indigo fleet deep agents |
-| Where | User Outpost (systemd user timers) | EventBridge Scheduler + IoT/vault |
-| Registry | `personal/jobs/*.yaml`, `companies/{co}/jobs/*.yaml` | Fleet agent manifests / EventBridge |
-| Product surface | `/schedule` | Company-agent / ops tooling |
+| Who | End-user personal/company jobs | Hosted agents and local bots |
+| Where | User Outpost (systemd user timers) | hq-pro-agents job records on EventBridge Scheduler; agents-v2 boxes also run HqFleet-native cron on the box clock |
+| Registry | `personal/jobs/*.yaml`, `companies/{co}/jobs/*.yaml` | hq-pro-agents job records (`/v1/agents/{uid}/jobs`); HqFleet cron store on the box |
+| Product surface | `/schedule` | `hq bot jobs <name>` (local bots), `hq agents jobs list\|pause\|cancel` (hosted agents) |
 
-Do **not** unify these systems in v1. Paths stay `…/jobs/` for Outpost jobs;
-fleet docs remain under agent-scheduled-jobs architecture.
+Do **not** unify these systems in v1. Paths stay `…/jobs/` for Outpost jobs.
+Fleet scheduling is described in
+[agents-and-bots.md](agents-and-bots.md#scheduled-jobs): `hq bot jobs` and
+`hq agents jobs` both manage hq-pro EventBridge jobs, and
+`hq-agents-v2-import-jobs` (hq-agents-v2) migrates an agent's EventBridge
+jobs onto HqFleet cron and pauses the originals (verified against
+hq-cli@dfe49a48, hq-pro-agents@f6275ec7, hq-agents-v2@5ec6d18 on 2026-09-27).
 
 ## Registry locations
 

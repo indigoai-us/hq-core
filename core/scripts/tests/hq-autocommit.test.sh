@@ -4,7 +4,8 @@
 
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git -C "$SCRIPT_DIR/../../.." rev-parse --show-toplevel)"
 TMP_PARENT="$(mktemp -d)"
 TMP="$TMP_PARENT/hq"
 trap 'rm -rf "$TMP_PARENT"' EXIT
@@ -16,7 +17,8 @@ export TMPDIR="$TMP_PARENT/tmp"
 mkdir -p "$TMPDIR"
 
 mkdir -p "$TMP/.claude/hooks" "$TMP/core" "$TMP/repos/public/app"
-cp "$ROOT/.claude/hooks/hq-autocommit.sh" "$TMP/.claude/hooks/hq-autocommit.sh"
+HOOK_SOURCE="${HQ_AUTOCOMMIT_TEST_HOOK_SOURCE:-$ROOT/.claude/hooks/hq-autocommit.sh}"
+cp "$HOOK_SOURCE" "$TMP/.claude/hooks/hq-autocommit.sh"
 chmod +x "$TMP/.claude/hooks/hq-autocommit.sh"
 printf 'hqVersion: "test"\n' > "$TMP/core/core.yaml"
 
@@ -25,6 +27,138 @@ git -C "$TMP" config user.email "hq-autocommit-test"
 git -C "$TMP" config user.name "HQ Autocommit Test"
 git -C "$TMP" add core/core.yaml .claude/hooks/hq-autocommit.sh
 git -C "$TMP" commit -q -m "init"
+
+run_linked_worktree_case() {
+  local linked="$TMP_PARENT/hq-linked" branch="us085-linked-worktree" base_head payload rc output
+  git -C "$TMP" worktree add -q -b "$branch" "$linked"
+  base_head="$(git -C "$TMP" rev-parse HEAD)"
+  printf 'linked worktree edit\n' > "$linked/linked-worktree.md"
+  payload="$(jq -cn --arg path "$linked/linked-worktree.md" '{tool_name:"Edit",tool_input:{file_path:$path}}')"
+  rc=0
+  output="$(cd "$linked" && printf '%s' "$payload" | env CLAUDE_PROJECT_DIR="$linked" bash .claude/hooks/hq-autocommit.sh 2>&1)" || rc=$?
+  if [[ "$rc" -ne 0 || -n "$output" ]]; then
+    echo "linked-worktree autosave should stay silent and exit 0; rc=$rc out='$output'" >&2
+    return 1
+  fi
+  if [[ "$(git -C "$linked" branch --show-current)" != "$branch" ]]; then
+    echo "linked-worktree autosave must retain its worktree branch" >&2
+    return 1
+  fi
+  if ! git -C "$linked" show --name-only --format= HEAD | grep -Fqx 'linked-worktree.md'; then
+    echo "linked-worktree edit was not committed on its linked branch" >&2
+    return 1
+  fi
+  if [[ "$(git -C "$TMP" rev-parse HEAD)" != "$base_head" ]]; then
+    echo "linked-worktree autosave changed the base worktree branch" >&2
+    return 1
+  fi
+}
+
+ensure_cygpath_shim() {
+  local shim_dir="$TMP/windows-path-shim"
+  mkdir -p "$shim_dir"
+  cat > "$shim_dir/cygpath" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-u" ]]; then shift; fi
+windows_path="${1:-}"
+windows_path="${windows_path//\\//}"
+case "$windows_path" in
+  [A-Za-z]:/hq/*) ;;
+  *) exit 1 ;;
+esac
+printf '%s/%s\n' "${HQ_AUTOCOMMIT_TEST_WINDOWS_ROOT:?}" "${windows_path:6}"
+SHIM
+  chmod +x "$shim_dir/cygpath"
+  printf '%s' "$shim_dir"
+}
+
+run_windows_style_path_case() {
+  local style="$1" fixture windows_path payload shim_dir rc=0 output
+  case "$style" in
+    backslash)
+      fixture="windows-backslash.md"
+      windows_path='C:\hq\windows-backslash.md'
+      ;;
+    forwardslash)
+      fixture="windows-forwardslash.md"
+      windows_path='C:/hq/windows-forwardslash.md'
+      ;;
+    *)
+      echo "unknown Windows path style: $style" >&2
+      return 1
+      ;;
+  esac
+  shim_dir="$(ensure_cygpath_shim)"
+  printf 'Windows path edit\n' > "$TMP/$fixture"
+  payload="$(jq -cn --arg path "$windows_path" '{tool_name:"Edit",tool_input:{file_path:$path}}')"
+  output="$(cd "$TMP" && printf '%s' "$payload" | env \
+    HQ_AUTOCOMMIT_TEST_WINDOWS_ROOT="$TMP" PATH="$shim_dir:$PATH" \
+    bash .claude/hooks/hq-autocommit.sh 2>&1)" || rc=$?
+  if [[ "$rc" -ne 0 || -n "$output" ]]; then
+    echo "Windows-style $style path should autosave silently; rc=$rc out='$output'" >&2
+    return 1
+  fi
+  if ! git -C "$TMP" show --name-only --format= HEAD | grep -Fqx "$fixture"; then
+    echo "Windows-style $style path was not committed: $windows_path" >&2
+    return 1
+  fi
+}
+
+run_unresolved_windows_path_case() {
+  local shim_dir payload rc=0 output before after
+  shim_dir="$(ensure_cygpath_shim)"
+  mkdir -p "$TMP/unresolved"
+  before="$(grep -c 'FAIL stage=resolve' "$TMP/workspace/logs/hq-autocommit.log" 2>/dev/null || true)"
+  payload="$(jq -cn --arg path 'C:\hq\unresolved\missing.md' '{tool_name:"Edit",tool_input:{file_path:$path}}')"
+  output="$(cd "$TMP" && printf '%s' "$payload" | env \
+    HQ_AUTOCOMMIT_TEST_WINDOWS_ROOT="$TMP" PATH="$shim_dir:$PATH" \
+    bash .claude/hooks/hq-autocommit.sh 2>&1)" || rc=$?
+  if [[ "$rc" -ne 0 || -n "$output" ]]; then
+    echo "unresolved Windows path should remain non-blocking and silent; rc=$rc out='$output'" >&2
+    return 1
+  fi
+  after="$(grep -c 'FAIL stage=resolve' "$TMP/workspace/logs/hq-autocommit.log" 2>/dev/null || true)"
+  if [[ "$after" -le "$before" ]]; then
+    echo "unresolved Windows path was silently dropped instead of logged" >&2
+    return 1
+  fi
+}
+
+run_windows_fallback_path_case() {
+  local shim_dir="$TMP/cygpath-failure-shim" payload rc=0 output log
+  mkdir -p "$shim_dir"
+  cat > "$shim_dir/cygpath" <<'SHIM'
+#!/usr/bin/env bash
+exit 1
+SHIM
+  chmod +x "$shim_dir/cygpath"
+  payload="$(jq -cn --arg path 'C:\hq\fallback-missing.md' '{tool_name:"Edit",tool_input:{file_path:$path}}')"
+  output="$(cd "$TMP" && printf '%s' "$payload" | env \
+    PATH="$shim_dir:$PATH" bash .claude/hooks/hq-autocommit.sh 2>&1)" || rc=$?
+  if [[ "$rc" -ne 0 || -n "$output" ]]; then
+    echo "unresolved fallback path should remain non-blocking and silent; rc=$rc out='$output'" >&2
+    return 1
+  fi
+  log="$TMP/workspace/logs/hq-autocommit.log"
+  if ! grep -Fq 'FAIL stage=resolve path=/c/hq/fallback-missing.md' "$log" 2>/dev/null; then
+    echo "failed cygpath conversion did not use and log the pure-Bash drive mapping" >&2
+    return 1
+  fi
+}
+
+if [[ -n "${HQ_AUTOCOMMIT_TEST_PATH_CASE:-}" ]]; then
+  case "$HQ_AUTOCOMMIT_TEST_PATH_CASE" in
+    linked-worktree) run_linked_worktree_case ;;
+    windows-backslash) run_windows_style_path_case backslash ;;
+    windows-forwardslash) run_windows_style_path_case forwardslash ;;
+    unresolved-windows) run_unresolved_windows_path_case ;;
+    windows-fallback) run_windows_fallback_path_case ;;
+    *) echo "unknown path regression case: $HQ_AUTOCOMMIT_TEST_PATH_CASE" >&2; exit 2 ;;
+  esac
+  echo "hq-autocommit path regression $HQ_AUTOCOMMIT_TEST_PATH_CASE: ok"
+  exit 0
+fi
 
 printf 'one\n' > "$TMP/notes.md"
 payload='{"tool_name":"Edit","tool_input":{"file_path":"notes.md"}}'
@@ -384,5 +518,11 @@ if git -C "$TMP" diff --cached --name-only -z | tr '\0' '\n' | grep -q "Icon"; t
   echo "an Icon\\r path must not be left staged in the index" >&2
   exit 1
 fi
+
+run_linked_worktree_case
+run_windows_style_path_case backslash
+run_windows_style_path_case forwardslash
+run_unresolved_windows_path_case
+run_windows_fallback_path_case
 
 echo "hq-autocommit smoke: ok"

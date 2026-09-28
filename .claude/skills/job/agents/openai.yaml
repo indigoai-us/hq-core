@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Job
+  short_description: >-
+    Deprecated alias for /schedule — Outpost recurring agent jobs.

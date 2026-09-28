@@ -157,7 +157,11 @@ if ! . "$REPO_ROOT/core/scripts/lib/hook-adapter-core.sh" 2>/dev/null; then
 fi
 
 MASTER_TRACE_START="${EPOCHREALTIME:-}"
-INPUT="$(cat)"
+INPUT=
+IFS= read -r -d '' INPUT || true
+# Command substitution stripped trailing newlines; preserve that contract without
+# spawning an external process on every hook event.
+INPUT="${INPUT%"${INPUT##*[!$'\n']}"}"
 MASTER_STARTED_MS="$(master_now_ms)"
 MASTER_TIMING_PRECISION="$(master_timing_precision)"
 master_debug_phase_finish startup
@@ -222,6 +226,12 @@ master_timeout_sha256() {
 
 MASTER_INVOCATION_ID="$(master_timeout_sha256 "$$" "$MASTER_STARTED_MS" "$EVENT" 2>/dev/null || true)"
 [ -n "$MASTER_INVOCATION_ID" ] || MASTER_INVOCATION_ID="$$-$MASTER_STARTED_MS"
+MASTER_DEBUG_DIRECTORY_READY=0
+if master_timeout_watchdog_enabled \
+  && mkdir -p "$REPO_ROOT/workspace/.hook-timeout-journal" >/dev/null 2>&1; then
+  MASTER_DEBUG_DIRECTORY_READY=1
+  master_debug_initialize "$REPO_ROOT" "$MASTER_INVOCATION_ID"
+fi
 stop_master_timeout_watchdog() {
   local i pid session
   for i in "${!master_timeout_watchdog_pids[@]}"; do
@@ -242,7 +252,8 @@ stop_master_timeout_watchdog() {
   done
   master_timeout_watchdog_pids=()
   master_timeout_watchdog_sessions=()
-  if [ -n "${timeout_journal_file:-}" ] && [ -n "${MASTER_INVOCATION_ID:-}" ]; then
+  if { [ -n "${timeout_journal_file:-}" ] || [ -n "${MASTER_DEBUG_PHASE_FILE:-}" ]; } \
+    && [ -n "${MASTER_INVOCATION_ID:-}" ]; then
     local -a debug_files=()
     if [ -n "$MASTER_DEBUG_PHASE_FILE" ]; then
       debug_files=(
@@ -252,8 +263,9 @@ stop_master_timeout_watchdog() {
         "$MASTER_DEBUG_CLI_VERSION_FILE.tmp.$$"
       )
     fi
-    rm -f "$timeout_journal_file.$MASTER_INVOCATION_ID.active" \
-      ${debug_files[@]+"${debug_files[@]}"} >/dev/null 2>&1 || true
+    [ -z "${timeout_journal_file:-}" ] \
+      || debug_files+=("$timeout_journal_file.$MASTER_INVOCATION_ID.active")
+    [ "${#debug_files[@]}" -eq 0 ] || rm -f "${debug_files[@]}" >/dev/null 2>&1 || true
   fi
 }
 
@@ -462,16 +474,14 @@ master_nproc() {
 
 timeout_journal_file=""
 active_child_file=""
-if master_timeout_watchdog_enabled && [ -n "$SESSION_ID" ]; then
+if master_timeout_watchdog_enabled && [ "$MASTER_DEBUG_DIRECTORY_READY" -eq 1 ] && [ -n "$SESSION_ID" ]; then
   journal_session_hash="$(master_timeout_sha256 "$SESSION_ID")"
   if [ -n "$journal_session_hash" ]; then
     timeout_journal_file="$REPO_ROOT/workspace/.hook-timeout-journal/$journal_session_hash.tsv"
-    mkdir -p "${timeout_journal_file%/*}" >/dev/null 2>&1 || timeout_journal_file=""
     [ -z "$timeout_journal_file" ] || active_child_file="$timeout_journal_file.$MASTER_INVOCATION_ID.active"
   fi
 fi
 if [ -n "$timeout_journal_file" ]; then
-  master_debug_initialize "$REPO_ROOT" "$MASTER_INVOCATION_ID"
   export HQ_HOOK_TIMEOUT_JOURNAL_FILE="$timeout_journal_file"
 else
   unset HQ_HOOK_TIMEOUT_JOURNAL_FILE || true
@@ -568,21 +578,8 @@ compact_timeout_journal() {
 }
 
 master_hook_sequence_json() {
-  local sequence
-  [ -f "$timeout_journal_file" ] || { printf '[]'; return; }
   compact_timeout_journal
-  sequence="$(tail -n 40 "$timeout_journal_file" 2>/dev/null | jq -Rsc '
-    split("\n")
-    | map(select(length > 0) | split("\t")
-      | select((length == 3 or length == 4) and (.[2] | test("^[0-9]+$")))
-      | {script: .[0], event: .[1], ms: (.[2] | tonumber)})
-    | .[-20:]
-  ' 2>/dev/null || true)"
-  if [ -n "$sequence" ]; then
-    printf '%s' "$sequence"
-  else
-    printf '[]'
-  fi
+  hook_timeout_sequence_json "$timeout_journal_file"
 }
 
 master_policy_trigger_metadata_json() {
@@ -777,6 +774,7 @@ exit_code=0
 plain_buf=""
 json_outputs=()
 json_sources=()
+blocking_hook_sources=()
 timed_out_child_paths=()
 timed_out_child_elapsed_ms=()
 timed_out_child_exit_codes=()
@@ -922,12 +920,33 @@ collect_output() { # <rc> <stdout> <source-path>
     fi
   fi
   if [ "$rc" -eq 2 ]; then
+    blocking_hook_sources+=("$src")
+  fi
+  if [ "$rc" -eq 2 ]; then
     # Claude Code treats 2 as a block. Preserve it even if an earlier advisory
     # hook failed, so a broken sibling cannot downgrade a later guard.
     exit_code=2
   elif [ "$rc" -ne 0 ] && [ "$exit_code" -eq 0 ]; then
     exit_code=$rc
   fi
+}
+
+master_report_block_reason() { # <source-path>
+  local source="$1" hook_name
+  hook_name="${source##*/}"
+  hook_name="${hook_name%.sh}"
+  case "$hook_name" in
+    ''|*[!A-Za-z0-9._-]*) hook_name="registered hook" ;;
+  esac
+  printf '\nBlocked by hook %s.\n' "$hook_name" >&2 || true
+}
+
+master_block_reason_source_seen() { # <source-path>
+  local wanted="$1" existing
+  for existing in ${blocking_hook_sources[@]+"${blocking_hook_sources[@]}"}; do
+    [ "$existing" = "$wanted" ] && return 0
+  done
+  return 1
 }
 
 master_normalize_fingerprint_path() {
@@ -1155,6 +1174,13 @@ master_report_late_event() {
     slow_child_ms="$final_elapsed_ms"
   fi
   [ -n "$slow_child_ms" ] || [ "$slow_child_duration" -le 0 ] || slow_child_ms="$slow_child_duration"
+  if [ -z "$slow_child" ] && [ "$hook_name" = master-hook.sh ]; then
+    case "${MASTER_DEBUG_ACTIVE_PHASE:-}" in
+      startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse)
+        debug_wait_point="$MASTER_DEBUG_ACTIVE_PHASE"
+        ;;
+    esac
+  fi
   fingerprint_identity="$(master_hook_fingerprint_identity "$hook_path")"
   fingerprint_hash="$(master_timeout_sha256 "$fingerprint_identity")"
   [ -n "$fingerprint_hash" ] || return 0
@@ -1187,6 +1213,9 @@ master_report_late_event() {
     debug_wait_point=child_wait
     debug_child_name="$slow_child"
     debug_child_elapsed="${slow_child_ms:-$final_elapsed_ms}"
+    case "$slow_child" in
+      master:*) debug_wait_point="${slow_child#master:}"; debug_child_name=other ;;
+    esac
   fi
   if hook_timeout_cli_supports_debug_context "$hq_bin" "$MASTER_DEBUG_CLI_VERSION_FILE" "$platform"; then
     debug_context="$(hook_timeout_debug_context_json \
@@ -1210,6 +1239,7 @@ master_report_late_event() {
     --arg spawn_ms "$spawn_ms" \
     --arg slow_child "$slow_child" \
     --arg slow_child_ms "$slow_child_ms" \
+      --argjson hook_sequence "$hook_sequence" \
     --arg bash_env_set "$bash_env_set" \
     --arg shell "$shell_info" \
     --arg cwd_kind "$cwd_kind_value" \
@@ -1221,8 +1251,7 @@ master_report_late_event() {
     --argjson watchdog_timeout_ms "$watchdog_timeout_ms" \
     --argjson final_elapsed_ms "$final_elapsed_ms" \
     --argjson exit_code "$report_exit" \
-    --argjson nproc "$nproc_count" \
-    --argjson hook_sequence "$hook_sequence" '
+    --argjson nproc "$nproc_count" '
       {
         type: $type,
         message: $message,
@@ -1493,12 +1522,19 @@ done
 # (no JSON) never reaches `exit "$exit_code"` and the process returns 1.
 master_debug_phase_start output_write
 has_blocking_json=0
-for jo in ${json_outputs[@]+"${json_outputs[@]}"}; do
-  case "$jo" in *'"decision"'*) ;; *) continue ;; esac
-  if printf '%s' "$jo" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+for ((i = 0; i < ${#json_outputs[@]}; i++)); do
+  jo="${json_outputs[$i]}"
+  case "$jo" in *'"decision"'*|*'"permissionDecision"'*) ;; *) continue ;; esac
+  if printf '%s' "$jo" | jq -e '
+    .decision == "block" or .hookSpecificOutput.permissionDecision == "deny"
+  ' >/dev/null 2>&1; then
     has_blocking_json=1
-    break
+    src="${json_sources[$i]}"
+    master_block_reason_source_seen "$src" || blocking_hook_sources+=("$src")
   fi
+done
+for src in ${blocking_hook_sources[@]+"${blocking_hook_sources[@]}"}; do
+  master_report_block_reason "$src"
 done
 
 timeout_warning_emitted=0

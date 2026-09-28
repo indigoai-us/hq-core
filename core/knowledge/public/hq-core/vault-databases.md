@@ -2,7 +2,7 @@
 type: reference
 domain: [operations, engineering]
 status: canonical
-tags: [hq-cli, vault, databases, sqlite, secrets, team-plan]
+tags: [hq-cli, vault, databases, sqlite, secrets, workforce-plan]
 relates_to:
   - quick-reference.md
   - native-knowledge-stores.md
@@ -10,7 +10,7 @@ relates_to:
 
 # Vault databases (`hq db`)
 
-Structured storage as a first-class HQ surface: **local SQLite per company** on every machine, and (on **HQ Team**, $500/mo) a **remote Postgres-class** DB provisioned by the platform — secrets never printed.
+Structured storage as a first-class HQ surface: **local SQLite per company** on every machine, and (on **HQ Workforce**, $500/mo per company; internal plan id `paid-500`) a **remote** DB provisioned by the platform — secrets never printed.
 
 Markdown / qmd / ontology remain the primary knowledge store. Vault DB is for **relational agent and app state**, not for replacing company knowledge docs.
 
@@ -18,8 +18,8 @@ Markdown / qmd / ontology remain the primary knowledge store. Vault DB is for **
 
 | Tier | When | Path / binding |
 |------|------|----------------|
-| **Local (C1)** | Always — no Team plan required | `~/.hq/db/{company}/vault.db` (WAL). Binary files **outside** the vault tree (not hq-sync’d). |
-| **Remote (C2)** | **HQ Team plan only** | Control-plane provision; connection material only in HQ Secrets / SecretBinding. |
+| **Local (C1)** | Always — no paid plan required | `~/.hq/db/{company}/vault.db` (WAL). Binary files **outside** the vault tree (not hq-sync’d). |
+| **Remote (C2)** | **HQ Workforce plan only** | Control-plane provision; connection material only in HQ Secrets / SecretBinding. |
 
 Local and remote share the CLI surface but are **not** auto-replicated in v1.
 
@@ -27,8 +27,8 @@ Local and remote share the CLI surface but are **not** auto-replicated in v1.
 
 - Agent skills that need small tables (ledgers, caches, registries, inventories)
 - Implementation partners standardizing client installs (same migration layout every company)
-- Team multi-machine shared operational data (Team remote)
-- Deployed apps needing `DATABASE_URL` via **existing SecretBinding** (Team remote)
+- Team multi-machine shared operational data (Workforce remote)
+- Deployed apps needing `DATABASE_URL` via **existing SecretBinding** (Workforce remote)
 
 ## Jobs that do **not** fit v1
 
@@ -45,8 +45,8 @@ Local and remote share the CLI surface but are **not** auto-replicated in v1.
 | `hq db status --company {co}` | Ensure local SQLite exists; report path + schema version (never prints remote URLs) |
 | `hq db sql --company {co} -- 'SELECT …'` | Query **local** DB (read-only default; `--write` for mutations) |
 | `hq db migrate --company {co} --hq-root {HQ}` | Apply vault text migrations |
-| `hq db provision --company {co}` | Remote binding (Team plan; live control plane when deployed) |
-| `hq db sql --company {co} --remote -- '…'` | Remote SQL via secrets injection (when wired) |
+| `hq db provision --company {co}` | Remote binding via hq-pro `POST /v1/db/provision` (HQ Workforce plan; other plans get `PLAN_REQUIRED`) |
+| `hq db sql --company {co} --remote -- '…'` | **Not working yet.** The flag exists, but the CLI has no remote connection lookup or executor wired, so every run fails with "remote SQL unavailable: no remote binding", even after `hq db provision`. Use local SQL. |
 
 ## Paths
 
@@ -63,7 +63,7 @@ Never place `*.db` under `companies/` — binary state must not enter vault sync
 - **Never print** `postgres://` / connection strings (CLI, API, logs, agent transcripts).
 - Company scope from HQ identity + membership + `--company` — not free-text path alone.
 - `ATTACH` / path overrides that open another company’s DB are denied.
-- Remote provision requires **Team plan**; non-Team gets a clear plan error. Local remains available.
+- Remote provision requires the **HQ Workforce plan**; other plans get a clear plan error ("Remote vault DB requires the HQ Workforce plan ($500/mo)."). Local remains available.
 
 ## Skill / implementer contract
 
@@ -80,7 +80,7 @@ hq db sql --company {co} -- 'SELECT …'
 ## Customer-shaped journeys (summary)
 
 1. **Solo / learn-by-doing** — local only; install HQ, run status/migrate/sql for agent state.
-2. **Implementation partner** — same local conventions for every client; upsell Team remote when multi-machine or deploy injection is needed.
+2. **Implementation partner** — same local conventions for every client; upsell Workforce remote when multi-machine or deploy injection is needed.
 3. **Team admin** — provision remote once; agents use CLI; apps use SecretBinding.
 
 ## Related

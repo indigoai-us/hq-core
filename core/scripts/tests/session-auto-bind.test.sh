@@ -14,6 +14,7 @@ pass() { echo "  PASS: $*"; }
 
 mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts/lib" "$TMP/bin" \
   "$TMP/companies/indigo/settings" "$TMP/companies/otherco/settings" \
+  "$TMP/companies/cmp_FIXTURE/settings" \
   "$TMP/workspace/sessions/parent-sid" "$TMP/workspace/sessions/child-sid" \
   "$TMP/.grok/hooks"
 
@@ -26,6 +27,7 @@ cp "$ROOT/core/scripts/lib/session-auto-bind.sh" "$TMP/core/scripts/lib/"
 cp "$ROOT/.grok/hooks/hq-grok-hook-adapter.sh" "$TMP/.grok/hooks/"
 chmod +x "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.grok/hooks/hq-grok-hook-adapter.sh"
 touch "$TMP/companies/indigo/settings/foo.yaml"
+touch "$TMP/companies/cmp_FIXTURE/settings/foo.yaml"
 printf 'companies:\n  indigo:\n    name: Indigo\n  otherco:\n    name: otherco\n' \
   > "$TMP/companies/manifest.yaml"
 
@@ -45,6 +47,15 @@ PATH="$TMP/bin:$PATH"
 . "$TMP/core/scripts/lib/session-scope-capability.sh"
 # shellcheck source=../lib/session-auto-bind.sh
 . "$TMP/core/scripts/lib/session-auto-bind.sh"
+
+TR_REAL="$(command -v tr)"
+mkdir -p "$TMP/tr-count-bin"
+cat > "$TMP/tr-count-bin/tr" <<'TR'
+#!/bin/sh
+printf 'called\n' >> "$TR_CALLS_FILE"
+exec "$TR_REAL" "$@"
+TR
+chmod +x "$TMP/tr-count-bin/tr"
 
 run_auth() {
   local payload="$1"
@@ -71,6 +82,82 @@ payload='{"tool_name":"Read","session_id":"child-sid","cwd":"'"$TMP"'","tool_inp
 rc="$(run_auth "$payload")"
 [ "$rc" = "0" ] || fail "Read companies/indigo after spawn bind should allow, got $rc"
 pass "unbound sid + HQ_SPAWN_COMPANY=indigo allows indigo Read"
+
+echo "== spawn env binds a case-sensitive cloud company ID =="
+HQ_SPAWN_COMPANY=cmp_FIXTURE session_auto_bind_apply "$TMP" "opaque-child"
+[ "$(session_auto_bind_meta_slug "$TMP" "opaque-child")" = "cmp_FIXTURE" ] \
+  || fail "HQ_SPAWN_COMPANY did not bind the case-sensitive company ID"
+[ "$(session_scope_read "$TMP" "opaque-child")" = "cmp_FIXTURE" ] \
+  || fail "case-sensitive company ID capability not minted"
+payload='{"tool_name":"Read","session_id":"opaque-child","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/cmp_FIXTURE/settings/foo.yaml"}}'
+rc="$(run_auth "$payload")"
+[ "$rc" = "0" ] || fail "Read exact case-sensitive company after spawn bind should allow, got $rc"
+pass "spawn bind carries the exact company ID through capability and scope authorizer"
+
+echo "== auto-bind requires the exact real company directory entry =="
+mkdir -p "$TMP/companies/Acme"
+ln -s Acme "$TMP/companies/acme"
+HQ_SPAWN_COMPANY=Acme session_auto_bind_apply "$TMP" "exact-case-company"
+[ "$(session_auto_bind_meta_slug "$TMP" "exact-case-company")" = "Acme" ] \
+  || fail "exact directory name did not bind Acme"
+[ "$(session_scope_read "$TMP" "exact-case-company")" = "Acme" ] \
+  || fail "exact directory name did not mint the Acme capability"
+pass "exact real directory name binds and mints the matching capability"
+
+echo "== exact existing bindings do not case-fold on SessionStart =="
+for sid in exact-bound-apply exact-bound-default; do
+  mkdir -p "$TMP/workspace/sessions/$sid"
+  printf 'session_id: %s\ncompany_slug: indigo\ncompany_source: session\n' "$sid" \
+    > "$TMP/workspace/sessions/$sid/meta.yaml"
+  session_scope_mint "$TMP" "$sid" "indigo"
+done
+: > "$TMP/tr-calls"
+PATH="$TMP/tr-count-bin:$PATH" TR_CALLS_FILE="$TMP/tr-calls" TR_REAL="$TR_REAL" \
+  session_auto_bind_apply "$TMP" "exact-bound-apply"
+[ ! -s "$TMP/tr-calls" ] \
+  || fail "exact bound SessionStart invoked tr"
+: > "$TMP/tr-calls"
+PATH="$TMP/tr-count-bin:$PATH" TR_CALLS_FILE="$TMP/tr-calls" TR_REAL="$TR_REAL" \
+  session_auto_bind_apply_validated_default "$TMP" "exact-bound-default" "indigo" "cmp_indigo" 0 false
+[ ! -s "$TMP/tr-calls" ] \
+  || fail "exact validated binding invoked tr"
+pass "exact scope and metadata slugs take the builtin-only path in both apply functions"
+
+HQ_SPAWN_COMPANY=acme HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 \
+  session_auto_bind_apply "$TMP" "case-alias-company"
+[ ! -f "$TMP/workspace/sessions/case-alias-company/meta.yaml" ] \
+  || fail "symlink alias acme bound when only real directory Acme exists"
+[ -z "$(session_scope_read "$TMP" "case-alias-company")" ] \
+  || fail "symlink alias minted a company capability"
+pass "symlinked case alias is refused"
+
+echo "== stale case aliases cannot survive an auto-bind decision =="
+mkdir -p "$TMP/workspace/sessions/stale-alias-fallback"
+printf 'session_id: stale-alias-fallback\ncompany_slug: acme\ncompany_source: session\n' \
+  > "$TMP/workspace/sessions/stale-alias-fallback/meta.yaml"
+session_scope_mint "$TMP" "stale-alias-fallback" "acme"
+unset HQ_PARENT_SESSION_ID
+HQ_SPAWN_COMPANY=Acme session_auto_bind_apply "$TMP" "stale-alias-fallback"
+[ "$(session_auto_bind_meta_slug "$TMP" "stale-alias-fallback")" = "Acme" ] \
+  || fail "trusted exact fallback left stale alias in session metadata"
+grep -qx 'company_source: spawn' "$TMP/workspace/sessions/stale-alias-fallback/meta.yaml" \
+  || fail "trusted exact fallback did not record the replacement source"
+[ "$(session_scope_read "$TMP" "stale-alias-fallback")" = "Acme" ] \
+  || fail "trusted exact fallback left the stale alias capability"
+pass "trusted exact fallback repairs stale metadata and capability"
+
+mkdir -p "$TMP/workspace/sessions/stale-alias-unbound"
+printf 'session_id: stale-alias-unbound\ncompany_slug: acme\ncompany_source: session\n' \
+  > "$TMP/workspace/sessions/stale-alias-unbound/meta.yaml"
+session_scope_mint "$TMP" "stale-alias-unbound" "acme"
+unset HQ_SPAWN_COMPANY HQ_PARENT_SESSION_ID
+HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 \
+  session_auto_bind_apply "$TMP" "stale-alias-unbound"
+[ -z "$(session_auto_bind_meta_slug "$TMP" "stale-alias-unbound")" ] \
+  || fail "stale alias remained in metadata without a valid replacement"
+[ ! -e "$TMP/workspace/sessions/stale-alias-unbound/scope-capability.json" ] \
+  || fail "stale alias capability remained without a valid replacement"
+pass "stale alias and capability are cleared when no replacement exists"
 
 echo "== parent inherit, never cwd guess =="
 rm -rf "$TMP/workspace/sessions/child-sid"
@@ -182,6 +269,20 @@ session_auto_bind_apply_validated_default "$TMP" "validated-held" "indigo" "cmp_
 grep -qx 'company_confidence: device_default_repair' "$TMP/workspace/sessions/validated-held/meta.yaml" \
   || fail "validated repair missing lower-confidence marker"
 pass "validated historical repair is opt-in and marked lower confidence"
+
+mkdir -p "$TMP/workspace/sessions/validated-stale-alias"
+printf 'session_id: validated-stale-alias\ncompany_slug: acme\ncompany_source: session\n' \
+  > "$TMP/workspace/sessions/validated-stale-alias/meta.yaml"
+session_scope_mint "$TMP" "validated-stale-alias" "acme"
+session_auto_bind_apply_validated_default "$TMP" "validated-stale-alias" "Acme" "cmp_acme" 0 false
+[ "$(session_auto_bind_meta_slug "$TMP" "validated-stale-alias")" = "Acme" ] \
+  || fail "validated exact default left stale alias in session metadata"
+grep -qx 'company_source: device_default' \
+  "$TMP/workspace/sessions/validated-stale-alias/meta.yaml" \
+  || fail "validated exact default did not record its source"
+[ "$(session_scope_read "$TMP" "validated-stale-alias")" = "Acme" ] \
+  || fail "validated exact default left stale alias capability"
+pass "validated exact default repairs stale metadata and capability"
 
 HQ_AGENT_IDENTITY_FILE="$TMP/fleet-identity.json" \
   HQ_DEFAULT_COMPANY_JSON='{"ok":true,"slug":"indigo","enabled":true,"needsChoice":false,"source":"configured"}' \

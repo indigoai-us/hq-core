@@ -278,7 +278,7 @@ This section is the formal contract that Desktop code MUST adhere to.
 ### MUST NOT
 
 1. Desktop MUST NOT crash or show unhandled errors when any optional structure is missing.
-2. Desktop MUST NOT hardcode `~/Documents/HQ` as the HQ path (currently 17 places do this -- see US-001 Section 5).
+2. Desktop MUST NOT hardcode `~/Documents/HQ` as the HQ path. The shipped app resolves it at runtime; see `hq-structure-detection.md` Section 5.
 3. Desktop MUST NOT assume `companies/` exists (it is optional, not present in template).
 4. Desktop MUST NOT assume `core/workers/public/` or `core/workers/private/` layout (template uses flat `core/workers/`).
 5. Desktop MUST NOT assume `core/knowledge/public/` layout (template uses flat `core/knowledge/`).
@@ -299,9 +299,9 @@ This section is the formal contract that Desktop code MUST adhere to.
 
 ## 7. Rust Implementation Notes
 
-The current Rust backend (see US-001, Section 5) needs these changes to comply with this contract:
+These notes were written in February 2026 against a React-era Rust backend (`files.rs`, `orchestrator.rs`) that was not shipped. The current app (hq-desktop-app `origin/main@c621a6a1`, verified 2026-09-27) has no `validate_hq_instance`, `detect_hq_features`, PRD watcher or threads watcher. Treat items 2-7 as requirements for any future structure-detection work, not as a description of current code.
 
-1. **Config-based HQ path:** Replace all 17 hardcoded `~/Documents/HQ` references with a config value loaded at startup. The HQ path comes from a config file (e.g., `~/.hq-desktop/config.json`) or the Tauri app's settings store.
+1. **Config-based HQ path:** Done. The app resolves the HQ folder at runtime (`crates/hq-desktop-core/src/paths.rs`, `resolve_hq_folder`): `hqPath` in `~/.hq/menubar.json`, then `hqFolderPath` in the HQ config file, then discovery of a folder containing `core/core.yaml`, then the default location.
 
 2. **Validation command:** Add a `validate_hq_instance(path: String)` Tauri command that runs the 7-item check and returns the `HQDetectionResult` (see US-001 detection algorithm).
 

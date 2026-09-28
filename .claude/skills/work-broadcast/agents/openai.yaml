@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Work Broadcast
+  short_description: >-
+    Draft Slack broadcasts for completed or proposed HQ work.

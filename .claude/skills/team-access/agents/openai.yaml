@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Team Access
+  short_description: >-
+    Set, change, or repair what company members can read and write

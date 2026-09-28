@@ -51,15 +51,18 @@ to `AGENTS.md`) references this file as the canonical directory map under its
   settings, projects, workers, and registries. Source of truth:
   `companies/manifest.yaml`. The release ships only `companies/_template/`.
 - **`personal/`** — the owner overlay (policies, knowledge, skills, hooks,
-  settings, projects, workers). Not release-shipped; mirrored into `core/` by the
-  reindex step so owner-global rules survive a wholesale `/update-hq`.
+  settings, projects, workers). Not release-shipped. Consumers read it directly
+  from `personal/`; the old reindex mirror into `core/` is retired and reindex
+  prunes leftover mirror links. `/update-hq` does not touch `personal/`.
 - **`repos/`** — code only, split into `repos/public/` and `repos/private/`. The
   only trees that get pushed to git remotes.
 
 ## Working state
 
 - **`workspace/`** — session, orchestration, locks, drafts, reports, and
-  worktrees. Local-only working state.
+  worktrees. Local working state; only `workspace/threads/handoff.json` (plus
+  the thread it points to), `workspace/agency/`, and `workspace/.session-logs/`
+  sync to the personal vault.
 
 ## Tooling
 
@@ -74,3 +77,17 @@ to `AGENTS.md`) references this file as the canonical directory map under its
 - `core/docs/hq/USER-GUIDE.md` — command and capability reference.
 - `core/knowledge/public/hq-core/quick-reference.md` — quick reference.
 - `core/core.yaml` — the authoritative locked/excluded path lists.
+
+## Product reference (`core/knowledge/public/hq-core/`)
+
+- [hq-product-model.md](../../knowledge/public/hq-core/hq-product-model.md) — surfaces, local vs cloud, identity types, which surface for which task. Start here.
+- [hq-cli-reference.md](../../knowledge/public/hq-core/hq-cli-reference.md) — every `hq` command, generated from the CLI.
+- [hq-sync-model.md](../../knowledge/public/hq-core/hq-sync-model.md) — vaults, sync modes, company lifecycle, conflicts, daemons.
+- [hq-desktop-app.md](../../knowledge/public/hq-core/hq-desktop-app.md) — the desktop app.
+- [desktop-claude-code-integration.md](../../knowledge/public/hq-core/desktop-claude-code-integration.md) — Launch menu and local bots with Claude Code, Codex, Grok.
+- [desktop-company-isolation.md](../../knowledge/public/hq-core/desktop-company-isolation.md) — desktop company scope gate.
+- [desktop-rich-messages.md](../../knowledge/public/hq-core/desktop-rich-messages.md) — `hq-block` rich message contract.
+- [agents-and-bots.md](../../knowledge/public/hq-core/agents-and-bots.md) — local bots, hosted agents, external bots.
+- [external-agents-mcp.md](../../knowledge/public/hq-core/external-agents-mcp.md) — hq-mcp connector, `hq agent mcp`, Cowork plugin.
+- [hq-console.md](../../knowledge/public/hq-core/hq-console.md) — console pages by task.
+- [plans-and-pricing.md](../../knowledge/public/hq-core/plans-and-pricing.md) — plans, limits, billing.
