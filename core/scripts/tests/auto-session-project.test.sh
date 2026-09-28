@@ -16,8 +16,9 @@ assert_contains() {
   [[ "$haystack" == *"$needle"* ]] || fail "$label: missing '$needle'"
 }
 
-mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts" "$TMP/companies/acme/projects" \
+mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts" "$TMP/companies/acme/projects" "$TMP/companies/cmp_FIXTURE/projects" "$TMP/companies/Beta" \
   "$TMP/workspace/sessions" "$TMP/home/.hq/work-context/sessions"
+ln -s Beta "$TMP/companies/beta"
 cp "$ROOT/.claude/hooks/auto-session-project.sh" "$TMP/.claude/hooks/"
 cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/"
 cp "$ROOT/core/scripts/resolve-company.sh" "$TMP/core/scripts/"
@@ -27,6 +28,10 @@ cat > "$TMP/companies/manifest.yaml" <<'YAML'
 companies:
   acme:
     name: Acme
+  beta:
+    name: Beta
+  cmp_FIXTURE:
+    name: Synthetic cloud company ID
 YAML
 
 unset HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CODEX_SESSION_ID CODEX_THREAD_ID
@@ -108,6 +113,57 @@ assert prd.get("metadata",{}).get("origin")=="work-mesh-live-board"
 print("ok")
 PY
 echo "PASS: bound session materializes local prd from board"
+
+# --- Bound opaque cloud company ID: retain exact key and materialize safely ---
+cat > "$TMP/home/.hq/work-context/sessions/sid-case-sensitive.json" <<'JSON'
+{
+  "contractVersion": 1,
+  "sessionId": "sid-case-sensitive",
+  "contextStatus": "bound",
+  "companySlug": "cmp_FIXTURE",
+  "companyUid": "cmp_FIXTURE",
+  "projectId": "opaque-id-project",
+  "taskId": "US-1",
+  "updatedAt": "2026-09-04T00:00:00Z"
+}
+JSON
+mkdir -p "$TMP/home/.hq/work-context/sessions/sid-case-sensitive"
+cat > "$TMP/home/.hq/work-context/sessions/sid-case-sensitive/board.md" <<'MD'
+# Board snapshot
+- projectId: opaque-id-project
+- projectName: Opaque ID Project
+## Stories
+- US-1 [in_progress] — Synthetic story
+MD
+out="$(run_hook '{"session_id":"sid-case-sensitive","prompt":"continue"}')"
+assert_contains "$out" "companies/cmp_FIXTURE/projects/opaque-id-project" "case-sensitive bound company reaches local project"
+[ -f "$TMP/companies/cmp_FIXTURE/projects/opaque-id-project/prd.json" ] || fail "case-sensitive company prd.json not materialized"
+echo "PASS: bound opaque company ID materializes under its exact manifest key"
+
+# --- Manifest slug must also match the real directory-entry spelling ---
+mkdir -p "$TMP/home/.hq/work-context/sessions/sid-case-alias"
+cat > "$TMP/home/.hq/work-context/sessions/sid-case-alias.json" <<'JSON'
+{
+  "contractVersion": 1,
+  "sessionId": "sid-case-alias",
+  "contextStatus": "bound",
+  "companySlug": "beta",
+  "projectId": "alias-project",
+  "taskId": "US-1",
+  "updatedAt": "2026-09-27T00:00:00Z"
+}
+JSON
+cat > "$TMP/home/.hq/work-context/sessions/sid-case-alias/board.md" <<'MD'
+# Board snapshot
+- projectId: alias-project
+- projectName: Alias Project
+## Stories
+- US-1 [in_progress] — Synthetic story
+MD
+out="$(run_hook '{"session_id":"sid-case-alias","prompt":"continue"}')"
+assert_empty "$out" "case-alias directory must not materialize project context"
+[ ! -d "$TMP/companies/Beta/projects/alias-project" ] || fail "manifest alias created a project under the differently-cased directory"
+echo "PASS: manifest slug with a case-alias directory is refused"
 
 # --- Bound but unregistered company: no ghost tenant ---
 cat > "$TMP/home/.hq/work-context/sessions/sid-ghost.json" <<'JSON'

@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Publish Docs
+  short_description: >-
+    Sync the active company's PUBLISHED documentation site (the

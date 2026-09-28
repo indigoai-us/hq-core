@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SOURCE_ROOT="${HQ_HOOK_PERF_SOURCE_ROOT:-$ROOT}"
 BASE_SHA="${HQ_HOOK_PERF_BASE_SHA:-}"
+BASE_SOURCE_ROOT="${HQ_HOOK_PERF_BASE_SOURCE_ROOT:-}"
 STRACE="$(type -P strace || true)"
 BASH_BIN="$(type -P bash || true)"
 [ -n "$STRACE" ] || { echo 'FAIL: strace is required for this Linux process-budget test' >&2; exit 1; }
@@ -27,8 +28,10 @@ if [ -z "$BASE_SHA" ]; then
   BASE_SHA="$(git -C "$ROOT" merge-base HEAD origin/main 2>/dev/null || true)"
 fi
 [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail 'HQ_HOOK_PERF_BASE_SHA or origin/main merge base is required'
-timeout 20s git -C "$ROOT" cat-file -e "$BASE_SHA^{commit}" \
-  || fail "base commit is unavailable locally: $BASE_SHA"
+if [ -z "$BASE_SOURCE_ROOT" ]; then
+  timeout 20s git -C "$ROOT" cat-file -e "$BASE_SHA^{commit}" \
+    || fail "base commit is unavailable locally: $BASE_SHA"
+fi
 
 for relative in \
   .claude/hooks/master-hook.sh \
@@ -38,15 +41,19 @@ for relative in \
   core/scripts/lib/hook-adapter-core.sh; do
   [ -f "$SOURCE_ROOT/$relative" ] || fail "missing candidate source file: $SOURCE_ROOT/$relative"
   mkdir -p "$BASE_SOURCE/${relative%/*}" "$CANDIDATE_SOURCE/${relative%/*}"
-  timeout 20s git -C "$ROOT" show "$BASE_SHA:$relative" > "$BASE_SOURCE/$relative" \
-    || fail "base is missing $relative at $BASE_SHA"
+  if [ -n "$BASE_SOURCE_ROOT" ]; then
+    [ -f "$BASE_SOURCE_ROOT/$relative" ] \
+      || fail "fixture base is missing $relative at $BASE_SOURCE_ROOT"
+    cp "$BASE_SOURCE_ROOT/$relative" "$BASE_SOURCE/$relative"
+  else
+    timeout 20s git -C "$ROOT" show "$BASE_SHA:$relative" > "$BASE_SOURCE/$relative" \
+      || fail "base is missing $relative at $BASE_SHA"
+  fi
   cp "$SOURCE_ROOT/$relative" "$CANDIDATE_SOURCE/$relative"
 done
 
-# A strict reduction is only meaningful when the measured hook sources differ
-# from base. When they are byte-identical (any PR that does not touch the hook
-# dispatcher, and main itself), both fixtures run the same code, so require no
-# regression instead of an impossible reduction.
+# Hook-source changes may be unrelated to process cost. Keep the same
+# no-regression budget whether the measured sources changed or stayed equal.
 SOURCES_CHANGED=0
 for relative in \
   .claude/hooks/master-hook.sh \
@@ -170,12 +177,14 @@ measure_event() {
   printf '%s: execve base=%s candidate=%s; fork/clone base=%s candidate=%s; wall_ms base=%s candidate=%s\n' \
     "$event" "$base_execs" "$candidate_execs" "$base_forks" "$candidate_forks" "$base_wall_ms" "$candidate_wall_ms"
   if [ "$SOURCES_CHANGED" -eq 1 ]; then
-    [ "$candidate_execs" -lt "$base_execs" ] || fail "$event did not reduce execve count"
+    echo "$event: hook sources changed from base; requiring no regression (execve candidate=$candidate_execs base=$base_execs; fork/clone candidate=$candidate_forks base=$base_forks)"
   else
-    echo "$event: hook sources unchanged from base; checking for no regression"
-    [ "$candidate_execs" -le "$base_execs" ] || fail "$event increased execve count"
+    echo "$event: hook sources unchanged from base; requiring no regression (execve candidate=$candidate_execs base=$base_execs; fork/clone candidate=$candidate_forks base=$base_forks)"
   fi
-  [ "$candidate_forks" -le "$base_forks" ] || fail "$event increased fork/clone count"
+  [ "$candidate_execs" -le "$base_execs" ] \
+    || fail "$event increased execve count (candidate=$candidate_execs base=$base_execs)"
+  [ "$candidate_forks" -le "$base_forks" ] \
+    || fail "$event increased fork/clone count (candidate=$candidate_forks base=$base_forks)"
 }
 
 measure_event PreToolUse

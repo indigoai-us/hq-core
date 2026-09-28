@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Outpost Host
+  short_description: >-
+    Host a full-stack or static app directly on the HQ Outpost / EC2

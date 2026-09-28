@@ -85,6 +85,14 @@ run_master PreToolUse "$(payload_bash "printenv")"
 [ "$RC" = "2" ] && grep -q "environment dump" <<<"$ERR" && pass "block-env-dump blocks printenv through the dispatcher" \
   || fail "block-env-dump did not block printenv (rc=$RC): $ERR"
 
+echo "[3b] read-only handoff-script commands are allowed"
+run_master PreToolUse "$(payload_bash "bash core/scripts/handoff-finalize.sh")"
+[ "$RC" = "0" ] && [ -z "$ERR" ] && pass "running the handoff finalizer is not blocked by the Bash dispatcher" \
+  || fail "handoff finalizer command was blocked (rc=$RC): $ERR"
+run_master PreToolUse "$(payload_bash "sed -n 1,5p core/scripts/handoff-finalize.sh")"
+[ "$RC" = "0" ] && [ -z "$ERR" ] && pass "reading the handoff finalizer is not blocked by the Bash dispatcher" \
+  || fail "read-only handoff script command was blocked (rc=$RC): $ERR"
+
 echo "[4] a benign Bash payload skips prefiltered guards"
 HQ_HOOK_TRACE=1 run_master PreToolUse "$(payload_bash "echo bench")"
 [ "$RC" = "0" ] && pass "benign command passes (rc=0)" || fail "benign command rc=$RC: $ERR"
@@ -243,6 +251,56 @@ run_fixture_master
   && grep -q "skip first (missing-script)" <<<"$FIXTURE_ERR" \
   && pass "missing registry script is skipped and later block wins" \
   || fail "missing script before block must exit 2, trace skip, and preserve guard stderr (rc=$FIXTURE_RC): $FIXTURE_ERR"
+
+cat > "$FIXTURE/.claude/hooks/silent-guard.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 2
+SH
+chmod +x "$FIXTURE/.claude/hooks/silent-guard.sh"
+write_fixture_registry ".claude/hooks/silent-guard.sh" ""
+run_fixture_master
+[ "$FIXTURE_RC" = "2" ] && grep -q "Blocked by hook silent-guard" <<<"$FIXTURE_ERR" \
+  && pass "silent sub-hook blocks include a reason naming the hook" \
+  || fail "silent sub-hook block did not produce a named stderr reason (rc=$FIXTURE_RC): $FIXTURE_ERR"
+
+cat > "$FIXTURE/.claude/hooks/json-block.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '{"decision":"block"}'
+SH
+chmod +x "$FIXTURE/.claude/hooks/json-block.sh"
+write_fixture_registry ".claude/hooks/json-block.sh" ""
+run_fixture_master
+[ "$FIXTURE_RC" = "0" ] && jq -e '.decision == "block"' <<<"$FIXTURE_OUT" >/dev/null \
+  && grep -q "Blocked by hook json-block" <<<"$FIXTURE_ERR" \
+  && pass "JSON deny decisions include a reason naming the hook on stderr" \
+  || fail "JSON deny did not produce a named stderr reason (rc=$FIXTURE_RC, out=$FIXTURE_OUT): $FIXTURE_ERR"
+
+cat > "$FIXTURE/.claude/hooks/permission-deny.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}}'
+SH
+chmod +x "$FIXTURE/.claude/hooks/permission-deny.sh"
+write_fixture_registry ".claude/hooks/permission-deny.sh" ""
+run_fixture_master
+[ "$FIXTURE_RC" = "0" ] && jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$FIXTURE_OUT" >/dev/null \
+  && grep -q "Blocked by hook permission-deny" <<<"$FIXTURE_ERR" \
+  && pass "permissionDecision deny outputs include a reason naming the hook on stderr" \
+  || fail "permissionDecision deny did not produce a named stderr reason (rc=$FIXTURE_RC, out=$FIXTURE_OUT): $FIXTURE_ERR"
+
+cat > "$FIXTURE/.claude/hooks/json-looking-text.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '{"unfinished": }'
+SH
+chmod +x "$FIXTURE/.claude/hooks/json-looking-text.sh"
+write_fixture_registry ".claude/hooks/json-looking-text.sh" ""
+run_fixture_master
+[ "$FIXTURE_RC" = "0" ] && [ "$FIXTURE_OUT" = '{"unfinished": }' ] \
+  && pass "malformed JSON-looking child output remains plain text" \
+  || fail "malformed JSON-looking output was lost or changed (rc=$FIXTURE_RC, out=$FIXTURE_OUT): $FIXTURE_ERR"
 
 write_fixture_registry ".claude/hooks/advisory.sh" ""
 run_fixture_master

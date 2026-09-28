@@ -35,17 +35,50 @@ Pick `company` when the user asks for org/company/internal restriction. Pick `pr
 - `POST   /api/apps/:id/allowed-emails  {email}` — accepts an exact address (`[EMAIL]`) or a `@domain.tld` pattern; idempotent; lowercased server-side.
 - `DELETE /api/apps/:id/allowed-emails/{patternKey}` — `patternKey` URL-encoded.
 
-**Comments (opt-in) — `--comments on|off`:** orthogonal to access mode. Turn it on when the user wants identity-verified, click-anywhere commenting on the deploy: viewers drop a point pin or drag a box/region, tagged to who they are, the owner reads/resolves/deletes from a side pane, and a "Sign in to comment" Cognito prompt turns viewers into HQ users. It sets the per-app `commentsEnabled` flag, which the deploy pipeline reads to inject the comment widget at deploy time. Access controls still hold: on a gated deploy the thread is only readable/writable by viewers who pass the gate, and access revocation applies to the comment surface too.
+**Comments (opt-in) — `--comments on|off`:** orthogonal to access mode. Turn it on when the user wants identity-verified commenting on the deploy: viewers drop a point pin, drag a box/region, or highlight a passage of text and comment on it, each tagged to who they are; the owner reads/resolves/deletes from a side pane, and a "Sign in to comment" Cognito prompt turns viewers into HQ users. It sets the per-app `commentsEnabled` flag, which the deploy pipeline reads to inject the comment widget at deploy time. Access controls still hold: on a gated deploy the thread is only readable/writable by viewers who pass the gate (the recorded owner can also read the in-page list with their own verified HQ sign-in), and access revocation applies to the comment surface too.
 - Detect intent from the invocation: `--comments`/`--comments on` (or "with comments", "turn comments on") → on; `--comments off` (or "turn comments off") → off; otherwise leave unset.
-- Wire it in Phase C after upload returns `appId` (see C.2.6): `PATCH /api/apps/:id {commentsEnabled: true|false}`.
-- **Off by default.** Without the flag `commentsEnabled` stays unset and the injector is a strict no-op — the served HTML is byte-identical to a pre-feature deploy (no widget markup, no script, no network calls). The flag takes effect on the *next* deploy.
+- Wire it in Phase C once `appId` is known and **before** `POST /api/deploys/:id/complete` (see C.2.6): `PATCH /api/apps/:id {commentsEnabled: true|false}`. The widget is injected during `…/complete`, which reads the flag at that moment.
+- **Off by default.** Without the flag `commentsEnabled` stays unset and the injector is a strict no-op — the served HTML is byte-identical to a pre-feature deploy (no widget markup, no script, no network calls). The flag takes effect on the *next* deploy's `…/complete`.
+- **Static deploys only.** Injection runs in the static `…/complete` path. `app` (`api/*`) deploys and Next.js/Hono live deploys do not get the widget. The widget resolves the app from the page's `{sub}.indigo-hq.com` origin, so comments work on the platform URL, not on a custom domain.
+- **Turning comments off** (`commentsEnabled: false`) keeps every stored comment. The viewer-facing routes answer `403 COMMENTS_DISABLED`; a widget still present in already-served HTML removes itself on load, and a viewer's post is refused with "Comments are turned off for this page". The owner routes below keep working. Turning comments back on shows the same thread again.
 
 **Reading and answering comments as the owner (no browser needed).** When the user asks to see, answer, or resolve comments on a deploy, use the owner routes. They take the same `Authorization: Bearer $JWT` + `X-Org-Slug` headers as every other Phase C call (send them through `deploy-api-request.sh`), work on gated deploys, and work whether `commentsEnabled` is on or off. Only the app owner or an org admin can call them (others get `403 FORBIDDEN`).
 - `GET   /api/apps/:id/manage/comments` — every comment on the app. Returns `{commentsEnabled, comments: [{id, body, author{email,name}, anchor, status, deployId, createdAt}]}`.
 - `POST  /api/apps/:id/manage/comments {body, anchor, deployId?}` — add a comment as the caller. The author is always the verified caller; the body cannot set it.
-- `PATCH /api/apps/:id/manage/comments/:commentId {status: "resolved"|"open"}` — resolve or reopen.
+- `PATCH /api/apps/:id/manage/comments/:commentId {status: "resolved"|"open"}` — resolve or reopen. Any other `status` → `400 COMMENT_STATUS_INVALID`; unknown id → `404 COMMENT_NOT_FOUND`.
+- There is no owner-route delete. GET takes no filters; filter `status == "open"` client-side. Rate limits are per IP: 60 reads/min, 10 writes/min (`429 RATE_LIMITED` with `Retry-After`).
+
+**POST body rules.** `body` must be a non-empty string (else `400 COMMENT_BODY_REQUIRED`). `anchor` is required and must be an object with a valid `mode` (else `400 COMMENT_ANCHOR_INVALID`). Anchor shapes:
+
+| `mode` | Fields | Use |
+|---|---|---|
+| `unanchored` | none | General reply or note not tied to a spot. Default for agent replies. |
+| `anchored` | `cssPath`, `xRatio`, `yRatio` (0..1), optional `viewportWidth`, `scrollY` | Point pin. |
+| `region` | as `anchored`, plus `wRatio`, `hRatio` | Dragged box. |
+| `text` | `quote` (required, non-empty, ≤3000 UTF-16 units), `prefix`/`suffix` (optional, ≤64 each), optional `cssPath` of the starting block | Highlighted passage. Over-length or blank `quote` → `COMMENT_ANCHOR_INVALID`. |
+
+To place a reply next to the comment it answers, copy that comment's `anchor` object verbatim.
+
+**Replies are flat.** A comment has no parent/thread id; the API ignores any `parentId`. Quote or name what you are answering in `body` (for example `Re: "tighten the headline" — done in the latest deploy.`).
+
+**Author naming.** The server sets the author; the body cannot. Name resolution for owner-route posts: the name this user already has on the app's comments (from a browser sign-in), else their email, else `App owner` / `Org admin`. Viewer comments carry the verified Cognito name and email; there are no anonymous comments.
+
+**Stale text highlights.** On load the widget re-finds each `text` quote using its stored `prefix`/`suffix`. If the words were edited out, or the only matches have no agreeing context, the comment is not moved to another passage; it is listed in the side pane with a "Text changed" tag ("Hidden on page" when found but not visible). Point and box comments whose element is gone show a "context changed" state. Treat these as likely addressed, but confirm before resolving.
+
+**Review loop (on redeploy, or "what did reviewers say").**
+1. `GET /api/apps/:id/manage/comments`; keep `status == "open"`.
+2. Group by anchor: `text` by `quote`, pins/boxes by `cssPath`, `unanchored` separately. Note `deployId` so you know which version each comment was left on.
+3. Summarize for the user and make the fixes in the source.
+4. Redeploy through this skill.
+5. For each addressed comment, optionally `POST` a short `unanchored` (or same-anchor) reply that quotes it, then `PATCH … {status: "resolved"}`. Leave anything not addressed open and say which ones.
 
 Do **not** use `/api/apps/:id/comments` for this. That route serves the in-page widget only: it needs the deploy's browser `Origin` plus the `hq-access` cookie from signing in on the page, and returns `403 COMMENT_ORIGIN_REQUIRED` / `COMMENT_ACCESS_REQUIRED` to a CLI or agent. A 403 from it does not mean the owner can't read comments. The `hq-deploy` CLI has no comments command, so these HTTP routes are the only non-browser path. If the local `repos/private/hq-deploy` checkout lacks `src/api/routes/comments-manage.ts`, it is stale; read `origin/main` before concluding a capability doesn't exist.
+
+**Plan limits, domains, visit stats, receipts (reference).**
+- **Deploy counts never block.** hq-deploy observes plan and personal caps but does not refuse a deploy for them (no `402`/`503` on the deploy path). For personal scope, hq-deploy logs a soft 500-deploy cap (hq-pro's plan table lists 50 lifetime deploys for an unpaid personal scope); neither blocks. Starter companies have a 500-deploy limit in hq-pro; when a Starter company is at ≥80% or over, responses from `POST /api/apps/:id/deploy` carry a `planLimits` object (`planName`, `upgradeUrl`, `deployments{used,limit,over,pctUsed}`). The presigned `/api/deploys` path used in C.2 does not attach it. If you see it, tell the user once with the upgrade link. Numbers come from hq-pro; see `core/knowledge/public/hq-core/plans-and-pricing.md`.
+- **Custom domains.** `GET|POST /api/apps/:id/domains {domain, environment?}`, `PATCH|DELETE /api/apps/:id/domains/:domain`, `POST /api/apps/:id/domains/:domain/refresh`; the `hq-deploy` CLI wraps these as `hq-deploy domains list|add|edit|refresh|remove` (run in a directory linked with `hq-deploy link`). Only the `production` environment can have a custom domain (`409 ENVIRONMENT_NOT_SERVED` otherwise). Adding one requires the company's staff-assigned plan field in HQ (`metadata.plan`) to be `pro` or `enterprise`; a self-serve HQ Workforce subscription alone may not satisfy this check. Otherwise `403 DOMAIN_NOT_ENTITLED`. A company-wide base domain (`/api/orgs/:orgSlug/base-domain`) is Enterprise-only. Comments do not work on a custom domain (see above).
+- **Visit stats.** `GET /api/apps` items carry `lastVisitAt` (ISO or `null`) and `views30d` (`null` = analytics unavailable, not zero). `GET /api/apps/:id/analytics` returns a trailing 30-day daily `series` and `totals`. Counts come from a nightly CloudFront log rollup, so today's views appear the next day; `lastVisitAt` is written at the edge at most every 5 minutes per app and ignores bots. The console's Deployments page shows the same numbers.
+- **Completion receipts.** When a deploy goes live, hq-deploy sends a `deployment_completed` receipt and a `deploy-succeeded` outcome event to hq-pro on the deployer's behalf (best effort; a failure never fails the deploy). No action is needed from this skill.
 
 ---
 
@@ -275,6 +308,14 @@ fi
 if [ "$DEPLOY_TYPE" != "ssr" ] && [ -n "$(find api -type f \( -name '*.ts' -o -name '*.js' \) 2>/dev/null | head -n1)" ]; then
   DEPLOY_TYPE="app"
 fi
+
+# Next.js here means a static export (`output: 'export'` → out/). A Next.js 15
+# app that needs a server (SSR, route handlers, middleware), or a Hono 4 app,
+# is not a tarball deploy: hq-deploy runs those live through its own CLI
+# (`hq-deploy link --org <slug>` once, then `hq-deploy deploy`; Next via the
+# pinned OpenNext builder, Hono via the Fetch/Lambda adapter, production
+# environment only). If the Next build produces no out/index.html, or the
+# project depends on `hono`, hand off to that CLI instead of this tarball flow.
 
 # Package manager
 if   [ -f "bun.lockb" ] || [ -f "bun.lock" ]; then PM="bun"
@@ -780,7 +821,7 @@ malformed responses.
 
 ### C.2.6 — Enable comments (opt-in)
 
-Only when the invocation opted in (`$COMMENTS` is `on` or `off` per the `--comments` intent in "Access modes"; unset → skip this step entirely). Comments are a per-app opt-in, off by default; the flag makes the deploy pipeline inject the widget on the *next* deploy. Wire it right after upload with `appId` in hand:
+Only when the invocation opted in (`$COMMENTS` is `on` or `off` per the `--comments` intent in "Access modes"; unset → skip this step entirely). Comments are a per-app opt-in, off by default. hq-deploy reads the flag inside `POST /api/deploys/:id/complete`, so this PATCH must run **before** that call: right after "Ensure app exists" in C.2 (the app, new or existing, has `$APP_ID` by then). Running it after `…/complete` only affects the following deploy.
 
 ```bash
 if [ "$COMMENTS" = "on" ] || [ "$COMMENTS" = "off" ]; then
@@ -793,7 +834,7 @@ fi
 
 `commentsEnabled` is orthogonal to `ACCESS_MODE` — the comment surface enforces the SAME gate as the deploy (a gated deploy's thread is only readable/writable by viewers who pass the gate; access revocation reaches comments too), so no extra access wiring is needed here. Mention it once in C.5 when it was toggled ("comments are on for this deploy").
 
-Because the flag only takes effect on the *next* deploy, run this PATCH **before** the upload in C.2 when the app already exists (or right after `POST /api/apps` for a new app) so the current deploy ships with the widget. To read or resolve the comments afterwards, use the owner routes under "Reading and answering comments as the owner" in the Access modes section.
+This step is documented after C.2 for reference, but execute it between "Ensure app exists" and "Static upload" so the current deploy ships with (or without) the widget. It has no effect on `app` or SSR deploys, which never get the widget. To read or resolve the comments afterwards, use the owner routes and the review loop under "Reading and answering comments as the owner" in the Access modes section.
 
 ### C.3 — Wire access mode (sensitive only)
 

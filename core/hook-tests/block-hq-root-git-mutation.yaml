@@ -28,3 +28,24 @@ cases:
     input:
       command: "gh pr create -R owner/repo --title x --body y"
     expect: allow
+
+  # The strict hq-flags gate defaults off, preserving main's behavior until
+  # explicitly enabled for the company.
+  - name: default-off-allows-bash-c-payload
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "bash -c 'git push origin main'"
+    expect: allow
+  - name: default-off-allows-eval-payload
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "eval 'git push origin main'"
+    expect: allow
+  - name: default-off-keeps-marker-anywhere-escape
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "echo HQ_ALLOW_HQ_ROOT_GIT=1; git push origin main"
+    expect: allow

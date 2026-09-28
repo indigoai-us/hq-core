@@ -24,7 +24,7 @@
 
 New to HQ? Follow the **[guided seven-lesson tutorial](https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_docs_readme)**. Each lesson pairs a short video with written steps and screenshots.
 
-HQ is a **shared context layer** on top of any AI tool — Claude Code, Cursor, Codex, or whatever your team uses. It syncs knowledge, skills, and capabilities across everyone working with AI, so the most skilled user's workflow becomes the whole team's baseline.
+HQ is a **shared context layer** on top of any AI tool — Claude Code, Codex, Cursor, Grok, or whatever your team uses. It syncs knowledge, skills, and capabilities across everyone working with AI, so the most skilled user's workflow becomes the whole team's baseline.
 
 Solo AI is easy. Team AI is hard. Every person builds their own context from scratch, every session. The most capable users have no clean way to share what they've built, and context evaporates between sessions and between people. HQ turns those individual wins into infrastructure the whole team inherits.
 
@@ -35,7 +35,7 @@ Four systems sit at the core:
 - **Cloud file system** — bidirectional sync between every team member's local HQ and a shared cloud store. Knowledge bases, policies, skills, workers, and threads stay in lockstep across the team. Conflicts surface for interactive review instead of silent overwrite, and the same context is reachable from web, mobile, or a remote AI session running in the cloud.
 - **Access control** — company-scoped isolation by default. Roles and named groups govern who can see which files, secrets, and capabilities; cross-company contamination is architecturally impossible. Sign in once, and every HQ surface — vault, deploys, secrets, sync — works without re-authenticating. Every access is logged.
 - **Secrets manager** — a per-company credential store with fine-grained ACLs. Each secret grants `read`, `write`, or `admin` to individuals or named groups, with optional company-wide open access. Values are injected directly into child processes — they never touch disk, stdout, or logs. For credentials a human holds, one-time links let a teammate hand off the value without any agent or operator ever seeing it.
-- **Deployment** — one command ships any HQ artifact — reports, dashboards, decks, applications — to a shareable URL. Static sites and full server apps both work out of the box. Sensitive artifacts (PII, financial, private) are automatically password-protected. Deploy is opt-out and triggers itself when HQ produces something shareable, so the user gets a link without ever typing `deploy`.
+- **Deployment** — one command ships any HQ artifact — reports, dashboards, decks, applications — to a shareable URL. Static sites and full server apps both work out of the box. Sensitive artifacts (PII, financial, private) get an access gate automatically: a password, sign-in limited to the company or to selected people, or an email allowlist. Owners can turn on comments so reviewers pin, box, or highlight text on the live page, and the agent can read, answer, and resolve them. Deploy is opt-out and triggers itself when HQ produces something shareable, so the user gets a link without ever typing `deploy`.
 
 ```
 ┌──────────────────────────┐    ┌──────────────────────────┐    ┌──────────────────────────┐
@@ -45,8 +45,8 @@ Four systems sit at the core:
 │  • Knowledge bases       │    │  • Cloud file system     │    │  • Claude Code           │
 │  • Skills                │    │  • Access control        │    │  • Cursor                │
 │  • Workers               │    │  • Secrets manager       │    │  • Codex                 │
-│  • Policies              │    │  • Deployment            │    │  • Any AI tool           │
-│  • Threads               │    │                          │    │                          │
+│  • Policies              │    │  • Deployment            │    │  • Grok                  │
+│  • Threads               │    │                          │    │  • Any AI tool           │
 └──────────────────────────┘    └──────────────────────────┘    └──────────────────────────┘
 ```
 

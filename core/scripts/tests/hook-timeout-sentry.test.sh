@@ -584,6 +584,8 @@ jq -e '
   and .metadata.hook_script == "detect-secrets.sh"
   and .metadata.exit_code == "running"
   and (.metadata.hook_sequence | type == "array" and length == 0)
+  and (.metadata | has("slow_child") | not)
+  and (.metadata | has("slow_child_ms_bucket") | not)
   and ([.metadata | to_entries[] | select(.key != "hook_sequence" and .key != "hook_timeout_debug_context") | .value | type]
        | all(. == "string" or . == "number" or . == "boolean"))
   and (.metadata.hook_timeout_debug_context | type == "object")
@@ -642,7 +644,8 @@ set -e
 [ "$rc" -eq 2 ] || fail "failed reporter changed blocking hook exit: $rc"
 [ "$(event_count "$R4")" = "1" ] || fail "failed reporter did not receive one attempted event"
 [ "$(cat "$R4/out")" = 'reporter-safe' ] || fail "failed reporter changed stdout"
-[ "$(cat "$R4/err")" = 'reporter-safe-err' ] || fail "failed reporter changed stderr"
+[ "$(cat "$R4/err")" = $'reporter-safe-err\nBlocked by hook detect-secrets.' ] \
+  || fail "failed reporter changed hook stderr or omitted the required block reason"
 set +e
 run_gate "$R4" failure-baseline "$R4/baseline.out" "$R4/baseline.err" HQ_HOOK_TIMEOUT_SENTRY=0
 baseline_rc=$?
@@ -723,6 +726,7 @@ echo "[7] a master dispatch warning persists while a child is slow"
 R7="$(make_root master-child)"
 R7_OUTER_TIMEOUT="$(type -P timeout 2>/dev/null || true)"
 [ -n "$R7_OUTER_TIMEOUT" ] || fail "master-child test requires the host timeout executable"
+# Keep these Git Bash fixtures bounded while allowing the fake reporter's process startup cost.
 set_timeout "$R7" 'master-hook.sh" PreToolUse' 4
 master_hook_path="$R7/.claude/hooks/master-hook.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$R7/bin/cksum"
@@ -747,13 +751,13 @@ env PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.
   HQ_TEST_POWERSHELL_CALLS="$R7/powershell-calls" \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R7/watchdog.trigger" \
-  "$R7_OUTER_TIMEOUT" 15s bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/out" 2>"$R7/err" <<<"$(payload master-session)"
+  "$R7_OUTER_TIMEOUT" 30s bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/out" 2>"$R7/err" <<<"$(payload master-session)"
 with_master_rc=$?
 env PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" HQ_TEST_HQ_ACK="$R7/hq.ack" \
   HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
   HQ_TEST_POWERSHELL_CALLS="$R7/powershell-calls" \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R7/watchdog.trigger" \
-  "$R7_OUTER_TIMEOUT" 15s bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/without.out" 2>"$R7/without.err" <<<"$(payload master-without-session)"
+  "$R7_OUTER_TIMEOUT" 30s bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/without.out" 2>"$R7/without.err" <<<"$(payload master-without-session)"
 without_master_rc=$?
 set -e
 [ "$with_master_rc" -eq 2 ] || fail "master child changed blocking exit with watchdog: $with_master_rc"
@@ -801,14 +805,30 @@ if ! jq -s -e --arg child "${slow_child_path##*/}" '
   fail "watchdog did not capture bounded active-child phase context"
 fi
 pass "watchdog captures phase timing, wait point, child basename, and Windows probe fixture"
+if ! jq -s -e --arg child "${slow_child_path##*/}" '
+  [.[] | select(.type == "hook_timeout_warning")] as $warnings
+  | ($warnings | length) == 2
+    and all($warnings[];
+      .metadata.slow_child == $child
+      and (.metadata.slow_child_ms | type == "number" and . > 0)
+      and (.metadata | has("slow_child_ms_bucket") | not))
+' < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >/dev/null; then
+  jq -s '[.[] | select(.type == "hook_timeout_warning") | .metadata | {slow_child, slow_child_ms}]' \
+    < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >&2 || true
+  fail "approaching-timeout tags omitted the running child or elapsed bucket"
+fi
+pass "approaching-timeout tags identify the running child and its elapsed bucket"
 if ! jq -s -e --arg slow_child "${slow_child_path##*/}" --arg fast_child "${fast_child_path##*/}" '
   [ .[] | select(.type == "hook_late_finish"
     and .metadata.hook_script == "master-hook.sh") ] as $master_late
+  | [$master_late[0].metadata.hook_sequence[]
+      | select(.script == $fast_child)
+      | .ms] as $fast_ms
   | ($master_late | length) == 1
     and $master_late[0].metadata.slow_child == $slow_child
     and ($master_late[0].metadata.slow_child_ms | type == "number" and . > 0)
-    and ($master_late[0].metadata.slow_child_ms >
-      ([$master_late[0].metadata.hook_sequence[] | select(.script == $fast_child) | .ms][0]))
+    and ($fast_ms | length) == 1
+    and ($master_late[0].metadata.slow_child_ms > $fast_ms[0])
 ' < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >/dev/null; then
   jq -s '[.[] | {type, metadata: (.metadata | {hook_script, slow_child, slow_child_ms, hook_sequence})}]' \
     < <(sed '/^---EVENT---$/d' "$R7/hq.stdin") >&2 || true
@@ -860,7 +880,8 @@ if grep -Fq "$slow_child_path" "$R7/blocked.out"; then
 fi
 [ "$(find "$R7/workspace/.hook-timeout-breadcrumbs" -name '*.json' -type f | wc -l)" -ge 1 ] \
   || fail "blocking child consumed a warning that was not emitted"
-[ ! -s "$R7/blocked.err" ] || fail "blocking child changed master stderr"
+grep -q '^Blocked by hook 20-blocker\.$' "$R7/blocked.err" \
+  || fail "blocking child did not name the blocking hook on stderr"
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' ':' > "$R7/core/hooks/PreToolUse/20-blocker.sh"
 PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
@@ -1149,7 +1170,7 @@ printf '%s\t%s\t%s\n' master-dispatch "$R11/.claude/hooks/master-hook.sh" absolu
 set +e
 env PATH="$R11/bin:$PATH" HQ_TEST_HQ_ARGS="$R11/hq.args" HQ_TEST_HQ_STDIN="$R11/hq.stdin" HQ_TEST_HQ_ACK="$R11/hq.ack" \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=2 HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R11/watchdog.trigger" \
-  timeout 15s bash "$R11/.claude/hooks/master-hook.sh" PostToolUse >"$R11/out" 2>"$R11/err" <<<"$(jq -cn --arg session no-settings-session '{hook_event_name: "PostToolUse", tool_name: "Bash", session_id: $session}')"
+  timeout 30s bash "$R11/.claude/hooks/master-hook.sh" PostToolUse >"$R11/out" 2>"$R11/err" <<<"$(jq -cn --arg session no-settings-session '{hook_event_name: "PostToolUse", tool_name: "Bash", session_id: $session}')"
 no_settings_rc=$?
 set -e
 [ "$no_settings_rc" -eq 0 ] || fail "master without settings.json did not reach reporter acknowledgement: $no_settings_rc"
@@ -1314,7 +1335,7 @@ if ! jq -e '
   and (.metadata.nproc | type == "number" and . >= 1)
   and .metadata.hook_script == "metadata-set-hook.sh"
   and .metadata.exit_code == "running"
-  and (.metadata.hook_sequence | type == "array")
+  and (.metadata.hook_sequence | type == "array" and length <= 20)
 ' < <(sed '/^---EVENT---$/,$d' "$R15_META/metadata-set.hq.stdin") >/dev/null; then
   jq -c '{type, metadata: (.metadata | {bash_env_set, shell, cwd_kind, nproc, hook_script, exit_code, hook_sequence})}' \
     < <(sed '/^---EVENT---$/,$d' "$R15_META/metadata-set.hq.stdin") >&2 || true
@@ -1398,10 +1419,11 @@ jq -s -e --arg hook_path "$late_master_path" '
   and ([.[] | select(.type == "hook_late_finish")] | length == 1)
   and (all(.[]; .metadata.hook_path == $hook_path))
   and (all(.[]; .metadata.hook_script == "master-hook.sh"))
-  and (all(.[]; (.metadata.hook_sequence | type == "array" and length == 20)))
-  and (all(.[]; ([.metadata.hook_sequence[] | .script] | all(contains("/") | not))))
-  and (all(.[]; ([.metadata.hook_sequence[] | .event] | all(. == "PreToolUse"))))
-  and (all(.[]; ([.metadata.hook_sequence[] | .ms] | all(type == "number"))))
+  and (all(.[]; (.metadata.hook_sequence | type == "array" and length <= 20)))
+  and (all(.[]; all(.metadata.hook_sequence[];
+    (.script | test("^[A-Za-z0-9._-]{1,48}$"))
+    and (.event | type == "string" and length > 0 and length <= 48)
+    and (.ms | type == "number" and . >= 0 and floor == .))))
   and (all(.[]; .metadata.declared_timeout_ms == 30000))
   and ([.[] | .metadata.watchdog_timeout_ms] | sort == [1000, 1000, 29000])
   and (all(.[]; (.metadata.shell | startswith("bash "))))
@@ -1428,7 +1450,7 @@ journal_line_count="$(wc -l < "$late_journal_file" 2>/dev/null || printf '0')"
 if awk -F '\t' 'NF == 5 && $3 == "running" { found = 1 } END { exit(found ? 0 : 1) }' "$late_journal_file"; then
   fail "completed hook history retained per-child running records"
 fi
-pass "late finish is emitted once with final duration, exit code, and last 20 hooks"
+pass "late finish is emitted once with final duration, exit code, and the top-three slowest hooks"
 
 echo "[17] child timeout emits one completion event with the timeout exit code"
 R17="$(make_root child-timeout)"
@@ -1475,7 +1497,7 @@ jq -e --arg hook_path "$R17/core/hooks/PreToolUse/10-timeout-child.sh" '
   and .metadata.watchdog_timeout_ms == 1000
   and (.metadata.timing_precision == "ms" or .metadata.timing_precision == "s")
   and (.metadata.final_elapsed_ms | type == "number" and . >= 900)
-  and (.metadata.hook_sequence | type == "array")
+  and (.metadata.hook_sequence | type == "array" and length <= 20)
 ' < <(sed '/^---EVENT---$/,$d' "$R17/hq.stdin") >/dev/null \
   || fail "child timeout event omitted final duration or exit code"
 [ ! -s "$R17/err" ] || fail "child timeout instrumentation changed master stderr"
@@ -1670,8 +1692,7 @@ if printf '%s' "$debug_context" | grep -Eq '(/home/|home User|--private|--passwo
 fi
 base_report="$(jq -cn --arg hook_path "$TMP/repos/private/hq-core-staging/.claude/hooks/master-hook.sh" \
   --arg session_id 'session-test-abc123' --arg event 'PreToolUse' \
-  --argjson sequence '[{"script":"check-hq-update.sh","event":"PreToolUse","ms":10}]' \
-  '{type:"hook_timeout_warning",message:"HQ hook is approaching configured timeout",fingerprint:"hook-timeout:PreToolUse:abc",level:"warning",metadata:{hook_name:"master-hook.sh",hook_path:$hook_path,hook_event:$event,session_id:$session_id,hook_sequence:$sequence}}')"
+  '{type:"hook_timeout_warning",message:"HQ hook is approaching configured timeout",fingerprint:"hook-timeout:PreToolUse:abc",level:"warning",metadata:{hook_name:"master-hook.sh",hook_path:$hook_path,hook_event:$event,session_id:$session_id,hook_sequence:[{script:"check-hq-update.sh",event:"PreToolUse",ms:10}]}}')"
 bounded_report="$(hook_timeout_attach_debug_context "$base_report" "$debug_context")"
 [ "$(printf '%s' "$bounded_report" | wc -c | tr -d '[:space:]')" -le 2048 ] \
   || fail "24-phase hook timeout report exceeded the 2,048-byte CLI limit"

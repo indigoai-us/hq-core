@@ -39,6 +39,21 @@ The enforcement twin of this document is
 
 ## The handling policy
 
+### Repo merge holds
+
+The `lanes-repo-merge-hold` Bash `PreToolUse` hook sends possible merge commands
+to `hq lanes hold check --command … --json`, including shell-quoted token
+concatenations such as `gh pr m"erge"`. hq-cli owns command parsing and the
+`lanes.repo-merge-hold` hq-flags gate. The shim bounds each check to five
+seconds and denies only a valid exit-3 response with `ok:false` and a non-empty
+`error`. A non-empty `message` supplies the deny reason; otherwise the hook
+formats the hold details or the returned error. Invalid payloads and malformed
+exit-3 responses allow with one diagnostic. This check fails open by design
+because hq-cli treats every check error as allow; missing or older hq-cli
+versions produce one stderr diagnostic and do not spam. Claude and Codex route
+through the same registry entry, and both honor the structured PreToolUse
+deny.
+
 1. **Supported ⇒ mirrored.** If a runtime's hook system supports an event, the
    adapter dispatches everything `settings.json` registers for it. "Supported
    but unregistered" is treated as a bug (this is how Codex missed SessionEnd/

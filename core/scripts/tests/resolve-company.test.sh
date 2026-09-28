@@ -30,6 +30,8 @@ companies:
     name: Globex
   holler:
     name: Holler
+  cmp_FIXTURE:
+    name: Synthetic cloud company ID
   zeta:
     name: Zeta
   zeta-labs:
@@ -94,6 +96,30 @@ assert_eq "$(company_of "$out")" "holler" "bound session beats device default"
 assert_eq "$(source_of "$out")" "session" "session source"
 pass "bound session company beats device default"
 
+printf 'company_slug: cmp_FIXTURE\n' > "$TMP/workspace/sessions/sess-1/meta.yaml"
+out="$(resolve 'no explicit company in this request')"
+assert_eq "$(company_of "$out")" "cmp_FIXTURE" "case-sensitive session company resolves"
+assert_eq "$(source_of "$out")" "session" "case-sensitive session source"
+pass "manifest and session resolution preserve opaque company ID casing"
+
+out="$(resolve 'please check the cmp_FIXTURE workspace')"
+assert_eq "$(company_of "$out")" "cmp_FIXTURE" "case-sensitive prompt company resolves"
+assert_eq "$(source_of "$out")" "prompt" "case-sensitive prompt source"
+pass "prompt resolution preserves opaque company ID casing"
+
+cat >> "$TMP/companies/manifest.yaml" <<'YAML'
+  cmp_fixture:
+    name: Case-colliding synthetic cloud company ID
+YAML
+printf '' > "$TMP/workspace/sessions/sess-1/meta.yaml"
+unset HQ_DEFAULT_COMPANY_JSON HQ_DEFAULT_PREFLIGHT_JSON || true
+out="$(resolve 'please check the cmp_FIXTURE workspace')"
+assert_eq "$(company_of "$out")" "" "ambiguous case-folded prompt does not pick a company"
+assert_eq "$(source_of "$out")" "none" "ambiguous case-folded prompt source"
+pass "case-folded prompt matching refuses case-distinct company IDs"
+
+HQ_DEFAULT_COMPANY_JSON='{"ok":true,"slug":"acme","enabled":true,"needsChoice":false,"source":"configured"}'
+export HQ_DEFAULT_COMPANY_JSON
 out="$(resolve 'please plan the globex migration')"
 assert_eq "$(company_of "$out")" "globex" "explicit prompt beats session"
 assert_eq "$(source_of "$out")" "prompt" "explicit prompt source"

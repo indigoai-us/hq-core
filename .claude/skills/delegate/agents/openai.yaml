@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Delegate
+  short_description: >-
+    Hand a project to a named person or fleet agent with exact grant

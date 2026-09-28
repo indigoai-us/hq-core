@@ -160,9 +160,9 @@ session_resolve_company_dir() {
     fi
   fi
 
-  # Slug charset guard (parity with preflight: a-z0-9_-)
+  # Company ID charset guard (parity with preflight: A-Za-z0-9_-).
   case "$slug" in
-    ''|*[!a-z0-9_-]*)
+    ''|*[!a-zA-Z0-9_-]*)
       echo "hq-agent-session: company refused: requested='$slug' present=[$present_csv]" >&2
       return 6
       ;;

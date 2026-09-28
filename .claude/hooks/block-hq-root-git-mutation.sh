@@ -54,10 +54,31 @@ TOOL_CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || true
 [[ -z "$CMD" ]] && exit 0
 
 if [[ "${HQ_ALLOW_HQ_ROOT_GIT:-}" == "1" ]]; then exit 0; fi
-if echo "$CMD" | grep -Eq '(^|[[:space:]])HQ_ALLOW_HQ_ROOT_GIT=1\b'; then exit 0; fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$HOOK_ROOT/core/scripts/hook-lib.sh"
+
+STRICT_GIT_GUARD=0
+if [[ "$CMD" == *git* ]]; then
+  if [[ -z "${HQ_CLI_BIN:-}" ]]; then
+    HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)"
+    export HQ_CLI_BIN
+  fi
+  if command -v node >/dev/null 2>&1; then
+    FLAG_ENABLED="$(node "$HOOK_ROOT/.claude/hooks/block-hq-root-git-mutation-flag.cjs")" || FLAG_ENABLED=false
+  else
+    FLAG_ENABLED=false
+  fi
+  [[ "$FLAG_ENABLED" == "true" ]] && STRICT_GIT_GUARD=1
+fi
+
+# Keep the historical marker-anywhere behavior exactly while the strict flag is
+# off. With the flag on, the marker is checked against each resolved git command
+# below and only a leading assignment on that same simple command is honored.
+if [[ "$STRICT_GIT_GUARD" -eq 0 ]] && echo "$CMD" | grep -Eq '(^|[[:space:]])HQ_ALLOW_HQ_ROOT_GIT=1\b'; then
+  exit 0
+fi
 # expanduser + realpath (symlink-resolving when the path exists), python-free:
 # `realpath` ships with GNU coreutils (Linux, Git Bash) and modern macOS; fall
 # back to the lexical hq_normpath when it is missing or the path is dangling.
@@ -95,6 +116,79 @@ git_subcommand() {
   return 1
 }
 
+# hq_shell_simple_commands is the tokenizer of record. This only follows the
+# already-parsed argv for the three explicit shell source forms and eval; it
+# never evaluates a payload and does not parse shell syntax a second time.
+RESOLVED_RECORDS=()
+RESOLVED_COMMAND=""
+UNCLASSIFIED_GIT_WRAPPER=0
+collect_resolved_records() {
+  local source="$1" depth="$2" record executable executable_base text index token payload expanded i
+  local -a words
+  if [[ "$depth" -ge 8 ]]; then
+    [[ "$source" == *git* ]] && UNCLASSIFIED_GIT_WRAPPER=1
+    return 0
+  fi
+  while IFS= read -r record; do
+    [[ -n "$record" ]] || continue
+    executable="$(hq_shell_command_executable "$record" || true)"
+    executable_base="${executable##*/}"
+    executable_base="${executable_base##*\\}"
+    expanded=0
+    case "$executable_base" in
+      bash|bash.exe|sh|sh.exe|zsh|zsh.exe|eval)
+        if [[ "$STRICT_GIT_GUARD" -eq 1 ]]; then
+          IFS=$'\037' read -r -a words <<<"$record"
+          index=-1
+          for ((i=0; i<${#words[@]}; i++)); do
+            if [[ "${words[i]}" == "$executable" ]]; then index=$i; break; fi
+          done
+          if [[ "$index" -ge 0 ]]; then
+            payload=""
+            if [[ "$executable" == "eval" ]]; then
+              for ((i=index+1; i<${#words[@]}; i++)); do
+                [[ -n "$payload" ]] && payload+=" "
+                payload+="${words[i]}"
+              done
+            else
+              for ((i=index+1; i<${#words[@]}; i++)); do
+                token="${words[i]}"
+                if [[ "$token" == -* && "$token" != --* && "$token" == *c* ]]; then
+                  if [[ "$((i+1))" -lt "${#words[@]}" ]]; then payload="${words[i+1]}"; fi
+                  break
+                fi
+              done
+            fi
+            if [[ -n "$payload" ]]; then
+              collect_resolved_records "$payload" "$((depth+1))"
+              expanded=1
+            fi
+          fi
+        fi
+        ;;
+    esac
+    if [[ "$expanded" -eq 0 ]]; then
+      RESOLVED_RECORDS+=("$record")
+      text="${record//$'\037'/ }"
+      RESOLVED_COMMAND+="$text"$'\n'
+    fi
+  done < <(hq_shell_simple_commands "$source")
+}
+
+simple_command_has_escape_assignment() {
+  local record="$1" executable token i
+  local -a words
+  IFS=$'\037' read -r -a words <<<"$record"
+  executable="$(hq_shell_command_executable "$record" || true)"
+  for ((i=0; i<${#words[@]}; i++)); do
+    token="${words[i]}"
+    [[ "$token" == "$executable" ]] && return 1
+    if [[ "$token" == "HQ_ALLOW_HQ_ROOT_GIT=1" ]]; then return 0; fi
+    [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || return 1
+  done
+  return 1
+}
+
 is_dual_mutation() {
   local sub="$1" cmd="$2"
   case "$sub" in
@@ -118,6 +212,9 @@ GH_CMD=""
 SUB=""
 GIT_MUTATION_COUNT=0
 GH_MUTATION_COUNT=0
+ANCHOR_SCAN_COMMAND="$CMD"
+collect_resolved_records "$CMD" 0
+if [[ "$STRICT_GIT_GUARD" -eq 1 ]]; then ANCHOR_SCAN_COMMAND="$RESOLVED_COMMAND"; fi
 # Classify executable words, not arbitrary command text. A git phrase inside a
 # summary, JSON payload, echo, or grep pattern is an argument, never a git
 # operation.
@@ -137,6 +234,10 @@ while IFS= read -r shell_record; do
       else
         shell_mutation=1
       fi
+      if [[ "$STRICT_GIT_GUARD" -eq 1 && "$shell_mutation" -eq 1 ]] \
+         && simple_command_has_escape_assignment "$shell_record"; then
+        shell_mutation=0
+      fi
       if [ "$shell_mutation" -eq 1 ] && [ "$GIT_IS_MUTATION" -eq 0 ]; then
         GIT_IS_MUTATION=1; GIT_CMD="$shell_text"; SUB="$shell_sub"
       fi
@@ -149,7 +250,14 @@ while IFS= read -r shell_record; do
       fi
       ;;
   esac
-done < <(hq_shell_simple_commands "$CMD")
+done < <(printf '%s\n' "${RESOLVED_RECORDS[@]}")
+
+if [[ "$STRICT_GIT_GUARD" -eq 1 && "$UNCLASSIFIED_GIT_WRAPPER" -eq 1 ]]; then
+  GIT_IS_MUTATION=1
+  GIT_CMD="git push"
+  SUB="push"
+  GIT_MUTATION_COUNT=$((GIT_MUTATION_COUNT + 1))
+fi
 
 [[ $GIT_IS_MUTATION -eq 0 && $GH_IS_MUTATION -eq 0 ]] && exit 0
 
@@ -191,7 +299,7 @@ if [[ -z "$ANCHOR_PATH" ]]; then
   # Collect every cd anchor instead, and fail CLOSED: if ANY of them lands on
   # HQ root, that is the anchor. Otherwise keep the previous behaviour of using
   # the last one. `git -C` is resolved earlier and still wins outright.
-  CD_PATHS=$(echo "$CMD" | grep -oE '(^|[;&|(])[[:space:]]*cd[[:space:]]+("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|)]+)' \
+  CD_PATHS=$(echo "$ANCHOR_SCAN_COMMAND" | grep -oE '(^|[;&|(])[[:space:]]*cd[[:space:]]+("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|)]+)' \
         | sed -E 's/.*cd[[:space:]]+//; s/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//')
   if [[ -n "$CD_PATHS" ]]; then
     while IFS= read -r CDP; do
@@ -238,6 +346,10 @@ If this block is wrong or surprising, report it with /hq-bug.
 MSG
   exit 2
 }
+
+if [[ "$STRICT_GIT_GUARD" -eq 1 && "$UNCLASSIFIED_GIT_WRAPPER" -eq 1 ]]; then
+  block "A nested shell/eval payload containing git exceeded the strict parser depth limit."
+fi
 
 # `git init` is the one mutation for which upward git discovery can identify
 # the wrong repository: before the new repository has a .git, a direct child

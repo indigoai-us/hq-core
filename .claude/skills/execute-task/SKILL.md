@@ -565,9 +565,11 @@ For each worker in the sequence, spawn a sub-agent via the Task tool. Each sub-a
 
 4. **Resolve Codex model** (for codex workers only):
    ```
-   codex_model = task.codex_model_hint || worker.execution.codex_model || "gpt-5.4"
+   codex_model = task.codex_model_hint || worker.execution.codex_model
    ```
-   Story-level `codex_model_hint` overrides worker default. Fallback: gpt-5.4.
+   Story-level `codex_model_hint` overrides the model configured in the worker
+   profile. A missing `worker.execution.codex_model` is a configuration error;
+   stop and report it rather than selecting a model in this skill.
 
 5. If the worker has a skill file relevant to the task, note its path so the sub-agent prompt can reference it.
 
@@ -598,7 +600,7 @@ If the target repo has a qmd collection (check `qmd status`), prefer `qmd vsearc
 {policies loaded in step 5.6, if any}
 
 ### Codex CLI Model (codex workers only)
-{worker.execution.codex_model || "gpt-5.4"} — pass via `-c model="{codex_model}"` to all codex exec/review commands
+{codex_model} — the resolved value from the story override or worker profile. Pass it via `-c model="{codex_model}"` to all Codex exec/review commands.
 
 ### Your Instructions
 {worker.instructions}

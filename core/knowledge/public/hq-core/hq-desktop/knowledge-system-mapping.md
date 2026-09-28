@@ -1,4 +1,18 @@
+---
+type: reference
+domain: [engineering, product]
+status: historical
+tags: [desktop-app, historical, knowledge-system-mapping]
+relates_to: [knowledge/public/hq-core/hq-desktop-app.md]
+---
+
 # Knowledge System to Desktop UX Mapping
+
+> **Historical (February 2026).** This page is a spec or audit written for a React
+> version of HQ Desktop that was not shipped. The component names, Tauri commands
+> (for example `files.rs`, `orchestrator.rs`, `terminal.rs`) and file paths it
+> describes do not exist in the current app. The shipped app is Svelte 5 + Tauri 2
+> (hq-desktop-app). For current behavior, read `../hq-desktop-app.md`.
 
 Maps HQ's canonical real-directory knowledge structure, embedded-git detection, INDEX.md hierarchy, company-scoped knowledge, and qmd search collections to Desktop browsing, navigation, and search UX.
 

@@ -42,13 +42,18 @@ fail() {
   exit 1
 }
 
+pass() {
+  echo "  PASS: $*"
+}
+
 assert_eq() {
   [ "$1" = "$2" ] || fail "$3: expected '$2', got '$1'"
 }
 
 # Build a minimal HQ-shaped layout so the script's BASH_SOURCE-relative
 # REPO_ROOT computation has something real to resolve against.
-mkdir -p "$TMP/core/scripts/lib" "$TMP/workspace/sessions"
+mkdir -p "$TMP/core/scripts/lib" "$TMP/workspace/sessions" "$TMP/companies/Acme" "$TMP/companies/Personal"
+ln -s Acme "$TMP/companies/acme"
 cp "$SRC" "$TMP/core/scripts/hq-session.sh"
 cp "$LIB_SRC/session-scope-capability.sh" "$TMP/core/scripts/lib/"
 cp "$LIB_SRC/session-id.sh" "$TMP/core/scripts/lib/"
@@ -89,6 +94,77 @@ cap="$TMP/workspace/sessions/sess-1/scope-capability.json"
 [ -f "$cap" ] || fail "scope-capability.json not minted"
 assert_eq "$(jq -r '.company_slug' "$cap")" "indigo" "capability company_slug"
 assert_eq "$(jq -r '.session_id' "$cap")" "sess-1" "capability session_id"
+
+# A common exact-name company bind must short-circuit before case folding.
+TR_REAL="$(command -v tr)"
+mkdir -p "$TMP/tr-count-bin"
+cat > "$TMP/tr-count-bin/tr" <<'TR'
+#!/bin/sh
+printf 'called\n' >> "$TR_CALLS_FILE"
+exec "$TR_REAL" "$@"
+TR
+chmod +x "$TMP/tr-count-bin/tr"
+: > "$TMP/tr-calls"
+TR_CALLS_FILE="$TMP/tr-calls" TR_REAL="$TR_REAL" PATH="$TMP/tr-count-bin:$PATH" \
+  "$HS" --session-id sess-exact-tr set company_slug Acme >/dev/null
+[ ! -s "$TMP/tr-calls" ] || fail "exact hq-session bind called tr"
+pass "exact hq-session bind does not invoke case folding"
+
+# A case alias must not be persisted as a company identity when only the
+# differently-cased real directory exists.
+rc=0
+case_alias_out="$("$HS" --session-id sess-case-alias set company_slug acme 2>"$TMP/case-alias.err")" || rc=$?
+[ "$rc" -eq 1 ] || fail "expected case-alias company bind to be rejected, got exit $rc"
+[ -z "$case_alias_out" ] || fail "case-alias bind surfaced policy output: $case_alias_out"
+[ ! -e "$TMP/workspace/sessions/sess-case-alias/scope-capability.json" ] \
+  || fail "case-alias company bind minted a scope capability"
+[ -z "$("$HS" --session-id sess-case-alias get company_slug)" ] \
+  || fail "case-alias company bind persisted a slug"
+
+# Older installed CLI bundles may advertise hq-session without carrying the
+# exact-directory fix. The wrapper must stay on the in-tree guard unless the
+# CLI help advertises the explicit capability marker.
+mkdir -p "$TMP/old-cli-bin"
+cat > "$TMP/old-cli-bin/hq" <<'CLI'
+#!/usr/bin/env bash
+if [ "${1:-}" = "core" ] && [ "${2:-}" = "--help" ]; then
+  printf '%s\n' "${HQ_CLI_CAPS_TEXT:-hq-session}"
+  exit 0
+fi
+if [ "${1:-}" = "core" ] && [ "${2:-}" = "hq-session" ]; then
+  : > "$HQ_CLI_DELEGATION_MARKER"
+  exit 0
+fi
+exit 91
+CLI
+chmod +x "$TMP/old-cli-bin/hq"
+rc=0
+env -u HQ_HQ_SESSION_NO_CLI \
+  HQ_ROOT="$TMP" PATH="$TMP/old-cli-bin:$PATH" \
+  HQ_CLI_CAPS_CACHE="$TMP/old-cli-caps" \
+  HQ_CLI_DELEGATION_MARKER="$TMP/old-cli-called" \
+  "$HS" --session-id sess-cli-case-alias set company_slug acme \
+  >"$TMP/old-cli.out" 2>"$TMP/old-cli.err" || rc=$?
+[ "$rc" -eq 1 ] || fail "old CLI alias path expected refusal via fallback, got exit $rc"
+[ ! -e "$TMP/old-cli-called" ] || fail "old CLI without exact-directory capability was called"
+pass "wrapper refuses to delegate to an old CLI that lacks the exact-directory capability"
+
+env -u HQ_HQ_SESSION_NO_CLI \
+  HQ_ROOT="$TMP" PATH="$TMP/old-cli-bin:$PATH" \
+  HQ_CLI_CAPS_CACHE="$TMP/new-cli-caps" \
+  HQ_CLI_CAPS_TEXT='exact-company-directory-match-v1 hq-session' \
+  HQ_CLI_DELEGATION_MARKER="$TMP/new-cli-called" \
+  "$HS" --session-id sess-cli-capable get company_slug >/dev/null
+[ -e "$TMP/new-cli-called" ] || fail "CLI with the exact-directory capability was not used"
+pass "wrapper delegates when the installed CLI advertises the exact-directory capability"
+
+# 6a. Cloud company IDs may be opaque case-sensitive values rather than slugs.
+#     The binding accepts the safe ASCII identifier and preserves it exactly.
+"$HS" --session-id sess-opaque set company_slug cmp_FIXTURE >/dev/null
+opaque_cap="$TMP/workspace/sessions/sess-opaque/scope-capability.json"
+[ -f "$opaque_cap" ] || fail "opaque company binding did not mint scope-capability.json"
+assert_eq "$(jq -r '.company_slug' "$opaque_cap")" "cmp_FIXTURE" \
+  "opaque company capability preserves case-sensitive identifier"
 
 # 6b. `personal` is a reserved no-company scope: it binds (mints the capability)
 #     but must NOT surface a company hard-policy digest, even if a companies/

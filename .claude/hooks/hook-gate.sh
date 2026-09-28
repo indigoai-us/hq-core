@@ -35,7 +35,7 @@ export BASH_ENV=/dev/null
 # Minimal: critical safety hooks
 is_in_minimal_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|block-env-dump|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|lanes-senior-monitor-stop-gate|block-unsafe-package-install|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|conduct-lane-inbox)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|lanes-senior-monitor-stop-gate|block-unsafe-package-install|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|conduct-lane-inbox)
       return 0
       ;;
     *)
@@ -47,7 +47,7 @@ is_in_minimal_profile() {
 # Standard: minimal + checkpoint/handoff + pattern learning + core governance + policy loading
 is_in_standard_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-conduct|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-conduct|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start)
       return 0
       ;;
     *)
@@ -59,7 +59,7 @@ is_in_standard_profile() {
 # Strict: standard + future quality hooks (reserved for expansion)
 is_in_strict_profile() {
   case "$1" in
-    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-conduct|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start)
+    block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|auto-conduct|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lane-inbox|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start)
       return 0
       ;;
     *)
@@ -223,6 +223,15 @@ HOOK_ID="$1"
 HOOK_SCRIPT="$2"
 shift 2
 # Remaining args passed to actual hook script (if any)
+
+hook_gate_report_block_reason() {
+  local hook_name="${HOOK_ID##*/}"
+  hook_name="${hook_name%.sh}"
+  case "$hook_name" in
+    ''|*[!A-Za-z0-9._-]*) hook_name="registered hook" ;;
+  esac
+  printf '\nBlocked by hook %s.\n' "$hook_name" >&2 || true
+}
 
 self_src="${BASH_SOURCE[0]:-$0}"
 self_dir="$(cd "$(dirname "$self_src")" 2>/dev/null && pwd -P || true)"
@@ -434,6 +443,7 @@ if command -v hq_launch_shell_path >/dev/null 2>&1 \
       "$HQ_HOOK_LAST_CAUSE")"
     [ -n "$warning" ] && printf '%s\n' "$warning" >&2
   fi
+  [ "$status" -ne 2 ] || hook_gate_report_block_reason
   exit "$status"
 fi
 
@@ -453,8 +463,18 @@ else
   chmod u+x "$HOOK_SCRIPT" 2>/dev/null || true
 fi
 if [ "$hq_gate_win" -eq 0 ] && [ -x "$HOOK_SCRIPT" ]; then
+  status=0
+  set +e
   printf '%s' "$HOOK_PAYLOAD" | "$HOOK_SCRIPT" "$@"
-  exit "${PIPESTATUS[1]}"
+  status="${PIPESTATUS[1]}"
+  set -e
+  [ "$status" -ne 2 ] || hook_gate_report_block_reason
+  exit "$status"
 fi
+status=0
+set +e
 printf '%s' "$HOOK_PAYLOAD" | bash "$HOOK_SCRIPT" "$@"
-exit "${PIPESTATUS[1]}"
+status="${PIPESTATUS[1]}"
+set -e
+[ "$status" -ne 2 ] || hook_gate_report_block_reason
+exit "$status"

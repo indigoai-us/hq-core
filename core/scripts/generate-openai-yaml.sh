@@ -12,7 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HQ_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HQ_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SKILLS_DIR="${HQ_ROOT}/.claude/skills"
 
 DRY_RUN=false
@@ -26,16 +26,55 @@ for arg in "$@"; do
   esac
 done
 
+if [[ ! -d "$SKILLS_DIR" ]]; then
+  echo "Skills directory not found: $SKILLS_DIR" >&2
+  exit 1
+fi
+
 # Convert "kebab-case-name" to "Title Case Name"
 to_title_case() {
   echo "$1" | tr '-' ' ' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2))}1'
 }
 
-# Extract first sentence from description (up to first period+space or end)
+# Extract a Codex-valid description from the first sentence, bounded to 25-64
+# characters and truncated only at a word boundary.
 first_sentence() {
-  local desc="$1"
-  # Take up to first ". " or first "." at end, max 120 chars
-  echo "$desc" | sed 's/\. .*/\./' | cut -c1-120
+  local sentence="$1"
+  local bounded=""
+  local candidate
+  local word
+  local -a words=()
+
+  sentence="$(printf '%s\n' "$sentence" | sed 's/\. .*/\./' | sed 's/[[:space:]]*$//')"
+
+  if ((${#sentence} > 64)); then
+    read -r -a words <<< "$sentence"
+    for word in "${words[@]}"; do
+      candidate="${bounded:+${bounded} }${word}"
+      if ((${#candidate} > 64)); then
+        break
+      fi
+      bounded="$candidate"
+    done
+
+    bounded="$(printf '%s\n' "$bounded" | sed 's/[[:space:],;:—-]*$//')"
+
+    # A single unbroken token cannot fit the word-boundary limit. Use a useful
+    # generic description rather than emitting an invalid or mid-word value.
+    if [[ -z "$bounded" ]]; then
+      bounded="See the full skill instructions."
+    fi
+    sentence="$bounded"
+  fi
+
+  if [[ -z "$sentence" ]]; then
+    sentence="See the full skill instructions."
+  elif ((${#sentence} < 25)); then
+    [[ "$sentence" == *. ]] || sentence="${sentence}."
+    sentence="${sentence} See the full skill instructions."
+  fi
+
+  printf '%s\n' "$sentence"
 }
 
 # Extract YAML frontmatter field from SKILL.md
@@ -103,16 +142,16 @@ for skill_dir in "${SKILLS_DIR}"/*/; do
   short_description="$(first_sentence "$description")"
 
   if [ "$DRY_RUN" = true ]; then
-    echo "${skill_name}:"
-    echo "  display_name: \"${display_name}\""
-    echo "  short_description: \"${short_description}\""
-    echo
+    printf '%s:\n  display_name: >-\n    %s\n  short_description: >-\n    %s\n\n' \
+      "$skill_name" "$display_name" "$short_description"
   else
     mkdir -p "${skill_dir}agents"
     cat > "$yaml_path" <<EOF
 interface:
-  display_name: "${display_name}"
-  short_description: "${short_description}"
+  display_name: >-
+    ${display_name}
+  short_description: >-
+    ${short_description}
 EOF
     echo "Generated: ${skill_name}/agents/openai.yaml"
   fi

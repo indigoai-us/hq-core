@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Humanize
+  short_description: >-
+    Revise human-facing prose to remove AI tells and match the

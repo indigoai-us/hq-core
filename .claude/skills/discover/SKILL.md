@@ -38,7 +38,7 @@ Optional flags: `--company <slug>`, `--private`, `--no-policies`.
 2. Pick target: `repos/public/<name>` (PUBLIC) or `repos/private/<name>` (PRIVATE). `--private` forces private placement.
 3. **Clone (if absent):**
    ```bash
-   git clone --depth=50 <url> repos/{pub|priv}/<name>
+   git clone --depth=50 --no-single-branch <url> repos/{pub|priv}/<name>
    ```
    Shallow is sufficient for discovery.
 4. **Sync (if present):**

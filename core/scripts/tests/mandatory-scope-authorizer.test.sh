@@ -38,6 +38,7 @@ install_fixture() {
   rm -rf "${TMP:?}"/*
   mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts/lib" \
     "$TMP/companies/indigo/settings" "$TMP/companies/otherco/settings" \
+    "$TMP/companies/cmp_FIXTURE/settings" "$TMP/companies/cmp_OTHER/settings" \
     "$TMP/companies/_template" "$TMP/core/docs" "$TMP/personal" \
     "$TMP/workspace/sessions/sess-bound"
   cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.claude/hooks/"
@@ -302,6 +303,15 @@ unbound_payload='{"tool_name":"Read","session_id":"sess-live","cwd":"'"$TMP"'","
 rc="$(run_hook_env "$unbound_payload" HQ_TEST_MARKER=1)"
 [ "$rc" = "2" ] || fail "expected exit 2 for an identified but unbound session, got '$rc'"
 grep -q "no company_slug bound" "$TMP/err.txt" || fail "unbound session keeps its own message"
+
+echo "[19] opaque case-sensitive company IDs bind exactly and keep cross-company blocking"
+install_fixture "cmp_FIXTURE"
+payload='{"tool_name":"Read","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/cmp_FIXTURE/settings/foo.yaml"}}'
+rc="$(run_hook "$payload")"
+[ "$rc" = "0" ] || fail "expected allow for the exact opaque company ID, got $rc"
+payload='{"tool_name":"Read","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/cmp_OTHER/settings/foo.yaml"}}'
+rc="$(run_hook "$payload")"
+[ "$rc" = "2" ] || fail "expected block for a different opaque company ID, got $rc"
 
 
 echo "[23] a continuation inside single quotes is stripped too — deliberately conservative"

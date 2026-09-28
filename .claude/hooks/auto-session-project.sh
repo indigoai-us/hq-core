@@ -64,7 +64,7 @@ fi
 # Cannot place a local folder without a company slug (never invent one).
 [ -n "$COMPANY" ] || exit 0
 case "$COMPANY" in
-  *[!a-z0-9_-]*|"") exit 0 ;;
+  *[!A-Za-z0-9_-]*|"") exit 0 ;;
 esac
 case "$PROJECT" in
   *[!a-zA-Z0-9._-]*|"") exit 0 ;;
@@ -86,6 +86,20 @@ if [ -f "$MANIFEST" ]; then
 else
   exit 0
 fi
+
+# A manifest match is not enough on a case-insensitive filesystem: a differently
+# cased directory path can resolve to another directory. Compare the requested
+# slug with actual entries before creating anything beneath the company path.
+company_entry_found=0
+for company_entry in "$HQ_ROOT"/companies/*; do
+  [ -d "$company_entry" ] || continue
+  [ -L "$company_entry" ] && continue
+  if [ "${company_entry##*/}" = "$COMPANY" ]; then
+    company_entry_found=1
+    break
+  fi
+done
+[ "$company_entry_found" -eq 1 ] || exit 0
 
 PROJECT_DIR="$HQ_ROOT/companies/$COMPANY/projects/$PROJECT"
 PRD_PATH="$PROJECT_DIR/prd.json"

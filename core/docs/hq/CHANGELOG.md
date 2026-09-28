@@ -1,10 +1,84 @@
 ## [Unreleased]
 
+### Fixed: shallow discovery clones, Codex model fallback, and OpenAI skill metadata
+- `/discover` now keeps the full origin fetch refspec when it performs a shallow clone, so a later plain fetch sees branches beyond the default branch.
+- `/execute-task` resolves Codex models from the story override or the worker profile and reports a missing profile value as a configuration error.
+- `generate-openai-yaml.sh` now locates the HQ root correctly, fails clearly when the skills directory is missing, and removes dangling punctuation from bounded descriptions. Missing Codex metadata was generated for every eligible skill.
+- Custom worker profiles without execution.codex_model now stop with a configuration error instead of falling back to gpt-5.4.
+
+### Fixed: process-budget checks no longer depend on staging history (US-113)
+- Hook process-budget baselines are vendored as fixtures so hq-core promotion checks do not require staging-only commits.
+
+### Fixed: HQ autocommit handles linked worktrees and Windows paths (US-085)
+- The autosave hook accepts linked worktrees, converts Git Bash drive paths before staging, and records paths it cannot resolve.
+
+### Changed: Move Linux PR checks to ARM runners (GH-4)
+- The Linux jobs in `pr-checks.yml` use `ubuntu-24.04-arm`; the macOS and Windows shell smoke jobs keep their existing runners.
+- The CI suite remains unchanged. Runner-label and yq architecture tests guard the ARM configuration.
+
+
+### Fixed: Outpost job failure alerts use the job owner
+- Generated units preserve the resolved `hq` CLI path, including a global npm prefix. Alerts pass each job's `personUid` to `hq dm` unchanged. If the CLI cannot be found, the notify script logs the skipped DM and leaves the job outcome intact.
+
+### Fixed: clean-worktree reconciles handoff mirrors before merge
+- The pre-merge check removes the main-checkout pointer and copied thread only when each file exactly matches the incoming branch. Differing local files remain in place and are surfaced before the merge.
+
+### Added: repo merge-hold PreToolUse shim
+- Added a Bash guard that asks `hq lanes hold check` before merge commands and
+  denies valid exit-3 responses with `ok:false` and a non-empty `error`. Checks
+  have a five-second timeout and fail open with one diagnostic for malformed
+  payloads, invalid check output, missing or older hq-cli, and other errors,
+  matching hq-cli's fail-open contract. Codex uses the same registered
+  PreToolUse hook as Claude.
+- Added regression tests for fail-open results, exact command forwarding,
+  profile registration, master-hook dispatch, and Codex denial translation.
+
+### Fixed: generated Outpost job units sanitize systemd PATH (US-083)
+- Systemd environment values double percent before quoting. Generated unit PATH values keep first-seen absolute entries only, dropping empty and relative items so global npm hq remains resolvable.
+
+### Added: pricing and billing reference with a drift check (workforce-no-included-agents US-011)
+- `core/knowledge/public/hq-core/pricing-and-billing.md` explains plans, the member rule, per-box agent billing, the legacy Workforce rule, meeting hours, outposts, trials, cancelling and invoices. Its numbers section is generated from `core/knowledge/public/hq-core/pricing.json`, a copy of the `GET /v1/pricing` statement.
+- `core/scripts/refresh-pricing.sh` fetches the endpoint, rewrites `pricing.json`, and regenerates only the text between the numbers markers.
+- `core/scripts/check-pricing-drift.sh` fails when `pricing.json` differs from the endpoint on any plan price, allowance, agent rung, add-on or the legacy Workforce rule, and names each field. It exits 2 when the endpoint is unreachable. pr-checks runs it on every PR and push to main.
+- New hard policy `core/policies/hq-pricing-source-of-truth.md`: quote pricing only from `pricing.json` or the endpoint; the endpoint wins on disagreement.
+- The quick reference links the pricing reference.
+- `GET /v1/pricing` is live, so CI runs the drift check without an unreachable-endpoint allowance. `pricing.json` was refreshed from the live statement after the Workforce v2 cutover: all three agent rungs (basic, power, dev) are buyable.
+- Regression: `core/scripts/tests/pricing-drift.test.sh`.
+
+### Fixed: PreToolUse hook blocks name their source (US-073)
+- The master dispatcher and hook gate now write a one-line stderr reason when a
+  child blocks with exit code 2 or returns a JSON deny. Tests cover silent hooks
+  and confirm that reading the handoff finalizer is allowed.
+
+### Fixed: session binding requires exact company directory names (US-072)
+- Spawn auto-binding now matches a company slug to a real directory entry by
+  exact name, so a case-insensitive filesystem cannot bind a differently-cased
+  alias. A trusted fallback rewrites stale aliases in session metadata and
+  scope capability; without a valid replacement, both stale bindings are
+  cleared. Manual `hq-session.sh set company_slug` rejects case aliases, and
+  its wrapper delegates only to an installed CLI that advertises the exact
+  directory-match capability. The reserved `personal` binding is unchanged.
+- Policy loading from an existing session slug also requires the exact company
+  directory entry before reading that company's policy directory.
+
+### Fixed: delegate ACL preflight, worker index, and company binding (US-049)
+- `/delegate` now accepts the normalized shared-folder prefix returned by
+  `hq files acl --json`. The preflight still checks the requested company and
+  rejects any other prefix.
+- The public workers index now lists the shipped directories. The existing
+  worker-registry CI test checks that the index stays in sync with them.
+- `hq-session.sh`, spawn auto-binding, and agent-session authorization accept
+  safe case-sensitive ASCII company IDs that match company directory names. The
+  scope authorizer still binds to the exact company ID.
 ### Changed: setup bot invites teammates through the new-hire flow
 - When the setup bot invites someone, it follows the new-hire skill's steps (membership check, role, invite, access, follow-through) without naming the skill, and tells the person to have the invitee check their spam folder.
 
 ### Changed: setup bot confirms a connected app and says where connections live
 - After the first app it connects, once it reads real data from it, the setup bot says "Great, <Tool> is connected" with a link to the company's integrations page on hq.computer, and says the person can ask it or any other AI in HQ to connect another.
+
+### Fixed: flag-gated HQ-root git guard wrapper checks (US-071)
+- The optional `hooks.hq-root-git-guard-strict` hq-flags key enables recursive checks for `bash -c`, `sh -c`, `zsh -c` and `eval` git operations. The default-off path preserves the current behavior.
+- With strict checks enabled, `HQ_ALLOW_HQ_ROOT_GIT=1` only exempts the same git mutation when it is a leading environment assignment on that command. SSH remains unchanged.
 
 ### Fixed: root git guard and skill catalog frontmatter parsing (US-067)
 - The HQ-root guard now allows the read-only `git check-ignore` command.
@@ -13,6 +87,9 @@
 ### Fixed: handoff post syncs workspace mirrors to the thread company
 - Workspace sync now passes the thread's company slug to hq sync push.
 - The document-release gate counts string paths and objects with a string path. Unsupported entries are logged and skipped.
+
+### Fixed: handoff pointers are atomic and worktree-resumable (US-083)
+- The finalizer atomically replaces handoff pointers through a same-directory temp file. A linked-worktree handoff copies its thread into the main checkout and writes a checkout-relative pointer, so the handoff remains portable without changing explicit staging or commit behavior.
 
 ### Fixed: npm hq-cli install windows no longer trigger a pnpm shadow restore
 - Before restoring hq, the UserPromptSubmit hook checks for a matching npm or pnpm install process and an npm staging directory. If hq is still missing, it waits two seconds and checks again.

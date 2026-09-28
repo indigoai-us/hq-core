@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Dm
+  short_description: >-
+    Send or read HQ Sync direct messages — inbox, 1:1 threads

@@ -2,253 +2,123 @@
 type: reference
 domain: [engineering, operations]
 status: canonical
-tags: [desktop-app, company-isolation, manifest, credential-scoping, routing]
-relates_to: []
+tags: [desktop-app, company-isolation, scope-gate, company-home-channel, secrets]
+relates_to: [knowledge/public/hq-core/hq-desktop-app.md]
+verified_against:
+  - repo: hq-desktop-app
+    ref: origin/main@c621a6a1
+    app_version: 0.10.347
+    date: 2026-09-27
 ---
 
 # Company Isolation in HQ Desktop
 
-How `manifest.yaml` maps to Desktop routing, credential visibility rules, knowledge scoping per company, and company switching UX.
+How HQ Desktop keeps one company's files, channels and credentials apart from
+another's. This replaces an earlier version of this page that described a
+React `CompanyContext` design and stated that Desktop had no isolation
+enforcement. That React app was not shipped; enforcement has existed since
+2026-07-31 (hq-desktop-app PR #309).
 
-## manifest.yaml Schema
+## Company scope gate
 
-`companies/manifest.yaml` is the single source of truth for company-to-resource ownership. Every company entry has these fields:
+`crates/hq-desktop-core/src/scope_gate.rs` exposes
+`enforce_read_scope(rel_path, active_company)`. It mirrors the CLI's
+mandatory-scope-authorizer hook.
 
-```yaml
-{company_id}:
-  repos: [list of repo paths]           # Git repos owned by this company
-  settings: [list of setting dir names]  # Credential/config dirs under companies/{id}/settings/
-  knowledge: companies/{id}/knowledge/   # Real directory; optional embedded git repo
-  deploy: [list of deploy commands]      # Slash commands for deployment
-  vercel_projects: [list of domains]     # Vercel deployment targets
-  qmd_collections: [list of names]       # Semantic search collections
-```
+Rules, applied to an HQ-relative path after normalising `\` to `/` and
+resolving `.` and `..` segments:
 
-Nullable fields: `knowledge` (acmestudio has `null`), `settings` (can be empty array), `qmd_collections` (can be empty array).
+| Path | No company bound | Company `A` bound |
+|---|---|---|
+| Outside `companies/` (for example `core/`, `personal/`, `repos/`) | allowed | allowed |
+| `companies/manifest.yaml` (also `.yml`, `.json`) | allowed | allowed |
+| `companies/_template/…` | allowed | allowed |
+| `companies/A/…` | refused: "company scope not bound" | allowed |
+| `companies/B/…` (any other slug, including `_`-prefixed ones like `_archive`) | refused | refused: "cross-company read blocked" |
 
-> Company-scoped workers are not listed in manifest.yaml. They are discovered by scanning `companies/{id}/workers/*/worker.yaml` and surfaced through `core/workers/registry.yaml` (auto-generated). The single source of truth for each worker's company assignment is `worker.company` inside its own `worker.yaml`.
+### Where the active company comes from
 
-### Current Companies
+The desktop keeps one active company per app session
+(`DesktopSessionScope` in `apps/sync/src-tauri/src/commands/desktop_alt.rs`).
+The Files explorer sets it through `set_desktop_active_company` when the user
+opens a company vault. Slugs must be lowercase letters, digits, `-` or `_`.
+Opening the personal vault does not bind a company.
 
-| Company | Repos | Settings Dirs | Workers | Knowledge | qmd Collections |
-|---------|-------|--------------|---------|-----------|-----------------|
-| {company} | {product}, {product}-popup-builder, agent-ops-hq, {product}-cx | stripe, gusto, deel, quickbooks, shopify-partner, linear-acme-recover + (on disk: attio, browser-state, gmail, google-cloud, infobip, meta, stripe-acme-recover) | cfo-{company}, {company}-analyst, {product}-deploy | yes | {company}, {product} |
-| {company} | {company}-advisory | (on disk: linkedin, loops, meta, x) | cmo-brand | yes | {company} |
-| personal | (none) | slack + (on disk: gmail, linkedin, x) | x-user, invoices | yes | personal |
-| acmestudio | acmestudio-portal | (none) | (none) | null | (none) |
+### Commands that pass through the gate
 
-Note: The manifest `settings` list does not always match the on-disk contents of `companies/{id}/settings/`. Desktop must discover settings from the filesystem, but the manifest defines which are "declared" vs which are incidental.
+In `desktop_alt.rs`: `get_company_file_tree`, `get_company_file_content`,
+`get_authorized_file_preview`, `reveal_authorized_file`, `reveal_hq_root`,
+`open_authorized_file_in_claude`, `list_hq_dir`.
+In `vault_explorer.rs`: directory listing and `read_vault_note`.
 
-## Desktop Isolation Enforcement
+### Checks that run alongside the gate
 
-### Current State (Gaps)
+- **Membership.** `require_company_file_read_access` refuses a
+  `companies/<slug>/` path unless the signed-in user's resolved workspaces
+  grant that company ("company files are not authorized").
+- **Symlinks.** `require_matching_company_scope` compares the path as written
+  with its canonical (symlink-resolved) form and refuses the read if they
+  point into different companies ("file path resolves across HQ company
+  boundaries").
+- **Open in Claude Code.** File hand-off to Claude Code accepts only an
+  HQ-relative path, runs the checks above, and builds the prompt and deep link
+  itself.
 
-Desktop currently has **no company isolation enforcement**. The existing code:
+### Limits
 
-1. **`list_companies()` in files.rs** -- Scans `companies/` directory, returns basic existence checks (`has_settings`, `has_data`, `has_knowledge`). No manifest awareness.
-2. **`get_company_detail()` in files.rs** -- Lists raw file names from `core/settings/`, `data/`, `core/knowledge/` subdirectories. No filtering, no masking, no ownership mapping.
-3. **`CompanyDetailView` component** -- Displays all core/settings/data/knowledge files for any company the user clicks. No credential masking. No cross-company guardrails.
-4. **No manifest.yaml parsing** -- Desktop does not read `manifest.yaml` at all. The `WorkerEntry` struct lacks a `company` field. Projects have no company association.
-5. **No company context state** -- There is no "active company" concept in the UI. All views show all companies' data simultaneously.
+- The gate covers desktop file reads. It does not restrict what a coding tool
+  or a local bot reads on disk; those are governed by the HQ hooks and
+  policies in the tool's own session and by the bot's kind.
+- Company bots (`hq bot create --kind company --company <slug>`) act as
+  themselves and only reach their companies' files. Personal bots act as the
+  owner and reach everything the owner can.
 
-### Required Isolation Model
+## Company home channels
 
-Desktop must enforce company isolation at three layers:
+- Each company has exactly one home channel (company settings, wallpaper).
+  Other channels created inside a company are ordinary team channels.
+- The app opens the channel the server names as the company's
+  `homeChannelId`. If there is none, the row says "No company channel yet."
+- The sidebar's Companies section lists home channels: the three most active
+  companies by default, or only the pinned ones once any are pinned.
+- A company home channel has a Projects tab that shows that company's board.
 
-#### Layer 1: Data Access (Rust Backend)
+## Sync scope
 
-A new Tauri command `read_manifest()` must parse `companies/manifest.yaml` and return a typed `CompanyManifest` struct:
+- Auto-sync skips companies whose sync is paused on this machine (passed to
+  the runner as `HQ_SYNC_SKIP_COMPANIES`) and skips the personal vault when
+  personal sync is off (`--skip-personal`).
+- A company the user has just joined is pulled automatically, scoped to that
+  company.
 
-```rust
-struct CompanyManifest {
-    id: String,
-    repos: Vec<String>,
-    settings: Vec<String>,
-    workers: Vec<String>,
-    knowledge: Option<String>,
-    deploy: Vec<String>,
-    vercel_projects: Vec<String>,
-    qmd_collections: Vec<String>,
-}
-```
+## Secrets
 
-All company-scoped queries (`get_company_detail`, `list_workers`, `list_projects`) should accept an optional `company_filter: Option<String>` parameter. When set, the backend filters results to resources owned by that company per the manifest.
+- The desktop never shows or stores secret values in its UI state or logs.
+  Local bots get credentials through the `hq` CLI, which does not print them.
+- There is no secret-entry field in the current desktop shell. A company
+  Secrets panel (`packages/ui/src/company/SecretsPanel.svelte`) exists in the
+  source but is not mounted by the live shell; its actions only open Claude
+  Code with a prompt to use the HQ secrets workflow.
+- The Tauri command `setup_store_secret` pipes a value into
+  `hq secrets set <NAME> --from-stdin [--personal | --company <slug>]`, so the
+  value goes field → app → CLI stdin → vault. Its only caller is the secret
+  card of the scripted `/setup --guided` run, which the shipped host no longer
+  starts.
+- In practice, secrets are entered through the HQ secret flows: `/hq-secrets`,
+  `hq secrets`, or a one-time entry link from `hq secrets generate-link`. The
+  Setup bot follows the same rule and refers to secrets by name only.
 
-#### Layer 2: State Management (React)
+## Sources
 
-A `CompanyContext` provider (or Zustand store) must track:
+hq-desktop-app `origin/main@c621a6a1`:
 
-```typescript
-interface CompanyState {
-  activeCompany: string | null          // null = "all companies" view
-  manifest: Record<string, CompanyManifest>  // parsed manifest.yaml
-  setActiveCompany: (id: string | null) => void
-}
-```
-
-When `activeCompany` is set:
-- Worker list filters to workers owned by that company (from manifest `workers` array), plus all public workers
-- Project list filters to projects whose `repoPath` maps to a repo owned by that company
-- Knowledge browser scopes to that company's knowledge path
-- Search defaults to that company's qmd collection(s)
-- Settings view shows only that company's settings
-
-#### Layer 3: UI Enforcement (Components)
-
-Every view that displays company-scoped resources must respect `activeCompany`:
-- **Nav/sidebar**: Company picker dropdown or tab bar
-- **Worker list**: Filter by company ownership, show public workers with a "shared" badge
-- **Project list**: Filter by company association
-- **Knowledge browser**: Scope to active company's knowledge path
-- **Search**: Default qmd collection to active company
-
-## Credential Visibility Rules
-
-### Classification of Settings Files
-
-Settings files fall into three sensitivity tiers:
-
-| Tier | Description | Desktop Behavior | Examples |
-|------|-------------|-----------------|----------|
-| **Secret** | API keys, tokens, OAuth credentials, service account JSON | NEVER display content. Show file name only, with a lock icon. Content masked as `[REDACTED]` | `stripe/*.json`, `google-cloud/*.json`, `gmail/credentials.json`, `linear/*.json` |
-| **Config** | Non-secret configuration (feature flags, org IDs, display names) | Display content read-only | `browser-state/*.json` (session state, not secrets), `analytics/config.yaml` |
-| **Reference** | Documentation, guides, READMEs within settings dirs | Display content freely | `{company}/settings/README.md` |
-
-### Detection Heuristic
-
-Since HQ has no explicit schema for classifying settings sensitivity, Desktop must use heuristics:
-
-1. **File name patterns (Secret)**: `*credentials*`, `*secret*`, `*token*`, `*key*`, `*auth*`, `*.pem`, `*.p12`
-2. **Content patterns (Secret)**: Files containing `apiKey`, `api_key`, `secret`, `token`, `client_secret`, `private_key`, `-----BEGIN`
-3. **Known secret dirs**: `stripe`, `gusto`, `deel`, `quickbooks`, `shopify-partner`, `linear*`, `figma`, `google-drive`, `google-cloud`, `gmail`, `slack`, `meta`, `infobip`, `attio`, `clerk`, `retool`, `loops` -- all of these contain credentials
-4. **Default assumption**: If uncertain, treat as Secret (fail safe)
-
-### Implementation Approach
-
-The Rust backend should:
-1. List settings file/directory names (always safe to show names)
-2. For any file content request under `companies/*/settings/`, apply the detection heuristic
-3. If the file is classified as Secret, return `{ "masked": true, "type": "credential" }` instead of content
-4. Never return raw credential file content through Tauri commands
-
-The frontend should:
-- Show a lock icon next to masked files
-- Display "Credentials - not viewable in Desktop" for masked content
-- Never attempt to decrypt or unmask
-
-### Cross-Company Rule
-
-Desktop MUST NOT allow viewing Company A's settings when Company B is the active context. The backend `get_company_detail` command must validate that the requested `company_id` matches the active company context (or that no company filter is active).
-
-## Knowledge Scoping
-
-### How Company Filter Maps to Knowledge Access
-
-Each company's knowledge is stored as a real directory at
-`companies/{id}/knowledge/`. If independent version history is needed, git is
-initialized inside that directory; the path is never a symlink into `repos/`.
-
-When `activeCompany` is set:
-
-| Scope | Knowledge Path | Behavior |
-|-------|---------------|----------|
-| Company-specific | `companies/{activeCompany}/knowledge/` | Primary knowledge source. Full browsing and search |
-| Public/shared | `core/knowledge/public/` | Always accessible regardless of company filter |
-| Other companies | `companies/{other}/knowledge/` | Hidden from tree browser. Excluded from search results |
-
-### qmd Collection Routing
-
-When searching via qmd, the active company determines the default collection:
-
-```typescript
-function getSearchCollections(activeCompany: string | null): string[] {
-  if (!activeCompany) return ['hq']  // search everything
-  const manifest = getManifest(activeCompany)
-  return manifest.qmd_collections  // e.g., ['{company}', '{product}'] for {company}
-}
-```
-
-The search UI should:
-1. Auto-select the active company's collections when a company filter is set
-2. Allow manual collection override (user might want to search across companies)
-3. Show a "Searching: {collection}" indicator so the user knows the scope
-4. When no company is active, default to the `hq` collection (searches everything)
-
-### Knowledge Tree Navigation
-
-The knowledge browser (currently a placeholder "coming soon" in `empire-view.tsx`) should render:
-
-```
-Knowledge
-├── Public (always visible)
-│   ├── Ralph/
-│   ├── hq-core/
-│   ├── dev-team/
-│   ├── core/workers/
-│   └── ...
-├── {activeCompany} (when filtered)
-│   └── {company knowledge files}
-└── All Companies (when no filter)
-    ├── {company}/
-    ├── {company}/
-    └── personal/
-```
-
-## Company Switching UX
-
-### How Changing Company Context Affects All Views
-
-
-| View | Effect of Company Switch |
-|------|------------------------|
-| **Dashboard/Stats** | Stats scope to company-owned resources (workers, projects, threads) |
-| **Workers** | List filters to company-owned private workers + all public workers. Worker detail only shows threads from company context |
-| **Projects** | List filters to projects targeting company-owned repos |
-| **Knowledge** | Tree scopes to company knowledge path. Public knowledge remains visible |
-| **Search** | Default qmd collection switches to company's collection(s) |
-| **Settings** | Only company's settings dirs shown. Cross-company settings hidden |
-| **Terminal** | No filtering -- terminal is company-agnostic (user controls CLI context) |
-| **Threads** | Filter to threads whose `worker_id` belongs to the company, or threads with `cwd` inside company repos |
-
-### Company Picker Design
-
-The company picker should appear in the top bar (`top-bar.tsx`) or left sidebar, providing:
-
-1. **"All" option** -- No company filter, show everything (default state)
-2. **Company list** -- Each company from manifest, with visual indicator (color dot or icon)
-3. **Active indicator** -- Highlight the currently selected company
-4. **Keyboard shortcut** -- Quick switch via command palette (e.g., `/company {company}`)
-5. **Persistence** -- Remember last active company across app restarts (store in Tauri's app data or localStorage)
-
-### Visual Differentiation
-
-Each company should have a consistent color assignment for visual identification across all views:
-
-```typescript
-const companyColors: Record<string, string> = {
-  {company}: '#00ff88',   // green (matches brand)
-  {company}: '#6366f1',        // {company} (matches brand name)
-  personal: '#a855f7',      // purple
-  'acmestudio': '#ffd700' // gold (matches brand name)
-}
-```
-
-When a company is active, the top bar or sidebar should show a subtle color accent matching the company, reinforcing which context the user is operating in.
-
-### Edge Cases
-
-1. **Resources owned by multiple companies** -- Not currently possible in manifest schema. Each resource belongs to exactly one company.
-2. **Public workers in company context** -- Always show public workers, but badge them as "Shared" to distinguish from company-owned workers.
-3. **Cross-company projects** -- If a project's `repoPath` is not in any company's manifest `repos`, show it only in "All" view.
-4. **Company with no resources** -- acmestudio has no workers, no settings, no knowledge. Show it in the company list but display an empty state: "No resources configured."
-5. **Manifest out of sync** -- Desktop should reload manifest on file change (add `manifest.yaml` to file watcher). If manifest parse fails, fall back to no filtering with a warning toast.
-
-## Implementation Priority
-
-1. **Parse manifest.yaml** -- New Rust command, TypeScript types (prerequisite for everything)
-2. **Company context state** -- React context/store with `activeCompany` (prerequisite for filtering)
-3. **Company picker UI** -- Top bar or sidebar component
-4. **Filter existing views** -- Workers, projects, settings (use manifest data)
-5. **Credential masking** -- Settings file content redaction (security-critical)
-6. **Knowledge scoping** -- Company-aware knowledge browser
-7. **Search collection routing** -- qmd collection auto-selection
+- `crates/hq-desktop-core/src/scope_gate.rs` (and its tests)
+- `crates/hq-desktop-core/src/desktop_alt.rs` (`workspace_grants_company_file_read_access`)
+- `crates/hq-desktop-core/src/daemon.rs` (`build_watch_runner_args_for_target`)
+- `apps/sync/src-tauri/src/commands/desktop_alt.rs` (`DesktopSessionScope`, gated commands)
+- `apps/sync/src-tauri/src/commands/vault_explorer.rs`
+- `apps/sync/src-tauri/src/commands/setup_secret.rs`
+- `packages/ui/src/files/explorer/VaultExplorer.svelte` (`ensureScope`)
+- `packages/ui/src/company/SecretsPanel.svelte`, `CompanyOperationsPanel.svelte`
+- `CHANGELOG.md` (0.10.322, 0.10.327, 0.10.346)
+- `git log -- crates/hq-desktop-core/src/scope_gate.rs` (a321617d, 2026-07-31)

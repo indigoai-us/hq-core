@@ -385,37 +385,28 @@ interface HQDetectionResult {
 }
 ```
 
-## 5. Desktop Hardcoded Path Assumptions (Current State)
+## 5. Desktop HQ Path Resolution (Current State)
 
-The current HQ Desktop Rust backend (`files.rs`, `orchestrator.rs`) hardcodes the path `~/Documents/HQ` in every Tauri command:
+The February 2026 audit in this section described a React-era Rust backend
+(`files.rs`, `orchestrator.rs`) that hardcoded `~/Documents/HQ` in each Tauri
+command. That backend was not shipped, and those files do not exist in the
+current app (hq-desktop-app `origin/main@c621a6a1`, verified 2026-09-27).
 
-| Tauri Command | Hardcoded Path |
-|--------------|---------------|
-| `list_prds()` | `~/Documents/HQ/projects` + `~/Documents/HQ/apps` + `~/Documents/HQ/repos/private` |
-| `start_prd_watcher()` | Same 3 paths |
-| `read_dir_tree()` | Falls back to `~/Documents/HQ` |
-| `list_workers()` | `~/Documents/HQ/workers/registry.yaml` |
-| `list_threads()` | `~/Documents/HQ/workspace/threads` |
-| `list_checkpoints()` | `~/Documents/HQ/workspace/checkpoints` |
-| `list_companies()` | `~/Documents/HQ/companies` |
-| `list_projects()` | `~/Documents/HQ/projects` |
-| `list_claude_sessions()` | `~/.claude/projects/-Users-{your-name}-Documents-HQ` (user-specific!) |
-| `get_hq_stats()` | `~/Documents/HQ` (multiple sub-paths) |
-| `get_worker_detail()` | `~/Documents/HQ/workers/{id}` (flat, not public/private split) |
-| `get_company_detail()` | `~/Documents/HQ/companies/{id}` |
-| `get_project_detail()` | `~/Documents/HQ/personal/projects/{name}` or `~/Documents/HQ/companies/{co}/projects/{name}` |
-| `spawn_worker_skill()` | `~/Documents/HQ` |
-| `open_terminal_in_hq()` | `~/Documents/HQ` |
-| `get_orchestrator_state()` | `~/Documents/HQ/workspace/orchestrator/state.json` |
-| `get_checkouts_state()` | `~/Documents/HQ/workspace/orchestrator/checkouts.json` |
+The shipped app resolves the HQ folder at runtime instead of hardcoding it.
+`crates/hq-desktop-core/src/paths.rs` (`resolve_hq_folder`) tries, in order:
 
-### Type Mismatches (Preview for US-003)
+1. `hqPath` in `~/.hq/menubar.json`, written by the onboarding Directory step
+   (`set_hq_install_path` in `apps/sync/src-tauri/src/commands/install_directory.rs`);
+2. `hqFolderPath` in the HQ config file;
+3. discovery of a folder that contains a valid `core/core.yaml` (or a legacy
+   root `core.yaml`);
+4. the default location.
 
-- `Prd` struct expects `features` array, but current prd.json uses `userStories`
-- `PrdFeature` has `acceptance` field, prd.json has `acceptanceCriteria`
-- `get_worker_detail()` looks in flat `core/workers/` not `core/workers/public/` or `core/workers/private/`
-- `list_prds()` scans `apps/` dir which doesn't exist
-- `list_claude_sessions()` has hardcoded username in path
+The sync runner and local bots receive the resolved folder as `HQ_ROOT`. The
+PRD, thread, checkpoint and orchestrator readers listed in the old audit
+(`list_prds`, `list_threads`, `get_orchestrator_state`, `spawn_worker_skill`,
+and others) have no current equivalent. See `hq-desktop-app.md` for what the
+app reads today.
 
 ## 6. Graceful Degradation Strategy
 

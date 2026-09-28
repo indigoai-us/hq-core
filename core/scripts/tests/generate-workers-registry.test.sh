@@ -315,6 +315,20 @@ else
 fi
 rm -rf "$r7"
 
+# --- Test 8: the checked-in public worker index names every shipped directory ---
+PUBLIC_WORKERS="$ROOT/core/workers/public"
+PUBLIC_INDEX="$PUBLIC_WORKERS/INDEX.md"
+expected_public="$(find "$PUBLIC_WORKERS" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -print \
+  | while IFS= read -r path; do basename "$path"; done | LC_ALL=C sort)"
+actual_public="$(sed -nE 's/^\| `([^`/]+)\/` \|.*/\1/p' "$PUBLIC_INDEX" | LC_ALL=C sort)"
+if [ "$actual_public" != "$expected_public" ]; then
+  echo "FAIL[public-index]: public worker INDEX.md names do not match shipped directories" >&2
+  diff -u <(printf '%s\n' "$expected_public") <(printf '%s\n' "$actual_public") >&2 || true
+  fails=$((fails+1))
+else
+  echo "ok: public worker index names every shipped directory"
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "generate-workers-registry tests: $fails failure(s)" >&2
   exit 1

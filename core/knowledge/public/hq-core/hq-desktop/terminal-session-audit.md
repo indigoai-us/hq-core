@@ -1,4 +1,18 @@
+---
+type: reference
+domain: [engineering, product]
+status: historical
+tags: [desktop-app, historical, terminal-session-audit]
+relates_to: [knowledge/public/hq-core/hq-desktop-app.md]
+---
+
 # Terminal & Session Capabilities Audit
+
+> **Historical (February 2026).** This page is a spec or audit written for a React
+> version of HQ Desktop that was not shipped. The component names, Tauri commands
+> (for example `files.rs`, `orchestrator.rs`, `terminal.rs`) and file paths it
+> describes do not exist in the current app. The shipped app is Svelte 5 + Tauri 2
+> (hq-desktop-app). For current behavior, read `../hq-desktop-app.md`.
 
 Comprehensive audit of the HQ Desktop terminal subsystem: PTY implementation, command palette scope, slash command coverage, thread lifecycle, session management, and the relationship between Desktop terminal sessions and Claude Code sessions.
 

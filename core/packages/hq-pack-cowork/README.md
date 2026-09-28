@@ -243,6 +243,9 @@ instances, multi-tenant deployments).
 - `core/policies/cross-company-credential-isolation.md` — `hq_secrets_exec`
   must respect company scoping. Pass `company` explicitly when crossing
   contexts.
+- `core/knowledge/public/hq-core/external-agents-mcp.md` — how the Cowork
+  plugin compares with the hosted hq-mcp connector and `hq agent mcp` for
+  external bots, with their tool lists.
 - `core/knowledge/public/hq-core/cowork-plugin-handoff.md` — design rationale
   and decision log (if you want the full "why this shape, not that one"
   story).

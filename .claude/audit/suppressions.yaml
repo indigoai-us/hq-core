@@ -47,3 +47,6 @@
   rules: [pii/email]
   reason: "Metadata validator tests assert a pinned js-yaml package version; the npm specifier resembles an email address but is not PII."
 
+- path: "core/scripts/tests/fixtures/hook-process-budgets/d3c1726c831181f43cf90731b916db4d36b5172b/.claude/hooks/block-unsafe-package-install.sh"
+  rules: [pii/email]
+  reason: "Byte-identical historical hook fixture contains scoped npm package version literals misclassified as email; source bytes and hashes are verified against the baseline commit."

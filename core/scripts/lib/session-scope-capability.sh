@@ -29,7 +29,7 @@ session_scope_mint() {
   [ -n "$root" ] && [ -n "$sid" ] && [ -n "$slug" ] || return 1
 
   case "$slug" in
-    ''|*[!a-z0-9_-]*)
+    ''|*[!a-zA-Z0-9_-]*)
       echo "session-scope-capability: invalid company_slug: $slug" >&2
       return 1
       ;;

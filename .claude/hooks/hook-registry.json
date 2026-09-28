@@ -122,6 +122,16 @@
             "runner": "source"
           },
           {
+            "id": "lanes-repo-merge-hold",
+            "script": ".claude/hooks/lanes-repo-merge-hold.sh",
+            "timeout": 10,
+            "gated": true,
+            "prefilter": {
+              "re": "[mM][\"'\\\\]*[eE][\"'\\\\]*[rR][\"'\\\\]*[gG][\"'\\\\]*[eE]"
+            },
+            "runner": "source"
+          },
+          {
             "id": "block-env-dump",
             "script": ".claude/hooks/block-env-dump.sh",
             "timeout": 30,

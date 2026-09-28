@@ -181,3 +181,140 @@ run 2 "$NESTED" "cd $TMP && echo hi && git push origin main" \
 
 echo "block-hq-root-git-mutation: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
+
+# --- US-071 round 2: strict flag-gated wrapper and escape-hatch parsing -----
+STRICT_HOOK="${US071_HOOK_OVERRIDE:-$HOOK}"
+STRICT_CLI="$TMP/us071-npm-global/lib/node_modules/@indigoai-us/hq-cli"
+mkdir -p "$STRICT_CLI/bin" "$STRICT_CLI/node_modules/@indigoai-us/hq-flags-client" \
+  "$STRICT_CLI/node_modules/@indigoai-us/hq-cloud" "$TMP/us071-bin"
+cat > "$STRICT_CLI/package.json" <<'JSON'
+{"name":"@indigoai-us/hq-cli","bin":{"hq":"bin/hq"}}
+JSON
+cat > "$STRICT_CLI/bin/hq" <<'SH'
+#!/usr/bin/env sh
+exit 0
+SH
+chmod +x "$STRICT_CLI/bin/hq"
+ln -sf "$STRICT_CLI/bin/hq" "$TMP/us071-bin/hq"
+cat > "$STRICT_CLI/node_modules/@indigoai-us/hq-flags-client/package.json" <<'JSON'
+{"type":"module","exports":{".":{"import":"./index.js"}}}
+JSON
+cat > "$STRICT_CLI/node_modules/@indigoai-us/hq-flags-client/index.js" <<'JS'
+import { appendFileSync } from "node:fs";
+
+export const createFlagClient = () => {
+  if (process.env.HQ_TEST_GIT_GUARD_FLAG_MARKER) {
+    appendFileSync(process.env.HQ_TEST_GIT_GUARD_FLAG_MARKER, "called\n");
+  }
+  return {
+    ready: async () => {
+      if (process.env.HQ_TEST_GIT_GUARD_FLAG_ERROR === "true") {
+        throw new Error("synthetic flag lookup failure");
+      }
+    },
+    snapshot: () => ({
+      flags: {
+        "hooks.hq-root-git-guard-strict":
+          process.env.HQ_TEST_GIT_GUARD_FLAG === "true",
+      },
+    }),
+    close: () => {},
+  };
+};
+JS
+cat > "$STRICT_CLI/node_modules/@indigoai-us/hq-cloud/package.json" <<'JSON'
+{"type":"module","exports":{".":{"default":"./index.js"}}}
+JSON
+cat > "$STRICT_CLI/node_modules/@indigoai-us/hq-cloud/index.js" <<'JS'
+export const loadCachedTokens = () => ({ idToken: "test-only-token" });
+JS
+
+strict_run() {
+  local cwd="$1" command="$2" flag="$3" error="${4:-false}" rc=0
+  local payload
+  payload=$(jq -n --arg cwd "$cwd" --arg cmd "$command" \
+    '{cwd: $cwd, tool_input: {command: $cmd}}')
+  printf '%s' "$payload" \
+    | env PATH="$TMP/us071-bin:$PATH" HQ_CLI_BIN="$STRICT_CLI/bin/hq" \
+        HQ_FLAGS_API_URL=https://flags.invalid HQ_COMPANY_UID=cmp_test123 \
+        HQ_COMPANY_SLUG=indigo HQ_TEST_GIT_GUARD_FLAG="$flag" \
+        HQ_TEST_GIT_GUARD_FLAG_ERROR="$error" \
+        HQ_TEST_GIT_GUARD_FLAG_MARKER="$TMP/us071-flag-lookups" \
+        CLAUDE_PROJECT_DIR="$TMP" \
+        bash "$STRICT_HOOK" >/dev/null 2>"$TMP/us071-stderr" || rc=$?
+  printf '%s' "$rc"
+}
+
+strict_expect() {
+  local label="$1" expected="$2" cwd="$3" command="$4" flag="$5" error="${6:-false}" actual
+  actual="$(strict_run "$cwd" "$command" "$flag" "$error")"
+  if [ "$actual" = "$expected" ]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "FAIL [US-071 $label]: expected exit $expected, got $actual" >&2
+  fi
+}
+
+STRICT_NESTED="$TMP/repos/private/app"
+strict_expect 'flag-on bash -c blocks HQ mutation' 2 "$TMP" "bash -c 'git push origin main'" true
+strict_expect 'flag-on sh -c blocks HQ mutation' 2 "$TMP" "sh -c 'git push origin main'" true
+strict_expect 'flag-on zsh -c blocks HQ mutation' 2 "$TMP" "zsh -c 'git push origin main'" true
+strict_expect 'flag-on eval blocks HQ mutation' 2 "$TMP" "eval 'git push origin main'" true
+strict_expect 'flag-on absolute bash path blocks HQ mutation' 2 "$TMP" \
+  "/bin/bash -c 'git push origin main'" true
+strict_expect 'flag-on Windows-suffixed shell path blocks HQ mutation' 2 "$TMP" \
+  "/usr/bin/bash.exe -c 'git push origin main'" true
+strict_expect 'flag-on shell combined -c options block HQ mutation' 2 "$TMP" \
+  "bash -xc 'git push origin main'" true
+strict_expect 'flag-on sh combined -c options block HQ mutation' 2 "$TMP" \
+  "sh -ec 'git push origin main'" true
+strict_expect 'flag-on ignores cd text in shell positional arguments' 2 "$TMP" \
+  "bash -c 'git push origin main' ignored '; cd $STRICT_NESTED && echo harmless'" true
+strict_expect 'flag-on echo marker cannot allow following mutation' 2 "$TMP" \
+  'echo HQ_ALLOW_HQ_ROOT_GIT=1; git push origin main' true
+strict_expect 'flag-on marker in prior command cannot allow mutation' 2 "$TMP" \
+  'HQ_ALLOW_HQ_ROOT_GIT=1 echo permitted; git push origin main' true
+strict_expect 'flag-on leading assignment allows same git command' 0 "$TMP" \
+  'HQ_ALLOW_HQ_ROOT_GIT=1 git push origin main' true
+strict_expect 'flag-on quoted prose remains allowed' 0 "$TMP" \
+  'hq dm x --message "I will git push"' true
+strict_expect 'flag-on echo prose remains allowed' 0 "$TMP" \
+  'echo "git push origin main"' true
+strict_expect 'flag-on wrapper in non-HQ repo remains allowed' 0 "$STRICT_NESTED" \
+  "bash -c 'git push origin main'" true
+DEEP_GIT_COMMAND='git push origin main'
+for _ in 1 2 3 4 5 6 7 8 9; do
+  DEEP_GIT_COMMAND="bash -c $(printf '%q' "$DEEP_GIT_COMMAND")"
+done
+strict_expect 'flag-on too-deep wrapper fails closed' 2 "$TMP" "$DEEP_GIT_COMMAND" true
+
+strict_expect 'flag-off wrapper keeps main behavior' 0 "$TMP" \
+  "bash -c 'git push origin main'" false
+strict_expect 'flag-off misplaced marker keeps main behavior' 0 "$TMP" \
+  'echo HQ_ALLOW_HQ_ROOT_GIT=1; git push origin main' false
+strict_expect 'flag-off leading assignment keeps main behavior' 0 "$TMP" \
+  'HQ_ALLOW_HQ_ROOT_GIT=1 git push origin main' false
+strict_expect 'flag-off bare mutation keeps blocking' 2 "$TMP" 'git push origin main' false
+strict_expect 'flag lookup failure keeps main behavior' 0 "$TMP" \
+  "bash -c 'git push origin main'" true true
+if grep -Fx 'HQ root git-guard flag lookup failed (Error); using the default-off behavior.' \
+    "$TMP/us071-stderr" >/dev/null \
+    && ! grep -Eq 'synthetic flag lookup failure|test-only-token' "$TMP/us071-stderr"; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo 'FAIL [US-071 flag lookup failure emits only a sanitized diagnostic]' >&2
+fi
+rm -f "$TMP/us071-flag-lookups"
+strict_expect 'command without git skips flag lookup' 0 "$TMP" 'echo harmless' true
+if [ -e "$TMP/us071-flag-lookups" ]; then
+  FAIL=$((FAIL+1))
+  echo 'FAIL [US-071 command without git must skip flag lookup]' >&2
+else
+  PASS=$((PASS+1))
+fi
+
+printf 'block-hq-root-git-mutation US-071 round 2: %s passed, %s failed\n' \
+  "$PASS" "$FAIL"
+[[ "$FAIL" -eq 0 ]]

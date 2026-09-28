@@ -38,6 +38,27 @@ grep -q FAKE_HOOK_RAN "$TMP/err" || fail "hook did not run when executable"
 [ "$code" -eq 2 ] || fail "expected exit 2 from exec hook, got $code"
 pass "ran executable hook and propagated exit 2"
 
+echo "[2b] silent blocking hooks receive a named stderr reason"
+cat > "$TMP/silent-hook.sh" <<'HOOK'
+#!/bin/bash
+cat >/dev/null
+exit 2
+HOOK
+chmod 0755 "$TMP/silent-hook.sh"
+set +e; printf '{}' | bash "$GATE" detect-secrets "$TMP/silent-hook.sh" 2>"$TMP/silent-err"; code=$?; set -e
+[ "$code" -eq 2 ] || fail "expected silent delegated block to remain exit 2, got $code"
+grep -q "Blocked by hook detect-secrets" "$TMP/silent-err" \
+  || fail "gate did not write a named reason for silent hook block"
+pass "silent delegated block has a named reason"
+
+echo "[2c] stderr reporting failure preserves the delegated block status"
+set +e
+printf '{}' | bash "$GATE" detect-secrets "$TMP/silent-hook.sh" 2>&-
+code=$?
+set -e
+[ "$code" -eq 2 ] || fail "stderr reporting failure changed delegated block status to $code"
+pass "closed stderr keeps the delegated exit 2"
+
 echo "[3] out-of-profile hook is pass-through (exit 0) and NOT executed"
 chmod 0644 "$TMP/fake-hook.sh"
 set +e

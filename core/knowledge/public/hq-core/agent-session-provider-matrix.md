@@ -10,6 +10,10 @@ relates_to:
   - core/scripts/lib/provider-adapter-grok.sh
   - core/scripts/lib/session-resume.sh
   - core/knowledge/public/hq-core/agent-session-contract.md
+  - core/knowledge/public/hq-core/agents-and-bots.md
+verified_against:
+  - hq-agents-v2@5ec6d18 (2026-09-27)
+  - hq-pro-agents@f6275ec7 (2026-09-27)
 ---
 
 # Agent Session Provider Matrix
@@ -26,6 +30,16 @@ than re-probing.
 | claude | CLI flag `--append-system-prompt <text>` | `native` | `2.1.198 (Claude Code)` | `claude --help` (lists `--append-system-prompt` and `--append-system-prompt-file`) | Also supports `--system-prompt`. Adapter uses append so default Claude Code framing is preserved. Does **not** use `-p`/`--print` (interactive / pty path per claude-runtime). Flags retained: `--settings`, `--dangerously-skip-permissions`, `--permission-mode bypassPermissions`. |
 | codex | **none** | `prepended` | `codex-cli 0.144.6` | `codex exec --help` | No system-prompt flag, instructions-file flag, or config key for a per-turn system block appears in `codex exec --help`. Positional `[PROMPT]` is "initial instructions". Adapter **prepends** `system.txt` to the user payload with a blank-line separator and sets `systemPromptMode=prepended` so the fallback is never silent. Base argv: `codex exec --skip-git-repo-check --dangerously-bypass-hook-trust -- <prompt>` (parity with `resolveRunAgentInner`). |
 | grok | CLI flag `--system-prompt-override <text>` (alias `--system-prompt`) | `native` | `grok 0.2.106` | `grok --help` | Also exposes `--rules` ("extra rules to append to the system prompt"). Adapter uses override for the full assembled system text. Retains fleet flags `--yolo` and `--no-auto-update` from user-data dispatch; user text via `-p` / single-turn. System text is **not** concatenated into the positional prompt. |
+
+### Agents-v2 (HqFleet) boxes
+
+Agents-v2 boxes do not run a turn through `hq-agent-session.sh`. The
+HqFleet runtime runs its own agent loop with a Codex, Grok, or Claude brain.
+HQ context reaches it through the `hq_session_context` plugin (hq-agents-v2):
+
+| Provider | Mechanism | systemPromptMode | Resume | Notes |
+|----------|-----------|------------------|--------|-------|
+| agents-v2 (HqFleet) | `hq-agent-session.sh` in render-only mode (`HQ_AGENT_SESSION_RENDER_ONLY=1`) writes the rendered charter, company context, policies, and skill catalog to `<HQ_ROOT>/.hq-fleet.md`, which the runtime's context-file loader folds into every session's system prompt. A `pre_llm_call` hook adds a refreshed block when the context fingerprint changes mid-session and per-turn policy reminders via `inject-policy-on-trigger.sh` | n/a (runtime-native context file) | Runtime-native sessions (SessionDB); the per-convKey resume store below is not used | `HQ_SESSION_RENDERED=1` stops the shell hook adapter from double-injecting. The render call has no v2 provider adapter, so the adapter rules below do not apply |
 
 ## Session resume (US-408)
 

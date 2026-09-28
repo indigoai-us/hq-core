@@ -8,6 +8,9 @@ relates_to:
   - core/schemas/agent-session-response.schema.json
   - core/scripts/hq-agent-session.sh
   - core/core.yaml
+verified_against:
+  - hq-pro-agents@f6275ec7 (2026-09-27)
+  - hq-agents-v2@5ec6d18 (2026-09-27)
 ---
 
 # HQ Agent Session Contract
@@ -35,8 +38,24 @@ watchers) emit one JSON request envelope on stdin; the entrypoint validates it,
 runs the six responsibilities below, and emits one JSON response envelope on
 stdout. No parallel session entrypoint is authorized.
 
-Implementation of the runtime body is deferred (US-402 and follow-ons). This
-document and the schemas are the durable seam those stories implement against.
+The runtime body is implemented: `core/scripts/hq-agent-session.sh`
+validates the request, admits the contract version, resolves root and company
+fail-closed, assembles `system.txt` / `user.txt`, bootstraps session hooks,
+dispatches the provider adapter, and emits a response envelope on every exit
+path. Exit codes: `0` success, `2` invalid request, `3` HQ root rejected,
+`4` unsupported provider, `5` contract version too new, `6` company
+authorization failure, `1` other runtime failure.
+
+Two callers use it (verified 2026-09-27):
+
+- The legacy resident fleet inbox watcher (hq-pro-agents
+  `src/agents/inbox-watcher-cli.ts`) runs full turns through it.
+- Agents-v2 (HqFleet) boxes call it with `HQ_AGENT_SESSION_RENDER_ONLY=1`
+  from the `hq_session_context` plugin (hq-agents-v2). The plugin writes the
+  rendered context to `<HQ_ROOT>/.hq-fleet.md` for the runtime's context-file
+  loader and injects per-turn policy reminders; the HqFleet runtime, not this
+  script, runs the model turn. See
+  [agent-session-provider-matrix.md](agent-session-provider-matrix.md).
 
 ## Six entrypoint responsibilities
 
@@ -112,9 +131,11 @@ those can land without a breaking request-schema edit.
 
 ## Channel brief constants (inbox-watcher migration inventory)
 
-These thirteen module-level constants are declared in hq-pro
-`src/agents/inbox-watcher-cli.ts` (approximately lines 109–156). Today they
-are concatenated into a single user task file by the watcher. Under the Agent
+These thirteen constants are declared in hq-pro-agents
+`src/agents/inbox-watcher-cli.ts` (moved from hq-pro; at hq-pro-agents
+`f6275ec7` they sit around lines 643–700, with `VERIFIED_MEMBER_REPLY_POSTURE`
+exported and a fourteenth, `ROOM_FORMATTING`, added for rooms). The watcher
+concatenates them into a single user task file. Under the Agent
 Session contract they move into the entrypoint-owned prompt assembly with an
 explicit destination so none are dropped silently.
 
@@ -142,6 +163,16 @@ UNTRUSTED delimiters — never the trust, posture, voice, or formatting brief.
 Channel-specific constants are still only *emitted* for the matching
 `channel` value; the inventory above is the full set that must survive the
 move from the watcher.
+
+### Open Fleet note
+
+The verified/untrusted preambles no longer decide whether an agent answers.
+Under Open Fleet (hq-pro-agents `docs/open-fleet-communications.md`), hosted
+agents converse with anyone on a connected channel; the preamble records the
+sender's trust (verified member or unverified), and verification still gates
+run controls, pending-decision answers, and owner administration. Unverified
+senders never inherit the owner's identity or permissions. See
+[agents-and-bots.md](agents-and-bots.md#open-fleet-trust-model).
 
 ## Skill body trust classification
 
@@ -185,7 +216,8 @@ never silent.
 
 ## Related
 
-- Entrypoint stub: `core/scripts/hq-agent-session.sh` (body in US-402+)
+- Entrypoint: `core/scripts/hq-agent-session.sh`
+- Agent kinds and runtimes: [agents-and-bots.md](agents-and-bots.md)
 - Directory map: `core/docs/hq/INDEX.md`
 - Session metadata helper (distinct): `core/scripts/hq-session.sh` — a thin
   fallback that prefers the CLI-hosted `hq core hq-session` when the installed

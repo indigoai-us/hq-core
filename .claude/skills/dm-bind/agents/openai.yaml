@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Dm Bind
+  short_description: >-
+    Bind this session to one HQ DM channel — post structured status

@@ -51,12 +51,12 @@ SLUGS="$(
     }
     /^companies:[[:space:]]*$/ { wrapped = 1; next }
     wrapped && /^[^[:space:]][^:]*:[[:space:]]*$/ { wrapped = 0 }
-    wrapped && /^  [a-z][a-z0-9_-]*:/ {
+    wrapped && /^  [A-Za-z][A-Za-z0-9_-]*:/ {
       line = $0; sub(/^[[:space:]]+/, "", line); sub(/:.*/, "", line)
       if (keep(line)) print line
       next
     }
-    !wrapped && /^[a-z][a-z0-9_-]*:/ {
+    !wrapped && /^[A-Za-z][A-Za-z0-9_-]*:/ {
       line = $0; sub(/:.*/, "", line)
       if (keep(line)) print line
     }
@@ -73,6 +73,9 @@ prompt_slug() {
   [ -n "$PROMPT" ] || return 0
   normalized="$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' ' ')"
   match="$(
+    # Prompt normalization is case-insensitive, but company IDs are not.
+    # Keep a folded match only when exactly one registered ID has that key.
+    # If IDs differ only by case, do not guess which tenant the prompt means.
     printf '%s\n' "$SLUGS" | awk -v line="$normalized" '
       BEGIN {
         n = split(line, tok, /[ \t]+/)
@@ -81,14 +84,23 @@ prompt_slug() {
       }
       {
         slug = $0
-        if (slug in pos) {
-          len = length(slug); p = pos[slug]
+        key = tolower(slug)
+        if (key in pos) {
+          matches[key]++
+          candidate[key] = slug
+        }
+      }
+      END {
+        for (key in matches) {
+          if (matches[key] != 1) continue
+          slug = candidate[key]
+          len = length(slug); p = pos[key]
           if (len > bestLen || (len == bestLen && p < bestPos)) {
             bestSlug = slug; bestLen = len; bestPos = p
           }
         }
+        if (bestSlug != "") print bestSlug
       }
-      END { if (bestSlug != "") print bestSlug }
     '
   )"
   printf '%s' "$match"

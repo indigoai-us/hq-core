@@ -27,11 +27,10 @@
 
 set -euo pipefail
 
-# Prefer the CLI-hosted implementation. The canonical script ships in the CLI
-# (`hq core hq-session`); when the installed CLI provides it, delegate with
-# arguments passed through untouched. Otherwise fall through to the in-tree copy
-# below, which stays behavior-identical as a transitional fallback for a CLI
-# that predates the command. HQ_HQ_SESSION_NO_CLI=1 forces the in-tree path.
+# Prefer the CLI-hosted implementation only when it advertises the exact-company
+# directory check. Older CLI bundles may recognize hq-session but still accept
+# case aliases, so they must use this in-tree implementation instead.
+# HQ_HQ_SESSION_NO_CLI=1 forces the in-tree path.
 if [ "${HQ_HQ_SESSION_NO_CLI:-}" != "1" ]; then
   __hs_hq="$(command -v hq 2>/dev/null || true)"
   if [ -n "$__hs_hq" ]; then
@@ -59,7 +58,11 @@ if [ "${HQ_HQ_SESSION_NO_CLI:-}" != "1" ]; then
       __hs_caps=""
     fi
     case "$__hs_caps" in
-      *hq-session*) exec hq core hq-session "$@" ;;
+      *hq-session*)
+        case "$__hs_caps" in
+          *exact-company-directory-match-v1*) exec hq core hq-session "$@" ;;
+        esac
+        ;;
     esac
   fi
 fi
@@ -79,6 +82,44 @@ LIB_DIR="$SCRIPT_DIR/lib"
 . "$LIB_DIR/session-scope-capability.sh"
 # shellcheck source=lib/session-id.sh
 . "$LIB_DIR/session-id.sh"
+
+# These checks stay local so hq-session remains usable by fixtures and bundled
+# copies that include its capability and ID libraries but not auto-bind.
+hq_session_has_exact_company_dir() {
+  local root="${1:-}" slug="${2:-}" company_dir
+  [ -n "$root" ] && [ -n "$slug" ] || return 1
+  for company_dir in "$root"/companies/*; do
+    [ -d "$company_dir" ] || continue
+    [ -L "$company_dir" ] && continue
+    [ "${company_dir##*/}" = "$slug" ] && return 0
+  done
+  return 1
+}
+
+hq_session_has_case_alias() {
+  local root="${1:-}" slug="${2:-}" company_dir company_slug slug_fold company_fold
+  [ -n "$root" ] && [ -n "$slug" ] || return 1
+
+  # Exact, real entries are the common case. Check them before starting any
+  # case-fold subprocesses on SessionStart or a normal company bind.
+  for company_dir in "$root"/companies/*; do
+    [ -d "$company_dir" ] || continue
+    [ -L "$company_dir" ] && continue
+    company_slug="${company_dir##*/}"
+    [ "$company_slug" = "$slug" ] && return 1
+  done
+
+  slug_fold="$(printf '%s' "$slug" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  for company_dir in "$root"/companies/*; do
+    [ -d "$company_dir" ] || continue
+    [ -L "$company_dir" ] && continue
+    company_slug="${company_dir##*/}"
+    [ "$company_slug" = "$slug" ] && continue
+    company_fold="$(printf '%s' "$company_slug" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    [ "$company_fold" = "$slug_fold" ] && return 0
+  done
+  return 1
+}
 
 # Set by the --session-id global option; empty means "resolve it".
 SESSION_ID_OVERRIDE=""
@@ -142,17 +183,23 @@ cmd_set() {
   local key="${1:-}" value="${2:-}"
   [ -n "$key" ] && [ $# -ge 2 ] || { echo "usage: hq-session.sh set <key> <value>" >&2; exit 1; }
 
-  # Reject an invalid company_slug BEFORE writing anything. Otherwise a bad value
-  # lands in meta.yaml and only fails later at session_scope_mint, leaving
-  # corrupt state that the scope gate would read as a (bogus) binding. Mirrors
-  # session_scope_mint's own character-set rule; `personal` is a valid slug.
+  # Reject invalid company_slug values before writing anything. A case alias
+  # could otherwise bind the session and surface policies from a differently
+  # named company directory on a case-insensitive filesystem.
   if [ "$key" = "company_slug" ] && [ -n "$value" ]; then
     case "$value" in
-      *[!a-z0-9_-]*)
-        echo "hq-session: invalid company_slug: '$value' (allowed characters: a-z 0-9 - _)" >&2
+      *[!a-zA-Z0-9_-]*)
+        echo "hq-session: invalid company_slug: '$value' (allowed characters: A-Z a-z 0-9 - _)" >&2
         exit 1
         ;;
     esac
+    if [ "$value" != "personal" ] && {
+      [ -L "$REPO_ROOT/companies/$value" ] \
+        || hq_session_has_case_alias "$REPO_ROOT" "$value"
+    }; then
+      echo "hq-session: company_slug must use the exact real directory name: '$value'" >&2
+      exit 1
+    fi
   fi
 
   # Reject an invalid senior BEFORE writing anything. Otherwise a bad value
@@ -300,6 +347,7 @@ spawn_work_mesh_register() {
 emit_company_hard_policies() {
   local co="$1"
   local dir="$REPO_ROOT/companies/$co/policies"
+  hq_session_has_exact_company_dir "$REPO_ROOT" "$co" || return 0
   [ -d "$dir" ] || return 0
   # Collect real policy files only. Skip the generated digest, docs, examples,
   # and sync-conflict duplicates: policy slugs never contain spaces, so a space

@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Ontology
+  short_description: >-
+    Read a company ontology brief, entity graph, and freshness

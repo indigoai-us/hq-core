@@ -1,6 +1,6 @@
 # HQ User Guide
 
-The AI operating system for your company. A shared context layer on top of Claude Code, Cursor, and Codex — syncs knowledge, skills, and capabilities across your team. Scales from solopreneur to enterprise.
+The AI operating system for your company. A shared context layer on top of Claude Code, Codex, Cursor, and Grok — syncs knowledge, skills, and capabilities across your team. Scales from solopreneur to enterprise.
 
 For a first-time setup, begin with the **[guided HQ tutorial](https://www.hqforwork.com/getting-started/tutorials/install-hq-macos?source=hq_user_guide)**. Its seven videos, written walkthroughs, and screenshots take you from installation through your first shared worker. The `/tutorial` command below is the complementary adaptive course inside your local HQ.
 
@@ -83,50 +83,51 @@ If a skill is skipped as invalid YAML or a hook reports a launch failure, use th
 ### HQ Services & Sync
 | Command | What it does |
 |---------|--------------|
-| `/hq-login` | Sign in to HQ Cognito (browser flow) |
-| `/hq-logout` | Clear local Cognito session |
-| `/hq-whoami` | Show current HQ identity + token expiry |
+| `/hq-login` | Sign in to HQ (Cognito browser flow). `hq login --provider google\|microsoft\|picker`; Google is the default, the picker also covers email and password accounts |
+| `/hq-logout` | Clear the local HQ session |
+| `/hq-whoami` | Show current HQ identity and token expiry |
 | `/hq-sync` | Run a full HQ sync across cloud-backed companies |
 | `/resolve-conflicts` | Walk through HQ Sync conflicts interactively |
 
-### HQ CLI: Files (vault sharing)
+### HQ CLI (most used)
 
-These are CLI commands (not slash commands) — direct surface for HQ vault access control. Full reference: `.claude/skills/hq-files/SKILL.md`.
-
-| Command | What it does |
-|---------|--------------|
-| `hq files share <prefix>...` | **Browser flow** — opens a share-session page where you batch-pick recipients (members, groups, "Share with All") with per-recipient read/write. Add `--no-open` to print the URL only. |
-| `hq files share <prefix> --with <email\|grp_*\|@all> --permission <read\|write>` | **Direct grant** — single recipient (or `@all` for company-wide) without leaving the terminal |
-| `hq files unshare <prefix> --with <principal>` | Revoke a grant (idempotent — exits 0 if already absent) |
-| `hq files acl <prefix>` | Show ACL entries, creator, and your effective permission |
-
-Share-session URLs are encrypted single-use 15-minute capabilities — never paste them into commits, threads, or logs. See policy `core/policies/hq-share-session-urls-are-capabilities.md`.
-
-### HQ CLI: Vault databases (`hq db`)
-
-Structured storage for agent and app state — not a replacement for markdown knowledge. Full guide: `core/knowledge/public/hq-core/vault-databases.md`. CLI: `@indigoai-us/hq-cli` ≥ 5.62.0.
+The full command list (55 roots in CLI 5.247.0) is generated from the CLI and
+lives in [hq-cli-reference.md](../../knowledge/public/hq-core/hq-cli-reference.md).
+Run `hq <command> --help` for options. Commonly used:
 
 | Command | What it does |
 |---------|--------------|
-| `hq db status --company {co}` | Create/open local SQLite at `~/.hq/db/{co}/vault.db` (WAL) |
-| `hq db sql --company {co} -- 'SELECT …'` | Query the company local DB (read-only by default) |
-| `hq db migrate --company {co} --hq-root {HQ}` | Apply reviewable SQL under `companies/{co}/db/migrations/` |
-| `hq db provision --company {co}` | Remote DB on **HQ Team** plan only (secrets never printed) |
+| `hq login` / `hq whoami` | Sign in; show the current identity |
+| `hq sync now` | Push then pull the active company (`--all` for every membership plus the personal vault) |
+| `hq files share <prefix>...` | Share vault paths. Opens a share-session page; `--with <email\|grp_*\|@all> --permission <read\|write>` grants directly. Full reference: `.claude/skills/hq-files/SKILL.md` |
+| `hq secrets` / `hq run` | Manage secrets; run a command with secrets injected |
+| `hq dm <recipient-or-channel> "<message>"` | Send a direct message (see below) |
+| `hq search "<query>"` | Search the local HQ qmd index |
+| `hq bot` | Local bots on this computer |
+| `hq integrations` | Connected company apps |
+| `hq billing status --company <slug>` | Plan and subscription status |
+| `hq db status\|sql\|migrate --company {co}` | Local vault SQLite database. Guide: [vault-databases.md](../../knowledge/public/hq-core/vault-databases.md) |
 
-Use local for single-machine agent skills and implementer standards. Use Team remote for multi-machine shared data and deploy SecretBinding. Never commit `*.db` files into the vault tree.
+Share-session URLs are encrypted single-use 15-minute capabilities. Never paste them into commits, threads, or logs. See policy `core/policies/hq-share-session-urls-are-capabilities.md`.
 
-### HQ CLI: Direct messages (`hq dm`)
+`hq db provision` creates a remote vault DB and requires the HQ Workforce plan. `hq db sql --remote` exists but does not work yet (no remote executor is wired); use local SQL. Never commit `*.db` files into the vault tree.
 
-Send a person-to-person notification to a teammate. They receive it in their HQ Desktop App. Full reference: `.claude/skills/dm/SKILL.md` (`/dm`).
+### Direct messages (`hq dm`, `/dm`)
+
+HQ has full messaging: DMs, group messages, channels, and threads. You can send and read in the HQ Desktop App on macOS and Windows, or from a session with `hq dm` / `/dm`. Full reference: `.claude/skills/dm/SKILL.md`.
 
 | Command | What it does |
 |---------|--------------|
-| `hq dm <email\|prs_*> "<message>"` | Send a DM — recipient gets a macOS notification in the HQ Desktop App |
-| `hq dm <r> "<m>" --prompt "<context>"` | Attach agent context — recipient gets a one-click **Copy prompt** action to paste into their own agent |
-| `hq dm <r> "<m>" --details "<text>"` (or `--details-file <path>`) | Longer text shown in the recipient's **Open details** window |
-| `hq dm <r> "<m>" --at <iso>` / `--in <30s\|10m\|2h\|1d>` | Schedule delivery (store-and-forward — arrives even if you're offline at that time) |
+| `hq dm <recipient-or-channel> "<message>"` | Send to a person (email, `prs_*`), a bot, or a channel |
+| `hq dm <r> "<m>" --prompt "<context>"` | Attach agent context the recipient can copy into their own agent |
+| `hq dm <r> "<m>" --details "<text>"` (or `--details-file <path>`) | Longer text shown in an **Open details** view |
+| `hq dm <r> "<m>" --at <iso>` / `--in <30s\|10m\|2h\|1d>` | Schedule delivery (store-and-forward) |
+| `hq dm inbox` | Recent incoming messages |
+| `hq dm thread <person>` | Two-way conversation with one person or bot |
+| `hq dm channel <name>` | Recent messages in a channel or group DM (`hq channels` lists them) |
+| `hq dm requests` / `accept` / `decline` / `block` | Manage connection requests from people outside your companies |
 
-Receiving is handled by the **HQ Desktop App** (it's receive-only — there's no send UI; sending is session/CLI only). You can only DM someone you share an active company with; DM your own email for a note-to-self or reminder. Never put secrets in a DM body/prompt/details — they're stored server-side.
+DM your own email for a note-to-self or reminder. Never put secrets in a message body, prompt, or details; they are stored server-side.
 
 ### Company & Infrastructure
 | Command | What it does |
@@ -383,7 +384,38 @@ HQ captures these **natively, per company** — check HQ first, not your email o
 
 **Your preference for "meeting notes":** defaults to HQ-native. To point a company at email instead, set `meeting_notes_source: email` in `companies/{co}/settings/knowledge/preferences.yaml` (global default lives in `personal/settings/knowledge-preferences.yaml`).
 
-> Signals extraction and the ontology gardener run on HQ cloud and will require HQ Pro once billing ships. Billing isn't live yet — today these are provisioned per-company when you cloud-back it via `/designate-team`. Reference: `core/knowledge/public/hq-core/native-knowledge-stores.md`.
+> Signals extraction and the ontology gardener run on HQ cloud. Billing is live: inviting the HQ meeting bot requires the HQ Workforce plan (internal id `paid-500`), and a Starter company is refused with an upgrade link. Plans: [plans-and-pricing.md](../../knowledge/public/hq-core/plans-and-pricing.md). Reference: [native-knowledge-stores.md](../../knowledge/public/hq-core/native-knowledge-stores.md).
+
+## Product surfaces
+
+For the map of HQ surfaces (CLI, desktop app, console, bots, connectors, deploy, sync), identity types, and which surface to use for a task, read [hq-product-model.md](../../knowledge/public/hq-core/hq-product-model.md).
+
+## HQ Desktop app
+
+A macOS and Windows app. On a new machine it runs onboarding; after that it is a messaging workspace (DMs, groups, channels, bots, a home channel per company) with Files, Projects, Meetings, and Library pages, and it runs sync in the background. It has no built-in agent sessions: the **Launch** menu opens the HQ folder in Claude Code, Codex, or Grok. First run creates a **Setup bot**, a personal local bot you DM to finish setup. Reference: [hq-desktop-app.md](../../knowledge/public/hq-core/hq-desktop-app.md).
+
+## Bots & agents
+
+- **Local bots** run on your computer with your own Claude, Codex, or Grok login: `hq bot create <name>`, or desktop Settings → Bots.
+- **Hosted agents** run on HQ infrastructure for a company: `/new-agent`, `hq agents provision`, or the console Bots page.
+- **External bots** run on your own hardware and enroll with `hq agent enroll <code>`. They require a paid plan and are unlimited on it.
+- **Chat-app connectors** let a person use HQ from Claude, ChatGPT, Claude Code, Codex, or Grok through the hosted HQ connector (console → Integrations → Connect an agent shows the URL).
+
+Reference: [agents-and-bots.md](../../knowledge/public/hq-core/agents-and-bots.md), [external-agents-mcp.md](../../knowledge/public/hq-core/external-agents-mcp.md).
+
+## Console
+
+[hq.computer](https://hq.computer) is the web UI: team and invites, groups and grants, bots, integrations, secrets, vault, billing, and deployments. Most pages have a matching CLI command or skill. Reference: [hq-console.md](../../knowledge/public/hq-core/hq-console.md). Plans and billing: [plans-and-pricing.md](../../knowledge/public/hq-core/plans-and-pricing.md).
+
+## Deploy
+
+`/deploy` publishes a generated artifact through hq-deploy and returns a link. Access modes are public (default), password, company sign-in, selected people or groups, and a private email allowlist. There is no `hq deploy` command.
+
+Comments are opt-in per deploy (`/deploy --comments on`, static deploys only). Signed-in viewers pin, box, or highlight parts of the page and comment; the owner reads and resolves them in the page's side pane, or asks the agent to use the `/deploy` owner routes. The console has no comment UI. Reference: [deploy SKILL.md](../../../.claude/skills/deploy/SKILL.md).
+
+## Sync
+
+Cloud-backed companies sync to a company vault; the rest of your HQ folder (minus `repos/` and most of `workspace/`) syncs to your personal vault. Run `/hq-sync` or `hq sync now`; the desktop app syncs in the background. Reference: [hq-sync-model.md](../../knowledge/public/hq-core/hq-sync-model.md).
 
 ## Typical Session
 

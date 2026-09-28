@@ -35,7 +35,27 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HQ_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
-if [[ ! -d "$HQ_ROOT/.git" || ! -f "$HQ_ROOT/core/core.yaml" ]]; then
+# Set up the durable logger before resolving the changed path so a path that
+# cannot be mapped to this checkout is visible instead of being silently lost.
+LOG_DIR="$HQ_ROOT/workspace/logs"
+LOG_FILE="$LOG_DIR/hq-autocommit.log"
+LOG_MAX_BYTES="${HQ_AUTOCOMMIT_LOG_MAX_BYTES:-1048576}"
+SESSION_KEY="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
+[[ -z "$SESSION_KEY" ]] && SESSION_KEY="pid-${PPID:-$$}"
+SESSION_KEY="$(printf '%s' "$SESSION_KEY" | tr -c 'A-Za-z0-9._-' '_')"
+
+log_line() {
+  mkdir -p "$LOG_DIR" 2>/dev/null || return 0
+  local size
+  size="$(wc -c <"$LOG_FILE" 2>/dev/null || echo 0)"
+  size="${size//[^0-9]/}"
+  if [[ -n "$size" && "$size" -gt "$LOG_MAX_BYTES" ]]; then
+    mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null || true
+  fi
+  printf '%s\n' "$1" >>"$LOG_FILE" 2>/dev/null || true
+}
+
+if [[ ( ! -d "$HQ_ROOT/.git" && ! -f "$HQ_ROOT/.git" ) || ! -f "$HQ_ROOT/core/core.yaml" ]]; then
   exit 0
 fi
 
@@ -44,8 +64,32 @@ if [[ -z "$FILE_PATH" ]]; then
   exit 0
 fi
 
+DRIVE_PREFIX="${FILE_PATH:0:2}"
+if [[ "$DRIVE_PREFIX" =~ ^[[:alpha:]]:$ ]]; then
+  DRIVE_SEPARATOR="${FILE_PATH:2:1}"
+  if [[ "$DRIVE_SEPARATOR" == "/" || "$DRIVE_SEPARATOR" == "\\" ]]; then
+    NORMALIZED_PATH=""
+    if command -v cygpath >/dev/null 2>&1; then
+      NORMALIZED_PATH="$(cygpath -u "$FILE_PATH" 2>/dev/null || true)"
+    fi
+    if [[ "$NORMALIZED_PATH" == /* ]]; then
+      FILE_PATH="$NORMALIZED_PATH"
+    else
+      DRIVE_LETTER="$(printf '%s' "${FILE_PATH:0:1}" | tr '[:upper:]' '[:lower:]')"
+      DRIVE_REMAINDER="${FILE_PATH:2}"
+      DRIVE_REMAINDER="${DRIVE_REMAINDER//\\//}"
+      FILE_PATH="/$DRIVE_LETTER$DRIVE_REMAINDER"
+    fi
+  fi
+fi
+
 if [[ "$FILE_PATH" != /* ]]; then
   FILE_PATH="$HQ_ROOT/$FILE_PATH"
+fi
+
+if [[ ! -e "$FILE_PATH" ]]; then
+  log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] FAIL stage=resolve path=$(printf '%q' "$FILE_PATH") session=${SESSION_KEY}"
+  exit 0
 fi
 
 DIR_PATH="$FILE_PATH"
@@ -55,7 +99,11 @@ fi
 
 PATH_TOP="$(git -C "$DIR_PATH" rev-parse --show-toplevel 2>/dev/null || true)"
 HQ_TOP="$(git -C "$HQ_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -z "$PATH_TOP" || -z "$HQ_TOP" || "$PATH_TOP" != "$HQ_TOP" ]]; then
+if [[ -z "$PATH_TOP" || -z "$HQ_TOP" ]]; then
+  log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] FAIL stage=resolve path=$(printf '%q' "$FILE_PATH") session=${SESSION_KEY}"
+  exit 0
+fi
+if [[ "$PATH_TOP" != "$HQ_TOP" ]]; then
   exit 0
 fi
 
@@ -111,27 +159,9 @@ case "$REL_PATH" in
     ;;
 esac
 
-LOG_DIR="$HQ_ROOT/workspace/logs"
-LOG_FILE="$LOG_DIR/hq-autocommit.log"
-LOG_MAX_BYTES="${HQ_AUTOCOMMIT_LOG_MAX_BYTES:-1048576}"
 WARN_DIR="$HQ_ROOT/workspace/.autocommit-warnings"
 LOCK_DIR="${TMPDIR:-/tmp}/hq-autocommit.lock"
 STALE_LOCK_MINUTES="${HQ_AUTOCOMMIT_STALE_LOCK_MINUTES:-5}"
-
-SESSION_KEY="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
-[[ -z "$SESSION_KEY" ]] && SESSION_KEY="pid-${PPID:-$$}"
-SESSION_KEY="$(printf '%s' "$SESSION_KEY" | tr -c 'A-Za-z0-9._-' '_')"
-
-log_line() {
-  mkdir -p "$LOG_DIR" 2>/dev/null || return 0
-  local size
-  size="$(wc -c <"$LOG_FILE" 2>/dev/null || echo 0)"
-  size="${size//[^0-9]/}"
-  if [[ -n "$size" && "$size" -gt "$LOG_MAX_BYTES" ]]; then
-    mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null || true
-  fi
-  printf '%s\n' "$1" >>"$LOG_FILE" 2>/dev/null || true
-}
 
 # One warning per session per distinct cause. A wedged repo fails on every
 # single edit; repeating the same line hundreds of times would train the user

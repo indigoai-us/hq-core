@@ -1,10 +1,23 @@
 ---
 name: new-agent
-description: Provision a fleet agent end-to-end — identity, membership, vault join, secrets, file access, MCP/runtime bootstrap, mission brief, and a verified capability probe. Use when standing up a new HQ agent (Slack bot, reporting agent, ops agent) or when an existing agent reports it is blocked on access.
+description: Provision a hosted (cloud) HQ agent end-to-end — identity, membership, vault join, secrets, file access, MCP/runtime bootstrap, mission brief, and a verified capability probe — or repair one that reports it is blocked on access. Use when standing up a new HQ agent (Slack bot, reporting agent, ops agent). Routes local bots (`hq bot create`, runs on the user's computer with their own model login) and external bots (an agent hosted elsewhere, enrolled by one-time code with `hq agent enroll`) to their own flows.
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
 # /new-agent — Provision a Fleet Agent
+
+## First: which kind of agent?
+
+Ask where the agent should run before anything paid happens. Reference:
+`core/knowledge/public/hq-core/agents-and-bots.md`.
+
+| The user wants | Route |
+|---|---|
+| A bot on their own computer, using their own Claude/Codex/Grok login | Local bot: `hq bot create <name>` (personal, acts as them) or `hq bot create <name> --kind company --company <slug>`. No hosted box. Stop here; this skill's layers do not apply |
+| An agent they already run elsewhere (OpenClaw, grokbot, Muse, any MCP-capable agent) | External bot: console Bots page → Add bot → External bot → Create and get code, then on its host `hq agent enroll <code>`, `hq agent kit install`, register `hq agent mcp`, `hq agent probe`. See `core/knowledge/public/hq-core/external-agents-mcp.md`. Paid plans only; no per-agent charge |
+| Their own Claude/ChatGPT/Codex/Grok chat app reading HQ | Console Integrations → Connect an agent. Not an agent identity |
+| An always-on company agent hosted by HQ | This skill (create mode) |
+| An existing agent that is blocked on access | This skill (repair mode) |
 
 Take an agent from "exists somewhere" to "fully capable for a defined job" in
 one flow. The failure mode this skill kills: an agent is invited to a company,
@@ -15,15 +28,21 @@ registered its MCPs.
 **Provisioning is not done when grants are issued. It is done when the agent
 confirms, from its own runtime, that every capability mounts.**
 
-> **Billing gate (paid resource).** A cloud fleet agent is a paid resource —
-> **$100/month** on the company's payer. Before creating one, get the operator's
-> explicit approval of that recurring charge, and never provision silently. The
-> `hq agents provision` command enforces this: it prints the monthly cost and
-> refuses to run without `--yes`, and if the company has no card on file it
-> returns a Stripe card-capture link instead of an opaque failure. Hand that link
-> to whoever owns billing, wait until a card is added, then re-run. Do not try to
-> work around the gate. This applies only to **create mode** — repairing an
-> existing agent's access grants nothing paid and needs no approval.
+> **Billing gate (paid resource).** A hosted agent is a recurring charge on
+> the company's payer. The price is company-specific and depends on the size
+> (`basic`, `power`, `dev`); see
+> `core/knowledge/public/hq-core/plans-and-pricing.md`, but always quote the
+> number the CLI prints, not a remembered one. Get the operator's explicit
+> approval of that charge and never provision silently. `hq agents provision`
+> enforces this: without `--yes` it prints the quote and stops. If the plan
+> does not allow another agent, the server answers `AGENT_PLAN_LIMIT` and the
+> CLI prints a checkout URL and **exits with status 3** (payment required,
+> distinct from an ordinary failure; it never opens a browser under `--json`
+> or without a TTY). If billing itself is blocked (402), it prints a payment
+> link and exits 1. Hand either link to whoever owns billing, wait until it is
+> completed, then re-run. Do not try to work around the gate. This applies
+> only to **create mode** — repairing an existing agent's access grants
+> nothing paid and needs no approval.
 
 **Usage:**
 ```
@@ -59,16 +78,19 @@ produces the exact bootstrap block and verifies via probe instead.
 - If the agent exists → **repair mode**: diff what it has against what it
   needs, grant only the gaps.
 - If not → **create mode**: provision the paid agent box through the billing
-  gate — `hq agents provision {name} --company {co} [--model <model>]`. Every
-  new managed agent is an agents v2 box; omit `--provider` (it defaults to
-  `agents-v2`, and `codex`/`grok`/`claude` are rejected for new agents). See
-  §Agents v2 branch for the setup steps and the human gates. This prints the
-  **$100/month** cost and requires `--yes` to proceed; approve it with the
-  operator first. If the company has no card on file the command returns
-  a Stripe card-capture link instead of provisioning — hand that link to whoever
-  owns billing, wait until a card is added, then re-run. (If an agent email was
-  already issued out-of-band, you can invite it directly with `hq members invite`
-  instead.)
+  gate — `hq agents provision {name} --company {co} [--model <model>] [--size basic|power|dev]`.
+  Every new managed agent is an agents-v2 box with a Codex, Grok, or Claude
+  brain (pick the model from `hq agents models`). Omit `--provider`: with
+  `--model` the CLI sends `agents-v2`, and with neither the server defaults
+  to `agents-v2`. The CLI still accepts `--provider codex|grok|claude` for
+  script compatibility, but the server rejects them for new agents with
+  `LEGACY_MANAGED_PROVIDER_RETIRED`. Claude brains need the account enabled
+  for Claude. See §Agents v2 branch for the setup steps and the human gates.
+  The command prints the quote and requires `--yes`; approve it with the
+  operator first. Exit status 3 means payment is required: pass on the
+  checkout URL it printed (see the billing gate above). (If an agent email
+  was already issued out-of-band, you can invite it directly with
+  `hq members invite` instead.)
 - Company must resolve to a slug in `companies/manifest.yaml` **and** be
   cloud-backed (`cloud_uid` present). If it is not cloud-backed, stop and route
   to `/designate-team` first — without a cloud entity there is no team vault to
@@ -244,13 +266,27 @@ chosen by `--model` (a Codex, Grok, or Claude model).
    - **codex-auth — brain sign-in.** The box asks for a device sign-in. The URL
      and code are in `.pairing` (and in the step's `lastError`). Hand them to
      the person who owns the brain account; nobody else can complete it.
-   - **channels — Slack app-level token** (socket-mode apps). If the step's
-     `lastError` says "generate the Slack app-level token", someone with access
-     to the app must open `channels.slack.appTokenPendingUrl` → Basic
-     Information → App-Level Tokens, generate a token with `connections:write`,
-     and paste it on the agent's row on the console Agents page. Never paste
-     the token into chat. If it instead says "waiting for the Slack app install",
-     someone in that Slack workspace must approve the app install.
+   - **channels — Slack.** Two console paths exist; a per-company rollout
+     flag decides which one the Add bot wizard shows.
+     - *Customer-created app (guided):* the console page
+       `/companies/{co}/agents/{agentUid}/slack-setup` opens Slack's
+       create-app screen with the full-scope manifest pre-filled (Socket
+       Mode on, token rotation off), or shows the manifest to copy. The
+       customer creates the app, installs it to the workspace (a Slack admin
+       may need to approve), generates an app-level token with
+       `connections:write`, copies the `xoxb-` Bot User OAuth Token, and
+       pastes both tokens on that page. HQ validates the scopes and Socket
+       Mode before storing anything; a rotating token (`xoxe.xoxb-`) is
+       rejected until rotation is turned off.
+     - *Factory app (older path):* `FACTORY_ROOT_MISSING` means an owner or
+       admin must connect the company's Slack workspace once from the console
+       Bots page. After that, `hq agents status` shows a `slack-install`
+       action (someone in the workspace clicks Install) and possibly a
+       `slack-app-token` action (generate a `connections:write` app-level
+       token at the app's Basic Information page and paste it on the console).
+     Never paste a token into chat. To reuse an existing Slack app from the
+     CLI, pass `--slack-tokens-stdin` (bot token line, then app token line;
+     agents-v2 needs both).
 
    Surface each gate to the user as soon as it appears. The owner is also
    emailed if a gate is still open 45 minutes after the previous step finished.
@@ -262,7 +298,7 @@ chosen by `--model` (a Codex, Grok, or Claude model).
    to `off`); then the step waits with "Agents v2 installation is disabled for
    this stage" and the agent stays pending until it is switched back on. If the
    step fails, `hq agents retry {agentUid}` resumes setup from it. The operator
-   script `scripts/agents/install-agents-v2-runtime.ts` (hq-pro) is an
+   script `scripts/agents/install-agents-v2-runtime.ts` (hq-pro-agents) is an
    indigo-only manual tool, not part of normal provisioning.
 
 4. **v2 probe checklist** — the done gate for a v2 box, on top of §7. From
@@ -301,4 +337,7 @@ chosen by `--model` (a Codex, Grok, or Claude model).
 - `/accept` — how the agent's runtime claims a pending membership
 - `/hq-secrets`, `/hq-files` — the underlying grant primitives
 - `/delegate` — hand an existing project to a provisioned agent (or person): verified access, branch + secrets handover, ownership transfer, and a self-sufficient pickup DM
-- `scripts/agents/install-agents-v2-runtime.ts` (hq-pro) — indigo-only manual tool for the v2 runtime; normal provisioning installs it automatically (§Agents v2 branch)
+- `scripts/agents/install-agents-v2-runtime.ts` (hq-pro-agents) — indigo-only manual tool for the v2 runtime; normal provisioning installs it automatically (§Agents v2 branch)
+- `core/knowledge/public/hq-core/agents-and-bots.md` — every agent kind, CLI surface, Slack paths, Open Fleet trust model
+- `core/knowledge/public/hq-core/external-agents-mcp.md` — external bots and MCP connectors
+- `hq bot create` — local bots (no hosted box)

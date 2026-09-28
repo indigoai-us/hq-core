@@ -1,4 +1,18 @@
+---
+type: reference
+domain: [engineering, product]
+status: historical
+tags: [desktop-app, historical, rust-commands-audit]
+relates_to: [knowledge/public/hq-core/hq-desktop-app.md]
+---
+
 # Rust Commands vs HQ Structures Audit
+
+> **Historical (February 2026).** This page is a spec or audit written for a React
+> version of HQ Desktop that was not shipped. The component names, Tauri commands
+> (for example `files.rs`, `orchestrator.rs`, `terminal.rs`) and file paths it
+> describes do not exist in the current app. The shipped app is Svelte 5 + Tauri 2
+> (hq-desktop-app). For current behavior, read `../hq-desktop-app.md`.
 
 Comprehensive audit of every Tauri command in the HQ Desktop Rust backend against actual HQ file structures. Identifies type mismatches, missing data accessors, stale mock data, and new commands needed.
 

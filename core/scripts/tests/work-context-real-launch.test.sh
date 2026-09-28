@@ -27,7 +27,7 @@ trap cleanup EXIT
 
 HOME_DIR="$SANDBOX/home"
 HQ="$SANDBOX/hq"
-mkdir -p "$HOME_DIR" "$HQ/workspace/sessions" "$HQ/core/scripts" "$HQ/core/hooks/SessionStart" "$HQ/companies/acme" "$HQ/companies/otherco" \
+mkdir -p "$HOME_DIR" "$HQ/workspace/sessions" "$HQ/core/scripts" "$HQ/core/hooks/SessionStart" "$HQ/companies/acme" "$HQ/companies/otherco" "$HQ/companies/cmp_FIXTURE" \
   "$HQ/.claude/hooks" "$SANDBOX/bin"
 cp -R "$REPO_ROOT/core/scripts/lib" "$HQ/core/scripts/lib"
 cp "$REPO_ROOT/core/scripts/hq-session.sh" "$HQ/core/scripts/"
@@ -43,6 +43,8 @@ companies:
     name: Acme
   otherco:
     name: Otherco
+  cmp_FIXTURE:
+    name: Synthetic cloud company ID
 YAML
 
 export HOME="$HOME_DIR"
@@ -387,6 +389,37 @@ out="$(env HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" HQ_ROOT="$HQ" CLAUDE_PR
   "$HQ/.claude/hooks/auto-session-project.sh" \
   <<<"{\"session_id\":\"sid-mis\",\"prompt\":\"walk through how the work mesh is set up\"}" 2>/dev/null || true)"
 [ -z "$out" ] && pass "misfile walkthrough quiet" || fail "misfile not quiet: $out"
+
+# --- 5b) Opaque uppercase company ID still materializes a bound project ---
+mkdir -p "$HOME_DIR/.hq/work-context/sessions/sid-case-sensitive"
+cat > "$HOME_DIR/.hq/work-context/sessions/sid-case-sensitive.json" <<'JSON'
+{
+  "contractVersion": 1,
+  "sessionId": "sid-case-sensitive",
+  "contextStatus": "bound",
+  "companySlug": "cmp_FIXTURE",
+  "companyUid": "cmp_FIXTURE",
+  "projectId": "opaque-id-project",
+  "taskId": "US-1",
+  "updatedAt": "2026-09-04T00:00:00Z"
+}
+JSON
+cat > "$HOME_DIR/.hq/work-context/sessions/sid-case-sensitive/board.md" <<'MD'
+# Board snapshot
+- projectId: opaque-id-project
+- projectName: Opaque ID Project
+## Stories
+- US-1 [in_progress] — Synthetic story
+MD
+out="$(env HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" HQ_ROOT="$HQ" CLAUDE_PROJECT_DIR="$HQ" \
+  "$HQ/.claude/hooks/auto-session-project.sh" \
+  <<<"{\"session_id\":\"sid-case-sensitive\",\"prompt\":\"continue\"}" 2>/dev/null || true)"
+[[ "$out" == *"companies/cmp_FIXTURE/projects/opaque-id-project"* ]] \
+  && pass "uppercase company ID reaches auto-session-project" \
+  || fail "uppercase company ID was refused by auto-session-project: $out"
+[ -f "$HQ/companies/cmp_FIXTURE/projects/opaque-id-project/prd.json" ] \
+  && pass "uppercase company project is materialized under its exact manifest key" \
+  || fail "uppercase company project prd was not materialized"
 
 # --- 6) Rebind: session_end old + session_start new ---
 reset_spool
