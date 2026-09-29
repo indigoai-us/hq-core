@@ -1,7 +1,7 @@
 ---
 name: knowledge-pulse
 description: Run a lightweight freshness pass over company knowledge and policies.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/read-policy-frontmatter.sh:*)
 ---
 
 # Knowledge Pulse — Background Gardening
@@ -49,31 +49,26 @@ Check for existing report at `workspace/reports/knowledge-pulse/{company_slug}-{
 - If exists from today: **skip entire pulse**. Print "Pulse already ran for {company_slug} today. Skipping." and exit.
 - If not found: proceed.
 
-### Step 1: Detect Knowledge Repo Type
+### Step 1: Check the Company Knowledge Directory
 
-Determine the knowledge directory pattern to choose the right commit strategy:
+Company knowledge is always a plain directory synchronized through its company
+vault. Do not inspect it for Git metadata or run Git commands in it.
 
 ```bash
 if [ -L "{knowledge_path}" ]; then
-  repo_type="symlink"      # Pattern 2: symlink to repos/
-elif [ -d "{knowledge_path}/.git" ]; then
-  repo_type="embedded"     # Pattern 1: standalone .git inside core/knowledge/
+  repo_type="symlink"
 else
-  repo_type="inline"       # Pattern 3: tracked by HQ git
+  repo_type="company-vault"
 fi
 ```
 
 **If `repo_type` is `symlink`, STOP HERE.** The layout is invalid (policy
 `knowledge-repositories-never-symlink`): skip Steps 2–4 entirely — no INDEX.md
 regeneration, no tagging, no stale-status edits, nothing written through the
-link — and jump straight to Step 5 to write a report-only pulse recording the
-migration violation (materialize at `{knowledge_path}`, run `hq reindex`,
-verify `! test -L`).
-
-**Commit rules:**
-- `embedded`: commit changes inside the inner repo (`git -C {knowledge_path} add . && git -C {knowledge_path} commit`)
-- `symlink`: unreachable — a symlink layout exits to report-only in Step 1
-- `inline`: **skip committing** — flag in report as "changes staged but not committed (inline HQ-tracked)"
+link. Jump straight to Step 5 to report the migration violation. The
+company knowledge path must be materialized manually as a plain real directory
+after safely preserving its contents and any needed Git history outside the
+company folder. Do not use an automatic repository migration for this path.
 
 ### Step 2: Knowledge Garden
 
@@ -105,8 +100,8 @@ For each `.md` file in `{knowledge_path}/` (skip `INDEX.md`, `README.md`):
 
 For each `.md` file in `{knowledge_path}/` (skip `INDEX.md`):
 
-1. Check git last-modified date: `git log -1 --format="%ai" -- {file}` (run from knowledge repo root, not HQ root)
-2. If >60 days since last commit:
+1. Check the file's filesystem modification time (for example, with Python's `os.path.getmtime()`); do not use Git history for company knowledge.
+2. If the file has not been modified in more than 60 days:
    - If file has frontmatter with `status:` field: update to `status: stale`
    - If no frontmatter: skip (will be tagged in next pulse after 2b adds frontmatter)
 3. Track: `stale_flagged` count, collect files >90 days for report
@@ -114,7 +109,7 @@ For each `.md` file in `{knowledge_path}/` (skip `INDEX.md`):
 #### 2d. company-info.md Check
 
 1. Check if `{knowledge_path}/company-info.md` exists
-2. If exists: check git age via `git log -1 --format="%ai" -- company-info.md`
+2. If it exists: check its filesystem modification time; do not use Git history.
 3. Track: `company_info_age_days` (or `null` if missing)
 4. If >90 days stale: flag in report
 5. If `discovered_facts` provided by parent: note in report as "Potential updates for human review" (do NOT auto-modify company-info.md — it's high-stakes)
@@ -141,7 +136,7 @@ Glob `{policies_path}/*.md` (skip `example-policy.md`).
 For each policy file:
 
 1. Read first 20 lines — extract YAML frontmatter
-2. Check required fields per policies-spec: `id`, `title`, `scope`, `trigger`, `enforcement`, `version`, `created`, `updated`, `public`
+2. Check required fields per policies-spec: `id`, `title`, `when`, `on`, `enforcement`, `version`, `created`, `updated`, `public`
 3. If missing required fields: log in report as "Policy {filename} missing fields: {list}"
 4. Track: `policies_invalid` count
 
@@ -181,23 +176,14 @@ For each policy file:
 
 No digest rebuild step exists. Policies surface automatically via the SessionStart trigger hook (`inject-policy-on-trigger.sh`) and the `migrate-policy-triggers.sh` backfill. If a policy was modified in Steps 3a-3d (currently none are — all report-only), just ensure it still carries `when:`/`on:` frontmatter.
 
-### Step 4: Commit Changes
+### Step 4: Record Changes for Company Vault Sync
 
 **Knowledge changes** (INDEX.md refresh, tagging, stale flags):
 
-- If `repo_type` is `embedded`:
-  ```bash
-  cd {knowledge_path}
-  git add -A
-  git diff --cached --quiet || git commit -m "pulse: auto-tag and index refresh ({date})"
-  ```
-- If `repo_type` is `symlink`: this step is never reached — Step 1 exits to
-  report-only before any mutation, so there is nothing to commit or decline.
-  The pulse report records the migration violation: materialize the content at
-  `{knowledge_path}` (run `hq reindex`), preserve git there if needed, and
-  verify `! test -L`
-- If `repo_type` is `inline`:
-  - Skip commit. Note in report: "Knowledge is HQ-tracked (inline). Changes staged but not committed to avoid race with parent command."
+- If `repo_type` is `company-vault`, do not run Git commands. Record the changed
+  paths in the pulse report for company vault sync.
+- If `repo_type` is `symlink`, this step is never reached; Step 1 stops before
+  any write and reports the migration violation.
 
 **Policy changes:** Currently all policy actions are report-only (no file modifications). If future versions add policy auto-fixes, commit to HQ git separately.
 
@@ -207,14 +193,14 @@ Write to `workspace/reports/knowledge-pulse/{company_slug}-{YYYY-MM-DD}.md`:
 
 ```markdown
 # Knowledge Pulse: {company_slug}
-**Date:** {YYYY-MM-DD} | **Triggered by:** {caller} | **Repo type:** {repo_type}
+**Date:** {YYYY-MM-DD} | **Triggered by:** {caller} | **Storage:** {repo_type}
 
 ## Knowledge Actions
 - INDEX.md: {refreshed — N files added/removed | no drift detected}
 - Tagged: {N} untagged docs {(M remaining, capped at 20) if applicable}
 - Stale flags: {N} files marked stale (>60d)
 - company-info.md: {fresh (Nd old) | stale (Nd old) — review needed | not found}
-- Committed: {yes (hash) | skipped (inline repo)}
+- Company vault sync: {changed paths ready for sync | no changes}
 
 ## Policy Health
 - Validated: {N} policies, {M} with missing frontmatter fields
@@ -226,7 +212,7 @@ Write to `workspace/reports/knowledge-pulse/{company_slug}-{YYYY-MM-DD}.md`:
 {table: file_a | file_b | conflicting claims — or "None" or "Skipped (startwork caller)"}
 
 ## Stale Files (>90d)
-{table: file | last commit | age — or "None"}
+{table: file | last modified | age (or "None")}
 
 ## Invalid Policy Frontmatter
 {table: file | missing fields — or "None"}
@@ -256,8 +242,8 @@ Append one JSON line to `workspace/metrics/knowledge-health.jsonl`:
 - **Policy changes are report-only** — never auto-modify policy content. Frontmatter validation and stale detection produce reports, not fixes
 - **company-info.md is hands-off** — only report age and discovered facts. Never auto-update
 - **Cap tagging at 20 files** — prevents runaway in large knowledge bases
-- **Respect repo type** — commit only embedded repos. Report symlinks as migration violations and never write through them. Never commit inline knowledge to avoid racing HQ git
+- **Company storage:** company knowledge is a plain directory synced through its vault. Do not inspect it for Git metadata or run Git commands there. Report symlinks as migration violations and never write through them.
 - **Company isolation** — only garden the specified company's knowledge and policies. Never cross-company
 - **Background execution** — this skill runs detached from the parent command. No user interaction, no AskUserQuestion, no plan mode
-- **Fail gracefully** — if qmd is unavailable, skip contradiction detection. If git commands fail, skip stale detection. Always produce a report even if partial
+- **Failures:** if qmd is unavailable, skip contradiction detection. If filesystem timestamps cannot be read, skip stale detection and report the limitation. Always produce a report, including when some checks fail.
 - **No INDEX.md reads during startwork** — startwork's rule "NEVER read company knowledge dirs" applies to the main command, not this background agent. The pulse agent operates independently

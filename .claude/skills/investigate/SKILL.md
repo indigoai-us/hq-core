@@ -1,6 +1,6 @@
 ---
 name: investigate
-description: Iron Law debugging — systematic root cause investigation before any fixes. Scope lock, pattern classification, hypothesis testing with 3-strike rule, structured DEBUG REPORT. Use when debugging, fixing bugs, or tracing unexpected behavior. Triggers on "debug this", "fix this bug", "why is this broken", "root cause analysis".
+description: "Root-cause debugging before any fix: scope lock, hypothesis testing, debug report. Triggers: \"debug this\", \"why is this broken\"."
 allowed-tools: Read, Grep, Glob, Write, Bash(git:*), Bash(qmd:*), Bash(bash core/scripts/resolve-company.sh:*), AskUserQuestion
 ---
 

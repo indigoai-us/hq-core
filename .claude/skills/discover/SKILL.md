@@ -1,10 +1,6 @@
 ---
 name: discover
-description: |
-  Pull a repo into HQ at latest main, fan out parallel exploration, and
-  synthesize structured knowledge + (gated) policies under the owning company.
-  Use when the user says "discover this repo", "ingest <repo>", "pull <repo>
-  into HQ", or asks to learn a codebase HQ doesn't yet know.
+description: "Pull a repo into HQ and turn parallel exploration into company knowledge and policies. Triggers: \"discover this repo\", \"ingest <repo>\"."
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion, Agent
 ---
 

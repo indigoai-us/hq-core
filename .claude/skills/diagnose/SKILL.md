@@ -1,9 +1,6 @@
 ---
 name: diagnose
-description: |
-  Disciplined diagnosis loop for hard bugs, performance regressions, and intermittent failures.
-  Build a deterministic feedback loop FIRST, then reproduce → hypothesise (3-5 ranked) → instrument (one variable at a time, tagged probes) → fix at the correct seam → cleanup + post-mortem.
-  Use when the dominant problem is "I cannot reliably reproduce or measure this." For bugs that reproduce reliably with unknown root cause, use /investigate instead.
+description: "Diagnosis loop for bugs you cannot reliably reproduce or measure, including perf regressions and flakes. For reproducible bugs use /investigate."
 allowed-tools: Read, Grep, Glob, Write, Edit, Bash, Agent, AskUserQuestion
 ---
 

@@ -132,6 +132,22 @@ got="$(edit "$HQ/repos/private/app/src/file.txt" mine)"
 # --- [7] missing helper: fail open, but say so ----------------------------
 printf '%s\n' '{"version":1,"runs":[{"run_id":"r","pid":1,"session_id":"x","scope":"repo","repo_path":"/"}]}' \
   > "$HQ/workspace/orchestrator/active-runs.json"
+mv "$REG" "$TMP/repo-run-registry.real"
+cat > "$REG" <<EOF
+#!/usr/bin/env bash
+printf '%s\\n' 'repo-run-registry.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest' >&2
+printf 'called\\n' >> '$TMP/repo-run-registry.calls'
+exit 127
+EOF
+chmod +x "$REG"
+got="$(edit "$HQ/repos/private/app/src/file.txt" mine)"
+if [ "$got" = "0" ] && [ ! -s "$ERR" ] && [ "$(cat "$TMP/repo-run-registry.calls")" = "called" ]; then
+  ok "a 127 forwarder is called, its stderr is suppressed, and the edit fails open"
+else
+  fail "a 127 forwarder is called, its stderr is suppressed, and the edit fails open" "rc=$got stderr=$(cat "$ERR") calls=$(cat "$TMP/repo-run-registry.calls" 2>/dev/null)"
+fi
+rm -f "$REG"
+mv "$TMP/repo-run-registry.real" "$REG"
 chmod -x "$REG"
 got="$(edit "$HQ/repos/private/app/src/file.txt" mine)"
 if [ "$got" = "0" ] && grep -q 'repo-run-registry.sh is missing or not executable' "$ERR"; then
@@ -139,6 +155,35 @@ if [ "$got" = "0" ] && grep -q 'repo-run-registry.sh is missing or not executabl
 else
   fail "a missing helper is reported on stderr" "rc=$got stderr=$(cat "$ERR")"
 fi
+
+# The SessionStart sibling uses the same helper, but captures a 127 failure as
+# data and emits no banner. With the helper absent it exits silently first.
+CHECK_OUT="$TMP/check-repo.out"; CHECK_ERR="$TMP/check-repo.err"
+cat > "$REG" <<EOF
+#!/usr/bin/env bash
+printf '%s\\n' 'repo-run-registry.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest' >&2
+printf 'called\\n' >> '$TMP/check-repo-registry.calls'
+exit 127
+EOF
+chmod +x "$REG"
+if ( cd "$HQ" && printf '{}' | HQ_ROOT="$HQ" CLAUDE_PROJECT_DIR="$HQ" bash "$HQ/.claude/hooks/check-repo-active-runs.sh" ) >"$CHECK_OUT" 2>"$CHECK_ERR"; then
+  check_rc=0
+else
+  check_rc=$?
+fi
+[ "$check_rc" = 0 ] && [ ! -s "$CHECK_OUT" ] && [ ! -s "$CHECK_ERR" ] \
+  && [ "$(cat "$TMP/check-repo-registry.calls")" = "called" ] \
+  && ok "check-repo-active-runs suppresses a 127 result and emits no banner" \
+  || fail "check-repo-active-runs suppresses a 127 result and emits no banner" "rc=$check_rc out=$(cat "$CHECK_OUT") err=$(cat "$CHECK_ERR")"
+rm -f "$REG"
+if ( cd "$HQ" && printf '{}' | HQ_ROOT="$HQ" CLAUDE_PROJECT_DIR="$HQ" bash "$HQ/.claude/hooks/check-repo-active-runs.sh" ) >"$CHECK_OUT" 2>"$CHECK_ERR"; then
+  check_rc=0
+else
+  check_rc=$?
+fi
+[ "$check_rc" = 0 ] && [ ! -s "$CHECK_OUT" ] && [ ! -s "$CHECK_ERR" ] \
+  && ok "check-repo-active-runs is silent when the helper is absent" \
+  || fail "check-repo-active-runs is silent when the helper is absent" "rc=$check_rc out=$(cat "$CHECK_OUT") err=$(cat "$CHECK_ERR")"
 
 # --- [8] check-hq-hooks.sh reports a missing guard helper -----------------
 # Inline checker only: a failing `hq` shim first on PATH makes try_doctor fall

@@ -76,10 +76,86 @@ mesh_company_from_prd() {
   basename "$company_dir"
 }
 
+mesh_project_repo_source() {
+  local repo_path="$1" candidate base parent common_dir
+  if common_dir="$(git -C "$repo_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    dirname "$common_dir"
+    return 0
+  fi
+
+  # The orchestrator may create the configured worktree during the child run
+  # and remove it before this wrapper reports completion. Mirror its suffix
+  # walk now so the source repository remains available for the later check.
+  candidate="$repo_path"
+  while [[ -n "$candidate" && "$candidate" != "$(dirname "$candidate")" ]]; do
+    base="$(basename "$candidate")"
+    parent="$(dirname "$candidate")"
+    [[ "$base" == *-* ]] || break
+    candidate="$parent/${base%-*}"
+    if common_dir="$(git -C "$candidate" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+      dirname "$common_dir"
+      return 0
+    fi
+  done
+  return 1
+}
+
+MESH_SOURCE_REPO=""
+MESH_START_BRANCH_OID=""
+mesh_capture_completion_snapshot() {
+  local prd="$1" repo_path branch_name
+  MESH_SOURCE_REPO=""
+  MESH_START_BRANCH_OID=""
+  if ! repo_path="$(jq -r '.metadata.repoPath // empty' "$prd" 2>/dev/null)"; then
+    printf '%s\n' 'run-project: unable to read repository metadata for completion evidence; completion will not be claimed' >&2
+    return 0
+  fi
+  [[ -n "$repo_path" ]] || return 0
+  [[ "$repo_path" = /* ]] || repo_path="$HQ_ROOT/$repo_path"
+  if MESH_SOURCE_REPO="$(mesh_project_repo_source "$repo_path")"; then
+    if ! branch_name="$(jq -r '.branchName // empty' "$prd" 2>/dev/null)"; then
+      printf '%s\n' 'run-project: unable to read project branch for completion evidence; completion will not be claimed' >&2
+      MESH_SOURCE_REPO=""
+      return 0
+    fi
+    if [[ -n "$branch_name" ]] && git -C "$MESH_SOURCE_REPO" \
+      check-ref-format "refs/heads/$branch_name" >/dev/null 2>&1; then
+      MESH_START_BRANCH_OID="$(git -C "$MESH_SOURCE_REPO" rev-parse --verify \
+        "${branch_name}^{commit}" 2>/dev/null)" || MESH_START_BRANCH_OID=""
+    fi
+  else
+    MESH_SOURCE_REPO=""
+  fi
+  return 0
+}
+
 mesh_project_complete() {
-  local prd="$1"
+  local prd="$1" repo_path="${2:-}" start_branch_oid="${3:-}"
+  local configured_repo branch_name base_branch commit_count current_branch_oid
   command -v jq >/dev/null 2>&1 || return 1
-  jq -e '([.userStories[]? | select(.passes != true)] | length) == 0' "$prd" >/dev/null 2>&1
+  jq -e '([.userStories[]? | select(.passes != true)] | length) == 0' "$prd" >/dev/null 2>&1 || return 1
+
+  configured_repo="$(jq -r '.metadata.repoPath // empty' "$prd" 2>/dev/null)" || return 1
+  # Keep projects without a configured repository on the story-pass contract;
+  # there is no branch whose delivery evidence this wrapper can inspect.
+  [[ -n "$configured_repo" ]] || return 0
+  [[ -n "$repo_path" ]] || return 1
+
+  branch_name="$(jq -r '.branchName // empty' "$prd" 2>/dev/null)" || return 1
+  base_branch="$(jq -r '.metadata.baseBranch // "main"' "$prd" 2>/dev/null)" || return 1
+  [[ -n "$branch_name" && -n "$base_branch" ]] || return 1
+  git -C "$repo_path" check-ref-format "refs/heads/$branch_name" >/dev/null 2>&1 || return 1
+  git -C "$repo_path" check-ref-format "refs/heads/$base_branch" >/dev/null 2>&1 || return 1
+  # Direct-base projects need a commit created during this run as evidence.
+  if [[ "$branch_name" == "$base_branch" ]]; then
+    [[ -n "$start_branch_oid" ]] || return 1
+    current_branch_oid="$(git -C "$repo_path" rev-parse --verify \
+      "${branch_name}^{commit}" 2>/dev/null)" || return 1
+    [[ "$current_branch_oid" != "$start_branch_oid" ]]
+    return
+  fi
+  commit_count="$(git -C "$repo_path" rev-list --count "${base_branch}..${branch_name}" 2>/dev/null)" || return 1
+  [[ "$commit_count" =~ ^[1-9][0-9]*$ ]]
 }
 
 mesh_report_start() {
@@ -95,7 +171,8 @@ mesh_report_finish() {
   local project="$1" company="$2" rc="$3" prd="$4"
   command -v hq >/dev/null 2>&1 || return 0
   local summary
-  if [[ "$rc" == "0" ]] && [[ -n "$prd" ]] && mesh_project_complete "$prd"; then
+  if [[ "$rc" == "0" ]] && [[ -n "$prd" ]] \
+    && mesh_project_complete "$prd" "$MESH_SOURCE_REPO" "$MESH_START_BRANCH_OID"; then
     summary="run-project completed for $project"
   elif [[ "$rc" == "0" ]]; then
     summary="run-project made progress on $project"
@@ -119,6 +196,7 @@ if [[ -n "$PRD_FOR_MESH" ]]; then
 fi
 
 if [[ -n "$PROJECT_FOR_MESH" && -n "$COMPANY_FOR_MESH" ]]; then
+  mesh_capture_completion_snapshot "$PRD_FOR_MESH"
   mesh_report_start "$PROJECT_FOR_MESH" "$COMPANY_FOR_MESH"
 fi
 

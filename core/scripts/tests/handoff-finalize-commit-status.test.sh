@@ -262,4 +262,104 @@ git show "HEAD:workspace/threads/handoff.json" >/dev/null 2>&1 \
 git show "HEAD:workspace/threads/handoff.json" | grep -q '"old"' \
   && fail "tracked-ignored run committed the STALE handoff.json (the regenerated pointer was not staged)"
 
+# ── 7. A synced root without Git metadata still writes the handoff. ─────────
+NO_GIT_REPO="$TMP_ROOT/no-git"
+NO_GIT_BIN="$TMP_ROOT/no-git-bin"
+mkdir -p "$NO_GIT_REPO/core/scripts" "$NO_GIT_REPO/workspace/threads" \
+  "$NO_GIT_REPO/workspace/orchestrator" "$NO_GIT_REPO/notes" "$NO_GIT_BIN" "$TMP_ROOT/home"
+cp "$SRC_ROOT/scripts/handoff-finalize.sh" "$NO_GIT_REPO/core/scripts/handoff-finalize.sh"
+chmod +x "$NO_GIT_REPO/core/scripts/handoff-finalize.sh"
+cat > "$NO_GIT_REPO/core/scripts/qmd-reindex-bg.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'skipped-test'
+SH
+cat > "$NO_GIT_BIN/hq" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "core hq-status-summary"*) printf '{}';;
+  "core rebuild-index"*) :;;
+  *) echo "unexpected hq command in synthetic no-git test" >&2; exit 1;;
+esac
+SH
+REAL_GIT="$(command -v git)"
+cat > "$NO_GIT_BIN/git" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GIT_CALL_LOG:?}"
+exec "${REAL_GIT:?}" "$@"
+SH
+chmod +x "$NO_GIT_REPO/core/scripts/qmd-reindex-bg.sh" "$NO_GIT_BIN/hq" "$NO_GIT_BIN/git"
+printf 'synthetic durable note\n' > "$NO_GIT_REPO/notes/durable.md"
+[[ ! -e "$NO_GIT_REPO/.git" ]] || fail "no-git fixture unexpectedly has Git metadata"
+
+rc=0
+out="$(cd "$NO_GIT_REPO" && HQ_ROOT="$NO_GIT_REPO" HOME="$TMP_ROOT/home" \
+  PATH="$NO_GIT_BIN:/usr/bin:/bin" REAL_GIT="$REAL_GIT" \
+  GIT_CALL_LOG="$TMP_ROOT/no-git.calls" bash core/scripts/handoff-finalize.sh \
+    --title "Handoff: synthetic no-Git root" \
+    --summary "Synthetic no-Git regression" \
+    --files-touched-json '["notes/durable.md"]' \
+    --next-command '' \
+    --slug "synthetic-no-git")" || rc=$?
+assert_eq "$rc" "0" "no-Git finalize exit code"
+assert_eq "$(jq -r '.hq_committed' <<<"$out")" "false" "no-Git committed state"
+assert_eq "$(jq -r '.hq_commit_status' <<<"$out")" "no-git-checkout" "no-Git commit status"
+assert_eq "$(jq -r '.commit_after_finalize' <<<"$out")" "unknown" "no-Git commit identity"
+thread_path="$(jq -r '.thread_path' <<<"$out")"
+changeset_path="$(jq -r '.changeset_path' <<<"$out")"
+[[ -f "$NO_GIT_REPO/$thread_path" ]] || fail "no-Git handoff thread was not written"
+[[ -f "$NO_GIT_REPO/workspace/threads/handoff.json" ]] || fail "no-Git handoff pointer was not written"
+assert_eq "$(jq -r '.git.current_commit' "$NO_GIT_REPO/$thread_path")" "unknown" "no-Git thread commit metadata"
+assert_eq "$(jq -r '.staged_paths | length' "$NO_GIT_REPO/$changeset_path")" "0" "no-Git staged paths"
+if grep -E '(^| )(add|commit)( |$)' "$TMP_ROOT/no-git.calls" >/dev/null 2>&1; then
+  fail "finalizer attempted a Git write without repository metadata"
+fi
+
+# ── 8. A Git probe failure inside a checkout must fail closed. ───────────────
+# A checkout whose Git rejects access (for example dubious ownership) is not a
+# synced no-Git root. It must never silently skip staging and report success.
+DUBIOUS_REPO="$TMP_ROOT/dubious-git"
+DUBIOUS_BIN="$TMP_ROOT/dubious-bin"
+scaffold_repo "$DUBIOUS_REPO"
+mkdir -p "$DUBIOUS_BIN"
+cat > "$DUBIOUS_BIN/hq" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "core hq-status-summary"*) printf '{}';;
+  "core rebuild-index"*) :;;
+  *) echo "unexpected hq command in synthetic dubious-git test" >&2; exit 1;;
+esac
+SH
+REAL_GIT="$(command -v git)"
+cat > "$DUBIOUS_BIN/git" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GIT_CALL_LOG:?}"
+if [[ "$*" == "rev-parse --git-common-dir" ]]; then
+  echo "fatal: detected dubious ownership in repository at '$PWD'" >&2
+  exit 128
+fi
+exec "${REAL_GIT:?}" "$@"
+SH
+chmod +x "$DUBIOUS_BIN/hq" "$DUBIOUS_BIN/git"
+[[ -d "$DUBIOUS_REPO/.git" ]] || fail "dubious-git fixture must have .git metadata"
+
+rc=0
+err_file="$TMP_ROOT/dubious-git.err"
+out="$(cd "$DUBIOUS_REPO" && env -i \
+  HOME="$TMP_ROOT/home" HQ_ROOT="$DUBIOUS_REPO" PATH="$DUBIOUS_BIN:/usr/bin:/bin" \
+  REAL_GIT="$REAL_GIT" GIT_CALL_LOG="$TMP_ROOT/dubious-git.calls" \
+  bash core/scripts/handoff-finalize.sh \
+    --title "Handoff: synthetic Git probe failure" \
+    --summary "Synthetic dubious ownership failure" \
+    --files-touched-json '["tracked.txt"]' \
+    --next-command '' \
+    --slug "synthetic-dubious-git" 2>"$err_file")" || rc=$?
+assert_eq "$rc" "4" "Git probe failure in a checkout must fail closed"
+grep -q "dubious ownership" "$err_file" \
+  || fail "Git probe failure must retain a clear diagnostic"
+if [[ "$out" == *'"hq_commit_status":"no-git-checkout"'* ]]; then
+  fail "Git probe failure in a checkout must not be classified as no Git"
+fi
+grep -Fxq "rev-parse --git-common-dir" "$TMP_ROOT/dubious-git.calls" \
+  || fail "dubious-git fixture did not exercise the Git probe"
+
 echo "handoff-finalize commit status: ok"

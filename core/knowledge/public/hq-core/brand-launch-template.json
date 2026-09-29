@@ -31,7 +31,7 @@
         "Color palette defined: primary ({{color_primary}}), secondary ({{color_secondary}}), accent ({{color_accent}}), neutrals — inspired by {{aesthetic_refs}}",
         "Typography selected: heading ({{font_heading}}) + body ({{font_body}}) from Google Fonts or similar",
         "Simple wordmark/logo created (SVG + PNG formats)",
-        "Brand guidelines document written and committed to companies/{{brand_slug}}/knowledge/brand-guidelines.md",
+        "Brand guidelines document written to companies/{{brand_slug}}/knowledge/brand-guidelines.md and synced through the company vault",
         "Domain {{domain}} confirmed available and purchase instructions documented"
       ],
       "priority": 1,

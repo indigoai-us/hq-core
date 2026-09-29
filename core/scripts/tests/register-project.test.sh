@@ -193,4 +193,69 @@ grep -q '^done$' "$MARK" || fail "detached retry did not finish: $(cat "$MARK")"
 [ ! -d "$PENDING_DIR/acme.lock" ] || fail "retry lock was not released"
 grep -q 'retry-out' "$PENDING_DIR/acme.log" || fail "retry log missing stdout: $(cat "$PENDING_DIR/acme.log" 2>/dev/null || true)"
 
+# The registered SessionStart caller launches the helper in a detached child.
+# A forwarder message and exit 127 stay in the per-company log, while an
+# absent script skips the child. Pin the foreground hook's exact status and
+# streams in both cases, then wait for the child to release its lock.
+CONTRACT_PENDING="$TMP/pending-contract"
+CONTRACT_FORWARDER="$TMP/register-forwarder.sh"
+CONTRACT_ROOT="$TMP/register-contract-root"
+CONTRACT_HOOK="$CONTRACT_ROOT/core/hooks/SessionStart/35-work-mesh-session-start.sh"
+mkdir -p "$CONTRACT_ROOT/.claude" "$CONTRACT_ROOT/core/hooks/SessionStart" \
+  "$CONTRACT_ROOT/core/scripts/lib"
+cp "$HOOK" "$CONTRACT_HOOK"
+cp "$ROOT/core/scripts/lib/work-mesh-enqueue.sh" "$CONTRACT_ROOT/core/scripts/lib/"
+cat > "$CONTRACT_ROOT/core/scripts/lib/session-auto-bind.sh" <<'EOF'
+session_auto_bind_apply() { return 0; }
+session_auto_bind_meta_slug() { return 0; }
+session_auto_bind_run_with_timeout() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --timeout-ms) shift 2 ;;
+      *) break ;;
+    esac
+  done
+  "$@"
+}
+EOF
+cat > "$CONTRACT_FORWARDER" <<EOF
+#!/usr/bin/env bash
+printf '%s\\n' 'register-project.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest' >&2
+exit 127
+EOF
+chmod +x "$CONTRACT_FORWARDER"
+run_start_contract() {
+  local id="$1" script="$2" out="$3" err="$4" rc
+  if env -u HQ_DISABLED_HOOKS -u HQ_WORK_MESH_DISABLED \
+    HOME="$TMP/home" HQ_ROOT="$CONTRACT_ROOT" HQ_SESSION_ID="$id" \
+    HQ_SPAWN_COMPANY=acme HQ_WORK_MESH_RECONCILE_STUB=1 \
+    HQ_REGISTER_PENDING_SCRIPT="$script" HQ_REGISTER_PENDING_DIR="$CONTRACT_PENDING/$id" \
+    WORK_MESH_SEQ_DIR="$TMP/seq-$id" WORK_MESH_SPOOL="$TMP/spool-$id.jsonl" \
+    bash "$CONTRACT_HOOK" <<<"{\"session_id\":\"$id\"}" >"$out" 2>"$err"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" = 0 ] && [ ! -s "$out" ] && [ ! -s "$err" ] \
+    || fail "register-project $id changed hook foreground status/stdout/stderr"
+}
+run_start_contract register-forwarder "$CONTRACT_FORWARDER" "$TMP/register-forwarder.out" "$TMP/register-forwarder.err"
+waited=0
+while [ "$waited" -lt 100 ] && [ ! -s "$CONTRACT_PENDING/register-forwarder/acme.log" ]; do
+  sleep 0.1
+  waited=$((waited + 1))
+done
+printf '%s\n' 'register-project.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest' \
+  > "$CONTRACT_ROOT/register-forwarder.expected"
+cmp -s "$CONTRACT_ROOT/register-forwarder.expected" "$CONTRACT_PENDING/register-forwarder/acme.log" \
+  || { diff -u "$CONTRACT_ROOT/register-forwarder.expected" "$CONTRACT_PENDING/register-forwarder/acme.log" >&2 || true; fail "forwarder message differs in child log"; }
+waited=0
+while [ "$waited" -lt 50 ] && [ -d "$CONTRACT_PENDING/register-forwarder/acme.lock" ]; do
+  sleep 0.1
+  waited=$((waited + 1))
+done
+[ ! -d "$CONTRACT_PENDING/register-forwarder/acme.lock" ] || fail "127 child lock was not released"
+run_start_contract register-absent "$TMP/register-project-absent.sh" "$TMP/register-absent.out" "$TMP/register-absent.err"
+[ ! -e "$CONTRACT_PENDING/register-absent/acme.log" ] || fail "absent helper unexpectedly launched child"
+
 echo "ok"

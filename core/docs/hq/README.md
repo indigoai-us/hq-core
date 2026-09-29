@@ -101,14 +101,14 @@ cd my-hq
 # 2. Open in Claude Code
 claude
 
-# 3. Run setup wizard (checks deps, creates profile, scaffolds knowledge repos)
+# 3. Run setup wizard (checks deps, creates profile, scaffolds knowledge directories)
 /setup
 
 # 4. Build your profile (optional but recommended)
 /personal-interview
 ```
 
-`/setup` asks your name, work, and goals, then scaffolds your first knowledge base as a real directory with an optional embedded git repo (see [Knowledge Repos](#knowledge-repos) below). `/personal-interview` goes deeper — a tiered interview that builds your voice, preferences, and working style.
+`/setup` asks your name, work, and goals, then creates a real directory for your first knowledge base. See [Knowledge directories](#knowledge-directories) below. Personal knowledge may use an embedded Git repo when it needs independent history. Company knowledge stays plain and syncs through its vault. `/personal-interview` builds your voice, preferences, and working style through a tiered interview.
 
 ## Core Concepts
 
@@ -387,27 +387,30 @@ core/scripts/run-project.sh my-project --timeout 30  # Per-story timeout (minute
 
 ---
 
-## Knowledge Repos
+## Knowledge directories
 
-Knowledge bases in HQ are **real directories at their canonical HQ paths**. When a knowledge base needs independent version history, initialize git inside that directory. Never place a knowledge repo under `repos/` and symlink it back into `core/knowledge/`, `personal/knowledge/`, or `companies/{co}/knowledge/`.
+Knowledge bases in HQ are **real directories at their canonical HQ paths**. Personal knowledge may use embedded Git when independent version history is needed. Core knowledge is tracked by HQ itself. Company knowledge under `companies/{co}/knowledge/` is always a plain directory synchronized through the company vault; never initialize Git there. Never place a knowledge directory under `repos/` and symlink it back into `core/knowledge/`, `personal/knowledge/`, or a company folder.
+
+Company folders sync to every member's devices. The repository-creation guards reject Git repository creation and population anywhere under `companies/`; keep code checkouts under root `repos/private/` or `repos/public/`. `/newcompany`, `/setup`, planning, import, and cleanup now create or use plain company knowledge directories.
 
 ### How it works
 
 ```
-personal/knowledge/my-topic/        ← real directory
-├── .git/                              ← optional embedded repo
+personal/knowledge/my-topic/        ← real directory; optional embedded repo
+├── .git/                              ← personal knowledge only
 ├── README.md
 └── notes.md
 
-companies/acme/knowledge/           ← real directory + embedded repo
+companies/acme/knowledge/           ← plain real directory; company-vault sync
 ```
 
-This keeps document contents visible to HQ sync and gives every tool one stable path. `repos/` is reserved for code repositories.
+Company manifest entries use `knowledge: companies/{co}/knowledge/` as the path to this plain directory. A `null` knowledge value means that no company knowledge directory is configured.
 
-### Creating a knowledge repo
+### Creating a knowledge directory
+
+Personal knowledge can be versioned independently:
 
 ```bash
-# Create the canonical real directory and initialize git in place
 mkdir -p personal/knowledge/my-topic
 git -C personal/knowledge/my-topic init
 printf '# My Topic\n' > personal/knowledge/my-topic/README.md
@@ -415,25 +418,26 @@ git -C personal/knowledge/my-topic add README.md
 git -C personal/knowledge/my-topic commit -m "init knowledge repo"
 ```
 
-For company-scoped knowledge, `/newcompany acme` creates
-`companies/acme/knowledge/` as a real directory and initializes its embedded repo.
+For company-scoped knowledge, `/newcompany acme` creates `companies/acme/knowledge/` as a plain real directory and records that path in the company manifest. Company changes are distributed through company vault sync; do not commit in the directory.
 
-### Committing knowledge changes
+### Existing company knowledge repositories
 
-Changes appear in `git status` of the embedded repo:
+If `companies/{co}/knowledge/.git` already exists, pause edits and run `git -C companies/{co}/knowledge status --short` to see what needs preserving. From outside `companies/`, create and verify a bundle of committed history with `git -C companies/{co}/knowledge bundle create /path/outside-hq/knowledge-history.bundle --all` and `git -C companies/{co}/knowledge bundle verify /path/outside-hq/knowledge-history.bundle`; separately copy or archive uncommitted and untracked files. Once both backups are verified, manually remove only the `.git` metadata and leave the knowledge directory and its files in place. Do not run an automatic migration that recreates embedded Git under the company path.
+
+### Committing personal knowledge changes
+
+Changes to personal knowledge appear in `git status` of its embedded repo:
 
 ```bash
 git -C personal/knowledge/my-topic add .
 git -C personal/knowledge/my-topic commit -m "update notes"
 ```
 
-Do not push knowledge repos to ad-hoc remotes — HQ state moves across machines
-and teammates through `/hq-sync`, which is tenant-aware and syncs the real
-directory contents.
+Do not push personal knowledge repos to ad-hoc remotes. Company knowledge moves across machines through tenant-aware company vault sync.
 
 ### Bundled knowledge
 
-The starter kit ships Ralph, workers, security framework, and other shared material as real directories under `core/knowledge/public/`, tracked by hq-core. Keep those directories in place. Put user-specific or company-specific additions under `personal/knowledge/` or `companies/{co}/knowledge/` instead of converting bundled knowledge into a symlinked repository.
+The starter kit ships Ralph, workers, security framework, and other shared material as real directories under `core/knowledge/public/`, tracked by hq-core. Keep those directories in place. Put user-specific or company-specific additions under `personal/knowledge/` or `companies/{co}/knowledge/` as real directories, not symlinks.
 
 ---
 

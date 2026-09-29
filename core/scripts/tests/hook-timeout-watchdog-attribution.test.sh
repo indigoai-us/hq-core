@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
+# HQ_CLI_REQUIRED_IN_CI: the real sentry-report probes below must run in CI.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
+ORIGINAL_PATH="$PATH"
 CASE="${C179_TEST_CASE:-all}"
 SHELL_FAMILY="$(uname -s)"
 case "$SHELL_FAMILY" in
@@ -595,12 +597,20 @@ test_hook_sequence_array() {
 
 contract_cli_probe() {
   local probe debug_probe
-  [ -n "$REAL_HQ_BIN" ] || return 0
+  if [ -z "$REAL_HQ_BIN" ]; then
+    if [ "${HQ_CLI_REQUIRED_IN_CI:-0}" = "1" ]; then
+      fail "HQ_CLI_REQUIRED_IN_CI=1: hq executable is required but missing"
+    fi
+    return 0
+  fi
   probe='{"type":"hook_timeout","message":"m","fingerprint":"f","level":"warning","metadata":{"hook_sequence":[{"script":"a.sh","event":"PreToolUse","ms":5}]}}'
   if printf '%s\n' "$probe" | run_bounded 15 "$REAL_HQ_BIN" core sentry report --dry-run > "$TMP/hq-cli-probe.out" 2> "$TMP/hq-cli-probe.err" \
     && jq -e '.extra.hook_sequence == [{script:"a.sh",event:"PreToolUse",ms:5}]' "$TMP/hq-cli-probe.out" >/dev/null 2>&1; then
     HQ_CLI_CONTRACT_AVAILABLE=1
   else
+    if [ "${HQ_CLI_REQUIRED_IN_CI:-0}" = "1" ]; then
+      fail "HQ_CLI_REQUIRED_IN_CI=1: hq core sentry report --dry-run probe failed or returned unexpected JSON"
+    fi
     return 0
   fi
   debug_probe="$(jq -cn '{type:"hook_timeout_warning",message:"m",fingerprint:"f",level:"warning",metadata:{hook_sequence:[],hook_timeout_debug_context:{hook_name:"master-hook.sh",hook_event:"SessionStart",budget_ms:30000,elapsed_ms:5000,remaining_ms:25000,phase_timings:[],wait_point:"parse",waiting_child_basename:"other",waiting_child_elapsed_ms:0,load_average:1.2,spawn_ms:"unavailable",process_count:"unavailable"}}}')"
@@ -608,6 +618,33 @@ contract_cli_probe() {
     && jq -e '.tags.timeout_debug_wait_point == "parse"' "$TMP/hq-cli-debug-probe.out" >/dev/null 2>&1; then
     HQ_CLI_DEBUG_CONTEXT_ENABLED=1
   fi
+}
+
+test_required_cli_probe_fails_closed() {
+  local reject_bin="$TMP/reject-hq-bin" child_output="$TMP/required-cli-probe.out"
+  mkdir -p "$reject_bin"
+  cat > "$reject_bin/hq" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'synthetic hq probe rejection' >&2
+exit 23
+EOF
+  chmod +x "$reject_bin/hq"
+
+  if C179_TEST_CASE=cli-probe-only C179_TEST_SKIP_REQUIRED_CLI_PROBE_CONTROL=1 \
+    HQ_CLI_REQUIRED_IN_CI=1 PATH="$reject_bin:$ORIGINAL_PATH" \
+    bash "$ROOT/core/scripts/tests/hook-timeout-watchdog-attribution.test.sh" \
+      > "$child_output" 2>&1; then
+    cat "$child_output" >&2
+    fail "a rejected required hq CLI probe was accepted"
+  fi
+  grep -F -q 'HQ_CLI_REQUIRED_IN_CI=1: hq core sentry report --dry-run probe failed or returned unexpected JSON' "$child_output" \
+    || { cat "$child_output" >&2; fail "required hq CLI probe failed for an unexpected reason"; }
+  pass "required hq CLI probe failure is fatal"
+}
+
+test_required_cli_probe_only() {
+  contract_cli_probe
+  pass "hq CLI probe completed"
 }
 
 assert_cli_event_contract() {
@@ -750,7 +787,18 @@ case "$CASE" in
   watchdog-trigger-phase-snapshot) test_watchdog_trigger_phase_snapshot ;;
   read-eof-errexit) test_eof_read_under_errexit ;;
   journal-filter) test_journal_sequence_filter ;;
-  cli-contract) test_hq_cli_event_contract ;;
+  cli-contract)
+    if [ "${C179_TEST_SKIP_REQUIRED_CLI_PROBE_CONTROL:-0}" != "1" ]; then
+      test_required_cli_probe_fails_closed
+    fi
+    test_hq_cli_event_contract
+    ;;
+  cli-probe-only)
+    test_required_cli_probe_only
+    ;;
+  cli-probe-control)
+    test_required_cli_probe_fails_closed
+    ;;
   all)
     test_slow_child_tag
     test_master_phase_tag
@@ -760,6 +808,9 @@ case "$CASE" in
     test_watchdog_trigger_phase_snapshot
     test_eof_read_under_errexit
     test_journal_sequence_filter
+    if [ "${C179_TEST_SKIP_REQUIRED_CLI_PROBE_CONTROL:-0}" != "1" ]; then
+      test_required_cli_probe_fails_closed
+    fi
     test_hq_cli_event_contract
     ;;
   *) fail "unknown C179_TEST_CASE: $CASE" ;;

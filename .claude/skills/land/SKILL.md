@@ -1,8 +1,6 @@
 ---
 name: land
-description: |
-  Land a PR: monitor CI, resolve review issues, merge, monitor production.
-  Use when asked to "land this", "merge and monitor", "ship this PR", or after PR creation when next step is merge + prod verification.
+description: "Land a PR: watch CI, resolve review issues, merge, verify production. Triggers: \"land this\", \"merge and monitor\"."
 allowed-tools: Bash, Read, Grep, Glob, Write, Edit, Agent, AskUserQuestion
 ---
 

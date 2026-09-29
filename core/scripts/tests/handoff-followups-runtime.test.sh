@@ -47,13 +47,26 @@ grep -q 'Run exactly: /learn {learnings_json}' "$SKILL" \
   || fail "manual learning recovery command missing"
 grep -q 'Run exactly: /document-release {thread_path}' "$SKILL" \
   || fail "manual document-release recovery command missing"
+grep -q 'skill-installed.sh document-release' "$SKILL" \
+  || fail "document-release follow-up does not check the installed skill catalog"
+grep -q 'Only when document-release is installed' "$SKILL" \
+  || fail "document-release dispatch and recovery must require the installed skill"
 
 mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/workspace/baseline" \
   "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/orchestrator" \
+  "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/.claude/skills/document-release" \
   "$TMP_ROOT/logs"
 cp "$ROOT/core/scripts/handoff-finalize.sh" "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh"
 cp "$ROOT/core/scripts/handoff-post.sh" "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
+cp "$ROOT/core/scripts/skill-installed.sh" "$TMP_ROOT/repo/core/scripts/skill-installed.sh"
+cp "$ROOT/core/scripts/lib/session-skill-catalog.sh" "$TMP_ROOT/repo/core/scripts/lib/session-skill-catalog.sh"
 cp "$ROOT/core/scripts/hq-status-summary.sh" "$TMP_ROOT/repo/core/scripts/hq-status-summary.sh"
+cat > "$TMP_ROOT/repo/.claude/skills/document-release/SKILL.md" <<'MD'
+---
+name: document-release
+description: Fixture release documentation skill.
+---
+MD
 # Keep the fixture finalizer's legacy fixed /tmp paths inside this test's temp root.
 sed \
   -e "s|/tmp/handoff-git-bg.pid|$TMP_ROOT/handoff-git-bg.pid|g" \
@@ -116,7 +129,7 @@ JSON
     || fail "collected learnings were not made durable before dispatch"
 
   handoff_post_test_run "$TMP_ROOT/repo" "$thread_path" "$TMP_ROOT/learnings.json" \
-    HANDOFF_LOG_DIR="$TMP_ROOT/logs" PATH=/usr/bin:/bin
+    HQ_ACTIVE_COMPANY=acme HANDOFF_LOG_DIR="$TMP_ROOT/logs" PATH=/usr/bin:/bin
 )
 
 grep -q 'learn: eligible and pending runtime dispatch.*no dispatch proof' "$TMP_ROOT/logs/handoff-post.log" \

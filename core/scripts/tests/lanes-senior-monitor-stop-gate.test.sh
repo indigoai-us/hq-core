@@ -8,7 +8,7 @@
 
 set -uo pipefail
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
+SRC="${C179B_SOURCE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)}"
 STOP_SRC="$SRC/.claude/hooks/lanes-senior-monitor-stop-gate.sh"
 REMINDER_SRC="$SRC/core/scripts/lib/lanes-senior-monitor.sh"
 WRAP_SS="$SRC/core/hooks/SessionStart/45-lanes-senior-monitor.sh"
@@ -18,6 +18,7 @@ PROBE_SRC="$SRC/.claude/hooks/hook-timeout-probe.sh"
 GATE_SRC="$SRC/.claude/hooks/hook-gate.sh"
 REGISTRY_SRC="$SRC/.claude/hooks/hook-registry.json"
 ADAPTER_CORE_SRC="$SRC/core/scripts/lib/hook-adapter-core.sh"
+AUTO_BIND_SRC="$SRC/core/scripts/lib/session-auto-bind.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -47,7 +48,11 @@ command -v jq >/dev/null 2>&1 || { echo "SKIP: jq unavailable" >&2; exit 0; }
 
 FIX="$TMP/fixture"
 BIN="$TMP/bin"
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+[ -n "$NODE_BIN" ] || { echo "FAIL: node is required for the bounded hq runner test" >&2; exit 1; }
+NODE_DIR="${NODE_BIN%/*}"
 mkdir -p "$FIX/.claude/hooks" "$FIX/core/hooks" "$FIX/core/scripts/lib" "$BIN"
+cp "$AUTO_BIND_SRC" "$FIX/core/scripts/lib/session-auto-bind.sh"
 cp "$MASTER_SRC" "$FIX/.claude/hooks/master-hook.sh"
 cp "$PROBE_SRC" "$FIX/.claude/hooks/hook-timeout-probe.sh"
 cp "$ADAPTER_CORE_SRC" "$FIX/core/scripts/lib/hook-adapter-core.sh"
@@ -155,8 +160,8 @@ make_monitor_cache_stale() {
 
 PAYLOAD_PASS='{"session_id":"senior-1","hook_event_name":"Stop","stop_hook_active":false}'
 PAYLOAD_ACTIVE='{"session_id":"senior-1","hook_event_name":"Stop","stop_hook_active":true}'
-PATH_WITH_HQ="$BIN:/usr/bin:/bin"
-PATH_WITHOUT_HQ="$TMP/no-hq:/usr/bin:/bin"
+PATH_WITH_HQ="$BIN:$NODE_DIR:/usr/bin:/bin"
+PATH_WITHOUT_HQ="$TMP/no-hq:$NODE_DIR:/usr/bin:/bin"
 
 run_master() {
   local payload="$1" path_env="$2"; local errf outf
@@ -228,13 +233,18 @@ echo "[2] reminder shims are session-scoped and silent without active lanes"
 REMINDER_PAYLOAD_SS='{"session_id":"senior-1","hook_event_name":"SessionStart","engine":"claude"}'
 REMINDER_PAYLOAD_UPS='{"session_id":"senior-1","hook_event_name":"UserPromptSubmit","engine":"claude"}'
 run_reminder() {
-  local wrapper="$1" event="$2" engine="${3:-claude}" cache_home="${4:-$TMP/cache}" payload
+  local wrapper="$1" event="$2" engine="${3:-claude}" cache_home="${4:-$TMP/cache}" \
+    root="${5:-$FIX}" payload
   payload="$(jq -nc --arg ev "$event" --arg engine "$engine" '{session_id:"senior-1",hook_event_name:$ev,engine:$engine}')"
   RRC=0
-  ROUT="$(printf '%s' "$payload" | env HQ_ROOT="$FIX" CLAUDE_PROJECT_DIR="$FIX" \
+  ROUT="$(printf '%s' "$payload" | env HQ_ROOT="$root" CLAUDE_PROJECT_DIR="$root" \
     XDG_CACHE_HOME="$cache_home" PATH="$PATH_WITH_HQ" bash "$wrapper" "$event" \
     2>"$TMP/reminder-err")" || RRC=$?
   RERR="$(cat "$TMP/reminder-err")"
+}
+
+test_now_ms() {
+  node -e 'process.stdout.write(String(Number(process.hrtime.bigint() / 1000000n)))'
 }
 
 rm -rf "$TMP/cache"
@@ -292,6 +302,54 @@ assert_empty "$ROUT" "SessionStart refresh output"
 SESSION_START_CALLS_AFTER="$(stub_call_count)"
 [ "$SESSION_START_CALLS_AFTER" = "$((SESSION_START_CALLS_BEFORE + 1))" ] \
   && pass "SessionStart always launches hq" || fail "SessionStart reused the monitor cache"
+
+echo "[2a] SessionStart monitor-check timeout is a quiet skip; prompt path still reminds"
+rm -rf "$TMP/cache"
+reset_stub hang
+TIME_START="$(test_now_ms)"
+run_reminder "$WRAP_SS" SessionStart
+TIME_END="$(test_now_ms)"
+TIME_ELAPSED=$((TIME_END - TIME_START))
+[ "$RRC" = "0" ] && pass "SessionStart timeout exits 0" \
+  || fail "SessionStart timeout rc=$RRC stderr=$RERR"
+assert_empty "$ROUT" "SessionStart timeout output"
+assert_empty "$RERR" "SessionStart timeout stderr"
+[ "$TIME_ELAPSED" -lt 2800 ] && pass "SessionStart timeout returns inside its bound (${TIME_ELAPSED}ms)" \
+  || fail "SessionStart timeout exceeded its bound (${TIME_ELAPSED}ms)"
+[ -z "$(monitor_cache_file "$TMP/cache")" ] && pass "SessionStart timeout does not write monitor cache" \
+  || fail "SessionStart timeout wrote monitor cache"
+
+reset_stub active-a
+run_reminder "$WRAP_UPS" UserPromptSubmit
+[ "$RRC" = "0" ] && pass "UserPromptSubmit still runs monitor-check and reminder" \
+  || fail "UserPromptSubmit reminder rc=$RRC stderr=$RERR"
+assert_contains "$ROUT" 'CLI-REMINDER' "UserPromptSubmit reminder after quiet timeout"
+assert_contains "$ROUT" 'lane-a' "UserPromptSubmit lane after quiet timeout"
+contains "$(cat "$STUB_LOG")" 'lanes monitor-check --session senior-1 --engine claude --json' \
+  && pass "UserPromptSubmit still checks Monitor state" || fail "UserPromptSubmit skipped Monitor check"
+contains "$(cat "$STUB_LOG")" 'lanes monitor-check --reminder' \
+  && pass "UserPromptSubmit still asks CLI for reminder" || fail "UserPromptSubmit skipped reminder command"
+
+echo "[2aa] named SessionStart timeout mutation is killed"
+MUTANT_FIX="$TMP/reminder-timeout-mutant"
+mkdir -p "$MUTANT_FIX"
+cp -R "$FIX/." "$MUTANT_FIX/"
+mkdir -p "$MUTANT_FIX/core/scripts/lib" "$MUTANT_FIX/core/hooks/SessionStart"
+cp "$REMINDER_SRC" "$MUTANT_FIX/core/scripts/lib/lanes-senior-monitor.sh"
+cp "$WRAP_SS" "$MUTANT_FIX/core/hooks/SessionStart/45-lanes-senior-monitor.sh"
+sed -i '/# SESSIONSTART_TIMEOUT_MUST_STAY_QUIET/{n;s/exit 0/: # mutant removes the quiet timeout return/;}' \
+  "$MUTANT_FIX/core/scripts/lib/lanes-senior-monitor.sh"
+rm -rf "$TMP/mutant-cache"
+reset_stub hang
+run_reminder "$MUTANT_FIX/core/hooks/SessionStart/45-lanes-senior-monitor.sh" SessionStart claude \
+  "$TMP/mutant-cache" "$MUTANT_FIX"
+if [ "$RRC" = "0" ] && [ -z "$RERR" ]; then
+  fail "mutation sessionstart_timeout_quiet did not go red"
+else
+  echo "MUTATION_RED: sessionstart_timeout_quiet / timeout restored to generic ERROR and exit 1"
+  pass "sessionstart_timeout_quiet"
+fi
+reset_stub active-a
 
 MONITOR_CACHE="$(monitor_cache_file "$TMP/cache")"
 make_monitor_cache_stale "$MONITOR_CACHE"
@@ -365,6 +423,7 @@ echo "[2b] master-hook sibling isolation"
 SIBLING_FIX="$TMP/reminder-master"
 mkdir -p "$SIBLING_FIX/.claude/hooks" "$SIBLING_FIX/core/hooks/SessionStart" \
   "$SIBLING_FIX/core/scripts/lib"
+cp "$AUTO_BIND_SRC" "$SIBLING_FIX/core/scripts/lib/session-auto-bind.sh"
 cp "$MASTER_SRC" "$SIBLING_FIX/.claude/hooks/master-hook.sh"
 cp "$PROBE_SRC" "$SIBLING_FIX/.claude/hooks/hook-timeout-probe.sh"
 cp "$ADAPTER_CORE_SRC" "$SIBLING_FIX/core/scripts/lib/hook-adapter-core.sh"

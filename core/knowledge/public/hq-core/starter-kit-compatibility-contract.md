@@ -255,7 +255,7 @@ Desktop should detect when a user has evolved their HQ template beyond the defau
 | First project | `personal/projects/*/plan.json` or `companies/*/projects/*/plan.json` exists | Created PRD via `/plan` |
 | Active use | `workspace/threads/*.json` count > 5 | Regular session use |
 | Multi-company | `companies/` exists with manifest | Set up company isolation |
-| Knowledge repos | Embedded `.git/` inside a real canonical knowledge directory | Graduated to independently versioned knowledge |
+| Knowledge layout | Company knowledge is a plain directory; personal knowledge may contain embedded `.git/` | Graduated to vault-synced company knowledge and independently versioned personal knowledge |
 | Full production | `workspace/orchestrator/state.json` exists, > 10 projects, > 10 workers | Power user |
 
 ## 6. Compatibility Contract Summary
@@ -311,6 +311,6 @@ These notes were written in February 2026 against a React-era Rust backend (`fil
 
 5. **Worker path resolution:** `list_workers()` and `get_worker_detail()` must read paths from `registry.yaml` rather than assuming directory structure. Support both `core/workers/{id}/` and `core/workers/public/{id}/` patterns.
 
-6. **Knowledge layout validation:** Use `std::fs::symlink_metadata()` before reading a knowledge root. Allow only package links whose resolved target stays under `core/packages/*/knowledge/`; reject links to separate git repositories. Detect embedded git in real canonical directories.
+6. **Knowledge layout validation:** Use `std::fs::symlink_metadata()` before reading a knowledge root. Allow only package links whose resolved target stays under `core/packages/*/knowledge/`; reject links to separate git repositories. Company knowledge must be a plain real directory with no Git metadata; embedded Git detection is limited to personal knowledge.
 
 7. **PRD field compatibility:** Support both `userStories` and `features` keys in prd.json parsing. When `features` is found but not `userStories`, treat it as the story array (with field name mapping).

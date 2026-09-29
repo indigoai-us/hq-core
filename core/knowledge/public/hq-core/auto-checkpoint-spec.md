@@ -4,7 +4,7 @@ Auto-checkpoint has two layers: (1) a PostToolUse trigger that fires after speci
 
 ## PostToolUse Trigger
 
-The PostToolUse trigger is **advisory**. `.claude/hooks/auto-checkpoint-trigger.sh` detects checkpoint-worthy events and injects `AUTO-CHECKPOINT SUGGESTED`. When seen, write a lightweight thread file at the next natural pause and continue — do not interrupt in-flight work for it. Only the context-threshold and pre-compaction hooks below emit the mandatory `AUTO-CHECKPOINT REQUIRED`. Do **NOT** rebuild INDEX, update `recent.md`, run `qmd update`, or write legacy checkpoint files on auto-checkpoints. When edits touch knowledge files, commit to the knowledge repo — not HQ git.
+The PostToolUse trigger is **advisory**. `.claude/hooks/auto-checkpoint-trigger.sh` detects checkpoint-worthy events and injects `AUTO-CHECKPOINT SUGGESTED`. When it appears, write a lightweight thread file at the next natural pause and continue. Do not interrupt in-flight work. Only the context-threshold and pre-compaction hooks emit the mandatory `AUTO-CHECKPOINT REQUIRED`. Do **NOT** rebuild INDEX, update `recent.md`, run `qmd update`, or write legacy checkpoint files on auto-checkpoints. Commit changes only when they belong to a Git repository. Company knowledge changes are distributed by company vault sync.
 
 | Tool         | Pattern                                                     | Trigger                   | Gate                    |
 | ------------ | ----------------------------------------------------------- | ------------------------- | ----------------------- |

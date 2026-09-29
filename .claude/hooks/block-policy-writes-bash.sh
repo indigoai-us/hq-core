@@ -14,9 +14,24 @@
 
 set -uo pipefail
 
-INPUT=$(cat)
-CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
+CMD=$(jq -r '.tool_input.command // empty' 2>/dev/null) || true
 [[ -z "$CMD" ]] && exit 0
+
+# Strip shell quote/escape syntax with Bash builtins and skip parser/path setup
+# only for commands with no policy path, shell expansion, variable assignment,
+# find traversal, or sanctioned-writer marker. Assignments and expansions can
+# construct a protected path without spelling "policies" in the command text.
+POLICY_PATH_CANDIDATE="$CMD"
+POLICY_PATH_CANDIDATE="${POLICY_PATH_CANDIDATE//\'/}"
+POLICY_PATH_CANDIDATE="${POLICY_PATH_CANDIDATE//\"/}"
+POLICY_PATH_CANDIDATE="${POLICY_PATH_CANDIDATE//\\/}"
+if [[ "$POLICY_PATH_CANDIDATE" != *policies* \
+   && "$POLICY_PATH_CANDIDATE" != *HQ_ALLOW_POLICY_WRITE=1* \
+   && "$CMD" != *'$'* \
+   && ! "$CMD" =~ [A-Za-z_][A-Za-z0-9_]*= \
+   && ! "$POLICY_PATH_CANDIDATE" =~ (^|[[:space:];|&()])find([[:space:];|&()]|$) ]]; then
+  exit 0
+fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"

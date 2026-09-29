@@ -182,6 +182,16 @@
             "runner": "source"
           },
           {
+            "id": "block-company-repo-creation",
+            "script": ".claude/hooks/block-company-repo-creation.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
+            },
+            "runner": "source"
+          },
+          {
             "id": "block-foreground-timeout-over-harness-ceiling",
             "script": ".claude/hooks/block-foreground-timeout-over-harness-ceiling.sh",
             "timeout": 30,
@@ -287,6 +297,16 @@
             "gated": true,
             "prefilter": {
               "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
+            },
+            "runner": "source"
+          },
+          {
+            "id": "block-company-git-metadata",
+            "script": ".claude/hooks/block-company-git-metadata.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
             },
             "runner": "source"
           },
@@ -403,6 +423,16 @@
             "runner": "source"
           },
           {
+            "id": "block-company-git-metadata",
+            "script": ".claude/hooks/block-company-git-metadata.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
+            },
+            "runner": "source"
+          },
+          {
             "id": "block-inline-story-impl",
             "script": ".claude/hooks/block-inline-story-impl.sh",
             "timeout": 30,
@@ -501,6 +531,16 @@
             "gated": true,
             "prefilter": {
               "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
+            },
+            "runner": "source"
+          },
+          {
+            "id": "block-company-git-metadata",
+            "script": ".claude/hooks/block-company-git-metadata.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
             },
             "runner": "source"
           },

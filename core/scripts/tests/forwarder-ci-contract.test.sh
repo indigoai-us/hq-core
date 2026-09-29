@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Keep pr-checks.yml's hq CLI install steps synchronized with shell tests that
+# Keep pr-checks.yml's pinned hq CLI install steps synchronized with shell tests that
 # exercise one of core/scripts' CLI forwarders.
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+ROOT="${FORWARDER_CI_CONTRACT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 
 # The forwarder inventory is intentionally mechanical. Do not replace this
 # with a manually maintained script list.
@@ -25,6 +25,7 @@ from collections import defaultdict
 from pathlib import Path
 import re
 import sys
+import os
 
 try:
     import yaml
@@ -94,17 +95,20 @@ def references_forwarder(source: str, forwarder: str) -> bool:
 
 
 references: set[tuple[str, str]] = set()
+required_cli_tests: set[str] = set()
 for test_path in tests_dir.rglob("*"):
     if not test_path.is_file():
         continue
     relative_path = test_path.relative_to(root).as_posix()
     source = test_path.read_text(encoding="utf-8", errors="replace")
+    if "HQ_CLI_REQUIRED_IN_CI:" in "\n".join(source.splitlines()[:12]):
+        required_cli_tests.add(relative_path)
     for forwarder in forwarders:
         if references_forwarder(source, forwarder):
             references.add((relative_path, forwarder))
 
 unknown_allowlist_entries = ALLOWLISTED_REFERENCES - references
-if unknown_allowlist_entries:
+if unknown_allowlist_entries and os.environ.get("FORWARDER_CI_CONTRACT_FIXTURE") != "1":
     for test_path, forwarder in sorted(unknown_allowlist_entries):
         fail(
             f"stale non-executing allowlist entry for {test_path} and "
@@ -128,14 +132,12 @@ jobs_with_hq_install: set[str] = set()
 # than silently accepting an unverified job.
 test_command_pattern = re.compile(
     r"(?:^|[;&|]\s*|\n\s*)"
+    r"(?:HQ_CLI_REQUIRED_IN_CI=1\s+)?"
     r"(?:bash|sh)\s+['\"]?"
     r"(core/scripts/tests/[A-Za-z0-9_.-]+)['\"]?(?=\s|$)"
 )
-required_install_tokens = (
-    "npm install -g @indigoai-us/hq-cli",
-    "command -v hq",
-    "hq core --help",
-)
+required_install_tokens = ("bash core/scripts/ci/install-pinned-hq-cli.sh",)
+required_cli_env_jobs: dict[str, set[str]] = defaultdict(set)
 
 for job_name, job in jobs.items():
     if not isinstance(job, dict):
@@ -148,10 +150,46 @@ for job_name, job in jobs.items():
             continue
         for test_path in test_command_pattern.findall(run):
             test_jobs[test_path].add(job_name)
+            if test_path in required_cli_tests and re.search(
+                r"(?:^|[;&|]\s*|\n\s*)HQ_CLI_REQUIRED_IN_CI=1\s+"
+                r"(?:bash|sh)\s+['\"]?"
+                + re.escape(test_path)
+                + r"['\"]?(?=\s|$)",
+                run,
+            ):
+                required_cli_env_jobs[test_path].add(job_name)
         if all(token in run for token in required_install_tokens):
             jobs_with_hq_install.add(job_name)
 
 failures: list[str] = []
+catalog_job = jobs.get("cli-hosted-forwarders")
+catalog_steps: list[dict[str, object]] = []
+if isinstance(catalog_job, dict):
+    for step in catalog_job.get("steps", []):
+        if isinstance(step, dict) and step.get("name") == "Current published CLI catalog parity":
+            catalog_steps.append(step)
+if len(catalog_steps) != 1:
+    failures.append(
+        "cli-hosted-forwarders must have exactly one current published CLI catalog parity step"
+    )
+else:
+    catalog_run = catalog_steps[0].get("run", "")
+    required_catalog_fragments = (
+        'current_prefix="$RUNNER_TEMP/hq-cli-current"',
+        'npm_config_prefix="$current_prefix" bash core/scripts/ci/install-pinned-hq-cli.sh --version latest',
+        'export PATH="$current_prefix/bin:$PATH"',
+        "pinned hq-cli:",
+        "current published hq-cli:",
+        "HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh",
+    )
+    if not isinstance(catalog_run, str) or not all(
+        fragment in catalog_run for fragment in required_catalog_fragments
+    ):
+        failures.append(
+            "current published CLI catalog parity must install latest in a separate npm prefix, "
+            "print pinned and current versions, and require the catalog check"
+        )
+
 covered_references = references - ALLOWLISTED_REFERENCES
 for test_path, forwarder in sorted(covered_references):
     matching_jobs = sorted(test_jobs.get(test_path, set()))
@@ -167,7 +205,26 @@ for test_path, forwarder in sorted(covered_references):
             failures.append(
                 f"job {job_name} runs forwarder-dependent test {test_path} "
                 f"({forwarder}) but lacks the hq CLI install/validation step; "
-                "add the 'Install hq CLI for forwarded scaffold scripts' step"
+                "add the pinned hq CLI setup step"
+            )
+
+for test_path in sorted(required_cli_tests):
+    matching_jobs = sorted(test_jobs.get(test_path, set()))
+    if not matching_jobs:
+        failures.append(
+            f"{test_path} requires a real hq CLI in CI but no pr-checks job runs it"
+        )
+        continue
+    for job_name in matching_jobs:
+        if job_name not in jobs_with_hq_install:
+            failures.append(
+                f"job {job_name} runs CLI-required test {test_path} but lacks the "
+                "pinned hq CLI install step"
+            )
+        if job_name not in required_cli_env_jobs.get(test_path, set()):
+            failures.append(
+                f"job {job_name} runs CLI-required test {test_path} without "
+                "HQ_CLI_REQUIRED_IN_CI=1, so a rejected probe could be treated as a skip"
             )
 
 if failures:
@@ -178,6 +235,96 @@ if failures:
 print(
     "forwarder CI contract passed: "
     f"{len(forwarders)} forwarders, {len(references)} potential test references, "
-    f"{len(NON_EXECUTING_REFERENCE_ALLOWLIST)} explicit fixture/comment allowlist entries"
+    f"{len(NON_EXECUTING_REFERENCE_ALLOWLIST)} explicit fixture/comment allowlist entries, "
+    f"{len(required_cli_tests)} tests marked as requiring a real hq CLI"
 )
 PY
+
+if [ "${FORWARDER_CI_CONTRACT_SKIP_SELF_TEST:-0}" != "1" ]; then
+  CONTRACT_FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/forwarder-ci-contract.XXXXXX")"
+  trap 'rm -rf "$CONTRACT_FIXTURE"' EXIT
+  mkdir -p "$CONTRACT_FIXTURE/core/scripts/tests" "$CONTRACT_FIXTURE/.github/workflows"
+  cat > "$CONTRACT_FIXTURE/core/scripts/fixture-forwarder.sh" <<'SH'
+#!/usr/bin/env bash
+# FORWARDER — synthetic contract fixture
+SH
+  cat > "$CONTRACT_FIXTURE/core/scripts/tests/cli-required-fixture.test.sh" <<'SH'
+#!/usr/bin/env bash
+# HQ_CLI_REQUIRED_IN_CI: synthetic real CLI test
+# References core/scripts/fixture-forwarder.sh.
+SH
+  cat > "$CONTRACT_FIXTURE/.github/workflows/pr-checks.yml" <<'YAML'
+jobs:
+  fixture:
+    steps:
+      - run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/cli-required-fixture.test.sh
+YAML
+  if FORWARDER_CI_CONTRACT_ROOT="$CONTRACT_FIXTURE" FORWARDER_CI_CONTRACT_FIXTURE=1 \
+    FORWARDER_CI_CONTRACT_SKIP_SELF_TEST=1 bash "${BASH_SOURCE[0]}" \
+      >"$CONTRACT_FIXTURE/negative.out" 2>"$CONTRACT_FIXTURE/negative.err"; then
+    echo "FAIL: CI contract accepted a real-CLI test without a pinned install step" >&2
+    exit 1
+  elif ! grep -F -q 'lacks the pinned hq CLI install step' "$CONTRACT_FIXTURE/negative.err"; then
+    cat "$CONTRACT_FIXTURE/negative.err" >&2
+    echo "FAIL: CI contract negative control failed for an unexpected reason" >&2
+    exit 1
+  fi
+  cat > "$CONTRACT_FIXTURE/.github/workflows/pr-checks.yml" <<'YAML'
+jobs:
+  fixture:
+    steps:
+      - run: bash core/scripts/tests/cli-required-fixture.test.sh
+      - run: bash core/scripts/ci/install-pinned-hq-cli.sh
+YAML
+  if FORWARDER_CI_CONTRACT_ROOT="$CONTRACT_FIXTURE" FORWARDER_CI_CONTRACT_FIXTURE=1 \
+    FORWARDER_CI_CONTRACT_SKIP_SELF_TEST=1 bash "${BASH_SOURCE[0]}" \
+      >"$CONTRACT_FIXTURE/unmarked.out" 2>"$CONTRACT_FIXTURE/unmarked.err"; then
+    echo "FAIL: CI contract accepted a CLI-required test without required-mode behavior" >&2
+    exit 1
+  elif ! grep -F -q 'without HQ_CLI_REQUIRED_IN_CI=1' "$CONTRACT_FIXTURE/unmarked.err"; then
+    cat "$CONTRACT_FIXTURE/unmarked.err" >&2
+    echo "FAIL: CI contract environment negative control failed for an unexpected reason" >&2
+    exit 1
+  fi
+  cat > "$CONTRACT_FIXTURE/.github/workflows/pr-checks.yml" <<'YAML'
+jobs:
+  cli-hosted-forwarders:
+    steps:
+      - run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/cli-required-fixture.test.sh
+      - name: Catalog parity without the published CLI step
+        run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
+YAML
+  if FORWARDER_CI_CONTRACT_ROOT="$CONTRACT_FIXTURE" FORWARDER_CI_CONTRACT_FIXTURE=1 \
+    FORWARDER_CI_CONTRACT_SKIP_SELF_TEST=1 bash "${BASH_SOURCE[0]}" \
+      >"$CONTRACT_FIXTURE/no-current-cli.out" 2>"$CONTRACT_FIXTURE/no-current-cli.err"; then
+    echo "FAIL: CI contract accepted a missing current-published CLI catalog step" >&2
+    exit 1
+  elif ! grep -F -q 'must have exactly one current published CLI catalog parity step' "$CONTRACT_FIXTURE/no-current-cli.err"; then
+    cat "$CONTRACT_FIXTURE/no-current-cli.err" >&2
+    echo "FAIL: current-published CLI negative control failed for an unexpected reason" >&2
+    exit 1
+  fi
+  cat > "$CONTRACT_FIXTURE/.github/workflows/pr-checks.yml" <<'YAML'
+jobs:
+  cli-hosted-forwarders:
+    steps:
+      - run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/cli-required-fixture.test.sh
+      - name: Current published CLI catalog parity
+        run: |
+          pinned_hq="$(command -v hq)"
+          pinned_version="$("$pinned_hq" --version)"
+          current_prefix="$RUNNER_TEMP/hq-cli-current"
+          npm_config_prefix="$current_prefix" bash core/scripts/ci/install-pinned-hq-cli.sh --version latest
+          export PATH="$current_prefix/bin:$PATH"
+          current_version="$(hq --version)"
+          printf 'pinned hq-cli: %s\ncurrent published hq-cli: %s\n' "$pinned_version" "$current_version"
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
+YAML
+  FORWARDER_CI_CONTRACT_ROOT="$CONTRACT_FIXTURE" FORWARDER_CI_CONTRACT_FIXTURE=1 \
+    FORWARDER_CI_CONTRACT_SKIP_SELF_TEST=1 bash "${BASH_SOURCE[0]}" \
+      >"$CONTRACT_FIXTURE/positive.out" 2>"$CONTRACT_FIXTURE/positive.err" \
+    || { cat "$CONTRACT_FIXTURE/positive.err" >&2; exit 1; }
+  echo "forwarder CI contract negative controls passed: a real-CLI test without an install step or required-mode environment, and a current CLI parity step without the required setup, fail"
+fi

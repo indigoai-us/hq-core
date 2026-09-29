@@ -33,7 +33,7 @@ Called programmatically by `/execute-task` and `/run-project` after task complet
 | Scope | Target directory | Format |
 |-------|-----------------|--------|
 | Global / repo | `workspace/insights/global/{slug}.md` | Insight file (YAML frontmatter + Insight + Context) |
-| Company | `companies/{co}/knowledge/insights/{slug}.md` | Insight file (inside company knowledge repo) |
+| Company | `companies/{co}/knowledge/insights/{slug}.md` | Insight file in the company's plain synced knowledge directory |
 | Tool | `workspace/insights/tools/{slug}.md` | Insight file |
 | Conceptual | `workspace/insights/concepts/{slug}.md` | Insight file |
 

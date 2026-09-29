@@ -1,3 +1,5 @@
 interface:
   display_name: "Commit Main"
   short_description: "Commit every dirty file in the current repo, only when on main."
+policy:
+  allow_implicit_invocation: false

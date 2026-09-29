@@ -1,9 +1,6 @@
 ---
 name: land-batch
-description: |
-  Triage, review, and sequentially merge multiple open PRs. Handles CI monitoring,
-  conflict resolution between PRs, Codex-style review, and post-merge deploy verification.
-  Use when asked to "land all PRs", "merge open PRs", or "triage and ship".
+description: "Triage, review, and merge several open PRs in order, with CI and deploy checks. Triggers: \"land all PRs\", \"merge open PRs\"."
 allowed-tools: Bash, Read, Grep, Glob, Write, Edit, Agent, AskUserQuestion
 ---
 

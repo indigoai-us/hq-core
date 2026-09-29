@@ -269,6 +269,10 @@ function validateHqCliArgs(args) {
 const SECRET_EXEC_BLOCKED_BINS = new Set([
   // shells
   "sh", "bash", "zsh", "dash", "ksh", "fish",
+  // Windows shells
+  "cmd", "powershell", "pwsh", "wsl",
+  // Windows script hosts and value-printers
+  "cscript", "wscript", "certutil", "mshta",
   // pure value-printers (read an env var and echo it back)
   "printenv", "env", "echo", "printf", "cat", "tee",
   "set", "declare", "export",
@@ -279,10 +283,26 @@ const SECRET_EXEC_BLOCKED_BINS = new Set([
   "rscript", "osascript",
 ]);
 
-// Strip any directory component and a trailing platform separator so the
-// denylist matches on `/bin/bash`, `bash`, `./bash` alike.
-function commandBasename(cmd0) {
-  return String(cmd0).split(/[\\/]/).pop();
+// Strip directory components using either separator. On Windows, executable
+// suffixes from PATHEXT are not part of the command's identity: cmd.exe,
+// C:\\Windows\\System32\\cmd.exe, and cmd.cmd must all match the `cmd` entry.
+function commandBasename(cmd0, platform = process.platform, pathExt = process.env.PATHEXT) {
+  let basename = String(cmd0).split(/[\\/]/).pop();
+  if (platform !== "win32") return basename;
+
+  const extensions = new Set([
+    ".com", ".exe", ".bat", ".cmd",
+    ...String(pathExt || "")
+      .split(";")
+      .map((extension) => extension.trim().toLowerCase())
+      .filter((extension) => /^\.[a-z0-9]+$/.test(extension)),
+  ]);
+  while (true) {
+    const dot = basename.lastIndexOf(".");
+    if (dot <= 0 || !extensions.has(basename.slice(dot).toLowerCase())) break;
+    basename = basename.slice(0, dot);
+  }
+  return basename;
 }
 
 // Reject when cmd[0]'s basename is a shell / value-printing binary. Shared by
@@ -885,7 +905,7 @@ const TOOLS = [
 
 // ─── Tool dispatch ───────────────────────────────────────────────────────────
 const server = new Server(
-  { name: "hq", version: "0.1.0" },
+  { name: "hq", version: "0.1.1" },
   { capabilities: { tools: {} } },
 );
 

@@ -112,7 +112,7 @@ Extended recovery procedures and the incidents each rule was paid for.
 
 **Rule 3.** On a research project `npm install` ran before `git init`, so the first commit captured `next-swc.darwin-arm64.node` (100.35 MB) and the repo had to be reinitialized from scratch.
 
-**Rule 5.** For submodule / knowledge-repo pointer drift (e.g. `m companies/{co}/tools/chart-renderer`), check whether it represents in-progress upstream work before staging. To isolate before staging under concurrent edits: `git stash push --include-untracked -m "<label>" -- <paths>`, then pop after.
+**Rule 5.** For submodule or nested repository pointer drift inside a code checkout, check whether it represents in-progress upstream work before staging. Company directories are not Git repositories. To isolate changes before staging under concurrent edits: `git stash push --include-untracked -m "<label>" -- <paths>`, then pop after.
 
 **Rule 6 recovery.** Verify `git rev-parse HEAD` and `git rev-parse origin/{branch}`; if both are intact, `git reset --hard HEAD` restores cleanly. With unpushed commits, confirm they are in `git reflog` first — `checkout -- .` only touches the working tree, never commits. To compare lint/build across branches: `git stash -u && git switch main && npm run lint && git switch - && git stash pop`.
 

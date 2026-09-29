@@ -12,10 +12,19 @@ fail() {
   exit 1
 }
 
-mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/companies/acme/workspace" "$TMP_ROOT/bin" "$TMP_ROOT/logs"
+mkdir -p "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/companies/acme/workspace" "$TMP_ROOT/repo/.claude/skills/document-release" "$TMP_ROOT/bin" "$TMP_ROOT/logs"
 cp "$SRC_ROOT/scripts/handoff-post.sh" "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
+cp "$SRC_ROOT/scripts/skill-installed.sh" "$TMP_ROOT/repo/core/scripts/skill-installed.sh"
+cp "$SRC_ROOT/scripts/lib/session-skill-catalog.sh" "$TMP_ROOT/repo/core/scripts/lib/session-skill-catalog.sh"
 chmod +x "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
 source "$SRC_ROOT/scripts/tests/lib/handoff-post-test-helpers.sh"
+
+cat > "$TMP_ROOT/repo/.claude/skills/document-release/SKILL.md" <<'MD'
+---
+name: document-release
+description: Fixture release documentation skill.
+---
+MD
 
 cat > "$TMP_ROOT/repo/core/scripts/archive-old-threads.sh" <<'SH'
 #!/usr/bin/env bash

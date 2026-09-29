@@ -30,7 +30,7 @@ mkdir -p "$(dirname {path})/_archive"
 mv "{path}" "$(dirname {path})/_archive/$(date +%Y%m%d)-$(basename {path})"
 ```
 - If file listed in an INDEX.md, remove that line from INDEX
-- If the real knowledge directory contains embedded git, commit in that directory
+- Company knowledge is a plain directory synced through the company vault; do not commit in that directory
 
 **DEDUPLICATE:**
 1. Verify canonical file still exists
@@ -59,7 +59,7 @@ mv "{path}" "workspace/threads/_archive/"
 1. Move file to correct company directory
 2. Update source INDEX.md (remove entry)
 3. Update destination INDEX.md (add entry)
-4. If moving between embedded knowledge repos, commit in both canonical directories
+4. If moving between knowledge directories, update both affected INDEX.md files and let company vault sync distribute company-scoped changes
 
 **ESCALATE:**
 1. Generate slug from prd_title
@@ -73,7 +73,7 @@ After all actions:
 - Regenerate affected INDEX.md files
 - Run `qmd update 2>/dev/null || true`
 - Identify which repos need commits:
-  - Knowledge repos: `cd` to target, `git add -A`, `git commit -m "garden: {action summary}"`
+  - Company knowledge: do not run Git commands; company vault sync distributes changes
   - HQ repo: stage only garden-related changes
 
 ### 4. Output
@@ -91,7 +91,7 @@ Write `actions-log.json` to `{output_path}`:
       "status": "success|failed|skipped",
       "before": "companies/{product}/knowledge/gtm/old-pixel-setup.md",
       "after": "companies/{product}/knowledge/gtm/_archive/20260219-old-pixel-setup.md",
-      "commits": [{"repo": "knowledge-{product}", "sha": "abc1234"}],
+      "commits": [],
       "error": null
     }
   ],
@@ -109,7 +109,7 @@ Write `actions-log.json` to `{output_path}`:
 ## Rules
 
 - NEVER delete without archival
-- Commit knowledge repo changes to the embedded repo at the canonical knowledge path, not HQ git
-- Always verify `git branch --show-current` before committing to any repo
+- Company knowledge remains a plain directory and syncs through the company vault
+- Always verify `git branch --show-current` before committing to a code repository
 - If action fails, log error and continue (don't abort)
 - Output MUST be valid JSON

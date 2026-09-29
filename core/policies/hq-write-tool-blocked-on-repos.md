@@ -4,9 +4,9 @@ title: "Write/Edit is blocked on repos/ paths — use a worktree for code"
 when: always
 on: [SessionStart]
 enforcement: hard
-version: 5
+version: 6
 created: 2026-05-24
-updated: 2026-08-13
+updated: 2026-09-28
 source: session-learning
 public: true
 ---
@@ -29,13 +29,16 @@ bash core/scripts/worktree.sh --name <kebab-slug> --source <repo-path>
 
 It cuts a fresh branch under `workspace/worktrees/{repo}/{name}/` off `origin/<default-branch>`, leaving the source repo's working tree and refs untouched. The worktree lives under `workspace/`, not `repos/`, so the Write/Edit block does not apply inside it — edit, commit, and open the PR from there. (`/personal:worktree` wraps the same script.)
 
-Knowledge repositories do not belong under `repos/`. They are real directories at
-`personal/knowledge/` or `companies/{co}/knowledge/`, with git initialized in place
-when separate history is needed. Edit through that canonical path and commit there:
+Knowledge directories do not belong under `repos/`. They are real directories at
+`personal/knowledge/` or `companies/{co}/knowledge/`. Personal knowledge may use
+embedded Git when separate history is needed. Company knowledge is a plain
+directory synced through its company vault; never initialize or commit Git there.
+Edit through the canonical path:
 
 ```bash
-git -C companies/{co}/knowledge add notes.md
-git -C companies/{co}/knowledge commit -m "update knowledge"
+# Personal knowledge may be versioned independently:
+git -C personal/knowledge/{topic} add notes.md
+git -C personal/knowledge/{topic} commit -m "update knowledge"
 ```
 
 If a knowledge path is a symlink into `repos/`, it is an invalid legacy layout.
@@ -57,6 +60,6 @@ The guard stays absolute rather than growing exemptions because the pressure to 
 
 Do not confuse that pack hook with hq-core's own shipped guards, and do not assume symlink resolution or `master-hook.sh` dispatch. hq-core's guards (`block-core-writes.sh`, `block-core-writes-bash.sh`, `protect-core.sh`) are dispatched through `hook-gate.sh`, not `master-hook.sh`, and they normalize paths with `hq_normpath` (`core/scripts/hook-lib.sh`) — a purely **lexical** normalizer that collapses `.` and `..` but resolves no symlinks at all. They also guard `core/`, `.claude/`, and the charter, not `repos/`.
 
-Two distinct paths, by repo kind:
+Two distinct paths, by work type:
 - **Code that ships** → a worktree (`core/scripts/worktree.sh`). The worktree gives you an isolated branch off `origin/main` under `workspace/`, so edits, commits, and the eventual PR never touch the live checkout and never hit the repos/ Write block.
-- **Knowledge notes** → edit the real canonical knowledge directory and commit its embedded repo in place.
+- **Personal knowledge notes** → edit the real canonical directory and commit its embedded repo when configured. **Company knowledge notes** → edit the plain canonical directory and distribute changes through company vault sync.

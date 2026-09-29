@@ -29,6 +29,8 @@ jq -e '
 ' "$SETTINGS" >/dev/null || fail "settings.json has no PreToolUse command hook"
 jq -e '.permissions.defaultMode == "auto"' "$SETTINGS" >/dev/null \
   || fail "shipped settings.json must default permissions.defaultMode to auto"
+jq -e '.includeGitInstructions == false' "$SETTINGS" >/dev/null \
+  || fail "shipped settings.json must set includeGitInstructions to false (HQ owns its git rules; skip Claude Code's built-in git snapshot and commit/PR boilerplate)"
 jq -e 'has("hooks") | not' "$LOCAL_SETTINGS" >/dev/null \
   || fail "shipped settings.local.json must not shadow project hook registrations"
 REPOSITORY="${GITHUB_REPOSITORY:-$(git config --get remote.origin.url || true)}"

@@ -64,19 +64,24 @@ done
 [ -r "$PRD" ] || { echo "verify-story-deliverables: cannot read $PRD" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || { echo "verify-story-deliverables: jq required" >&2; exit 2; }
 
-story_json="$(jq -c --arg id "$STORY" '.userStories[]? | select(.id == $id)' "$PRD" 2>/dev/null | head -1)"
+jq_capture() {
+  # jq.exe emits CRLF from Windows Bash; strip CR from every captured line.
+  jq "$@" | sed 's/\r$//'
+}
+
+story_json="$(jq_capture -c --arg id "$STORY" '.userStories[]? | select(.id == $id)' "$PRD" 2>/dev/null | head -1)"
 [ -n "$story_json" ] || { echo "verify-story-deliverables: story $STORY not in $PRD" >&2; exit 2; }
-[ -n "$REPO" ] || REPO="$(jq -r '.metadata.repoPath // empty' "$PRD" 2>/dev/null)"
+[ -n "$REPO" ] || REPO="$(jq_capture -r '.metadata.repoPath // empty' "$PRD" 2>/dev/null)"
 case "$REPO" in ""|/*) ;; *) REPO="$HQ_ROOT/$REPO" ;; esac
 
 jq -e 'type == "array"' <<<"$EVIDENCE_JSON" >/dev/null 2>&1 || { echo "verify-story-deliverables: --evidence-json must be a JSON array" >&2; exit 2; }
 jq -e 'type == "array"' <<<"$COMMITS_JSON" >/dev/null 2>&1 || { echo "verify-story-deliverables: --commits-json must be a JSON array" >&2; exit 2; }
 # Everything to check: declared deliverables + worker evidence + worker commits
 # (as commit: refs), de-duplicated, in that order.
-REFS_JSON="$(jq -cn --argjson d "$(printf '%s' "$story_json" | jq -c '(.deliverables // [])')" --argjson e "$EVIDENCE_JSON" --argjson c "$COMMITS_JSON" \
+REFS_JSON="$(jq_capture -cn --argjson d "$(printf '%s' "$story_json" | jq_capture -c '(.deliverables // [])')" --argjson e "$EVIDENCE_JSON" --argjson c "$COMMITS_JSON" \
   '($d + $e + ($c | map("commit:" + tostring))) | map(select(type == "string" and length > 0)) | unique')"
-count="$(jq -r 'length' <<<"$REFS_JSON")"
-declared="$(printf '%s' "$story_json" | jq -r '(.deliverables // []) | length')"
+count="$(jq_capture -r 'length' <<<"$REFS_JSON")"
+declared="$(printf '%s' "$story_json" | jq_capture -r '(.deliverables // []) | length')"
 if [ "$count" = "0" ]; then
   if [ "$STRICT" = "1" ]; then
     echo "verify-story-deliverables: $STORY has no evidence and declares no deliverables (--strict)" >&2
@@ -115,12 +120,12 @@ while IFS= read -r d; do
     *) ok=0 ;;
   esac
   if [ "$ok" = 1 ]; then present+=("$d"); else missing+=("$d"); fi
-done < <(jq -r '.[]' <<<"$REFS_JSON")
+done < <(jq_capture -r '.[]' <<<"$REFS_JSON")
 
 if [ "$JSON" = 1 ]; then
   jq -cn --arg s "$STORY" \
-    --argjson m "$(printf '%s\n' "${missing[@]:-}" | jq -R . | jq -s 'map(select(. != ""))')" \
-    --argjson p "$(printf '%s\n' "${present[@]:-}" | jq -R . | jq -s 'map(select(. != ""))')" \
+    --argjson m "$(printf '%s\n' "${missing[@]:-}" | jq_capture -R . | jq_capture -s 'map(select(. != ""))')" \
+    --argjson p "$(printf '%s\n' "${present[@]:-}" | jq_capture -R . | jq_capture -s 'map(select(. != ""))')" \
     '{story:$s, status:(if ($m|length)==0 then "present" else "missing" end), missing:$m, present:$p}'
 fi
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -131,9 +136,13 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 if [ "$WRITE" = 1 ]; then
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  jq --arg id "$STORY" --arg now "$now" --argjson refs "$(printf '%s\n' "${present[@]}" | jq -R . | jq -s 'map(select(. != ""))')" \
+  jq_capture --arg id "$STORY" --arg now "$now" --argjson refs "$(printf '%s\n' "${present[@]}" | jq_capture -R . | jq_capture -s 'map(select(. != ""))')" \
     '.userStories = (.userStories | map(if .id == $id then .evidence = ($refs | map({ref: ., verifiedAt: $now})) else . end))' \
     "$PRD" > "$PRD.tmp" && mv "$PRD.tmp" "$PRD"
 fi
-[ "$JSON" = 1 ] || echo "verify-story-deliverables: $STORY — all $count reference(s) present ($declared declared, $((count - declared)) from worker evidence)${WRITE:+; recorded on the story}"
+recorded_suffix=""
+if [ "$WRITE" = 1 ]; then
+  recorded_suffix="; recorded on the story"
+fi
+[ "$JSON" = 1 ] || echo "verify-story-deliverables: $STORY — all $count reference(s) present ($declared declared, $((count - declared)) from worker evidence)$recorded_suffix"
 exit 0

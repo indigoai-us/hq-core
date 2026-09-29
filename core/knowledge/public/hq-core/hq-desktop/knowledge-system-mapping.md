@@ -14,7 +14,7 @@ relates_to: [knowledge/public/hq-core/hq-desktop-app.md]
 > describes do not exist in the current app. The shipped app is Svelte 5 + Tauri 2
 > (hq-desktop-app). For current behavior, read `../hq-desktop-app.md`.
 
-Maps HQ's canonical real-directory knowledge structure, embedded-git detection, INDEX.md hierarchy, company-scoped knowledge, and qmd search collections to Desktop browsing, navigation, and search UX.
+Maps HQ's canonical real-directory knowledge structure, personal embedded-Git detection, INDEX.md hierarchy, company-scoped knowledge, and qmd search collections to Desktop browsing, navigation, and search UX.
 
 ---
 
@@ -40,12 +40,12 @@ core/knowledge/
 
 ### Tier 2: Company-Scoped Knowledge (`companies/{co}/knowledge/`)
 
-Each company directory contains a real knowledge subdirectory. It may be its own embedded git repo, with `.git/` directly inside the canonical directory:
+Each company directory contains a plain real knowledge subdirectory synchronized through the company vault. It does not contain Git metadata:
 
-| Company | Knowledge Path | Git Repo | File Count |
+| Company | Knowledge Path | Storage | File Count |
 |---------|---------------|----------|------------|
-| {company} | `companies/{company}/knowledge/` | Own repo (has `.git/`) | ~40 files across 8 subdirs |
-| {company} | `companies/{company}/knowledge/` | Own repo (has `.git/`) | ~12 files across 3 subdirs |
+| {company} | `companies/{company}/knowledge/` | Plain vault-synced directory | ~40 files across 8 subdirs |
+| {company} | `companies/{company}/knowledge/` | Plain vault-synced directory | ~12 files across 3 subdirs |
 | acmestudio | N/A | No knowledge dir | 0 |
 
 > **Personal scope is not a company.** Personal knowledge lives at top-level `personal/knowledge/` (peer of `core/knowledge/`), read directly from `personal/knowledge/` (the `reindex.sh` symlink mirror into `core/knowledge/` was retired). Desktop should treat it like HQ-level public knowledge, not as a company entry.
@@ -63,7 +63,7 @@ Workers carry domain knowledge in their `worker.yaml` `instructions:` block and 
 | HQ public | `core/knowledge/public/{base}/` | Real directory tracked by hq-core |
 | HQ private | `core/knowledge/private/{base}/` | Real directory tracked by its containing HQ tree |
 | Personal | `personal/knowledge/{base}/` | Real directory; optional embedded `.git/` |
-| Company | `companies/{co}/knowledge/` | Real directory; optional embedded `.git/` |
+| Company | `companies/{co}/knowledge/` | Plain real directory; synchronized through its vault |
 
 Knowledge identity comes from the canonical directory path. `repos/` is for code
 repositories; Desktop must never infer a supported knowledge layout from a link
@@ -97,7 +97,7 @@ pub struct KnowledgeRepo {
     pub layout_kind: String,       // "real", "package-contribution", or "invalid-repo-symlink"
     pub visibility: String,        // "public" or "private"
     pub scope: String,             // "hq" or company ID ("{company}", etc.)
-    pub has_git: bool,             // Whether .git exists in resolved path
+    pub has_git: bool,             // Whether personal knowledge has embedded Git; false for company scope without probing
     pub has_index: bool,           // Whether INDEX.md exists
     pub file_count: usize,         // Number of non-hidden files (recursive)
 }
@@ -115,7 +115,7 @@ for each entry in core/knowledge/public/ and core/knowledge/private/:
 for each company in companies/:
   1. Check if companies/{co}/knowledge/ exists
   2. Reject a symlinked knowledge root as an invalid legacy layout
-  3. Check whether .git/ exists inside the real directory
+  3. Treat the company directory as plain vault-synced content; do not inspect it for Git metadata
 ```
 
 ### Tauri FS Plugin Behavior
@@ -123,8 +123,9 @@ for each company in companies/:
 The `@tauri-apps/plugin-fs` `readDir()` also follows symlinks transparently. The
 knowledge browser must check metadata first. It may traverse a package contribution
 whose target stays inside `core/packages/`; it must refuse a symlink to a separate
-git repository and show a migration warning. For a real directory, show the git
-status of an embedded `.git/` when present.
+git repository and show a migration warning. For personal knowledge, show the git
+status of an embedded repository when present. Company knowledge has no Git status
+and is synchronized through its vault.
 
 ### Edge Cases
 
@@ -258,6 +259,9 @@ Per `manifest.yaml`, each company owns its knowledge:
   knowledge: companies/{company}/knowledge/
   qmd_collections: [{company}]
 ```
+
+Each `knowledge` value is a path to a plain company directory. A `null` value
+means no company knowledge directory is configured.
 
 (Personal knowledge is not a manifest entry — it lives at top-level `personal/knowledge/` and is mirrored by `reindex.sh`.)
 
@@ -458,12 +462,12 @@ Building on the US-003 audit, the knowledge browser needs these Rust commands:
 
 | Command | Priority | Purpose |
 |---------|----------|---------|
-| `list_knowledge_repos` | P0 | List real-directory knowledge bases with layout validation, scope, git status |
+| `list_knowledge_repos` | P0 | List real-directory knowledge bases with layout validation and scope; Git status applies only to personal repositories |
 | `get_knowledge_tree` | P0 | Build file tree for a knowledge base with INDEX.md enrichment |
 | `qmd_search` | P0 | Wrap qmd CLI for search (keyword/semantic/hybrid) |
 | `list_qmd_collections` | P1 | List available qmd collections with stats |
 | `render_markdown` | P2 | Server-side markdown rendering (or do client-side) |
-| `get_knowledge_git_status` | P2 | Git status for a knowledge repo (branch, dirty, last commit) |
+| `get_knowledge_git_status` | P2 | Git status for a personal knowledge repo (branch, dirty, last commit) |
 
 ### Existing Commands That Help
 
@@ -515,7 +519,7 @@ Change Company Context    →    Filter KnowledgeRepo[]   →    Filtered list
 
 4. **Knowledge editing**: Should Desktop support editing knowledge files? For v1, no -- read-only browsing + search. Editing happens in Claude Code or a text editor. Desktop can offer "Open in editor" action.
 
-5. **Git operations**: Should Desktop show git diff for dirty knowledge repos? For v1, show dirty/clean status only. Full git integration (commit, push) is out of scope.
+5. **Git operations**: Should Desktop show a git diff for dirty personal knowledge repos? For v1, show dirty/clean status only. Company knowledge uses vault sync and has no Git operations. Full Git integration (commit, push) is out of scope.
 
 6. **Large files**: Some knowledge files are 20KB+ (e.g., `verified-site-facts.md` at 21KB). Virtual scrolling or lazy rendering may be needed for the markdown viewer.
 

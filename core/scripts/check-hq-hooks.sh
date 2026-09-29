@@ -54,6 +54,8 @@ if [ ! -r "$SCRIPT_DIR/lib/hook-command-scan.sh" ] && command -v icacls >/dev/nu
 fi
 # shellcheck source=core/scripts/lib/hook-command-scan.sh
 . "$SCRIPT_DIR/lib/hook-command-scan.sh"
+# shellcheck source=core/scripts/lib/hq-cli-floor.sh
+. "$SCRIPT_DIR/lib/hq-cli-floor.sh"
 REQUIRE_LEDGER=0
 SESSION_ID=""
 
@@ -92,6 +94,25 @@ if [ ! -d "$HQ_ROOT" ]; then
   exit 2
 fi
 HQ_ROOT="$(cd "$HQ_ROOT" && pwd -P)"
+
+# A declared floor is a prerequisite for running this checker through hq-cli.
+# Keep the failure in this script's normal one-line issue format so the inline
+# fallback still reports the toolchain problem when the doctor cannot run.
+CLI_FLOOR_ISSUES=()
+check_cli_floor() {
+  local required floor_status floor_message
+  if required="$(hq_cli_floor_required "$HQ_ROOT")"; then
+    if ! floor_message="$(hq_cli_floor_check check-hq-hooks.sh "$required" 2>&1)"; then
+      CLI_FLOOR_ISSUES+=("$floor_message")
+    fi
+  else
+    floor_status=$?
+    if [ "$floor_status" -eq 2 ]; then
+      CLI_FLOOR_ISSUES+=("core/core.yaml contains duplicate requiresHqCli keys")
+    fi
+  fi
+}
+check_cli_floor
 
 # --- Runtime-aware recovery guidance ----------------------------------------
 #
@@ -339,21 +360,108 @@ check_local_hook_shadow() {
 }
 check_local_hook_shadow
 
-# A guard hook that cannot find its helper exits 0 and allows everything, so
-# the missing helper is invisible from inside a session. The active-run guard
-# (block-on-active-run.sh) read $HQ_ROOT/scripts/repo-run-registry.sh, which
-# does not exist, and was off on every install until that path was corrected.
-# Report a missing or non-executable guard helper here instead.
+# Keep this legacy diagnostic wording for the active-run guard. Its call site is
+# part of the shared helper map below, so its check form stays in one place.
 GUARD_HELPER_ISSUES=()
-check_guard_helpers() {
-  local helper="core/scripts/repo-run-registry.sh"
-  # Only a tree that ships the guard needs its helper.
-  [ -f "$HQ_ROOT/.claude/hooks/block-on-active-run.sh" ] || return 0
-  if [ ! -x "$HQ_ROOT/$helper" ]; then
-    GUARD_HELPER_ISSUES+=("guard helper $helper is missing or not executable, so the active-run guard allows every edit")
+check_helper_cli_floor() {
+  local helper="$1" helper_name helper_file floor floor_message
+  helper_file="$HQ_ROOT/$helper"
+  floor="$(sed -nE 's/^[[:space:]]*hq_cli_floor_check[[:space:]]+"[^"]+"[[:space:]]+"([^"]+)".*/\1/p' "$helper_file" | head -1)"
+  [ -n "$floor" ] || return 0
+  helper_name="${helper##*/}"
+  if ! floor_message="$(hq_cli_floor_check "$helper_name" "$floor" 2>&1)"; then
+    printf '%s\n' "$floor_message"
+    return 1
   fi
+  return 0
 }
-check_guard_helpers
+
+# Wave 8 helpers are called from hook files registered in hook-registry.json
+# or from the event-directory hooks under core/hooks/. Keep the mapping here in
+# sync with core/docs/hq/hook-helper-contract.md. The checker remains usable
+# without hq because it calls the same sourced F1 floor check only for a helper
+# that contains a generated-forwarder floor call.
+HOOK_HELPER_ISSUES=()
+hook_helper_is_registered() {
+  local hook="$1" registry="$HQ_ROOT/.claude/hooks/hook-registry.json"
+  case "$hook" in
+    .claude/hooks/*|core/scripts/migrate-policy-triggers.sh)
+      [ -r "$registry" ] && jq -e --arg script "$hook" \
+        'any(.. | objects; .script? == $script)' "$registry" >/dev/null 2>&1
+      ;;
+    core/hooks/*)
+      # Event-directory hooks are registered by their event subdirectory.
+      [ -f "$HQ_ROOT/$hook" ]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+check_hook_helpers() {
+  local hook helper call_form helper_file floor_message
+  while IFS='|' read -r hook helper call_form; do
+    [ -n "$hook" ] && [ -n "$helper" ] && [ -n "$call_form" ] || continue
+    case "$call_form" in
+      exec|bash|guard) ;;
+      *) HOOK_HELPER_ISSUES+=("hook helper map has an invalid call form for $hook -> $helper: $call_form"); continue ;;
+    esac
+    if [ "$hook" = ".claude/hooks/block-on-active-run.sh" ]; then
+      # Preserve the older guard check's registration rule: the guard helper is
+      # required whenever that hook file ships, even if its registry is absent.
+      [ -f "$HQ_ROOT/$hook" ] || continue
+    else
+      hook_helper_is_registered "$hook" || continue
+    fi
+    helper_file="$HQ_ROOT/$helper"
+    if [ ! -f "$helper_file" ]; then
+      if [ "$hook" = ".claude/hooks/block-on-active-run.sh" ] && [ "$helper" = "core/scripts/repo-run-registry.sh" ]; then
+        GUARD_HELPER_ISSUES+=("guard helper $helper is missing or not executable, so the active-run guard allows every edit")
+      else
+        HOOK_HELPER_ISSUES+=("hook $hook cannot run helper $helper because it is missing")
+      fi
+      continue
+    fi
+    # `bash <file>` works without the executable bit. Presence-only guards do
+    # not execute the helper, so neither mode nor its CLI floor affects them.
+    if [ "$call_form" = "exec" ] && [ ! -x "$helper_file" ]; then
+      if [ "$hook" = ".claude/hooks/block-on-active-run.sh" ] && [ "$helper" = "core/scripts/repo-run-registry.sh" ]; then
+        GUARD_HELPER_ISSUES+=("guard helper $helper is missing or not executable, so the active-run guard allows every edit")
+      else
+        HOOK_HELPER_ISSUES+=("hook $hook cannot run helper $helper because it is not executable")
+      fi
+      continue
+    fi
+    [ "$call_form" != "guard" ] || continue
+    if ! floor_message="$(check_helper_cli_floor "$helper" 2>&1)"; then
+      if [ "$hook" = ".claude/hooks/block-on-active-run.sh" ] && [ "$helper" = "core/scripts/repo-run-registry.sh" ]; then
+        GUARD_HELPER_ISSUES+=("guard helper $helper cannot run: $floor_message")
+      else
+        HOOK_HELPER_ISSUES+=("hook $hook cannot run helper $helper: $floor_message")
+      fi
+    fi
+done <<'EOF'
+# CALL_SITE_MAP_START
+.claude/hooks/block-on-active-run.sh|core/scripts/repo-run-registry.sh|exec
+.claude/hooks/check-repo-active-runs.sh|core/scripts/repo-run-registry.sh|exec
+.claude/hooks/hq-auto-acl-suggest.sh|core/scripts/share-suggestion-state.sh|exec
+.claude/hooks/inject-policy-on-trigger.sh|core/scripts/derive-trigger-facts.sh|bash
+.claude/hooks/inject-policy-on-trigger.sh|core/scripts/eval-trigger.sh|guard
+.claude/hooks/journal-due.sh|core/scripts/session-journal.sh|exec
+.claude/hooks/journal-precompact.sh|core/scripts/session-journal.sh|exec
+.claude/hooks/native-plan-project-sync.sh|core/scripts/session-project.sh|exec
+.claude/hooks/repair-stale-review-base.sh|core/scripts/detect-stale-review-base.sh|bash
+.claude/hooks/session-title.sh|core/scripts/session-title.sh|exec
+.claude/hooks/session-title.sh|core/scripts/session-title-config.sh|guard
+.claude/hooks/validate-policy-frontmatter.sh|core/scripts/eval-trigger.sh|bash
+core/scripts/migrate-policy-triggers.sh|core/scripts/migrate-policy-triggers.sh|exec
+core/scripts/migrate-policy-triggers.sh|core/scripts/eval-trigger.sh|bash
+core/hooks/SessionStart/35-work-mesh-session-start.sh|core/scripts/register-project.sh|bash
+core/hooks/Stop/40-auto-acl-share-suggestion.sh|core/scripts/share-suggestion-state.sh|exec
+core/hooks/Stop/50-after-turn-suggestions.sh|core/scripts/share-suggestion-state.sh|exec
+# CALL_SITE_MAP_END
+EOF
+}
+check_hook_helpers
 
 # The `hq doctor --json` check ids that make up this checker's settings scope.
 DOCTOR_SETTINGS_SCOPE='["hooks.settings-present","hooks.settings-valid-json","hooks.claude.settings-local-valid-json","hooks.claude.unquoted-project-dir","hooks.claude.script-missing"]'
@@ -377,7 +485,7 @@ render_from_doctor() {
   local json="$1"
   local settings_issues runtime_status runtime_message
   local AGENTS_V2_ATTESTED=0
-  local -a issues=("${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}" "${LOCAL_HOOK_SHADOW_ISSUES[@]+"${LOCAL_HOOK_SHADOW_ISSUES[@]}"}" "${GUARD_HELPER_ISSUES[@]+"${GUARD_HELPER_ISSUES[@]}"}")
+  local -a issues=("${CLI_FLOOR_ISSUES[@]+"${CLI_FLOOR_ISSUES[@]}"}" "${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}" "${LOCAL_HOOK_SHADOW_ISSUES[@]+"${LOCAL_HOOK_SHADOW_ISSUES[@]}"}" "${GUARD_HELPER_ISSUES[@]+"${GUARD_HELPER_ISSUES[@]}"}" "${HOOK_HELPER_ISSUES[@]+"${HOOK_HELPER_ISSUES[@]}"}")
 
   settings_issues="$(printf '%s' "$json" | jq -r --argjson scope "$DOCTOR_SETTINGS_SCOPE" '
     .results[]
@@ -522,6 +630,7 @@ run_inline() {
   LOCAL_SETTINGS="$HQ_ROOT/.claude/settings.local.json"
   LEDGER_DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
   ISSUES=()
+  ISSUES+=("${CLI_FLOOR_ISSUES[@]+"${CLI_FLOOR_ISSUES[@]}"}")
   SCANNED=()
   ROOT_HAS_SPACE=0
   case "$HQ_ROOT" in
@@ -555,6 +664,7 @@ run_inline() {
   ISSUES+=("${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}")
   ISSUES+=("${LOCAL_HOOK_SHADOW_ISSUES[@]+"${LOCAL_HOOK_SHADOW_ISSUES[@]}"}")
   ISSUES+=("${GUARD_HELPER_ISSUES[@]+"${GUARD_HELPER_ISSUES[@]}"}")
+  ISSUES+=("${HOOK_HELPER_ISSUES[@]+"${HOOK_HELPER_ISSUES[@]}"}")
 
   # The local overlay is optional, so its absence is never an issue — but when it
   # is present Claude Code loads its hooks too, and an unquoted command hiding

@@ -208,7 +208,20 @@ REACTIVE_EVENTS="PreToolUse PostToolUse UserPromptSubmit AssistantIntent"
 total=0; bad_when=0; loose=0; oversized=0; no_trigger=0
 say() { [ "$QUIET" = "1" ] || printf '%s\n' "$1"; }
 
-while IFS=$'\t' read -r path when on enf bytes state; do
+# Bash treats tab as IFS whitespace and collapses consecutive separators. Split
+# each TSV row literally so absent `when` / `on` fields stay empty rather than
+# shifting the following enforcement and size columns into their slots.
+while IFS= read -r record; do
+  path="${record%%$'\t'*}"
+  rest="${record#*$'\t'}"
+  when="${rest%%$'\t'*}"
+  rest="${rest#*$'\t'}"
+  on="${rest%%$'\t'*}"
+  rest="${rest#*$'\t'}"
+  enf="${rest%%$'\t'*}"
+  rest="${rest#*$'\t'}"
+  bytes="${rest%%$'\t'*}"
+  state="${rest#*$'\t'}"
   [ -n "$path" ] || continue
   total=$((total + 1))
   rel="${path#"$HQ_ROOT"/}"

@@ -63,6 +63,10 @@ INLINE_STUB_BIN="$TMP/inline-stub-bin"
 mkdir -p "$INLINE_STUB_BIN"
 cat >"$INLINE_STUB_BIN/hq" <<'STUB'
 #!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'hq 5.270.0\n'
+  exit 0
+fi
 exit 1
 STUB
 chmod +x "$INLINE_STUB_BIN/hq"
@@ -711,5 +715,10 @@ assert_contains "$out" 'HQ runtime enforcement: OBSERVED' \
 assert_contains "$out" 'session: old-session' \
   || fail "19d: the exact session identity should be reported: $out"
 pass "19d: freshness gates the no-session case; --session-id bypasses it by identity"
+
+bash "$ROOT/core/scripts/tests/check-hook-helper-doctor.test.sh"
+bash "$ROOT/core/scripts/tests/check-hook-helper-call-forms.test.sh"
+bash "$ROOT/core/scripts/tests/check-hook-helper-callsite-coverage.test.sh"
+bash "$ROOT/core/scripts/tests/hook-helper-simple-failures.test.sh"
 
 echo "PASS: hook-health checker"

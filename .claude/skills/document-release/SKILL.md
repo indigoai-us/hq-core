@@ -1,6 +1,6 @@
 ---
 name: document-release
-description: Post-ship documentation sync — updates README, CLAUDE.md, architecture docs, and INDEX files to match what actually shipped. Use after merging a PR, completing a project, or deploying a release. Triggers on "update docs", "sync documentation", "docs are stale", "document what shipped".
+description: "Update in-repo docs (README, CLAUDE.md, architecture, INDEX) to match what shipped. Use after a merge, project, or release."
 allowed-tools: Read, Edit, Write, Grep, Glob, Bash(git:*), Bash(qmd:*), AskUserQuestion
 ---
 

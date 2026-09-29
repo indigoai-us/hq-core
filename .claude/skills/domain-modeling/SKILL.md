@@ -1,8 +1,6 @@
 ---
 name: domain-modeling
-description: |
-  Actively build and sharpen a project's domain model — challenge fuzzy or overloaded terms against a glossary, stress-test with edge cases, and maintain CONTEXT.md as the source of truth for a ubiquitous language.
-  Use when the user wants to pin down domain terminology, resolve a naming conflict, define a ubiquitous language, or when another skill needs to produce or sharpen the domain model. Triggers on "what should we call this", "domain model", "ubiquitous language", "define these terms", "update CONTEXT.md".
+description: "Sharpen a project's domain terms and maintain CONTEXT.md as its glossary. Triggers: \"what should we call this\", \"domain model\"."
 allowed-tools: Read, Write, Edit, Grep, Glob
 ---
 

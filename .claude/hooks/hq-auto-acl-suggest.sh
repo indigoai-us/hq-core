@@ -13,17 +13,19 @@ log_error() {
 }
 
 is_hq_root() {
-  [ -n "${1:-}" ] && [ -d "$1/core" ] && [ -d "$1/.claude" ]
+  # Strip trailing slash before appending to prevent "//core" on Windows (MSYS2 SMB stall).
+  [ -n "${1:-}" ] && [ -d "${1%/}/core" ] && [ -d "${1%/}/.claude" ]
 }
 
 walk_up_to_hq_root() {
   local dir="${1:-}"
   while [ -n "$dir" ]; do
+    # Stop before testing "/" so we never form "//core" on Windows.
+    [ "$dir" = "/" ] && break
     if is_hq_root "$dir"; then
       printf '%s\n' "$dir"
       return 0
     fi
-    [ "$dir" = "/" ] && break
     dir="$(dirname "$dir")"
   done
   return 1

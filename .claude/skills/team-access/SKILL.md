@@ -1,6 +1,6 @@
 ---
 name: team-access
-description: Set, change, or repair what company members can read and write in the company vault by default — whole synced folders or only chosen subfolders — with a guided, one-question-at-a-time flow, grant-before-revoke ordering, and a readback check that proves every grant landed. Finds the rules that silently lock members out (legacy folder rows, empty auto-lock rows, locked subfolders, private-folder conflicts) and can run across every company you own. Use when an owner asks "give the team access to X", "members can't sync their knowledge", "fix my team's folder access", "narrow what everyone can see", or wants to review the current member baseline.
+description: "Set, change, or repair members' default read/write access to company vault folders, and find rules that lock members out."
 allowed-tools: Bash(hq:*), Bash(jq:*), Bash(awk:*), Bash(test:*), Bash(mkdir:*), Bash(printf:*), Read, Write, AskUserQuestion
 ---
 

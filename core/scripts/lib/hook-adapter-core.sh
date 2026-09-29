@@ -640,11 +640,11 @@ hqad_fallback_records() {
   local event="$1" tool="$2" ids="" id script
   [ "$event" = "PreToolUse" ] || return 0
   case "$tool" in
-    Bash) ids="mandatory-scope-authorizer detect-secrets block-env-dump block-core-writes-bash block-policy-writes-bash block-hq-root-git-mutation block-unsafe-package-install block-qmd-model-download" ;;
+    Bash) ids="mandatory-scope-authorizer detect-secrets block-env-dump block-core-writes-bash block-policy-writes-bash block-hq-root-git-mutation block-company-repo-creation block-unsafe-package-install block-qmd-model-download" ;;
     Read) ids="mandatory-scope-authorizer warn-cross-company-settings" ;;
     Grep) ids="mandatory-scope-authorizer block-hq-grep" ;;
     Glob) ids="mandatory-scope-authorizer block-hq-glob" ;;
-    Edit|Write) ids="protect-core block-core-writes block-inline-story-impl env-file-no-trailing-newline" ;;
+    Edit|Write|MultiEdit) ids="protect-core block-core-writes block-company-git-metadata block-inline-story-impl env-file-no-trailing-newline" ;;
     *) return 0 ;;
   esac
   for id in $ids; do

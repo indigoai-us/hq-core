@@ -96,17 +96,23 @@ git status --short
 - Untracked new files (should commit or ignore)
 - Modified submodules
 
-**Note:** Knowledge repositories must be real directories at their canonical paths. They may contain embedded git repos. A legacy symlink into a separate repository is a migration violation; keep detecting it so cleanup can report it, but never create or preserve it as a supported layout. Package-managed links into `core/packages/*/knowledge/` are not repositories and remain valid.
+**Note:** Company knowledge paths must be plain real directories with no embedded Git metadata. Personal knowledge directories may contain embedded Git when independent version history is needed. A legacy symlink into a separate repository is a migration violation; keep detecting it so cleanup can report it, but never create or preserve it as a supported layout. Package-managed links into `core/packages/*/knowledge/` are not repositories and remain valid.
 
-### 4b. Knowledge Repo Status
+### 4b. Personal and Core Knowledge Repo Status
 
-**Policy**: Knowledge repos should be clean (committed)
+**Policy**: Embedded Git repositories under personal and core knowledge should be clean (committed). Company knowledge is a plain directory synced through its company vault and is not scanned for Git state.
 
 ```bash
    bash -c '
    shopt -s nullglob
    for knowledge_path in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
      if [ -L "$knowledge_path" ]; then
+       case "$knowledge_path" in
+         companies/*/knowledge)
+           echo "INVALID: $knowledge_path is a symlink; company knowledge must be a plain directory synced through the company vault"
+           continue
+           ;;
+       esac
        target=$(cd "$knowledge_path" 2>/dev/null && pwd -P) || continue
        case "$target" in
          "$(pwd -P)"/core/packages/*) continue ;;  # package-managed mount — the only valid knowledge link
@@ -115,12 +121,15 @@ git status --short
        hq_repo=$(git rev-parse --show-toplevel 2>/dev/null) || hq_repo=""
        if [ -n "$repo_dir" ] && [ "$repo_dir" != "$hq_repo" ]; then
          echo "INVALID: $knowledge_path links to separate repo $repo_dir; migrate to a real directory (hq reindex)"
-       else
-         echo "NONSTANDARD: $knowledge_path is a symlink to $target — knowledge must be a real directory; only core/packages mounts may be links"
-       fi
-       continue
+     else
+       echo "NONSTANDARD: $knowledge_path is a symlink to $target; knowledge must be a real directory, while core/packages mounts may use links"
      fi
-     [ -d "$knowledge_path/.git" ] || continue
+     continue
+   fi
+   case "$knowledge_path" in
+     companies/*/knowledge) continue ;;  # company knowledge is never a Git repository
+   esac
+   [ -d "$knowledge_path/.git" ] || continue
      repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
      dirty=$(cd "$repo_dir" && git status --porcelain)
      [ -z "$dirty" ] && continue
@@ -129,7 +138,7 @@ git status --short
    '
 ```
 
-**With --fix**: Auto-commit dirty knowledge repos:
+**With --fix**: Auto-commit dirty personal/core knowledge repos only:
 ```bash
 (cd "$repo_dir" && git add -A && git commit -m "chore: cleanup commit")
 ```
@@ -201,11 +210,13 @@ For each:
 grep -n "null" companies/manifest.yaml
 ```
 
+**Manifest field**: `knowledge` is a path to the company's plain knowledge directory (usually `companies/{company}/knowledge/`); it does not identify a Git repository. A `null` value means no company knowledge directory is configured.
+
 **Violations**: Company with `knowledge: null`, empty settings when settings dir has files, etc.
 
 **With --fix**: For each company with `knowledge: null`:
-1. Create embedded knowledge repo: `companies/{company}/knowledge/` → `git init` → initial README
-2. Update manifest.yaml: replace `null` with `companies/{company}/knowledge/`
+1. Create the plain directory: `mkdir -p companies/{company}/knowledge/`; add an initial README if needed.
+2. Update manifest.yaml: replace `null` with `companies/{company}/knowledge/`.
 
 Do **not** symlink `companies/{company}/knowledge` into `repos/` — sync uploads
 symlink markers instead of document contents.
@@ -545,7 +556,7 @@ Reference for what we're enforcing:
 | Checkpoints | Legacy format, archive after 30 days |
 | Metrics | Append to `workspace/metrics/metrics.jsonl` |
 | Git | Clean working tree |
-| Knowledge repos | Real canonical directories; embedded repos are committed; links to separate repos are flagged for migration |
+| Knowledge directories | Company paths are plain synced directories; personal/core embedded repos may be committed; links to separate repos are flagged for migration |
 | INDEX.md | Exist at 10 key dirs, match contents (see spec) |
 | Manifest | All companies have non-null knowledge, settings, repos |
 | qmd | All companies with knowledge have a qmd collection |

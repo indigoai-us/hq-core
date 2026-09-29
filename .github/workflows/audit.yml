@@ -85,7 +85,7 @@ jobs:
       # ── 3. Install yq (required by merge-settings.sh) ──────────────────
       - name: Install yq
         if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
-        uses: mikefarah/yq@v4.44.3
+        uses: mikefarah/yq@bbdd97482f2d439126582a59689eb1c855944955 # v4.44.3
 
       # ── 4. Sparse-checkout settings repo (defaults + scripts) ───────────
       #
@@ -156,7 +156,7 @@ jobs:
       - name: Claude Code Audit
         id: claude
         if: env.HQ_AUDIT_BOT_APP_ID != '' && env.HQ_AUDIT_BOT_PRIVATE_KEY != ''
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1
         env:
           # Iteration state from count-iterations.sh (loop mode only).
           # In entry mode these are empty strings; the prompt defaults them to 0 / false.

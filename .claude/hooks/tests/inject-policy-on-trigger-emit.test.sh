@@ -693,5 +693,7 @@ grep -Eq $'^uppercase-trigger\tcore\t.*UPPERCASE_TRIGGER_MARKER' <<<"$OUT29" \
   || fail "uppercase trigger identifier did not match lowercase derived fact: $OUT29"
 ok "inline trigger evaluator matches uppercase identifiers"
 
+timeout 60s bash "$HQ_SRC/.claude/hooks/tests/inject-policy-on-trigger-match-process-budget.test.sh"
+
 echo
 echo "PASS ($pass assertions)"

@@ -300,7 +300,7 @@ Add recovered thread to the full threads table.
 
 **Skip** (unsafe in recovery context):
 - Auto-committing repos (can't know what was dirty at death vs now)
-- Knowledge repo commits
+- Personal/core knowledge repo commits (company knowledge changes sync through the company vault)
 - qmd reindex (user can run `qmd update`)
 
 ### 7. Report

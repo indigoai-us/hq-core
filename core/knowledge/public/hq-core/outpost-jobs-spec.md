@@ -39,7 +39,7 @@ authoritative.
 id: daily-sentry-triage          # required — kebab-case slug, unique across scanned registry
 name: Daily Sentry triage        # required — human label
 schedule: "0 9 * * 1-5"          # required — canonical 5-field cron (see Schedule)
-timezone: America/New_York       # required — IANA tz; reconciler renders OnCalendar with this tz
+timezone: America/New_York       # optional — IANA tz; omitted means the host's local timezone
 runtime: claude                  # required — claude | codex
 exec:                            # required — exactly one of prompt | skill
   prompt: "Triage new Sentry issues and DM a summary."
@@ -65,13 +65,16 @@ requirements:                    # optional but recommended — fixed vocabulary
 
 ### Required fields
 
-`id`, `name`, `schedule`, `timezone`, `runtime`, `exec`, `timeout_seconds`,
+`id`, `name`, `schedule`, `runtime`, `exec`, `timeout_seconds`,
 `notify`, `enabled`, `owner`, `created_at`.
 
 ### Field notes
 
 - **`id`**: `[a-z][a-z0-9-]{1,62}` — unique within a validate pass over the
   registry set. Duplicate `id` across files is an error.
+- **`timezone`**: optional IANA zone. The reconciler appends a declared zone to
+  `OnCalendar=`; if omitted, systemd uses the host's local timezone. Unsafe
+  characters are rejected before a unit is written.
 - **`runtime`**: `claude` or `codex` only. Unknown values (e.g. `gemini`) fail
   validation.
 - **`exec`**: object with either `prompt` (non-empty string) **or** `skill`
@@ -247,7 +250,7 @@ executor each timer starts.
 ### Units
 
 - Paths: `~/.config/systemd/user/hq-job-{id}.service` + `.timer`
-- Timer: `Timezone=` (job IANA tz), `OnCalendar=` (from 5-field cron),
+- Timer: `OnCalendar=` (from 5-field cron, with an optional IANA zone suffix),
   `Persistent=true`, `RandomizedDelaySec` (default 60)
 - Service: `ExecStart=…/hq-job-run.sh --hq-root … --job-id {id}`
 - Disabled / deleted / non-`ready` jobs: units removed and timers stopped

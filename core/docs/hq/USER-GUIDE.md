@@ -295,7 +295,7 @@ A scaffolded company contains:
 companies/{co}/
 ├── data/           # Exports, reports, journal entries
 ├── hooks/          # Company-scoped hooks
-├── knowledge/      # Company knowledge base (embedded git repo)
+├── knowledge/      # Plain company knowledge directory, synced through its vault
 ├── people/         # Contact / personnel records
 ├── policies/       # Company-scoped rules
 ├── projects/       # PRDs and project state
@@ -441,4 +441,4 @@ Cloud-backed companies sync to a company vault; the rest of your HQ folder (minu
 - Empty by default — populated via packs (e.g. `@indigoai-us/hq-pack-*`) or sync.
 
 **Company-level** (in `companies/{co}/knowledge/`):
-- Each company has an embedded git repo populated through use.
+- Each company has a plain knowledge directory populated through use and synced through its company vault.

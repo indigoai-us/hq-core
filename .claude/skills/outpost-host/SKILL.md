@@ -1,6 +1,6 @@
 ---
 name: outpost-host
-description: Host a full-stack or static app directly on the HQ Outpost / EC2 VM this session is running on, served through nginx. Finds a free port on the box, installs and configures nginx (static file serving or reverse-proxy to a running app), and returns the public URL. HARD-GATED — refuses to run anywhere that is not an HQ Outpost or EC2 instance and tells the user why. Use when the user says "host this app on the outpost", "serve this on the VM", "deploy my app to the outpost", "put this site on the box", or wants to expose a locally-running app from their Outpost. For sharing a generated artifact or vault file instead, use /deploy or /hq-share.
+description: "Host an app on this HQ Outpost/EC2 VM behind nginx and return its public URL. Refuses to run elsewhere. For artifacts use /deploy."
 allowed-tools: Bash, Read, Glob, Grep, Bash(bash "$CLAUDE_PROJECT_DIR/.claude/skills/outpost-host/host-app.sh:*), AskUserQuestion
 ---
 

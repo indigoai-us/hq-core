@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-VALIDATE="$ROOT/core/scripts/jobs-validate.sh"
+VALIDATE="${HQ_JOB_VALIDATE_TEST_SCRIPT_SOURCE:-$ROOT/core/scripts/jobs-validate.sh}"
 FIX="$ROOT/core/scripts/tests/fixtures/jobs"
 
 command -v yq >/dev/null 2>&1 || { echo "SKIP: yq not available"; exit 0; }
@@ -60,7 +60,34 @@ err="$("$VALIDATE" "$FIX/invalid/inline-secret-in-requirements.yaml" 2>&1)" || r
 echo "$err" | grep -qi "requirements.secrets" || fail "should name requirements.secrets: $err"
 pass "inline secret rejected"
 
-echo "[5] duplicate id across files"
+echo "[5] timezone may be omitted"
+tmp_no_timezone="$(mktemp -d "${TMPDIR:-/tmp}/jobs-validate-no-timezone.XXXXXX")"
+cp "$FIX/valid/personal-daily-digest.yaml" "$tmp_no_timezone/no-timezone.yaml"
+yq -i 'del(.timezone)' "$tmp_no_timezone/no-timezone.yaml"
+rc=0
+"$VALIDATE" "$tmp_no_timezone/no-timezone.yaml" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "timezone-omitted job should pass validation"
+rm -rf "$tmp_no_timezone"
+pass "timezone is optional"
+
+echo "[6] present timezone must be a non-empty string"
+tmp_bad_timezone="$(mktemp -d "${TMPDIR:-/tmp}/jobs-validate-bad-timezone.XXXXXX")"
+for bad_timezone in false empty; do
+  cp "$FIX/valid/personal-daily-digest.yaml" "$tmp_bad_timezone/$bad_timezone.yaml"
+  if [ "$bad_timezone" = false ]; then
+    yq -i '.timezone = false' "$tmp_bad_timezone/$bad_timezone.yaml"
+  else
+    yq -i '.timezone = ""' "$tmp_bad_timezone/$bad_timezone.yaml"
+  fi
+  rc=0
+  err="$("$VALIDATE" "$tmp_bad_timezone/$bad_timezone.yaml" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "$bad_timezone timezone should fail validation"
+  echo "$err" | grep -qi "timezone" || fail "$bad_timezone timezone error should name the field: $err"
+done
+rm -rf "$tmp_bad_timezone"
+pass "false and empty timezones are rejected"
+
+echo "[7] duplicate id across files"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/jobs-validate-dup.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 cp "$FIX/valid/personal-daily-digest.yaml" "$tmp/a.yaml"
@@ -71,13 +98,13 @@ err="$("$VALIDATE" "$tmp/a.yaml" "$tmp/b.yaml" 2>&1)" || rc=$?
 echo "$err" | grep -qi "duplicate" || fail "should say duplicate: $err"
 pass "duplicate id"
 
-echo "[6] single valid personal job with requirements exits 0"
+echo "[8] single valid personal job with requirements exits 0"
 rc=0
 "$VALIDATE" "$FIX/valid/company-with-requirements.yaml" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 0 ] || fail "company-with-requirements should pass"
 pass "requirements block valid"
 
-echo "[7] exec.surface remote is valid"
+echo "[9] exec.surface remote is valid"
 rc=0
 "$VALIDATE" "$FIX/valid/remote-surface.yaml" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 0 ] || fail "remote-surface should pass"

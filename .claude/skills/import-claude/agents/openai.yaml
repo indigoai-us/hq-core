@@ -3,3 +3,5 @@ interface:
     Import Claude
   short_description: >-
     Deprecated alias for /import-context — bootstrap HQ from your
+policy:
+  allow_implicit_invocation: false

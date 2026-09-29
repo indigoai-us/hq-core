@@ -106,4 +106,24 @@ PATH="$TMP/fail-bin:$PATH" HQ_ROOT="$TMP" bash "$LINT" "$POLICIES" \
 grep -q 'failed to extract policy facts' "$failed_stderr" \
   || fail "parser failure was not reported clearly: $(cat "$failed_stderr")"
 
+# Empty tab-separated trigger fields must not collapse and shift enforcement/body columns.
+MISSING_POLICIES="$TMP/missing-trigger-policies"
+mkdir -p "$MISSING_POLICIES"
+printf -- '---\nid: synthetic-missing-trigger\nenforcement: soft\ntrigger: synthetic prose\n---\n\n## Rule\n\nSynthetic policy.\n' \
+  > "$MISSING_POLICIES/missing-trigger.md"
+missing_stdout="$TMP/missing-trigger.stdout"
+missing_stderr="$TMP/missing-trigger.stderr"
+missing_rc=0
+HQ_ROOT="$TMP" bash "$LINT" "$MISSING_POLICIES" \
+  > "$missing_stdout" 2> "$missing_stderr" || missing_rc=$?
+[ "$missing_rc" -eq 1 ] \
+  || fail "missing when/on fields must fail lint (got $missing_rc): $(cat "$missing_stdout")"
+grep -Fq 'MISSING   ' "$missing_stdout" \
+  || fail "missing when/on policy was not listed: $(cat "$missing_stdout")"
+grep -Fq 'missing trigger: 1' "$missing_stdout" \
+  || fail "missing when/on policy was not counted: $(cat "$missing_stdout")"
+[ ! -s "$missing_stderr" ] \
+  || fail "missing trigger check emitted stderr: $(cat "$missing_stderr")"
+echo 'PASS: linter counts policies with missing when/on fields'
+
 echo 'PASS: lint-policy-triggers streams an ARG_MAX-scale corpus and fails closed'

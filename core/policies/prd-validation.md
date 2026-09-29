@@ -11,7 +11,7 @@ tags: [design, infrastructure]
 
 ## Rule
 
-Two PRD gates. (A) During drafting: when an AC references a concrete product string (label, URL, route, env var, API field), open the source file and quote the live value. Never infer from plan-mode notes or sibling projects; ask if ambiguous. (B) After any sub-agent write to prd.json: run `python3 -c "import json; json.load(open('prd.json'))"` and fix before next story.
+Two PRD gates. (A) During drafting: when an AC references a concrete product string (label, URL, route, env var, API field), open the source file and quote the live value. Never infer from plan-mode notes or sibling projects; ask if ambiguous. (B) After any sub-agent write to prd.json: run `node -e 'JSON.parse(require("node:fs").readFileSync(0, "utf8"))' < prd.json` and fix before next story.
 
 ## Rationale
 

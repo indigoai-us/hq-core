@@ -4,6 +4,7 @@
 #
 # Args:
 #   $1 — output directory (the build artifact root)
+#   $2 — optional API handler directory to include at archive root
 #
 # Output (one JSON line on stdout):
 #   {"pass":true,"reason":null,"tarball_path":"...","size_bytes":N,"sha256":"...","file_count":N}
@@ -17,6 +18,7 @@
 set -u
 
 OUT_DIR="${1:-}"
+API_DIR="${2:-}"
 
 emit_fail() {
   printf '{"pass":false,"reason":"%s","tarball_path":"","size_bytes":0,"sha256":"","file_count":0}\n' "$1"
@@ -31,6 +33,12 @@ emit_ok() {
 
 if [ -z "$OUT_DIR" ] || [ ! -d "$OUT_DIR" ]; then
   emit_fail "missing_output_dir"
+fi
+if [ -n "$API_DIR" ] && [ ! -d "$API_DIR" ]; then
+  emit_fail "missing_api_dir"
+fi
+if [ -n "$API_DIR" ] && [[ "$API_DIR" != /* ]]; then
+  API_DIR="$PWD/$API_DIR"
 fi
 
 # 1. Project-root disqualifiers (in caller's CWD, not OUT_DIR)
@@ -56,13 +64,22 @@ done
 
 # 2. File count cap
 FILE_COUNT=$(find "$OUT_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')
+if [ -n "$API_DIR" ]; then
+  API_FILE_COUNT=$(find "$API_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')
+  FILE_COUNT=$((FILE_COUNT + API_FILE_COUNT))
+fi
 if [ "$FILE_COUNT" -gt 100 ]; then
   emit_fail "file_count_exceeded:$FILE_COUNT"
 fi
 
 # 3. Build tarball
 TARBALL=$(mktemp -t hq-deploy-tar.XXXXXX)
-if ! tar -czf "$TARBALL" -C "$OUT_DIR" . 2>/dev/null; then
+if [ -n "$API_DIR" ]; then
+  if ! tar -czf "$TARBALL" -C "$OUT_DIR" . -C "$(dirname "$API_DIR")" "$(basename "$API_DIR")" 2>/dev/null; then
+    rm -f "$TARBALL"
+    emit_fail "tar_create_failed"
+  fi
+elif ! tar -czf "$TARBALL" -C "$OUT_DIR" . 2>/dev/null; then
   rm -f "$TARBALL"
   emit_fail "tar_create_failed"
 fi

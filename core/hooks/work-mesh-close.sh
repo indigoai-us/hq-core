@@ -457,10 +457,10 @@ wmc_close_bg() {
 # ===========================================================================
 # __sweep_bg__ — late-reconcile spooled sessions no longer active.
 # Bounded: process lock (single-flight + stale reclaim), hard timeout, cheap
-# empty-spool exit. Successful-path body is unchanged.
+# empty-spool exit, one-pass pair map, and terminal-session prefilter.
 # ===========================================================================
 wmc_sweep_bg() {
-  local sec body wd rc
+  local sec body wd rc lock timeout_file
   wmc_sweep_has_work || return 0
   if ! wmc_sweep_try_process_lock; then
     wm_log "sweep: already running — skip"
@@ -470,11 +470,19 @@ wmc_sweep_bg() {
   trap 'wmc_sweep_cleanup TERM' HUP INT TERM
   sec="$(wm_sweep_timeout_sec)"
   if [ "$sec" -gt 0 ] 2>/dev/null; then
+    lock="$(wmc_sweep_lock_dir)"
+    timeout_file="$lock/timed-out"
     # Run the body as a job so the timeout can kill it. A trap on THIS
     # shell does not interrupt a `printf | while` / $(sleep) pipeline.
     wmc_sweep_bg_body &
     body=$!
-    ( sleep "$sec" >/dev/null 2>&1; wmc_sweep_reap_tree "$body" ) >/dev/null 2>&1 &
+    (
+      sleep "$sec" >/dev/null 2>&1
+      if kill -0 "$body" 2>/dev/null; then
+        : >"$timeout_file" 2>/dev/null || true
+        wmc_sweep_reap_tree "$body"
+      fi
+    ) >/dev/null 2>&1 &
     wd=$!
     WM_SWEEP_WATCHDOG_PID=$wd
     rc=0
@@ -482,9 +490,11 @@ wmc_sweep_bg() {
     wmc_sweep_signal_tree "$wd" KILL
     wait "$wd" 2>/dev/null || true
     WM_SWEEP_WATCHDOG_PID=""
-    # Timed-out body is non-zero; skip last-run so the next session can
-    # continue the scan. A clean finish cools down for N minutes.
-    [ "$rc" -eq 0 ] && wmc_sweep_mark_ran
+    # A timeout is a completed attempt for cooldown purposes. Without this,
+    # every trigger restarts the large spool scan from the first session.
+    if [ "$rc" -eq 0 ] || [ -f "$timeout_file" ]; then
+      wmc_sweep_mark_ran
+    fi
   else
     wmc_sweep_bg_body || true
     wmc_sweep_mark_ran
@@ -492,9 +502,80 @@ wmc_sweep_bg() {
   return 0
 }
 
+wmc_sweep_session_all_terminal() {
+  local root="$1" sid="$2" slugs="$3" slug rmark cmark tmark
+  [ -n "$slugs" ] || return 0
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    # Unsafe values are not terminal: leave them for the normal refusal path.
+    wm_safe_path_component "$slug" || return 1
+    rmark="$(wm_reconciled_marker "$sid" "$slug")"
+    cmark="$(wm_copied_marker "$sid" "$slug")"
+    tmark="$(wm_terminal_marker "$sid" "$slug")"
+    if [ ! -f "$tmark" ] && { [ ! -f "$rmark" ] || [ ! -f "$cmark" ]; }; then
+      return 1
+    fi
+  done <<EOF
+$slugs
+EOF
+  return 0
+}
+
+wmc_sweep_process_session() {
+  local root="$1" sid="$2" slugs="$3" cur="$4" now="$5" thresh="$6"
+  local slug tp mtime age ismulti n_slugs claim
+  [ -n "$sid" ] || return 0
+  wm_safe_path_component "$sid" || { wm_log "sweep: unsafe session path component refused"; return 0; }
+  [ "$sid" = "$cur" ] && return 0   # never sweep the live session
+  [ -n "$slugs" ] || return 0
+
+  # Most historical sessions are already terminal. Check every company before
+  # transcript discovery or claims so they need no per-session jq read or search.
+  wmc_sweep_session_all_terminal "$root" "$sid" "$slugs" && return 0
+
+  n_slugs="$(printf '%s\n' "$slugs" | grep -c . )"
+  if [ "$n_slugs" -gt 1 ] 2>/dev/null; then ismulti=1; else ismulti=0; fi
+
+  # Conservative activity heuristic: a fresh transcript mtime => possibly a
+  # concurrent live session; leave it for its own close hook.
+  tp="$(wm_find_transcript "$sid" "")"
+  if [ -n "$tp" ] && [ -f "$tp" ]; then
+    mtime="$(wm_file_mtime "$tp")"
+    if [ -n "$mtime" ]; then
+      age=$(( now - mtime ))
+      [ "$age" -ge 0 ] 2>/dev/null && [ "$age" -lt "$thresh" ] 2>/dev/null && return 0
+    fi
+  fi
+
+  printf '%s\n' "$slugs" | while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    wm_safe_path_component "$slug" || { wm_log "sweep: unsafe company path component refused"; continue; }
+    # Already terminal (reconciled + copied) => no-op.
+    if [ -f "$(wm_reconciled_marker "$sid" "$slug")" ] && [ -f "$(wm_copied_marker "$sid" "$slug")" ]; then
+      continue
+    fi
+    # Permanently terminal (not a cloud-backed company) => never retry.
+    if [ -f "$(wm_terminal_marker "$sid" "$slug")" ]; then
+      continue
+    fi
+    # Atomic claim so concurrent sweeps do exactly one reconcile/copy. A stale
+    # claim orphaned by a killed sweep is reclaimed (crash recovery, AC6) so a
+    # single mid-sweep crash cannot wedge this (sid, slug) forever.
+    if ! wm_sweep_try_claim "$sid" "$slug"; then
+      continue   # a LIVE sweep owns this (sid, slug)
+    fi
+    claim="$(wm_sweep_claim "$sid" "$slug")"
+    wm_hold_claim "$claim"
+    wmc_reconcile_and_copy_one "$root" "$sid" "$slug" "$tp" "$ismulti" \
+      "claude-code" "$(wmc_meta_get "$root" "$sid" project)" "adhoc" "" \
+      "work session $sid reconciled (sweep)" || true
+    wm_release_claim
+  done
+}
+
 wmc_sweep_bg_body() {
   local root="${WM_ROOT:-$HQ_ROOT}"
-  local spf cur now thresh sids sid slugs slug tp mtime age ismulti n_slugs claim
+  local spf cur now thresh summary malformed_count pairs sid slug current_sid current_slugs
   spf="$(wm_spool_file)"
   [ -f "$spf" ] || return 0
   cur=""
@@ -502,55 +583,68 @@ wmc_sweep_bg_body() {
   now="$(date +%s 2>/dev/null || echo 0)"
   thresh="$(wm_active_threshold)"
 
-  sids="$(jq -r 'select(.event=="attempt" or .event=="posted") | .sessionId // empty' "$spf" 2>/dev/null | grep -v '^$' | sort -u)"
-  [ -n "$sids" ] || return 0
+  # Build a compact unique pair map with one streaming jq pass. Read raw lines
+  # so one torn or malformed append cannot make jq discard the whole result.
+  # Keep malformed rows observable without printing their contents.
+  summary="$(jq -cnR '
+    reduce inputs as $line ({pairs:{}, malformed:0};
+      (try ($line | fromjson) catch null) as $row
+      | if ($row | type)!="object" then .malformed += 1
+        elif ($row.event=="attempt" or $row.event=="posted")
+          and (($row.sessionId // null) | type)=="string"
+          and $row.sessionId!=""
+          and ($row.companySlug // null)!=null
+          and ($row.companySlug | tostring)!=""
+        then .pairs[$row.sessionId][($row.companySlug | tostring)]=true
+        else .
+        end)
+  ' "$spf" 2>/dev/null)" || {
+    wm_log "sweep: failed to aggregate work-session spool"
+    return 1
+  }
+  malformed_count="$(printf '%s\n' "$summary" | jq -r '.malformed' 2>/dev/null)" || {
+    wm_log "sweep: failed to read malformed work-session line count"
+    return 1
+  }
+  case "$malformed_count" in
+    ''|*[!0-9]*) wm_log "sweep: invalid malformed work-session line count"; return 1 ;;
+  esac
+  if [ "$malformed_count" -gt 0 ]; then
+    wm_log "sweep: ignored $malformed_count malformed JSONL line from spool"
+  fi
+  # Serializing the reduced map is a small in-memory parse; only the first jq
+  # reads the spool. Keeping slugs grouped by session preserves multi-company
+  # and per-slug behavior.
+  pairs="$(printf '%s\n' "$summary" | jq -r '
+    .pairs
+    | to_entries | sort_by(.key)[] as $session
+    | ($session.value | keys[]) as $companySlug
+    | [$session.key, $companySlug] | @tsv
+  ' 2>/dev/null)" || {
+    wm_log "sweep: failed to format work-session pairs"
+    return 1
+  }
+  [ -n "$pairs" ] || return 0
 
-  printf '%s\n' "$sids" | while IFS= read -r sid; do
-    [ -n "$sid" ] || continue
-    wm_safe_path_component "$sid" || { wm_log "sweep: unsafe session path component refused"; continue; }
-    [ "$sid" = "$cur" ] && continue   # never sweep the live session
-
-    slugs="$(wm_registered_slugs "$sid")"
-    [ -n "$slugs" ] || continue
-    n_slugs="$(printf '%s\n' "$slugs" | grep -c . )"
-    if [ "$n_slugs" -gt 1 ] 2>/dev/null; then ismulti=1; else ismulti=0; fi
-
-    # Conservative activity heuristic: a fresh transcript mtime => possibly a
-    # concurrent live session; leave it for its own close hook.
-    tp="$(wm_find_transcript "$sid" "")"
-    if [ -n "$tp" ] && [ -f "$tp" ]; then
-      mtime="$(wm_file_mtime "$tp")"
-      if [ -n "$mtime" ]; then
-        age=$(( now - mtime ))
-        [ "$age" -ge 0 ] 2>/dev/null && [ "$age" -lt "$thresh" ] 2>/dev/null && continue
+  current_sid=""
+  current_slugs=""
+  printf '%s\n' "$pairs" | {
+    while IFS=$'\t' read -r sid slug; do
+      [ -n "$sid" ] && [ -n "$slug" ] || continue
+      if [ -n "$current_sid" ] && [ "$sid" != "$current_sid" ]; then
+        wmc_sweep_process_session "$root" "$current_sid" "$current_slugs" "$cur" "$now" "$thresh"
+        current_slugs=""
       fi
-    fi
-
-    printf '%s\n' "$slugs" | while IFS= read -r slug; do
-      [ -n "$slug" ] || continue
-      wm_safe_path_component "$slug" || { wm_log "sweep: unsafe company path component refused"; continue; }
-      # Already terminal (reconciled + copied) => no-op.
-      if [ -f "$(wm_reconciled_marker "$sid" "$slug")" ] && [ -f "$(wm_copied_marker "$sid" "$slug")" ]; then
-        continue
+      current_sid="$sid"
+      if [ -n "$current_slugs" ]; then
+        current_slugs="${current_slugs}"$'\n'
       fi
-      # Permanently terminal (not a cloud-backed company) => never retry.
-      if [ -f "$(wm_terminal_marker "$sid" "$slug")" ]; then
-        continue
-      fi
-      # Atomic claim so concurrent sweeps do exactly one reconcile/copy. A stale
-      # claim orphaned by a killed sweep is reclaimed (crash recovery, AC6) so a
-      # single mid-sweep crash cannot wedge this (sid, slug) forever.
-      if ! wm_sweep_try_claim "$sid" "$slug"; then
-        continue   # a LIVE sweep owns this (sid, slug)
-      fi
-      claim="$(wm_sweep_claim "$sid" "$slug")"
-      wm_hold_claim "$claim"
-      wmc_reconcile_and_copy_one "$root" "$sid" "$slug" "$tp" "$ismulti" \
-        "claude-code" "$(wmc_meta_get "$root" "$sid" project)" "adhoc" "" \
-        "work session $sid reconciled (sweep)" || true
-      wm_release_claim
+      current_slugs="${current_slugs}${slug}"
     done
-  done
+    if [ -n "$current_sid" ]; then
+      wmc_sweep_process_session "$root" "$current_sid" "$current_slugs" "$cur" "$now" "$thresh"
+    fi
+  }
   return 0
 }
 

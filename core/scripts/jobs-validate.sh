@@ -205,6 +205,10 @@ validate_job_file() {
   id="$(jq -r '.id // empty' <<<"$json")"
   name="$(jq -r '.name // empty' <<<"$json")"
   schedule="$(jq -r '.schedule // empty' <<<"$json")"
+  if jq -e 'has("timezone") and ((.timezone | type) != "string" or .timezone == "")' \
+    <<<"$json" >/dev/null; then
+    err "$file" "timezone" "must be a non-empty string when present"
+  fi
   timezone="$(jq -r '.timezone // empty' <<<"$json")"
   runtime="$(jq -r '.runtime // empty' <<<"$json")"
   timeout="$(jq -r '.timeout_seconds // empty' <<<"$json")"
@@ -217,7 +221,6 @@ validate_job_file() {
   [ -n "$id" ] || err "$file" "id" "missing required field"
   [ -n "$name" ] || err "$file" "name" "missing required field"
   [ -n "$schedule" ] || err "$file" "schedule" "missing required field"
-  [ -n "$timezone" ] || err "$file" "timezone" "missing required field"
   [ -n "$runtime" ] || err "$file" "runtime" "missing required field"
   [ -n "$timeout" ] || err "$file" "timeout_seconds" "missing required field"
   [ -n "$notify" ] || err "$file" "notify" "missing required field"

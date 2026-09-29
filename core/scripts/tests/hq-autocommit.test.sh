@@ -16,6 +16,34 @@ mkdir -p "$TMP"
 export TMPDIR="$TMP_PARENT/tmp"
 mkdir -p "$TMPDIR"
 
+SAFE_BIN="$TMP_PARENT/safe-bin"
+mkdir -p "$SAFE_BIN"
+AWS_PROFILE="us-110-111-test"
+AWS_SHARED_CREDENTIALS_FILE="$TMP_PARENT/empty-aws-credentials"
+AWS_CONFIG_FILE="$TMP_PARENT/empty-aws-config"
+AWS_EC2_METADATA_DISABLED=true
+: >"$AWS_SHARED_CREDENTIALS_FILE"
+: >"$AWS_CONFIG_FILE"
+export AWS_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE AWS_EC2_METADATA_DISABLED
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN \
+  AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_CONTAINER_CREDENTIALS_RELATIVE_URI \
+  AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_AUTHORIZATION_TOKEN
+for blocked_binary in aws sst pulumi systemctl; do
+  cat >"$SAFE_BIN/$blocked_binary" <<'STUB'
+#!/usr/bin/env bash
+printf 'unexpected external binary: %s\n' "${0##*/}" >&2
+exit 97
+STUB
+  chmod +x "$SAFE_BIN/$blocked_binary"
+done
+export PATH="$SAFE_BIN:$PATH"
+for blocked_binary in aws sst pulumi systemctl; do
+  if [[ "$(command -v "$blocked_binary")" != "$SAFE_BIN/$blocked_binary" ]]; then
+    echo "the test must not resolve the host $blocked_binary binary" >&2
+    exit 1
+  fi
+done
+
 mkdir -p "$TMP/.claude/hooks" "$TMP/core" "$TMP/repos/public/app"
 HOOK_SOURCE="${HQ_AUTOCOMMIT_TEST_HOOK_SOURCE:-$ROOT/.claude/hooks/hq-autocommit.sh}"
 cp "$HOOK_SOURCE" "$TMP/.claude/hooks/hq-autocommit.sh"
@@ -289,6 +317,212 @@ run_hook() {
   HOOK_RC=0
   HOOK_OUT="$(cd "$TMP" && printf '%s' "$payload" | env "$@" bash .claude/hooks/hq-autocommit.sh 2>/dev/null)" || HOOK_RC=$?
 }
+
+REAL_GIT="$(command -v git)"
+INDEX_LOCK_GIT_SHIM_DIR="$TMP/index-lock-git-shim"
+mkdir -p "$INDEX_LOCK_GIT_SHIM_DIR"
+cat >"$INDEX_LOCK_GIT_SHIM_DIR/git" <<'SHIM'
+#!/usr/bin/env python3
+import os
+import shlex
+import sys
+from pathlib import Path
+import subprocess
+
+args = sys.argv[1:]
+trace = Path(os.environ["HQ_AUTOCOMMIT_TEST_GIT_TRACE"])
+with trace.open("a") as handle:
+    handle.write("git " + " ".join(shlex.quote(arg) for arg in args) + "\n")
+
+real_git = os.environ["HQ_AUTOCOMMIT_TEST_REAL_GIT"]
+root = os.environ.get("HQ_AUTOCOMMIT_TEST_ROOT", "")
+if len(args) >= 5 and args[:3] == ["-C", root, "add"] and args[3] == "--":
+    attempts_file = Path(os.environ["HQ_AUTOCOMMIT_TEST_ATTEMPTS"])
+    try:
+        attempts = int(attempts_file.read_text().strip() or "0")
+    except FileNotFoundError:
+        attempts = 0
+    attempts += 1
+    attempts_file.write_text(f"{attempts}\n")
+    lock_path = Path(root) / ".git" / "index.lock"
+
+    if attempts > 4:
+        print("test stub stopped an unbounded git add retry loop", file=sys.stderr)
+        sys.exit(97)
+    mode = os.environ["HQ_AUTOCOMMIT_TEST_ADD_MODE"]
+    if mode == "persistent" or attempts == 1:
+        lock_path.touch()
+        message = "File exists" if mode != "locale" or os.environ.get("LC_ALL") == "C" else "Datei existiert"
+        print(f"fatal: Unable to create '{lock_path}': {message}.", file=sys.stderr)
+        sys.exit(128)
+
+    if mode == "foreign-staged" and attempts == 2:
+        concurrent_index = Path(root) / ".git" / "index.concurrent"
+        env = os.environ.copy()
+        env["LC_ALL"] = "C"
+        env["GIT_INDEX_FILE"] = str(concurrent_index)
+        subprocess.run([real_git, "-C", root, "read-tree", "HEAD"], env=env, check=True)
+        subprocess.run([real_git, "-C", root, "add", "--", "manually-staged.md"], env=env, check=True)
+        os.replace(concurrent_index, Path(root) / ".git" / "index")
+        lock_path.unlink(missing_ok=True)
+    elif mode in ("transient", "locale") and attempts == 2:
+        lock_path.unlink(missing_ok=True)
+
+env = os.environ.copy()
+env["LC_ALL"] = "C"
+os.execve(real_git, [real_git, *args], env)
+SHIM
+chmod +x "$INDEX_LOCK_GIT_SHIM_DIR/git"
+
+run_index_lock_retry_case() {
+  local mode="$1" rel="$2" attempts_file head_before staged_paths git_trace_file mode_tmpdir
+  mode_tmpdir="$TMP_PARENT/tmp/$mode"
+  mkdir -p "$mode_tmpdir"
+  if [[ -e "$mode_tmpdir/hq-autocommit.lock" ]]; then
+    echo "index-lock $mode case started with a stale hook lock; owner: $(cat "$mode_tmpdir/hq-autocommit.lock/owner" 2>/dev/null || echo missing)" >&2
+    return 1
+  fi
+  staged_paths="$(git -C "$TMP" diff --cached --name-only)"
+  if [[ -n "$staged_paths" ]]; then
+    echo "index-lock $mode case requires a clean fixture index; staged paths: $staged_paths" >&2
+    return 1
+  fi
+  attempts_file="$TMP/$mode-add-attempts"
+  git_trace_file="$TMP/$mode-git-trace"
+  printf '%s contention\n' "$mode" >"$TMP/$rel"
+  if [[ "$mode" == "foreign-staged" ]]; then
+    printf 'manual stage during retry\n' >"$TMP/manually-staged.md"
+  fi
+  head_before="$(git -C "$TMP" rev-parse HEAD)"
+  if [[ "$mode" == "locale" ]]; then
+    run_hook "sess-index-lock-$mode" "$rel" \
+      PATH="$INDEX_LOCK_GIT_SHIM_DIR:$PATH" \
+      TMPDIR="$mode_tmpdir" \
+      HQ_AUTOCOMMIT_TEST_REAL_GIT="$REAL_GIT" \
+      HQ_AUTOCOMMIT_TEST_ROOT="$TMP" \
+      HQ_AUTOCOMMIT_TEST_ATTEMPTS="$attempts_file" \
+      HQ_AUTOCOMMIT_TEST_GIT_TRACE="$git_trace_file" \
+      HQ_AUTOCOMMIT_TEST_ADD_MODE="$mode" \
+      LANG=de_DE.UTF-8 LC_ALL=de_DE.UTF-8 \
+      HQ_AUTOCOMMIT_STRICT=1
+  else
+    run_hook "sess-index-lock-$mode" "$rel" \
+      PATH="$INDEX_LOCK_GIT_SHIM_DIR:$PATH" \
+      TMPDIR="$mode_tmpdir" \
+      HQ_AUTOCOMMIT_TEST_REAL_GIT="$REAL_GIT" \
+      HQ_AUTOCOMMIT_TEST_ROOT="$TMP" \
+      HQ_AUTOCOMMIT_TEST_ATTEMPTS="$attempts_file" \
+      HQ_AUTOCOMMIT_TEST_GIT_TRACE="$git_trace_file" \
+      HQ_AUTOCOMMIT_TEST_ADD_MODE="$mode" \
+      HQ_AUTOCOMMIT_STRICT=1
+  fi
+
+  if [[ "$mode" == "locale" || "$mode" == "foreign-staged" ]]; then
+    if [[ ! -f "$attempts_file" ]]; then
+      echo "$mode index.lock contention did not reach the git-add shim; rc=$HOOK_RC out='$HOOK_OUT'; trace='$(cat "$git_trace_file" 2>/dev/null || true)'; process_lock='$([[ -e "$mode_tmpdir/hq-autocommit.lock" ]] && cat "$mode_tmpdir/hq-autocommit.lock/owner" 2>/dev/null || echo absent)'; staged='$(git -C "$TMP" diff --cached --name-only)'; log='$(cat "$LOG")'" >&2
+      return 1
+    fi
+    local observed_attempts
+    observed_attempts="$(cat "$attempts_file")"
+    if [[ "$observed_attempts" -ne 2 ]]; then
+      echo "$mode index.lock contention should use exactly two add attempts (got $observed_attempts); hook='$HOOK_OUT'; log='$(cat "$LOG")'" >&2
+      return 1
+    fi
+  fi
+
+  if [[ "$mode" == "foreign-staged" ]]; then
+    if [[ "$(git -C "$TMP" rev-parse HEAD)" != "$head_before" ]]; then
+      echo "autosave must not commit a foreign path staged during the retry window" >&2
+      return 1
+    fi
+    if ! git -C "$TMP" diff --cached --name-only -- manually-staged.md | grep -Fqx 'manually-staged.md'; then
+      echo "foreign manually staged path must remain staged after autosave skips" >&2
+      return 1
+    fi
+    if ! grep -Fq 'SKIP stage=foreign-staged' "$LOG"; then
+      echo "foreign staged path must log SKIP stage=foreign-staged" >&2
+      return 1
+    fi
+    if ! git -C "$TMP" diff --cached --quiet -- "$rel"; then
+      echo "the autosave target must be unstaged when a foreign staged path appears" >&2
+      return 1
+    fi
+    git -C "$TMP" reset -q -- manually-staged.md
+    return 0
+  fi
+
+  if [[ "$mode" == "transient" || "$mode" == "locale" ]]; then
+    if [[ "$HOOK_RC" -ne 0 || -n "$HOOK_OUT" ]]; then
+      echo "$mode index.lock contention should autosave silently; rc=$HOOK_RC out='$HOOK_OUT'" >&2
+      return 1
+    fi
+    if [[ "$(cat "$attempts_file")" -ne 2 ]]; then
+      echo "$mode index.lock contention should use exactly two add attempts" >&2
+      return 1
+    fi
+    if [[ -e "$TMP/.git/index.lock" ]]; then
+      echo "the synthetic $mode index.lock should be released before the successful add" >&2
+      return 1
+    fi
+    if ! git -C "$TMP" show --name-only --format= HEAD | grep -Fqx "$rel"; then
+      echo "$mode index.lock contention did not commit $rel" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  if [[ "$HOOK_RC" -eq 0 || "$HOOK_OUT" != *"HQ autosave failed"* ]]; then
+    echo "persistent index.lock contention should report the add failure; rc=$HOOK_RC out='$HOOK_OUT'" >&2
+    return 1
+  fi
+  if [[ "$(cat "$attempts_file")" -ne 4 ]]; then
+    echo "persistent index.lock contention should stop after four total add attempts" >&2
+    return 1
+  fi
+  if [[ "$(git -C "$TMP" rev-parse HEAD)" != "$head_before" ]]; then
+    echo "persistent index.lock contention must not commit $rel" >&2
+    return 1
+  fi
+  if ! grep -Fq 'FAIL stage=add' "$LOG" || ! grep -Fq 'index.lock' "$LOG"; then
+    echo "persistent index.lock contention must retain the add failure details" >&2
+    return 1
+  fi
+  if [[ ! -e "$TMP/.git/index.lock" ]]; then
+    echo "the hook must leave the fresh persistent index.lock untouched" >&2
+    return 1
+  fi
+  rm -f -- "$TMP/.git/index.lock"
+}
+
+case "${HQ_AUTOCOMMIT_TEST_INDEX_LOCK_CASE:-}" in
+  transient)
+    run_index_lock_retry_case transient transient-index-lock.md
+    echo "hq-autocommit transient index.lock retry: ok"
+    exit 0
+    ;;
+  persistent)
+    run_index_lock_retry_case persistent persistent-index-lock.md
+    echo "hq-autocommit persistent index.lock retry: ok"
+    exit 0
+    ;;
+  foreign-staged)
+    run_index_lock_retry_case foreign-staged retry-with-foreign-staged.md
+    echo "hq-autocommit foreign staged path during index.lock retry: ok"
+    exit 0
+    ;;
+  locale)
+    run_index_lock_retry_case locale locale-index-lock.md
+    echo "hq-autocommit index.lock retry under non-English locale: ok"
+    exit 0
+    ;;
+  "")
+    run_index_lock_retry_case transient transient-index-lock.md
+    run_index_lock_retry_case persistent persistent-index-lock.md
+    run_index_lock_retry_case locale locale-index-lock.md
+    run_index_lock_retry_case foreign-staged retry-with-foreign-staged.md
+    ;;
+  *) echo "unknown index-lock regression case: $HQ_AUTOCOMMIT_TEST_INDEX_LOCK_CASE" >&2; exit 2 ;;
+esac
 
 printf 'blocked\n' > "$TMP/wedged.md"
 : > "$TMP/.git/index.lock"

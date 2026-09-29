@@ -89,7 +89,7 @@ if ! command -v hq >/dev/null 2>&1; then
   hq_monitor_log_once "$root" "$payload" cli-unavailable "hq is unavailable; monitor delivery is disabled"
   exit 0
 fi
-if ! hq_monitor_cli_ready "$root" "$payload"; then
+if ! hq_monitor_cli_ready "$root" "$payload" "$provider-$session_id"; then
   exit 0
 fi
 exec env HQ_NO_UPDATE_CHECK=1 hq monitor drain --provider "$provider" --event "$event" <<<"$payload"

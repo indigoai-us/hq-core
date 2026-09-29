@@ -1,6 +1,6 @@
 ---
 name: prd
-description: Create an execution-ready PRD for a project. Creates prd.json + README.md with full HQ context awareness. Runtime-agnostic — executes identically in Claude Code and Codex. Lightweight by default — uses batched questions and adapts interview depth to brainstorm context if available. For deep research subagents + 3-tier 15-question interview, use /deep-plan instead.
+description: "Create an execution-ready PRD (prd.json + README.md) with a light interview. For deep research use /deep-plan."
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion
 ---
 
@@ -100,7 +100,7 @@ Scanned HQ:
 
 Before generating the PRD, verify infrastructure exists for the target company/repo:
 
-1. **Company**: If project targets a company, read `companies/manifest.yaml`. If company has `knowledge: null`, flag: "Company {co} has no knowledge repo. Create one? [Y/n]" — if yes, create embedded repo at `companies/{co}/knowledge/` with `git init`, and update manifest.yaml.
+1. **Company**: If project targets a company, read `companies/manifest.yaml`. If company has `knowledge: null`, flag that it has no knowledge directory. If the user wants one, create `companies/{co}/knowledge/` as a plain real directory (never initialize Git or symlink it), add a README if useful, and update the manifest `knowledge` field with that directory path.
 
 2. **Repo**: If `repoPath` specified and doesn't exist locally, flag: "Repo not found at {path}. Clone it or create new?" Add to `manifest.yaml` if missing.
 

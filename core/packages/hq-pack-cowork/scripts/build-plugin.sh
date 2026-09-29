@@ -1,6 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+required_build_tools=(dirname mktemp mkdir rm rsync node npm mv zip)
+missing_build_tools=()
+for tool in "${required_build_tools[@]}"; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    missing_build_tools+=("$tool")
+  fi
+done
+
+if [ "${#missing_build_tools[@]}" -gt 0 ]; then
+  printf 'Missing required Cowork plugin build tools: %s\n' "${missing_build_tools[*]}" >&2
+  printf 'Install the missing tools and ensure they are on PATH:\n' >&2
+  for tool in "${missing_build_tools[@]}"; do
+    case "$tool" in
+      rsync)
+        printf '  rsync: MSYS2: pacman -S rsync; macOS: brew install rsync; Debian/Ubuntu: sudo apt install rsync\n' >&2
+        ;;
+      zip)
+        printf '  zip: MSYS2: pacman -S zip; macOS: brew install zip; Debian/Ubuntu: sudo apt install zip\n' >&2
+        ;;
+      node|npm)
+        printf '  %s: install Node.js; its installer includes npm\n' "$tool" >&2
+        ;;
+      dirname|mktemp|mkdir|rm|mv)
+        printf '  %s: install the standard shell utilities (MSYS2: pacman -S coreutils)\n' "$tool" >&2
+        ;;
+    esac
+  done
+  exit 1
+fi
+
 PACK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-$HOME/Downloads/hq-pack-cowork.plugin}"
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/hq-pack-cowork-build.XXXXXX")"

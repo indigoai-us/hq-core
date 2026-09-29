@@ -1,6 +1,6 @@
 ---
 name: import-context
-description: Bootstrap HQ from your prior AI footprint — Claude Code, Codex, Grok, and claude.ai conversation history plus on-disk artifacts (skills, hooks, policies, repos, plans). Proposes companies, knowledge, policies, and projects for guided import.
+description: "Bootstrap HQ from prior Claude Code, Codex, Grok, and claude.ai history and on-disk artifacts, with guided import."
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion, Task
 ---
 
@@ -8,7 +8,7 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion, Task
 
 Hydrate a fresh HQ install from the user's existing AI footprint. Two complementary sources:
 
-1. **Artifacts on disk** — skills, hooks, policies, MCP configs, CLAUDE.md files, knowledge dirs, claude-bearing repos, and prior `/plan` outputs.
+1. **Artifacts on disk** — skills, hooks, policies, MCP configs, CLAUDE.md files, knowledge-bearing repos, claude-bearing repos, and prior `/plan` outputs.
 2. **Conversation history** — Claude Code sessions, Codex sessions, Grok sessions, and (via export) claude.ai chat threads. Sub-agents mine sampled threads and **propose** HQ context to bootstrap company setup: candidate companies, knowledge seeds, policies, and projects. Everything is a proposal — nothing lands without an explicit accept.
 
 Discovers artifacts, infers work ontology from prior plans and conversations, and guides a per-category import — creating missing companies and synthesizing workers on demand.
@@ -40,7 +40,7 @@ For every `--scope=<dir>` flag (and for the default allowlist), resolve with `re
 
 ### 4. Active-Run Guard
 
-Read `workspace/orchestrator/active-runs.json`. If the current repo is claimed by another run, refuse. `/import-context` writes to registries — it cannot share the repo.
+Read `workspace/orchestrator/active-runs.json` when it exists. If it is missing, treat the repo as unclaimed. If the current repo is claimed by another run, refuse. `/import-context` writes to registries — it cannot share the repo.
 
 ## Flags
 
@@ -106,8 +106,7 @@ Scan complete. Found:
   hooks               {N}
   policies            {N}
   claude_md           {N}
-  knowledge_dirs      {N}
-  claude_repos        {N}
+  claude_repos        {N; {K} marked is_knowledge}
   agents              {N}
   conversations       {N stores: claude-code {a} sessions · codex {b} · grok {c} · claude.ai {d or "no export"}}
 
@@ -245,7 +244,7 @@ Record every decision in `$SCAN_DIR/conversation-proposals.json` and add accepte
 
 Skip if `--conversations-only` (jump to Phase 7 after conversation mining).
 
-Order (empties skipped): `mcp_servers → settings_fragments → commands → skills → hooks → policies → agents → claude_md → knowledge_dirs → claude_repos`.
+Order (empties skipped): `mcp_servers → settings_fragments → commands → skills → hooks → policies → agents → claude_md → claude_repos`. For knowledge handling, use only repo entries with `claude_repos[].is_knowledge == true`.
 
 Plans are intentionally excluded — they stay at `~/.claude/plans/`.
 
@@ -308,31 +307,30 @@ Update registries immediately after each category finishes — limits blast radi
 | commands | File-presence only |
 | skills | Copy to `.claude/skills/{name}/`; if `worker.yaml` sibling exists → route to worker synthesis (Phase 6) |
 | hooks | Copy to `.claude/hooks/`; add matcher to `settings.json#hooks[]`; verify `hook-gate.sh --list` shows it |
-| policies | Validate frontmatter against `core/knowledge/public/hq-core/policies-spec.md`; place at `core/policies/` or `companies/{co}/policies/` |
+| policies | Validate frontmatter against `core/knowledge/public/hq-core/policies-spec.md`; place in `companies/{co}/policies/` when a company is bound, otherwise `personal/policies/`. Never write imported policies to `core/policies/`. |
 | agents | Copy to `.claude/agents/` |
 | claude_md | Merge into nearest-root CLAUDE.md (show diff, confirm before write) |
-| knowledge_dirs | Materialize content in a real canonical knowledge directory; optionally initialize git in place; register it in the relevant company knowledge tree |
-| claude_repos | Per-repo prompt: `Symlink / Move / Skip`; update `manifest.yaml` company `repos:` array on adoption |
+| claude_repos | Per-repo prompt: `Symlink / Move / Skip`; update `manifest.yaml` company `repos:` array on adoption. When `is_knowledge` is true, materialize its `knowledge/` content in a real canonical knowledge directory and register it in the relevant company knowledge tree. Company knowledge always stays a plain vault-synced directory; only personal knowledge may use embedded Git for separate history. |
 
 **No null fields** — every `manifest.yaml` company entry and every `worker.yaml` must include all required fields from the schema. If a field is unknown, ask before writing. (`core/workers/registry.yaml` is auto-generated — no direct writes.)
 
 ## Phase 6: Worker Synthesis
 
-Runs after `skills` + `knowledge_dirs` triage completes. Reads imported items from `index.json`.
+Runs after `skills` + `claude_repos` triage completes. Entries with `claude_repos[].is_knowledge == true` supply knowledge content. Reads imported items from `index.json`.
 
 ### Cluster detection
 
 A cluster is any group of imported artifacts where:
 
 - ≥`--cluster-min-skills` skills share a domain keyword (filename stem, SKILL.md `description` first word, or parent dir basename), OR
-- ≥1 skill + ≥1 knowledge dir imported from the same source repo/parent, OR
+- ≥1 skill + ≥1 `claude_repos` entry with `is_knowledge == true` from the same source repo/parent, OR
 - ≥1 `agents/*.md` file with both tool list + instructions (worker-shaped)
 
 ### Per-cluster prompt
 
 For each detected cluster, **AskUserQuestion**:
 
-- `question`: "Cluster `{keyword}`: {N} skills + {M} knowledge dirs. Synthesize as a worker?"
+- `question`: "Cluster `{keyword}`: {N} skills + {M} knowledge repos. Synthesize as a worker?"
 - `header`: "Worker synthesis"
 - `options`:
   - `Create worker` — "Inline /newworker with skills + knowledge pre-filled"
@@ -344,14 +342,14 @@ For each detected cluster, **AskUserQuestion**:
 
 Registration order is strict — violate this and the worker's knowledge pointers won't resolve:
 
-1. Verify knowledge dirs from Phase 5 are real directories (`test -d` and `! test -L`) and `companies/{co}/knowledge/` is populated
+1. Verify imported company knowledge lives in a plain real directory (`test -d` and `! test -L`). The manifest `knowledge` value is the directory path; it does not identify a repository.
 2. Inline-invoke `/newworker` with pre-filled fields:
    - `name`: inferred from dominant keyword
    - `scope`: company-scoped if cluster maps to a known slug, else `core/workers/public/`
    - `skills`: paths of imported skill dirs
    - `knowledge`: paths of imported knowledge dirs (must already be registered)
    - `description`: synthesized from SKILL.md frontmatter (user edits in the /newworker flow)
-3. `/newworker` writes `worker.yaml`; `core/workers/registry.yaml` regenerates automatically via reindex.
+3. `/newworker` writes `worker.yaml`; `core/workers/registry.yaml` regenerates automatically via reindex. Company knowledge files remain plain vault-synced files and are not committed to an embedded repository.
 4. Record the cluster in `$SCAN_DIR/synthesized-workers.json`.
 
 ### Shared vs company default
@@ -407,13 +405,13 @@ Print the summary path + `git status` diff preview (not commit — user commits)
 - `options`:
   - `Run /cleanup --audit` — "Validate nothing landed broken"
   - `Run /learn` — "Capture insights from this import"
-  - `Commit now` — "Stage + commit the new state"
+  - `Commit now` — "Stage and commit eligible HQ or repo changes; company knowledge syncs through the company vault"
   - `End` — "Done for now"
 
 ## Rules
 
 - **Plan Mode refuse** — Preflight halts before any scan. No silent degrade.
-- **Self-exclusion** — scanner never reads inside `$HQ_ROOT`. Verified via `realpath` in scan.sh.
+- **Self-exclusion** — Preflight step 3 resolves scope paths and `$HQ_ROOT` with `realpath` and aborts when a scope resolves inside `$HQ_ROOT`; scan.sh also excludes `$HQ_ROOT` during discovery.
 - **Read-only scan** — scan.sh never writes outside `$SCAN_DIR`. Confirmed by scan.sh's lack of any write paths other than `--output`.
 - **Redact before display** — every preview/prompt/report.json the user sees has been through `redact.sh`. Raw source file content is never shown verbatim without explicit `Include raw` choice.
 - **Idempotent** — re-runs check `workspace/imports/index.json` by sha256 and skip already-imported items silently. Different destination for same source → surface as `duplicate source`.
@@ -434,7 +432,7 @@ Print the summary path + `git status` diff preview (not commit — user commits)
 
 **Reads:** `companies/manifest.yaml`, `core/workers/registry.yaml`, `workspace/imports/index.json`, user's disk (per scope), conversation stores read-only (`~/.claude/projects/`, `~/.codex/sessions/`, `~/.grok/`, `--claude-export` path).
 
-**Writes:** `workspace/imports/{scan_id}/` (report, ontology, conversations-{source}, conversation-proposals, summary, synthesized-workers), `workspace/imports/index.json`, `.claude/{commands,skills,hooks,policies,agents}/`, `.claude/settings.json`, `companies/{co}/{knowledge,policies,projects,repos,workers}/`, `companies/manifest.yaml`, `core/workers/public/{id}/worker.yaml` (registry auto-regenerates), `CLAUDE.md` (on user confirm).
+**Writes:** `workspace/imports/{scan_id}/` (report, ontology, conversations-{source}, conversation-proposals, summary, synthesized-workers), `workspace/imports/index.json`, `.claude/{commands,skills,hooks,policies,agents}/`, `.claude/settings.json`, plain company directories under `companies/{co}/{knowledge,policies,projects,repos,workers}/`, `companies/manifest.yaml` (with `knowledge` as a plain directory path), `core/workers/public/{id}/worker.yaml` (registry auto-regenerates), `CLAUDE.md` (on user confirm).
 
 **Never touches:** `~/.claude/plans/` (read-only for ontology), conversation stores (read-only for mining), `~/.ssh/`, `~/.aws/`, `~/.gnupg/`, `.env`, any shell rc file (per HQ deny lists).
 

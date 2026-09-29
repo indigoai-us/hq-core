@@ -226,7 +226,7 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
 - **Show:**
   - List `core/knowledge/public/` directories — show what knowledge bases exist
   - Count total knowledge files: `ls core/knowledge/public/` and any `companies/*/knowledge/`
-  - Show the two supported knowledge storage forms: a plain real directory or a real directory with embedded git. Explain that symlinked knowledge repositories are invalid because sync cannot materialize their contents
+  - Explain that company knowledge is a plain real directory synced through the company vault, while personal knowledge may use embedded Git when independent version history is needed. Explain that knowledge directories must not be symlinked into `repos/` because sync cannot materialize their contents
 - **Exercise (Tier 1):**
   1. Pick a keyword relevant to the user's work (ask them for one via AskUserQuestion)
   2. Run `qmd search "{keyword}" --json -n 5` (BM25 keyword search)

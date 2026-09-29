@@ -143,7 +143,7 @@ If a manifest exists, this phase becomes the primary driver of setup. The manife
 - `steps.directory` failed or missing → HQ directory doesn't exist; abort setup and tell user to re-run installer
 - `steps.templates` failed → HQ template not fetched; attempt `npx --package=@indigoai-us/hq-cli hq init .`
 - `dependencies.node` failed → nothing works; guide user through Node install
-- `steps.git-init` failed → no git repo; run `git init && git add . && git commit -m "init"`
+- `steps.git-init` failed → the HQ root has no Git repo; run `git init && git add . && git commit -m "init"` from the HQ root only. This installer step does not apply to company directories.
 
 **P1 — Required (HQ works poorly without these):**
 - `dependencies.qmd` failed → no semantic search; install the SANCTIONED pin (see `core/scripts/install-deps.allow`): `npm install -g @tobilu/qmd@2.5.3`, then `qmd index .`. Unpinned installs are blocked by the supply-chain guard on purpose.
@@ -605,7 +605,7 @@ Hold this understanding in working memory — Phase 2 weaves it into `profile.md
 
 ### Repos directory (required)
 
-Code repos live under `repos/public/` and `repos/private/`. Knowledge bases are **real directories** under `personal/knowledge/` or `companies/{slug}/knowledge/` (embedded git) — not symlinks into `repos/`.
+Code repos live under `repos/public/` and `repos/private/`. Knowledge bases are **real directories** under `personal/knowledge/` or `companies/{slug}/knowledge/`. Company knowledge always stays a plain directory with no Git metadata; personal knowledge may use embedded Git when independent version history is needed. Never symlink knowledge into `repos/`.
 
 ```bash
 mkdir -p repos/public repos/private
@@ -628,9 +628,12 @@ The schema and a fillable template live at `companies/_template/`.
 Personal and company knowledge directories must be **real directories** so cloud
 sync uploads document contents. Do **not** symlink `personal/knowledge/` or
 `companies/{slug}/knowledge/` into `repos/` — sync records symlinks as vault
-markers and teammates receive nothing.
+markers and teammates receive nothing. Company knowledge must remain a plain
+directory; do not initialize Git inside it. Add a company through
+`/newcompany {slug}`, which creates that directory and records its path in the
+manifest.
 
-For each knowledge base the user wants to create:
+For each **personal** knowledge base that needs separate version history:
 
 1. Create the directory and embedded git repo:
 ```bash
@@ -660,15 +663,16 @@ git add . && git commit -m "init personal knowledge"
 cd -
 ```
 
-If you skip embedded git, `personal/knowledge/` is a plain directory tracked by HQ git — fine for single-machine setups.
+If you skip embedded Git, HQ Git tracks `personal/knowledge/` as a plain directory. This works for single-machine setups. Company knowledge stays plain and syncs through its vault.
 
 **The starter kit's bundled knowledge (Ralph, workers, ai-security-framework, etc.) ships as plain directories. Explain to the user:**
 ```
 Bundled knowledge (Ralph, workers, security framework) ships as plain directories.
 Keep those real directories in place so upgrades and sync see their contents. Add
 personal or company-specific knowledge under personal/knowledge/ or
-companies/{slug}/knowledge/. If separate version history is needed, initialize git
-inside the canonical real directory; never move it into repos/ and symlink it back.
+companies/{slug}/knowledge/. Personal knowledge may use embedded Git for separate
+version history. Company knowledge must stay a plain directory; never initialize
+Git there or move it into repos/ and symlink it back.
 ```
 
 ### Profile files
@@ -809,11 +813,12 @@ Still needs attention:      ← include this block ONLY if a direct install fail
 ✗ {tool} — {what failed; the one manual command the user can run to finish it}
 ...
 
-Knowledge Repos:
-Your personal knowledge bases are real directories under personal/knowledge/.
-Initialize git inside a knowledge directory when it needs independent version history;
-knowledge repositories are never symlinked into HQ.
-See "Knowledge Repos" in core/docs/hq/README.md for details.
+Knowledge directories:
+Personal knowledge bases are real directories under personal/knowledge/ and may
+use embedded Git for independent version history. Company knowledge lives in a
+plain directory under companies/{slug}/knowledge/ and syncs through the company
+vault. Knowledge directories are never symlinked into HQ.
+See "Knowledge directories" in core/docs/hq/README.md for details.
 
 Setup is done. Next: a short orientation + a few questions so I can hand you
 the exact commands to start your first real work.

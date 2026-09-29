@@ -153,8 +153,8 @@ case "$REL_PATH" in
     exit 0
     ;;
   companies/*/knowledge|companies/*/knowledge/*)
-    # Company knowledge is a real canonical directory and may contain an
-    # embedded repo. Let that repo's discipline decide when to commit.
+    # Company knowledge is a plain tenant-scoped directory; vault sync owns it.
+    # Do not stage it in HQ root Git.
     exit 0
     ;;
 esac
@@ -294,10 +294,66 @@ trap 'rm -f -- "$LOCK_DIR/owner" 2>/dev/null || true; rmdir "$LOCK_DIR" 2>/dev/n
 
 recover_stale_index_lock
 
-ADD_OUT="$(git -C "$HQ_ROOT" add -- "$REL_PATH" 2>&1)"
-ADD_RC=$?
-if [[ $ADD_RC -ne 0 ]]; then
-  report_failure "add" "$ADD_RC" "$ADD_OUT"
+ADD_LOCK_MAX_RETRIES=3
+ADD_LOCK_RETRIES=0
+while :; do
+  ADD_OUT="$(LC_ALL=C git -C "$HQ_ROOT" add -- "$REL_PATH" 2>&1)"
+  ADD_RC=$?
+  [[ $ADD_RC -eq 0 ]] && break
+
+  if [[ "$ADD_OUT" != *"index.lock"* || "$ADD_OUT" != *"File exists"* \
+        || "$ADD_LOCK_RETRIES" -ge "$ADD_LOCK_MAX_RETRIES" ]]; then
+    report_failure "add" "$ADD_RC" "$ADD_OUT"
+  fi
+
+  # A fresh index.lock may belong to a live Git writer. Give it a short chance
+  # to finish, then retry the add without touching the lock ourselves.
+  ADD_LOCK_RETRIES=$((ADD_LOCK_RETRIES + 1))
+  sleep 0.2
+done
+
+# A retry leaves a window for another Git writer to stage a separate path.
+# Recheck the staged set before committing so this autosave never consumes that
+# writer's staged work. Keep the common no-retry path free of extra processes.
+if [[ "$ADD_LOCK_RETRIES" -gt 0 ]]; then
+  POST_ADD_STAGED_FILE="$(mktemp "${TMPDIR:-/tmp}/hq-autocommit-staged.XXXXXX" 2>/dev/null)"
+  if [[ -z "$POST_ADD_STAGED_FILE" ]]; then
+    report_failure "staged-paths" 1 "could not create staged-path snapshot"
+  fi
+
+  git -C "$HQ_ROOT" diff --cached --name-only -z >"$POST_ADD_STAGED_FILE" 2>&1
+  POST_ADD_STAGED_RC=$?
+  if [[ "$POST_ADD_STAGED_RC" -ne 0 ]]; then
+    POST_ADD_STAGED_OUT="$(cat "$POST_ADD_STAGED_FILE")"
+    rm -f -- "$POST_ADD_STAGED_FILE"
+    report_failure "diff-cached" "$POST_ADD_STAGED_RC" "$POST_ADD_STAGED_OUT"
+  fi
+
+  POST_ADD_FOREIGN=0
+  POST_ADD_FOREIGN_PATH=""
+  while IFS= read -r -d '' staged_path; do
+    case "$staged_path" in
+      "$REL_PATH"|"$REL_PATH"/*) ;;
+      *)
+        POST_ADD_FOREIGN=1
+        POST_ADD_FOREIGN_PATH="$(printf '%q' "$staged_path")"
+        break
+        ;;
+    esac
+  done <"$POST_ADD_STAGED_FILE"
+
+  if [[ "$POST_ADD_FOREIGN" -eq 1 ]]; then
+    POST_ADD_RESET_OUT="$(git -C "$HQ_ROOT" reset -q -- "$REL_PATH" 2>&1)"
+    POST_ADD_RESET_RC=$?
+    rm -f -- "$POST_ADD_STAGED_FILE"
+    if [[ "$POST_ADD_RESET_RC" -ne 0 ]]; then
+      report_failure "reset" "$POST_ADD_RESET_RC" "$POST_ADD_RESET_OUT"
+    fi
+    log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] SKIP stage=foreign-staged path=${REL_PATH} foreign=${POST_ADD_FOREIGN_PATH} session=${SESSION_KEY}"
+    exit 0
+  fi
+
+  rm -f -- "$POST_ADD_STAGED_FILE"
 fi
 
 # Unstage any control-character path the add pulled in. The guard above rejects

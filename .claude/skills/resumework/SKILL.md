@@ -1,6 +1,6 @@
 ---
 name: resumework
-description: Resume work from a specific handoff thread by id. Loads that thread's saved state (summary, next steps, git, files touched, learnings) and drops you straight back into the work. Use when you have a thread id in hand — e.g. from a previous `/handoff` report — and want to continue that exact session in a fresh one, rather than picking the most recent handoff (`/startwork`) or doing a post-mortem (`/recover-session`).
+description: "Resume a specific handoff thread by id. For the latest handoff use /startwork."
 allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(cat:*), Bash(core/scripts/hq-session.sh:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash, AskUserQuestion
 ---
 

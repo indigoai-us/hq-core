@@ -9,7 +9,8 @@ done
 for d in ontology/facts ontology/_candidates signals/_candidates ontology/entities/person sources/meetings; do
   [ -d "$root/companies/_template/$d" ] && ok || no "template missing $d"
 done
-grep -q 'sources/meetings/source.yaml' "$root/.claude/skills/newcompany/SKILL.md" && ok || no "/newcompany does not seed source.yaml"
+grep -q 'render-company-starter-files.mjs' "$root/.claude/skills/newcompany/SKILL.md" && ok || no "/newcompany does not use the template renderer"
+awk '/^seed:$/ { in_seed=1; next } /^[^ ]/ { in_seed=0 } in_seed && $0 == "  - sources/meetings/source.yaml" { found=1 } END { exit !found }' "$root/companies/_template/.hq-seed.yaml" && ok || no "seed manifest omits sources/meetings/source.yaml"
 grep -q 'never part of the member baseline' "$root/.claude/skills/team-access/SKILL.md" && ok || no "/team-access lacks ontology exclusion"
 grep -q 'never in the' "$root/.claude/skills/designate-team/SKILL.md" && ok || no "/designate-team lacks ontology exclusion"
 sed -n '/^## Release: TBD/,/^## Release: v/p' "$root/core/docs/hq/MIGRATION.md" | grep -q 'signals_capture' && ok || no "MIGRATION TBD lacks capture entry"
