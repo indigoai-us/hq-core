@@ -1,6 +1,6 @@
 ---
 name: new-hire
-description: Onboard a human teammate end-to-end — invite, role, groups, secrets, file access, onboarding packet, and acceptance follow-through. Use when someone new joins a company or an existing teammate needs their access brought up to their role.
+description: "Onboard a teammate end to end: invite, role, groups, secrets, file access, and onboarding packet. Also brings existing access up to role."
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
@@ -103,11 +103,12 @@ Create `companies/{co}/people/{name-slug}/onboarding.md` in the team vault:
   or path is for, and the house rules that govern it (link the company's hard
   policies rather than restating them).
 - **Setup checklist**: `hq login` → `/accept` (if link not yet claimed) →
-  `hq team-sync` → `hq secrets list --company {co}` shows their keys.
+  `hq sync pull --company {co}` → confirm `companies/{co}/` is present →
+  `hq secrets list --company {co}` shows their keys.
 - **First week**: the priorities from Step 2.4.
 
-The packet syncs to them on `hq team-sync` — it outlives the welcome message
-and is the single place to update as their access evolves.
+The packet syncs to them on their next `hq sync pull --company {co}`. It outlives
+the welcome message and is the place to update as their access evolves.
 
 ### 6. Welcome + follow-through
 

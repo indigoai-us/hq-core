@@ -395,10 +395,6 @@ repo_run_cleanup_registry() {
 }
 # --- end repo-run-registry integration ---
 
-trap 'cleanup_on_signal INT' INT
-trap 'cleanup_on_signal TERM' TERM
-trap 'repo_run_cleanup_registry; cleanup_worktree' EXIT
-
 # --- Defaults ---
 PROJECT=""
 RESUME=false
@@ -535,6 +531,14 @@ BUILDER="codex"
 # Headless detection: non-interactive when permissions bypassed (pipeline mode)
 if [[ "$NO_PERMISSIONS" == true ]]; then
   HEADLESS=true
+fi
+
+# A dry run is a read-only query. It must not register cleanup handlers because
+# no worktree or project state has been created on that path.
+if [[ "$DRY_RUN" != true ]]; then
+  trap 'cleanup_on_signal INT' INT
+  trap 'cleanup_on_signal TERM' TERM
+  trap 'repo_run_cleanup_registry; cleanup_worktree' EXIT
 fi
 
 # =============================================================================
@@ -753,11 +757,13 @@ BASE_BRANCH=$(jq -r '.metadata.baseBranch // "main"' "$PRD_PATH")
 # Auto-create worktree when metadata.repoPath points to a path that does not
 # exist yet. Derive the source repo by stripping the trailing `-suffix` from
 # basename(REPO_PATH). Example: repos/private/{product}-sms-guardrails -> repos/private/{product}.
-if [[ -n "$BRANCH_NAME" && -n "$REPO_PATH" ]] && ! is_git_repo "$REPO_PATH"; then
+if [[ "$DRY_RUN" != true && -n "$BRANCH_NAME" && -n "$REPO_PATH" ]] \
+  && ! is_git_repo "$REPO_PATH"; then
   ensure_missing_repo_worktree "$REPO_PATH" "$BRANCH_NAME" "$BASE_BRANCH" || exit 1
 fi
 
-if [[ -n "$BRANCH_NAME" && -n "$REPO_PATH" ]] && is_git_repo "$REPO_PATH"; then
+if [[ "$DRY_RUN" != true && -n "$BRANCH_NAME" && -n "$REPO_PATH" ]] \
+  && is_git_repo "$REPO_PATH"; then
   if [[ "$IN_PLACE" == true || "$WORKTREE_ENABLED" != true ]]; then
     # Opt-out: legacy checkout behavior (no worktree)
     current_branch=$(git -C "$REPO_PATH" branch --show-current 2>/dev/null)
@@ -797,7 +803,7 @@ fi
 
 # =============================================================================
 # Register with repo-run-registry (after worktree setup so REPO_PATH is final)
-if [[ -n "${REPO_PATH:-}" ]]; then
+if [[ "$DRY_RUN" != true && -n "${REPO_PATH:-}" ]]; then
   repo_run_register_for_repo "$REPO_PATH"
 fi
 
@@ -829,9 +835,11 @@ STATE_FILE="$PROJECT_DIR/state.json"
 PROGRESS_FILE="$PROJECT_DIR/progress.txt"
 EXEC_DIR="$PROJECT_DIR/executions"
 
-mkdir -p "$EXEC_DIR"
+if [[ "$DRY_RUN" != true ]]; then
+  mkdir -p "$EXEC_DIR"
+fi
 
-if [[ -f "$STATE_FILE" ]]; then
+if [[ "$DRY_RUN" != true && -f "$STATE_FILE" ]]; then
   existing_status=$(jq -r '.status // "unknown"' "$STATE_FILE")
   if [[ "$existing_status" == "completed" && "$RETRY_FAILED" != true ]]; then
     echo -e "${YELLOW}Project already completed. Use --retry-failed to re-run failures.${NC}"
@@ -861,7 +869,7 @@ if [[ -f "$STATE_FILE" ]]; then
     --action "Resuming project: $TOTAL stories, $COMPLETED completed (resume=true)" \
     --result success \
     --session-id "$SESSION_ID" || true
-else
+elif [[ "$DRY_RUN" != true ]]; then
   # Initialize new state
   cat > "$STATE_FILE" <<EOF
 {
@@ -908,7 +916,9 @@ migrate_state_schema() {
   fi
 }
 
-migrate_state_schema
+if [[ "$DRY_RUN" != true ]]; then
+  migrate_state_schema
+fi
 
 # =============================================================================
 # Checkout Config (from orchestrator.yaml)
@@ -2463,13 +2473,12 @@ Update 4 documentation layers based on what changed:
 
 4. COMPANY KNOWLEDGE (business knowledge)
    - Path: $HQ_ROOT/companies/${company}/knowledge/
-   - This is a SEPARATE git repo — commit here independently
-   - cd companies/${company}/knowledge/ && git add -A && git commit -m 'docs: update from $project completion'
-   - Update architecture docs, integration docs, process docs as needed
+   - This is a plain directory synced through the company vault; never initialize or commit Git here
+   - Write relevant architecture, integration, or process docs here and let company sync distribute them
 
 Rules:
 - Commit repo docs to the repo branch ($branch)
-- Commit company knowledge to the knowledge repo (separate git)
+- Company knowledge files sync through the company vault; do not run git add or git commit in that directory
 - Do NOT create boilerplate — only document what actually changed
 - Do NOT use EnterPlanMode or TodoWrite
 - Output JSON: {\"layers_updated\": [\"internal\",\"external\",\"repo_knowledge\",\"company_knowledge\"], \"files_touched\": [], \"summary\": \"1-sentence\"}"
@@ -3742,10 +3751,10 @@ if [[ "$SWARM_MODE" == true ]]; then
 
     # Filter out stories that exhausted swarm retries (already in retry_queue)
     if [[ -n "$local_candidates" && ${#retry_queue[@]} -gt 0 ]]; then
-      local filtered_candidates=""
+      filtered_candidates=""
       while IFS= read -r _cand; do
         [[ -z "$_cand" ]] && continue
-        local _in_retry=false
+        _in_retry=false
         for _rq in "${retry_queue[@]}"; do
           [[ "$_rq" == "$_cand" ]] && _in_retry=true && break
         done

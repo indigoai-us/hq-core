@@ -133,7 +133,7 @@ For a new company skill, run:
   hq skill --company $CO create $NAME --no-sync
 
 Then edit $CANONICAL and run the create command again to surface and sync it.
-Generated `.claude/skills/` wrappers are owned by HQ.
+Generated \`.claude/skills/\` wrappers are owned by HQ.
 
 Override (rare, audited): set HQ_ALLOW_DIRECT_PREFIX_WRITE=1 to bypass this check.
 MSG

@@ -1,0 +1,279 @@
+# CLI-hosted scaffold entrypoints. This is a restricted YAML 1.2 subset:
+# `entries` is a sequence of flat mappings; `note` is a literal text block.
+# The Bash 3.2 + awk parser in lib/cli-hosted-manifest.awk reads these fields.
+# Keep values unquoted, one field per line, and do not add YAML aliases/nesting.
+entries:
+  - path: .claude/hooks/block-foreground-timeout-over-harness-ceiling.sh
+    command: timeout-guard
+    kind: hybrid
+    root: cwd
+    interpreter: bash
+    min_cli: 5.99.1
+    state: forwarded
+    note: |
+      The hook forwards its payload to the CLI command and fails open when hq is missing.
+  - path: .claude/hooks/checkpoint-stop-gate.sh
+    command: checkpoint-stop-gate
+    kind: hybrid
+    root: live
+    interpreter: bash
+    min_cli: 5.99.0
+    state: forwarded
+    note: |
+      The hook probes CLI capabilities and falls back to the in-tree implementation.
+  - path: .claude/hooks/hook-timeout-watchdog.sh
+    command: sentry report
+    kind: hybrid
+    root: live
+    interpreter: bash
+    min_cli: 5.112.0
+    state: forwarded
+    note: |
+      The hook invokes sentry report without --hq-root, so hq-cli resolves the live root;
+      hq core commands --json reports root: live for the command.
+  - path: core/scripts/archive-old-threads.sh
+    command: archive-old-threads
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/codex-skill-bridge.sh
+    command: codex-skill-bridge
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/detect-stale-core-policy-mirror.sh
+    command: detect-stale-core-policy-mirror
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/generate-workers-registry.sh
+    command: generate-workers-registry
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a derived-index generator invoked explicitly and by reindex, so
+      process startup is immaterial and the CLI already owns the index primitives.
+
+      Equivalence is not assumed. The CLI's native implementation is pinned against a
+      byte-frozen copy of this script's pre-migration source by a differential suite
+      (hq-cli e2e/registry-scan-differential.test.ts), which compares exit status,
+      stdout, stderr and a sha256 manifest of every file touched, across repeated runs.
+  - path: core/scripts/hq-session.sh
+    command: hq-session
+    kind: hybrid
+    root: live
+    interpreter: bash
+    min_cli: 5.99.0
+    state: forwarded
+    note: |
+      This call site probes CLI capabilities and falls back to the in-tree implementation.
+  - path: core/scripts/hq-status-summary.sh
+    command: hq-status-summary
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/ontology-readme-drift.sh
+    command: ontology-readme-drift
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/qmd-reindex-after-sync.sh
+    command: qmd-reindex-after-sync
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/rebuild-all-indexes.sh
+    command: rebuild-index all
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/rebuild-companies-index.sh
+    command: rebuild-index companies
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/rebuild-company-knowledge-index.sh
+    command: rebuild-index company-knowledge
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/rebuild-orchestrator-index.sh
+    command: rebuild-index orchestrator
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/rebuild-projects-index.sh
+    command: rebuild-index projects
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/rebuild-public-knowledge-index.sh
+    command: rebuild-index public-knowledge
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/rebuild-reports-index.sh
+    command: rebuild-index reports
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/rebuild-social-drafts-index.sh
+    command: rebuild-index social-drafts
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/rebuild-threads-index.sh
+    command: rebuild-index threads
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/rebuild-workers-index.sh
+    command: rebuild-index workers
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/resize-screenshot.sh
+    command: resize-screenshot
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/scan-packages.sh
+    command: scan-packages
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: the pack contribution mapping it encoded is single-sourced in the CLI
+      (src/utils/pack-contributions.ts); keeping a second copy here invited drift.
+
+      Equivalence is not assumed. The CLI's native implementation is pinned against a
+      byte-frozen copy of this script's pre-migration source by a differential suite
+      (hq-cli e2e/registry-scan-differential.test.ts), which compares exit status,
+      stdout, stderr and a sha256 manifest of every file touched, across repeated runs.
+  - path: core/scripts/token-usage-report.sh
+    command: token-usage-report
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold, explicitly-invoked operation where
+      process startup is immaterial, so hosting it in the CLI costs nothing and
+      keeps the scaffold to configuration rather than code.
+  - path: core/scripts/worktree.sh
+    command: worktree
+    kind: hybrid
+    root: live
+    interpreter: bash
+    min_cli: 5.78.0
+    state: forwarded
+    note: |
+      The wrapper captures CLI stdout and writes a worktree creation stamp after a successful call.

@@ -32,7 +32,7 @@ HQ/
 ├── AGENTS.md           # Runtime entrypoint (symlink to .claude/CLAUDE.md)
 ├── companies/          # Company-scoped resources (registry: companies/manifest.yaml)
 │   └── {co}/
-│       ├── knowledge/  # Embedded git repo (company knowledge)
+│       ├── knowledge/  # Plain company directory, synced through its vault
 │       ├── policies/   # Standing operational rules
 │       ├── repos/      # Symlinks → repos/{pub|priv}/
 │       ├── settings/   # Credentials & config

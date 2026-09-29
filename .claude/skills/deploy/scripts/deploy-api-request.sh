@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$_dir" && pwd)"
 IDENTITY_RESOLVER="${HQ_DEPLOY_IDENTITY_RESOLVER:-$SCRIPT_DIR/identity-resolve.sh}"
 
 usage() {
-  echo "usage: $0 --stage <stage> --method <method> --url <url> [--org <slug>] [--scope <scope>] [--header <header>] [--data <json>] [--upload-file <path>] [--expect <jq-expression>] [--no-auth]" >&2
+  echo "usage: $0 --stage <stage> --method <method> --url <url> [--org <slug>] [--scope <scope>] [--header <header>] [--data <json>] [--upload-file <path>] [--form-string <name=value>] [--form-file <name=path>] [--expect <jq-expression>] [--no-auth]" >&2
   exit 64
 }
 
@@ -25,6 +25,8 @@ ORG=""
 SCOPE=""
 DATA=""
 UPLOAD_FILE=""
+FORM_STRINGS=()
+FORM_FILES=()
 EXPECT=""
 USE_AUTH=1
 HEADERS=()
@@ -39,6 +41,8 @@ while [ "$#" -gt 0 ]; do
     --header) HEADERS+=("${2:-}"); shift 2 ;;
     --data) DATA="${2:-}"; shift 2 ;;
     --upload-file) UPLOAD_FILE="${2:-}"; shift 2 ;;
+    --form-string) FORM_STRINGS+=("${2:-}"); shift 2 ;;
+    --form-file) FORM_FILES+=("${2:-}"); shift 2 ;;
     --expect) EXPECT="${2:-}"; shift 2 ;;
     --no-auth) USE_AUTH=0; shift ;;
     *) usage ;;
@@ -53,6 +57,22 @@ fi
 if [ -n "$DATA" ] && [ -n "$UPLOAD_FILE" ]; then
   usage
 fi
+if { [ -n "$DATA" ] || [ -n "$UPLOAD_FILE" ]; } \
+  && { [ "${#FORM_STRINGS[@]}" -gt 0 ] || [ "${#FORM_FILES[@]}" -gt 0 ]; }; then
+  usage
+fi
+for form_value in "${FORM_STRINGS[@]}"; do
+  case "$form_value" in *=*) [ -n "${form_value%%=*}" ] || usage ;; *) usage ;; esac
+done
+for form_file in "${FORM_FILES[@]}"; do
+  case "$form_file" in
+    *=*)
+      [ -n "${form_file%%=*}" ] && [ -n "${form_file#*=}" ] || usage
+      [ -f "${form_file#*=}" ] || usage
+      ;;
+    *) usage ;;
+  esac
+done
 
 RESPONSE_BODY="$(mktemp -t hq-deploy-response.XXXXXX)"
 CURL_ERRORS="$(mktemp -t hq-deploy-curl.XXXXXX)"
@@ -124,6 +144,15 @@ request_once() {
     curl_args+=(--data "$DATA")
   elif [ -n "$UPLOAD_FILE" ]; then
     curl_args+=(--data-binary "@$UPLOAD_FILE")
+  else
+    for form_value in "${FORM_STRINGS[@]}"; do
+      curl_args+=(--form-string "$form_value")
+    done
+    for form_file in "${FORM_FILES[@]}"; do
+      form_name="${form_file%%=*}"
+      form_path="${form_file#*=}"
+      curl_args+=(--form "$form_name=@$form_path;type=application/gzip;filename=upload.tar.gz")
+    done
   fi
   curl_args+=("$URL")
 

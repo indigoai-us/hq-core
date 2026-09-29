@@ -99,14 +99,32 @@ done
 
 if [[ "$KNOWLEDGE_WRITE" == true ]]; then
   RAW_REL="${RAW_PATH#$RAW_PROJECT_DIR/}"
-  cat >&2 <<EOF
+  case "$RAW_REL" in
+    companies/*/knowledge|companies/*/knowledge/*)
+      cat >&2 <<EOF
+BLOCKED: company knowledge must be a plain real directory, not a symlink into repos/.
+  File: $RAW_REL
+  Resolves to: $REL
+
+Do not use the hq reindex command for company knowledge; it may create embedded Git
+metadata that company folders cannot contain. Preserve any needed source
+history outside the company folder, materialize the files in a real directory,
+and verify both:
+
+  test -d "$RAW_REL"
+  ! test -L "$RAW_REL"
+EOF
+      ;;
+    *)
+      cat >&2 <<EOF
 BLOCKED: direct edits inside repos/ are not allowed.
   File: $RAW_REL
   Resolves to: $REL
 
-This is an invalid legacy knowledge symlink. Knowledge repositories must be
-real directories at their canonical path, with git initialized there when
-separate history is needed. Never write through this link or bypass the guard.
+This is an invalid legacy knowledge symlink. Knowledge directories must be real
+directories at their canonical path. Company knowledge must stay a plain
+directory; personal knowledge may use embedded Git for separate history. Never
+write through this link or bypass the guard.
 
 Run \`hq reindex\` to migrate automatically: it pulls the legacy repo, copies
 its content (and git history) inline at "$RAW_REL", and removes the fully
@@ -116,6 +134,8 @@ history there if needed. Either way, verify both:
   test -d "$RAW_REL"
   ! test -L "$RAW_REL"
 EOF
+      ;;
+  esac
   exit 2
 fi
 

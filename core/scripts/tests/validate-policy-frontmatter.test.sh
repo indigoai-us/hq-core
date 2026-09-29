@@ -120,7 +120,40 @@ output="$(printf '%s' "$payload" | HQ_ROOT="$disabled_root" HQ_ALLOW_POLICY_NO_T
 printf '%s\n' "$output" | grep -F -- "override active" >/dev/null || fail "override path must be noted on stderr"
 pass "non-executable evaluator with override -> allow and note degraded validation"
 
-echo "[2d] every deny message hardens the validator override"
+echo "[2d] a 127 floor forwarder fails closed with the unchanged diagnostic"
+forwarder_root="$PROJ/forwarder-evaluator-root"
+mkdir -p "$forwarder_root/core/scripts"
+cat > "$forwarder_root/core/scripts/eval-trigger.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'eval-trigger.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest' >&2
+exit 127
+EOF
+chmod +x "$forwarder_root/core/scripts/eval-trigger.sh"
+payload="$(wp "$PROJ/core/policies/forwarder-evaluator.md" "$GOOD")"
+if printf '%s' "$payload" | HQ_ROOT="$forwarder_root" bash "$HOOK" \
+  >"$PROJ/forwarder-validator.out" 2>"$PROJ/forwarder-validator.err"; then
+  got=0
+else
+  got=$?
+fi
+[ "$got" = 2 ] || fail "127 evaluator forwarder should fail closed with exit 2, got $got"
+[ ! -s "$PROJ/forwarder-validator.out" ] || fail "127 evaluator forwarder unexpectedly wrote stdout"
+cat > "$PROJ/forwarder-validator.expected" <<EOF
+BLOCKED: cannot validate this policy's when: expression because the canonical
+trigger evaluator is unavailable.
+
+Checked: $forwarder_root/core/scripts/eval-trigger.sh
+Expected: an executable core/scripts/eval-trigger.sh resolved from HQ_ROOT.
+
+This write is blocked fail-closed rather than silently skipping syntax
+validation. Restore that executable (or correct HQ_ROOT / CLAUDE_PROJECT_DIR)
+and retry; allowing the write would permit rules that can never parse or fire.
+EOF
+cmp -s "$PROJ/forwarder-validator.expected" "$PROJ/forwarder-validator.err" \
+  || fail "127 evaluator diagnostic differs: $(cat "$PROJ/forwarder-validator.err")"
+pass "127 evaluator forwarder preserves exact fail-closed status/stdout/stderr"
+
+echo "[2e] every deny message hardens the validator override"
 HARD_ALWAYS_REACTIVE=$'---\nid: hq-x\nwhen: always\non: [PreToolUse]\nenforcement: hard\n---\n## Rule\nx\n'
 HARD_UPPER_ALWAYS_REACTIVE=$'---\nid: hq-x\nwhen: ALWAYS\non: [UserPromptSubmit]\nenforcement: hard\n---\n## Rule\nx\n'
 HARD_TOO_LONG=$'---\nid: hq-x\nwhen: deploy\non: [PreToolUse]\nenforcement: hard\n---\n## Rule\nThis binding rule is deliberately longer than one byte.\n'

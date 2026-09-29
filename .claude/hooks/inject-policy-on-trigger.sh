@@ -39,29 +39,38 @@
 
 set -euo pipefail
 
-STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
+STDIN_JSON=""
+IFS= read -r -d '' STDIN_JSON || true
+while [[ "$STDIN_JSON" == *$'\n' ]]; do
+  STDIN_JSON="${STDIN_JSON%$'\n'}"
+done
 STDIN_FILE=""
 POLICY_TRIGGER_INPUT_FILE_LIMIT=65536
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HELPERS="$(cd "$SCRIPT_DIR/../.." && pwd)/core/scripts"
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${SCRIPT_SOURCE%/*}"
+[ "$SCRIPT_DIR" != "$SCRIPT_SOURCE" ] || SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
+HELPERS="${SCRIPT_DIR%/.claude/hooks}/core/scripts"
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
 
 JQ="$(command -v jq || true)"
-
-. "$HELPERS/hook-lib.sh"
 
 # The timeout watchdog and master hook use this exact session-hash convention
 # for their per-dispatch journal. Adapter runtimes execute this hook before the
 # master hook exports HQ_HOOK_TIMEOUT_JOURNAL_FILE, so derive the same path when
 # the environment handoff has not happened yet.
 policy_trigger_sha256() {
+  local digest
   if command -v shasum >/dev/null 2>&1; then
-    printf '%s\0' "$@" | shasum -a 256 2>/dev/null | awk '{print $1}'
+    digest="$(printf '%s\0' "$@" | shasum -a 256 2>/dev/null)" || return 1
+    printf '%s\n' "${digest%% *}"
   elif command -v sha256sum >/dev/null 2>&1; then
-    printf '%s\0' "$@" | sha256sum 2>/dev/null | awk '{print $1}'
+    digest="$(printf '%s\0' "$@" | sha256sum 2>/dev/null)" || return 1
+    printf '%s\n' "${digest%% *}"
   elif command -v openssl >/dev/null 2>&1; then
-    printf '%s\0' "$@" | openssl dgst -sha256 2>/dev/null | awk '{print $NF}'
+    digest="$(printf '%s\0' "$@" | openssl dgst -sha256 2>/dev/null)" || return 1
+    printf '%s\n' "${digest##* }"
   else
     return 1
   fi
@@ -80,10 +89,13 @@ policy_trigger_journal_file() {
 }
 
 extract() {
+  if ! declare -F hq_json_get >/dev/null 2>&1; then
+    . "$HELPERS/hook-lib.sh"
+  fi
   printf '%s' "$STDIN_JSON" | hq_json_get "$1"
 }
 
-# These four scalar values are required on every invocation. When jq is
+# These five scalar values are required on every invocation. When jq is
 # available (the same prerequisite for policy evaluation below), extract them
 # in one process rather than launching jq four times. NUL delimiters keep
 # whitespace and embedded newlines intact; command substitution then matches
@@ -102,20 +114,23 @@ if [ -n "$JQ" ]; then
       scalar(["hook_event_name"]) + "\u0000",
       scalar(["session_id"]) + "\u0000",
       scalar(["tool_name"]) + "\u0000",
-      scalar(["cwd"]) + "\u0000"
+      scalar(["cwd"]) + "\u0000",
+      scalar(["tool_input", "command"]) + "\u0000"
     ' 2>/dev/null
   )
 fi
-if [ "${#INITIAL_FIELDS[@]}" -eq 4 ]; then
-  EVENT="$(printf '%s' "${INITIAL_FIELDS[0]}")"
-  SESSION_ID="$(printf '%s' "${INITIAL_FIELDS[1]}")"
-  TOOL_NAME="$(printf '%s' "${INITIAL_FIELDS[2]}")"
-  CWD="$(printf '%s' "${INITIAL_FIELDS[3]}")"
+if [ "${#INITIAL_FIELDS[@]}" -eq 5 ]; then
+  EVENT="${INITIAL_FIELDS[0]}"
+  SESSION_ID="${INITIAL_FIELDS[1]}"
+  TOOL_NAME="${INITIAL_FIELDS[2]}"
+  CWD="${INITIAL_FIELDS[3]}"
+  ARG="${INITIAL_FIELDS[4]}"
 else
   EVENT="$(extract hook_event_name)"
   SESSION_ID="$(extract session_id)"
   TOOL_NAME="$(extract tool_name)"
   CWD="$(extract cwd)"
+  ARG="$(extract tool_input.command)"
 fi
 [ -z "$EVENT" ] && EVENT="PreToolUse"
 [ -z "$CWD" ] && CWD="$HQ_ROOT"
@@ -129,9 +144,8 @@ fi
 
 # Per-session dedupe ledger (unchanged location for continuity).
 DEDUPE_DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
-mkdir -p "$DEDUPE_DIR" 2>/dev/null || true
 DEDUPE_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.txt"
-touch "$DEDUPE_FILE" 2>/dev/null || true
+STATS_DIR="$HQ_ROOT/workspace/orchestrator/policy-emit-stats"
 
 # Second ledger for `inject: always` policies (see the frontmatter field of the
 # same name). Where the session ledger above fires a slug at most once for the
@@ -142,9 +156,23 @@ touch "$DEDUPE_FILE" 2>/dev/null || true
 # ledgers are disjoint by policy: a `once` slug is only ever recorded in the
 # session ledger, an `always` slug only in the turn ledger.
 TURN_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.turn.txt"
+FACTS_TMP_DIR=""
+JOURNAL_FILE=""
+JOURNAL_DIR=""
+if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-trigger-facts.sh" ]; then
+  FACTS_TMP_DIR="$HQ_ROOT/workspace/orchestrator/hook-state"
+  JOURNAL_FILE="$(policy_trigger_journal_file)"
+  [ -z "$JOURNAL_FILE" ] || JOURNAL_DIR="${JOURNAL_FILE%/*}"
+  STATE_DIRS=("$DEDUPE_DIR" "$FACTS_TMP_DIR")
+  [ -z "$JOURNAL_DIR" ] || STATE_DIRS+=("$JOURNAL_DIR")
+  mkdir -p "${STATE_DIRS[@]}" 2>/dev/null || true
+else
+  mkdir -p "$DEDUPE_DIR" 2>/dev/null || true
+fi
 if [ "$EVENT" = "UserPromptSubmit" ]; then
   : > "$TURN_FILE" 2>/dev/null || true
 fi
+touch "$DEDUPE_FILE" 2>/dev/null || true
 touch "$TURN_FILE" 2>/dev/null || true
 
 # Accumulate
@@ -159,12 +187,39 @@ MATCHES=""
 # governs its cadence? `once` (default) consults the session ledger; `always`
 # consults the per-turn ledger.
 already() {
+  local ledger line
   if [ "${2:-once}" = "always" ]; then
-    grep -Fxq "$1" "$TURN_FILE" 2>/dev/null
+    ledger="$TURN_FILE"
   else
-    grep -Fxq "$1" "$DEDUPE_FILE" 2>/dev/null
+    ledger="$DEDUPE_FILE"
   fi
+  [ -r "$ledger" ] || return 1
+  # This runs once for every policy match. An external grep here adds a child
+  # process for each matching slug. Read the newline-delimited ledger with Bash
+  # builtins so membership stays fresh for each match without another fork.
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ "$line" = "$1" ] && return 0
+  done < "$ledger" 2>/dev/null
+  return 1
 }
+
+# Copy a ledger byte-for-byte through Bash builtins for the evaluation-cache
+# digest. Ledgers contain newline-delimited slugs; preserve a final unterminated
+# line too, matching `cat` without launching a process for each ledger.
+append_policy_ledger() {
+  local ledger="$1" line=""
+  [ -r "$ledger" ] || return 0
+  while :; do
+    line=""
+    if IFS= read -r line; then
+      printf '%s\n' "$line"
+    else
+      [ -n "$line" ] && printf '%s' "$line"
+      break
+    fi
+  done < "$ledger" 2>/dev/null || true
+}
+
 # The ledgers are newline-separated policy slugs. Keep the normal path at the
 # same process cost as before, but compact a ledger once it grows past 64 KiB.
 # Compaction removes duplicate slugs without dropping an older policy, so the
@@ -225,7 +280,7 @@ acquire_policy_ledger_lock() {
 
 release_policy_ledger_lock() {
   local ledger="$1" lock_dir="${1}.lock" owner=""
-  owner="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+  IFS= read -r owner < "$lock_dir/pid" 2>/dev/null || true
   [ "$owner" = "$$" ] || return 0
   rm -f "$lock_dir/pid" 2>/dev/null || true
   rmdir "$lock_dir" 2>/dev/null || true
@@ -288,10 +343,22 @@ worker_policy_diagnostic() {
 }
 
 policy_file_bytes() {
-  local bytes=""
-  bytes="$(wc -c < "$1" 2>/dev/null || true)"
-  bytes="${bytes//[!0-9]/}"
-  printf '%s' "${bytes:-0}"
+  local LC_ALL=C line="" bytes=0 terminated=0
+  while :; do
+    line=""
+    if IFS= read -r line; then
+      terminated=1
+    else
+      terminated=0
+    fi
+    bytes=$((bytes + ${#line} + terminated))
+    if [ "$bytes" -gt 131072 ]; then
+      bytes=131073
+      break
+    fi
+    [ "$terminated" -eq 1 ] || break
+  done < "$1" 2>/dev/null || true
+  printf '%s' "$bytes"
 }
 
 # Store the byte length in POLICY_VALUE_BYTES without spawning a counting
@@ -346,11 +413,11 @@ compact_policy_ledger() {
 # to the current dispatch and does not become a second unbounded ledger.
 record_policy_trigger_sizes() {
   local journal_file metadata_file journal_dir temporary
-  journal_file="$(policy_trigger_journal_file)"
+  journal_file="$JOURNAL_FILE"
   [ -n "$journal_file" ] || return 0
   metadata_file="${journal_file}.meta"
   journal_dir="${journal_file%/*}"
-  mkdir -p "$journal_dir" 2>/dev/null || return 0
+  [ -d "$journal_dir" ] || mkdir -p "$journal_dir" 2>/dev/null || return 0
   if [ ! -f "$metadata_file" ]; then
     temporary="$(mktemp "${metadata_file}.XXXXXX" 2>/dev/null || true)"
     if [ -n "$temporary" ]; then
@@ -369,7 +436,6 @@ record_policy_trigger_sizes() {
 FACTS_FILE=""
 INTENT_FACTS_FILE=""
 FACT_PAIR_FILE=""
-FACTS_TMP_DIR=""
 POLICY_BODY_TMP_DIR=""
 POLICY_ARG_INLINE_LIMIT=65536
 
@@ -388,7 +454,7 @@ prepare_policy_trigger_input() {
   [ "${#STDIN_JSON}" -gt "$POLICY_TRIGGER_INPUT_FILE_LIMIT" ] || return 0
   [ -n "$STDIN_FILE" ] && return 0
   [ -n "$FACTS_TMP_DIR" ] || FACTS_TMP_DIR="$HQ_ROOT/workspace/orchestrator/hook-state"
-  mkdir -p "$FACTS_TMP_DIR" 2>/dev/null || return 0
+  [ -d "$FACTS_TMP_DIR" ] || return 0
   temporary="$(mktemp "$FACTS_TMP_DIR/.policy-trigger-input.XXXXXX" 2>/dev/null || true)"
   [ -n "$temporary" ] || return 0
   if printf '%s' "$STDIN_JSON" > "$temporary" 2>/dev/null; then
@@ -417,7 +483,7 @@ spill_policy_facts() {
   local value="$1" label="$2" temporary=""
   [ "${#value}" -gt "$POLICY_ARG_INLINE_LIMIT" ] || return 0
   [ -n "$FACTS_TMP_DIR" ] || return 0
-  [ -d "$FACTS_TMP_DIR" ] || mkdir -p "$FACTS_TMP_DIR" 2>/dev/null || return 0
+  [ -d "$FACTS_TMP_DIR" ] || return 0
   temporary="$(mktemp "$FACTS_TMP_DIR/.policy-trigger-$label.XXXXXX" 2>/dev/null || true)"
   [ -n "$temporary" ] || return 0
   if printf '%s\n' "$value" > "$temporary"; then
@@ -468,7 +534,6 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # for this helper. Large tool commands therefore spend the entire adapter
   # deadline moving an already-buffered JSON string through a pipe. Hand the
   # helper a regular file once the payload crosses the inline threshold.
-  FACTS_TMP_DIR="$HQ_ROOT/workspace/orchestrator/hook-state"
   prepare_policy_trigger_input
   # AssistantIntent channel: AI-message-only facts, available where there is a
   # transcript look-back (PreToolUse + UserPromptSubmit). Policies with
@@ -482,7 +547,6 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     # newlines before returning. Read the records from a file rather than using
     # `${pair#*newline}`; Bash's shortest-prefix matcher becomes quadratic on a
     # 200 KB first line and can consume the entire adapter deadline.
-    mkdir -p "$FACTS_TMP_DIR" 2>/dev/null || true
     FACT_PAIR_FILE="$(mktemp "$FACTS_TMP_DIR/.policy-trigger-pair.XXXXXX" 2>/dev/null || true)"
     if [ -n "$FACT_PAIR_FILE" ]; then
       run_derive_trigger_facts "$EVENT" 1 > "$FACT_PAIR_FILE"
@@ -734,12 +798,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   elif command -v shasum >/dev/null 2>&1; then
     POLICY_HASH_MODE="shasum"
   fi
-  POLICY_FINGERPRINT_MODE=""
-  if stat -Lc '%n\t%i\t%s\t%y\t%z' "$SCRIPT_DIR" >/dev/null 2>&1; then
-    POLICY_FINGERPRINT_MODE="metadata"
-  elif [ -n "$POLICY_HASH_MODE" ]; then
-    POLICY_FINGERPRINT_MODE="content"
-  fi
+  POLICY_FINGERPRINT_MODE="auto"
   policy_hash() {
     case "$POLICY_HASH_MODE" in
       sha256sum) sha256sum "$@" 2>/dev/null ;;
@@ -749,35 +808,15 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   }
   policy_fingerprint() {
     local manifest digest
-    case "$POLICY_FINGERPRINT_MODE" in
-      metadata)
-        # Stream the stat manifest straight into SHA-256. Holding the roughly
-        # half-megabyte manifest in a command-substitution variable doubled the
-        # warm-path fingerprint cost on a 3,476-policy corpus; pipefail keeps a
-        # partial stat failure fail-open just as the old assignment did.
-        digest="$(stat -Lc '%n\t%i\t%s\t%y\t%z' "$@" 2>/dev/null | policy_hash)" || return 1
-        printf '%s\n' "${digest%% *}"
-        return 0
-        ;;
-      content)
-        manifest="$(policy_hash "$@")" || return 1
-        ;;
-      *) return 1 ;;
-    esac
-    digest="$(printf '%s\n' "$manifest" | policy_hash)" || return 1
+    # Try one complete metadata pass on GNU stat. BSD stat rejects GNU's
+    # format and falls back to the existing content fingerprint, preserving
+    # the macOS path without a separate capability-probe process.
+    digest="$(stat -Lc '%n\t%i\t%s\t%y\t%z' "$@" 2>/dev/null | policy_hash)" || {
+      manifest="$(policy_hash "$@")" || return 1
+      digest="$(printf '%s\n' "$manifest" | policy_hash)" || return 1
+    }
     printf '%s\n' "${digest%% *}"
-  }
-  policy_cache_state_dir() {
-    # A few standalone hook fixtures provide only hq_json_get. Keep those
-    # lightweight callers fail-open while using hook-lib's standard location
-    # whenever the full helper is available.
-    if declare -F hq_hook_state_dir >/dev/null 2>&1; then
-      hq_hook_state_dir "$HQ_ROOT"
-    else
-      local state_dir="$HQ_ROOT/workspace/orchestrator/hook-state"
-      mkdir -p "$state_dir" 2>/dev/null || true
-      printf '%s\n' "$state_dir"
-    fi
+    return 0
   }
 
   # The cached records use ASCII FS (0x1c), outside valid policy frontmatter
@@ -789,14 +828,19 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   CACHE_TMP=""
   CACHE_STATUS=""
   CACHE_FILE=""
-  EVAL_INPUTS=("${POLICY_FILES[@]}")
+  # Bash 3.2 with nounset treats an empty array expansion as unbound even
+  # after POLICY_FILES=(). Use the guarded form so a valid empty scope stays empty.
+  EVAL_INPUTS=("${POLICY_FILES[@]+"${POLICY_FILES[@]}"}")
   if [ "${#POLICY_FILES[@]}" -gt 0 ] && [ -n "$POLICY_HASH_MODE" ] && [ -n "$POLICY_FINGERPRINT_MODE" ]; then
     POLICY_FINGERPRINT="$(policy_fingerprint "${POLICY_FILES[@]}" 2>/dev/null || true)"
     if [ -n "$POLICY_FINGERPRINT" ]; then
       scope_hash="$(printf '%s\n' "${DIRS[@]}" | policy_hash 2>/dev/null || true)"
       scope_key="${scope_hash%% *}"
-      CACHE_DIR="$(policy_cache_state_dir)/policy-trigger-cache"
-      if [ -n "$scope_key" ] && mkdir -p "$CACHE_DIR" 2>/dev/null; then
+      CACHE_DIR="$HQ_ROOT/workspace/orchestrator/hook-state/policy-trigger-cache"
+      if [ -n "$scope_key" ]; then
+        mkdir -p "$CACHE_DIR" "$CACHE_DIR/eval-v4" "$STATS_DIR" 2>/dev/null || true
+      fi
+      if [ -n "$scope_key" ] && [ -d "$CACHE_DIR" ]; then
         CACHE_FILE="$CACHE_DIR/${scope_key}.cache"
         CACHE_HEADER="hq-policy-cache-v1${CACHE_SEP}${POLICY_FINGERPRINT}"
         cache_header=""
@@ -853,9 +897,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     eval_input_hash="$(
       {
         printf '%s\034%s\034%s\034%s\034' "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS"
-        cat "$DEDUPE_FILE" 2>/dev/null || true
+        append_policy_ledger "$DEDUPE_FILE"
         printf '\034'
-        cat "$TURN_FILE" 2>/dev/null || true
+        append_policy_ledger "$TURN_FILE"
         printf '\n'
       } | policy_hash 2>/dev/null || true
     )"
@@ -867,7 +911,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # records at v1, but namespace evaluation results by evaluator semantics
       # so old verdicts cannot survive case-insensitive trigger matching.
       EVAL_CACHE_DIR="$CACHE_DIR/eval-v4"
-      if mkdir -p "$EVAL_CACHE_DIR" 2>/dev/null; then
+      if [ -d "$EVAL_CACHE_DIR" ]; then
         eval_slot="$(printf '%02x' "$((16#${eval_session_key:0:2} % 64))")"
         EVAL_CACHE_FILE="$EVAL_CACHE_DIR/${scope_key}.${eval_slot}.eval"
         EVAL_CACHE_HEADER="hq-policy-eval-v4${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
@@ -1204,7 +1248,6 @@ fi
 # tokenize), so it still covers cases path (A) misses. Rule of thumb: drop a
 # legacy row only when an equivalent `when:` covers the SAME command surface.
 if [ "$EVENT" = "PreToolUse" ] && [ "$TOOL_NAME" = "Bash" ]; then
-  ARG="$(extract tool_input.command)"
   if [ -n "$ARG" ]; then
     TAB=$'\t'
     TRIGGERS=$(printf '%s\n' \
@@ -1216,7 +1259,7 @@ if [ "$EVENT" = "PreToolUse" ] && [ "$TOOL_NAME" = "Bash" ]; then
       "(^|[[:space:]])(npm|yarn|bun|pnpm)[[:space:]]+(install|i|add)[[:space:]]+[^-]${TAB}hq-pnpm-min-release-age-supply-chain${TAB}Supply-chain guard: prefer \`pnpm\` with \`minimum-release-age=1440\` (24h). Raw \`npm/yarn/bun install <pkg>\` is hard-blocked by block-unsafe-package-install.sh.")
     while IFS=$'\t' read -r t_pat t_slug t_rule; do
       [ -z "$t_pat" ] && continue
-      if printf '%s' "$ARG" | grep -Eq "$t_pat"; then
+      if [[ "$ARG" =~ $t_pat ]]; then
         # Legacy rows have no on-disk path; scope=core, enforcement=unset.
         add_match "$t_slug" "core" "" "unset" "$t_rule"
       fi
@@ -1254,7 +1297,9 @@ fi
 # order (company > repo > personal > core) is still preserved inside each
 # enforcement tier.
 ORDERED_MATCHES=""
-GROUP=""
+GROUP_ROWS=()
+GROUP_SPECS=()
+GROUP_COUNT=0
 for match_kind in reactive baseline; do
   for match_tier in hard other; do
     while IFS= read -r match; do
@@ -1263,23 +1308,43 @@ for match_kind in reactive baseline; do
         *$'\t'"$match_kind"$'\t'*) ;;
         *) continue ;;
       esac
-      IFS=$'\t' read -r _m_slug _m_scope _m_path _m_enf _m_rest <<< "$match"
+      IFS=$'\t' read -r _m_slug _m_scope _m_path _m_enf _m_rule _m_kind _m_inj _m_ws _m_spec <<< "$match"
       if [ "$match_tier" = "hard" ]; then
         [ "$_m_enf" = "hard" ] || continue
       else
         [ "$_m_enf" != "hard" ] || continue
       fi
-      GROUP="${GROUP}${match}
-"
+      case "$_m_spec" in ''|*[!0-9]*) _m_spec=0 ;; esac
+      insert_at="$GROUP_COUNT"
+      for ((group_index=0; group_index<GROUP_COUNT; group_index++)); do
+        if [ "$_m_spec" -gt "${GROUP_SPECS[$group_index]}" ]; then
+          insert_at="$group_index"
+          break
+        fi
+      done
+      if [ "$insert_at" -eq "$GROUP_COUNT" ]; then
+        GROUP_ROWS[$GROUP_COUNT]="$match"
+        GROUP_SPECS[$GROUP_COUNT]="$_m_spec"
+      else
+        group_shift=$GROUP_COUNT
+        while [ "$group_shift" -gt "$insert_at" ]; do
+          GROUP_ROWS[$group_shift]="${GROUP_ROWS[$((group_shift - 1))]}"
+          GROUP_SPECS[$group_shift]="${GROUP_SPECS[$((group_shift - 1))]}"
+          group_shift=$((group_shift - 1))
+        done
+        GROUP_ROWS[$insert_at]="$match"
+        GROUP_SPECS[$insert_at]="$_m_spec"
+      fi
+      GROUP_COUNT=$((GROUP_COUNT + 1))
     done <<< "$MATCHES"
-    # Within a (kind, tier) group, more specific triggers first (field 9,
-    # numeric, descending); `sort -s` keeps scope order for ties. Rows without
-    # the field sort as 0.
-    if [ -n "$GROUP" ]; then
-      ORDERED_MATCHES="${ORDERED_MATCHES}$(printf '%s' "$GROUP" | sort -t "$(printf '\t')" -k9,9nr -s)
-"
-    fi
-    GROUP=""
+    # Stable insertion order matches `sort -s -k9,9nr`: descending numeric
+    # specificity, while equal values retain their original scope order.
+    for ((group_index=0; group_index<GROUP_COUNT; group_index++)); do
+      ORDERED_MATCHES+="${GROUP_ROWS[$group_index]}"$'\n'
+    done
+    GROUP_ROWS=()
+    GROUP_SPECS=()
+    GROUP_COUNT=0
   done
 done
 MATCHES="$ORDERED_MATCHES"
@@ -1297,7 +1362,10 @@ MATCHES="$ORDERED_MATCHES"
 # Setting HQ_SESSION_POLICY_CAP to a positive number restores the legacy
 # count cap (used by the box-preflight bounds tests).
 SESSION_POLICY_CAP="${HQ_SESSION_POLICY_CAP:-0}"
-MATCH_COUNT="$(printf '%s' "$MATCHES" | grep -c . || true)"
+MATCH_COUNT=0
+while IFS= read -r match; do
+  [ -n "$match" ] && MATCH_COUNT=$((MATCH_COUNT + 1))
+done <<< "$MATCHES"
 WITHHELD=0
 WITHHELD_MATCHES=""
 if [ "$SESSION_POLICY_CAP" -gt 0 ] && [ "$MATCH_COUNT" -gt "$SESSION_POLICY_CAP" ]; then
@@ -1389,7 +1457,7 @@ prepare_policy_bodies() {
   [ "$HARD_FULL" != "0" ] || return 0
   [ -n "$MATCHES" ] || return 0
   [ -n "$FACTS_TMP_DIR" ] || FACTS_TMP_DIR="$HQ_ROOT/workspace/orchestrator/hook-state"
-  mkdir -p "$FACTS_TMP_DIR" 2>/dev/null || return 0
+  [ -d "$FACTS_TMP_DIR" ] || return 0
   POLICY_BODY_TMP_DIR="$(mktemp -d "$FACTS_TMP_DIR/.policy-bodies.XXXXXX" 2>/dev/null || true)"
   [ -n "$POLICY_BODY_TMP_DIR" ] || return 0
   map_file="$POLICY_BODY_TMP_DIR/map.tsv"
@@ -1750,7 +1818,7 @@ fi
 # can prove, per session and per runtime, that every reminder stayed under the
 # host ceiling. OUT_BYTES is the final `printf '%s\n'` byte count. Cheap append;
 # failure is ignored.
-{ STATS_DIR="$HQ_ROOT/workspace/orchestrator/policy-emit-stats"; mkdir -p "$STATS_DIR" 2>/dev/null \
+{ [ -d "$STATS_DIR" ] || mkdir -p "$STATS_DIR" 2>/dev/null \
   && printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$EVENT" "$OUT_BYTES" "$MATCH_COUNT" >> "$STATS_DIR/${SESSION_ID:-unknown}.txt"; } 2>/dev/null || true
 if [ -n "${NO_STDOUT_REASON:-}" ]; then
   printf 'inject-policy-on-trigger: %s; emitted no stdout.\n' "$NO_STDOUT_REASON" >&2

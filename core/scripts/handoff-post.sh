@@ -91,7 +91,11 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]]; then
     log "document-release: skipped unsupported files_touched entry"
   done
   if [[ "$scope_match" -gt 0 ]]; then
-    log "document-release: eligible and pending runtime dispatch by handoff skill ($scope_match scoped files; no dispatch proof)"
+    if bash "$HQ_ROOT/core/scripts/skill-installed.sh" document-release "${HQ_ACTIVE_COMPANY:-}" >/dev/null 2>>"$LOG_MAIN"; then
+      log "document-release: eligible and pending runtime dispatch by handoff skill ($scope_match scoped files; no dispatch proof)"
+    else
+      log "document-release: skipped (skill not installed)"
+    fi
   else
     log "document-release: skipped (no company/repo files in files_touched)"
   fi

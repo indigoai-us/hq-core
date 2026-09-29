@@ -3,6 +3,37 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.179-beta.25
+
+- fix 2026-09-28 (Windows Stop-hook stall): `walk_up_to_hq_root` and
+  `is_hq_root` no longer form `//core` on Git Bash for Windows, which was
+  triggering an SMB name-resolution attempt on `\\core` and stalling each Stop
+  hook ~2.7s outside the HQ folder. Measured Windows Stop-hook peek from
+  outside HQ: 5,561ms to 185ms; Mac unchanged. No action beyond `/update-hq`.
+- change 2026-09-28 (`.claude/settings.json` sets `includeGitInstructions:
+  false`): the shipped settings now tell Claude Code to skip its built-in git
+  status snapshot and built-in commit/PR instructions. HQ owns its git rules
+  (`.claude/CLAUDE.md` "Git Discipline" plus `/land`, `/commit-main`, `/handoff`
+  and the per-repo skills), so nothing depends on the removed content. Measured
+  session-start impact: a trivial reply in a large HQ folder went from ~16.8s
+  to ~3.8s. No action beyond `/update-hq`.
+- Staging CI now runs against the pinned floor CLI.
+- A separate isolated install of the current published CLI checks the command catalog against every forwarded and hybrid manifest row.
+
+## Release: v15.0.179-beta.17
+
+- Add `core/scripts/cli-hosted.yaml` as the source for generated forwarders.
+  `generate-forwarders.sh` reproduces the wrappers, and
+  `check-cli-hosted.sh` checks generated drift, retired or deleted paths, hybrid
+  call sites and unmanifested forwarders. The 20 pure wrappers now check the
+  minimum hq-cli version required by their own command before dispatch.
+
+## Release: v15.0.179-beta.11
+
+- Declare `requiresHqCli: ">=5.269.0"` in `core/core.yaml`. Setup warns and
+  offers the npm upgrade for an older CLI, `check-hq-hooks.sh` reports the
+  unmet floor, and `/update-hq` checks the incoming release before applying it.
+
 ## Release: v15.0.178-beta.3
 
 - promote 2026-09-27 (product docs refresh): core now ships reference docs
@@ -1565,19 +1596,21 @@ release; the release workflow stamps it with the version at tag time.
   mattpocock/skills wayfinder. No action required for existing installations;
   the skill file is replaced on `/update-hq`.
 
+## Current Migration Guidance (2026-09-28)
+
+Company knowledge paths are plain real directories synchronized through their
+company vault. Do not create or migrate an embedded repository at
+`companies/{co}/knowledge/`; see the Knowledge directories section in the public
+README for instructions on preserving an existing repository before removing its
+metadata manually.
+
 ## Release: v15.0.93-beta.1
 
-- **Knowledge repositories must be real directories:** `/setup`, `/newcompany`,
-  `/import-claude`, `/tutorial`, cleanup guidance, and the public README now use
-  canonical real directories with optional embedded git. They no longer create or
-  endorse repositories under `repos/` symlinked into `core/knowledge/`,
-  `personal/knowledge/`, or `companies/{co}/knowledge/`. Existing installations
-  with legacy knowledge symlinks should materialize the same content at the
-  canonical path, preserve git there if needed, and verify `test -d PATH` plus
-  `! test -L PATH` before the next cloud sync. `hq reindex` (hq CLI with the
-  knowledge-migration pass) does this automatically: it scours the canonical
-  knowledge locations, pulls each legacy repo, copies it inline with history
-  preserved as an embedded repo, and removes the fully migrated legacy repo.
+- **Knowledge symlink guidance:** this release established canonical real
+  directories and stopped recommending knowledge links into `repos/`. Current
+  company knowledge must remain plain and vault-synced; personal knowledge may
+  use embedded Git. The older automatic migration description is superseded by
+  the current guidance above.
 
 ## Release: v15.0.91-beta.1
 

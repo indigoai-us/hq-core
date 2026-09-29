@@ -8,6 +8,8 @@ cd "$REPO_ROOT"
 
 # shellcheck source=core/scripts/lib/portable.sh
 . "$REPO_ROOT/core/scripts/lib/portable.sh"
+# shellcheck source=core/scripts/lib/hq-cli-floor.sh
+. "$REPO_ROOT/core/scripts/lib/hq-cli-floor.sh"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -52,6 +54,47 @@ if require_jq; then
 else
   fail "jq not found"
   exit 1
+fi
+
+# The scaffold can declare a minimum CLI version. Offer the global npm upgrade
+# when an installed CLI is too old, but keep setup usable if the upgrade fails
+# or is declined.
+if check_cmd hq; then
+  if HQ_CLI_REQUIRED="$(hq_cli_floor_required "$REPO_ROOT")"; then
+    HQ_CLI_FLOOR_MESSAGE=""
+    if HQ_CLI_FLOOR_MESSAGE="$(hq_cli_floor_check setup.sh "$HQ_CLI_REQUIRED" 2>&1)"; then
+      ok "hq-cli satisfies scaffold requirement $HQ_CLI_REQUIRED"
+    else
+      HQ_CLI_FLOOR_STATUS=$?
+      if [ "$HQ_CLI_FLOOR_STATUS" -eq 127 ]; then
+        printf '  ⚠ %s\n' "$HQ_CLI_FLOOR_MESSAGE"
+        if ask "Upgrade hq-cli now? ($HQ_CLI_FLOOR_UPGRADE_COMMAND)"; then
+          if npm install -g @indigoai-us/hq-cli@latest; then
+            if HQ_CLI_FLOOR_MESSAGE="$(hq_cli_floor_check setup.sh "$HQ_CLI_REQUIRED" 2>&1)"; then
+              ok "hq-cli upgraded and satisfies scaffold requirement $HQ_CLI_REQUIRED"
+            else
+              printf '  ⚠ hq-cli still does not satisfy the scaffold requirement. Setup will continue.\n'
+              printf '  Run: %s\n' "$HQ_CLI_FLOOR_UPGRADE_COMMAND"
+            fi
+          else
+            printf '  ⚠ hq-cli upgrade failed. Setup will continue.\n'
+            printf '  Run: %s\n' "$HQ_CLI_FLOOR_UPGRADE_COMMAND"
+          fi
+        else
+          printf '  Upgrade with: %s\n' "$HQ_CLI_FLOOR_UPGRADE_COMMAND"
+        fi
+      else
+        printf '  ⚠ Could not check the scaffold hq-cli floor. Setup will continue.\n'
+      fi
+    fi
+  else
+    HQ_CLI_FLOOR_STATUS=$?
+    if [ "$HQ_CLI_FLOOR_STATUS" -eq 2 ]; then
+      printf '  ⚠ core/core.yaml has duplicate requiresHqCli keys. Setup will continue.\n'
+    fi
+  fi
+else
+  skip "hq CLI not found — install via: npm install -g @indigoai-us/hq-cli"
 fi
 
 # Claude Code CLI (optional — needed for subprocess pattern)

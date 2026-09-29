@@ -1,8 +1,6 @@
 ---
 name: to-tickets
-description: |
-  Break a plan, spec, or conversation into tracer-bullet vertical-slice tickets, each declaring its blocking edges (dependency order).
-  Use when you have a plan/spec/PRD and need it decomposed into independently-executable tickets. Triggers on "break into tickets", "slice this into tasks", "vertical slices", "tracer bullets".
+description: "Break a plan or PRD into vertical-slice tickets with dependency order. Triggers: \"break into tickets\", \"vertical slices\"."
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash(gh:*), AskUserQuestion
 ---
 

@@ -1,0 +1,56 @@
+# Synthetic fixtures for the CLI-hosted forwarder generator.
+entries:
+  - path: core/scripts/fixture-live.sh
+    command: fixture-live
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.11.0
+    state: forwarded
+    note: |
+      Why the fixture moved: it tests live-root forwarding.
+  - path: core/scripts/fixture-cwd.sh
+    command: fixture-cwd
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.22.0
+    state: forwarded
+    note: |
+      Why the fixture moved: it tests caller-cwd forwarding.
+  - path: core/scripts/fixture-node.mjs
+    command: fixture-node
+    kind: generated
+    root: live
+    interpreter: node
+    min_cli: 5.33.0
+    state: forwarded
+    note: |
+      Why the fixture moved: it tests the Node forwarding template.
+  - path: core/scripts/fixture-hybrid.sh
+    command: fixture-hybrid
+    kind: hybrid
+    root: cwd
+    interpreter: bash
+    min_cli: 5.44.0
+    state: forwarded
+    note: |
+      Why the fixture moved: it tests hybrid command validation.
+  - path: core/scripts/fixture-retired.sh
+    command: fixture-retired
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.55.0
+    state: retired
+    note: |
+      Why the fixture moved: it tests retired-path validation.
+  - path: core/scripts/fixture-deleted.sh
+    command: fixture-deleted
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.66.0
+    state: deleted
+    note: |
+      Why the fixture moved: it tests deleted-path validation.

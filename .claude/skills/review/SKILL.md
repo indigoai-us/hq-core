@@ -1,6 +1,6 @@
 ---
 name: review
-description: Paranoid pre-landing code review. Reads git diff, runs two-pass analysis (CRITICAL blocks PR, INFORMATIONAL goes in body), surfaces issues with file:line references. Use when reviewing code before creating a PR, after finishing implementation, or when asked to review changes.
+description: "Pre-landing code review of the git diff; critical issues block the PR. Use before a PR or when asked to review changes."
 allowed-tools: Read, Grep, Glob, Bash(git:*), AskUserQuestion, Task
 ---
 

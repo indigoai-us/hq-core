@@ -63,7 +63,7 @@ All `companies/*/INDEX.md` — inventory of settings, data, knowledge + project/
 
 ### Company Knowledge (10 directories)
 
-All `companies/*/knowledge/INDEX.md` — contents of each company's knowledge repo.
+Each `companies/*/knowledge/INDEX.md` lists the contents of that company's plain knowledge directory, which syncs through the company vault.
 
 `core/docs/hq/INDEX.md` and `workspace/threads/INDEX.md` also exist but follow their own formats.
 

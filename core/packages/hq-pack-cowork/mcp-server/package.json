@@ -1,6 +1,6 @@
 {
   "name": "@indigoai-us/hq-cowork-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Host-launched stdio MCP server that wraps the `hq` CLI + `qmd` for use from Cowork (and any sandboxed Claude Code plugin host).",
   "type": "module",
   "main": "index.mjs",
@@ -8,7 +8,7 @@
     "hq-cowork-mcp": "index.mjs"
   },
   "scripts": {
-    "test": "node --test command-runner.test.mjs"
+    "test": "node --test command-runner.test.mjs secret-exec-denylist.test.mjs"
   },
   "engines": {
     "node": ">=18.0.0"

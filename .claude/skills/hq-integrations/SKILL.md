@@ -1,6 +1,6 @@
 ---
 name: hq-integrations
-description: "Connect, govern, and use company apps (Linear, Notion, …) from any HQ session via `hq integrations` — browse the catalog, connect an app, set who may use it and whether its changes need approval, call its tools, and handle the approval gate. Use when the user asks an agent to look something up or act in an external app, or to add, share, or disconnect one."
+description: "Connect, govern, and use company apps (Linear, Notion, ...) via `hq integrations`. Use to look up or act in an external app, or add, share, or disconnect one."
 allowed-tools: Bash(hq:*)
 ---
 

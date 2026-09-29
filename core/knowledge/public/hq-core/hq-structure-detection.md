@@ -85,7 +85,7 @@ Present in {your-name}'s production HQ but NOT in the starter-kit. These represe
 | `companies/manifest.yaml` | file | Company-resource isolation map | Not in starter |
 | `companies/{co}/settings/` | dir | Per-company credentials | Not in starter |
 | `companies/{co}/data/` | dir | Per-company data exports | Not in starter |
-| `companies/{co}/knowledge/` | dir | Per-company knowledge (optional embedded git) | Not in starter |
+| `companies/{co}/knowledge/` | dir | Per-company plain knowledge directory, synced through its vault | Not in starter |
 | `core/knowledge/public/` | dir | Public knowledge (split) | Flat `core/knowledge/` |
 | `core/knowledge/private/` | dir | Private knowledge | Not in starter |
 | `repos/public/` | dir | Public git repos | Not in starter |
@@ -165,7 +165,7 @@ Each feature below is optional but, when present, unlocks additional Desktop cap
 | Feature | Detection | Desktop Capability Unlocked |
 |---------|-----------|---------------------------|
 | `core/knowledge/public/` + `core/knowledge/private/` split | Both dirs exist | Visibility-aware knowledge browser |
-| Embedded knowledge git | `.git/` exists inside a real knowledge directory | Knowledge repo status, git state per KB |
+| Personal knowledge Git | `.git/` exists inside a real personal knowledge directory | Personal knowledge repo status; company knowledge is always plain |
 | Package knowledge contribution | Link resolves under `core/packages/*/knowledge/` | Read-only packaged knowledge |
 | Legacy repository symlink | Link resolves to a separate git repository | Invalid-layout migration warning |
 | `INDEX.md` files | Present in key dirs | INDEX-based navigation tree |

@@ -141,6 +141,10 @@ if [ "$rc" = 0 ] && ! jq -e '.hookSpecificOutput.permissionDecision == "deny"' "
 : > "$TMP/flag-calls.log"
 mkdir -p "$TMP_ROOT/workspace/logs"
 : > "$TMP_ROOT/workspace/logs/hq-monitor-hook.log"
+# The simulated CLI binary changes readiness behavior below without changing
+# its path or mtime. Clear the guard's CLI-capability cache to model that new
+# build before asserting its missing-command diagnostic.
+rm -f "$TMP_ROOT/workspace/orchestrator/hook-state/hq-monitor-cli-ready/monitor-guard"
 export HQ_TEST_NO_MONITOR=true
 rc="$(run_guard codex 'sleep 30' false '' true old-cli-guard-session)"
 unset HQ_TEST_NO_MONITOR
@@ -173,7 +177,11 @@ mkdir -p "$session_dir/active"
 : > "$HQ_LOG"
 drain_payload="$(jq -nc --arg sid monitor-session '{session_id:$sid,hook_event_name:"PreToolUse"}')"
 printf '%s' "$drain_payload" | env "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=codex HQ_TEST_MONITOR_ENABLED=true HQ_TEST_MONITOR_ENABLED_CALL_MARKER="$TMP/flag-calls.log" bash "$SESSION" drain PreToolUse >"$TMP/stdout" 2>"$TMP/stderr"
-if jq -e '.drained == true' "$TMP/stdout" >/dev/null && grep -Fq 'monitor drain --provider codex --event PreToolUse' "$HQ_LOG" && [ ! -s "$TMP/flag-calls.log" ]; then ok 'active Codex session drains through hq monitor without a hook flag lookup'; else bad 'active Codex session drains through hq monitor without a hook flag lookup'; fi
+printf '%s' "$drain_payload" | env "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=codex HQ_TEST_MONITOR_ENABLED=true HQ_TEST_MONITOR_ENABLED_CALL_MARKER="$TMP/flag-calls.log" bash "$SESSION" drain PreToolUse >"$TMP/stdout2" 2>"$TMP/stderr2"
+drain_help_calls="$(grep -c '^--help$' "$HQ_LOG" 2>/dev/null || true)"
+if jq -e '.drained == true' "$TMP/stdout" >/dev/null && jq -e '.drained == true' "$TMP/stdout2" >/dev/null \
+   && [ "$drain_help_calls" = 1 ] && [ "$(grep -c 'monitor drain --provider codex --event PreToolUse' "$HQ_LOG")" = 2 ] \
+   && [ ! -s "$TMP/flag-calls.log" ]; then ok 'active Codex session drains twice with one cached readiness probe'; else bad 'active Codex session drains twice with one cached readiness probe'; fi
 
 inbox_only_dir="$TMP_ROOT/workspace/monitors/sessions/grok-monitor-session"
 mkdir -p "$inbox_only_dir/dropbox"
@@ -575,10 +583,24 @@ echo '[12] an older hq CLI exits quietly and logs once'
 export HQ_TEST_NO_MONITOR=true
 rc=0
 : > "$TMP_ROOT/workspace/logs/hq-monitor-hook.log"
-printf '%s' "$drain_payload" | env "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=codex HQ_TEST_MONITOR_ENABLED=true HQ_TEST_MONITOR_ENABLED_CALL_MARKER="$TMP/flag-calls.log" bash "$SESSION" drain PreToolUse >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
-printf '%s' "$drain_payload" | env "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=codex HQ_TEST_MONITOR_ENABLED=true HQ_TEST_MONITOR_ENABLED_CALL_MARKER="$TMP/flag-calls.log" bash "$SESSION" drain PreToolUse >"$TMP/stdout2" 2>"$TMP/stderr2" || rc=$?
+old_cli_payload="$(jq -nc --arg sid c207-old-cli-cache '{session_id:$sid,hook_event_name:"PreToolUse"}')"
+mkdir -p "$TMP_ROOT/workspace/monitors/sessions/codex-c207-old-cli-cache/active"
+: > "$TMP_ROOT/workspace/monitors/sessions/codex-c207-old-cli-cache/active/test"
+printf '%s' "$old_cli_payload" | env "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=codex HQ_TEST_MONITOR_ENABLED=true HQ_TEST_MONITOR_ENABLED_CALL_MARKER="$TMP/flag-calls.log" bash "$SESSION" drain PreToolUse >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
+printf '%s' "$old_cli_payload" | env "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=codex HQ_TEST_MONITOR_ENABLED=true HQ_TEST_MONITOR_ENABLED_CALL_MARKER="$TMP/flag-calls.log" bash "$SESSION" drain PreToolUse >"$TMP/stdout2" 2>"$TMP/stderr2" || rc=$?
 old_cli_warnings="$(grep -c 'no monitor command' "$TMP_ROOT/workspace/logs/hq-monitor-hook.log" 2>/dev/null || true)"
-if [ "$rc" = 0 ] && [ ! -s "$TMP/stdout2" ] && [ ! -s "$TMP/stderr2" ] && [ "$old_cli_warnings" = 1 ]; then ok 'old hq CLI fails open silently and logs once'; else bad "old hq CLI fails open silently and logs once (rc=$rc warnings=$old_cli_warnings stdout=$(cat "$TMP/stdout2") stderr=$(cat "$TMP/stderr2") log=$(cat "$TMP_ROOT/workspace/logs/hq-monitor-hook.log" 2>/dev/null))"; fi
+old_cli_help_calls="$(grep -c '^--help$' "$HQ_LOG" 2>/dev/null || true)"
+if [ "$rc" = 0 ] && [ ! -s "$TMP/stdout2" ] && [ ! -s "$TMP/stderr2" ] \
+   && [ "$old_cli_warnings" = 1 ] && [ "$old_cli_help_calls" = 1 ]; then
+  ok 'old hq CLI is probed once, fails open silently, and logs once'
+else
+  bad "old hq CLI is probed once, fails open silently, and logs once (rc=$rc warnings=$old_cli_warnings help_calls=$old_cli_help_calls)"
+fi
+sleep 1
+touch "$CLI/bin/hq"
+printf '%s' "$old_cli_payload" | env "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=codex HQ_TEST_MONITOR_ENABLED=true HQ_TEST_MONITOR_ENABLED_CALL_MARKER="$TMP/flag-calls.log" bash "$SESSION" drain PreToolUse >"$TMP/stdout3" 2>"$TMP/stderr3" || rc=$?
+old_cli_help_calls_after_update="$(grep -c '^--help$' "$HQ_LOG" 2>/dev/null || true)"
+if [ "$old_cli_help_calls_after_update" = 2 ] && [ "$old_cli_warnings" = 1 ]; then ok 'readiness cache invalidates when the CLI binary mtime changes'; else bad 'readiness cache invalidates when the CLI binary mtime changes'; fi
 unset HQ_TEST_NO_MONITOR
 
 echo '[13] a missing hq binary exits quietly and logs once'

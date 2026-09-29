@@ -52,7 +52,8 @@ clear_stub_receipts() {
 }
 
 payload() {
-  jq -nc --arg cmd "$1" --arg root "$ROOT" \
+  local root="${2:-$ROOT}"
+  jq -nc --arg cmd "$1" --arg root "$root" \
     '{session_id:"lanes-hold-check-test",hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$root,tool_input:{command:$cmd}}'
 }
 
@@ -275,6 +276,54 @@ done
 
 echo '[8] master-hook dispatches the registered Bash guard and Codex preserves its deny'
 OTHER_IDS="$(jq -r '.hooks.PreToolUse[].hooks[].id | select(. != "lanes-repo-merge-hold")' "$REGISTRY" 2>/dev/null | sort -u | paste -sd, -)"
+invoke_master() {
+  local command_text="$1" rc=0 input
+  clear_stub_receipts
+  input="$(payload "$command_text")"
+  printf '%s' "$input" \
+    | env "PATH=$TEST_PATH" "HQ_HOLD_TEST_CALL_FILE=$TMP/calls" \
+        "HQ_HOLD_TEST_ARGV_FILE=$TMP/argv" "HQ_HOLD_TEST_EXIT=0" \
+        "HQ_HOLD_TEST_STDOUT={\"ok\":true}" "HQ_ROOT=$ROOT" \
+        "CLAUDE_PROJECT_DIR=$ROOT" HQ_HOOK_TIMEOUT_SENTRY=0 \
+        HQ_HOOK_PROFILE=minimal "HQ_DISABLED_HOOKS=$OTHER_IDS" \
+        bash "$MASTER" PreToolUse >"$TMP/stdout" 2>"$TMP/stderr" || rc=$?
+  LAST_RC="$rc"
+  LAST_OUT="$(cat "$TMP/stdout")"
+  LAST_ERR="$(cat "$TMP/stderr")"
+}
+
+# Exercise the real master dispatcher and registry prefilter with a recording
+# target script. This proves whether the registry dispatched the shim slot even
+# when the production shim's own substring check would skip hq.
+PREFILTER_ROOT="$TMP/prefilter-root"
+mkdir -p "$PREFILTER_ROOT/.claude" "$PREFILTER_ROOT/core/scripts/lib"
+cp -R "$ROOT/.claude/hooks" "$PREFILTER_ROOT/.claude/hooks"
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$PREFILTER_ROOT/core/scripts/lib/hook-adapter-core.sh"
+jq '(.hooks.PreToolUse[].hooks[] | select(.id == "lanes-repo-merge-hold").script) = ".claude/hooks/lanes-repo-merge-hold-probe.sh"' \
+  "$REGISTRY" > "$PREFILTER_ROOT/.claude/hooks/hook-registry.json"
+cat > "$PREFILTER_ROOT/.claude/hooks/lanes-repo-merge-hold-probe.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'called\n' >> "$HQ_HOLD_DISPATCH_CALL_FILE"
+SH
+chmod +x "$PREFILTER_ROOT/.claude/hooks/lanes-repo-merge-hold-probe.sh"
+
+invoke_prefilter_probe() {
+  local command_text="$1" rc=0 input
+  : > "$TMP/prefilter-dispatch-calls"
+  input="$(payload "$command_text" "$PREFILTER_ROOT")"
+  printf '%s' "$input" \
+    | env "PATH=$TEST_PATH" "HQ_HOLD_DISPATCH_CALL_FILE=$TMP/prefilter-dispatch-calls" \
+        "HQ_ROOT=$PREFILTER_ROOT" "CLAUDE_PROJECT_DIR=$PREFILTER_ROOT" \
+        HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_PROFILE=minimal \
+        "HQ_DISABLED_HOOKS=$OTHER_IDS" \
+        bash "$PREFILTER_ROOT/.claude/hooks/master-hook.sh" PreToolUse \
+        >"$TMP/probe-stdout" 2>"$TMP/probe-stderr" || rc=$?
+  LAST_RC="$rc"
+  LAST_OUT="$(cat "$TMP/probe-stdout")"
+  LAST_ERR="$(cat "$TMP/probe-stderr")"
+}
+
 for quoted_command in \
   "gh pr m'er'ge 5 -R acme/widgets" \
   'gh pr me\rge 5 -R acme/widgets'; do
@@ -308,6 +357,40 @@ if [ "$rc" = 0 ] && [ ! -s "$TMP/calls" ]; then
 else
   bad "master-hook raw-JSON prefilter skips ordered letters spread across words (rc=$rc, out=$(cat "$TMP/stdout"), err=$(cat "$TMP/stderr"))"
 fi
+
+echo '[8a] master-hook registry prefilter skips commands the original regex skipped'
+for unrelated_command in \
+  'mkdir -p /tmp/every/rg/e' \
+  'echo m e r g e'; do
+  invoke_prefilter_probe "$unrelated_command"
+  if [ "$LAST_RC" = 0 ] && [ ! -s "$TMP/prefilter-dispatch-calls" ]; then
+    ok "master-hook does not dispatch the shim for: $unrelated_command"
+  else
+    bad "master-hook does not dispatch the shim for: $unrelated_command (rc=$LAST_RC, out=$LAST_OUT, err=$LAST_ERR)"
+  fi
+done
+
+echo '[8b] master-hook registry prefilter dispatches merge commands through common wrappers'
+for merge_command in \
+  'gh pr merge 5 -R o/r' \
+  "bash -lc 'gh pr merge 5'" \
+  'env -i gh pr merge 5' \
+  'git merge topic' \
+  'gh pr "merge" 5 -R o/r' \
+  "gh 'pr' merge 5" \
+  $'gh\tpr\tmerge 5' \
+  $'gh pr \\\n merge 5 -R o/r' \
+  'gh api -X PUT repos/o/r/pulls/5/merge' \
+  "g'it' merge topic" \
+  'g\it merge topic' \
+  "g'h' pr merge 5"; do
+  invoke_master "$merge_command"
+  if [ "$LAST_RC" = 0 ] && [ -s "$TMP/calls" ]; then
+    ok "master-hook invokes hq for: $merge_command"
+  else
+    bad "master-hook invokes hq for: $merge_command (rc=$LAST_RC, out=$LAST_OUT, err=$LAST_ERR)"
+  fi
+done
 
 rc=0
 clear_stub_receipts

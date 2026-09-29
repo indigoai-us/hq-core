@@ -74,6 +74,10 @@ echo "[1] direct policy writes are blocked"
 run 2 "cat > $P <<EOF
 x
 EOF" 'heredoc redirect into personal policy is blocked'
+run 2 "d=$TMP/personal/polic; echo x > \${d}ies/new.md" \
+  'split-variable policy path using ${d}ies is blocked'
+run 2 "d=$TMP/personal/polic; cd \${d}ies; echo x > \$PWD/new.md" \
+  'variable policy path using $PWD after a split-variable cd is blocked'
 run 2 "tee $P < /tmp/policy-input" 'tee into personal policy is blocked'
 run 2 "cp /tmp/policy-input $P" 'cp into personal policy is blocked'
 run 2 "mv /tmp/policy-input $P" 'mv into personal policy is blocked'

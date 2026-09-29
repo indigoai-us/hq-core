@@ -1,6 +1,6 @@
 ---
 name: execute-task
-description: Execute a single PRD story through coordinated worker phases (Ralph pattern). Each worker handles its domain, passes context to the next, with back-pressure (tests/lint/typecheck) keeping code on rails.
+description: "Execute one PRD story through coordinated worker phases with test, lint, and typecheck gates."
 allowed-tools: Task, Read, Write, Glob, Grep, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/verify-story-deliverables.sh:*), Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion
 ---
 
@@ -503,7 +503,7 @@ If the story has `linearIssueId` and prd metadata has `linearCredentials`:
 
 2. **Read API key**:
    ```bash
-   LINEAR_KEY=$(cat {prd.metadata.linearCredentials} | python3 -c "import sys,json; print(json.load(sys.stdin)['apiKey'])")
+   LINEAR_KEY=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(0, "utf8")).apiKey)' < "{prd.metadata.linearCredentials}")
    ISSUE_ID="{task.linearIssueId}"
    IN_PROGRESS_STATE="{prd.metadata.linearInProgressStateId}"
    ```
@@ -1067,7 +1067,7 @@ If the story has `linearIssueId` and prd metadata has `linearCredentials`:
 1. **Cross-company guard**: Same validation as step 5.5.5.
 2. **Set issue to Done**:
    ```bash
-   LINEAR_KEY=$(cat {prd.metadata.linearCredentials} | python3 -c "import sys,json; print(json.load(sys.stdin)['apiKey'])")
+   LINEAR_KEY=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(0, "utf8")).apiKey)' < "{prd.metadata.linearCredentials}")
    ISSUE_ID="{task.linearIssueId}"
    DONE_STATE="{prd.metadata.linearDoneStateId}"
 
@@ -1213,7 +1213,7 @@ Check `core/settings/contacts.yaml` for contacts whose `context` list includes t
 ```bash
 # Count completed vs total stories
 COMPLETED=$(grep -c '"passes": true' "${prdPath}" || echo 0)
-TOTAL=$(python3 -c "import json; print(len(json.load(open('${prdPath}'))['userStories']))")
+TOTAL=$(node -e 'process.stdout.write(String(JSON.parse(require("node:fs").readFileSync(0, "utf8")).userStories.length))' < "${prdPath}")
 PCT=$((COMPLETED * 100 / TOTAL))
 
 ~/scripts/imessage.sh "{contact.imessage}" \

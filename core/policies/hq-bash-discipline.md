@@ -61,8 +61,8 @@ now_ms=$(node -e 'process.stdout.write(String(Date.now()))')
 Other BSD/GNU divergences to avoid:
 
 - `sed -i` — BSD requires `-i ''` (empty extension); GNU takes `-i` alone. Use `sed -i.bak '...' file && rm file.bak`, or probe for `gsed`.
-- `readlink -f` — BSD lacks `-f`. Use `python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"`.
-- `stat -c %Y` (GNU) vs `stat -f %m` (BSD). Prefer `python3 -c 'import os,sys; print(int(os.stat(sys.argv[1]).st_mtime))'`.
+- `readlink -f` — BSD lacks `-f`. Use `node -e 'console.log(require("node:fs").realpathSync(process.argv[1]))' "$1"`.
+- `stat -c %Y` (GNU) vs `stat -f %m` (BSD). Prefer `node -e 'console.log(Math.floor(require("node:fs").statSync(process.argv[1]).mtimeMs / 1000))' "$1"`.
 
 ### 4. No Bash 4+ builtins — macOS `/bin/bash` is 3.2.57
 

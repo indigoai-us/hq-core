@@ -1,34 +1,52 @@
 #!/usr/bin/env bash
 # /import-context credential redactor.
 #
-# Scrubs likely-credential patterns from a file before the content is written
-# to any committed artifact (report.json, preview prompt, summary). Runs at
-# two surfaces:
-#   1. During scan preview generation (first 40 lines passed through this).
-#   2. During import of settings fragments (field-by-field).
+# Scrubs likely-credential patterns before content is shown or written. The
+# scanner sends file previews through this script, and settings imports use it
+# field by field.
 #
 # Usage:
-#   redact.sh <input_file> [--json-fields]     → stdout redacted text
-#   redact.sh --list-fields <input_file>        → prints fields redacted (one/line)
+#   redact.sh [--json-fields] [<input_file>|-]  → stdout redacted text
+#   redact.sh [--list-fields] [<input_file>|-]  → prints fields redacted (one/line)
+#   With no input path or with `-`, reads stdin. `--list-fields` is text-only.
 
 set -euo pipefail
 
 MODE="text"
 LIST=false
-if [[ "${1:-}" == "--list-fields" ]]; then
-  LIST=true
+INPUT=""
+INPUT_SET=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --list-fields) LIST=true ;;
+    --json-fields) MODE="json-fields" ;;
+    -)
+      if $INPUT_SET; then echo "redact.sh: only one input path is allowed" >&2; exit 2; fi
+      INPUT="-"; INPUT_SET=true
+      ;;
+    --*) echo "redact.sh: unknown option: $1" >&2; exit 2 ;;
+    *)
+      if $INPUT_SET; then echo "redact.sh: only one input path is allowed" >&2; exit 2; fi
+      INPUT="$1"; INPUT_SET=true
+      ;;
+  esac
   shift
-fi
-if [[ "${1:-}" == "--json-fields" ]]; then
-  MODE="json-fields"
-  shift
+done
+
+if $LIST && [[ "$MODE" == "json-fields" ]]; then
+  echo "redact.sh: --list-fields cannot be combined with --json-fields" >&2
+  exit 2
 fi
 
-INPUT="${1:-}"
-if [[ -z "$INPUT" || ! -f "$INPUT" ]]; then
+[[ "$INPUT_SET" == true ]] || INPUT="-"
+if [[ "$INPUT" != "-" && ! -f "$INPUT" ]]; then
   echo "redact.sh: input file required and must exist" >&2
   exit 2
 fi
+
+read_input() {
+  if [[ "$INPUT" == "-" ]]; then cat; else cat "$INPUT"; fi
+}
 
 # ──────────────────────── regex catalog ────────────────────────
 # Each entry: NAME|PATTERN (extended regex). Replacement is <REDACTED:NAME>.
@@ -56,30 +74,102 @@ JSON_KEYS=(
 
 ENV_SUFFIXES=(_KEY _TOKEN _SECRET _PASSWORD)
 
+ci_regex() {
+  local value="$1"
+  printf '%s\n' "$value" | awk '
+    {
+      for (i = 1; i <= length($0); i++) {
+        char = substr($0, i, 1)
+        if (char ~ /[a-zA-Z]/) printf "[%s%s]", tolower(char), toupper(char)
+        else printf "%s", char
+      }
+    }
+  '
+}
+
+redact_pem_text() {
+  awk '
+    function header(kind) { return "-----" "BEGIN " kind " KEY" "-----" }
+    function footer(kind) { return "-----" "END " kind " KEY" "-----" }
+    function key_kind(line) {
+      if (line == header("RSA PRIVATE")) return "RSA PRIVATE"
+      if (line == header("PRIVATE")) return "PRIVATE"
+      if (line == header("OPENSSH PRIVATE")) return "OPENSSH PRIVATE"
+      return ""
+    }
+    function redact_escaped(line, kind, h, f, start, rest, rel, end_start, end_pos) {
+      for (kind_index = 1; kind_index <= 3; kind_index++) {
+        if (kind_index == 1) kind = "RSA PRIVATE"
+        else if (kind_index == 2) kind = "PRIVATE"
+        else kind = "OPENSSH PRIVATE"
+        h = header(kind); f = footer(kind)
+        start = index(line, h)
+        while (start > 0) {
+          rest = substr(line, start + length(h))
+          rel = index(rest, "\\n" f)
+          if (rel == 0) break
+          end_start = start + length(h) + rel - 1
+          end_pos = end_start + 2 + length(f) - 1
+          line = substr(line, 1, start - 1) "<REDACTED:private_key>" substr(line, end_pos + 1)
+          start = index(line, h)
+        }
+      }
+      return line
+    }
+    {
+      if (active_kind != "") {
+        if ($0 == footer(active_kind)) active_kind = ""
+        next
+      }
+      kind = key_kind($0)
+      if (kind != "") {
+        print "<REDACTED:private_key>"
+        active_kind = kind
+        next
+      }
+      print redact_escaped($0)
+    }
+  '
+}
+
 # ──────────────────────── redact text ────────────────────────
 redact_text() {
-  local out; out="$(cat "$INPUT")"
+  local out; out="$(read_input)"
   local redacted_names=()
   for entry in "${REDACTIONS[@]}"; do
     local name="${entry%%|*}"
     local pat="${entry#*|}"
-    if echo "$out" | grep -E -q -- "$pat" 2>/dev/null; then
+    if grep -E -- "$pat" <<< "$out" >/dev/null 2>&1; then
       redacted_names+=("$name")
-      out="$(echo "$out" | sed -E "s@${pat}@<REDACTED:${name}>@g")"
+      out="$(printf '%s' "$out" | sed -E "s@${pat}@<REDACTED:${name}>@g")"
     fi
   done
-  # JSON key-value redaction (handles "key": "value" with optional whitespace).
+  # Remove URL userinfo while retaining the scheme and host.
+  local conn_pat='([[:alpha:]][[:alnum:]+.-]*://)[^/@[:space:]]+:[^/@[:space:]]+@'
+  if grep -E -- "$conn_pat" <<< "$out" >/dev/null 2>&1; then
+    redacted_names+=(connection_credentials)
+    out="$(printf '%s' "$out" | sed -E "s#${conn_pat}#\\1<REDACTED:connection_credentials>@#g")"
+  fi
+
+  # Replace complete PEM blocks, including a JSON-escaped block on one line.
+  local pem_out; pem_out="$(printf '%s' "$out" | redact_pem_text)"
+  if [[ "$pem_out" != "$out" ]]; then redacted_names+=(private_key); out="$pem_out"; fi
+
+  # JSON key-value redaction, case-insensitive, preserving key spelling.
   for key in "${JSON_KEYS[@]}"; do
-    if echo "$out" | grep -E -q "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]+\""; then
+    local key_pat; key_pat="$(ci_regex "$key")"
+    local key_value_pat="(\"${key_pat}\"[[:space:]]*:[[:space:]]*\")[^\"]+(\")"
+    if grep -E -- "$key_value_pat" <<< "$out" >/dev/null 2>&1; then
       redacted_names+=("json:${key}")
-      out="$(echo "$out" | sed -E "s@\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]+\"@\"${key}\":\"<REDACTED:json:${key}>\"@g")"
+      out="$(printf '%s' "$out" | sed -E "s#${key_value_pat}#\\1<REDACTED:json:${key}>\\2#g")"
     fi
   done
   # Env-style KEY=VALUE redaction for common credential suffixes.
   for suf in "${ENV_SUFFIXES[@]}"; do
-    if echo "$out" | grep -E -q "^[A-Z][A-Z0-9_]*${suf}=[^[:space:]]+"; then
+    local env_pat="(^[[:space:]]*(export[[:space:]]+)?[A-Z][A-Z0-9_]*${suf})=[^[:space:]]+"
+    if grep -E -- "$env_pat" <<< "$out" >/dev/null 2>&1; then
       redacted_names+=("env${suf}")
-      out="$(echo "$out" | sed -E "s@(^[A-Z][A-Z0-9_]*${suf})=[^[:space:]]+@\1=<REDACTED:env${suf}>@g")"
+      out="$(printf '%s' "$out" | sed -E "s#${env_pat}#\\1=<REDACTED:env${suf}>#g")"
     fi
   done
 
@@ -98,7 +188,7 @@ apply_regex_patterns() {
   for entry in "${REDACTIONS[@]}"; do
     local name="${entry%%|*}"
     local pat="${entry#*|}"
-    if printf '%s' "$data" | grep -E -q -- "$pat" 2>/dev/null; then
+    if grep -E -- "$pat" <<< "$data" >/dev/null 2>&1; then
       data="$(printf '%s' "$data" | sed -E "s@${pat}@<REDACTED:${name}>@g")"
     fi
   done
@@ -108,21 +198,26 @@ apply_regex_patterns() {
 # ──────────────────────── redact JSON fields (structural) ────────────────────
 redact_json_fields() {
   command -v jq >/dev/null 2>&1 || { redact_text; return; }
-  # Structural pass: replace values at well-known key names.
-  # Follow-up pass: regex-scrub remaining string values so credential patterns
-  # under arbitrary keys (API_KEY, MY_TOKEN, etc.) don't leak.
-  jq --argjson keys "$(printf '%s\n' "${JSON_KEYS[@]}" | jq -R . | jq -s .)" '
+  local normalized_keys
+  normalized_keys="$(printf '%s\n' "${JSON_KEYS[@]}" | jq -R 'ascii_downcase' | jq -s '.')"
+  read_input | jq --argjson keys "$normalized_keys" '
+    def redact_string:
+      gsub("(?s)-----BEGIN (RSA PRIVATE|PRIVATE|OPENSSH PRIVATE) KEY-----.*?-----END \\1 KEY-----"; "<REDACTED:private_key>")
+      | gsub("(?<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]+:[^/@[:space:]]+@"; "\\(.scheme)<REDACTED:connection_credentials>@")
+      | gsub("(?m)(?<prefix>^[[:space:]]*(export[[:space:]]+)?[A-Z][A-Z0-9_]*(_KEY|_TOKEN|_SECRET|_PASSWORD))=[^[:space:]]+"; "\\(.prefix)=<REDACTED:env>");
     walk(
       if type == "object" then
         with_entries(
-          .key as $k |
-          if ($keys | index($k)) and (.value | type == "string")
-          then .value = ("<REDACTED:json:" + $k + ">")
-          else . end
+          .key as $key |
+          .value |= if type == "string" and ($keys | index($key | ascii_downcase)) != null
+            then "<REDACTED:json:\($key)>"
+            elif type == "string" then redact_string
+            else . end
         )
+      elif type == "string" then redact_string
       else . end
     )
-  ' "$INPUT" | apply_regex_patterns
+  ' | apply_regex_patterns
 }
 
 case "$MODE" in

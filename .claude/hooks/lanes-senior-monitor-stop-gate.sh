@@ -34,26 +34,31 @@ LANES_MONITOR_CHECK_TIMEOUT_SECONDS=20
 
 # Drain before any early exit. The dispatcher may still be writing the payload;
 # leaving it unread turns a legitimate hook status into a SIGPIPE/141 report.
-INPUT="$(cat 2>/dev/null || true)"
+{ INPUT="$(</dev/stdin)"; } 2>/dev/null || INPUT=''
 
-HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P || true)"
+HOOK_PATH="${BASH_SOURCE[0]:-$0}"
+case "$HOOK_PATH" in
+  */*) HOOK_DIR="${HOOK_PATH%/*}" ;;
+  *) HOOK_DIR="." ;;
+esac
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd -P || true)}}"
 
 # Establish the adapter's engine before jq parsing. This preserves the
 # no-Monitor exception even when jq itself is unavailable.
 ENGINE_RAW="${HQ_HARNESS:-claude}"
-ENGINE_RAW="$(printf '%s' "$ENGINE_RAW" | tr '[:upper:]' '[:lower:]')"
-case "$ENGINE_RAW" in
-  claude|claude-code|claude_code) ENGINE=claude ;;
-  codex) ENGINE=codex ;;
-  grok) ENGINE=grok ;;
-  *) ENGINE=unknown ;;
-esac
+normalize_engine() {
+  case "$1" in
+    claude|claude-code|claude_code|[cC][lL][aA][uU][dD][eE]|[cC][lL][aA][uU][dD][eE]-[cC][oO][dD][eE]|[cC][lL][aA][uU][dD][eE]_[cC][oO][dD][eE]) ENGINE=claude ;;
+    codex|[cC][oO][dD][eE][xX]) ENGINE=codex ;;
+    grok|[gG][rR][oO][kK]) ENGINE=grok ;;
+    *) ENGINE=unknown ;;
+  esac
+}
+normalize_engine "$ENGINE_RAW"
 STOP_HOOK_ACTIVE=false
-INPUT_COMPACT="$(printf '%s' "$INPUT" | tr -d '[:space:]')"
-case "$INPUT_COMPACT" in
-  *'"stop_hook_active":true'*) STOP_HOOK_ACTIVE=true ;;
-esac
+if [[ "$INPUT" =~ \"stop_hook_active\"[[:space:]]*:[[:space:]]*true ]]; then
+  STOP_HOOK_ACTIVE=true
+fi
 
 early_gate_error() {
   local detail="$1"
@@ -80,22 +85,28 @@ if ! command -v jq >/dev/null 2>&1; then
   exit "$rc"
 fi
 
-if ! printf '%s' "$INPUT" | jq -e 'type == "object"' >/dev/null 2>&1; then
+if ! PARSED="$(printf '%s' "$INPUT" | jq -jer '
+  if type != "object" then error("hook payload is not an object") else
+    [
+      (.session_id // .sessionId // "" | tostring),
+      (if .stop_hook_active == true then "true" else "false" end),
+      (.engine // .engine_name // "" | tostring)
+    ] | join("\u001e")
+  end
+' 2>/dev/null)"; then
   rc=0
   early_gate_error "received malformed hook JSON; monitor coverage is unknown" || rc=$?
   exit "$rc"
 fi
 
-SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)"
-STOP_HOOK_ACTIVE="$(printf '%s' "$INPUT" | jq -r 'if .stop_hook_active == true then "true" else "false" end' 2>/dev/null || printf 'false')"
-ENGINE_RAW="$(printf '%s' "$INPUT" | jq -r '.engine // .engine_name // empty' 2>/dev/null || true)"
+SESSION_ID="${PARSED%%$'\x1e'*}"
+PARSED_REST="${PARSED#*$'\x1e'}"
+STOP_HOOK_ACTIVE="${PARSED_REST%%$'\x1e'*}"
+ENGINE_RAW="${PARSED_REST#*$'\x1e'}"
 [ -n "$ENGINE_RAW" ] || ENGINE_RAW="${HQ_HARNESS:-claude}"
-ENGINE="$(printf '%s' "$ENGINE_RAW" | tr '[:upper:]' '[:lower:]')"
+normalize_engine "$ENGINE_RAW"
 case "$ENGINE" in
-  claude|claude-code|claude_code) ENGINE=claude ;;
-  codex) ENGINE=codex ;;
-  grok) ENGINE=grok ;;
-  *)
+  unknown)
     ENGINE=unknown
     rc=0
     early_gate_error "received unsupported engine '$ENGINE_RAW'; monitor coverage is unknown" || rc=$?
@@ -247,25 +258,26 @@ if [ -z "$ERR_FILE" ]; then
   gate_error "could not allocate a bounded stderr capture for hq-cli" || rc=$?
   exit "$rc"
 fi
-TIMEOUT_MARKER="$(mktemp "${TMPDIR:-/tmp}/hq-lanes-monitor-check-timeout.XXXXXX" 2>/dev/null || true)"
-if [ -z "$TIMEOUT_MARKER" ]; then
+TIMEOUT_MARKER="${ERR_FILE}.timeout"
+if [ -e "$TIMEOUT_MARKER" ]; then
+  rm -f "$ERR_FILE" 2>/dev/null || true
   rc=0
-  gate_error "could not allocate the bounded hq-cli timeout marker" || rc=$?
+  gate_error "the bounded hq-cli timeout marker path is already occupied" || rc=$?
   exit "$rc"
 fi
-rm -f "$TIMEOUT_MARKER" 2>/dev/null || true
 cleanup() {
-  rm -f "$ERR_FILE" 2>/dev/null || true
-  rm -f "$TIMEOUT_MARKER" 2>/dev/null || true
+  rm -f "$ERR_FILE" "$TIMEOUT_MARKER" 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
 
 HQ_RC=0
+HQ_NO_UPDATE_CHECK=1
+CLAUDE_PROJECT_DIR="$HQ_ROOT"
+export HQ_NO_UPDATE_CHECK HQ_ROOT CLAUDE_PROJECT_DIR
 RESULT="$(run_hq_with_timeout "$LANES_MONITOR_CHECK_TIMEOUT_SECONDS" "$TIMEOUT_MARKER" \
-  env HQ_NO_UPDATE_CHECK=1 HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" \
   "$HQ_BIN" lanes monitor-check --session "$SESSION_ID" --engine "$ENGINE" --json \
   2>"$ERR_FILE")" || HQ_RC=$?
-HQ_ERR="$(cat "$ERR_FILE" 2>/dev/null || true)"
+{ HQ_ERR="$(<"$ERR_FILE")"; } 2>/dev/null || HQ_ERR=''
 
 if [ -f "$TIMEOUT_MARKER" ]; then
   detail="hq lanes monitor-check timed out after ${LANES_MONITOR_CHECK_TIMEOUT_SECONDS}s"

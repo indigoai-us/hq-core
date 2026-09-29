@@ -16,10 +16,20 @@ fail() {
 
 mkdir -p "$TMP_ROOT/repo/core/scripts" \
   "$TMP_ROOT/repo/companies/indigo/workspace" \
+  "$TMP_ROOT/repo/.claude/skills/document-release" \
   "$TMP_ROOT/bin" \
   "$TMP_ROOT/logs"
 cp "$SRC_ROOT/scripts/handoff-post.sh" "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
+cp "$SRC_ROOT/scripts/skill-installed.sh" "$TMP_ROOT/repo/core/scripts/skill-installed.sh"
+mkdir -p "$TMP_ROOT/repo/core/scripts/lib"
+cp "$SRC_ROOT/scripts/lib/session-skill-catalog.sh" "$TMP_ROOT/repo/core/scripts/lib/session-skill-catalog.sh"
 chmod +x "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
+cat > "$TMP_ROOT/repo/.claude/skills/document-release/SKILL.md" <<'MD'
+---
+name: document-release
+description: Fixture release documentation skill.
+---
+MD
 cat > "$TMP_ROOT/repo/core/scripts/qmd-reindex-bg.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0

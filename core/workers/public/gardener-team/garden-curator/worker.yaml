@@ -79,9 +79,9 @@ instructions: |
 
   ## Rules
   - NEVER delete without archival (move to _archive/ first)
-  - Knowledge repo files: the canonical knowledge path must be a real directory. If it contains embedded git, commit there rather than to HQ git.
+  - Company knowledge files: the canonical path must be a plain real directory; sync changes through the company vault and never initialize or commit Git there.
   - HQ-native files (workspace/, projects/): commit to HQ git
-  - Create _archive/ directories as needed (they're gitignored in knowledge repos, tracked in HQ)
+  - Create _archive/ directories as needed; company vault sync carries those directories with the rest of the knowledge tree.
   - When creating escalation PRDs, use minimal format:
     ```json
     {

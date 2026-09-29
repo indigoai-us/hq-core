@@ -355,4 +355,57 @@ printf '%s' "$(jq -n --arg company acme --arg fp "$fp" '{company:$company, artif
 run_hook "$HQ_FS" "$payload_suppressed" >/dev/null
 assert_not_file "$queue_fs"
 
+# [g] a moved-helper forwarder failure stays advisory and preserves the hook's
+# exact stderr contract. The failed suppression probe and enqueue each surface
+# the forwarder's message; enqueue then adds its own diagnostic. An absent
+# helper reports only the existing missing-helper diagnostic.
+HQ_FFAIL="$(make_root f-fail)"
+set_company "$HQ_FFAIL" "sess-forwarder" "acme"
+payload_forwarder="$(python3 - <<PY
+import json
+root = ${HQ_FFAIL@Q}
+print(json.dumps({
+  "hook_event_name": "PostToolUse",
+  "session_id": "sess-forwarder",
+  "cwd": root,
+  "tool_name": "Write",
+  "tool_input": {"file_path": f"{root}/companies/acme/data/reports/forwarder.md"},
+  "tool_response": {"stdout": ""}
+}))
+PY
+)"
+FAIL_HELPER="$HQ_FFAIL/core/scripts/share-suggestion-state.sh"
+FAIL_LOG="$TMP/share-forwarder.calls"
+FORWARDER_MESSAGE='share-suggestion-state.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest'
+cat > "$FAIL_HELPER" <<EOF
+#!/usr/bin/env bash
+printf '%s\\n' '$FORWARDER_MESSAGE' >&2
+printf 'called\\n' >> '$FAIL_LOG'
+exit 127
+EOF
+chmod +x "$FAIL_HELPER"
+if printf '%s' "$payload_forwarder" | CLAUDE_PROJECT_DIR="$HQ_FFAIL" \
+  "$HQ_FFAIL/.claude/hooks/hq-auto-acl-suggest.sh" >"$TMP/forwarder.out" 2>"$TMP/forwarder.err"; then
+  got=0
+else
+  got=$?
+fi
+[ "$got" = 0 ] || fail "forwarder status should stay advisory, got $got"
+[ ! -s "$TMP/forwarder.out" ] || fail "forwarder unexpectedly wrote stdout: $(cat "$TMP/forwarder.out")"
+printf '%s\n%s\nhq-auto-acl-suggest: unable to enqueue suggestion\n' \
+  "$FORWARDER_MESSAGE" "$FORWARDER_MESSAGE" > "$TMP/forwarder.expected"
+cmp -s "$TMP/forwarder.expected" "$TMP/forwarder.err" \
+  || { diff -u "$TMP/forwarder.expected" "$TMP/forwarder.err" >&2 || true; fail "forwarder stderr differs"; }
+[ "$(wc -l < "$FAIL_LOG" | tr -d ' ')" = 2 ] || fail "forwarder should be called twice"
+rm -f "$FAIL_HELPER"
+if printf '%s' "$payload_forwarder" | CLAUDE_PROJECT_DIR="$HQ_FFAIL" \
+  "$HQ_FFAIL/.claude/hooks/hq-auto-acl-suggest.sh" >"$TMP/absent.out" 2>"$TMP/absent.err"; then
+  got=0
+else
+  got=$?
+fi
+[ "$got" = 0 ] && [ ! -s "$TMP/absent.out" ] || fail "absent helper changed hook status/stdout"
+[ "$(cat "$TMP/absent.err")" = 'hq-auto-acl-suggest: missing state helper' ] \
+  || fail "absent helper stderr differs: $(cat "$TMP/absent.err")"
+
 echo "auto-acl-suggest smoke: ok"

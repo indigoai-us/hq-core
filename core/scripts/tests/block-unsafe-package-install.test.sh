@@ -14,8 +14,19 @@
 set -uo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
-HOOK="$ROOT/.claude/hooks/block-unsafe-package-install.sh"
+HOOK="${HQ_TEST_BLOCK_UNSAFE_PACKAGE_INSTALL_HOOK:-$ROOT/.claude/hooks/block-unsafe-package-install.sh}"
 [ -f "$HOOK" ] || { echo "FAIL: $HOOK not found" >&2; exit 1; }
+
+# The cross-version parity suite wraps Bash via PATH. Preserve only its
+# instrumentation variables when the hook cases below deliberately use env -i.
+PARITY_ENV_ARGS=()
+for parity_var in HQ_PARITY_REAL_BASH HQ_PARITY_RECORD_ROOT \
+  HQ_PARITY_UNSAFE_BASE_HOOK HQ_PARITY_UNSAFE_CANDIDATE_HOOK \
+  HQ_PARITY_CORE_BASE_HOOK HQ_PARITY_CORE_CANDIDATE_HOOK; do
+  if [[ -n "${!parity_var:-}" ]]; then
+    PARITY_ENV_ARGS+=("$parity_var=${!parity_var}")
+  fi
+done
 
 fails=0
 pass() { echo "ok   - $1"; }
@@ -28,10 +39,34 @@ run_hook() {
   local cmd="$1" tmp ec json
   tmp="$(mktemp -d)"
   json="$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.stdin.read()}}))')"
-  # Run from an isolated CWD with no .npmrc up the tree. `env` forwards the current
-  # environment (so a caller-set HQ_ALLOW_UNSAFE_INSTALL reaches the hook) plus a
-  # throwaway HQ_ROOT for any audit-row write.
-  ( cd "$tmp" && printf '%s' "$json" | env HQ_ROOT="$tmp" bash "$HOOK" >/dev/null 2>&1 )
+  # Run with an isolated CWD and only the bypass flag preserved from the caller.
+  # Release-age variables must not make command-line cases pass accidentally.
+  ( cd "$tmp" && printf '%s' "$json" | env -i PATH="$PATH" HQ_ROOT="$tmp" HQ_ALLOW_UNSAFE_INSTALL="${HQ_ALLOW_UNSAFE_INSTALL:-0}" "${PARITY_ENV_ARGS[@]}" bash "$HOOK" >/dev/null 2>&1 )
+  ec=$?
+  rm -rf "$tmp"
+  echo "$ec"
+}
+
+# run_hook_with_env <name> <value> <command-string> — isolate the hook
+# environment so each release-age alias is checked independently.
+run_hook_with_env() {
+  local name="$1" value="$2" cmd="$3" tmp ec json
+  tmp="$(mktemp -d)"
+  json="$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.stdin.read()}}))')"
+  ( cd "$tmp" && printf '%s' "$json" | env -i PATH="$PATH" HQ_ROOT="$tmp" "$name=$value" "${PARITY_ENV_ARGS[@]}" bash "$HOOK" >/dev/null 2>&1 )
+  ec=$?
+  rm -rf "$tmp"
+  echo "$ec"
+}
+
+# run_hook_with_repo_config <filename> <line> <command-string> — isolate the
+# working directory and put one package-manager config value in its repo root.
+run_hook_with_repo_config() {
+  local filename="$1" line="$2" cmd="$3" tmp ec json
+  tmp="$(mktemp -d)"
+  printf '%s\n' "$line" > "$tmp/$filename"
+  json="$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.stdin.read()}}))')"
+  ( cd "$tmp" && printf '%s' "$json" | env -i PATH="$PATH" HQ_ROOT="$tmp" HQ_ALLOW_UNSAFE_INSTALL="${HQ_ALLOW_UNSAFE_INSTALL:-0}" "${PARITY_ENV_ARGS[@]}" bash "$HOOK" >/dev/null 2>&1 )
   ec=$?
   rm -rf "$tmp"
   echo "$ec"
@@ -52,6 +87,92 @@ run_hook_with_allow() {
   rm -rf "$tmp"
   echo "$ec"
 }
+
+# 4b. A command-line release-age gate is valid only at 1440 minutes or more.
+#     Check both pnpm spellings and the threshold/invalid-value boundaries.
+release_age_cmd_case() {  # <expected-ec> <setting-name> <age> <label>
+  local want="$1" setting="$2" age="$3" label="$4" ec
+  ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook "pnpm add left-pad --config.${setting}=${age}")"
+  [ "$ec" = "$want" ] && pass "$label (exit $want)" \
+                      || fail "$label: expected exit $want, got $ec"
+}
+for setting in minimumReleaseAge minimum-release-age; do
+  release_age_cmd_case 2 "$setting" 1200 "${setting}=1200 is below the 1440-minute minimum"
+  release_age_cmd_case 2 "$setting" 0 "${setting}=0 is below the 1440-minute minimum"
+  release_age_cmd_case 2 "$setting" "" "${setting}=empty is rejected"
+  release_age_cmd_case 2 "$setting" abc "${setting}=abc is rejected"
+  release_age_cmd_case 0 "$setting" 1440 "${setting}=1440 meets the minimum"
+  release_age_cmd_case 0 "$setting" 10080 "${setting}=10080 exceeds the minimum"
+done
+ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook "pnpm add left-pad --config.minimumReleaseAge='1440'")"
+[ "$ec" = "0" ] && pass "single-quoted release-age value is accepted (exit 0)" \
+                 || fail "single-quoted valid release-age value should be accepted, got $ec"
+ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook 'pnpm add left-pad "--config.minimumReleaseAge=1440"')"
+[ "$ec" = "0" ] && pass "quoted release-age option is accepted (exit 0)" \
+                 || fail "quoted valid release-age option should be accepted, got $ec"
+for setting in minimumReleaseAge minimum-release-age; do
+  multiline_cmd="$(printf 'pnpm add left-pad \\\n--config.%s=1200' "$setting")"
+  ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook "$multiline_cmd")"
+  [ "$ec" = "2" ] && pass "continued command with ${setting}=1200 is blocked (exit 2)" \
+                   || fail "continued command with ${setting}=1200 should block, got $ec"
+  multiline_cmd="$(printf 'pnpm add left-pad \\\n--config.%s=1440' "$setting")"
+  ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook "$multiline_cmd")"
+  [ "$ec" = "0" ] && pass "continued command with ${setting}=1440 is accepted (exit 0)" \
+                   || fail "continued command with ${setting}=1440 should pass, got $ec"
+done
+# Repository config values receive the same 1440-minute validation.
+release_age_repo_case() {  # <expected-ec> <filename> <setting-line> <label>
+  local want="$1" filename="$2" line="$3" label="$4" ec
+  ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook_with_repo_config "$filename" "$line" 'pnpm add left-pad')"
+  [ "$ec" = "$want" ] && pass "$label (exit $want)" \
+                      || fail "$label: expected exit $want, got $ec"
+}
+for filename in .npmrc pnpm-workspace.yaml; do
+  if [ "$filename" = ".npmrc" ]; then
+    setting=minimum-release-age
+    separator="="
+  else
+    setting=minimumReleaseAge
+    separator=": "
+  fi
+  release_age_repo_case 2 "$filename" "${setting}${separator}1200" "$filename below-minimum value is rejected"
+  release_age_repo_case 2 "$filename" "${setting}${separator}0" "$filename zero value is rejected"
+  release_age_repo_case 2 "$filename" "${setting}${separator}" "$filename empty value is rejected"
+  release_age_repo_case 2 "$filename" "${setting}${separator}abc" "$filename non-numeric value is rejected"
+  release_age_repo_case 0 "$filename" "${setting}${separator}1440" "$filename minimum value is accepted"
+  release_age_repo_case 0 "$filename" "${setting}${separator}10080" "$filename above-minimum value is accepted"
+done
+release_age_repo_case 0 pnpm-workspace.yaml 'minimumReleaseAge: 1440 # enforced' \
+  "pnpm-workspace.yaml inline-commented minimum value is accepted"
+
+# Environment aliases receive the same value validation as command flags.
+release_age_env_case() {  # <expected-ec> <env-name> <age> <label>
+  local want="$1" name="$2" age="$3" label="$4" ec
+  ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook_with_env "$name" "$age" 'pnpm add left-pad')"
+  [ "$ec" = "$want" ] && pass "$label (exit $want)" \
+                      || fail "$label: expected exit $want, got $ec"
+}
+for name in npm_config_minimum_release_age NPM_CONFIG_MINIMUM_RELEASE_AGE; do
+  release_age_env_case 2 "$name" 1200 "$name=1200 is below the minimum"
+  release_age_env_case 2 "$name" 0 "$name=0 is below the minimum"
+  release_age_env_case 2 "$name" "" "$name empty value is rejected"
+  release_age_env_case 2 "$name" abc "$name non-numeric value is rejected"
+  release_age_env_case 0 "$name" 1440 "$name=1440 meets the minimum"
+  release_age_env_case 0 "$name" 10080 "$name=10080 exceeds the minimum"
+done
+ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook_with_env npm_config_minimum_release_age 1440 'pnpm add left-pad --config.minimumReleaseAge=1200')"
+[ "$ec" = "2" ] && pass "invalid command value cannot fall through to a valid environment value (exit 2)" \
+                 || fail "invalid command value must block despite valid environment value, got $ec"
+
+
+if [[ "${HQ_TEST_RELEASE_AGE_ONLY:-0}" == "1" ]]; then
+  if [[ "$fails" -gt 0 ]]; then
+    echo "release-age checks failed ($fails assertions)" >&2
+    exit 1
+  fi
+  echo "release-age checks passed"
+  exit 0
+fi
 
 # 1. Baseline: raw `npm install <pkg>` with no gate configured is BLOCKED (exit 2).
 ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook 'npm install left-pad')"

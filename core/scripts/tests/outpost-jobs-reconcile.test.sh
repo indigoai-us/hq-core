@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-RECON="$ROOT/core/scripts/outpost-jobs-reconcile.sh"
+RECON="${HQ_JOB_RECONCILE_TEST_SCRIPT_SOURCE:-$ROOT/core/scripts/outpost-jobs-reconcile.sh}"
 FIX_VALID="$ROOT/core/scripts/tests/fixtures/jobs/valid"
 
 command -v yq >/dev/null 2>&1 || { echo "SKIP: yq not available"; exit 0; }
@@ -19,6 +19,17 @@ pass() { echo "  ok: $*"; }
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/hq-job-recon-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+AWS_PROFILE="us-110-111-test"
+AWS_SHARED_CREDENTIALS_FILE="$TMP/empty-aws-credentials"
+AWS_CONFIG_FILE="$TMP/empty-aws-config"
+AWS_EC2_METADATA_DISABLED=true
+: >"$AWS_SHARED_CREDENTIALS_FILE"
+: >"$AWS_CONFIG_FILE"
+export AWS_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE AWS_EC2_METADATA_DISABLED
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN \
+  AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_CONTAINER_CREDENTIALS_RELATIVE_URI \
+  AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_AUTHORIZATION_TOKEN
+
 HQ="$TMP/hqroot"
 HOME_DIR="$TMP/home"
 UNIT_DIR="$TMP/units"
@@ -26,15 +37,28 @@ CACHE="$TMP/status-cache"
 BIN="$TMP/bin"
 mkdir -p "$HQ/personal/jobs" "$HQ/companies/indigo/jobs" "$HQ/companies/indigo/projects/outpost-scheduled-jobs"
 mkdir -p "$HOME_DIR" "$UNIT_DIR" "$CACHE" "$BIN" "$HOME_DIR/.hq/jobs/reconcile"
+for blocked_binary in aws sst pulumi systemctl hq curl; do
+  cat >"$BIN/$blocked_binary" <<'STUB'
+#!/usr/bin/env bash
+printf 'unexpected external binary: %s\n' "${0##*/}" >&2
+exit 97
+STUB
+  chmod +x "$BIN/$blocked_binary"
+done
 export HOME="$HOME_DIR"
 export HQ_ROOT="$HQ"
 export PATH="$BIN:$PATH"
+for blocked_binary in aws sst pulumi systemctl hq curl; do
+  [ "$(command -v "$blocked_binary")" = "$BIN/$blocked_binary" ] \
+    || fail "the test must not resolve the host $blocked_binary binary"
+done
 export HQ_JOB_UNIT_DIR="$UNIT_DIR"
 export HQ_JOB_STATUS_CACHE_DIR="$CACHE"
 export HQ_JOB_SYSTEMCTL=":"
 export HQ_JOB_OWNER_EMAIL="owner@example.com"
 export HQ_JOB_OWNER_UID="prs_owner"
 export HQ_JOB_RANDOMIZE_SEC=45
+unset HQ_ACCESS_TOKEN HQ_PRO_API_URL HQ_API_URL HQ_VAULT_API_URL
 
 # Stub probe — records calls; optionally writes cache via env.
 cat >"$BIN/hq-job-probe-stub.sh" <<'STUB'
@@ -84,6 +108,65 @@ jq -nc '{job_id:"daily-inbox-digest",readiness:"ready",updated_at:"2026-08-23T18
 jq -nc '{job_id:"sentry-triage-mine",readiness:"pending_probe",updated_at:"2026-08-23T18:00:00Z",source:"test"}' \
   >"$CACHE/sentry-triage-mine.json"
 
+# A failed systemctl enable must be reported as an error on both the write and
+# idempotent paths. These stubs never invoke the host's systemctl binary.
+cat >"$BIN/systemctl-fail-enable" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == "--user daemon-reload" ]]; then
+  exit 0
+fi
+if [[ "$*" == "--user enable --now hq-job-daily-inbox-digest.timer" ]]; then
+  echo "Failed to connect to bus: No medium found" >&2
+  exit 37
+fi
+exit 0
+STUB
+chmod +x "$BIN/systemctl-fail-enable"
+cat >"$BIN/systemctl-success" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${HQ_JOB_SYSTEMCTL_TEST_LOG:?}"
+STUB
+chmod +x "$BIN/systemctl-success"
+
+assert_enable_failure() {
+  local label="$1" rc=0 summary_file="$HOME_DIR/.hq/jobs/reconcile/last-reconcile.json"
+  HQ_JOB_SYSTEMCTL="$BIN/systemctl-fail-enable" bash "$RECON" --hq-root "$HQ" --no-probe \
+    >"$TMP/$label.out" 2>"$TMP/$label.err" || rc=$?
+  [[ "$rc" -ne 0 ]] || fail "$label systemctl failure should make reconcile exit non-zero"
+  jq -e '.errors == 1 and .armed == 0 and .skipped == 3' "$summary_file" >/dev/null \
+    || fail "$label summary must report the failed job as skipped (plus two fixture skips): $(cat "$summary_file")"
+  ! grep -Fq 'armed daily-inbox-digest' "$TMP/$label.err" \
+    || fail "$label must not log the failed timer as armed"
+  grep -Fq 'systemctl enable timer failed for job daily-inbox-digest exit=37: Failed to connect to bus: No medium found' \
+    "$TMP/$label.err" || fail "$label must log the job id, exit code, and systemctl message"
+  [ -f "$UNIT_DIR/hq-job-daily-inbox-digest.service" ] \
+    && [ -f "$UNIT_DIR/hq-job-daily-inbox-digest.timer" ] \
+    || fail "$label systemctl failure must leave the generated unit files in place"
+}
+
+# First call writes the unit files; the second call takes the no-op branch.
+assert_enable_failure "enable-failure-write"
+assert_enable_failure "enable-failure-noop"
+
+# A successful enable continues to count as armed on the no-op path.
+export HQ_JOB_SYSTEMCTL_TEST_LOG="$TMP/systemctl-success.log"
+HQ_JOB_SYSTEMCTL="$BIN/systemctl-success" bash "$RECON" --hq-root "$HQ" --no-probe \
+  >"$TMP/enable-success.out" 2>"$TMP/enable-success.err"
+jq -e '.errors == 0 and .armed == 1' "$HOME_DIR/.hq/jobs/reconcile/last-reconcile.json" >/dev/null \
+  || fail "successful systemctl enable should report armed=1 and errors=0"
+grep -Fqx -- '--user enable --now hq-job-daily-inbox-digest.timer' "$HQ_JOB_SYSTEMCTL_TEST_LOG" \
+  || fail "successful systemctl stub must receive the timer enable request"
+
+# An unavailable systemctl remains a non-error while preserving its diagnostic.
+HQ_JOB_SYSTEMCTL="$TMP/systemctl-not-installed" bash "$RECON" --hq-root "$HQ" --no-probe \
+  >"$TMP/systemctl-unavailable.out" 2>"$TMP/systemctl-unavailable.err"
+jq -e '.errors == 0 and .armed == 1' "$HOME_DIR/.hq/jobs/reconcile/last-reconcile.json" >/dev/null \
+  || fail "an unavailable systemctl should retain the existing armed/no-error summary"
+grep -Fq 'systemctl not available — units written but not enabled (enable --now hq-job-daily-inbox-digest.timer)' \
+  "$TMP/systemctl-unavailable.err" \
+  || fail "an unavailable systemctl must retain its diagnostic: $(cat "$TMP/systemctl-unavailable.err")"
+pass "systemctl failures are reported and successful enables remain armed"
+
 # 1) Ready personal job → units written with Persistent + RandomizedDelaySec + OnCalendar
 set +e
 bash "$RECON" --hq-root "$HQ" --no-probe --dry-run >"$TMP/out1.json" 2>"$TMP/err1.txt"
@@ -94,11 +177,36 @@ set -e
 [ -f "$UNIT_DIR/hq-job-daily-inbox-digest.timer" ] || fail "timer unit missing"
 grep -q 'Persistent=true' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "Persistent=true missing"
 grep -q 'RandomizedDelaySec=45' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "RandomizedDelaySec missing"
-grep -q 'Timezone=America/New_York' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "Timezone missing"
-grep -q 'OnCalendar=' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "OnCalendar missing"
+grep -q '^OnCalendar=.* America/New_York$' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" \
+  || fail "OnCalendar must end with the declared timezone"
+! grep -q '^Timezone=' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "invalid Timezone= directive must not be written"
 grep -q 'Mon..Fri' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "weekday OnCalendar expected for 1-5"
 grep -q 'hq-job-run.sh' "$UNIT_DIR/hq-job-daily-inbox-digest.service" || fail "service must ExecStart hq-job-run.sh"
 pass "ready personal job materializes service+timer"
+
+# A job without a declared timezone uses the generated OnCalendar expression unchanged.
+yq -i 'del(.timezone)' "$HQ/personal/jobs/digest.yaml"
+bash "$RECON" --hq-root "$HQ" --no-probe --dry-run >"$TMP/no-zone.out" 2>"$TMP/no-zone.err"
+grep -q '^OnCalendar=Mon..Fri \*-\*-\* 09:00:00$' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" \
+  || fail "OnCalendar must stay unchanged when no timezone is declared"
+! grep -q '^Timezone=' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" \
+  || fail "timer without a timezone must not write a Timezone= directive"
+pass "no declared timezone leaves OnCalendar unchanged"
+
+# Newlines and other unsafe characters in a zone must not become unit-file keys.
+yq -i '.timezone = "America/New_York\nPersistent=false"' "$HQ/personal/jobs/digest.yaml"
+set +e
+bash "$RECON" --hq-root "$HQ" --no-probe --dry-run >"$TMP/invalid-zone.out" 2>"$TMP/invalid-zone.err"
+invalid_zone_rc=$?
+set -e
+[ "$invalid_zone_rc" -ne 0 ] || fail "unsafe timezone should fail reconcile"
+grep -Fq 'invalid timezone' "$TMP/invalid-zone.err" || fail "unsafe timezone must have a clear log line"
+[ ! -f "$UNIT_DIR/hq-job-daily-inbox-digest.timer" ] \
+  || fail "unsafe timezone must not leave a generated timer"
+pass "unsafe timezone is rejected without unit-file injection"
+
+yq -i '.timezone = "America/New_York"' "$HQ/personal/jobs/digest.yaml"
+bash "$RECON" --hq-root "$HQ" --no-probe --dry-run >"$TMP/restore-zone.out" 2>"$TMP/restore-zone.err"
 
 # 2) Other-owner company job ignored; non-ready company job not armed
 [ ! -f "$UNIT_DIR/hq-job-sentry-triage-indigo.timer" ] || fail "other-owner company job should not arm"

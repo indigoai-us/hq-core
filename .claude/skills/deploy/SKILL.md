@@ -574,11 +574,15 @@ disown
 
 ### B.2 — Guardrails (inline, backgrounded)
 
-Walks `$OUTPUT_DIR`, applies caps, builds tarball, returns path + size + sha256.
+Walks `$OUTPUT_DIR`, includes root `api/` handlers for `DEPLOY_TYPE=app`, applies caps to the combined artifact, and returns path + size + sha256.
 
 ```bash
 T_GUARDRAILS=$(mktemp -t hq-deploy-guardrails.XXXXXX)
-.claude/skills/deploy/scripts/guardrails-check.sh "$OUTPUT_DIR" > "$T_GUARDRAILS" 2>/dev/null &
+GUARDRAILS_API_DIR=""
+if [ "$DEPLOY_TYPE" = "app" ] && [ "$OUTPUT_DIR" != "." ]; then
+  GUARDRAILS_API_DIR="$PWD/api"
+fi
+.claude/skills/deploy/scripts/guardrails-check.sh "$OUTPUT_DIR" "$GUARDRAILS_API_DIR" > "$T_GUARDRAILS" 2>/dev/null &
 GUARDRAILS_PID=$!
 
 # Preview server is already disowned and serving — nothing to wait on for it.
@@ -703,7 +707,8 @@ carry `X-Org-Slug: $ORG_SLUG`; personal deploys carry
 headers on the same request.
 
 ```bash
-DEPLOY_RESPONSE=$(deploy_request deploy-creation --method POST --url "$API/api/deploys" \
+if [ "$DEPLOY_TYPE" = "static" ]; then
+  DEPLOY_RESPONSE=$(deploy_request deploy-creation --method POST --url "$API/api/deploys" \
   --header 'Content-Type: application/json' \
   --data "{\"appSlug\": \"$APP_SUBDOMAIN\", \"org\": \"$ORG_SLUG\", \"manifest\": {\"files\": [], \"size\": $TARBALL_SIZE, \"sha256\": \"$TARBALL_SHA256\"}}" \
   --expect '(.deployId | type == "string" and length > 0) and (.presignedUrl | type == "string" and length > 0)') || exit 1
@@ -722,18 +727,34 @@ COMPLETE_RESPONSE=$(deploy_request deploy-completion --method POST \
 
 LIVE_URL=$(echo "$COMPLETE_RESPONSE" | jq -r '.url')
 rm -f "$TARBALL_PATH"
+fi
 ```
 
 #### App upload (backend `api/*` → per-app Lambda)
 
 When `DEPLOY_TYPE=app` (a root `api/` dir was detected in A.1), the app ships a
-static frontend **and** backend `api/*` handlers. The client-side flow is the
-**same presigned-tarball upload as static** — tar the whole build (frontend +
-`api/` dir) and push it through `POST /api/deploys` → S3 PUT → `…/complete`
-exactly as in "Static upload" above. The control plane does the backend work:
-it esbuild-bundles `api/**/*.{ts,js}` into a per-app Lambda, mounts it behind a
-shared front-door HTTP API, and maps the app's subdomain to it. There is **no**
-Docker/ECR/ECS step — `app` is distinct from the dormant SSR path.
+static frontend **and** backend `api/*` handlers. Guardrails includes the root
+`api/` directory in the capped archive when the build output is a separate
+directory. Use the app deploy route, which accepts `type=app`; `/api/deploys`
+supports only `static`, `fetch`, and `next` artifact types and defaults an
+omitted type to `static`.
+
+```bash
+if [ "$DEPLOY_TYPE" = "app" ]; then
+  APP_DEPLOY_RESPONSE=$(deploy_request app-deploy --method POST \
+    --url "$API/api/apps/$APP_ID/deploy" \
+    --form-string 'type=app' \
+    --form-file "file=$TARBALL_PATH" \
+    --expect '(.deployId | type == "string" and length > 0) and (.statusUrl | type == "string" and length > 0)') || exit 1
+  LIVE_URL="https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}"
+  rm -f "$TARBALL_PATH"
+fi
+```
+
+The control plane esbuild-bundles `api/**/*.{ts,js}` into a per-app Lambda,
+mounts it behind a shared front-door HTTP API, and maps the app subdomain to it.
+This multipart request performs the app deploy; do not follow it with the static
+presigned upload or a separate completion request. There is no Docker/ECR/ECS step.
 
 **Runtime secrets → SecretBindings (not env vars in the bundle).** A backend
 handler that needs a secret (DB URL, Slack webhook, API key) must NOT have the
@@ -821,7 +842,7 @@ malformed responses.
 
 ### C.2.6 — Enable comments (opt-in)
 
-Only when the invocation opted in (`$COMMENTS` is `on` or `off` per the `--comments` intent in "Access modes"; unset → skip this step entirely). Comments are a per-app opt-in, off by default. hq-deploy reads the flag inside `POST /api/deploys/:id/complete`, so this PATCH must run **before** that call: right after "Ensure app exists" in C.2 (the app, new or existing, has `$APP_ID` by then). Running it after `…/complete` only affects the following deploy.
+Only when the invocation opted in (`$COMMENTS` is `on` or `off` per the `--comments` intent in "Access modes"; unset → skip this step entirely). Comments are a per-app opt-in, off by default. The static completion route reads the flag inside `POST /api/deploys/:id/complete`, so this PATCH must run **before** that call: right after "Ensure app exists" in C.2 (the app, new or existing, has `$APP_ID` by then). The app route has no comment-widget injection.
 
 ```bash
 if [ "$COMMENTS" = "on" ] || [ "$COMMENTS" = "off" ]; then
@@ -834,7 +855,7 @@ fi
 
 `commentsEnabled` is orthogonal to `ACCESS_MODE` — the comment surface enforces the SAME gate as the deploy (a gated deploy's thread is only readable/writable by viewers who pass the gate; access revocation reaches comments too), so no extra access wiring is needed here. Mention it once in C.5 when it was toggled ("comments are on for this deploy").
 
-This step is documented after C.2 for reference, but execute it between "Ensure app exists" and "Static upload" so the current deploy ships with (or without) the widget. It has no effect on `app` or SSR deploys, which never get the widget. To read or resolve the comments afterwards, use the owner routes and the review loop under "Reading and answering comments as the owner" in the Access modes section.
+This step is documented after C.2 for reference, but execute it between "Ensure app exists" and the static upload so the current static deploy ships with (or without) the widget. It has no effect on `app` or SSR deploys, which never get the widget. To read or resolve the comments afterwards, use the owner routes and the review loop under "Reading and answering comments as the owner" in the Access modes section.
 
 ### C.3 — Wire access mode (sensitive only)
 

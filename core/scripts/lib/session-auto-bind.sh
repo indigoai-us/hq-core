@@ -141,29 +141,82 @@ session_auto_bind_is_fleet_identity() {
 # Run a command in a detached process group with a real wall-clock ceiling.
 # A plain Perl alarm is replaced by exec(), so it cannot kill descendants which
 # keep the command-substitution pipe open. Node is already required to run hq.
+# The default remains two seconds; bounded SessionStart maintenance can request
+# a longer explicit ceiling without changing the caller's process budget.
 session_auto_bind_run_with_timeout() {
   command -v node >/dev/null 2>&1 || return 127
+  local timeout_ms=2000 capture_stderr=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --timeout-ms)
+        [ "$#" -ge 2 ] || return 127
+        timeout_ms="${2:-}"
+        shift 2
+        ;;
+      --capture-stderr)
+        capture_stderr=1
+        shift
+        ;;
+      *) break ;;
+    esac
+  done
+  case "$timeout_ms" in
+    ''|*[!0-9]*) return 127 ;;
+  esac
+  [ "$timeout_ms" -ge 1 ] && [ "$timeout_ms" -le 10000 ] || return 127
+  [ "$#" -gt 0 ] || return 127
   node -e '
 const { spawn } = require("child_process");
-const command = process.argv[1];
-if (!command) process.exit(127);
-const child = spawn(command, process.argv.slice(2), {
+const timeoutMs = Number(process.argv[1]);
+const captureStderr = process.argv[2] === "1";
+const command = process.argv[3];
+if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000 || !command) process.exit(127);
+const child = spawn(command, process.argv.slice(4), {
   detached: true,
-  stdio: ["ignore", "pipe", "ignore"],
+  stdio: ["ignore", "pipe", captureStderr ? "pipe" : "ignore"],
 });
 let finished = false;
+let stopStatus = null;
+let timeoutTimer = null;
+let killTimer = null;
 const finish = (status) => {
   if (finished) return;
   finished = true;
-  clearTimeout(timer);
-  try { process.kill(-child.pid, "SIGTERM"); } catch (_) {}
-  process.exit(status);
+  if (timeoutTimer) clearTimeout(timeoutTimer);
+  if (killTimer) clearTimeout(killTimer);
+  process.exitCode = status;
+};
+const signalGroup = (signal) => {
+  if (!child.pid) return;
+  try { process.kill(-child.pid, signal); } catch (_) {}
+};
+const requestStop = (status) => {
+  if (stopStatus === null) stopStatus = status;
+  signalGroup("SIGTERM");
+  if (!killTimer) killTimer = setTimeout(() => signalGroup("SIGKILL"), 250);
 };
 child.stdout.on("data", (chunk) => process.stdout.write(chunk));
-child.once("error", () => finish(127));
-child.once("exit", (code) => finish(typeof code === "number" ? code : 1));
-const timer = setTimeout(() => finish(124), 2000);
-' "$@"
+if (captureStderr) child.stderr.on("data", (chunk) => process.stderr.write(chunk));
+process.once("SIGTERM", () => requestStop(143));
+process.once("SIGINT", () => requestStop(130));
+child.once("error", () => requestStop(127));
+child.once("exit", (code, signal) => {
+  if (stopStatus === null) {
+    stopStatus = typeof code === "number" ? code : (signal ? 128 : 1);
+  }
+  // A child can leave descendants holding either output pipe open. Stop the
+  // process group now, but let `close` drain the streams before returning.
+  signalGroup("SIGTERM");
+  if (!killTimer) killTimer = setTimeout(() => signalGroup("SIGKILL"), 250);
+});
+child.once("close", (code, signal) => {
+  const status = stopStatus === null
+    ? (typeof code === "number" ? code : (signal ? 128 : 1))
+    : stopStatus;
+  finish(status);
+});
+timeoutTimer = setTimeout(() => requestStop(124), timeoutMs);
+' "$timeout_ms" "$capture_stderr" "$@"
 }
 
 # Emits a known default-company slug and repair flag as tab-separated fields, or
@@ -176,7 +229,7 @@ session_auto_bind_device_default() {
   command -v hq >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
 
-  json="$(session_auto_bind_run_with_timeout hq mesh context default get --json 2>/dev/null || true)"
+  json="$(HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout hq mesh context default get --json 2>/dev/null || true)"
   [ -n "$json" ] || return 0
   slug="$(printf '%s' "$json" | jq -er '
     (.defaultCompany // .) as $default |

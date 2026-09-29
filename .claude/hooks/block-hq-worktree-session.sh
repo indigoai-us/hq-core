@@ -128,70 +128,111 @@ HQ_ROOT="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}"
 [ -z "$HQ_ROOT" ] && HQ_ROOT="$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd)"
 [ -n "$HQ_ROOT" ] || exit 0
 
-# hq_normpath: lexical fallback for paths realpath cannot resolve.
-if [ -f "$HQ_ROOT/core/scripts/hook-lib.sh" ]; then
-  # shellcheck disable=SC1091
-  . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
-fi
-
+# Existing hook paths are directories. Resolve them with Bash's cd builtin;
+# sourcing hook-lib.sh and asking Git to enumerate worktrees made a cold
+# SessionStart pay for several child processes before it could warn.
 norm() {
   local p="${1:-}" resolved="" old_pwd="${PWD:-}"
   [ -n "$p" ] || return 0
   case "$p" in "~") p="$HOME" ;; "~/"*) p="$HOME${p#\~}" ;; esac
-  if [ -d "$p" ] && CDPATH= cd -P -- "$p" 2>/dev/null; then
+  if [ -d "$p" ] && CDPATH= cd -P -- "$p" >/dev/null 2>&1; then
     resolved="$PWD"
-    [ -n "$old_pwd" ] && cd -- "$old_pwd" 2>/dev/null || true
+    [ -n "$old_pwd" ] && CDPATH= cd -- "$old_pwd" >/dev/null 2>&1 || true
   fi
-  if [ -z "$resolved" ]; then
-    # Git Bash may report an alternate drive-letter spelling for the same
-    # checkout. Resolve only paths that cannot be reached with `cd`; normal
-    # existing paths stay on the builtin fast path.
-    if command -v realpath >/dev/null 2>&1; then
-      resolved="$(realpath "$p" 2>/dev/null || true)"
+  printf '%s\n' "${resolved:-$p}"
+}
+
+parent_dir() {
+  local path="$1" parent
+  case "$path" in
+    /) return 1 ;;
+    */*) parent="${path%/*}"; [ -n "$parent" ] || parent="/" ;;
+    *) return 1 ;;
+  esac
+  [ "$parent" != "$path" ] || return 1
+  printf '%s\n' "$parent"
+}
+
+repo_root_for() {
+  local dir="${1:-}" next
+  [ -d "$dir" ] || return 1
+  dir="$(norm "$dir")"
+  while [ -n "$dir" ]; do
+    if [ -d "$dir/.git" ] || [ -f "$dir/.git" ]; then
+      printf '%s\n' "$dir"
+      return 0
     fi
-    [ -n "$resolved" ] || resolved="$(hq_normpath "$p" 2>/dev/null || printf '%s\n' "$p")"
-  fi
-  if declare -F hq_canonical_path >/dev/null 2>&1; then
-    hq_canonical_path "$resolved"
-  else
-    printf '%s\n' "$resolved"
-  fi
+    next="$(parent_dir "$dir")" || return 1
+    dir="$next"
+  done
+  return 1
 }
 
 SESSION_CWD="$(payload_field cwd)"
 [ -z "$SESSION_CWD" ] && SESSION_CWD="${PWD:-}"
 
-linked_worktree_main() {
-  local dir="${1:-}" gd cdir main listing line
+repo_common_git_dir_for() {
+  local dir="${1:-}" root marker entry gd common_file common
   [ -n "$dir" ] && [ -d "$dir" ] || return 1
-
-  gd="$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null)" || gd=""
-  if [ -z "$gd" ]; then
-    # git < 2.13 has no --absolute-git-dir; resolve the relative form ourselves.
-    gd="$(git -C "$dir" rev-parse --git-dir 2>/dev/null)" || return 1
-    case "$gd" in /*) ;; *) gd="$dir/$gd" ;; esac
+  root="$(repo_root_for "$dir")" || return 1
+  marker="$root/.git"
+  if [ -d "$marker" ]; then
+    common="$marker"
+  elif [ -f "$marker" ]; then
+    IFS= read -r entry < "$marker" || return 1
+    entry="${entry%$'\r'}"
+    case "$entry" in "gitdir: "*) gd="${entry#gitdir: }" ;; *) return 1 ;; esac
+    case "$gd" in /*|[A-Za-z]:/*) ;; *) gd="$root/$gd" ;; esac
+    gd="$(norm "$gd")"
+    [ -n "$gd" ] || return 1
+    common_file="$gd/commondir"
+    if [ -f "$common_file" ]; then
+      IFS= read -r common < "$common_file" || return 1
+      common="${common%$'\r'}"
+      case "$common" in /*|[A-Za-z]:/*) ;; *) common="$gd/$common" ;; esac
+    else
+      common="$gd"
+    fi
+  else
+    return 1
   fi
-  cdir="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)" || return 1
-  case "$cdir" in /*) ;; *) cdir="$dir/$cdir" ;; esac
+  common="$(norm "$common")"
+  [ -n "$common" ] || return 1
+  printf '%s\n' "$common"
+}
 
+linked_worktree_common_git_dir_for() {
+  local dir="${1:-}" root marker entry gd common_file common
+  [ -n "$dir" ] && [ -d "$dir" ] || return 1
+  root="$(repo_root_for "$dir")" || return 1
+  marker="$root/.git"
+  [ -f "$marker" ] || return 1
+  IFS= read -r entry < "$marker" || return 1
+  entry="${entry%$'\r'}"
+  case "$entry" in "gitdir: "*) gd="${entry#gitdir: }" ;; *) return 1 ;; esac
+  case "$gd" in /*|[A-Za-z]:/*) ;; *) gd="$root/$gd" ;; esac
   gd="$(norm "$gd")"
-  cdir="$(norm "$cdir")"
-  [ -n "$gd" ] && [ -n "$cdir" ] || return 1
-  [ "$gd" != "$cdir" ] || return 1
+  [ -n "$gd" ] || return 1
+  common_file="$gd/commondir"
+  [ -f "$common_file" ] || return 1
+  IFS= read -r common < "$common_file" || return 1
+  common="${common%$'\r'}"
+  case "$common" in /*|[A-Za-z]:/*) ;; *) common="$gd/$common" ;; esac
+  common="$(norm "$common")"
+  [ -n "$common" ] && [ "$gd" != "$common" ] || return 1
+  printf '%s\n' "$common"
+}
 
-  # `git worktree list` always reports the main worktree first.
-  listing="$(git -C "$dir" worktree list --porcelain 2>/dev/null)" || listing=""
-  while IFS= read -r line; do
-    case "$line" in
-      worktree\ *) main="${line#worktree }"; break ;;
-    esac
-  done <<< "$listing"
-  if [ -z "$main" ]; then
-    case "$cdir" in
-      */.git) main="${cdir%/.git}" ;;
-      *) return 1 ;;
-    esac
-  fi
+linked_worktree_main() {
+  local dir="${1:-}" common main
+  common="$(linked_worktree_common_git_dir_for "$dir")" || return 1
+  # The common directory is usually <main checkout>/.git. Separate-git-dir
+  # repositories use an arbitrary metadata path, which identifies the linked
+  # worktree but does not encode the main checkout's path.
+  case "$common" in
+    */.git) main="${common%/.git}" ;;
+    *) return 1 ;;
+  esac
   norm "$main"
 }
 
@@ -199,18 +240,23 @@ REASON=""
 CANONICAL=""
 WORKTREE_PATH=""
 
+MAIN_FOR_ROOT_COMMON="$(linked_worktree_common_git_dir_for "$HQ_ROOT" || true)"
 MAIN_FOR_ROOT="$(linked_worktree_main "$HQ_ROOT" || true)"
-if [ -n "$MAIN_FOR_ROOT" ]; then
+if [ -n "$MAIN_FOR_ROOT_COMMON" ]; then
   REASON="project-dir"
   CANONICAL="$MAIN_FOR_ROOT"
+  COMMON_GIT_DIR="$MAIN_FOR_ROOT_COMMON"
   WORKTREE_PATH="$(norm "$HQ_ROOT")"
 else
-  HQ_TOP="$(git -C "$HQ_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+  HQ_TOP="$(repo_root_for "$HQ_ROOT" 2>/dev/null || true)"
   HQ_TOP="$(norm "$HQ_TOP")"
-  MAIN_FOR_CWD="$(linked_worktree_main "$SESSION_CWD" || true)"
-  if [ -n "$MAIN_FOR_CWD" ] && [ -n "$HQ_TOP" ] && [ "$MAIN_FOR_CWD" = "$HQ_TOP" ]; then
+  HQ_COMMON_GIT_DIR="$(repo_common_git_dir_for "$HQ_TOP" || true)"
+  CWD_LINKED_COMMON="$(linked_worktree_common_git_dir_for "$SESSION_CWD" || true)"
+  if [ -n "$CWD_LINKED_COMMON" ] && [ -n "$HQ_COMMON_GIT_DIR" ] \
+     && [ "$CWD_LINKED_COMMON" = "$HQ_COMMON_GIT_DIR" ]; then
     REASON="cwd"
-    CANONICAL="$MAIN_FOR_CWD"
+    CANONICAL="$HQ_TOP"
+    COMMON_GIT_DIR="$CWD_LINKED_COMMON"
     WORKTREE_PATH="$(norm "$SESSION_CWD")"
   fi
 fi
@@ -231,11 +277,19 @@ else
 fi
 
 message() {
+  local canonical_display next_step
+  if [ -n "$CANONICAL" ]; then
+    canonical_display="Canonical HQ:  $CANONICAL"
+    next_step="cd $CANONICAL"
+  else
+    canonical_display="Canonical HQ:  path unavailable (separate Git directory: $COMMON_GIT_DIR)"
+    next_step="start Claude from HQ's main checkout; its path is not recorded in this separate Git directory"
+  fi
   cat <<MSG
 $WHERE
 
   Worktree:      $WORKTREE_PATH
-  Canonical HQ:  $CANONICAL
+  $canonical_display
 
 WHY THIS IS BLOCKED: HQ is an orchestration layer, not a branchable codebase,
 and it must always run from its single canonical checkout on main (hard policy
@@ -247,7 +301,7 @@ whose merge deletes unrelated HQ files.
 
 WHAT TO DO: exit this session and start Claude from the canonical checkout:
 
-  cd $CANONICAL
+  $next_step
 
 Source-repo worktrees are unaffected: editing a checkout under repos/ from a
 worktree in workspace/worktrees/<repo>/<name>/ is the normal, required flow.

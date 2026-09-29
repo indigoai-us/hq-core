@@ -275,10 +275,13 @@ fi
 
 # A legacy knowledge symlink gets a migration diagnostic, never a bypass recipe.
 run "$HQ/companies/acme/knowledge/finance/overview.md" -u HQ_BYPASS_REPO_WORKTREE >/dev/null
-if grep -Fq 'invalid legacy knowledge symlink' "$ERR" && grep -Fq '! test -L' "$ERR" && ! grep -Fq 'cat >' "$ERR"; then
-  ok "a legacy knowledge symlink is told to migrate"
+if grep -Fq 'company knowledge must be a plain real directory' "$ERR" \
+  && grep -Fq 'Do not use the hq reindex command for company knowledge' "$ERR" \
+  && grep -Fq '! test -L' "$ERR" \
+  && ! grep -Fq 'cat >' "$ERR"; then
+  ok "company knowledge symlink guidance requires a plain directory and avoids automatic migration"
 else
-  fail "a legacy knowledge symlink is told to migrate" "$(cat "$ERR")"
+  fail "company knowledge symlink guidance is safe" "$(cat "$ERR")"
 fi
 
 # The same diagnostic covers a legacy link at the HQ knowledge root

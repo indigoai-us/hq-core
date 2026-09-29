@@ -1,3 +1,5 @@
 interface:
   display_name: "HQ Logout"
   short_description: "Sign out of HQ Cognito locally — clear cached tokens."
+policy:
+  allow_implicit_invocation: false

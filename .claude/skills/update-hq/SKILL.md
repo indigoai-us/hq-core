@@ -51,6 +51,26 @@ Surface the plan in plain terms: the target release, how many paths are clean vs
 
 If the user passed `--check` / `--dry-run`, **stop here** — report the plan and write nothing.
 
+Before an applying run, check the incoming release's `core/core.yaml` from the
+exact source repository and ref shown by the plan. The default source is
+`indigoai-us/hq-core`; `--staging` selects `indigoai-us/hq-core-staging`, and
+`--source` or `--ref` overrides those defaults. Read only the metadata file:
+
+```bash
+gh api -H 'Accept: application/vnd.github.raw+json' \
+  "repos/<owner>/<repo>/contents/core/core.yaml?ref=<target-ref>"
+```
+
+If the metadata file cannot be read from the planned source and ref, stop and
+report that failure; do not apply the release.
+
+If the file declares `requiresHqCli`, compare the installed CLI with that floor
+using `core/scripts/lib/hq-cli-floor.sh`. If the floor is malformed, stop and
+report its value. The reader accepts an HQ root, so place the fetched file under
+a temporary `core/core.yaml` and call `hq_cli_floor_required` on that root. If
+the CLI is older, include the required CLI upgrade in the plan. Do not install
+it before the user confirms the applying run.
+
 ## Phase 3: Confirm and apply
 
 If this is not a dry run, confirm with `AskUserQuestion` (skip the prompt only if the user already passed `-y` / `--yes`):
@@ -58,7 +78,19 @@ If this is not a dry run, confirm with `AskUserQuestion` (skip the prompt only i
 1. Apply this upgrade (recommended)
 2. Cancel
 
-On confirm, apply — pass `-y` so rescue does not re-prompt, since the user just confirmed here:
+If the incoming release requires a newer CLI, run the upgrade after this
+confirmation and before rescue:
+
+```bash
+npm install -g @indigoai-us/hq-cli@latest
+```
+
+Then check the installed version again with `hq_cli_floor_check`. If the
+install fails or the CLI still misses the floor, stop without applying the
+scaffold release and show the upgrade command. Do not run rescue until the floor
+check passes.
+
+Only after that check passes, run rescue with `-y` so it does not prompt again:
 ```bash
 hq rescue -y {mapped-flags}
 ```

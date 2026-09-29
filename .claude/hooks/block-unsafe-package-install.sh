@@ -41,7 +41,9 @@ set -uo pipefail
 
 STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
 
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+HOOK_SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HOOK_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$HOOK_SOURCE_ROOT}}"
+. "$HOOK_SOURCE_ROOT/core/scripts/hook-lib.sh"
 
 extract() {
   printf '%s' "$STDIN_JSON" | hq_json_get "$1"
@@ -55,7 +57,7 @@ CMD="$(extract tool_input.command)"
 
 # Honor explicit bypass — audit it.
 if [ "${HQ_ALLOW_UNSAFE_INSTALL:-0}" = "1" ]; then
-  HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+  HQ_ROOT="$HOOK_ROOT"
   AUDIT_DIR="$HQ_ROOT/workspace/learnings"
   mkdir -p "$AUDIT_DIR" 2>/dev/null || true
   printf '{"ts":"%s","cwd":"%s","cmd":%s}\n' \
@@ -103,29 +105,184 @@ EOF
   exit 2
 }
 
-# Detect whether the command (or env) supplies the release-age gate.
-has_release_age_in_cmd() {
-  [[ "$1" =~ --config\.(minimumReleaseAge|minimum-release-age)= ]]
+# Release age must be an unsigned decimal integer of at least 1440 minutes.
+# Strip leading zeroes before the comparison so large values cannot overflow
+# Bash arithmetic; only four-digit values reach the numeric test.
+release_age_is_valid() {
+  local value="$1" digits
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  while [[ "${#value}" -gt 1 && "$value" == 0* ]]; do
+    value="${value#0}"
+  done
+  digits="${#value}"
+  [ "$digits" -gt 4 ] && return 0
+  [ "$digits" -eq 4 ] || return 1
+  [ "$value" -ge 1440 ]
 }
 
+# Detect whether the command (or env) supplies a valid release-age gate. A
+# present but invalid higher-precedence source must not fall through to a
+# weaker source such as the environment or repository config.
+RELEASE_AGE_CMD_PRESENT=0
+has_release_age_in_cmd() {
+  local token value normalized continuation_pattern found_invalid=0
+  local -a tokens=()
+  RELEASE_AGE_CMD_PRESENT=0
+  # A shell command may continue an invocation onto the next physical line.
+  # Join escaped newlines before tokenizing so a gate on the continued line is
+  # validated with the same precedence as one on the first line.
+  normalized="$1"
+  continuation_pattern=$'\\\n'
+  # Shell removes the backslash-newline pair without inserting whitespace;
+  # keep that distinction so an unspaced continuation cannot invent a flag.
+  normalized="${normalized//"$continuation_pattern"/}"
+  read -r -a tokens <<< "$normalized"
+  for token in "${tokens[@]}"; do
+    case "$token" in
+      \"*\") token="${token#\"}"; token="${token%\"}" ;;
+      \'*\') token="${token#\'}"; token="${token%\'}" ;;
+    esac
+    case "$token" in
+      --config.minimumReleaseAge=*|--config.minimum-release-age=*)
+        RELEASE_AGE_CMD_PRESENT=1
+        value="${token#*=}"
+        case "$value" in
+          \"*\") value="${value#\"}"; value="${value%\"}" ;;
+          \'*\') value="${value#\'}"; value="${value%\'}" ;;
+        esac
+        release_age_is_valid "$value" || found_invalid=1
+        ;;
+    esac
+  done
+  [ "$RELEASE_AGE_CMD_PRESENT" = "1" ] && [ "$found_invalid" = "0" ]
+}
+
+RELEASE_AGE_ENV_PRESENT=0
 has_release_age_in_env() {
-  [ -n "${npm_config_minimum_release_age:-}" ] || [ -n "${NPM_CONFIG_MINIMUM_RELEASE_AGE:-}" ]
+  local value found_invalid=0
+  RELEASE_AGE_ENV_PRESENT=0
+  if [[ ${npm_config_minimum_release_age+x} ]]; then
+    RELEASE_AGE_ENV_PRESENT=1
+    value="$npm_config_minimum_release_age"
+    release_age_is_valid "$value" || found_invalid=1
+  fi
+  if [[ ${NPM_CONFIG_MINIMUM_RELEASE_AGE+x} ]]; then
+    RELEASE_AGE_ENV_PRESENT=1
+    value="$NPM_CONFIG_MINIMUM_RELEASE_AGE"
+    release_age_is_valid "$value" || found_invalid=1
+  fi
+  [ "$RELEASE_AGE_ENV_PRESENT" = "1" ] && [ "$found_invalid" = "0" ]
+}
+
+RELEASE_AGE_REPO_CACHE_FILE=""
+RELEASE_AGE_REPO_CACHE_READY=0
+RELEASE_AGE_REPO_CACHE_PWD=""
+RELEASE_AGE_REPO_CACHE_RESULT=0
+RELEASE_AGE_SESSION_ID="${HQ_HOOK_SESSION_ID:-}"
+
+release_age_cache_init() {
+  [ "$RELEASE_AGE_REPO_CACHE_READY" = "0" ] || return 0
+  RELEASE_AGE_REPO_CACHE_READY=1
+  if [ -z "$RELEASE_AGE_SESSION_ID" ]; then
+    RELEASE_AGE_SESSION_ID="$(extract session_id)"
+  fi
+  case "$RELEASE_AGE_SESSION_ID" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
+  case "$PWD" in *$'\n'*) return 0 ;; esac
+  RELEASE_AGE_REPO_CACHE_FILE="$HOOK_ROOT/workspace/orchestrator/hook-state/unsafe-package-release-age/$RELEASE_AGE_SESSION_ID"
+}
+
+release_age_cache_load() {
+  local cached_pwd="" cached_result="" dir file
+  [ -n "$RELEASE_AGE_REPO_CACHE_FILE" ] && [ -f "$RELEASE_AGE_REPO_CACHE_FILE" ] || return 1
+  {
+    IFS= read -r cached_pwd || true
+    IFS= read -r cached_result || true
+  } < "$RELEASE_AGE_REPO_CACHE_FILE"
+  [ "$cached_pwd" = "$PWD" ] || return 1
+  case "$cached_result" in 0|1) ;; *) return 1 ;; esac
+
+  # The cache must be newer than every searched directory and config file.
+  # Directory mtimes also invalidate a cached miss when a config is added.
+  dir="$PWD"
+  for _ in 1 2 3 4 5 6; do
+    [ "$RELEASE_AGE_REPO_CACHE_FILE" -nt "$dir" ] || return 1
+    for file in "$dir/.npmrc" "$dir/pnpm-workspace.yaml"; do
+      if [ -e "$file" ]; then
+        [ "$RELEASE_AGE_REPO_CACHE_FILE" -nt "$file" ] || return 1
+      fi
+    done
+    [ "$dir" = "/" ] && break
+    case "$dir" in
+      */*) dir="${dir%/*}"; [ -n "$dir" ] || dir="/" ;;
+      *) dir="." ;;
+    esac
+  done
+  RELEASE_AGE_REPO_CACHE_RESULT="$cached_result"
+  return 0
+}
+
+release_age_cache_save() {
+  local tmp
+  [ -n "$RELEASE_AGE_REPO_CACHE_FILE" ] || return 0
+  tmp="$RELEASE_AGE_REPO_CACHE_FILE.tmp.$$"
+  (umask 077; mkdir -p "${RELEASE_AGE_REPO_CACHE_FILE%/*}" 2>/dev/null) || return 0
+  if printf '%s\n%s\n' "$PWD" "$RELEASE_AGE_REPO_CACHE_RESULT" > "$tmp" 2>/dev/null \
+     && mv -f "$tmp" "$RELEASE_AGE_REPO_CACHE_FILE" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
 }
 
 has_release_age_in_repo() {
   # Walk up to 6 levels looking for a .npmrc with minimum-release-age or
-  # a pnpm-workspace.yaml with minimumReleaseAge.
-  local dir line
+  # a pnpm-workspace.yaml with minimumReleaseAge. A configured but invalid
+  # value must not count as satisfying the supply-chain gate. Reuse the result
+  # for this session and cwd until a searched directory or config file changes.
+  local dir line value found=0 found_invalid=0
+  release_age_cache_init
+  if [ "$RELEASE_AGE_REPO_CACHE_PWD" = "$PWD" ]; then
+    [ "$RELEASE_AGE_REPO_CACHE_RESULT" = "1" ] && return 0
+    return 1
+  fi
+  if release_age_cache_load; then
+    RELEASE_AGE_REPO_CACHE_PWD="$PWD"
+    [ "$RELEASE_AGE_REPO_CACHE_RESULT" = "1" ] && return 0
+    return 1
+  fi
+
   dir="$PWD"
   for _ in 1 2 3 4 5 6; do
     if [ -f "$dir/.npmrc" ]; then
       while IFS= read -r line || [ -n "$line" ]; do
-        [[ "$line" =~ ^[[:space:]]*minimum-release-age[[:space:]]*= ]] && return 0
+        if [[ "$line" =~ ^[[:space:]]*minimum-release-age[[:space:]]*=(.*)$ ]]; then
+          found=1
+          value="${BASH_REMATCH[1]}"
+          value="${value#"${value%%[![:space:]]*}"}"
+          value="${value%"${value##*[![:space:]]}"}"
+          case "$value" in
+            \"*\") value="${value#\"}"; value="${value%\"}" ;;
+            \'*\') value="${value#\'}"; value="${value%\'}" ;;
+          esac
+          release_age_is_valid "$value" || found_invalid=1
+        fi
       done < "$dir/.npmrc"
     fi
     if [ -f "$dir/pnpm-workspace.yaml" ]; then
       while IFS= read -r line || [ -n "$line" ]; do
-        [[ "$line" =~ ^[[:space:]]*minimumReleaseAge[[:space:]]*: ]] && return 0
+        if [[ "$line" =~ ^[[:space:]]*minimumReleaseAge[[:space:]]*:(.*)$ ]]; then
+          found=1
+          value="${BASH_REMATCH[1]}"
+          # YAML permits an inline comment after a scalar. Trim it before
+          # validating the configured value.
+          value="${value%%[[:space:]]#*}"
+          value="${value#"${value%%[![:space:]]*}"}"
+          value="${value%"${value##*[![:space:]]}"}"
+          case "$value" in
+            \"*\") value="${value#\"}"; value="${value%\"}" ;;
+            \'*\') value="${value#\'}"; value="${value%\'}" ;;
+          esac
+          release_age_is_valid "$value" || found_invalid=1
+        fi
       done < "$dir/pnpm-workspace.yaml"
     fi
     [ "$dir" = "/" ] && break
@@ -134,12 +291,20 @@ has_release_age_in_repo() {
       *) dir="." ;;
     esac
   done
-  return 1
+  RELEASE_AGE_REPO_CACHE_PWD="$PWD"
+  RELEASE_AGE_REPO_CACHE_RESULT=0
+  if [ "$found" = "1" ] && [ "$found_invalid" = "0" ]; then
+    RELEASE_AGE_REPO_CACHE_RESULT=1
+  fi
+  release_age_cache_save
+  [ "$RELEASE_AGE_REPO_CACHE_RESULT" = "1" ]
 }
 
 gate_configured() {
   has_release_age_in_cmd "$1" && return 0
+  [ "$RELEASE_AGE_CMD_PRESENT" = "1" ] && return 1
   has_release_age_in_env && return 0
+  [ "$RELEASE_AGE_ENV_PRESENT" = "1" ] && return 1
   has_release_age_in_repo && return 0
   return 1
 }
@@ -218,7 +383,7 @@ has_positional_pkg_arg() {
 }
 
 # ── Sanctioned global CLI allow-list (core/scripts/install-deps.allow) ────────
-ALLOW_FILE="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}/core/scripts/install-deps.allow"
+ALLOW_FILE="$HOOK_ROOT/core/scripts/install-deps.allow"
 
 # Does one positional token match an allow entry?
 # Args: "<token>"  — e.g. @tobilu/qmd@2.5.3

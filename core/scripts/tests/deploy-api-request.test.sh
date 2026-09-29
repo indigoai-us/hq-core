@@ -29,6 +29,10 @@ for ((i = 1; i <= $#; i++)); do
   case "$arg" in
     -o) next=$((i + 1)); body_file="${!next}" ;;
     -X) next=$((i + 1)); method="${!next}" ;;
+    --form-string|--form)
+      next=$((i + 1))
+      printf '%s %s\n' "$arg" "${!next}" >> "$MOCK_DIR/form-args"
+      ;;
     -H)
       next=$((i + 1))
       case "${!next}" in Authorization:*) authorization="${!next}" ;; esac
@@ -44,6 +48,7 @@ case "$url" in
     if [ "$method" = POST ]; then stage=app-creation; body='{"id":"app-1","subdomain":"app"}'
     else stage=app-list; body='{"apps":[]}'
     fi ;;
+  http://api.test/api/apps/app-1/deploy) stage=app-deploy; body='{"deployId":"app-deploy-1","status":"live","statusUrl":"/api/apps/app-1/deploys/app-deploy-1/status"}' ;;
   http://api.test/api/deploys) stage=deploy-creation; body='{"deployId":"deploy-1","presignedUrl":"https://upload.test/archive?X-Amz-Signature=presigned-secret-should-not-leak&X-Amz-Credential=credential-secret"}' ;;
   https://upload.test/archive\?*) stage=s3-upload; body='' ;;
   http://api.test/api/deploys/deploy-1/complete) stage=deploy-completion; body='{"url":"https://live.test"}' ;;
@@ -95,6 +100,17 @@ run_phase_c() {
   presigned_url="$(printf '%s' "$deploy_response" | jq -r '.presignedUrl')"
   request --stage s3-upload --method PUT --url "$presigned_url" --upload-file "$TMP/archive.tar.gz" --no-auth >/dev/null || return
   request --stage deploy-completion --method POST --url http://api.test/api/deploys/deploy-1/complete --data '{"appSlug":"app"}' --expect '(.url | type == "string" and length > 0)' >/dev/null
+}
+
+run_app_deploy() {
+  request() {
+    HQ_DEPLOY_JWT="$TOKEN" HQ_DEPLOY_IDENTITY_RESOLVER="$TMP/identity-resolve" \
+      "$SRC" --org acme --scope company --header 'X-Org-Slug: acme' "$@"
+  }
+
+  request --stage app-deploy --method POST --url http://api.test/api/apps/app-1/deploy \
+    --form-string 'type=app' --form-file "file=$TMP/archive.tar.gz" \
+    --expect '(.deployId | type == "string" and length > 0) and (.statusUrl | type == "string" and length > 0)'
 }
 
 assert_case() {
@@ -229,5 +245,24 @@ printf '%s' "$output" | grep -Fq "$TOKEN" && fail "failed retry leaked the origi
 printf '%s' "$output" | grep -Fq 'refreshed-no-leak' && fail "failed retry leaked the refreshed token: $output"
 printf '%s' "$output" | grep -Fq "$SIGNATURE" && fail "failed retry leaked a presigned signature: $output"
 pass 'completion enforces one retry and redacts failed-retry diagnostics'
+
+echo '[11] app deploy uses multipart fields through the checked request helper'
+: > "$TMP/calls"
+: > "$TMP/auth-calls"
+: > "$TMP/identity-calls"
+: > "$TMP/form-args"
+set +e
+app_output="$(PATH="$TMP/bin:$PATH" MOCK_DIR="$TMP" FAIL_STAGE=none run_app_deploy 2>&1)"
+app_status=$?
+set -e
+[ "$app_status" -eq 0 ] || fail "app multipart request failed through deploy-api-request.sh: $app_output"
+[ "$(wc -l < "$TMP/calls" | tr -d ' ')" = 1 ] || fail "app deploy made an unexpected later request: $app_output"
+grep -Fxq 'POST http://api.test/api/apps/app-1/deploy' "$TMP/calls" \
+  || fail "app deploy did not call the app deploy route: $app_output"
+grep -Fxq -- '--form-string type=app' "$TMP/form-args" \
+  || fail "app deploy did not submit the app type field: $app_output"
+grep -Fxq -- "--form file=@$TMP/archive.tar.gz;type=application/gzip;filename=upload.tar.gz" "$TMP/form-args" \
+  || fail "app deploy did not submit the archive file as multipart: $app_output"
+pass 'app route carries type=app and the gzip archive as multipart fields'
 
 echo 'ALL PASS: deploy-api-request'

@@ -1,9 +1,6 @@
 ---
 name: architect
-description: |
-  Surface architectural friction and propose deepening opportunities — turn shallow modules into deep ones for better testability and AI-navigability.
-  Output: ranked candidate list with deletion-test outcome, leverage/locality scoring, file refs. Never edits code directly; presents candidates and walks the user through grilling-style design decisions for picked candidates.
-  Use when the codebase is hard to change, when /diagnose hands off "no good test seam," or when planning a refactor wave.
+description: "Find shallow modules and propose deepening refactors, ranked with file refs; never edits code. Use when code is hard to change or planning a refactor."
 allowed-tools: Read, Grep, Glob, Bash, Agent, Write, Edit, AskUserQuestion
 ---
 

@@ -1,8 +1,6 @@
 ---
 name: codebase-design
-description: |
-  Shared vocabulary and discipline for designing deep modules (a lot of behaviour behind a small interface, at a clean seam).
-  Use when designing module boundaries or interfaces, or when another skill needs the deep-module vocabulary. Triggers on "deep module", "interface design", "design it twice".
+description: "Vocabulary for designing deep modules and clean interfaces. Triggers: \"deep module\", \"interface design\", \"design it twice\"."
 allowed-tools: Read
 ---
 

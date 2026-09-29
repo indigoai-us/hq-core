@@ -36,6 +36,17 @@ git_quiet -C "$TMP/hq" worktree add -q -b wt "$TMP/hq-worktree" >/dev/null 2>&1
 git_quiet -C "$TMP/hq" worktree add -q -b wt-two "$TMP/hq-worktree-two" >/dev/null 2>&1
 git_quiet -C "$TMP/hq" worktree add -q -b wt-three "$TMP/hq-worktree-three" >/dev/null 2>&1
 
+# --- HQ checkout initialized with a separate Git directory ------------------
+HQ_SEPARATE="$TMP/hq-separate"
+HQ_SEPARATE_GITDIR="$TMP/hq-separate.git"
+HQ_SEPARATE_WT="$TMP/hq-separate-linked"
+mkdir -p "$HQ_SEPARATE"
+git_quiet -C "$HQ_SEPARATE" init -q --separate-git-dir="$HQ_SEPARATE_GITDIR"
+printf 'hq separate git dir\n' > "$HQ_SEPARATE/README.md"
+git_quiet -C "$HQ_SEPARATE" add README.md
+git_quiet -C "$HQ_SEPARATE" commit -qm init
+git_quiet -C "$HQ_SEPARATE" worktree add -q -b linked "$HQ_SEPARATE_WT" >/dev/null 2>&1
+
 # --- Nested source repo + its own worktree (the sanctioned editing flow) ----
 mkdir -p "$TMP/hq/repos/private/app"
 git_quiet -C "$TMP/hq/repos/private/app" init -q
@@ -149,7 +160,12 @@ TEST_SESSION_ID=c153-multi-worktree \
 [ "$LAST_STDOUT" = "$base_multi_worktree_stdout" ] \
   && [ "$LAST_STDERR" = "$base_multi_worktree_stderr" ] \
   && { PASS=$((PASS + 1)); echo 'ok: base and candidate both deny the multi-worktree session'; } \
-  || { FAIL=$((FAIL + 1)); echo 'FAIL [multi-worktree parity]: base and candidate output differ' >&2; }
+  || {
+    FAIL=$((FAIL + 1))
+    echo 'FAIL [multi-worktree parity]: base and candidate output differ' >&2
+    printf 'base stdout: <%s>\ncandidate stdout: <%s>\nbase stderr: <%s>\ncandidate stderr: <%s>\n' \
+      "$base_multi_worktree_stdout" "$LAST_STDOUT" "$base_multi_worktree_stderr" "$LAST_STDERR" >&2
+  }
 
 # An exported CDPATH must not contaminate norm's captured output for a relative
 # project path.
@@ -166,7 +182,12 @@ TEST_SESSION_ID=c153-cdpath \
 [ "$LAST_STDOUT" = "$base_cdpath_stdout" ] \
   && [ "$LAST_STDERR" = "$base_cdpath_stderr" ] \
   && { PASS=$((PASS + 1)); echo 'ok: base and candidate keep relative path output clean with CDPATH'; } \
-  || { FAIL=$((FAIL + 1)); echo 'FAIL [CDPATH parity]: base and candidate output differ' >&2; }
+  || {
+    FAIL=$((FAIL + 1))
+    echo 'FAIL [CDPATH parity]: base and candidate output differ' >&2
+    printf 'base stdout: <%s>\ncandidate stdout: <%s>\nbase stderr: <%s>\ncandidate stderr: <%s>\n' \
+      "$base_cdpath_stdout" "$LAST_STDOUT" "$base_cdpath_stderr" "$LAST_STDERR" >&2
+  }
 
 # Direct calls carry session_id and cwd only in stdin. Both fields must survive
 # the later command substitutions that feed the deny and cached-allow paths.
@@ -213,6 +234,58 @@ run 0 "$TMP/not-a-repo" "$TMP/not-a-repo" UserPromptSubmit 'project dir outside 
 run 0 "$WINDOWS_HQ" "$WINDOWS_HQ" UserPromptSubmit \
   'Git Bash and drive-letter aliases identify the same canonical HQ checkout' \
   PATH="$WINDOWS_BIN:$PATH"
+
+# A linked worktree still shares a repository when the main checkout uses an
+# arbitrary --separate-git-dir path. Detection uses Git metadata identity;
+# deriving a human-facing checkout path remains a separate concern.
+run 0 "$HQ_SEPARATE" "$HQ_SEPARATE" UserPromptSubmit \
+  'canonical HQ checkout with a separate Git dir allowed'
+run 2 "$HQ_SEPARATE" "$HQ_SEPARATE_WT" UserPromptSubmit \
+  'cwd linked to HQ through an arbitrary common Git dir is blocked'
+if [[ "$LAST_STDERR" != *"Canonical HQ:  $HQ_SEPARATE"* ]]; then
+  FAIL=$((FAIL + 1))
+  echo 'FAIL [separate git dir canonical path]: cwd warning omitted the known HQ checkout' >&2
+else
+  PASS=$((PASS + 1))
+fi
+run 2 "$HQ_SEPARATE_WT" "$HQ_SEPARATE_WT" UserPromptSubmit \
+  'project dir linked through an arbitrary common Git dir is blocked'
+if [[ "$LAST_STDERR" != *"path unavailable (separate Git directory: $HQ_SEPARATE_GITDIR)"* ]]; then
+  FAIL=$((FAIL + 1))
+  echo 'FAIL [separate git dir display]: metadata path was presented as a checkout' >&2
+else
+  PASS=$((PASS + 1))
+fi
+
+# SessionStart must still identify the real HQ worktree without launching a
+# potentially slow Git subprocess on the cold path. The stub sleeps long
+# enough to exceed the 2-second budget if the hook invokes it.
+SLOW_GIT_BIN="$TMP/slow-git-bin"
+mkdir -p "$SLOW_GIT_BIN"
+cat > "$SLOW_GIT_BIN/git" <<'SH'
+#!/usr/bin/env bash
+sleep 5
+exec /usr/bin/git "$@"
+SH
+chmod +x "$SLOW_GIT_BIN/git"
+slow_payload="$(jq -nc --arg cwd "$HQWT" --arg sid c207-slow-git-session \
+  '{cwd:$cwd,hook_event_name:"SessionStart",session_id:$sid}')"
+slow_started="$(date +%s%N)"
+slow_rc=0
+slow_stdout="$(printf '%s' "$slow_payload" \
+  | env -u HQ_HOOK_AGENT_ID -u HQ_HOOK_SESSION_ID -u HQ_HOOK_CWD -u HQ_HOOK_EVENT \
+      CLAUDE_PROJECT_DIR="$HQ" HQ_ROOT= HQ_ALLOW_HQ_WORKTREE= PATH="$SLOW_GIT_BIN:$PATH" \
+      timeout 2s bash "$HOOK" SessionStart 2>"$TMP/slow-git.err")" || slow_rc=$?
+slow_finished="$(date +%s%N)"
+slow_elapsed_ms=$(((slow_finished - slow_started) / 1000000))
+if [ "$slow_rc" -eq 0 ] && [ "$slow_elapsed_ms" -lt 1500 ] \
+   && [[ "$slow_stdout" == *"<hq-worktree-block>"* ]]; then
+  PASS=$((PASS + 1))
+  echo "ok: cold SessionStart blocks HQ worktree without the slow Git call (${slow_elapsed_ms}ms)"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL [cold SessionStart budget]: rc=$slow_rc elapsed=${slow_elapsed_ms}ms stdout=$slow_stdout" >&2
+fi
 
 # --- Escape hatch -----------------------------------------------------------
 run 0 "$HQWT" "$HQWT" UserPromptSubmit 'HQ_ALLOW_HQ_WORKTREE=1 bypasses the block' \

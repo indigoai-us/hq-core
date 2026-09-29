@@ -1,6 +1,7 @@
 {
   "model": "opus",
   "autoMemoryEnabled": false,
+  "includeGitInstructions": false,
   "useAutoModeDuringPlan": false,
   "disableArtifact": true,
   "worktree": {

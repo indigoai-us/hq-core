@@ -1,8 +1,6 @@
 ---
 name: wayfinder
-description: |
-  Plan a chunk of work too big for one agent session with a foggy destination — chart a shared map of investigation tickets and resolve them one per session until the path is clear.
-  Use when the effort is too large to hold in one planning pass and the destination is unclear. Triggers on "too big to plan", "chart a map", "investigation tickets", "foggy scope".
+description: "Plan work too big and foggy for one session as a map of investigation tickets resolved one per session."
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, Agent, AskUserQuestion
 ---
 

@@ -68,7 +68,85 @@ printf '%s\n' "$base_rc" > "$record/base/exit"
 "$real_bash" "${candidate_args[@]}" < "$record/input" > "$record/candidate/stdout" 2> "$record/candidate/stderr"
 candidate_rc=$?
 printf '%s\n' "$candidate_rc" > "$record/candidate/exit"
+invalid_release_age=0
+if [ "$target_kind" = unsafe ] && python3 - "$record/input" <<'PY'
+import json
+import os
+import re
+import shlex
+import sys
+from pathlib import Path
+
+def valid(value: str) -> bool:
+    return value.isascii() and value.isdigit() and int(value) >= 1440
+
+try:
+    command = json.loads(open(sys.argv[1], encoding="utf-8").read())["tool_input"]["command"]
+    tokens = shlex.split(command.replace("\\\n", " "))
+    age_flags = [
+        token.split("=", 1)[1]
+        for token in tokens
+        if token.startswith(("--config.minimumReleaseAge=", "--config.minimum-release-age="))
+    ]
+    invalid = any(not valid(value) for value in age_flags)
+    release_age_present = bool(age_flags)
+except (KeyError, TypeError, ValueError):
+    invalid = False
+    release_age_present = False
+
+for name in ("npm_config_minimum_release_age", "NPM_CONFIG_MINIMUM_RELEASE_AGE"):
+    if name in os.environ:
+        release_age_present = True
+        invalid = invalid or not valid(os.environ[name])
+
+if not release_age_present:
+    config_patterns = (
+        (".npmrc", re.compile(r"^\s*minimum-release-age\s*=(.*)$")),
+        ("pnpm-workspace.yaml", re.compile(r"^\s*minimumReleaseAge\s*:(.*)$")),
+    )
+    for directory in (Path.cwd(), *list(Path.cwd().parents)[:5]):
+        for filename, pattern in config_patterns:
+            config_path = directory / filename
+            try:
+                lines = config_path.read_text(encoding="utf-8").splitlines()
+            except FileNotFoundError:
+                continue
+            for line in lines:
+                match = pattern.match(line)
+                if match:
+                    value = match.group(1)
+                    if filename == "pnpm-workspace.yaml":
+                        value = re.split(r"\s+#", value, maxsplit=1)[0]
+                    value = value.strip().strip("\"'")
+                    invalid = invalid or not valid(value)
+sys.exit(0 if invalid else 1)
+PY
+then
+  invalid_release_age=1
+fi
+
+cmp -s "$record/base/stdout" "$record/candidate/stdout" || {
+  printf 'FAIL: %s guard differs on fixture invocation %s (stdout)\n' "$target_kind" "$count" >&2
+  exit 1
+}
+intentional_release_age_block=0
+if [ "$base_rc" -ne "$candidate_rc" ]; then
+  if [ "$target_kind" != unsafe ] || [ "$invalid_release_age" -ne 1 ] \
+    || [ "$base_rc" -ne 0 ] || [ "$candidate_rc" -ne 2 ]; then
+    printf 'FAIL: %s guard exit differs on fixture invocation %s (base %s, candidate %s)\n' \
+      "$target_kind" "$count" "$base_rc" "$candidate_rc" >&2
+    exit 1
+  fi
+  grep -Fq 'BLOCKED — supply-chain guard' "$record/candidate/stderr" \
+    && grep -Fq 'minimum-release-age=1440' "$record/candidate/stderr" \
+    || { printf 'FAIL: US-107 release-age denial has unexpected candidate message\n' >&2; exit 1; }
+  intentional_release_age_block=1
+fi
+
 for field in stdout stderr exit; do
+  if [ "$intentional_release_age_block" -eq 1 ] && { [ "$field" = stderr ] || [ "$field" = exit ]; }; then
+    continue
+  fi
   cmp -s "$record/base/$field" "$record/candidate/$field" || {
     printf 'FAIL: %s guard differs on fixture invocation %s (%s)\n' "$target_kind" "$count" "$field" >&2
     exit 1

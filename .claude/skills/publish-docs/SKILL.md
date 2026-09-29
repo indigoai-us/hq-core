@@ -1,6 +1,6 @@
 ---
 name: publish-docs
-description: Sync the active company's PUBLISHED documentation site (the standalone docs-site repo, e.g. docs.{company}.com) to match what shipped. Company-agnostic dispatcher — resolves the company's docs-site sync skill and runs it foreground. Distinct from document-release, which syncs in-repo docs (README, CLAUDE.md, architecture, INDEX). Use after shipping a material change, or as the final foreground step of /ship. Triggers on "publish the docs site", "update the docs site", "sync published docs".
+description: "Sync the company's published docs site to match what shipped. For in-repo docs use /document-release."
 allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(yq:*), Bash(grep:*), Bash(ls:*), Bash(test:*), Skill, AskUserQuestion
 ---
 

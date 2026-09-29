@@ -1,6 +1,6 @@
 ---
 name: create-skill
-description: Create or capture a shared company skill in HQ with a durable identity and FILE_ACL governance. Use when asked to create or add a team/company skill, or to turn a repeatable workflow into an HQ skill. Do not use for personal or local-only Codex skills.
+description: "Create a shared company skill in HQ with a durable identity and ACL governance. Not for personal or local-only skills."
 allowed-tools: Bash(hq:*), Read, Write, Edit
 ---
 

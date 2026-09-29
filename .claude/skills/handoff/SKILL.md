@@ -16,12 +16,18 @@ Write a thread file + `handoff.json` with minimal foreground token cost. Keep sh
 
 ## Process
 
-### 1. Launch concurrent bg git commit for knowledge repos
+### 1. Launch concurrent bg git commit for personal/core knowledge repos
 
 ```bash
 nohup bash -c '
 for knowledge_path in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
   if [ -L "$knowledge_path" ]; then
+    case "$knowledge_path" in
+      companies/*/knowledge)
+        echo "INVALID-LINK: $knowledge_path is a symlink; company knowledge must be a plain directory synced through the company vault"
+        continue
+        ;;
+    esac
     # Invalid legacy layout: never write through the link, but never lose the
     # dirty state silently either — record it so the handoff surfaces it.
     repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
@@ -32,6 +38,9 @@ for knowledge_path in core/knowledge/public/* core/knowledge/private/* personal/
     echo "INVALID-DIRTY: $knowledge_path is a legacy knowledge symlink to $repo_dir with uncommitted changes — NOT auto-committed; run hq reindex to materialize it, then commit, before archiving this session"
     continue
   fi
+  case "$knowledge_path" in
+    companies/*/knowledge) continue ;;  # company knowledge is a plain synced directory
+  esac
   [ -d "$knowledge_path/.git" ] || continue
   repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
   dirty=$(cd "$repo_dir" && git status --porcelain)
@@ -175,6 +184,8 @@ Logs land at `/tmp/handoff-post.log` and `/tmp/qmd-handoff.log`. If the session 
 
 Only begin this step after `handoff-finalize.sh` succeeds: `{learnings_json}` is now stored in `{thread_path}` and is recoverable even if every execution route fails. Do **not** call `claude -p` or `codex exec`, and do **not** run model work from `handoff-post.sh`.
 
+Before dispatching document-release, resolve its availability once for this session with `bash core/scripts/skill-installed.sh document-release "${HQ_ACTIVE_COMPANY:-}"`. Use the bound active company from `HQ_ACTIVE_COMPANY`; do not derive the skill scope from `.metadata.company`, which may describe a touched tenant. When no company is bound, the check searches root and package skills only. Only when document-release is installed may a document-release follow-up use a dispatch route or appear in the recovery warning. If the check reports that it is absent, do not invoke it and record `document-release: skipped (skill not installed)` in the follow-up outcomes.
+
 For each applicable follow-up, use the first capability available in this order:
 
 1. **Codex:** when `spawn_agent` (and `wait_agent`) is available, call `spawn_agent` and wait for its result. This is visible delegation.
@@ -189,7 +200,7 @@ Use this prompt for each learnings follow-up when `{learnings_json}` contains an
 Use the learn skill to process this JSON learnings array: {learnings_json}. Apply each item exactly as written, preserving scope and user corrections. Do not read INDEX.md. Commit only the files you change, if the repository rules require it. Return a concise summary of applied learnings, skipped items, and changed files.
 ```
 
-Use this prompt for each document-release follow-up when `{thread_path}` has any `files_touched` entry under `companies/` or `repos/`:
+Use this prompt for each document-release follow-up when `{thread_path}` has any `files_touched` entry under `companies/` or `repos/` and the installed-skill check passed:
 
 ```
 Use the document-release skill for the handoff thread at {thread_path}. Update release/docs indexes only where warranted by the touched files. Do not read unrelated company knowledge. Commit only the files you change, if the repository rules require it. Return a concise summary of changes, skipped work, and changed files.
@@ -228,7 +239,7 @@ Chat report follows the active output style (`core/policies/hq-audience-mode.md`
 - Active pipelines: add one plain sentence that some work is still running and a new chat can pick it up.
 - `git_bg_errors` non-empty: add one plain sentence that one knowledge folder did not save, and they can ask you to retry. No raw git dump.
 
-If any eligible follow-up is still uncompleted after the synchronous Skill fallback, put this warning first (Auto-Clarity — the person must run a command). In the default style, lead with one plain sentence that something still needs finishing, then the recovery commands:
+If any eligible follow-up is still uncompleted after the synchronous Skill fallback, put this warning first (Auto-Clarity — the person must run a command). In the default style, lead with one plain sentence that something still needs finishing, then the recovery commands. Include the document-release recovery entry and its `Run exactly:` line only when the same installed-skill check above passed. If the skill is absent, record `document-release: skipped (skill not installed)` and omit the document-release recovery entry and command:
 
 ```
 WARN: Follow-up recovery required
@@ -254,7 +265,7 @@ Baseline noise: {baseline_noise_count} unrelated/baseline status entries
 Background work dispatched:
   - handoff-post.sh PID {from nohup} → /tmp/handoff-post.log
   - /learn → {Codex spawn_agent | Claude Task/Agent | synchronous Skill | durably pending}
-  - /document-release → {Codex spawn_agent | Claude Task/Agent | synchronous Skill | durably pending}
+  - /document-release → {Codex spawn_agent | Claude Task/Agent | synchronous Skill | durably pending | document-release: skipped (skill not installed)}
   - qmd helper (`skipped-agent` | `skipped` | worker pid) → /tmp/qmd-handoff.log
 
 To continue in a fresh session:
@@ -266,7 +277,7 @@ To continue in a fresh session:
 If `clipboard_copied` was false, drop the "already copied" phrasing and just show the command.
 
 If `git_bg_errors` was non-empty, append:
-⚠ Knowledge repo git errors: {git_bg_errors}
+⚠ Personal/core knowledge repo git errors: {git_bg_errors}
 ```
 
 If recovery is still needed in operator mode, put the same `WARN: Follow-up recovery required` block at the top (before `Handoff ready.`), substituting actual values and including only applicable commands.
@@ -288,7 +299,7 @@ Fresh context = no accumulated noise, clean slate for complex tasks, follows Ral
 - **Changeset owns scope** — when HQ root status is noisy, scope comes from `--files-touched-json` and the generated changeset, not from whole-repo `git status`.
 - **Context diet** — this skill should emit <15K tokens of tool output on a typical session. If you find yourself Reading more than 3 files, stop and rethink.
 - **Session handoffs execute directly** — skip any planning-mode detour.
-- **Commit flow** — knowledge repo commits run in bg (Step 1), HQ commit runs inside `handoff-finalize.sh` via explicit paths. Never `git add -A` from this skill.
+- **Commit flow:** personal/core knowledge repo commits run in bg (Step 1), company knowledge syncs through its vault, and `handoff-finalize.sh` commits the HQ changes using explicit paths. Never `git add -A` from this skill.
 
 ## See also
 

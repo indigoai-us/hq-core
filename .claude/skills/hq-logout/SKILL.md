@@ -1,6 +1,7 @@
 ---
 name: hq-logout
 description: Sign out of HQ Cognito and clear local tokens.
+disable-model-invocation: true
 allowed-tools: Bash(hq:*), Bash(ls:*), Bash(test:*), Bash(rm:*)
 ---
 

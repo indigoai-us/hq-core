@@ -192,10 +192,14 @@ jobs:
           fetch-depth: 0
       - name: Core skills only reference shipped local shell scripts
         run: |
+          bash core/scripts/lint-skill-script-refs.sh handoff
+          bash core/scripts/lint-skill-script-refs.sh checkpoint
           bash core/scripts/lint-skill-script-refs.sh learn
           bash core/scripts/lint-skill-script-refs.sh resumework
           bash core/scripts/lint-skill-script-refs.sh startwork
           bash core/scripts/lint-skill-script-refs.sh conduct
+      - name: /import-context redactor and synthetic scan output
+        run: bash core/scripts/tests/import-context-redact.test.sh
       - name: /conduct session worker pool (cap, resume, recycle)
         run: bash core/scripts/tests/conduct-pool.test.sh
       - name: /conduct lane drop box (queue, claim, per-event hook output)
@@ -216,6 +220,12 @@ jobs:
         run: bash core/scripts/tests/auto-conduct.test.sh
       - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
         run: bash core/scripts/tests/skill-script-refs.test.sh
+      - name: Deploy skill app route and multipart helper contracts
+        run: bash core/scripts/tests/deploy-skill-app-route.test.sh
+      - name: Deploy request helper rejects errors and supports app multipart uploads
+        run: bash core/scripts/tests/deploy-api-request.test.sh
+      - name: App deploy artifact includes root API handlers
+        run: bash core/scripts/tests/guardrails-check-app-api.test.sh
       - name: HQ feedback summary and verbatim report contract
         run: bash core/scripts/tests/hq-bug-skill.test.sh
       - name: /team-access heal contract (bare rows, hidden grants, DEV-3405, readback)
@@ -247,6 +257,17 @@ jobs:
           fetch-depth: 0
       - name: UserPromptSubmit command.sh dispatch (scope, isolation, bounds)
         run: bash core/scripts/tests/skill-command-script.test.sh
+
+  company-seed-renderer:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: company-seed-renderer
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Deterministic company starter renderer and /newcompany contract
+        run: node --test core/scripts/__tests__/render-company-starter-files.test.mjs
 
   setup-skill-direct-install:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -333,6 +354,25 @@ jobs:
       - name: Regression test (fixture + live tree + fix present)
         run: bash core/scripts/tests/install-deps.test.sh
 
+  hq-cowork-mcp-secret-guard:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: hq-cowork-mcp-secret-guard
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run cowork plugin build prerequisite test
+        run: bash core/packages/hq-pack-cowork/scripts/tests/build-plugin-prerequisites.test.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - name: Install pinned MCP server dependencies
+        run: pnpm --dir core/packages/hq-pack-cowork/mcp-server install --frozen-lockfile --ignore-workspace
+      - name: Run hq-pack-cowork MCP server tests
+        run: pnpm --dir core/packages/hq-pack-cowork/mcp-server test
+
   # Installer→Claude PATH gap: the template must not hardcode env.PATH, and
   # the setup.sh snapshot must include the native installer's managed
   # toolchain dirs even when the session PATH is missing them (GUI-launched
@@ -347,7 +387,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Install pinned YAML parser for skill metadata contracts
         run: |
           set -euo pipefail
@@ -358,6 +398,8 @@ jobs:
         run: node core/scripts/validate-agent-runtime-contracts.mjs
       - name: Skill metadata regression test
         run: bash core/scripts/tests/agent-runtime-skill-metadata.test.sh
+      - name: Agent bootstrap cloud sync guidance regression test
+        run: bash core/scripts/tests/agent-bootstrap-cloud-sync.test.sh
       - name: Discover shallow clone fetch refspec regression test
         run: bash core/scripts/tests/discover-shallow-clone-fetch-all.test.sh
       - name: Execute-task Codex model source regression test
@@ -386,6 +428,7 @@ jobs:
             core/scripts/hq-job-probe.sh \
             core/scripts/tests/hq-job-run.test.sh \
             core/scripts/tests/hq-job-probe.test.sh \
+            core/scripts/tests/outpost-jobs-reconcile.test.sh \
             core/scripts/tests/outpost-job-failure-alerts.test.sh \
             core/scripts/tests/handoff-finalize-pointer.test.sh \
             core/scripts/tests/agent-runtime-skill-metadata.test.sh \
@@ -395,6 +438,7 @@ jobs:
             core/scripts/tests/generate-openai-yaml-root.test.sh \
             core/scripts/tests/codex-skill-metadata-coverage.test.sh \
             core/scripts/tests/agent-runtime-permissions.test.sh \
+            core/scripts/tests/us091-policy-and-skill-contract.test.sh \
             core/scripts/tests/hook-runtime-diagnostics.test.sh \
             core/scripts/tests/hook-launch-sigpipe-status.test.sh \
             core/scripts/tests/hooks-drain-stdin-before-early-exit.test.sh \
@@ -449,7 +493,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Install hq CLI for doctor-path coverage
         run: |
           set -euo pipefail
@@ -461,8 +505,14 @@ jobs:
           hq doctor --help >/dev/null 2>&1
       - name: Hook health checker behavior
         run: bash core/scripts/tests/hook-health-check.test.sh
+      - name: CLI floor reader, cache, and hook checker
+        run: bash core/scripts/tests/hq-cli-floor.test.sh
+      - name: Setup warns for an old or missing CLI
+        run: bash core/scripts/tests/setup-hq-cli-floor.test.sh
       - name: Hook settings release contract
         run: bash core/scripts/tests/hook-settings-release-contract.test.sh
+      - name: walk_up_to_hq_root and is_hq_root form no //core path
+        run: bash core/scripts/tests/walk-root-no-double-slash.test.sh
 
   # US-015: check-client-health runs on EVERY session start, spawns detached
   # background work, and can file bug reports on the user's behalf. Pin that a
@@ -477,7 +527,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       - name: check-client-health behaviour (detection, cooldown, opt-out, engines)
         run: bash core/scripts/tests/check-client-health.test.sh
 
@@ -492,19 +542,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Install hq CLI for forwarded scaffold scripts
-        run: |
-          set -euo pipefail
-          npm install -g @indigoai-us/hq-cli
-          if ! command -v hq >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
-            exit 1
-          fi
-          if ! hq core --help >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
-            exit 1
-          fi
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Hook commands resolve from an install path containing spaces
         run: bash core/scripts/tests/hook-path-resolution.test.sh
       - name: ensure-hq-cli hook detects/install/PATH-fixes the CLI
@@ -611,19 +651,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Install hq CLI for forwarded scaffold scripts
-        run: |
-          set -euo pipefail
-          npm install -g @indigoai-us/hq-cli
-          if ! command -v hq >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
-            exit 1
-          fi
-          if ! hq core --help >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
-            exit 1
-          fi
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: README team table matches person ontology
         run: bash core/scripts/tests/ontology-readme-drift.test.sh
 
@@ -670,8 +700,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Claude-harness git-mutation guard
         run: bash core/scripts/tests/block-hq-root-git-mutation.test.sh
+      - name: US-146 positional gh repository anchors
+        run: bash core/scripts/tests/us146-gh-positional-repo-anchors.test.sh
       - name: Codex-harness git-mutation guard fires
         run: bash core/scripts/tests/codex-git-mutation-firing.test.sh
+      - name: Company repo creation and Git metadata guards
+        run: bash .claude/hooks/tests/block-company-code-repos.test.sh
       - name: Codex hook adapter routes mandatory scope authorizer
         run: bash core/scripts/test-codex-hook-adapter.sh
 
@@ -709,19 +743,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Install hq CLI for forwarded scaffold scripts
-        run: |
-          set -euo pipefail
-          npm install -g @indigoai-us/hq-cli
-          if ! command -v hq >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
-            exit 1
-          fi
-          if ! hq core --help >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
-            exit 1
-          fi
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Autocommit hook surfaces git failures and stays quiet otherwise
         run: bash core/scripts/tests/hq-autocommit.test.sh
       - name: Handoff pointer is atomic and worktree-resumable
@@ -734,6 +758,8 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-large-changeset.test.sh
       - name: Handoff follow-ups stay pending without dispatch proof
         run: bash core/scripts/tests/handoff-followups-runtime.test.sh
+      - name: Handoff document-release dispatch requires an installed skill
+        run: bash core/scripts/tests/handoff-post-document-release-skill.test.sh
       - name: Handoff post never launches Claude CLI jobs
         run: bash core/scripts/tests/handoff-post-no-claude.test.sh
       - name: Handoff post keeps company sync and document-release scope
@@ -749,19 +775,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Install hq CLI for forwarded scaffold scripts
-        run: |
-          set -euo pipefail
-          npm install -g @indigoai-us/hq-cli
-          if ! command -v hq >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
-            exit 1
-          fi
-          if ! hq core --help >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
-            exit 1
-          fi
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Handoff qmd reindex ownership (agent skip + laptop single-flight)
         run: bash core/scripts/tests/qmd-handoff-reindex.test.sh
 
@@ -806,6 +822,8 @@ jobs:
         run: bash core/scripts/tests/checkpoint-stop-gate.test.sh
       - name: Lane senior Monitor Stop/reminder shim wiring
         run: bash core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh
+      - name: Lane senior Stop-gate PATH-shim process budget
+        run: bash .claude/hooks/tests/lanes-senior-monitor-stop-gate-process-budget.test.sh
       - name: Checkpoint and journal hooks do not over-trigger
         run: bash core/scripts/tests/checkpoint-journal-noise.test.sh
       - name: Session id resolves to this process, not .current
@@ -901,19 +919,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Install hq CLI for forwarded scaffold scripts
-        run: |
-          set -euo pipefail
-          npm install -g @indigoai-us/hq-cli
-          if ! command -v hq >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
-            exit 1
-          fi
-          if ! hq core --help >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
-            exit 1
-          fi
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Rebuild qmd collections after sync
         run: bash core/scripts/tests/qmd-reindex-after-sync.test.sh
       - name: Index real-directory company knowledge
@@ -992,18 +1000,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-      - name: Install hq CLI for forwarded scaffold scripts
-        run: |
-          set -euo pipefail
-          npm install -g @indigoai-us/hq-cli
-          if ! command -v hq >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
-            exit 1
-          fi
-          if ! hq core --help >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
-            exit 1
-          fi
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Detector smoke test
         run: bash core/scripts/tests/auto-acl-suggest.test.sh
       - name: Stop reminder smoke test
@@ -1045,6 +1043,7 @@ jobs:
           command -v yq >/dev/null
           bash core/scripts/tests/hq-job-run.test.sh
           bash core/scripts/tests/hq-job-probe.test.sh
+          bash core/scripts/tests/outpost-jobs-reconcile.test.sh
           bash core/scripts/tests/outpost-job-failure-alerts.test.sh
 
   previously-unrun-suites:
@@ -1067,6 +1066,11 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Agent secret reveal guard covers Bash and Codex PreToolUse
         run: bash core/scripts/tests/block-agent-secrets-reveal.test.sh
       - name: hook-gate self-heals a non-executable (sync-stripped) hook
@@ -1076,7 +1080,9 @@ jobs:
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
       - name: Hook timeout attribution tags and compact sequence
-        run: bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
+        run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
+      - name: SessionStart slow work is detached and deadline-bound
+        run: timeout 30s bash core/scripts/tests/sessionstart-slow-work-bounded.test.sh
       - name: Master-hook success path process budget
         env:
           HQ_HOOK_PERF_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -1149,6 +1155,10 @@ jobs:
         run: bash core/scripts/tests/ontology-audience-grant.test.sh
       - name: run-project work-mesh notes use options the hq CLI accepts (--session-id)
         run: bash core/scripts/tests/run-project-mesh-note.test.sh
+      - name: run-project completion notes require branch delivery evidence (US-147)
+        run: bash core/scripts/tests/run-project-mesh-completion-evidence.test.sh
+      - name: run-project dry-run prints order without changing project state (US-108)
+        run: bash core/scripts/tests/run-project-dry-run-no-write.test.sh
 
   bash-guard-process-budgets:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1164,6 +1174,7 @@ jobs:
           command -v strace
           timeout 240s bash core/scripts/tests/block-unsafe-package-install-process-budget.test.sh | tail -200
           timeout 240s bash core/scripts/tests/block-core-writes-bash-process-budget.test.sh | tail -200
+          timeout 60s bash .claude/hooks/tests/block-policy-writes-bash-process-budget.test.sh | tail -200
           timeout 600s bash core/scripts/tests/block-guard-hooks-parity.test.sh | tail -200
 
   # US-005: shell portability lint + shellcheck + cross-platform smoke.
@@ -1183,6 +1194,16 @@ jobs:
         run: bash core/scripts/tests/grok-min-version.test.sh
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: tracked shell discovery regression test
+        run: bash core/scripts/tests/lint-shell-errors.test.sh
+      - name: shellcheck all tracked shell scripts (error)
+        run: bash core/scripts/lint-shell-errors.sh
+      - name: scaffold shell regression tests
+        run: |
+          bash core/scripts/tests/run-project-swarm-retry-filter.test.sh
+          bash .claude/hooks/tests/route-company-skill-creation.test.sh
+      - name: shellcheck scaffold scripts (error)
+        run: shellcheck -S error .claude/scripts/run-project.sh .claude/hooks/route-company-skill-creation.sh
       - name: shellcheck portability surface (warning; this-PR shell paths)
         run: |
           set -euo pipefail
@@ -1190,12 +1211,21 @@ jobs:
           # Full-tree shellcheck is a separate burn-down (pre-existing SC noise).
           files=(
             core/scripts/hook-lib.sh
+            core/scripts/tests/run-project-dry-run-no-write.test.sh
+            core/scripts/tests/block-unsafe-package-install.test.sh
             core/scripts/tests/hook-process-budget-common.sh
             core/scripts/tests/block-unsafe-package-install-process-budget.test.sh
             core/scripts/tests/block-core-writes-bash-process-budget.test.sh
             core/scripts/tests/block-guard-hooks-parity.test.sh
+            core/scripts/tests/knowledge-pulse-policy-schema.test.sh
+            core/scripts/tests/us146-gh-positional-repo-anchors.test.sh
             core/scripts/tests/hook-timeout-sentry.test.sh
             core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
+            core/scripts/tests/sessionstart-slow-work-bounded.test.sh
+            core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh
+            core/scripts/lib/session-auto-bind.sh
+            core/scripts/lib/lanes-senior-monitor.sh
+            core/hooks/SessionStart/35-work-mesh-session-start.sh
             core/scripts/tests/check-hq-update-bounded-network.test.sh
             core/scripts/tests/hook-lib-strip-exclude-tokens.test.sh
             core/scripts/tests/block-core-writes-bash-fanout.test.sh
@@ -1203,6 +1233,8 @@ jobs:
             core/scripts/tests/block-policy-writes-bash.test.sh
             core/scripts/tests/block-agent-secrets-reveal.test.sh
             core/scripts/tests/lanes-hold-check-shim.test.sh
+            core/scripts/tests/hq-cli-floor.test.sh
+            core/scripts/tests/setup-hq-cli-floor.test.sh
             .claude/hooks/block-agent-secrets-reveal.sh
             .claude/hooks/lanes-repo-merge-hold.sh
             .claude/hooks/block-unsafe-package-install.sh
@@ -1217,13 +1249,19 @@ jobs:
             core/scripts/rebuild-threads-index.sh
             core/scripts/tests/rebuild-threads-index.test.sh
             core/scripts/handoff-post.sh
+            core/scripts/skill-installed.sh
+            core/scripts/tests/handoff-post-document-release-skill.test.sh
+            core/scripts/tests/handoff-followups-runtime.test.sh
             core/scripts/tests/handoff-post-no-claude.test.sh
             core/scripts/tests/handoff-post-company-scope.test.sh
             core/scripts/setup.sh
+            core/scripts/check-hq-hooks.sh
+            core/scripts/lib/hq-cli-floor.sh
             core/scripts/repo-run-registry.sh
             core/scripts/rebuild-social-drafts-index.sh
             core/scripts/audit-log.sh
             .claude/hooks/hook-gate.sh \
+            .claude/hooks/block-hq-root-git-mutation.sh \
             .claude/hooks/lanes-senior-monitor-stop-gate.sh
             .claude/skills/deploy/scripts/identity-resolve.sh
             .claude/skills/deploy/scripts/password-helper.sh
@@ -1245,6 +1283,11 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: portable-lib
         run: bash core/scripts/tests/portable-lib.test.sh
       - name: identity-resolve USER key
@@ -1261,8 +1304,14 @@ jobs:
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: Lane senior Stop-gate PATH-shim process budget
+        run: bash .claude/hooks/tests/lanes-senior-monitor-stop-gate-process-budget.test.sh
+      - name: hq monitor guard PATH-shim process budget
+        run: bash .claude/hooks/tests/hq-monitor-guard-process-budget.test.sh
+      - name: policy/core write guards PATH-shim process budget
+        run: bash .claude/hooks/tests/block-policy-writes-bash-process-budget.test.sh
       - name: Hook timeout attribution tags and compact sequence
-        run: bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
+        run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
@@ -1289,12 +1338,21 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: portable-lib
         run: bash core/scripts/tests/portable-lib.test.sh
       - name: identity-resolve USER key
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
       - name: identity-resolve missing engines
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve-missing-jq.test.sh
+      - name: /import-context redactor and synthetic scan output under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/import-context-redact.test.sh
       - name: exec-bit index
         run: bash core/scripts/tests/exec-bit-all-scripts.test.sh
       - name: hook-gate path augment
@@ -1306,7 +1364,7 @@ jobs:
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
       - name: Hook timeout attribution tags and compact sequence
-        run: bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
+        run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
@@ -1329,6 +1387,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Hooks run python-free (tripwire + parity + broken-stub runtime)
         run: bash core/scripts/tests/hooks-no-python.test.sh
+      - name: Policy recipe and knowledge-pulse scope contracts
+        run: bash core/scripts/tests/us091-policy-and-skill-contract.test.sh
+      - name: US-146 knowledge-pulse policy schema contract
+        run: bash core/scripts/tests/knowledge-pulse-policy-schema.test.sh
       - name: Stray matcher-less hook-gate registrations are removed (jq + node)
         run: bash core/scripts/tests/remove-stray-gate-hooks.test.sh
 
@@ -1391,19 +1453,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Install hq CLI for forwarded scaffold scripts
-        run: |
-          set -euo pipefail
-          npm install -g @indigoai-us/hq-cli
-          if ! command -v hq >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
-            exit 1
-          fi
-          if ! hq core --help >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
-            exit 1
-          fi
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: personal/policies is read directly by the trigger hook (no mirror)
         run: bash core/scripts/tests/personal-policy-overlay.test.sh
       - name: stale core/policies mirror detector classifies + prunes safely
@@ -1437,19 +1489,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Install hq CLI for forwarded scaffold scripts
-        run: |
-          set -euo pipefail
-          npm install -g @indigoai-us/hq-cli
-          if ! command -v hq >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but hq was not installed on PATH." >&2
-            exit 1
-          fi
-          if ! hq core --help >/dev/null 2>&1; then
-            echo "ERROR: This job depends on a released @indigoai-us/hq-cli containing the hidden core group (hq-cli#279), but the installed hq CLI does not provide it." >&2
-            exit 1
-          fi
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Policy fires on SessionStart + canvas prompt (trigger battery)
         run: bash core/scripts/tests/prefer-native-capabilities-trigger.test.sh
       - name: Background-shell pressure-reap policy trigger + run_in_background fact
@@ -1458,6 +1500,8 @@ jobs:
         run: bash core/scripts/tests/hq-monitor-policy-trigger.test.sh
       - name: hq monitor guard and delivery hook contract
         run: bash core/scripts/tests/hq-monitor-hooks.test.sh
+      - name: hq monitor guard PATH-shim process budget
+        run: bash .claude/hooks/tests/hq-monitor-guard-process-budget.test.sh
       - name: Codex preflight pull path emits the policy + Grok rules pointer
         run: bash core/scripts/tests/codex-preflight-policies.test.sh
       - name: Codex output-style bridge
@@ -1473,6 +1517,34 @@ jobs:
       - uses: actions/checkout@v4
       - name: Every forwarder-dependent test has an hq CLI job
         run: bash core/scripts/tests/forwarder-ci-contract.test.sh
+
+  cli-hosted-forwarders:
+    name: cli-hosted-forwarders
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: CLI-hosted manifest and backmerge guard
+        run: bash core/scripts/check-cli-hosted.sh
+      - name: CLI-hosted generator, floor and guard contract
+        run: bash core/scripts/tests/cli-hosted-manifest.test.sh
+      - name: Pinned CLI install and command-catalog parity controls
+        run: bash core/scripts/tests/cli-hosted-pinned-cli.test.sh
+      - name: Current published CLI catalog parity
+        run: |
+          set -euo pipefail
+          pinned_hq="$(command -v hq)"
+          pinned_version="$("$pinned_hq" --version)"
+          current_prefix="$RUNNER_TEMP/hq-cli-current"
+          npm_config_prefix="$current_prefix" bash core/scripts/ci/install-pinned-hq-cli.sh --version latest
+          export PATH="$current_prefix/bin:$PATH"
+          current_version="$(hq --version)"
+          printf 'pinned hq-cli: %s\ncurrent published hq-cli: %s\n' "$pinned_version" "$current_version"
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
 
   work-mesh-tests:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1495,6 +1567,8 @@ jobs:
             echo "=== $t ==="
             bash "$t"
           done
+      - name: SessionStart detached register-project helper failure contract
+        run: bash core/scripts/tests/register-project.test.sh
 
   work-mesh-live:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1528,7 +1602,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Advisory summary helper unit + workflow contract
         run: node --test core/scripts/__tests__/doctor-ci-summary.test.mjs
 
@@ -1547,7 +1621,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Codex strict output-schema adapter (unit)
         run: node --test core/scripts/__tests__/codex-output-schema.test.mjs
       - name: Workflow runner — codex / grok / claude engines + gates

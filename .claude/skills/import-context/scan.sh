@@ -170,12 +170,17 @@ hash_file() { $SHASUM "$1" 2>/dev/null | awk '{print $1}'; }
 bytes_of()  { stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null; }
 sub_home()  { printf "%s" "${1/#$HOME/\$HOME}"; }
 
-# Read first N lines of a file, HTML/JSON-escape unsafe chars via jq -Rs.
+# Read first N lines, redact them before display/persistence, and JSON-escape.
 # Always emits a valid JSON string — never empty output.
 preview_file() {
   local f="$1" n="${2:-40}"
-  local out
-  out="$(head -n "$n" "$f" 2>/dev/null | jq -Rs . 2>/dev/null)"
+  local out redactor
+  redactor="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/redact.sh"
+  if ! out="$(head -n "$n" "$f" 2>/dev/null | bash "$redactor" | jq -Rs . 2>/dev/null)"; then
+    echo "scan.sh: preview redaction failed for $(sub_home "$f"); omitting preview" >&2
+    printf '""'
+    return 0
+  fi
   if [[ -z "$out" ]]; then
     printf '""'
   else
@@ -355,7 +360,7 @@ emit_claude_tree_artifacts() { # <tree-json-output> <parts-dir>
       find_capture "$tf" "enumerate policies in $(sub_home "$d/policies")" \
         "$d/policies" -maxdepth 2 -type f -name "*.md" -print0
       while IFS= read -r -d '' f; do
-        pols+=("$(entry_json policies "$f" "core/policies/$(basename "$f")")")
+        pols+=("$(entry_json policies "$f" "personal/policies/$(basename "$f")")")
       done < "$tf"
     fi
     # agents
@@ -478,10 +483,9 @@ emit_conversation_stores() {
   d="$HOME/.grok/sessions"
   if [[ -d "$d" ]]; then
     count="$(find "$d" -type f -name 'updates.jsonl' 2>>"$DISCOVERY_LOG" | grep -c '' || true)"
-    if [[ "${count:-0}" -gt 0 ]]; then
-      arr+=("$(jq -n --arg p "$(sub_home "$d")" --argjson n "$count" \
-        '{source:"grok", path:$p, sessions:$n}')")
-    fi
+    # Include an existing store with zero sessions, matching Claude Code/Codex.
+    arr+=("$(jq -n --arg p "$(sub_home "$d")" --argjson n "${count:-0}" \
+      '{source:"grok", path:$p, sessions:$n}')")
   fi
 
   if [[ -n "$CLAUDE_EXPORT" ]]; then

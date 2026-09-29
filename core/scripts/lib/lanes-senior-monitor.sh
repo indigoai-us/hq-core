@@ -64,6 +64,13 @@ if [ -z "$HQ_BIN" ]; then
   exit 1
 fi
 
+if [ "$EVENT" = "SessionStart" ] && [ -f "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" ]; then
+  # SessionStart must not share the master dispatch deadline with an hq
+  # self-update or a stalled lane lookup.
+  # shellcheck source=core/scripts/lib/session-auto-bind.sh
+  . "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" 2>/dev/null || true
+fi
+
 ERROR_FILE="$(mktemp "${TMPDIR:-/tmp}/hq-lanes-reminder.XXXXXX" 2>/dev/null || true)"
 if [ -z "$ERROR_FILE" ]; then
   printf 'ERROR: lanes-senior-monitor reminder shim: could not allocate stderr capture.\n' >&2
@@ -82,8 +89,20 @@ run_hq() {
     HQ_STDERR="could not reset stderr capture"
     return 0
   }
-  HQ_STDOUT="$(env HQ_NO_UPDATE_CHECK=1 HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" \
-    "$HQ_BIN" "$@" 2>"$ERROR_FILE")" || HQ_RC=$?
+  if [ "$EVENT" = "SessionStart" ]; then
+    if ! command -v session_auto_bind_run_with_timeout >/dev/null 2>&1; then
+      HQ_RC=127
+      HQ_STDOUT=""
+      HQ_STDERR="bounded hq runner is unavailable"
+      return 0
+    fi
+    HQ_STDOUT="$(HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout --capture-stderr \
+      env HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" "$HQ_BIN" "$@" \
+      2>"$ERROR_FILE")" || HQ_RC=$?
+  else
+    HQ_STDOUT="$(env HQ_NO_UPDATE_CHECK=1 HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" \
+      "$HQ_BIN" "$@" 2>"$ERROR_FILE")" || HQ_RC=$?
+  fi
   HQ_STDERR="$(cat "$ERROR_FILE" 2>/dev/null || true)"
 }
 
@@ -242,6 +261,10 @@ load_monitor_cache
 # CACHE_HIT_MUST_SKIP_MONITOR_CHECK
 if [ "$CACHE_HIT" -eq 0 ]; then
   run_hq lanes monitor-check --session "$SESSION_ID" --engine "$ENGINE" --json
+  if [ "$EVENT" = "SessionStart" ] && [ "$HQ_RC" -eq 124 ]; then
+    # SESSIONSTART_TIMEOUT_MUST_STAY_QUIET
+    exit 0
+  fi
   if [ "$HQ_RC" -ne 0 ] && [ "$HQ_RC" -ne 2 ]; then
     # MONITOR_CHECK_ERROR_MUST_STAY_STDERR_ONLY
     report_hq_error "hq lanes monitor-check --session returned exit $HQ_RC"

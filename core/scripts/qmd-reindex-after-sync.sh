@@ -27,4 +27,11 @@ if ! command -v hq >/dev/null 2>&1; then
   exit 127
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/lib/hq-cli-floor.sh" ]; then
+  # shellcheck source=lib/hq-cli-floor.sh
+  . "$SCRIPT_DIR/lib/hq-cli-floor.sh"
+  hq_cli_floor_check "qmd-reindex-after-sync.sh" "5.78.0"
+fi
+
 exec hq core qmd-reindex-after-sync "$@"

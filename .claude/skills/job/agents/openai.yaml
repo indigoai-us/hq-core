@@ -3,3 +3,5 @@ interface:
     Job
   short_description: >-
     Deprecated alias for /schedule — Outpost recurring agent jobs.
+policy:
+  allow_implicit_invocation: false

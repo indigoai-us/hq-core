@@ -1,6 +1,6 @@
 ---
 name: new-agent
-description: Provision a hosted (cloud) HQ agent end-to-end — identity, membership, vault join, secrets, file access, MCP/runtime bootstrap, mission brief, and a verified capability probe — or repair one that reports it is blocked on access. Use when standing up a new HQ agent (Slack bot, reporting agent, ops agent). Routes local bots (`hq bot create`, runs on the user's computer with their own model login) and external bots (an agent hosted elsewhere, enrolled by one-time code with `hq agent enroll`) to their own flows.
+description: "Provision or repair a hosted HQ agent end to end, from identity to a verified capability probe. Routes local and external bots to their own flows."
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
@@ -60,7 +60,7 @@ layer above it silently useless:
 |---|---|---|---|
 | 1. Identity | Cognito principal + agent email (`agt-<ulid>@agents.{your-domain}.ai`) | `hq agents provision` (paid — billing-gated) / `hq members invite` | `hq whoami` on the agent runtime |
 | 2. Membership | Row in the company's member list | `hq members invite` + `/accept` on the agent runtime | `hq members list --company {co}` |
-| 3. Team vault | Company directory synced into the agent's HQ | company is cloud-backed (`/designate-team`) + `hq team-sync` on the agent runtime | agent sees `companies/{co}/` locally |
+| 3. Company vault | Company directory synced into the agent's HQ | company is cloud-backed (`/designate-team`) + `hq sync pull --company {co}` on the agent runtime | agent sees `companies/{co}/` locally |
 | 4. Secrets & files | Read grants on vault secrets + file ACLs | `hq secrets share`, `hq files` | `hq secrets list --company {co}` on the agent runtime |
 | 5. Runtime config | MCP servers, Slack tokens, model creds registered in the agent's own `.mcp.json`/settings | paste-ready bootstrap block (this skill generates it) | agent runs its probe checklist |
 
@@ -93,9 +93,8 @@ produces the exact bootstrap block and verifies via probe instead.
   `hq members invite` instead.)
 - Company must resolve to a slug in `companies/manifest.yaml` **and** be
   cloud-backed (`cloud_uid` present). If it is not cloud-backed, stop and route
-  to `/designate-team` first — without a cloud entity there is no team vault to
-  join and `hq team-sync` on the agent side will report "no team directories
-  found" no matter what else is granted.
+  to `/designate-team` first. Without a cloud entity, there is no company vault
+  directory for `hq sync pull --company {co}` to sync.
 
 ### 2. Interview — define the job before the grants
 
@@ -176,7 +175,7 @@ addressed to whoever operates that runtime (often the agent itself via DM):
 # --- HQ agent bootstrap: {agent} @ {co} ---
 hq login                      # or hq auth status if already authenticated
 # /accept <token>             # only if membership is still pending
-hq team-sync                  # pulls companies/{co}/ into this HQ
+hq sync pull --company {co}  # pulls the permitted company vault files
 hq secrets list --company {co}   # must show the granted keys
 # Mount secrets per-invocation — never export or paste values:
 #   hq secrets exec --company {co} --only KEY1,KEY2 -- <command>
@@ -210,8 +209,8 @@ The brief contains:
 - What is intentionally NOT granted and why (e.g. "QuickBooks excluded — live
   QBO stays a human-side monthly reconciliation").
 
-The brief syncs to the agent on its next `hq team-sync` — it is the durable
-answer to "what am I supposed to do and with what," surviving any chat history.
+The brief syncs to the agent on its next `hq sync pull --company {co}`. It is the
+durable answer to "what am I supposed to do and with what," beyond chat history.
 
 ### 7. Verification probe — the done gate
 
@@ -219,7 +218,7 @@ DM the agent (via `hq dm` or its Slack channel) the bootstrap block plus a
 probe checklist:
 
 1. `hq whoami` → correct identity
-2. `hq team-sync` → `companies/{co}/` present
+2. Run `hq sync pull --company {co}` and confirm `companies/{co}/` is present
 3. `hq secrets list --company {co}` → every granted key visible
 4. One end-to-end read per data source (e.g. `SELECT 1` through the RO URL, a
    Stripe balance read) via `hq secrets exec`

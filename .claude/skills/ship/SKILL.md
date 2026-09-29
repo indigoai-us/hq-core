@@ -1,11 +1,6 @@
 ---
 name: ship
-description: |
-  Meta pipeline: review → land → deploy → smoke → heal → monitor. Takes one or
-  more PRs from "open" through merged, deployed, live-verified, and monitored
-  until every declared KPI is healthy. Use when asked to "ship this", "land and
-  monitor", "take this all the way to prod", or when a feature spans repos and
-  needs the full loop closed (per policy hq-smoke-cross-repo-contracts-before-done).
+description: "Take PRs through review, merge, deploy, smoke test, and monitoring until every KPI is healthy. Triggers: \"ship this\", \"take this to prod\"."
 allowed-tools: Bash, Read, Grep, Glob, Write, Edit, Agent, AskUserQuestion, TaskCreate, TaskUpdate, Monitor, CronCreate, CronList
 ---
 

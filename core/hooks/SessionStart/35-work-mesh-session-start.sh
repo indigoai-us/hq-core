@@ -54,8 +54,6 @@ _wm_json_str "$INPUT" cwd; [ -n "$REPLY" ] && CWD=$REPLY
 
 BOUND_COMPANY=""
 WORK_CONTEXT_ROOT="${HQ_WORK_CONTEXT_ROOT:-${HOME:-}/.hq/work-context}"
-WORK_CONTEXT_STATE_EXISTED=0
-[ -f "$WORK_CONTEXT_ROOT/sessions/$SID.json" ] && WORK_CONTEXT_STATE_EXISTED=1
 if [ -f "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" ]; then
   # shellcheck source=core/scripts/lib/session-scope-capability.sh
   . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" 2>/dev/null || true
@@ -130,15 +128,83 @@ fi
 # The retry runs up to three `hq mesh project ensure` calls. That work is
 # detached (nohup, log file) and single-flight (mkdir lock per company).
 # The session-start path only takes or skips the lock; it never waits.
+_wm_lock_age_seconds() {
+  local path=$1 stamp now
+  stamp="$(stat -c '%Y' "$path" 2>/dev/null || true)"
+  case "$stamp" in ''|*[!0-9]*) stamp="$(stat -f '%m' "$path" 2>/dev/null || true)" ;; esac
+  case "$stamp" in ''|*[!0-9]*) return 1 ;; esac
+  now="$(date +%s 2>/dev/null || true)"
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  REPLY=$((now - stamp))
+}
+
+_wm_reclaim_abandoned_reaper() {
+  local reaper=$1 stale_after=$2 retired age
+  [ -d "$reaper" ] || return 0
+  _wm_lock_age_seconds "$reaper" || return 1
+  age=$REPLY
+  [ "$age" -gt "$stale_after" ] || return 1
+  retired="$reaper.stale.$$.$RANDOM"
+  [ ! -e "$retired" ] || return 1
+  if ! mv -- "$reaper" "$retired" 2>/dev/null; then
+    return 1
+  fi
+  if _wm_lock_age_seconds "$retired" && [ "$REPLY" -gt "$stale_after" ]; then
+    rm -rf -- "$retired" 2>/dev/null || true
+    return 0
+  fi
+  [ -e "$reaper" ] || mv -- "$retired" "$reaper" 2>/dev/null || true
+  return 1
+}
+
+_wm_lock_acquire() {
+  local lock=$1 stale_after=${2:-30} reaper="$1.reclaim" retired age
+  if [ -d "$reaper" ]; then
+    _wm_reclaim_abandoned_reaper "$reaper" "$stale_after" || return 1
+  fi
+  if mkdir -- "$lock" 2>/dev/null; then
+    printf '%s\n' "$$" >"$lock/pid" 2>/dev/null || true
+    if [ -d "$reaper" ]; then
+      rm -rf -- "$lock" 2>/dev/null || true
+      return 1
+    fi
+    return 0
+  fi
+
+  # Reclaim only by age. The detached stages have deadlines up to ten seconds,
+  # so a thirty-second-old lock cannot belong to live work. The reclaim mutex
+  # keeps stale classification from being applied to a replacement lock. A
+  # crashed reclaimer is itself reclaimed after the same quiescent interval.
+  mkdir -- "$reaper" 2>/dev/null || return 1
+  if [ -d "$lock" ] && _wm_lock_age_seconds "$lock"; then
+    age=$REPLY
+    if [ "$age" -gt "$stale_after" ]; then
+      retired="$lock.stale.$$.$RANDOM"
+      if [ ! -e "$retired" ] && mv -- "$lock" "$retired" 2>/dev/null; then
+        if _wm_lock_age_seconds "$retired" && [ "$REPLY" -gt "$stale_after" ]; then
+          rm -rf -- "$retired" 2>/dev/null || true
+        elif [ ! -e "$lock" ]; then
+          mv -- "$retired" "$lock" 2>/dev/null || true
+        fi
+      fi
+    fi
+  fi
+  rmdir -- "$reaper" 2>/dev/null || true
+  return 1
+}
+
 _wm_retry_pending_child() {
-  local lock=$1 script=$2 company=$3
-  printf '%s\n' "$$" >"$lock/pid" 2>/dev/null || true
-  trap 'rm -rf -- "$lock"' EXIT INT TERM
-  bash "$script" --retry-pending "$company" || true
+  local script=$2 company=$3
+  _WM_CHILD_LOCK=$1
+  printf '%s\n' "$$" >"$_WM_CHILD_LOCK/pid" 2>/dev/null || true
+  trap 'rm -rf -- "$_WM_CHILD_LOCK"' EXIT INT TERM
+  command -v session_auto_bind_run_with_timeout >/dev/null 2>&1 || return 0
+  HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout --timeout-ms 5000 \
+    bash "$script" --retry-pending "$company" || true
 }
 
 _wm_retry_pending_detached() {
-  local company=$1 script safe dir lock log take pid
+  local company=$1 script safe dir lock log
   [ -n "$company" ] || return 0
   script="${HQ_REGISTER_PENDING_SCRIPT:-$HQ_ROOT/core/scripts/register-project.sh}"
   [ -f "$script" ] || return 0
@@ -149,29 +215,79 @@ _wm_retry_pending_detached() {
   chmod 700 -- "$dir" 2>/dev/null || true
   lock="$dir/${safe}.lock"
   log="$dir/${safe}.log"
-  take=0
-  if mkdir -- "$lock" 2>/dev/null; then
-    take=1
-  else
-    pid=""
-    if [ -f "$lock/pid" ]; then
-      pid="$(tr -cd '0-9' <"$lock/pid" 2>/dev/null || true)"
-    fi
-    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
-      rm -rf -- "$lock" 2>/dev/null || true
-      if mkdir -- "$lock" 2>/dev/null; then
-        take=1
-      fi
-    fi
-  fi
-  [ "$take" -eq 1 ] || return 0
-  export -f _wm_retry_pending_child
+  _wm_lock_acquire "$lock" 30 || return 0
+  export -f session_auto_bind_run_with_timeout _wm_retry_pending_child
   nohup bash -c '_wm_retry_pending_child "$@"' _ "$lock" "$script" "$company" >>"$log" 2>&1 </dev/null &
   printf '%s\n' "$!" >"$lock/pid" 2>/dev/null || true
   disown 2>/dev/null || true
 }
 
 _wm_retry_pending_detached "$COMPANY" || true
+
+_wm_reconcile_drain() {
+  local lock=$1 hq_bin=$2 pending_dir=$3 attempt selected observation last
+  local -a pending_files=()
+  export LC_ALL=C
+  # A crashed lock holder is reclaimable after thirty seconds; keep this
+  # detached drainer alive long enough to take over that abandoned lock.
+  for ((attempt = 0; attempt < 700; attempt++)); do
+    if _wm_lock_acquire "$lock" 30; then
+      _WM_CHILD_LOCK=$lock
+      printf '%s\n' "$$" >"$_WM_CHILD_LOCK/pid" 2>/dev/null || true
+      trap 'rm -rf -- "$_WM_CHILD_LOCK"' EXIT INT TERM
+
+      shopt -s nullglob
+      pending_files=("$pending_dir"/*.json)
+      [ "${#pending_files[@]}" -gt 0 ] || return 0
+      last=$((${#pending_files[@]} - 1))
+      selected=${pending_files[$last]}
+      observation="$(<"$selected")"
+      # Consume one latest snapshot. If a newer one arrives while the current
+      # reconcile runs, its own drainer is already waiting on this lock.
+      rm -f -- "${pending_files[@]}" 2>/dev/null || true
+      [ -f "$observation" ] || return 0
+      command -v session_auto_bind_run_with_timeout >/dev/null 2>&1 || return 0
+      HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout --timeout-ms 10000 \
+        "$hq_bin" mesh context reconcile --observation-file "$observation" --machine \
+        >/dev/null 2>&1 || true
+      return 0
+    fi
+    sleep 0.05
+  done
+}
+
+_wm_reconcile_detached() {
+  local hq_bin=$1 observation=$2 safe dir lock pending_dir order pending_file pending_tmp worker_pid
+  [ -f "$observation" ] || return 0
+  [ -n "$hq_bin" ] || return 0
+  command -v session_auto_bind_run_with_timeout >/dev/null 2>&1 || return 0
+  safe="${SID//[^A-Za-z0-9._-]/_}"
+  [ -n "$safe" ] || return 0
+  dir="${HQ_WORK_MESH_RECONCILE_DIR:-${TMPDIR:-/tmp}/hq-work-mesh-reconcile}"
+  mkdir -p -- "$dir" 2>/dev/null || return 0
+  chmod 700 -- "$dir" 2>/dev/null || true
+  lock="$dir/$safe.lock"
+  pending_dir="$dir/$safe.pending"
+  mkdir -p -- "$pending_dir" 2>/dev/null || return 0
+  chmod 700 -- "$pending_dir" 2>/dev/null || true
+  printf -v order '%020d' "$SEQ"
+  pending_file="$pending_dir/$order.$CLIENT_OP.json"
+  pending_tmp="$pending_file.tmp.$$"
+  printf '%s\n' "$observation" >"$pending_tmp" 2>/dev/null || return 0
+  mv -- "$pending_tmp" "$pending_file" 2>/dev/null || {
+    rm -f -- "$pending_tmp" 2>/dev/null || true
+    return 0
+  }
+  export -f session_auto_bind_run_with_timeout _wm_lock_age_seconds \
+    _wm_reclaim_abandoned_reaper _wm_lock_acquire _wm_reconcile_drain
+  nohup bash -c '_wm_reconcile_drain "$@"' _ "$lock" "$hq_bin" "$pending_dir" \
+    >/dev/null 2>&1 </dev/null &
+  worker_pid=$!
+  if [ -n "${HQ_WORK_MESH_RECONCILE_WORKER_PID_FILE:-}" ]; then
+    printf '%s\n' "$worker_pid" >>"$HQ_WORK_MESH_RECONCILE_WORKER_PID_FILE" 2>/dev/null || true
+  fi
+  disown 2>/dev/null || true
+}
 
 # Timing / test stub: still record reconcile intent without building a large obs.
 if [ "${HQ_WORK_MESH_RECONCILE_STUB:-}" = "1" ]; then
@@ -220,9 +336,10 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
   if [ -z "$BOUND_COMPANY" ] && command -v session_auto_bind_run_with_timeout >/dev/null 2>&1; then
     PREFLIGHT_STATE_EXISTED=0
     PREFLIGHT_REPAIR=false
-    [ -f "${HQ_WORK_CONTEXT_ROOT:-${HOME:-}/.hq/work-context}/sessions/$SID.json" ] && PREFLIGHT_STATE_EXISTED=1
+    [ -f "$WORK_CONTEXT_ROOT/sessions/$SID.json" ] && PREFLIGHT_STATE_EXISTED=1
     PREFLIGHT_STATUS=0
-    PREFLIGHT_RESULT="$(session_auto_bind_run_with_timeout "$HQ_BIN" mesh context reconcile --observation-file "$OBS_FILE" --machine --offline 2>/dev/null)" || PREFLIGHT_STATUS=$?
+    PREFLIGHT_RESULT="$(HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout \
+      "$HQ_BIN" mesh context reconcile --observation-file "$OBS_FILE" --machine --offline 2>/dev/null)" || PREFLIGHT_STATUS=$?
     PREFLIGHT_CLASSIFICATION=""
     PREFLIGHT_SLUG=""
     PREFLIGHT_UID=""
@@ -247,7 +364,9 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
       ' 2>/dev/null)" || PREFLIGHT_CLASSIFICATION=""
       PREFLIGHT_SLUG="$(printf '%s' "$PREFLIGHT_RESULT" | jq -er '.companySlug | select(type == "string" and length > 0)' 2>/dev/null)" || PREFLIGHT_SLUG=""
       PREFLIGHT_UID="$(printf '%s' "$PREFLIGHT_RESULT" | jq -er '.companyUid | select(type == "string" and length > 0)' 2>/dev/null)" || PREFLIGHT_UID=""
-      PREFLIGHT_REPAIR="$("$HQ_BIN" mesh context default get --json 2>/dev/null | jq -er '(.repairHeldWithDefault // (.defaultCompany.repairHeldWithDefault // false)) | if . == true then "true" else "false" end' 2>/dev/null)" || PREFLIGHT_REPAIR=false
+      PREFLIGHT_REPAIR="$(HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout \
+        "$HQ_BIN" mesh context default get --json 2>/dev/null \
+        | jq -er '(.repairHeldWithDefault // (.defaultCompany.repairHeldWithDefault // false)) | if . == true then "true" else "false" end' 2>/dev/null)" || PREFLIGHT_REPAIR=false
     fi
     case "$PREFLIGHT_CLASSIFICATION" in
       company_conflict|bound|needs_project|needs_task)
@@ -285,8 +404,6 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
         ;;
     esac
   fi
-  nohup "$HQ_BIN" mesh context reconcile --observation-file "$OBS_FILE" --machine \
-    >/dev/null 2>&1 </dev/null &
-  disown 2>/dev/null || true
+  _wm_reconcile_detached "$HQ_BIN" "$OBS_FILE"
 fi
 exit 0

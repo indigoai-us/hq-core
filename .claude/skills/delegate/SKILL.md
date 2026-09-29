@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: Hand a project to a named person or fleet agent with exact grant receipts, a published dossier, local ownership updates, and a pickup DM. Track recipient access separately through their acknowledgment.
+description: "Hand a project to a person or fleet agent: grants, dossier, ownership transfer, and a pickup DM."
 allowed-tools: Read, AskUserQuestion, Skill, Bash(hq:*), Bash(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/hq-delegate-resolve.sh:*), Bash(bash core/scripts/hq-delegate-bundle.sh:*), Bash(bash core/scripts/hq-delegate-grant.sh:*), Bash(bash core/scripts/hq-delegate-repo.sh:*), Bash(bash core/scripts/hq-delegate-secrets.sh:*), Bash(bash core/scripts/hq-delegate-transfer.sh:*), Bash(bash core/scripts/hq-delegate-verify.sh:*), Bash(bash core/scripts/hq-delegate-send.sh:*), Bash(bash core/scripts/hq-delegate-pickup.sh:*), Bash(rm:*)
 ---
 

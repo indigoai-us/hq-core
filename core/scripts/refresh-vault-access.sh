@@ -61,7 +61,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-is_hq_root() { [ -n "${1:-}" ] && [ -d "$1/core" ] && [ -d "$1/.claude" ]; }
+is_hq_root() { [ -n "${1:-}" ] && [ -d "${1%/}/core" ] && [ -d "${1%/}/.claude" ]; }
 
 if [ -z "$ROOT" ]; then
   if is_hq_root "${CLAUDE_PROJECT_DIR:-}"; then

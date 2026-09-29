@@ -136,7 +136,7 @@ date in the header, and update `verified_against`.
 | `hq sync manifest` | Upload a file manifest for the sync reconciliation audit (personal or a company scope) |
 | `hq team-sync` | Pull latest team content for all joined teams |
 | `hq rescue` | Re-sync your HQ core to the latest release, preserving your local edits (drift) |
-| `hq reindex` (alias: `master-sync`) | Surface namespaced skills, materialize legacy knowledge repos, regenerate the workers registry, and trust HQ hooks for Codex, Grok, and Claude Code |
+| `hq reindex` (alias: `master-sync`) | Surface namespaced skills, refresh HQ indexes, regenerate the workers registry, and trust HQ hooks for Codex, Grok, and Claude Code |
 
 ## Files and vault
 

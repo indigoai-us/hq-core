@@ -1,6 +1,6 @@
 ---
 name: clean-worktree
-description: Clean up an HQ git worktree — merge a detached worktree branch back into local main in the primary HQ tree, then remove the worktree and delete the branch. Use when HQ work happened in a separate worktree (e.g. .claude/worktrees/<name> on claude/*, or workspace/worktrees/<name> on codex/*) and needs to land and be cleaned up — including right after /handoff when HQ itself is running from a separate worktree. HQ is local-only; this workflow never pushes to a remote.
+description: "Merge an HQ worktree branch back into local main, then remove the worktree and branch. Local only; never pushes."
 allowed-tools: Bash(git:*), Bash(docker:*), Bash(ls:*), Bash(rmdir:*), Bash(bash "${HQ_ROOT}/core/scripts/clean-worktree-reconcile-handoff.sh:*), Read, AskUserQuestion
 ---
 

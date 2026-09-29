@@ -49,14 +49,20 @@ Save current work state as a thread to survive context loss.
    git status --porcelain                   # dirty check
    ```
 
-4. **Capture knowledge repo git states**
-   Knowledge folders may contain embedded git repos at their canonical real-directory paths. For any knowledge path in files_touched, capture its repo state. Continue detecting legacy symlinks only so they can be reported for migration:
+4. **Capture personal/core knowledge repo git states**
+   Personal knowledge folders may contain embedded Git repositories at their canonical real-directory paths. Company knowledge is a plain directory synced through the company vault. Continue detecting legacy symlinks only so they can be reported for migration; do not inspect company knowledge for embedded Git state:
    ```bash
    # For each knowledge repo with changes:
    bash -c '
    shopt -s nullglob
    for knowledge_path in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
      if [ -L "$knowledge_path" ]; then
+       case "$knowledge_path" in
+         companies/*/knowledge)
+           echo "$knowledge_path: INVALID symlink (company knowledge must be a plain directory synced through the vault)"
+           continue
+           ;;
+       esac
        target=$(cd "$knowledge_path" 2>/dev/null && pwd -P) || continue
        case "$target" in
          "$(pwd -P)"/core/packages/*) continue ;;  # package-managed mount — the only valid knowledge link
@@ -70,6 +76,9 @@ Save current work state as a thread to survive context loss.
        fi
        continue
      fi
+     case "$knowledge_path" in
+       companies/*/knowledge) continue ;;  # plain company directory; no embedded Git state
+     esac
      [ -d "$knowledge_path/.git" ] || continue
      repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
      dirty=$(cd "$repo_dir" && git status --porcelain)
@@ -78,7 +87,7 @@ Save current work state as a thread to survive context loss.
    done
    '
    ```
-   Include dirty knowledge repos in the thread JSON under `git.knowledge_repos`.
+   Include dirty personal/core knowledge repos in the thread JSON under `git.knowledge_repos`.
 
 5. **Gather session state**
    - Summarize what was accomplished
@@ -143,8 +152,9 @@ Save current work state as a thread to survive context loss.
    - See `core/knowledge/public/hq-core/index-md-spec.md` for INDEX format
 
 8b. **Document release**
-    Run `/document-release` — the skill resolves company + project context on its own.
-    Best-effort — skip silently on failure.
+    Check the installed session catalog with `bash core/scripts/skill-installed.sh document-release "${HQ_ACTIVE_COMPANY:-}"`.
+    If the skill is installed, run `/document-release` — the skill resolves company + project context on its own.
+    If it is absent, skip this step silently. Best-effort — skip silently on failure.
 
 9. **Report**
    Chat report follows the active output style (`core/policies/hq-audience-mode.md`). Files this skill writes stay full prose. The templates below are chat-only.

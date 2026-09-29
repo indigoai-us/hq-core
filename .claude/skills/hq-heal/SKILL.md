@@ -163,7 +163,7 @@ Fix proposal: remove stale `_overrides/` snapshots (with `--dry-run` first), or 
 Checks:
 - Grep `ERR` for the broken path; if found, `ls -la <path>` and `readlink <path>`
 - Common legitimate HQ symlinks to verify: `AGENTS.md` and `.claude/skills/personal:*`
-- Knowledge repositories under `personal/knowledge/` and `companies/*/knowledge/` must be real directories. Under `core/knowledge/`, a package-managed link into `core/packages/*/knowledge/` is valid; a link to a separate git repository is a migration violation.
+- Company knowledge under `companies/*/knowledge/` must be a plain real directory with no embedded Git metadata or symlink. Personal knowledge may be a real directory with embedded Git. Under `core/knowledge/`, a package-managed link into `core/packages/*/knowledge/` is valid; a link to a separate git repository is a migration violation.
 
 Fix proposal: for legitimate non-knowledge links, re-create the symlink with an absolute path under `$HOME/Documents/HQ/` only if the target is unambiguous. For knowledge, materialize the content at the canonical path and verify it is not a symlink.
 

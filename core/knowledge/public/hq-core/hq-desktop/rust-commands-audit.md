@@ -17,9 +17,10 @@ relates_to: [knowledge/public/hq-core/hq-desktop-app.md]
 Comprehensive audit of every Tauri command in the HQ Desktop Rust backend against actual HQ file structures. Identifies type mismatches, missing data accessors, stale mock data, and new commands needed.
 
 > Historical note: earlier HQ installations used symlinked knowledge repositories.
-> Current HQ requires real canonical knowledge directories with optional embedded
-> git. Any link references below describe legacy compatibility, not a layout to
-> create or preserve.
+> Current HQ requires real canonical knowledge directories. Personal knowledge
+> may use embedded Git; company knowledge stays plain and syncs through its
+> company vault. Any link references below describe legacy compatibility, not a
+> layout to create or preserve.
 
 ## 1. Command Inventory
 
@@ -251,7 +252,7 @@ struct CompanyEntry {
   settings: [stripe, gusto, deel, quickbooks, shopify-partner, linear-acme-recover]
   # workers are NOT in manifest — they are discovered from worker.yaml files
   # via core/workers/registry.yaml (auto-generated) with `company: {company}` set.
-  knowledge: companies/{company}/knowledge/
+  knowledge: companies/{company}/knowledge/ # plain directory, synced through company vault
   deploy: [...]
   vercel_projects: [...]
   qmd_collections: [{company}, {product}]
@@ -309,7 +310,7 @@ No Rust command wraps `qmd` CLI. Desktop needs:
 
 No command validates knowledge-directory layout. Desktop needs:
 - Real-directory validation and a migration warning for legacy symlinks
-- Knowledge repo git status (clean/dirty)
+- Personal knowledge repo Git status (clean/dirty)
 - INDEX.md hierarchy traversal
 
 **Needed commands:** `validate_knowledge_path`, `get_knowledge_tree`

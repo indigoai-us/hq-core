@@ -1,15 +1,32 @@
 #!/bin/bash
 # Gated foreground-wait guard for Claude, Codex, and Grok shell calls.
 set -uo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/hq-monitor-hook-lib.sh"
+HOOK_PATH="${BASH_SOURCE[0]:-$0}"
+HOOK_DIR="${HOOK_PATH%/*}"
+[ "$HOOK_DIR" != "$HOOK_PATH" ] || HOOK_DIR=.
+. "$HOOK_DIR/hq-monitor-hook-lib.sh"
 
 payload="$(</dev/stdin)" || payload='{}'
 [ "${HQ_LANE_ID+x}" = x ] && exit 0
 
 runtime="${HQ_CHECKPOINT_RUNTIME:-claude}"
-command_text="$(printf '%s' "$payload" | jq -r '.tool_input.command // .toolInput.command // empty' 2>/dev/null || true)"
+parsed_fields="$(printf '%s' "$payload" | jq -jr '
+  if type == "object" then
+    (.tool_input.run_in_background // .toolInput.run_in_background // false
+      | if . == true or . == "true" then "1" else "0" end),
+    "\u001f",
+    (.tool_input.command // .toolInput.command // "" | tostring),
+    "\u001f"
+  else
+    "0\u001f\u001f"
+  end
+' 2>/dev/null || true)"
+run_background="${parsed_fields%%$'\x1f'*}"
+command_text="${parsed_fields#*$'\x1f'}"
+command_text="${command_text%$'\x1f'}"
 [ -n "$command_text" ] || exit 0
-flat="${command_text//$'\n'/ }"
+flat="${command_text//$'\r\n'/$'\n'}"
+flat="${flat//$'\n'/ }"
 
 single_hq_monitor_command() {
   local text="$1" stripped="" quote="" escaped=0 char i
@@ -34,14 +51,16 @@ single_hq_monitor_command() {
 }
 
 if [ "$runtime" = "claude" ]; then
-  run_background="$(printf '%s' "$payload" | jq -r '.tool_input.run_in_background // .toolInput.run_in_background // false' 2>/dev/null || true)"
-  [ "$run_background" = "true" ] && exit 0
+  [ "$run_background" = "1" ] && exit 0
 fi
 
 blocked=0
-if [[ "$flat" =~ (^|[;&|[:space:]])sleep[[:space:]]+([0-9]+([.][0-9]+)?)(s|[[:space:]]|$) ]]; then
+if [[ "$flat" =~ (^|[;&|[:space:]])sleep[[:space:]]+([0-9]+)([.][0-9]+)?(s|[[:space:]]|$) ]]; then
   seconds="${BASH_REMATCH[2]}"
-  awk -v seconds="$seconds" 'BEGIN { exit !(seconds + 0 >= 30) }' && blocked=1
+  while [ "${seconds#0}" != "$seconds" ]; do seconds="${seconds#0}"; done
+  case "$seconds" in
+    [3-9][0-9]|[0-9][0-9][0-9]*) blocked=1 ;;
+  esac
 fi
 if [[ "$flat" =~ (^|[;&|[:space:]])(while|until)[[:space:]].*sleep[[:space:]]+[0-9]+ ]]; then
   blocked=1
@@ -61,7 +80,7 @@ single_hq_monitor_command "$flat" && exit 0
 
 root="$(hq_monitor_root)"
 [ -n "$root" ] || exit 0
-if ! hq_monitor_enabled "$root" "$payload"; then
+if ! hq_monitor_enabled "$root" "$payload" monitor-guard; then
   exit 0
 fi
 

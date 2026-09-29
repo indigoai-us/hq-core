@@ -1,6 +1,6 @@
 ---
 name: newcompany
-description: Scaffold a new HQ company AND optionally take it all the way to operational — business-discovery interview, seeded knowledge/workers/skills/projects, brand design packs (generated from website/PDF/Drive and bound to deploys via policy), connected integrations, org groups + ACL rules, teammate invites, and optional cloud agents.
+description: "Scaffold a new HQ company, optionally through to operational: knowledge, workers, brand, integrations, access rules, and invites."
 allowed-tools: Read, Write, Edit, Bash, AskUserQuestion
 ---
 
@@ -52,41 +52,10 @@ Ask (batch is fine here — these are simple facts):
 ### 0.3 Scaffold Directory
 
 ```bash
-# Full company layout, mirrored from companies/_template/ (minus knowledge/,
-# which 0.4 creates as its own git repo). Every native store gets its folder
-# from day one so /signals, /meeting-notes, /learn, /prd, and worker
-# discovery have a real path to read or write:
-#   policies/ workers/ skills/ projects/ people/ data/ settings/
-#   signals/{_index}/            — extracted decisions, action items, risks
-#   sources/{meetings,_index}/   — meeting-bot transcripts
-#   ontology/{entities/{person,project,company,concept},facts,_candidates}/ and
-#     signals/_candidates/ — local ontology gardened by the ontology worker
-#     (core/knowledge/public/hq-core/ontology-local-spec.md)
-mkdir -p companies/{slug}
-(cd companies/_template && find . -type d -not -path './.obsidian*' -not -path './knowledge*' \
-   -not -path '*/_example*') | while read -r d; do mkdir -p "companies/{slug}/$d"; done
-(cd companies/_template && find . -type f -name .gitkeep -not -path './knowledge/*' -not -path '*/_example/*') \
-  | while read -r f; do : > "companies/{slug}/$f"; done
-cp companies/_template/settings/auto-share.yaml companies/{slug}/settings/auto-share.yaml
-cp companies/_template/settings/communication/preferences.yaml companies/{slug}/settings/communication/preferences.yaml
-sed 's/{company}/{slug}/g' companies/_template/settings/knowledge/preferences.yaml \
-  > companies/{slug}/settings/knowledge/preferences.yaml
-cp companies/_template/sources/meetings/source.yaml companies/{slug}/sources/meetings/source.yaml
-mkdir -p companies/{slug}/workspace/sessions
-printf '# HQ workspace mirror — sessions are gitignored, index.jsonl is committed\nsessions/\n' \
-  > companies/{slug}/workspace/.gitignore
-: > companies/{slug}/workspace/index.jsonl
-# Scaffold company.yaml with cloud-disabled default. /designate-team flips
-# cloud: true later (and provisions via `hq cloud provision company`).
-printf "slug: %s\ncloud: false\n" "{slug}" > companies/{slug}/company.yaml
-# Seed an empty board.json so the company's board EXISTS from day one. The
-# board lives at the vault root (key `board.json`) and is synced verbatim from
-# this file; without it the desktop/console board lookup 404s every poll
-# (HQ-77). /idea, /prd, /goals populate it later. Stamp the slug + a UTC
-# timestamp; keep the empty objectives/initiatives/projects arrays.
-printf '{\n  "company": "%s",\n  "schema_version": 2,\n  "updated_at": "%s",\n  "objectives": [],\n  "initiatives": [],\n  "projects": []\n}\n' \
-  "{slug}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > companies/{slug}/board.json
-# Copy Obsidian vault config (dereference symlink in template)
+# Render shared server-seed files and the local-only files listed in the manifest.
+node core/scripts/render-company-starter-files.mjs \
+  "{slug}" "{Name}" "companies/{slug}" --mode newcompany
+# Obsidian preferences stay on this machine and are not part of the company seed.
 [ -e companies/_template/.obsidian ] && cp -rL companies/_template/.obsidian companies/{slug}/.obsidian
 ```
 
@@ -94,36 +63,34 @@ The `workspace/` directory is the per-company audit trail of HQ sessions that to
 company. Sessions are hardlinked here from `workspace/threads/` by the mirror hook
 (`mirror-thread-to-company.sh`); `index.jsonl` is committed, individual session JSONs are gitignored.
 
-`company.yaml` is the HQ Desktop App / cloud-state marker. `cloud: false` is the local-only
-default; `/designate-team {slug}` rewrites it to `cloud: true` and runs
-`hq cloud provision company {slug}`. Keep the file even for purely-local companies.
+`company.yaml` is the HQ Desktop App / cloud-state marker. The local renderer creates it
+with `cloud: false`; `/designate-team {slug}` rewrites it to `cloud: true` and runs
+`hq cloud provision company {slug}`. The server seed never writes this per-machine file.
 
-### 0.4 Create Knowledge Directory (embedded git)
+### 0.4 Create Knowledge Directory
 
-Scaffold `companies/{slug}/knowledge/` as a **real directory** with its own git
-repo so cloud sync uploads documents directly. Do **not** symlink into `repos/` —
-symlinked knowledge dirs upload as ~50-byte vault markers and break teammate sync.
+Scaffold `companies/{slug}/knowledge/` as a **plain real directory**. Company
+folders sync to every member's devices, so company knowledge must never contain
+Git metadata and must never be a symlink into `repos/`.
 
 ```bash
 mkdir -p companies/{slug}/knowledge/design-styles/packs
-cd companies/{slug}/knowledge
-git init
-printf '# %s Knowledge\n\nKnowledge base for %s.\n' "{Name}" "{Name}" > README.md
-mkdir -p design-styles/packs
-: > design-styles/packs/.gitkeep
-git add -A && git commit -m "init: knowledge base"
-cd -
+cat > companies/{slug}/knowledge/README.md <<'EOF'
+# {Name} Knowledge
+
+Company reference material synced through the company vault.
+EOF
 ```
 
 Verify (must pass before continuing):
 
 ```bash
 test -d companies/{slug}/knowledge && ! test -L companies/{slug}/knowledge \
-  && echo "OK: knowledge is a real directory"
+  && echo "OK: knowledge is a plain real directory"
 ```
 
-This layout is mandatory: initialize git inside the canonical knowledge directory.
-Never move it under `repos/` or replace it with a symlink.
+Keep this as a plain directory. Never initialize Git inside it, move it under
+`repos/`, or replace it with a symlink.
 
 The `design-styles/packs/` subdir is where company-scoped brand packs live.
 
@@ -136,7 +103,7 @@ The `design-styles/packs/` subdir is where company-scoped brand packs live.
   github_org: {org or omit}
   repos: [{repo paths or empty array}]
   settings: [{setting names or empty array}]
-  knowledge: companies/{slug}/knowledge/
+  knowledge: companies/{slug}/knowledge/ # plain directory, synced with the company
   deploy: []
   vercel_projects: []
   qmd_collections: [{slug}]
@@ -161,9 +128,12 @@ qmd collection add companies/{slug}/knowledge --name {slug} --mask "**/*.md"
 qmd update 2>/dev/null || true
 ```
 
-### 0.7 README + Companies List
+### 0.7 Company Details + Companies List
 
-- Write `companies/{slug}/README.md` (name, purpose, repos, workers).
+- Write `companies/{slug}/company-details.md` with the display name, GitHub org,
+  associated repos, and workers from Phase 0.2. The shared `README.md` is rendered
+  from the seed template and stays unchanged; Phase 1 records the business purpose
+  after discovery.
 - If CLAUDE.md `## Companies` line doesn't include the new slug, update it.
 
 **Checkpoint — the company now works locally.** Announce it, then offer the operational
@@ -452,12 +422,12 @@ Skip → no agents (the most likely default; it's a deliberate step).
 ## Rules
 
 - Phase 0 always runs and must leave a working local company; everything else is fail-soft/skippable.
-- All manifest.yaml fields non-null (empty arrays, not `null`). Knowledge repo is mandatory.
+- All manifest.yaml fields non-null (empty arrays, not `null`). The company knowledge directory is mandatory.
 - Never create a company that already exists. Validate slug: lowercase, hyphens only, no spaces.
 - Always write `company.yaml` with `cloud: false`; only `/designate-team` flips it. Never default to `cloud: true`.
 - Every `hq` call carries `--company {slug}`. Never collect raw secrets in chat — mint links.
 - Don't fake integrations: tools without an easy key become tracked tasks (manual export / ingestion script), not silent no-ops.
-- Design packs go in `companies/{slug}/knowledge/design-styles/packs/` (never the shared public packs dir), get registered per §2.5.4 (shared registry only when it is a real HQ-tracked file; company-scoped `registry.yaml` when design-styles is an immutable package mount), and bind to surfaces via company-scoped policies — never through a knowledge repository under `repos/` or by editing core deploy infra.
+- Design packs go in `companies/{slug}/knowledge/design-styles/packs/`, not the shared public packs directory. Register them per §2.5.4: use the shared registry when it is a real HQ-tracked file, or a company-scoped `registry.yaml` when design-styles is an immutable package mount. Bind packs to surfaces through company-scoped policies. Do not symlink them into `repos/` or edit core deploy infrastructure.
 - Reuse `/designate-team`, `/newworker`, `/idea`, `/prd`, `hq groups|secrets|files|members invite`, and the cloud-agent provisioning path — don't reimplement them.
 
 ## See also

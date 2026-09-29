@@ -56,6 +56,23 @@ set -euo pipefail
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$HQ_ROOT"
 HQ_ROOT="$(pwd -P)"
+HAS_GIT_CHECKOUT="false"
+COMMON_GIT_DIR=""
+GIT_PROBE_OUTPUT=""
+if GIT_PROBE_OUTPUT="$(LC_ALL=C git rev-parse --git-common-dir 2>&1)"; then
+  COMMON_GIT_DIR="$GIT_PROBE_OUTPUT"
+  HAS_GIT_CHECKOUT="true"
+else
+  GIT_PROBE_STATUS=$?
+  if [[ ! -e "$HQ_ROOT/.git" && ! -L "$HQ_ROOT/.git" && \
+        "$GIT_PROBE_OUTPUT" == *"not a git repository"* ]]; then
+    COMMON_GIT_DIR=""
+  else
+    printf 'handoff-finalize: Git checkout probe failed (exit %s): %s\n' \
+      "$GIT_PROBE_STATUS" "$GIT_PROBE_OUTPUT" >&2
+    exit 4
+  fi
+fi
 
 # -------- args --------
 TITLE="Handoff: session continuation"
@@ -204,7 +221,8 @@ while IFS=$'\t' read -r raw_path deleted_flag; do
     continue
   fi
   if [[ ! -e "$rel_path" ]]; then
-    if [[ "$deleted_flag" == "true" ]] && git ls-files --error-unmatch "$rel_path" >/dev/null 2>&1; then
+    if [[ "$HAS_GIT_CHECKOUT" == "true" && "$deleted_flag" == "true" ]] \
+      && git ls-files --error-unmatch "$rel_path" >/dev/null 2>&1; then
       SAFE_STAGE_PATHS+=("$rel_path")
     else
       record_skip "$rel_path" "missing"
@@ -272,7 +290,11 @@ if command -v hq >/dev/null 2>&1; then
 fi
 BASELINE_NOISE_COUNT=$(jq -r '.counts.baseline_noise // 0' "$STATUS_SUMMARY_FILE" 2>/dev/null || echo 0)
 new_tmp STAGED_PATHS_FILE
-printf '%s\n' "${SAFE_STAGE_PATHS[@]:-}" | jq -R -s 'split("\n") | map(select(length > 0))' > "$STAGED_PATHS_FILE"
+if [[ "$HAS_GIT_CHECKOUT" == "true" ]]; then
+  printf '%s\n' "${SAFE_STAGE_PATHS[@]:-}" | jq -R -s 'split("\n") | map(select(length > 0))' > "$STAGED_PATHS_FILE"
+else
+  printf '[]' > "$STAGED_PATHS_FILE"
+fi
 
 mkdir -p workspace/threads
 # Every next step carries an id and a closure status (2026-09-07). Handoffs
@@ -422,15 +444,16 @@ copy_handoff_thread() {
 }
 
 write_handoff_pointer "workspace/threads/handoff.json" "$THREAD_PATH"
-COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
-case "$COMMON_GIT_DIR" in
-  /*|[A-Za-z]:/*) ;;
-  *) COMMON_GIT_DIR="$HQ_ROOT/$COMMON_GIT_DIR" ;;
-esac
-MAIN_CHECKOUT_ROOT="$(cd "$COMMON_GIT_DIR/.." && pwd -P)"
-if [[ "$MAIN_CHECKOUT_ROOT" != "$HQ_ROOT" ]]; then
-  copy_handoff_thread "$MAIN_CHECKOUT_ROOT/$THREAD_PATH"
-  write_handoff_pointer "$MAIN_CHECKOUT_ROOT/workspace/threads/handoff.json" "$THREAD_PATH"
+if [[ "$HAS_GIT_CHECKOUT" == "true" ]]; then
+  case "$COMMON_GIT_DIR" in
+    /*|[A-Za-z]:/*) ;;
+    *) COMMON_GIT_DIR="$HQ_ROOT/$COMMON_GIT_DIR" ;;
+  esac
+  MAIN_CHECKOUT_ROOT="$(cd "$COMMON_GIT_DIR/.." && pwd -P)"
+  if [[ "$MAIN_CHECKOUT_ROOT" != "$HQ_ROOT" ]]; then
+    copy_handoff_thread "$MAIN_CHECKOUT_ROOT/$THREAD_PATH"
+    write_handoff_pointer "$MAIN_CHECKOUT_ROOT/workspace/threads/handoff.json" "$THREAD_PATH"
+  fi
 fi
 
 # -------- regen INDEX files via dedicated scripts --------
@@ -457,6 +480,9 @@ fi
 # genuine failure also exits non-zero (4).
 HQ_COMMITTED="false"
 HQ_COMMIT_STATUS="nothing-to-commit"
+if [[ "$HAS_GIT_CHECKOUT" != "true" ]]; then
+  HQ_COMMIT_STATUS="no-git-checkout"
+fi
 HQ_COMMIT_ERROR=""
 EXPLICIT_PATHS=(
   "${SAFE_STAGE_PATHS[@]:-}"
@@ -475,37 +501,39 @@ STAGED=0
 # regression hit), and macOS still ships bash 3.2.
 STAGE_FAILURES=""
 STAGE_FAILURE_COUNT=0
-for p in "${EXPLICIT_PATHS[@]}"; do
-  [[ -n "$p" ]] || continue
-  if [[ -e "$p" || -n "$(git status --porcelain -- "$p" 2>/dev/null)" ]]; then
-    add_rc=0
-    git add -- "$p" >/dev/null 2>&1 || add_rc=$?
-    if [[ $add_rc -eq 0 ]]; then
-      STAGED=$((STAGED+1))
-    elif git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
-      # The path is already TRACKED but a broad later ignore rule now shadows it
-      # (the scaffold's /workspace/ entry over the tracked handoff pointer/index
-      # files), so a plain `git add` refuses it. A tracked file must still be
-      # committed, so force-add it. Only a force-add that ALSO fails (e.g. a held
-      # .git/index.lock) is a genuine stage failure.
-      if git add -f -- "$p" >/dev/null 2>&1; then
+if [[ "$HAS_GIT_CHECKOUT" == "true" ]]; then
+  for p in "${EXPLICIT_PATHS[@]}"; do
+    [[ -n "$p" ]] || continue
+    if [[ -e "$p" || -n "$(git status --porcelain -- "$p" 2>/dev/null)" ]]; then
+      add_rc=0
+      git add -- "$p" >/dev/null 2>&1 || add_rc=$?
+      if [[ $add_rc -eq 0 ]]; then
         STAGED=$((STAGED+1))
+      elif git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+        # The path is already TRACKED but a broad later ignore rule now shadows it
+        # (the scaffold's /workspace/ entry over the tracked handoff pointer/index
+        # files), so a plain `git add` refuses it. A tracked file must still be
+        # committed, so force-add it. Only a force-add that ALSO fails (e.g. a held
+        # .git/index.lock) is a genuine stage failure.
+        if git add -f -- "$p" >/dev/null 2>&1; then
+          STAGED=$((STAGED+1))
+        else
+          STAGE_FAILURES="${STAGE_FAILURES}${p}"$'\n'
+          STAGE_FAILURE_COUNT=$((STAGE_FAILURE_COUNT+1))
+        fi
+      elif git check-ignore --no-index -q -- "$p" 2>/dev/null; then
+        # An UNtracked, gitignored path is a deliberate exclusion, not a failed
+        # write. --no-index is required: plain `git check-ignore` SKIPS tracked
+        # files (it would wrongly report a tracked-but-ignored path as not-ignored,
+        # the bug that made this a stage-failure); the tracked case is handled above.
+        :
       else
         STAGE_FAILURES="${STAGE_FAILURES}${p}"$'\n'
         STAGE_FAILURE_COUNT=$((STAGE_FAILURE_COUNT+1))
       fi
-    elif git check-ignore --no-index -q -- "$p" 2>/dev/null; then
-      # An UNtracked, gitignored path is a deliberate exclusion, not a failed
-      # write. --no-index is required: plain `git check-ignore` SKIPS tracked
-      # files (it would wrongly report a tracked-but-ignored path as not-ignored,
-      # the bug that made this a stage-failure); the tracked case is handled above.
-      :
-    else
-      STAGE_FAILURES="${STAGE_FAILURES}${p}"$'\n'
-      STAGE_FAILURE_COUNT=$((STAGE_FAILURE_COUNT+1))
     fi
-  fi
-done
+  done
+fi
 # committed_paths scales with the staged set; capture it to a file (git piped to
 # jq via stdin, then the result written to disk) so it too stays off argv.
 new_tmp COMMITTED_PATHS_FILE

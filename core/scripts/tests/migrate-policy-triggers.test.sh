@@ -361,4 +361,64 @@ env -u HOME -u XDG_STATE_HOME HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" \
   bash "$MIGRATOR" "$NO_HOME_DIR"
 assert_migrated "$NO_HOME_DIR/pending.md" "migration failed when HOME and XDG_STATE_HOME were unset"
 
+# Call-site contract: the registered migration hook shells out to the
+# evaluator. A 127 forwarder is treated as an unparseable trigger and leaves
+# the source file untouched; an absent evaluator deliberately skips grammar
+# validation and writes the derived trigger. Both paths keep exit 0 and exact
+# output streams pinned.
+CONTRACT_ROOT="$TMP/evaluator-callsite"
+CONTRACT_FORWARDER="$CONTRACT_ROOT/forwarder"
+CONTRACT_ABSENT="$CONTRACT_ROOT/absent"
+mkdir -p "$CONTRACT_FORWARDER/core/scripts" "$CONTRACT_FORWARDER/core/policies" \
+  "$CONTRACT_ABSENT/core/scripts" "$CONTRACT_ABSENT/core/policies"
+cp "$MIGRATOR" "$CONTRACT_FORWARDER/core/scripts/migrate-policy-triggers.sh"
+cp "$MIGRATOR" "$CONTRACT_ABSENT/core/scripts/migrate-policy-triggers.sh"
+write_migratable_policy "$CONTRACT_FORWARDER/core/policies/forwarder.md"
+write_migratable_policy "$CONTRACT_ABSENT/core/policies/absent.md"
+CONTRACT_LOG="$CONTRACT_ROOT/eval.calls"
+cat > "$CONTRACT_FORWARDER/core/scripts/eval-trigger.sh" <<EOF
+#!/usr/bin/env bash
+printf 'called\n' >> '$CONTRACT_LOG'
+printf '%s\n' 'eval-trigger.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest' >&2
+exit 127
+EOF
+chmod +x "$CONTRACT_FORWARDER/core/scripts/eval-trigger.sh"
+if HQ_ROOT="$CONTRACT_FORWARDER" CLAUDE_PROJECT_DIR="$CONTRACT_FORWARDER" \
+  HQ_MIGRATE_POLICY_TRIGGERS_COOLDOWN_SECONDS=0 \
+  HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR="$CONTRACT_FORWARDER/state" \
+  bash "$CONTRACT_FORWARDER/core/scripts/migrate-policy-triggers.sh" \
+    "$CONTRACT_FORWARDER/core/policies" >"$CONTRACT_ROOT/forwarder.out" 2>"$CONTRACT_ROOT/forwarder.err"; then
+  got=0
+else
+  got=$?
+fi
+[ "$got" = 0 ] && [ ! -s "$CONTRACT_ROOT/forwarder.out" ] || fail "migration 127 forwarder changed status/stdout"
+grep -qx 'called' "$CONTRACT_LOG" || fail "migration did not execute evaluator forwarder"
+cmp -s "$CONTRACT_FORWARDER/core/policies/forwarder.md" <(printf '%s\n' \
+  '---' 'id: forwarder' 'enforcement: soft' 'trigger: when deploying' '---' '' \
+  '## Rule' 'This policy must be backfilled when the cooldown permits a migration.') \
+  || fail "migration wrote an unparseable trigger despite evaluator 127"
+cat > "$CONTRACT_ROOT/forwarder.expected" <<'EOF'
+eval-trigger.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest
+migrate-policy-triggers: refusing to write unparseable when: forwarder.md -> `deploy`
+EOF
+cmp -s "$CONTRACT_ROOT/forwarder.expected" "$CONTRACT_ROOT/forwarder.err" \
+  || fail "migration 127 stderr differs: $(cat "$CONTRACT_ROOT/forwarder.err")"
+
+if HQ_ROOT="$CONTRACT_ABSENT" CLAUDE_PROJECT_DIR="$CONTRACT_ABSENT" \
+  HQ_MIGRATE_POLICY_TRIGGERS_COOLDOWN_SECONDS=0 \
+  HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR="$CONTRACT_ABSENT/state" \
+  bash "$CONTRACT_ABSENT/core/scripts/migrate-policy-triggers.sh" \
+    "$CONTRACT_ABSENT/core/policies" >"$CONTRACT_ROOT/absent.out" 2>"$CONTRACT_ROOT/absent.err"; then
+  got=0
+else
+  got=$?
+fi
+[ "$got" = 0 ] && [ ! -s "$CONTRACT_ROOT/absent.out" ] || fail "migration absent evaluator changed status/stdout"
+grep -qx 'when: deploy' "$CONTRACT_ABSENT/core/policies/absent.md" \
+  || fail "missing evaluator no longer skips validation and writes trigger"
+grep -qx 'migrate-policy-triggers: backfilled 1 policy trigger(s) (0 hard -> SessionStart, 0 non-hard triggerless left unchanged, 0 unparseable derivations skipped, 0 already had when)' "$CONTRACT_ROOT/absent.err" \
+  || fail "migration absent evaluator stderr differs: $(cat "$CONTRACT_ROOT/absent.err")"
+echo "PASS: migration evaluator 127/absence call-site contract"
+
 echo "PASS: migrate-policy-triggers enforcement-gated fallback and 10 cooldown cases"

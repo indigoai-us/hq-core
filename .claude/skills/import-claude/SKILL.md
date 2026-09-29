@@ -1,6 +1,7 @@
 ---
 name: import-claude
 description: "Deprecated alias for /import-context — bootstrap HQ from your prior AI footprint (Claude Code, Codex, Grok, claude.ai history plus on-disk artifacts)."
+disable-model-invocation: true
 allowed-tools: Skill
 ---
 

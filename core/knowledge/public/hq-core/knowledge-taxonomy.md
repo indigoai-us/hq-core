@@ -10,7 +10,7 @@ relates_to:
 
 # Knowledge Taxonomy Specification
 
-Standard directory structure for all company knowledge repositories in HQ. Defines 8 canonical subdirectories aligned to `knowledge-ontology.yaml` domains.
+Standard directory structure for all company knowledge directories in HQ. These are plain, vault-synced directories, not Git repositories. Defines 8 canonical subdirectories aligned to `knowledge-ontology.yaml` domains.
 
 ---
 
@@ -27,7 +27,7 @@ companies/{co}/knowledge/
 ├── data/           # Metrics, analytics, reporting, tracking
 ├── assets/         # Logos, images, design files, static resources
 ├── INDEX.md        # Auto-generated directory map (see index-md-spec.md)
-└── README.md       # Knowledge repo overview (human-maintained)
+└── README.md       # Knowledge directory overview (human-maintained)
 ```
 
 Root files that always stay at root:

@@ -1,6 +1,6 @@
 ---
 name: conduct
-description: Put the session into orchestrator mode — every task is assigned to a long-lived HQ worker from a capped session pool and run as a detached workflow-runner lane on a user-chosen engine (Codex, Grok, or Claude), so the parent session stays free to accept and route new messages. Use when the user says "/conduct", "run everything in the background", "keep the session free", "orchestrate through workers", or names an engine for delegated work.
+description: "Orchestrator mode: route every task to a pooled HQ worker lane on Codex, Grok, or Claude so this session stays free. Triggers: \"/conduct\", \"run everything in the background\"."
 allowed-tools: Bash, Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/conduct-inbox.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_COMPANY="$(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_PROJECT="$(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_TASK="$(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Read, Grep, Glob, AskUserQuestion, mcp__visualize__read_me, mcp__visualize__show_widget
 argument-hint: "[engine] [task description] | status | off"
 ---

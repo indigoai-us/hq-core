@@ -1,0 +1,89 @@
+version: 1
+
+# These names are replaced with the new company's URL-safe slug and display name.
+placeholders:
+  company: company slug, for example acme
+  company_name: company display name, for example Acme Corp
+
+# Shared files written by both the server seed and the /newcompany renderer.
+seed:
+  - README.md
+  - board.json
+  - knowledge/README.md
+  - knowledge/design-styles/packs/.gitkeep
+  - people/.gitkeep
+  - policies/.gitkeep
+  - projects/.gitkeep
+  - repos/.gitkeep
+  - skills/.gitkeep
+  - sources/meetings/source.yaml
+  - workspace/.gitignore
+  - workspace/index.jsonl
+  - workspace/sessions/.gitkeep
+
+# These files and placeholders are only for a local /newcompany scaffold.
+# They are machine-local or owned by a local pipeline and never enter the server seed.
+newcompany_only:
+  - company.yaml
+  - data/.gitkeep
+  - ontology/_candidates/.gitkeep
+  - ontology/entities/company/.gitkeep
+  - ontology/entities/concept/.gitkeep
+  - ontology/entities/person/.gitkeep
+  - ontology/entities/project/.gitkeep
+  - ontology/facts/.gitkeep
+  - settings/.gitkeep
+  - settings/auto-share.yaml
+  - settings/communication/preferences.yaml
+  - settings/knowledge/preferences.yaml
+  - signals/.gitkeep
+  - signals/_candidates/.gitkeep
+  - signals/_index/.gitkeep
+  - sources/_index/.gitkeep
+  - sources/meetings/.gitkeep
+  - workers/.gitkeep
+
+# Only these template files contain values that are replaced during rendering.
+substitute:
+  - README.md
+  - board.json
+  - company.yaml
+  - knowledge/README.md
+  - settings/knowledge/preferences.yaml
+
+# The cloud server seed never writes these paths. Each comment says why.
+never_seeded:
+  # This is a local desktop marker that selects local-only or cloud-backed behavior.
+  - company.yaml
+  # These preferences belong to one device and are not shared starter content.
+  - settings/**
+  # Data is populated by the company and must not be copied from a template.
+  - data/**
+  # Workers are provisioned for a specific company and are never template defaults.
+  - workers/**
+  # HQ sync state is private bookkeeping for one installation.
+  - .hq/**
+  # Obsidian configuration is local to the user's vault application.
+  - .obsidian
+  - .obsidian/**
+  # Example directories contain sample identities or project policy, not company data.
+  - "**/_example/**"
+  # This example policy is active guidance and must never be loaded for a new company.
+  - policies/example-policy.md
+  # These pipeline folders are created and owned by the local ontology pipeline.
+  - ontology/**
+  # These pipeline folders are created and owned by local signal capture.
+  - signals/**
+  # Meeting and source pipeline placeholders are local; only the meeting source definition is shared.
+  - sources/**
+  # Knowledge content is created separately; only the starter README and design pack folder are shared.
+  - knowledge/**
+  # This manifest and its golden files are tooling fixtures, not company content.
+  - .hq-seed.yaml
+  - .hq-seed/**
+
+# These exact files are shared even though they sit below a never-seeded prefix.
+seed_exceptions:
+  - knowledge/README.md
+  - knowledge/design-styles/packs/.gitkeep
+  - sources/meetings/source.yaml

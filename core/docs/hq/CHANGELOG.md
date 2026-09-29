@@ -1,5 +1,83 @@
 ## [Unreleased]
 
+### Changed: pin audit workflow actions to commits (TD-04 wave 2)
+- Pin the third-party actions used by the audit workflow to their current commits.
+
+### Fixed: cowork plugin build reports missing prerequisites before staging (US-150)
+- Before creating a staging directory, the script checks for shell utilities, Node.js/npm, rsync, and zip. It prints install instructions when a tool is missing.
+
+### Fixed: handoff skips document-release when the skill is unavailable (US-139)
+- Handoff checks the active company skill catalog before dispatching `/document-release`. When the skill is unavailable, it records the follow-up as skipped and leaves out the recovery command.
+
+### Fixed: run-project completion notes require branch delivery evidence (US-147)
+- For projects with a configured repository branch, run-project reports completion only when every story passes and delivery evidence exists: a commit ahead of the base, or a commit added during a run directly on the base branch.
+
+### Changed: PR checks run on Node 22 (TD-07)
+- The PR check and doctor advisory workflows set up Node 22 instead of Node 20, which no longer receives security updates. Action pins are unchanged.
+
+### Added: CI checks every tracked shell script with ShellCheck (TD-08)
+- `core/scripts/lint-shell-errors.sh` finds every tracked `.sh` file and every tracked file with a bash or sh shebang, and runs `shellcheck -S error` on them. The pr-checks shell-portability job runs it, so a new error-level ShellCheck finding anywhere in the tree fails the PR. Warnings are not checked yet.
+
+### Fixed: policy-trigger linter counts missing trigger fields (US-144)
+- Preserve empty TSV columns while parsing policy facts, so missing `when:` or `on:` fields are reported and fail lint instead of being shifted into later columns.
+
+### Fixed: knowledge-pulse policy fields and positional gh repo anchors (US-146)
+- The policy check uses `when` and `on` from the current format, and the Git mutation guard recognizes explicit positional repository targets on `gh repo` archive, delete, and edit commands and repository-scoped `gh api` mutations. Anchors do not bypass other HQ-root Git mutations in the same command.
+
+### Fixed: Outpost timers use systemd's OnCalendar timezone syntax (US-136)
+- The reconciler appends a validated job timezone to `OnCalendar=` and reports failed timer enables as skipped instead of counting them as armed.
+
+### Added: Wave 8 hook-helper contract and availability check
+- Document registered call-site failure behavior for the Wave 8 helpers and pin it with targeted tests. `check-hq-hooks.sh` reports missing helpers, non-executable helpers used directly, and CLI-floor failures for helpers that run; presence-only guards require only the file.
+
+### Fixed: swarm retries no longer stop candidate filtering (TD-02)
+- The retry filter now assigns its scratch variables at top level. A non-empty retry queue no longer makes the runner exit before it processes the remaining candidates.
+
+### Fixed: /deploy sends API-backed apps through the app handler (US-105)
+- App artifacts now include root `api/` handlers within the size and file caps, then use the multipart `type=app` route. Static uploads keep the presigned route.
+
+### Fixed: work-mesh sweeps read the spool once
+- The late-reconcile sweep reads distinct session/company pairs in one jq pass. It skips transcript searches when every company for a session has both reconciled and copied markers, or a terminal marker.
+- Malformed JSONL rows are skipped and counted in the hook log so valid rows around a torn append are still reconciled.
+- A timed-out sweep writes the existing last-run marker. Subsequent triggers observe the cooldown.
+
+### Fixed: autosave retries transient Git index lock contention (US-111)
+- HQ autocommit retries `git add` failures that report `index.lock` and `File exists` up to three times with 200 ms waits; other add failures remain immediate, and stale-lock recovery remains the only lock removal path.
+- Retried adds use the C locale for stable lock-error matching and check the staged set before committing, leaving separately staged paths untouched.
+### Fixed: handoff finalization works without Git metadata
+- Synced HQ roots without a Git checkout now keep the handoff thread and pointer durable while skipping local Git mirroring, staging, and commits.
+
+### Fixed: merge-hold prefilter preserves merge command coverage
+- The registry prefilter keeps the existing broad merge token scan so wrapped, quoted, tab-separated, newline-separated, and API merge commands still reach the hold shim. Unrelated commands may also reach the shim; its command check allows them through.
+
+### Added: Git repository guards for company folders
+- PreToolUse now blocks Git and GitHub CLI commands that create or populate a repository under `companies/`, including URL-derived clone destinations, `git -C`, preceding `cd`, and relative paths. Write, Edit, and MultiEdit also block direct writes inside a company `.git` directory or to a worktree `.git` file.
+- Claude and Codex dispatch the same guards through the hook registry and Codex fallback set. Regression coverage is registered in `pr-checks.yml`.
+
+### Changed: Company knowledge is a plain synced directory
+- Company knowledge scaffolding, planning, cleanup, import, and worker guidance now use real directories with no Git metadata. The manifest `knowledge` field is documented as the directory path, and personal knowledge retains optional embedded Git support.
+- Added manual guidance for preserving existing company knowledge history and uncommitted files before users remove legacy Git metadata. No automatic metadata deletion is performed.
+
+### Fixed: import-context redacts credentials before report previews (US-103)
+- The redactor now removes credentialed URLs, private-key blocks, case-insensitive JSON credential fields, and indented or exported environment assignments. It accepts stdin, runs on stock macOS Bash 3.2, and scan previews pass through it before they are written to the report.
+- Policy imports now target company policies or personal policies, and knowledge repositories are identified by `claude_repos[].is_knowledge`.
+- Added synthetic regression coverage for the redactor and scan output.
+
+### Fixed: Outpost timer reconciliation reports systemd enable failures (US-110)
+- When `systemctl --user enable --now` fails, reconciliation reports the job id, exit code, and error text, increments errors instead of armed, and keeps the generated unit files for diagnosis.
+
+### Fixed: run-project dry runs do not change project state (US-108)
+- `run-project <project> --dry-run` prints the story order without creating a worktree or writing state, progress, or audit files.
+
+### Fixed: package installs enforce the 24-hour release-age minimum (US-107)
+- A package install is now blocked when `minimumReleaseAge` (or `minimum-release-age`) is set below 1440 minutes or is not an integer, whether it comes from the command line, the environment, `.npmrc` or `pnpm-workspace.yaml`. Before, any value, including 0 or an empty value, was accepted. The `HQ_ALLOW_UNSAFE_INSTALL` bypass is unchanged.
+
+### Fixed: new company scaffolds use deterministic starter files
+- The server seed and `/newcompany` now share the template-owned README, knowledge README, and fixed-timestamp board bytes. A manifest records shared, local-only, substituted, and never-seeded paths.
+
+### Fixed: portable policy recipes and scoped knowledge-pulse commits (US-091)
+- Shell guidance uses Node built-ins for filesystem and JSON helpers, and knowledge-pulse commits only the exact paths it changed inside an embedded repository.
+
 ### Fixed: shallow discovery clones, Codex model fallback, and OpenAI skill metadata
 - `/discover` now keeps the full origin fetch refspec when it performs a shallow clone, so a later plain fetch sees branches beyond the default branch.
 - `/execute-task` resolves Codex models from the story override or the worker profile and reports a missing profile value as a configuration error.

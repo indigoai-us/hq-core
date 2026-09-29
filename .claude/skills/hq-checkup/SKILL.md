@@ -1,6 +1,6 @@
 ---
 name: hq-checkup
-description: Check that HQ is working and fix what can be fixed safely — updates HQ, starts the app if it's closed, backs up work that hasn't saved, turns safety checks back on. Reports anything left in plain language.
+description: "Check HQ health and fix what is safe: start the app, back up unsaved work, re-enable safety checks. Reports the rest in plain language."
 allowed-tools: Bash, Bash(bash .claude/skills/hq-checkup/hq-checkup.sh:*), Read, AskUserQuestion
 ---
 

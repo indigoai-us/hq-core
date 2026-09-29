@@ -1,6 +1,7 @@
 ---
 name: commit-main
 description: Commit every dirty file in the current repo, only when on main.
+disable-model-invocation: true
 allowed-tools: Bash(git:*), Bash(date:*), Read
 ---
 

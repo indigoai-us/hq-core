@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Take an idea all the way to a finished deliverable in one command — capture it, research and compare approaches, generate the PRD, then execute every story to the actual work product (code, artwork, documents), continuously and without pausing. Recommended answers are taken automatically and recorded in the decision ledger; --gated pauses at human decisions instead; --plan-only stops at the execution-ready PRD. Use when the user says "/orchestrate", "take this idea to done", "make this end to end", or wants idea → brainstorm → plan → execution chained without invoking each step by hand. Formerly /ideate (planning-only).
+description: "Take an idea to a finished deliverable: brainstorm, PRD, then execute every story. --gated pauses at decisions; --plan-only stops at the PRD."
 allowed-tools: Read, Write, Grep, Glob, Bash, Bash(node:*), Bash(bash:*), Bash(nohup:*), Bash(ls:*), Bash(cat:*), Bash(jq:*), Bash(tail:*), Bash(mkdir:*), Bash(file:*), Bash(bash core/scripts/workflow-gate.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), AskUserQuestion, Task
 argument-hint: "[company] <idea description> [--board <id>] [--engine codex|grok|claude] [--gated] [--plan-only]"
 ---

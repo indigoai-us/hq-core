@@ -1,6 +1,6 @@
 ---
 name: worktree
-description: Create a git worktree under workspace/worktrees/ and route all subsequent work through it. Main checkout is never modified — neither working tree nor local branch refs. By default fetches origin and branches off origin/{default} so the worktree gets the latest upstream state without mutating the main tree. Use when the user asks to "do X in a worktree", "spin up a worktree", "isolate this change", "work without touching main", or whenever a non-trivial change should be sandboxed.
+description: "Create a git worktree under workspace/worktrees/ off the latest origin default branch and route all work through it."
 allowed-tools: Bash(bash .claude/skills/worktree/worktree.sh:*), Bash(git:*), Read, AskUserQuestion
 ---
 

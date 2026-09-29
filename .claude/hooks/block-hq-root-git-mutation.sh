@@ -3,7 +3,7 @@
 #
 # THE CONCEPT THIS GUARDS (one of the most important in HQ):
 #   HQ root is itself a git repo, and every working repo is nested under it
-#   (repos/*, companies/*/knowledge/.git, ...). A git/gh MUTATION whose
+#   (repos/* and other nested working directories). A git/gh MUTATION whose
 #   target directory is ambient (depends on invisible shell cwd) will
 #   silently operate on whichever .git it resolves to. From HQ root that is
 #   HQ — which by hard policy (hq-root-never-push-remote, hq-git-discipline)
@@ -14,8 +14,10 @@
 #
 #   The safe form for a repo git mutation is an explicit per-command
 #   anchor: `git -C /abs/path <cmd>` (git) or `-R owner/repo` (gh) in the
-#   SAME Bash call. Hard policies are model-facing prose; this hook is
-#   the mechanical backstop that does not depend on the model remembering
+#   SAME Bash call. `gh repo archive|delete|edit <owner/repo>` and `gh api`
+#   `repos/<owner>/<repo>` endpoints are remote anchors only on commands that
+#   take them as mutation targets. Hard policies are model-facing prose; this
+#   hook is the mechanical backstop that does not depend on the model remembering
 #   to run a pre-flight `pwd`.
 #
 # Escape hatch (deliberate, distinct, audited — NOT the generic core
@@ -84,7 +86,7 @@ fi
 # back to the lexical hq_normpath when it is missing or the path is dangling.
 norm() {
   local p="$1" resolved
-  case "$p" in "~") p="$HOME" ;; "~/"*) p="$HOME${p#\~}" ;; esac
+  case "$p" in [~]) p="$HOME" ;; [~]/*) p="$HOME${p#\~}" ;; esac
   resolved="$(realpath "$p" 2>/dev/null || hq_normpath "$p" 2>/dev/null || printf '%s' "$p")"
   # Git for Windows reports repository roots as D:/..., while Git Bash may
   # receive the same path as /d/.... Canonicalize after physical resolution so
@@ -209,9 +211,88 @@ GIT_IS_MUTATION=0
 GH_IS_MUTATION=0
 GIT_CMD=""
 GH_CMD=""
+GH_RECORD=""
 SUB=""
 GIT_MUTATION_COUNT=0
 GH_MUTATION_COUNT=0
+
+is_redirection_operator() {
+  case "$1" in
+    '>'|'>>'|'<'|'<<'|'>|') return 0 ;;
+  esac
+  return 1
+}
+
+gh_positional_repo_anchor() {
+  local record="$1" executable executable_base token subcommand
+  local command_index=-1 endpoint="" method="" i
+  local -a words
+  IFS=$'\037' read -r -a words <<<"$record"
+  executable="$(hq_shell_command_executable "$record" || true)"
+  executable_base="${executable##*/}"
+  executable_base="${executable_base##*\\}"
+  [[ "$executable_base" == gh ]] || return 1
+
+  for ((i=0; i<${#words[@]}; i++)); do
+    if [[ "${words[i]}" == "$executable" ]]; then
+      command_index=$((i + 1))
+      break
+    fi
+  done
+  [[ "$command_index" -ge 0 && "$command_index" -lt "${#words[@]}" ]] || return 1
+
+  subcommand="${words[command_index]}"
+  if [[ "$subcommand" == repo ]]; then
+    local target_index=$((command_index + 2))
+    while [[ "$target_index" -lt "${#words[@]}" ]]; do
+      token="${words[target_index]}"
+      if [[ "$token" =~ ^[0-9]+$ ]] && is_redirection_operator "${words[target_index+1]:-}"; then
+        target_index=$((target_index + 3))
+        continue
+      fi
+      if is_redirection_operator "$token"; then
+        target_index=$((target_index + 2))
+        continue
+      fi
+      break
+    done
+    [[ "${words[command_index+1]:-}" =~ ^(archive|delete|edit)$ ]] || return 1
+    [[ "${words[target_index]:-}" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]
+    return $?
+  fi
+
+  [[ "$subcommand" == api ]] || return 1
+  for ((i=command_index + 1; i<${#words[@]}; i++)); do
+    token="${words[i]}"
+    if [[ "$token" =~ ^[0-9]+$ ]] && is_redirection_operator "${words[i+1]:-}"; then
+      i=$((i + 2))
+      continue
+    fi
+    if is_redirection_operator "$token"; then
+      i=$((i + 1))
+      continue
+    fi
+    case "$token" in
+      -X|--method)
+        ((i++)); [[ "$i" -lt "${#words[@]}" ]] || return 1
+        method="${words[i]}"
+        ;;
+      --method=*) method="${token#*=}" ;;
+      -H|--header|-f|--field|-F|--raw-field|-q|--jq|-t|--template|--input|--hostname|--cache|--preview)
+        ((i++)); [[ "$i" -lt "${#words[@]}" ]] || return 1
+        ;;
+      -i|-s|-p|--include|--silent|--paginate|--slurp|--verbose|--help) ;;
+      --*=*) ;;
+      -*) return 1 ;;
+      *) [[ -n "$endpoint" ]] || endpoint="$token" ;;
+    esac
+  done
+
+  method="$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')"
+  [[ "$method" =~ ^(POST|PUT|PATCH|DELETE)$ ]] || return 1
+  [[ "$endpoint" =~ ^/?repos/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*([/?#]|$) ]]
+}
+
 ANCHOR_SCAN_COMMAND="$CMD"
 collect_resolved_records "$CMD" 0
 if [[ "$STRICT_GIT_GUARD" -eq 1 ]]; then ANCHOR_SCAN_COMMAND="$RESOLVED_COMMAND"; fi
@@ -245,7 +326,11 @@ while IFS= read -r shell_record; do
       ;;
     gh)
       if echo "$shell_text" | grep -Eq '^[^[:space:]]*[[:space:]]+(pr[[:space:]]+(create|merge|close|reopen|edit|comment|ready|review)|repo[[:space:]]+(create|delete|rename|archive|edit|sync|fork)|release[[:space:]]+(create|delete|edit|upload)|issue[[:space:]]+(create|close|edit|comment|delete)|api.*-X[[:space:]]*(POST|PUT|PATCH|DELETE))'; then
-        if [ "$GH_IS_MUTATION" -eq 0 ]; then GH_IS_MUTATION=1; GH_CMD="$shell_text"; fi
+        if [ "$GH_IS_MUTATION" -eq 0 ]; then
+          GH_IS_MUTATION=1
+          GH_CMD="$shell_text"
+          GH_RECORD="$shell_record"
+        fi
         GH_MUTATION_COUNT=$((GH_MUTATION_COUNT + 1))
       fi
       ;;
@@ -270,8 +355,11 @@ if [[ $GIT_IS_MUTATION -eq 1 ]]; then
   if [[ -n "$GC" ]]; then ANCHOR_PATH="$GC"; ANCHOR_KIND="git -C"; fi
 fi
 
-if [[ -z "$ANCHOR_PATH" && $GH_IS_MUTATION -eq 1 ]]; then
+if [[ -z "$ANCHOR_PATH" && $GH_IS_MUTATION -eq 1 && $GH_MUTATION_COUNT -eq 1 && $GIT_IS_MUTATION -eq 0 ]]; then
   if echo "$GH_CMD" | grep -Eq 'gh[^|;&]*[[:space:]](-R|--repo)[[:space:]]+[^ ;&|]+'; then
+    exit 0
+  fi
+  if gh_positional_repo_anchor "$GH_RECORD"; then
     exit 0
   fi
 fi
@@ -326,6 +414,8 @@ hq-root-never-push-remote, hq-git-discipline) or the wrong repo.
 FIX — re-issue with an explicit anchor:
   git -C /abs/path/to/repo <subcommand> ...    # canonical for git
   gh pr create -R owner/repo ...               # canonical for gh
+  gh repo archive owner/repo ...               # positional gh repo target
+  gh api -X PATCH repos/owner/repo/issues/1    # positional API target
   gh repo create owner/name ...                # self-anchoring (--source, if
                                                # used, must be absolute, non-HQ)
 

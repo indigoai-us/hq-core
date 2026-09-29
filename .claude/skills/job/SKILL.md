@@ -1,6 +1,7 @@
 ---
 name: job
 description: Deprecated alias for /schedule — Outpost recurring agent jobs. Prefer /schedule.
+disable-model-invocation: true
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion
 ---
 
