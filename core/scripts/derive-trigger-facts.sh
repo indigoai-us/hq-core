@@ -76,6 +76,12 @@ if [ ! -r "$TRIGGER_FACT_TEXT_AWK" ]; then
   printf '%s\n' 'ERROR: derive-trigger-facts: missing core/scripts/lib/trigger-fact-text.awk' >&2
   exit 1
 fi
+TRANSCRIPT_TAIL_LIB="$SCRIPT_DIR/lib/transcript-tail.sh"
+if [ ! -r "$TRANSCRIPT_TAIL_LIB" ]; then
+  printf '%s\n' 'ERROR: derive-trigger-facts: missing core/scripts/lib/transcript-tail.sh' >&2
+  exit 1
+fi
+. "$TRANSCRIPT_TAIL_LIB"
 
 # Parse the hook payload once. The old per-field jget() helper launched jq for
 # every scalar, then the policy hook launched this script twice for a single
@@ -231,7 +237,7 @@ derive_event() {
             elif $ty == "assistant" then . + (if length > 0 then " " else "" end) + $txt
             else . end
         )
-      ' "$TRANSCRIPT_PATH" 2>/dev/null)"
+      ' < <(hq_transcript_tail "$TRANSCRIPT_PATH") 2>/dev/null)"
       [ -n "$lookback_text" ] && add "$(match_keywords "$lookback_text")"
     fi
   else

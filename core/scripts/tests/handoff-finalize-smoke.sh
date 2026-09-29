@@ -62,8 +62,9 @@ cp "$SRC_ROOT/scripts/hq-status-summary.sh" "$TMP_ROOT/hq-status-summary.sh"
 cp "$SRC_ROOT/scripts/qmd-reindex-bg.sh" "$TMP_ROOT/qmd-reindex-bg.sh"
 cp "$SRC_ROOT/../.claude/hooks/mirror-thread-to-company.sh" "$TMP_ROOT/mirror-thread-to-company.sh"
 
-mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/.claude/hooks" "$TMP_ROOT/repo/workspace/baseline" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/orchestrator"
+mkdir -p "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/.claude/hooks" "$TMP_ROOT/repo/workspace/baseline" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/orchestrator"
 cp "$TMP_ROOT/handoff-finalize.sh" "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh"
+cp "$SRC_ROOT/scripts/lib/session-id.sh" "$TMP_ROOT/repo/core/scripts/lib/session-id.sh"
 cp "$TMP_ROOT/hq-status-summary.sh" "$TMP_ROOT/repo/core/scripts/hq-status-summary.sh"
 cp "$TMP_ROOT/qmd-reindex-bg.sh" "$TMP_ROOT/repo/core/scripts/qmd-reindex-bg.sh"
 cp "$TMP_ROOT/mirror-thread-to-company.sh" "$TMP_ROOT/repo/.claude/hooks/mirror-thread-to-company.sh"
@@ -224,10 +225,11 @@ assert_eq "$(jq -r '.staged_paths | length' "$empty_changeset")" "0" "empty chan
 # Regression: a company-scoped handoff mirrors even when the helper lacks an
 # executable bit. The finalizer runs it through Bash because a shell hook is
 # not an executable contract.
-mkdir -p companies/winks/projects/offer
+mkdir -p companies/winks/projects/offer workspace/sessions/winks-smoke-session
+printf 'company_slug: winks\n' > workspace/sessions/winks-smoke-session/meta.yaml
 echo "offer" > companies/winks/projects/offer/README.md
 [[ ! -x .claude/hooks/mirror-thread-to-company.sh ]] || fail "mirror hook unexpectedly executable"
-mirror_out=$(bash core/scripts/handoff-finalize.sh \
+mirror_out=$(HQ_SESSION_ID=winks-smoke-session bash core/scripts/handoff-finalize.sh \
   --title "Handoff: Winks offer" \
   --summary "Mirror handoff across devices" \
   --message "Mirror handoff" \
@@ -245,6 +247,21 @@ jq -e '.metadata.company == ["winks"]' "$mirror_thread_path" >/dev/null \
   || fail "non-executable mirror hook was not replayed"
 git show "HEAD:companies/winks/workspace/index.jsonl" | grep -q "${mirror_thread_id}" \
   || fail "mirror index was not committed with handoff"
+
+# The same company-path handoff without a bound session company must not mirror.
+unbound_out=$(HQ_SESSION_ID=unbound-smoke-session bash core/scripts/handoff-finalize.sh \
+  --title "Handoff: unbound Winks offer" \
+  --summary "Unbound handoff does not mirror" \
+  --message "Unbound mirror control" \
+  --next-steps-json '[]' \
+  --files-touched-json '["companies/winks/projects/offer/README.md"]' \
+  --learnings-json '[]' \
+  --tags-json '["test"]' \
+  --slug "winks-offer-unbound")
+unbound_thread_id=$(jq -r '.thread_id' <<<"$unbound_out")
+assert_eq "$(jq -c '.mirror_companies' <<<"$unbound_out")" '[]' "unbound mirrored company output"
+[[ ! -e "companies/winks/workspace/sessions/${unbound_thread_id}.json" ]] \
+  || fail "unbound handoff unexpectedly wrote a Winks session mirror"
 
 # Host lock domain must be untouched (helper fidelity without host mutation).
 if [[ "$_HOST_STAMP_EXISTED" -eq 1 ]]; then

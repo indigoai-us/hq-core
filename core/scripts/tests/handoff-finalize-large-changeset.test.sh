@@ -31,10 +31,11 @@ assert_eq() {
 }
 
 # -------- harness: assemble a temp HQ root with the scripts under test --------
-mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/.claude/hooks" \
+mkdir -p "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/.claude/hooks" \
   "$TMP_ROOT/repo/workspace/baseline" "$TMP_ROOT/repo/workspace/threads" \
   "$TMP_ROOT/repo/workspace/orchestrator"
 cp "$SRC_ROOT/scripts/handoff-finalize.sh" "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh"
+cp "$SRC_ROOT/scripts/lib/session-id.sh" "$TMP_ROOT/repo/core/scripts/lib/session-id.sh"
 cp "$SRC_ROOT/scripts/hq-status-summary.sh" "$TMP_ROOT/repo/core/scripts/hq-status-summary.sh"
 cp "$SRC_ROOT/../.claude/hooks/mirror-thread-to-company.sh" "$TMP_ROOT/repo/.claude/hooks/mirror-thread-to-company.sh"
 chmod +x "$TMP_ROOT/repo/core/scripts/"*.sh

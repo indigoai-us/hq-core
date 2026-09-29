@@ -30,7 +30,9 @@ set -uo pipefail
   command -v jq  >/dev/null 2>&1 || exit 0
   command -v node >/dev/null 2>&1 || exit 0
 
-  . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+  HQ_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  . "$HQ_REPO_ROOT/core/scripts/hook-lib.sh"
+  . "$HQ_REPO_ROOT/core/scripts/lib/transcript-tail.sh"
 
   # Tell-detection program (node). Slurped into a top-level var — no heredoc
   # inside $( ) (hooks-heredoc-syntax.test.sh).
@@ -129,11 +131,11 @@ JS
   # Full content array of the last assistant message (text + tool_use blocks),
   # as compact JSON. The send signature lives in tool_use inputs.
   LAST_CONTENT="$(
-    jq -sc '
-      [ .[] | select(.type=="assistant") ] | last
+    jq -nr '
+      [ inputs | select(.type=="assistant") ] | last
       | .message.content
       | (if type=="array" then . elif type=="string" then [{type:"text",text:.}] else [] end)
-    ' "$TRANSCRIPT_PATH" 2>/dev/null || true
+    ' < <(hq_transcript_tail "$TRANSCRIPT_PATH") 2>/dev/null || true
   )"
   [ -z "$LAST_CONTENT" ] || [ "$LAST_CONTENT" = "null" ] && exit 0
 

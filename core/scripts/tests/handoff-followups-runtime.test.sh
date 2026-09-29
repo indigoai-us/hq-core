@@ -52,11 +52,12 @@ grep -q 'skill-installed.sh document-release' "$SKILL" \
 grep -q 'Only when document-release is installed' "$SKILL" \
   || fail "document-release dispatch and recovery must require the installed skill"
 
-mkdir -p "$TMP_ROOT/repo/core/scripts" "$TMP_ROOT/repo/workspace/baseline" \
+mkdir -p "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/workspace/baseline" \
   "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/orchestrator" \
   "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/.claude/skills/document-release" \
   "$TMP_ROOT/logs"
 cp "$ROOT/core/scripts/handoff-finalize.sh" "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh"
+cp "$ROOT/core/scripts/lib/session-id.sh" "$TMP_ROOT/repo/core/scripts/lib/session-id.sh"
 cp "$ROOT/core/scripts/handoff-post.sh" "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
 cp "$ROOT/core/scripts/skill-installed.sh" "$TMP_ROOT/repo/core/scripts/skill-installed.sh"
 cp "$ROOT/core/scripts/lib/session-skill-catalog.sh" "$TMP_ROOT/repo/core/scripts/lib/session-skill-catalog.sh"

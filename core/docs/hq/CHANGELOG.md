@@ -1,5 +1,35 @@
 ## [Unreleased]
 
+### Fixed: handoff mirrors stay within the session's bound company (US-208)
+- Handoffs touching multiple companies no longer create company workspace mirrors or sync pushes; single-company mirrors must match the session binding.
+
+### Added: /deploy adds routes to existing deploys
+- A static artifact that belongs on a site that is already live is now added as a route on that app (`https://<host>.indigo-hq.com/<route>/`) instead of getting a new app. When it is unclear whether the artifact belongs there, /deploy asks. Headless runs never guess and deploy a new app.
+- hq-deploy replaces every live file on each static upload and has no download API, so /deploy now keeps a local snapshot of each static site it publishes (`~/.hq/deploy-hosts/`, indexed in `~/.hq/deploy-routes.json`) and re-uploads the host's pages with the new route. Reuse is refused when the snapshot is missing or older than the live deploy, when a sensitive page would land on a public host, or when the page uses root-absolute asset paths.
+- Redeploying a host now asks before deleting routes that were added to it later.
+
+### Fixed: setup PATH snapshot can use the machine-local settings override (US-166)
+- The default-off `core.setup-path-settings-local` flag writes the PATH snapshot to `.claude/settings.local.json`, leaving locked `.claude/settings.json` unchanged. With the flag off, setup keeps the existing behavior.
+
+### Fixed: autocommit failures reach the model (US-156a)
+- When the default-off `hooks.hq-autocommit-failure-context` flag is enabled and flag configuration is valid, PostToolUse supplies a structured failure warning to the model while keeping the stderr/log warning and exit behavior. Without valid flag configuration, the hook prints the plain warning without starting Node.js.
+
+### Fixed: opt-in autosave covers Bash-created HQ files (US-165)
+- At Stop, a default-off hq-flags gate allows a bounded sweep of changed HQ-root files; ignored, repository, worktree, and other existing autosave exclusions stay protected.
+
+### Fixed: /hq-sync refreshes skill wrappers after tombstone-only pulls (US-123)
+- Post-pull wrapper reindexing for downloaded files or tombstones is opt-in behind the default-off `hq-sync.post-pull-reindex` flag.
+
+### Fixed: Bash core-write guard tracks protected variable assignments (US-158)
+- The Bash write guard carries protected-root assignments through later variable expansions and blocks unresolved expansion targets conservatively. The auto-ACL test now passes paths to Python through the environment, and CI rejects Bash 4.4-only parameter transformations in shell tests.
+
+### Fixed: gated hooks have profile coverage (US-157)
+- The documented standard-profile capture-estimates hook now runs in standard and strict sessions. CI fails when a gated registry hook is missing from every profile and has no owner-deferred exception.
+
+### Fixed: Transcript lookback reads a bounded tail
+- AssistantIntent matching and recent-turn hooks read a bounded transcript
+  suffix of about 1 MiB, beginning at a complete JSONL record.
+
 ### Changed: pin audit workflow actions to commits (TD-04 wave 2)
 - Pin the third-party actions used by the audit workflow to their current commits.
 
@@ -11,6 +41,9 @@
 
 ### Fixed: run-project completion notes require branch delivery evidence (US-147)
 - For projects with a configured repository branch, run-project reports completion only when every story passes and delivery evidence exists: a commit ahead of the base, or a commit added during a run directly on the base branch.
+
+### Changed: Windows shell smoke skips documentation-only pull requests (GH-8)
+- Pull requests that change only documentation or worker-skill content now skip this job. Shell, workflow, hook, and validated skill-metadata changes still run the full job; main pushes always run it.
 
 ### Changed: PR checks run on Node 22 (TD-07)
 - The PR check and doctor advisory workflows set up Node 22 instead of Node 20, which no longer receives security updates. Action pins are unchanged.
@@ -44,6 +77,9 @@
 ### Fixed: autosave retries transient Git index lock contention (US-111)
 - HQ autocommit retries `git add` failures that report `index.lock` and `File exists` up to three times with 200 ms waits; other add failures remain immediate, and stale-lock recovery remains the only lock removal path.
 - Retried adds use the C locale for stable lock-error matching and check the staged set before committing, leaving separately staged paths untouched.
+
+### Fixed: zero-change handoffs sync the bound company workspace
+- The finalizer carries the current session's bound company into the handoff metadata, so the thread is mirrored and post-handoff sync runs even with no changed paths. The post step does not change or trust a device-wide active-company value.
 ### Fixed: handoff finalization works without Git metadata
 - Synced HQ roots without a Git checkout now keep the handoff thread and pointer durable while skipping local Git mirroring, staging, and commits.
 

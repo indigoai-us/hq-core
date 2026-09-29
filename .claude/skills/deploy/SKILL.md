@@ -1,7 +1,7 @@
 ---
 name: deploy
 description: Deploy or share generated HQ artifacts through hq-deploy.
-allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(pbcopy:*), Bash(chmod:*), Bash(node:*), Bash(lsof:*), Bash(mkdir:*), Bash(echo:*), Bash(wait:*), Bash(disown:*), Bash(test:*), Bash(touch:*), Bash(rm:*), Bash(paste:*), Bash(.claude/skills/deploy/scripts/identity-resolve.sh:*), Bash(.claude/skills/deploy/scripts/sensitivity-check.sh:*), Bash(.claude/skills/deploy/scripts/guardrails-check.sh:*), Bash(.claude/skills/deploy/scripts/deploy-api-request.sh:*), Bash(.claude/skills/deploy/scripts/og-inject.sh:*), Bash(.claude/skills/deploy/scripts/password-helper.sh:*), Edit, Write
+allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(pbcopy:*), Bash(chmod:*), Bash(node:*), Bash(lsof:*), Bash(mkdir:*), Bash(echo:*), Bash(wait:*), Bash(disown:*), Bash(test:*), Bash(touch:*), Bash(rm:*), Bash(paste:*), Bash(.claude/skills/deploy/scripts/identity-resolve.sh:*), Bash(.claude/skills/deploy/scripts/sensitivity-check.sh:*), Bash(.claude/skills/deploy/scripts/guardrails-check.sh:*), Bash(.claude/skills/deploy/scripts/deploy-api-request.sh:*), Bash(.claude/skills/deploy/scripts/og-inject.sh:*), Bash(.claude/skills/deploy/scripts/password-helper.sh:*), Bash(.claude/skills/deploy/scripts/route-host.sh:*), Edit, Write
 ---
 
 # Deploy Engine
@@ -9,6 +9,8 @@ allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), 
 Skill for deploying web artifacts to hq-deploy infrastructure. Invoked directly via `/deploy`, or auto-triggered by `auto-deploy-on-create` (silent post-build) and `hq-deploy-reinforcement` (intent-to-share, deliverable PRDs) policies. The two paths share this same engine.
 
 **Guiding principle:** quick casual handoff — preview, upload, link. Sensitive artifacts get the lowest-friction appropriate gate: password, Cognito company access, or an email allowlist when the user names recipients.
+
+**Reuse before creating.** When a static artifact belongs on a site that is already live, add it as a route on that app instead of creating a new one. When it is unclear whether it belongs there, ask the user. See "Reuse an existing deploy (route mode)" in C.2.
 
 ## Access modes (reference)
 
@@ -91,13 +93,14 @@ The engine is **three phases**, structured by data-dependency. Independent work 
 | **Step 1** | Preferences + exclusions (gate) | inline, sequential |
 | **Phase A** | Framework detect + **design pass** (A.1.5, generated static only) → Build (inline) ‖ Identity (script) ‖ Sensitivity (script) | detect + design sync, then 3-way parallel via `&` + `wait` |
 | **Phase B** | Localhost preview (inline-bg) ‖ Guardrails (script) | 2-way parallel via `&` + `wait` |
-| **Phase C** | Password gen → upload → wire password → announce → present link | sequential, hard-gated |
+| **Phase C** | Password gen → reuse check (route mode) → upload → wire password → announce → present link | sequential, hard-gated |
 
 **Hard ordering constraints (preserved from `core/policies/hq-deploy-reinforcement.md`):**
 
 - Identity (Phase A) MUST complete before Upload (Phase C)
 - Guardrails (Phase B) MUST gate Upload (Phase C)
 - Upload (Phase C) returns `appId` which MUST exist before password persist + announce
+- The route-mode reuse check (C.2) MUST decide the target app before any app is created, and a merged route-mode tree MUST pass guardrails again before upload
 - Localhost preview (Phase B) is NEVER gated by identity — always runs
 - **Design pass (A.1.5) MUST complete before Build/Guardrails package the artifact** — it restyles the generated static source in place, so it runs synchronously right after framework detection and before the Phase A fan-out
 
@@ -111,6 +114,7 @@ The engine is **three phases**, structured by data-dependency. Independent work 
 | `.claude/skills/deploy/scripts/deploy-api-request.sh` | Makes a checked Phase C API/S3 request | validated body on stdout; safe failure diagnostic on stderr |
 | `.claude/skills/deploy/scripts/og-inject.sh <output_dir> [base_url] [app_name]` | Injects OG/Twitter preview tags; generates a 1200x630 card image when none exists | `{"injected":int,"image":string,"changed":bool}` |
 | `.claude/skills/deploy/scripts/password-helper.sh` | `gen` / `announce` / `persist` / `lookup` | password text, or persisted entry |
+| `.claude/skills/deploy/scripts/route-host.sh` | `hosts` / `merge` / `record`: local snapshots of live static sites, so a new artifact can be added as a route on an existing app | one JSON line |
 
 All scripts are deterministic, run in 0.3–0.5s, and never echo JWTs / artifact contents / matched PII.
 
@@ -652,6 +656,153 @@ deploy_request() {
 # GET /api/apps returns {apps: [...]}
 APPS_JSON=$(deploy_request app-list --method GET --url "$API/api/apps" \
   --expect '.apps | type == "array"') || exit 1
+```
+
+#### Reuse an existing deploy (route mode, static only)
+
+Before creating a new app, check whether this artifact belongs on a site that is already live. When it does, add it as a route on that app (`https://<host>.indigo-hq.com/<route>/`) instead of creating another app. Related pages such as dated reports, a series of briefs, or documentation sections then share one link and one access gate.
+
+hq-deploy has no merge upload. `POST /api/deploys/:id/complete` deletes every live file of the app and then uploads the new tarball, so adding a route means re-uploading the host's full current site with the artifact placed under `/<route>/`. hq-deploy also has no API for downloading a live site. `route-host.sh record` (run after every successful static upload, see "Static upload") therefore keeps a local snapshot of each static site this skill publishes under `~/.hq/deploy-hosts/<org>/<subdomain>/`, indexed in `~/.hq/deploy-routes.json`, and route mode merges against that snapshot. A site with no local snapshot (deployed from another machine, by the `hq-deploy` CLI, or before this step existed) cannot take a route here without losing its current pages.
+
+Invocation intents (detected like `--comments`):
+- `--host=<subdomain>`, or "add this to <app>", "put it on the <app> site", "publish it under <app>": the user named the host.
+- `--route=<path>`, or "at /<path>", "under <app>/<path>": the user named the route.
+- `--new-app`, or "as its own deploy", "give it a separate link": skip route mode.
+
+**1. Gather candidate hosts.** Only when `DEPLOY_TYPE=static` and `--new-app` was not given. A candidate is a recorded host in the current org (or personal scope) whose snapshot still exists and whose app still appears in `$APPS_JSON` as a `static` app.
+
+```bash
+# Re-run guardrails on a new tree; on pass, swap it in as the upload artifact.
+rerun_guardrails() {
+  local g
+  g=$(.claude/skills/deploy/scripts/guardrails-check.sh "$1" "")
+  if [ "$(jq -r '.pass' <<<"$g")" != "true" ]; then
+    rm -f "$(jq -r '.tarball_path // empty' <<<"$g")"
+    return 1
+  fi
+  rm -f "$TARBALL_PATH"
+  OUTPUT_DIR="$1"
+  TARBALL_PATH=$(jq -r '.tarball_path' <<<"$g")
+  TARBALL_SIZE=$(jq -r '.size_bytes' <<<"$g")
+  TARBALL_SHA256=$(jq -r '.sha256' <<<"$g")
+  FILE_COUNT=$(jq -r '.file_count' <<<"$g")
+}
+
+ROUTE_MODE=false
+ROUTE_BLOCKER=""
+CANDIDATES='[]'
+if [ "$DEPLOY_TYPE" = "static" ] && [ "$NEW_APP" != "true" ]; then
+  HOSTS_JSON=$(.claude/skills/deploy/scripts/route-host.sh hosts --org "${ORG_SLUG:--}")
+  CANDIDATES=$(jq -c --argjson apps "$APPS_JSON" '
+    [ (.hosts // [])[] | select(.siteExists == true) | . as $h
+      | ($apps.apps[] | select(.id == $h.appId and .type == "static")) as $a
+      | $h + { name: $a.name, url: $a.url,
+               liveAccess: (if $a.privateMode then "private"
+                            elif ($a.accessMode // "") != "" then $a.accessMode
+                            elif $a.passwordProtected then "password"
+                            else "public" end) } ]' <<<"$HOSTS_JSON" 2>/dev/null || echo '[]')
+fi
+```
+
+**2. Decide whether reuse applies.** Walk this table top to bottom and stop at the first matching row.
+
+| Situation | Decision |
+|---|---|
+| `CANDIDATES` is empty | Not applicable. Continue to "Ensure app exists" without saying anything. |
+| `APP_NAME` matches a candidate's `name` | This is a redeploy of the host itself. Go to "Redeploying a host" below. |
+| The user named a host and it is a candidate | Applicable. Do not ask. |
+| The user named a host that is not a candidate (no local snapshot, not a static app, or in another org) | Ask (step 4) with these options: deploy as a new app, point me at the folder that holds the full current site, or cancel. Never upload a partial site over it. If the user supplies the folder, run `route-host.sh record --site <folder>` for that host first, then continue. |
+| A calling skill or policy passed both `--host` and `--route` (series deploys such as a dated report) | Applicable. Do not ask. |
+| A candidate looks related but the user did not say so: same project or series, a shared slug prefix with `APP_NAME` (`q3-report` and `reports`), the artifact is a new edition of pages already on the host (date- or version-named routes), or the user's words point at an existing site ("add another one", "next week's version") | Not sure. Ask (step 4). |
+| Candidates exist but none looks related | Not applicable. Continue to "Ensure app exists". |
+
+When more than one candidate qualifies, never pick one yourself. List them in the question.
+
+**3. Blockers.** Check these once a host is chosen. Each one makes reuse unsafe for that host. Tell the user in one plain line and deploy as a new app, except where the row says to ask.
+
+- **Access mismatch.** The route inherits the host's gate; route mode never changes it. If `SENSITIVE=true` and the host's `liveAccess` is `public`, the page would go out ungated: deploy it as its own gated app. If the user named specific recipients (`ACCESS_MODE=private` or `selected`) and the host's gate is different, ask. A non-sensitive page on a gated host is fine. Say in the link line that it shares the host's access.
+- **Stale snapshot.** The host's newest deploy that did not fail is not the `deployId` the registry recorded, so someone redeployed it from somewhere else and merging would roll that back. Ask: new app, or the folder that holds the current site. (A console rollback does not create a deploy record and is not detected here.)
+- **Merge refused.** `route_exists`: ask whether to replace that page (`ROUTE_REPLACE=1`), use another route, or make a new app. `root_absolute_paths`: the artifact loads files from `/…`, which break under a sub-path. Rebuild it with a relative base (Vite `base: './'`, Astro `base`) or deploy as a new app. `invalid_route`: pick a lowercase slug route. `no_index` and `route_blocked`: deploy as a new app.
+- **Host full.** Guardrails fail on the merged tree (more than 100 files or 10 MB gzipped). Deploy as a new app.
+
+```bash
+# Stale-snapshot check for the chosen host ($HOST = one element of $CANDIDATES).
+HOST_APP_ID=$(jq -r '.appId' <<<"$HOST")
+HOST_DEPLOYS=$(deploy_request host-deploys --method GET \
+  --url "$API/api/apps/$HOST_APP_ID/deploys" --expect '.deploys | type == "array"') || HOST_DEPLOYS=""
+# Newest deploy that did not fail. A newer in-flight deploy also counts as
+# stale: someone else is replacing the site right now.
+LIVE_DEPLOY_ID=""
+[ -n "$HOST_DEPLOYS" ] && LIVE_DEPLOY_ID=$(jq -r \
+  '[.deploys[] | select(.status != "failed")] | sort_by(.createdAt) | last | .id // empty' <<<"$HOST_DEPLOYS")
+if [ -z "$LIVE_DEPLOY_ID" ] || [ "$LIVE_DEPLOY_ID" != "$(jq -r '.deployId' <<<"$HOST")" ]; then
+  ROUTE_BLOCKER="stale_snapshot"
+fi
+```
+
+**4. Asking.** Use AskUserQuestion with one question, for example "This looks like it belongs with <host>. Where should it go?" Options:
+1. "Add to <host> at /<route>/ (Recommended)" when exactly one related host exists. The description gives the URL the page will get and says it shares <host>'s access.
+2. "New separate deploy". The description gives the new app's own link.
+3. Up to two more candidate hosts when several qualify.
+
+Default route: `--route` when given; else the artifact's date as `YYYY-MM-DD` when the host's existing routes are date-named; else the slug-cased `APP_NAME`. The user can type a different route through the free-text answer.
+
+When no structured picker is available (headless runs, the silent `auto-deploy-on-create` path, fleet agents), do not guess. Deploy as a new app and add one line to the final message: "This could also live on <host> at /<route>/. Say so and I'll move it there."
+
+**5. Merge.** Assign `HOST` the chosen element of `$CANDIDATES` and `ROUTE_PATH` the route. Assign `ROUTE_REPLACE=1` only when the user agreed to replace an existing page. Build the combined site in a temp directory. The host snapshot and the build output are never modified.
+
+```bash
+if [ -n "$HOST" ] && [ -z "$ROUTE_BLOCKER" ]; then
+  HOST_SITE=$(jq -r '.site' <<<"$HOST")
+  ROUTE_OUT=$(mktemp -d -t hq-deploy-route.XXXXXX)
+  MERGE_JSON=$(.claude/skills/deploy/scripts/route-host.sh merge \
+    "$HOST_SITE" "$OUTPUT_DIR" "$ROUTE_PATH" "$ROUTE_OUT" ${ROUTE_REPLACE:+--replace})
+  if [ "$(jq -r '.ok' <<<"$MERGE_JSON")" != "true" ]; then
+    ROUTE_BLOCKER=$(jq -r '.reason' <<<"$MERGE_JSON")
+    rm -rf "$ROUTE_OUT"
+  elif ! rerun_guardrails "$ROUTE_OUT"; then
+    ROUTE_BLOCKER="host_full"
+    rm -rf "$ROUTE_OUT"
+  else
+    ROUTE_MODE=true
+    APP_ID="$HOST_APP_ID"
+    APP_SUBDOMAIN=$(jq -r '.subdomain' <<<"$HOST")
+    HOST_ACCESS_MODE=$(jq -r '.liveAccess' <<<"$HOST")
+    ROUTE_URL_PATH=$(jq -r '.route' <<<"$MERGE_JSON")   # e.g. /2026-09-29/
+    # C.3 and C.4 key off SENSITIVE. The host keeps its own gate, so turn them
+    # off here; step 3 already checked the host gate against the artifact.
+    ARTIFACT_SENSITIVE="$SENSITIVE"
+    SENSITIVE=false
+  fi
+fi
+```
+
+If `ROUTE_BLOCKER` is set, handle it as step 3 says and continue on the normal new-app path. The artifact's own tarball from Phase B is still in place for that path.
+
+With `ROUTE_MODE=true`, skip the app lookup below and continue with social preview tags and the static upload against the host app. Route mode also skips C.2.6 (unless the user asked to change comments on the host), C.3, and C.4: the host keeps its access mode, password, and allowlist, and any password generated in C.1 is discarded without being announced.
+
+**Redeploying a host.** When `APP_NAME` matches a candidate, a plain redeploy replaces the whole site, including routes that were added to it later. List the candidate's recorded routes (other than `/`) that the new build does not contain. If there are none, or the snapshot is stale, continue with the normal redeploy. Otherwise ask one question: "Keep the other pages on <host> (Recommended)" or "Replace the whole site". Without a picker, keep them. To keep them, assign `SAME_HOST` the matching candidate and run:
+
+```bash
+SAME_SITE=$(jq -r '.site' <<<"$SAME_HOST")
+KEEP_OUT=$(mktemp -d -t hq-deploy-keep.XXXXXX)
+cp -R "$OUTPUT_DIR/." "$KEEP_OUT/"
+jq -r '.routes[] | select(. != "/")' <<<"$SAME_HOST" | while IFS= read -r r; do
+  rel="${r#/}"; rel="${rel%/}"
+  { [ -n "$rel" ] && [ ! -e "$KEEP_OUT/$rel" ]; } || continue
+  mkdir -p "$KEEP_OUT/$(dirname "$rel")"
+  cp -R "$SAME_SITE/$rel" "$KEEP_OUT/$rel"
+done
+rerun_guardrails "$KEEP_OUT" || { rm -rf "$KEEP_OUT"; echo "[deploy] site too large to keep the other pages" >&2; }
+```
+
+If keeping the pages makes the site too large, ask whether to replace the whole site or cancel.
+
+#### Find or create the app
+
+```bash
+# Route mode already chose the host app; everything else looks up or creates one.
+if [ "$ROUTE_MODE" != "true" ]; then
 APP_ID=$(echo "$APPS_JSON" | jq -r --arg name "$APP_NAME" '.apps[] | select(.name == $name) | .id' | head -1)
 APP_SUBDOMAIN=$(echo "$APPS_JSON" | jq -r --arg name "$APP_NAME" '[.apps[] | select(.name == $name)][0].subdomain // empty')
 
@@ -663,6 +814,7 @@ if [ -z "$APP_ID" ]; then
     --expect '(.id | type == "string" and length > 0)') || exit 1
   APP_ID=$(echo "$APP_RESPONSE" | jq -r '.id')
   APP_SUBDOMAIN=$(echo "$APP_RESPONSE" | jq -r '.subdomain')
+fi
 fi
 # Subdomain anchors both the upload (appSlug) and the preview-tag base URL; fall
 # back to the app-name slug if the API response didn't surface one.
@@ -726,7 +878,28 @@ COMPLETE_RESPONSE=$(deploy_request deploy-completion --method POST \
   --expect '(.url | type == "string" and length > 0)') || exit 1
 
 LIVE_URL=$(echo "$COMPLETE_RESPONSE" | jq -r '.url')
+
+# Snapshot exactly what just went live so a later deploy can add a route to
+# this app without deleting its pages (see "Reuse an existing deploy"). A
+# failed snapshot never fails the deploy.
+.claude/skills/deploy/scripts/route-host.sh record --org "${ORG_SLUG:--}" \
+  --subdomain "$APP_SUBDOMAIN" --app-id "$APP_ID" \
+  --access-mode "${HOST_ACCESS_MODE:-${ACCESS_MODE:-public}}" \
+  --deploy-id "$DEPLOY_ID" --tarball "$TARBALL_PATH" >/dev/null 2>&1 || true
+
+# Route mode on a public host: confirm the new page and every page that was
+# already there still load. Gated hosts redirect to sign-in, so skip them.
+ROUTE_VERIFY_FAILED=""
+if [ "$ROUTE_MODE" = "true" ] && [ "$HOST_ACCESS_MODE" = "public" ]; then
+  for r in $(jq -r '.routes[:25][]' <<<"$MERGE_JSON"); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --fail --retry 5 --retry-delay 3 \
+      --retry-all-errors "${LIVE_URL%/}$r" 2>/dev/null)
+    [ "$code" = "200" ] || ROUTE_VERIFY_FAILED="$ROUTE_VERIFY_FAILED $r"
+  done
+fi
 rm -f "$TARBALL_PATH"
+[ -n "$ROUTE_OUT" ] && rm -rf "$ROUTE_OUT"
+[ -n "$KEEP_OUT" ] && rm -rf "$KEEP_OUT"
 fi
 ```
 
@@ -842,6 +1015,8 @@ malformed responses.
 
 ### C.2.6 — Enable comments (opt-in)
 
+Skipped when `ROUTE_MODE=true`, unless the user asked to change comments on the host site: the flag is app-wide.
+
 Only when the invocation opted in (`$COMMENTS` is `on` or `off` per the `--comments` intent in "Access modes"; unset → skip this step entirely). Comments are a per-app opt-in, off by default. The static completion route reads the flag inside `POST /api/deploys/:id/complete`, so this PATCH must run **before** that call: right after "Ensure app exists" in C.2 (the app, new or existing, has `$APP_ID` by then). The app route has no comment-widget injection.
 
 ```bash
@@ -858,6 +1033,8 @@ fi
 This step is documented after C.2 for reference, but execute it between "Ensure app exists" and the static upload so the current static deploy ships with (or without) the widget. It has no effect on `app` or SSR deploys, which never get the widget. To read or resolve the comments afterwards, use the owner routes and the review loop under "Reading and answering comments as the owner" in the Access modes section.
 
 ### C.3 — Wire access mode (sensitive only)
+
+Skipped when `ROUTE_MODE=true`. The new route inherits the host's existing gate; route mode never changes a host's access mode, password, or allowlist. C.4 is skipped for the same reason.
 
 After upload, with `appId` in hand. Branch on `ACCESS_MODE`. Use `PUT /access-policy` for first-class Cognito policy modes (`company`, `selected`, policy-versioned password); use `POST /access-mode` for legacy password/private transitions and allowlist cleanup.
 
@@ -1058,6 +1235,13 @@ The only user-visible output. Keep it casual.
 - "Here's a link you can share: https://{app}.indigo-hq.com"
 - "The docs are live at https://{app}.indigo-hq.com"
 
+**On success (route mode, `ROUTE_MODE=true`):** give the route URL, `${LIVE_URL%/}$ROUTE_URL_PATH`, and name the host once. Describe access from `$HOST_ACCESS_MODE` without re-announcing any password:
+- Public host: "Added it to <host>: https://<host>.indigo-hq.com/<route>/"
+- Gated host: "Added it to <host>: https://<host>.indigo-hq.com/<route>/. It uses the same sign-in (or password) as the rest of <host>."
+- If `ROUTE_VERIFY_FAILED` is non-empty, list those pages in plain words and say they did not load after the upload.
+
+When route mode was skipped because of a blocker the user should know about (step 3), add one plain line saying why the page got its own link.
+
 **On success (personal scope, `PERSONAL_SCOPE=true`):** the deploy went to the
 user's own personal space (no company). Say so once, casually, so they know it
 isn't org-restricted — and only mention a password if the content was sensitive
@@ -1137,6 +1321,9 @@ Then move on. Deploy is never the main event.
 | `og-inject.sh <output_dir> [base_url] [app_name]` | static build dir (+ live base URL) | `{"injected":int,"image":"generated\|existing\|none","changed":bool}` |
 | `password-helper.sh gen` | — | `<adjective-noun-NN>` on stdout |
 | `password-helper.sh announce <slug> <pw> [trigger]` | slug + password | stderr message + pbcopy + writes `~/.hq/deploy-passwords.json` |
+| `route-host.sh hosts [--org <slug>\|-]` | reads `~/.hq/deploy-routes.json` | `{"hosts":[{key,org,subdomain,appId,accessMode,deployId,site,siteExists,routes,updatedAt}]}` |
+| `route-host.sh merge <host_site> <artifact_dir> <route> <out_dir> [--replace]` | host snapshot + build output | `{"ok":true,"out_dir","route","replaced","file_count","routes"}` or `{"ok":false,"reason":"invalid_route\|route_exists\|route_blocked\|no_index\|root_absolute_paths\|host_missing\|artifact_missing\|out_not_empty\|copy_failed"}` |
+| `route-host.sh record --org <slug\|-> --subdomain <s> --app-id <id> --access-mode <m> --deploy-id <id> --tarball <path>` | the uploaded tarball | `{"ok":true,"key","site","routes"}`; snapshot at `~/.hq/deploy-hosts/<org>/<subdomain>/` |
 
 All scripts:
 - Are deterministic and run in 0.3–0.5s

@@ -175,7 +175,19 @@ warn_once() {
     fi
     printf '%s\n' "$key" >>"$cache" 2>/dev/null || true
   fi
-  printf '%s\n' "$msg"
+  local flag_reader flag_enabled
+  flag_reader="$(dirname "$0")/hq-autocommit-failure-context-flag.cjs"
+  flag_enabled=false
+  if [[ -n "${HQ_FLAGS_API_URL:-}" && "${HQ_COMPANY_UID:-}" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]] \
+    && command -v node >/dev/null 2>&1 && [[ -f "$flag_reader" ]]; then
+    flag_enabled="$(HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)" node "$flag_reader")" || flag_enabled=false
+  fi
+  if [[ "$flag_enabled" == "true" ]]; then
+    jq -cn --arg context "$msg" \
+      '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$context}}'
+  else
+    printf '%s\n' "$msg"
+  fi
   printf '%s\n' "$msg" >&2
 }
 

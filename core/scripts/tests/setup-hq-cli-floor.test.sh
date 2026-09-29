@@ -14,6 +14,7 @@ make_setup_root() {
   local root="$1"
   mkdir -p "$root/core/scripts/lib" "$root/.claude/hooks" "$root/companies"
   cp "$ROOT/core/scripts/setup.sh" "$root/core/scripts/setup.sh"
+  cp "$ROOT/core/scripts/configure-settings-path.sh" "$root/core/scripts/configure-settings-path.sh"
   cp "$ROOT/core/scripts/lib/portable.sh" "$root/core/scripts/lib/portable.sh"
   cp "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$root/core/scripts/lib/hq-cli-floor.sh"
   cat > "$root/core/core.yaml" <<'YAML'
@@ -33,7 +34,8 @@ SCRIPT
 #!/usr/bin/env bash
 exit 0
 SCRIPT
-  chmod +x "$root/core/scripts/setup.sh" "$root/core/scripts/compose-settings-path.sh" \
+  chmod +x "$root/core/scripts/setup.sh" "$root/core/scripts/configure-settings-path.sh" \
+    "$root/core/scripts/compose-settings-path.sh" \
     "$root/core/scripts/restore-hook-settings.sh" "$root/core/scripts/check-hq-hooks.sh"
 }
 

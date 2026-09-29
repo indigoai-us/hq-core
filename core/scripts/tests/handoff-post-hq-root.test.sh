@@ -10,8 +10,9 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 FIXTURE_ROOT="$TMP_ROOT/fixture"
 CALLER_ROOT="$TMP_ROOT/caller-root"
 LOG_DIR="$TMP_ROOT/logs"
-mkdir -p "$FIXTURE_ROOT/core/scripts" "$CALLER_ROOT" "$TMP_ROOT/bin" "$LOG_DIR"
+mkdir -p "$FIXTURE_ROOT/core/scripts/lib" "$CALLER_ROOT" "$TMP_ROOT/bin" "$LOG_DIR"
 cp "$SRC_ROOT/scripts/handoff-post.sh" "$FIXTURE_ROOT/core/scripts/handoff-post.sh"
+cp "$SRC_ROOT/scripts/lib/session-id.sh" "$FIXTURE_ROOT/core/scripts/lib/session-id.sh"
 chmod +x "$FIXTURE_ROOT/core/scripts/handoff-post.sh"
 source "$SRC_ROOT/scripts/tests/lib/handoff-post-test-helpers.sh"
 

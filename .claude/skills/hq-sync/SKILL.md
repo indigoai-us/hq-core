@@ -240,6 +240,8 @@ files_d=0
 if [ -n "$final_event" ]; then
   files_d=$(printf '%s' "$final_event" | jq -r '.filesDownloaded // 0' 2>/dev/null || echo 0)
 fi
+# Tombstone counts are on per-company complete events, not all-complete.
+files_t="$(hq_sync_count_tombstoned_files "$output_file")"
 summary_status=0
 hq_sync_report_summary "$output_file" || summary_status=$?
 
@@ -323,12 +325,22 @@ if [ -z "${final_event:-}" ] || [ "${files_d:-0}" != "0" ]; then
 fi
 
 # Step 6b: regenerate the workers registry after a completed sync.
-# `hq reindex` is path-gated on in-session Write/Edit/rm and does not run
-# after an out-of-band pull, so a stale core/workers/registry.yaml can list
-# active workers whose directories were never downloaded (or were pruned).
+# The normal lifecycle reindex hook does not run for this out-of-band pull, and
+# worker-registry generation is separate from skill-wrapper surfacing. Without
+# this step, a stale core/workers/registry.yaml can list active workers whose
+# directories were never downloaded (or were pruned).
 # The generator is derived from worker.yaml files on disk: new workers appear,
 # missing directories drop. Best-effort; never mask sync.
 hq core --hq-root "$hq_root" generate-workers-registry >/dev/null 2>&1 || true
+
+# Step 6c: surface freshly pulled company skills. The --companies runner
+# skips its per-company reindex to avoid repeated work, so do one reindex after
+# the pull when it downloaded or tombstoned files and `hq-sync.post-pull-reindex`
+# is enabled (default off). Missing or invalid flag configuration skips the
+# lookup without starting Node.js and keeps the pre-change behavior. Reindex
+# also converges core,
+# personal, and pack skill wrappers; a failure warns but never changes the sync result.
+hq_sync_post_pull_reindex "$hq_root" "${files_d:-0}" "${files_t:-0}"
 
 # Step 7: exit. A partial run is not a clean one, so exit 3 (documented in
 # scripts/hq-sync-events.sh) even when the runner itself exited 0 after a clean
@@ -350,6 +362,7 @@ exit "$cli_status"
 - For a single-company sync, use `hq sync push <company>` (already in hq-cli) — this command is the "all companies, both directions" full sync that the HQ Desktop App runs.
 - **Post-sync qmd reindex (Step 6):** after a sync that pulled files, the skill runs `hq core qmd-reindex-after-sync`, which auto-registers any new company knowledge collection and runs an incremental lexical `qmd update`. This is what makes freshly-synced knowledge searchable without a manual re-index, and keeps teammates' personal indexes converged. Embeddings are intentionally deferred (run `qmd embed`, or the reindex script with `--embed`, on an idle pass) so sync stays fast. The qmd index is per-machine (large binary, absolute local paths) and is **not** itself synced — only its freshness is automated. The HQ Desktop App sync gets the same behavior via the `hq-sync-runner` seam.
 - **Post-sync workers registry (Step 6b):** after a completed sync, regenerate `core/workers/registry.yaml` from on-disk `worker.yaml` files. A pulled worker must become listable, and a registry row whose directory was not downloaded must not stay discoverable. SessionStart also warns if any `status: active` path is still absent.
+- **Post-pull skill wrappers (Step 6c):** when the runner downloaded or tombstoned files and the default-off `hq-sync.post-pull-reindex` flag is enabled, run the same idempotent `hq reindex` used by the CLI. It surfaces company skill wrappers and converges the other namespaced skills. With no valid flag configuration, no Node.js lookup starts and current behavior is preserved. This is best-effort and does not alter the sync exit code.
 
 - **Selective download (`syncMode`) — access ≠ download.** What a sync *downloads* is governed per-membership by `syncMode`: `all` (full bucket — the default, and what owners get on upgrade), `shared` (only your explicit ACL grants), or `custom` (an explicit prefix list). Set it with `hq sync mode <all|shared|custom>` and narrow an existing local tree with `hq sync narrow`. This is purely about local footprint — it does **not** change your *access*. Owners always sync as `all` regardless of the stored mode; admins stay grant-scoped for sync; `shared`/`custom` just stop a sync from materializing the whole vault locally. The scope is resolved per company in hq-cloud `src/sync/pull-scope.ts::resolvePullScope` (degrades to `all` on any error so a transient failure never prunes the tree). To reach a file you have access to but didn't download, use `hq files browse`/`cat`/`search`/`get` (see the `hq-files` skill) — no full sync required.
 

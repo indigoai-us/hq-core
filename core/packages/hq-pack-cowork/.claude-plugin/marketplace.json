@@ -9,7 +9,7 @@
       "name": "hq-cowork",
       "source": "./",
       "description": "Native HQ inside Cowork and Claude Code. Exposes the shared HQ brain, sync, files, secrets, teams, DMs, meetings, packages, and guarded HQ CLI access through host-side MCP tools.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "Indigo / HQ",
         "url": "https://github.com/indigoai-us"

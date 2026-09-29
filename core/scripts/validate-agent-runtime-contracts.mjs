@@ -111,6 +111,14 @@ const INTENTIONALLY_APPROVAL_GATED_COMMANDS = new Map([
     "The command is embedded in assignment syntax, which cannot use a path-only literal prefix.",
   ],
   [
+    ".claude/skills/deploy/SKILL.md::path:.claude/skills/deploy/scripts/route-host.sh",
+    "The command is embedded in assignment syntax, which cannot use a path-only literal prefix.",
+  ],
+  [
+    ".claude/skills/deploy/SKILL.md::path:.claude/skills/deploy/scripts/guardrails-check.sh",
+    "The route-mode re-check is embedded in assignment syntax, which cannot use a path-only literal prefix.",
+  ],
+  [
     ".claude/skills/hq-sync/SKILL.md::path:core/scripts/qmd-reindex-after-sync.sh",
     "The script path is rooted through a runtime variable and cannot have a fixed literal prefix.",
   ],

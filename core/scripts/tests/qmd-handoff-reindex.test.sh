@@ -663,6 +663,8 @@ ok "S4: laptop launcher prints pid and worker mutates once"
 # =============================================================================
 reset_state
 cp "$FINALIZE" "$TMP/repo/core/scripts/handoff-finalize.sh"
+mkdir -p "$TMP/repo/core/scripts/lib"
+cp "$ROOT/core/scripts/lib/session-id.sh" "$TMP/repo/core/scripts/lib/session-id.sh"
 sed \
   -e "s|/tmp/handoff-git-bg.pid|$TMP/handoff-git-bg.pid|g" \
   -e "s|/tmp/handoff-git-bg.log|$TMP/handoff-git-bg.log|g" \

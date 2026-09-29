@@ -81,7 +81,6 @@ run 2 "touch $C/new"                         'touch into core blocked'
 # --- Blocked: 2026-06-14 boundary fix (= and : are boundaries) -----------
 run 2 "D=$C; mv /tmp/y \"\$D/s.json\""       'VAR=core-path assignment + mv blocked (boundary fix)'
 run 2 "P=/x:$TMP/core/y; cp /tmp/z \$P"      'colon-joined core path + cp blocked (boundary fix)'
-
 # --- Blocked: variable context carries across simple commands ------------
 run 2 "f=$TMP/.codex/hooks/probe.sh; cp \"\$f\" \"\$f.bak\"; cat > \"\$f\"" \
   'protected variable + backup copy + semicolon redirect blocked'

@@ -18,6 +18,8 @@ set -euo pipefail
 
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$HQ_ROOT"
+HANDOFF_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HANDOFF_SCRIPT_DIR/lib/session-id.sh"
 
 THREAD_PATH="${1:-}"
 LEARNINGS_FILE="${2:-}"
@@ -105,18 +107,97 @@ fi
 
 # --- 3b. Push company handoff mirrors promptly (best effort) ---
 # Session snapshots are intentionally gitignored, so a completed mirror needs
-# the sync client to make the handoff available to a second device. Trust only
-# the finalizer's lowercase company-slug metadata before constructing a path.
+# the sync client to make the handoff available to a second device. Keep
+# finalizer company metadata and add the company bound to this session when no
+# changed path identified one; never use a device-wide active-company value.
+bound_session_company() {
+  local session_id metadata company
+  session_id="$(session_id_resolve "$HQ_ROOT")"
+  [[ -n "$session_id" ]] || return 0
+  metadata="$HQ_ROOT/workspace/sessions/$session_id/meta.yaml"
+  [[ -r "$metadata" ]] || return 0
+  company="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$metadata" 2>/dev/null || true)"
+  [[ "$company" =~ ^[a-z][a-z0-9_-]*$ ]] || return 0
+  printf '%s' "$company"
+}
+
 if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1; then
+  if [[ "$THREAD_PATH" == /* ]]; then
+    THREAD_FILE="$THREAD_PATH"
+  else
+    THREAD_FILE="$HQ_ROOT/$THREAD_PATH"
+  fi
+  THREAD_COMPANIES_JSON="$(jq -c '
+    (.metadata.company // [])
+    | (if type == "array" then . else [.] end)
+    | map(select(type == "string" and test("^[a-z][a-z0-9_-]*$")))
+    | unique
+  ' "$THREAD_FILE" 2>/dev/null || printf '[]')"
+  THREAD_PATH_COMPANIES_JSON="$(jq -c --arg hq_root "$HQ_ROOT" '
+    [ ((.files_touched // []) | if type == "array" then .[] else empty end)
+    | (if type == "string" then . elif type == "object" and (.path | type) == "string" then .path else "" end)
+    | (if startswith($hq_root + "/") then .[(($hq_root | length) + 1):] else . end)
+    | sub("^\\./"; "")
+    | (try capture("^companies/(?<company>[a-z][a-z0-9_-]*)/").company catch null)
+      | select(type == "string")
+    ] | unique
+  ' "$THREAD_FILE" 2>/dev/null || printf '[]')"
+  BOUND_COMPANY="$(bound_session_company)"
+  THREAD_COMPANY_COUNT="$(jq 'length' <<< "$THREAD_COMPANIES_JSON")"
+  THREAD_PATH_COMPANY_COUNT="$(jq 'length' <<< "$THREAD_PATH_COMPANIES_JSON")"
+  SYNC_COMPANIES_JSON='[]'
+  if [[ "$THREAD_COMPANY_COUNT" -gt 1 || "$THREAD_PATH_COMPANY_COUNT" -gt 1 ]]; then
+    log "workspace-sync: skipped (handoff spans multiple companies)"
+  elif [[ -z "$BOUND_COMPANY" || ! -d "$HQ_ROOT/companies/$BOUND_COMPANY" ]]; then
+    log "workspace-sync: skipped (no bound company for this session)"
+  elif { [[ "$THREAD_COMPANY_COUNT" -eq 1 ]] && [[ "$(jq -r '.[0]' <<< "$THREAD_COMPANIES_JSON")" != "$BOUND_COMPANY" ]]; } || \
+       { [[ "$THREAD_PATH_COMPANY_COUNT" -eq 1 ]] && [[ "$(jq -r '.[0]' <<< "$THREAD_PATH_COMPANIES_JSON")" != "$BOUND_COMPANY" ]]; }; then
+    log "workspace-sync: skipped (handoff paths do not match the bound company)"
+  else
+    SYNC_COMPANIES_JSON="$(jq -cn --arg company "$BOUND_COMPANY" '[$company]')"
+    THREAD_TMP="$(mktemp "$HQ_ROOT/workspace/threads/.handoff-post-XXXXXX")"
+    if jq -c --argjson companies "$SYNC_COMPANIES_JSON" \
+      '.metadata = (.metadata // {}) | .metadata.company = $companies' \
+      "$THREAD_FILE" > "$THREAD_TMP" && mv "$THREAD_TMP" "$THREAD_FILE"; then
+      :
+    else
+      rm -f "$THREAD_TMP"
+      log "workspace-sync: skipped (could not add bound company to handoff thread)"
+      SYNC_COMPANIES_JSON='[]'
+    fi
+  fi
+  THREAD_ID="$(jq -r '.thread_id // empty' "$THREAD_FILE" 2>/dev/null || true)"
+  THREAD_MIRRORABLE="false"
+  case "$THREAD_FILE" in
+    "$HQ_ROOT"/workspace/threads/T-*.json)
+      if [[ "$THREAD_ID" =~ ^T-[A-Za-z0-9._-]+$ ]]; then THREAD_MIRRORABLE="true"; fi
+      ;;
+  esac
+  if [[ "$THREAD_MIRRORABLE" == "true" && "$SYNC_COMPANIES_JSON" != '[]' ]]; then
+    MIRROR_HOOK="$HQ_ROOT/.claude/hooks/mirror-thread-to-company.sh"
+    if [[ -f "$MIRROR_HOOK" ]]; then
+      jq -n --arg file_path "$THREAD_FILE" \
+        '{tool_name:"Write",tool_input:{file_path:$file_path}}' | \
+        bash "$MIRROR_HOOK" >>"$LOG_MAIN" 2>&1 || \
+        log "workspace-sync: mirror hook failed for handoff thread"
+    else
+      log "workspace-sync: mirror hook unavailable for handoff thread"
+    fi
+  fi
   while IFS= read -r company; do
     [[ "$company" =~ ^[a-z][a-z0-9_-]*$ ]] || continue
     [[ -d "$HQ_ROOT/companies/$company/workspace" ]] || continue
+    if [[ "$THREAD_MIRRORABLE" != "true" || \
+          ! -f "$HQ_ROOT/companies/$company/workspace/sessions/$THREAD_ID.json" ]]; then
+      log "workspace-sync: skipped (thread mirror missing for $company)"
+      continue
+    fi
     if hq sync push --company "$company" "companies/$company/workspace" >>"$LOG_MAIN" 2>&1; then
       log "workspace-sync: pushed companies/$company/workspace"
     else
       log "workspace-sync: failed companies/$company/workspace"
     fi
-  done < <(jq -r '.metadata.company // empty | if type == "array" then .[] else . end' "$THREAD_PATH" 2>/dev/null || true)
+  done < <(jq -r '.[]' <<< "$SYNC_COMPANIES_JSON")
 elif [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]]; then
   log "workspace-sync: skipped (hq CLI unavailable)"
 fi
@@ -150,9 +231,7 @@ fi
 WM_END_HOOK="$HQ_ROOT/core/hooks/SessionEnd/35-work-mesh-session-end.sh"
 if [[ -f "$WM_END_HOOK" ]]; then
   sid=""
-  if [[ -f "$HQ_ROOT/workspace/sessions/.current" ]]; then
-    sid="$(tr -d '[:space:]' <"$HQ_ROOT/workspace/sessions/.current" 2>/dev/null || true)"
-  fi
+  sid="$(session_id_resolve "$HQ_ROOT")"
   if [[ -n "$sid" ]]; then
     payload=$(printf '{"session_id":"%s"}' "$sid")
   else

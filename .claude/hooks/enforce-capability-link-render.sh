@@ -21,7 +21,9 @@ set -uo pipefail
   command -v jq  >/dev/null 2>&1 || exit 0
   command -v node >/dev/null 2>&1 || exit 0
 
-  . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+  HQ_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  . "$HQ_REPO_ROOT/core/scripts/hook-lib.sh"
+  . "$HQ_REPO_ROOT/core/scripts/lib/transcript-tail.sh"
 
   # Bare-capability-URL detector (node). Slurped into a top-level var — no
   # heredoc inside $( ) (hooks-heredoc-syntax.test.sh).
@@ -59,13 +61,13 @@ JS
 
   # Last assistant message text only (the turn that just finished).
   LAST_TEXT="$(
-    jq -rs '
-      [ .[] | select(.type=="assistant") ] | last
+    jq -nr '
+      [ inputs | select(.type=="assistant") ] | last
       | .message.content
       | (if type=="array" then [ .[] | select(.type=="text") | .text ] | join("\n")
          elif type=="string" then .
          else "" end)
-    ' "$TRANSCRIPT_PATH" 2>/dev/null || true
+    ' < <(hq_transcript_tail "$TRANSCRIPT_PATH") 2>/dev/null || true
   )"
   [ -z "$LAST_TEXT" ] && exit 0
 
