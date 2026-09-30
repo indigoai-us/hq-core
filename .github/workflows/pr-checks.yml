@@ -62,6 +62,8 @@ jobs:
             "$base_sha" "$GITHUB_SHA" "$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
       - name: Shell smoke platform path filter regression test
         run: bash core/scripts/tests/shell-smoke-macos-paths.test.sh
+      - name: Codex policy rubric batching workflow contract
+        run: bash core/scripts/tests/cost-workflow-pr-checks.test.sh
       - name: Run denylist scan
         run: bash .leak-scan/scan.sh denylist
 
@@ -1768,30 +1770,38 @@ jobs:
       needs.collect-policy-changes.outputs.count != '0' &&
       !contains(github.event.pull_request.labels.*.name, 'skip-codex-rubric')
     runs-on: ubuntu-24.04-arm
-    strategy:
-      max-parallel: 10
-      fail-fast: false
-      matrix:
-        file: ${{ fromJson(needs.collect-policy-changes.outputs.files) }}
     steps:
       - uses: actions/checkout@v4
       - name: Install codex CLI
         run: npm i -g @openai/codex
-      - name: Run rubric on ${{ matrix.file }}
+      - name: Run rubrics for changed policies
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_MODEL: gpt-5
+          POLICY_FILES: ${{ needs.collect-policy-changes.outputs.files }}
         run: |
           set -euo pipefail
-          out="$(bash .leak-scan/codex-rubric.sh "${{ matrix.file }}")"
-          echo "$out"
-          # Append to job summary so reviewers see verdicts collated
-          {
-            echo "## Rubric: ${{ matrix.file }}"
-            echo '```json'
+          failed=0
+          while IFS= read -r file; do
+            [[ -n "$file" ]] || continue
+            status=0
+            out="$(bash .leak-scan/codex-rubric.sh "$file")" || status=$?
             echo "$out"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$status" -ne 0 ]]; then
+              echo "::error::Policy rubric failed for $file with status $status."
+              failed=1
+            fi
+            # Keep each policy verdict distinct in the job summary.
+            {
+              echo "## Rubric: $file"
+              echo '```json'
+              echo "$out"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done < <(jq -r '.[]' <<< "$POLICY_FILES")
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi
 
   # ─── Provider adapter contract (US-504) ─────────────────────────────
   #
