@@ -12,6 +12,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 CONTEXT_HOOK="$ROOT/.claude/hooks/context-warning-50.sh"
 PRECOMPACT_HOOK="$ROOT/.claude/hooks/auto-checkpoint-precompact.sh"
+PRECOMPACT_THRASH_HOOK="$ROOT/.claude/hooks/precompact-thrashing-detector.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -61,5 +62,17 @@ out_precompact=$(bash "$PRECOMPACT_HOOK")
 assert_contains "$out_precompact" "AUTO-CHECKPOINT REQUIRED" "precompact directive"
 assert_contains "$out_precompact" "run /checkpoint" "precompact checkpoint command"
 assert_contains "$out_precompact" "Do not ask the user first" "precompact no prompt"
+
+# Transcript byte accounting reads filesystem metadata and must retain the
+# exact recorded size without scanning the transcript contents.
+SIZE_ROOT="$TMP_ROOT/size-check"
+mkdir -p "$SIZE_ROOT"
+SIZE_TRANSCRIPT="$TMP_ROOT/size-check-transcript.jsonl"
+printf '12345' > "$SIZE_TRANSCRIPT"
+SIZE_PAYLOAD="$(printf '{"session_id":"s-size-check","transcript_path":"%s"}' "$SIZE_TRANSCRIPT")"
+printf '%s' "$SIZE_PAYLOAD" | CLAUDE_PROJECT_DIR="$SIZE_ROOT" bash "$PRECOMPACT_THRASH_HOOK" >/dev/null 2>&1
+SIZE_HISTORY="$SIZE_ROOT/workspace/.compact-history/s-size-check.jsonl"
+grep -Fq '"bytes":5' "$SIZE_HISTORY" \
+  || fail "precompact history did not preserve the transcript byte count"
 
 echo "context checkpoint hooks smoke: ok"

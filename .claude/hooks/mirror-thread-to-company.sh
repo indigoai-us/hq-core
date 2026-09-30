@@ -41,14 +41,40 @@ esac
 HQ_ROOT="${FILE_PATH%/workspace/threads/*}"
 [ -d "$HQ_ROOT/companies" ] || exit 0
 
-# Parse thread metadata. company can be string or array.
-COMPANIES_JSON=$(jq -r '
+# A thread mirror is safe only when it belongs to exactly one company and
+# every company path in its changeset agrees with the session binding. Never
+# use the list of touched companies as a list of mirror destinations.
+THREAD_COMPANIES_JSON=$(jq -c '
   .metadata.company // empty
   | if type == "array" then . else [.] end
-  | .[]
-' "$FILE_PATH" 2>/dev/null || true)
+  | map(select(type == "string" and test("^[a-z][a-z0-9_-]*$")))
+  | unique
+' "$FILE_PATH" 2>/dev/null || printf '[]')
+[ "$(jq 'length' <<< "$THREAD_COMPANIES_JSON")" -eq 1 ] || exit 0
+COMPANY=$(jq -r '.[0]' <<< "$THREAD_COMPANIES_JSON")
 
-[ -z "$COMPANIES_JSON" ] && exit 0
+THREAD_PATH_COMPANIES_JSON=$(jq -c --arg hq_root "$HQ_ROOT" '
+  [ ((.files_touched // []) | if type == "array" then .[] else empty end)
+    | (if type == "string" then . elif type == "object" and (.path | type) == "string" then .path else "" end)
+    | (if startswith($hq_root + "/") then .[(($hq_root | length) + 1):] else . end)
+    | sub("^\\./"; "")
+    | (try capture("^companies/(?<company>[a-z][a-z0-9_-]*)/").company catch null)
+    | select(type == "string")
+  ] | unique
+' "$FILE_PATH" 2>/dev/null || printf '[]')
+[ "$(jq 'length' <<< "$THREAD_PATH_COMPANIES_JSON")" -le 1 ] || exit 0
+if [ "$(jq 'length' <<< "$THREAD_PATH_COMPANIES_JSON")" -eq 1 ] && \
+   [ "$(jq -r '.[0]' <<< "$THREAD_PATH_COMPANIES_JSON")" != "$COMPANY" ]; then
+  exit 0
+fi
+
+source "$HQ_ROOT/core/scripts/lib/session-id.sh"
+SESSION_ID=$(session_id_resolve "$HQ_ROOT")
+[ -n "$SESSION_ID" ] || exit 0
+SESSION_META="$HQ_ROOT/workspace/sessions/$SESSION_ID/meta.yaml"
+[ -r "$SESSION_META" ] || exit 0
+BOUND_COMPANY=$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$SESSION_META" 2>/dev/null || true)
+[ "$BOUND_COMPANY" = "$COMPANY" ] || exit 0
 
 THREAD_ID=$(jq -r '.thread_id // empty' "$FILE_PATH")
 [ -z "$THREAD_ID" ] && exit 0
@@ -57,8 +83,8 @@ UPDATED_AT=$(jq -r '.updated_at // .created_at // empty' "$FILE_PATH")
 KIND=$(jq -r '.type // "unknown"' "$FILE_PATH")
 TITLE=$(jq -r '.metadata.title // .conversation_summary // ""' "$FILE_PATH" | head -c 200)
 
-# Mirror to each touched company
-echo "$COMPANIES_JSON" | while IFS= read -r CO; do
+# Mirror only into the bound company.
+printf '%s\n' "$COMPANY" | while IFS= read -r CO; do
   [ -z "$CO" ] && continue
   CO_DIR="$HQ_ROOT/companies/$CO"
   [ -d "$CO_DIR" ] || continue

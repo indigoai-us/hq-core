@@ -12,8 +12,10 @@ fail() {
   exit 1
 }
 
-mkdir -p "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/companies/acme/workspace" "$TMP_ROOT/repo/.claude/skills/document-release" "$TMP_ROOT/bin" "$TMP_ROOT/logs"
+mkdir -p "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/.claude/hooks" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/companies/acme/workspace" "$TMP_ROOT/repo/.claude/skills/document-release" "$TMP_ROOT/bin" "$TMP_ROOT/logs"
 cp "$SRC_ROOT/scripts/handoff-post.sh" "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
+cp "$SRC_ROOT/scripts/lib/session-id.sh" "$TMP_ROOT/repo/core/scripts/lib/session-id.sh"
+cp "$SRC_ROOT/../.claude/hooks/mirror-thread-to-company.sh" "$TMP_ROOT/repo/.claude/hooks/mirror-thread-to-company.sh"
 cp "$SRC_ROOT/scripts/skill-installed.sh" "$TMP_ROOT/repo/core/scripts/skill-installed.sh"
 cp "$SRC_ROOT/scripts/lib/session-skill-catalog.sh" "$TMP_ROOT/repo/core/scripts/lib/session-skill-catalog.sh"
 chmod +x "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
@@ -61,6 +63,7 @@ chmod +x "$TMP_ROOT/bin/hq"
 
 cat > "$TMP_ROOT/repo/workspace/threads/T-test.json" <<'JSON'
 {
+  "thread_id": "T-test",
   "files_touched": [
     "companies/acme/knowledge/release-note.md"
   ],

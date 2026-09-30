@@ -41,6 +41,8 @@ STATE_DIR="$HQ/workspace/.compact-history"
 
   TRANSCRIPT_PATH="$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
   SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)"
+  . "$HOOK_ROOT/core/scripts/lib/transcript-tail.sh"
 
   if [ -z "$SESSION_ID" ]; then
     exit 0
@@ -52,7 +54,7 @@ STATE_DIR="$HQ/workspace/.compact-history"
   NOW="$(date +%s)"
   BYTES=0
   if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
-    BYTES="$(wc -c < "$TRANSCRIPT_PATH" 2>/dev/null | tr -d ' ' || echo 0)"
+    BYTES="$(hq_transcript_size "$TRANSCRIPT_PATH" 2>/dev/null || echo 0)"
   fi
 
   # Append this compaction event.

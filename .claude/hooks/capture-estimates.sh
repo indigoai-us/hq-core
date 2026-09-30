@@ -15,6 +15,7 @@ SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HQ_ROOT="$(cd "$HOOK_DIR/.." && pwd)"
 HQ_ROOT="$(cd "$HQ_ROOT/.." && pwd)"
+. "$HQ_ROOT/core/scripts/lib/transcript-tail.sh"
 
 LOG_DIR="$HQ_ROOT/workspace/estimate-log"
 LOG_FILE="$LOG_DIR/log.jsonl"
@@ -25,7 +26,7 @@ PARSER="$HOOK_DIR/lib/parse-estimates.pl"
 mkdir -p "$LOG_DIR"
 touch "$LOG_FILE"
 
-LAST_ASSISTANT=$(awk '/"type":"assistant"/ { last=$0 } END { print last }' "$TRANSCRIPT_PATH")
+LAST_ASSISTANT="$(hq_transcript_tail "$TRANSCRIPT_PATH" | awk '/"type":"assistant"/ { last=$0 } END { print last }')"
 [ -z "$LAST_ASSISTANT" ] && exit 0
 
 UUID=$(printf '%s' "$LAST_ASSISTANT" | jq -r '.uuid // .message.id // empty' 2>/dev/null || echo "")

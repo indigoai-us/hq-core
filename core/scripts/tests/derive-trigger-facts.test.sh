@@ -39,6 +39,7 @@ trap 'rm -rf "$TMP"' EXIT
 # Linux too: normal awk invocations pass through, while newline-bearing argv
 # fails in the same way as BSD awk.
 REAL_AWK="$(command -v awk)"
+REAL_JQ="$(command -v jq)"
 mkdir -p "$TMP/bin"
 printf '%s\n' '#!/usr/bin/env bash' \
   'previous=' \
@@ -48,9 +49,33 @@ printf '%s\n' '#!/usr/bin/env bash' \
   'done' \
   'exec "$REAL_AWK" "$@"' > "$TMP/bin/awk"
 chmod +x "$TMP/bin/awk"
+cat > "$TMP/bin/jq" <<'JQ_SHIM'
+#!/usr/bin/env bash
+set -o pipefail
+measure=0
+for arg in "$@"; do
+  [ "$arg" = "-nr" ] && measure=1
+done
+if [ "$measure" -eq 0 ]; then
+  exec "$REAL_JQ" "$@"
+fi
+
+last_arg=""
+for arg in "$@"; do last_arg="$arg"; done
+if [ -f "$last_arg" ]; then
+  stat -c %s "$last_arg" > "$HQ_TEST_TRANSCRIPT_BYTES_FILE"
+  exec "$REAL_JQ" "$@"
+fi
+
+tee >(wc -c > "$HQ_TEST_TRANSCRIPT_BYTES_FILE") | "$REAL_JQ" "$@"
+JQ_SHIM
+chmod +x "$TMP/bin/jq"
 export REAL_AWK
+export REAL_JQ
 PATH="$TMP/bin:$PATH"
 export PATH
+HQ_TEST_TRANSCRIPT_BYTES_FILE="$TMP/transcript-jq-bytes"
+export HQ_TEST_TRANSCRIPT_BYTES_FILE
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -235,6 +260,94 @@ TR_FLAT="$TMP/flat.jsonl"
   printf '%s\n' '{"type":"assistant","content":"I will deploy to prod"}'
 } > "$TR_FLAT"
 has deploy AssistantIntent "$(printf '{"prompt":"ok","transcript_path":"%s"}' "$TR_FLAT")"
+
+# ---- bounded transcript tail: large files, partial lines, small-file parity ----
+TRANSCRIPT_TAIL_LIB="$(dirname "$SRC")/lib/transcript-tail.sh"
+
+# A small fixture retains the exact pre-tail AssistantIntent result.
+SMALL_TAIL_TRANSCRIPT="$TMP/small-tail.jsonl"
+{
+  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"alpha"}]}}'
+  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"deploy now"}]}}'
+} > "$SMALL_TAIL_TRANSCRIPT"
+SMALL_TAIL_OUT="$(printf '{"transcript_path":"%s"}' "$SMALL_TAIL_TRANSCRIPT" | bash "$SRC" AssistantIntent 2>/dev/null)"
+[ "$SMALL_TAIL_OUT" = "always alpha deploy now" ] \
+  || fail "small transcript AssistantIntent changed: [$SMALL_TAIL_OUT]"
+
+# A transcript well beyond the 1 MiB bound still preserves the latest turn.
+LARGE_TAIL_TRANSCRIPT="$TMP/large-tail.jsonl"
+python3 - "$LARGE_TAIL_TRANSCRIPT" <<'PY'
+import sys
+path = sys.argv[1]
+prefix = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"oldintent '
+suffix = '"}]}}\n'
+record = prefix + ("x" * (1024 - len(prefix) - len(suffix))) + suffix
+user = '{"type":"user","message":{"role":"user","content":"new turn"}}\n'
+assistant = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"recenttoken"}]}}\n'
+padding_prefix = '{"type":"progress","padding":"'
+padding_suffix = '"}\n'
+padding_size = (-len(user + assistant)) % 1024
+if padding_size < len(padding_prefix) + len(padding_suffix):
+    padding_size += 1024
+padding = padding_prefix + ("x" * (padding_size - len(padding_prefix) - len(padding_suffix))) + padding_suffix
+with open(path, "w", encoding="utf-8") as transcript:
+    for _ in range(2200):
+        transcript.write(record)
+    transcript.write(user)
+    transcript.write(assistant)
+    transcript.write(padding)
+PY
+LARGE_TAIL_JSON="$(printf '{"transcript_path":"%s"}' "$LARGE_TAIL_TRANSCRIPT")"
+has recenttoken AssistantIntent "$LARGE_TAIL_JSON"
+hasnot oldintent AssistantIntent "$LARGE_TAIL_JSON"
+LARGE_JQ_BYTES="$(cat "$HQ_TEST_TRANSCRIPT_BYTES_FILE")"
+[ "$LARGE_JQ_BYTES" -le 1048577 ] \
+  || fail "large AssistantIntent parsed $LARGE_JQ_BYTES bytes, over the 1048576-byte tail plus boundary byte"
+
+[ -r "$TRANSCRIPT_TAIL_LIB" ] || fail "bounded transcript-tail helper is missing"
+. "$TRANSCRIPT_TAIL_LIB"
+
+# An oversized newest record must survive the bounded read as the final
+# complete JSONL record instead of being discarded as a partial first line.
+OVERSIZED_LAST_TRANSCRIPT="$TMP/oversized-last-record.jsonl"
+OVERSIZED_LAST_EXPECTED="$TMP/oversized-last-record.expected"
+python3 - "$OVERSIZED_LAST_TRANSCRIPT" "$OVERSIZED_LAST_EXPECTED" <<'PY'
+import json, sys
+transcript_path, expected_path = sys.argv[1:]
+user = {"type":"user","message":{"role":"user","content":"new turn"}}
+assistant = {
+    "type":"assistant",
+    "message":{"role":"assistant","content":[
+        {"type":"text","text":"x" * 1100000 + " https://hq.computer/share-session/abcdefghijklmnopqrstuvwx"}
+    ]}
+}
+with open(transcript_path, "w", encoding="utf-8") as transcript:
+    transcript.write(json.dumps(user, separators=(",", ":")) + "\n")
+    last_record = json.dumps(assistant, separators=(",", ":")) + "\n"
+    transcript.write(last_record)
+with open(expected_path, "w", encoding="utf-8") as expected:
+    expected.write(last_record)
+PY
+OVERSIZED_LAST_RETURNED="$TMP/oversized-last-record.returned"
+hq_transcript_tail "$OVERSIZED_LAST_TRANSCRIPT" > "$OVERSIZED_LAST_RETURNED"
+cmp -s "$OVERSIZED_LAST_EXPECTED" "$OVERSIZED_LAST_RETURNED" \
+  || fail "oversized newest transcript record was not returned intact"
+
+# If the byte bound begins inside a JSONL record, discard its malformed partial
+# first line before parsing the complete records that follow it.
+PARTIAL_TAIL_TRANSCRIPT="$TMP/partial-tail.jsonl"
+python3 - "$PARTIAL_TAIL_TRANSCRIPT" <<'PY'
+import sys
+with open(sys.argv[1], "w", encoding="utf-8") as transcript:
+    transcript.write('{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"partialphantom ' + "x" * 1100000 + '"}]}}\n')
+    transcript.write('{"type":"user","message":{"role":"user","content":"new turn"}}\n')
+    transcript.write('{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"recenttoken"}]}}\n')
+PY
+EXPECTED_FIRST_TAIL_LINE='{"type":"user","message":{"role":"user","content":"new turn"}}'
+ACTUAL_FIRST_TAIL_LINE="$(hq_transcript_tail "$PARTIAL_TAIL_TRANSCRIPT" | sed -n '1p')"
+[ "$ACTUAL_FIRST_TAIL_LINE" = "$EXPECTED_FIRST_TAIL_LINE" ] \
+  || fail "partial first transcript line was not dropped"
+has recenttoken AssistantIntent "$(printf '{"transcript_path":"%s"}' "$PARTIAL_TAIL_TRANSCRIPT")"
 
 # ---- US-004: `company` fact resolution (env > cwd > session-meta) ----
 # Hermetic HQ_ROOT so the live policy tree / cwd never leak in. company is now a

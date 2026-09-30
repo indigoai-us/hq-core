@@ -97,9 +97,9 @@ run_hook() {
 # [a] qualifying Write enqueues one sanitized item
 HQ_A="$(make_root a)"
 set_company "$HQ_A" "sess-write" "acme"
-payload_write="$(python3 - <<PY
-import json
-root = ${HQ_A@Q}
+payload_write="$(HQ_A="$HQ_A" python3 - <<'PY'
+import json, os
+root = os.environ["HQ_A"]
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "sess-write",
@@ -127,9 +127,9 @@ fi
 
 # [b] missing company_slug fails closed
 HQ_B="$(make_root b)"
-payload_no_company="$(python3 - <<PY
-import json
-root = ${HQ_B@Q}
+payload_no_company="$(HQ_B="$HQ_B" python3 - <<'PY'
+import json, os
+root = os.environ["HQ_B"]
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "sess-no-company",
@@ -153,10 +153,10 @@ for rel_path in \
   "companies/acme/sources/meetings/raw.md" \
   "companies/acme/data/reports/salary-forecast.md"
 do
-  payload="$(python3 - <<PY
-import json
-root = ${HQ_C@Q}
-rel_path = ${rel_path@Q}
+  payload="$(HQ_C="$HQ_C" REL_PATH="$rel_path" python3 - <<'PY'
+import json, os
+root = os.environ["HQ_C"]
+rel_path = os.environ["REL_PATH"]
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "sess-settings",
@@ -172,12 +172,12 @@ PY
   assert_not_file "$(queue_file "$HQ_C" "sess-settings")"
 done
 
-payload_secrets="$(python3 - <<PY
-import json
+payload_secrets="$(HQ_C="$HQ_C" python3 - <<'PY'
+import json, os
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "sess-settings",
-  "cwd": ${HQ_C@Q},
+  "cwd": os.environ["HQ_C"],
   "tool_name": "Bash",
   "tool_input": {"command": "hq secrets exec -- env"},
   "tool_response": {"stdout": "ok"}
@@ -191,12 +191,12 @@ assert_not_file "$(queue_file "$HQ_C" "sess-settings")"
 # [d] queue and history never persist urls or secret-bearing fields
 HQ_D="$(make_root d)"
 set_company "$HQ_D" "sess-deploy" "acme"
-payload_deploy="$(python3 - <<PY
-import json
+payload_deploy="$(HQ_D="$HQ_D" python3 - <<'PY'
+import json, os
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "sess-deploy",
-  "cwd": ${HQ_D@Q},
+  "cwd": os.environ["HQ_D"],
   "tool_name": "Bash",
   "tool_input": {"command": "/deploy workspace/reports/demo"},
   "tool_response": {"stdout": "deploy complete appId=app-123 URL=https://deploy.example.com/demo"}
@@ -220,9 +220,9 @@ mkdir -p "$HQ_E/workspace/sessions/___escape"
 cat > "$HQ_E/workspace/sessions/___escape/meta.yaml" <<'YAML'
 company_slug: acme
 YAML
-payload_traversal="$(python3 - <<PY
-import json
-root = ${HQ_E@Q}
+payload_traversal="$(HQ_E="$HQ_E" python3 - <<'PY'
+import json, os
+root = os.environ["HQ_E"]
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "../escape",
@@ -254,9 +254,9 @@ surfaces:
   in_session_picker: true
   dm: false
 YAML
-payload_global="$(python3 - <<PY
-import json
-root = ${HQ_FG@Q}
+payload_global="$(HQ_FG="$HQ_FG" python3 - <<'PY'
+import json, os
+root = os.environ["HQ_FG"]
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "sess-global",
@@ -287,9 +287,9 @@ surfaces:
   in_session_picker: true
   dm: false
 YAML
-payload_company="$(python3 - <<PY
-import json
-root = ${HQ_FC@Q}
+payload_company="$(HQ_FC="$HQ_FC" python3 - <<'PY'
+import json, os
+root = os.environ["HQ_FC"]
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "sess-company",
@@ -313,9 +313,9 @@ enabled: false
 artifact_classes: {}
 recipient_hints: []
 YAML
-payload_project="$(python3 - <<PY
-import json
-root = ${HQ_FP@Q}
+payload_project="$(HQ_FP="$HQ_FP" python3 - <<'PY'
+import json, os
+root = os.environ["HQ_FP"]
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "sess-project",
@@ -332,9 +332,9 @@ assert_not_file "$(queue_file "$HQ_FP" "sess-project")"
 
 HQ_FS="$(make_root fs)"
 set_company "$HQ_FS" "sess-suppress" "acme"
-payload_suppressed="$(python3 - <<PY
-import json
-root = ${HQ_FS@Q}
+payload_suppressed="$(HQ_FS="$HQ_FS" python3 - <<'PY'
+import json, os
+root = os.environ["HQ_FS"]
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "sess-suppress",
@@ -361,9 +361,9 @@ assert_not_file "$queue_fs"
 # helper reports only the existing missing-helper diagnostic.
 HQ_FFAIL="$(make_root f-fail)"
 set_company "$HQ_FFAIL" "sess-forwarder" "acme"
-payload_forwarder="$(python3 - <<PY
-import json
-root = ${HQ_FFAIL@Q}
+payload_forwarder="$(HQ_FFAIL="$HQ_FFAIL" python3 - <<'PY'
+import json, os
+root = os.environ["HQ_FFAIL"]
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "sess-forwarder",

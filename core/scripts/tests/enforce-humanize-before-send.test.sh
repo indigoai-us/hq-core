@@ -13,9 +13,16 @@ set -euo pipefail
 
 ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 HOOK="$ROOT/.claude/hooks/enforce-humanize-before-send.sh"
+CAPABILITY_HOOK="$ROOT/.claude/hooks/enforce-capability-link-render.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
+
+run_capability_hook() { # <transcript path> -> hook JSON
+  local transcript="$1"
+  jq -nc --arg p "$transcript" '{transcript_path:$p,stop_hook_active:false}' \
+    | bash "$CAPABILITY_HOOK"
+}
 
 [ -x "$HOOK" ] || fail "hook not executable: $HOOK"
 
@@ -134,5 +141,61 @@ echo "[16] ordinary three-item list is not a rhythm triad on its own"
 out="$(run_hook "$(bash_send 'hq dm alice "Ship order is staging, canary, and prod."')")"
 [ "$(decision_of "$out")" = "none" ] || fail "[16] plain enumeration wrongly blocked, got: $out"
 pass "plain enumeration passed"
+
+echo "[17] capability-link hook reads a bounded tail and keeps the last assistant turn"
+REAL_JQ="$(command -v jq)"
+JQ_TRACE="$TMP/capability-jq-bytes"
+JQ_SHIM_DIR="$TMP/bin"
+mkdir -p "$JQ_SHIM_DIR"
+cat > "$JQ_SHIM_DIR/jq" <<'JQ_SHIM'
+#!/usr/bin/env bash
+set -o pipefail
+measure=0
+for arg in "$@"; do
+  [ "$arg" = "-nr" ] && measure=1
+done
+if [ "$measure" -eq 0 ]; then exec "$REAL_JQ" "$@"; fi
+last_arg=""
+for arg in "$@"; do last_arg="$arg"; done
+if [ -f "$last_arg" ]; then
+  stat -c %s "$last_arg" > "$JQ_TRACE"
+  exec "$REAL_JQ" "$@"
+fi
+MEASURED_INPUT="${JQ_TRACE}.input"
+cat > "$MEASURED_INPUT"
+wc -c < "$MEASURED_INPUT" > "$JQ_TRACE"
+"$REAL_JQ" "$@" < "$MEASURED_INPUT"
+status=$?
+rm -f "$MEASURED_INPUT"
+exit "$status"
+JQ_SHIM
+chmod +x "$JQ_SHIM_DIR/jq"
+CAPABILITY_TRANSCRIPT="$TMP/capability-large.jsonl"
+CAPABILITY_RECORD_BYTES="$TMP/capability-record-bytes"
+python3 - "$CAPABILITY_TRANSCRIPT" "$CAPABILITY_RECORD_BYTES" <<'PY'
+import json, sys
+transcript_path, length_path = sys.argv[1:]
+padding = {"type":"progress","padding":"x" * 1200000}
+assistant = {
+    "type":"assistant",
+    "message":{"role":"assistant","content":[
+        {"type":"text","text":"x" * 1100000 + " https://hq.computer/share-session/abcdefghijklmnopqrstuvwx"}
+    ]}
+}
+with open(transcript_path, "w", encoding="utf-8") as transcript:
+    transcript.write(json.dumps(padding, separators=(",", ":")) + "\n")
+    last_record = json.dumps(assistant, separators=(",", ":")) + "\n"
+    transcript.write(last_record)
+with open(length_path, "w", encoding="ascii") as length:
+    length.write(str(len(last_record.encode("utf-8"))))
+PY
+CAPABILITY_OUT="$(printf '%s' "$(jq -nc --arg p "$CAPABILITY_TRANSCRIPT" '{transcript_path:$p,stop_hook_active:false}')" | PATH="$JQ_SHIM_DIR:$PATH" REAL_JQ="$REAL_JQ" JQ_TRACE="$JQ_TRACE" bash "$CAPABILITY_HOOK")"
+[ "$(decision_of "$CAPABILITY_OUT")" = "block" ] \
+  || fail "[17] expected a block for the last assistant bare capability URL, got: $CAPABILITY_OUT"
+CAPABILITY_JQ_BYTES="$(cat "$JQ_TRACE")"
+EXPECTED_CAPABILITY_RECORD_BYTES="$(cat "$CAPABILITY_RECORD_BYTES")"
+[ "$CAPABILITY_JQ_BYTES" -eq "$EXPECTED_CAPABILITY_RECORD_BYTES" ] \
+  || fail "[17] capability hook parsed $CAPABILITY_JQ_BYTES bytes, expected only final record ($EXPECTED_CAPABILITY_RECORD_BYTES bytes)"
+pass "capability-link hook retained and blocked an oversized latest bare URL record"
 
 echo "ALL PASS"

@@ -56,6 +56,8 @@ set -euo pipefail
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$HQ_ROOT"
 HQ_ROOT="$(pwd -P)"
+HANDOFF_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HANDOFF_SCRIPT_DIR/lib/session-id.sh"
 HAS_GIT_CHECKOUT="false"
 COMMON_GIT_DIR=""
 GIT_PROBE_OUTPUT=""
@@ -243,14 +245,43 @@ done < <(
   ' "$FILES_TOUCHED_FILE" 2>/dev/null || true
 )
 
-# Company workspace mirrors are scoped from the already-validated changeset,
-# never from ambient repository state. A handoff can legitimately touch more
-# than one company, so preserve all unique slugs in durable thread metadata.
-MIRROR_COMPANIES_JSON=$(printf '%s\n' "${SAFE_STAGE_PATHS[@]:-}" | jq -R -s -c '
-  split("\n")
-  | [ .[] | select(length > 0) | try (capture("^companies/(?<company>[a-z][a-z0-9_-]*)/").company) ]
-  | unique
-' 2>/dev/null || printf '[]')
+# Company workspace mirrors are limited to the company bound to this session.
+# Inspect the complete handoff paths, including skipped paths, so a missing or
+# excluded file cannot hide that the handoff spans multiple companies.
+TOUCHED_COMPANIES_JSON=$(jq -c --arg hq_root "$HQ_ROOT" '
+  [ (if type == "array" then .[] else empty end)
+    | (if type == "string" then . elif type == "object" and (.path | type) == "string" then .path else "" end)
+    | (if startswith($hq_root + "/") then .[(($hq_root | length) + 1):] else . end)
+    | sub("^\\./"; "")
+    | (try capture("^companies/(?<company>[a-z][a-z0-9_-]*)/").company catch null)
+    | select(type == "string")
+  ] | unique
+' "$FILES_TOUCHED_FILE" 2>/dev/null || printf '[]')
+MIRROR_COMPANIES_JSON='[]'
+
+bound_session_company() {
+  local session_id metadata company
+  session_id="$(session_id_resolve "$HQ_ROOT")"
+  [[ -n "$session_id" ]] || return 0
+  metadata="$HQ_ROOT/workspace/sessions/$session_id/meta.yaml"
+  [[ -r "$metadata" ]] || return 0
+  company="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$metadata" 2>/dev/null || true)"
+  [[ "$company" =~ ^[a-z][a-z0-9_-]*$ ]] || return 0
+  printf '%s' "$company"
+}
+
+BOUND_SESSION_COMPANY="$(bound_session_company)"
+TOUCHED_COMPANY_COUNT="$(jq 'length' <<< "$TOUCHED_COMPANIES_JSON")"
+if [[ "$TOUCHED_COMPANY_COUNT" -gt 1 ]]; then
+  printf 'handoff-finalize: company mirror skipped (handoff spans multiple companies)\n' >&2
+elif [[ -z "$BOUND_SESSION_COMPANY" || ! -d "companies/$BOUND_SESSION_COMPANY" ]]; then
+  printf 'handoff-finalize: company mirror skipped (no bound company for this session)\n' >&2
+elif [[ "$TOUCHED_COMPANY_COUNT" -eq 1 ]] && \
+     [[ "$(jq -r '.[0]' <<< "$TOUCHED_COMPANIES_JSON")" != "$BOUND_SESSION_COMPANY" ]]; then
+  printf 'handoff-finalize: company mirror skipped (handoff paths do not match the bound company)\n' >&2
+else
+  MIRROR_COMPANIES_JSON="$(jq -cn --arg company "$BOUND_SESSION_COMPANY" '[$company]')"
+fi
 
 # -------- bg git reap (if launched by caller) --------
 GIT_BG_ERRORS=""

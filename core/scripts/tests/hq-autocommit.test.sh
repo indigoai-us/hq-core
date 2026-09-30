@@ -25,7 +25,8 @@ AWS_EC2_METADATA_DISABLED=true
 : >"$AWS_SHARED_CREDENTIALS_FILE"
 : >"$AWS_CONFIG_FILE"
 export AWS_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE AWS_EC2_METADATA_DISABLED
-unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN \
+unset HQ_FLAGS_API_URL HQ_COMPANY_UID HQ_COMPANY_SLUG HQ_CLI_BIN \
+  AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN \
   AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_CONTAINER_CREDENTIALS_RELATIVE_URI \
   AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_AUTHORIZATION_TOKEN
 for blocked_binary in aws sst pulumi systemctl; do
@@ -46,7 +47,11 @@ done
 
 mkdir -p "$TMP/.claude/hooks" "$TMP/core" "$TMP/repos/public/app"
 HOOK_SOURCE="${HQ_AUTOCOMMIT_TEST_HOOK_SOURCE:-$ROOT/.claude/hooks/hq-autocommit.sh}"
+FLAG_SOURCE="${HQ_AUTOCOMMIT_TEST_FLAG_SOURCE:-$ROOT/.claude/hooks/hq-autocommit-failure-context-flag.cjs}"
 cp "$HOOK_SOURCE" "$TMP/.claude/hooks/hq-autocommit.sh"
+if [[ -f "$FLAG_SOURCE" ]]; then
+  cp "$FLAG_SOURCE" "$TMP/.claude/hooks/hq-autocommit-failure-context-flag.cjs"
+fi
 chmod +x "$TMP/.claude/hooks/hq-autocommit.sh"
 printf 'hqVersion: "test"\n' > "$TMP/core/core.yaml"
 
@@ -175,6 +180,153 @@ SHIM
   fi
 }
 
+run_failure_context_case() {
+  local shim_dir="$TMP_PARENT/failing-git" payload rc=0 stderr_file="$TMP_PARENT/failure-stderr" strict_stderr="$TMP_PARENT/strict-stderr" real_git default_tmp strict_tmp off_tmp cli fake_bin
+  real_git="$(command -v git)"
+  default_tmp="$TMP_PARENT/tmp/failure-default"
+  strict_tmp="$TMP_PARENT/tmp/failure-strict"
+  off_tmp="$TMP_PARENT/tmp/failure-off"
+  cli="$TMP_PARENT/flag-cli"
+  fake_bin="$TMP_PARENT/flag-bin"
+  mkdir -p "$shim_dir" "$default_tmp" "$strict_tmp" "$off_tmp" \
+    "$cli/bin" "$cli/node_modules/@indigoai-us/hq-flags-client" \
+    "$cli/node_modules/@indigoai-us/hq-cloud" "$fake_bin"
+  cat >"$shim_dir/git" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+for arg in "$@"; do
+  if [[ "$arg" == "commit" ]]; then
+    printf 'synthetic commit failure\n' >&2
+    exit 23
+  fi
+done
+exec "${HQ_AUTOCOMMIT_TEST_REAL_GIT:?}" "$@"
+SHIM
+  chmod +x "$shim_dir/git"
+  cat >"$cli/package.json" <<'JSON'
+{"name":"@indigoai-us/hq-cli","bin":{"hq":"bin/hq"}}
+JSON
+  cat >"$cli/bin/hq" <<'SH'
+#!/usr/bin/env sh
+exit 0
+SH
+  chmod +x "$cli/bin/hq"
+  ln -s "$cli/bin/hq" "$fake_bin/hq"
+  cat >"$cli/node_modules/@indigoai-us/hq-flags-client/package.json" <<'JSON'
+{"type":"module","exports":{".":{"import":"./index.js"}}}
+JSON
+  cat >"$cli/node_modules/@indigoai-us/hq-flags-client/index.js" <<'JS'
+export const createFlagClient = () => ({
+  ready: async () => {},
+  snapshot: () => ({ flags: { "hooks.hq-autocommit-failure-context": process.env.HQ_TEST_FLAG_ENABLED === "true" } }),
+  close: () => {},
+});
+JS
+  cat >"$cli/node_modules/@indigoai-us/hq-cloud/package.json" <<'JSON'
+{"type":"module","exports":{".":{"import":"./index.js"}}}
+JSON
+  cat >"$cli/node_modules/@indigoai-us/hq-cloud/index.js" <<'JS'
+export const loadCachedTokens = () => ({ idToken: "synthetic-test-token" });
+JS
+
+  printf 'failure context\n' >"$TMP/failure-context.md"
+  payload="$(jq -cn --arg path "$TMP/failure-context.md" '{tool_name:"Edit",session_id:"failure-context-default",tool_input:{file_path:$path}}')"
+  HOOK_OUT="$(cd "$TMP" && printf '%s' "$payload" | env \
+    PATH="$fake_bin:$shim_dir:$PATH" TMPDIR="$default_tmp" CLAUDE_PROJECT_DIR="$TMP" \
+    HQ_AUTOCOMMIT_TEST_REAL_GIT="$real_git" HQ_CLI_BIN="$cli/bin/hq" \
+    HQ_FLAGS_API_URL="https://flags.invalid" HQ_COMPANY_UID=cmp_test123 \
+    HQ_COMPANY_SLUG=indigo HQ_TEST_FLAG_ENABLED=true \
+    bash .claude/hooks/hq-autocommit.sh 2>"$stderr_file")" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "default PostToolUse failure must remain non-blocking; rc=$rc" >&2
+    return 1
+  fi
+  if ! printf '%s' "$HOOK_OUT" | jq -e '
+      .hookSpecificOutput.hookEventName == "PostToolUse" and
+      (.hookSpecificOutput.additionalContext | contains("git commit exited 23"))
+    ' >/dev/null 2>&1; then
+    echo "enabled git failure must emit PostToolUse additionalContext JSON; stdout was: $HOOK_OUT" >&2
+    return 1
+  fi
+  if ! grep -Fq 'WARNING: HQ autosave failed — git commit exited 23' "$stderr_file"; then
+    echo "default failure must retain the human-readable stderr warning" >&2
+    return 1
+  fi
+  if ! grep -Fq 'FAIL stage=commit exit=23' "$TMP/workspace/logs/hq-autocommit.log"; then
+    echo "failure must retain the existing durable log record" >&2
+    return 1
+  fi
+
+  "$real_git" -C "$TMP" reset -q
+  printf 'strict failure context\n' >"$TMP/failure-context-strict.md"
+  payload="$(jq -cn --arg path "$TMP/failure-context-strict.md" '{tool_name:"Edit",session_id:"failure-context-strict",tool_input:{file_path:$path}}')"
+  rc=0
+  HOOK_OUT="$(cd "$TMP" && printf '%s' "$payload" | env \
+    PATH="$fake_bin:$shim_dir:$PATH" TMPDIR="$strict_tmp" CLAUDE_PROJECT_DIR="$TMP" \
+    HQ_AUTOCOMMIT_TEST_REAL_GIT="$real_git" HQ_CLI_BIN="$cli/bin/hq" \
+    HQ_FLAGS_API_URL="https://flags.invalid" HQ_COMPANY_UID=cmp_test123 \
+    HQ_COMPANY_SLUG=indigo HQ_TEST_FLAG_ENABLED=true HQ_AUTOCOMMIT_STRICT=1 \
+    bash .claude/hooks/hq-autocommit.sh 2>"$strict_stderr")" || rc=$?
+  if [[ "$rc" -ne 1 ]]; then
+    echo "strict PostToolUse failure must keep exit 1; rc=$rc" >&2
+    return 1
+  fi
+  if ! printf '%s' "$HOOK_OUT" | jq -e '
+      .hookSpecificOutput.hookEventName == "PostToolUse" and
+      (.hookSpecificOutput.additionalContext | contains("git commit exited 23"))
+    ' >/dev/null 2>&1; then
+    echo "strict enabled git failure must emit PostToolUse additionalContext JSON; stdout was: $HOOK_OUT" >&2
+    return 1
+  fi
+  if ! grep -Fq 'WARNING: HQ autosave failed — git commit exited 23' "$strict_stderr"; then
+    echo "strict failure must retain the human-readable stderr warning" >&2
+    return 1
+  fi
+
+  "$real_git" -C "$TMP" reset -q
+  printf 'default off failure context\n' >"$TMP/failure-context-off.md"
+  payload="$(jq -cn --arg path "$TMP/failure-context-off.md" '{tool_name:"Edit",session_id:"failure-context-off",tool_input:{file_path:$path}}')"
+  rc=0
+  HOOK_OUT="$(cd "$TMP" && printf '%s' "$payload" | env \
+    PATH="$shim_dir:$PATH" TMPDIR="$off_tmp" CLAUDE_PROJECT_DIR="$TMP" \
+    HQ_AUTOCOMMIT_TEST_REAL_GIT="$real_git" \
+    bash .claude/hooks/hq-autocommit.sh 2>"$strict_stderr")" || rc=$?
+  if [[ "$rc" -ne 0 || "$HOOK_OUT" != *"HQ autosave failed"* ]]; then
+    echo "missing flag configuration must keep the previous non-blocking warning; rc=$rc stdout=$HOOK_OUT" >&2
+    return 1
+  fi
+  if printf '%s' "$HOOK_OUT" | jq -e '.hookSpecificOutput.hookEventName == "PostToolUse"' >/dev/null 2>&1; then
+    echo "the default-off flag must not switch to model-context JSON" >&2
+    return 1
+  fi
+
+  "$real_git" -C "$TMP" reset -q
+  local node_bin="$TMP_PARENT/node-trace-bin" node_trace="$TMP_PARENT/node-calls"
+  mkdir -p "$node_bin"
+  cat >"$node_bin/node" <<'SHIM'
+#!/usr/bin/env bash
+printf 'node %s\n' "$*" >>"${HQ_AUTOCOMMIT_TEST_NODE_TRACE:?}"
+printf 'false\n'
+SHIM
+  chmod +x "$node_bin/node"
+  : >"$node_trace"
+  printf 'unset flag inputs\n' >"$TMP/failure-context-unset-flags.md"
+  payload="$(jq -cn --arg path "$TMP/failure-context-unset-flags.md" '{tool_name:"Edit",session_id:"failure-context-unset-flags",tool_input:{file_path:$path}}')"
+  rc=0
+  HOOK_OUT="$(cd "$TMP" && printf '%s' "$payload" | env \
+    PATH="$node_bin:$shim_dir:$PATH" TMPDIR="$off_tmp" CLAUDE_PROJECT_DIR="$TMP" \
+    HQ_AUTOCOMMIT_TEST_REAL_GIT="$real_git" HQ_AUTOCOMMIT_TEST_NODE_TRACE="$node_trace" \
+    bash .claude/hooks/hq-autocommit.sh 2>"$strict_stderr")" || rc=$?
+  if [[ "$rc" -ne 0 || "$HOOK_OUT" != *"HQ autosave failed"* ]]; then
+    echo "unset flag inputs must keep the plain non-blocking warning; rc=$rc stdout=$HOOK_OUT" >&2
+    return 1
+  fi
+  if [[ -s "$node_trace" ]]; then
+    echo "node must not start when the flag URL and company UID are unset; calls: $(cat "$node_trace")" >&2
+    return 1
+  fi
+}
+
 if [[ -n "${HQ_AUTOCOMMIT_TEST_PATH_CASE:-}" ]]; then
   case "$HQ_AUTOCOMMIT_TEST_PATH_CASE" in
     linked-worktree) run_linked_worktree_case ;;
@@ -182,6 +334,7 @@ if [[ -n "${HQ_AUTOCOMMIT_TEST_PATH_CASE:-}" ]]; then
     windows-forwardslash) run_windows_style_path_case forwardslash ;;
     unresolved-windows) run_unresolved_windows_path_case ;;
     windows-fallback) run_windows_fallback_path_case ;;
+    failure-context) run_failure_context_case ;;
     *) echo "unknown path regression case: $HQ_AUTOCOMMIT_TEST_PATH_CASE" >&2; exit 2 ;;
   esac
   echo "hq-autocommit path regression $HQ_AUTOCOMMIT_TEST_PATH_CASE: ok"

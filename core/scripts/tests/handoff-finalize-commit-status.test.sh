@@ -28,8 +28,9 @@ assert_eq() {
 # index-rebuild scripts it shells out to.
 scaffold_repo() {
   local repo="$1"
-  mkdir -p "$repo/core/scripts" "$repo/workspace/baseline" "$repo/workspace/threads" "$repo/workspace/orchestrator"
+  mkdir -p "$repo/core/scripts/lib" "$repo/workspace/baseline" "$repo/workspace/threads" "$repo/workspace/orchestrator"
   cp "$SRC_ROOT/scripts/handoff-finalize.sh" "$repo/core/scripts/handoff-finalize.sh"
+  cp "$SRC_ROOT/scripts/lib/session-id.sh" "$repo/core/scripts/lib/session-id.sh"
   cp "$SRC_ROOT/scripts/hq-status-summary.sh" "$repo/core/scripts/hq-status-summary.sh"
   chmod +x "$repo/core/scripts/"*.sh
 
@@ -267,7 +268,9 @@ NO_GIT_REPO="$TMP_ROOT/no-git"
 NO_GIT_BIN="$TMP_ROOT/no-git-bin"
 mkdir -p "$NO_GIT_REPO/core/scripts" "$NO_GIT_REPO/workspace/threads" \
   "$NO_GIT_REPO/workspace/orchestrator" "$NO_GIT_REPO/notes" "$NO_GIT_BIN" "$TMP_ROOT/home"
+mkdir -p "$NO_GIT_REPO/core/scripts/lib"
 cp "$SRC_ROOT/scripts/handoff-finalize.sh" "$NO_GIT_REPO/core/scripts/handoff-finalize.sh"
+cp "$SRC_ROOT/scripts/lib/session-id.sh" "$NO_GIT_REPO/core/scripts/lib/session-id.sh"
 chmod +x "$NO_GIT_REPO/core/scripts/handoff-finalize.sh"
 cat > "$NO_GIT_REPO/core/scripts/qmd-reindex-bg.sh" <<'SH'
 #!/usr/bin/env bash

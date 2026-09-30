@@ -13,6 +13,7 @@ mkdir -p "$ROOT/core/scripts/lib" "$ROOT/.claude/hooks" \
 
 cp "$HQ_SRC/core/scripts/hook-lib.sh" "$ROOT/core/scripts/"
 cp "$HQ_SRC/core/scripts/derive-trigger-facts.sh" "$ROOT/core/scripts/"
+cp "$HQ_SRC/core/scripts/lib/transcript-tail.sh" "$ROOT/core/scripts/lib/"
 cp "$HQ_SRC/core/scripts/eval-trigger.sh" "$ROOT/core/scripts/"
 cp "$HQ_SRC/core/scripts/lib/trigger-fact-text.awk" "$ROOT/core/scripts/lib/"
 cp "$HQ_SRC/.claude/hooks/inject-policy-on-trigger.sh" "$ROOT/.claude/hooks/"

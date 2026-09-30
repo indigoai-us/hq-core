@@ -42,6 +42,7 @@ cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/"
 cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$TMP/core/scripts/lib/"
 cp "$ROOT/core/scripts/lib/trigger-fact-text.awk" "$TMP/core/scripts/lib/"
 cp "$ROOT/core/scripts/derive-trigger-facts.sh" "$TMP/core/scripts/"
+cp "$ROOT/core/scripts/lib/transcript-tail.sh" "$TMP/core/scripts/lib/"
 cp "$ROOT/core/scripts/eval-trigger.sh" "$TMP/core/scripts/"
 chmod +x \
   "$TMP/.claude/hooks/hook-gate.sh" \

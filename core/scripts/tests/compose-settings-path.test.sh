@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hq-core: public
-# Regression test for compose-settings-path.sh + the setup.sh 3b snapshot and
-# the template settings.json.
+# Regression test for compose-settings-path.sh + setup's PATH configuration
+# helper and the template settings.json.
 #
 # Covers the installer→Claude PATH gap: the native installer provisions
 # qmd/hq/node into a managed toolchain wired into PATH only via an
@@ -55,9 +55,11 @@ NODE_COUNT="$(tr ':' '\n' <<<"$OUT" | grep -cx "$TOOLCHAIN/node/bin")"
 OUT="$(HQ_TOOLCHAIN_DIR="$TMP/does-not-exist" bash "$SCRIPT" "$BASE")"
 [[ "$OUT" == "$BASE" ]] || fail "base PATH altered without a toolchain on disk — got: $OUT"
 
-# ── 5. setup.sh 3b routes the snapshot through the composer ─────────────────
+# ── 5. setup.sh delegates PATH configuration to the tested helper ──────────
 
-grep -q 'compose-settings-path.sh' "$SRC_ROOT/core/scripts/setup.sh" ||
-  fail "setup.sh no longer snapshots PATH via compose-settings-path.sh"
+grep -q 'configure-settings-path.sh' "$SRC_ROOT/core/scripts/setup.sh" ||
+  fail "setup.sh no longer delegates PATH setup to configure-settings-path.sh"
+grep -q 'compose-settings-path.sh' "$SRC_ROOT/core/scripts/configure-settings-path.sh" ||
+  fail "PATH configuration helper no longer composes the PATH snapshot"
 
 echo "PASS: compose-settings-path regression suite"

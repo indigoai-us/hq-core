@@ -3,6 +3,17 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.180-beta.6
+
+- feat 2026-09-27 (setup: instant HQ explanation): the setup worker's
+  explanation of HQ now lives in one file,
+  `core/workers/public/setup/skills/explain-hq.md`, and is sent word for word.
+  When the person clicks "Explain HQ first", hq-cli sends that text straight
+  away with no model turn and tells the bot on its next turn that it went
+  out; the bot then carries on with setup. When they ask in their own words,
+  the bot reads the same file. An hq-cli without this change still works: the
+  bot sends the text itself. No action beyond `/update-hq`.
+
 ## Release: v15.0.179-beta.25
 
 - fix 2026-09-28 (Windows Stop-hook stall): `walk_up_to_hq_root` and

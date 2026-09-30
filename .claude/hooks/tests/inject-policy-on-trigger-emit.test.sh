@@ -70,6 +70,7 @@ hq_json_get() {
 }
 EOF
   cp "$HQ_SRC/core/scripts/derive-trigger-facts.sh" "$ROOT/core/scripts/derive-trigger-facts.sh"
+  cp "$HQ_SRC/core/scripts/lib/transcript-tail.sh" "$ROOT/core/scripts/lib/transcript-tail.sh"
   cp "$HQ_SRC/core/scripts/lib/trigger-fact-text.awk" "$ROOT/core/scripts/lib/trigger-fact-text.awk"
   printf '#!/bin/bash\nexit 0\n' > "$ROOT/core/scripts/eval-trigger.sh"
   chmod +x "$ROOT/core/scripts/"*.sh

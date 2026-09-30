@@ -50,6 +50,80 @@ hq_sync_exit_note() {
   esac
 }
 
+# hq_sync_count_tombstoned_files <events_file>
+# Tombstone counts are emitted on per-company `complete` events. The final
+# `all-complete` event has the download total but no tombstone aggregate.
+hq_sync_count_tombstoned_files() {
+  local events_file="${1:-}"
+  local files_tombstoned
+  [ -n "$events_file" ] && [ -f "$events_file" ] || { echo 0; return 0; }
+  if ! files_tombstoned="$(jq -sr '
+    [ .[] | select(.type == "complete") | (.filesTombstoned // 0) ]
+    | if all(.[]; type == "number" and . >= 0 and floor == .)
+      then (add // 0)
+      else "invalid"
+      end
+  ' "$events_file" 2>/dev/null)"; then
+    files_tombstoned=invalid
+  fi
+  printf '%s\n' "$files_tombstoned"
+}
+
+# hq_sync_post_pull_reindex_flag_enabled
+# Avoid starting Node when the hq-flags endpoint or company identity is absent
+# or malformed. The CJS reader uses the same default-off flag-client pattern as
+# hq-autocommit-failure-context-flag.cjs.
+hq_sync_post_pull_reindex_flag_enabled() {
+  local endpoint="${HQ_FLAGS_API_URL:-}"
+  local company_uid="${HQ_COMPANY_UID:-}"
+  local cli_bin="${HQ_CLI_BIN:-}"
+  local reader_dir reader enabled
+
+  [[ "$endpoint" =~ ^https?://[^/[:space:]]+(/[^[:space:]]*)?$ ]] || return 1
+  [[ "$company_uid" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]] || return 1
+  if [ -z "$cli_bin" ]; then cli_bin="$(command -v hq 2>/dev/null || true)"; fi
+  [ -n "$cli_bin" ] && [ -x "$cli_bin" ] || return 1
+  command -v node >/dev/null 2>&1 || return 1
+
+  reader_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
+  reader="$reader_dir/hq-sync-post-pull-reindex-flag.cjs"
+  [ -f "$reader" ] || return 1
+  enabled="$(HQ_CLI_BIN="$cli_bin" node "$reader" 2>/dev/null)" || return 1
+  [ "$enabled" = true ]
+}
+
+# hq_sync_post_pull_reindex <hq_root> <files_downloaded> <files_tombstoned>
+# The --companies runner skips reindex per company to avoid repeated work.
+# Refresh namespaced wrappers only when the default-off hq-flags gate is enabled
+# and the pull changed files. This is best-effort; never replace sync's status.
+hq_sync_post_pull_reindex() {
+  local hq_root="${1:-}"
+  local files_downloaded="${2:-0}"
+  local files_tombstoned="${3:-0}"
+  local reindex_status=0
+
+  for count in "$files_downloaded" "$files_tombstoned"; do
+    case "$count" in
+      ''|*[!0-9]*)
+        echo "Warning: company-skill reindex skipped because a file-change count was invalid." >&2
+        return 0
+        ;;
+    esac
+  done
+  [ "$files_downloaded" -gt 0 ] || [ "$files_tombstoned" -gt 0 ] || return 0
+  if [ -z "$hq_root" ]; then
+    echo "Warning: company-skill reindex skipped because the HQ root is empty." >&2
+    return 0
+  fi
+  hq_sync_post_pull_reindex_flag_enabled || return 0
+
+  hq reindex --repo-root "$hq_root" || reindex_status=$?
+  if [ "$reindex_status" -ne 0 ]; then
+    echo "Warning: company-skill reindex failed (exit $reindex_status); sync result is unchanged. Run 'hq reindex --repo-root <hqRoot>' to retry." >&2
+  fi
+  return 0
+}
+
 # hq_sync_count_conflict_twins <hq_root>
 # Counts on-disk `.conflict-*` twin files under the HQ root. node_modules,
 # .git, and workspace/tmp are excluded: they hold generated or scratch content

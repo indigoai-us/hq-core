@@ -30,9 +30,10 @@ trap cleanup EXIT
 
 scaffold_repo() {
   local repo="$1"
-  mkdir -p "$repo/core/scripts" "$repo/workspace/baseline" "$repo/workspace/threads" \
+  mkdir -p "$repo/core/scripts/lib" "$repo/workspace/baseline" "$repo/workspace/threads" \
     "$repo/workspace/orchestrator" "$repo/home"
   cp "$SRC_ROOT/scripts/handoff-finalize.sh" "$repo/core/scripts/handoff-finalize.sh"
+  cp "$SRC_ROOT/scripts/lib/session-id.sh" "$repo/core/scripts/lib/session-id.sh"
   cp "$SRC_ROOT/scripts/clean-worktree-reconcile-handoff.sh" "$repo/core/scripts/clean-worktree-reconcile-handoff.sh"
   cp "$SRC_ROOT/scripts/hq-status-summary.sh" "$repo/core/scripts/hq-status-summary.sh"
   cp "$SRC_ROOT/scripts/qmd-reindex-bg.sh" "$repo/core/scripts/qmd-reindex-bg.sh"

@@ -40,15 +40,14 @@ done
 
 echo "[2] registry scripts exist and gated ids are known to the profile lists"
 . "$ROOT/.claude/hooks/hook-gate.sh" --lib
-# Ids that were already gated-but-absent from every profile list when the
-# registry was introduced (they never ran under hook-gate.sh either). Kept
-# byte-for-byte to preserve behaviour; enabling them is a separate decision.
-KNOWN_DEAD=" capture-estimates check-core-yaml-parity env-file-no-trailing-newline record-policy-retrieval "
+# These three gated ids remain inactive pending an explicit owner choice
+# for their profile placement; they are documented in MIGRATION.md.
+DEFERRED_PROFILE_DECISION=" check-core-yaml-parity env-file-no-trailing-newline record-policy-retrieval "
 while IFS=$'\t' read -r id script gated; do
   [ -f "$ROOT/$script" ] || fail "registry script missing: $script ($id)"
   if [ "$gated" = "true" ]; then
     if ! is_in_standard_profile "$id" && ! is_in_minimal_profile "$id" && ! is_in_strict_profile "$id"; then
-      case "$KNOWN_DEAD" in
+      case "$DEFERRED_PROFILE_DECISION" in
         *" $id "*) ;;
         *) fail "gated id '$id' is in no profile list (would never run)" ;;
       esac

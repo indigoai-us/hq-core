@@ -83,7 +83,7 @@ case "$MODE" in
     mkdir -p "$FX/core/policies" "$FX/core/scripts/lib" "$FX/.claude/hooks" "$FX/workspace/orchestrator/policy-trigger-state"
     for c in "${CORPUS[@]}"; do [ -d "$c" ] && cp "$c"/*.md "$FX/core/policies/" 2>/dev/null; done
     cp "$HOOK" "$FX/.claude/hooks/"; cp "$HQ_ROOT/core/scripts/hook-lib.sh" "$HQ_ROOT/core/scripts/derive-trigger-facts.sh" "$HQ_ROOT/core/scripts/eval-trigger.sh" "$FX/core/scripts/" 2>/dev/null
-    cp "$HQ_ROOT/core/scripts/lib/trigger-fact-text.awk" "$FX/core/scripts/lib/"
+    cp "$HQ_ROOT/core/scripts/lib/trigger-fact-text.awk" "$HQ_ROOT/core/scripts/lib/transcript-tail.sh" "$FX/core/scripts/lib/"
     n=0; total_recall_hit=0; total_recall_n=0; rows=""
     while IFS= read -r sc; do
       n=$((n+1))

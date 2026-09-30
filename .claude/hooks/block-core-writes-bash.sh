@@ -21,21 +21,26 @@ CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
 [[ -z "$CMD" ]] && exit 0
 
 # This lexical candidate check is deliberately a superset of every deny path
-# below. Each deny path needs one protected directory name (or AGENTS.md) in
-# its target token: fixed HQ-root prefixes, CLAUDE_PROJECT_DIR/HQ_ROOT/REPO_ROOT
-# forms, colon lists, and assignment-carried variables all preserve that name.
-# Remove shell quote and escape syntax first because hq_shell_simple_commands
-# does the same while building argv. This also covers a path split across
-# adjacent quoted fragments. The registry prefilter has these names plus broad
-# write verbs and is therefore broader than the blocking target predicate.
+# below. Remove shell quote and escape syntax first because
+# hq_shell_simple_commands does the same while building argv. This also covers
+# paths split across adjacent quoted fragments.
 has_protected_path_candidate() {
-  local candidate="$1"
+  local candidate="$1" assignment_root_re substitution_root_re
   candidate="${candidate//\'/}"
   candidate="${candidate//\"/}"
   candidate="${candidate//\\/}"
   case "$candidate" in
     *core/*|*.claude/*|*.agents/*|*.codex/*|*.obsidian/*|*companies/_template*|*AGENTS.md*) return 0 ;;
   esac
+  # A protected root may be assigned without its trailing slash and only gain
+  # one when a later command appends a filename (for example C=core; > "$C/x").
+  assignment_root_re='(^|[[:space:];|&])[A-Za-z_][A-Za-z0-9_]*=(\./)?(core|\.claude|\.agents|\.codex|\.obsidian|companies/_template)([[:space:];|&/:]|$)|(^|[[:space:];|&])[A-Za-z_][A-Za-z0-9_]*=AGENTS\.md([[:space:];|&]|$)'
+  [[ "$candidate" =~ $assignment_root_re ]] && return 0
+  # A substitution only makes this a candidate when its own command text names
+  # a protected root. Arbitrary dynamic targets such as $(mktemp) stay on the
+  # fast allow path.
+  substitution_root_re='(\$\([^)]*[[:space:]]|`[^`]*[[:space:]])(core|\.claude|\.agents|\.codex|\.obsidian|companies/_template)(/|[[:space:]]|\)|$)'
+  [[ "$candidate" =~ $substitution_root_re ]] && return 0
   return 1
 }
 
@@ -233,6 +238,7 @@ shell_command_executable_result() {
 
 WRITE_TARGET_PROTECTED_CWD="no"
 WRITE_TARGET_PROTECTED_VARS=""
+WRITE_TARGET_SUBSTITUTION_VARS=""
 
 raw_token_matches_re() {
   local token="$1" token_re="$2"
@@ -250,6 +256,11 @@ target_matches_re() {
       "\$$var"|"\$$var/"*|"\${$var}"|"\${$var}/"*) return 0 ;;
     esac
   done
+  for var in $WRITE_TARGET_SUBSTITUTION_VARS; do
+    case "$token" in
+      "\$$var"|"\$$var/"*|"\${$var}"|"\${$var}/"*) return 0 ;;
+    esac
+  done
   if [[ "$WRITE_TARGET_PROTECTED_CWD" = "yes" ]]; then
     case "$token" in
       /*) ;;
@@ -260,6 +271,42 @@ target_matches_re() {
   return 1
 }
 
+remove_context_var() {
+  local list="$1" remove="$2" item result=""
+  for item in $list; do
+    [[ "$item" == "$remove" ]] || result="${result:+$result }$item"
+  done
+  CONTEXT_VAR_LIST_RESULT="$result"
+}
+
+collect_explicit_substitution_vars() {
+  local token_re="$2" rest="$1" match key value inner suffix
+  local assignment_re='(^|[[:space:];|&])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|\$\([^)]*\)|`[^`]*`|[^[:space:];|&]+)'
+  WRITE_TARGET_SUBSTITUTION_VARS=""
+  while [[ "$rest" =~ $assignment_re ]]; do
+    match="${BASH_REMATCH[0]}"
+    key="${BASH_REMATCH[2]}"
+    value="${BASH_REMATCH[3]}"
+    rest="${rest#*"$match"}"
+    remove_context_var "$WRITE_TARGET_SUBSTITUTION_VARS" "$key"
+    WRITE_TARGET_SUBSTITUTION_VARS="$CONTEXT_VAR_LIST_RESULT"
+    strip_token_quotes "$value"
+    value="$STRIP_TOKEN_RESULT"
+    inner=""
+    case "$value" in
+      '$('*')') inner="${value#\$\(}"; inner="${inner%)}" ;;
+      '`'*'`') inner="${value#\`}"; inner="${inner%\`}" ;;
+    esac
+    if [[ -n "$inner" ]]; then
+      suffix="$inner"
+      case "$suffix" in */) ;; *) suffix="${suffix}/" ;; esac
+      if raw_token_matches_re "$inner" "$token_re" || raw_token_matches_re "$suffix" "$token_re"; then
+        WRITE_TARGET_SUBSTITUTION_VARS="${WRITE_TARGET_SUBSTITUTION_VARS:+$WRITE_TARGET_SUBSTITUTION_VARS }$key"
+      fi
+    fi
+  done
+}
+
 segment_fallback_matches() {
   local segment="$1" token_re="$2"
   text_has_regex_line "$segment" "$token_re" && return 0
@@ -268,7 +315,7 @@ segment_fallback_matches() {
 
 record_segment_context() {
   local segment="$1" token_re="$2"
-  local words=() clean=() i tok key val next
+  local words=() clean=() i tok key val next literal_val rest reference match
 
   read -r -a words <<< "$segment"
   for ((i=0; i<${#words[@]}; i++)); do
@@ -282,11 +329,33 @@ record_segment_context() {
       [A-Za-z_]*=*)
         key="${tok%%=*}"
         val="${tok#*=}"
-        if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && raw_token_matches_re "$val" "$token_re"; then
-          case " $WRITE_TARGET_PROTECTED_VARS " in
-            *" $key "*) ;;
-            *) WRITE_TARGET_PROTECTED_VARS="$WRITE_TARGET_PROTECTED_VARS $key" ;;
-          esac
+        strip_token_quotes "$val"
+        val="$STRIP_TOKEN_RESULT"
+        literal_val="$val"
+        case "$literal_val" in */) ;; *) literal_val="${literal_val}/" ;; esac
+        if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+          remove_context_var "$WRITE_TARGET_PROTECTED_VARS" "$key"
+          WRITE_TARGET_PROTECTED_VARS="$CONTEXT_VAR_LIST_RESULT"
+
+          # Literal protected paths, including a bare root that gains /file
+          # later, retain the existing path-based classification.
+          if raw_token_matches_re "$val" "$token_re" || raw_token_matches_re "$literal_val" "$token_re"; then
+            WRITE_TARGET_PROTECTED_VARS="$WRITE_TARGET_PROTECTED_VARS $key"
+          fi
+
+          # Propagate only from a variable already known to contain a
+          # protected path. Arbitrary expansions such as $HOME remain ordinary
+          # caller-owned targets.
+          rest="$val"
+          while [[ "$rest" =~ \$\{?([A-Za-z_][A-Za-z0-9_]*)\}? ]]; do
+            reference="${BASH_REMATCH[1]}"
+            match="${BASH_REMATCH[0]}"
+            case " $WRITE_TARGET_PROTECTED_VARS " in
+              *" $reference "*) WRITE_TARGET_PROTECTED_VARS="$WRITE_TARGET_PROTECTED_VARS $key" ;;
+            esac
+            rest="${rest/"$match"/}"
+          done
+
         fi
         ;;
       cd|pushd)
@@ -475,6 +544,7 @@ write_op_targets_protected() {
   local shell_record segment shell_exe rc
   WRITE_TARGET_PROTECTED_CWD="no"
   WRITE_TARGET_PROTECTED_VARS=""
+  collect_explicit_substitution_vars "$CMD" "$token_re"
   for shell_record in "${SHELL_COMMAND_RECORDS[@]}"; do
     [ -n "$shell_record" ] || continue
     segment="${shell_record//$'\037'/ }"
@@ -503,6 +573,7 @@ redirect_targets_protected() {
   local -a argv
   WRITE_TARGET_PROTECTED_CWD="no"
   WRITE_TARGET_PROTECTED_VARS=""
+  collect_explicit_substitution_vars "$CMD" "$token_re"
   for shell_record in "${SHELL_COMMAND_RECORDS[@]}"; do
     [ -n "$shell_record" ] || continue
     segment="${shell_record//$'\037'/ }"

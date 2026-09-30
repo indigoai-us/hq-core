@@ -1,5 +1,5 @@
 name: hq-pack-cowork
-version: 0.1.0
+version: 0.1.1
 publisher: '@indigoai-us'
 access: public
 description: 'Native HQ inside Cowork (and any Claude Code plugin host). Bundles a host-launched stdio MCP server that wraps the `hq` CLI + `qmd`, exposing 20 tools (identity, sync, qmd/search, secrets, vault files, team & membership, packages & modules, meeting intelligence, feedback, schema-backed runs, guarded long-tail CLI) as tool calls, plus thin HQ skills that preserve default HQ behavior through a host-side transport. The MCP server runs on the host so it has access to ~/.hq cognito auth and the real binaries — Cowork''s Linux sandbox does not. Security posture: the server never returns secret values itself; the secret-injecting tools (hq_secrets_exec, hq_run) refuse to launch a shell or value-printing binary, the long-tail CLI is a strict read-only allowlist, and package/module installs are gated to first-party indigoai-us or local-HQ sources. These tools run host commands with the user''s privileges, so treat them as host-trusted, not an airtight boundary.'
