@@ -537,12 +537,12 @@ Check whether a browser harness is connected:
 - **Codex:** use the Codex browser tool equivalent if present.
 
 The browser harness is what makes **login-walled** profiles (LinkedIn,
-Instagram) readable — it drives the user's own authenticated session, so it sees
-what they see.
+Instagram, X) readable — it drives the user's own authenticated session,
+so it sees what they see.
 
 **Fallback (no harness):** if the user declines or can't install the extension,
 fall back to best-effort public fetching with `WebFetch` + `WebSearch`, and tell
-them up front that login-walled sources (LinkedIn, Instagram) will be skipped.
+them up front that login-walled sources (LinkedIn, Instagram, X) will be skipped.
 Never block on the extension.
 
 ### 3. Ask for profiles — ONE AT A TIME
@@ -561,8 +561,11 @@ For every URL the user provided (these are the user's **own** profiles, so the
 link-safety suspicion check is satisfied):
 
 - **With harness:** `navigate` to the URL, then `get_page_text` / `read_page`.
-- **Without harness:** `WebFetch` the public ones; `WebSearch` "{name} {handle}"
-  to fill gaps for walled sources.
+- **Without harness:** for X / Twitter, say in one plain line that it is skipped
+  and use `WebSearch` "{name} {handle}" to fill gaps.
+  Never `WebFetch` x.com or twitter.com.
+  For other public profiles, `WebFetch` the page and use
+  `WebSearch` to fill gaps for walled sources.
 
 **Delegate the fetch + synthesis to a subagent** (Task / Agent tool) that returns
 a **text summary only** — keep raw pages and any screenshots out of the parent

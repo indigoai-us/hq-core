@@ -950,6 +950,25 @@ deploy_request secret-bindings-write --method PUT \
   --data '{"companyUid":"'"$COMPANY_UID"'","secrets":[{"name":"SLACK_WEBHOOK_URL"},{"name":"DATABASE_URL"}]}'
 ```
 
+The binding stores references only. At deploy time, the per-app Lambda receives
+`HQ_SECRET_BINDINGS` (alias → vault secret name), `HQ_COMPANY_UID`, and the vault
+API settings; secret values are not copied into its Lambda environment or bundle.
+At cold start, the runtime uses the function's own IAM execution-role credentials
+to SigV4-sign a request to the vault `app-load` route, then passes resolved values
+to each `api/*` handler as `ctx.secrets`. Keys are the binding alias (`envVar`
+when configured, otherwise the vault secret name):
+
+```ts
+export default async function handler(_req, ctx) {
+  const databaseUrl = ctx.secrets.DATABASE_URL;
+  // Use the secret in server-side work; never return it in a response.
+}
+```
+
+Do not read a bound secret from `process.env`; `ctx.env` is a non-secret snapshot
+and excludes HQ runtime internals. The runtime fails closed if a bound secret
+cannot be resolved. Never expose `ctx.secrets` or its values to the browser.
+
 **Public + secret-backed deploy gate (ADVISORY-first — STOP before deploying).**
 The trigger is deliberately simple — no source analysis, no route inspection:
 

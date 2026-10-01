@@ -83,6 +83,7 @@ run_hook() {
   set +e
   timeout 8s env \
     BASH_ENV= \
+    HQ_ROOT="$TMP" \
     CLAUDE_PROJECT_DIR="$TMP" \
     HQ_TEST_GH_MODE="$mode" \
     HQ_TEST_GH_CALLS="$TMP/$label.gh.calls" \
@@ -286,3 +287,35 @@ if grep -Fq '<hq-cli-auto-update>' "$TMP/cli-version-timeout.out"; then
   fail 'timed-out hq version probe emitted an auto-update banner'
 fi
 pass 'timed-out CLI version probe does not trigger an update'
+
+# Without pnpm, SessionStart must not fall back to an unguarded npm install.
+# The printed pnpm command is run later as a user Bash tool call, where the
+# registered package-install PreToolUse guard can enforce the minimum age.
+mkdir -p "$TMP/no-pnpm-bin"
+printf '%s\n' '#!/usr/bin/env bash' 'if [ "${1:-}" = "--version" ]; then printf "hq 5.110.0\\n"; fi' \
+  > "$TMP/no-pnpm-bin/hq"
+cat > "$TMP/no-pnpm-bin/npm" <<'EOF_NPM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HQ_TEST_NPM_CALLS"
+exit 1
+EOF_NPM
+cp "$TMP/bin/gh" "$TMP/no-pnpm-bin/gh"
+chmod +x "$TMP/no-pnpm-bin/hq" "$TMP/no-pnpm-bin/npm" "$TMP/no-pnpm-bin/gh"
+NO_PNPM_PATH="$TMP/no-pnpm-bin:$TMP/shadow-tools"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) NO_PNPM_PATH="$NO_PNPM_PATH:$(dirname "$BASH_BIN")" ;;
+esac
+if PATH="$NO_PNPM_PATH" command -v pnpm >/dev/null 2>&1; then
+  fail 'no-pnpm fixture unexpectedly has pnpm on PATH'
+fi
+: > "$TMP/npm-fallback.calls"
+HQ_TEST_NPM_CALLS="$TMP/npm-fallback.calls" run_hook ok npm-fallback-no-pnpm "" "$NO_PNPM_PATH"
+grep -Fq '<hq-cli-auto-update-skipped>' "$TMP/npm-fallback-no-pnpm.out" \
+  || fail 'missing pnpm did not produce the manual safe-update notice'
+grep -Fq 'pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440' \
+  "$TMP/npm-fallback-no-pnpm.out" \
+  || fail 'safe update notice omitted the guarded pnpm command'
+if grep -Eq '^install -g @indigoai-us/hq-cli@latest$' "$TMP/npm-fallback.calls"; then
+  fail 'missing pnpm fell back to an unguarded npm install'
+fi
+pass 'missing pnpm skips npm auto-install and gives the guarded pnpm command'

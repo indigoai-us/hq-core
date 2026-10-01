@@ -1,4 +1,6 @@
 ## [Unreleased]
+- Skip the hq CLI SessionStart auto-update when pnpm is unavailable and show the guarded 24-hour install command instead of using npm latest.
+- Gate the session-bind warning for an installed but unloaded Work Mesh daemon behind the default-off hq-flags key hooks.work-mesh-daemon-not-loaded-warning.
 - Refresh a missing or older-than-24-hours vault-access manifest in the background so SessionStart stays fast.
 - `/hq-heal` now classifies stale presign-upload rejections and throttled sync manifests as sync failures.
 - Fixed Windows `/handoff` rewriting the slash-leading next command during JSON output.

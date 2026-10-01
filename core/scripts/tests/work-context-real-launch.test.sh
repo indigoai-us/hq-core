@@ -35,6 +35,7 @@ cp "$REPO_ROOT/core/scripts/work-mesh-live-bind-trusted.sh" "$HQ/core/scripts/"
 cp "$REPO_ROOT/core/scripts/work-mesh-live-rebind.sh" "$HQ/core/scripts/"
 cp "$REPO_ROOT/core/scripts/hook-lib.sh" "$HQ/core/scripts/"
 cp "$REPO_ROOT/.claude/hooks/auto-session-project.sh" "$HQ/.claude/hooks/"
+cp "$REPO_ROOT/.claude/hooks/work-mesh-daemon-not-loaded-flag.cjs" "$HQ/.claude/hooks/"
 chmod +x "$HQ/core/scripts/"*.sh "$HQ/.claude/hooks/"*.sh
 # Point hooks at repo (enqueue lives in real tree via HQ_ROOT for hooks)
 cat > "$HQ/companies/manifest.yaml" <<'YAML'
@@ -61,7 +62,10 @@ unset HQ_SESSION_ID HQ_PARENT_SESSION_ID HQ_SPAWN_COMPANY HQ_SPAWN_PROJECT HQ_SP
 
 cat > "$SANDBOX/bin/hq" <<'HQ'
 #!/usr/bin/env bash
-if [ "$1" = "mesh" ] && [ "$2" = "context" ] && [ "$3" = "default" ] && [ "$4" = "get" ] && [ "$5" = "--json" ]; then
+if [ "$1" = "mesh" ] && [ "$2" = "daemon" ] && [ "$3" = "status" ] && [ "$4" = "--json" ]; then
+  [ -z "${HQ_DAEMON_STATUS_CALLS:-}" ] || printf 'status\n' >> "$HQ_DAEMON_STATUS_CALLS"
+  printf '%s\n' "${HQ_DAEMON_STATUS_JSON:-}"
+elif [ "$1" = "mesh" ] && [ "$2" = "context" ] && [ "$3" = "default" ] && [ "$4" = "get" ] && [ "$5" = "--json" ]; then
   printf '%s\n' "${HQ_DEFAULT_COMPANY_JSON:-}"
 elif [ "$1" = "mesh" ] && [ "$2" = "context" ] && [ "$3" = "reconcile" ]; then
   [ -z "${HQ_RECONCILE_PID_FILE:-}" ] || printf '%s\n' "$$" >> "$HQ_RECONCILE_PID_FILE"
@@ -97,6 +101,25 @@ fi
 HQ
 chmod +x "$SANDBOX/bin/hq"
 
+# Resolve the real hq-flags client path without network or credentials.
+printf '%s\n' '{"name":"@indigoai-us/hq-cli"}' > "$SANDBOX/package.json"
+mkdir -p "$SANDBOX/node_modules/@indigoai-us/hq-flags-client" "$SANDBOX/node_modules/@indigoai-us/hq-cloud"
+printf '%s\n' '{"type":"module","exports":{".":{"import":"./index.js"}}}' \
+  > "$SANDBOX/node_modules/@indigoai-us/hq-flags-client/package.json"
+cat > "$SANDBOX/node_modules/@indigoai-us/hq-flags-client/index.js" <<'JS'
+export const createFlagClient = () => ({
+  ready: async () => {},
+  snapshot: () => ({flags: {
+    "hooks.work-mesh-daemon-not-loaded-warning": process.env.HQ_TEST_FLAG_ENABLED === "true",
+  }}),
+  close: () => {},
+});
+JS
+printf '%s\n' '{"type":"module","exports":{".":{"import":"./index.js"}}}' \
+  > "$SANDBOX/node_modules/@indigoai-us/hq-cloud/package.json"
+printf '%s\n' 'export const loadCachedTokens = () => ({idToken:"test-token"});' \
+  > "$SANDBOX/node_modules/@indigoai-us/hq-cloud/index.js"
+
 # --- missing CLI warns instead of silently skipping the bind reconcile ------
 mkdir -p "$SANDBOX/no-hq"
 SID=sid-no-hq-cli
@@ -110,6 +133,47 @@ fi
 grep -Fqx 'Work Mesh reconcile skipped: hq CLI not found on PATH.' "$missing_hq_err" \
   && pass "missing hq CLI emits a one-line Work Mesh warning" \
   || fail "missing hq CLI warning was absent"
+
+# --- daemon warning stays off by default and can be enabled by hq-flags -----
+SID=sid-daemon-not-loaded-default-off
+default_off_calls="$SANDBOX/daemon-default-off.calls"
+default_off_err="$SANDBOX/daemon-default-off.err"
+env -u HQ_FLAGS_API_URL -u HQ_COMPANY_UID PATH="$SANDBOX/bin:$PATH" HOME="$HOME_DIR" WORK_MESH_HOME="$WORK_MESH_HOME" \
+  HQ_ROOT="$HQ" HQ_WORK_MESH_RECONCILE_STUB=0 HQ_HQ_SESSION_NO_CLI=1 \
+  HQ_DAEMON_STATUS_CALLS="$default_off_calls" \
+  HQ_DAEMON_STATUS_JSON='{"ok":true,"running":false,"message":"LaunchAgent ai.getindigo.hq-mesh-daemon: installed (not loaded)"}' \
+  HQ_SESSION_ID="$SID" bash "$BIND" --company acme --root "$HQ" \
+  >/dev/null 2>"$default_off_err"
+[ ! -s "$default_off_err" ] && [ ! -e "$default_off_calls" ] \
+  && pass "daemon warning flag is off by default" \
+  || fail "daemon warning ran without an enabled flag: $(cat "$default_off_err" 2>/dev/null)"
+
+SID=sid-daemon-not-loaded-flag-on
+not_loaded_calls="$SANDBOX/daemon-not-loaded.calls"
+not_loaded_err="$SANDBOX/daemon-not-loaded.err"
+env PATH="$SANDBOX/bin:$PATH" HOME="$HOME_DIR" WORK_MESH_HOME="$WORK_MESH_HOME" \
+  HQ_ROOT="$HQ" HQ_WORK_MESH_RECONCILE_STUB=0 HQ_HQ_SESSION_NO_CLI=1 \
+  HQ_FLAGS_API_URL=https://flags.invalid HQ_COMPANY_UID=cmp_FIXTURE HQ_TEST_FLAG_ENABLED=true \
+  HQ_DAEMON_STATUS_CALLS="$not_loaded_calls" \
+  HQ_DAEMON_STATUS_JSON='{"ok":true,"running":false,"message":"LaunchAgent ai.getindigo.hq-mesh-daemon: installed (not loaded)"}' \
+  HQ_SESSION_ID="$SID" bash "$BIND" --company acme --root "$HQ" \
+  >/dev/null 2>"$not_loaded_err"
+grep -Fqx 'Work Mesh daemon is installed but not loaded; start it with: hq mesh daemon install' "$not_loaded_err" \
+  && [ -s "$not_loaded_calls" ] \
+  && pass "enabled daemon warning emits the start command" \
+  || fail "enabled daemon warning was absent: $(cat "$not_loaded_err" 2>/dev/null)"
+
+SID=sid-daemon-loaded-flag-on
+loaded_err="$SANDBOX/daemon-loaded.err"
+env PATH="$SANDBOX/bin:$PATH" HOME="$HOME_DIR" WORK_MESH_HOME="$WORK_MESH_HOME" \
+  HQ_ROOT="$HQ" HQ_WORK_MESH_RECONCILE_STUB=0 HQ_HQ_SESSION_NO_CLI=1 \
+  HQ_FLAGS_API_URL=https://flags.invalid HQ_COMPANY_UID=cmp_FIXTURE HQ_TEST_FLAG_ENABLED=true \
+  HQ_DAEMON_STATUS_JSON='{"ok":true,"running":true,"message":"LaunchAgent ai.getindigo.hq-mesh-daemon: loaded"}' \
+  HQ_SESSION_ID="$SID" bash "$BIND" --company acme --root "$HQ" \
+  >/dev/null 2>"$loaded_err"
+[ ! -s "$loaded_err" ] \
+  && pass "loaded daemon emits no warning" \
+  || fail "loaded daemon emitted a warning: $(cat "$loaded_err" 2>/dev/null)"
 
 reset_spool() {
   if [ -f "$SANDBOX/reconcile.pids" ]; then
