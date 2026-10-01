@@ -16,7 +16,7 @@ set -euo pipefail
 # pipefail a SIGPIPE on the writer can turn a passing assertion into a failure.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-SKILL="${ROOT}/.claude/skills/setup/SKILL.md"
+SKILL="${SETUP_SKILL_PATH:-${ROOT}/.claude/skills/setup/SKILL.md}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -24,6 +24,28 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 [[ -f "$SKILL" ]] || fail "setup skill missing: $SKILL"
 body="$(cat "$SKILL")"
+
+# X profiles are browser-harness-only. The no-harness fallback must disclose
+# the skip up front, use WebSearch for gaps, and never WebFetch either X host.
+phase_15="$(sed -n '/^## Phase 1.5:/,/^## Phase 2:/p' "$SKILL")"
+grep -qF 'Instagram, X) readable' <<<"$phase_15" \
+  || fail "9: browser-harness guidance must include X with LinkedIn and Instagram"
+grep -qE 'login-walled sources \(LinkedIn, Instagram, X\) will be skipped' <<<"$phase_15" \
+  || fail "9: fallback note must list X with LinkedIn and Instagram"
+grep -qF 'for X / Twitter, say in one plain line that it is skipped' <<<"$phase_15" \
+  || fail "9: without the browser harness, setup must skip X in one plain line"
+grep -qF '`WebSearch` "{name} {handle}" to fill gaps' <<<"$phase_15" \
+  || fail "9: without the browser harness, setup must use WebSearch for X gaps"
+grep -qF 'Never `WebFetch` x.com or twitter.com.' <<<"$phase_15" \
+  || fail "9: setup must explicitly prohibit WebFetch for both X hosts"
+while IFS= read -r line; do
+  case "$line" in
+    *WebFetch*x.com*|*WebFetch*twitter.com*|*x.com*WebFetch*|*twitter.com*WebFetch*)
+      [[ "$line" == *'Never `WebFetch` x.com or twitter.com.'* ]] \
+        || fail "9: setup must not instruct WebFetch for an X domain: $line"
+      ;;
+  esac
+done <<<"$phase_15"
 
 # ── 1. The direct-install invariant is present ──────────────────────────────
 grep -qF 'Install missing dependencies and CLI tools directly — never ask' <<<"$body" \

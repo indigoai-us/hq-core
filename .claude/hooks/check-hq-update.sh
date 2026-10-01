@@ -189,26 +189,34 @@ if command -v hq >/dev/null 2>&1 && { command -v pnpm >/dev/null 2>&1 || command
         [ "$((NOW - STAMP_MTIME))" -lt 21600 ] && STAMP_OK=0
       fi
       if [ "$STAMP_OK" -eq 1 ]; then
-        mkdir -p "$CACHE_DIR"
-        : > "$CLI_STAMP"
-        # Detach fully so the install outlives this hook process.
         if command -v pnpm >/dev/null 2>&1; then
           UPDATE_CMD='pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440'
-        else
-          UPDATE_CMD='npm install -g @indigoai-us/hq-cli@latest'
-        fi
-        if command -v setsid >/dev/null 2>&1; then
-          setsid sh -c "$UPDATE_CMD >/dev/null 2>&1" >/dev/null 2>&1 &
-        else
-          nohup sh -c "$UPDATE_CMD >/dev/null 2>&1" >/dev/null 2>&1 &
-        fi
-        cat <<EOF
+          mkdir -p "$CACHE_DIR"
+          : > "$CLI_STAMP"
+          # Detach fully so the age-gated install outlives this hook process.
+          if command -v setsid >/dev/null 2>&1; then
+            setsid sh -c "$UPDATE_CMD >/dev/null 2>&1" >/dev/null 2>&1 &
+          else
+            nohup sh -c "$UPDATE_CMD >/dev/null 2>&1" >/dev/null 2>&1 &
+          fi
+          cat <<EOF
 <hq-cli-auto-update>
 Your hq CLI ($CLI_VER) is below the required $HQ_CLI_FLOOR and is being updated in
 the background ($UPDATE_CMD). The update is picked
 up next session.
 </hq-cli-auto-update>
 EOF
+        else
+          cat <<EOF
+<hq-cli-auto-update-skipped>
+Your hq CLI ($CLI_VER) is below the required $HQ_CLI_FLOOR. Automatic update was
+skipped because pnpm is unavailable; npm does not enforce the 24-hour minimum
+release age or the package-install guard. Install pnpm, then run this guarded
+command from a Bash tool call:
+  pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440
+</hq-cli-auto-update-skipped>
+EOF
+        fi
       fi
     fi
   fi

@@ -146,9 +146,39 @@ fi
 HQ_BIN="$(command -v hq 2>/dev/null || true)"
 if [ -z "$HQ_BIN" ]; then
   printf '%s\n' 'Work Mesh reconcile skipped: hq CLI not found on PATH.' >&2
-elif [ -f "$OBS_FILE" ]; then
-  nohup "$HQ_BIN" mesh context reconcile --observation-file "$OBS_FILE" --machine \
-    >/dev/null 2>&1 </dev/null &
-  disown 2>/dev/null || true
+else
+  flag_reader="$ROOT/.claude/hooks/work-mesh-daemon-not-loaded-flag.cjs"
+  daemon_warning_enabled=false
+  if [[ -n "${HQ_FLAGS_API_URL:-}" \
+    && "${HQ_COMPANY_UID:-}" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]] \
+    && command -v node >/dev/null 2>&1 && [[ -f "$flag_reader" ]]; then
+    daemon_warning_enabled="$(HQ_CLI_BIN="$HQ_BIN" node "$flag_reader")" || daemon_warning_enabled=false
+  fi
+  if [ "$daemon_warning_enabled" = "true" ]; then
+    # Status only reads the installed service and its live state. Keep this hook
+    # bounded, and fail quiet when the CLI or service manager cannot answer.
+    daemon_status_file="$(mktemp "${TMPDIR:-/tmp}/hq-work-mesh-daemon-status.XXXXXX" 2>/dev/null)" || daemon_status_file=""
+    if [ -n "$daemon_status_file" ]; then
+      HQ_NO_UPDATE_CHECK=1 "$HQ_BIN" mesh daemon status --json >"$daemon_status_file" 2>/dev/null &
+      daemon_status_pid=$!
+      ( sleep 2; kill "$daemon_status_pid" 2>/dev/null || true ) &
+      daemon_status_watchdog=$!
+      daemon_status_rc=0
+      wait "$daemon_status_pid" || daemon_status_rc=$?
+      kill "$daemon_status_watchdog" 2>/dev/null || true
+      wait "$daemon_status_watchdog" 2>/dev/null || true
+      if [ "$daemon_status_rc" -eq 0 ] && command -v jq >/dev/null 2>&1 && \
+        jq -e '(.ok == true) and (.running == false) and (.message | type == "string" and contains("installed ("))' \
+          "$daemon_status_file" >/dev/null 2>&1; then
+        printf '%s\n' 'Work Mesh daemon is installed but not loaded; start it with: hq mesh daemon install' >&2
+      fi
+      rm -f "$daemon_status_file" 2>/dev/null || true
+    fi
+  fi
+  if [ -f "$OBS_FILE" ]; then
+    nohup "$HQ_BIN" mesh context reconcile --observation-file "$OBS_FILE" --machine \
+      >/dev/null 2>&1 </dev/null &
+    disown 2>/dev/null || true
+  fi
 fi
 exit 0
