@@ -291,5 +291,28 @@ fi
 run 0 "$HQWT" "$HQWT" UserPromptSubmit 'HQ_ALLOW_HQ_WORKTREE=1 bypasses the block' \
   HQ_ALLOW_HQ_WORKTREE=1
 
+# --- Shipped background knowledge callers use Claude's trusted Task lineage -
+# spawn_task creates an HQ-linked child worktree without the provider-owned
+# agent_id that this guard relies on. Task defaults to the current canonical
+# checkout when worktree isolation is not requested.
+for skill in brainstorm deep-plan plan prd; do
+  skill_file="$ROOT/.claude/skills/$skill/SKILL.md"
+  if ! grep -qE '^allowed-tools: (Task([, ]|$)|.*[, ]Task([, ]|$))' "$skill_file"; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL [knowledge pulse caller $skill]: Task is missing from allowed-tools" >&2
+  elif grep -q 'spawn_task(' "$skill_file"; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL [knowledge pulse caller $skill]: still uses spawn_task without trusted Task lineage" >&2
+  elif ! grep -q 'Task({' "$skill_file" \
+      || ! grep -q 'run_in_background: true' "$skill_file" \
+      || ! grep -q 'Run the knowledge-pulse skill' "$skill_file" \
+      || ! grep -q 'without worktree isolation' "$skill_file"; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL [knowledge pulse caller $skill]: missing background Task contract" >&2
+  else
+    PASS=$((PASS + 1))
+  fi
+done
+
 echo "block-hq-worktree-session: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

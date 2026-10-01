@@ -26,7 +26,10 @@ PARSER="$HOOK_DIR/lib/parse-estimates.pl"
 mkdir -p "$LOG_DIR"
 touch "$LOG_FILE"
 
-LAST_ASSISTANT="$(hq_transcript_tail "$TRANSCRIPT_PATH" | awk '/"type":"assistant"/ { last=$0 } END { print last }')"
+# Estimate capture is best-effort. Preserve an oversized newest assistant
+# record when metadata follows it; if the bounded scan cannot verify it, skip.
+TRANSCRIPT_TAIL="$(hq_transcript_tail_with_latest_assistant "$TRANSCRIPT_PATH" 2>/dev/null || true)"
+LAST_ASSISTANT="$(printf '%s\n' "$TRANSCRIPT_TAIL" | awk '/"type":"assistant"/ { last=$0 } END { print last }')"
 [ -z "$LAST_ASSISTANT" ] && exit 0
 
 UUID=$(printf '%s' "$LAST_ASSISTANT" | jq -r '.uuid // .message.id // empty' 2>/dev/null || echo "")

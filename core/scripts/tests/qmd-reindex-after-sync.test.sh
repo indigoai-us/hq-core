@@ -5,7 +5,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-SCRIPT="$ROOT/core/scripts/qmd-reindex-after-sync.sh"
+SOURCE_ROOT="${HQ_TEST_SOURCE_ROOT:-$ROOT}"
+SCRIPT="$SOURCE_ROOT/core/scripts/qmd-reindex-after-sync.sh"
+
+if [ -f "$SOURCE_ROOT/core/scripts/tests/lib/hq-hermetic-env.sh" ]; then
+  source "$SOURCE_ROOT/core/scripts/tests/lib/hq-hermetic-env.sh"
+else
+  # Baseline behavior for the fail-first control: plain env -i drops the
+  # caller's update opt-out.
+  hq_test_clean_env() { env -i "$@"; }
+fi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
@@ -59,7 +68,7 @@ HQ_BIN_DIR="$(dirname "$(command -v hq 2>/dev/null || true)")"
 [ -n "$HQ_BIN_DIR" ] && [ "$HQ_BIN_DIR" != "." ] || fail "hq CLI not on PATH — required since core/scripts/qmd-reindex-after-sync.sh became a CLI forwarder"
 HERMETIC_PATH="$TMP/bin:$HQ_BIN_DIR:/usr/bin:/bin"
 
-env -i PATH="$HERMETIC_PATH" HQ_QMD_BIN="$TMP/bin/qmd" QMD_LOG="$LOG" \
+hq_test_clean_env PATH="$HERMETIC_PATH" HQ_QMD_BIN="$TMP/bin/qmd" QMD_LOG="$LOG" \
   bash "$SCRIPT" "$HQ_ROOT"
 
 knowledge_add="collection add $HQ_ROOT/companies/populated/knowledge --name populated --mask **/*.md"
@@ -81,7 +90,7 @@ mkdir -p "$HQ2/core" "$HQ2/personal/knowledge"
 : > "$HQ2/core/core.yaml"
 : > "$HQ2/personal/knowledge/note.md"
 : > "$HQ2/personal/knowledge/INDEX.md"
-env -i PATH="$HERMETIC_PATH" HQ_QMD_BIN="$TMP/bin/qmd" QMD_LOG="$LOG2" bash "$SCRIPT" "$HQ2"
+hq_test_clean_env PATH="$HERMETIC_PATH" HQ_QMD_BIN="$TMP/bin/qmd" QMD_LOG="$LOG2" bash "$SCRIPT" "$HQ2"
 personal_add="collection add $HQ2/personal/knowledge --name personal-knowledge --mask **/*.md"
 grep -Fqx "$personal_add" "$LOG2" || fail "personal/knowledge collection was not registered"
 pass "personal/knowledge registered as its own collection"
@@ -91,7 +100,7 @@ HQ3="$TMP/hq3"; LOG3="$TMP/qmd3.log"
 mkdir -p "$HQ3/core" "$HQ3/personal/knowledge"
 : > "$HQ3/core/core.yaml"
 : > "$HQ3/personal/knowledge/INDEX.md"
-env -i PATH="$HERMETIC_PATH" HQ_QMD_BIN="$TMP/bin/qmd" QMD_LOG="$LOG3" bash "$SCRIPT" "$HQ3"
+hq_test_clean_env PATH="$HERMETIC_PATH" HQ_QMD_BIN="$TMP/bin/qmd" QMD_LOG="$LOG3" bash "$SCRIPT" "$HQ3"
 grep -Fq 'name personal-knowledge' "$LOG3" && fail "INDEX-only personal/knowledge should not register"
 pass "INDEX-only personal/knowledge skipped"
 

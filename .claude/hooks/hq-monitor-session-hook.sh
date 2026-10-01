@@ -8,6 +8,12 @@ event="${2:-}"
 payload="$(cat)" || payload='{}'
 root="$(hq_monitor_root)"
 [ -n "$root" ] || exit 0
+if [ -f "$root/.claude/hooks/hook-timeout-probe.sh" ]; then
+  . "$root/.claude/hooks/hook-timeout-probe.sh"
+else
+  hook_timeout_child_phase_start() { :; }
+  hook_timeout_child_phase_finish() { :; }
+fi
 read_session_id() {
   local HQ_LIB_WINSEP=0
   . "$root/core/scripts/hook-lib.sh" 2>/dev/null || return 1
@@ -89,7 +95,11 @@ if ! command -v hq >/dev/null 2>&1; then
   hq_monitor_log_once "$root" "$payload" cli-unavailable "hq is unavailable; monitor delivery is disabled"
   exit 0
 fi
+hook_timeout_child_phase_start probe
 if ! hq_monitor_cli_ready "$root" "$payload" "$provider-$session_id"; then
+  hook_timeout_child_phase_finish probe
   exit 0
 fi
+hook_timeout_child_phase_finish probe
+hook_timeout_child_phase_start child_wait
 exec env HQ_NO_UPDATE_CHECK=1 hq monitor drain --provider "$provider" --event "$event" <<<"$payload"

@@ -54,6 +54,16 @@ has "$STARTWORK" "does NOT upgrade the request to Company Mode" \
 has "$STARTWORK" "Fall-through" \
   "startwork: fast path lost its fall-through clause (over-routing guard)"
 
+# A company resolved by the normal startwork flow must be persisted before
+# any mode-specific context gathering can run repo commands or project scans.
+has "$STARTWORK" 'bash core/scripts/hq-session.sh set company_slug "{co}"' \
+  "startwork: resolved company is not mechanically bound"
+bind_line="$(grep -nF 'bash core/scripts/hq-session.sh set company_slug "{co}"' "$STARTWORK" | head -1 | cut -d: -f1)"
+gather_line="$(grep -nF '### 2. Gather Context' "$STARTWORK" | head -1 | cut -d: -f1)"
+[ -n "$bind_line" ] && [ -n "$gather_line" ] && [ "$bind_line" -lt "$gather_line" ] \
+  || fail "startwork: company binding must precede all mode-specific context gathering"
+echo "PASS: startwork binds resolved company before context gathering"
+
 # ── 2. Startup spawns no maintenance agents (F-04) ────────────────────────────
 lacks "$STARTWORK" "Spawn Knowledge Pulse" \
   "startwork: §2.7 knowledge-pulse spawn is back"
@@ -122,3 +132,26 @@ if [ -e "$ROOT/.codex/claude" ]; then
 fi
 
 echo "PASS: startwork bounded-action scope contract"
+
+# ── 8. Company Mode story status comes from the Work Mesh Board ───────────────
+company_mode="$(awk '
+  /^#### Company Mode/ { in_company=1; print; next }
+  /^#### Project Mode/ { in_company=0 }
+  in_company { print }
+' "$STARTWORK")"
+company_has() {
+  printf '%s\n' "$company_mode" | grep -qF -- "$1" \
+    || fail "Company Mode: missing Board contract: $1"
+}
+company_lacks() {
+  ! printf '%s\n' "$company_mode" | grep -qF -- "$1" \
+    || fail "Company Mode: stale local-PRD status rule returned: $1"
+}
+company_has "Board status comes from the work mesh, never local prd.passes."
+company_has "For each matching project, load the live Board from cache / Desktop live read"
+company_has "If the Board block is absent, use local prd only for project description and acceptance; never as live Board columns."
+company_has '`queued` = available next work'
+company_has '`in_progress` / `review` = already claimed; do not offer as free next work'
+company_has '`done` = done'
+company_lacks "Count incomplete stories per project."
+echo "PASS: Company Mode status follows the Work Mesh Board contract"

@@ -73,7 +73,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   done
   SECRET_NAMES="(none — no .env.schema found)"
   if [ -n "$SCHEMA" ]; then
-    SECRET_NAMES="$(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$SCHEMA" | cut -d= -f1 | sort -u | tr '\n' ' ')"
+    SECRET_NAMES="$(grep -E '^[A-Z][A-Z0-9_]*(/[A-Z][A-Z0-9_]+)*=' "$SCHEMA" | cut -d= -f1 | sort -u | tr '\n' ' ')"
     [ -n "$SECRET_NAMES" ] || SECRET_NAMES="(none declared)"
   fi
 

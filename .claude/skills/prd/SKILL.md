@@ -1,7 +1,7 @@
 ---
 name: prd
 description: "Create an execution-ready PRD (prd.json + README.md) with a light interview. For deep research use /deep-plan."
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion
+allowed-tools: Read, Write, Edit, Grep, Glob, Task, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion
 ---
 
 # PRD — Project Planning & PRD Generation
@@ -566,11 +566,9 @@ Read `workspace/orchestrator/state.json`. Append to `projects` array:
 
 If project already exists in state.json, update it instead of duplicating.
 
-## Step 7: Sync to Beads
+## Step 7: Optional Beads Setup
 
-```bash
-npx tsx core/scripts/prd-to-beads.ts --project={name}
-```
+If the optional `bd` CLI is on PATH (`command -v bd`), you may run `bd init --project {name}`; otherwise skip this step.
 
 Silent — just log success/failure.
 
@@ -620,9 +618,13 @@ Check if the new project's scope reveals missing or stale docs. Scout only — n
 
 If `{co}` is resolved and company has a knowledge directory (not `null` in manifest):
 
+Use the background `Task` tool without worktree isolation so the child stays in this canonical HQ checkout.
+
 ```
-spawn_task(
-  reason: "Pulse-garden {co} knowledge",
+Task({
+  subagent_type: "general-purpose",
+  description: "Pulse-garden {co} knowledge",
+  run_in_background: true,
   prompt: "Run the knowledge-pulse skill at .claude/skills/knowledge-pulse/SKILL.md.
     company_slug: {co}
     knowledge_path: companies/{co}/knowledge/
@@ -633,7 +635,7 @@ spawn_task(
     discovered_facts: {new facts from interview answers — especially Batch 4a data model, 5a integrations, any architecture or capability info learned about the company}
     doc_scout_gaps: {postImplementation items from Step 7.6, or 'none'}
     Read the skill file for full instructions."
-)
+})
 ```
 
 Do NOT wait for the pulse to complete — continue immediately to Step 8.

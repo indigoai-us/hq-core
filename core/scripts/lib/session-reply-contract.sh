@@ -3,7 +3,7 @@
 # session-reply-contract.sh — reply-contract enforcement for hq-agent-session.
 #
 # Parity with the hq-pro DIRECT path, which prompts the model for
-#   {"action":"reply","text":"…"} | {"action":"no_reply"}
+#   {"action":"reply","text":"…"}[,"outcome":"complete|blocked|needs_input"] | {"action":"no_reply"}
 # and validates it fail-closed. The hq-session path historically did neither:
 # it set disposition=reply and shipped the provider's ENTIRE stdout as the
 # reply body. Codex masked that by self-regulating; grok did not, and posted
@@ -47,16 +47,29 @@ session_reply_contract_validate() {
       (.[0].action == "no_reply" and (.[0] | keys) == ["action"])
       or (
         .[0].action == "reply"
-        and ((.[0] | keys | sort) == ["action","text"])
         and (.[0].text | type == "string")
         and (.[0].text | test("[^[:space:]]"))
         and ((.[0].text | test("^[[:space:]]*NO_REPLY[[:space:]]*$")) | not)
+        and (
+          ((.[0] | keys | sort) == ["action","text"])
+          or (
+            .[0].outcome == "complete"
+            and ((.[0] | keys | sort) == ["action","outcome","text"])
+          )
+          or (
+            (.[0].outcome == "blocked" or .[0].outcome == "needs_input")
+            and ((.[0] | keys | sort) == ["action","outcome","reason","text"])
+            and (.[0].reason | type == "string")
+            and (.[0].reason | test("[^[:space:]]"))
+            and (.[0].reason | length <= 500)
+          )
+        )
       )
     )' >/dev/null 2>&1
 }
 
 session_reply_contract_apply() {
-  local raw="${1:-}" action text candidate
+  local raw="${1:-}" action text candidate outcome reason
   [ -n "$(printf '%s' "$raw" | tr -d '[:space:]')" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
 
@@ -106,12 +119,30 @@ session_reply_contract_apply() {
   if [ "$action" = "no_reply" ]; then
     SESSION_DISPOSITION="no_reply"
     SESSION_TEXT=""
+    SESSION_OUTCOME=""
+    SESSION_OUTCOME_REASON=""
     return 0
   fi
   text="$(printf '%s' "$raw" | jq -r -s '.[0].text')"
+  outcome="$(printf '%s' "$raw" | jq -r -s '.[0].outcome // empty')"
+  reason="$(printf '%s' "$raw" | jq -r -s '.[0].reason // empty')"
   SESSION_DISPOSITION="reply"
   SESSION_TEXT="$text"
+  SESSION_OUTCOME="$outcome"
+  SESSION_OUTCOME_REASON="$reason"
   return 0
+}
+
+# Add validated optional job outcome fields to a session response. With no
+# outcome, preserve the existing serialized response byte-for-byte.
+session_reply_contract_add_outcome_fields() {
+  local response="${1:-}" outcome="${SESSION_OUTCOME:-}" reason="${SESSION_OUTCOME_REASON:-}"
+  if [ -z "$outcome" ]; then
+    printf '%s' "$response"
+    return 0
+  fi
+  printf '%s' "$response" | jq -c --arg outcome "$outcome" --arg reason "$reason" \
+    '. + {outcome: $outcome} + (if $reason == "" then {} else {outcomeReason: $reason} end)'
 }
 
 # session_reply_contract_reformat_prompt
@@ -127,6 +158,11 @@ session_reply_contract_reformat_prompt() {
   printf '%s\n' 'Your ENTIRE stdout must be exactly ONE JSON object and NOTHING else:'
   printf '%s\n' '  {"action":"reply","text":"<the FINAL answer only>"}'
   printf '%s\n' '  {"action":"no_reply"}'
+  printf '%s\n' 'When the caller explicitly requests a scheduled-job outcome, a reply may also carry:'
+  printf '%s\n' '  {"action":"reply","text":"<the final answer>","outcome":"complete"}'
+  printf '%s\n' '  {"action":"reply","text":"<the final answer>","outcome":"blocked","reason":"<short reason>"}'
+  printf '%s\n' '  {"action":"reply","text":"<the final answer>","outcome":"needs_input","reason":"<short reason>"}'
+  printf '%s\n' 'Use exactly one outcome only when explicitly requested; blocked and needs_input reasons must be non-blank and at most 500 characters.'
   printf '%s\n' 'Rules:'
   printf '%s\n' '- "text" is the final answer that was already produced, with ALL planning,'
   printf '%s\n' '  preamble, narration, status updates, and reasoning removed. Preserve the'
@@ -199,6 +235,11 @@ session_reply_contract_body() {
   printf '%s\n' 'Your FINAL stdout must be exactly ONE JSON object and NOTHING else:'
   printf '%s\n' '  {"action":"reply","text":"<the message to send>"}'
   printf '%s\n' '  {"action":"no_reply"}'
+  printf '%s\n' 'When the caller explicitly requests a scheduled-job outcome, a reply may also carry:'
+  printf '%s\n' '  {"action":"reply","text":"<the final answer>","outcome":"complete"}'
+  printf '%s\n' '  {"action":"reply","text":"<the final answer>","outcome":"blocked","reason":"<short reason>"}'
+  printf '%s\n' '  {"action":"reply","text":"<the final answer>","outcome":"needs_input","reason":"<short reason>"}'
+  printf '%s\n' 'Use exactly one outcome only when explicitly requested; blocked and needs_input reasons must be non-blank and at most 500 characters.'
   printf '%s\n' 'Rules:'
   printf '%s\n' '- No prose, no code fence, no commentary before or after the object.'
   printf '%s\n' '- "text" is the FINAL answer only. Never include your working narration,'

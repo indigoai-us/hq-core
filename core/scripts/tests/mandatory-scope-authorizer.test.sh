@@ -45,6 +45,7 @@ install_fixture() {
   cp "$ROOT/core/scripts/lib/session-authz.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/session-id.sh" "$TMP/core/scripts/lib/"
+  cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/"
   chmod +x "$TMP/.claude/hooks/mandatory-scope-authorizer.sh"
 
   printf 'companies:\n  indigo:\n    name: Indigo\n  otherco:\n    name: otherco\n' \
@@ -65,7 +66,7 @@ run_hook() {
   local payload="$1"
   local rc=0
   : > "$TMP/err.txt"
-  printf '%s' "$payload" | bash "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" 2>"$TMP/err.txt" || rc=$?
+  printf '%s' "$payload" | "${BASH_BIN:-bash}" "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" 2>"$TMP/err.txt" || rc=$?
   printf '%s' "$rc"
 }
 
@@ -606,6 +607,129 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "later repeated path with mutated variable is blocked"
+
+echo "[52] Bash allows a glob after the literal bound-company prefix"
+install_fixture "indigo"
+touch "$TMP/companies/indigo/settings/report-a.yaml" "$TMP/companies/indigo/settings/report-b.yaml"
+command='cat companies/indigo/settings/report-*.yaml'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "glob after the literal bound-company prefix is allowed"
+
+echo "[52a] Bash 3.2-compatible glob matching tolerates missing globstar"
+cat > "$TMP/bash-32-shopt.sh" <<'EOF'
+shopt() {
+  case " $* " in
+    *" globstar "*) return 1 ;;
+  esac
+  builtin shopt "$@"
+}
+EOF
+command='cat companies/indigo/settings/report-*.yaml'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc=0
+printf '%s' "$payload" | BASH_ENV="$TMP/bash-32-shopt.sh" "${BASH_BIN:-bash}" "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" 2>"$TMP/err.txt" || rc=$?
+expect_exit 0 "$rc" "contained glob works when globstar is unavailable"
+
+echo "[53] Bash refuses a glob in the company segment"
+install_fixture "indigo"
+command='cat companies/ind*/settings/*.yaml'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "glob in the company segment is refused"
+grep -Fq "companies/ind*/settings/*.yaml" "$TMP/err.txt" || fail "company-segment glob block names the glob"
+command='cat companies/[io]therco/settings/*.yaml'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "character class selecting another company is refused"
+
+echo "[54] Bash refuses a glob under another company"
+install_fixture "indigo"
+command='cat companies/otherco/settings/*.yaml'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "glob under another company is refused"
+grep -Fq "the literal prefix before the glob does not resolve inside companies/indigo" "$TMP/err.txt" || fail "other-company glob is refused by its out-of-scope prefix"
+
+echo "[55] Bash refuses a glob that escapes the bound company with parent segments"
+install_fixture "indigo"
+command='cat companies/indigo/settings/../../otherco/settings/*.yaml'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "parent traversal glob escape is refused"
+grep -Fq "the literal prefix before the glob does not resolve inside companies/indigo" "$TMP/err.txt" || fail "parent traversal glob is refused by its normalized prefix"
+
+echo "[56] Bash refuses a glob through a symlink into another company"
+install_fixture "indigo"
+ln -s "$TMP/companies/otherco/settings" "$TMP/companies/indigo/settings/foreign-link"
+touch "$TMP/companies/otherco/settings/escape.yaml"
+command='cat companies/indigo/settings/foreign-link/*.yaml'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "symlink glob escape is refused"
+grep -Fq "the literal prefix before the glob does not resolve inside companies/indigo" "$TMP/err.txt" || fail "symlink glob is refused by its resolved out-of-scope prefix"
+
+echo "[57] Bash refuses brace expansion that reaches another company"
+install_fixture "indigo"
+command='cat companies/{indigo,otherco}/settings/.keep'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "brace expansion reaching another company is refused"
+grep -Fq "companies/{indigo,otherco}/settings/.keep" "$TMP/err.txt" || fail "brace glob block names the glob"
+
+echo "[58] Bash refuses a glob when no company is bound"
+install_fixture ""
+command='cat companies/indigo/settings/*.yaml'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "unbound session glob is refused"
+
+echo "[59] Bash refuses a glob match that escapes after a literal bound-company prefix"
+install_fixture "indigo"
+touch "$TMP/companies/otherco/settings/leak.yaml"
+command='cat companies/indigo/set*/../../otherco/settings/*.yaml'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "per-match realpath escape after glob is refused"
+grep -Fq "a glob match resolves outside companies/indigo" "$TMP/err.txt" || fail "post-glob traversal is refused by per-match realpath check"
+
+echo "[60] Bash allows an absolute glob below the bound-company prefix"
+install_fixture "indigo"
+touch "$TMP/companies/indigo/settings/report-absolute.yaml"
+command="cat $TMP/companies/indigo/settings/report-*.yaml"
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "absolute bound-company glob is allowed"
+
+echo "[61] Bash refuses an absolute glob below another company"
+install_fixture "indigo"
+touch "$TMP/companies/otherco/settings/report-absolute.yaml"
+command="cat $TMP/companies/otherco/settings/report-*.yaml"
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "absolute other-company glob is refused"
+grep -Fq "the literal prefix before the glob does not resolve inside companies/indigo" "$TMP/err.txt" || fail "absolute other-company glob is refused by its out-of-scope prefix"
+
+echo "[62] Bash refuses brace expansion under the bound company"
+install_fixture "indigo"
+command='mkdir -p companies/indigo/settings/{a,b}'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "brace expansion under bound company remains refused"
+grep -Fq "brace expansion cannot be checked safely" "$TMP/err.txt" || fail "bound-company brace refusal gives the brace reason"
 
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

@@ -21,12 +21,13 @@
 #   - role:   `hq members --company <slug> list` matched against the caller's
 #             email (from `hq whoami`, override with HQ_VAULT_ACCESS_EMAIL)
 #
-# Fail-open by design: anything this script cannot determine is recorded as
-# role "unknown" (the hook does not enforce unknown roles), and a company it
-# cannot query at all is left out of the manifest entirely (the hook allows
-# companies absent from the manifest). The server-side STS/ACL layer remains
-# the authoritative security boundary — this manifest only powers the local
-# early-warning block for read-only shares.
+# Anything this script cannot determine is recorded as role "unknown", and a
+# company it cannot query is left out of the manifest. By default the
+# write-protection hook preserves its prior allow behavior for either case;
+# when hooks.vault-write-deny-unknown-access is on, it blocks protected paths
+# and asks the user to refresh/sign in. A missing manifest remains allowed so a
+# fresh install is usable before its first successful manual refresh.
+# The server-side STS/ACL layer remains the authoritative security boundary.
 #
 # Usage:
 #   bash core/scripts/refresh-vault-access.sh [--company <slug>]... [--root <hqRoot>]
@@ -81,7 +82,7 @@ fi
 
 command -v jq >/dev/null 2>&1 || { log "jq is required"; exit 1; }
 if ! command -v hq >/dev/null 2>&1; then
-  log "hq CLI not found — nothing refreshed (the write-access hook stays fail-open without a manifest)"
+  log "hq CLI not found — nothing refreshed (a fresh install remains usable until a manifest is created)"
   exit 0
 fi
 
@@ -94,7 +95,7 @@ if [ -z "$EMAIL" ]; then
     | grep -Eo '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' \
     | grep -v '@outposts\.' | head -1 || true)"
 fi
-[ -n "$EMAIL" ] || log "could not determine caller email — roles will be 'unknown' (hook will not enforce)"
+[ -n "$EMAIL" ] || log "could not determine caller email — roles will be 'unknown' (hook blocks protected paths only when hooks.vault-write-deny-unknown-access is on)"
 
 # ── explicit grants via shared-with-me ─────────────────────────────────────
 # Table columns: COMPANY  PATH  PERMISSION  SOURCE (header + ─── separator).
@@ -159,7 +160,7 @@ if [ "${#SLUGS[@]}" -gt 0 ]; then
 fi
 
 if [ -z "$ALL_SLUGS" ]; then
-  log "no explicit grants found — writing an empty manifest (hook stays fail-open everywhere)"
+  log "no explicit grants found — writing an empty manifest (company paths without entries are blocked only when hooks.vault-write-deny-unknown-access is on)"
 fi
 
 COMPANIES_JSON="{}"

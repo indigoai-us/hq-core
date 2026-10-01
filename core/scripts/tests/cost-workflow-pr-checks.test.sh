@@ -16,6 +16,15 @@ grep -Fq 'group: pr-checks-${{ github.ref }}' <<< "$CONCURRENCY" \
 grep -Fqx '  cancel-in-progress: true' <<< "$CONCURRENCY" \
   || fail 'new main pushes must cancel superseded main runs'
 
+WINDOWS_JOB="$(sed -n '/^  shell-smoke-windows:$/,/^  shell-smoke-macos:$/p' "$WORKFLOW")"
+WINDOWS_NODE_SETUP="$(sed -n '/      - uses: actions\/setup-node@v4/,/      - name: Install pinned hq CLI for forwarded scaffold scripts/p' <<< "$WINDOWS_JOB")"
+grep -Fq '          cache: npm' <<< "$WINDOWS_NODE_SETUP" \
+  || fail 'Windows shell-smoke must cache npm package downloads before installing the pinned CLI'
+grep -Fq '            core/core.yaml' <<< "$WINDOWS_NODE_SETUP" \
+  || fail 'Windows npm cache key must include the CLI floor source'
+grep -Fq '            core/scripts/cli-hosted.yaml' <<< "$WINDOWS_NODE_SETUP" \
+  || fail 'Windows npm cache key must include the hosted CLI minimum-version source'
+
 MACOS_JOB="$(sed -n '/^  shell-smoke-macos:$/,/^  [[:alnum:]_-][[:alnum:]_-]*:$/p' "$WORKFLOW" | sed '$d')"
 grep -Fq "needs['denylist-scan'].outputs.macos_shell_smoke == 'true'" <<< "$MACOS_JOB" \
   || fail 'macOS shell smoke must remain gated by the existing path filter'
@@ -39,4 +48,4 @@ if grep -Fq '    strategy:' <<< "$JOB"; then
   fail 'the rubric job still creates one matrix runner per policy file'
 fi
 
-echo 'PASS: main concurrency, macOS path gating, and batched rubric behavior'
+echo 'PASS: Windows npm cache, main concurrency, macOS path gating, and batched rubric behavior'

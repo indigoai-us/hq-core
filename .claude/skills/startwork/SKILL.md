@@ -83,6 +83,23 @@ Determine mode from the user's argument (first match wins):
 - **Free-text task** — arg is ≥3 words and doesn't match any company/project/repo/partial → Task mode
 - **No match** — ask user to clarify
 
+### 1.2 Bind a resolved company before gathering mode context
+
+As soon as normal mode resolution or the default-company fallback identifies a
+company, persist the company on this session before running project scans,
+`qmd`, worker selection, or any repository command:
+
+```bash
+bash core/scripts/hq-session.sh set company_slug "{co}"
+```
+
+For Project or Repo mode, first resolve the project's owning company or the
+repo's company mapping when it is not already known, then run this bind before
+any Git command or project scan. A bounded-action short-circuit does not enter
+this flow, and an unresolved or personal-only context has no company to bind.
+When project/task context becomes available later, §2.4's trusted bind adds
+that context to the session.
+
 ### 2. Gather Context
 
 #### Entry-Gate Mode (no arg)
@@ -116,16 +133,21 @@ Determine mode from the user's argument (first match wins):
 3. Search for company projects:
    - Primary: `qmd search "prd.json" --json -n 10` via shell
    - Fallback: `grep -rl '"passes"' personal/projects/ companies/ --include='prd.json'`
-   - Filter to projects whose repoPath matches any of the company's repos. Count incomplete stories per project.
-4. If company has repos, run `git -C {first-repo} log --oneline -3` and `git -C {first-repo} branch --show-current`
-5. List the company's workers from manifest (names only, don't read worker.yaml files)
+   - Filter to projects whose repoPath matches any of the company's repos. Read local `prd.json` only for project description and acceptance context, not story status.
+4. Board status comes from the work mesh, never local prd.passes. For each matching project, load the live Board from cache / Desktop live read (presence is automatic via `hq mesh daemon`), using the Project Mode source and status wording. If the Board block is absent, use local prd only for project description and acceptance; never as live Board columns.
+   - `queued` = available next work
+   - `in_progress` / `review` = already claimed; do not offer as free next work
+   - `done` = done
+   Count story status from Board entries per project and summarize the company totals.
+5. If company has repos, run `git -C {first-repo} log --oneline -3` and `git -C {first-repo} branch --show-current`
+6. List the company's workers from manifest (names only, don't read worker.yaml files)
 
 #### Project Mode (arg = project name)
 
 Board status comes from the work mesh, never local prd.passes. If ground/check and the project-view cache both fail, then and only then use local prd for description — still not as live Board columns.
 
-1. Resolve the project dir (`personal/projects/{name}` or `companies/{co}/projects/{name}`). Read `prd.json` only for `name`, `description`, `branchName`, and acceptance text — not story status.
-2. Extract `metadata.repoPath` — identify company by matching against manifest repos
+1. Resolve the project dir (`personal/projects/{name}` or `companies/{co}/projects/{name}`); when the path is under `companies/{co}`, bind that company now. Read `prd.json` only for `name`, `description`, `branchName`, and acceptance text — not story status.
+2. Extract `metadata.repoPath` — identify company by matching against manifest repos if the project path did not identify it. Bind the resolved company before continuing.
 3. If repoPath exists: `git -C {repoPath} branch --show-current` and `git -C {repoPath} status --short`
 4. If company `{co}` is resolved, load the live Board from cache / Desktop live read (presence is automatic via `hq mesh daemon`). Prefer `~/.hq/work-mesh/cache/projects/{companyUid}/{projectId}.json` when present. Do not call deleted `hq mesh session ground|check|watch`.
    - `queued` = available next work
@@ -141,6 +163,7 @@ Board status comes from the work mesh, never local prd.passes. If ground/check a
 #### Task Mode (arg = free-text task description)
 
 1. Resolve company/repo from cwd or recent handoff context (read `workspace/threads/handoff.json` if exists)
+   - If a company is found, immediately run `bash core/scripts/hq-session.sh set company_slug "{co}"` before task classification or company-specific context reads.
 2. Classify task using inline pattern table:
    - DB/migration/schema/prisma → `schema_change`
    - API/endpoint/route/webhook → `api_development`
@@ -156,8 +179,8 @@ Board status comes from the work mesh, never local prd.passes. If ground/check a
 #### Repo Mode (arg = repo directory name)
 
 1. Resolve full path: check `repos/private/{arg}` then `repos/public/{arg}`
-2. Git state: `git -C {repoPath} branch --show-current`, `git -C {repoPath} log --oneline -5`, `git -C {repoPath} status --short`
-3. Owning company: scan `companies/manifest.yaml` for a company whose `repos:` list contains this path
+2. Owning company: scan `companies/manifest.yaml` for a company whose `repos:` list contains this path, then bind it before repository commands
+3. Git state: `git -C {repoPath} branch --show-current`, `git -C {repoPath} log --oneline -5`, `git -C {repoPath} status --short`
 4. Related projects:
    - Primary: `qmd search "{repo-name} prd.json" --json -n 10` via shell
    - Fallback: use Grep to find prd.json files referencing this repo

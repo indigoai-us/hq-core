@@ -124,6 +124,48 @@ git_subcommand() {
 RESOLVED_RECORDS=()
 RESOLVED_COMMAND=""
 UNCLASSIFIED_GIT_WRAPPER=0
+SSH_REMOTE_PAYLOAD=""
+
+# ssh forwards every argument after the destination as a remote command. Return
+# that payload without evaluating it so the strict parser can classify nested
+# git commands exactly like the explicit bash -c / eval forms below.
+ssh_remote_payload() {
+  local record="$1" executable token i j payload=""
+  local -a words
+  IFS=$'\037' read -r -a words <<<"$record"
+  executable="$(hq_shell_command_executable "$record" || true)"
+  [[ -n "$executable" ]] || return 1
+  for ((i=0; i<${#words[@]}; i++)); do
+    [[ "${words[i]}" == "$executable" ]] && break
+  done
+  [[ "$i" -lt "${#words[@]}" ]] || return 1
+  i=$((i+1))
+  while [[ "$i" -lt "${#words[@]}" ]]; do
+    token="${words[i]}"
+    if [[ "$token" == "--" ]]; then
+      i=$((i+1))
+      break
+    fi
+    [[ "$token" == -* ]] || break
+    case "$token" in
+      -b|-c|-D|-E|-e|-F|-I|-i|-J|-L|-l|-m|-O|-o|-p|-Q|-R|-S|-W|-w)
+        i=$((i+2))
+        ;;
+      *) i=$((i+1)) ;;
+    esac
+  done
+  # The destination is required even when ssh has no remote command.
+  [[ "$i" -lt "${#words[@]}" ]] || return 1
+  i=$((i+1))
+  for ((j=i; j<${#words[@]}; j++)); do
+    [[ -n "$payload" ]] && payload+=" "
+    payload+="${words[j]}"
+  done
+  [[ -n "$payload" ]] || return 1
+  SSH_REMOTE_PAYLOAD="$payload"
+  return 0
+}
+
 collect_resolved_records() {
   local source="$1" depth="$2" record executable executable_base text index token payload expanded i
   local -a words
@@ -166,6 +208,12 @@ collect_resolved_records() {
               expanded=1
             fi
           fi
+        fi
+        ;;
+      ssh|ssh.exe)
+        if [[ "$STRICT_GIT_GUARD" -eq 1 ]] && ssh_remote_payload "$record"; then
+          collect_resolved_records "$SSH_REMOTE_PAYLOAD" "$((depth+1))"
+          expanded=1
         fi
         ;;
     esac

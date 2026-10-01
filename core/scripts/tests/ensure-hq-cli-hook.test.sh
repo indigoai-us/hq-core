@@ -70,6 +70,35 @@ out="$(run_hook "$COREUTILS_PATH")"
 [ -z "$out" ] || fail "hq on settings PATH should be silent, got: $out"
 rm -f "$BIN/hq"
 
+# --- 1b. Windows settings PATH resolves a Git Bash-visible hq.cmd shim ----
+reset_root
+WINDOWS_HQ_BIN="$TMP/windows-hq-bin"
+mkdir -p "$WINDOWS_HQ_BIN" "$TMP/windows-system32"
+printf '#!/usr/bin/env bash\necho 5.108.2\n' > "$WINDOWS_HQ_BIN/hq.cmd"
+chmod +x "$WINDOWS_HQ_BIN/hq.cmd"
+stub cygpath "printf '%s\\n' '$WINDOWS_HQ_BIN:$TMP/windows-system32'"
+write_local_settings '{"env":{"PATH":"C:\\Users\\u\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32"}}'
+out="$(run_hook "$COREUTILS_PATH")"
+[ -z "$out" ] || fail "Windows settings PATH with a working hq.cmd should be silent, got: $out"
+printf '%s\n' 'PASS: Windows settings PATH resolves cygpath-converted hq.cmd'
+rm -f "$BIN/cygpath" "$WINDOWS_HQ_BIN/hq.cmd"
+
+# --- 1c. adding an off-PATH Windows shim preserves the Windows delimiter --
+reset_root
+WINDOWS_NPM_BIN="$TMP/windows-npm-bin"; mkdir -p "$WINDOWS_NPM_BIN" "$TMP/windows-system32"
+printf '#!/usr/bin/env bash\necho 5.108.2\n' > "$WINDOWS_NPM_BIN/hq.cmd"
+chmod +x "$WINDOWS_NPM_BIN/hq.cmd"
+stub cygpath "printf '%s\\n' '$TMP/windows-system32'"
+stub npm "case \"\$*\" in 'prefix -g') printf '%s\\n' '$WINDOWS_NPM_BIN';; *) exit 1;; esac"
+write_local_settings '{"env":{"PATH":"C:\\Users\\u\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32"}}'
+out="$(run_hook "$COREUTILS_PATH")"
+printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+  || fail "off-PATH Windows hq.cmd should be added to settings PATH, got: $out"
+[ "$(local_path)" = "$WINDOWS_NPM_BIN;C:\\Users\\u\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32" ] \
+  || fail "adding Windows hq.cmd must preserve semicolon-delimited PATH, got: $(local_path)"
+printf '%s\n' 'PASS: adding an off-PATH Windows hq.cmd preserves semicolon separators'
+rm -f "$BIN/cygpath" "$BIN/npm" "$WINDOWS_NPM_BIN/hq.cmd"
+
 # --- 2. no settings PATH configured -> ambient fallback (silent) ---------
 reset_root
 write_local_settings '{}'

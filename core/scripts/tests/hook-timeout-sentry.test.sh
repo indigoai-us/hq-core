@@ -31,6 +31,22 @@ export HQ_TEST_SYSTEM_QMD="$SYSTEM_QMD"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
 
+# Main Windows run 36805735147 completed case [18] in 11.608s (03:09:00.211Z–03:09:11.818Z).
+# A 15s cap left only 3.392s after that passing run; the 30s Windows bound gives
+# room for Git Bash process-start variance without changing the hook's behavior.
+fixture_master_timeout_seconds() {
+  case "${C179_TEST_SHELL_FAMILY:-$(uname -s 2>/dev/null || printf unknown)}" in
+    MINGW*|MSYS*|CYGWIN*) printf '30' ;;
+    *) printf '15' ;;
+  esac
+}
+
+echo "[fixture-budget] simulated Windows receives headroom for nested dispatch startup"
+[ "$(C179_TEST_SHELL_FAMILY=MSYS_NT fixture_master_timeout_seconds)" = "30" ] \
+  || fail "simulated Git Bash fixture budget must be 30 seconds"
+[ "$(C179_TEST_SHELL_FAMILY=Linux fixture_master_timeout_seconds)" = "15" ] \
+  || fail "Linux fixture budget must stay 15 seconds"
+
 TMP="$(mktemp -d)"
 export HQ_TEST_HQ_UPDATE_CHECK="$TMP/hq-update-check"
 trap 'rm -rf "$TMP"' EXIT
@@ -1391,8 +1407,8 @@ printf '%s\n' \
   'printf "late stdout"' \
   'exit 7' > "$R16/core/hooks/PreToolUse/99-late-finish.sh"
 chmod +x "$R16/core/hooks/PreToolUse/99-late-finish.sh"
-# Git Bash startup cost across the deliberate 25-hook journal fixture can
-# exceed the Linux-oriented 15-second harness budget on Windows.
+# Windows logs measured 48.8 seconds for the deliberate 25-hook journal
+# fixture, so keep a 60-second bound with measured headroom.
 set +e
 env \
   BASH_ENV= \
@@ -1407,7 +1423,7 @@ env \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 \
   HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=1 \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R16/watchdog.trigger" \
-  timeout 45s bash "$R16/.claude/hooks/master-hook.sh" PreToolUse \
+  timeout 60s bash "$R16/.claude/hooks/master-hook.sh" PreToolUse \
   >"$R16/out" 2>"$R16/err" <<<"$(payload_for_event PreToolUse late-finish-session)"
 late_finish_rc=$?
 set -e
@@ -1558,7 +1574,7 @@ env \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 \
   HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=1 \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R18_LOCK/watchdog.trigger" \
-  timeout 15s bash "$R18_LOCK/.claude/hooks/master-hook.sh" PreToolUse \
+  timeout "$(fixture_master_timeout_seconds)s" bash "$R18_LOCK/.claude/hooks/master-hook.sh" PreToolUse \
   >"$R18_LOCK/out" 2>"$R18_LOCK/err" <<<"$(payload_for_event PreToolUse "$stale_lock_session")"
 stale_lock_rc=$?
 set -e
@@ -1728,6 +1744,8 @@ pass "nested metadata is version-gated and every report stays within the receive
 echo "[22] master debug phase markers do not fork and persist one bounded snapshot"
 phase_trace="$TMP/master-debug-phase.trace"
 phase_state="$TMP/master-debug-phase.state"
+child_phase_state="$TMP/child-debug-phase.state"
+child_active_state="$TMP/child-debug-phase.active"
 if ! bash -c '
   PS4="+${BASH_SUBSHELL}: "
   set -x
@@ -1741,8 +1759,17 @@ if ! bash -c '
   master_debug_phase_buffer_record source 5
   master_debug_phase_start external_command
   master_debug_phase_finish external_command
+  HQ_HOOK_TIMEOUT_CHILD_PHASE_FILE="$3"
+  HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE="$4"
+  export HQ_HOOK_TIMEOUT_CHILD_PHASE_FILE HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE
+  : > "$3"
+  : > "$4"
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    hook_timeout_child_phase_start parse
+    hook_timeout_child_phase_finish parse
+  fi
   set +x
-' _ "$PROBE_SRC" "$phase_state" 2>"$phase_trace"; then
+' _ "$PROBE_SRC" "$phase_state" "$child_phase_state" "$child_active_state" 2>"$phase_trace"; then
   fail "debug phase helpers were not callable from the probe library"
 fi
 if grep -Eq '^\+[1-9]' "$phase_trace"; then
@@ -1753,6 +1780,12 @@ IFS=$'\t' read -r saved_phase _ saved_completed < "$phase_state" || true
 [ "$saved_phase" = external_command ] \
   && [ "$saved_completed" = 'startup:3,source:5' ] \
   || fail "active phase snapshot omitted completed timings"
-pass "phase helpers stay in the caller and persist one active-state line"
+if [ -n "${EPOCHREALTIME:-}" ]; then
+  IFS=$'\t' read -r saved_phase saved_elapsed < "$child_phase_state" || true
+  [[ "$saved_phase" = parse && "$saved_elapsed" =~ ^[0-9]+$ ]] \
+    || fail "child phase helpers did not save an elapsed duration"
+  [ ! -s "$child_active_state" ] || fail "child phase finish left a stale active marker"
+fi
+pass "phase helpers stay in the caller and persist bounded timing state"
 
 echo "ALL PASS: hook-timeout-sentry"

@@ -1,7 +1,7 @@
 ---
 name: hq-bug
 description: Submit HQ bug reports or feature requests with session context.
-allowed-tools: AskUserQuestion, Write, Bash(mktemp:*), Bash(cygpath:*), Bash(bash:*), Bash(rm:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(pwd:*), Bash(ls:*)
+allowed-tools: AskUserQuestion, Write, Bash(mktemp:*), Bash(cygpath:*), Bash(bash:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(pwd:*), Bash(ls:*)
 ---
 
 # HQ Feedback
@@ -23,7 +23,7 @@ From `$ARGUMENTS`, extract:
 
 ### 2. Allocate body file
 
-Run this as a **single** Bash call (do not split mktemp and cygpath across tool calls — each spawn is expensive on Windows):
+Run this as a **single** Bash call (do not split mktemp and cygpath across tool calls):
 
 ```bash
 BODY_PATH=$(mktemp -t hq-feedback-body.XXXXXX) || { echo "mktemp failed" >&2; exit 1; }
@@ -33,7 +33,7 @@ fi
 printf '%s\n' "$BODY_PATH"
 ```
 
-Capture the absolute path printed to stdout. **On Windows Git Bash, `mktemp` yields an MSYS `/tmp/...` path that the native `hq` binary cannot read — `--body-file` then fails with "body must not be empty." `cygpath -m` converts it to a `C:/...` path the native binary can open. On macOS/Linux the `cygpath` branch is a no-op.** Substitute this literal path into Steps 6 and 8 directly — do not rely on it as a shell variable across separate Bash tool calls, as each call runs in a fresh subprocess. Never pass a Git Bash `/tmp/...` path to `hq`.
+Capture the absolute path printed to stdout. On Windows Git Bash, `cygpath -m` makes the path readable by the native `hq` binary. Use this path in Steps 6 and 8. Leave the small body file in the OS temp directory after submission; do not run a cleanup command.
 
 ### 3. Capture CWD
 
@@ -124,34 +124,36 @@ Capture the output. If empty or blank, omit `--company` from the submit call.
 
 ### 8. Submit (single Bash call — substitute literal values)
 
-**Each Bash tool call runs in a fresh subprocess — shell variables set in earlier steps do not carry over.** Construct the submit command by replacing each placeholder with its captured literal value, then run the result in a single Bash call.
+**Primary path:** use the Write-created file from Step 6. Construct and run this command directly:
 
-Template:
-
-```
-hq feedback "<type>" --title "<title>" --body-file "<body-path>" [--company "<slug>"] [--screenshot "<path>" ...]; rc=$?; rm -f "<body-path>"; exit $rc
+```bash
+hq feedback "<type>" --title "<title>" --body-file "<body-path>" [--company "<slug>"] [--screenshot "<path>" ...]
 ```
 
 Substitution map:
 - `<type>` → TYPE from Step 1 (e.g., `bug`)
 - `<title>` → TITLE from Step 1 (e.g., `Login broken on mobile`) — always pass via `--title`, never as a positional argument to `hq feedback`
-- `<body-path>` → absolute path printed in Step 2 (native-visible; e.g. `/tmp/hq-feedback-body.AbCdEf` on POSIX, `C:/Temp/hq-feedback-body.AbCdEf` on Windows Git Bash after `cygpath -m`)
+- `<body-path>` → absolute path printed in Step 2 (native-visible; `cygpath -m` converts Git Bash paths on Windows)
 - `[--company "<slug>"]` → `--company "indigo"` if Step 7 returned a non-empty slug; omit entirely if empty
 - `[--screenshot "<path>" ...]` → one `--screenshot "<abs-path>"` per image from Step 5b, repeated (the flag is repeatable, max 5). Omit entirely when Step 5b collected none.
 
 Example fully-substituted command:
 
 ```bash
-hq feedback "bug" --title "Login broken on mobile" --body-file "/tmp/hq-feedback-body.AbCdEf" --company "indigo"; rc=$?; rm -f "/tmp/hq-feedback-body.AbCdEf"; exit $rc
+hq feedback "bug" --title "Login broken on mobile" --body-file "/tmp/hq-feedback-body.AbCdEf" --company "indigo"
 ```
 
-Same command carrying two screenshots:
+Do not append cleanup commands. The file stays in the OS temp directory.
+
+**Fallback only when the host has no Write tool:** `hq feedback --body-file -` reads stdin. Before constructing the command, choose `HQ_FEEDBACK_BODY_` followed by at least 12 random alphanumeric characters for this submission. Confirm that no line in the complete body exactly equals the chosen delimiter. Replace `<unique-delimiter>` with that same chosen value in both locations below; never reuse a fixed delimiter:
 
 ```bash
-hq feedback "bug" --title "Login broken on mobile" --body-file "/tmp/hq-feedback-body.AbCdEf" --company "indigo" --screenshot "/tmp/login-error.png" --screenshot "/tmp/console.png"; rc=$?; rm -f "/tmp/hq-feedback-body.AbCdEf"; exit $rc
+hq feedback "<type>" --title "<title>" --body-file - [--company "<slug>"] [--screenshot "<path>" ...] <<'<unique-delimiter>'
+<four-section body from Step 6>
+<unique-delimiter>
 ```
 
-Running the chain directly (without a `bash -c '...'` wrapper) avoids single-quote hazards when TITLE contains apostrophes. The `hq` call is covered by `Bash(hq:*)`; the inline `rm -f` cleanup is covered by `Bash(rm:*)`. Cleanup runs whether `hq` succeeds or fails.
+Run the command directly (without a `bash -c '...'` wrapper). The primary command has no cleanup step; its exit status is the `hq feedback` result.
 
 ### 9. Report
 
@@ -162,8 +164,9 @@ Print the `Submitted: feedback_<uuid>` line returned by the CLI. If the command 
 - **Literal substitution only in Step 8.** Never rely on shell variables from a prior Bash tool call — they do not survive across invocations. Paste the captured values directly into the command string.
 - **Always pass `--title` explicitly.** Do not pass the title as a positional to the `bug`/`feature` subcommand — the subcommand's positional parser would either reject it or swallow it depending on Commander's mode. Always use `--title "<title>"`.
 - **Input without a type → use the whole description.** If `$ARGUMENTS` does not begin with `bug` or `feature`, do not consume any token as TYPE. Derive a concise TITLE and preserve the whole input in User Message.
-- Run the submit chain directly (no `bash -c '...'` wrapper) — single-quoting user-supplied values like TITLE inside `bash -c '...'` breaks on apostrophes. The `hq` call is covered by `Bash(hq:*)`; `rm -f` by `Bash(rm:*)`. No exit-trap dependency.
+- Run the primary submit command directly (no `bash -c '...'` wrapper). Leave its body file in the OS temp directory; do not chain cleanup. If a host lacks Write, use the random-delimiter stdin fallback from Step 8 and verify that no body line equals the delimiter before running it.
 - Use **AskUserQuestion** for any missing title — never inline questions in chat text.
+- For stdin fallback only, choose `HQ_FEEDBACK_BODY_` plus at least 12 random alphanumeric characters per submission. Confirm no line of the body exactly equals that delimiter, and use that same unique delimiter to open and close the quoted here-document. Never use a fixed here-document delimiter.
 - **Attach screenshots for visual defects.** A UI, layout, or rendering report
   without an image makes the reader reconstruct from prose what one picture
   would have settled. Run Step 5b on every report; it is prose-only and costs

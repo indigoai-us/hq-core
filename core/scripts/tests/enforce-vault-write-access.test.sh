@@ -10,8 +10,9 @@
 #     dir itself), "prefix/" private folders (write covers direct children
 #     only; read covers none), exact keys, and most-specific-wins (a specific read grant
 #     carves a broader write grant down, and vice versa);
-#   - fail-open behavior: missing manifest, unparseable manifest, company not
-#     in manifest, role owner/admin/unknown, enforced=false;
+#   - fail-open behavior: missing manifest and known owner/admin roles;
+#     unknown roles, absent companies, and malformed manifests preserve the
+#     default-off behavior and are denied only when the hq-flags gate is on;
 #   - Bash coverage: rm/mv/sed -i/tee/redirects into denied paths blocked;
 #     reads and cp FROM a read-only path allowed; bare-relative companies/
 #     tokens exempt inside a repos/ checkout context;
@@ -33,7 +34,32 @@ mkdir -p "$TMP/.claude" "$TMP/.hq" "$TMP/core/scripts" \
 cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/hook-lib.sh"
 mkdir -p "$TMP/.claude/hooks"
 cp "$HOOK" "$TMP/.claude/hooks/enforce-vault-write-access.sh"
+cp "$ROOT/.claude/hooks/enforce-vault-write-access-flag.cjs" "$TMP/.claude/hooks/"
 HOOK="$TMP/.claude/hooks/enforce-vault-write-access.sh"
+CLI="$TMP/npm-global/lib/node_modules/@indigoai-us/hq-cli"
+mkdir -p "$CLI/bin" "$CLI/node_modules/@indigoai-us/hq-flags-client" \
+  "$CLI/node_modules/@indigoai-us/hq-cloud" "$TMP/bin"
+printf '%s\n' '{"name":"@indigoai-us/hq-cli","bin":{"hq":"bin/hq"}}' > "$CLI/package.json"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$CLI/bin/hq"
+chmod +x "$CLI/bin/hq"
+ln -s "$CLI/bin/hq" "$TMP/bin/hq"
+printf '%s\n' '{"type":"module","exports":{".":{"import":"./index.js"}}}' \
+  > "$CLI/node_modules/@indigoai-us/hq-flags-client/package.json"
+cat > "$CLI/node_modules/@indigoai-us/hq-flags-client/index.js" <<'JS'
+export const createFlagClient = () => ({
+  ready: async () => {
+    if (process.env.HQ_TEST_FLAG_ERROR === "true") throw new Error("test registry unavailable");
+  },
+  snapshot: () => ({flags: process.env.HQ_TEST_FLAG_MISSING === "true" ? {} : {
+    "hooks.vault-write-deny-unknown-access": process.env.HQ_TEST_FLAG_ENABLED === "true",
+  }}),
+  close: () => {},
+});
+JS
+printf '%s\n' '{"type":"module","exports":{".":{"import":"./index.js"}}}' \
+  > "$CLI/node_modules/@indigoai-us/hq-cloud/package.json"
+printf '%s\n' 'export const loadCachedTokens = () => ({idToken:"test-token"});' \
+  > "$CLI/node_modules/@indigoai-us/hq-cloud/index.js"
 printf '{}' > "$TMP/.claude/settings.local.json"   # no bypass by default
 
 write_manifest() {
@@ -57,6 +83,7 @@ write_manifest() {
     "beta": { "role": "owner", "grants": [] },
     "gamma": { "role": "member", "enforced": false, "grants": [] },
     "delta": { "role": "unknown", "grants": [] },
+    "epsilon": { "role": "unknown", "enforced": false, "grants": [] },
     "wild": {
       "role": "member",
       "grants": [
@@ -78,12 +105,43 @@ run() {
   local expect="$1" tool="$2" key="$3" value="$4" label="$5" rc=0 payload
   payload=$(jq -n --arg t "$tool" --arg k "$key" --arg v "$value" \
     '{tool_name: $t, tool_input: {($k): $v}}')
-  printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" >/dev/null 2>&1 || rc=$?
+  printf '%s' "$payload" | env PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
+    HQ_COMPANY_UID=cmp_test123 HQ_COMPANY_SLUG=indigo \
+    CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" >/dev/null 2>&1 || rc=$?
   if [[ "$rc" -eq "$expect" ]]; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))
     echo "FAIL [$label]: expected exit $expect, got $rc" >&2
+  fi
+}
+run_flag() {
+  local expect="$1" enabled="$2" slug="$3" label="$4" registry_error="${5:-false}" rc=0 payload output
+  payload=$(jq -n --arg p "$TMP/companies/$slug/x.md" \
+    '{tool_name: "Edit", tool_input: {file_path: $p}}')
+  output=$(printf '%s' "$payload" | env PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
+    HQ_COMPANY_UID=cmp_test123 HQ_COMPANY_SLUG=indigo HQ_TEST_FLAG_ENABLED="$enabled" \
+    HQ_TEST_FLAG_ERROR="$registry_error" \
+    CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>&1 >/dev/null) || rc=$?
+  if [[ "$rc" -eq "$expect" ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "FAIL [$label]: expected exit $expect, got $rc; stderr=$output" >&2
+  fi
+}
+run_unknown_message() {
+  local payload output rc=0
+  payload=$(jq -n --arg p "$TMP/companies/delta/x.md" \
+    '{tool_name: "Edit", tool_input: {file_path: $p}}')
+  output=$(printf '%s' "$payload" | env PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
+    HQ_COMPANY_UID=cmp_test123 HQ_COMPANY_SLUG=indigo HQ_TEST_FLAG_ENABLED=true \
+    CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>&1 >/dev/null) || rc=$?
+  if [[ "$rc" -eq 2 && "$output" == *"Run HQ sync or"* && "$output" == *"sign in again"* ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "FAIL [unknown role recovery guidance]: expected exit 2 and sync/sign-in guidance, got exit $rc" >&2
   fi
 }
 
@@ -106,11 +164,15 @@ run 0 Write file_path "$A/dropbox/new.md"           'private-folder write allows
 run 2 Write file_path "$A/dropbox/sub/new.md"       'private-folder write does not cover nested path'
 run 0 Edit  file_path "$A/reports/peek/x.md"        'private-folder read does not carve broader write'
 
-# --- Fail-open paths ------------------------------------------------------
+# --- Known bypass and unknown-role paths --------------------------------
 run 0 Edit file_path "$TMP/companies/beta/x.md"     'owner role fail-open'
 run 0 Edit file_path "$TMP/companies/gamma/x.md"    'enforced=false fail-open'
-run 0 Edit file_path "$TMP/companies/delta/x.md"    'unknown role fail-open'
-run 0 Edit file_path "$TMP/companies/ghost/x.md"    'company absent from manifest fail-open'
+run_flag 0 false delta 'unknown role allowed with default-off flag'
+run_flag 0 false ghost 'absent company allowed with default-off flag'
+run_flag 2 true delta 'unknown role denied with flag on'
+run_flag 2 true ghost 'absent company denied with flag on'
+run_flag 0 true epsilon 'enforced=false unknown role bypasses when flag on'
+run_unknown_message
 run 0 Edit file_path "$TMP/workspace/n.md"          'path outside companies/ ignored'
 run 0 Edit file_path "$TMP/companies/manifest.yaml" 'companies/manifest.yaml exempt'
 run 0 Edit file_path "$TMP/companies/_template/k.md" 'companies/_template exempt'
@@ -146,9 +208,11 @@ runb 0 "ls $A/private"                              'bash non-write op allowed'
 
 # --- Manifest edge cases --------------------------------------------------
 printf 'not json' > "$TMP/.hq/vault-access.json"
-run 0 Edit file_path "$A/private/notes.md"          'unparseable manifest fail-open'
+run_flag 0 false acme 'malformed manifest allowed with default-off flag'
+run_flag 2 true acme 'malformed manifest denied with flag on'
+run_flag 0 true delta 'registry outage falls back to default off' true
 rm -f "$TMP/.hq/vault-access.json"
-run 0 Edit file_path "$A/private/notes.md"          'missing manifest fail-open'
+run 0 Edit file_path "$A/private/notes.md"          'missing manifest allowed for fresh install'
 write_manifest
 
 # --- Bypass escape hatch --------------------------------------------------

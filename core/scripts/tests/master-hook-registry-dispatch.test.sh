@@ -40,6 +40,14 @@ done
 
 echo "[2] registry scripts exist and gated ids are known to the profile lists"
 . "$ROOT/.claude/hooks/hook-gate.sh" --lib
+# The vault access manifest must exist before the write-protection hook's
+# file prefilter can dispatch it. Refresh stale manifests asynchronously.
+refresh_count="$(jq '[.hooks.SessionStart[] | .hooks[] | select(.script == "core/scripts/refresh-vault-access-session-start.sh")] | length' "$REGISTRY")"
+[ "$refresh_count" = "1" ] && pass "vault access manifest refresh runs at SessionStart" \
+  || fail "vault access manifest refresh is not registered at SessionStart (count=$refresh_count)"
+is_in_minimal_profile refresh-vault-access \
+  && pass "vault access refresh runs in the minimal profile" \
+  || fail "vault access refresh is missing from the minimal profile"
 # These three gated ids remain inactive pending an explicit owner choice
 # for their profile placement; they are documented in MIGRATION.md.
 DEFERRED_PROFILE_DECISION=" check-core-yaml-parity env-file-no-trailing-newline record-policy-retrieval "

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # HQ_CLI_REQUIRED_IN_CI: the real sentry-report probes below must run in CI.
 set -euo pipefail
+unset HQ_ROOT
 
 ROOT="$(git rev-parse --show-toplevel)"
 ORIGINAL_PATH="$PATH"
@@ -184,12 +185,19 @@ HQ
   printf '%s' "$root"
 }
 
+fixture_timeout_seconds() {
+  case "${C179_TEST_SHELL_FAMILY:-$SHELL_FAMILY}" in
+    MINGW*|MSYS*|CYGWIN*) printf '20' ;;
+    *) printf '10' ;;
+  esac
+}
+
 run_report() {
   local root="$1" label="$2" session="c179-attribution-$2" invocation="c179-test-$2"
   local hook_path="$root/.claude/hooks/master-hook.sh" fixture_bin
   fixture_bin="$(fixture_path "$root/bin")"
   printf 'master-dispatch\t%s\tabsolute\n' "$hook_path" > "$root/trigger.tsv"
-  run_fixture_bounded 10 \
+  run_fixture_bounded "$(fixture_timeout_seconds)" \
     "PATH=$fixture_bin:$PATH" \
     'BASH_ENV=' \
     'HQ_HOOK_TIMEOUT_SENTRY=1' \
@@ -300,14 +308,14 @@ run_master_phase_case() {
   set +e
   run_fixture_bounded 45 \
     "PATH=$fixture_bin:$PATH" \
-    'BASH_ENV=' \
+    "BASH_ENV=${C179_TEST_BASH_ENV:-}" \
     'HQ_HARNESS=codex' \
     "HOME=$root/home" \
     'HQ_DISABLED_HOOKS=' \
     "HQ_HOOK_TIMEOUT_SENTRY=$sentry" \
     "HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE=$root/watchdog.trigger" \
     "HQ_HOOK_TIMEOUT_SENTRY_TEST_STATUS_FILE=$root/watchdog.status" \
-    'HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=2' \
+    "HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=${C179_TEST_MASTER_ABSOLUTE_SECONDS:-2}" \
     'HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=20' \
     "HQ_TEST_SYSTEM_JQ=$SYSTEM_JQ" \
     "HQ_TEST_SYSTEM_AWK=$SYSTEM_AWK" \
@@ -367,6 +375,17 @@ seed_sequence() {
     'slow-c.sh	SessionStart	8000' \
     'fourth.sh	SessionStart	7000' \
     > "$root/workspace/.hook-timeout-journal/$session_hash.tsv"
+}
+
+test_windows_slow_start_budget() {
+  local rc
+  C179_TEST_SHELL_FAMILY=MSYS_NT
+  set +e
+  run_fixture_bounded "$(fixture_timeout_seconds)" -- bash -c 'sleep 11'
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "Windows-simulated slow startup exceeded the fixture budget (rc=$rc)"
+  pass "Windows-simulated slow startup stays within the platform fixture budget"
 }
 
 test_slow_child_tag() {
@@ -491,6 +510,10 @@ test_master_late_active_phase() {
     MASTER_DEBUG_PHASE_FILE="$root/master.debug.tsv"
     MASTER_DEBUG_ACTIVE_PHASE_FILE="$root/master.debug.tsv.active"
     MASTER_DEBUG_CLI_VERSION_FILE="$root/master.debug.tsv.cli-version"
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    MASTER_DEBUG_CHILD_PHASE_FILE=""
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    MASTER_DEBUG_CHILD_ACTIVE_PHASE_FILE=""
     # shellcheck disable=SC2034
     timeout_journal_file="$root/workspace/.hook-timeout-journal/session.tsv"
     # shellcheck disable=SC2034
@@ -778,11 +801,377 @@ test_real_master_parse_phase() {
   pass "real master parse delay reports master:parse without changing composed output"
 }
 
+test_master_entry_shell_startup_phase() {
+  local root event
+  root="$(prepare_fixture master-entry-shell-startup)"
+  prepare_master_phase_fixture "$root"
+  printf '%s\n' 'unset EPOCHREALTIME' 'sleep 2' > "$root/slow-bash-env.sh"
+  cat > "$root/core/hooks/SessionStart/10-slow-json.sh" <<'CHILD'
+#!/usr/bin/env bash
+cat > "${HQ_TEST_CAPTURED_INPUT:?}"
+printf 'first\n' >> "${HQ_TEST_ORDER:?}"
+sleep 2
+printf '%s' '{"hookSpecificOutput":{"additionalContext":"C179_PHASE_DELAY"}}'
+CHILD
+  chmod +x "$root/core/hooks/SessionStart/10-slow-json.sh"
+  C179_TEST_MASTER_ABSOLUTE_SECONDS=5 C179_TEST_BASH_ENV="$root/slow-bash-env.sh" \
+    run_master_phase_case "$root" 1 entry-shell-startup
+  unset C179_TEST_BASH_ENV C179_TEST_MASTER_ABSOLUTE_SECONDS
+  event="$(sed '/^---EVENT---$/d' "$root/event.jsonl" | jq -sc '.[0]')"
+  jq -e '
+    .type == "hook_timeout_warning"
+    and any(.metadata.hook_timeout_debug_context.phase_timings[];
+      .phase == "startup" and .elapsed_ms >= 2000)
+    and any(.metadata.hook_timeout_debug_context.phase_timings[];
+      .phase == "external_command" and .elapsed_ms > 0)
+  ' <<<"$event" >/dev/null \
+    || { jq -c '.metadata.hook_timeout_debug_context.phase_timings' <<<"$event" >&2; fail "entry-shell startup and child durations were not separated"; }
+  pass "entry-shell startup and child execution have separate phase durations"
+}
+
+test_master_entry_shell_startup_legacy_clock() {
+  local root event
+  root="$(prepare_fixture master-entry-shell-startup-legacy-clock)"
+  prepare_master_phase_fixture "$root"
+  cat > "$root/core/hooks/SessionStart/10-slow-json.sh" <<'CHILD'
+#!/usr/bin/env bash
+cat > "${HQ_TEST_CAPTURED_INPUT:?}"
+printf 'first\n' >> "${HQ_TEST_ORDER:?}"
+sleep 2
+printf '%s' '{"hookSpecificOutput":{"additionalContext":"C179_PHASE_DELAY"}}'
+CHILD
+  chmod +x "$root/core/hooks/SessionStart/10-slow-json.sh"
+  printf 'unset EPOCHREALTIME\n' > "$root/legacy-bash-env.sh"
+  C179_TEST_MASTER_ABSOLUTE_SECONDS=5 C179_TEST_BASH_ENV="$root/legacy-bash-env.sh" \
+    run_master_phase_case "$root" 1 entry-shell-startup-legacy-clock
+  unset C179_TEST_BASH_ENV C179_TEST_MASTER_ABSOLUTE_SECONDS
+  event="$(sed '/^---EVENT---$/d' "$root/event.jsonl" | jq -sc '.[0]')"
+  jq -e '
+    .type == "hook_timeout_warning"
+    and (.metadata.hook_timeout_debug_context.phase_timings | type == "array")
+    and any(.metadata.hook_timeout_debug_context.phase_timings[];
+      .phase == "external_command" and .elapsed_ms > 0)
+  ' <<<"$event" >/dev/null \
+    || { jq -c '.metadata.hook_timeout_debug_context.phase_timings' <<<"$event" >&2; fail "legacy Bash lost the measured external-command phase without EPOCHREALTIME"; }
+  pass "legacy Bash records measured external-command duration without EPOCHREALTIME"
+}
+
+test_legacy_active_phase_omits_zero_duration() {
+  local root
+  root="$(prepare_fixture legacy-active-phase-zero-duration)"
+  (
+    . "$ROOT/.claude/hooks/hook-timeout-probe.sh"
+    unset EPOCHREALTIME
+
+    SECONDS=20
+    local active_record
+    printf -v active_record 'external_command\tseconds:%s' "$SECONDS"
+    timeout 5s sleep 2
+    hook_timeout_phase_timings_json "" "" "$active_record" "" "" > "$root/positive-phase.json"
+    jq -e 'any(.[]; .phase == "external_command" and .elapsed_ms >= 1000)' \
+      "$root/positive-phase.json" >/dev/null \
+      || { jq -c . "$root/positive-phase.json" >&2; fail "legacy clock lost its positive active phase duration"; }
+
+    SECONDS=40
+    printf -v active_record 'external_command\tseconds:%s' "$SECONDS"
+    hook_timeout_phase_timings_json "" "" "$active_record" "" "" > "$root/zero-phase.json"
+    jq -e 'all(.[]; .phase != "external_command")' "$root/zero-phase.json" >/dev/null \
+      || { jq -c . "$root/zero-phase.json" >&2; fail "legacy clock emitted a zero-duration active phase"; }
+  ) || fail "legacy active phase timing assertions failed"
+  pass "legacy active phases retain positive durations and omit zero-duration samples"
+}
+
+test_monitor_readiness_phase() {
+  local root phase_dir monitor_file monitor_active
+  root="$(prepare_fixture monitor-readiness-phase)"
+  phase_dir="$root/workspace/.hook-timeout-journal"
+  monitor_file="$phase_dir/monitor.tsv"
+  monitor_active="$monitor_file.active"
+  mkdir -p "$phase_dir" "$root/core/scripts" "$root/workspace/monitors/sessions/claude-phase-tags-monitor/dropbox"
+  cp "$ROOT/core/scripts/hook-lib.sh" "$root/core/scripts/hook-lib.sh"
+  cp "$ROOT/.claude/hooks/hq-monitor-session-hook.sh" "$root/.claude/hooks/hq-monitor-session-hook.sh"
+  cp "$ROOT/.claude/hooks/hq-monitor-hook-lib.sh" "$root/.claude/hooks/hq-monitor-hook-lib.sh"
+  cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$root/.claude/hooks/hook-timeout-probe.sh"
+  printf '{}\n' > "$root/workspace/monitors/sessions/claude-phase-tags-monitor/dropbox/inbox.jsonl"
+  : > "$monitor_file"
+  : > "$monitor_active"
+  cat > "$root/bin/hq" <<'HQ'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--help" ]; then
+  printf '  monitor\n'
+  exit 0
+fi
+if [ "${1:-}" = "monitor" ] && [ "${2:-}" = "drain" ]; then
+  cat >/dev/null
+  exit 0
+fi
+exit 91
+HQ
+  chmod +x "$root/bin/hq"
+  if ! run_bounded 30 env \
+    "CLAUDE_PROJECT_DIR=$root" \
+    "PATH=$root/bin:$ORIGINAL_PATH" \
+    "HQ_HOOK_TIMEOUT_CHILD_PHASE_FILE=$monitor_file" \
+    "HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE=$monitor_active" \
+    bash "$root/.claude/hooks/hq-monitor-session-hook.sh" drain PreToolUse \
+      <<<'{"session_id":"phase-tags-monitor"}' > "$root/monitor.out" 2> "$root/monitor.err"; then
+    cat "$root/monitor.err" >&2
+    fail "monitor readiness fixture did not run"
+  fi
+  grep -Eq '^probe[[:space:]]+[0-9]+$' "$monitor_file" \
+    || fail "monitor hook did not record its readiness check"
+  pass "monitor readiness phase is recorded"
+}
+
+test_journal_missing_probe_fails_soft() {
+  local root journal_payload rc
+  root="$(prepare_fixture journal-missing-probe)"
+  mkdir -p "$root/core/scripts" "$root/workspace/threads/journal/2026-09-30"
+  cp "$ROOT/.claude/hooks/journal-due.sh" "$root/.claude/hooks/journal-due.sh"
+  cp "$ROOT/core/scripts/hook-lib.sh" "$root/core/scripts/hook-lib.sh"
+  rm -f "$root/.claude/hooks/hook-timeout-probe.sh"
+
+  cat > "$root/core/scripts/session-journal.sh" <<'JOURNAL'
+#!/usr/bin/env bash
+case "${1:-}" in
+  dir-path) printf '%s\n' "${HQ_TEST_JOURNAL_DIR:?}" ;;
+  *) exit 0 ;;
+esac
+JOURNAL
+  chmod +x "$root/core/scripts/session-journal.sh"
+  journal_payload='{"tool_name":"Read","session_id":"missing-probe","tool_response":{"exit_code":0}}'
+  if printf '%s' "$journal_payload" | env \
+    "HQ_ROOT=$root" "CLAUDE_PROJECT_DIR=$root" \
+    "HQ_TEST_JOURNAL_DIR=$root/workspace/threads/journal/2026-09-30" \
+    bash "$root/.claude/hooks/journal-due.sh" >"$root/journal.out" 2>"$root/journal.err"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" = 0 ] && [ ! -s "$root/journal.out" ] && [ ! -s "$root/journal.err" ] \
+    || { cat "$root/journal.err" >&2; fail "journal-due with missing probe expected exit 0 and empty output (rc=$rc)"; }
+  pass "journal-due remains silent when hook-timeout-probe.sh is absent"
+}
+
+test_monitor_missing_probe_fails_soft() {
+  local root monitor_payload rc
+  root="$(prepare_fixture monitor-missing-probe)"
+  mkdir -p "$root/core/scripts" "$root/workspace/monitors/sessions/claude-missing-probe/dropbox"
+  cp "$ROOT/.claude/hooks/hq-monitor-session-hook.sh" "$root/.claude/hooks/hq-monitor-session-hook.sh"
+  cp "$ROOT/.claude/hooks/hq-monitor-hook-lib.sh" "$root/.claude/hooks/hq-monitor-hook-lib.sh"
+  cp "$ROOT/core/scripts/hook-lib.sh" "$root/core/scripts/hook-lib.sh"
+  rm -f "$root/.claude/hooks/hook-timeout-probe.sh"
+  cat > "$root/bin/hq" <<'HQ'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--help" ]; then
+  printf '  monitor\n'
+  exit 0
+fi
+if [ "${1:-}" = "monitor" ] && [ "${2:-}" = "drain" ]; then
+  cat >/dev/null
+  exit 0
+fi
+exit 91
+HQ
+  chmod +x "$root/bin/hq"
+  monitor_payload='{"session_id":"missing-probe"}'
+  printf '%s\n' "$monitor_payload" \
+    > "$root/workspace/monitors/sessions/claude-missing-probe/dropbox/inbox.jsonl"
+  if printf '%s' "$monitor_payload" | env \
+    "HQ_ROOT=$root" "CLAUDE_PROJECT_DIR=$root" "PATH=$root/bin:$ORIGINAL_PATH" \
+    HQ_CHECKPOINT_RUNTIME=claude \
+    bash "$root/.claude/hooks/hq-monitor-session-hook.sh" drain PreToolUse \
+      >"$root/monitor.out" 2>"$root/monitor.err"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" = 0 ] && [ ! -s "$root/monitor.out" ] && [ ! -s "$root/monitor.err" ] \
+    || { cat "$root/monitor.err" >&2; fail "monitor hook with missing probe expected exit 0 and empty output (rc=$rc)"; }
+  pass "monitor hook remains silent when hook-timeout-probe.sh is absent"
+}
+
+test_missing_probe_fails_soft() {
+  test_journal_missing_probe_fails_soft
+  test_monitor_missing_probe_fails_soft
+}
+
+test_child_phase_tags() {
+  local root phase_dir journal_file monitor_file monitor_active child_file child_active_file now_ms child_active_record phase_timings debug_context report
+  root="$(prepare_fixture child-phase-tags)"
+  phase_dir="$root/workspace/.hook-timeout-journal"
+  mkdir -p "$phase_dir" "$root/core/scripts" "$root/workspace/threads/journal" \
+    "$root/workspace/monitors/sessions/claude-phase-tags-monitor/dropbox"
+  cp "$ROOT/.claude/hooks/journal-due.sh" "$root/.claude/hooks/journal-due.sh"
+  cp "$ROOT/.claude/hooks/hq-monitor-session-hook.sh" "$root/.claude/hooks/hq-monitor-session-hook.sh"
+  cp "$ROOT/.claude/hooks/hq-monitor-hook-lib.sh" "$root/.claude/hooks/hq-monitor-hook-lib.sh"
+  cp "$ROOT/core/scripts/hook-lib.sh" "$root/core/scripts/hook-lib.sh"
+  cp "$ROOT/core/scripts/session-journal.sh" "$root/core/scripts/session-journal.sh"
+
+  journal_file="$phase_dir/journal-due.tsv"
+  : > "$journal_file"
+  : > "$journal_file.active"
+  if ! run_bounded 30 env \
+    "CLAUDE_PROJECT_DIR=$root" \
+    "HQ_HOOK_TIMEOUT_CHILD_PHASE_FILE=$journal_file" \
+    "HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE=$journal_file.active" \
+    bash "$root/.claude/hooks/journal-due.sh" \
+      <<<'{"tool_name":"Read","tool_response":{"exit_code":0},"session_id":"phase-tags-journal"}' \
+      > "$root/journal.out" 2> "$root/journal.err"; then
+    cat "$root/journal.err" >&2
+    fail "journal-due phase fixture did not run"
+  fi
+  grep -Eq '^parse[[:space:]]+[0-9]+$' "$journal_file" \
+    || fail "journal-due did not record its JSON/helper parse group"
+  grep -Eq '^child_wait[[:space:]]+[0-9]+$' "$journal_file" \
+    || fail "journal-due did not record its journal-helper group"
+
+  monitor_file="$phase_dir/monitor.tsv"
+  monitor_active="$monitor_file.active"
+  printf '{}\n' > "$root/workspace/monitors/sessions/claude-phase-tags-monitor/dropbox/inbox.jsonl"
+  : > "$monitor_file"
+  : > "$monitor_active"
+  cat > "$root/bin/hq" <<'HQ'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--help" ]; then
+  printf '  monitor\n'
+  exit 0
+fi
+if [ "${1:-}" = "monitor" ] && [ "${2:-}" = "drain" ]; then
+  cat >/dev/null
+  exit 0
+fi
+exit 91
+HQ
+  chmod +x "$root/bin/hq"
+  if ! run_bounded 30 env \
+    "CLAUDE_PROJECT_DIR=$root" \
+    "PATH=$root/bin:$ORIGINAL_PATH" \
+    "HQ_HOOK_TIMEOUT_CHILD_PHASE_FILE=$monitor_file" \
+    "HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE=$monitor_active" \
+    bash "$root/.claude/hooks/hq-monitor-session-hook.sh" drain PreToolUse \
+      <<<'{"session_id":"phase-tags-monitor"}' > "$root/monitor.out" 2> "$root/monitor.err"; then
+    cat "$root/monitor.err" >&2
+    fail "monitor phase fixture did not run"
+  fi
+  grep -Eq '^probe[[:space:]]+[0-9]+$' "$monitor_file" \
+    || fail "monitor hook did not record its readiness check"
+  grep -Eq '^child_wait[[:space:]]+[0-9]{1,16}$' "$monitor_active" \
+    || fail "monitor hook did not leave the drain phase active through exec"
+
+  grep -Fq 'master_debug_phase_buffer_record startup' "$ROOT/.claude/hooks/master-hook.sh" \
+    || fail "master-hook omitted its entry-shell startup measurement"
+  grep -Fq 'hook_timeout_child_phase_start parse' "$ROOT/.claude/hooks/journal-due.sh" \
+    || fail "journal-due omitted its JSON helper phase"
+  grep -Fq 'hook_timeout_child_phase_start child_wait' "$ROOT/.claude/hooks/journal-due.sh" \
+    || fail "journal-due omitted its helper-call phase"
+  grep -Fq 'hook_timeout_child_phase_start probe' "$ROOT/.claude/hooks/hq-monitor-session-hook.sh" \
+    || fail "monitor hook omitted its readiness phase"
+  grep -Fq 'hook_timeout_child_phase_start child_wait' "$ROOT/.claude/hooks/hq-monitor-session-hook.sh" \
+    || fail "monitor hook omitted its drain phase"
+
+  child_file="$phase_dir/c179-test-child-phase-tags.debug.tsv.child"
+  child_active_file="$child_file.active"
+  now_ms="$(bash -c '. "$1"; hook_timeout_now_ms' _ "$ROOT/.claude/hooks/hook-timeout-probe.sh")"
+  [[ "$now_ms" =~ ^[0-9]{1,16}$ ]] || fail "test clock did not return milliseconds"
+  printf 'startup\t12000\nexternal_command\t7000\nparse\t1500\nprobe\t3000\n' > "$child_file"
+  printf 'child_wait\t%s\n' "$((now_ms - 15000))" > "$child_active_file"
+
+  (
+    . "$ROOT/.claude/hooks/hook-timeout-probe.sh"
+    phase_timings="$(hook_timeout_phase_timings_json "" "" "" "$child_file" "$(cat "$child_active_file")")"
+    printf '%s' "$phase_timings" > "$root/phase-timings.json"
+    debug_context="$(hook_timeout_debug_context_json \
+      journal-due.sh PostToolUse 30000 12000 18000 "$phase_timings" parse other 0 0.1 unavailable unavailable)"
+    printf '%s' "$debug_context" > "$root/debug-context.json"
+  ) || fail "child phase timing aggregation failed"
+  jq -e '
+    any(.[]; .phase == "startup" and .elapsed_ms == 12000)
+    and any(.[]; .phase == "external_command" and .elapsed_ms == 7000)
+    and any(.[]; .phase == "parse" and .elapsed_ms == 1500)
+    and any(.[]; .phase == "probe" and .elapsed_ms == 3000)
+    and any(.[]; .phase == "child_wait" and .elapsed_ms >= 15000)
+  ' "$root/phase-timings.json" >/dev/null \
+    || { jq -c . "$root/phase-timings.json" >&2; fail "child phase durations were not included in the attribution context"; }
+
+  # Model the Bash 3.2 master and its separately launched watchdog sharing the
+  # SECONDS value explicitly passed at process start.
+  unset EPOCHREALTIME
+  SECONDS=20
+  export SECONDS
+  . "$ROOT/.claude/hooks/hook-timeout-probe.sh"
+  MASTER_DEBUG_ACTIVE_PHASE_FILE="$root/master-active.tsv"
+  MASTER_DEBUG_PHASE_BUFFER=()
+  master_debug_phase_start policy_load
+  grep -Eq '^policy_load[[:space:]]seconds:[0-9]+[[:space:]]' "$root/master-active.tsv" \
+    || fail "legacy Bash parent marker did not use the shared SECONDS clock"
+  timeout 5s sleep 2
+  child_active_record="$(cat "$child_active_file")"
+  phase_timings="$(SECONDS="$SECONDS" bash -c '
+    . "$1"
+    hook_timeout_phase_timings_json "" "$2" "__read_active__" "$3" "$4"
+  ' _ "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$root/master-active.tsv" "$child_file" "$child_active_record")" \
+    || fail "active phase fallback failed when child timing inputs were supplied"
+  printf '%s' "$phase_timings" > "$root/active-phase-timings.json"
+  jq -e '
+    any(.[]; .phase == "policy_load" and .elapsed_ms >= 2000)
+    and any(.[]; .phase == "child_wait" and .elapsed_ms >= 15000)
+  ' \
+    "$root/active-phase-timings.json" >/dev/null \
+    || { jq -c . "$root/active-phase-timings.json" >&2; fail "active parent or child phase was lost when child timing inputs were supplied"; }
+
+  (
+    . "$ROOT/.claude/hooks/hook-timeout-probe.sh"
+    phase_timings="$(hook_timeout_phase_timings_json "" "" "" "$child_file" "")"
+    printf '%s' "$phase_timings" > "$root/empty-child-snapshot-timings.json"
+  ) || fail "explicitly empty child phase snapshot was not accepted"
+  jq -e 'all(.[]; .phase != "child_wait")' \
+    "$root/empty-child-snapshot-timings.json" >/dev/null \
+    || { jq -c . "$root/empty-child-snapshot-timings.json" >&2; fail "explicitly empty child phase snapshot was replaced by the later live marker"; }
+  echo "ok: explicitly empty child phase snapshots are not replaced by a later live marker"
+
+  (
+    . "$ROOT/.claude/hooks/hook-timeout-probe.sh"
+    phase_timings="$(hook_timeout_phase_timings_json "" "$root/master-active.tsv" "" "$child_file" "")"
+    printf '%s' "$phase_timings" > "$root/empty-parent-snapshot-timings.json"
+  ) || fail "explicitly empty parent phase snapshot was not accepted"
+  jq -e 'all(.[]; .phase != "policy_load" or .elapsed_ms == 0)' \
+    "$root/empty-parent-snapshot-timings.json" >/dev/null \
+    || { jq -c . "$root/empty-parent-snapshot-timings.json" >&2; fail "explicitly empty parent phase snapshot was replaced by the later live marker"; }
+  echo "ok: explicitly empty parent phase snapshots are not replaced by a later live marker"
+
+  contract_cli_probe
+  if [ "$HQ_CLI_DEBUG_CONTEXT_ENABLED" -eq 1 ]; then
+    report="$(jq -cn --argjson context "$(cat "$root/debug-context.json")" \
+      '{type:"hook_timeout_warning",message:"m",fingerprint:"f",level:"warning",metadata:{hook_sequence:[],hook_timeout_debug_context:$context}}')"
+    printf '%s\n' "$report" | run_bounded 15 "$REAL_HQ_BIN" core sentry report --dry-run \
+      > "$root/cli-event.json" 2> "$root/cli-event.err" \
+      || { cat "$root/cli-event.err" "$root/cli-event.json" >&2; fail "phase tags were rejected by hq sentry report"; }
+    jq -e '
+      .tags.timeout_debug_phase_startup_bucket == "10-20s"
+      and .tags.timeout_debug_phase_external_command_bucket == "5-10s"
+      and .tags.timeout_debug_phase_parse_bucket == "<5s"
+      and .tags.timeout_debug_phase_probe_bucket == "<5s"
+      and .tags.timeout_debug_phase_child_wait_bucket == "10-20s"
+    ' "$root/cli-event.json" >/dev/null \
+      || { jq -c '.tags' "$root/cli-event.json" >&2; fail "phase duration buckets were not emitted as Sentry tags"; }
+  fi
+  pass "startup, child, JSON/helper, readiness, and drain durations reach bucketed attribution tags"
+}
+
 case "$CASE" in
+  windows-slow-start) test_windows_slow_start_budget ;;
   slow-child) test_slow_child_tag ;;
   master-phase) test_master_phase_tag ;;
   hook-sequence) test_hook_sequence_array ;;
   master-phase-delay) test_real_master_parse_phase ;;
+  master-entry-shell-startup) test_master_entry_shell_startup_phase; test_master_entry_shell_startup_legacy_clock ;;
+  child-phase-tags) test_child_phase_tags ;;
+  monitor-readiness-phase) test_monitor_readiness_phase ;;
+  legacy-zero-phase) test_legacy_active_phase_omits_zero_duration ;;
+  journal-missing-probe) test_journal_missing_probe_fails_soft ;;
+  monitor-missing-probe) test_monitor_missing_probe_fails_soft ;;
+  missing-probe-fallback) test_missing_probe_fails_soft ;;
   master-late-active-phase) test_master_late_active_phase ;;
   watchdog-trigger-phase-snapshot) test_watchdog_trigger_phase_snapshot ;;
   read-eof-errexit) test_eof_read_under_errexit ;;
@@ -804,6 +1193,11 @@ case "$CASE" in
     test_master_phase_tag
     test_hook_sequence_array
     test_real_master_parse_phase
+    test_master_entry_shell_startup_phase
+    test_master_entry_shell_startup_legacy_clock
+    test_child_phase_tags
+    test_monitor_readiness_phase
+    test_missing_probe_fails_soft
     test_master_late_active_phase
     test_watchdog_trigger_phase_snapshot
     test_eof_read_under_errexit

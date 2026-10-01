@@ -61,6 +61,38 @@ git -C "$TMP" config user.name "HQ Autocommit Test"
 git -C "$TMP" add core/core.yaml .claude/hooks/hq-autocommit.sh
 git -C "$TMP" commit -q -m "init"
 
+run_auto_maintenance_disabled_case() {
+  local shim_dir="$TMP_PARENT/git-maintenance-shim" trace="$TMP_PARENT/git-maintenance-trace" real_git payload rc=0 output
+  real_git="$(command -v git)"
+  mkdir -p "$shim_dir"
+  cat >"$shim_dir/git" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${HQ_AUTOCOMMIT_TEST_GIT_TRACE:?}"
+exec "${HQ_AUTOCOMMIT_TEST_REAL_GIT:?}" "$@"
+SHIM
+  chmod +x "$shim_dir/git"
+  : >"$trace"
+  git -C "$TMP" config gc.auto 1
+  printf 'maintenance regression\n' > "$TMP/maintenance-regression.md"
+  payload="$(jq -cn --arg path "$TMP/maintenance-regression.md" '{tool_name:"Edit",tool_input:{file_path:$path}}')"
+  output="$(cd "$TMP" && printf '%s' "$payload" | env \
+    PATH="$shim_dir:$PATH" HQ_AUTOCOMMIT_TEST_GIT_TRACE="$trace" \
+    HQ_AUTOCOMMIT_TEST_REAL_GIT="$real_git" bash .claude/hooks/hq-autocommit.sh 2>&1)" || rc=$?
+  if [[ "$rc" -ne 0 || -n "$output" ]]; then
+    echo "autosave with gc.auto=1 should commit silently; rc=$rc out='$output'" >&2
+    return 1
+  fi
+  if ! grep -Fq -- '-c gc.auto=0 -c maintenance.auto=false' "$trace" || ! grep -Eq ' commit --no-verify ' "$trace"; then
+    echo "autosave commit must disable per-commit auto maintenance without changing config; git calls: $(cat "$trace")" >&2
+    return 1
+  fi
+  if grep -Eq '(^| )(gc --auto|maintenance run --auto)( |$)' "$trace"; then
+    echo "autosave spawned automatic git maintenance: $(cat "$trace")" >&2
+    return 1
+  fi
+}
+
 run_linked_worktree_case() {
   local linked="$TMP_PARENT/hq-linked" branch="us085-linked-worktree" base_head payload rc output
   git -C "$TMP" worktree add -q -b "$branch" "$linked"
@@ -330,6 +362,7 @@ SHIM
 if [[ -n "${HQ_AUTOCOMMIT_TEST_PATH_CASE:-}" ]]; then
   case "$HQ_AUTOCOMMIT_TEST_PATH_CASE" in
     linked-worktree) run_linked_worktree_case ;;
+    auto-maintenance) run_auto_maintenance_disabled_case ;;
     windows-backslash) run_windows_style_path_case backslash ;;
     windows-forwardslash) run_windows_style_path_case forwardslash ;;
     unresolved-windows) run_unresolved_windows_path_case ;;

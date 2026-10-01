@@ -104,6 +104,13 @@ settings_path_is_local() {
     [ -n "$(jq -r '.env.PATH // empty' "$LOCAL_SETTINGS" 2>/dev/null)" ]
 }
 
+settings_path_delimiter() {
+  case "$1" in
+    [A-Za-z]:\\*|[A-Za-z]:/*) printf ';' ;;
+    *) printf ':' ;;
+  esac
+}
+
 version_at_least() {
   local actual="$1" required="$2" a1 a2 a3 r1 r2 r3 oldifs
   oldifs="$IFS"; IFS='.'
@@ -129,6 +136,20 @@ stop_watchdog() {
   fi
   kill "$watchdog_pid" 2>/dev/null || true
   wait "$watchdog_pid" 2>/dev/null || true
+}
+
+# Windows npm installs expose hq.cmd (or hq.exe) rather than a bare hq file.
+# Keep the caller's base path so PATH probing can use the same directory while
+# validating the actual shim.
+resolve_hq_binary() {
+  local base="$1" candidate
+  for candidate in "$base" "${base}.cmd" "${base}.exe"; do
+    if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 capture_hq_version_bounded() {
@@ -162,7 +183,7 @@ capture_hq_version_bounded() {
 
 hq_binary_usable() {
   local binary="$1" output version probe_rc
-  [ -x "$binary" ] || return 1
+  binary="$(resolve_hq_binary "$binary")" || return 1
   if output="$(capture_hq_version_bounded "$binary")"; then
     :
   else
@@ -180,15 +201,29 @@ hq_binary_usable() {
 # names its directory.
 hq_in_path() {
   local sp="$1" allow_configured="${2:-0}" d oldifs trusted_dir="" probe_rc saw_unknown=0
+  local path_sep=':' converted="" is_windows_path=0
   [ -n "$sp" ] || return 1
   if [ "$allow_configured" != "1" ]; then
     trusted_dir="$(locate_hq_dir)" || return 1
   fi
-  oldifs="$IFS"; IFS=':'
+  case "$sp" in
+    [A-Za-z]:\\*|[A-Za-z]:/*) is_windows_path=1 ;;
+  esac
+  if [ "$is_windows_path" -eq 1 ]; then
+    case "$sp" in *';'*) path_sep=';' ;; *) path_sep=$'\n' ;; esac
+    if command -v cygpath >/dev/null 2>&1; then
+      converted="$(cygpath -u -p "$sp" 2>/dev/null)" || converted=""
+      if [ -n "$converted" ]; then
+        sp="$converted"
+        path_sep=':'
+      fi
+    fi
+  fi
+  oldifs="$IFS"; IFS="$path_sep"
   for d in $sp; do
     IFS="$oldifs"
     if [ -n "$d" ]; then
-      if [ "$allow_configured" = "1" ] && [ -x "$d/hq" ]; then
+      if [ "$allow_configured" = "1" ]; then
         if hq_binary_usable "$d/hq"; then
           return 0
         else
@@ -262,7 +297,7 @@ pnpm_global_bin() {
   fi
   if [ -n "${HOME:-}" ]; then
     for candidate in "${HOME}/Library/pnpm" "${HOME}/.local/share/pnpm"; do
-      if [ -x "$candidate/hq" ]; then printf '%s\n' "$candidate"; return 0; fi
+      if resolve_hq_binary "$candidate/hq" >/dev/null 2>&1; then printf '%s\n' "$candidate"; return 0; fi
     done
   fi
   return 1
@@ -282,10 +317,10 @@ locate_hq_dir() {
   if [ -n "$hqpath" ] && { [ -z "$pnpm_bin" ] || [ "$hqpath" != "$pnpm_bin/hq" ]; }; then
     if hq_binary_usable "$hqpath"; then dirname "$hqpath"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
   fi
-  if [ -n "$npm_bin" ] && [ -x "$npm_bin/hq" ]; then
+  if [ -n "$npm_bin" ] && resolve_hq_binary "$npm_bin/hq" >/dev/null 2>&1; then
     if hq_binary_usable "$npm_bin/hq"; then printf '%s\n' "$npm_bin"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
   fi
-  if [ -n "$pnpm_bin" ] && [ -x "$pnpm_bin/hq" ]; then
+  if [ -n "$pnpm_bin" ] && resolve_hq_binary "$pnpm_bin/hq" >/dev/null 2>&1; then
     if hq_binary_usable "$pnpm_bin/hq"; then printf '%s\n' "$pnpm_bin"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
   fi
   # If the ambient binary was the pnpm copy, try it only after npm-global.
@@ -293,7 +328,7 @@ locate_hq_dir() {
     if hq_binary_usable "$hqpath"; then dirname "$hqpath"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
   fi
   candidate="${HOME:-}/.local/bin/hq"
-  if [ -n "${HOME:-}" ] && [ -x "$candidate" ]; then
+  if [ -n "${HOME:-}" ] && resolve_hq_binary "$candidate" >/dev/null 2>&1; then
     if hq_binary_usable "$candidate"; then
       printf '%s\n' "${HOME}/.local/bin"
       return 0
@@ -390,9 +425,10 @@ npm_owned_cli_version() {
 
 # Append $1 to env.PATH in settings.local.json (never settings.json). Seeds the
 # local PATH from the resolved settings PATH (arg $2), then the ambient PATH.
+# Arg $3 preserves Windows PATH list syntax when the settings file uses it.
 # Returns 0 on a successful (or already-present) write, 1 if it could not write.
 add_dir_to_settings_path() {
-  local dir="$1" sp="$2" basep tmp
+  local dir="$1" sp="$2" path_sep="${3:-:}" basep tmp
   have_jq || return 1
   [ -n "$dir" ] || return 1
   mkdir -p "$CLAUDE_DIR" 2>/dev/null || true
@@ -404,11 +440,11 @@ add_dir_to_settings_path() {
   [ -n "$basep" ] || basep="$sp"
   [ -n "$basep" ] || basep="${PATH:-}"
   # Already present -> nothing to do (idempotent success).
-  case ":$basep:" in
-    *":$dir:"*) return 0 ;;
+  case "$path_sep$basep$path_sep" in
+    *"$path_sep$dir$path_sep"*) return 0 ;;
   esac
   local newp
-  if [ -n "$basep" ]; then newp="$dir:$basep"; else newp="$dir"; fi
+  if [ -n "$basep" ]; then newp="$dir$path_sep$basep"; else newp="$dir"; fi
   tmp="$LOCAL_SETTINGS.tmp.$$"
   if ( jq --arg p "$newp" '.env = ((.env // {}) + {PATH: $p})' "$LOCAL_SETTINGS" > "$tmp" ) 2>/dev/null; then
     mv "$tmp" "$LOCAL_SETTINGS" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
@@ -489,6 +525,7 @@ run_bounded() {
 
 # --- 1. already reachable on the settings PATH -> silent -----------------
 SP="$(settings_path)"
+SP_DELIMITER="$(settings_path_delimiter "$SP")"
 if [ -n "$SP" ]; then
   SP_LOCAL=0
   settings_path_is_local && SP_LOCAL=1
@@ -525,7 +562,7 @@ if [ "$LOCATE_HQ_RC" -eq 2 ]; then
 fi
 if [ "$LOCATE_HQ_RC" -ne 0 ]; then HQ_DIR=""; fi
 if [ -n "$HQ_DIR" ]; then
-  if add_dir_to_settings_path "$HQ_DIR" "$SP"; then
+  if add_dir_to_settings_path "$HQ_DIR" "$SP" "$SP_DELIMITER"; then
     rm -f "$STAMP" 2>/dev/null || true
     emit_path_updated "$HQ_DIR" 0
   else
@@ -546,7 +583,7 @@ if [ "$REPROBE_LOCATE_RC" -eq 2 ]; then exit 0; fi
 if [ "$REPROBE_LOCATE_RC" -ne 0 ]; then HQ_DIR=""; fi
 if [ -n "$HQ_DIR" ]; then
   rm -f "$STAMP" 2>/dev/null || true
-  if add_dir_to_settings_path "$HQ_DIR" "$SP"; then
+  if add_dir_to_settings_path "$HQ_DIR" "$SP" "$SP_DELIMITER"; then
     emit_path_updated "$HQ_DIR" 0
   else
     emit_needs_path "$HQ_DIR"
@@ -623,7 +660,7 @@ fi
 if [ "$POST_INSTALL_LOCATE_RC" -ne 0 ]; then HQ_DIR=""; fi
 if [ -n "$HQ_DIR" ]; then
   rm -f "$STAMP" 2>/dev/null || true
-  if add_dir_to_settings_path "$HQ_DIR" "$SP"; then
+  if add_dir_to_settings_path "$HQ_DIR" "$SP" "$SP_DELIMITER"; then
     emit_path_updated "$HQ_DIR" 1
   else
     emit_needs_path "$HQ_DIR"

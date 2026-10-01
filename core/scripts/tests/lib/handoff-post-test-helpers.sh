@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+source "$(dirname "${BASH_SOURCE[0]}")/hq-hermetic-env.sh"
+
 # Run handoff-post with an explicit fixture root, regardless of the caller's
 # exported HQ_ROOT. Remaining arguments are NAME=value child environment.
 handoff_post_test_run() {
@@ -16,7 +18,7 @@ handoff_post_test_run() {
   (
     cd "$fixture_root" || exit 1
     if [[ "$env_mode" == clean ]]; then
-      env -i "$@" HQ_ROOT="$fixture_root" \
+      hq_test_clean_env "$@" HQ_ROOT="$fixture_root" \
         bash core/scripts/handoff-post.sh "$thread_path" "$learnings_path"
     else
       env "$@" HQ_ROOT="$fixture_root" \

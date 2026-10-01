@@ -144,7 +144,9 @@ if [ "${HQ_WORK_MESH_RECONCILE_STUB:-}" = "1" ]; then
 fi
 
 HQ_BIN="$(command -v hq 2>/dev/null || true)"
-if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
+if [ -z "$HQ_BIN" ]; then
+  printf '%s\n' 'Work Mesh reconcile skipped: hq CLI not found on PATH.' >&2
+elif [ -f "$OBS_FILE" ]; then
   nohup "$HQ_BIN" mesh context reconcile --observation-file "$OBS_FILE" --machine \
     >/dev/null 2>&1 </dev/null &
   disown 2>/dev/null || true

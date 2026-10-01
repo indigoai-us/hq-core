@@ -29,10 +29,14 @@ pass() { echo "  ok: $*"; }
 # Fake `hq` that records an invocation, shadowing the real CLI.
 TMPBIN="$(mktemp -d)"
 SENTINEL="$TMPBIN/ran"
+ARGS_FILE="$TMPBIN/args"
 cat > "$TMPBIN/hq" <<EOF
 #!/usr/bin/env bash
 # Only the reindex subcommand should ever be dispatched by the hook.
-[ "\${1:-}" = "reindex" ] && : > "$SENTINEL"
+if [ "\${1:-}" = "reindex" ]; then
+  : > "$SENTINEL"
+  printf '%s\\n' "\$@" > "$ARGS_FILE"
+fi
 exit 0
 EOF
 chmod +x "$TMPBIN/hq"
@@ -69,6 +73,10 @@ assert "Write pack skill"         RAN "$(wj Write    "$ROOT/core/packages/hq-pac
 assert "Write generated wrapper"  RAN "$(wj Write    "$ROOT/.claude/skills/core:demo/SKILL.md")"
 assert "Edit core skill"          RAN "$(wj Edit     "$ROOT/core/skills/demo/SKILL.md")"
 assert "MultiEdit personal skill" RAN "$(wj MultiEdit "$ROOT/personal/skills/mine/SKILL.md")"
+assert "reindex hook requests bounded cleanup" RAN "$(wj Edit "$ROOT/core/skills/demo/SKILL.md")"
+grep -Fxq -- '--from-hook' "$ARGS_FILE" \
+  && pass "reindex hook bounds stale-worktree cleanup" \
+  || fail "reindex hook invoked hq reindex without --from-hook (args: $(cat "$ARGS_FILE" 2>/dev/null || true))"
 
 echo "[2] create/edit of irrelevant files → SKIP"
 assert "Write workspace note"   SKIP "$(wj Write "$ROOT/workspace/notes.md")"

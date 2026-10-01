@@ -196,7 +196,7 @@ write_standard_qmd_stub
 # runner drops the embed step and the step-count assertions fail.
 helper_env() {
   # shellcheck disable=SC2086
-  env -i \
+  hq_test_clean_env \
     PATH="$BIN:/usr/bin:/bin" \
     HOME="$HOME_DIR" \
     HQ_QMD_BIN="$BIN/qmd" \
@@ -339,7 +339,7 @@ ok "A2: HQ_QMD_REINDEX_MODE=skip-agent|skip → skipped-agent, zero mutations"
 # Agent with qmd ABSENT must still print skipped-agent (not skipped).
 reset_state
 out=$(
-  env -i PATH="$CLI_ONLY_BIN" HOME="$HOME_DIR" \
+  hq_test_clean_env PATH="$CLI_ONLY_BIN" HOME="$HOME_DIR" \
     QMD_REINDEX_LOG="$LOG" HQ_AGENT_BOX=1 \
     bash "$HELPER" --log "$LOG"
 )
@@ -617,7 +617,7 @@ reset_state
 # skipping. CLI_ONLY_BIN holds the CLI and coreutils, deliberately no qmd.
 [[ -e "$CLI_ONLY_BIN/qmd" ]] && fail "S2 fixture leaked a qmd binary"
 out=$(
-  env -i PATH="$CLI_ONLY_BIN" HOME="$HOME_DIR" \
+  hq_test_clean_env PATH="$CLI_ONLY_BIN" HOME="$HOME_DIR" \
     QMD_REINDEX_LOG="$LOG" \
     bash "$HELPER" --log "$LOG"
 )
@@ -627,7 +627,7 @@ ok "S2: no qmd on PATH still proceeds (CLI bundles qmd), exit 0"
 reset_state
 set +e
 out=$(
-  env -i PATH="$BIN:/usr/bin:/bin" \
+  hq_test_clean_env PATH="$BIN:/usr/bin:/bin" \
     MUTATION_LOG="$MUTATION_LOG" \
     QMD_REINDEX_LOG="$LOG" \
     bash "$HELPER" --log "$LOG"
@@ -718,7 +718,7 @@ chmod +x "$REAL_HELPER" "$TMP/repo/core/scripts/qmd-reindex-bg.real.sh"
   rm -f "$TMP/helper-scheduled.log" "$MUTATION_LOG" "$COMPLETE_STAMP"
   : > "$MUTATION_LOG"
   out=$(
-    env -i PATH="$BIN:/usr/bin:/bin:$(dirname "$(command -v jq || echo /usr/bin)")" \
+    hq_test_clean_env PATH="$BIN:/usr/bin:/bin:$(dirname "$(command -v jq || echo /usr/bin)")" \
       HOME="$HOME_DIR" \
       HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
       MUTATION_LOG="$MUTATION_LOG" \
@@ -764,7 +764,7 @@ rm -f "$TMP/helper-scheduled.log"
 (
   cd "$TMP/repo"
   out=$(
-    env -i PATH="$BIN:/usr/bin:/bin:$(dirname "$(command -v jq || echo /usr/bin)")" \
+    hq_test_clean_env PATH="$BIN:/usr/bin:/bin:$(dirname "$(command -v jq || echo /usr/bin)")" \
       HOME="$HOME_DIR" \
       HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
       MUTATION_LOG="$MUTATION_LOG" \
@@ -853,7 +853,7 @@ rm -f "$TMP/r3-finalize-out.json" "$TMP/r3-post-pid" "$TMP/logs/handoff-post.log
   JQ_DIR="$(dirname "$(command -v jq || echo /usr/bin)")"
 
   # Real finalize in background (launcher path → detached worker; holds on qmd).
-  env -i PATH="$BIN:/usr/bin:/bin:$JQ_DIR" \
+  hq_test_clean_env_exec PATH="$BIN:/usr/bin:/bin:$JQ_DIR" \
     HOME="$HOME_DIR" \
     HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
     MUTATION_LOG="$MUTATION_LOG" \
@@ -1131,7 +1131,7 @@ chmod +x "$BIN/qmd"
 # Spawn worker directly (not via helper_env function) so $! is the process
 # that installed the INT/TERM/HUP traps — signaling a wrapper subshell would
 # orphan the real worker and let the pipeline continue after ownership loss.
-env -i \
+hq_test_clean_env_exec \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
   HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
@@ -1502,7 +1502,7 @@ READY="$TMP/ready-c5-dual"
 rm -f "$READY"
 : > "$HOLD"
 # Explicit env — never inherit force-fail into B.
-env -i \
+hq_test_clean_env_exec \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
   HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
@@ -1527,7 +1527,7 @@ b_opid="$(awk -F= '/^pid=/{print $2; exit}' "$LOCK_DIR/owner" 2>/dev/null || tru
 [[ "$b_opid" == "$c5_b_pid" ]] || fail "C5: owner pid=$b_opid want B=$c5_b_pid"
 # Forced-fail A while B holds — must not mutate or dual-write.
 set +e
-env -i \
+hq_test_clean_env \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
   HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \
@@ -1741,7 +1741,7 @@ rm -f "$READY"
   dd if=/dev/zero bs=1024 count=1 2>/dev/null | tr '\0' 'x'
   printf '\n'
 } >"$LOG"
-env -i \
+hq_test_clean_env_exec \
   PATH="$BIN:/usr/bin:/bin" \
   HOME="$HOME_DIR" \
   HQ_QMD_BIN="$BIN/qmd" HQ_INDEX_MAX_LOAD_PERCENT=off \

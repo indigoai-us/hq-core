@@ -81,7 +81,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" SessionStart",
+            "command": "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" SessionStart",
             "timeout": 300
           }
         ]

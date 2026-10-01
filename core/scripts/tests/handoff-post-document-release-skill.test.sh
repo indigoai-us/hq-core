@@ -33,6 +33,7 @@ mkdir -p "$FIXTURE/core/scripts/lib" \
   "$TMP_ROOT/bin" "$TMP_ROOT/logs"
 
 cp "$SOURCE_ROOT/core/scripts/handoff-post.sh" "$FIXTURE/core/scripts/handoff-post.sh"
+cp "$SOURCE_ROOT/core/scripts/lib/session-id.sh" "$FIXTURE/core/scripts/lib/session-id.sh"
 if [[ -f "$SOURCE_ROOT/core/scripts/skill-installed.sh" ]]; then
   cp "$SOURCE_ROOT/core/scripts/skill-installed.sh" "$FIXTURE/core/scripts/skill-installed.sh"
 fi

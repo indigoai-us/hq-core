@@ -120,6 +120,15 @@ fi
 printf 'hq-cli pin: requiresHqCli >=%s; highest forwarded/hybrid min_cli %s; installing %s\n' \
   "$FLOOR_EXPRESSION" "$HIGHEST_ROW_MIN" "$SELECTED_VERSION"
 
+# CI runs the pinned floor build on purpose. When the server-side minimum
+# rises above it, the version gate installs the latest CLI and exits before
+# running the command, so every later probe gets no output. Turn the gate off
+# here and, through GITHUB_ENV, for the steps that follow.
+export HQ_NO_UPDATE_CHECK=1
+if [ -n "${GITHUB_ENV:-}" ]; then
+  printf 'HQ_NO_UPDATE_CHECK=1\n' >> "$GITHUB_ENV"
+fi
+
 # The package's postinstall may reconcile a local daemon; CI only needs the CLI binary.
 npm install -g "@indigoai-us/hq-cli@$SELECTED_VERSION" --ignore-scripts
 

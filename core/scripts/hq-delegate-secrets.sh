@@ -90,7 +90,7 @@ fi
 
 # --- parse names (KEY= lines; comments and blanks ignored) --------------------
 
-NAMES="$(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_SCHEMA" | cut -d= -f1 | sort -u)"
+NAMES="$(grep -E '^[A-Z][A-Z0-9_]*(/[A-Z][A-Z0-9_]+)*=' "$ENV_SCHEMA" | cut -d= -f1 | sort -u)"
 if [ -z "$NAMES" ]; then
   update_manifest '.secrets = [] | .secretsSkipped = false'
   echo "hq-delegate-secrets: $ENV_SCHEMA declares no secret names — nothing to grant"

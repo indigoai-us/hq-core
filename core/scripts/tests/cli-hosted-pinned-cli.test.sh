@@ -83,11 +83,15 @@ YAML
 cat > "$MOCK_PREFIX/bin/hq" <<'HQ'
 #!/usr/bin/env bash
 if [ "${1-}" = "--version" ]; then printf '5.270.0\n'; exit 0; fi
+# Like the real version gate when the server minimum is above the pin: without
+# the opt-out, a command self-updates and exits without running.
+if [ "${HQ_NO_UPDATE_CHECK-}" != "1" ]; then printf 'below the minimum required version\n' >&2; exit 75; fi
 if [ "${1-}" = "core" ] && [ "${2-}" = "--help" ]; then exit 0; fi
 exit 64
 HQ
 chmod +x "$MOCK_PREFIX/bin/hq"
 GITHUB_PATH_FILE="$TMP/github-path"
+GITHUB_ENV_FILE="$TMP/github-step-vars"
 MOCK_NPM_LOG="$TMP/npm-installs"
 : > "$MOCK_NPM_LOG"
 if [ ! -f "$INSTALLER" ]; then
@@ -95,11 +99,16 @@ if [ ! -f "$INSTALLER" ]; then
 else
   install_output="$(MOCK_NPM_PREFIX="$MOCK_PREFIX" MOCK_NPM_ROOT="$MOCK_NPM_ROOT" \
     MOCK_NPM_INSTALL_LOG="$MOCK_NPM_LOG" GITHUB_PATH="$GITHUB_PATH_FILE" \
-    HQ_MOCK_VERSION=5.270.0 PATH="$MOCK_BIN:$PATH" \
+    GITHUB_ENV="$GITHUB_ENV_FILE" HQ_MOCK_VERSION=5.270.0 PATH="$MOCK_BIN:$PATH" \
     bash "$INSTALLER" --root "$INSTALL_ROOT" 2>&1)" || {
       fail "pinned CLI installer succeeds: $install_output"
       install_output=""
     }
+  if ! grep -qx 'HQ_NO_UPDATE_CHECK=1' "$GITHUB_ENV_FILE" 2>/dev/null; then
+    fail 'installer turns the version gate off for later CI steps'
+  else
+    pass 'installer turns the version gate off for later CI steps'
+  fi
   if ! grep -F -q 'install -g @indigoai-us/hq-cli@5.270.0 --ignore-scripts' "$MOCK_NPM_LOG"; then
     fail 'installer selects the maximum manifest min_cli and suppresses package lifecycle scripts'
   else

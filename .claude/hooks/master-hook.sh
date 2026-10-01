@@ -2,6 +2,7 @@
 # Hosts like Claude Code export BASH_ENV to a user profile; each non-interactive
 # bash on the hook path then pays nvm (~1-11s). Measured 2026-09-21 macOS:
 # adapter 18-32s, bridge 28s, master-hook 4.5s; with BASH_ENV=/dev/null: 4.0s / 3.5s.
+MASTER_ENTRY_SECONDS="${SECONDS:-0}"
 export BASH_ENV=/dev/null
 # Master hook — dispatches a hook event to the active company's hook scripts.
 #
@@ -141,6 +142,8 @@ MASTER_DEBUG_PHASE_BUFFER=()
 MASTER_DEBUG_PHASE_FILE=""
 MASTER_DEBUG_ACTIVE_PHASE_FILE=""
 MASTER_DEBUG_CLI_VERSION_FILE=""
+MASTER_DEBUG_CHILD_PHASE_FILE=""
+MASTER_DEBUG_CHILD_ACTIVE_PHASE_FILE=""
 # shellcheck disable=SC2034 # Shared with phase helpers loaded from hook-timeout-probe.sh.
 MASTER_DEBUG_ACTIVE_PHASE=""
 # shellcheck disable=SC2034 # Shared with phase helpers loaded from hook-timeout-probe.sh.
@@ -165,6 +168,9 @@ INPUT="${INPUT%"${INPUT##*[!$'\n']}"}"
 MASTER_STARTED_MS="$(master_now_ms)"
 MASTER_TIMING_PRECISION="$(master_timing_precision)"
 master_debug_phase_finish startup
+if [[ "${MASTER_ENTRY_SECONDS:-}" =~ ^[0-9]{1,8}$ ]] && [ "$MASTER_ENTRY_SECONDS" -gt 0 ]; then
+  master_debug_phase_buffer_record startup "$((MASTER_ENTRY_SECONDS * 1000))"
+fi
 
 # Shared gate helpers (profile lists, disabled list, PATH augmentation),
 # loaded from hook-gate.sh in library mode so there is a single definition.
@@ -231,6 +237,12 @@ if master_timeout_watchdog_enabled \
   && mkdir -p "$REPO_ROOT/workspace/.hook-timeout-journal" >/dev/null 2>&1; then
   MASTER_DEBUG_DIRECTORY_READY=1
   master_debug_initialize "$REPO_ROOT" "$MASTER_INVOCATION_ID"
+  if [ -n "$MASTER_DEBUG_PHASE_FILE" ]; then
+    MASTER_DEBUG_CHILD_PHASE_FILE="$MASTER_DEBUG_PHASE_FILE.child"
+    MASTER_DEBUG_CHILD_ACTIVE_PHASE_FILE="$MASTER_DEBUG_CHILD_PHASE_FILE.active"
+    export HQ_HOOK_TIMEOUT_CHILD_PHASE_FILE="$MASTER_DEBUG_CHILD_PHASE_FILE"
+    export HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE="$MASTER_DEBUG_CHILD_ACTIVE_PHASE_FILE"
+  fi
 fi
 stop_master_timeout_watchdog() {
   local i pid session
@@ -258,10 +270,12 @@ stop_master_timeout_watchdog() {
     if [ -n "$MASTER_DEBUG_PHASE_FILE" ]; then
       debug_files=(
         "$MASTER_DEBUG_PHASE_FILE"
-        "$MASTER_DEBUG_ACTIVE_PHASE_FILE"
         "$MASTER_DEBUG_CLI_VERSION_FILE"
         "$MASTER_DEBUG_CLI_VERSION_FILE.tmp.$$"
       )
+      [ -z "$MASTER_DEBUG_CHILD_PHASE_FILE" ] \
+        || debug_files+=("$MASTER_DEBUG_CHILD_PHASE_FILE" "$MASTER_DEBUG_CHILD_ACTIVE_PHASE_FILE")
+      [ "${MASTER_OUTPUT_ABORTED:-0}" -eq 1 ] || debug_files+=("$MASTER_DEBUG_ACTIVE_PHASE_FILE")
     fi
     [ -z "${timeout_journal_file:-}" ] \
       || debug_files+=("$timeout_journal_file.$MASTER_INVOCATION_ID.active")
@@ -275,7 +289,7 @@ arm_master_timeout_watchdog() {
   for threshold in absolute relative; do
     session=0
     if command -v setsid >/dev/null 2>&1; then
-      setsid bash "$HOOK_TIMEOUT_WATCHDOG" \
+      SECONDS="$SECONDS" setsid bash "$HOOK_TIMEOUT_WATCHDOG" \
         --root "$REPO_ROOT" \
         --source "$source_kind" \
         --hook-path "$watched_path" \
@@ -287,7 +301,7 @@ arm_master_timeout_watchdog() {
         >/dev/null 2>&1 <<<"$INPUT" &
       session=1
     else
-      bash "$HOOK_TIMEOUT_WATCHDOG" \
+      SECONDS="$SECONDS" bash "$HOOK_TIMEOUT_WATCHDOG" \
         --root "$REPO_ROOT" \
         --source "$source_kind" \
         --hook-path "$watched_path" \
@@ -809,6 +823,10 @@ child_sequence=0
 run_child() { # <timeout-seconds> <runner-mode> <script-path> <completion-marker> [args...]
   local t="$1" mode="$2" path="$3" completion_marker="$4"; shift 4
   local runner=()
+  [ -z "${MASTER_DEBUG_CHILD_PHASE_FILE:-}" ] \
+    || : > "$MASTER_DEBUG_CHILD_PHASE_FILE" 2>/dev/null || true
+  [ -z "${MASTER_DEBUG_CHILD_ACTIVE_PHASE_FILE:-}" ] \
+    || : > "$MASTER_DEBUG_CHILD_ACTIVE_PHASE_FILE" 2>/dev/null || true
   if [ "$mode" = "source" ]; then
     # A fresh Bash process is the child's isolation boundary. The subshell
     # contains `exit`, traps, variables and shell options while sourcing the
@@ -1176,7 +1194,7 @@ master_report_late_event() {
   [ -n "$slow_child_ms" ] || [ "$slow_child_duration" -le 0 ] || slow_child_ms="$slow_child_duration"
   if [ -z "$slow_child" ] && [ "$hook_name" = master-hook.sh ]; then
     case "${MASTER_DEBUG_ACTIVE_PHASE:-}" in
-      startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse)
+      startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse)
         debug_wait_point="$MASTER_DEBUG_ACTIVE_PHASE"
         ;;
     esac
@@ -1204,7 +1222,9 @@ master_report_late_event() {
   [[ "$report_exit" =~ ^[0-9]+$ ]] || report_exit=1
   [[ "$final_elapsed_ms" =~ ^[0-9]+$ ]] || final_elapsed_ms=0
   debug_remaining_ms=$((declared_timeout_ms - final_elapsed_ms))
-  debug_phase_timings="$(hook_timeout_phase_timings_json "$MASTER_DEBUG_PHASE_FILE" "$MASTER_DEBUG_ACTIVE_PHASE_FILE")"
+  debug_phase_timings="$(hook_timeout_phase_timings_json \
+    "$MASTER_DEBUG_PHASE_FILE" "$MASTER_DEBUG_ACTIVE_PHASE_FILE" "__read_active__" \
+    "$MASTER_DEBUG_CHILD_PHASE_FILE")"
   if [ "$os_name" = windows ]; then
     [[ "$spawn_ms" =~ ^[0-9]+$ ]] && debug_spawn_ms="$spawn_ms"
     debug_process_count="$(hook_timeout_windows_process_count "$(command -v ps 2>/dev/null || printf 'ps')")"
@@ -1520,12 +1540,81 @@ done
 # Use the same ${arr[@]+"${arr[@]}"} guard as the hooks dispatch loop above;
 # otherwise a layered PreToolUse blocker that exits 2 with plain-text stderr
 # (no JSON) never reaches `exit "$exit_code"` and the process returns 1.
+MASTER_OUTPUT_DEADLINE_MS=""
+output_write_started_ms=""
+MASTER_OUTPUT_ABORTED=0
+MASTER_OUTPUT_ABORT_PHASE=""
+MASTER_OUTPUT_BOUND_BYTES=65536
+master_output_needs_bound() {
+  [ "${#1}" -gt "$MASTER_OUTPUT_BOUND_BYTES" ]
+}
+master_output_abandon_phase() {
+  local phase="${1:-output_stdout}"
+  phase="${phase#output_}"
+  printf 'output_abandoned_%s' "$phase"
+}
+master_output_record_abandoned() {
+  local phase="${1:-output_stdout}"
+  MASTER_OUTPUT_ABORTED=1
+  MASTER_OUTPUT_ABORT_PHASE="$phase"
+  master_debug_phase_buffer_record "$(master_output_abandon_phase "$phase")" 0
+}
+master_output_remaining_seconds() {
+  local now remaining
+  if [ -z "$MASTER_OUTPUT_DEADLINE_MS" ]; then
+    output_write_started_ms="$(master_now_ms)"
+    MASTER_OUTPUT_DEADLINE_MS=$((output_write_started_ms + 4000))
+  fi
+  now="$(master_now_ms)"
+  remaining=$((MASTER_OUTPUT_DEADLINE_MS - now))
+  [ "$remaining" -gt 0 ] || return 1
+  printf '%s' "$(((remaining + 999) / 1000))"
+}
+master_output_run() {
+  local phase="$1" seconds rc=0
+  shift
+  seconds="$(master_output_remaining_seconds)" || {
+    master_output_record_abandoned "$phase"
+    return 124
+  }
+  hook_timeout_run_bounded "$seconds" "$@" || rc=$?
+  case "$rc" in
+    124|127|137)
+      master_output_record_abandoned "$phase"
+      ;;
+    *)
+      if [ "$phase" = output_stdout ] && [ "$rc" -ne 0 ]; then
+        master_output_record_abandoned "$phase"
+      fi
+      ;;
+  esac
+  return "$rc"
+}
+
 master_debug_phase_start output_write
+master_debug_phase_start output_scan
 has_blocking_json=0
 for ((i = 0; i < ${#json_outputs[@]}; i++)); do
   jo="${json_outputs[$i]}"
   case "$jo" in *'"decision"'*|*'"permissionDecision"'*) ;; *) continue ;; esac
-  if printf '%s' "$jo" | jq -e '
+  if master_output_needs_bound "$jo"; then
+    if master_output_run output_scan jq -e '
+      .decision == "block" or .hookSpecificOutput.permissionDecision == "deny"
+    ' >/dev/null 2>&1 <<< "$jo"; then
+      has_blocking_json=1
+      src="${json_sources[$i]}"
+      master_block_reason_source_seen "$src" || blocking_hook_sources+=("$src")
+    else
+      rc=$?
+      if [ "$rc" -eq 124 ] || [ "$rc" -eq 127 ] || [ "$rc" -eq 137 ]; then
+        # Preserve a candidate deny on a parser timeout or unavailable timeout
+        # runner; the later provenance stamp falls back to the original JSON.
+        has_blocking_json=1
+        src="${json_sources[$i]}"
+        master_block_reason_source_seen "$src" || blocking_hook_sources+=("$src")
+      fi
+    fi
+  elif printf '%s' "$jo" | jq -e '
     .decision == "block" or .hookSpecificOutput.permissionDecision == "deny"
   ' >/dev/null 2>&1; then
     has_blocking_json=1
@@ -1536,7 +1625,9 @@ done
 for src in ${blocking_hook_sources[@]+"${blocking_hook_sources[@]}"}; do
   master_report_block_reason "$src"
 done
+master_debug_phase_finish output_scan
 
+master_debug_phase_start output_merge
 timeout_warning_emitted=0
 if [ -n "$pending_timeout_warning" ]; then
   # A successful stdout write is not sufficient evidence of delivery. Several
@@ -1552,7 +1643,7 @@ if [ -n "$pending_timeout_warning" ]; then
   else
     timeout_warning_json="$(jq -cn --arg event "$EVENT" --arg warning "$pending_timeout_warning" '
       {hookSpecificOutput: {hookEventName: $event, additionalContext: $warning}}
-    ' 2>/dev/null || true)"
+      ' 2>/dev/null)"
     if [ -n "$timeout_warning_json" ]; then
       # Prepend context so the immediate warning is read before child context.
       # Adding a source keeps json_outputs/json_sources index-aligned for the
@@ -1566,15 +1657,49 @@ if [ -n "$pending_timeout_warning" ]; then
   fi
 fi
 
-[ -n "$plain_buf" ] && printf '%s' "$plain_buf"
+master_debug_phase_finish output_merge
+master_debug_phase_start output_stdout
+# A deny/block must not wait behind advisory text on a slow stdout pipe. When a
+# possible deny is present, preserve the decision's output budget by dropping
+# plain text for this invocation.
+if [ -n "$plain_buf" ] && [ "$has_blocking_json" -eq 0 ]; then
+  if master_output_needs_bound "$plain_buf"; then
+    master_output_run output_stdout cat < <(printf '%s' "$plain_buf") || true
+  else
+    printf '%s' "$plain_buf"
+  fi
+fi
+master_debug_phase_finish output_stdout
 
+master_debug_phase_start output_merge
 json_result=""
 if [ ${#json_outputs[@]} -eq 1 ]; then
   # Single JSON result: if it is a block, stamp provenance.
-  if [[ "${json_outputs[0]}" == *'"decision"'* ]] && printf '%s' "${json_outputs[0]}" | jq -e '.decision == "block"' >/dev/null 2>&1; then
-    json_result="$(printf '%s\n' "${json_outputs[0]}" | jq -c --arg src "${json_sources[0]}" '
-      .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
-    ')"
+  if [[ "${json_outputs[0]}" == *'"decision"'* ]]; then
+    if master_output_needs_bound "${json_outputs[0]}"; then
+      if master_output_run output_merge jq -e '.decision == "block"' >/dev/null 2>&1 <<< "${json_outputs[0]}"; then
+        json_result="$(master_output_run output_merge jq -c --arg src "${json_sources[0]}" '
+          .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
+        ' <<< "${json_outputs[0]}")"
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+          master_output_record_abandoned output_merge
+          json_result="${json_outputs[0]}"
+        fi
+      else
+        rc=$?
+        [ "$rc" -eq 124 ] || [ "$rc" -eq 127 ] || [ "$rc" -eq 137 ] || rc=0
+        if [ "$rc" -ne 0 ]; then
+          master_output_record_abandoned output_merge
+          json_result="${json_outputs[0]}"
+        fi
+      fi
+    elif printf '%s' "${json_outputs[0]}" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+      json_result="$(printf '%s\n' "${json_outputs[0]}" | jq -c --arg src "${json_sources[0]}" '
+        .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
+      ')"
+    fi
+    [ -n "$json_result" ] || json_result="${json_outputs[0]}"
   else
     json_result="${json_outputs[0]}"
   fi
@@ -1583,18 +1708,57 @@ elif [ ${#json_outputs[@]} -gt 1 ]; then
   block_idx=""
   i=0
   for jo in ${json_outputs[@]+"${json_outputs[@]}"}; do
-    if [[ "$jo" == *'"decision"'* ]] && printf '%s' "$jo" | jq -e '.decision == "block"' >/dev/null 2>&1; then
-      block_idx="$i"
-      break
+    if [[ "$jo" == *'"decision"'* || "$jo" == *'"permissionDecision"'* ]]; then
+      if master_output_needs_bound "$jo"; then
+        if master_output_run output_merge jq -e '
+          .decision == "block" or .hookSpecificOutput.permissionDecision == "deny"
+        ' >/dev/null 2>&1 <<< "$jo"; then
+          block_idx="$i"
+          break
+        else
+          rc=$?
+          case "$rc" in
+            124|127|137)
+              # jq could not decide whether this candidate blocks. Fail closed
+              # and retain its original JSON if provenance stamping also times out.
+              master_output_record_abandoned output_merge
+              block_idx="$i"
+              break
+              ;;
+          esac
+        fi
+      elif printf '%s' "$jo" | jq -e '
+        .decision == "block" or .hookSpecificOutput.permissionDecision == "deny"
+      ' >/dev/null 2>&1; then
+        block_idx="$i"
+        break
+      fi
     fi
     i=$((i + 1))
   done
   if [ -n "$block_idx" ]; then
-    json_result="$(printf '%s\n' "${json_outputs[$block_idx]}" | jq -c --arg src "${json_sources[$block_idx]}" '
-      .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
-    ')"
+    if master_output_needs_bound "${json_outputs[$block_idx]}"; then
+      json_result="$(master_output_run output_merge jq -c --arg src "${json_sources[$block_idx]}" '
+        .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
+      ' <<< "${json_outputs[$block_idx]}")"
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        master_output_record_abandoned output_merge
+        json_result="${json_outputs[$block_idx]}"
+      fi
+    else
+      json_result="$(printf '%s\n' "${json_outputs[$block_idx]}" | jq -c --arg src "${json_sources[$block_idx]}" '
+        .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
+      ')"
+    fi
   else
-    json_result="$(printf '%s\n' ${json_outputs[@]+"${json_outputs[@]}"} | jq -sc '
+    json_input_bytes=0
+    for jo in ${json_outputs[@]+"${json_outputs[@]}"}; do
+      json_input_bytes=$((json_input_bytes + ${#jo} + 1))
+    done
+    if [ "$json_input_bytes" -gt "$MASTER_OUTPUT_BOUND_BYTES" ]; then
+      json_input="$(printf '%s\n' ${json_outputs[@]+"${json_outputs[@]}"})"
+      json_result="$(master_output_run output_merge jq -sc '
       reduce .[] as $h ({};
         . as $previous
         | . * $h
@@ -1612,18 +1776,54 @@ elif [ ${#json_outputs[@]} -gt 1 ]; then
                  end)
           else .
           end)
-    ')"
+      ' <<< "$json_input")"
+      rc=$?
+      [ "$rc" -eq 0 ] || master_output_record_abandoned output_merge
+    else
+      json_result="$(printf '%s\n' ${json_outputs[@]+"${json_outputs[@]}"} | jq -sc '
+        reduce .[] as $h ({};
+          . as $previous
+          | . * $h
+          | if ($previous.hookSpecificOutput? != null or $h.hookSpecificOutput? != null)
+            then
+              (($previous.hookSpecificOutput // {}) * ($h.hookSpecificOutput // {})) as $merged
+              | ([
+                   $previous.hookSpecificOutput.additionalContext?,
+                   $h.hookSpecificOutput.additionalContext?
+                 ] | map(select(type == "string" and length > 0))) as $contexts
+              | .hookSpecificOutput =
+                  (if ($contexts | length) > 0
+                   then $merged + {additionalContext: ($contexts | join("\n\n"))}
+                   else $merged | del(.additionalContext)
+                   end)
+            else .
+            end)
+      ')"
+    fi
   fi
 fi
 
+master_debug_phase_finish output_merge
+master_debug_phase_start output_stdout
 if [ -n "$json_result" ]; then
-  if printf '%s\n' "$json_result"; then
+  if master_output_needs_bound "$json_result"; then
+    if master_output_run output_stdout cat <<< "$json_result"; then
+      [ "$timeout_warning_emitted" -eq 0 ] || finalize_timeout_breadcrumbs
+    else
+      [ "$timeout_warning_emitted" -eq 0 ] || restore_timeout_breadcrumbs
+    fi
+  elif printf '%s\n' "$json_result"; then
     [ "$timeout_warning_emitted" -eq 0 ] || finalize_timeout_breadcrumbs
   else
     [ "$timeout_warning_emitted" -eq 0 ] || restore_timeout_breadcrumbs
   fi
 fi
+master_debug_phase_finish output_stdout
 master_debug_phase_finish output_write
+if [ "$MASTER_OUTPUT_ABORTED" -eq 1 ]; then
+  output_write_ended_ms="$(master_now_ms)"
+  master_debug_phase_write_state "$(master_output_abandon_phase "${MASTER_OUTPUT_ABORT_PHASE:-output_stdout}")" "$output_write_ended_ms"
+fi
 emit_pending_late_finish_events
 
 [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "master-hook:$EVENT total" "$exit_code" "${MASTER_TRACE_START:-}"

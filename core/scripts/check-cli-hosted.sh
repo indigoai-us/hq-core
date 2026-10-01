@@ -194,6 +194,7 @@ EOF
 fi
 
 tracked_scripts="$(git -C "$ROOT" ls-files -- core/scripts .claude/hooks)"
+SOURCE_LINES="$TEMP_DIR/source-lines.txt"
 while IFS= read -r file; do
   [ -n "$file" ] || continue
   case "$file" in
@@ -202,7 +203,11 @@ while IFS= read -r file; do
     *) continue ;;
   esac
   [ -f "$ROOT/$file" ] || continue
-  if source_lines "$file" | grep -E -q '(^|[^[:alnum:]_-])hq[[:space:]]+core([^[:alnum:]_-]|$)'; then
+  if ! source_lines "$file" > "$SOURCE_LINES"; then
+    fail "$file" "executable-line scan failed"
+    continue
+  fi
+  if grep -E -q '(^|[^[:alnum:]_-])hq[[:space:]]+core([^[:alnum:]_-]|$)' "$SOURCE_LINES"; then
     registered="$(awk -F '\t' -v wanted="$file" '$1 == wanted { found = 1 } END { exit !found }' "$ROWS" && echo yes || true)"
     if [ "$registered" != "yes" ] && ! is_explicitly_allowed_cli_source "$file"; then
       fail "$file" "unmanifested executable hq core call lacks a manifest row or explicit allow-list entry"

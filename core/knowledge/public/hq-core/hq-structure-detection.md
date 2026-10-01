@@ -90,7 +90,7 @@ Present in {your-name}'s production HQ but NOT in the starter-kit. These represe
 | `core/knowledge/private/` | dir | Private knowledge | Not in starter |
 | `repos/public/` | dir | Public git repos | Not in starter |
 | `repos/private/` | dir | Private git repos | Not in starter |
-| `core/scripts/` | dir | Utility scripts (migrate-prd, prd-to-beads) | Not in starter |
+| `core/scripts/` | dir | Utility scripts (migrate-prd) | Not in starter |
 | `core/settings/{service}/` | dirs | Service-specific credentials | core/settings/.gitkeep only |
 | `social-kit.yaml` | file | Social kit configuration | Not in starter |
 | `tools/` | dir | Auxiliary tools (session-manager) | Not in starter |

@@ -179,7 +179,7 @@ fi
 [ -n "${HQ_SPAWN_TASK:-}" ] && export HQ_SPAWN_TASK
 export HQ_CONDUCT_ENGINE='{engine}'
 
-bash core/scripts/hq-detach.sh -- bash -c '
+bash core/scripts/hq-detach.sh --owner-pidfile "$RUN_DIR/owner.pid" -- bash -c '
   echo $$ > "$LANE_RUN_DIR/lane.pid"
   export HQ_CONDUCT_RUN_DIR="$LANE_RUN_DIR_ABS"
   node core/scripts/workflow-runner.mjs --eval \

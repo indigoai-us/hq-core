@@ -130,12 +130,13 @@ JS
 
   # Full content array of the last assistant message (text + tool_use blocks),
   # as compact JSON. The send signature lives in tool_use inputs.
+  TRANSCRIPT_TAIL="$(hq_transcript_tail_with_latest_assistant "$TRANSCRIPT_PATH" 2>/dev/null || true)"
   LAST_CONTENT="$(
-    jq -nr '
+    printf '%s\n' "$TRANSCRIPT_TAIL" | jq -nr '
       [ inputs | select(.type=="assistant") ] | last
       | .message.content
       | (if type=="array" then . elif type=="string" then [{type:"text",text:.}] else [] end)
-    ' < <(hq_transcript_tail "$TRANSCRIPT_PATH") 2>/dev/null || true
+    ' 2>/dev/null || true
   )"
   [ -z "$LAST_CONTENT" ] || [ "$LAST_CONTENT" = "null" ] && exit 0
 

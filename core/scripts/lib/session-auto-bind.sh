@@ -3,8 +3,9 @@
 # session-auto-bind.sh — bind company_slug + scope-capability for a session.
 #
 # Trusted sources (first hit wins): existing session state, parent session,
-# explicit HQ_SPAWN_COMPANY, then the human device default. Fleet/agent boxes
-# never use the device default: their dispatch context is the only safe source.
+# explicit HQ_SPAWN_COMPANY, a sole real company in the manifest, then the human
+# device default. Fleet/agent boxes never use manifest or device defaults: their
+# dispatch context is the only safe source.
 #
 # Sourced; never execute directly.
 
@@ -251,6 +252,35 @@ session_auto_bind_device_default() {
   fi
 }
 
+# Emit a company slug only when the manifest contains exactly one real company.
+# Both supported manifest layouts are accepted: a `companies:` mapping and the
+# historical flat mapping. The scaffold/template and metadata sections are not
+# company memberships.
+session_auto_bind_manifest_single_company() {
+  local root="${1:-}" manifest
+  [ -n "$root" ] || return 0
+  manifest="$root/companies/manifest.yaml"
+  [ -f "$manifest" ] || return 0
+  awk '
+    function keep(slug) {
+      return slug != "" && slug != "_template" && slug != "companies" && slug != "unaffiliated_repos"
+    }
+    function record(line) {
+      sub(/^[[:space:]]+/, "", line)
+      sub(/:.*/, "", line)
+      if (keep(line) && !seen[line]++) {
+        if (count == 0) only = line
+        count++
+      }
+    }
+    /^companies:[[:space:]]*$/ { wrapped = 1; in_companies = 1; next }
+    wrapped && /^[^[:space:]][^:]*:[[:space:]]*$/ { in_companies = 0; next }
+    in_companies && /^  [A-Za-z][A-Za-z0-9_-]*:/ { record($0); next }
+    !wrapped && /^[A-Za-z][A-Za-z0-9_-]*:/ { record($0) }
+    END { if (count == 1) print only }
+  ' "$manifest"
+}
+
 # Prints slug and source as a tab-separated pair.
 session_auto_bind_resolve_source() {
   local root="${1:-}" sid="${2:-}" parent="${3:-}" slug="" spawn="" parent_slug="" default_info="" repair="false"
@@ -286,6 +316,14 @@ session_auto_bind_resolve_source() {
   if session_auto_bind_is_known_slug "$root" "$slug"; then
     printf '%s\tspawn' "$slug"
     return 0
+  fi
+
+  if ! session_auto_bind_is_fleet_identity; then
+    slug="$(session_auto_bind_manifest_single_company "$root")"
+    if session_auto_bind_is_known_slug "$root" "$slug"; then
+      printf '%s\tmanifest_single_company' "$slug"
+      return 0
+    fi
   fi
 
   # SessionStart defers device defaults to the shared CLI resolver so cwd and
@@ -342,15 +380,27 @@ session_auto_bind_apply() {
   meta_dir="$root/workspace/sessions/$sid"
   meta="$meta_dir/meta.yaml"
   # Held sessions already have durable Work Mesh state. Repairing one with a
-  # device preference is opt-in; a genuinely new session can use the default.
-  if [ "$source" = "device_default" ] && [ "$repair" != "true" ]; then
-    local work_context_root
+  # device preference is opt-in, and a held session can use the manifest
+  # fallback only when its durable Work Context is explicitly unresolved.
+  if { [ "$source" = "device_default" ] && [ "$repair" != "true" ]; } || \
+     [ "$source" = "manifest_single_company" ]; then
+    local work_context_root context_status
     work_context_root="${HQ_WORK_CONTEXT_ROOT:-${HOME:-}/.hq/work-context}"
     # SessionStart records this before its resolver preflight. The preflight
     # itself writes local state, which must not relabel a new session as held.
     if [ "$state_existed_before_preflight" != "0" ] && [ -f "$work_context_root/sessions/$sid.json" ]; then
-      [ "$stale_alias" = "true" ] && session_auto_bind_clear_case_alias "$root" "$sid" || true
-      return 0
+      if [ "$source" = "device_default" ]; then
+        [ "$stale_alias" = "true" ] && session_auto_bind_clear_case_alias "$root" "$sid" || true
+        return 0
+      fi
+      context_status="$(jq -er '
+        if type == "object" and (.contextStatus | type == "string")
+        then .contextStatus else empty end
+      ' "$work_context_root/sessions/$sid.json" 2>/dev/null || true)"
+      if [ "$context_status" != "unresolved" ]; then
+        [ "$stale_alias" = "true" ] && session_auto_bind_clear_case_alias "$root" "$sid" || true
+        return 0
+      fi
     fi
   fi
   mkdir -p "$meta_dir" 2>/dev/null || return 0

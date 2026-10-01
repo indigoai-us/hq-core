@@ -26,10 +26,13 @@
 #   }
 #
 # Semantics (best-effort local mirror of server-side vault ACL resolution):
-#   - Manifest missing/unparseable, company absent from it, role
-#     owner/admin/unknown, or enforced=false  →  ALLOW (fail-open). The
-#     server-side STS/ACL layer is the real security boundary; this hook only
-#     stops doomed local edits to read-only shares before they happen.
+#   - A missing manifest allows writes so a fresh install remains usable before
+#     the first successful manual refresh. By default, invalid data, an absent
+#     company, and an unknown role retain the prior allow behavior. When
+#     hooks.vault-write-deny-unknown-access is on, those cases block protected
+#     company-path writes with refresh/sign-in guidance. Known owner/admin roles
+#     and enforced=false retain their existing bypass. The server-side STS/ACL
+#     layer remains the security boundary; this hook prevents doomed local edits.
 #   - role member/guest  →  effective permission = most-specific matching
 #     grant (longest pattern wins; tie → higher permission). Grant patterns
 #     are company-relative: "*" (whole vault), "prefix/*" (subtree, also
@@ -60,7 +63,8 @@ set -uo pipefail
 
 INPUT=$(cat)
 
-# No jq → cannot read the manifest → fail-open (consistent with other guards).
+# No jq → cannot parse the tool payload or manifest, so this guard cannot
+# determine whether a mutation targets a protected company path.
 command -v jq >/dev/null 2>&1 || exit 0
 
 TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || true
@@ -74,8 +78,11 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 PROJECT_DIR="$(hq_canonical_path "$PROJECT_DIR")"
 
 MANIFEST="$PROJECT_DIR/.hq/vault-access.json"
+# A missing manifest is expected before the first successful manual refresh on
+# a fresh install; preserve usability until access data has been created.
 [[ -f "$MANIFEST" ]] || exit 0
-jq -e 'type == "object"' "$MANIFEST" >/dev/null 2>&1 || exit 0
+MANIFEST_INVALID=0
+jq -e 'type == "object"' "$MANIFEST" >/dev/null 2>&1 || MANIFEST_INVALID=1
 
 SETTINGS_LOCAL="$PROJECT_DIR/.claude/settings.local.json"
 
@@ -97,16 +104,20 @@ fi
 # Prints: bypass | write | admin | read | none
 effective_permission() {
   local slug="$1" rel="$2" out
-  out=$(jq -r --arg slug "$slug" --arg rel "$rel" '
+  if [[ "$MANIFEST_INVALID" == 1 ]]; then
+    out="unknown"
+  else
+    out=$(jq -r --arg slug "$slug" --arg rel "$rel" '
     def rank:
       if . == "admin" then 3
       elif . == "write" then 2
       elif . == "read" then 1
       else 0 end;
     (.companies[$slug] // null) as $c
-    | if $c == null then "bypass"
-      elif (($c.role // "unknown") | IN("owner", "admin", "unknown")) then "bypass"
+    | if $c == null then "unknown"
+      elif (($c.role // "unknown") | IN("owner", "admin")) then "bypass"
       elif ((if ($c | has("enforced")) then $c.enforced else true end) | not) then "bypass"
+      elif (($c.role // "unknown") != "member" and ($c.role // "unknown") != "guest") then "unknown"
       else (
         [ ($c.grants // [])[]
           | . as $g
@@ -125,8 +136,9 @@ effective_permission() {
           else (sort_by([(.path | length), (.permission | rank)]) | last | .permission)
           end
       ) end
-  ' "$MANIFEST" 2>/dev/null) || out="bypass"
-  [[ -n "$out" ]] || out="bypass"
+  ' "$MANIFEST" 2>/dev/null) || out="unknown"
+  fi
+  [[ -n "$out" ]] || out="unknown"
   printf '%s' "$out"
 }
 
@@ -153,6 +165,18 @@ check_vault_path() {
     crel="${rel#*/}"
   fi
   perm="$(effective_permission "$slug" "$crel")"
+  if [[ "$perm" == "unknown" ]]; then
+    local flag_reader flag_enabled
+    flag_reader="$(dirname "${BASH_SOURCE[0]}")/enforce-vault-write-access-flag.cjs"
+    flag_enabled=false
+    if [[ -n "${HQ_FLAGS_API_URL:-}" \
+      && "${HQ_COMPANY_UID:-}" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]] \
+      && command -v node >/dev/null 2>&1 && [[ -f "$flag_reader" ]]; then
+      flag_enabled="$(HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)" \
+        node "$flag_reader")" || flag_enabled=false
+    fi
+    [[ "$flag_enabled" == "true" ]] || return 0
+  fi
   case "$perm" in
     bypass|write|admin) return 0 ;;
   esac
@@ -167,6 +191,8 @@ block_message() {
   local what="$1" have
   if [[ "$DENY_PERM" == "read" ]]; then
     have="read-only"
+  elif [[ "$DENY_PERM" == "unknown" ]]; then
+    have="unknown"
   else
     have="no"
   fi
@@ -177,10 +203,20 @@ BLOCKED: you do not have write access to this vault path.
   Vault path: ${DENY_REL:-<entire vault>}
   Your access (from .hq/vault-access.json): $have
 
+EOF
+  if [[ "$DENY_PERM" == "unknown" ]]; then
+    cat >&2 <<'EOF'
+The local manifest does not confirm your role for this company. Run HQ sync or
+sign in again, then retry so the local access manifest can be refreshed.
+EOF
+  else
+    cat >&2 <<'EOF'
 This path is synced from the company vault, and your membership grants do not
 include write permission on it. A local edit or delete here would be rejected
 (or clobbered) at the next sync — the server-side ACL is authoritative.
-
+EOF
+  fi
+  cat >&2 <<EOF
 Options:
   - Ask a company owner/admin to grant you write on this prefix (/hq-files, or
     they run: hq files share <prefix> --with <you> --permission write).

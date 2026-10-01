@@ -31,6 +31,12 @@ HQ_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pw
 JOURNAL_HELPER="$HQ_ROOT/core/scripts/session-journal.sh"
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
+if [ -f "$HQ_ROOT/.claude/hooks/hook-timeout-probe.sh" ]; then
+  . "$HQ_ROOT/.claude/hooks/hook-timeout-probe.sh"
+else
+  hook_timeout_child_phase_start() { :; }
+  hook_timeout_child_phase_finish() { :; }
+fi
 
 # Read stdin JSON (fail-soft if absent or invalid).
 stdin_json=""
@@ -41,7 +47,9 @@ stdin_json=$(cat || true)
 [ -z "$stdin_json" ] && exit 0
 
 # A failed call is not a milestone.
+hook_timeout_child_phase_start parse
 if hq_hook_tool_failed "$stdin_json"; then
+  hook_timeout_child_phase_finish parse
   exit 0
 fi
 
@@ -50,6 +58,9 @@ tool_name=$(printf '%s' "$stdin_json" | hq_json_get tool_name)
 tool_cmd=$(printf '%s' "$stdin_json" | hq_json_get tool_input.command)
 
 session_key=$(hq_hook_session_key_from_payload "$stdin_json")
+hook_timeout_child_phase_finish parse
+
+hook_timeout_child_phase_start child_wait
 state_dir=$(hq_hook_state_dir "$HQ_ROOT")
 remind_file="$state_dir/journal-remind-$session_key"
 test_debounce_file="$state_dir/journal-test-$session_key"
@@ -129,6 +140,7 @@ case "$tool_name" in
     fi
     ;;
 esac
+hook_timeout_child_phase_finish child_wait
 
 if [ "$should_remind" = "1" ]; then
   # Soft signal — surfaced to Claude as system reminder.

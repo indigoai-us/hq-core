@@ -1,7 +1,7 @@
 ---
 name: knowledge-pulse
 description: Run a lightweight freshness pass over company knowledge and policies.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/knowledge-pulse-lock.sh:*)
 ---
 
 # Knowledge Pulse — Background Gardening
@@ -47,7 +47,14 @@ The parent command provides these values in the spawn prompt:
 Check for existing report at `workspace/reports/knowledge-pulse/{company_slug}-{YYYY-MM-DD}.md`.
 
 - If exists from today: **skip entire pulse**. Print "Pulse already ran for {company_slug} today. Skipping." and exit.
-- If not found: proceed.
+- If not found, atomically claim this company/date before reading or editing any knowledge files:
+
+```bash
+bash core/scripts/knowledge-pulse-lock.sh claim workspace/reports/knowledge-pulse/.claims "{company_slug}" "$(date +%F)"
+```
+
+- If the command prints `already-claimed`: another pulse is running or has already been admitted for this company today. Print "Pulse already running or ran for {company_slug} today. Skipping." and exit without gardening or writing metrics.
+- If it prints `claimed`: proceed. The claim marker is kept for the rest of the date so later invocations cannot produce a second report or duplicate daily metrics. Do not remove it after the pulse finishes.
 
 ### Step 1: Check the Company Knowledge Directory
 

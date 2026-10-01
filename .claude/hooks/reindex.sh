@@ -89,6 +89,6 @@ esac
 
 [ "$relevant" -eq 1 ] || exit 0
 
-HQ_NO_UPDATE_CHECK=1 HQ_OP_LOCK_TIMEOUT=0 hq reindex --repo-root "$REPO_ROOT" 1>&2 || true
+HQ_NO_UPDATE_CHECK=1 HQ_OP_LOCK_TIMEOUT=0 hq reindex --from-hook --repo-root "$REPO_ROOT" 1>&2 || true
 
 exit 0
