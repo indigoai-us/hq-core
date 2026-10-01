@@ -112,6 +112,7 @@ cat > "$PROJ/prd.json" <<'JSON'
 JSON
 cat > "$PROJ/.env.schema" <<'SCHEMA'
 WIDGET_API_KEY=
+TEAM/US_API_KEY=
 SCHEMA
 
 M="$TMP/manifest.json"
@@ -288,7 +289,7 @@ if grep -Eq '^(dm|files share|sync push|secrets share)' "$INVOKE_LOG"; then
   fail "dry run invoked a mutating command: $(cat "$INVOKE_LOG")"
 fi
 for needle in "alice@acme.test" "transfer" "projects/widget/" "knowledge/insights/" \
-  "WIDGET_API_KEY" "feature/widget" "DM that would be sent"; do
+  "WIDGET_API_KEY" "TEAM/US_API_KEY" "feature/widget" "DM that would be sent"; do
   printf '%s' "$OUT" | grep -qF "$needle" || fail "dry-run plan missing: $needle"
 done
 printf '%s' "$OUT" | grep -q "write" || fail "dry-run plan must show permissions"

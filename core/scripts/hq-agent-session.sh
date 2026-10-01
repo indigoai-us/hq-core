@@ -80,6 +80,8 @@ export PATH
 SESSION_EXIT_CODE=1
 SESSION_DISPOSITION="error"
 SESSION_TEXT=""
+SESSION_OUTCOME=""
+SESSION_OUTCOME_REASON=""
 SESSION_ARTIFACTS_JSON='[]'
 SESSION_RUN_DIR=""
 SESSION_SYSTEM_PROMPT_BYTES=""
@@ -330,6 +332,9 @@ emit_and_exit() {
       text: $text,
       artifacts: $artifacts
     } + $extra')" || resp='{"contractVersion":1,"disposition":"error","text":"hq-agent-session: envelope encode failed","artifacts":[]}'
+
+  resp="$(session_reply_contract_add_outcome_fields "$resp")" \
+    || resp='{"contractVersion":1,"disposition":"error","text":"hq-agent-session: outcome encode failed","artifacts":[]}'
 
   printf '%s\n' "$resp"
   exit "${SESSION_EXIT_CODE:-1}"

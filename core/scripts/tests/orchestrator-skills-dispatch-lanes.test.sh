@@ -473,7 +473,7 @@ echo "the nested launch body interpolates nothing"
 # substituted into single-quoted values inside it. An apostrophe in the HQ
 # checkout path -- the one value here a user controls -- closes those quotes
 # early and the lane dies before it starts, in a log nobody is watching yet.
-grep -q "hq-detach.sh -- bash -c '" "$DISPATCH" \
+grep -qE "hq-detach\\.sh( --[a-z-]+ [^ ]+)* -- bash -c '" "$DISPATCH" \
   || fail "the nested body is not single-quoted; path text is still parsed as shell"
 # Stock macOS has no setsid(1), and the Homebrew util-linux copy is keg-only and
 # off a non-interactive PATH -- a literal `setsid ...` here dies with `command

@@ -14,6 +14,7 @@
 set -euo pipefail
 
 INPUT="$(cat)"
+PAYLOAD_CWD="$(printf '%s' "$INPUT" | jq -r '.cwd // empty')"
 if [ -n "${HQ_HOOK_TOOL_NAME+set}" ]; then
   TOOL="$HQ_HOOK_TOOL_NAME"   # parsed once by master-hook.sh
 else
@@ -277,9 +278,12 @@ scope_check_bash_candidate_inner() {
     while IFS= read -r value; do
       [ -n "$value" ] || scope_block_rel "companies/(shell-expanded)"
       if [[ "$candidate" == *"$braced"* ]]; then
-        expanded="${candidate/"$braced"/"$value"}"
+        # Bash 3.2 can preserve nested quotes from a parameter-replacement
+        # replacement word. Assemble the pieces so the checked path has no
+        # quote characters that the shell would remove before opening it.
+        expanded="${candidate%%"$braced"*}$value${candidate#*"$braced"}"
       elif [[ "$candidate" == *"$unbraced"* ]]; then
-        expanded="${candidate/"$unbraced"/"$value"}"
+        expanded="${candidate%%"$unbraced"*}$value${candidate#*"$unbraced"}"
       else
         scope_block_rel "companies/(shell-expanded)"
       fi
@@ -292,14 +296,22 @@ scope_check_bash_candidate_inner() {
   fi
 
   case "$masked" in
+    *'{'*|*'}'*) scope_block_rel "$candidate" "brace expansion cannot be checked safely" ;;
+  esac
+  case "$masked" in
     *'$'*|*"$backtick"*) scope_block_rel "companies/(shell-expanded)" ;;
   esac
   first_segment="${masked#companies/}"
   first_segment="${first_segment%%/*}"
   case "$first_segment" in
-    *'*'*|*'?'*|*'['*) scope_block_rel "$candidate" ;;
+    *'*'*|*'?'*|*'['*) scope_block_rel "$candidate" "glob in the company segment is not allowed" ;;
   esac
-  case "$masked" in *'*'*|*'?'*|*'['*) scope_block_rel "$candidate" ;; esac
+  case "$masked" in
+    *'*'*|*'?'*|*'['*)
+      scope_check_bash_glob_candidate "$candidate" "$masked" "$occurrence_prefix"
+      return 0
+      ;;
+  esac
   if [ -n "$expected_company" ]; then
     resolved="$(scope_normalize_hq_relative "$candidate")"
     resolved="$(scope_resolve_rel_symlinks "$resolved")"
@@ -315,6 +327,94 @@ scope_check_bash_candidate_inner() {
 
 scope_check_bash_candidate() {
   scope_check_bash_candidate_inner "${1:-}" "${2:-}" 0 "" "${3:-}" "${4:-}"
+}
+
+scope_check_bash_glob_candidate() {
+  local candidate="${1:-}" masked="${2:-}" occurrence_prefix="${3:-}"
+  local first_glob_prefix="" ch token_prefix="" remaining full_prefix full_pattern
+  local normalized_prefix company_root expansion_cwd match resolved_match rel
+  local count=0 prefix_remaining backtick=$'\140'
+
+  [ -n "$BOUND_CO" ] || scope_block_rel "$candidate" "no bound company authorizes glob expansion"
+  case "$candidate" in
+    *"'"*|*'"'*|*\\*) scope_block_rel "$candidate" "quoted or escaped glob syntax cannot be checked safely" ;;
+  esac
+  case "$masked" in
+    *'{'*|*'}'*) scope_block_rel "$candidate" "brace expansion cannot be checked safely" ;;
+  esac
+
+  remaining="$masked"
+  while [ -n "$remaining" ]; do
+    ch="${remaining:0:1}"
+    case "$ch" in
+      '*'|'?'|'[') break ;;
+      *) first_glob_prefix+="$ch"; remaining="${remaining:1}" ;;
+    esac
+  done
+
+  prefix_remaining="$occurrence_prefix"
+  while [ -n "$prefix_remaining" ]; do
+    ch="${prefix_remaining:0:1}"
+    case "$ch" in
+      [[:space:]]|';'|'|'|'&'|'('|')'|'<'|'>') token_prefix="" ;;
+      *) token_prefix+="$ch" ;;
+    esac
+    prefix_remaining="${prefix_remaining:1}"
+  done
+  case "$token_prefix" in
+    *'$'*|*"$backtick"*|*'*'*|*'?'*|*'['*|*'{'*|*'}'*|*'"'*|*"'"*|*\\*)
+      scope_block_rel "$candidate" "the path prefix before the glob contains unchecked shell expansion"
+      ;;
+  esac
+
+  expansion_cwd="$(cd "$COMMAND_CWD" 2>/dev/null && pwd -P)" \
+    || scope_block_rel "$candidate" "the command working directory cannot be resolved"
+  full_prefix="$token_prefix$first_glob_prefix"
+  case "$full_prefix" in
+    /*) ;;
+    *) full_prefix="$expansion_cwd/$full_prefix" ;;
+  esac
+  normalized_prefix="$(scope_normalize_hq_relative "$full_prefix")"
+  case "$normalized_prefix" in
+    "companies/$BOUND_CO"/*) ;;
+    *) scope_block_rel "$candidate" "the literal prefix before the glob does not resolve inside companies/$BOUND_CO" ;;
+  esac
+
+  company_root="$(realpath "$HQ_ROOT/companies/$BOUND_CO" 2>/dev/null)" \
+    || scope_block_rel "$candidate" "the bound company directory cannot be resolved"
+  case "$company_root" in
+    "$HQ_ROOT/companies/$BOUND_CO"|"$HQ_ROOT/companies/$BOUND_CO"/*) ;;
+    *) scope_block_rel "$candidate" "the bound company directory resolves outside its literal company path" ;;
+  esac
+
+  full_pattern="$token_prefix$candidate"
+  case "$full_pattern" in
+    /*) ;;
+    *) full_pattern="$expansion_cwd/$full_pattern" ;;
+  esac
+  while IFS= read -r match; do
+    [ -n "$match" ] || scope_block_rel "$candidate" "the shell glob produced an empty match"
+    count=$((count + 1))
+    [ "$count" -le 2048 ] || scope_block_rel "$candidate" "the glob has more matches than the hook can check"
+    case "$match" in
+      /*) ;;
+      *) match="$expansion_cwd/$match" ;;
+    esac
+    resolved_match="$(realpath "$match" 2>/dev/null)" \
+      || scope_block_rel "$candidate" "a glob match cannot be resolved with realpath"
+    case "$resolved_match" in
+      "$company_root"/*) ;;
+      *) scope_block_rel "$candidate" "a glob match resolves outside companies/$BOUND_CO" ;;
+    esac
+    rel="${resolved_match#"$HQ_ROOT"/}"
+    scope_check_rel "$rel"
+  done < <(
+    cd "$expansion_cwd" 2>/dev/null || exit 1
+    shopt -s nullglob dotglob nocaseglob
+    shopt -s globstar 2>/dev/null || :
+    compgen -G "$full_pattern"
+  )
+  [ "$count" -gt 0 ] || scope_block_rel "$candidate" "the shell glob produced no checkable matches"
 }
 
 case "$TOOL" in
@@ -427,6 +527,8 @@ if [ -n "${HQ_HOOK_SESSION_ID+set}" ]; then
 else
   SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty')"
 fi
+COMMAND_CWD="$(printf '%s' "$INPUT" | jq -r '.cwd // empty')"
+[ -n "$COMMAND_CWD" ] || COMMAND_CWD="$(pwd -P)"
 
 scope_read_bound_company() {
   local sid="${1:-}" co=""
@@ -581,6 +683,7 @@ scope_rel_allowed() {
 
 scope_block_rel() {
   local rel="${1:-}"
+  local glob_reason="${2:-}"
   local co bound_msg
   co="$(scope_company_slug_for_rel "$rel")"
   if [ -z "$SESSION_ID" ]; then
@@ -601,7 +704,13 @@ child does not)."
 BLOCKED: Cross-company scope violation
 Tool: $TOOL
 Path: $rel
-Target company: ${co:-unknown}
+EOF
+  if [ -n "$glob_reason" ]; then
+    printf 'Target company: %s (glob "%s" blocked: %s)\n' "${co:-unknown}" "$rel" "$glob_reason" >&2
+  else
+    printf 'Target company: %s\n' "${co:-unknown}" >&2
+  fi
+  cat >&2 <<EOF
 Session: ${SESSION_ID:-unknown}
 $bound_msg
 
@@ -627,6 +736,312 @@ scope_check_raw() {
   scope_check_rel "$rel"
 }
 
+# Resolve a tool-supplied relative root from its payload cwd. Relative paths in
+# a hook payload are not necessarily relative to HQ_ROOT (for example, `lnk`
+# while cwd is workspace/).
+scope_resolve_payload_path() {
+  local raw="${1:-}" cwd="${2:-$PAYLOAD_CWD}" cwd_abs physical
+  [ -n "$raw" ] || { printf '%s' ""; return 0; }
+  case "$raw" in
+    /*) physical="$(scope_resolve_absolute_path "$raw" 2>/dev/null || true)" ;;
+    *)
+      case "$cwd" in /*) cwd_abs="$cwd" ;; *) cwd_abs="$HQ_ROOT/${cwd:-}" ;; esac
+      [ -n "$cwd_abs" ] || cwd_abs="$HQ_ROOT"
+      physical="$(scope_resolve_absolute_path "$cwd_abs/$raw" 2>/dev/null || true)"
+      ;;
+  esac
+  case "$physical" in
+    "$HQ_ROOT") printf '%s' "" ;;
+    "$HQ_ROOT"/*) printf '%s' "${physical#"$HQ_ROOT"/}" ;;
+    *) printf '%s' "__OUTSIDE_HQ__" ;;
+  esac
+}
+
+# Search tools can traverse entries below their declared root. Check a root's
+# own resolved target first, then inspect symlinks below it without following
+# them. Scan links rather than walking every ordinary file, and prune large
+# trees that are outside company scope. A symlink that cannot be resolved is
+# denied because its company scope cannot be established safely.
+scope_scan_search_symlinks() {
+  local dir="${1:-}" max_depth="${2:-6}" entry rel resolved scan_rc too_deep
+  [ -d "$dir" ] || return 0
+  too_deep="$(find "$dir" \( -type d \( -name .git -o -name node_modules -o -path "$HQ_ROOT/repos" \) -prune \) -o \( -mindepth "$((max_depth + 1))" -type d -print -quit \) 2>/dev/null)" || \
+    scope_block_rel "companies/(search root could not be checked safely)"
+  [ -z "$too_deep" ] || scope_block_rel "companies/(search root is too deep; narrow the root and retry)"
+  find "$dir" -maxdepth "$((max_depth + 1))" -type l -print0 2>/dev/null |
+    while IFS= read -r -d '' entry; do
+      rel="$(scope_normalize_hq_relative "$entry")"
+      if [ -n "$rel" ]; then
+        scope_check_rel "$rel"
+      else
+        resolved="$(scope_resolve_absolute_path "$entry" 2>/dev/null || true)"
+        [ -n "$resolved" ] || scope_block_rel "companies/(unresolvable search symlink)"
+      fi
+    done
+  scan_rc=$?
+  [ "$scan_rc" -ne 2 ] || exit 2
+  [ "$scan_rc" -eq 0 ] || scope_block_rel "companies/(search root could not be scanned safely)"
+  return 0
+}
+
+scope_check_search_root() {
+  local raw="${1:-}" rel candidate_abs
+  [ -n "$raw" ] || return 0
+  case "$raw" in /*) candidate_abs="$raw" ;; *) candidate_abs="${PAYLOAD_CWD:-$HQ_ROOT}/$raw" ;; esac
+  if [ -L "$candidate_abs" ] && [ ! -e "$candidate_abs" ]; then
+    scope_block_rel "companies/(unresolvable search root symlink)"
+  fi
+  rel="$(scope_resolve_payload_path "$raw")"
+  [ "$rel" != "__OUTSIDE_HQ__" ] || return 0
+  scope_check_rel "$rel"
+}
+
+scope_check_recursive_search_root() {
+  local raw="${1:-}" rel root_abs
+  [ -n "$raw" ] || return 0
+  scope_check_search_root "$raw"
+  rel="$(scope_resolve_payload_path "$raw")"
+  [ "$rel" != "__OUTSIDE_HQ__" ] || return 0
+  root_abs="$HQ_ROOT/$rel"
+  [ -d "$root_abs" ] || return 0
+  scope_scan_search_symlinks "$root_abs" 6
+}
+
+scope_strip_command_wrappers() {
+  local i=0 token wrapper
+  local -a wrapper_tokens
+  wrapper_tokens=("${scope_tokens[@]}")
+  while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+    token="${wrapper_tokens[$i]}"
+    if [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
+      i=$((i + 1)); continue
+    fi
+    wrapper="${token##*/}"
+    case "$wrapper" in
+      env)
+        i=$((i + 1))
+        while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+          token="${wrapper_tokens[$i]}"
+          case "$token" in
+            -i|--ignore-environment|-0) i=$((i + 1)) ;;
+            -u|--unset) i=$((i + 2)) ;;
+            --unset=*) i=$((i + 1)) ;;
+            -C|--chdir) i=$((i + 2)) ;;
+            --) i=$((i + 1)); break ;;
+            -*) i=$((i + 1)) ;;
+            *) break ;;
+          esac
+        done
+        ;;
+      command)
+        i=$((i + 1))
+        while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+          case "${wrapper_tokens[$i]}" in -p|-v|-V) i=$((i + 1)) ;; *) break ;; esac
+        done
+        ;;
+      builtin|nohup|time|xargs)
+        i=$((i + 1))
+        if [ "$wrapper" = time ]; then
+          while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+            case "${wrapper_tokens[$i]}" in
+              -p) i=$((i + 1)) ;;
+              -f|-o) i=$((i + 2)) ;;
+              --) i=$((i + 1)); break ;;
+              -*) i=$((i + 1)) ;;
+              *) break ;;
+            esac
+          done
+        elif [ "$wrapper" = xargs ]; then
+          while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+            token="${wrapper_tokens[$i]}"
+            case "$token" in
+              -0|-r|-t|-p|-x|--null|--no-run-if-empty|--verbose|--interactive) i=$((i + 1)) ;;
+              -d|-E|-e|-I|-i|-L|-l|-n|-P|-s|--max-lines|--max-args|--max-procs|--max-chars|--replace|--eof) i=$((i + 2)) ;;
+              --) i=$((i + 1)); break ;;
+              -*) i=$((i + 1)) ;;
+              *) break ;;
+            esac
+          done
+        fi
+        ;;
+      exec)
+        i=$((i + 1))
+        while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+          case "${wrapper_tokens[$i]}" in
+            -c|-l) i=$((i + 1)) ;;
+            -a) i=$((i + 2)) ;;
+            --) i=$((i + 1)); break ;;
+            -*) i=$((i + 1)) ;;
+            *) break ;;
+          esac
+        done
+        ;;
+      nice)
+        i=$((i + 1))
+        if [ "$i" -lt "${#wrapper_tokens[@]}" ]; then
+          case "${wrapper_tokens[$i]}" in -n) i=$((i + 2)) ;; --adjustment=*) i=$((i + 1)) ;; esac
+        fi
+        ;;
+      timeout)
+        i=$((i + 1))
+        while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+          token="${wrapper_tokens[$i]}"
+          case "$token" in
+            -s|-signal|-k|-kill-after) i=$((i + 2)) ;;
+            --signal=*|--kill-after=*) i=$((i + 1)) ;;
+            --) i=$((i + 1)); break ;;
+            -*) i=$((i + 1)) ;;
+            *) i=$((i + 1)); break ;;
+          esac
+        done
+        ;;
+      stdbuf)
+        i=$((i + 1))
+        while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+          token="${wrapper_tokens[$i]}"
+          case "$token" in
+            -i|-o|-e) i=$((i + 2)) ;;
+            -i?*|-o?*|-e?*) i=$((i + 1)) ;;
+            --) i=$((i + 1)); break ;;
+            -*) i=$((i + 1)) ;;
+            *) break ;;
+          esac
+        done
+        ;;
+      ionice)
+        i=$((i + 1))
+        while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+          token="${wrapper_tokens[$i]}"
+          case "$token" in -c|-n|-t|-p) i=$((i + 2)) ;; --) i=$((i + 1)); break ;; -*) i=$((i + 1)) ;; *) break ;; esac
+        done
+        ;;
+      chrt)
+        i=$((i + 1))
+        while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+          token="${wrapper_tokens[$i]}"
+          case "$token" in
+            -f|-o|-r|-b|-i|-d|-p|-m) i=$((i + 2)) ;;
+            --) i=$((i + 1)); break ;;
+            -*) i=$((i + 1)) ;;
+            *) break ;;
+          esac
+        done
+        ;;
+      taskset)
+        i=$((i + 1))
+        while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+          token="${wrapper_tokens[$i]}"
+          case "$token" in -c|-p|-a) i=$((i + 2)) ;; --) i=$((i + 1)); break ;; -*) i=$((i + 1)) ;; *) break ;; esac
+        done
+        ;;
+      sudo|doas)
+        i=$((i + 1))
+        while [ "$i" -lt "${#wrapper_tokens[@]}" ]; do
+          token="${wrapper_tokens[$i]}"
+          case "$token" in
+            -u|-g|-h|-p|-C|-T|-D|-R|-r|-t|-U|-a|-c|-L|-P|--user|--group|--host|--prompt|--close-from|--command-timeout|--chdir|--cwd|--role|--type|--auth-type) i=$((i + 2)) ;;
+            --) i=$((i + 1)); break ;;
+            -*) i=$((i + 1)) ;;
+            *) break ;;
+          esac
+        done
+        ;;
+      *) break ;;
+    esac
+  done
+  scope_tokens=("${wrapper_tokens[@]:$i}")
+}
+
+scope_command_follows_nested_links() {
+  local command_name="${scope_tokens[0]##*/}" token cluster option i=1 j saw_find_root=0
+  case "$command_name" in grep|egrep|fgrep|zgrep|ggrep) command_name=grep ;; esac
+  while [ "$i" -lt "${#scope_tokens[@]}" ]; do
+    token="${scope_tokens[$i]}"
+    case "$command_name:$token" in
+      grep:--dereference-recursive|rg:--follow|find:-follow) return 0 ;;
+      find:-L|find:-H)
+        [ "$saw_find_root" -eq 0 ] && return 0
+        i=$((i + 1)); continue
+        ;;
+    esac
+    case "$command_name" in
+      grep|rg)
+        case "$token" in
+          --) break ;;
+          --*) i=$((i + 1)); continue ;;
+          -* )
+            # A whitespace-bearing quoted token is one operand, not a short-option cluster.
+            if [[ "$token" == *[[:space:]]* ]]; then i=$((i + 1)); continue; fi
+            cluster="${token#-}"
+            j=0
+            while [ "$j" -lt "${#cluster}" ]; do
+              option="${cluster:$j:1}"
+              if { [ "$command_name" = grep ] && [ "$option" = R ]; } || \
+                 { [ "$command_name" = rg ] && [ "$option" = L ]; }; then
+                return 0
+              fi
+              j=$((j + 1))
+            done
+            i=$((i + 1)); continue ;;
+          *) i=$((i + 1)); continue ;;
+        esac
+        ;;
+      find)
+        case "$token" in
+          -follow) return 0 ;;
+          -L|-H) [ "$saw_find_root" -eq 0 ] && return 0 ;;
+          -* ) ;;
+          *) saw_find_root=1 ;;
+        esac
+        i=$((i + 1)); continue
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  return 1
+}
+
+scope_glob_static_prefix() {
+  local pattern="${1:-}" prefix="" ch i
+  for ((i = 0; i < ${#pattern}; i++)); do
+    ch="${pattern:i:1}"
+    case "$ch" in
+      '*'|'?'|'[') break ;;
+      *) prefix+="$ch" ;;
+    esac
+  done
+  printf '%s' "$prefix"
+}
+
+scope_check_bash_skill_path() {
+  local raw="${1:-}" command_text="${2:-}" prefix="${3:-}" suffix="${4:-}"
+  local masked backtick token rel resolved
+  [ -n "$raw" ] || return 0
+  scope_candidate_is_inert_text "$raw" "$command_text" "$prefix" "$suffix" && return 0
+  case "$raw" in */*|/*) ;; *) return 0 ;; esac
+  rel="$(scope_normalize_hq_relative "$raw")"
+  masked="$(scope_mask_literal_expansions "$raw")"
+  backtick=$'\140'
+  case "$masked" in
+    *'$('|*"$backtick"*|*'$'*)
+      case "$rel" in companies/*|.claude/*|personal/*|workspace/*) scope_block_rel "companies/(shell-expanded)" ;; esac
+      return 0
+      ;;
+  esac
+  scope_candidate_is_single_quoted "$raw" "$prefix" && {
+    resolved="$(scope_resolve_rel_symlinks "$rel")"
+    scope_check_rel "$resolved"
+    return 0
+  }
+  token="$(printf '%s' "$masked" | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' 2>/dev/null | head -n 1 || true)"
+  [ -z "$token" ] || return 0
+  case "$masked" in
+    *'*'*|*'?'*|*'['*) return 0 ;;
+  esac
+  resolved="$(scope_resolve_rel_symlinks "$rel")"
+  scope_check_rel "$resolved"
+}
+
 case "$TOOL" in
   Read|Write|Edit|MultiEdit)
     scope_check_raw "$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')"
@@ -635,11 +1050,38 @@ case "$TOOL" in
     scope_check_raw "$(printf '%s' "$INPUT" | jq -r '.tool_input.notebook_path // empty')"
     ;;
   Grep|Glob)
-    scope_check_raw "$(printf '%s' "$INPUT" | jq -r '.tool_input.path // empty')"
+    scope_search_root="$(printf '%s' "$INPUT" | jq -r '.tool_input.path // empty')"
+    scope_search_root_is_implicit=0
+    if [ -z "$scope_search_root" ]; then
+      scope_search_root="$(printf '%s' "$INPUT" | jq -r '.cwd // empty')"
+      scope_search_root_is_implicit=1
+    fi
+    scope_search_root_rel="$(scope_resolve_payload_path "$scope_search_root")"
+    if [ "$TOOL" = Grep ] && [ "$scope_search_root_is_implicit" -eq 1 ] && [ -z "$scope_search_root_rel" ]; then
+      # Grep's implicit HQ-root search skips hidden directories and symlink
+      # directories. Avoid a broad whole-tree scan; explicit roots are scanned.
+      :
+    else
+      scope_check_search_root "$scope_search_root"
+    fi
+    if [ "$TOOL" = "Glob" ]; then
+      scope_pattern="$(printf '%s' "$INPUT" | jq -r '.tool_input.pattern // empty')"
+      scope_prefix="$(scope_glob_static_prefix "$scope_pattern")"
+      if [ -n "$scope_prefix" ]; then
+        case "$scope_prefix" in
+          /*) scope_pattern_root="$scope_prefix" ;;
+          *) scope_pattern_root="${scope_search_root%/}/$scope_prefix" ;;
+        esac
+        scope_check_search_root "$scope_pattern_root"
+      fi
+    fi
     ;;
   Bash)
     cmd="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
     [ -n "$cmd" ] || exit 0
+    # Reuse the shared non-evaluating shell splitter so recursive checks see
+    # every simple command, including commands after separators and pipelines.
+    . "$HQ_ROOT/core/scripts/hook-lib.sh"
     # Bash removes an unquoted backslash-newline before tokenizing, so scan the
     # same normalized form when extracting possible path tokens.
     #
@@ -679,6 +1121,63 @@ case "$TOOL" in
       scope_offset=$((scope_offset + scope_consumed))
       scope_remaining="${scope_remaining:$scope_consumed}"
     done
+    scope_remaining="$scope_scan_cmd"
+    scope_offset=0
+    while [[ "$scope_remaining" == *'.claude'* ]]; do
+      scope_before="${scope_remaining%%.claude*}"
+      scope_after="${scope_remaining#*.claude}"
+      fragment='.claude'
+      while [ -n "$scope_after" ]; do
+        scope_char="${scope_after:0:1}"
+        case "$scope_char" in
+          [[:space:]]|';'|'|'|'&'|'('|')'|'<'|'>') break ;;
+        esac
+        fragment+="$scope_char"
+        scope_after="${scope_after:1}"
+      done
+      scope_candidate_length=${#fragment}
+      scope_prefix_length=$((scope_offset + ${#scope_before}))
+      scope_prefix="${scope_scan_cmd:0:$scope_prefix_length}"
+      scope_suffix="${scope_scan_cmd:$((scope_prefix_length + scope_candidate_length))}"
+      case "$fragment" in
+        *'"') fragment="${fragment%\"}" ;;
+        *"'") fragment="${fragment%\'}" ;;
+      esac
+      scope_check_bash_skill_path "$fragment" "$scope_scan_cmd" "$scope_prefix" "$scope_suffix"
+      scope_consumed=$((${#scope_before} + scope_candidate_length))
+      scope_offset=$((scope_offset + scope_consumed))
+      scope_remaining="${scope_remaining:$scope_consumed}"
+    done
+    scope_segments="$(hq_shell_simple_commands "$scope_scan_cmd")"
+    while IFS= read -r scope_record; do
+      [ -n "$scope_record" ] || continue
+      IFS=$'\037' read -r -a scope_tokens <<< "$scope_record"
+      [ "${#scope_tokens[@]}" -gt 0 ] || continue
+      for scope_token in "${scope_tokens[@]}"; do
+        case "$scope_token" in companies/*|.claude*) continue ;; esac
+        case "$scope_token" in
+          */*|/*) scope_check_bash_skill_path "$scope_token" "$scope_scan_cmd" "" "" ;;
+        esac
+      done
+      scope_strip_command_wrappers
+      [ "${#scope_tokens[@]}" -gt 0 ] || continue
+      if scope_command_follows_nested_links; then
+        scope_recursive_roots=0
+        for scope_token in "${scope_tokens[@]:1}"; do
+          case "$scope_token" in -*|''|*://*) continue ;; esac
+          scope_root_candidate="$(scope_resolve_payload_path "$scope_token")"
+          [ "$scope_root_candidate" != "__OUTSIDE_HQ__" ] || continue
+          scope_root_abs="$HQ_ROOT/$scope_root_candidate"
+          if [ -d "$scope_root_abs" ]; then
+            scope_check_recursive_search_root "$scope_token"
+            scope_recursive_roots=$((scope_recursive_roots + 1))
+          fi
+        done
+        if [ "$scope_recursive_roots" -eq 0 ]; then
+          scope_check_recursive_search_root "$PAYLOAD_CWD"
+        fi
+      fi
+    done <<< "$scope_segments"
     ;;
 esac
 

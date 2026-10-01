@@ -1,12 +1,12 @@
 ---
 id: hq-codex-decision-gate-fallback
-title: Codex planning skills must preserve decision gates with a text fallback
-when: /brainstorm || /plan || /prd || /review-plan || /run-project
-on: [UserPromptSubmit, AssistantIntent]
+title: Codex questions must preserve decision gates with a render-aware text fallback
+when: /brainstorm || /plan || /prd || /review-plan || /run-project || request_user_input
+on: [PreToolUse, UserPromptSubmit, AssistantIntent]
 enforcement: soft
-version: 2
+version: 3
 created: 2026-05-01
-updated: 2026-05-12
+updated: 2026-09-30
 source: user-correction
 public: false
 skip-promotion: true
@@ -21,7 +21,9 @@ Codex adaptation order:
 1. Use Codex `request_user_input` when it is actually callable in the current runtime and the question can be expressed as 2-3 selectable choices. Present exactly one question per call.
 2. If Codex `request_user_input` is not callable, use any other structured interactive question tool that is actually callable in the current runtime, still exactly one question per call.
 3. If no structured question tool is callable, ask a concise plain-text question with the same options and wait for the user's answer.
-4. Never replace a required gate with a passive summary like "Next: promote to PRD, edit, or park" and then end the turn.
+4. When a structured question tool returns an accepted result without an explicit render confirmation, treat visibility as unconfirmed. Immediately print the same question and every choice in plain text, then wait for the user's answer. An accepted result alone does not confirm that the prompt was rendered.
+5. If the tool explicitly confirms that the question and choices were rendered to the user, do not print the text fallback.
+6. Never replace a required gate with a passive summary like "Next: promote to PRD, edit, or park" and then end the turn.
 
 This preference applies to all user-facing HQ questions with enumerated choices, not only formal lifecycle gates. Free-form discovery questions may remain plain text when forcing them into choices would lose useful information.
 

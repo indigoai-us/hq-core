@@ -340,4 +340,130 @@ rc="$(run_auth "$payload")"
 [ "$rc" = "0" ] || fail "Codex SessionStart bind must unblock indigo Read, got $rc err=$(cat "$TMP/err.txt")"
 pass "Codex SessionStart binds before Read"
 
+echo "== US-251 manifest-based auto-bind cases =="
+us251_failures=0
+us251_fail() {
+  echo "FAIL: US-251 $*" >&2
+  us251_failures=$((us251_failures + 1))
+}
+us251_assert_held_status_stays_unbound() {
+  local sid="$1" record="$2" failures_before="$us251_failures"
+  printf '%s\n' "$record" > "$TMP/work-context/sessions/$sid.json"
+  HQ_WORK_CONTEXT_ROOT="$TMP/work-context" HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 \
+    session_auto_bind_apply "$TMP" "$sid" "" "1"
+  [ ! -f "$TMP/workspace/sessions/$sid/meta.yaml" ] \
+    || us251_fail "held $sid session was manifest auto-bound"
+  [ ! -f "$TMP/workspace/sessions/$sid/scope-capability.json" ] \
+    || us251_fail "held $sid session minted a scope capability"
+  if [ "$us251_failures" = "$failures_before" ]; then
+    pass "held $sid session stays unbound"
+  fi
+  return 0
+}
+us251_assert_held_status_binds() {
+  local sid="$1" record="$2" failures_before="$us251_failures"
+  printf '%s\n' "$record" > "$TMP/work-context/sessions/$sid.json"
+  HQ_WORK_CONTEXT_ROOT="$TMP/work-context" HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 \
+    session_auto_bind_apply "$TMP" "$sid" "" "1"
+  [ "$(session_auto_bind_meta_slug "$TMP" "$sid")" = "indigo" ] \
+    || us251_fail "held $sid session was not bound to the sole company"
+  [ "$(session_scope_read "$TMP" "$sid")" = "indigo" ] \
+    || us251_fail "held $sid session did not mint the sole-company scope"
+  if [ "$us251_failures" = "$failures_before" ]; then
+    pass "held $sid session binds to the sole company"
+  fi
+  return 0
+}
+
+unset HQ_SPAWN_COMPANY HQ_PARENT_SESSION_ID HQ_AGENT_WORKDIR HQ_AGENT_COMPANY_DIR HQ_AGENT_IDENTITY_FILE HQ_AGENT_ROOT_PREFIX HQ_DEFAULT_COMPANY_JSON || true
+printf 'companies:\n  _template:\n    name: Template\n  indigo:\n    name: Indigo\n' > "$TMP/companies/manifest.yaml"
+HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 session_auto_bind_apply "$TMP" "us251-single-company"
+[ "$(session_auto_bind_meta_slug "$TMP" "us251-single-company")" = "indigo" ] \
+  || us251_fail "one real manifest company was not written to session metadata"
+[ "$(session_scope_read "$TMP" "us251-single-company")" = "indigo" ] \
+  || us251_fail "one real manifest company did not mint its scope capability"
+payload='{"tool_name":"Read","session_id":"us251-single-company","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml"}}'
+rc="$(run_auth "$payload")"
+[ "$rc" = "0" ] \
+  || us251_fail "one-company session could not read its settings (status=$rc)"
+[ "$(session_auto_bind_meta_slug "$TMP" "us251-single-company")" = "indigo" ] \
+  && [ "$(session_scope_read "$TMP" "us251-single-company")" = "indigo" ] \
+  && [ "$rc" = "0" ] \
+  && pass "one real manifest company binds and permits its settings read"
+
+mkdir -p "$TMP/work-context/sessions"
+printf '{"sessionId":"us251-held-needs-company","contextStatus":"needs_company"}\n' \
+  > "$TMP/work-context/sessions/us251-held-needs-company.json"
+HQ_WORK_CONTEXT_ROOT="$TMP/work-context" HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 \
+  session_auto_bind_apply "$TMP" "us251-held-needs-company" "" "1"
+[ ! -f "$TMP/workspace/sessions/us251-held-needs-company/meta.yaml" ] \
+  || us251_fail "held needs_company session was manifest auto-bound"
+[ ! -f "$TMP/workspace/sessions/us251-held-needs-company/scope-capability.json" ] \
+  || us251_fail "held needs_company session minted a scope capability"
+[ ! -f "$TMP/workspace/sessions/us251-held-needs-company/meta.yaml" ] \
+  && [ ! -f "$TMP/workspace/sessions/us251-held-needs-company/scope-capability.json" ] \
+  && pass "held needs_company session stays unbound while new one-company session binds"
+us251_assert_held_status_stays_unbound "us251-held-company-conflict" \
+  '{"sessionId":"us251-held-company-conflict","contextStatus":"company_conflict"}'
+us251_assert_held_status_stays_unbound "us251-held-bound" \
+  '{"sessionId":"us251-held-bound","contextStatus":"bound"}'
+us251_assert_held_status_binds "us251-held-unresolved" \
+  '{"sessionId":"us251-held-unresolved","contextStatus":"unresolved"}'
+us251_assert_held_status_stays_unbound "us251-held-unreadable-status" \
+  '{"sessionId":"us251-held-unreadable-status","contextStatus":'
+
+printf 'companies:\n  _template:\n    name: Template\n  indigo:\n    name: Indigo\nsettings:\n  mode: strict\n' \
+  > "$TMP/companies/manifest.yaml"
+HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 session_auto_bind_apply "$TMP" "us251-wrapped-trailing-settings"
+[ "$(session_auto_bind_meta_slug "$TMP" "us251-wrapped-trailing-settings")" = "indigo" ] \
+  || us251_fail "wrapped manifest trailing settings key prevented single-company bind"
+[ "$(session_scope_read "$TMP" "us251-wrapped-trailing-settings")" = "indigo" ] \
+  || us251_fail "wrapped manifest trailing settings key did not mint the company scope"
+[ "$(session_auto_bind_meta_slug "$TMP" "us251-wrapped-trailing-settings")" = "indigo" ] \
+  && [ "$(session_scope_read "$TMP" "us251-wrapped-trailing-settings")" = "indigo" ] \
+  && pass "wrapped manifest ignores trailing settings when counting companies"
+
+printf 'companies:\n  indigo:\n    name: Indigo\n  otherco:\n    name: Other\n' > "$TMP/companies/manifest.yaml"
+session_auto_bind_apply "$TMP" "us251-multiple-companies"
+[ ! -f "$TMP/workspace/sessions/us251-multiple-companies/meta.yaml" ] \
+  || us251_fail "multiple real manifest companies auto-bound session metadata"
+[ ! -f "$TMP/workspace/sessions/us251-multiple-companies/scope-capability.json" ] \
+  || us251_fail "multiple real manifest companies minted a scope capability"
+payload='{"tool_name":"Read","session_id":"us251-multiple-companies","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml"}}'
+rc="$(run_auth "$payload")"
+[ "$rc" = "2" ] \
+  || us251_fail "multiple-company session refusal changed (status=$rc)"
+grep -Fq 'Session has no company_slug bound.' "$TMP/err.txt" \
+  || us251_fail "multiple-company session did not retain the unbound refusal"
+[ ! -f "$TMP/workspace/sessions/us251-multiple-companies/meta.yaml" ] \
+  && [ ! -f "$TMP/workspace/sessions/us251-multiple-companies/scope-capability.json" ] \
+  && [ "$rc" = "2" ] \
+  && grep -Fq 'Session has no company_slug bound.' "$TMP/err.txt" \
+  && pass "multiple real companies remain unbound and keep the settings refusal"
+
+printf 'companies:\n  _template:\n    name: Template\n' > "$TMP/companies/manifest.yaml"
+session_auto_bind_apply "$TMP" "us251-template-only"
+[ ! -f "$TMP/workspace/sessions/us251-template-only/meta.yaml" ] \
+  || us251_fail "_template was treated as a real company"
+[ ! -f "$TMP/workspace/sessions/us251-template-only/scope-capability.json" ] \
+  || us251_fail "_template minted a scope capability"
+[ ! -f "$TMP/workspace/sessions/us251-template-only/meta.yaml" ] \
+  && [ ! -f "$TMP/workspace/sessions/us251-template-only/scope-capability.json" ] \
+  && pass "_template alone does not auto-bind"
+
+printf 'companies:\n  indigo:\n    name: Indigo\n' > "$TMP/companies/manifest.yaml"
+mkdir -p "$TMP/workspace/sessions/us251-already-bound"
+printf 'session_id: us251-already-bound\ncompany_slug: otherco\ncompany_source: session\n' \
+  > "$TMP/workspace/sessions/us251-already-bound/meta.yaml"
+session_scope_mint "$TMP" "us251-already-bound" "otherco"
+session_auto_bind_apply "$TMP" "us251-already-bound"
+[ "$(session_auto_bind_meta_slug "$TMP" "us251-already-bound")" = "otherco" ] \
+  || us251_fail "single-company fallback replaced an existing company in metadata"
+[ "$(session_scope_read "$TMP" "us251-already-bound")" = "otherco" ] \
+  || us251_fail "single-company fallback replaced an existing scope capability"
+[ "$(session_auto_bind_meta_slug "$TMP" "us251-already-bound")" = "otherco" ] \
+  && [ "$(session_scope_read "$TMP" "us251-already-bound")" = "otherco" ] \
+  && pass "existing company binding remains unchanged"
+
+[ "$us251_failures" -eq 0 ] || exit 1
 echo "session-auto-bind: all passed"

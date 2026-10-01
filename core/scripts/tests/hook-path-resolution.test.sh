@@ -105,6 +105,14 @@ fi
 # shellcheck source=core/scripts/lib/hook-command-scan.sh
 . "$ROOT/core/scripts/lib/hook-command-scan.sh"
 
+# SessionStart uses env to neutralize Bash startup files before Bash itself
+# starts. The shared scanner used by doctor must still require its script.
+session_start_command='env BASH_ENV=/dev/null bash "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh" SessionStart'
+session_start_required="$(printf '%s\n' "$session_start_command" | hook_scan_encode | hook_scan_required_relpaths)"
+[ "$session_start_required" = ".claude/hooks/master-hook.sh" ] \
+  || fail "env-prefixed SessionStart command does not require master-hook.sh: ${session_start_required:-<none>}"
+pass "env-prefixed SessionStart command resolves master-hook.sh"
+
 unquoted_project_dir_refs() {
   printf '%s\n' "$1" | hook_scan_encode | hook_scan_unquoted_commands | grep .
 }
@@ -118,7 +126,7 @@ if unquoted_project_dir_refs "$hook_commands"; then
   fail "settings.json has an unquoted \$CLAUDE_PROJECT_DIR-derived path (dies on a root containing a space)"
 fi
 if printf '%s\n' "$hook_commands" \
-    | grep -vE '^bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/(hook-gate|master-hook|reindex|hq-monitor-session-hook)\.sh"([[:space:]]|$)'; then
+    | grep -vE '^(bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/(hook-gate|master-hook|reindex|hq-monitor-session-hook)\.sh"([[:space:]].*)?|env BASH_ENV=/dev/null bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/master-hook\.sh" SessionStart)$'; then
   fail "settings.json has a hook entrypoint that is not invoked through bash"
 fi
 pass "all project-root paths are quoted and hook entrypoints use bash"

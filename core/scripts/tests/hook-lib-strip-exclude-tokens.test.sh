@@ -21,6 +21,7 @@ fail() { printf '  FAIL %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/hook-lib-strip-exclude.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+CORE_YAML="${HQ_TEST_CORE_YAML:-$ROOT/core/core.yaml}"
 
 # --- a long command token stays inside the core-write hook's hot-path budget --
 printf -v long_token '%20000s' ''
@@ -58,7 +59,9 @@ for arg in "$@"; do
 done
 [ -n "$yaml" ] && [ -f "$yaml" ] || exit 0
 awk '
-  /^[[:space:]]*-[[:space:]]+/ {
+  /^[[:space:]]*exclude:[[:space:]]*$/ { in_exclude=1; next }
+  in_exclude && /^[[:space:]]*[a-zA-Z_]+:/ { in_exclude=0 }
+  in_exclude && /^[[:space:]]*-[[:space:]]+/ {
     line = $0
     sub(/^[[:space:]]*-[[:space:]]+/, "", line)
     sub(/[[:space:]]+#.*$/, "", line)
@@ -68,6 +71,22 @@ awk '
 ' "$yaml"
 EOF
 chmod +x "$TMP/bins/yq"
+
+# rules.exclude is the shared source for drift filtering. The generated company
+# wrapper marker is excluded as one exact file; neighboring skill files stay
+# eligible for drift reporting.
+marker="$ROOT/.claude/skills/.hq-company-skill-wrappers"
+neighbor="$ROOT/.claude/skills/untracked-skill-probe"
+if PATH="$TMP/bins:$PATH" hq_path_matches_core_yaml_exclude "$ROOT" "$marker" "$CORE_YAML"; then
+  pass 'company wrapper marker is excluded from core drift'
+else
+  fail 'company wrapper marker is missing from rules.exclude'
+fi
+if PATH="$TMP/bins:$PATH" hq_path_matches_core_yaml_exclude "$ROOT" "$neighbor" "$CORE_YAML"; then
+  fail 'a neighboring untracked skill file was excluded from core drift'
+else
+  pass 'neighboring untracked skill file remains eligible for core drift'
+fi
 
 REAL_SED="$(command -v sed)"
 export HQ_TEST_SED_CALLS="$TMP/sed-calls"

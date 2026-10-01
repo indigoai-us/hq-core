@@ -12,7 +12,7 @@ fail() {
   exit 1
 }
 
-mkdir -p "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/.claude/hooks" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/companies/acme/workspace" "$TMP_ROOT/repo/.claude/skills/document-release" "$TMP_ROOT/bin" "$TMP_ROOT/logs"
+mkdir -p "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/.claude/hooks" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/sessions/no-claude-session" "$TMP_ROOT/repo/companies/acme/workspace" "$TMP_ROOT/repo/.claude/skills/document-release" "$TMP_ROOT/bin" "$TMP_ROOT/logs"
 cp "$SRC_ROOT/scripts/handoff-post.sh" "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
 cp "$SRC_ROOT/scripts/lib/session-id.sh" "$TMP_ROOT/repo/core/scripts/lib/session-id.sh"
 cp "$SRC_ROOT/../.claude/hooks/mirror-thread-to-company.sh" "$TMP_ROOT/repo/.claude/hooks/mirror-thread-to-company.sh"
@@ -70,6 +70,8 @@ cat > "$TMP_ROOT/repo/workspace/threads/T-test.json" <<'JSON'
   "metadata": {"company": ["acme"]}
 }
 JSON
+# handoff-post pushes a company workspace only for the session-bound company.
+printf 'company_slug: acme\n' > "$TMP_ROOT/repo/workspace/sessions/no-claude-session/meta.yaml"
 cat > "$TMP_ROOT/learnings.json" <<'JSON'
 [
   {"type":"rule","content":"ALWAYS: test handoff-post without hidden CLI","scope":"global","source":"test"}
@@ -80,6 +82,7 @@ handoff_post_test_run "$TMP_ROOT/repo" "workspace/threads/T-test.json" "$TMP_ROO
   CLAUDE_SENTINEL="$TMP_ROOT/claude-called" \
   HQ_SYNC_SENTINEL="$TMP_ROOT/hq-sync-called" \
   HANDOFF_LOG_DIR="$TMP_ROOT/logs" \
+  HQ_SESSION_ID=no-claude-session \
   PATH="$TMP_ROOT/bin:/usr/bin:/bin"
 
 [[ ! -e "$TMP_ROOT/claude-called" ]] || fail "handoff-post invoked claude"

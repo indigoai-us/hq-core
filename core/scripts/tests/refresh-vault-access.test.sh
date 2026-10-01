@@ -18,9 +18,12 @@ trap 'rm -rf "$TMP"' EXIT
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not available"; exit 0; }
 
 mkdir -p "$TMP/hqroot/core" "$TMP/hqroot/.claude" "$TMP/bin"
+CLI="$TMP/npm-global/lib/node_modules/@indigoai-us/hq-cli"
+mkdir -p "$CLI/bin" "$CLI/node_modules/@indigoai-us/hq-flags-client" \
+  "$CLI/node_modules/@indigoai-us/hq-cloud"
 
 # Stubbed hq CLI: emits the real CLI's padded-table formats.
-cat > "$TMP/bin/hq" <<'EOF'
+cat > "$CLI/bin/hq" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   "whoami")
@@ -50,7 +53,8 @@ case "$*" in
     ;;
 esac
 EOF
-chmod +x "$TMP/bin/hq"
+chmod +x "$CLI/bin/hq"
+ln -s "$CLI/bin/hq" "$TMP/bin/hq"
 
 PATH="$TMP/bin:$PATH" HQ_VAULT_ACCESS_EMAIL="" \
   bash "$SCRIPT" --root "$TMP/hqroot" >/dev/null 2>&1
@@ -87,11 +91,30 @@ mkdir -p "$TMP/hqroot/.hq" "$TMP/hqroot/core/scripts" "$TMP/hqroot/.claude/hooks
   "$TMP/hqroot/companies/acme"
 cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/hqroot/core/scripts/hook-lib.sh"
 cp "$ROOT/.claude/hooks/enforce-vault-write-access.sh" "$TMP/hqroot/.claude/hooks/"
+cp "$ROOT/.claude/hooks/enforce-vault-write-access-flag.cjs" "$TMP/hqroot/.claude/hooks/"
+printf '%s\n' '{"name":"@indigoai-us/hq-cli","bin":{"hq":"bin/hq"}}' > "$CLI/package.json"
+printf '%s\n' '{"type":"module","exports":{".":{"import":"./index.js"}}}' \
+  > "$CLI/node_modules/@indigoai-us/hq-flags-client/package.json"
+cat > "$CLI/node_modules/@indigoai-us/hq-flags-client/index.js" <<'JS'
+export const createFlagClient = () => ({
+  ready: async () => {},
+  snapshot: () => ({flags: {
+    "hooks.vault-write-deny-unknown-access": process.env.HQ_TEST_FLAG_ENABLED === "true",
+  }}),
+  close: () => {},
+});
+JS
+printf '%s\n' '{"type":"module","exports":{".":{"import":"./index.js"}}}' \
+  > "$CLI/node_modules/@indigoai-us/hq-cloud/package.json"
+printf '%s\n' 'export const loadCachedTokens = () => ({idToken:"test-token"});' \
+  > "$CLI/node_modules/@indigoai-us/hq-cloud/index.js"
 printf '{}' > "$TMP/hqroot/.claude/settings.local.json"
 hook_rc() {
-  local path="$1" rc=0
+  local path="$1" enabled="${2:-false}" rc=0
   jq -n --arg p "$path" '{tool_name: "Edit", tool_input: {file_path: $p}}' \
-    | CLAUDE_PROJECT_DIR="$TMP/hqroot" bash "$TMP/hqroot/.claude/hooks/enforce-vault-write-access.sh" \
+    | env PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
+      HQ_COMPANY_UID=cmp_test123 HQ_COMPANY_SLUG=indigo HQ_TEST_FLAG_ENABLED="$enabled" \
+      CLAUDE_PROJECT_DIR="$TMP/hqroot" bash "$TMP/hqroot/.claude/hooks/enforce-vault-write-access.sh" \
       >/dev/null 2>&1 || rc=$?
   printf '%s' "$rc"
 }
@@ -104,7 +127,9 @@ hook_rc() {
 [[ "$(hook_rc "$TMP/hqroot/companies/acme/inbox/sub/x.md")" == "2" ]] \
   && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "FAIL [roundtrip private-folder write blocks nested path]" >&2; }
 [[ "$(hook_rc "$TMP/hqroot/companies/other/docs/plan.md")" == "0" ]] \
-  && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "FAIL [roundtrip unknown role fail-open]" >&2; }
+  && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "FAIL [roundtrip unknown role allowed by default-off flag]" >&2; }
+[[ "$(hook_rc "$TMP/hqroot/companies/other/docs/plan.md" true)" == "2" ]] \
+  && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "FAIL [roundtrip unknown role denied with flag on]" >&2; }
 
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

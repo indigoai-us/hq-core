@@ -88,19 +88,59 @@ esac
 # basename of each argument against `claude` exactly — a loose substring test
 # matches every `.claude/hooks/...` path on the machine and would mark the
 # whole world live.
+process_args() {
+  local target="$1"
+  # `ps -eww` avoids argument truncation; filter its complete listing back to
+  # the exact PID because combining -e and -p selects all processes on Linux.
+  ps -eww -o pid=,args= 2>/dev/null | awk -v target="$target" '$1 == target { $1=""; sub(/^[[:space:]]+/, ""); print; exit }'
+}
+
+is_session_command() {
+  local cmd="$1" executable script third
+  executable="$(printf '%s\n' "$cmd" | awk '{print $1}')"
+  script="$(printf '%s\n' "$cmd" | awk '{print $2}')"
+  third="$(printf '%s\n' "$cmd" | awk '{print $3}')"
+  case "${executable##*/}" in
+    claude|codex|codex-code-mode-host|grok|grok-cli) return 0 ;;
+    bash|sh|zsh|dash|ksh|node)
+      case "${script##*/}" in claude|codex|codex-code-mode-host|grok|grok-cli) return 0 ;; esac
+      ;;
+    env)
+      case "${script##*/}" in
+        claude|codex|codex-code-mode-host|grok|grok-cli) return 0 ;;
+        bash|sh|zsh|dash|ksh)
+          case "${third##*/}" in claude|codex|codex-code-mode-host|grok|grok-cli) return 0 ;; esac
+          ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
 has_live_owner() {
-  local pid="$1" hops=0 cmd tok
+  local pid="$1" hops=0 cmd
   while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ] && [ "$hops" -lt 24 ]; do
-    cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
-    for tok in $cmd; do
-      # Strip the directory with parameter expansion, not `basename`: argv is
-      # full of tokens like `-c`, which basename reads as a flag.
-      [ "${tok##*/}" = "claude" ] && return 0
-    done
-    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+    cmd="$(process_args "$pid" || true)"
+    is_session_command "$cmd" && return 0
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
     hops=$((hops + 1))
   done
   return 1
+}
+
+has_recorded_live_owner() {
+  local file="$1" owner_pid owner_started actual_started owner_state
+  [ -s "$file" ] || return 1
+  owner_pid="$(sed -n '1p' "$file" 2>/dev/null || true)"
+  owner_started="$(sed -n '2p' "$file" 2>/dev/null || true)"
+  case "$owner_pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$owner_pid" -gt 1 ] 2>/dev/null || return 1
+  [ -n "$owner_started" ] || return 1
+  kill -0 "$owner_pid" 2>/dev/null || return 1
+  owner_state="$(ps -o stat= -p "$owner_pid" 2>/dev/null | tr -d '[:space:]' || true)"
+  case "$owner_state" in *Z*|"") return 1 ;; esac
+  actual_started="$(ps -o lstart= -p "$owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)"
+  [ -n "$actual_started" ] && [ "$actual_started" = "$owner_started" ]
 }
 
 # Retire a lane's liveness markers without touching the rest of its directory.
@@ -109,7 +149,7 @@ has_live_owner() {
 # transcript, and an operator asking "what was that thing doing before it went
 # wrong" has nowhere else to look. Clear the markers; leave the evidence.
 clear_markers() {
-  rm -f "$1/lane.pid" "$1/runner.pid" "$1/runner.json"
+  rm -f "$1/lane.pid" "$1/runner.pid" "$1/runner.json" "$1/owner.pid"
 }
 
 # Stopping a lane means stopping its whole tree: the launcher, the runner
@@ -189,9 +229,9 @@ while IFS= read -r dir; do
     continue
   fi
 
-  if has_live_owner "$pid"; then
+  if has_live_owner "$pid" || has_recorded_live_owner "$dir/owner.pid"; then
     live=$((live + 1))
-    echo "keep     live     ${started:-?}  $label  [session $owner_session] (pid $pid)"
+    echo "keep     live     ${started:-?}  $label  [session $owner_session] (pid $pid; owner recorded/live)"
     continue
   fi
 

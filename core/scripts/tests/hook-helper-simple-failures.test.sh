@@ -87,6 +87,7 @@ pass "journal-precompact preserves exact stdout when the helper is absent"
 # the helper returns 127 or is absent.
 ROOT_DUE="$(make_root journal-due)"
 cp "$ROOT/.claude/hooks/journal-due.sh" "$ROOT_DUE/.claude/hooks/"
+cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$ROOT_DUE/.claude/hooks/"
 cp "$ROOT/core/scripts/hook-lib.sh" "$ROOT_DUE/core/scripts/"
 DUE_HELPER="$ROOT_DUE/core/scripts/session-journal.sh"
 DUE_LOG="$TMP/journal-due.calls"

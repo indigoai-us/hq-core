@@ -402,4 +402,28 @@ if [ "$(id -u)" != "0" ]; then
     || fail "unreadable meta.yaml must not look like an absent key (exit 0)"
 fi
 
+# ── Company rebind clears stale context before Work Mesh registration ─────────
+mkdir -p "$TMP/companies/Beta" "$TMP/companies/beta" "$TMP/core/hooks/SessionStart"
+cat > "$TMP/core/hooks/SessionStart/35-work-mesh-session-start.sh" <<'HOOK'
+#!/usr/bin/env bash
+meta="$HQ_ROOT/workspace/sessions/$CLAUDE_CODE_SESSION_ID/meta.yaml"
+cp "$meta" "$HQ_REGISTER_CAPTURE"
+HOOK
+chmod +x "$TMP/core/hooks/SessionStart/35-work-mesh-session-start.sh"
+mkdir -p "$TMP/workspace/sessions/sess-company-rebind"
+printf 'session_id: sess-company-rebind\ncompany_slug: acme\nproject: old-project\ntask: OLD-1\n' \
+  > "$TMP/workspace/sessions/sess-company-rebind/meta.yaml"
+capture="$TMP/work-mesh-registration-meta.yaml"
+HQ_HQ_SESSION_NO_CLI=1 HQ_REGISTER_CAPTURE="$capture" \
+  "$HS" --session-id sess-company-rebind set company_slug beta >/dev/null
+for _ in {1..50}; do
+  [ -f "$capture" ] && break
+  sleep 0.1
+done
+[ -f "$capture" ] || fail "company rebind did not reach Work Mesh registration hook"
+if grep -qE '^(project|task):' "$capture"; then
+  fail "Work Mesh registration saw stale project/task after company rebind: $(grep -E '^(project|task):' "$capture" | tr '\n' ' ')"
+fi
+pass "company rebind clears stale project/task before Work Mesh registration"
+
 echo "PASS: hq-session.sh ($(basename "$HS"))"

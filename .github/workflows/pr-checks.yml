@@ -246,6 +246,8 @@ jobs:
         run: bash core/scripts/tests/auto-conduct.test.sh
       - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
         run: bash core/scripts/tests/skill-script-refs.test.sh
+      - name: Shipped skills reference existing core scripts
+        run: bash core/scripts/tests/skill-core-script-references.test.sh
       - name: Deploy skill app route and multipart helper contracts
         run: bash core/scripts/tests/deploy-skill-app-route.test.sh
       - name: Deploy request helper rejects errors and supports app multipart uploads
@@ -254,6 +256,8 @@ jobs:
         run: bash core/scripts/tests/guardrails-check-app-api.test.sh
       - name: HQ feedback summary and verbatim report contract
         run: bash core/scripts/tests/hq-bug-skill.test.sh
+      - name: HQ feedback submit path avoids cleanup and fixed heredoc delimiters
+        run: bash core/scripts/tests/hq-bug-submit-no-rm.test.sh
       - name: /team-access heal contract (bare rows, hidden grants, DEV-3405, readback)
         run: bash core/scripts/tests/team-access-skill.test.sh
       - name: Pricing drift and refresh scripts (offline regression)
@@ -426,6 +430,8 @@ jobs:
         run: bash core/scripts/tests/agent-runtime-skill-metadata.test.sh
       - name: Agent bootstrap cloud sync guidance regression test
         run: bash core/scripts/tests/agent-bootstrap-cloud-sync.test.sh
+      - name: hq-heal sync classifier regression test
+        run: bash core/scripts/tests/hq-heal-sync-classifier.test.sh
       - name: Discover shallow clone fetch refspec regression test
         run: bash core/scripts/tests/discover-shallow-clone-fetch-all.test.sh
       - name: Execute-task Codex model source regression test
@@ -780,6 +786,8 @@ jobs:
         run: bash core/scripts/tests/hq-autocommit.test.sh
       - name: Autocommit failure context reaches the model behind its flag
         run: HQ_AUTOCOMMIT_TEST_PATH_CASE=failure-context bash core/scripts/tests/hq-autocommit.test.sh
+      - name: Autocommit commits never start automatic git maintenance
+        run: HQ_AUTOCOMMIT_TEST_PATH_CASE=auto-maintenance bash core/scripts/tests/hq-autocommit.test.sh
       - name: Handoff pointer is atomic and worktree-resumable
         run: bash core/scripts/tests/handoff-finalize-pointer.test.sh
       - name: Handoff finalizer never reports a failed commit as success
@@ -812,6 +820,8 @@ jobs:
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Handoff qmd reindex ownership (agent skip + laptop single-flight)
         run: bash core/scripts/tests/qmd-handoff-reindex.test.sh
+      - name: Keep the pinned CLI opt-out in hermetic tests
+        run: bash core/scripts/tests/hermetic-hq-no-update-check.test.sh
 
   # Aggregating gate. Green ONLY if BOTH legs above succeeded — a skipped or
   # cancelled leg reds this too, so the split cannot silently drop a suite.
@@ -866,6 +876,8 @@ jobs:
         run: bash core/scripts/tests/session-scope-capability.test.sh
       - name: Mandatory scope authorizer blocks cross-company access
         run: bash core/scripts/tests/mandatory-scope-authorizer.test.sh
+      - name: Directory symlink scope for Grep, Glob, and Bash
+        run: bash core/scripts/tests/scope-authorizer-symlink-dirs.test.sh
       - name: Secret detector scans Write/Edit/MultiEdit/NotebookEdit content
         run: bash core/scripts/tests/detect-secrets-file-tools.test.sh
       - name: Secret detector has no command-keyword escape; token boundary holds
@@ -958,6 +970,8 @@ jobs:
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Rebuild qmd collections after sync
         run: bash core/scripts/tests/qmd-reindex-after-sync.test.sh
+      - name: Keep the pinned CLI opt-out in hermetic tests
+        run: bash core/scripts/tests/hermetic-hq-no-update-check.test.sh
       - name: Index real-directory company knowledge
         run: bash core/scripts/tests/rebuild-company-knowledge-index.test.sh
       - name: Index orchestrator state
@@ -1091,10 +1105,14 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: audit-log append creates its metrics dir on a clean tree
         run: bash core/scripts/tests/audit-log-mkdir.test.sh
       - name: release-guidance command references resolve
         run: bash core/scripts/tests/skill-command-refs.test.sh
+      - name: Merged write-guard shadow is flag-off inert and record-only
+        run: bash core/scripts/tests/merged-write-guard-shadow.test.sh
 
   core-write-protection:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1107,6 +1125,8 @@ jobs:
           node-version: '22'
       - name: Install pinned hq CLI for forwarded scaffold scripts
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: Company skill mirrors use a slug only behind the hq-flags gate
+        run: bash core/scripts/tests/auto-mirror-company-skill.test.sh
       - name: Agent secret reveal guard covers Bash and Codex PreToolUse
         run: bash core/scripts/tests/block-agent-secrets-reveal.test.sh
       - name: Bash autocommit sweep stays opt-in, safe, and bounded
@@ -1140,6 +1160,10 @@ jobs:
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
+      - name: SessionStart refreshes stale vault access manifests without waiting
+        run: bash core/scripts/tests/refresh-vault-access-session-start.test.sh
+      - name: Master-hook output writes preserve deny decisions and plain bytes
+        run: bash core/scripts/tests/master-hook-output-write-bound.test.sh
       - name: Gated hook IDs have profile coverage (US-157)
         run: bash core/scripts/tests/gated-hook-profile-coverage.test.sh
       - name: Session title mode and transcript regressions
@@ -1334,6 +1358,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            core/core.yaml
+            core/scripts/cli-hosted.yaml
       - name: Install pinned hq CLI for forwarded scaffold scripts
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: portable-lib
@@ -1403,6 +1431,10 @@ jobs:
         env:
           BASH_BIN: /bin/bash
         run: /bin/bash core/scripts/tests/import-context-redact.test.sh
+      - name: Mandatory scope authorizer globstar fallback under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/mandatory-scope-authorizer.test.sh
       - name: exec-bit index
         run: bash core/scripts/tests/exec-bit-all-scripts.test.sh
       - name: hook-gate path augment
@@ -1619,6 +1651,8 @@ jobs:
             echo "=== $t ==="
             bash "$t"
           done
+      - name: Detached handoff launcher platform contract
+        run: bash core/scripts/tests/handoff-launcher.test.sh
       - name: SessionStart detached register-project helper failure contract
         run: bash core/scripts/tests/register-project.test.sh
 

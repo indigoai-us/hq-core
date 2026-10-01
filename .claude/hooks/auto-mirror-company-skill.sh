@@ -9,9 +9,8 @@
 # Worker-nested skills (companies/{co}/workers/{worker}/skills/) are intentionally
 # NOT mirrored — they keep their existing /run {worker} {skill} access path.
 #
-# Idempotent: matching symlink → no-op; mismatching symlink → log + skip; missing
-# manifest prefix → log + skip (prefix is auto-seeded by /newcompany; lazy users
-# get a stderr nudge rather than a hard failure).
+# Idempotent: matching symlink → no-op; mismatching symlink → log + skip. An
+# empty manifest prefix can use the company slug when the hq-flags gate is on.
 #
 # Trigger: PostToolUse on Write
 
@@ -26,6 +25,7 @@ if [[ -z "$FILE_PATH" ]]; then
 fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 
 if [[ "$FILE_PATH" == /* ]]; then
   case "$FILE_PATH" in
@@ -60,6 +60,11 @@ else
   exit 0
 fi
 
+if [[ ! "$CO" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,63}$ ]]; then
+  echo "auto-mirror: unsafe company slug — skipping mirror" >&2
+  exit 0
+fi
+
 # Manifest prefix lookup via yq (the same YAML engine the registry hooks use).
 # Missing yq degrades exactly like the old missing-python path: empty prefix,
 # stderr nudge, skip.
@@ -67,7 +72,25 @@ PREFIX=$(cd "$PROJECT_DIR" && yq -r ".companies.\"$CO\".prefix // \"\"" companie
 [ "$PREFIX" = "null" ] && PREFIX=""
 
 if [[ -z "$PREFIX" ]]; then
-  echo "auto-mirror: no prefix in manifest for company '$CO' — skipping mirror for $REL" >&2
+  HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)"
+  export HQ_CLI_BIN
+  FLAG_READER="$HOOK_ROOT/.claude/hooks/auto-mirror-company-skill-flag.cjs"
+  FLAG_ENABLED="$(node "$FLAG_READER")" || FLAG_ENABLED=false
+  if [[ "$FLAG_ENABLED" != "true" ]]; then
+    echo "auto-mirror: no prefix in manifest for company '$CO' — skipping mirror for $REL" >&2
+    exit 0
+  fi
+  PREFIX="$CO"
+fi
+
+# Prefixes and source names become one path segment in Claude's one-level
+# skill discovery tree. Reject unsafe values before constructing a mirror path.
+if [[ ! "$PREFIX" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,63}$ ]]; then
+  echo "auto-mirror: unsafe prefix — skipping mirror" >&2
+  exit 0
+fi
+if [[ ! "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,63}$ ]]; then
+  echo "auto-mirror: unsafe skill name — skipping mirror" >&2
   exit 0
 fi
 

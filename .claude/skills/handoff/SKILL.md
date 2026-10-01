@@ -3,7 +3,7 @@ name: handoff
 description: Preserve session state for a follow-up agent with handoff files and commits.
 model: sonnet
 effort: low
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(nohup:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(bash core/scripts/handoff-open-steps.sh:*), Bash(core/scripts/handoff-finalize.sh:*), Bash(nohup bash core/scripts/handoff-post.sh:*), Bash, AskUserQuestion, Task, Agent, Skill
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(bash core/scripts/handoff-open-steps.sh:*), Bash(bash core/scripts/handoff-knowledge-commit.sh:*), Bash(core/scripts/handoff-finalize.sh:*), Bash(bash core/scripts/hq-detach.sh:*), Bash, AskUserQuestion, Task, Agent, Skill
 ---
 
 # Fresh Session Continuity
@@ -16,41 +16,20 @@ Write a thread file + `handoff.json` with minimal foreground token cost. Keep sh
 
 ## Process
 
-### 1. Launch concurrent bg git commit for personal/core knowledge repos
+### 1. Commit only session-scoped personal/core knowledge changes
+
+Before saving knowledge, write the exact relative paths intentionally changed by this session into a unique JSON changeset file. Do not scan repository status to expand this list. Use the same changeset file in Step 3.
 
 ```bash
-nohup bash -c '
-for knowledge_path in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
-  if [ -L "$knowledge_path" ]; then
-    case "$knowledge_path" in
-      companies/*/knowledge)
-        echo "INVALID-LINK: $knowledge_path is a symlink; company knowledge must be a plain directory synced through the company vault"
-        continue
-        ;;
-    esac
-    # Invalid legacy layout: never write through the link, but never lose the
-    # dirty state silently either — record it so the handoff surfaces it.
-    repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
-    hq_repo=$(git rev-parse --show-toplevel 2>/dev/null) || hq_repo=""
-    [ "$repo_dir" = "$hq_repo" ] && continue  # in-tree link (e.g. package mount)
-    dirty=$(cd "$repo_dir" && git status --porcelain)
-    [ -z "$dirty" ] && continue
-    echo "INVALID-DIRTY: $knowledge_path is a legacy knowledge symlink to $repo_dir with uncommitted changes — NOT auto-committed; run hq reindex to materialize it, then commit, before archiving this session"
-    continue
-  fi
-  case "$knowledge_path" in
-    companies/*/knowledge) continue ;;  # company knowledge is a plain synced directory
-  esac
-  [ -d "$knowledge_path/.git" ] || continue
-  repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
-  dirty=$(cd "$repo_dir" && git status --porcelain)
-  [ -z "$dirty" ] && continue
-  (cd "$repo_dir" && git add -A && git commit -m "checkpoint: auto-commit before handoff") \
-    && echo "OK: $repo_dir" || echo "ERR: $repo_dir"
-done
-' > /tmp/handoff-git-bg.log 2>&1 &
-echo $! > /tmp/handoff-git-bg.pid
+mkdir -p workspace/threads/.handoff-tmp
+CHANGESET_TMP=$(mktemp workspace/threads/.handoff-tmp/.handoff-changeset-XXXXXX)
+cat > "$CHANGESET_TMP" <<'CHANGESET_JSON'
+["core/knowledge/public/<repo>/<file-you-changed>"]
+CHANGESET_JSON
+bash core/scripts/handoff-knowledge-commit.sh --files-touched-json-file "$CHANGESET_TMP"
 ```
+
+Include only files this session intentionally changed. The helper commits only listed files inside personal/core knowledge repositories and leaves unrelated staged or dirty files untouched. It does not process company knowledge, which remains a plain synced directory.
 
 ### 2. Collect learnings (do NOT invoke /learn)
 
@@ -89,23 +68,16 @@ Pass the resolved project directory that owns this session's journal. The helper
 ### 3. Call handoff-finalize.sh (synchronous, one tool call)
 
 `core/scripts/handoff-finalize.sh` handles everything that must be durable before session end:
-- Waits for bg git loop (Step 1)
+- Receives the same explicit session changeset used by the knowledge commit helper (Step 1)
 - Writes thread file + `handoff.json` + `workspace/threads/{thread}.changeset.json`
 - Regenerates thread INDEX + recent.md + orchestrator INDEX via dedicated bash scripts (`rebuild-threads-index.sh`, `rebuild-orchestrator-index.sh`) — zero Claude context
 - Commits HQ via explicit paths: thread/index files plus the validated `--files-touched-json` paths (never `git add -A`)
 - Classifies noisy HQ root status via `hq core hq-status-summary` so baseline local files do not become accidental handoff scope
 - Schedules ownership-aware qmd reindex via `qmd-reindex-bg.sh` (shared with post): agent boxes hard-skip (`skipped-agent`, zero qmd mutation — managed timer/post-sync own freshness); laptops use one non-blocking single-flight cleanup→update→embed
 
-First write the changeset to a workspace temp file, then pass its path — never inline the changeset into `--files-touched-json`. On Windows Git Bash the OS caps a command line at ~32KB (~8KB under cmd.exe), and a large changeset rides argv through several hops (status-summary, jq) and aborts the handoff. The file form keeps it off argv. This mirrors the learnings temp-file pattern from Step 2. Use `mktemp` under `workspace/threads/.handoff-tmp/` (gitignored, exists on Git Bash — do **not** use `/tmp`, which some Windows setups lack; do **not** use a slug-only deterministic path under `workspace/threads/` — concurrent sessions collide and unignored temps flip `git.dirty`). Clean it up whether the finalizer succeeds or fails, and propagate a non-zero finalize exit status:
+Reuse the `CHANGESET_TMP` file prepared in Step 1 and pass its path — never inline the changeset into `--files-touched-json`. On Windows Git Bash the OS caps a command line at ~32KB (~8KB under cmd.exe), and a large changeset rides argv through several hops (status-summary, jq) and aborts the handoff. The file form keeps it off argv. This mirrors the learnings temp-file pattern from Step 2. Use `mktemp` under `workspace/threads/.handoff-tmp/` (gitignored, exists on Git Bash — do **not** use `/tmp`, which some Windows setups lack; do **not** use a slug-only deterministic path under `workspace/threads/` — concurrent sessions collide and unignored temps flip `git.dirty`). Clean it up whether the finalizer succeeds or fails, and propagate a non-zero finalize exit status:
 
 ```bash
-# Unique path under the gitignored handoff tmp dir — never slug-only beside threads.
-mkdir -p workspace/threads/.handoff-tmp
-CHANGESET_TMP=$(mktemp workspace/threads/.handoff-tmp/.handoff-changeset-XXXXXX)
-cat > "$CHANGESET_TMP" <<'CHANGESET_JSON'
-[{"...json array of relative paths edited..."}]
-CHANGESET_JSON
-
 rc=0
 core/scripts/handoff-finalize.sh \
   --title "Handoff: {one-line title}" \
@@ -166,10 +138,10 @@ The script emits a single JSON line to stdout:
 ### 4. Launch handoff-post.sh detached (mechanical cleanup only)
 
 ```bash
-nohup bash core/scripts/handoff-post.sh \
+bash core/scripts/hq-detach.sh --handoff --pidfile /tmp/handoff-post.pid --logfile /tmp/handoff-post.log -- \
+  bash core/scripts/handoff-post.sh \
   "{thread_path from Step 3}" \
-  "{learnings_file path from Step 2}" \
-  > /tmp/handoff-post.log 2>&1 &
+  "{learnings_file path from Step 2}"
 ```
 
 `handoff-post.sh` runs detached and:
@@ -263,7 +235,7 @@ Skipped paths: {skipped_paths count, if any}
 Baseline noise: {baseline_noise_count} unrelated/baseline status entries
 
 Background work dispatched:
-  - handoff-post.sh PID {from nohup} → /tmp/handoff-post.log
+  - handoff-post.sh PID {from /tmp/handoff-post.pid} → /tmp/handoff-post.log
   - /learn → {Codex spawn_agent | Claude Task/Agent | synchronous Skill | durably pending}
   - /document-release → {Codex spawn_agent | Claude Task/Agent | synchronous Skill | durably pending | document-release: skipped (skill not installed)}
   - qmd helper (`skipped-agent` | `skipped` | worker pid) → /tmp/qmd-handoff.log
@@ -299,7 +271,7 @@ Fresh context = no accumulated noise, clean slate for complex tasks, follows Ral
 - **Changeset owns scope** — when HQ root status is noisy, scope comes from `--files-touched-json` and the generated changeset, not from whole-repo `git status`.
 - **Context diet** — this skill should emit <15K tokens of tool output on a typical session. If you find yourself Reading more than 3 files, stop and rethink.
 - **Session handoffs execute directly** — skip any planning-mode detour.
-- **Commit flow:** personal/core knowledge repo commits run in bg (Step 1), company knowledge syncs through its vault, and `handoff-finalize.sh` commits the HQ changes using explicit paths. Never `git add -A` from this skill.
+- **Commit flow:** personal/core knowledge repos commit only the explicit session changeset through `handoff-knowledge-commit.sh` (Step 1), company knowledge syncs through its vault, and `handoff-finalize.sh` commits the HQ changes using explicit paths. Never `git add -A` from this skill.
 
 ## See also
 

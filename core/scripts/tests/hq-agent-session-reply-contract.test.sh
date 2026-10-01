@@ -572,6 +572,80 @@ and then some afterthought'
   exit "$FAILED"
 ) || FAILED=1
 
+# ── typed session outcome contract ─────────────────────────────────────────
+(
+  load_helpers
+
+  # A complete outcome carries no required reason; non-success outcomes do.
+  SESSION_DISPOSITION=""; SESSION_TEXT=""; SESSION_OUTCOME=""; SESSION_OUTCOME_REASON=""
+  if session_reply_contract_apply '{"action":"reply","text":"finished","outcome":"complete"}' \
+     && [ "$SESSION_DISPOSITION" = "reply" ] && [ "$SESSION_TEXT" = "finished" ] \
+     && [ "$SESSION_OUTCOME" = "complete" ] && [ -z "$SESSION_OUTCOME_REASON" ]; then
+    pass "complete outcome is accepted"
+  else
+    fail "complete outcome was rejected or changed the reply fields"
+  fi
+
+  for outcome in blocked needs_input; do
+    SESSION_DISPOSITION=""; SESSION_TEXT=""; SESSION_OUTCOME=""; SESSION_OUTCOME_REASON=""
+    if session_reply_contract_apply "{\"action\":\"reply\",\"text\":\"waiting\",\"outcome\":\"$outcome\",\"reason\":\"owner decision required\"}" \
+       && [ "$SESSION_OUTCOME" = "$outcome" ] \
+       && [ "$SESSION_OUTCOME_REASON" = "owner decision required" ]; then
+      pass "$outcome outcome and reason are accepted"
+    else
+      fail "$outcome outcome was rejected or its reason was lost"
+    fi
+  done
+
+  for bad in \
+    '{"action":"reply","text":"finished","outcome":"other"}' \
+    '{"action":"reply","text":"waiting","outcome":"blocked"}' \
+    '{"action":"reply","text":"waiting","outcome":"needs_input","reason":"   "}' \
+    '{"action":"reply","text":"waiting","outcome":"blocked","reason":"decision","extra":1}' ; do
+    if session_reply_contract_apply "$bad"; then
+      fail "accepted invalid outcome payload: $bad"
+    fi
+  done
+  long_reason="$(printf '%0510d' 0 | tr '0' x)"
+  long_payload="$(jq -cn --arg reason "$long_reason" '{action:"reply",text:"waiting",outcome:"blocked",reason:$reason}')"
+  if session_reply_contract_apply "$long_payload"; then
+    fail "accepted an outcome reason longer than 500 characters"
+  else
+    pass "outcome reason is bounded to 500 characters"
+  fi
+  pass "unknown, reasonless, blank-reason, and extra-field outcomes are rejected"
+
+  SESSION_DISPOSITION=""; SESSION_TEXT=""; SESSION_OUTCOME="stale"; SESSION_OUTCOME_REASON="stale"
+  if session_reply_contract_apply '{"action":"reply","text":"ordinary reply"}' \
+     && [ "$SESSION_DISPOSITION" = "reply" ] && [ "$SESSION_TEXT" = "ordinary reply" ] \
+     && [ -z "$SESSION_OUTCOME" ] && [ -z "$SESSION_OUTCOME_REASON" ]; then
+    pass "reply without outcome preserves existing behavior and clears optional fields"
+  else
+    fail "reply without outcome changed existing behavior"
+  fi
+
+  SESSION_OUTCOME="blocked"; SESSION_OUTCOME_REASON="job cannot continue"
+  base='{"contractVersion":1,"disposition":"reply","text":"waiting","artifacts":[]}'
+  if response="$(session_reply_contract_add_outcome_fields "$base")" \
+     && printf '%s' "$response" | jq -e '.outcome == "blocked" and .outcomeReason == "job cannot continue" and .disposition == "reply"' >/dev/null; then
+    pass "session response includes the typed outcome and reason fields"
+  else
+    fail "session response did not carry the typed outcome"
+  fi
+
+  SESSION_OUTCOME=""; SESSION_OUTCOME_REASON=""
+  response="$(session_reply_contract_add_outcome_fields "$base")"
+  [ "$response" = "$base" ] \
+    && pass "response without outcome remains byte-identical" \
+    || fail "response without outcome changed"
+
+  SESSION_SH="$SCRIPT_DIR/../hq-agent-session.sh"
+  grep -Fq 'resp="$(session_reply_contract_add_outcome_fields "$resp")"' "$SESSION_SH" \
+    && pass "entrypoint adds the parsed outcome fields to its response envelope" \
+    || fail "entrypoint does not add typed outcome fields to the response envelope"
+  exit "$FAILED"
+) || FAILED=1
+
 # ── status notes ────────────────────────────────────────────────────────────
 (
   load_helpers

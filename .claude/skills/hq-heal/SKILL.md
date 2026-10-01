@@ -28,7 +28,7 @@ The first argument shapes how the error is collected. Everything after the flag 
 
 If `$ARGUMENTS` is empty, ask: *"Paste the error message you're seeing (or describe what went wrong)."* Wait for response, treat that as the error text.
 
-If `--last-session`, run a Python streaming extract that scans the last 200 lines of the most recently modified JSONL for any of these signals: `Prompt is too long`, `Conversation too long`, `Error during compaction`, `Autocompact is thrashing`, `permission denied`, `EACCES`, `hook .* failed`, `block-hq-root-git-mutation`, `MCP server .* failed`, `qmd: error`, `reindex.sh.*abort` (legacy `master-sync.sh.*abort`). Capture the matched line plus 2 lines of surrounding context. Truncate to 2 KB.
+If `--last-session`, run a Python streaming extract that scans the last 200 lines of the most recently modified JSONL for any of these signals: `Prompt is too long`, `Conversation too long`, `Error during compaction`, `Autocompact is thrashing`, `permission denied`, `EACCES`, `hook .* failed`, `block-hq-root-git-mutation`, `MCP server .* failed`, `qmd: error`, `reindex.sh.*abort` (legacy `master-sync.sh.*abort`), `FILES_PRESIGN_STALE_UPLOAD_FORBIDDEN`, `resend_full_scheduled`, or `manifest.*throttled`. Capture the matched line plus 2 lines of surrounding context. Truncate to 2 KB.
 
 Store the resulting text in a local variable called `ERR`.
 
@@ -40,7 +40,7 @@ Unless `--class` is set, walk the pattern table top-to-bottom; first match wins.
 |---|---|
 | `autocompact` | `Autocompact is thrashing`, `Prompt is too long`, `Conversation too long`, `Error during compaction`, `context refilled to the limit` |
 | `hook` | `hook .* failed`, `PreToolUse .* blocked`, `PostToolUse hook`, `hook-gate.sh`, `non-zero exit from hook` |
-| `sync` | `hq sync .* conflict`, `conflictPath`, `resolve-conflicts`, `hq-sync.*error`, `originalPath.*conflict` |
+| `sync` | `hq sync .* conflict`, `conflictPath`, `resolve-conflicts`, `hq-sync.*error`, `originalPath.*conflict`, `FILES_PRESIGN_STALE_UPLOAD_FORBIDDEN`, `resend_full_scheduled`, `manifest.*throttled` |
 | `access` | `caller lacks '.*' on '.*'`, `403 Forbidden`, `Access denied`, `AccessDenied`, `no such key`, `NoSuchKey`, `not found` (when the path is under `companies/`) |
 | `denylist` | `Read access blocked`, `denied by settings`, `~/.ssh`, `~/.aws/credentials`, `~/.zshrc`, `permission rule .* deny` |
 | `mcp` | `MCP server .* (failed|disconnected|timeout)`, `Error connecting to MCP`, `tool .* not found` (when the tool name matches a known MCP) |
@@ -105,11 +105,24 @@ Fix proposals:
    Then confirm `command -v hq` and `HQ_NO_UPDATE_CHECK=1 hq --version`. If pnpm is missing, install pnpm first. An explicit version pin (`npm install -g @indigoai-us/hq-cli@<x.y.z>`) is the only npm fallback; `@latest` is never the restore command.
 
 #### `sync`
-Checks:
+
+Branch the recovery on the actual sync signal. First inspect the conflict ledger:
+
 - `[ -f workspace/sync/conflicts.json ] && wc -l workspace/sync/conflicts.json`
 - `ls workspace/sync/conflicts/ 2>/dev/null | head`
 
-Fix proposal: invoke `/resolve-conflicts`. Surface the count of pending conflicts so the user sees scope. Apply the *learned rule* from charter: keep local when `originalPath` is a symlink or an auto-generated artifact (registries, INDEX).
+When the ledger contains conflict paths, report the count and sample paths, then
+propose `/resolve-conflicts`. Apply the *learned rule* from charter: keep local
+when `originalPath` is a symlink or an auto-generated artifact (registries,
+INDEX).
+
+`FILES_PRESIGN_STALE_UPLOAD_FORBIDDEN`, `resend_full_scheduled`, and
+`manifest.*throttled` can occur without any conflict-ledger row. In that case,
+do not propose `/resolve-conflicts` as the repair. Use `/hq-sync` to inspect the
+`all-complete` summary and each company's status; `partial` plus `transient`
+diagnostics identifies retryable interruption. For a transient network result,
+tell the user to run `/hq-sync` again after connectivity recovers. Report any
+remaining non-complete company status instead of claiming success.
 
 #### `access`
 

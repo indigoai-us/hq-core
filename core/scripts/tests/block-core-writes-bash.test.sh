@@ -114,6 +114,8 @@ run 0 'cd /tmp/worker-e2e && mkdir -p core/workers/dev-team/backend/skills' \
   'relative core under an unrelated cwd allowed'
 run 0 'hq core checkpoint --summary "mkdir -p core/workers/dev-team"' \
   'protected path only in a summary argument allowed'
+run 0 'hq core checkpoint --file "core/" --file ".claude/"' \
+  'protected paths passed as checkpoint file values allowed'
 
 # --- Allowed: benign commands stay clean (2026-06-20 stray-warning regression).
 # These never touch a protected path but are the shapes the old esc()/'\/' bug

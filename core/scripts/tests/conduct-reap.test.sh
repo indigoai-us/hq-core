@@ -62,6 +62,38 @@ for _ in $(seq 1 40); do [ -s "$TMP/owned.pid" ] && break; sleep 0.1; done
 owned_pid="$(cat "$TMP/owned.pid")"
 lock owned "$owned_pid"
 
+# --- fixture: a detached run with a recorded live owner ------------------------
+# The lane is started in a new process session, so its process ancestry cannot
+# reach the still-running session that dispatched it. owner.pid is the producer
+# record the reaper must consult instead.
+LIVE_OWNER_DIR="$RUNNER_DIR/live-owner-session/detached"
+mkdir -p "$LIVE_OWNER_DIR"
+HQ_ROOT="$TMP" bash "$SRC_ROOT/core/scripts/hq-detach.sh" \
+  --pidfile "$LIVE_OWNER_DIR/lane.pid" --logfile "$TMP/detached.log" -- sleep 353
+live_owner_lane_pid="$(cat "$LIVE_OWNER_DIR/lane.pid")"
+PIDS+=("$live_owner_lane_pid")
+owner_started="$(ps -o lstart= -p "$owner_pid" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+printf '%s\n%s\n' "$owner_pid" "$owner_started" > "$LIVE_OWNER_DIR/owner.pid"
+grep -Fq -- '--owner-pidfile "$RUN_DIR/owner.pid"' "$SRC_ROOT/.claude/skills/_shared/lane-dispatch-protocol.md" || fail "lane producer does not request owner pid capture"
+
+# --- fixture: recorded owner is gone -------------------------------------------
+DEAD_OWNER_DIR="$RUNNER_DIR/dead-owner-session/detached"
+mkdir -p "$DEAD_OWNER_DIR"
+HQ_ROOT="$TMP" bash "$SRC_ROOT/core/scripts/hq-detach.sh" \
+  --pidfile "$DEAD_OWNER_DIR/lane.pid" --logfile "$TMP/dead-owner.log" -- sleep 359
+dead_owner_lane_pid="$(cat "$DEAD_OWNER_DIR/lane.pid")"
+PIDS+=("$dead_owner_lane_pid")
+printf '99999999\nnever-started\n' > "$DEAD_OWNER_DIR/owner.pid"
+
+# --- fixture: owner PID was reused for a different process ---------------------
+REUSED_OWNER_DIR="$RUNNER_DIR/reused-owner-session/detached"
+mkdir -p "$REUSED_OWNER_DIR"
+HQ_ROOT="$TMP" bash "$SRC_ROOT/core/scripts/hq-detach.sh" \
+  --pidfile "$REUSED_OWNER_DIR/lane.pid" --logfile "$TMP/reused-owner.log" -- sleep 367
+reused_owner_lane_pid="$(cat "$REUSED_OWNER_DIR/lane.pid")"
+PIDS+=("$reused_owner_lane_pid")
+printf '%s\n%s-reused\n' "$owner_pid" "$owner_started" > "$REUSED_OWNER_DIR/owner.pid"
+
 # --- fixture: a lane with no session anywhere in its chain ---------------------
 # The launcher must exit, not merely detach: while it lives, the lane's ppid
 # points at this test, whose own chain reaches a real session, and the
@@ -123,6 +155,9 @@ lock stale 999999
 # --- report mode must classify all three and change nothing --------------------
 out="$("${REAP[@]}" --min-age 0)"
 echo "$out" | grep -q "keep     live .*owned" || fail "a lane with a live owning session was not kept: $out"
+echo "$out" | grep -q "keep     live .*live-owner-session/detached" || fail "a detached lane with a recorded live owner was not kept: $out"
+echo "$out" | grep -q "would stop    orphan .*dead-owner-session/detached" || fail "a detached lane with a dead recorded owner was not marked orphaned: $out"
+echo "$out" | grep -q "would stop    orphan .*reused-owner-session/detached" || fail "a detached lane with a reused owner PID was not marked orphaned: $out"
 echo "$out" | grep -q "would stop    orphan .*orphan" || fail "an orphan with no owning session was not flagged: $out"
 echo "$out" | grep -q "would stop    orphan .*nested" \
   || fail "a lane whose living parent is itself orphaned was not flagged: $out"
@@ -150,5 +185,11 @@ kill -0 "$owned_pid" 2>/dev/null || fail "--apply --kill stopped a lane whose ow
 kill -0 "$rooted_launcher" 2>/dev/null && fail "--apply --kill left the lane's launcher running"
 kill -0 "$rooted_runner" 2>/dev/null && fail "--apply --kill left the runner beneath the launcher running"
 [ -f "$RUNNER_DIR/owned/runner.json" ] || fail "--apply --kill cleared a live lane's marker"
+kill -0 "$live_owner_lane_pid" 2>/dev/null || fail "--apply --kill stopped a detached lane whose recorded owner was alive"
+[ -f "$LIVE_OWNER_DIR/owner.pid" ] || fail "--apply --kill cleared the live owner marker"
+kill -0 "$dead_owner_lane_pid" 2>/dev/null && fail "--apply --kill left a detached lane with a dead recorded owner running"
+kill -0 "$reused_owner_lane_pid" 2>/dev/null && fail "--apply --kill left a detached lane with a reused owner PID running"
+[ ! -e "$DEAD_OWNER_DIR/owner.pid" ] || fail "--apply --kill left the dead owner's marker"
+[ ! -e "$REUSED_OWNER_DIR/owner.pid" ] || fail "--apply --kill left the reused owner's marker"
 
 echo "conduct-reap.test: PASS"

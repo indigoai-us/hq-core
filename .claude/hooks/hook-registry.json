@@ -629,6 +629,17 @@
             "runner": "source"
           }
         ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|apply_patch",
+        "hooks": [
+          {
+            "id": "merged-write-guard-shadow",
+            "script": ".claude/hooks/merged-write-guard-shadow.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -1019,6 +1030,12 @@
             "runner": "source"
           },
           {
+            "id": "refresh-vault-access",
+            "script": "core/scripts/refresh-vault-access-session-start.sh",
+            "timeout": 5,
+            "gated": true
+          },
+          {
             "id": "migrate-policy-triggers",
             "script": "core/scripts/migrate-policy-triggers.sh",
             "timeout": 60,
@@ -1108,6 +1125,17 @@
             "id": "hq-monitor-session-start",
             "script": ".claude/hooks/hq-monitor-session-start.sh",
             "timeout": 5,
+            "gated": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "id": "merged-write-guard-shadow-refresh",
+            "script": ".claude/hooks/merged-write-guard-shadow-refresh.sh",
+            "timeout": 30,
             "gated": true
           }
         ]

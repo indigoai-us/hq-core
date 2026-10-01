@@ -254,10 +254,18 @@ cmd_set() {
   local prev=""
   prev="$(cmd_get "$key" 2>/dev/null || true)"
 
+  # A company switch invalidates the old project/task; clear both in the same
+  # metadata rewrite before the company bind can register with Work Mesh.
+  local clear_project_task=0
+  if [ "$key" = "company_slug" ] && [ -n "$prev" ] && [ "$value" != "$prev" ]; then
+    clear_project_task=1
+  fi
+
   local tmp
   tmp="$(mktemp)"
-  awk -v k="$key" -v v="$value" '
+  awk -v clear_project_task="$clear_project_task" -v k="$key" -v v="$value" '
     BEGIN { found = 0 }
+    clear_project_task && ($1 == "project:" || $1 == "task:") { next }
     $1 == k":" { print k": " v; found = 1; next }
     { print }
     END { if (!found) print k": " v }

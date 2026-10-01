@@ -155,6 +155,8 @@ MARK="$TMP/retry-mark"
 : >"$MARK"
 cat > "$TMP/sleeper.sh" <<'EOF'
 #!/usr/bin/env bash
+# Delay the child marker so the test exercises detached startup ordering.
+sleep 1
 printf 'start\n' >> "${HQ_RETRY_MARK:?}"
 printf 'retry-out\n'
 sleep 3
@@ -178,9 +180,16 @@ run_start
 t1=$(date +%s)
 [ $((t1 - t0)) -le 2 ] || fail "session start waited on retry ($((t1 - t0))s)"
 [ -d "$PENDING_DIR/acme.lock" ] || fail "retry lock was not taken"
+waited=0
+starts=0
+while [ "$waited" -lt 100 ]; do
+  starts=$(grep -c '^start$' "$MARK" || true)
+  [ "$starts" -ge 1 ] && break
+  sleep 0.1
+  waited=$((waited + 1))
+done
+[ "$starts" -ge 1 ] || fail "timed out waiting for the detached retry to start: $starts"
 run_start
-starts=$(grep -c '^start$' "$MARK" || true)
-[ "$starts" = "1" ] || fail "second session start launched another retry: $starts"
 waited=0
 while [ "$waited" -lt 8 ]; do
   if grep -q '^done$' "$MARK" && [ ! -d "$PENDING_DIR/acme.lock" ]; then
@@ -191,6 +200,8 @@ while [ "$waited" -lt 8 ]; do
 done
 grep -q '^done$' "$MARK" || fail "detached retry did not finish: $(cat "$MARK")"
 [ ! -d "$PENDING_DIR/acme.lock" ] || fail "retry lock was not released"
+starts=$(grep -c '^start$' "$MARK" || true)
+[ "$starts" = "1" ] || fail "second session start launched another retry: $starts"
 grep -q 'retry-out' "$PENDING_DIR/acme.log" || fail "retry log missing stdout: $(cat "$PENDING_DIR/acme.log" 2>/dev/null || true)"
 
 # The registered SessionStart caller launches the helper in a detached child.

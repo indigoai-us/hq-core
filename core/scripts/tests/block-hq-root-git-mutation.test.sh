@@ -287,6 +287,12 @@ DEEP_GIT_COMMAND='git push origin main'
 for _ in 1 2 3 4 5 6 7 8 9; do
   DEEP_GIT_COMMAND="bash -c $(printf '%q' "$DEEP_GIT_COMMAND")"
 done
+strict_expect 'flag-on ssh remote git mutation is blocked' 2 "$TMP" \
+  "ssh deploy@example.invalid 'git push origin main'" true
+strict_expect 'flag-on ssh remote nested shell mutation is blocked' 2 "$TMP" \
+  "ssh -p 2222 deploy@example.invalid \"bash -c 'git push origin main'\"" true
+strict_expect 'flag-on ssh quoted checkpoint prose remains allowed' 0 "$TMP" \
+  "ssh deploy@example.invalid \"hq core checkpoint --summary 'git push is only prose'\"" true
 strict_expect 'flag-on too-deep wrapper fails closed' 2 "$TMP" "$DEEP_GIT_COMMAND" true
 
 strict_expect 'flag-off wrapper keeps main behavior' 0 "$TMP" \

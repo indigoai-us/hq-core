@@ -29,6 +29,7 @@ make_root() {
   cp "$ROOT/core/scripts/hook-lib.sh" "$fr/core/scripts/hook-lib.sh"
   cp "$ROOT/core/scripts/session-journal.sh" "$fr/core/scripts/session-journal.sh"
   cp "$HOOKS/journal-due.sh" "$fr/.claude/hooks/journal-due.sh"
+  cp "$HOOKS/hook-timeout-probe.sh" "$fr/.claude/hooks/hook-timeout-probe.sh"
   cp "$HOOKS/auto-checkpoint-trigger.sh" "$fr/.claude/hooks/auto-checkpoint-trigger.sh"
   chmod +x "$fr/core/scripts"/*.sh "$fr/.claude/hooks"/*.sh
   git -C "$fr" init -q 2>/dev/null

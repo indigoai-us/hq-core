@@ -594,7 +594,13 @@ hqad_prefilter_payload_fields() {
 # (tested: hook-path-resolution.test.sh). We still guard the shape first.
 hqad_classify_command() {
   local command="$1"
-  # Only ever eval a command of the expected shape: `bash "<abs>/…/*.sh" …`.
+  # The canonical SessionStart registration has one literal env prefix so
+  # Bash neutralizes the host's BASH_ENV before its startup-file phase.
+  # Strip only that exact prefix; all command parsing stays on the established
+  # `bash "<abs>/…/*.sh" …` shape below.
+  case "$command" in
+    "env BASH_ENV=/dev/null bash "*) command="${command#env BASH_ENV=/dev/null }" ;;
+  esac
   case "$command" in
     bash\ *) ;;
     *) return 0 ;;

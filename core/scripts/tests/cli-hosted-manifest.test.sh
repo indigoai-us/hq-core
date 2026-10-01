@@ -278,6 +278,29 @@ CATALOG_TEST_NPM_ROOT="$CATALOG_TEST_NPM_ROOT" PATH="$CATALOG_TEST_BIN:$PATH" \
 grep -F -q 'cli-hosted manifest and backmerge checks passed' "$TMP/guard-clean.out" || fail 'guard clean success line missing'
 printf 'ok: guard accepts a clean synthetic tree\n'
 
+GUARD_ROOT="$TMP/guard-js-diagnostic"
+make_guard_root "$GUARD_ROOT"
+cat > "$GUARD_ROOT/core/scripts/diagnostic-only.mjs" <<'EOF'
+throw new Error("hq core commands --json must return an array");
+EOF
+git -C "$GUARD_ROOT" add -A
+if CATALOG_TEST_NPM_ROOT="$CATALOG_TEST_NPM_ROOT" PATH="$CATALOG_TEST_BIN:$PATH" \
+  bash "$GUARD" --root "$GUARD_ROOT" --manifest "$GUARD_ROOT/core/scripts/cli-hosted.yaml" > "$TMP/guard-js-diagnostic.out" 2> "$TMP/guard-js-diagnostic.err"; then
+  printf 'ok: JavaScript diagnostic text is not an executable CLI call\n'
+else
+  cat "$TMP/guard-js-diagnostic.err" >&2
+  fail 'guard treated JavaScript diagnostic text as an executable CLI call'
+fi
+
+GUARD_ROOT="$TMP/guard-js-real-call"
+make_guard_root "$GUARD_ROOT"
+{
+  printf 'execSync("hq core stray");\n'
+  awk 'BEGIN { for (i = 0; i < 20000; i++) print "const filler" i " = true;" }'
+} > "$GUARD_ROOT/core/scripts/large-unmanifested.mjs"
+git -C "$GUARD_ROOT" add -A
+expect_guard_failure "$GUARD_ROOT" 'core/scripts/large-unmanifested.mjs: unmanifested executable hq core call lacks a manifest row or explicit allow-list entry' 'guard detects an early JavaScript CLI call in a large source file'
+
 GUARD_ROOT="$TMP/guard-drift"
 make_guard_root "$GUARD_ROOT"
 printf '# drift\n' >> "$GUARD_ROOT/core/scripts/fixture-live.sh"

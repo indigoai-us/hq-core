@@ -1,4 +1,89 @@
 ## [Unreleased]
+- Refresh a missing or older-than-24-hours vault-access manifest in the background so SessionStart stays fast.
+- `/hq-heal` now classifies stale presign-upload rejections and throttled sync manifests as sync failures.
+- Fixed Windows `/handoff` rewriting the slash-leading next command during JSON output.
+- Cache npm downloads used by the Windows shell-smoke HQ CLI install, keyed by the CLI version inputs.
+- Detached handoff and project-registration shell tests now wait for their child-process markers before asserting.
+
+### Changed: Hook timeout reports include bounded phase durations (SC-CLI-HOOK-TIMEOUT-CLUSTER)
+- Existing timeout attribution now distinguishes master entry-shell startup from dispatched child time, journal JSON/helper work, and monitor readiness from drain time. On Bash versions with `EPOCHREALTIME`, timing uses shell builtins and writes only allowlisted phase names and elapsed milliseconds to the local watchdog journal; the CLI sends duration buckets as tags.
+
+### Fixed: hq-bug submissions avoid rm cleanup (US-169)
+- The skill submits the report body from a Write-created temp file and no longer asks an agent to run a sandbox-rejected `rm` cleanup; `hq feedback --body-file -` over stdin is the fallback when the host has no Write tool.
+
+### Fixed: SessionStart bypasses profile startup before the hook dispatcher (SC-CLI-2C)
+- The SessionStart command starts Bash with `BASH_ENV=/dev/null` before the master hook begins. This avoids host profile and nvm startup delay while keeping the hook chain and timeout unchanged.
+- The hook path scanners follow the `env` launcher and still verify that the SessionStart master hook exists.
+
+### Fixed: strict HQ-root Git guard follows SSH command payloads (US-354)
+- When the strict guard is enabled, inspect SSH remote-command arguments for nested Git mutations without executing them; quoted checkpoint prose remains allowed. The strict guard default is unchanged.
+
+### Fixed: Work Mesh reports when the CLI is missing
+- The trusted session bind hook now prints one warning when it cannot launch Work Mesh reconciliation because the hq CLI is not on PATH.
+
+### Fixed: PRD skills no longer invoke an unavailable Beads conversion script (US-162)
+- The `/prd`, `/deep-plan`, and retained `/plan` guidance now treats `bd` as an optional CLI and skips Beads setup when it is not installed.
+### Fixed: session-start reaping preserves detached runs with a live owner (US-325)
+- Conduct dispatch records its owning Claude process identity before detaching; the session-start reaper keeps those runs while that exact process remains alive.
+### Fixed: handoff background work avoids visible Windows consoles (US-358)
+- Detached handoff cleanup and worktree tasks use a hidden Windows child process; Linux and macOS keep their existing `nohup` launch behavior.
+### Fixed: Windows stale-journal-lock smoke case uses a measured outer bound (US-361)
+- Give the nested warning/compaction fixture 30 seconds on Git Bash while keeping its 15-second Linux bound; main Windows run 36805735147 measured a passing 11.608-second case [18], leaving only 3.392 seconds under the old bound.
+### Fixed: handoff knowledge commits follow the session changeset (US-240)
+- `/handoff` passes only intentionally changed files to personal/core knowledge commits, leaving unrelated dirty files outside the commit.
+
+### Fixed: vault write protection can deny unknown access roles (US-210)
+- The block for an unknown role, absent company entry, or malformed access manifest is behind the default-off `hooks.vault-write-deny-unknown-access` hq-flags gate. With the flag off, these cases retain the prior allow behavior; a missing manifest remains allowed until the first manual refresh.
+
+### Fixed: Windows settings PATH detects the HQ CLI shim (US-306)
+- Resolve semicolon-separated Windows PATH entries through `cygpath` when available, recognize `hq.cmd` and `hq.exe` shims, and preserve Windows separators when adding a discovered shim to settings.
+
+### Fixed: Windows hook watchdog smoke fixtures allow measured process startup time
+- The Windows shell-smoke fixtures now use a bounded 20-second per-report budget and a 60-second bound for the 25-hook journal case, based on observed Git Bash run times. Linux fixture bounds remain unchanged.
+
+### Fixed: bound-company scope checks allow contained Bash globs (US-247)
+- Bash globs are expanded from the command working directory and each realpath must remain inside the session's bound company; company-segment, cross-company, escaping, unchecked, and unbound globs remain blocked. Brace expansion in companies/ paths is always refused because its expansions cannot be safely scoped. Variable-expanded paths are reconstructed without nested quote artifacts so stock macOS Bash checks the path the shell will open.
+### Fixed: concurrent knowledge pulses
+
+- A per-company/date claim allows only one background knowledge pulse to garden
+  the shared company index and append daily metrics.
+
+### Added: merged write-guard shadow canary
+
+- Add an optional typed outcome to scheduled agent session replies, with a bounded reason for blocked or needs-input results.
+
+- Add a default-off hq-flags shadow canary that records merged write-guard decisions without changing tool permissions. The existing write guards remain registered and enforcing.
+### Fixed: monitor guard targets the active session and skips heredoc text (US-240)
+- Wait guidance now names the session from the hook payload, and command text inside a here-document does not trigger the foreground-wait guard.
+### Fixed: Company Mode reads story status from the Work Mesh Board (US-238b)
+- Company Mode now uses Board statuses for story completion and keeps local PRD data for project description and acceptance only.
+### Fixed: reindex hooks bound stale-worktree cleanup (HQ-CLI-B6)
+- The reindex hook passes `--from-hook`, so stale-worktree cleanup observes its five-second hook budget. Any remaining candidates wait for a later reindex.
+
+
+### Fixed: hermetic tests preserve the pinned hq CLI opt-out
+- Clean-environment test helpers now carry `HQ_NO_UPDATE_CHECK` only when the caller sets it, preventing the pinned CLI from self-updating inside qmd tests.
+
+### Fixed: /startwork binds resolved companies before repo context (US-236c)
+- Persist `company_slug` as soon as startwork resolves the company so company-scoped hooks are active before project scans and repository commands.
+### Fixed: company skills mirror with the slug when no prefix is configured (US-195)
+- A default-off `hooks.company-skill-slug-fallback` hq-flags gate lets top-level company skills use a validated company slug as their mirror prefix when the manifest prefix is empty. Existing prefixes and user-owned mirror paths are preserved.
+
+### Fixed: master hook output writes are bounded
+- Bound output parsing, merging, and stdout writes to a shared deadline. A blocked stdout writer is abandoned with a retained `output_abandoned_stdout` debug phase; PreToolUse deny output keeps its existing aggregation path.
+
+### Fixed: CI keeps running the pinned hq-cli when the server minimum rises
+- `install-pinned-hq-cli.sh` sets `HQ_NO_UPDATE_CHECK=1` for itself and later CI steps. Since the server minimum moved to 5.293.0 at about 12:20Z on 2026-09-30, the pinned 5.269.0 floor build self-updated and exited on every command, which failed the hq-cli probes in pr-checks on main and on every PR.
+
+### Fixed: transcript-tail checks retain oversized nonfinal assistant records
+- Stop hooks recover the newest assistant record when small metadata records follow it, using a bounded 16 MiB scan and blocking capability-link checks when the record cannot be verified within that cap.
+
+### Fixed: handoff-post test fixtures include required session inputs
+- The document-release fixture copies `session-id.sh`, which `handoff-post.sh` sources. The no-Claude fixture records its bound session company so its sync assertion matches the session-scoped behavior added in #959.
+
+### Fixed: single-company sessions bind at startup (US-251)
+- SessionStart now binds an unbound user session to the only real company in the manifest, so the first read of that company's files is allowed.
+- Held sessions use the manifest fallback only when Work Context explicitly says `unresolved`; other or unreadable states stay unbound. Wrapped manifest metadata no longer counts as a company.
 
 ### Fixed: handoff mirrors stay within the session's bound company (US-208)
 - Handoffs touching multiple companies no longer create company workspace mirrors or sync pushes; single-company mirrors must match the session binding.
@@ -25,6 +110,10 @@
 
 ### Fixed: gated hooks have profile coverage (US-157)
 - The documented standard-profile capture-estimates hook now runs in standard and strict sessions. CI fails when a gated registry hook is missing from every profile and has no owner-deferred exception.
+
+### Fixed: scope checks resolve directory symlinks for search and shell tools (US-160)
+- Grep, Glob, and Bash now check resolved company scope for bounded directory-symlink searches and paths.
+- Bash scope checks unwrap command wrappers and inspect all grep-family and rg tokens through `--` for follow flags, including flags after operands or option values.
 
 ### Fixed: Transcript lookback reads a bounded tail
 - AssistantIntent matching and recent-turn hooks read a bounded transcript

@@ -95,7 +95,7 @@ hook_timeout_monotonic_ms() {
 
 hook_timeout_normalize_phase() {
   case "${1:-}" in
-    startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse)
+    startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse)
       printf '%s' "$1"
       ;;
     *) printf 'other' ;;
@@ -118,6 +118,54 @@ hook_timeout_realtime_ms() {
   HOOK_TIMEOUT_REALTIME_MS=$((10#$seconds * 1000 + 10#$fraction))
 }
 
+# Child hooks append only allowlisted phase names and elapsed milliseconds.
+# EPOCHREALTIME keeps the Windows hot path inside Bash; older Bash falls back
+# to the existing clock helper only on platforms without that builtin.
+hook_timeout_child_phase_start() {
+  local phase="${1:-}" started_ms
+  [ -n "${HQ_HOOK_TIMEOUT_CHILD_PHASE_FILE:-}" ] \
+    && [ -n "${HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE:-}" ] || return 0
+  case "$phase" in
+    startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse) ;;
+    *) return 0 ;;
+  esac
+  if hook_timeout_realtime_ms; then
+    started_ms="$HOOK_TIMEOUT_REALTIME_MS"
+  else
+    started_ms="$(hook_timeout_now_ms 2>/dev/null || true)"
+  fi
+  [[ "$started_ms" =~ ^[0-9]{1,16}$ ]] || return 0
+  printf '%s\t%s\n' "$phase" "$started_ms" \
+    > "$HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE" 2>/dev/null || true
+}
+
+hook_timeout_child_phase_finish() {
+  local phase="${1:-}" active_phase="" started_ms="" ended_ms elapsed_ms
+  [ -n "${HQ_HOOK_TIMEOUT_CHILD_PHASE_FILE:-}" ] \
+    && [ -n "${HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE:-}" ] || return 0
+  case "$phase" in
+    startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse) ;;
+    *) return 0 ;;
+  esac
+  [ -r "$HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE" ] || return 0
+  IFS=$'\t' read -r active_phase started_ms < "$HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE" || true
+  [ "$active_phase" = "$phase" ] || return 0
+  if hook_timeout_realtime_ms; then
+    ended_ms="$HOOK_TIMEOUT_REALTIME_MS"
+  else
+    ended_ms="$(hook_timeout_now_ms 2>/dev/null || true)"
+  fi
+  if [[ "$started_ms" =~ ^[0-9]{1,16}$ ]] \
+    && [[ "$ended_ms" =~ ^[0-9]{1,16}$ ]] \
+    && [ "$ended_ms" -ge "$started_ms" ]; then
+    elapsed_ms=$((ended_ms - started_ms))
+    [ "$elapsed_ms" -le 86400000 ] || elapsed_ms=86400000
+    printf '%s\t%s\n' "$phase" "$elapsed_ms" \
+      >> "$HQ_HOOK_TIMEOUT_CHILD_PHASE_FILE" 2>/dev/null || true
+  fi
+  : > "$HQ_HOOK_TIMEOUT_CHILD_ACTIVE_PHASE_FILE" 2>/dev/null || true
+}
+
 master_debug_phase_buffer_record() {
   local phase="$1" elapsed_ms="$2" i entry entry_phase entry_elapsed total
   case "$phase" in
@@ -131,7 +179,7 @@ master_debug_phase_buffer_record() {
       fi
       MASTER_DEBUG_PHASE_BUFFER+=("$phase"$'\t'"$elapsed_ms")
       ;;
-    startup|source|config_load|policy_load|output_write)
+    startup|source|config_load|policy_load|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout)
       for i in "${!MASTER_DEBUG_PHASE_BUFFER[@]}"; do
         entry="${MASTER_DEBUG_PHASE_BUFFER[$i]}"
         entry_phase="${entry%%$'\t'*}"
@@ -162,35 +210,52 @@ master_debug_phase_write_state() {
 master_debug_phase_start() {
   local phase="${1:-other}" started_ms
   case "$phase" in
-    startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse) ;;
+    startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse) ;;
     *) phase=other ;;
   esac
-  hook_timeout_realtime_ms || true
-  started_ms="${HOOK_TIMEOUT_REALTIME_MS:-}"
+  if hook_timeout_realtime_ms; then
+    started_ms="$HOOK_TIMEOUT_REALTIME_MS"
+    MASTER_DEBUG_ACTIVE_CLOCK=ms
+    MASTER_DEBUG_ACTIVE_STARTED_SECONDS=""
+  else
+    # Bash 3.2 has no EPOCHREALTIME. Its exported SECONDS value is inherited by
+    # the watchdog, so it can measure a live marker without a clock subprocess.
+    started_ms="seconds:$SECONDS"
+    MASTER_DEBUG_ACTIVE_CLOCK=seconds
+    MASTER_DEBUG_ACTIVE_STARTED_SECONDS=$SECONDS
+  fi
   MASTER_DEBUG_ACTIVE_PHASE="$phase"
   MASTER_DEBUG_ACTIVE_STARTED="$started_ms"
-  [[ "$started_ms" =~ ^[0-9]{1,16}$ ]] || started_ms=0
   master_debug_phase_write_state "$phase" "$started_ms"
 }
 
 master_debug_phase_finish() {
   local phase="${1:-other}" ended_ms elapsed_ms
   case "$phase" in
-    startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse) ;;
+    startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse) ;;
     *) phase=other ;;
   esac
-  hook_timeout_realtime_ms || true
-  ended_ms="${HOOK_TIMEOUT_REALTIME_MS:-}"
-  if [ "${MASTER_DEBUG_ACTIVE_PHASE:-}" = "$phase" ] \
-    && [[ "${MASTER_DEBUG_ACTIVE_STARTED:-}" =~ ^[0-9]{1,16}$ ]] \
-    && [[ "$ended_ms" =~ ^[0-9]{1,16}$ ]] \
-    && [ "$ended_ms" -ge "$MASTER_DEBUG_ACTIVE_STARTED" ]; then
-    elapsed_ms=$((ended_ms - MASTER_DEBUG_ACTIVE_STARTED))
-    [ "$elapsed_ms" -le 86400000 ] || elapsed_ms=86400000
-    master_debug_phase_buffer_record "$phase" "$elapsed_ms"
+  if [ "${MASTER_DEBUG_ACTIVE_PHASE:-}" = "$phase" ]; then
+    if [ "${MASTER_DEBUG_ACTIVE_CLOCK:-}" = ms ] \
+      && hook_timeout_realtime_ms \
+      && [[ "${MASTER_DEBUG_ACTIVE_STARTED:-}" =~ ^[0-9]{1,16}$ ]]; then
+      ended_ms="$HOOK_TIMEOUT_REALTIME_MS"
+      if [ "$ended_ms" -ge "$MASTER_DEBUG_ACTIVE_STARTED" ]; then
+        elapsed_ms=$((ended_ms - MASTER_DEBUG_ACTIVE_STARTED))
+        [ "$elapsed_ms" -le 86400000 ] || elapsed_ms=86400000
+        master_debug_phase_buffer_record "$phase" "$elapsed_ms"
+      fi
+    elif [ "${MASTER_DEBUG_ACTIVE_CLOCK:-}" = seconds ] \
+      && [[ "${MASTER_DEBUG_ACTIVE_STARTED_SECONDS:-}" =~ ^[0-9]{1,9}$ ]]; then
+      elapsed_ms=$(((SECONDS - MASTER_DEBUG_ACTIVE_STARTED_SECONDS) * 1000))
+      [ "$elapsed_ms" -le 86400000 ] || elapsed_ms=86400000
+      [ "$elapsed_ms" -le 0 ] || master_debug_phase_buffer_record "$phase" "$elapsed_ms"
+    fi
   fi
   MASTER_DEBUG_ACTIVE_PHASE=""
   MASTER_DEBUG_ACTIVE_STARTED=""
+  MASTER_DEBUG_ACTIVE_STARTED_SECONDS=""
+  MASTER_DEBUG_ACTIVE_CLOCK=""
 }
 
 # Reuse the session journal directory and keep completed timings in shell
@@ -206,7 +271,11 @@ master_debug_initialize() {
   MASTER_DEBUG_CLI_VERSION_FILE="$MASTER_DEBUG_PHASE_FILE.cli-version"
   phase="${MASTER_DEBUG_ACTIVE_PHASE:-startup}"
   started_ms="${MASTER_DEBUG_ACTIVE_STARTED:-0}"
-  [[ "$started_ms" =~ ^[0-9]{1,16}$ ]] || started_ms=0
+  if [[ "$started_ms" == seconds:* ]]; then
+    [[ "${started_ms#seconds:}" =~ ^[0-9]{1,9}$ ]] || started_ms=0
+  else
+    [[ "$started_ms" =~ ^[0-9]{1,16}$ ]] || started_ms=0
+  fi
   master_debug_phase_write_state "$phase" "$started_ms"
 }
 
@@ -290,27 +359,93 @@ hook_timeout_sequence_json() {
 }
 
 hook_timeout_phase_timings_json() {
-  local completed_file="${1:-}" active_file="${2:-${1:-}}" active_record="${3:-}" phase started completed now elapsed raw=""
+  local completed_file="${1:-}" active_file="${2:-${1:-}}" active_record="${3:-}"
+  local child_completed_file="${4:-}" child_active_record="${5:-}"
+  local phase started completed now elapsed raw="" read_parent_active=0
+  local child_elapsed child_phase child_started
   if [ -r "$completed_file" ]; then
     raw="$(awk -F '\t' '
-      NF == 2 && $1 ~ /^(startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse|other)$/ && $2 ~ /^[0-9]+$/ && length($2) <= 9 && $2 <= 86400000 { print $1 "\t" $2 }
+      NF == 2 && $1 ~ /^(startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse|other)$/ && $2 ~ /^[0-9]+$/ && length($2) <= 9 && $2 <= 86400000 { print $1 "\t" $2 }
     ' "$completed_file" 2>/dev/null)"
   fi
-  if [ "$#" -lt 3 ] && [ -r "$active_file" ]; then
+  if [ -r "$child_completed_file" ]; then
+    while IFS=$'\t' read -r child_phase child_elapsed; do
+      case "$child_phase" in
+        startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse) ;;
+        *) continue ;;
+      esac
+      [[ "$child_elapsed" =~ ^[0-9]{1,9}$ ]] || continue
+      [ "$((10#$child_elapsed))" -le 86400000 ] || continue
+      [ -z "$raw" ] || raw+=$'\n'
+      raw+="${child_phase}"$'\t'"${child_elapsed}"
+    done < "$child_completed_file"
+  fi
+  # An omitted record preserves the legacy marker-file fallback. Callers that
+  # intentionally need the live parent marker pass this explicit sentinel;
+  # an explicitly empty snapshot must stay empty.
+  if [ "$#" -lt 3 ] || [ "$active_record" = "__read_active__" ]; then
+    read_parent_active=1
+    active_record=""
+  fi
+  if [ "$read_parent_active" -eq 1 ] && [ -r "$active_file" ]; then
     active_record="$(awk -F '\t' 'NF >= 2 { print $1 "\t" $2 "\t" $3; exit }' "$active_file" 2>/dev/null || true)"
   fi
   if [ -n "$active_record" ]; then
     IFS=$'\t' read -r phase started completed <<< "$active_record" || true
     completed="${completed//,/$'\n'}"
     completed="${completed//:/$'\t'}"
-    raw="${raw:+$raw$'\n'}$completed"
-    hook_timeout_realtime_ms || true
-    now="${HOOK_TIMEOUT_REALTIME_MS:-}"
-    if [ -n "$phase" ] && [[ "$started" =~ ^[0-9]{1,16}$ ]] && [ "$started" -gt 0 ] \
+    if [ -n "$completed" ]; then
+      [ -z "$raw" ] || raw+=$'\n'
+      raw+="$completed"
+    fi
+    if [[ "$started" == seconds:* ]]; then
+      started="${started#seconds:}"
+      now="$SECONDS"
+      if [ -n "$phase" ] && [[ "$started" =~ ^[0-9]{1,9}$ ]] \
+        && [[ "$now" =~ ^[0-9]{1,9}$ ]] && [ "$now" -ge "$started" ]; then
+        elapsed=$(((now - started) * 1000))
+        [ "$elapsed" -le 86400000 ] || elapsed=86400000
+        if [ "$elapsed" -gt 0 ]; then
+          [ -z "$raw" ] || raw+=$'\n'
+          raw+="${phase}"$'\t'"${elapsed}"
+        fi
+      fi
+    else
+      hook_timeout_realtime_ms || true
+      now="${HOOK_TIMEOUT_REALTIME_MS:-}"
+      if [ -n "$phase" ] && [[ "$started" =~ ^[0-9]{1,16}$ ]] && [ "$started" -gt 0 ] \
+        && [[ "$now" =~ ^[0-9]{1,16}$ ]] && [ "$now" -ge "$started" ]; then
+        elapsed=$((now - started))
+        [ "$elapsed" -le 86400000 ] || elapsed=86400000
+        [ -z "$raw" ] || raw+=$'\n'
+        raw+="${phase}"$'\t'"${elapsed}"
+      fi
+    fi
+  fi
+  # The watchdog supplies the trigger-time child snapshot, including an empty
+  # value. Only callers that omit argument five may read the live marker.
+  if [ "$#" -lt 5 ] && [ -z "$child_active_record" ] && [ -r "${child_completed_file}.active" ]; then
+    IFS=$'\t' read -r child_phase child_started < "${child_completed_file}.active" || true
+    case "$child_phase" in
+      startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse) ;;
+      *) child_phase="" ;;
+    esac
+    [[ "$child_started" =~ ^[0-9]{1,16}$ ]] || child_phase=""
+    [ -z "$child_phase" ] || child_active_record="${child_phase}"$'\t'"${child_started}"
+  fi
+  if [ -n "$child_active_record" ]; then
+    IFS=$'\t' read -r phase started <<< "$child_active_record" || true
+    if hook_timeout_realtime_ms; then
+      now="$HOOK_TIMEOUT_REALTIME_MS"
+    else
+      now="$(hook_timeout_now_ms 2>/dev/null || true)"
+    fi
+    if [ -n "$phase" ] && [[ "$started" =~ ^[0-9]{1,16}$ ]] \
       && [[ "$now" =~ ^[0-9]{1,16}$ ]] && [ "$now" -ge "$started" ]; then
       elapsed=$((now - started))
       [ "$elapsed" -le 86400000 ] || elapsed=86400000
-      raw="${raw:+$raw$'\n'}$phase$'\t'$elapsed"
+      [ -z "$raw" ] || raw+=$'\n'
+      raw+="${phase}"$'\t'"${elapsed}"
     fi
   fi
   if [ -z "$raw" ]; then
@@ -321,7 +456,7 @@ hook_timeout_phase_timings_json() {
     split("\n")
     | map(select(length > 0) | split("\t")
       | select(length == 2 and (.[1] | test("^[0-9]{1,9}$")) and (.[1] | tonumber) <= 86400000)
-      | {phase: (.[0] | if . == "startup" or . == "source" or . == "config_load" or . == "policy_load" or . == "external_command" or . == "output_write" or . == "wait" or . == "child_wait" or . == "probe" or . == "parse" then . else "other" end), elapsed_ms: (.[1] | tonumber)})
+      | {phase: (.[0] | if . == "startup" or . == "source" or . == "config_load" or . == "policy_load" or . == "external_command" or . == "output_write" or . == "output_scan" or . == "output_merge" or . == "output_stdout" or . == "output_abandoned_scan" or . == "output_abandoned_merge" or . == "output_abandoned_stdout" or . == "wait" or . == "child_wait" or . == "probe" or . == "parse" then . else "other" end), elapsed_ms: (.[1] | tonumber)})
     | reduce .[] as $entry ({totals: {}, external: []};
         if $entry.phase == "external_command" then
           .external += [$entry.elapsed_ms]
@@ -329,13 +464,22 @@ hook_timeout_phase_timings_json() {
           .totals[$entry.phase] = ((.totals[$entry.phase] // 0) + $entry.elapsed_ms)
         end)
     | . as $records
-    | (["startup", "source", "config_load", "policy_load", "output_write"]
+    | (["startup", "source", "config_load", "policy_load", "output_write", "output_scan", "output_merge", "output_stdout", "output_abandoned_scan", "output_abandoned_merge", "output_abandoned_stdout"]
       | map(. as $phase | {phase: $phase, elapsed_ms: ($records.totals[$phase] // 0)})) as $required
-    | if $records.totals.other != null then
-        $required + [{phase: "other", elapsed_ms: $records.totals.other}]
-        + ($records.external[-18:] | map({phase: "external_command", elapsed_ms: .}))
+    | (["wait", "child_wait", "probe", "parse"]
+      | map(. as $phase
+        | select($records.totals[$phase] != null)
+        | {phase: $phase, elapsed_ms: $records.totals[$phase]})) as $optional
+    | (if $records.totals.other != null then
+        [{phase: "other", elapsed_ms: $records.totals.other}]
+      else [] end) as $other
+    | ($required + $optional + $other) as $fixed
+    | (24 - ($fixed | length)) as $external_limit
+    | if $external_limit <= 0 then $fixed
       else
-        $required + ($records.external[-19:] | map({phase: "external_command", elapsed_ms: .}))
+        $fixed + ($records.external
+          | if length > $external_limit then .[-$external_limit:] else . end
+          | map({phase: "external_command", elapsed_ms: .}))
       end
   ' 2>/dev/null || printf '[]'
 }

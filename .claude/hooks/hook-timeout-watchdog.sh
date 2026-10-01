@@ -58,22 +58,38 @@ debug_phase_file=""
 debug_active_phase_file=""
 debug_cli_version_file=""
 active_debug_phase_record=""
-if [ "$source_kind" = master-dispatch ] \
-  && [[ "$invocation_id" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+active_child_debug_phase_record=""
+if [[ "$invocation_id" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
   debug_phase_file="$root/workspace/.hook-timeout-journal/$invocation_id.debug.tsv"
   debug_active_phase_file="$debug_phase_file.active"
+fi
+if [ "$source_kind" = master-dispatch ] && [ -n "$debug_phase_file" ]; then
   debug_cli_version_file="$debug_phase_file.cli-version"
 elif [ -n "${session_hash:-}" ]; then
   debug_cli_version_file="$root/workspace/.hook-timeout-journal/$session_hash.cli-version"
 fi
 
 capture_active_debug_phase() {
+  local child_phase="" child_started=""
   active_debug_phase_record=""
+  active_child_debug_phase_record=""
   if [ -r "$debug_active_phase_file" ]; then
     active_debug_phase_record="$(awk -F '\t' '
-      NF >= 2 && $1 ~ /^(startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse)$/ \
-        && $2 ~ /^[0-9]{1,16}$/ { print $1 "\t" $2 "\t" $3; exit }
+      NF >= 2 && $1 ~ /^(startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse)$/ \
+        && ($2 ~ /^[0-9]{1,16}$/ || $2 ~ /^seconds:[0-9]{1,9}$/) {
+          print $1 "\t" $2 "\t" $3
+          exit
+        }
     ' "$debug_active_phase_file" 2>/dev/null || true)"
+  fi
+  if [ -n "$debug_phase_file" ] && [ -r "$debug_phase_file.child.active" ]; then
+    IFS=$'\t' read -r child_phase child_started < "$debug_phase_file.child.active" || true
+    case "$child_phase" in
+      startup|source|config_load|policy_load|external_command|output_write|wait|child_wait|probe|parse) ;;
+      *) child_phase="" ;;
+    esac
+    [[ "$child_started" =~ ^[0-9]{1,16}$ ]] || child_phase=""
+    [ -z "$child_phase" ] || active_child_debug_phase_record="${child_phase}"$'\t'"${child_started}"
   fi
 }
 
@@ -799,7 +815,9 @@ debug_child_elapsed=0
 debug_process_count=unavailable
 debug_spawn_ms=unavailable
 debug_context=''
-debug_phase_timings="$(hook_timeout_phase_timings_json "$debug_phase_file" "$debug_active_phase_file" "$active_debug_phase_record")"
+debug_phase_timings="$(hook_timeout_phase_timings_json \
+  "$debug_phase_file" "$debug_active_phase_file" "$active_debug_phase_record" \
+  "$debug_phase_file.child" "$active_child_debug_phase_record")"
 active_debug_phase="${active_debug_phase_record%%$'\t'*}"
 [ -z "${active_debug_phase:-}" ] || debug_wait_point="$active_debug_phase"
 if [ "$source_kind" = hook-gate ]; then

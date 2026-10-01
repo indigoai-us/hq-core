@@ -97,6 +97,20 @@ fi
 HQ
 chmod +x "$SANDBOX/bin/hq"
 
+# --- missing CLI warns instead of silently skipping the bind reconcile ------
+mkdir -p "$SANDBOX/no-hq"
+SID=sid-no-hq-cli
+missing_hq_err="$SANDBOX/missing-hq.err"
+if ! env PATH="$SANDBOX/no-hq:/usr/bin:/bin" HOME="$HOME_DIR" WORK_MESH_HOME="$WORK_MESH_HOME" \
+  HQ_ROOT="$HQ" HQ_WORK_MESH_RECONCILE_STUB=0 HQ_HQ_SESSION_NO_CLI=1 \
+  HQ_SESSION_ID="$SID" bash "$BIND" --company acme --root "$HQ" \
+  >/dev/null 2>"$missing_hq_err"; then
+  fail "trusted bind should remain non-fatal when hq is missing"
+fi
+grep -Fqx 'Work Mesh reconcile skipped: hq CLI not found on PATH.' "$missing_hq_err" \
+  && pass "missing hq CLI emits a one-line Work Mesh warning" \
+  || fail "missing hq CLI warning was absent"
+
 reset_spool() {
   if [ -f "$SANDBOX/reconcile.pids" ]; then
     while IFS= read -r reconcile_pid; do

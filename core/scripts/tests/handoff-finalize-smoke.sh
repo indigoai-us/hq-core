@@ -77,6 +77,27 @@ mkdir -p "$TMP_ROOT/home" "$TMP_ROOT/bin"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$TMP_ROOT/bin/qmd"
 chmod +x "$TMP_ROOT/bin/qmd"
 export HOME="$TMP_ROOT/home"
+
+# Simulate Git Bash/MSYS argv conversion for native utilities: slash-leading
+# non-path arguments are rewritten unless the caller opts out. The handoff
+# command is data, so the finalizer must preserve it for jq.
+REAL_JQ="$(command -v jq)"
+cat > "$TMP_ROOT/bin/jq" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "${MSYS_NO_PATHCONV:-}" != "1" ]]; then
+  for ((i = 0; i < ${#args[@]} - 1; i++)); do
+    if [[ "${args[i]}" == "--arg" && "${args[i + 1]}" == "next_command" ]]; then
+      ((i += 2))
+      args[i]="C:/Program Files/Git${args[i]}"
+    fi
+  done
+fi
+exec "$US396_REAL_JQ" "${args[@]}"
+SH
+chmod +x "$TMP_ROOT/bin/jq"
+export US396_REAL_JQ="$REAL_JQ"
 export PATH="$TMP_ROOT/bin:$PATH"
 
 cat > "$TMP_ROOT/repo/core/scripts/rebuild-threads-index.sh" <<'SH'
@@ -126,6 +147,8 @@ out=$(bash core/scripts/handoff-finalize.sh \
   --slug "smoke")
 
 thread_path=$(jq -r '.thread_path' <<<"$out")
+jq -e '.next_command | startswith("/resumework ")' <<<"$out" >/dev/null \
+  || fail "Git Bash argv conversion rewrote the slash-leading next_command"
 changeset_path=$(jq -r '.changeset_path' <<<"$out")
 baseline_noise=$(jq -r '.baseline_noise_count' <<<"$out")
 

@@ -409,7 +409,7 @@ if [[ ${#msg_path} -gt 72 ]]; then
   msg_path="${msg_path:0:69}..."
 fi
 
-COMMIT_OUT="$(git -C "$HQ_ROOT" commit --no-verify -m "autosave(hq): ${msg_path}" 2>&1)"
+COMMIT_OUT="$(git -c gc.auto=0 -c maintenance.auto=false -C "$HQ_ROOT" commit --no-verify -m "autosave(hq): ${msg_path}" 2>&1)"
 COMMIT_RC=$?
 if [[ $COMMIT_RC -ne 0 ]]; then
   report_failure "commit" "$COMMIT_RC" "$COMMIT_OUT"

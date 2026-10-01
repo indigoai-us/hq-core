@@ -639,7 +639,9 @@ if [[ -n "$NEXT_COMMAND" ]]; then
 fi
 
 # -------- emit result --------
-jq -n \
+# Git Bash/MSYS rewrites slash-leading argv values for native executables.
+# next_command is command text, not a filesystem path; preserve it for jq.
+MSYS_NO_PATHCONV=1 jq -n \
   --arg thread_id "$THREAD_ID" \
   --arg thread_path "$THREAD_PATH" \
   --arg handoff_path "workspace/threads/handoff.json" \

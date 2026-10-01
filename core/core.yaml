@@ -1,12 +1,12 @@
 version: 1
-hqVersion: "15.0.181"
+hqVersion: "15.0.182"
 agentSessionContractVersion: 1
 # See core/scripts/lib/hq-cli-floor.sh for the checks that enforce this floor.
 requiresHqCli: ">=5.269.0"
 # Provider adapter contract version (US-500). Must match
 # HQ_ADAPTER_CONTRACT_VERSION in core/scripts/lib/provider-adapter-version.sh.
 adapterContractVersion: "1.0.0"
-updatedAt: "2026-09-30T07:45:48Z"
+updatedAt: "2026-10-01T10:26:40Z"
 # hq-core is the minimal scaffold seed. Rich add-ons ship as `@indigoai-us/hq-pack-*`
 # npm packages installed into `core/packages/` via `hq install`. See `core/packages/README.md`.
 rules:
@@ -25,6 +25,7 @@ rules:
     - .claude/launch.json            # per-machine dev-server launch configs
     - .claude/scheduled-tasks/        # live scheduled-task store (managed by the scheduler)
     - .claude/scheduled_tasks.lock    # transient scheduler lock (sessionId/pid)
+    - .claude/skills/.hq-company-skill-wrappers # generated marker for company skill wrappers
     # Builder/admin-only tooling (hq-pack-admin) — deliberately NOT base-release content
     # (policy hq-pack-policies-excluded-from-core-release). Canonical source: the hq-pack-admin repo (internal).
     - core/scripts/promote-hq-core-apply.sh

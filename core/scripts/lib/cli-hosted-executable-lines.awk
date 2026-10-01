@@ -53,7 +53,7 @@ function shell_code(line,    result, quote, escaped, i, c, previous) {
   return result
 }
 
-function javascript_code(line,    result, i, c, nextc, quote, escaped) {
+function javascript_code(line,    result, i, c, nextc, quote, escaped, keep_string) {
   result = ""
   quote = ""
   escaped = 0
@@ -68,15 +68,26 @@ function javascript_code(line,    result, i, c, nextc, quote, escaped) {
       continue
     }
     if (quote != "") {
-      result = result c
-      if (escaped) escaped = 0
-      else if (c == "\\") escaped = 1
-      else if (c == quote) quote = ""
+      if (escaped) {
+        if (keep_string) result = result c
+        escaped = 0
+      } else if (c == "\\") {
+        if (keep_string) result = result c
+        escaped = 1
+      } else if (c == quote) {
+        if (keep_string) result = result c
+        quote = ""
+        keep_string = 0
+      } else if (keep_string) result = result c
       continue
     }
     if (c == "'" || c == "\"" || c == "`") {
       quote = c
-      result = result c
+      # JavaScript diagnostics and documentation are not command invocations.
+      # Preserve text only when it is the first argument to a child-process API,
+      # where the generic shell-call scan can validate the command string.
+      keep_string = result ~ /(^|[^[:alnum:]_$])(exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)[[:space:]]*\([[:space:]]*$/
+      if (keep_string) result = result c
       continue
     }
     if (c == "/" && nextc == "/") break

@@ -52,3 +52,47 @@ hq_transcript_tail() {
     tail -n 1 "$path"
   fi
 }
+
+# hq_transcript_tail_with_latest_assistant <path> [max_bytes] [scan_cap_bytes]
+# Return the normal bounded suffix plus the latest complete assistant record
+# when later metadata records have pushed it outside that suffix. The fallback
+# scan is bounded; status 3 means the latest assistant could not be verified
+# within the cap and security-sensitive callers must fail closed.
+hq_transcript_tail_with_latest_assistant() {
+  [ "$#" -ge 1 ] && [ "$#" -le 3 ] || return 2
+  local path="$1" max_bytes="${2:-$HQ_TRANSCRIPT_TAIL_MAX_BYTES}"
+  local scan_cap="${3:-16777216}" size normal_tail assistant_record scan_tail
+  case "$scan_cap" in ''|*[!0-9]*) return 2 ;; esac
+  [ "$scan_cap" -gt 0 ] || return 2
+
+  normal_tail="$(hq_transcript_tail "$path" "$max_bytes")" || return $?
+  assistant_record="$(printf '%s\n' "$normal_tail" | jq -Rrc 'fromjson? | select(.type == "assistant")' | tail -n 1)"
+  if [ -n "$assistant_record" ]; then
+    [ -z "$normal_tail" ] || printf '%s\n' "$normal_tail"
+    return 0
+  fi
+
+  size="$(hq_transcript_size "$path")" || {
+    printf '%s\n' "hq_transcript_tail_with_latest_assistant: cannot read transcript size: $path" >&2
+    return 1
+  }
+  if [ "$size" -le "$scan_cap" ]; then
+    scan_tail="$(cat "$path"; printf '.')"
+  else
+    scan_tail="$(tail -c "$((scan_cap + 1))" "$path" | sed '1d'; printf '.')"
+  fi
+  scan_tail="${scan_tail%.}"
+  assistant_record="$(printf '%s\n' "$scan_tail" | jq -Rrc 'fromjson? | select(.type == "assistant")' | tail -n 1)"
+  if [ -n "$assistant_record" ]; then
+    printf '%s\n' "$assistant_record"
+    [ -z "$normal_tail" ] || printf '%s\n' "$normal_tail"
+    return 0
+  fi
+
+  if [ "$size" -gt "$scan_cap" ]; then
+    printf '%s\n' "hq_transcript_tail_with_latest_assistant: latest assistant record exceeds the ${scan_cap}-byte verification window" >&2
+    return 3
+  fi
+
+  [ -z "$normal_tail" ] || printf '%s\n' "$normal_tail"
+}

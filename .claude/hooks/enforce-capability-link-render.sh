@@ -60,14 +60,24 @@ JS
   [ -z "$TRANSCRIPT_PATH" ] || [ ! -r "$TRANSCRIPT_PATH" ] && exit 0
 
   # Last assistant message text only (the turn that just finished).
+  TRANSCRIPT_TAIL="$(hq_transcript_tail_with_latest_assistant "$TRANSCRIPT_PATH")"
+  TAIL_STATUS=$?
+  if [ "$TAIL_STATUS" -eq 3 ]; then
+    REASON='POLICY CHECK BLOCKED — the newest assistant transcript record could not be verified within the 16 MiB scan cap. Keep the capability link out of the response until the transcript can be checked.'
+    jq -nc --arg r "$REASON" '{decision:"block", reason:$r}' 2>/dev/null \
+      || printf '{"decision":"block","reason":%s}' "$(printf '%s' "$REASON" | hq_json_encode)"
+    exit 0
+  fi
+  [ "$TAIL_STATUS" -eq 0 ] || exit 0
+
   LAST_TEXT="$(
-    jq -nr '
+    printf '%s\n' "$TRANSCRIPT_TAIL" | jq -nr '
       [ inputs | select(.type=="assistant") ] | last
       | .message.content
       | (if type=="array" then [ .[] | select(.type=="text") | .text ] | join("\n")
          elif type=="string" then .
          else "" end)
-    ' < <(hq_transcript_tail "$TRANSCRIPT_PATH") 2>/dev/null || true
+    ' 2>/dev/null || true
   )"
   [ -z "$LAST_TEXT" ] && exit 0
 

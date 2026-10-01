@@ -153,4 +153,51 @@ for reg in "$REG_GROK" "$REG_BRIDGE"; do
   pass "$(basename "$reg"): $n command handler(s) neutralized at spawn"
 done
 
+# [7] Claude's SessionStart settings command must neutralize the entry Bash
+# before it starts. The master-hook export at line 5 is too late to avoid the
+# entry Bash sourcing BASH_ENV. Run the shipped command against a hermetic stub
+# and assert the inherited profile was never sourced while the hook still ran.
+echo "[7] Claude SessionStart clears BASH_ENV before starting master-hook"
+SESSION_START_COMMAND="$(jq -er '
+  [.hooks.SessionStart[]?.hooks[]? | select(.type == "command") | .command][0] // empty
+' "$ROOT/.claude/settings.json")" || fail "cannot read SessionStart command from settings.json"
+[ -n "$SESSION_START_COMMAND" ] || fail "settings.json has no SessionStart command"
+SESSION_START_FIXTURE="$TMP/sessionstart-entry"
+mkdir -p "$SESSION_START_FIXTURE/.claude/hooks"
+cat > "$SESSION_START_FIXTURE/.claude/hooks/master-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+export BASH_ENV=/dev/null
+printf 'sessionstart:%s\n' "${1:-}"
+EOF
+chmod +x "$SESSION_START_FIXTURE/.claude/hooks/master-hook.sh"
+ENTRY_POISON="$TMP/entry-poison.sh"
+ENTRY_LOG="$TMP/entry-profile-loads.log"
+cat > "$ENTRY_POISON" <<'EOF'
+[ -n "${HQ_BASH_ENV_ENTRY_LOG:-}" ] && printf 'LOADED\n' >> "$HQ_BASH_ENV_ENTRY_LOG"
+EOF
+: > "$ENTRY_LOG"
+set +e
+SESSION_START_OUTPUT="$(env BASH_ENV=/dev/null \
+  SESSION_START_COMMAND="$SESSION_START_COMMAND" \
+  SESSION_START_ROOT="$SESSION_START_FIXTURE" \
+  ENTRY_POISON="$ENTRY_POISON" \
+  HQ_BASH_ENV_ENTRY_LOG="$ENTRY_LOG" \
+  bash -c '
+    export CLAUDE_PROJECT_DIR="$SESSION_START_ROOT"
+    export BASH_ENV="$ENTRY_POISON"
+    eval "$SESSION_START_COMMAND"
+  '
+)"
+SESSION_START_RC=$?
+set -e
+[ "$SESSION_START_RC" -eq 0 ] || fail "SessionStart command failed with rc=$SESSION_START_RC output=$SESSION_START_OUTPUT"
+[ "$SESSION_START_OUTPUT" = "sessionstart:SessionStart" ] \
+  || fail "SessionStart command did not reach master-hook: $SESSION_START_OUTPUT"
+[ ! -s "$ENTRY_LOG" ] \
+  || fail "SessionStart entry Bash sourced BASH_ENV before master-hook: $(tr '\n' ' ' < "$ENTRY_LOG")"
+case "$SESSION_START_COMMAND" in
+  "env BASH_ENV=/dev/null bash "*) pass "SessionStart disables BASH_ENV before entry Bash and still dispatches" ;;
+  *) fail "SessionStart command does not disable BASH_ENV before entry Bash" ;;
+esac
+
 echo "hooks-bash-env-neutralize: ok"

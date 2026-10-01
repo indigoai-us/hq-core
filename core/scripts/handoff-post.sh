@@ -237,12 +237,16 @@ if [[ -f "$WM_END_HOOK" ]]; then
   else
     payload='{}'
   fi
+  _detach_pidfile="${TMPDIR:-/tmp}/hq-handoff-session-end-$$.pid"
+  _detach_script="$HQ_ROOT/core/scripts/hq-detach.sh"
   HQ_ROOT="$HQ_ROOT" CLAUDE_CODE_SESSION_ID="${sid:-}" \
-    nohup bash -c 'printf "%s\n" "$1" | bash "$2" SessionEnd' \
-    _ "$payload" "$WM_END_HOOK" \
-    >>"${LOG_DIR}/work-mesh-session-end.log" 2>&1 </dev/null &
-  disown 2>/dev/null || true
-  log "work-mesh-session-end: launched PID $!"
+    bash "$_detach_script" --handoff --pidfile "$_detach_pidfile" \
+      --logfile "${LOG_DIR}/work-mesh-session-end.log" -- \
+      bash -c 'printf "%s\n" "$1" | bash "$2" SessionEnd' _ "$payload" "$WM_END_HOOK" \
+      || log "work-mesh-session-end: launch failed (see ${LOG_DIR}/work-mesh-session-end.log)"
+  _detach_pid="$(cat "$_detach_pidfile" 2>/dev/null || true)"
+  rm -f "$_detach_pidfile"
+  log "work-mesh-session-end: launched PID ${_detach_pid:-unknown}"
 else
   log "work-mesh-session-end: skipped (hook absent)"
 fi
@@ -256,9 +260,14 @@ fi
 # handoff. Guarded so an older checkout without the script simply skips it.
 WT_GC="$HQ_ROOT/core/scripts/worktree-gc.sh"
 if [[ -f "$WT_GC" ]]; then
-  HQ_ROOT="$HQ_ROOT" nohup bash "$WT_GC" --apply --gated >>"${LOG_DIR}/worktree-gc.log" 2>&1 </dev/null &
-  disown 2>/dev/null || true
-  log "worktree-gc: launched PID $! (--apply --gated)"
+  _detach_pidfile="${TMPDIR:-/tmp}/hq-handoff-worktree-gc-$$.pid"
+  _detach_script="$HQ_ROOT/core/scripts/hq-detach.sh"
+  HQ_ROOT="$HQ_ROOT" bash "$_detach_script" --handoff --pidfile "$_detach_pidfile" \
+    --logfile "${LOG_DIR}/worktree-gc.log" -- bash "$WT_GC" --apply --gated \
+    || log "worktree-gc: launch failed (see ${LOG_DIR}/worktree-gc.log)"
+  _detach_pid="$(cat "$_detach_pidfile" 2>/dev/null || true)"
+  rm -f "$_detach_pidfile"
+  log "worktree-gc: launched PID ${_detach_pid:-unknown} (--apply --gated)"
 else
   log "worktree-gc: skipped (script absent)"
 fi

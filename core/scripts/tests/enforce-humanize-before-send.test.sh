@@ -198,4 +198,114 @@ EXPECTED_CAPABILITY_RECORD_BYTES="$(cat "$CAPABILITY_RECORD_BYTES")"
   || fail "[17] capability hook parsed $CAPABILITY_JQ_BYTES bytes, expected only final record ($EXPECTED_CAPABILITY_RECORD_BYTES bytes)"
 pass "capability-link hook retained and blocked an oversized latest bare URL record"
 
+echo "[18] oversized assistant followed by Claude Code metadata: bare URL blocks, markdown link passes"
+make_nonfinal_transcript() { # <path> <rendered|bare>
+  python3 - "$1" "$2" <<'PY_FIXTURE'
+import json, sys
+path, render = sys.argv[1:]
+url = "https://hq.computer/share-session/abcdefghijklmnopqrstuvwx"
+text = "x" * 1100000 + (" [open](" + url + ")" if render == "rendered" else " " + url)
+assistant = {
+    "type": "assistant",
+    "uuid": "assistant-turn",
+    "message": {"role": "assistant", "content": [{"type": "text", "text": text}], "stop_reason": "end_turn"},
+}
+# Claude Code transcript records are JSONL objects; metadata records may follow
+# the assistant record before Stop hooks consume transcript_path.
+records = [
+    assistant,
+    {"type": "system", "subtype": "hook_feedback", "content": "Stop hook feedback"},
+    {"type": "file-history-snapshot", "messageId": "assistant-turn", "snapshot": {"trackedFileBackups": {}, "timestamp": "2026-09-29T00:00:00Z"}},
+]
+with open(path, "w", encoding="utf-8") as transcript:
+    for record in records:
+        transcript.write(json.dumps(record, separators=(",", ":")) + "\n")
+PY_FIXTURE
+}
+NONFINAL_BARE="$TMP/oversized-assistant-followed-by-metadata-bare.jsonl"
+make_nonfinal_transcript "$NONFINAL_BARE" bare
+NONFINAL_BARE_OUT="$(run_capability_hook "$NONFINAL_BARE")"
+[ "$(decision_of "$NONFINAL_BARE_OUT")" = "block" ] \
+  || fail "[18] expected oversized nonfinal bare URL to block, got: $NONFINAL_BARE_OUT"
+pass "oversized nonfinal assistant bare capability URL blocked"
+
+NONFINAL_RENDERED="$TMP/oversized-assistant-followed-by-metadata-rendered.jsonl"
+make_nonfinal_transcript "$NONFINAL_RENDERED" rendered
+NONFINAL_RENDERED_OUT="$(run_capability_hook "$NONFINAL_RENDERED")"
+[ "$(decision_of "$NONFINAL_RENDERED_OUT")" = "none" ] \
+  || fail "[18] expected oversized nonfinal rendered URL to pass, got: $NONFINAL_RENDERED_OUT"
+pass "oversized nonfinal assistant markdown capability link passed"
+
+echo "[19] common-case assistant in tail reads one bounded window"
+TAIL_LIB="$ROOT/core/scripts/lib/transcript-tail.sh"
+TAIL_TRACE="$TMP/tail-trace"
+TAIL_SHIM_DIR="$TMP/tail-bin"
+mkdir -p "$TAIL_SHIM_DIR"
+cat > "$TAIL_SHIM_DIR/tail" <<'TAIL_SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TAIL_TRACE"
+exec "$REAL_TAIL" "$@"
+TAIL_SHIM
+chmod +x "$TAIL_SHIM_DIR/tail"
+COMMON_TRANSCRIPT="$TMP/common-case.jsonl"
+python3 - "$COMMON_TRANSCRIPT" <<'PY_FIXTURE'
+import json, sys
+with open(sys.argv[1], "w", encoding="utf-8") as transcript:
+    transcript.write(json.dumps({"type":"progress", "padding":"x" * 1200000}, separators=(",", ":")) + "\n")
+    transcript.write(json.dumps({"type":"assistant", "message":{"role":"assistant", "content":[{"type":"text", "text":"common-case"}]}}, separators=(",", ":")) + "\n")
+PY_FIXTURE
+REAL_TAIL="$(command -v tail)"
+TAIL_TRACE="$TAIL_TRACE" REAL_TAIL="$REAL_TAIL" PATH="$TAIL_SHIM_DIR:$PATH" bash -c '. "$1"; hq_transcript_tail_with_latest_assistant "$2" >/dev/null' _ "$TAIL_LIB" "$COMMON_TRANSCRIPT"
+TAIL_READS="$(grep -c "^-c " "$TAIL_TRACE" || true)"
+[ "$TAIL_READS" -eq 1 ] || fail "[19] common case made $TAIL_READS transcript byte-window reads, expected one"
+grep -Fxq -- "-c 1048577 $COMMON_TRANSCRIPT" "$TAIL_TRACE" \
+  || fail "[19] common case did not read exactly one 1 MiB tail window: $(cat "$TAIL_TRACE")"
+pass "common-case assistant needed one tail-window read"
+
+echo "[20] assistant beyond verification cap blocks capability-link check"
+CAP_HIT_TRANSCRIPT="$TMP/assistant-over-cap.jsonl"
+python3 - "$CAP_HIT_TRANSCRIPT" <<'PY_FIXTURE'
+import json, sys
+assistant = {"type":"assistant", "message":{"role":"assistant", "content":[{"type":"text", "text":"x" * 17000000 + " [open](https://hq.computer/share-session/abcdefghijklmnopqrstuvwx)"}]}}
+metadata = {"type":"system", "subtype":"hook_feedback", "content":"small trailing record"}
+with open(sys.argv[1], "w", encoding="utf-8") as transcript:
+    for record in (assistant, metadata):
+        transcript.write(json.dumps(record, separators=(",", ":")) + "\n")
+PY_FIXTURE
+CAP_HIT_OUT="$(run_capability_hook "$CAP_HIT_TRANSCRIPT")"
+[ "$(decision_of "$CAP_HIT_OUT")" = "block" ] \
+  || fail "[20] expected unverifiable oversized assistant to block, got: $CAP_HIT_OUT"
+pass "cap-hit capability-link check failed closed"
+
+echo "[21] estimate capture retains oversized nonfinal assistant records"
+CAPTURE_ROOT="$TMP/capture-hq"
+CAPTURE_TRANSCRIPT="$TMP/capture-transcript.jsonl"
+CAPTURE_TRACE="$TMP/capture-parser.trace"
+mkdir -p "$CAPTURE_ROOT/.claude/hooks/lib" "$CAPTURE_ROOT/core/scripts/lib"
+cp "$ROOT/.claude/hooks/capture-estimates.sh" "$CAPTURE_ROOT/.claude/hooks/"
+cp "$ROOT/core/scripts/lib/transcript-tail.sh" "$CAPTURE_ROOT/core/scripts/lib/"
+cat > "$CAPTURE_ROOT/.claude/hooks/lib/parse-estimates.pl" <<'PARSER_STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CAPTURE_TRACE"
+cat >/dev/null
+printf '{"session_id":"%s","message_uuid":"%s","captured":true}\n' "$1" "$2"
+PARSER_STUB
+chmod +x "$CAPTURE_ROOT/.claude/hooks/capture-estimates.sh" "$CAPTURE_ROOT/.claude/hooks/lib/parse-estimates.pl"
+python3 - "$CAPTURE_TRANSCRIPT" <<'PY_FIXTURE'
+import json, sys
+assistant = {"type":"assistant", "uuid":"oversized-assistant-turn", "message":{"role":"assistant", "content":[{"type":"text", "text":"Estimated time: 3 minutes. " + "x" * 1100000}]}}
+records = [assistant, {"type":"system", "subtype":"hook_feedback", "content":"Stop hook feedback"}, {"type":"file-history-snapshot", "messageId":"oversized-assistant-turn", "snapshot":{"trackedFileBackups":{}, "timestamp":"2026-09-29T00:00:00Z"}}]
+with open(sys.argv[1], "w", encoding="utf-8") as transcript:
+    for record in records:
+        transcript.write(json.dumps(record, separators=(",", ":")) + "\n")
+PY_FIXTURE
+jq -nc --arg p "$CAPTURE_TRANSCRIPT" '{transcript_path:$p,session_id:"session-fixture"}' \
+  | CAPTURE_TRACE="$CAPTURE_TRACE" bash "$CAPTURE_ROOT/.claude/hooks/capture-estimates.sh"
+CAPTURE_LOG="$CAPTURE_ROOT/workspace/estimate-log/log.jsonl"
+grep -Fq '"message_uuid":"oversized-assistant-turn"' "$CAPTURE_LOG" \
+  || fail "[21] estimate capture missed oversized nonfinal assistant record"
+grep -Fq 'session-fixture oversized-assistant-turn' "$CAPTURE_TRACE" \
+  || fail "[21] estimate parser did not receive the newest assistant record"
+pass "estimate capture saw the oversized nonfinal assistant record"
+
 echo "ALL PASS"

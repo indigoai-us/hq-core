@@ -189,6 +189,15 @@ function emit_required(   k, b, rp, j, rp2) {
   while (k <= NFIRST && FIRST[k] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) k = k + 1
   if (k > NFIRST) return
   b = base_name(FIRST[k])
+  # SessionStart may use env to set BASH_ENV before Bash starts. Walk through
+  # that launcher and its assignments so doctor still checks the executed
+  # script, while leaving unsupported env options unclassified.
+  if (b == "env") {
+    k = k + 1
+    while (k <= NFIRST && FIRST[k] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) k = k + 1
+    if (k > NFIRST || substr(FIRST[k], 1, 1) == "-") return
+    b = base_name(FIRST[k])
+  }
   if (b == "bash" || b == "sh" || b == "zsh" || b == "dash" || b == "ksh") {
     k = k + 1
     while (k <= NFIRST && substr(FIRST[k], 1, 1) == "-") {

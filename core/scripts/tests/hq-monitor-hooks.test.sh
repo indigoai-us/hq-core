@@ -29,6 +29,7 @@ cp "$SETTINGS" "$TMP_ROOT/.claude/settings.json"
 cp "$REGISTRY" "$TMP_ROOT/.claude/hooks/hook-registry.json"
 cp "$ROOT/.claude/hooks/hook-gate.sh" "$TMP_ROOT/.claude/hooks/hook-gate.sh"
 cp "$ROOT/.claude/hooks/hq-monitor-hook-lib.sh" "$TMP_ROOT/.claude/hooks/hq-monitor-hook-lib.sh"
+cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$TMP_ROOT/.claude/hooks/hook-timeout-probe.sh"
 cp "$GUARD" "$TMP_ROOT/.claude/hooks/hq-monitor-guard.sh"
 cp "$SESSION" "$TMP_ROOT/.claude/hooks/hq-monitor-session-hook.sh"
 cp "$START" "$TMP_ROOT/.claude/hooks/hq-monitor-session-start.sh"
@@ -128,6 +129,46 @@ done
 expect_block claude 'until grep -q done state; do sleep 1; done' 'until poll loop'
 expect_block codex 'gh run watch 123' 'gh run watch'
 expect_block grok 'gh pr checks --watch' 'gh pr checks --watch'
+rc="$(run_guard codex 'gh pr checks --watch')"
+if [ "$rc" = 0 ] && jq -e '.hookSpecificOutput.permissionDecisionReason | contains("--target session:codex:monitor-session")' "$TMP/stdout" >/dev/null; then ok 'monitor guidance includes this session target'; else bad 'monitor guidance includes this session target'; fi
+shell_heredoc="bash <<'EOF'
+gh run watch 1
+EOF"
+expect_block codex "$shell_heredoc" 'bash heredoc executes gh watch'
+shell_loop_heredoc="sh <<EOF
+until grep -q done f; do sleep 5; done
+EOF"
+expect_block codex "$shell_loop_heredoc" 'sh heredoc executes wait loop'
+piped_shell_heredoc="cat <<'EOF' | bash
+gh run watch 1
+EOF"
+expect_block codex "$piped_shell_heredoc" 'piped bash heredoc executes gh watch'
+sudo_shell_heredoc="sudo -u root bash <<EOF
+gh run watch 1
+EOF"
+expect_block codex "$sudo_shell_heredoc" 'sudo bash heredoc executes gh watch'
+command_sub_shell_heredoc="out=\$(bash <<'EOF'
+gh run watch 1
+EOF
+)"
+expect_block codex "$command_sub_shell_heredoc" 'command substitution bash heredoc executes gh watch'
+report_heredoc="cat <<'REPORT'
+gh pr checks --watch
+REPORT"
+expect_allow codex "$report_heredoc" 'watch command in heredoc report prose'
+redirected_report_heredoc="cat > report.md <<'REPORT'
+gh pr checks --watch
+REPORT"
+expect_allow codex "$redirected_report_heredoc" 'watch command in redirected report heredoc'
+here_string_then_wait=$'cat <<<EOF\ngh run watch 1'
+expect_block codex "$here_string_then_wait" 'here-string does not hide a following wait'
+quoted_operator_then_wait=$'echo "<<EOF"\ngh run watch 1'
+expect_block codex "$quoted_operator_then_wait" 'quoted heredoc-like text does not hide a following wait'
+commented_operator_then_wait=$'echo safe # <<EOF\ngh run watch 1'
+expect_block codex "$commented_operator_then_wait" 'commented heredoc-like text does not hide a following wait'
+crlf_heredoc_then_wait=$'cat <<EOF\r\nbody\r\nEOF\r\ngh run watch 1'
+expect_block codex "$crlf_heredoc_then_wait" 'CRLF heredoc does not hide a following wait'
+
 expect_block codex 'hq monitor list; sleep 300' 'monitor then sleep compound command'
 expect_block grok 'hq monitor stop x && gh run watch 1' 'monitor then gh watch compound command'
 

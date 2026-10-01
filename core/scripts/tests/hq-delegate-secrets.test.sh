@@ -55,6 +55,7 @@ cat > "$PROJ/.env.schema" <<'SCHEMA'
 DATABASE_URL=
 WIDGET_API_KEY=
 STRIPE_WEBHOOK_SECRET=
+SERVICE/API_KEY=
 SCHEMA
 
 BUNDLE="$FIX/workspace/delegations/dlg-test-widget"
@@ -87,6 +88,7 @@ set -e
 [ "$RC" -eq 2 ] || fail "without --yes must exit 2, got $RC"
 [ ! -s "$INVOKE_LOG" ] || fail "without --yes nothing may be invoked: $(cat "$INVOKE_LOG")"
 printf '%s' "$PLAN" | grep -q "WIDGET_API_KEY" || fail "confirmation prose must list the names"
+printf '%s' "$PLAN" | grep -q "SERVICE/API_KEY" || fail "confirmation prose must include slash-separated secret paths"
 printf '%s' "$PLAN" | grep -q "alice@acme.test" || fail "confirmation prose must name the principal"
 jq -e '.secrets == []' "$MANIFEST" >/dev/null || fail "declined run must not record names"
 
@@ -97,8 +99,8 @@ HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes >/dev/null 2>&1 \
   || fail "grant run exited non-zero"
 
 SHARE_COUNT="$(grep -c '^secrets share' "$INVOKE_LOG")"
-[ "$SHARE_COUNT" -eq 3 ] || fail "expected exactly 3 share calls, got $SHARE_COUNT: $(cat "$INVOKE_LOG")"
-for name in DATABASE_URL WIDGET_API_KEY STRIPE_WEBHOOK_SECRET; do
+[ "$SHARE_COUNT" -eq 4 ] || fail "expected exactly 4 share calls, got $SHARE_COUNT: $(cat "$INVOKE_LOG")"
+for name in DATABASE_URL WIDGET_API_KEY STRIPE_WEBHOOK_SECRET SERVICE/API_KEY; do
   grep -q "^secrets share $name --with alice@acme.test --permission read --company acme$" "$INVOKE_LOG" \
     || fail "missing read share for $name"
 done
@@ -108,7 +110,7 @@ if grep -Eq '^secrets (get|env|exec)|--reveal' "$INVOKE_LOG"; then
   fail "a value-reading command was invoked: $(cat "$INVOKE_LOG")"
 fi
 
-jq -e '.secrets == ["DATABASE_URL","STRIPE_WEBHOOK_SECRET","WIDGET_API_KEY"] and .secretsSkipped == false and .secretsGrantedAt != null' \
+jq -e '.secrets == ["DATABASE_URL","SERVICE/API_KEY","STRIPE_WEBHOOK_SECRET","WIDGET_API_KEY"] and .secretsSkipped == false and .secretsGrantedAt != null' \
   "$MANIFEST" >/dev/null || fail "manifest must record exactly the granted names: $(jq -c '.secrets' "$MANIFEST")"
 
 # --- 5. the sentinel value appears nowhere in the bundle ---------------------
