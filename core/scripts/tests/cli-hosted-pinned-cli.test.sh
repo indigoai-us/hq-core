@@ -26,7 +26,21 @@ set -euo pipefail
 case "$*" in
   "prefix -g") printf '%s\n' "${npm_config_prefix:-$MOCK_NPM_PREFIX}" ;;
   "root -g") printf '%s\n' "$MOCK_NPM_ROOT" ;;
-  install\ -g\ *) printf '%s\n' "$*" >> "$MOCK_NPM_INSTALL_LOG" ;;
+  install\ -g\ *)
+    printf '%s\n' "$*" >> "$MOCK_NPM_INSTALL_LOG"
+    package="$3"
+    installed_version="${package##*@}"
+    if [ "$installed_version" = latest ]; then installed_version="${HQ_MOCK_VERSION:?}"; fi
+    prefix="${npm_config_prefix:-$MOCK_NPM_PREFIX}"
+    mkdir -p "$prefix/bin"
+    cat > "$prefix/bin/hq" <<HQ
+#!/usr/bin/env bash
+if [ "\${1-}" = "--version" ]; then printf '%s\n' '$installed_version'; exit 0; fi
+if [ "\${1-}" = "core" ] && [ "\${2-}" = "--help" ]; then exit 0; fi
+exit 64
+HQ
+    chmod +x "$prefix/bin/hq"
+    ;;
   *) printf 'unexpected npm arguments: %s\n' "$*" >&2; exit 64 ;;
 esac
 NPM
@@ -80,9 +94,43 @@ entries:
     note: |
       synthetic row
 YAML
+MANIFEST_FILE="$INSTALL_ROOT/core/scripts/cli-hosted.yaml"
+BASE_MANIFEST="$TMP/base-cli-hosted.yaml"
+cp "$MANIFEST_FILE" "$BASE_MANIFEST"
+CORE_YAML_FILE="$INSTALL_ROOT/core/core.yaml"
+BASE_CORE_YAML="$TMP/base-core.yaml"
+cp "$CORE_YAML_FILE" "$BASE_CORE_YAML"
+RESOLVED_PIN="$(bash "$INSTALLER" --root "$INSTALL_ROOT" --resolve-only)"
+if [ "$RESOLVED_PIN" = "5.312.1" ]; then
+  pass 'resolve-only honors the CI-only minimum hq-cli pin'
+else
+  fail "resolve-only selects CI minimum 5.312.1: got $RESOLVED_PIN"
+fi
+awk '{ gsub(/min_cli: 5\.270\.0/, "min_cli: 5.400.0"); print }' "$BASE_MANIFEST" > "$MANIFEST_FILE"
+RESOLVED_FORWARDER_PIN="$(bash "$INSTALLER" --root "$INSTALL_ROOT" --resolve-only)"
+if [ "$RESOLVED_FORWARDER_PIN" = "5.400.0" ]; then
+  pass 'resolve-only preserves a higher forwarded min_cli over the CI minimum'
+else
+  fail "resolve-only selects higher forwarded min_cli 5.400.0: got $RESOLVED_FORWARDER_PIN"
+fi
+cp "$BASE_MANIFEST" "$MANIFEST_FILE"
+printf 'requiresHqCli: ">=5.401.0"\n' > "$CORE_YAML_FILE"
+RESOLVED_CORE_FLOOR="$(bash "$INSTALLER" --root "$INSTALL_ROOT" --resolve-only)"
+if [ "$RESOLVED_CORE_FLOOR" = "5.401.0" ]; then
+  pass 'resolve-only preserves a higher core.yaml floor over the CI minimum'
+else
+  fail "resolve-only selects higher core.yaml floor 5.401.0: got $RESOLVED_CORE_FLOOR"
+fi
+cp "$BASE_CORE_YAML" "$CORE_YAML_FILE"
+REQUESTED_PIN="$(bash "$INSTALLER" --root "$INSTALL_ROOT" --resolve-only --version 5.299.0)"
+if [ "$REQUESTED_PIN" = "5.299.0" ]; then
+  pass 'resolve-only preserves an explicit requested version'
+else
+  fail "resolve-only preserves --version: got $REQUESTED_PIN"
+fi
 cat > "$MOCK_PREFIX/bin/hq" <<'HQ'
 #!/usr/bin/env bash
-if [ "${1-}" = "--version" ]; then printf '5.270.0\n'; exit 0; fi
+if [ "${1-}" = "--version" ]; then printf '5.300.0\n'; exit 0; fi
 # Like the real version gate when the server minimum is above the pin: without
 # the opt-out, a command self-updates and exits without running.
 if [ "${HQ_NO_UPDATE_CHECK-}" != "1" ]; then printf 'below the minimum required version\n' >&2; exit 75; fi
@@ -94,12 +142,42 @@ GITHUB_PATH_FILE="$TMP/github-path"
 GITHUB_ENV_FILE="$TMP/github-step-vars"
 MOCK_NPM_LOG="$TMP/npm-installs"
 : > "$MOCK_NPM_LOG"
+CACHED_PREFIX="$TMP/cached-global"
+CACHED_PATH_FILE="$TMP/cached-github-path"
+mkdir -p "$CACHED_PREFIX/bin"
+cat > "$CACHED_PREFIX/bin/hq" <<'HQ'
+#!/usr/bin/env bash
+if [ "${1-}" = "--version" ]; then printf '5.312.1\n'; exit 0; fi
+if [ "${1-}" = "core" ] && [ "${2-}" = "--help" ]; then exit 0; fi
+exit 64
+HQ
+chmod +x "$CACHED_PREFIX/bin/hq"
+CACHED_OUTPUT="$(MOCK_NPM_PREFIX="$CACHED_PREFIX" MOCK_NPM_ROOT="$MOCK_NPM_ROOT" \
+  MOCK_NPM_INSTALL_LOG="$MOCK_NPM_LOG" GITHUB_PATH="$CACHED_PATH_FILE" \
+  HQ_MOCK_VERSION=5.312.1 PATH="$MOCK_BIN:$PATH" \
+  bash "$INSTALLER" --root "$INSTALL_ROOT" 2>&1)" || fail "cached pinned CLI is reused: $CACHED_OUTPUT"
+if [ -s "$MOCK_NPM_LOG" ]; then
+  fail 'already-installed selected hq version skips npm install'
+else
+  pass 'already-installed selected hq version skips npm install'
+fi
+if ! grep -F -q "$CACHED_PREFIX/bin" "$CACHED_PATH_FILE"; then
+  fail 'cached CLI still exports the npm global bin directory through GITHUB_PATH'
+else
+  pass 'cached CLI still exports the npm global bin directory through GITHUB_PATH'
+fi
+if ! grep -F -q 'hq --version: 5.312.1' <<<"$CACHED_OUTPUT"; then
+  fail 'cached CLI still passes the final selected-version check'
+else
+  pass 'cached CLI still passes the final selected-version check'
+fi
+: > "$MOCK_NPM_LOG"
 if [ ! -f "$INSTALLER" ]; then
   fail 'pinned CLI installer exists'
 else
   install_output="$(MOCK_NPM_PREFIX="$MOCK_PREFIX" MOCK_NPM_ROOT="$MOCK_NPM_ROOT" \
     MOCK_NPM_INSTALL_LOG="$MOCK_NPM_LOG" GITHUB_PATH="$GITHUB_PATH_FILE" \
-    GITHUB_ENV="$GITHUB_ENV_FILE" HQ_MOCK_VERSION=5.270.0 PATH="$MOCK_BIN:$PATH" \
+    GITHUB_ENV="$GITHUB_ENV_FILE" HQ_MOCK_VERSION=5.312.1 PATH="$MOCK_BIN:$PATH" \
     bash "$INSTALLER" --root "$INSTALL_ROOT" 2>&1)" || {
       fail "pinned CLI installer succeeds: $install_output"
       install_output=""
@@ -109,17 +187,17 @@ else
   else
     pass 'installer turns the version gate off for later CI steps'
   fi
-  if ! grep -F -q 'install -g @indigoai-us/hq-cli@5.270.0 --ignore-scripts' "$MOCK_NPM_LOG"; then
+  if ! grep -F -q 'install -g @indigoai-us/hq-cli@5.312.1 --ignore-scripts' "$MOCK_NPM_LOG"; then
     fail 'installer selects the maximum manifest min_cli and suppresses package lifecycle scripts'
   else
-    pass 'installer selects the maximum manifest min_cli and suppresses package lifecycle scripts'
+    pass 'different installed version triggers npm install at the selected pin'
   fi
   if ! grep -F -q "$MOCK_PREFIX/bin" "$GITHUB_PATH_FILE"; then
     fail 'installer exports the npm global bin directory through GITHUB_PATH'
   else
     pass 'installer exports the npm global bin directory through GITHUB_PATH'
   fi
-  if ! grep -F -q '5.270.0' <<<"$install_output"; then
+  if ! grep -F -q '5.312.1' <<<"$install_output"; then
     fail 'installer prints the installed hq version'
   else
     pass 'installer prints the installed hq version'
@@ -131,17 +209,17 @@ WINDOWS_PATH_FILE="$TMP/windows-github-path"
 mkdir -p "$WINDOWS_PREFIX"
 cat > "$WINDOWS_PREFIX/hq" <<'HQ'
 #!/usr/bin/env bash
-if [ "${1-}" = "--version" ]; then printf '5.270.0\n'; exit 0; fi
+if [ "${1-}" = "--version" ]; then printf '5.312.1\n'; exit 0; fi
 if [ "${1-}" = "core" ] && [ "${2-}" = "--help" ]; then exit 0; fi
 exit 64
 HQ
 chmod +x "$WINDOWS_PREFIX/hq"
 if WINDOWS_INSTALL_OUTPUT="$(MOCK_NPM_PREFIX="$WINDOWS_PREFIX" MOCK_NPM_ROOT="$MOCK_NPM_ROOT" \
   MOCK_NPM_INSTALL_LOG="$MOCK_NPM_LOG" GITHUB_PATH="$WINDOWS_PATH_FILE" \
-  HQ_MOCK_VERSION=5.270.0 PATH="$MOCK_BIN:$PATH" \
+  HQ_MOCK_VERSION=5.312.1 PATH="$MOCK_BIN:$PATH" \
   bash "$INSTALLER" --root "$INSTALL_ROOT" 2>&1)"; then
   if grep -F -q "$WINDOWS_PREFIX" "$WINDOWS_PATH_FILE" \
-    && grep -F -q 'hq --version: 5.270.0' <<<"$WINDOWS_INSTALL_OUTPUT"; then
+    && grep -F -q 'hq --version: 5.312.1' <<<"$WINDOWS_INSTALL_OUTPUT"; then
     pass 'installer accepts an npm global bin placed directly in its prefix'
   else
     fail 'installer exports and validates a prefix-level Windows-style npm bin'
@@ -320,6 +398,27 @@ write_release_changelog 5.277.0 yes
 expect_guard_failure "$TREE" 5.277.0 "$CATALOG" 1 \
   'hq-cli 5.277.0: published CHANGELOG.md contains hq core commands --json but the command is unavailable' \
   'negative control: missing catalog command fails once the installed release changelog advertises it'
+
+WINDOWS_JOB="$(sed -n '/^  shell-smoke-windows:$/,/^  shell-smoke-macos:$/p' "$ROOT/.github/workflows/pr-checks.yml" | sed '$d')"
+RESOLVE_STEP_LINE="$(grep -n 'name: Resolve Windows hq CLI cache inputs' <<<"$WINDOWS_JOB" | cut -d: -f1 || true)"
+CACHE_STEP_LINE="$(grep -n 'uses: actions/cache@v4' <<<"$WINDOWS_JOB" | cut -d: -f1 || true)"
+INSTALL_STEP_LINE="$(grep -n 'name: Install pinned hq CLI for forwarded scaffold scripts' <<<"$WINDOWS_JOB" | cut -d: -f1 || true)"
+if [ -n "$RESOLVE_STEP_LINE" ] && [ -n "$CACHE_STEP_LINE" ] && [ -n "$INSTALL_STEP_LINE" ] \
+  && [ "$RESOLVE_STEP_LINE" -lt "$CACHE_STEP_LINE" ] && [ "$CACHE_STEP_LINE" -lt "$INSTALL_STEP_LINE" ] \
+  && grep -Fq 'bash core/scripts/ci/install-pinned-hq-cli.sh --resolve-only' <<<"$WINDOWS_JOB" \
+  && grep -Fq 'npm prefix -g' <<<"$WINDOWS_JOB" && grep -Fq 'npm root -g' <<<"$WINDOWS_JOB" \
+  && grep -Fq 'runner.os' <<<"$WINDOWS_JOB" && grep -Fq 'runner.arch' <<<"$WINDOWS_JOB" \
+  && grep -Fq 'steps.hq_cli_cache.outputs.version' <<<"$WINDOWS_JOB" \
+  && grep -Fq "hashFiles('core/scripts/ci/install-pinned-hq-cli.sh')" <<<"$WINDOWS_JOB" \
+  && grep -Fq 'outputs.npm_root' <<<"$WINDOWS_JOB" \
+  && grep -Fq 'outputs.npm_prefix' <<<"$WINDOWS_JOB" \
+  && grep -Fq '\@indigoai-us\hq-cli' <<<"$WINDOWS_JOB" \
+  && grep -Fq '\hq.cmd' <<<"$WINDOWS_JOB" \
+  && grep -Fq '\hq.ps1' <<<"$WINDOWS_JOB"; then
+  pass 'Windows job resolves the pinned version and restores the versioned npm global CLI cache before install'
+else
+  fail 'Windows job caches the pinned npm global CLI package and shims by runner, version, and installer hash'
+fi
 
 if [ "$failures" -gt 0 ]; then exit 1; fi
 printf 'cli-hosted pinned CLI and catalog tests passed\n'

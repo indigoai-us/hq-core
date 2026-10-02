@@ -202,14 +202,16 @@ session_skill_catalog_build() {
   return 0
 }
 
-# session_skill_catalog_append <runDir>
+# session_skill_catalog_append <runDir> <companySlug> <compactFlag>
 session_skill_catalog_append() {
-  local run_dir="${1:-}"
+  local run_dir="${1:-}" company="${2:-}" compact="${3:-0}"
   local system_txt="$run_dir/system.txt"
   [ -f "$system_txt" ] || return 0
   {
     printf '<!-- hq-section: skill-catalog -->\n'
-    if [ -n "${SESSION_SKILL_CATALOG_BODY:-}" ]; then
+    if [ "$compact" = "true" ]; then
+      printf 'Read the relevant SKILL.md directly when a task calls for an HQ skill. Search only .claude/skills/*/SKILL.md, companies/%s/skills/*/SKILL.md, and core/packages/*/skills/*/SKILL.md. Do not inspect another company directory.\n' "$company"
+    elif [ -n "${SESSION_SKILL_CATALOG_BODY:-}" ]; then
       printf '%s\n' "$SESSION_SKILL_CATALOG_BODY"
     else
       printf '(no skills available)\n'

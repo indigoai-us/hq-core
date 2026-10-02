@@ -56,9 +56,9 @@ function packageImportPath(cliRoot, packageName) {
   throw new Error(`${packageName} could not be resolved from the installed hq CLI`);
 }
 
-function reportFailure(error) {
+function reportFailure(error, context = "HQ setup PATH") {
   process.stderr.write(
-    `HQ setup PATH flag lookup failed (${safeErrorClass(error)}); using the default-off behavior.\n`,
+    `${context} flag lookup failed (${safeErrorClass(error)}); using the default-off behavior.\n`,
   );
 }
 
@@ -66,7 +66,7 @@ function getHqRoot(env) {
   return path.resolve(env.HQ_ROOT || path.join(__dirname, "..", ".."));
 }
 
-function resolveCompanyContext(env, hqRoot) {
+function resolveCompanyContext(env, hqRoot, timeoutMs) {
   const explicitUid = env.HQ_COMPANY_UID?.trim() || "";
   if (/^cmp_[A-Za-z0-9]{3,128}$/.test(explicitUid)) {
     return { companyUid: explicitUid };
@@ -78,7 +78,7 @@ function resolveCompanyContext(env, hqRoot) {
     cwd: hqRoot,
     env: { ...env, HQ_ROOT: hqRoot, HQ_HQ_SESSION_NO_CLI: "1" },
     encoding: "utf8",
-    timeout: REQUEST_TIMEOUT_MS,
+    timeout: timeoutMs,
     maxBuffer: 4096,
   });
   if (result.error || result.status !== 0) {
@@ -105,21 +105,26 @@ async function resolveEndpoint(cliRoot, env) {
   return FLAG_REGISTRY_DEFAULT_ENDPOINT;
 }
 
-async function setupPathFlagEnabled(env = process.env) {
-  const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+async function readHqFlag(
+  flagKey,
+  env = process.env,
+  context = "HQ feature",
+  { timeoutMs = REQUEST_TIMEOUT_MS } = {},
+) {
+  const deadline = AbortSignal.timeout(timeoutMs);
   let client;
   let failed = false;
   let failureReported = false;
   const reportOnce = (error) => {
     if (failureReported) return;
     failureReported = true;
-    reportFailure(error);
+    reportFailure(error, context);
   };
   try {
     const cliRoot = findCliPackageRoot(env.HQ_CLI_BIN || "");
     const endpoint = await resolveEndpoint(cliRoot, env);
     const hqRoot = getHqRoot(env);
-    const company = resolveCompanyContext(env, hqRoot);
+    const company = resolveCompanyContext(env, hqRoot, timeoutMs);
     const flagsPath = packageImportPath(cliRoot, "@indigoai-us/hq-flags-client");
     const cloudPath = packageImportPath(cliRoot, "@indigoai-us/hq-cloud");
     const [{ createFlagClient }, { loadCachedTokens }] = await Promise.all([
@@ -139,7 +144,7 @@ async function setupPathFlagEnabled(env = process.env) {
         signal: AbortSignal.any([init?.signal, deadline].filter(Boolean)),
       }),
       refreshIntervalMs: 0,
-      requestTimeoutMs: REQUEST_TIMEOUT_MS,
+      requestTimeoutMs: timeoutMs,
       onError: (error) => {
         failed = true;
         reportOnce(error);
@@ -148,7 +153,7 @@ async function setupPathFlagEnabled(env = process.env) {
     await client.ready();
     const flags = client.snapshot()?.flags;
     if (deadline.aborted || failed || !flags || typeof flags !== "object") return DEFAULT_VALUE;
-    return flags[FLAG_KEY] === true;
+    return flags[flagKey] === true;
   } catch (error) {
     reportOnce(error);
     return DEFAULT_VALUE;
@@ -161,6 +166,10 @@ async function setupPathFlagEnabled(env = process.env) {
   }
 }
 
+async function setupPathFlagEnabled(env = process.env) {
+  return readHqFlag(FLAG_KEY, env, "HQ setup PATH");
+}
+
 if (require.main === module) {
   setupPathFlagEnabled()
     .then((enabled) => process.stdout.write(enabled ? "true\n" : "false\n"))
@@ -170,4 +179,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { FLAG_KEY, DEFAULT_VALUE, REQUEST_TIMEOUT_MS, setupPathFlagEnabled };
+module.exports = { FLAG_KEY, DEFAULT_VALUE, REQUEST_TIMEOUT_MS, readHqFlag, setupPathFlagEnabled };

@@ -551,6 +551,40 @@ emit_context() {
   esac
 }
 
+codex_explicit_path_guard() {
+  local cmd="$1" root_real cwd_real transcript candidate likely enabled reason
+  root_real="$(cd -P -- "$HQ_ROOT" 2>/dev/null && pwd -P)" || return 0
+  cwd_real="$(cd -P -- "$CWD" 2>/dev/null && pwd -P)" || return 0
+  [ "$cwd_real" = "$root_real" ] || return 0
+
+  likely="$(node "$HQ_ROOT/.codex/hooks/codex-explicit-path-guard.cjs" --candidate \
+    "$HQ_ROOT" "$CWD" "$cmd" "" 2>/dev/null)" || return 0
+  jq -e '.candidate == true' <<< "$likely" >/dev/null 2>&1 || return 0
+
+  if [ -z "${HQ_CLI_BIN:-}" ]; then
+    HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)"
+    export HQ_CLI_BIN
+  fi
+  enabled="$(node "$HQ_ROOT/.codex/hooks/codex-explicit-path-flag.cjs")" || enabled=false
+  [ "$enabled" = "true" ] || return 0
+
+  transcript="$(json_get '.transcript_path // empty')"
+  candidate="$(node "$HQ_ROOT/.codex/hooks/codex-explicit-path-guard.cjs" \
+    "$HQ_ROOT" "$CWD" "$cmd" "$transcript" 2>/dev/null)" || return 0
+  jq -e '.deny == true' <<< "$candidate" >/dev/null 2>&1 || return 0
+
+  reason="$(jq -r '.reason // empty' <<< "$candidate")"
+  [ -n "$reason" ] || return 0
+  jq -nc --arg ev "$HOOK_EVENT" --arg reason "$reason" '{
+    hookSpecificOutput: {
+      hookEventName: $ev,
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }
+  }'
+  exit 0
+}
+
 run_pre_tool_use() {
   local cmd read_path grep_path glob_path
   case "$TOOL_NAME" in
@@ -567,6 +601,7 @@ run_pre_tool_use() {
     Bash)
       cmd="$(json_get '.tool_input.command // empty')"
       [ -n "$cmd" ] && block_sensitive_read_if_needed "$cmd"
+      [ -n "$cmd" ] && codex_explicit_path_guard "$cmd"
       dispatch_settings_hooks "PreToolUse" "Bash" "$INPUT"
       ;;
     Read)

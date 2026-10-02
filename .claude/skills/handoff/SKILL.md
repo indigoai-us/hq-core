@@ -156,6 +156,8 @@ Logs land at `/tmp/handoff-post.log` and `/tmp/qmd-handoff.log`. If the session 
 
 Only begin this step after `handoff-finalize.sh` succeeds: `{learnings_json}` is now stored in `{thread_path}` and is recoverable even if every execution route fails. Do **not** call `claude -p` or `codex exec`, and do **not** run model work from `handoff-post.sh`.
 
+Run applicable follow-ups sequentially in this order: `/learn` first, then `/document-release`; wait for each result before starting the next. Before dispatch, tell the user a rough expected duration for the applicable work by estimating each follow-up and adding the estimates. Label it as an estimate, not a promise.
+
 Before dispatching document-release, resolve its availability once for this session with `bash core/scripts/skill-installed.sh document-release "${HQ_ACTIVE_COMPANY:-}"`. Use the bound active company from `HQ_ACTIVE_COMPANY`; do not derive the skill scope from `.metadata.company`, which may describe a touched tenant. When no company is bound, the check searches root and package skills only. Only when document-release is installed may a document-release follow-up use a dispatch route or appear in the recovery warning. If the check reports that it is absent, do not invoke it and record `document-release: skipped (skill not installed)` in the follow-up outcomes.
 
 For each applicable follow-up, use the first capability available in this order:

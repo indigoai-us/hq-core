@@ -72,9 +72,9 @@ JS
 
   LAST_TEXT="$(
     printf '%s\n' "$TRANSCRIPT_TAIL" | jq -nr '
-      [ inputs | select(.type=="assistant") ] | last
-      | .message.content
-      | (if type=="array" then [ .[] | select(.type=="text") | .text ] | join("\n")
+      [ inputs | select(.type=="assistant" or (.type=="response_item" and .payload.type=="message" and .payload.role=="assistant")) ] | last
+      | (if .type=="assistant" then .message.content else .payload.content end)
+      | (if type=="array" then [ .[] | select(.type=="text" or .type=="output_text") | .text ] | join("\n")
          elif type=="string" then .
          else "" end)
     ' 2>/dev/null || true

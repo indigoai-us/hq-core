@@ -1,2 +1,3 @@
 # HQ workspace mirror — sessions are gitignored, index.jsonl is committed
-sessions/
+sessions/*
+!sessions/.gitkeep

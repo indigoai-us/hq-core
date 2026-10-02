@@ -82,12 +82,14 @@ make_fixture() {
   local name="$1" dir="$TMP/$1"
   mkdir -p "$dir/.claude" "$dir/core/scripts/lib" "$dir/companies"
   cp "$ROOT/.claude/settings.json" "$dir/.claude/settings.json"
+  jq '.env = ((.env // {}) + {PATH: "/user/project:/shared"})' "$dir/.claude/settings.json" > "$dir/.claude/settings.json.tmp"
+  mv "$dir/.claude/settings.json.tmp" "$dir/.claude/settings.json"
   cp "$ROOT/core/scripts/compose-settings-path.sh" "$dir/core/scripts/compose-settings-path.sh"
   cp "$ROOT/core/scripts/setup-path-flag.cjs" "$dir/core/scripts/setup-path-flag.cjs"
   cp "$ROOT/core/scripts/hq-session.sh" "$dir/core/scripts/hq-session.sh"
   cp "$ROOT/core/scripts/lib/session-id.sh" "$dir/core/scripts/lib/session-id.sh"
   cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$dir/core/scripts/lib/session-scope-capability.sh"
-  printf '{"env":{"LOCAL_ONLY":"preserved"},"other":true}\n' > "$dir/.claude/settings.local.json"
+  printf '{"env":{"LOCAL_ONLY":"preserved","PATH":"/user/local:/shared"},"other":true}\n' > "$dir/.claude/settings.local.json"
   printf '%s' "$dir"
 }
 
@@ -123,8 +125,8 @@ run_helper() {
 }
 
 RUN_PATH="$PATH"
-EXPECTED_PATH="$(env HOME="$TMP/home" HQ_TOOLCHAIN_DIR="$TMP/no-toolchain" \
-  bash "$ROOT/core/scripts/compose-settings-path.sh" "$RUN_PATH")"
+EXPECTED_PATH="$(env HOME="$TMP/home" TMPDIR="$TMP" HQ_TOOLCHAIN_DIR="$TMP/no-toolchain" \
+  bash "$ROOT/core/scripts/compose-settings-path.sh" "/user/local:/shared:/user/project:/shared:$RUN_PATH")"
 
 ON_ROOT="$(make_fixture enabled)"
 bind_indigo "$ON_ROOT"

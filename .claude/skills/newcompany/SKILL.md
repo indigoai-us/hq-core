@@ -52,20 +52,28 @@ Ask (batch is fine here — these are simple facts):
 ### 0.3 Scaffold Directory
 
 ```bash
-# Render shared server-seed files and the local-only files listed in the manifest.
-node core/scripts/render-company-starter-files.mjs \
-  "{slug}" "{Name}" "companies/{slug}" --mode newcompany
+# The default-off HQ flag keeps the existing local scaffold. When enabled, bootstrap
+# the cloud company first, pull the shared seed, then render only machine-local paths.
+HQ_CLI_BIN="$(command -v hq)" node core/scripts/newcompany-bootstrap.cjs "{slug}" "{Name}" "companies/{slug}" "$PWD"
 # Obsidian preferences stay on this machine and are not part of the company seed.
-[ -e companies/_template/.obsidian ] && cp -rL companies/_template/.obsidian companies/{slug}/.obsidian
+[ -e companies/_template/.obsidian ] && cp -rL companies/_template/.obsidian "companies/{slug}/.obsidian"
 ```
+
+The bootstrap prints exactly one mode line after it completes:
+`newcompany mode: cloud-first` or `newcompany mode: newcompany`. Use that output
+as the mode for the rest of this run; do not read the flag again. In cloud-first mode,
+`hq onboard create-company` provisions the entity, bucket,
+owner membership, verifies STS access, and writes `.hq/config.json` before the
+shared company seed is pulled. The renderer then writes only `newcompany_only`
+paths, so cloud-owned seed files are not overwritten.
 
 The `workspace/` directory is the per-company audit trail of HQ sessions that touch this
 company. Sessions are hardlinked here from `workspace/threads/` by the mirror hook
 (`mirror-thread-to-company.sh`); `index.jsonl` is committed, individual session JSONs are gitignored.
 
-`company.yaml` is the HQ Desktop App / cloud-state marker. The local renderer creates it
-with `cloud: false`; `/designate-team {slug}` rewrites it to `cloud: true` and runs
-`hq cloud provision company {slug}`. The server seed never writes this per-machine file.
+`company.yaml` is the HQ Desktop App / cloud-state marker. Local mode preserves the
+existing `cloud: false` scaffold. Cloud-first mode writes `cloud: true` after onboarding
+has provisioned the company. The server seed never writes this per-machine file.
 
 ### 0.4 Create Knowledge Directory
 
@@ -75,12 +83,17 @@ Git metadata and must never be a symlink into `repos/`.
 
 ```bash
 mkdir -p companies/{slug}/knowledge/design-styles/packs
+# Run this legacy README write only when the bootstrap did not report cloud-first.
 cat > companies/{slug}/knowledge/README.md <<'EOF'
 # {Name} Knowledge
 
 Company reference material synced through the company vault.
 EOF
 ```
+
+When the bootstrap reports cloud-first, skip only the README write above because
+that shared file was pulled from the cloud. The local path continues to use the
+same README content as before.
 
 Verify (must pass before continuing):
 
@@ -304,6 +317,15 @@ Skip → no workers/skills synthesized.
 ---
 
 ## Phase 4 — Team & Cloud (NEW, opt-in gate for Phases 5–8)
+
+If Phase 0 printed `newcompany mode: cloud-first`, skip this phase's prompt and
+do not run `/designate-team` or `hq cloud provision company {slug}`. The company
+and vault already exist, and `hq files get` already pulled the shared company
+folder. Continue directly to Phase 5. Do not repeat the company-wide `@all`
+folder grants described in Phase 6. Phase 6 may still add group-specific grants
+the user selects; those do not replace or repeat the existing baseline.
+
+Only when Phase 0 printed `newcompany mode: newcompany`, ask:
 
 Shared secrets, group ACLs, invites, and cloud agents require a provisioned vault. Ask once:
 

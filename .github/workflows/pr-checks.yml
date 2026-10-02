@@ -64,6 +64,8 @@ jobs:
         run: bash core/scripts/tests/shell-smoke-macos-paths.test.sh
       - name: Codex policy rubric batching workflow contract
         run: bash core/scripts/tests/cost-workflow-pr-checks.test.sh
+      - name: Release promotion checks gate regression test
+        run: bash core/scripts/tests/release-pr-check-gate.test.sh
       - name: Run denylist scan
         run: bash .leak-scan/scan.sh denylist
 
@@ -298,6 +300,10 @@ jobs:
           fetch-depth: 0
       - name: Deterministic company starter renderer and /newcompany contract
         run: node --test core/scripts/__tests__/render-company-starter-files.test.mjs
+      - name: /newcompany bootstrap and flag timeout contracts
+        run: node --test core/scripts/__tests__/newcompany-bootstrap.test.cjs
+      - name: HQ flag reader honors caller timeout budgets
+        run: node --test core/scripts/__tests__/setup-path-flag-timeout.test.cjs
 
   setup-skill-direct-install:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -581,6 +587,8 @@ jobs:
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Hook commands resolve from an install path containing spaces
         run: bash core/scripts/tests/hook-path-resolution.test.sh
+      - name: Restored hook registrations neutralize BASH_ENV
+        run: bash core/scripts/tests/restore-hook-settings.test.sh
       - name: ensure-hq-cli hook detects/install/PATH-fixes the CLI
         run: bash core/scripts/tests/ensure-hq-cli-hook.test.sh
       - name: ensure-hq-desktop hook detects/updates the desktop app
@@ -740,6 +748,10 @@ jobs:
         run: bash core/scripts/tests/us146-gh-positional-repo-anchors.test.sh
       - name: Codex-harness git-mutation guard fires
         run: bash core/scripts/tests/codex-git-mutation-firing.test.sh
+      - name: Codex explicit shell paths guard
+        run: bash core/scripts/tests/codex-explicit-path-guard.test.sh
+      - name: Codex explicit-path flag reader
+        run: node --test core/scripts/tests/codex-explicit-path-flag.test.cjs
       - name: Company repo creation and Git metadata guards
         run: bash .claude/hooks/tests/block-company-code-repos.test.sh
       - name: Codex hook adapter routes mandatory scope authorizer
@@ -929,6 +941,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - name: Skill catalog compact flag preserves safety prompt sections
+        run: bash core/scripts/tests/hq-agent-session-skills.test.sh
       - name: Session bootstrap scope capability and entrypoint regressions
         run: bash core/scripts/tests/hq-agent-session.test.sh
       - name: Assembly timing budget (US-411)
@@ -968,6 +982,8 @@ jobs:
           node-version: '22'
       - name: Install pinned hq CLI for forwarded scaffold scripts
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: Shipped knowledge and worker indexes match generators
+        run: bash core/scripts/tests/shipped-index-freshness.test.sh
       - name: Rebuild qmd collections after sync
         run: bash core/scripts/tests/qmd-reindex-after-sync.test.sh
       - name: Keep the pinned CLI opt-out in hermetic tests
@@ -1182,6 +1198,8 @@ jobs:
         run: bash core/scripts/tests/hook-gate-path-augment.test.sh
       - name: All tracked .sh files are mode 100755 in the git index (US-004)
         run: bash core/scripts/tests/exec-bit-all-scripts.test.sh
+      - name: new-hire CLI onboarding guidance regression
+        run: bash core/scripts/tests/new-hire-cli-onboarding-guidance.test.sh
       - name: block-core-writes-bash exempts repos/ checkouts, still guards live root
         run: bash core/scripts/tests/block-core-writes-repos-exempt.test.sh
       - name: block-core-writes-bash target-aware write detection
@@ -1362,6 +1380,27 @@ jobs:
           cache-dependency-path: |
             core/core.yaml
             core/scripts/cli-hosted.yaml
+      - name: Resolve Windows hq CLI cache inputs
+        id: hq_cli_cache
+        shell: bash
+        run: |
+          version="$(bash core/scripts/ci/install-pinned-hq-cli.sh --resolve-only)"
+          npm_prefix="$(npm prefix -g)"
+          npm_root="$(npm root -g)"
+          {
+            printf 'version=%s\n' "$version"
+            printf 'npm_prefix=%s\n' "$npm_prefix"
+            printf 'npm_root=%s\n' "$npm_root"
+          } >> "$GITHUB_OUTPUT"
+      - name: Cache pinned hq CLI global install
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.hq_cli_cache.outputs.npm_root }}\@indigoai-us\hq-cli
+            ${{ steps.hq_cli_cache.outputs.npm_prefix }}\hq
+            ${{ steps.hq_cli_cache.outputs.npm_prefix }}\hq.cmd
+            ${{ steps.hq_cli_cache.outputs.npm_prefix }}\hq.ps1
+          key: hq-cli-${{ runner.os }}-${{ runner.arch }}-${{ steps.hq_cli_cache.outputs.version }}-${{ hashFiles('core/scripts/ci/install-pinned-hq-cli.sh') }}
       - name: Install pinned hq CLI for forwarded scaffold scripts
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: portable-lib
@@ -1378,6 +1417,20 @@ jobs:
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
       - name: Hook path does not source BASH_ENV in child bash
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
+      - name: Registered SessionStart command bypasses BASH_ENV on Git Bash
+        run: |
+          set -euo pipefail
+          registered="$(jq -r '.hooks.SessionStart[0].hooks[0].command' .claude/settings.json)"
+          test -n "$registered"
+          poison="$RUNNER_TEMP/sc-cli-br-poison-profile.sh"
+          printf 'exit 87\n' > "$poison"
+          payload="$(jq -nc --arg cwd "$GITHUB_WORKSPACE" '{session_id:"windows-bash-env-smoke",hook_event_name:"SessionStart",source:"startup",cwd:$cwd}')"
+          printf '%s' "$payload" | env \
+            BASH_ENV="$poison" \
+            HQ_HOOK_TIMEOUT_SENTRY=0 \
+            HQ_ROOT="$GITHUB_WORKSPACE" \
+            CLAUDE_PROJECT_DIR="$GITHUB_WORKSPACE" \
+            timeout 120s sh -c "$registered"
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
       - name: Lane senior Stop-gate PATH-shim process budget

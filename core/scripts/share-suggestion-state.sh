@@ -113,7 +113,10 @@ const sortKeys = (v) =>
 
 function readJson(p, dflt) {
   if (!fs.existsSync(p)) return dflt;
-  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { return dflt; }
+  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) {
+    console.error(`share-suggestion-state: unable to read ${p} (${e.name || "Error"})`);
+    process.exit(3);
+  }
 }
 
 function writeJson(p, payload) {
@@ -537,5 +540,10 @@ process.exit(0);
 JS
 }
 
-main "$@" || log_error "internal error"
+# Exit 3 means an existing state file could not be read; callers see that
+# failure. Every other error is logged and the helper exits 0.
+main "$@"
+status=$?
+[ "$status" -eq 3 ] && exit 3
+[ "$status" -eq 0 ] || log_error "internal error"
 exit 0

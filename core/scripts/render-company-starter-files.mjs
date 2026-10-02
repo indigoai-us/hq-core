@@ -248,7 +248,7 @@ export function renderCompanyStarterFiles({
   if (typeof companyName !== 'string' || !companyName.trim() || /[\r\n\0]/.test(companyName)) {
     fail('Company display name must be non-empty and stay on one line');
   }
-  if (mode !== 'seed' && mode !== 'newcompany') {
+  if (!['seed', 'newcompany', 'newcompany-cloud-first'].includes(mode)) {
     fail(`Unsupported rendering mode: ${mode}`);
   }
   if (!destination) fail('Destination is required');
@@ -269,13 +269,23 @@ export function renderCompanyStarterFiles({
   for (const placeholder of Object.keys(manifest.placeholders)) {
     if (!(placeholder in values)) fail(`No CLI value is defined for placeholder {${placeholder}}`);
   }
-  const outputPaths = mode === 'seed' ? manifest.seed : [...manifest.seed, ...manifest.newcompany_only];
+  const outputPaths = mode === 'seed'
+    ? manifest.seed
+    : mode === 'newcompany'
+      ? [...manifest.seed, ...manifest.newcompany_only]
+      : manifest.newcompany_only;
   mkdirSync(absoluteDestination, { recursive: true });
 
   for (const relativePath of outputPaths) {
     const source = sourcePath(templateRoot, relativePath);
     const target = path.join(absoluteDestination, ...relativePath.split('/'));
-    const contents = resolvePlaceholders(readFileSync(source, 'utf8'), relativePath, manifest, values);
+    let contents = resolvePlaceholders(readFileSync(source, 'utf8'), relativePath, manifest, values);
+    if (mode === 'newcompany-cloud-first' && relativePath === 'company.yaml') {
+      if (!/^cloud: false\s*$/m.test(contents)) {
+        fail('Cloud-first company template must start with cloud: false');
+      }
+      contents = contents.replace(/^cloud: false\s*$/m, 'cloud: true');
+    }
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, contents, 'utf8');
   }
@@ -284,12 +294,12 @@ export function renderCompanyStarterFiles({
 
 function runCli(args) {
   if (args.length !== 3 && args.length !== 5) {
-    fail('Usage: node core/scripts/render-company-starter-files.mjs <slug> <display-name> <destination> [--mode newcompany]');
+    fail('Usage: node core/scripts/render-company-starter-files.mjs <slug> <display-name> <destination> [--mode newcompany|newcompany-cloud-first]');
   }
   let mode = 'seed';
   if (args.length === 5) {
-    if (args[3] !== '--mode' || args[4] !== 'newcompany') {
-      fail('The only supported mode option is --mode newcompany');
+    if (args[3] !== '--mode' || !['newcompany', 'newcompany-cloud-first'].includes(args[4])) {
+      fail('Supported modes are --mode newcompany and --mode newcompany-cloud-first');
     }
     mode = args[4];
   }

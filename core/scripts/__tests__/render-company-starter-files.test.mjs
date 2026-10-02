@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import os from 'node:os';
@@ -87,6 +88,38 @@ test('the manifest classifies every template path and excludes every never-seede
   assert.equal(seeded.has('sources/meetings/source.yaml'), true);
 });
 
+test('manifest and golden files are not hidden by gitignore rules', async () => {
+  const { loadSeedManifest } = await import('../render-company-starter-files.mjs');
+  const manifest = loadSeedManifest(TEMPLATE);
+  const goldenFiles = filesUnder(GOLDEN).map((relative) =>
+    path.posix.join('.hq-seed/golden/acme', relative),
+  );
+  const paths = [
+    ...manifest.seed.map((relative) => path.posix.join('companies/_template', relative)),
+    ...manifest.newcompany_only.map((relative) => path.posix.join('companies/_template', relative)),
+    ...goldenFiles.map((relative) => path.posix.join('companies/_template', relative)),
+  ];
+
+  for (const relative of paths) {
+    const result = spawnSync('git', ['check-ignore', '--no-index', '-q', '--', relative], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 1, `${relative} must not be ignored by git${result.stderr ? `: ${result.stderr}` : ''}`);
+  }
+});
+
+test('core golden shared seed matches the pinned hq-cli fixture contract', async () => {
+  const { loadSeedManifest } = await import('../render-company-starter-files.mjs');
+  const manifest = loadSeedManifest(TEMPLATE);
+  const contract = JSON.parse(readFileSync(path.join(ROOT, 'core/scripts/company-seed-golden-sha256.json'), 'utf8'));
+  assert.deepEqual(Object.keys(contract.files).sort(), [...manifest.seed].sort());
+  for (const relative of manifest.seed) {
+    const hash = createHash('sha256').update(readFileSync(path.join(GOLDEN, relative))).digest('hex');
+    assert.equal(hash, contract.files[relative], `${relative} matches the hq-cli fixture contract`);
+  }
+});
+
 test('leading-wildcard manifest globs are quoted and parsed as values', async () => {
   const source = readFileSync(path.join(TEMPLATE, '.hq-seed.yaml'), 'utf8');
   const neverSeeded = source.split(/^never_seeded:\s*$/m)[1]?.split(/^seed_exceptions:\s*$/m)[0] ?? '';
@@ -137,6 +170,24 @@ test('the /newcompany render preserves shared bytes and fills all declared place
   }
 });
 
+test('cloud-first rendering writes only local paths and marks the company cloud-backed', async (t) => {
+  const temporary = temporaryDirectory();
+  t.after(() => rmSync(temporary, { recursive: true, force: true }));
+  const destination = path.join(temporary, 'cloud-first');
+  const result = render(destination, 'newcompany-cloud-first');
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const { loadSeedManifest } = await import('../render-company-starter-files.mjs');
+  const manifest = loadSeedManifest(TEMPLATE);
+  for (const relative of manifest.seed) {
+    assert.equal(filesUnder(destination).includes(relative), false, `${relative} is left to cloud seed`);
+  }
+  for (const relative of manifest.newcompany_only) {
+    assert.ok(filesUnder(destination).includes(relative), `${relative} is rendered locally`);
+  }
+  assert.match(readFileSync(path.join(destination, 'company.yaml'), 'utf8'), /^cloud: true$/m);
+});
+
 test('display-name braces are kept as literal output text', (t) => {
   const temporary = temporaryDirectory();
   t.after(() => rmSync(temporary, { recursive: true, force: true }));
@@ -152,7 +203,7 @@ test('/newcompany uses the renderer and step 0.7 leaves the rendered README alon
   const phase04 = skill.split('### 0.4 Create Knowledge Directory\n')[1]?.split('### 0.5 ')[0] ?? '';
   const phase07 = skill.split('### 0.7 ')[1]?.split('\n---')[0] ?? '';
 
-  assert.match(phase03, /render-company-starter-files\.mjs/);
+  assert.match(phase03, /newcompany-bootstrap\.cjs/);
   assert.doesNotMatch(phase03, /find \. -type|companies\/_template\/settings|updated_at.*date -u/s);
   assert.match(phase04, /plain real directory/);
   assert.doesNotMatch(phase04, /git\s+(init|add|commit)|git -C/);

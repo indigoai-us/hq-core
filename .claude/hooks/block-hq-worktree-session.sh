@@ -270,6 +270,19 @@ if [ -z "$REASON" ]; then
   exit 0
 fi
 
+# A session whose project root is canonical HQ may deliberately `cd` into an
+# HQ-linked worktree for shell work. Keep sessions launched from an HQ
+# worktree blocked; only the cwd-only case is eligible for this default-off
+# hq-flags gate.
+if [ "$REASON" = "cwd" ] && command -v node >/dev/null 2>&1; then
+  if [ -z "${HQ_CLI_BIN:-}" ]; then
+    HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)"
+    export HQ_CLI_BIN
+  fi
+  SAFE_CWD_FLAG="$(node "$HOOK_DIR/block-hq-worktree-safe-cd-flag.cjs")" || SAFE_CWD_FLAG=false
+  [ "$SAFE_CWD_FLAG" = "true" ] && exit 0
+fi
+
 if [ "$REASON" = "project-dir" ]; then
   WHERE="This Claude session's project directory is a linked git worktree of the HQ repository."
 else
@@ -302,6 +315,10 @@ whose merge deletes unrelated HQ files.
 WHAT TO DO: exit this session and start Claude from the canonical checkout:
 
   $next_step
+
+When starting an HQ session, leave Claude Code's Worktree toggle unchecked. It
+starts HQ in a linked worktree, which this guard blocks. Use the toggle for a
+source-repository session; those worktrees are unaffected.
 
 Source-repo worktrees are unaffected: editing a checkout under repos/ from a
 worktree in workspace/worktrees/<repo>/<name>/ is the normal, required flow.

@@ -24,7 +24,13 @@ mkdir -p "$FIXTURE/core/schemas" "$FIXTURE/core/scripts" \
   "$FIXTURE/.claude/skills/handoff" \
   "$FIXTURE/.claude/skills/signals" \
   "$FIXTURE/core/packages/demo-pack/skills/pack-skill" \
-  "$FIXTURE/personal/policies"
+  "$FIXTURE/personal/policies" \
+  "$FIXTURE/personal/knowledge/public/agent-capabilities" \
+  "$FIXTURE/companies/indigo" \
+  "$FIXTURE/.claude/hooks" \
+  "$TMP/cli/bin" \
+  "$TMP/cli/node_modules/@indigoai-us/hq-flags-client" \
+  "$TMP/cli/node_modules/@indigoai-us/hq-cloud"
 
 cp "$SRC_ROOT/core/core.yaml" "$FIXTURE/core/core.yaml"
 cp "$SRC_ROOT/core/schemas/"*.json "$FIXTURE/core/schemas/"
@@ -34,6 +40,9 @@ cp "$SRC_ROOT/core/scripts/hq-session.sh" "$FIXTURE/core/scripts/" 2>/dev/null |
 cp "$SRC_ROOT/.claude/hooks/master-hook.sh" "$FIXTURE/.claude/hooks/" 2>/dev/null || true
 cp "$SRC_ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIXTURE/.claude/hooks/"
 cp "$SRC_ROOT/.claude/hooks/inject-policy-on-trigger.sh" "$FIXTURE/.claude/hooks/"
+if [ -f "$SRC_ROOT/.claude/hooks/agent-session-skill-catalog-compact-flag.cjs" ]; then
+  cp "$SRC_ROOT/.claude/hooks/agent-session-skill-catalog-compact-flag.cjs" "$FIXTURE/.claude/hooks/"
+fi
 cat > "$FIXTURE/core/scripts/hook-lib.sh" <<'EOF'
 hq_json_get() {
   jq -r --arg k "$1" '
@@ -48,6 +57,39 @@ printf '# Formats\n\n## slack\n\nSlack.\n' \
   > "$FIXTURE/core/knowledge/public/hq-core/channel-writing-formats.md"
 printf 'CHARTER\n' > "$FIXTURE/AGENTS.md"
 printf 'COMPANY\n' > "$FIXTURE/companies/indigo/CLAUDE.md"
+printf 'cmp_test123456\n' > "$FIXTURE/companies/indigo/.company-uid"
+printf 'AGENT_IDENTITY_CONTEXT\n' \
+  > "$FIXTURE/personal/knowledge/public/agent-capabilities/hq-agent-contract.md"
+# Keep policy injection deterministic and offline for the synthetic fixture.
+cat > "$FIXTURE/.claude/hooks/inject-policy-on-trigger.sh" <<'HOOK'
+#!/usr/bin/env bash
+printf 'fixture-hard-safety\tcompany\t\thard\tFIXTURE_HARD_POLICY\n'
+HOOK
+
+# Synthetic hq-flags client: tests stay offline and can exercise both flag values.
+printf '#!/bin/bash\nexit 0\n' > "$TMP/cli/bin/hq"
+chmod +x "$TMP/cli/bin/hq"
+cat > "$TMP/cli/package.json" <<'JSON'
+{"name":"@indigoai-us/hq-cli"}
+JSON
+cat > "$TMP/cli/node_modules/@indigoai-us/hq-flags-client/package.json" <<'JSON'
+{"name":"@indigoai-us/hq-flags-client","main":"index.cjs"}
+JSON
+cat > "$TMP/cli/node_modules/@indigoai-us/hq-flags-client/index.cjs" <<'JS'
+exports.createFlagClient = () => ({
+  ready: async () => {},
+  snapshot: () => ({flags: process.env.HQ_TEST_SESSION_SKILL_CATALOG_COMPACT === "true"
+    ? {"core.agent-session-skill-catalog-compact": true}
+    : {"core.agent-session-skill-catalog-compact": false}}),
+  close: () => {},
+});
+JS
+cat > "$TMP/cli/node_modules/@indigoai-us/hq-cloud/package.json" <<'JSON'
+{"name":"@indigoai-us/hq-cloud","main":"index.cjs"}
+JSON
+cat > "$TMP/cli/node_modules/@indigoai-us/hq-cloud/index.cjs" <<'JS'
+exports.loadCachedTokens = () => ({idToken: "synthetic-token"});
+JS
 
 # Skills
 cat > "$FIXTURE/.claude/skills/handoff/SKILL.md" <<'EOF'
@@ -98,6 +140,11 @@ export HOME="$TMP/home"
 mkdir -p "$HOME"
 export HQ_AGENT_WORKDIR="$FIXTURE"
 export HQ_AGENT_SESSION_SKIP_PROVIDER=1
+export HQ_CLI_BIN="$TMP/cli/bin/hq"
+export HQ_FLAGS_API_URL="https://flags.synthetic.test"
+export HQ_COMPANY_UID="cmp_test123456"
+export HQ_COMPANY_SLUG="indigo"
+export HQ_TEST_SESSION_SKILL_CATALOG_COMPACT=false
 
 REQ="$(jq -nc '{
   contractVersion: 1,
@@ -214,6 +261,73 @@ overflow_bytes="$(printf '%s\n' "$SESSION_SKILL_CATALOG_BODY" | wc -c | tr -d '[
   fail "overflow byte count=$SESSION_SKILL_CATALOG_RENDERED_BYTES actual=$overflow_bytes"
 [ "$overflow_bytes" -le 180 ] || fail "overflow catalog $overflow_bytes bytes > 180"
 pass "name-only overflow is explicit (rendered=$overflow_bytes)"
+
+# Flag-off retains the current catalog; flag-on replaces it with a short pointer
+# to the allowed SKILL.md locations while keeping all safety sections intact.
+HQ_TEST_SESSION_SKILL_CATALOG_COMPACT=false
+REQ_COMPACT="$(echo "$REQ" | jq '.provider = "grok"')"
+OUT_OFF="$(printf '%s' "$REQ_COMPACT" | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/err-off")" || \
+  fail "flag-off session failed: $(cat "$TMP/err-off")"
+RUN_OFF="$(echo "$OUT_OFF" | jq -r .runDir)"
+grep -q -- '- /handoff — Preserve session state' "$RUN_OFF/system.txt" || \
+  fail "flag-off must preserve the existing skill catalog"
+pass "flag-off retains the existing catalog"
+
+HQ_TEST_SESSION_SKILL_CATALOG_COMPACT=true
+OUT_ON="$(printf '%s' "$REQ_COMPACT" | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/err-on")" || \
+  fail "flag-on session failed: $(cat "$TMP/err-on")"
+RUN_ON="$(echo "$OUT_ON" | jq -r .runDir)"
+SYS_ON="$RUN_ON/system.txt"
+section_bytes() {
+  local file="$1" section="$2"
+  awk -v marker="<!-- hq-section: $section -->" '
+    $0 == marker {print; grab=1; next}
+    grab && /<!-- hq-section:/ {exit}
+    grab {print}
+  ' "$file" | wc -c | tr -d '[:space:]'
+}
+for safety_section in charter agent-contract company-charter voice channel-format policies \
+  brief-posture reply-contract mention-posture status-notes durable-writes reply-contract-reminder; do
+  before_bytes="$(section_bytes "$RUN_OFF/system.txt" "$safety_section")"
+  after_bytes="$(section_bytes "$SYS_ON" "$safety_section")"
+  [ "$before_bytes" = "$after_bytes" ] || \
+    fail "flag-on changed safety section $safety_section bytes ($before_bytes -> $after_bytes)"
+  printf 'MEASURE section=%s bytes_before=%s bytes_after=%s\n' \
+    "$safety_section" "$before_bytes" "$after_bytes"
+done
+catalog_bytes_before="$(section_bytes "$RUN_OFF/system.txt" skill-catalog)"
+catalog_bytes_after="$(section_bytes "$SYS_ON" skill-catalog)"
+printf 'MEASURE section=skill-catalog bytes_before=%s bytes_after=%s\n' \
+  "$catalog_bytes_before" "$catalog_bytes_after"
+for phase in system-prompt policy skill-catalog; do
+  before_ms="$(echo "$OUT_OFF" | jq -r --arg phase "$phase" '.assemblyMs[$phase] // 0')"
+  after_ms="$(echo "$OUT_ON" | jq -r --arg phase "$phase" '.assemblyMs[$phase] // 0')"
+  printf 'MEASURE phase=%s ms_before=%s ms_after=%s\n' "$phase" "$before_ms" "$after_ms"
+done
+compact_bytes="$(awk '
+  /<!-- hq-section: skill-catalog -->/ {grab=1; next}
+  /<!-- hq-section:/ {if(grab) exit}
+  grab {print}
+' "$SYS_ON" | wc -c | tr -d '[:space:]')"
+[ "$compact_bytes" -lt 512 ] || fail "flag-on skill catalog is not compact ($compact_bytes bytes)"
+grep -qF 'Read the relevant SKILL.md' "$SYS_ON" || fail "compact guidance does not point to SKILL.md files"
+grep -qF '.claude/skills' "$SYS_ON" || fail "compact guidance omits root skill path"
+grep -qF 'companies/indigo/skills' "$SYS_ON" || fail "compact guidance omits bound-company skill path"
+grep -qF 'core/packages' "$SYS_ON" || fail "compact guidance omits packaged skill path"
+grep -qF 'Do not inspect another company directory' "$SYS_ON" || fail "compact guidance omits tenant scope boundary"
+grep -qF 'companies/otherco' "$SYS_ON" && fail "compact guidance leaked another company path"
+if grep -q 'Company signals skill description\|Root signals skill description\|Package skill one-liner' "$SYS_ON"; then
+  fail "flag-on still includes expanded skill descriptions"
+fi
+for safety_section in charter agent-contract company-charter policies reply-contract reply-contract-reminder; do
+  grep -qF "<!-- hq-section: $safety_section -->" "$SYS_ON" || \
+    fail "flag-on removed safety section $safety_section"
+done
+grep -qF 'CHARTER' "$SYS_ON" || fail "flag-on removed charter content"
+grep -qF 'COMPANY' "$SYS_ON" || fail "flag-on removed company charter content"
+grep -qF 'AGENT_IDENTITY_CONTEXT' "$SYS_ON" || fail "flag-on removed agent identity context"
+grep -qF 'FIXTURE_HARD_POLICY' "$SYS_ON" || fail "flag-on removed hard policy content"
+pass "flag-on compacts the catalog and preserves safety sections ($compact_bytes bytes)"
 
 echo
 echo "PASS (skill catalog)"

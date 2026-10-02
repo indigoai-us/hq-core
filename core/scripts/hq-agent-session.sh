@@ -611,8 +611,16 @@ main() {
 
   # ── skill-catalog ─────────────────────────────────────────────────────────
   session_timing_begin skill-catalog
+  local compact_skill_catalog=false
+  if command -v node >/dev/null 2>&1 \
+    && [ -f "$root/.claude/hooks/agent-session-skill-catalog-compact-flag.cjs" ]; then
+    compact_skill_catalog="$(HQ_ROOT="$root" HQ_COMPANY_SLUG="$company_slug" \
+      node "$root/.claude/hooks/agent-session-skill-catalog-compact-flag.cjs")" \
+      || compact_skill_catalog=false
+  fi
+  case "$compact_skill_catalog" in true) ;; *) compact_skill_catalog=false ;; esac
   session_skill_catalog_build "$root" "$company_slug" >/dev/null || true
-  session_skill_catalog_append "$run_dir" || true
+  session_skill_catalog_append "$run_dir" "$company_slug" "$compact_skill_catalog" || true
   session_skill_dispatch "$run_dir" "$message_text" || true
   session_timing_end
 

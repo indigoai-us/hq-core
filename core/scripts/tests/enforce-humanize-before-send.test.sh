@@ -308,4 +308,97 @@ grep -Fq 'session-fixture oversized-assistant-turn' "$CAPTURE_TRACE" \
   || fail "[21] estimate parser did not receive the newest assistant record"
 pass "estimate capture saw the oversized nonfinal assistant record"
 
+echo "[21a] latest Codex assistant in fast tail avoids scan-cap read and keeps bounded output"
+FAST_PATH_FAILURES=0
+REAL_TAIL="$(command -v tail)"
+make_fast_path_transcript() { # <path> <codex|claude>
+  python3 - "$1" "$2" <<'PY_FAST_PATH_FIXTURE'
+import json, sys
+path, kind = sys.argv[1:]
+padding = {"type":"progress", "padding":"x" * 256}
+if kind == "codex":
+    assistant = {"type":"response_item", "payload":{"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"fast-codex"}]}}
+else:
+    assistant = {"type":"assistant", "message":{"role":"assistant", "content":[{"type":"text", "text":"fast-claude"}]}}
+with open(path, "w", encoding="utf-8") as transcript:
+    for _ in range(8):
+        transcript.write(json.dumps(padding, separators=(",", ":")) + "\n")
+    transcript.write(json.dumps(assistant, separators=(",", ":")) + "\n")
+PY_FAST_PATH_FIXTURE
+}
+run_tail_with_trace() { # <transcript> <trace>
+  TAIL_TRACE="$2" REAL_TAIL="$REAL_TAIL" PATH="$TAIL_SHIM_DIR:$PATH" \
+    bash -c '. "$1"; hq_transcript_tail_with_latest_assistant "$2" 512 1024' _ "$TAIL_LIB" "$1"
+}
+for FAST_KIND in codex claude; do
+  FAST_TRANSCRIPT="$TMP/fast-path-$FAST_KIND.jsonl"
+  FAST_TRACE="$TMP/fast-path-$FAST_KIND.trace"
+  make_fast_path_transcript "$FAST_TRANSCRIPT" "$FAST_KIND"
+  FAST_STATUS=0
+  FAST_OUTPUT="$(run_tail_with_trace "$FAST_TRANSCRIPT" "$FAST_TRACE")" || FAST_STATUS=$?
+  FAST_OUTPUT_BYTES="$(printf '%s' "$FAST_OUTPUT" | wc -c | tr -d ' ')"
+  if [ "$FAST_STATUS" -ne 0 ] || ! printf '%s' "$FAST_OUTPUT" | grep -Fq "fast-$FAST_KIND"; then
+    echo "FAIL [21a/$FAST_KIND]: expected status 0 and latest assistant output; status=$FAST_STATUS"
+    FAST_PATH_FAILURES=1
+  fi
+  if [ "$FAST_OUTPUT_BYTES" -gt 513 ]; then
+    echo "FAIL [21a/$FAST_KIND]: returned $FAST_OUTPUT_BYTES bytes; expected at most 513"
+    FAST_PATH_FAILURES=1
+  fi
+  if awk '$1 == "-c" && $2 > 513 { bad=1 } END { exit bad ? 0 : 1 }' "$FAST_TRACE"; then
+    echo "FAIL [21a/$FAST_KIND]: tail read exceeded max_bytes+1: $(cat "$FAST_TRACE")"
+    FAST_PATH_FAILURES=1
+  else
+    pass "$FAST_KIND fast tail stayed within 513 bytes (output=$FAST_OUTPUT_BYTES bytes)"
+  fi
+done
+[ "$FAST_PATH_FAILURES" -eq 0 ] || exit 1
+
+echo "[22] Codex transcript over 16 MiB with no capability link does not trigger the guard"
+CODEX_OVER_CAP_NO_LINK="$TMP/codex-over-cap-no-link.jsonl"
+python3 - "$CODEX_OVER_CAP_NO_LINK" "" <<'PY_FIXTURE'
+import json, sys
+path, text = sys.argv[1:]
+padding = {"type":"progress", "padding":"x" * 16778240}
+assistant = {"type":"response_item", "payload":{"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":text}]}}
+with open(path, "w", encoding="utf-8") as transcript:
+    transcript.write(json.dumps(padding, separators=(",", ":")) + "\n")
+    transcript.write(json.dumps(assistant, separators=(",", ":")) + "\n")
+PY_FIXTURE
+CODEX_NO_LINK_OUT="$(run_capability_hook "$CODEX_OVER_CAP_NO_LINK")"
+[ "$(decision_of "$CODEX_NO_LINK_OUT")" = "none" ] \
+  || fail "[22] expected a no-link Codex turn to pass, got: $CODEX_NO_LINK_OUT"
+pass "over-cap Codex assistant without capability link passed"
+
+echo "[23] Codex transcript over 16 MiB with a bare capability link remains blocked"
+CODEX_OVER_CAP_LINK="$TMP/codex-over-cap-link.jsonl"
+python3 - "$CODEX_OVER_CAP_LINK" <<'PY_FIXTURE'
+import json, sys
+path = sys.argv[1]
+padding = {"type":"progress", "padding":"x" * 16778240}
+assistant = {"type":"response_item", "payload":{"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"https://hq.computer/share-session/abcdefghijklmnopqrstuvwx"}]}}
+with open(path, "w", encoding="utf-8") as transcript:
+    transcript.write(json.dumps(padding, separators=(",", ":")) + "\n")
+    transcript.write(json.dumps(assistant, separators=(",", ":")) + "\n")
+PY_FIXTURE
+CODEX_LINK_OUT="$(run_capability_hook "$CODEX_OVER_CAP_LINK")"
+[ "$(decision_of "$CODEX_LINK_OUT")" = "block" ] \
+  || fail "[23] expected a bare capability link in Codex transcript to block, got: $CODEX_LINK_OUT"
+pass "over-cap Codex assistant bare capability link blocked"
+
+echo "[24] oversized newest Codex assistant record fails closed at a bounded scan cap"
+CODEX_OVERSIZED="$TMP/codex-oversized-assistant.jsonl"
+python3 - "$CODEX_OVERSIZED" <<'PY_FIXTURE'
+import json, sys
+assistant = {"type":"response_item", "payload":{"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"x" * 4096}]}}
+with open(sys.argv[1], "w", encoding="utf-8") as transcript:
+    transcript.write(json.dumps(assistant, separators=(",", ":")) + "\n")
+PY_FIXTURE
+TAIL_LIB="$ROOT/core/scripts/lib/transcript-tail.sh"
+CODEX_TAIL_STATUS=0
+bash -c '. "$1"; hq_transcript_tail_with_latest_assistant "$2" 128 1024 >/dev/null' _ "$TAIL_LIB" "$CODEX_OVERSIZED" || CODEX_TAIL_STATUS=$?
+[ "$CODEX_TAIL_STATUS" -eq 3 ] \
+  || fail "[24] expected oversized Codex assistant to return status 3, got: $CODEX_TAIL_STATUS"
+pass "oversized Codex assistant failed closed with status 3"
+
 echo "ALL PASS"

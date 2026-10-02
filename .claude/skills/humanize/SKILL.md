@@ -245,9 +245,11 @@ Avoiding AI patterns is only half the job. Sterile, voiceless writing is just as
 
 ## STYLE PATTERNS
 
-### 14. Em Dashes (and En Dashes): Cut Them
+### 14. Em Dashes, En Dashes, and Colons: Cut Them
 
-**Rule:** The final rewrite contains no em dashes (—) or en dashes (–). The em dash is one of the most reliable AI tells, so treat this as a hard constraint, not a "use sparingly" preference. Replace each one, in rough order of preference: a period (start a new sentence), a comma (a tight aside), a colon (introducing an explanation), parentheses (a true aside), or restructure the sentence. Also catch spaced em dashes (` — `) and double hyphens (` -- `) used the same way.
+**Rule:** The final rewrite contains no em dashes (—), en dashes (–), or colons in its prose. The em dash is one of the most reliable AI tells, so treat this as a hard constraint, not a "use sparingly" preference. Replace each one, in rough order of preference: a period (start a new sentence), a comma (a tight aside), parentheses (a true aside), or restructure the sentence. Also catch spaced em dashes (` — `) and double hyphens (` -- `) used the same way.
+
+Never swap a dash for a colon. A colon that sets up a reveal ("The fix: a one-line change"), introduces an explanation ("The reason is simple: the cache was cold"), or labels a sentence ("Next step: schedule a meeting") is the same tell in different punctuation. Write the full sentence instead ("The fix is a one-line change." / "The cache was cold."). Colons are fine only where they are not prose: clock times (9:30), ratios (3:1), URLs, code, and quoted source text you are not rewriting.
 
 **Before:**
 > The term is primarily promoted by Dutch institutions—not by the people themselves. You don't say "Netherlands, Europe" as an address—yet this mislabeling continues—even in official documents.
@@ -261,7 +263,13 @@ Avoiding AI patterns is only half the job. Sterile, voiceless writing is just as
 **After:**
 > The new policy, announced without warning, affects thousands of workers. The changes, long overdue according to critics, will take effect immediately.
 
-Before returning the final rewrite, scan it for `—` and `–`. Any hit means the draft isn't done.
+**Before:**
+> The tools are good at one thing: boilerplate. The catch: they sound right while being wrong.
+
+**After:**
+> The tools are good at boilerplate. They also sound right while being wrong.
+
+Before returning the final rewrite, scan it for `—`, `–`, and `:`. Any hit outside the allowed non-prose uses means the draft isn't done.
 
 
 ### 15. Overuse of Boldface
@@ -309,7 +317,7 @@ Before returning the final rewrite, scan it for `—` and `–`. Any hit means t
 > ✅ **Next Steps:** Schedule follow-up meeting
 
 **After:**
-> The product launches in Q3. User research showed a preference for simplicity. Next step: schedule a follow-up meeting.
+> The product launches in Q3. User research showed a preference for simplicity. The next step is to schedule a follow-up meeting.
 
 
 ### 19. Curly Quotation Marks
@@ -631,7 +639,7 @@ When you see these, lean toward leaving the prose alone. They are evidence of a 
 1. Read the input carefully and identify every instance of the patterns above.
 2. Write a **draft rewrite**. Check that it reads naturally aloud, varies sentence length, prefers specific details and simple constructions (is/are/has), and keeps the appropriate register.
 3. Ask: **"What makes the below so obviously AI generated?"** Answer briefly with any remaining tells.
-4. Revise into a **final rewrite** that addresses them and contains no em or en dashes (see §14).
+4. Revise into a **final rewrite** that addresses them and contains no em dashes, en dashes, or prose colons (see §14).
 
 Deliver the draft, the brief "still-AI" bullets, the final rewrite, and (optionally) a short summary of changes. When the humanize pass runs inline as part of producing a deliverable (not when explicitly invoked as `/humanize` for review), you may deliver only the final rewrite, but the internal audit step (3) is still mandatory.
 
@@ -658,7 +666,7 @@ Deliver the draft, the brief "still-AI" bullets, the final rewrite, and (optiona
 **Draft rewrite:**
 > AI coding assistants speed up some tasks. In a 2024 study by Google, developers using Codex completed simple functions 55% faster than a control group, but showed no improvement on debugging or architectural decisions.
 >
-> The tools are good at boilerplate: config files, test scaffolding, repetitive refactors. They are bad at knowing when they are wrong. I have mass-accepted suggestions that compiled, passed lint, and still did the wrong thing because I stopped paying attention.
+> The tools are good at boilerplate like config files, test scaffolding, and repetitive refactors. They are bad at knowing when they are wrong. I have mass-accepted suggestions that compiled, passed lint, and still did the wrong thing because I stopped paying attention.
 >
 > Mira, an engineer at a fintech startup I interviewed, said she uses Copilot "like autocomplete for boring code" but reviews every line before committing. Jake, a senior dev at a larger company, disabled it after it kept suggesting patterns from a deprecated internal library.
 >
@@ -674,7 +682,7 @@ Deliver the draft, the brief "still-AI" bullets, the final rewrite, and (optiona
 **Now make it not obviously AI generated.**
 > AI coding assistants can make you faster at the boring parts. Not everything. Definitely not architecture.
 >
-> They're great at boilerplate: config files, test scaffolding, repetitive refactors. They're also great at sounding right while being wrong. I've accepted suggestions that compiled, passed lint, and still missed the point because I stopped paying attention.
+> They're great at boilerplate like config files, test scaffolding, and repetitive refactors. They're also great at sounding right while being wrong. I've accepted suggestions that compiled, passed lint, and still missed the point because I stopped paying attention.
 >
 > People I talk to tend to land in two camps. Some use it like autocomplete for chores and review every line. Others disable it after it keeps suggesting patterns they don't want. Both feel reasonable.
 >

@@ -24,6 +24,14 @@ that humans don't.
 
 ## Process
 
+### Who runs these steps
+
+Steps 1–4 are the onboarding admin’s terminal tasks. Run them from a terminal
+with the HQ CLI signed in to the company account that can invite teammates and
+grant access. The teammate does not need to run provisioning commands. Their
+setup is the checklist in Step 5: sign in with `hq login`, accept the invite,
+and pull the company workspace with `hq sync pull --company {co}`.
+
 ### 1. Resolve person + company
 
 - Check current state: `hq members list --company {co}`. If the person already
