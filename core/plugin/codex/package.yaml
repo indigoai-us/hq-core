@@ -1,0 +1,45 @@
+name: hq-anywhere
+version: 0.1.0
+publisher: '@indigoai-us'
+access: public
+description: 'HQ skills, daemon-backed Codex hooks, and the HQ MCP server for Codex.'
+requires:
+  hqCore: '>=15.0.0'
+capabilities: []
+contributes:
+  skills:
+    - accept
+    - architect
+    - ascii-graphic
+    - calibration-report
+    - codebase-design
+    - designate-team
+    - diagnose
+    - domain-modeling
+    - finish-estimate
+    - hq-access
+    - hq-logout
+    - hq-whoami
+    - idea
+    - import-claude
+    - land-batch
+    - land
+    - onboard
+    - outpost-host
+    - personal-interview
+    - promote
+    - publish-docs
+    - quality-gate
+    - recover-session
+    - review-plan
+    - ship
+    - strategize
+    - sync-registry
+    - tdd
+    - to-tickets
+    - track-estimate
+    - wayfinder
+  hooks:
+    - codex
+  mcp:
+    - hq-anywhere

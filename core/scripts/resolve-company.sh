@@ -8,26 +8,36 @@
 #
 # Output: {"company":"<slug>","source":"prompt|session|device_default|none"}
 # Always exits 0 and never writes state.
+#
+# Folder mode (--path <dir>): ask the repo-to-company registry through
+# `$HQ_CLI_BIN resolve-company --path <dir> --json` (HQ_CLI_BIN defaults to
+# `hq`). Sources: registry (linked folder), registry_miss (not linked), or
+# unavailable (CLI missing, failed, timed out, or returned bad output). A
+# registry answer is accepted only when it names a real companies/<slug>
+# directory. Folder mode never falls back to prompt, session, or device default.
 
 set -uo pipefail
 
 ROOT=""
 PROMPT=""
 HAVE_PROMPT=0
+FOLDER=""
+HAVE_FOLDER=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --root) ROOT="${2:-}"; shift 2 || shift ;;
     --prompt) PROMPT="${2:-}"; HAVE_PROMPT=1; shift 2 || shift ;;
+    --path) FOLDER="${2:-}"; HAVE_FOLDER=1; shift 2 || shift ;;
     --help|-h)
-      sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) shift ;;
   esac
 done
 
-if [ "$HAVE_PROMPT" -eq 0 ] && [ ! -t 0 ]; then
+if [ "$HAVE_PROMPT" -eq 0 ] && [ "$HAVE_FOLDER" -eq 0 ] && [ ! -t 0 ]; then
   PROMPT="$(cat 2>/dev/null || true)"
 fi
 : "${PROMPT:=}"
@@ -39,6 +49,62 @@ emit() {
 
 if [ -z "$ROOT" ]; then
   ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && cd .. && pwd)}}"
+fi
+
+# Runs a command with a hard deadline (HQ_RESOLVE_TIMEOUT_MS, default 2000).
+run_with_timeout() {
+  command -v node >/dev/null 2>&1 || return 127
+  node -e '
+const { spawn } = require("child_process");
+const command = process.argv[1];
+if (!command) process.exit(127);
+const child = spawn(command, process.argv.slice(2), { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+let finished = false;
+const finish = (status) => {
+  if (finished) return;
+  finished = true;
+  clearTimeout(timer);
+  try { process.kill(-child.pid, "SIGTERM"); } catch (_) {}
+  process.exit(status);
+};
+child.stdout.on("data", (chunk) => process.stdout.write(chunk));
+child.once("error", () => finish(127));
+child.once("exit", (code) => finish(typeof code === "number" ? code : 1));
+const timer = setTimeout(() => finish(124), Number(process.env.HQ_RESOLVE_TIMEOUT_MS) || 2000);
+' "$@"
+}
+
+unavailable() {
+  printf 'resolve-company: WARNING company registry unavailable (%s); binding personal, not guessing a company\n' "$1" >&2
+  emit "" "unavailable"
+}
+
+if [ "$HAVE_FOLDER" -eq 1 ]; then
+  [ -n "$FOLDER" ] || unavailable "empty --path"
+  cli="${HQ_CLI_BIN:-hq}"
+  command -v "$cli" >/dev/null 2>&1 || unavailable "'$cli' not found"
+  command -v jq >/dev/null 2>&1 || unavailable "jq not found"
+  status=0
+  if command -v node >/dev/null 2>&1; then
+    out="$(HQ_RESOLVE_TIMEOUT_MS="${HQ_RESOLVE_TIMEOUT_MS:-5000}" run_with_timeout "$cli" resolve-company --path "$FOLDER" --json)" || status=$?
+  else
+    out="$("$cli" resolve-company --path "$FOLDER" --json 2>/dev/null)" || status=$?
+  fi
+  [ "$status" -eq 0 ] || unavailable "'$cli resolve-company' exited $status"
+  kind="$(printf '%s' "$out" | jq -r 'if type != "object" then "bad" elif .company == null then "miss" elif (.company | type) == "string" then "hit" else "bad" end' 2>/dev/null || printf 'bad')"
+  case "$kind" in
+    miss) emit "" "registry_miss" ;;
+    hit) ;;
+    *) unavailable "'$cli resolve-company' returned unreadable output" ;;
+  esac
+  slug="$(printf '%s' "$out" | jq -r '.company')"
+  case "$slug" in
+    ''|personal|_*|*[!A-Za-z0-9_-]*) unavailable "registry returned invalid company '$slug'" ;;
+  esac
+  if [ ! -d "$ROOT/companies/$slug" ] || [ -L "$ROOT/companies/$slug" ]; then
+    unavailable "registry company '$slug' has no companies/$slug directory in $ROOT"
+  fi
+  emit "$slug" "registry"
 fi
 
 MANIFEST="$ROOT/companies/manifest.yaml"
@@ -132,28 +198,6 @@ is_fleet_identity() {
   fi
   [ -f /var/lib/hq-agent/machine-creds.json ] && return 0
   return 1
-}
-
-run_with_timeout() {
-  command -v node >/dev/null 2>&1 || return 127
-  node -e '
-const { spawn } = require("child_process");
-const command = process.argv[1];
-if (!command) process.exit(127);
-const child = spawn(command, process.argv.slice(2), { detached: true, stdio: ["ignore", "pipe", "ignore"] });
-let finished = false;
-const finish = (status) => {
-  if (finished) return;
-  finished = true;
-  clearTimeout(timer);
-  try { process.kill(-child.pid, "SIGTERM"); } catch (_) {}
-  process.exit(status);
-};
-child.stdout.on("data", (chunk) => process.stdout.write(chunk));
-child.once("error", () => finish(127));
-child.once("exit", (code) => finish(typeof code === "number" ? code : 1));
-const timer = setTimeout(() => finish(124), 2000);
-' "$@"
 }
 
 if ! is_fleet_identity && command -v hq >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then

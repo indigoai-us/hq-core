@@ -1,16 +1,26 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { SERVER_OWNED_PATH_PREFIXES } from '../server-owned-path-prefixes.mjs';
 
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const TEMPLATE = path.join(ROOT, 'companies/_template');
 const RENDERER = path.join(ROOT, 'core/scripts/render-company-starter-files.mjs');
 const GOLDEN = path.join(TEMPLATE, '.hq-seed/golden/acme');
+const EXPECTED_NEWCOMPANY_ONLY = [
+  'company.yaml',
+  'data/.gitkeep',
+  'settings/.gitkeep',
+  'settings/auto-share.yaml',
+  'settings/communication/preferences.yaml',
+  'settings/knowledge/preferences.yaml',
+  'workers/.gitkeep',
+];
 
 function temporaryDirectory() {
   return mkdtempSync(path.join(os.tmpdir(), 'company-starter-'));
@@ -147,7 +157,9 @@ test('the /newcompany render preserves shared bytes and fills all declared place
 
   const { loadSeedManifest } = await import('../render-company-starter-files.mjs');
   const manifest = loadSeedManifest(TEMPLATE);
+  assert.deepEqual(manifest.newcompany_only, EXPECTED_NEWCOMPANY_ONLY);
   for (const relative of manifest.seed) {
+    if (SERVER_OWNED_PATH_PREFIXES.some((prefix) => relative.startsWith(prefix))) continue;
     assert.deepEqual(
       readFileSync(path.join(localDestination, relative)),
       readFileSync(path.join(seedDestination, relative)),
@@ -157,6 +169,11 @@ test('the /newcompany render preserves shared bytes and fills all declared place
   for (const relative of manifest.newcompany_only) {
     assert.ok(filesUnder(localDestination).includes(relative), `${relative} stays in local setup`);
   }
+  assert.deepEqual(
+    filesUnder(localDestination),
+    [...manifest.seed.filter((relative) => !SERVER_OWNED_PATH_PREFIXES.some((prefix) => relative.startsWith(prefix))), ...EXPECTED_NEWCOMPANY_ONLY].sort(),
+    'local-first output contains exactly the non-server-owned shared and local files',
+  );
 
   for (const relative of filesUnder(localDestination)) {
     const contents = readFileSync(path.join(localDestination, relative), 'utf8');
@@ -179,13 +196,34 @@ test('cloud-first rendering writes only local paths and marks the company cloud-
 
   const { loadSeedManifest } = await import('../render-company-starter-files.mjs');
   const manifest = loadSeedManifest(TEMPLATE);
+  assert.deepEqual(manifest.newcompany_only, EXPECTED_NEWCOMPANY_ONLY);
   for (const relative of manifest.seed) {
     assert.equal(filesUnder(destination).includes(relative), false, `${relative} is left to cloud seed`);
   }
   for (const relative of manifest.newcompany_only) {
     assert.ok(filesUnder(destination).includes(relative), `${relative} is rendered locally`);
   }
+  assert.deepEqual(filesUnder(destination), EXPECTED_NEWCOMPANY_ONLY, 'cloud-first output is exactly the local file set');
   assert.match(readFileSync(path.join(destination, 'company.yaml'), 'utf8'), /^cloud: true$/m);
+});
+
+test('newcompany modes never render sync server-owned paths', async (t) => {
+  const temporary = temporaryDirectory();
+  t.after(() => rmSync(temporary, { recursive: true, force: true }));
+
+  for (const mode of ['newcompany', 'newcompany-cloud-first']) {
+    const destination = path.join(temporary, mode);
+    const result = render(destination, mode);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    const refused = filesUnder(destination).filter((relative) =>
+      SERVER_OWNED_PATH_PREFIXES.some((prefix) => relative.startsWith(prefix)),
+    );
+    assert.deepEqual(refused, [], `${mode} does not render sync server-owned paths`);
+    for (const directory of ['sources/_index', 'sources/meetings']) {
+      assert.equal(statSync(path.join(destination, directory)).isDirectory(), true, `${mode} preserves ${directory}`);
+    }
+  }
 });
 
 test('display-name braces are kept as literal output text', (t) => {

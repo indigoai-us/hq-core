@@ -1,6 +1,6 @@
 # Public Knowledge
 
-> Auto-generated. Updated: 2026-10-01
+> Auto-generated. Updated: 2026-10-02
 
 | Name | Description |
 |------|-------------|
@@ -10,7 +10,7 @@
 | `brand-voice/` | Brand-voice packs (2 file(s)) |
 | `dev-team/` | Dev Team Knowledge Base (1 file(s)) |
 | `getting-started/` | HQ Cheatsheet (3 file(s)) |
-| `hq-core/` | HQ Agent Session Contract (48 file(s)) |
+| `hq-core/` | HQ Agent Session Contract (49 file(s)) |
 | `loom/` | Loom (9 file(s)) |
 | `projects/` | Projects (1 file(s)) |
 | `workers/` | Workers (4 file(s)) |

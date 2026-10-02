@@ -250,6 +250,8 @@ jobs:
         run: bash core/scripts/tests/skill-script-refs.test.sh
       - name: Shipped skills reference existing core scripts
         run: bash core/scripts/tests/skill-core-script-references.test.sh
+      - name: Command reports gate expandable technical details
+        run: bash core/scripts/tests/skill-plain-report.test.sh
       - name: Deploy skill app route and multipart helper contracts
         run: bash core/scripts/tests/deploy-skill-app-route.test.sh
       - name: Deploy request helper rejects errors and supports app multipart uploads
@@ -434,6 +436,10 @@ jobs:
         run: node core/scripts/validate-agent-runtime-contracts.mjs
       - name: Skill metadata regression test
         run: bash core/scripts/tests/agent-runtime-skill-metadata.test.sh
+      - name: Codex pack build regression test
+        run: bash core/scripts/tests/build-codex-pack.test.sh
+      - name: Claude Code plugin build regression test
+        run: bash core/scripts/tests/build-claude-plugin.test.sh
       - name: Agent bootstrap cloud sync guidance regression test
         run: bash core/scripts/tests/agent-bootstrap-cloud-sync.test.sh
       - name: hq-heal sync classifier regression test
@@ -442,6 +448,8 @@ jobs:
         run: bash core/scripts/tests/discover-shallow-clone-fetch-all.test.sh
       - name: Execute-task Codex model source regression test
         run: bash core/scripts/tests/execute-task-codex-model-source.test.sh
+      - name: Worker Codex model override flag and scope regression test
+        run: node core/scripts/tests/worker-codex-model-overrides.test.cjs
       - name: OpenAI YAML generator root regression test
         run: bash core/scripts/tests/generate-openai-yaml-root.test.sh
       - name: Codex skill metadata coverage regression test
@@ -488,6 +496,8 @@ jobs:
             .claude/hooks/hook-gate.sh \
             .claude/hooks/check-claude-desktop-bridge-health.sh \
             .claude/skills/deploy/scripts/tests/guardrails-tar-failure.test.sh \
+            .claude/skills/deploy/scripts/site-events.sh \
+            .claude/skills/deploy/scripts/tests/site-events.test.sh \
             .codex/hooks/hq-codex-hook-adapter.sh \
             .grok/hooks/hq-grok-hook-adapter.sh
       - name: Claude Codex Grok Cowork runtime contract matrix
@@ -655,6 +665,8 @@ jobs:
         run: bash .claude/skills/deploy/scripts/tests/guardrails-tar-failure.test.sh
       - name: route-host merges routes onto an existing deploy
         run: bash .claude/skills/deploy/scripts/tests/route-host.test.sh
+      - name: site-events owner loop (enable, list, watch, reply)
+        run: bash .claude/skills/deploy/scripts/tests/site-events.test.sh
 
   # US-001: identity-resolve jq→node fallback; missing engines → missing_dependency not login_required.
   identity-resolve-missing-jq:
@@ -1020,6 +1032,8 @@ jobs:
         run: bash core/scripts/tests/session-title-manual-backoff.test.sh
       - name: Session title mode override and desktop nudge
         run: bash core/scripts/tests/session-title-desktop-nudge.test.sh
+      - name: Handoff and resume preserve session-title ownership
+        run: bash core/scripts/tests/session-title-handoff-policy.test.sh
 
   knowledge-repo-glob-shells:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1176,6 +1190,18 @@ jobs:
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
+      - name: hq-anywhere hook and resolver regressions
+        run: |
+          bash core/scripts/tests/hq-anywhere-runtime-flag.test.sh
+          bash core/scripts/tests/resolve-hq-root.test.sh
+          bash core/scripts/tests/master-hook-double-dispatch.test.sh
+          bash core/scripts/tests/master-hook-foreign-bind.test.sh
+          bash core/scripts/tests/master-hook-empty-json-outputs.test.sh
+          bash core/scripts/tests/master-hook-library-fail-open.test.sh
+          bash core/scripts/tests/master-hook-registry-dispatch.test.sh
+          bash core/scripts/tests/hq-agent-session-hooks.test.sh
+          bash core/scripts/anywhere-parity-test.test.sh
+          sh core/scripts/hqd-hook-shim.test.sh
       - name: SessionStart refreshes stale vault access manifests without waiting
         run: bash core/scripts/tests/refresh-vault-access-session-start.test.sh
       - name: Master-hook output writes preserve deny decisions and plain bytes
@@ -1198,6 +1224,8 @@ jobs:
         run: bash core/scripts/tests/hook-gate-path-augment.test.sh
       - name: All tracked .sh files are mode 100755 in the git index (US-004)
         run: bash core/scripts/tests/exec-bit-all-scripts.test.sh
+      - name: Output style task-specific prompt regression test
+        run: bash core/scripts/tests/output-style-task-specific-prompts.test.sh
       - name: new-hire CLI onboarding guidance regression
         run: bash core/scripts/tests/new-hire-cli-onboarding-guidance.test.sh
       - name: block-core-writes-bash exempts repos/ checkouts, still guards live root
@@ -1708,6 +1736,18 @@ jobs:
         run: bash core/scripts/tests/handoff-launcher.test.sh
       - name: SessionStart detached register-project helper failure contract
         run: bash core/scripts/tests/register-project.test.sh
+
+  update-hq-install-offer:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: update-hq-install-offer
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: One-time update-hq global install offer
+        run: bash core/scripts/tests/update-hq-install-offer.test.sh
 
   work-mesh-live:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}

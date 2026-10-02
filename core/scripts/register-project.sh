@@ -21,13 +21,44 @@ resolve_uid() {
     tr -d '[:space:]' < "$file"
     return
   fi
-  die "no company uid for $company (set HQ_COMPANY_UID or companies/$company/.company-uid)"
+  if [ -f "$ROOT/companies/manifest.yaml" ]; then
+    local manifest_uid
+    manifest_uid="$(awk -v company="$company" '
+      /^companies:[[:space:]]*$/ { in_companies=1; next }
+      in_companies && /^[^[:space:]]/ { in_companies=0 }
+      in_companies && /^  [^ #][^:]*:/ {
+        slug=$1; sub(/[[:space:]]+$/, "", slug); sub(/:$/, "", slug); in_company=(slug == company); next
+      }
+      in_company && /^  [^[:space:]#]/ { exit }
+      in_company && $1 == "cloud_uid:" { gsub(/["\047]/, "", $2); sub(/[[:space:]]+$/, "", $2); print $2; exit }
+    ' "$ROOT/companies/manifest.yaml")"
+    if [ -n "$manifest_uid" ]; then
+      printf '%s\n' "$manifest_uid"
+      return
+    fi
+  fi
+  die "no company uid for $company (set HQ_COMPANY_UID, companies/$company/.company-uid, or manifest cloud_uid)"
+}
+
+mesh_project_id_for_prd() {
+  local company="$1" project="$2" board rel resolved
+  board="$(board_path "$company")"
+  rel="companies/$company/projects/$project/prd.json"
+  resolved=""
+  if [ -f "$board" ]; then
+    resolved="$(jq -r --arg path "$rel" --arg project "$project" '
+      [.projects[]? | select(.prd_path == $path or .id == $project)] | first | (.mesh_project_id // .id // empty)
+    ' "$board" 2>/dev/null || true)"
+  fi
+  printf '%s\n' "${resolved:-$project}"
 }
 
 has_board() {
-  local company="$1" project="$2" uid
+  local company="$1" project="$2" uid mesh_project
   uid="$(resolve_uid "$company")"
-  [ -f "${HOME}/.hq/work-mesh/cache/projects/${uid}/${project}.json" ]
+  mesh_project="$(mesh_project_id_for_prd "$company" "$project")"
+  [ -f "${HOME}/.hq/work-mesh/cache/projects/${uid}/${mesh_project}.json" ] \
+    || [ -f "${HOME}/.hq/work-mesh/cache/projects/${uid}/${project}.json" ]
 }
 
 story_not_done() {
@@ -108,13 +139,15 @@ mark_pending() {
 register_one() {
   local company="$1" project="$2"
   local prd="$ROOT/companies/$company/projects/$project/prd.json"
+  local mesh_project
+  mesh_project="$(mesh_project_id_for_prd "$company" "$project")"
   [ -f "$prd" ] || die "registration incomplete: missing $prd"
   if ! cli_has_project_ensure; then
     mark_pending "$company" "$project"
     die "hq-cli ${MIN_HQ_CLI} or newer is required; ${company}/${project} stays local until then"
   fi
   local ensure_json
-  if ! ensure_json="$(hq mesh project ensure "$project" --company "$company" --stories-file "$prd" --json)"; then
+  if ! ensure_json="$(hq mesh project ensure "$mesh_project" --company "$company" --stories-file "$prd" --json)"; then
     echo "registration incomplete: hq mesh project ensure failed for $company/$project" >&2
     exit 1
   fi
@@ -136,7 +169,8 @@ register_one() {
   fi
   tmp="$(mktemp)"
   jq \
-    --arg id "$project" \
+    --arg id "$mesh_project" \
+    --arg project "$project" \
     --arg path "$rel" \
     --arg thread "$thread" \
     --arg channel "$channel" \
@@ -144,9 +178,9 @@ register_one() {
     --arg title "$title" \
     '
       .projects = (.projects // []) |
-      if any(.projects[]; .id == $id or .prd_path == $path or .mesh_project_id == $id) then
+      if any(.projects[]; .id == $id or .id == $project or .prd_path == $path or .mesh_project_id == $id) then
         .projects |= map(
-          if .id == $id or .prd_path == $path or .mesh_project_id == $id then
+          if .id == $id or .id == $project or .prd_path == $path or .mesh_project_id == $id then
             . + {threadId:$thread, channelId:$channel, updated_at:$now, prd_path:(.prd_path // $path), mesh_project_id:$id} | del(.pending_registration)
           else . end
         )
@@ -169,11 +203,42 @@ register_one() {
   jq -e \
     --arg id "$project" \
     --arg path "$rel" \
+    --arg mesh "$mesh_project" \
     --arg thread "$thread" \
     --arg channel "$channel" \
-    'any(.projects[]?; (.id == $id or .prd_path == $path or .mesh_project_id == $id) and .threadId == $thread and .channelId == $channel)' \
+    'any(.projects[]?; (.id == $id or .prd_path == $path or .mesh_project_id == $mesh) and .mesh_project_id == $mesh and .threadId == $thread and .channelId == $channel)' \
     "$board" >/dev/null \
     || die "registration incomplete: board.json entry for $project did not verify"
+  echo "registered $company/$project thread=$thread channel=$channel"
+}
+
+register_brainstorm() {
+  local company="$1" project="$2" board title description ensure_json thread channel tmp
+  resolve_uid "$company" >/dev/null
+  board="$(board_path "$company")"
+  [ -f "$board" ] || die "registration incomplete: missing $board"
+  title="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .title // empty' "$board")"
+  description="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .description // empty' "$board")"
+  [ -n "$title" ] || die "registration incomplete: missing local Board project $company/$project"
+  if ! ensure_json="$(hq mesh project set "$project" --company "$company" --name "$title" --description "$description" --create --json)"; then
+    die "registration incomplete: hq mesh project set failed for $company/$project"
+  fi
+  thread="$(printf '%s' "$ensure_json" | jq -er '.registration.threadId // .threadId // empty')" \
+    || die "registration incomplete: project set output missing threadId"
+  channel="$(printf '%s' "$ensure_json" | jq -er '.registration.channelId // .channelId // empty')" \
+    || die "registration incomplete: project set output missing channelId"
+  [ -n "$thread" ] && [ -n "$channel" ] || die "registration incomplete: empty threadId or channelId"
+  tmp="$(mktemp)"
+  jq --arg id "$project" --arg thread "$thread" --arg channel "$channel" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    .projects |= map(if .id == $id or .mesh_project_id == $id then . + {
+      threadId:$thread, channelId:$channel, mesh_project_id:$id,
+      mesh_registration_prompt_state:"accepted", updated_at:$now
+    } | del(.pending_registration) else . end)
+  ' "$board" > "$tmp"
+  mv "$tmp" "$board"
+  jq -e --arg id "$project" --arg thread "$thread" --arg channel "$channel" \
+    'any(.projects[]?; (.id == $id or .mesh_project_id == $id) and .threadId == $thread and .channelId == $channel)' \
+    "$board" >/dev/null || die "registration incomplete: local Board registration did not verify"
   echo "registered $company/$project thread=$thread channel=$channel"
 }
 
@@ -248,7 +313,10 @@ retry_pending() {
   done < <(jq -r '[.projects[]? | select(.pending_registration == true) | .id // empty] | .[]' "$board" 2>/dev/null || true)
 }
 
-if [ "${1:-}" = "--audit" ]; then
+if [ "${1:-}" = "--brainstorm" ]; then
+  [ "$#" -eq 3 ] || die "usage: register-project.sh --brainstorm <company> <board-project-id>"
+  register_brainstorm "$2" "$3"
+elif [ "${1:-}" = "--audit" ]; then
   audit "${2:-}"
 elif [ "${1:-}" = "--backfill" ]; then
   shift
@@ -258,5 +326,5 @@ elif [ "${1:-}" = "--retry-pending" ]; then
 elif [ $# -eq 2 ]; then
   register_one "$1" "$2"
 else
-  die "usage: register-project.sh <company> <project> | --audit <company> | --backfill <company> --only-active [--yes] | --retry-pending <company>"
+  die "usage: register-project.sh <company> <project> | --brainstorm <company> <board-project-id> | --audit <company> | --backfill <company> --only-active [--yes] | --retry-pending <company>"
 fi

@@ -454,6 +454,10 @@ For any `scope: company` rule, **surface the resolved company slug and the full 
 
 **Default (`HQ`, and any style that is not `hq-operator`):** one short plain sentence. Do not print Scope, Dedup, Action, file paths, thread IDs, or PIDs. Do not paste the operator template.
 
+When trusted command-report details context is present, lead with a short plain-language summary. Put useful, non-sensitive diagnostics in a collapsed `Technical details` section. Without that context, keep the summary-only format.
+
+When trusted context is absent (for example, a routed natural-language or programmatic invocation), check the flag at report time with `HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)" node .claude/hooks/command-report-details-flag.cjs`. Use expanded details only when it prints `true`; otherwise keep the summary-only format. This gate never overrides `hq-operator` style.
+
 - New or updated rule/insight: `Saved. I'll remember that next time.`
 - Multiple items: `Saved {n} lessons so I'll remember them next time.`
 - Skipped as duplicate: stay silent, or `Already had that. No change.`

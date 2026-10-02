@@ -15,6 +15,9 @@
 #   4. A benign Bash payload skips the prefiltered hooks (trace shows skips).
 #   5. HQ_DISABLED_HOOKS and HQ_HOOK_PROFILE=minimal are honoured in-process.
 set -uo pipefail
+# These cases replay identical payloads in one session on purpose; turn off the
+# user/project double-dispatch dedupe (covered by master-hook-double-dispatch).
+export HQ_HOOK_DEDUPE=0
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 MASTER="$ROOT/.claude/hooks/master-hook.sh"

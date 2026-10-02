@@ -821,6 +821,11 @@ debug_phase_timings="$(hook_timeout_phase_timings_json \
 active_debug_phase="${active_debug_phase_record%%$'\t'*}"
 [ -z "${active_debug_phase:-}" ] || debug_wait_point="$active_debug_phase"
 if [ "$source_kind" = hook-gate ]; then
+  # A hook-gate watchdog observes the hook itself rather than a master
+  # dispatcher child. Name that slow hook with its safe basename so the
+  # retained warning has child attribution on this path too.
+  slow_child="$hook_script"
+  slow_child_ms="$elapsed_ms"
   debug_child_name="$hook_path"
   debug_child_elapsed="$elapsed_ms"
   debug_wait_point=child_wait

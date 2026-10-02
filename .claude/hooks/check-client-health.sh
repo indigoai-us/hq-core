@@ -11,9 +11,8 @@
 #      fully detached background remediation (`--remediate` mode of this same
 #      script) corroborates with `hq doctor --json` (the sync family, US-015
 #      hq-cli), runs `hq doctor --fix --yes` for auto-fixable findings,
-#      re-verifies, then sends normalized client-health events directly to
-#      Sentry when the company flag is on. Flag-off and older CLI installs keep
-#      filing the existing `hq feedback bug` summary.
+#      re-verifies, then files the existing `hq feedback bug` summary for any
+#      remaining findings.
 #
 # Cautions paid for in blood:
 #   - The cooldown window is claimed ATOMICALLY and the stamp is written BEFORE
@@ -200,7 +199,7 @@ if [ "${1:-}" = "--remediate" ]; then
       # Newer CLI versions resolve the opt-in hq-flags gate. Older versions
       # reject the private option, so fall back to ordinary JSON output. Both
       # invocations are bounded and raw JSON stays in this process.
-      local output_file="${1:-}" document rc
+      local document rc
       document=$(cd "$HQ_ROOT" 2>/dev/null && bounded 120 hq doctor --json --client-health-report 2>/dev/null)
       rc=$?
       if [ "$rc" -ne 0 ] || [ -z "$document" ]; then
@@ -208,9 +207,6 @@ if [ "${1:-}" = "--remediate" ]; then
         rc=$?
       fi
       [ "$rc" -eq 0 ] || return 0
-      if [ -n "$output_file" ]; then
-        (umask 077; printf '%s\n' "$document" > "$output_file") 2>/dev/null || true
-      fi
       printf '%s\n' "$document" | sync_findings
     }
 
@@ -221,22 +217,12 @@ if [ "${1:-}" = "--remediate" ]; then
     # Attempt the allowlisted safe repairs, then re-verify. Only findings that
     # SURVIVE the fix pass are report-worthy — a fixed issue files no bug.
     ( cd "$HQ_ROOT" 2>/dev/null && bounded 300 hq doctor --fix --yes --json >/dev/null 2>&1 )
-    FIX_RC=$?
-    case "$FIX_RC" in
-      124|137|143) FIX_OUTCOME="fix_timed_out" ;;
-      0) FIX_OUTCOME="not_auto_fixable" ;;
-      *) FIX_OUTCOME="fix_failed" ;;
-    esac
-    POST_FIX_JSON_FILE=$(mktemp "$STATE_DIR/post-fix.XXXXXX" 2>/dev/null || true)
-    REMAINING=$(doctor_degraded "$POST_FIX_JSON_FILE")
-    if [ -z "$REMAINING" ]; then
-      [ -n "$POST_FIX_JSON_FILE" ] && rm -f "$POST_FIX_JSON_FILE" 2>/dev/null
-      exit 0
-    fi
+    REMAINING=$(doctor_degraded)
+    [ -n "$REMAINING" ] || exit 0
 
     # One bounded attempt per install, not one attempt per company/check.
-    # Reserve it BEFORE sending: a timeout may mean either route accepted the
-    # report but the response was lost. Retrying could duplicate the report.
+    # Reserve it BEFORE sending: a timeout may mean the report was accepted
+    # but the response was lost. Retrying could duplicate the report.
     NOW=$(date +%s)
     BUG_LOCK="$STATE_DIR/bugs/summary.lock"
     ATTEMPT_STAMP="$STATE_DIR/bugs/report-attempt.stamp"
@@ -245,38 +231,22 @@ if [ "${1:-}" = "--remediate" ]; then
       [ "$((NOW - LOCK_MTIME))" -gt 3600 ] && rm -f "$BUG_LOCK" 2>/dev/null
     fi
     if ! ( set -C; : > "$BUG_LOCK" ) 2>/dev/null; then
-      [ -n "$POST_FIX_JSON_FILE" ] && rm -f "$POST_FIX_JSON_FILE" 2>/dev/null
       exit 0
     fi
     if [ -f "$ATTEMPT_STAMP" ]; then
       STAMP_MTIME=$(stat -c %Y "$ATTEMPT_STAMP" 2>/dev/null || stat -f %m "$ATTEMPT_STAMP" 2>/dev/null || echo "$NOW")
       if [ "$((NOW - STAMP_MTIME))" -lt 86400 ]; then
         rm -f "$BUG_LOCK" 2>/dev/null
-        [ -n "$POST_FIX_JSON_FILE" ] && rm -f "$POST_FIX_JSON_FILE" 2>/dev/null
         exit 0
       fi
     fi
     if ! ( : > "$ATTEMPT_STAMP" ) 2>/dev/null; then
       rm -f "$BUG_LOCK" 2>/dev/null
-      [ -n "$POST_FIX_JSON_FILE" ] && rm -f "$POST_FIX_JSON_FILE" 2>/dev/null
       exit 0
     fi
 
-    # Newer hq-cli sends the normalized event directly to Sentry when every
-    # affected company has enabled the default-off flag. Older CLIs, a disabled
-    # flag, or a failed send retain the existing feedback report path below.
-    if [ -n "$POST_FIX_JSON_FILE" ] && [ -s "$POST_FIX_JSON_FILE" ]; then
-      if ( cd "$HQ_ROOT" 2>/dev/null && bounded 60 hq doctor \
-          --client-health-sentry \
-          --json-input "$POST_FIX_JSON_FILE" \
-          --client-health-fix-outcome "$FIX_OUTCOME" >/dev/null 2>&1 ); then
-        ( : > "$STATE_DIR/bugs/summary.stamp" ) 2>/dev/null || true
-        rm -f "$POST_FIX_JSON_FILE" "$BUG_LOCK" 2>/dev/null
-        exit 0
-      fi
-    fi
-    [ -n "$POST_FIX_JSON_FILE" ] && rm -f "$POST_FIX_JSON_FILE" 2>/dev/null
-
+    # The removed direct-Sentry CLI route is no longer available. Keep sending
+    # the same sanitized summary through the feedback report path below.
     # Only sanitised IDs leave the machine. Cap both rows and ID length so a
     # large install still produces a small report; raw messages stay local.
     CHECK_IDS=$(printf '%s\n' "$REMAINING" | tr -c 'A-Za-z0-9._:\n -' '_' | cut -c 1-200 | sort -u)

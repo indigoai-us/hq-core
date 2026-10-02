@@ -90,6 +90,11 @@ emit_check_json() {
 }
 if [ "${3:-}" = "--reminder" ]; then
   case "$mode" in
+    reminder-timeout)
+    sleep 12
+    printf '%s\n' 'late reminder output must not escape'
+    exit 0
+    ;;
     reminder|active-a|active-b)
     printf '%s\n' 'CLI-REMINDER timeout_ms=1800000 persistent=true'
     exit 0
@@ -117,6 +122,10 @@ case "$mode" in
     ;;
   active-b)
     printf '%s\n' '{"ok":false,"action":"monitor-check","session_id":"senior-1","engine":"claude","active_lane_ids":["lane-b"],"covered_lane_ids":[],"uncovered_lane_ids":["lane-b"],"monitor_calls":[{"command":"hq lanes watch lane-b","timeout_ms":1800000,"persistent":true}]}' | emit_check_json
+    exit 2
+    ;;
+  reminder-timeout)
+    printf '%s\n' '{"ok":false,"action":"monitor-check","session_id":"senior-1","engine":"claude","active_lane_ids":["lane-a"],"covered_lane_ids":[],"uncovered_lane_ids":["lane-a"],"monitor_calls":[]}' | emit_check_json
     exit 2
     ;;
   error)
@@ -337,7 +346,7 @@ cp -R "$FIX/." "$MUTANT_FIX/"
 mkdir -p "$MUTANT_FIX/core/scripts/lib" "$MUTANT_FIX/core/hooks/SessionStart"
 cp "$REMINDER_SRC" "$MUTANT_FIX/core/scripts/lib/lanes-senior-monitor.sh"
 cp "$WRAP_SS" "$MUTANT_FIX/core/hooks/SessionStart/45-lanes-senior-monitor.sh"
-sed -i '/# SESSIONSTART_TIMEOUT_MUST_STAY_QUIET/{n;s/exit 0/: # mutant removes the quiet timeout return/;}' \
+sed -i '/# MONITOR_TIMEOUT_MUST_STAY_QUIET/{n;s/exit 0/: # mutant removes the quiet timeout return/;}' \
   "$MUTANT_FIX/core/scripts/lib/lanes-senior-monitor.sh"
 rm -rf "$TMP/mutant-cache"
 reset_stub hang
@@ -349,6 +358,41 @@ else
   echo "MUTATION_RED: sessionstart_timeout_quiet / timeout restored to generic ERROR and exit 1"
   pass "sessionstart_timeout_quiet"
 fi
+reset_stub active-a
+
+echo "[2ab] UserPromptSubmit reminder timeout is quiet and does not cache"
+REMINDER_TIMEOUT_CACHE="$TMP/reminder-timeout-cache"
+rm -rf "$REMINDER_TIMEOUT_CACHE"
+reset_stub reminder-timeout
+run_reminder "$WRAP_UPS" UserPromptSubmit claude "$REMINDER_TIMEOUT_CACHE"
+[ "$RRC" = "0" ] && pass "UserPromptSubmit reminder timeout exits 0" \
+  || fail "UserPromptSubmit reminder timeout rc=$RRC stderr=$RERR"
+assert_empty "$ROUT" "UserPromptSubmit reminder timeout output"
+assert_empty "$RERR" "UserPromptSubmit reminder timeout stderr"
+[ -z "$(monitor_cache_file "$REMINDER_TIMEOUT_CACHE")" ] && pass "UserPromptSubmit reminder timeout does not write monitor cache" \
+  || fail "UserPromptSubmit reminder timeout wrote monitor cache"
+
+REMINDER_TIMEOUT_MUTANT_FIX="$TMP/reminder-timeout-mutant"
+mkdir -p "$REMINDER_TIMEOUT_MUTANT_FIX"
+cp -R "$FIX/." "$REMINDER_TIMEOUT_MUTANT_FIX/"
+mkdir -p "$REMINDER_TIMEOUT_MUTANT_FIX/core/hooks/UserPromptSubmit"
+cp "$WRAP_UPS" "$REMINDER_TIMEOUT_MUTANT_FIX/core/hooks/UserPromptSubmit/45-lanes-senior-monitor.sh"
+cp "$REMINDER_SRC" "$REMINDER_TIMEOUT_MUTANT_FIX/core/scripts/lib/lanes-senior-monitor.sh"
+sed -i '/# REMINDER_TIMEOUT_MUST_STAY_QUIET/{n;s/exit 0/: # mutant removes the quiet reminder timeout return/;}' \
+  "$REMINDER_TIMEOUT_MUTANT_FIX/core/scripts/lib/lanes-senior-monitor.sh"
+rm -rf "$TMP/reminder-timeout-mutant-cache"
+reset_stub reminder-timeout
+run_reminder "$REMINDER_TIMEOUT_MUTANT_FIX/core/hooks/UserPromptSubmit/45-lanes-senior-monitor.sh" \
+  UserPromptSubmit claude "$TMP/reminder-timeout-mutant-cache" \
+  "$REMINDER_TIMEOUT_MUTANT_FIX"
+if [ "$RRC" = "0" ] && [ -z "$RERR" ] && [ -z "$ROUT" ] \
+  && [ -z "$(monitor_cache_file "$TMP/reminder-timeout-mutant-cache")" ]; then
+  fail "mutation reminder_timeout_quiet did not go red"
+else
+  echo "MUTATION_RED: reminder_timeout_quiet / reminder timeout restored to generic error path"
+  pass "reminder_timeout_quiet"
+fi
+
 reset_stub active-a
 
 MONITOR_CACHE="$(monitor_cache_file "$TMP/cache")"

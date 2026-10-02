@@ -150,7 +150,20 @@ MASTER_DEBUG_ACTIVE_PHASE=""
 MASTER_DEBUG_ACTIVE_STARTED=""
 
 master_debug_phase_start startup
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# HQ root comes from the shared resolver (anchor = this hook's own HQ, then
+# HQ_ROOT, ~/.hq/root, cwd walk-up). CLAUDE_PROJECT_DIR is never consulted
+# because it names a foreign repo when Claude Code runs outside HQ.
+REPO_ROOT=""
+HQ_ROOT_RESULT=""
+# shellcheck source=../../core/scripts/resolve-hq-root.sh
+# shellcheck disable=SC2034 # Consumed by the sourced resolver script.
+HQ_RESOLVE_HQ_ROOT_LIBRARY=1
+if . "$SCRIPT_DIR/../../core/scripts/resolve-hq-root.sh" 2>/dev/null \
+  && hq_resolve_root "$SCRIPT_DIR/../.." "$PWD"; then
+  REPO_ROOT="$HQ_ROOT_RESULT"
+fi
+unset HQ_RESOLVE_HQ_ROOT_LIBRARY
+[ -n "$REPO_ROOT" ] || REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Shared registry prefilter semantics also power the Codex and Grok adapters.
 # shellcheck source=../../core/scripts/lib/hook-adapter-core.sh
 MASTER_PREFILTER_AVAILABLE=1
@@ -180,6 +193,15 @@ if [ -f "$SCRIPT_DIR/hook-gate.sh" ]; then
   hq_augment_path
   master_debug_phase_finish source
 fi
+HQ_ANYWHERE_RUNTIME_ENABLED=false
+if [ -f "$REPO_ROOT/core/scripts/hq-anywhere-runtime-flag.cjs" ] \
+  && command -v node >/dev/null 2>&1 \
+  && [ -n "${HQ_FLAGS_API_URL:-}" ] \
+  && [[ "${HQ_COMPANY_UID:-}" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]]; then
+  HQ_ANYWHERE_RUNTIME_ENABLED="$(node "$REPO_ROOT/core/scripts/hq-anywhere-runtime-flag.cjs" || printf false)"
+fi
+[ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] || HQ_ANYWHERE_RUNTIME_ENABLED=false
+export HQ_ANYWHERE_RUNTIME_ENABLED
 
 # Windows Git Bash: process creation is 10-30x macOS cost and the watchdog
 # sentry is two extra setsid processes per fire. Default it off there unless
@@ -440,6 +462,82 @@ if [ -n "$SESSION_ID" ]; then
   ACTIVE_COMPANY="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META_FILE")"
 fi
 
+# --- Dedupe user-scope + project-scope double registration ---
+# When master-hook is registered in both ~/.claude/settings.json (or
+# ~/.codex) and the project settings, the runtime runs both commands with the
+# same payload (fixtures: tests/fixtures/runtime/*-user-hook-input.json). The
+# first dispatch claims a lock file keyed by session_id + event + tool_use_id
+# and the second exits silently. Events without a tool_use_id key on the
+# payload hash and only dedupe within HQ_HOOK_DEDUPE_WINDOW seconds, so a
+# later identical event (another Stop, a repeated prompt) still dispatches.
+# HQ_HOOK_DEDUPE=0 disables the check.
+#
+# A dedupe must never weaken a verdict. The claiming dispatch records
+# "<exit_code> <has_blocking_json>" in <lock>.rc when it finishes. A duplicate
+# waits for that record (HQ_HOOK_DEDUPE_WAIT seconds, default 10) and exits 0
+# only when the original allowed silently; when the original blocked, or never
+# recorded a result, the duplicate dispatches normally and reaches the same
+# verdict itself.
+dedupe_claimed_lock=""
+master_dedupe_follow() { # <lock> → exits 0 when the original allowed; else returns
+  local rc_file="$1.rc" wait_s="${HQ_HOOK_DEDUPE_WAIT:-10}" deadline verdict=""
+  [[ "$wait_s" =~ ^[0-9]+$ ]] || wait_s=10
+  deadline=$((SECONDS + wait_s))
+  while :; do
+    if [ -s "$rc_file" ]; then
+      verdict="$(cat "$rc_file" 2>/dev/null || true)"
+      break
+    fi
+    [ "$SECONDS" -lt "$deadline" ] || break
+    sleep 0.05
+  done
+  [ "$verdict" = "0 0" ] && exit 0
+  return 0
+}
+if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] && [ -n "$SESSION_ID" ] && [ "${HQ_HOOK_DEDUPE:-1}" != "0" ]; then
+  dedupe_key=""
+  dedupe_window=0
+  dedupe_key="$(printf '%s' "$INPUT" | jq -r 'if (.tool_use_id | type) == "string" then .tool_use_id else empty end' 2>/dev/null || true)"
+  if [ -z "$dedupe_key" ]; then
+    dedupe_key="$(master_timeout_sha256 "$INPUT" 2>/dev/null || true)"
+    dedupe_window="${HQ_HOOK_DEDUPE_WINDOW:-5}"
+    [[ "$dedupe_window" =~ ^[1-9][0-9]*$ ]] || dedupe_window=5
+  fi
+  if [ -n "$dedupe_key" ]; then
+    dedupe_dir="$SESSION_DIR/dispatch-locks"
+    dedupe_lock="$dedupe_dir/$EVENT-${dedupe_key//[^A-Za-z0-9_.-]/_}"
+    dedupe_now="${EPOCHSECONDS:-$(date +%s)}"
+    mkdir -p "$dedupe_dir" 2>/dev/null || true
+    if ! ( set -C; printf '%s\n' "$dedupe_now" > "$dedupe_lock" ) 2>/dev/null; then
+      # A lock still being written (empty) counts as fresh. A stale lock is
+      # taken over by rename, which exactly one concurrent dispatch wins.
+      dedupe_then="$(cat "$dedupe_lock" 2>/dev/null || true)"
+      [[ "$dedupe_then" =~ ^[0-9]+$ ]] || dedupe_then="$dedupe_now"
+      if [ "$dedupe_window" -eq 0 ] || [ $((dedupe_now - dedupe_then)) -lt "$dedupe_window" ] \
+        || ! mv "$dedupe_lock" "$dedupe_lock.stale.$$" 2>/dev/null; then
+        master_dedupe_follow "$dedupe_lock"
+      else
+        # The renamed file may be a fresh lock a concurrent dispatch just wrote.
+        dedupe_then="$(cat "$dedupe_lock.stale.$$" 2>/dev/null || true)"
+        if [[ "$dedupe_then" =~ ^[0-9]+$ ]] && [ $((dedupe_now - dedupe_then)) -lt "$dedupe_window" ]; then
+          mv "$dedupe_lock.stale.$$" "$dedupe_lock" 2>/dev/null || true
+          master_dedupe_follow "$dedupe_lock"
+        else
+          rm -f "$dedupe_lock.stale.$$" "$dedupe_lock.rc" 2>/dev/null || true
+          if ( set -C; printf '%s\n' "$dedupe_now" > "$dedupe_lock" ) 2>/dev/null; then
+            dedupe_claimed_lock="$dedupe_lock"
+          else
+            master_dedupe_follow "$dedupe_lock"
+          fi
+        fi
+      fi
+    else
+      rm -f "$dedupe_lock.rc" 2>/dev/null || true
+      dedupe_claimed_lock="$dedupe_lock"
+    fi
+  fi
+fi
+
 master_bash_env_state() {
   if [ -n "${BASH_ENV:-}" ]; then
     printf 'set'
@@ -457,15 +555,17 @@ master_shell_descriptor() {
   printf '%s %s' "$shell_name" "$shell_version"
 }
 
-master_cwd_kind() {
-  local cwd_root="$REPO_ROOT"
+master_cwd_kind() { # [cwd] (default: payload cwd)
+  local cwd_root="$REPO_ROOT" cwd="${1-$PAYLOAD_CWD}"
   while [ "$cwd_root" != "/" ] && [ "${cwd_root%/}" != "$cwd_root" ]; do
     cwd_root="${cwd_root%/}"
   done
-  case "$PAYLOAD_CWD" in
+  case "$cwd" in
     "$cwd_root") printf 'hq-root' ;;
     "$cwd_root/repos/public/"*|"$cwd_root/repos/private/"*) printf 'repo' ;;
     "$cwd_root/workspace/worktrees/"*) printf 'worktree' ;;
+    "$cwd_root/"*|'') printf 'other' ;;
+    /*) printf 'foreign' ;;
     *) printf 'other' ;;
   esac
 }
@@ -797,6 +897,59 @@ completed_child_paths=()
 completed_child_elapsed_ms=()
 late_finish_seen_paths=()
 
+# --- Foreign-cwd company bind (SessionStart only) ---------------------------
+# A session started outside the HQ tree has no /startwork to bind it. Ask the
+# repo-to-company registry; a hit runs the same bind as /startwork
+# (hq-session.sh set company_slug, which mints the scope capability, registers
+# with Work Mesh, and prints the company policy digest). A miss or an
+# unavailable resolver binds personal: never guess a tenant. Session metadata
+# stays under $REPO_ROOT/workspace/sessions/<sid>/ with a foreign_cwd field.
+master_foreign_bind() {
+  local foreign_cwd kind resolved slug source bind_out bind_rc context=""
+  # Only a cwd the runtime reported counts; the hook's own $PWD is not a
+  # session start location, so a payload without cwd stays silent.
+  foreign_cwd="$PAYLOAD_CWD"
+  [ -n "$foreign_cwd" ] || return 0
+  kind="$(master_cwd_kind "$foreign_cwd")"
+  [ "$kind" = "foreign" ] || return 0
+  local session_cmd=(env HQ_ROOT="$REPO_ROOT" bash "$REPO_ROOT/core/scripts/hq-session.sh" --session-id "$SESSION_ID")
+  resolved="$(HQ_ROOT="$REPO_ROOT" bash "$REPO_ROOT/core/scripts/resolve-company.sh" --root "$REPO_ROOT" --path "$foreign_cwd" </dev/null)"
+  slug="$(printf '%s' "$resolved" | jq -r '.company // ""' 2>/dev/null || true)"
+  source="$(printf '%s' "$resolved" | jq -r '.source // ""' 2>/dev/null || true)"
+  if [ -z "$source" ]; then
+    printf 'master-hook: WARNING company resolver failed for %s; binding personal, not guessing a company\n' "$foreign_cwd" >&2
+    source="unavailable"
+  fi
+  "${session_cmd[@]}" set foreign_cwd "$foreign_cwd" >/dev/null 2>&1 || true
+  if [ "$source" = "registry" ] && [ -n "$slug" ]; then
+    bind_rc=0
+    bind_out="$("${session_cmd[@]}" set company_slug "$slug" 2>/dev/null)" || bind_rc=$?
+    if [ "$bind_rc" -eq 0 ]; then
+      ACTIVE_COMPANY="$slug"
+      context="This session started in ${foreign_cwd}, which is linked to HQ company ${slug}; the session is bound to ${slug}.${bind_out:+
+$bind_out}"
+    else
+      printf 'master-hook: WARNING could not bind company %s for %s; binding personal, not guessing a company\n' "$slug" "$foreign_cwd" >&2
+      source="unavailable"
+    fi
+  fi
+  if [ "$ACTIVE_COMPANY" != "$slug" ] || [ -z "$slug" ]; then
+    "${session_cmd[@]}" set company_slug personal >/dev/null 2>&1 \
+      || printf 'master-hook: WARNING could not bind personal for session %s\n' "$SESSION_ID" >&2
+    ACTIVE_COMPANY="personal"
+    if [ "$source" = "registry_miss" ]; then
+      context="This folder (${foreign_cwd}) is not linked to an HQ company, so this session is bound to personal. Offer the user \`hq link <company>\` once if the work belongs to a company; do not guess a company."
+    else
+      context="HQ could not check which company this folder (${foreign_cwd}) belongs to, so this session is bound to personal. Do not guess a company; the user can bind one with core/scripts/hq-session.sh set company_slug <slug>."
+    fi
+  fi
+  json_outputs+=("$(jq -cn --arg ctx "$context" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}')")
+  json_sources+=("$REPO_ROOT/core/scripts/resolve-company.sh")
+}
+if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] && [ "$EVENT" = "SessionStart" ] && [ -n "$SESSION_ID" ] && [ -z "$ACTIVE_COMPANY" ]; then
+  master_foreign_bind
+fi
+
 is_json_object() {
   # Cheap shape check first so plain-text outputs never fork jq.
   case "$1" in
@@ -948,6 +1101,43 @@ collect_output() { # <rc> <stdout> <source-path>
     exit_code=$rc
   fi
 }
+
+# In the HQ-root Claude project, the project registration is the only route to
+# hqd (the companion hq-cli global hook skips this root). Feed the same payload
+# to the shim and aggregate its result with the normal master fan-out below.
+# This preserves registry, core, personal, pack, and company hooks while
+# delivering one hqd operation. The shim reports unavailable dependencies or
+# a stale socket with 75 so this invocation can fall back to the direct path.
+if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
+  && [ -d "${CLAUDE_PROJECT_DIR:-}" ] \
+  && [ "${CLAUDE_PROJECT_DIR:-}" -ef "$REPO_ROOT" ]; then
+  if [ -n "${HQ_HQD_SOCKET:-}" ]; then
+    HQD_SOCKET_PATH="$HQ_HQD_SOCKET"
+  elif [ -n "${HQ_REGISTRY_DIR:-}" ]; then
+    HQD_SOCKET_PATH="$HQ_REGISTRY_DIR/hqd.sock"
+  else
+    HQD_SOCKET_PATH="${HOME:-}/.hq/hqd.sock"
+  fi
+  if [ -S "$HQD_SOCKET_PATH" ] && [ -f "$REPO_ROOT/core/scripts/hqd-hook-shim.sh" ]; then
+    FLAG_DIR="$REPO_ROOT/core/scripts"
+    # shellcheck disable=SC1090 # The path is rooted at the resolved HQ checkout.
+    if . "$FLAG_DIR/hqd-hook-flag-cache-lib.sh" && hqd_hook_flag_cache_store_enabled >/dev/null 2>&1; then
+      shim_tmp="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/hq-hook-shim.XXXXXX" 2>/dev/null || true)"
+      if [ -n "$shim_tmp" ]; then
+        shim_rc=0
+        printf '%s' "$INPUT" | HQ_HQD_SHIM_REPORT_UNREACHABLE=1 /bin/sh \
+          "$REPO_ROOT/core/scripts/hqd-hook-shim.sh" "$EVENT" --runtime claude \
+          >"$shim_tmp/stdout" 2>"$shim_tmp/stderr" || shim_rc=$?
+        if [ "$shim_rc" -ne 75 ]; then
+          [ ! -s "$shim_tmp/stderr" ] || cat "$shim_tmp/stderr" >&2
+          shim_output="$(cat "$shim_tmp/stdout" 2>/dev/null || true)"
+          collect_output "$shim_rc" "$shim_output" "$REPO_ROOT/core/scripts/hqd-hook-shim.sh"
+        fi
+        rm -rf "$shim_tmp"
+      fi
+    fi
+  fi
+fi
 
 master_report_block_reason() { # <source-path>
   local source="$1" hook_name
@@ -1827,4 +2017,6 @@ fi
 emit_pending_late_finish_events
 
 [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "master-hook:$EVENT total" "$exit_code" "${MASTER_TRACE_START:-}"
+# Let a deduped twin of this event follow this verdict (see dedupe above).
+[ -z "$dedupe_claimed_lock" ] || printf '%s %s\n' "$exit_code" "$has_blocking_json" > "$dedupe_claimed_lock.rc" 2>/dev/null || true
 exit "$exit_code"

@@ -22,7 +22,8 @@ run_case() {
     .claude/hooks/hook-gate.sh \
     .claude/hooks/hook-timeout-probe.sh \
     .claude/hooks/hook-timeout-watchdog.sh \
-    core/scripts/lib/hook-adapter-core.sh; do
+    core/scripts/lib/hook-adapter-core.sh \
+    core/scripts/hq-anywhere-runtime-flag.cjs; do
     mkdir -p "$root/${rel%/*}"
     cp "$SOURCE_ROOT/$rel" "$root/$rel"
   done

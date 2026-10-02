@@ -1,0 +1,70 @@
+{
+  "_meta": {
+    "runtime": "claude",
+    "runtime_version": "claude code CLI (claude -p)",
+    "captured_at": "2026-10-01",
+    "registration": "Two scopes registered at once: a user-scope settings file (~/.claude/settings.json shape, passed via CLAUDE_CONFIG_DIR for SessionStart and --settings for PreToolUse because a temp config dir has no login) and the project .claude/settings.json.",
+    "fields": {
+      "cwd": "present on SessionStart and PreToolUse (realpath form)",
+      "session_id": "present on both events; same value across events",
+      "tool_use_id": "present on PreToolUse (toolu_...)",
+      "prompt_id": "present on PreToolUse",
+      "transcript_path": "present",
+      "scratchpad_dir": "present on PreToolUse"
+    },
+    "findings": [
+      "When the user-scope and project-scope commands differ, Claude runs both, each with the identical payload: one SessionStart pair and one PreToolUse pair per event.",
+      "The duplicate pair shares session_id + hook_event_name + tool_use_id, which is the dedupe key master-hook.sh uses."
+    ]
+  },
+  "SessionStart": {
+    "user_scope": {
+      "session_id": "66d0dc7b-7ac5-4a27-8b75-03178697e190",
+      "transcript_path": "/Users/corey/.claude/projects/-private-tmp-cdxcap-qoIO-cproj/66d0dc7b-7ac5-4a27-8b75-03178697e190.jsonl",
+      "cwd": "/private/tmp/cdxcap.qoIO/cproj",
+      "scratchpad_dir": "/private/tmp/claude-501/-private-tmp-cdxcap-qoIO-cproj/66d0dc7b-7ac5-4a27-8b75-03178697e190/scratchpad",
+      "hook_event_name": "SessionStart",
+      "source": "startup"
+    },
+    "project_scope": {
+      "session_id": "66d0dc7b-7ac5-4a27-8b75-03178697e190",
+      "transcript_path": "/Users/corey/.claude/projects/-private-tmp-cdxcap-qoIO-cproj/66d0dc7b-7ac5-4a27-8b75-03178697e190.jsonl",
+      "cwd": "/private/tmp/cdxcap.qoIO/cproj",
+      "scratchpad_dir": "/private/tmp/claude-501/-private-tmp-cdxcap-qoIO-cproj/66d0dc7b-7ac5-4a27-8b75-03178697e190/scratchpad",
+      "hook_event_name": "SessionStart",
+      "source": "startup"
+    }
+  },
+  "PreToolUse": {
+    "user_scope": {
+      "session_id": "66d0dc7b-7ac5-4a27-8b75-03178697e190",
+      "transcript_path": "/Users/corey/.claude/projects/-private-tmp-cdxcap-qoIO-cproj/66d0dc7b-7ac5-4a27-8b75-03178697e190.jsonl",
+      "cwd": "/private/tmp/cdxcap.qoIO/cproj",
+      "scratchpad_dir": "/private/tmp/claude-501/-private-tmp-cdxcap-qoIO-cproj/66d0dc7b-7ac5-4a27-8b75-03178697e190/scratchpad",
+      "prompt_id": "6a960e62-bbc9-4d45-ad31-f0725fca38ec",
+      "permission_mode": "default",
+      "hook_event_name": "PreToolUse",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "echo hi",
+        "description": "Print \"hi\" to stdout"
+      },
+      "tool_use_id": "toolu_01DLkd43gDAJxhS4KZDovS58"
+    },
+    "project_scope": {
+      "session_id": "66d0dc7b-7ac5-4a27-8b75-03178697e190",
+      "transcript_path": "/Users/corey/.claude/projects/-private-tmp-cdxcap-qoIO-cproj/66d0dc7b-7ac5-4a27-8b75-03178697e190.jsonl",
+      "cwd": "/private/tmp/cdxcap.qoIO/cproj",
+      "scratchpad_dir": "/private/tmp/claude-501/-private-tmp-cdxcap-qoIO-cproj/66d0dc7b-7ac5-4a27-8b75-03178697e190/scratchpad",
+      "prompt_id": "6a960e62-bbc9-4d45-ad31-f0725fca38ec",
+      "permission_mode": "default",
+      "hook_event_name": "PreToolUse",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "echo hi",
+        "description": "Print \"hi\" to stdout"
+      },
+      "tool_use_id": "toolu_01DLkd43gDAJxhS4KZDovS58"
+    }
+  }
+}

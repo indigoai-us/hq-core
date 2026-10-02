@@ -1,0 +1,45 @@
+{
+  "_meta": {
+    "runtime": "codex",
+    "runtime_version": "codex-cli 0.153.4",
+    "captured_at": "2026-10-01",
+    "registration": "user scope: $CODEX_HOME/config.toml [[hooks.<Event>]] (a hooks.json file in the same layer is also read; Codex warns when both exist). Run with codex exec --dangerously-bypass-hook-trust because untrusted user hooks are skipped silently in exec mode.",
+    "capture_command": "cat > <file>; echo PWD=$PWD",
+    "fields": {
+      "cwd": "present on SessionStart and PreToolUse (absolute, realpath form /private/tmp/...)",
+      "session_id": "present on both events; same value across events",
+      "tool_use_id": "present on PreToolUse (exec-<uuid>)",
+      "turn_id": "present on PreToolUse only",
+      "transcript_path": "present",
+      "hook_process_PWD": "equals the session cwd (/tmp/... symlink form, not realpath)"
+    },
+    "findings": [
+      "Codex delivers cwd in the payload, so US-007 does not need the $PWD fallback for Codex, but should still use $PWD when cwd is absent.",
+      "Each event ran the hook command twice (two processes, identical payload and tool_use_id) in this capture, so dispatch dedupe is needed on Codex too."
+    ]
+  },
+  "SessionStart": {
+    "session_id": "01a0f89d-81d7-71a0-b768-2396b52d32d9",
+    "transcript_path": "/private/tmp/cdxcap.qoIO/home/sessions/2026/10/01/rollout-2026-10-01T11-57-47-01a0f89d-81d7-71a0-b768-2396b52d32d9.jsonl",
+    "cwd": "/private/tmp/cdxcap.qoIO/proj",
+    "hook_event_name": "SessionStart",
+    "model": "gpt-5.6-sol",
+    "permission_mode": "bypassPermissions",
+    "source": "startup"
+  },
+  "PreToolUse": {
+    "session_id": "01a0f89d-81d7-71a0-b768-2396b52d32d9",
+    "turn_id": "01a0f89d-8371-7a31-ba36-d138a331772b",
+    "transcript_path": "/private/tmp/cdxcap.qoIO/home/sessions/2026/10/01/rollout-2026-10-01T11-57-47-01a0f89d-81d7-71a0-b768-2396b52d32d9.jsonl",
+    "cwd": "/private/tmp/cdxcap.qoIO/proj",
+    "hook_event_name": "PreToolUse",
+    "model": "gpt-5.6-sol",
+    "permission_mode": "bypassPermissions",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "echo hi"
+    },
+    "tool_use_id": "exec-830c5c71-8ecc-4eed-bf3f-7bad69ce0623"
+  },
+  "hook_process_PWD": "/tmp/cdxcap.qoIO/proj"
+}

@@ -101,10 +101,10 @@ CORE_YAML_FILE="$INSTALL_ROOT/core/core.yaml"
 BASE_CORE_YAML="$TMP/base-core.yaml"
 cp "$CORE_YAML_FILE" "$BASE_CORE_YAML"
 RESOLVED_PIN="$(bash "$INSTALLER" --root "$INSTALL_ROOT" --resolve-only)"
-if [ "$RESOLVED_PIN" = "5.312.1" ]; then
+if [ "$RESOLVED_PIN" = "5.324.0" ]; then
   pass 'resolve-only honors the CI-only minimum hq-cli pin'
 else
-  fail "resolve-only selects CI minimum 5.312.1: got $RESOLVED_PIN"
+  fail "resolve-only selects CI minimum 5.324.0: got $RESOLVED_PIN"
 fi
 awk '{ gsub(/min_cli: 5\.270\.0/, "min_cli: 5.400.0"); print }' "$BASE_MANIFEST" > "$MANIFEST_FILE"
 RESOLVED_FORWARDER_PIN="$(bash "$INSTALLER" --root "$INSTALL_ROOT" --resolve-only)"
@@ -147,14 +147,14 @@ CACHED_PATH_FILE="$TMP/cached-github-path"
 mkdir -p "$CACHED_PREFIX/bin"
 cat > "$CACHED_PREFIX/bin/hq" <<'HQ'
 #!/usr/bin/env bash
-if [ "${1-}" = "--version" ]; then printf '5.312.1\n'; exit 0; fi
+if [ "${1-}" = "--version" ]; then printf '5.324.0\n'; exit 0; fi
 if [ "${1-}" = "core" ] && [ "${2-}" = "--help" ]; then exit 0; fi
 exit 64
 HQ
 chmod +x "$CACHED_PREFIX/bin/hq"
 CACHED_OUTPUT="$(MOCK_NPM_PREFIX="$CACHED_PREFIX" MOCK_NPM_ROOT="$MOCK_NPM_ROOT" \
   MOCK_NPM_INSTALL_LOG="$MOCK_NPM_LOG" GITHUB_PATH="$CACHED_PATH_FILE" \
-  HQ_MOCK_VERSION=5.312.1 PATH="$MOCK_BIN:$PATH" \
+  HQ_MOCK_VERSION=5.324.0 PATH="$MOCK_BIN:$PATH" \
   bash "$INSTALLER" --root "$INSTALL_ROOT" 2>&1)" || fail "cached pinned CLI is reused: $CACHED_OUTPUT"
 if [ -s "$MOCK_NPM_LOG" ]; then
   fail 'already-installed selected hq version skips npm install'
@@ -166,7 +166,7 @@ if ! grep -F -q "$CACHED_PREFIX/bin" "$CACHED_PATH_FILE"; then
 else
   pass 'cached CLI still exports the npm global bin directory through GITHUB_PATH'
 fi
-if ! grep -F -q 'hq --version: 5.312.1' <<<"$CACHED_OUTPUT"; then
+if ! grep -F -q 'hq --version: 5.324.0' <<<"$CACHED_OUTPUT"; then
   fail 'cached CLI still passes the final selected-version check'
 else
   pass 'cached CLI still passes the final selected-version check'
@@ -177,7 +177,7 @@ if [ ! -f "$INSTALLER" ]; then
 else
   install_output="$(MOCK_NPM_PREFIX="$MOCK_PREFIX" MOCK_NPM_ROOT="$MOCK_NPM_ROOT" \
     MOCK_NPM_INSTALL_LOG="$MOCK_NPM_LOG" GITHUB_PATH="$GITHUB_PATH_FILE" \
-    GITHUB_ENV="$GITHUB_ENV_FILE" HQ_MOCK_VERSION=5.312.1 PATH="$MOCK_BIN:$PATH" \
+    GITHUB_ENV="$GITHUB_ENV_FILE" HQ_MOCK_VERSION=5.324.0 PATH="$MOCK_BIN:$PATH" \
     bash "$INSTALLER" --root "$INSTALL_ROOT" 2>&1)" || {
       fail "pinned CLI installer succeeds: $install_output"
       install_output=""
@@ -187,7 +187,7 @@ else
   else
     pass 'installer turns the version gate off for later CI steps'
   fi
-  if ! grep -F -q 'install -g @indigoai-us/hq-cli@5.312.1 --ignore-scripts' "$MOCK_NPM_LOG"; then
+  if ! grep -F -q 'install -g @indigoai-us/hq-cli@5.324.0 --ignore-scripts' "$MOCK_NPM_LOG"; then
     fail 'installer selects the maximum manifest min_cli and suppresses package lifecycle scripts'
   else
     pass 'different installed version triggers npm install at the selected pin'
@@ -197,7 +197,7 @@ else
   else
     pass 'installer exports the npm global bin directory through GITHUB_PATH'
   fi
-  if ! grep -F -q '5.312.1' <<<"$install_output"; then
+  if ! grep -F -q '5.324.0' <<<"$install_output"; then
     fail 'installer prints the installed hq version'
   else
     pass 'installer prints the installed hq version'
@@ -209,17 +209,17 @@ WINDOWS_PATH_FILE="$TMP/windows-github-path"
 mkdir -p "$WINDOWS_PREFIX"
 cat > "$WINDOWS_PREFIX/hq" <<'HQ'
 #!/usr/bin/env bash
-if [ "${1-}" = "--version" ]; then printf '5.312.1\n'; exit 0; fi
+if [ "${1-}" = "--version" ]; then printf '5.324.0\n'; exit 0; fi
 if [ "${1-}" = "core" ] && [ "${2-}" = "--help" ]; then exit 0; fi
 exit 64
 HQ
 chmod +x "$WINDOWS_PREFIX/hq"
 if WINDOWS_INSTALL_OUTPUT="$(MOCK_NPM_PREFIX="$WINDOWS_PREFIX" MOCK_NPM_ROOT="$MOCK_NPM_ROOT" \
   MOCK_NPM_INSTALL_LOG="$MOCK_NPM_LOG" GITHUB_PATH="$WINDOWS_PATH_FILE" \
-  HQ_MOCK_VERSION=5.312.1 PATH="$MOCK_BIN:$PATH" \
+  HQ_MOCK_VERSION=5.324.0 PATH="$MOCK_BIN:$PATH" \
   bash "$INSTALLER" --root "$INSTALL_ROOT" 2>&1)"; then
   if grep -F -q "$WINDOWS_PREFIX" "$WINDOWS_PATH_FILE" \
-    && grep -F -q 'hq --version: 5.312.1' <<<"$WINDOWS_INSTALL_OUTPUT"; then
+    && grep -F -q 'hq --version: 5.324.0' <<<"$WINDOWS_INSTALL_OUTPUT"; then
     pass 'installer accepts an npm global bin placed directly in its prefix'
   else
     fail 'installer exports and validates a prefix-level Windows-style npm bin'

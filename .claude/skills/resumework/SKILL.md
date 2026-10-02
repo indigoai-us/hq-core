@@ -117,6 +117,16 @@ bash core/scripts/hq-session.sh set mode "Resume"
 
 Skip the `company_slug` line if no company is resolvable from the thread — same fail-closed behavior as `/startwork`.
 
+After the thread is loaded and its company/work subject is clear, update this
+successor session's title with `set_session_title` according to
+`core/policies/hq-session-title-grammar.md`. Carry the useful work subject from
+`metadata.title` or `conversation_summary`; include company, product, or mode
+when that adds information. Before calling the tool, run
+`bash core/scripts/hq-session.sh current` to get the current session id,
+sanitize it as `${session_id//[^A-Za-z0-9._-]/_}`, and check whether
+`.claude/state/session-title-${session_key}.manual` exists. If it exists, skip
+the title update to preserve the user's manual rename. If the optional title tool is unavailable, skip the update without blocking resume.
+
 ### 6. Present the resume block + next steps
 
 ```

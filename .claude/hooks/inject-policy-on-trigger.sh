@@ -331,6 +331,21 @@ record_match_rows() {
   [ -z "$always_slugs" ] || record_slugs "$TURN_FILE" "$always_slugs"
 }
 
+# A slug is delivered only when its policy heading survives output budgeting.
+# Keep omitted matches eligible for a later tool event instead of consuming the
+# session ledger before the final reminder has been assembled.
+record_emitted_match_rows() {
+  local rows="$1" output="$2" row slug delivered=""
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    slug="${row%%$'\t'*}"
+    case "$output" in
+      *$'\n> Policy `'"$slug"'` '*) delivered+="$row"$'\n' ;;
+    esac
+  done <<< "$rows"
+  [ -z "$delivered" ] || record_match_rows "$delivered"
+}
+
 # Invalid worker-policy configuration is advisory, but keep one diagnostic per
 # reason in the existing per-session ledger so repeated hook events stay quiet.
 worker_policy_diagnostic() {
@@ -1389,6 +1404,9 @@ fi
 WITHHELD_NAMES=""
 WITHHELD_NAMED=0
 if [ -n "$WITHHELD_MATCHES" ]; then
+  # An explicit count cap intentionally consumes lower-ranked matches for this
+  # session; preserve that existing contract. Output-ceiling omissions are
+  # handled separately after the final reminder is assembled.
   record_match_rows "$WITHHELD_MATCHES"
   while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
     [ -n "$slug" ] || continue
@@ -1565,11 +1583,6 @@ policy_body() {
   '
 }
 
-# Record every emitted slug in its ledger exactly once, BEFORE emission: the
-# emission below may run twice (full text, then summary-only fallback) and
-# must not double-record.
-record_match_rows "$MATCHES"
-
 emit_reminder() {
 printf '<policy-reminder>\n'
 printf '%s' "$MATCHES" | {
@@ -1708,7 +1721,7 @@ if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ]; then
             if (!(i in policy_line)) continue
             removed_bytes += length(lines[i]) + 1
             candidate_cut++
-            notice = "> Output ceiling of " ceiling " bytes: " candidate_cut " lower-ranked policy line(s) cut from this reminder. They stay in the ledger as fired; see the policy files."
+            notice = "> Output ceiling of " ceiling " bytes: " candidate_cut " lower-ranked policy line(s) cut from this reminder. Omitted policies remain eligible for a later event; see the policy files."
             candidate_bytes = total_bytes - removed_bytes + length(notice) + 1
             if (candidate_bytes <= ceiling) {
               chosen_cut=candidate_cut
@@ -1814,16 +1827,54 @@ if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ]; then
     fi
   fi
 fi
+HOOK_OUTPUT="$OUT"
+if [ -z "${NO_STDOUT_REASON:-}" ] && [ -n "$OUT" ]; then
+  if [ "$EVENT" = "PostToolUse" ]; then
+    # Native Claude Code only treats plain stdout as context on selected events;
+    # PostToolUse requires event-specific JSON additionalContext. Codex's adapter
+    # also understands this shape and flattens it back into the same context.
+    HOOK_OUTPUT="$(jq -cn --arg event "$EVENT" --arg context "$OUT" \
+      '{hookSpecificOutput:{hookEventName:$event,additionalContext:$context}}' 2>/dev/null)"
+    if [ -z "$HOOK_OUTPUT" ]; then
+      NO_STDOUT_REASON="could not encode PostToolUse additionalContext"
+    fi
+  fi
+fi
+if [ -n "$HOOK_OUTPUT" ]; then
+  policy_value_bytes "$HOOK_OUTPUT"
+  OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
+  if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ] && [ "$EVENT" = "PostToolUse" ]; then
+    # JSON quoting can expand the reminder beyond the context budget. Retry
+    # with a compact, valid envelope and suppress it if even that cannot fit.
+    OUT='Policies matched.'
+    HOOK_OUTPUT="$(jq -cn --arg event "$EVENT" --arg context "$OUT" \
+      '{hookSpecificOutput:{hookEventName:$event,additionalContext:$context}}' 2>/dev/null)"
+    if [ -n "$HOOK_OUTPUT" ]; then
+      policy_value_bytes "$HOOK_OUTPUT"
+      OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
+    else
+      OUT_BYTES=0
+    fi
+    if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ]; then
+      HOOK_OUTPUT=""
+      OUT_BYTES=0
+      NO_STDOUT_REASON="HQ_POLICY_OUTPUT_CEILING_BYTES=${OUTPUT_CEILING} is below the minimum PostToolUse envelope"
+    fi
+  fi
+  [ -z "$HOOK_OUTPUT" ] || record_emitted_match_rows "$MATCHES" "$OUT"
+else
+  OUT_BYTES=0
+fi
 # Emission stats (2026-09-07): one line per event so a live smoke or benchmark
 # can prove, per session and per runtime, that every reminder stayed under the
-# host ceiling. OUT_BYTES is the final `printf '%s\n'` byte count. Cheap append;
-# failure is ignored.
+# host ceiling. OUT_BYTES is the final stdout byte count, including a PostToolUse
+# JSON envelope. Cheap append; failure is ignored.
 { [ -d "$STATS_DIR" ] || mkdir -p "$STATS_DIR" 2>/dev/null \
   && printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$EVENT" "$OUT_BYTES" "$MATCH_COUNT" >> "$STATS_DIR/${SESSION_ID:-unknown}.txt"; } 2>/dev/null || true
 if [ -n "${NO_STDOUT_REASON:-}" ]; then
   printf 'inject-policy-on-trigger: %s; emitted no stdout.\n' "$NO_STDOUT_REASON" >&2
 else
-  printf '%s\n' "$OUT"
+  [ -z "$HOOK_OUTPUT" ] || printf '%s\n' "$HOOK_OUTPUT"
 fi
 
 exit 0

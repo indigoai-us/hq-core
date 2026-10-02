@@ -92,6 +92,17 @@ rm -f "$CHANGESET_TMP"   # clean up on both success and failure
 [ "$rc" -eq 0 ] || { echo "handoff-finalize failed (rc=$rc)" >&2; exit "$rc"; }
 ```
 
+After finalization succeeds, update this predecessor session's title with
+`set_session_title` to show that the handoff is ready. Follow
+`core/policies/hq-session-title-grammar.md`: use the `📤` handed-off status
+glyph with the existing company, product, and work subject; do not replace the
+subject with a generic "handoff" label. Do this only after the thread is
+durable. Before calling the tool, run `bash core/scripts/hq-session.sh current`
+to get the current session id, sanitize it as
+`${session_id//[^A-Za-z0-9._-]/_}`, and check whether
+`.claude/state/session-title-${session_key}.manual` exists. If it exists, skip
+the title update so a manual rename is preserved. If the optional title tool is unavailable, skip the update without blocking handoff completion.
+
 Every next step is stored with an `id` (`<thread_id>#<n>`) and `status: open`.
 Before writing the new thread's next steps, close the ones this session actually
 finished so they stop being copied forward:
@@ -207,6 +218,10 @@ If any active pipelines surface, mention them in the report and suggest `core/sc
 Chat report follows the active output style (`core/policies/hq-audience-mode.md`). Files this skill writes stay full prose. The templates below are chat-only.
 
 **Default (`HQ`, and any style that is not `hq-operator`):** one or two short plain sentences. Do not print Scope, Dedup, Action, file paths, thread IDs, or PIDs. Do not paste the operator template.
+
+When trusted command-report details context is present, lead with a short plain-language summary. Put useful, non-sensitive diagnostics in a collapsed `Technical details` section. Without that context, keep the summary-only format.
+
+When trusted context is absent (for example, a routed natural-language or programmatic invocation), check the flag at report time with `HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)" node .claude/hooks/command-report-details-flag.cjs`. Use expanded details only when it prints `true`; otherwise keep the summary-only format. This gate never overrides `hq-operator` style.
 
 - Clipboard copied: `All saved. To pick up later, open a new chat and paste what's on your clipboard.`
 - Clipboard not copied: `All saved. To pick up later, open a new chat and run {next_command}.`

@@ -112,9 +112,8 @@ case "$1" in
   doctor)
     case "$*" in
       *--client-health-sentry*)
-        # Return zero only for the opt-in direct-Sentry path; every non-zero
-        # result models flag-off, an unavailable transport, or an older CLI.
-        exit "${HQ_STUB_SENTRY_RC:-2}"
+        # Model the current CLI rejecting this removed option if the hook regresses.
+        exit 2
         ;;
       *--fix*)
         # HQ_STUB_FIX_HANG models a wedged repair (a doctor stuck on a network
@@ -931,49 +930,28 @@ run_remediate "$R19" "-"
 [ ! -s "$REM_STATE/bugs-filed" ] \
   && ok "cannot send without durable cooldown" || bad "cannot send without durable cooldown" "sent without stamp"
 
-echo "== 21. direct Sentry handling preserves the old path when unavailable =="
-R20="$TMP/sentry-fallback"
+echo "== 21. retired direct-Sentry route is never called; degraded checks use feedback =="
+R20="$TMP/retired-sentry-route"
 build_root "$R20"
-REM_STATE="$TMP/sentry-fallback-state"
+REM_STATE="$TMP/retired-sentry-route-state"
 mkdir -p "$REM_STATE"
-export HQ_STUB_SENTRY_RC=10
 run_remediate "$R20" "-"
-unset HQ_STUB_SENTRY_RC
 [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
-  && ok "flag-off direct report falls back to hq feedback bug" \
-  || bad "flag-off direct report falls back to hq feedback bug" "feedback was not filed"
-grep -Fq -- '--client-health-sentry' "$STUB_LOG" \
-  && ok "flag-off CLI attempt is explicit and bounded" \
-  || bad "flag-off CLI attempt is explicit and bounded" "direct command missing"
+  && ok "degraded checks still file one feedback report" \
+  || bad "degraded checks still file one feedback report" "feedback was not filed"
+grep -Fq 'sync.journal.stale' "$REM_STATE/bug-bodies.txt" \
+  && ok "feedback report keeps the sanitized check id" \
+  || bad "feedback report keeps the sanitized check id" "check id missing"
+[ -f "$R20/workspace/.hq-client-health/bugs/summary.stamp" ] \
+  && ok "feedback report records the shared daily cooldown" \
+  || bad "feedback report records the shared daily cooldown" "summary stamp missing"
+if grep -Fq -- '--client-health-sentry' "$STUB_LOG"; then
+  bad "retired direct-Sentry route is never invoked" "hook called a removed hq-cli option"
+else
+  ok "retired direct-Sentry route is never invoked"
+fi
 
-echo "== 22. successful direct Sentry handling skips the feedback API =="
-R21="$TMP/sentry-handled"
-build_root "$R21"
-REM_STATE="$TMP/sentry-handled-state"
-mkdir -p "$REM_STATE"
-export HQ_STUB_SENTRY_RC=0
-run_remediate "$R21" "-"
-unset HQ_STUB_SENTRY_RC
-[ ! -s "$REM_STATE/bugs-filed" ] \
-  && ok "handled Sentry event skips hq feedback bug" \
-  || bad "handled Sentry event skips hq feedback bug" "feedback API was called"
-[ -f "$R21/workspace/.hq-client-health/bugs/summary.stamp" ] \
-  && ok "handled Sentry event records the shared daily cooldown" \
-  || bad "handled Sentry event records the shared daily cooldown" "summary stamp missing"
-
-echo "== 23. an older CLI falls back to hq feedback bug =="
-R22="$TMP/sentry-old-cli"
-build_root "$R22"
-REM_STATE="$TMP/sentry-old-cli-state"
-mkdir -p "$REM_STATE"
-export HQ_STUB_SENTRY_RC=2
-run_remediate "$R22" "-"
-unset HQ_STUB_SENTRY_RC
-[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
-  && ok "older CLI falls back to hq feedback bug" \
-  || bad "older CLI falls back to hq feedback bug" "feedback was not filed"
-
-echo "== 24. a local next-step message is displayed once =="
+echo "== 22. a local next-step message is displayed once =="
 R23="$TMP/result-message"
 build_root "$R23"
 mkdir -p "$R23/workspace/.hq-client-health"
@@ -1000,7 +978,7 @@ case "$HOOK_OUT" in
   *) ok "SessionStart marks the result shown" ;;
 esac
 
-echo "== 25. a contended report lock removes the local raw post-fix document =="
+echo "== 23. a contended report lock removes the local raw post-fix document =="
 R24="$TMP/sentry-lock-contended"
 build_root "$R24"
 mkdir -p "$R24/workspace/.hq-client-health/bugs"
@@ -1013,7 +991,7 @@ POST_FIX_FILES=$(compgen -G "$R24/workspace/.hq-client-health/post-fix.*" || tru
   && ok "contended report lock removes the raw post-fix document" \
   || bad "contended report lock removes the raw post-fix document" "temporary doctor JSON remained on disk"
 
-echo "== 26. a stale local-message lock is recovered =="
+echo "== 24. a stale local-message lock is recovered =="
 R25="$TMP/result-message-stale-lock"
 build_root "$R25"
 mkdir -p "$R25/workspace/.hq-client-health"
@@ -1033,7 +1011,7 @@ case "$HOOK_OUT" in
   *) bad "stale local-message lock is reclaimed" "stored next step was not displayed" ;;
 esac
 
-echo "== 27. a recent report cooldown removes the local raw post-fix document =="
+echo "== 25. a recent report cooldown removes the local raw post-fix document =="
 R26="$TMP/sentry-cooldown"
 build_root "$R26"
 mkdir -p "$R26/workspace/.hq-client-health/bugs"

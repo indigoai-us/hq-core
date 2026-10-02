@@ -99,7 +99,7 @@ out="$(bash "$EXPORTER" --root "$HQ" --company demo)"
 scalar_failures=0
 check_catalog_line() {
   local expected="$1" label="$2"
-  if printf '%s\n' "$out" | grep -Fq -- "$expected"; then
+  if grep -Fq -- "$expected" <<<"$out"; then
     pass "$label"
   else
     echo "FAIL: $label missing: $expected" >&2
@@ -112,7 +112,7 @@ check_catalog_line '/literal-clip — literal first literal second' 'literal cli
 check_catalog_line '/literal-strip — strip first strip second' 'literal strip scalar joined with spaces'
 check_catalog_line '/inline — inline stays exact' 'plain inline description preserved'
 check_catalog_line '/quoted-inline — quoted stays exact' 'quoted inline description preserved'
-if printf '%s\n' "$out" | grep -Fq -- 'following key must not enter the description'; then
+if grep -Fq -- 'following key must not enter the description' <<<"$out"; then
   echo 'FAIL: following frontmatter key leaked into a block description' >&2
   scalar_failures=$((scalar_failures+1))
 else

@@ -1,0 +1,5 @@
+{
+  "name": "hq",
+  "version": "0.1.0",
+  "description": "HQ runtime hooks, skills, and MCP server for Claude Code"
+}

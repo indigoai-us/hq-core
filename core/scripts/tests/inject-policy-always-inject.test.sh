@@ -77,7 +77,11 @@ run_event() {
   cd "$tmp/hq" && HQ_ROOT="$tmp/hq" CLAUDE_PROJECT_DIR="$tmp/hq" \
     bash "$tmp/hq/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input" 2>/dev/null || true
 }
-has() { printf '%s' "$1" | grep -q "\`$2\`"; }
+has() {
+  local needle
+  printf -v needle '\x60%s\x60' "$2"
+  [[ "$1" == *"$needle"* ]]
+}
 
 # Turn 1 (UserPromptSubmit): both policies surface.
 t1="$(run_event UserPromptSubmit)"

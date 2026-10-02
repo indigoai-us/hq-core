@@ -143,6 +143,7 @@ prepare_fixture() {
   cp "$ROOT/.claude/settings.json" "$root/.claude/settings.json"
   cp "$ROOT/.codex/config.toml" "$root/.codex/config.toml"
   cp "$ROOT/.grok/hooks/hq-grok-user-bridge.json" "$root/.grok/hooks/hq-grok-user-bridge.json"
+  cp "$ROOT/core/scripts/resolve-hq-root.sh" "$root/core/scripts/resolve-hq-root.sh"
   cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$root/core/scripts/lib/hook-adapter-core.sh"
   printf 'hqVersion: "15.0.176-beta.7"\n' > "$root/core/core.yaml"
   chmod +x "$root/.claude/hooks/master-hook.sh" "$root/.claude/hooks/hook-gate.sh"
@@ -467,7 +468,7 @@ CHILD
     HQ_HOOK_TIMEOUT_SENTRY=0 HQ_DISABLED_HOOKS= \
     "HQ_TEST_SYSTEM_AWK=$SYSTEM_AWK" \
     "HQ_TEST_CAPTURED_INPUT=$root/captured-input" "HQ_TEST_HOOK_MARKER=$root/hook-ran" \
-    bash "$root/.claude/hooks/master-hook.sh" SessionStart \
+    bash -x "$root/.claude/hooks/master-hook.sh" SessionStart \
     <<<"$payload" > "$root/out" 2> "$root/err"
   rc=$?
   set -e
