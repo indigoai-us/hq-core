@@ -157,7 +157,7 @@ printf '%s\n' '{"topLevelPrecedence":"second","hookSpecificOutput":{"additionalC
 EOF
 chmod +x "$FIXTURE/core/hooks/SessionStart/"*.sh
 SESSION_START_PAYLOAD="$(jq -nc --arg sid "context-merge-test" '{session_id:$sid,hook_event_name:"SessionStart"}')"
-HOUT="$(printf '%s' "$SESSION_START_PAYLOAD" | bash "$FIXTURE/.claude/hooks/master-hook.sh" SessionStart)"
+HOUT="$(cd "$FIXTURE" && printf '%s' "$SESSION_START_PAYLOAD" | bash "$FIXTURE/.claude/hooks/master-hook.sh" SessionStart)"
 CONTEXT="$(echo "$HOUT" | jq -r '.hookSpecificOutput.additionalContext')"
 [ "$CONTEXT" = $'context from hook A\n\ncontext from hook B' ] \
   || fail "SessionStart contexts did not compose in order: $HOUT"

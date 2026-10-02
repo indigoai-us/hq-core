@@ -600,7 +600,6 @@ jq -e '
   and .metadata.hook_script == "detect-secrets.sh"
   and .metadata.exit_code == "running"
   and (.metadata.hook_sequence | type == "array" and length == 0)
-  and (.metadata | has("slow_child") | not)
   and (.metadata | has("slow_child_ms_bucket") | not)
   and ([.metadata | to_entries[] | select(.key != "hook_sequence" and .key != "hook_timeout_debug_context") | .value | type]
        | all(. == "string" or . == "number" or . == "boolean"))
@@ -623,6 +622,13 @@ if grep -Fq "$R2/companies/" "$R2/hq.stdin"; then
   fail "company filesystem path leaked to reporter stdin"
 fi
 pass "slow hook emits one bounded event with the expected safe metadata"
+if ! jq -e '
+  .metadata.slow_child == "detect-secrets.sh"
+  and (.metadata.slow_child_ms | type == "number" and . > 0)
+' < <(sed '/^---EVENT---$/,$d' "$R2/hq.stdin") >/dev/null; then
+  fail "hook-gate timeout warning omitted the safe slow-hook basename and elapsed time"
+fi
+pass "hook-gate timeout warning tags the slow hook by basename"
 
 echo "[3] watchdog preserves passing and blocking gate stdout, stderr, and exit"
 for kind in passing blocking; do

@@ -77,7 +77,7 @@ mkdir -p "$WINDOWS_HQ_BIN" "$TMP/windows-system32"
 printf '#!/usr/bin/env bash\necho 5.108.2\n' > "$WINDOWS_HQ_BIN/hq.cmd"
 chmod +x "$WINDOWS_HQ_BIN/hq.cmd"
 stub cygpath "printf '%s\\n' '$WINDOWS_HQ_BIN:$TMP/windows-system32'"
-write_local_settings '{"env":{"PATH":"C:\\Users\\u\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32"}}'
+write_local_settings '{"env":{"PATH":"C:\\Users\\HqTest\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32"}}'
 out="$(run_hook "$COREUTILS_PATH")"
 [ -z "$out" ] || fail "Windows settings PATH with a working hq.cmd should be silent, got: $out"
 printf '%s\n' 'PASS: Windows settings PATH resolves cygpath-converted hq.cmd'
@@ -88,13 +88,17 @@ reset_root
 WINDOWS_NPM_BIN="$TMP/windows-npm-bin"; mkdir -p "$WINDOWS_NPM_BIN" "$TMP/windows-system32"
 printf '#!/usr/bin/env bash\necho 5.108.2\n' > "$WINDOWS_NPM_BIN/hq.cmd"
 chmod +x "$WINDOWS_NPM_BIN/hq.cmd"
-stub cygpath "printf '%s\\n' '$TMP/windows-system32'"
+stub cygpath "case \"\$1:\${2:-}\" in
+  -u:-p) printf '%s\\n' '$TMP/windows-system32' ;;
+  -m:*) printf '%s\\n' 'C:/Users/HqTest/AppData/Local/Temp/windows-npm-bin' ;;
+  *) printf '%s\\n' '$TMP/windows-system32' ;;
+esac"
 stub npm "case \"\$*\" in 'prefix -g') printf '%s\\n' '$WINDOWS_NPM_BIN';; *) exit 1;; esac"
-write_local_settings '{"env":{"PATH":"C:\\Users\\u\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32"}}'
+write_local_settings '{"env":{"PATH":"C:\\Users\\HqTest\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32"}}'
 out="$(run_hook "$COREUTILS_PATH")"
 printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
   || fail "off-PATH Windows hq.cmd should be added to settings PATH, got: $out"
-[ "$(local_path)" = "$WINDOWS_NPM_BIN;C:\\Users\\u\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32" ] \
+[ "$(local_path)" = "C:/Users/HqTest/AppData/Local/Temp/windows-npm-bin;C:\\Users\\HqTest\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32" ] \
   || fail "adding Windows hq.cmd must preserve semicolon-delimited PATH, got: $(local_path)"
 printf '%s\n' 'PASS: adding an off-PATH Windows hq.cmd preserves semicolon separators'
 rm -f "$BIN/cygpath" "$BIN/npm" "$WINDOWS_NPM_BIN/hq.cmd"
@@ -541,7 +545,81 @@ if grep -E 'npm install -g @indigoai-us/hq-cli@latest' "$HOOK" | grep -v 'NPM_RE
   fail "ensure-hq-cli still advertises npm @latest as the restore command"
 fi
 
-echo "PASS: ensure-hq-cli-hook (settings-PATH detection, ambient fallback, auto-fix local settings, install+fix, npm-missing, cooldown, unwritable remedy, kill-switch, floor-advisory 5.108.1/5.108.2, bounded-install, atomic-lock, install-window guards, re-probe, npm owner restore, npm-first PATH)"
+# --- 19. reuse HQ Desktop's managed toolchain before a global restore --------
+reset_root
+write_local_settings '{"env":{"PATH":"/usr/bin:/bin"}}'
+DESKTOP_HQ_BIN="$TMP/home/Library/Application Support/Indigo HQ/toolchain/npm-global/bin"
+mkdir -p "$DESKTOP_HQ_BIN"
+printf '#!/usr/bin/env bash\necho 5.108.2\n' > "$DESKTOP_HQ_BIN/hq"
+chmod +x "$DESKTOP_HQ_BIN/hq"
+rm -f "$TMP/desktop-restore-ran"
+out="$(run_hook "$COREUTILS_PATH" HQ_ENSURE_CLI_COOLDOWN=0 HQ_ENSURE_CLI_INSTALL_CMD="echo ran > '$TMP/desktop-restore-ran'")"
+case "$(local_path)" in "$DESKTOP_HQ_BIN:"*) : ;; *) fail "desktop-managed hq was not added to settings PATH: $(local_path); output: $out";; esac
+[ ! -f "$TMP/desktop-restore-ran" ] || fail "global restore ran despite desktop-managed hq existing"
+printf '%s\n' 'PASS: desktop-managed hq is reused before global restore'
+
+if [ "${HQ_TEST_SKIP_DESKTOP_NODE_CASE:-0}" != 1 ]; then
+# --- 20. managed Node runs the Desktop npm shim and is persisted on PATH ---
+reset_root
+write_local_settings '{"env":{"PATH":"/usr/bin:/bin"}}'
+DESKTOP_NODE_BIN="$TMP/home/Library/Application Support/Indigo HQ/toolchain/node/bin"
+DESKTOP_HQ_BIN="$TMP/home/Library/Application Support/Indigo HQ/toolchain/npm-global/bin"
+mkdir -p "$DESKTOP_NODE_BIN" "$DESKTOP_HQ_BIN"
+printf '#!/usr/bin/env bash\nprintf \"5.108.2\\n\"\n' > "$DESKTOP_NODE_BIN/node"
+printf '#!/usr/bin/env node\n' > "$DESKTOP_HQ_BIN/hq"
+chmod +x "$DESKTOP_NODE_BIN/node" "$DESKTOP_HQ_BIN/hq"
+rm -f "$TMP/desktop-node-restore-ran"
+out="$(run_hook "$COREUTILS_PATH" HQ_ENSURE_CLI_COOLDOWN=0 HQ_ENSURE_CLI_INSTALL_CMD="echo ran > '$TMP/desktop-node-restore-ran'")"
+case "$(local_path)" in "$DESKTOP_NODE_BIN:$DESKTOP_HQ_BIN:"*) : ;; *) fail "Desktop managed Node and hq were not prepended in order: $(local_path); output: $out";; esac
+[ ! -f "$TMP/desktop-node-restore-ran" ] || fail "global restore ran despite managed Node and Desktop hq existing"
+out="$(run_hook "$(local_path)")"
+[ -z "$out" ] || fail "Desktop hq shim should resolve silently after both paths persist, got: $out"
+printf '%s\n' 'PASS: Desktop managed Node runs the CLI shim and is persisted before npm-global'
+
+fi
+
+if [ "${HQ_TEST_SKIP_WINDOWS_DESKTOP_CASE:-0}" != 1 ]; then
+# --- 21. Windows desktop paths stay Windows-form across repeated prompts ---
+reset_root
+rm -rf "$TMP/home/Library/Application Support/Indigo HQ/toolchain"
+WINDOWS_LOCAL_ROOT="$TMP/windows-local-appdata"
+WINDOWS_LOCAL_HQ_BIN="$WINDOWS_LOCAL_ROOT/IndigoHQ/toolchain/npm-global/bin"
+mkdir -p "$WINDOWS_LOCAL_HQ_BIN" "$TMP/windows-system32"
+printf '#!/usr/bin/env bash\necho 5.108.2\n' > "$WINDOWS_LOCAL_HQ_BIN/hq"
+chmod +x "$WINDOWS_LOCAL_HQ_BIN/hq"
+stub cygpath "case \"\$1:\${2:-}\" in
+  -u:-p) case \"\$3\" in *IndigoHQ/toolchain/npm-global/bin*) printf '%s\\n' '$WINDOWS_LOCAL_HQ_BIN:$TMP/windows-system32' ;; *) printf '%s\\n' '$TMP/windows-system32' ;; esac ;;
+  -u:*) printf '%s\\n' '$WINDOWS_LOCAL_ROOT' ;;
+  -m:*) printf '%s\\n' 'C:/Users/HqTest/AppData/Local/IndigoHQ/toolchain/npm-global/bin' ;;
+  *) exit 1 ;;
+esac"
+write_local_settings '{"env":{"PATH":"C:\\Users\\HqTest\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32"}}'
+run_hook "$COREUTILS_PATH" LOCALAPPDATA='C:\Users\HqTest\AppData\Local' >/dev/null
+expected_windows_hq='C:/Users/HqTest/AppData/Local/IndigoHQ/toolchain/npm-global/bin'
+[ "$(local_path)" = "$expected_windows_hq;C:\Users\HqTest\.hq-cli\node_modules\.bin;C:\Windows\System32" ] \
+  || fail "Windows desktop candidate did not preserve the semicolon-delimited path: $(local_path)"
+out="$(run_hook "$COREUTILS_PATH" LOCALAPPDATA='C:\Users\HqTest\AppData\Local')"
+[ -z "$out" ] || fail "second Windows prompt did not resolve the preserved candidate silently: $out"
+printf '%s\n' 'PASS: Windows desktop path remains semicolon-delimited on repeated prompts'
+rm -f "$BIN/cygpath"
+
+fi
+
+# --- 22. APPDATA and npm-global/bin legacy layout is discovered ------------
+reset_root
+rm -rf "$TMP/home/Library/Application Support/Indigo HQ/toolchain"
+write_local_settings '{"env":{"PATH":"/usr/bin:/bin"}}'
+APPDATA_HQ_BIN="$TMP/windows-roaming-appdata/Indigo HQ/toolchain/npm-global/bin"
+mkdir -p "$APPDATA_HQ_BIN"
+printf '#!/usr/bin/env bash\necho 5.108.2\n' > "$APPDATA_HQ_BIN/hq"
+chmod +x "$APPDATA_HQ_BIN/hq"
+rm -f "$TMP/appdata-restore-ran"
+out="$(run_hook "$COREUTILS_PATH" APPDATA="$TMP/windows-roaming-appdata" HQ_ENSURE_CLI_COOLDOWN=0 HQ_ENSURE_CLI_INSTALL_CMD="echo ran > '$TMP/appdata-restore-ran'")"
+case ":$(local_path):" in *":$APPDATA_HQ_BIN:"*) : ;; *) fail "APPDATA npm-global/bin candidate was not added: $(local_path); output: $out";; esac
+[ ! -f "$TMP/appdata-restore-ran" ] || fail "global restore ran despite the APPDATA managed CLI existing"
+printf '%s\n' 'PASS: APPDATA Indigo HQ npm-global/bin candidate is reused'
+
+echo "PASS: ensure-hq-cli-hook (settings-PATH detection, ambient fallback, auto-fix local settings, install+fix, npm-missing, cooldown, unwritable remedy, kill-switch, floor-advisory 5.108.1/5.108.2, bounded-install, atomic-lock, install-window guards, re-probe, npm owner restore, npm-first PATH, desktop toolchain reuse)"
 
 # Prompt-contract coverage lives in a sibling file; run it here so CI picks it
 # up without a workflow-permission edit.

@@ -40,22 +40,70 @@ cp "$HOOK" "$FX/.claude/hooks/"
 wp() { # <file> <id> <enforcement> <rule-text>
   printf -- '---\nid: %s\ntitle: "%s"\nscope: test\nwhen: always\non: [UserPromptSubmit]\nenforcement: %s\n---\n\n## Rule\n\n%s\n' "$2" "$2" "$3" "$4" > "$1"
 }
+wp_event() { # <file> <id> <event> <enforcement> <rule-text>
+  printf -- '---\nid: %s\ntitle: "%s"\nscope: test\nwhen: always\non: [%s]\nenforcement: %s\n---\n\n## Rule\n\n%s\n' "$2" "$2" "$3" "$4" "$5" > "$1"
+}
 run() { # <extra env...>
-  local input; input="$(jq -cn --arg sid "ceil-$$-$RANDOM" --arg cwd "$FX" '{session_id:$sid,hook_event_name:"UserPromptSubmit",cwd:$cwd,prompt:"x"}')"
-  env HQ_ROOT="$FX" CLAUDE_PROJECT_DIR="$FX" "$@" bash "$FX/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input" 2>/dev/null
+  local sid="${HQ_TEST_SESSION_ID:-ceil-$$-$RANDOM}" input; input="$(jq -cn --arg sid "$sid" --arg cwd "$FX" '{session_id:$sid,hook_event_name:"UserPromptSubmit",cwd:$cwd,prompt:"x"}')"
+  env -u HQ_POLICY_WORKER_DIR HQ_ROOT="$FX" CLAUDE_PROJECT_DIR="$FX" "$@" bash "$FX/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input" 2>/dev/null
 }
 run_to_file() { # <stdout-file> <session-id> <extra env...>
   local output="$1" sid="$2" input
   shift 2
   input="$(jq -cn --arg sid "$sid" --arg cwd "$FX" '{session_id:$sid,hook_event_name:"UserPromptSubmit",cwd:$cwd,prompt:"x"}')"
-  env HQ_ROOT="$FX" CLAUDE_PROJECT_DIR="$FX" "$@" bash "$FX/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input" > "$output" 2>/dev/null
+  env -u HQ_POLICY_WORKER_DIR HQ_ROOT="$FX" CLAUDE_PROJECT_DIR="$FX" "$@" bash "$FX/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input" > "$output" 2>/dev/null
 }
 run_to_files() { # <stdout-file> <stderr-file> <session-id> <extra env...>
   local output="$1" error="$2" sid="$3" input
   shift 3
   input="$(jq -cn --arg sid "$sid" --arg cwd "$FX" '{session_id:$sid,hook_event_name:"UserPromptSubmit",cwd:$cwd,prompt:"x"}')"
-  env HQ_ROOT="$FX" CLAUDE_PROJECT_DIR="$FX" "$@" bash "$FX/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input" > "$output" 2> "$error"
+  env -u HQ_POLICY_WORKER_DIR HQ_ROOT="$FX" CLAUDE_PROJECT_DIR="$FX" "$@" bash "$FX/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input" > "$output" 2> "$error"
 }
+run_event_to_files() { # <stdout-file> <stderr-file> <session-id> <event> <extra env...>
+  local output="$1" error="$2" sid="$3" event="$4" input
+  shift 4
+  input="$(jq -cn --arg sid "$sid" --arg cwd "$FX" --arg event "$event" '{session_id:$sid,hook_event_name:$event,tool_name:"Bash",tool_input:{command:"true"},cwd:$cwd}')"
+  env -u HQ_POLICY_WORKER_DIR HQ_ROOT="$FX" CLAUDE_PROJECT_DIR="$FX" "$@" bash "$FX/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input" > "$output" 2> "$error"
+}
+
+echo "[posttool-context] native PostToolUse output uses the host context field"
+posttool_sid="ceil-posttool-$$-$RANDOM"
+posttool_out="$FX/posttool.out"
+posttool_err="$FX/posttool.err"
+wp_event "$FX/core/policies/posttool.md" posttool-visible PostToolUse soft "POSTTOOL context rule"
+run_event_to_files "$posttool_out" "$posttool_err" "$posttool_sid" PostToolUse
+jq -e '.hookSpecificOutput.hookEventName == "PostToolUse" and (.hookSpecificOutput.additionalContext | contains("posttool-visible") and contains("POSTTOOL context rule"))' "$posttool_out" >/dev/null \
+  || fail "PostToolUse policy reminder was not returned as additionalContext JSON: $(cat "$posttool_out")"
+
+echo "[unemitted-not-deduped] output suppressed by ceiling remains eligible for the next event"
+floor_sid="ceil-retry-$$-$RANDOM"
+floor_event_out="$FX/floor-event.out"
+floor_event_err="$FX/floor-event.err"
+retry_event_out="$FX/retry-event.out"
+retry_event_err="$FX/retry-event.err"
+wp_event "$FX/core/policies/floor-event.md" floor-event PostToolUse soft "FLOOR event rule"
+run_event_to_files "$floor_event_out" "$floor_event_err" "$floor_sid" PostToolUse HQ_POLICY_OUTPUT_CEILING_BYTES=75
+[ ! -s "$floor_event_out" ] || fail "75-byte ceiling should suppress this event reminder: $(cat "$floor_event_out")"
+floor_ledger="$FX/workspace/orchestrator/policy-trigger-state/$floor_sid.txt"
+if [ -f "$floor_ledger" ] && grep -Fxq floor-event "$floor_ledger"; then
+  fail "suppressed PostToolUse policy was recorded as delivered"
+fi
+posttool_tight_out="$FX/posttool-tight.out"
+posttool_tight_err="$FX/posttool-tight.err"
+posttool_tight_sid="ceil-posttool-tight-$$-$RANDOM"
+wp_event "$FX/core/policies/posttool-tight.md" posttool-tight PostToolUse soft "$(printf 'quoted \\\" policy text %.0s' $(seq 1 12))"
+run_event_to_files "$posttool_tight_out" "$posttool_tight_err" "$posttool_tight_sid" PostToolUse HQ_POLICY_OUTPUT_CEILING_BYTES=100
+posttool_tight_bytes="$(wc -c < "$posttool_tight_out" | tr -d ' ')"
+[ "$posttool_tight_bytes" -le 100 ] || fail "100-byte PostToolUse ceiling emitted $posttool_tight_bytes stdout bytes: $(cat "$posttool_tight_out")"
+jq -e '.hookSpecificOutput.hookEventName == "PostToolUse" and .hookSpecificOutput.additionalContext == "Policies matched."' "$posttool_tight_out" >/dev/null \
+  || fail "tight PostToolUse ceiling did not use the compact valid envelope: $(cat "$posttool_tight_out")"
+posttool_tight_ledger="$FX/workspace/orchestrator/policy-trigger-state/$posttool_tight_sid.txt"
+if [ -f "$posttool_tight_ledger" ] && grep -Fxq posttool-tight "$posttool_tight_ledger"; then
+  fail "policy whose heading was omitted from the compact envelope was recorded as delivered"
+fi
+run_event_to_files "$retry_event_out" "$retry_event_err" "$floor_sid" PostToolUse
+jq -e '.hookSpecificOutput.hookEventName == "PostToolUse" and (.hookSpecificOutput.additionalContext | contains("floor-event") and contains("FLOOR event rule"))' "$retry_event_out" >/dev/null \
+  || fail "policy suppressed by the prior ceiling attempt was not delivered on retry: $(cat "$retry_event_out")"
 
 echo "[ceiling-floor] every configured ceiling bounds stdout without silencing the reminder"
 wp "$FX/core/policies/ceiling-soft.md" ceiling-soft soft "CEILING rule"
@@ -135,10 +183,22 @@ bytes="$(wc -c < "$digit_out" | tr -d ' ')"
 cut_count="$(sed -nE 's/^> Output ceiling of [0-9]+ bytes: ([1-9][0-9]*) lower-ranked policy line\(s\) cut from this reminder\..*/\1/p' "$digit_out")"
 [ -n "$cut_count" ] || fail "digit-boundary cut notice missing or reports zero cuts"
 [ "$cut_count" -ge 10 ] || fail "digit-boundary did not cross 9 -> 10 cuts (got $cut_count)"
+grep -q 'Omitted policies remain eligible for a later event' "$digit_out" \
+  || fail "cut notice must say omitted policies remain eligible for a later event"
 stats_file="$FX/workspace/orchestrator/policy-emit-stats/$digit_sid.txt"
 [ -f "$stats_file" ] || fail "missing emission stats for $digit_sid"
 stats_bytes="$(awk -F '\t' 'END { print $3 }' "$stats_file")"
 [ "$stats_bytes" = "$bytes" ] || fail "stats recorded $stats_bytes bytes but stdout emitted $bytes"
+digit_ledger="$FX/workspace/orchestrator/policy-trigger-state/$digit_sid.txt"
+omitted=""
+for n in $(seq 1 80); do
+  candidate="digit-$n"
+  if ! grep -Fq "> Policy \`$candidate\`" "$digit_out"; then omitted="$candidate"; break; fi
+done
+[ -n "$omitted" ] || fail "expected at least one policy heading to be omitted at the output ceiling"
+if [ -f "$digit_ledger" ] && grep -Fxq "$omitted" "$digit_ledger"; then
+  fail "output-ceiling-omitted policy $omitted was recorded as delivered"
+fi
 
 echo "[4] when no policy lines remain, emit a bounded metadata-fallback reminder"
 rm -f "$FX/core/policies/"*.md

@@ -1,7 +1,7 @@
 ---
 name: update-hq
 description: Upgrade HQ from the latest hq-core release.
-allowed-tools: Read, Bash, Bash(bash core/scripts/check-hq-hooks.sh:*), Bash(bash core/scripts/restore-hook-settings.sh:*), AskUserQuestion
+allowed-tools: Read, Bash, Bash(bash core/scripts/check-hq-hooks.sh:*), Bash(bash core/scripts/restore-hook-settings.sh:*), Bash(bash core/scripts/update-hq-install-offer.sh:*), AskUserQuestion
 ---
 
 # /update-hq — HQ Upgrade
@@ -144,6 +144,44 @@ Refresh the search index so new/renamed content is findable:
 ```bash
 qmd update 2>/dev/null || true
 ```
+
+After the hook health check passes, check whether the one-time global HQ
+runtime offer is available:
+
+```bash
+bash core/scripts/update-hq-install-offer.sh --check
+```
+
+The helper prints `offer`, `answered`, `installed`, or `off`. It uses the
+installed hq CLI's existing `hq-anywhere-runtime` flag reader and the active
+session's bound company. Missing or outdated CLI support, an unresolved
+company UID, an unavailable flag service, or a flag value other than true all
+count as `off`. The current reader does not evaluate person-only overrides
+when no company is bound.
+
+If the result is `offer` and this session can ask the user interactively, use
+one `AskUserQuestion` with the question “Install the HQ runtime globally now?”
+and these choices:
+
+1. Install the HQ runtime globally now
+2. No thanks
+
+Record the answer before taking any follow-up action:
+
+```bash
+bash core/scripts/update-hq-install-offer.sh --accept
+# or
+bash core/scripts/update-hq-install-offer.sh --decline
+```
+
+Run `hq install --global` only when `--accept` prints `accepted`. A decline is
+recorded and the offer does not repeat. If the helper reports `answered` or
+`installed`, take no action. If the session is headless, non-interactive, or
+cannot use `AskUserQuestion`, run `--decline`; do not install. The answer is
+stored at `~/.hq/anywhere/update-hq-install-offer.json`, next to the global
+install records, so it survives HQ core updates. If installation fails after
+acceptance, report the failure and give the user `hq install --global` as a
+manual retry command; do not ask again.
 
 ## Rules
 

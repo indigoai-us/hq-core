@@ -1,7 +1,7 @@
 ---
 name: brainstorm
 description: Compare approaches, surface unknowns, and draft a recommendation before PRD work.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, AskUserQuestion, WebSearch
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash, AskUserQuestion, WebSearch
 ---
 
 # Brainstorm - Structured Exploration
@@ -331,6 +331,31 @@ Read `companies/{co}/board.json`.
   ```
 
 Write updated `board.json`.
+
+### Offer Work Mesh registration for a cloud-backed project
+
+After the Board entry is written, check whether the entry has a Work Mesh
+registration:
+
+```bash
+bash core/scripts/work-mesh-project-registration-offer.sh --check {co} {board-project-id}
+```
+
+If it prints `offer`, ask once with `AskUserQuestion` and these options:
+`Create the Work Mesh project now` and `Not now`. This offer is controlled by
+the default-off `workmesh.offer-project-create-on-brainstorm` hq-flags key.
+On acceptance, record the choice and register the existing Board entry:
+
+```bash
+bash core/scripts/work-mesh-project-registration-offer.sh --accept {co} {board-project-id}
+bash core/scripts/register-project.sh --brainstorm {co} {board-project-id}
+```
+
+Verify registration from the script's `registered {co}/{board-project-id}`
+line. On `Not now`, call `--defer` for that entry; do not register it, and do
+not ask again for that entry. `accepted`, `deferred`, `registered`, `local`,
+`off`, or `missing` means no prompt is needed. If an accepted registration
+previously failed, retry it without asking again.
 
 ## Step 6.4: Open Session Journal
 

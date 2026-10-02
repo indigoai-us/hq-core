@@ -15,6 +15,25 @@ mkdir -p "$TMP/bin" "$TMP/home" "$TMP/hq/companies/acme/projects/alpha" \
   "$TMP/hq/companies/acme/projects/cached" \
   "$TMP/home/.hq/work-mesh/cache/projects/cmp_acme"
 
+# A cloud-backed company can be identified by manifest cloud_uid without a
+# per-directory company.yaml or .company-uid file.
+FALLBACK_COMPANY="manifest-fixture"
+FALLBACK_PROJECT="cached-project"
+mkdir -p "$TMP/hq/companies/$FALLBACK_COMPANY/projects/$FALLBACK_PROJECT" \
+  "$TMP/home/.hq/work-mesh/cache/projects/cmp_manifest_fixture"
+printf 'companies:\r\n  %s:\r\n    cloud_uid: cmp_manifest_fixture\r\n' "$FALLBACK_COMPANY" \
+  > "$TMP/hq/companies/manifest.yaml"
+cat > "$TMP/hq/companies/$FALLBACK_COMPANY/projects/$FALLBACK_PROJECT/prd.json" <<'JSON'
+{"name":"Cached Project","userStories":[{"id":"US-001","status":"queued"}]}
+JSON
+printf '%s\n' '{"projectId":"cached-project"}' > \
+  "$TMP/home/.hq/work-mesh/cache/projects/cmp_manifest_fixture/$FALLBACK_PROJECT.json"
+fallback_audit="$(env -u HQ_COMPANY_UID HQ_ROOT="$TMP/hq" HOME="$TMP/home" \
+  bash "$SCRIPT" --audit "$FALLBACK_COMPANY")" \
+  || fail "manifest cloud_uid was not used by register-project audit"
+[ -z "$fallback_audit" ] || fail "cached manifest-backed project appeared unregistered: $fallback_audit"
+echo "PASS: register-project resolves cloud_uid from the company manifest"
+
 cat > "$TMP/bin/hq" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = "mesh" ] && [ "$2" = "project" ] && [ "$3" = "ensure" ] && [ "${4:-}" = "--help" ]; then

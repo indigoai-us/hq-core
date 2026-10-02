@@ -26,21 +26,10 @@ seed:
 newcompany_only:
   - company.yaml
   - data/.gitkeep
-  - ontology/_candidates/.gitkeep
-  - ontology/entities/company/.gitkeep
-  - ontology/entities/concept/.gitkeep
-  - ontology/entities/person/.gitkeep
-  - ontology/entities/project/.gitkeep
-  - ontology/facts/.gitkeep
   - settings/.gitkeep
   - settings/auto-share.yaml
   - settings/communication/preferences.yaml
   - settings/knowledge/preferences.yaml
-  - signals/.gitkeep
-  - signals/_candidates/.gitkeep
-  - signals/_index/.gitkeep
-  - sources/_index/.gitkeep
-  - sources/meetings/.gitkeep
   - workers/.gitkeep
 
 # Only these template files contain values that are replaced during rendering.

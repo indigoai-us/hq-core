@@ -200,7 +200,7 @@ hq_binary_usable() {
 # PATH? Never execute a binary merely because a repo-controlled settings file
 # names its directory.
 hq_in_path() {
-  local sp="$1" allow_configured="${2:-0}" d oldifs trusted_dir="" probe_rc saw_unknown=0
+  local sp="$1" allow_configured="${2:-0}" d oldifs trusted_dir="" probe_rc saw_unknown=0 desktop_bin desktop_node
   local path_sep=':' converted="" is_windows_path=0
   [ -n "$sp" ] || return 1
   if [ "$allow_configured" != "1" ]; then
@@ -224,7 +224,12 @@ hq_in_path() {
     IFS="$oldifs"
     if [ -n "$d" ]; then
       if [ "$allow_configured" = "1" ]; then
-        if hq_binary_usable "$d/hq"; then
+        desktop_bin="$(desktop_toolchain_bin)" || desktop_bin=""
+        desktop_node="$(desktop_toolchain_node_bin)" || desktop_node=""
+        if [ "$d" = "$desktop_bin" ] && [ -n "$desktop_node" ]; then
+          case ":$sp:" in *":$desktop_node:"*) : ;; *) IFS="$oldifs"; continue ;; esac
+          if PATH="$desktop_node:$PATH" hq_binary_usable "$d/hq"; then return 0; fi
+        elif hq_binary_usable "$d/hq"; then
           return 0
         else
           probe_rc=$?
@@ -303,12 +308,55 @@ pnpm_global_bin() {
   return 1
 }
 
+# HQ Desktop's managed toolchain is outside the package-manager candidates.
+desktop_toolchain_node_bin() {
+  local candidate app_root
+  if [ -n "${HOME:-}" ]; then
+    candidate="$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin"
+    [ -x "$candidate/node" ] && { printf '%s\n' "$candidate"; return 0; }
+  fi
+  for app_root in "${LOCALAPPDATA:-}" "${APPDATA:-}"; do
+    [ -n "$app_root" ] || continue
+    if command -v cygpath >/dev/null 2>&1; then app_root="$(cygpath -u "$app_root" 2>/dev/null)" || app_root=""; else app_root="${app_root//\\//}"; fi
+    [ -n "$app_root" ] || continue
+    for candidate in "$app_root/IndigoHQ/toolchain/node/bin" "$app_root/Indigo HQ/toolchain/node/bin"; do
+      [ -x "$candidate/node" ] && { printf '%s\n' "$candidate"; return 0; }
+    done
+  done
+  return 1
+}
+
+# On Unix the app uses ~/Library/Application Support/Indigo HQ/toolchain;
+# Windows uses LOCALAPPDATA or APPDATA, with current and legacy layouts.
+desktop_toolchain_bin() {
+  local candidate local_app app_root
+  for app_root in "${LOCALAPPDATA:-}" "${APPDATA:-}"; do
+    [ -n "$app_root" ] || continue
+    local_app="$app_root"
+    if command -v cygpath >/dev/null 2>&1; then
+      local_app="$(cygpath -u "$local_app" 2>/dev/null)" || local_app=""
+    else
+      local_app="${local_app//\\//}"
+    fi
+    if [ -n "$local_app" ]; then
+      for candidate in "$local_app/IndigoHQ/toolchain/npm-global/bin" "$local_app/Indigo HQ/toolchain/npm-global/bin" "$local_app/IndigoHQ/toolchain/npm-global" "$local_app/Indigo HQ/toolchain/npm-global" "$local_app/IndigoHQ/toolchain/npm-prefix" "$local_app/Indigo HQ/toolchain/npm-prefix"; do
+        if resolve_hq_binary "$candidate/hq" >/dev/null 2>&1; then printf '%s\n' "$candidate"; return 0; fi
+      done
+    fi
+  done
+  if [ -n "${HOME:-}" ]; then
+    candidate="$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin"
+    if resolve_hq_binary "$candidate/hq" >/dev/null 2>&1; then printf '%s\n' "$candidate"; return 0; fi
+  fi
+  return 1
+}
+
 # Locate a dir that actually contains an `hq` binary: unrelated ambient PATH
-# entries first, then npm-global, then pnpm. A pnpm ambient candidate is held
-# until after npm-global so auto-fix cannot put pnpm ahead of npm. Prints the
-# dir (no trailing binary) or nothing.
+# entries first, then HQ Desktop's managed toolchain, npm-global, and pnpm. A
+# pnpm ambient candidate is held until after npm-global so auto-fix cannot put
+# pnpm ahead of npm. Prints the dir (no trailing binary) or nothing.
 locate_hq_dir() {
-  local hqpath bin candidate probe_rc saw_unknown=0 pnpm_bin npm_bin
+  local hqpath bin candidate probe_rc saw_unknown=0 pnpm_bin npm_bin desktop_bin desktop_node
   # npm-global wins over pnpm when both managers hold an hq installation.
   # Keep unrelated ambient installations first to preserve existing behavior.
   npm_bin="$(npm_global_bin)" || npm_bin=""
@@ -316,6 +364,13 @@ locate_hq_dir() {
   hqpath="$(command -v hq 2>/dev/null)" || hqpath=""
   if [ -n "$hqpath" ] && { [ -z "$pnpm_bin" ] || [ "$hqpath" != "$pnpm_bin/hq" ]; }; then
     if hq_binary_usable "$hqpath"; then dirname "$hqpath"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
+  fi
+  desktop_bin="$(desktop_toolchain_bin)" || desktop_bin=""
+  if [ -n "$desktop_bin" ] && resolve_hq_binary "$desktop_bin/hq" >/dev/null 2>&1; then
+    desktop_node="$(desktop_toolchain_node_bin)" || desktop_node=""
+    if [ -n "$desktop_node" ]; then
+      if PATH="$desktop_node:$PATH" hq_binary_usable "$desktop_bin/hq"; then printf '%s\n' "$desktop_bin"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
+    elif hq_binary_usable "$desktop_bin/hq"; then printf '%s\n' "$desktop_bin"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
   fi
   if [ -n "$npm_bin" ] && resolve_hq_binary "$npm_bin/hq" >/dev/null 2>&1; then
     if hq_binary_usable "$npm_bin/hq"; then printf '%s\n' "$npm_bin"; return 0; else probe_rc=$?; [ "$probe_rc" -eq 2 ] && saw_unknown=1; fi
@@ -428,7 +483,7 @@ npm_owned_cli_version() {
 # Arg $3 preserves Windows PATH list syntax when the settings file uses it.
 # Returns 0 on a successful (or already-present) write, 1 if it could not write.
 add_dir_to_settings_path() {
-  local dir="$1" sp="$2" path_sep="${3:-:}" basep tmp
+  local dir="$1" sp="$2" path_sep="${3:-:}" basep tmp windows_dir
   have_jq || return 1
   [ -n "$dir" ] || return 1
   mkdir -p "$CLAUDE_DIR" 2>/dev/null || true
@@ -437,6 +492,10 @@ add_dir_to_settings_path() {
     ( printf '{}\n' > "$LOCAL_SETTINGS" ) 2>/dev/null || return 1
   fi
   basep="$(jq -r '.env.PATH // empty' "$LOCAL_SETTINGS" 2>/dev/null)" || basep=""
+  if [ "$path_sep" = ";" ] && command -v cygpath >/dev/null 2>&1; then
+    windows_dir="$(cygpath -m "$dir" 2>/dev/null)" || windows_dir=""
+    [ -n "$windows_dir" ] && dir="$windows_dir"
+  fi
   [ -n "$basep" ] || basep="$sp"
   [ -n "$basep" ] || basep="${PATH:-}"
   # Already present -> nothing to do (idempotent success).
@@ -452,6 +511,17 @@ add_dir_to_settings_path() {
   fi
   rm -f "$tmp" 2>/dev/null
   return 1
+}
+
+add_hq_dir_to_settings_path() {
+  local hq_dir="$1" sp="$2" delim="$3" node_dir
+  node_dir="$(desktop_toolchain_node_bin)" || node_dir=""
+  if [ -n "$node_dir" ] && [ "$hq_dir" = "$(desktop_toolchain_bin)" ]; then
+    add_dir_to_settings_path "$hq_dir" "$sp" "$delim" || return 1
+    add_dir_to_settings_path "$node_dir" "$sp" "$delim"
+  else
+    add_dir_to_settings_path "$hq_dir" "$sp" "$delim"
+  fi
 }
 
 emit_path_updated() { # $1=dir  $2=installed(1/0)
@@ -562,7 +632,7 @@ if [ "$LOCATE_HQ_RC" -eq 2 ]; then
 fi
 if [ "$LOCATE_HQ_RC" -ne 0 ]; then HQ_DIR=""; fi
 if [ -n "$HQ_DIR" ]; then
-  if add_dir_to_settings_path "$HQ_DIR" "$SP" "$SP_DELIMITER"; then
+  if add_hq_dir_to_settings_path "$HQ_DIR" "$SP" "$SP_DELIMITER"; then
     rm -f "$STAMP" 2>/dev/null || true
     emit_path_updated "$HQ_DIR" 0
   else
@@ -583,7 +653,7 @@ if [ "$REPROBE_LOCATE_RC" -eq 2 ]; then exit 0; fi
 if [ "$REPROBE_LOCATE_RC" -ne 0 ]; then HQ_DIR=""; fi
 if [ -n "$HQ_DIR" ]; then
   rm -f "$STAMP" 2>/dev/null || true
-  if add_dir_to_settings_path "$HQ_DIR" "$SP" "$SP_DELIMITER"; then
+  if add_hq_dir_to_settings_path "$HQ_DIR" "$SP" "$SP_DELIMITER"; then
     emit_path_updated "$HQ_DIR" 0
   else
     emit_needs_path "$HQ_DIR"
@@ -660,7 +730,7 @@ fi
 if [ "$POST_INSTALL_LOCATE_RC" -ne 0 ]; then HQ_DIR=""; fi
 if [ -n "$HQ_DIR" ]; then
   rm -f "$STAMP" 2>/dev/null || true
-  if add_dir_to_settings_path "$HQ_DIR" "$SP" "$SP_DELIMITER"; then
+  if add_hq_dir_to_settings_path "$HQ_DIR" "$SP" "$SP_DELIMITER"; then
     emit_path_updated "$HQ_DIR" 1
   else
     emit_needs_path "$HQ_DIR"

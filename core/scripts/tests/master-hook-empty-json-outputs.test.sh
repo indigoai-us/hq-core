@@ -12,6 +12,9 @@
 # is the CI-proof gate: every json_outputs / json_sources list expansion must
 # use the same ${arr[@]+"${arr[@]}"} idiom the hooks dispatch loop already uses.
 set -euo pipefail
+# These cases replay identical payloads in one session on purpose; turn off the
+# user/project double-dispatch dedupe (covered by master-hook-double-dispatch).
+export HQ_HOOK_DEDUPE=0
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 MASTER="$ROOT/.claude/hooks/master-hook.sh"

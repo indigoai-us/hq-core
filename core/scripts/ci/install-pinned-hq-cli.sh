@@ -8,7 +8,7 @@ RESOLVE_ONLY=0
 REQUESTED_VERSION=""
 # CI-only floor for SRV-QMD-REINDEX-RACE / hq-cli #1290. Keep core.yaml's
 # requiresHqCli floor unchanged so regular users are not moved to this pin.
-HQ_CI_MIN_CLI="5.312.1"
+HQ_CI_MIN_CLI="5.324.0"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in

@@ -3,11 +3,13 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isServerOwnedPath } from './server-owned-path-prefixes.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '../..');
 const TEMPLATE_ROOT = path.join(REPO_ROOT, 'companies/_template');
 const MANIFEST_FILE = '.hq-seed.yaml';
+const EMPTY_PIPELINE_DIRECTORIES = ['sources/_index', 'sources/meetings'];
 const MANIFEST_SECTIONS = new Set([
   'placeholders',
   'seed',
@@ -274,9 +276,12 @@ export function renderCompanyStarterFiles({
     : mode === 'newcompany'
       ? [...manifest.seed, ...manifest.newcompany_only]
       : manifest.newcompany_only;
+  const renderPaths = mode === 'seed'
+    ? outputPaths
+    : outputPaths.filter((item) => !isServerOwnedPath(item));
   mkdirSync(absoluteDestination, { recursive: true });
 
-  for (const relativePath of outputPaths) {
+  for (const relativePath of renderPaths) {
     const source = sourcePath(templateRoot, relativePath);
     const target = path.join(absoluteDestination, ...relativePath.split('/'));
     let contents = resolvePlaceholders(readFileSync(source, 'utf8'), relativePath, manifest, values);
@@ -289,7 +294,12 @@ export function renderCompanyStarterFiles({
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, contents, 'utf8');
   }
-  return outputPaths;
+  if (mode !== 'seed') {
+    for (const relativePath of EMPTY_PIPELINE_DIRECTORIES) {
+      mkdirSync(path.join(absoluteDestination, ...relativePath.split('/')), { recursive: true });
+    }
+  }
+  return renderPaths;
 }
 
 function runCli(args) {

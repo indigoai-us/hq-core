@@ -549,6 +549,8 @@ For each worker in the sequence, spawn a sub-agent via the Task tool. Each sub-a
    ```
    Extract the `path:` value. This may resolve to `core/workers/public/dev-team/{worker-id}/`, `core/workers/public/{worker-id}/`, or `companies/{co}/workers/{worker-id}/`.
 
+   Resolve the core worker profile independently of the registry path: check `core/workers/public/dev-team/{worker-id}/worker.yaml` and then `core/workers/public/{worker-id}/worker.yaml`. The registry deduplicates IDs and may select a company profile lexicographically before the core profile. If either core file exists, use that core profile as the selected worker profile and set the registry variable worker_path to the core directory before step 2; treat same-ID company and personal profiles only as model overlays in step 4. If no core file exists, keep the registry-selected worker_path as the full worker profile.
+
 2. Read `{worker_path}/worker.yaml` to get:
    - `instructions` — worker's role, process, and accumulated learnings
    - `context.base` — files the worker always needs
@@ -570,6 +572,22 @@ For each worker in the sequence, spawn a sub-agent via the Task tool. Each sub-a
    Story-level `codex_model_hint` overrides the model configured in the worker
    profile. A missing `worker.execution.codex_model` is a configuration error;
    stop and report it rather than selecting a model in this skill.
+
+   Before reading a company-scoped flag, resolve the active project company UID from its local checkout file. Do not rely on inherited `HQ_COMPANY_UID` or `HQ_COMPANY_SLUG`, which may describe the session launch company. Use the company slug established in step 1 and run the flag helper with explicit `HQ_COMPANY_UID="$active_company_uid"` and `HQ_COMPANY_SLUG="{active-company}"` values, where the UID came from `companies/{active-company}/.company-uid` in the local checkout. If the file is missing, pass an empty UID so the helper stays default-off.
+
+   When the independently resolved worker profile is under `core/workers/`, first read the
+   `workers.codex-model-overrides` hq-flags value with
+   `HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)" node
+   .claude/hooks/worker-codex-model-overrides-flag.cjs`. The flag is default-off;
+   a missing flag context or lookup error means off. Only when it prints `true`,
+   check `companies/{active-company}/workers/{worker-id}/worker.yaml` and then
+   `personal/workers/{worker-id}/worker.yaml`. A non-empty
+   `execution.codex_model` in the company overlay takes precedence; otherwise a
+   non-empty value in the personal overlay takes precedence over the core
+   profile. Overlays for a worker already selected from a company or personal
+   path are not layered again. Keep `execution.codex_flags` from the selected
+   worker profile unchanged. Do not read or merge overlay `execution.codex_flags`.
+   The task-level `codex_model_hint` remains the highest-priority model source.
 
 5. If the worker has a skill file relevant to the task, note its path so the sub-agent prompt can reference it.
 

@@ -1,4 +1,14 @@
 ## [Unreleased]
+- Route in-root Claude hooks through hqd when hq-anywhere-runtime is enabled, while keeping global and project registrations to one dispatch.
+- After a successful `/update-hq`, offer the global HQ runtime install once when `hq-anywhere-runtime` is enabled; record the answer per user.
+- `/brainstorm` and `/prd` can offer Work Mesh project creation after confirmation when `workmesh.offer-project-create-on-brainstorm` is enabled; cloud UID lookup also falls back to the company manifest.
+- The client-health hook no longer tries the removed direct-Sentry CLI route; degraded checks continue through the existing feedback report.
+- Deliver native PostToolUse policy reminders through the hook context field, and keep policies eligible for retry when output budgeting omits them.
+- Gate expandable technical details in `/handoff`, `/learn`, and `/checkpoint` reports behind the default-off `output.command-report-details-expandable` hq-flags key.
+- Clarify that task-specific reply instructions can override the shared HQ style for that task without saving a lasting style preference.
+- Reuse an existing HQ Desktop-managed hq CLI before attempting a global restore, avoiding duplicate installs (US-506, feedback_47d1ade4).
+- Gate core-worker Codex model overrides from company and personal profiles behind the default-off `workers.codex-model-overrides` flag; keep CLI flags pinned to the selected worker profile.
+- `/handoff` marks a durable handoff as ready in the predecessor session title, and `/startwork` carries its work subject into the successor title.
 - Clarify that handoff follow-ups run sequentially and include a rough duration estimate before dispatch.
 - Fix the hq-core release gate's staging checkout path and large check payload handling.
 - Keep CI hq-cli installs on 5.312.1 or newer so qmd reindex uses exclusive lock ownership.
@@ -25,6 +35,9 @@
 - Fixed Windows `/handoff` rewriting the slash-leading next command during JSON output.
 - Cache npm downloads used by the Windows shell-smoke HQ CLI install, keyed by the CLI version inputs.
 - Detached handoff and project-registration shell tests now wait for their child-process markers before asserting.
+- Keep new-company renderer output out of the sync engine's server-owned ontology, signals, and sources prefixes.
+- Bound the senior-monitor UserPromptSubmit lookup so a stalled CLI cannot consume the hook's full timeout.
+- Include the timed-out hook's safe script basename and elapsed time on direct hook-timeout warnings.
 
 ### Changed: Hook timeout reports include bounded phase durations (SC-CLI-HOOK-TIMEOUT-CLUSTER)
 - Existing timeout attribution now distinguishes master entry-shell startup from dispatched child time, journal JSON/helper work, and monitor readiness from drain time. On Bash versions with `EPOCHREALTIME`, timing uses shell builtins and writes only allowlisted phase names and elapsed milliseconds to the local watchdog journal; the CLI sends duration buckets as tags.

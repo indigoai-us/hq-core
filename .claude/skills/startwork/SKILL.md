@@ -121,10 +121,18 @@ that context to the session.
 
 3. **After the pick, load only what that path needs:**
    - *Resume last session* → before reading the thread file, resolve `thread_id` from `handoff.json.last_thread` and apply the same resume-lock confirmation procedure from `/resumework` Step 2. Run `bash core/scripts/hq-session.sh current` to obtain the session id, then `bash core/scripts/resume-thread-lock.sh inspect "{thread_id}"`. On `unlocked`, acquire the marker with `bash core/scripts/resume-thread-lock.sh acquire "{thread_id}" --session-id "{session_id}"`. On `locked` or `stale`, use AskUserQuestion with the returned `prompt` and stop on cancel; only after **Re-resume anyway** run `bash core/scripts/resume-thread-lock.sh acquire "{thread_id}" --replace --expected-generation "{lock_generation from inspected JSON}" --session-id "{session_id}"`. If replacement exits `4`, re-inspect and ask again because a newer marker replaced the one the user confirmed. Then, and only then, read the thread file handoff.json points to (extract `conversation_summary`, `next_steps`, `git.branch`, `git.current_commit`, `git.dirty`, `files_touched`); run `git log --oneline -3`; if the thread references a `project_dir`, read its most-recent journal file (frontmatter + `## Open threads` only — see Project Mode step 4). Skip the global qmd/grep project scan unless the user then asks "what else is active?".
+
    - *Answer waiting workflow questions* → for each pending gate, oldest first: read its JSON (question, options, context, recommended), ask ONE AskUserQuestion per gate (options from the gate file, recommended first, plus a "Skip this gate" option), and on an answer run `bash core/scripts/workflow-gate.sh answer {id} "{choice}"` (add `--notes` if the user typed free text). Skipped gates stay pending. When done, re-present this entry gate so the user can pick where to work.
    - *Pick company/project/repo* → proceed via the corresponding mode's Gather Context section with the supplied arg.
    - *Not sure* → `/strategize` owns it from here; stop gathering.
    - *Something else* → Task Mode gather.
+
+Once the chosen path has enough context to name the work, name or rename this
+session with `set_session_title` according to
+`core/policies/hq-session-title-grammar.md`. When resuming, carry forward the
+useful work subject from the predecessor summary; otherwise use the resolved
+target. Add company, product, or mode when it adds information. Rename again
+only when the subject changes, and preserve a title the user manually renamed.
 
 #### Company Mode (arg = company slug)
 

@@ -1,7 +1,7 @@
 ---
 name: prd
 description: "Create an execution-ready PRD (prd.json + README.md) with a light interview. For deep research use /deep-plan."
-allowed-tools: Read, Write, Edit, Grep, Glob, Task, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion
+allowed-tools: Read, Write, Edit, Grep, Glob, Task, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion
 ---
 
 # PRD — Project Planning & PRD Generation
@@ -541,6 +541,33 @@ If `board_path` exists, read `companies/{co}/board.json` and upsert a project en
 ## Step 5.7: Register the canonical project in Work Mesh
 
 Local `board.json` does not establish the server project. Registration is one script call. Do not GET, PUT, or POST the Work Mesh project by hand.
+
+After Step 5.6, read the Board entry matched by
+`prd_path === "companies/{co}/projects/{name}/prd.json"` and use its `id` as
+`{board-project-id}` for this offer check:
+
+```bash
+bash core/scripts/work-mesh-project-registration-offer.sh --check {co} {board-project-id}
+```
+
+When the helper prints `offer`, ask once with `AskUserQuestion` and exactly
+these choices: `Create the Work Mesh project now` and `Not now`. The prompt is
+available only when the company is cloud-backed, registration is missing, and
+the default-off `workmesh.offer-project-create-on-brainstorm` hq-flags key is
+on. On acceptance, record it before running the registration command below:
+
+```bash
+bash core/scripts/work-mesh-project-registration-offer.sh --accept {co} {board-project-id}
+```
+
+On `Not now`, record the deferral with `--defer` and skip registration for
+this invocation. A persisted `deferred` result skips registration for this
+invocation. When the helper reports `deferred`, stop here and do not run
+`register-project.sh`. It suppresses both the prompt and registration. An
+`accepted` result retries registration without another prompt. Do not prompt again for an
+accepted or deferred Board entry. For `off`, `local`, `registered`, or
+`missing`, do not show a prompt and preserve the existing registration flow
+below (including its existing failure handling).
 
 ```bash
 bash core/scripts/register-project.sh {co} {name}

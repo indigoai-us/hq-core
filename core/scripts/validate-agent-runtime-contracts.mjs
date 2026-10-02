@@ -107,6 +107,10 @@ const INTENTIONALLY_APPROVAL_GATED_COMMANDS = new Map([
     "The invocation begins with a runtime credential assignment and remains approval-gated.",
   ],
   [
+    ".claude/skills/deploy/SKILL.md::path:.claude/skills/deploy/scripts/site-events.sh",
+    "The enable call begins with a runtime credential assignment and remains approval-gated.",
+  ],
+  [
     ".claude/skills/deploy/SKILL.md::path:.claude/skills/deploy/scripts/og-inject.sh",
     "The command is embedded in assignment syntax, which cannot use a path-only literal prefix.",
   ],
@@ -829,6 +833,23 @@ function collectPackageSurfaces(rootPath) {
   return surfaces;
 }
 
+function collectPluginSurface(pluginDir) {
+  if (!pluginDir) {
+    return [];
+  }
+  const skillsRoot = path.join(pluginDir, "skills");
+  const skillFiles = listChildDirectories(skillsRoot)
+    .map((skillDir) => path.join(skillDir, "SKILL.md"))
+    .filter((skillPath) => fileExists(skillPath));
+  return [
+    {
+      id: "plugin:hq",
+      label: `${displayPath(pluginDir)} skills`,
+      skillFiles,
+    },
+  ];
+}
+
 function formatError(error) {
   if (error instanceof YamlSyntaxError) {
     const lines = [
@@ -913,8 +934,54 @@ function validatePermissionSurface(rootPath, surface, seenSummaries) {
   return { skillCount, commandCount, gaps };
 }
 
-function validateRuntimeContracts(rootPath) {
-  const surfaces = [...collectRootSurface(rootPath), ...collectPackageSurfaces(rootPath)];
+function collectExternalSkillSurface(skillDir) {
+  if (!skillDir) return [];
+  const skillsRoot = path.join(skillDir, "skills");
+  if (!isDirectory(skillsRoot)) {
+    throw new ValidationError("external skill payload must contain a skills/ directory", {
+      filePath: skillDir,
+      field: "skills",
+    });
+  }
+  let skillDirs;
+  try {
+    skillDirs = fs.readdirSync(skillsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(skillsRoot, entry.name))
+      .sort();
+  } catch (error) {
+    throw new ValidationError(`unable to read external skills directory: ${error.message}`, {
+      filePath: skillsRoot,
+      field: "skills",
+    });
+  }
+  if (skillDirs.length === 0) {
+    throw new ValidationError("external skills directory must contain at least one skill", {
+      filePath: skillsRoot,
+      field: "skills",
+    });
+  }
+  const skillFiles = skillDirs.map((dir) => {
+    const skillFile = path.join(dir, "SKILL.md");
+    if (!fileExists(skillFile)) {
+      throw new ValidationError("external skill directory is missing SKILL.md", {
+        filePath: dir,
+        field: "SKILL.md",
+      });
+    }
+    return skillFile;
+  });
+  return [{ id: `external:${displayPath(skillDir)}`, label: `${displayPath(skillDir)} skills`, skillFiles }];
+}
+
+function validateRuntimeContracts(rootPath, { skillDir = null, pluginDir = null } = {}) {
+  const externalSurfaces = collectExternalSkillSurface(skillDir);
+  const surfaces = [
+    ...collectRootSurface(rootPath),
+    ...collectPackageSurfaces(rootPath),
+    ...collectPluginSurface(pluginDir),
+    ...externalSurfaces,
+  ];
   const summaries = [];
   let total = 0;
 
@@ -949,6 +1016,65 @@ function validatePermissionContracts(rootPath) {
   return { skillCount, commandCount, summaries };
 }
 
+const HOOK_SCRIPT_PATH_PATTERN = /[^\s"'=;]*\.(?:claude|codex)\/hooks\/[^\s"';]+\.sh/g;
+
+function hookRegistrationCommands(rootPath) {
+  const commands = [];
+  const settingsPath = path.join(rootPath, ".claude", "settings.json");
+  if (fileExists(settingsPath)) {
+    const settings = JSON.parse(readFile(settingsPath));
+    for (const groups of Object.values(settings.hooks || {})) {
+      for (const group of groups || []) {
+        for (const hook of group.hooks || []) {
+          if (typeof hook.command === "string") {
+            commands.push({ filePath: settingsPath, command: hook.command });
+          }
+        }
+      }
+    }
+  }
+  const codexPath = path.join(rootPath, ".codex", "config.toml");
+  if (fileExists(codexPath)) {
+    for (const line of readFile(codexPath).split("\n")) {
+      const match = line.match(/^\s*command\s*=\s*(['"])(.*)\1\s*$/);
+      if (match) {
+        commands.push({ filePath: codexPath, command: match[2] });
+      }
+    }
+  }
+  return commands;
+}
+
+// Hook registrations must name their script through an absolute path or an
+// anchoring variable ($CLAUDE_PROJECT_DIR, $HQ_ROOT, $d from a root search).
+// A relative path resolves against the session cwd, which is a foreign repo
+// when the runtime starts outside HQ. master-hook.sh must keep its
+// user-scope/project-scope dispatch dedupe.
+function validateHookRegistrations(rootPath) {
+  const commands = hookRegistrationCommands(rootPath);
+  for (const { filePath, command } of commands) {
+    for (const scriptPath of command.match(HOOK_SCRIPT_PATH_PATTERN) || []) {
+      if (!/^(?:\/|\$|~)/.test(scriptPath)) {
+        throw new ValidationError(
+          `hook registration uses relative script path "${scriptPath}"; anchor it with an absolute path or $CLAUDE_PROJECT_DIR`,
+          { filePath, field: "hooks.command" },
+        );
+      }
+    }
+  }
+  const masterPath = path.join(rootPath, ".claude", "hooks", "master-hook.sh");
+  if (fileExists(masterPath)) {
+    const master = readFile(masterPath);
+    if (!master.includes("dispatch-locks") || !master.includes("tool_use_id") || !master.includes("set -C")) {
+      throw new ValidationError(
+        "master-hook.sh lacks the session_id + event + tool_use_id dispatch dedupe (workspace/sessions/<sid>/dispatch-locks)",
+        { filePath: masterPath, field: "dedupe" },
+      );
+    }
+  }
+  return commands.length;
+}
+
 function parseCli(argv) {
   const args = [...argv];
   let command = "validate";
@@ -962,6 +1088,8 @@ function parseCli(argv) {
     ? path.resolve(process.env[YAML_PARSER_ROOT_ENV])
     : null;
   let installDir = null;
+  let skillDir = null;
+  let pluginDir = null;
 
   while (args.length > 0) {
     const arg = args.shift();
@@ -1004,6 +1132,29 @@ function parseCli(argv) {
       continue;
     }
 
+    if (arg === "--skill-dir") {
+      if (args.length === 0) throw new Error("--skill-dir requires a directory containing skills/");
+      skillDir = path.resolve(args.shift());
+      continue;
+    }
+    if (arg.startsWith("--skill-dir=")) {
+      skillDir = path.resolve(arg.slice("--skill-dir=".length));
+      continue;
+    }
+
+    if (arg === "--plugin-dir") {
+      if (args.length === 0) {
+        throw new Error("--plugin-dir requires a path");
+      }
+      pluginDir = path.resolve(args.shift());
+      continue;
+    }
+
+    if (arg.startsWith("--plugin-dir=")) {
+      pluginDir = path.resolve(arg.slice("--plugin-dir=".length));
+      continue;
+    }
+
     if (command === "emit-openai-yaml" && skillPath === null) {
       skillPath = path.resolve(arg);
       continue;
@@ -1012,11 +1163,11 @@ function parseCli(argv) {
     throw new Error(`unknown argument: ${arg}`);
   }
 
-  return { command, rootPath, skillPath, parserRoot, installDir };
+  return { command, rootPath, skillPath, parserRoot, installDir, skillDir, pluginDir };
 }
 
 function main() {
-  const { command, rootPath, skillPath, parserRoot, installDir } = parseCli(
+  const { command, rootPath, skillPath, parserRoot, installDir, skillDir, pluginDir } = parseCli(
     process.argv.slice(2),
   );
 
@@ -1025,6 +1176,12 @@ function main() {
     process.stdout.write(
       `Installed ${YAML_PARSER_PACKAGE}@${YAML_PARSER_VERSION} into ${resolvedInstallDir}\nSet ${YAML_PARSER_ROOT_ENV}=${resolvedInstallDir} when running ${path.relative(process.cwd(), VALIDATOR_SCRIPT) || VALIDATOR_SCRIPT} or core/scripts/convert-codex.sh.\n`,
     );
+    return;
+  }
+
+  if (command === "validate-hooks") {
+    const count = validateHookRegistrations(rootPath);
+    process.stdout.write(`Validated ${count} hook registration command(s) and master-hook dispatch dedupe.\n`);
     return;
   }
 
@@ -1056,9 +1213,10 @@ function main() {
     throw new Error(`unknown command: ${command}`);
   }
 
-  const result = validateRuntimeContracts(rootPath);
+  const hookCount = validateHookRegistrations(rootPath);
+  const result = validateRuntimeContracts(rootPath, { skillDir, pluginDir });
   process.stdout.write(
-    `Validated ${result.total} shipped skill metadata contract(s).\n${result.summaries
+    `Validated ${hookCount} hook registration command(s) and master-hook dispatch dedupe.\nValidated ${result.total} shipped skill metadata contract(s).\n${result.summaries
       .map((summary) => `  ${summary}`)
       .join("\n")}\n`,
   );
