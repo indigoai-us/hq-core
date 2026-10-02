@@ -143,7 +143,7 @@ the metadata header is stripped) per
 `core/knowledge/public/hq-core/humanize-before-send.md` — channel `social`,
 default intensity `full`. Social posts are public, so this is the full
 `/humanize` pass including the audit step and voice calibration, ending with no
-em or en dashes. If a `voice_pack` is configured for the `social` channel,
+em dashes, en dashes, or prose colons. If a `voice_pack` is configured for the `social` channel,
 load it from the brand-voice registry and calibrate to it; otherwise use the
 profile's brand voice (or `personal/agents-profile.md` for personal accounts).
 Humanize only the post body, never the metadata, image path, account IDs, or

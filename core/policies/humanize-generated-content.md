@@ -44,7 +44,7 @@ When the deliverable type is ambiguous, default to running the pass; over-applyi
 
 1. Produce your draft.
 2. Run the internal audit step from the skill: ask "what makes this obviously AI generated?" and name the remaining tells.
-3. Revise into a final version that addresses them and contains no em dashes or en dashes.
+3. Revise into a final version that addresses them and contains no em dashes, en dashes, or prose colons.
 4. For the owner's first-person content, calibrate voice against `personal/agents-profile.md`; for company content, against that company's brand voice knowledge.
 
 When the user explicitly invokes `/humanize` on existing text, deliver the full draft → audit → final loop. When the pass runs inline as part of producing a deliverable, the audit step is still mandatory, but you may present only the final result.

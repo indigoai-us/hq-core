@@ -388,8 +388,8 @@ jobs:
           if [ "$INPUT_MODE" = "auto" ]; then
             {
               echo "- 🤖 Auto-promote: this PR tracks staging \`main\` and is force-updated on every push."
-              echo "- ✅ **Auto-merge on green** is armed (\`gh pr merge --auto --squash\`). Required checks must pass; red checks hold the PR indefinitely."
-              echo "- 🛑 **Hold a release:** \`gh pr edit <N> --add-label hold-release\` (or apply the \`hold-release\` label in the UI). That disables auto-merge and skips re-arming on subsequent staging pushes."
+              echo "- ✅ The release workflow waits for every check and status on the exact hq-core PR head, then merges only that checked SHA."
+              echo "- 🛑 **Hold a release:** \`gh pr edit <N> --add-label hold-release\` (or apply the \`hold-release\` label in the UI). The gate disables auto-merge and will not merge while the label is present."
             } >> "$BODY_FILE"
           fi
           if [ -n "${INPUT_EXTRA}" ]; then
@@ -446,6 +446,24 @@ jobs:
           cd target
           git commit -m "$COMMIT_MSG"
 
+      # Stop a previously-armed auto-merge before changing the PR head; otherwise
+      # GitHub can merge against its required-check subset during the push step.
+      - name: Disable legacy auto-merge before updating standing PR
+        if: steps.params.outputs.mode == 'auto' && steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.params.outputs.branch }}
+        run: |
+          set -euo pipefail
+          EXISTING="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$EXISTING" ]; then
+            AUTO_MERGE="$(gh pr view "$EXISTING" --repo "$TARGET_REPO" --json autoMergeRequest --jq '.autoMergeRequest != null')"
+            if [ "$AUTO_MERGE" = 'true' ]; then
+              gh pr merge "$EXISTING" --repo "$TARGET_REPO" --disable-auto
+              echo "::notice::Disabled legacy auto-merge on hq-core PR #${EXISTING} before updating its head."
+            fi
+          fi
+
       - name: Push branch to hq-core
         if: steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
         env:
@@ -477,32 +495,33 @@ jobs:
           cd target
           EXISTING="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [ -n "$EXISTING" ]; then
-            echo "::notice::PR #${EXISTING} already open for ${BRANCH}; the force-push updated it in place."
-            echo "number=${EXISTING}" >> "$GITHUB_OUTPUT"
-            exit 0
+            NUM="$EXISTING"
+            echo "::notice::PR #${NUM} already open for ${BRANCH}; the force-push updated it in place."
+          else
+            LABEL_ARGS=()
+            if [ -n "$LABELS" ]; then
+              IFS=',' read -ra LABEL_LIST <<< "$LABELS"
+              for L in "${LABEL_LIST[@]}"; do
+                LABEL_ARGS+=(--label "$L")
+              done
+            fi
+            URL="$(gh pr create \
+              --repo "$TARGET_REPO" \
+              --base main \
+              --head "$BRANCH" \
+              --title "$TITLE" \
+              --body-file "$BODY_FILE" \
+              "${LABEL_ARGS[@]}")"
+            NUM="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+            echo "::notice::Opened PR #${NUM}: ${URL}"
           fi
-          LABEL_ARGS=()
-          if [ -n "$LABELS" ]; then
-            IFS=',' read -ra LABEL_LIST <<< "$LABELS"
-            for L in "${LABEL_LIST[@]}"; do
-              LABEL_ARGS+=(--label "$L")
-            done
-          fi
-          URL="$(gh pr create \
-            --repo "$TARGET_REPO" \
-            --base main \
-            --head "$BRANCH" \
-            --title "$TITLE" \
-            --body-file "$BODY_FILE" \
-            "${LABEL_ARGS[@]}")"
-          NUM="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          PR_HEAD_SHA="$(gh pr view "$NUM" --repo "$TARGET_REPO" --json headRefOid --jq '.headRefOid')"
           echo "number=${NUM}" >> "$GITHUB_OUTPUT"
-          echo "::notice::Opened PR #${NUM}: ${URL}"
+          echo "head_sha=${PR_HEAD_SHA}" >> "$GITHUB_OUTPUT"
 
-      # US-012: arm GitHub auto-merge (squash) on the standing auto-mode PR so
-      # green required checks land without a multi-hour human gate. hold-release
-      # label is the human opt-out (disable + skip re-arm).
-      - name: Arm or hold auto-merge (auto mode)
+      # Gate the exact target PR head. GitHub auto-merge only waits for required
+      # branch-protection contexts, so do not arm it here.
+      - name: Gate every check and merge auto-mode release PR
         if: >-
           steps.params.outputs.mode == 'auto' &&
           steps.nochanges.outputs.skip != 'true' &&
@@ -512,17 +531,5 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.openpr.outputs.number }}
-        run: |
-          set -euo pipefail
-          LABELS="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json labels --jq '[.labels[].name] | join(",")')"
-          if echo ",${LABELS}," | grep -q ',hold-release,'; then
-            gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --disable-auto || true
-            echo "::notice::hold-release present on PR #${PR_NUMBER} — auto-merge disabled; not re-arming."
-            exit 0
-          fi
-          # Queues until required checks are green; does not bypass red checks.
-          if gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --auto --squash; then
-            echo "::notice::Auto-merge armed (squash) on PR #${PR_NUMBER}."
-          else
-            echo "::warning::Could not arm auto-merge on PR #${PR_NUMBER} (checks may already be red or merge state blocked). Will retry on next staging push."
-          fi
+          PR_HEAD_SHA: ${{ steps.openpr.outputs.head_sha }}
+        run: bash staging/core/scripts/release-pr-check-gate.sh "$TARGET_REPO" "$PR_NUMBER" "$PR_HEAD_SHA" 600 30

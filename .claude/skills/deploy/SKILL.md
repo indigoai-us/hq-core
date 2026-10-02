@@ -24,6 +24,10 @@ Every deployed app has exactly one edge access mode. New policy-aware deploys pr
 | `selected` | Specific HQ people/groups when the caller has resolvable HQ directory IDs. | Same Cognito flow as `company`, but only selected user/group IDs in the policy are accepted. Use only when IDs are known from the HQ directory, not from free-form names. |
 | `private` | Legacy sensitive sharing for **known recipients by email/domain** when Cognito company membership is not the desired gate. | Visitors must be signed in to hq-auth (`auth.{your-domain}.com`) AND their email must be on the app's allowlist. Lands on `hq.{your-domain}.com/__private`, which checks the session + allowlist and mints the same `hq-access` JWT. |
 
+### Embedding a deployed app in another site
+
+Public apps can be embedded in an iframe on another site, such as Notion. Apps with password, company, selected, or private access cannot be embedded. The browser does not send the `hq-access` cookie inside a third-party frame because it uses `SameSite=Lax`, so the frame shows the access page or fails. To share a gated app, send the link instead.
+
 Pick `company` when the user asks for org/company/internal restriction. Pick `private` over `password` when the user gives concrete email/domain recipients (`"share with [EMAIL] and the @example.com team"`) and did not ask for company-wide Cognito access. Pick `password` when sensitivity is detected but recipients are unspecified and config does not prefer org restriction.
 
 **Canonical mutation endpoint** for switching between modes:

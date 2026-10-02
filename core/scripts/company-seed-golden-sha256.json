@@ -1,0 +1,18 @@
+{
+  "source": "hq-core-staging origin/main 27f90ebde8f58fc78360cdf6894619662a5e97d0",
+  "files": {
+    "README.md": "da76fb614781b795516f20e70aeb97a259217eba5e82b9d8fc78dc77bab99683",
+    "board.json": "5ec16c685fb4580b786e54682b082a9c6aab0220b2cf34a7f96d64010e4a6447",
+    "knowledge/README.md": "5d6b79c7c8ec7416e269182719edb01e4474677c47e76e9fcd566c68ed10f93f",
+    "knowledge/design-styles/packs/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "people/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "policies/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "projects/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "repos/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "skills/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sources/meetings/source.yaml": "1963d600ffb98d63aaf9b9ae6bcba9477f927514ce2ab1cbc18a4b8e7018598b",
+    "workspace/.gitignore": "22433fa5ca7d1da9f01b226b4970992ff4969378501ecc4c795605e2e7c0dd99",
+    "workspace/index.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "workspace/sessions/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

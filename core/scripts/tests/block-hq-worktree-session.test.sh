@@ -20,9 +20,22 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 BASE_SHA="${HQ_HOOK_GUARD_BASE_SHA:-}"
 [ -n "$BASE_SHA" ] || BASE_SHA="$(git -C "$ROOT" merge-base HEAD origin/main)"
-BASE_HOOK="$TMP/base-block-hq-worktree-session.sh"
+# The base guard runs from its own directory so it can load the helpers it
+# ships with (block-hq-worktree-safe-cd-flag.cjs since #1009).
+mkdir -p "$TMP/base-hooks"
+BASE_HOOK="$TMP/base-hooks/block-hq-worktree-session.sh"
 git -C "$ROOT" show "$BASE_SHA:.claude/hooks/block-hq-worktree-session.sh" > "$BASE_HOOK" \
   || { echo "FAIL: could not load base guard at $BASE_SHA" >&2; exit 1; }
+# The base guard runs from its own directory so it can load the helpers it
+# ships with (block-hq-worktree-safe-cd-flag.cjs since #1009).
+mkdir -p "$TMP/base-hooks"
+BASE_HOOK="$TMP/base-hooks/block-hq-worktree-session.sh"
+git -C "$ROOT" show "$BASE_SHA:.claude/hooks/block-hq-worktree-session.sh" > "$BASE_HOOK" \
+  || { echo "FAIL: could not load base guard at $BASE_SHA" >&2; exit 1; }
+if git -C "$ROOT" cat-file -e "$BASE_SHA:.claude/hooks/block-hq-worktree-safe-cd-flag.cjs" 2>/dev/null; then
+  git -C "$ROOT" show "$BASE_SHA:.claude/hooks/block-hq-worktree-safe-cd-flag.cjs" \
+    > "$TMP/base-hooks/block-hq-worktree-safe-cd-flag.cjs"
+fi
 
 git_quiet() { git -c init.defaultBranch=main -c user.email=t@t -c user.name=t "$@"; }
 
@@ -96,6 +109,39 @@ esac
 WINDOWS_CYGPATH
 chmod +x "$WINDOWS_BIN/git" "$WINDOWS_BIN/realpath" "$WINDOWS_BIN/cygpath"
 
+# Fake the installed CLI's hq-flags dependencies so the safe-directory gate
+# is deterministic and never makes a network request.
+FLAG_CLI="$TMP/flag-cli"
+FLAG_BIN="$TMP/flag-bin"
+mkdir -p "$FLAG_CLI/bin" \
+  "$FLAG_CLI/node_modules/@indigoai-us/hq-flags-client" \
+  "$FLAG_CLI/node_modules/@indigoai-us/hq-cloud" "$FLAG_BIN"
+printf '%s\n' '{"name":"@indigoai-us/hq-cli"}' > "$FLAG_CLI/package.json"
+cat > "$FLAG_CLI/bin/hq" <<'SH'
+#!/usr/bin/env sh
+exit 0
+SH
+chmod +x "$FLAG_CLI/bin/hq"
+cat > "$FLAG_CLI/node_modules/@indigoai-us/hq-flags-client/package.json" <<'JSON'
+{"type":"module","exports":{".":{"import":"./index.js"}}}
+JSON
+cat > "$FLAG_CLI/node_modules/@indigoai-us/hq-flags-client/index.js" <<'JS'
+export const createFlagClient = () => ({
+  ready: async () => {},
+  snapshot: () => ({ flags: {
+    "hooks.hq-worktree-safe-directory-change": process.env.HQ_TEST_SAFE_CWD_FLAG === "true",
+  } }),
+  close: () => {},
+});
+JS
+cat > "$FLAG_CLI/node_modules/@indigoai-us/hq-cloud/package.json" <<'JSON'
+{"type":"module","exports":{".":{"import":"./index.js"}}}
+JSON
+cat > "$FLAG_CLI/node_modules/@indigoai-us/hq-cloud/index.js" <<'JS'
+export const loadCachedTokens = () => ({ idToken: "test-only-token" });
+JS
+ln -s "$FLAG_CLI/bin/hq" "$FLAG_BIN/hq"
+
 PASS=0
 FAIL=0
 
@@ -143,9 +189,49 @@ APPWT="$TMP/hq/workspace/worktrees/app/x"
 
 # --- The block: HQ itself running from a worktree ---------------------------
 run 2 "$HQWT" "$HQWT" UserPromptSubmit 'project dir is a linked HQ worktree — prompt blocked'
+if [[ "$LAST_STDERR" != *"When starting an HQ session, leave Claude Code's Worktree toggle unchecked."* ]]; then
+  FAIL=$((FAIL + 1))
+  echo 'FAIL [UserPromptSubmit toggle guidance]: missing Worktree toggle instruction in refusal' >&2
+else
+  PASS=$((PASS + 1))
+fi
 run 2 "$HQWT" "$HQWT" PreToolUse       'project dir is a linked HQ worktree — tool blocked'
 run 2 "$HQ"   "$HQWT" UserPromptSubmit 'cwd is a worktree cut from HQ — blocked'
 run 2 "$HQ"   "$HQWT" PreToolUse       'cwd is a worktree cut from HQ — tool blocked'
+
+# Only a session still rooted in canonical HQ may opt into a shell directory
+# change. The flag is default-off; a session started from an HQ worktree stays
+# blocked even when the flag is on.
+run 2 "$HQ" "$HQWT" PreToolUse 'safe directory change remains blocked by default'
+run 0 "$HQ" "$HQWT" PreToolUse 'safe directory change allowed when flag is on' \
+  PATH="$FLAG_BIN:$PATH" HQ_CLI_BIN="$FLAG_CLI/bin/hq" \
+  HQ_FLAGS_API_URL=https://flags.invalid HQ_COMPANY_UID=cmp_test123 \
+  HQ_TEST_SAFE_CWD_FLAG=true
+run 2 "$HQWT" "$HQWT" PreToolUse 'session started in HQ worktree stays blocked with flag on' \
+  PATH="$FLAG_BIN:$PATH" HQ_CLI_BIN="$FLAG_CLI/bin/hq" \
+  HQ_FLAGS_API_URL=https://flags.invalid HQ_COMPANY_UID=cmp_test123 \
+  HQ_TEST_SAFE_CWD_FLAG=true
+run 2 "$HQ" "$HQWT" PreToolUse 'invalid company identity fails closed' \
+  PATH="$FLAG_BIN:$PATH" HQ_CLI_BIN="$FLAG_CLI/bin/hq" \
+  HQ_FLAGS_API_URL=https://flags.invalid HQ_COMPANY_UID=invalid \
+  HQ_TEST_SAFE_CWD_FLAG=true
+
+# The worktree-toggle note is new candidate output. Strip it from base and
+# candidate alike so parity holds whether or not the base already has it.
+strip_worktree_toggle_note() {
+  printf '%s\n' "$1" | awk 'skip { skip--; next } /^When starting an HQ session,/ { skip=2; next } NF { if (blank) print ""; print; blank=0; next } { blank=1 }'
+}
+
+# Regression: a base that already prints the note must normalize to the same
+# text as a base without it, so the parity checks below hold on either base.
+note_free=$'Blocked.\n\nSource-repo worktrees are unaffected.'
+note_present=$'Blocked.\n\nWhen starting an HQ session, leave the Worktree toggle unchecked. It\nstarts HQ in a linked worktree.\nUse the toggle for a source session.\n\nSource-repo worktrees are unaffected.'
+if [ "$(strip_worktree_toggle_note "$note_present")" = "$(strip_worktree_toggle_note "$note_free")" ] \
+  && [ "$(strip_worktree_toggle_note "$note_free")" = "$note_free" ]; then
+  PASS=$((PASS + 1)); echo 'ok: worktree-toggle note normalizes away on base and candidate stderr'
+else
+  FAIL=$((FAIL + 1)); echo 'FAIL [note normalization]: base and candidate stderr normalize differently' >&2
+fi
 
 # The last listed linked worktree must not be mistaken for the main checkout.
 # Run the same multi-worktree cwd denial on the PR base and candidate guard.
@@ -153,12 +239,13 @@ HOOK="$BASE_HOOK"
 TEST_SESSION_ID=c153-multi-worktree
 run 2 "$HQ" "$HQWT_LAST" UserPromptSubmit 'base denies cwd in the last of several HQ worktrees'
 base_multi_worktree_stdout="$LAST_STDOUT"
-base_multi_worktree_stderr="$LAST_STDERR"
+base_multi_worktree_stderr="$(strip_worktree_toggle_note "$LAST_STDERR")"
 HOOK="$ROOT/.claude/hooks/block-hq-worktree-session.sh"
 TEST_SESSION_ID=c153-multi-worktree \
   run 2 "$HQ" "$HQWT_LAST" UserPromptSubmit 'candidate denies cwd in the last of several HQ worktrees'
+candidate_multi_worktree_stderr="$(strip_worktree_toggle_note "$LAST_STDERR")"
 [ "$LAST_STDOUT" = "$base_multi_worktree_stdout" ] \
-  && [ "$LAST_STDERR" = "$base_multi_worktree_stderr" ] \
+  && [ "$candidate_multi_worktree_stderr" = "$base_multi_worktree_stderr" ] \
   && { PASS=$((PASS + 1)); echo 'ok: base and candidate both deny the multi-worktree session'; } \
   || {
     FAIL=$((FAIL + 1))
@@ -174,13 +261,14 @@ TEST_SESSION_ID=c153-cdpath \
   TEST_RUN_CWD="$TMP" CDPATH="$TMP" \
   run 2 hq-worktree-two hq-worktree-two UserPromptSubmit 'base denies relative path with CDPATH'
 base_cdpath_stdout="$LAST_STDOUT"
-base_cdpath_stderr="$LAST_STDERR"
+base_cdpath_stderr="$(strip_worktree_toggle_note "$LAST_STDERR")"
 HOOK="$ROOT/.claude/hooks/block-hq-worktree-session.sh"
 TEST_SESSION_ID=c153-cdpath \
   TEST_RUN_CWD="$TMP" CDPATH="$TMP" \
   run 2 hq-worktree-two hq-worktree-two UserPromptSubmit 'candidate denies relative path with CDPATH'
+candidate_cdpath_stderr="$(strip_worktree_toggle_note "$LAST_STDERR")"
 [ "$LAST_STDOUT" = "$base_cdpath_stdout" ] \
-  && [ "$LAST_STDERR" = "$base_cdpath_stderr" ] \
+  && [ "$candidate_cdpath_stderr" = "$base_cdpath_stderr" ] \
   && { PASS=$((PASS + 1)); echo 'ok: base and candidate keep relative path output clean with CDPATH'; } \
   || {
     FAIL=$((FAIL + 1))

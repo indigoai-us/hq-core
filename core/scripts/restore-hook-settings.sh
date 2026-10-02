@@ -43,11 +43,7 @@ def canonical_hooks:
     .[$e] = [{hooks:[{
       type: "command",
       command: (
-        if $e == "SessionStart" then
-          "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" SessionStart"
-        else
-          "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" " + $e
-        end
+        "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" " + $e
       ),
       timeout: 300
     }]}]);
@@ -64,9 +60,7 @@ const canonicalHooks = () => {
   for (const e of EVENTS) {
     h[e] = [{hooks:[{
       type: "command",
-      command: e === "SessionStart"
-        ? "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" SessionStart"
-        : "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" " + e,
+      command: "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" " + e,
       timeout: 300
     }]}];
   }

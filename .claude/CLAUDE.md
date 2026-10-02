@@ -33,7 +33,7 @@ scaffolds, supervises, and syncs work across repos and companies.
   pickup DM — never hand-roll this flow from share/dm primitives).
 - Identity: `/hq-login`, `/hq-logout`, `/hq-whoami`.
 - Bugs and feature requests: `/hq-bug`.
-- Work Mesh Live presence is automatic (enqueue hooks + `hq mesh daemon`). Manual signals only: `hq mesh session task-status|blocked|note --enqueue …`. Clarification: `hq mesh context organize`.
+- Work Mesh Live presence is automatic (enqueue hooks + `hq mesh daemon`). Manual signals only: `hq mesh session task-status|blocked|note --enqueue …`. Board story status: `hq mesh story --story <id> --status <status>`. Clarification: `hq mesh context organize`.
 - Search: `/search`, `hq search`, or `qmd`.
 - Connected apps: `/hq-integrations` or `hq integrations`.
 - Bots and agents: `hq bot` for local bots, `/new-agent` for hosted agents,
@@ -70,6 +70,13 @@ scaffolds, supervises, and syncs work across repos and companies.
 - Learnings: route reusable rules through `/learn`, not inline charter edits.
 - Customizations: put local changes in `personal/` or company scope, not `core/`
   unless they are intended for release.
+
+## Codex Shell Paths
+
+Codex PreToolUse hooks do not receive the exec command's `workdir`. For shell
+commands with relative path operands, spell the target from the HQ root (for
+example `ls companies/<company>/projects/<project>/backend`); use `git -C
+<directory>` for Git commands. Do not rely on the tool `workdir` to scope a hook.
 
 ## Communication
 

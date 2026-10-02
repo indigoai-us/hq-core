@@ -88,11 +88,10 @@ for ENGINE in jq node; do
   [ "$ACTUAL_SESSION_START" = "$EXPECTED_SESSION_START" ] \
     && ok "$ENGINE: restored SessionStart neutralizes BASH_ENV before entry Bash" \
     || fail "$ENGINE: restored SessionStart neutralizes BASH_ENV before entry Bash" "$ACTUAL_SESSION_START"
-  EXPECTED_PRETOOL='bash "$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh" PreToolUse'
-  ACTUAL_PRETOOL="$(jq -r '.hooks.PreToolUse[]?.hooks[]? | select(.type == "command") | .command' "$T/.claude/settings.json")"
-  [ "$ACTUAL_PRETOOL" = "$EXPECTED_PRETOOL" ] \
-    && ok "$ENGINE: other event commands keep their existing invocation" \
-    || fail "$ENGINE: other event commands keep their existing invocation" "$ACTUAL_PRETOOL"
+  UNNEUTRALIZED="$(jq -r '[.hooks[]?[]?.hooks[]? | select(.type == "command") | .command | select(contains("master-hook.sh") and (startswith("env BASH_ENV=/dev/null bash ") | not))] | .[]' "$T/.claude/settings.json")"
+  [ -z "$UNNEUTRALIZED" ] \
+    && ok "$ENGINE: every restored event neutralizes BASH_ENV before entry Bash" \
+    || fail "$ENGINE: every restored event neutralizes BASH_ENV before entry Bash" "$UNNEUTRALIZED"
 
   EMPTY=0
   for e in PostToolUse PreCompact Stop UserPromptSubmit Notification SubagentStop SessionEnd; do

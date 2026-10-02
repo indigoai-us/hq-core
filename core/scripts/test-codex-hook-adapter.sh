@@ -15,7 +15,14 @@ trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP/.codex/hooks" "$TMP/.claude/hooks" "$TMP/core/scripts/lib" "$TMP/core/policies"
 cp "$ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
+cp "$ROOT/.codex/hooks/codex-explicit-path-guard.cjs" "$TMP/.codex/hooks/codex-explicit-path-guard.cjs"
 chmod +x "$TMP/.codex/hooks/hq-codex-hook-adapter.sh"
+# This suite exercises adapter routing, not the opt-in explicit-path flag.
+# Keep the new gate default-off in the synthetic fixture without requiring an
+# installed CLI or a live flag registry.
+cat > "$TMP/.codex/hooks/codex-explicit-path-flag.cjs" <<'JS'
+process.stdout.write("false\n");
+JS
 # The adapter reads the registry dispatch table through the shared library.
 # Keep settings.json too because it still carries the per-event master commands.
 # Hooks the fixture does not stub are skipped by the missing-script guard.

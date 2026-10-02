@@ -8,6 +8,9 @@ node - "$SKILL" <<'JS'
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const skill = fs.readFileSync(process.argv[2], 'utf8');
+const overview = skill.split('## Process')[0];
+assert.match(overview, /Invoke `\/hq-bug bug <title>` to report a bug or `\/hq-bug feature <title>` to request a feature\./);
+assert.match(overview, /The skill assembles a structured report and submits it through the `hq feedback` CLI\./);
 const parse = skill.split('### 1. Parse input')[1].split('### 2.')[0];
 const body = skill.split('### 6. Assemble four-section body')[1].split('### 7.')[0];
 const submit = skill.split('### 8. Submit')[1].split('### 9.')[0];
@@ -29,5 +32,5 @@ assert.match(submit, /Fallback only when the host has no Write tool/);
 assert.match(submit, /at least 12 random alphanumeric characters/);
 assert.match(submit, /Confirm that no line in the complete body exactly equals the chosen delimiter/);
 assert.doesNotMatch(skill, /Bash\(rm:\*\)/);
-console.log('hq-bug prompt contract: concise title, independent verbatim body, safe Windows body path, no cleanup, collision-checked stdin fallback');
+console.log('hq-bug invocation and prompt contract: explicit slash command, concise title, independent verbatim body, safe Windows body path, no cleanup, collision-checked stdin fallback');
 JS

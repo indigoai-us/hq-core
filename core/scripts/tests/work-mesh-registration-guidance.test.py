@@ -21,6 +21,12 @@ class RegistrationGuidanceTest(unittest.TestCase):
             self.assertIn(requirement, verify)
         self.assertIn('POST /v1/work-mesh/projects/{projectId}/register', text[steps[3]:])
 
+    def test_board_story_status_route_is_documented(self):
+        skill = (ROOT / 'core/skills/work-mesh/SKILL.md').read_text()
+        charter = (ROOT / '.claude/CLAUDE.md').read_text()
+        self.assertIn('hq mesh story --story <id> --status <status>', skill)
+        self.assertIn('hq mesh story --story <id> --status', charter)
+
     def test_existing_view_is_not_blindly_replaced(self):
         text = (ROOT / 'core/skills/work-mesh/SKILL.md').read_text()
         for requirement in ('confirmed 404', 'reuse it without a PUT',

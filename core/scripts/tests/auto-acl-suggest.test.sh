@@ -94,6 +94,29 @@ run_hook() {
   CLAUDE_PROJECT_DIR="$root" "$root/.claude/hooks/hq-auto-acl-suggest.sh" <<<"$payload"
 }
 
+# The state reader distinguishes an absent pending item from an unreadable one.
+HQ_STATE_READ="$(make_root state-read)"
+STATE_HELPER="$HQ_STATE_READ/core/scripts/share-suggestion-state.sh"
+STATE_FILE="$(queue_file "$HQ_STATE_READ" "state-read")"
+state_out="$(CLAUDE_PROJECT_DIR="$HQ_STATE_READ" "$STATE_HELPER" peek state-read)"
+assert_empty "$state_out" "missing state file returns the default pending map"
+
+mkdir -p "$(dirname "$STATE_FILE")"
+printf '%s\n' '{"company":"acme","artifact":{"path":"companies/acme/reports/normal.md"}}' > "$STATE_FILE"
+expected_state='{"artifact":{"path":"companies/acme/reports/normal.md"},"company":"acme"}'
+state_out="$(CLAUDE_PROJECT_DIR="$HQ_STATE_READ" "$STATE_HELPER" peek state-read)"
+assert_eq "$state_out" "$expected_state" "normal state output remains unchanged"
+
+printf '%s\n' '{not-json' > "$STATE_FILE"
+if CLAUDE_PROJECT_DIR="$HQ_STATE_READ" "$STATE_HELPER" peek state-read >"$TMP/state-corrupt.out" 2>"$TMP/state-corrupt.err"; then
+  state_status=0
+else
+  state_status=$?
+fi
+[ "$state_status" -ne 0 ] || fail "corrupt state file should fail non-zero"
+assert_empty "$(cat "$TMP/state-corrupt.out")" "corrupt state file stdout"
+assert_eq "$(cat "$TMP/state-corrupt.err")" "share-suggestion-state: unable to read $STATE_FILE (SyntaxError)" "corrupt state diagnostic"
+
 # [a] qualifying Write enqueues one sanitized item
 HQ_A="$(make_root a)"
 set_company "$HQ_A" "sess-write" "acme"

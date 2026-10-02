@@ -19,7 +19,16 @@ if command -v node >/dev/null 2>&1 && [[ -f "$FLAG_READER" ]]; then
   FLAG_ENABLED="$(HQ_CLI_BIN="$HQ_BIN" node "$FLAG_READER" 2>/dev/null || printf 'false')"
 fi
 
-CURRENT_PATH="$(bash "$REPO_ROOT/core/scripts/compose-settings-path.sh" "$BASE_PATH" || printf '%s' "$BASE_PATH")"
+LOCAL_PATH=""
+PROJECT_PATH=""
+if [[ -f "$REPO_ROOT/.claude/settings.local.json" ]]; then
+  LOCAL_PATH="$(jq -r 'if type == "object" then .env.PATH // empty else empty end' "$REPO_ROOT/.claude/settings.local.json" 2>/dev/null || true)"
+fi
+if [[ -f "$REPO_ROOT/.claude/settings.json" ]]; then
+  PROJECT_PATH="$(jq -r 'if type == "object" then .env.PATH // empty else empty end' "$REPO_ROOT/.claude/settings.json" 2>/dev/null || true)"
+fi
+PATH_INPUT="${LOCAL_PATH}${LOCAL_PATH:+:}${PROJECT_PATH}${PROJECT_PATH:+:}${BASE_PATH}"
+CURRENT_PATH="$(bash "$REPO_ROOT/core/scripts/compose-settings-path.sh" "$PATH_INPUT" || printf '%s' "$PATH_INPUT")"
 if [[ "$FLAG_ENABLED" == "true" ]]; then
   SETTINGS_FILE="$REPO_ROOT/.claude/settings.local.json"
   if [[ -f "$SETTINGS_FILE" ]]; then

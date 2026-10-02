@@ -144,6 +144,45 @@ emit_machine_ok() {
   emit "{\"status\":\"ok\",\"jwt\":\"$id_token\",\"id_token\":\"$id_token\",\"identity\":\"machine\",\"expires_at\":$expires_at,\"source\":\"machine_mint\"}"
 }
 
+MINT_STDERR_FILE=""
+
+json_quote_stdin() {
+  if [ "$JQ_OK" -eq 1 ]; then
+    jq -Rs '.[0:200]'
+  elif [ "$NODE_OK" -eq 1 ]; then
+    node -e 'let s=""; process.stdin.setEncoding("utf8"); process.stdin.on("data", c => s += c); process.stdin.on("end", () => process.stdout.write(JSON.stringify(s.slice(0, 200))));'
+  else
+    return 1
+  fi
+}
+
+machine_mint_failed() {
+  local mint_detail_line="" mint_detail_json="" line="" detail_lower=""
+  if [ -n "${MINT_STDERR_FILE:-}" ] && [ -f "$MINT_STDERR_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      mint_detail_line=$line
+    done < "$MINT_STDERR_FILE"
+  fi
+  mint_detail_line=${mint_detail_line%$'\r'}
+  # Do not echo diagnostics that name or resemble credentials, tokens, or env
+  # assignments. hq-auth-refresh owns the machine-creds file; this script never
+  # reads it. Other plain diagnostics are bounded and JSON-escaped below.
+  detail_lower=$(printf '%s' "$mint_detail_line" | tr '[:upper:]' '[:lower:]')
+  case "$detail_lower" in
+    *token*|*secret*|*password*|*credential*|*authorization*|*bearer*|*machine-creds*|*hq_machine*|*=*)
+      mint_detail_line="[redacted sensitive diagnostic]"
+      ;;
+  esac
+  if [[ "$mint_detail_line" =~ [A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,} ]]; then
+    mint_detail_line="[redacted sensitive diagnostic]"
+  fi
+  if ! mint_detail_json=$(printf '%s' "${mint_detail_line:0:200}" | json_quote_stdin 2>/dev/null); then
+    mint_detail_json='""'
+  fi
+  printf '{"status":"login_required","reason":"machine_mint_failed","detail":%s}\n' "$mint_detail_json"
+  exit 0
+}
+
 # Fleet agents authenticate non-interactively with machine credentials. Match
 # the CLI's signal: HQ_MACHINE_CREDS_FILE overrides the standard agent path.
 # Do not read or parse the credential file here; hq-auth-refresh owns that
@@ -162,11 +201,23 @@ if [ -n "${HQ_MACHINE_CREDS_FILE:-}" ] \
 fi
 if [ "$MACHINE_IDENTITY_EXPECTED" -eq 1 ]; then
   [ -r "$MACHINE_CREDS_FILE" ] || err "machine_mint_failed"
+  MACHINE_MIN_VALIDITY_SECONDS=$((SKEW_MS / 1000))
+  if [ "$FORCE_REFRESH" -eq 1 ]; then
+    # Machine tokens are normally one hour; one day forces a fresh mint after
+    # an API rejection, rather than letting hq-auth-refresh reuse that cache.
+    MACHINE_MIN_VALIDITY_SECONDS=86400
+  fi
+  MINT_STDERR_FILE=$(mktemp "$_DEPLOY_TMPDIR/hq-auth-refresh.XXXXXX" 2>/dev/null || true)
+  [ -n "$MINT_STDERR_FILE" ] || machine_mint_failed
+  trap 'if [ -n "${MINT_STDERR_FILE:-}" ] && [ -f "$MINT_STDERR_FILE" ]; then rm -f "$MINT_STDERR_FILE"; fi' EXIT
   MINT_OK=1
   if command -v hq-auth-refresh >/dev/null 2>&1; then
-    hq-auth-refresh >/dev/null 2>&1 || MINT_OK=0
+    HQ_AUTH_MIN_VALIDITY_SECONDS="$MACHINE_MIN_VALIDITY_SECONDS" \
+      hq-auth-refresh >/dev/null 2>"$MINT_STDERR_FILE" || MINT_OK=0
   elif command -v npx >/dev/null 2>&1; then
-    npx -y --package=@indigoai-us/hq-cli hq-auth-refresh >/dev/null 2>&1 || MINT_OK=0
+    HQ_AUTH_MIN_VALIDITY_SECONDS="$MACHINE_MIN_VALIDITY_SECONDS" \
+      npx -y --package=@indigoai-us/hq-cli hq-auth-refresh \
+        >/dev/null 2>"$MINT_STDERR_FILE" || MINT_OK=0
   else
     err "machine_mint_unavailable"
   fi
@@ -175,7 +226,7 @@ if [ "$MACHINE_IDENTITY_EXPECTED" -eq 1 ]; then
   # cache hit or a fresh USER_PASSWORD_AUTH mint. Never accept a stale file if
   # the mint command itself failed.
   if [ "$MINT_OK" -ne 1 ] || [ ! -f "$MACHINE_TOKEN_FILE" ]; then
-    err "machine_mint_failed"
+    machine_mint_failed
   fi
   IDT=$(token_field "$MACHINE_TOKEN_FILE" "idToken")
   EXP=$(token_field "$MACHINE_TOKEN_FILE" "expiresAt")
@@ -183,7 +234,7 @@ if [ "$MACHINE_IDENTITY_EXPECTED" -eq 1 ]; then
   if [ -n "$IDT" ] && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
     emit_machine_ok "$IDT" "$EXP"
   fi
-  err "machine_mint_failed"
+  machine_mint_failed
 fi
 
 # 1. Find token file

@@ -60,7 +60,7 @@ over-formalized and a public post is fully scrubbed.
 | `off` | Skip the pass. | none |
 | `light` | Strip the unambiguous tells only: em and en dashes, AI vocabulary (`delve`, `leverage`, `seamless`, `robust`, `testament`, `underscore`, `showcase`, `pivotal`, `vibrant`, `unlock`, `elevate`, `harness`), collaborative / sycophantic artifacts ("I hope this helps", "Let me know if", "Great question", "Certainly!"), promotional framing, and decorative emoji. Keep the message terse and conversational; do not add length or formality. | `dm`, `cowork-dm`, `work-broadcast` |
 | `standard` | `light` plus rule-of-three, negative parallelisms, false ranges, copula avoidance, filler, and generic upbeat conclusions. | global default |
-| `full` | The complete `/humanize` pass, including voice calibration and the soul / personality check, ending with no em or en dashes. | `social` |
+| `full` | The complete `/humanize` pass, including voice calibration and the soul / personality check, ending with no em dashes, en dashes, or prose colons. | `social` |
 
 DMs default to `light` because they are conversational and semi-internal:
 the goal is to remove slop, not to make a teammate ping read like marketing copy.

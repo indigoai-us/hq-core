@@ -87,6 +87,17 @@ canonical ID. Inspect partial state before recovery; never create a replacement
 project or weaken tenant ownership checks. Presence hooks remain automatic and
 do not perform this project-registration step.
 
+## Board story status
+
+Update an individual Board story with the hq-cli story command:
+
+```bash
+hq mesh story --story <id> --status <status> --company <slug> --project <slug>
+```
+
+Use `queued`, `in_progress`, `review`, or `done` for `<status>`. This updates a
+Board story; `hq mesh session task-status` records session-task status instead.
+
 ## Session (manual only)
 
 ```bash

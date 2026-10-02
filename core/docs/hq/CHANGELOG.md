@@ -1,5 +1,24 @@
 ## [Unreleased]
+- Clarify that handoff follow-ups run sequentially and include a rough duration estimate before dispatch.
+- Fix the hq-core release gate's staging checkout path and large check payload handling.
+- Keep CI hq-cli installs on 5.312.1 or newer so qmd reindex uses exclusive lock ownership.
+- Preserve existing user PATH entries in Claude settings, append managed tools, and filter temporary npx paths.
+- Explain when to leave Claude Code's Worktree toggle unchecked for HQ sessions.
+- Document that gated deployed apps cannot be embedded in third-party sites.
+- Keep the capability-link Stop guard accurate for Codex response_item assistant transcripts, including bounded scans (feedback_4ff48409-1a0f-4b4f-823a-02a8bf0228bf).
+- Clarify that `/new-hire` provisioning is run by the onboarding admin in the terminal, while the teammate follows the existing login, invite-acceptance, and workspace-sync checklist.
+- Launch every registered hook with BASH_ENV neutralized before Bash starts, avoiding host profile startup cost on Windows Git Bash. (SC-CLI-BR)
+- Policy trigger ledgers record only rows included in final SessionStart and UserPromptSubmit reminders; cap-withheld and non-visible hook output remain eligible for later delivery.
+- Gate cloud-first `/newcompany` setup behind the default-off `core.setup.newcompany-cloud-first` hq-flags key.
+- Give the one-time `/newcompany` flag lookup a 5 s budget while keeping setup PATH reads at 150 ms.
+- Clarify `/hq-bug bug <title>` and `/hq-bug feature <title>` as the report entry points through `hq feedback`.
+- The hq-core release bot waits for every check on the exact PR head and retries pending checks on a schedule.
+- Add a default-off flag that lets a canonical HQ session continue after changing its shell directory into an HQ worktree.
+- Fix Codex explicit-path flag reads for bound companies, including machine-identity tokens, while keeping module and request waits bounded.
+- Codex explicit-path guard reads the exec workdir from Codex 0.159+ code-mode transcript records, so unanchored Git commands get the `git -C <dir>` rewrite and relative paths get the exact project path.
+- Documented explicit HQ-root paths for Codex shell commands and added an opt-in guard for relative paths that depend on the hidden tool workdir.
 - Skip the hq CLI SessionStart auto-update when pnpm is unavailable and show the guarded 24-hour install command instead of using npm latest.
+- Preserve the company session-directory `.gitkeep` files through starter rendering and seed promotion.
 - Gate the session-bind warning for an installed but unloaded Work Mesh daemon behind the default-off hq-flags key hooks.work-mesh-daemon-not-loaded-warning.
 - Refresh a missing or older-than-24-hours vault-access manifest in the background so SessionStart stays fast.
 - `/hq-heal` now classifies stale presign-upload rejections and throttled sync manifests as sync failures.

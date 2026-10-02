@@ -6,7 +6,7 @@ allowed-tools: AskUserQuestion, Write, Bash(mktemp:*), Bash(cygpath:*), Bash(bas
 
 # HQ Feedback
 
-Submit a bug report or feature request. Assemble a structured body and submit via the `hq feedback` CLI. Slack shows the title as a short channel summary, with the full report and diagnostics in its thread.
+Invoke `/hq-bug bug <title>` to report a bug or `/hq-bug feature <title>` to request a feature. The skill assembles a structured report and submits it through the `hq feedback` CLI. Slack shows the title as a short channel summary, with the full report and diagnostics in its thread.
 
 **Input:** `$ARGUMENTS` — expected format: `bug|feature [title text]`  
 If the type is omitted, default to `bug`. If the title is absent, use **AskUserQuestion** to ask before proceeding.

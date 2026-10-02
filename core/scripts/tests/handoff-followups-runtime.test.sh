@@ -51,6 +51,12 @@ grep -q 'skill-installed.sh document-release' "$SKILL" \
   || fail "document-release follow-up does not check the installed skill catalog"
 grep -q 'Only when document-release is installed' "$SKILL" \
   || fail "document-release dispatch and recovery must require the installed skill"
+grep -q 'Run applicable follow-ups sequentially in this order: `/learn` first, then `/document-release`; wait for each result before starting the next' "$SKILL" \
+  || fail "handoff follow-ups must run one at a time in a documented order"
+grep -q 'tell the user a rough expected duration for the applicable work' "$SKILL" \
+  || fail "handoff must show a rough expected duration before dispatch"
+grep -qi 'label it as an estimate, not a promise' "$SKILL" \
+  || fail "handoff duration must be labeled as an estimate"
 
 mkdir -p "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/workspace/baseline" \
   "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/orchestrator" \

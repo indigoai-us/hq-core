@@ -5,6 +5,8 @@
 import { chromium } from '@playwright/test';
 import { parseStringPromise } from 'xml2js';
 
+const SITEMAP_FETCH_TIMEOUT_MS = 10_000;
+
 export interface DiscoveryOptions {
   baseUrl: string;
   pages?: string[];
@@ -18,8 +20,15 @@ export async function discoverFromSitemap(baseUrl: string): Promise<string[]> {
   const sitemapUrl = `${baseUrl}/sitemap.xml`;
 
   try {
-    const response = await fetch(sitemapUrl);
-    if (!response.ok) return [];
+    const response = await fetch(sitemapUrl, {
+      signal: AbortSignal.timeout(SITEMAP_FETCH_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      if (response.status !== 404) {
+        console.warn('[qa-tester] sitemap request failed', { status: response.status });
+      }
+      return [];
+    }
 
     const xml = await response.text();
     const result = await parseStringPromise(xml);
@@ -37,7 +46,10 @@ export async function discoverFromSitemap(baseUrl: string): Promise<string[]> {
     }
 
     return urls;
-  } catch {
+  } catch (error) {
+    console.warn('[qa-tester] sitemap discovery failed', {
+      errorName: error instanceof Error ? error.name : typeof error,
+    });
     return [];
   }
 }

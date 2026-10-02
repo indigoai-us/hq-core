@@ -50,8 +50,22 @@ for needle in 'master-hook.sh' 'reindex.sh'; do
 done
 pass "master-hook.sh and reindex.sh anchored to \$CLAUDE_PROJECT_DIR"
 
+# BASH_ENV must be neutralized before every master-hook entry shell starts.
+# Setting it inside master-hook.sh is too late: Bash reads BASH_ENV before the
+# first script line. #968 covered SessionStart; every other event still paid
+# the host profile cost on Git Bash.
+unneutralized_master_commands="$(jq -r '
+  [.. | objects
+   | select(.type? == "command")
+   | .command
+   | select(contains("master-hook.sh") and (startswith("env BASH_ENV=/dev/null bash ") | not))]
+  | .[]' "$SETTINGS")"
+[ -z "$unneutralized_master_commands" ] \
+  || fail "master-hook event command(s) start Bash with inherited BASH_ENV: $(printf '%s' "$unneutralized_master_commands" | tr '\n' ';')"
+pass "all master-hook event commands neutralize BASH_ENV before Bash starts"
+
 direct_monitor_hooks="$(jq -c '[.. | objects | select(.type? == "command") | .command | select(test("hq-monitor-(guard|session-hook|session-start)\\.sh"))]' "$SETTINGS")"
-stop_waiter_command='bash "$CLAUDE_PROJECT_DIR/.claude/hooks/hq-monitor-session-hook.sh" wait'
+stop_waiter_command='env BASH_ENV=/dev/null bash "$CLAUDE_PROJECT_DIR/.claude/hooks/hq-monitor-session-hook.sh" wait'
 if jq -e --arg command "$stop_waiter_command" 'length == 1 and .[0] == $command' <<<"$direct_monitor_hooks" >/dev/null; then
   pass "Claude Stop is the only direct monitor hook registration"
 else
@@ -126,7 +140,7 @@ if unquoted_project_dir_refs "$hook_commands"; then
   fail "settings.json has an unquoted \$CLAUDE_PROJECT_DIR-derived path (dies on a root containing a space)"
 fi
 if printf '%s\n' "$hook_commands" \
-    | grep -vE '^(bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/(hook-gate|master-hook|reindex|hq-monitor-session-hook)\.sh"([[:space:]].*)?|env BASH_ENV=/dev/null bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/master-hook\.sh" SessionStart)$'; then
+    | grep -vE '^(bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/(hook-gate|reindex)\.sh"([[:space:]].*)?|env BASH_ENV=/dev/null bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/(master-hook|hq-monitor-session-hook)\.sh"([[:space:]].*)?)$'; then
   fail "settings.json has a hook entrypoint that is not invoked through bash"
 fi
 pass "all project-root paths are quoted and hook entrypoints use bash"

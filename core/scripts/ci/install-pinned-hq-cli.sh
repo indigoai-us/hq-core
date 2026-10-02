@@ -6,6 +6,9 @@ DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 ROOT="$DEFAULT_ROOT"
 RESOLVE_ONLY=0
 REQUESTED_VERSION=""
+# CI-only floor for SRV-QMD-REINDEX-RACE / hq-cli #1290. Keep core.yaml's
+# requiresHqCli floor unchanged so regular users are not moved to this pin.
+HQ_CI_MIN_CLI="5.312.1"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -90,7 +93,7 @@ HIGHEST_ROW_MIN="$(awk -F '\t' '
   exit 1
 }
 
-SELECTED_VERSION="$(awk -v floor="$FLOOR_EXPRESSION" -v row_min="$HIGHEST_ROW_MIN" '
+SELECTED_VERSION="$(awk -v floor="$FLOOR_EXPRESSION" -v row_min="$HIGHEST_ROW_MIN" -v ci_min="$HQ_CI_MIN_CLI" '
   function version_gt(left, right,    a, b, i) {
     split(left, a, ".")
     split(right, b, ".")
@@ -100,7 +103,10 @@ SELECTED_VERSION="$(awk -v floor="$FLOOR_EXPRESSION" -v row_min="$HIGHEST_ROW_MI
     }
     return 0
   }
-  BEGIN { print version_gt(row_min, floor) ? row_min : floor }
+  BEGIN {
+    selected = version_gt(row_min, floor) ? row_min : floor
+    print version_gt(ci_min, selected) ? ci_min : selected
+  }
 ')"
 
 if [ -n "$REQUESTED_VERSION" ]; then
@@ -117,8 +123,8 @@ if [ "$RESOLVE_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-printf 'hq-cli pin: requiresHqCli >=%s; highest forwarded/hybrid min_cli %s; installing %s\n' \
-  "$FLOOR_EXPRESSION" "$HIGHEST_ROW_MIN" "$SELECTED_VERSION"
+printf 'hq-cli pin: requiresHqCli >=%s; highest forwarded/hybrid min_cli %s; CI minimum %s; selected %s\n' \
+  "$FLOOR_EXPRESSION" "$HIGHEST_ROW_MIN" "$HQ_CI_MIN_CLI" "$SELECTED_VERSION"
 
 # CI runs the pinned floor build on purpose. When the server-side minimum
 # rises above it, the version gate installs the latest CLI and exits before
@@ -129,8 +135,38 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   printf 'HQ_NO_UPDATE_CHECK=1\n' >> "$GITHUB_ENV"
 fi
 
-# The package's postinstall may reconcile a local daemon; CI only needs the CLI binary.
-npm install -g "@indigoai-us/hq-cli@$SELECTED_VERSION" --ignore-scripts
+# Reuse a restored global install only when its CLI reports the exact selected
+# version. A cache miss or stale cache follows the existing install path.
+PREINSTALL_NPM_PREFIX="$(npm prefix -g)"
+PREINSTALL_BASH_PREFIX="$PREINSTALL_NPM_PREFIX"
+case "$PREINSTALL_NPM_PREFIX" in
+  [A-Za-z]:\\*|[A-Za-z]:/*)
+    if command -v cygpath >/dev/null 2>&1; then
+      PREINSTALL_BASH_PREFIX="$(cygpath -u "$PREINSTALL_NPM_PREFIX")"
+    else
+      PREINSTALL_BASH_PREFIX=""
+    fi
+    ;;
+esac
+PREINSTALL_HQ_BIN_DIR=""
+if [ -n "$PREINSTALL_BASH_PREFIX" ]; then
+  if [ -f "$PREINSTALL_BASH_PREFIX/bin/hq" ] || [ -f "$PREINSTALL_BASH_PREFIX/bin/hq.cmd" ]; then
+    PREINSTALL_HQ_BIN_DIR="$PREINSTALL_BASH_PREFIX/bin"
+  elif [ -f "$PREINSTALL_BASH_PREFIX/hq" ] || [ -f "$PREINSTALL_BASH_PREFIX/hq.cmd" ]; then
+    # npm places global command shims directly in prefix on Windows.
+    PREINSTALL_HQ_BIN_DIR="$PREINSTALL_BASH_PREFIX"
+  fi
+fi
+INSTALLED_VERSION=""
+if [ -n "$PREINSTALL_HQ_BIN_DIR" ]; then
+  INSTALLED_VERSION="$(HQ_NO_UPDATE_CHECK=1 PATH="$PREINSTALL_HQ_BIN_DIR:$PATH" hq --version 2>/dev/null || true)"
+fi
+if [ "$INSTALLED_VERSION" = "$SELECTED_VERSION" ]; then
+  printf 'reusing restored @indigoai-us/hq-cli@%s\n' "$SELECTED_VERSION"
+else
+  # The package's postinstall may reconcile a local daemon; CI only needs the CLI binary.
+  npm install -g "@indigoai-us/hq-cli@$SELECTED_VERSION" --ignore-scripts
+fi
 
 NPM_PREFIX="$(npm prefix -g)"
 GITHUB_NPM_PREFIX="$NPM_PREFIX"
