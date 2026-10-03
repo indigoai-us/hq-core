@@ -225,7 +225,8 @@ prune_stale_state() {
   # Per-session title state accumulates one to three small files per session.
   # Drop anything untouched for a fortnight; cheap and SessionStart-only.
   command -v find >/dev/null 2>&1 || return 0
-  find "$STATE_DIR" -maxdepth 1 -type f -name 'session-title-*' -mtime +14 \
+  find "$STATE_DIR" -maxdepth 1 -type f \
+    \( -name 'session-title-*' -o -name 'auto-session-project-*' \) -mtime +14 \
     -exec rm -f {} + 2>/dev/null || true
 }
 [ "$EVENT" = "SessionStart" ] && prune_stale_state
@@ -292,12 +293,11 @@ if [ "$EVENT" = "UserPromptSubmit" ] && [ -n "$PROMPT" ]; then
 fi
 
 # --- project-marker wait (BEGIN) --------------------------------------------
-# The auto-session-project hook (also UserPromptSubmit) writes the session's
-# project marker, but hooks in one event run in PARALLEL — computing the title
-# here often loses that race on the very first prompt and emits a projectless
-# stub ("HQ", "chat"). Wait briefly for the marker, once per session, so the
-# first emitted title already carries the project. The once-flag keeps
-# projectless sessions from paying the wait on every prompt.
+# The auto-session-project hook runs before this hook in the master dispatcher
+# and publishes a completion marker, even when no project resolves. Keep this
+# bounded fallback for direct/independent invocations where that resolution
+# has not completed yet; the once-flag keeps unresolved sessions from paying
+# the wait on every prompt.
 PROJ_MARKER="$STATE_DIR/auto-session-project-${SESSION_KEY}"
 PROJWAIT="$STATE.projwait"
 if [ "$EVENT" = "UserPromptSubmit" ] && [ ! -f "$PROJ_MARKER" ] && [ ! -f "$PROJWAIT" ]; then

@@ -10,12 +10,16 @@
 #   $3 — app name, used as the og:site_name and title fallback; optional
 #
 # Output (one JSON line on stdout):
-#   {"injected":N,"image":"generated|existing|none","changed":bool}
+#   {"injected":N,"image":"card|generated|existing|none","changed":bool}
 #
 # Notes:
 #   - Only ever rewrites .html files; binary/asset files are left alone.
-#   - When no usable preview image exists, generates a branded 1200x630 PNG
-#     (_hq-og.png) using only Node built-ins (zlib) -- no external deps, no network.
+#   - When no usable preview image exists and a base URL is given, points
+#     og:image at hq-deploy's generated card for the app:
+#     https://api.<deploy-domain>/api/public/apps/<slug>/card.png, where <slug>
+#     is the first label of the base URL host. Only when the base URL is empty
+#     does it fall back to a plain 1200x630 placeholder PNG (_hq-og.png), built
+#     with Node built-ins (zlib) -- no external deps, no network.
 #   - twitter:card is summary_large_image whenever an image is present.
 #   - Runs in well under a second; safe to call on every static deploy.
 
@@ -72,6 +76,17 @@ for (const file of htmlFiles) {
 if (targets.length === 0) done({ injected: 0, image: 'none', changed: false });
 
 const IMG_NAME = '_hq-og.png';
+// hq-deploy renders a wallpaper share card per app at
+// https://api.<deploy-domain>/api/public/apps/<slug>/card.png.
+let cardUrl = null;
+try {
+  if (baseUrl) {
+    const labels = new URL(baseUrl).hostname.split('.');
+    if (labels.length >= 3 && labels[0]) {
+      cardUrl = `https://api.${labels.slice(1).join('.')}/api/public/apps/${labels[0]}/card.png`;
+    }
+  }
+} catch { cardUrl = null; }
 let imageRel = null;
 let imageStatus = 'none';
 
@@ -81,6 +96,8 @@ const imgCandidate = allFiles.find(f =>
 if (imgCandidate) {
   imageRel = path.relative(outDir, imgCandidate).split(path.sep).join('/');
   imageStatus = 'existing';
+} else if (cardUrl) {
+  imageStatus = 'card';
 } else {
   const W = 1200, H = 630;
   const top = [10, 14, 26], bot = [24, 32, 58];
@@ -138,7 +155,7 @@ const absUrl = (rel) => {
   const clean = rel.replace(/^\/+/, '');
   return baseUrl ? `${baseUrl}/${clean}` : `/${clean}`;
 };
-const imgAbs = absUrl(imageRel);
+const imgAbs = imageStatus === 'card' ? cardUrl : absUrl(imageRel);
 
 let injected = 0;
 for (const { file, html } of targets) {

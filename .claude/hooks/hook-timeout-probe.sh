@@ -296,7 +296,8 @@ hook_timeout_normalize_basename() {
     master-hook.sh hook-gate.sh hook-timeout-watchdog.sh check-hq-update.sh \
     block-core-writes-bash.sh block-core-writes.sh block-hq-worktree-session.sh \
     inject-policy-on-trigger.sh inject-local-context.sh session-title.sh \
-    45-lanes-senior-monitor.sh lanes-senior-monitor-stop-gate.sh reindex.sh \
+    35-work-mesh-session-start.sh 45-lanes-senior-monitor.sh \
+    lanes-senior-monitor-stop-gate.sh reindex.sh \
     bash bash.exe sh cmd cmd.exe powershell powershell.exe wmic.exe jq jq.exe \
     node node.exe git git.exe python python.exe py"thon3" py"thon3.exe" true sleep \
     cat grep sed awk find timeout curl gh hq npm pnpm npx; do

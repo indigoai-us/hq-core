@@ -641,6 +641,20 @@ fi
 # -------- emit result --------
 # Git Bash/MSYS rewrites slash-leading argv values for native executables.
 # next_command is command text, not a filesystem path; preserve it for jq.
+# When cygpath is available, convert the slurpfile paths to native Windows
+# paths first so native jq can open them while MSYS_NO_PATHCONV protects the
+# slash-leading command text. On POSIX systems the paths stay unchanged.
+jq_slurpfile_path() {
+  local path="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+COMMITTED_PATHS_JQ_FILE="$(jq_slurpfile_path "$COMMITTED_PATHS_FILE")"
+STAGE_FAILURES_JQ_FILE="$(jq_slurpfile_path "$STAGE_FAILURES_FILE")"
+SKIPPED_PATHS_JQ_FILE="$(jq_slurpfile_path "$SKIPPED_PATHS_FILE")"
 MSYS_NO_PATHCONV=1 jq -n \
   --arg thread_id "$THREAD_ID" \
   --arg thread_path "$THREAD_PATH" \
@@ -652,9 +666,9 @@ MSYS_NO_PATHCONV=1 jq -n \
   --arg changeset_path "$CHANGESET_PATH" \
   --arg hq_commit_status "$HQ_COMMIT_STATUS" \
   --arg hq_commit_error "$HQ_COMMIT_ERROR" \
-  --slurpfile committed_paths "$COMMITTED_PATHS_FILE" \
-  --slurpfile stage_failures "$STAGE_FAILURES_FILE" \
-  --slurpfile skipped_paths "$SKIPPED_PATHS_FILE" \
+  --slurpfile committed_paths "$COMMITTED_PATHS_JQ_FILE" \
+  --slurpfile stage_failures "$STAGE_FAILURES_JQ_FILE" \
+  --slurpfile skipped_paths "$SKIPPED_PATHS_JQ_FILE" \
   --argjson baseline_noise_count "$BASELINE_NOISE_COUNT" \
   --arg commit_after_finalize "$COMMIT_AFTER" \
   --arg next_command "$NEXT_COMMAND" \

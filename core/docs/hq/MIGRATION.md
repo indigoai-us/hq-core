@@ -3,6 +3,15 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.186-beta.3
+
+- fix 2026-10-02 (deploy: share card image): `og-inject.sh` no longer writes a
+  blank `_hq-og.png` placeholder as `og:image` when a page has no image. With a
+  base URL it now uses hq-deploy's generated card,
+  `https://api.<domain>/api/public/apps/<slug>/card.png` (slug = first label of
+  the base URL host). The placeholder is kept only when no base URL is passed.
+  No action needed; redeploy an affected static site to pick up the card.
+
 ## Release: v15.0.180-beta.6
 
 - feat 2026-09-27 (setup: instant HQ explanation): the setup worker's

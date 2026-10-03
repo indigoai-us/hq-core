@@ -1,4 +1,6 @@
 ## [Unreleased]
+- `/deploy` static pages without an image now unfurl with hq-deploy's generated share card instead of a blank placeholder PNG.
+- Publish per-session project-resolution completion before title generation, avoiding the redundant first-prompt wait.
 - Route in-root Claude hooks through hqd when hq-anywhere-runtime is enabled, while keeping global and project registrations to one dispatch.
 - After a successful `/update-hq`, offer the global HQ runtime install once when `hq-anywhere-runtime` is enabled; record the answer per user.
 - `/brainstorm` and `/prd` can offer Work Mesh project creation after confirmation when `workmesh.offer-project-create-on-brainstorm` is enabled; cloud UID lookup also falls back to the company manifest.

@@ -270,6 +270,8 @@ jobs:
         run: bash core/scripts/check-pricing-drift.sh
       - name: Auto-session project uses the exact company directory entry
         run: bash core/scripts/tests/auto-session-project.test.sh
+      - name: Session title waits for project resolution and prunes stale markers
+        run: bash core/scripts/tests/session-title-project-resolution.test.sh
       - name: Company resolver (session bind + whole-token prompt scan)
         run: bash core/scripts/tests/resolve-company.test.sh
       - name: Session auto-bind honors device-default company boundaries
