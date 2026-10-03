@@ -1,7 +1,7 @@
 ---
 name: update-hq
 description: Upgrade HQ from the latest hq-core release.
-allowed-tools: Read, Bash, Bash(bash core/scripts/check-hq-hooks.sh:*), Bash(bash core/scripts/restore-hook-settings.sh:*), Bash(bash core/scripts/update-hq-install-offer.sh:*), AskUserQuestion
+allowed-tools: Read, Bash, Bash(bash core/scripts/check-hq-hooks.sh:*), Bash(bash core/scripts/restore-hook-settings.sh:*), Bash(bash core/scripts/update-hq-install-offer.sh:*), Bash(bash core/scripts/normalize-eol-lf.sh:*), AskUserQuestion
 ---
 
 # /update-hq — HQ Upgrade
@@ -182,6 +182,21 @@ stored at `~/.hq/anywhere/update-hq-install-offer.json`, next to the global
 install records, so it survives HQ core updates. If installation fails after
 acceptance, report the failure and give the user `hq install --global` as a
 manual retry command; do not ask again.
+
+## Phase 5: Normalize line endings (post-rescue)
+
+After a successful apply (skip on `--check` / dry-run), rewrite the worktree so tracked text is LF on disk. Existing Windows installs that already materialized CRLF do not pick up `eol=lf` from `.gitattributes` on pull alone — `git status` stays clean while on-disk bytes stay CRLF.
+
+If `core/scripts/normalize-eol-lf.sh` exists under the HQ root (or the path passed via `--hq-root`), run it:
+
+```bash
+bash core/scripts/normalize-eol-lf.sh {hq-root}
+```
+
+- **Exit 0** — report "line endings normalized (or already LF)".
+- **Exit 2** (dirty tree) — do not fail the upgrade; tell the user the upgrade applied but EOL rewrite was skipped because the tree is dirty, and they can re-run the script after commit/stash.
+- **Missing script** — skip silently (older releases).
+- Safe on macOS/Linux (no-op when already LF).
 
 ## Rules
 

@@ -6,9 +6,23 @@ public: true
 
 # HQ Anywhere runtime protocol and registry
 
-The HQ Anywhere CLI keeps its daemon socket and folder registry in the user's
-home directory. These files are local to that host. They are not stored inside
-a project or synced HQ folder.
+HQ Anywhere adds a global CLI install and the hqd local daemon. A per-user
+registry links folders to companies. The `hq-anywhere-runtime` flag controls
+these features and is off by default. The socket and registry stay in the
+user's home directory. They are local to that host and are not stored in a
+project or synced HQ folder.
+
+## Global install and daemon
+
+Run `hq install --global` from an HQ checkout to register HQ hooks for the
+agent runtime. The install records the HQ root in `~/.hq/root`. When the
+runtime flag is enabled, hooks can send work to hqd. Install and check the
+daemon with `hq daemon install` and `hq daemon status`.
+
+Run `hq link <company>` from a repository to associate its normalized Git
+remote, or its canonical folder path when it has no recognized remote, with a
+company. The link is stored in the local registry described below. A repository
+without a registry match uses personal context.
 
 ## hqd socket
 
@@ -59,7 +73,8 @@ For example:
 }
 ```
 
-Keys use either `remote:<normalized-git-remote>` or `path:<absolute-folder>`.
+Keys use either `remote:<normalized-git-remote>` or
+`path:<canonical-absolute-folder>`.
 The supported `source` values are `link`, `manifest`, and `prompt`. When more
 than one entry matches, `link` outranks `prompt`, which outranks `manifest`.
 Entries with the same source rank use the more specific folder key. A folder

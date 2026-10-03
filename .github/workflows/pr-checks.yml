@@ -12,6 +12,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: pr-checks-${{ github.ref }}
   cancel-in-progress: true
@@ -66,6 +69,8 @@ jobs:
         run: bash core/scripts/tests/cost-workflow-pr-checks.test.sh
       - name: Release promotion checks gate regression test
         run: bash core/scripts/tests/release-pr-check-gate.test.sh
+      - name: US-016 Tart VM harness stub regression test
+        run: bash core/scripts/tests/anywhere-vm-test.test.sh
       - name: Run denylist scan
         run: bash .leak-scan/scan.sh denylist
 
@@ -768,6 +773,10 @@ jobs:
         run: node --test core/scripts/tests/codex-explicit-path-flag.test.cjs
       - name: Company repo creation and Git metadata guards
         run: bash .claude/hooks/tests/block-company-code-repos.test.sh
+      - name: Repo guard common-path process budget
+        run: bash core/scripts/tests/repogit-guard-spawn-budget.test.sh
+      - name: Repo guard command survives master-hook parsing
+        run: bash core/scripts/tests/master-hook-repogit-command-roundtrip.test.sh
       - name: Codex hook adapter routes mandatory scope authorizer
         run: bash core/scripts/test-codex-hook-adapter.sh
 
@@ -890,6 +899,8 @@ jobs:
       # The Stop-gate regression supplies its own hq shim; do not install hq here.
       - name: Checkpoint Stop gate
         run: bash core/scripts/tests/checkpoint-stop-gate.test.sh
+      - name: Stop gate and reindex common-path spawn budgets
+        run: bash core/scripts/tests/stopgate-reindex-spawn-budget.test.sh
       - name: Lane senior Monitor Stop/reminder shim wiring
         run: bash core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh
       - name: Lane senior Stop-gate PATH-shim process budget
@@ -902,6 +913,8 @@ jobs:
         run: bash core/scripts/tests/session-scope-capability.test.sh
       - name: Mandatory scope authorizer blocks cross-company access
         run: bash core/scripts/tests/mandatory-scope-authorizer.test.sh
+      - name: Mandatory scope authorizer process budget and deny parity
+        run: bash core/scripts/tests/mandatory-scope-authorizer-spawn-budget.test.sh
       - name: Directory symlink scope for Grep, Glob, and Bash
         run: bash core/scripts/tests/scope-authorizer-symlink-dirs.test.sh
       - name: Secret detector scans Write/Edit/MultiEdit/NotebookEdit content
@@ -1030,6 +1043,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - name: Session-title event payload spawn budget and output
+        run: bash core/scripts/tests/session-title-json-spawn-budget.test.sh
       - name: Manual /rename and --name titles are not clobbered
         run: bash core/scripts/tests/session-title-manual-backoff.test.sh
       - name: Session title mode override and desktop nudge
@@ -1467,6 +1482,8 @@ jobs:
         run: bash .claude/hooks/tests/lanes-senior-monitor-stop-gate-process-budget.test.sh
       - name: hq monitor guard PATH-shim process budget
         run: bash .claude/hooks/tests/hq-monitor-guard-process-budget.test.sh
+      - name: SessionStart monitor and updater subprocess budget
+        run: bash core/scripts/tests/sessionstart-monitor-update-budget.test.sh
       - name: policy/core write guards PATH-shim process budget
         run: bash .claude/hooks/tests/block-policy-writes-bash-process-budget.test.sh
       - name: Hook timeout attribution tags and compact sequence
@@ -1595,6 +1612,8 @@ jobs:
         run: bash core/scripts/tests/inject-policy-arg-size.test.sh
       - name: inject-policy-cache.test.sh
         run: bash core/scripts/tests/inject-policy-cache.test.sh
+      - name: Contended policy ledger locks cannot stall SessionStart
+        run: bash core/scripts/tests/inject-policy-ledger-lock-deadline.test.sh
       - name: derive-trigger-facts.test.sh
         run: bash core/scripts/tests/derive-trigger-facts.test.sh
       - name: Inject cadence (once vs always) + PreCompact ledger purge

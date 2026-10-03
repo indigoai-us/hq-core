@@ -14,7 +14,7 @@
 #   * every path where the gate is unavailable is a SILENT allow — a missing
 #     hq, a CLI too old to advertise the command, or the opt-out env var — so a
 #     stale install can never strand a session at Stop;
-#   * the capability probe is cached rather than re-run per turn;
+#   * the Stop hook delegates without a separate cold CLI capability probe;
 #   * no gate logic has crept back into this file;
 #   * registration: hook-gate routing, profile membership, and the Codex
 #     adapter's Stop/SessionStart wiring.
@@ -81,28 +81,24 @@ for hook_name in \
   chmod +x "$FIXTURE/.claude/hooks/$hook_name.sh"
 done
 
-# The shim stands in for the installed CLI. HQ_SHIM_CLI_HAS_GATE=1 makes it
-# advertise (and honor) `checkpoint-stop-gate`; without it the shim models a CLI
-# too old to host the gate. Every invocation is logged so a test can assert what
-# the hook actually called, and the delegated command records its stdin so
-# payload passthrough is provable.
+# The shim stands in for the installed CLI. It handles the gate directly, or
+# returns the same unknown-command diagnostic as an older CLI lacking it.
 cat >"$SHIM_DIR/hq" <<'SHIM'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$HQ_SHIM_LOG"
-if [ "${1:-}" = "core" ] && [ "${2:-}" = "--help" ]; then
-  [ "${HQ_SHIM_CLI_HAS_GATE:-}" = "1" ] && printf 'checkpoint-stop-gate\nhq-session\n'
-  exit 0
-fi
 if [ "${1:-}" = "core" ] && [ "${2:-}" = "checkpoint-stop-gate" ] && [ "${HQ_SHIM_CLI_HAS_GATE:-}" = "1" ]; then
-  cat >"${HQ_SHIM_STDIN_CAPTURE:-/dev/null}" 2>/dev/null || true
-  # Braces in a `${VAR:-default}` default terminate the expansion early, so the
-  # fallback decision is assigned on its own line rather than inline.
+  while IFS= read -r shim_line || [ -n "$shim_line" ]; do
+    [ -n "${HQ_SHIM_STDIN_CAPTURE:-}" ] && printf '%s\n' "$shim_line" >>"$HQ_SHIM_STDIN_CAPTURE"
+  done
   shim_out="${HQ_SHIM_GATE_OUTPUT:-}"
-  # @none models the CLI allowing the turn: exit 0 having printed nothing.
   [ "$shim_out" = "@none" ] && exit 0
   [ -n "$shim_out" ] || shim_out='{"decision":"block","reason":"CLI-DELEGATED"}'
   printf '%s\n' "$shim_out"
   exit 0
+fi
+if [ "${1:-}" = "core" ] && [ "${2:-}" = "checkpoint-stop-gate" ]; then
+  printf "error: unknown command 'checkpoint-stop-gate'\n" >&2
+  exit 1
 fi
 exit 0
 SHIM
@@ -154,7 +150,7 @@ new_transcript() {
 
 reset_case() {
   rm -f "$STATE_DIR"/checkpoint-cli-last* "$STATE_DIR"/codex-checkpoint-reprompt-* \
-    "$STATE_DIR"/cli-caps* "$SHIM_LOG" "$TMP_ROOT"/stdin-capture
+    "$SHIM_LOG" "$TMP_ROOT"/stdin-capture
   RUN_PATH="$SHIM_DIR:$PATH"
   RUN_NO_CLI=""
   RUN_CLI_HAS_GATE=1
@@ -176,7 +172,6 @@ run_hook() {
     "HQ_SHIM_GATE_OUTPUT=$RUN_GATE_OUTPUT" \
     "HQ_SHIM_STDIN_CAPTURE=$RUN_STDIN_CAPTURE" \
     "HQ_CHECKPOINT_GATE_NO_CLI=$RUN_NO_CLI" \
-    "HQ_CLI_CAPS_CACHE=$STATE_DIR/cli-caps" \
     "PATH=$RUN_PATH" \
     "$BASH_BIN" "$FIXTURE/.claude/hooks/checkpoint-stop-gate.sh" <<<"$payload" 2>"$stderr_path")"
   HOOK_STATUS=$?
@@ -195,7 +190,6 @@ run_codex_stop() {
     "HQ_SHIM_LOG=$SHIM_LOG" \
     "HQ_SHIM_CLI_HAS_GATE=$RUN_CLI_HAS_GATE" \
     "HQ_SHIM_GATE_OUTPUT=$RUN_GATE_OUTPUT" \
-    "HQ_CLI_CAPS_CACHE=$STATE_DIR/cli-caps-codex" \
     "PATH=$SHIM_DIR:$PATH" \
     "$BASH_BIN" "$FIXTURE/.codex/hooks/hq-codex-hook-adapter.sh" <<<"$payload" 2>"$stderr_path")"
   CODEX_STATUS=$?
@@ -311,33 +305,32 @@ printf '%s' "$HOOK_STDOUT" | jq -e '.reason == "CLI-DELEGATED"' >/dev/null \
 pass "the hook delegates regardless of transcript state"
 
 # ---------------------------------------------------------------------------
-# Capability probe caching
+# Direct delegation without a cold capability-probe startup
 # ---------------------------------------------------------------------------
 
-# 8. `hq core --help` costs seconds of node startup, so the positive probe is
-# cached and not repeated on the next turn.
+# 8. Every available-gate invocation starts the CLI once; there is no separate
+# `hq core --help` Node startup before the command.
 reset_case
-new_transcript 8-cache
-run_hook s-cache-first "$TRANSCRIPT"
-[ -s "$STATE_DIR/cli-caps" ] || fail "probe cache: no cache file was written"
-: >"$SHIM_LOG"
-run_hook s-cache-second "$TRANSCRIPT"
+new_transcript 8-direct
+run_hook s-direct-first "$TRANSCRIPT"
 printf '%s' "$HOOK_STDOUT" | jq -e '.reason == "CLI-DELEGATED"' >/dev/null \
-  || fail "probe cache: second run did not delegate: $HOOK_STDOUT"
+  || fail "direct delegation: first invocation did not run the gate: $HOOK_STDOUT"
+[ "$(wc -l <"$SHIM_LOG" | tr -d ' ')" -eq 1 ] \
+  || fail "direct delegation: expected one CLI invocation, got: $(cat "$SHIM_LOG")"
+grep -qF 'core checkpoint-stop-gate' "$SHIM_LOG" \
+  || fail "direct delegation: gate command was not invoked"
 grep -qF 'core --help' "$SHIM_LOG" \
-  && fail "probe cache: --help was re-run despite a cached result"
-pass "the capability probe is cached across turns"
+  && fail "direct delegation: ran the cold help probe"
+pass "the available gate is invoked without a separate capability probe"
 
-# 9. A failed probe is never persisted, so a transient failure cannot pin the
-# gate off for the life of the cache.
+# 9. A CLI without the gate still allows silently and leaves no probe cache.
 reset_case
 RUN_CLI_HAS_GATE=""
-new_transcript 9-negative-cache
-run_hook s-negative-cache "$TRANSCRIPT"
-assert_allow "negative probe"
-[ ! -s "$STATE_DIR/cli-caps" ] || \
-  fail "probe cache: an empty/failed probe was persisted: $(cat "$STATE_DIR/cli-caps")"
-pass "a failed capability probe is not cached"
+new_transcript 9-old-cli
+run_hook s-old-cli-again "$TRANSCRIPT"
+assert_allow "CLI without the gate"
+assert_empty "$HOOK_STDERR" "CLI without the gate"
+pass "an unavailable subcommand remains a silent allow"
 
 # ---------------------------------------------------------------------------
 # No gate logic in the shim

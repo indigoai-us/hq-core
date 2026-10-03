@@ -34,47 +34,37 @@ set -uo pipefail
 # Each bail-out below happens before anything reads the payload, and the
 # dispatcher is still writing it into our stdin. Exiting with the pipe unread
 # kills that writer with SIGPIPE, and a dispatcher under `pipefail` reports the
-# resulting 141 as this hook's own status. Drain first (the `exec` path does not
-# need this — the delegated CLI inherits and reads stdin itself).
+# resulting 141 as this hook's own status. Drain on every early exit; the
+# delegated CLI path inherits and reads stdin itself.
 __cp_bail() { cat >/dev/null 2>&1 || true; exit 0; }
 
 [ "${HQ_CHECKPOINT_GATE_NO_CLI:-}" = "1" ] && __cp_bail
 
-__cp_hq="$(command -v hq 2>/dev/null || true)"
-[ -n "$__cp_hq" ] || __cp_bail
+command -v hq >/dev/null 2>&1 || __cp_bail
 
-# `hq core --help` costs seconds of node startup, so probe it at most once per
-# CLI build and cache the answer. Key by resolved path + mtime + size so a PATH
-# switch or same-second rebuild cannot reuse a stale result; keep the cache in a
-# private 0700 dir and trust it only when we own it, so another user cannot
-# plant a positive result on a shared host; never persist a failed probe. The
-# probe reads `hq core --help`, never our stdin, so the delegated command still
-# receives the full hook payload. HQ_CLI_CAPS_CACHE overrides the path (tests
-# isolate it).
-__cp_mt="$(stat -c %Y "$__cp_hq" 2>/dev/null || stat -f %m "$__cp_hq" 2>/dev/null || echo 0)"
-__cp_sz="$(stat -c %s "$__cp_hq" 2>/dev/null || stat -f %z "$__cp_hq" 2>/dev/null || echo 0)"
-__cp_key="$(printf '%s' "$__cp_hq:$__cp_mt:$__cp_sz" | cksum 2>/dev/null | cut -d' ' -f1)"
-if [ -n "${HQ_CLI_CAPS_CACHE:-}" ]; then
-  __cp_cache="$HQ_CLI_CAPS_CACHE"
-else
-  __cp_dir="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/hq-cli"
-  mkdir -p "$__cp_dir" 2>/dev/null && chmod 700 "$__cp_dir" 2>/dev/null || true
-  __cp_cache="$__cp_dir/core-caps.${__cp_key:-0}"
+# Dispatch directly instead of starting Node once for `hq core --help` and
+# again for the gate. A CLI too old to register this subcommand returns its
+# normal unknown-command diagnostic; discard only that known missing-command
+# case so the historical silent-allow behavior remains intact. Preserve all
+# output and status for an installed gate. This hook is deadline-bound, so keep
+# CLI self-update outside its budget.
+__cp_err="$(mktemp "${TMPDIR:-/tmp}/hq-checkpoint-stop-gate.XXXXXX")" || __cp_bail
+HQ_NO_UPDATE_CHECK=1 hq core checkpoint-stop-gate 2>"$__cp_err"
+__cp_rc=$?
+if [ "$__cp_rc" -ne 0 ]; then
+  __cp_missing=0
+  while IFS= read -r __cp_line || [ -n "$__cp_line" ]; do
+    case "$__cp_line" in
+      *"unknown command 'checkpoint-stop-gate'"*|*"unknown command: checkpoint-stop-gate"*)
+        __cp_missing=1
+        ;;
+    esac
+  done <"$__cp_err"
+  if [ "$__cp_missing" -eq 1 ]; then
+    rm -f "$__cp_err"
+    __cp_bail
+  fi
 fi
-
-__cp_caps=""
-if [ -r "$__cp_cache" ] && [ -O "$__cp_cache" ]; then
-  __cp_caps="$(cat "$__cp_cache" 2>/dev/null || true)"
-elif __cp_caps="$(hq core --help 2>/dev/null)"; then
-  [ -n "$__cp_caps" ] && (umask 077; printf '%s' "$__cp_caps" >"$__cp_cache" 2>/dev/null) || true
-else
-  __cp_caps=""
-fi
-
-case "$__cp_caps" in
-  *checkpoint-stop-gate*) exec hq core checkpoint-stop-gate ;;
-esac
-
-# No gate available: emit no decision and let the turn end. Still drain, for the
-# same reason as the guards above — nothing has read the payload on this path.
-__cp_bail
+[ ! -s "$__cp_err" ] || cat "$__cp_err" >&2
+rm -f "$__cp_err"
+exit "$__cp_rc"

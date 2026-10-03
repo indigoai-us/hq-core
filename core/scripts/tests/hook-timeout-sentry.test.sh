@@ -703,6 +703,14 @@ pass "watchdog cancellation removes its throttle lock"
 
 echo "[6] master dispatcher remains covered outside child execution"
 R6="$(make_root master-dispatch)"
+# This case verifies master-dispatch reporting, not Windows-only diagnostics.
+# Keep its fixture platform deterministic so Git Bash process startup cost does
+# not consume the independent 15s assertion budget on Windows runners.
+cat > "$R6/bin/uname" <<'EOF'
+#!/usr/bin/env bash
+printf 'Linux\n'
+EOF
+chmod +x "$R6/bin/uname"
 set_timeout "$R6" 'master-hook.sh" PreToolUse' 3
 mkdir -p "$R6/core/hooks/PreToolUse"
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' > "$R6/core/hooks/PreToolUse/10-fast-child.sh"
@@ -764,8 +772,12 @@ make_fixture_gnu_timeout "$R7/bin"
 printf '%s\n' '#!/usr/bin/env bash' '[ -n "${HQ_HOOK_TIMEOUT_SPAWN_SHELL:-}" ] || exit 127' 'printf x >> "${HQ_TEST_POWERSHELL_CALLS:?}"' 'printf 17' \
   > "$R7/bin/powershell.exe"
 chmod +x "$R7/bin/uname" "$R7/bin/ps" "$R7/bin/powershell.exe"
+# Bash 3.2 has no EPOCHREALTIME, so master-hook times the active external_command
+# phase in whole seconds and the watchdog reports it only once SECONDS has ticked.
+# The stub waits for the next wall-clock second before triggering the watchdog,
+# so that tick always happens and the sampled phase is the same on every clock.
 # shellcheck disable=SC2016 # This is source text for the fixture child script.
-printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'case "${HQ_HOOK_TIMEOUT_SENTRY:-1}" in 0) : ;; *) printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done ;; esac' 'printf "master block stdout"' 'printf "master block stderr" >&2' 'exit 2' > "$slow_child_path"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'case "${HQ_HOOK_TIMEOUT_SENTRY:-1}" in 0) : ;; *) started_s="$(date +%s)"; while [ "$(date +%s)" -le "$started_s" ]; do sleep 0.05; done; printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" absolute > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; printf "%s\t%s\t%s\n" master-dispatch "${HQ_TEST_MASTER_PATH:?}" relative >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"; while [ "$(wc -l < "${HQ_TEST_HQ_ACK:?}")" -lt 2 ]; do sleep 0.02; done ;; esac' 'printf "master block stdout"' 'printf "master block stderr" >&2' 'exit 2' > "$slow_child_path"
 chmod +x "$slow_child_path"
 set +e
 env PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" HQ_TEST_HQ_ACK="$R7/hq.ack" \
@@ -813,11 +825,11 @@ if ! jq -s -e --arg child "${slow_child_path##*/}" '
       and .wait_point == "external_command"
       and .waiting_child_basename == $child
       and (.waiting_child_elapsed_ms | type == "number" and . > 0)
-      and (if ($context.phase_timings | length) == 0 then true else
-        any($context.phase_timings[]; .phase == "external_command" and .elapsed_ms > 0)
-        and (["startup", "source", "config_load", "policy_load", "output_write"]
-          - [$context.phase_timings[].phase] | length == 0)
-      end)
+      and any($context.phase_timings[];
+        .phase == "external_command"
+        and (.elapsed_ms | type == "number" and . >= 0))
+      and (["startup", "source", "config_load", "policy_load", "output_write"]
+        - [$context.phase_timings[].phase] | length == 0)
       and .load_average == "unavailable"
       and (.spawn_ms | type == "number" and . >= 0 and . <= 2000)
       and .process_count == 2)
@@ -1793,5 +1805,17 @@ if [ -n "${EPOCHREALTIME:-}" ]; then
   [ ! -s "$child_active_state" ] || fail "child phase finish left a stale active marker"
 fi
 pass "phase helpers stay in the caller and persist bounded timing state"
+
+echo "[23] Bash 3.2 coarse clock retains the active phase at zero elapsed milliseconds"
+coarse_phase_timings="$TMP/coarse-clock-phase-timings.json"
+(
+  unset EPOCHREALTIME
+  SECONDS=42
+  hook_timeout_phase_timings_json "" "" $'external_command\tseconds:42'
+) > "$coarse_phase_timings"
+jq -e 'any(.[]; .phase == "external_command" and .elapsed_ms == 0)' \
+  "$coarse_phase_timings" >/dev/null \
+  || fail "coarse Bash clock dropped the active external-command phase"
+pass "coarse Bash clock retains the active phase when elapsed time rounds to zero"
 
 echo "ALL PASS: hook-timeout-sentry"

@@ -3,6 +3,29 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.187-beta.17
+
+- fix 2026-10-03 (scripts: LF line endings on every platform): `.gitattributes`
+  now pins `* text=auto eol=lf`. A Windows checkout with `core.autocrlf=true`
+  used to write CRLF, and a script that then reached a Mac through HQ Sync
+  failed under bash (`pipefail: invalid option name`). Bash on Windows (Git
+  Bash, MSYS2, WSL) runs LF scripts, so LF works everywhere. Tarball installs
+  already receive LF. An existing Windows git checkout keeps its CRLF bytes
+  until `core/scripts/normalize-eol-lf.sh` runs; `/update-hq` runs it after a
+  successful apply, or run `bash core/scripts/normalize-eol-lf.sh` yourself.
+  Pairs with the hq-cloud change that converts shell scripts to LF in transit
+  and stops a Windows uploader from stamping file permissions.
+
+## Release: v15.0.187-beta.12
+
+- fix 2026-10-03 (deploy: share card is a JPEG): `og-inject.sh` now points
+  `og:image` and `twitter:image` at hq-deploy's card as
+  `https://api.<domain>/api/public/apps/<slug>/card.jpg`. hq-deploy serves the
+  card as a JPEG; `card.png` stays as a legacy alias for the same image. A page
+  deployed by an older version that still carries a `card.png` image tag is
+  rewritten to `card.jpg` in place on the next deploy, with no duplicate tags.
+  No action beyond `/update-hq`; redeploy a static site to update its tags.
+
 ## Release: v15.0.186-beta.3
 
 - fix 2026-10-02 (deploy: share card image): `og-inject.sh` no longer writes a

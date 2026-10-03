@@ -39,6 +39,10 @@
   scanners: [pii]
   reason: "Throwaway qmd reindex fixtures only: disposable git-config identity uses an RFC 2606 reserved example.com address (documentation-only, no real mailbox); DEAD_PID sentinels are synthetic process IDs for stale-lock reclaim cases (not phone numbers or personal data)."
 
+- path: "core/scripts/tests/normalize-eol-lf.test.sh"
+  scanners: [pii]
+  reason: "Disposable git-config identity in throwaway test fixture; uses example.com (RFC 2606 reserved), not a real mailbox."
+
 - path: "core/scripts/__tests__/work-mesh.test.mjs"
   scanners: [pii]
   reason: "Work Mesh unit-test fixtures use loopback IPs, an RFC 2606 .test address, UUID-shaped IDs, and integer boundary values; none are real personal data."

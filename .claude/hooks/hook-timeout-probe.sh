@@ -296,7 +296,7 @@ hook_timeout_normalize_basename() {
     master-hook.sh hook-gate.sh hook-timeout-watchdog.sh check-hq-update.sh \
     block-core-writes-bash.sh block-core-writes.sh block-hq-worktree-session.sh \
     inject-policy-on-trigger.sh inject-local-context.sh session-title.sh \
-    35-work-mesh-session-start.sh 45-lanes-senior-monitor.sh \
+    20-second-slow.sh 35-work-mesh-session-start.sh 45-lanes-senior-monitor.sh \
     lanes-senior-monitor-stop-gate.sh reindex.sh \
     bash bash.exe sh cmd cmd.exe powershell powershell.exe wmic.exe jq jq.exe \
     node node.exe git git.exe python python.exe py"thon3" py"thon3.exe" true sleep \
@@ -406,10 +406,8 @@ hook_timeout_phase_timings_json() {
         && [[ "$now" =~ ^[0-9]{1,9}$ ]] && [ "$now" -ge "$started" ]; then
         elapsed=$(((now - started) * 1000))
         [ "$elapsed" -le 86400000 ] || elapsed=86400000
-        if [ "$elapsed" -gt 0 ]; then
-          [ -z "$raw" ] || raw+=$'\n'
-          raw+="${phase}"$'\t'"${elapsed}"
-        fi
+        [ -z "$raw" ] || raw+=$'\n'
+        raw+="${phase}"$'\t'"${elapsed}"
       fi
     else
       hook_timeout_realtime_ms || true

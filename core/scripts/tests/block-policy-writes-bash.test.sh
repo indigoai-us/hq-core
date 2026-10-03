@@ -42,6 +42,7 @@ mkdir -p \
   "$TMP/personal/policies" "$TMP/personal/knowledge" \
   "$TMP/companies/indigo/policies" "$TMP/companies/_template/policies" \
   "$TMP/companies/indigo/settings" \
+  "$TMP/companies/acme/policies" \
   "$TMP/repos/private/widget/.claude/policies" \
   "$TMP/workspace/worktrees/widget/branch/.claude/policies"
 cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/hook-lib.sh"
@@ -62,6 +63,74 @@ run() {
   fi
   if grep -q 'grep: warning' "$stderr"; then
     fail "$label (guard leaked a grep warning)"
+  fi
+  rm -f "$stderr"
+}
+
+# Match the environment exported by master-hook.sh to a Bash hook: the
+# dispatcher supplies the parsed command and the tool call's cwd. When cwd is
+# omitted, HQ_HOOK_CWD stays unset as it does for older/direct callers.
+run_dispatched() {
+  local want="$1" cmd="$2" label="$3" cwd="${4-}" rc=0 payload stderr
+  payload="$(jq -nc --arg cmd "$cmd" '{tool_input:{command:$cmd}}')"
+  stderr="$(mktemp)"
+  if [[ "${4+x}" == x ]]; then
+    printf '%s' "$payload" | env -i PATH="$PATH" HOME="$HOME" \
+      CLAUDE_PROJECT_DIR="$TMP" HQ_HOOK_TOOL_NAME=Bash HQ_HOOK_COMMAND="$cmd" \
+      HQ_HOOK_CWD="$cwd" HQ_HOOK_SESSION_ID=cwd-test \
+      "$POLICY_TEST_BASH" "$HOOK" >/dev/null 2>"$stderr" || rc=$?
+  else
+    printf '%s' "$payload" | env -i PATH="$PATH" HOME="$HOME" \
+      CLAUDE_PROJECT_DIR="$TMP" HQ_HOOK_TOOL_NAME=Bash HQ_HOOK_COMMAND="$cmd" \
+      HQ_HOOK_SESSION_ID=cwd-test \
+      "$POLICY_TEST_BASH" "$HOOK" >/dev/null 2>"$stderr" || rc=$?
+  fi
+  if [[ "$rc" == "$want" ]]; then
+    pass "$label (exit $rc)"
+  else
+    fail "$label (expected exit $want, got $rc; $(tr '\n' ' ' < "$stderr"))"
+  fi
+  if [[ "$want" == 2 ]] && ! grep -q '^BLOCKED:' "$stderr"; then
+    fail "$label (guard denied without its required BLOCKED diagnostic: $(tr '\n' ' ' < "$stderr"))"
+  fi
+  rm -f "$stderr"
+}
+
+run_dispatched_at_root() {
+  local want="$1" project="$2" cwd="$3" cmd="$4" label="$5" rc=0 payload stderr
+  payload="$(jq -nc --arg cwd "$cwd" --arg cmd "$cmd" \
+    '{tool_input:{command:$cmd}}')"
+  stderr="$(mktemp)"
+  printf '%s' "$payload" | env -i PATH="$PATH" HOME="$HOME" \
+    CLAUDE_PROJECT_DIR="$project" HQ_HOOK_TOOL_NAME=Bash HQ_HOOK_COMMAND="$cmd" \
+    HQ_HOOK_CWD="$cwd" HQ_HOOK_SESSION_ID=canonical-root-test \
+    "$POLICY_TEST_BASH" "$HOOK" >/dev/null 2>"$stderr" || rc=$?
+  if [[ "$rc" == "$want" ]]; then
+    pass "$label (exit $rc)"
+  else
+    fail "$label (expected exit $want, got $rc; $(tr '\n' ' ' < "$stderr"))"
+  fi
+  if [[ "$want" == 2 ]] && ! grep -Fq 'BLOCKED: Bash command appears to write a policy file.' "$stderr"; then
+    fail "$label (policy-write diagnostic missing: $(tr '\n' ' ' < "$stderr"))"
+  fi
+  rm -f "$stderr"
+}
+
+run_payload_at_root() {
+  local want="$1" project="$2" cwd="$3" cmd="$4" label="$5" rc=0 payload stderr
+  payload="$(jq -nc --arg cwd "$cwd" --arg cmd "$cmd" \
+    '{cwd:$cwd,tool_input:{command:$cmd}}')"
+  stderr="$(mktemp)"
+  printf '%s' "$payload" | env -i PATH="$PATH" HOME="$HOME" \
+    CLAUDE_PROJECT_DIR="$project" "$POLICY_TEST_BASH" "$HOOK" \
+    >/dev/null 2>"$stderr" || rc=$?
+  if [[ "$rc" == "$want" ]]; then
+    pass "$label (exit $rc)"
+  else
+    fail "$label (expected exit $want, got $rc; $(tr '\n' ' ' < "$stderr"))"
+  fi
+  if [[ "$want" == 2 ]] && ! grep -Fq 'BLOCKED: Bash command appears to write a policy file.' "$stderr"; then
+    fail "$label (policy-write diagnostic missing: $(tr '\n' ' ' < "$stderr"))"
   fi
   rm -f "$stderr"
 }
@@ -178,6 +247,16 @@ run 0 "cd $TMP/workspace/worktrees/widget/branch && cat > .claude/policies/x.md 
 x
 EOF" 'worktree relative repo policy path is allowed'
 
+echo "[3b] dispatcher cwd controls relative policy target resolution"
+run_dispatched 2 'printf x > policies/x.md' \
+  'tenant cwd relative policies write is denied' "$TMP/companies/acme"
+run_dispatched 0 'cat > .claude/policies/x.md <<EOF
+x
+EOF' \
+  'worktree cwd relative .claude policy write remains allowed' "$TMP/workspace/worktrees/widget/branch"
+run_dispatched 2 'printf x > personal/policies/x.md' \
+  'unset dispatcher cwd keeps project-root relative policy write denied'
+
 echo "[4] only audited, validating tooling gets the narrow shell route"
 run 0 "HQ_ALLOW_POLICY_WRITE=1 bash core/scripts/migrate-policy-triggers.sh companies/indigo/policies" \
   'migrator route is allowed'
@@ -213,7 +292,82 @@ else
   fail 'Bash core guard contains a bare narrow-override recipe'
 fi
 
-echo "[6] hook registry registration is complete and the new guard is profile-live"
+echo "[7] Codex adapter supplies payload cwd to the policy-write guard"
+ADAPTER_ROOT="$TMP/codex-adapter"
+mkdir -p "$ADAPTER_ROOT/.codex/hooks" "$ADAPTER_ROOT/.claude/hooks" \
+  "$ADAPTER_ROOT/core/scripts/lib" "$ADAPTER_ROOT/companies/acme/policies" \
+  "$ADAPTER_ROOT/workspace/worktrees/example/.claude/policies"
+cp "$ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$ADAPTER_ROOT/.codex/hooks/"
+cp "$ROOT/.claude/hooks/hook-gate.sh" "$ADAPTER_ROOT/.claude/hooks/"
+cp "$HOOK" "$ADAPTER_ROOT/.claude/hooks/"
+cp "$ROOT/.claude/hooks/hook-registry.json" "$ADAPTER_ROOT/.claude/hooks/"
+cp "$ROOT/core/scripts/hook-lib.sh" "$ADAPTER_ROOT/core/scripts/"
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$ADAPTER_ROOT/core/scripts/lib/"
+chmod +x "$ADAPTER_ROOT/.codex/hooks/hq-codex-hook-adapter.sh" \
+  "$ADAPTER_ROOT/.claude/hooks/hook-gate.sh" "$ADAPTER_ROOT/.claude/hooks/block-policy-writes-bash.sh"
+ADAPTER_DISABLED="$(jq -r '[.hooks.PreToolUse[].hooks[].id | select(. != "block-policy-writes-bash")] | join(",")' \
+  "$ADAPTER_ROOT/.claude/hooks/hook-registry.json")"
+run_codex_policy() {
+  local want="$1" cwd="$2" cmd="$3" label="$4" payload rc=0
+  payload="$(jq -nc --arg cwd "$cwd" --arg cmd "$cmd" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:$cmd}}')"
+  printf '%s' "$payload" | (cd / && env -i PATH="$PATH" HOME="$HOME" \
+    HQ_DISABLED_HOOKS="$ADAPTER_DISABLED" HQ_HOOK_TRACE=1 \
+    bash "$ADAPTER_ROOT/.codex/hooks/hq-codex-hook-adapter.sh") \
+    >"$TMP/adapter.out" 2>"$TMP/adapter.err" || rc=$?
+  if [[ "$rc" == "$want" ]]; then
+    pass "$label (exit $rc)"
+  else
+    fail "$label (expected exit $want, got $rc; stdout=$(tr '\n' ' ' < "$TMP/adapter.out"); stderr=$(tr '\n' ' ' < "$TMP/adapter.err"))"
+  fi
+  if [[ "$want" == 2 ]] && ! grep -Fq 'BLOCKED: Bash command appears to write a policy file.' "$TMP/adapter.err"; then
+    fail "$label (policy-write diagnostic missing: $(tr '\n' ' ' < "$TMP/adapter.err"))"
+  fi
+}
+run_codex_policy 2 "$ADAPTER_ROOT/companies/acme" 'printf x > policies/x.md' \
+  'Codex payload cwd makes tenant-relative policy write deny'
+run_codex_policy 0 "$ADAPTER_ROOT/workspace/worktrees/example" 'printf x > .claude/policies/x.md' \
+  'Codex worktree-relative .claude policy write remains allowed'
+run_codex_policy 2 "$ADAPTER_ROOT" 'printf x > personal/policies/x.md' \
+  'Codex project-root relative policy write remains denied'
+ADAPTER_ALIAS="$TMP/codex-adapter-alias"
+ln -s "$ADAPTER_ROOT" "$ADAPTER_ALIAS"
+run_codex_policy 2 "$ADAPTER_ALIAS/companies/acme" 'printf x > policies/x.md' \
+  'Codex payload cwd through a symlinked project root still denies tenant policy writes'
+
+echo "[7b] logical and physical spellings of a symlinked policy root are denied"
+CANON_REAL="$TMP/canonical-project"
+CANON_ALIAS="$TMP/canonical-project-alias"
+mkdir -p "$CANON_REAL/companies/acme/policies"
+ln -s "$CANON_REAL" "$CANON_ALIAS"
+run_dispatched_at_root 2 "$CANON_ALIAS" "$CANON_ALIAS/companies/acme" \
+  "printf x > '$CANON_ALIAS/companies/acme/policies/logical.md'" \
+  'symlink-root spelling of absolute policy target is denied'
+run_dispatched_at_root 2 "$CANON_ALIAS" "$CANON_ALIAS/companies/acme" \
+  "printf x > '$CANON_REAL/companies/acme/policies/physical.md'" \
+  'physical spelling of absolute policy target under symlink root is denied'
+run_payload_at_root 2 "$CANON_ALIAS" "$CANON_REAL/companies/acme" \
+  'printf x > policies/payload-cwd.md' \
+  'physical payload cwd under symlink root keeps relative policy target denied'
+
+echo "[8] 1000-line sanctioned-route scan stays below the fixed latency budget"
+printf -v slow_line '%1024s' ''
+slow_line="${slow_line// /x}"
+slow_payload="$(jq -nc --arg line "$slow_line" \
+  '{tool_input:{command:(([range(0;999) | $line] + ["HQ_ALLOW_POLICY_WRITE=1 bash core/scripts/policy-retire.sh x"]) | join("\n"))}}')"
+slow_rc=0
+started=$SECONDS
+printf '%s' "$slow_payload" | perl -e 'alarm shift; exec @ARGV or die $!' 5 env -i PATH="$PATH" HOME="$HOME" \
+  CLAUDE_PROJECT_DIR="$TMP" "$POLICY_TEST_BASH" "$HOOK" \
+  >"$TMP/slow.out" 2>"$TMP/slow.err" || slow_rc=$?
+elapsed=$((SECONDS - started))
+if [[ "$slow_rc" == 2 && "$elapsed" -lt 5 ]]; then
+  pass "1000-line sanctioned-route scan completed in ${elapsed}s within 5s"
+else
+  fail "1000-line sanctioned-route scan exceeded 5s or changed denial (rc=$slow_rc elapsed=${elapsed}s)"
+fi
+
+echo "[9] hook registry registration is complete and the new guard is profile-live"
 for matcher in Write Edit MultiEdit; do
   count="$(jq --arg matcher "$matcher" '[.hooks.PreToolUse[] | select(.matcher == $matcher) | .hooks[] | select(.id == "validate-policy-frontmatter")] | length' "$REGISTRY")"
   if [[ "$count" == 1 ]]; then

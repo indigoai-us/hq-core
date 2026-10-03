@@ -3,7 +3,7 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/hq-monitor-hook-lib.sh"
 
-payload="$(</dev/stdin)" || payload='{}'
+payload="$(cat 2>/dev/null)" || payload='{}'
 root="$(hq_monitor_root)"
 [ -n "$root" ] || exit 0
 provider="${HQ_CHECKPOINT_RUNTIME:-claude}"
