@@ -32,7 +32,7 @@
 #       still recognised (exact match against the computed title)
 #   T11 defensive (undocumented): session_title on a non-SessionStart payload
 #       backs off if a host ever surfaces it there
-#   T12 stale per-session state is pruned on SessionStart
+#   T12 stale per-session state and project markers are pruned on SessionStart
 #   T13 opt-out (HQ_SESSION_TITLE=off) emits nothing
 #   T14 teeth: a back-off-stripped hook clobbers a manual title (bug reproduces)
 #   T15 a live named session's marker outlives another session's stale-state
@@ -321,7 +321,14 @@ emitted "$out" || fail "T12: pruning turn should still emit normally"
 [ -f "$STALE" ] && fail "T12: stale session-title state should be pruned"
 [ -f "$STALE.emitted" ] && fail "T12: stale ledger should be pruned"
 [ -f "$(hq_ledger)" ] || fail "T12: the machine-wide ledger must survive pruning"
-ok "T12 stale per-session state is pruned, shared ledger survives"
+STALE_PROJECT_MARKER="$HQ_ROOT/.claude/state/auto-session-project-stale-marker"
+: > "$STALE_PROJECT_MARKER"
+touch -t 202001010000 "$STALE_PROJECT_MARKER" 2>/dev/null ||
+  fail "T12: could not age the auto-session-project marker"
+out="$(run_hook "$HOOK" "$(json_start S7B)")"
+emitted "$out" || fail "T12: marker-pruning turn should still emit normally"
+[ -f "$STALE_PROJECT_MARKER" ] && fail "T12: stale auto-session-project marker should be pruned"
+ok "T12 stale title and project markers are pruned, shared ledger survives"
 
 # ── T13: opt-out emits nothing ──────────────────────────────────────────────
 reset_state

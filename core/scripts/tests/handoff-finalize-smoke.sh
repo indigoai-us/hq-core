@@ -86,6 +86,21 @@ cat > "$TMP_ROOT/bin/jq" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 args=("$@")
+if [[ "${US396_SIMULATE_MSYS:-}" == "1" && "${MSYS_NO_PATHCONV:-}" == "1" ]]; then
+  for ((i = 0; i < ${#args[@]} - 1; i++)); do
+    if [[ "${args[i]}" == "--slurpfile" ]]; then
+      path_index=$((i + 2))
+      path="${args[path_index]}"
+      if [[ "$path" == /* ]]; then
+        echo "jq: native MSYS jq cannot open an unconverted POSIX slurpfile path: $path" >&2
+        exit 2
+      fi
+      if [[ "$path" == [A-Za-z]:/* ]]; then
+        args[path_index]="${path:2}"
+      fi
+    fi
+  done
+fi
 if [[ "${MSYS_NO_PATHCONV:-}" != "1" ]]; then
   for ((i = 0; i < ${#args[@]} - 1; i++)); do
     if [[ "${args[i]}" == "--arg" && "${args[i + 1]}" == "next_command" ]]; then
@@ -97,7 +112,15 @@ fi
 exec "$US396_REAL_JQ" "${args[@]}"
 SH
 chmod +x "$TMP_ROOT/bin/jq"
+cat > "$TMP_ROOT/bin/cygpath" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == "-m" && -n "${2:-}" ]]
+printf 'C:%s\n' "$2"
+SH
+chmod +x "$TMP_ROOT/bin/cygpath"
 export US396_REAL_JQ="$REAL_JQ"
+export US396_SIMULATE_MSYS=1
 export PATH="$TMP_ROOT/bin:$PATH"
 
 cat > "$TMP_ROOT/repo/core/scripts/rebuild-threads-index.sh" <<'SH'

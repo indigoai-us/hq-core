@@ -36,6 +36,24 @@ case "$SESSION_ID" in
   *..*|*/*|*\\*|*" "*) exit 0 ;;
 esac
 
+# session-title.sh waits for this per-session marker on the first prompt so it
+# can include a project if auto-session-project resolves one in the same
+# master-hook dispatch. The dispatcher runs this hook before session-title;
+# publish the resolution (including an empty result) on exit so the later hook
+# does not pay its two-second fallback wait for a result this hook already
+# established.
+SESSION_KEY="${SESSION_ID//[^A-Za-z0-9._-]/_}"
+TITLE_PROJECT_MARKER="$HQ_ROOT/.claude/state/auto-session-project-$SESSION_KEY"
+TITLE_PROJECT_RESOLUTION=""
+write_title_project_resolution() {
+  local temporary="${TITLE_PROJECT_MARKER}.tmp.$$"
+  mkdir -p "${TITLE_PROJECT_MARKER%/*}" 2>/dev/null || return 0
+  printf '%s' "$TITLE_PROJECT_RESOLUTION" > "$temporary" 2>/dev/null \
+    && mv -f "$temporary" "$TITLE_PROJECT_MARKER" 2>/dev/null \
+    || rm -f "$temporary" 2>/dev/null || true
+}
+trap write_title_project_resolution EXIT
+
 WC_HOME="${WORK_MESH_HOME:-$HOME}"
 STATE="$WC_HOME/.hq/work-context/sessions/$SESSION_ID.json"
 [ -f "$STATE" ] || exit 0
@@ -199,6 +217,7 @@ materialize_prd_from_board() {
 if [ ! -f "$PRD_PATH" ]; then
   materialize_prd_from_board
 fi
+TITLE_PROJECT_RESOLUTION="$PROJECT_DIR"
 
 # Quiet success — no additionalContext that invents a project. Optional pointer.
 if [ -f "$PRD_PATH" ] && command -v jq >/dev/null 2>&1; then

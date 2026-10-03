@@ -409,6 +409,18 @@ test_slow_child_tag() {
   pass "running child name and elapsed milliseconds are reported without an unsupported bucket"
 }
 
+test_session_start_mesh_hook_debug_name() {
+  local debug_context
+  debug_context="$(bash -c '. "$1"; hook_timeout_debug_context_json master-hook.sh SessionStart 30000 5000 25000 "[]" child_wait "$2" 500' \
+    _ "$ROOT/.claude/hooks/hook-timeout-probe.sh" '35-work-mesh-session-start.sh')"
+  printf '%s' "$debug_context" | jq -e '
+    .waiting_child_basename == "35-work-mesh-session-start.sh"
+    and .waiting_child_elapsed_ms == 500
+  ' >/dev/null \
+    || { printf '%s\n' "$debug_context" >&2; fail "SessionStart mesh child was not retained as a safe debug name"; }
+  pass "SessionStart mesh child keeps a safe basename in timeout debug context"
+}
+
 test_master_phase_tag() {
   local root session session_hash invocation active_phase_file
   root="$(prepare_fixture master-phase)"
@@ -1163,6 +1175,7 @@ HQ
 case "$CASE" in
   windows-slow-start) test_windows_slow_start_budget ;;
   slow-child) test_slow_child_tag ;;
+  session-start-mesh-debug-name) test_session_start_mesh_hook_debug_name ;;
   master-phase) test_master_phase_tag ;;
   hook-sequence) test_hook_sequence_array ;;
   master-phase-delay) test_real_master_parse_phase ;;
@@ -1191,6 +1204,7 @@ case "$CASE" in
     ;;
   all)
     test_slow_child_tag
+    test_session_start_mesh_hook_debug_name
     test_master_phase_tag
     test_hook_sequence_array
     test_real_master_parse_phase
