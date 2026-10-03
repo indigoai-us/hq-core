@@ -67,6 +67,20 @@ run_guard() {
   GUARD_RC="$rc"
 }
 
+run_policy_dispatched() {
+  local hook="$1" command_text="$2" payload rc=0
+  payload="$(jq -cn --arg cwd "$PROJECT" --arg command "$command_text" \
+    '{tool_name:"Bash",cwd:$cwd,session_id:"budget-test",tool_input:{command:$command}}')"
+  : > "$PROCESS_LOG"
+  env PATH="$BIN:$ORIGINAL_PATH" CLAUDE_PROJECT_DIR="$PROJECT" \
+    HQ_CHECKPOINT_RUNTIME=claude HQ_HOOK_EVENT=PreToolUse HQ_HOOK_TOOL_NAME=Bash \
+    HQ_HOOK_COMMAND="$command_text" HQ_HOOK_CWD="$PROJECT" \
+    HQ_HOOK_SESSION_ID=budget-test HQ_LIB_WINSEP=1 PROCESS_LOG="$PROCESS_LOG" \
+    "$BASH_BIN" "$hook" drain PreToolUse <<< "$payload" \
+    > "$TMP/stdout" 2> "$TMP/stderr" || rc=$?
+  GUARD_RC="$rc"
+}
+
 policy_normal='{"tool_input":{"command":"git status"}}'
 run_guard "$POLICY_HOOK" "$policy_normal"
 policy_normal_total="$(total_launches)"
@@ -77,6 +91,31 @@ if [ "$GUARD_RC" -eq 0 ] && [ "$policy_normal_total" -le 1 ] \
   pass 'ordinary policy-guard command stays silent within one launch'
 else
   fail "ordinary policy-guard launch budget exceeded 1 or behavior changed (rc=$GUARD_RC, launches=$policy_normal_total)"
+fi
+
+# Match the dispatcher-backed ordinary path (which reuses HQ_HOOK_COMMAND) and
+# slow candidate-scan path. The separate core script test used to duplicate
+# this PATH-shim inventory.
+run_policy_dispatched "$POLICY_HOOK" 'git status'
+policy_dispatched_total="$(total_launches)"
+printf 'block-policy-writes dispatched ordinary PreToolUse execve_total=%s inventory=%s\n' \
+  "$policy_dispatched_total" "$(print_inventory)"
+if [ "$GUARD_RC" -eq 0 ] && [ "$policy_dispatched_total" -eq 0 ] \
+   && [ ! -s "$TMP/stdout" ] && [ ! -s "$TMP/stderr" ]; then
+  pass 'dispatcher-backed ordinary path stays within zero launches'
+else
+  fail "dispatcher-backed ordinary path exceeded zero launches or behavior changed (rc=$GUARD_RC, launches=$policy_dispatched_total)"
+fi
+
+run_policy_dispatched "$POLICY_HOOK" 'printf policies'
+policy_candidate_total="$(total_launches)"
+printf 'block-policy-writes candidate scan PreToolUse execve_total=%s inventory=%s\n' \
+  "$policy_candidate_total" "$(print_inventory)"
+if [ "$GUARD_RC" -eq 0 ] && [ "$policy_candidate_total" -le 2 ] \
+   && [ ! -s "$TMP/stdout" ] && [ ! -s "$TMP/stderr" ]; then
+  pass 'candidate-scan path stays within two launches'
+else
+  fail "candidate-scan launch budget exceeded 2 or behavior changed (rc=$GUARD_RC, launches=$policy_candidate_total)"
 fi
 
 policy_write="$(printf 'cat > \"%s\"\n' "$PROJECT/personal/policies/new.md" \

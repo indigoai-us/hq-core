@@ -26,6 +26,14 @@ for program in awk env dirname grep mkdir mv; do
     "$program" "$real_q" > "$BIN/$program"
   chmod 700 "$BIN/$program"
 done
+# The monitor helper captures and removes its bounded probe output. Keep those
+# ordinary runtime utilities available in the isolated PATH without counting
+# them as hook policy/parser launches.
+for program in cat rm; do
+  real="$(PATH="$ORIGINAL_PATH" command -v "$program" 2>/dev/null || true)"
+  [ -n "$real" ] || continue
+  ln -s "$real" "$BIN/$program"
+done
 if [ -n "$REAL_JQ" ]; then
   cat > "$BIN/jq" <<'SH'
 #!/bin/bash

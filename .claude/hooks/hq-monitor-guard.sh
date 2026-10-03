@@ -171,7 +171,11 @@ single_hq_monitor_command "$flat" && exit 0
 
 root="$(hq_monitor_root)"
 [ -n "$root" ] || exit 0
-if ! hq_monitor_enabled "$root" "$payload" monitor-guard; then
+# The advisory SessionStart caller keeps the one-second budget. The blocking
+# guard gets a longer bounded probe so an ordinary cold CLI start does not
+# disable enforcement for the command being checked. It must stay below this
+# hook's registry timeout (5 s) so a stuck CLI ends the probe, not the hook.
+if ! hq_monitor_enabled "$root" "$payload" monitor-guard 3; then
   exit 0
 fi
 

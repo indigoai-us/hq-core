@@ -11,7 +11,14 @@ REGISTRY="$ROOT/.claude/hooks/hook-registry.json"
 ADAPTER_CORE="$ROOT/core/scripts/lib/hook-adapter-core.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/hq-monitor-hooks.XXXXXX")"
 TMP_ROOT="$TMP/hq"
-trap 'rm -rf "$TMP"' EXIT
+cleanup() {
+  if [ -f "$TMP/timeout-child.pid" ]; then
+    child_pid="$(cat "$TMP/timeout-child.pid" 2>/dev/null || true)"
+    [[ "$child_pid" =~ ^[0-9]+$ ]] && kill -KILL "$child_pid" 2>/dev/null || true
+  fi
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
 
 PASS=0
 FAIL=0
@@ -59,6 +66,10 @@ if [ "${HQ_NO_UPDATE_CHECK:-}" != 1 ]; then
 fi
 if [ -n "${HQ_TEST_HQ_MARKER:-}" ]; then printf '%s\n' "$*" >> "$HQ_TEST_HQ_MARKER"; fi
 if [ "${1:-}" = "--help" ]; then
+  if [ -n "${HQ_TEST_HELP_SLOW_ONCE:-}" ] && [ ! -e "$HQ_TEST_HELP_SLOW_ONCE" ]; then
+    : > "$HQ_TEST_HELP_SLOW_ONCE"
+    exec sleep 3
+  fi
   if [ "${HQ_TEST_NO_MONITOR:-false}" = true ]; then
     printf 'Usage: hq [command]\nCommands:\n  status\n'
   else
@@ -68,6 +79,7 @@ if [ "${1:-}" = "--help" ]; then
 fi
 if [ "${1:-}" = "monitor" ] && [ "${2:-}" = "enabled" ]; then
   if [ -n "${HQ_TEST_MONITOR_ENABLED_CALL_MARKER:-}" ]; then printf 'called\n' >> "$HQ_TEST_MONITOR_ENABLED_CALL_MARKER"; fi
+  [ -n "${HQ_TEST_MONITOR_ENABLED_DELAY:-}" ] && sleep "$HQ_TEST_MONITOR_ENABLED_DELAY"
   [ "${HQ_TEST_NO_MONITOR:-false}" = true ] && exit 1
   [ "${HQ_TEST_MONITOR_ENABLED:-false}" = true ] && exit 0 || exit 1
 fi
@@ -129,6 +141,16 @@ done
 expect_block claude 'until grep -q done state; do sleep 1; done' 'until poll loop'
 expect_block codex 'gh run watch 123' 'gh run watch'
 expect_block grok 'gh pr checks --watch' 'gh pr checks --watch'
+export HQ_TEST_MONITOR_ENABLED_DELAY=1.2
+expect_block codex 'sleep 30' 'transient slow monitor-enabled probe still blocks'
+unset HQ_TEST_MONITOR_ENABLED_DELAY
+guard_timeout="$(jq -r '[.. | objects | select(.id? == "hq-monitor-guard") | .timeout][0] // empty' "$ROOT/.claude/hooks/hook-registry.json")"
+export HQ_TEST_MONITOR_ENABLED_DELAY=10
+probe_started=$SECONDS
+rc="$(run_guard codex 'sleep 30')"
+probe_elapsed=$((SECONDS - probe_started))
+unset HQ_TEST_MONITOR_ENABLED_DELAY
+if [ -n "$guard_timeout" ] && [ "$rc" = 0 ] && [ "$probe_elapsed" -lt "$guard_timeout" ]; then ok 'stuck monitor-enabled probe ends before the hook registry timeout'; else bad "stuck monitor-enabled probe ends before the hook registry timeout (rc=$rc elapsed=${probe_elapsed}s timeout=${guard_timeout:-missing}s)"; fi
 rc="$(run_guard codex 'gh pr checks --watch')"
 if [ "$rc" = 0 ] && jq -e '.hookSpecificOutput.permissionDecisionReason | contains("--target session:codex:monitor-session")' "$TMP/stdout" >/dev/null; then ok 'monitor guidance includes this session target'; else bad 'monitor guidance includes this session target'; fi
 shell_heredoc="bash <<'EOF'
@@ -223,6 +245,62 @@ drain_help_calls="$(grep -c '^--help$' "$HQ_LOG" 2>/dev/null || true)"
 if jq -e '.drained == true' "$TMP/stdout" >/dev/null && jq -e '.drained == true' "$TMP/stdout2" >/dev/null \
    && [ "$drain_help_calls" = 1 ] && [ "$(grep -c 'monitor drain --provider codex --event PreToolUse' "$HQ_LOG")" = 2 ] \
    && [ ! -s "$TMP/flag-calls.log" ]; then ok 'active Codex session drains twice with one cached readiness probe'; else bad 'active Codex session drains twice with one cached readiness probe'; fi
+
+echo '[4a] a timed-out help probe is retried instead of cached as unsupported'
+timeout_session='help-timeout-retry-session'
+timeout_session_dir="$TMP_ROOT/workspace/monitors/sessions/codex-$timeout_session"
+mkdir -p "$timeout_session_dir/active"
+: > "$timeout_session_dir/active/watch-1"
+timeout_payload="$(jq -nc --arg sid "$timeout_session" '{session_id:$sid,hook_event_name:"PreToolUse"}')"
+help_slow_once="$TMP/help-slow-once"
+printf '%s' "$timeout_payload" | env "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=codex HQ_TEST_MONITOR_ENABLED=true \
+  HQ_TEST_HELP_SLOW_ONCE="$help_slow_once" bash "$SESSION" drain PreToolUse >"$TMP/help-timeout-first.out" 2>"$TMP/help-timeout-first.err"
+printf '%s' "$timeout_payload" | env "${base_env[@]}" HQ_CHECKPOINT_RUNTIME=codex HQ_TEST_MONITOR_ENABLED=true \
+  HQ_TEST_HELP_SLOW_ONCE="$help_slow_once" bash "$SESSION" drain PreToolUse >"$TMP/help-timeout-second.out" 2>"$TMP/help-timeout-second.err"
+if [ ! -s "$TMP/help-timeout-first.out" ] && [ ! -s "$TMP/help-timeout-first.err" ] \
+   && jq -e '.drained == true' "$TMP/help-timeout-second.out" >/dev/null; then
+  ok 'timed-out help probe is not cached as unsupported and later drain succeeds'
+else
+  bad 'timed-out help probe is not cached as unsupported and later drain succeeds'
+fi
+
+echo '[4b] bounded command initializes its temp path under nounset'
+no_tmp_rc=0
+timeout 10s bash -u -c '. "$1"; TMPDIR="$2/missing"; hq_monitor_bounded_command 1 true' _ \
+  "$TMP_ROOT/.claude/hooks/hq-monitor-hook-lib.sh" "$TMP" >"$TMP/no-temp.out" 2>"$TMP/no-temp.err" || no_tmp_rc=$?
+if [ "$no_tmp_rc" -eq 1 ] && [ ! -s "$TMP/no-temp.err" ]; then
+  ok 'temp creation failure returns cleanly under nounset'
+else
+  bad "temp creation failure returns cleanly under nounset (rc=$no_tmp_rc stderr=$(cat "$TMP/no-temp.err"))"
+fi
+
+echo '[4c] bounded command kills descendants before reaping the wrapper'
+cat > "$TMP/term-resistant-parent.sh" <<'SH'
+#!/bin/bash
+(
+  trap '' TERM
+  exec sleep 30
+) &
+printf '%s\n' "$!" > "$HQ_TEST_DESCENDANT_PID"
+exec sleep 30
+SH
+chmod +x "$TMP/term-resistant-parent.sh"
+export HQ_TEST_DESCENDANT_PID="$TMP/timeout-child.pid"
+. "$TMP_ROOT/.claude/hooks/hq-monitor-hook-lib.sh"
+tree_rc=0
+hq_monitor_bounded_command 1 "$TMP/term-resistant-parent.sh" >/dev/null || tree_rc=$?
+descendant_pid="$(cat "$TMP/timeout-child.pid" 2>/dev/null || true)"
+descendant_state=''
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  descendant_state="$(ps -o stat= -p "$descendant_pid" 2>/dev/null | tr -d ' ' || true)"
+  case "$descendant_state" in ''|Z*) break ;; esac
+  sleep 0.05
+done
+if [ "$tree_rc" -eq 124 ] && { [ -z "$descendant_state" ] || [[ "$descendant_state" == Z* ]]; }; then
+  ok 'timeout returns 124 and leaves no live descendant'
+else
+  bad "timeout returns 124 and leaves no live descendant (rc=$tree_rc child_state=$descendant_state)"
+fi
 
 inbox_only_dir="$TMP_ROOT/workspace/monitors/sessions/grok-monitor-session"
 mkdir -p "$inbox_only_dir/dropbox"

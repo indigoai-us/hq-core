@@ -19,7 +19,7 @@ pass() { printf '  ok: %s\n' "$*"; }
 
 mkdir -p "$TMP/bin" "$TMP/core/scripts" "$TMP/workspace"
 mkdir -p "$TMP/shadow-tools"
-for utility in awk bash cat date dirname grep head mkdir mv nohup perl pkill rm sed setsid sh sleep stat timeout; do
+for utility in awk bash cat date dirname grep head mkdir mktemp mv nohup perl pkill rm sed setsid sh sleep stat timeout; do
   utility_path="$(command -v "$utility" 2>/dev/null || true)"
   [ -n "$utility_path" ] && ln -s "$utility_path" "$TMP/shadow-tools/$utility"
 done
@@ -52,6 +52,7 @@ fi
 printf 'hqVersion: "15.0.131"\n' > "$TMP/core/core.yaml"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$TMP/core/scripts/remove-stray-gate-hooks.sh"
 printf '%s\n' '#!/usr/bin/env bash' \
+  'if [ "${HQ_TEST_HANG_DESCENDANTS:-}" = 1 ] && [ "${1:-}" = "--version" ]; then (trap "" TERM; exec sleep 30) & printf "%s\n" "$!" > "$HQ_TEST_DESCENDANT_PID"; exec sleep 30; fi' \
   'if [ "${1:-}" = "--version" ]; then printf "hq 5.200.0\\n"; fi' \
   > "$TMP/bin/hq"
 printf '%s\n' '#!/usr/bin/env bash' \
@@ -190,6 +191,22 @@ run_hook trap-term term-resistant-timeout
 grep -Fqx 'trap-term:auth status' "$TMP/term-resistant-timeout.gh.calls" \
   || fail 'TERM-resistant fixture did not invoke the bounded auth check'
 pass 'TERM-resistant gh auth status is killed after its timeout grace period'
+
+export HQ_TEST_HANG_DESCENDANTS=1 HQ_TEST_DESCENDANT_PID="$TMP/update-child.pid"
+run_hook hang-auth updater-process-tree
+unset HQ_TEST_HANG_DESCENDANTS HQ_TEST_DESCENDANT_PID
+updater_child_pid="$(cat "$TMP/update-child.pid" 2>/dev/null || true)"
+updater_child_state=''
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  updater_child_state="$(ps -o stat= -p "$updater_child_pid" 2>/dev/null | tr -d ' ' || true)"
+  case "$updater_child_state" in ''|Z*) break ;; esac
+  sleep 0.05
+done
+if [ -n "$updater_child_pid" ] && { [ -z "$updater_child_state" ] || [[ "$updater_child_state" == Z* ]]; }; then
+  pass 'updater timeout kills a TERM-resistant descendant before reaping its command'
+else
+  fail "updater timeout kills a TERM-resistant descendant before reaping its command (child_state=$updater_child_state)"
+fi
 
 run_hook ok success
 jq -e '.latest == "15.0.200"' "$TMP/workspace/.hq-update-check/last-check.json" >/dev/null \

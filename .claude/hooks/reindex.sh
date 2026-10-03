@@ -35,18 +35,26 @@ set -uo pipefail
 
 # Read the hook payload (JSON on stdin). Never let a read failure abort.
 PAYLOAD="$(cat 2>/dev/null || true)"
+[ -n "$PAYLOAD" ] || exit 0
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-
-# No CLI → nothing to do.
+# No CLI → nothing to do. Keep this early exit ahead of JSON parsing.
 command -v hq >/dev/null 2>&1 || exit 0
 
-# --- what counts as a reindex-relevant path (REPO_ROOT-relative) --------------
-# companies/<slug>/{skills,workers}/…   core/{skills,workers}/…
-# core/packages/<pack>/{skills,workers}/…
-# personal/{skills,workers,knowledge,policies,settings}/…
-# .claude/skills/…                      (the generated wrappers themselves)
+# The dispatcher already parsed this field for routing. Fall back to JSON only
+# when this hook is run directly (for example by its test suite).
+_hook_lib_loaded=0
+tool="${HQ_HOOK_TOOL_NAME-}"
+if [ "${HQ_HOOK_TOOL_NAME+x}" != x ]; then
+  . "${BASH_SOURCE[0]%/*}/../../core/scripts/hook-lib.sh"
+  _hook_lib_loaded=1
+  tool="$(printf '%s' "$PAYLOAD" | hq_json_get tool_name)"
+fi
+
+case "$tool" in
+  Write|Edit|MultiEdit|Bash) ;;
+  *) exit 0 ;;
+esac
+
 REL_RE='^(companies/[^/]+/(skills|workers)|core/(skills|workers)|core/packages/[^/]+/(skills|workers)|personal/(skills|workers|knowledge|policies|settings)|\.claude/skills)/'
 # Same set, matched anywhere in a shell command string (paths there may be
 # absolute or root-relative). Kept in lock-step with REL_RE above.
@@ -54,34 +62,46 @@ CMD_PATH_RE='(companies/[^/]+/(skills|workers)|core/(skills|workers)|core/packag
 # Mutating verbs that create / move / delete files (word-bounded).
 CMD_VERB_RE='(^|[^[:alnum:]_])(rm|rmdir|unlink|mv|cp|trash)([^[:alnum:]_]|$)'
 
-# Extract a string field from the payload (jq-first, node fallback — hook-lib).
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
-_field() { # $1 = jq path, e.g. .tool_input.file_path
-  printf '%s' "$PAYLOAD" | hq_json_get "${1#.}"
+# grep -E treats each newline-delimited record independently. Preserve that
+# behavior with Bash builtins while avoiding a grep process per check.
+__reindex_has_matching_line() {
+  local __value="$1" __regex="$2" __line
+  while IFS= read -r __line || [ -n "$__line" ]; do
+    [[ "$__line" =~ $__regex ]] && return 0
+  done <<<"$__value"
+  return 1
 }
 
-relevant=0
-[ -z "$PAYLOAD" ] && exit 0
-tool="$(_field .tool_name)"
+# Extract each needed input field once. Bash's ERE matcher has the same
+# expressions as the former grep calls without launching grep on no-op events.
+if [ "$_hook_lib_loaded" -eq 0 ]; then
+  . "${BASH_SOURCE[0]%/*}/../../core/scripts/hook-lib.sh"
+fi
+_field() { printf '%s' "$PAYLOAD" | hq_json_get "${1#.}"; }
 
+relevant=0
 case "$tool" in
   Write|Edit|MultiEdit)
     fp="$(_field .tool_input.file_path)"
+    # Parameter expansion avoids forking dirname. Keep the HQ root anchored to
+    # the installed hook, since dispatcher cwd can be a nested project.
+    SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+    [ "$SCRIPT_DIR" != "${BASH_SOURCE[0]}" ] || SCRIPT_DIR=.
+    REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
     case "$fp" in
       "$REPO_ROOT"/*) rel="${fp#"$REPO_ROOT"/}" ;;
       *)              rel="" ;;
     esac
-    if [ -n "$rel" ] && printf '%s' "$rel" | grep -Eq "$REL_RE"; then
+    if [ -n "$rel" ] && __reindex_has_matching_line "$rel" "$REL_RE"; then
       relevant=1
     fi
     ;;
   Bash)
     cmd="$(_field .tool_input.command)"
-    # A mutation (create/move/delete) that names a reindex-relevant path. The
-    # verb check keeps read-only bash (ls/cat/grep over skills/) from triggering
-    # a reindex.
-    if printf '%s' "$cmd" | grep -Eq "$CMD_VERB_RE" \
-       && printf '%s' "$cmd" | grep -Eq "$CMD_PATH_RE"; then
+    # A mutation that names a reindex-relevant path; read-only shell commands
+    # remain no-ops.
+    if __reindex_has_matching_line "$cmd" "$CMD_VERB_RE" \
+       && __reindex_has_matching_line "$cmd" "$CMD_PATH_RE"; then
       relevant=1
     fi
     ;;
@@ -89,6 +109,12 @@ esac
 
 [ "$relevant" -eq 1 ] || exit 0
 
+# Bash mutations need the same HQ-root argument as file edits.
+if [ -z "${REPO_ROOT:-}" ]; then
+  SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+  [ "$SCRIPT_DIR" != "${BASH_SOURCE[0]}" ] || SCRIPT_DIR=.
+  REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+fi
 HQ_NO_UPDATE_CHECK=1 HQ_OP_LOCK_TIMEOUT=0 hq reindex --from-hook --repo-root "$REPO_ROOT" 1>&2 || true
 
 exit 0

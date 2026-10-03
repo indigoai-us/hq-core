@@ -772,6 +772,7 @@ hook_script="$(safe_hook_script)"
 spawn_ms=""
 slow_child=""
 slow_child_ms=""
+slow_phase=""
 session_hash="$(sha256_fields "$session_id")"
 if [ "$os_name" = windows ] && [ -n "$session_hash" ]; then
   mkdir -p "$root/workspace/.hook-timeout-journal" >/dev/null 2>&1 || true
@@ -820,6 +821,13 @@ debug_phase_timings="$(hook_timeout_phase_timings_json \
   "$debug_phase_file.child" "$active_child_debug_phase_record")"
 active_debug_phase="${active_debug_phase_record%%$'\t'*}"
 [ -z "${active_debug_phase:-}" ] || debug_wait_point="$active_debug_phase"
+if [ "$source_kind" = master-dispatch ]; then
+  case "$active_debug_phase" in
+    startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse)
+      slow_phase="$active_debug_phase"
+      ;;
+  esac
+fi
 if [ "$source_kind" = hook-gate ]; then
   # A hook-gate watchdog observes the hook itself rather than a master
   # dispatcher child. Name that slow hook with its safe basename so the
@@ -872,6 +880,7 @@ event_json="$(jq -cn \
   --arg spawn_ms "$spawn_ms" \
   --arg slow_child "$slow_child" \
   --arg slow_child_ms "$slow_child_ms" \
+  --arg slow_phase "$slow_phase" \
   --argjson hook_sequence "$hook_sequence" \
   --arg bash_env_set "$bash_env_set" \
   --arg shell "$shell_info" \
@@ -912,6 +921,7 @@ event_json="$(jq -cn \
         hook_sequence: $hook_sequence
       }
       + (if ($spawn_ms | test("^[0-9]+$")) then {spawn_ms: ($spawn_ms | tonumber)} else {} end)
+      + (if ($slow_phase | length) > 0 then {slow_phase: $slow_phase} else {} end)
       + (if ($slow_child | length) > 0 and ($slow_child_ms | test("^[0-9]+$"))
          then {slow_child: $slow_child, slow_child_ms: ($slow_child_ms | tonumber)} else {} end))
     }
