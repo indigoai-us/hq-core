@@ -60,14 +60,41 @@ extract() {
   printf '%s' "$STDIN_JSON" | hq_json_get "$1"
 }
 
-EVENT="$(extract hook_event_name)"
-SOURCE="$(extract source)"
-PROMPT="$(extract prompt)"
-SESSION_ID="$(extract session_id)"
-TRANSCRIPT="$(extract transcript_path)"
-# Documented, version-stable SessionStart field: Claude Code populates it with
-# the user's title when the session was named via --name or renamed via /rename.
-SESSION_TITLE_INPUT="$(extract session_title)"
+if [ -n "${HQ_LIB_JQ:-}" ]; then
+  # Parse the payload once instead of launching jq separately for each field.
+  # NUL framing preserves whitespace/newlines in scalar prompt values.
+  payload_fields=()
+  while IFS= read -r -d '' payload_field; do
+    payload_fields+=("$payload_field")
+  done < <(
+    printf '%s' "$STDIN_JSON" | "$HQ_LIB_JQ" -j '
+      def hook_value:
+        if . == null or type == "object" or type == "array" then ""
+        # Match $(...) per-field extraction: no NUL bytes, no trailing newlines.
+        else tostring | gsub("\u0000"; "") | sub("\n+\\z"; "") end;
+      [(.hook_event_name | hook_value), (.source | hook_value), (.prompt | hook_value),
+       (.session_id | hook_value), (.transcript_path | hook_value), (.session_title | hook_value)]
+      | .[] | ., "\u0000"
+    '
+  )
+  EVENT="${payload_fields[0]:-}"
+  SOURCE="${payload_fields[1]:-}"
+  PROMPT="${payload_fields[2]:-}"
+  SESSION_ID="${payload_fields[3]:-}"
+  TRANSCRIPT="${payload_fields[4]:-}"
+  SESSION_TITLE_INPUT="${payload_fields[5]:-}"
+  [ -n "${HQ_HOOK_EVENT+set}" ] && EVENT="$HQ_HOOK_EVENT"
+  [ -n "${HQ_HOOK_SESSION_ID+set}" ] && SESSION_ID="$HQ_HOOK_SESSION_ID"
+else
+  EVENT="$(extract hook_event_name)"
+  SOURCE="$(extract source)"
+  PROMPT="$(extract prompt)"
+  SESSION_ID="$(extract session_id)"
+  TRANSCRIPT="$(extract transcript_path)"
+  # Documented, version-stable SessionStart field: Claude Code populates it with
+  # the user's title when the session was named via --name or renamed via /rename.
+  SESSION_TITLE_INPUT="$(extract session_title)"
+fi
 [ -z "$SESSION_ID" ] && SESSION_ID="default"
 
 # Infer the event if Claude Code did not provide hook_event_name.

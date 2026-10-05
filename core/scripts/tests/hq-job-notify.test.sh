@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # hq-core: public
 # Regression: hq-job-notify.sh dm delivery + 24h collapse (US-006).
+# HQ_CLI_REQUIRED_IN_CI: the script under test is a generated CLI forwarder.
 set -euo pipefail
 
+REAL_HQ="$(command -v hq 2>/dev/null || true)"
+export REAL_HQ
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 NOTIFY="$ROOT/core/scripts/hq-job-notify.sh"
@@ -31,6 +34,8 @@ DM_LOG="$TMP/dm.log"
 : >"$DM_LOG"
 cat >"$BIN/hq" <<STUB
 #!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then "${REAL_HQ:?pinned hq CLI required}" --version; exit; fi
+if [ "\${1:-}" = "core" ]; then exec "${REAL_HQ:?pinned hq CLI required}" "\$@"; fi
 if [ "\${1:-}" = "dm" ]; then
   recipient="\$2"
   headline="\$3"
@@ -140,6 +145,8 @@ pass "notify=none skips delivery"
 # 8) dm delivery failure never exits non-zero
 cat >"$BIN/hq" <<'STUB'
 #!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then "${REAL_HQ:?pinned hq CLI required}" --version; exit; fi
+if [ "${1:-}" = "core" ]; then exec "${REAL_HQ:?pinned hq CLI required}" "$@"; fi
 exit 99
 STUB
 chmod +x "$BIN/hq"
@@ -147,7 +154,7 @@ set +e
 bash "$NOTIFY" "${common[@]}" --notify dm --outcome ok --summary "x" >"$TMP/fail.out" 2>"$TMP/fail.err"
 rc=$?
 set -e
-[ "$rc" -eq 0 ] || fail "notify must exit 0 on dm failure, got $rc"
+if [ "$rc" -ne 0 ]; then cat "$TMP/fail.err" >&2; fail "notify must exit 0 on dm failure, got $rc"; fi
 pass "dm delivery failure exits 0"
 
 echo "ALL PASSED (hq-job-notify)"

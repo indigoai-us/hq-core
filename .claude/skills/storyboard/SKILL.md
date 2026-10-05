@@ -1,7 +1,7 @@
 ---
 name: storyboard
 description: Lock visual design before building — explore mockups on your preferred surface (Paper, HTML, Figma) and feed discovered changes back into the PRD.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(mkdir:*), Bash(.claude/skills/storyboard/scripts/surface-config.sh:*), Bash(.claude/skills/_shared/journal.sh:*), Bash, AskUserQuestion, Agent
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(mkdir:*), Bash(.claude/skills/storyboard/scripts/surface-config.sh:*), Bash(.claude/skills/_shared/journal.sh:*), Bash, AskUserQuestion, Agent, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
 argument-hint: "[company] {project} [--surface paper|html|figma] [--design-led]"
 ---
 
@@ -86,7 +86,7 @@ Pull the same design sources the existing design workers use — do not invent a
 - **Design tokens / styles:** the design-styles catalog and any bound company brand pack (`core/packages/hq-pack-design-styles/`, and `companies/{co}/knowledge/design-styles/packs/` when a company is anchored — falls back to the shipped theme for personal projects). Use it for palette, type scale, spacing, and motion.
 - **PRD context (spec-led):** read `prd.json` — `description`, `userStories[]` (titles + acceptance criteria define the screens/states to design), `metadata.audiences`, `metadata.designRef`, `metadata.dataModel`, `metadata.authModel`.
 - **Brainstorm context (design-led):** read `brainstorm.md` — `## Recommendation`, `## What We Don't Know`, audience, and the chosen approach.
-- **Policies:** if a company is anchored, note its hard-enforcement policies (frontmatter scan via `bash core/scripts/read-policy-frontmatter.sh`). When designing on Paper, the Paper MCP policies apply (see Step 5).
+- **Policies:** if a company is anchored, collect its policy files except `example-policy.md`, preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Note hard-enforcement policies. When designing on Paper, the Paper MCP policies apply (see Step 5).
 
 ## Step 5 — Design Iteration
 

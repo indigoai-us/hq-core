@@ -1,8 +1,39 @@
 # CLI-hosted scaffold entrypoints. This is a restricted YAML 1.2 subset:
 # `entries` is a sequence of flat mappings; `note` is a literal text block.
 # The Bash 3.2 + awk parser in lib/cli-hosted-manifest.awk reads these fields.
+# root: live-project preserves HQ_ROOT, CLAUDE_PROJECT_DIR, then script-tree precedence.
 # Keep values unquoted, one field per line, and do not add YAML aliases/nesting.
 entries:
+  - path: core/scripts/derive-trigger-facts.sh
+    command: derive-trigger-facts
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.342.5
+    state: forwarded
+    note: |
+      This hook-time helper runs on the hq core fast path and retains its
+      bundled shell fallback while the core-native-hook-helpers flag is off.
+  - path: core/scripts/eval-trigger.sh
+    command: eval-trigger
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.341.3
+    state: forwarded
+    note: |
+      This hook-time helper runs on the hq core fast path and retains its
+      bundled shell fallback while the core-native-hook-helpers flag is off.
+  - path: core/scripts/migrate-policy-triggers.sh
+    command: migrate-policy-triggers
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.341.3
+    state: forwarded
+    note: |
+      This SessionStart helper runs on the hq core fast path and retains its
+      bundled shell fallback while the core-native-hook-helpers flag is off.
   - path: .claude/hooks/block-foreground-timeout-over-harness-ceiling.sh
     command: timeout-guard
     kind: hybrid
@@ -42,6 +73,15 @@ entries:
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
       keeps the scaffold to configuration rather than code.
+  - path: core/scripts/audit-log.sh
+    command: audit-log
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.307.0
+    state: forwarded
+    note: |
+      Native audit-log passed Windows and macOS parity; core-native-utilities remains the rollback switch.
   - path: core/scripts/codex-skill-bridge.sh
     command: codex-skill-bridge
     kind: generated
@@ -79,6 +119,15 @@ entries:
       byte-frozen copy of this script's pre-migration source by a differential suite
       (hq-cli e2e/registry-scan-differential.test.ts), which compares exit status,
       stdout, stderr and a sha256 manifest of every file touched, across repeated runs.
+  - path: core/scripts/git-pack-extension-check.sh
+    command: git-pack-extension-check
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.307.0
+    state: forwarded
+    note: |
+      Native git-pack-extension-check passed Windows and macOS parity; core-native-utilities remains the rollback switch.
   - path: core/scripts/hq-session.sh
     command: hq-session
     kind: hybrid
@@ -88,6 +137,33 @@ entries:
     state: forwarded
     note: |
       This call site probes CLI capabilities and falls back to the in-tree implementation.
+  - path: core/scripts/hq-dm-bind.sh
+    command: dm-bind
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.309.1
+    state: forwarded
+    note: |
+      Native dm-bind passed the current Windows and macOS parity matrix; core-native-utilities remains the rollback switch.
+  - path: core/scripts/hq-job-notify.sh
+    command: job notify
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.342.14
+    state: forwarded
+    note: |
+      Native job-notify passed the current Windows, macOS and Linux parity matrix; core-native-jobs remains the rollback switch.
+  - path: core/scripts/hq-pin.sh
+    command: pin
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.307.0
+    state: forwarded
+    note: |
+      Native pin passed Windows and macOS parity; core-native-utilities remains the rollback switch.
   - path: core/scripts/hq-status-summary.sh
     command: hq-status-summary
     kind: generated
@@ -110,6 +186,39 @@ entries:
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
       keeps the scaffold to configuration rather than code.
+  - path: core/scripts/policy-age-report.sh
+    command: policy age-report
+    kind: generated
+    root: live-project
+    interpreter: bash
+    min_cli: 5.341.3
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold policy maintenance command; the CLI
+      keeps the implementation behind core-native-policy while this path remains the
+      compatibility entrypoint for existing skills and hooks.
+  - path: core/scripts/policy-retire.sh
+    command: policy retire
+    kind: generated
+    root: live-project
+    interpreter: bash
+    min_cli: 5.341.3
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a cold policy maintenance command; the CLI
+      keeps the implementation behind core-native-policy while this path remains the
+      compatibility entrypoint for existing skills and hooks.
+  - path: core/scripts/read-policy-frontmatter.sh
+    command: policy frontmatter
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.342.7
+    state: forwarded
+    note: |
+      Why the implementation moved: it is a small, explicitly-invoked policy reader;
+      the CLI keeps the implementation behind core-native-policy and the caller's
+      file path and working directory continue to define its input.
   - path: core/scripts/qmd-reindex-after-sync.sh
     command: qmd-reindex-after-sync
     kind: generated
@@ -231,6 +340,15 @@ entries:
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
       keeps the scaffold to configuration rather than code.
+  - path: core/scripts/refresh-vault-access.sh
+    command: refresh-vault-access
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.307.0
+    state: forwarded
+    note: |
+      Native refresh-vault-access passed Windows and macOS parity; core-native-utilities remains the rollback switch.
   - path: core/scripts/resize-screenshot.sh
     command: resize-screenshot
     kind: generated

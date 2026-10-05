@@ -24,7 +24,7 @@ function emit_entry(    valid) {
     report("invalid kind for " path)
     valid = 0
   }
-  if (root != "live" && root != "cwd") {
+  if (root != "live" && root != "live-project" && root != "cwd") {
     report("invalid root mode for " path)
     valid = 0
   }

@@ -14,7 +14,22 @@
 
 set -uo pipefail
 
-CMD=$(jq -r '.tool_input.command // empty' 2>/dev/null) || true
+if [[ "${HQ_HOOK_TOOL_NAME+set}" == set && "$HQ_HOOK_TOOL_NAME" != Bash ]]; then
+  exit 0
+fi
+PAYLOAD_CWD=""
+if [[ "${HQ_HOOK_COMMAND+set}" == set ]]; then
+  CMD="$HQ_HOOK_COMMAND"
+else
+  # The adapters pass the original JSON payload on stdin without dispatcher
+  # variables. Read command and cwd together: a second jq invocation would see
+  # EOF after the first one consumed the payload. NUL framing preserves both
+  # fields exactly, including newlines and tabs in the command.
+  exec 3< <(jq -j '(.tool_input.command // ""), "\u0000", (if (.cwd | type) == "string" then .cwd else "" end), "\u0000"' 2>/dev/null)
+  IFS= read -r -d '' CMD <&3 || true
+  IFS= read -r -d '' PAYLOAD_CWD <&3 || true
+  exec 3<&-
+fi
 [[ -z "$CMD" ]] && exit 0
 
 # Strip shell quote/escape syntax with Bash builtins and skip parser/path setup
@@ -34,9 +49,20 @@ if [[ "$POLICY_PATH_CANDIDATE" != *policies* \
 fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
-PROJECT_DIR="$(hq_normpath "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
-CURRENT_CWD="$PROJECT_DIR"
+HOOK_SOURCE="${BASH_SOURCE[0]}"
+HOOK_DIR="${HOOK_SOURCE%/*}"
+[[ "$HOOK_DIR" == "$HOOK_SOURCE" ]] && HOOK_DIR=.
+. "$HOOK_DIR/../../core/scripts/hook-lib.sh"
+PROJECT_DIR="$(hq_realpath_dir "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
+if [[ "${HQ_HOOK_CWD+set}" == set && -n "$HQ_HOOK_CWD" ]]; then
+  CURRENT_CWD="$(hq_realpath_dir "$HQ_HOOK_CWD" 2>/dev/null || echo "$HQ_HOOK_CWD")"
+else
+  if [[ -n "$PAYLOAD_CWD" ]]; then
+    CURRENT_CWD="$(hq_realpath_dir "$PAYLOAD_CWD" 2>/dev/null || echo "$PAYLOAD_CWD")"
+  else
+    CURRENT_CWD="$PROJECT_DIR"
+  fi
+fi
 TRACKED_VAR_NAMES=()
 TRACKED_VAR_VALUES=()
 
@@ -52,20 +78,21 @@ REPO_CONTEXT_RE="^${PROJECT_DIR_RE}/(repos/|workspace/worktrees/)"
 # it into a whole-payload bypass: a newline, separator, substitution, or a
 # trailing semicolon is a separate command surface and is denied below.
 is_exact_sanctioned_policy_writer() {
-  local cmd="$1"
+  local cmd="$1" re='^[[:space:]]*HQ_ALLOW_POLICY_WRITE=1[[:space:]]+(env[[:space:]]+)?(bash[[:space:]]+)?(\./)?core/scripts/(migrate-policy-triggers|policy-retire)\.sh([[:space:]][^[:cntrl:];|&]*)?[[:space:]]*$'
   [[ "$cmd" != *$'\n'* && "$cmd" != *';'* && "$cmd" != *'|'* && "$cmd" != *'&'* \
      && "$cmd" != *'$('* && "$cmd" != *'`'* ]] || return 1
-  printf '%s' "$cmd" | grep -Eq \
-    '^[[:space:]]*HQ_ALLOW_POLICY_WRITE=1[[:space:]]+(env[[:space:]]+)?(bash[[:space:]]+)?(\./)?core/scripts/(migrate-policy-triggers|policy-retire)\.sh([[:space:]][^[:cntrl:];|&]*)?[[:space:]]*$'
+  [[ "$cmd" =~ $re ]]
 }
 
 # A malformed attempt at the narrowly sanctioned route is denied rather than
 # falling through as an ordinary no-op. In particular, this makes a trailing
 # separator fail closed instead of inviting agents to extend the payload.
 is_sanctioned_route_attempt() {
-  local cmd="$1"
-  printf '%s' "$cmd" | grep -Eq \
-    '^[[:space:]]*HQ_ALLOW_POLICY_WRITE=1[[:space:]]+(env[[:space:]]+)?(bash[[:space:]]+)?(\./)?core/scripts/(migrate-policy-triggers|policy-retire)\.sh'
+  local cmd="$1" line re='^[[:space:]]*HQ_ALLOW_POLICY_WRITE=1[[:space:]]+(env[[:space:]]+)?(bash[[:space:]]+)?(\./)?core/scripts/(migrate-policy-triggers|policy-retire)\.sh'
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ $re ]] && return 0
+  done <<< "$cmd"
+  return 1
 }
 
 strip_token_quotes() {
@@ -123,7 +150,9 @@ resolve_from_cwd() { # <raw path> -> lexical absolute path, or nothing
     ~*|\$*) return 1 ;; # unknown expansion: not a reliable live-HQ target
     *) path="$CURRENT_CWD/$path" ;;
   esac
-  hq_normpath "$path"
+  # Resolve the nearest existing ancestor so absolute targets spelled through
+  # a logical root symlink compare in the same physical form as PROJECT_DIR.
+  hq_realpath_lenient "$path"
 }
 
 is_policy_target() {

@@ -78,7 +78,7 @@ hq_json_get() {
 }
 EOF
   # Real evaluator + a fact stub, so `when:` is genuinely parsed.
-  cp "$EVAL" "$ROOT/core/scripts/eval-trigger.sh"
+  ln -s "$EVAL" "$ROOT/core/scripts/eval-trigger.sh"
   printf '#!/bin/bash\necho "always deploy"\n' > "$ROOT/core/scripts/derive-trigger-facts.sh"
   chmod +x "$ROOT/core/scripts/"*.sh
   cp "$INJECT" "$ROOT/.claude/hooks/inject-policy-on-trigger.sh"

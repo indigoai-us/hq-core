@@ -5,9 +5,17 @@
 
 set -uo pipefail
 
-INPUT="$(cat)"
-CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
-TOOL_CWD="$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)"
+if [[ "${HQ_HOOK_TOOL_NAME+set}" == set && "$HQ_HOOK_TOOL_NAME" != "Bash" ]]; then
+  exit 0
+fi
+if [[ "${HQ_HOOK_COMMAND+set}" == set ]]; then
+  CMD="$HQ_HOOK_COMMAND"
+  TOOL_CWD="${HQ_HOOK_CWD:-}"
+else
+  INPUT="$(cat)"
+  CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+  TOOL_CWD="${HQ_HOOK_CWD:-$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)}"
+fi
 [[ -n "$CMD" ]] || exit 0
 
 # Cheap pre-filter before shell tokenization. A bare clone from a cwd under
@@ -17,6 +25,13 @@ case "$CMD" in
   *git*|*gh*) ;;
   *) exit 0 ;;
 esac
+
+# An exact, standalone status command cannot create or populate a repository.
+# Keep this deliberately narrow; quoted, compound, or otherwise ambiguous
+# commands continue through the full parser below.
+if [[ "$CMD" =~ ^git[[:space:]]+-C[[:space:]]+/[[:alnum:]_.:/-]+[[:space:]]+status$ ]]; then
+  exit 0
+fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

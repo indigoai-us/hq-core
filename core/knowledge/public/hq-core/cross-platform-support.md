@@ -10,6 +10,35 @@ HQ's shell layer (hooks, core scripts, skill helpers) targets **bash** on:
 
 PowerShell-native scripts are intentionally out of scope.
 
+## Line endings (LF everywhere)
+
+HQ text is **LF in git and on disk on every OS**, including Windows.
+
+Root `.gitattributes` sets `* text=auto eol=lf` (with explicit `binary` rules for images/fonts/archives). That stops Git for Windows `core.autocrlf` from checking out CRLF under locked paths (`.claude/`, `core/`, …).
+
+Why it matters:
+
+- Shell hooks and scripts assume Unix newlines.
+- Desktop **Core Drift** compares local bytes to upstream git blobs (LF). A CRLF working tree looks like hundreds of "Modified" files even when content matches.
+
+After a **fresh** clone/checkout on Windows, text files should show LF only.
+
+### Repair existing Windows worktrees (CRLF already on disk)
+
+Pulling the `.gitattributes` change does **not** rewrite unchanged files that already have CRLF on disk — `git status` stays clean while bytes stay CRLF. Desktop Core Drift (pre-0.10.24) and bash hooks still see those bytes.
+
+With a **clean** worktree (commit or stash first):
+
+```bash
+bash core/scripts/normalize-eol-lf.sh
+# or:
+bash core/scripts/normalize-eol-lf.sh /path/to/hq-root
+```
+
+That force-rechecks out every tracked path so `eol=lf` lands LF on disk. Safe no-op on macOS/Linux when files are already LF. `/update-hq` runs the same script after a successful `hq rescue` when the script is present.
+
+If an editor rewrites CRLF later, re-run the script (or restore the file from git). Do not leave locked core files edited only for line endings.
+
 ## Required dependencies
 
 | Tool | Why | Install |

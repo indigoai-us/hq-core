@@ -7,6 +7,9 @@ TEST_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
 ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 STRACE="$(type -P strace || true)"
 [ -n "$STRACE" ] || { echo 'FAIL: strace is required for the hook process-budget test' >&2; exit 1; }
+HQ_BIN="$(command -v hq || true)"
+[ -n "$HQ_BIN" ] || { echo 'FAIL: pinned hq CLI is required for forwarded helpers' >&2; exit 1; }
+TEST_PATH="$(dirname "$HQ_BIN"):/usr/bin:/bin"
 
 # Keep this pinned to the pre-optimization source. A moving PR base becomes the
 # optimized candidate after merge and would make the improvement assertion fail.
@@ -62,8 +65,8 @@ make_fixture() {
   done
   cp "$ROOT/core/core.yaml" "$root/core/core.yaml"
   cp "$ROOT/core/scripts/hook-lib.sh" "$root/core/scripts/hook-lib.sh"
-  cp "$ROOT/core/scripts/derive-trigger-facts.sh" "$root/core/scripts/derive-trigger-facts.sh"
-  cp "$ROOT/core/scripts/eval-trigger.sh" "$root/core/scripts/eval-trigger.sh"
+  ln -s "$ROOT/core/scripts/derive-trigger-facts.sh" "$root/core/scripts/derive-trigger-facts.sh"
+  ln -s "$ROOT/core/scripts/eval-trigger.sh" "$root/core/scripts/eval-trigger.sh"
   cp -R "$ROOT/core/scripts/lib/." "$root/core/scripts/lib/"
   write_registry "$root"
   while [ "$i" -le "$count" ]; do
@@ -77,7 +80,8 @@ make_fixture() {
 install_source() {
   local root="$1" source="$2"
   cp "$source/.claude/hooks/inject-policy-on-trigger.sh" "$root/.claude/hooks/inject-policy-on-trigger.sh"
-  cp "$source/core/scripts/migrate-policy-triggers.sh" "$root/core/scripts/migrate-policy-triggers.sh"
+  rm -f "$root/core/scripts/migrate-policy-triggers.sh"
+  ln -s "$source/core/scripts/migrate-policy-triggers.sh" "$root/core/scripts/migrate-policy-triggers.sh"
 }
 
 reset_runtime_state() {
@@ -92,7 +96,7 @@ run_measured_injector() {
   reset_runtime_state "$root"
   set +e
   timeout 90s "$STRACE" -f -c -e trace=execve -o "$trace" \
-    env -u BASH_ENV -u ENV -u HQ_POLICY_WORKER_DIR PATH=/usr/bin:/bin HOME="$root/home" \
+    env -u BASH_ENV -u ENV -u HQ_POLICY_WORKER_DIR PATH="$TEST_PATH" HOME="$root/home" \
       XDG_STATE_HOME="$root/home/.local/state" HQ_ROOT="$root" \
       CLAUDE_PROJECT_DIR="$root" HQ_HOOK_PROFILE=standard HQ_HOOK_TIMEOUT_SENTRY=0 \
       env -u HQ_POLICY_EMIT bash "$root/.claude/hooks/inject-policy-on-trigger.sh" \
@@ -111,7 +115,7 @@ run_measured_migrator() {
   reset_runtime_state "$root"
   set +e
   timeout 90s "$STRACE" -f -c -e trace=execve -o "$trace" \
-    env -u BASH_ENV -u ENV -u HQ_POLICY_WORKER_DIR PATH=/usr/bin:/bin HOME="$root/home" \
+    env -u BASH_ENV -u ENV -u HQ_POLICY_WORKER_DIR PATH="$TEST_PATH" HOME="$root/home" \
       XDG_STATE_HOME="$root/home/.local/state" HQ_ROOT="$root" \
       CLAUDE_PROJECT_DIR="$root" HQ_MIGRATE_POLICY_TRIGGERS_COOLDOWN_SECONDS=0 \
       bash "$root/core/scripts/migrate-policy-triggers.sh" --dry-run \
@@ -129,7 +133,7 @@ run_equivalence_case() {
   local out="$TMP/$name.$variant.out" err="$TMP/$name.$variant.err"
   reset_runtime_state "$root"
   set +e
-  timeout 30s env -u BASH_ENV -u ENV -u HQ_POLICY_WORKER_DIR PATH=/usr/bin:/bin HOME="$root/home" \
+  timeout 30s env -u BASH_ENV -u ENV -u HQ_POLICY_WORKER_DIR PATH="$TEST_PATH" HOME="$root/home" \
     XDG_STATE_HOME="$root/home/.local/state" HQ_ROOT="$root" \
     CLAUDE_PROJECT_DIR="$root" HQ_HOOK_PROFILE=standard HQ_HOOK_TIMEOUT_SENTRY=0 \
     bash "$root/.claude/hooks/master-hook.sh" "$event" \

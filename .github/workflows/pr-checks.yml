@@ -12,6 +12,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: pr-checks-${{ github.ref }}
   cancel-in-progress: true
@@ -62,10 +65,14 @@ jobs:
             "$base_sha" "$GITHUB_SHA" "$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
       - name: Shell smoke platform path filter regression test
         run: bash core/scripts/tests/shell-smoke-macos-paths.test.sh
+      - name: Shell smoke timeout runner overlap and failure regression test
+        run: bash core/scripts/tests/shell-smoke-timeout-runner.test.sh
       - name: Codex policy rubric batching workflow contract
         run: bash core/scripts/tests/cost-workflow-pr-checks.test.sh
       - name: Release promotion checks gate regression test
         run: bash core/scripts/tests/release-pr-check-gate.test.sh
+      - name: US-016 Tart VM harness stub regression test
+        run: bash core/scripts/tests/anywhere-vm-test.test.sh
       - name: Run denylist scan
         run: bash .leak-scan/scan.sh denylist
 
@@ -546,14 +553,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install hq CLI for doctor-path coverage
+      - name: Install pinned hq CLI for doctor-path coverage
         run: |
           set -euo pipefail
-          npm install -g @indigoai-us/hq-cli
+          bash core/scripts/ci/install-pinned-hq-cli.sh
           if ! command -v hq >/dev/null 2>&1; then
             echo "ERROR: hook-health prevention requires hq on PATH to exercise the doctor path." >&2
             exit 1
           fi
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
           hq doctor --help >/dev/null 2>&1
       - name: Hook health checker behavior
         run: bash core/scripts/tests/hook-health-check.test.sh
@@ -728,6 +736,14 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help >/dev/null
       - name: De-extensioned packfile detection and repair
         run: bash core/scripts/tests/git-pack-extension-check.test.sh
 
@@ -768,6 +784,10 @@ jobs:
         run: node --test core/scripts/tests/codex-explicit-path-flag.test.cjs
       - name: Company repo creation and Git metadata guards
         run: bash .claude/hooks/tests/block-company-code-repos.test.sh
+      - name: Repo guard common-path process budget
+        run: bash core/scripts/tests/repogit-guard-spawn-budget.test.sh
+      - name: Repo guard command survives master-hook parsing
+        run: bash core/scripts/tests/master-hook-repogit-command-roundtrip.test.sh
       - name: Codex hook adapter routes mandatory scope authorizer
         run: bash core/scripts/test-codex-hook-adapter.sh
 
@@ -879,6 +899,12 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - name: Install and validate the pinned hq CLI for hook helpers
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
       - name: Session-scoped journal pointers and ownership validation
         run: bash core/scripts/tests/journal-session-scoped-pointer.test.sh
       - name: Stop hook selects only its session journal
@@ -887,9 +913,11 @@ jobs:
         run: bash core/scripts/tests/context-checkpoint-hooks.test.sh
       - name: Bounded transcript tails preserve hook behavior
         run: bash core/scripts/tests/enforce-humanize-before-send.test.sh
-      # The Stop-gate regression supplies its own hq shim; do not install hq here.
+      # The Stop-gate regression controls PATH for both hq-present and missing-hq cases.
       - name: Checkpoint Stop gate
         run: bash core/scripts/tests/checkpoint-stop-gate.test.sh
+      - name: Stop gate and reindex common-path spawn budgets
+        run: bash core/scripts/tests/stopgate-reindex-spawn-budget.test.sh
       - name: Lane senior Monitor Stop/reminder shim wiring
         run: bash core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh
       - name: Lane senior Stop-gate PATH-shim process budget
@@ -902,6 +930,8 @@ jobs:
         run: bash core/scripts/tests/session-scope-capability.test.sh
       - name: Mandatory scope authorizer blocks cross-company access
         run: bash core/scripts/tests/mandatory-scope-authorizer.test.sh
+      - name: Mandatory scope authorizer process budget and deny parity
+        run: bash core/scripts/tests/mandatory-scope-authorizer-spawn-budget.test.sh
       - name: Directory symlink scope for Grep, Glob, and Bash
         run: bash core/scripts/tests/scope-authorizer-symlink-dirs.test.sh
       - name: Secret detector scans Write/Edit/MultiEdit/NotebookEdit content
@@ -916,18 +946,12 @@ jobs:
         run: bash core/scripts/tests/inject-policy-output-ceiling.test.sh
       - name: Policy reminder output trimming avoids per-line tail launches
         run: bash core/scripts/tests/inject-policy-output-trim-performance.test.sh
-      - name: Policy age report flags retirement candidates
-        run: bash core/scripts/tests/policy-age-report.test.sh
       - name: Story deliverables gate on passes:true
         run: bash core/scripts/tests/verify-story-deliverables.test.sh
       - name: Delegation pickup receipt / FAILED state
         run: bash core/scripts/tests/hq-delegate-pickup.test.sh
       - name: Handoff next-step ids and closure
         run: bash core/scripts/tests/handoff-open-steps.test.sh
-      - name: Policy retire / restore and consumers skip retired
-        run: bash core/scripts/tests/policy-retire.test.sh
-      - name: Policy retrieval ledger hook
-        run: bash core/scripts/tests/record-policy-retrieval.test.sh
       - name: Policy delivery benchmark (live + scenarios)
         run: bash core/scripts/tests/policy-benchmark.test.sh
       - name: Live runtime smoke (skips when no runtime CLI is installed on the runner)
@@ -938,6 +962,30 @@ jobs:
         run: bash core/scripts/tests/startwork-bounded-action-contract.test.sh
       - name: Company infra policy reminder follows the firing session
         run: bash core/scripts/tests/surface-company-infra-policy.test.sh
+
+  policy-forwarders:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: policy-forwarders
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and validate the pinned hq CLI
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          npm_prefix="$(npm prefix -g)"
+          export PATH="$npm_prefix/bin:$PATH"
+          command -v hq
+          hq core --help
+      - name: Check the published CLI catalog
+        run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
+      - name: Policy age report flags retirement candidates through hq core
+        run: bash core/scripts/tests/policy-age-report.test.sh
+      - name: Policy retire / restore and consumers skip retired through hq core
+        run: bash core/scripts/tests/policy-retire.test.sh
+      - name: Policy retrieval ledger reads age report through hq core
+        run: bash core/scripts/tests/record-policy-retrieval.test.sh
+      - name: Policy write guard keeps sanctioned script-path compatibility
+        run: bash core/scripts/tests/block-policy-writes-bash.test.sh
 
   mcp-cleanup-session-scope:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -955,6 +1003,12 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - name: Install and validate the pinned hq CLI for hook helpers
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
       - name: Skill catalog compact flag preserves safety prompt sections
         run: bash core/scripts/tests/hq-agent-session-skills.test.sh
       - name: Session bootstrap scope capability and entrypoint regressions
@@ -1030,6 +1084,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - name: Session-title event payload spawn budget and output
+        run: bash core/scripts/tests/session-title-json-spawn-budget.test.sh
       - name: Manual /rename and --name titles are not clobbered
         run: bash core/scripts/tests/session-title-manual-backoff.test.sh
       - name: Session title mode override and desktop nudge
@@ -1119,6 +1175,8 @@ jobs:
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
           "$RUNNER_TEMP/bin/yq" --version
           command -v jq >/dev/null
+      - name: Install pinned hq CLI for job notification forwarder tests
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Run-token argv, xtrace, and cleanup regressions
         run: |
           set -euo pipefail
@@ -1126,7 +1184,9 @@ jobs:
           bash core/scripts/tests/hq-job-run.test.sh
           bash core/scripts/tests/hq-job-probe.test.sh
           bash core/scripts/tests/outpost-jobs-reconcile.test.sh
-          bash core/scripts/tests/outpost-job-failure-alerts.test.sh
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/outpost-job-failure-alerts.test.sh
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hq-job-notify.test.sh
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hq-job-alerts.test.sh
 
   previously-unrun-suites:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1139,6 +1199,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned hq CLI for forwarded scaffold scripts
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help >/dev/null
       - name: audit-log append creates its metrics dir on a clean tree
         run: bash core/scripts/tests/audit-log-mkdir.test.sh
       - name: release-guidance command references resolve
@@ -1155,8 +1223,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install pinned hq CLI for forwarded scaffold scripts
-        run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: Install and validate the pinned hq CLI for hook helpers
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
       - name: Company skill mirrors use a slug only behind the hq-flags gate
         run: bash core/scripts/tests/auto-mirror-company-skill.test.sh
       - name: Agent secret reveal guard covers Bash and Codex PreToolUse
@@ -1263,6 +1335,8 @@ jobs:
         run: bash core/scripts/tests/hook-lib-normpath.test.sh
       - name: enforce-vault-write-access blocks mutations without vault write permission
         run: bash core/scripts/tests/enforce-vault-write-access.test.sh
+      - name: enforce-vault-write-access avoids parsing unmatched tools twice
+        run: bash core/scripts/tests/enforce-vault-write-access-spawn-budget.test.sh
       - name: refresh-vault-access builds the manifest the write-access hook consumes
         run: bash core/scripts/tests/refresh-vault-access.test.sh
       - name: ontology-audience-grant shares the recursive folder/* glob, never a bare private folder
@@ -1392,7 +1466,7 @@ jobs:
     name: shell-smoke-windows
     needs: [denylist-scan]
     if: >-
-      ${{ always()
+      ${{ !cancelled()
           && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
           && (github.event_name == 'push'
               || needs['denylist-scan'].result != 'success'
@@ -1435,6 +1509,8 @@ jobs:
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: portable-lib
         run: bash core/scripts/tests/portable-lib.test.sh
+      - name: jq wrapper Windows and POSIX output parity
+        run: bash core/scripts/tests/jq-wrapper-platform-parity.test.sh
       - name: identity-resolve USER key
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
       - name: identity-resolve missing engines
@@ -1467,6 +1543,8 @@ jobs:
         run: bash .claude/hooks/tests/lanes-senior-monitor-stop-gate-process-budget.test.sh
       - name: hq monitor guard PATH-shim process budget
         run: bash .claude/hooks/tests/hq-monitor-guard-process-budget.test.sh
+      - name: SessionStart monitor and updater subprocess budget
+        run: bash core/scripts/tests/sessionstart-monitor-update-budget.test.sh
       - name: policy/core write guards PATH-shim process budget
         run: bash .claude/hooks/tests/block-policy-writes-bash-process-budget.test.sh
       - name: Hook timeout attribution tags and compact sequence
@@ -1528,10 +1606,10 @@ jobs:
         run: bash core/scripts/tests/gated-hook-profile-coverage.test.sh
       - name: Hook path does not source BASH_ENV in child bash
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
-      - name: Hook timeout Sentry watchdog
-        run: bash core/scripts/tests/hook-timeout-sentry.test.sh
-      - name: Hook timeout attribution tags and compact sequence
-        run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
+      - name: Hook timeout watchdog and attribution regressions
+        env:
+          HQ_CLI_REQUIRED_IN_CI: '1'
+        run: bash core/scripts/ci/run-shell-smoke-timeout-tests.sh
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
@@ -1552,6 +1630,15 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install and validate the pinned hq CLI for forwarded helpers
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
       - name: Hooks run python-free (tripwire + parity + broken-stub runtime)
         run: bash core/scripts/tests/hooks-no-python.test.sh
       - name: Policy recipe and knowledge-pulse scope contracts
@@ -1569,6 +1656,12 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - name: Install and validate the pinned hq CLI for hook helpers
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
       - name: 300-policy hook process budget and output equivalence
         env:
           # The baseline must exist in the repo running the check. Staging's
@@ -1595,6 +1688,8 @@ jobs:
         run: bash core/scripts/tests/inject-policy-arg-size.test.sh
       - name: inject-policy-cache.test.sh
         run: bash core/scripts/tests/inject-policy-cache.test.sh
+      - name: Contended policy ledger locks cannot stall SessionStart
+        run: bash core/scripts/tests/inject-policy-ledger-lock-deadline.test.sh
       - name: derive-trigger-facts.test.sh
         run: bash core/scripts/tests/derive-trigger-facts.test.sh
       - name: Inject cadence (once vs always) + PreCompact ledger purge
@@ -1607,6 +1702,47 @@ jobs:
         run: bash core/scripts/tests/lint-policy-triggers.test.sh
       - name: Narrowed git and gh policy triggers still cover every mutation
         run: bash core/scripts/tests/git-policy-trigger-coverage.test.sh
+
+  hook-helper-forwarders:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: hook-helper-forwarders
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and validate the pinned hq CLI for hook helpers
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
+      - name: Policy write guard keeps sanctioned migration forwarding
+        run: bash core/scripts/tests/block-policy-writes-bash.test.sh
+      - name: Hook helper call forms and callsite coverage
+        run: |
+          bash core/scripts/tests/check-hook-helper-call-forms.test.sh
+          bash core/scripts/tests/check-hook-helper-callsite-coverage.test.sh
+          bash core/scripts/tests/check-hook-helper-doctor.test.sh
+      - name: Policy trigger command integrations
+        run: |
+          bash core/scripts/tests/codex-decision-gate-accepted-fallback.test.sh
+          bash core/scripts/tests/derive-trigger-facts-library-fail-closed.test.sh
+          bash core/scripts/tests/derive-trigger-facts-synthetic.test.sh
+          bash core/scripts/tests/eval-triggers-hooks.test.sh
+          bash core/scripts/tests/harness-settings-dispatch.test.sh
+          bash core/scripts/tests/hook-helper-simple-failures.test.sh
+          bash core/scripts/tests/hq-agent-session-policy.test.sh
+          bash core/scripts/tests/hq-agent-session-skill-dispatch.test.sh
+          bash core/scripts/tests/inject-policy-baseline-bounds.test.sh
+          bash core/scripts/tests/inject-policy-parser-parity.test.sh
+          bash core/scripts/tests/policy-trigger-strictness.test.sh
+      - name: SessionStart hook helper process budget
+        env:
+          HQ_HOOK_PERF_BASE_SHA: ${{ github.repository == 'indigoai-us/hq-core-staging' && 'cead9f4fce5f762ee08d169d4d47e912c1ef0bee' || '641796571f18e870a2e4cdd24575fda6b93dc4c3' }}
+        run: |
+          timeout 30s git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$HQ_HOOK_PERF_BASE_SHA"
+          timeout 240s bash core/scripts/tests/sessionstart-policy-latency-process-budget.test.sh
+      - name: Hook trigger helpers run through generated forwarders
+        run: bash .claude/hooks/tests/inject-policy-on-trigger-emit.test.sh
 
   personal-policy-overlay:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1621,8 +1757,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install pinned hq CLI for forwarded scaffold scripts
-        run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: Install and validate the pinned hq CLI for hook helpers
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
       - name: personal/policies is read directly by the trigger hook (no mirror)
         run: bash core/scripts/tests/personal-policy-overlay.test.sh
       - name: stale core/policies mirror detector classifies + prunes safely
@@ -1657,8 +1797,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install pinned hq CLI for forwarded scaffold scripts
-        run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: Install and validate the pinned hq CLI for hook helpers
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
       - name: Policy fires on SessionStart + canvas prompt (trigger battery)
         run: bash core/scripts/tests/prefer-native-capabilities-trigger.test.sh
       - name: Background-shell pressure-reap policy trigger + run_in_background fact
@@ -1699,6 +1843,23 @@ jobs:
         run: bash core/scripts/check-cli-hosted.sh
       - name: CLI-hosted generator, floor and guard contract
         run: bash core/scripts/tests/cli-hosted-manifest.test.sh
+      - name: DM bind length guard with the pinned CLI
+        env:
+          HQ_CLI_REQUIRED_IN_CI: 1
+        run: bash core/scripts/tests/hq-dm-bind-length-guard.test.sh
+      - name: DM bind mentions with the pinned CLI
+        env:
+          HQ_CLI_REQUIRED_IN_CI: 1
+        run: bash core/scripts/tests/hq-dm-bind-mentions.test.sh
+      - name: DM bind machine principal with the pinned CLI
+        env:
+          HQ_CLI_REQUIRED_IN_CI: 1
+        run: bash core/scripts/tests/hq-dm-bind-machine-principal.test.sh
+      - name: Batched policy frontmatter forwarding and skill callsites
+        env:
+          HQ_TEST_REQUIRE_REAL_CLI: 1
+          HQ_TEST_REAL_CLI: hq
+        run: bash core/scripts/tests/read-policy-frontmatter-batch.test.sh
       - name: Pinned CLI install and command-catalog parity controls
         run: bash core/scripts/tests/cli-hosted-pinned-cli.test.sh
       - name: Current published CLI catalog parity

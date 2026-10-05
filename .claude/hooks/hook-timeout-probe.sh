@@ -208,7 +208,7 @@ master_debug_phase_write_state() {
 }
 
 master_debug_phase_start() {
-  local phase="${1:-other}" started_ms
+  local phase="${1:-other}" started_ms started_seconds
   case "$phase" in
     startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse) ;;
     *) phase=other ;;
@@ -218,11 +218,19 @@ master_debug_phase_start() {
     MASTER_DEBUG_ACTIVE_CLOCK=ms
     MASTER_DEBUG_ACTIVE_STARTED_SECONDS=""
   else
-    # Bash 3.2 has no EPOCHREALTIME. Its exported SECONDS value is inherited by
-    # the watchdog, so it can measure a live marker without a clock subprocess.
-    started_ms="seconds:$SECONDS"
-    MASTER_DEBUG_ACTIVE_CLOCK=seconds
-    MASTER_DEBUG_ACTIVE_STARTED_SECONDS=$SECONDS
+    # The watchdog runs in a different shell, so SECONDS is not a shared clock.
+    # Store an absolute, coarse timestamp that both processes can compare.
+    started_seconds="${EPOCHSECONDS:-$(date +%s 2>/dev/null || true)}"
+    if [[ "$started_seconds" =~ ^[0-9]{1,10}$ ]] && [ "$started_seconds" -gt 0 ]; then
+      started_ms="epoch-seconds:$started_seconds"
+      MASTER_DEBUG_ACTIVE_CLOCK=epoch-seconds
+      MASTER_DEBUG_ACTIVE_STARTED_SECONDS="$started_seconds"
+    else
+      # Retain local coarse timing if the system clock is unavailable.
+      started_ms="seconds:$SECONDS"
+      MASTER_DEBUG_ACTIVE_CLOCK=seconds
+      MASTER_DEBUG_ACTIVE_STARTED_SECONDS=$SECONDS
+    fi
   fi
   MASTER_DEBUG_ACTIVE_PHASE="$phase"
   MASTER_DEBUG_ACTIVE_STARTED="$started_ms"
@@ -230,7 +238,7 @@ master_debug_phase_start() {
 }
 
 master_debug_phase_finish() {
-  local phase="${1:-other}" ended_ms elapsed_ms
+  local phase="${1:-other}" ended_ms ended_seconds elapsed_ms
   case "$phase" in
     startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse) ;;
     *) phase=other ;;
@@ -245,8 +253,17 @@ master_debug_phase_finish() {
         [ "$elapsed_ms" -le 86400000 ] || elapsed_ms=86400000
         master_debug_phase_buffer_record "$phase" "$elapsed_ms"
       fi
+    elif [ "${MASTER_DEBUG_ACTIVE_CLOCK:-}" = epoch-seconds ] \
+      && [[ "${MASTER_DEBUG_ACTIVE_STARTED_SECONDS:-}" =~ ^[0-9]{1,10}$ ]]; then
+      ended_seconds="${EPOCHSECONDS:-$(date +%s 2>/dev/null || true)}"
+      if [[ "$ended_seconds" =~ ^[0-9]{1,10}$ ]] \
+        && [ "$ended_seconds" -ge "$MASTER_DEBUG_ACTIVE_STARTED_SECONDS" ]; then
+        elapsed_ms=$(((ended_seconds - MASTER_DEBUG_ACTIVE_STARTED_SECONDS) * 1000))
+        [ "$elapsed_ms" -le 86400000 ] || elapsed_ms=86400000
+        master_debug_phase_buffer_record "$phase" "$elapsed_ms"
+      fi
     elif [ "${MASTER_DEBUG_ACTIVE_CLOCK:-}" = seconds ] \
-      && [[ "${MASTER_DEBUG_ACTIVE_STARTED_SECONDS:-}" =~ ^[0-9]{1,9}$ ]]; then
+      && [[ "${MASTER_DEBUG_ACTIVE_STARTED_SECONDS:-}" =~ ^[0-9]{1,10}$ ]]; then
       elapsed_ms=$(((SECONDS - MASTER_DEBUG_ACTIVE_STARTED_SECONDS) * 1000))
       [ "$elapsed_ms" -le 86400000 ] || elapsed_ms=86400000
       [ "$elapsed_ms" -le 0 ] || master_debug_phase_buffer_record "$phase" "$elapsed_ms"
@@ -296,7 +313,7 @@ hook_timeout_normalize_basename() {
     master-hook.sh hook-gate.sh hook-timeout-watchdog.sh check-hq-update.sh \
     block-core-writes-bash.sh block-core-writes.sh block-hq-worktree-session.sh \
     inject-policy-on-trigger.sh inject-local-context.sh session-title.sh \
-    35-work-mesh-session-start.sh 45-lanes-senior-monitor.sh \
+    20-second-slow.sh 35-work-mesh-session-start.sh 45-lanes-senior-monitor.sh \
     lanes-senior-monitor-stop-gate.sh reindex.sh \
     bash bash.exe sh cmd cmd.exe powershell powershell.exe wmic.exe jq jq.exe \
     node node.exe git git.exe python python.exe py"thon3" py"thon3.exe" true sleep \
@@ -362,8 +379,14 @@ hook_timeout_sequence_json() {
 hook_timeout_phase_timings_json() {
   local completed_file="${1:-}" active_file="${2:-${1:-}}" active_record="${3:-}"
   local child_completed_file="${4:-}" child_active_record="${5:-}"
+  local frozen_now_ms="${6:-}" frozen_now_seconds=""
   local phase started completed now elapsed raw="" read_parent_active=0
   local child_elapsed child_phase child_started
+  if [[ "$frozen_now_ms" =~ ^[0-9]{1,16}$ ]] && [ "$frozen_now_ms" -gt 0 ]; then
+    frozen_now_seconds=$((frozen_now_ms / 1000))
+  else
+    frozen_now_ms=""
+  fi
   if [ -r "$completed_file" ]; then
     raw="$(awk -F '\t' '
       NF == 2 && $1 ~ /^(startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse|other)$/ && $2 ~ /^[0-9]+$/ && length($2) <= 9 && $2 <= 86400000 { print $1 "\t" $2 }
@@ -399,21 +422,41 @@ hook_timeout_phase_timings_json() {
       [ -z "$raw" ] || raw+=$'\n'
       raw+="$completed"
     fi
-    if [[ "$started" == seconds:* ]]; then
-      started="${started#seconds:}"
-      now="$SECONDS"
-      if [ -n "$phase" ] && [[ "$started" =~ ^[0-9]{1,9}$ ]] \
-        && [[ "$now" =~ ^[0-9]{1,9}$ ]] && [ "$now" -ge "$started" ]; then
+    if [[ "$started" == epoch-seconds:* ]]; then
+      started="${started#epoch-seconds:}"
+      if [ -n "$frozen_now_seconds" ]; then
+        now="$frozen_now_seconds"
+      else
+        now="${EPOCHSECONDS:-$(date +%s 2>/dev/null || true)}"
+      fi
+      if [ -n "$phase" ] && [[ "$started" =~ ^[0-9]{1,10}$ ]] \
+        && [[ "$now" =~ ^[0-9]{1,10}$ ]] && [ "$now" -ge "$started" ]; then
         elapsed=$(((now - started) * 1000))
         [ "$elapsed" -le 86400000 ] || elapsed=86400000
-        if [ "$elapsed" -gt 0 ]; then
-          [ -z "$raw" ] || raw+=$'\n'
-          raw+="${phase}"$'\t'"${elapsed}"
-        fi
+        [ -z "$raw" ] || raw+=$'\n'
+        raw+="${phase}"$'\t'"${elapsed}"
+      fi
+    elif [[ "$started" == seconds:* ]]; then
+      started="${started#seconds:}"
+      # This fallback is process-relative and cannot be compared with the
+      # watchdog's frozen wall-clock instant. Preserve the legacy sample for
+      # callers that do not supply a frozen instant; omit it for watchdog
+      # reports instead of substituting an unrelated clock.
+      if [ -z "$frozen_now_ms" ]; then now="$SECONDS"; else now=""; fi
+      if [ -n "$phase" ] && [[ "$started" =~ ^[0-9]{1,10}$ ]] \
+        && [[ "$now" =~ ^[0-9]{1,10}$ ]] && [ "$now" -ge "$started" ]; then
+        elapsed=$(((now - started) * 1000))
+        [ "$elapsed" -le 86400000 ] || elapsed=86400000
+        [ -z "$raw" ] || raw+=$'\n'
+        raw+="${phase}"$'\t'"${elapsed}"
       fi
     else
-      hook_timeout_realtime_ms || true
-      now="${HOOK_TIMEOUT_REALTIME_MS:-}"
+      if [ -n "$frozen_now_ms" ]; then
+        now="$frozen_now_ms"
+      else
+        hook_timeout_realtime_ms || true
+        now="${HOOK_TIMEOUT_REALTIME_MS:-}"
+      fi
       if [ -n "$phase" ] && [[ "$started" =~ ^[0-9]{1,16}$ ]] && [ "$started" -gt 0 ] \
         && [[ "$now" =~ ^[0-9]{1,16}$ ]] && [ "$now" -ge "$started" ]; then
         elapsed=$((now - started))
@@ -436,7 +479,9 @@ hook_timeout_phase_timings_json() {
   fi
   if [ -n "$child_active_record" ]; then
     IFS=$'\t' read -r phase started <<< "$child_active_record" || true
-    if hook_timeout_realtime_ms; then
+    if [ -n "$frozen_now_ms" ]; then
+      now="$frozen_now_ms"
+    elif hook_timeout_realtime_ms; then
       now="$HOOK_TIMEOUT_REALTIME_MS"
     else
       now="$(hook_timeout_now_ms 2>/dev/null || true)"

@@ -38,6 +38,19 @@ LIB="$HQ_ROOT_BOOT/core/scripts/work-mesh-lib.sh"
 # shellcheck source=core/scripts/work-mesh-lib.sh
 . "$LIB" 2>/dev/null || exit 0
 
+# Fail-soft when the installed work-mesh-lib.sh predates any helper this
+# hook calls. A box upgraded from pre-v15.0.121 can preserve an older lib
+# on disk that is missing wm_terminal_marker (and friends); calling the
+# undefined function prints "command not found" to stderr at session end
+# (reported by Spice on hq-core 15.0.183, hq-cli 5.332). The sweep is
+# best-effort and must stay silent, so exit 0 cleanly when any helper is
+# missing instead of letting the stale lib bleed stderr noise.
+for _wmc_req in wm_safe_path_component wm_log wm_reconciled_marker \
+                wm_copied_marker wm_terminal_marker; do
+  command -v "$_wmc_req" >/dev/null 2>&1 || exit 0
+done
+unset _wmc_req
+
 command -v jq >/dev/null 2>&1 || exit 0
 
 case "${HQ_WORK_MESH_DISABLED:-}" in

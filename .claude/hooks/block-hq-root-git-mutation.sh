@@ -50,12 +50,30 @@
 
 set -uo pipefail
 
-INPUT=$(cat)
-CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
-TOOL_CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || true
+if [[ "${HQ_HOOK_TOOL_NAME+set}" == set && "$HQ_HOOK_TOOL_NAME" != "Bash" ]]; then
+  exit 0
+fi
+if [[ "${HQ_HOOK_COMMAND+set}" == set ]]; then
+  CMD="$HQ_HOOK_COMMAND"
+  TOOL_CWD="${HQ_HOOK_CWD:-}"
+else
+  INPUT=$(cat)
+  CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
+  TOOL_CWD="${HQ_HOOK_CWD:-$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)}"
+fi
 [[ -z "$CMD" ]] && exit 0
 
 if [[ "${HQ_ALLOW_HQ_ROOT_GIT:-}" == "1" ]]; then exit 0; fi
+case "$CMD" in
+  *git*|*gh*) ;;
+  *) exit 0 ;;
+esac
+# This exact standalone read-only form needs no root lookup or git process.
+# Keep the expression narrow so every compound or quoted form reaches the
+# existing classifier.
+if [[ "$CMD" =~ ^git[[:space:]]+-C[[:space:]]+(/[[:alnum:]_.:/-]+|[A-Za-z]:[/\\][[:alnum:]_.:/\\-]+)[[:space:]]+status$ ]]; then
+  exit 0
+fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

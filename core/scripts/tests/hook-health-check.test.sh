@@ -9,6 +9,7 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 CHECKER="$ROOT/core/scripts/check-hq-hooks.sh"
+MIN_HQ_CLI="$(bash "$ROOT/core/scripts/ci/install-pinned-hq-cli.sh" --root "$ROOT" --resolve-only)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -61,10 +62,17 @@ REAL_HQ_DIR="$(dirname "$REAL_HQ")"
 # and proves the modern doctor path against a minimal valid HQ root.
 INLINE_STUB_BIN="$TMP/inline-stub-bin"
 mkdir -p "$INLINE_STUB_BIN"
+# Keep the fixture aligned with the configured floor instead of duplicating a
+# version literal that becomes stale whenever core.yaml raises the requirement.
+. "$ROOT/core/scripts/lib/hq-cli-floor.sh"
+INLINE_STUB_VERSION="$(hq_cli_floor_required "$ROOT")" \
+  || fail "could not read the configured hq-cli floor"
+INLINE_STUB_VERSION="${INLINE_STUB_VERSION#>=}"
+export INLINE_STUB_VERSION
 cat >"$INLINE_STUB_BIN/hq" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then
-  printf 'hq 5.270.0\n'
+  printf 'hq %s\n' "${HQ_TEST_CLI_VERSION:-$INLINE_STUB_VERSION}"
   exit 0
 fi
 exit 1
@@ -376,6 +384,17 @@ echo "[13] the shipped project settings satisfy the checker"
 out="$(run_expect 0 "$ROOT")"
 assert_contains "$out" 'HQ hook health: PASS' || fail "shipped settings did not pass: $out"
 pass "shipped .claude/settings.json is quote-safe and fully resolvable"
+
+echo "[13a] a stub below the configured CLI floor is rejected"
+set +e
+out="$(HQ_TEST_CLI_VERSION=5.307.0 PATH="$INLINE_STUB_BIN:$PATH" \
+  bash "$CHECKER" --root "$ROOT" 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "below-floor stub should fail with exit 2, got $rc: $out"
+assert_contains "$out" "this script needs hq-cli >= ${INLINE_STUB_VERSION} (found 5.307.0)" \
+  || fail "below-floor stub did not report the configured requirement: $out"
+pass "a below-floor hq stub remains rejected"
 
 echo "[14] a quoted token that merely CONTAINS the variable is split-safe"
 # "--root=$CLAUDE_PROJECT_DIR" is a single word to /bin/sh even on a spaced

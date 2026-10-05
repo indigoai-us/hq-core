@@ -50,8 +50,9 @@ FIX="$TMP/fixture"
 BIN="$TMP/bin"
 NODE_BIN="$(command -v node 2>/dev/null || true)"
 [ -n "$NODE_BIN" ] || { echo "FAIL: node is required for the bounded hq runner test" >&2; exit 1; }
-NODE_DIR="${NODE_BIN%/*}"
-mkdir -p "$FIX/.claude/hooks" "$FIX/core/hooks" "$FIX/core/scripts/lib" "$BIN"
+NODE_ONLY_DIR="$TMP/node-only"
+mkdir -p "$FIX/.claude/hooks" "$FIX/core/hooks" "$FIX/core/scripts/lib" "$BIN" "$NODE_ONLY_DIR"
+ln -s "$NODE_BIN" "$NODE_ONLY_DIR/node"
 cp "$AUTO_BIND_SRC" "$FIX/core/scripts/lib/session-auto-bind.sh"
 cp "$MASTER_SRC" "$FIX/.claude/hooks/master-hook.sh"
 cp "$PROBE_SRC" "$FIX/.claude/hooks/hook-timeout-probe.sh"
@@ -169,17 +170,27 @@ make_monitor_cache_stale() {
 
 PAYLOAD_PASS='{"session_id":"senior-1","hook_event_name":"Stop","stop_hook_active":false}'
 PAYLOAD_ACTIVE='{"session_id":"senior-1","hook_event_name":"Stop","stop_hook_active":true}'
-PATH_WITH_HQ="$BIN:$NODE_DIR:/usr/bin:/bin"
-PATH_WITHOUT_HQ="$TMP/no-hq:$NODE_DIR:/usr/bin:/bin"
+PATH_WITH_HQ="$BIN:$NODE_ONLY_DIR:/usr/local/bin:/usr/bin:/bin"
+PATH_WITHOUT_HQ="$TMP/no-hq:$NODE_ONLY_DIR:/usr/bin:/bin"
+if [ "$(env PATH="$PATH_WITH_HQ" bash -c 'command -v hq')" = "$BIN/hq" ]; then
+  pass "hq-present PATH resolves to the test stub"
+else
+  fail "hq-present PATH does not resolve to the test stub"
+fi
+if env -u HOME PATH="$PATH_WITHOUT_HQ" bash -c 'command -v hq >/dev/null 2>&1'; then
+  fail "missing-hq PATH exposes an installed hq CLI"
+else
+  pass "missing-hq PATH excludes the installed hq CLI"
+fi
 
 run_master() {
-  local payload="$1" path_env="$2"; local errf outf
+  local payload="$1" path_env="$2" home_override="${3-$TMP/test-home}"; local errf outf
   errf="$(mktemp "$TMP/master-err.XXXXXX")"
   outf="$(mktemp "$TMP/master-out.XXXXXX")"
   MRC=0
   printf '%s' "$payload" | env -u HQ_HARNESS -u HQ_WORK_MESH_HARNESS -u HQ_CHECKPOINT_RUNTIME \
     HQ_ROOT="$FIX" CLAUDE_PROJECT_DIR="$FIX" HQ_ALLOW_HQ_WORKTREE=1 \
-    HOME="$TMP/test-home" HQ_HOOK_TIMEOUT_SENTRY=0 PATH="$path_env" bash "$FIX/.claude/hooks/master-hook.sh" Stop \
+    HOME="$home_override" HQ_HOOK_TIMEOUT_SENTRY=0 PATH="$path_env" bash "$FIX/.claude/hooks/master-hook.sh" Stop \
     > "$outf" 2> "$errf" || MRC=$?
   MOUT="$(cat "$outf")"
   MERR="$(cat "$errf")"
@@ -226,7 +237,7 @@ assert_contains "$MERR" 'simulated monitor-check failure' "hq error detail"
 assert_contains "$MOUT" '"decision":"block"' "hq error block JSON"
 
 reset_stub pass
-run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ"
+run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ" ""
 [ "$MRC" = "0" ] && pass "missing hq is loud and blocks Claude" || fail "missing hq rc=$MRC"
 assert_contains "$MERR" 'hq CLI is missing' "missing hq stderr"
 assert_contains "$MOUT" '"decision":"block"' "missing hq block JSON"

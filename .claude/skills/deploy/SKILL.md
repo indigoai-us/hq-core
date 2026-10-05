@@ -133,7 +133,7 @@ The engine is **three phases**, structured by data-dependency. Independent work 
 | `.claude/skills/deploy/scripts/sensitivity-check.sh <path> [user_msg]` | Classifies artifact sensitivity (filename-list grep, no content surfaces) | `{"sensitive":bool,"trigger":string\|null}` |
 | `.claude/skills/deploy/scripts/guardrails-check.sh <output_dir>` | Caps + builds tarball | `{"pass":bool,"reason":string\|null,"tarball_path":string,...}` |
 | `.claude/skills/deploy/scripts/deploy-api-request.sh` | Makes a checked Phase C API/S3 request | validated body on stdout; safe failure diagnostic on stderr |
-| `.claude/skills/deploy/scripts/og-inject.sh <output_dir> [base_url] [app_name]` | Injects OG/Twitter preview tags; with no page image, points og:image at hq-deploy's generated card (`https://api.<domain>/api/public/apps/<slug>/card.png`), using a blank `_hq-og.png` placeholder only when `base_url` is empty | `{"injected":int,"image":string,"changed":bool}` |
+| `.claude/skills/deploy/scripts/og-inject.sh <output_dir> [base_url] [app_name]` | Injects OG/Twitter preview tags; with no page image, points og:image at hq-deploy's generated card (`https://api.<domain>/api/public/apps/<slug>/card.jpg`), using a blank `_hq-og.png` placeholder only when `base_url` is empty; on pages that already have tags, rewrites a legacy `card.png` image URL to `card.jpg` in place | `{"injected":int,"rewritten":int,"image":string,"changed":bool}` |
 | `.claude/skills/deploy/scripts/password-helper.sh` | `gen` / `announce` / `persist` / `lookup` | password text, or persisted entry |
 | `.claude/skills/deploy/scripts/route-host.sh` | `hosts` / `merge` / `record`: local snapshots of live static sites, so a new artifact can be added as a route on an existing app | one JSON line |
 

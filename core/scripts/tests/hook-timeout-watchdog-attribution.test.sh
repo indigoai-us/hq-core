@@ -18,6 +18,8 @@ TMP="$(mktemp -d "$ROOT/.c179-attribution.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 SYSTEM_JQ="$(command -v jq)"
 SYSTEM_AWK="$(command -v awk)"
+SYSTEM_DATE="$(command -v date)"
+SYSTEM_PERL="$(command -v perl 2>/dev/null || true)"
 REAL_HQ_BIN="$(command -v hq 2>/dev/null || true)"
 HQ_CLI_CONTRACT_AVAILABLE=0
 HQ_CLI_DEBUG_CONTEXT_ENABLED=0
@@ -175,6 +177,9 @@ if [ -n "${HQ_TEST_ORDER_AT_REPORT:-}" ] \
   && [ -f "${HQ_TEST_ORDER:-}" ]; then
   cat "$HQ_TEST_ORDER" > "$HQ_TEST_ORDER_AT_REPORT"
 fi
+if [ -n "${HQ_TEST_REPORT_TIMESTAMP:-}" ]; then
+  date +%s > "$HQ_TEST_REPORT_TIMESTAMP"
+fi
 if [ -n "${HQ_TEST_RELEASE_FILE:-}" ]; then
   : > "$HQ_TEST_RELEASE_FILE"
 fi
@@ -197,15 +202,62 @@ run_report() {
   local root="$1" label="$2" session="c179-attribution-$2" invocation="c179-test-$2"
   local hook_path="$root/.claude/hooks/master-hook.sh" fixture_bin
   fixture_bin="$(fixture_path "$root/bin")"
+  if [ "${C179_TEST_FORCE_COARSE_CLOCK:-0}" = "1" ] \
+    || [ "${C179_TEST_MIXED_CLOCK:-0}" = "1" ]; then
+    cat > "$root/bin/coarse-bash-env" <<'COARSE_ENV'
+unset EPOCHREALTIME EPOCHSECONDS
+SECONDS=42
+COARSE_ENV
+    cat > "$root/bin/date" <<'COARSE_DATE'
+#!/usr/bin/env bash
+case "$*" in
+  '+%s%3N')
+    if [ -n "${C179_TEST_FIXED_EPOCH_SECONDS:-}" ]; then
+      if [ "${C179_TEST_MIXED_CLOCK:-0}" = "1" ]; then
+        printf '%s500' "$C179_TEST_FIXED_EPOCH_SECONDS"
+      else
+        printf '%s' "$C179_TEST_FIXED_EPOCH_SECONDS"
+      fi
+    else
+      "$SYSTEM_DATE" +%s%3N
+    fi
+    ;;
+  '+%s')
+    if [ -n "${C179_TEST_FIXED_EPOCH_SECONDS:-}" ]; then
+      printf '%s' "$C179_TEST_FIXED_EPOCH_SECONDS"
+    else
+      "$SYSTEM_DATE" +%s
+    fi
+    ;;
+  *) exec "$SYSTEM_DATE" "$@" ;;
+esac
+COARSE_DATE
+    if [ "${C179_TEST_FORCE_COARSE_CLOCK:-0}" = "1" ]; then
+      cat > "$root/bin/perl" <<'COARSE_PERL'
+#!/usr/bin/env bash
+case "$*" in
+  *Time::HiRes*) exit 1 ;;
+  *) exec "$SYSTEM_PERL" "$@" ;;
+esac
+COARSE_PERL
+      chmod +x "$root/bin/perl"
+    fi
+    chmod +x "$root/bin/date"
+    export SYSTEM_DATE SYSTEM_PERL
+    coarse_bash_env="$root/bin/coarse-bash-env"
+  else
+    coarse_bash_env=""
+  fi
   printf 'master-dispatch\t%s\tabsolute\n' "$hook_path" > "$root/trigger.tsv"
   run_fixture_bounded "$(fixture_timeout_seconds)" \
     "PATH=$fixture_bin:$PATH" \
-    'BASH_ENV=' \
+    "BASH_ENV=$coarse_bash_env" \
     'HQ_HOOK_TIMEOUT_SENTRY=1' \
     'HQ_DISABLED_HOOKS=' \
     "HQ_TEST_SYSTEM_AWK=$SYSTEM_AWK" \
     "HQ_TEST_PHASE_TIMING_FILE=${C179_TEST_PHASE_TIMING_FILE:-}" \
     "HQ_TEST_PHASE_TIMING_TRIGGER_FILE=${C179_TEST_PHASE_TIMING_TRIGGER_FILE:-}" \
+    "HQ_TEST_FIXED_EPOCH_SECONDS=${C179_TEST_FIXED_EPOCH_SECONDS:-}" \
     "HQ_TEST_PHASE_SWITCHED=$root/phase-switched" \
     "HQ_TEST_REPORT_ACK=${C179_TEST_REPORT_ACK:-}" \
     "HQ_TEST_EVENT_FILE=$root/event.jsonl" \
@@ -213,7 +265,7 @@ run_report() {
     "HQ_HOOK_TIMEOUT_SENTRY_TEST_STATUS_FILE=$root/watchdog.status" \
     -- bash "$root/.claude/hooks/hook-timeout-watchdog.sh" \
       --root "$root" --source master-dispatch --hook-path "$hook_path" \
-      --event SessionStart --threshold absolute --started-at 0 \
+      --event SessionStart --threshold absolute --started-at "${C179_TEST_STARTED_AT_SECONDS:-0}" \
       --invocation-id "$invocation" \
       <<<"{\"hook_event_name\":\"SessionStart\",\"session_id\":\"$session\"}" \
       > "$root/out" 2> "$root/err"
@@ -232,7 +284,8 @@ prepare_master_phase_fixture() {
   cat > "$root/bin/jq" <<'JQ'
 #!/usr/bin/env bash
 if [ "${HQ_TEST_REQUIRE_EARLY_PHASE:-0}" = 1 ] \
-  && [ "${1:-}" = "-r" ] && [ "${2:-}" = "--arg" ] \
+  && { [ "${1:-}" = "-r" ] || [ "${1:-}" = "-j" ]; } \
+  && [ "${2:-}" = "--arg" ] \
   && [ "${3:-}" = "ev" ]; then
   early_phase=""
   for early_phase_file in "${HQ_TEST_EARLY_PHASE_DIR:?}"/*.debug.tsv.active; do
@@ -245,6 +298,12 @@ if [ "${HQ_TEST_REQUIRE_EARLY_PHASE:-0}" = 1 ] \
   else
     : > "${HQ_TEST_EARLY_PHASE_MISSING:?}"
   fi
+fi
+if [ "${HQ_TEST_DELAY_PRECHILD:-0}" = 1 ] \
+  && [ "${1:-}" = "-j" ] \
+  && [ "${2:-}" = "--arg" ] \
+  && [ "${3:-}" = "ev" ]; then
+  sleep 2
 fi
 if [ "${1:-}" = "-e" ] && [ "${2:-}" = 'type == "object"' ]; then
   input="$(cat)"
@@ -310,6 +369,7 @@ run_master_phase_case() {
   run_fixture_bounded 45 \
     "PATH=$fixture_bin:$PATH" \
     "BASH_ENV=${C179_TEST_BASH_ENV:-}" \
+    'SECONDS=0' \
     'HQ_HARNESS=codex' \
     "HOME=$root/home" \
     'HQ_DISABLED_HOOKS=' \
@@ -318,6 +378,7 @@ run_master_phase_case() {
     "HQ_HOOK_TIMEOUT_SENTRY_TEST_STATUS_FILE=$root/watchdog.status" \
     "HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=${C179_TEST_MASTER_ABSOLUTE_SECONDS:-2}" \
     'HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=20' \
+    "HQ_TEST_DELAY_PRECHILD=${C179_TEST_DELAY_PRECHILD:-0}" \
     "HQ_TEST_SYSTEM_JQ=$SYSTEM_JQ" \
     "HQ_TEST_SYSTEM_AWK=$SYSTEM_AWK" \
     "HQ_TEST_REQUIRE_EARLY_PHASE=$sentry" \
@@ -328,6 +389,9 @@ run_master_phase_case() {
     "HQ_TEST_ORDER=$root/order" \
     "HQ_TEST_CAPTURED_INPUT=$root/captured-input" \
     "HQ_TEST_ORDER_AT_REPORT=$root/order-at-report" \
+    "HQ_TEST_FIRST_CHILD_STARTED=$root/first-child-started" \
+    "HQ_TEST_SECOND_CHILD_STARTED=$root/second-child-started" \
+    "HQ_TEST_REPORT_TIMESTAMP=$root/report-timestamp" \
     "HQ_TEST_RELEASE_FILE=$root/report-released" \
     "HQ_TEST_JQ_ACK=$root/jq-ack" \
     "HQ_TEST_JQ_ACK_TIMEOUT=$root/jq-ack-timeout" \
@@ -356,14 +420,18 @@ run_master_phase_case() {
     [ ! -e "$root/early-phase-missing" ] || fail "$label master phase file held no active phase before payload parsing"
   fi
   printf '%s' "$expected_payload" > "$root/expected-input"
-  if [ "$with_children" = yes ]; then
+  if [ "$with_children" = single-slow ]; then
+    cmp -s "$root/expected-input" "$root/captured-input" \
+      || fail "$label SessionStart hook did not receive the payload"
+    [ "$(cat "$root/order")" = first ] || fail "$label did not dispatch the slow fixture child"
+  elif [ "$with_children" = yes ]; then
     cmp -s "$root/expected-input" "$root/captured-input" \
       || fail "$label SessionStart stdin differed from command-substitution semantics"
     [ "$(cat "$root/order")" = $'first\nsecond' ] || fail "$label did not dispatch both children in order"
   else
     [ ! -s "$root/order" ] || fail "$label unexpectedly dispatched a child"
   fi
-  [ ! -s "$root/err" ] || fail "$label master hook changed stderr"
+  [ ! -s "$root/err" ] || { cat "$root/err" >&2; fail "$label master hook changed stderr"; }
 }
 
 seed_sequence() {
@@ -422,22 +490,69 @@ test_session_start_mesh_hook_debug_name() {
 }
 
 test_master_phase_tag() {
-  local root session session_hash invocation active_phase_file
+  local root session session_hash invocation active_phase_file phase_seconds phase_fraction phase_started_ms coarse_clock=0
+  if [ "${C179_TEST_FORCE_COARSE_CLOCK:-0}" = "1" ] || [ -z "${EPOCHREALTIME:-}" ]; then
+    coarse_clock=1
+  fi
   root="$(prepare_fixture master-phase)"
   session="c179-attribution-master-phase"
   invocation="c179-test-master-phase"
   session_hash="$(sha256_fields "$session")"
   active_phase_file="$root/workspace/.hook-timeout-journal/$invocation.debug.tsv.active"
-  printf 'parse\t1\t\n' > "$active_phase_file"
+  if [ "${C179_TEST_FORCE_COARSE_CLOCK:-0}" = "1" ] || [ -z "${EPOCHREALTIME:-}" ]; then
+    printf 'parse\tepoch-seconds:%s\t\n' "$(( $(date +%s) - 2 ))" > "$active_phase_file"
+  else
+    phase_seconds="${EPOCHREALTIME%%.*}"
+    phase_fraction="${EPOCHREALTIME#*.}000"
+    phase_fraction="${phase_fraction:0:3}"
+    phase_started_ms=$((10#$phase_seconds * 1000 + 10#$phase_fraction - 1000))
+    printf 'parse\t%s\t\n' "$phase_started_ms" > "$active_phase_file"
+  fi
   seed_sequence "$root" "$session"
   run_report "$root" master-phase
-  jq -e '
+  jq -e --arg coarse "$coarse_clock" '
+    ([.metadata.hook_timeout_debug_context.phase_timings[] | select(.phase == "parse")] ) as $parse
+    |
     .type == "hook_timeout_warning"
-    and (.metadata | has("slow_child") | not)
+    and .metadata.slow_child == "master-hook.sh"
+    and (.metadata.slow_child_ms | type == "number" and floor == . and . >= 0 and . <= 305000)
+    and (.metadata.elapsed_ms | type == "number" and floor == . and . >= 0 and . <= 305000)
     and .metadata.hook_timeout_debug_context.wait_point == "parse"
     and (.metadata | has("slow_child_ms_bucket") | not)
-  ' "$root/event.json" >/dev/null || { jq -c '.metadata' "$root/event.json" >&2; fail "active master phase was not kept in the debug wait point"; }
-  pass "active master phase is reported through the CLI-supported debug wait point"
+    and (if $coarse == "1" or .metadata.timing_precision == "s" then
+      ($parse | length) > 0
+      and .metadata.slow_child_ms == $parse[-1].elapsed_ms
+      and .metadata.slow_child_ms >= 1000
+    else .metadata.slow_child_ms > 0 end)
+  ' "$root/event.json" >/dev/null || { jq -c '.metadata' "$root/event.json" >&2; fail "active master phase lacked bounded parent attribution and elapsed duration"; }
+  pass "master phase carries bounded master-hook attribution and retains the debug wait point"
+}
+
+test_master_phase_zero_coarse_uses_measured_elapsed() {
+  local root fixed_epoch invocation active_phase_file
+  root="$(prepare_fixture master-phase-zero-coarse)"
+  invocation="c179-test-master-phase-zero-coarse"
+  fixed_epoch="$(date +%s)"
+  active_phase_file="$root/workspace/.hook-timeout-journal/$invocation.debug.tsv.active"
+  mkdir -p "$(dirname "$active_phase_file")"
+  export C179_TEST_MIXED_CLOCK=1
+  export C179_TEST_FIXED_EPOCH_SECONDS="$fixed_epoch"
+  printf 'parse\tepoch-seconds:%s\t\n' "$fixed_epoch" > "$active_phase_file"
+  export C179_TEST_STARTED_AT_SECONDS="$((fixed_epoch - 1))"
+  run_report "$root" master-phase-zero-coarse
+  unset C179_TEST_MIXED_CLOCK C179_TEST_FIXED_EPOCH_SECONDS \
+    C179_TEST_STARTED_AT_SECONDS
+  jq -e '
+    .type == "hook_timeout_warning"
+    and .metadata.timing_precision == "ms"
+    and .metadata.slow_child == "master-hook.sh"
+    and (.metadata.elapsed_ms | type == "number" and . > 0)
+    and .metadata.slow_child_ms == .metadata.elapsed_ms
+    and .metadata.hook_timeout_debug_context.wait_point == "parse"
+    and ([.metadata.hook_timeout_debug_context.phase_timings[] | select(.phase == "parse")][-1].elapsed_ms == 0)
+  ' "$root/event.json" >/dev/null \
+    || { jq -c '.metadata' "$root/event.json" >&2; fail "coarse zero phase duration replaced the measured master elapsed time"; }
+  pass "coarse zero phase duration preserves positive measured master elapsed time at millisecond watchdog precision"
 }
 
 test_watchdog_trigger_phase_snapshot() {
@@ -453,6 +568,8 @@ test_watchdog_trigger_phase_snapshot() {
   run_report "$root" trigger-phase-snapshot
   unset C179_TEST_PHASE_TIMING_FILE C179_TEST_PHASE_TIMING_TRIGGER_FILE
   [ -e "$root/phase-switched" ] || fail "phase snapshot fixture did not change the phase after trigger acceptance"
+  jq -e '.metadata.slow_phase == "external_command"' "$root/event.json" >/dev/null \
+    || { jq -c '.metadata | {slow_phase, hook_timeout_debug_context}' "$root/event.json" >&2; fail "watchdog warning omitted its allowlisted trigger-time slow phase"; }
   jq -e '.metadata.hook_timeout_debug_context.wait_point == "external_command"' \
     "$root/event.json" >/dev/null \
     || { jq -c '.metadata.hook_timeout_debug_context' "$root/event.json" >&2; fail "watchdog used report-time phase instead of trigger-time snapshot"; }
@@ -552,17 +669,225 @@ test_master_late_active_phase() {
     HQ_TEST_EVENT_FILE="$root/event.jsonl"
     export PATH HQ_TEST_EVENT_FILE
     master_report_late_event hook_late_finish "$root/.claude/hooks/master-hook.sh" 5000 0
+    MASTER_DEBUG_ACTIVE_PHASE='../../unlisted/path'
+    HQ_TEST_EVENT_FILE="$root/untrusted-phase-event.jsonl"
+    export HQ_TEST_EVENT_FILE
+    master_report_late_event hook_late_finish "$root/.claude/hooks/master-hook.sh" 5000 0
   ) || fail "master late report fixture failed"
   sed '/^---EVENT---$/,$d' "$root/event.jsonl" > "$root/event.json"
   jq -e '
     .type == "hook_late_finish"
-    and (.metadata | has("slow_child") | not)
+    and .metadata.slow_child == "master-hook.sh"
+    and (.metadata.slow_child_ms | type == "number" and . > 0)
+    and .metadata.slow_phase == "external_command"
     and .metadata.hook_timeout_debug_context.wait_point == "external_command"
   ' "$root/event.json" >/dev/null || {
-    jq -c '.metadata | {slow_child, hook_timeout_debug_context}' "$root/event.json" >&2
+    jq -c '.metadata | {slow_child, slow_phase, hook_timeout_debug_context}' "$root/event.json" >&2
     fail "master late report lost the active external_command phase"
   }
   pass "master late report with no slow child retains the active phase"
+  sed '/^---EVENT---$/,$d' "$root/untrusted-phase-event.jsonl" > "$root/untrusted-phase-event.json"
+  jq -e '
+    (.metadata | has("slow_phase") | not)
+    and .metadata.hook_timeout_debug_context.wait_point == "wait"
+  ' "$root/untrusted-phase-event.json" >/dev/null || {
+    jq -c '.metadata | {slow_phase, hook_timeout_debug_context}' "$root/untrusted-phase-event.json" >&2
+    fail "master late report emitted an unlisted phase"
+  }
+  if grep -Fq '../../unlisted/path' "$root/untrusted-phase-event.json"; then
+    fail "master late report leaked an unlisted phase value"
+  fi
+  pass "master late report omits phase values outside the fixed list"
+}
+
+test_master_late_inflight_child() {
+  local root function_file
+  root="$(prepare_fixture master-late-inflight-child)"
+  function_file="$root/master-report-late-function.sh"
+  awk '
+    /^master_report_late_event\(\) \{/ { copy = 1 }
+    copy { print }
+    copy && /^}/ { exit }
+  ' "$ROOT/.claude/hooks/master-hook.sh" > "$function_file"
+  [ -s "$function_file" ] || fail "master_report_late_event function was not extracted"
+  (
+    . "$ROOT/.claude/hooks/hook-timeout-probe.sh"
+    . "$function_file"
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    REPO_ROOT="$root"
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    SCRIPT_DIR="$root/.claude/hooks"
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    EVENT=SessionStart
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    TOOL_NAME=Bash
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    SESSION_ID=c179-master-late-inflight-child
+    MASTER_INVOCATION_ID=c179-test-inflight
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    MASTER_TIMING_PRECISION=ms
+    MASTER_DEBUG_ACTIVE_PHASE=external_command
+    MASTER_DEBUG_ACTIVE_STARTED=1
+    MASTER_DEBUG_PHASE_FILE="$root/master.debug.tsv"
+    MASTER_DEBUG_ACTIVE_PHASE_FILE="$root/master.debug.tsv.active"
+    MASTER_DEBUG_CLI_VERSION_FILE="$root/master.debug.tsv.cli-version"
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    MASTER_DEBUG_CHILD_PHASE_FILE=""
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    MASTER_DEBUG_CHILD_ACTIVE_PHASE_FILE=""
+    timeout_journal_file="$root/workspace/.hook-timeout-journal/session.tsv"
+    active_child_file="$timeout_journal_file.$MASTER_INVOCATION_ID.active"
+    completed_child_paths=("$root/core/hooks/SessionStart/completed-hook.sh")
+    completed_child_elapsed_ms=(4000)
+    master_now_ms() { printf '20000'; }
+    master_safe_hook_script() { printf 'master-hook.sh'; }
+    master_load_average() { printf '0.1'; }
+    master_spawn_probe_ms() { printf 'unavailable'; }
+    master_hook_fingerprint_identity() { printf '%s' "$1"; }
+    master_timeout_sha256() { printf 'c179-test-fingerprint'; }
+    master_bash_env_state() { printf 'unset'; }
+    master_shell_descriptor() { printf 'bash test'; }
+    master_cwd_kind() { printf 'hq-root'; }
+    master_nproc() { printf '2'; }
+    master_hook_sequence_json() { printf '[]'; }
+    master_policy_trigger_metadata_json() { printf '{}'; }
+    master_declared_timeout_ms() { printf '30000'; }
+    master_watchdog_timeout_ms() { printf '10000'; }
+    hook_timeout_cli_supports_debug_context() { return 0; }
+    hook_timeout_windows_process_count() { printf 'unavailable'; }
+    PATH="$root/bin:$PATH"
+    printf 'safe-child.sh\tSessionStart\t15000\n' > "$active_child_file"
+    HQ_TEST_EVENT_FILE="$root/inflight.jsonl"
+    export PATH HQ_TEST_EVENT_FILE
+    master_report_late_event hook_late_finish "$root/.claude/hooks/master-hook.sh" 20000 0
+    : > "$active_child_file"
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    completed_child_paths=("$root/core/hooks/SessionStart/completed-hook.sh")
+    # shellcheck disable=SC2034 # Read by the dynamically sourced master-hook function.
+    completed_child_elapsed_ms=(4000)
+    HQ_TEST_EVENT_FILE="$root/completed.jsonl"
+    export HQ_TEST_EVENT_FILE
+    master_report_late_event hook_late_finish "$root/.claude/hooks/master-hook.sh" 20000 0
+  ) || fail "master in-flight child fixture failed"
+  sed '/^---EVENT---$/d' "$root/inflight.jsonl" > "$root/inflight.json"
+  jq -e '
+    .type == "hook_late_finish"
+    and .metadata.slow_child == "safe-child.sh"
+    and .metadata.slow_child_ms == 5000
+    and .metadata.slow_child_state == "running"
+  ' "$root/inflight.json" >/dev/null || {
+    jq -c '.metadata | {slow_child, slow_child_ms, slow_child_state}' "$root/inflight.json" >&2
+    fail "late report omitted in-flight registry child name or elapsed time"
+  }
+  jq -e '.metadata.slow_child | test("^[A-Za-z0-9._-]+$")' "$root/inflight.json" >/dev/null \
+    || fail "in-flight child report leaked data beyond the registry name"
+  sed '/^---EVENT---$/d' "$root/completed.jsonl" > "$root/completed.json"
+  jq -e '
+    .metadata.slow_child == "completed-hook.sh"
+    and .metadata.slow_child_ms == 4000
+    and .metadata.slow_child_state == "completed"
+  ' "$root/completed.json" >/dev/null || {
+    jq -c '.metadata | {slow_child, slow_child_ms, slow_child_state}' "$root/completed.json" >&2
+    fail "completed-child selection changed when no child was in flight"
+  }
+  pass "late report names the in-flight registry child with elapsed time and preserves completed-child attribution"
+}
+
+portable_ms_timestamp() {
+  local realtime seconds fractional now
+  realtime="${EPOCHREALTIME:-}"
+  if [[ "$realtime" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+    seconds="${BASH_REMATCH[1]}"
+    fractional="${BASH_REMATCH[2]}000"
+    fractional="${fractional:0:3}"
+    printf '%s%s\n' "$seconds" "$fractional"
+    return 0
+  fi
+  now="$(date +%s%3N 2>/dev/null || true)"
+  if [[ "$now" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$now"
+    return 0
+  fi
+  seconds="$(date +%s)"
+  [[ "$seconds" =~ ^[0-9]+$ ]] || return 1
+  printf '%s000\n' "$seconds"
+}
+
+test_master_dispatch_startup_elapsed() {
+  local root event first_started second_started report_started startup_child_elapsed_ms child_elapsed_ms hook_elapsed_ms wall_started_ms wall_finished_ms wall_span_ms
+  root="$(prepare_fixture master-dispatch-startup-elapsed)"
+  prepare_master_phase_fixture "$root" no
+  cat > "$root/core/hooks/SessionStart/10-first-delayed.sh" <<'CHILD'
+#!/usr/bin/env bash
+cat > "${HQ_TEST_CAPTURED_INPUT:?}"
+printf 'first\n' >> "${HQ_TEST_ORDER:?}"
+date +%s > "${HQ_TEST_FIRST_CHILD_STARTED:?}"
+sleep 5
+printf '%s' '{"hookSpecificOutput":{"additionalContext":"first child completed"}}'
+CHILD
+  cat > "$root/core/hooks/SessionStart/20-second-slow.sh" <<'CHILD'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'second\n' >> "${HQ_TEST_ORDER:?}"
+date +%s > "${HQ_TEST_SECOND_CHILD_STARTED:?}"
+sleep 0.75
+printf 'master-dispatch\t%s\tabsolute\n' "${HQ_TEST_MASTER_PATH:?}" > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"
+for _ in {1..500}; do
+  [ -e "${HQ_TEST_RELEASE_FILE:?}" ] && break
+  sleep 0.02
+done
+[ -e "$HQ_TEST_RELEASE_FILE" ] || exit 91
+printf '%s' '{"hookSpecificOutput":{"additionalContext":"second child completed"}}'
+CHILD
+  chmod +x "$root/core/hooks/SessionStart/10-first-delayed.sh" "$root/core/hooks/SessionStart/20-second-slow.sh"
+  wall_started_ms="$(portable_ms_timestamp)" || fail "could not read a portable start timestamp"
+  C179_TEST_DELAY_PRECHILD=1 C179_TEST_MASTER_ABSOLUTE_SECONDS=5 \
+    run_master_phase_case "$root" 1 dispatch-startup-elapsed yes "" c179-dispatch-startup-elapsed
+  wall_finished_ms="$(portable_ms_timestamp)" || fail "could not read a portable finish timestamp"
+  unset C179_TEST_DELAY_PRECHILD C179_TEST_MASTER_ABSOLUTE_SECONDS
+  event="$(sed '/^---EVENT---$/d' "$root/event.jsonl" | jq -sc '[.[] | select(.type == "hook_timeout_warning" or .type == "hook_timeout_exceeded")][0] // empty')"
+  [ -n "$event" ] || { cat "$root/event.jsonl" >&2; fail "dispatcher startup fixture emitted no timeout report"; }
+  first_started="$(cat "$root/first-child-started")"
+  second_started="$(cat "$root/second-child-started")"
+  report_started="$(cat "$root/report-timestamp")"
+  startup_child_elapsed_ms="$(jq -r '[.metadata.hook_timeout_debug_context.phase_timings[] | select(.phase == "startup" or .phase == "external_command") | .elapsed_ms] | add' <<<"$event")"
+  child_elapsed_ms="$(jq -r '[.metadata.hook_timeout_debug_context.phase_timings[] | select(.phase == "external_command") | .elapsed_ms] | add // 0' <<<"$event")"
+  hook_elapsed_ms="$(jq -r '.metadata.hook_timeout_debug_context.elapsed_ms' <<<"$event")"
+  [[ "$wall_started_ms" =~ ^[0-9]+$ && "$wall_finished_ms" =~ ^[0-9]+$ ]] \
+    || fail "dispatcher fixture did not record a numeric wall-clock span"
+  wall_span_ms=$((wall_finished_ms - wall_started_ms))
+  [ "$wall_span_ms" -ge 0 ] || fail "dispatcher fixture wall-clock span moved backwards"
+  [[ "$first_started" =~ ^[0-9]+$ && "$second_started" =~ ^[0-9]+$ && "$report_started" =~ ^[0-9]+$ ]] \
+    || fail "dispatcher fixture did not record ordered launch and report timestamps"
+  [ "$first_started" -lt "$second_started" ] && [ "$second_started" -le "$report_started" ] \
+    || fail "dispatcher report did not follow the first and second child launches"
+  jq -e '
+    .metadata.hook_timeout_debug_context.wait_point == "external_command"
+    and .metadata.hook_timeout_debug_context.waiting_child_basename == "20-second-slow.sh"
+    and (.metadata.hook_timeout_debug_context.waiting_child_elapsed_ms | type == "number" and floor == . and . >= 500)
+    and any(.metadata.hook_timeout_debug_context.phase_timings[];
+      .phase == "external_command" and (.elapsed_ms | type == "number" and floor == . and . >= 500))
+    and any(.metadata.hook_timeout_debug_context.phase_timings[];
+      .phase == "startup" and (.elapsed_ms | type == "number" and floor == . and . >= 1500))
+  ' <<<"$event" >/dev/null || {
+    jq -c '.metadata.hook_timeout_debug_context' <<<"$event" >&2
+    fail "dispatcher report omitted bounded phase, child, elapsed, or startup measurements"
+  }
+  if [ "$child_elapsed_ms" -gt "$((hook_elapsed_ms + 1000))" ]; then
+    printf 'children=%s hook_elapsed=%s startup+children=%s wall_span=%s first=%s second=%s report=%s\n' \
+      "$child_elapsed_ms" "$hook_elapsed_ms" "$startup_child_elapsed_ms" "$wall_span_ms" \
+      "$first_started" "$second_started" "$report_started" >&2
+    jq -c '.metadata.hook_timeout_debug_context.phase_timings' <<<"$event" >&2
+    fail "child timing exceeds watchdog elapsed time"
+  fi
+  if [ "$startup_child_elapsed_ms" -gt "$((wall_span_ms + 1000))" ]; then
+    printf 'startup+child=%s hook_elapsed=%s wall_span=%s first=%s second=%s report=%s\n' \
+      "$startup_child_elapsed_ms" "$hook_elapsed_ms" "$wall_span_ms" \
+      "$first_started" "$second_started" "$report_started" >&2
+    jq -c '.metadata.hook_timeout_debug_context.phase_timings' <<<"$event" >&2
+    fail "startup timing overlaps child runtime instead of ending at the first launch"
+  fi
+  pass "dispatcher reports pre-child startup separately from a delayed first child and second-child wait"
 }
 
 test_journal_sequence_filter() {
@@ -714,7 +1039,10 @@ assert_cli_event_contract() {
 }
 
 watchdog_contract_event() {
-  local label="$1" journal_mode="$2" root session invocation
+  local label="$1" journal_mode="$2" root session invocation phase_seconds phase_fraction phase_started_ms coarse_clock=0
+  if [ "${C179_TEST_FORCE_COARSE_CLOCK:-0}" = "1" ] || [ -z "${EPOCHREALTIME:-}" ]; then
+    coarse_clock=1
+  fi
   root="$(prepare_fixture "cli-watchdog-$label")"
   session="c179-attribution-$label"
   invocation="c179-test-$label"
@@ -722,14 +1050,33 @@ watchdog_contract_event() {
     seed_sequence "$root" "$session"
   fi
   mkdir -p "$root/workspace/.hook-timeout-journal"
-  printf 'parse\t1\t\n' > "$root/workspace/.hook-timeout-journal/$invocation.debug.tsv.active"
+  if [ "${C179_TEST_FORCE_COARSE_CLOCK:-0}" = "1" ] || [ -z "${EPOCHREALTIME:-}" ]; then
+    printf 'parse\tepoch-seconds:%s\t\n' "$(( $(date +%s) - 2 ))" > "$root/workspace/.hook-timeout-journal/$invocation.debug.tsv.active"
+  else
+    phase_seconds="${EPOCHREALTIME%%.*}"
+    phase_fraction="${EPOCHREALTIME#*.}000"
+    phase_fraction="${phase_fraction:0:3}"
+    phase_started_ms=$((10#$phase_seconds * 1000 + 10#$phase_fraction - 1000))
+    printf 'parse\t%s\t\n' "$phase_started_ms" > "$root/workspace/.hook-timeout-journal/$invocation.debug.tsv.active"
+  fi
   run_report "$root" "$label"
   assert_cli_event_contract "$(cat "$root/event.json")" "watchdog-$label" parse
   if [ "$journal_mode" = with-journal ]; then
     jq -e '.metadata.hook_sequence | length == 5' "$root/event.json" >/dev/null || fail "$label did not include the seeded journal"
+  elif [ "$coarse_clock" = 1 ]; then
+    jq -e '
+      ([.metadata.hook_timeout_debug_context.phase_timings[] | select(.phase == "parse")] ) as $parse
+      |
+      (.metadata.hook_sequence | length == 0)
+      and .metadata.slow_child == "master-hook.sh"
+      and (.metadata.slow_child_ms | type == "number" and floor == . and . >= 1000 and . <= 305000)
+      and ($parse | length) > 0
+      and .metadata.slow_child_ms == $parse[-1].elapsed_ms
+    ' "$root/event.json" >/dev/null \
+      || fail "$label coarse event omitted its measured parse duration or dispatcher attribution"
   else
-    jq -e '(.metadata.hook_sequence | length == 0) and (.metadata | has("slow_child") | not)' "$root/event.json" >/dev/null \
-      || fail "$label without journal invented a slow child or nonempty sequence"
+    jq -e '(.metadata.hook_sequence | length == 0) and .metadata.slow_child == "master-hook.sh" and (.metadata.slow_child_ms | type == "number" and floor == . and . > 0 and . <= 305000)' "$root/event.json" >/dev/null \
+      || fail "$label without journal omitted dispatcher attribution or invented a sequence"
   fi
 }
 
@@ -805,7 +1152,8 @@ test_real_master_parse_phase() {
     || { cat "$root_enabled/event.jsonl" >&2 2>/dev/null || true; cat "$root_enabled/order" >&2 2>/dev/null || true; cat "$root_enabled/jq-delayed" >&2 2>/dev/null || true; cat "$root_enabled/watchdog.trigger" >&2 2>/dev/null || true; cat "$root_enabled/watchdog.status" >&2 2>/dev/null || true; fail "watchdog did not report while master was between children in parse"; }
   jq -e '
     .type == "hook_timeout_warning"
-    and (.metadata | has("slow_child") | not)
+    and .metadata.slow_child == "master-hook.sh"
+    and (.metadata.slow_child_ms | type == "number" and . > 0)
     and .metadata.hook_timeout_debug_context.wait_point == "parse"
     and (.metadata | has("slow_child_ms_bucket") | not)
     and (.metadata.hook_sequence | type == "array" and length <= 20)
@@ -869,7 +1217,7 @@ CHILD
   pass "legacy Bash records measured external-command duration without EPOCHREALTIME"
 }
 
-test_legacy_active_phase_omits_zero_duration() {
+test_legacy_active_phase_keeps_zero_duration() {
   local root
   root="$(prepare_fixture legacy-active-phase-zero-duration)"
   (
@@ -885,13 +1233,55 @@ test_legacy_active_phase_omits_zero_duration() {
       "$root/positive-phase.json" >/dev/null \
       || { jq -c . "$root/positive-phase.json" >&2; fail "legacy clock lost its positive active phase duration"; }
 
+    unset SECONDS
     SECONDS=40
     printf -v active_record 'external_command\tseconds:%s' "$SECONDS"
     hook_timeout_phase_timings_json "" "" "$active_record" "" "" > "$root/zero-phase.json"
-    jq -e 'all(.[]; .phase != "external_command")' "$root/zero-phase.json" >/dev/null \
-      || { jq -c . "$root/zero-phase.json" >&2; fail "legacy clock emitted a zero-duration active phase"; }
+    jq -e '([.[] | select(.phase == "external_command")]) as $phases | ((($phases | length) == 1) and ($phases[0].elapsed_ms == 0))' \
+      "$root/zero-phase.json" >/dev/null \
+      || { jq -c . "$root/zero-phase.json" >&2; fail "legacy clock did not emit exactly one zero-duration active phase"; }
   ) || fail "legacy active phase timing assertions failed"
-  pass "legacy active phases retain positive durations and omit zero-duration samples"
+  pass "legacy active phases retain positive durations and keep exactly one zero-duration sample"
+}
+
+test_active_phase_uses_frozen_warning_time() {
+  local root frozen_now_ms
+  root="$(prepare_fixture active-phase-frozen-warning-time)"
+  frozen_now_ms=15000
+  grep -Fq '"$debug_phase_file.child" "$active_child_debug_phase_record" "$warning_now_ms")"' \
+    "$ROOT/.claude/hooks/hook-timeout-watchdog.sh" \
+    || fail "watchdog did not pass its frozen warning instant to phase serialization"
+  (
+    . "$ROOT/.claude/hooks/hook-timeout-probe.sh"
+    # Simulate the report-serialization clock advancing after elapsed_ms was
+    # frozen by the watchdog.
+    hook_timeout_realtime_ms() { HOOK_TIMEOUT_REALTIME_MS=40000; }
+
+    hook_timeout_phase_timings_json "" "" $'external_command\t10000' "" "" "$frozen_now_ms" \
+      > "$root/ms-phase.json"
+    jq -e --argjson elapsed "$((frozen_now_ms - 10000))" '
+      ([.[] | select(.phase == "external_command")][-1].elapsed_ms) as $phase_ms
+      | $phase_ms == $elapsed and $phase_ms <= $elapsed
+    ' "$root/ms-phase.json" >/dev/null \
+      || { jq -c . "$root/ms-phase.json" >&2; fail "active millisecond phase used a post-warning clock sample"; }
+
+    hook_timeout_phase_timings_json "" "" $'parse\tepoch-seconds:10' "" "" "$frozen_now_ms" \
+      > "$root/epoch-phase.json"
+    jq -e --argjson elapsed 5000 '
+      ([.[] | select(.phase == "parse")][-1].elapsed_ms) as $phase_ms
+      | $phase_ms == $elapsed and $phase_ms <= $elapsed
+    ' "$root/epoch-phase.json" >/dev/null \
+      || { jq -c . "$root/epoch-phase.json" >&2; fail "active epoch-seconds phase did not use the frozen warning time"; }
+
+    hook_timeout_phase_timings_json "" "" "" "" $'external_command\t10000' "$frozen_now_ms" \
+      > "$root/child-phase.json"
+    jq -e --argjson elapsed "$((frozen_now_ms - 10000))" '
+      ([.[] | select(.phase == "external_command")][-1].elapsed_ms) as $phase_ms
+      | $phase_ms == $elapsed and $phase_ms <= $elapsed
+    ' "$root/child-phase.json" >/dev/null \
+      || { jq -c . "$root/child-phase.json" >&2; fail "active child phase used a post-warning clock sample"; }
+  ) || fail "active phase timing did not use the frozen warning instant"
+  pass "active millisecond, epoch-seconds, and child phases use the watchdog warning instant"
 }
 
 test_monitor_readiness_phase() {
@@ -1107,8 +1497,9 @@ HQ
   ' "$root/phase-timings.json" >/dev/null \
     || { jq -c . "$root/phase-timings.json" >&2; fail "child phase durations were not included in the attribution context"; }
 
-  # Model the Bash 3.2 master and its separately launched watchdog sharing the
-  # SECONDS value explicitly passed at process start.
+  # Model the Bash 3.2 master and its separately launched watchdog using a
+  # shared coarse wall clock rather than each shell's process-relative SECONDS.
+  (
   unset EPOCHREALTIME
   SECONDS=20
   export SECONDS
@@ -1116,8 +1507,8 @@ HQ
   MASTER_DEBUG_ACTIVE_PHASE_FILE="$root/master-active.tsv"
   MASTER_DEBUG_PHASE_BUFFER=()
   master_debug_phase_start policy_load
-  grep -Eq '^policy_load[[:space:]]seconds:[0-9]+[[:space:]]' "$root/master-active.tsv" \
-    || fail "legacy Bash parent marker did not use the shared SECONDS clock"
+  grep -Eq '^policy_load[[:space:]]epoch-seconds:[0-9]{10}[[:space:]]' "$root/master-active.tsv" \
+    || fail "legacy Bash parent marker did not use a shared epoch-second clock"
   timeout 5s sleep 2
   child_active_record="$(cat "$child_active_file")"
   phase_timings="$(SECONDS="$SECONDS" bash -c '
@@ -1132,6 +1523,7 @@ HQ
   ' \
     "$root/active-phase-timings.json" >/dev/null \
     || { jq -c . "$root/active-phase-timings.json" >&2; fail "active parent or child phase was lost when child timing inputs were supplied"; }
+  ) || fail "coarse cross-shell phase timing assertions failed"
 
   (
     . "$ROOT/.claude/hooks/hook-timeout-probe.sh"
@@ -1177,16 +1569,20 @@ case "$CASE" in
   slow-child) test_slow_child_tag ;;
   session-start-mesh-debug-name) test_session_start_mesh_hook_debug_name ;;
   master-phase) test_master_phase_tag ;;
+  master-phase-zero-coarse) test_master_phase_zero_coarse_uses_measured_elapsed ;;
   hook-sequence) test_hook_sequence_array ;;
   master-phase-delay) test_real_master_parse_phase ;;
   master-entry-shell-startup) test_master_entry_shell_startup_phase; test_master_entry_shell_startup_legacy_clock ;;
   child-phase-tags) test_child_phase_tags ;;
   monitor-readiness-phase) test_monitor_readiness_phase ;;
-  legacy-zero-phase) test_legacy_active_phase_omits_zero_duration ;;
+  legacy-zero-phase) test_legacy_active_phase_keeps_zero_duration ;;
+  active-phase-frozen-warning-time) test_active_phase_uses_frozen_warning_time ;;
   journal-missing-probe) test_journal_missing_probe_fails_soft ;;
   monitor-missing-probe) test_monitor_missing_probe_fails_soft ;;
   missing-probe-fallback) test_missing_probe_fails_soft ;;
   master-late-active-phase) test_master_late_active_phase ;;
+  master-late-inflight-child) test_master_late_inflight_child ;;
+  master-dispatch-startup-elapsed) test_master_dispatch_startup_elapsed ;;
   watchdog-trigger-phase-snapshot) test_watchdog_trigger_phase_snapshot ;;
   read-eof-errexit) test_eof_read_under_errexit ;;
   journal-filter) test_journal_sequence_filter ;;
@@ -1206,14 +1602,19 @@ case "$CASE" in
     test_slow_child_tag
     test_session_start_mesh_hook_debug_name
     test_master_phase_tag
+    test_master_phase_zero_coarse_uses_measured_elapsed
     test_hook_sequence_array
     test_real_master_parse_phase
     test_master_entry_shell_startup_phase
     test_master_entry_shell_startup_legacy_clock
     test_child_phase_tags
     test_monitor_readiness_phase
+    test_legacy_active_phase_keeps_zero_duration
+    test_active_phase_uses_frozen_warning_time
     test_missing_probe_fails_soft
     test_master_late_active_phase
+    test_master_late_inflight_child
+    test_master_dispatch_startup_elapsed
     test_watchdog_trigger_phase_snapshot
     test_eof_read_under_errexit
     test_journal_sequence_filter

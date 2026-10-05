@@ -6,25 +6,20 @@
 # On a clean install that directory does not exist yet, so without `mkdir -p`
 # the `>> "$AUDIT_LOG"` redirect fails and the metric event is silently lost.
 #
-# Strategy: audit-log.sh derives its HQ_ROOT from BASH_SOURCE, so we copy it
-# into a throwaway core/scripts/ tree whose root has NO workspace/metrics dir,
-# then assert the first append succeeds and creates the log.
+# Run the generated forwarder against a throwaway HQ root whose workspace has
+# no metrics directory, then assert the command creates the log there.
 
 set -euo pipefail
-
-command -v jq >/dev/null 2>&1 || { echo "audit-log-mkdir: skipped (jq missing)"; exit 0; }
 
 SRC_ROOT="$(git rev-parse --show-toplevel)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+command -v hq >/dev/null 2>&1 || { echo "FAIL: pinned hq CLI is not on PATH" >&2; exit 1; }
 mkdir -p "$TMP/core/scripts/lib"
-cp "$SRC_ROOT/core/scripts/audit-log.sh" "$TMP/core/scripts/audit-log.sh"
-# audit-log.sh sources core/scripts/lib/portable.sh. The fixture used to copy
-# only the script, so every append died with "portable.sh: No such file or
-# directory" — invisible because this suite does not run in CI. Copy the whole
-# lib/ so a future dependency cannot silently break the fixture again.
-cp "$SRC_ROOT"/core/scripts/lib/*.sh "$TMP/core/scripts/lib/" 2>/dev/null || true
+# When core-native-utilities is off, the pinned CLI runs the bundled shell
+# companion, which keeps its source-time dependency on this scaffold library.
+cp "$SRC_ROOT/core/scripts/lib/portable.sh" "$TMP/core/scripts/lib/portable.sh"
 
 LOG="$TMP/workspace/metrics/audit-log.jsonl"
 
@@ -33,7 +28,7 @@ if [[ -e "$TMP/workspace/metrics" ]]; then
   exit 1
 fi
 
-if ! bash "$TMP/core/scripts/audit-log.sh" append \
+if ! HQ_ROOT="$TMP" bash "$SRC_ROOT/core/scripts/audit-log.sh" append \
       --event task_started --project audit-log-mkdir-test >/dev/null 2>&1; then
   echo "FAIL: append exited non-zero on a clean tree (missing mkdir -p?)" >&2
   exit 1

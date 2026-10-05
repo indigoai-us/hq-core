@@ -47,7 +47,9 @@ _hq_cli_floor_resolve_executable() {
   while [ -L "$executable" ]; do
     hops=$((hops + 1))
     [ "$hops" -le 40 ] || return 1
-    link_dir="$(cd -P "$(dirname "$executable")" 2>/dev/null && pwd)" || return 1
+    link_dir="${executable%/*}"
+    [ -n "$link_dir" ] || link_dir="/"
+    link_dir="$(cd -P "$link_dir" 2>/dev/null && pwd)" || return 1
     link_target="$(readlink "$executable" 2>/dev/null)" || return 1
     case "$link_target" in
       /*) executable="$link_target" ;;
@@ -56,93 +58,112 @@ _hq_cli_floor_resolve_executable() {
   done
 
   [ -f "$executable" ] || return 1
-  link_dir="$(cd -P "$(dirname "$executable")" 2>/dev/null && pwd)" || return 1
-  printf '%s/%s\n' "$link_dir" "$(basename "$executable")"
+  link_dir="${executable%/*}"
+  [ -n "$link_dir" ] || link_dir="/"
+  link_dir="$(cd -P "$link_dir" 2>/dev/null && pwd)" || return 1
+  printf '%s/%s\n' "${link_dir%/}" "${executable##*/}"
 }
 
-# Find the npm package metadata for the resolved executable.
-_hq_cli_floor_find_package_json() {
-  local executable="$1" dir candidate
-  dir="$(dirname "$executable")"
-  while [ "$dir" != / ]; do
-    candidate="$dir/package.json"
-    if [ -f "$candidate" ] && grep -Eq '"name"[[:space:]]*:[[:space:]]*"@indigoai-us/hq-cli"' "$candidate"; then
-      printf '%s\n' "$candidate"
+_hq_cli_floor_package_version() {
+  local package_json="$1"
+  awk -F '"' '
+    {
+      for (i = 2; i + 2 <= NF; i += 4) {
+        key = $i
+        value = $(i + 2)
+        if (key == "name" && package_name == "") package_name = value
+        else if (key == "version" && package_version == "") package_version = value
+      }
+    }
+    END {
+      if (package_name == "@indigoai-us/hq-cli" && package_version != "") {
+        print package_version
+      }
+    }
+  ' "$package_json"
+}
+
+# Read the package version using shell builtins on the warm path. The npm
+# package's top-level version is the first version key in its package.json.
+_hq_cli_floor_package_version_builtin() {
+  local package_json="$1" line
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ \"version\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}"
       return 0
     fi
-    dir="$(dirname "$dir")"
-  done
+  done < "$package_json"
   return 1
 }
 
-# Use the same BSD/GNU stat fallback as the surrounding core shell scripts.
-_hq_cli_floor_file_state() {
-  local file="$1" size modified
-  [ -f "$file" ] || return 1
-  size="$(stat -c %s "$file" 2>/dev/null || stat -f %z "$file" 2>/dev/null)" || return 1
-  modified="$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null)" || return 1
-  [ -n "$size" ] && [ -n "$modified" ] || return 1
-  printf '%s:%s\n' "$size" "$modified"
-}
-
-# Include package contents so same-size replacements within one timestamp
-# second cannot reuse a stale cached version.
-_hq_cli_floor_file_checksum() {
-  local file="$1" checksum
-  checksum="$(cksum < "$file")" || return 1
-  printf '%s\n' "$checksum" | awk '{ print $1 ":" $2 }'
-}
-
-# Return the installed CLI version, using a filesystem-keyed cache when possible.
+# Return the installed CLI version without starting another Node process on the
+# hook path. A package's version field is the same version reported by its
+# generated hq entry point. Unrecognized or malformed installations retain the
+# historical --version probe as a fallback.
 _hq_cli_floor_installed_version() {
-  local hq_command resolved package_json exe_state package_state package_checksum cache_key cache_id
-  local cache_dir cache_file cached_key cached_version raw_version parsed_version
+  local hq_command cached_schema cached_command cached_target cached_package_json cached_version current_package_version
+  local cache_dir cache_file resolved dir package_json package_version parent raw_version parsed_version
 
   hq_command="$(command -v hq 2>/dev/null)" || return 127
   [ -n "$hq_command" ] || return 127
 
+  # The cache hit path is intentionally shell-only. Compare the selected hq
+  # entry point and its current target with the entry recorded on the cold
+  # lookup; -nt also catches an in-place replacement of that target.
+  cache_dir="${XDG_CACHE_HOME:-${HOME:-}/.cache}/hq-cli-floor"
+  cache_file="$cache_dir/version"
+  if [ -r "$cache_file" ]; then
+    {
+      IFS= read -r cached_schema || cached_schema=""
+      IFS= read -r cached_command || cached_command=""
+      IFS= read -r cached_target || cached_target=""
+      IFS= read -r cached_package_json || cached_package_json=""
+      IFS= read -r cached_version || cached_version=""
+    } < "$cache_file"
+    if [ "$cached_schema" = "hq-cli-floor.v2" ] &&
+      [ "$cached_command" = "$hq_command" ] && [ -n "$cached_target" ] &&
+      [ -n "$cached_package_json" ] && [ -n "$cached_version" ] &&
+      _hq_cli_floor_parse_semver "$cached_version" >/dev/null 2>&1 &&
+      [ -e "$cached_target" ] && [ -f "$cached_package_json" ] &&
+      [ "$hq_command" -ef "$cached_target" ] &&
+      ! [[ "$cached_target" -nt "$cache_file" ]] &&
+      ! [[ "$cached_package_json" -nt "$cache_file" ]] &&
+      current_package_version="$( _hq_cli_floor_package_version_builtin "$cached_package_json" )" &&
+      [ "$current_package_version" = "$cached_version" ]; then
+      printf '%s\n' "$cached_version"
+      return 0
+    fi
+  fi
+
   resolved="$( _hq_cli_floor_resolve_executable "$hq_command" 2>/dev/null )" || resolved=""
-  package_json=""
   if [ -n "$resolved" ]; then
-    package_json="$( _hq_cli_floor_find_package_json "$resolved" 2>/dev/null )" || package_json=""
-  fi
-
-  cache_dir="${XDG_CACHE_HOME:-}"
-  if [ -z "$cache_dir" ] && [ -n "${HOME:-}" ]; then
-    cache_dir="$HOME/.cache"
-  fi
-  if [ -n "$cache_dir" ]; then
-    cache_dir="$cache_dir/hq/cli-version"
-  fi
-  cache_file=""
-  cache_key=""
-  if [ -n "$cache_dir" ] && [ -n "$resolved" ] && [ -n "$package_json" ]; then
-    exe_state="$( _hq_cli_floor_file_state "$resolved" 2>/dev/null )" || exe_state=""
-    package_state="$( _hq_cli_floor_file_state "$package_json" 2>/dev/null )" || package_state=""
-    package_checksum="$( _hq_cli_floor_file_checksum "$package_json" 2>/dev/null )" || package_checksum=""
-    if [ -n "$exe_state" ] && [ -n "$package_state" ] && [ -n "$package_checksum" ]; then
-      cache_key="$resolved|$exe_state|$package_json|$package_state|$package_checksum"
-      cache_id="$(printf '%s\n' "$cache_key" | cksum | awk '{ print $1 }')"
-      cache_file="$cache_dir/$cache_id"
-    fi
-  fi
-
-  if [ -n "$cache_file" ] && mkdir -p "$cache_dir" 2>/dev/null && [ -w "$cache_dir" ]; then
-    if [ -r "$cache_file" ]; then
-      cached_key=""
-      cached_version=""
-      {
-        IFS= read -r cached_key || true
-        IFS= read -r cached_version || true
-      } < "$cache_file"
-      if [ "$cached_key" = "$cache_key" ] && [ -n "$cached_version" ]; then
-        printf '%s\n' "$cached_version"
-        return 0
+    dir="${resolved%/*}"
+    while [ -n "$dir" ] && [ "$dir" != / ]; do
+      package_json="$dir/package.json"
+      if [ -f "$package_json" ]; then
+        package_version="$( _hq_cli_floor_package_version "$package_json" 2>/dev/null )" || package_version=""
+        if [ -n "$package_version" ]; then
+          if mkdir -p "$cache_dir" 2>/dev/null; then
+            local cache_tmp="$cache_file.$$"
+            if {
+              printf 'hq-cli-floor.v2\n'
+              printf '%s\n' "$hq_command"
+              printf '%s\n' "$resolved"
+              printf '%s\n' "$package_json"
+              printf '%s\n' "$package_version"
+            } > "$cache_tmp" 2>/dev/null; then
+              mv -f "$cache_tmp" "$cache_file" 2>/dev/null || rm -f "$cache_tmp" 2>/dev/null || true
+            fi
+          fi
+          printf '%s\n' "$package_version"
+          return 0
+        fi
       fi
-    fi
-  fi
-
-  if [ -n "$resolved" ]; then
+      parent="${dir%/*}"
+      [ -n "$parent" ] || parent="/"
+      [ "$parent" != "$dir" ] || break
+      dir="$parent"
+    done
     raw_version="$("$resolved" --version 2>/dev/null)" || return 1
   else
     raw_version="$(hq --version 2>/dev/null)" || return 1
@@ -156,16 +177,6 @@ _hq_cli_floor_installed_version() {
     }
   ')"
   [ -n "$parsed_version" ] || return 1
-
-  if [ -n "$cache_file" ] && mkdir -p "$cache_dir" 2>/dev/null && [ -w "$cache_dir" ]; then
-    (
-      umask 077
-      temporary="$cache_file.$$"
-      if printf '%s\n%s\n' "$cache_key" "$parsed_version" > "$temporary" 2>/dev/null; then
-        mv -f "$temporary" "$cache_file" 2>/dev/null || rm -f "$temporary"
-      fi
-    )
-  fi
   printf '%s\n' "$parsed_version"
 }
 

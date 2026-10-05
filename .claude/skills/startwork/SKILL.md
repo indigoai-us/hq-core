@@ -1,7 +1,7 @@
 ---
 name: startwork
 description: Resolve current HQ context and surface useful next work options.
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash, AskUserQuestion
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash, AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
 ---
 
 # Start Work Session
@@ -225,7 +225,7 @@ session.
 Policy loading is NOT this skill's job. Two mechanisms already inject policies before this step runs:
 
 1. **Company policies**: surfaced automatically when §2.4 runs `hq-session.sh set company_slug` — the bind emits the company's hard-enforcement rules (deduped and budgeted) directly into the tool result. Do NOT re-scan `companies/{co}/policies/` frontmatter here; that duplicates the bind emission.
-2. **Repo policies**: if repo context resolved and `{repoPath}/.claude/policies/` exists, read frontmatter-only for each file via `bash core/scripts/read-policy-frontmatter.sh {file}` (skip `example-policy.md`). This is the one scan this step still owns — repo policies are not covered by the company bind.
+2. **Repo policies**: if repo context resolved and `{repoPath}/.claude/policies/` exists, collect its files except `example-policy.md`, preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. This is the one scan this step still owns; repo policies are not covered by the company bind.
 3. **Global policies**: injected by the SessionStart/PreToolUse trigger hook (`inject-policy-on-trigger.sh`). No action here.
 
 Display in orientation block (counts only — `ls | wc -l` is enough for N/K):

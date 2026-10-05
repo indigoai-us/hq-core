@@ -40,6 +40,15 @@ die()   { echo "hq-delegate-send: $*" >&2; exit 1; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 
+# jq.exe on Windows emits CRLF data; remove only its line-ending CR bytes.
+case "${OSTYPE:-}" in
+  msys*)
+    jq() {
+      command jq "$@" | command sed -b 's/\r$//'
+    }
+    ;;
+esac
+
 MANIFEST="" SEND=0 HEADLINE="" NOTE=""
 while [ $# -gt 0 ]; do
   case "$1" in

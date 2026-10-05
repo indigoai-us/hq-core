@@ -1,7 +1,7 @@
 ---
 name: execute-task
 description: "Execute one PRD story through coordinated worker phases with test, lint, and typecheck gates."
-allowed-tools: Task, Read, Write, Glob, Grep, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/verify-story-deliverables.sh:*), Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion
+allowed-tools: Task, Read, Write, Glob, Grep, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/verify-story-deliverables.sh:*), Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
 ---
 
 # Execute Task - Worker-Coordinated Story Execution
@@ -522,13 +522,13 @@ Skip silently if no `linearIssueId` or no credentials configured. Never block ex
 
 ### 5.6 Load Applicable Policies
 
-Load policies via frontmatter-only gate. Use `bash core/scripts/read-policy-frontmatter.sh {file}` for each policy file — this reads frontmatter only (not full body), keeping context lean.
+Load policies through the frontmatter-only gate. Collect each applicable file set in stable order and divide it into consecutive chunks of at most 40 files. Invoke `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once per chunk, with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. This reads frontmatter only and keeps each tool result bounded.
 
-1. **Company policies**: Determine the active company from `prd.metadata.company` or manifest repo lookup. Read frontmatter for each file in `companies/{co}/policies/` (skip `example-policy.md`). For any policy with `enforcement: hard` whose `trigger` matches the current task, additionally read its `## Rule` section via targeted Read + range.
+1. **Company policies**: Determine the active company from `prd.metadata.company` or manifest repo lookup. Collect eligible files in `companies/{co}/policies/`, skipping `example-policy.md`, preserve their order, and read frontmatter using one complete ordered file list. For any policy with `enforcement: hard` whose `trigger` matches the current task, additionally read its `## Rule` section via targeted Read + range.
 
-2. **Repo policies**: If working inside a repo, check `{repoPath}/.claude/policies/` if it exists. Same frontmatter-only pattern.
+2. **Repo policies**: If working inside a repo, list files in `{repoPath}/.claude/policies/` if it exists, preserve their order, and read all frontmatter using one complete ordered file list with each path as a separate argument.
 
-3. **Global policies**: Policy digests (`core/policies/_digest.md`) are **retired**. Filter policies in `core/policies/` by frontmatter `trigger` via `bash core/scripts/read-policy-frontmatter.sh {file}` — don't load all. SessionStart injects matching policies via `inject-policy-on-trigger`; do not look for a digest file.
+3. **Global policies**: Policy digests (`core/policies/_digest.md`) are **retired**. Collect global policy files, preserve their order, and read their frontmatter using one complete ordered file list to filter by `trigger`; don't load full policy bodies. In the combined output, the initial unlabeled block belongs to its first path; subsequent results start with `# --- policy-file: <path> ---`. SessionStart injects matching policies via `inject-policy-on-trigger`; do not look for a digest file.
 
 Include applicable policy rules in worker prompts (step 6b) under `### Applicable Policies`.
 

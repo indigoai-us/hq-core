@@ -112,10 +112,29 @@ while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli st
         '' \
         'set -euo pipefail' \
         ''
-      if [ "$root" = "live" ]; then
+      case "$command" in
+        derive-trigger-facts|eval-trigger|migrate-policy-triggers)
+          printf '%s\n' \
+            '# Hook-time helpers must not run the CLI self-updater inside the hook deadline.' \
+            'export HQ_NO_UPDATE_CHECK=1' \
+            ''
+          ;;
+      esac
+      printf '%s\n' \
+        'FORWARDER_PATH="${BASH_SOURCE[0]}"' \
+        'FORWARDER_DIR="${FORWARDER_PATH%/*}"' \
+        '[ "$FORWARDER_DIR" != "$FORWARDER_PATH" ] || FORWARDER_DIR=.' \
+        'SCRIPT_DIR="$(cd "$FORWARDER_DIR" && pwd)"' \
+        ''
+      if [ "$root" = "live-project" ] || { [ "$root" = "live" ] && { [ "$command" = "derive-trigger-facts" ] || [ "$command" = "migrate-policy-triggers" ]; }; }; then
+        printf '%s\n' \
+          '# Preserve the original root precedence: HQ_ROOT, CLAUDE_PROJECT_DIR, then this tree.' \
+          'HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"' \
+          ''
+      elif [ "$root" = "live" ]; then
         printf '%s\n' \
           '# This forwarder sits in the tree it targets, so its own location IS the root.' \
-          "HQ_ROOT=\"\${HQ_ROOT:-\$(cd \"\$(dirname \"\${BASH_SOURCE[0]}\")/../..\" && pwd)}\"" \
+          'HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"' \
           ''
       else
         printf '%s\n' \
@@ -129,13 +148,12 @@ while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli st
       printf '%s\n' '  echo "Install it with: npm install -g @indigoai-us/hq-cli" >&2'
       printf '  exit 127\n'
       printf 'fi\n\n'
-      printf '%s\n' "SCRIPT_DIR=\"\$(cd \"\$(dirname \"\${BASH_SOURCE[0]}\")\" && pwd)\""
       printf "if [ -f \"\$SCRIPT_DIR/lib/hq-cli-floor.sh\" ]; then\n"
       printf '  # shellcheck source=lib/hq-cli-floor.sh\n'
       printf "  . \"\$SCRIPT_DIR/lib/hq-cli-floor.sh\"\n"
       printf '  hq_cli_floor_check "%s" "%s"\n' "$script_name" "$min_cli"
       printf 'fi\n\n'
-      if [ "$root" = "live" ]; then
+      if [ "$root" = "live" ] || [ "$root" = "live-project" ]; then
         printf "exec hq %s --hq-root \"\$HQ_ROOT\" %s \"\$@\"\n" core "$command"
       else
         printf "exec hq %s %s \"\$@\"\n" core "$command"
@@ -181,7 +199,10 @@ while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli st
       printf 'const scriptName = "%s";\n' "$script_name"
       printf 'const minCli = "%s";\n' "$min_cli"
       printf 'const commandArgs = %s;\n' "$command_json"
-      if [ "$root" = "live" ]; then
+      if [ "$root" = "live-project" ]; then
+        printf 'const hqRoot = process.env.HQ_ROOT || process.env.CLAUDE_PROJECT_DIR || path.resolve(scriptDir, "../..");\n'
+        printf 'const rootArgs = ["--hq-root", hqRoot];\n\n'
+      elif [ "$root" = "live" ]; then
         printf 'const hqRoot = process.env.HQ_ROOT || path.resolve(scriptDir, "../..");\n'
         printf 'const rootArgs = ["--hq-root", hqRoot];\n\n'
       else

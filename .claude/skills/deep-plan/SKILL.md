@@ -1,7 +1,7 @@
 ---
 name: deep-plan
 description: "Deep planning: research subagents plus a 15-question interview for large or strategic PRDs. For light planning use /plan."
-allowed-tools: Task, Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion
+allowed-tools: Task, Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
 ---
 
 # Deep Plan — Research-First PRD Generation
@@ -38,7 +38,7 @@ It returns `{"company":"<slug>","source":"prompt|session|device_default|none"}`:
 
 1. **Set `{co}`** = resolved slug for the entire flow. Strip it from the description only when it was the leading token
 2. **Announce:** "Anchored on **{co}**"
-3. **Load policies (frontmatter-only)** — For each file in `companies/{co}/policies/` (skip `example-policy.md`, `README.md`, and any `_digest.md` leftover), run `bash core/scripts/read-policy-frontmatter.sh {file}`. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. Policy digests (`**/policies/_digest.md`) are **retired** — SessionStart now injects matching policies via `inject-policy-on-trigger`; do not look for or prefer a digest file. Apply hard rules as constraints throughout the PRD
+3. **Load policies (frontmatter-only)** — Collect eligible files for the resolved company, except `example-policy.md`, `README.md`, and `_digest.md`; preserve their order and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. Policy digests remain retired; SessionStart injects matching policies via `inject-policy-on-trigger`. Apply hard rules as constraints throughout the PRD
 4. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}` for all `qmd` calls
 5. **Pre-load repos** — Extract `{co}.repos[]` from manifest. Present as repo options in the Architecture tier repo question
 6. **Scope workers** — Filter to company workers (`companies/{co}/workers/`) + public workers (`core/workers/public/`)
@@ -84,7 +84,7 @@ If `{co}` is anchored, scope all searches to that company.
 - Already loaded in Step 0 (frontmatter-only). Do NOT re-read here. Note constraints from that scan
 
 **Repo Policies (if repo resolved):**
-- If target repo identified, list files in `{repoPath}/.claude/policies/` (if dir exists; skip `README.md` / `_digest.md`), then for each run `bash core/scripts/read-policy-frontmatter.sh {file}`. Do not prefer a digest file (retired). For hard-enforcement policies, additionally read the `## Rule` section
+- If target repo identified, list files in `{repoPath}/.claude/policies/` (if the directory exists; skip `README.md` and `_digest.md`), preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Do not prefer a digest file (retired). For hard-enforcement policies, additionally read the `## Rule` section
 
 **Target Repo (if repo specified or discovered):**
 - If anchored: company repos already pre-loaded from manifest. Present as options

@@ -318,19 +318,35 @@ assert_migrated "$OVERRIDE_A_POLICY" "HQ_POLICY_COMPANY worker scope override"
 assert_unmigrated "$OVERRIDE_B_POLICY" "HQ_POLICY_COMPANY excludes cwd tenant workers"
 
 # A second SessionStart that begins before the first completion must not scan
-# concurrently. The first process holds its lock in grep; the policy added
-# after it begins is outside its already-expanded file list, so it changes only
-# if the second process gets past the lock/recheck path.
+# concurrently. Hold the first process inside grep until the second forwarded
+# command has returned, so the assertion is independent of CLI startup time.
 LOCK_DIR="$TMP/cooldown-lock/policies"
 LOCK_STATE="$TMP/cooldown-lock/state"
 LOCK_BIN="$TMP/cooldown-lock/bin"
 LOCK_MARKER="$TMP/cooldown-lock/grep-started"
+LOCK_RELEASE="$TMP/cooldown-lock/release-grep"
+SECOND_STARTED="$TMP/cooldown-lock/second-cli-started"
+SECOND_DONE="$TMP/cooldown-lock/second-cli-done"
 mkdir -p "$LOCK_DIR" "$LOCK_STATE" "$LOCK_BIN"
 write_migratable_policy "$LOCK_DIR/seed.md"
+REAL_HQ="$(command -v hq)"
+cat > "$LOCK_BIN/hq" <<EOF
+#!/usr/bin/env bash
+if [ "\${HQ_MIGRATE_TEST_SECOND:-}" = 1 ] && [ "\${1-}" = "--version" ]; then
+  touch "$SECOND_STARTED"
+fi
+"$REAL_HQ" "\$@"
+rc=\$?
+if [ "\${HQ_MIGRATE_TEST_SECOND:-}" = 1 ] && [ "\${1-}" = "core" ]; then
+  touch "$SECOND_DONE"
+fi
+exit "\$rc"
+EOF
+chmod +x "$LOCK_BIN/hq"
 cat > "$LOCK_BIN/grep" <<EOF
 #!/usr/bin/env bash
 touch "$LOCK_MARKER"
-sleep 2
+while [ ! -e "$LOCK_RELEASE" ]; do sleep 0.05; done
 exec "$SYSTEM_GREP" "\$@"
 EOF
 chmod +x "$LOCK_BIN/grep"
@@ -338,19 +354,38 @@ PATH="$LOCK_BIN:$PATH" HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" \
   HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR="$LOCK_STATE" \
   bash "$MIGRATOR" "$LOCK_DIR" >"$TMP/lock-first.out" 2>"$TMP/lock-first.err" &
 lock_first_pid=$!
-for _ in $(seq 1 50); do
+for _ in $(seq 1 300); do
   [ -e "$LOCK_MARKER" ] && break
   sleep 0.1
 done
 [ -e "$LOCK_MARKER" ] || fail "first concurrent migration never reached its lock-held scan"
 write_migratable_policy "$LOCK_DIR/pending.md"
-HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" \
+PATH="$LOCK_BIN:$PATH" HQ_MIGRATE_TEST_SECOND=1 HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" \
   HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR="$LOCK_STATE" \
   bash "$MIGRATOR" "$LOCK_DIR" >"$TMP/lock-second.out" 2>"$TMP/lock-second.err" &
 lock_second_pid=$!
+[ -e "$SECOND_STARTED" ] || {
+  for _ in $(seq 1 300); do [ -e "$SECOND_STARTED" ] && break; sleep 0.1; done
+}
+[ -e "$SECOND_STARTED" ] || {
+  touch "$LOCK_RELEASE"
+  wait "$lock_first_pid" || true
+  wait "$lock_second_pid" || true
+  fail "second forwarded command did not start while the first held its lock"
+}
+[ -e "$SECOND_DONE" ] || {
+  for _ in $(seq 1 300); do [ -e "$SECOND_DONE" ] && break; sleep 0.1; done
+}
+[ -e "$SECOND_DONE" ] || {
+  touch "$LOCK_RELEASE"
+  wait "$lock_first_pid" || true
+  wait "$lock_second_pid" || true
+  fail "second forwarded command did not return while the first held its lock"
+}
+assert_unmigrated "$LOCK_DIR/pending.md" "concurrent SessionStart scanned despite the cooldown lock"
+touch "$LOCK_RELEASE"
 wait "$lock_first_pid" || fail "first concurrent migration failed"
 wait "$lock_second_pid" || fail "second concurrent migration failed"
-assert_unmigrated "$LOCK_DIR/pending.md" "concurrent SessionStart scanned despite the cooldown lock"
 
 # A clean service environment may have neither HOME nor XDG_STATE_HOME. In
 # that case the migration remains available, with no cooldown state to trust.
@@ -361,51 +396,43 @@ env -u HOME -u XDG_STATE_HOME HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" \
   bash "$MIGRATOR" "$NO_HOME_DIR"
 assert_migrated "$NO_HOME_DIR/pending.md" "migration failed when HOME and XDG_STATE_HOME were unset"
 
-# Call-site contract: the registered migration hook shells out to the
-# evaluator. A 127 forwarder is treated as an unparseable trigger and leaves
-# the source file untouched; an absent evaluator deliberately skips grammar
-# validation and writes the derived trigger. Both paths keep exit 0 and exact
-# output streams pinned.
+# Forwarder contract: the checked-in migration path reaches the published CLI
+# and retains the bundled evaluator dependency. When the CLI is below the
+# declared floor, the generated forwarder exits 127 before changing policies.
 CONTRACT_ROOT="$TMP/evaluator-callsite"
 CONTRACT_FORWARDER="$CONTRACT_ROOT/forwarder"
 CONTRACT_ABSENT="$CONTRACT_ROOT/absent"
-mkdir -p "$CONTRACT_FORWARDER/core/scripts" "$CONTRACT_FORWARDER/core/policies" \
-  "$CONTRACT_ABSENT/core/scripts" "$CONTRACT_ABSENT/core/policies"
-cp "$MIGRATOR" "$CONTRACT_FORWARDER/core/scripts/migrate-policy-triggers.sh"
-cp "$MIGRATOR" "$CONTRACT_ABSENT/core/scripts/migrate-policy-triggers.sh"
+mkdir -p "$CONTRACT_FORWARDER/core/scripts/lib" "$CONTRACT_FORWARDER/core/policies" \
+  "$CONTRACT_ABSENT/core/scripts/lib" "$CONTRACT_ABSENT/core/policies"
+ln -s "$MIGRATOR" "$CONTRACT_FORWARDER/core/scripts/migrate-policy-triggers.sh"
+ln -s "$MIGRATOR" "$CONTRACT_ABSENT/core/scripts/migrate-policy-triggers.sh"
+ln -s "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$CONTRACT_ABSENT/core/scripts/lib/hq-cli-floor.sh"
 write_migratable_policy "$CONTRACT_FORWARDER/core/policies/forwarder.md"
 write_migratable_policy "$CONTRACT_ABSENT/core/policies/absent.md"
-CONTRACT_LOG="$CONTRACT_ROOT/eval.calls"
-cat > "$CONTRACT_FORWARDER/core/scripts/eval-trigger.sh" <<EOF
+MOCK_OLD_CLI="$CONTRACT_ROOT/old-cli"
+mkdir -p "$MOCK_OLD_CLI"
+cat > "$MOCK_OLD_CLI/hq" <<'EOF'
 #!/usr/bin/env bash
-printf 'called\n' >> '$CONTRACT_LOG'
-printf '%s\n' 'eval-trigger.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest' >&2
+if [ "${1-}" = "--version" ]; then printf '5.341.2\n'; exit 0; fi
+printf 'unexpected old hq invocation: %s\n' "$*" >&2
 exit 127
 EOF
-chmod +x "$CONTRACT_FORWARDER/core/scripts/eval-trigger.sh"
+chmod +x "$MOCK_OLD_CLI/hq"
 if HQ_ROOT="$CONTRACT_FORWARDER" CLAUDE_PROJECT_DIR="$CONTRACT_FORWARDER" \
   HQ_MIGRATE_POLICY_TRIGGERS_COOLDOWN_SECONDS=0 \
   HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR="$CONTRACT_FORWARDER/state" \
-  bash "$CONTRACT_FORWARDER/core/scripts/migrate-policy-triggers.sh" \
-    "$CONTRACT_FORWARDER/core/policies" >"$CONTRACT_ROOT/forwarder.out" 2>"$CONTRACT_ROOT/forwarder.err"; then
+  bash "$MIGRATOR" "$CONTRACT_FORWARDER/core/policies" \
+    >"$CONTRACT_ROOT/forwarder.out" 2>"$CONTRACT_ROOT/forwarder.err"; then
   got=0
 else
   got=$?
 fi
-[ "$got" = 0 ] && [ ! -s "$CONTRACT_ROOT/forwarder.out" ] || fail "migration 127 forwarder changed status/stdout"
-grep -qx 'called' "$CONTRACT_LOG" || fail "migration did not execute evaluator forwarder"
-cmp -s "$CONTRACT_FORWARDER/core/policies/forwarder.md" <(printf '%s\n' \
-  '---' 'id: forwarder' 'enforcement: soft' 'trigger: when deploying' '---' '' \
-  '## Rule' 'This policy must be backfilled when the cooldown permits a migration.') \
-  || fail "migration wrote an unparseable trigger despite evaluator 127"
-cat > "$CONTRACT_ROOT/forwarder.expected" <<'EOF'
-eval-trigger.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest
-migrate-policy-triggers: refusing to write unparseable when: forwarder.md -> `deploy`
-EOF
-cmp -s "$CONTRACT_ROOT/forwarder.expected" "$CONTRACT_ROOT/forwarder.err" \
-  || fail "migration 127 stderr differs: $(cat "$CONTRACT_ROOT/forwarder.err")"
+[ "$got" = 0 ] || fail "migration forwarder with the installed CLI failed: $got"
+grep -qx 'when: deploy' "$CONTRACT_FORWARDER/core/policies/forwarder.md" \
+  || fail "migration forwarder did not backfill its synthetic policy"
 
-if HQ_ROOT="$CONTRACT_ABSENT" CLAUDE_PROJECT_DIR="$CONTRACT_ABSENT" \
+before_absent="$(sha256sum "$CONTRACT_ABSENT/core/policies/absent.md")"
+if PATH="$MOCK_OLD_CLI:$PATH" HQ_ROOT="$CONTRACT_ABSENT" CLAUDE_PROJECT_DIR="$CONTRACT_ABSENT" \
   HQ_MIGRATE_POLICY_TRIGGERS_COOLDOWN_SECONDS=0 \
   HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR="$CONTRACT_ABSENT/state" \
   bash "$CONTRACT_ABSENT/core/scripts/migrate-policy-triggers.sh" \
@@ -414,11 +441,13 @@ if HQ_ROOT="$CONTRACT_ABSENT" CLAUDE_PROJECT_DIR="$CONTRACT_ABSENT" \
 else
   got=$?
 fi
-[ "$got" = 0 ] && [ ! -s "$CONTRACT_ROOT/absent.out" ] || fail "migration absent evaluator changed status/stdout"
-grep -qx 'when: deploy' "$CONTRACT_ABSENT/core/policies/absent.md" \
-  || fail "missing evaluator no longer skips validation and writes trigger"
-grep -qx 'migrate-policy-triggers: backfilled 1 policy trigger(s) (0 hard -> SessionStart, 0 non-hard triggerless left unchanged, 0 unparseable derivations skipped, 0 already had when)' "$CONTRACT_ROOT/absent.err" \
-  || fail "migration absent evaluator stderr differs: $(cat "$CONTRACT_ROOT/absent.err")"
-echo "PASS: migration evaluator 127/absence call-site contract"
+[ "$got" = 127 ] && [ ! -s "$CONTRACT_ROOT/absent.out" ] \
+  || fail "migration forwarder below the CLI floor must exit 127 without stdout (got $got)"
+after_absent="$(sha256sum "$CONTRACT_ABSENT/core/policies/absent.md")"
+[ "$before_absent" = "$after_absent" ] \
+  || fail "migration forwarder below the CLI floor changed a policy"
+grep -qx 'migrate-policy-triggers.sh: this script needs hq-cli >= 5.341.3 (found 5.341.2); upgrade with: npm install -g @indigoai-us/hq-cli@latest' "$CONTRACT_ROOT/absent.err" \
+  || fail "old CLI migration forwarder diagnostic changed"
+echo "PASS: migration forwarder and minimum-version contract"
 
 echo "PASS: migrate-policy-triggers enforcement-gated fallback and 10 cooldown cases"

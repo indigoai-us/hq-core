@@ -17,8 +17,13 @@
 
 set -euo pipefail
 
+FORWARDER_PATH="${BASH_SOURCE[0]}"
+FORWARDER_DIR="${FORWARDER_PATH%/*}"
+[ "$FORWARDER_DIR" != "$FORWARDER_PATH" ] || FORWARDER_DIR=.
+SCRIPT_DIR="$(cd "$FORWARDER_DIR" && pwd)"
+
 # This forwarder sits in the tree it targets, so its own location IS the root.
-HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
 if ! command -v hq >/dev/null 2>&1; then
   echo "rebuild-companies-index.sh: requires the hq CLI — this script's implementation now ships with it." >&2
@@ -26,7 +31,6 @@ if ! command -v hq >/dev/null 2>&1; then
   exit 127
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/lib/hq-cli-floor.sh" ]; then
   # shellcheck source=lib/hq-cli-floor.sh
   . "$SCRIPT_DIR/lib/hq-cli-floor.sh"

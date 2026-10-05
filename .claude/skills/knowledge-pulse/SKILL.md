@@ -1,7 +1,7 @@
 ---
 name: knowledge-pulse
 description: Run a lightweight freshness pass over company knowledge and policies.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/knowledge-pulse-lock.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/knowledge-pulse-lock.sh:*)
 ---
 
 # Knowledge Pulse — Background Gardening
@@ -165,7 +165,7 @@ For each policy file:
 **Skip if caller is `startwork`.**
 
 1. Read company policies from `{policies_path}/`
-2. Read global policies from `core/policies/` (frontmatter only — use `core/scripts/read-policy-frontmatter.sh`)
+2. Collect global policy files except `example-policy.md`, preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator.
 3. For each company policy: check if a global policy with similar `trigger` exists
 4. If both are `enforcement: hard` with potentially conflicting rules: log as "Potential conflict: company {title} vs global {title}"
 5. Track: `policy_conflicts` count

@@ -144,16 +144,24 @@ pass "repair-stale-review-base is silent when the detector is absent"
 ROOT_INJECT="$(make_root inject-policy)"
 cp "$ROOT/.claude/hooks/inject-policy-on-trigger.sh" "$ROOT_INJECT/.claude/hooks/"
 cp "$ROOT/core/scripts/hook-lib.sh" "$ROOT_INJECT/core/scripts/"
-cp "$ROOT/core/scripts/eval-trigger.sh" "$ROOT_INJECT/core/scripts/"
+ln -s "$ROOT/core/scripts/eval-trigger.sh" "$ROOT_INJECT/core/scripts/eval-trigger.sh"
 INJECT_HELPER="$ROOT_INJECT/core/scripts/derive-trigger-facts.sh"
-INJECT_LOG="$TMP/inject-derived.calls"
-make_forwarder_stub "$INJECT_HELPER" derive-trigger-facts.sh "$INJECT_LOG"
+ln -s "$ROOT/core/scripts/derive-trigger-facts.sh" "$INJECT_HELPER"
+ln -s "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$ROOT_INJECT/core/scripts/lib/hq-cli-floor.sh"
+MOCK_CLI="$TMP/old-hq-cli"
+mkdir -p "$MOCK_CLI"
+cat > "$MOCK_CLI/hq" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1-}" = "--version" ]; then printf '5.341.2\n'; exit 0; fi
+printf 'unexpected old hq invocation: %s\n' "$*" >&2
+exit 64
+EOF
+chmod +x "$MOCK_CLI/hq"
 PAYLOAD='{"hook_event_name":"PostToolUse","session_id":"contract-session","tool_name":"Bash","tool_input":{"command":"echo ok"},"tool_response":{"exit_code":0}}'
-rc="$(run_hook "$ROOT_INJECT" "$ROOT_INJECT/.claude/hooks/inject-policy-on-trigger.sh" "$PAYLOAD")"
+rc="$(PATH="$MOCK_CLI:$PATH" run_hook "$ROOT_INJECT" "$ROOT_INJECT/.claude/hooks/inject-policy-on-trigger.sh" "$PAYLOAD")"
 [ "$rc" = 0 ] && [ ! -s "$OUT" ] || fail "inject derive 127 changed status/stdout"
-printf '%s\n' 'derive-trigger-facts.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest' > "$TMP/inject.expected"
+printf '%s\n' 'derive-trigger-facts.sh: this script needs hq-cli >= 5.342.5 (found 5.341.2); upgrade with: npm install -g @indigoai-us/hq-cli@latest' > "$TMP/inject.expected"
 cmp -s "$TMP/inject.expected" "$ERR" || fail "inject derive 127 stderr differs: $(cat "$ERR")"
-[ "$(cat "$INJECT_LOG")" = called ] || fail "inject hook did not run its derive helper"
 rm -f "$INJECT_HELPER"
 rc="$(run_hook "$ROOT_INJECT" "$ROOT_INJECT/.claude/hooks/inject-policy-on-trigger.sh" "$PAYLOAD")"
 assert_empty_result "inject derive absent" "$rc"
@@ -165,7 +173,7 @@ pass "inject-policy-on-trigger ignores derive 127 and remains silent when absent
 ROOT_EVAL="$(make_root inject-eval-guard)"
 cp "$ROOT/.claude/hooks/inject-policy-on-trigger.sh" "$ROOT_EVAL/.claude/hooks/"
 cp "$ROOT/core/scripts/hook-lib.sh" "$ROOT_EVAL/core/scripts/"
-cp "$ROOT/core/scripts/derive-trigger-facts.sh" "$ROOT_EVAL/core/scripts/"
+ln -s "$ROOT/core/scripts/derive-trigger-facts.sh" "$ROOT_EVAL/core/scripts/derive-trigger-facts.sh"
 cp "$ROOT/core/scripts/lib/transcript-tail.sh" "$ROOT_EVAL/core/scripts/lib/"
 cp "$ROOT/core/scripts/lib/trigger-fact-text.awk" "$ROOT_EVAL/core/scripts/lib/"
 EVAL_LOG="$TMP/inject-eval.calls"

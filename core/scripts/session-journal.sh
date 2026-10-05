@@ -59,16 +59,73 @@ resolve_session_key() {
 }
 
 # Read-modify-write on the counter must not interleave across concurrent tasks.
+# Waiters retry for about 5 s (250 x 20 ms) by default; under heavy contention a
+# 1 s budget was not enough for 30 concurrent writers. After that the update is
+# skipped rather than run unlocked. HQ_JOURNAL_COUNTER_LOCK_TRIES overrides the
+# attempt count (tests use it to force exhaustion quickly).
+# A stale lock is reclaimable only when its recorded owner PID is no longer
+# alive. The sibling reclaim directory serializes reclaimers; after rechecking
+# the owner under that claim, rename the stale lock before deleting its unique
+# tombstone so a new owner can never be removed by cleanup.
+reclaim_stale_counter_lock() {
+  local lockdir="$1" owner_pid current_owner claim stale_dir suffix=0
+  owner_pid="$(cat "$lockdir/pid" 2>/dev/null || true)"
+  case "$owner_pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$owner_pid" -gt 1 ] 2>/dev/null || return 1
+  kill -0 "$owner_pid" 2>/dev/null && return 1
+
+  claim="${lockdir}.reclaim"
+  mkdir "$claim" 2>/dev/null || return 1
+  if ! printf '%s\n' "$$" > "$claim/pid" 2>/dev/null; then
+    rmdir "$claim" 2>/dev/null || true
+    return 1
+  fi
+
+  current_owner="$(cat "$lockdir/pid" 2>/dev/null || true)"
+  if [ "$current_owner" = "$owner_pid" ] && ! kill -0 "$owner_pid" 2>/dev/null; then
+    stale_dir="${lockdir}.stale.$$.$RANDOM"
+    while [ -e "$stale_dir" ]; do
+      suffix=$((suffix + 1))
+      stale_dir="${lockdir}.stale.$$.$RANDOM.$suffix"
+    done
+    if mv "$lockdir" "$stale_dir" 2>/dev/null; then
+      rm -rf "$stale_dir" 2>/dev/null || true
+      rm -rf "$claim" 2>/dev/null || true
+      return 0
+    fi
+  fi
+
+  rm -rf "$claim" 2>/dev/null || true
+  return 1
+}
+
 with_counter_lock() {
   local lockdir="$1"; shift
-  local i=0
-  while ! mkdir "$lockdir" 2>/dev/null; do
+  local i=0 acquired=0 rc=0 tries="${HQ_JOURNAL_COUNTER_LOCK_TRIES:-250}"
+  case "$tries" in ''|*[!0-9]*) tries=250 ;; esac
+  while [ "$i" -lt "$tries" ]; do
+    if mkdir "$lockdir" 2>/dev/null; then
+      acquired=1
+      if ! printf '%s\n' "$$" > "$lockdir/pid" 2>/dev/null; then
+        rm -rf "$lockdir" 2>/dev/null || true
+        return 0
+      fi
+      break
+    fi
+    reclaim_stale_counter_lock "$lockdir" && continue
     i=$((i + 1))
-    [ "$i" -ge 50 ] && break
-    sleep 0.02 2>/dev/null || sleep 1
+    [ "$i" -ge "$tries" ] || sleep 0.02 2>/dev/null || sleep 1
   done
-  "$@"
-  rmdir "$lockdir" 2>/dev/null || true
+  if [ "$acquired" -ne 1 ]; then
+    warn "tool-counter: lock remained busy; skipped update"
+    return 0
+  fi
+
+  "$@" || rc=$?
+  if [ "$(cat "$lockdir/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -rf "$lockdir" 2>/dev/null || true
+  fi
+  return "$rc"
 }
 
 counter_read_raw() {

@@ -3,6 +3,7 @@
 # bash on the hook path then pays nvm (~1-11s). Measured 2026-09-21 macOS:
 # adapter 18-32s, bridge 28s, master-hook 4.5s; with BASH_ENV=/dev/null: 4.0s / 3.5s.
 MASTER_ENTRY_SECONDS="${SECONDS:-0}"
+MASTER_ENTRY_REALTIME="${EPOCHREALTIME:-}"
 export BASH_ENV=/dev/null
 # Master hook — dispatches a hook event to the active company's hook scripts.
 #
@@ -103,6 +104,10 @@ master_now_ms() {
   printf '%s000' "$now"
 }
 
+MASTER_DISPATCH_STARTED_MS=""
+MASTER_DISPATCH_STARTED_SECONDS="$MASTER_ENTRY_SECONDS"
+MASTER_DISPATCH_START_RECORDED=0
+
 master_timing_precision() {
   local candidate=""
   [ -n "${EPOCHREALTIME:-}" ] && { printf 'ms'; return; }
@@ -137,6 +142,12 @@ case "$0" in
   *) SCRIPT_DIR="$(pwd)" ;;
 esac
 . "$SCRIPT_DIR/hook-timeout-probe.sh"
+if [[ "$MASTER_ENTRY_REALTIME" =~ ^([0-9]{1,12})\.([0-9]+)$ ]]; then
+  master_entry_seconds="${BASH_REMATCH[1]}"
+  master_entry_fraction="${BASH_REMATCH[2]}000"
+  master_entry_fraction="${master_entry_fraction:0:3}"
+  MASTER_DISPATCH_STARTED_MS=$((10#$master_entry_seconds * 1000 + 10#$master_entry_fraction))
+fi
 # shellcheck disable=SC2034 # Shared with phase helpers loaded from hook-timeout-probe.sh.
 MASTER_DEBUG_PHASE_BUFFER=()
 MASTER_DEBUG_PHASE_FILE=""
@@ -148,6 +159,38 @@ MASTER_DEBUG_CHILD_ACTIVE_PHASE_FILE=""
 MASTER_DEBUG_ACTIVE_PHASE=""
 # shellcheck disable=SC2034 # Shared with phase helpers loaded from hook-timeout-probe.sh.
 MASTER_DEBUG_ACTIVE_STARTED=""
+
+master_record_dispatch_startup() {
+  local now elapsed i entry phase found=0
+  [ "$MASTER_DISPATCH_START_RECORDED" -eq 0 ] || return 0
+  if [[ "$MASTER_DISPATCH_STARTED_MS" =~ ^[0-9]{1,16}$ ]] \
+    && hook_timeout_realtime_ms \
+    && [ "$HOOK_TIMEOUT_REALTIME_MS" -ge "$MASTER_DISPATCH_STARTED_MS" ]; then
+    now="$HOOK_TIMEOUT_REALTIME_MS"
+    elapsed=$((now - MASTER_DISPATCH_STARTED_MS + MASTER_DISPATCH_STARTED_SECONDS * 1000))
+    [ "$elapsed" -le 86400000 ] || elapsed=86400000
+  elif [[ "$MASTER_DISPATCH_STARTED_SECONDS" =~ ^[0-9]{1,9}$ ]]; then
+    elapsed=$((SECONDS * 1000))
+    [ "$elapsed" -le 86400000 ] || elapsed=86400000
+  else
+    return 0
+  fi
+  MASTER_DISPATCH_START_RECORDED=1
+  if [ "$elapsed" -ge 0 ]; then
+    for i in "${!MASTER_DEBUG_PHASE_BUFFER[@]}"; do
+      entry="${MASTER_DEBUG_PHASE_BUFFER[$i]}"
+      phase="${entry%%$'\t'*}"
+      [ "$phase" = startup ] || continue
+      MASTER_DEBUG_PHASE_BUFFER[$i]="startup"$'\t'"$elapsed"
+      found=1
+      break
+    done
+    [ "$found" -eq 1 ] || MASTER_DEBUG_PHASE_BUFFER+=("startup"$'\t'"$elapsed")
+    if [ -n "${MASTER_DEBUG_ACTIVE_PHASE:-}" ] && [ -n "${MASTER_DEBUG_ACTIVE_STARTED:-}" ]; then
+      master_debug_phase_write_state "$MASTER_DEBUG_ACTIVE_PHASE" "$MASTER_DEBUG_ACTIVE_STARTED"
+    fi
+  fi
+}
 
 master_debug_phase_start startup
 # HQ root comes from the shared resolver (anchor = this hook's own HQ, then
@@ -403,10 +446,21 @@ SESSION_ID=""
 PREFILTER_TEXT=""
 PAYLOAD_CWD=""
 PAYLOAD_AGENT_ID=""
+TOOL_COMMAND=""
+TOOL_METADATA_EXTRACTED=0
+TOOL_COMMAND_EXTRACTED=0
 master_debug_phase_start parse
 {
-  IFS=$'\x1f' read -r TOOL_NAME MATCH_KEY SESSION_ID PAYLOAD_CWD PAYLOAD_AGENT_ID PREFILTER_TEXT || true
-} < <(printf '%s' "$INPUT" | jq -r --arg ev "$EVENT" '
+  # NUL-frame metadata and command separately. Bash 3.2 (the system Bash on
+  # macOS) supports read -d but not read -N. Keeping command last preserves
+  # embedded newlines, unit separators, and a trailing newline exactly.
+  if IFS=$'\x1f' read -r -d '' TOOL_NAME MATCH_KEY SESSION_ID PAYLOAD_CWD PAYLOAD_AGENT_ID PREFILTER_TEXT; then
+    TOOL_METADATA_EXTRACTED=1
+    if IFS= read -r -d '' TOOL_COMMAND; then
+      TOOL_COMMAND_EXTRACTED=1
+    fi
+  fi
+} < <(printf '%s' "$INPUT" | jq -j --arg ev "$EVENT" '
   [ (.tool_name // ""),
     (if ($ev == "PreToolUse" or $ev == "PostToolUse") then (.tool_name // "")
      elif $ev == "PreCompact" then (.trigger // "")
@@ -418,8 +472,13 @@ master_debug_phase_start parse
     ((if $ev == "UserPromptSubmit" then (.prompt // "")
       elif (.tool_input | type) == "object" then (.tool_input | tojson)
       else (.prompt // "") end)
-     + (if $ev == "PostToolUse" and .tool_response != null then " " + (.tool_response | tojson) else "" end))
-  ] | map(gsub("\u001f|\n"; " ")) | join("\u001f")' 2>/dev/null || printf '\n')
+     + (if $ev == "PostToolUse" and .tool_response != null then " " + (.tool_response | tojson) else "" end)),
+    (if .tool_name == "Bash" and ($ev == "PreToolUse" or $ev == "PostToolUse")
+     then (.tool_input.command // "" | tostring) else "" end)
+  ] as $fields
+  | ($fields[0:6] | map(gsub("\u001f|\n"; " ")) | join("\u001f"))
+    + "\u0000" + $fields[6] + "\u0000"
+' 2>/dev/null)
 is_tool_event "$EVENT" || TOOL_NAME=""
 master_debug_phase_finish parse
 
@@ -438,10 +497,21 @@ fi
 # ~130 ms on Windows Git Bash). Values are exported even when empty so a hook
 # can distinguish "known empty" from "not provided".
 export HQ_HOOK_EVENT="$EVENT"
-export HQ_HOOK_TOOL_NAME="$TOOL_NAME"
-export HQ_HOOK_SESSION_ID="$SESSION_ID"
-export HQ_HOOK_CWD="$PAYLOAD_CWD"
-export HQ_HOOK_AGENT_ID="$PAYLOAD_AGENT_ID"
+if [ "$TOOL_METADATA_EXTRACTED" -eq 1 ]; then
+  export HQ_HOOK_TOOL_NAME="$TOOL_NAME"
+  export HQ_HOOK_SESSION_ID="$SESSION_ID"
+  export HQ_HOOK_CWD="$PAYLOAD_CWD"
+  export HQ_HOOK_AGENT_ID="$PAYLOAD_AGENT_ID"
+else
+  # Leave fields absent so safety guards can parse the original input instead
+  # of treating a failed extraction as a known-empty command.
+  unset HQ_HOOK_TOOL_NAME HQ_HOOK_SESSION_ID HQ_HOOK_CWD HQ_HOOK_AGENT_ID
+fi
+if [ "$TOOL_COMMAND_EXTRACTED" -eq 1 ]; then
+  export HQ_HOOK_COMMAND="$TOOL_COMMAND"
+else
+  unset HQ_HOOK_COMMAND
+fi
 # Prefilters match against the tool input (command, file_path, content, ...)
 # or the prompt, never the whole payload: cwd/session paths must not trigger
 # path-shaped regexes. Newlines inside the text are flattened to spaces, which
@@ -1354,7 +1424,8 @@ master_report_late_event() {
   local child_timeout_seconds="${5:-}" declared_timeout_ms watchdog_timeout_ms
   local hook_name message hq_version platform load_average fingerprint_identity fingerprint_hash
   local bash_env_set shell_info cwd_kind_value nproc_count hook_sequence policy_trigger_metadata report_exit event_json
-  local os_name spawn_ms slow_child="" slow_child_ms="" slow_child_duration=0 i
+  local os_name spawn_ms slow_child="" slow_child_ms="" slow_child_state="" slow_phase="" slow_child_duration=0 dispatcher_fallback=0 i
+  local active_child_name="" active_child_event="" active_child_started_ms="" active_child_now_ms=""
   local hq_bin debug_process_count=unavailable debug_spawn_ms=unavailable debug_context=""
   local debug_phase_timings='[]' debug_wait_point=wait debug_child_name=other debug_child_elapsed=0 debug_remaining_ms
   command -v hq >/dev/null 2>&1 || return 0
@@ -1371,21 +1442,46 @@ master_report_late_event() {
   load_average="$(master_load_average)"
   spawn_ms="$(master_spawn_probe_ms "$os_name")"
   if [ "$hook_name" = master-hook.sh ]; then
-    for i in "${!completed_child_elapsed_ms[@]}"; do
-      if [ "${completed_child_elapsed_ms[$i]}" -gt "$slow_child_duration" ]; then
-        slow_child_duration="${completed_child_elapsed_ms[$i]}"
-        slow_child="${completed_child_paths[$i]##*/}"
+    if [ -n "${active_child_file:-}" ] && [ -r "$active_child_file" ]; then
+      IFS=$'\t' read -r active_child_name active_child_event active_child_started_ms < "$active_child_file" || true
+    fi
+    case "$active_child_name" in ''|*[!A-Za-z0-9._-]*) active_child_name="" ;; esac
+    if [ -n "$active_child_name" ] && [ "$active_child_event" = "$EVENT" ] \
+      && [[ "$active_child_started_ms" =~ ^[0-9]+$ ]]; then
+      active_child_now_ms="$(master_now_ms)"
+      if [[ "$active_child_now_ms" =~ ^[0-9]+$ ]] && [ "$active_child_now_ms" -ge "$active_child_started_ms" ]; then
+        slow_child="$active_child_name"
+        slow_child_ms=$((active_child_now_ms - active_child_started_ms))
+        slow_child_state=running
       fi
-    done
+    fi
+    if [ -z "$slow_child" ]; then
+      for i in "${!completed_child_elapsed_ms[@]}"; do
+        if [ "${completed_child_elapsed_ms[$i]}" -gt "$slow_child_duration" ]; then
+          slow_child_duration="${completed_child_elapsed_ms[$i]}"
+          slow_child="${completed_child_paths[$i]##*/}"
+        fi
+      done
+      if [ -n "$slow_child" ] && [ "$slow_child_duration" -gt 0 ]; then
+        slow_child_state=completed
+      fi
+    fi
   else
     slow_child="$hook_name"
     slow_child_ms="$final_elapsed_ms"
+    slow_child_state=completed
   fi
   [ -n "$slow_child_ms" ] || [ "$slow_child_duration" -le 0 ] || slow_child_ms="$slow_child_duration"
   if [ -z "$slow_child" ] && [ "$hook_name" = master-hook.sh ]; then
+    slow_child=master-hook.sh
+    slow_child_ms="$final_elapsed_ms"
+    dispatcher_fallback=1
+  fi
+  if [ "$dispatcher_fallback" -eq 1 ]; then
     case "${MASTER_DEBUG_ACTIVE_PHASE:-}" in
       startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse)
         debug_wait_point="$MASTER_DEBUG_ACTIVE_PHASE"
+        slow_phase="$MASTER_DEBUG_ACTIVE_PHASE"
         ;;
     esac
   fi
@@ -1419,12 +1515,25 @@ master_report_late_event() {
     [[ "$spawn_ms" =~ ^[0-9]+$ ]] && debug_spawn_ms="$spawn_ms"
     debug_process_count="$(hook_timeout_windows_process_count "$(command -v ps 2>/dev/null || printf 'ps')")"
   fi
-  if [ -n "$slow_child" ]; then
+  if [ "$dispatcher_fallback" -eq 1 ]; then
+    # Preserve the active phase for the detailed context; the top-level fields
+    # carry the dispatcher basename and its measured elapsed time for the CLI.
+    debug_child_name=other
+    debug_child_elapsed="$slow_child_ms"
+  elif [ -n "$slow_child" ]; then
     debug_wait_point=child_wait
     debug_child_name="$slow_child"
     debug_child_elapsed="${slow_child_ms:-$final_elapsed_ms}"
     case "$slow_child" in
-      master:*) debug_wait_point="${slow_child#master:}"; debug_child_name=other ;;
+      master:*)
+        debug_wait_point="${slow_child#master:}"
+        debug_child_name=other
+        case "$debug_wait_point" in
+          startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse)
+            slow_phase="$debug_wait_point"
+            ;;
+        esac
+        ;;
     esac
   fi
   if hook_timeout_cli_supports_debug_context "$hq_bin" "$MASTER_DEBUG_CLI_VERSION_FILE" "$platform"; then
@@ -1449,6 +1558,8 @@ master_report_late_event() {
     --arg spawn_ms "$spawn_ms" \
     --arg slow_child "$slow_child" \
     --arg slow_child_ms "$slow_child_ms" \
+    --arg slow_child_state "$slow_child_state" \
+    --arg slow_phase "$slow_phase" \
       --argjson hook_sequence "$hook_sequence" \
     --arg bash_env_set "$bash_env_set" \
     --arg shell "$shell_info" \
@@ -1491,8 +1602,11 @@ master_report_late_event() {
           hook_sequence: $hook_sequence
         }
         + (if ($spawn_ms | test("^[0-9]+$")) then {spawn_ms: ($spawn_ms | tonumber)} else {} end)
+        + (if ($slow_phase | length) > 0 then {slow_phase: $slow_phase} else {} end)
         + (if ($slow_child | length) > 0 and ($slow_child_ms | test("^[0-9]+$"))
-           then {slow_child: $slow_child, slow_child_ms: ($slow_child_ms | tonumber)} else {} end))
+           then {slow_child: $slow_child, slow_child_ms: ($slow_child_ms | tonumber)} else {} end)
+        + (if $slow_child_state == "running" or $slow_child_state == "completed"
+           then {slow_child_state: $slow_child_state} else {} end))
       }
     ')" || return 0
   [ -n "$event_json" ] || return 0
@@ -1629,6 +1743,7 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     child_started_ms="$(master_now_ms)"
     prepare_child_completion_marker
     master_debug_phase_start external_command
+    master_record_dispatch_startup
     # shellcheck disable=SC2086 # args are space-separated literals from the registry.
     out="$(run_child "$rtimeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
     master_debug_phase_finish external_command
@@ -1713,6 +1828,7 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
   # The single dispatcher watchdog armed at the top covers every child; the
   # previous per-child re-arm cost two setsid bash processes per hook.
   master_debug_phase_start external_command
+  master_record_dispatch_startup
   out="$(run_child "$master_child_timeout" "exec" "$hook" "$child_completion_marker" "$EVENT")" || rc=$?
   master_debug_phase_finish external_command
   child_ended_ms="$(master_now_ms)"

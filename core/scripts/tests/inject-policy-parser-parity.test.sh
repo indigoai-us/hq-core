@@ -22,7 +22,7 @@ trap 'rm -rf "$TMPROOT"' EXIT
 mkdir -p "$ROOT/core/policies" "$ROOT/core/scripts" "$ROOT/.claude/hooks" \
   "$ROOT/workspace/orchestrator/policy-trigger-state"
 cp "$HQ_SRC/core/scripts/hook-lib.sh" "$ROOT/core/scripts/hook-lib.sh"
-cp "$EVAL" "$ROOT/core/scripts/eval-trigger.sh"
+ln -s "$EVAL" "$ROOT/core/scripts/eval-trigger.sh"
 cp "$INJECT" "$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
 cat >"$ROOT/core/scripts/derive-trigger-facts.sh" <<'EOF'
 #!/usr/bin/env bash

@@ -19,11 +19,15 @@ CALLS="$SANDBOX/hq-calls"
 POST_BODY="$SANDBOX/post-body"
 printf '[]\n' > "$HISTORY"
 
+REAL_HQ="$(command -v hq)"
+REAL_NODE="$(command -v node)"
+export REAL_HQ REAL_NODE
 cat > "$SANDBOX/bin/hq" <<'S'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$CALLS"
 
+if [ "${1:-}" = core ]; then exec "$REAL_NODE" "$REAL_HQ" "$@"; fi
 if [ "${1:-}" = --version ]; then
   printf 'CLI %s\n' "${HQ_VERSION:-5.137.0}"
   exit 0

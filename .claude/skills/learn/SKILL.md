@@ -1,7 +1,7 @@
 ---
 name: learn
 description: Turn reusable findings into scoped policies or insight files.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(grep:*), Bash(mkdir:*), Bash(date:*), Bash(ls:*), Bash(bash:*), Bash(git:*), Bash(rm:*), Bash(stat:*), Bash
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(grep:*), Bash(mkdir:*), Bash(date:*), Bash(ls:*), Bash(bash:*), Bash(git:*), Bash(rm:*), Bash(stat:*), Bash, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
 ---
 
 # Learn - Automated Learning Pipeline
@@ -45,7 +45,7 @@ See `core/knowledge/public/hq-core/insights-spec.md` for the insight file format
 
 Before processing, load applicable policies with minimal context burn:
 
-1. For each file in `core/policies/` (skip `example-policy.md`), run `bash core/scripts/read-policy-frontmatter.sh {file}` to get frontmatter-only
+1. Collect eligible paths in the global policy set except `example-policy.md`, keep their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator.
 2. Note `enforcement: hard` titles. Only Read the `## Rule` section of hard-enforcement policies if one looks relevant to the current learning
 
 Skip full policy body loads — the frontmatter contains enough metadata for the learn pipeline.

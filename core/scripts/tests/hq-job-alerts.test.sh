@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # hq-core: public
 # Integration: hq-job-run.sh classify → remediate → ingest → notify (US-006).
+# HQ_CLI_REQUIRED_IN_CI: the caller reaches the generated hq-job-notify forwarder.
 #
 # Covers ACs / e2e-shaped cases:
 #   - exit 0 → one ok dm + run ingest failure_class null
@@ -9,6 +10,8 @@
 #   - trust: only requirements.secrets[] via hq secrets exec --only
 set -euo pipefail
 
+REAL_HQ="$(command -v hq 2>/dev/null || true)"
+export REAL_HQ
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RUN="$ROOT/core/scripts/hq-job-run.sh"
@@ -106,6 +109,8 @@ chmod +x "$BIN/sync-pull.sh"
 cat >"$BIN/hq" <<'STUB'
 #!/usr/bin/env bash
 echo "hq: $*" >>"${HQ_STUB_LOG}"
+if [ "${1:-}" = "--version" ]; then exec "${REAL_HQ:?pinned hq CLI required}" --version; fi
+if [ "${1:-}" = "core" ]; then exec "${REAL_HQ:?pinned hq CLI required}" "$@"; fi
 if [ "${1:-}" = "secrets" ]; then
   shift
   only=""

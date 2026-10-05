@@ -1,0 +1,41 @@
+name: hq CLI floor parity
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hq-cli-floor-parity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hq-cli-floor-parity:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: hq CLI floor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install jq on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install jq -y --no-progress
+          $jqExe = @(
+            "$env:ChocolateyInstall\bin\jq.exe",
+            "$env:ChocolateyInstall\lib\jq\tools\jq.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $jqExe) { throw 'jq.exe was not found after Chocolatey install' }
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $jqExe)
+      - name: Run floor cache and compatibility tests
+        run: bash core/scripts/tests/hq-cli-floor.test.sh

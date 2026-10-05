@@ -16,6 +16,21 @@ fail() {
 }
 pass() { printf 'PASS: %s\n' "$1"; }
 
+ACTUAL_CORE_FLOOR="$(awk -F '[:\"]' '$1 == "requiresHqCli" { gsub(/[[:space:]]/, "", $3); print $3 }' "$ROOT/core/core.yaml")"
+if [ "$ACTUAL_CORE_FLOOR" = ">=5.342.7" ]; then
+  pass 'core CLI floor matches the minimum Windows-safe hook helper and policy batching CLI'
+else
+  fail "core CLI floor is >=5.342.7 for hook helper and policy batching compatibility: got $ACTUAL_CORE_FLOOR"
+fi
+POLICY_MIN_CLI="$(awk '
+  /^  - path: core\/scripts\/read-policy-frontmatter\.sh$/ { found=1; next }
+  found && /^    min_cli:/ { print $2; exit }
+' "$ROOT/core/scripts/cli-hosted.yaml")"
+if [ -n "$POLICY_MIN_CLI" ] && [ "$ACTUAL_CORE_FLOOR" = ">=$POLICY_MIN_CLI" ]; then
+  pass 'core CLI floor matches the forwarded policy minimum'
+else
+  fail "core CLI floor should match forwarded policy min_cli $POLICY_MIN_CLI: got $ACTUAL_CORE_FLOOR"
+fi
 MOCK_BIN="$TMP/mock-bin"
 MOCK_PREFIX="$TMP/global"
 MOCK_NPM_ROOT="$MOCK_PREFIX/lib/node_modules"
@@ -68,6 +83,40 @@ HQ
 chmod +x "$MOCK_BIN/hq"
 
 INSTALL_ROOT="$TMP/install-root"
+ROOT_PRECEDENCE_ROOT="$TMP/root-precedence-root"
+mkdir -p "$ROOT_PRECEDENCE_ROOT/core/scripts/lib"
+cp "$SCRIPTS/lib/cli-hosted-manifest.awk" "$ROOT_PRECEDENCE_ROOT/core/scripts/lib/cli-hosted-manifest.awk"
+cat > "$ROOT_PRECEDENCE_ROOT/core/scripts/cli-hosted.yaml" <<'YAML'
+entries:
+  - path: core/scripts/derive-trigger-facts.sh
+    command: derive-trigger-facts
+    kind: generated
+    root: live
+    interpreter: bash
+    min_cli: 5.341.3
+    state: forwarded
+YAML
+bash "$GENERATOR" --manifest "$ROOT_PRECEDENCE_ROOT/core/scripts/cli-hosted.yaml" \
+  --output-root "$ROOT_PRECEDENCE_ROOT" >/dev/null
+if grep -F -q 'HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-' \
+  "$ROOT_PRECEDENCE_ROOT/core/scripts/derive-trigger-facts.sh"; then
+  pass 'live trigger-fact forwarder preserves CLAUDE_PROJECT_DIR root fallback'
+else
+  fail 'live trigger-fact forwarder preserves CLAUDE_PROJECT_DIR root fallback'
+fi
+mkdir -p "$ROOT_PRECEDENCE_ROOT/bin"
+cat > "$ROOT_PRECEDENCE_ROOT/bin/hq" <<'HQ'
+#!/usr/bin/env bash
+printf '%s\n' "${HQ_NO_UPDATE_CHECK-}"
+HQ
+chmod +x "$ROOT_PRECEDENCE_ROOT/bin/hq"
+NO_UPDATE_OUTPUT="$(PATH="$ROOT_PRECEDENCE_ROOT/bin:$PATH" \
+  bash "$ROOT_PRECEDENCE_ROOT/core/scripts/derive-trigger-facts.sh" PreToolUse)"
+if [ "$NO_UPDATE_OUTPUT" = "1" ]; then
+  pass 'hook-time forwarder disables the CLI self-updater before exec'
+else
+  fail "hook-time forwarder disables the CLI self-updater before exec: got '$NO_UPDATE_OUTPUT'"
+fi
 mkdir -p "$INSTALL_ROOT/core/scripts/lib"
 cp "$SCRIPTS/lib/cli-hosted-manifest.awk" "$INSTALL_ROOT/core/scripts/lib/cli-hosted-manifest.awk"
 cat > "$INSTALL_ROOT/core/core.yaml" <<'YAML'
@@ -101,10 +150,11 @@ CORE_YAML_FILE="$INSTALL_ROOT/core/core.yaml"
 BASE_CORE_YAML="$TMP/base-core.yaml"
 cp "$CORE_YAML_FILE" "$BASE_CORE_YAML"
 RESOLVED_PIN="$(bash "$INSTALLER" --root "$INSTALL_ROOT" --resolve-only)"
-if [ "$RESOLVED_PIN" = "5.324.0" ]; then
+EXPECTED_CI_PIN="$(sed -n 's/^HQ_CI_MIN_CLI="\([^"]*\)"$/\1/p' "$INSTALLER")"
+if [ -n "$EXPECTED_CI_PIN" ] && [ "$RESOLVED_PIN" = "$EXPECTED_CI_PIN" ]; then
   pass 'resolve-only honors the CI-only minimum hq-cli pin'
 else
-  fail "resolve-only selects CI minimum 5.324.0: got $RESOLVED_PIN"
+  fail "resolve-only selects CI minimum from the installer: expected $EXPECTED_CI_PIN, got $RESOLVED_PIN"
 fi
 awk '{ gsub(/min_cli: 5\.270\.0/, "min_cli: 5.400.0"); print }' "$BASE_MANIFEST" > "$MANIFEST_FILE"
 RESOLVED_FORWARDER_PIN="$(bash "$INSTALLER" --root "$INSTALL_ROOT" --resolve-only)"
@@ -147,14 +197,14 @@ CACHED_PATH_FILE="$TMP/cached-github-path"
 mkdir -p "$CACHED_PREFIX/bin"
 cat > "$CACHED_PREFIX/bin/hq" <<'HQ'
 #!/usr/bin/env bash
-if [ "${1-}" = "--version" ]; then printf '5.324.0\n'; exit 0; fi
+if [ "${1-}" = "--version" ]; then printf '%s\n' "${HQ_MOCK_VERSION:?}"; exit 0; fi
 if [ "${1-}" = "core" ] && [ "${2-}" = "--help" ]; then exit 0; fi
 exit 64
 HQ
 chmod +x "$CACHED_PREFIX/bin/hq"
 CACHED_OUTPUT="$(MOCK_NPM_PREFIX="$CACHED_PREFIX" MOCK_NPM_ROOT="$MOCK_NPM_ROOT" \
   MOCK_NPM_INSTALL_LOG="$MOCK_NPM_LOG" GITHUB_PATH="$CACHED_PATH_FILE" \
-  HQ_MOCK_VERSION=5.324.0 PATH="$MOCK_BIN:$PATH" \
+  HQ_MOCK_VERSION="$EXPECTED_CI_PIN" PATH="$MOCK_BIN:$PATH" \
   bash "$INSTALLER" --root "$INSTALL_ROOT" 2>&1)" || fail "cached pinned CLI is reused: $CACHED_OUTPUT"
 if [ -s "$MOCK_NPM_LOG" ]; then
   fail 'already-installed selected hq version skips npm install'
@@ -166,7 +216,7 @@ if ! grep -F -q "$CACHED_PREFIX/bin" "$CACHED_PATH_FILE"; then
 else
   pass 'cached CLI still exports the npm global bin directory through GITHUB_PATH'
 fi
-if ! grep -F -q 'hq --version: 5.324.0' <<<"$CACHED_OUTPUT"; then
+if ! grep -F -q "hq --version: $EXPECTED_CI_PIN" <<<"$CACHED_OUTPUT"; then
   fail 'cached CLI still passes the final selected-version check'
 else
   pass 'cached CLI still passes the final selected-version check'
@@ -177,7 +227,7 @@ if [ ! -f "$INSTALLER" ]; then
 else
   install_output="$(MOCK_NPM_PREFIX="$MOCK_PREFIX" MOCK_NPM_ROOT="$MOCK_NPM_ROOT" \
     MOCK_NPM_INSTALL_LOG="$MOCK_NPM_LOG" GITHUB_PATH="$GITHUB_PATH_FILE" \
-    GITHUB_ENV="$GITHUB_ENV_FILE" HQ_MOCK_VERSION=5.324.0 PATH="$MOCK_BIN:$PATH" \
+    GITHUB_ENV="$GITHUB_ENV_FILE" HQ_MOCK_VERSION="$EXPECTED_CI_PIN" PATH="$MOCK_BIN:$PATH" \
     bash "$INSTALLER" --root "$INSTALL_ROOT" 2>&1)" || {
       fail "pinned CLI installer succeeds: $install_output"
       install_output=""
@@ -187,7 +237,7 @@ else
   else
     pass 'installer turns the version gate off for later CI steps'
   fi
-  if ! grep -F -q 'install -g @indigoai-us/hq-cli@5.324.0 --ignore-scripts' "$MOCK_NPM_LOG"; then
+  if ! grep -F -q "install -g @indigoai-us/hq-cli@$EXPECTED_CI_PIN --ignore-scripts" "$MOCK_NPM_LOG"; then
     fail 'installer selects the maximum manifest min_cli and suppresses package lifecycle scripts'
   else
     pass 'different installed version triggers npm install at the selected pin'
@@ -197,7 +247,7 @@ else
   else
     pass 'installer exports the npm global bin directory through GITHUB_PATH'
   fi
-  if ! grep -F -q '5.324.0' <<<"$install_output"; then
+  if ! grep -F -q "hq --version: $EXPECTED_CI_PIN" <<<"$install_output"; then
     fail 'installer prints the installed hq version'
   else
     pass 'installer prints the installed hq version'
@@ -209,17 +259,17 @@ WINDOWS_PATH_FILE="$TMP/windows-github-path"
 mkdir -p "$WINDOWS_PREFIX"
 cat > "$WINDOWS_PREFIX/hq" <<'HQ'
 #!/usr/bin/env bash
-if [ "${1-}" = "--version" ]; then printf '5.324.0\n'; exit 0; fi
+if [ "${1-}" = "--version" ]; then printf '%s\n' "${HQ_MOCK_VERSION:?}"; exit 0; fi
 if [ "${1-}" = "core" ] && [ "${2-}" = "--help" ]; then exit 0; fi
 exit 64
 HQ
 chmod +x "$WINDOWS_PREFIX/hq"
 if WINDOWS_INSTALL_OUTPUT="$(MOCK_NPM_PREFIX="$WINDOWS_PREFIX" MOCK_NPM_ROOT="$MOCK_NPM_ROOT" \
   MOCK_NPM_INSTALL_LOG="$MOCK_NPM_LOG" GITHUB_PATH="$WINDOWS_PATH_FILE" \
-  HQ_MOCK_VERSION=5.324.0 PATH="$MOCK_BIN:$PATH" \
+  HQ_MOCK_VERSION="$EXPECTED_CI_PIN" PATH="$MOCK_BIN:$PATH" \
   bash "$INSTALLER" --root "$INSTALL_ROOT" 2>&1)"; then
   if grep -F -q "$WINDOWS_PREFIX" "$WINDOWS_PATH_FILE" \
-    && grep -F -q 'hq --version: 5.324.0' <<<"$WINDOWS_INSTALL_OUTPUT"; then
+    && grep -F -q "hq --version: $EXPECTED_CI_PIN" <<<"$WINDOWS_INSTALL_OUTPUT"; then
     pass 'installer accepts an npm global bin placed directly in its prefix'
   else
     fail 'installer exports and validates a prefix-level Windows-style npm bin'
@@ -255,14 +305,14 @@ else
 fi
 
 make_guard_root() {
-  local tree="$1" call="${2:-archive-old-threads}"
+  local tree="$1" call="${2:-archive-old-threads}" root_mode="${3:-live}"
   mkdir -p "$tree/core/scripts/ci"
-  cat > "$tree/core/scripts/cli-hosted.yaml" <<'YAML'
+  cat > "$tree/core/scripts/cli-hosted.yaml" <<YAML
 entries:
   - path: core/scripts/fixture-live.sh
     command: fixture-live
     kind: generated
-    root: live
+    root: $root_mode
     interpreter: bash
     min_cli: 5.269.0
     state: forwarded
@@ -344,6 +394,16 @@ elif ! grep -F -q 'cli-hosted manifest and backmerge checks passed' "$TMP/guard.
   fail 'clean catalog guard emits its success line'
 else
   pass 'supported CLI catalog passes when every row and allow-listed call site is registered'
+fi
+
+TREE="$TMP/guard-live-project-root"
+make_guard_root "$TREE" archive-old-threads live-project
+write_catalog "$CATALOG"
+status="$(run_guard "$TREE" 5.276.0 "$CATALOG" 0)"
+if [ "$status" -ne 0 ]; then
+  fail 'live-project wrapper root maps to the native live catalog capability'
+else
+  pass 'live-project wrapper root maps to the native live catalog capability'
 fi
 
 TREE="$TMP/guard-missing-command"

@@ -1,32 +1,41 @@
-#!/bin/bash
-# read-policy-frontmatter.sh — Extract YAML frontmatter from a policy file
+#!/usr/bin/env bash
+# FORWARDER — the implementation of this script now lives in the hq CLI.
 #
-# Usage: bash core/scripts/read-policy-frontmatter.sh <policy-file>
+# It ships at assets/scaffold/core/scripts/read-policy-frontmatter.sh inside @indigoai-us/hq-cli and
+# runs as the hidden command `hq core policy frontmatter`. This file stays behind so every
+# existing caller — skills, other scripts, CI, and muscle memory — keeps working
+# against the path it already knows.
 #
-# Returns only the YAML frontmatter block (between the first two --- markers),
-# skipping the policy body. Used by /startwork, /plan, /brainstorm, /run commands
-# to minimize context burn when scanning policy metadata (id, title, enforcement,
-# when) without loading the full ## Rule and ## Rationale sections.
-# (Fields id/title/enforcement/when/on live in that block.)
+# Why the implementation moved: it is a small, explicitly-invoked policy reader;
+# the CLI keeps the implementation behind core-native-policy and the caller's
+# file path and working directory continue to define its input.
 #
-# Exit codes:
-#   0 - Success, frontmatter written to stdout
-#   1 - Usage error or file not readable
+# The ABI is preserved exactly: arguments are forwarded unchanged, stdin is never
+# read by this file, stdout and stderr are inherited untouched, and the child
+# replaces this process so its exit code and signal disposition become the
+# caller's.
 
 set -euo pipefail
 
-if [ $# -lt 1 ]; then
-  echo "USAGE: read-policy-frontmatter.sh <policy-file>" >&2
-  exit 1
+FORWARDER_PATH="${BASH_SOURCE[0]}"
+FORWARDER_DIR="${FORWARDER_PATH%/*}"
+[ "$FORWARDER_DIR" != "$FORWARDER_PATH" ] || FORWARDER_DIR=.
+SCRIPT_DIR="$(cd "$FORWARDER_DIR" && pwd)"
+
+# No root is injected: this script derived its root from the CALLER's cwd
+# before it moved (git top level, a cwd walk, or a positional argument), and the
+# CLI preserves that. Anything the caller already exported still applies.
+
+if ! command -v hq >/dev/null 2>&1; then
+  echo "read-policy-frontmatter.sh: requires the hq CLI — this script's implementation now ships with it." >&2
+  echo "Install it with: npm install -g @indigoai-us/hq-cli" >&2
+  exit 127
 fi
 
-FILE="$1"
-
-if [ ! -r "$FILE" ]; then
-  echo "ERROR: File not readable: $FILE" >&2
-  exit 1
+if [ -f "$SCRIPT_DIR/lib/hq-cli-floor.sh" ]; then
+  # shellcheck source=lib/hq-cli-floor.sh
+  . "$SCRIPT_DIR/lib/hq-cli-floor.sh"
+  hq_cli_floor_check "read-policy-frontmatter.sh" "5.342.7"
 fi
 
-# Extract frontmatter: lines between first two --- markers.
-# c counts --- markers; print lines only while inside the frontmatter (c==1).
-awk '/^---$/{c++; next} c==1' "$FILE"
+exec hq core policy frontmatter "$@"

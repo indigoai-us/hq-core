@@ -72,7 +72,7 @@ PROMOTE_WORKFLOW="$ROOT/.github/workflows/promote-to-hq-core.yml"
 RECHECK_WORKFLOW="$ROOT/.github/workflows/recheck-hq-core-release-gate.yml"
 grep -Fq 'path: staging' "$PROMOTE_WORKFLOW" || fail "promotion workflow must check out staging under staging/"
 grep -Fq 'run: bash staging/core/scripts/release-pr-check-gate.sh ' "$PROMOTE_WORKFLOW" || fail "promotion workflow must invoke the gate from staging/"
-grep -Fq '      - uses: actions/checkout@v4' "$RECHECK_WORKFLOW" || fail "recheck workflow must check out the repository root"
+grep -Fq '      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4' "$RECHECK_WORKFLOW" || fail "recheck workflow must check out the repository root"
 if grep -Fq 'path:' "$RECHECK_WORKFLOW"; then fail "recheck workflow checkout must remain at the repository root"; fi
 grep -Fq 'bash core/scripts/release-pr-check-gate.sh ' "$RECHECK_WORKFLOW" || fail "recheck workflow must invoke the gate from its root checkout"
 printf '%s\n' 'PASS: promotion and scheduled recheck workflows invoke the gate from their checkout paths'
