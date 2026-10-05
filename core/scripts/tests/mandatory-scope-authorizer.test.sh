@@ -93,6 +93,8 @@ install_fixture ""
 payload='{"tool_name":"Read","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml"}}'
 rc="$(run_hook "$payload")"
 [ "$rc" = "2" ] || fail "expected exit 2 for unbound company read, got $rc"
+grep -Fq 'hq-session.sh set company_slug' "$TMP/err.txt" || fail "unbound session denial should explain how to bind a company"
+grep -qi 'Write tool' "$TMP/err.txt" || fail "unbound session denial should direct data-file writes to the Write tool"
 
 payload='{"tool_name":"Read","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/_template/readme.md"}}'
 rc="$(run_hook "$payload")"
@@ -107,6 +109,7 @@ install_fixture "indigo"
 payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"command":"cat companies/otherco/settings/secrets.yaml"}}'
 rc="$(run_hook "$payload")"
 [ "$rc" = "2" ] || fail "expected exit 2 for bash cross-company, got $rc"
+grep -qi 'Write tool' "$TMP/err.txt" || fail "bound wrong-company denial should direct data-file writes to the Write tool"
 
 echo "[5] Bash allows a literal same-company path with an unrelated expansion"
 install_fixture "indigo"
@@ -119,6 +122,7 @@ install_fixture "indigo"
 payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"command":"co=otherco; cat companies/$co/settings/x"}}'
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "unresolved company variable fails closed"
+grep -qi 'Write tool' "$TMP/err.txt" || fail "shell-expanded company path denial should direct data-file writes to the Write tool"
 
 echo "[7] Bash blocks expansion in the remainder of a company path"
 install_fixture "indigo"
@@ -263,6 +267,9 @@ run_hook_env() { # run_hook_env <payload> [env assignments...]
 rc="$(run_hook_env "$scoped_payload" HQ_TEST_MARKER=1)"
 [ "$rc" = "2" ] || fail "expected exit 2 for an unidentifiable session, got '$rc'"
 grep -q "NO session id" "$TMP/err.txt" || fail "message must say the call carries no session id"
+if grep -Fq 'hq-session.sh set company_slug' "$TMP/err.txt"; then
+  fail "unidentifiable session denial must not suggest binding a company"
+fi
 
 echo "[19] .current is never consulted for an authorization decision"
 # The fixture binds sess-bound AND points .current at it. A call carrying no
@@ -503,6 +510,7 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "heredoc redirected into another company is blocked"
+grep -qi 'Write tool' "$TMP/err.txt" || fail "heredoc company path denial should direct data-file writes to the Write tool"
 
 echo "[39] Bash scans a heredoc executed as a shell script"
 install_fixture "indigo"

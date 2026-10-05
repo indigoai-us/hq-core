@@ -605,6 +605,24 @@ if [[ $STAGE_FAILURE_COUNT -gt 0 && "$HQ_COMMIT_STATUS" != "failed" ]]; then
 fi
 COMMIT_AFTER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
+# -------- publish continuity pointer to the personal vault (cross-device) --------
+# workspace/ is otherwise excluded from the personal vault; only handoff.json
+# plus the referenced thread file are carved in (hq-cloud-sync
+# computeContinuityPointerPaths). Without a push between A's /handoff and B's
+# /startwork, machine B sees stale state. Fire the publisher in the background
+# so handoff never blocks on cloud reachability. Fail-soft: a missing hq CLI,
+# an offline host, or a logged-out operator all exit 0 inside the helper.
+HANDOFF_PUBLISH_PID=""
+HANDOFF_PUBLISH_STATUS="skipped"
+_PUBLISH_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/handoff-sync-publish.sh"
+if [[ "$HQ_COMMITTED" == "true" && -f "$_PUBLISH_SH" ]]; then
+  HANDOFF_PUBLISH_PID="$(bash "$_PUBLISH_SH" --hq-root "$HQ_ROOT" \
+    --log /tmp/handoff-sync-publish.log 2>/dev/null || true)"
+  if [[ -n "$HANDOFF_PUBLISH_PID" ]]; then
+    HANDOFF_PUBLISH_STATUS="dispatched"
+  fi
+fi
+
 # -------- qmd reindex fire-and-forget (agent: skip; laptop: single-flight) --------
 # Agent boxes: managed timer owns indexing — handoff never kicks qmd.
 # Laptop: qmd-reindex-bg single-flight reindex. See qmd-reindex-bg.sh.
@@ -674,6 +692,8 @@ MSYS_NO_PATHCONV=1 jq -n \
   --arg next_command "$NEXT_COMMAND" \
   --argjson clipboard_copied "$CLIPBOARD_COPIED" \
   --argjson mirror_companies "$MIRRORED_COMPANIES_JSON" \
+  --arg handoff_publish_pid "${HANDOFF_PUBLISH_PID:-}" \
+  --arg handoff_publish_status "${HANDOFF_PUBLISH_STATUS:-skipped}" \
   '{
     thread_id: $thread_id,
     thread_path: $thread_path,
@@ -692,7 +712,9 @@ MSYS_NO_PATHCONV=1 jq -n \
     git_bg_errors: $git_bg_errors,
     next_command: $next_command,
     clipboard_copied: $clipboard_copied,
-    mirror_companies: $mirror_companies
+    mirror_companies: $mirror_companies,
+    handoff_publish_pid: $handoff_publish_pid,
+    handoff_publish_status: $handoff_publish_status
   }'
 
 # -------- fail loudly on a git write that did not land --------

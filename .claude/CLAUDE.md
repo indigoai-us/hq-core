@@ -35,7 +35,13 @@ scaffolds, supervises, and syncs work across repos and companies.
 - Bugs and feature requests: `/hq-bug`.
 - Work Mesh Live presence is automatic (enqueue hooks + `hq mesh daemon`). Manual signals only: `hq mesh session task-status|blocked|note --enqueue …`. Board story status: `hq mesh story --story <id> --status <status>`. Clarification: `hq mesh context organize`.
 - Search: `/search`, `hq search`, or `qmd`.
-- Connected apps: `/hq-integrations` or `hq integrations`.
+- Connected apps: `/hq-integrations` or `hq integrations`. For any request to
+  look up, read, create, update, or search in an external app (Linear, Notion,
+  Jira, GitHub, Slack, Sentry, Gmail, Google Drive, Asana, ClickUp, Figma,
+  HubSpot, Salesforce, and anything else wired through HQ), check `hq
+  integrations list` FIRST and route through the HQ gateway when connected.
+  Only fall back to a separate MCP, web search, or asking the user when the app
+  is not connected there.
 - Bots and agents: `hq bot` for local bots, `/new-agent` for hosted agents,
   `hq agent enroll` for external bots.
 - Billing: `hq billing`.
