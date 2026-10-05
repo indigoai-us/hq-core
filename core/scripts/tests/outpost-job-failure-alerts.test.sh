@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # hq-core: public
 # Regression: Outpost systemd job units retain the resolved CLI PATH and job-owner UIDs reach hq dm unchanged (US-081).
+# HQ_CLI_REQUIRED_IN_CI: the caller reaches the generated hq-job-notify forwarder.
 set -euo pipefail
 
+REAL_HQ="$(command -v hq 2>/dev/null || true)"
+export REAL_HQ
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RECON="$ROOT/core/scripts/outpost-jobs-reconcile.sh"
@@ -29,7 +32,7 @@ NPM_GLOBAL_PREFIX="$TMP/npm%global prefix"
 NPM_GLOBAL_BIN="$NPM_GLOBAL_PREFIX/bin"
 NPM_BIN="$TMP/npm-tools"
 mkdir -p "$BASE_BIN" "$NPM_GLOBAL_BIN" "$NPM_BIN"
-for tool in awk basename bash cat chmod cp cksum cut date dirname find flock grep head id install jq ln mkdir mktemp mv realpath rm sed sha256sum shasum sleep sort stat tee touch tr wc; do
+for tool in awk basename bash cat chmod cp cksum cut date dirname find flock grep head id install jq ln mkdir mktemp mv node realpath rm sed sha256sum shasum sleep sort stat tee touch tr wc; do
   tool_path="$(command -v "$tool" 2>/dev/null || true)"
   if [ -n "$tool_path" ] && [ -x "$tool_path" ]; then
     ln -s "$tool_path" "$BASE_BIN/$tool"
@@ -41,6 +44,8 @@ cat >"$NPM_GLOBAL_BIN/hq" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
+  --version) "${REAL_HQ:?pinned hq CLI required}" --version ;;
+  core) exec "${REAL_HQ:?pinned hq CLI required}" "$@" ;;
   whoami)
     if [ "${2:-}" = "--json" ]; then
       printf '{"email":"machine@example.test","personUid":"prs_machine"}\n'
@@ -167,6 +172,8 @@ STUB
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
+  --version) "${REAL_HQ:?pinned hq CLI required}" --version ;;
+  core) exec "${REAL_HQ:?pinned hq CLI required}" "$@" ;;
   whoami)
     printf 'whoami\n' >>"$HQ_JOB_TEST_WHOAMI_LOG"
     printf 'email: machine@example.test\n'
@@ -194,33 +201,60 @@ STUB
 
   bash "$RUN" --hq-root "$hq_root" --job-id us081-person-uid >"$TMP/owner.stdout" 2>"$TMP/owner.stderr" \
     || fail "job runner failed: $(cat "$TMP/owner.stderr")"
-  grep -Fxq 'recipient=prs_01TESTOWNER0000000000000000' "$dm_log" \
-    || fail "personUid was not delivered unchanged; observed recipients: $(cat "$dm_log")"
+  if ! grep -Fxq 'recipient=prs_01TESTOWNER0000000000000000' "$dm_log"; then
+    cat "$TMP/owner.stderr" >&2
+    cat "$whoami_log" >&2
+    fail "personUid was not delivered unchanged; observed recipients: $(cat "$dm_log")"
+  fi
   [ ! -s "$whoami_log" ] || fail "personUid owner triggered hq whoami"
   pass "personUid owner is sent directly to hq dm without hq whoami"
 }
 
 test_missing_hq_is_nonfatal() {
-  local hq_root="$TMP/no-hq-root" home_dir="$TMP/no-hq-home" out rc
-  mkdir -p "$hq_root/personal/settings" "$home_dir/.hq/jobs"
+  local hq_root="$TMP/no-hq-root" home_dir="$TMP/no-hq-home" run_bin="$TMP/no-hq-run-bin" out rc
+  mkdir -p "$hq_root/personal/settings" "$hq_root/personal/jobs" "$home_dir/.hq/jobs" \
+    "$home_dir/.claude" "$run_bin"
   cat >"$hq_root/personal/settings/schedule-alerts.yaml" <<'YAML'
 channel: dm
 updated_at: "2026-09-28T00:00:00Z"
 YAML
+  cp "$FIXTURE" "$hq_root/personal/jobs/no-hq.yaml"
+  yq -i '.id = "no-hq" | .owner = "owner@example.test" | .notify = "dm"' \
+    "$hq_root/personal/jobs/no-hq.yaml"
+  printf '{"token":"synthetic-test-token"}\n' >"$home_dir/.claude/.credentials.json"
+  cat >"$run_bin/claude" <<'STUB'
+#!/usr/bin/env bash
+printf 'synthetic job completed\n'
+STUB
+  chmod +x "$run_bin/claude"
   assert_hq_only_in_npm_global
+
   set +e
-  out="$(PATH="$BASE_PATH" HOME="$home_dir" HQ_ROOT="$hq_root" \
+  PATH="$BASE_PATH" HOME="$home_dir" HQ_ROOT="$hq_root" \
     HQ_JOB_ALERT_DIR="$home_dir/.hq/jobs/alerts" \
     bash "$NOTIFY" --hq-root "$hq_root" --job-id no-hq --job-name "No hq binary" \
       --owner owner@example.test --notify dm --outcome failed --summary "synthetic failure" \
-      --duration 1 --log-path "$home_dir/run.log" 2>"$TMP/no-hq.stderr")"
+      --duration 1 --log-path "$home_dir/run.log" >"$TMP/no-hq-helper.out" 2>"$TMP/no-hq-helper.err"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] || fail "notify failed when hq was unavailable (exit $rc)"
-  printf '%s' "$out" | jq -e '.delivered == false' >/dev/null || fail "missing-hq result did not report undelivered"
-  grep -Fq 'skip dm send — hq CLI not found' "$TMP/no-hq.stderr" \
-    || fail "missing hq binary was not clearly logged"
-  pass "missing hq binary is logged and does not fail the job"
+  [ "$rc" -eq 127 ] || fail "forwarder missing-CLI status was $rc, expected 127"
+  grep -Fq 'hq-job-notify.sh: requires the hq CLI' "$TMP/no-hq-helper.err" \
+    || fail "missing CLI forwarder message was absent"
+
+  set +e
+  out="$(PATH="$run_bin:$NPM_BIN:$BASE_PATH" HOME="$home_dir" HQ_ROOT="$hq_root" \
+    HQ_JOB_ALERT_DIR="$home_dir/.hq/jobs/alerts" HQ_JOB_LOCK="$home_dir/.hq/jobs/run.lock" \
+    HQ_JOB_LOG_DIR="$home_dir/.hq/jobs/logs" HQ_JOB_METER_DIR="$home_dir/.hq/jobs/meters" \
+    HQ_JOB_RUN_NO_INGEST=1 bash "$RUN" --hq-root "$hq_root" --job-id no-hq \
+      2>"$TMP/no-hq-caller.stderr")"
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then cat "$TMP/no-hq-caller.stderr" >&2; fail "job-run caller failed with missing hq (exit $rc)"; fi
+  [ -z "$out" ] || fail "job-run unexpectedly wrote stdout with missing hq: $out"
+  grep -Fq 'notify helper exited 127 (ignored)' "$TMP/no-hq-caller.stderr" \
+    || fail "job-run did not log the forwarder failure"
+  grep -Fq 'job no-hq completed ok' "$TMP/no-hq-caller.stderr" || fail "job-run log did not preserve success status"
+  pass "missing hq is reported by the forwarder; job-run logs it and exits 0"
 }
 
 case "${1:-all}" in

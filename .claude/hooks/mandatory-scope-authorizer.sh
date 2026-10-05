@@ -13,9 +13,16 @@
 
 set -euo pipefail
 
-INPUT="$(cat)"
-PAYLOAD_CWD="$(printf '%s' "$INPUT" | jq -r '.cwd // empty')"
-if [ -n "${HQ_HOOK_TOOL_NAME+set}" ]; then
+INPUT=
+IFS= read -r -d '' INPUT || true
+INPUT="${INPUT%"${INPUT##*[!$'\n']}"}"
+
+if [ "${HQ_HOOK_CWD+set}" = "set" ]; then
+  PAYLOAD_CWD="$HQ_HOOK_CWD"
+else
+  PAYLOAD_CWD="$(printf '%s' "$INPUT" | jq -r '.cwd // empty')"
+fi
+if [ "${HQ_HOOK_TOOL_NAME+set}" = "set" ]; then
   TOOL="$HQ_HOOK_TOOL_NAME"   # parsed once by master-hook.sh
 else
   TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')"
@@ -335,6 +342,7 @@ scope_check_bash_glob_candidate() {
   local normalized_prefix company_root expansion_cwd match resolved_match rel
   local count=0 prefix_remaining backtick=$'\140'
 
+  scope_load_bound_company
   [ -n "$BOUND_CO" ] || scope_block_rel "$candidate" "no bound company authorizes glob expansion"
   case "$candidate" in
     *"'"*|*'"'*|*\\*) scope_block_rel "$candidate" "quoted or escaped glob syntax cannot be checked safely" ;;
@@ -522,12 +530,12 @@ LIB_DIR="$HQ_ROOT/core/scripts/lib"
 #
 # A payload with no session id is produced by `claude -p --session-id <uuid>`.
 # Such a call cannot be attributed to any session and is denied below.
-if [ -n "${HQ_HOOK_SESSION_ID+set}" ]; then
+if [ "${HQ_HOOK_SESSION_ID+set}" = "set" ]; then
   SESSION_ID="$HQ_HOOK_SESSION_ID"
 else
   SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty')"
 fi
-COMMAND_CWD="$(printf '%s' "$INPUT" | jq -r '.cwd // empty')"
+COMMAND_CWD="$PAYLOAD_CWD"
 [ -n "$COMMAND_CWD" ] || COMMAND_CWD="$(pwd -P)"
 
 scope_read_bound_company() {
@@ -551,14 +559,18 @@ scope_read_bound_company() {
 }
 
 BOUND_CO=""
-if [ -n "$SESSION_ID" ]; then
+BOUND_CO_LOADED=0
+scope_load_bound_company() {
+  [ "$BOUND_CO_LOADED" -eq 0 ] || return 0
+  BOUND_CO_LOADED=1
+  [ -n "$SESSION_ID" ] || return 0
   BOUND_CO="$(scope_read_bound_company "$SESSION_ID")"
-  # SessionStart bind can land in the same turn as the first companies/ Read.
+  # SessionStart bind can land in the same turn as the first company path.
   # Re-read once rather than weakening the deny.
   if [ -z "$BOUND_CO" ]; then
     BOUND_CO="$(scope_read_bound_company "$SESSION_ID")"
   fi
-fi
+}
 
 scope_normalize_hq_relative() {
   local raw="${1:-}" abs physical
@@ -654,6 +666,7 @@ scope_rel_allowed() {
   co="$(scope_company_slug_for_rel "$rel")"
   [ -n "$co" ] || return 0
   [ "$co" != "__companies_root__" ] || return 0
+  scope_load_bound_company
 
   # SessionStart and the first company path can arrive in one parallel batch.
   # Keep the deny unless the same payload session becomes bound on this delayed
@@ -685,6 +698,7 @@ scope_block_rel() {
   local rel="${1:-}"
   local glob_reason="${2:-}"
   local co bound_msg
+  scope_load_bound_company
   co="$(scope_company_slug_for_rel "$rel")"
   if [ -z "$SESSION_ID" ]; then
     bound_msg="This call carries NO session id in its hook payload, so there is no
@@ -1079,6 +1093,13 @@ case "$TOOL" in
   Bash)
     cmd="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
     [ -n "$cmd" ] || exit 0
+    # A plain path-free command cannot name an HQ tenant path. Skip the shell
+    # parser in this common case; commands that can traverse or change roots
+    # stay on the full fail-closed scan.
+    scope_simple_command_re='^(printf|echo|true|false|pwd)([[:blank:]]+[[:alnum:]_.+-]+)*$'
+    if [[ "$cmd" =~ $scope_simple_command_re ]]; then
+      exit 0
+    fi
     # Reuse the shared non-evaluating shell splitter so recursive checks see
     # every simple command, including commands after separators and pipelines.
     . "$HQ_ROOT/core/scripts/hook-lib.sh"

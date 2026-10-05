@@ -1,7 +1,50 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# HQ ships LF-only text in git and on disk.
+#
+# Why: desktop Core Drift compares local bytes to upstream git blobs (GitHub
+# trees API). macOS/Linux checkouts are LF; Windows with core.autocrlf or
+# text=auto alone often materializes CRLF and reports mass false "Modified"
+# drift. Forcing eol=lf on text keeps every OS aligned with the release blobs
+# and with bash/Git-Bash hooks that assume Unix newlines.
+#
+# * text=auto  — git decides text vs binary
+# * eol=lf     — text files are stored and checked out as LF on all platforms
+#
+# Existing Windows worktrees that already have CRLF on disk are NOT rewritten
+# by pulling this file alone. Repair with:
+#   bash core/scripts/normalize-eol-lf.sh
+# (/update-hq runs it after hq rescue when the script is present.)
+* text=auto eol=lf
 
-# This is a single-writer session pointer, not mergeable text.  Treating it as
+# Explicit binaries — never newline-convert (design-style assets, fonts, etc.)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.bmp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.bz2 binary
+*.xz binary
+*.7z binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.mp3 binary
+*.mp4 binary
+*.wasm binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.node binary
+
+# This is a single-writer session pointer, not mergeable text. Treating it as
 # binary preserves the current valid value in the worktree rather than writing
 # conflict-marker bytes that consumers could mistake for a filesystem path.
 .claude/state/active-session-project merge=binary

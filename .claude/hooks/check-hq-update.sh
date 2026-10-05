@@ -55,7 +55,10 @@ version_at_least() {
 
 # A slow CLI probe is not evidence that the binary is broken. Bound it and
 # report timeout distinctly so the floor updater can leave the install alone.
-HQ_CLI_VERSION_TIMEOUT="${HQ_CLI_VERSION_TIMEOUT:-3}"
+HQ_CLI_VERSION_TIMEOUT="${HQ_CLI_VERSION_TIMEOUT:-1}"
+HQ_NPM_PREFIX_TIMEOUT="${HQ_NPM_PREFIX_TIMEOUT:-1}"
+HQ_CLI_SHADOW_SCAN_TIMEOUT="${HQ_CLI_SHADOW_SCAN_TIMEOUT:-4}"
+HQ_SETTINGS_HEAL_TIMEOUT="${HQ_SETTINGS_HEAL_TIMEOUT:-1}"
 stop_cli_watchdog() {
   local watchdog_pid="$1"
   if command -v pkill >/dev/null 2>&1; then pkill -P "$watchdog_pid" 2>/dev/null || true; fi
@@ -63,18 +66,83 @@ stop_cli_watchdog() {
   wait "$watchdog_pid" 2>/dev/null || true
 }
 
-capture_cli_version() {
-  local binary="$1" output_file timeout_file cmd_pid watchdog_pid rc=0 output version
-  output_file="${TMPDIR:-/tmp}/hq-cli-update-version.$$.out"
+# Use Bash's fractional epoch clock where available, then Perl's high-resolution
+# clock, and finally Bash's coarse SECONDS counter. The timer is only written
+# when the regression test explicitly supplies HQ_TEST_TIMING_FILE.
+update_hook_now_ms() {
+  local epoch seconds fraction padded perl_ms
+  epoch="${EPOCHREALTIME:-}"
+  if [ -n "$epoch" ]; then
+    seconds="${epoch%%.*}"
+    fraction="${epoch#*.}"
+    padded="${fraction}000"
+    printf '%s\n' "$((10#$seconds * 1000 + 10#${padded:0:3}))"
+  elif command -v perl >/dev/null 2>&1 \
+    && perl_ms="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000' 2>/dev/null)" \
+    && [ -n "$perl_ms" ]; then
+    printf '%s\n' "$perl_ms"
+  else
+    printf '%s000\n' "$SECONDS"
+  fi
+}
+
+record_update_probe_timing() {
+  local probe="$1" budget_ms="$2" start_ms="$3" end_ms elapsed_ms
+  [ -n "${HQ_TEST_TIMING_FILE:-}" ] || return 0
+  end_ms="$(update_hook_now_ms)" || return 0
+  elapsed_ms=$((end_ms - start_ms))
+  printf 'probe=%s budget_ms=%s elapsed_ms=%s\n' "$probe" "$budget_ms" "$elapsed_ms" \
+    >> "$HQ_TEST_TIMING_FILE" 2>/dev/null || true
+}
+
+capture_command_descendants() {
+  local root_pid="$1" process_table queue descendants parent pid ppid
+  process_table="$(ps -A -o pid= -o ppid= 2>/dev/null)" || return 0
+  queue="$root_pid"
+  descendants=""
+  while [ -n "$queue" ]; do
+    parent="${queue%% *}"
+    if [ "$queue" = "$parent" ]; then queue=""; else queue="${queue#* }"; fi
+    while read -r pid ppid; do
+      if [ "$ppid" = "$parent" ] && [ "$pid" != "$root_pid" ]; then
+        queue="${queue:+$queue }$pid"
+        descendants="${descendants:+$descendants }$pid"
+      fi
+    done <<EOF
+$process_table
+EOF
+  done
+  for pid in $descendants; do printf '%s\n' "$pid"; done
+}
+
+capture_bounded_output() {
+  local seconds="$1" probe="$2" output_file timeout_file cmd_pid watchdog_pid rc=0 start_ms
+  shift 2
+  output_file="$(mktemp "${TMPDIR:-/tmp}/hq-cli-update-command.XXXXXX" 2>/dev/null)" || return 1
   timeout_file="${output_file}.timeout"
-  rm -f "$output_file" "$timeout_file" 2>/dev/null || true
-  HQ_NO_UPDATE_CHECK=1 "$binary" --version >"$output_file" 2>/dev/null &
+  start_ms=""
+  if [ -n "${HQ_TEST_TIMING_FILE:-}" ]; then
+    start_ms="$(update_hook_now_ms)" || start_ms=0
+  fi
+  "$@" >"$output_file" 2>/dev/null &
   cmd_pid=$!
   (
-    if sleep "$HQ_CLI_VERSION_TIMEOUT" 2>/dev/null; then
+    if sleep "$seconds" 2>/dev/null; then
       : > "$timeout_file" 2>/dev/null
-      if command -v pkill >/dev/null 2>&1; then pkill -TERM -P "$cmd_pid" 2>/dev/null || true; fi
-      kill "$cmd_pid" 2>/dev/null
+      record_update_probe_timing "$probe" "$((seconds * 1000))" "$start_ms"
+      descendants="$(capture_command_descendants "$cmd_pid")"
+      if [ -n "$descendants" ]; then
+        for descendant in $descendants; do kill -TERM "$descendant" 2>/dev/null || true; done
+        sleep 0.1 2>/dev/null || true
+        for descendant in $descendants; do kill -KILL "$descendant" 2>/dev/null || true; done
+      elif command -v pkill >/dev/null 2>&1; then
+        pkill -TERM -P "$cmd_pid" 2>/dev/null || true
+        sleep 0.1 2>/dev/null || true
+        pkill -KILL -P "$cmd_pid" 2>/dev/null || true
+      fi
+      kill -TERM "$cmd_pid" 2>/dev/null || true
+      sleep 0.1 2>/dev/null || true
+      kill -KILL "$cmd_pid" 2>/dev/null || true
     fi
   ) >/dev/null 2>&1 &
   watchdog_pid=$!
@@ -84,11 +152,14 @@ capture_cli_version() {
     rm -f "$output_file" "$timeout_file" 2>/dev/null || true
     return 124
   fi
-  if [ "$rc" -eq 0 ]; then
-    output="$(cat "$output_file" 2>/dev/null)" || rc=1
-  fi
+  [ "$rc" -eq 0 ] && cat "$output_file" || true
   rm -f "$output_file" "$timeout_file" 2>/dev/null || true
-  [ "$rc" -eq 0 ] || return "$rc"
+  return "$rc"
+}
+
+capture_cli_version() {
+  local binary="$1" output version
+  output="$(HQ_NO_UPDATE_CHECK=1 capture_bounded_output "$HQ_CLI_VERSION_TIMEOUT" cli-version "$binary" --version)" || return $?
   version="$(printf '%s' "$output" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   [ -n "$version" ] || return 1
   printf '%s\n' "$version"
@@ -97,7 +168,7 @@ capture_cli_version() {
 npm_global_bin() {
   command -v npm >/dev/null 2>&1 || return 1
   local prefix
-  prefix="$(npm config get prefix 2>/dev/null)" || return 1
+  prefix="$(capture_bounded_output "$HQ_NPM_PREFIX_TIMEOUT" npm-prefix npm config get prefix)" || return $?
   [ -n "$prefix" ] && [ "$prefix" != "undefined" ] || return 1
   if [ -d "$prefix/bin" ]; then printf '%s\n' "$prefix/bin"; else printf '%s\n' "$prefix"; fi
 }
@@ -108,14 +179,20 @@ npm_global_bin() {
 # replace a PATH winner when an equal/newer install may already exist.
 has_equal_or_newer_hq() {
   local active_binary="$1" active_version="$2" dir binary candidate_version probe_rc npm_bin
+  local deadline=$((SECONDS + HQ_CLI_SHADOW_SCAN_TIMEOUT))
   local oldifs="$IFS"
   local -a path_dirs=()
   IFS=':' read -r -a path_dirs <<< "${PATH:-}"
   IFS="$oldifs"
-  npm_bin="$(npm_global_bin 2>/dev/null)" || npm_bin=""
+  npm_bin="$(npm_global_bin 2>/dev/null)" || {
+    probe_rc=$?
+    [ "$probe_rc" -eq 124 ] && return 2
+    npm_bin=""
+  }
   [ -z "$npm_bin" ] || path_dirs+=("$npm_bin")
   for dir in "${path_dirs[@]}"; do
     [ -n "$dir" ] || continue
+    [ "$SECONDS" -lt "$deadline" ] || return 2
     binary="$dir/hq"
     [ -x "$binary" ] || continue
     [ "$binary" = "$active_binary" ] && continue
@@ -138,7 +215,7 @@ bounded_gh_command() {
   if command -v timeout >/dev/null 2>&1; then
     timeout_version="$(timeout --version 2>/dev/null || true)"
     case "$timeout_version" in
-      *"GNU coreutils"*) timeout -k 1s "${seconds}s" "$@"; return $? ;;
+      *"GNU coreutils"*) timeout -k 0.1s "${seconds}s" "$@"; return $? ;;
     esac
   fi
   if command -v perl >/dev/null 2>&1; then
@@ -158,7 +235,7 @@ bounded_gh_command() {
 # that run every guard on every tool call and block Bash, Skill and Read.
 # Remove exactly those, with a backup. Runs first so the next session starts
 # healed. See core/scripts/remove-stray-gate-hooks.sh.
-STRAY_OUT=$(bash "$HQ_ROOT/core/scripts/remove-stray-gate-hooks.sh" "$HQ_ROOT" 2>/dev/null || true)
+STRAY_OUT="$(capture_bounded_output "$HQ_SETTINGS_HEAL_TIMEOUT" settings-heal bash "$HQ_ROOT/core/scripts/remove-stray-gate-hooks.sh" "$HQ_ROOT")" || STRAY_OUT=""
 if [ -n "$STRAY_OUT" ]; then
   printf '<hq-settings-healed>\n%s\nThese entries were written by an older hq doctor --fix and blocked tools with "Glob needs a path" or "Edit to locked path". If tools were blocked in this session, restart it. Tell the user in one plain sentence.\n</hq-settings-healed>\n' "$STRAY_OUT"
 fi
@@ -249,9 +326,9 @@ fi
 
 if [ "$USE_CACHE" -eq 0 ]; then
   command -v gh >/dev/null 2>&1 || exit 0
-  bounded_gh_command 5 gh auth status >/dev/null 2>&1 || exit 0
+  bounded_gh_command 2 gh auth status >/dev/null 2>&1 || exit 0
 
-  RAW_TAG=$(bounded_gh_command 5 gh release view -R indigoai-us/hq-core --json tagName -q .tagName 2>/dev/null) || exit 0
+  RAW_TAG=$(bounded_gh_command 2 gh release view -R indigoai-us/hq-core --json tagName -q .tagName 2>/dev/null) || exit 0
   [ -n "$RAW_TAG" ] || exit 0
 
   LATEST_VERSION=$(echo "$RAW_TAG" | sed -E 's/^v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/')

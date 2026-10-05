@@ -36,7 +36,7 @@ if printf '%s\n' "$APP_UPLOAD_CODE" | grep -Eq '/api/deploys|deploy-completion|p
 fi
 printf '%s\n' "$STATIC_SECTION" | grep -Fq -- '--url "$API/api/deploys"' \
   || fail "static uploads no longer use the presigned deploy route"
-printf '%s\n' "$STATIC_SECTION" | grep -Fq 's3-upload --no-auth --method PUT' \
+grep -Fq 's3-upload --no-auth --method PUT' <<<"$STATIC_SECTION" \
   || fail "static uploads no longer PUT the presigned artifact"
 grep -Fq 'guardrails-check.sh "$OUTPUT_DIR" "$GUARDRAILS_API_DIR"' "$SKILL" \
   || fail "Phase B does not include root api/ handlers in the app artifact"

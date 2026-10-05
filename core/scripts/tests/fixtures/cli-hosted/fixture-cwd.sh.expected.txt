@@ -15,6 +15,11 @@
 
 set -euo pipefail
 
+FORWARDER_PATH="${BASH_SOURCE[0]}"
+FORWARDER_DIR="${FORWARDER_PATH%/*}"
+[ "$FORWARDER_DIR" != "$FORWARDER_PATH" ] || FORWARDER_DIR=.
+SCRIPT_DIR="$(cd "$FORWARDER_DIR" && pwd)"
+
 # No root is injected: this script derived its root from the CALLER's cwd
 # before it moved (git top level, a cwd walk, or a positional argument), and the
 # CLI preserves that. Anything the caller already exported still applies.
@@ -25,7 +30,6 @@ if ! command -v hq >/dev/null 2>&1; then
   exit 127
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/lib/hq-cli-floor.sh" ]; then
   # shellcheck source=lib/hq-cli-floor.sh
   . "$SCRIPT_DIR/lib/hq-cli-floor.sh"

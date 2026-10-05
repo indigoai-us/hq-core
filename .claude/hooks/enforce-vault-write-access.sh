@@ -61,17 +61,33 @@
 
 set -uo pipefail
 
-INPUT=$(cat)
+INPUT=""
+if [[ "${HQ_HOOK_TOOL_NAME+x}" ]]; then
+  # master-hook has already parsed this field. On the common allow path, use
+  # it before reading stdin or starting jq.
+  TOOL="$HQ_HOOK_TOOL_NAME"
+else
+  INPUT=$(cat)
 
-# No jq → cannot parse the tool payload or manifest, so this guard cannot
-# determine whether a mutation targets a protected company path.
-command -v jq >/dev/null 2>&1 || exit 0
+  # No jq → cannot parse the tool payload or manifest, so this guard cannot
+  # determine whether a mutation targets a protected company path.
+  command -v jq >/dev/null 2>&1 || exit 0
 
-TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || true
+  TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || true
+fi
 case "$TOOL" in
   Edit|Write|MultiEdit|NotebookEdit|Bash) ;;
   *) exit 0 ;;
 esac
+
+# The dispatcher-provided tool name avoids parsing, but supported tools still
+# need their original payload for path/command checks below.
+if [[ ! "${HQ_HOOK_TOOL_NAME+x}" ]]; then
+  : # INPUT was read above for the fallback path.
+else
+  INPUT=$(cat)
+  command -v jq >/dev/null 2>&1 || exit 0
+fi
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"

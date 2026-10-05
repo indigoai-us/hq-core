@@ -14,7 +14,7 @@
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
-HOOK="$ROOT/.claude/hooks/block-hq-root-git-mutation.sh"
+HOOK="${HQ_ROOT_GIT_GUARD_HOOK_OVERRIDE:-$ROOT/.claude/hooks/block-hq-root-git-mutation.sh}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -43,6 +43,31 @@ run() {
   fi
 }
 
+# The standalone status fast path must recognize both Git Bash spellings of a
+# Windows absolute path before starting the strict-mode flag reader.
+mkdir -p "$TMP/status-bin"
+cat > "$TMP/status-bin/node" <<'NODE'
+#!/usr/bin/env sh
+: > "$HQ_TEST_STATUS_NODE_LOOKUP"
+printf 'false\n'
+NODE
+chmod +x "$TMP/status-bin/node"
+run_windows_status_fast_path() {
+  local command="$1" label="$2" payload rc=0
+  payload=$(jq -n --arg cwd "$TMP" --arg cmd "$command" \
+    '{cwd: $cwd, tool_input: {command: $cmd}}')
+  printf '%s' "$payload" | env PATH="$TMP/status-bin:$PATH" \
+    CLAUDE_PROJECT_DIR="$TMP" HQ_TEST_STATUS_NODE_LOOKUP="$TMP/status-node-looked-up" \
+    bash "$HOOK" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 && ! -e "$TMP/status-node-looked-up" ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "FAIL [$label]: expected clean fast-path allow without node lookup; exit=$rc" >&2
+  fi
+  rm -f "$TMP/status-node-looked-up"
+}
+
 NESTED="$TMP/repos/private/app"
 
 # --- Original guard: bare mutations from the HQ root stay blocked ---------
@@ -57,6 +82,8 @@ run 0 "$TMP" "git -C $NESTED commit -m x"            'git -C nested repo allowed
 run 2 "$TMP" "git -C $TMP push origin main"          'git -C HQ root blocked'
 run 0 "$TMP" 'gh pr create -R owner/repo --title x'  'gh -R allowed'
 run 0 "$TMP" 'git status'                            'read-only git allowed'
+run_windows_status_fast_path 'git -C C:/x status' 'Windows drive slash status fast path'
+run_windows_status_fast_path 'git -C C:\x status' 'Windows drive backslash status fast path'
 run 0 "$TMP" 'git check-ignore -v some/path'       'read-only check-ignore at HQ root allowed'
 run 0 "$TMP" 'hq core checkpoint --summary "synchronous git fetch + hard-reset"' \
   'git words in a non-git summary argument allowed'

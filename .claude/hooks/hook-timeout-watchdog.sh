@@ -76,7 +76,7 @@ capture_active_debug_phase() {
   if [ -r "$debug_active_phase_file" ]; then
     active_debug_phase_record="$(awk -F '\t' '
       NF >= 2 && $1 ~ /^(startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse)$/ \
-        && ($2 ~ /^[0-9]{1,16}$/ || $2 ~ /^seconds:[0-9]{1,9}$/) {
+        && ($2 ~ /^[0-9]{1,16}$/ || $2 ~ /^seconds:[0-9]{1,9}$/ || $2 ~ /^epoch-seconds:[0-9]{1,10}$/) {
           print $1 "\t" $2 "\t" $3
           exit
         }
@@ -630,7 +630,9 @@ is_nonnegative_integer "$now_seconds" || now_seconds=0
 # Gate launches intentionally omit this timestamp to avoid a foreground process
 # on every fast hook. Sampling after the one-second grace can make its warning
 # at most one second late, while keeping the configured lead approximate.
-is_nonnegative_integer "$started_at" || started_at="$now_seconds"
+if ! is_nonnegative_integer "$started_at" || [ "$started_at" -eq 0 ]; then
+  started_at="$now_seconds"
+fi
 # Recompute the threshold after normalizing a missing start timestamp.
 case "$source_kind:$threshold_kind" in
   master-dispatch:absolute|master-child:absolute)
@@ -772,6 +774,7 @@ hook_script="$(safe_hook_script)"
 spawn_ms=""
 slow_child=""
 slow_child_ms=""
+slow_phase=""
 session_hash="$(sha256_fields "$session_id")"
 if [ "$os_name" = windows ] && [ -n "$session_hash" ]; then
   mkdir -p "$root/workspace/.hook-timeout-journal" >/dev/null 2>&1 || true
@@ -817,9 +820,16 @@ debug_spawn_ms=unavailable
 debug_context=''
 debug_phase_timings="$(hook_timeout_phase_timings_json \
   "$debug_phase_file" "$debug_active_phase_file" "$active_debug_phase_record" \
-  "$debug_phase_file.child" "$active_child_debug_phase_record")"
+  "$debug_phase_file.child" "$active_child_debug_phase_record" "$warning_now_ms")"
 active_debug_phase="${active_debug_phase_record%%$'\t'*}"
 [ -z "${active_debug_phase:-}" ] || debug_wait_point="$active_debug_phase"
+if [ "$source_kind" = master-dispatch ]; then
+  case "$active_debug_phase" in
+    startup|source|config_load|policy_load|external_command|output_write|output_scan|output_merge|output_stdout|output_abandoned_scan|output_abandoned_merge|output_abandoned_stdout|wait|child_wait|probe|parse)
+      slow_phase="$active_debug_phase"
+      ;;
+  esac
+fi
 if [ "$source_kind" = hook-gate ]; then
   # A hook-gate watchdog observes the hook itself rather than a master
   # dispatcher child. Name that slow hook with its safe basename so the
@@ -832,6 +842,27 @@ if [ "$source_kind" = hook-gate ]; then
 elif [ -n "$slow_child" ]; then
   debug_child_name="$slow_child"
   debug_child_elapsed="${slow_child_ms:-0}"
+elif [ "$source_kind" = master-dispatch ]; then
+  # A dispatcher can exceed its deadline while it is doing its own startup,
+  # parsing, or output work, before (or between) child hooks. Attribute that
+  # measured wait to the dispatcher instead of omitting both child fields.
+  slow_child=master-hook.sh
+  slow_child_ms="$elapsed_ms"
+  if [ -n "${active_debug_phase:-}" ]; then
+    active_phase_started="${active_debug_phase_record#*$'\t'}"
+    active_phase_started="${active_phase_started%%$'\t'*}"
+    active_phase_elapsed="$(jq -r --arg phase "$active_debug_phase" \
+      '[.[] | select(.phase == $phase)] | if length > 0 then .[-1].elapsed_ms else empty end' \
+      <<<"$debug_phase_timings" 2>/dev/null || true)"
+    if is_nonnegative_integer "$active_phase_elapsed" \
+      && { [ "$active_phase_elapsed" -gt 0 ] \
+        || case "$active_phase_started" in
+          epoch-seconds:*|seconds:*) false ;;
+          *) true ;;
+        esac; }; then
+      slow_child_ms="$active_phase_elapsed"
+    fi
+  fi
 fi
 if [ "$source_kind" != master-dispatch ] && [ -n "${session_hash:-}" ]; then
   debug_cli_version_file="$root/workspace/.hook-timeout-journal/$session_hash.cli-version"
@@ -872,6 +903,7 @@ event_json="$(jq -cn \
   --arg spawn_ms "$spawn_ms" \
   --arg slow_child "$slow_child" \
   --arg slow_child_ms "$slow_child_ms" \
+  --arg slow_phase "$slow_phase" \
   --argjson hook_sequence "$hook_sequence" \
   --arg bash_env_set "$bash_env_set" \
   --arg shell "$shell_info" \
@@ -912,6 +944,7 @@ event_json="$(jq -cn \
         hook_sequence: $hook_sequence
       }
       + (if ($spawn_ms | test("^[0-9]+$")) then {spawn_ms: ($spawn_ms | tonumber)} else {} end)
+      + (if ($slow_phase | length) > 0 then {slow_phase: $slow_phase} else {} end)
       + (if ($slow_child | length) > 0 and ($slow_child_ms | test("^[0-9]+$"))
          then {slow_child: $slow_child, slow_child_ms: ($slow_child_ms | tonumber)} else {} end))
     }

@@ -216,4 +216,31 @@ grep -q '"/tmp/' "$HOOKS/auto-checkpoint-trigger.sh" \
 [ -d "$FR/workspace/orchestrator/hook-state" ] || fail "hook state dir was not created under the HQ root"
 pass "state lives under workspace/orchestrator/hook-state"
 
+# ---------------------------------------------------------------------------
+echo "[14] counter lock exhaustion skips without changing or removing a live lock"
+HQ_ROOT="$FR" "$HELPER" tool-counter reset --session s-lock-exhausted >/dev/null
+lock_dir="$(HQ_ROOT="$FR" "$HELPER" dir-path)/.tool-count-s-lock-exhausted.lock"
+mkdir -p "$lock_dir"
+# This test process remains alive while the helper contends, so the lock is
+# demonstrably live and must not be reclaimed.
+printf '%s\n' "$$" > "$lock_dir/pid"
+HQ_JOURNAL_COUNTER_LOCK_TRIES=5 HQ_ROOT="$FR" "$HELPER" tool-counter increment --session s-lock-exhausted >/dev/null 2>&1
+lock_n="$(HQ_ROOT="$FR" "$HELPER" tool-counter read --session s-lock-exhausted)"
+[ "$lock_n" = "0" ] || fail "lock exhaustion ran the callback unlocked (counter is $lock_n)"
+[ -d "$lock_dir" ] || fail "lock exhaustion removed a live lock owned by another process"
+[ "$(cat "$lock_dir/pid")" = "$$" ] || fail "live lock owner marker changed"
+pass "live-lock exhaustion skipped the counter callback and preserved the lock"
+
+# ---------------------------------------------------------------------------
+echo "[15] dead-owner counter locks are reclaimed before the callback"
+HQ_ROOT="$FR" "$HELPER" tool-counter reset --session s-stale-lock >/dev/null
+stale_lock_dir="$(HQ_ROOT="$FR" "$HELPER" dir-path)/.tool-count-s-stale-lock.lock"
+mkdir -p "$stale_lock_dir"
+printf '%s\n' 999999999 > "$stale_lock_dir/pid"
+HQ_ROOT="$FR" "$HELPER" tool-counter increment --session s-stale-lock >/dev/null 2>&1
+stale_n="$(HQ_ROOT="$FR" "$HELPER" tool-counter read --session s-stale-lock)"
+[ "$stale_n" = "1" ] || fail "dead-owner lock was not reclaimed (counter is $stale_n)"
+[ ! -d "$stale_lock_dir" ] || fail "stale lock directory remains after successful reclaim"
+pass "dead-owner lock was reclaimed and the increment ran under the new lock"
+
 echo "checkpoint/journal over-trigger regressions: ok"

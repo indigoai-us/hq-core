@@ -229,6 +229,7 @@ append_policy_ledger() {
 # appends to the old inode would otherwise lose the new slug.
 POLICY_LEDGER_COMPACT_THRESHOLD=65536
 POLICY_LEDGER_LOCK_WAIT_ATTEMPTS=200
+POLICY_LEDGER_LOCK_WAIT_SECONDS=2
 POLICY_LEDGER_LOCK_STALE_SECONDS=30
 
 policy_ledger_lock_is_stale() {
@@ -248,8 +249,10 @@ policy_ledger_lock_is_stale() {
 }
 
 acquire_policy_ledger_lock() {
-  local ledger="$1" lock_dir="${1}.lock" stale_dir="" attempt=0
-  while [ "$attempt" -lt "$POLICY_LEDGER_LOCK_WAIT_ATTEMPTS" ]; do
+  local ledger="$1" lock_dir="${1}.lock" stale_dir="" attempt=0 stale_checked=0
+  local deadline=$((SECONDS + POLICY_LEDGER_LOCK_WAIT_SECONDS))
+  while [ "$attempt" -lt "$POLICY_LEDGER_LOCK_WAIT_ATTEMPTS" ] \
+    && [ "$SECONDS" -lt "$deadline" ]; do
     if mkdir "$lock_dir" 2>/dev/null; then
       if printf '%s\n' "$$" > "$lock_dir/pid" 2>/dev/null; then
         return 0
@@ -263,13 +266,16 @@ acquire_policy_ledger_lock() {
     # grace period and retry. Once a lock is older than the bounded critical
     # section, rename it away before reclaiming it so a new owner cannot be
     # deleted after the stale check.
-    if policy_ledger_lock_is_stale "$lock_dir"; then
-      stale_dir="${lock_dir}.stale.$$.$attempt"
-      if mv "$lock_dir" "$stale_dir" 2>/dev/null; then
-        rm -f "$stale_dir/pid" 2>/dev/null || true
-        rmdir "$stale_dir" 2>/dev/null || true
-        attempt=$((attempt + 1))
-        continue
+    if [ "$stale_checked" -eq 0 ]; then
+      stale_checked=1
+      if policy_ledger_lock_is_stale "$lock_dir"; then
+        stale_dir="${lock_dir}.stale.$$.$attempt"
+        if mv "$lock_dir" "$stale_dir" 2>/dev/null; then
+          rm -f "$stale_dir/pid" 2>/dev/null || true
+          rmdir "$stale_dir" 2>/dev/null || true
+          attempt=$((attempt + 1))
+          continue
+        fi
       fi
     fi
     sleep 0.01

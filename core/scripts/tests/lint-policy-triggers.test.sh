@@ -50,7 +50,7 @@ mkdir -p "$DEFAULT_ROOT/core/scripts" "$DEFAULT_ROOT/core/policies" \
   "$DEFAULT_ROOT/personal/workers/personal-worker/policies" \
   "$DEFAULT_ROOT/companies/indigo/workers/company-worker/policies"
 cp "$LINT" "$DEFAULT_ROOT/core/scripts/lint-policy-triggers.sh"
-cp "$ROOT/core/scripts/eval-trigger.sh" "$DEFAULT_ROOT/core/scripts/eval-trigger.sh"
+ln -s "$ROOT/core/scripts/eval-trigger.sh" "$DEFAULT_ROOT/core/scripts/eval-trigger.sh"
 printf -- '---\nid: default-root\nwhen: deploy\non: [PreToolUse]\nenforcement: soft\n---\n\n## Rule\n\nDefault root.\n' \
   > "$DEFAULT_ROOT/core/policies/default-root.md"
 printf -- '---\nid: personal-worker-default\nwhen: deploy\non: [PreToolUse]\nenforcement: soft\n---\n\n## Rule\n\nPersonal worker default.\n' \

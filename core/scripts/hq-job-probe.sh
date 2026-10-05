@@ -120,6 +120,15 @@ done
 command -v yq >/dev/null 2>&1 || die "yq is required (mikefarah/yq)"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
+# jq.exe on Windows emits CRLF data; remove only its line-ending CR bytes.
+case "${OSTYPE:-}" in
+  msys*)
+    jq() {
+      command jq "$@" | command sed -b 's/\r$//'
+    }
+    ;;
+esac
+
 iso_now() {
   if [ -n "${HQ_JOB_PROBE_NOW:-}" ]; then
     printf '%s' "$HQ_JOB_PROBE_NOW"

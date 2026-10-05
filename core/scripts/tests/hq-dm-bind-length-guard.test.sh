@@ -17,8 +17,12 @@ cat > "$SANDBOX/root/core/scripts/hq-session.sh" <<'S'
 case "$1" in current) printf 'sess-test' ;; get) echo '"room"' ;; *) : ;; esac
 S
 # Stub hq: quiet.
+REAL_HQ="$(command -v hq)"
+REAL_NODE="$(command -v node)"
+export REAL_HQ REAL_NODE
 cat > "$SANDBOX/bin/hq" <<'S'
 #!/usr/bin/env bash
+if [ "${1:-}" = --version ] || [ "${1:-}" = core ]; then exec "$REAL_NODE" "$REAL_HQ" "$@"; fi
 if [ "$1" = dm ] && [ "$2" = channel ]; then echo "${CHANNEL_JSON:-[]}"; fi
 exit 0
 S

@@ -24,6 +24,6 @@ run '{"tool_name":"Read","tool_input":{"file_path":"/x/core/policies/z.md"}}'
 [ "$(wc -l < "$L" | tr -d ' ')" = 3 ] || fail "unexpected records: $(cat "$L")"
 echo "[5] age report exposes retrieved counts"
 mkdir -p "$FX/core/policies"; printf -- '---\nid: acme-deploy-rule\nenforcement: hard\ncreated: 2026-01-01\nwhen: always\n---\n\n## Rule\n\nr\n' > "$FX/core/policies/acme-deploy-rule.md"
-r="$(HQ_ROOT="$FX" HQ_POLICY_REPORT_NOW_EPOCH=1800000000 bash "$ROOT/core/scripts/policy-age-report.sh" --dir "$FX/core/policies" --json)"
+r="$(HQ_POLICY_REPORT_NOW_EPOCH=1800000000 hq core --hq-root "$FX" policy age-report --dir "$FX/core/policies" --json)"
 [ "$(jq -r '.[0].retrieved' <<<"$r")" = 1 ] || fail "retrieved count: $r"
 echo "record-policy-retrieval: ok"

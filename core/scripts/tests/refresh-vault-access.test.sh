@@ -12,6 +12,8 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT="$ROOT/core/scripts/refresh-vault-access.sh"
+REAL_HQ="$(command -v hq)"
+[ -n "$REAL_HQ" ] || { echo "FAIL: pinned hq CLI is not on PATH" >&2; exit 1; }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -25,6 +27,9 @@ mkdir -p "$CLI/bin" "$CLI/node_modules/@indigoai-us/hq-flags-client" \
 # Stubbed hq CLI: emits the real CLI's padded-table formats.
 cat > "$CLI/bin/hq" <<'EOF'
 #!/usr/bin/env bash
+case "${1:-}" in
+  --version|core) exec "$HQ_TEST_REAL_HQ" "$@" ;;
+esac
 case "$*" in
   "whoami")
     echo "Signed in as tester@example.com (session expires later)"
@@ -56,7 +61,7 @@ EOF
 chmod +x "$CLI/bin/hq"
 ln -s "$CLI/bin/hq" "$TMP/bin/hq"
 
-PATH="$TMP/bin:$PATH" HQ_VAULT_ACCESS_EMAIL="" \
+PATH="$TMP/bin:$PATH" HQ_TEST_REAL_HQ="$REAL_HQ" HQ_VAULT_ACCESS_EMAIL="" \
   bash "$SCRIPT" --root "$TMP/hqroot" >/dev/null 2>&1
 
 MANIFEST="$TMP/hqroot/.hq/vault-access.json"
@@ -112,7 +117,7 @@ printf '{}' > "$TMP/hqroot/.claude/settings.local.json"
 hook_rc() {
   local path="$1" enabled="${2:-false}" rc=0
   jq -n --arg p "$path" '{tool_name: "Edit", tool_input: {file_path: $p}}' \
-    | env PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
+    | env PATH="$TMP/bin:$PATH" HQ_TEST_REAL_HQ="$REAL_HQ" HQ_FLAGS_API_URL=https://flags.invalid \
       HQ_COMPANY_UID=cmp_test123 HQ_COMPANY_SLUG=indigo HQ_TEST_FLAG_ENABLED="$enabled" \
       CLAUDE_PROJECT_DIR="$TMP/hqroot" bash "$TMP/hqroot/.claude/hooks/enforce-vault-write-access.sh" \
       >/dev/null 2>&1 || rc=$?

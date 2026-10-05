@@ -108,7 +108,7 @@ pass "missing canonical evaluator -> explicit fail-closed block"
 echo "[2c] a non-executable evaluator honors the operator override"
 disabled_root="$PROJ/non-executable-evaluator-root"
 mkdir -p "$disabled_root/core/scripts"
-cp "$ROOT/core/scripts/eval-trigger.sh" "$disabled_root/core/scripts/eval-trigger.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$disabled_root/core/scripts/eval-trigger.sh"
 chmod -x "$disabled_root/core/scripts/eval-trigger.sh"
 payload="$(wp "$PROJ/core/policies/non-executable-evaluator.md" "$GOOD")"
 output="$(printf '%s' "$payload" | HQ_ROOT="$disabled_root" bash "$HOOK" 2>&1)" && got=0 || got=$?
@@ -122,15 +122,19 @@ pass "non-executable evaluator with override -> allow and note degraded validati
 
 echo "[2d] a 127 floor forwarder fails closed with the unchanged diagnostic"
 forwarder_root="$PROJ/forwarder-evaluator-root"
-mkdir -p "$forwarder_root/core/scripts"
-cat > "$forwarder_root/core/scripts/eval-trigger.sh" <<'EOF'
+mock_cli="$PROJ/old-cli-bin"
+mkdir -p "$forwarder_root/core/scripts/lib" "$mock_cli"
+ln -s "$ROOT/core/scripts/eval-trigger.sh" "$forwarder_root/core/scripts/eval-trigger.sh"
+ln -s "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$forwarder_root/core/scripts/lib/hq-cli-floor.sh"
+cat > "$mock_cli/hq" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' 'eval-trigger.sh: this script needs hq-cli >= 5.78.0 (found 5.77.0); upgrade with: npm install -g @indigoai-us/hq-cli@latest' >&2
-exit 127
+if [ "${1-}" = "--version" ]; then printf '5.341.2\n'; exit 0; fi
+printf 'unexpected old hq invocation: %s\n' "$*" >&2
+exit 64
 EOF
-chmod +x "$forwarder_root/core/scripts/eval-trigger.sh"
+chmod +x "$mock_cli/hq"
 payload="$(wp "$PROJ/core/policies/forwarder-evaluator.md" "$GOOD")"
-if printf '%s' "$payload" | HQ_ROOT="$forwarder_root" bash "$HOOK" \
+if printf '%s' "$payload" | PATH="$mock_cli:$PATH" HQ_ROOT="$forwarder_root" bash "$HOOK" \
   >"$PROJ/forwarder-validator.out" 2>"$PROJ/forwarder-validator.err"; then
   got=0
 else

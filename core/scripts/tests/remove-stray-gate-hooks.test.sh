@@ -64,8 +64,8 @@ for ENGINE in jq node; do
   OUT="$(HQ_HOOK_ENGINE=$ENGINE bash "$SCRIPT" "$T")"
   L="$T/.claude/settings.local.json"; S="$T/.claude/settings.json"
 
-  if printf '%s' "$OUT" | grep -q "removed 2 stray.*settings.local.json" \
-     && printf '%s' "$OUT" | grep -q "removed 1 stray.*settings.json"; then
+  if printf '%s' "$OUT" | grep "removed 2 stray.*settings.local.json" >/dev/null \
+     && printf '%s' "$OUT" | grep "removed 1 stray.*settings.json" >/dev/null; then
     ok "$ENGINE: reports removals per file"
   else
     fail "$ENGINE: reports removals per file" "$OUT"

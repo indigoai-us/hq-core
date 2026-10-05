@@ -132,6 +132,7 @@ jobs_with_hq_install: set[str] = set()
 # than silently accepting an unverified job.
 test_command_pattern = re.compile(
     r"(?:^|[;&|]\s*|\n\s*)"
+    r"(?:timeout\s+[0-9]+s\s+)?"
     r"(?:HQ_CLI_REQUIRED_IN_CI=1\s+)?"
     r"(?:bash|sh)\s+['\"]?"
     r"(core/scripts/tests/[A-Za-z0-9_.-]+)['\"]?(?=\s|$)"
@@ -162,6 +163,79 @@ for job_name, job in jobs.items():
             jobs_with_hq_install.add(job_name)
 
 failures: list[str] = []
+for job_name in (
+    "core-write-protection",
+    "personal-policy-overlay",
+    "prefer-native-capabilities",
+):
+    job = jobs.get(job_name)
+    if not isinstance(job, dict):
+        continue
+    steps = job.get("steps", [])
+    setup_node_indexes = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict) and step.get("uses", "").startswith("actions/setup-node@")
+    ]
+    install_indexes = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and "bash core/scripts/ci/install-pinned-hq-cli.sh" in step["run"]
+    ]
+    if len(install_indexes) != 1 or not setup_node_indexes or install_indexes[0] <= setup_node_indexes[0]:
+        failures.append(
+            f"job {job_name} must install the pinned CLI exactly once after setup-node"
+        )
+
+if os.environ.get("FORWARDER_CI_CONTRACT_FIXTURE") != "1":
+    policy_job = jobs.get("policy-forwarders")
+    if not isinstance(policy_job, dict):
+        failures.append("policy-forwarders job is missing")
+    else:
+        policy_steps = policy_job.get("steps", [])
+        install_indexes = [
+            index for index, step in enumerate(policy_steps)
+            if isinstance(step, dict)
+            and isinstance(step.get("run"), str)
+            and "bash core/scripts/ci/install-pinned-hq-cli.sh" in step["run"]
+        ]
+        catalog_indexes = [
+            index for index, step in enumerate(policy_steps)
+            if isinstance(step, dict)
+            and isinstance(step.get("run"), str)
+            and "bash core/scripts/check-cli-hosted.sh" in step["run"]
+        ]
+        if len(install_indexes) != 1:
+            failures.append("policy-forwarders must have exactly one pinned CLI install step")
+        else:
+            install_run = policy_steps[install_indexes[0]].get("run", "")
+            for required in ("command -v hq", "hq core --help"):
+                if required not in install_run:
+                    failures.append(
+                        f"policy-forwarders install step must validate the CLI with {required}"
+                    )
+        if len(catalog_indexes) != 1:
+            failures.append("policy-forwarders must have exactly one CLI catalog check step")
+        elif len(install_indexes) == 1 and catalog_indexes[0] <= install_indexes[0]:
+            failures.append(
+                "policy-forwarders catalog check must run after the CLI install step so "
+                "GITHUB_PATH and GITHUB_ENV are applied"
+            )
+
+    health_job = jobs.get("hook-health-prevention")
+    health_install_runs = [
+        step.get("run", "")
+        for step in health_job.get("steps", [])
+        if isinstance(step, dict)
+        and step.get("name") == "Install pinned hq CLI for doctor-path coverage"
+    ] if isinstance(health_job, dict) else []
+    if len(health_install_runs) != 1 or "bash core/scripts/ci/install-pinned-hq-cli.sh" not in health_install_runs[0]:
+        failures.append(
+            "hook-health-prevention must install the CLI selected from core.yaml and forwarded floors"
+        )
+
 catalog_job = jobs.get("cli-hosted-forwarders")
 catalog_steps: list[dict[str, object]] = []
 if isinstance(catalog_job, dict):
@@ -255,6 +329,11 @@ SH
 SH
   cat > "$CONTRACT_FIXTURE/.github/workflows/pr-checks.yml" <<'YAML'
 jobs:
+  core-write-protection:
+    steps:
+      - uses: actions/setup-node@v4
+      - run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - run: bash core/scripts/ci/install-pinned-hq-cli.sh
   fixture:
     steps:
       - run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/cli-required-fixture.test.sh
@@ -264,7 +343,8 @@ YAML
       >"$CONTRACT_FIXTURE/negative.out" 2>"$CONTRACT_FIXTURE/negative.err"; then
     echo "FAIL: CI contract accepted a real-CLI test without a pinned install step" >&2
     exit 1
-  elif ! grep -F -q 'lacks the pinned hq CLI install step' "$CONTRACT_FIXTURE/negative.err"; then
+  elif ! grep -F -q 'lacks the pinned hq CLI install step' "$CONTRACT_FIXTURE/negative.err" \
+    || ! grep -F -q 'core-write-protection must install the pinned CLI exactly once after setup-node' "$CONTRACT_FIXTURE/negative.err"; then
     cat "$CONTRACT_FIXTURE/negative.err" >&2
     echo "FAIL: CI contract negative control failed for an unexpected reason" >&2
     exit 1

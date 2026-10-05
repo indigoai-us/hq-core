@@ -40,6 +40,15 @@ command -v jq >/dev/null 2>&1 || {
   exit 2
 }
 
+# jq.exe on Windows emits CRLF data; remove only its line-ending CR bytes.
+case "${OSTYPE:-}" in
+  msys*)
+    jq() {
+      command jq "$@" | command sed -b 's/\r$//'
+    }
+    ;;
+esac
+
 [ "$#" -ge 1 ] || die_usage
 
 collect_files() {

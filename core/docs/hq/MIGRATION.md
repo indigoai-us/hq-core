@@ -3,6 +3,77 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.187-beta.38
+
+- feat 2026-10-02 (setup: offer the desktop app the person already uses):
+  hq-cli can now send the setup bot's first message itself on a Mac where
+  the Claude app or the Codex app is installed and has been used a lot
+  lately, offering to continue setup in that app, with buttons in the HQ
+  desktop app to open it or keep going in the chat. The setup worker's
+  `worker.yaml` gains "When the app offered their coding tool first", which
+  tells the bot how to read the app's note on the next turn: carry on with
+  the kickoff after "Keep going here", or, if the person wrote something
+  else, point them to the button in plain words and otherwise start setup as
+  usual. An hq-cli without this change never sends the offer, so nothing
+  changes. No action beyond `/update-hq`.
+
+## Release: v15.0.187-beta.25
+
+- `hq-dm-bind.sh` now forwards to its published hq-cli command. It requires hq-cli 5.309.1 or newer; the existing
+  `core-native-utilities` flag keeps the bundled shell fallback available.
+  Existing callers retain their script path.
+
+- Policy scans can pass multiple files to `read-policy-frontmatter.sh` in
+  batches of up to 61 files; output after the first file in each batch is labelled
+  with a comment separator. Install @indigoai-us/hq-cli 5.342.7 or newer.
+
+## Release: v15.0.187-beta.22
+
+- feat 2026-10-03 (policy commands): core/scripts/policy-age-report.sh,
+  core/scripts/policy-retire.sh, and
+  core/scripts/read-policy-frontmatter.sh now forward to the published
+  hq core commands. Install @indigoai-us/hq-cli 5.341.3 or newer; older
+  versions fail closed with exit 127. Roll back by setting the existing
+  core-native-policy flag off so the CLI uses its bundled shell companions.
+
+- feat 2026-10-03 (core scripts: policy trigger helpers): generated forwarders
+  now route `derive-trigger-facts.sh`, `eval-trigger.sh`, and
+  `migrate-policy-triggers.sh` through `hq core`. `derive-trigger-facts.sh`
+  requires hq-cli 5.342.5 for Windows stdin support; the other two helpers
+  require 5.341.3. The scaffold global floor is 5.342.5.
+  Callers keep their existing script paths. Hook-time forwarders disable CLI
+  self-update while invoking the command. The
+  `core-native-hook-helpers` flag can roll back native execution to the bundled
+  shell companions. The flag value is managed outside this change.
+- `audit-log.sh`, `git-pack-extension-check.sh`, `hq-pin.sh`, and
+  `refresh-vault-access.sh` now forward to their hq-cli native commands. The
+  generated forwarders require hq-cli 5.307.0 or newer; staging CI now pins the
+  published 5.342.7 CLI. Roll back by leaving or setting `core-native-utilities`
+  off, which makes the CLI run each bundled shell companion.
+
+## Release: v15.0.187-beta.17
+
+- fix 2026-10-03 (scripts: LF line endings on every platform): `.gitattributes`
+  now pins `* text=auto eol=lf`. A Windows checkout with `core.autocrlf=true`
+  used to write CRLF, and a script that then reached a Mac through HQ Sync
+  failed under bash (`pipefail: invalid option name`). Bash on Windows (Git
+  Bash, MSYS2, WSL) runs LF scripts, so LF works everywhere. Tarball installs
+  already receive LF. An existing Windows git checkout keeps its CRLF bytes
+  until `core/scripts/normalize-eol-lf.sh` runs; `/update-hq` runs it after a
+  successful apply, or run `bash core/scripts/normalize-eol-lf.sh` yourself.
+  Pairs with the hq-cloud change that converts shell scripts to LF in transit
+  and stops a Windows uploader from stamping file permissions.
+
+## Release: v15.0.187-beta.12
+
+- fix 2026-10-03 (deploy: share card is a JPEG): `og-inject.sh` now points
+  `og:image` and `twitter:image` at hq-deploy's card as
+  `https://api.<domain>/api/public/apps/<slug>/card.jpg`. hq-deploy serves the
+  card as a JPEG; `card.png` stays as a legacy alias for the same image. A page
+  deployed by an older version that still carries a `card.png` image tag is
+  rewritten to `card.jpg` in place on the next deploy, with no duplicate tags.
+  No action beyond `/update-hq`; redeploy a static site to update its tags.
+
 ## Release: v15.0.186-beta.3
 
 - fix 2026-10-02 (deploy: share card image): `og-inject.sh` no longer writes a

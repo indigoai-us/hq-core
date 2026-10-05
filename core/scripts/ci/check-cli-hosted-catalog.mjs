@@ -103,8 +103,13 @@ for (const row of rows) {
   const entry = byName.get(row.command);
   if (!entry) {
     mismatches.push(`${row.path}: hq core ${row.command} is missing from hq core commands`);
-  } else if (entry.root !== row.root) {
-    mismatches.push(`${row.path}: hq core ${row.command} root is ${entry.root}, expected ${row.root}`);
+  } else {
+    // `live-project` is a wrapper root-selection policy; the native command
+    // still declares its root capability as `live` in the published catalog.
+    const expectedCatalogRoot = row.root === "live-project" ? "live" : row.root;
+    if (entry.root !== expectedCatalogRoot) {
+      mismatches.push(`${row.path}: hq core ${row.command} root is ${entry.root}, expected ${expectedCatalogRoot}`);
+    }
   }
 }
 

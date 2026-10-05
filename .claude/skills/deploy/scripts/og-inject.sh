@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # og-inject.sh — inject Open Graph / Twitter Card preview tags into static HTML
 # so shared links unfurl with a proper card (title + description + large image)
-# instead of a bare URL. Idempotent: never touches a page that already declares
-# its own og:title.
+# instead of a bare URL. Idempotent: never injects into a page that already
+# declares its own og:title. The one edit it makes to such a page is to move an
+# hq-deploy card.png image URL (written by older versions) to card.jpg in place.
 #
 # Args:
 #   $1 — output directory (build artifact root, served at the deploy domain)
@@ -10,13 +11,13 @@
 #   $3 — app name, used as the og:site_name and title fallback; optional
 #
 # Output (one JSON line on stdout):
-#   {"injected":N,"image":"card|generated|existing|none","changed":bool}
+#   {"injected":N,"rewritten":N,"image":"card|generated|existing|none","changed":bool}
 #
 # Notes:
 #   - Only ever rewrites .html files; binary/asset files are left alone.
 #   - When no usable preview image exists and a base URL is given, points
 #     og:image at hq-deploy's generated card for the app:
-#     https://api.<deploy-domain>/api/public/apps/<slug>/card.png, where <slug>
+#     https://api.<deploy-domain>/api/public/apps/<slug>/card.jpg, where <slug>
 #     is the first label of the base URL host. Only when the base URL is empty
 #     does it fall back to a plain 1200x630 placeholder PNG (_hq-og.png), built
 #     with Node built-ins (zlib) -- no external deps, no network.
@@ -29,7 +30,7 @@ OUT_DIR="${1:-}"
 BASE_URL="${2:-}"
 APP_NAME="${3:-}"
 
-emit_noop() { printf '{"injected":0,"image":"none","changed":false}\n'; exit 0; }
+emit_noop() { printf '{"injected":0,"rewritten":0,"image":"none","changed":false}\n'; exit 0; }
 
 if [ -z "$OUT_DIR" ] || [ ! -d "$OUT_DIR" ]; then emit_noop; fi
 if ! command -v node >/dev/null 2>&1; then emit_noop; fi
@@ -66,24 +67,39 @@ const allFiles = walk(outDir, []);
 const htmlFiles = allFiles.filter(f => /\.html?$/i.test(f));
 const hasOgTitle = (h) => /property\s*=\s*["']og:title["']/i.test(h);
 
+// Older versions pointed og:image / twitter:image at the card as card.png.
+// hq-deploy now serves the card as card.jpg (card.png is a legacy alias), so
+// rewrite those tags in place rather than adding a second set.
+const IMAGE_META_RE = /<meta[^>]+(?:property|name)\s*=\s*["'](?:og:image|twitter:image)["'][^>]*>/gi;
+const LEGACY_CARD_RE = /(\/api\/public\/apps\/[^/"'\s]+\/card)\.png(?=["'?#\s])/gi;
+const rewriteLegacyCard = (h) => h.replace(IMAGE_META_RE, (tag) => tag.replace(LEGACY_CARD_RE, '$1.jpg'));
+
 const targets = [];
+let rewritten = 0;
 for (const file of htmlFiles) {
   let html;
   try { html = fs.readFileSync(file, 'utf8'); } catch { continue; }
-  if (hasOgTitle(html)) continue;
+  if (hasOgTitle(html)) {
+    const fixed = rewriteLegacyCard(html);
+    if (fixed !== html) {
+      try { fs.writeFileSync(file, fixed); rewritten++; }
+      catch (e) { process.stderr.write(`og-inject: rewrite failed for ${file}: ${e.message}\n`); }
+    }
+    continue;
+  }
   targets.push({ file, html });
 }
-if (targets.length === 0) done({ injected: 0, image: 'none', changed: false });
+if (targets.length === 0) done({ injected: 0, rewritten, image: 'none', changed: rewritten > 0 });
 
 const IMG_NAME = '_hq-og.png';
 // hq-deploy renders a wallpaper share card per app at
-// https://api.<deploy-domain>/api/public/apps/<slug>/card.png.
+// https://api.<deploy-domain>/api/public/apps/<slug>/card.jpg (JPEG).
 let cardUrl = null;
 try {
   if (baseUrl) {
     const labels = new URL(baseUrl).hostname.split('.');
     if (labels.length >= 3 && labels[0]) {
-      cardUrl = `https://api.${labels.slice(1).join('.')}/api/public/apps/${labels[0]}/card.png`;
+      cardUrl = `https://api.${labels.slice(1).join('.')}/api/public/apps/${labels[0]}/card.jpg`;
     }
   }
 } catch { cardUrl = null; }
@@ -209,5 +225,5 @@ for (const { file, html } of targets) {
   try { fs.writeFileSync(file, out); injected++; } catch {}
 }
 
-done({ injected, image: imageStatus, changed: injected > 0 || imageStatus === 'generated' });
+done({ injected, rewritten, image: imageStatus, changed: injected > 0 || rewritten > 0 || imageStatus === 'generated' });
 NODE

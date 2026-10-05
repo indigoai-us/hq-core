@@ -2,7 +2,7 @@
 # hq-core: public
 # Regression tests for core/scripts/policy-age-report.sh (2026-09-07).
 set -euo pipefail
-ROOT="$(git rev-parse --show-toplevel)"; S="$ROOT/core/scripts/policy-age-report.sh"
+ROOT="$(git rev-parse --show-toplevel)"
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 mkdir -p "$FX/core/policies" "$FX/personal/policies" "$FX/workspace/orchestrator/policy-trigger-state" "$FX/core/scripts"
@@ -24,7 +24,7 @@ mkl s2 'fresh-used' $((NOW - 100*day))
 mkl s3 'fresh-used' $((NOW - 2*day))
 # created dates relative to NOW: compute ages the script will see
 export HQ_POLICY_REPORT_NOW_EPOCH="$NOW"
-out="$(HQ_ROOT="$FX" bash "$S" --json)"
+out="$(env -u HQ_ROOT CLAUDE_PROJECT_DIR="$FX" "$ROOT/core/scripts/policy-age-report.sh" --json)"
 get() { jq -r --arg id "$1" ".[] | select(.id==\$id) | $2" <<<"$out"; }
 echo "[1] usage counts and last-fired"
 [ "$(get fresh-used .fired)" = 3 ] || fail "fresh-used fired: $(get fresh-used .fired)"
@@ -38,11 +38,11 @@ get stale-ref '.stale_refs|join(",")' | grep -q 'gone-forever.sh' || fail "stale
 get stale-ref '.stale_refs|join(",")' | grep -q 'exists.sh' && fail "existing ref flagged as stale"
 [ "$(get fresh-used '.candidate_classes|length')" = 0 ] || fail "fresh-used must not be a candidate: $(get fresh-used .)"
 echo "[3] --candidates human output lists only candidates"
-h="$(HQ_ROOT="$FX" bash "$S" --candidates)"
+h="$(hq core --hq-root "$FX" policy age-report --candidates)"
 grep -q 'never-old' <<<"$h" && grep -q 'stale-ref' <<<"$h" || fail "candidates missing: $h"
 grep -q 'fresh-used' <<<"$h" && fail "non-candidate listed: $h"
 grep -qE '^policy-age-report: 5 policies, 3 never fired' <<<"$h" || fail "summary line: $(head -1 <<<"$h")"
 echo "[4] thresholds are tunable"
-n="$(HQ_ROOT="$FX" bash "$S" --json --candidates --min-age 100000 --dormant-days 100000 --incident-days 100000 | jq 'map(select(.candidate_classes|index("never-fired") or index("dormant") or index("single-incident-old")))|length')"
+n="$(hq core --hq-root "$FX" policy age-report --json --candidates --min-age 100000 --dormant-days 100000 --incident-days 100000 | jq 'map(select(.candidate_classes|index("never-fired") or index("dormant") or index("single-incident-old")))|length')"
 [ "$n" = 0 ] || fail "thresholds ignored: $n"
 echo "policy-age-report: ok"

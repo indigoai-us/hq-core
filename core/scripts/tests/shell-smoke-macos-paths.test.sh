@@ -207,8 +207,12 @@ if ! grep -Fq "|| needs['denylist-scan'].outputs.windows_shell_smoke == 'true')"
   echo 'FAIL: shell-smoke-windows must use the Windows relevant-path output for pull requests' >&2
   exit 1
 fi
-if ! grep -Fq 'always()' <<< "$windows_job"; then
-  echo 'FAIL: shell-smoke-windows must evaluate push and fail-open conditions after a detector failure' >&2
+if ! grep -Fq '!cancelled()' <<< "$windows_job"; then
+  echo 'FAIL: shell-smoke-windows must honor cancellation while evaluating fail-open conditions' >&2
+  exit 1
+fi
+if grep -Fq 'always()' <<< "$windows_job"; then
+  echo 'FAIL: shell-smoke-windows must not override workflow cancellation' >&2
   exit 1
 fi
 if ! grep -Fq "needs['denylist-scan'].result != 'success'" <<< "$windows_job"; then
