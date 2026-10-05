@@ -1,7 +1,7 @@
 ---
 name: startwork
 description: Resolve current HQ context and surface useful next work options.
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash, AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash, AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*)
 ---
 
 # Start Work Session
@@ -104,9 +104,17 @@ that context to the session.
 
 #### Entry-Gate Mode (no arg)
 
-**Do NOT eager-load context.** A naked `/startwork` must ask the user where to go *before* reading the thread file, running the qmd/grep project scan, or reading any prd.json. Only the single cheap read in step 1 is permitted before the gate.
+**Do NOT eager-load context.** A naked `/startwork` must ask the user where to go *before* reading the thread file, running the qmd/grep project scan, or reading any prd.json. Only the cheap reads in step 1 are permitted before the gate.
 
-1. **Cheap peek only.** If `workspace/threads/handoff.json` exists, read it (small, allowed by context-diet) and extract only the last-session one-liner (its `summary` / `conversation_summary` field) + referenced branch. Do NOT read the thread file it points to yet. If handoff.json is absent, skip — no last-session option.
+1. **Prefetch cross-device state (fail-soft).** Before reading `handoff.json`, pull the session continuity pointer from the personal vault so a `/handoff` run on another machine is visible on this one. The workspace tree is otherwise machine-local; only `workspace/threads/handoff.json` plus the referenced thread file are carved into the personal vault (hq-cloud-sync `computeContinuityPointerPaths`). Without this pull a fresh session on a second device sees stale state.
+
+   ```bash
+   bash core/scripts/handoff-sync-prefetch.sh
+   ```
+
+   The helper is fail-soft: missing-CLI, offline, logged-out, or lock-held hosts return within the timeout and leave the local pointer untouched. Treat its output as advisory — never block the entry gate on its exit status.
+
+   **Cheap peek.** If `workspace/threads/handoff.json` now exists, read it (small, allowed by context-diet) and extract only the last-session one-liner (its `summary` / `conversation_summary` field) + referenced branch. Do NOT read the thread file it points to yet. If handoff.json is absent, skip — no last-session option.
 
    Also glob `workspace/gates/pending/*.json` (cheap, no file reads yet). If any exist, a paused workflow is waiting on human answers — note the count for the gate below. Spec: `core/knowledge/public/hq-core/workflow-gates-spec.md`.
 
