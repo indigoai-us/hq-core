@@ -1,7 +1,7 @@
 ---
 name: resumework
 description: "Resume a specific handoff thread by id. For the latest handoff use /startwork."
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(cat:*), Bash(core/scripts/hq-session.sh:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash, AskUserQuestion
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(cat:*), Bash(core/scripts/hq-session.sh:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*), Bash, AskUserQuestion
 ---
 
 # Resume Work From a Thread
@@ -17,6 +17,16 @@ Targeted resume. Unlike `/startwork` (which peeks at `handoff.json` for the *lat
 - You're continuing real work — not auditing a crashed session. For a post-mortem of a wedged session, use `/recover-session` instead.
 
 ## Process
+
+### 0. Prefetch cross-device state (fail-soft)
+
+Before resolving the thread, pull the session continuity pointer from the personal vault so a `/handoff` run on another machine is visible on this one. The workspace tree is otherwise machine-local; only `workspace/threads/handoff.json` plus the referenced thread file are carved into the personal vault (hq-cloud-sync `computeContinuityPointerPaths`). Without this pull, resuming on a second device sees stale state (or no thread file at all).
+
+```bash
+bash core/scripts/handoff-sync-prefetch.sh
+```
+
+The helper is fail-soft: missing-CLI, offline, logged-out, or lock-held hosts return within the timeout and leave the local pointer untouched. Treat its output as advisory — never block the resume on its exit status.
 
 ### 1. Resolve the thread id
 

@@ -697,7 +697,7 @@ scope_rel_allowed() {
 scope_block_rel() {
   local rel="${1:-}"
   local glob_reason="${2:-}"
-  local co bound_msg
+  local co bound_msg bind_msg=""
   scope_load_bound_company
   co="$(scope_company_slug_for_rel "$rel")"
   if [ -z "$SESSION_ID" ]; then
@@ -710,6 +710,9 @@ it so the host reports a session of its own (a \`claude -p --session-id <uuid>\`
 child does not)."
   elif [ -z "$BOUND_CO" ]; then
     bound_msg="Session has no company_slug bound."
+    bind_msg="Bind the correct company with: core/scripts/hq-session.sh set company_slug <slug>
+If that reports success but this keeps blocking, the bind landed on another
+session — retry it as: core/scripts/hq-session.sh --session-id ${SESSION_ID:-<id>} set company_slug <slug>"
   else
     bound_msg="Session company_slug is '$BOUND_CO'."
   fi
@@ -728,11 +731,14 @@ EOF
 Session: ${SESSION_ID:-unknown}
 $bound_msg
 
-Bind the correct company with: core/scripts/hq-session.sh set company_slug <slug>
-If that reports success but this keeps blocking, the bind landed on another
-session — retry it as: core/scripts/hq-session.sh --session-id ${SESSION_ID:-<id>} set company_slug <slug>
-Allowed without binding: core/, personal/, repos/, workspace/, companies/manifest.yaml, companies/_template/
+For data files, use the Write tool (or Edit to change an existing file) with a
+literal path under your bound company. Do not write company files with a Bash
+heredoc or redirect.
 EOF
+  if [ -n "$bind_msg" ]; then
+    printf '%s\n' "$bind_msg" >&2
+  fi
+  printf 'Allowed without binding: core/, personal/, repos/, workspace/, companies/manifest.yaml, companies/_template/\n' >&2
   exit 2
 }
 

@@ -1,6 +1,6 @@
 ---
 name: hq-integrations
-description: "Connect, govern, and use company apps (Linear, Notion, ...) via `hq integrations`. Use to look up or act in an external app, or add, share, or disconnect one."
+description: "Use the company's connected external apps (Linear, Notion, Jira, GitHub, Slack, Sentry, Gmail, Google Drive, Asana, ClickUp, Figma, HubSpot, Salesforce, and anything else wired through `hq integrations`) BEFORE reaching for a separate MCP, a web search, or asking the user. Trigger on any request to look up, read, create, update, or search in an external app, including natural phrasings like 'check my Linear tickets', 'open issues assigned to me', 'find the Notion doc about X', 'any new Sentry errors', 'my Jira issues', 'search Slack for', 'create a GitHub issue', 'add a task in Asana'. Run `hq integrations list` first; only fall back to another path when the app is not connected there. Also covers connecting, sharing, policy, approval, and disconnect flows."
 allowed-tools: Bash(hq:*)
 ---
 
