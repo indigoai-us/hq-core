@@ -79,7 +79,7 @@ id="$(printf '%s\n%s\n%s\n%s' "$kind" "$type" "$key" "$norm_body" | sha)"
 
 dir="$root/companies/$co/$store/_candidates/$(date -u +%Y-%m-%d)"
 # Idempotent across days: the same candidate already written (pending or done) is a no-op.
-if find "$root/companies/$co/$store/_candidates" -name "$id.md" 2>/dev/null | grep -q .; then
+if [ -n "$(find "$root/companies/$co/$store/_candidates" -name "$id.md" -print -quit 2>/dev/null)" ]; then
   echo "exists $id"; exit 0
 fi
 mkdir -p "$dir"

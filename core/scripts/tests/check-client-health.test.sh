@@ -214,8 +214,10 @@ DOCTOR_DEGRADED="$TMP/doctor-degraded.json"
 cat > "$DOCTOR_DEGRADED" <<JSON
 {
   "results": [
-    { "family": "sync", "status": "FAIL", "checkId": "sync.journal.stale",
+    { "family": "sync", "status": "FAIL", "checkId": "sync.journal.stale", "fix": { "autoFixable": true },
       "message": "The sync journal has not advanced in 9 days." },
+    { "family": "sync", "status": "WARN", "checkId": "sync.journal.__hq_personal_vault__", "fix": { "autoFixable": false },
+      "message": "Personal vault journal requires a user-initiated sync." },
     { "family": "sync", "status": "WARN", "checkId": "sync.vault.drift",
       "message": "Vault manifest drifted\nfrom the local tree." },
     { "family": "sync", "status": "FAIL", "checkId": "sync.vault.missing",
@@ -233,11 +235,13 @@ cat > "$DOCTOR_REASON_CODES" <<JSON
 {
   "clientHealthReasonCodesEnabled": true,
   "results": [
-    { "family": "sync", "status": "WARN", "checkId": "sync.journal.personal", "reasonCode": "stale-threshold", "clientHealthReasonCodesEnabled": true,
+    { "family": "sync", "status": "WARN", "checkId": "sync.journal.personal", "reasonCode": "stale-threshold", "clientHealthReasonCodesEnabled": true, "fix": { "autoFixable": false },
       "target": "$LEAK_PATH", "message": "private path $LEAK_PATH and private prose" },
+    { "family": "sync", "status": "WARN", "checkId": "sync.journal.opted-company", "reasonCode": "stale-threshold", "clientHealthReasonCodesEnabled": true, "fix": { "autoFixable": true },
+      "message": "private company prose must stay local" },
     { "family": "sync", "status": "FAIL", "checkId": "sync.manifest.personal", "reasonCode": "stale-threshold",
       "clientHealthReasonCodesEnabled": true, "message": "private manifest prose $LEAK_PATH" },
-    { "family": "sync", "status": "WARN", "checkId": "sync.journal.other-company", "reasonCode": "never-synced",
+    { "family": "sync", "status": "WARN", "checkId": "sync.journal.other-company", "reasonCode": "never-synced", "fix": { "autoFixable": true },
       "message": "private company prose must stay local" },
     { "family": "hooks", "status": "FAIL", "checkId": "hooks.private", "reasonCode": "never-synced" }
   ]
@@ -487,6 +491,12 @@ for eng in $ENGINES; do
     && ok "remediate($label) still identifies the failing check by id" \
     || bad "remediate($label) still identifies the failing check by id" \
       "no check id in body"
+  if grep -Fq "sync.journal.__hq_personal_vault__" "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
+    bad "remediate($label) excludes journals the safe repair cannot fix" \
+      "unrepairable personal-vault journal was reported"
+  else
+    ok "remediate($label) excludes journals the safe repair cannot fix"
+  fi
   # `hq doctor --fix --yes` must actually be attempted before anything is filed.
   grep -Fq -- "doctor --fix --yes" "$STUB_LOG" \
     && ok "remediate($label) attempts the safe repair pass first" \
@@ -542,9 +552,15 @@ RDIAG_RC=$?
 set -e
 [ "$RDIAG_RC" = 0 ] && ok "opted-in remediation exits 0" \
   || bad "opted-in remediation exits 0" "exit $RDIAG_RC"
-grep -Fq "sync.journal.personal: stale-threshold" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
-  && ok "opted-in report includes journal reason code" \
-  || bad "opted-in report includes journal reason code" "missing checkId: reasonCode pair"
+if grep -Fq "sync.journal.personal" "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
+  bad "opted-in report excludes unrepairable personal journal" \
+    "personal journal reached the bug body"
+else
+  ok "opted-in report excludes unrepairable personal journal"
+fi
+grep -Fq "sync.journal.opted-company: stale-threshold" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && ok "opted-in report includes repairable journal reason code" \
+  || bad "opted-in report includes repairable journal reason code" "missing checkId: reasonCode pair"
 grep -Fq "sync.manifest.personal: stale-threshold" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
   && ok "opted-in report includes manifest reason code" \
   || bad "opted-in report includes manifest reason code" "missing checkId: reasonCode pair"
@@ -902,7 +918,7 @@ MANY="$TMP/many.json"
 printf '{"results":[' > "$MANY"
 for ((i=1; i<=45; i++)); do
   [ "$i" = 1 ] || printf ',' >> "$MANY"
-  printf '{"family":"sync","status":"WARN","checkId":"sync.journal.company%s"}' "$i" >> "$MANY"
+  printf '{"family":"sync","status":"WARN","checkId":"sync.journal.company%s","fix":{"autoFixable":true}}' "$i" >> "$MANY"
 done
 printf ']}' >> "$MANY"
 R18="$TMP/many-companies"

@@ -17,9 +17,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-HELPER="$ROOT/core/scripts/hq-delegate-verify.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+HELPER="$ROOT/core/scripts/hq-delegate-verify.sh"
+if [ -n "${HQ_DELEGATE_VERIFY_TEST_SOURCE:-}" ]; then
+  BEFORE_DIR="$TMP"
+  cp "$HQ_DELEGATE_VERIFY_TEST_SOURCE" "$BEFORE_DIR/hq-delegate-verify.sh"
+  cp "$ROOT/core/scripts/hq-delegate-bundle.sh" "$ROOT/core/scripts/hq-delegate-publish.sh" "$BEFORE_DIR/"
+  cp -R "$ROOT/core/scripts/lib" "$BEFORE_DIR/lib"
+  HELPER="$BEFORE_DIR/hq-delegate-verify.sh"
+fi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -48,6 +56,10 @@ case "$1 $2" in
     if [ "$pfx" = "${HQ_STUB_BROWSE_EMPTY:-}" ]; then
       exit 0
     fi
+    if [ "$pfx" = "${HQ_STUB_BROWSE_EMPTY_MESSAGE:-}" ]; then
+      echo "No objects under that prefix."
+      exit 0
+    fi
     # per-prefix call counter (for throttle scenarios)
     n=1
     if [ -n "${HQ_STUB_COUNT_DIR:-}" ]; then
@@ -59,14 +71,18 @@ case "$1 $2" in
     # (models a second back-to-back browse of the same parent being throttled).
     if [ "$pfx" = "${HQ_STUB_EMPTY_AFTER_FIRST:-}" ]; then
       if [ "$n" -eq 1 ]; then
-        echo "a.md  0.1KB  shared-with-you"; echo "b.md  0.1KB  shared-with-you"
+        echo "Path  Size  Modified  Access"
+        echo "----  ----  --------  ------"
+        echo "companies/acme/knowledge/deep/sub/a.md  100  2026-09-11T00:00:00.000Z shared-with-you"; echo "companies/acme/knowledge/deep/sub/b.md  100  2026-09-11T00:00:00.000Z shared-with-you"
       fi
       exit 0
     fi
     # Throttle: empty on the FIRST browse, listing on a retry.
     if [ "$pfx" = "${HQ_STUB_EMPTY_BEFORE_FIRST:-}" ]; then
       if [ "$n" -ge 2 ]; then
-        echo "a.md  0.1KB  shared-with-you"; echo "b.md  0.1KB  shared-with-you"
+        echo "Path  Size  Modified  Access"
+        echo "----  ----  --------  ------"
+        echo "companies/acme/knowledge/deep/sub/a.md  100  2026-09-11T00:00:00.000Z shared-with-you"; echo "companies/acme/knowledge/deep/sub/b.md  100  2026-09-11T00:00:00.000Z shared-with-you"
       fi
       exit 0
     fi
@@ -74,14 +90,22 @@ case "$1 $2" in
     # SIGPIPE false-fail (early match closes the pipe while printf still has bytes
     # to write). Must overflow the pipe buffer to fire SIGPIPE under the old code.
     if [ "$pfx" = "${HQ_STUB_BIG_LISTING:-}" ]; then
-      echo "target.md  0.1KB  shared-with-you"
-      k=0; while [ "$k" -lt 3000 ]; do echo "filler-$k.md  0.1KB  shared-with-you"; k=$((k + 1)); done
+      echo "Path  Size  Modified  Access"
+      echo "----  ----  --------  ------"
+      echo "companies/acme/knowledge/big/target.md  100  2026-09-11T00:00:00.000Z shared-with-you"
+      k=0; while [ "$k" -lt 3000 ]; do echo "companies/acme/knowledge/big/filler-$k.md  100  2026-09-11T00:00:00.000Z shared-with-you"; k=$((k + 1)); done
       exit 0
     fi
-    echo "prd.json  1.2KB  shared-with-you"
+    echo "Path  Size  Modified  Access"
+    echo "----  ----  --------  ------"
+    echo "companies/acme/projects/widget/prd.json  1200  2026-09-11T00:00:00.000Z shared-with-you"
     # the referenced knowledge file is present unless the scenario hides it
     if [ "${HQ_STUB_BROWSE_NO_FILE:-0}" != "1" ]; then
-      echo "notes.md  0.4KB  shared-with-you"
+      if [ "${HQ_STUB_BROWSE_WRONG_FILE:-0}" = "1" ]; then
+        echo "companies/acme/knowledge/insights/not-notes.md  400  2026-09-11T00:00:00.000Z shared-with-you"
+      else
+        echo "companies/acme/knowledge/insights/notes.md  400  2026-09-11T00:00:00.000Z shared-with-you"
+      fi
     fi
     exit 0
     ;;
@@ -113,6 +137,7 @@ JSON
 cat > "$PROJ/.env.schema" <<'SCHEMA'
 WIDGET_API_KEY=
 TEAM/US_API_KEY=
+my_api_key=
 SCHEMA
 
 M="$TMP/manifest.json"
@@ -173,12 +198,24 @@ set -e
 printf '%s' "$OUT" | grep -q "EMPTY" || fail "empty prefix failure must say so: $OUT"
 unset HQ_STUB_BROWSE_EMPTY
 
+# A textual "No objects" sentinel is still an empty listing, not proof that
+# the granted directory contains the requested prefix.
+write_manifest granted
+export HQ_STUB_BROWSE_EMPTY_MESSAGE="projects/widget/"
+set +e
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "No objects sentinel must fail the browse probe"
+printf '%s' "$OUT" | grep -q "EMPTY" || fail "No objects sentinel must be reported as empty: $OUT"
+unset HQ_STUB_BROWSE_EMPTY_MESSAGE
+
 # --- 2. all reachable -> verified --------------------------------------------
 
 write_manifest granted
 : > "$INVOKE_LOG"
-HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
-  || fail "healthy probe exited non-zero"
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)" \
+  || fail "healthy probe exited non-zero: $OUT"
 jq -e '.status == "verified" and .verifiedAt != null' "$M" >/dev/null \
   || fail "healthy probe must advance status to verified"
 BROWSE_COUNT="$(grep -c '^files browse' "$INVOKE_LOG")"
@@ -199,6 +236,19 @@ printf '%s' "$OUT" | grep -q "FAIL  knowledge/insights/notes.md" \
   || fail "failure must name the missing referenced file: $OUT"
 jq -e '.status == "granted"' "$M" >/dev/null || fail "missing-file probe must not advance status"
 unset HQ_STUB_BROWSE_NO_FILE
+
+# A basename substring in an unrelated listing row must not prove that the
+# exact company-relative key is present.
+write_manifest granted
+export HQ_STUB_BROWSE_WRONG_FILE=1
+set +e
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "a different key with a matching basename must not satisfy the reference"
+printf '%s' "$OUT" | grep -q "FAIL  knowledge/insights/notes.md" \
+  || fail "exact-key mismatch must name the missing key: $OUT"
+unset HQ_STUB_BROWSE_WRONG_FILE
 
 # --- 7. two referenced files sharing a parent: browse the parent ONCE, and a
 #     throttled second browse must NOT be misread as "file missing" (the prod
@@ -289,7 +339,7 @@ if grep -Eq '^(dm|files share|sync push|secrets share)' "$INVOKE_LOG"; then
   fail "dry run invoked a mutating command: $(cat "$INVOKE_LOG")"
 fi
 for needle in "alice@acme.test" "transfer" "projects/widget/" "knowledge/insights/" \
-  "WIDGET_API_KEY" "TEAM/US_API_KEY" "feature/widget" "DM that would be sent"; do
+  "WIDGET_API_KEY" "TEAM/US_API_KEY" "my_api_key" "feature/widget" "DM that would be sent"; do
   printf '%s' "$OUT" | grep -qF "$needle" || fail "dry-run plan missing: $needle"
 done
 printf '%s' "$OUT" | grep -q "write" || fail "dry-run plan must show permissions"

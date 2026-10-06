@@ -19,7 +19,7 @@ cp "$ROOT/core/scripts/hook-lib.sh" "$HQ/core/scripts/hook-lib.sh"
 cp "$ROOT/core/scripts/session-title.sh" "$HQ/core/scripts/session-title.sh"
 cp "$ROOT/core/scripts/session-title-config.sh" "$HQ/core/scripts/session-title-config.sh"
 chmod +x "$HQ/core/scripts/session-title.sh"
-printf 'companies:\n  alpha:\n' > "$HQ/companies/manifest.yaml"
+printf 'companies:\n  alpha:\n  beta:\n' > "$HQ/companies/manifest.yaml"
 printf '%s\n' '#!/usr/bin/env bash' 'printf called >> "${HQ_TEST_SLEEP_LOG:?}"' > "$BIN/sleep"
 chmod +x "$BIN/sleep"
 
@@ -60,3 +60,19 @@ run_title_hook "$BOUND_SID"
 EXPECTED_PROJECT="$HQ/companies/alpha/projects/demo"
 [ "$(cat "$BOUND_MARKER")" = "$EXPECTED_PROJECT" ] || fail 'bound project path was not preserved in the completion marker'
 pass 'bound project path remains available without the first-prompt wait'
+
+# A same-named project in another company must not supply this session's
+# status glyph. Company and project identity come from the session pointer.
+mkdir -p "$HQ/companies/alpha/projects/demo" "$HQ/companies/beta/projects/demo" \
+  "$HQ/workspace/orchestrator"
+printf '%s\n' "$HQ/companies/alpha/projects/demo" \
+  > "$HQ/.claude/state/auto-session-project-company-collision"
+now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$HQ/workspace/orchestrator/state.json" <<JSON
+{"projects":[{"name":"demo","prdPath":"companies/beta/projects/demo/prd.json","state":"COMPLETED","updatedAt":"$now"}]}
+JSON
+collision_title="$(HQ_ROOT="$HQ" bash "$HQ/core/scripts/session-title.sh" \
+  --session-id company-collision --command chat)"
+case "$collision_title" in *'✅'*) fail 'same-named project from another company supplied the completion glyph' ;; esac
+case "$collision_title" in *demo*) ;; *) fail "session project title missing: $collision_title" ;; esac
+pass 'same-named project in another company does not supply the status glyph'

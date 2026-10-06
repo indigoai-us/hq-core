@@ -121,8 +121,16 @@ if (project) {
     const data = JSON.parse(fs.readFileSync(orch, "utf8"));
     for (const p of data.projects || []) {
       const nm = p.name || "";
-      const prd = "/" + (p.prdPath || "");
-      if (nm === project || prd.includes("/" + project + "/")) {
+      const prd = String(p.prdPath || "").replace(/\\/g, "/");
+      const expectedProjectPath = company === "personal"
+        ? `personal/projects/${project}/`
+        : company ? `companies/${company}/projects/${project}/` : "";
+      const matchesProject = prd
+        ? expectedProjectPath
+          ? prd.replace(/^\/+/, "").includes(expectedProjectPath)
+          : nm === project || prd.includes("/" + project + "/")
+        : nm === project;
+      if (matchesProject) {
         const st = p.state || "";
         if (st === "IN_PROGRESS") {
           emoji = "▶️";

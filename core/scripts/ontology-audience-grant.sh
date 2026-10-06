@@ -67,7 +67,7 @@ for aud in "$C"/signals/@*/_audience.yaml; do
     # attendees), so they are already company identities; emails must be members.
     case "$who" in
       prs_*|agt_*) ;;
-      *) if ! printf '%s\n' "$members" | grep -qxF "$who"; then echo "skip $who (not a member of $co)" >&2; skipped=$((skipped+1)); continue; fi ;;
+      *) if ! grep -qxF "$who" <<<"$members"; then echo "skip $who (not a member of $co)" >&2; skipped=$((skipped+1)); continue; fi ;;
     esac
     for p in $prefixes; do grant "$p" "$who"; done
   done

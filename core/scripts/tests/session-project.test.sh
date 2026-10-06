@@ -4,7 +4,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-HELPER="$ROOT/core/scripts/session-project.sh"
+HELPER="${HQ_SESSION_PROJECT_TEST_SOURCE:-$ROOT/core/scripts/session-project.sh}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -94,6 +94,20 @@ set -e
 [[ "$stale_status" -ne 0 ]] || fail "stale project destination was accepted"
 assert_contains "$stale_out" "cannot uniquely reconcile project" "stale destination rejection"
 [[ ! -e "$TMP/personal/projects/moved-away" ]] || fail "stale destination recreated a project"
+
+# A lexically in-root project can still escape through a directory symlink.
+# Reject the pointer before the plan write reaches the external target.
+mkdir -p "$TMP/companies/acme/projects" "$TMP/outside/sessions"
+ln -s "$TMP/outside" "$TMP/companies/acme/projects/escape"
+set +e
+symlink_out="$(printf '## External plan\n' | HQ_ROOT="$TMP" "$HELPER" ingest-plan \
+  --project companies/acme/projects/escape 2>&1)"
+symlink_status=$?
+set -e
+[[ "$symlink_status" -ne 0 ]] || fail "symlinked project path was accepted"
+assert_contains "$symlink_out" "invalid project path" "symlink path rejection"
+[[ -z "$(find "$TMP/outside/sessions" -mindepth 1 -print -quit)" ]] \
+  || fail "symlink path wrote a plan outside HQ_ROOT"
 
 
 # ---------------------------------------------------------------------------

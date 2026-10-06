@@ -1,0 +1,42 @@
+<!-- Conduct lane rows. One compact two-line row per lane; fill the placeholders
+     from `bash core/scripts/conduct-lane-status.sh` and render via
+     mcp__visualize__show_widget (HTML mode). Keep the CSS; repeat the .row
+     block once per lane. Status dot: g = running and healthy, y = waiting on
+     CI / inbox pending / quiet for 20+ min, r = died or non-zero exit,
+     b = finished (exit 0).
+     Layout is flex, not a many-column grid: the chat pane is narrow and a
+     7-column grid wraps its header and stacks the phase cell vertically.
+     Line 1: dot · worker · phase chip · meta · progress · PR.
+     Line 2: task — last line (one line each, ellipsis). -->
+<h2 class="sr-only">Lanes: {N} running — {one sentence}</h2>
+<style>
+.lr{font-family:var(--font-sans);color:var(--text-primary);font-size:12px;border:0.5px solid var(--border);border-radius:8px;overflow:hidden}
+.lr .row{padding:7px 12px;border-top:0.5px solid var(--border);display:flex;flex-direction:column;gap:3px;min-width:0}
+.lr .row:first-child{border-top:0}
+.lr .a,.lr .b2{display:flex;align-items:center;gap:8px;min-width:0}
+.lr .d{width:7px;height:7px;border-radius:50%;flex:none}
+.lr .g{background:var(--fill-success)}.lr .y{background:var(--fill-warning)}.lr .r{background:var(--fill-danger)}.lr .b{background:var(--fill-accent)}
+.lr .w{font-weight:500;font-size:13px;white-space:nowrap}
+.lr .ph{font-family:var(--font-mono);font-size:10.5px;color:var(--text-secondary);background:var(--surface-2);padding:1px 6px;border-radius:3px;white-space:nowrap}
+.lr .m{font-family:var(--font-mono);font-size:10.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.lr .p{display:flex;align-items:center;gap:6px;flex:none}
+.lr .bar{width:72px;height:3px;border-radius:2px;background:var(--border)}
+.lr .bar i{display:block;height:3px;border-radius:2px;background:var(--fill-accent)}
+.lr .pct{font-family:var(--font-mono);font-size:10.5px;color:var(--text-muted);width:28px;text-align:right}
+.lr a{color:var(--text-accent);text-decoration:none;font-family:var(--font-mono);font-size:10.5px;white-space:nowrap;flex:none;width:44px;text-align:right}
+.lr .b2{padding-left:15px;color:var(--text-secondary);white-space:nowrap;overflow:hidden}
+.lr .t{overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0}
+.lr .l{overflow:hidden;text-overflow:ellipsis;color:var(--text-muted);flex:1 1 auto;min-width:0}
+.lr .sep{color:var(--text-muted);flex:none}
+</style>
+<div class="lr">
+  <div class="row">
+    <div class="a">
+      <i class="d {g|y|r|b}"></i><span class="w">{worker}</span><span class="ph">{phase · short sub-step}</span>
+      <span class="m">{elapsed} · {active 2m ago | quiet 8m} · {1 note queued} · {hold note}</span>
+      <div class="p"><div class="bar"><i style="width:{pct}%"></i></div><span class="pct">{pct}%</span></div>
+      <a href="{pr url}">{#PR}</a>
+    </div>
+    <div class="b2"><span class="t">{task — plain words}</span><span class="sep">—</span><span class="l">{last_line, plain words}</span></div>
+  </div>
+</div>

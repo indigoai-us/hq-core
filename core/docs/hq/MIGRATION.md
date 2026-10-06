@@ -3,6 +3,48 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v15.0.191-beta.7
+
+- feat 2026-10-06 (sessions know which connected apps they can use):
+  a new SessionStart hook, `core/scripts/usable-integrations.sh context`,
+  adds a short note naming the HQ Integrations the caller can use in the
+  active company (connected and shared with them), with how to call them.
+  The company comes from the session binding, else the working folder
+  under `companies/<slug>/`, else (only for a session started at the HQ
+  root) the device's default company, labeled as such. An invalid binding
+  or folder shows nothing. The
+  hook never touches the network: it reads a per-company cache under
+  `.hq/usable-integrations/` (shown for up to an hour) and refreshes it in
+  the background with `hq integrations list --usable --no-login`. Signed
+  out deletes every cached list; losing a company's membership deletes
+  its list; offline keeps it until it ages out.
+  Needs an hq-cli with `list --usable`; on older CLIs the hook adds nothing.
+  New policy `hq-prefer-usable-integrations`, an updated charter
+  "Connected apps" bullet, the `hq-integrations` skill, and a Grok rule
+  (Grok ignores SessionStart output) tell agents to use a usable HQ
+  Integration before a separate MCP, web search, or asking the user.
+  Opt out with `HQ_NO_USABLE_INTEGRATIONS=1`. No action needed on update.
+## Release: v15.0.191-beta.5
+
+- fix 2026-10-06 (conduct lane rows, compact): `.claude/skills/conduct/lane-rows.html`
+  is now a two-line flex row per lane (dot · worker · phase chip · elapsed and
+  last-activity · progress · PR, then task — last action) instead of a
+  seven-column grid. The grid wrapped its header and stacked the phase cell
+  vertically in the chat pane, so each lane took most of a screen. Same data,
+  about a third of the height. Owner: "should be way less tall and more
+  compact. same details. better layout".
+
+## Release: v15.0.191-beta.4
+
+- feat 2026-10-06 (conduct lane cards): `/conduct` now ends every turn that
+  leaves a lane running with one GenUI card per lane (worker, task in plain
+  words, elapsed, phase, progress estimate, last action, PR link). Data comes
+  from the new `core/scripts/conduct-lane-status.sh`, which reads the session
+  pool and each lane's last log line or live transcript tail, so a card costs
+  almost no parent context. Template: `.claude/skills/conduct/lane-rows.html` (one row per lane).
+  The table board `.claude/skills/conduct/status-board.html` is removed; the
+  skill's Step 7 and Rules section reference the cards instead.
+
 ## Release: v15.0.187-beta.38
 
 - feat 2026-10-02 (setup: offer the desktop app the person already uses):

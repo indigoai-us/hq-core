@@ -6,6 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RUN="$ROOT/core/scripts/hq-job-run.sh"
+CLASSIFY_SOURCE="${HQ_JOB_RUN_TEST_SOURCE:-$RUN}"
 
 command -v yq >/dev/null 2>&1 || { echo "SKIP: yq not available"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not available"; exit 0; }
@@ -17,6 +18,21 @@ pass() { echo "  ok: $*"; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/hq-job-run-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+
+# grep -q can stop reading as soon as it sees the match. With pipefail enabled,
+# a large producer then receives SIGPIPE and the classifier misses that match.
+{
+  printf 'not logged in\n'
+  for _ in {1..8}; do
+    head -c 8192 /dev/zero | tr '\000' x
+    printf '\n'
+  done
+} >"$TMP/classifier.log"
+classified="$(HQ_JOB_RUN_TEST_SOURCE="$CLASSIFY_SOURCE" bash -c \
+  'set -euo pipefail; source <(sed -n "/^classify_failure()/,/^}/p" "$HQ_JOB_RUN_TEST_SOURCE"); classify_failure 1 "$1" ""' \
+  _ "$TMP/classifier.log")"
+[ "$classified" = "auth" ] || fail "large log classifier should preserve an early auth match, got: $classified"
+pass "large failure logs classify without pipefail SIGPIPE"
 
 HQ="$TMP/hqroot"
 HOME_DIR="$TMP/home"

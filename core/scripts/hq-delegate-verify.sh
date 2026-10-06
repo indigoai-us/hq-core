@@ -73,7 +73,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   done
   SECRET_NAMES="(none — no .env.schema found)"
   if [ -n "$SCHEMA" ]; then
-    SECRET_NAMES="$(grep -E '^[A-Z][A-Z0-9_]*(/[A-Z][A-Z0-9_]+)*=' "$SCHEMA" | cut -d= -f1 | sort -u | tr '\n' ' ')"
+    SECRET_NAMES="$(grep -E '^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*=' "$SCHEMA" | cut -d= -f1 | sort -u | tr '\n' ' ')"
     [ -n "$SECRET_NAMES" ] || SECRET_NAMES="(none declared)"
   fi
 
@@ -135,7 +135,7 @@ while [ "$i" -lt "$PREFIX_COUNT" ]; do
   if [ "$BROWSE_RC" -ne 0 ]; then
     echo "  FAIL  $PFX — browse errored (likely cause: the grant did not land, or the caller's session expired — re-run /hq-login and hq-delegate-grant.sh)"
     FAILED=1
-  elif [ -z "$(printf '%s' "$BROWSE_OUT" | tr -d '[:space:]')" ]; then
+  elif [ -z "$(printf '%s' "$BROWSE_OUT" | tr -d '[:space:]')" ] || [ "$(printf '%s' "$BROWSE_OUT" | tr -d '[:space:]')" = "Noobjectsunderthatprefix." ]; then
     echo "  FAIL  $PFX — reachable but EMPTY (likely cause: the dossier was never pushed to the vault — hq sync push companies/$COMPANY/... and re-run)"
     FAILED=1
   else
@@ -156,6 +156,31 @@ done
 # Browse each distinct parent at most once, and retry an empty result a few
 # times before trusting it. (Cache dir cleaned on exit.)
 REF_BROWSE_CACHE="$(mktemp -d)"
+listing_has_exact_key() {
+  local listing="$1" expected="$2"
+  printf '%s\n' "$listing" | awk -v expected="$expected" '
+    function exact_key(row, expected, modified, size) {
+      gsub(/\033\[[0-9;]*m/, "", row)
+      sub(/[[:space:]]+$/, "", row)
+      if (row !~ / +(shared-with-you|creator access — creator-only|role-bypass|personal-vault|private folder — children are creator-only)$/) return 0
+      sub(/ +(shared-with-you|creator access — creator-only|role-bypass|personal-vault|private folder — children are creator-only)$/, "", row)
+      modified = row
+      sub(/^.* +/, "", modified)
+      if (modified != "—" && modified !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\.[0-9][0-9][0-9]Z$/) return 0
+      sub(/ +[^[:space:]]+$/, "", row)
+      sub(/[[:space:]]+$/, "", row)
+      size = row
+      sub(/^.* +/, "", size)
+      if (size !~ /^[0-9]+$/) return 0
+      sub(/ +[0-9]+$/, "", row)
+      sub(/[[:space:]]+$/, "", row)
+      return row == expected
+    }
+    NR > 2 && exact_key($0, expected) { found = 1 }
+    END { exit found ? 0 : 1 }
+  '
+}
+
 browse_parent() { # parent -> listing (memoized per run, retried on empty)
   local parent="$1" key out attempt
   key="$REF_BROWSE_CACHE/$(printf '%s' "$parent" | tr '/@:' '___')"
@@ -187,7 +212,7 @@ if [ "$REF_COUNT" -gt 0 ]; then
     # early match, which under `set -o pipefail` surfaces printf's SIGPIPE as a
     # non-zero pipeline and FALSE-FAILS a file that is genuinely present (it bit
     # exactly the referenced files that sort early in a large parent listing).
-    if [[ "$LISTING" == *"$BASE"* ]]; then
+    if listing_has_exact_key "$LISTING" "$kpath"; then
       echo "  pass  $REL"
     else
       echo "  FAIL  $REL — granted prefix is reachable but this referenced file is NOT in the vault (likely cause: it was never pushed — hq sync push $kpath --company $COMPANY and re-run)"

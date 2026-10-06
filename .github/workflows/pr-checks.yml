@@ -277,6 +277,8 @@ jobs:
         run: bash core/scripts/check-pricing-drift.sh
       - name: Auto-session project uses the exact company directory entry
         run: bash core/scripts/tests/auto-session-project.test.sh
+      - name: Session project helper rejects symlink escapes
+        run: bash core/scripts/tests/session-project.test.sh
       - name: Session title waits for project resolution and prunes stale markers
         run: bash core/scripts/tests/session-title-project-resolution.test.sh
       - name: Company resolver (session bind + whole-token prompt scan)
@@ -1288,6 +1290,8 @@ jobs:
           sh core/scripts/hqd-hook-shim.test.sh
       - name: SessionStart refreshes stale vault access manifests without waiting
         run: bash core/scripts/tests/refresh-vault-access-session-start.test.sh
+      - name: SessionStart lists usable integrations for the active company only
+        run: bash core/scripts/tests/usable-integrations.test.sh
       - name: Master-hook output writes preserve deny decisions and plain bytes
         run: bash core/scripts/tests/master-hook-output-write-bound.test.sh
       - name: Gated hook IDs have profile coverage (US-157)
@@ -1351,6 +1355,8 @@ jobs:
         run: bash core/scripts/tests/refresh-vault-access.test.sh
       - name: ontology-audience-grant shares the recursive folder/* glob, never a bare private folder
         run: bash core/scripts/tests/ontology-audience-grant.test.sh
+      - name: ontology-candidate existing-file lookup drains find under pipefail
+        run: bash core/scripts/tests/ontology-candidate.test.sh
       - name: run-project work-mesh notes use options the hq CLI accepts (--session-id)
         run: bash core/scripts/tests/run-project-mesh-note.test.sh
       - name: run-project completion notes require branch delivery evidence (US-147)
@@ -1600,6 +1606,8 @@ jobs:
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: portable-lib
         run: bash core/scripts/tests/portable-lib.test.sh
+      - name: outpost reconcile PATH normalizer under stock macOS Bash
+        run: /bin/bash core/scripts/tests/outpost-jobs-path-normalizer.test.sh
       - name: session-journal CLI port behavior
         run: bash core/scripts/tests/session-journal-cli-port.test.sh
       - name: identity-resolve USER key

@@ -38,10 +38,11 @@ scaffolds, supervises, and syncs work across repos and companies.
 - Connected apps: `/hq-integrations` or `hq integrations`. For any request to
   look up, read, create, update, or search in an external app (Linear, Notion,
   Jira, GitHub, Slack, Sentry, Gmail, Google Drive, Asana, ClickUp, Figma,
-  HubSpot, Salesforce, and anything else wired through HQ), check `hq
-  integrations list` FIRST and route through the HQ gateway when connected.
-  Only fall back to a separate MCP, web search, or asking the user when the app
-  is not connected there.
+  HubSpot, Salesforce, and anything else wired through HQ), check the
+  SessionStart "HQ Integrations you can use" note or `hq integrations list
+  --usable` FIRST and route through the HQ gateway when the app is usable.
+  Only fall back to a separate MCP, web search, or asking the user when no
+  usable app covers it. Rule: `core/policies/hq-prefer-usable-integrations.md`.
 - Bots and agents: `hq bot` for local bots, `/new-agent` for hosted agents,
   `hq agent enroll` for external bots.
 - Billing: `hq billing`.

@@ -78,8 +78,10 @@ create_generated_unit() {
   assert_hq_only_in_npm_global
   local hq_root="$TMP/${job_id}-root" home_dir="$TMP/${job_id}-home"
   local unit_dir="$TMP/${job_id}-units" cache_dir="$TMP/${job_id}-cache"
-  mkdir -p "$hq_root/personal/jobs" "$home_dir" "$unit_dir" "$cache_dir" \
+  mkdir -p "$hq_root/personal/jobs" "$hq_root/core/scripts" "$home_dir" "$unit_dir" "$cache_dir" \
     "$home_dir/.hq/jobs/reconcile"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$hq_root/core/scripts/hq-job-run.sh"
+  chmod +x "$hq_root/core/scripts/hq-job-run.sh"
   cat >"$NPM_BIN/npm" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
