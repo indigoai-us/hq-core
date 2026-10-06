@@ -80,6 +80,69 @@ function writeDoc(file, fm, body, dry) {
 const slugify = s => s.toLowerCase().normalize("NFKD").replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80);
 const today = () => new Date().toISOString().slice(0, 10);
 const now = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+const yyyyMm = () => new Date().toISOString().slice(0, 7);
+
+// ── Fact-file compaction ─────────────────────────────────────────────
+// Fact pages append one line per signal-mention of an entity (see step 3
+// below). Without a bound a hot entity accumulates every mention it has
+// ever received, so the page becomes a flat log. Compaction keeps the
+// most recent N lines inline and rolls the older ones into a dated,
+// append-only archive next to the fact file. `signal_count` on the
+// entity itself is unaffected — it is the true total.
+const BACKREF_COMPACT_THRESHOLD = Number(process.env.HQ_ONTOLOGY_BACKREF_THRESHOLD || 50);
+const BACKREF_KEEP_INLINE = Number(process.env.HQ_ONTOLOGY_BACKREF_KEEP_INLINE || 25);
+const SUMMARY_MARKER = "<!-- backref-archive -->";
+
+function isBackrefLine(line) { return /^- \[[a-z_]+\] .+ \(signal [0-9a-f]{12}\)\s*$/.test(line); }
+function isSummaryLine(line) { return line.includes(SUMMARY_MARKER); }
+
+function readArchiveIndex(file) {
+  if (!fs.existsSync(file)) return { version: 1, signalIds: [] };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (parsed && Array.isArray(parsed.signalIds)) {
+      return { version: 1, signalIds: parsed.signalIds.filter(s => typeof s === "string") };
+    }
+  } catch (err) {
+    console.warn(`ontology-garden: archive index unreadable at ${file}: ${err.message || err}; skipping compaction`);
+  }
+  // Present but unreadable: never compact on top of it, or the rewrite would
+  // drop every archived id it lists.
+  return { version: 1, signalIds: [], unreadable: true };
+}
+
+// Compact `body` when its backref-line count exceeds the threshold.
+// Returns { body, archivedLines, archivedIds, changed }.
+function compactFactBody(body, { slug, archivedTotalBefore, dry }) {
+  const lines = body.split("\n").map(l => l.trimEnd()).filter(l => l.length > 0);
+  const backrefLines = lines.filter(isBackrefLine);
+  const other = lines.filter(l => !isBackrefLine(l) && !isSummaryLine(l));
+  if (backrefLines.length <= BACKREF_COMPACT_THRESHOLD) {
+    return { body, archivedLines: [], archivedIds: [], changed: false };
+  }
+  const archiveCount = backrefLines.length - BACKREF_KEEP_INLINE;
+  const archivedLines = backrefLines.slice(0, archiveCount);
+  const inlineLines = backrefLines.slice(archiveCount);
+  const archivedIds = archivedLines
+    .map(l => (l.match(/\(signal ([0-9a-f]{12})\)$/) || [])[1])
+    .filter(Boolean);
+  const archivedTotal = archivedTotalBefore + archivedLines.length;
+  const stamp = yyyyMm();
+  const summary = `- ${SUMMARY_MARKER} _${archivedTotal} older mention${archivedTotal === 1 ? "" : "s"} archived in [history](./${slug}.history/${stamp}.md)_`;
+  const nextBody = [summary, ...other, ...inlineLines].join("\n");
+  return { body: nextBody, archivedLines, archivedIds, changed: true, stamp };
+}
+
+function appendArchiveFile(file, isoDate, lines, dry) {
+  if (dry) return;
+  const batch = `\n<!-- archived ${isoDate} -->\n${lines.join("\n")}\n`;
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, "utf8").replace(/\s+$/, "") : "";
+  const next = prev ? `${prev}\n${batch}` : `# Back-reference archive\n${batch}`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, next);
+  fs.renameSync(tmp, file);
+}
 
 function listCandidates(dir) {
   if (!fs.existsSync(dir)) return [];
@@ -193,10 +256,30 @@ function main() {
       for (const slug of hit) {
         const e = entities.get(slug);
         const ffile = path.join(ont, "facts", `@${key}`, e.type, `${slug}.md`);
-        const line = `- [${type}] ${body.split("\n")[0]} (signal ${id.slice(0, 12)})`;
+        const sid12 = id.slice(0, 12);
+        const line = `- [${type}] ${body.split("\n")[0]} (signal ${sid12})`;
         const prev = fs.existsSync(ffile) ? readDoc(ffile) : { fm: { entity: slug, type: e.type, audience_key: key }, body: "" };
-        if (!prev.body.includes(`signal ${id.slice(0, 12)}`)) {
-          writeDoc(ffile, prev.fm, [prev.body, line].filter(Boolean).join("\n"), a.dryRun);
+        const idxFile = path.join(path.dirname(ffile), `${slug}.history`, "_index.json");
+        const archiveIndex = readArchiveIndex(idxFile);
+        const alreadyArchived = archiveIndex.signalIds.includes(sid12);
+        if (!prev.body.includes(`signal ${sid12}`) && !alreadyArchived) {
+          let nextBody = [prev.body, line].filter(Boolean).join("\n");
+          const compact = compactFactBody(nextBody, {
+            slug,
+            archivedTotalBefore: archiveIndex.signalIds.length,
+            dry: a.dryRun,
+          });
+          if (compact.changed && !archiveIndex.unreadable) {
+            const archiveFile = path.join(path.dirname(ffile), `${slug}.history`, `${compact.stamp}.md`);
+            appendArchiveFile(archiveFile, today(), compact.archivedLines, a.dryRun);
+            if (!a.dryRun) {
+              const nextIdx = { version: 1, signalIds: [...archiveIndex.signalIds, ...compact.archivedIds] };
+              fs.mkdirSync(path.dirname(idxFile), { recursive: true });
+              fs.writeFileSync(idxFile, JSON.stringify(nextIdx) + "\n");
+            }
+            nextBody = compact.body;
+          }
+          writeDoc(ffile, prev.fm, nextBody, a.dryRun);
           report.facts_written++;
         }
         if (key === "company") {

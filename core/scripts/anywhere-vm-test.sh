@@ -14,11 +14,12 @@ usage() {
   cat <<'USAGE'
 Usage: anywhere-vm-test.sh --cli-package FILE.tgz --core-bundle FILE.tar.gz
        --fixture-repo URL --fixture-ref SHA --company SLUG --hq-api-url NONPROD_URL
-       --secret-names NAME[,NAME...] [--base-image NAME]
+       --secret-names NAME[=ENV][,NAME[=ENV]...] [--base-image NAME]
        [--results-dir DIR] [--tart-bin FILE] [--timeout-seconds N]
 
-The script obtains the named host credentials with `hq secrets exec`, then
-passes them only to individual `tart exec ... env NAME=VALUE ...` calls.
+The script obtains each named credential with `hq secrets exec`; slash-namespaced
+records must map to an explicit environment name. Credentials travel to the VM over
+stdin and are never included in command arguments or image files.
 USAGE
 }
 
@@ -94,27 +95,70 @@ case "$COMPANY" in *test*) ;; *) fail "--company must name a disposable test com
 case "$COMPANY" in *prod*|*indigo*) fail "refusing a production company slug" ;; esac
 case "$BASE_IMAGE" in *[!A-Za-z0-9_.:/@-]*|'') fail "--base-image contains unsupported characters" ;; esac
 
-IFS=',' read -r -a SECRET_NAME_LIST <<< "$SECRET_NAMES"
-[ "${#SECRET_NAME_LIST[@]}" -gt 0 ] || fail "--secret-names must not be empty"
-for secret_name in "${SECRET_NAME_LIST[@]}"; do
-  case "$secret_name" in
+IFS=',' read -r -a SECRET_SPEC_LIST <<< "$SECRET_NAMES"
+[ "${#SECRET_SPEC_LIST[@]}" -gt 0 ] || fail "--secret-names must not be empty"
+SECRET_SOURCE_LIST=() SECRET_ENV_LIST=() SECRET_SOURCE_NAMES="" SECRET_ENV_MAP=""
+declare -A SECRET_SOURCES_SEEN=() SECRET_ENVS_SEEN=()
+for secret_spec in "${SECRET_SPEC_LIST[@]}"; do
+  case "$secret_spec" in
+    *=*) secret_source="${secret_spec%%=*}"; secret_env="${secret_spec#*=}" ;;
+    *) secret_source="$secret_spec"; secret_env="$secret_spec" ;;
+  esac
+  case "$secret_source" in
     [A-Za-z_]* ) ;;
     *) fail "secret names must begin with a letter or underscore" ;;
   esac
-  case "$secret_name" in
-    *[!A-Za-z_0-9]*|'') fail "secret names must be environment-variable identifiers" ;;
-  esac
-  case "${!secret_name:-}" in *$'\n'*|*$'\r'*) fail "credential values must be single-line for secure stdin transport" ;; esac
+  [[ "$secret_source" =~ ^[A-Za-z_][A-Za-z_0-9.-]*(/[A-Za-z_][A-Za-z_0-9.-]*)*$ ]] || fail "secret names must be environment identifiers or slash-namespaced names"
+  [[ "$secret_env" =~ ^[A-Za-z_][A-Za-z_0-9]*$ ]] || fail "secret mappings must end with an environment-variable name"
+  [[ -z "${SECRET_SOURCES_SEEN[$secret_source]:-}" ]] || fail "secret names must not be repeated"
+  [[ -z "${SECRET_ENVS_SEEN[$secret_env]:-}" ]] || fail "secret environment names must not be repeated"
+  SECRET_SOURCES_SEEN[$secret_source]=1
+  SECRET_ENVS_SEEN[$secret_env]=1
+  SECRET_SOURCE_LIST+=("$secret_source")
+  SECRET_ENV_LIST+=("$secret_env")
+  [ -z "$SECRET_SOURCE_NAMES" ] || SECRET_SOURCE_NAMES+=,
+  SECRET_SOURCE_NAMES="${SECRET_SOURCE_NAMES}${secret_source}"
+  [ -z "$SECRET_ENV_MAP" ] || SECRET_ENV_MAP+=,
+  SECRET_ENV_MAP="${SECRET_ENV_MAP}${secret_source}=${secret_env}"
+  case "${!secret_env:-}" in *$'\n'*|*$'\r'*) fail "credential values must be single-line for secure stdin transport" ;; esac
 done
 
 if [ "$SECRETS_READY" -eq 0 ]; then
   command -v hq >/dev/null 2>&1 || fail "hq is required on the Mac host to inject credentials"
   export HQ_VAULT_API_URL="$HQ_API_URL"
-  exec hq secrets --company "$COMPANY" exec --only "$SECRET_NAMES" -- bash "$0" --secrets-ready "${ORIGINAL_ARGS[@]}"
+  export HQ_VM_SECRET_ENV_MAP="$SECRET_ENV_MAP"
+  exec hq secrets --company "$COMPANY" exec --only "$SECRET_SOURCE_NAMES" -- node -e '
+const { spawnSync } = require("node:child_process");
+const [script, ...args] = process.argv.slice(1);
+const env = { ...process.env };
+for (const entry of (env.HQ_VM_SECRET_ENV_MAP || "").split(",").filter(Boolean)) {
+  const separator = entry.lastIndexOf("=");
+  const source = entry.slice(0, separator);
+  const target = entry.slice(separator + 1);
+  const value = env[source];
+  if (value === undefined || value.length === 0) {
+    console.error(`a requested credential is not available in the hq secrets exec environment (${source}: ${value === undefined ? "unset" : "empty"})`);
+    process.exit(2);
+  }
+  if (/[\r\n]/.test(value)) {
+    console.error("credential values must be single-line for secure stdin transport");
+    process.exit(2);
+  }
+  env[target] = value;
+  if (source !== target) delete env[source];
+}
+delete env.HQ_VM_SECRET_ENV_MAP;
+const child = spawnSync("/bin/bash", [script, "--secrets-ready", ...args], { env, stdio: "inherit" });
+if (child.error) {
+  console.error("failed to start the harness with injected credentials");
+  process.exit(2);
+}
+process.exit(child.status ?? 1);
+' "$0" "${ORIGINAL_ARGS[@]}"
 fi
 
-for secret_name in "${SECRET_NAME_LIST[@]}"; do
-  [ -n "${!secret_name:-}" ] || fail "a requested credential is not available in the hq secrets exec environment"
+for secret_env in "${SECRET_ENV_LIST[@]}"; do
+  [ -n "${!secret_env:-}" ] || fail "requested credential target is unavailable: $secret_env"
 done
 
 command -v "$TART_BIN" >/dev/null 2>&1 || [ -x "$TART_BIN" ] || fail "Tart is required on the Mac host"
@@ -150,7 +194,7 @@ run_bounded() {
 
 redact_output() {
   local value="$1" secret_name secret_value
-  for secret_name in "${SECRET_NAME_LIST[@]}"; do
+  for secret_name in "${SECRET_ENV_LIST[@]}"; do
     secret_value="${!secret_name}"
     value="${value//"$secret_value"/[REDACTED]}"
   done
@@ -165,7 +209,7 @@ guest_exec() {
   local guest_bootstrap='while IFS= read -r secret_assignment; do [ -n "$secret_assignment" ] || continue; export "$secret_assignment"; done; exec "$@"'
   {
     local secret_name
-  for secret_name in "${SECRET_NAME_LIST[@]}"; do printf '%s=%s\n' "$secret_name" "${!secret_name}"; done
+  for secret_name in "${SECRET_ENV_LIST[@]}"; do printf '%s=%s\n' "$secret_name" "${!secret_name}"; done
   } | run_bounded "$seconds" "${TART_ARGS[@]}" exec -i "$VM_NAME" /usr/bin/env "HQ_VAULT_API_URL=$HQ_API_URL" \
     /bin/bash -c "$guest_bootstrap" anywhere-vm-guest "${guest_command[@]}"
 }
@@ -261,6 +305,10 @@ test "$(hq resolve-company --path "$HOME/hq-us016-fixture" --json | node -e "let
 hq install --global --runtime claude --hq-root "$HOME/hq-root"
 hq install --global --runtime codex --hq-root "$HOME/hq-root"
 hq daemon install --hq-root "$HOME/hq-root"
+node -e "const username=process.env.HQ_MACHINE_USERNAME; const secret=process.env.HQ_MACHINE_SECRET; if (!username || !secret) process.exit(2); process.stdout.write(JSON.stringify({username,secret}));" | hq daemon login --stdin
+hq daemon login --status | grep -q "hqd signed in: yes (memory only)"
+test ! -e "$HOME/.hq/daemon/cognito-tokens.json"
+test ! -e "$HOME/.hq/cognito-tokens.json"
 '
 if capture_guest setup env "HQ_VM_CLI_PACKAGE=$CLI_BASENAME" "HQ_VM_CORE_BUNDLE=$CORE_BASENAME" \
   "HQ_VM_FIXTURE_REPO=$FIXTURE_REPO" "HQ_VM_FIXTURE_REF=$FIXTURE_REF" "HQ_VM_COMPANY=$COMPANY" /bin/zsh -lc "$GUEST_SETUP"; then

@@ -40,12 +40,17 @@ function emit_entry(    valid) {
     report("invalid state for " path)
     valid = 0
   }
-  if (path == "" || command == "" || kind == "" || root == "" || interpreter == "" || min_cli == "" || state == "") {
+  if (path == "" || command == "" || kind == "" || root == "" || interpreter == "" || min_cli == "" || state == "" || path_operands == "") {
     report("missing required field for " path)
     valid = 0
   }
+  if (path_operands != "none" &&
+      path_operands !~ /^(position:[0-9]+|first-nonoption|all-nonoptions|options:--[a-z0-9-]+(,--[a-z0-9-]+)*|comma:--[a-z0-9-]+)(;(position:[0-9]+|first-nonoption|all-nonoptions|options:--[a-z0-9-]+(,--[a-z0-9-]+)*|comma:--[a-z0-9-]+))*$/) {
+    report("invalid path_operands for " path)
+    valid = 0
+  }
   if (valid) {
-    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", path, command, kind, root, interpreter, min_cli, state
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", path, command, kind, root, interpreter, min_cli, state, path_operands
   }
 }
 
@@ -59,6 +64,7 @@ function emit_entry(    valid) {
   interpreter = ""
   min_cli = ""
   state = ""
+  path_operands = ""
   next
 }
 
@@ -95,6 +101,12 @@ function emit_entry(    valid) {
 /^    state:[[:space:]]/ {
   state = $0
   sub(/^    state:[[:space:]]*/, "", state)
+  next
+}
+
+/^    path_operands:[[:space:]]/ {
+  path_operands = $0
+  sub(/^    path_operands:[[:space:]]*/, "", path_operands)
   next
 }
 

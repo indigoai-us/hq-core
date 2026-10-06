@@ -1,3 +1,3 @@
 interface:
   display_name: "Land PR"
-  short_description: "Land a single PR - monitor CI, resolve reviews, merge, monitor production"
+  short_description: "Monitor CI, merge a PR, then verify the production result."

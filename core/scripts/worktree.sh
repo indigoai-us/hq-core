@@ -62,7 +62,28 @@ stamp_worktree() {
 # Run the CLI with stdout captured (for the stamp) and stderr flowing live.
 _wt_out=$(mktemp 2>/dev/null || echo "/tmp/hq-worktree-out.$$")
 _wt_rc=0
-hq core --hq-root "$HQ_ROOT" worktree "$@" >"$_wt_out" || _wt_rc=$?
+_wt_hq_root="$HQ_ROOT"
+if command -v cygpath >/dev/null 2>&1; then
+  _wt_hq_root="$(cygpath -m "$_wt_hq_root")"
+fi
+_wt_args=("$@")
+_wt_arg_count=$#
+if command -v cygpath >/dev/null 2>&1; then
+  for ((_wt_index = 0; _wt_index < _wt_arg_count; _wt_index++)); do
+    if [ "${_wt_args[_wt_index]}" = "--source" ]; then
+      _wt_index=$((_wt_index + 1))
+      if [ "$_wt_index" -lt "$_wt_arg_count" ]; then
+        _wt_args[_wt_index]="$(cygpath -m "${_wt_args[_wt_index]}")"
+      fi
+      break
+    fi
+  done
+fi
+if [ "$_wt_arg_count" -gt 0 ]; then
+  MSYS2_ARG_CONV_EXCL='*' hq core --hq-root "$_wt_hq_root" worktree "${_wt_args[@]}" >"$_wt_out" || _wt_rc=$?
+else
+  MSYS2_ARG_CONV_EXCL='*' hq core --hq-root "$_wt_hq_root" worktree >"$_wt_out" || _wt_rc=$?
+fi
 cat "$_wt_out"
 if [[ "$_wt_rc" -eq 0 ]] && command -v jq >/dev/null 2>&1; then
   stamp_worktree "$_wt_out" || true

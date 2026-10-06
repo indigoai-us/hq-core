@@ -48,7 +48,7 @@ mesh_project_id_for_prd() {
   if [ -f "$board" ]; then
     resolved="$(jq -r --arg path "$rel" --arg project "$project" '
       [.projects[]? | select(.prd_path == $path or .id == $project)] | first | (.mesh_project_id // .id // empty)
-    ' "$board" 2>/dev/null || true)"
+    ' "$board" 2>/dev/null | tr -d '\r' || true)"
   fi
   printf '%s\n' "${resolved:-$project}"
 }
@@ -100,11 +100,11 @@ mark_pending() {
   prd="$ROOT/companies/$company/projects/$project/prd.json"
   rel="companies/$company/projects/$project/prd.json"
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  title="$(jq -r '.name // empty' "$prd" 2>/dev/null || true)"
+  title="$(jq -r '.name // empty' "$prd" 2>/dev/null | tr -d '\r' || true)"
   [ -n "$title" ] || title="$project"
   mkdir -p "$(dirname "$board")"
   if [ ! -f "$board" ]; then
-    jq -n --arg company "$company" '{company:$company, projects:[]}' > "$board"
+    jq -n --arg company "$company" '{company:$company, projects:[]}' | tr -d '\r' > "$board"
   fi
   tmp="$(mktemp)"
   jq \
@@ -132,7 +132,7 @@ mark_pending() {
           updated_at:$now
         }]
       end
-    ' "$board" > "$tmp"
+    ' "$board" | tr -d '\r' > "$tmp"
   mv "$tmp" "$board"
 }
 
@@ -152,8 +152,8 @@ register_one() {
     exit 1
   fi
   local thread channel
-  thread="$(printf '%s' "$ensure_json" | jq -er '.threadId // empty')" || die "registration incomplete: ensure output missing threadId"
-  channel="$(printf '%s' "$ensure_json" | jq -er '.channelId // empty')" || die "registration incomplete: ensure output missing channelId"
+  thread="$(printf '%s' "$ensure_json" | jq -er '.threadId // empty' | tr -d '\r')" || die "registration incomplete: ensure output missing threadId"
+  channel="$(printf '%s' "$ensure_json" | jq -er '.channelId // empty' | tr -d '\r')" || die "registration incomplete: ensure output missing channelId"
   [ -n "$thread" ] || die "registration incomplete: empty threadId"
   [ -n "$channel" ] || die "registration incomplete: empty channelId"
 
@@ -161,11 +161,11 @@ register_one() {
   local rel="companies/$company/projects/$project/prd.json"
   local now title tmp
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  title="$(jq -r '.name // empty' "$prd")"
+  title="$(jq -r '.name // empty' "$prd" | tr -d '\r')"
   [ -n "$title" ] || title="$project"
   mkdir -p "$(dirname "$board")"
   if [ ! -f "$board" ]; then
-    jq -n --arg company "$company" '{company:$company, projects:[]}' > "$board"
+    jq -n --arg company "$company" '{company:$company, projects:[]}' | tr -d '\r' > "$board"
   fi
   tmp="$(mktemp)"
   jq \
@@ -198,7 +198,7 @@ register_one() {
           updated_at:$now
         }]
       end
-    ' "$board" > "$tmp"
+    ' "$board" | tr -d '\r' > "$tmp"
   mv "$tmp" "$board"
   jq -e \
     --arg id "$project" \
@@ -217,15 +217,15 @@ register_brainstorm() {
   resolve_uid "$company" >/dev/null
   board="$(board_path "$company")"
   [ -f "$board" ] || die "registration incomplete: missing $board"
-  title="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .title // empty' "$board")"
-  description="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .description // empty' "$board")"
+  title="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .title // empty' "$board" | tr -d '\r')"
+  description="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .description // empty' "$board" | tr -d '\r')"
   [ -n "$title" ] || die "registration incomplete: missing local Board project $company/$project"
   if ! ensure_json="$(hq mesh project set "$project" --company "$company" --name "$title" --description "$description" --create --json)"; then
     die "registration incomplete: hq mesh project set failed for $company/$project"
   fi
-  thread="$(printf '%s' "$ensure_json" | jq -er '.registration.threadId // .threadId // empty')" \
+  thread="$(printf '%s' "$ensure_json" | jq -er '.registration.threadId // .threadId // empty' | tr -d '\r')" \
     || die "registration incomplete: project set output missing threadId"
-  channel="$(printf '%s' "$ensure_json" | jq -er '.registration.channelId // .channelId // empty')" \
+  channel="$(printf '%s' "$ensure_json" | jq -er '.registration.channelId // .channelId // empty' | tr -d '\r')" \
     || die "registration incomplete: project set output missing channelId"
   [ -n "$thread" ] && [ -n "$channel" ] || die "registration incomplete: empty threadId or channelId"
   tmp="$(mktemp)"
@@ -310,7 +310,7 @@ retry_pending() {
     count=$((count + 1))
     [ "$count" -le 3 ] || break
     ( register_one "$company" "$id" ) || true
-  done < <(jq -r '[.projects[]? | select(.pending_registration == true) | .id // empty] | .[]' "$board" 2>/dev/null || true)
+  done < <(jq -r '[.projects[]? | select(.pending_registration == true) | .id // empty] | .[]' "$board" 2>/dev/null | tr -d '\r' || true)
 }
 
 if [ "${1:-}" = "--brainstorm" ]; then

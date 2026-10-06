@@ -34,6 +34,10 @@ grep -Fq '            core/scripts/cli-hosted.yaml' <<< "$WINDOWS_NODE_SETUP" \
 MACOS_JOB="$(sed -n '/^  shell-smoke-macos:$/,/^  [[:alnum:]_-][[:alnum:]_-]*:$/p' "$WORKFLOW" | sed '$d')"
 grep -Fq "needs['denylist-scan'].outputs.macos_shell_smoke == 'true'" <<< "$MACOS_JOB" \
   || fail 'macOS shell smoke must remain gated by the existing path filter'
+grep -Fq '        run: bash core/scripts/tests/session-journal-cli-port.test.sh' <<< "$WINDOWS_JOB" \
+  || fail 'Windows shell smoke must run the session-journal CLI port regression'
+grep -Fq '        run: bash core/scripts/tests/session-journal-cli-port.test.sh' <<< "$MACOS_JOB" \
+  || fail 'macOS shell smoke must run the session-journal CLI port regression'
 if grep -Eq 'always\(\)|github.event_name == .push.|needs\[.denylist-scan.\].result != .success.' <<< "$MACOS_JOB"; then
   fail 'macOS shell smoke must not bypass its path filter for main pushes or scan failures'
 fi

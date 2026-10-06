@@ -123,7 +123,7 @@ while IFS= read -r d; do
 done < <(jq_capture -r '.[]' <<<"$REFS_JSON")
 
 if [ "$JSON" = 1 ]; then
-  jq -cn --arg s "$STORY" \
+  jq_capture -cn --arg s "$STORY" \
     --argjson m "$(printf '%s\n' "${missing[@]:-}" | jq_capture -R . | jq_capture -s 'map(select(. != ""))')" \
     --argjson p "$(printf '%s\n' "${present[@]:-}" | jq_capture -R . | jq_capture -s 'map(select(. != ""))')" \
     '{story:$s, status:(if ($m|length)==0 then "present" else "missing" end), missing:$m, present:$p}'

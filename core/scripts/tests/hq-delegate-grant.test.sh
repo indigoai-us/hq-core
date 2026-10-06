@@ -63,6 +63,7 @@ case "$1 $2" in
   "sync push")     exit 0 ;;
   "groups create") exit 0 ;;
   "groups add")    exit 0 ;;
+  "groups members") printf 'PERSON_UID\nagt_01KTXDEACON\n'; exit 0 ;;
   "files share")
     # args: files share <pfx> --with <who> --permission <perm> --company <co>
     pfx=""; who=""; perm=""
@@ -282,7 +283,8 @@ set -e
 
 # --- 6. agent recipient: grants flow through a per-agent delegation group -----
 # (Live finding: `hq files share --with` rejects agt_ principals — only
-# email/grp_/@all are valid file-ACL grantees. Agent grants use grp_dlg-<tail>.)
+# email/grp_/@all are valid file-ACL grantees. Agent grants use a full-UID
+# digest group and verify that the group contains exactly the intended agent.
 
 reset_acl_state
 write_manifest "$M" building
@@ -291,16 +293,18 @@ jq '.to = {"kind": "agent", "principal": "agt_01KTXDEACON", "displayName": "Deac
 : > "$INVOKE_LOG"
 bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "agent-recipient grant run exited non-zero"
 
-grep -q '^groups create grp_dlg-ktxdeacon --name Delegation: Deacon --company acme$' "$INVOKE_LOG" \
+grep -q '^groups create grp_dlg7158ae994f83ea5e168a09b57269b9d5 --name Delegation: Deacon --company acme$' "$INVOKE_LOG" \
   || fail "agent recipient must ensure the delegation group exists: $(cat "$INVOKE_LOG")"
-grep -q '^groups add grp_dlg-ktxdeacon agt_01KTXDEACON --company acme$' "$INVOKE_LOG" \
+grep -q '^groups add grp_dlg7158ae994f83ea5e168a09b57269b9d5 agt_01KTXDEACON --company acme$' "$INVOKE_LOG" \
   || fail "agent recipient must be added to the delegation group"
 if grep '^files share' "$INVOKE_LOG" | grep -q 'agt_'; then
   fail "files share must never receive a raw agt_ principal"
 fi
-grep -q '^files share projects/widget/\* --with grp_dlg-ktxdeacon --permission write --company acme$' "$INVOKE_LOG" \
+grep -q '^groups members grp_dlg7158ae994f83ea5e168a09b57269b9d5 --company acme$' "$INVOKE_LOG" \
+  || fail "agent recipient group membership must be verified"
+grep -q '^files share projects/widget/\* --with grp_dlg7158ae994f83ea5e168a09b57269b9d5 --permission write --company acme$' "$INVOKE_LOG" \
   || fail "agent write grant must target the delegation group"
-jq -e '.status == "granted" and .grantPrincipal == "grp_dlg-ktxdeacon"' "$M" >/dev/null \
+jq -e '.status == "granted" and .grantPrincipal == "grp_dlg7158ae994f83ea5e168a09b57269b9d5"' "$M" >/dev/null \
   || fail "manifest must record the group grant principal"
 
 # A committed write with a failed response is confirmed by exact read-back.

@@ -42,7 +42,7 @@ if ! awk -f "$SCRIPT_DIR/lib/cli-hosted-manifest.awk" "$MANIFEST" > "$ROWS"; the
   exit 1
 fi
 
-while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli state; do
+while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli state path_operands; do
   [ "$kind" = "generated" ] || continue
   [ "$state" = "forwarded" ] || continue
 
@@ -154,9 +154,117 @@ while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli st
       printf '  hq_cli_floor_check "%s" "%s"\n' "$script_name" "$min_cli"
       printf 'fi\n\n'
       if [ "$root" = "live" ] || [ "$root" = "live-project" ]; then
-        printf "exec hq %s --hq-root \"\$HQ_ROOT\" %s \"\$@\"\n" core "$command"
+        printf '%s\n' \
+          '# MSYS path conversion is disabled for the hq process so slash commands arrive unchanged.' \
+          '# Convert only this generated root path to Windows form for the native CLI.' \
+          'if command -v cygpath >/dev/null 2>&1; then' \
+          '  HQ_ROOT="$(cygpath -m "$HQ_ROOT")"' \
+          'fi' \
+          ''
+      fi
+      printf '%s\n' \
+        'forwarded_args=("$@")' \
+        'forwarded_arg_count=$#'
+      printf 'PATH_OPERANDS=%q\n' "$path_operands"
+      cat <<'PATH_CONVERSION'
+convert_forwarded_path() {
+  local arg_index="$1"
+  local value="${forwarded_args[$arg_index]}"
+  case "$value" in
+    /*) forwarded_args[$arg_index]="$(cygpath -m "$value")" ;;
+  esac
+}
+
+if command -v cygpath >/dev/null 2>&1; then
+  IFS=';' read -r -a path_rules <<< "$PATH_OPERANDS"
+  for path_rule in "${path_rules[@]}"; do
+    case "$path_rule" in
+      none) ;;
+      position:*)
+        index="${path_rule#position:}"
+        if (( index < forwarded_arg_count )); then convert_forwarded_path "$index"; fi
+        ;;
+      first-nonoption)
+        for ((index = 0; index < forwarded_arg_count; index++)); do
+          case "${forwarded_args[index]}" in --*) ;; *) convert_forwarded_path "$index"; break ;; esac
+        done
+        ;;
+      all-nonoptions)
+        for ((index = 0; index < forwarded_arg_count; index++)); do
+          case "${forwarded_args[index]}" in --*) ;; *) convert_forwarded_path "$index" ;; esac
+        done
+        ;;
+      options:*)
+        IFS=, read -r -a path_options <<< "${path_rule#options:}"
+        for ((index = 0; index < forwarded_arg_count; index++)); do
+          for path_option in "${path_options[@]}"; do
+            case "${forwarded_args[index]}" in
+              "$path_option")
+                index=$((index + 1))
+                if (( index < forwarded_arg_count )); then convert_forwarded_path "$index"; fi
+                break
+                ;;
+              "$path_option"=*)
+                value="${forwarded_args[index]#*=}"
+                case "$value" in /*) forwarded_args[index]="${path_option}=$(cygpath -m "$value")" ;; esac
+                break
+                ;;
+            esac
+          done
+        done
+        ;;
+      comma:*)
+        path_option="${path_rule#comma:}"
+        for ((index = 0; index < forwarded_arg_count; index++)); do
+          case "${forwarded_args[index]}" in
+            "$path_option")
+              index=$((index + 1))
+              if (( index < forwarded_arg_count )); then
+                IFS=, read -r -a path_values <<< "${forwarded_args[index]}"
+                converted_values=()
+                for path_value in "${path_values[@]}"; do
+                  case "$path_value" in /*) converted_values+=("$(cygpath -m "$path_value")") ;; *) converted_values+=("$path_value") ;; esac
+                done
+                value="$(IFS=,; printf '%s' "${converted_values[*]}")"
+                forwarded_args[index]="$value"
+              fi
+              break
+              ;;
+            "$path_option"=*)
+              value="${forwarded_args[index]#*=}"
+              case "$value" in
+                /*,*|/*)
+                  IFS=, read -r -a path_values <<< "$value"
+                  converted_values=()
+                  for path_value in "${path_values[@]}"; do
+                    case "$path_value" in /*) converted_values+=("$(cygpath -m "$path_value")") ;; *) converted_values+=("$path_value") ;; esac
+                  done
+                  value="$(IFS=,; printf '%s' "${converted_values[*]}")"
+                  forwarded_args[index]="${path_option}=$value"
+                  ;;
+              esac
+              break
+              ;;
+          esac
+        done
+        ;;
+      *) echo "unknown path_operands rule: $path_rule" >&2; exit 70 ;;
+    esac
+  done
+fi
+PATH_CONVERSION
+      if [ "$root" = "live" ] || [ "$root" = "live-project" ]; then
+        printf 'if [ "$forwarded_arg_count" -gt 0 ]; then\n'
+        printf "  MSYS2_ARG_CONV_EXCL='*' exec hq %s --hq-root \"\$HQ_ROOT\" %s \"\${forwarded_args[@]}\"\n" core "$command"
+        printf 'else\n'
+        printf "  MSYS2_ARG_CONV_EXCL='*' exec hq %s --hq-root \"\$HQ_ROOT\" %s\n" core "$command"
+        printf 'fi\n'
       else
-        printf "exec hq %s %s \"\$@\"\n" core "$command"
+        printf 'if [ "$forwarded_arg_count" -gt 0 ]; then\n'
+        printf "  MSYS2_ARG_CONV_EXCL='*' exec hq %s %s \"\${forwarded_args[@]}\"\n" core "$command"
+        printf 'else\n'
+        printf "  MSYS2_ARG_CONV_EXCL='*' exec hq %s %s\n" core "$command"
+        printf 'fi\n'
       fi
     } > "$output"
   else

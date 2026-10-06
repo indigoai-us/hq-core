@@ -40,11 +40,25 @@ die()   { echo "hq-delegate-send: $*" >&2; exit 1; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 
-# jq.exe on Windows emits CRLF data; remove only its line-ending CR bytes.
-case "${OSTYPE:-}" in
-  msys*)
+# jq.exe on MSYS may use CRT text mode unless --binary is supported.
+case "${OSTYPE:-}:${MSYSTEM:-}" in
+  msys*:*|*:MINGW*)
     jq() {
-      command jq "$@" | command sed -b 's/\r$//'
+      local stdout_file stderr_file status binary_supported
+      stdout_file="$(mktemp)" || return $?
+      stderr_file="$(mktemp)" || { status=$?; rm -f "$stdout_file"; return "$status"; }
+      if command jq --binary -n 'null' >/dev/null 2>&1; then binary_supported=1; else binary_supported=0; fi
+      if [[ "$binary_supported" == 1 ]]; then
+        if command jq --binary "$@" >"$stdout_file" 2>"$stderr_file"; then status=0; else status=$?; fi
+        command cat "$stdout_file"
+        command cat "$stderr_file" >&2
+      else
+        if command jq "$@" >"$stdout_file" 2>"$stderr_file"; then status=0; else status=$?; fi
+        command sed -b 's/\r$//' "$stdout_file"
+        command sed -b 's/\r$//' "$stderr_file" >&2
+      fi
+      rm -f "$stdout_file" "$stderr_file"
+      return "$status"
     }
     ;;
 esac
@@ -102,7 +116,7 @@ if [ -f "$PRD_ABS" ] && jq -e . "$PRD_ABS" >/dev/null 2>&1; then
 fi
 
 GET_LINES="$(jq -r --arg co "$COMPANY" \
-  '.vaultPrefixes[] | "hq files get \(.prefix) --company \($co)"' "$MANIFEST")"
+  'def bashq: if test("^[A-Za-z0-9_./:@+-]+$") then . else @sh end; .vaultPrefixes[] | "hq files get \(.prefix | bashq) --company \($co | bashq)"' "$MANIFEST")"
 
 REPO_IS_NULL="$(jq -r 'if .repo == null then "yes" else "no" end' "$MANIFEST")"
 REPO_SECTION=""

@@ -51,10 +51,13 @@ for (const contribution of ['skills:', 'hooks:', 'mcp:']) assert.ok(manifest.inc
 assert.match(manifest, /- codex/);
 assert.match(manifest, /- hq-anywhere/);
 
-const hookFile = path.join(pack, 'hooks/codex-hook-shim.sh');
-assert.ok(fs.statSync(hookFile).mode & 0o111, 'Codex hook adapter is executable');
+const hookFile = path.join(pack, 'hooks/codex.sh');
+const shimFile = path.join(pack, 'hooks/codex-hook-shim.sh');
+assert.ok(fs.statSync(hookFile).mode & 0o111, 'installer-visible Codex hook entry point is executable');
 const hookSource = fs.readFileSync(hookFile, 'utf8');
-assert.equal(hookSource, fs.readFileSync(path.join(repo, 'core/scripts/hqd-hook-shim.sh'), 'utf8'), 'pack hook is the shared shim, without an adapter wrapper');
+assert.match(hookSource, /exec \/bin\/sh "\$hook_dir\/codex-hook-shim\.sh" --runtime codex/u);
+const shimSource = fs.readFileSync(shimFile, 'utf8');
+assert.equal(shimSource, fs.readFileSync(path.join(repo, 'core/scripts/hqd-hook-shim.sh'), 'utf8'), 'pack uses the shared flag-aware shim');
 
 const hooks = JSON.parse(fs.readFileSync(path.join(pack, 'hooks/codex-hooks.json'), 'utf8')).hooks;
 for (const event of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']) {
@@ -62,7 +65,7 @@ for (const event of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostTool
   assert.equal(registrations.length, 1, `one ${event} registration`);
   assert.equal(registrations[0].timeout, event === 'SessionEnd' ? 3 : 300, `${event} timeout matches Codex`);
   const target = path.resolve(pack, registrations[0].command);
-  assert.equal(registrations[0].command, 'hooks/codex-hook-shim.sh');
+  assert.equal(registrations[0].command, 'hooks/codex.sh');
   assert.equal(target, hookFile);
   assert.ok(fs.existsSync(target), `${event} hook target exists`);
 }
@@ -79,6 +82,30 @@ const sourceSkills = fs.readdirSync(path.join(repo, '.claude/skills'), { withFil
   .filter(entry => entry.isDirectory()).map(entry => entry.name);
 const builtSkills = fs.readdirSync(path.join(pack, 'skills'));
 assert.ok(builtSkills.length > 0, 'at least one portable skill is packaged');
+for (const skill of builtSkills) {
+  const agentYaml = path.join(pack, 'skills', skill, 'agents/openai.yaml');
+  if (!fs.existsSync(agentYaml)) continue;
+  const yaml = fs.readFileSync(agentYaml, 'utf8');
+  const lines = yaml.split(/\r?\n/);
+  const index = lines.findIndex(line => /^\s*short_description\s*:/u.test(line));
+  assert.notEqual(index, -1, `${skill} Codex metadata declares interface.short_description`);
+  const indent = lines[index].match(/^\s*/u)[0].length;
+  const value = lines[index].replace(/^\s*short_description\s*:\s*/u, '').trim();
+  const quoted = value.match(/^(?:"([^"]*)"|'([^']*)')$/u);
+  let description = quoted ? (quoted[1] ?? quoted[2]) : value;
+  if (!quoted && /^[>|][+-]?$/u.test(value)) {
+    const folded = [];
+    for (let i = index + 1; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      if (lines[i].match(/^\s*/u)[0].length <= indent) break;
+      folded.push(lines[i].trim());
+    }
+    description = folded.join(' ').replace(/\s+/gu, ' ').trim();
+  }
+  const length = [...description].length;
+  assert.ok(length >= 25 && length <= 64,
+    `${skill} Codex interface.short_description is ${length} characters (expected 25-64)`);
+}
 const declaredSkills = manifest.match(/  skills:\n([\s\S]*?)\n  hooks:/)?.[1]
   .split('\n').map(line => line.trim().replace(/^-\s+/, '')).filter(Boolean) ?? [];
 assert.deepEqual(declaredSkills.sort(), [...builtSkills].sort(), 'manifest exactly declares packaged skills');
@@ -105,20 +132,22 @@ cp -R "$pack/." "$installed/"
 test -f "$installed/package.yaml"
 test -d "$installed/skills"
 test -f "$installed/hooks/codex-hooks.json"
-test ! -e "$installed/hooks/codex.sh"
+test -f "$installed/hooks/codex.sh" || { echo 'builder omitted declared hook payload hooks/codex.sh' >&2; exit 1; }
 hook_command=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).hooks.SessionStart[0].hooks[0].command)' "$installed/hooks/codex-hooks.json")
-test "$hook_command" = 'hooks/codex-hook-shim.sh'
+test "$hook_command" = 'hooks/codex.sh' || { echo "Codex hook config must run hooks/codex.sh, got $hook_command" >&2; exit 1; }
 hook_target=$(realpath "$installed/$hook_command")
-test "$hook_target" = "$installed/hooks/codex-hook-shim.sh"
+test "$hook_target" = "$installed/hooks/codex.sh"
+test -x "$hook_target"
 
 printf '%s\n' '{"hook_event_name":"SessionStart","cwd":"/tmp/foreign-repo"}' |
   env -u HQ_FLAGS_API_URL -u HQ_COMPANY_UID -u HQ_TEST_FLAG HOME="$tmp/home" /bin/sh "$hook_target" >"$tmp/flag-off.out"
 test ! -s "$tmp/flag-off.out"
 
+export HQ_COMPANY_UID=cmp_123456
 cache_timestamp=$(. "$repo_root/core/scripts/hqd-hook-flag-cache-lib.sh"; now_seconds)
 mkdir -p "$tmp/home/.hq"
-printf 'true %s\n' "$cache_timestamp" > "$tmp/home/.hq/hq-anywhere-runtime.flag"
-chmod 600 "$tmp/home/.hq/hq-anywhere-runtime.flag"
+printf 'true %s\n' "$cache_timestamp" > "$tmp/home/.hq/hq-anywhere-runtime.flag.cmp_123456"
+chmod 600 "$tmp/home/.hq/hq-anywhere-runtime.flag.cmp_123456"
 server_socket="$tmp/home/.hq/hqd.sock"
 server_trace="$tmp/server-request.json"
 node - "$hook_target" "$tmp/home" "$server_socket" "$server_trace" <<'NODE'

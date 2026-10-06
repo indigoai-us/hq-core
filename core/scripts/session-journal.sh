@@ -36,11 +36,80 @@ journal_dir_for() {
 warn() { echo "session-journal: $*" >&2; }
 
 slugify() {
-  # Lowercase, replace non-alnum with hyphen, collapse hyphens, trim.
-  printf '%s' "$1" \
+  # Win32 rejects newline file-name bytes; otherwise keep the POSIX slug pipeline.
+  local slug_input="$1"; if [[ "${OSTYPE:-}" == msys* ]] || [[ "${MSYSTEM:-}" == MINGW* ]]; then slug_input="${slug_input//$'\n'/-}"; fi; printf '%s' "$slug_input" \
     | tr '[:upper:]' '[:lower:]' \
     | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
     | cut -c1-40
+}
+
+yaml_double_quoted() {
+  local value="$1" output='"' character next pair hex
+  local LC_ALL=C index
+  for ((index = 0; index < ${#value}; index++)); do
+    character="${value:index:1}"
+    if [[ "$character" == $'\xc2' ]] && (( index + 1 < ${#value} )); then
+      next="${value:index+1:1}"
+      pair="$character$next"
+      case "$pair" in
+        $'\xc2\x80') hex=0080 ;;
+        $'\xc2\x81') hex=0081 ;;
+        $'\xc2\x82') hex=0082 ;;
+        $'\xc2\x83') hex=0083 ;;
+        $'\xc2\x84') hex=0084 ;;
+        $'\xc2\x85') hex=0085 ;;
+        $'\xc2\x86') hex=0086 ;;
+        $'\xc2\x87') hex=0087 ;;
+        $'\xc2\x88') hex=0088 ;;
+        $'\xc2\x89') hex=0089 ;;
+        $'\xc2\x8a') hex=008a ;;
+        $'\xc2\x8b') hex=008b ;;
+        $'\xc2\x8c') hex=008c ;;
+        $'\xc2\x8d') hex=008d ;;
+        $'\xc2\x8e') hex=008e ;;
+        $'\xc2\x8f') hex=008f ;;
+        $'\xc2\x90') hex=0090 ;;
+        $'\xc2\x91') hex=0091 ;;
+        $'\xc2\x92') hex=0092 ;;
+        $'\xc2\x93') hex=0093 ;;
+        $'\xc2\x94') hex=0094 ;;
+        $'\xc2\x95') hex=0095 ;;
+        $'\xc2\x96') hex=0096 ;;
+        $'\xc2\x97') hex=0097 ;;
+        $'\xc2\x98') hex=0098 ;;
+        $'\xc2\x99') hex=0099 ;;
+        $'\xc2\x9a') hex=009a ;;
+        $'\xc2\x9b') hex=009b ;;
+        $'\xc2\x9c') hex=009c ;;
+        $'\xc2\x9d') hex=009d ;;
+        $'\xc2\x9e') hex=009e ;;
+        $'\xc2\x9f') hex=009f ;;
+        *) hex= ;;
+      esac
+      if [[ -n "$hex" ]]; then
+        output+="\\u$hex"
+        index=$((index + 1))
+        continue
+      fi
+    fi
+    case "$character" in
+      \\) output+='\\' ;;
+      '"') output+='\"' ;;
+      $'\n') output+='\n' ;;
+      $'\r') output+='\r' ;;
+      $'\t') output+='\t' ;;
+      *)
+        if [[ "$character" == [[:cntrl:]] ]]; then
+          printf -v codepoint '%d' "'${character}"
+          printf -v hex '%02x' "$codepoint"
+          output+="\\x$hex"
+        else
+          output+="$character"
+        fi
+        ;;
+    esac
+  done
+  printf '%s"' "$output"
 }
 
 # Counters are per-session. A date-global counter lets concurrent Claude and
@@ -59,14 +128,6 @@ resolve_session_key() {
 }
 
 # Read-modify-write on the counter must not interleave across concurrent tasks.
-# Waiters retry for about 5 s (250 x 20 ms) by default; under heavy contention a
-# 1 s budget was not enough for 30 concurrent writers. After that the update is
-# skipped rather than run unlocked. HQ_JOURNAL_COUNTER_LOCK_TRIES overrides the
-# attempt count (tests use it to force exhaustion quickly).
-# A stale lock is reclaimable only when its recorded owner PID is no longer
-# alive. The sibling reclaim directory serializes reclaimers; after rechecking
-# the owner under that claim, rename the stale lock before deleting its unique
-# tombstone so a new owner can never be removed by cleanup.
 reclaim_stale_counter_lock() {
   local lockdir="$1" owner_pid current_owner claim stale_dir suffix=0
   owner_pid="$(cat "$lockdir/pid" 2>/dev/null || true)"
@@ -147,6 +208,31 @@ next_seq() {
   if [ -z "$hi" ]; then printf '001'; else printf '%03d' $((10#$hi + 1)); fi
 }
 
+acquire_journal_write_lock() {
+  local lock="$1/.session-journal-write.lock" owner=0 i=0
+  while [[ "$i" -lt 250 || ( "${OSTYPE:-}" == msys* && "$i" -lt 1500 ) ]]; do
+    if mkdir "$lock" 2>/dev/null; then
+      printf '%s\n' "$$" > "$lock/pid" || { rm -rf "$lock"; return 1; }
+      JOURNAL_WRITE_LOCK="$lock"
+      return 0
+    fi
+    owner="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [[ "$owner" =~ ^[0-9]+$ ]] && [ "$owner" -gt 0 ] && ! kill -0 "$owner" 2>/dev/null; then
+      if [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$owner" ]; then rm -rf "$lock" 2>/dev/null || true; fi
+    fi
+    i=$((i + 1))
+    sleep 0.02 2>/dev/null || sleep 1
+  done
+  return 1
+}
+
+release_journal_write_lock() {
+  [ -n "${JOURNAL_WRITE_LOCK:-}" ] || return 0
+  if [ "$(cat "$JOURNAL_WRITE_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -rf "$JOURNAL_WRITE_LOCK" 2>/dev/null || true
+  fi
+}
+
 cmd="${1:-}"; shift || true
 
 case "$cmd" in
@@ -170,36 +256,66 @@ case "$cmd" in
     dir="$(journal_dir_for "$d")"
     mkdir -p "$dir" 2>/dev/null || { warn "write: mkdir failed: $dir"; exit 0; }
 
-    seq="$(next_seq "$dir")"
     slug="$(slugify "$title")"
     [ -z "$slug" ] && slug="entry"
-    out="$dir/${seq}-${slug}.md"
-
-    # Build frontmatter
-    {
-      printf -- '---\n'
-      printf 'ts: %s\n' "$(now_iso_z)"
-      printf 'title: %s\n' "$title"
-      printf 'slug: %s\n' "$slug"
-      if [ -n "$files_csv" ]; then
-        printf 'files:\n'
-        old_ifs="$IFS"
-        IFS=','
-        set -- $files_csv
-        IFS="$old_ifs"
-        for f in "$@"; do
-          [ -n "$f" ] && printf '  - %s\n' "$f"
-        done
-      fi
-      printf 'status: closed\n'
-      printf -- '---\n\n'
-      printf '# %s — %s\n\n' "$seq" "$title"
-      if [ -n "$body_file" ] && [ -f "$body_file" ]; then
-        cat "$body_file"
+    yaml_title="$(yaml_double_quoted "$title")"
+    yaml_slug="$slug"
+    [[ "$slug" != *$'\n'* ]] || yaml_slug="$(yaml_double_quoted "$slug")"
+    JOURNAL_WRITE_LOCK=""
+    acquire_journal_write_lock "$dir" || { warn "write: failed to acquire journal lock"; exit 0; }
+    trap release_journal_write_lock EXIT
+    seq=""
+    out=""
+    created=false
+    attempt=0
+    while [ "$attempt" -lt 10000 ]; do
+      attempt=$((attempt + 1))
+      seq="$(next_seq "$dir")"
+      out="$dir/${seq}-${slug}.md"
+      write_status=0
+      (
+        set -o noclobber
+        if ! exec 3>"$out" 2>/dev/null; then
+          if [ -e "$out" ] || [ -L "$out" ]; then exit 17; fi
+          exit 16
+        fi
+        {
+          printf -- '---\n'
+          printf 'ts: %s\n' "$(now_iso_z)"
+          printf 'title: %s\n' "$yaml_title"
+          printf 'slug: %s\n' "$yaml_slug"
+          if [ -n "$files_csv" ]; then
+            printf 'files:\n'
+            old_ifs="$IFS"
+            IFS=','
+            set -- $files_csv
+            IFS="$old_ifs"
+            for f in "$@"; do
+              [ -n "$f" ] && printf '  - %s\n' "$f"
+            done
+          fi
+          printf 'status: closed\n'
+          printf -- '---\n\n'
+          printf '# %s — %s\n\n' "$seq" "$title"
+          if [ -n "$body_file" ] && [ -f "$body_file" ]; then
+            cat "$body_file"
+          else
+            printf '## Goal\n\n## Findings\n\n## Decisions\n\n## Next\n'
+          fi
+        } >&3 || exit 18
+      )
+      write_status=$?
+      if [ "$write_status" -eq 0 ]; then
+        created=true
+        break
+      elif [ "$write_status" -eq 17 ]; then
+        continue
       else
-        printf '## Goal\n\n## Findings\n\n## Decisions\n\n## Next\n'
+        warn "write: failed to write $out"
+        exit 0
       fi
-    } > "$out" 2>/dev/null || { warn "write: failed to write $out"; exit 0; }
+    done
+    [ "$created" = true ] || { warn "write: failed to write $out"; exit 0; }
 
     # Update INDEX.md
     idx="$dir/INDEX.md"
@@ -237,6 +353,7 @@ case "$cmd" in
       case "$1" in --date) date_arg="${2:-$(today)}"; shift 2 ;; *) shift ;; esac
     done
     [ -z "$seq" ] && { warn "read: NNN required"; exit 0; }
+    [[ "$seq" =~ ^[0-9]{1,18}$ ]] || { warn "read: NNN required"; exit 0; }
     seq=$(printf '%03d' $((10#$seq)) 2>/dev/null) || seq="$seq"
     dir="$(journal_dir_for "$date_arg")"
     match=$(ls "$dir" 2>/dev/null | grep -E "^${seq}-" | head -1)

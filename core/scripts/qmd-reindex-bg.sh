@@ -37,4 +37,21 @@ if ! command -v hq >/dev/null 2>&1; then
   exit 127
 fi
 
-exec hq index background --hq-root "$HQ_ROOT" "$@"
+if command -v cygpath >/dev/null 2>&1; then
+  HQ_ROOT="$(cygpath -m "$HQ_ROOT")"
+fi
+forwarded_args=("$@")
+forwarded_arg_count=$#
+if command -v cygpath >/dev/null 2>&1; then
+  for ((index = 0; index < forwarded_arg_count; index++)); do
+    case "${forwarded_args[index]}" in
+      --log) index=$((index + 1)); if ((index < forwarded_arg_count)); then forwarded_args[index]="$(cygpath -m "${forwarded_args[index]}")"; fi ;;
+      --log=*) forwarded_args[index]="--log=$(cygpath -m "${forwarded_args[index]#--log=}")" ;;
+    esac
+  done
+fi
+if [ "$forwarded_arg_count" -gt 0 ]; then
+  MSYS2_ARG_CONV_EXCL='*' exec hq index background --hq-root "$HQ_ROOT" "${forwarded_args[@]}"
+else
+  MSYS2_ARG_CONV_EXCL='*' exec hq index background --hq-root "$HQ_ROOT"
+fi

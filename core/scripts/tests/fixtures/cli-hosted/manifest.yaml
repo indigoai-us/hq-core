@@ -7,6 +7,7 @@ entries:
     interpreter: bash
     min_cli: 5.11.0
     state: forwarded
+    path_operands: none
     note: |
       Why the fixture moved: it tests live-root forwarding.
   - path: core/scripts/fixture-cwd.sh
@@ -16,6 +17,7 @@ entries:
     interpreter: bash
     min_cli: 5.22.0
     state: forwarded
+    path_operands: none
     note: |
       Why the fixture moved: it tests caller-cwd forwarding.
   - path: core/scripts/fixture-node.mjs
@@ -25,6 +27,7 @@ entries:
     interpreter: node
     min_cli: 5.33.0
     state: forwarded
+    path_operands: none
     note: |
       Why the fixture moved: it tests the Node forwarding template.
   - path: core/scripts/fixture-hybrid.sh
@@ -34,6 +37,7 @@ entries:
     interpreter: bash
     min_cli: 5.44.0
     state: forwarded
+    path_operands: none
     note: |
       Why the fixture moved: it tests hybrid command validation.
   - path: core/scripts/fixture-retired.sh
@@ -43,6 +47,7 @@ entries:
     interpreter: bash
     min_cli: 5.55.0
     state: retired
+    path_operands: none
     note: |
       Why the fixture moved: it tests retired-path validation.
   - path: core/scripts/fixture-deleted.sh
@@ -52,5 +57,6 @@ entries:
     interpreter: bash
     min_cli: 5.66.0
     state: deleted
+    path_operands: none
     note: |
       Why the fixture moved: it tests deleted-path validation.

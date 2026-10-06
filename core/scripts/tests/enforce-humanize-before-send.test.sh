@@ -262,7 +262,7 @@ grep -Fxq -- "-c 1048577 $COMMON_TRANSCRIPT" "$TAIL_TRACE" \
   || fail "[19] common case did not read exactly one 1 MiB tail window: $(cat "$TAIL_TRACE")"
 pass "common-case assistant needed one tail-window read"
 
-echo "[20] assistant beyond verification cap blocks capability-link check"
+echo "[20] oversized newest assistant with a rendered capability link passes"
 CAP_HIT_TRANSCRIPT="$TMP/assistant-over-cap.jsonl"
 python3 - "$CAP_HIT_TRANSCRIPT" <<'PY_FIXTURE'
 import json, sys
@@ -273,9 +273,11 @@ with open(sys.argv[1], "w", encoding="utf-8") as transcript:
         transcript.write(json.dumps(record, separators=(",", ":")) + "\n")
 PY_FIXTURE
 CAP_HIT_OUT="$(run_capability_hook "$CAP_HIT_TRANSCRIPT")"
-[ "$(decision_of "$CAP_HIT_OUT")" = "block" ] \
-  || fail "[20] expected unverifiable oversized assistant to block, got: $CAP_HIT_OUT"
-pass "cap-hit capability-link check failed closed"
+[ "$(decision_of "$CAP_HIT_OUT")" = "none" ] \
+  || fail "[20] expected rendered capability link on oversized assistant to pass, got: $CAP_HIT_OUT"
+printf '%s' "$CAP_HIT_OUT" | grep -Fq "POLICY CHECK BLOCKED" \
+  && fail "[20] internal verification warning must not be shown: $CAP_HIT_OUT"
+pass "oversized rendered capability link was inspected without an internal warning"
 
 echo "[21] estimate capture retains oversized nonfinal assistant records"
 CAPTURE_ROOT="$TMP/capture-hq"
@@ -386,7 +388,7 @@ CODEX_LINK_OUT="$(run_capability_hook "$CODEX_OVER_CAP_LINK")"
   || fail "[23] expected a bare capability link in Codex transcript to block, got: $CODEX_LINK_OUT"
 pass "over-cap Codex assistant bare capability link blocked"
 
-echo "[24] oversized newest Codex assistant record fails closed at a bounded scan cap"
+echo "[24] oversized newest Codex assistant record is returned beyond the old bounded scan cap"
 CODEX_OVERSIZED="$TMP/codex-oversized-assistant.jsonl"
 python3 - "$CODEX_OVERSIZED" <<'PY_FIXTURE'
 import json, sys
@@ -396,9 +398,128 @@ with open(sys.argv[1], "w", encoding="utf-8") as transcript:
 PY_FIXTURE
 TAIL_LIB="$ROOT/core/scripts/lib/transcript-tail.sh"
 CODEX_TAIL_STATUS=0
-bash -c '. "$1"; hq_transcript_tail_with_latest_assistant "$2" 128 1024 >/dev/null' _ "$TAIL_LIB" "$CODEX_OVERSIZED" || CODEX_TAIL_STATUS=$?
-[ "$CODEX_TAIL_STATUS" -eq 3 ] \
-  || fail "[24] expected oversized Codex assistant to return status 3, got: $CODEX_TAIL_STATUS"
-pass "oversized Codex assistant failed closed with status 3"
+CODEX_TAIL_OUTPUT="$(bash -c '. "$1"; hq_transcript_tail_with_latest_assistant "$2" 128 1024' _ "$TAIL_LIB" "$CODEX_OVERSIZED")" || CODEX_TAIL_STATUS=$?
+[ "$CODEX_TAIL_STATUS" -eq 0 ] \
+  || fail "[24] expected oversized Codex assistant to return status 0, got: $CODEX_TAIL_STATUS"
+CODEX_TAIL_FIRST="$(printf '%s\n' "$CODEX_TAIL_OUTPUT" | sed -n '1p')"
+printf '%s\n' "$CODEX_TAIL_FIRST" | jq -Rre 'fromjson? | select(.type == "response_item" and .payload.type == "message" and .payload.role == "assistant") | .payload.role == "assistant"' >/dev/null \
+  || fail "[24] expected helper to return the oversized assistant record, got: ${CODEX_TAIL_FIRST:0:120}"
+pass "oversized Codex assistant record was returned"
+
+# Records after the newest assistant exceed the old 16 MiB verification window.
+# Each transcript remains a temporary fixture, generated in bounded chunks.
+make_over_cap_trailing_transcript() { # <path> <claude|codex> <assistant text>
+  python3 - "$1" "$2" "$3" <<'PY_OVER_CAP_TRAILING'
+import json, sys
+path, kind, text = sys.argv[1:]
+if kind == "codex":
+    assistant = {"type":"response_item", "payload":{"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":text}]}}
+    trailing = {"type":"response_item", "payload":{"type":"function_call_output", "call_id":"large-output", "output":"x" * 18000000}}
+else:
+    assistant = {"type":"assistant", "message":{"role":"assistant", "content":[{"type":"text", "text":text}]}}
+    trailing = {"type":"tool_result", "content":"x" * 18000000}
+with open(path, "w", encoding="utf-8") as transcript:
+    transcript.write(json.dumps(assistant, separators=(",", ":")) + "\n")
+    transcript.write(json.dumps(trailing, separators=(",", ":")) + "\n")
+    transcript.write(json.dumps({"type":"user", "message":{"role":"user", "content":"later user record"}}, separators=(",", ":")) + "\n")
+PY_OVER_CAP_TRAILING
+}
+check_over_cap_hook() { # <case number> <label> <path> <expected decision>
+  local case_no="$1" label="$2" transcript="$3" expected="$4" out decision
+  out="$(run_capability_hook "$transcript")"
+  decision="$(decision_of "$out")"
+  if [ "$expected" = "none" ]; then
+    [ "$decision" = "none" ] \
+      || fail "[$case_no] expected $label to pass without an internal warning, got: $out"
+    ! printf '%s' "$out" | grep -Fq "POLICY CHECK BLOCKED" \
+      || fail "[$case_no] internal verification warning must be silent, got: $out"
+    pass "$label passed without an internal warning"
+  else
+    [ "$decision" = "block" ] \
+      || fail "[$case_no] expected $label to block, got: $out"
+    printf '%s' "$out" | grep -Fq "POLICY VIOLATION" \
+      || fail "[$case_no] expected POLICY VIOLATION for $label, got: $out"
+    ! printf '%s' "$out" | grep -Fq "POLICY CHECK BLOCKED" \
+      || fail "[$case_no] internal verification warning must not replace the policy violation, got: $out"
+    pass "$label remained blocked for the policy violation"
+  fi
+}
+
+for OVER_CAP_KIND in claude codex; do
+  OVER_CAP_NO_LINK="$TMP/$OVER_CAP_KIND-over-cap-trailing-no-link.jsonl"
+  make_over_cap_trailing_transcript "$OVER_CAP_NO_LINK" "$OVER_CAP_KIND" "assistant-without-link"
+  if [ "$OVER_CAP_KIND" = "claude" ]; then
+    check_over_cap_hook 25 "Claude assistant without a capability link and over-17-MiB trailing tool/user records" "$OVER_CAP_NO_LINK" none
+  else
+    check_over_cap_hook 27 "Codex assistant without a capability link and over-17-MiB trailing response items" "$OVER_CAP_NO_LINK" none
+  fi
+
+  OVER_CAP_LINK="$TMP/$OVER_CAP_KIND-over-cap-trailing-bare-link.jsonl"
+  make_over_cap_trailing_transcript "$OVER_CAP_LINK" "$OVER_CAP_KIND" "https://hq.computer/share-session/abcdefghijklmnopqrstuvwx"
+  if [ "$OVER_CAP_KIND" = "claude" ]; then
+    check_over_cap_hook 26 "Claude newest assistant bare capability URL behind over-17-MiB trailing tool/user records" "$OVER_CAP_LINK" block
+  else
+    check_over_cap_hook 28 "Codex newest assistant bare capability URL behind over-17-MiB trailing response items" "$OVER_CAP_LINK" block
+  fi
+done
+
+echo "[29] reverse helper returns the newest assistant and stops before the transcript prefix"
+REVERSE_TRANSCRIPT="$TMP/reverse-latest-assistant.jsonl"
+REVERSE_TRACE="$TMP/reverse-lines.trace"
+: > "$REVERSE_TRACE"
+python3 - "$REVERSE_TRANSCRIPT" <<'PY_REVERSE_FIXTURE'
+import json, sys
+path = sys.argv[1]
+with open(path, "w", encoding="utf-8") as transcript:
+    for index in range(5000):
+        old = {"type":"assistant", "message":{"role":"assistant", "content":[{"type":"text", "text":f"older-{index}"}]}}
+        transcript.write(json.dumps(old, separators=(",", ":")) + "\n")
+    assistant = {"type":"assistant", "message":{"role":"assistant", "content":[{"type":"text", "text":"reverse-scan-target"}]}}
+    transcript.write(json.dumps(assistant, separators=(",", ":")) + "\n")
+    trailing = {"type":"tool_result", "content":"z" * 18000000}
+    transcript.write(json.dumps(trailing, separators=(",", ":")) + "\n")
+PY_REVERSE_FIXTURE
+REVERSE_BIN="$TMP/reverse-bin"
+mkdir -p "$REVERSE_BIN"
+REAL_TAC="$(command -v tac || true)"
+REAL_TAIL="$(command -v tail)"
+if [ -n "$REAL_TAC" ]; then
+  cat > "$REVERSE_BIN/tac" <<'TAC_TRACE_SHIM'
+#!/usr/bin/env bash
+"$REAL_TAC" "$@" | grep -E '"assistant"' | while IFS= read -r line || [ -n "$line" ]; do
+  printf '.\n' >> "$REVERSE_TRACE"
+  if ! printf '%s\n' "$line"; then
+    break
+  fi
+done
+TAC_TRACE_SHIM
+  chmod +x "$REVERSE_BIN/tac"
+else
+  cat > "$REVERSE_BIN/tail" <<'TAIL_REVERSE_TRACE_SHIM'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-r" ]; then
+  "$REAL_TAIL" "$@" | grep -E '"assistant"' | while IFS= read -r line || [ -n "$line" ]; do
+    printf '.\n' >> "$REVERSE_TRACE"
+    if ! printf '%s\n' "$line"; then
+      break
+    fi
+  done
+else
+  exec "$REAL_TAIL" "$@"
+fi
+TAIL_REVERSE_TRACE_SHIM
+  chmod +x "$REVERSE_BIN/tail"
+fi
+REVERSE_STATUS=0
+REVERSE_OUTPUT="$(REVERSE_TRACE="$REVERSE_TRACE" REAL_TAC="$REAL_TAC" REAL_TAIL="$REAL_TAIL" PATH="$REVERSE_BIN:$PATH" bash -c '. "$1"; hq_transcript_tail_with_latest_assistant "$2"' _ "$TAIL_LIB" "$REVERSE_TRANSCRIPT")" || REVERSE_STATUS=$?
+[ "$REVERSE_STATUS" -eq 0 ] \
+  || fail "[29] expected reverse helper status 0, got: $REVERSE_STATUS"
+REVERSE_FIRST="$(printf '%s\n' "$REVERSE_OUTPUT" | sed -n '1p')"
+[ "$(printf '%s\n' "$REVERSE_FIRST" | jq -r '.message.content[0].text')" = "reverse-scan-target" ] \
+  || fail "[29] expected newest assistant record first, got: ${REVERSE_FIRST:0:120}"
+REVERSE_LINES="$(wc -l < "$REVERSE_TRACE" | tr -d '[:space:]')"
+[ "$REVERSE_LINES" -lt 5001 ] \
+  || fail "[29] reverse reader scanned all $REVERSE_LINES assistant candidates instead of stopping at the newest one"
+pass "reverse scan returned the newest assistant and stopped before the large prefix"
 
 echo "ALL PASS"

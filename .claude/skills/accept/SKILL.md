@@ -16,7 +16,7 @@ Accept a vault-backed membership invite using a magic link or raw token.
 ## Process
 
 1. **Parse token** — extracts raw token from `hq://accept/<token>` or raw input
-2. **Resolve caller** — reads Cognito session from `~/.hq/credentials.json`
+2. **Resolve caller** — reads the Cognito session from `~/.hq/cognito-tokens.json`
 3. **Call vault-service** — via `VaultClient.acceptInvite()` from `@indigoai-us/hq-cloud`
 4. **Print result** — company details, role, and sync hint
 

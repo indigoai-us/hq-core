@@ -33,7 +33,7 @@ run_hook() {
   : > "$COUNT_FILE"
   payload=$(jq -cn --arg cwd "$FIXTURE" --arg tool "$tool" --arg sid "$sid" --arg path "$file" --arg command "$command" '{tool_name:$tool,session_id:$sid,cwd:$cwd,tool_input:{file_path:$path,command:$command}}')
   rc=0
-  printf '%s' "$payload" | env HQ_HOOK_TOOL_NAME="$tool" HQ_HOOK_SESSION_ID="$sid" HQ_HOOK_CWD="$FIXTURE" HQ_TEST_COUNT_FILE="$COUNT_FILE" CLAUDE_PROJECT_DIR="$FIXTURE" PATH="$SHIMS:$ORIGINAL_PATH" /bin/bash "$FIXTURE/.claude/hooks/mandatory-scope-authorizer.sh" > "$TMP/$label.out" 2> "$TMP/$label.err" || rc=$?
+  printf '%s' "$payload" | env HQ_HOOK_TOOL_NAME="$tool" HQ_HOOK_SESSION_ID="$sid" HQ_HOOK_CWD="$FIXTURE" HQ_HOOK_AGENT_ID="" HQ_HOOK_AGENT_TYPE="" HQ_TEST_COUNT_FILE="$COUNT_FILE" CLAUDE_PROJECT_DIR="$FIXTURE" PATH="$SHIMS:$ORIGINAL_PATH" /bin/bash "$FIXTURE/.claude/hooks/mandatory-scope-authorizer.sh" > "$TMP/$label.out" 2> "$TMP/$label.err" || rc=$?
   printf '%s\n' "$rc" > "$TMP/$label.rc"
 }
 assert_budget() {

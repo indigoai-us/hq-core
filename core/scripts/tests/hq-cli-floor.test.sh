@@ -387,6 +387,7 @@ entries:
     interpreter: bash
     min_cli: 5.342.5
     state: forwarded
+    path_operands: none
   - path: core/scripts/live-project-fallback.sh
     command: migrate-policy-triggers
     kind: generated
@@ -394,15 +395,20 @@ entries:
     interpreter: bash
     min_cli: 5.342.5
     state: forwarded
+    path_operands: none
 YAML
 "$ROOT/core/scripts/generate-forwarders.sh" --manifest "$symlink_manifest" --output-root "$symlink_logical_root"
 export SYMLINK_HQ_ARGS="$symlink_args"
 PATH="$symlink_stub_bin:/usr/bin:/bin"
 export PATH
 unset HQ_ROOT CLAUDE_PROJECT_DIR
+expected_symlink_root="$symlink_logical_root"
+if command -v cygpath >/dev/null 2>&1; then
+  expected_symlink_root="$(cygpath -m "$symlink_logical_root")"
+fi
 bash "$symlink_logical_root/core/scripts/live-fallback.sh"
-assert_equal "$(sed -n '3p' "$symlink_args")" "$symlink_logical_root" "live forwarder preserves logical symlink root"
+assert_equal "$(sed -n '3p' "$symlink_args")" "$expected_symlink_root" "live forwarder preserves logical symlink root"
 bash "$symlink_logical_root/core/scripts/live-project-fallback.sh"
-assert_equal "$(sed -n '3p' "$symlink_args")" "$symlink_logical_root" "live-project forwarder preserves logical symlink root"
+assert_equal "$(sed -n '3p' "$symlink_args")" "$expected_symlink_root" "live-project forwarder preserves logical symlink root"
 
 printf 'PASS: hq-cli-floor (reader, SemVer, package metadata fast path, fallback, checker floor)\n'

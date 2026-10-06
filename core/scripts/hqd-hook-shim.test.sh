@@ -86,7 +86,7 @@ if [ "$RC" -eq 0 ] && [ -z "$OUT$ERR" ]; then pass "flag off: shim is inert"
 else fail "flag off: shim is inert" "rc=$RC out=$OUT err=$ERR"; fi
 HQ_TEST_FLAG=true
 export HQ_TEST_FLAG
-rm -f "$HOME/.hq/hq-anywhere-runtime.flag"
+rm -f "$HOME/.hq/hq-anywhere-runtime.flag.cmp_123456"
 sh "$HERE/hqd-hook-flag-cache.sh" --refresh
 
 mkdir -p "$TMP/no-perl-modules"
@@ -104,7 +104,7 @@ ERR=$(cat "$TMP/err")
 if [ "$RC" -eq 75 ] && [ -z "$OUT$ERR" ]; then pass "routing mode reports unavailable Perl modules for direct fallback"
 else fail "routing mode reports unavailable Perl modules for direct fallback" "rc=$RC out=$OUT err=$ERR"; fi
 
-printf 'true 0\n' >"$HOME/.hq/hq-anywhere-runtime.flag"
+printf 'true 0\n' >"$HOME/.hq/hq-anywhere-runtime.flag.cmp_123456"
 run_shim "$NOSOCK" "$WRITE_OTHERCO" PreToolUse
 if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "stale enabled cache: first company write still reaches fail-closed shim"
 else fail "stale enabled cache: first company write still enforces" "rc=$RC err=$ERR"; fi
@@ -127,6 +127,82 @@ else fail "multiline JSON payload" "rc=$RC err=$ERR"; fi
 run_shim "$NOSOCK" "$WRITE_ABS"
 if [ "$RC" -eq 2 ]; then pass "absent socket: absolute companies/ path blocks (event from payload)"
 else fail "absent socket: absolute companies/ path blocks" "rc=$RC err=$ERR"; fi
+
+RELATIVE_COMPANY_WRITE='{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"/tmp/HQ/companies/acme","tool_name":"Write","tool_input":{"file_path":"knowledge/file.md"}}'
+run_shim "$NOSOCK" "$RELATIVE_COMPANY_WRITE" PreToolUse
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "absent socket: relative file write from a company cwd blocks"
+else fail "relative company cwd write blocks" "rc=$RC err=$ERR"; fi
+
+RELATIVE_SHELL_WRITE='{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"/tmp/HQ","tool_name":"Bash","tool_input":{"command":"cd companies && touch acme/file"}}'
+run_shim "$NOSOCK" "$RELATIVE_SHELL_WRITE" PreToolUse
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "absent socket: shell writes after cd into a company block"
+else fail "relative shell company write blocks" "rc=$RC err=$ERR"; fi
+
+mkdir -p "$TMP/no-perl-path"
+printf '%s' "$RELATIVE_SHELL_WRITE" | env PATH="$TMP/no-perl-path" \
+  HQ_HQD_SOCKET="$NOSOCK" HOME="$HOME" HQ_COMPANY_UID="$HQ_COMPANY_UID" \
+  /bin/sh "$SHIM" PreToolUse >"$TMP/out" 2>"$TMP/err"
+RC=$?; OUT=$(cat "$TMP/out"); ERR=$(cat "$TMP/err")
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ] && [ -z "$OUT" ]; then
+  pass "no Perl in PATH: relative shell company write fails closed"
+else fail "no Perl in PATH: relative shell company write fails closed" "rc=$RC out=$OUT err=$ERR"; fi
+
+# Codex registers one shim command for every hook event and does not pass the
+# event as argv. Exercise that real invocation shape without Perl.
+CODEX_SHIM="$TMP/codex-hook-shim.sh"
+cp "$SHIM" "$CODEX_SHIM"
+cp "$HERE/hq-anywhere-runtime-flag.cjs" "$HERE/hqd-hook-flag-cache-lib.sh" "$TMP/"
+CODEX_ABS_WRITE='{"hook_event_name":"PreToolUse","cwd":"/tmp","tool_name":"Write","tool_input":{"file_path":"/tmp/HQ/companies/acme/x.md"}}'
+CODEX_REL_WRITE='{"hook_event_name" : "PreToolUse","cwd":"/tmp/HQ","tool_name":"Bash","tool_input":{"command":"cd companies && touch acme/x.md"}}'
+CODEX_UNKNOWN_TOOL='{"cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"echo hi"}}'
+CODEX_UNKNOWN_COMPANY='{"cwd":"/tmp","command":"touch companies/acme/x.md"}'
+CODEX_PRETOOL_EVENT_ONLY='{"hook_event_name":"PreToolUse","cwd":"/tmp"}'
+CODEX_PRETOOL_EVENT_ONLY_SPACED='{"hook_event_name" : "PreToolUse","cwd":"/tmp"}'
+CODEX_STOP='{"hook_event_name":"Stop","cwd":"/tmp","session_id":"s1"}'
+CODEX_SESSION_START='{"hook_event_name":"SessionStart","cwd":"/tmp","session_id":"s1"}'
+run_codex_no_perl() {
+  _payload="$1"
+  printf '%s' "$_payload" | env PATH="$TMP/no-perl-path" HOME="$HOME" \
+    HQ_COMPANY_UID="$HQ_COMPANY_UID" HQ_HQD_SOCKET="$NOSOCK" \
+    /bin/sh "$CODEX_SHIM" >"$TMP/out" 2>"$TMP/err"
+  RC=$?; OUT=$(cat "$TMP/out"); ERR=$(cat "$TMP/err")
+}
+run_codex_no_perl "$CODEX_ABS_WRITE"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ] && [ -z "$OUT" ]; then
+  pass "no Perl, Codex no-arg PreToolUse absolute companies write blocks"
+else fail "no Perl, Codex no-arg PreToolUse absolute companies write blocks" "rc=$RC out=$OUT err=$ERR"; fi
+run_codex_no_perl "$CODEX_REL_WRITE"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ] && [ -z "$OUT" ]; then
+  pass "no Perl, Codex no-arg PreToolUse relative cd companies write blocks"
+else fail "no Perl, Codex no-arg PreToolUse relative cd companies write blocks" "rc=$RC out=$OUT err=$ERR"; fi
+run_codex_no_perl "$CODEX_UNKNOWN_TOOL"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ] && [ -z "$OUT" ]; then
+  pass "no Perl, Codex unknown event with tool_name fails closed"
+else fail "no Perl, Codex unknown event with tool_name fails closed" "rc=$RC out=$OUT err=$ERR"; fi
+run_codex_no_perl "$CODEX_UNKNOWN_COMPANY"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ] && [ -z "$OUT" ]; then
+  pass "no Perl, Codex unknown event naming companies/ fails closed"
+else fail "no Perl, Codex unknown event naming companies/ fails closed" "rc=$RC out=$OUT err=$ERR"; fi
+run_codex_no_perl "$CODEX_PRETOOL_EVENT_ONLY"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ] && [ -z "$OUT" ]; then
+  pass "no Perl, Codex event-only PreToolUse blocks without whitespace"
+else fail "no Perl, Codex event-only PreToolUse blocks without whitespace" "rc=$RC out=$OUT err=$ERR"; fi
+run_codex_no_perl "$CODEX_PRETOOL_EVENT_ONLY_SPACED"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ] && [ -z "$OUT" ]; then
+  pass "no Perl, Codex event-only PreToolUse blocks with whitespace around colon"
+else fail "no Perl, Codex event-only PreToolUse with whitespace around colon" "rc=$RC out=$OUT err=$ERR"; fi
+run_codex_no_perl "$CODEX_STOP"
+if [ "$RC" -eq 0 ]; then pass "no Perl, Codex no-arg Stop passes"
+else fail "no Perl, Codex no-arg Stop passes" "rc=$RC out=$OUT err=$ERR"; fi
+run_codex_no_perl "$CODEX_SESSION_START"
+if [ "$RC" -eq 0 ]; then pass "no Perl, Codex no-arg SessionStart passes"
+else fail "no Perl, Codex no-arg SessionStart passes" "rc=$RC out=$OUT err=$ERR"; fi
+
+perl -MJSON::PP -e 'print JSON::PP->new->encode({session_id=>"large",hook_event_name=>"PreToolUse",cwd=>"/tmp/HQ",tool_name=>"Write",tool_input=>{file_path=>"companies/acme/large.md",content=>"x" x 140000}})' >"$TMP/large-company-write.json"
+HQ_HQD_SOCKET="$NOSOCK" sh "$SHIM" PreToolUse <"$TMP/large-company-write.json" >"$TMP/out" 2>"$TMP/err"
+RC=$?; OUT=$(cat "$TMP/out"); ERR=$(cat "$TMP/err")
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ] && [ -z "$OUT" ]; then pass "large company-write payload over 128 KiB blocks"
+else fail "large company-write payload over 128 KiB blocks" "rc=$RC out=${#OUT} err=$ERR"; fi
 
 run_shim "$NOSOCK" "$BASH_OTHERCO" PreToolUse
 if [ "$RC" -eq 2 ]; then pass "absent socket: Bash naming companies/ blocks"

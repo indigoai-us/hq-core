@@ -138,7 +138,7 @@ emit_unlocked() {
   jq -cn \
     --arg thread_id "$thread_id" \
     --arg lock_path "$relative_lock_path" \
-    '{status:"unlocked", thread_id:$thread_id, lock_path:$lock_path}'
+    '{status:"unlocked", thread_id:$thread_id, lock_path:$lock_path}' | tr -d '\r'
 }
 
 emit_stale() {
@@ -152,7 +152,7 @@ emit_stale() {
     --arg resumed_at "$resumed_at" \
     --arg lock_generation "$generation" \
     --arg prompt "$prompt" \
-    '{status:"stale", thread_id:$thread_id, lock_path:$lock_path, stale_reason:$stale_reason, session_id:$session_id, resumed_at:$resumed_at, lock_generation:$lock_generation, prompt:$prompt}'
+    '{status:"stale", thread_id:$thread_id, lock_path:$lock_path, stale_reason:$stale_reason, session_id:$session_id, resumed_at:$resumed_at, lock_generation:$lock_generation, prompt:$prompt}' | tr -d '\r'
 }
 
 emit_locked() {
@@ -165,7 +165,7 @@ emit_locked() {
     --arg resumed_at "$resumed_at" \
     --arg lock_generation "$generation" \
     --arg prompt "$prompt" \
-    '{status:"locked", thread_id:$thread_id, lock_path:$lock_path, session_id:$session_id, resumed_at:$resumed_at, lock_generation:$lock_generation, prompt:$prompt}'
+    '{status:"locked", thread_id:$thread_id, lock_path:$lock_path, session_id:$session_id, resumed_at:$resumed_at, lock_generation:$lock_generation, prompt:$prompt}' | tr -d '\r'
 }
 
 # Print the existing lock's state. A damaged or expired marker is deliberately
@@ -199,11 +199,11 @@ existing_state() {
   fi
 
   local record_thread record_session record_at record_epoch record_generation current_epoch
-  record_thread="$(jq -r '.thread_id' "$record_path")"
-  record_session="$(jq -r '.session_id' "$record_path")"
-  record_at="$(jq -r '.resumed_at' "$record_path")"
-  record_epoch="$(jq -r '.resumed_epoch' "$record_path")"
-  record_generation="$(jq -r '.generation' "$record_path")"
+  record_thread="$(jq -r '.thread_id' "$record_path" | tr -d '\r')"
+  record_session="$(jq -r '.session_id' "$record_path" | tr -d '\r')"
+  record_at="$(jq -r '.resumed_at' "$record_path" | tr -d '\r')"
+  record_epoch="$(jq -r '.resumed_epoch' "$record_path" | tr -d '\r')"
+  record_generation="$(jq -r '.generation' "$record_path" | tr -d '\r')"
 
   if [[ "$record_thread" != "$thread_id" || ! "$record_epoch" =~ ^[0-9]+$ ]]; then
     emit_stale "invalid-record" "$record_session" "$record_at" "$record_generation"
@@ -244,7 +244,7 @@ emit_acquired() {
     --arg lock_path "$relative_lock_path" \
     --arg session_id "$session_id" \
     --arg lock_generation "$generation" \
-    '{status:"acquired", thread_id:$thread_id, lock_path:$lock_path, session_id:$session_id, lock_generation:$lock_generation}'
+    '{status:"acquired", thread_id:$thread_id, lock_path:$lock_path, session_id:$session_id, lock_generation:$lock_generation}' | sed 's/\r$//'
 }
 
 case "$subcommand" in

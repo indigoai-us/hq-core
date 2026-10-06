@@ -405,9 +405,9 @@ shell_descriptor() {
 }
 
 normalize_cwd_path() {
-  local value="$1" os drive converted
+  local value="$1" os="${2:-}" drive converted
   value="${value//\\//}"
-  os="$(uname -s 2>/dev/null || printf 'unknown')"
+  [ -n "$os" ] || os="$(uname -s 2>/dev/null || printf 'unknown')"
   case "$os" in
     MINGW*|MSYS*|CYGWIN*)
       if command -v cygpath >/dev/null 2>&1; then
@@ -429,16 +429,87 @@ normalize_cwd_path() {
   printf '%s' "$value"
 }
 
-cwd_kind() {
-  local cwd_root cwd_value
-  cwd_root="$(normalize_cwd_path "$root")"
-  cwd_value="$(normalize_cwd_path "$cwd")"
+# Closed cwd_kind values: hq-root, repo, worktree, hq_subdir,
+# root_unset, root_not_directory, cwd_unset, and cwd_outside_root.
+classify_cwd_paths() {
+  local cwd_root cwd_value os="${3:-}"
+  cwd_root="$(normalize_cwd_path "$1" "$os")"
+  cwd_value="$(normalize_cwd_path "$2" "$os")"
   case "$cwd_value" in
     "$cwd_root") printf 'hq-root' ;;
     "$cwd_root/repos/public/"*|"$cwd_root/repos/private/"*) printf 'repo' ;;
     "$cwd_root/workspace/worktrees/"*) printf 'worktree' ;;
-    *) printf 'other' ;;
+    "$cwd_root/"*) printf 'hq_subdir' ;;
+    *) printf 'cwd_outside_root' ;;
   esac
+}
+
+cwd_kind() {
+  local root_value="${root:-}" cwd_value="${cwd:-}" os="${platform:-}"
+  [ -n "$root_value" ] || { printf 'root_unset'; return 0; }
+  [ -d "$root_value" ] || { printf 'root_not_directory'; return 0; }
+  [ -n "$cwd_value" ] || { printf 'cwd_unset'; return 0; }
+  classify_cwd_paths "$root_value" "$cwd_value" "$os"
+}
+
+# Closed root storage classes: system_drive, non_system_fixed_drive,
+# network_or_mapped_drive; unavailable means the drive could not be classified.
+root_storage_class() {
+  local root_value="${1-${root:-}}" os="${2-${platform:-}}" powershell="${3:-}" normalized drive probe result
+  [ "$(hook_timeout_os_name "$os")" = windows ] || { printf 'unavailable'; return 0; }
+  [ -n "$root_value" ] || { printf 'unavailable'; return 0; }
+  normalized="$(normalize_cwd_path "$root_value" "$os")"
+  case "$normalized" in
+    [A-Za-z]:|[A-Za-z]:/*) drive="${normalized:0:1}" ;;
+    *) printf 'unavailable'; return 0 ;;
+  esac
+  [ -n "$powershell" ] || powershell="$(command -v powershell.exe 2>/dev/null || command -v pwsh.exe 2>/dev/null || command -v powershell 2>/dev/null || command -v pwsh 2>/dev/null || true)"
+  [ -n "$powershell" ] && [ -x "$powershell" ] || { printf 'unavailable'; return 0; }
+
+  # Only the validated drive letter enters this probe. PowerShell returns a
+  # closed classification, never a root path or drive name.
+  probe="\$ErrorActionPreference = 'Stop'; \$rootDrive = '${drive}:'; \$path = \$rootDrive + [char]92; \$systemDrive = [Environment]::GetEnvironmentVariable('SystemDrive'); if (\$systemDrive -and \$systemDrive.TrimEnd([char]92) -ieq \$rootDrive) { 'system_drive' } else { try { \$kind = ([System.IO.DriveInfo]::new(\$path)).DriveType.ToString(); switch (\$kind) { 'Fixed' { 'non_system_fixed_drive' } 'Network' { 'network_or_mapped_drive' } default { 'unavailable' } } } catch { 'unavailable' } }"
+  result="$(hook_timeout_run_bounded 2 "$powershell" -NoProfile -NonInteractive -Command "$probe" 2>/dev/null || true)"
+  result="$(printf '%s' "$result" | tr -d '\r\n')"
+  case "$result" in
+    system_drive|non_system_fixed_drive|network_or_mapped_drive) printf '%s' "$result" ;;
+    *) printf 'unavailable' ;;
+  esac
+}
+
+# Cache the per-HQ-root drive class for the CLI session. The probe starts a
+# Windows process, so it must run before the timeout wait and only once per
+# session rather than on the reporting path for every hook.
+cached_root_storage_class() {
+  local root_value="$1" os="$2" cache_file="$3" powershell="${4:-}"
+  local lock_dir="${cache_file}.lock" cached="" attempt="0" result="unavailable"
+  read_cache() {
+    local value=""
+    [ -r "$cache_file" ] && IFS= read -r value < "$cache_file" || true
+    case "$value" in
+      system_drive|non_system_fixed_drive|network_or_mapped_drive|unavailable) printf '%s' "$value"; return 0 ;;
+    esac
+    return 1
+  }
+  cached="$(read_cache 2>/dev/null || true)"
+  [ -n "$cached" ] && { printf '%s' "$cached"; return 0; }
+  mkdir -p "${cache_file%/*}" >/dev/null 2>&1 || true
+  if ! mkdir "$lock_dir" >/dev/null 2>&1; then
+    while [ "$attempt" -lt 40 ]; do
+      cached="$(read_cache 2>/dev/null || true)"
+      [ -n "$cached" ] && { printf '%s' "$cached"; return 0; }
+      sleep 0.05
+      attempt=$((attempt + 1))
+    done
+    printf 'unavailable'
+    return 0
+  fi
+  result="$(root_storage_class "$root_value" "$os" "$powershell")"
+  printf '%s\n' "$result" > "${cache_file}.$$.tmp" 2>/dev/null \
+    && mv "${cache_file}.$$.tmp" "$cache_file" 2>/dev/null || true
+  rm -f "${cache_file}.$$.tmp" 2>/dev/null || true
+  rmdir "$lock_dir" >/dev/null 2>&1 || true
+  printf '%s' "$result"
 }
 
 nproc_value() {
@@ -646,6 +717,20 @@ esac
 wait_seconds=$((warning_at - now_seconds))
 [ "$wait_seconds" -ge 0 ] || wait_seconds=0
 
+# Resolve the root storage class before the timeout wait. Cache by CLI session
+# so concurrent hooks do not launch PowerShell on the warning/report path.
+platform="$(uname -s 2>/dev/null || printf 'unknown')"
+session_hash="$(sha256_fields "$session_id")"
+root_storage_class_value="unavailable"
+if [ -n "$session_hash" ]; then
+  root_storage_class_value="$(cached_root_storage_class "$root" "$platform" \
+    "$root/workspace/.hook-timeout-journal/$session_hash.tsv.root-storage-class")"
+fi
+now_seconds="$(date +%s 2>/dev/null || printf '0')"
+is_nonnegative_integer "$now_seconds" || now_seconds=0
+wait_seconds=$((warning_at - now_seconds))
+[ "$wait_seconds" -ge 0 ] || wait_seconds=0
+
 if [ -z "$test_trigger_file" ]; then
   sleep "$wait_seconds" >/dev/null 2>&1 &
   sleep_pid=$!
@@ -758,7 +843,6 @@ test_status hq-found
 
 hq_version="$(grep -E '^hqVersion:' "$root/core/core.yaml" 2>/dev/null | head -n 1 | tr -d ' "' | cut -d: -f2)"
 [ -n "$hq_version" ] || hq_version="unknown"
-platform="$(uname -s 2>/dev/null || printf 'unknown')"
 os_name="$(hook_timeout_os_name "$platform")"
 load_average="$(hook_timeout_load_average "$platform" /proc/loadavg \
   "$(command -v sysctl 2>/dev/null || printf 'sysctl')")"
@@ -775,7 +859,6 @@ spawn_ms=""
 slow_child=""
 slow_child_ms=""
 slow_phase=""
-session_hash="$(sha256_fields "$session_id")"
 if [ "$os_name" = windows ] && [ -n "$session_hash" ]; then
   mkdir -p "$root/workspace/.hook-timeout-journal" >/dev/null 2>&1 || true
   spawn_ms="$(hook_timeout_spawn_ms \
@@ -908,6 +991,7 @@ event_json="$(jq -cn \
   --arg bash_env_set "$bash_env_set" \
   --arg shell "$shell_info" \
   --arg cwd_kind "$cwd_kind_value" \
+  --arg root_storage_class "$root_storage_class_value" \
   --arg timing_precision "$timing_precision" \
   --arg hook_script "$hook_script" \
   --arg exit_code "running" \
@@ -937,6 +1021,7 @@ event_json="$(jq -cn \
         bash_env_set: $bash_env_set,
         shell: $shell,
         cwd_kind: $cwd_kind,
+        root_storage_class: $root_storage_class,
         timing_precision: $timing_precision,
         nproc: $nproc,
         hook_script: $hook_script,

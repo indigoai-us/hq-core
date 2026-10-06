@@ -1,3 +1,3 @@
 interface:
   display_name: "Investigate"
-  short_description: "Iron Law debugging — systematic root cause investigation before any fixes."
+  short_description: "Trace reliably reproducible bugs to their root cause."

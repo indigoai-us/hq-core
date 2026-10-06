@@ -114,6 +114,31 @@ brief:
 
 No config = default applied silently on first run.
 
+## Entity page size: how pruning works
+
+Entity pages are an INDEX into signals, not a log. Every time a signal
+mentions an entity the gardener appends one short back-reference line to
+the entity's Relationships section (cloud) or to the fact file at
+`ontology/facts/@{key}/{type}/{slug}.md` (local). Without a bound these
+lists grow forever, so the gardener now compacts them:
+
+- The most recent 25 back-references stay inline on the page.
+- Once the inline list exceeds 50 lines, older back-references roll into
+  a dated, append-only archive next to the page
+  (`<slug>.history/<yyyy-mm>.md`). Nothing is deleted.
+- A single summary line on the page points at the archive directory and
+  reports how many older mentions live there.
+- `signal_count` on the entity frontmatter remains the TRUE total —
+  compaction never touches it, so the entity's weight is always accurate.
+- A sidecar `<slug>.history/_index.json` records every archived
+  reference, so dedup still works across inline + archive on later runs.
+- `company-brief.md` stays the bounded summary (max 2000 tokens by
+  default): a short, model-ready view distinct from the full entity page.
+
+Thresholds are configurable: cloud reads them per call; the local
+`ontology-garden.mjs` honours `HQ_ONTOLOGY_BACKREF_THRESHOLD` and
+`HQ_ONTOLOGY_BACKREF_KEEP_INLINE`.
+
 ## Observability
 
 CloudWatch namespace: the gardener's published namespace (set per HQ cloud backend deploy). Dimensions:

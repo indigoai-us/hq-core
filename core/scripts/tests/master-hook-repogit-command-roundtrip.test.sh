@@ -56,7 +56,7 @@ cat > "$TMP/truncated-jq-bin/jq" <<'JQ'
 if [[ "${HQ_TEST_TRUNCATE_COMMAND_EXTRACTION:-0}" == 1 ]] \
   && [[ "${1:-}" == "-j" && "${2:-}" == "--arg" && "${3:-}" == "ev" ]]; then
   # Supply valid Bash metadata but omit the command record terminator.
-  printf 'Bash\037Bash\037%s\037%s\037\037%s\0' \
+  printf 'Bash\037Bash\037%s\037%s\037\037\037%s\0' \
     "$HQ_TEST_SESSION" "$HQ_TEST_CWD" "$HQ_TEST_PREFILTER"
   exit 0
 fi

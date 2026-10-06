@@ -40,11 +40,25 @@ command -v jq >/dev/null 2>&1 || {
   exit 2
 }
 
-# jq.exe on Windows emits CRLF data; remove only its line-ending CR bytes.
-case "${OSTYPE:-}" in
-  msys*)
+# jq.exe on MSYS may use CRT text mode unless --binary is supported.
+case "${OSTYPE:-}:${MSYSTEM:-}" in
+  msys*:*|*:MINGW*)
     jq() {
-      command jq "$@" | command sed -b 's/\r$//'
+      local stdout_file stderr_file status binary_supported
+      stdout_file="$(mktemp)" || return $?
+      stderr_file="$(mktemp)" || { status=$?; rm -f "$stdout_file"; return "$status"; }
+      if command jq --binary -n 'null' >/dev/null 2>&1; then binary_supported=1; else binary_supported=0; fi
+      if [[ "$binary_supported" == 1 ]]; then
+        if command jq --binary "$@" >"$stdout_file" 2>"$stderr_file"; then status=0; else status=$?; fi
+        command cat "$stdout_file"
+        command cat "$stderr_file" >&2
+      else
+        if command jq "$@" >"$stdout_file" 2>"$stderr_file"; then status=0; else status=$?; fi
+        command sed -b 's/\r$//' "$stdout_file"
+        command sed -b 's/\r$//' "$stderr_file" >&2
+      fi
+      rm -f "$stdout_file" "$stderr_file"
+      return "$status"
     }
     ;;
 esac
@@ -154,7 +168,7 @@ scan_string_for_secrets() {
   for entry in "${SECRET_PATTERNS[@]}"; do
     pattern="${entry%%:*}"
     name="${entry#*:}"
-    if grep -Eq "$pattern" "$tmp" 2>/dev/null; then
+    if grep -Eq -e "$pattern" "$tmp" 2>/dev/null; then
       err "$file" "$field" "inline credential-shaped value matched pattern '$name' (names only; never values)"
     fi
   done

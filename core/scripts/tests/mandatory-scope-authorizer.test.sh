@@ -739,5 +739,66 @@ rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "brace expansion under bound company remains refused"
 grep -Fq "brace expansion cannot be checked safely" "$TMP/err.txt" || fail "bound-company brace refusal gives the brace reason"
 
+echo "[63] same-session Task subagents use distinct bindings and never fall back"
+install_fixture "indigo"
+. "$ROOT/core/scripts/lib/session-scope-capability.sh"
+session_scope_mint "$TMP" "sess-bound" "indigo" "agent-A"
+session_scope_mint "$TMP" "sess-bound" "otherco" "agent-B"
+caller_payload() {
+  local aid="$1" atype="$2" company="$3" sid="${4:-sess-bound}"
+  jq -cn --arg cwd "$TMP" --arg aid "$aid" --arg atype "$atype" --arg company "$company" --arg sid "$sid" \
+    '{tool_name:"Write",session_id:$sid,cwd:$cwd,
+      agent_id:$aid,agent_type:$atype,
+      tool_input:{file_path:($cwd + "/companies/" + $company + "/settings/foo.yaml")}}'
+}
+rc="$(run_hook "$(caller_payload agent-A general-purpose indigo)")"
+expect_exit 0 "$rc" "agent A writes within A"
+rc="$(run_hook "$(caller_payload agent-A general-purpose otherco)")"
+expect_exit 2 "$rc" "agent A cannot write within B"
+rc="$(run_hook "$(caller_payload agent-B general-purpose otherco)")"
+expect_exit 0 "$rc" "agent B writes within B"
+rc="$(run_hook "$(caller_payload agent-B general-purpose indigo)")"
+expect_exit 2 "$rc" "agent B cannot write within A"
+
+echo "[64] unbound and malformed subagent identities fail closed"
+rc="$(run_hook "$(caller_payload agent-unbound general-purpose indigo)")"
+expect_exit 2 "$rc" "unbound subagent tuple is denied"
+grep -qi 'restart or respawn the subagent' "$TMP/err.txt" || fail "valid but unbound subagent denial tells the caller to restart or respawn"
+rc="$(run_hook "$(caller_payload '../agent-A' general-purpose indigo)")"
+expect_exit 2 "$rc" "malformed agent_id is denied"
+payload="$(jq -cn --arg cwd "$TMP" \
+  '{tool_name:"Write",session_id:"sess-bound",cwd:$cwd,agent_id:7,agent_type:"general-purpose",
+    tool_input:{file_path:($cwd + "/companies/indigo/settings/foo.yaml")}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "non-string agent_id is denied"
+grep -qi 'invalid agent_id' "$TMP/err.txt" || fail "non-string agent_id is not coerced into a caller identity"
+rc="$(run_hook "$(caller_payload agent-A '' indigo '../sess-bound')")"
+expect_exit 2 "$rc" "malformed session_id is denied"
+grep -qi 'invalid session_id' "$TMP/err.txt" || fail "malformed session denial identifies the invalid caller identity"
+rc="$(run_hook "$(caller_payload '' general-purpose indigo)")"
+expect_exit 2 "$rc" "agent_type without agent_id is denied"
+grep -qi 'restart the session' "$TMP/err.txt" || fail "missing-id subagent denial tells the caller to restart"
+rc="$(run_hook "$(caller_payload agent-A '' indigo)")"
+expect_exit 0 "$rc" "valid agent_id selects tuple even when agent_type is absent"
+
+echo "[65] main thread keeps its legacy session binding"
+rc="$(run_hook "$(caller_payload '' '' indigo)")"
+expect_exit 0 "$rc" "main thread without agent identity uses session binding"
+
+echo "[66] legacy session-only capability is main-thread-only"
+mkdir -p "$TMP/workspace/sessions/legacy-sid"
+jq -n '{session_id:"legacy-sid",company_slug:"indigo",minted_at:"2026-10-05T00:00:00Z"}' \
+  > "$TMP/workspace/sessions/legacy-sid/scope-capability.json"
+legacy_payload() {
+  local aid="$1" atype="$2"
+  jq -cn --arg cwd "$TMP" --arg aid "$aid" --arg atype "$atype" \
+    '{tool_name:"Write",session_id:"legacy-sid",cwd:$cwd,agent_id:$aid,agent_type:$atype,
+      tool_input:{file_path:($cwd + "/companies/indigo/settings/foo.yaml")}}'
+}
+rc="$(run_hook "$(legacy_payload '' '')")"
+expect_exit 0 "$rc" "legacy capability still authorizes main thread"
+rc="$(run_hook "$(legacy_payload agent-new general-purpose)")"
+expect_exit 2 "$rc" "legacy capability never falls back to a new subagent tuple"
+
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

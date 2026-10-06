@@ -17,12 +17,20 @@ if [ "${1:-}" != secrets ]; then
   exit 91
 fi
 shift
-while [ "$#" -gt 0 ] && [ "$1" != exec ]; do shift; done
-[ "${1:-}" = exec ] || exit 91
-shift
-while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+only_names=""
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+  case "$1" in
+    --only) only_names="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$only_names" ] || exit 91
 [ "${1:-}" = -- ] || exit 92
 shift
+printf '%s\n' "$only_names" >> "$HQ_ONLY_LOG"
+if [ "${HQ_TEST_NAMESPACED:-0}" = 1 ]; then
+  exec env 'HQ_TEST_FLEET/MACHINE_USERNAME=sentinel-machine-user' 'HQ_TEST_FLEET/MACHINE_SECRET=sentinel-machine-secret' "$@"
+fi
 exec "$@"
 HQ
 
@@ -42,27 +50,40 @@ case "$command_name" in
   exec)
     [ "${TART_STUB_SLEEP_ON_EXEC:-0}" = 1 ] && sleep 30
     full_args="$*"
+    printf '%s\n' "$full_args" >> "$TART_GUEST_LOG"
     case "$full_args" in
-      *sentinel-anthropic-secret*|*sentinel-openai-secret*|*ANTHROPIC_API_KEY=*|*OPENAI_API_KEY=*)
+      *sentinel-anthropic-secret*|*sentinel-openai-secret*|*sentinel-machine-user*|*sentinel-machine-secret*|*ANTHROPIC_API_KEY=*|*OPENAI_API_KEY=*|*HQ_MACHINE_USERNAME=*|*HQ_MACHINE_SECRET=*)
         printf 'credential appeared in tart argv\n' >&2
         exit 94
         ;;
       *"-i"*) : ;;
       *) printf 'tart exec did not request stdin forwarding\n' >&2; exit 95 ;;
     esac
-    seen_anthropic=0 seen_openai=0
+    seen_anthropic=0 seen_openai=0 seen_user=0 seen_machine_secret=0
     while IFS= read -r assignment; do
       case "$assignment" in
         ANTHROPIC_API_KEY=sentinel-anthropic-secret) seen_anthropic=1 ;;
         OPENAI_API_KEY=sentinel-openai-secret) seen_openai=1 ;;
+        HQ_MACHINE_USERNAME=sentinel-machine-user) seen_user=1 ;;
+        HQ_MACHINE_SECRET=sentinel-machine-secret) seen_machine_secret=1 ;;
         *) printf 'unexpected credential input shape\n' >&2; exit 96 ;;
       esac
     done
-    [ "$seen_anthropic" = 1 ] && [ "$seen_openai" = 1 ] || exit 97
+    if [ "${HQ_TEST_NAMESPACED:-0}" = 1 ]; then
+      [ "$seen_user" = 1 ] && [ "$seen_machine_secret" = 1 ] || exit 97
+      expected='[ "$HQ_MACHINE_USERNAME" = sentinel-machine-user ] && [ "$HQ_MACHINE_SECRET" = sentinel-machine-secret ]'
+      input='HQ_MACHINE_USERNAME=sentinel-machine-user HQ_MACHINE_SECRET=sentinel-machine-secret'
+    elif [ "${TART_STUB_MACHINE_LOGIN:-0}" = 1 ]; then
+      [ "$seen_user" = 1 ] && [ "$seen_machine_secret" = 1 ] || exit 97
+      expected='[ "$HQ_MACHINE_USERNAME" = sentinel-machine-user ] && [ "$HQ_MACHINE_SECRET" = sentinel-machine-secret ]'
+      input='HQ_MACHINE_USERNAME=sentinel-machine-user HQ_MACHINE_SECRET=sentinel-machine-secret'
+    else
+      [ "$seen_anthropic" = 1 ] && [ "$seen_openai" = 1 ] || exit 97
+      expected='[ "$ANTHROPIC_API_KEY" = sentinel-anthropic-secret ] && [ "$OPENAI_API_KEY" = sentinel-openai-secret ]'
+      input='ANTHROPIC_API_KEY=sentinel-anthropic-secret OPENAI_API_KEY=sentinel-openai-secret'
+    fi
     bootstrap="${8:-}"
-    if ! printf '%s\n' 'ANTHROPIC_API_KEY=sentinel-anthropic-secret' 'OPENAI_API_KEY=sentinel-openai-secret' \
-      | /bin/bash -c "$bootstrap" anywhere-vm-guest /bin/bash -c \
-        '[ "$ANTHROPIC_API_KEY" = sentinel-anthropic-secret ] && [ "$OPENAI_API_KEY" = sentinel-openai-secret ]'; then
+    if ! printf '%s\n' $input | /bin/bash -c "$bootstrap" anywhere-vm-guest /bin/bash -c "$expected"; then
       printf 'guest environment bootstrap failed\n' >&2
       exit 99
     fi
@@ -105,6 +126,10 @@ run_harness() {
     HQ_US016_FIXTURE_REPO='https://github.com/indigoai-us/hq-anywhere-fixture.git' \
     HQ_US016_FIXTURE_REF='0123456789abcdef0123456789abcdef01234567' \
     HQ_US016_TEST_COMPANY='us016-test' \
+    HQ_MACHINE_USERNAME='sentinel-machine-user' HQ_MACHINE_SECRET='sentinel-machine-secret' \
+    HQ_TEST_NAMESPACED="$([ "$name" = namespaced-secret-map ] && printf 1 || printf 0)" \
+    TART_STUB_MACHINE_LOGIN="$([ "$name" = stdin-login ] && printf 1 || printf 0)" \
+    TART_GUEST_LOG="$run_dir/guest.log" HQ_ONLY_LOG="$run_dir/only.log" \
     bash "$SCRIPT" \
       --cli-package "$TMP/input/hq-cli-1.0.0.tgz" \
       --core-bundle "$TMP/input/hq-core.tar.gz" \
@@ -142,6 +167,25 @@ assert '[ "$THIRD_CALL" = exec ]' 'guest exec follows boot'
 assert '[ "$LAST_CALL" = delete ]' 'VM is deleted after the run'
 assert 'grep -q "PASS US-016 parity" "$TMP/success/stdout.log"' 'successful parity is reported'
 assert '! grep -R -E "sentinel-(anthropic|openai)-secret|ANTHROPIC_API_KEY=|OPENAI_API_KEY=" "$TMP/success"' 'credential values and assignments are absent from every output file'
+
+
+set +e
+run_harness namespaced-secret-map --secret-names 'HQ_TEST_FLEET/MACHINE_USERNAME=HQ_MACHINE_USERNAME,HQ_TEST_FLEET/MACHINE_SECRET=HQ_MACHINE_SECRET'
+status=$?
+set -e
+assert '[ "$status" -eq 0 ]' 'slash-namespaced secrets map to explicit environment names'
+assert 'grep -q "PASS US-016 parity" "$TMP/namespaced-secret-map/stdout.log"' 'namespaced secret mapping completes the harness'
+assert 'grep -qx "HQ_TEST_FLEET/MACHINE_USERNAME,HQ_TEST_FLEET/MACHINE_SECRET" "$TMP/namespaced-secret-map/only.log"' 'hq secrets receives the namespaced record names'
+
+set +e
+run_harness stdin-login --secret-names 'HQ_MACHINE_USERNAME,HQ_MACHINE_SECRET'
+status=$?
+set -e
+assert '[ "$status" -eq 0 ]' 'stdin machine login scenario completes'
+assert 'grep -q "hq daemon login --stdin" "$TMP/stdin-login/guest.log"' 'guest setup pipes machine credentials into daemon login on stdin'
+assert 'grep -q "hq daemon login --status | grep -q" "$TMP/stdin-login/guest.log"' 'guest setup requires a signed-in daemon status'
+assert 'grep -q "cognito-tokens.json" "$TMP/stdin-login/guest.log"' 'guest setup checks that machine login wrote no Cognito cache file'
+assert '! grep -R -E "sentinel-machine-(user|secret)" "$TMP/stdin-login/guest.log" "$TMP/stdin-login/stdout.log" "$TMP/stdin-login/stderr.log"' 'machine credential values are absent from guest command arguments and logs'
 
 set +e
 TART_STUB_PARITY_FAIL=1 run_harness parity-fail

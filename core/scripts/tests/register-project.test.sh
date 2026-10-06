@@ -90,6 +90,38 @@ assert row["threadId"] == "thr_alpha", row
 assert row["channelId"] == "chn_alpha", row
 PY
 
+# Git Bash jq.exe can emit CRLF for scalar captures. Normalize values before
+# they are passed back into jq as --arg values; stripping only final JSON bytes
+# leaves the CR embedded in the registered board fields.
+REAL_JQ="$(command -v jq)"
+mkdir -p "$TMP/crlf-bin"
+cat > "$TMP/crlf-bin/jq" <<'STUB'
+#!/usr/bin/env bash
+case "${2:-}" in
+  '.threadId // empty'|'.channelId // empty'|'.name // empty')
+    set +e
+    "$REAL_JQ" "$@" | sed 's/$/\r/'
+    jq_rc=${PIPESTATUS[0]}
+    set -e
+    exit "$jq_rc"
+    ;;
+esac
+exec "$REAL_JQ" "$@"
+STUB
+chmod +x "$TMP/crlf-bin/jq"
+crlf_line="$(PATH="$TMP/crlf-bin:$PATH" REAL_JQ="$REAL_JQ" bash "$SCRIPT" acme alpha)"
+python3 - <<PY
+import json
+board = json.load(open("$TMP/hq/companies/acme/board.json"))
+row = next(p for p in board["projects"] if p["id"] == "alpha")
+assert row["threadId"] == "thr_alpha", row
+assert row["channelId"] == "chn_alpha", row
+assert row["title"] == "Alpha", row
+PY
+[ "$crlf_line" = "registered acme/alpha thread=thr_alpha channel=chn_alpha" ] \
+  || fail "CRLF jq output changed registration line: $crlf_line"
+echo "PASS: register-project normalizes CRLF jq scalar values before registration"
+
 audit="$(bash "$SCRIPT" --audit acme)"
 printf '%s\n' "$audit" | grep -qx alpha || fail "audit missing alpha: $audit"
 printf '%s\n' "$audit" | grep -qx done-one || fail "audit missing done-one: $audit"
