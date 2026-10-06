@@ -37,6 +37,8 @@ CACHE="$TMP/status-cache"
 BIN="$TMP/bin"
 mkdir -p "$HQ/personal/jobs" "$HQ/companies/indigo/jobs" "$HQ/companies/indigo/projects/outpost-scheduled-jobs"
 mkdir -p "$HOME_DIR" "$UNIT_DIR" "$CACHE" "$BIN" "$HOME_DIR/.hq/jobs/reconcile"
+mkdir -p "$HQ/core/scripts"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$HQ/core/scripts/hq-job-run.sh"
 for blocked_binary in aws sst pulumi systemctl hq curl; do
   cat >"$BIN/$blocked_binary" <<'STUB'
 #!/usr/bin/env bash
@@ -182,6 +184,8 @@ grep -q '^OnCalendar=.* America/New_York$' "$UNIT_DIR/hq-job-daily-inbox-digest.
 ! grep -q '^Timezone=' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "invalid Timezone= directive must not be written"
 grep -q 'Mon..Fri' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "weekday OnCalendar expected for 1-5"
 grep -q 'hq-job-run.sh' "$UNIT_DIR/hq-job-daily-inbox-digest.service" || fail "service must ExecStart hq-job-run.sh"
+grep -Fq "ExecStart=$HQ/core/scripts/hq-job-run.sh" "$UNIT_DIR/hq-job-daily-inbox-digest.service" \
+  || fail "service runner must use the selected HQ root"
 pass "ready personal job materializes service+timer"
 
 # A job without a declared timezone uses the generated OnCalendar expression unchanged.

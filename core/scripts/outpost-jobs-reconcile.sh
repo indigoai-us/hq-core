@@ -39,7 +39,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 VALIDATE="$SCRIPT_DIR/jobs-validate.sh"
-RUNNER="$SCRIPT_DIR/hq-job-run.sh"
 PROBE="$SCRIPT_DIR/hq-job-probe.sh"
 
 DRY_RUN=0
@@ -98,6 +97,11 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# The shell script is also bundled inside hq-cli. Its own SCRIPT_DIR then
+# points into the npm package, while job units must always target the live
+# scaffold forwarder so they survive CLI upgrades and Node switches.
+RUNNER="$HQ_ROOT/core/scripts/hq-job-run.sh"
 
 command -v yq >/dev/null 2>&1 || die "yq is required (mikefarah/yq)"
 command -v jq >/dev/null 2>&1 || die "jq is required"
@@ -409,7 +413,7 @@ unit_service_path() { printf '%s/hq-job-%s.service' "$UNIT_DIR" "$1"; }
 unit_timer_path() { printf '%s/hq-job-%s.timer' "$UNIT_DIR" "$1"; }
 
 normalize_service_path() {
-  local remaining="$1" entry existing normalized="" has_more seen
+  local remaining="$1" entry existing normalized="" has_more seen entry_count=0 index
   local -a entries=()
   while :; do
     if [[ "$remaining" == *:* ]]; then
@@ -424,7 +428,8 @@ normalize_service_path() {
     case "$entry" in
       /*)
         seen=0
-        for existing in "${entries[@]}"; do
+        for ((index = 0; index < entry_count; index++)); do
+          existing="${entries[index]}"
           if [ "$existing" = "$entry" ]; then
             seen=1
             break
@@ -432,12 +437,13 @@ normalize_service_path() {
         done
         if [ "$seen" -eq 0 ]; then
           entries+=("$entry")
+          entry_count=$((entry_count + 1))
         fi
         ;;
     esac
     [ "$has_more" -eq 1 ] || break
   done
-  if [ "${#entries[@]}" -gt 0 ]; then
+  if [ "$entry_count" -gt 0 ]; then
     local IFS=:
     normalized="${entries[*]}"
   fi

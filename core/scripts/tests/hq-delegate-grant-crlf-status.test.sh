@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-GRANT="$ROOT/core/scripts/hq-delegate-grant.sh"
+GRANT="${HQ_DELEGATE_GRANT_TEST_SOURCE:-$ROOT/core/scripts/hq-delegate-grant.sh}"
 REAL_JQ="$(command -v jq)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -26,6 +26,10 @@ JSON
 cat > "$TMP/bin/jq" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "--binary" ] && [ "${2:-}" = "-n" ]; then
+  exit 0
+fi
+if [ "${1:-}" = "--binary" ]; then shift; fi
 case "${2:-}" in
   '.vaultPrefixes[] | "  2. Grant '*|".company // empty"|".project.name // empty"|".to.principal // empty"|".to.displayName // .to.principal // empty") CRLF_QUERY=1 ;;
 esac

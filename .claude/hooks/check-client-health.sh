@@ -153,6 +153,7 @@ if [ "${1:-}" = "--remediate" ]; then
           | select(.family == "sync" and (.status == "FAIL" or .status == "WARN"))
           | select(.checkId != "sync.update.core" or .status == "FAIL")
           | . as $row
+          | select((($row.checkId // "") | startswith("sync.journal.") | not) or $row.fix.autoFixable == true)
           | ($row.checkId // "") as $candidate_id
           | (if ($candidate_id | test("^sync\\.[A-Za-z0-9._-]{1,160}$"))
              then $candidate_id else "unknown" end) as $check_id
@@ -181,6 +182,8 @@ if [ "${1:-}" = "--remediate" ]; then
               if (!r || r.family !== "sync") continue;
               if (r.status !== "FAIL" && r.status !== "WARN") continue;
               if (r.checkId === "sync.update.core" && r.status === "WARN") continue;
+              if (typeof r.checkId === "string" && r.checkId.startsWith("sync.journal.")
+                && (!r.fix || r.fix.autoFixable !== true)) continue;
               const id = typeof r.checkId === "string" && /^sync\.[A-Za-z0-9._-]{1,160}$/.test(r.checkId)
                 ? r.checkId
                 : "unknown";

@@ -57,20 +57,98 @@ run_with_timeout() {
   node -e '
 const { spawn } = require("child_process");
 const command = process.argv[1];
-if (!command) process.exit(127);
-const child = spawn(command, process.argv.slice(2), { detached: true, stdio: ["ignore", "pipe", "ignore"] });
-let finished = false;
-const finish = (status) => {
-  if (finished) return;
-  finished = true;
-  clearTimeout(timer);
-  try { process.kill(-child.pid, "SIGTERM"); } catch (_) {}
-  process.exit(status);
-};
-child.stdout.on("data", (chunk) => process.stdout.write(chunk));
-child.once("error", () => finish(127));
-child.once("exit", (code) => finish(typeof code === "number" ? code : 1));
-const timer = setTimeout(() => finish(124), Number(process.env.HQ_RESOLVE_TIMEOUT_MS) || 2000);
+const args = process.argv.slice(2);
+const timeoutMs = Number(process.env.HQ_RESOLVE_TIMEOUT_MS) || 2000;
+if (!command) process.exitCode = 127;
+else {
+  let child;
+  try {
+    child = spawn(command, args, { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    process.exitCode = 127;
+  }
+  if (child) {
+    let exited = false;
+    let exitStatus = 1;
+    let timedOut = false;
+    let drainExpired = false;
+    let pendingWrites = 0;
+    let finished = false;
+    let drainTimer;
+    let timeoutKillTimer;
+    let timeoutFinalTimer;
+    let deadlineTimer;
+    const signalGroup = (signal) => {
+      if (!child.pid) return;
+      try {
+        if (process.platform === "win32") child.kill(signal);
+        else process.kill(-child.pid, signal);
+      } catch {}
+    };
+    const maybeFinish = () => {
+      if (finished || !exited || pendingWrites !== 0 || (!drainExpired && !child.stdout.readableEnded)) return;
+      finished = true;
+      clearTimeout(deadlineTimer);
+      clearTimeout(drainTimer);
+      clearTimeout(timeoutKillTimer);
+      clearTimeout(timeoutFinalTimer);
+      signalGroup("SIGTERM");
+      process.exitCode = timedOut ? 124 : exitStatus;
+      process.exit();
+    };
+    const writeChunk = (chunk) => {
+      pendingWrites += 1;
+      process.stdout.write(chunk, () => {
+        pendingWrites -= 1;
+        maybeFinish();
+      });
+    };
+    child.stdout.on("data", writeChunk);
+    child.stdout.once("end", () => {
+      drainExpired = true;
+      maybeFinish();
+    });
+    child.once("error", () => {
+      exited = true;
+      exitStatus = 127;
+      drainExpired = true;
+      maybeFinish();
+    });
+    child.once("exit", (code) => {
+      exited = true;
+      exitStatus = typeof code === "number" ? code : 1;
+      signalGroup("SIGTERM");
+      if (!child.stdout.readableEnded) {
+        drainTimer = setTimeout(() => {
+          child.stdout.pause();
+          let chunk;
+          while ((chunk = child.stdout.read()) !== null) writeChunk(chunk);
+          process.stdout.write("", () => {
+            drainExpired = true;
+            maybeFinish();
+          });
+        }, 100);
+      } else {
+        drainExpired = true;
+      }
+      maybeFinish();
+    });
+    deadlineTimer = setTimeout(() => {
+      timedOut = true;
+      signalGroup("SIGTERM");
+      timeoutKillTimer = setTimeout(() => signalGroup("SIGKILL"), 100);
+      timeoutFinalTimer = setTimeout(() => {
+        if (!exited) {
+          exited = true;
+          exitStatus = 124;
+          child.stdout.destroy();
+          drainExpired = true;
+          maybeFinish();
+        }
+      }, 1000);
+    }, timeoutMs);
+  }
+}
 ' "$@"
 }
 
@@ -81,23 +159,33 @@ unavailable() {
 
 if [ "$HAVE_FOLDER" -eq 1 ]; then
   [ -n "$FOLDER" ] || unavailable "empty --path"
+  case "$FOLDER" in
+    /*|[A-Za-z]:/*|[A-Za-z]:\\*|\\\\*) ;;
+    *)
+      caller_cwd="${HQ_CALLER_CWD:-$PWD}"
+      caller_cwd="$(cd "$caller_cwd" 2>/dev/null && pwd -P)" || unavailable "caller working directory unavailable"
+      if [ "$FOLDER" = "." ]; then FOLDER="$caller_cwd"; else FOLDER="$caller_cwd/$FOLDER"; fi
+      ;;
+  esac
   cli="${HQ_CLI_BIN:-hq}"
   command -v "$cli" >/dev/null 2>&1 || unavailable "'$cli' not found"
   command -v jq >/dev/null 2>&1 || unavailable "jq not found"
   status=0
   if command -v node >/dev/null 2>&1; then
-    out="$(HQ_RESOLVE_TIMEOUT_MS="${HQ_RESOLVE_TIMEOUT_MS:-5000}" run_with_timeout "$cli" resolve-company --path "$FOLDER" --json)" || status=$?
+    out="$(HQ_NO_UPDATE_CHECK=1 HQ_RESOLVE_TIMEOUT_MS="${HQ_RESOLVE_TIMEOUT_MS:-5000}" run_with_timeout "$cli" resolve-company --path "$FOLDER" --json)" || status=$?
   else
     out="$("$cli" resolve-company --path "$FOLDER" --json 2>/dev/null)" || status=$?
   fi
-  [ "$status" -eq 0 ] || unavailable "'$cli resolve-company' exited $status"
-  kind="$(printf '%s' "$out" | jq -r 'if type != "object" then "bad" elif .company == null then "miss" elif (.company | type) == "string" then "hit" else "bad" end' 2>/dev/null || printf 'bad')"
+  kind="$(printf '%s' "$out" | jq -r 'if type != "object" then "bad" elif .company == null then "miss" elif (.company | type) == "string" then "hit" else "bad" end' 2>/dev/null | sed 's/\r$//' || printf 'bad')"
+  if [ "$status" -ne 0 ] && ! { [ "$status" -eq 1 ] && [ "$kind" = "miss" ]; }; then
+    unavailable "'$cli resolve-company' exited $status"
+  fi
   case "$kind" in
     miss) emit "" "registry_miss" ;;
     hit) ;;
     *) unavailable "'$cli resolve-company' returned unreadable output" ;;
   esac
-  slug="$(printf '%s' "$out" | jq -r '.company')"
+  slug="$(printf '%s' "$out" | jq -r '.company' | sed 's/\r$//')"
   case "$slug" in
     ''|personal|_*|*[!A-Za-z0-9_-]*) unavailable "registry returned invalid company '$slug'" ;;
   esac
@@ -131,7 +219,7 @@ SLUGS="$(
 [ -n "$SLUGS" ] || emit "" "none"
 
 is_known_slug() {
-  printf '%s\n' "$SLUGS" | grep -Fxq "$1"
+  printf '%s\n' "$SLUGS" | grep -Fx "$1" >/dev/null
 }
 
 prompt_slug() {

@@ -1,7 +1,7 @@
 ---
 name: conduct
 description: "Orchestrator mode: route every task to a pooled HQ worker lane on Codex, Grok, or Claude so this session stays free. Triggers: \"/conduct\", \"run everything in the background\"."
-allowed-tools: Bash, Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/conduct-inbox.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_COMPANY="$(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_PROJECT="$(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_TASK="$(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Read, Grep, Glob, AskUserQuestion, mcp__visualize__read_me, mcp__visualize__show_widget
+allowed-tools: Bash, Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/conduct-inbox.sh:*), Bash(bash core/scripts/conduct-lane-status.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_COMPANY="$(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_PROJECT="$(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_TASK="$(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Read, Grep, Glob, AskUserQuestion, mcp__visualize__read_me, mcp__visualize__show_widget
 argument-hint: "[engine] [task description] | status | off"
 ---
 
@@ -302,7 +302,7 @@ The conduct-specific parts are only these:
   second one actually bounds the lane.
 - **Label:** the worker id.
 
-Then reply to the user in one line — what was dispatched, to which worker, on
+Then render the lane rows (Step 7) and reply to the user in one line — what was dispatched, to which worker, on
 which engine — and stop. Do not poll in the foreground.
 
 Independent tasks go out together in one response, up to the remaining pool
@@ -422,10 +422,44 @@ bash core/scripts/conduct-pool.sh list
 ```
 
 Render it as worker id, status, last task, and run id — the JSON is for you, not
-for the user. With two or more lanes live, render the board widget as well —
-template `.claude/skills/conduct/status-board.html`, filled with one row per
-lane and the CSS left alone. Decisions never go inside the widget; they follow it
-through `/decision-queue`.
+for the user. Then render the lane rows (Step 7). Decisions never go inside a
+widget; they follow it through `/decision-queue`.
+
+## Step 7: End every turn with one row per running lane
+
+Owner directive (2026-10-06): "at the end of every turn where lanes are running,
+we get a nice genui card in the chat to monitor each worker/lane and progress …
+one card per lane", then: "instead of cards, how about rows? that way we can
+include a bit more detail". One row per lane, in one table-like block.
+
+At the end of **any** turn in which at least one lane is running — after a
+dispatch, a status check, a lane completion that leaves others live, a message
+to a lane, or a plain question answered while lanes work — do this last, right
+before the closing sentence:
+
+1. Pull the data once (cheap; it reads only the pool and the last log line per
+   lane, never the transcript):
+   ```bash
+   bash core/scripts/conduct-lane-status.sh
+   ```
+   Add `--all` on the turn a lane finishes, so the finished lane gets its last
+   row (blue dot, exit 0) next to the ones still running.
+2. Render `mcp__visualize__show_widget` (HTML mode) from the template
+   `.claude/skills/conduct/lane-rows.html`: one `.row` block per lane, CSS left
+   alone. Per row: worker name; the task in plain words (not the
+   worker id or the brief); elapsed time; a short phase word derived from
+   `last_line` (building, tests, CI, merging, waiting on you); inbox count when
+   `inbox_pending` > 0; a progress bar with a percentage you estimate from the
+   phase and the brief's steps (be rough, be honest — never show 100% before
+   `exit` is 0); `last_line` in plain words; the PR link when `pr` is set. Dot
+   colour: green running, yellow when waiting on CI or on the owner or quiet for
+   20+ minutes, red on a non-zero exit or a dead process, blue on exit 0.
+3. Then the one-line reply. Nothing the owner must decide goes in a row; that
+   is `/decision-queue`, after the rows.
+
+Zero lanes running means no rows. Status text alone with lanes running is a
+defect, same as before; the old table board (`status-board.html`) is retired in
+favour of the rows.
 
 ## Rules
 
@@ -439,9 +473,10 @@ through `/decision-queue`.
   `AskUserQuestion` per decision, on every surface — status ticks, loop wakeups,
   lane completions, cross-session requests — not only at session close. A
   markdown list of questions is a defect.
-- **Two or more lanes in motion means every status reply carries the board
-  widget** (`.claude/skills/conduct/status-board.html`). A text-only status with
-  multiple lanes running is a defect.
+- **Every turn that ends with a lane running ends with one row per lane**
+  (Step 7, `.claude/skills/conduct/lane-rows.html`, data from
+  `core/scripts/conduct-lane-status.sh`). A text-only reply with lanes running is
+  a defect.
 - **Irreversible actions stay with the user** — merging, publishing a release,
   force-pushing, deleting, sending messages. The lane prepares and reports; the
   parent asks once, then tells the worker to proceed.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for core/scripts/ontology-audience-grant.sh against a stub hq CLI.
 set -uo pipefail
-here="$(cd "$(dirname "$0")" && pwd)"; s="$here/../ontology-audience-grant.sh"
+here="$(cd "$(dirname "$0")" && pwd)"; s="${ONTOLOGY_AUDIENCE_TEST_SOURCE:-$here/../ontology-audience-grant.sh}"
 fail=0; pass=0
 check() { if [ "$2" = "$3" ]; then pass=$((pass+1)); else echo "FAIL: $1 — want '$3' got '$2'"; fail=$((fail+1)); fi; }
 t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT
@@ -14,7 +14,12 @@ cat > "$t/hq" <<'STUB'
 L="$(dirname "$0")/ledger"
 args="$*"
 case "$args" in
-  *"members --company acme list"*) printf 'EMAIL ROLE NAME\na@x.com member A\nb@x.com member B\n' ;;
+  *"members --company acme list"*)
+    printf 'EMAIL ROLE NAME\na@x.com member A\nb@x.com member B\n'
+    if [ "${STUB_LARGE_MEMBERS:-0}" = 1 ]; then
+      for n in {1..100000}; do printf 'member%06d@example.test member Name\n' "$n"; done
+    fi
+    ;;
   *" share "*) p="$(echo "$args" | sed 's/.* share \([^ ]*\) .*/\1/')"; w="$(echo "$args" | sed 's/.*--with \([^ ]*\).*/\1/')"
                [ "${STUB_DROP:-}" = "$w" ] || echo "$p $w" >> "$L" ;;
   *" acl "*) p="$(echo "$args" | sed 's/.* acl \([^ ]*\) .*/\1/')"
@@ -28,7 +33,9 @@ bash "$s" --company acme >/dev/null 2>&1; check "local-only exits 0" "$?" 0
 check "local-only grants nothing" "$(wc -l < "$t/ledger" | tr -d ' ')" 0
 
 printf 'slug: acme\ncloud: true\n' > "$A/company.yaml"
+export STUB_LARGE_MEMBERS=1
 out="$(bash "$s" --company acme 2>&1)"; check "cloud run exits 0" "$?" 0
+unset STUB_LARGE_MEMBERS
 check "a granted on signals" "$(grep -c '^signals/@k1/\* a@x.com$' "$t/ledger")" 1
 check "b lowercased + granted on facts" "$(grep -c '^ontology/facts/@k1/\* b@x.com$' "$t/ledger")" 1
 check "sources scoped folder granted" "$(grep -c '^sources/meetings/@k1/\* a@x.com$' "$t/ledger")" 1

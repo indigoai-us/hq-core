@@ -96,7 +96,7 @@ esac"
 stub npm "case \"\$*\" in 'prefix -g') printf '%s\\n' '$WINDOWS_NPM_BIN';; *) exit 1;; esac"
 write_local_settings '{"env":{"PATH":"C:\\Users\\HqTest\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32"}}'
 out="$(run_hook "$COREUTILS_PATH")"
-printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+grep -F '<hq-cli-path-updated>' <<<"$out" >/dev/null \
   || fail "off-PATH Windows hq.cmd should be added to settings PATH, got: $out"
 [ "$(local_path)" = "C:/Users/HqTest/AppData/Local/Temp/windows-npm-bin;C:\\Users\\HqTest\\.hq-cli\\node_modules\\.bin;C:\\Windows\\System32" ] \
   || fail "adding Windows hq.cmd must preserve semicolon-delimited PATH, got: $(local_path)"

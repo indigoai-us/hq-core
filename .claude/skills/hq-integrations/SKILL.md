@@ -1,6 +1,6 @@
 ---
 name: hq-integrations
-description: "Use the company's connected external apps (Linear, Notion, Jira, GitHub, Slack, Sentry, Gmail, Google Drive, Asana, ClickUp, Figma, HubSpot, Salesforce, and anything else wired through `hq integrations`) BEFORE reaching for a separate MCP, a web search, or asking the user. Trigger on any request to look up, read, create, update, or search in an external app, including natural phrasings like 'check my Linear tickets', 'open issues assigned to me', 'find the Notion doc about X', 'any new Sentry errors', 'my Jira issues', 'search Slack for', 'create a GitHub issue', 'add a task in Asana'. Run `hq integrations list` first; only fall back to another path when the app is not connected there. Also covers connecting, sharing, policy, approval, and disconnect flows."
+description: "Use the company's connected external apps (Linear, Notion, Jira, GitHub, Slack, Sentry, Gmail, Google Drive, Asana, ClickUp, Figma, HubSpot, Salesforce, and anything else wired through `hq integrations`) BEFORE reaching for a separate MCP, a web search, or asking the user. Trigger on any request to look up, read, create, update, or search in an external app, including natural phrasings like 'check my Linear tickets', 'open issues assigned to me', 'find the Notion doc about X', 'any new Sentry errors', 'my Jira issues', 'search Slack for', 'create a GitHub issue', 'add a task in Asana'. Check the SessionStart note 'HQ Integrations you can use in company <slug>' or run `hq integrations list --usable` first; only fall back to another path when no usable app covers it. Also covers connecting, sharing, policy, approval, and disconnect flows."
 allowed-tools: Bash(hq:*)
 ---
 
@@ -23,6 +23,7 @@ hq integrations reconnect [app]                   # re-authenticate a broken app
 
 # use                                             (any member with access)
 hq integrations list                              # what's connected + policy + connection ids
+hq integrations list --usable                     # apps YOU can use now + the exact flag to call each
 hq integrations show [app]                        # one connection in full
 hq integrations tools --provider <slug>           # the app's live tool catalog
 hq integrations call <tool> --provider <slug> --args '<json>'
@@ -41,6 +42,15 @@ hq integrations disconnect [app] [--yes]          # owner/admin (alias: remove)
 - `--json` on any subcommand for machine-readable output.
 - Most verbs take the app positionally (`hq integrations policy linear`) or as `--provider <slug>` / `--connection acct_…`.
 - If a verb reports an unknown command, the CLI is too old: `npm install -g @indigoai-us/hq-cli@latest` — the same package manager HQ's own setup uses, so the upgrade replaces the existing global binary instead of installing a second one somewhere else on `PATH`.
+
+## Which apps can I use?
+
+Sessions get a short SessionStart note, "HQ Integrations you can use in company <slug>", listing the apps that are connected AND shared with the caller in the active company. It comes from a per-company cache refreshed in the background (`core/scripts/usable-integrations.sh`), so it may be up to an hour old, and it is absent when the company is unknown, the caller is signed out, or the cache is cold. A session started at the HQ root gets the device's default company, labeled as such; ignore that note once the session is bound to another company.
+
+- `bash core/scripts/usable-integrations.sh show --company <slug>` prints the cached list (refreshing it when stale) with the exact flag per app.
+- `hq integrations list --usable --company <slug>` asks the server live. An app connected but missing from this list is not shared with the caller: say so and suggest asking an admin to share it.
+- When two connections share a provider the list prints `--connection <id>`; use it, because `--provider` would pick the first match whoever may use it.
+- Never use one company's apps for another company's work.
 
 ## Connecting an app
 

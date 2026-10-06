@@ -54,3 +54,11 @@
 - path: "core/scripts/tests/fixtures/hook-process-budgets/d3c1726c831181f43cf90731b916db4d36b5172b/.claude/hooks/block-unsafe-package-install.sh"
   rules: [pii/email]
   reason: "Byte-identical historical hook fixture contains scoped npm package version literals misclassified as email; source bytes and hashes are verified against the baseline commit."
+
+- path: "core/scripts/tests/ontology-audience-grant.test.sh"
+  rules: [pii/email]
+  reason: "Stubbed hq members output uses made-up one-letter fixture addresses and generated example.test addresses; none belong to a real person."
+
+- path: "core/scripts/tests/resolve-company.test.sh"
+  rules: [pii/phone]
+  reason: "The 10-digit literal on the drain-timing assertion is one second expressed in nanoseconds, not a phone number."

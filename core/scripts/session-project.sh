@@ -462,6 +462,32 @@ function resolveProjectPath(raw) {
   if (rel === "" || rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel) ||
       (!isPersonalProject && !isCompanyProject)) return null;
 
+  // Project pointers can look in-root while a directory symlink redirects
+  // writes outside HQ_ROOT. Reject every existing symlink component before
+  // accepting a path for a write operation.
+  let current = HQ_ROOT;
+  for (const part of parts) {
+    current = path.join(current, part);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) return null;
+    } catch (error) {
+      if (error.code === "ENOENT") break;
+      return null;
+    }
+  }
+  try {
+    const canonical = fs.realpathSync(projectDir);
+    const canonicalRel = path.relative(HQ_ROOT, canonical);
+    const canonicalParts = canonicalRel.split(path.sep).filter(Boolean);
+    const canonicalIsPersonal = canonicalParts.length >= 3 && canonicalParts[0] === "personal" && canonicalParts[1] === "projects";
+    const canonicalIsCompany = canonicalParts.length >= 4 && canonicalParts[0] === "companies" && canonicalParts[2] === "projects";
+    if (canonicalRel === "" || canonicalRel === ".." || canonicalRel.startsWith(".." + path.sep) ||
+        path.isAbsolute(canonicalRel) || (!canonicalIsPersonal && !canonicalIsCompany)) return null;
+    return canonical;
+  } catch (error) {
+    if (error.code !== "ENOENT") return null;
+  }
+
   return projectDir;
 }
 

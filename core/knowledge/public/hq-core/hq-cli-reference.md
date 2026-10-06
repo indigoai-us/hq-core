@@ -408,6 +408,7 @@ date in the header, and update `verified_against`.
 |---|---|
 | `hq integrations` | Connect, govern, and use company apps (Linear, Notion, …) through HQ's governed integration gateway |
 | `hq integrations list` | List the company's connected apps |
+| `hq integrations list --usable` | Only the apps you can use right now (connected and shared with you), with the exact flag to call each |
 | `hq integrations import` | Import Claude Desktop connectors into company Integrations |
 | `hq integrations install-local` | Register a company-shared local connector in this machine's Claude/Codex MCP config |
 | `hq integrations tools` | List what a connected app can do |

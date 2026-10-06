@@ -323,24 +323,24 @@ classify_failure() {
   local lower
   lower="$(printf '%s' "$tail_txt" | tr '[:upper:]' '[:lower:]')"
 
-  if printf '%s' "$lower" | grep -Eq \
-    'not logged in|please log in|authentication (failed|required)|unauthorized|401|invalid.*(token|credential)|credentials? (missing|expired|invalid)|device.?code|login required'; then
+  if printf '%s' "$lower" | grep -E \
+    'not logged in|please log in|authentication (failed|required)|unauthorized|401|invalid.*(token|credential)|credentials? (missing|expired|invalid)|device.?code|login required' >/dev/null; then
     printf 'auth'
     return
   fi
-  if printf '%s' "$lower" | grep -Eq \
-    'secret.*(not found|missing|denied|not visible|not shared)|hq secrets.*(fail|error|denied)|missing vault|access denied.*secret'; then
+  if printf '%s' "$lower" | grep -E \
+    'secret.*(not found|missing|denied|not visible|not shared)|hq secrets.*(fail|error|denied)|missing vault|access denied.*secret' >/dev/null; then
     printf 'secrets'
     return
   fi
   # Avoid matching job metadata like timeout_seconds=N in the log header.
-  if printf '%s' "$lower" | grep -Eq \
-    '(^|[^_])timed out|command timed out|deadline exceeded|killed by timeout|exit[=:][[:space:]]*124\b'; then
+  if printf '%s' "$lower" | grep -E \
+    '(^|[^_])timed out|command timed out|deadline exceeded|killed by timeout|exit[=:][[:space:]]*124\b' >/dev/null; then
     printf 'timeout'
     return
   fi
-  if printf '%s' "$lower" | grep -Eq \
-    'connection (refused|reset|timed out)|network is unreachable|temporary failure|econnreset|enotfound|no space left|i/o error|transport error|dns (fail|error)|http[/ ]*(502|503|504)|statusingesterror|api unreachable'; then
+  if printf '%s' "$lower" | grep -E \
+    'connection (refused|reset|timed out)|network is unreachable|temporary failure|econnreset|enotfound|no space left|i/o error|transport error|dns (fail|error)|http[/ ]*(502|503|504)|statusingesterror|api unreachable' >/dev/null; then
     printf 'infra'
     return
   fi

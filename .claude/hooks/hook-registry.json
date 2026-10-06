@@ -1036,6 +1036,15 @@
             "gated": true
           },
           {
+            "id": "usable-integrations",
+            "script": "core/scripts/usable-integrations.sh",
+            "timeout": 5,
+            "gated": true,
+            "args": [
+              "context"
+            ]
+          },
+          {
             "id": "migrate-policy-triggers",
             "script": "core/scripts/migrate-policy-triggers.sh",
             "timeout": 60,

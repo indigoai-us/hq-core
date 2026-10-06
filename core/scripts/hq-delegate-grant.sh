@@ -72,11 +72,11 @@ done
 [ -f "$MANIFEST" ] || die "manifest not found: $MANIFEST"
 jq -e . "$MANIFEST" >/dev/null 2>&1 || die "manifest is not valid JSON: $MANIFEST"
 
-COMPANY="$(jq -r '.company // empty' "$MANIFEST")"
-PROJECT="$(jq -r '.project.name // empty' "$MANIFEST")"
-PRINCIPAL="$(jq -r '.to.principal // empty' "$MANIFEST")"
-DISPLAY="$(jq -r '.to.displayName // .to.principal // empty' "$MANIFEST")"
-STATUS="$(jq -r '.status // empty' "$MANIFEST")"
+COMPANY="$(jq -r '.company // empty' "$MANIFEST" | tr -d '\r')"
+PROJECT="$(jq -r '.project.name // empty' "$MANIFEST" | tr -d '\r')"
+PRINCIPAL="$(jq -r '.to.principal // empty' "$MANIFEST" | tr -d '\r')"
+DISPLAY="$(jq -r '.to.displayName // .to.principal // empty' "$MANIFEST" | tr -d '\r')"
+STATUS="$(jq -r '.status // empty' "$MANIFEST" | tr -d '\r')"
 [ -n "$COMPANY" ]   || die "manifest has no company"
 [ -n "$PROJECT" ]   || die "manifest has no project.name"
 [ -n "$PRINCIPAL" ] || die "manifest has no to.principal"
@@ -103,7 +103,7 @@ case "$PRINCIPAL" in
     TAIL="$(printf '%s' "$PRINCIPAL" | tail -c 9 | tr '[:upper:]' '[:lower:]')"
     LEGACY_GROUP="grp_dlg-$TAIL"
     NEXT_GROUP="$(agent_group_id "$PRINCIPAL")"
-    RECORDED_GROUP="$(jq -r '.grantPrincipal // empty' "$MANIFEST")"
+    RECORDED_GROUP="$(jq -r '.grantPrincipal // empty' "$MANIFEST" | tr -d '\r')"
     case "$RECORDED_GROUP" in
       "$LEGACY_GROUP"|"$NEXT_GROUP") GRANT_PRINCIPAL="$RECORDED_GROUP" ;;
       *) GRANT_PRINCIPAL="$NEXT_GROUP" ;;
@@ -116,7 +116,7 @@ case "$STATUS" in
   *) die "manifest status is '$STATUS' — grants run from 'building' (or re-run from 'granted'), not from there" ;;
 esac
 
-PREFIX_COUNT="$(jq '.vaultPrefixes | length' "$MANIFEST")"
+PREFIX_COUNT="$(jq '.vaultPrefixes | length' "$MANIFEST" | tr -d '\r')"
 [ "$PREFIX_COUNT" -gt 0 ] || die "manifest has no vaultPrefixes"
 
 # --- validate every prefix BEFORE touching anything --------------------------
@@ -125,7 +125,7 @@ PREFIX_COUNT="$(jq '.vaultPrefixes | length' "$MANIFEST")"
 # not exist in the bucket. Either is a hard error, never a silent grant.
 
 BAD="$(jq -r '.vaultPrefixes[] | .prefix
-  | select((endswith("/") | not) or startswith("companies/") or startswith("/"))' "$MANIFEST")"
+  | select((endswith("/") | not) or startswith("companies/") or startswith("/"))' "$MANIFEST" | tr -d '\r')"
 if [ -n "$BAD" ]; then
   die "prefix violates the hq-files prefix conventions (must be company-relative folder form ending in '/'): $BAD"
 fi
@@ -137,8 +137,8 @@ if [ "$GRANT_PRINCIPAL" != "$PRINCIPAL" ]; then
   echo "  0. Agent recipient: grants flow through group $GRANT_PRINCIPAL (created if absent, containing exactly $DISPLAY)"
 fi
 echo "  1. Push companies/$COMPANY/projects/$PROJECT/ to the vault (on-conflict keep)"
-jq -r '.vaultPrefixes[] | "  2. Grant \(.permission) on \(.prefix) — \(.reason // "")"' "$MANIFEST"
-WRITE_PREFIXES="$(jq -r '.vaultPrefixes[] | select(.permission == "write") | .prefix' "$MANIFEST")"
+jq -r '.vaultPrefixes[] | "  2. Grant \(.permission) on \(.prefix) — \(.reason // "")"' "$MANIFEST" | tr -d '\r'
+WRITE_PREFIXES="$(jq -r '.vaultPrefixes[] | select(.permission == "write") | .prefix' "$MANIFEST" | tr -d '\r')"
 if [ -n "$WRITE_PREFIXES" ]; then
   echo
   echo "NOTE: granting 'write' is a privilege escalation. The recipient will be able"
@@ -162,7 +162,7 @@ hq sync push "companies/$COMPANY/projects/$PROJECT/" --company "$COMPANY" --on-c
 
 jq -r --arg co "$COMPANY" \
   '((.knowledge // []) + (.policies // []))[] | select(startswith("companies/" + $co + "/"))' \
-  "$MANIFEST" | while IFS= read -r kpath; do
+  "$MANIFEST" | tr -d '\r' | while IFS= read -r kpath; do
   if [ -e "$HQ_ROOT/$kpath" ]; then
     hq sync push "$kpath" --company "$COMPANY" --on-conflict keep \
       || die "vault push failed for referenced knowledge: $kpath"
@@ -202,8 +202,8 @@ case "$GRANT_PRINCIPAL" in
     if printf '%s' "$RESOLVED" | jq -e '.status == "found" and (.person.personUid | type == "string") and (.person.companyUid | type == "string")' >/dev/null; then
       [ "$RESOLVE_RC" -eq 0 ] || die "recipient resolution failed"
       EXPECTED_TYPE=person
-      EXPECTED_ID="$(printf '%s' "$RESOLVED" | jq -r '.person.personUid')"
-      EXPECTED_COMPANY="$(printf '%s' "$RESOLVED" | jq -r '.person.companyUid')"
+      EXPECTED_ID="$(printf '%s' "$RESOLVED" | jq -r '.person.personUid' | tr -d '\r')"
+      EXPECTED_COMPANY="$(printf '%s' "$RESOLVED" | jq -r '.person.companyUid' | tr -d '\r')"
     elif printf '%s' "$RESOLVED" | jq -e '.status == "not_found"' >/dev/null; then
       case "$PRINCIPAL" in *@*) EXPECTED_TYPE=email; EXPECTED_ID="$(printf '%s' "$PRINCIPAL" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" ;; *) die "unresolved recipient" ;; esac
     else
@@ -230,15 +230,15 @@ read_acl() {
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 i=0
 while [ "$i" -lt "$PREFIX_COUNT" ]; do
-  PFX="$(jq -r ".vaultPrefixes[$i].prefix" "$MANIFEST")"
-  PERM="$(jq -r ".vaultPrefixes[$i].permission" "$MANIFEST")"
+  PFX="$(jq -r ".vaultPrefixes[$i].prefix" "$MANIFEST" | tr -d '\r')"
+  PERM="$(jq -r ".vaultPrefixes[$i].permission" "$MANIFEST" | tr -d '\r')"
   # Always address the recursive "folder/*" pattern explicitly. Since hq-pro
   # #3662 (2026-09-23) the server echoes the raw pattern back on read, and a
   # bare trailing "/" can mean a PRIVATE folder pattern when that flag is on.
   # A delegation grant is always the recursive share, never a private folder.
   ACL_PATTERN="${PFX}*"
   BEFORE="$(read_acl "$ACL_PATTERN")" || die "ACL preflight failed; no share attempted for $PFX"
-  EXPECTED_COMPANY="$(printf '%s' "$BEFORE" | jq -r '.companyUid')"
+  EXPECTED_COMPANY="$(printf '%s' "$BEFORE" | jq -r '.companyUid' | tr -d '\r')"
   SHARE_RC=0
   hq files share "$ACL_PATTERN" --with "$GRANT_PRINCIPAL" --permission "$PERM" --company "$COMPANY" || SHARE_RC=$?
   [ "$SHARE_RC" -eq 0 ] || echo "hq-delegate-grant: share reported an error on $PFX; checking exact grant" >&2
