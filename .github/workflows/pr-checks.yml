@@ -283,6 +283,8 @@ jobs:
         run: bash core/scripts/tests/resolve-company.test.sh
       - name: Session auto-bind honors device-default company boundaries
         run: bash core/scripts/tests/session-auto-bind.test.sh
+      - name: Ontology source worklist retries transient ACL failures
+        run: bash core/scripts/tests/ontology-source-worklist-acl-retry.test.sh
       - name: /resumework requires explicit confirmation for locked threads
         run: bash core/scripts/tests/resume-thread-lock.test.sh
 

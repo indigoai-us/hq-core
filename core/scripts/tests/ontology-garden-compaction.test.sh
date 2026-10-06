@@ -19,6 +19,15 @@ export HQ_ONTOLOGY_BACKREF_KEEP_INLINE=2
 A="$t/companies/acme"
 cand() { bash "$t/core/scripts/ontology-candidate.sh" write --company acme --source-ref test:1 "$@" >/dev/null; }
 
+# An invalid compaction window must be rejected before the garden can append
+# facts that it cannot safely compact.
+set +e
+invalid_window_output="$(HQ_ONTOLOGY_BACKREF_THRESHOLD=2 HQ_ONTOLOGY_BACKREF_KEEP_INLINE=2 node "$g" --company acme --hq-root "$t" 2>&1)"
+invalid_window_status=$?
+set -e
+check "invalid compaction window exits nonzero" "$invalid_window_status" "1"
+check "invalid compaction window diagnostic" "$invalid_window_output" "ontology-garden: BACKREF_THRESHOLD (2) must be greater than BACKREF_KEEP_INLINE (2)"
+
 # One entity we'll pile signals onto.
 cand --kind entity --type person --audience company --body "Jane Doe"
 

@@ -158,6 +158,12 @@ function listCandidates(dir) {
 
 function main() {
   const a = parseArgs(process.argv.slice(2));
+  const backrefThreshold = Number(process.env.HQ_ONTOLOGY_BACKREF_THRESHOLD || 50);
+  const backrefKeepInline = Number(process.env.HQ_ONTOLOGY_BACKREF_KEEP_INLINE || 25);
+  if (!(backrefThreshold > backrefKeepInline)) {
+    console.error(`ontology-garden: BACKREF_THRESHOLD (${backrefThreshold}) must be greater than BACKREF_KEEP_INLINE (${backrefKeepInline})`);
+    process.exit(1);
+  }
   const co = path.join(a.root, "companies", a.company);
   if (!fs.existsSync(co)) { console.error(`ontology-garden: no company ${a.company}`); process.exit(2); }
   const ont = path.join(co, "ontology"), sig = path.join(co, "signals");
