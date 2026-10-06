@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 - Keep existing Task subagent company bindings across session resumes, and tell valid but unbound agents to restart or respawn while their company access stays denied.
+- Reject ontology-garden back-reference settings unless the compaction threshold exceeds the number of inline facts.
 - The capability-link check now scans past large trailing tool output to find the newest assistant reply, and verification failures no longer block the turn.
 
 - Run the hook timeout watchdog and attribution regressions concurrently in macOS shell-smoke; keep Windows tests in separate steps after the timing-sensitive watchdog failed under contention.

@@ -203,8 +203,18 @@ for f in "$D"/*.md; do
       # test/sources/inbound/slack-personal-dm.test.ts.
       [ -n "$aud" ] || aud="$(participant_ids "$f" resolved_participants | grep -E '@|^(prs|agt)_' | paste -sd, -)"
       if [ -z "$aud" ]; then
-        aud="$("$HQ" files --company "$co" acl "$rel" --json 2>/dev/null \
-          | jq -r '[.direct[]? | select(.granteeType=="person" or .granteeType=="email" or .granteeType=="agent") | select(.permission=="read" or .permission=="write" or .permission=="admin") | .granteeId] | unique | join(",")' 2>/dev/null)"
+        # A transient ACL or jq failure must not turn a source into a durable
+        # no-audience skip. Retry once, while treating valid empty ACL output as
+        # a completed lookup that needs no retry.
+        for attempt in 1 2; do
+          acl_output=""
+          if acl_output="$("$HQ" files --company "$co" acl "$rel" --json 2>/dev/null \
+            | jq -r '[.direct[]? | select(.granteeType=="person" or .granteeType=="email" or .granteeType=="agent") | select(.permission=="read" or .permission=="write" or .permission=="admin") | .granteeId] | unique | join(",")' 2>/dev/null)"; then
+            aud="$acl_output"
+            break
+          fi
+          aud=""
+        done
       fi ;;
   esac
   if [ -z "$aud" ]; then

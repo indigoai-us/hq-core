@@ -32,6 +32,9 @@ HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 REG_DIR="$HQ_ROOT/workspace/orchestrator"
 REG_FILE="$REG_DIR/active-runs.json"
 LOCK_DIR="$REG_FILE.lock"
+RECOVER_DIR="$LOCK_DIR.recover"
+WRITER_WAIT_MARKER=""
+WRITER_WAIT_PREVIOUS_EXIT_TRAP=""
 # Resolve the orchestrator settings file. personal/settings is read DIRECTLY now
 # (the reindex symlink mirror into core/settings is retired). orchestrator.yaml
 # ships as a core default; unlike the list-shaped overlays (policies/workers/
@@ -80,30 +83,143 @@ _ensure_reg() {
 # Atomic mutex via mkdir — single-machine only
 _lock() { _try_lock || _die "registry lock timeout"; }
 
+_lock_is_stale() {
+  local lock_path="${1:-$LOCK_DIR}"
+  [[ -d "$lock_path" ]] || return 1
+  local mtime age
+  mtime="$(portable_stat_mtime "$lock_path" 2>/dev/null)" || return 1
+  case "$mtime" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  age=$(( $(date +%s) - mtime ))
+  [[ $age -gt 60 ]]
+}
+
+_clear_writer_wait_marker() {
+  [[ -n "$WRITER_WAIT_MARKER" ]] || return 0
+  rm -f "$WRITER_WAIT_MARKER" 2>/dev/null || true
+  WRITER_WAIT_MARKER=""
+}
+
+_restore_writer_wait_exit_trap() {
+  if [[ -n "$WRITER_WAIT_PREVIOUS_EXIT_TRAP" ]]; then
+    eval "$WRITER_WAIT_PREVIOUS_EXIT_TRAP"
+  else
+    trap - EXIT
+  fi
+  WRITER_WAIT_PREVIOUS_EXIT_TRAP=""
+}
+
+_writer_wait_marker_is_live() {
+  local marker="$1" pid mtime age
+  pid="${marker##*.wait.}"
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  _is_pid_alive "$pid" || return 1
+  mtime="$(portable_stat_mtime "$marker" 2>/dev/null)" || return 1
+  case "$mtime" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  age=$(( $(date +%s) - mtime ))
+  [[ $age -le 60 ]]
+}
+
+_has_live_writer_wait_marker() {
+  local marker
+  for marker in "$LOCK_DIR.wait."*; do
+    [[ -f "$marker" ]] || continue
+    _writer_wait_marker_is_live "$marker" && return 0
+  done
+  return 1
+}
+
+_prune_dead_writer_wait_markers() {
+  local marker pid mtime age
+  for marker in "$LOCK_DIR.wait."*; do
+    [[ -f "$marker" ]] || continue
+    pid="${marker##*.wait.}"
+    case "$pid" in
+      ''|*[!0-9]*) rm -f "$marker" 2>/dev/null || true; continue ;;
+    esac
+    if ! _is_pid_alive "$pid"; then
+      rm -f "$marker" 2>/dev/null || true
+      continue
+    fi
+    mtime="$(portable_stat_mtime "$marker" 2>/dev/null)" || continue
+    case "$mtime" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    age=$(( $(date +%s) - mtime ))
+    [[ $age -gt 60 ]] && rm -f "$marker" 2>/dev/null || true
+  done
+}
+
+# Reclaim a stale registry lock only while holding a separate, non-waiting
+# mutex. An expired recovery directory is also reclaimable; a process paused
+# for more than 60 seconds inside this deliberately tiny critical section is
+# the residual limit of this directory-mutex protocol.
+_recover_stale_lock() {
+  local removed=1
+  if ! mkdir "$RECOVER_DIR" 2>/dev/null; then
+    if _lock_is_stale "$RECOVER_DIR"; then
+      rm -rf "$RECOVER_DIR" 2>/dev/null || true
+    fi
+    return 1
+  fi
+
+  if _lock_is_stale "$LOCK_DIR"; then
+    rm -rf "$LOCK_DIR" 2>/dev/null || true
+    [[ ! -e "$LOCK_DIR" ]] && removed=0
+  fi
+  rmdir "$RECOVER_DIR" 2>/dev/null || true
+  return "$removed"
+}
+
 # Returns 1 instead of exiting when the lock stays busy (~5s).
 _try_lock() {
-  local tries=0
+  local tries=0 wait_marker_published=0
   local max=50
   # register takes the lock before _ensure_reg; without its parent the mkdir
   # below can never succeed and the first register on a fresh install timed out.
   mkdir -p "$REG_DIR" 2>/dev/null || true
+  _prune_dead_writer_wait_markers
   while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    if [[ $wait_marker_published -eq 0 ]]; then
+      WRITER_WAIT_MARKER="$LOCK_DIR.wait.$$"
+      if touch "$WRITER_WAIT_MARKER" 2>/dev/null; then
+        WRITER_WAIT_PREVIOUS_EXIT_TRAP="$(trap -p EXIT)"
+        trap '_clear_writer_wait_marker' EXIT
+        wait_marker_published=1
+      else
+        WRITER_WAIT_MARKER=""
+        _log "could not publish writer wait marker"
+      fi
+    fi
     tries=$((tries + 1))
     if [[ $tries -ge $max ]]; then
-      # stale lock fallback: remove if older than 60s
-      if [[ -d "$LOCK_DIR" ]]; then
-        local age mtime
-        mtime="$(portable_stat_mtime "$LOCK_DIR" 2>/dev/null || echo 0)"
-        age=$(( $(date +%s) - mtime ))
-        if [[ $age -gt 60 ]]; then
-          rm -rf "$LOCK_DIR" 2>/dev/null || true
-          continue
+      # Use the same finite retry budget; if recovery or the final mkdir loses
+      # to another writer, give up rather than restarting the loop.
+      if _recover_stale_lock && mkdir "$LOCK_DIR" 2>/dev/null; then
+        if [[ $wait_marker_published -eq 1 ]]; then
+          _clear_writer_wait_marker
+          _restore_writer_wait_exit_trap
         fi
+        return 0
+      fi
+      if [[ $wait_marker_published -eq 1 ]]; then
+        _clear_writer_wait_marker
+        _restore_writer_wait_exit_trap
       fi
       return 1
     fi
     sleep 0.1
   done
+  if [[ $wait_marker_published -eq 1 ]]; then
+    _clear_writer_wait_marker
+    _restore_writer_wait_exit_trap
+  fi
+  return 0
 }
 _unlock() { rm -rf "$LOCK_DIR" 2>/dev/null || true; }
 
@@ -111,7 +227,14 @@ _unlock() { rm -rf "$LOCK_DIR" 2>/dev/null || true; }
 # older snapshot over a concurrent register or heartbeat. If the lock stays
 # busy, skip the prune and answer from the file as it is.
 _prune_stale_locked() {
-  _try_lock || return 0
+  mkdir -p "$REG_DIR" 2>/dev/null || return 0
+  # Readers answer from the current file while a live writer is waiting; they
+  # never queue for the optional prune and do not remove expired markers.
+  _has_live_writer_wait_marker && return 0
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    _recover_stale_lock || return 0
+    mkdir "$LOCK_DIR" 2>/dev/null || return 0
+  fi
   trap '_unlock' EXIT
   _prune_stale >/dev/null 2>&1 || true
   _unlock
