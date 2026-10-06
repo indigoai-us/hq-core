@@ -95,6 +95,7 @@ entries:
     interpreter: bash
     min_cli: 5.341.3
     state: forwarded
+    path_operands: none
 YAML
 bash "$GENERATOR" --manifest "$ROOT_PRECEDENCE_ROOT/core/scripts/cli-hosted.yaml" \
   --output-root "$ROOT_PRECEDENCE_ROOT" >/dev/null
@@ -131,6 +132,7 @@ entries:
     interpreter: bash
     min_cli: 5.112.0
     state: forwarded
+    path_operands: none
     note: |
       synthetic row
   - path: core/scripts/fixture-newer.sh
@@ -140,6 +142,7 @@ entries:
     interpreter: bash
     min_cli: 5.270.0
     state: forwarded
+    path_operands: none
     note: |
       synthetic row
 YAML
@@ -316,6 +319,7 @@ entries:
     interpreter: bash
     min_cli: 5.269.0
     state: forwarded
+    path_operands: none
     note: |
       synthetic parity row
 YAML

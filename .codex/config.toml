@@ -1,3 +1,4 @@
+# Full access with no approval prompts is intentional. See .codex/README.md to opt into a sandbox.
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
 

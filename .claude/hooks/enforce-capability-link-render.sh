@@ -60,14 +60,9 @@ JS
   [ -z "$TRANSCRIPT_PATH" ] || [ ! -r "$TRANSCRIPT_PATH" ] && exit 0
 
   # Last assistant message text only (the turn that just finished).
-  TRANSCRIPT_TAIL="$(hq_transcript_tail_with_latest_assistant "$TRANSCRIPT_PATH")"
+  TRANSCRIPT_TAIL="$(hq_transcript_tail_with_latest_assistant "$TRANSCRIPT_PATH" 2>/dev/null)"
   TAIL_STATUS=$?
-  if [ "$TAIL_STATUS" -eq 3 ]; then
-    REASON='POLICY CHECK BLOCKED — the newest assistant transcript record could not be verified within the 16 MiB scan cap. Keep the capability link out of the response until the transcript can be checked.'
-    jq -nc --arg r "$REASON" '{decision:"block", reason:$r}' 2>/dev/null \
-      || printf '{"decision":"block","reason":%s}' "$(printf '%s' "$REASON" | hq_json_encode)"
-    exit 0
-  fi
+  # A helper failure must never expose internal scan details or block the user.
   [ "$TAIL_STATUS" -eq 0 ] || exit 0
 
   LAST_TEXT="$(

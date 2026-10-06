@@ -55,10 +55,56 @@ while IFS= read -r skill_dir; do
   cp -R "$skill_dir" "$output/skills/"
 done < <(find "$repo_root/.claude/skills" -mindepth 1 -maxdepth 1 -type d -print | sort)
 
+node - "$output/skills" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const skillsRoot = process.argv[2];
+function shortDescription(yaml) {
+  const lines = yaml.split(/\r?\n/);
+  const index = lines.findIndex(line => /^\s*short_description\s*:/u.test(line));
+  if (index < 0) return null;
+  const indent = lines[index].match(/^\s*/u)[0].length;
+  const value = lines[index].replace(/^\s*short_description\s*:\s*/u, '').trim();
+  const quoted = value.match(/^(?:"([^"]*)"|'([^']*)')$/u);
+  if (quoted) return quoted[1] ?? quoted[2];
+  if (/^[>|][+-]?$/u.test(value)) {
+    const folded = [];
+    for (let i = index + 1; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      if (lines[i].match(/^\s*/u)[0].length <= indent) break;
+      folded.push(lines[i].trim());
+    }
+    return folded.join(' ').replace(/\s+/gu, ' ').trim();
+  }
+  return value;
+}
+for (const skill of fs.readdirSync(skillsRoot, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
+  const metadata = path.join(skillsRoot, skill.name, 'agents/openai.yaml');
+  if (!fs.existsSync(metadata)) continue;
+  const yaml = fs.readFileSync(metadata, 'utf8');
+  const description = shortDescription(yaml);
+  if (description === null) throw new Error(`${skill.name}: missing interface.short_description in agents/openai.yaml`);
+  const length = [...description].length;
+  if (length < 25 || length > 64) {
+    throw new Error(`${skill.name}: interface.short_description is ${length} characters; expected 25-64`);
+  }
+}
+NODE
+
 for file in hqd-hook-flag-cache-lib.sh hq-anywhere-runtime-flag.cjs; do
   install -m 0755 "$repo_root/core/scripts/$file" "$output/hooks/$file"
 done
 install -m 0755 "$repo_root/core/scripts/hqd-hook-shim.sh" "$output/hooks/codex-hook-shim.sh"
+cat > "$output/hooks/codex.sh" <<'HOOK'
+#!/bin/sh
+# Installer-visible Codex hook entry point. Keep gate and dispatch behavior in the shared shim.
+case "$0" in
+  */*) hook_dir=${0%/*} ;;
+  *) hook_dir=. ;;
+esac
+exec /bin/sh "$hook_dir/codex-hook-shim.sh" --runtime codex "$@"
+HOOK
+chmod 0755 "$output/hooks/codex.sh"
 
 node - "$output" <<'NODE'
 const fs = require('node:fs');
@@ -67,7 +113,7 @@ const root = process.argv[2];
 const events = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd'];
 const hooks = Object.fromEntries(events.map(event => [event, [{ hooks: [{
   type: 'command',
-  command: 'hooks/codex-hook-shim.sh',
+  command: 'hooks/codex.sh',
   timeout: event === 'SessionEnd' ? 3 : 300,
 }] }]]));
 fs.writeFileSync(path.join(root, 'hooks/codex-hooks.json'), `${JSON.stringify({ hooks }, null, 2)}\n`);

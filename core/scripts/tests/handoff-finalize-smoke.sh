@@ -116,7 +116,14 @@ cat > "$TMP_ROOT/bin/cygpath" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "${1:-}" == "-m" && -n "${2:-}" ]]
-printf 'C:%s\n' "$2"
+if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+  printf 'C:%s\n' "$2"
+elif [[ "${US396_CYGPATH_PASSTHROUGH:-}" == "1" ]]; then
+  printf '%s\n' "$2"
+else
+  # Finalizer tests use Windows-shaped paths to exercise jq's MSYS boundary.
+  printf 'C:%s\n' "$2"
+fi
 SH
 chmod +x "$TMP_ROOT/bin/cygpath"
 export US396_REAL_JQ="$REAL_JQ"
@@ -223,7 +230,7 @@ cat > "$TMP_ROOT/porcelain.txt" <<'EOF'
 !! .cache/foo
 EOF
 
-summary=$(bash core/scripts/hq-status-summary.sh \
+summary=$(US396_CYGPATH_PASSTHROUGH=1 bash core/scripts/hq-status-summary.sh \
   --porcelain-file "$TMP_ROOT/porcelain.txt" \
   --session-files-json '[{"path":"notes/new.md"}]' \
   --json)
@@ -236,7 +243,7 @@ assert_eq "$(jq -r '.counts.ignored' <<<"$summary")" "1" "ignored count"
 
 # --session-files-file path is used when provided (mirrors --session-files-json).
 echo '[{"path":"notes/new.md"}]' > "$TMP_ROOT/session-files.json"
-summary_file=$(bash core/scripts/hq-status-summary.sh \
+summary_file=$(US396_CYGPATH_PASSTHROUGH=1 bash core/scripts/hq-status-summary.sh \
   --porcelain-file "$TMP_ROOT/porcelain.txt" \
   --session-files-file "$TMP_ROOT/session-files.json" \
   --json)
@@ -244,7 +251,7 @@ assert_eq "$(jq -r '.counts.session_touched_untracked' <<<"$summary_file")" "1" 
 assert_eq "$(jq -r '.counts.unrelated_untracked' <<<"$summary_file")" "1" "unrelated untracked count (file input)"
 
 # A missing --session-files-file is a hard error, never a silent empty summary.
-if bash core/scripts/hq-status-summary.sh \
+if US396_CYGPATH_PASSTHROUGH=1 bash core/scripts/hq-status-summary.sh \
     --porcelain-file "$TMP_ROOT/porcelain.txt" \
     --session-files-file "$TMP_ROOT/does-not-exist.json" \
     --json >/dev/null 2>&1; then

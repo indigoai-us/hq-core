@@ -366,6 +366,8 @@ jobs:
         run: bash core/scripts/tests/hq-delegate-resolve.test.sh
       - name: Vault grants (direct-only, verified read-back)
         run: bash core/scripts/tests/hq-delegate-grant.test.sh
+      - name: Vault grant status handles jq CRLF output
+        run: bash core/scripts/tests/hq-delegate-grant-crlf-status.test.sh
       - name: Repo/branch handover (anchored push, dirty work surfaced)
         run: bash core/scripts/tests/hq-delegate-repo.test.sh
       - name: Secrets by name only (sentinel no-value-leak)
@@ -447,6 +449,12 @@ jobs:
         run: bash core/scripts/tests/agent-runtime-skill-metadata.test.sh
       - name: Codex pack build regression test
         run: bash core/scripts/tests/build-codex-pack.test.sh
+      - name: HQ Anywhere package contract regression test
+        run: bash core/scripts/tests/hq-anywhere-package-contract.test.sh
+      - name: Outpost host app regression test
+        run: bash core/scripts/tests/outpost-host-app.test.sh
+      - name: HQ Anywhere hook flag cache regression test
+        run: bash core/scripts/tests/hqd-hook-flag-cache.test.sh
       - name: Claude Code plugin build regression test
         run: bash core/scripts/tests/build-claude-plugin.test.sh
       - name: Agent bootstrap cloud sync guidance regression test
@@ -1509,8 +1517,14 @@ jobs:
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: portable-lib
         run: bash core/scripts/tests/portable-lib.test.sh
+      - name: Git Bash forwarder preserves slash arguments and path arguments
+        run: bash core/scripts/tests/forwarder-msys-argv.test.sh
       - name: jq wrapper Windows and POSIX output parity
         run: bash core/scripts/tests/jq-wrapper-platform-parity.test.sh
+      - name: session-journal MSYS newline slug
+        run: bash core/scripts/tests/session-journal-windows-slug.test.sh
+      - name: session-journal CLI port behavior
+        run: bash core/scripts/tests/session-journal-cli-port.test.sh
       - name: identity-resolve USER key
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
       - name: identity-resolve missing engines
@@ -1584,6 +1598,8 @@ jobs:
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: portable-lib
         run: bash core/scripts/tests/portable-lib.test.sh
+      - name: session-journal CLI port behavior
+        run: bash core/scripts/tests/session-journal-cli-port.test.sh
       - name: identity-resolve USER key
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
       - name: identity-resolve missing engines

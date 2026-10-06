@@ -160,7 +160,7 @@ GENERATED_ROOT="$TEMP_DIR/generated"
 if ! bash "$SCRIPT_DIR/generate-forwarders.sh" --manifest "$MANIFEST" --output-root "$GENERATED_ROOT"; then
   fail "core/scripts/cli-hosted.yaml" "forwarder generation failed"
 else
-  while IFS="$(printf '\t')" read -r path command kind _root _interpreter _min_cli state; do
+  while IFS="$(printf '\t')" read -r path command kind _root _interpreter _min_cli state _path_operands; do
     if [ "$kind" = "generated" ] && [ "$state" = "forwarded" ]; then
       if [ ! -f "$ROOT/$path" ] || ! cmp -s "$GENERATED_ROOT/$path" "$ROOT/$path"; then
         fail "$path" "generated forwarder differs from manifest"

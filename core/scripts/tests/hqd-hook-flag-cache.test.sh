@@ -17,7 +17,7 @@ chmod 700 "$TMP/bin/node"
 export REAL_NODE NODE_CALLS="$TMP/node-calls" PATH="$TMP/bin:$PATH" HOME="$TMP/home"
 export HQ_CLI_BIN="$TMP/cli/bin/hq" HQ_FLAGS_API_URL=https://flags.test HQ_COMPANY_UID=cmp_123456 HQ_TEST_FLAG=true
 CACHE="$HERE/hqd-hook-flag-cache.sh"
-FLAG_CACHE="$HOME/.hq/hq-anywhere-runtime.flag"
+FLAG_CACHE="$HOME/.hq/hq-anywhere-runtime.flag.cmp_123456"
 . "$HERE/hqd-hook-flag-cache-lib.sh"
 NOW=$(now_seconds)
 
@@ -67,3 +67,15 @@ printf '%s\n' 'ok   master-hook can publish its verified enabled decision withou
 [ "$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 07777' "$HOME/.hq")" = 700 ]
 [ "$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 07777' "$FLAG_CACHE")" = 600 ]
 printf '%s\n' 'ok   cache directory and file are user-only'
+
+# A fresh snapshot for one tenant must never satisfy another tenant's lookup.
+export HQ_COMPANY_UID=cmp_cache_a HQ_TEST_FLAG=true
+. "$HERE/hqd-hook-flag-cache-lib.sh"
+hqd_hook_flag_cache_store_enabled
+export HQ_COMPANY_UID=cmp_cache_b HQ_TEST_FLAG=false
+if [ "$(sh "$CACHE")" = false ]; then
+  printf '%s\n' 'ok   runtime flag cache is isolated by company UID'
+else
+  printf '%s\n' 'not ok   runtime flag cache is isolated by company UID' >&2
+  exit 1
+fi

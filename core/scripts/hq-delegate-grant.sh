@@ -35,11 +35,25 @@ die()   { echo "hq-delegate-grant: $*" >&2; exit 1; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 
-# jq.exe on Windows emits CRLF data; remove only its line-ending CR bytes.
-case "${OSTYPE:-}" in
-  msys*)
+# jq.exe on MSYS may use CRT text mode unless --binary is supported.
+case "${OSTYPE:-}:${MSYSTEM:-}" in
+  msys*:*|*:MINGW*)
     jq() {
-      command jq "$@" | command sed -b 's/\r$//'
+      local stdout_file stderr_file status binary_supported
+      stdout_file="$(mktemp)" || return $?
+      stderr_file="$(mktemp)" || { status=$?; rm -f "$stdout_file"; return "$status"; }
+      if command jq --binary -n 'null' >/dev/null 2>&1; then binary_supported=1; else binary_supported=0; fi
+      if [[ "$binary_supported" == 1 ]]; then
+        if command jq --binary "$@" >"$stdout_file" 2>"$stderr_file"; then status=0; else status=$?; fi
+        command cat "$stdout_file"
+        command cat "$stderr_file" >&2
+      else
+        if command jq "$@" >"$stdout_file" 2>"$stderr_file"; then status=0; else status=$?; fi
+        command sed -b 's/\r$//' "$stdout_file"
+        command sed -b 's/\r$//' "$stderr_file" >&2
+      fi
+      rm -f "$stdout_file" "$stderr_file"
+      return "$status"
     }
     ;;
 esac
@@ -69,13 +83,31 @@ STATUS="$(jq -r '.status // empty' "$MANIFEST")"
 
 # File-ACL principals must be an email, grp_<id>, or @all — an agentUid is
 # NOT accepted by `hq files share`. For agent recipients, grants flow through
-# a deterministic per-agent delegation group (the /new-agent pattern):
-# grp_dlg-<uid tail>, containing exactly that agent.
+# a deterministic per-agent delegation group keyed by the full UID digest:
+# grp_dlg<first 32 SHA-256 hex characters>, containing exactly that agent.
+agent_group_id() {
+  local principal="$1" digest
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$principal" | sha256sum)"
+  elif command -v shasum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$principal" | shasum -a 256)"
+  else
+    die "sha256 utility is required for agent delegation groups"
+  fi
+  printf 'grp_dlg%.32s' "$digest"
+}
+
 GRANT_PRINCIPAL="$PRINCIPAL"
 case "$PRINCIPAL" in
   agt_*)
     TAIL="$(printf '%s' "$PRINCIPAL" | tail -c 9 | tr '[:upper:]' '[:lower:]')"
-    GRANT_PRINCIPAL="grp_dlg-$TAIL"
+    LEGACY_GROUP="grp_dlg-$TAIL"
+    NEXT_GROUP="$(agent_group_id "$PRINCIPAL")"
+    RECORDED_GROUP="$(jq -r '.grantPrincipal // empty' "$MANIFEST")"
+    case "$RECORDED_GROUP" in
+      "$LEGACY_GROUP"|"$NEXT_GROUP") GRANT_PRINCIPAL="$RECORDED_GROUP" ;;
+      *) GRANT_PRINCIPAL="$NEXT_GROUP" ;;
+    esac
     ;;
 esac
 
@@ -142,12 +174,20 @@ done
 # --- 1b. agent recipients: ensure the delegation group exists + contains them
 
 if [ "$GRANT_PRINCIPAL" != "$PRINCIPAL" ]; then
-  # Both calls are idempotent-tolerated: an existing group / existing member
-  # is fine — the ACL read-back below is the arbiter of success.
+  # Group creation and add are idempotent-tolerated; confirm that the complete
+  # member list is exactly this agent before any file ACL is shared.
   hq groups create "$GRANT_PRINCIPAL" --name "Delegation: $DISPLAY" --company "$COMPANY" \
     || echo "hq-delegate-grant: group create reported an error (may already exist) — continuing" >&2
   hq groups add "$GRANT_PRINCIPAL" "$PRINCIPAL" --company "$COMPANY" \
     || echo "hq-delegate-grant: group add reported an error (may already be a member) — continuing" >&2
+  GROUP_MEMBERS="$(NO_COLOR=1 FORCE_COLOR=0 hq groups members "$GRANT_PRINCIPAL" --company "$COMPANY")" \
+    || die "could not verify delegation group membership"
+  MEMBER_IDS="$(printf '%s\n' "$GROUP_MEMBERS" | awk '
+    { gsub(/\033\[[0-9;]*m/, "", $0) }
+    /^PERSON_UID([[:space:]]|$)/ { collecting = 1; next }
+    collecting && NF { print $1 }
+  ')"
+  [ "$MEMBER_IDS" = "$PRINCIPAL" ] || die "delegation group membership does not exactly match recipient"
 fi
 
 # --- 2+3. exact structured read-back; never infer identity from a new row ---

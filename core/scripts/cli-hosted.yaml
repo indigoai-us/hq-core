@@ -11,6 +11,7 @@ entries:
     interpreter: bash
     min_cli: 5.342.5
     state: forwarded
+    path_operands: none
     note: |
       This hook-time helper runs on the hq core fast path and retains its
       bundled shell fallback while the core-native-hook-helpers flag is off.
@@ -21,6 +22,7 @@ entries:
     interpreter: bash
     min_cli: 5.341.3
     state: forwarded
+    path_operands: none
     note: |
       This hook-time helper runs on the hq core fast path and retains its
       bundled shell fallback while the core-native-hook-helpers flag is off.
@@ -31,6 +33,7 @@ entries:
     interpreter: bash
     min_cli: 5.341.3
     state: forwarded
+    path_operands: none
     note: |
       This SessionStart helper runs on the hq core fast path and retains its
       bundled shell fallback while the core-native-hook-helpers flag is off.
@@ -41,6 +44,7 @@ entries:
     interpreter: bash
     min_cli: 5.99.1
     state: forwarded
+    path_operands: none
     note: |
       The hook forwards its payload to the CLI command and fails open when hq is missing.
   - path: .claude/hooks/checkpoint-stop-gate.sh
@@ -50,6 +54,7 @@ entries:
     interpreter: bash
     min_cli: 5.99.0
     state: forwarded
+    path_operands: none
     note: |
       The hook probes CLI capabilities and falls back to the in-tree implementation.
   - path: .claude/hooks/hook-timeout-watchdog.sh
@@ -59,6 +64,7 @@ entries:
     interpreter: bash
     min_cli: 5.112.0
     state: forwarded
+    path_operands: none
     note: |
       The hook invokes sentry report without --hq-root, so hq-cli resolves the live root;
       hq core commands --json reports root: live for the command.
@@ -69,6 +75,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -80,6 +87,7 @@ entries:
     interpreter: bash
     min_cli: 5.307.0
     state: forwarded
+    path_operands: comma:--files
     note: |
       Native audit-log passed Windows and macOS parity; core-native-utilities remains the rollback switch.
   - path: core/scripts/codex-skill-bridge.sh
@@ -89,6 +97,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: options:--root,--old-root
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -100,6 +109,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -111,6 +121,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a derived-index generator invoked explicitly and by reindex, so
       process startup is immaterial and the CLI already owns the index primitives.
@@ -126,6 +137,7 @@ entries:
     interpreter: bash
     min_cli: 5.307.0
     state: forwarded
+    path_operands: options:--root
     note: |
       Native git-pack-extension-check passed Windows and macOS parity; core-native-utilities remains the rollback switch.
   - path: core/scripts/hq-session.sh
@@ -135,6 +147,7 @@ entries:
     interpreter: bash
     min_cli: 5.99.0
     state: forwarded
+    path_operands: none
     note: |
       This call site probes CLI capabilities and falls back to the in-tree implementation.
   - path: core/scripts/hq-dm-bind.sh
@@ -144,6 +157,7 @@ entries:
     interpreter: bash
     min_cli: 5.309.1
     state: forwarded
+    path_operands: none
     note: |
       Native dm-bind passed the current Windows and macOS parity matrix; core-native-utilities remains the rollback switch.
   - path: core/scripts/hq-job-notify.sh
@@ -153,6 +167,7 @@ entries:
     interpreter: bash
     min_cli: 5.342.14
     state: forwarded
+    path_operands: options:--hq-root,--log-path
     note: |
       Native job-notify passed the current Windows, macOS and Linux parity matrix; core-native-jobs remains the rollback switch.
   - path: core/scripts/hq-pin.sh
@@ -162,6 +177,7 @@ entries:
     interpreter: bash
     min_cli: 5.307.0
     state: forwarded
+    path_operands: none
     note: |
       Native pin passed Windows and macOS parity; core-native-utilities remains the rollback switch.
   - path: core/scripts/hq-status-summary.sh
@@ -171,6 +187,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: options:--porcelain-file,--session-files-file
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -182,6 +199,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: options:--root
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -193,6 +211,7 @@ entries:
     interpreter: bash
     min_cli: 5.341.3
     state: forwarded
+    path_operands: options:--dir
     note: |
       Why the implementation moved: it is a cold policy maintenance command; the CLI
       keeps the implementation behind core-native-policy while this path remains the
@@ -204,6 +223,7 @@ entries:
     interpreter: bash
     min_cli: 5.341.3
     state: forwarded
+    path_operands: options:--dir,--report-dir
     note: |
       Why the implementation moved: it is a cold policy maintenance command; the CLI
       keeps the implementation behind core-native-policy while this path remains the
@@ -215,6 +235,7 @@ entries:
     interpreter: bash
     min_cli: 5.342.7
     state: forwarded
+    path_operands: all-nonoptions
     note: |
       Why the implementation moved: it is a small, explicitly-invoked policy reader;
       the CLI keeps the implementation behind core-native-policy and the caller's
@@ -226,6 +247,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: first-nonoption
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -237,6 +259,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -248,6 +271,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -259,6 +283,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -270,6 +295,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -281,6 +307,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -292,6 +319,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -303,6 +331,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -314,6 +343,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -325,6 +355,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -336,6 +367,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -347,6 +379,7 @@ entries:
     interpreter: bash
     min_cli: 5.307.0
     state: forwarded
+    path_operands: options:--root
     note: |
       Native refresh-vault-access passed Windows and macOS parity; core-native-utilities remains the rollback switch.
   - path: core/scripts/resize-screenshot.sh
@@ -356,6 +389,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: position:0
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -367,6 +401,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: none
     note: |
       Why the implementation moved: the pack contribution mapping it encoded is single-sourced in the CLI
       (src/utils/pack-contributions.ts); keeping a second copy here invited drift.
@@ -382,6 +417,7 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: options:--project-dir
     note: |
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
@@ -393,5 +429,6 @@ entries:
     interpreter: bash
     min_cli: 5.78.0
     state: forwarded
+    path_operands: options:--source
     note: |
       The wrapper captures CLI stdout and writes a worktree creation stamp after a successful call.

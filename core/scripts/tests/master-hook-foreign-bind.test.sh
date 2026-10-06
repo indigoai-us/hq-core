@@ -60,12 +60,14 @@ STUB
 chmod +x "$TMP/bin/hq-stub" "$TMP/bin/hq-broken" "$TMP/bin/hq-ghost"
 
 N=0
-start_session() { # <cwd> <cli-bin> → sets SID, OUT, ERR
+start_session() { # <cwd> <cli-bin> [agent_id] [agent_type] → sets SID, OUT, ERR
   N=$((N + 1))
   SID="foreign-sess-$N"
   OUT="$TMP/out.$N"; ERR="$TMP/err.$N"
-  jq -cn --arg sid "$SID" --arg cwd "$1" \
-    '{session_id:$sid, cwd:$cwd, hook_event_name:"SessionStart", source:"startup"}' \
+  jq -cn --arg sid "$SID" --arg cwd "$1" --arg aid "${3:-}" --arg atype "${4:-}" \
+    '({session_id:$sid, cwd:$cwd, hook_event_name:"SessionStart", source:"startup"}
+      + (if $aid == "" then {} else {agent_id:$aid} end)
+      + (if $atype == "" then {} else {agent_type:$atype} end))' \
     | ( cd "$1" && env HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HQ_SESSION_NO_CLI=1 HQ_CLI_BIN="$2" HQ_FLAG_CLI_BIN="$TMP/bin/hq-stub" HQ_FLAGS_API_URL=https://flags.test HQ_COMPANY_UID=cmp_123456 HQ_TEST_FLAG=true \
         bash "$FIX/.claude/hooks/master-hook.sh" SessionStart ) >"$OUT" 2>"$ERR" \
     || fail "master-hook exited non-zero for $1: $(cat "$ERR")"
@@ -134,5 +136,37 @@ authz() { # <path> → exit code
 [ "$(authz "$FIX/companies/indigo/knowledge/a.md")" = "0" ] || fail "bound company write blocked"
 [ "$(authz "$FIX/companies/otherco/knowledge/a.md")" = "2" ] || fail "other company write not blocked"
 pass "authorizer allows foreign repo + bound company, blocks other company"
+
+# 6. Task subagent SessionStart receives the same tuple key used by PreToolUse.
+start_session "$TMP/linked-repo" "$TMP/bin/hq-stub" "agent-a" "general-purpose"
+AGENT_SID="$SID"
+AGENT_CAP="$FIX/workspace/sessions/$AGENT_SID/agents/agent-a/scope-capability.json"
+[ "$(jq -r '.company_slug' "$AGENT_CAP")" = "indigo" ] || fail "Task SessionStart did not mint tuple capability"
+[ -z "$(jq -r '.company_slug // empty' "$FIX/workspace/sessions/$AGENT_SID/scope-capability.json" 2>/dev/null || true)" ] \
+  || fail "Task SessionStart wrote the main-thread capability too"
+printf 'session_id: %s\ncompany_slug: otherco\n' "$AGENT_SID" > "$FIX/workspace/sessions/$AGENT_SID/meta.yaml"
+jq -cn --arg sid "$AGENT_SID" --arg cwd "$FIX" \
+  '{session_id:$sid,cwd:$cwd,source:"resume",agent_id:"agent-a",agent_type:"general-purpose"}' \
+  | ( cd "$FIX" && env HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_DEDUPE=0 HQ_HQ_SESSION_NO_CLI=1 HQ_CLI_BIN="$TMP/bin/hq-stub" \
+      bash "$FIX/.claude/hooks/master-hook.sh" SessionStart ) > "$TMP/agent-resume.out" 2> "$TMP/agent-resume.err" \
+  || fail "Task SessionStart resume failed: $(cat "$TMP/agent-resume.err")"
+[ "$(jq -r '.company_slug' "$AGENT_CAP")" = "indigo" ] \
+  || fail "Task SessionStart resume changed the agent binding to $(jq -r '.company_slug' "$AGENT_CAP")"
+[ "$(bound company_slug)" = "otherco" ] || fail "Task resume rewrote the shared session metadata"
+authz_agent() { # <path> <agent_id> <agent_type> → exit code
+  local rc=0
+  jq -cn --arg sid "$AGENT_SID" --arg p "$1" --arg cwd "$TMP/linked-repo" --arg aid "$2" --arg atype "$3" \
+    '{session_id:$sid,cwd:$cwd,tool_name:"Write",agent_id:$aid,agent_type:$atype,tool_input:{file_path:$p,content:"x"}}' \
+    | bash "$FIX/.claude/hooks/mandatory-scope-authorizer.sh" >/dev/null 2>"$TMP/agent-authz.err" || rc=$?
+  printf '%s' "$rc"
+}
+[ "$(authz_agent "$FIX/companies/indigo/knowledge/a.md" agent-a general-purpose)" = "0" ] \
+  || fail "subagent tuple did not authorize its company"
+[ "$(authz_agent "$FIX/companies/otherco/knowledge/a.md" agent-a general-purpose)" = "2" ] \
+  || fail "subagent tuple authorized a different company"
+[ "$(authz_agent "$FIX/companies/indigo/knowledge/a.md" '' general-purpose)" = "2" ] \
+  || fail "missing-id subagent was not denied"
+grep -qi 'restart the session' "$TMP/agent-authz.err" || fail "missing-id denial lacks restart direction"
+pass "Task SessionStart mint and authorizer lookup share the caller tuple"
 
 echo "master-hook-foreign-bind: all passed"

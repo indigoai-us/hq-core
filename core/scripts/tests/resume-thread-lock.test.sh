@@ -132,6 +132,37 @@ stale_marker="$TMP/workspace/threads/resume-locks/$STALE_ID.lock/current.json"
 mkdir -p "$(dirname "$stale_marker")"
 printf '%s\n' '{"version":1,"thread_id":"T-stale-resume-lock","session_id":"session-old","resumed_at":"1970-01-01T00:00:01Z","resumed_epoch":1,"generation":"stale-lock-generation"}' > "$stale_marker"
 
+# Git Bash jq.exe can append CR to -r scalar reads. The JSON validator accepts
+# the record, so each captured value must be normalized before lock-state
+# classification and rendering.
+CRLF_ID="T-crlf-resume-lock"
+CRLF_MARKER="$TMP/workspace/threads/resume-locks/$CRLF_ID.lock/current.json"
+mkdir -p "$(dirname "$CRLF_MARKER")"
+CRLF_NOW="$(date +%s)"
+printf '{"version":1,"thread_id":"%s","session_id":"session-crlf","resumed_at":"now","resumed_epoch":%s,"generation":"crlf-generation"}\n' \
+  "$CRLF_ID" "$CRLF_NOW" > "$CRLF_MARKER"
+CRLF_REAL_JQ="$(command -v jq)"
+mkdir -p "$TMP/crlf-bin"
+cat > "$TMP/crlf-bin/jq" <<'STUB'
+#!/usr/bin/env bash
+case "${2:-}" in
+  '.thread_id'|'.session_id'|'.resumed_at'|'.resumed_epoch'|'.generation')
+    set +e
+    "$REAL_JQ" "$@" | sed 's/$/\r/'
+    jq_rc=${PIPESTATUS[0]}
+    set -e
+    exit "$jq_rc"
+    ;;
+esac
+exec "$REAL_JQ" "$@"
+STUB
+chmod +x "$TMP/crlf-bin/jq"
+crlf_state="$(PATH="$TMP/crlf-bin:$PATH" REAL_JQ="$CRLF_REAL_JQ" HQ_ROOT="$TMP" "$SCRIPT" inspect "$CRLF_ID")"
+assert_json "$crlf_state" '.status == "locked"' "CRLF lock record was not classified as locked"
+assert_json "$crlf_state" '.session_id == "session-crlf"' "CRLF leaked into lock owner"
+assert_json "$crlf_state" '.lock_generation == "crlf-generation"' "CRLF leaked into lock generation"
+echo "PASS: resume-thread-lock normalizes CRLF jq lock-record reads"
+
 stale="$(HQ_ROOT="$TMP" "$SCRIPT" inspect "$STALE_ID")"
 assert_json "$stale" '.status == "stale"' "expired marker was not surfaced as stale"
 assert_json "$stale" '.stale_reason == "expired"' "stale marker lacked its expiry reason"

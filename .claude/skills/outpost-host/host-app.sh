@@ -111,13 +111,28 @@ cmd_public_url() {
 # ---- deploy ----------------------------------------------------------------
 write_site_and_reload() {
   local conf_path="$1" conf_body="$2"
-  printf '%s\n' "$conf_body" | sudo tee "$conf_path" >/dev/null
+  local backup_path="${conf_path}.outpost-backup.$$" had_previous=0
+  if sudo test -f "$conf_path"; then
+    sudo cp -p "$conf_path" "$backup_path" || die "could not back up existing nginx config"
+    had_previous=1
+  fi
+  if ! printf '%s\n' "$conf_body" | sudo tee "$conf_path" >/dev/null; then
+    [[ "$had_previous" == 0 ]] || sudo mv -f "$backup_path" "$conf_path"
+    die "could not write nginx config"
+  fi
   if ! sudo nginx -t 2>/tmp/outpost-nginx-test.log; then
-    sudo rm -f "$conf_path"
+    if [[ "$had_previous" == 1 ]]; then
+      sudo mv -f "$backup_path" "$conf_path" || die "nginx config failed validation and previous config could not be restored"
+    else
+      sudo rm -f "$conf_path"
+    fi
     cat /tmp/outpost-nginx-test.log >&2
     die "nginx config test failed; site not installed (reverted)"
   fi
-  sudo systemctl reload nginx 2>/dev/null || sudo systemctl restart nginx
+  [[ "$had_previous" == 0 ]] || sudo rm -f "$backup_path"
+  if ! sudo systemctl reload nginx 2>/dev/null && ! sudo systemctl restart nginx; then
+    die "nginx reload and restart both failed; site was not reported as deployed"
+  fi
 }
 
 cmd_deploy() {
@@ -149,10 +164,33 @@ cmd_deploy() {
     # Copy into an nginx-readable managed web root (user dirs are not traversable
     # by the nginx worker), then make it world-readable.
     local webroot="${WEBROOT_BASE}/${name}"
-    sudo rm -rf "$webroot"
-    sudo mkdir -p "$webroot"
-    sudo cp -aT "$root" "$webroot"
-    sudo chmod -R a+rX "$WEBROOT_BASE"
+    local staging="${WEBROOT_BASE}/.${name}.staging.$$"
+    local previous="${WEBROOT_BASE}/.${name}.previous.$$"
+    sudo rm -rf "$staging" "$previous" || die "could not clear stale staging paths"
+    sudo mkdir -p "$staging" || die "could not create staging web root"
+    if ! sudo chmod a+rX "$WEBROOT_BASE"; then
+      sudo rm -rf "$staging"
+      die "could not make managed web root traversable; existing web root was left in place"
+    fi
+    if ! sudo cp -aT "$root" "$staging"; then
+      sudo rm -rf "$staging"
+      die "could not copy static content; existing web root was left in place"
+    fi
+    if ! sudo chmod -R a+rX "$staging"; then
+      sudo rm -rf "$staging"
+      die "could not set static content permissions; existing web root was left in place"
+    fi
+    local had_webroot=0
+    if sudo test -e "$webroot"; then
+      sudo mv "$webroot" "$previous" || { sudo rm -rf "$staging"; die "could not move existing web root"; }
+      had_webroot=1
+    fi
+    if ! sudo mv "$staging" "$webroot"; then
+      if [[ "$had_webroot" == 1 ]]; then sudo mv "$previous" "$webroot" || die "new web root failed and previous web root could not be restored"; fi
+      sudo rm -rf "$staging"
+      die "could not install staged static content"
+    fi
+    [[ "$had_webroot" == 0 ]] || sudo rm -rf "$previous" || info "warning: old static content remains at $previous"
     body="# managed by /outpost-host — app: ${name}
 # static content copied from: ${root}
 server {
@@ -218,6 +256,7 @@ cmd_remove() {
     esac
   done
   [[ -n "$name" ]] || die "--name is required"
+  [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "--name must be a slug ([a-z0-9-], no leading dash)"
   local conf_path="${CONF_DIR}/${CONF_PREFIX}${name}.conf"
   [[ -f "$conf_path" ]] || die "no app named '${name}' is hosted here"
   sudo rm -f "$conf_path"

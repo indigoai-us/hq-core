@@ -60,7 +60,7 @@ if [ "${HQ_HQ_SESSION_NO_CLI:-}" != "1" ]; then
     case "$__hs_caps" in
       *hq-session*)
         case "$__hs_caps" in
-          *exact-company-directory-match-v1*) exec hq core hq-session "$@" ;;
+          *exact-company-directory-match-v1*) MSYS2_ARG_CONV_EXCL='*' exec hq core hq-session "$@" ;;
         esac
         ;;
     esac

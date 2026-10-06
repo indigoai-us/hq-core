@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- Keep existing Task subagent company bindings across session resumes, and tell valid but unbound agents to restart or respawn while their company access stays denied.
+- The capability-link check now scans past large trailing tool output to find the newest assistant reply, and verification failures no longer block the turn.
+
 - Run the hook timeout watchdog and attribution regressions concurrently in macOS shell-smoke; keep Windows tests in separate steps after the timing-sensitive watchdog failed under contention.
 - Forward `hq-dm-bind.sh` to its hq-cli command while retaining the existing
   `core-native-utilities` rollback gate.

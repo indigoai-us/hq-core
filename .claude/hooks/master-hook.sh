@@ -446,6 +446,7 @@ SESSION_ID=""
 PREFILTER_TEXT=""
 PAYLOAD_CWD=""
 PAYLOAD_AGENT_ID=""
+PAYLOAD_AGENT_TYPE=""
 TOOL_COMMAND=""
 TOOL_METADATA_EXTRACTED=0
 TOOL_COMMAND_EXTRACTED=0
@@ -454,7 +455,7 @@ master_debug_phase_start parse
   # NUL-frame metadata and command separately. Bash 3.2 (the system Bash on
   # macOS) supports read -d but not read -N. Keeping command last preserves
   # embedded newlines, unit separators, and a trailing newline exactly.
-  if IFS=$'\x1f' read -r -d '' TOOL_NAME MATCH_KEY SESSION_ID PAYLOAD_CWD PAYLOAD_AGENT_ID PREFILTER_TEXT; then
+  if IFS=$'\x1f' read -r -d '' TOOL_NAME MATCH_KEY SESSION_ID PAYLOAD_CWD PAYLOAD_AGENT_ID PAYLOAD_AGENT_TYPE PREFILTER_TEXT; then
     TOOL_METADATA_EXTRACTED=1
     if IFS= read -r -d '' TOOL_COMMAND; then
       TOOL_COMMAND_EXTRACTED=1
@@ -468,7 +469,8 @@ master_debug_phase_start parse
      else "" end),
     (.session_id // ""),
     (.cwd // ""),
-    (.agent_id // "" | tostring),
+    (if .agent_id == null then "" elif (.agent_id | type) == "string" then .agent_id else "!invalid-agent-id-type!" end),
+    (if .agent_type == null then "" elif (.agent_type | type) == "string" then .agent_type else "!invalid-agent-type!" end),
     ((if $ev == "UserPromptSubmit" then (.prompt // "")
       elif (.tool_input | type) == "object" then (.tool_input | tojson)
       else (.prompt // "") end)
@@ -476,8 +478,8 @@ master_debug_phase_start parse
     (if .tool_name == "Bash" and ($ev == "PreToolUse" or $ev == "PostToolUse")
      then (.tool_input.command // "" | tostring) else "" end)
   ] as $fields
-  | ($fields[0:6] | map(gsub("\u001f|\n"; " ")) | join("\u001f"))
-    + "\u0000" + $fields[6] + "\u0000"
+  | ($fields[0:7] | map(gsub("\u001f|\n"; " ")) | join("\u001f"))
+    + "\u0000" + $fields[7] + "\u0000"
 ' 2>/dev/null)
 is_tool_event "$EVENT" || TOOL_NAME=""
 master_debug_phase_finish parse
@@ -502,10 +504,11 @@ if [ "$TOOL_METADATA_EXTRACTED" -eq 1 ]; then
   export HQ_HOOK_SESSION_ID="$SESSION_ID"
   export HQ_HOOK_CWD="$PAYLOAD_CWD"
   export HQ_HOOK_AGENT_ID="$PAYLOAD_AGENT_ID"
+  export HQ_HOOK_AGENT_TYPE="$PAYLOAD_AGENT_TYPE"
 else
   # Leave fields absent so safety guards can parse the original input instead
   # of treating a failed extraction as a known-empty command.
-  unset HQ_HOOK_TOOL_NAME HQ_HOOK_SESSION_ID HQ_HOOK_CWD HQ_HOOK_AGENT_ID
+  unset HQ_HOOK_TOOL_NAME HQ_HOOK_SESSION_ID HQ_HOOK_CWD HQ_HOOK_AGENT_ID HQ_HOOK_AGENT_TYPE
 fi
 if [ "$TOOL_COMMAND_EXTRACTED" -eq 1 ]; then
   export HQ_HOOK_COMMAND="$TOOL_COMMAND"
@@ -530,6 +533,19 @@ if [ -n "$SESSION_ID" ]; then
   fi
   printf '%s\n' "$SESSION_ID" > "$SESSIONS_DIR/.current"
   ACTIVE_COMPANY="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META_FILE")"
+fi
+
+# A Task agent's company context belongs to its exact (session_id, agent_id)
+# tuple. Shared session metadata may have moved since this agent was bound; it
+# can initialize a new binding at SessionStart, but cannot replace one.
+if [ -n "$SESSION_ID" ] && [ -n "$PAYLOAD_AGENT_ID" ]; then
+  . "$REPO_ROOT/core/scripts/lib/session-scope-capability.sh" || ACTIVE_COMPANY=""
+  if session_scope_identity_is_valid "$PAYLOAD_AGENT_ID"; then
+    ACTIVE_COMPANY="$(session_scope_resolve_agent_company \
+      "$REPO_ROOT" "$SESSION_ID" "$PAYLOAD_AGENT_ID" "$ACTIVE_COMPANY" "$EVENT")"
+  else
+    ACTIVE_COMPANY=""
+  fi
 fi
 
 # --- Dedupe user-scope + project-scope double registration ---
@@ -990,6 +1006,31 @@ master_foreign_bind() {
     printf 'master-hook: WARNING company resolver failed for %s; binding personal, not guessing a company\n' "$foreign_cwd" >&2
     source="unavailable"
   fi
+  # A subagent has its own capability key. Never route its SessionStart bind
+  # through hq-session's session-wide metadata writer.
+  if [ -n "$PAYLOAD_AGENT_ID" ]; then
+    if ! . "$REPO_ROOT/core/scripts/lib/session-scope-capability.sh"; then
+      return 0
+    fi
+    if [ "$source" = "registry" ] && [ -n "$slug" ]; then
+      session_scope_mint "$REPO_ROOT" "$SESSION_ID" "$slug" "$PAYLOAD_AGENT_ID" || return 0
+      ACTIVE_COMPANY="$slug"
+      context="This session started in a folder linked to HQ company ${slug}; this Task subagent is bound to ${slug}."
+    else
+      session_scope_mint "$REPO_ROOT" "$SESSION_ID" "personal" "$PAYLOAD_AGENT_ID" || return 0
+      ACTIVE_COMPANY="personal"
+      context="This Task subagent is bound to personal because no company could be safely resolved."
+    fi
+    json_outputs+=("$(jq -cn --arg ctx "$context" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}')")
+    json_sources+=("$REPO_ROOT/core/scripts/resolve-company.sh")
+    return 0
+  elif [ -n "$PAYLOAD_AGENT_TYPE" ]; then
+    # agent_type can identify that a caller is a subagent for denial only; it
+    # never names a capability key or selects a company binding.
+    context="This subagent event has no agent_id and remains unbound. Restart the session so the host supplies the caller identity."
+    json_outputs+=("$(jq -cn --arg ctx "$context" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}')")
+    return 0
+  fi
   "${session_cmd[@]}" set foreign_cwd "$foreign_cwd" >/dev/null 2>&1 || true
   if [ "$source" = "registry" ] && [ -n "$slug" ]; then
     bind_rc=0
@@ -1019,6 +1060,24 @@ $bind_out}"
 if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] && [ "$EVENT" = "SessionStart" ] && [ -n "$SESSION_ID" ] && [ -z "$ACTIVE_COMPANY" ]; then
   master_foreign_bind
 fi
+
+master_bind_session_start_scope() {
+  [ "$EVENT" = "SessionStart" ] && [ -n "$SESSION_ID" ] && [ -n "$ACTIVE_COMPANY" ] || return 0
+  if [ -n "$PAYLOAD_AGENT_TYPE" ] && [ -z "$PAYLOAD_AGENT_ID" ]; then
+    return 0
+  fi
+  . "$REPO_ROOT/core/scripts/lib/session-scope-capability.sh" || return 0
+  if [ -n "$PAYLOAD_AGENT_ID" ]; then
+    session_scope_identity_is_valid "$PAYLOAD_AGENT_ID" || return 0
+    [ -z "$(session_scope_read "$REPO_ROOT" "$SESSION_ID" "$PAYLOAD_AGENT_ID")" ] || return 0
+    session_scope_mint "$REPO_ROOT" "$SESSION_ID" "$ACTIVE_COMPANY" "$PAYLOAD_AGENT_ID" \
+      || printf 'master-hook: WARNING could not bind Task subagent scope for session %s\n' "$SESSION_ID" >&2
+  elif [ -z "$PAYLOAD_AGENT_TYPE" ]; then
+    session_scope_mint "$REPO_ROOT" "$SESSION_ID" "$ACTIVE_COMPANY" \
+      || printf 'master-hook: WARNING could not bind main-thread scope for session %s\n' "$SESSION_ID" >&2
+  fi
+}
+master_bind_session_start_scope
 
 is_json_object() {
   # Cheap shape check first so plain-text outputs never fork jq.

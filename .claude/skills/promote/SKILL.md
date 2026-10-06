@@ -15,7 +15,7 @@ Change an existing member's role on a company. Admin+ only.
 
 ## Process
 
-1. **Resolve auth** — read Cognito session from `~/.hq/credentials.json`
+1. **Resolve auth** — read the Cognito session from `~/.hq/cognito-tokens.json`
 2. **Resolve company** — from `--company` flag, or active company via `.hq/config.json`
 3. **Validate args** — `--paths` is only valid with guest role
 4. **Call vault-service** — via `VaultClient.updateRole()` from `@indigoai-us/hq-cloud`

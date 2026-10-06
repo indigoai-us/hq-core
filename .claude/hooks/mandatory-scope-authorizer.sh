@@ -535,14 +535,47 @@ if [ "${HQ_HOOK_SESSION_ID+set}" = "set" ]; then
 else
   SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty')"
 fi
+CALLER_AGENT_ID=""
+CALLER_AGENT_TYPE=""
+if [ "${HQ_HOOK_AGENT_ID+set}" = "set" ] && [ "${HQ_HOOK_AGENT_TYPE+set}" = "set" ]; then
+  CALLER_AGENT_ID="$HQ_HOOK_AGENT_ID"
+  CALLER_AGENT_TYPE="$HQ_HOOK_AGENT_TYPE"
+else
+  # Read both caller fields in one process; hook process budgets are deliberately
+  # tight. NUL framing preserves ordinary values and marks embedded NUL invalid.
+  {
+    IFS= read -r -d '' CALLER_AGENT_ID || true
+    IFS= read -r -d '' CALLER_AGENT_TYPE || true
+  } < <(printf '%s' "$INPUT" | jq -j '
+    (if .agent_id == null then "" elif (.agent_id | type) == "string" then .agent_id else "!invalid-agent-id-type!" end | gsub("\u0000"; "!invalid-agent-id-nul!"))
+    + "\u0000" +
+    (if .agent_type == null then "" elif (.agent_type | type) == "string" then .agent_type else "!invalid-agent-type!" end | gsub("\u0000"; "!invalid-agent-type-nul!"))
+    + "\u0000"
+  ')
+  if [ "${HQ_HOOK_AGENT_ID+set}" = "set" ]; then CALLER_AGENT_ID="$HQ_HOOK_AGENT_ID"; fi
+  if [ "${HQ_HOOK_AGENT_TYPE+set}" = "set" ]; then CALLER_AGENT_TYPE="$HQ_HOOK_AGENT_TYPE"; fi
+fi
+CALLER_KIND="main"
+CALLER_IDENTITY_ERROR=""
+if [ -n "$SESSION_ID" ] && ! session_scope_identity_is_valid "$SESSION_ID"; then
+  CALLER_IDENTITY_ERROR="invalid-session"
+elif [ -n "$CALLER_AGENT_ID" ]; then
+  CALLER_KIND="subagent"
+  if ! session_scope_identity_is_valid "$CALLER_AGENT_ID"; then
+    CALLER_IDENTITY_ERROR="invalid"
+  fi
+elif [ -n "$CALLER_AGENT_TYPE" ]; then
+  CALLER_KIND="subagent"
+  CALLER_IDENTITY_ERROR="missing"
+fi
 COMMAND_CWD="$PAYLOAD_CWD"
 [ -n "$COMMAND_CWD" ] || COMMAND_CWD="$(pwd -P)"
 
 scope_read_bound_company() {
-  local sid="${1:-}" co=""
+  local sid="${1:-}" aid="${2:-}" co=""
   [ -n "$sid" ] || return 0
-  co="$(session_scope_read "$HQ_ROOT" "$sid")"
-  if [ -z "$co" ]; then
+  co="$(session_scope_read "$HQ_ROOT" "$sid" "$aid")"
+  if [ -z "$co" ] && [ "$CALLER_KIND" = "main" ]; then
     local meta="$HQ_ROOT/workspace/sessions/$sid/meta.yaml"
     if [ -f "$meta" ]; then
       co="$(awk '
@@ -564,11 +597,12 @@ scope_load_bound_company() {
   [ "$BOUND_CO_LOADED" -eq 0 ] || return 0
   BOUND_CO_LOADED=1
   [ -n "$SESSION_ID" ] || return 0
-  BOUND_CO="$(scope_read_bound_company "$SESSION_ID")"
+  [ -z "$CALLER_IDENTITY_ERROR" ] || return 0
+  BOUND_CO="$(scope_read_bound_company "$SESSION_ID" "$CALLER_AGENT_ID")"
   # SessionStart bind can land in the same turn as the first company path.
   # Re-read once rather than weakening the deny.
   if [ -z "$BOUND_CO" ]; then
-    BOUND_CO="$(scope_read_bound_company "$SESSION_ID")"
+    BOUND_CO="$(scope_read_bound_company "$SESSION_ID" "$CALLER_AGENT_ID")"
   fi
 }
 
@@ -666,6 +700,7 @@ scope_rel_allowed() {
   co="$(scope_company_slug_for_rel "$rel")"
   [ -n "$co" ] || return 0
   [ "$co" != "__companies_root__" ] || return 0
+  [ -z "$CALLER_IDENTITY_ERROR" ] || return 1
   scope_load_bound_company
 
   # SessionStart and the first company path can arrive in one parallel batch.
@@ -674,7 +709,7 @@ scope_rel_allowed() {
   if [ -n "$SESSION_ID" ] && [ -z "$BOUND_CO" ] && [ "$scope_bind_retry_done" -eq 0 ]; then
     scope_bind_retry_done=1
     sleep 0.05
-    BOUND_CO="$(scope_read_bound_company "$SESSION_ID")"
+    BOUND_CO="$(scope_read_bound_company "$SESSION_ID" "$CALLER_AGENT_ID")"
   fi
 
   case "$co" in
@@ -700,7 +735,13 @@ scope_block_rel() {
   local co bound_msg bind_msg=""
   scope_load_bound_company
   co="$(scope_company_slug_for_rel "$rel")"
-  if [ -z "$SESSION_ID" ]; then
+  if [ "$CALLER_IDENTITY_ERROR" = "missing" ]; then
+    bound_msg="This subagent call has no agent_id, so its company access is denied. Restart the session so the host supplies the caller identity."
+  elif [ "$CALLER_IDENTITY_ERROR" = "invalid" ]; then
+    bound_msg="This call has an invalid agent_id, so its company access is denied. Restart the session so the host supplies a valid caller identity."
+  elif [ "$CALLER_IDENTITY_ERROR" = "invalid-session" ]; then
+    bound_msg="This call has an invalid session_id, so its company access is denied. Restart the session so the host supplies a valid session identity."
+  elif [ -z "$SESSION_ID" ]; then
     bound_msg="This call carries NO session id in its hook payload, so there is no
 session whose company scope could authorize it, and company paths are denied
 rather than guessed. Only the payload identity counts here: an id in the
@@ -708,6 +749,8 @@ environment names whoever exported it — for a spawned agent, its parent — an
 child must not inherit its parent's tenant. If this is an agent you spawned, run
 it so the host reports a session of its own (a \`claude -p --session-id <uuid>\`
 child does not)."
+  elif [ "$CALLER_KIND" = "subagent" ] && [ -n "$CALLER_AGENT_ID" ] && [ -z "$BOUND_CO" ]; then
+    bound_msg="This subagent has no company binding for its agent_id, so its company access is denied. Restart or respawn the subagent so the host can bind its company scope."
   elif [ -z "$BOUND_CO" ]; then
     bound_msg="Session has no company_slug bound."
     bind_msg="Bind the correct company with: core/scripts/hq-session.sh set company_slug <slug>

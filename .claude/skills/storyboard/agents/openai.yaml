@@ -1,3 +1,3 @@
 interface:
   display_name: "Storyboard"
-  short_description: "Lock visual design before building — explore mockups on your preferred surface (Paper, HTML, Figma) and feed discovered changes back into the PRD."
+  short_description: "Explore visual mockups and feed decisions back into the PRD."

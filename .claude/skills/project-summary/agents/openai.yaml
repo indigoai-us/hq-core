@@ -1,3 +1,3 @@
 interface:
   display_name: "Project Summary"
-  short_description: "Render a branded visual artifact from a project's prd.json (plan summary) or brainstorm.md (research deck) and deploy it gated, returning a link."
+  short_description: "Turn a project PRD or brainstorm into a shareable visual deck."

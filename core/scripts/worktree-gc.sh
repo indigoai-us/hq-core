@@ -249,7 +249,7 @@ for wt in "${CANDIDATES[@]:-}"; do
   created_epoch="$wt_mtime"
   stamp_file="$GC_META_DIR/$(path_key "$wt").json"
   if [[ -f "$stamp_file" ]]; then
-    stamped=$(jq -r '.createdAtEpoch // empty' "$stamp_file" 2>/dev/null || echo "")
+    stamped=$(jq -r '.createdAtEpoch // empty' "$stamp_file" 2>/dev/null | tr -d '\r' || echo "")
     [[ -n "$stamped" ]] && created_epoch="$stamped"
   fi
   age_days=$(( (NOW - created_epoch) / 86400 ))
@@ -350,7 +350,7 @@ if [[ "$JSON" -eq 1 ]]; then
       skipped_by_reason: ([$records[] | select(.action=="skipped") | .reason]
                           | group_by(.) | map({(.[0]): length}) | add // {}),
       records: $records
-    }'
+    }' | tr -d '\r'
 else
   if [[ "$APPLY" -eq 1 ]]; then
     echo "worktree-gc [apply]: examined $examined · removed $removed · reclaimed ${reclaimed_gb} GB · skipped ${skip_total} (retention ${DAYS}d)"

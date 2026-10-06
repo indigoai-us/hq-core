@@ -36,6 +36,16 @@ assert_eq "$(jq -r '.company_slug' "$cap")" "indigo" "company_slug stored"
 session_scope_mint "$TMP" "sess-a" "otherco"
 assert_eq "$(session_scope_read "$TMP" "sess-a")" "otherco" "mint replaces prior slug"
 
+# A resumed Task agent must keep the company bound to its exact tuple, even
+# when shared session metadata has since moved to another company.
+session_scope_mint "$TMP" "sess-a" "indigo" "agent-A"
+assert_eq "$(session_scope_resolve_agent_company "$TMP" "sess-a" "agent-A" "otherco" "SessionStart")" \
+  "indigo" "resumed agent keeps its existing company"
+assert_eq "$(session_scope_resolve_agent_company "$TMP" "sess-a" "agent-new" "otherco" "PreToolUse")" \
+  "" "unbound running agent remains unbound"
+assert_eq "$(session_scope_resolve_agent_company "$TMP" "sess-a" "agent-new" "otherco" "SessionStart")" \
+  "otherco" "new or restarted agent can bind from session metadata"
+
 if session_scope_mint "$TMP" "sess-a" "../evil" 2>/dev/null; then
   fail "invalid slug should be rejected"
 fi

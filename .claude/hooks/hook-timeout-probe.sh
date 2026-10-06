@@ -29,7 +29,9 @@ hook_timeout_load_average() {
         done
       fi
       ;;
-    *) printf 'unavailable'; return 0 ;;
+    # Windows and unknown platforms have no supported load-average probe. Keep
+    # that fact distinct from a failed Linux /proc or macOS sysctl read below.
+    *) printf 'unsupported_platform'; return 0 ;;
   esac
   if [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     printf '%s' "$value"

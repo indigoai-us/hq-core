@@ -413,8 +413,10 @@ if [ -f "$PROBE_SRC" ]; then
     "$(hook_timeout_load_average Linux "$probe_root/linux-loadavg" "$probe_root/bin/sysctl")"
   probe_assert_eq 'Darwin load average parses sysctl braces' '2.75' \
     "$(hook_timeout_load_average Darwin "$probe_root/missing-loadavg" "$probe_root/bin/sysctl")"
-  probe_assert_eq 'Windows has an explicit no-load-average value' 'unavailable' \
-    "$(hook_timeout_load_average MINGW64_NT-10.0 "$probe_root/missing-loadavg" "$probe_root/bin/sysctl")"
+probe_assert_eq 'Windows has a distinct unsupported-platform load value' 'unsupported_platform' \
+  "$(hook_timeout_load_average MINGW64_NT-10.0 "$probe_root/missing-loadavg" "$probe_root/bin/sysctl")"
+probe_assert_eq 'failed Linux load probe remains unavailable' 'unavailable' \
+  "$(hook_timeout_load_average Linux "$probe_root/missing-loadavg" "$probe_root/bin/sysctl")"
   probe_assert_eq 'Linux platform name is bounded' 'linux' \
     "$(hook_timeout_os_name Linux)"
   probe_assert_eq 'Darwin platform name is bounded' 'macos' \
@@ -537,7 +539,76 @@ else
   echo 'FAIL: Linux, Darwin, and Windows probe helpers are absent on the base revision' >&2
 fi
 [ "$probe_failures" -eq 0 ] || fail "platform probe regressions: $probe_failures assertion(s) failed"
-pass 'load and bounded Windows process probes return fixture values without PowerShell'
+load_watchdog_function() {
+  local name="$1" body
+  body="$(sed -n "/^${name}() {/,/^}/p" "$WATCHDOG_SRC")"
+  [ -n "$body" ] || fail "required watchdog diagnostic function is missing: $name"
+  eval "$body"
+}
+load_watchdog_function normalize_cwd_path
+load_watchdog_function classify_cwd_paths
+load_watchdog_function cwd_kind
+load_watchdog_function root_storage_class
+load_watchdog_function cached_root_storage_class
+
+root=""
+cwd=""
+probe_assert_eq 'empty root has its own cwd kind' root_unset "$(cwd_kind)"
+root="$probe_root/root-file"
+: > "$root"
+cwd="$probe_root/inside"
+probe_assert_eq 'non-directory root has its own cwd kind' root_not_directory "$(cwd_kind)"
+root="$probe_root/hq-root"
+mkdir -p "$root"
+cwd=""
+probe_assert_eq 'empty cwd has its own cwd kind' cwd_unset "$(cwd_kind)"
+cwd="$probe_root/outside"
+probe_assert_eq 'cwd outside root has its own cwd kind' cwd_outside_root "$(cwd_kind)"
+cwd="$root"
+probe_assert_eq 'HQ root remains a closed cwd kind' hq-root "$(cwd_kind)"
+cwd="$root/repos/private/hq-cli"
+probe_assert_eq 'repo remains a closed cwd kind' repo "$(cwd_kind)"
+cwd="$root/workspace/worktrees/card"
+probe_assert_eq 'worktree remains a closed cwd kind' worktree "$(cwd_kind)"
+cwd="$root/companies/indigo"
+probe_assert_eq 'other HQ subdirectories have their own cwd kind' hq_subdir "$(cwd_kind)"
+probe_assert_eq 'Windows drive path normalizes for comparison' g:/hq \
+  "$(normalize_cwd_path 'G:/HQ' MINGW64_NT-10.0)"
+probe_assert_eq 'Windows drive repo paths classify across separators and case' repo \
+  "$(classify_cwd_paths 'G:\HQ' 'g:/hq/repos/private/hq-cli' MINGW64_NT-10.0)"
+
+storage_probe_bin="$probe_root/storage-probe-bin"
+mkdir -p "$storage_probe_bin"
+cat > "$storage_probe_bin/powershell-fixture" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${HQ_TEST_ROOT_STORAGE_CALLS:-}" ] || printf 'called\n' >> "$HQ_TEST_ROOT_STORAGE_CALLS"
+case "${HQ_TEST_ROOT_STORAGE_CLASS:-}" in
+  system_drive|non_system_fixed_drive|network_or_mapped_drive) printf '%s\n' "$HQ_TEST_ROOT_STORAGE_CLASS" ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$storage_probe_bin/powershell-fixture"
+  for storage_class in system_drive non_system_fixed_drive network_or_mapped_drive; do
+    actual="$(HQ_TEST_ROOT_STORAGE_CLASS="$storage_class" root_storage_class 'G:/HQ' MINGW64_NT-10.0 "$storage_probe_bin/powershell-fixture")"
+  probe_assert_eq "root storage reports $storage_class" "$storage_class" "$actual"
+  [[ ! "$actual" =~ [A-Za-z]:|[/\\] ]] || fail "root storage value contains path syntax: $actual"
+  done
+probe_assert_eq 'drive-root paths retain their drive class' system_drive \
+  "$(HQ_TEST_ROOT_STORAGE_CLASS=system_drive root_storage_class 'C:/' MINGW64_NT-10.0 "$storage_probe_bin/powershell-fixture")"
+storage_cache="$probe_root/root-storage-cache/classification"
+storage_calls="$probe_root/root-storage-cache/probe-count"
+first_cached_storage="$(HQ_TEST_ROOT_STORAGE_CLASS=network_or_mapped_drive HQ_TEST_ROOT_STORAGE_CALLS="$storage_calls" \
+  cached_root_storage_class 'G:/HQ' MINGW64_NT-10.0 "$storage_cache" "$storage_probe_bin/powershell-fixture")"
+second_cached_storage="$(HQ_TEST_ROOT_STORAGE_CLASS=system_drive HQ_TEST_ROOT_STORAGE_CALLS="$storage_calls" \
+  cached_root_storage_class 'G:/HQ' MINGW64_NT-10.0 "$storage_cache" "$storage_probe_bin/powershell-fixture")"
+probe_assert_eq 'cached root storage preserves the resolved class' network_or_mapped_drive "$second_cached_storage"
+probe_assert_eq 'root storage process probe runs once per cache key' 1 "$(wc -l < "$storage_calls" | tr -d ' ')"
+[[ ! "$first_cached_storage" =~ [A-Za-z]:|[/\\] ]] || fail "cached root storage value contains path syntax: $first_cached_storage"
+  probe_assert_eq 'failed root storage probe has an explicit negative value' unavailable \
+    "$(HQ_TEST_ROOT_STORAGE_CLASS= root_storage_class 'relative/root' MINGW64_NT-10.0 "$storage_probe_bin/powershell-fixture")"
+
+[ "$probe_failures" -eq 0 ] || fail "load, cwd, and storage diagnostics: $probe_failures assertion(s) failed"
+pass 'load, cwd, and storage diagnostics return bounded fixture values'
 fi
 
 echo "[1] fast gate hook leaves no watcher and sends no warning"
@@ -594,7 +665,8 @@ jq -e '
   and (.metadata.load_average | type == "string")
   and .metadata.bash_env_set == "set"
   and (.metadata.shell | type == "string" and contains("bash"))
-  and .metadata.cwd_kind == "other"
+  and .metadata.cwd_kind == "cwd_unset"
+  and (.metadata.root_storage_class | IN("system_drive", "non_system_fixed_drive", "network_or_mapped_drive", "unavailable"))
   and (.metadata.timing_precision == "ms" or .metadata.timing_precision == "s")
   and (.metadata.nproc | type == "number" and . >= 1)
   and .metadata.hook_script == "detect-secrets.sh"
@@ -719,7 +791,7 @@ cat > "$R6/bin/jq" <<'EOF'
 #!/usr/bin/env bash
 delay_master_payload_parse=0
 for arg in "$@"; do
-  if [[ "$arg" == *'(.agent_id // "" | tostring)'* ]]; then
+  if [[ "$arg" == *'.agent_type | type'* ]]; then
     delay_master_payload_parse=1
     break
   fi

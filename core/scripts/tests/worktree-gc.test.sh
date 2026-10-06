@@ -82,6 +82,11 @@ WT_D="$HQ/workspace/worktrees/case-d"
 git -C "$REPO" worktree add -q -b wt-d "$WT_D" origin/main
 write_stamp "$WT_D" "$YOUNG_EPOCH"; mk_old_mtime "$WT_D"
 
+# (h) jq.exe CRLF scalar output must not enter Bash arithmetic.
+WT_H="$HQ/workspace/worktrees/case-h"
+git -C "$REPO" worktree add -q -b wt-h "$WT_H" origin/main
+write_stamp "$WT_H" "$YOUNG_EPOCH"; mk_old_mtime "$WT_H"
+
 # (e) active-session referenced  → skipped
 WT_E="$HQ/workspace/worktrees/case-e"
 git -C "$REPO" worktree add -q -b wt-e "$WT_E" origin/main
@@ -114,6 +119,29 @@ json=$(run_gc --dry-run --json 2>/dev/null) || fail "json run failed"
 echo "$json" | jq -e '.examined >= 6' >/dev/null || fail "json.examined wrong"
 echo "$json" | jq -e '.mode == "dry-run"' >/dev/null || fail "json.mode wrong"
 
+REAL_JQ="$(command -v jq)"
+mkdir -p "$TMP/crlf-bin"
+cat > "$TMP/crlf-bin/jq" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-r" ] && [ "${2:-}" = '.createdAtEpoch // empty' ]; then
+  : > "$CRLF_JQ_READ_MARKER"
+  set +e
+  "$REAL_JQ" "$@" | sed 's/$/\r/'
+  jq_rc=${PIPESTATUS[0]}
+  set -e
+  exit "$jq_rc"
+fi
+exec "$REAL_JQ" "$@"
+STUB
+chmod +x "$TMP/crlf-bin/jq"
+CRLF_JQ_READ_MARKER="$TMP/crlf-jq-read"
+crlf_output="$(PATH="$TMP/crlf-bin:$PATH" REAL_JQ="$REAL_JQ" CRLF_JQ_READ_MARKER="$CRLF_JQ_READ_MARKER" HQ_ROOT="$HQ" bash "$GC" --dry-run 2>&1)" \
+  || fail "worktree-gc failed with CRLF jq timestamp output: $crlf_output"
+[[ -f "$CRLF_JQ_READ_MARKER" ]] || fail "worktree-gc did not read a stamped epoch under the CRLF jq stub"
+printf '%s\n' "$crlf_output" | grep -Fq "[too-recent] $WT_H" \
+  || fail "CRLF jq timestamp changed the too-recent classification for $WT_H: $crlf_output"
+echo "PASS: worktree-gc normalizes CRLF jq epoch values before arithmetic"
+
 # ---- apply: only safe ones go ----
 run_gc --apply >/dev/null 2>&1 || fail "apply exited non-zero"
 
@@ -129,6 +157,7 @@ git -C "$REPO" branch --list wt-a | grep -q wt-a && fail "(a) branch wt-a not de
 [[ -f "$WT_C/secret.txt" ]] || fail "(c) local-only commit content lost"
 # (d) too-recent preserved
 [[ -d "$WT_D" ]] || fail "(d) too-recent worktree was removed"
+[[ -d "$WT_H" ]] || fail "(h) CRLF-stamped too-recent worktree was removed"
 # (e) active-session preserved
 [[ -d "$WT_E" ]] || fail "(e) active-session worktree was removed"
 

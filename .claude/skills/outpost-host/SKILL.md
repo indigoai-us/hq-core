@@ -1,7 +1,7 @@
 ---
 name: outpost-host
 description: "Host an app on this HQ Outpost/EC2 VM behind nginx and return its public URL. Refuses to run elsewhere. For artifacts use /deploy."
-allowed-tools: Bash, Read, Glob, Grep, Bash(bash "$CLAUDE_PROJECT_DIR/.claude/skills/outpost-host/host-app.sh:*), AskUserQuestion
+allowed-tools: Bash, Read, Glob, Grep, Bash(bash "$CLAUDE_PLUGIN_ROOT/skills/outpost-host/host-app.sh:*), Bash(bash "$CLAUDE_PROJECT_DIR/.claude/skills/outpost-host/host-app.sh:*), AskUserQuestion
 ---
 
 # /outpost-host — serve an app from the Outpost VM
@@ -17,7 +17,11 @@ This skill installs system packages, edits `/etc/nginx`, opens ports, and expose
 **Step 1, always, before anything else:** run the environment guard.
 
 ```bash
-bash "$CLAUDE_PROJECT_DIR/.claude/skills/outpost-host/host-app.sh" check
+if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+  bash "$CLAUDE_PLUGIN_ROOT/skills/outpost-host/host-app.sh" check
+else
+  bash "$CLAUDE_PROJECT_DIR/.claude/skills/outpost-host/host-app.sh" check
+fi
 ```
 
 - Exit `0` → you are on an Outpost/EC2 box; continue.

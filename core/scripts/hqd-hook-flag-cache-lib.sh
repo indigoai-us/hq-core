@@ -1,7 +1,11 @@
 #!/bin/sh
 # Sourced by hqd-hook-shim.sh; cache refresh stays outside the fresh event path.
 TTL_SECONDS=60
-CACHE_FILE=${HOME:-}/.hq/hq-anywhere-runtime.flag
+company_cache_scope=${HQ_COMPANY_UID:-unscoped}
+case "$company_cache_scope" in
+  ''|*[!A-Za-z0-9_-]*) company_cache_scope=$(printf '%s' "$company_cache_scope" | cksum | awk '{print $1}') ;;
+esac
+CACHE_FILE=${HOME:-}/.hq/hq-anywhere-runtime.flag.$company_cache_scope
 
 now_seconds() {
   if [ -r /proc/uptime ]; then
