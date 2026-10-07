@@ -282,6 +282,20 @@ run_hook() {
   set -e
 }
 
+echo "== sanitizer deletes out-of-set bytes without changing check IDs =="
+SANITIZER_INPUT=$'sync.update.core\r\nsync.journal.__hq_personal_vault__\r\nsync.mid\r.byte\n'
+EXPECTED_SANITIZED_IDS=$'sync.journal.__hq_personal_vault__\nsync.mid.byte\nsync.update.core'
+if SANITIZED_IDS="$(printf '%s' "$SANITIZER_INPUT" \
+  | env HQ_TEST_CLIENT_HEALTH_SANITIZER=1 bash "$HOOK_SRC")"; then
+  [ "$SANITIZED_IDS" = "$EXPECTED_SANITIZED_IDS" ] \
+    && ok "CR-terminated and mid-line stray bytes are deleted; exact IDs remain" \
+    || bad "CR-terminated and mid-line stray bytes are deleted; exact IDs remain" \
+      "got: [$SANITIZED_IDS]"
+else
+  bad "CR-terminated and mid-line stray bytes are deleted; exact IDs remain" \
+    "the production sanitizer entry point failed"
+fi
+
 STUB_BIN="$TMP/bin"
 STUB_STATE="$TMP/stub-state"
 STUB_LOG="$TMP/stub.log"

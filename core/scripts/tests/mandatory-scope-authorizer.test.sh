@@ -800,5 +800,239 @@ expect_exit 0 "$rc" "legacy capability still authorizes main thread"
 rc="$(run_hook "$(legacy_payload agent-new general-purpose)")"
 expect_exit 2 "$rc" "legacy capability never falls back to a new subagent tuple"
 
+echo "[67] quoted cat heredoc body is data written to an allowed workspace target"
+install_fixture "indigo"
+mkdir -p "$TMP/workspace/hq-core"
+command=$'cat > workspace/hq-core/note.md <<\'EOF\'\nsee companies/indigo/projects/$p/prd.json\nEOF'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "quoted heredoc body mentioning a company path is literal data"
+
+echo "[68] unquoted cat heredoc body allows plain variable text at an allowed target"
+install_fixture "indigo"
+mkdir -p "$TMP/workspace/hq-core"
+command=$'cat > workspace/hq-core/note.md <<EOF\nsee companies/indigo/projects/$p/prd.json\nEOF'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "unquoted heredoc plain variable text is not a filesystem operand"
+
+echo "[68a] tee heredoc body is data written to an allowed workspace target"
+install_fixture "indigo"
+mkdir -p "$TMP/workspace/hq-core"
+command=$'tee > workspace/hq-core/note.md <<EOF\nsee companies/indigo/projects/$p/prd.json\nEOF'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "tee redirect keeps unquoted heredoc plain text out of path checks"
+
+echo "[69] unresolved list-derived company paths stay blocked"
+install_fixture "indigo"
+command='for p in $(ls companies/*/projects); do cat companies/$p/prd.json; done'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "command-substitution loop with unresolved company path is refused"
+
+echo "[70] heredoc redirect to another company stays blocked"
+install_fixture "indigo"
+command=$'cat > companies/otherco/settings/note.md <<EOF\nplain data\nEOF'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "heredoc output redirect to another company is refused"
+
+echo "[71] heredoc fed to bash remains fully scanned"
+install_fixture "indigo"
+command=$'bash <<EOF\ncat companies/otherco/settings/secret.yaml\nEOF'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "interpreter heredoc body is fully scanned"
+
+echo "[72] command substitution in an unquoted data heredoc remains checked"
+install_fixture "indigo"
+mkdir -p "$TMP/workspace/hq-core"
+command=$'cat > workspace/hq-core/note.md <<EOF\n$(cat companies/otherco/settings/secret.yaml)\nEOF'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "unquoted heredoc command substitution is scanned"
+
+echo "[73] workspace positional path with a same-company literal is allowed"
+install_fixture "indigo"
+command='function read_brief() { cat companies/indigo/settings/.keep; cat --brief-file workspace/lane-briefs/hq-core/$2; }; read_brief --company indigo note.md'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+if [ "$rc" != "0" ]; then cat "$TMP/err.txt" >&2; fi
+expect_exit 0 "$rc" "workspace positional expansion is not misclassified as company access"
+
+echo "[74] unresolved companies positional operand stays blocked with workspace path"
+install_fixture "indigo"
+command='function read_brief() { cat companies/$1/settings/.keep; cat --brief-file workspace/lane-briefs/hq-core/$2; }; read_brief otherco note.md'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "unresolved companies positional operand remains blocked"
+
+echo "[75] quoted text option keeps a company-looking string out of path checks"
+install_fixture "indigo"
+command='hq dm send --text "See companies/indigo/projects/$p/prd.json and core/scripts/resumework.sh"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "quoted --text content is data, not a path operand"
+
+echo "[76] same quoted company string is blocked when cat opens it"
+install_fixture "indigo"
+command='cat "companies/indigo/projects/$p/prd.json"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "quoted company path opened by cat remains blocked"
+
+echo "[77] workspace heredoc prose names company and script paths with variable text"
+install_fixture "indigo"
+mkdir -p "$TMP/workspace/hq-core"
+command=$'cat > workspace/hq-core/note.md <<EOF\nReview companies/indigo/projects/$p/prd.json and core/scripts/resumework.sh before shipping.\nEOF'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "heredoc prose paths and plain variable text remain data"
+
+echo "[78] heredoc's same company path is blocked when cat opens it"
+install_fixture "indigo"
+command='cat "companies/indigo/projects/$p/prd.json"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "company path named in prose is blocked as a real cat operand"
+
+echo "[79] text-file brief and workspace loop variables remain allowed"
+install_fixture "indigo"
+command='function write_brief() { hq docs create --text-file workspace/lane-briefs/hq-core/$2; for p in one two; do printf "%s\\n" "workspace/lane-briefs/hq-core/$p"; done; }; write_brief --company indigo brief.md'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+if [ "$rc" != "0" ]; then cat "$TMP/err.txt" >&2; fi
+expect_exit 0 "$rc" "text-file workspace path with loop variables is allowed"
+
+echo "[80] function positional workspace path resolves beside a literal company path"
+install_fixture "indigo"
+command='mk(){ cat companies/indigo/projects/a/p; cat --brief-file workspace/lane-briefs/hq-core/$2; }; mk a b.md; mk c c.md'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+if [ "$rc" != "0" ]; then cat "$TMP/err.txt" >&2; fi
+expect_exit 0 "$rc" "function positional workspace path resolves from a literal call site"
+
+echo "[81] function positional traversal into another company stays blocked"
+install_fixture "indigo"
+command='mk(){ cat --brief-file workspace/lane-briefs/hq-core/$2; }; mk a ../../companies/otherco/s'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "function positional traversal into another company is blocked"
+
+echo "[82] unresolved workspace positional operand stays blocked with its literal path"
+install_fixture "indigo"
+command='cat workspace/$1'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "unresolved workspace positional operand is blocked"
+grep -Fq 'Path: workspace/$1' "$TMP/err.txt" || fail "unresolved workspace path should be reported literally"
+
+echo "[83] workspace loop values resolve and remain allowed"
+install_fixture "indigo"
+command='for l in A B; do ls workspace/lanes-runs/${l}_x/; done'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "literal workspace loop values resolve"
+
+echo "[84] hq lanes message body is inert message text"
+install_fixture "indigo"
+command='hq lanes message lane-1 --text "Review companies/otherco/s"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "hq lanes message text is not a file operand"
+
+echo "[85] gh pr comment body is inert message text"
+install_fixture "indigo"
+command='gh pr comment 1132 --body "Review companies/otherco/s"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "gh pr comment body is not a file operand"
+
+echo "[86] python body text that names a company remains blocked"
+install_fixture "indigo"
+command='python3 tool.py --body "companies/otherco/s"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "python body value is not covered by the text-only command exemption"
+
+echo "[87] unresolved workspace path stays blocked beside a company operand"
+install_fixture "indigo"
+command='cat companies/indigo/projects/a/p; cat workspace/x/$2'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "workspace positional operand stays blocked beside a company path"
+grep -Fq 'Path: workspace/x/$2' "$TMP/err.txt" || fail "workspace positional denial should name its literal path"
+
+echo "[88] unresolved personal path stays blocked with its literal path"
+install_fixture "indigo"
+command='cat personal/$x'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "unresolved personal operand is blocked"
+grep -Fq 'Path: personal/$x' "$TMP/err.txt" || fail "unresolved personal path should be reported literally"
+
+echo "[89] every function positional call site must pass literal arguments"
+install_fixture "indigo"
+command='mk(){ cat --brief-file workspace/lane-briefs/hq-core/$2; }; mk a good.md; mk a "$target"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "dynamic argument at a later function call site stays blocked"
+
+echo "[90] workspace variable assigned literally in the command resolves"
+install_fixture "indigo"
+command='brief=b.md; cat workspace/lane-briefs/hq-core/$brief'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "literal workspace assignment resolves"
+
+echo "[91] git -C resolves pwd forms against the command cwd"
+install_fixture "indigo"
+mkdir -p "$TMP/companies/indigo/projects/a" "$TMP/companies/otherco"
+for command in \
+  'git -C "$(pwd)/companies/indigo/projects/a" status' \
+  'git -C "$PWD/companies/indigo/projects/a" status' \
+  'git -C "$(pwd -P)/companies/indigo/projects/a" status'; do
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  if [ "$rc" != "0" ]; then cat "$TMP/err.txt" >&2; fi
+  expect_exit 0 "$rc" "git -C resolves a safe pwd form to the bound company"
+done
+
+echo "[92] git -C pwd form still blocks another company"
+install_fixture "indigo"
+mkdir -p "$TMP/companies/otherco"
+command='git -C "$(pwd)/companies/otherco" status'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "git -C pwd expansion to another company remains blocked"
+
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

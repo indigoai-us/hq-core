@@ -46,6 +46,16 @@
 # Wired in .claude/settings.json SessionStart and gated by hook-gate.sh under
 # "check-client-health" (standard and strict profiles).
 
+sanitize_check_ids() {
+  tr -dc 'A-Za-z0-9._:\n -' | cut -c 1-200 | sort -u
+}
+
+# Focused regression-test entry point for the exact production sanitizer.
+if [ "${HQ_TEST_CLIENT_HEALTH_SANITIZER:-}" = "1" ]; then
+  sanitize_check_ids
+  exit $?
+fi
+
 # ─── Remediation mode (runs detached in the background, never as a hook) ─────
 if [ "${1:-}" = "--remediate" ]; then
   # Best-effort throughout; every failure is silent.
@@ -252,7 +262,7 @@ if [ "${1:-}" = "--remediate" ]; then
     # the same sanitized summary through the feedback report path below.
     # Only sanitised IDs leave the machine. Cap both rows and ID length so a
     # large install still produces a small report; raw messages stay local.
-    CHECK_IDS=$(printf '%s\n' "$REMAINING" | tr -c 'A-Za-z0-9._:\n -' '_' | cut -c 1-200 | sort -u)
+    CHECK_IDS=$(printf '%s\n' "$REMAINING" | sanitize_check_ids)
     CHECK_COUNT=$(printf '%s\n' "$CHECK_IDS" | wc -l | tr -d ' ')
     CHECK_LIST=$(printf '%s\n' "$CHECK_IDS" | head -50 | sed 's/^/- /')
     # Automatic reports must opt out explicitly: the feedback CLI otherwise

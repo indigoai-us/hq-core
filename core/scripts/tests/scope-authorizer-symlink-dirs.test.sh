@@ -108,23 +108,39 @@ run_case 'rg default control remains allowed' Bash sess-unbound '' '' 'rg canary
 run_case 'env grep -r control remains allowed' Bash sess-unbound '' '' 'env grep -r canary workspace' 0
 run_case 'grep -e -r treats -r as pattern and remains allowed' Bash sess-unbound '' '' 'grep -e -r canary workspace' 0
 echo '[unbound session: symlinked company content must be denied]'
-run_case 'Grep does not follow a nested company directory symlink' Grep sess-unbound '.claude/skills' '' '' 0
-run_case 'Grep uses cwd without scanning descendant symlinks' Grep sess-unbound '__NO_PATH__' '' '' 0 "$TMP/.claude/skills"
+run_case 'Grep blocks nested company directory symlink under its search root' Grep sess-unbound '.claude/skills' '' '' 2
+run_case 'Grep blocks nested company directory symlink under cwd fallback' Grep sess-unbound '__NO_PATH__' '' '' 2 "$TMP/.claude/skills"
 run_case 'Grep with implicit HQ-root path avoids a broad symlink scan' Grep sess-unbound '__NO_PATH__' '' '' 0 "$TMP"
 run_case 'Grep search root is company dir symlink' Grep sess-unbound '.claude/skills/otherco:s' '' '' 2
-run_case 'Glob does not follow a nested company directory symlink' Glob sess-unbound '.' '.claude/skills/**/SKILL.md' '' 0
-run_case 'Glob static prefix does not scan descendant symlinks' Glob sess-unbound 'core' '../.claude/skills/**/SKILL.md' '' 0
-run_case 'Glob without static prefix checks root only' Glob sess-unbound '.' '**/SKILL.md' '' 0
+run_case 'Glob blocks nested company directory symlink under static pattern prefix' Glob sess-unbound '.' '.claude/skills/**/SKILL.md' '' 2
+run_case 'Glob blocks nested company directory symlink under relative static prefix' Glob sess-unbound 'core' '../.claude/skills/**/SKILL.md' '' 2
+run_case 'Glob without static prefix checks the search root' Glob sess-unbound '.' '**/SKILL.md' '' 2
 run_case 'Glob search root is company dir symlink' Glob sess-unbound '.claude/skills/otherco:s' 'SKILL.md' '' 2
 ln -s unresolvable "$TMP/.claude/skills/unresolvable"
-run_case 'Grep root with nested unresolvable symlink does not follow it' Grep sess-unbound '.claude/skills' '' '' 0
+run_case 'Grep root with nested unresolvable symlink fails closed' Grep sess-unbound '.claude/skills' '' '' 2
 run_case 'Grep search root is unresolvable symlink' Grep sess-unbound '.claude/skills/unresolvable' '' '' 2
 unlink "$TMP/.claude/skills/otherco:s"
 unlink "$TMP/.claude/skills/unresolvable"
 mkdir -p "$TMP/.claude/skills/a/b/c/d/e"
 ln -s ../../../../../../../companies/otherco/skills/s "$TMP/.claude/skills/a/b/c/d/e/deep-link"
-run_case 'Grep does not follow deeper company directory symlink' Grep sess-unbound '.claude/skills' '' '' 0
+run_case 'Grep blocks company directory symlink within bounded depth' Grep sess-unbound '.claude/skills' '' '' 2
+rm -rf "$TMP/.claude/skills/a"
+mkdir -p "$TMP/.claude/skills/a/b/c/d/e/f/g"
+ln -s "$TMP/companies/otherco/skills/s" "$TMP/.claude/skills/a/b/c/d/e/f/g/deep-link"
+run_case 'Grep blocks company directory symlink below max-depth plus one' Grep sess-unbound '.claude/skills' '' '' 2
+rm -rf "$TMP/.claude/skills/a"
 ln -s ../../companies/otherco/skills/s "$TMP/.claude/skills/otherco:s"
+mkdir -p "$TMP/find-fail-bin"
+printf '%s\n' '#!/bin/bash' 'printf "%s\n" "synthetic find failure" >&2' 'exit 1' > "$TMP/find-fail-bin/find"
+chmod +x "$TMP/find-fail-bin/find"
+PATH="$TMP/find-fail-bin:$PATH" run_case 'Grep denies when the symlink scan find fails' Grep sess-unbound '.claude/skills' '' '' 2
+grep -q 'synthetic find failure' "$TMP/stderr-$checks" || fail 'Grep hid the symlink scan find error'
+rm -rf "$TMP/find-fail-bin"
+mkdir -p "$TMP/find-limit-bin"
+printf '%s\n' '#!/bin/bash' 'root="$1"' 'i=0' 'while [ "$i" -lt 4097 ]; do' '  printf "%s\0" "$root"' '  i=$((i + 1))' 'done' > "$TMP/find-limit-bin/find"
+chmod +x "$TMP/find-limit-bin/find"
+PATH="$TMP/find-limit-bin:$PATH" run_case 'Grep denies after the symlink scan entry ceiling' Grep sess-unbound '.claude/skills' '' '' 2
+rm -rf "$TMP/find-limit-bin"
 for tool in cat head 'grep -r' ls; do
   if [ "$tool" = 'grep -r' ]; then
     command="$tool fixture \"$TMP/.claude/skills/otherco:s/SKILL.md\""

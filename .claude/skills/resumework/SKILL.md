@@ -103,6 +103,10 @@ Read the resolved thread file (it's small — one Read). Extract:
 - `changeset_path` — if present, note it (don't read it unless the user needs the full diff scope)
 
 If the thread references a company (via tags, `cwd`, or a `companies/{co}/...` path in `files_touched`), note the slug for Step 4.
+Treat `files_touched` paths as metadata. If you need to inspect one, bind the
+company first and read the exact path literally; do not build a shell loop from
+`jq` or command-substitution output. An unresolved company path must remain
+blocked by the scope authorizer.
 
 ### 4. Verify current git state vs the thread
 
@@ -110,10 +114,11 @@ The thread records the git state at handoff. Confirm where the repo is now so th
 
 ```bash
 # Anchor to the repo the thread worked in when it's a nested repo;
-# otherwise use HQ root context.
-git -C {repoPath or HQ root} branch --show-current
-git -C {repoPath or HQ root} log --oneline -3
-git -C {repoPath or HQ root} status --short
+# otherwise use HQ root context. Resolve repoPath first, then substitute its
+# literal absolute path into each command; do not use an unresolved expansion.
+git -C /absolute/path/to/repo branch --show-current
+git -C /absolute/path/to/repo log --oneline -3
+git -C /absolute/path/to/repo status --short
 ```
 
 Flag plainly if the current branch differs from `git.branch`, or if `git.current_commit` is no longer at HEAD (someone committed/merged since the handoff). If `git.dirty` was true at handoff but the tree is now clean, the in-flight edits may have been committed or lost — call that out.
