@@ -318,7 +318,9 @@ jobs:
       - name: /newcompany bootstrap and flag timeout contracts
         run: node --test core/scripts/__tests__/newcompany-bootstrap.test.cjs
       - name: HQ flag reader honors caller timeout budgets
-        run: node --test core/scripts/__tests__/setup-path-flag-timeout.test.cjs
+        run: >-
+          node --test core/scripts/__tests__/setup-path-flag-timeout.test.cjs
+          core/scripts/__tests__/setup-path-flag-machine-token.test.cjs
 
   setup-skill-direct-install:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -942,6 +944,8 @@ jobs:
         run: bash core/scripts/tests/session-scope-capability.test.sh
       - name: Mandatory scope authorizer blocks cross-company access
         run: bash core/scripts/tests/mandatory-scope-authorizer.test.sh
+      - name: Resumework skill commands stay within allowed paths
+        run: bash core/scripts/tests/resumework-skill-scope.test.sh
       - name: Mandatory scope authorizer process budget and deny parity
         run: bash core/scripts/tests/mandatory-scope-authorizer-spawn-budget.test.sh
       - name: Directory symlink scope for Grep, Glob, and Bash
@@ -1478,6 +1482,25 @@ jobs:
           echo "shellcheck ${#present[@]} files"
           shellcheck -S warning "${present[@]}"
 
+  resumework-timing-linux:
+    name: resumework-timing-linux
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned hq CLI for resumework timing
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: Measure resumework command set through master hook
+        env:
+          RESUMEWORK_TIMING_RUNS: '20'
+        run: bash core/scripts/tests/resumework-timing.test.sh
+
   shell-smoke-windows:
     name: shell-smoke-windows
     needs: [denylist-scan]
@@ -1523,6 +1546,11 @@ jobs:
           key: hq-cli-${{ runner.os }}-${{ runner.arch }}-${{ steps.hq_cli_cache.outputs.version }}-${{ hashFiles('core/scripts/ci/install-pinned-hq-cli.sh') }}
       - name: Install pinned hq CLI for forwarded scaffold scripts
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: Measure resumework command set through master hook
+        env:
+          RESUMEWORK_TIMING_RUNS: '20'
+          RESUMEWORK_HOOK_BUDGET_MS: '70000'
+        run: bash core/scripts/tests/resumework-timing.test.sh
       - name: portable-lib
         run: bash core/scripts/tests/portable-lib.test.sh
       - name: Git Bash forwarder preserves slash arguments and path arguments

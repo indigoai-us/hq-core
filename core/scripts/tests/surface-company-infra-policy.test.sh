@@ -62,16 +62,16 @@ run_hook() {
 
 echo "[1] payload session_id wins over .current"
 out="$(run_hook sess-live)"
-printf '%s' "$out" | grep -q 'co="indigo"' \
+grep -q 'co="indigo"' <<<"$out" \
   || fail "expected the payload session's company (indigo), got: ${out:-<empty>}"
-if printf '%s' "$out" | grep -q 'otherco'; then
+if grep -q 'otherco' <<<"$out"; then
   fail "leaked the .current session's company into this session: $out"
 fi
 
 echo "[2] the .current session still resolves to its own company"
 rm -rf "$TMP/workspace/orchestrator"
 out="$(run_hook sess-other)"
-printf '%s' "$out" | grep -q 'co="otherco"' \
+grep -q 'co="otherco"' <<<"$out" \
   || fail "expected otherco for sess-other, got: ${out:-<empty>}"
 
 echo "[3] an unbound session surfaces nothing, even when .current is bound"

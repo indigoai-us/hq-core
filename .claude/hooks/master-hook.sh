@@ -83,25 +83,29 @@ master_now_ms() {
     fraction="${fraction}000"
     fraction="${fraction:0:3}"
     if [[ "$seconds" =~ ^[0-9]+$ ]] && [[ "$fraction" =~ ^[0-9]{3}$ ]]; then
-      printf '%s%s' "$seconds" "$fraction"
+      MASTER_NOW_MS="$seconds$fraction"
+      printf '%s' "$MASTER_NOW_MS"
       return 0
     fi
   fi
   now="$(date +%s%3N 2>/dev/null || true)"
   if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
-    printf '%s' "$now"
+    MASTER_NOW_MS="$now"
+    printf '%s' "$MASTER_NOW_MS"
     return 0
   fi
   if command -v perl >/dev/null 2>&1; then
     now="$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
     if [[ "$now" =~ ^[0-9]+$ ]]; then
-      printf '%s' "$now"
+      MASTER_NOW_MS="$now"
+      printf '%s' "$MASTER_NOW_MS"
       return 0
     fi
   fi
   now="$(date +%s 2>/dev/null || printf '0')"
   [[ "$now" =~ ^[0-9]+$ ]] || now=0
-  printf '%s000' "$now"
+  MASTER_NOW_MS="${now}000"
+  printf '%s' "$MASTER_NOW_MS"
 }
 
 MASTER_DISPATCH_STARTED_MS=""
@@ -1799,14 +1803,16 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     fi
     rc=0
     trace_start="${EPOCHREALTIME:-}"
-    child_started_ms="$(master_now_ms)"
+    master_now_ms >/dev/null
+    child_started_ms="$MASTER_NOW_MS"
     prepare_child_completion_marker
     master_debug_phase_start external_command
     master_record_dispatch_startup
     # shellcheck disable=SC2086 # args are space-separated literals from the registry.
     out="$(run_child "$rtimeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
     master_debug_phase_finish external_command
-    child_ended_ms="$(master_now_ms)"
+    master_now_ms >/dev/null
+    child_ended_ms="$MASTER_NOW_MS"
     record_child_execution "$REPO_ROOT/$rscript" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$rtimeout"
     [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$rid" "$rc" "$trace_start"
     master_debug_phase_start parse
@@ -1881,7 +1887,8 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
 
   rc=0
   trace_start="${EPOCHREALTIME:-}"
-  child_started_ms="$(master_now_ms)"
+  master_now_ms >/dev/null
+  child_started_ms="$MASTER_NOW_MS"
   prepare_child_completion_marker
   master_child_timeout="${HQ_MASTER_CHILD_TIMEOUT:-120}"
   # The single dispatcher watchdog armed at the top covers every child; the
@@ -1890,7 +1897,8 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
   master_record_dispatch_startup
   out="$(run_child "$master_child_timeout" "exec" "$hook" "$child_completion_marker" "$EVENT")" || rc=$?
   master_debug_phase_finish external_command
-  child_ended_ms="$(master_now_ms)"
+  master_now_ms >/dev/null
+  child_ended_ms="$MASTER_NOW_MS"
   record_child_execution "$hook" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$master_child_timeout"
   [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$(basename "$hook")" "$rc" "$trace_start"
   master_debug_phase_start parse

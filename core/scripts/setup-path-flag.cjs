@@ -9,6 +9,7 @@ const { pathToFileURL } = require("node:url");
 const FLAG_KEY = "core.setup-path-settings-local";
 const DEFAULT_VALUE = false;
 const REQUEST_TIMEOUT_MS = 150;
+const SETUP_PATH_TIMEOUT_MS = 5000;
 
 function safeErrorClass(error) {
   const name = error instanceof Error ? error.name : "UnknownError";
@@ -131,7 +132,14 @@ async function readHqFlag(
       import(pathToFileURL(flagsPath).href),
       import(pathToFileURL(cloudPath).href),
     ]);
-    const token = loadCachedTokens()?.idToken ?? "";
+    let token = loadCachedTokens()?.idToken ?? "";
+    if (!token) {
+      // `hq whoami` uses this CLI loader for the machine identity. Keep token
+      // acquisition cached and noninteractive on this short setup path.
+      const sessionPath = path.join(cliRoot, "dist", "utils", "cognito-session.js");
+      const { loadMachineCachedTokens } = await import(pathToFileURL(sessionPath).href);
+      token = loadMachineCachedTokens()?.idToken ?? "";
+    }
     if (typeof token !== "string" || token.length === 0) return DEFAULT_VALUE;
     client = createFlagClient({
       endpoint,
@@ -167,7 +175,7 @@ async function readHqFlag(
 }
 
 async function setupPathFlagEnabled(env = process.env) {
-  return readHqFlag(FLAG_KEY, env, "HQ setup PATH");
+  return readHqFlag(FLAG_KEY, env, "HQ setup PATH", { timeoutMs: SETUP_PATH_TIMEOUT_MS });
 }
 
 if (require.main === module) {

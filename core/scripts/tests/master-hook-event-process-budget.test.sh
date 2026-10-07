@@ -156,8 +156,35 @@ syscall_count() {
   ' "$1"
 }
 
+timestamp_substitution_count() {
+  awk '
+    index($0, "child_started_ms=\"$(master_now_ms)\"") { count++ }
+    index($0, "child_ended_ms=\"$(master_now_ms)\"") { count++ }
+    END { print count + 0 }
+  ' "$1"
+}
+
+timestamp_global_count() {
+  awk '
+    index($0, "child_started_ms=\"$MASTER_NOW_MS\"") { count++ }
+    index($0, "child_ended_ms=\"$MASTER_NOW_MS\"") { count++ }
+    END { print count + 0 }
+  ' "$1"
+}
+
+DIRECT_TIMESTAMP_CALLS="$(timestamp_global_count "$CANDIDATE_SOURCE/.claude/hooks/master-hook.sh")"
+[ "$DIRECT_TIMESTAMP_CALLS" -eq 4 ] \
+  || fail "expected four child timing reads from MASTER_NOW_MS at dispatch seam (found $DIRECT_TIMESTAMP_CALLS)"
+
 measure_event() {
-  local event="$1"
+  local event="$1" expected_hooks expected_timestamp_forks
+  local base_timestamp_subs candidate_timestamp_globals
+  case "$event" in
+    PreToolUse) expected_hooks=5 ;;
+    SessionStart) expected_hooks=4 ;;
+    *) fail "unexpected event in dispatch timestamp regression: $event" ;;
+  esac
+  expected_timestamp_forks="$((expected_hooks * 2))"
   local base_trace="$TMP/$event-base.trace" candidate_trace="$TMP/$event-candidate.trace"
   local base_started_ns base_finished_ns candidate_started_ns candidate_finished_ns
   base_started_ns="$(date +%s%N)"
@@ -185,6 +212,13 @@ measure_event() {
     || fail "$event increased execve count (candidate=$candidate_execs base=$base_execs)"
   [ "$candidate_forks" -le "$base_forks" ] \
     || fail "$event increased fork/clone count (candidate=$candidate_forks base=$base_forks)"
+  base_timestamp_subs="$(timestamp_substitution_count "$BASE_SOURCE/.claude/hooks/master-hook.sh")"
+  candidate_timestamp_globals="$(timestamp_global_count "$CANDIDATE_SOURCE/.claude/hooks/master-hook.sh")"
+  if [ "$base_timestamp_subs" -eq 4 ] && [ "$candidate_timestamp_globals" -eq 4 ]; then
+    [ "$candidate_forks" -le "$((base_forks - expected_timestamp_forks))" ] \
+      || fail "$event did not remove two timestamp command-substitution forks per hook (expected at least $expected_timestamp_forks fewer; candidate=$candidate_forks base=$base_forks)"
+    echo "$event: removed at least $expected_timestamp_forks timestamp subshell forks across $expected_hooks hooks"
+  fi
 }
 
 measure_event PreToolUse

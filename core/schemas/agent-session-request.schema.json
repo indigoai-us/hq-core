@@ -94,6 +94,11 @@
     "directMention": {
       "type": "boolean",
       "description": "True when THIS inbound message directly @-mentioned the agent. This is literal mention metadata, not whether the message was addressed; a verified Slack direct message is addressed without an @mention. Optional; absent means unknown."
+    },
+    "laneId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,160}$",
+      "description": "Optional lane-run id whose last envelope decision is included in the response result."
     }
   }
 }

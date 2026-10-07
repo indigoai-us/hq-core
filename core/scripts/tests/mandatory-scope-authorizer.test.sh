@@ -860,14 +860,14 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "unquoted heredoc command substitution is scanned"
 
-echo "[73] workspace positional path with a same-company literal is allowed"
+echo "[73] unresolved workspace positional path is denied without confinement proof"
 install_fixture "indigo"
 command='function read_brief() { cat companies/indigo/settings/.keep; cat --brief-file workspace/lane-briefs/hq-core/$2; }; read_brief --company indigo note.md'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
 if [ "$rc" != "0" ]; then cat "$TMP/err.txt" >&2; fi
-expect_exit 0 "$rc" "workspace positional expansion is not misclassified as company access"
+expect_exit 2 "$rc" "workspace positional expansion fails closed"
 
 echo "[74] unresolved companies positional operand stays blocked with workspace path"
 install_fixture "indigo"
@@ -910,23 +910,23 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "company path named in prose is blocked as a real cat operand"
 
-echo "[79] text-file brief and workspace loop variables remain allowed"
+echo "[79] unknown positional and loop values under workspace fail closed"
 install_fixture "indigo"
 command='function write_brief() { hq docs create --text-file workspace/lane-briefs/hq-core/$2; for p in one two; do printf "%s\\n" "workspace/lane-briefs/hq-core/$p"; done; }; write_brief --company indigo brief.md'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
 if [ "$rc" != "0" ]; then cat "$TMP/err.txt" >&2; fi
-expect_exit 0 "$rc" "text-file workspace path with loop variables is allowed"
+expect_exit 2 "$rc" "text-file workspace path with unresolved values fails closed"
 
-echo "[80] function positional workspace path resolves beside a literal company path"
+echo "[80] function positional workspace path fails closed beside a literal company path"
 install_fixture "indigo"
 command='mk(){ cat companies/indigo/projects/a/p; cat --brief-file workspace/lane-briefs/hq-core/$2; }; mk a b.md; mk c c.md'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
 if [ "$rc" != "0" ]; then cat "$TMP/err.txt" >&2; fi
-expect_exit 0 "$rc" "function positional workspace path resolves from a literal call site"
+expect_exit 2 "$rc" "function positional workspace path lacks confinement proof"
 
 echo "[81] function positional traversal into another company stays blocked"
 install_fixture "indigo"
@@ -936,22 +936,22 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "function positional traversal into another company is blocked"
 
-echo "[82] unresolved workspace positional operand stays blocked with its literal path"
+echo "[82] unresolved workspace positional operand is denied without confinement proof"
 install_fixture "indigo"
 command='cat workspace/$1'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
-expect_exit 2 "$rc" "unresolved workspace positional operand is blocked"
-grep -Fq 'Path: workspace/$1' "$TMP/err.txt" || fail "unresolved workspace path should be reported literally"
+expect_exit 2 "$rc" "unresolved workspace positional operand fails closed"
+grep -Fq 'Path: workspace/$1' "$TMP/err.txt" || fail "unresolved workspace positional denial should print the literal operand"
 
-echo "[83] workspace loop values resolve and remain allowed"
+echo "[83] workspace loop values fail closed without confinement proof"
 install_fixture "indigo"
 command='for l in A B; do ls workspace/lanes-runs/${l}_x/; done'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
-expect_exit 0 "$rc" "literal workspace loop values resolve"
+expect_exit 2 "$rc" "workspace loop values are not proven confined"
 
 echo "[84] hq lanes message body is inert message text"
 install_fixture "indigo"
@@ -977,31 +977,31 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "python body value is not covered by the text-only command exemption"
 
-echo "[87] unresolved workspace path stays blocked beside a company operand"
+echo "[87] unresolved workspace path is denied beside a company operand"
 install_fixture "indigo"
 command='cat companies/indigo/projects/a/p; cat workspace/x/$2'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
-expect_exit 2 "$rc" "workspace positional operand stays blocked beside a company path"
-grep -Fq 'Path: workspace/x/$2' "$TMP/err.txt" || fail "workspace positional denial should name its literal path"
+expect_exit 2 "$rc" "unknown workspace positional operand fails closed beside a company path"
+grep -Fq 'Path: workspace/x/$2' "$TMP/err.txt" || fail "workspace positional denial beside a company path should print the literal operand"
 
-echo "[88] unresolved personal path stays blocked with its literal path"
+echo "[88] unresolved personal path is denied without confinement proof"
 install_fixture "indigo"
 command='cat personal/$x'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
-expect_exit 2 "$rc" "unresolved personal operand is blocked"
-grep -Fq 'Path: personal/$x' "$TMP/err.txt" || fail "unresolved personal path should be reported literally"
+expect_exit 2 "$rc" "unknown personal operand fails closed"
+grep -Fq 'Path: personal/$x' "$TMP/err.txt" || fail "personal positional denial should print the literal operand"
 
-echo "[89] every function positional call site must pass literal arguments"
+echo "[89] unresolved function positional path under workspace fails closed"
 install_fixture "indigo"
 command='mk(){ cat --brief-file workspace/lane-briefs/hq-core/$2; }; mk a good.md; mk a "$target"'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
-expect_exit 2 "$rc" "dynamic argument at a later function call site stays blocked"
+expect_exit 2 "$rc" "unknown workspace function argument fails closed"
 
 echo "[90] workspace variable assigned literally in the command resolves"
 install_fixture "indigo"

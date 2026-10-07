@@ -1266,10 +1266,170 @@ scope_glob_static_prefix() {
   printf '%s' "$prefix"
 }
 
+scope_open_tree_expansion_has_parent_value() {
+  local candidate="$1" command_text="$2" token name assignment_re
+  local tokens
+  tokens="$(printf '%s' "$candidate" | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' 2>/dev/null || true)"
+  for token in $tokens; do
+    name="$(printf '%s' "$token" | sed 's/^\$//;s/^{//;s/}$//')"
+    assignment_re='(^|[;[:space:]])'
+    assignment_re+="$name="
+    assignment_re+='[^;|&]*'
+    if [[ "$command_text" =~ $assignment_re ]]; then
+      case "$BASH_REMATCH" in
+        *'..'*) return 0 ;;
+      esac
+    fi
+  done
+  return 1
+}
+
+scope_resolve_known_path_expansions() {
+  local candidate="${1:-}" command_text="${2:-}" token name value assignment_re backtick
+  backtick=$'\140'
+  local tokens
+  tokens="$(printf '%s' "$candidate" | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' 2>/dev/null || true)"
+  for token in $tokens; do
+    name="$(printf '%s' "$token" | sed 's/^\$//;s/^{//;s/}$//')"
+    value=""
+    if [ "$name" = "HQ_ROOT" ] && [ -n "$HQ_ROOT" ]; then
+      value="$HQ_ROOT"
+    else
+      assignment_re='(^|[;[:space:]])'
+      assignment_re+="$name="
+      assignment_re+='("[^"[:cntrl:]]*"|'
+      assignment_re+="'[^'[:cntrl:]]*'"
+      assignment_re+='|[^;|&[:space:]]+)'
+      if [[ "$command_text" =~ $assignment_re ]]; then
+        value="${BASH_REMATCH[2]}"
+        case "$value" in
+          \"*\") value="${value:1:${#value}-2}" ;;
+          \'*\') value="${value:1:${#value}-2}" ;;
+        esac
+        value="${value//\$\{HQ_ROOT\}/$HQ_ROOT}"
+        value="${value//\$HQ_ROOT/$HQ_ROOT}"
+      fi
+    fi
+    if [ -n "$value" ]; then
+      # An absolute value embedded after an open-tree prefix is ambiguous to
+      # the shell and must not inherit the literal prefix's exemption.
+      case "$value" in /*) printf '%s' "__ABSOLUTE_EXPANSION__"; return 0 ;; esac
+      # Only a literal, slash-free, non-parent value is safe to substitute.
+      # Command substitutions and assignment chains remain unresolved.
+      case "$value" in
+        *'/'*|*'..'*|*'$'*|*"$backtick"*) value="" ;;
+      esac
+    fi
+    if [ -n "$value" ]; then
+      candidate="${candidate//\$\{$name\}/$value}"
+      candidate="${candidate//\$$name/$value}"
+    fi
+  done
+  printf '%s' "$candidate"
+}
+
+scope_open_tree_expansion_is_provably_confined() {
+  local candidate="${1:-}" command_prefix="${2:-}" root parent segment normalized_parent
+  local token name assignment_re glob_segment match physical value backtick physical_parent physical_tree
+  backtick=$'\140'
+  local tokens
+  case "$candidate" in
+    workspace/*) root="workspace" ;;
+    core/*) root="core" ;;
+    personal/*) root="personal" ;;
+    repos/*) root="repos" ;;
+    *) return 1 ;;
+  esac
+  parent="${candidate%/*}"
+  segment="${candidate##*/}"
+  # Expansions in directory components are never granted the open-tree carve-out.
+  case "$parent" in *'$'*|*"$backtick"*|*'$('*) return 1 ;; esac
+  normalized_parent="$(scope_normalize_hq_relative "$parent")"
+  case "$normalized_parent" in "$root"|"$root"/*) ;; *) return 1 ;; esac
+  [ -d "$HQ_ROOT/$normalized_parent" ] || return 1
+  physical_tree="$(scope_resolve_absolute_path "$HQ_ROOT/$root" 2>/dev/null || true)"
+  physical_parent="$(scope_resolve_absolute_path "$HQ_ROOT/$normalized_parent" 2>/dev/null || true)"
+  [ -n "$physical_tree" ] && [ -n "$physical_parent" ] || return 1
+  case "$physical_parent" in "$physical_tree"|"$physical_tree"/*) ;; *) return 1 ;; esac
+  tokens="$(printf '%s' "$segment" | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' 2>/dev/null || true)"
+  [ -n "$tokens" ] || return 1
+  glob_segment="$segment"
+  for token in $tokens; do
+    name="$(printf '%s' "$token" | sed 's/^\$//;s/^{//;s/}$//')"
+    assignment_re='(^|[;[:space:]])'
+    assignment_re+="$name="
+    assignment_re+='("[^"[:cntrl:]]*"|'
+    assignment_re+="'[^'[:cntrl:]]*'"
+    assignment_re+='|[^;|&[:space:]]+)'
+    if [[ "$command_prefix" =~ $assignment_re ]]; then
+      value="${BASH_REMATCH[2]}"
+      case "$value" in
+        \"*\") value="${value:1:${#value}-2}" ;;
+        \'*\') value="${value:1:${#value}-2}" ;;
+      esac
+      case "$value" in *'/'*|*'..'*|*'$'*|*"$backtick"*) value="" ;; esac
+      [ -n "$value" ] || return 1
+      glob_segment="${glob_segment//"$token"/*}"
+      continue
+    fi
+    return 1
+  done
+  case "$glob_segment" in *'$'*|*"$backtick"*|*'$('*) return 1 ;; esac
+  while IFS= read -r match; do
+    [ -n "$match" ] || continue
+    physical="$(scope_resolve_absolute_path "$match" 2>/dev/null || true)"
+    case "$physical" in
+      "$HQ_ROOT/$root"|"$HQ_ROOT/$root"/*) ;;
+      *) return 1 ;;
+    esac
+  done < <(compgen -G "$physical_parent/$glob_segment" || true)
+  # No existing entry can be checked. The slash-free value and resolved
+  # parent still prove that a future path cannot leave this tree.
+  return 0
+}
+
+scope_resolve_resumework_basename_value() {
+  local candidate="${1:-}" command_text="${2:-}" assignment_re value thread_id backtick
+  backtick=$'\140'
+  if [[ "$command_text" != *'id="${arg%.json}"'* || "$command_text" != *'id="${id##*/}"'* ]]; then
+    printf '%s' "$candidate"
+    return 0
+  fi
+  assignment_re='(^|[;[:space:]])arg=("[^"[:cntrl:]]*"|[^;|&[:space:]]+)'
+  [[ "$command_text" =~ $assignment_re ]] || { printf '%s' "$candidate"; return 0; }
+  value="${BASH_REMATCH[2]}"
+  case "$value" in \"*\") value="${value:1:${#value}-2}" ;; esac
+  case "$value" in *'$'*|*"$backtick"*) printf '%s' "$candidate"; return 0 ;; esac
+  case "$value" in *.json) value="${value%.json}" ;; esac
+  thread_id="${value##*/}"
+  [ -n "$thread_id" ] || { printf '%s' "$candidate"; return 0; }
+  case "$thread_id" in .|..|*/*) printf '%s' "$candidate"; return 0 ;; esac
+  candidate="${candidate//\$\{id\}/$thread_id}"
+  candidate="${candidate//\$id/$thread_id}"
+  candidate="${candidate//\$$thread_id/$thread_id}"
+  printf '%s' "$candidate"
+}
+
 scope_check_bash_skill_path() {
   local raw="${1:-}" command_text="${2:-}" prefix="${3:-}" suffix="${4:-}"
-  local masked backtick token rel resolved expansion_cwd expanded
+  local masked raw_masked backtick token rel resolved expansion_cwd expanded expanded_raw
   [ -n "$raw" ] || return 0
+  # Shell assignment words can themselves carry paths. Check those values,
+  # while leaving basename-style parameter transforms such as ${id##*/} alone.
+  if [[ "$raw" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+    expanded="${raw#*=}"
+    case "$expanded" in
+      \"*\") expanded="${expanded:1:${#expanded}-2}" ;;
+      \'*\') expanded="${expanded:1:${#expanded}-2}" ;;
+    esac
+    case "$expanded" in
+      workspace/*|core/*|personal/*|repos/*|companies/*|/*|./*|../*|~/*)
+        scope_check_bash_skill_path "$expanded" "$command_text" "$prefix" "$suffix"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  fi
   if [ -z "$prefix" ] && [[ "$command_text" == *"$raw"* ]]; then
     prefix="${command_text%%"$raw"*}"
     suffix="${command_text#*"$raw"}"
@@ -1292,9 +1452,47 @@ scope_check_bash_skill_path() {
       return 0
       ;;
   esac
-  rel="$(scope_normalize_hq_relative "$raw")"
-  masked="$(scope_mask_literal_expansions "$raw")"
+  expanded_raw="$(scope_resolve_resumework_basename_value "$raw" "$command_text")"
+  expanded_raw="$(scope_resolve_known_path_expansions "$expanded_raw" "$command_text")"
+  [ "$expanded_raw" != "__ABSOLUTE_EXPANSION__" ] || \
+    scope_block_rel "$raw" "an absolute path expansion cannot use an open-tree prefix"
+  rel="$(scope_normalize_hq_relative "$expanded_raw")"
+  raw_masked="$(scope_mask_literal_expansions "$expanded_raw")"
+  case "$raw_masked" in
+    workspace/*|core/*|personal/*|repos/*)
+      case "$raw_masked:$rel" in
+        workspace/*:workspace/*|core/*:core/*|personal/*:personal/*|repos/*:repos/*) ;;
+        *)
+          [ -n "$rel" ] || scope_block_rel "$raw" "an expanded path leaves the HQ root"
+          scope_check_rel "$rel"
+          ;;
+      esac
+      ;;
+  esac
+  masked="$(scope_mask_literal_expansions "$rel")"
   backtick=$'\140'
+  # Paths rooted in HQ's explicitly open trees remain in those trees when a
+  # filename component is supplied by a shell variable. Company paths are
+  # handled by the stricter company-aware scanner above; an unresolved company
+  # segment must still fail closed.
+  case "$masked" in
+    workspace/*|core/*|personal/*|repos/*)
+      case "$masked" in
+        *'$'*|*"$backtick"*)
+          case "$raw" in
+            *'..'*) scope_block_rel "$raw" "a path expansion can traverse outside an allowed HQ tree" ;;
+          esac
+          if scope_open_tree_expansion_has_parent_value "$raw" "$command_text"; then
+            scope_block_rel "$raw" "a path variable contains parent traversal"
+          fi
+          if scope_open_tree_expansion_is_provably_confined "$expanded_raw" "$prefix"; then
+            return 0
+          fi
+          scope_block_rel "$raw" "an open-tree path expansion is not provably confined"
+          ;;
+      esac
+      ;;
+  esac
   case "$masked" in
     *'$('|*"$backtick"*|*'$'*)
       # Resolve assignments, bounded loop values, and literal positional
