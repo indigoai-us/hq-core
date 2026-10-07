@@ -67,12 +67,97 @@ scope_mask_literal_expansions() {
   printf '%s' "$out"
 }
 
-# Strip only heredoc bodies passed as literal gh pr create body data. Keep
-# each command header in the scan so redirection destinations remain authorization
-# targets. Other heredocs stay visible and are checked fail-closed.
+# Keep each heredoc command header in the scan so redirection destinations
+# remain authorization targets. Heredoc bodies are stripped only when they are
+# data for `gh pr create` or data written by `cat`/`tee` to an output redirect.
+# Interpreter heredocs and other command bodies stay visible and fail closed.
+scope_heredoc_output_writer() {
+  local header="${1:-}" output_redirect_re
+  # Do not classify compound commands or pipelines as pure data writers.
+  case "$header" in *'|'*|*';'*|*'&'*) return 1 ;; esac
+  [[ "$header" =~ ^[[:space:]]*(cat|tee)([[:space:]]|$) ]] || return 1
+  output_redirect_re='(^|[[:space:]])(1?>|>>)[[:space:]]*[^[:space:];|&]+'
+  [[ "$header" =~ $output_redirect_re ]]
+}
+
+# Unquoted here-docs expand command and process substitutions and backticks,
+# but plain text such as `$project` is not a filesystem operand. Keep executable
+# expansion bodies visible to the normal scanner and discard the surrounding prose.
+scope_heredoc_executions() {
+  local raw="${1:-}" out="" ch next escaped=0 quote="" depth start i j inner_ch inner_escape
+  local backtick
+  # Most heredoc lines are plain prose. Avoid the byte-by-byte parser unless
+  # an executable expansion marker is present; this is especially costly in
+  # Git Bash where substring extraction starts a shell operation per byte.
+  case "$raw" in
+    *'$('*|*'<('*|*'>('*|*'`'*) ;;
+    *) return 0 ;;
+  esac
+  backtick=$'\140'
+  for ((i = 0; i < ${#raw}; i++)); do
+    ch="${raw:i:1}"
+    if [ "$escaped" -eq 1 ]; then escaped=0; continue; fi
+    if [ "$ch" = '\\' ]; then escaped=1; continue; fi
+    next="${raw:$((i + 1)):1}"
+    if { [ "$ch" = '$' ] || [ "$ch" = '<' ] || [ "$ch" = '>' ]; } && [ "$next" = '(' ]; then
+      start=$i
+      depth=1
+      quote=""
+      inner_escape=0
+      j=$((i + 2))
+      while [ "$j" -lt "${#raw}" ] && [ "$depth" -gt 0 ]; do
+        inner_ch="${raw:j:1}"
+        if [ "$inner_escape" -eq 1 ]; then inner_escape=0; j=$((j + 1)); continue; fi
+        if [ "$inner_ch" = '\\' ]; then inner_escape=1; j=$((j + 1)); continue; fi
+        if [ -n "$quote" ]; then
+          if [ "$inner_ch" = "$quote" ]; then quote=""; fi
+          j=$((j + 1)); continue
+        fi
+        case "$inner_ch" in
+          \'|\") quote="$inner_ch" ;;
+          '(') depth=$((depth + 1)) ;;
+          ')') depth=$((depth - 1)) ;;
+        esac
+        j=$((j + 1))
+      done
+      if [ "$depth" -eq 0 ]; then
+        out+="${raw:start:$((j - start))}"$'\n'
+        i=$((j - 1))
+      else
+        # An unterminated substitution is ambiguous; leave its remainder for
+        # the normal fail-closed scan.
+        out+="${raw:start}"
+        break
+      fi
+      continue
+    fi
+    if [ "$ch" = "$backtick" ]; then
+      start=$i
+      j=$((i + 1))
+      inner_escape=0
+      while [ "$j" -lt "${#raw}" ]; do
+        inner_ch="${raw:j:1}"
+        if [ "$inner_escape" -eq 1 ]; then inner_escape=0; j=$((j + 1)); continue; fi
+        if [ "$inner_ch" = '\\' ]; then inner_escape=1; j=$((j + 1)); continue; fi
+        if [ "$inner_ch" = "$backtick" ]; then break; fi
+        j=$((j + 1))
+      done
+      if [ "$j" -lt "${#raw}" ]; then
+        out+="${raw:start:$((j - start + 1))}"$'\n'
+        i=$j
+      else
+        out+="${raw:start}"
+        break
+      fi
+      continue
+    fi
+  done
+  printf '%s' "$out"
+}
+
 scope_strip_inert_heredoc_bodies() {
   local raw="${1:-}" output="" line delimiter="" strip_tabs=0 in_body=0 delimiter_quoted=0
-  local original="$raw" tail="" unsafe_re body_sub_prefix
+  local original="$raw" tail="" unsafe_re body_sub_prefix data_writer=0
   case "$raw" in *'<<'*) ;; *) printf '%s' "$raw"; return 0 ;; esac
 
   body_sub_prefix='$'
@@ -87,6 +172,9 @@ scope_strip_inert_heredoc_bodies() {
         in_body=0
         delimiter=""
         strip_tabs=0
+        data_writer=0
+      elif [ "$data_writer" -eq 1 ] && [ "$delimiter_quoted" -eq 0 ]; then
+        output+="$(scope_heredoc_executions "$line")"$'\n'
       fi
       continue
     fi
@@ -113,7 +201,12 @@ scope_strip_inert_heredoc_bodies() {
         continue
       fi
     else
-      continue
+      if scope_heredoc_output_writer "$line"; then
+        tail="${line#*<<}"
+        data_writer=1
+      else
+        continue
+      fi
     fi
 
     strip_tabs=0
@@ -140,9 +233,11 @@ scope_strip_inert_heredoc_bodies() {
     case "$delimiter" in
       ""|*[!A-Za-z0-9._-]*) delimiter=""; strip_tabs=0; continue ;;
     esac
-    # Unquoted heredoc bodies undergo shell expansion, including command
-    # substitution. Keep those lines visible to the path scan.
-    [ "$delimiter_quoted" -eq 1 ] || { delimiter=""; strip_tabs=0; continue; }
+    # Quoted bodies are literal. For an unquoted data-writer body, retain only
+    # executable expansions; other unquoted heredocs remain fully scanned.
+    if [ "$delimiter_quoted" -eq 0 ] && [ "$data_writer" -eq 0 ]; then
+      delimiter=""; strip_tabs=0; continue
+    fi
     in_body=1
   done <<< "$raw"
 
@@ -154,19 +249,88 @@ scope_strip_inert_heredoc_bodies() {
   fi
 }
 
+scope_shell_prefix_is_unquoted() {
+  local value="${1:-}" quote="" escaped=0 ch i
+  for ((i = 0; i < ${#value}; i++)); do
+    ch="${value:i:1}"
+    if [ "$escaped" -eq 1 ]; then
+      escaped=0
+      continue
+    fi
+    if [ "$quote" = "'" ]; then
+      [ "$ch" = "'" ] && quote=""
+      continue
+    fi
+    if [ "$quote" = '"' ]; then
+      case "$ch" in
+        \\) escaped=1 ;;
+        '"') quote="" ;;
+      esac
+      continue
+    fi
+    case "$ch" in
+      \\) escaped=1 ;;
+      "'") quote="'" ;;
+      '"') quote='"' ;;
+    esac
+  done
+  [ -z "$quote" ] && [ "$escaped" -eq 0 ]
+}
+
 scope_shell_variable_values() {
-  local name="${1:-}" prefix="${2:-}" loop_re assignment_re command_prefix_re
-  local raw value command_prefix
-  local -a values=()
+  local name="${1:-}" prefix="${2:-}" command_text="${3:-}" loop_re assignment_re command_prefix_re
+  local raw value command_prefix function_name function_re function_keyword_re statement call_text position call_count call_occurrences loop_match loop_pre
+  local -a values=() statements=() call_args=()
   [ -n "$name" ] || return 1
 
+  if [[ "$name" =~ ^[1-9]$ ]]; then
+    function_re='(^|[;[:space:]])([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\(\)[[:space:]]*\{[^}]*$'
+    function_keyword_re='(^|[;[:space:]])function[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]+\{[^}]*$'
+    if [[ "$prefix" =~ $function_re ]]; then
+      function_name="${BASH_REMATCH[2]}"
+    elif [[ "$prefix" =~ $function_keyword_re ]]; then
+      function_name="${BASH_REMATCH[2]}"
+    else
+      return 1
+    fi
+    position="$name"
+    call_count=0
+    IFS=';' read -r -a statements <<< "$command_text"
+    for statement in "${statements[@]}"; do
+      while [[ "$statement" == [[:space:]]* || "$statement" == '}'* ]]; do
+        statement="${statement#?}"
+      done
+      [[ "$statement" =~ ^${function_name}([[:space:]]+(.*))?$ ]] || continue
+      call_text="${BASH_REMATCH[2]:-}"
+      [ -n "$call_text" ] || return 1
+      [[ "$call_text" =~ ^[A-Za-z0-9._/-]+([[:space:]]+[A-Za-z0-9._/-]+)*[[:space:]]*$ ]] || return 1
+      read -r -a call_args <<< "$call_text"
+      [ "${#call_args[@]}" -ge "$position" ] || return 1
+      values[${#values[@]}]="${call_args[$((position - 1))]}"
+      call_count=$((call_count + 1))
+    done
+    [ "$call_count" -gt 0 ] || return 1
+    call_occurrences="$(printf '%s' "$command_text" | grep -oE "(^|[;[:space:]])${function_name}([[:space:]]|$)" 2>/dev/null | wc -l | tr -d '[:space:]' || true)"
+    [ "$call_occurrences" = "$call_count" ] || return 1
+    printf '%s\n' "${values[@]}"
+    return 0
+  fi
+
   command_prefix_re='^[A-Za-z0-9_./:+@=-]+([[:space:]]+[A-Za-z0-9_./:+@=-]+)*[[:space:]]*$'
-  loop_re="^[[:space:]]*for[[:space:]]+${name}[[:space:]]+in[[:space:]]+([^;|&]+);[[:space:]]*do[[:space:]]+(.*)$"
+  loop_re="(^|;[[:space:]]*)for[[:space:]]+${name}[[:space:]]+in[[:space:]]+([^;|&]+);[[:space:]]*do[[:space:]]+(.*)$"
   if [[ "$prefix" =~ $loop_re ]]; then
-    raw="${BASH_REMATCH[1]}"
-    command_prefix="${BASH_REMATCH[2]}"
-    [[ "$command_prefix" =~ $command_prefix_re ]] || return 1
+    loop_match="${BASH_REMATCH[0]}"
+    loop_pre="${prefix%%"$loop_match"*}"
+    scope_shell_prefix_is_unquoted "$loop_pre" || return 1
+    raw="${BASH_REMATCH[2]}"
+    command_prefix="${BASH_REMATCH[3]}"
+    if ! [[ "$command_prefix" =~ $command_prefix_re ]]; then
+      [[ "$command_prefix" =~ ^[[:space:]]*(printf|echo)[[:space:]] ]] || return 1
+    fi
     [[ "$command_prefix" =~ (^|[[:space:]])${name}= ]] && return 1
+    case "$command_prefix" in
+      *"-v $name"*|*"read $name"*|*"declare $name"*|*"local $name"*|*"unset $name"*|*"eval"*|*"source "*|*". "*) return 1 ;;
+    esac
     IFS=$' \t\n' read -r -a values <<< "$raw"
     [ "${#values[@]}" -gt 0 ] || return 1
     for value in "${values[@]}"; do
@@ -196,12 +360,29 @@ scope_shell_variable_values() {
 
 scope_candidate_is_inert_text() {
   local candidate="${1:-}" command_text="${2:-}" prefix="${3:-}" suffix="${4:-}"
-  local segment="" masked_segment="" output_re redirection_re backtick
+  local segment="" masked_segment="" output_re redirection_re data_option_re backtick text_option_re command_head
   [ -n "$candidate" ] || return 1
   backtick=$'\140'
   # Only a standalone echo/printf is inert. A pipe, redirect, command
   # separator, or substitution can feed or execute the printed path.
   case "$command_text" in *';'*|*'|'*|*'&'*|*'<'*|*'>'*|*'$('*|*"$backtick"*|*$'\n'*) return 1 ;; esac
+  # Quoted message values are data only for commands whose option contract
+  # identifies them as text. Keep arbitrary programs and file options checked.
+  data_option_re="(^|[[:space:]])(--text|--title|--body)(=|[[:space:]])(\"[^\"]*$|'[^']*$)"
+  command_head="${command_text#"${command_text%%[![:space:]]*}"}"
+  case "$command_head" in
+    'hq dm '*) text_option_re="$data_option_re" ;;
+    'hq lanes message '*) text_option_re="$data_option_re" ;;
+    'hq mesh '* )
+      if [[ "$command_head" =~ ^hq[[:space:]]+mesh[[:space:]]+[^[:space:]]+[[:space:]]+note([[:space:]]|$) ]]; then
+        text_option_re="$data_option_re"
+      fi
+      ;;
+    'gh pr create '*|'gh pr comment '*|'gh pr edit '*|'gh issue create '*|'gh issue comment '*|'gh issue edit '*)
+      text_option_re="(^|[[:space:]])(--title|--body)(=|[[:space:]])(\"[^\"]*$|'[^']*$)" ;;
+    *) text_option_re="" ;;
+  esac
+  [ -n "$text_option_re" ] && [[ "$prefix" =~ $text_option_re ]] && return 0
   segment="$prefix$candidate$suffix"
   output_re='^[[:space:]]*(command[[:space:]]+)?(printf|echo)([[:space:]]|$)'
   [[ "$segment" =~ $output_re ]] || return 1
@@ -249,7 +430,7 @@ scope_check_bash_candidate_inner() {
   local masked token name prefix values value braced unbraced expanded backtick first_segment resolved
   local -a pending=()
   [ -n "$candidate" ] || return 0
-  [ "$depth" -lt 8 ] || scope_block_rel "companies/(shell-expanded)"
+  [ "$depth" -lt 8 ] || scope_block_rel "$candidate"
   scope_candidate_is_inert_text "$candidate" "$command_text" "$occurrence_prefix" "$occurrence_suffix" && return 0
   scope_candidate_is_single_quoted "$candidate" "$occurrence_prefix" && { scope_check_raw "$candidate"; return 0; }
 
@@ -266,9 +447,9 @@ scope_check_bash_candidate_inner() {
   fi
   backtick=$'\140'
   case "$masked" in
-    *'$('*|*"$backtick"*) scope_block_rel "companies/(shell-expanded)" ;;
+    *'$('*|*"$backtick"*) scope_block_rel "$candidate" ;;
   esac
-  token="$(printf '%s' "$masked" | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' 2>/dev/null | head -n 1 || true)"
+  token="$(printf '%s' "$masked" | grep -oE '\$\{?([A-Za-z_][A-Za-z0-9_]*|[1-9])\}?' 2>/dev/null | head -n 1 || true)"
   if [ -n "$token" ]; then
     name="${token#\$}"
     name="${name#\{}"
@@ -276,14 +457,14 @@ scope_check_bash_candidate_inner() {
     braced='$'"{$name}"
     unbraced='$'"$name"
     if [ "$token" != "$unbraced" ] && [ "$token" != "$braced" ]; then
-      scope_block_rel "companies/(shell-expanded)"
+      scope_block_rel "$candidate"
     fi
     prefix="$occurrence_prefix"
-    values="$(scope_shell_variable_values "$name" "$prefix" || true)"
-    [ -n "$values" ] || scope_block_rel "companies/(shell-expanded)"
+    values="$(scope_shell_variable_values "$name" "$prefix" "$command_text" || true)"
+    [ -n "$values" ] || scope_block_rel "$candidate"
 
     while IFS= read -r value; do
-      [ -n "$value" ] || scope_block_rel "companies/(shell-expanded)"
+      [ -n "$value" ] || scope_block_rel "$candidate"
       if [[ "$candidate" == *"$braced"* ]]; then
         # Bash 3.2 can preserve nested quotes from a parameter-replacement
         # replacement word. Assemble the pieces so the checked path has no
@@ -292,7 +473,7 @@ scope_check_bash_candidate_inner() {
       elif [[ "$candidate" == *"$unbraced"* ]]; then
         expanded="${candidate%%"$unbraced"*}$value${candidate#*"$unbraced"}"
       else
-        scope_block_rel "companies/(shell-expanded)"
+        scope_block_rel "$candidate"
       fi
       pending[${#pending[@]}]="$expanded"
     done <<< "$values"
@@ -306,7 +487,7 @@ scope_check_bash_candidate_inner() {
     *'{'*|*'}'*) scope_block_rel "$candidate" "brace expansion cannot be checked safely" ;;
   esac
   case "$masked" in
-    *'$'*|*"$backtick"*) scope_block_rel "companies/(shell-expanded)" ;;
+    *'$'*|*"$backtick"*) scope_block_rel "$candidate" ;;
   esac
   first_segment="${masked#companies/}"
   first_segment="${first_segment%%/*}"
@@ -822,26 +1003,35 @@ scope_resolve_payload_path() {
 
 # Search tools can traverse entries below their declared root. Check a root's
 # own resolved target first, then inspect symlinks below it without following
-# them. Scan links rather than walking every ordinary file, and prune large
-# trees that are outside company scope. A symlink that cannot be resolved is
-# denied because its company scope cannot be established safely.
+# them. Prune expensive or out-of-scope trees and cap the entries inspected so
+# the scan remains bounded independently of directory depth. A scan error or an
+# exceeded entry ceiling is denied. A symlink that cannot be resolved is denied
+# because its company scope cannot be established safely.
 scope_scan_search_symlinks() {
-  local dir="${1:-}" max_depth="${2:-6}" entry rel resolved scan_rc too_deep
+  local dir="${1:-}" entry rel resolved scan_rc max_entries=4096 scanned=0
   [ -d "$dir" ] || return 0
-  too_deep="$(find "$dir" \( -type d \( -name .git -o -name node_modules -o -path "$HQ_ROOT/repos" \) -prune \) -o \( -mindepth "$((max_depth + 1))" -type d -print -quit \) 2>/dev/null)" || \
-    scope_block_rel "companies/(search root could not be checked safely)"
-  [ -z "$too_deep" ] || scope_block_rel "companies/(search root is too deep; narrow the root and retry)"
-  find "$dir" -maxdepth "$((max_depth + 1))" -type l -print0 2>/dev/null |
+  if find "$dir" \
+    \( -type d \( -name .git -o -name node_modules \) -prune \) -o \
+    \( -path "$HQ_ROOT/repos" -prune \) -o \
+    -print0 |
     while IFS= read -r -d '' entry; do
-      rel="$(scope_normalize_hq_relative "$entry")"
-      if [ -n "$rel" ]; then
-        scope_check_rel "$rel"
-      else
-        resolved="$(scope_resolve_absolute_path "$entry" 2>/dev/null || true)"
-        [ -n "$resolved" ] || scope_block_rel "companies/(unresolvable search symlink)"
+      scanned=$((scanned + 1))
+      [ "$scanned" -le "$max_entries" ] || \
+        scope_block_rel "companies/(search root scan limit exceeded; narrow the root and retry)"
+      if [ -L "$entry" ]; then
+        rel="$(scope_normalize_hq_relative "$entry")"
+        if [ -n "$rel" ]; then
+          scope_check_rel "$rel"
+        else
+          resolved="$(scope_resolve_absolute_path "$entry" 2>/dev/null || true)"
+          [ -n "$resolved" ] || scope_block_rel "companies/(unresolvable search symlink)"
+        fi
       fi
-    done
-  scan_rc=$?
+    done; then
+    return 0
+  else
+    scan_rc=$?
+  fi
   [ "$scan_rc" -ne 2 ] || exit 2
   [ "$scan_rc" -eq 0 ] || scope_block_rel "companies/(search root could not be scanned safely)"
   return 0
@@ -867,7 +1057,7 @@ scope_check_recursive_search_root() {
   [ "$rel" != "__OUTSIDE_HQ__" ] || return 0
   root_abs="$HQ_ROOT/$rel"
   [ -d "$root_abs" ] || return 0
-  scope_scan_search_symlinks "$root_abs" 6
+  scope_scan_search_symlinks "$root_abs"
 }
 
 scope_strip_command_wrappers() {
@@ -1078,16 +1268,39 @@ scope_glob_static_prefix() {
 
 scope_check_bash_skill_path() {
   local raw="${1:-}" command_text="${2:-}" prefix="${3:-}" suffix="${4:-}"
-  local masked backtick token rel resolved
+  local masked backtick token rel resolved expansion_cwd expanded
   [ -n "$raw" ] || return 0
+  if [ -z "$prefix" ] && [[ "$command_text" == *"$raw"* ]]; then
+    prefix="${command_text%%"$raw"*}"
+    suffix="${command_text#*"$raw"}"
+  fi
   scope_candidate_is_inert_text "$raw" "$command_text" "$prefix" "$suffix" && return 0
   case "$raw" in */*|/*) ;; *) return 0 ;; esac
+  # These three forms have the same value as the shell's command cwd. Resolve
+  # only the exact leading spellings; any other substitution in the remaining
+  # path is checked normally and stays fail-closed when it cannot be resolved.
+  case "$raw" in
+    '$(pwd)/'*|'$(pwd -P)/'*|'$PWD/'*)
+      expansion_cwd="$(cd "$COMMAND_CWD" 2>/dev/null && pwd -P)" \
+        || scope_block_rel "$raw" "the command working directory cannot be resolved"
+      case "$raw" in
+        '$(pwd)/'*) expanded="$expansion_cwd/${raw#\$(pwd)/}" ;;
+        '$(pwd -P)/'*) expanded="$expansion_cwd/${raw#\$(pwd -P)/}" ;;
+        '$PWD/'*) expanded="$expansion_cwd/${raw#\$PWD/}" ;;
+      esac
+      scope_check_bash_candidate_inner "$expanded" "$command_text" 0 "" "$prefix" "$suffix"
+      return 0
+      ;;
+  esac
   rel="$(scope_normalize_hq_relative "$raw")"
   masked="$(scope_mask_literal_expansions "$raw")"
   backtick=$'\140'
   case "$masked" in
     *'$('|*"$backtick"*|*'$'*)
-      case "$rel" in companies/*|.claude/*|personal/*|workspace/*) scope_block_rel "companies/(shell-expanded)" ;; esac
+      # Resolve assignments, bounded loop values, and literal positional
+      # arguments at known function call sites. Any unresolved path stays
+      # blocked and is reported by its own literal path.
+      scope_check_bash_candidate_inner "$raw" "$command_text" 0 "" "$prefix" "$suffix"
       return 0
       ;;
   esac
@@ -1125,7 +1338,7 @@ case "$TOOL" in
       # directories. Avoid a broad whole-tree scan; explicit roots are scanned.
       :
     else
-      scope_check_search_root "$scope_search_root"
+      scope_check_recursive_search_root "$scope_search_root"
     fi
     if [ "$TOOL" = "Glob" ]; then
       scope_pattern="$(printf '%s' "$INPUT" | jq -r '.tool_input.pattern // empty')"
@@ -1135,7 +1348,7 @@ case "$TOOL" in
           /*) scope_pattern_root="$scope_prefix" ;;
           *) scope_pattern_root="${scope_search_root%/}/$scope_prefix" ;;
         esac
-        scope_check_search_root "$scope_pattern_root"
+        scope_check_recursive_search_root "$scope_pattern_root"
       fi
     fi
     ;;

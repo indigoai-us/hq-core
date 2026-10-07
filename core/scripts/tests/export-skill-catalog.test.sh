@@ -11,6 +11,19 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
 
+# Match a fixed string inside a captured output without a pipe.
+#
+# `printf '%s\n' "$out" | grep -Fq ...` looks equivalent but is not: grep -q
+# exits the moment it matches, so printf loses its reader and dies of EPIPE
+# whenever the matching line is not the last one. Under `set -o pipefail` that
+# poisons the pipeline's exit status, and a matching assertion reports a
+# failure. It is a race on buffer timing, so it passes locally and fails on CI.
+# A here-string has no second process and cannot lose the race.
+contains() {
+  local needle="$1" haystack="$2"
+  grep -Fq -- "$needle" <<<"$haystack"
+}
+
 write_skill() {
   local dir="$1" name="$2" description="$3"
   mkdir -p "$dir"
@@ -50,8 +63,8 @@ scaffold_hq "$HQ"
 write_skill "$HQ/companies/demo/skills/startwork" startwork "company copy"
 write_skill "$HQ/.claude/skills/startwork" startwork "root copy"
 out="$(bash "$EXPORTER" --root "$HQ" --company demo)"
-printf '%s\n' "$out" | grep -Fq '/startwork — company copy' || fail "company skill missing: $out"
-printf '%s\n' "$out" | grep -Fq 'root copy' && fail "root shadow should not appear: $out"
+contains '/startwork — company copy' "$out" || fail "company skill missing: $out"
+contains 'root copy' "$out" && fail "root shadow should not appear: $out"
 pass "company precedence honored"
 
 echo "[2] root and package skills export when present"
@@ -60,8 +73,8 @@ scaffold_hq "$HQ"
 write_skill "$HQ/.claude/skills/handoff" handoff "wrap sessions"
 write_skill "$HQ/core/packages/hq-pack-engineering/skills/land" land "ship code"
 out="$(bash "$EXPORTER" --root "$HQ" --company demo)"
-printf '%s\n' "$out" | grep -Fq '/handoff — wrap sessions' || fail "root skill missing: $out"
-printf '%s\n' "$out" | grep -Fq '/land — ship code' || fail "package skill missing: $out"
+contains '/handoff — wrap sessions' "$out" || fail "root skill missing: $out"
+contains '/land — ship code' "$out" || fail "package skill missing: $out"
 pass "root and package skills export"
 
 echo "[3] missing args fail clearly"
@@ -70,7 +83,7 @@ out_missing="$(bash "$EXPORTER" 2>&1)"
 rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "expected failure without args"
-printf '%s\n' "$out_missing" | grep -Fq -- '--root is required' || fail "missing --root message absent: $out_missing"
+contains '--root is required' "$out_missing" || fail "missing --root message absent: $out_missing"
 pass "usage guardrails"
 
 echo "[4] traversal slug rejected before catalog build"
@@ -83,7 +96,7 @@ err="$(bash "$EXPORTER" --root "$HQ" --company 'demo/../secret' 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 6 ] || fail "traversal slug expected exit 6 got $rc: $err"
-printf '%s\n' "$err" | grep -Fq 'company refused' || fail "expected company refused: $err"
+contains 'company refused' "$err" || fail "expected company refused: $err"
 pass "traversal slug rejected"
 
 echo "[5] block-scalar descriptions fold; inline descriptions stay unchanged"
@@ -119,5 +132,15 @@ else
   pass 'following frontmatter key is excluded from block description'
 fi
 [[ "$scalar_failures" -eq 0 ]] || exit 1
+
+echo "[6] a match on a non-final line does not report a failure"
+# Guards the EPIPE race that broke case [2] on CI: with `set -o pipefail`, a
+# matching `printf "%s\n" "$out" | grep -Fq` can still exit non-zero because
+# grep -q stops reading and printf dies writing the remaining lines. The output
+# here is large enough that the race is lost every time, so this case fails
+# deterministically if any assertion helper goes back to a pipe.
+big_output="$(seq 1 200000)"
+contains '1' "$big_output" || fail "contains lost a match on a non-final line"
+pass "match on a non-final line survives pipefail"
 
 echo "export-skill-catalog tests passed"

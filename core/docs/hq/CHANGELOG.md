@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Scope checks treat `cat` and `tee` heredoc bodies sent to output redirects as file content. They still check the redirect path and command substitutions in unquoted bodies.
+- Skip per-character heredoc scans when a line has no executable expansion markers; keep unresolved workspace and personal paths blocked by their literal paths; resolve only known assignments, loop values, and literal function arguments; and limit message-text exemptions to approved HQ/GitHub commands.
+- Scan bounded symlink entries below Grep and Glob roots and static prefixes before authorizing cross-company reads.
+- Resolve `pwd`, `$PWD`, and `pwd -P` command-directory operands before checking company scope; keep other shell substitutions fail-closed.
 - Disable hq self-update for the timeout-bounded folder registry call in resolve-company.
 
 - Exclude sync journal findings that `hq doctor --fix` cannot repair from automated client health reports, while keeping unresolved repairable company journals reportable.
