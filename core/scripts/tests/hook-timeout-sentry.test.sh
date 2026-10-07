@@ -1608,6 +1608,14 @@ jq -e --arg hook_path "$R17/core/hooks/PreToolUse/10-timeout-child.sh" '
   || fail "child timeout event omitted final duration or exit code"
 [ ! -s "$R17/err" ] || fail "child timeout instrumentation changed master stderr"
 pass "declared child timeout is reported with its measured completion details"
+dispatch_timestamp_reads="$(awk '
+  index($0, "child_started_ms=\"$MASTER_NOW_MS\"") { count++ }
+  index($0, "child_ended_ms=\"$MASTER_NOW_MS\"") { count++ }
+  END { print count + 0 }
+' "$ROOT/.claude/hooks/master-hook.sh")"
+[ "$dispatch_timestamp_reads" -eq 4 ] \
+  || fail "exceeded child path must use all four parent-shell dispatch timestamps (found $dispatch_timestamp_reads)"
+pass "exceeded timeout path uses parent-shell dispatch timestamps"
 
 echo "[17b] a child that returns 124 is not misclassified as a timeout"
 R17_STATUS="$(make_root child-status-124)"
@@ -1793,7 +1801,7 @@ jq -e '
   and .waiting_child_basename == "other"
   and (.phase_timings | length == 24)
 ' <<<"$debug_context" >/dev/null || fail "debug context was not normalized to the accepted fields"
-if printf '%s' "$debug_context" | grep -Eq '(/home/|home User|--private|--password|hidden|alice|secret)'; then
+if grep -Eq '(/home/|home User|--private|--password|hidden|alice|secret)' <<<"$debug_context"; then
   fail "debug context leaked a path, home directory, or argument"
 fi
 base_report="$(jq -cn --arg hook_path "$TMP/repos/private/hq-core-staging/.claude/hooks/master-hook.sh" \

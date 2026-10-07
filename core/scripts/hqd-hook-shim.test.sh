@@ -326,6 +326,9 @@ await startHqdServer({
   hqRoot: root,
   env: { PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR ?? "/tmp",
          HQ_WORK_MESH_ROOT: path.join(home, ".hq", "work-mesh"), WORK_MESH_SEQ_DIR: path.join(home, ".hq", "work-mesh", "seq") },
+  // Keep the real-daemon probe on the enabled path without consulting live flag state.
+  runtimeFlagReader: async () => true,
+  personSettingReader: async () => true,
   workMeshRoot: path.join(home, ".hq", "work-mesh"),
 });
 process.stdout.write("ready\n");

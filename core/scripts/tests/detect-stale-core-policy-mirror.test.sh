@@ -58,6 +58,18 @@ policy "$FIX/personal/policies" personal-only "operator rule"
 
 run() { HQ_ROOT="$FIX" bash "$SCRIPT" "$@"; }
 
+# The bundled rollback companion in the pinned CLI package owns the shell help
+# bytes. The staging path itself is a generated forwarder and intentionally has
+# no implementation body to inspect.
+CLI_GLOBAL_ROOT="${HQ_CLI_ROOT:-$(npm root -g)/@indigoai-us/hq-cli}"
+BUNDLED_SCRIPT="$CLI_GLOBAL_ROOT/assets/scaffold/core/scripts/detect-stale-core-policy-mirror.sh"
+[ -f "$BUNDLED_SCRIPT" ] || { bad "pinned hq CLI shell companion is missing: $BUNDLED_SCRIPT"; exit 1; }
+HELP="$(bash "$BUNDLED_SCRIPT" --help)"
+case "$HELP" in
+  *"set -euo pipefail"*) bad "--help includes the shell implementation instead of stopping at the comment header" ;;
+  *) ok "--help stops at the comment header" ;;
+esac
+
 # --- JSON classification -----------------------------------------------------
 JSON="$(run --json)"
 case "$JSON" in

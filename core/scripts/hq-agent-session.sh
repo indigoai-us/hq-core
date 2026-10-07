@@ -213,6 +213,9 @@ emit_and_exit() {
   # guarantees the background loop cannot outlive the turn.
   session_heartbeat_stop
   local resp opt_json
+  if [ -z "${SESSION_DECISION:-}" ] && [ -n "${SESSION_HQ_ROOT:-}" ] && [ -n "${SESSION_LANE_ID:-}" ]; then
+    SESSION_DECISION="$(session_read_lane_decision "$SESSION_HQ_ROOT" "$SESSION_LANE_ID" 2>/dev/null || true)"
+  fi
   local bytes_json="null"
   local cv_json="1"
   local downgrade_json="false"
@@ -323,6 +326,7 @@ emit_and_exit() {
   resp="$(jq -nc \
     --argjson cv "$cv_json" \
     --arg disposition "${SESSION_DISPOSITION:-error}" \
+    --arg decision "${SESSION_DECISION:-}" \
     --arg text "${SESSION_TEXT:-}" \
     --argjson artifacts "$SESSION_ARTIFACTS_JSON" \
     --argjson extra "$opt_json" \
@@ -331,7 +335,8 @@ emit_and_exit() {
       disposition: $disposition,
       text: $text,
       artifacts: $artifacts
-    } + $extra')" || resp='{"contractVersion":1,"disposition":"error","text":"hq-agent-session: envelope encode failed","artifacts":[]}'
+    } + (if ($decision | IN("done", "blocked", "ask")) then {decision:$decision} else {} end) + $extra')" \
+    || resp='{"contractVersion":1,"disposition":"error","text":"hq-agent-session: envelope encode failed","artifacts":[]}'
 
   resp="$(session_reply_contract_add_outcome_fields "$resp")" \
     || resp='{"contractVersion":1,"disposition":"error","text":"hq-agent-session: outcome encode failed","artifacts":[]}'
@@ -425,7 +430,7 @@ validate_request_json() {
       (keys - [
         "contractVersion","agentUid","companySlug","channel","convKey",
         "messageText","provider","sender","rehydration",
-        "rehydrationTurnCount","project","directMention"
+        "rehydrationTurnCount","project","directMention","laneId"
       ] | length) == 0
     )
     and (
@@ -445,7 +450,40 @@ validate_request_json() {
       (has("directMention") | not)
       or (.directMention | type == "boolean")
     )
+    and (
+      (has("laneId") | not)
+      or (.laneId | type == "string" and test("^[A-Za-z0-9_-]{1,160}$"))
+    )
   ' "$file" >/dev/null 2>&1
+}
+
+# hq-cli persists worker envelopes at
+# workspace/lanes-runs/<laneId>/envelopes/<sequence>.json. Read only the
+# numerically newest sequenced envelope; unsequenced filenames are ignored.
+# A newer envelope without a terminal decision intentionally returns no result.
+session_read_lane_decision() {
+  local LC_ALL=C
+  local root="${1:-}" lane_id="${2:-}" dir file sequence latest_sequence="" latest_file="" candidate
+  case "$lane_id" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
+  [ -n "$root" ] || return 1
+  dir="$root/workspace/lanes-runs/$lane_id/envelopes"
+  [ -d "$dir" ] || return 1
+  for file in "$dir"/*.json; do
+    [ -f "$file" ] || continue
+    sequence="${file##*/}"
+    sequence="${sequence%.json}"
+    case "$sequence" in ''|*[!0-9]*) continue ;; esac
+    while [[ "$sequence" == 0* && "$sequence" != 0 ]]; do sequence="${sequence#0}"; done
+    if [ -z "$latest_file" ] \
+      || [ "${#sequence}" -gt "${#latest_sequence}" ] \
+      || { [ "${#sequence}" -eq "${#latest_sequence}" ] && [[ "$sequence" > "$latest_sequence" ]]; }; then
+      latest_sequence="$sequence"
+      latest_file="$file"
+    fi
+  done
+  [ -n "$latest_file" ] || return 1
+  candidate="$(jq -r '.last_envelope.decision // .decision // empty' "$latest_file" 2>/dev/null || true)"
+  case "$candidate" in done|blocked|ask) printf '%s' "$candidate" ;; *) return 1 ;; esac
 }
 
 # Post-turn: collect artifacts + residual workspace writes into SESSION_* fields
@@ -481,7 +519,7 @@ main() {
   fi
 
   # Extract fields
-  local contract_version agent_uid company_slug channel conv_key message_text provider
+  local contract_version agent_uid company_slug channel conv_key message_text provider lane_id
   local project_field="" sender_verified="false" rehydration_block="" direct_mention="false"
   contract_version="$(jq -r '.contractVersion' "$req_file")"
   agent_uid="$(jq -r '.agentUid' "$req_file")"
@@ -490,6 +528,8 @@ main() {
   conv_key="$(jq -r '.convKey' "$req_file")"
   message_text="$(jq -r '.messageText' "$req_file")"
   provider="$(jq -r '.provider' "$req_file")"
+  lane_id="$(jq -r '.laneId // empty' "$req_file")"
+  SESSION_LANE_ID="$lane_id"
   project_field="$(jq -r '.project // empty' "$req_file")"
   # US-011: pass dispatch envelope to SessionStart as trusted spawn context.
   export HQ_SPAWN_COMPANY="$company_slug"
@@ -825,6 +865,7 @@ main() {
   fi
 
   session_finalize_writes "$root" "$project_dir" "$SESSION_RUN_START_EPOCH"
+  SESSION_DECISION="$(session_read_lane_decision "$root" "$lane_id" 2>/dev/null || true)"
 
   # Reply contract (dispatch-path parity). The DIRECT path in hq-pro tells the
   # model to emit {"action":"reply","text":…} | {"action":"no_reply"} and

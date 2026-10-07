@@ -124,6 +124,7 @@ Required fields:
 | `disposition` | enum | `reply` \| `no_reply` \| `clarify` \| `plan` \| `error` |
 | `text` | string | Channel-facing body (may be empty for `no_reply`) |
 | `artifacts` | string[] | HQ-root-relative paths |
+| `decision` | enum (optional) | `done` \| `blocked` \| `ask`; included when the request carries a lane id with a persisted terminal envelope |
 
 Later stories may add optional diagnostic fields (e.g. `runDir`,
 `systemPromptBytes`); the response schema allows additional properties so

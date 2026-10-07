@@ -104,6 +104,85 @@ MODE="$(stat -c %a "$RUNDIR" 2>/dev/null || stat -f %Lp "$RUNDIR" 2>/dev/null)"
 [ "$MODE" = "700" ] || fail "runDir mode not 700: $MODE"
 pass "valid request"
 
+# The scheduled runner supplies the lane id; hq-agent-session returns the
+# decision hq-cli persisted in that lane's last envelope as a top-level result.
+mkdir -p "$FIXTURE/workspace/lanes-runs/lane-result/envelopes"
+printf '{"last_envelope":{"decision":"blocked"}}\n' \
+  > "$FIXTURE/workspace/lanes-runs/lane-result/envelopes/001.json"
+OUT="$(valid_req | jq '.laneId = "lane-result"' \
+  | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/lane-blocked.err")" \
+  || fail "blocked lane result failed to return an envelope"
+echo "$OUT" | jq -e '.decision == "blocked"' >/dev/null \
+  || { cat "$TMP/lane-blocked.err" >&2; fail "blocked lane decision missing from session result: $OUT"; }
+pass "lane decision is emitted from the persisted envelope"
+
+printf '{"last_envelope":{"decision":"done"}}\n' \
+  > "$FIXTURE/workspace/lanes-runs/lane-result/envelopes/001.json"
+OUT="$(valid_req | jq '.laneId = "lane-result"' \
+  | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/lane-done.err")" \
+  || fail "done lane result failed to return an envelope"
+echo "$OUT" | jq -e '.decision == "done"' >/dev/null \
+  || fail "done lane decision missing from session result: $OUT"
+pass "done lane decision is emitted"
+
+# Each case can be selected independently for a pre-fix negative control.
+LANE_DECISION_TEST_CASE="${HQ_AGENT_SESSION_TEST_ONLY_LANE_DECISION_CASE:-all}"
+run_lane_decision_case() {
+  [ "$LANE_DECISION_TEST_CASE" = all ] || [ "$LANE_DECISION_TEST_CASE" = "$1" ]
+}
+run_lane_decision_result() {
+  local label="$1"
+  OUT="$(valid_req | jq '.laneId = "lane-result"' \
+    | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/$label.err")" \
+    || fail "$label lane result failed to return an envelope"
+}
+
+if run_lane_decision_case blocked_then_review; then
+  printf '{"last_envelope":{"decision":"blocked"}}\n' \
+    > "$FIXTURE/workspace/lanes-runs/lane-result/envelopes/001.json"
+  printf '{"last_envelope":{"decision":"review"}}\n' \
+    > "$FIXTURE/workspace/lanes-runs/lane-result/envelopes/002.json"
+  run_lane_decision_result blocked-then-review
+  echo "$OUT" | jq -e 'has("decision") | not' >/dev/null \
+    || fail "newest review envelope must leave decision absent: $OUT"
+  pass "newest review envelope clears an older blocked decision"
+fi
+
+if run_lane_decision_case blocked_then_done; then
+  printf '{"last_envelope":{"decision":"blocked"}}\n' \
+    > "$FIXTURE/workspace/lanes-runs/lane-result/envelopes/001.json"
+  printf '{"last_envelope":{"decision":"done"}}\n' \
+    > "$FIXTURE/workspace/lanes-runs/lane-result/envelopes/002.json"
+  run_lane_decision_result blocked-then-done
+  echo "$OUT" | jq -e '.decision == "done"' >/dev/null \
+    || fail "newest done envelope must replace older blocked decision: $OUT"
+  pass "newest done envelope replaces an older blocked decision"
+fi
+
+if run_lane_decision_case done_then_missing; then
+  printf '{"last_envelope":{"decision":"done"}}\n' \
+    > "$FIXTURE/workspace/lanes-runs/lane-result/envelopes/001.json"
+  printf '{"last_envelope":{"status":"in_progress"}}\n' \
+    > "$FIXTURE/workspace/lanes-runs/lane-result/envelopes/002.json"
+  run_lane_decision_result done-then-missing
+  echo "$OUT" | jq -e 'has("decision") | not' >/dev/null \
+    || fail "newest envelope without decision must leave decision absent: $OUT"
+  pass "newest envelope without decision clears older done decision"
+fi
+
+if run_lane_decision_case numeric_sequence_and_unsequenced; then
+  printf '{"last_envelope":{"decision":"blocked"}}\n' \
+    > "$FIXTURE/workspace/lanes-runs/lane-result/envelopes/9.json"
+  printf '{"last_envelope":{"decision":"done"}}\n' \
+    > "$FIXTURE/workspace/lanes-runs/lane-result/envelopes/010.json"
+  printf '{"last_envelope":{"decision":"blocked"}}\n' \
+    > "$FIXTURE/workspace/lanes-runs/lane-result/envelopes/latest.json"
+  run_lane_decision_result numeric-sequence-and-unsequenced
+  echo "$OUT" | jq -e '.decision == "done"' >/dev/null \
+    || fail "sequence 10 must win over sequence 9 and unsequenced latest.json: $OUT"
+  pass "numeric sequence chooses 10 and ignores an unsequenced filename"
+fi
+
 RUN_ID="$(basename "$RUNDIR")"
 jq -e --arg sid "$RUN_ID" \
   '.session_id == $sid and .company_slug == "indigo" and (.minted_at | length > 0)' \
