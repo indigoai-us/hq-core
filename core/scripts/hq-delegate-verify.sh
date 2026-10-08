@@ -17,7 +17,8 @@
 #   core/scripts/hq-delegate-verify.sh --dry-run \
 #     --company <slug> --project <name> --to <principal> [--mode transfer|share]
 #
-# Prints recipient, mode, every prefix with its permission, the secret
+# Prints recipient, mode, project stage (prd, or brainstorm with the dossier
+# files and the /plan next step), every prefix with its permission, the secret
 # names an .env.schema would grant, repo + branch, and the DM headline that
 # would be sent. Exits 0. Creates nothing under workspace/delegations/ and
 # invokes no mutating command.
@@ -83,6 +84,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "  Mode:       $MODE"
   echo "  Company:    $COMPANY"
   echo "  Project:    $PROJECT"
+  if [ "$(printf '%s' "$PLAN_JSON" | jq -r '.project.stage // "prd"')" = brainstorm ]; then
+    echo "  Stage:      brainstorm — no PRD yet; source of truth is brainstorm.md; recommended next step is /plan $PROJECT"
+    echo
+    echo "  Dossier files that would be published:"
+    printf '%s' "$PLAN_JSON" | jq -r '.project.dossier[] | "    \(.)"'
+  else
+    echo "  Stage:      prd"
+  fi
   echo
   echo "  Vault grants that would be written:"
   printf '%s' "$PLAN_JSON" | jq -r '.vaultPrefixes[] | "    \(.permission)\ton \(.prefix)\t(\(.reason // ""))"'

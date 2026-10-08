@@ -5,6 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 RUNS="${RESUMEWORK_TIMING_RUNS:-20}"
 SESSION_ID="bench-resumework-$(date +%s)-$$"
+# Each operational Bash code block is a separate Bash tool call and therefore
+# starts another master-hook process. Four includes the confirmed re-resume path.
+HOOK_CALL_LIMIT=4
 HQ_ROOT="${HQ_ROOT:-$ROOT}"
 RESUMEWORK_PREFETCH_LOG="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/handoff-sync-prefetch-${SESSION_ID}.log"
 CURRENT_POINTER="$HQ_ROOT/workspace/sessions/.current"
@@ -16,22 +19,100 @@ COMMAND_SAMPLES="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/resumework-command-${SESSION_ID
 HOOK_OUTPUT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/resumework-hook-output-${SESSION_ID}.txt"
 HOOK_FAILURE_OUTPUT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/resumework-hook-failure-${SESSION_ID}.txt"
 
+check_hook_call_count() {
+  python3 - "$ROOT/.claude/skills/resumework/SKILL.md" "$HOOK_CALL_LIMIT" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+limit = int(sys.argv[2])
+text = path.read_text(encoding="utf-8")
+try:
+    process = text.split("## Process", 1)[1].split("\n## Rules", 1)[0]
+except IndexError:
+    raise SystemExit("resumework hook count: Process section not found")
+calls = re.findall(
+    r"(?m)^[ ]{0,3}```bash[ \t]*\r?\n.*?^[ ]{0,3}```[ \t]*$",
+    process,
+    re.DOTALL,
+)
+count = len(calls)
+if count == 0 or count > limit:
+    raise SystemExit(
+        f"resumework hook count: Process has {count} Bash tool-call blocks; limit is {limit}"
+    )
+required = (
+    "handoff-sync-prefetch.sh",
+    "find workspace/threads",
+    "resume-thread-lock.sh inspect",
+    "resume-thread-lock.sh acquire",
+    "handoff-open-steps.sh list --limit 10",
+    "git -C /absolute/path/to/repo status --short",
+    "hq-session.sh set mode \"Resume\"",
+)
+missing = [token for token in required if token not in process]
+if missing:
+    raise SystemExit(
+        "resumework hook count: required operations missing from Process: "
+        + ", ".join(missing)
+    )
+print(f"PASS: resumework Bash tool-call blocks={count} limit={limit}")
+PY
+}
+
+check_hook_call_count
+if [[ "${1:-}" == "--check-hook-count" ]]; then
+  exit 0
+fi
+
 now_ms() {
   perl -MTime::HiRes=time -e 'printf("%d\n", time()*1000)'
 }
 
-THREAD_FIND_COMMAND="$(python3 - "$ROOT/.claude/skills/resumework/SKILL.md" <<'PY'
+THREAD_FIND_COMMAND="$(python3 - "$ROOT/.claude/skills/resumework/SKILL.md" <<'PYBLOCK'
 import pathlib
 import re
 import sys
 
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-blocks = [block for _, block in re.findall(r"(?m)^([ \t]*)```bash[ \t]*\n(.*?)^\1```[ \t]*$", text, re.DOTALL)]
-step_one = next((block for block in blocks if 'arg="$ARGUMENTS"' in block), None)
-if step_one is None:
-    raise SystemExit("resumework timing: Step 1 Bash block not found in skill")
-print(step_one.replace("$ARGUMENTS", "T-20261007-091000-resumework-timing"), end="")
-PY
+process = text.split("## Process", 1)[1].split("\n## Rules", 1)[0]
+blocks = [block for _, block in re.findall(r"(?m)^([ \t]*)```bash[ \t]*\n(.*?)^\1```[ \t]*$", process, re.DOTALL)]
+block = next((block for block in blocks if 'arg="$ARGUMENTS"' in block), None)
+if block is None:
+    raise SystemExit("resumework timing: thread-resolution Bash block not found")
+print(block.replace("$ARGUMENTS", "\"$RESUMEWORK_THREAD_ID\""), end="")
+PYBLOCK
+)"
+LOCK_COMMAND="$(python3 - "$ROOT/.claude/skills/resumework/SKILL.md" <<'PYBLOCK'
+import pathlib
+import re
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+process = text.split("## Process", 1)[1].split("\n## Rules", 1)[0]
+blocks = [block for _, block in re.findall(r"(?m)^([ \t]*)```bash[ \t]*\n(.*?)^\1```[ \t]*$", process, re.DOTALL)]
+block = next((block for block in blocks if 'thread_file="<resolved-thread-file>"' in block), None)
+if block is None:
+    raise SystemExit("resumework timing: lock Bash block not found")
+block = block.replace('thread_file="<resolved-thread-file>"', 'thread_file="$ROOT/workspace/threads/$RESUMEWORK_THREAD_ID.json"')
+print(block, end="")
+PYBLOCK
+)"
+METADATA_COMMAND="$(python3 - "$ROOT/.claude/skills/resumework/SKILL.md" <<'PYBLOCK'
+import pathlib
+import re
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+process = text.split("## Process", 1)[1].split("\n## Rules", 1)[0]
+blocks = [block for _, block in re.findall(r"(?m)^([ \t]*)```bash[ \t]*\n(.*?)^\1```[ \t]*$", process, re.DOTALL)]
+block = next((block for block in blocks if "git -C /absolute/path/to/repo branch --show-current" in block), None)
+if block is None:
+    raise SystemExit("resumework timing: metadata Bash block not found")
+block = block.replace("/absolute/path/to/repo", "$ROOT").replace('"{co}"', '"indigo"')
+print(block, end="")
+PYBLOCK
 )"
 
 percentile() {
@@ -43,15 +124,8 @@ median() {
   sort -n | awk '{ a[NR]=$1 } END { if (!NR) { print 0; exit } if (NR%2) print a[(NR+1)/2]; else print int((a[NR/2]+a[NR/2+1])/2) }'
 }
 
-commands=(
-  'bash core/scripts/handoff-sync-prefetch.sh --log "$RESUMEWORK_PREFETCH_LOG"'
-  "$THREAD_FIND_COMMAND"
-  'bash core/scripts/hq-session.sh current >/dev/null && bash core/scripts/resume-thread-lock.sh inspect "$RESUMEWORK_THREAD_ID" >/dev/null'
-  'bash core/scripts/resume-thread-lock.sh acquire "$RESUMEWORK_THREAD_ID" --session-id "$RESUMEWORK_SESSION_ID" >/dev/null'
-  'git -C "$RESUMEWORK_ROOT" status --short && git -C "$RESUMEWORK_ROOT" log --oneline -3'
-  'bash core/scripts/hq-session.sh set company_slug indigo && bash core/scripts/hq-session.sh set mode Resume'
-)
-labels=("handoff-sync-prefetch" "thread-find-ls" "session-current-lock-inspect" "lock-acquire" "git-status-log" "hq-session-set")
+commands=("$THREAD_FIND_COMMAND" "$LOCK_COMMAND" "$METADATA_COMMAND")
+labels=("thread-resolution-prefetch" "lock-inspect-acquire-open-steps" "git-session-metadata")
 
 command -v jq >/dev/null 2>&1 || { echo "resumework timing: jq is required" >&2; exit 2; }
 command -v perl >/dev/null 2>&1 || { echo "resumework timing: perl is required" >&2; exit 2; }
@@ -89,13 +163,13 @@ for step in "${!commands[@]}"; do
   step_hook_failures[$step]=0
   for ((run=1; run<=RUNS; run++)); do
     export RESUMEWORK_THREAD_ID="T-${SESSION_ID}-step${step}-run${run}"
+    if (( step < 2 )); then
+      printf '%s\n' '{}' > "$ROOT/workspace/threads/${RESUMEWORK_THREAD_ID}.json"
+    fi
     command="${commands[$step]}"
     payload="$(jq -nc --arg s "$SESSION_ID" --arg c "$command" --arg cwd "$HQ_ROOT" '{session_id:$s,hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:$c,description:"resumework timing"}}')"
     t0="$(now_ms)"
-    if printf '%s' "$payload" | bash "$ROOT/.claude/hooks/master-hook.sh" PreToolUse >"$HOOK_OUTPUT" 2>&1; then
-      hook_rc=0
-    else
-      hook_rc=$?
+    if ! printf '%s' "$payload" | bash "$ROOT/.claude/hooks/master-hook.sh" PreToolUse >"$HOOK_OUTPUT" 2>&1; then
       hook_failures=$((hook_failures + 1))
       step_hook_failures[$step]=$((step_hook_failures[$step] + 1))
       if [[ ! -e "$HOOK_FAILURE_OUTPUT" ]]; then cp "$HOOK_OUTPUT" "$HOOK_FAILURE_OUTPUT"; fi
@@ -112,6 +186,12 @@ for step in "${!commands[@]}"; do
     printf '%s\n' "$hook_ms" >> "$HOOK_SAMPLES"
     printf '%s\n' "$command_ms" >> "$COMMAND_SAMPLES"
     rm -rf "$ROOT/workspace/threads/resume-locks/${RESUMEWORK_THREAD_ID}.lock"
+    if (( step < 2 )); then python3 - "$ROOT/workspace/threads/${RESUMEWORK_THREAD_ID}.json" <<'PYBLOCK'
+import pathlib
+import sys
+pathlib.Path(sys.argv[1]).unlink(missing_ok=True)
+PYBLOCK
+    fi
   done
   hook_p50="$(printf '%s\n' "${hook_times[@]}" | median)"
   hook_p95="$(printf '%s\n' "${hook_times[@]}" | percentile 95)"

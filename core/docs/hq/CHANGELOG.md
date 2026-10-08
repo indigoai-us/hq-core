@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- Report sync findings when older doctor output omits the auto-fixability field.
+- Report Outpost jobs as not scheduled with a reason when the systemd user manager is unavailable.
+- Outpost job units name the job runner under the selected HQ root exactly as given. On macOS, where the temp directory path ends in "/", the runner path no longer drifts from `--hq-root`.
 - Rename the domain glossary from `CONTEXT.md` to `GLOSSARY.md` (and `CONTEXT-MAP.md` to `GLOSSARY-MAP.md`), matching upstream mattpocock/skills. `/tdd`, `/diagnose`, `/architect`, `/to-tickets`, `/wayfinder` and `/domain-modeling` read `GLOSSARY.md` and fall back to `CONTEXT.md` when it is absent. Rename yours with `git mv CONTEXT.md GLOSSARY.md` (and `git mv CONTEXT-MAP.md GLOSSARY-MAP.md` if you have one). The `CONTEXT.md` fallback is removed in hq-core 16.0.0.
 - Deprecate `/plan`. It is now a stub that prints one line and runs `/prd` with the same arguments. Skills, policies and docs now name `/prd` as the next step. The stub will be removed in hq-core 16.0.0.
 - Scope checks treat `cat` and `tee` heredoc bodies sent to output redirects as file content. They still check the redirect path and command substitutions in unquoted bodies.
@@ -10,6 +13,7 @@
 - Disable hq self-update for the timeout-bounded folder registry call in resolve-company.
 
 - Exclude sync journal findings that `hq doctor --fix` cannot repair from automated client health reports, while keeping unresolved repairable company journals reportable.
+- Exclude personal-manifest and core-update findings from automated client health reports when `hq doctor --fix` classifies them as manual-only, while keeping the checks visible in doctor output.
 - Keep existing Task subagent company bindings across session resumes, and tell valid but unbound agents to restart or respawn while their company access stays denied.
 - Reject ontology-garden back-reference settings unless the compaction threshold exceeds the number of inline facts.
 - The capability-link check now scans past large trailing tool output to find the newest assistant reply, and verification failures no longer block the turn.

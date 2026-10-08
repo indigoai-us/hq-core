@@ -390,6 +390,8 @@ jobs:
         run: bash core/scripts/tests/hq-delegate-secrets.test.sh
       - name: Ownership transfer (board/PRD/mesh/journal, idempotent)
         run: bash core/scripts/tests/hq-delegate-transfer.test.sh
+      - name: /delegate brainstorm-stage projects (no prd.json yet)
+        run: bash core/scripts/tests/hq-delegate-brainstorm.test.sh
       - name: Pickup prompt + single-DM delivery (verify-gated)
         run: bash core/scripts/tests/hq-delegate-send.test.sh
       - name: Reachability probe + inert dry run
@@ -1216,6 +1218,8 @@ jobs:
           bash core/scripts/tests/hq-job-run.test.sh
           bash core/scripts/tests/hq-job-probe.test.sh
           bash core/scripts/tests/outpost-jobs-reconcile.test.sh
+          # macOS TMPDIR ends in "/", which doubles a slash in the HQ root.
+          TMPDIR="$RUNNER_TEMP/" bash core/scripts/tests/outpost-jobs-reconcile.test.sh
           HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/outpost-job-failure-alerts.test.sh
           HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hq-job-notify.test.sh
           HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hq-job-alerts.test.sh

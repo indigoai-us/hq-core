@@ -122,6 +122,7 @@ jobs:
         id: meta
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HQ_BETA_BASE: ${{ vars.HQ_BETA_BASE }}
         run: |
           set -euo pipefail
 
@@ -152,6 +153,14 @@ jobs:
           IFS=. read -r _MA _MI _PA <<< "$STABLE"
           BASE="${_MA}.${_MI}.$((_PA + 1))"
           echo "::notice::Last stable hq-core release: ${STABLE} → beta base (next patch): ${BASE}"
+
+          # Operator override: when the next release is a major or minor bump
+          # rather than the next patch, set the repo variable HQ_BETA_BASE
+          # (for example 16.0.0). Betas then tag v<HQ_BETA_BASE>-beta.N.
+          if printf '%s' "${HQ_BETA_BASE:-}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            BASE="$HQ_BETA_BASE"
+            echo "::notice::HQ_BETA_BASE override → beta base: ${BASE}"
+          fi
 
           # Make sure we see every existing tag from the remote before picking N.
           git fetch --tags --force origin >/dev/null 2>&1 || true

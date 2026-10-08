@@ -34,6 +34,8 @@ HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
 # shellcheck source=lib/secret-patterns.sh
 . "$SCRIPT_DIR/lib/secret-patterns.sh"
+# shellcheck source=lib/delegate-brainstorm.sh
+. "$SCRIPT_DIR/lib/delegate-brainstorm.sh"
 
 usage() { sed -n '3,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die()   { echo "hq-delegate-send: $*" >&2; exit 1; }
@@ -100,12 +102,25 @@ MODE="$(jq -r '.mode // "transfer"' "$MANIFEST")"
 [ -n "$PROJECT" ]   || die "manifest has no project.name"
 [ -n "$PRINCIPAL" ] || die "manifest has no to.principal"
 
-PRD_ABS="$HQ_ROOT/$(jq -r '.project.prdPath' "$MANIFEST")"
+STAGE="$(jq -r '.project.stage // "prd"' "$MANIFEST")"
+PRD_REL="$(jq -r '.project.prdPath // empty' "$MANIFEST")"
+PRD_ABS="${PRD_REL:+$HQ_ROOT/$PRD_REL}"
+BRAINSTORM_ABS="$HQ_ROOT/companies/$COMPANY/projects/$PROJECT/brainstorm.md"
 
 # --- assemble prompt sections from the manifest (single source of truth) -----
 
 GOAL="" STATE_LINE="" NEXT_STEPS=""
-if [ -f "$PRD_ABS" ] && jq -e . "$PRD_ABS" >/dev/null 2>&1; then
+DOSSIER_LINE="Start with the project dossier: \`companies/$COMPANY/projects/$PROJECT/\` now contains the PRD (\`prd.json\`), a full brief (\`README.md\` / the DM's details pane), and the delegation journal."
+if [ "$STAGE" = brainstorm ]; then
+  # Brainstorm stage: no PRD, no stories. The next steps are to read the
+  # brainstorm and turn it into a PRD with /plan.
+  [ -f "$BRAINSTORM_ABS" ] && GOAL="$(hq_brainstorm_summary "$BRAINSTORM_ABS")"
+  STATE_LINE="This project is at the brainstorm stage: no PRD yet, no stories. The source of truth is \`companies/$COMPANY/projects/$PROJECT/brainstorm.md\`."
+  NEXT_STEPS="1. **Read the brainstorm** — \`brainstorm.md\`, the notes under \`research/\`, and the latest journal entry under \`journal/\`.
+2. **Turn it into a PRD** — run \`/plan $PROJECT\` to write \`prd.json\` with stories.
+3. **Start the first story** — once the PRD exists, \`/run-project $PROJECT\` or \`/execute-task\` picks it up."
+  DOSSIER_LINE="Start with the project dossier: \`companies/$COMPANY/projects/$PROJECT/\` contains \`brainstorm.md\`, the \`research/\` notes, the latest journal entry, a full brief (the DM's details pane), and the delegation journal. There is no \`prd.json\` yet."
+elif [ -n "$PRD_ABS" ] && [ -f "$PRD_ABS" ] && jq -e . "$PRD_ABS" >/dev/null 2>&1; then
   GOAL="$(jq -r '.metadata.goal // .description // ""' "$PRD_ABS")"
   TOTAL="$(jq -r '[.userStories // [] | .[]] | length' "$PRD_ABS")"
   DONE="$(jq -r '[.userStories // [] | .[] | select(.passes == true)] | length' "$PRD_ABS")"
@@ -195,7 +210,7 @@ trap 'rm -rf "$STAGE"; [ "$SEND" -eq 0 ] || rmdir "$LOCK"' EXIT
   printf '%s\n' "$GET_LINES"
   echo '```'
   echo
-  echo "Start with the project dossier: \`companies/$COMPANY/projects/$PROJECT/\` now contains the PRD (\`prd.json\`), a full brief (\`README.md\` / the DM's details pane), and the delegation journal."
+  echo "$DOSSIER_LINE"
   echo
   if [ -n "$REPO_SECTION" ]; then
     printf '%s\n' "$REPO_SECTION"

@@ -485,18 +485,178 @@ prepare_policy_trigger_input() {
   fi
 }
 
+# core/scripts/derive-trigger-facts.sh is a forwarder: it execs
+# `hq core derive-trigger-facts`, which boots Node. On the operator's Mac that
+# boot is about 229 MB RSS, and the policy injector pays it once or twice for
+# EVERY tool call (HQ-HOOK-COST-001). The implementation the CLI runs on this
+# path is itself a shell script shipped inside the CLI package, so at hook time
+# the Node boot buys nothing: same program, same ABI, one interpreter more.
+#
+# Resolve that companion from the `hq` entry on PATH with shell builtins and run
+# it directly. The resolved path is memoised in the per-machine hook-state dir
+# keyed by the `hq` entry it came from, so a session resolves it once instead of
+# per event. Any doubt — no `hq` on PATH, companion or awk helper unreadable,
+# recorded key stale — falls through to the forwarder, so the worst case is
+# exactly today's behaviour and never a missing fact set.
+POLICY_FACT_HELPER=""
+POLICY_FACT_HELPER_RESOLVED=0
+# Same floor the forwarder enforces via lib/hq-cli-floor.sh. Keep the two in step.
+POLICY_FACT_HELPER_CLI_FLOOR="5.342.5"
+
+# policy_fact_helper_from_bin <hq-bin> — print the companion path for an `hq`
+# entry, or nothing. readlink is not a builtin and macOS readlink has no -f, so
+# walk the link chain one bounded step at a time.
+policy_fact_helper_from_bin() {
+  local bin="$1" target="" dir="" hops=0 candidate=""
+  while [ -L "$bin" ] && [ "$hops" -lt 10 ]; do
+    target="$(readlink "$bin" 2>/dev/null || true)"
+    [ -n "$target" ] || break
+    case "$target" in
+      /*) bin="$target" ;;
+      *) dir="${bin%/*}"; [ "$dir" != "$bin" ] || dir="."; bin="$dir/$target" ;;
+    esac
+    hops=$((hops + 1))
+  done
+  # .../@indigoai-us/hq-cli/dist/index.js -> .../hq-cli/assets/scaffold/core/scripts
+  dir="${bin%/*}"
+  [ "$dir" != "$bin" ] || return 0
+  candidate="${dir%/dist}/assets/scaffold/core/scripts"
+  [ "$candidate" != "$dir" ] || return 0
+  [ -r "$candidate/derive-trigger-facts.sh" ] || return 0
+  [ -r "$candidate/lib/trigger-fact-text.awk" ] || return 0
+  [ -r "$candidate/lib/transcript-tail.sh" ] || return 0
+  # The forwarder sources lib/hq-cli-floor.sh and refuses a CLI below
+  # POLICY_FACT_HELPER_CLI_FLOOR. Bypassing the forwarder must not drop that
+  # check: an older package's companion would answer with an older fact ABI,
+  # and a wrong fact set silently changes which policies fire. Read the
+  # package version with builtins and fall through to the forwarder — which
+  # will refuse and say why — whenever the version is unreadable or below the
+  # floor.
+  policy_fact_helper_version_ok "${dir%/dist}/package.json" || return 0
+  printf '%s\n' "$candidate/derive-trigger-facts.sh"
+}
+
+# policy_fact_helper_cli_version <package.json> — print the version string of
+# the @indigoai-us/hq-cli package manifest, or nothing. Builtins only: this runs
+# on the hook fast path and must not spawn.
+policy_fact_helper_cli_version() {
+  local manifest="$1" line="" rest="" name_seen=0 version=""
+  [ -r "$manifest" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *'"name"'*'@indigoai-us/hq-cli'*) name_seen=1 ;;
+    esac
+    case "$line" in
+      *'"version"'*)
+        if [ -z "$version" ]; then
+          rest="${line#*\"version\"}"
+          rest="${rest#*:}"
+          rest="${rest#*\"}"
+          version="${rest%%\"*}"
+        fi
+        ;;
+    esac
+  done < "$manifest"
+  [ "$name_seen" = "1" ] || return 1
+  [ -n "$version" ] || return 1
+  printf '%s\n' "$version"
+}
+
+# policy_fact_helper_version_ok <package.json> — true when the package version
+# is at or above the floor. Numeric per-component compare, prerelease suffix
+# dropped, so 5.342.5-rc.1 is treated as 5.342.5 exactly as a floor check that
+# only cares about the fact ABI should.
+policy_fact_helper_version_ok() {
+  local version="" have="" want="" index=0 left=0 right=0
+  version="$(policy_fact_helper_cli_version "$1")" || return 1
+  version="${version%%-*}"
+  version="${version%%+*}"
+  local -a have_parts=() want_parts=()
+  IFS=. read -r -a have_parts <<< "$version"
+  IFS=. read -r -a want_parts <<< "$POLICY_FACT_HELPER_CLI_FLOOR"
+  for index in 0 1 2; do
+    have="${have_parts[$index]:-0}"
+    want="${want_parts[$index]:-0}"
+    case "$have" in ''|*[!0-9]*) return 1 ;; esac
+    case "$want" in ''|*[!0-9]*) return 1 ;; esac
+    left=$((10#$have))
+    right=$((10#$want))
+    [ "$left" -eq "$right" ] || { [ "$left" -gt "$right" ] && return 0 || return 1; }
+  done
+  return 0
+}
+
+# policy_forwarder_is_release_shipped <forwarder> — true when the tree's
+# derive-trigger-facts.sh is the release forwarder whose whole job is to exec
+# the CLI. A tree that carries a different script there (a test harness, a local
+# patch) means something deliberately stands in that position, and running the
+# packaged companion instead would ignore it. Builtins only, bounded read.
+policy_forwarder_is_release_shipped() {
+  local forwarder="$1" line="" lines=0
+  [ -r "$forwarder" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    lines=$((lines + 1))
+    [ "$lines" -le 12 ] || break
+    case "$line" in
+      '# FORWARDER'*) return 0 ;;
+    esac
+  done < "$forwarder"
+  return 1
+}
+
+resolve_policy_fact_helper() {
+  local hq_bin="" cache="" cached_key="" cached_path=""
+  [ "$POLICY_FACT_HELPER_RESOLVED" = "1" ] && return 0
+  POLICY_FACT_HELPER_RESOLVED=1
+  [ -z "${HQ_POLICY_FACT_HELPER_DISABLE:-}" ] || return 0
+  policy_forwarder_is_release_shipped "$HELPERS/derive-trigger-facts.sh" || return 0
+  hq_bin="$(command -v hq 2>/dev/null || true)"
+  [ -n "$hq_bin" ] || return 0
+  if [ -n "$FACTS_TMP_DIR" ] && [ -d "$FACTS_TMP_DIR" ]; then
+    cache="$FACTS_TMP_DIR/fact-helper-path"
+  fi
+  # The recorded key is the `command -v hq` path, which does not change when an
+  # upgrade retargets a stable `hq` symlink at a new package. Without a second
+  # condition the memo would keep pointing at the old package's companion for as
+  # long as it stayed readable, which would answer with an older fact ABI and
+  # silently change which policies fire — and would also outlive the version
+  # floor, since the floor is checked at resolution time. `-nt` is a shell
+  # builtin test that spawns nothing and follows the link, so a retargeted
+  # symlink or a reinstalled package makes the memo stale and the hook resolves
+  # again. Equal timestamps or clock skew resolve again too, which is the safe
+  # direction.
+  if [ -n "$cache" ] && [ -r "$cache" ] && [ "$cache" -nt "$hq_bin" ]; then
+    # Both lines in one pass: two separate redirects would each read line 1.
+    { IFS= read -r cached_key; IFS= read -r cached_path; } < "$cache" 2>/dev/null || true
+    if [ "$cached_key" = "$hq_bin" ] && [ -n "$cached_path" ] && [ -r "$cached_path" ]; then
+      POLICY_FACT_HELPER="$cached_path"
+      return 0
+    fi
+  fi
+  POLICY_FACT_HELPER="$(policy_fact_helper_from_bin "$hq_bin")"
+  if [ -n "$cache" ]; then
+    printf '%s\n%s\n' "$hq_bin" "$POLICY_FACT_HELPER" > "$cache" 2>/dev/null || true
+  fi
+  return 0
+}
+
 run_derive_trigger_facts() {
-  local event="$1" with_intent="${2:-0}"
+  local event="$1" with_intent="${2:-0}" helper=""
+  resolve_policy_fact_helper
+  helper="${POLICY_FACT_HELPER:-$HELPERS/derive-trigger-facts.sh}"
+  # The companion derives HQ_ROOT from its own location, which inside the CLI
+  # package is not an HQ root. The forwarder passes --hq-root for the same
+  # reason; here the env carries it.
   if [ -n "$STDIN_FILE" ]; then
     if [ "$with_intent" = "1" ]; then
-      bash "$HELPERS/derive-trigger-facts.sh" "$event" --with-assistant-intent < "$STDIN_FILE" || true
+      HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" --with-assistant-intent < "$STDIN_FILE" || true
     else
-      bash "$HELPERS/derive-trigger-facts.sh" "$event" < "$STDIN_FILE" || true
+      HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" < "$STDIN_FILE" || true
     fi
   elif [ "$with_intent" = "1" ]; then
-    printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$event" --with-assistant-intent || true
+    printf '%s' "$STDIN_JSON" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" --with-assistant-intent || true
   else
-    printf '%s' "$STDIN_JSON" | bash "$HELPERS/derive-trigger-facts.sh" "$event" || true
+    printf '%s' "$STDIN_JSON" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" || true
   fi
 }
 
@@ -826,15 +986,21 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # trusting directory mtimes, which do not change for an in-place child-file
   # edit on many filesystems.
   #
-  # SHA-256 and GNU stat are intentionally cache prerequisites on the fast
-  # path: on a host without either we take the existing uncached path rather
-  # than accept a weaker stale signal. GNU stat accepts every policy path in
-  # one process, so metadata validation is thousands of stat syscalls but not
-  # thousands of shell forks. -L is required because the scanner's -f test and
-  # awk both follow a policy symlink: fingerprint the target, not the link, so
-  # a target edit changes ctime and a retarget changes the reported inode.
-  # macOS falls back to a content-hash fingerprint; it keeps correctness where
-  # BSD stat lacks nanosecond ctime formatting.
+  # SHA-256 and a metadata-capable stat are intentionally cache prerequisites
+  # on the fast path: on a host without either we take the existing uncached
+  # path rather than accept a weaker stale signal. One stat process accepts
+  # every policy path, so metadata validation is thousands of stat syscalls but
+  # not thousands of shell forks. -L is required because the scanner's -f test
+  # and awk both follow a policy symlink: fingerprint the target, not the link,
+  # so a target edit changes ctime and a retarget changes the reported inode.
+  #
+  # Both stat dialects are tried before any content hashing. GNU stat answers
+  # -c; BSD stat (macOS) answers -f, and its %Fm/%Fc give mtime and ctime with
+  # the same sub-second resolution GNU's %y/%z carry, so the BSD record is not
+  # a weaker signal. Hashing every policy file's CONTENT is the last resort for
+  # a host with neither dialect. On the operator's Mac that last resort was the
+  # live path: it read all of core, personal and company policy text on every
+  # tool call (HQ-HOOK-COST-001).
   POLICY_HASH_MODE=""
   if command -v sha256sum >/dev/null 2>&1; then
     POLICY_HASH_MODE="sha256sum"
@@ -851,12 +1017,16 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   }
   policy_fingerprint() {
     local manifest digest
-    # Try one complete metadata pass on GNU stat. BSD stat rejects GNU's
-    # format and falls back to the existing content fingerprint, preserving
-    # the macOS path without a separate capability-probe process.
+    # One complete metadata pass per stat dialect, GNU first. A dialect that
+    # does not understand the format string exits non-zero and prints nothing,
+    # and `set -o pipefail` carries that failure out of the pipe, so each
+    # branch is selected by the host's own stat rather than by a separate
+    # capability-probe process.
     digest="$(stat -Lc '%n\t%i\t%s\t%y\t%z' "$@" 2>/dev/null | policy_hash)" || {
-      manifest="$(policy_hash "$@")" || return 1
-      digest="$(printf '%s\n' "$manifest" | policy_hash)" || return 1
+      digest="$(stat -Lf '%N\t%i\t%z\t%Fm\t%Fc' "$@" 2>/dev/null | policy_hash)" || {
+        manifest="$(policy_hash "$@")" || return 1
+        digest="$(printf '%s\n' "$manifest" | policy_hash)" || return 1
+      }
     }
     printf '%s\n' "${digest%% *}"
     return 0

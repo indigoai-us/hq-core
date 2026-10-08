@@ -24,14 +24,9 @@
 #  12. Concurrent invocations do not interfere: many hooks at once spawn ONE
 #      worker, download ONCE, announce the start ONCE, and later report the
 #      outcome ONCE; parallel stale-cache refreshes leave a valid cache.
-#  13. NEVER quit or kill the app while a meeting is being recorded (the app's
-#      ~/.hq/recordings-ledger.json is non-empty while it runs). The hook spawns
-#      nothing and writes no stamp while recording; a worker that is already
-#      running waits for the recording to end plus a settle grace, then
-#      proceeds; a recording that outlasts the wait bound defers the update,
-#      leaves the app untouched, and is reported once. A stale ledger entry
-#      with the app NOT running blocks nothing. (Regression for two customer
-#      recordings cut off mid-meeting by this hook's relaunch.)
+#  13. The recording guard honors both the legacy shipped recordings ledger and
+#      the fresh/live marker contract, and never quits or kills a running app
+#      while either reports an active recording.
 
 set -euo pipefail
 
@@ -170,6 +165,30 @@ reset_root() {
 fresh_cache() { mkdir -p "$STATE"; write_manifest "$STATE/latest.json" "${1:-0.10.200}"; }
 stale_cache() { fresh_cache "$@"; touch -d '2 days ago' "$STATE/latest.json" 2>/dev/null || touch -t 202001010000 "$STATE/latest.json"; }
 installed_version() { sed -n 's/.*<string>\([0-9.]*\)<\/string>.*/\1/p' "$APP/Contents/Info.plist" | head -1; }
+write_recording() { # write_recording <pid> <updatedAt> [recordings-json]
+  mkdir -p "$HOMEDIR/.hq"
+  printf '{"version":1,"pid":%s,"updatedAt":"%s","recordings":%s}\n' "$1" "$2" "${3:-[{\"recordingId\":\"r1\",\"windowId\":\"w1\",\"startedAt\":\"2026-10-07T00:00:00Z\"}]}" > "$HOMEDIR/.hq/recording-active.json"
+}
+# Contract specimen from hq-desktop-app/crates/hq-desktop-core/fixtures/recording-active.sample.json.
+# Keep every byte other than the live pid and current updatedAt timestamp unchanged.
+fresh_recording() {
+  local pid="${1:-$$}" updated_at
+  if [ "$#" -gt 1 ]; then
+    write_recording "$pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2"
+    return
+  fi
+  updated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$HOMEDIR/.hq"
+  printf '%s' '{"version":1,"pid":42,"updatedAt":"2026-10-07T21:44:00Z","recordings":[{"recordingId":"rec-1","windowId":"win-1","startedAt":"2026-10-07T21:00:00Z"}]}' \
+    | sed -e "s/\"pid\":42/\"pid\":${pid}/" \
+          -e "s/\"updatedAt\":\"2026-10-07T21:44:00Z\"/\"updatedAt\":\"${updated_at}\"/" \
+    > "$HOMEDIR/.hq/recording-active.json"
+}
+ledger_recording() {
+  mkdir -p "$HOMEDIR/.hq"
+  printf '{"5723ABAA-EE26-4451-89BB-1CB8237FD3D6":{"recordingId":"291cff83-4844-473e-b028-c57e11c6d655","startedAt":"2026-10-07T21:00:15Z"}}\n' > "$HOMEDIR/.hq/recordings-ledger.json"
+}
+ledger_clear() { mkdir -p "$HOMEDIR/.hq"; printf '{}\n' > "$HOMEDIR/.hq/recordings-ledger.json"; }
 
 run_hook() { # run_hook [env assignments...]
   env -i PATH="$BIN:$CORE" HQ_ROOT="$ROOTDIR" HOME="$HOMEDIR" \
@@ -187,6 +206,7 @@ wait_worker() {
   while [ "$i" -lt 25 ] && [ -d "$STATE/updating.lock" ]; do sleep 0.2; i=$((i + 1)); done
 }
 no_download() { grep -q '.tar.gz' "$CURL_LOG" && fail "$1"; return 0; }
+run_hook_guard() { run_hook HQ_ENSURE_DESKTOP_RECORDING_POLL=1 HQ_ENSURE_DESKTOP_RECORDING_GRACE=1 HQ_ENSURE_DESKTOP_RECORDING_WAIT=2; }
 
 # --- 1. not installed -> silent, no network -------------------------------
 reset_root
@@ -216,6 +236,52 @@ out="$(run_hook)"
 grep -qx "$MANIFEST_URL" "$CURL_LOG" || fail "stale cache was not refreshed"
 grep -q '"version": "0.10.200"' "$STATE/latest.json" || fail "refreshed manifest was not cached"
 [ "$(grep -c . "$CURL_LOG")" -eq 1 ] || fail "current app must not download anything"
+
+# --- 3b. recording marker: fresh, live, non-empty state defers ------------
+reset_root; write_plist "$APP" 0.10.150; fresh_cache; : > "$RUNNING_FLAG"; fresh_recording
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-deferred>' || fail "fresh active recording should defer, got: $out"
+no_download "active recording must not download"
+[ ! -d "$STATE/updating.lock" ] || fail "active recording must not claim the worker lock"
+[ ! -f "$STATE/last-attempt.stamp" ] || fail "active recording must not set the cooldown stamp"
+grep -qx 'status=deferred' "$STATE/last-result" || fail "active recording must record a deferred result"
+
+# The desktop and hook can be briefly version-skewed. Accept all UTC shapes
+# chrono can write, but reject a non-UTC offset rather than treating it as live.
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+: > "$RUNNING_FLAG"
+write_recording "$$" "$(date -u +%Y-%m-%dT%H:%M:%S).123456789Z"
+out="$(run_hook)"; has "$out" '<hq-desktop-update-deferred>' || fail "fractional UTC recording should defer, got: $out"
+
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+: > "$RUNNING_FLAG"
+write_recording "$$" "$(date -u +%Y-%m-%dT%H:%M:%S)+00:00"
+out="$(run_hook)"; has "$out" '<hq-desktop-update-deferred>' || fail "zero-offset UTC recording should defer, got: $out"
+
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+: > "$RUNNING_FLAG"
+write_recording "$$" "$(date -u +%Y-%m-%dT%H:%M:%S).123+00:00"
+out="$(run_hook)"; has "$out" '<hq-desktop-update-deferred>' || fail "fractional zero-offset UTC recording should defer, got: $out"
+
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+write_recording "$$" "$(date -u +%Y-%m-%dT%H:%M:%S)+01:00"
+out="$(run_hook)"; has "$out" '<hq-desktop-update-started>' || fail "non-UTC recording offset must not defer, got: $out"; wait_worker
+
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+write_recording "$$" '2000-01-01T00:00:00Z'
+out="$(run_hook)"; has "$out" '<hq-desktop-update-started>' || fail "stale recording ledger must not defer, got: $out"; wait_worker
+
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+( sleep 1 ) & dead_pid=$!; wait "$dead_pid" || true
+write_recording "$dead_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+out="$(run_hook)"; has "$out" '<hq-desktop-update-started>' || fail "dead recording pid must not defer, got: $out"; wait_worker
+
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+fresh_recording "$$" '[]'
+out="$(run_hook)"; has "$out" '<hq-desktop-update-started>' || fail "empty recordings must not defer, got: $out"; wait_worker
+
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+out="$(run_hook)"; has "$out" '<hq-desktop-update-started>' || fail "missing recording ledger must not defer, got: $out"; wait_worker
 
 # --- 4. outdated + running -> starts at once, worker updates, next prompt reports
 reset_root
@@ -254,6 +320,42 @@ has "$out" '<hq-desktop-updated>' || fail "next prompt should report <hq-desktop
 has "$out" 'relaunched' || fail "report should say it was relaunched"
 out="$(run_hook)"
 [ -z "$out" ] || fail "outcome must be reported only once, got: $out"
+
+# A recording that begins during the download keeps the verified bundle staged,
+# clears the retry stamp, and lets the next prompt update without redownloading.
+reset_root
+write_plist "$APP" 0.10.150
+fresh_cache
+: > "$RUNNING_FLAG"
+: > "$SLOW_FLAG"
+out="$(run_hook_guard)"
+has "$out" '<hq-desktop-update-started>' || fail "worker recording case should start, got: $out"
+fresh_recording
+wait_worker
+[ "$(installed_version)" = "0.10.150" ] || fail "worker must not replace an app during recording"
+grep -qx 'status=deferred' "$STATE/last-result" || fail "worker must record recording deferral"
+[ ! -f "$STATE/last-attempt.stamp" ] || fail "worker deferral must clear cooldown stamp"
+[ -d "$STATE/work" ] || fail "worker deferral must retain the staged bundle"
+rm -f "$HOMEDIR/.hq/recording-active.json" "$SLOW_FLAG"
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-started>' || fail "post-recording prompt should retry immediately, got: $out"
+wait_worker
+[ "$(installed_version)" = "0.10.200" ] || fail "staged bundle was not applied after recording"
+[ "$(grep -c '.tar.gz' "$CURL_LOG")" -eq 1 ] || fail "retry after recording must reuse the staged bundle"
+
+# A staged bundle from an earlier release must be discarded instead of turning
+# into a failed update and cooldown after the manifest advances.
+reset_root
+write_plist "$APP" 0.10.150
+fresh_cache
+mkdir -p "$STATE/work"
+write_plist "$STATE/work/HQ.app" 0.10.199
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-started>' || fail "stale staged bundle should start a current download, got: $out"
+wait_worker
+[ "$(installed_version)" = "0.10.200" ] || fail "stale staged bundle did not update to the manifest release"
+grep -qx 'status=updated' "$STATE/last-result" || fail "stale staged bundle should produce an updated result"
+[ "$(grep -c '.tar.gz' "$CURL_LOG")" -eq 1 ] || fail "stale staged bundle must download the current release"
 
 # 4b. graceful quit ignored -> the fallback kills by exact name only.
 reset_root
@@ -345,6 +447,12 @@ reset_root
 mkdir -p "$HOMEDIR/.hq"
 printf '{"version":"0.10.150","updatedAt":"2026-09-01T00:00:00Z"}\n' > "$HOMEDIR/.hq/sync-version.json"
 fresh_cache
+fresh_recording
+: > "$RUNNING_FLAG"
+out="$(run_hook HQ_ENSURE_DESKTOP_OS=Windows_NT HQ_ENSURE_DESKTOP_ARCH=x86_64)"
+has "$out" '<hq-desktop-update-deferred>' || fail "Windows recording should defer installer advice, got: $out"
+grep -q '.tar.gz\|setup.exe' "$CURL_LOG" && fail "Windows recording deferral must not download an installer"
+rm -f "$HOMEDIR/.hq/recording-active.json"
 out="$(run_hook HQ_ENSURE_DESKTOP_OS=Windows_NT HQ_ENSURE_DESKTOP_ARCH=x86_64)"
 has "$out" '<hq-desktop-update-available>' || fail "outdated Windows app should advise, got: $out"
 has "$out" "$WIN_URL" || fail "Windows advice should carry the x64 installer URL"
@@ -423,119 +531,94 @@ grep -q '"version": "0.10.200"' "$STATE/latest.json" || fail "parallel refresh c
 [ ! -d "$STATE/updating.lock" ] || fail "current app must not leave a lock"
 
 # --- 13. meeting recording in progress -> never quit/kill the app ---------
-LEDGER="$HOMEDIR/.hq/recordings-ledger.json"
-ledger_recording() { # a recording started on this machine and has not ended
-  mkdir -p "$HOMEDIR/.hq"
-  printf '{"5723ABAA-EE26-4451-89BB-1CB8237FD3D6":{"recordingId":"291cff83-4844-473e-b028-c57e11c6d655","startedAt":"2026-10-07T21:00:15Z"}}\n' > "$LEDGER"
-}
-ledger_clear() { mkdir -p "$HOMEDIR/.hq"; printf '{}\n' > "$LEDGER"; }
-# Fast guard timings for the tests (seconds): poll 1, grace 1, wait bound 2.
-run_hook_guard() { run_hook HQ_ENSURE_DESKTOP_RECORDING_POLL=1 HQ_ENSURE_DESKTOP_RECORDING_GRACE=1 HQ_ENSURE_DESKTOP_RECORDING_WAIT=2; }
-
-# 13a. hook: outdated + running + recording -> silent, no worker, no download,
-#      no stamp (so a later prompt retries once the recording is over).
+# 13a: the legacy ledger alone protects the shipped desktop builds, even with
+# no marker file. The hook writes a deferred outcome, clears the stamp, and
+# never claims a worker while the fake app is running.
 reset_root
 write_plist "$APP" 0.10.150
 fresh_cache
 : > "$RUNNING_FLAG"
 ledger_recording
 out="$(run_hook_guard)"
-[ -z "$out" ] || fail "recording in progress: hook must stay silent, got: $out"
-no_download "recording in progress: hook must not download"
-[ ! -d "$STATE/updating.lock" ] || fail "recording in progress: hook must not spawn a worker"
-[ ! -f "$STATE/last-attempt.stamp" ] || fail "recording in progress: hook must not write the cooldown stamp"
-[ "$(installed_version)" = "0.10.150" ] || fail "recording in progress: bundle must be untouched"
-grep -q osascript "$CALLS" && fail "recording in progress: app must not be asked to quit"
-grep -q 'pkill -x' "$CALLS" && fail "recording in progress: app must not be killed"
-# The recording ends; the very next prompt proceeds normally.
-ledger_clear
-out="$(run_hook_guard)"
-has "$out" '<hq-desktop-update-started>' || fail "after the recording ends the update should start, got: $out"
-wait_worker
-[ "$(installed_version)" = "0.10.200" ] || fail "update after the recording ended did not land"
-grep -q osascript "$CALLS" || fail "after the recording ended the app should be quit gracefully"
-grep -q "open -a $APP" "$CALLS" || fail "after the recording ended the app should be relaunched"
-out="$(run_hook_guard)"
-has "$out" '<hq-desktop-updated>' || fail "next prompt should report the update, got: $out"
+has "$out" '<hq-desktop-update-deferred>' || fail "13a: ledger-only recording should defer, got: $out"
+[ ! -f "$HOMEDIR/.hq/recording-active.json" ] || fail "13a: marker fixture must be absent"
+no_download "13a: ledger-only recording must not download"
+[ ! -d "$STATE/updating.lock" ] || fail "13a: ledger-only recording must not spawn a worker"
+[ ! -f "$STATE/last-attempt.stamp" ] || fail "13a: ledger-only recording must clear cooldown"
+grep -q osascript "$CALLS" && fail "13a: ledger-only recording must not quit the app"
+grep -q 'pkill -x' "$CALLS" && fail "13a: ledger-only recording must not kill the app"
 
-# 13b. worker: a recording starts AFTER the hook spawned the worker (during the
-#      download) -> the worker waits, the recording ends, grace, then it quits
-#      and swaps. The quit must happen only after the ledger clears.
+# 13b: the new marker alone also defers, with no legacy ledger present.
 reset_root
 write_plist "$APP" 0.10.150
 fresh_cache
 : > "$RUNNING_FLAG"
-ledger_clear
-: > "$SLOW_FLAG"                       # download takes 2s: start recording meanwhile
+fresh_recording
 out="$(run_hook_guard)"
-has "$out" '<hq-desktop-update-started>' || fail "13b: update should start, got: $out"
-ledger_recording                       # recording begins while the worker downloads
-# osascript must not fire while the ledger is non-empty: hold the recording 4s
-# (download 2s + poll), then end it and verify the quit came afterwards.
-sleep 4
-grep -q osascript "$CALLS" && fail "13b: app was quit while a recording was in progress (calls: $(tr '\n' ' ' < "$CALLS"))"
-[ "$(installed_version)" = "0.10.150" ] || fail "13b: bundle must stay untouched while recording"
-grep -q 'a meeting recording is in progress; waiting' "$STATE/worker.log" || fail "13b: worker should log that it is waiting (log: $(cat "$STATE/worker.log"))"
-ledger_clear                           # recording ends
-wait_worker
-[ "$(installed_version)" = "0.10.200" ] || fail "13b: update did not land after the recording ended (log: $(cat "$STATE/worker.log"))"
-grep -q 'recording ended; settling' "$STATE/worker.log" || fail "13b: worker should settle after the recording ends"
-grep -q osascript "$CALLS" || fail "13b: app should be quit gracefully once the recording is over"
-grep -q 'pkill -x' "$CALLS" && fail "13b: app must not be force-killed"
-grep -q "open -a $APP" "$CALLS" || fail "13b: app should be relaunched"
-out="$(run_hook_guard)"
-has "$out" '<hq-desktop-updated>' || fail "13b: next prompt should report the update, got: $out"
+has "$out" '<hq-desktop-update-deferred>' || fail "13b: marker-only recording should defer, got: $out"
+[ ! -f "$HOMEDIR/.hq/recordings-ledger.json" ] || fail "13b: ledger fixture must be absent"
+no_download "13b: marker-only recording must not download"
+[ ! -d "$STATE/updating.lock" ] || fail "13b: marker-only recording must not spawn a worker"
+[ ! -f "$STATE/last-attempt.stamp" ] || fail "13b: marker-only recording must clear cooldown"
 
-# 13c. worker: the recording outlasts the wait bound -> defer: app untouched,
-#      never quit or killed, not relaunched; reported once; stamp kept so the
-#      retry waits for the cooldown.
+# 13c: a recording beginning during download makes the worker wait through its
+# bounded ledger guard, retain the verified bundle, clear the stamp, and never
+# quit/kill/relaunch. Once the ledger clears, the next prompt reuses the bundle.
 reset_root
 write_plist "$APP" 0.10.150
 fresh_cache
 : > "$RUNNING_FLAG"
-ledger_clear
 : > "$SLOW_FLAG"
 out="$(run_hook_guard)"
 has "$out" '<hq-desktop-update-started>' || fail "13c: update should start, got: $out"
-ledger_recording                       # ...and never ends within the 2s bound
+ledger_recording
 wait_worker
 [ "$(installed_version)" = "0.10.150" ] || fail "13c: deferred update must leave the bundle untouched"
-grep -q osascript "$CALLS" && fail "13c: deferred update must not ask the app to quit"
-grep -q 'pkill -x' "$CALLS" && fail "13c: deferred update must not kill the app"
-grep -q 'open -a' "$CALLS" && fail "13c: deferred update must not relaunch the app"
-grep -q 'deferred: a meeting recording was still in progress' "$STATE/worker.log" || fail "13c: worker log should record the deferral (log: $(cat "$STATE/worker.log"))"
-[ -f "$STATE/last-attempt.stamp" ] || fail "13c: deferral must keep the cooldown stamp"
-[ ! -d "$STATE/updating.lock" ] || fail "13c: lock must be released after deferral"
-[ -z "$(find "$STATE" -maxdepth 1 -name 'work.*')" ] || fail "13c: deferral must clean up the work dir"
-[ -z "$(find "$APPS" -maxdepth 1 -name '*.hq-ensure-backup.*')" ] || fail "13c: deferral must not leave a backup"
+grep -q osascript "$CALLS" && fail "13c: worker must not quit during ledger recording"
+grep -q 'pkill -x' "$CALLS" && fail "13c: worker must not kill during ledger recording"
+grep -q 'open -a' "$CALLS" && fail "13c: worker must not relaunch during ledger recording"
+grep -q 'a meeting recording was still in progress after waiting 2s' "$STATE/worker.log" || fail "13c: wait-bound deferral was not logged"
+grep -qx 'status=deferred' "$STATE/last-result" || fail "13c: worker must record deferred result"
+[ ! -f "$STATE/last-attempt.stamp" ] || fail "13c: worker deferral must clear cooldown"
+[ -d "$STATE/work" ] || fail "13c: worker deferral must retain staged bundle"
+ledger_clear
+rm -f "$SLOW_FLAG"
 out="$(run_hook_guard)"
-has "$out" '<hq-desktop-update-deferred>' || fail "13c: next prompt should report the deferral, got: $out"
-has "$out" 'meeting recording' || fail "13c: deferral report should say why"
-out="$(run_hook_guard)"
-[ -z "$out" ] || fail "13c: deferral must be reported once, then stay quiet for the cooldown, got: $out"
+has "$out" '<hq-desktop-update-started>' || fail "13c: post-recording prompt should retry, got: $out"
+wait_worker
+[ "$(installed_version)" = "0.10.200" ] || fail "13c: staged bundle was not applied after ledger cleared"
+[ "$(grep -c '.tar.gz' "$CURL_LOG")" -eq 1 ] || fail "13c: retry must reuse staged bundle"
 
-# 13d. a stale ledger entry with the app NOT running blocks nothing: there is
-#      no app to quit, the bundle is swapped, nothing is launched.
+# 13d: a non-empty legacy ledger left by a crashed app is stale. With no
+# running app there is nothing to quit, so it must not block the update.
 reset_root
 write_plist "$APP" 0.10.150
 fresh_cache
-ledger_recording                       # left behind by a crash; app not running
+ledger_recording
 out="$(run_hook_guard)"
-has "$out" '<hq-desktop-update-started>' || fail "13d: stale ledger with app not running should still update, got: $out"
+has "$out" '<hq-desktop-update-started>' || fail "13d: stale ledger without app must not block, got: $out"
 wait_worker
-[ "$(installed_version)" = "0.10.200" ] || fail "13d: stale ledger must not block the swap"
-grep -q open "$CALLS" && fail "13d: a non-running app must not be launched"
-grep -q osascript "$CALLS" && fail "13d: nothing to quit when the app is not running"
+[ "$(installed_version)" = "0.10.200" ] || fail "13d: stale ledger without app should still update"
 
-# 13e. an empty ledger file and a missing ledger both mean "not recording".
+# 13e: recording begins after the worker's wait has returned but before its
+# quit. The final termination-boundary check must defer without osascript or
+# pkill touching the running app.
 reset_root
 write_plist "$APP" 0.10.150
 fresh_cache
 : > "$RUNNING_FLAG"
-rm -f "$LEDGER"
+PGREP_COUNT="$TMP/late-recording-pgrep-count"
+stub pgrep "echo \"pgrep \$*\" >> '$CALLS'; [ \"\$1\" = -x ] || exit 3
+count=0; [ -f '$PGREP_COUNT' ] && count=\$(cat '$PGREP_COUNT'); count=\$((count + 1)); printf '%s\\n' \"\$count\" > '$PGREP_COUNT'
+if [ \"\$count\" -eq 3 ]; then mkdir -p '$HOMEDIR/.hq'; printf '{\\\"late\\\":{\\\"recordingId\\\":\\\"r1\\\"}}\\n' > '$HOMEDIR/.hq/recordings-ledger.json'; fi
+[ -f '$RUNNING_FLAG' ]"
 out="$(run_hook_guard)"
-has "$out" '<hq-desktop-update-started>' || fail "13e: missing ledger should not block, got: $out"
+has "$out" '<hq-desktop-update-started>' || fail "13e: update should initially start, got: $out"
 wait_worker
-[ "$(installed_version)" = "0.10.200" ] || fail "13e: missing ledger must not block the update"
+[ "$(installed_version)" = "0.10.150" ] || fail "13e: late recording must leave the bundle untouched"
+grep -q osascript "$CALLS" && fail "13e: late recording must prevent graceful quit"
+grep -q 'pkill -x' "$CALLS" && fail "13e: late recording must prevent force kill"
+grep -q 'started before quitting the app' "$STATE/worker.log" || fail "13e: final quit boundary was not logged"
+stub pgrep "echo \"pgrep \$*\" >> '$CALLS'; [ \"\$1\" = -x ] || exit 3; [ -f '$RUNNING_FLAG' ]"
 
-echo "PASS: ensure-hq-desktop-hook (not-installed, current, cache-refresh, detached-start+report, stuck-app-fallback, no-relaunch, verification-guards, cooldown, live/stale-lock, windows-advise, platform+kill-switch, no-manifest, concurrency, recording-guard)"
+echo "PASS: ensure-hq-desktop-hook (not-installed, current, cache-refresh, legacy+marker-recording-guards, deferred-staged-retry, detached-start+report, stuck-app-fallback, no-relaunch, verification-guards, cooldown, live/stale-lock, windows-advise, platform+kill-switch, no-manifest, concurrency)"

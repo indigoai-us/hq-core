@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # hq-core: public
 # Publish final delegation artifacts and verify their canonical cloud bytes.
+# PRD stage snapshots prd.json, README.md, and the delegation journal.
+# Brainstorm stage (manifest project.stage == "brainstorm") snapshots the
+# manifest's dossier list (brainstorm.md, research/**, newest journal note)
+# plus the delegation journal, and checks ownership in the brainstorm.md
+# frontmatter instead of prd.json.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 . "$SCRIPT_DIR/lib/secret-patterns.sh"
+. "$SCRIPT_DIR/lib/delegate-brainstorm.sh"
 die() { echo "hq-delegate-publish: $*" >&2; exit 1; }
 [ "${1:-}" = --manifest ] && [ -f "${2:-}" ] || die 'usage: --manifest <path>'
 MANIFEST="$2"
@@ -33,10 +39,19 @@ REL="companies/$COMPANY/projects/$PROJECT"
 PROJECT_DIR="$HQ_ROOT/$REL"
 BUNDLE="$(cd "$(dirname "$MANIFEST")" && pwd)"
 [ -f "$BUNDLE/BRIEF.md" ] || die 'BRIEF.md missing'
-[ -f "$PROJECT_DIR/prd.json" ] || die 'PRD missing'
+STAGE_KIND="$(jq -r '.project.stage // "prd"' "$MANIFEST")"
+case "$STAGE_KIND" in
+  prd)        [ -f "$PROJECT_DIR/prd.json" ] || die 'PRD missing' ;;
+  brainstorm) [ -f "$PROJECT_DIR/brainstorm.md" ] || die 'brainstorm.md missing' ;;
+  *)          die "unknown project stage '$STAGE_KIND'" ;;
+esac
 if [ "$(jq -r '.mode' "$MANIFEST")" = transfer ]; then
   EXPECTED_OWNER="$(jq -r '.to.principal' "$MANIFEST")"
-  jq -e --arg owner "$EXPECTED_OWNER" '.metadata.owner == $owner' "$PROJECT_DIR/prd.json" >/dev/null || die 'local PRD owner does not match recipient'
+  if [ "$STAGE_KIND" = prd ]; then
+    jq -e --arg owner "$EXPECTED_OWNER" '.metadata.owner == $owner' "$PROJECT_DIR/prd.json" >/dev/null || die 'local PRD owner does not match recipient'
+  else
+    [ "$(hq_brainstorm_frontmatter_get "$PROJECT_DIR/brainstorm.md" owner)" = "$EXPECTED_OWNER" ] || die 'local brainstorm.md owner does not match recipient'
+  fi
 fi
 STAGE="$(mktemp -d)"
 atomic_copy() {
@@ -52,10 +67,26 @@ file_hash() {
 }
 # Snapshot final project content, excluding mutable/self-referential receipts.
 : > "$STAGE/hashes"
-for file in "$PROJECT_DIR/prd.json" "$PROJECT_DIR/README.md" "$PROJECT_DIR/journal/delegations.md"; do
-  [ -f "$file" ] || continue
+if [ "$STAGE_KIND" = prd ]; then
+  SNAPSHOT_FILES="$PROJECT_DIR/prd.json
+$PROJECT_DIR/README.md
+$PROJECT_DIR/journal/delegations.md"
+else
+  SNAPSHOT_FILES="$(jq -r '.project.dossier[]' "$MANIFEST" | sed "s|^|$HQ_ROOT/|")
+$PROJECT_DIR/journal/delegations.md"
+  # Every dossier file the manifest promised must still exist.
+  while IFS= read -r file; do
+    [ -f "$file" ] || die "dossier file missing: ${file#"$HQ_ROOT/"}"
+  done <<EOF
+$(jq -r '.project.dossier[]' "$MANIFEST" | sed "s|^|$HQ_ROOT/|")
+EOF
+fi
+while IFS= read -r file; do
+  [ -n "$file" ] && [ -f "$file" ] || continue
   jq -cn --arg key "${file#"$HQ_ROOT/"}" --arg value "$(file_hash "$file")" '{key:$key,value:$value}' >> "$STAGE/hashes"
-done
+done <<EOF
+$SNAPSHOT_FILES
+EOF
 jq -cn --arg key "$REL/delegation/$ID/BRIEF.md" --arg value "$(file_hash "$STAGE/BRIEF.md")" '{key:$key,value:$value}' >> "$STAGE/hashes"
 jq -s 'from_entries' "$STAGE/hashes" > "$STAGE/checksums"
 jq --slurpfile hashes "$STAGE/checksums" '.checksums=$hashes[0] | .status="granted" | .recipientAccess="unconfirmed" | del(.publication,.verifiedAt,.sentAt,.dmEventId)' "$MANIFEST" > "$STAGE/manifest.json"
