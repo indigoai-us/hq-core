@@ -1,0 +1,5 @@
+<policy-reminder>
+> Policy `c138-fixture-001` applies here: Fixture rule 001. (`personal/policies/c138-fixture-001.md`)
+> Policy `c138-fixture-002` applies here: Fixture rule 002. (`personal/policies/c138-fixture-002.md`)
+> Policy `c138-fixture-003` applies here: Fixture rule 003. (`personal/policies/c138-fixture-003.md`)
+</policy-reminder>

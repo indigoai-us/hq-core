@@ -12,6 +12,9 @@
 # policy path as an argument. PATH shims record arguments; no strace, no
 # platform-specific tool, and it runs the same way under bash 3.2.
 set -euo pipefail
+# Keep this performance regression on the legacy pre-call path; the new
+# default event contract is covered by inject-policy-tool-events.test.sh.
+export HQ_POLICY_TOOL_EVENTS=legacy
 
 TEST_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
 ROOT="$(cd "$TEST_DIR/../../.." && pwd)"

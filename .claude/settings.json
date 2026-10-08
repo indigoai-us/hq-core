@@ -2,6 +2,10 @@
   "model": "opus",
   "autoMemoryEnabled": false,
   "includeGitInstructions": false,
+  "skillOverrides": {
+    "job": "user-invocable-only",
+    "import-claude": "user-invocable-only"
+  },
   "useAutoModeDuringPlan": false,
   "disableArtifact": true,
   "worktree": {

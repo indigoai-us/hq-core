@@ -1,0 +1,12 @@
+{
+  "today": "2026-10-07",
+  "scope": "company:acme",
+  "slug": "pin-widgetctl-before-deploy",
+  "title": "Pin widgetctl 4.2 until the upload regression is fixed",
+  "when": "widgetctl && deploy",
+  "source": "back-pressure-failure",
+  "rule": "ALWAYS pin widgetctl to 4.1 when deploying; 4.2 has an upload regression that drops the last chunk.",
+  "mechanism": "Pinning the previous minor version avoids the truncated upload at the cost of missing 4.2 features.",
+  "context": "Seen on acme ticket OPS-77 on 2026-10-01.",
+  "workaround": {"fix_condition": "widgetctl ships a release that fixes the upload regression"}
+}

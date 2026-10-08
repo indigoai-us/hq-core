@@ -27,6 +27,28 @@
 
 set -uo pipefail
 
+# PostToolUse plain stdout is not model context. Buffer this advisory hook's
+# output and return it in the event-specific context envelope instead.
+HOOK_STDOUT_TMP="$(mktemp "${TMPDIR:-/tmp}/hq-journal-due.XXXXXX" 2>/dev/null || true)"
+if [ -n "$HOOK_STDOUT_TMP" ]; then
+  exec 9>&1
+  exec >"$HOOK_STDOUT_TMP"
+  journal_due_emit_context() {
+    hook_status=$?
+    trap - EXIT
+    hook_context="$(cat "$HOOK_STDOUT_TMP" 2>/dev/null || true)"
+    rm -f "$HOOK_STDOUT_TMP" 2>/dev/null || true
+    if [ -n "$hook_context" ] && command -v jq >/dev/null 2>&1; then
+      jq -cn --arg event PostToolUse --arg context "$hook_context" \
+        '{hookSpecificOutput:{hookEventName:$event,additionalContext:$context}}' >&9 2>/dev/null || true
+    fi
+    exit "$hook_status"
+  }
+  trap journal_due_emit_context EXIT
+else
+  exec >/dev/null
+fi
+
 HQ_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 JOURNAL_HELPER="$HQ_ROOT/core/scripts/session-journal.sh"
 

@@ -39,6 +39,12 @@ if [ -f "$SCRIPT_DIR/lib/hq-cli-floor.sh" ]; then
   hq_cli_floor_check "derive-trigger-facts.sh" "5.342.5"
 fi
 
+# Node replaces an inherited closed fd 0 with /dev/null; tell the CLI to run its own bundled shell with fd 0 closed.
+if ! { true <&0; } 2>/dev/null; then
+  HQ_CORE_STDIN_CLOSED=1
+  export HQ_CORE_STDIN_CLOSED
+fi
+
 # MSYS path conversion is disabled for the hq process so slash commands arrive unchanged.
 # Convert only this generated root path to Windows form for the native CLI.
 if command -v cygpath >/dev/null 2>&1; then

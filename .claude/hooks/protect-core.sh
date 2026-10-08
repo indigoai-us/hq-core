@@ -152,7 +152,13 @@ if ! which yq >/dev/null 2>&1; then
 fi
 
 # Bypass: must be declared in .claude/settings.local.json env section.
+# HQ_IGNORE_CORE_PROTECT_BYPASS=1 makes this hook behave as if no bypass were
+# declared. It can only tighten the guard, never open it, so unlike the bypass
+# itself it is safe to accept from the environment. The dispatcher suite sets it
+# so that "protect-core blocks the charter" is tested on a machine whose
+# operator keeps the bypass switched on.
 is_bypass_authorized() {
+  [[ "${HQ_IGNORE_CORE_PROTECT_BYPASS:-}" != "1" ]] || return 1
   [[ -f "$SETTINGS_LOCAL" ]] || return 1
   command -v jq >/dev/null 2>&1 || return 1
   local val

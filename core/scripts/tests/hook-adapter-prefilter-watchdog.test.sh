@@ -228,8 +228,14 @@ run_slow_hook_report_case() {
     if [ "$bin" = "hq" ]; then
       cat > "$TMP/bin/$bin" <<'HQ'
 #!/usr/bin/env bash
-cat >> "${HQ_TEST_EVENT_JSON_LOG:?}"
-printf 'reported\n' >> "${HQ_TEST_HQ_ACK:?}"
+report_file="$(mktemp "${HQ_TEST_EVENT_JSON_LOG:?}.report.XXXXXX")"
+cat > "$report_file"
+if jq -e '
+  type == "object" and .type == "hook_timeout_warning"
+    and (.metadata | type == "object")
+' "$report_file" >/dev/null 2>&1; then
+  printf 'reported\n' >> "${HQ_TEST_HQ_ACK:?}"
+fi
 HQ
     else
       printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/$bin"
@@ -256,10 +262,19 @@ else
   printf 'master-dispatch\t%s\tabsolute\n' "${HQ_TEST_MASTER_PATH:?}" > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"
   printf 'master-dispatch\t%s\trelative\n' "${HQ_TEST_MASTER_PATH:?}" >> "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"
 fi
-while [ "$(awk 'END { print NR + 0 }' "${HQ_TEST_HQ_ACK:?}")" -lt "$HQ_TEST_EXPECTED_REPORTS" ]; do sleep 0.02; done
+report_deadline=$((SECONDS + 15))
+while [ "$(awk 'END { print NR + 0 }' "${HQ_TEST_HQ_ACK:?}")" -lt "$HQ_TEST_EXPECTED_REPORTS" ]; do
+  if [ "$SECONDS" -ge "$report_deadline" ]; then
+    printf 'FAIL: timed out waiting for %s valid watchdog report acknowledgement(s)\n' \
+      "$HQ_TEST_EXPECTED_REPORTS" >&2
+    exit 1
+  fi
+  sleep 0.02
+done
 SLOW
   chmod +x "$root/.claude/hooks/detect-secrets.sh"
-  : > "$TMP/events.jsonl"
+  local event_log="$TMP/events.$provider.jsonl"
+  : > "$event_log"
   : > "$TMP/acks.log"
   : > "$TMP/watchdog.trigger"
   local adapter status=0
@@ -273,23 +288,35 @@ SLOW
     HQ_TEST_MASTER_PATH="$root/.claude/hooks/master-hook.sh" \
     HQ_TEST_HOOK_PATH="$root/.claude/hooks/detect-secrets.sh" \
     HQ_TEST_EXPECTED_REPORTS="$expected_reports" \
-    HQ_TEST_EVENT_JSON_LOG="$TMP/events.jsonl" \
+    HQ_TEST_EVENT_JSON_LOG="$event_log" \
     HQ_TEST_HQ_ACK="$TMP/acks.log" \
     HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$TMP/watchdog.trigger" \
     HQ_HOOK_TIMEOUT_SENTRY=1 \
     HQ_GROK_POLICY_DEBOUNCE_SECS=0 \
     BASH_ENV=/dev/null bash "$adapter" >"$TMP/$provider-slow.out" 2>"$TMP/$provider-slow.err" || status=$?
   [ "$status" -eq 0 ] || fail "$provider slow-hook adapter exited $status"
+  # The watchdog reporters and other HQ calls may overlap. Acknowledgements
+  # count only complete timeout events; collect those complete payloads after
+  # adapter exit instead of appending concurrently to one JSONL file.
+  for report_file in "$TMP"/events."$provider".jsonl.report.*; do
+    [ -f "$report_file" ] || continue
+    jq -e 'type == "object" and .type == "hook_timeout_warning"' \
+      "$report_file" >/dev/null 2>&1 || continue
+    cat "$report_file" >> "$event_log"
+  done
   if ! jq -s -e --argjson expected "$expected_reports" '
     length == $expected and all(.[]; (.metadata.slow_child // .metadata.hook_script) == "detect-secrets.sh"
       and (.metadata.slow_child_ms | type == "number" and . > 0))
-  ' "$TMP/events.jsonl" >/dev/null 2>&1; then
+  ' "$event_log" >/dev/null 2>&1; then
     if [ "$expected_reports" -eq 1 ] && jq -s -e '
       length == 1 and all(.[]; .metadata.hook_script == "detect-secrets.sh")
-    ' "$TMP/events.jsonl" >/dev/null 2>&1; then
+    ' "$event_log" >/dev/null 2>&1; then
       printf 'case=%s long hook watchdog warnings=1 hook_script=detect-secrets.sh\n' "$provider"
     else
-      fail "$provider long hook did not produce $expected_reports watchdog warning(s) attributed to detect-secrets.sh"
+      local ack_count event_count
+      ack_count="$(count_lines "$TMP/acks.log")"
+      event_count="$(count_lines "$event_log")"
+      fail "$provider long hook expected $expected_reports watchdog warning(s) attributed to detect-secrets.sh; acknowledgements=$ack_count event_rows=$event_count"
     fi
   else
     printf 'case=%s long hook watchdog warnings=%s slow_child=detect-secrets.sh\n' "$provider" "$expected_reports"

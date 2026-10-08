@@ -69,7 +69,11 @@ pass "registry ids resolve to scripts and profile lists"
 
 run_master() { # <event> <payload>  -> sets OUT RC ERR
   ERR_FILE="$(mktemp)"
-  OUT="$(printf '%s' "$2" | bash "$MASTER" "$1" 2>"$ERR_FILE")"; RC=$?
+  # protect-core reads its bypass from .claude/settings.local.json, which an
+  # operator may legitimately keep switched on. With it on, the charter write
+  # below is allowed and this suite would report the guard as broken. The
+  # variable tells the hook to ignore the bypass; it can only tighten the guard.
+  OUT="$(printf '%s' "$2" | HQ_IGNORE_CORE_PROTECT_BYPASS=1 bash "$MASTER" "$1" 2>"$ERR_FILE")"; RC=$?
   ERR="$(cat "$ERR_FILE")"; rm -f "$ERR_FILE"
 }
 payload_bash() { jq -nc --arg c "$1" --arg root "$ROOT" '{session_id:"mh-registry-test",hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$root,tool_input:{command:$c}}'; }
@@ -153,21 +157,24 @@ cat > "$PF_FIXTURE/.claude/hooks/hook-registry.json" <<'JSON'
 ]}]}}
 JSON
 : > "$PF_FIXTURE/workspace/orchestrator/policy-trigger-state/mh-prefilter-test.txt"
-run_pf_master() { # <command> -> sets PF_ERR and PF_RC
+run_pf_master_event() { # <event> <command> -> sets PF_ERR and PF_RC
   local payload
-  payload="$(jq -nc --arg c "$1" --arg root "$PF_FIXTURE" '{session_id:"mh-prefilter-test",hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$root,tool_input:{command:$c}}')"
+  payload="$(jq -nc --arg c "$2" --arg root "$PF_FIXTURE" --arg event "$1" '{session_id:"mh-prefilter-test",hook_event_name:$event,tool_name:"Bash",cwd:$root,tool_input:{command:$c},tool_response:{stdout:"done"}}')"
   PF_ERR_FILE="$(mktemp)"
   PF_OUT="$(printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$PF_FIXTURE" HQ_ROOT="$PF_FIXTURE" \
-    HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_TRACE=1 bash "$PF_FIXTURE/.claude/hooks/master-hook.sh" PreToolUse 2>"$PF_ERR_FILE")"
+    HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_TRACE=1 bash "$PF_FIXTURE/.claude/hooks/master-hook.sh" "$1" 2>"$PF_ERR_FILE")"
   PF_RC=$?
   PF_ERR="$(cat "$PF_ERR_FILE")"
   rm -f "$PF_ERR_FILE"
+}
+run_pf_master() { # <command> -> sets PF_ERR and PF_RC
+  run_pf_master_event PreToolUse "$1"
 }
 run_pf_master "zzqqc153prefilterfixture"
 grep -q "skip inject-policy-on-trigger (policy-vocab)" <<<"$PF_ERR" \
   && pass "token-free command skips the injector" \
   || fail "token-free command did not skip the injector: $PF_ERR"
-PF_CACHE="$PF_FIXTURE/workspace/orchestrator/hook-state/policy-prefilter/personal_policies+core_policies+PreToolUse.v1"
+PF_CACHE="$PF_FIXTURE/workspace/orchestrator/hook-state/policy-prefilter/personal_policies+core_policies+PreToolUse.default.v3"
 [ -s "$PF_CACHE" ] && pass "compiled vocabulary written" || fail "no compiled vocabulary file at $PF_CACHE"
 run_pf_master "git status"
 grep -q "run inject-policy-on-trigger" <<<"$PF_ERR" \
@@ -204,6 +211,26 @@ run_pf_master "cat README.md"
 grep -q "run inject-policy-on-trigger" <<<"$PF_ERR" \
   && pass "unprovable policy disables the skip" \
   || fail "unprovable (negated) policy did not disable the skip"
+cat > "$PF_FIXTURE/personal/policies/zz-registry-test-post-default.md" <<'POLICY'
+---
+id: zz-registry-test-post-default
+title: omitted on post tool policy
+when: zzqqposttoken
+enforcement: soft
+---
+Test-only omitted-on policy for PostToolUse dispatch.
+POLICY
+jq -nc '{hooks:{PostToolUse:[{matcher:"Bash",hooks:[
+  {id:"inject-policy-on-trigger",script:".claude/hooks/injector.sh",timeout:30,gated:false,prefilter:{policy_vocab:true}}
+]}]}}' > "$PF_FIXTURE/.claude/hooks/hook-registry.json"
+sleep 1
+run_pf_master_event PostToolUse "echo zzqqposttoken"
+grep -q "run inject-policy-on-trigger" <<<"$PF_ERR" \
+  && pass "omitted-on PostToolUse policy reaches injector through the vocabulary prefilter" \
+  || fail "omitted-on PostToolUse policy was skipped by the vocabulary prefilter: $PF_ERR"
+PF_POST_CACHE="$PF_FIXTURE/workspace/orchestrator/hook-state/policy-prefilter/personal_policies+core_policies+PostToolUse.default.v3"
+[ -s "$PF_POST_CACHE" ] && pass "PostToolUse vocabulary cache compiled with the new default" \
+  || fail "no PostToolUse vocabulary cache at $PF_POST_CACHE"
 rm -rf "$PF_FIXTURE"
 
 echo "[7] a blocking registry hook wins over earlier errors or missing scripts"

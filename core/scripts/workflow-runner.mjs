@@ -285,7 +285,8 @@ function readSessionCompanyCapability(sid) {
     if (Object.prototype.hasOwnProperty.call(data, 'company_slugs')
       && (!Array.isArray(data.company_slugs) || !data.company_slugs.length
         || !data.company_slugs.every(validSlug) || data.company_slugs[0] !== data.company_slug
-        || new Set(data.company_slugs).size !== data.company_slugs.length)) return null;
+        || new Set(data.company_slugs).size !== data.company_slugs.length
+        || (data.company_slugs.includes('personal') && data.company_slugs.length !== 1))) return null;
     return data;
   } catch {
     return null;
@@ -300,11 +301,13 @@ function readSessionCompanySlugs(sid) {
   try {
     const flag = spawnSync(process.execPath, [flagScript], {
       encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'],
-      env: { ...process.env, HQ_ROOT, HQ_FLAG_KEY: 'hooks.multi-company-session-lock' },
+      env: { ...process.env, HQ_ROOT, HQ_COMPANY_SLUG: data.company_slug, HQ_FLAG_KEY: 'hooks.multi-company-session-lock' },
     });
-    if (flag.status !== 0 || String(flag.stdout || '').trim() !== 'true') return [];
+    // Unknown/unavailable lookups retain the lock set. Only the explicit
+    // server-side false is allowed to disable this kill switch.
+    if (flag.status === 0 && String(flag.stdout || '').trim() === 'false') return [];
   } catch {
-    return [];
+    // Keep the lock set on local reader failures; the flag defaults on.
   }
   return [...new Set(slugs)];
 }

@@ -1,0 +1,34 @@
+BLOCKED: Unanchored git/gh mutation with effective cwd at the HQ root (no `git -C`, no `gh -R`).
+
+  Command: git push origin main
+
+WHY: A git/gh mutation must carry its OWN explicit repo anchor in the same
+Bash call. Shell cwd is not a reliable anchor — it silently drifts across
+context compaction, long-running tools, and parallel-call leakage, so a
+bare mutation can land on the HQ root repo (never committed/pushed:
+hq-root-never-push-remote, hq-git-discipline) or the wrong repo.
+
+FIX — re-issue with an explicit anchor:
+  git -C /abs/path/to/repo <subcommand> ...    # canonical for git
+  gh pr create -R owner/repo ...               # canonical for gh
+  gh repo archive owner/repo ...               # positional gh repo target
+  gh api -X PATCH repos/owner/repo/issues/1    # positional API target
+  gh repo create owner/name ...                # self-anchoring (--source, if
+                                               # used, must be absolute, non-HQ)
+
+Do NOT use `( cd /abs/path && git ... )` as the anchor: the Claude Code
+harness silently strips a leading `cd <path> && ` when <path> equals the
+session cwd, so this hook never sees it (verified 2026-06-08, re-verified
+2026-06-09). If your cwd is already inside the target non-HQ repo, bare
+mutations are permitted via the cwd fallback — so seeing this block means
+the effective cwd IS the HQ root repo (or not a repo at all), and the
+mutation would land on HQ.
+
+Mechanical backstop for a real incident (a bare `git push` after earlier
+`cd`s — the DISABLED HQ push URL caught it only by luck). If you are
+intentionally operating on HQ git internals, prefix the single command
+with HQ_ALLOW_HQ_ROOT_GIT=1.
+
+If this block is wrong or surprising, report it with /hq-bug.
+
+Blocked by hook block-hq-root-git-mutation.

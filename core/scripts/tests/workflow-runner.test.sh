@@ -887,6 +887,51 @@ suf="${ih##*/codex-argv.}"
 grep -qx -- 'withtrestle,otherco' "$TMP/rec/codex-spawncos.$suf"
 check "child inherits ordered company lock set when the flag is on" "$?"
 
+# The server's explicit false remains the kill switch for spawned workers.
+printf '%s\n' 'process.stdout.write("false")' > "$HQROOT/.codex/hooks/codex-explicit-path-flag.cjs"
+OUT="$(env -u HQ_SPAWN_COMPANY -u HQ_SPAWN_COMPANIES -u HQ_SPAWN_PROJECT -u HQ_SPAWN_TASK \
+  HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$TMP/rec" \
+  HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" HQ_SESSION_ID=parent-sid \
+  HQ_WORKFLOW_GATES_DIR="$TMP/gates-multi-flag-off" \
+  node "$RUNNER" "$TMP/wf-inherit.mjs" --quiet --run-dir "$TMP/run-inherit-multi-flag-off" 2>/dev/null)"
+RC=$?
+check "multi-company explicit-off workflow exits 0" "$RC"
+ih="$(grep -l -x -- 'inherit-bind' "$TMP/rec"/codex-argv.* 2>/dev/null | tail -1)"
+suf="${ih##*/codex-argv.}"
+grep -qx -- 'withtrestle' "$TMP/rec/codex-spawnco.$suf"
+check "explicit false restricts child to its primary company" "$?"
+
+# If the flag script is missing, retain the validated capability lock set.
+rm -f "$HQROOT/.codex/hooks/codex-explicit-path-flag.cjs"
+OUT="$(env -u HQ_SPAWN_COMPANY -u HQ_SPAWN_COMPANIES -u HQ_SPAWN_PROJECT -u HQ_SPAWN_TASK \
+  HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$TMP/rec" \
+  HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" HQ_SESSION_ID=parent-sid \
+  HQ_WORKFLOW_GATES_DIR="$TMP/gates-multi-flag-missing" \
+  node "$RUNNER" "$TMP/wf-inherit.mjs" --quiet --run-dir "$TMP/run-inherit-multi-flag-missing" 2>/dev/null)"
+RC=$?
+check "multi-company missing-flag workflow exits 0" "$RC"
+ih="$(grep -l -x -- 'inherit-bind' "$TMP/rec"/codex-argv.* 2>/dev/null | tail -1)"
+suf="${ih##*/codex-argv.}"
+grep -qx -- 'withtrestle,otherco' "$TMP/rec/codex-spawncos.$suf"
+check "missing flag script preserves validated child lock set" "$?"
+
+# Default-on never widens the capability format: personal remains a singleton.
+printf '{"session_id":"parent-sid","company_slug":"withtrestle","company_slugs":["withtrestle","personal"]}\n' \
+  > "$HQROOT/workspace/sessions/parent-sid/scope-capability.json"
+printf '%s\n' 'process.stdout.write("true")' > "$HQROOT/.codex/hooks/codex-explicit-path-flag.cjs"
+touch "$TMP/personal-malformed-marker"
+OUT="$(env -u HQ_SPAWN_COMPANY -u HQ_SPAWN_COMPANIES -u HQ_SPAWN_PROJECT -u HQ_SPAWN_TASK \
+  HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$TMP/rec" \
+  HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" HQ_SESSION_ID=parent-sid \
+  HQ_WORKFLOW_GATES_DIR="$TMP/gates-multi-personal-malformed" \
+  node "$RUNNER" "$TMP/wf-inherit.mjs" --quiet --run-dir "$TMP/run-inherit-multi-personal-malformed" 2>/dev/null)"
+RC=$?
+check "mixed personal capability workflow exits 0" "$RC"
+ih="$(find "$TMP/rec" -maxdepth 1 -type f -name 'codex-argv.*' -newer "$TMP/personal-malformed-marker" -print | head -1)"
+suf="${ih##*/codex-argv.}"
+[ -n "$ih" ] && [ ! -s "$TMP/rec/codex-spawnco.$suf" ] && [ ! -s "$TMP/rec/codex-spawncos.$suf" ]
+check "malformed personal lock set is not inherited by child" "$?"
+
 # Metadata can be ahead after an interrupted add. The child must inherit only
 # the capability's narrower authorized set, even when meta.yaml still lists B.
 printf '{"session_id":"parent-sid","company_slug":"withtrestle","company_slugs":["withtrestle"]}\n' \
@@ -1002,7 +1047,15 @@ OUT="$(HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$REC3" \
   HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" CODEX_WORKFLOW_GATES_DIR="$GATES2" \
   node "$RUNNER" "$TMP/wf-gate.mjs" --quiet --run-dir "$TMP/run-gate2" 2>/dev/null)"
 RC=$?
-[ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q 'GATE CACHED'
+[ "$RC" -eq 0 ] && node -e '
+  const fs = require("node:fs");
+  const events = fs.readFileSync(process.argv[1], "utf8").trim().split(/\r?\n/).map(JSON.parse);
+  const cached = events.some((event) => event.event === "gate-cached"
+    && event.id === "core-gate" && event.choice === "careful");
+  const resumed = events.some((event) => event.event === "agent-start"
+    && event.promptHead === "after:careful");
+  process.exit(cached && resumed ? 0 : 1);
+' "$TMP/run-gate2/journal.jsonl"
 check "legacy CODEX_WORKFLOW_GATES_DIR honored (cached answer found there)" "$?"
 
 # ---- 9: an off-contract reply is repaired, not thrown away -------------------

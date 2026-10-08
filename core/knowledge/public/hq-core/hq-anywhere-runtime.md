@@ -7,7 +7,10 @@ public: true
 # HQ Anywhere runtime protocol and registry
 
 HQ Anywhere adds a global CLI install and the hqd local daemon. A per-user
-registry links folders to companies. The `hq-anywhere-runtime` flag controls
+registry links folders to companies. The `hq-anywhere-runtime` flag is an
+operator kill switch: absent, archived, or unreadable registry rows default on,
+while an explicit false row or local `HQ_FLAG_HQ_ANYWHERE_RUNTIME=false|0`
+override turns it off. The flag controls
 these features and is off by default. The socket and registry stay in the
 user's home directory. They are local to that host and are not stored in a
 project or synced HQ folder.

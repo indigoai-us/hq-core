@@ -12,6 +12,8 @@ relates_to:
 
 Structured storage as a first-class HQ surface: **local SQLite per company** on every machine, and (on **HQ Workforce**, $500/mo per company; internal plan id `paid-500`) a **remote** DB provisioned by the platform — secrets never printed.
 
+Deployed apps get their own database with `database: true` and `@hq/db` (Team plan, $10 a month per app). See `core/knowledge/public/hq-core/app-databases.md`.
+
 Markdown / qmd / ontology remain the primary knowledge store. Vault DB is for **relational agent and app state**, not for replacing company knowledge docs.
 
 ## Two tiers
@@ -46,6 +48,7 @@ Local and remote share the CLI surface but are **not** auto-replicated in v1.
 | `hq db sql --company {co} -- 'SELECT …'` | Query **local** DB (read-only default; `--write` for mutations) |
 | `hq db migrate --company {co} --hq-root {HQ}` | Apply vault text migrations |
 | `hq db provision --company {co}` | Remote binding via hq-pro `POST /v1/db/provision` (HQ Workforce plan; other plans get `PLAN_REQUIRED`) |
+| `hq db usage\|sql\|dump\|destroy --company {co} --app {app}` | App databases: usage and estimated charge, SQL, export, delete now. See `app-databases.md`. |
 | `hq db sql --company {co} --remote -- '…'` | **Not working yet.** The flag exists, but the CLI has no remote connection lookup or executor wired, so every run fails with "remote SQL unavailable: no remote binding", even after `hq db provision`. Use local SQL. |
 
 ## Paths
@@ -85,6 +88,7 @@ hq db sql --company {co} -- 'SELECT …'
 
 ## Related
 
+- App databases (`database: true`, `@hq/db`, migrations, price, consent, retention): `core/knowledge/public/hq-core/app-databases.md`
 - Quick reference: `core/knowledge/public/hq-core/quick-reference.md` (CLI: `hq db`)
 - Hard policy: never print DB connection strings (core policies)
 - CLI package: `@indigoai-us/hq-cli` ≥ 5.62.0

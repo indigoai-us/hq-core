@@ -160,7 +160,13 @@ Local SQLite per company (always) + optional remote Postgres-class on **HQ Workf
 | `hq db sql --company {co} -- 'SELECT …'` | Query local DB (read-only default; `--write` for mutations) |
 | `hq db migrate --company {co} --hq-root {HQ}` | Apply `companies/{co}/db/migrations/*.sql` |
 | `hq db provision --company {co}` | Remote binding — **HQ Workforce plan only** |
+| `hq db usage --company {co} --app {app}` | App database usage, included amounts, ceiling and estimated charge |
+| `hq db sql --company {co} --app {app} -- '…'` | SQL against an app's database (read-only unless `--write`) |
+| `hq db dump --company {co} --app {app}` | Export an app's database to a SQL file |
+| `hq db destroy --company {co} --app {app}` | Delete an app's database now (owner or admin, typed confirmation) |
 | `hq db sql --company {co} --remote -- '…'` | Flag exists but always fails today (no remote executor wired); use local SQL |
+
+App databases (`database: true` on a deploy, `@hq/db`, `db/migrations/`): Team plan, $10 a month per app with 250k DPU and 1 GB included, read-only at 4x, 30-day retention after delete. Details: `app-databases.md`.
 
 Migrations are vault **text**; binary `.db` files stay machine-local (never under `companies/`). Never print connection strings. Local and remote are not auto-replicated in v1.
 

@@ -24,6 +24,11 @@
 
 set -uo pipefail
 
+# This helper is registered on PreToolUse(Bash), whose plain stdout is not
+# delivered as model context. Keep it silent until the registry moves it to a
+# delivering event and it can emit an additionalContext envelope.
+exit 0
+
 STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"

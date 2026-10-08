@@ -68,8 +68,22 @@ start_session() { # <cwd> <cli-bin> [agent_id] [agent_type] → sets SID, OUT, E
     '({session_id:$sid, cwd:$cwd, hook_event_name:"SessionStart", source:"startup"}
       + (if $aid == "" then {} else {agent_id:$aid} end)
       + (if $atype == "" then {} else {agent_type:$atype} end))' \
-    | ( cd "$1" && env HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HQ_SESSION_NO_CLI=1 HQ_CLI_BIN="$2" HQ_FLAG_CLI_BIN="$TMP/bin/hq-stub" HQ_FLAGS_API_URL=https://flags.test HQ_COMPANY_UID=cmp_123456 HQ_TEST_FLAG=true \
-        bash "$FIX/.claude/hooks/master-hook.sh" SessionStart ) >"$OUT" 2>"$ERR" \
+    | if [ "${5:-configured}" = "missing-flag-config" ]; then
+        ( cd "$1" && env -u HQ_FLAGS_API_URL -u HQ_COMPANY_UID -u HQ_FLAG_HQ_ANYWHERE_RUNTIME \
+            HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HQ_SESSION_NO_CLI=1 HQ_CLI_BIN="$2" \
+            HQ_FLAG_CLI_BIN="$TMP/bin/hq-stub" HQ_TEST_FLAG=true \
+            bash "$FIX/.claude/hooks/master-hook.sh" SessionStart ) >"$OUT" 2>"$ERR"
+      elif [ "${5:-configured}" = "local-kill-switch" ]; then
+        ( cd "$1" && env -u HQ_FLAGS_API_URL -u HQ_COMPANY_UID \
+            HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HQ_SESSION_NO_CLI=1 HQ_CLI_BIN="$2" \
+            HQ_FLAG_CLI_BIN="$TMP/bin/hq-stub" HQ_FLAG_HQ_ANYWHERE_RUNTIME=0 \
+            bash "$FIX/.claude/hooks/master-hook.sh" SessionStart ) >"$OUT" 2>"$ERR"
+      else
+        ( cd "$1" && env HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HQ_SESSION_NO_CLI=1 HQ_CLI_BIN="$2" \
+            HQ_FLAG_CLI_BIN="$TMP/bin/hq-stub" HQ_FLAGS_API_URL=https://flags.test \
+            HQ_COMPANY_UID=cmp_123456 HQ_TEST_FLAG=true \
+            bash "$FIX/.claude/hooks/master-hook.sh" SessionStart ) >"$OUT" 2>"$ERR"
+      fi \
     || fail "master-hook exited non-zero for $1: $(cat "$ERR")"
 }
 bound() { HQ_HQ_SESSION_NO_CLI=1 bash "$FIX/core/scripts/hq-session.sh" --session-id "$SID" get "$1"; }
@@ -93,12 +107,35 @@ start_session "$TMP/plain-folder" "$TMP/bin/hq-stub"
 if context | grep -q 'company-policy-digest'; then fail "miss emitted a company digest"; fi
 pass "miss binds personal with one hq link hint"
 
+# This child reports the flag inherited from master-hook without a registry config.
+mkdir -p "$FIX/core/hooks/SessionStart"
+cat > "$FIX/core/hooks/SessionStart/98-anywhere-flag-state.sh" <<'HOOK'
+#!/usr/bin/env bash
+jq -cn --arg enabled "${HQ_ANYWHERE_RUNTIME_ENABLED:-unset}" \
+  '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:("HQ_ANYWHERE_RUNTIME_ENABLED=" + $enabled)}}'
+HOOK
+chmod +x "$FIX/core/hooks/SessionStart/98-anywhere-flag-state.sh"
+
+# With no endpoint or company UID, the runtime flag reader's fail-safe still
+# enables the Anywhere hook path, while the company resolver binds personal.
+start_session "$TMP/plain-folder" "$TMP/bin/hq-stub" "" "" missing-flag-config
+[ "$(bound company_slug)" = "personal" ] || fail "missing flag config did not bind personal"
+context | grep -q 'hq link <company>' || fail "missing flag config skipped the default-on Anywhere path"
+context | grep -q 'HQ_ANYWHERE_RUNTIME_ENABLED=true' || fail "missing flag config did not export the ON decision"
+pass "missing endpoint and company UID keep the default-on hook path"
+rm -f "$FIX/core/hooks/SessionStart/98-anywhere-flag-state.sh"
+
 # 2b. A later SessionStart (resume) for the bound session does not repeat the hint.
 jq -cn --arg sid "$SID" --arg cwd "$TMP/plain-folder" '{session_id:$sid, cwd:$cwd, source:"resume"}' \
   | ( cd "$TMP/plain-folder" && env HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_DEDUPE=0 HQ_HQ_SESSION_NO_CLI=1 HQ_CLI_BIN="$TMP/bin/hq-stub" \
       bash "$FIX/.claude/hooks/master-hook.sh" SessionStart ) > "$TMP/resume.out" 2>/dev/null
 if grep -q 'hq link' "$TMP/resume.out"; then fail "resume repeated the link hint"; fi
 pass "resume does not repeat the hint"
+
+# The local override remains authoritative when the registry config is absent.
+start_session "$TMP/plain-folder" "$TMP/bin/hq-stub" "" "" local-kill-switch
+if context | grep -q 'hq link <company>'; then fail "local kill switch did not suppress the Anywhere hook path"; fi
+pass "local kill switch suppresses the hook path without registry config"
 
 # 3. Resolver unavailable: CLI missing → personal, loud stderr line.
 start_session "$TMP/linked-repo" "$TMP/bin/hq-missing"

@@ -43,8 +43,21 @@ make_root() {
 FR="$TMP_ROOT/hq"
 make_root "$FR"
 
-journal_hook() { CLAUDE_PROJECT_DIR="$FR" bash "$FR/.claude/hooks/journal-due.sh" <<<"$1"; }
-checkpoint_hook() { CLAUDE_PROJECT_DIR="$FR" bash "$FR/.claude/hooks/auto-checkpoint-trigger.sh" <<<"$1"; }
+unwrap_context() {
+  local output="$1"
+  [ -n "$output" ] || return 0
+  jq -r '.hookSpecificOutput.additionalContext // empty' <<<"$output"
+}
+journal_hook() {
+  local output
+  output="$(CLAUDE_PROJECT_DIR="$FR" bash "$FR/.claude/hooks/journal-due.sh" <<<"$1")"
+  unwrap_context "$output"
+}
+checkpoint_hook() {
+  local output
+  output="$(CLAUDE_PROJECT_DIR="$FR" bash "$FR/.claude/hooks/auto-checkpoint-trigger.sh" <<<"$1")"
+  unwrap_context "$output"
+}
 
 edit_payload() {
   printf '{"session_id":"%s","tool_name":"Edit","cwd":"%s","tool_input":{"file_path":"%s/src/app.ts"},"tool_response":{"exit_code":0}}' \

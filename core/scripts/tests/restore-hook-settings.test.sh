@@ -71,8 +71,8 @@ for ENGINE in jq node; do
 
   T="$TMP/broken"; make_broken "$T"
   OUT="$(HQ_HOOK_ENGINE=$ENGINE bash "$SCRIPT" "$T")"
-  if printf '%s' "$OUT" | grep -q "restored canonical master-hook.sh" \
-     && printf '%s' "$OUT" | grep -q "removed hooks key"; then
+  if [[ "$OUT" == *"restored canonical master-hook.sh"* \
+     && "$OUT" == *"removed hooks key"* ]]; then
     ok "$ENGINE: reports restore + local hooks removal"
   else
     fail "$ENGINE: reports restore + local hooks removal" "$OUT"

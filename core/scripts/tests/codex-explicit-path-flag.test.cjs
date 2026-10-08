@@ -10,9 +10,10 @@ const {
   REQUEST_TIMEOUT_MS,
   codexExplicitPathGuardEnabled,
   companyUidForSlug,
+  defaultValueForFlag,
 } = require("../../../.codex/hooks/codex-explicit-path-flag.cjs");
 
-function fakeRuntime(flagValue, fetchImpl = async () => ({ ok: true }), inspectConfig = () => {}) {
+function fakeRuntime(flagValue, fetchImpl = async () => ({ ok: true }), inspectConfig = () => {}, flagKey = FLAG_KEY, closeImpl = () => {}) {
   return {
     createClient(config) {
       inspectConfig(config);
@@ -21,9 +22,9 @@ function fakeRuntime(flagValue, fetchImpl = async () => ({ ok: true }), inspectC
           await config.fetch("https://flags.invalid/v1/flags", {});
         },
         snapshot() {
-          return { flags: { [FLAG_KEY]: flagValue } };
+          return { flags: { [flagKey]: flagValue } };
         },
-        close() {},
+        close: closeImpl,
       };
     },
     getClientHealthFlagToken: async () => "test-id-token",
@@ -86,6 +87,23 @@ test("resolves endpoint and company from the bound HQ session without explicit e
   assert.deepEqual(observed.companyIdentifiers, ["indigo"]);
 });
 
+test("an explicit session company slug resolves its own flag context", async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-flag-session-company-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(temp, "companies/indigo"), { recursive: true });
+  fs.writeFileSync(path.join(temp, "companies/indigo/.company-uid"), "cmp_indigo123\n");
+  let observed;
+  const enabled = await codexExplicitPathGuardEnabled({
+    env: { HQ_FLAGS_API_URL: "https://flags.invalid", HQ_COMPANY_SLUG: "indigo" },
+    hqRoot: temp,
+    cliRoot: "/virtual-cli",
+    loadRuntimeModules: async () => fakeRuntime(true, undefined, (config) => { observed = config; }),
+  });
+  assert.equal(enabled, true);
+  assert.equal(observed.companyUid, "cmp_indigo123");
+  assert.deepEqual(observed.companyIdentifiers, ["indigo"]);
+});
+
 test("a flag request slower than the network bound fails closed", async () => {
   let requestStarted = false;
   let requestAborted = false;
@@ -118,6 +136,44 @@ test("a false registry value stays false", async () => {
     env: envWithExplicitCompany(),
     cliRoot: "/virtual-cli",
     loadRuntimeModules: async () => fakeRuntime(false),
+  });
+  assert.equal(enabled, false);
+});
+
+test("only the multi-company kill switch defaults on when lookup fails", async () => {
+  const multiCompanyKey = "hooks.multi-company-session-lock";
+  assert.equal(defaultValueForFlag(multiCompanyKey), true);
+  assert.equal(defaultValueForFlag(FLAG_KEY), false);
+  const enabled = await codexExplicitPathGuardEnabled({
+    env: { ...envWithExplicitCompany(), HQ_FLAG_KEY: multiCompanyKey },
+    cliRoot: "/virtual-cli",
+    loadRuntimeModules: async () => fakeRuntime(true, async () => { throw new Error("offline"); }, () => {}, multiCompanyKey),
+  });
+  assert.equal(enabled, true);
+});
+
+test("an explicit multi-company registry false remains the kill switch", async () => {
+  const multiCompanyKey = "hooks.multi-company-session-lock";
+  const enabled = await codexExplicitPathGuardEnabled({
+    env: { ...envWithExplicitCompany(), HQ_FLAG_KEY: multiCompanyKey },
+    cliRoot: "/virtual-cli",
+    loadRuntimeModules: async () => fakeRuntime(false, async () => ({ ok: true }), () => {}, multiCompanyKey),
+  });
+  assert.equal(enabled, false);
+});
+
+test("cleanup failure cannot override an explicit multi-company false", async () => {
+  const multiCompanyKey = "hooks.multi-company-session-lock";
+  const enabled = await codexExplicitPathGuardEnabled({
+    env: { ...envWithExplicitCompany(), HQ_FLAG_KEY: multiCompanyKey },
+    cliRoot: "/virtual-cli",
+    loadRuntimeModules: async () => fakeRuntime(
+      false,
+      async () => ({ ok: true }),
+      () => {},
+      multiCompanyKey,
+      () => { throw new Error("close failed"); },
+    ),
   });
   assert.equal(enabled, false);
 });

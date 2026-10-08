@@ -125,7 +125,11 @@ TR_CALLS_FILE="$TMP/tr-calls" TR_REAL="$TR_REAL" PATH="$TMP/tr-count-bin:$PATH" 
 [ ! -s "$TMP/tr-calls" ] || fail "exact hq-session bind called tr"
 pass "exact hq-session bind does not invoke case folding"
 
-# Flag OFF keeps the legacy singleton behavior and refuses expansion.
+# Only an explicit cached server false keeps the legacy singleton behavior.
+# The previous missing-cache assertion relied on the old default-off fallback;
+# default-on now requires the test to seed the kill-switch value it intends.
+flag_now="$(cut -d. -f1 /proc/uptime)"
+printf 'false %s\n' "$flag_now" >"$HOME/.hq/hook-flag.multi-company-session-lock.indigo"
 "$HS" --session-id sess-lock-off set company_slug indigo >/dev/null
 rc=0
 "$HS" --session-id sess-lock-off add company beta >"$TMP/add-off.out" 2>"$TMP/add-off.err" || rc=$?

@@ -19,7 +19,7 @@ printf 'session_id: sess-unbound\n' > "$FIXTURE/workspace/sessions/sess-unbound/
 mkdir -p "$SHIMS"
 for name in cat jq dirname awk grep head realpath readlink find sort; do
   real=$(type -P "$name" || true); [ -n "$real" ] || continue
-  { printf '#!/usr/bin/env bash\n'; printf 'printf "%%s\\n" %q >> "$HQ_TEST_COUNT_FILE"\n' "$name"; printf 'exec %q "$@"\n' "$real"; } > "$SHIMS/$name"
+  { printf '#!/usr/bin/env bash\n'; printf 'printf "%%s\\n" %q >> "$HQ_TEST_COUNT_FILE"\n' "$name"; if [ "$name" = jq ]; then printf 'case "$*" in *company_slugs*) printf "read\\n" >> "${HQ_TEST_SCOPE_READ_FILE:-/dev/null}" ;; esac\n'; fi; printf 'exec %q "$@"\n' "$real"; } > "$SHIMS/$name"
   chmod +x "$SHIMS/$name"
 done
 PASS=0; FAIL=0
@@ -76,5 +76,14 @@ printf '{"tool_name":"Write","session_id":"e2e-unbound","cwd":"%s","tool_input":
 rc=0
 cat "$TMP/master-payload.json" | env -u HQ_HOOK_EVENT -u HQ_HOOK_TOOL_NAME -u HQ_HOOK_SESSION_ID -u HQ_HOOK_CWD -u HQ_HOOK_AGENT_ID -u HQ_FLAGS_API_URL -u HQ_COMPANY_UID CLAUDE_PROJECT_DIR="$MASTER" BASH_ENV=/dev/null bash "$MASTER/.claude/hooks/master-hook.sh" PreToolUse > "$TMP/master.out" 2> "$TMP/master.err" || rc=$?
 if [ "$rc" = 2 ] && grep -q 'Cross-company scope violation' "$TMP/master.err"; then PASS=$((PASS+1)); printf 'PASS real-master-hook-no-injected-fields\n'; else FAIL=$((FAIL+1)); printf 'FAIL real-master-hook-no-injected-fields exit=%s\n' "$rc" >&2; fi
+# A routine tool event must not parse the lock set; that data is consumed only at SessionStart.
+mkdir -p "$MASTER/workspace/sessions/e2e-bound"
+printf 'session_id: e2e-bound\ncompany_slug: indigo\n' > "$MASTER/workspace/sessions/e2e-bound/meta.yaml"
+printf '{"session_id":"e2e-bound","company_slug":"indigo"}\n' > "$MASTER/workspace/sessions/e2e-bound/scope-capability.json"
+printf '{"tool_name":"Read","session_id":"e2e-bound","cwd":"%s","tool_input":{"file_path":"%s/companies/indigo/settings/.keep"}}' "$MASTER" "$MASTER" > "$TMP/master-bound-payload.json"
+: > "$TMP/scope-read-count"
+rc=0
+cat "$TMP/master-bound-payload.json" | env -u HQ_HOOK_EVENT -u HQ_HOOK_TOOL_NAME -u HQ_HOOK_SESSION_ID -u HQ_HOOK_CWD -u HQ_HOOK_AGENT_ID -u HQ_FLAGS_API_URL -u HQ_COMPANY_UID HQ_TEST_SCOPE_READ_FILE="$TMP/scope-read-count" CLAUDE_PROJECT_DIR="$MASTER" BASH_ENV=/dev/null PATH="$SHIMS:$ORIGINAL_PATH" bash "$MASTER/.claude/hooks/master-hook.sh" PreToolUse > "$TMP/master-bound.out" 2> "$TMP/master-bound.err" || rc=$?
+if [ "$rc" = 0 ] && [ ! -s "$TMP/scope-read-count" ]; then PASS=$((PASS+1)); printf 'PASS master-hook-pretooluse-skips-lock-set-read\n'; else FAIL=$((FAIL+1)); printf 'FAIL master-hook-pretooluse-lock-set-read exit=%s reads=%s\n' "$rc" "$(wc -l < "$TMP/scope-read-count" | tr -d ' ')" >&2; fi
 if (( FAIL > 0 )); then printf 'mandatory-scope-authorizer-spawn-budget: %s passed, %s failed\n' "$PASS" "$FAIL" >&2; exit 1; fi
 printf 'mandatory-scope-authorizer-spawn-budget: %s passed, %s failed\n' "$PASS" "$FAIL"

@@ -153,6 +153,15 @@ while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli st
       printf "  . \"\$SCRIPT_DIR/lib/hq-cli-floor.sh\"\n"
       printf '  hq_cli_floor_check "%s" "%s"\n' "$script_name" "$min_cli"
       printf 'fi\n\n'
+      if [ "$command" = "derive-trigger-facts" ]; then
+        printf '%s\n' \
+          '# Node replaces an inherited closed fd 0 with /dev/null; tell the CLI to run its own bundled shell with fd 0 closed.' \
+          'if ! { true <&0; } 2>/dev/null; then' \
+          '  HQ_CORE_STDIN_CLOSED=1' \
+          '  export HQ_CORE_STDIN_CLOSED' \
+          'fi' \
+          ''
+      fi
       if [ "$root" = "live" ] || [ "$root" = "live-project" ]; then
         printf '%s\n' \
           '# MSYS path conversion is disabled for the hq process so slash commands arrive unchanged.' \

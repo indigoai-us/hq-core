@@ -45,6 +45,83 @@ assets=(
   jobs-validate.sh
 )
 
+# Exercise jobs-validate with the real jq behind a shim that reproduces the
+# Git Bash jq.exe text-mode CRLF on its root-type query. A plain `tr` probe
+# would only test tr, not the validator's comparison.
+jobs_validate="$ASSET_ROOT/jobs-validate.sh"
+real_jq="$(command -v jq)"
+[[ -x "$real_jq" ]] || { echo "FAIL: real jq is not executable: $real_jq" >&2; exit 1; }
+real_yq="$(command -v yq || true)"
+[[ -n "$real_yq" && -x "$real_yq" ]] \
+  || { echo "FAIL: yq missing; install pinned mikefarah/yq v4.45.1 before running this test" >&2; exit 1; }
+mkdir -p "$TMP/jobs-bin"
+cat > "$TMP/jobs-bin/jq" <<'JQ_CRLF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'args=%s\n' "$*" >> "$JQ_TYPE_LOG"
+# Reproduce jq.exe's CRLF text-mode output for the old captured `-r type`
+# query. The `-es` slurp query checks one object document through jq's status.
+if [[ " $* " == *" -r type "* ]]; then
+  printf '%s\n' 'root-type-query-crlf' >> "$JQ_TYPE_LOG"
+  value="$("$REAL_JQ" "$@")"
+  printf '%s\r\n' "$value"
+elif [[ " $* " == *'-es length == 1 and (.[0] | type == "object")'* ]]; then
+  printf '%s\n' 'root-object-query' >> "$JQ_TYPE_LOG"
+  exec "$REAL_JQ" "$@"
+else
+  exec "$REAL_JQ" "$@"
+fi
+JQ_CRLF
+chmod +x "$TMP/jobs-bin/jq"
+valid_job="$ASSET_ROOT/tests/fixtures/jobs/valid/personal-daily-digest.yaml"
+: > "$TMP/jq-type.log"
+set +e
+REAL_JQ="$real_jq" JQ_TYPE_LOG="$TMP/jq-type.log" PATH="$TMP/jobs-bin:$PATH" \
+  "$jobs_validate" "$valid_job" >"$TMP/jobs-validate.stdout" 2>"$TMP/jobs-validate.stderr"
+jobs_validate_status=$?
+set -e
+[[ "$jobs_validate_status" -eq 0 ]] \
+  || { printf 'FAIL: jobs-validate rejected valid job after CRLF jq type output (status=%s)\n' "$jobs_validate_status" >&2; cat "$TMP/jobs-validate.stderr" >&2; exit 1; }
+! grep -Fq 'job root must be a mapping' "$TMP/jobs-validate.stderr" \
+  || { echo 'FAIL: jobs-validate compared the CRLF root type without removing CR' >&2; exit 1; }
+grep -Fxq 'root-object-query' "$TMP/jq-type.log" \
+  || { echo 'FAIL: the jq shim did not exercise jobs-validate root type query' >&2; cat "$TMP/jq-type.log" >&2; exit 1; }
+echo 'jobs-validate accepts a valid job when the Windows jq shim reproduces CRLF text-mode output'
+
+multi_job="$TMP/jobs-validate-multi-document.yaml"
+cat >"$multi_job" <<'MULTI_JOB'
+id: first
+name: First job
+schedule: '0 9 * * *'
+runtime: claude
+timeout_seconds: 600
+notify: none
+enabled: true
+owner: owner@example.test
+created_at: '2026-09-01T00:00:00Z'
+---
+id: second
+name: Second job
+schedule: '0 9 * * *'
+runtime: claude
+timeout_seconds: 600
+notify: none
+enabled: true
+owner: owner@example.test
+created_at: '2026-09-01T00:00:00Z'
+MULTI_JOB
+: > "$TMP/jq-type.log"
+set +e
+REAL_JQ="$real_jq" JQ_TYPE_LOG="$TMP/jq-type.log" PATH="$TMP/jobs-bin:$PATH" \
+  "$jobs_validate" "$multi_job" >"$TMP/jobs-validate-multi.stdout" 2>"$TMP/jobs-validate-multi.stderr"
+multi_status=$?
+set -e
+[[ "$multi_status" -eq 1 ]] \
+  || { printf 'FAIL: jobs-validate accepted multiple YAML documents (status=%s)\n' "$multi_status" >&2; cat "$TMP/jobs-validate-multi.stderr" >&2; exit 1; }
+grep -Fq 'job root must be a mapping' "$TMP/jobs-validate-multi.stderr" \
+  || { echo 'FAIL: jobs-validate did not preserve the multi-document root diagnostic' >&2; cat "$TMP/jobs-validate-multi.stderr" >&2; exit 1; }
+echo 'jobs-validate preserves the old rejection of multiple YAML documents'
+
 extract_wrapper() {
   awk '
     index($0, "case \"${OSTYPE:-}") { capture = 1 }

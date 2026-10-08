@@ -219,7 +219,8 @@ validate_job_file() {
     err "$file" "yaml" "failed to parse YAML"
     return
   fi
-  if [ "$(jq -r 'type' <<<"$json")" != "object" ]; then
+  # Use jq's exit status instead of its text output: jq.exe writes CRLF on Windows.
+  if ! jq -es 'length == 1 and (.[0] | type == "object")' <<<"$json" >/dev/null; then
     err "$file" "yaml" "job root must be a mapping"
     return
   fi

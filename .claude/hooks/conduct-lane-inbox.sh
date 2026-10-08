@@ -35,8 +35,10 @@
 #
 # THE GUARD MATTERS. This hook is registered with matcher `*`, so it runs on
 # every tool call in every session on the machine. HQ_CONDUCT_RUN_DIR is set
-# only by a /conduct lane launch, so an ordinary session exits on the first test
-# having touched no disk — and, critically, without consuming a lane's queue.
+# only by a /conduct lane launch, and a linked session is listed by id under
+# workspace/conduct-links/by-session, so an ordinary session exits on those two
+# tests without reading its payload — and, critically, without consuming a
+# queue that belongs to someone else.
 
 set -uo pipefail
 
@@ -52,17 +54,48 @@ set -uo pipefail
 # costs one read of an already-buffered payload, so bail out through this.
 bail() { cat >/dev/null 2>&1 || true; exit "${1:-0}"; }
 
-[ -n "${HQ_CONDUCT_RUN_DIR:-}" ] || bail 0
-
 self_hq="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)" || bail 0
 [ -n "$self_hq" ] || bail 0
 
 inbox_sh="$self_hq/core/scripts/conduct-inbox.sh"
 [ -x "$inbox_sh" ] || bail 0
-[ -d "$HQ_CONDUCT_RUN_DIR/inbox/pending" ] || bail 0
 
-# Past this point stdin is at EOF, so a plain `exit` is already SIGPIPE-safe.
-input="$(cat 2>/dev/null || printf '{}')"
+# TWO WAYS IN. A lane is named by the environment its launcher exported. A
+# LINKED session (core/scripts/conduct-link.sh) was already running when it
+# joined a conductor, so nothing could be exported into it; it is found by the
+# session id in the payload instead, through workspace/conduct-links/by-session.
+# That registry is empty on a machine with no open link, and the test below is
+# one directory listing, so an ordinary session still leaves without reading
+# its payload.
+# hook-registry.json lists this script twice per event, because its prefilters
+# are ANDed and the two ways in have different cheap tests: the lane entry is
+# gated on the HQ_CONDUCT_RUN_DIR env var, the `--link` entry on the by-session
+# directory existing. Inside a lane the `--link` entry stands down so one event
+# never drains twice.
+if [ "${1:-}" = "--link" ] && [ -n "${HQ_CONDUCT_RUN_DIR:-}" ]; then bail 0; fi
+role="lane"
+run_dir="${HQ_CONDUCT_RUN_DIR:-}"
+input=""
+if [ -z "$run_dir" ]; then
+  by_session="${HQ_CONDUCT_LINKS_DIR:-$self_hq/workspace/conduct-links}/by-session"
+  [ -d "$by_session" ] && [ -n "$(ls -A "$by_session" 2>/dev/null)" ] || bail 0
+  input="$(cat 2>/dev/null || printf '{}')"
+  sid="$(printf '%s' "$input" | jq -r '.session_id // .sessionId // ""' 2>/dev/null || true)"
+  case "$sid" in ""|.|..|*[!A-Za-z0-9._-]*) exit 0 ;; esac
+  [ -f "$by_session/$sid" ] || exit 0
+  read -r role link child < "$by_session/$sid" || exit 0
+  link_dir="$(dirname "$by_session")/$link"
+  case "$role" in
+    child)     run_dir="$link_dir/children/$child"; link_meta="$run_dir/meta.json" ;;
+    conductor) run_dir="$link_dir/up";              link_meta="$link_dir/meta.json" ;;
+    *) exit 0 ;;
+  esac
+  [ -d "$run_dir/inbox/pending" ] || exit 0
+else
+  [ -d "$run_dir/inbox/pending" ] || bail 0
+  # Past this point stdin is at EOF, so a plain `exit` is already SIGPIPE-safe.
+  input="$(cat 2>/dev/null || printf '{}')"
+fi
 hook_event="$(printf '%s' "$input" | jq -r '.hook_event_name // .hookEventName // ""' 2>/dev/null || true)"
 
 deliver_on="PostToolUse Stop SubagentStop"
@@ -82,17 +115,37 @@ case "$hook_event" in
     ;;
 esac
 
-messages="$(bash "$inbox_sh" drain --run-dir "$HQ_CONDUCT_RUN_DIR" 2>/dev/null || true)"
+messages="$(bash "$inbox_sh" drain --run-dir "$run_dir" 2>/dev/null || true)"
 [ -n "$messages" ] || exit 0
 
 # The framing is load-bearing. Without it a bare instruction reads as if it came
 # from the brief, and the lane cannot tell a mid-flight correction from its
 # original orders — which is exactly when the difference matters most.
-body="[conduct] Your conductor sent this while you were working. Treat it as a
+case "$role" in
+  conductor)
+    body="[conduct] Sessions you are conducting reported while you were working.
+Each report names the session it came from. Relay what the operator needs to
+know, and answer a session with: bash core/scripts/conduct-link.sh send --child <name> --text '...'
+
+$messages"
+    ;;
+  child)
+    body="[conduct] The session conducting you sent this while you were working.
+Treat it as a new instruction from the operator, taking precedence over your
+current task where the two conflict. When you have something to tell the
+conductor - a result, a blocker, a question - send it with:
+bash core/scripts/conduct-link.sh report --state <working|blocked|idle|done> --text '...'
+
+$messages"
+    ;;
+  *)
+    body="[conduct] Your conductor sent this while you were working. Treat it as a
 new instruction from the operator, taking precedence over your brief where the
 two conflict. Do not reply to the conductor; act on it and carry on.
 
 $messages"
+    ;;
+esac
 
 case "$hook_event" in
   PostToolUse)

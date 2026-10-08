@@ -47,9 +47,9 @@ printf 'true %s\n' "$((NOW - 61))" >"$FLAG_CACHE"
 printf '%s\n' 'ok   stale enabled cache with flag off refreshes and remains off'
 
 printf 'enabled maybe\n' >"$FLAG_CACHE"
-[ "$(NODE_FAIL=true sh "$CACHE")" = false ]
+[ "$(NODE_FAIL=true sh "$CACHE")" = true ]
 [ "$(wc -l <"$NODE_CALLS" | tr -d ' ')" = 4 ]
-printf '%s\n' 'ok   malformed cache plus failed reader fails off'
+printf '%s\n' 'ok   malformed cache plus failed reader defaults on'
 
 printf 'true %s\ninvalid trailing data\n' "$NOW" >"$FLAG_CACHE"
 [ "$(sh "$CACHE")" = true ]
@@ -81,11 +81,36 @@ hqd_hook_flag_enabled_for multi-company-test hooks.multi-company-session-lock \
 [ "$(wc -l <"$NODE_CALLS" | tr -d ' ')" = "$calls_before" ] || { echo 'not ok   cached multi-company flag avoids Node' >&2; exit 1; }
 printf '%s\n' 'ok   fresh multi-company cache value is used without Node'
 
+# The tri-state reader exposes unknown only to the opted-in kill-switch caller.
+printf 'false %s\n' "$(now_seconds)" >"$HOME/.hq/hook-flag.multi-company-test.indigo"
+hqd_hook_flag_state_for multi-company-test hooks.multi-company-session-lock \
+  "$TMP/multi-company-flag.cjs" "$TMP" indigo indigo
+[ "$HQD_FLAG_STATE" = false ] || { echo 'not ok   tri-state reader preserves explicit false' >&2; exit 1; }
+printf '%s\n' 'ok   tri-state reader preserves explicit false'
+printf 'malformed\n' >"$HOME/.hq/hook-flag.multi-company-test.indigo"
+NODE_FAIL=true hqd_hook_flag_state_for multi-company-test hooks.multi-company-session-lock \
+  "$TMP/multi-company-flag.cjs" "$TMP" indigo indigo
+[ "$HQD_FLAG_STATE" = unknown ] || { echo 'not ok   tri-state reader distinguishes failed refresh' >&2; exit 1; }
+printf '%s\n' 'ok   tri-state reader distinguishes failed refresh from explicit false'
+
+cat >"$TMP/multi-company-flag.cjs" <<'NODE'
+const fs = require("node:fs");
+fs.appendFileSync(process.env.COMPANY_LOG, `${process.env.HQ_COMPANY_SLUG}\n`);
+process.stdout.write("true");
+NODE
+export COMPANY_LOG="$TMP/company-context.log"
+rm -f "$HOME/.hq/hook-flag.multi-company-test.indigo"
+hqd_hook_flag_state_for multi-company-test hooks.multi-company-session-lock \
+  "$TMP/multi-company-flag.cjs" "$TMP" indigo indigo
+[ "$HQD_FLAG_STATE" = true ] && grep -qx indigo "$COMPANY_LOG" \
+  || { echo 'not ok   live lookup receives the session company slug' >&2; exit 1; }
+printf '%s\n' 'ok   live lookup receives the session company slug'
+
 # A fresh snapshot for one tenant must never satisfy another tenant's lookup.
-export HQ_COMPANY_UID=cmp_cache_a HQ_TEST_FLAG=true
+export HQ_COMPANY_UID=cmp_cachea123 HQ_TEST_FLAG=true
 . "$HERE/hqd-hook-flag-cache-lib.sh"
 hqd_hook_flag_cache_store_enabled
-export HQ_COMPANY_UID=cmp_cache_b HQ_TEST_FLAG=false
+export HQ_COMPANY_UID=cmp_cacheb123 HQ_TEST_FLAG=false
 if [ "$(sh "$CACHE")" = false ]; then
   printf '%s\n' 'ok   runtime flag cache is isolated by company UID'
 else

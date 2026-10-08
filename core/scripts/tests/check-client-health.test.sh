@@ -76,7 +76,11 @@ build_root() {
   mkdir -p "$root/.claude/hooks" "$root/core/scripts" "$root/companies" "$root/workspace"
   cp "$HOOK_SRC" "$root/.claude/hooks/check-client-health.sh"
   cp "$GATE_SRC" "$root/.claude/hooks/hook-gate.sh"
+  if [ -f "$ROOT/.claude/hooks/client-health-unreached-checks-flag.cjs" ]; then
+    cp "$ROOT/.claude/hooks/client-health-unreached-checks-flag.cjs" "$root/.claude/hooks/"
+  fi
   cp "$ROOT/core/scripts/hook-lib.sh" "$root/core/scripts/hook-lib.sh"
+  make_flag_cli "$root"
   printf 'hqVersion: "1.0.0"\n' > "$root/core/core.yaml"
   printf 'companies: []\n' > "$root/companies/manifest.yaml"
 }
@@ -116,6 +120,9 @@ case "$1" in
         exit 2
         ;;
       *--fix*)
+        if [ -n "${HQ_STUB_FIX_JSON:-}" ]; then
+          cat "$HQ_STUB_FIX_JSON"
+        fi
         # HQ_STUB_FIX_HANG models a wedged repair (a doctor stuck on a network
         # call). The completion marker is written only if the sleep RETURNS, so
         # "was this killed at the deadline?" is directly observable.
@@ -153,6 +160,52 @@ esac
 exit 0
 STUB
   chmod +x "$bin/hq"
+}
+
+# A fake installed hq-cli package exposes deterministic hq-flags snapshots to
+# the client-health flag reader without network access.
+make_flag_cli() {
+  local root="$1" cli="$1/.test-hq-cli"
+  mkdir -p "$cli/bin" "$cli/dist" "$cli/node_modules/@indigoai-us/hq-flags-client" \
+    "$cli/node_modules/@indigoai-us/hq-cloud"
+  : > "$cli/bin/hq"
+  : > "$cli/dist/index.js"
+  cat > "$cli/package.json" <<'JSON'
+{"name":"@indigoai-us/hq-cli","type":"module"}
+JSON
+  cat > "$cli/node_modules/@indigoai-us/hq-flags-client/package.json" <<'JSON'
+{"name":"@indigoai-us/hq-flags-client","type":"module","exports":{".":{"import":"./index.js"}}}
+JSON
+  cat > "$cli/node_modules/@indigoai-us/hq-flags-client/index.js" <<'JS'
+export function createFlagClient() {
+  return {
+    ready: async () => {},
+    isEnabled(flagKey, lookup = {}) {
+      const localKey = `HQ_FLAG_${flagKey.replace(/[.-]/g, "_").toUpperCase()}`;
+      const localValue = process.env[localKey];
+      if (localValue === "true") return true;
+      if (localValue === "false") return false;
+      const flags = this.snapshot()?.flags;
+      if (flags && typeof flags[flagKey] === "boolean") return flags[flagKey];
+      return lookup.fallback ?? false;
+    },
+    snapshot: () => {
+      const flags = {};
+      if (process.env.HQ_TEST_UNREACHED_FLAG !== "missing") {
+        flags["client-health.suppress-unreached-company-journals"] = process.env.HQ_TEST_UNREACHED_FLAG === "true";
+      }
+      return { flags };
+    },
+    close: () => {},
+  };
+}
+JS
+  cat > "$cli/node_modules/@indigoai-us/hq-cloud/package.json" <<'JSON'
+{"name":"@indigoai-us/hq-cloud","type":"module","exports":{".":{"import":"./index.js"}}}
+JSON
+  cat > "$cli/node_modules/@indigoai-us/hq-cloud/index.js" <<'JS'
+export function loadCachedTokens() { return { idToken: "synthetic-test-token" }; }
+JS
 }
 
 # Stub the detachers (`setsid`, and the `nohup` fallback) so a background
@@ -446,6 +499,7 @@ command -v node >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && ENGINES="jq 
 # PATH, and returns its exit code in REM_RC.
 run_remediate() {
   local root="$1" engine="$2" doctor_json="${3:-$DOCTOR_DEGRADED}"
+  local fix_json="${4:-}" gate="${5:-false}"
   local -a extra=()
   [ "$engine" = "-" ] || extra+=("HQ_HOOK_ENGINE=$engine")
   set +e
@@ -454,6 +508,12 @@ run_remediate() {
     HQ_STUB_LOG="$STUB_LOG" \
     HQ_STUB_STATE="$REM_STATE" \
     HQ_STUB_DOCTOR_JSON="$doctor_json" \
+    HQ_STUB_FIX_JSON="$fix_json" \
+    HQ_TEST_UNREACHED_FLAG="$gate" \
+    HQ_CLI_BIN="$root/.test-hq-cli/bin/hq" \
+    HQ_FLAGS_API_URL="https://flags.invalid" \
+    HQ_COMPANY_UID="cmp_test123" \
+    HQ_COMPANY_SLUG="indigo" \
     bash "$root/.claude/hooks/check-client-health.sh" --remediate "$root" >/dev/null 2>&1
   REM_RC=$?
   set -e
@@ -676,6 +736,181 @@ if grep -Fq "$LEAK_PATH" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
     "unexpected diagnostic data reached the body"
 else
   ok "opted-in report excludes paths, free text, and non-sync findings"
+fi
+
+
+echo "== 7d. unreached company journals are filtered only by the gate and shown in diagnostics =="
+DOCTOR_UNREACHED="$TMP/doctor-unreached.json"
+cat > "$DOCTOR_UNREACHED" <<'JSON'
+{"results":[
+  {"family":"sync","status":"FAIL","checkId":"sync.journal.reached","fix":{"autoFixable":true}},
+  {"family":"sync","status":"FAIL","checkId":"sync.journal.unreached","fix":{"autoFixable":true}}
+]}
+JSON
+FIX_UNREACHED="$TMP/fix-unreached.json"
+cat > "$FIX_UNREACHED" <<'JSON'
+{"exitCode":1,"applied":[{"checkId":"sync.journal.reached","fixClass":"refresh-sync","postStatus":"FAIL","refreshSyncOutcome":"pull-failed:5xx"}],"refreshSync":[{"checkId":"sync.journal.reached","outcome":"pull-failed:5xx","postStatus":"FAIL"}]}
+JSON
+R_UNREACHED="$TMP/rem-unreached"
+build_root "$R_UNREACHED"
+REM_STATE="$TMP/rem-stub-unreached"
+mkdir -p "$REM_STATE"
+run_remediate "$R_UNREACHED" - "$DOCTOR_UNREACHED" "$FIX_UNREACHED" true
+if grep -Fq "sync.journal.reached" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && ! grep -Fq "sync.journal.unreached" "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
+  ok "attempted failed journal remains reportable while unreached company journal is omitted"
+else
+  bad "attempted failed journal remains reportable while unreached company journal is omitted" \
+    "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null)"
+fi
+grep -Fq "unreached_company_journal_checks=1" "$R_UNREACHED/workspace/.hq-client-health/repair-pass.log" 2>/dev/null \
+  && ok "repair diagnostics record one omitted unreached company journal" \
+  || bad "repair diagnostics record one omitted unreached company journal" "missing count"
+PENDING="$R_UNREACHED/workspace/.hq-client-health/unreached-count.pending"
+PENDING_READY=false
+if [ -f "$PENDING" ]; then
+  PENDING_READY=true
+  ok "repair writes a pending human-readable count"
+else
+  bad "repair writes a pending human-readable count" "missing pending count"
+fi
+run_hook "$R_UNREACHED" HQ_STATE_DIR="$TMP/state-unreached-display"
+case "$HOOK_OUT" in
+  *"1 company journal check was not reached by the last automatic repair and was left out of its report."*)
+    ok "the next SessionStart shows the unreached count in client-health diagnostics" ;;
+  *)
+    bad "the next SessionStart shows the unreached count in client-health diagnostics" "out=[$HOOK_OUT]" ;;
+esac
+if [ "$PENDING_READY" = true ] && [ ! -f "$PENDING" ]; then
+  ok "the human-readable unreached count is shown once"
+else
+  bad "the human-readable unreached count is shown once" "pending count was not consumed"
+fi
+
+R_UNREACHED_NODE="$TMP/rem-unreached-node"
+build_root "$R_UNREACHED_NODE"
+REM_STATE="$TMP/rem-stub-unreached-node"
+mkdir -p "$REM_STATE"
+run_remediate "$R_UNREACHED_NODE" node "$DOCTOR_UNREACHED" "$FIX_UNREACHED" true
+if grep -Fq "sync.journal.reached" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && ! grep -Fq "sync.journal.unreached" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && grep -Fq "unreached_company_journal_checks=1" "$R_UNREACHED_NODE/workspace/.hq-client-health/repair-pass.log" 2>/dev/null; then
+  ok "node parser keeps the attempted journal and counts the unreached company journal"
+else
+  bad "node parser keeps the attempted journal and counts the unreached company journal" \
+    "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null); diagnostics: $(cat "$R_UNREACHED_NODE/workspace/.hq-client-health/repair-pass.log" 2>/dev/null)"
+fi
+
+DOCTOR_ONLY_UNREACHED="$TMP/doctor-only-unreached.json"
+cat > "$DOCTOR_ONLY_UNREACHED" <<'JSON'
+{"results":[{"family":"sync","status":"FAIL","checkId":"sync.journal.unreached-only","fix":{"autoFixable":true}}]}
+JSON
+FIX_NO_JOURNALS="$TMP/fix-no-journals.json"
+cat > "$FIX_NO_JOURNALS" <<'JSON'
+{"exitCode":1,"applied":[],"refreshSync":[]}
+JSON
+R_ZERO_REPORTABLE="$TMP/rem-zero-reportable"
+build_root "$R_ZERO_REPORTABLE"
+REM_STATE="$TMP/rem-stub-zero-reportable"
+mkdir -p "$REM_STATE"
+run_remediate "$R_ZERO_REPORTABLE" - "$DOCTOR_ONLY_UNREACHED" "$FIX_NO_JOURNALS" true
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+  && ok "a row with only unreached company journals files no report" \
+  || bad "a row with only unreached company journals files no report" "filed $(count_lines "$REM_STATE/bugs-filed")"
+grep -Fq "unreached_company_journal_checks=1" "$R_ZERO_REPORTABLE/workspace/.hq-client-health/repair-pass.log" 2>/dev/null \
+  && ok "zero reportable checks still retain their unreached count" \
+  || bad "zero reportable checks still retain their unreached count" "missing count"
+
+R_GATE_OFF="$TMP/rem-unreached-gate-off"
+build_root "$R_GATE_OFF"
+REM_STATE="$TMP/rem-stub-unreached-gate-off"
+mkdir -p "$REM_STATE"
+run_remediate "$R_GATE_OFF" - "$DOCTOR_UNREACHED" "$FIX_UNREACHED" missing
+if grep -Fq "sync.journal.reached" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && grep -Fq "sync.journal.unreached" "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
+  ok "gate-off path keeps the current report contents unchanged"
+else
+  bad "gate-off path keeps the current report contents unchanged" \
+    "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null)"
+fi
+[ ! -f "$R_GATE_OFF/workspace/.hq-client-health/repair-pass.log" ] \
+  && ok "gate-off path emits no unreached-suppression diagnostic" \
+  || bad "gate-off path emits no unreached-suppression diagnostic" "diagnostic log exists"
+
+FIX_MISSING_REFRESH="$TMP/fix-missing-refresh.json"
+cat > "$FIX_MISSING_REFRESH" <<'JSON'
+{"exitCode":1,"applied":[]}
+JSON
+R_MISSING_REFRESH="$TMP/rem-missing-refresh"
+build_root "$R_MISSING_REFRESH"
+REM_STATE="$TMP/rem-stub-missing-refresh"
+mkdir -p "$REM_STATE"
+run_remediate "$R_MISSING_REFRESH" - "$DOCTOR_ONLY_UNREACHED" "$FIX_MISSING_REFRESH" true
+if grep -Fq "sync.journal.unreached-only" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && [ ! -f "$R_MISSING_REFRESH/workspace/.hq-client-health/repair-pass.log" ]; then
+  ok "missing refreshSync output keeps remaining journal reportable"
+else
+  bad "missing refreshSync output keeps remaining journal reportable" \
+    "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null); diagnostics: $(cat "$R_MISSING_REFRESH/workspace/.hq-client-health/repair-pass.log" 2>/dev/null)"
+fi
+
+echo "== 7d. flag reader honors the hq-flags local override =="
+R_FLAG_LOCAL_OVERRIDE="$TMP/flag-local-override"
+build_root "$R_FLAG_LOCAL_OVERRIDE"
+set +e
+LOCAL_OVERRIDE_VALUE=$(env \
+  HQ_CLI_BIN="$R_FLAG_LOCAL_OVERRIDE/.test-hq-cli/bin/hq" \
+  HQ_FLAGS_API_URL="https://flags.invalid" \
+  HQ_COMPANY_UID="cmp_test123" \
+  HQ_TEST_UNREACHED_FLAG="missing" \
+  HQ_FLAG_CLIENT_HEALTH_SUPPRESS_UNREACHED_COMPANY_JOURNALS="true" \
+  node "$R_FLAG_LOCAL_OVERRIDE/.claude/hooks/client-health-unreached-checks-flag.cjs" 2>/dev/null)
+LOCAL_OVERRIDE_RC=$?
+set -e
+if [ "$LOCAL_OVERRIDE_RC" = 0 ] && [ "$LOCAL_OVERRIDE_VALUE" = "true" ]; then
+  ok "flag reader honors HQ_FLAG_CLIENT_HEALTH_SUPPRESS_UNREACHED_COMPANY_JOURNALS when snapshot is absent"
+else
+  bad "flag reader honors HQ_FLAG_CLIENT_HEALTH_SUPPRESS_UNREACHED_COMPANY_JOURNALS when snapshot is absent" \
+    "exit=$LOCAL_OVERRIDE_RC value=[$LOCAL_OVERRIDE_VALUE]"
+fi
+
+echo "== 7e. main manual-only suppression preserves a row with a company journal =="
+DOCTOR_MANUAL_ONLY="$TMP/doctor-manual-only.json"
+cat > "$DOCTOR_MANUAL_ONLY" <<'JSON'
+{"results":[
+  {"family":"sync","status":"WARN","checkId":"sync.update.core","fix":{"autoFixable":false}}
+]}
+JSON
+DOCTOR_MANUAL_PLUS_JOURNAL="$TMP/doctor-manual-plus-journal.json"
+cat > "$DOCTOR_MANUAL_PLUS_JOURNAL" <<'JSON'
+{"results":[
+  {"family":"sync","status":"WARN","checkId":"sync.update.core","fix":{"autoFixable":false}},
+  {"family":"sync","status":"FAIL","checkId":"sync.journal.indigo","fix":{"autoFixable":true}}
+]}
+JSON
+FIX_MANUAL_PLUS_JOURNAL="$TMP/fix-manual-plus-journal.json"
+cat > "$FIX_MANUAL_PLUS_JOURNAL" <<'JSON'
+{"exitCode":1,"applied":[{"checkId":"sync.journal.indigo","fixClass":"refresh-sync","postStatus":"FAIL","refreshSyncOutcome":"pull-failed:network"}],"refreshSync":[{"checkId":"sync.journal.indigo","outcome":"pull-failed:network","postStatus":"FAIL"}]}
+JSON
+R_MANUAL_ONLY="$TMP/rem-manual-only"
+build_root "$R_MANUAL_ONLY"
+REM_STATE="$TMP/rem-stub-manual-only"
+mkdir -p "$REM_STATE"
+run_remediate "$R_MANUAL_ONLY" - "$DOCTOR_MANUAL_ONLY" "$FIX_NO_JOURNALS" false
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+  && ok "manual-only row A is suppressed by the existing main predicate" \
+  || bad "manual-only row A is suppressed by the existing main predicate" "filed $(count_lines "$REM_STATE/bugs-filed")"
+R_MANUAL_PLUS_JOURNAL="$TMP/rem-manual-plus-journal"
+build_root "$R_MANUAL_PLUS_JOURNAL"
+REM_STATE="$TMP/rem-stub-manual-plus-journal"
+mkdir -p "$REM_STATE"
+run_remediate "$R_MANUAL_PLUS_JOURNAL" - "$DOCTOR_MANUAL_PLUS_JOURNAL" "$FIX_MANUAL_PLUS_JOURNAL" true
+if grep -Fq "sync.journal.indigo" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && ! grep -Fq "sync.update.core" "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
+  ok "manual-only suppression preserves row B with the attempted company journal"
+else
+  bad "manual-only suppression preserves row B with the attempted company journal" \
+    "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null)"
 fi
 
 echo "== 8. a repair that succeeds files no bug =="
@@ -957,48 +1192,71 @@ echo "== 17. with no timeout(1), a hanging command is still killed at the deadli
 # Shape: `hq doctor --fix` wedges for 45s while the deadline is 3s (the
 # HQ_TEST_FORCE_HEALTH_DEADLINE fixture seam shortens the budget for BOTH
 # bounding paths, so this exercises the real code path, not a test-only one).
-R17="$TMP/no-timeout-hang"
-build_root "$R17"
-REM_STATE="$TMP/rem-stub-no-timeout-hang"
-mkdir -p "$REM_STATE"
 HANG_BIN="$TMP/bin-no-timeout-hang"
 sanitized_bin "$HANG_BIN" timeout gtimeout
-R17_START=$(date +%s)
-set +e
-env PATH="$HANG_BIN" HQ_STUB_LOG="$STUB_LOG" HQ_STUB_STATE="$REM_STATE" \
-  HQ_STUB_DOCTOR_JSON="$DOCTOR_DEGRADED" \
-  HQ_STUB_FIX_HANG=45 HQ_TEST_FORCE_HEALTH_DEADLINE=3 \
-  "$BASH_BIN" "$R17/.claude/hooks/check-client-health.sh" --remediate "$R17" >/dev/null 2>&1
-RC17=$?
-set -e
-R17_ELAPSED=$(( $(date +%s) - R17_START ))
+for gate in false true; do
+  R17="$TMP/no-timeout-hang-$gate"
+  build_root "$R17"
+  REM_STATE="$TMP/rem-stub-no-timeout-hang-$gate"
+  mkdir -p "$REM_STATE"
+  R17_START=$(date +%s)
+  set +e
+  env PATH="$HANG_BIN" HQ_STUB_LOG="$STUB_LOG" HQ_STUB_STATE="$REM_STATE" \
+    HQ_STUB_DOCTOR_JSON="$DOCTOR_DEGRADED" HQ_CLI_BIN="$R17/.test-hq-cli/bin/hq" \
+    HQ_FLAGS_API_URL="https://flags.invalid" HQ_COMPANY_UID="cmp_test123" \
+    HQ_COMPANY_SLUG="indigo" HQ_TEST_UNREACHED_FLAG="$gate" \
+    HQ_STUB_FIX_HANG=45 HQ_TEST_FORCE_HEALTH_DEADLINE=3 \
+    "$BASH_BIN" "$R17/.claude/hooks/check-client-health.sh" --remediate "$R17" >/dev/null 2>&1
+  RC17=$?
+  set -e
+  R17_ELAPSED=$(( $(date +%s) - R17_START ))
 
-[ "$RC17" = 0 ] && ok "remediate exits 0 when a bounded command is killed" \
-  || bad "remediate exits 0 when a bounded command is killed" "exit $RC17"
+  [ "$RC17" = 0 ] && ok "remediate exits 0 when bounded fix is killed (gate $gate)" \
+    || bad "remediate exits 0 when bounded fix is killed (gate $gate)" "exit $RC17"
+  [ "$R17_ELAPSED" -lt 25 ] \
+    && ok "hanging fix is killed at deadline without timeout(1) (gate $gate)" \
+    || bad "hanging fix is killed at deadline without timeout(1) (gate $gate)" \
+      "took ${R17_ELAPSED}s against a 3s deadline — command ran unbounded"
+  [ ! -f "$REM_STATE/fix-completed" ] \
+    && ok "killed fix never completes (gate $gate)" \
+    || bad "killed fix never completes (gate $gate)" "hq doctor --fix finished its 45s hang"
+  FILED17=$(count_lines "$REM_STATE/bugs-filed")
+  [ "${FILED17:-0}" = 1 ] \
+    && ok "fast follow-up command completes under fallback (gate $gate)" \
+    || bad "fast follow-up command completes under fallback (gate $gate)" \
+      "filed ${FILED17:-0}, expected 1 — watchdog outlived its command"
+  STAMPS17=$(ls "$R17/workspace/.hq-client-health/bugs/"*.stamp 2>/dev/null | wc -l | tr -d ' ')
+  [ "${STAMPS17:-0}" = 2 ] \
+    && ok "fallback propagates completed command status (gate $gate)" \
+    || bad "fallback propagates completed command status (gate $gate)" \
+      "${STAMPS17:-0} summary/attempt stamps, expected 2"
+done
 
-# (a) The hang is cut off. Unbounded, this returns only after the full 45s.
-[ "$R17_ELAPSED" -lt 25 ] \
-  && ok "hanging remediation is killed at the deadline with no timeout(1)" \
-  || bad "hanging remediation is killed at the deadline with no timeout(1)" \
-    "took ${R17_ELAPSED}s against a 3s deadline — the command ran unbounded"
-[ ! -f "$REM_STATE/fix-completed" ] \
-  && ok "the killed command never ran to completion" \
-  || bad "the killed command never ran to completion" \
-    "hq doctor --fix finished its 45s hang — nothing bounded it"
-
-# (b) The watchdog kills its own command and NOTHING else: the fast `hq
-#     feedback` calls that follow the killed fix all complete normally under
-#     the same fallback, each well inside the deadline.
-FILED17=$(count_lines "$REM_STATE/bugs-filed")
-[ "${FILED17:-0}" = 1 ] \
-  && ok "fast commands still complete under the portable fallback" \
-  || bad "fast commands still complete under the portable fallback" \
-    "filed ${FILED17:-0}, expected 1 — a watchdog outlived its command"
-STAMPS17=$(ls "$R17/workspace/.hq-client-health/bugs/"*.stamp 2>/dev/null | wc -l | tr -d ' ')
-[ "${STAMPS17:-0}" = 2 ] \
-  && ok "the fallback propagates a completed command's exit status" \
-  || bad "the fallback propagates a completed command's exit status" \
-    "${STAMPS17:-0} summary/attempt stamps, expected 2 — a success was read as a failure"
+echo "== 17b. flag-on repair output is read for the unreached filter =="
+DOCTOR_TWO_JOURNALS="$TMP/doctor-two-journals.json"
+cat > "$DOCTOR_TWO_JOURNALS" <<'JSON'
+{"results":[
+  {"family":"sync","status":"FAIL","checkId":"sync.journal.unreached","fix":{"autoFixable":true}},
+  {"family":"sync","status":"FAIL","checkId":"sync.journal.attempted","fix":{"autoFixable":true}}
+]}
+JSON
+FIX_TWO_JOURNALS="$TMP/fix-two-journals.json"
+cat > "$FIX_TWO_JOURNALS" <<'JSON'
+{"exitCode":1,"applied":[{"checkId":"sync.journal.attempted","fixClass":"refresh-sync","postStatus":"FAIL","refreshSyncOutcome":"pull-failed:network"}],"refreshSync":[{"checkId":"sync.journal.attempted","outcome":"pull-failed:network","postStatus":"FAIL"}]}
+JSON
+R17B="$TMP/flag-on-output"
+build_root "$R17B"
+REM_STATE="$TMP/rem-stub-flag-on-output"
+mkdir -p "$REM_STATE"
+run_remediate "$R17B" - "$DOCTOR_TWO_JOURNALS" "$FIX_TWO_JOURNALS" true
+if grep -Fq "sync.journal.attempted" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && ! grep -Fq "sync.journal.unreached" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+  && grep -Fq $'unreached_company_journal_checks=1' "$R17B/workspace/.hq-client-health/repair-pass.log" 2>/dev/null; then
+  ok "flag-on fix output is read and filters only the unreached journal"
+else
+  bad "flag-on fix output is read and filters only the unreached journal" \
+    "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null); diagnostics: $(cat "$R17B/workspace/.hq-client-health/repair-pass.log" 2>/dev/null)"
+fi
 
 echo "== 18. failed sends respect cooldown and retry after expiry =="
 REM_STATE="$TMP/rem-stub-badfile"

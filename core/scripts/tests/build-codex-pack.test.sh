@@ -139,8 +139,10 @@ hook_target=$(realpath "$installed/$hook_command")
 test "$hook_target" = "$installed/hooks/codex.sh"
 test -x "$hook_target"
 
+# This packaging assertion is separate from Anywhere's default-on hook path.
 printf '%s\n' '{"hook_event_name":"SessionStart","cwd":"/tmp/foreign-repo"}' |
-  env -u HQ_FLAGS_API_URL -u HQ_COMPANY_UID -u HQ_TEST_FLAG HOME="$tmp/home" /bin/sh "$hook_target" >"$tmp/flag-off.out"
+  env -u HQ_FLAGS_API_URL -u HQ_COMPANY_UID -u HQ_TEST_FLAG HQ_FLAG_HQ_ANYWHERE_RUNTIME=false \
+    HOME="$tmp/home" /bin/sh "$hook_target" >"$tmp/flag-off.out"
 test ! -s "$tmp/flag-off.out"
 
 export HQ_COMPANY_UID=cmp_123456

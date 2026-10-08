@@ -935,9 +935,11 @@ omitted type to `static`.
 
 ```bash
 if [ "$DEPLOY_TYPE" = "app" ]; then
+  DB_ACK_FORM=(); [ "${DB_BILLING_ACK:-}" = "true" ] && DB_ACK_FORM=(--form-string 'database_billing_acknowledged=true')
   APP_DEPLOY_RESPONSE=$(deploy_request app-deploy --method POST \
     --url "$API/api/apps/$APP_ID/deploy" \
     --form-string 'type=app' \
+    "${DB_ACK_FORM[@]}" \
     --form-file "file=$TARBALL_PATH" \
     --expect '(.deployId | type == "string" and length > 0) and (.statusUrl | type == "string" and length > 0)') || exit 1
   LIVE_URL="https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}"
@@ -1045,7 +1047,12 @@ deploy_request ssr-deploy --method POST --url "$API/api/apps/$APP_ID/deploy" \
 authenticated request it calls `identity-resolve.sh --force-refresh` and retries
 that request exactly once with the new access token. A successful retry continues
 the current deploy. If refresh or the retry fails, it stops before any later
-stage and explicitly reports that live content was not updated. Other non-2xx
+stage and explicitly reports that live content was not updated. A `503` with
+code `DATABASE_PROVISIONING` means a `database: true` app's cluster is still
+being created (about two minutes on the first deploy). The script prints a
+progress line and repeats the same request after the `Retry-After` delay, up to
+`HQ_DEPLOY_DB_WAIT_SECS` (default 600); the server reuses the same cluster, so
+repeats never create a second one. Other non-2xx
 responses also stop the phase. Diagnostics include the stage, method, sanitized
 URL, status, API code/message, request ID, and non-secret org/scope while
 stripping old and refreshed Authorization values and the full query string
@@ -1088,6 +1095,59 @@ fi
 ```
 
 Keep `EVENT_SCOPE` for the watcher and replies below, so a personal deploy uses `--personal` throughout. Mention it once in C.5 when it was turned on ("visitors' actions on this page now reach me"), then follow "Interactive sites (site events loop)" to start watching.
+
+### C.2.8 — Database apps
+
+A database is never added to an app without the user knowing what it costs. Only `app` deploys (a root `api/` dir) can have a database.
+
+**When to set `database: true`.** Only in one of these cases:
+
+- The user explicitly asked for a database ("give it a database", "store the entries", "use @hq/db").
+- The project has `db/migrations/` or imports `@hq/db`, and the user confirms they want a database when asked.
+
+Never infer it from anything else, and never turn it on for an existing app that does not have it unless the user asks.
+
+**Use the HQ database, not an outside provider.** When the user asks to add a database, or asks for data that persists or is shared across visitors, the default is this built-in HQ database. Do not suggest Neon, Supabase, or another outside database, or ask the user to create an account, unless they ask for one by name or the HQ database is not available on their plan. If it is not available (`501 REMOTE_DB_NOT_AVAILABLE`), say so and give the upgrade link from the error before offering alternatives.
+
+**Adding a database to an app that has none** (including a `static` deploy):
+
+1. Add a backend: a root `api/` dir with handlers that use `@hq/db` (`getDb().query(sql, params)` for SQL, or `collection(name)` for document mode). The deploy type becomes `app`. Keep the existing frontend and have it call `/api/...` on the same host with `fetch(..., {credentials: 'include'})`.
+2. For SQL, add `db/migrations/NNN_name.sql` files. Migrations run once per app at deploy. Aurora DSQL rules apply: one DDL statement per migration file, no `SERIAL` (use `uuid DEFAULT gen_random_uuid()`), no foreign keys or extensions, and at most 3,000 changed rows per transaction.
+3. Ask the billing question below, then redeploy the same app with `database: true`. The app keeps its subdomain and access gate.
+4. Check the user-facing path: write a row and read it back through the live URL.
+
+Full reference: `core/knowledge/public/hq-core/app-databases.md`.
+
+**Public apps with a database.** If the app is `public`, anyone with the link can call its write routes. Say so once before deploying. Add basic limits in the handlers (field length, row count, request size), or suggest a `company` gate when only the team should edit.
+
+**Before the first database deploy of an app**, state the terms in plain words and ask one structured yes-or-no question (use the picker when available):
+
+> Adding a database to this app costs $10 a month. That includes 250,000 compute units and 1 GB of storage. Above that it is $32 per million compute units and $1.32 per GB per month. If the app reaches 4 times the included amounts, the database becomes read-only until the next month. Add the database?
+
+- **Yes:** set the flag and the acknowledgement on the app, then deploy with the acknowledgement too.
+
+  ```bash
+  deploy_request db-enable --method PATCH --url "$API/api/apps/$APP_ID" \
+    --header 'Content-Type: application/json' \
+    --data '{"database":true,"databaseBillingAcknowledged":true}' >/dev/null || exit 1
+  DB_BILLING_ACK=true
+  ```
+
+  hq-deploy records who accepted and when on the app, so later deploys of the same app are not asked again.
+- **No:** deploy without a database if the app works without one (skip the PATCH and leave `DB_BILLING_ACK` unset). If the app needs its database to run (it has `db/migrations/` or imports `@hq/db`), stop and tell the user the deploy needs a database.
+
+**Exempt companies.** The server decides who is exempt (`DB_APP_BILLING_EXEMPT_COMPANIES`; today only Indigo). The skill treats `$ORG_SLUG` as exempt when it is listed in `HQ_DB_BILLING_EXEMPT_ORGS` (comma separated, default `indigo`). For an exempt company, do not ask. Send the PATCH as above with `DB_BILLING_ACK=true` and add one line to the final message: "The database is free for this company." The server stays the authority: if the company is in fact billed, the deploy still needs the acknowledgement, and asking an exempt company would only add a question.
+
+```bash
+DB_EXEMPT=false
+case ",${HQ_DB_BILLING_EXEMPT_ORGS:-indigo}," in *",$ORG_SLUG,"*) DB_EXEMPT=true ;; esac
+```
+
+**Silent and headless runs.** The `auto-deploy-on-create` path, headless runs and fleet agents never add a database and never send the acknowledgement. If the project looks like it needs one, deploy without it when possible and add one line to the final message: "This app uses a database. Adding one costs $10 a month; say so and I'll add it." If it cannot run without one, stop and say the same.
+
+**Server enforcement.** For a billed company, a deploy that would create a new database without the acknowledgement fails with `409 DATABASE_BILLING_ACK_REQUIRED`; the message carries the terms. Nothing on the live app changes. Show the terms, ask the question above, and on yes repeat the deploy with `DB_BILLING_ACK=true`. Apps that already have a database are not asked again.
+
+**First request after a lock or unlock.** When the app crosses its usage ceiling the database is locked (read-only) and later unlocked. `@hq/db` repeats a read once if it hits the one-time `40001 ... (OC001)` error that follows the permission change. A write fails with `CatalogChangedError` (`retryable: true`); the app can repeat the request.
 
 ### C.3 — Wire access mode (sensitive only)
 

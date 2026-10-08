@@ -17,6 +17,12 @@ assert_eq() {
   [ "$1" = "$2" ] || fail "$3: expected '$2', got '$1'"
 }
 
+call_multi_company_flag() {
+  local root="$1" primary="$2"
+  bash -c '. "$1"; if session_scope_multi_company_enabled "$2" "$3"; then printf on; else printf off; fi' \
+    _ "$LIB" "$root" "$primary"
+}
+
 # shellcheck source=../lib/session-scope-capability.sh
 . "$LIB"
 
@@ -72,6 +78,56 @@ assert_eq "$(PATH="$TMP/bin:$PATH" session_scope_resolve_agent_companies "$TMP" 
 jq '.company_slugs = ["indigo", 7]' "$cap" >"$TMP/malformed.json"
 cp "$TMP/malformed.json" "$cap"
 assert_eq "$(PATH="$TMP/bin:$PATH" session_scope_read_companies "$TMP" "sess-a")" "" "malformed lock set fails closed"
+
+# The lock flag is a kill switch. Only an explicit false may disable it.
+fallback_failures=0
+expect_default_on() {
+  local actual="$1" name="$2"
+  if [ "$actual" = on ]; then
+    printf 'PASS: %s\n' "$name"
+  else
+    printf 'FAIL: %s (got %s)\n' "$name" "$actual" >&2
+    fallback_failures=$((fallback_failures + 1))
+  fi
+}
+mkdir -p "$TMP/no-cache/.codex/hooks" "$TMP/no-script/core/scripts"
+cp "$TMP/.codex/hooks/codex-explicit-path-flag.cjs" "$TMP/no-cache/.codex/hooks/"
+cp "$TMP/core/scripts/hqd-hook-flag-cache-lib.sh" "$TMP/no-script/core/scripts/"
+expect_default_on "$(call_multi_company_flag "$TMP/no-cache" indigo)" "missing cache library defaults on"
+expect_default_on "$(call_multi_company_flag "$TMP/no-script" indigo)" "missing flag script defaults on"
+expect_default_on "$(call_multi_company_flag "$TMP" "")" "missing primary defaults on"
+saved_home="$HOME"
+unset HOME
+expect_default_on "$(call_multi_company_flag "$TMP" indigo)" "missing HOME defaults on"
+export HOME="$saved_home"
+
+mkdir -p "$TMP/fail-bin" "$TMP/false-bin"
+cat >"$TMP/fail-bin/node" <<'SH'
+#!/bin/sh
+exit 1
+SH
+cat >"$TMP/false-bin/node" <<'SH'
+#!/bin/sh
+printf 'false\n'
+SH
+chmod +x "$TMP/fail-bin/node" "$TMP/false-bin/node"
+flag_cache="$HOME/.hq/hook-flag.multi-company-session-lock.indigo"
+cache_now="$(cut -d. -f1 /proc/uptime)"
+printf 'true %s\n' "$((cache_now - 61))" >"$flag_cache"
+expect_default_on "$(PATH="$TMP/fail-bin:$PATH" call_multi_company_flag "$TMP" indigo)" "network failure after expired cache defaults on"
+printf 'malformed cache\n' >"$flag_cache"
+expect_default_on "$(PATH="$TMP/fail-bin:$PATH" call_multi_company_flag "$TMP" indigo)" "malformed cache plus failed refresh defaults on"
+[ "$fallback_failures" -eq 0 ] || fail "$fallback_failures multi-company default-on fallback cases failed"
+printf 'false %s\n' "$cache_now" >"$flag_cache"
+if [ "$(call_multi_company_flag "$TMP" indigo)" != off ]; then
+  fail "fresh explicit false cache must disable the flag"
+fi
+rm -f "$flag_cache"
+if [ "$(PATH="$TMP/false-bin:$PATH" call_multi_company_flag "$TMP" indigo)" != off ]; then
+  fail "live explicit false must disable the flag"
+fi
+session_scope_mint_set "$TMP" "sess-a" "indigo,otherco"
+assert_eq "$(PATH="$TMP/false-bin:$PATH" session_scope_read_companies "$TMP" sess-a)" "indigo" "explicit false keeps singleton lock"
 
 if session_scope_mint "$TMP" "sess-a" "../evil" 2>/dev/null; then
   fail "invalid slug should be rejected"

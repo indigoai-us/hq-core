@@ -179,7 +179,7 @@ DEFAULT_OUT="$(run_hook "$ROOT/companies/indigo" "UserPromptSubmit" "anything")"
 mkdir -p "$FIXTURE_DIR"
 # Command substitution strips trailing newlines; the hook emits one final \n
 # after </policy-reminder>. Compare the stable body (no trailing newline).
-EXPECTED=$'<policy-reminder>\n> Policy `fixture-pol` applies here: FIXTURE_RULE_MARKER prose.\n> This is an index. Before acting in an area a HARD rule covers, read that rule in full: `qmd get <slug>` or the policy file (personal/workers/<id>/policies, companies/<co>/workers/<id>/policies, companies/<co>/policies, repo policies, personal/policies, core/policies). One-line entries are summaries, not the rule.\n</policy-reminder>'
+EXPECTED=$'<policy-reminder>\n> Policy `fixture-pol` applies here: FIXTURE_RULE_MARKER prose. (`core/policies/fixture-pol.md`)\n</policy-reminder>'
 # Checked-in fixture includes the trailing newline the hook prints on stdout.
 printf '%s\n' "$EXPECTED" > "$FIXTURE_PROSE"
 if [ "$DEFAULT_OUT" != "$EXPECTED" ]; then

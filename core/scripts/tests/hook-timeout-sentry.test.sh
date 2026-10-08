@@ -14,6 +14,8 @@ REGISTRY_SRC="$ROOT/.claude/hooks/hook-registry.json"
 CODEX_CONFIG_SRC="$ROOT/.codex/config.toml"
 GROK_BRIDGE_SRC="$ROOT/.grok/hooks/hq-grok-user-bridge.json"
 SYSTEM_JQ="$(command -v jq)"
+SYSTEM_MV="$(command -v mv)"
+export HQ_TEST_SYSTEM_MV="$SYSTEM_MV"
 SYSTEM_NODE="$(command -v node 2>/dev/null || true)"
 SYSTEM_QMD="$(command -v qmd 2>/dev/null || true)"
 
@@ -30,6 +32,20 @@ export HQ_TEST_SYSTEM_QMD="$SYSTEM_QMD"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
+
+has_recoverable_breadcrumb() {
+  local breadcrumb_dir="$1" record claim owner_pid
+  for record in "$breadcrumb_dir"/*.json; do
+    [ -f "$record" ] && return 0
+  done
+  for claim in "$breadcrumb_dir"/*.json.consuming.*; do
+    [ -f "$claim" ] || continue
+    owner_pid="${claim##*.consuming.}"
+    [[ "$owner_pid" =~ ^[0-9]+$ ]] || continue
+    ! kill -0 "$owner_pid" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
 
 # Main Windows run 36805735147 completed case [18] in 11.608s (03:09:00.211Z–03:09:11.818Z).
 # A 15s cap left only 3.392s after that passing run; the 30s Windows bound gives
@@ -976,7 +992,18 @@ jq -e --arg hook_path "$master_hook_path" '
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'printf "%s\n" "{\"hookSpecificOutput\":{\"additionalContext\":\"existing child context\"}}"' > "$slow_child_path"
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'printf "%s\n" "{\"decision\":\"block\",\"reason\":\"fixture block\"}"' > "$R7/core/hooks/PreToolUse/20-blocker.sh"
 chmod +x "$R7/core/hooks/PreToolUse/20-blocker.sh"
+cat > "$R7/bin/mv" <<'EOF'
+#!/usr/bin/env bash
+if [ "${HQ_TEST_FAIL_BREADCRUMB_RESTORE:-0}" = "1" ] \
+  && [[ "${1:-}" == *.json.consuming.* ]] \
+  && [[ "${2:-}" == *.json ]]; then
+  exit 1
+fi
+exec "${HQ_TEST_SYSTEM_MV:?}" "$@"
+EOF
+chmod +x "$R7/bin/mv"
 PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
+  HQ_TEST_SYSTEM_MV="$SYSTEM_MV" HQ_TEST_FAIL_BREADCRUMB_RESTORE=1 \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
   bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/blocked.out" 2>"$R7/blocked.err" <<<"$(payload master-session)"
 jq -e '(.decision == "block") and (.hookSpecificOutput.hqSessionBlockedBy | endswith("20-blocker.sh"))' "$R7/blocked.out" >/dev/null \
@@ -984,8 +1011,9 @@ jq -e '(.decision == "block") and (.hookSpecificOutput.hqSessionBlockedBy | ends
 if grep -Fq "$slow_child_path" "$R7/blocked.out"; then
   fail "warning was mixed into a block response instead of staying pending"
 fi
-[ "$(find "$R7/workspace/.hook-timeout-breadcrumbs" -name '*.json' -type f | wc -l)" -ge 1 ] \
-  || fail "blocking child consumed a warning that was not emitted"
+breadcrumb_dir="$R7/workspace/.hook-timeout-breadcrumbs/$breadcrumb_session_key"
+has_recoverable_breadcrumb "$breadcrumb_dir" \
+  || fail "blocking child lost its pending warning breadcrumb"
 grep -q '^Blocked by hook 20-blocker\.$' "$R7/blocked.err" \
   || fail "blocking child did not name the blocking hook on stderr"
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' ':' > "$R7/core/hooks/PreToolUse/20-blocker.sh"

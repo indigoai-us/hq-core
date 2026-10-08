@@ -240,14 +240,23 @@ if [ -f "$SCRIPT_DIR/hook-gate.sh" ]; then
   hq_augment_path
   master_debug_phase_finish source
 fi
-HQ_ANYWHERE_RUNTIME_ENABLED=false
-if [ -f "$REPO_ROOT/core/scripts/hq-anywhere-runtime-flag.cjs" ] \
-  && command -v node >/dev/null 2>&1 \
-  && [ -n "${HQ_FLAGS_API_URL:-}" ] \
-  && [[ "${HQ_COMPANY_UID:-}" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]]; then
-  HQ_ANYWHERE_RUNTIME_ENABLED="$(node "$REPO_ROOT/core/scripts/hq-anywhere-runtime-flag.cjs" || printf false)"
-fi
-[ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] || HQ_ANYWHERE_RUNTIME_ENABLED=false
+HQ_ANYWHERE_RUNTIME_ENABLED=true
+HQ_ANYWHERE_RUNTIME_CONFIGURED=false
+case "${HQ_FLAG_HQ_ANYWHERE_RUNTIME:-}" in
+  false|0) HQ_ANYWHERE_RUNTIME_ENABLED=false ;;
+  *)
+    if [ -n "${HQ_FLAGS_API_URL:-}" ] \
+      && [[ "${HQ_COMPANY_UID:-}" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]]; then
+      HQ_ANYWHERE_RUNTIME_CONFIGURED=true
+      if [ -f "$REPO_ROOT/core/scripts/hq-anywhere-runtime-flag.cjs" ] \
+        && command -v node >/dev/null 2>&1; then
+        if flag_value="$(node "$REPO_ROOT/core/scripts/hq-anywhere-runtime-flag.cjs")"; then
+          [ "$flag_value" = "false" ] && HQ_ANYWHERE_RUNTIME_ENABLED=false
+        fi
+      fi
+    fi
+    ;;
+esac
 export HQ_ANYWHERE_RUNTIME_ENABLED
 
 # Windows Git Bash: process creation is 10-30x macOS cost and the watchdog
@@ -497,6 +506,7 @@ if [ "$EVENT" = "UserPromptSubmit" ] \
   && [ "$PREFILTER_TEXT" = "[Monitor timed out — re-arm if needed.]" ]; then
   MONITOR_EXPIRY_NOTIFICATION=1
 fi
+export HQ_HOOK_MONITOR_EXPIRY_NOTIFICATION="$MONITOR_EXPIRY_NOTIFICATION"
 
 # Hand the already-parsed fields to children. A hook can use
 # "${HQ_HOOK_TOOL_NAME+set}" style checks to skip its own jq parse (one jq is
@@ -546,7 +556,7 @@ fi
 # can initialize a new binding at SessionStart, but cannot replace one.
 if [ -f "$REPO_ROOT/core/scripts/lib/session-scope-capability.sh" ]; then
   . "$REPO_ROOT/core/scripts/lib/session-scope-capability.sh" || ACTIVE_COMPANY=""
-  if [ -n "$SESSION_ID" ] && [ -f "$REPO_ROOT/workspace/sessions/$SESSION_ID/scope-capability.json" ]; then
+  if [ "$EVENT" = "SessionStart" ] && [ -n "$SESSION_ID" ] && [ -f "$REPO_ROOT/workspace/sessions/$SESSION_ID/scope-capability.json" ]; then
     ACTIVE_COMPANIES="$(session_scope_read_companies "$REPO_ROOT" "$SESSION_ID" 2>/dev/null | paste -sd, -)"
     [ -n "$ACTIVE_COMPANIES" ] || ACTIVE_COMPANIES="$ACTIVE_COMPANY"
   fi
@@ -556,8 +566,10 @@ if [ -n "$SESSION_ID" ] && [ -n "$PAYLOAD_AGENT_ID" ]; then
   if session_scope_identity_is_valid "$PAYLOAD_AGENT_ID"; then
     ACTIVE_COMPANY="$(session_scope_resolve_agent_company \
       "$REPO_ROOT" "$SESSION_ID" "$PAYLOAD_AGENT_ID" "$ACTIVE_COMPANY" "$EVENT")"
-    ACTIVE_COMPANIES="$(session_scope_resolve_agent_companies \
-      "$REPO_ROOT" "$SESSION_ID" "$PAYLOAD_AGENT_ID" "$ACTIVE_COMPANIES" "$EVENT" | paste -sd, -)"
+    if [ "$EVENT" = "SessionStart" ]; then
+      ACTIVE_COMPANIES="$(session_scope_resolve_agent_companies \
+        "$REPO_ROOT" "$SESSION_ID" "$PAYLOAD_AGENT_ID" "$ACTIVE_COMPANIES" "$EVENT" | paste -sd, -)"
+    fi
   else
     ACTIVE_COMPANY=""
   fi
@@ -595,7 +607,10 @@ master_dedupe_follow() { # <lock> → exits 0 when the original allowed; else re
   [ "$verdict" = "0 0" ] && exit 0
   return 0
 }
-if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] && [ -n "$SESSION_ID" ] && [ "${HQ_HOOK_DEDUPE:-1}" != "0" ]; then
+if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
+  && [ "$HQ_ANYWHERE_RUNTIME_CONFIGURED" = "true" ] \
+  && [ -n "$SESSION_ID" ] \
+  && [ "${HQ_HOOK_DEDUPE:-1}" != "0" ]; then
   dedupe_key=""
   dedupe_window=0
   dedupe_key="$(printf '%s' "$INPUT" | jq -r 'if (.tool_use_id | type) == "string" then .tool_use_id else empty end' 2>/dev/null || true)"
@@ -1072,8 +1087,15 @@ $bind_out}"
   json_outputs+=("$(jq -cn --arg ctx "$context" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}')")
   json_sources+=("$REPO_ROOT/core/scripts/resolve-company.sh")
 }
-if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] && [ "$EVENT" = "SessionStart" ] && [ -n "$SESSION_ID" ] && [ -z "$ACTIVE_COMPANY" ]; then
-  master_foreign_bind
+if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
+  && [ "$EVENT" = "SessionStart" ] \
+  && [ -n "$SESSION_ID" ] \
+  && [ -z "$ACTIVE_COMPANY" ] \
+  && [ -n "$PAYLOAD_CWD" ]; then
+  case "$PAYLOAD_CWD" in
+    "$REPO_ROOT"|"$REPO_ROOT/"*) : ;;
+    *) master_foreign_bind ;;
+  esac
 fi
 
 master_bind_session_start_scope() {

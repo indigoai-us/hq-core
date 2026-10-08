@@ -26,9 +26,14 @@
 
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/lib/bench-runtime.sh"
+
 ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+RUNTIME="claude"
 TOOL="Bash"
 EVENTS="PreToolUse,PostToolUse"
+EVENTS_SET=0
 RUNS=3
 USE_LOCAL=1
 JSON_OUT=""
@@ -37,8 +42,9 @@ CMD_TEXT='echo bench'
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --runtime) RUNTIME="$2"; shift 2 ;;
     --tool) TOOL="$2"; shift 2 ;;
-    --event|--events) EVENTS="$2"; shift 2 ;;
+    --event|--events) EVENTS="$2"; EVENTS_SET=1; shift 2 ;;
     --runs) RUNS="$2"; shift 2 ;;
     --no-local) USE_LOCAL=0; shift ;;
     --json) JSON_OUT="$2"; shift 2 ;;
@@ -48,6 +54,19 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+bench_runtime_valid "$RUNTIME" || { echo "bench-hooks: unknown runtime: $RUNTIME" >&2; exit 2; }
+if [ "$RUNTIME" = "grok" ]; then
+  echo "bench-hooks: --runtime grok is unsupported: the adapter does not expose benchmark-visible output" >&2
+  exit 2
+fi
+if [ "$RUNTIME" = "hq-agent" ]; then
+  if [ "$EVENTS_SET" = 0 ]; then EVENTS="AgentSession"; fi
+  [ "$EVENTS" = "AgentSession" ] || {
+    echo "bench-hooks: hq-agent supports the AgentSession event (SessionStart + UserPromptSubmit)" >&2
+    exit 2
+  }
+fi
 
 for dep in jq perl; do
   command -v "$dep" >/dev/null 2>&1 || { echo "bench-hooks: missing dependency: $dep" >&2; exit 2; }
@@ -65,6 +84,14 @@ esac
 
 SESSION_ID="bench-$(date +%s)-$$"
 export CLAUDE_PROJECT_DIR="$ROOT"
+BENCH_TMP="$(mktemp -d -t bench-hooks.XXXXXX)"
+trap 'rm -rf "$BENCH_TMP"' EXIT
+AGENT_ROOT=""
+if [ "$RUNTIME" = "hq-agent" ]; then
+  AGENT_ROOT="$BENCH_TMP/agent-root"
+  bench_runtime_agent_root "$ROOT" "$AGENT_ROOT" || { echo "bench-hooks: cannot prepare hq-agent fixture" >&2; exit 1; }
+  mkdir -p "$BENCH_TMP/home"
+fi
 
 settings_files=("$ROOT/.claude/settings.json")
 if [ "$USE_LOCAL" = 1 ] && [ -f "$ROOT/.claude/settings.local.json" ]; then
@@ -74,6 +101,12 @@ fi
 # Build the synthetic event payload for an event name.
 event_payload() {
   local ev="$1"
+  if [ "$RUNTIME" != "claude" ]; then
+    local runtime_root="$ROOT"
+    [ "$RUNTIME" != "hq-agent" ] || runtime_root="$AGENT_ROOT"
+    bench_runtime_payload "$RUNTIME" "$ev" "$runtime_root" "$SESSION_ID" "$TOOL" "$CMD_TEXT" "$CMD_TEXT"
+    return
+  fi
   case "$ev" in
     PreToolUse)
       jq -nc --arg s "$SESSION_ID" --arg ev "$ev" --arg t "$TOOL" --arg c "$CMD_TEXT" --arg cwd "$ROOT" \
@@ -100,6 +133,14 @@ event_payload() {
 # List "label<TAB>command" for hooks matching event + tool across settings files.
 registrations() {
   local ev="$1" f
+  if [ "$RUNTIME" != "claude" ]; then
+    case "$RUNTIME" in
+      codex) printf 'Codex hook adapter\t__runtime_entrypoint__\t30\n' ;;
+      grok) printf 'Grok hook adapter\t__runtime_entrypoint__\t30\n' ;;
+      hq-agent) printf 'hq-agent session entrypoint\t__runtime_entrypoint__\t30\n' ;;
+    esac
+    return
+  fi
   for f in "${settings_files[@]}"; do
     jq -r --arg ev "$ev" --arg t "$TOOL" --arg src "$(basename "$f")" '
       (.hooks[$ev] // [])[] as $entry
@@ -122,7 +163,7 @@ median() { # reads numbers on stdin
 
 results_json="[]"
 grand_total=0
-printf 'bench-hooks  platform=%s  tool=%s  runs=%d  root=%s\n' "$platform_label" "$TOOL" "$RUNS" "$ROOT"
+printf 'bench-hooks  platform=%s  runtime=%s  tool=%s  runs=%d  root=%s\n' "$platform_label" "$RUNTIME" "$TOOL" "$RUNS" "$ROOT"
 [ "$USE_LOCAL" = 1 ] && [ -f "$ROOT/.claude/settings.local.json" ] && echo "including .claude/settings.local.json"
 echo
 
@@ -138,8 +179,15 @@ for ev in "${ev_list[@]}"; do
     times=""
     for _ in $(seq 1 "$RUNS"); do
       t0="$(now_ms)"
-      # Enforce the same per-hook timeout the harness applies (perl alarm is portable).
-      ( printf '%s' "$payload" | perl -e 'alarm shift; exec "bash", "-c", shift' "$tmo" "$cmd" ) >/dev/null 2>&1
+      if [ "$RUNTIME" = "claude" ]; then
+        # Enforce the same per-hook timeout the harness applies (perl alarm is portable).
+        ( printf '%s' "$payload" | perl -e 'alarm shift; exec "bash", "-c", shift' "$tmo" "$cmd" ) >/dev/null 2>&1
+      else
+        runtime_root="$ROOT"
+        [ "$RUNTIME" != "hq-agent" ] || runtime_root="$AGENT_ROOT"
+        bench_runtime_dispatch "$RUNTIME" "$runtime_root" "$ev" "$payload" \
+          "$BENCH_TMP/entrypoint.out" "$BENCH_TMP/entrypoint.err" "$BENCH_TMP/home" "$tmo" >/dev/null 2>&1 || true
+      fi
       t1="$(now_ms)"
       times="$times$((t1 - t0))"$'\n'
     done
@@ -159,9 +207,9 @@ done
 echo "TOTAL hook overhead per simulated $TOOL tool call: ${grand_total} ms  [$platform_label]"
 
 if [ -n "$JSON_OUT" ]; then
-  jq -n --arg p "$platform_label" --arg t "$TOOL" --arg ev "$EVENTS" --argjson runs "$RUNS" \
+  jq -n --arg p "$platform_label" --arg runtime "$RUNTIME" --arg t "$TOOL" --arg ev "$EVENTS" --argjson runs "$RUNS" \
      --argjson total "$grand_total" --argjson rows "$results_json" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-     '{platform:$p, tool:$t, events:$ev, runs:$runs, total_median_ms:$total, generated_at:$at, registrations:$rows}' \
+     '{platform:$p, runtime:$runtime, tool:$t, events:$ev, runs:$runs, total_median_ms:$total, generated_at:$at, registrations:$rows}' \
      > "$JSON_OUT"
   echo "wrote $JSON_OUT"
 fi

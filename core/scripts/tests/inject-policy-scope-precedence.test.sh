@@ -74,12 +74,12 @@ write_policy "$ROOT/companies/acme/policies/collide-me.md" \
 
 OUT="$(run_hook "$ROOT" "$ROOT/companies/acme" "UserPromptSubmit" "anything at all")"
 
-echo "$OUT" | grep -q "COMPANY_COPY_MARKER" \
+grep -q "COMPANY_COPY_MARKER" <<<"$OUT" \
   || fail "case1: company copy was NOT emitted. Output was:
 $OUT"
 ok "company copy wins the id collision"
 
-echo "$OUT" | grep -q "CORE_COPY_MARKER" \
+grep -q "CORE_COPY_MARKER" <<<"$OUT" \
   && fail "case1: core copy WAS emitted — precedence is still inverted. Output was:
 $OUT"
 ok "core copy emitted zero times"
@@ -92,7 +92,7 @@ ok "colliding slug emitted exactly once"
 write_policy "$ROOT/core/policies/core-only.md" \
   "core-only" "always" "[SessionStart]" "hard" "CORE_ONLY_MARKER survives."
 OUT2="$(run_hook "$ROOT" "$ROOT/companies/acme" "UserPromptSubmit" "anything at all")"
-echo "$OUT2" | grep -q "CORE_ONLY_MARKER" \
+grep -q "CORE_ONLY_MARKER" <<<"$OUT2" \
   || fail "case2: a core policy with NO company counterpart was dropped — the fix over-corrected. Output was:
 $OUT2"
 ok "non-colliding core policy still injects"
@@ -111,7 +111,7 @@ printf '{"session_id":"multi-policy","company_slug":"acme","company_slugs":["acm
 write_policy "$ROOT/companies/beta/policies/locked-b.md" \
   "locked-b" "always" "[SessionStart]" "hard" "LOCKED_B_POLICY_MARKER."
 OUT_MULTI="$(run_hook "$ROOT" "$ROOT/companies/acme" "UserPromptSubmit" "anything" "multi-policy")"
-echo "$OUT_MULTI" | grep -q "LOCKED_B_POLICY_MARKER" \
+grep -q "LOCKED_B_POLICY_MARKER" <<<"$OUT_MULTI" \
   || fail "session cwd under A omitted locked company B policy. Output was:\n$OUT_MULTI"
 ok "cwd under primary loads all capability-locked company policies"
 
@@ -125,10 +125,10 @@ write_policy "$ROOT2/repos/private/widget/.claude/policies/scoped.md" \
   "scoped" "always" "[SessionStart, UserPromptSubmit]" "soft" "REPO_SCOPED_MARKER."
 
 OUT3="$(run_hook "$ROOT2" "$ROOT2/repos/private/widget" "UserPromptSubmit" "anything")"
-echo "$OUT3" | grep -q "REPO_SCOPED_MARKER" \
+grep -q "REPO_SCOPED_MARKER" <<<"$OUT3" \
   || fail "case3: repo copy was not emitted. Output was:
 $OUT3"
-echo "$OUT3" | grep -q "CORE_SCOPED_MARKER" \
+grep -q "CORE_SCOPED_MARKER" <<<"$OUT3" \
   && fail "case3: core copy beat the repo copy. Output was:
 $OUT3"
 ok "repo scope outranks core"

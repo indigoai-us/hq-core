@@ -35,6 +35,13 @@
 #   (no dirs)  scan the standard policy roots under HQ_ROOT
 #   --quiet    print only the summary counts
 #   --strict   also exit non-zero for LOOSE/OVERSIZE, not just MALFORMED/MISSING
+#   --usage    instead of the trigger audit, list DEAD-OR-UNMATCHABLE policies:
+#              zero retrievals in the last HQ_POLICY_USAGE_DAYS (default 30)
+#              days in workspace/orchestrator/policy-retrieval-ledger.jsonl,
+#              while the injector matched their when: in at least
+#              HQ_POLICY_USAGE_MIN_MATCHES (default 50) events, counted from its
+#              per-session ledgers in workspace/orchestrator/policy-trigger-state.
+#              Output: one UNUSED line per policy, then a summary line. Exit 0.
 #
 # Exit: 0 clean, 1 findings (see --strict), 2 usage error.
 
@@ -50,6 +57,7 @@ EVAL="$SCRIPT_DIR/eval-trigger.sh"
 HARD_RULE_MAX="${HQ_POLICY_HARD_RULE_MAX_BYTES:-6144}"
 QUIET=0
 STRICT=0
+USAGE=0
 DIRS=()
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
@@ -62,6 +70,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --quiet) QUIET=1 ;;
     --strict) STRICT=1 ;;
+    --usage) USAGE=1 ;;
     -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     -*) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
     *) DIRS+=("$1") ;;
@@ -113,6 +122,44 @@ for dir in "${DIRS[@]}"; do
     || die "failed to enumerate policy files under $dir"
 done
 [ -s "$FILES_NUL" ] || die "policy directories were found but no policy files were scanned"
+
+# ── --usage: retrieval ledger x injector match counts ───────────────────────
+if [ "$USAGE" = "1" ]; then
+  USAGE_DAYS="${HQ_POLICY_USAGE_DAYS:-30}"
+  USAGE_MIN="${HQ_POLICY_USAGE_MIN_MATCHES:-50}"
+  RLEDGER="$HQ_ROOT/workspace/orchestrator/policy-retrieval-ledger.jsonl"
+  TSTATE="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
+  CUTOFF="$(date -u -v-"${USAGE_DAYS}"d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "$USAGE_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" \
+    || die "cannot compute the $USAGE_DAYS-day cutoff date"
+  # Recent retrievals: one slug per line, from ledger rows at or after the cutoff.
+  : > "$TMPROOT/retrieved"
+  if [ -f "$RLEDGER" ]; then
+    jq -r --arg c "$CUTOFF" 'select(.ts >= $c) | .policy' "$RLEDGER" > "$TMPROOT/retrieved" \
+      || die "failed to read retrieval ledger $RLEDGER"
+  fi
+  # Injector matches: each per-session once-ledger lists every slug it emitted.
+  : > "$TMPROOT/matched"
+  if [ -d "$TSTATE" ]; then
+    find "$TSTATE" -maxdepth 1 -type f -name '*.txt' ! -name '*.turn.txt' -print0 \
+      | xargs -0 cat > "$TMPROOT/matched" \
+      || die "failed to read injector ledgers under $TSTATE"
+  fi
+  tr '\0' '\n' < "$FILES_NUL" | awk -v min="$USAGE_MIN" -v days="$USAGE_DAYS" -v root="$HQ_ROOT/" '
+    FILENAME == ARGV[1] { got[$0] = 1; next }
+    FILENAME == ARGV[2] { hits[$0]++; next }
+    {
+      n = split($0, parts, "/"); slug = parts[n]; sub(/\.md$/, "", slug)
+      total++
+      if (!(slug in got) && hits[slug] + 0 >= min) {
+        rel = $0; if (index(rel, root) == 1) rel = substr(rel, length(root) + 1)
+        printf "UNUSED    %6d matches  %s\n", hits[slug], rel; unused++
+      }
+    }
+    END { printf "policies scanned: %d | dead-or-unmatchable (0 retrievals in %s days, >= %d matches): %d\n", total, days, min, unused + 0 }
+  ' "$TMPROOT/retrieved" "$TMPROOT/matched" -
+  exit 0
+fi
 
 # ── Pass 1: one awk over every file → path <TAB> when <TAB> on <TAB> enf <TAB> bytes
 # `bytes` is the span inject-policy-on-trigger.sh would actually quote: body

@@ -1,0 +1,333 @@
+{
+  "version": 1,
+  "runtime": "codex",
+  "created": "2026-10-08T13:36:32Z",
+  "hq_root": "/home/ec2-user/hq/workspace/worktrees/hq-core-staging/hp11-runtime-bench",
+  "corpus": "core/scripts/bench-hook-corpus-default.json",
+  "items": [
+    {
+      "bytes": 2408,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "session-start",
+      "event": "SessionStart",
+      "secs": 20.125,
+      "supported": true
+    },
+    {
+      "bytes": 5300,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [
+        "search",
+        "project"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "p1-project-memory",
+      "event": "UserPromptSubmit",
+      "secs": 9.094,
+      "text": "what happened to the project where we were aging out old policies as part of the core upgrade",
+      "kind": "question",
+      "supported": true
+    },
+    {
+      "bytes": 2905,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [
+        "deploy"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "p2-company-data",
+      "event": "UserPromptSubmit",
+      "secs": 8.781,
+      "text": "check the stats on our deploys for the past 24 hours",
+      "kind": "lookup",
+      "supported": true
+    },
+    {
+      "bytes": 5913,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [
+        "slack",
+        "integrations"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "p3-startwork-slack",
+      "event": "UserPromptSubmit",
+      "secs": 12.503,
+      "text": "/startwork acme summarize everything that happened in slack",
+      "kind": "command",
+      "supported": true
+    },
+    {
+      "bytes": 3171,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [
+        "search",
+        "web"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "p4-external-lookup",
+      "event": "UserPromptSubmit",
+      "secs": 10.897,
+      "text": "get me links to all the posts about our product on x from the last week",
+      "kind": "external-lookup",
+      "supported": true
+    },
+    {
+      "bytes": 7561,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [
+        "hq-secrets",
+        "secrets"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "p5-teammate-secret",
+      "event": "UserPromptSubmit",
+      "secs": 10.675,
+      "text": "from a teammate: could you run hq secrets generate-link --company acme ADS_ACCESS_TOKEN so I can write the ads token",
+      "kind": "pasted-request",
+      "supported": true
+    },
+    {
+      "bytes": 5999,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [
+        "deploy"
+      ],
+      "hints_missed": [
+        "brand"
+      ],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "p6-startwork-creative-deploy",
+      "event": "UserPromptSubmit",
+      "secs": 12.978,
+      "text": "/startwork acme '/deploy an on brand investor pitch about our product'",
+      "kind": "creative-ops",
+      "supported": true
+    },
+    {
+      "bytes": 4184,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [
+        "integrations"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "p7-startwork-linear",
+      "event": "UserPromptSubmit",
+      "secs": 11.469,
+      "text": "/startwork acme check linear for open issues on the site",
+      "kind": "startwork-followup",
+      "supported": true
+    },
+    {
+      "bytes": 3196,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [
+        "search"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "p8-startwork-sources",
+      "event": "UserPromptSubmit",
+      "secs": 10.94,
+      "text": "what sources do we have for this client, meetings and transcripts",
+      "kind": "startwork-followup",
+      "supported": true
+    },
+    {
+      "bytes": 4206,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [
+        "board"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "p9-startwork-board",
+      "event": "UserPromptSubmit",
+      "secs": 11.26,
+      "text": "what is on the board for this project and what is still queued",
+      "kind": "startwork-followup",
+      "supported": true
+    },
+    {
+      "bytes": 7501,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [
+        "workers"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "p10-startwork-workers",
+      "event": "UserPromptSubmit",
+      "secs": 12.533,
+      "text": "which workers can do design work for this company",
+      "kind": "startwork-followup",
+      "supported": true
+    },
+    {
+      "bytes": 7799,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [
+        "search"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "p11-startwork-knowledge",
+      "event": "UserPromptSubmit",
+      "secs": 13.6,
+      "text": "where is the brand knowledge for this company kept",
+      "kind": "startwork-followup",
+      "supported": true
+    },
+    {
+      "bytes": 0,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "c1-ls",
+      "event": "PostToolUse",
+      "secs": 3.474,
+      "text": "ls .claude/hooks",
+      "supported": true
+    },
+    {
+      "bytes": 0,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "c2-git-status",
+      "event": "PostToolUse",
+      "secs": 3.365,
+      "text": "git status --short | head",
+      "supported": true
+    },
+    {
+      "bytes": 0,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "c3-cat",
+      "event": "PostToolUse",
+      "secs": 3.436,
+      "text": "cat core/core.yaml | head -20",
+      "supported": true
+    },
+    {
+      "bytes": 0,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "c4-grep",
+      "event": "PostToolUse",
+      "secs": 3.23,
+      "text": "grep -n hqVersion core/core.yaml",
+      "supported": true
+    },
+    {
+      "bytes": 0,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "c5-python",
+      "event": "PostToolUse",
+      "secs": 3.142,
+      "text": "python3 -c 'print(1+1)'",
+      "supported": true
+    }
+  ],
+  "totals": {
+    "secs": 161.5,
+    "bytes": 60143,
+    "policy_lines": 0
+  },
+  "provenance": {
+    "baseline_commit": "2d27e2903cb370c9ce0f85e5444c4af8a82b6a42",
+    "candidate_commit": "1de583f28e6a5bf8518c120a8e861dc6f3eadbf3",
+    "captured_commit": "1de583f28e6a5bf8518c120a8e861dc6f3eadbf3",
+    "machine": "ip-172-31-47-133.ec2.internal, Linux 6.1.176-221.367.amzn2023.x86_64, GNU bash 5.2.15",
+    "corpus_inputs": 16,
+    "report_rows_including_session_start": 17,
+    "comparison": "Single-box cross-commit comparison on the EC2 Linux box; these values are not the owner-machine benchmark number."
+  }
+}

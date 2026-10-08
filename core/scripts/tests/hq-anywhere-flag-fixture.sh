@@ -7,8 +7,22 @@ hq_anywhere_flag_fixture() {
   chmod +x "$dir/bin/hq"
   printf '%s\n' '{"type":"module","exports":"./index.js"}' > "$dir/node_modules/@indigoai-us/hq-flags-client/package.json"
   cat > "$dir/node_modules/@indigoai-us/hq-flags-client/index.js" <<'JS'
-export function createFlagClient() {
-  return { ready: async () => {}, snapshot: () => ({ flags: { "hq-anywhere-runtime": process.env.HQ_TEST_FLAG === "true" } }), close() {} };
+export function createFlagClient(options) {
+  return {
+    ready: async () => {
+      if (process.env.HQ_TEST_FLAG === "unreadable") throw new Error("offline");
+      if (process.env.HQ_TEST_FLAG === "stale-false-throw") throw new Error("offline");
+      if (process.env.HQ_TEST_FLAG === "stale-false") options.onError?.(new Error("offline"));
+      if (process.env.HQ_TEST_FLAG === "timeout") await new Promise((resolve) => setTimeout(resolve, 200));
+    },
+    snapshot: () => {
+      const value = process.env.HQ_TEST_FLAG;
+      if (value === "absent" || value === "unreadable" || value === "timeout") return { flags: {} };
+      if (value === "archived") return { flags: { "hq-anywhere-runtime": { archived: true } } };
+      return { flags: { "hq-anywhere-runtime": value !== "false" && value !== "stale-false" && value !== "stale-false-throw" } };
+    },
+    close() {},
+  };
 }
 JS
   printf '%s\n' '{"type":"module","exports":"./index.js"}' > "$dir/node_modules/@indigoai-us/hq-cloud/package.json"

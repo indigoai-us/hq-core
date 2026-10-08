@@ -38,7 +38,7 @@ id: {scope-prefix}-{slug}
 title: Short descriptive title
 when: <boolean trigger expression>   # e.g. always | git && push | deploy || share
 on: [<events>]                       # PreToolUse | PostToolUse | UserPromptSubmit | AssistantIntent | SessionStart
-enforcement: hard | soft
+enforcement: hard | soft | gate
 version: 1
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
@@ -56,7 +56,21 @@ Why this policy exists. What problem it prevents or what outcome it ensures.
 ## Examples
 
 Optional. Concrete examples of correct and incorrect behavior under this policy.
+
+## Provenance
+
+Optional. HQ-local evidence: who reported it, when, which company, which ticket.
+Stripped on publish.
 ```
+
+**`## Provenance` vs `## Rationale`.** Rationale explains the mechanism and the
+trade-offs, and ships with the policy. Provenance records who, when, which
+company, and which ticket. It stays HQ-local and the publish pipeline strips it.
+The injector and the hard-body size limit treat `## Provenance` as an archival
+heading, so it is never injected.
+
+- Do: `## Rationale` — "Two hooks read the same receipt store, so a stale receipt from one session can satisfy the other."
+- Don't: `## Rationale` — "Reported by Jane at Acme on 2026-09-12 in ticket OPS-412." Put that line under `## Provenance`.
 
 ## Required Fields
 
@@ -66,7 +80,7 @@ Optional. Concrete examples of correct and incorrect behavior under this policy.
 | `title` | string | Human-readable title |
 | `when` | string | Boolean trigger expression evaluated just-in-time to inject the policy when relevant (e.g. `always`, `git && push`). See **Trigger Expressions** below. Scope is determined by the policy's **directory**, not a field. |
 | `on` | array | Evaluation site(s) for `when` — any of `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `AssistantIntent`, `SessionStart`. |
-| `enforcement` | enum | `hard` (must follow, blocks execution if violated) or `soft` (should follow, deviations noted) |
+| `enforcement` | enum | `hard` (must follow, blocks execution if violated), `soft` (should follow, deviations noted), or `gate` (blocks named tool calls until required session facts exist; needs a `gate:` block, see **Gate Block**) |
 | `version` | integer | Starts at 1, incremented on material changes |
 | `created` | date | ISO date of creation |
 | `updated` | date | ISO date of last update |
@@ -79,6 +93,52 @@ Optional. Concrete examples of correct and incorrect behavior under this policy.
 | `learned_from` | string | Task ID or session reference (for auto-generated policies) |
 | `command` | string | Command name for a command-scoped policy (e.g. `prd`, `email`); pair with a `when:` keyed on the `/command` token |
 | `inject` | enum | `once` (default) or `always`. Sets injection **cadence** — how *often* the policy re-surfaces — and is orthogonal to `enforcement:` (which sets **depth**). See **Injection Cadence** below. |
+
+### Lifecycle Fields
+
+All optional. `.claude/hooks/validate-policy-frontmatter.sh` validates them when present and names
+the offending field when one is malformed. `/learn`, `/garden`, the injector, `policy-retire.sh`, and the
+gate hook read this one schema.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `status` | enum | `active` | `active`, `retired`, or `superseded`. Any other value is rejected. Consumers skip non-active policies. |
+| `retired_at` | ISO timestamp | none | When the policy was retired. Allowed only with `status: retired`. |
+| `retired_by` | string | none | Who or what retired it (a person, `policy-retire.sh`, `/garden`). Allowed only with `status: retired`. |
+| `retired_reason` | string | none | Why it was retired. Allowed only with `status: retired`. |
+| `last_confirmed` | ISO date | none | Last date someone confirmed the rule still holds (`YYYY-MM-DD`; a full timestamp is also accepted). |
+| `retire_when` | string | none | Free-text condition under which the rule can be retired, e.g. `retire_when: hq-cli 6.0 ships the native fix`. No quotes and no regex metacharacters (`* + ? [ ] ( ) { } \| \ ^ $`), per `hq-policy-when-expr-no-quotes-or-symbols`. |
+| `supersedes` | list of policy ids | none | Policies this one replaces. Accepts `[a, b]`, `a, b`, or a YAML block list of `- id` lines. Each entry must be a bare policy id. |
+
+### Gate Block (`enforcement: gate`)
+
+`enforcement: gate` is a third tier beside `hard` and `soft`. A gate policy declares, as data, which tool
+calls it guards and which session facts must exist before those calls run. The gate hook blocks a
+matching call until every required fact is present and fresh. The policy carries a `gate:` block:
+
+```yaml
+enforcement: gate
+gate:
+  tools: [mcp__superhuman-*__send_draft, mcp__hq-work__send_email]
+  bash: [gws gmail send]
+  requires: [sending_account_confirmed, recipients_confirmed]
+  freshness: 60
+  override: allowed
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `tools` | list of tool-name globs | none | Tool names the gate guards. `*` is the only glob character. |
+| `bash` | list of command prefixes | none | Bash command prefixes the gate guards. |
+| `requires` | list of fact names | required | Session facts that must exist before a guarded call runs. |
+| `freshness` | integer minutes | none (no expiry) | Maximum age of each required fact. |
+| `override` | enum | `allowed` | `allowed` or `denied`. Whether a human can pass the gate once with an audited `gate-override` token. |
+
+A gate block must declare `tools` or `bash` (at least one) and a non-empty `requires`. Unknown keys inside
+`gate:` are rejected. A `gate:` block is validated whenever present. The v1 fact
+vocabulary is fixed: `sending_account_confirmed`, `recipients_confirmed`, `draft_approved`,
+`humanize_passed`, `enforcement_observed`. The policy-gate-enforcement project owns fact-name and
+metacharacter validation for gate fields.
 
 > **Removed:** the `applies_to` field and its stack-based filtering have been removed from the policy schema. Scope stack-specificity through the `when:` expression instead (e.g. `when: vercel`).
 
@@ -138,12 +198,22 @@ when: /brainstorm || /deep-plan        # slash-command tokens
 **`on:` selects the evaluation site(s):**
 
 ```yaml
-on: [PreToolUse]                       # default when omitted
+on: [PostToolUse]                      # default for tool-bearing when: facts
 on: [PreToolUse, UserPromptSubmit]     # also evaluate on the user's message
 on: [PostToolUse]                      # evaluate against the tool's output
 on: [AssistantIntent]                  # evaluate against what the AI said it will do
 on: [SessionStart]                     # introduce at the very start of a session
 ```
+
+An omitted `on:` on a tool-bearing `when:` policy means `PostToolUse`. This is
+the event where Claude Code can deliver the reminder as
+`hookSpecificOutput.additionalContext`. PreToolUse is not evaluated for passive
+policy reminders by default because plain stdout from that event is not model
+context. `on: [PreToolUse]` remains meaningful for rollback compatibility;
+passive PreToolUse policy evaluation is disabled unless
+`HQ_POLICY_TOOL_EVENTS=legacy` is set. That environment variable is a
+one-release rollback switch and restores both PreToolUse evaluation and the
+historical omitted-on default.
 
 `SessionStart` evaluates `when` against **static facts only** (`company`, `repo`,
 `shared_branch`) plus the reserved **`always`** token. Use `when: always` +
@@ -177,7 +247,8 @@ keys on whatever word naturally appears when it is relevant (`refactor`,
 | `PreToolUse` Bash command | every word of the command (`git`, `push`, `commit`, …); `gh pr`→`pr`; `op://`/`AWS_PROFILE`/`.env`→`secret`; a shared branch name→`shared_branch`; `run_in_background: true`→`run_in_background` |
 | `PreToolUse` other tools | lowercased tool name (`glob`, `grep`, `read`, `write`, `edit`) |
 | `UserPromptSubmit` | every word token of the user's message |
-| `PostToolUse` | every word token of the tool's **output** |
+| `PostToolUse` Bash command and output | every word token of `tool_input.command` and the tool's **output**, plus command-derived facts other than `run_in_background` |
+| `PostToolUse` non-Bash tool | every word token of the tool's **output** |
 | `AssistantIntent` | every word token of assistant message text since the last user turn — **AI-message only, no static facts** |
 | `SessionStart` | static facts only (no command/prompt/AI tokens) |
 | Static session facts (real events only) | `company`, `repo`, `shared_branch` (current branch) |
@@ -186,6 +257,11 @@ keys on whatever word naturally appears when it is relevant (`refactor`,
 
 The raw `PreToolUse`/`UserPromptSubmit` fact sets deliberately **exclude** the
 look-back so the command/prompt channel and the AI-intent channel stay distinct.
+The `run_in_background` marker is available only on PreToolUse, where the host
+reports that option. Passive policy evaluation skips PreToolUse by default, so a
+policy that depends on this marker will not run until
+`HQ_POLICY_TOOL_EVENTS=legacy` restores the old path. The blocking Bash hooks
+are separate registry entries and this change does not edit them.
 
 **Filename tokens.** Any file reference in the evaluated text emits two extra
 facts: a literal basename token and a `.ext` token. `.claude/settings.json` yields

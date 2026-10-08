@@ -7,7 +7,7 @@ const { spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 
 const FLAG_KEY = process.env.HQ_FLAG_KEY?.trim() || "hooks.codex-explicit-path-guard";
-const DEFAULT_VALUE = false;
+const DEFAULT_VALUE = FLAG_KEY === "hooks.multi-company-session-lock";
 const REQUEST_TIMEOUT_MS = 1_000;
 const TOTAL_TIMEOUT_MS = 2_000;
 const TOKEN_TIMEOUT_MS = 750;
@@ -152,6 +152,14 @@ function companyUidForSlug(hqRoot, slug) {
 }
 
 function resolveCompanyContext(hqRoot, env, dependencies) {
+  const explicitSlug = env.HQ_COMPANY_SLUG?.trim() || "";
+  if (COMPANY_SLUG_RE.test(explicitSlug)) {
+    const companyUid = companyUidForSlug(hqRoot, explicitSlug);
+    return {
+      ...(companyUid ? { companyUid } : {}),
+      companyIdentifiers: [explicitSlug],
+    };
+  }
   const explicitUid = env.HQ_COMPANY_UID?.trim() || "";
   if (COMPANY_UID_RE.test(explicitUid)) {
     const slug = env.HQ_COMPANY_SLUG?.trim() || "";
@@ -194,9 +202,13 @@ function safeErrorClass(error) {
   return /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(name) ? name : "UnknownError";
 }
 
+function defaultValueForFlag(flagKey) {
+  return flagKey === "hooks.multi-company-session-lock";
+}
+
 function reportFailure(error) {
   process.stderr.write(
-    `Codex explicit-path flag lookup failed (${safeErrorClass(error)}); using the default-off behavior.\n`,
+    `Codex explicit-path flag lookup failed (${safeErrorClass(error)}); using the configured default.\n`,
   );
 }
 
@@ -216,12 +228,14 @@ function timeoutPromise(signal) {
 
 async function codexExplicitPathGuardEnabled(dependencies = {}) {
   const env = dependencies.env ?? process.env;
+  const flagKey = env.HQ_FLAG_KEY?.trim() || FLAG_KEY;
   const overallDeadline = AbortSignal.timeout(TOTAL_TIMEOUT_MS);
   const timeout = timeoutPromise(overallDeadline);
   let client;
-  let enabled = DEFAULT_VALUE;
+  let enabled = defaultValueForFlag(flagKey);
   let failed = false;
   let failureReported = false;
+  let killSwitchExplicitFalseObserved = false;
   const reportFailureOnce = (error) => {
     failed = true;
     if (failureReported) return;
@@ -280,8 +294,10 @@ async function codexExplicitPathGuardEnabled(dependencies = {}) {
 
     const snapshot = client.snapshot();
     const flags = snapshot?.flags && typeof snapshot.flags === "object" ? snapshot.flags : {};
-    if (!failed && Object.prototype.hasOwnProperty.call(flags, FLAG_KEY)) {
-      enabled = flags[FLAG_KEY] === true;
+    if (!failed && Object.prototype.hasOwnProperty.call(flags, flagKey)) {
+      enabled = flags[flagKey] === true;
+      killSwitchExplicitFalseObserved = flagKey === "hooks.multi-company-session-lock"
+        && flags[flagKey] === false;
     }
   };
 
@@ -296,12 +312,15 @@ async function codexExplicitPathGuardEnabled(dependencies = {}) {
       reportFailureOnce(error);
     }
   }
-  return !failed && !overallDeadline.aborted && enabled === true;
+  if (killSwitchExplicitFalseObserved) return false;
+  if (failed || overallDeadline.aborted) return defaultValueForFlag(flagKey);
+  return enabled === true;
 }
 
 module.exports = {
   FLAG_KEY,
   DEFAULT_VALUE,
+  defaultValueForFlag,
   REQUEST_TIMEOUT_MS,
   TOTAL_TIMEOUT_MS,
   findCliBin,

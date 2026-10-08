@@ -911,6 +911,18 @@
             "prefilter": {
               "env": "HQ_CONDUCT_RUN_DIR"
             }
+          },
+          {
+            "id": "conduct-lane-inbox",
+            "script": ".claude/hooks/conduct-lane-inbox.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "file": "workspace/conduct-links/by-session"
+            },
+            "args": [
+              "--link"
+            ]
           }
         ]
       }
@@ -1005,6 +1017,18 @@
             "prefilter": {
               "env": "HQ_CONDUCT_RUN_DIR"
             }
+          },
+          {
+            "id": "conduct-lane-inbox",
+            "script": ".claude/hooks/conduct-lane-inbox.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "file": "workspace/conduct-links/by-session"
+            },
+            "args": [
+              "--link"
+            ]
           },
           {
             "id": "lanes-senior-monitor-stop-gate",

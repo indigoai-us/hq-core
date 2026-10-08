@@ -135,6 +135,10 @@ personal scopes have their own ceilings (table above).
   (`pro` or `enterprise`); see the `/deploy` skill.
 - **Remote vault DB** (`hq db provision`) requires Workforce; see
   `vault-databases.md`.
+- **App databases** (`database: true` on a deploy) require Workforce (or a
+  staff-set paid plan) and cost $10 a month per database app, with 250,000
+  compute units and 1 GB included. A company can hold 20 database apps. See
+  `app-databases.md`.
 - **Meeting bot invites** require Workforce (`MEETING_PLAN_REQUIRED`).
 
 Cancelling Workforce takes effect at the end of the paid period. The company

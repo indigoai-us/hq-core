@@ -5,7 +5,8 @@
 #
 # Contract:
 #   <hook-json on stdin> | bash inject-policy-on-trigger.sh
-#     - event comes from `hook_event_name` in the JSON (default PreToolUse)
+#     - event comes from `hook_event_name` in the JSON
+#     - legacy PreToolUse expectations opt in to HQ_POLICY_TOOL_EVENTS=legacy
 #     - resolves policy scope + dedupe ledger from $CLAUDE_PROJECT_DIR
 #     - resolves helper scripts (eval-trigger.sh / derive-trigger-facts.sh)
 #       relative to its OWN location (real repo), so tests can point data at a
@@ -57,36 +58,36 @@ trigger: prose only
 This must never be injected by the trigger hook.
 EOF
 
-call() { printf '%s' "$1" | HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>/dev/null || true; }
+call() { printf '%s' "$1" | HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" HQ_POLICY_TOOL_EVENTS=legacy bash "$HOOK" 2>/dev/null || true; }
 
 DEPLOY_PRE='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"vercel deploy --prod"},"session_id":"sess-1"}'
 
 # 1. Matching deploy command injects the frontmatter policy.
 out="$(call "$DEPLOY_PRE")"
-echo "$out" | grep -q "demo-deploy-rule" || fail "expected demo-deploy-rule injected, got: [$out]"
+[[ "$out" == *"demo-deploy-rule"* ]] || fail "expected demo-deploy-rule injected, got: [$out]"
 
 # 2. no-when policy never injected.
-echo "$out" | grep -q "demo-no-when" && fail "no-when policy must not be injected" || true
+[[ "$out" == *"demo-no-when"* ]] && fail "no-when policy must not be injected" || true
 
 # 3. Dedupe ledger records the slug.
 [ -f "$LEDGER" ] && grep -qxF "demo-deploy-rule" "$LEDGER" || fail "slug not recorded in ledger"
 
 # 4. Second identical call -> deduped.
 out2="$(call "$DEPLOY_PRE")"
-echo "$out2" | grep -q "demo-deploy-rule" && fail "policy re-injected despite dedupe" || true
+[[ "$out2" == *"demo-deploy-rule"* ]] && fail "policy re-injected despite dedupe" || true
 
 # 5. Unrelated command -> no injection.
 out3="$(call '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls -la"},"session_id":"sess-1"}')"
-echo "$out3" | grep -q "demo-deploy-rule" && fail "policy injected for unrelated command" || true
+[[ "$out3" == *"demo-deploy-rule"* ]] && fail "policy injected for unrelated command" || true
 
 # 6. UserPromptSubmit event with deploy intent in the prompt also injects
 #    (fresh session id to avoid dedupe carryover).
 out4="$(call '{"hook_event_name":"UserPromptSubmit","prompt":"please deploy this to prod","session_id":"sess-2"}')"
-echo "$out4" | grep -q "demo-deploy-rule" || fail "expected injection on UserPromptSubmit deploy intent, got: [$out4]"
+[[ "$out4" == *"demo-deploy-rule"* ]] || fail "expected injection on UserPromptSubmit deploy intent, got: [$out4]"
 
 # 7. Legacy regex map still fires (regression guard): pgrep -> hq-bash-discipline.
 out5="$(call '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"pgrep -f node"},"session_id":"sess-3"}')"
-echo "$out5" | grep -q "hq-bash-discipline" || fail "legacy regex map regressed (pgrep), got: [$out5]"
+[[ "$out5" == *"hq-bash-discipline"* ]] || fail "legacy regex map regressed (pgrep), got: [$out5]"
 
 # 8. Tool events are CLI/Bash-only: a non-Bash PreToolUse (Glob) injects nothing,
 #    even if a deploy-ish token might otherwise appear.
@@ -125,8 +126,8 @@ TI="$TMP/ti.jsonl"
 { printf '%s\n' '{"type":"user","message":{"role":"user","content":"hi"}}'
   printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"let me git push the branch"}]}}'; } > "$TI"
 outA="$(call "$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls -la"},"transcript_path":"%s","session_id":"sessA"}' "$TI")")"
-echo "$outA" | grep -q "demo-intent-rule" || fail "AssistantIntent should fire from AI message, got: [$outA]"
-echo "$outA" | grep -q "demo-git-pre" && fail "PreToolUse(command) git rule must not fire on 'ls'" || true
+[[ "$outA" == *"demo-intent-rule"* ]] || fail "AssistantIntent should fire from AI message, got: [$outA]"
+[[ "$outA" == *"demo-git-pre"* ]] && fail "PreToolUse(command) git rule must not fire on 'ls'" || true
 
 # 11. Command HAS git, but the assistant did NOT mention it -> the
 #     PreToolUse(command) rule fires; the AssistantIntent rule does not.
@@ -134,8 +135,8 @@ TI2="$TMP/ti2.jsonl"
 { printf '%s\n' '{"type":"user","message":{"role":"user","content":"hi"}}'
   printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"just looking at the files"}]}}'; } > "$TI2"
 outB="$(call "$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git status"},"transcript_path":"%s","session_id":"sessB"}' "$TI2")")"
-echo "$outB" | grep -q "demo-git-pre" || fail "PreToolUse(command) git rule should fire on 'git status', got: [$outB]"
-echo "$outB" | grep -q "demo-intent-rule" && fail "AssistantIntent rule must NOT fire from a command token, got: [$outB]" || true
+[[ "$outB" == *"demo-git-pre"* ]] || fail "PreToolUse(command) git rule should fire on 'git status', got: [$outB]"
+[[ "$outB" == *"demo-intent-rule"* ]] && fail "AssistantIntent rule must NOT fire from a command token, got: [$outB]" || true
 
 # --- SessionStart channel: ALL on:[SessionStart] policies inject unconditionally ---
 # The pre-built digest was retired; this hook is the sole policy-surfacing path,
@@ -165,8 +166,8 @@ Hard policy introduced at session start.
 EOF
 
 outS="$(call '{"hook_event_name":"SessionStart","session_id":"sessS"}')"
-echo "$outS" | grep -q "demo-soft-start" || fail "SessionStart should inject soft on:[SessionStart] policy, got: [$outS]"
-echo "$outS" | grep -q "demo-hard-start" || fail "SessionStart should inject hard on:[SessionStart] policy unconditionally (no digest dedup), got: [$outS]"
+[[ "$outS" == *"demo-soft-start"* ]] || fail "SessionStart should inject soft on:[SessionStart] policy, got: [$outS]"
+[[ "$outS" == *"demo-hard-start"* ]] || fail "SessionStart should inject hard on:[SessionStart] policy unconditionally (no digest dedup), got: [$outS]"
 
 # 12. REGRESSION — multi-line dedupe ledger must not abort the frontmatter awk.
 #     After SessionStart seeds the ledger with MULTIPLE slugs (one per line), a
@@ -179,10 +180,10 @@ echo "$outS" | grep -q "demo-hard-start" || fail "SessionStart should inject har
 LEDGER_S="$TMP/workspace/orchestrator/policy-trigger-state/sessS.txt"
 [ "$(grep -c . "$LEDGER_S")" -ge 2 ] || fail "precondition: SessionStart should seed >=2 ledger slugs, got: [$(cat "$LEDGER_S" 2>/dev/null)]"
 ERRF="$TMP/awk-err.txt"
-out8b="$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git status"},"session_id":"sessS"}' | HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>"$ERRF" || true)"
+out8b="$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git status"},"session_id":"sessS"}' | HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" HQ_POLICY_TOOL_EVENTS=legacy bash "$HOOK" 2>"$ERRF" || true)"
 grep -q 'newline in string' "$ERRF" && fail "awk aborted on multi-line ledger (regressed to -v ALREADY): [$(cat "$ERRF")]" || true
-echo "$out8b" | grep -q "demo-git-pre" || fail "reactive when:/on: must still fire after a multi-slug SessionStart ledger, got: [$out8b]"
-echo "$out8b" | grep -q "demo-soft-start" && fail "SessionStart slug re-injected — ledger not honored, got: [$out8b]" || true
+[[ "$out8b" == *"demo-git-pre"* ]] || fail "reactive when:/on: must still fire after a multi-slug SessionStart ledger, got: [$out8b]"
+[[ "$out8b" == *"demo-soft-start"* ]] && fail "SessionStart slug re-injected — ledger not honored, got: [$out8b]" || true
 
 # 13. REGRESSION — byte-oriented awk must not split a UTF-8 code point when
 #     truncating the rule summary. Byte 157 is the first byte of the em dash.
@@ -201,7 +202,7 @@ EOF
   printf '%s—suffix\n' "$ASCII_156"
 } > "$TMP/core/policies/demo-utf8-boundary.md"
 
-out_utf8="$(printf '%s' "$DEPLOY_PRE" | LC_ALL=C HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>/dev/null || true)"
+out_utf8="$(printf '%s' "$DEPLOY_PRE" | LC_ALL=C HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" HQ_POLICY_TOOL_EVENTS=legacy bash "$HOOK" 2>/dev/null || true)"
 printf '%s' "$out_utf8" | python3 -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' 2>/dev/null \
   || fail "policy reminder is not valid UTF-8 under byte-oriented awk"
 expected_utf8="> Policy \`demo-utf8-boundary\` applies here: ${ASCII_156}..."

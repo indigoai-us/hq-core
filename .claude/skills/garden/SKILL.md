@@ -19,7 +19,49 @@ Multi-worker audit pipeline: Scout → Auditor → Curator. Detects stale conten
 /garden all                            # Full HQ sweep (chunked by company + orphan sweep)
 /garden --resume {run-id}              # Resume interrupted run
 /garden --status                       # Show active/past garden runs
+/garden policies [--dry-run]           # Retire personal + active-company policies by evidence
 ```
+
+---
+
+## Policies Pass (`/garden policies`)
+
+Retires personal and company policies by evidence so the corpus fades on its
+own. Retirement is never gated on human review: the pass retires, reports, and
+a wrong call is reversed with `bash core/scripts/policy-retire.sh <id> --restore`.
+It runs on its own and is not part of the Scout → Auditor → Curator pipeline
+below. The approval gates there do not apply to this pass.
+
+1. Resolve the active company (`hq-session.sh get company_slug`). Scope is
+   `personal/policies` and `companies/<active>/policies` only. Never retire
+   anything in `core/policies`
+   (hq-retire-generated-artifacts-by-usage-do-not-gate-creation).
+2. Read the evidence: `bash core/scripts/policy-retrieval-report.sh
+   personal/policies companies/<active>/policies` (last retrieval per policy).
+3. Select candidates with `bash core/scripts/garden-policy-pass.sh --company
+   <active> --dry-run`. It prints one row per policy (decision, id, path,
+   reason). A policy is a candidate when any one of these holds:
+   - zero retrievals in 90 days and `created:` more than 90 days ago;
+   - `status: superseded` and an active policy lists it in `supersedes:`;
+   - `retire_when:` is present and you judge the condition met. The script
+     marks these rows `judge`. Read each one, check the condition against the
+     current state (installed versions, shipped fixes, existing files), and
+     write one sentence of reasoning per candidate, whether met or not.
+4. Run it for real: `bash core/scripts/garden-policy-pass.sh --company
+   <active> [--retire-when-met <id>=<reasoning>]...`. Each candidate is retired
+   through `core/scripts/policy-retire.sh` (`hq core policy retire`), which
+   sets `status: retired`, `retired_at`, `retired_by`, `retired_reason`. Never
+   edit policy frontmatter by hand.
+5. Retired files stay in place. Do not move, delete, or archive them. The only
+   effect on injection is the staleness order from the trigger loader.
+6. Print the summary line the script ends with (how many evaluated, retired,
+   and skipped and why). It is also written to
+   `workspace/reports/garden/policies-<YYYY-MM-DD>.md`, together with the
+   per-policy table and your `retire_when` reasoning.
+
+`--dry-run` lists candidates without retiring anything. Use it for a first
+run on a new machine, review the list against the rules above yourself, then
+run for real.
 
 ---
 

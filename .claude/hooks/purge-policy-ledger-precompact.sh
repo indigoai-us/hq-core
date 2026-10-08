@@ -20,6 +20,11 @@
 #
 # Wired in .claude/settings.json PreCompact, gated by hook-gate.sh under
 # "purge-policy-ledger-precompact" (standard + strict profiles).
+#
+# Retrieval records are NOT touched here: record-policy-retrieval.sh writes each
+# retrieval to the durable workspace/orchestrator/policy-retrieval-ledger.jsonl
+# at record time, and its per-session policy-retrieval-state/<session>.txt dedup
+# file is left in place so a compaction does not double-count a retrieval.
 
 set -uo pipefail
 

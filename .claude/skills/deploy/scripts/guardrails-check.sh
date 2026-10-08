@@ -68,18 +68,32 @@ if [ -n "$API_DIR" ]; then
   API_FILE_COUNT=$(find "$API_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')
   FILE_COUNT=$((FILE_COUNT + API_FILE_COUNT))
 fi
+
+# App database migrations live at the project root (db/migrations). When the
+# output directory is a build dir (dist/, public/) they are not inside it, so
+# add them to the archive root. Skipped when the output directory is the
+# project root, where the migrations are already included.
+MIGRATIONS_DIR=""
+if [ -d "./db/migrations" ] && [ ! -e "$OUT_DIR/db/migrations" ]; then
+  MIGRATIONS_DIR="$PWD/db/migrations"
+  MIGRATIONS_FILE_COUNT=$(find "$MIGRATIONS_DIR" -type f -name '*.sql' 2>/dev/null | wc -l | tr -d ' ')
+  FILE_COUNT=$((FILE_COUNT + MIGRATIONS_FILE_COUNT))
+fi
 if [ "$FILE_COUNT" -gt 100 ]; then
   emit_fail "file_count_exceeded:$FILE_COUNT"
 fi
 
 # 3. Build tarball
 TARBALL=$(mktemp -t hq-deploy-tar.XXXXXX)
+TAR_ARGS=(-czf "$TARBALL" -C "$OUT_DIR" .)
 if [ -n "$API_DIR" ]; then
-  if ! tar -czf "$TARBALL" -C "$OUT_DIR" . -C "$(dirname "$API_DIR")" "$(basename "$API_DIR")" 2>/dev/null; then
-    rm -f "$TARBALL"
-    emit_fail "tar_create_failed"
-  fi
-elif ! tar -czf "$TARBALL" -C "$OUT_DIR" . 2>/dev/null; then
+  TAR_ARGS+=(-C "$(dirname "$API_DIR")" "$(basename "$API_DIR")")
+fi
+if [ -n "$MIGRATIONS_DIR" ]; then
+  TAR_ARGS+=(-C "$PWD" db/migrations)
+fi
+# COPYFILE_DISABLE stops macOS tar from adding ._ AppleDouble files.
+if ! COPYFILE_DISABLE=1 tar "${TAR_ARGS[@]}" 2>/dev/null; then
   rm -f "$TARBALL"
   emit_fail "tar_create_failed"
 fi

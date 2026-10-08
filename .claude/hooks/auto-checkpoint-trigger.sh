@@ -21,6 +21,28 @@
 
 set -euo pipefail
 
+# PostToolUse plain stdout is not model context. Buffer this advisory hook's
+# output and return it in the event-specific context envelope instead.
+HOOK_STDOUT_TMP="$(mktemp "${TMPDIR:-/tmp}/hq-auto-checkpoint.XXXXXX" 2>/dev/null || true)"
+if [ -n "$HOOK_STDOUT_TMP" ]; then
+  exec 9>&1
+  exec >"$HOOK_STDOUT_TMP"
+  auto_checkpoint_emit_context() {
+    hook_status=$?
+    trap - EXIT
+    hook_context="$(cat "$HOOK_STDOUT_TMP" 2>/dev/null || true)"
+    rm -f "$HOOK_STDOUT_TMP" 2>/dev/null || true
+    if [ -n "$hook_context" ] && command -v jq >/dev/null 2>&1; then
+      jq -cn --arg event PostToolUse --arg context "$hook_context" \
+        '{hookSpecificOutput:{hookEventName:$event,additionalContext:$context}}' >&9 2>/dev/null || true
+    fi
+    exit "$hook_status"
+  }
+  trap auto_checkpoint_emit_context EXIT
+else
+  exec >/dev/null
+fi
+
 # Resolve the active HQ root regardless of install path or session cwd:
 # CLAUDE_PROJECT_DIR (set by Claude Code) → HQ_ROOT env → the hook's own
 # location (always <HQ>/.claude/hooks/, matching master-hook.sh/reindex.sh) →

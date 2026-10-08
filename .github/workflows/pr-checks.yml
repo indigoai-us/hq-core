@@ -229,6 +229,8 @@ jobs:
         run: bash core/scripts/build-intent-index.sh --check
       - name: Intent index generator (shipped scope, idempotent, --check drift)
         run: bash core/scripts/tests/build-intent-index.test.sh
+      - name: Skills listing budget report (200K and 1M)
+        run: bash core/scripts/tests/skills-listing-budget.test.sh
       - name: Core skills only reference shipped local shell scripts
         run: |
           bash core/scripts/lint-skill-script-refs.sh handoff
@@ -245,6 +247,8 @@ jobs:
         run: bash core/scripts/tests/conduct-pool.test.sh
       - name: /conduct lane drop box (queue, claim, per-event hook output)
         run: bash core/scripts/tests/conduct-inbox.test.sh
+      - name: /conduct session link (adopt, join, send, report, hook delivery)
+        run: bash core/scripts/tests/conduct-link.test.sh
       - name: /conduct worker selection (registry fields, definition load)
         run: bash core/scripts/tests/conduct-worker-selection.test.sh
       - name: Ralph orchestrator policy (JSON contract kept, spawn-per-story gone)
@@ -513,6 +517,8 @@ jobs:
             core/scripts/tests/outpost-job-failure-alerts.test.sh \
             core/scripts/tests/handoff-finalize-pointer.test.sh \
             core/scripts/tests/agent-runtime-skill-metadata.test.sh \
+            core/scripts/skills-listing-budget.sh \
+            core/scripts/tests/skills-listing-budget.test.sh \
             core/scripts/generate-openai-yaml.sh \
             core/scripts/tests/discover-shallow-clone-fetch-all.test.sh \
             core/scripts/tests/execute-task-codex-model-source.test.sh \
@@ -597,6 +603,8 @@ jobs:
         run: bash core/scripts/tests/setup-hq-cli-floor.test.sh
       - name: Hook settings release contract
         run: bash core/scripts/tests/hook-settings-release-contract.test.sh
+      - name: Adapter prefilter and watchdog contract
+        run: bash core/scripts/tests/hook-adapter-prefilter-watchdog.test.sh
       - name: walk_up_to_hq_root and is_hq_root form no //core path
         run: bash core/scripts/tests/walk-root-no-double-slash.test.sh
 
@@ -699,6 +707,10 @@ jobs:
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
       - name: guardrails reports and removes a failed tarball
         run: bash .claude/skills/deploy/scripts/tests/guardrails-tar-failure.test.sh
+      - name: cold database deploys repeat until the cluster is ready
+        run: bash .claude/skills/deploy/scripts/tests/deploy-api-request-db-provisioning.test.sh
+      - name: deploy request errors show the API message
+        run: bash .claude/skills/deploy/scripts/tests/deploy-api-request-error-body.test.sh
       - name: route-host merges routes onto an existing deploy
         run: bash .claude/skills/deploy/scripts/tests/route-host.test.sh
       - name: site-events owner loop (enable, list, watch, reply)
@@ -982,6 +994,8 @@ jobs:
         run: bash core/scripts/tests/hq-delegate-pickup.test.sh
       - name: Handoff next-step ids and closure
         run: bash core/scripts/tests/handoff-open-steps.test.sh
+      - name: Handoff listing avoids per-thread stat subprocesses
+        run: bash core/scripts/tests/handoff-open-steps-stat-scaling.test.sh
       - name: Policy delivery benchmark (live + scenarios)
         run: bash core/scripts/tests/policy-benchmark.test.sh
       - name: Live runtime smoke (skips when no runtime CLI is installed on the runner)
@@ -1016,6 +1030,8 @@ jobs:
         run: bash core/scripts/tests/policy-age-report.test.sh
       - name: Policy retire / restore and consumers skip retired through hq core
         run: bash core/scripts/tests/policy-retire.test.sh
+      - name: Garden policies pass selects and retires candidates through hq core
+        run: bash core/scripts/tests/garden-policy-pass.test.sh
       - name: Policy retrieval ledger reads age report through hq core
         run: bash core/scripts/tests/record-policy-retrieval.test.sh
       - name: Policy write guard keeps sanctioned script-path compatibility
@@ -1300,6 +1316,8 @@ jobs:
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
+      - name: Hook benchmarks dispatch through every supported runtime
+        run: bash core/scripts/tests/bench-hooks-runtime.test.sh
       - name: hq-anywhere hook and resolver regressions
         run: |
           bash core/scripts/tests/hq-anywhere-runtime-flag.test.sh
@@ -1439,6 +1457,11 @@ jobs:
           # Full-tree shellcheck is a separate burn-down (pre-existing SC noise).
           files=(
             core/scripts/hook-lib.sh
+            core/scripts/lib/hook-adapter-core.sh
+            core/scripts/tests/policy-prefilter-scale.test.sh
+            core/scripts/tests/inject-policy-background-notifications.test.sh
+            core/scripts/tests/inject-policy-tool-events.test.sh
+            core/scripts/tests/inject-policy-tool-events-cost.sh
             core/scripts/tests/run-project-dry-run-no-write.test.sh
             core/scripts/tests/block-unsafe-package-install.test.sh
             core/scripts/tests/hook-process-budget-common.sh
@@ -1446,6 +1469,13 @@ jobs:
             core/scripts/tests/block-core-writes-bash-process-budget.test.sh
             core/scripts/tests/block-guard-hooks-parity.test.sh
             core/scripts/tests/knowledge-pulse-policy-schema.test.sh
+            core/scripts/remove-stray-gate-hooks.sh
+            core/scripts/tests/remove-registry-duplicate-hooks.test.sh
+            core/scripts/tests/hook-adapter-duplicate-cleanup-parity.test.sh
+            core/scripts/bench-hooks.sh
+            core/scripts/bench-hook-corpus.sh
+            core/scripts/lib/bench-runtime.sh
+            core/scripts/tests/bench-hooks-runtime.test.sh
             core/scripts/tests/us146-gh-positional-repo-anchors.test.sh
             core/scripts/tests/hook-timeout-sentry.test.sh
             core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
@@ -1520,6 +1550,8 @@ jobs:
         env:
           RESUMEWORK_TIMING_RUNS: '20'
         run: bash core/scripts/tests/resumework-timing.test.sh
+      - name: Handoff listing stat and elapsed scaling benchmark
+        run: bash core/scripts/tests/handoff-open-steps-stat-scaling-bench.sh
 
   shell-smoke-windows:
     name: shell-smoke-windows
@@ -1543,6 +1575,18 @@ jobs:
           cache-dependency-path: |
             core/core.yaml
             core/scripts/cli-hosted.yaml
+      - name: Install pinned mikefarah/yq for jobs-validate parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          runner_temp="$(cygpath -u "$RUNNER_TEMP")"
+          github_path="$(cygpath -u "$GITHUB_PATH")"
+          mkdir -p "$runner_temp/bin"
+          curl --fail --silent --show-error --location \
+            "https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_windows_amd64.exe" \
+            --output "$runner_temp/bin/yq.exe"
+          printf '%s\n' "$(cygpath -w "$runner_temp/bin")" >>"$github_path"
+          "$runner_temp/bin/yq.exe" --version
       - name: Resolve Windows hq CLI cache inputs
         id: hq_cli_cache
         shell: bash
@@ -1566,11 +1610,44 @@ jobs:
           key: hq-cli-${{ runner.os }}-${{ runner.arch }}-${{ steps.hq_cli_cache.outputs.version }}-${{ hashFiles('core/scripts/ci/install-pinned-hq-cli.sh') }}
       - name: Install pinned hq CLI for forwarded scaffold scripts
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: Git Bash session-title slash command argv
+        run: bash core/scripts/tests/session-title-windows-argv.test.sh
+      - name: Verify Windows hook benchmark workflow wiring
+        run: bash core/scripts/tests/windows-hook-benchmark-workflow.test.sh
+      - name: Measure hook benchmark on Git Bash
+        shell: bash
+        run: |
+          set -euo pipefail
+          bench_dir="$RUNNER_TEMP/hook-benchmark"
+          mkdir -p "$bench_dir"
+          bash core/scripts/bench-hooks.sh --tool Bash --runs 3 --json "$bench_dir/per-registration.json"
+          bash core/scripts/bench-hook-corpus.sh run --corpus core/scripts/bench-hook-corpus-default.json --out "$bench_dir/default-corpus.json"
+          node - "$bench_dir/default-corpus.json" <<'NODE'
+          const fs = require('fs');
+          const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const calls = report.items
+            .filter(item => item.event === 'PostToolUse')
+            .map(item => item.secs * 1000)
+            .sort((a, b) => a - b);
+          if (calls.length === 0) throw new Error('benchmark report contains no Bash tool calls');
+          const percentile = p => calls[Math.ceil(p * calls.length) - 1];
+          console.log(`Bash tool call latency: n=${calls.length} p50_ms=${percentile(0.50).toFixed(1)} p95_ms=${percentile(0.95).toFixed(1)}`);
+          NODE
+      - name: Upload raw Windows hook benchmark results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-hook-benchmark-${{ github.run_id }}
+          path: ${{ runner.temp }}/hook-benchmark/*.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Measure resumework command set through master hook
         env:
           RESUMEWORK_TIMING_RUNS: '20'
           RESUMEWORK_HOOK_BUDGET_MS: '70000'
         run: bash core/scripts/tests/resumework-timing.test.sh
+      - name: Handoff listing stat and elapsed scaling benchmark
+        run: bash core/scripts/tests/handoff-open-steps-stat-scaling-bench.sh
       - name: portable-lib
         run: bash core/scripts/tests/portable-lib.test.sh
       - name: Git Bash forwarder preserves slash arguments and path arguments
@@ -1581,6 +1658,8 @@ jobs:
         run: bash core/scripts/tests/session-journal-windows-slug.test.sh
       - name: session-journal CLI port behavior
         run: bash core/scripts/tests/session-journal-cli-port.test.sh
+      - name: derive-trigger-facts closed stdin returns promptly
+        run: node core/scripts/tests/derive-trigger-facts-closed-stdin.test.mjs
       - name: identity-resolve USER key
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
       - name: identity-resolve missing engines
@@ -1721,6 +1800,10 @@ jobs:
         run: bash core/scripts/tests/knowledge-pulse-policy-schema.test.sh
       - name: Stray matcher-less hook-gate registrations are removed (jq + node)
         run: bash core/scripts/tests/remove-stray-gate-hooks.test.sh
+      - name: Registry hook duplicates are removed (jq + node)
+        run: bash core/scripts/tests/remove-registry-duplicate-hooks.test.sh
+      - name: Adapter hook ids are stable across local cleanup
+        run: bash core/scripts/tests/hook-adapter-duplicate-cleanup-parity.test.sh
 
   policy-trigger-migration:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1754,12 +1837,18 @@ jobs:
         run: bash core/scripts/tests/validate-policy-frontmatter.test.sh
       - name: Emit contract — tsv shape, scope precedence, enforcement-tiered depth
         run: bash .claude/hooks/tests/inject-policy-on-trigger-emit.test.sh
+      - name: Background prompts skip policy injection and reminders name source paths
+        run: bash core/scripts/tests/inject-policy-background-notifications.test.sh
+      - name: Staleness ordering — stale rules cut first, exemptions hold, personal soft off
+        run: bash .claude/hooks/tests/inject-policy-on-trigger-staleness.test.sh
       - name: check-stale-model-pin hook regression test
         run: bash .claude/hooks/tests/check-stale-model-pin.test.sh
       - name: Case-insensitive policy trigger identifier matching
         run: bash core/scripts/tests/eval-trigger.test.sh
       - name: Policy trigger end-to-end corpus coverage
         run: bash core/scripts/tests/inject-policy-e2e.test.sh
+      - name: Policy reminders use model-delivering tool events
+        run: bash core/scripts/tests/inject-policy-tool-events.test.sh
       - name: Multi-company policy loading follows the session capability
         run: bash core/scripts/tests/inject-policy-scope-precedence.test.sh
       - name: Large policy trigger inputs stay out of argv
@@ -1812,6 +1901,7 @@ jobs:
           bash core/scripts/tests/hq-agent-session-skill-dispatch.test.sh
           bash core/scripts/tests/inject-policy-baseline-bounds.test.sh
           bash core/scripts/tests/inject-policy-parser-parity.test.sh
+          bash core/scripts/tests/policy-prefilter-scale.test.sh
           bash core/scripts/tests/policy-trigger-strictness.test.sh
       - name: SessionStart hook helper process budget
         env:

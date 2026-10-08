@@ -18,6 +18,9 @@
 # entry that records every script it is asked to run so the forwarder's own
 # launch is directly observable.
 set -euo pipefail
+# This suite exercises the historical pre-call fact path behind the rollback
+# switch; new default behavior is covered by inject-policy-tool-events.test.sh.
+export HQ_POLICY_TOOL_EVENTS=legacy
 
 TEST_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
 ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
