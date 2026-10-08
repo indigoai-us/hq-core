@@ -40,8 +40,11 @@ hqd_hook_flag_cache_store_enabled() {
 refresh_cache() {
   [ -n "${HOME:-}" ] || return 1
   command -v node >/dev/null 2>&1 || return 1
-  [ -f "$FLAG_DIR/hq-anywhere-runtime-flag.cjs" ] || return 1
-  value=$(node "$FLAG_DIR/hq-anywhere-runtime-flag.cjs" 2>/dev/null) || return 1
+  local flag_script=${HQD_FLAG_SCRIPT:-${FLAG_DIR:-}/hq-anywhere-runtime-flag.cjs}
+  [ -f "$flag_script" ] || return 1
+  value=$(HQ_ROOT="${HQD_FLAG_ROOT:-${HQ_ROOT:-}}" \
+    HQ_FLAG_KEY="${HQD_FLAG_KEY:-${HQ_FLAG_KEY:-}}" \
+    node "$flag_script" 2>/dev/null) || return 1
   store_flag_cache_value "$value"
 }
 
@@ -85,4 +88,32 @@ else
   # shellcheck disable=SC2034 # The sourcing hqd shim consumes this result.
   HQD_FLAG_ENABLED=false
 fi
+}
+
+# hqd_hook_flag_enabled_for <cache-key> <flag-key> <script> <root> <company-scope>
+# Use a dedicated, company-scoped snapshot for additional hook flags.
+# A missing, malformed, or expired value refreshes synchronously; failed reads
+# return false for this event. The cache file is private like the legacy cache.
+hqd_hook_flag_enabled_for() {
+  local cache_key="${1:-}" flag_key="${2:-}" flag_script="${3:-}" root="${4:-}" scope="${5:-}"
+  local old_cache_file=${CACHE_FILE:-} old_script=${HQD_FLAG_SCRIPT:-} old_key=${HQD_FLAG_KEY:-}
+  local old_root=${HQD_FLAG_ROOT:-} scope_key
+  case "$cache_key" in ''|*[!A-Za-z0-9_.-]*) HQD_FLAG_ENABLED=false; return 0 ;; esac
+  case "$flag_key" in ''|*[!A-Za-z0-9_.-]*) HQD_FLAG_ENABLED=false; return 0 ;; esac
+  [ -n "${HOME:-}" ] && [ -n "$root" ] && [ -n "$scope" ] && [ -f "$flag_script" ] \
+    || { # shellcheck disable=SC2034 # The caller consumes this fail-closed result.
+      HQD_FLAG_ENABLED=false
+      return 0
+    }
+  case "$scope" in ''|*[!A-Za-z0-9_-]*) scope_key=$(printf '%s' "$scope" | cksum | awk '{print $1}') ;; *) scope_key=$scope ;; esac
+  CACHE_FILE="${HOME:-}/.hq/hook-flag.${cache_key}.${scope_key}"
+  HQD_FLAG_SCRIPT=$flag_script
+  HQD_FLAG_KEY=$flag_key
+  HQD_FLAG_ROOT=$root
+  hqd_hook_flag_enabled
+  HQD_FLAG_SCRIPT=$old_script
+  HQD_FLAG_KEY=$old_key
+  HQD_FLAG_ROOT=$old_root
+  if [ -n "$old_cache_file" ]; then CACHE_FILE=$old_cache_file; else unset CACHE_FILE; fi
+  return 0
 }

@@ -21,6 +21,8 @@ Instead:
 
 The parent session should only see the final formatted output, never raw query results.
 
+Company-scoped collection must remain inside the session's locked company set. Add a company with `core/scripts/hq-session.sh add company <slug>` before collecting its data. Never copy one locked company's results or credentials into another company's files, vault, or services unless the user asks for that transfer.
+
 ## Rationale
 
 During an early health-monitor build (2026-04-03), running the cron inline consumed ~50K tokens per 10-minute tick. Six ticks burned half the context window. Moving to scheduled tasks (isolated sessions) and background agents for ad-hoc runs eliminated context bleed entirely.

@@ -225,6 +225,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Shipped intent index is current (core/settings/intent-index.yaml, clean checkout)
+        run: bash core/scripts/build-intent-index.sh --check
+      - name: Intent index generator (shipped scope, idempotent, --check drift)
+        run: bash core/scripts/tests/build-intent-index.test.sh
       - name: Core skills only reference shipped local shell scripts
         run: |
           bash core/scripts/lint-skill-script-refs.sh handoff
@@ -233,6 +237,8 @@ jobs:
           bash core/scripts/lint-skill-script-refs.sh resumework
           bash core/scripts/lint-skill-script-refs.sh startwork
           bash core/scripts/lint-skill-script-refs.sh conduct
+      - name: /startwork capability block (company-scoped, no network, alias resolve)
+        run: bash core/scripts/tests/startwork-context.test.sh
       - name: /import-context redactor and synthetic scan output
         run: bash core/scripts/tests/import-context-redact.test.sh
       - name: /conduct session worker pool (cap, resume, recycle)
@@ -253,6 +259,10 @@ jobs:
         run: bash core/scripts/tests/conduct-reap-hook.test.sh
       - name: Conduct mode as the session default (auto-conduct SessionStart hook)
         run: bash core/scripts/tests/auto-conduct.test.sh
+      - name: Intent hint (UserPromptSubmit, closest intent-index entries)
+        run: bash core/scripts/tests/intent-hint.test.sh
+      - name: Intent hint (UserPromptSubmit, closest intent-index entries)
+        run: bash core/scripts/tests/intent-hint.test.sh
       - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
         run: bash core/scripts/tests/skill-script-refs.test.sh
       - name: Shipped skills reference existing core scripts
@@ -856,6 +866,8 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-smoke.sh
       - name: Handoff finalizer accepts a large file-backed changeset
         run: bash core/scripts/tests/handoff-finalize-large-changeset.test.sh
+      - name: Handoff knowledge-commit changeset error names the offending entry
+        run: bash core/scripts/tests/handoff-knowledge-commit-changeset-error.test.sh
       - name: Handoff follow-ups stay pending without dispatch proof
         run: bash core/scripts/tests/handoff-followups-runtime.test.sh
       - name: Handoff document-release dispatch requires an installed skill
@@ -974,6 +986,10 @@ jobs:
         run: bash core/scripts/tests/harness-live-smoke.sh --runtimes claude,codex,grok
       - name: hq-session mints scope capability on company bind
         run: bash core/scripts/tests/hq-session.test.sh
+      - name: hq-session serializes per-session company lock updates
+        run: bash core/scripts/tests/hq-session-lock-serialization.test.sh
+      - name: hq-session clears prior tenant project/task on primary removal
+        run: bash core/scripts/tests/hq-session-remove-primary-state.test.sh
       - name: Bounded-action scope contract (Claude+Codex shared text)
         run: bash core/scripts/tests/startwork-bounded-action-contract.test.sh
       - name: Company infra policy reminder follows the firing session
@@ -1728,6 +1744,8 @@ jobs:
           timeout 240s bash core/scripts/tests/sessionstart-policy-latency-process-budget.test.sh
       - name: Enforcement-gated policy trigger backfill
         run: bash core/scripts/tests/migrate-policy-triggers.test.sh
+      - name: Trigger migration skips hq when policies are unchanged (HP-7)
+        run: bash core/scripts/tests/migrate-policy-triggers-skip-unchanged.test.sh
       - name: Retired digest path has no frontmatter exemption
         run: bash core/scripts/tests/validate-policy-frontmatter.test.sh
       - name: Emit contract — tsv shape, scope precedence, enforcement-tiered depth
@@ -1738,6 +1756,8 @@ jobs:
         run: bash core/scripts/tests/eval-trigger.test.sh
       - name: Policy trigger end-to-end corpus coverage
         run: bash core/scripts/tests/inject-policy-e2e.test.sh
+      - name: Multi-company policy loading follows the session capability
+        run: bash core/scripts/tests/inject-policy-scope-precedence.test.sh
       - name: Large policy trigger inputs stay out of argv
         run: bash core/scripts/tests/inject-policy-arg-size.test.sh
       - name: inject-policy-cache.test.sh
@@ -2215,3 +2235,18 @@ jobs:
       - name: Capability snapshot is not stale
         if: steps.filter.outputs.run == 'true'
         run: bash core/scripts/tests/provider-adapter-capabilities-snapshot.test.sh
+
+  planning-merge:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    # Planning-merge track: grilling engine, /prd minimum questions and the
+    # /brainstorm plan gate.
+    name: planning-merge
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Grilling engine frontier and count object
+        run: bash core/scripts/tests/grilling-count.test.sh
+      - name: PRD minimum-questions check and question set
+        run: bash core/scripts/tests/prd-minimum-questions.test.sh
+      - name: Brainstorm plan gate and plan phase
+        run: bash core/scripts/tests/brainstorm-gate.test.sh

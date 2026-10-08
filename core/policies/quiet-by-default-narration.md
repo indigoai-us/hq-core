@@ -1,7 +1,7 @@
 ---
 id: quiet-by-default-narration
 title: Quiet by default — silent on routine ops, surface only when user must know
-when: always
+when: write || message || reply || report || email || slack
 on: [SessionStart]
 enforcement: soft
 version: 1

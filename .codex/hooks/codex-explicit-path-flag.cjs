@@ -6,7 +6,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 
-const FLAG_KEY = "hooks.codex-explicit-path-guard";
+const FLAG_KEY = process.env.HQ_FLAG_KEY?.trim() || "hooks.codex-explicit-path-guard";
 const DEFAULT_VALUE = false;
 const REQUEST_TIMEOUT_MS = 1_000;
 const TOTAL_TIMEOUT_MS = 2_000;
@@ -103,6 +103,28 @@ function readBoundCompanySlug(hqRoot, env, dependencies) {
   return result.stdout.trim() || undefined;
 }
 
+function readBoundCompanySlugs(hqRoot, env, dependencies) {
+  if (dependencies.readBoundCompanySlugs) return dependencies.readBoundCompanySlugs(hqRoot);
+  const sessionScript = path.join(hqRoot, "core/scripts/hq-session.sh");
+  if (!fs.existsSync(sessionScript)) throw new Error("HQ session reader is unavailable");
+  const result = spawnSync("bash", [sessionScript, "get", "company_slugs"], {
+    cwd: hqRoot,
+    encoding: "utf8",
+    timeout: 500,
+    env: { ...process.env, ...env, HQ_ROOT: hqRoot, CLAUDE_PROJECT_DIR: hqRoot, HQ_HQ_SESSION_NO_CLI: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    // Older hq-session readers do not expose company_slugs. Falling back to
+    // the primary is compatibility-safe: it cannot widen the company lock.
+    const primary = readBoundCompanySlug(hqRoot, env, dependencies);
+    return primary ? [primary] : [];
+  }
+  const slugs = result.stdout.trim().split(",").filter((slug) => COMPANY_SLUG_RE.test(slug));
+  return [...new Set(slugs)];
+}
+
 function manifestCloudUid(hqRoot, slug) {
   const manifestPath = path.join(hqRoot, "companies", "manifest.yaml");
   if (!fs.existsSync(manifestPath)) return undefined;
@@ -133,16 +155,18 @@ function resolveCompanyContext(hqRoot, env, dependencies) {
   const explicitUid = env.HQ_COMPANY_UID?.trim() || "";
   if (COMPANY_UID_RE.test(explicitUid)) {
     const slug = env.HQ_COMPANY_SLUG?.trim() || "";
+    const slugs = String(env.HQ_COMPANY_SLUGS || "").split(",").filter((item) => COMPANY_SLUG_RE.test(item));
     return {
       companyUid: explicitUid,
-      ...(COMPANY_SLUG_RE.test(slug) ? { companyIdentifiers: [slug] } : {}),
+      ...(slugs.length ? { companyIdentifiers: [...new Set(slugs)] } : COMPANY_SLUG_RE.test(slug) ? { companyIdentifiers: [slug] } : {}),
     };
   }
-  const slug = readBoundCompanySlug(hqRoot, env, dependencies);
+  const slugs = readBoundCompanySlugs(hqRoot, env, dependencies);
+  const slug = slugs[0] ?? readBoundCompanySlug(hqRoot, env, dependencies);
   const companyUid = companyUidForSlug(hqRoot, slug);
   return {
     ...(companyUid ? { companyUid } : {}),
-    ...(companyUid && slug ? { companyIdentifiers: [slug] } : {}),
+    ...(companyUid && slugs.length ? { companyIdentifiers: slugs } : companyUid && slug ? { companyIdentifiers: [slug] } : {}),
   };
 }
 
@@ -285,6 +309,7 @@ module.exports = {
   packageImportPath,
   resolveEndpoint,
   readBoundCompanySlug,
+  readBoundCompanySlugs,
   manifestCloudUid,
   companyUidForSlug,
   resolveCompanyContext,

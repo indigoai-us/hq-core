@@ -3,7 +3,7 @@
 # when metadata.company is populated.
 #
 # Side effects per matched write:
-#   1. Hardlink thread file → companies/{co}/workspace/sessions/{thread_id}.json
+#   1. Write a tenant-redacted thread snapshot to companies/{co}/workspace/sessions/{thread_id}.json
 #   2. Append a row to companies/{co}/workspace/index.jsonl (deduped by thread_id+ts+kind)
 #   3. Create per-company .gitignore (sessions/) on first mirror
 #
@@ -74,7 +74,15 @@ SESSION_ID=$(session_id_resolve "$HQ_ROOT")
 SESSION_META="$HQ_ROOT/workspace/sessions/$SESSION_ID/meta.yaml"
 [ -r "$SESSION_META" ] || exit 0
 BOUND_COMPANY=$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$SESSION_META" 2>/dev/null || true)
-[ "$BOUND_COMPANY" = "$COMPANY" ] || exit 0
+LOCKED_COMPANIES="$BOUND_COMPANY"
+if [ -f "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" ]; then
+  # shellcheck source=core/scripts/lib/session-scope-capability.sh
+  . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" 2>/dev/null || true
+  if command -v session_scope_read_companies >/dev/null 2>&1; then
+    LOCKED_COMPANIES="$(session_scope_read_companies "$HQ_ROOT" "$SESSION_ID" 2>/dev/null || true)"
+  fi
+fi
+printf '%s\n' "$LOCKED_COMPANIES" | awk -v wanted="$COMPANY" '$0 == wanted { found = 1 } END { exit !found }' || exit 0
 
 THREAD_ID=$(jq -r '.thread_id // empty' "$FILE_PATH")
 [ -z "$THREAD_ID" ] && exit 0
@@ -105,9 +113,15 @@ printf '%s\n' "$COMPANY" | while IFS= read -r CO; do
     } > "$GITIGNORE"
   fi
 
-  # Hardlink the thread snapshot. -f makes it idempotent (replaces existing).
+  # Company mirrors must not copy the root thread's other locked-company
+  # identities. Keep the full lock set in the canonical root thread only.
   TARGET="$SESSIONS_DIR/$THREAD_ID.json"
-  ln -f "$FILE_PATH" "$TARGET" 2>/dev/null || cp -f "$FILE_PATH" "$TARGET"
+  MIRROR_TMP="$(mktemp "$SESSIONS_DIR/.mirror-XXXXXX")"
+  if ! jq --arg company "$CO" '.metadata.company_slugs = [$company]' "$FILE_PATH" > "$MIRROR_TMP"; then
+    rm -f "$MIRROR_TMP"
+    continue
+  fi
+  mv -f "$MIRROR_TMP" "$TARGET"
 
   # Build the row, then append only if (thread_id, ts, kind) not already present.
   ROW=$(jq -nc \

@@ -1,0 +1,455 @@
+# Conduct dispatch module
+
+Lane mechanics for `/conduct`. `SKILL.md` loads this file at the first task that
+needs a lane (its "When a task needs a lane" section); questions, lookups,
+status, and `/conduct off` never read it. The engine has already been resolved
+and persisted as `conduct_engine` by the time this file is read.
+
+## How work leaves this session
+
+A task becomes one **detached lane**: a `core/scripts/workflow-runner.mjs`
+process running a single `agent()` call against a headless coding-agent CLI. That
+is the same runner `/orchestrate` drives for its pipeline stages, so a lane gets
+the same hardening for free — unattended-run flags, stdin closed, HQ-root
+anchoring so project hooks load, per-agent logs, and a soft timeout that warns
+instead of killing.
+
+Two properties matter more than the rest:
+
+- **Lanes are OS processes, not in-session subagents.** Nothing here uses the
+  `Agent` tool. A lane keeps running when this session compacts, restarts, or
+  ends, and a host without in-session subagents can still run `/conduct`.
+- **Detaching is mandatory, not decorative.** A child left inside the session's
+  process tree is swept at the turn boundary, minutes after the turn that
+  launched it — which reads as an unexplained silent failure. Launch every lane
+  through `core/scripts/hq-detach.sh`, which puts it in its own session where
+  the sweep cannot reach it. Never call `setsid` directly — stock macOS has no
+  `setsid(1)`, and the Homebrew util-linux copy is keg-only and off a
+  non-interactive PATH; the helper covers both and falls back to node.
+
+## Engine roster
+
+The roster and the resolution rule live in
+`.claude/skills/_shared/lane-dispatch-protocol.md` §2 — `codex` (default),
+`grok`, `claude`, resolved once per run and reused for every lane in it. That is
+also where the per-engine steering difference is recorded: codex and claude take
+a mid-flight message quietly, grok has to be interrupted.
+
+Each `agent()` call also names a `tier`: `exec` for execution (the throughput
+model) or `plan` for analysis, review, and design (the flagship model). The tier
+is required — the model choice is never implicit.
+
+An engine the user names in the argument wins over the default. Confirm it can
+actually run before you brief it (protocol §2); if every engine is unavailable,
+that is a blocker to hand back immediately — naming which were tried and what
+each returned — not something to retry around.
+
+## Step 2: Choose the worker (per task, every turn while the mode is set)
+
+1. Resolve the active company with `bash core/scripts/resolve-company.sh`. One
+   company per brief — never mix scopes.
+2. Read `core/workers/registry.yaml`. It is auto-generated and already spans all
+   three worker trees — `core/workers/`, `personal/workers/`, and
+   `companies/<co>/workers/` — so there is only one file to read. Each entry
+   carries `id`, `path`, `type`, `status`, `description`, `visibility`, `team`
+   and `company`.
+
+   Consider an entry only when both hold:
+
+   - `status` is `active`; and
+   - `company` is empty — a core or personal worker, available to every
+     tenant — **or** exactly the active company slug.
+
+   An entry naming a *different* company is out of scope. Do not fall back to it
+   because it looks like a better match; a cross-company worker is a tenancy
+   breach, not a near miss.
+
+   Match the task against `id`, `type` and `description`.
+3. No match → use a single general-purpose slot called `unmatched`. Do not search
+   a catalog and do not create a worker.
+
+The worker id is the pool's identity for this line of work. The same kind of task
+returns to the same worker, which is what keeps the lane count flat.
+
+### Load the worker's definition
+
+A registry entry is an index card, not the worker. Once matched, read
+`{path}/worker.yaml` — `path` comes from the registry entry and is relative to
+the HQ root.
+
+```bash
+cat "{path}/worker.yaml"
+```
+
+Read it **whole**. Do not cap the read: the longest shipped definitions run past
+220 lines, and what sits at the end is the part that matters most here —
+`## Before You Finalize` checklists and the approval requirements below. A capped
+read silently drops exactly the standing instructions this step exists to carry.
+
+This is what makes the choice mean anything. Without it the worker id is only a
+pool slot label, and every lane is identical no matter which worker was picked.
+Take from it:
+
+| Field | Use |
+|---|---|
+| `worker.name`, `worker.description` | who the lane is; opens the brief |
+| `instructions` | standing instructions — fold in verbatim |
+| `skills[].file` | the worker's actual procedures. Pass the **paths**, relative to `{path}`; the lane reads them itself |
+| `context.base` | what the lane should read before starting — **resolve first**, see below |
+| `knowledge` | knowledge files to load |
+| `verification` | done criteria, and the approval rules below |
+| `execution.max_runtime` | the lane's `timeoutSecs` (Step 5) |
+
+`skills[].file` is reliable: every entry resolves against the worker's own
+directory. `context.base` is not. Those paths are not uniformly rooted — some are
+relative to the HQ root, some to `core/` — and a good many are simply stale. Of
+the 175 distinct entries shipped today, 109 resolve from the HQ root, 17 only
+under `core/`, and 49 point at nothing at all. Passing them through verbatim
+hands the lane locations that do not exist.
+
+So resolve each entry and pass only what survives:
+
+```bash
+for p in {context.base entries}; do
+  for candidate in "$p" "core/$p" "{path}/$p"; do
+    [ -e "$candidate" ] && { printf '%s\n' "$candidate"; break; }
+  done
+done
+```
+
+Drop an entry that resolves nowhere rather than passing it on. A brief that
+points a lane at a missing path costs it a failed read and leaves it guessing
+whether the gap matters.
+
+Two fields are deliberately **not** applied. `execution.model` and
+`codex_model` / `codex_flags` name models for delivery paths this skill does not
+use — the engine is the operator's session-wide choice, and the tier follows the
+task. Read them as a hint about how heavy the worker expects to be, nothing more.
+
+**`verification.approval_required: true` and `verification.human_checkpoints` are
+binding.** A worker that declares `before_merge_production` must not have its
+lane merge to production. Carry every such checkpoint into the brief as an
+explicit stop-and-report, and honour it in the parent: the lane prepares, the
+parent asks the user once, and only then does the worker proceed. A worker that
+asked for a human gate and did not get one is a defect, not a shortcut.
+
+## Step 3: Assign a pool slot
+
+```bash
+bash core/scripts/conduct-pool.sh assign --worker-id "conduct:{worker}" --task "{short label}"
+```
+
+**The `conduct:` prefix is load-bearing.** A `/conduct` lane and an
+`/execute-task` phase lane are not interchangeable even when they name the same
+worker: `/conduct` stores a workflow-runner run directory as the `subagent_id`
+and `/execute-task` stores a `Task` / `spawn_agent` handle, so a lane claimed by
+one and resumed by the other would hand its id to the wrong adapter. They also
+answer to different ownership rules — `/execute-task` lanes carry the
+`owner.json` stamp from `.claude/skills/_shared/pool-lane-protocol.md`. Keeping
+the namespaces apart means a session can use both without either reading the
+other's state. Phase lanes use the bare id, story coordinators use `story:`, and
+`/conduct` uses `conduct:`.
+
+Read the JSON it prints and honour it:
+
+- `{"action":"spawn",...}` → launch a new lane (Step 4).
+- `{"action":"resume","subagent_id":"{run id}",...}` → that worker already has a
+  lane history. Reuse the **slot**, not the directory: launch a fresh run dir
+  into the same slot and give the brief the previous lane's result file — the
+  `subagent_id` names it — so the worker picks up its own thread instead of
+  starting cold. Relaunching into the old directory races the waiter against its
+  stale completion marker (protocol §3). Record the new run id against the same
+  slot afterwards.
+- `{"action":"spawn","recycled":"{other}",...}` → the pool was full, so the
+  least-recently-used idle worker was retired to make room. Mention the retired
+  worker when you report back; a silently dropped worker is a defect.
+- **Exit 3** → the pool is at cap and every slot is running. Do not launch.
+  Tell the user which workers are live and offer to wait. Do **not** reach for
+  `recycle`: it frees the pool entry and cannot stop the sub-agent, so it now
+  refuses a running lane with exit 5. Retiring one is only correct once that
+  lane has reported and been marked `idle`, or the user has stopped it — in
+  which case `bash core/scripts/conduct-pool.sh recycle --worker-id conduct:{id} --force`
+  asserts that. A claim you made but never launched is a different case: drop it
+  with `bash core/scripts/conduct-pool.sh cancel --worker-id conduct:{id}`.
+- **Exit 4** → this worker's own lane is still running. Do not launch: a second
+  live lane in one recorded slot exceeds the advertised cap and has both
+  processes appending to the same `handoffs.jsonl`. Queue the task behind the
+  running one and dispatch it from that lane's completion, or pick a different
+  worker.
+
+Only an **idle** slot resumes. A running slot is never resumable, which is also
+what stops repeated same-worker tasks from stacking lanes inside one recorded
+slot and quietly exceeding the advertised cap.
+
+`subagent_id` is the lane's **run id** — the basename of its run directory. It is
+the durable handle for continuing a worker's thread, and it is what makes the
+pool meaningful for CLI engines, which have no resumable in-session transcript.
+
+## Step 4: Write the brief
+
+The lane cannot see this conversation, so the brief is the entire context. Do at
+most two cheap read-only calls yourself to fill it in (branch state, PR number,
+file path). Never edit, build, test, or run long commands in the parent.
+
+Open with **who the lane is**, from the worker definition loaded in Step 2 — the
+worker's `name` and `description`, then its `instructions` verbatim if it has
+any. A lane that is told it is the Code Reviewer, and given that worker's review
+procedure, behaves differently from a generic lane handed the same task. That
+difference is the entire point of choosing a worker.
+
+Then include:
+
+- **the worker's own material**: the paths to its `skills[].file` entries
+  (relative to the worker's `path`), its `context.base` paths, and any
+  `knowledge` files. Pass paths, not contents — the lane can read, and the brief
+  stays short;
+- **its `verification` block**: post-execute checks as done criteria, and every
+  `human_checkpoints` entry as an explicit stop-and-report. If
+  `approval_required` is true, say so in the brief;
+- the goal and its observable done criteria;
+- the absolute repo path, branch, and any PR or release identifiers;
+- the company slug and the hard policies that bear on the work (repo-anchored
+  version-control commands, never push the HQ root, no secrets in output, tests
+  are never skipped or loosened);
+- on a resume, the path to the worker's previous result file;
+- what to do when blocked: report back with the blocker; never wait on the user;
+- the report shape: what changed, what was verified and how, links, open risks.
+
+For the `unmatched` slot there is no definition to load — brief it as a
+general-purpose lane and say so, rather than inventing a persona for it.
+
+Open the brief with an explicit instruction to execute rather than propose. A
+long, carefully scoped brief with no such line reads as a plan request, and the
+lane returns in a minute having changed nothing.
+
+## Step 5: Launch the lane, detached
+
+Before following the shared launch block, resolve and carry the parent binding
+into the detached environment. `HQ_SPAWN_COMPANY` is mandatory and comes only
+from trusted session state; do not infer a slug from cwd. `project` and `task`
+are optional metadata on that same parent session:
+
+```bash
+HQ_SPAWN_COMPANY="$(bash core/scripts/hq-session.sh --session-id "$SID" get company_slug 2>/dev/null || true)"
+[ -n "$HQ_SPAWN_COMPANY" ] || {
+  echo "cannot launch conduct lane: bind a company first" >&2
+  exit 1
+}
+HQ_SPAWN_PROJECT="$(bash core/scripts/hq-session.sh --session-id "$SID" get project 2>/dev/null || true)"
+# /conduct does not own a story binding. A conductor that is itself a lane must
+# not leak that lane's task to unrelated work it dispatches.
+unset HQ_SPAWN_TASK
+```
+
+Follow `.claude/skills/_shared/lane-dispatch-protocol.md` — it owns the whole
+mechanism: brief on disk, `args.json`, the `hq-detach.sh` launch with its proof-of-
+escape check, the inherited `HQ_SPAWN_*` and `HQ_PARENT_SESSION_ID` exports,
+`record --status running` against the run-dir basename, and the background
+waiter. `/run-project` dispatches its stories the same way, so the launch block
+lives in one file rather than drifting between two.
+
+The conduct-specific parts are only these:
+
+- **Run dir:** the protocol mints it — `{caller}` = `conduct`,
+  `{lane}` = `{worker}`. Do not spell a path here, and mint a fresh one on a
+  resume too (protocol §3): the old dir's `CONDUCT_EXIT=` marker is still on
+  disk when the waiter arms, so reusing it releases the slot while the new lane
+  is still live. The `subagent_id` you record moves to the new run id; the
+  worker's continuity comes from the slot's `handoffs.jsonl` and its previous
+  result file, both of which outlive the run dir.
+- **Lane id:** `conduct:{worker}` — the namespace from pool protocol §1, which
+  is what keeps a `/conduct` lane from colliding with an `/execute-task` phase
+  lane for the same worker.
+- **Engine:** whatever Step 1 resolved, from the roster above.
+- **`{tier}`:** `exec` for a task that changes things; `plan` for review, design,
+  or analysis. Never leave it implicit — it picks the model.
+- **Timeout:** the worker's `execution.max_runtime` in seconds — 15m → 900,
+  5m → 300, 60m → 3600. Default 900 when the worker declares none, or for
+  `unmatched`. This is both `timeoutSecs` and the waiter's the `deadline` file; only the
+  second one actually bounds the lane.
+- **Label:** the worker id.
+
+Then render the lane rows (Step 7) and reply to the user in one line — what was dispatched, to which worker, on
+which engine — and stop. Do not poll in the foreground.
+
+Independent tasks go out together in one response, up to the remaining pool
+capacity. Dependent tasks chain: launch the next from the previous lane's
+completion.
+
+## Step 5b: Send a message to a lane that is already running
+
+A launched lane is not sealed. Each one carries a drop box, and a hook inside
+the lane delivers from it on the lane's next tool event — so a correction
+reaches a worker mid-task, without killing it and without waiting for it to
+finish.
+
+```bash
+bash core/scripts/conduct-inbox.sh send --run-dir "{run dir}" \
+  --text "Skip the migration step — Corey says that table is already live."
+```
+
+That is the whole operation. The lane picks it up on its next tool call,
+treats it as a new instruction from the operator that outranks its brief, and
+carries on. Use `--text-file <path>` for anything long or multi-line rather
+than fighting shell quoting.
+
+Reach for this when the user changes their mind, when a lane is visibly heading
+somewhere wrong, or when something a *different* lane discovered changes what
+this one should do. It is one-way. The lane cannot reply; its answer still
+arrives the usual way, in its final output.
+
+**Delivery is a queue, not a broadcast.** A message sits in `pending/` until a
+lane consumes it, so sending before the lane's first tool call is fine — nothing
+is lost. Each message is delivered exactly once, and the consumed copy is kept
+under `inbox/claimed/` as a record of what the lane was actually told. To see
+what is waiting:
+
+```bash
+bash core/scripts/conduct-inbox.sh list --run-dir "{run dir}"
+# {"run_dir":"...","pending":1,"delivered":3}
+```
+
+**How it lands.** Every lane takes the message the same way, on every engine:
+`PostToolUse`, as context before the model's next step, with `Stop` as a
+backstop for anything queued while the lane writes its final answer. It costs
+the lane nothing — no interrupted tool call, no retry.
+
+| Engine | Event | How it arrives | Cost |
+|---|---|---|---|
+| claude, codex, grok | `PostToolUse`, plus `Stop` as a backstop | as context, before the model's next step | none |
+
+There is deliberately no `SubagentStop` delivery. A conductor's message is for
+the lane, not for a subagent the lane spawned, so `conduct-lane-inbox` carries
+no `SubagentStop` registration.
+
+Grok used to be the exception: it was reached by denying a tool call so the
+message could ride the deny reason, which cost a call every time. That was built
+on a claim about Grok that turned out to be wrong. Its adapter now passes hook
+`additionalContext` through on `PostToolUse`, and its `Stop` gate blocks like
+Claude's, so the engine branch is gone.
+
+The corollary is a safety rule the hook enforces: a message is **only** consumed
+on an event that can actually reach the model. Draining on an event that cannot
+would not delay the message, it would destroy it — and the operator would
+believe a correction landed that the lane never saw.
+
+Because it rides the lane's own hooks, this costs nothing when unused: with an
+empty queue the hook exits before it touches disk, and the `Stop` arm never
+blocks a lane that is legitimately done.
+
+## Step 6: Read the outcome, then verify it
+
+`lane.log` is the *status* channel, not the result channel. Its last lines say
+which of several very different things happened:
+
+| Log tail | Meaning |
+|---|---|
+| `CONDUCT_EXIT=0` | finished — read the report from `agent-1.result.json` per dispatch protocol §7 (`jq -r '.value'`), not from this log, which wraps it in narration and a layer of JSON string quoting |
+| `CONDUCT_EXIT` non-zero | died — read the tail before blaming the code; a quota or balance refusal (`402`, `403`) looks identical to a build failure from the exit code alone |
+| no marker, no process | killed from outside — inspect the work directory before believing nothing happened |
+| `TIMEOUT WARNING` repeating, log not growing | hung — stop it per dispatch protocol §5 (signal `runner.pid`, wait for the marker). Do **not** kill the group named in the warning: the engine runs detached in a group of its own, so that leaves it alive while looking successful. Never pattern-kill. |
+
+Then, in this order:
+
+1. **Release the slot first.** The lane is gone, so the slot is reusable —
+   whatever it returned (pool protocol §6):
+   ```bash
+   bash core/scripts/conduct-pool.sh record --worker-id "conduct:{worker}" \
+     --subagent-id "{run id}" --status idle
+   ```
+   This is before verification, not after, and the ordering is load bearing:
+   step 3 re-`assign`s the same worker on failure, and a slot still marked
+   `running` sends that retry to exit 4 — recovery stalls waiting on a lane that
+   has already exited. Release is a fact about the process, not a verdict on its
+   work.
+
+   **The exception is any lane whose engine group you could not confirm empty —
+   on any outcome, not only a deadline.** Dispatch protocol §5 runs that
+   confirmation after every exit; `engine_gone=no` means a process is still
+   working in the repo, and `died` or `never-started` say nothing about it
+   because the engine is not in the wrapper's group. Releasing there hands the
+   slot to a retry that starts on top of a live engine. Leave the slot
+   `running`, say so, and stop.
+2. **Verify independently.** A lane's self-reported success is a claim. Check the
+   artifact, the git state, and the repo's own typecheck, lint, and tests
+   yourself.
+3. On failure, send the errors back to the **same worker** — assign again, which
+   resumes its released slot — rather than fixing it in the parent. Cap it at
+   three rounds, then surface it to the user.
+4. Relay the outcome plainly — done, blocked, or needs a decision — with any
+   links. Anything the owner has to answer goes through `/decision-queue`: one
+   `AskUserQuestion` per decision, recommended option first, wait for each answer
+   before asking the next. Never hand the owner a markdown list of open
+   questions. When the answer arrives, continue the same worker with it.
+
+For `status`, print the pool and the live lanes; launch nothing:
+
+```bash
+bash core/scripts/conduct-pool.sh list
+```
+
+Render it as worker id, status, last task, and run id — the JSON is for you, not
+for the user. Then render the lane rows (Step 7). Decisions never go inside a
+widget; they follow it through `/decision-queue`.
+
+## Step 7: End every turn with one row per running lane
+
+Owner directive (2026-10-06): "at the end of every turn where lanes are running,
+we get a nice genui card in the chat to monitor each worker/lane and progress …
+one card per lane", then: "instead of cards, how about rows? that way we can
+include a bit more detail". One row per lane, in one table-like block.
+
+At the end of **any** turn in which at least one lane is running — after a
+dispatch, a status check, a lane completion that leaves others live, a message
+to a lane, or a plain question answered while lanes work — do this last, right
+before the closing sentence:
+
+1. Pull the data once (cheap; it reads only the pool and the last log line per
+   lane, never the transcript):
+   ```bash
+   bash core/scripts/conduct-lane-status.sh
+   ```
+   Add `--all` on the turn a lane finishes, so the finished lane gets its last
+   row (blue dot, exit 0) next to the ones still running.
+2. Render `mcp__visualize__show_widget` (HTML mode) from the template
+   `.claude/skills/conduct/lane-rows.html`: one `.row` block per lane, CSS left
+   alone. Per row: worker name; the task in plain words (not the
+   worker id or the brief); elapsed time; a short phase word derived from
+   `last_line` (building, tests, CI, merging, waiting on you); inbox count when
+   `inbox_pending` > 0; a progress bar with a percentage you estimate from the
+   phase and the brief's steps (be rough, be honest — never show 100% before
+   `exit` is 0); `last_line` in plain words; the PR link when `pr` is set. Dot
+   colour: green running, yellow when waiting on CI or on the owner or quiet for
+   20+ minutes, red on a non-zero exit or a dead process, blue on exit 0.
+3. Then the one-line reply. Nothing the owner must decide goes in a row; that
+   is `/decision-queue`, after the rows.
+
+Zero lanes running means no rows. Status text alone with lanes running is a
+defect, same as before; the old table board (`status-board.html`) is retired in
+favour of the rows.
+
+**Pipeline lanes (`/run-project --pipeline`): relay, do not drive.** The parent
+side of run-project Step 3P.6 applies here too:
+
+- Ends every turn in which a pipeline lane is live with the lane rows. Pull
+  them once with
+  `sh core/scripts/pipeline-lane-rows.sh --state {state} --session-id {session_id}`
+  (one JSON array: an item per loop lane in the session pool and one
+  `kind: "driver"` item). Call `mcp__visualize__read_me` with `["mockup"]`
+  once per session first, silently, then render `mcp__visualize__show_widget`
+  in HTML mode from the template `.claude/skills/conduct/lane-rows.html`: one
+  `.row` per worker lane plus one for the driver, the CSS untouched, flex rows,
+  never a grid or cards. Per lane row: the worker; the phase chip from
+  `phase_label`; the meta from `phase_elapsed_s`, `quiet_s` and
+  `inbox_pending`; a rough percentage from `phase_index` of `phase_count`
+  (`(phase_index - 1) / phase_count`, never 100% before the story is
+  verified); the story title in plain words; `last_line` in plain words; the PR
+  link when `pr` is set. Dot: green when the lane runs and is active; yellow
+  when it waits on an envelope, on the owner, or has been quiet 20 minutes or
+  more (`quiet_s` >= 1200); red when `pid_alive` is false on a lane that has
+  not exited, or the driver exited non-zero; blue on a lane that exited 0
+  (`exit` is `0`). The driver row carries the story counts (verified,
+  in_flight, queued, blocked, parked, skipped, interrupted, awaiting_go) and
+  its `last_line`. Then the one-line reply. Nothing the owner must decide goes
+  in a row: that is `/decision-queue`, after the rows. Zero live lanes means no
+  rows.

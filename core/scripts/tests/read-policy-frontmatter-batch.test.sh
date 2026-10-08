@@ -86,7 +86,7 @@ printf 'PASS: forwarder rejects hq-cli 5.342.6 before any partial multi-file out
 
 SKILL_ROOT="${HQ_TEST_SKILL_ROOT:-$ROOT/.claude/skills}"
 POLICY_CHUNK_SIZE=""
-for skill in learn brainstorm knowledge-pulse plan storyboard startwork deep-plan execute-task prd; do
+for skill in learn brainstorm knowledge-pulse storyboard startwork deep-plan execute-task prd; do
   skill_file="$SKILL_ROOT/$skill/SKILL.md"
   chunk_declarations="$(LC_ALL=C grep -oE 'chunks of at most [0-9]+ files' "$skill_file" | sed 's/[^0-9]//g' || true)"
   [ -n "$chunk_declarations" ] || {

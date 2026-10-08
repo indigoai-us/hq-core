@@ -642,13 +642,16 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # not a filter. Fail-open: any resolution miss leaves co_scope empty and the
   # behaviour identical to today's unresolved-company path.
   co_scope=""
+  co_scopes=()
+  co_scope_source=""
   if [ -n "${HQ_POLICY_COMPANY:-}" ]; then
     co_scope="$HQ_POLICY_COMPANY"
+    co_scope_source=override
   else
     case "$CWD" in
-      *companies/*) co_scope="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')" ;;
+      *companies/*) co_scope="$(printf '%s' "$CWD" | sed -nE 's#.*companies/([^/]+).*#\1#p')"; co_scope_source=cwd ;;
     esac
-    if [ -z "$co_scope" ] && [ -n "${SESSION_ID:-}" ]; then
+    if [ -n "${SESSION_ID:-}" ]; then
       # Read THIS session's own meta.yaml directly, keyed off the session id in
       # the hook payload. Do not shell out to hq-session.sh get: it resolves the
       # session from this process's environment, which on a hook path is the
@@ -657,7 +660,20 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # the company identically. READ ONLY: master-hook.sh bootstraps meta.yaml;
       # a second writer here would race.
       META="$HQ_ROOT/workspace/sessions/$SESSION_ID/meta.yaml"
-      [ -f "$META" ] && co_scope="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META")"
+      if [ -z "$co_scope" ]; then
+        [ -f "$META" ] && co_scope="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META")"
+      fi
+      if [ -n "$co_scope" ]; then
+        co_scope_source=session
+        # A capability is authoritative for the session lock set. The helper
+        # keeps old capability files singleton and gates the set through hq-flags.
+        if [ -f "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" ]; then
+          . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh"
+          while IFS= read -r locked_company; do
+            [ -n "$locked_company" ] && co_scopes+=("$locked_company")
+          done < <(session_scope_read_companies "$HQ_ROOT" "$SESSION_ID" 2>/dev/null || true)
+        fi
+      fi
     fi
   fi
   # HQ_POLICY_WORKER_DIR may name a worker profile directory or its policies
@@ -724,7 +740,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
                         worker_policy_diagnostic "invalid-worker-profile" "the worker profile path is malformed"
                         ;;
                       *)
-                        if [ -n "$worker_company" ] && [ "$co_scope" != "$worker_company" ]; then
+                        if [ -n "$worker_company" ] && [ "$co_scope" != "$worker_company" ] && [[ ! " ${co_scopes[*]} " =~ [[:space:]]${worker_company}[[:space:]] ]]; then
                           worker_policy_diagnostic "company-scope-mismatch-$worker_company" "company worker policies do not match the session company"
                         else
                           DIRS+=("$worker_policy_dir")
@@ -747,7 +763,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     fi
   fi
 
-  [ -n "$co_scope" ] && DIRS+=("$HQ_ROOT/companies/$co_scope/policies")
+  if [ "$co_scope_source" = session ] && [ "${#co_scopes[@]}" -gt 0 ]; then
+    for locked_company in "${co_scopes[@]}"; do
+      [ -d "$HQ_ROOT/companies/$locked_company" ] && DIRS+=("$HQ_ROOT/companies/$locked_company/policies")
+    done
+  elif [ -n "$co_scope" ]; then
+    DIRS+=("$HQ_ROOT/companies/$co_scope/policies")
+  fi
   case "$CWD" in
     *repos/public/*|*repos/private/*)
       rscope="$(printf '%s' "$CWD" | sed -nE 's#.*repos/(public|private)/.*#\1#p')"

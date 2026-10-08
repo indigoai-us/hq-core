@@ -160,6 +160,13 @@ cmd_get() {
   # Unreadable meta.yaml: awk fails and this function exits non-zero under
   # set -e. Those two are not the same case — do not default either.
   [ -n "$meta" ] && [ -f "$meta" ] || return 0
+  if [ "$key" = company_slugs ]; then
+    local lock_set primary id
+    id="$(current_id)"
+    lock_set="$(session_scope_read_companies "$REPO_ROOT" "$id" 2>/dev/null | paste -sd, -)"
+    if [ -n "$lock_set" ]; then printf '%s' "$lock_set"; else cmd_get company_slug; fi
+    return 0
+  fi
   # Absent key: print nothing. For `senior`, a record written before that
   # field existed has no line; that is a successful read of a file that does
   # not contain the key, not a failed read. §3.1 defaults `senior` to `user`
@@ -177,6 +184,125 @@ cmd_get() {
       exit
     }
   ' "$meta"
+}
+
+multi_company_enabled() {
+  local primary="${1:-}"
+  [ -n "$primary" ] || primary="$(cmd_get company_slug)"
+  session_scope_multi_company_enabled "$REPO_ROOT" "$primary"
+}
+
+validate_company_slug() {
+  local slug="${1:-}"
+  case "$slug" in ''|*[!a-zA-Z0-9_-]*) echo "hq-session: invalid company_slug: '$slug' (allowed characters: A-Z a-z 0-9 - _)" >&2; return 1 ;; esac
+  [ "$slug" != personal ] || { echo "hq-session: personal cannot be combined with a company" >&2; return 1; }
+  if [ -L "$REPO_ROOT/companies/$slug" ] || ! hq_session_has_exact_company_dir "$REPO_ROOT" "$slug" || hq_session_has_case_alias "$REPO_ROOT" "$slug"; then
+    echo "hq-session: company_slug must use the exact real directory name: '$slug'" >&2
+    return 1
+  fi
+}
+
+write_company_lock_set() {
+  local meta="$1" set="$2" primary="$3" clear_project_task="${4:-0}" tmp
+  tmp="$(mktemp)"
+  awk -v primary="$primary" -v slugs="$set" -v clear_project_task="$clear_project_task" '
+    BEGIN { has_primary=0; has_slugs=0 }
+    $1 == "company_slug:" { if (!has_primary) print "company_slug: " primary; has_primary=1; next }
+    $1 == "company_slugs:" { if (!has_slugs) print "company_slugs: " slugs; has_slugs=1; next }
+    clear_project_task && ($1 == "project:" || $1 == "task:") { next }
+    { print }
+    END { if (!has_primary) print "company_slug: " primary; if (!has_slugs) print "company_slugs: " slugs }
+  ' "$meta" >"$tmp"
+  mv "$tmp" "$meta"
+}
+
+company_lock_update_acquire() {
+  local id="$1" lock="$SESSIONS_DIR/$1/.company-lock-set.lock" owner tries=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    owner="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [[ "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf -- "$lock" 2>/dev/null || true
+      continue
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -lt 300 ] || { echo "hq-session: timed out waiting for company lock update" >&2; return 1; }
+    sleep 0.1
+  done
+  printf '%s\n' "$$" > "$lock/pid"
+}
+
+company_lock_update_release() {
+  rm -rf -- "$SESSIONS_DIR/$1/.company-lock-set.lock"
+}
+
+read_company_lock_set() {
+  local id="$1" fallback="$2" capset
+  capset="$(session_scope_read_companies "$REPO_ROOT" "$id" 2>/dev/null | paste -sd, -)"
+  if [ -n "$capset" ]; then printf '%s' "$capset"; else printf '%s' "$fallback"; fi
+}
+
+emit_lock_set_context() {
+  local sid="$1" slugs="$2" slug
+  IFS=, read -r -a __session_slugs <<< "$slugs"
+  for slug in "${__session_slugs[@]}"; do
+    [ "$slug" = personal ] && continue
+    emit_company_hard_policies "$slug"
+  done
+  spawn_work_mesh_register "$sid" || true
+}
+
+cmd_add_company() {
+  local slug="${1:-}" id meta current slugs next
+  [ -n "$slug" ] || { echo "usage: hq-session.sh add company <slug>" >&2; exit 1; }
+  if ! multi_company_enabled; then
+    echo "hq-session: add company is disabled; hooks.multi-company-session-lock is off" >&2
+    exit 1
+  fi
+  validate_company_slug "$slug" || exit 1
+  id="$(current_id)"
+  [ -n "$id" ] || { echo "hq-session: no current session" >&2; exit 1; }
+  meta="$SESSIONS_DIR/$id/meta.yaml"
+  [ -f "$meta" ] || { echo "hq-session: session is not company-bound" >&2; exit 1; }
+  company_lock_update_acquire "$id" || exit 1
+  slugs="$(read_company_lock_set "$id" "$(cmd_get company_slug)")"
+  current="${slugs%%,*}"
+  [ -n "$current" ] || { company_lock_update_release "$id"; echo "hq-session: session is not company-bound" >&2; exit 1; }
+  if [ "$current" = personal ]; then next="$slug"; else
+    case ",$slugs," in *",$slug,"*) next="$slugs" ;; *) next="$slugs,$slug" ;; esac
+  fi
+  write_company_lock_set "$meta" "$next" "${next%%,*}"
+  session_scope_mint_set "$REPO_ROOT" "$id" "$next" || { echo "hq-session: failed to mint scope-capability for session $id" >&2; exit 1; }
+  company_lock_update_release "$id"
+  emit_lock_set_context "$id" "$next"
+}
+
+cmd_remove_company() {
+  local slug="${1:-}" id meta current slugs next out entry removed=0
+  [ -n "$slug" ] || { echo "usage: hq-session.sh remove company <slug>" >&2; exit 1; }
+  id="$(current_id)"
+  [ -n "$id" ] || { echo "hq-session: no current session" >&2; exit 1; }
+  meta="$SESSIONS_DIR/$id/meta.yaml"
+  company_lock_update_acquire "$id" || exit 1
+  current="$(cmd_get company_slug)"
+  slugs="$(read_company_lock_set "$id" "$current")"
+  current="${slugs%%,*}"
+  [ -n "$slugs" ] || { echo "hq-session: session has no company lock" >&2; exit 1; }
+  out=""
+  IFS=, read -r -a __session_slugs <<< "$slugs"
+  for entry in "${__session_slugs[@]}"; do
+    if [ "$entry" = "$slug" ]; then removed=1; else out="${out:+$out,}$entry"; fi
+  done
+  [ "$removed" = 1 ] || { echo "hq-session: company is not locked: $slug" >&2; exit 1; }
+  [ -n "$out" ] || { echo "hq-session: cannot remove the last company; use set company_slug" >&2; exit 1; }
+  next="$out"
+  if [ "$slug" = "$current" ]; then
+    write_company_lock_set "$meta" "$next" "${next%%,*}" 1
+  else
+    write_company_lock_set "$meta" "$next" "${next%%,*}"
+  fi
+  session_scope_mint_set "$REPO_ROOT" "$id" "$next" || { echo "hq-session: failed to mint scope-capability for session $id" >&2; exit 1; }
+  company_lock_update_release "$id"
+  emit_lock_set_context "$id" "$next"
 }
 
 cmd_set() {
@@ -250,6 +376,12 @@ cmd_set() {
       "$id" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$meta"
   fi
 
+  local company_lock_held=0
+  if [ "$key" = "company_slug" ]; then
+    company_lock_update_acquire "$id" || exit 1
+    company_lock_held=1
+  fi
+
   # Capture the prior value so we only surface policies when it actually changes.
   local prev=""
   prev="$(cmd_get "$key" 2>/dev/null || true)"
@@ -261,16 +393,22 @@ cmd_set() {
     clear_project_task=1
   fi
 
-  local tmp
-  tmp="$(mktemp)"
-  awk -v clear_project_task="$clear_project_task" -v k="$key" -v v="$value" '
-    BEGIN { found = 0 }
-    clear_project_task && ($1 == "project:" || $1 == "task:") { next }
-    $1 == k":" { print k": " v; found = 1; next }
-    { print }
-    END { if (!found) print k": " v }
-  ' "$meta" > "$tmp"
-  mv "$tmp" "$meta"
+  if [ "$key" = company_slug ]; then
+    # The combined writer updates company_slug and company_slugs in one
+    # metadata rewrite while preserving the session update lock.
+    write_company_lock_set "$meta" "$value" "$value" "$clear_project_task"
+  else
+    local tmp
+    tmp="$(mktemp)"
+    awk -v clear_project_task="$clear_project_task" -v k="$key" -v v="$value" '
+      BEGIN { found = 0 }
+      clear_project_task && ($1 == "project:" || $1 == "task:") { next }
+      $1 == k":" { print k": " v; found = 1; next }
+      { print }
+      END { if (!found) print k": " v }
+    ' "$meta" > "$tmp"
+    mv "$tmp" "$meta"
+  fi
 
   # When a company is bound (or rebound) mid-session, surface that company's
   # hard-enforcement policies into this Bash tool result. SessionStart only
@@ -279,7 +417,7 @@ cmd_set() {
   # do company infra/deploy/credential work blind to hard rules. This closes
   # that gap. Emits policy text only — never secrets.
   if [ "$key" = "company_slug" ] && [ -n "$value" ] && [ "$value" != "$prev" ]; then
-    session_scope_mint "$REPO_ROOT" "$id" "$value" || {
+    session_scope_mint_set "$REPO_ROOT" "$id" "$value" || {
       echo "hq-session: failed to mint scope-capability for session $id" >&2
       exit 1
     }
@@ -293,9 +431,10 @@ cmd_set() {
       # Fire-and-forget: register this company bind with the Work Mesh (US-003).
       # Fully silent (all output → the hook's own bounded log) and guarded so it
       # can neither fail cmd_set under `set -euo pipefail` nor delay its return.
-      spawn_work_mesh_register "$id" || true
+      spawn_work_mesh_register "$id" "$value" || true
     fi
   fi
+  if [ "$company_lock_held" = 1 ]; then company_lock_update_release "$id"; fi
 
   # US-011: mid-session project change closes the old card and opens a new one.
   # First bind (empty prev) only updates the live-binding marker — SessionStart
@@ -326,13 +465,13 @@ cmd_set() {
 # tests copy only hq-session.sh). Never blocks: the hook itself is fire-and-forget
 # and this backgrounds even its fast foreground path off cmd_set's return path.
 spawn_work_mesh_register() {
-  local sid="$1"
+  local sid="$1" company="${2:-}"
   local hook="$REPO_ROOT/core/hooks/SessionStart/35-work-mesh-session-start.sh"
   local logf="$REPO_ROOT/workspace/logs/work-mesh-hook.log"
   [ -f "$hook" ] || return 0
   command -v jq >/dev/null 2>&1 || return 0
   local ev
-  ev="$(jq -nc --arg sid "$sid" --arg cwd "${PWD:-}" '{session_id:$sid,cwd:$cwd}' 2>/dev/null)" || return 0
+  ev="$(jq -nc --arg sid "$sid" --arg company "$company" --arg cwd "${PWD:-}" '{session_id:$sid,cwd:$cwd} + (if $company == "" then {} else {company_slug:$company} end)' 2>/dev/null)" || return 0
   [ -n "$ev" ] || return 0
   mkdir -p "$(dirname "$logf")" 2>/dev/null || true
   HQ_ROOT="$REPO_ROOT" CLAUDE_CODE_SESSION_ID="$sid" \
@@ -446,6 +585,8 @@ case "$sub" in
   path)    cmd_path "$@" ;;
   get)     cmd_get "$@" ;;
   set)     cmd_set "$@" ;;
+  add)     [ "${1:-}" = company ] || { echo "usage: hq-session.sh add company <slug>" >&2; exit 1; }; shift; cmd_add_company "$@" ;;
+  remove)  [ "${1:-}" = company ] || { echo "usage: hq-session.sh remove company <slug>" >&2; exit 1; }; shift; cmd_remove_company "$@" ;;
   ""|-h|--help|help) usage ;;
   *) echo "hq-session: unknown subcommand '$sub'" >&2; usage >&2; exit 1 ;;
 esac

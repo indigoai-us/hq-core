@@ -54,7 +54,7 @@ Knowledge bases are where your business logic lives. Cold channels (docs, databa
 ### Module 6: PRDs and Project Planning
 From idea to execution — think like an architect.
 
-A PRD is how you give AI a project, not just a task. User stories with acceptance criteria define "done" in terms the system can verify. `/plan` creates the structure. `/run-project` executes it.
+A PRD is how you give AI a project, not just a task. User stories with acceptance criteria define "done" in terms the system can verify. `/prd` creates the structure. `/run-project` executes it.
 
 **Key idea:** Don't over-specify. State outcomes, not methods. Let the system discover the best approach.
 

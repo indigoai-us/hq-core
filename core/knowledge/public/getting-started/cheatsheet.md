@@ -7,7 +7,7 @@ Daily reference card. Pin this somewhere visible.
 ## The Loop
 
 ```
-/startwork  →  /brainstorm  →  /plan  →  /run-project  →  /handoff
+/startwork  →  /brainstorm  →  /prd  →  /run-project  →  /handoff
 ```
 
 ---
@@ -18,7 +18,7 @@ Daily reference card. Pin this somewhere visible.
 |---------|-------------|
 | `/startwork` | Start of every session — reads your last handoff, shows your board |
 | `/brainstorm` | Fuzzy idea — you know the direction but not the shape |
-| `/plan` | Concrete project — turns an idea into stories with acceptance criteria |
+| `/prd` | Concrete project — turns an idea into stories with acceptance criteria |
 | `/run-project` | Execute a PRD — runs stories through the Ralph Loop |
 | `/handoff` | End of every session — logs work, preserves state |
 | `/learn` | After something worked or broke — captures corrections permanently |
@@ -46,7 +46,7 @@ Daily reference card. Pin this somewhere visible.
 
 ```
 Morning     /startwork [company]       Pick up where you left off
-Execute     /plan + /run-project        Ship the work
+Execute     /prd + /run-project        Ship the work
 Capture     /learn                     Teach what you discovered
 Close       /handoff                   Save state, end session
 ```
@@ -80,7 +80,7 @@ Plan  →  Execute  →  Verify  →  Iterate
 | Worker keeps making the same mistake | `/learn` to capture the correction |
 | HQ feels cluttered | `/reanchor` to clean up |
 | Don't know what to work on | `/startwork` reads your board |
-| Project is too vague to execute | `/brainstorm` first, then `/plan` |
+| Project is too vague to execute | `/brainstorm` first, then `/prd` |
 
 ---
 

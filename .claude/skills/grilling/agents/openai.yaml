@@ -1,0 +1,3 @@
+interface:
+  display_name: "Grilling Engine"
+  short_description: "Shared interview engine used by brainstorm, prd, and grill-me."

@@ -15,7 +15,7 @@ tags: [journal, projects, planning, codex, claude]
 
 Native assistant sessions should have a durable project folder and `prd.json`
 target even when the user did not invoke `/startwork`, `/brainstorm`, `/prd`,
-`/plan`, or `/run-project`.
+`/prd`, or `/run-project`.
 
 Before creating a new project, search the relevant existing project set and
 reuse a related project when there is a plausible match:
@@ -34,7 +34,7 @@ Automatic creation must stay thin: it may create `prd.json`,
 interview or silently register external task trackers.
 
 Explicit HQ project flows still own their own behavior. Do not compete with
-`/prd`, `/plan`, `/deep-plan`, `/run-project`, `/execute-task`, `/startwork`, or
+`/prd`, `/deep-plan`, `/run-project`, `/execute-task`, `/startwork`, or
 `/brainstorm`.
 
 ## Rationale

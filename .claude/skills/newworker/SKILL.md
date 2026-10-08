@@ -11,7 +11,7 @@ Create a new worker with proper structure, skills, and verification.
 **Technology:** All HQ workers use TypeScript + Node.js (ESM). No Python for new workers.
 
 **PRDs live in `personal/projects/` or `companies/{co}/projects/`** - Workers reference them, don't create their own. If the worker needs a PRD:
-1. Run `/plan {worker-name}` first to create the PRD
+1. Run `/prd {worker-name}` first to create the PRD
 2. Then return to `/newworker` to create the worker that references it
 
 ## Context to Load First
@@ -147,7 +147,7 @@ Workers can get tasks from:
 
 1. **Project PRD** (recommended): `personal/projects/{project-name}/prd.json` or `companies/{co}/projects/{project-name}/prd.json`
    - For workers that implement features
-   - Reference existing project or create one with `/plan`
+   - Reference existing project or create one with `/prd`
 
 2. **Queue file**: `companies/{company}/workers/{worker-id}/queue.json` (or `core/workers/public/{worker-id}/queue.json` for shared)
    - For workers with simple, repeating tasks (posting, monitoring)
@@ -203,4 +203,4 @@ Provide next steps:
 2. "Registry auto-regenerated on next reindex (or run `bash core/scripts/generate-workers-registry.sh` to force)"
 3. "Test with on-demand execution first"
 4. If using queue: "Add tasks to queue.json to get started"
-5. If using PRD: "Run `/plan {project-name}` to create the PRD, then link it in worker.yaml"
+5. If using PRD: "Run `/prd {project-name}` to create the PRD, then link it in worker.yaml"

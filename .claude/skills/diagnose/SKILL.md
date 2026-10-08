@@ -6,7 +6,7 @@ allowed-tools: Read, Grep, Glob, Write, Edit, Bash, Agent, AskUserQuestion
 
 # Diagnose
 
-A discipline for hard bugs. Skip phases only when explicitly justified, and only with the user's consent. Pattern adapted from `mattpocock/skills` (`repos/public/skills/skills/engineering/diagnose/SKILL.md`); HQ-specific cross-references and report shape added.
+A discipline for hard bugs. Skip phases only when explicitly justified, and only with the user's consent. Pattern adapted from `mattpocock/skills` (`skills/engineering/diagnosing-bugs/SKILL.md`, upstream commit f3fc563); HQ-specific cross-references and report shape added.
 
 ## When `/diagnose` vs `/investigate`
 
@@ -29,7 +29,15 @@ Same pattern as `/investigate` and `/brainstorm`:
 3. Fall back to cwd inference via `companies/manifest.yaml`
 4. Last resort: ask via `AskUserQuestion`
 
-Load CONTEXT-style domain glossary if the target repo has one (`<repo>/CONTEXT.md`). Check ADRs in the area being touched (`<repo>/docs/adr/`).
+Load GLOSSARY-style domain glossary if the target repo has one (`<repo>/GLOSSARY.md`). Check ADRs in the area being touched (`<repo>/docs/adr/`).
+
+Fallback (removed in hq-core 16.0.0): if `GLOSSARY.md` is absent and `CONTEXT.md` exists, read `CONTEXT.md` instead (and `CONTEXT-MAP.md` in place of `GLOSSARY-MAP.md`), and print one line suggesting `git mv CONTEXT.md GLOSSARY.md`.
+
+## Redact
+
+This skill has you show commands, outputs and captured artifacts. **Redact every secret first**: write `<REDACTED>` in its place. Build loops against env vars (inject them with `hq run` or `hq secrets exec`), so the credential stays in the environment rather than in what you show. Captured artifacts carry auth headers: quote only the lines that carry the signal.
+
+If the redacted output is not enough to diagnose the bug, say so and ask the user.
 
 ## Phase 1 — Build a feedback loop
 
@@ -73,14 +81,14 @@ Goal is not a clean repro but a **higher reproduction rate**. Loop the trigger 1
 Stop and say so explicitly. List what you tried. Ask the user via `AskUserQuestion` for one of:
 
 - Access to whatever environment reproduces it
-- A captured artifact (HAR file, log dump, core dump, screen recording with timestamps)
+- A redacted captured artifact (HAR file, log dump, core dump, screen recording with timestamps)
 - Permission to add temporary production instrumentation
 
 Do **not** proceed to hypothesise without a loop.
 
 ### Completion criterion — a tight loop that goes red
 
-Phase 1 is done when the loop is **tight** and **red-capable**: you can name **one command** — a script path, a test invocation, a curl — that you have **already run at least once** (paste the invocation and its output), and that is:
+Phase 1 is done when the loop is **tight** and **red-capable**: you can name **one command** — a script path, a test invocation, a curl — that you have **already run at least once** (show the invocation and its output, redacted), and that is:
 
 - [ ] **Red-capable** — it drives the actual bug code path and asserts the **user's exact symptom**, so it can go red on this bug and green once fixed. Not "runs without erroring" — it must be able to *catch this specific bug*.
 - [ ] **Deterministic** — same verdict every run (flaky bugs: a pinned, high reproduction rate, per above).
@@ -144,7 +152,7 @@ A correct seam exercises the **real bug pattern** as it occurs at the call site.
 If a correct seam exists:
 
 1. Turn the minimised repro into a failing test at that seam.
-2. Watch it fail.
+2. Watch it fail. If you forced the red by mutating code or a fixture, `diff` against a pristine copy to prove the mutation landed before you trust it.
 3. Apply the fix.
 4. Watch it pass.
 5. Re-run the Phase 1 feedback loop against the original (un-minimised) scenario.
@@ -202,4 +210,4 @@ Save to `workspace/reports/{slug}-diagnose.md`. Sections:
 - HQ `/architect` — Phase 6 hand-off when the absent test seam or tangled callers is the real story.
 - HQ Core Principles 7 (never skip failing tests) and 8 (bugfixes require tests).
 - HQ `/learn` — capture failure-mode patterns at end of session for cross-tenant reuse.
-- Pattern source: `mattpocock/skills` (`repos/public/skills/skills/engineering/diagnose/SKILL.md`)
+- Pattern source: `mattpocock/skills` (`skills/engineering/diagnosing-bugs/SKILL.md`), upstream commit f3fc563.

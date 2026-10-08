@@ -70,6 +70,34 @@ out="$(run_hook "$COREUTILS_PATH")"
 [ -z "$out" ] || fail "hq on settings PATH should be silent, got: $out"
 rm -f "$BIN/hq"
 
+# --- 1a. a successful probe is cached per session window (HP-8) ---------
+reset_root
+CALLS="$TMP/hq-calls"; : > "$CALLS"
+stub hq "echo probe >> '$CALLS'; echo 5.108.2"
+write_local_settings "{\"env\":{\"PATH\":\"$BIN:/usr/bin\"}}"
+out="$(run_hook "$COREUTILS_PATH")"; [ -z "$out" ] || fail "1a first run should be silent, got: $out"
+out="$(run_hook "$COREUTILS_PATH")"; [ -z "$out" ] || fail "1a second run should be silent, got: $out"
+[ "$(wc -l < "$CALLS" | tr -d ' ')" = "1" ] || fail "1a: expected one version probe across two prompts, got $(cat "$CALLS" | wc -l)"
+[ -f "$ROOTDIR/workspace/.hq-cli-ensure/usable.ok" ] || fail "1a: usable.ok cache was not written"
+# TTL 0 disables the cache -> re-probe.
+run_hook "$COREUTILS_PATH" HQ_ENSURE_CLI_OK_TTL=0 >/dev/null
+[ "$(wc -l < "$CALLS" | tr -d ' ')" = "2" ] || fail "1a: TTL=0 should re-probe"
+# A changed binary (different mtime) invalidates the cache -> re-probe.
+touch -t 202001010000 "$BIN/hq"
+run_hook "$COREUTILS_PATH" >/dev/null
+[ "$(wc -l < "$CALLS" | tr -d ' ')" = "3" ] || fail "1a: a changed hq binary should re-probe"
+# A failing probe is never cached: a broken hq re-probes every prompt.
+reset_root
+: > "$CALLS"
+stub hq "echo probe >> '$CALLS'; exit 1"
+write_local_settings "{\"env\":{\"PATH\":\"$BIN:/usr/bin\"}}"
+run_hook "$COREUTILS_PATH" HQ_ENSURE_CLI_COOLDOWN=0 >/dev/null 2>&1 || true
+run_hook "$COREUTILS_PATH" HQ_ENSURE_CLI_COOLDOWN=0 >/dev/null 2>&1 || true
+[ ! -f "$ROOTDIR/workspace/.hq-cli-ensure/usable.ok" ] || fail "1a: a failing probe must not be cached"
+printf '%s\n' 'PASS: successful version probe is cached per window; failures and changed binaries re-probe'
+reset_root
+rm -f "$BIN/hq"
+
 # --- 1b. Windows settings PATH resolves a Git Bash-visible hq.cmd shim ----
 reset_root
 WINDOWS_HQ_BIN="$TMP/windows-hq-bin"

@@ -21,7 +21,9 @@ Same pattern as `/diagnose`, `/investigate`, and `/brainstorm`:
 3. Fall back to cwd inference via `companies/manifest.yaml`
 4. Last resort: ask via `AskUserQuestion`
 
-Load the CONTEXT-style domain glossary if the target repo has one (`<repo>/CONTEXT.md`). Check ADRs in the area being touched (`<repo>/docs/adr/`). Ticket titles and descriptions should use the project's domain glossary vocabulary and respect those ADRs.
+Load the GLOSSARY-style domain glossary if the target repo has one (`<repo>/GLOSSARY.md`). Check ADRs in the area being touched (`<repo>/docs/adr/`). Ticket titles and descriptions should use the project's domain glossary vocabulary and respect those ADRs.
+
+Fallback (removed in hq-core 16.0.0): if `GLOSSARY.md` is absent and `CONTEXT.md` exists, read `CONTEXT.md` instead (and `CONTEXT-MAP.md` in place of `GLOSSARY-MAP.md`), and print one line suggesting `git mv CONTEXT.md GLOSSARY.md`.
 
 ## Process
 

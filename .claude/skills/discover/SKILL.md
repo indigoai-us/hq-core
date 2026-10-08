@@ -157,7 +157,7 @@ run `build-policy-digest.sh` (script removed).
    - Files written (count + paths)
    - Policies written (count + scopes)
    - Manifest changes (none / `<co>.repos[]` += / `unaffiliated_repos[]` +=)
-3. Suggest next: `/run dev-team context-manager` for deeper analysis, or `/plan` to start a project against this repo.
+3. Suggest next: `/run dev-team context-manager` for deeper analysis, or `/prd` to start a project against this repo.
 
 ## Idempotence guarantees
 

@@ -178,6 +178,7 @@ fi
 [ -n "${HQ_SPAWN_PROJECT:-}" ] && export HQ_SPAWN_PROJECT
 [ -n "${HQ_SPAWN_TASK:-}" ] && export HQ_SPAWN_TASK
 export HQ_CONDUCT_ENGINE='{engine}'
+export LANE_WORKER_ID='{lane-id}'   # the pool slot; the body records it idle on exit
 
 bash core/scripts/hq-detach.sh --owner-pidfile "$RUN_DIR/owner.pid" -- bash -c '
   echo $$ > "$LANE_RUN_DIR/lane.pid"
@@ -188,6 +189,11 @@ bash core/scripts/hq-detach.sh --owner-pidfile "$RUN_DIR/owner.pid" -- bash -c '
   echo $! > "$LANE_RUN_DIR/runner.pid"
   wait $(cat "$LANE_RUN_DIR/runner.pid")
   echo "CONDUCT_EXIT=$?" >> "$LANE_RUN_DIR/lane.log"
+  # A one-shot lane is finished once the runner exits: free its slot now, so a
+  # gate or aux lane never leaves it running. The waiter (section 5) does the
+  # same and puts it back to running if the engine group survived.
+  bash core/scripts/conduct-pool.sh --session-id "$HQ_SESSION_ID" record --worker-id "$LANE_WORKER_ID" \
+    --subagent-id "$(basename "$LANE_RUN_DIR")" --status idle >/dev/null 2>&1 || true
 '
 
 # Proof of escape: pgid and sid must equal the child's own pid.
@@ -271,6 +277,27 @@ session's pool while the slot lives in the owner's. Record it **immediately afte
 launch** — a slot left `claimed` while a lane is live is one `cancel` may retire
 as undispatched (pool protocol §4).
 
+**A one-shot lane's slot goes `idle` when the lane exits.** The launcher body in
+§4 records it `idle` right after it writes `CONDUCT_EXIT=`, and the waiter below
+records it again when it sees the marker, so a finished regression-gate or aux
+lane never leaves its slot `running` (a `running` slot makes the next `assign`
+for that worker exit 4). If the engine-group confirmation reports
+`engine_gone=no`, the waiter puts the slot back to `running` and a human
+decides. `conduct-pool.sh reconcile [--session-id <id>]` catches lanes whose
+waiter was swept: it marks `idle` every `running` one-shot slot whose run dir
+has `CONDUCT_EXIT=` in `lane.log` and whose `lane.pid` and `runner.pid` are
+dead. It never touches a loop lane, a lane without the marker, or a live one,
+and it never recycles. The pipeline driver runs it at start. Loop lanes
+(`workflow-runner --loop`) are recorded with `--pid` and `--run-dir` and follow
+their own process instead.
+
+**Two caps apply to every `assign`.** `CONDUCT_POOL_CAP` (default 8) bounds this
+session's pool. `CONDUCT_MACHINE_CAP` (default 16, `0` disables) bounds the
+running and claimed slots of every session pool under `workspace/sessions/` on
+the machine; a slot whose recorded pid is dead is not counted. Past it `assign`
+exits 6 and names the count, the cap and the sessions holding the most slots.
+Treat exit 6 like exit 3: wait for a lane to finish, do not spawn around it.
+
 Then arm a waiter as a **background** call so the harness notifies you when it
 exits. Never poll in the foreground:
 
@@ -297,6 +324,11 @@ until grep -q 'CONDUCT_EXIT=' "$L" 2>/dev/null; do
   sleep 10
 done
 echo "lane outcome: $outcome"
+if [ "$outcome" = exited ]; then
+  # one-shot lane: the marker means it finished; free the slot now
+  bash core/scripts/conduct-pool.sh --session-id "{owner session}" record --worker-id "{lane-id}" \
+    --subagent-id "$(basename "$D")" --status idle >/dev/null 2>&1 || true
+fi
 tail -30 "$L"
 ```
 
@@ -409,6 +441,11 @@ if [ -n "$epgid" ] && pgrep -g "$epgid" >/dev/null 2>&1; then
   pgrep -g "$epgid" >/dev/null 2>&1 && engine_gone=no
 fi
 echo "engine group: $engine_gone"
+if [ "$engine_gone" = no ]; then
+  # an engine survived: hold the slot that the exit marker freed
+  bash core/scripts/conduct-pool.sh --session-id "{owner session}" record --worker-id "{lane-id}" \
+    --subagent-id "$(basename "$D")" --status running >/dev/null 2>&1 || true
+fi
 ```
 
 **Observation first, force only after a refused request.** The runner is the
@@ -496,3 +533,119 @@ successful one's, and every recovery path re-`assign`s.
 "Gone" means both halves of §5: the waiter reached an outcome **and**
 `engine_gone=yes`. A slot released on the outcome alone can be handed to a
 replacement worker while the old engine is still committing to the same repo.
+
+## 8. Phase envelope and handoff shape
+
+Every pipeline phase, on every engine, takes one **phase envelope** and returns
+one **phase handoff**. claude, codex, and grok lanes all use this one shape, so
+a backend phase on one engine can hand to a QA phase on another without
+translation. The envelope starts from the `/execute-task` filesystem phase
+envelope.
+
+### Phase envelope (`schema: "hq-phase-envelope/v1"`)
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `schema` | string `hq-phase-envelope/v1` | yes | Shape tag |
+| `story_id` | string | yes | Story id, e.g. `run-project-pipeline-lanes/US-005` |
+| `phase` | string | yes | Phase name, e.g. `backend`, `qa` |
+| `worker_id` | string | yes | Worker running the phase, e.g. `backend-dev` |
+| `worktree` | string (path) | yes | Absolute path the phase works in |
+| `incoming_handoff` | string (path) or null | yes | Previous phase's handoff file; null for the first phase |
+| `acceptance_criteria` | array of strings | yes | Criteria this phase must meet |
+| `deadline` | string (ISO8601 UTC, e.g. `2026-10-03T23:59:00Z`) | yes | Time after which the runner treats the phase as timed out |
+| `fresh_call` | boolean | yes | Fresh-call override: true starts a new engine session instead of resuming |
+| `project` | string | no | Project slug |
+| `engine` | string | no | `claude`, `codex`, or `grok` |
+| `result_path` | string | no | Where the runner writes the normalized handoff |
+| `story_title` | string | no | Story title from the PRD, quoted in the phase prompt |
+| `story_description` | string | no | Story description from the PRD, quoted in the phase prompt |
+| `constraints` | array of strings | no | Run-wide hard limits, quoted verbatim in the phase prompt. `route` copies them from `{state}/constraints.txt` (one per line, blank lines ignored) when that file exists, then appends the lines below that apply |
+| `repo` | string (path) | no | The story's resolved repo |
+| `branch` | string | no | The branch checked out in `worktree`; a constraint line tells the worker to commit there |
+| `reopen_note` | string | no | Why a verified story was reopened at this phase; a constraint line quotes it |
+| `resumed_after_interrupt` | boolean | no | `true` when this phase was interrupted by a run stop and is routed again; a constraint line tells the worker to check the worktree for partial work |
+| `prior_handoff` | string (path) | no | The partial handoff the interrupted phase left (`handoffs/<id>-<phase>.interrupted.<n>.json`), when there is one |
+
+Constraint lines `route` may append:
+
+- the branch line (`Commit this phase's work on branch {branch} in {worktree}; ...`) when `branch` is set;
+- the reopen line (`This story was {verified} and has been reopened at this phase. Why: {reopen_note}`);
+- the interrupt line (`This phase was interrupted at {time} when the run stopped; check the worktree for partial work ... before starting over.`);
+- the repos-worktree line, only on a run started with `--allow-repos-worktree` whose worktree resolves under `repos/`: `This worktree is under repos/, where the core Write/Edit guard blocks the editor tools: make every file edit through the shell or apply_patch, never with the Write or Edit tool.`
+
+A loop lane (`workflow-runner.mjs --loop`) takes this envelope directly. It
+builds the phase prompt itself: the worker's `worker.yaml` name, description,
+instructions and `skills[].file` paths (worker dirs found under
+`core/workers` and `personal/workers`, any depth, or `PC_WORKERS_ROOT`), the
+story id, title, description and phase, the worktree as working directory, the
+literal acceptance criteria, the constraints, the incoming handoff path, and
+the required handoff reply. The phase runs at tier `exec` on `engine` when set,
+else the lane's own engine (`HQ_CONDUCT_ENGINE`) and HQ_WORKFLOW_* pins, with
+`cd` = `worktree`; `story_id` drives session resume and `fresh_call: true`
+forces a fresh call. The runner then runs `normalize` and `validate --kind
+handoff` on the reply (and checks `story_id`, `phase`, `worker_id` match) and
+writes the handoff to `result_path`. If the engine errors, stalls twice, or the
+reply is not a valid handoff, it writes a valid handoff with `status: "failed"`
+and the reason in `summary` and `notes`. The lane's run record still goes to
+`inbox/results/<stem>.json`.
+
+### Phase handoff (`schema: "hq-phase-handoff/v1"`)
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `schema` | string `hq-phase-handoff/v1` | yes | Shape tag |
+| `story_id`, `phase`, `worker_id` | string | yes | Copied from the envelope |
+| `status` | `passed` \| `failed` \| `blocked` | yes | Phase outcome |
+| `summary` | string | yes | What the phase did |
+| `files_changed` | array of strings | yes | Paths changed (may be empty) |
+| `commits` | array of strings | yes | Commit shas made (may be empty) |
+| `back_pressure` | object | yes | `tests`, `lint`, `typecheck`, `build`, each `pass` \| `fail` \| `skip` |
+| `context_for_next` | string | yes | What the next phase needs to know |
+| `engine` | string | no | Engine that ran the phase |
+| `notes` | string | no | Free text |
+
+Optional handoff field used by the pipeline conductor's acceptance re-check
+(`pipeline-conductor.sh recheck`):
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `ac_evidence` | array of `{index, met, evidence, criterion?}` | no | `index` is the 0-based position in the story's `acceptanceCriteria`; `met` is a boolean; `evidence` names the test, command output, or file that shows it; `criterion`, when present, must equal the literal criterion text or the entry is ignored |
+
+A story is verified only when, across its handoffs, every criterion has one
+`ac_evidence` entry with `met: true` and non-empty `evidence`. `status: passed`
+alone is not enough.
+
+### Validating and normalizing
+
+```bash
+core/scripts/pipeline-envelope.sh validate [--kind envelope|handoff] <file|->
+core/scripts/pipeline-envelope.sh normalize <raw-reply-file|-> > handoff.json
+```
+
+- `validate` detects the kind from `schema` when `--kind` is omitted. It exits
+  0 when valid. Otherwise it exits non-zero and prints each problem to stderr as
+  `missing field: <name>` or `wrong type: <name> (want <type>)`. Unparseable
+  JSON, an empty file, a missing file, or a non-object top level never exit 0.
+- `normalize` is the runner-side step for engines that wrap their reply. It
+  extracts the one JSON object from a ```` ```json ```` fence or surrounding
+  prose and prints it. It exits non-zero when no object, or more than one
+  untagged object, is found.
+- The runner always runs `normalize` then `validate` on the engine's final
+  message before advancing to the next phase.
+
+### Adapter notes per engine
+
+The same adapter prompt (envelope embedded plus the handoff field list,
+"reply with only the JSON object") produced a valid handoff on all three
+engines; see
+`personal/projects/run-project-pipeline-lanes/evidence/handoff-parity/`.
+
+- claude: `claude -p --model <m> --effort low --tools "" < prompt.md`. Pass
+  the prompt on stdin; `--tools` is variadic and swallows a positional prompt.
+- codex: `codex exec -m <model> -s read-only -o <final.txt> - < prompt.md`.
+  Read the `-o` file, not stdout. Pass `-m` explicitly; the configured default
+  model can be rejected for ChatGPT-account auth.
+- grok: `grok -p "<prompt>"`; stdout is the reply.
+
+Tests: `core/scripts/tests/pipeline-envelope.test.sh`.

@@ -183,7 +183,7 @@ The repo ships **66 slash skills** in `.claude/skills/`. The most-used are liste
 | Command | What it does |
 |---------|--------------|
 | `/brainstorm` | Explore approaches before committing to a PRD |
-| `/plan` | Create an execution-ready PRD |
+| `/prd` | Create an execution-ready PRD |
 | `/deep-plan` | Deep planning with research subagents and tiered interview |
 | `/idea` | Capture a project idea on the board without a full PRD |
 | `/goals` | View and manage OKR structure |
@@ -362,7 +362,7 @@ HQ uses the **Ralph Methodology** for autonomous coding.
 
 ```bash
 # 1. Create PRD
-/plan "Build user authentication"
+/prd "Build user authentication"
 
 # 2. Execute via Ralph loop
 /run-project auth-system

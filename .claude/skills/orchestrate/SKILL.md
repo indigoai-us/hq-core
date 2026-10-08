@@ -206,7 +206,7 @@ side effects.
 
 Run the same arc sequentially **in this session**: execute
 `.claude/skills/idea/SKILL.md`, then `.claude/skills/brainstorm/SKILL.md`,
-then `.claude/skills/prd/SKILL.md` (or `/plan`), then execute the stories in
+then `.claude/skills/prd/SKILL.md`, then execute the stories in
 order yourself, honoring the same continuous/gated/plan-only semantics.
 Announce which mode is in use in one line at launch time.
 
@@ -234,7 +234,7 @@ Announce which mode is in use in one line at launch time.
 ## See also
 
 - `/idea`, `/brainstorm` — the planning stages this pipeline chains
-- `/prd`, `/deep-plan`, `/plan` — PRD generation
+- `/prd`, `/deep-plan` — PRD generation
 - `/run-project` — story execution for `--plan-only` PRDs (fresh session)
 - `core/knowledge/public/hq-core/workflow-gates-spec.md` — the gate protocol
 - `core/scripts/workflow-runner.mjs` — the multi-engine workflow runner

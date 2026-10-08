@@ -114,7 +114,10 @@ const { DEFAULT_VALUE, FLAG_KEY, enabled } = require(process.argv[2]);
 NODE
 echo "PASS: offer flag is defined through hq-flags with a false default"
 
-for skill in .claude/skills/prd/SKILL.md .claude/skills/plan/SKILL.md; do
+# /prd keeps its finalize steps in the shared file it references.
+grep -Fq '_shared/prd-finalize.md' "$ROOT/.claude/skills/prd/SKILL.md" \
+  || fail ".claude/skills/prd/SKILL.md does not reference _shared/prd-finalize.md"
+for skill in .claude/skills/_shared/prd-finalize.md; do
   grep -Fq 'work-mesh-project-registration-offer.sh --check {co} {board-project-id}' "$ROOT/$skill" \
     || fail "$skill does not check the registration offer state"
   grep -Fq 'stop here and do not run' "$ROOT/$skill" \
@@ -122,4 +125,4 @@ for skill in .claude/skills/prd/SKILL.md .claude/skills/plan/SKILL.md; do
   grep -Fq '`accepted` result retries registration' "$ROOT/$skill" \
     || fail "$skill does not resume accepted registration"
 done
-echo "PASS: /prd and /plan honor persisted registration offer states"
+echo "PASS: /prd honors persisted registration offer states"

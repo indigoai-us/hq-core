@@ -1,7 +1,7 @@
 ---
 id: chunked-reads-large-files
 title: Chunked Reads for Large Files
-when: always
+when: read || file
 on: [SessionStart]
 enforcement: soft
 version: 1

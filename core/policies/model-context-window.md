@@ -1,6 +1,6 @@
 ---
 name: model-context-window
-when: always
+when: edit || compact || context
 on: [SessionStart]
 description: The default model is the plain opus alias, which follows new Opus releases; the opus[1m] (1M context) variant is opt-in per command, not the global default
 enforcement: soft

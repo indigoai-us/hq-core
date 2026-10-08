@@ -30,7 +30,7 @@ This preference applies to all user-facing HQ questions with enumerated choices,
 This especially applies to artifact lifecycle gates:
 
 - After `/brainstorm`: ask whether to promote to PRD, refine, park, or end.
-- During `/plan` open-question resolution: ask, defer as a pre-flight story, or explicitly record the user chose to leave it unresolved.
+- During `/prd` open-question resolution: ask, defer as a pre-flight story, or explicitly record the user chose to leave it unresolved.
 - During `/review-plan`: ask for the selected response to each blocking issue.
 - During `/run-project`: ask before changing execution semantics between interactive/session/headless modes.
 

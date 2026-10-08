@@ -1,7 +1,7 @@
 ---
 id: reread-before-edit-long-sessions
 title: Re-Read Files Before Edit in Long Sessions
-when: always
+when: edit || compact || context
 on: [SessionStart]
 enforcement: soft
 version: 1

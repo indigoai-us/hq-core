@@ -1046,7 +1046,7 @@
           },
           {
             "id": "migrate-policy-triggers",
-            "script": "core/scripts/migrate-policy-triggers.sh",
+            "script": ".claude/hooks/migrate-policy-triggers-if-changed.sh",
             "timeout": 60,
             "gated": true
           },
@@ -1196,6 +1196,12 @@
             "id": "natural-language-router",
             "script": ".claude/hooks/natural-language-router.sh",
             "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "intent-hint",
+            "script": ".claude/hooks/intent-hint.sh",
+            "timeout": 10,
             "gated": true
           },
           {

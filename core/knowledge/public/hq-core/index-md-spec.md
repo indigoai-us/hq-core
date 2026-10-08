@@ -82,7 +82,7 @@ Each `companies/*/knowledge/INDEX.md` lists the contents of that company's plain
 | `/handoff` | core/docs/hq/, threads/, orchestrator/, + touched company knowledge dirs |
 | `/reanchor` | Validates freshness, reads indexes for context |
 | `/cleanup --reindex` | ALL INDEX.md files (full rebuild) |
-| `/plan` | `personal/projects/` or `companies/{co}/projects/` |
+| `/prd` | `personal/projects/` or `companies/{co}/projects/` |
 | `/run-project` | `personal/projects/`, `companies/{co}/projects/`, `workspace/orchestrator/` |
 | `/newworker` | `core/workers/public/` or `core/workers/private/` |
 | `/contentidea`, `/suggestposts`, `/post-now` | `workspace/social-drafts/` |

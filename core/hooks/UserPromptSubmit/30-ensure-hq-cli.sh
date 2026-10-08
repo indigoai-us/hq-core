@@ -84,6 +84,13 @@ VERSION_TIMEOUT="${HQ_ENSURE_CLI_VERSION_TIMEOUT:-3}"
 REPROBE_WAIT=2
 # US-010: hooks need hq-cli >= 5.108.2 (ships US-008/US-009 mesh daemon + flush).
 MIN_VERSION="${HQ_ENSURE_CLI_MIN_VERSION:-5.108.2}"
+# A successful `hq --version` probe is remembered for OK_TTL seconds, keyed on
+# the binary path, its mtime, and MIN_VERSION, so the common case (a current hq
+# on the settings PATH) costs one small file read per prompt instead of a node
+# start-up (~1.2 s). Only successes are cached; every failure path still
+# re-probes so repairs are never delayed. 0 disables the cache.
+OK_TTL="${HQ_ENSURE_CLI_OK_TTL:-900}"
+OK_CACHE="$STAMP_DIR/usable.ok"
 
 have_jq() { command -v jq >/dev/null 2>&1; }
 
@@ -181,9 +188,31 @@ capture_hq_version_bounded() {
   return "$rc"
 }
 
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
+usable_cache_fresh() { # $1 = resolved binary
+  local now cache_age rec
+  [ "${OK_TTL:-0}" -gt 0 ] 2>/dev/null || return 1
+  [ -f "$OK_CACHE" ] || return 1
+  now="$(date +%s 2>/dev/null || echo 0)"
+  [ "$now" -gt 0 ] || return 1
+  cache_age=$((now - $(file_mtime "$OK_CACHE")))
+  [ "$cache_age" -ge 0 ] && [ "$cache_age" -lt "$OK_TTL" ] || return 1
+  rec="$(cat "$OK_CACHE" 2>/dev/null)" || return 1
+  [ "$rec" = "$1|$(file_mtime "$1")|$MIN_VERSION" ]
+}
+
+remember_usable() { # $1 = resolved binary
+  [ "${OK_TTL:-0}" -gt 0 ] 2>/dev/null || return 0
+  mkdir -p "$STAMP_DIR" 2>/dev/null || return 0
+  printf '%s|%s|%s' "$1" "$(file_mtime "$1")" "$MIN_VERSION" > "$OK_CACHE.tmp" 2>/dev/null || return 0
+  mv -f "$OK_CACHE.tmp" "$OK_CACHE" 2>/dev/null || rm -f "$OK_CACHE.tmp" 2>/dev/null || true
+}
+
 hq_binary_usable() {
   local binary="$1" output version probe_rc
   binary="$(resolve_hq_binary "$binary")" || return 1
+  if usable_cache_fresh "$binary"; then return 0; fi
   if output="$(capture_hq_version_bounded "$binary")"; then
     :
   else
@@ -193,7 +222,9 @@ hq_binary_usable() {
   fi
   version="$(printf '%s' "$output" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   [ -n "$version" ] || return 1
-  version_at_least "$version" "$MIN_VERSION"
+  version_at_least "$version" "$MIN_VERSION" || return 1
+  remember_usable "$binary"
+  return 0
 }
 
 # Is the independently discovered, sufficiently-current `hq` on the settings

@@ -27,7 +27,7 @@ The journal preserves it without bloating the canonical artifacts.
 |---|---|
 | Company project | `companies/{co}/projects/{slug}/` |
 | Personal / HQ project | `personal/projects/{slug}/` |
-| Plan-level workstream | wherever `/plan` resolves the workstream dir |
+| Plan-level workstream | wherever `/prd` resolves the workstream dir |
 
 `{skill}` is the lowercase skill name (`brainstorm`, `deep-plan`, `prd`, `startwork`, `plan`).
 

@@ -1,7 +1,7 @@
 ---
 name: prd
 description: "Create an execution-ready PRD (prd.json + README.md) with a light interview. For deep research use /deep-plan."
-allowed-tools: Read, Write, Edit, Grep, Glob, Task, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Task, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
 ---
 
 # PRD — Project Planning & PRD Generation
@@ -9,6 +9,19 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Task, Bash(git:*), Bash(qmd:*), Ba
 Create execution-ready PRDs with full HQ context awareness. Lightweight flow — batched questions, fast capture, no research subagents. For deep planning on large or strategically important PRDs, use `/deep-plan` instead. For adversarial spec review of an already-generated PRD, use `/review-plan`.
 
 **Important:** Do NOT implement. Just create the PRD.
+
+## Work Mesh Live — trusted bind (do this first)
+
+After Step 0 resolves `{co}` and before any other tool call that touches project work, bind the session per
+`.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
+
+```bash
+bash core/scripts/work-mesh-live-bind-trusted.sh \
+  --company "{co}" --project "{project}" --task "{task}"
+```
+
+Omit `--task` when unknown. This writes `workspace/sessions/<sid>/meta.yaml`
+and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
 
 ## Step 0: Company Anchor (resolver, not first word)
 
@@ -33,7 +46,7 @@ If `company` is non-empty:
 2. **Announce:** "Anchored on **{co}**" (add "— from this session's `/startwork`" when `source` is `session`, or "— from this device's default company" when `source` is `device_default`)
 3. **Load policies (frontmatter-only)** — Collect eligible files in `companies/{co}/policies/`, skipping `example-policy.md`, `README.md`, and `_digest.md`; preserve their order and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. Policy digests (`**/policies/_digest.md`) are **retired** — SessionStart now injects matching policies via `inject-policy-on-trigger`; do not look for or prefer a digest file. Apply hard rules as constraints throughout the PRD
 4. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}` for all `qmd` calls
-5. **Pre-load repos** — Extract `{co}.repos[]` from manifest. Present as repo options in Batch 3 Q10
+5. **Pre-load repos** — Extract `{co}.repos[]` from manifest. Present as options for Q-6d (repo path)
 6. **Scope workers** — Filter to company workers (`companies/{co}/workers/`) + public workers (`workers/public/`)
 7. **Scope projects** — Only search `companies/{co}/projects/` for existing project collision check
 
@@ -128,15 +141,8 @@ companies/{co}/projects/{slug}/brainstorm.md
 **If found:**
 1. Read it. Extract YAML frontmatter (`status`, `source_idea_id`)
 2. If `status: "promoted"` — warn the user: "This brainstorm was already promoted to a PRD. Open existing prd.json instead?"
-3. **Pre-load brainstorm content** into interview context for Step 4:
-   - **Batch 1** (Problem/Success): pre-fill from brainstorm's `## Context`, `## Recommendation`. Present as confirmations ("Based on brainstorm: {X}. Confirm or modify?") instead of open-ended questions
-   - **Batch 2** (Users/Current State): pre-fill audience and current solution from brainstorm context if mentioned
-   - **Batch 3** (Scope/Constraints): pre-fill from `## What We Don't Know` + any constraints mentioned. Surface unknowns as explicit questions to resolve. Pre-fill non-goals from brainstorm's rejected approaches
-   - **Batch 4** (Data/Architecture): pre-fill from brainstorm's recommended approach's tech choices, data model mentions
-   - **Batch 5** (Integrations): pre-fill from brainstorm's identified external services
-   - **Batch 6** (Quality/Shipping): pre-fill from brainstorm's identified workers, repos
-   - **Batch 7** (E2E): unchanged — brainstorm doesn't cover testing specifics
-4. **Effect**: interview batches collapse to confirmations rather than open-ended questions. User answers faster, stories are better anchored to the evaluated approach
+3. **Load recorded answers as known facts.** If the brainstorm records answers by question id (lines such as `Q-1a: <answer>` under a decisions or answers section, or a `known_facts` map in frontmatter), load each id that exists in `.claude/skills/_shared/questions/prd.md` into `known_facts` for Step 4. The engine skips these questions; do not re-ask them as confirmations. They are counted under `skipped_known`.
+4. Brainstorm prose without answer ids (Context, Recommendation, rejected approaches, What We Don't Know) feeds the question set's `prefill:` hints instead.
 
 **If not found:** proceed normally (no change to existing behavior).
 
@@ -160,191 +166,26 @@ The autocapture PostToolUse hook appends `## Auto-capture` lines for any Agent /
 
 ## Step 4: Discovery Interview
 
-Ask questions in batches. Users respond with shorthand: "1a A, 1b: build a dashboard, 1c B"
+Run the grilling engine (`.claude/skills/grilling/SKILL.md`) with:
 
-Each question has lettered options for fast answers + free text override. Present one batch at a time, wait for response, then present next batch.
+- `question_set`: `.claude/skills/_shared/questions/prd.md` (the former Batches 1 to 7, with tiers and `depends_on`)
+- `known_facts`: the brainstorm answers from Step 3.5, plus any question a `prefill:` hint fully answers from the Step 2 scan (company policies, repo scan, manifest)
+- `mode`: `one-at-a-time` (one AskUserQuestion per question) unless the user passed `--rounds`
 
-**Before Batch 4:** Classify project type from description + Batch 1-3 answers:
-- **Code project** (has repoPath, or code/app/API/feature keywords) — ask all batches
-- **Content/knowledge/report** — skip Batches 4, 5; skip 6g/6h. Note: "(Batch 4 skipped — non-code project)"
-- **Personal/HQ tooling** — skip 5b, 5c, 6g, 6h
+Before asking, apply the question set's `prefill:` hints to the question text and option labels. The engine resolves the `project_type` fact (code, content, or hq-tooling) once Q-1a, Q-2b, and Q-3a are answered; questions whose `applies_to` excludes the resolved type are skipped and not counted.
 
-### Dynamic Question Enrichment
+Write the engine count object to `prd.json` `metadata.interview` in Step 5:
 
-Use the context gathered in Step 2 (company policies, repo policies, manifest, repo scan) to **enrich questions with specific details** rather than asking generic versions. This makes questions faster to answer and surfaces constraints the user might forget.
-
-**From company policies** (`companies/{co}/policies/`):
-- Policy mentions feature flags / rollout — pre-fill 5c with the required approach, present as confirmation
-- Policy mentions PII / GDPR / compliance — always surface 5b regardless of keywords, note the policy
-- Policy mentions brand voice / design system — pre-fill 2c option C with the specific system name
-- Policy mentions specific deploy procedures — add context to 6a (quality gates)
-- Any `enforcement: hard` policy that constrains architecture, auth, or integrations — surface as a constraint in the relevant batch header (e.g. "Note: company policy requires Clerk auth for all new features")
-
-**From repo scan** (target repo's CLAUDE.md, package.json, existing patterns):
-- Repo uses specific auth (Clerk, NextAuth, Supabase Auth) — pre-fill 4b option A with: "Uses existing auth ({system}) — no changes needed"
-- Repo uses specific ORM/DB (Prisma, pgClient, Supabase) — add hint to 4a: "This repo uses {ORM}. Describe entities in those terms"
-- Repo has analytics/tracking (PostHog, Segment, Mixpanel, GA) — pre-fill 6g option B with the system name
-- Repo has monitoring (Sentry, Datadog, CloudWatch) — pre-fill 6h option B/D with the service name
-- Repo has existing test commands — pre-fill 6a with detected commands
-- Repo has existing design system / component library — mention in 2c option C
-
-**From manifest** (`companies/manifest.yaml`):
-- Company has `services: [stripe, ...]` — if project might involve payments, surface in 5a as a hint
-- Company has `vercel_team` — enrich 5c with "deploys via Vercel to {team}"
-- Company has existing integrations — list them as option B context in 5a
-
-**Presentation:** Weave enrichments into the question text naturally. Don't add a separate "detected context" dump — make each question smarter:
-```
-// Generic (bad):
-4b. Auth / permissions model?
-    A. Uses existing auth — no changes needed
-
-// Enriched (good):
-4b. Auth / permissions model? (repo uses Clerk via @clerk/nextjs)
-    A. Uses existing Clerk auth — no changes needed
+```json
+"interview": {"asked": 9, "skipped_known": 5, "skipped_fact": 1,
+              "by_tier": {"strategic": 3, "architecture": 4, "quality": 2}}
 ```
 
-If a policy or repo context **fully answers** a question, present it as a confirmation rather than an open question:
-```
-5c. Rollout strategy? → Company policy requires feature flags for all new features.
-    Confirming: B. Feature flag (env var)  [Y/n]
-```
-
----
-
-**Batch 1 — Problem & Success**
-1a. Core problem or goal?
-1b. What does success look like? (measurable metric or verifiable state)
-1c. Who benefits? (list all beneficiaries)
-
----
-
-**Batch 2 — Users & Current State**
-2a. Who are the primary users?
-    A. Internal / admin only
-    B. External customers / end users
-    C. Both internal and external
-    D. Developer tooling / no direct end user
-    (free text to specify roles and technical level, e.g. "Geoff — CEO, non-technical")
-
-2b. What exists today? (current solution, even if it's a spreadsheet or nothing)
-    A. Nothing — greenfield
-    B. Existing feature being replaced or upgraded
-    C. Manual process being automated
-    D. Third-party tool being replaced
-    (free text to describe what's being replaced and why it's insufficient)
-
-2c. Are there reference designs, mockups, or brand constraints? *(skip if non-UI)*
-    A. Figma file exists (provide file/node ID)
-    B. Visual reference / screenshot (describe or link)
-    C. Follow existing design system exactly (name which one)
-    D. No design constraints — AI chooses
-    E. Not a UI project (skip)
-    *Conditional: auto-skip with E for pure backend/CLI/data projects*
-
----
-
-**Batch 3 — Scope & Constraints**
-3a. What's in scope for MVP?
-3b. Hard constraints (time, tech, budget)?
-3c. Dependencies on other projects?
-3d. What is explicitly NOT in scope? (non-goals — things users might ask for but we won't build)
-    (free text list, or "none")
-
----
-
-**Batch 4 — Data & Architecture** *(conditional: code projects only)*
-*Trigger: project has repoPath or description contains DB/schema/API/model keywords. Auto-skip for content/knowledge/reports/social.*
-
-4a. Key data entities? (tables, columns, domain objects this project touches)
-    (free text, e.g. "new `depletions` table, adds `sku_id` FK to `line_items`" — or "no DB changes")
-
-4b. Auth / permissions model?
-    A. Uses existing auth — no changes needed
-    B. New role or permission level needed (describe)
-    C. New auth provider or login method
-    D. No auth (public or internal tool)
-
-4c. Architecture approach?
-    A. Follow existing patterns in the repo exactly
-    B. New pattern needed (describe)
-    C. No opinion — let workers decide
-
-4d. Performance requirements? *(conditional: only if real-time/scale/latency/throughput keywords in description)*
-    A. Standard — no special requirements
-    B. Latency target: [specify, e.g. "< 2s page load"]
-    C. Throughput target: [specify, e.g. "1000 req/s"]
-    D. Mobile / low-bandwidth optimization needed
-    *Default: A*
-
----
-
-**Batch 5 — Integrations & Security** *(conditional: projects with external service interaction)*
-*Trigger: description contains API/webhook/OAuth/third-party/Stripe/Slack/integration keywords. Auto-skip for fully internal projects.*
-
-5a. External integrations or third-party APIs?
-    A. None — fully self-contained
-    B. Existing integrations (already wired up, just using them)
-    C. New integration needed — list: which service, what data flows, are credentials already set up?
-
-5b. Sensitive data or security considerations? *(conditional: only if user/payment/PII/customer keywords)*
-    A. No PII or sensitive data
-    B. PII handled (email, name, payment info) — existing compliance approach applies
-    C. New compliance requirement (HIPAA, GDPR, etc.)
-    D. Rate limiting or abuse protection needed
-    E. User-generated content with moderation needs
-
-5c. Rollout strategy? *(conditional: only for production-deployed projects with real users)*
-    A. Ship to all users immediately
-    B. Feature flag (specify: env var, LaunchDarkly, user segment)
-    C. Staged rollout (% of users or specific cohort)
-    D. Internal only first, then broader rollout
-    *Default: A*
-
----
-
-**Batch 6 — Quality & Shipping**
-6a. Quality gates? (detect repo from scan, suggest commands)
-    A. `pnpm typecheck && pnpm lint`
-    B. `npm run typecheck && npm run lint`
-    C. None (no automated checks)
-    D. Other: [specify]
-
-6b. Based on scan: "Should this use {relevant workers}?"
-6c. Does this need a new worker or skill?
-6d. Repo path? (e.g. `repos/private/{name}`, or "none" if non-code)
-6e. Branch name? (default: `feature/{project-name}`)
-6f. Base branch? (default: `main`, or `staging` for {your-repo}, etc.) — Pure Ralph creates feature branch from this
-
-6g. Analytics / event tracking needed? *(conditional: deployable UI projects only)*
-    A. No — not a user-facing feature
-    B. Yes — use existing tracking system (name it)
-    C. Yes — new tracking events needed (list key events, e.g. "depletion.filter.applied")
-    D. Not sure — include tracking stub only
-    *Default: A*
-
-6h. How do we know it's working in production? *(conditional: production-deployed projects only)*
-    A. Manual testing only
-    B. Existing monitoring covers it (no changes needed)
-    C. New health check or monitoring alert needed (describe)
-    D. Success metric visible in existing dashboard (name it)
-    *Default: B for existing repos, A for greenfield*
-
----
-
-**Batch 7 — E2E Testing** *(recommended for deployable projects)*
-For each user story targeting a deployable repo, specify E2E tests:
-
-7a. What E2E tests should verify each story works?
-    - For UI: "Page loads", "User can complete [action]", "Form shows validation errors"
-    - For API: "Endpoint returns expected response", "Error cases handled"
-    - For CLI: "Command runs successfully", "Opens correct URL"
-    - For integration: "Full flow from [A] to [B] works"
-    - Leave empty for non-deployable projects (knowledge, content, data)
+Add the Live Path Watch question to `asked` and to the quality tier when it is asked. Then run `bash core/scripts/prd-interview-check.sh {prd.json}`. If it prints `WARN: {N}/10 answered` or a tier warning, show the warning and continue (policy `core/policies/prd-minimum-questions.md`).
 
 ### Append interview decisions to journal
 
-After the interview batches complete:
+After the interview completes:
 
 ```bash
 .claude/skills/_shared/journal.sh append "{project_dir}" decisions "Interview decisions: project type — {classification}; scope — {what's in / what's out}; notable answers — {2-3 bullets}"
@@ -409,26 +250,27 @@ This is the **source of truth**. `/run-project` and `/execute-task` consume this
     "createdAt": "{ISO8601}",
     "goal": "{Overall project goal}",
     "successCriteria": "{Measurable outcome}",
-    "qualityGates": ["{commands from Batch 6a}"],
+    "qualityGates": ["{commands from Q-6a}"],
     "repoPath": "{repos/private/repo-name or empty}",
     "baseBranch": "{main or staging or master}",
     "relatedWorkers": ["{worker-ids from scan}"],
     "knowledge": ["{relevant knowledge paths}"],
-    "audiences": ["{from Batch 2a — user roles + technical level}"],
-    "currentSolution": "{from Batch 2b — what exists today}",
-    "designRef": "{from Batch 2c — Figma ID, reference, or empty}",
-    "nonGoals": ["{from Batch 3d — explicit out-of-scope items}"],
-    "dataModel": "{from Batch 4a — key entities/tables or empty}",
-    "authModel": "{from Batch 4b — auth approach or empty}",
-    "architectureNotes": "{from Batch 4c — approach or empty}",
-    "performanceRequirements": "{from Batch 4d — targets or empty}",
-    "integrations": ["{from Batch 5a — service name, type, credentialsReady}"],
-    "securityNotes": "{from Batch 5b — PII/compliance notes or empty}",
-    "rolloutStrategy": "{from Batch 5c — ship strategy or empty}",
-    "analyticsEvents": ["{from Batch 6g — event names or empty}"],
-    "monitoringNotes": "{from Batch 6h — prod monitoring plan or empty}",
+    "audiences": ["{from Q-2a — user roles + technical level}"],
+    "currentSolution": "{from Q-2b — what exists today}",
+    "designRef": "{from Q-2c — Figma ID, reference, or empty}",
+    "nonGoals": ["{from Q-3d — explicit out-of-scope items}"],
+    "dataModel": "{from Q-4a — key entities/tables or empty}",
+    "authModel": "{from Q-4b — auth approach or empty}",
+    "architectureNotes": "{from Q-4c — approach or empty}",
+    "performanceRequirements": "{from Q-4d — targets or empty}",
+    "integrations": ["{from Q-5a — service name, type, credentialsReady}"],
+    "securityNotes": "{from Q-5b — PII/compliance notes or empty}",
+    "rolloutStrategy": "{from Q-5c — ship strategy or empty}",
+    "analyticsEvents": ["{from Q-6g — event names or empty}"],
+    "monitoringNotes": "{from Q-6h — prod monitoring plan or empty}",
     "openQuestions": ["{remaining unresolved questions — Step 8.5 resolves these before Step 9}"],
     "decisions": [],
+    "interview": {"asked": 0, "skipped_known": 0, "skipped_fact": 0, "by_tier": {"strategic": 0, "architecture": 0, "quality": 0}},
     "replacementFor": null
   }
 }
@@ -477,7 +319,7 @@ Generate FROM the prd.json data. Human-friendly view.
 - [ ] {e2eTest 2}
 
 ## Non-Goals
-{metadata.nonGoals — from Batch 3d answers. If empty, state "None defined"}
+{metadata.nonGoals — from Q-3d answers. If empty, state "None defined"}
 
 ## Technical Considerations
 {Enriched from interview answers:}
@@ -503,220 +345,20 @@ Generate FROM the prd.json data. Human-friendly view.
 {Remaining unresolved questions from metadata.openQuestions[]. If all were resolved in Step 8.5, write "None — all resolved in decision mode (see Decisions above)." If any were deferred, list each with its deferredReason and link to the generated pre-flight story.}
 ```
 
-## Step 5.5: Update Brainstorm (if exists)
+## Steps 5.5–8.5: Finalize (shared)
 
-If a `brainstorm.md` was detected in Step 3.5, update its YAML frontmatter:
-- Set `status: "promoted"`
-- Set `promoted_to: "companies/{co}/projects/{name}/prd.json"`
+Follow `.claude/skills/_shared/prd-finalize.md` in order, as caller `/prd`. One line per step:
 
-This marks the brainstorm as consumed. The file is preserved for reference.
-
-## Step 5.6: Sync to Company Board
-
-Read `companies/manifest.yaml` to find `metadata.company` → `board_path`.
-
-If `board_path` exists, read `companies/{co}/board.json` and upsert a project entry:
-- **Match**: find existing entry by `prd_path === "companies/{co}/projects/{name}/prd.json"` or title similarity
-- **If found**: update `status` to `prd_created`, set `prd_path`, update `updated_at`
-- **If not found**: append new entry:
-  ```json
-  {
-    "id": "{co-prefix}-proj-{N+1}",
-    "title": "{project name}",
-    "description": "{1-sentence description}",
-    "status": "prd_created",
-    "scope": "company",
-    "app": null,
-    "initiative_id": null,
-    "prd_path": "companies/{co}/projects/{name}/prd.json",
-    "created_at": "{ISO8601}",
-    "updated_at": "{ISO8601}"
-  }
-  ```
-- Write updated `board.json` back to `board_path`
-- If no `metadata.company` in prd.json or no board_path, skip silently
-
-**Verify:** After upserting the board entry, re-read board.json and confirm the new project ID exists. If the write failed silently (file parse error, missing board, manifest lookup miss), log the error and retry once. Silent failure leaves projects invisible in the HQ app — the orphan scanner catches them with an "Unregistered" badge, but proper registration is required.
-
-## Step 5.7: Register the canonical project in Work Mesh
-
-Local `board.json` does not establish the server project. Registration is one script call. Do not GET, PUT, or POST the Work Mesh project by hand.
-
-After Step 5.6, read the Board entry matched by
-`prd_path === "companies/{co}/projects/{name}/prd.json"` and use its `id` as
-`{board-project-id}` for this offer check:
-
-```bash
-bash core/scripts/work-mesh-project-registration-offer.sh --check {co} {board-project-id}
-```
-
-When the helper prints `offer`, ask once with `AskUserQuestion` and exactly
-these choices: `Create the Work Mesh project now` and `Not now`. The prompt is
-available only when the company is cloud-backed, registration is missing, and
-the default-off `workmesh.offer-project-create-on-brainstorm` hq-flags key is
-on. On acceptance, record it before running the registration command below:
-
-```bash
-bash core/scripts/work-mesh-project-registration-offer.sh --accept {co} {board-project-id}
-```
-
-On `Not now`, record the deferral with `--defer` and skip registration for
-this invocation. A persisted `deferred` result skips registration for this
-invocation. When the helper reports `deferred`, stop here and do not run
-`register-project.sh`. It suppresses both the prompt and registration. An
-`accepted` result retries registration without another prompt. Do not prompt again for an
-accepted or deferred Board entry. For `off`, `local`, `registered`, or
-`missing`, do not show a prompt and preserve the existing registration flow
-below (including its existing failure handling).
-
-```bash
-bash core/scripts/register-project.sh {co} {name}
-```
-
-The script runs `hq mesh project ensure`, writes `threadId` and `channelId` onto the company `board.json` entry, re-reads that entry, and prints one line: `registered {co}/{name} thread=<threadId> channel=<channelId>`. That line is the verify line. If the script exits non-zero, or stdout is not that line, registration is incomplete. Say "registration incomplete" in the Step 9 report and do not continue as if the project is on the Board. Do not create a replacement project.
-
-## Step 6: Register with Orchestrator
-
-Read `workspace/orchestrator/state.json`. Append to `projects` array:
-
-```json
-{
-  "name": "{name}",
-  "state": "READY",
-  "prdPath": "companies/{co}/projects/{name}/prd.json",
-  "updatedAt": "{ISO8601}",
-  "storiesComplete": 0,
-  "storiesTotal": "{N}",
-  "checkedOutFiles": []
-}
-```
-
-If project already exists in state.json, update it instead of duplicating.
-
-## Step 7: Optional Beads Setup
-
-If the optional `bd` CLI is on PATH (`command -v bd`), you may run `bd init --project {name}`; otherwise skip this step.
-
-Silent — just log success/failure.
-
-## Step 7.5: Capture Learning (Auto-Learn)
-
-Run the `learn` skill (or `/learn` in Claude Code) to register the new project in the learning system:
-
-```json
-{
-  "source": "build-activity",
-  "severity": "medium",
-  "scope": "global",
-  "rule": "Project {name} exists at companies/{co}/projects/{name}/ with {N} stories targeting {repoPath or 'no repo'}",
-  "context": "Created via prd skill"
-}
-```
-
-Also reindex: `qmd update 2>/dev/null || true`
-
-**Update INDEX.md:** Regenerate `companies/{co}/projects/INDEX.md` per `core/knowledge/public/hq-core/index-md-spec.md`.
-
-## Step 7.6: Doc Scout (read-only)
-
-Check if the new project's scope reveals missing or stale docs. Scout only — no modifications (project hasn't been built yet).
-
-1. **Repo README** (`{repoPath}/README.md` if `repoPath` set):
-   - Does it exist? Is it boilerplate (`create-next-app`, default template)?
-   - If repo is new or README is stale, note for post-implementation
-
-2. **HQ knowledge** (`companies/{co}/knowledge/`):
-   - `qmd search "{project topic}" -c {co} --json -n 3` — is this topic already covered?
-   - If no coverage and project is non-trivial, note the gap
-
-3. **External docs**: If company has a knowledge site (check INDEX.md references), note potential publishing need
-
-**Do NOT create or modify docs** — project hasn't been implemented. Instead:
-- Add a `postImplementation` array to prd.json `metadata` listing doc tasks:
-  ```json
-  "postImplementation": [
-    "Update repo README with API docs",
-    "Create {topic} architecture doc in companies/{co}/knowledge/"
-  ]
-  ```
-- Include these notes in the Step 8 confirmation output so user sees them
-
-## Step 7.7: Spawn Knowledge Pulse (Background)
-
-If `{co}` is resolved and company has a knowledge directory (not `null` in manifest):
-
-Use the background `Task` tool without worktree isolation so the child stays in this canonical HQ checkout.
-
-```
-Task({
-  subagent_type: "general-purpose",
-  description: "Pulse-garden {co} knowledge",
-  run_in_background: true,
-  prompt: "Run the knowledge-pulse skill at .claude/skills/knowledge-pulse/SKILL.md.
-    company_slug: {co}
-    knowledge_path: companies/{co}/knowledge/
-    policies_path: companies/{co}/policies/
-    caller: prd
-    qmd_collection: {qmd_collections[0] from manifest, or omit if none}
-    search_results_summary: {condensed list of qmd hits from Step 2, max 10 items — path + title per hit}
-    discovered_facts: {new facts from interview answers — especially Batch 4a data model, 5a integrations, any architecture or capability info learned about the company}
-    doc_scout_gaps: {postImplementation items from Step 7.6, or 'none'}
-    Read the skill file for full instructions."
-})
-```
-
-Do NOT wait for the pulse to complete — continue immediately to Step 8.
-
-**Skip if:** company has no knowledge directory.
-
-## Step 8: Linear Sync (best-effort, when configured)
-
-If `{co}` is `{product}`, attempt Linear sync. If credentials are unavailable or API fails, skip silently — Linear sync never blocks PRD creation.
-
-1. Read `companies/{product}/settings/linear/credentials.json` and `config.json`
-2. Validate `workspace: "{your-tenant}"` in config
-3. Create Linear project linked to best-fit initiative, with `leadId` (default: owner from `agents-profile.md`) and `targetDate` (default: today+1d)
-4. Create issue per story with `assigneeId` (resolved by team routing) and `dueDate` (matches project targetDate)
-5. Store all IDs in prd.json: `metadata.linearProjectId`, `metadata.linearCredentials`, per-story `linearIssueId`, `linearAssigneeId`
-
-No orphan issues — every issue must have a `projectId`. If project creation fails, skip issue creation.
-
-## Step 8.5: Resolve Open Questions (Decision Mode)
-
-**HARD BLOCK: PRD is NOT complete until this step finishes.**
-
-Read `metadata.openQuestions[]` from the prd.json just written. **If empty**, skip this step entirely and proceed to Step 9.
-
-**If non-empty:**
-
-1. **Enter plan mode for the resolution.** Announce to the user: `"Open questions remain — entering decision mode."` Use **AskUserQuestion** (NOT free-text questions) so answers are structured and auditable. ToolSearch `select:AskUserQuestion` if it isn't loaded yet.
-2. **Batch up to 4 questions per AskUserQuestion call.** For each question, infer **2–3 concrete candidate options** from:
-   - The PRD's own metadata (`integrations`, `architectureNotes`, `authModel`, `dataModel`, `rolloutStrategy`, etc.)
-   - Prior `metadata.decisions[]` already captured (if re-running)
-   - Anchored company policies (e.g. `{company}-aws-credentials-safety` → "{company} aws_profile (<account-id>, <region>)")
-   - Common-sense defaults ("existing cert" when signing, "existing pool" when auth)
-3. **Always append a `"Defer — track as pre-flight story"` option LAST** to every question. Users must be able to opt out of answering any single question without abandoning decision mode entirely.
-4. **Write results back to prd.json:**
-   - **Answered:** append to `metadata.decisions[]` as `{question, answer, decidedAt: <today ISO date>, decidedBy: <owner name from agents-profile.md>}`. Remove from `metadata.openQuestions[]`.
-   - **Deferred:** keep in `metadata.openQuestions[]` but annotate `{deferredAt, deferredReason}`. Generate a new user story `US-000` (or `US-00N` if taken) with:
-     - `priority: 1`
-     - `labels: ["investigation", "pre-flight"]`
-     - `acceptanceCriteria`: `"Investigate <question>, write findings to companies/{co}/projects/{name}/references.md, unblock <dependent story ids>"`
-     - `dependsOn`: minimal prerequisites (usually just US-001 or US-002)
-     - `notes`: `"Blocks <dependent stories>. Created via /prd Step 8.5 decision-mode deferral."`
-   - **Insert the new story at the top of `userStories[]`** and **prepend its id to the `dependsOn[]` of every dependent story** (inferred from the question text — e.g. "Affects US-009 scope" → add to US-009's deps).
-5. **Re-derive README.md** from the updated prd.json so the human-readable view reflects the Decisions section + new investigation stories + updated dependencies.
-6. **Re-sync orchestrator state** — update `workspace/orchestrator/state.json` for this project: `storiesTotal += <number of new investigation stories>`, bump `updatedAt`.
-7. **Re-sync board.json** — bump `companies/{co}/board.json` entry's `updated_at` timestamp (no field changes needed; investigation stories ride under the same project).
-8. **Append decision-mode results to journal:**
-
-```bash
-.claude/skills/_shared/journal.sh append "{project_dir}" decisions "Open question resolution: resolved {N} → metadata.decisions[]; deferred {M} → investigation stories; key decisions — {2-3 bullet summary}"
-```
-
-9. Only after Step 8.5 completes may Step 9 run.
-
-**Rationale:** Open questions historically drifted into `metadata.openQuestions[]` and were forgotten. Forcing resolution at PRD creation (in plan mode, via AskUserQuestion) catches cost/timeline implications while context is rich, not in the executing agent's downstream session where context is thinner. The "Defer — track as pre-flight story" escape hatch preserves the option to punt without losing traceability.
+- Step 5.5: Update Brainstorm (if exists) — set the brainstorm frontmatter to status promoted with promoted_to.
+- Step 5.6: Sync to Company Board — upsert the project entry in the company board.json.
+- Step 5.7: Register the canonical project in Work Mesh — run the registration offer check, then register-project.sh; report "registration incomplete" on failure.
+- Step 6: Register with Orchestrator — add the project to workspace/orchestrator/state.json.
+- Step 7: Optional Beads Setup — run bd init when the bd CLI is on PATH; otherwise skip.
+- Step 7.5: Capture Learning (Auto-Learn) — register the project through /learn, reindex qmd, regenerate the projects INDEX.md.
+- Step 7.6: Doc Scout (read-only) — record missing or stale docs as metadata.postImplementation; modify no docs.
+- Step 7.7: Spawn Knowledge Pulse (Background) — start a background knowledge pulse for the company.
+- Step 8: Linear Sync (best-effort, when configured) — create the Linear project and issues when configured; skip silently on failure.
+- Step 8.5: Resolve Open Questions (Decision Mode) — resolve open questions with AskUserQuestion, Defer option last; deferred ones become pre-flight investigation stories.
 
 ## Step 9: Confirm & STOP
 
@@ -774,7 +416,7 @@ Splitting heuristics:
 ## Rules
 
 - Scan HQ first, ask questions second
-- Batch questions (don't overwhelm)
+- One AskUserQuestion per interview question (grilling engine default)
 - **prd.json is the source of truth** — README.md is derived from it, never the reverse
 - **All stories start with `passes: false`** — `/run-project` marks them true
 - **Planning, not execution** — this skill IS planning for everything except Step 8.5, which uses plan mode + AskUserQuestion to force resolution of open questions before PRD completion

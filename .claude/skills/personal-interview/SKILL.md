@@ -121,4 +121,4 @@ Update or create both files. `agents-profile.md` holds the owner profile + worki
 - Don't fabricate answers — only write what was actually said.
 - If profile/voice files already exist, merge new content with existing. Don't overwrite without asking.
 - Keep the tone of the interview itself warm and conversational — not clinical.
-- After finishing, suggest: "Run `/newworker` to create your first worker, or `/plan` to plan a project."
+- After finishing, suggest: "Run `/newworker` to create your first worker, or `/prd` to plan a project."

@@ -1,7 +1,7 @@
 ---
 id: hq-docker-build-platform-amd64
 title: Always build Docker images with --platform linux/amd64 for ECS/EC2
-when: build || deploy
+when: (deploy && docker) || build
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: soft
 version: 1

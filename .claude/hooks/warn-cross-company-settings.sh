@@ -24,6 +24,22 @@ if [ -z "$TARGET_CO" ]; then
   exit 0
 fi
 
+# A target already in this exact session's lock set is an intentional scope.
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
+HQ_ROOT="${CLAUDE_PROJECT_DIR:-}"
+if [ -z "$HQ_ROOT" ]; then
+  probe="$CWD"
+  while [ -n "$probe" ] && [ "$probe" != / ]; do
+    if [ -f "$probe/core/scripts/hq-session.sh" ]; then HQ_ROOT="$probe"; break; fi
+    probe="${probe%/*}"
+    [ -n "$probe" ] || probe=/
+  done
+fi
+if [ -n "$SESSION_ID" ] && [ -n "$HQ_ROOT" ] && [ -f "$HQ_ROOT/core/scripts/hq-session.sh" ]; then
+  LOCKED_COMPANIES="$(bash "$HQ_ROOT/core/scripts/hq-session.sh" --session-id "$SESSION_ID" get company_slugs 2>/dev/null || true)"
+  case ",$LOCKED_COMPANIES," in *",$TARGET_CO,"*) exit 0 ;; esac
+fi
+
 # Try to infer active company from cwd
 ACTIVE_CO=""
 

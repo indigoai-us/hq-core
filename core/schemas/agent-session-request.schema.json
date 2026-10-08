@@ -30,6 +30,13 @@
       "minLength": 1,
       "description": "Company directory slug under companies/ that this turn is authorized for."
     },
+    "companySlugs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
+      "description": "Optional ordered company lock set for this turn. The first entry is the primary and must match companySlug."
+    },
     "channel": {
       "type": "string",
       "enum": [

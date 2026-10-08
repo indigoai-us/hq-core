@@ -36,15 +36,18 @@ expect_exit() {
 install_fixture() {
   local bound="${1:-}"
   rm -rf "${TMP:?}"/*
-  mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts/lib" \
+  mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts/lib" "$TMP/core/scripts" \
     "$TMP/companies/indigo/settings" "$TMP/companies/otherco/settings" \
     "$TMP/companies/cmp_FIXTURE/settings" "$TMP/companies/cmp_OTHER/settings" \
     "$TMP/companies/_template" "$TMP/core/docs" "$TMP/personal" \
-    "$TMP/workspace/sessions/sess-bound"
+    "$TMP/workspace/sessions/sess-bound" "$TMP/home/.hq"
   cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.claude/hooks/"
   cp "$ROOT/core/scripts/lib/session-authz.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/session-id.sh" "$TMP/core/scripts/lib/"
+  cp "$ROOT/core/scripts/hqd-hook-flag-cache-lib.sh" "$TMP/core/scripts/"
+  mkdir -p "$TMP/.codex/hooks"
+  cp "$ROOT/.codex/hooks/codex-explicit-path-flag.cjs" "$TMP/.codex/hooks/"
   cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/"
   chmod +x "$TMP/.claude/hooks/mandatory-scope-authorizer.sh"
 
@@ -53,6 +56,7 @@ install_fixture() {
   touch "$TMP/companies/indigo/settings/.keep" "$TMP/companies/otherco/settings/.keep"
   touch "$TMP/core/docs/readme.md" "$TMP/personal/note.md" "$TMP/companies/_template/readme.md"
   printf 'sess-bound\n' > "$TMP/workspace/sessions/.current"
+  export HOME="$TMP/home"
 
   if [ -n "$bound" ]; then
     printf 'company_slug: %s\n' "$bound" > "$TMP/workspace/sessions/sess-bound/meta.yaml"
@@ -860,6 +864,7 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "unquoted heredoc command substitution is scanned"
 
+# Expected exit 2: the path is unresolvable when the hook checks it, so the guard fails closed (IC-0019, #1135).
 echo "[73] unresolved workspace positional path is denied without confinement proof"
 install_fixture "indigo"
 command='function read_brief() { cat companies/indigo/settings/.keep; cat --brief-file workspace/lane-briefs/hq-core/$2; }; read_brief --company indigo note.md'
@@ -910,6 +915,7 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "company path named in prose is blocked as a real cat operand"
 
+# Expected exit 2: the path is unresolvable when the hook checks it, so the guard fails closed (IC-0019, #1135).
 echo "[79] unknown positional and loop values under workspace fail closed"
 install_fixture "indigo"
 command='function write_brief() { hq docs create --text-file workspace/lane-briefs/hq-core/$2; for p in one two; do printf "%s\\n" "workspace/lane-briefs/hq-core/$p"; done; }; write_brief --company indigo brief.md'
@@ -919,6 +925,7 @@ rc="$(run_hook "$payload")"
 if [ "$rc" != "0" ]; then cat "$TMP/err.txt" >&2; fi
 expect_exit 2 "$rc" "text-file workspace path with unresolved values fails closed"
 
+# Expected exit 2: the path is unresolvable when the hook checks it, so the guard fails closed (IC-0019, #1135).
 echo "[80] function positional workspace path fails closed beside a literal company path"
 install_fixture "indigo"
 command='mk(){ cat companies/indigo/projects/a/p; cat --brief-file workspace/lane-briefs/hq-core/$2; }; mk a b.md; mk c c.md'
@@ -945,6 +952,7 @@ rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "unresolved workspace positional operand fails closed"
 grep -Fq 'Path: workspace/$1' "$TMP/err.txt" || fail "unresolved workspace positional denial should print the literal operand"
 
+# Expected exit 2: the path is unresolvable when the hook checks it, so the guard fails closed (IC-0019, #1135).
 echo "[83] workspace loop values fail closed without confinement proof"
 install_fixture "indigo"
 command='for l in A B; do ls workspace/lanes-runs/${l}_x/; done'
@@ -1033,6 +1041,41 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "git -C pwd expansion to another company remains blocked"
+
+echo "[93] enabled ordered lock permits A and B while C and malformed sets fail closed"
+install_fixture "indigo"
+mkdir -p "$TMP/flagbin"
+cat >"$TMP/flagbin/node" <<'NODE'
+#!/bin/sh
+printf 'true\n'
+NODE
+chmod +x "$TMP/flagbin/node"
+. "$ROOT/core/scripts/lib/session-scope-capability.sh"
+session_scope_mint_set "$TMP" sess-bound indigo,otherco
+ORIGINAL_PATH="$PATH"
+export PATH="$TMP/flagbin:$PATH"
+for co in indigo otherco; do
+  payload="$(jq -cn --arg cwd "$TMP" --arg co "$co" \
+    '{tool_name:"Write",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:($cwd + "/companies/" + $co + "/settings/new.yaml")}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit 0 "$rc" "locked session writes within $co"
+done
+payload="$(jq -cn --arg cwd "$TMP" '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:($cwd + "/companies/cmp_FIXTURE/settings/x")}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "locked A+B session still blocks C"
+mkdir -p "$TMP/workspace/sessions/sess-unbound"
+payload="$(jq -cn --arg cwd "$TMP" '{tool_name:"Read",session_id:"sess-unbound",cwd:$cwd,tool_input:{file_path:($cwd + "/companies/indigo/settings/x")}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "multi-company flag does not bind an unbound session"
+jq '.company_slugs = ["indigo", 3]' "$TMP/workspace/sessions/sess-bound/scope-capability.json" >"$TMP/malformed-cap.json"
+cp "$TMP/malformed-cap.json" "$TMP/workspace/sessions/sess-bound/scope-capability.json"
+payload="$(jq -cn --arg cwd "$TMP" '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:($cwd + "/companies/indigo/settings/x")}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "malformed company_slugs capability fails closed"
+payload="$(jq -cn --arg cwd "$TMP" '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:($cwd + "/companies/indigo")}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "malformed company_slugs capability blocks primary company root"
+export PATH="$ORIGINAL_PATH"
 
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

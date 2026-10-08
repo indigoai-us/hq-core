@@ -10,7 +10,7 @@ Answer "what should I work on next?" Quick mode gives a prioritized 3-5 list. De
 
 **Input:** $ARGUMENTS
 
-**Pipeline:** `/idea` → `/brainstorm` → `/plan` → **`/strategize`** → `/run-project`
+**Pipeline:** `/idea` → `/brainstorm` → `/prd` → **`/strategize`** → `/run-project`
 
 ## Step 0: Parse Input & Company Anchor
 
@@ -124,7 +124,7 @@ TOP PRIORITIES
 | Project state | Suggested action |
 |---|---|
 | `idea`, no brainstorm | `/brainstorm {co} {slug}` |
-| `exploring`, has brainstorm | `/plan {co} {slug}` |
+| `exploring`, has brainstorm | `/prd {co} {slug}` |
 | `prd_created` or `ready` | `/run-project {prd-slug}` |
 | `in_progress`, stalled | `/run-project {prd-slug}` (resume) |
 | COVERAGE-GAP (no project) | `/idea {co} --objective {obj-id}` |
@@ -136,7 +136,7 @@ Then **AskUserQuestion** with options:
 3. Act on #3 — {title} ({next-action-verb})
 4. Run deep review (`--deep`)
 
-When user picks an option: **execute the routed command** (e.g., invoke `/run-project`, `/brainstorm`, `/plan`, or `/idea`).
+When user picks an option: **execute the routed command** (e.g., invoke `/run-project`, `/brainstorm`, `/prd`, or `/idea`).
 
 ## Step 6: Output — Deep Mode
 

@@ -1,12 +1,12 @@
 ---
 name: deep-plan
-description: "Deep planning: research subagents plus a 15-question interview for large or strategic PRDs. For light planning use /plan."
+description: "Deep planning: research subagents plus a 15-question interview for large or strategic PRDs. For light planning use /prd."
 allowed-tools: Task, Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
 ---
 
 # Deep Plan — Research-First PRD Generation
 
-Create execution-ready PRDs with full HQ context awareness, parallel research subagents, and a structured three-tier deep interview. Use this skill when the project is large, strategically important, touches unfamiliar code, or warrants the 10-15 minute upfront cost. For small ideas, tweaks, or fast captures, use the lightweight `/plan` skill instead.
+Create execution-ready PRDs with full HQ context awareness, parallel research subagents, and a structured three-tier deep interview. Use this skill when the project is large, strategically important, touches unfamiliar code, or warrants the 10-15 minute upfront cost. For small ideas, tweaks, or fast captures, use the lightweight `/prd` skill instead.
 
 **Important:** Do NOT implement. Just create the PRD.
 
@@ -695,183 +695,19 @@ Reasoning: a deep PRD already costs significant context. Bolting a multi-iterati
 
 Note in handoff (Step 9): `"Recommended next: /review-plan {slug}"`.
 
-## Step 5.5: Update Brainstorm (if exists)
+## Steps 5.5–8.5: Finalize (shared)
 
-If a `brainstorm.md` was detected in Step 3.5, update its YAML frontmatter:
-- Set `status: "promoted"`
-- Set `promoted_to: "companies/{co}/projects/{name}/prd.json"`
+Follow `.claude/skills/_shared/prd-finalize.md` in order, as caller `/deep-plan`. One line per step:
 
-This marks the brainstorm as consumed. The file is preserved for reference.
-
-## Step 5.6: Sync to Company Board
-
-Read `companies/manifest.yaml` to find `metadata.company` → `board_path`.
-
-If `board_path` exists, read `companies/{co}/board.json` and upsert a project entry:
-- **Match**: find existing entry by `prd_path === "companies/{co}/projects/{name}/prd.json"` or title similarity
-- **If found**: update `status` to `prd_created`, set `prd_path`, update `updated_at`
-- **If not found**: append new entry:
-  ```json
-  {
-    "id": "{co-prefix}-proj-{N+1}",
-    "title": "{project name}",
-    "description": "{1-sentence description}",
-    "status": "prd_created",
-    "scope": "company",
-    "app": null,
-    "initiative_id": null,
-    "prd_path": "companies/{co}/projects/{name}/prd.json",
-    "created_at": "{ISO8601}",
-    "updated_at": "{ISO8601}"
-  }
-  ```
-- Write updated `board.json` back to `board_path`
-- If no `metadata.company` in prd.json or no board_path, skip silently
-
-**Verify:** After upserting the board entry, re-read board.json and confirm the new project ID exists. If the write failed silently (file parse error, missing board, manifest lookup miss), log the error and retry once. Silent failure leaves projects invisible in the HQ app — the orphan scanner catches them with an "Unregistered" badge, but proper registration is required.
-
-## Step 6: Register with Orchestrator
-
-Read `workspace/orchestrator/state.json`. Append to `projects` array:
-
-```json
-{
-  "name": "{name}",
-  "state": "READY",
-  "prdPath": "companies/{co}/projects/{name}/prd.json",
-  "updatedAt": "{ISO8601}",
-  "storiesComplete": 0,
-  "storiesTotal": "{N}",
-  "checkedOutFiles": []
-}
-```
-
-If project already exists in state.json, update it instead of duplicating.
-
-## Step 7: Optional Beads Setup
-
-If the optional `bd` CLI is on PATH (`command -v bd`), you may run `bd init --project {name}`; otherwise skip this step.
-
-Silent — just log success/failure.
-
-## Step 7.5: Capture Learning (Auto-Learn)
-
-Run the `learn` skill (or `/learn` in Claude Code) to register the new project in the learning system:
-
-```json
-{
-  "source": "build-activity",
-  "severity": "medium",
-  "scope": "global",
-  "rule": "Project {name} exists at companies/{co}/projects/{name}/ with {N} stories targeting {repoPath or 'no repo'}",
-  "context": "Created via prd skill"
-}
-```
-
-Also reindex: `qmd update 2>/dev/null || true`
-
-**Update INDEX.md:** Regenerate `companies/{co}/projects/INDEX.md` per `core/knowledge/public/hq-core/index-md-spec.md`.
-
-## Step 7.6: Doc Scout (read-only)
-
-Check if the new project's scope reveals missing or stale docs. Scout only — no modifications (project hasn't been built yet).
-
-1. **Repo README** (`{repoPath}/README.md` if `repoPath` set):
-   - Does it exist? Is it boilerplate (`create-next-app`, default template)?
-   - If repo is new or README is stale, note for post-implementation
-
-2. **HQ knowledge** (`companies/{co}/knowledge/`):
-   - `qmd search "{project topic}" -c {co} --json -n 3` — is this topic already covered?
-   - If no coverage and project is non-trivial, note the gap
-
-3. **External docs**: If company has a knowledge site (check INDEX.md references), note potential publishing need
-
-**Do NOT create or modify docs** — project hasn't been implemented. Instead:
-- Add a `postImplementation` array to prd.json `metadata` listing doc tasks:
-  ```json
-  "postImplementation": [
-    "Update repo README with API docs",
-    "Create {topic} architecture doc in companies/{co}/knowledge/"
-  ]
-  ```
-- Include these notes in the Step 8 confirmation output so user sees them
-
-## Step 7.7: Spawn Knowledge Pulse (Background)
-
-If `{co}` is resolved and company has a knowledge directory (not `null` in manifest):
-
-Use the background `Task` tool without worktree isolation so the child stays in this canonical HQ checkout.
-
-```
-Task({
-  subagent_type: "general-purpose",
-  description: "Pulse-garden {co} knowledge",
-  run_in_background: true,
-  prompt: "Run the knowledge-pulse skill at .claude/skills/knowledge-pulse/SKILL.md.
-    company_slug: {co}
-    knowledge_path: companies/{co}/knowledge/
-    policies_path: companies/{co}/policies/
-    caller: prd
-    qmd_collection: {qmd_collections[0] from manifest, or omit if none}
-    search_results_summary: {condensed list of qmd hits from Step 2, max 10 items — path + title per hit}
-    discovered_facts: {new facts from interview answers — especially ARCHITECTURE-1 data model, operational integrations, any architecture or capability info learned about the company}
-    doc_scout_gaps: {postImplementation items from Step 7.6, or 'none'}
-    Read the skill file for full instructions."
-})
-```
-
-Do NOT wait for the pulse to complete — continue immediately to Step 8.
-
-**Skip if:** company has no knowledge directory.
-
-## Step 8: Linear Sync (best-effort, when configured)
-
-If `{co}` is `{product}`, attempt Linear sync. If credentials are unavailable or API fails, skip silently — Linear sync never blocks PRD creation.
-
-1. Read `companies/{product}/settings/linear/credentials.json` and `config.json`
-2. Validate `workspace: "{your-tenant}"` in config
-3. Create Linear project linked to best-fit initiative, with `leadId` (default: owner from `agents-profile.md`) and `targetDate` (default: today+1d)
-4. Create issue per story with `assigneeId` (resolved by team routing) and `dueDate` (matches project targetDate)
-5. Store all IDs in prd.json: `metadata.linearProjectId`, `metadata.linearCredentials`, per-story `linearIssueId`, `linearAssigneeId`
-
-No orphan issues — every issue must have a `projectId`. If project creation fails, skip issue creation.
-
-## Step 8.5: Resolve Open Questions (Decision Mode)
-
-**HARD BLOCK: PRD is NOT complete until this step finishes.**
-
-Read `metadata.openQuestions[]` from the prd.json just written. **If empty**, skip this step entirely and proceed to Step 9.
-
-**If non-empty:**
-
-1. **Enter plan mode for the resolution.** Announce to the user: `"Open questions remain — entering decision mode."` Use **AskUserQuestion** (NOT free-text questions) so answers are structured and auditable. ToolSearch `select:AskUserQuestion` if it isn't loaded yet.
-2. **Batch up to 4 questions per AskUserQuestion call.** For each question, infer **2–3 concrete candidate options** from:
-   - The PRD's own metadata (`integrations`, `architectureNotes`, `authModel`, `dataModel`, `rolloutStrategy`, etc.)
-   - Prior `metadata.decisions[]` already captured (if re-running)
-   - Anchored company policies (e.g. `{company}-aws-credentials-safety` → "{company} aws_profile (<account-id>, <region>)")
-   - Common-sense defaults ("existing cert" when signing, "existing pool" when auth)
-3. **Always append a `"Defer — track as pre-flight story"` option LAST** to every question. Users must be able to opt out of answering any single question without abandoning decision mode entirely.
-4. **Write results back to prd.json:**
-   - **Answered:** append to `metadata.decisions[]` as `{question, answer, decidedAt: <today ISO date>, decidedBy: <owner name from agents-profile.md>}`. Remove from `metadata.openQuestions[]`.
-   - **Deferred:** keep in `metadata.openQuestions[]` but annotate `{deferredAt, deferredReason}`. Generate a new user story `US-000` (or `US-00N` if taken) with:
-     - `priority: 1`
-     - `labels: ["investigation", "pre-flight"]`
-     - `acceptanceCriteria`: `"Investigate <question>, write findings to companies/{co}/projects/{name}/references.md, unblock <dependent story ids>"`
-     - `dependsOn`: minimal prerequisites (usually just US-001 or US-002)
-     - `notes`: `"Blocks <dependent stories>. Created via /plan Step 8.5 decision-mode deferral."`
-   - **Insert the new story at the top of `userStories[]`** and **prepend its id to the `dependsOn[]` of every dependent story** (inferred from the question text — e.g. "Affects US-009 scope" → add to US-009's deps).
-5. **Re-derive README.md** from the updated prd.json so the human-readable view reflects the Decisions section + new investigation stories + updated dependencies.
-6. **Re-sync orchestrator state** — update `workspace/orchestrator/state.json` for this project: `storiesTotal += <number of new investigation stories>`, bump `updatedAt`.
-7. **Re-sync board.json** — bump `companies/{co}/board.json` entry's `updated_at` timestamp (no field changes needed; investigation stories ride under the same project).
-8. **Append decision-mode results to journal:**
-
-```bash
-.claude/skills/_shared/journal.sh append "{project_dir}" decisions "Open question resolution: resolved {N} → metadata.decisions[]; deferred {M} → investigation stories; key decisions — {2-3 bullet summary}"
-```
-
-9. Only after Step 8.5 completes may Step 9 run.
-
-**Rationale:** Open questions historically drifted into `metadata.openQuestions[]` and were forgotten. Forcing resolution at PRD creation (in plan mode, via AskUserQuestion) catches cost/timeline implications while context is rich, not in the executing agent's downstream session where context is thinner. The "Defer — track as pre-flight story" escape hatch preserves the option to punt without losing traceability.
+- Step 5.5: Update Brainstorm (if exists) — set the brainstorm frontmatter to status promoted with promoted_to.
+- Step 5.6: Sync to Company Board — upsert the project entry in the company board.json.
+- Step 6: Register with Orchestrator — add the project to workspace/orchestrator/state.json.
+- Step 7: Optional Beads Setup — run bd init when the bd CLI is on PATH; otherwise skip.
+- Step 7.5: Capture Learning (Auto-Learn) — register the project through /learn, reindex qmd, regenerate the projects INDEX.md.
+- Step 7.6: Doc Scout (read-only) — record missing or stale docs as metadata.postImplementation; modify no docs.
+- Step 7.7: Spawn Knowledge Pulse (Background) — start a background knowledge pulse for the company.
+- Step 8: Linear Sync (best-effort, when configured) — create the Linear project and issues when configured; skip silently on failure.
+- Step 8.5: Resolve Open Questions (Decision Mode) — resolve open questions with AskUserQuestion, Defer option last; deferred ones become pre-flight investigation stories.
 
 ## Step 9: Confirm & STOP
 

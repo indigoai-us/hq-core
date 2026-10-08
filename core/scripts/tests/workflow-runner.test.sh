@@ -76,6 +76,9 @@ set -uo pipefail
 # Ambient company bind must not enqueue mesh events from this suite.
 # Lane presence is covered by workflow-runner-mesh-adapter.test.sh.
 unset HQ_SPAWN_COMPANY
+# A conduct lane exports its own claude model and effort pins; inherited, they
+# would override the tier defaults and orchestrator.yaml cases checked below.
+unset HQ_WORKFLOW_CLAUDE_PLAN_MODEL HQ_WORKFLOW_CLAUDE_EXEC_MODEL HQ_WORKFLOW_CLAUDE_EFFORT
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 RUNNER="$REPO_ROOT/core/scripts/workflow-runner.mjs"
@@ -110,6 +113,7 @@ n="$$-$RANDOM"
 printf '%s\n' "$@" > "$rec/codex-argv.$n"
 printenv HQ_DISABLED_HOOKS > "$rec/codex-hooksenv.$n" 2>/dev/null || : > "$rec/codex-hooksenv.$n"
 printenv HQ_SPAWN_COMPANY > "$rec/codex-spawnco.$n" 2>/dev/null || : > "$rec/codex-spawnco.$n"
+printenv HQ_SPAWN_COMPANIES > "$rec/codex-spawncos.$n" 2>/dev/null || : > "$rec/codex-spawncos.$n"
 printenv HQ_SPAWN_PROJECT > "$rec/codex-spawnproject.$n" 2>/dev/null || : > "$rec/codex-spawnproject.$n"
 printenv HQ_SPAWN_TASK > "$rec/codex-spawntask.$n" 2>/dev/null || : > "$rec/codex-spawntask.$n"
 printenv HQ_PARENT_SESSION_ID > "$rec/codex-parent.$n" 2>/dev/null || : > "$rec/codex-parent.$n"
@@ -840,6 +844,8 @@ check "symlink opts.cd is rewritten to the HQ-side repo path" "$?"
 mkdir -p "$HQROOT/workspace/sessions/parent-sid"
 printf 'session_id: parent-sid\ncompany_slug: withtrestle\nproject: download-file-organization\n' \
   > "$HQROOT/workspace/sessions/parent-sid/meta.yaml"
+printf '{"session_id":"parent-sid","company_slug":"withtrestle"}\n' \
+  > "$HQROOT/workspace/sessions/parent-sid/scope-capability.json"
 cat > "$TMP/wf-inherit.mjs" <<'WF'
 await agent('inherit-bind', { tier: 'plan', timeoutSecs: 30 })
 return 'ok'
@@ -861,6 +867,55 @@ check "child gets HQ_PARENT_SESSION_ID from the parent session" "$?"
 ih_argv="$TMP/rec/codex-argv.$suf"
 grep -qx -- '--sandbox' "$ih_argv" && grep -qx -- 'danger-full-access' "$ih_argv"
 check "plan-tier explorer spawn uses danger-full-access sandbox" "$?"
+
+# Multi-company child inheritance is gated by the same hq-flags key as readers.
+mkdir -p "$HQROOT/.codex/hooks"
+printf '%s\n' 'process.stdout.write("true")' > "$HQROOT/.codex/hooks/codex-explicit-path-flag.cjs"
+printf 'session_id: parent-sid\ncompany_slug: withtrestle\ncompany_slugs: withtrestle,otherco\nproject: download-file-organization\n' \
+  > "$HQROOT/workspace/sessions/parent-sid/meta.yaml"
+printf '{"session_id":"parent-sid","company_slug":"withtrestle","company_slugs":["withtrestle","otherco"]}\n' \
+  > "$HQROOT/workspace/sessions/parent-sid/scope-capability.json"
+OUT="$(env -u HQ_SPAWN_COMPANY -u HQ_SPAWN_COMPANIES -u HQ_SPAWN_PROJECT -u HQ_SPAWN_TASK \
+  HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$TMP/rec" \
+  HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" HQ_SESSION_ID=parent-sid \
+  HQ_WORKFLOW_GATES_DIR="$TMP/gates-multi" \
+  node "$RUNNER" "$TMP/wf-inherit.mjs" --quiet --run-dir "$TMP/run-inherit-multi" 2>/dev/null)"
+RC=$?
+check "multi-company inherit-bind workflow exits 0" "$RC"
+ih="$(grep -l -x -- 'inherit-bind' "$TMP/rec"/codex-argv.* 2>/dev/null | tail -1)"
+suf="${ih##*/codex-argv.}"
+grep -qx -- 'withtrestle,otherco' "$TMP/rec/codex-spawncos.$suf"
+check "child inherits ordered company lock set when the flag is on" "$?"
+
+# Metadata can be ahead after an interrupted add. The child must inherit only
+# the capability's narrower authorized set, even when meta.yaml still lists B.
+printf '{"session_id":"parent-sid","company_slug":"withtrestle","company_slugs":["withtrestle"]}\n' \
+  > "$HQROOT/workspace/sessions/parent-sid/scope-capability.json"
+OUT="$(env -u HQ_SPAWN_COMPANY -u HQ_SPAWN_COMPANIES -u HQ_SPAWN_PROJECT -u HQ_SPAWN_TASK \
+  HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$TMP/rec" \
+  HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" HQ_SESSION_ID=parent-sid \
+  HQ_WORKFLOW_GATES_DIR="$TMP/gates-capability-authority" \
+  node "$RUNNER" "$TMP/wf-inherit.mjs" --quiet --run-dir "$TMP/run-inherit-capability-authority" 2>/dev/null)"
+RC=$?
+check "capability-authority workflow exits 0" "$RC"
+ih="$(grep -l -x -- 'inherit-bind' "$TMP/rec"/codex-argv.* 2>/dev/null | tail -1)"
+suf="${ih##*/codex-argv.}"
+[ ! -s "$TMP/rec/codex-spawncos.$suf" ]
+check "child does not regain company B from stale metadata" "$?"
+sed 's/^company_slug: withtrestle$/company_slug: otherco/' \
+  "$HQROOT/workspace/sessions/parent-sid/meta.yaml" > "$TMP/parent-stale-primary.yaml"
+cp "$TMP/parent-stale-primary.yaml" "$HQROOT/workspace/sessions/parent-sid/meta.yaml"
+OUT="$(env -u HQ_SPAWN_COMPANY -u HQ_SPAWN_COMPANIES -u HQ_SPAWN_PROJECT -u HQ_SPAWN_TASK \
+  HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$TMP/rec" \
+  HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" HQ_SESSION_ID=parent-sid \
+  HQ_WORKFLOW_GATES_DIR="$TMP/gates-capability-primary" \
+  node "$RUNNER" "$TMP/wf-inherit.mjs" --quiet --run-dir "$TMP/run-inherit-capability-primary" 2>/dev/null)"
+RC=$?
+check "capability-primary workflow exits 0" "$RC"
+ih="$(grep -l -x -- 'inherit-bind' "$TMP/rec"/codex-argv.* 2>/dev/null | tail -1)"
+suf="${ih##*/codex-argv.}"
+grep -qx 'withtrestle' "$TMP/rec/codex-spawnco.$suf"
+check "child primary company comes from capability, not stale metadata" "$?"
 
 # Without HQ_ROOT env the runner anchors to ITS OWN install's HQ root (walking
 # up from the script location — here, this checkout) no matter the cwd. That is

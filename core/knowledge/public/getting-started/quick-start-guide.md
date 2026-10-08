@@ -73,14 +73,14 @@ Without back pressure, autonomous agents hallucinate. With it, the system catche
 Your daily loop follows this sequence:
 
 ```
-/startwork  ->  /brainstorm  ->  /plan  ->  /run-project  ->  /handoff
+/startwork  ->  /brainstorm  ->  /prd  ->  /run-project  ->  /handoff
 ```
 
 | Command | What It Does |
 |---------|-------------|
 | `/startwork` | Opens your session. Reads your last handoff, shows your board, picks up where you left off |
 | `/brainstorm` | Explores a fuzzy idea. Use when you know the direction but not the shape |
-| `/plan` | Turns a concrete idea into a project with user stories and acceptance criteria |
+| `/prd` | Turns a concrete idea into a project with user stories and acceptance criteria |
 | `/run-project` | Executes the PRD story by story — the Ralph Loop at full scale |
 | `/handoff` | Closes your session, logs it, preserves context for next time |
 
@@ -88,7 +88,7 @@ Your daily loop follows this sequence:
 
 **Day 1:** Install, run `/setup`, explore. Let it build your starting context.
 
-**Week 1:** Pick one real project. Run `/brainstorm` to explore it, `/plan` to scope it, `/run-project` to execute it. Close every session with `/handoff`.
+**Week 1:** Pick one real project. Run `/brainstorm` to explore it, `/prd` to scope it, `/run-project` to execute it. Close every session with `/handoff`.
 
 **Week 2:** The daily cadence clicks. `/startwork` every morning, `/handoff` every evening. You're reviewing work, not doing it.
 
@@ -120,7 +120,7 @@ The more knowledge you load, the smarter every session becomes. This is where th
 
 A PRD (Product Requirements Document) is how you give AI a project, not just a task. It contains user stories with acceptance criteria — clear definitions of "done" that the system can verify.
 
-The workflow: `/plan` creates the project structure. `/run-project` executes it story by story through the Ralph Loop. Each story gets fresh context, builds on verified work, and commits when done.
+The workflow: `/prd` creates the project structure. `/run-project` executes it story by story through the Ralph Loop. Each story gets fresh context, builds on verified work, and commits when done.
 
 ### Session Hygiene
 

@@ -563,7 +563,7 @@ grep -q 'export HQ_SPAWN_COMPANY=' "$REPO_ROOT/core/scripts/hq-agent-session.sh"
   || fail "HQ_SPAWN exports missing"
 
 # --- Skills reference shared bind ---
-for s in startwork execute-task run-project plan brainstorm deep-plan; do
+for s in startwork execute-task run-project prd brainstorm deep-plan; do
   if grep -q 'work-mesh-live-bind' "$REPO_ROOT/.claude/skills/$s/SKILL.md"; then
     pass "skill $s references trusted bind"
   else

@@ -3,7 +3,7 @@ id: hq-session-title-grammar
 title: Name the session with one meaningful glyph, company-first
 scope: global
 trigger: a session whose subject has become clear and whose title is still a slug or host autoname
-when: always
+when: session || title
 on: [SessionStart, UserPromptSubmit]
 enforcement: soft
 public: true

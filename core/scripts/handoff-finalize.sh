@@ -271,6 +271,18 @@ bound_session_company() {
 }
 
 BOUND_SESSION_COMPANY="$(bound_session_company)"
+SESSION_LOCKED_COMPANIES_JSON='[]'
+if [[ -n "$BOUND_SESSION_COMPANY" ]]; then
+  SESSION_ID_FOR_COMPANIES="$(session_id_resolve "$HQ_ROOT")"
+  SESSION_CAP="$HQ_ROOT/workspace/sessions/$SESSION_ID_FOR_COMPANIES/scope-capability.json"
+  LOCKED_COMPANIES="$BOUND_SESSION_COMPANY"
+  if [[ -f "$SESSION_CAP" && -f "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" ]]; then
+    # shellcheck source=lib/session-scope-capability.sh
+    . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh"
+    LOCKED_COMPANIES="$(session_scope_read_companies "$HQ_ROOT" "$SESSION_ID_FOR_COMPANIES" 2>/dev/null | paste -sd, -)"
+  fi
+  [[ -n "$LOCKED_COMPANIES" ]] && SESSION_LOCKED_COMPANIES_JSON="$(jq -cn --arg slugs "$LOCKED_COMPANIES" '$slugs | split(",") | map(select(length > 0))')"
+fi
 TOUCHED_COMPANY_COUNT="$(jq 'length' <<< "$TOUCHED_COMPANIES_JSON")"
 if [[ "$TOUCHED_COMPANY_COUNT" -gt 1 ]]; then
   printf 'handoff-finalize: company mirror skipped (handoff spans multiple companies)\n' >&2
@@ -357,6 +369,7 @@ jq -n \
   --argjson learnings "$LEARNINGS_JSON" \
   --argjson tags "$TAGS_JSON" \
   --argjson companies "$MIRROR_COMPANIES_JSON" \
+  --argjson company_slugs "$SESSION_LOCKED_COMPANIES_JSON" \
   '{
     thread_id: $thread_id,
     version: 1,
@@ -371,7 +384,7 @@ jq -n \
     next_steps: $next_steps,
     files_touched: ($files_touched[0] // []),
     learnings: $learnings,
-    metadata: { title: $title, tags: $tags, company: $companies }
+    metadata: { title: $title, tags: $tags, company: $companies, company_slugs: $company_slugs }
   }' > "$THREAD_PATH"
 
 # `handoff-finalize.sh` writes from a shell subprocess, so its thread creation

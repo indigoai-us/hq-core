@@ -45,7 +45,7 @@ Any code path that syncs a PRD into Linear MUST split the payload accordingly:
 1. **Short summary → `description` field** (≤230 chars, leaves ~25 char margin). If the source text exceeds 230 chars, truncate at the last word boundary ≤230 and append `…` (single-char ellipsis, not `...`).
 2. **Full body → `content` field** (markdown). Do NOT truncate. Do NOT dump the long body into `description`.
 
-Specifically, `/plan` Step 8 (Linear sync) must:
+Specifically, `/prd` Step 8 (Linear sync) must:
 
 1. Extract a short summary from `prd.metadata.description` or the PRD README first-paragraph summary (≤230 chars after word-boundary truncation).
 2. Extract the full PRD body (README or prd.json full description) for the `content` field.

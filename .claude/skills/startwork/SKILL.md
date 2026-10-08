@@ -1,7 +1,7 @@
 ---
 name: startwork
 description: Resolve current HQ context and surface useful next work options.
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash, AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*)
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash, AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*), Bash(bash core/scripts/startwork-context.sh:*)
 ---
 
 # Start Work Session
@@ -44,7 +44,7 @@ Use its company when `source` is `prompt`, `session`, or `device_default`; an ex
 If the argument contains a slash-command token (whitespace-delimited substring matching `/<name>` for any `<name>` that is a valid slash command in `.claude/commands/`), abort the normal classification flow and route to that command. Specifically:
 
 - **`/deep-plan` token present** → STOP. Do not classify, do not enter Task Mode, do not pick a worker pipeline. Announce: *"`/deep-plan` detected in args — routing to deep-plan skill."* Then load `.claude/skills/deep-plan/SKILL.md` and execute it end-to-end with the remaining args (everything after `/deep-plan`) as the project description. The deep-plan skill produces `companies/{co}/projects/{name}/prd.json` + board entry and HARD STOPS at `/handoff`. Implementation MUST NOT happen in this session.
-- **`/plan` token present** → route to `.claude/skills/plan/SKILL.md` similarly.
+- **`/prd` token present** → route to `.claude/skills/prd/SKILL.md` similarly.
 - **Other `/foo` tokens** → check `.claude/commands/foo.md`; if present, route to that command's skill (if any) or invoke the command directly.
 
 This rule supersedes the classification table below. The reason it exists: prior failure where `/startwork {company} vyg /deep-plan apps/...` was treated as free-text task description, causing the agent to enter Claude Code's built-in plan mode and start implementing instead of running the deep-plan questionnaire. Policy: `core/policies/deep-plan-skill-routing.md`.
@@ -77,6 +77,7 @@ Determine mode from the user's argument (first match wins):
 
 - **No arg / empty** — Entry-gate mode (ask before loading context — see "Entry-Gate Mode" below)
 - **Arg matches company slug** in `companies/manifest.yaml` — Company mode
+- **Arg is a company alias or a repo name** — run `bash core/scripts/startwork-context.sh resolve --arg "{arg}"`. `via: slug|alias` → Company mode for that company; `via: repo` → Company mode with the repo noted for git state. Exit 3 means no match: continue below. Never grep the manifest by hand to find out which company an argument belongs to.
 - **Arg matches a directory** in `personal/projects/` (not `_archive/`) or `companies/*/projects/` — Project mode
 - **Arg matches a directory** in `repos/private/` or `repos/public/` — Repo mode
 - **Partial match** — arg is a substring of any company slug, project dir, or repo name. 1 match: use that mode. 2-5 matches: present numbered list, wait for user to pick. >5: ask user to be more specific
@@ -144,26 +145,26 @@ only when the subject changes, and preserve a title the user manually renamed.
 
 #### Company Mode (arg = company slug)
 
-1. Read `companies/manifest.yaml` — extract the company's entry (repos, workers, knowledge, qmd_collections)
+1. Render the capability block. One script call, no network, under 3 KB:
+   ```bash
+   bash core/scripts/startwork-context.sh block --company "{co}"
+   ```
+   It carries the company's repos, knowledge and source folders, the cached list of usable integrations with the flag for each, the five most recently touched projects with local open-story counts, the company's workers, and the path of the skill intent index. Do not grep the manifest, run the qmd/grep project scan, read `core/workers/registry.yaml`, or run git over the first manifest repo by hand; the block replaces those reads (HP-12 traced every one of them as a lookup startwork should have answered).
 2. Read `workspace/threads/handoff.json` — if last thread relates to this company, note it
-3. Search for company projects:
-   - Primary: `qmd search "prd.json" --json -n 10` via shell
-   - Fallback: `grep -rl '"passes"' personal/projects/ companies/ --include='prd.json'`
-   - Filter to projects whose repoPath matches any of the company's repos. Read local `prd.json` only for project description and acceptance context, not story status.
-4. Board status comes from the work mesh, never local prd.passes. For each matching project, load the live Board from cache / Desktop live read (presence is automatic via `hq mesh daemon`), using the Project Mode source and status wording. If the Board block is absent, use local prd only for project description and acceptance; never as live Board columns.
+3. Board status comes from the work mesh, never local prd.passes. For each matching project, load the live Board from cache / Desktop live read (the matching projects are the ones the block listed) (presence is automatic via `hq mesh daemon`), using the Project Mode source and status wording. If the Board block is absent, use local prd only for project description and acceptance; never as live Board columns. The capability block's open counts are local too.
    - `queued` = available next work
    - `in_progress` / `review` = already claimed; do not offer as free next work
    - `done` = done
    Count story status from Board entries per project and summarize the company totals.
-5. If company has repos, run `git -C {first-repo} log --oneline -3` and `git -C {first-repo} branch --show-current`
-6. List the company's workers from manifest (names only, don't read worker.yaml files)
-
+4. If the block's Integrations line reads "not cached", run `bash core/scripts/usable-integrations.sh show --company {co}` once. That is the only network call startwork may make, and it is skipped when the cache is fresh
+5. Git state only for a repo the user named (or the `via: repo` resolution in §1.1): `git -C {repo} branch --show-current` and `git -C {repo} log --oneline -3`
 #### Project Mode (arg = project name)
 
 Board status comes from the work mesh, never local prd.passes. If ground/check and the project-view cache both fail, then and only then use local prd for description — still not as live Board columns.
 
 1. Resolve the project dir (`personal/projects/{name}` or `companies/{co}/projects/{name}`); when the path is under `companies/{co}`, bind that company now. Read `prd.json` only for `name`, `description`, `branchName`, and acceptance text — not story status.
-2. Extract `metadata.repoPath` — identify company by matching against manifest repos if the project path did not identify it. Bind the resolved company before continuing.
+2. Extract `metadata.repoPath` — identify company by matching against manifest repos if the project path did not identify it (`bash core/scripts/startwork-context.sh resolve --arg "{repo basename}"`). Bind the resolved company before continuing.
+2b. Once `{co}` is known, render the capability block for the project: `bash core/scripts/startwork-context.sh block --company "{co}" --project "{name}"`. Its last line carries the project goal and branch; the rest is the company context from Company Mode step 1.
 3. If repoPath exists: `git -C {repoPath} branch --show-current` and `git -C {repoPath} status --short`
 4. If company `{co}` is resolved, load the live Board from cache / Desktop live read (presence is automatic via `hq mesh daemon`). Prefer `~/.hq/work-mesh/cache/projects/{companyUid}/{projectId}.json` when present. Do not call deleted `hq mesh session ground|check|watch`.
    - `queued` = available next work
@@ -189,7 +190,7 @@ Board status comes from the work mesh, never local prd.passes. If ground/check a
    - Design/visual/brand → `design`
    - Deploy/CI/infra → `ops`
    - Otherwise → `enhancement`
-3. Map to worker pipeline (same sequences as `/plan` command Step 5)
+3. Map to worker pipeline (same sequences as `/prd` command Step 5)
 4. If company resolved, check company-specific workers in manifest — prefer over generic
 
 #### Repo Mode (arg = repo directory name)
@@ -251,7 +252,7 @@ Rules:
 
 After policies are known, build a compact Worker Packet for the resolved context.
 
-1. Read `core/workers/registry.yaml` (auto-generated read-only index) once and keep only entries relevant to the current company, project, repo, or task intent. Skip any entry whose `path` is not a directory containing `worker.yaml`. If an active company worker is listed but missing, say so in the orientation block — do not invent a raw-script fallback.
+1. When a company is resolved, the capability block's Workers line is the candidate list; do not re-read `core/workers/registry.yaml` for it. Read the registry (auto-generated read-only index) only in task mode without a company, or to map an intent onto public workers, and keep only entries relevant to the current company, project, repo, or task intent. Skip any entry whose `path` is not a directory containing `worker.yaml`. If an active company worker is listed but missing, say so in the orientation block — do not invent a raw-script fallback.
 2. If company `{co}` is resolved, include any registry entries whose `company:` field is `{co}` (sourced from `worker.company` in each `worker.yaml`) or whose path starts with `companies/{co}/workers/`.
 3. If project mode and `prd.json` story metadata includes declared workers or worker hints, include those first.
 4. If task mode, map the classified intent to a worker route before offering direct execution:
@@ -282,9 +283,9 @@ Display a concise orientation block:
 Session Start
 --------------
 {Mode: Resume | Company: {slug} | Project: {name}}
+{<startwork-context> block, verbatim, whenever a company is resolved}
 
 {If resume: "Last session: {summary}" + "Next steps: {next_steps with status: open}" + "Still open from earlier handoffs: {bash core/scripts/handoff-open-steps.sh list --limit 10, excluding this thread}"; any delegation manifest under workspace/delegations/ still at status `sent` gets `bash core/scripts/hq-delegate-pickup.sh --manifest <m> --check` and its result shown as verified / waiting / FAILED}
-{If company: "Repos: {list}" + "Workers: {list}"}
 {If project: "Goal: {description}" + "Branch: {branchName}"}
 {If repo: "Repo: {repoPath}" + "Company: {slug}" + "Branch: {branch}"}
 {If task: "Task: {description}" + "Intent: {classified_intent}" + "Pipeline: {worker count} workers"}
@@ -309,7 +310,7 @@ Then present numbered options built from context:
 - **Company mode**: worker-recommended next actions + active projects for that company (up to 3) + "Run a worker" + "Something else"
 - **Project mode**: top 3 **queued** Board stories from work-mesh `stories[]` via `/execute-task` + matching worker route + "Something else". Skip `in_progress` unless the user already owns that row.
 - **Repo mode**: related projects with incomplete work (up to 3) + "Open repo (no project)" + "Something else"
-- **Task mode**: proposed worker pipeline phases (up to 5) + "Run this worker pipeline" + "Modify pipeline" + "Do it directly (no worker)" + "Run /plan for full options" + "Something else"
+- **Task mode**: proposed worker pipeline phases (up to 5) + "Run this worker pipeline" + "Modify pipeline" + "Do it directly (no worker)" + "Run /prd for full options" + "Something else"
 
 Output the numbered list and wait for user input. After user picks, proceed directly into the work.
 
@@ -317,8 +318,10 @@ Output the numbered list and wait for user input. After user picks, proceed dire
 
 - NEVER read INDEX.md, agents files, or company knowledge dirs during startup
 - NEVER run exploratory searches to orient — this skill replaces exploration with targeted reads
+- NEVER grep the manifest, list project directories, or read the worker registry by hand when `core/scripts/startwork-context.sh block` can answer; one script call replaces those reads
+- The capability block reads only the bound company. Never render it for a second company in the same session to compare; that is a tenant-isolation bug
 - A bounded single-action request (§1.0b table) routes to its owning skill and never triggers orientation loading, session-metadata writes, policy scans, worker routing, or background maintenance
-- NEVER spawn a background knowledge-pulse (or any maintenance agent) from startup. The pulse is spawned only by the planning skills (`/brainstorm`, `/plan`, `/deep-plan`, `/prd`) — interactive startup spawns zero agents
+- NEVER spawn a background knowledge-pulse (or any maintenance agent) from startup. The pulse is spawned only by the planning skills (`/brainstorm`, `/prd`, `/deep-plan`) — interactive startup spawns zero agents
 - Max file reads: handoff.json + 1 thread + manifest + up to 5 prd.json (headers only) + up to 2 journal files per resolved project (frontmatter + Open threads section only — never load Auto-capture)
 - If >5 active projects found, show top 5 by most recent file modification
 - Always verify git branch with `git branch --show-current` before displaying git state

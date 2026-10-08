@@ -1,7 +1,7 @@
 ---
 id: hq-audience-mode
 title: Two audiences — quiet plain-language by default, technical play-by-play on request
-when: always
+when: write || message || reply || report || email || slack
 on: [SessionStart]
 enforcement: soft
 version: 1

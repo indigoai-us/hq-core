@@ -357,6 +357,26 @@ check_local_hook_shadow() {
   ' "$local_settings" >/dev/null 2>&1; then
     LOCAL_HOOK_SHADOW_ISSUES+=(".claude/settings.local.json shadows project hook registrations with master-hook.sh")
   fi
+
+  # A second, quieter failure of the same relocate: the overlay keeps the
+  # pre-consolidation per-hook `hook-gate.sh <id>` lines while settings.json
+  # routes through master-hook.sh, whose registry dispatches those same ids.
+  # Claude Code unions both files, so every such hook fires twice per event:
+  # doubled policy reminders, doubled startup context, doubled latency.
+  local registry="$HQ_ROOT/.claude/hooks/hook-registry.json"
+  [ -f "$registry" ] || return 0
+  grep -q 'master-hook\.sh' "$HQ_ROOT/.claude/settings.json" 2>/dev/null || return 0
+  local dup_count
+  dup_count="$(jq -r --slurpfile reg "$registry" '
+    ([$reg[0].hooks // {} | .. | objects | .id? | select(type == "string")] | unique) as $ids
+    | [ .hooks // {} | .. | objects | .command?
+        | select(type == "string")
+        | capture("hook-gate\\.sh\"? +(?<id>[A-Za-z0-9._-]+)") | .id
+        | select(. as $i | $ids | index($i)) ]
+    | length' "$local_settings" 2>/dev/null || echo 0)"
+  if [ "${dup_count:-0}" -gt 0 ] 2>/dev/null; then
+    LOCAL_HOOK_SHADOW_ISSUES+=(".claude/settings.local.json re-registers $dup_count hook(s) that master-hook.sh already dispatches, so each fires twice per event")
+  fi
 }
 check_local_hook_shadow
 
@@ -453,6 +473,7 @@ done <<'EOF'
 .claude/hooks/session-title.sh|core/scripts/session-title.sh|exec
 .claude/hooks/session-title.sh|core/scripts/session-title-config.sh|guard
 .claude/hooks/validate-policy-frontmatter.sh|core/scripts/eval-trigger.sh|bash
+.claude/hooks/migrate-policy-triggers-if-changed.sh|core/scripts/migrate-policy-triggers.sh|bash
 core/scripts/migrate-policy-triggers.sh|core/scripts/migrate-policy-triggers.sh|exec
 core/scripts/migrate-policy-triggers.sh|core/scripts/eval-trigger.sh|bash
 core/hooks/SessionStart/35-work-mesh-session-start.sh|core/scripts/register-project.sh|bash

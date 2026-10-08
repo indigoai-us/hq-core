@@ -26,7 +26,8 @@ handled_paths="$tmp_dir/handled-paths"
 : > "$handled_paths"
 
 jq -e 'def safe_path: type == "string" and length > 0 and (startswith("/") | not) and (split("/") | all(.[]; . != "" and . != "." and . != "..")) and (contains("\n") | not) and (contains("\r") | not); type == "array" and all(.[]; if type == "string" then safe_path else type == "object" and (.path | safe_path) end)' "$changeset" >/dev/null || {
-  echo "handoff knowledge commit: changeset must be an array of safe relative file paths" >&2
+  echo "handoff knowledge commit: changeset must be an array of safe relative file paths (files, not folders: no trailing slash, no absolute paths, no .. segments)" >&2
+  jq -r 'def safe_path: type == "string" and length > 0 and (startswith("/") | not) and (split("/") | all(.[]; . != "" and . != "." and . != "..")) and (contains("\n") | not) and (contains("\r") | not); if type == "array" then (.[] | select((if type == "string" then . elif type == "object" then .path else null end) | safe_path | not) | "  offending entry: " + tojson) else "  the changeset is not a JSON array" end' "$changeset" 2>/dev/null | head -5 >&2 || true
   exit 1
 }
 

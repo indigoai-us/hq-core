@@ -684,7 +684,7 @@ PRD_PATH=$(resolve_prd_path "$PROJECT") || true
 
 if [[ -z "$PRD_PATH" || ! -f "$PRD_PATH" ]]; then
   echo -e "${RED}ERROR: prd.json not found for '$PROJECT'.${NC}"
-  echo "Run /plan $PROJECT to generate one."
+  echo "Run /prd $PROJECT to generate one."
   exit 1
 fi
 

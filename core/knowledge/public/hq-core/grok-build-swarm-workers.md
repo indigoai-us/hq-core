@@ -62,7 +62,7 @@ Before a multi-unit swarm, ensure a durable project home exists:
 
 1. Active session project / PRD path if already bound
 2. Else create/reuse via `bash core/scripts/session-project.sh` (lightweight
-   project + `prd.json` without full `/plan` interview)
+   project + `prd.json` without full `/prd` interview)
 3. Use that slug under `workspace/orchestrator/{project}/`
 
 ### Layout (canonical)

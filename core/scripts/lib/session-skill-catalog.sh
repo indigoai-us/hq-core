@@ -94,13 +94,18 @@ session_skill_catalog_build() {
 
   # Build ordered candidate list: company first, then root, then packages.
   # Format per line: origin<TAB>path
-  if [ -d "$root/companies/$company/skills" ]; then
-    for skill_dir in "$root/companies/$company/skills"/*/; do
-      [ -d "$skill_dir" ] || continue
-      f="${skill_dir}SKILL.md"
-      [ -f "$f" ] && printf 'company\t%s\n' "$f" >> "$list_file"
-    done
-  fi
+  local -a company_slugs=()
+  IFS=, read -r -a company_slugs <<< "$company"
+  for company in "${company_slugs[@]}"; do
+    [ -n "$company" ] || continue
+    if [ -d "$root/companies/$company/skills" ]; then
+      for skill_dir in "$root/companies/$company/skills"/*/; do
+        [ -d "$skill_dir" ] || continue
+        f="${skill_dir}SKILL.md"
+        [ -f "$f" ] && printf 'company\t%s\n' "$f" >> "$list_file"
+      done
+    fi
+  done
   if [ -d "$root/.claude/skills" ]; then
     for skill_dir in "$root/.claude/skills"/*/; do
       [ -d "$skill_dir" ] || continue

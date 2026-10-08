@@ -101,6 +101,7 @@ if [ -n "$NS" ]; then valid_slug "$NS" || exit 0; fi
 # master-hook.sh resolves this too but does not export it, so read the same
 # source of truth: workspace/sessions/<session_id>/meta.yaml.
 ACTIVE_COMPANY=""
+ACTIVE_COMPANIES=""
 SID="${HQ_HOOK_SESSION_ID:-}"
 if [ -z "$SID" ]; then
   SID="$(printf '%s' "$INPUT" | hq_json_get session_id 2>/dev/null)" || SID=""
@@ -111,8 +112,23 @@ if valid_slug "$SID"; then
   if [ -f "$META" ]; then
     ACTIVE_COMPANY="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META" 2>/dev/null)" || ACTIVE_COMPANY=""
   fi
+  AGENT_ID="${HQ_HOOK_AGENT_ID:-}"
+  CAP="$HQ_ROOT/workspace/sessions/$SID/scope-capability.json"
+  if [ -n "$AGENT_ID" ]; then
+    CAP="$HQ_ROOT/workspace/sessions/$SID/agents/$AGENT_ID/scope-capability.json"
+  fi
+  if [ -f "$CAP" ] && [ -f "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" ]; then
+    . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh"
+    ACTIVE_COMPANIES="$(session_scope_read_companies "$HQ_ROOT" "$SID" "$AGENT_ID" 2>/dev/null | paste -sd, -)"
+    if [ -n "$AGENT_ID" ]; then ACTIVE_COMPANY="${ACTIVE_COMPANIES%%,*}"; fi
+  elif [ -n "$AGENT_ID" ]; then
+    ACTIVE_COMPANY=""
+    ACTIVE_COMPANIES=""
+  else
+    ACTIVE_COMPANIES="$ACTIVE_COMPANY"
+  fi
 fi
-case "$ACTIVE_COMPANY" in personal) ACTIVE_COMPANY="" ;; esac
+case "$ACTIVE_COMPANY" in personal) ACTIVE_COMPANY=""; ACTIVE_COMPANIES="" ;; esac
 if [ -n "$ACTIVE_COMPANY" ]; then
   valid_slug "$ACTIVE_COMPANY" || ACTIVE_COMPANY=""
 fi
@@ -133,15 +149,18 @@ candidates() {
       return 0
     fi
     # Company namespace: only the session's own company may execute.
-    if [ -n "$ACTIVE_COMPANY" ] && [ "$NS" = "$ACTIVE_COMPANY" ]; then
+    case ",$ACTIVE_COMPANIES," in *",$NS,"*)
       printf 'company:%s|%s\n' "$NS" "$HQ_ROOT/companies/$NS/skills/$NAME"
-    fi
+      ;;
+    esac
     return 0
   fi
 
-  if [ -n "$ACTIVE_COMPANY" ]; then
-    printf 'company:%s|%s\n' "$ACTIVE_COMPANY" "$HQ_ROOT/companies/$ACTIVE_COMPANY/skills/$NAME"
-  fi
+  IFS=, read -r -a LOCKED_COMPANY_LIST <<< "$ACTIVE_COMPANIES"
+  for locked_company in "${LOCKED_COMPANY_LIST[@]}"; do
+    [ -n "$locked_company" ] || continue
+    printf 'company:%s|%s\n' "$locked_company" "$HQ_ROOT/companies/$locked_company/skills/$NAME"
+  done
   printf 'personal|%s\n' "$HQ_ROOT/personal/skills/$NAME"
   if [ -d "$HQ_ROOT/core/packages" ]; then
     find "$HQ_ROOT/core/packages" -mindepth 3 -maxdepth 3 -type d -path "*/skills/$NAME" 2>/dev/null \

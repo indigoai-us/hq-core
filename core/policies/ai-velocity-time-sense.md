@@ -38,7 +38,7 @@ The only place in HQ where real wall-clock duration is legitimate is the empiric
 
 ### Scope of enforcement
 
-Applies to: `/brainstorm`, `/plan`, `/prd`, `/deep-plan`, `/idea`, `/strategize`, `/run-project`, `/execute-task`, `/handoff`, `/checkpoint`, `/retro`, and any agent-authored artifact (`brainstorm.md`, `prd.json`, README, handoff threads, retros) that would otherwise state effort or remaining work.
+Applies to: `/brainstorm`, `/prd`, `/deep-plan`, `/idea`, `/strategize`, `/run-project`, `/execute-task`, `/handoff`, `/checkpoint`, `/retro`, and any agent-authored artifact (`brainstorm.md`, `prd.json`, README, handoff threads, retros) that would otherwise state effort or remaining work.
 
 Does **not** apply to: genuine external deadlines supplied by the user (a real ship date, a customer commitment, a scheduled event), measured durations in the estimate-log, or descriptive references to past calendar events. Those are facts, not estimates — pass them through verbatim.
 

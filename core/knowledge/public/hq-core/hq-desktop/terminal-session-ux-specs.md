@@ -33,7 +33,7 @@ All 27 HQ slash commands registered with proper categories, descriptions, argume
 |----------|-------|----------|
 | `worker` | Workers | `/run`, `/newworker` |
 | `session` | Session | `/checkpoint`, `/handoff`, `/reanchor` |
-| `project` | Projects | `/nexttask`, `/execute-task`, `/run-project`, `/plan`, `/pr` |
+| `project` | Projects | `/nexttask`, `/execute-task`, `/run-project`, `/prd`, `/pr` |
 | `system` | System | `/cleanup`, `/metrics`, `/search`, `/search-reindex`, `/learn`, `/remember`, `/decide` |
 | `content` | Content | `/contentidea`, `/generateimage` |
 | `social` | Social | `/post-now`, `/preview-post`, `/scheduleposts`, `/suggestposts`, `/social-setup` |
@@ -81,7 +81,7 @@ Execute immediately                    Show argument input field
 | `/run` | `{worker}` or `{worker}:{skill}` | `worker-id` or `worker:skill` |
 | `/execute-task` | `{project}/{story-id}` | `project/STORY-001` |
 | `/run-project` | `{project}` | `project-name` |
-| `/plan` | `{project-name}` | `my-project` |
+| `/prd` | `{project-name}` | `my-project` |
 | `/newworker` | `{worker-id}` | `worker-name` |
 | `/contentidea` | `{topic}` | `topic or brief` |
 | `/search` | `{query}` | `search query` |

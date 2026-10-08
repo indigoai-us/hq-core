@@ -20,7 +20,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SKILLS="${HQ_ORCH_SKILLS_DIR:-$ROOT/.claude/skills}"
 RUN_PROJECT="$SKILLS/run-project/SKILL.md"
-CONDUCT="$SKILLS/conduct/SKILL.md"
+CONDUCT="$SKILLS/conduct/dispatch.md"   # lane mechanics moved out of SKILL.md (HP-14)
 DISPATCH="$SKILLS/_shared/lane-dispatch-protocol.md"
 POOL_PROTO="$SKILLS/_shared/pool-lane-protocol.md"
 RUNNER="$ROOT/core/scripts/workflow-runner.mjs"
@@ -633,6 +633,131 @@ no_task_result="$(launch_protocol_task_case no-task '')"
 [ "$no_task_result" = 'unset' ] \
   || fail "a lane without an owned task inherited parent meta.yaml task: ${no_task_result:-missing}"
 ok "the protocol launch forwards only the story-owned task binding"
+
+echo "run-project --pipeline: preflight first, table confirmed once, no lane before confirmation"
+# Step 3P only; matching the whole skill would let coordinator text satisfy a
+# pipeline check.
+awk '/^## Step 3P /{f=1} /^## Step 4 /{f=0} f' "$RUN_PROJECT" > "$TMP/pipe.md"
+[ -s "$TMP/pipe.md" ] || fail "run-project has no Step 3P pipeline section"
+flatten "$TMP/pipe.md" > "$TMP/pipe.flat"; PIPE_FLAT="$TMP/pipe.flat"
+pre_line="$(grep -n 'Pre-flight first' "$TMP/pipe.md" | head -1 | cut -d: -f1)"
+table_line="$(grep -n 'pipeline-worker-table.sh {prd.json}' "$TMP/pipe.md" | head -1 | cut -d: -f1)"
+confirm_line="$(grep -n 'confirm the whole table' "$TMP/pipe.md" | head -1 | cut -d: -f1)"
+launch_line="$(grep -n 'conduct-pool.sh assign --worker-id "{worker}"' "$TMP/pipe.md" | head -1 | cut -d: -f1)"
+[ -n "$pre_line" ] && [ -n "$table_line" ] && [ -n "$confirm_line" ] && [ -n "$launch_line" ] \
+  || fail "Step 3P must have preflight, table, confirmation and launch (${pre_line:-?} ${table_line:-?} ${confirm_line:-?} ${launch_line:-?})"
+[ "$pre_line" -lt "$table_line" ] && [ "$table_line" -lt "$confirm_line" ] && [ "$confirm_line" -lt "$launch_line" ] \
+  || fail "Step 3P order must be preflight < table < confirm < first lane assign ($pre_line $table_line $confirm_line $launch_line)"
+grep -qi 'Step 3a preflight exactly as they run today' "$PIPE_FLAT" \
+  || fail "pipeline mode must run the existing preflight unchanged"
+grep -qi 'stale state' "$PIPE_FLAT" && grep -qi 'launch no lane until it is resolved' "$PIPE_FLAT" \
+  || fail "pipeline mode must pause on stale state before any lane"
+grep -q 'needs-answer' "$PIPE_FLAT" && grep -qi 'must be answered' "$PIPE_FLAT" \
+  || fail "flagged (needs-answer) rows must be answered before launch"
+grep -qi 'confirm the whole table \*\*once\*\*, before the first dispatch' "$PIPE_FLAT" \
+  || fail "the table must be confirmed once before the first dispatch"
+grep -qi 'no lane starts' "$PIPE_FLAT" \
+  || fail "no lane may start before confirmation"
+ok "pipeline preflight, flagged rows and the single confirmation all precede the first lane"
+
+echo "run-project --pipeline: loop lanes with their own engine exports, commands that exist"
+grep -q 'pipeline-worker-table.sh --confirmed pipeline/table.tsv' "$PIPE_FLAT" \
+  || fail "per-lane exports must come from pipeline-worker-table.sh --confirmed"
+grep -qi 'own engine exports' "$PIPE_FLAT" \
+  || fail "each lane must start with its own engine exports"
+grep -q 'workflow-runner.mjs --loop --run-dir' "$PIPE_FLAT" \
+  || fail "pipeline lanes must be workflow-runner --loop lanes"
+grep -q "case '--loop'" "$RUNNER" || fail "the runner no longer accepts --loop"
+grep -q -- '--confirmed' "$ROOT/core/scripts/pipeline-worker-table.sh" \
+  || fail "pipeline-worker-table.sh no longer has --confirmed"
+grep -q 'worker-id pipeline-conductor' "$PIPE_FLAT" \
+  && fail "pipeline-conductor must not be launched as a pool lane"
+grep -qi 'There is no conductor lane' "$PIPE_FLAT" \
+  || fail "Step 3P must say the conductor is not a lane"
+grep -q 'hq-detach.sh --logfile {state}/driver/detach.log -- [\\]* *sh core/scripts/pipeline-driver.sh --prd {prd.json} --state {state}' "$PIPE_FLAT" \
+  || fail "the parent must launch pipeline-driver.sh detached through hq-detach.sh"
+[ -f "$ROOT/core/scripts/pipeline-driver.sh" ] || fail "core/scripts/pipeline-driver.sh is missing"
+grep -qi 'arms one background waiter' "$PIPE_FLAT" && grep -q '{state}/driver/exit' "$PIPE_FLAT" \
+  || fail "the parent must arm a waiter on the driver's exit file"
+for code in 0 20 21 22 23; do
+  grep -q "| $code |" "$TMP/pipe.md" || fail "Step 3P must document driver exit code $code"
+done
+for f in "$TMP/pipe.md" "$ROOT/core/workers/public/dev-team/pipeline-conductor/worker.yaml" \
+         "$ROOT/core/workers/public/dev-team/pipeline-conductor/skills/conduct-pipeline.md"; do
+  grep -inE 'run_in_background|nohup|in the background[^,]* (of|inside) (a|the|this) lane|&[[:space:]]*$' "$f" \
+    | grep -viE 'never|no step|not ' && fail "$f tells a lane to background something"
+done
+grep -q 'record --worker-id "{worker}"' "$PIPE_FLAT" \
+  && grep -q -- '--status waiting --pid "{runner pid}" --run-dir' "$PIPE_FLAT" \
+  || fail "a loop lane must be recorded with pid and run dir"
+ok "one loop lane per row through conduct-pool.sh, and a detached driver with a waiter"
+
+echo "run-project --pipeline: approval holds are released with the helper's real command"
+grep -q 'pipeline-conductor.sh release --state {state} --worker {worker}' "$PIPE_FLAT" \
+  || fail "the parent must release approval holds with pipeline-conductor.sh release"
+grep -q 'release  --state S (--story ID \[--worker W\] | --worker W)' "$ROOT/core/scripts/pipeline-conductor.sh" \
+  || fail "pipeline-conductor.sh no longer documents release --worker"
+grep -q 'approval_required: true' "$PIPE_FLAT" \
+  || fail "the skill must say why holds happen (approval_required)"
+ok "holds name the release command the helper implements"
+
+echo "run-project --pipeline: Step 3P.6 ends every live turn with the lane rows"
+awk '/^\*\*3P\.6 /{f=1} /^\*\*3P\.7 /{f=0} f' "$RUN_PROJECT" > "$TMP/p36.md"
+flatten "$TMP/p36.md" > "$TMP/p36.flat"
+grep -q 'Relay, do not drive' "$TMP/p36.flat" || fail "Step 3P.6 must be named Relay, do not drive"
+grep -qi 'Ends every turn in which a pipeline lane is live with the lane rows' "$TMP/p36.flat" \
+  || fail "Step 3P.6 must end every live turn with the lane rows"
+grep -q 'sh core/scripts/pipeline-lane-rows.sh --state {state} --session-id {session_id}' "$TMP/p36.flat" \
+  || fail "Step 3P.6 must pull the rows with pipeline-lane-rows.sh"
+[ -f "$ROOT/core/scripts/pipeline-lane-rows.sh" ] || fail "core/scripts/pipeline-lane-rows.sh is missing"
+[ -f "$SKILLS/conduct/lane-rows.html" ] || fail "the lane-rows template .claude/skills/conduct/lane-rows.html is missing"
+grep -q '\.claude/skills/conduct/lane-rows.html' "$TMP/p36.flat" || fail "Step 3P.6 must render from the lane-rows template"
+grep -q 'mcp__visualize__read_me` with `\["mockup"\]` once per session' "$TMP/p36.flat" \
+  || fail "Step 3P.6 must call read_me with mockup once per session"
+grep -q 'mcp__visualize__show_widget`' "$TMP/p36.flat" && grep -qi 'HTML mode' "$TMP/p36.flat" \
+  || fail "Step 3P.6 must render show_widget in HTML mode"
+grep -qi 'one `.row` per worker lane plus one for the driver' "$TMP/p36.flat" \
+  && grep -qi 'CSS untouched' "$TMP/p36.flat" && grep -qi 'never a grid or cards' "$TMP/p36.flat" \
+  || fail "Step 3P.6 must render one flex row per lane plus the driver, CSS untouched"
+grep -qi 'never 100% before the story is verified' "$TMP/p36.flat" \
+  || fail "Step 3P.6 must keep the percentage honest"
+for f in phase_label phase_elapsed_s quiet_s inbox_pending phase_index phase_count last_line pid_alive; do
+  grep -q "$f" "$TMP/p36.flat" || fail "Step 3P.6 must use the rows field $f"
+done
+grep -qi 'green when the lane runs and is active; yellow' "$TMP/p36.flat" && grep -qi 'red when `pid_alive` is false' "$TMP/p36.flat" \
+  && grep -qi 'blue on a lane that exited 0' "$TMP/p36.flat" || fail "Step 3P.6 must define the dot colours"
+grep -qi 'Nothing the owner must decide goes in a row' "$TMP/p36.flat" && grep -q '/decision-queue' "$TMP/p36.flat" \
+  || fail "decisions go to /decision-queue after the rows, never in a row"
+grep -qi 'Zero live lanes means no rows' "$TMP/p36.flat" || fail "Step 3P.6 must say zero live lanes means no rows"
+head -6 "$RUN_PROJECT" | grep '^allowed-tools:' | grep -q 'mcp__visualize__read_me' \
+  && head -6 "$RUN_PROJECT" | grep '^allowed-tools:' | grep -q 'mcp__visualize__show_widget' \
+  || fail "run-project allowed-tools must list mcp__visualize__read_me and mcp__visualize__show_widget"
+grep -q 'sh core/scripts/pipeline-lane-rows.sh --state {state} --session-id {session_id}' "$CONDUCT" \
+  && grep -qi 'relay, do not drive' "$CONDUCT" || fail "the conduct skill must mirror Step 3P.6 on the parent side"
+ok "Step 3P.6 lane rows, template, visualize tools and the conduct mirror"
+
+echo "run-project --pipeline: worktrees under workspace/worktrees, repos/ refused"
+grep -q 'workspace/worktrees/{project}/{repo-name}/' "$PIPE_FLAT" || fail "Step 3P must name the default worktree location"
+grep -qi 'must sit inside the HQ root for lanes to cd into it' "$PIPE_FLAT" || fail "Step 3P must keep the inside-the-HQ-root rule"
+grep -q -- '--allow-repos-worktree' "$PIPE_FLAT" && grep -qi 'core Write/Edit guard blocks' "$PIPE_FLAT" \
+  || fail "Step 3P must explain the repos/ refusal and --allow-repos-worktree"
+grep -q '| 29 |' "$TMP/pipe.md" && grep -q 'pipeline-conductor.sh stop --state {state}' "$PIPE_FLAT" \
+  && grep -q 'resumed_after_interrupt' "$PIPE_FLAT" || fail "Step 3P must document stop, exit 29 and interrupted phases"
+for f in repo branch reopen_note resumed_after_interrupt prior_handoff; do
+  grep -q "| \`$f\` |" "$SKILLS/_shared/lane-dispatch-protocol.md" || fail "protocol section 8 must list the envelope field $f"
+done
+grep -q 'repos-worktree line' "$SKILLS/_shared/lane-dispatch-protocol.md" || fail "protocol section 8 must list the repos-worktree constraint line"
+ok "worktree location, stop and interrupt, and the protocol's optional envelope fields"
+
+echo "run-project without --pipeline: coordinator lanes are still the default"
+awk '/^## Step 3 /{f=1} /^## Step 3P /{f=0} f' "$RUN_PROJECT" > "$TMP/step3.md"
+grep -q -- '--pipeline' "$TMP/step3.md" \
+  && fail "the coordinator path (Step 3 to 3d) must not mention --pipeline"
+grep -qi 'If no execution mode is supplied, route to `--inline`' "$RUN_FLAT" \
+  || fail "the default execution mode must still be --inline"
+grep -qi 'Without the flag, skip this whole step' "$PIPE_FLAT" \
+  || fail "Step 3P must say it does not apply without --pipeline"
+ok "default dispatch is the story coordinator path"
 
 echo
 echo "orchestrator-skills-dispatch-lanes.test.sh: $PASS checks passed"
