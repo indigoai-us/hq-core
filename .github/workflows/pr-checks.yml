@@ -243,6 +243,8 @@ jobs:
         run: bash core/scripts/tests/startwork-context.test.sh
       - name: /import-context redactor and synthetic scan output
         run: bash core/scripts/tests/import-context-redact.test.sh
+      - name: /import-context scanner --progress-json event stream
+        run: bash core/scripts/tests/import-context-progress-json.test.sh
       - name: /conduct session worker pool (cap, resume, recycle)
         run: bash core/scripts/tests/conduct-pool.test.sh
       - name: /conduct lane drop box (queue, claim, per-event hook output)
@@ -810,12 +812,28 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      - name: Install and validate the pinned hq CLI for hook helpers
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
       - name: Claude-harness git-mutation guard
         run: bash core/scripts/tests/block-hq-root-git-mutation.test.sh
       - name: US-146 positional gh repository anchors
         run: bash core/scripts/tests/us146-gh-positional-repo-anchors.test.sh
       - name: Codex-harness git-mutation guard fires
         run: bash core/scripts/tests/codex-git-mutation-firing.test.sh
+      - name: Policy enforcement gate regression tests
+        run: bash core/scripts/tests/policy-enforcement-gate.test.sh
+      - name: Gate fact proof regression tests
+        run: bash .claude/hooks/tests/hq-gate-fact.test.sh
+      - name: Policy trigger reactive-row pruning regression tests
+        run: bash core/scripts/tests/inject-policy-tool-events.test.sh
+      - name: Hook profile policy pairing regression tests
+        run: bash core/scripts/tests/hook-gate-path-augment.test.sh
+      - name: Adapter policy fallback regression tests
+        run: bash core/scripts/tests/hook-adapter-duplicate-cleanup-parity.test.sh
       - name: Codex explicit shell paths guard
         run: bash core/scripts/tests/codex-explicit-path-guard.test.sh
       - name: Codex explicit-path flag reader
@@ -1318,6 +1336,8 @@ jobs:
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
       - name: Hook benchmarks dispatch through every supported runtime
         run: bash core/scripts/tests/bench-hooks-runtime.test.sh
+      - name: Hook corpus benchmark same-session replay
+        run: bash core/scripts/tests/bench-hook-corpus-replay.test.sh
       - name: hq-anywhere hook and resolver regressions
         run: |
           bash core/scripts/tests/hq-anywhere-runtime-flag.test.sh
@@ -1745,6 +1765,10 @@ jobs:
         env:
           BASH_BIN: /bin/bash
         run: /bin/bash core/scripts/tests/import-context-redact.test.sh
+      - name: /import-context scanner --progress-json under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/import-context-progress-json.test.sh
       - name: Mandatory scope authorizer globstar fallback under stock macOS Bash
         env:
           BASH_BIN: /bin/bash
@@ -1837,6 +1861,8 @@ jobs:
         run: bash core/scripts/tests/validate-policy-frontmatter.test.sh
       - name: Emit contract — tsv shape, scope precedence, enforcement-tiered depth
         run: bash .claude/hooks/tests/inject-policy-on-trigger-emit.test.sh
+      - name: Session gate fact ledger test
+        run: bash .claude/hooks/tests/hq-gate-fact.test.sh
       - name: Background prompts skip policy injection and reminders name source paths
         run: bash core/scripts/tests/inject-policy-background-notifications.test.sh
       - name: Staleness ordering — stale rules cut first, exemptions hold, personal soft off
@@ -1861,6 +1887,8 @@ jobs:
         run: bash core/scripts/tests/derive-trigger-facts.test.sh
       - name: Inject cadence (once vs always) + PreCompact ledger purge
         run: bash core/scripts/tests/inject-policy-always-inject.test.sh
+      - name: Policy enforcement gate receipts and outbound checks
+        run: bash core/scripts/tests/policy-enforcement-gate.test.sh
       - name: Policy scan forks no helper process per policy file
         run: bash core/scripts/tests/inject-policy-no-per-file-fork.test.sh
       - name: Matched hard policy bodies are parsed in one batch

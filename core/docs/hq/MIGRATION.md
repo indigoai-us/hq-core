@@ -3,6 +3,33 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v16.0.0-beta.31
+
+- feat 2026-10-08 (conduct on by default): `conduct.default_enabled` in
+  `core/settings/orchestrator.yaml` ships as `true`. Every fresh session
+  (SessionStart `source: startup`) now opens in `/conduct` mode:
+  `.claude/hooks/auto-conduct.sh` emits the conductor core, so answers,
+  lookups and short skills run inline and real work goes to worker lanes.
+  Nothing changes for resumed or compacted sessions. No engine is preset; the
+  engine question is still asked at first dispatch unless one is named.
+  Unattended sessions are left alone: local bots (`hq bot run`), fleet agent
+  box turns, Outpost jobs, scheduled tasks, and anything with
+  `HQ_UNATTENDED`, `HQ_SESSION_UNATTENDED`, or `CLAUDE_HEADLESS` set get no
+  conduct block, because nobody is there to answer the engine question and a
+  bot turn must not spawn lanes. A brief that wants conduct in an unattended
+  session sets `HQ_AUTO_CONDUCT=1` and names the engine. To turn it off: per machine, copy `core/settings/orchestrator.yaml` to
+  `personal/settings/orchestrator.yaml` and set `default_enabled: false`; per
+  session, `HQ_AUTO_CONDUCT=0` or `HQ_DISABLED_HOOKS=auto-conduct`; mid-session,
+  `/conduct off`. Arrives with `/update-hq`. Regression:
+  `core/scripts/tests/auto-conduct.test.sh` (asserts the shipped file is on and
+  every off switch still works).
+- removal 2026-10-08 (v15 deprecations): the `/plan` stub is gone; call `/prd`
+  with the same arguments. The `CONTEXT.md` / `CONTEXT-MAP.md` fallback is gone
+  from `/tdd`, `/diagnose`, `/architect`, `/to-tickets`, `/wayfinder`, and
+  `/domain-modeling`; they read `GLOSSARY.md` and `GLOSSARY-MAP.md` only. Before
+  `/update-hq`, rename a repo glossary with `git mv CONTEXT.md GLOSSARY.md` (and
+  `git mv CONTEXT-MAP.md GLOSSARY-MAP.md`). Both were announced in 15.x.
+
 ## Release: v16.0.0-beta.19
 
 - promote 2026-09-18 (/conduct session link): new command `/conduct-join`

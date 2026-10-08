@@ -3,10 +3,37 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-HOOK="$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
+HOOK="${HQ_TEST_INJECT_POLICY_HOOK:-$ROOT/.claude/hooks/inject-policy-on-trigger.sh}"
 TMP="$(mktemp -d)"
 trap '[ "${HP17_KEEP_TMP:-0}" = 1 ] || rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/core/policies"
+mkdir -p "$TMP/core/policies" "$TMP/bin"
+cat > "$TMP/bin/hq" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  printf '%s\n' 'hq 5.342.5'
+  exit 0
+fi
+event=""
+with_intent=0
+for arg in "$@"; do
+  case "$arg" in
+    PreToolUse|PostToolUse|UserPromptSubmit|AssistantIntent) event="$arg" ;;
+    --with-assistant-intent) with_intent=1 ;;
+  esac
+done
+case "$event" in
+  PreToolUse) facts='git push' ;;
+  PostToolUse) facts='completed' ;;
+  *) facts="" ;;
+esac
+if [ "$with_intent" -eq 1 ]; then
+  printf '%s\n\n' "$facts"
+else
+  printf '%s\n' "$facts"
+fi
+EOF
+chmod +x "$TMP/bin/hq"
 cat > "$TMP/core/policies/tool-event-default.md" <<'EOF'
 ---
 when: git && push
@@ -47,8 +74,8 @@ run_hook() {
   local sid="$1" event="$2" harness="$3" legacy="$4" output="$5" command="$6" response="$7"
   jq -cn --arg sid "$sid" --arg event "$event" --arg command "$command" --arg response "$response" \
     '{session_id:$sid,hook_event_name:$event,tool_name:"Bash",cwd:"/tmp",tool_input:{command:$command},tool_response:$response}' \
-    | HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" HQ_HARNESS="$harness" HQ_POLICY_TOOL_EVENTS="$legacy" \
-      bash "$HOOK" > "$output" 2>"$TMP/stderr"
+    | PATH="$TMP/bin:$PATH" HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" HQ_HARNESS="$harness" HQ_POLICY_TOOL_EVENTS="$legacy" \
+      bash "$HOOK" > "$output" 2>"${output}.stderr"
 }
 
 run_hook pre-default PreToolUse claude off "$TMP/pre-default" 'git push origin test' ''
@@ -86,6 +113,15 @@ fi
 printf '%s\n' 'derive-trigger-facts.sh: simulated failure' > "$TMP/post-derive-failure.expected"
 check 'PostToolUse failed derive exits zero and emits no stdout' "$( [ "$failed_derive_rc" -eq 0 ] && [ ! -s "$TMP/post-derive-failure" ] && echo 1 || echo 0 )"
 check 'PostToolUse failed derive stderr is emitted once' "$(cmp -s "$TMP/post-derive-failure.expected" "$TMP/post-derive-failure.stderr" && echo 1 || echo 0)"
+
+mkdir -p "$TMP/workspace/orchestrator/policy-enforcement"
+printf 'old-reactive\tcore\t%s\thard\told row\treactive\nold-baseline\tcore\t%s\thard\tbaseline row\tbaseline\n' \
+  "$TMP/core/policies/tool-event-default.md" "$TMP/core/policies/tool-event-default.md" \
+  > "$TMP/workspace/orchestrator/policy-enforcement/prune-session.policies.tsv"
+jq -cn '{session_id:"prune-session",hook_event_name:"UserPromptSubmit",prompt:"No policy trigger in this new turn."}' \
+  | HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" HQ_HARNESS=claude HQ_POLICY_TOOL_EVENTS=off bash "$HOOK" > "$TMP/prune-empty-match" 2>"$TMP/stderr"
+check 'UserPromptSubmit prunes old reactive rows when the new turn has no matches' "$(awk -F '\t' '$1 == "old-reactive" {found=1} END {exit found}' "$TMP/workspace/orchestrator/policy-enforcement/prune-session.policies.tsv" && echo 1 || echo 0)"
+check 'pruning retains baseline rows' "$(awk -F '\t' '$1 == "old-baseline" {found=1} END {exit !found}' "$TMP/workspace/orchestrator/policy-enforcement/prune-session.policies.tsv" && echo 1 || echo 0)"
 
 run_hook pre-legacy PreToolUse claude legacy "$TMP/pre-legacy" 'git push origin test' ''
 check 'legacy restores PreToolUse policy evaluation' "$(grep -q 'tool-event-pre' "$TMP/pre-legacy" && echo 1 || echo 0)"

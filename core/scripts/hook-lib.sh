@@ -850,3 +850,65 @@ hq_launch_shell_path() {
   HQ_HOOK_LAST_CAUSE="bash is unavailable for the readable shell fallback"
   return 127
 }
+
+# hq_gate_fact_present <fact> [minutes]
+#   Return 0 when the current session has a valid fact, optionally within the
+#   requested freshness window. Failures write a one-line reason to stderr.
+hq_gate_fact_fail() {
+  printf '%s\n' "$1" >&2
+  return 1
+}
+
+hq_gate_fact_present() {
+  local fact="${1:-}" within="${2:-}" root lib_dir session_id state_dir file record ts epoch now age
+  case "$fact" in
+    sending_account_confirmed|recipients_confirmed|draft_approved|humanize_passed|enforcement_observed) ;;
+    *) hq_gate_fact_fail "unknown gate fact: ${fact:-<empty>}"; return 1 ;;
+  esac
+  if [ -n "$within" ]; then
+    case "$within" in *[!0-9]*|'') hq_gate_fact_fail 'invalid freshness window'; return 1 ;; esac
+    while [ "${within#0}" != "$within" ]; do within="${within#0}"; done
+    [ -n "$within" ] || within=0
+    case "$within" in ????????*) hq_gate_fact_fail 'freshness window is too large'; return 1 ;; esac
+  fi
+
+  root="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-}}"
+  if [ -z "$root" ]; then
+    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || lib_dir=""
+    [ -n "$lib_dir" ] || { hq_gate_fact_fail 'cannot resolve HQ root'; return 1; }
+    root="$(cd "$lib_dir/../.." 2>/dev/null && pwd)" || root=""
+  fi
+  [ -n "$root" ] || { hq_gate_fact_fail 'cannot resolve HQ root'; return 1; }
+
+  if ! command -v session_id_resolve >/dev/null 2>&1; then
+    [ -f "$root/core/scripts/lib/session-id.sh" ] || { hq_gate_fact_fail 'session resolver is unavailable'; return 1; }
+    . "$root/core/scripts/lib/session-id.sh" || { hq_gate_fact_fail 'session resolver could not be loaded'; return 1; }
+  fi
+  session_id="$(session_id_resolve "$root")"
+  [ -n "$session_id" ] || { hq_gate_fact_fail 'no current session id'; return 1; }
+  state_dir="$(hq_hook_state_dir "$root")/gate-facts/$session_id"
+  file="$state_dir/$fact.json"
+  [ -f "$file" ] || { hq_gate_fact_fail "fact absent: $fact"; return 1; }
+  command -v jq >/dev/null 2>&1 || { hq_gate_fact_fail 'jq is unavailable'; return 1; }
+  record="$(jq -er --arg fact "$fact" 'select(.fact == $fact and (.confirmed_at | type == "string") and (.note | type == "string") and (.source == "askuserquestion" or .source == "helper" or .source == "override"))' "$file" 2>/dev/null)" || {
+    hq_gate_fact_fail "fact record is invalid: $fact"
+    return 1
+  }
+  [ -n "$record" ] || { hq_gate_fact_fail "fact record is invalid: $fact"; return 1; }
+  ts="$(printf '%s' "$record" | jq -r '.confirmed_at')"
+  case "$ts" in ????-??-??T??:??:??Z) ;; *) hq_gate_fact_fail "fact timestamp is invalid: $fact"; return 1 ;; esac
+  epoch="$(date -u -d "$ts" +%s 2>/dev/null || true)"
+  case "$epoch" in *[!0-9]*|'') epoch="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2>/dev/null || true)" ;; esac
+  case "$epoch" in *[!0-9]*|'') hq_gate_fact_fail "fact timestamp is invalid: $fact"; return 1 ;; esac
+  if [ -z "$within" ]; then
+    return 0
+  fi
+  now="$(date -u +%s 2>/dev/null || true)"
+  case "$now" in *[!0-9]*|'') hq_gate_fact_fail 'current time is unavailable'; return 1 ;; esac
+  age=$((now - epoch))
+  if [ "$age" -lt 0 ] || [ "$age" -ge $((10#$within * 60)) ]; then
+    hq_gate_fact_fail "fact stale: $fact"
+    return 1
+  fi
+  return 0
+}

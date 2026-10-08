@@ -158,9 +158,8 @@ for cmd in run-project execute-task; do
     fail "Case E: /${cmd} ships in core — remove it from the allowlist so a real deletion still fails the lint"
   fi
 done
-if grep -q 'hq install github:indigoai-us/hq-packages#packages/hq-pack-engineering' \
-     "${ROOT}/.claude/skills/plan/SKILL.md"; then
-  fail "Case E: /plan still prints the engineering-pack install line, but the pack no longer exists"
+if [ -e "${ROOT}/.claude/skills/plan" ]; then
+  fail "Case E: the deprecated /plan stub was removed in hq-core 16.0.0; /prd is the command"
 fi
 grep -qF '`/new-hire {email} {company}`' "${ROOT}/core/policies/natural-language-mode.md" \
   || fail "Case E: invitation route must use /new-hire with email and company"

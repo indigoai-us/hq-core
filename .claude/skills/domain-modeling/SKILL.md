@@ -8,8 +8,6 @@ allowed-tools: Read, Write, Edit, Grep, Glob
 
 Actively build and sharpen the project's domain model as you design. This is the *active* discipline — challenging terms, inventing edge-case scenarios, and writing the glossary down the moment a term crystallises. Merely *reading* `GLOSSARY.md` for vocabulary is a one-line habit any skill can do (and `/architect` and `/diagnose` already do it). This skill is for when you are *changing* the model, not just consuming it — it is the producer that keeps `GLOSSARY.md` honest.
 
-Fallback (removed in hq-core 16.0.0): if `GLOSSARY.md` is absent and `CONTEXT.md` exists, read `CONTEXT.md` instead (and `CONTEXT-MAP.md` in place of `GLOSSARY-MAP.md`), and print one line suggesting `git mv CONTEXT.md GLOSSARY.md`.
-
 Pattern adapted from [mattpocock/skills](https://github.com/mattpocock/skills) (skills/engineering/domain-modeling), upstream commit 391a270; HQ cross-references and delegation to /adr added.
 
 ## When this skill vs others

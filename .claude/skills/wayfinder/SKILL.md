@@ -21,8 +21,6 @@ Same pattern as `/diagnose` and `/brainstorm`:
 
 Once resolved, derive a `<slug>` for this effort (lowercase, hyphens) and store the map + tickets under `workspace/reports/wayfinder-<slug>/` (see [Where the map lives](#where-the-map-lives)). Load any GLOSSARY-style domain glossary the target repo carries (`<repo>/GLOSSARY.md`) and note the company's hard-enforcement policies so tickets respect them.
 
-Fallback (removed in hq-core 16.0.0): if `GLOSSARY.md` is absent and `CONTEXT.md` exists, read `CONTEXT.md` instead (and `CONTEXT-MAP.md` in place of `GLOSSARY-MAP.md`), and print one line suggesting `git mv CONTEXT.md GLOSSARY.md`.
-
 ## Plan, don't do
 
 Wayfinder is **planning** by default: each ticket resolves a decision, and the map is done when the way is clear — nothing left to decide before someone goes and does the thing. The pull to just do the work is usually the signal you've reached the edge of the map and it's time to hand off to `/prd` or `/deep-plan`. An effort can override this in its **Notes** — carrying execution into the map itself — but absent that, produce decisions, not deliverables.

@@ -1,0 +1,25 @@
+# Fixture for the stateful receipt-backed policy enforcement gate.
+#
+# Hook fixture schema v1 executes one event in isolation and cannot seed the
+# per-session requirement/receipt state needed for a meaningful block case.
+# These cases pin the gate's fail-open boundary when no governed requirements
+# exist. The block surface (missing/exact/parallel receipts, opaque or invalid
+# content, and same-action Bash policy matches) is exercised by
+# core/scripts/tests/policy-enforcement-gate.test.sh and
+# core/scripts/tests/inject-policy-always-inject.test.sh.
+hookId: policy-enforcement-gate
+schemaVersion: 1
+cases:
+  - name: allows-unrelated-read-without-governed-state
+    event: PostToolUse
+    tool: Read
+    input:
+      file_path: "README.md"
+    expect: allow
+
+  - name: allows-outbound-action-without-declared-requirements
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: 'hq dm prs_fixture "status update"'
+    expect: allow

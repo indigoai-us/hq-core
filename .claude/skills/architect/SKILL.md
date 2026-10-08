@@ -32,7 +32,6 @@ Key heuristics (full treatment in `/codebase-design`):
 ### Step 1 — Read the project's domain model + decisions
 
 - Read `<repo>/GLOSSARY.md` if present (domain glossary)
-- Fallback (removed in hq-core 16.0.0): if `GLOSSARY.md` is absent and `CONTEXT.md` exists, read `CONTEXT.md` instead (and `CONTEXT-MAP.md` in place of `GLOSSARY-MAP.md`), and print one line suggesting `git mv CONTEXT.md GLOSSARY.md`.
 - Read `<repo>/docs/adr/` if present (architectural decisions)
 - Read `<repo>/.claude/policies/` for any soft architecture rules
 

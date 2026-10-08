@@ -205,10 +205,14 @@ the pool rows, in the same board widget when two or more things are in motion.
 - **The mode persists for the session** in `workspace/sessions/<id>/meta.yaml`
   under `conduct_engine`, alongside the `conduct_pool` list. Later turns read
   both; `/conduct off` clears them.
-- **The mode can be the HQ default.** `conduct.default_enabled` in
+- **The mode is the HQ default since v16.** `conduct.default_enabled: true` in
   `core/settings/orchestrator.yaml` (per-machine override:
-  `personal/settings/orchestrator.yaml`) makes every fresh session start with
-  the conductor core via `.claude/hooks/auto-conduct.sh`. The engine is never
+  `personal/settings/orchestrator.yaml` with `default_enabled: false`) makes
+  every fresh session start with the conductor core via
+  `.claude/hooks/auto-conduct.sh`. Unattended sessions (local bots, fleet box
+  turns, Outpost jobs, scheduled tasks, `HQ_UNATTENDED` /
+  `HQ_SESSION_UNATTENDED` / `CLAUDE_HEADLESS`) are skipped; `HQ_AUTO_CONDUCT=1`
+  plus a named engine opts one in. The engine is never
   preset; it is asked at first dispatch or named by the user. Per session: `HQ_AUTO_CONDUCT=1|0`
   or `HQ_DISABLED_HOOKS=auto-conduct`.
 

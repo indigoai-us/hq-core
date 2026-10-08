@@ -420,7 +420,7 @@ Recommendation: Option {X}
 
 The project folder is delegatable as it stands: `/delegate <who> {slug}` hands
 over `brainstorm.md`, `research/`, and the latest journal entry, tells the
-recipient there is no PRD yet, and points them at `/plan {slug}`. No `prd.json`
+recipient there is no PRD yet, and points them at `/prd {slug}`. No `prd.json`
 is needed first.
 
 Reindex: `qmd update 2>/dev/null || true`

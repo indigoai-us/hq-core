@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Handoff All
+  short_description: >-
+    Handoff every open desktop session and collect resume commands

@@ -12,6 +12,7 @@
 # Usage:
 #   bench-hook-corpus.sh run   [--corpus <json>] [--out <report.json>] [--runtime claude]
 #   bench-hook-corpus.sh compare <baseline.json> <candidate.json>
+#   bench-hook-corpus.sh replay <corpus.json> <report.json> <prompt-id>...
 #
 # compare exits non-zero when any prompt loses an expected hint it had at
 # baseline, gains an unwanted block, or loses a HARD policy whose trigger
@@ -80,14 +81,24 @@ JS
   exit $?
 fi
 
-while [ $# -gt 0 ]; do
-  case "$1" in
+REPLAY_CORPUS=""
+REPLAY_OUT=""
+REPLAY_IDS=()
+if [ "$MODE" = "replay" ]; then
+  REPLAY_CORPUS="${1:-}"
+  REPLAY_OUT="${2:-}"
+  [ $# -ge 2 ] && shift 2 || set --
+  REPLAY_IDS=("$@")
+else
+  while [ $# -gt 0 ]; do
+    case "$1" in
     --corpus) CORPUS="$2"; shift 2;;
     --out) OUT="$2"; shift 2;;
     --runtime) RUNTIME="$2"; shift 2;;
-    *) echo "unknown arg $1" >&2; exit 2;;
-  esac
-done
+      *) echo "unknown arg $1" >&2; exit 2;;
+    esac
+  done
+fi
 [ -f "$CORPUS" ] || { echo "bench-hook-corpus: corpus not found: $CORPUS" >&2; exit 2; }
 bench_runtime_valid "$RUNTIME" || { echo "bench-hook-corpus: unsupported runtime: $RUNTIME" >&2; exit 2; }
 if [ "$RUNTIME" = "grok" ]; then
@@ -121,6 +132,95 @@ run_event() { # $1 event, $2 payload json, $3 outfile -> prints secs
   printf '%s\n' "$rc" > "$output.rc"
   perl -e 'printf "%.3f\n", ($ARGV[1]-$ARGV[0])/1000' "$s" "$e"
 }
+
+if [ "$MODE" = "replay" ]; then
+  [ "$REPLAY_CORPUS" ] && [ "$REPLAY_OUT" ] && [ "${#REPLAY_IDS[@]}" -gt 0 ] || {
+    echo "usage: bench-hook-corpus.sh replay <corpus.json> <report.json> <prompt-id>..." >&2
+    exit 2
+  }
+  [ -f "$REPLAY_CORPUS" ] || { echo "bench-hook-corpus: corpus not found: $REPLAY_CORPUS" >&2; exit 2; }
+  bench_runtime_valid "$RUNTIME" || { echo "bench-hook-corpus: unsupported runtime: $RUNTIME" >&2; exit 2; }
+  [ "$RUNTIME" != "grok" ] || {
+    echo "bench-hook-corpus: --runtime grok is unsupported: the adapter does not expose benchmark-visible output" >&2
+    exit 2
+  }
+  seen_ids=" "
+  for id in "${REPLAY_IDS[@]}"; do
+    case "$id" in *[!A-Za-z0-9._-]*|'') echo "bench-hook-corpus: invalid prompt id: $id" >&2; exit 2;; esac
+    case "$seen_ids" in *" $id "*) echo "bench-hook-corpus: duplicate prompt id: $id" >&2; exit 2;; esac
+    seen_ids="$seen_ids$id "
+    jq -e --arg id "$id" 'any(.prompts[]?; .id == $id)' "$REPLAY_CORPUS" >/dev/null || {
+      echo "bench-hook-corpus: prompt id not found: $id" >&2; exit 2;
+    }
+  done
+  mkdir -p "$(dirname "$REPLAY_OUT")"
+  SID="bench-replay-$(date +%s)-$$"
+  # Replayed payloads are intentional measurements, not duplicate dispatches.
+  export HQ_HOOK_DEDUPE=0
+  PROMPT_TEXT="session start"
+  run_event SessionStart '' "$TMP/session-start.out" >/dev/null
+  warmup_rc="$(cat "$TMP/session-start.out.rc")"
+  [ "$warmup_rc" -eq 0 ] || { echo "bench-hook-corpus: SessionStart warm-up failed with exit $warmup_rc" >&2; exit 1; }
+  for pass in first repeat; do
+    for id in "${REPLAY_IDS[@]}"; do
+      PROMPT_TEXT="$(jq -r --arg id "$id" '.prompts[] | select(.id == $id) | .prompt' "$REPLAY_CORPUS")"
+      secs="$(run_event UserPromptSubmit '' "$TMP/$pass-$id.out")"
+      printf '%s\n' "$secs" > "$TMP/$pass-$id.secs"
+      printf '%s\n' "$(cat "$TMP/$pass-$id.out.rc")" > "$TMP/$pass-$id.rc"
+    done
+  done
+  node - "$REPLAY_CORPUS" "$TMP" "$REPLAY_OUT" "$RUNTIME" "$SID" "$HQ_ROOT" "${REPLAY_IDS[@]}" <<'JS'
+const fs = require('fs'), path = require('path');
+const [corpusPath, tmp, out, runtime, sessionId, workspace, ...ids] = process.argv.slice(2);
+const corpus = JSON.parse(fs.readFileSync(corpusPath, 'utf8'));
+const additionalContext = value => {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return '';
+  return (value.hookSpecificOutput && value.hookSpecificOutput.additionalContext) || value.additionalContext || '';
+};
+const visibleContext = text => {
+  try { return additionalContext(JSON.parse(text)); }
+  catch {
+    const lines = text.split('\n').filter(Boolean);
+    const parsed = [];
+    for (const line of lines) {
+      try { parsed.push(additionalContext(JSON.parse(line))); }
+      catch { return text; }
+    }
+    return parsed.length ? parsed.join('\n') : text;
+  }
+};
+const measure = (pass, id) => {
+  const text = visibleContext(fs.readFileSync(path.join(tmp, `${pass}-${id}.out`), 'utf8'));
+  return {
+    bytes: Buffer.byteLength(text),
+    wall_seconds: Number(fs.readFileSync(path.join(tmp, `${pass}-${id}.secs`), 'utf8').trim()),
+    exit_code: Number(fs.readFileSync(path.join(tmp, `${pass}-${id}.rc`), 'utf8').trim()),
+  };
+};
+const items = ids.map(id => ({
+  id,
+  event: 'UserPromptSubmit',
+  session_id: sessionId,
+  workspace,
+  first_run: measure('first', id),
+  repeat_run: measure('repeat', id),
+}));
+const totals = {
+  first_run: { bytes: items.reduce((n, item) => n + item.first_run.bytes, 0), wall_seconds: Number(items.reduce((n, item) => n + item.first_run.wall_seconds, 0).toFixed(3)) },
+  repeat_run: { bytes: items.reduce((n, item) => n + item.repeat_run.bytes, 0), wall_seconds: Number(items.reduce((n, item) => n + item.repeat_run.wall_seconds, 0).toFixed(3)) },
+};
+const report = { version: 1, mode: 'same-session-replay', runtime, created: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), session_id: sessionId, workspace, corpus: path.relative(process.cwd(), corpusPath), items, totals };
+fs.writeFileSync(out, JSON.stringify(report, null, 2) + '\n');
+const pad = (s, n) => String(s).padEnd(n);
+console.log(`${pad('event', 24)} ${'first bytes'.padStart(12)} ${'repeat bytes'.padStart(13)} ${'first wall s'.padStart(14)} ${'repeat wall s'.padStart(15)}`);
+for (const item of items) console.log(`${pad(item.id, 24)} ${String(item.first_run.bytes).padStart(12)} ${String(item.repeat_run.bytes).padStart(13)} ${item.first_run.wall_seconds.toFixed(3).padStart(14)} ${item.repeat_run.wall_seconds.toFixed(3).padStart(15)}`);
+console.log(`${pad('TOTAL', 24)} ${String(totals.first_run.bytes).padStart(12)} ${String(totals.repeat_run.bytes).padStart(13)} ${totals.first_run.wall_seconds.toFixed(3).padStart(14)} ${totals.repeat_run.wall_seconds.toFixed(3).padStart(15)}`);
+console.log(`session ${sessionId}\nworkspace ${workspace}\nreport: ${out}`);
+if (items.some(item => item.first_run.exit_code !== 0 || item.repeat_run.exit_code !== 0)) process.exitCode = 1;
+JS
+  exit $?
+fi
 
 SID_BASE="bench-$(date +%s)"
 

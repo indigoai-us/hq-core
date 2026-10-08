@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Resume All
+  short_description: >-
+    Relaunch every session from a /handoff-all batch as a new desktop session
