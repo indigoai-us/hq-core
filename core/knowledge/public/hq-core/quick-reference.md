@@ -117,7 +117,7 @@ companies add more. The list below is the common set, not a full inventory.
 **Session:** `/startwork`, `/reanchor`, `/checkpoint`, `/handoff`, `/recover-session`, `/remember`, `/learn`
 **Handoff:** `/delegate <recipient> [project]` — transfer a project to a person or fleet agent: vault grants (verified), branch push, secrets by name, board + work-mesh reassignment, and a self-pulling pickup DM (no `/hq-sync` needed on their side). Skill: `.claude/skills/delegate/SKILL.md`; manifest spec: `core/knowledge/public/hq-core/delegation-bundle-spec.md`.
 **Workers:** `/run`, `/newworker`
-**Projects:** `/plan`, `/run-project`, `/execute-task`, `/understand-project`, `/idea`, `/goals`, `/dashboard`, `/tdd`, `/quality-gate`
+**Projects:** `/prd`, `/run-project`, `/execute-task`, `/understand-project`, `/idea`, `/goals`, `/dashboard`, `/tdd`, `/quality-gate`
 **System:** `/cleanup`, `/garden`, `/search`, `/search-reindex`, `/harness-audit`, `/model-route`, `/update-hq`
 **Company:** `/newcompany`, `/personal-interview`, `/onboard`, `/new-hire`, `/new-agent`
 **HQ services:** `/hq-sync`, `/hq-files`, `/hq-share`, `/hq-secrets`, `/hq-integrations`, `/dm`

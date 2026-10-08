@@ -383,18 +383,23 @@ run 0 "$HQWT" "$HQWT" UserPromptSubmit 'HQ_ALLOW_HQ_WORKTREE=1 bypasses the bloc
 # spawn_task creates an HQ-linked child worktree without the provider-owned
 # agent_id that this guard relies on. Task defaults to the current canonical
 # checkout when worktree isolation is not requested.
-for skill in brainstorm deep-plan plan prd; do
+for skill in brainstorm deep-plan prd; do
   skill_file="$ROOT/.claude/skills/$skill/SKILL.md"
+  # /prd and /deep-plan keep the knowledge pulse step in the shared finalize file.
+  contract_file="$skill_file"
+  if grep -q '_shared/prd-finalize.md' "$skill_file"; then
+    contract_file="$ROOT/.claude/skills/_shared/prd-finalize.md"
+  fi
   if ! grep -qE '^allowed-tools: (Task([, ]|$)|.*[, ]Task([, ]|$))' "$skill_file"; then
     FAIL=$((FAIL + 1))
     echo "FAIL [knowledge pulse caller $skill]: Task is missing from allowed-tools" >&2
-  elif grep -q 'spawn_task(' "$skill_file"; then
+  elif grep -q 'spawn_task(' "$skill_file" "$contract_file"; then
     FAIL=$((FAIL + 1))
     echo "FAIL [knowledge pulse caller $skill]: still uses spawn_task without trusted Task lineage" >&2
-  elif ! grep -q 'Task({' "$skill_file" \
-      || ! grep -q 'run_in_background: true' "$skill_file" \
-      || ! grep -q 'Run the knowledge-pulse skill' "$skill_file" \
-      || ! grep -q 'without worktree isolation' "$skill_file"; then
+  elif ! grep -q 'Task({' "$contract_file" \
+      || ! grep -q 'run_in_background: true' "$contract_file" \
+      || ! grep -q 'Run the knowledge-pulse skill' "$contract_file" \
+      || ! grep -q 'without worktree isolation' "$contract_file"; then
     FAIL=$((FAIL + 1))
     echo "FAIL [knowledge pulse caller $skill]: missing background Task contract" >&2
   else

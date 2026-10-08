@@ -13,7 +13,7 @@ Forces strict compliance with `decision-queue-one-at-a-time.md` (global policy, 
 ## When to Use
 
 - The model is about to surface 2+ decisions and is tempted to batch them into a single `AskUserQuestion` (or a numbered list in text).
-- A skill (`/brainstorm`, `/plan`, `/architect`, `/diagnose`, `/run-project`, `/execute-task`, `/strategize`, `/review-plan`) needs to defer to the user on several separable choices.
+- A skill (`/brainstorm`, `/prd`, `/architect`, `/diagnose`, `/run-project`, `/execute-task`, `/strategize`, `/review-plan`) needs to defer to the user on several separable choices.
 - Ad-hoc: the user is mid-task, has multiple open questions, and explicitly asks for a decision queue (`decision queue plz`, `walk me through these one at a time`).
 
 ## Rule

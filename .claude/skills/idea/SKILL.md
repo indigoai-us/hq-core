@@ -115,7 +115,7 @@ Board: companies/{co}/board.json
 Status: idea
 
 Next steps:
-  /plan {title}             → promote to full PRD
+  /prd {title}             → promote to full PRD
   /idea                     → add another idea
   /idea --company {co}      → add idea to same board
 ```
@@ -125,8 +125,8 @@ Reindex: `qmd update 2>/dev/null || true`
 ## Rules
 
 - **No PRD files** — this command ONLY writes to board.json
-- **No orchestrator registration** — ideas are not executable; `/plan` handles that on promotion
-- **No Linear sync** — ideas are pre-planning; Linear sync happens at `/plan` time
+- **No orchestrator registration** — ideas are not executable; `/prd` handles that on promotion
+- **No Linear sync** — ideas are pre-planning; Linear sync happens at `/prd` time
 - **1 AskUserQuestion max** — batch everything into one call
 - **No TodoWrite** — single-step output, not needed
 - **No EnterPlanMode** — this command IS the quick capture
@@ -138,4 +138,4 @@ Reindex: `qmd update 2>/dev/null || true`
 ## See also
 
 - `/brainstorm` — compare approaches
-- `/plan` — promote it to a full PRD
+- `/prd` — promote it to a full PRD

@@ -43,6 +43,14 @@ fi
 : "${PROMPT:=}"
 
 emit() {
+  if [ "$2" = session ]; then
+    local companies=""
+    companies="$(bash "$ROOT/core/scripts/hq-session.sh" get company_slugs 2>/dev/null || true)"
+    [ -n "$companies" ] || companies="$1"
+    jq -cn --arg company "$1" --arg source "$2" --arg companies "$companies" \
+      '{company:$company,source:$source,companies:($companies | split(",") | map(select(length > 0)))}'
+    exit 0
+  fi
   printf '{"company":"%s","source":"%s"}\n' "$1" "$2"
   exit 0
 }

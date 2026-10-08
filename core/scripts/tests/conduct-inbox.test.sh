@@ -145,7 +145,7 @@ if jq -e '.hooks.SubagentStop[]?.hooks[]? | select(.id == "conduct-lane-inbox")'
   "$REGISTRY" >/dev/null 2>&1; then
   fail "conduct-lane-inbox gained a SubagentStop registration; update the conduct skill and .grok/README.md to match"
 fi
-grep -q 'no `SubagentStop` registration' "$ROOT/.claude/skills/conduct/SKILL.md" \
+grep -q 'no `SubagentStop` registration' "$ROOT/.claude/skills/conduct/dispatch.md" \
   || fail "the conduct skill no longer records that SubagentStop delivery is absent"
 ok "no SubagentStop backstop is registered, and the conduct skill says so"
 

@@ -53,6 +53,23 @@ pool() { "$TMP/core/scripts/conduct-pool.sh" --session-id "$SID" "$@"; }
 reset_pool() { rm -rf "$TMP/workspace/sessions/$SID"; }
 slot_count() { grep -c '^  - worker_id:' "$META" 2>/dev/null || echo 0; }
 
+echo "conduct-pool: --help prints the whole header, not a truncated slice"
+# usage() once printed a fixed line range; when the header grew, the decisions
+# verb text and everything after it (refusal exit codes, STATE, CAP) vanished.
+help_out="$("$TMP/core/scripts/conduct-pool.sh" --help)"
+assert_contains "$help_out" "conduct-pool.sh [--session-id <id>] decisions" "usage lists every verb"
+assert_contains "$help_out" "stalls twice on the same phase" "usage keeps the stall/decision text"
+assert_contains "$help_out" "exit 3  the pool is at cap" "usage keeps the refusal exit codes"
+assert_contains "$help_out" "CAP is 8 live" "usage keeps the cap text"
+assert_contains "$help_out" "without an escaping layer." "usage reaches the last header line"
+case "$help_out" in *"set -euo pipefail"*) fail "usage leaked script body past the header" ;; esac
+set +e
+"$TMP/core/scripts/conduct-pool.sh" >/dev/null 2>"$TMP/usage.err"; uc=$?
+set -e
+[ "$uc" -ne 0 ] || fail "no verb must exit non-zero"
+grep -q "without an escaping layer." "$TMP/usage.err" || fail "no-verb usage on stderr must be the full header too"
+ok "full usage on --help and on a missing verb"
+
 echo "conduct-pool: assign spawns then resumes"
 reset_pool
 out="$(pool assign --worker-id backend-dev --task 'implement the thing')"
@@ -331,6 +348,192 @@ pool assign --worker-id backend-dev >/dev/null
 pool record --worker-id backend-dev --subagent-id lane-1 --status idle
 pool list >/dev/null
 ok "no scalar-set path, and the trap script was never triggered"
+
+echo "conduct-pool: a live loop lane with an empty queue is waiting"
+reset_pool
+LANE="$TMP/lanes/loop-a"
+mkdir -p "$LANE/inbox/pending" "$LANE/inbox/active"
+sleep 300 & LPID=$!
+pool assign --worker-id looper >/dev/null
+pool record --worker-id looper --subagent-id lane-L1 --status running --pid "$LPID" --run-dir "$LANE"
+out="$(pool list)"
+assert_contains "$out" '"worker_id":"looper","subagent_id":"lane-L1","status":"waiting"' "empty queue reads waiting"
+assert_contains "$out" "\"pid\":$LPID" "waiting slot shows its pid"
+assert_contains "$out" '"queue_depth":0' "waiting slot shows queue depth"
+assert_contains "$(cat "$META")" "run_dir: \"$LANE\"" "run dir persisted"
+# A plain (non-loop) slot keeps the old shape with a null pid.
+pool assign --worker-id plain >/dev/null
+assert_contains "$(pool list)" '"worker_id":"plain","subagent_id":"","status":"claimed"' "plain slot unchanged"
+assert_contains "$(pool list)" '"pid":null,"run_dir":"","queue_depth":0' "plain slot has no pid"
+ok "waiting is reported with pid and queue depth"
+
+echo "conduct-pool: assigning to a waiting slot enqueues and spawns nothing"
+printf '{"kind":"phase","prompt":"p1"}\n' > "$TMP/env1.json"
+before="$(pgrep -f 'sleep 300' | wc -l | tr -d ' ')"
+out="$(pool assign --worker-id looper --task 'phase one' --envelope "$TMP/env1.json")"
+assert_contains "$out" '"action":"enqueue"' "waiting assign enqueues"
+assert_contains "$out" "\"pid\":$LPID" "enqueue names the live pid"
+assert_contains "$out" '"queue_depth":1' "enqueue reports depth"
+assert_eq "$(find "$LANE/inbox/pending" -type f ! -name '.*' | wc -l | tr -d ' ')" "1" "one envelope pending"
+cmp -s "$(find "$LANE/inbox/pending" -type f ! -name '.*')" "$TMP/env1.json" || fail "queued envelope differs from input"
+assert_eq "$(pgrep -f 'sleep 300' | wc -l | tr -d ' ')" "$before" "process count unchanged"
+out="$(pool list)"
+assert_contains "$out" '"worker_id":"looper","subagent_id":"lane-L1","status":"running"' "queued work reads running"
+assert_contains "$out" '"queue_depth":1' "list shows depth 1"
+# Running loop slot also enqueues.
+out="$(pool assign --worker-id looper --envelope "$TMP/env1.json")"
+assert_contains "$out" '"queue_depth":2' "running loop slot enqueues too"
+# Without an envelope a live loop slot is refused, never respawned.
+set +e
+err="$(pool assign --worker-id looper 2>&1)"; code=$?
+set -e
+assert_eq "$code" "4" "live loop slot without envelope"
+assert_contains "$err" "--envelope" "refusal names the flag"
+# Queue drained by the lane: back to waiting.
+rm -f "$LANE"/inbox/pending/*
+assert_contains "$(pool list)" '"worker_id":"looper","subagent_id":"lane-L1","status":"waiting"' "drained queue reads waiting"
+# A waiting lane is live, so recycle refuses it.
+set +e
+pool recycle --worker-id looper >/dev/null 2>&1; code=$?
+set -e
+assert_eq "$code" "5" "recycle refuses a waiting lane"
+ok "enqueue on assign, no spawn"
+
+echo "conduct-pool: a waiting slot whose pid died is idle, queue kept"
+pool assign --worker-id looper --envelope "$TMP/env1.json" >/dev/null
+kill "$LPID" 2>/dev/null || true
+wait "$LPID" 2>/dev/null || true
+out="$(pool list)"
+assert_contains "$out" '"worker_id":"looper","subagent_id":"lane-L1","status":"idle"' "dead pid reads idle"
+assert_contains "$out" '"pid":null' "dead pid cleared"
+assert_eq "$(find "$LANE/inbox/pending" -type f ! -name '.*' | wc -l | tr -d ' ')" "1" "queue contents kept"
+# Idle keeps today's behaviour: assign resumes.
+out="$(pool assign --worker-id looper)"
+assert_contains "$out" '"action":"resume"' "idle loop slot resumes"
+# Dead pid seen first by assign also reconciles.
+sleep 300 & LPID2=$!
+pool record --worker-id looper --subagent-id lane-L2 --status waiting --pid "$LPID2" --run-dir "$LANE"
+kill "$LPID2"; wait "$LPID2" 2>/dev/null || true
+out="$(pool assign --worker-id looper --envelope "$TMP/env1.json")"
+assert_contains "$out" '"action":"resume"' "assign reconciles a dead pid to idle and resumes"
+assert_eq "$(find "$LANE/inbox/pending" -type f ! -name '.*' | wc -l | tr -d ' ')" "1" "no enqueue into a dead lane"
+ok "dead waiting lane is idle with its queue intact"
+
+echo "conduct-pool: waiting slots count toward the cap"
+reset_pool
+PIDS=""
+i=1
+while [ "$i" -le 8 ]; do
+  d="$TMP/lanes/cap-$i"; mkdir -p "$d/inbox/pending"
+  sleep 300 & p=$!; PIDS="$PIDS $p"
+  pool assign --worker-id "w$i" >/dev/null
+  if [ "$i" -le 4 ]; then st=waiting; else st=running; fi
+  pool record --worker-id "w$i" --subagent-id "l$i" --status "$st" --pid "$p" --run-dir "$d"
+  [ "$i" -le 4 ] || printf 'x\n' > "$d/inbox/pending/q.msg"
+  i=$((i + 1))
+done
+assert_eq "$(pool list | grep -c '"status":"waiting"')" "4" "four waiting"
+assert_eq "$(pool list | grep -c '"status":"running"')" "4" "four running"
+set +e
+CONDUCT_POOL_CAP=8 pool assign --worker-id ninth >/dev/null 2>&1; code=$?
+set -e
+assert_eq "$code" "3" "ninth claim refused at cap"
+[ -z "$(pool list | grep '"worker_id":"ninth"')" ] || fail "refused claim must not add a slot"
+for p in $PIDS; do kill "$p" 2>/dev/null || true; done
+wait 2>/dev/null || true
+ok "waiting + running at cap refuses a ninth worker"
+
+echo "conduct-pool: record validates loop-mode fields"
+reset_pool
+pool assign --worker-id v >/dev/null
+set +e
+pool record --worker-id v --subagent-id l --status waiting >/dev/null 2>&1; c1=$?
+pool record --worker-id v --subagent-id l --status running --pid abc --run-dir /tmp/x >/dev/null 2>&1; c2=$?
+pool record --worker-id v --subagent-id l --status running --pid 12 --run-dir 'rel/dir' >/dev/null 2>&1; c3=$?
+set -e
+[ "$c1" -ne 0 ] && [ "$c2" -ne 0 ] && [ "$c3" -ne 0 ] || fail "bad loop-mode record should be rejected ($c1 $c2 $c3)"
+ok "waiting needs pid + absolute run dir"
+
+# ---- machine-wide lane cap (CONDUCT_MACHINE_CAP) ------------------------------
+# Its own HQ root, sessions dir and session ids: nothing here can read or write
+# a real session's pool.
+MC="$(cd "$(mktemp -d)" && pwd -P)"
+mkdir -p "$MC/core/scripts/lib" "$MC/workspace/sessions"
+cp "$TMP/core/scripts/conduct-pool.sh" "$TMP/core/scripts/hq-session.sh" "$MC/core/scripts/"
+cp "$TMP/core/scripts/lib/session-id.sh" "$MC/core/scripts/lib/"
+mpool() { local s="$1"; shift; HQ_ROOT="$MC" HQ_SESSION_ID="$s" "$MC/core/scripts/conduct-pool.sh" --session-id "$s" "$@"; }
+sleep 300 >/dev/null 2>&1 & LIVE=$!
+trap 'kill "$LIVE" 2>/dev/null || true; rm -rf "$TMP" "$MC"' EXIT
+sh -c 'exit 0' & DEAD=$!; wait "$DEAD" 2>/dev/null || true
+
+echo "conduct-pool: machine cap counts running and claimed slots across sessions"
+for w in a b; do mpool test-mc-one assign --worker-id "$w" >/dev/null; done
+mpool test-mc-one record --worker-id a --subagent-id la --status running >/dev/null
+mpool test-mc-two assign --worker-id c >/dev/null
+set +e
+out="$(CONDUCT_MACHINE_CAP=3 mpool test-mc-two assign --worker-id d 2>&1)"; code=$?
+set -e
+assert_eq "$code" "6" "fourth lane refused at machine cap 3"
+assert_contains "$out" "3 running or claimed lane(s)" "refusal names the count"
+assert_contains "$out" "cap 3" "refusal names the cap"
+assert_contains "$out" "test-mc-one (2)" "refusal names the session holding the most"
+[ -z "$(mpool test-mc-two list | grep '"worker_id":"d"')" ] || fail "refused claim must not add a slot"
+ok "machine cap refuses across two sessions and names count, cap and top session"
+
+echo "conduct-pool: a slot whose recorded pid is dead is not counted"
+mpool test-mc-one record --worker-id b --subagent-id lb --status running --pid "$DEAD" --run-dir "$MC/lane-b" >/dev/null
+# record does not reconcile, so the meta file still says running with a dead pid
+grep -q 'pid: "'"$DEAD"'"' "$MC/workspace/sessions/test-mc-one/meta.yaml" || fail "fixture: b should carry the dead pid"
+out="$(CONDUCT_MACHINE_CAP=3 mpool test-mc-two assign --worker-id d)"
+assert_contains "$out" '"action":"spawn"' "dead-pid slot frees a machine slot"
+# a live loop lane with work queued stays running (an empty queue would reconcile it to waiting)
+mkdir -p "$MC/lane-d/inbox/pending"; printf '{}\n' > "$MC/lane-d/inbox/pending/1.msg"
+mpool test-mc-two record --worker-id d --subagent-id ld --status running --pid "$LIVE" --run-dir "$MC/lane-d" >/dev/null
+set +e
+CONDUCT_MACHINE_CAP=3 mpool test-mc-two assign --worker-id e >/dev/null 2>&1; code=$?
+set -e
+assert_eq "$code" "6" "a live recorded pid is counted"
+ok "dead pid not counted; live pid counted"
+
+echo "conduct-pool: CONDUCT_MACHINE_CAP=0 disables the check; the per-session cap still holds"
+out="$(CONDUCT_MACHINE_CAP=0 mpool test-mc-two assign --worker-id e)"
+assert_contains "$out" '"action":"spawn"' "cap 0 disables"
+set +e
+CONDUCT_MACHINE_CAP=0 CONDUCT_POOL_CAP=3 mpool test-mc-two assign --worker-id f >/dev/null 2>&1; code=$?
+set -e
+assert_eq "$code" "3" "per-session cap unaffected"
+ok "cap 0 disables; CONDUCT_POOL_CAP unchanged"
+
+# ---- reconcile ----------------------------------------------------------------
+echo "conduct-pool: reconcile idles a finished one-shot lane only"
+RS=test-mc-rec
+RB="$MC/workspace/tmp/workflow-runner/$RS"
+mklane() { # mklane <run id> <lane pid> <exit marker yes|no>
+  mkdir -p "$RB/$1"; printf '%s\n' "$2" > "$RB/$1/lane.pid"; printf '%s\n' "$2" > "$RB/$1/runner.pid"
+  printf 'work\n' > "$RB/$1/lane.log"
+  if [ "$3" = yes ]; then printf 'CONDUCT_EXIT=0\n' >> "$RB/$1/lane.log"; fi
+}
+mklane run-done "$DEAD" yes
+mklane run-live "$LIVE" yes
+mklane run-nomark "$DEAD" no
+mkdir -p "$MC/loop-lane/inbox/pending"; printf 'CONDUCT_EXIT=0\n' > "$MC/loop-lane/lane.log"
+printf '{}\n' > "$MC/loop-lane/inbox/pending/1.msg"   # queued work: list keeps it running
+for w in done live nomark loop; do mpool "$RS" assign --worker-id "$w" >/dev/null; done
+mpool "$RS" record --worker-id done --subagent-id run-done --status running >/dev/null
+mpool "$RS" record --worker-id live --subagent-id run-live --status running >/dev/null
+mpool "$RS" record --worker-id nomark --subagent-id run-nomark --status running >/dev/null
+mpool "$RS" record --worker-id loop --subagent-id loop-1 --status running --pid "$LIVE" --run-dir "$MC/loop-lane" >/dev/null
+out="$(mpool "$RS" reconcile)"
+assert_contains "$out" "IDLE done CONDUCT_EXIT=0" "reconcile reports the finished lane"
+st_of() { mpool "$RS" list | python3 -c 'import json,sys; print({r["worker_id"]: r["status"] for r in json.load(sys.stdin)}[sys.argv[1]])' "$1"; }
+assert_eq "$(st_of done)" "idle" "running + dead + CONDUCT_EXIT -> idle"
+assert_eq "$(st_of live)" "running" "live lane untouched"
+assert_eq "$(st_of nomark)" "running" "no CONDUCT_EXIT -> untouched"
+assert_eq "$(st_of loop)" "running" "loop lane untouched"
+if grep -q 'recycled' "$MC/workspace/sessions/$RS/meta.yaml"; then fail "reconcile must never recycle"; fi
+ok "reconcile: finished one-shot -> idle; live, unmarked and loop lanes untouched"
+kill "$LIVE" 2>/dev/null || true
+rm -rf "$MC"
 
 echo
 echo "conduct-pool.test.sh: $PASS checks passed"

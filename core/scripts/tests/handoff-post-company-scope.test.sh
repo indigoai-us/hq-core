@@ -385,8 +385,48 @@ jq -n --arg file_path "$MIXED_HOOK_PATH" \
 
 HOOK_CONTROL_ID="T-synthetic-hook-dotted-control"
 HOOK_CONTROL_PATH="$ZERO_REPO/workspace/threads/$HOOK_CONTROL_ID.json"
+mkdir -p "$ZERO_REPO/core/scripts/lib" "$ZERO_REPO/.codex/hooks"
+cp "$SRC_ROOT/scripts/lib/session-scope-capability.sh" "$ZERO_REPO/core/scripts/lib/session-scope-capability.sh"
+cat > "$ZERO_REPO/core/scripts/hqd-hook-flag-cache-lib.sh" <<'SH'
+hqd_hook_flag_enabled_for() {
+  [[ "$1" == multi-company-session-lock && "$2" == hooks.multi-company-session-lock ]] || return 1
+  HQD_FLAG_ENABLED=true
+}
+SH
+printf '%s\n' 'process.stdout.write("true")' > "$ZERO_REPO/.codex/hooks/codex-explicit-path-flag.cjs"
+printf '{"session_id":"%s","company_slug":"winks","company_slugs":["winks","acme"]}\n' "$WINKS_SESSION" \
+  > "$ZERO_REPO/workspace/sessions/$WINKS_SESSION/scope-capability.json"
+POST_LOCKS_ID="T-synthetic-handoff-post-lock-redaction"
+POST_LOCKS_PATH="workspace/threads/$POST_LOCKS_ID.json"
+cat > "$ZERO_REPO/$POST_LOCKS_PATH" <<'JSON'
+{"thread_id":"T-synthetic-handoff-post-lock-redaction","type":"handoff","files_touched":["companies/winks/knowledge/x.md"],"metadata":{"company":["winks"],"company_slugs":["winks","acme"]}}
+JSON
+handoff_post_test_run --clean-env "$ZERO_REPO" "$POST_LOCKS_PATH" "" \
+  CODEX_THREAD_ID="$WINKS_SESSION" HOME="$TMP_ROOT/zero-change-home" \
+  HQ_SYNC_CALLS="$TMP_ROOT/lock-redaction-sync-calls" \
+  HANDOFF_LOG_DIR="$TMP_ROOT/zero-change-logs" PATH="$ZERO_BIN:/usr/bin:/bin"
+[[ "$(jq -c '.metadata.company_slugs' "$ZERO_REPO/$POST_LOCKS_PATH")" == '["winks"]' ]] \
+  || fail "handoff-post retained a locked company not touched by this handoff"
+[[ "$(jq -c '.metadata.company_slugs' "$ZERO_REPO/companies/winks/workspace/sessions/$POST_LOCKS_ID.json")" == '["winks"]' ]] \
+  || fail "handoff-post company mirror leaked a foreign locked company"
+
+# A session may be locked to winks and acme while this handoff touches only
+# winks. The company mirror must not expose acme in any JSON string value.
+POST_CAP_ID="T-synthetic-handoff-post-capability-lockset"
+POST_CAP_PATH="workspace/threads/$POST_CAP_ID.json"
+cat > "$ZERO_REPO/$POST_CAP_PATH" <<'JSON'
+{"thread_id":"T-synthetic-handoff-post-capability-lockset","type":"handoff","files_touched":["companies/winks/knowledge/x.md"],"metadata":{"company":["winks"]}}
+JSON
+handoff_post_test_run --clean-env "$ZERO_REPO" "$POST_CAP_PATH" "" \
+  CODEX_THREAD_ID="$WINKS_SESSION" HOME="$TMP_ROOT/zero-change-home" \
+  HQ_SYNC_CALLS="$TMP_ROOT/capability-lockset-sync-calls" \
+  HANDOFF_LOG_DIR="$TMP_ROOT/zero-change-logs" PATH="$ZERO_BIN:/usr/bin:/bin"
+if ! jq -e --arg foreign_company acme 'all(.. | strings; (contains($foreign_company) | not))' \
+    "$ZERO_REPO/companies/winks/workspace/sessions/$POST_CAP_ID.json" >/dev/null; then
+  fail "winks company mirror exposed acme in a JSON string value"
+fi
 cat > "$HOOK_CONTROL_PATH" <<'JSON'
-{"thread_id":"T-synthetic-hook-dotted-control","type":"handoff","files_touched":["./companies/winks/knowledge/x.md"],"metadata":{"company":["winks"]}}
+{"thread_id":"T-synthetic-hook-dotted-control","type":"handoff","files_touched":["./companies/winks/knowledge/x.md"],"metadata":{"company":["winks"],"company_slugs":["winks","acme"]}}
 JSON
 jq -n --arg file_path "$HOOK_CONTROL_PATH" \
   '{tool_name:"Write",tool_input:{file_path:$file_path}}' | \
@@ -394,6 +434,10 @@ jq -n --arg file_path "$HOOK_CONTROL_PATH" \
     bash "$ZERO_REPO/.claude/hooks/mirror-thread-to-company.sh"
 [[ -f "$ZERO_REPO/companies/winks/workspace/sessions/$HOOK_CONTROL_ID.json" ]] \
   || fail "mirror hook failed to preserve a single bound-company dotted path"
+[[ "$(jq -c '.metadata.company_slugs' "$ZERO_REPO/companies/winks/workspace/sessions/$HOOK_CONTROL_ID.json")" == '["winks"]' ]] \
+  || fail "company mirror leaked foreign locked company identity"
+[[ "$(jq -c '.metadata.company_slugs' "$HOOK_CONTROL_PATH")" == '["winks","acme"]' ]] \
+  || fail "mirror redaction modified the canonical root handoff"
 
 # Dotted relative paths for one bound company remain mirrorable.
 CONTROL_OUT="$(cd "$ZERO_REPO" && env -i CODEX_THREAD_ID="$WINKS_SESSION" \

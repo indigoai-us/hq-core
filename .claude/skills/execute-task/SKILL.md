@@ -151,7 +151,7 @@ From results, find the entry whose path includes `/{project}/prd.json`. If qmd i
 If no `prd.json` found:
 
 ```
-ERROR: prd.json not found for {project}. Run /plan {project} first.
+ERROR: prd.json not found for {project}. Run /prd {project} first.
 ```
 
 Stop.

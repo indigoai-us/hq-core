@@ -214,14 +214,22 @@ assert_not_file "$(queue_file "$HQ_C" "sess-settings")"
 # [d] queue and history never persist urls or secret-bearing fields
 HQ_D="$(make_root d)"
 set_company "$HQ_D" "sess-deploy" "acme"
+mkdir -p "$HQ_D/companies/beta"
+mkdir -p "$HQ_D/core/scripts/lib"
+cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$HQ_D/core/scripts/lib/session-scope-capability.sh"
+cp "$ROOT/core/scripts/hqd-hook-flag-cache-lib.sh" "$HQ_D/core/scripts/hqd-hook-flag-cache-lib.sh"
+mkdir -p "$HQ_D/.codex/hooks"
+printf '%s\n' 'process.stdout.write("true")' > "$HQ_D/.codex/hooks/codex-explicit-path-flag.cjs"
+printf '{"session_id":"sess-deploy","company_slug":"acme","company_slugs":["acme","beta"]}\n' \
+  > "$HQ_D/workspace/sessions/sess-deploy/scope-capability.json"
 payload_deploy="$(HQ_D="$HQ_D" python3 - <<'PY'
 import json, os
 print(json.dumps({
   "hook_event_name": "PostToolUse",
   "session_id": "sess-deploy",
-  "cwd": os.environ["HQ_D"],
+  "cwd": os.environ["HQ_D"] + "/companies/beta",
   "tool_name": "Bash",
-  "tool_input": {"command": "/deploy workspace/reports/demo"},
+  "tool_input": {"command": "/deploy companies/beta/workspace/reports/demo"},
   "tool_response": {"stdout": "deploy complete appId=app-123 URL=https://deploy.example.com/demo"}
 }))
 PY
@@ -236,6 +244,7 @@ if grep -RIE 'https?://|share-session/|"url"|"token"|"password"|"secret"' "$HQ_D
   fail "state files persisted sensitive strings"
 fi
 assert_eq "$(jq -r '.artifact.app_id' "$queue_d")" "app-123" "deploy app id stored without url"
+assert_eq "$(jq -r '.company' "$queue_d")" "beta" "deploy suggestion uses deployment company instead of primary"
 
 # [e] session_id traversal chars are sanitized for queue state
 HQ_E="$(make_root e)"

@@ -1,0 +1,83 @@
+worker:
+  id: pipeline-conductor
+  name: "Pipeline Conductor"
+  description: "Routing rules for /run-project --pipeline, applied by the detached pipeline-driver.sh: select unblocked stories, route each phase to a pooled worker lane, re-check acceptance criteria, report per story"
+  type: OpsWorker
+  version: "1.0"
+  team: dev-team
+
+execution:
+  mode: on_demand
+  max_runtime: 8h
+  retry_attempts: 0
+  model: opus
+
+context:
+  base:
+    - core/workers/public/dev-team/pipeline-conductor/
+    - core/workers/public/dev-team/pipeline-conductor/skills/
+    - .claude/skills/_shared/lane-dispatch-protocol.md
+  dynamic:
+    - pattern: "projects/{project}/"
+      when: always
+  exclude:
+    - node_modules/
+    - dist/
+    - "*.log"
+
+skills:
+  - id: conduct-pipeline
+    file: skills/conduct-pipeline.md
+
+verification:
+  post_execute:
+    - check: report_written
+      command: test -s "{state_dir}/report.md"
+  approval_required: false
+
+output:
+  destination: "{state_dir}/"
+  format: markdown
+  naming: "report.md"
+
+instructions: |
+  # Pipeline Conductor
+
+  The routing rules for /run-project --pipeline. This worker is not launched
+  as a lane. A lane cannot keep a child process alive past its own engine
+  call, so the loop that applies these rules is `core/scripts/pipeline-driver.sh`,
+  which the parent session starts detached through `core/scripts/hq-detach.sh`
+  and waits on. The driver makes no engine calls; each pass it accepts landed
+  handoffs, re-checks finished stories, and ticks
+  `core/scripts/pipeline-conductor.sh` to route the next phase. A session that
+  has to step a run by hand (for example after the driver exits 23) follows
+  the same rules with the same helper.
+
+  ## Contract
+
+  - Never spawn a child agent (no Task tool, no `claude -p`, no `codex exec`,
+    no `grok -p`). Every phase is queued into a pool lane through
+    `core/scripts/pipeline-conductor.sh route`, which calls
+    `conduct-pool.sh assign --envelope`.
+  - Never start a background loop inside a lane. The driver is the only loop.
+  - Never set `passes` in prd.json. A story is finished when its literal
+    acceptance criteria pass the re-check; the parent records it.
+  - Never wait for a human. A worker whose worker.yaml has
+    `approval_required: true` or `human_checkpoints` becomes a decision item
+    in `{state_dir}/decisions/` and its story is held.
+  - Report once per finished story and once at the end, never per phase.
+  - Keep company context isolated: one state dir per project and company.
+
+  ## Skills
+
+  | Skill | Description |
+  |-------|-------------|
+  | conduct-pipeline | Routing rules, driver passes and exit codes, AC re-check, decision items, regression gate, report file |
+
+  ## Worker sequence
+
+  Taken from task-executor's table (`worker_preference` wins when set):
+  - API/backend → architect → backend-dev → qa-tester
+  - Database schema → architect → database-dev → backend-dev → qa-tester
+  - UI → architect → frontend-dev → qa-tester
+  - Full-stack → architect → database-dev → backend-dev → frontend-dev → qa-tester

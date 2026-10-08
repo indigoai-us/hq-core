@@ -229,6 +229,18 @@ while IFS= read -r dir; do
     continue
   fi
 
+  # A loop-mode lane (`workflow-runner.mjs --loop`, which writes loop.json) is
+  # idle by design between envelopes and is owned by its pool, not by the turn
+  # that launched it: /run-project --pipeline starts it detached and the run
+  # continues long after that turn ends. Its only stop is a stop envelope from
+  # the run that owns it. Observed 2026-10-05: a SessionStart sweep read six
+  # waiting pipeline lanes of a live run as orphans and sent each SIGTERM.
+  if [ -f "$dir/loop.json" ]; then
+    live=$((live + 1))
+    echo "keep     loop     ${started:-?}  $label  [session $owner_session] (pid $pid; loop lane, stops only by its stop envelope)"
+    continue
+  fi
+
   if has_live_owner "$pid" || has_recorded_live_owner "$dir/owner.pid"; then
     live=$((live + 1))
     echo "keep     live     ${started:-?}  $label  [session $owner_session] (pid $pid; owner recorded/live)"

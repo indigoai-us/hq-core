@@ -1,7 +1,7 @@
 ---
 id: hq-never-swallow-errors
 title: Never Swallow Errors — All Failures Must Be Visible
-when: always
+when: catch || error || try
 on: [SessionStart]
 enforcement: soft
 tier: 1

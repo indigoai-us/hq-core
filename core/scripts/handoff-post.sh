@@ -157,7 +157,7 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1
     SYNC_COMPANIES_JSON="$(jq -cn --arg company "$BOUND_COMPANY" '[$company]')"
     THREAD_TMP="$(mktemp "$HQ_ROOT/workspace/threads/.handoff-post-XXXXXX")"
     if jq -c --argjson companies "$SYNC_COMPANIES_JSON" \
-      '.metadata = (.metadata // {}) | .metadata.company = $companies' \
+      '.metadata = (.metadata // {}) | .metadata.company = $companies | .metadata.company_slugs = $companies' \
       "$THREAD_FILE" > "$THREAD_TMP" && mv "$THREAD_TMP" "$THREAD_FILE"; then
       :
     else

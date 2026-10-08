@@ -520,11 +520,11 @@ scope_check_bash_candidate() {
 scope_check_bash_glob_candidate() {
   local candidate="${1:-}" masked="${2:-}" occurrence_prefix="${3:-}"
   local first_glob_prefix="" ch token_prefix="" remaining full_prefix full_pattern
-  local normalized_prefix company_root expansion_cwd match resolved_match rel
+  local normalized_prefix company_root expansion_cwd match resolved_match rel glob_company
   local count=0 prefix_remaining backtick=$'\140'
 
   scope_load_bound_company
-  [ -n "$BOUND_CO" ] || scope_block_rel "$candidate" "no bound company authorizes glob expansion"
+  [ -n "$BOUND_COS" ] || scope_block_rel "$candidate" "no bound company authorizes glob expansion"
   case "$candidate" in
     *"'"*|*'"'*|*\\*) scope_block_rel "$candidate" "quoted or escaped glob syntax cannot be checked safely" ;;
   esac
@@ -564,15 +564,19 @@ scope_check_bash_glob_candidate() {
     *) full_prefix="$expansion_cwd/$full_prefix" ;;
   esac
   normalized_prefix="$(scope_normalize_hq_relative "$full_prefix")"
+  glob_company="$(scope_company_slug_for_rel "$normalized_prefix")"
+  if ! scope_company_is_locked "$glob_company"; then
+    scope_block_rel "$candidate" "the literal prefix before the glob does not resolve inside companies/$BOUND_CO"
+  fi
   case "$normalized_prefix" in
-    "companies/$BOUND_CO"/*) ;;
-    *) scope_block_rel "$candidate" "the literal prefix before the glob does not resolve inside companies/$BOUND_CO" ;;
+    "companies/$glob_company"/*) ;;
+    *) scope_block_rel "$candidate" "the literal prefix before the glob does not resolve inside its company" ;;
   esac
 
-  company_root="$(realpath "$HQ_ROOT/companies/$BOUND_CO" 2>/dev/null)" \
+  company_root="$(realpath "$HQ_ROOT/companies/$glob_company" 2>/dev/null)" \
     || scope_block_rel "$candidate" "the bound company directory cannot be resolved"
   case "$company_root" in
-    "$HQ_ROOT/companies/$BOUND_CO"|"$HQ_ROOT/companies/$BOUND_CO"/*) ;;
+    "$HQ_ROOT/companies/$glob_company"|"$HQ_ROOT/companies/$glob_company"/*) ;;
     *) scope_block_rel "$candidate" "the bound company directory resolves outside its literal company path" ;;
   esac
 
@@ -593,7 +597,7 @@ scope_check_bash_glob_candidate() {
       || scope_block_rel "$candidate" "a glob match cannot be resolved with realpath"
     case "$resolved_match" in
       "$company_root"/*) ;;
-      *) scope_block_rel "$candidate" "a glob match resolves outside companies/$BOUND_CO" ;;
+      *) scope_block_rel "$candidate" "a glob match resolves outside companies/$glob_company" ;;
     esac
     rel="${resolved_match#"$HQ_ROOT"/}"
     scope_check_rel "$rel"
@@ -772,19 +776,84 @@ scope_read_bound_company() {
   printf '%s' "$co"
 }
 
+scope_read_bound_companies() {
+  local sid="${1:-}" aid="${2:-}" cap=""
+  [ -n "$sid" ] || return 0
+  cap="$(session_scope_capability_path "$HQ_ROOT" "$sid" "$aid" 2>/dev/null || true)"
+  if [ -n "$cap" ] && [ -f "$cap" ]; then
+    session_scope_read_companies "$HQ_ROOT" "$sid" "$aid" 2>/dev/null || true
+  elif [ -z "$aid" ]; then
+    scope_read_bound_company "$sid" "$aid"
+  fi
+}
+
+# Read the primary binding and its optional lock set in one capability parse.
+# This keeps the common hook path to the same jq invocation as the legacy
+# primary-only read.
+scope_read_bound_scope() {
+  local sid="${1:-}" aid="${2:-}" cap="" info="" primary="" has_set="" companies=""
+  [ -n "$sid" ] || return 0
+  cap="$(session_scope_capability_path "$HQ_ROOT" "$sid" "$aid" 2>/dev/null || true)"
+  if [ -n "$cap" ] && [ -f "$cap" ]; then
+    info="$(jq -er --arg sid "$sid" --arg aid "$aid" '
+      select(.session_id == $sid and (.agent_id // "") == $aid)
+      | if (.company_slug | type) != "string" or (.company_slug | test("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$") | not) then error("invalid primary")
+        elif has("company_slugs") then
+          if (.company_slugs | type) == "array" and all(.company_slugs[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"))
+            and (.company_slugs | length) > 0 and .company_slugs[0] == .company_slug
+            and ((.company_slugs | unique | length) == (.company_slugs | length))
+            and ((.company_slug == "personal" and (.company_slugs | length) == 1) or (.company_slugs | all(. != "personal"))) then
+            [.company_slug, "true", (.company_slugs | join(","))] | @tsv
+          else error("invalid company_slugs") end
+        else [.company_slug, "false", .company_slug] | @tsv end
+    ' "$cap" 2>/dev/null)" || return 0
+    IFS=$'\t' read -r primary has_set companies <<< "$info"
+    printf '%s\t%s\t%s\n' "$primary" "$has_set" "$companies"
+  elif [ -z "$aid" ]; then
+    primary="$(scope_read_bound_company "$sid" "$aid")"
+    [ -n "$primary" ] && printf '%s\tfalse\t%s\n' "$primary" "$primary"
+  fi
+}
+
 BOUND_CO=""
+BOUND_COS=""
 BOUND_CO_LOADED=0
 scope_load_bound_company() {
   [ "$BOUND_CO_LOADED" -eq 0 ] || return 0
   BOUND_CO_LOADED=1
   [ -n "$SESSION_ID" ] || return 0
   [ -z "$CALLER_IDENTITY_ERROR" ] || return 0
-  BOUND_CO="$(scope_read_bound_company "$SESSION_ID" "$CALLER_AGENT_ID")"
+  scope_apply_bound_scope
   # SessionStart bind can land in the same turn as the first company path.
   # Re-read once rather than weakening the deny.
   if [ -z "$BOUND_CO" ]; then
-    BOUND_CO="$(scope_read_bound_company "$SESSION_ID" "$CALLER_AGENT_ID")"
+    scope_apply_bound_scope
   fi
+}
+
+scope_apply_bound_scope() {
+  local info="" primary="" has_set="" companies="" slug out=""
+  info="$(scope_read_bound_scope "$SESSION_ID" "$CALLER_AGENT_ID" || true)"
+  IFS=$'\t' read -r primary has_set companies <<< "$info"
+  BOUND_CO="$primary"
+  BOUND_COS="$primary"
+  [ "$has_set" = true ] && [ -n "$companies" ] || return 0
+  # The gate is only consulted for a capability that actually carries a
+  # multi-company set. A disabled or unavailable flag keeps primary-only scope.
+  session_scope_multi_company_enabled "$HQ_ROOT" "$primary" || return 0
+  for slug in ${companies//,/ }; do
+    case "$slug" in ''|*[!a-zA-Z0-9_-]*) return 0 ;; esac
+    if [ "$slug" = personal ] || { [ -d "$HQ_ROOT/companies/$slug" ] && [ ! -L "$HQ_ROOT/companies/$slug" ]; }; then
+      case ",$out," in *",$slug,"*) ;; *) out="${out:+$out,}$slug" ;; esac
+    fi
+  done
+  [ -n "$out" ] && BOUND_COS="$out"
+}
+
+scope_company_is_locked() {
+  local slug="${1:-}"
+  [ -n "$slug" ] && case ",$BOUND_COS," in *",$slug,"*) return 0 ;; esac
+  return 1
 }
 
 scope_normalize_hq_relative() {
@@ -891,6 +960,7 @@ scope_rel_allowed() {
     scope_bind_retry_done=1
     sleep 0.05
     BOUND_CO="$(scope_read_bound_company "$SESSION_ID" "$CALLER_AGENT_ID")"
+    BOUND_COS="$(scope_read_bound_companies "$SESSION_ID" "$CALLER_AGENT_ID" | paste -sd, -)"
   fi
 
   case "$co" in
@@ -907,7 +977,7 @@ scope_rel_allowed() {
     return 1
   fi
 
-  [ "$co" = "$BOUND_CO" ]
+  scope_company_is_locked "$co"
 }
 
 scope_block_rel() {
@@ -938,7 +1008,7 @@ child does not)."
 If that reports success but this keeps blocking, the bind landed on another
 session — retry it as: core/scripts/hq-session.sh --session-id ${SESSION_ID:-<id>} set company_slug <slug>"
   else
-    bound_msg="Session company_slug is '$BOUND_CO'."
+    bound_msg="Session locked companies: ${BOUND_COS:-$BOUND_CO}."
   fi
 
   cat >&2 <<EOF
@@ -961,6 +1031,8 @@ heredoc or redirect.
 EOF
   if [ -n "$bind_msg" ]; then
     printf '%s\n' "$bind_msg" >&2
+  elif [ -n "$BOUND_CO" ]; then
+    printf 'For intentional multi-company work, add a lock with: core/scripts/hq-session.sh add company <slug>\n' >&2
   fi
   printf 'Allowed without binding: core/, personal/, repos/, workspace/, companies/manifest.yaml, companies/_template/\n' >&2
   exit 2

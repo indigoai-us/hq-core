@@ -45,6 +45,9 @@ PERSONAL_SKILLS="$TMP_ROOT/personal/skills"
 mkdir -p "$TMP_ROOT/core/scripts" "$CORE_SKILLS" "$PERSONAL_SKILLS" \
          "$CO" "$TMP_ROOT/.claude/skills" "$TMP_ROOT/workspace/sessions"
 cp "$HQ_SRC/core/scripts/hook-lib.sh" "$TMP_ROOT/core/scripts/hook-lib.sh"
+mkdir -p "$TMP_ROOT/core/scripts/lib" "$TMP_ROOT/.codex/hooks"
+cp "$HQ_SRC/core/scripts/lib/session-scope-capability.sh" "$TMP_ROOT/core/scripts/lib/"
+printf '%s\n' 'process.stdout.write("true")' > "$TMP_ROOT/.codex/hooks/codex-explicit-path-flag.cjs"
 
 make_skill() { # <dir> <body>
   mkdir -p "$1"
@@ -55,6 +58,13 @@ make_skill() { # <dir> <body>
 bind_company() { # <session-id> <slug>
   mkdir -p "$TMP_ROOT/workspace/sessions/$1"
   printf 'session_id: %s\ncompany_slug: %s\n' "$1" "$2" > "$TMP_ROOT/workspace/sessions/$1/meta.yaml"
+}
+
+bind_agent_company() { # <session-id> <agent-id> <slug>
+  mkdir -p "$TMP_ROOT/workspace/sessions/$1/agents/$2"
+  jq -n --arg sid "$1" --arg aid "$2" --arg slug "$3" \
+    '{session_id:$sid,agent_id:$aid,company_slug:$slug,company_slugs:[$slug]}' \
+    > "$TMP_ROOT/workspace/sessions/$1/agents/$2/scope-capability.json"
 }
 
 payload() { # <prompt> [session-id]
@@ -114,6 +124,12 @@ assert_empty "$(run_hook "$(payload '/beta:classified' 's-unbound')")" \
   "unbound session cannot reach a company script"
 assert_empty "$(run_hook "$(payload '/classified' 's-acme')")" \
   "bare name does not reach a non-active company"
+
+# A calling Task agent uses its exact tuple capability even when the main
+# session is locked to another company set.
+bind_agent_company "s-acme" "agent-a" "beta"
+out="$(run_hook "$(payload '/beta:classified' 's-acme')" HQ_HOOK_AGENT_ID=agent-a)"
+assert_contains "$out" 'beta-only' "company skill resolves against calling agent capability"
 
 # --- 9. explicit personal namespace pins the root --------------------------
 out="$(run_hook "$(payload '/personal:report' 's-acme')")"

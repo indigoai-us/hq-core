@@ -19,7 +19,7 @@ Ordering follows user feedback: **principles and daily workflow first**, orchest
 | 3 | `knowledge` | 6 | Daily practice | Hot vs cold channels, qmd search, knowledge gardens |
 | 4 | `session-hygiene` | 8 | Daily practice | `/checkpoint`, `/handoff`, thread files, context degradation |
 | 5 | `context-management` | 4+8 | Daily practice | Context Diet, token optimization, 60%/75% advisories |
-| 6 | `projects` | 7 | Daily practice | PRDs, `/idea` → `/plan`, acceptance criteria as back pressure |
+| 6 | `projects` | 7 | Daily practice | PRDs, `/idea` → `/prd`, acceptance criteria as back pressure |
 | 7 | `scaling` | 9 | Daily practice | Parallel sessions, company isolation via manifest.yaml |
 | 8 | `ralph-loop` | 3+7 | Advanced | `/run-project` orchestration — principles in action (mechanics) |
 | 9 | `workers` | 5 | Advanced | `/newworker`, worker.yaml, `/learn` training, skills |

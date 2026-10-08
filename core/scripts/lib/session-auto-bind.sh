@@ -339,6 +339,31 @@ session_auto_bind_resolve_source() {
   return 0
 }
 
+session_auto_bind_spawn_company_set() {
+  local root="${1:-}" sid="${2:-}" primary="${3:-}" companies="${HQ_SPAWN_COMPANIES:-}" item first="" meta tmp
+  [ -n "$companies" ] || return 0
+  meta="$root/workspace/sessions/$sid/meta.yaml"
+  local -a validated=()
+  IFS=, read -r -a validated <<< "$companies"
+  for item in "${validated[@]}"; do
+    session_auto_bind_is_known_slug "$root" "$item" || return 0
+    [ -n "$first" ] || first="$item"
+  done
+  [ "$first" = "$primary" ] || return 0
+  companies="$(printf '%s\n' "${validated[@]}" | awk 'NF && !seen[$0]++' | paste -sd, -)"
+  [ -n "$companies" ] || return 0
+  tmp="$(mktemp)"
+  awk -v slugs="$companies" '
+    BEGIN { found=0 }
+    $1 == "company_slugs:" { if (!found) print "company_slugs: " slugs; found=1; next }
+    { print }
+    END { if (!found) print "company_slugs: " slugs }
+  ' "$meta" >"$tmp" && mv "$tmp" "$meta" || { rm -f "$tmp"; return 0; }
+  if command -v session_scope_mint_set >/dev/null 2>&1; then
+    session_scope_mint_set "$root" "$sid" "$companies" || true
+  fi
+}
+
 # Historical slug-only contract retained for existing callers.
 session_auto_bind_resolve() {
   local resolved="" slug=""
@@ -421,6 +446,7 @@ session_auto_bind_apply() {
   if command -v session_scope_mint >/dev/null 2>&1; then
     session_scope_mint "$root" "$sid" "$slug" || true
   fi
+  session_auto_bind_spawn_company_set "$root" "$sid" "$slug"
   return 0
 }
 
@@ -466,4 +492,5 @@ session_auto_bind_apply_validated_default() {
   if command -v session_scope_mint >/dev/null 2>&1; then
     session_scope_mint "$root" "$sid" "$slug" || true
   fi
+  session_auto_bind_spawn_company_set "$root" "$sid" "$slug"
 }

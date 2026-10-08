@@ -79,7 +79,7 @@ with hands-on exercises using your actual HQ.
   3. Knowledge             — Hot vs cold channels, qmd search, gardens
   4. Session Hygiene       — /checkpoint, /handoff, thread files
   5. Context Management    — Token optimization, Context Diet, advisories
-  6. Projects              — PRDs, /idea → /plan, acceptance criteria
+  6. Projects              — PRDs, /idea → /prd, acceptance criteria
   7. Scaling               — Parallel sessions, company isolation
 
   Advanced
@@ -126,7 +126,7 @@ Present the exercise defined in the topic's `exercise` field.
 **Exercise tiers:**
 - **Tier 1 (AI executes, read-only):** qmd searches, file reads, git log, ls, wc. Safe to run directly.
 - **Tier 2 (User executes, AI verifies):** Commands like `/run`, `/checkpoint`. Describe what to do, wait for the user to try, then verify.
-- **Tier 3 (Suggested for later, NOT executed):** `/newworker`, `/plan`, `/run-project`, `/handoff`. Mention as next steps only.
+- **Tier 3 (Suggested for later, NOT executed):** `/newworker`, `/prd`, `/run-project`, `/handoff`. Mention as next steps only.
 
 ### Phase 4: Verify
 
@@ -287,7 +287,7 @@ For Tier 2 exercises: check for expected side effects (new files, updated state)
   - If none: explain the structure using the PRD schema from the book, emphasizing acceptance criteria as the "teeth"
 - **Exercise (Tier 1 + Tier 3 suggestion):**
   1. If a prd.json exists: read it and ask "How many stories are in this project? How many have passed verification?" Show how `passes: true/false` creates back pressure
-  2. If none: explain the /idea → /brainstorm → /plan → /run-project pipeline. Suggest: "Try `/idea` to capture something small on your board."
+  2. If none: explain the /idea → /brainstorm → /prd → /run-project pipeline. Suggest: "Try `/idea` to capture something small on your board."
 - **Verify:** User understands that acceptance criteria define "done" for autonomous agents — without them, the loop has no back pressure.
 - **Takeaway:** "A PRD is a to-do list with teeth. Acceptance criteria are how autonomous agents know when to stop."
 - **Next topic:** scaling

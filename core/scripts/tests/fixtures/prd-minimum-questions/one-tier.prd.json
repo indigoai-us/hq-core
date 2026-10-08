@@ -1,0 +1,16 @@
+{
+  "name": "fixture",
+  "userStories": [],
+  "metadata": {
+    "interview": {
+      "asked": 10,
+      "skipped_known": 2,
+      "skipped_fact": 1,
+      "by_tier": {
+        "strategic": 10,
+        "architecture": 0,
+        "quality": 0
+      }
+    }
+  }
+}

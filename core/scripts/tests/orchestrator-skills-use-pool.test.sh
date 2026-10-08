@@ -20,7 +20,7 @@ SKILLS="${HQ_ORCH_SKILLS_DIR:-$ROOT/.claude/skills}"
 EXEC_TASK="$SKILLS/execute-task/SKILL.md"
 RUN_PROJECT="$SKILLS/run-project/SKILL.md"
 PROTOCOL="$SKILLS/_shared/pool-lane-protocol.md"
-CONDUCT="$SKILLS/conduct/SKILL.md"
+CONDUCT="$SKILLS/conduct/dispatch.md"   # lane mechanics moved out of SKILL.md (HP-14)
 POOL="$ROOT/core/scripts/conduct-pool.sh"
 
 PASS=0
@@ -210,7 +210,7 @@ grep -q 'cmd_cancel' "$POOL" \
   || fail "conduct-pool.sh must implement the cancel verb the protocol depends on"
 grep -qi 'Delete .{slot dir}/handoffs.jsonl' "$PROTO_FLAT" \
   || fail "an ownership mismatch must reinitialise the handoff file, not just decline to read it"
-grep -qi 'appends in .6 are unconditional' "$PROTO_FLAT" \
+grep -qiF 'appends in §6 are unconditional' "$PROTO_FLAT" \
   || fail "the protocol must record why declining to read is not enough — the append happens regardless"
 ok "slot dirs are created first, session-scoped, checked before either dispatch path, and reinitialised on mismatch"
 
@@ -426,6 +426,59 @@ grep -qi 'branching on success or failure' "$EXEC_FLAT" \
 grep -qi 'before deciding whether to retry' "$RUN_FLAT" \
   || fail "run-project must release the coordinator lane before the malformed-JSON retry re-assigns it"
 ok "both skills release the lane as soon as the sub-agent returns"
+
+echo "run-project --pipeline: cap refusal, live-children bound, relay, recovery, stop"
+awk '/^## Step 3P /{f=1} /^## Step 4 /{f=0} f' "$RUN_PROJECT" > "$TMP/pipe.md"
+[ -s "$TMP/pipe.md" ] || fail "run-project has no Step 3P pipeline section"
+flatten "$TMP/pipe.md" > "$TMP/pipe.flat"; PIPE_FLAT="$TMP/pipe.flat"
+grep -q -- '--pipeline' <(sed -n '1,6p' "$RUN_PROJECT") \
+  || fail "argument-hint must list --pipeline"
+grep -q -- '- `--pipeline` —' "$RUN_PROJECT" \
+  || fail "Step 1 must document the --pipeline flag"
+head -30 "$RUN_PROJECT" | flatten /dev/stdin > "$TMP/head.flat"
+grep -qi 'Pipeline mode (`--pipeline`) live children' "$TMP/head.flat" \
+  || fail "the header must state the pipeline-mode live-children bound"
+grep -qi 'one loop lane per confirmed worker-table row, plus the regression-gate lane' "$TMP/head.flat" \
+  && grep -q 'CONDUCT_POOL_CAP' "$TMP/head.flat" \
+  || fail "the pipeline bound must name rows + gate and the cap"
+grep -qi 'driver that routes phases is a detached script, not a lane, and takes no pool slot' "$TMP/head.flat" \
+  || fail "the header must say the driver takes no pool slot"
+grep -q 'lanes = worker rows + 1 (regression gate)' "$PIPE_FLAT" \
+  || fail "the cap check must count rows + regression gate"
+grep -q '1 (conductor)' "$PIPE_FLAT" \
+  && fail "the cap check must not count a conductor lane"
+grep -qi 'greater than `CONDUCT_POOL_CAP`' "$PIPE_FLAT" \
+  || fail "the cap check must compare against CONDUCT_POOL_CAP"
+grep -q 'Refusing --pipeline: .* over CONDUCT_POOL_CAP={cap}' "$PIPE_FLAT" \
+  || fail "the refusal must name the cap"
+grep -qi '8 table rows at cap 8 is 9 lanes and is refused' "$PIPE_FLAT" \
+  && grep -qi '7 rows at cap 8 is 8 lanes and runs' "$PIPE_FLAT" \
+  || fail "the refusal must cover 8 rows at cap 8 and allow 7"
+ok "pipeline mode publishes its bound and refuses past CONDUCT_POOL_CAP"
+
+grep -q 'report.md' "$PIPE_FLAT" && grep -qi 'per-story report lines' "$PIPE_FLAT" \
+  || fail "the parent must relay the conductor's per-story report lines"
+grep -q '/decision-queue' "$PIPE_FLAT" \
+  && grep -q 'workspace/sessions/<id>/decisions.jsonl' "$PIPE_FLAT" \
+  && grep -q 'conduct-pool.sh decisions' "$PIPE_FLAT" \
+  || fail "decision items must reach the decision queue from decisions.jsonl"
+grep -q 'cmd_decisions\|decisions)' "$POOL" \
+  || fail "conduct-pool.sh must implement the decisions verb the skill relies on"
+ok "conductor report lines and decision items are relayed"
+
+grep -qi 'After a parent compaction, recover from disk' "$PIPE_FLAT" \
+  && grep -q '{state}/stories/' "$PIPE_FLAT" \
+  && grep -q '{state}/driver/' "$PIPE_FLAT" \
+  && grep -q 'conduct-pool.sh --session-id {session_id} list' "$PIPE_FLAT" \
+  || fail "the parent must rebuild run state from the conductor's files after compaction"
+ok "compaction recovery reads the conductor's state dir and the pool"
+
+grep -q '{"kind":"stop"}' "$PIPE_FLAT" \
+  && grep -qi 'send every worker lane a stop envelope' "$PIPE_FLAT" \
+  || fail "every lane must get a stop envelope at run end"
+grep -qi 'no `waiting` or `running` slot for it' "$PIPE_FLAT" \
+  || fail "the run must end with no waiting or running slot"
+ok "run end stops every lane and leaves no live slot"
 
 echo
 echo "orchestrator-skills-use-pool.test.sh: $PASS checks passed"

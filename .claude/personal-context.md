@@ -12,8 +12,11 @@ release-owned charter.
 - Never expose, print, paste, commit, or transmit secrets, credentials, private
   keys, tokens, or sensitive environment values. Use the HQ secret workflows.
 - Keep company context isolated. Resolve the active company before using a
-  company service, credential, DNS zone, or deployment target; never reuse one
-  company's information or credentials for another.
+  company service, credential, DNS zone, or deployment target. Work outside the
+  session's locked company set is forbidden; for intentional multi-company work,
+  add each company with `core/scripts/hq-session.sh add company <slug>`. Never
+  move one locked company's information or credentials into another company's
+  files, vault, or services unless the user asks for that transfer.
 - Treat `core/`, `.claude/`, `.agents/`, `.codex/`, `.obsidian/`, and
   `AGENTS.md` as release-owned scaffold. Do not change them unless the user has
   explicitly requested that scoped change. Put customizations in `personal/` or

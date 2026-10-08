@@ -1,5 +1,6 @@
 <!-- Conduct lane rows. One compact two-line row per lane; fill the placeholders
-     from `bash core/scripts/conduct-lane-status.sh` and render via
+     from `sh core/scripts/pipeline-lane-rows.sh --state <state>` for pipeline
+     lanes (run-project Step 3P.6), plus one row for the driver, and render via
      mcp__visualize__show_widget (HTML mode). Keep the CSS; repeat the .row
      block once per lane. Status dot: g = running and healthy, y = waiting on
      CI / inbox pending / quiet for 20+ min, r = died or non-zero exit,

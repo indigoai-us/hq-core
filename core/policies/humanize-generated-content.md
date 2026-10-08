@@ -1,6 +1,6 @@
 ---
 id: humanize-generated-content
-when: always
+when: write || message || reply || report || email || slack
 on: [SessionStart]
 enforcement: hard
 tags: [content, writing, email, blog, social, marketing, copy, voice, humanize, deliverable]

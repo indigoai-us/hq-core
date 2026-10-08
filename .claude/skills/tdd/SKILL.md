@@ -31,7 +31,7 @@ A **seam** is the public boundary you test at: the interface where you observe b
 
 **Test only at pre-agreed seams.** Before writing any test, write down the seams under test and confirm them with the user. No test is written at an unconfirmed seam. You can't test everything — agreeing the seams up front is how testing effort lands on the critical paths and complex logic instead of every edge case.
 
-Ask: "What's the public interface, and which seams should we test?"
+Ask: "What's the public interface, and which seams should we test?" Give each proposed seam a one-line note on what it catches and what it misses.
 
 ---
 
@@ -85,7 +85,9 @@ export function validateEmail(email: string): boolean {
 
 ### Step 3: Write Failing Tests (RED Phase)
 
-Read `<repo>/CONTEXT.md` if present so test names and interface vocabulary match the project's domain language (ties into `/domain-modeling`).
+Read `<repo>/GLOSSARY.md` if present so test names and interface vocabulary match the project's domain language (ties into `/domain-modeling`).
+
+Fallback (removed in hq-core 16.0.0): if `GLOSSARY.md` is absent and `CONTEXT.md` exists, read `CONTEXT.md` instead (and `CONTEXT-MAP.md` in place of `GLOSSARY-MAP.md`), and print one line suggesting `git mv CONTEXT.md GLOSSARY.md`.
 
 Write comprehensive test suite BEFORE implementation:
 
@@ -464,3 +466,7 @@ After completing the TDD workflow, verify:
 - [ ] No shared state between tests
 - [ ] Meaningful assertion messages
 - [ ] Code committed with comprehensive test suite
+
+## Upstream
+
+Seam and anti-pattern guidance adapted from [mattpocock/skills](https://github.com/mattpocock/skills) (skills/engineering/tdd), synced to upstream commit f3fc563. HQ keeps its RED, GREEN, REFACTOR cycle and coverage gates.

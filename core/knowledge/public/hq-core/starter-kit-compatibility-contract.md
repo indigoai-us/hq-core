@@ -47,7 +47,7 @@ Desktop classifies every valid HQ into one of three levels. The level determines
 
 **Definition:** Has active workers AND/OR active projects. The user has started building on top of the starter kit.
 
-**Typical instance:** A template clone after running `/setup`, creating 1-2 workers with `/newworker`, and starting a project with `/plan`.
+**Typical instance:** A template clone after running `/setup`, creating 1-2 workers with `/newworker`, and starting a project with `/prd`.
 
 **Structural fingerprint (any of):**
 - `core/workers/registry.yaml` has > 4 workers
@@ -153,7 +153,7 @@ Desktop MUST follow these rules when encountering missing structures. The princi
 
 | Condition | Desktop Behavior |
 |-----------|-----------------|
-| `personal/projects/` dir is empty | Show "Create your first project" with link to `/plan`. |
+| `personal/projects/` dir is empty | Show "Create your first project" with link to `/prd`. |
 | `prd.json` missing `userStories` | Show project as "legacy format" with migration prompt. |
 | `prd.json` has `features` instead of `userStories` | Same as above -- legacy format. |
 | Story missing `passes` field | Treat as `passes: false`. |
@@ -252,7 +252,7 @@ Desktop should detect when a user has evolved their HQ template beyond the defau
 | Fresh clone | Only `.gitkeep` files in workspace dirs | Just cloned, nothing done |
 | Post-setup | `agents.md` exists | Ran `/setup` |
 | First worker | registry has > 4 workers | Created custom worker via `/newworker` |
-| First project | `personal/projects/*/plan.json` or `companies/*/projects/*/plan.json` exists | Created PRD via `/plan` |
+| First project | `personal/projects/*/plan.json` or `companies/*/projects/*/plan.json` exists | Created PRD via `/prd` |
 | Active use | `workspace/threads/*.json` count > 5 | Regular session use |
 | Multi-company | `companies/` exists with manifest | Set up company isolation |
 | Knowledge layout | Company knowledge is a plain directory; personal knowledge may contain embedded `.git/` | Graduated to vault-synced company knowledge and independently versioned personal knowledge |

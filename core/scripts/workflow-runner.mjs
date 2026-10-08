@@ -72,6 +72,14 @@
  *                        point the run is live. Run ids are the directory names
  *                        under <hq-root>/workspace/tmp/workflow-runner/.
  *   --quiet              Suppress narrator lines on stderr
+ *   --loop               Persistent lane: no script; wait on
+ *                        <run-dir>/inbox/pending/ and run one phase envelope
+ *                        per agent() call until a {"kind":"stop"} envelope
+ *                        (see "loop mode" below main's helpers; poll interval
+ *                        env HQ_WORKFLOW_LOOP_POLL_MS, default 1000)
+ *   --no-resume          Loop mode: run every phase as a fresh engine call
+ *                        instead of resuming the story's engine session
+ *                        (env HQ_WORKFLOW_NO_RESUME=1 does the same)
  *
  * Env:
  *   HQ_ROOT                    Explicit HQ root. Unset -> auto-detected by
@@ -268,6 +276,39 @@ function readSessionField(sid, key) {
   }
 }
 
+function readSessionCompanyCapability(sid) {
+  const capability = path.join(HQ_ROOT, 'workspace', 'sessions', sid, 'scope-capability.json');
+  try {
+    const data = JSON.parse(fs.readFileSync(capability, 'utf8'));
+    const validSlug = (slug) => typeof slug === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(slug);
+    if (data.session_id !== sid || !validSlug(data.company_slug)) return null;
+    if (Object.prototype.hasOwnProperty.call(data, 'company_slugs')
+      && (!Array.isArray(data.company_slugs) || !data.company_slugs.length
+        || !data.company_slugs.every(validSlug) || data.company_slugs[0] !== data.company_slug
+        || new Set(data.company_slugs).size !== data.company_slugs.length)) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function readSessionCompanySlugs(sid) {
+  const data = readSessionCompanyCapability(sid);
+  const slugs = data?.company_slugs || [];
+  if (!data || slugs.length < 2) return [];
+  const flagScript = path.join(HQ_ROOT, '.codex', 'hooks', 'codex-explicit-path-flag.cjs');
+  try {
+    const flag = spawnSync(process.execPath, [flagScript], {
+      encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, HQ_ROOT, HQ_FLAG_KEY: 'hooks.multi-company-session-lock' },
+    });
+    if (flag.status !== 0 || String(flag.stdout || '').trim() !== 'true') return [];
+  } catch {
+    return [];
+  }
+  return [...new Set(slugs)];
+}
+
 function parentSessionId() {
   return String(
     process.env.HQ_PARENT_SESSION_ID
@@ -285,8 +326,15 @@ function engineChildEnv() {
   const parent = parentSessionId();
   if (!process.env.HQ_PARENT_SESSION_ID && parent) extra.HQ_PARENT_SESSION_ID = parent;
   if (!process.env.HQ_SPAWN_COMPANY) {
-    const slug = readSessionField(parent, 'company_slug') || readSessionField(parent, 'company');
-    if (slug) extra.HQ_SPAWN_COMPANY = slug;
+    const capability = readSessionCompanyCapability(parent);
+    if (capability?.company_slug) extra.HQ_SPAWN_COMPANY = capability.company_slug;
+  }
+  if (!process.env.HQ_SPAWN_COMPANIES) {
+    const slugs = readSessionCompanySlugs(parent);
+    if (slugs.length) {
+      extra.HQ_SPAWN_COMPANIES = slugs.join(',');
+      extra.HQ_SPAWN_COMPANY = slugs[0];
+    }
   }
   if (!process.env.HQ_SPAWN_PROJECT) {
     const project = readSessionField(parent, 'project');
@@ -662,6 +710,8 @@ function parseCli(argv) {
       case '--run-dir': cli.runDir = next('--run-dir'); break;
       case '--resume': cli.resume = next('--resume'); break;
       case '--quiet': cli.quiet = true; break;
+      case '--loop': cli.loop = true; break;
+      case '--no-resume': cli.noResume = true; break;
       default:
         if (a.startsWith('-')) {
           process.stderr.write(`workflow-runner: unknown option ${a}\n`);
@@ -673,6 +723,13 @@ function parseCli(argv) {
         }
         cli.scriptPath = a;
     }
+  }
+  if (cli.loop) {
+    if (cli.scriptPath || cli.evalSrc || cli.resume) {
+      process.stderr.write('workflow-runner: --loop takes its work from the lane inbox; do not pass a script, --eval or --resume\n');
+      process.exit(2);
+    }
+    return cli;
   }
   if (!cli.scriptPath && !cli.evalSrc) usageAndExit(2);
   if (cli.scriptPath && cli.evalSrc) {
@@ -814,6 +871,24 @@ function unwrapClaudeEnvelope(raw, label, lastFile, logFile) {
       `Envelope: ${lastFile}. Log: ${logFile}`);
   }
   return text;
+}
+
+// The engine session a call actually ran in. claude and grok report it in
+// their stdout envelope (session_id / sessionId); codex prints a
+// "session id: <uuid>" header line into its log. Null when not found.
+const UUIDISH = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function observedSessionId(engineName, raw, logFile) {
+  if (engineName === 'codex') {
+    let log = '';
+    try { log = fs.readFileSync(logFile, 'utf8'); } catch { return null; }
+    const m = log.match(/session id:\s*([0-9a-f-]{36})/i);
+    return m ? m[1] : null;
+  }
+  let env;
+  try { env = JSON.parse(String(raw).trim()); } catch { return null; }
+  if (!env || typeof env !== 'object') return null;
+  const id = engineName === 'grok' ? env.sessionId : env.session_id;
+  return typeof id === 'string' && UUIDISH.test(id) ? id : null;
 }
 
 // Scan for embedded JSON values and return every balanced {...} / [...] block,
@@ -1230,6 +1305,11 @@ async function buildRuntime(cli) {
   async function runEngine(spec) {
     const { engineName, engine, model, effort, tier, prompt, schema, opts,
       timeoutSecs, label, phaseName, n, suffix, attempt, restricted } = spec;
+    // Loop-mode engine session (see "engine sessions" in the loop-mode notes):
+    // resumeId continues a recorded session, newId names a fresh one where
+    // the engine lets the caller pick the id. Repair passes never carry one.
+    const resumeId = spec.session && spec.session.resumeId ? String(spec.session.resumeId) : null;
+    const newId = !resumeId && spec.session && spec.session.newId ? String(spec.session.newId) : null;
     const logFile = path.join(state.runDir, `agent-${n}${suffix}.log`);
     const lastFile = path.join(state.runDir, `agent-${n}${suffix}.last.md`);
     let spawnPrompt = prompt;
@@ -1240,10 +1320,15 @@ async function buildRuntime(cli) {
     // unwraps their reply envelope; null for codex (result read from a file).
     let envelopeUnwrap = null;
     if (engineName === 'codex') {
-      argv = ['exec', ...(restricted ? RESTRICTED_CODEX_FLAGS : MANDATED_CODEX_FLAGS),
-        '--color', 'never',
-        '-C', HQ_ROOT,
-        '--output-last-message', lastFile];
+      // `codex exec resume` takes no -C or --color; the spawn cwd is the HQ
+      // root either way, so the hook config still loads from there.
+      argv = resumeId
+        ? ['exec', 'resume', ...(restricted ? RESTRICTED_CODEX_FLAGS : MANDATED_CODEX_FLAGS),
+          '--output-last-message', lastFile]
+        : ['exec', ...(restricted ? RESTRICTED_CODEX_FLAGS : MANDATED_CODEX_FLAGS),
+          '--color', 'never',
+          '-C', HQ_ROOT,
+          '--output-last-message', lastFile];
       if (model) argv.push('-m', String(model));
       if (effort) argv.push('-c', `model_reasoning_effort=${JSON.stringify(String(effort))}`);
       if (spec.fastMode) argv.push(...FAST_MODE_FLAGS);
@@ -1261,7 +1346,8 @@ async function buildRuntime(cli) {
       }
       if (Array.isArray(opts.extraArgs)) argv.push(...opts.extraArgs.map(String));
       // `--` ends option parsing so a prompt like 'help' or '-x' stays a prompt
-      argv.push('--', spawnPrompt);
+      if (resumeId) argv.push('--', resumeId, spawnPrompt);
+      else argv.push('--', spawnPrompt);
     } else if (engineName === 'grok') {
       // grok: single-turn headless. Always ask for the JSON envelope rather
       // than plain text — a run that ends early (`stopReason: "Cancelled"`,
@@ -1285,6 +1371,12 @@ async function buildRuntime(cli) {
       }
       if (model) argv.push('-m', String(model));
       if (effort) argv.push('--reasoning-effort', String(effort));
+      // grok's --continue picks "the most recent session for this directory",
+      // which another lane in the same HQ root could have started. Resume by
+      // explicit id instead (a UUID always means an id, never a title), and
+      // name fresh sessions with --session-id so the id is known up front.
+      if (resumeId) argv.push('--resume', resumeId);
+      else if (newId) argv.push('--session-id', newId);
       if (Array.isArray(opts.extraArgs)) argv.push(...opts.extraArgs.map(String));
       resultFromStdout = true;
       envelopeUnwrap = unwrapGrokEnvelope;
@@ -1308,6 +1400,8 @@ async function buildRuntime(cli) {
            '--output-format', 'json'];
       if (model) argv.push('--model', String(model));
       if (effort) argv.push('--effort', String(effort));
+      if (resumeId) argv.push('--resume', resumeId);
+      else if (newId) argv.push('--session-id', newId);
       if (Array.isArray(opts.extraArgs)) argv.push(...opts.extraArgs.map(String));
       resultFromStdout = true;
       envelopeUnwrap = unwrapClaudeEnvelope;
@@ -1402,8 +1496,17 @@ async function buildRuntime(cli) {
     } catch {
       throw new Error(`${label} exited 0 but wrote no result file (${lastFile}). Log: ${logFile}`);
     }
+    const sessionId = (spec.session && !restricted) ? observedSessionId(engineName, text, logFile) : null;
     if (resultFromStdout && envelopeUnwrap) text = envelopeUnwrap(text, label, lastFile, logFile);
-    return { text, lastFile, logFile };
+    if (resumeId && engineName === 'grok' && sessionId !== resumeId) {
+      // The proof that grok continued the intended conversation: its envelope
+      // names the session it ran in. Anything else (absent, or a different
+      // id) is treated as a failed resume so the caller reruns fresh.
+      throw new Error(
+        `${label}: grok was asked to resume session ${resumeId} but its envelope ` +
+        `reports ${sessionId ? `session ${sessionId}` : 'no session id'}. Envelope: ${lastFile}`);
+    }
+    return { text, lastFile, logFile, sessionId };
   }
 
   async function agent(prompt, opts = {}) {
@@ -1411,7 +1514,9 @@ async function buildRuntime(cli) {
       throw new Error('agent() requires a non-empty string prompt');
     }
     const n = ++state.counter;
-    if (n > MAX_AGENTS) throw new Error(`agent cap reached (${MAX_AGENTS})`);
+    // A loop lane is long-lived by design and bounded by its queue, not by a
+    // runaway script, so the backstop does not apply to it.
+    if (!state.loop && n > MAX_AGENTS) throw new Error(`agent cap reached (${MAX_AGENTS})`);
     const label = opts.label || `agent-${n}`;
     const engineName = opts.engine || 'codex';
     const engine = ENGINES[engineName];
@@ -1543,7 +1648,39 @@ async function buildRuntime(cli) {
     try {
       const spec = { engineName, engine, model, effort, tier, fastMode, schema: opts.schema, opts,
         timeoutSecs, label, phaseName, n, mesh };
-      const main = await runEngine({ ...spec, prompt: spawnPrompt, suffix: '', attempt: 'main' });
+      // opts.session is set by loop mode only. It is a mutable record: the
+      // ids asked for go in, and what actually ran (mode, session id, any
+      // fallback) comes back out for the lane's result file.
+      const session = opts.session && typeof opts.session === 'object' ? opts.session : null;
+      let main;
+      if (session && session.resumeId) {
+        try {
+          main = await runEngine({ ...spec, session, prompt: spawnPrompt, suffix: '', attempt: 'main' });
+          session.mode = 'resume';
+        } catch (resumeErr) {
+          if (state.aborted) throw resumeErr;
+          // Unknown id, expired session, engine error: retry this phase ONCE
+          // as a fresh call. A second failure is the phase's real failure.
+          session.mode = 'fresh-fallback';
+          session.resumed_from = session.resumeId;
+          session.resume_error = errMsg(resumeErr).split('\n')[0].slice(0, 500);
+          narr(`${phaseName ? `[${phaseName}] ` : ''}⟳ ${label}: resume of session ${session.resumeId} failed (${session.resume_error.slice(0, 120)}) — rerunning fresh`);
+          journal({ event: 'agent-resume-fallback', n, label, phase: phaseName, from: session.resumeId, error: session.resume_error });
+          session.resumeId = null;
+          session.newId = crypto.randomUUID();
+          main = await runEngine({ ...spec, session, prompt: spawnPrompt, suffix: '.fresh', attempt: 'fresh-fallback' });
+        }
+      } else {
+        main = await runEngine({ ...spec, session, prompt: spawnPrompt, suffix: '', attempt: 'main' });
+        if (session) session.mode = 'fresh';
+      }
+      // codex cannot be told an id up front, so with no "session id:" header
+      // there is nothing to record; newId would name a session codex never had.
+      if (session) {
+        session.session_id = main.sessionId
+          || (session.mode === 'resume' ? session.resumeId : (engineName === 'codex' ? null : session.newId))
+          || null;
+      }
 
       let result;
       let repaired = false;
@@ -1806,6 +1943,857 @@ function terminateAndExit(code) {
   }, 5000);
 }
 
+// ------------------------------------------------------------------ loop mode
+//
+// `--loop` turns the runner into a persistent worker lane. The process stays
+// alive and takes phase envelopes from the lane's conduct-inbox queue
+// (<run-dir>/inbox/pending/, written with `conduct-inbox.sh send`), one at a
+// time, oldest first. Each envelope is one bounded agent() call. The lifecycle
+// of an envelope is:
+//
+//   pending/<name>  -> active/<name>     claimed by rename before it runs, so
+//                                        nothing else can take it twice
+//   results/<stem>.json                  written (tmp + rename) when it ends
+//   active/<name>   -> claimed/<name>    moved once the result is on disk
+//
+// Envelope body is JSON:
+//   {"kind":"phase","prompt":"...","engine":"claude","tier":"exec",
+//    "model"?, "effort"?, "schema"?, "label"?, "cd"?, "timeoutSecs"?,
+//    "id"?, "result_path"?}
+//   {"kind":"stop"}   exit 0 once the phases queued ahead of it are done
+//   {"schema":"hq-phase-envelope/v1", ...}  a §8 pipeline phase: the lane
+//                     builds the prompt and writes a §8 handoff to result_path
+//                     (see "section 8 phase envelopes" below)
+//
+// Engine sessions. A phase envelope may carry "story_id" and "fresh":
+//   - The first phase the lane runs for a story starts a new engine session
+//     and records its id in <run-dir>/sessions/<story_id>.json.
+//   - A later phase for the same story on the same engine resumes it
+//     (claude --resume <id>, codex exec resume <id>, grok --resume <id>).
+//   - A phase for a different story clears every other story's record first,
+//     so a session never crosses a story boundary.
+//   - --no-resume (or HQ_WORKFLOW_NO_RESUME=1) makes every phase fresh;
+//     "fresh": true does the same for one phase.
+//   - A resume that fails is retried once as a fresh call; the result file's
+//     "session" object records mode "fresh-fallback" and the error.
+// A phase without story_id always runs fresh and records nothing.
+//
+// Phase deadlines (stall handling). Every phase runs against a deadline:
+//   "deadline_seconds": N        budget in seconds from phase start, or
+//   "deadline": "<ISO8601 UTC>"  absolute (the section 8 pipeline envelope);
+//                                its budget is fixed at first start, so a rerun
+//                                gets the same budget rather than zero
+//   neither                      env HQ_WORKFLOW_PHASE_DEADLINE_SECS, else 3600
+// A phase still running at its deadline is STALLED. The engine call is killed
+// and one line is appended to <run-dir>/stalls.jsonl with story_id, phase,
+// lane, envelope, elapsed_s, deadline_s and attempt. Per-envelope counts live
+// in <run-dir>/stalls.json.
+//   - First stall: the lane restarts in place. The envelope stays in active/,
+//     the process spawns a copy of itself with the same argv and run dir (the
+//     same pool slot: loop.json is rewritten with the new pid, which
+//     conduct-pool.sh adopts) and exits 75. The copy puts the envelope back at
+//     the head of pending/ and reruns it as a fresh engine call, no resume.
+//     Queued envelopes are not touched.
+//   - Second stall of the same envelope: no restart. The envelope moves to
+//     inbox/stalled/, its result file gets status "stalled", a decision item
+//     is appended to <run-dir>/decisions.jsonl (and to
+//     $HQ_PIPELINE_DECISIONS_FILE when set), and the lane exits 76. pending/
+//     is left exactly as it was. conduct-pool.sh forwards decision items to
+//     workspace/sessions/<id>/decisions.jsonl, which the parent session reads.
+// Other lanes are separate processes and keep running throughout.
+//
+// The wait is an in-process directory read on a timer. It spawns no shell and
+// no engine, so an idle lane costs nothing beyond a sleeping node process.
+const LOOP_POLL_MS = (() => {
+  const v = Number(process.env.HQ_WORKFLOW_LOOP_POLL_MS);
+  return Number.isFinite(v) && v >= 50 ? v : 1000;
+})();
+
+function writeJsonAtomic(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n');
+  fs.renameSync(tmp, file);
+}
+
+// Arrival order. conduct-inbox names files <UTC second>-<sender pid>.msg, so
+// two sends inside one second would sort by pid, not by arrival. The file's
+// mtime is set when the sender wrote it, just before the rename into pending/,
+// so it orders sends that share a second; the name breaks exact ties.
+function pendingInArrivalOrder(dir) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  const items = [];
+  for (const name of names) {
+    if (name.startsWith('.')) continue;
+    try {
+      const st = fs.statSync(path.join(dir, name), { bigint: true });
+      if (st.isFile()) items.push({ name, mtimeNs: st.mtimeNs });
+    } catch { /* claimed by someone else between readdir and stat */ }
+  }
+  items.sort((a, b) => (a.mtimeNs < b.mtimeNs ? -1 : a.mtimeNs > b.mtimeNs ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return items.map((i) => i.name);
+}
+
+function storySessionFile(dir, storyId) {
+  return path.join(dir, `${String(storyId).replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+}
+
+// Pick the session for one phase and drop every other story's record. Returns
+// the mutable session object handed to agent() via opts.session, or null when
+// the envelope names no story.
+function prepareStorySession(rt, sessionsDir, envelope, noResume) {
+  const storyId = envelope.story_id;
+  if (storyId === undefined || storyId === null || String(storyId) === '') return null;
+  const own = storySessionFile(sessionsDir, storyId);
+  let names = [];
+  try { names = fs.readdirSync(sessionsDir); } catch { /* created at loop start */ }
+  for (const name of names) {
+    const file = path.join(sessionsDir, name);
+    if (file === own || !name.endsWith('.json')) continue;
+    try {
+      fs.unlinkSync(file);
+      rt.journal({ event: 'loop-session-cleared', file: name, for_story: String(storyId) });
+    } catch (e) {
+      rt.journal({ event: 'loop-session-clear-failed', file: name, error: errMsg(e) });
+    }
+  }
+  const session = { story_id: String(storyId), resumeId: null, newId: null };
+  const engine = envelope.engine || 'codex';
+  let prior = null;
+  try { prior = JSON.parse(fs.readFileSync(own, 'utf8')); } catch { /* none yet */ }
+  if (noResume || envelope.fresh === true) {
+    session.fresh_reason = noResume ? 'no-resume' : 'envelope-fresh';
+  } else if (prior && prior.engine === engine && typeof prior.session_id === 'string' && prior.session_id) {
+    session.resumeId = prior.session_id;
+  }
+  if (!session.resumeId) session.newId = crypto.randomUUID();
+  return session;
+}
+
+const EXIT_STALL_RESTART = 75;
+// setTimeout fires at once for delays above 2^31-1 ms (~24.8 days), which
+// would turn a long deadline into an instant stall. Cap the timer there.
+const MAX_TIMER_MS = 2147483647;
+const EXIT_STALL_DECISION = 76;
+const DEFAULT_PHASE_DEADLINE_SECS = (() => {
+  const v = Number(process.env.HQ_WORKFLOW_PHASE_DEADLINE_SECS);
+  return Number.isFinite(v) && v > 0 ? v : 3600;
+})();
+
+function readJsonOr(file, fallback) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+}
+
+function appendJsonl(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, JSON.stringify(value) + '\n');
+}
+
+// Seconds this phase may run. A prior stall fixed the budget; reuse it so a
+// rerun of an envelope with an absolute deadline is not instantly stalled.
+function phaseDeadlineSecs(envelope, prior) {
+  if (prior && Number(prior.deadline_s) > 0) return Number(prior.deadline_s);
+  const rel = Number(envelope.deadline_seconds);
+  if (envelope.deadline_seconds !== undefined && Number.isFinite(rel) && rel > 0) return rel;
+  if (typeof envelope.deadline === 'string') {
+    const at = Date.parse(envelope.deadline);
+    if (Number.isFinite(at)) return Math.max(1, Math.round((at - Date.now()) / 1000));
+  }
+  return DEFAULT_PHASE_DEADLINE_SECS;
+}
+
+function laneName(envelope, runDir) {
+  const v = envelope.worker_id || envelope.lane || process.env.HQ_WORKFLOW_LANE;
+  return typeof v === 'string' && v ? v : path.basename(runDir);
+}
+
+// A phase passed its deadline. Kill the engine call, record the stall, then
+// either restart the lane in place (first stall of this envelope) or park the
+// envelope and raise a decision for the parent (second stall). Never returns.
+function handleStall(rt, ctx) {
+  const { state } = rt;
+  const { envelope, name, activeFile, dirs, stalls, stallsFile, priorStall, deadlineSecs, startedMs, stem, section8 } = ctx;
+  for (const child of state.activeChildren) killTree(child, 'SIGKILL');
+  const now = new Date();
+  const attempt = (priorStall && Number(priorStall.count) > 0 ? Number(priorStall.count) : 0) + 1;
+  const lane = laneName(envelope, state.runDir);
+  const story_id = envelope.story_id !== undefined ? String(envelope.story_id) : null;
+  const phase = envelope.phase !== undefined ? String(envelope.phase) : (envelope.label || envelope.id || stem);
+  const elapsed_s = Math.round((now.getTime() - startedMs) / 100) / 10;
+  const action = attempt >= 2 ? 'decision' : 'restart';
+  const stall = {
+    event: 'stalled', story_id, phase, lane, envelope: name, run_dir: state.runDir,
+    elapsed_s, deadline_s: deadlineSecs, attempt, action, pid: process.pid, at: now.toISOString(),
+  };
+  stalls[name] = { count: attempt, story_id, phase, lane, deadline_s: deadlineSecs, last_at: stall.at };
+  try { writeJsonAtomic(stallsFile, stalls); } catch (e) { rt.narr(`loop: could not write ${stallsFile} (${errMsg(e)})`); }
+  try { appendJsonl(path.join(state.runDir, 'stalls.jsonl'), stall); } catch { /* journal below still has it */ }
+  rt.journal({ ...stall, event: 'loop-phase-stalled' });
+  rt.narr(`loop: phase ${phase} (story ${story_id ?? '-'}, lane ${lane}) stalled after ${elapsed_s}s ` +
+    `(deadline ${deadlineSecs}s, attempt ${attempt}) — ${action}`);
+  clearRunnerLock(state.runDir);
+
+  if (action === 'restart') {
+    // Same argv, same run dir: the copy finds the envelope in active/ and puts
+    // it back at the head of pending/. stdio is inherited so a detached lane
+    // keeps writing to the same log.
+    const child = spawn(process.execPath, process.argv.slice(1), {
+      detached: true, stdio: 'inherit', env: { ...process.env, HQ_WORKFLOW_LOOP_RESTART_OF: String(process.pid) },
+    });
+    child.unref();
+    try {
+      writeJsonAtomic(path.join(state.runDir, 'loop.json'), {
+        ...readJsonOr(path.join(state.runDir, 'loop.json'), {}),
+        pid: child.pid, restart_of: process.pid, restarted_at: now.toISOString(),
+      });
+    } catch { /* the copy rewrites loop.json on start */ }
+    rt.journal({ event: 'loop-restart', from_pid: process.pid, to_pid: child.pid, envelope: name });
+    process.exit(EXIT_STALL_RESTART);
+  }
+
+  // Second stall: park the envelope, leave the queue alone, ask the owner.
+  const stalledDir = path.join(path.dirname(dirs.pending), 'stalled');
+  let parked = activeFile;
+  try {
+    fs.mkdirSync(stalledDir, { recursive: true });
+    parked = path.join(stalledDir, name);
+    fs.renameSync(activeFile, parked);
+  } catch (e) {
+    rt.narr(`loop: could not move ${name} to stalled/ (${errMsg(e)})`);
+  }
+  const decision = {
+    id: `stall-${String(stem).replace(/[^A-Za-z0-9._-]/g, '_')}-${now.getTime()}`,
+    kind: 'stalled-phase', status: 'pending',
+    question: `Phase ${phase} of story ${story_id ?? '(none)'} on lane ${lane} passed its ${deadlineSecs}s deadline twice. ` +
+      'The lane was restarted once and is now stopped; its other queued envelopes are still queued.',
+    story_id, phase, lane, run_dir: state.runDir, envelope: parked,
+    attempts: attempt, elapsed_s, deadline_s: deadlineSecs,
+    queue_depth: pendingInArrivalOrder(dirs.pending).length,
+    options: ['rerun with a longer deadline', 'reroute the phase to another worker', 'drop the phase and block the story'],
+    created_at: now.toISOString(),
+  };
+  for (const file of [path.join(state.runDir, 'decisions.jsonl'), process.env.HQ_PIPELINE_DECISIONS_FILE]) {
+    if (!file) continue;
+    try { appendJsonl(file, decision); } catch (e) { rt.narr(`loop: could not write decision to ${file} (${errMsg(e)})`); }
+  }
+  const resultFile = !section8 && typeof envelope.result_path === 'string' && envelope.result_path
+    ? path.resolve(envelope.result_path) : path.join(dirs.results, `${stem}.json`);
+  if (section8 && typeof section8.result_path === 'string' && section8.result_path) {
+    try {
+      writeJsonAtomic(path.resolve(section8.result_path),
+        failedHandoff(section8, envelope.engine, `phase passed its ${deadlineSecs}s deadline twice; decision ${decision.id}`));
+    } catch (e) { rt.narr(`loop: could not write stalled handoff (${errMsg(e)})`); }
+  }
+  try {
+    writeJsonAtomic(resultFile, {
+      envelope: name, id: envelope.id !== undefined ? envelope.id : null, kind: 'phase', pid: process.pid,
+      started_at: new Date(startedMs).toISOString(), finished_at: now.toISOString(),
+      status: 'stalled', error: `phase passed its ${deadlineSecs}s deadline twice`, decision_id: decision.id,
+    });
+  } catch { /* the decision item is the record that matters */ }
+  rt.journal({ event: 'loop-decision', id: decision.id, story_id, phase, lane });
+  process.exit(EXIT_STALL_DECISION);
+}
+
+// ------------------------------------------------- section 8 phase envelopes
+//
+// The pipeline conductor (pipeline-conductor.sh route) queues an
+// `hq-phase-envelope/v1` envelope (lane-dispatch-protocol.md §8), not a
+// {"kind":"phase","prompt":...} one. For a §8 envelope the loop builds the
+// prompt itself from the worker's worker.yaml and the envelope, runs it on the
+// lane's own engine pins (tier exec, cd = worktree, fresh_call -> fresh), and
+// writes a §8 `hq-phase-handoff/v1` object to result_path: the engine's reply
+// after `pipeline-envelope.sh normalize` + `validate --kind handoff`, or a
+// `status: "failed"` handoff carrying the reason. The lane's own run record
+// still goes to inbox/results/<stem>.json.
+const SECTION8_ENVELOPE = 'hq-phase-envelope/v1';
+const SECTION8_HANDOFF = 'hq-phase-handoff/v1';
+
+function isSection8Envelope(envelope) {
+  return Boolean(envelope) && typeof envelope === 'object' && envelope.schema === SECTION8_ENVELOPE;
+}
+
+function pipelineEnvelopeScript() {
+  return process.env.HQ_PIPELINE_ENVELOPE_SH || path.join(__dirname, 'pipeline-envelope.sh');
+}
+
+// Same roots and walk as pipeline-conductor.sh find_worker_yaml.
+function findWorkerYaml(workerId) {
+  const roots = (process.env.PC_WORKERS_ROOT
+    || `${path.join(HQ_ROOT, 'core', 'workers')}:${path.join(HQ_ROOT, 'personal', 'workers')}`).split(':');
+  for (const root of roots) {
+    if (!root || !fs.existsSync(root)) continue;
+    const stack = [root];
+    while (stack.length) {
+      const dir = stack.shift();
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+      if (path.basename(dir) === workerId && entries.some((e) => e.isFile() && e.name === 'worker.yaml')) {
+        return path.join(dir, 'worker.yaml');
+      }
+      for (const e of entries) {
+        if (e.isDirectory() && !['node_modules', '.git', 'dist'].includes(e.name)) stack.push(path.join(dir, e.name));
+      }
+    }
+  }
+  return null;
+}
+
+// Minimal YAML reader for worker.yaml: block mappings and sequences, plain and
+// quoted scalars, block scalars (| and >), simple flow collections. Throws on
+// anything it does not understand; readWorkerInfo then falls back to a line scan.
+function parseMiniYaml(text) {
+  const raw = text.replace(/\r\n?/g, '\n').replace(/^﻿/, '').split('\n');
+  const lines = raw.map((r) => {
+    if (/\t/.test(r.match(/^\s*/)[0])) throw new Error('tab indentation');
+    return { ind: r.length - r.trimStart().length, text: r.trim(), raw: r };
+  });
+  const skip = (i) => {
+    while (i < lines.length && (lines[i].text === '' || lines[i].text.startsWith('#')
+      || lines[i].text === '---' || lines[i].text.startsWith('%'))) i++;
+    return i;
+  };
+  const stripComment = (s) => {
+    let q = null;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (q) { if (c === q) { if (q === "'" && s[i + 1] === "'") i++; else q = null; } else if (c === '\\' && q === '"') i++; continue; }
+      if ((c === '"' || c === "'") && (i === 0 || /[\s[{,:]/.test(s[i - 1]))) q = c;
+      else if (c === '#' && (i === 0 || /\s/.test(s[i - 1]))) return s.slice(0, i).trimEnd();
+    }
+    return s;
+  };
+  const unquote = (s) => {
+    if (s.startsWith('"')) {
+      if (!s.endsWith('"') || s.length < 2) throw new Error('bad double-quoted scalar');
+      return JSON.parse(s.replace(/\\x([0-9a-fA-F]{2})/g, '\\u00$1').replace(/\\'/g, "'"));
+    }
+    if (!s.endsWith("'") || s.length < 2) throw new Error('bad single-quoted scalar');
+    return s.slice(1, -1).replace(/''/g, "'");
+  };
+  const splitFlow = (s) => {
+    const parts = []; let depth = 0, q = null, cur = '';
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (q) { cur += c; if (c === q) q = null; continue; }
+      if (c === '"' || c === "'") q = c;
+      if (c === '[' || c === '{') depth++;
+      if (c === ']' || c === '}') depth--;
+      if (c === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; continue; }
+      cur += c;
+    }
+    if (cur.trim()) parts.push(cur.trim());
+    return parts;
+  };
+  const scalar = (s) => {
+    s = s.replace(/^!\S+\s*/, '');
+    if (/^[&*]/.test(s)) throw new Error('anchors/aliases unsupported');
+    if (s.startsWith('"') || s.startsWith("'")) return unquote(s);
+    if (s.startsWith('[')) {
+      if (!s.endsWith(']')) throw new Error('multi-line flow sequence');
+      return splitFlow(s.slice(1, -1)).map(scalar);
+    }
+    if (s.startsWith('{')) {
+      if (!s.endsWith('}')) throw new Error('multi-line flow mapping');
+      const o = {};
+      for (const p of splitFlow(s.slice(1, -1))) {
+        const m = /^([^:]+?)\s*:(?:\s+(.*))?$/.exec(p);
+        if (!m) throw new Error('bad flow mapping');
+        o[scalar(m[1])] = m[2] === undefined ? null : scalar(m[2]);
+      }
+      return o;
+    }
+    if (/^(~|null|Null|NULL|)$/.test(s)) return null;
+    if (/^(true|True|TRUE)$/.test(s)) return true;
+    if (/^(false|False|FALSE)$/.test(s)) return false;
+    if (/^[-+]?(0|[1-9][0-9_]*)$/.test(s)) return Number(s.replace(/_/g, ''));
+    if (/^[-+]?(\.[0-9]+|[0-9][0-9_]*(\.[0-9_]*)?)([eE][-+][0-9]+)?$/.test(s) && /\./.test(s)) return Number(s.replace(/_/g, ''));
+    return s;
+  };
+  // block scalar after "key: |" style header on line hi; parent indentation pind
+  const blockScalar = (header, hi, pind) => {
+    const m = /^([|>])([+-]?)(\d?)([+-]?)$/.exec(header);
+    if (!m) throw new Error('bad block scalar header');
+    const style = m[1], chomp = m[2] || m[4];
+    let i = hi + 1, ind = m[3] ? pind + Number(m[3]) : -1;
+    const body = [];
+    for (; i < lines.length; i++) {
+      const L = lines[i];
+      if (L.text === '') { body.push(''); continue; }
+      if (ind < 0) { if (L.ind <= pind) break; ind = L.ind; }
+      if (L.ind < ind) break;
+      body.push(L.raw.slice(ind));
+    }
+    let trailing = 0;
+    while (body.length && body[body.length - 1].trim() === '' && body[body.length - 1].length <= 0) { body.pop(); trailing++; }
+    let out;
+    if (style === '|') out = body.join('\n');
+    else {
+      out = '';
+      for (let k = 0; k < body.length; k++) {
+        const ln = body[k];
+        if (k === 0) { out = ln; continue; }
+        const prev = body[k - 1];
+        if (ln === '') out += '\n';
+        else if (prev === '' || /^\s/.test(ln) || /^\s/.test(prev)) out += (prev === '' ? '' : '\n') + ln;
+        else out += ' ' + ln;
+      }
+    }
+    if (chomp === '-') { /* strip */ } else if (chomp === '+') out += '\n'.repeat(trailing + (body.length ? 1 : 0));
+    else if (body.length) out += '\n';
+    return [out, i];
+  };
+  // plain or quoted scalar that may continue on more-indented lines
+  const flowScalar = (first, i, pind) => {
+    let s = first; let j = i + 1;
+    if (s.startsWith('"') || s.startsWith("'")) {
+      const q = s[0];
+      s = stripComment(s);
+      const closed = (t) => { if (q === "'") return /(^|[^'])('')*'$/.test(t) && t.length > 1; return /(^|[^\\])(\\\\)*"$/.test(t) && t.length > 1; };
+      while (!closed(s) && j < lines.length) {
+        const t = lines[j].text; s += t === '' ? '\n' : (s.endsWith('\n') ? '' : ' ') + t; j++;
+      }
+      return [scalar(stripComment(s)), j];
+    }
+    s = stripComment(s);
+    let pendingNl = '';
+    while (j < lines.length) {
+      const L = lines[j];
+      if (L.text === '') { pendingNl += '\n'; j++; continue; }
+      if (L.ind <= pind || L.text.startsWith('#')) break;
+      if (/^(-\s|-$)/.test(L.text) || /^[^\s'"]+[^:]*:(\s|$)/.test(L.text)) throw new Error('ambiguous continuation');
+      s += (pendingNl || ' ') + stripComment(L.text); pendingNl = ''; j++;
+    }
+    return [scalar(s), j];
+  };
+  const keyRe = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"\-?:,[\]{}][^#]*?|-[^\s][^#]*?)\s*:(?:\s+(.*))?$/;
+  const value = (rest, i, ind) => { // rest after "key:" on line i whose key sits at ind
+    rest = rest === undefined ? '' : rest;
+    const r = stripComment(rest);
+    if (r === '' || /^![^\s]*$/.test(r)) {
+      const j = skip(i + 1);
+      if (j < lines.length && (lines[j].ind > ind || (lines[j].ind === ind && /^-(\s|$)/.test(lines[j].text)))) return block(j, lines[j].ind);
+      return [null, i + 1];
+    }
+    if (/^[|>]/.test(r)) return blockScalar(r, i, ind);
+    return flowScalar(rest, i, ind);
+  };
+  function block(i, ind) {
+    i = skip(i);
+    if (i >= lines.length) return [null, i];
+    if (/^-(\s|$)/.test(lines[i].text)) {
+      const arr = [];
+      while ((i = skip(i)) < lines.length && lines[i].ind === ind && /^-(\s|$)/.test(lines[i].text)) {
+        const rest = lines[i].text.slice(1).trimStart();
+        if (rest === '' || rest.startsWith('#')) {
+          const j = skip(i + 1);
+          if (j < lines.length && lines[j].ind > ind) { const [v, n] = block(j, lines[j].ind); arr.push(v); i = n; } else { arr.push(null); i++; }
+        } else if (keyRe.test(stripComment(rest)) && !/^["']/.test(rest) || /^-(\s|$)/.test(rest)) {
+          const off = lines[i].raw.indexOf(rest, lines[i].ind + 1);
+          lines[i] = { ind: off, text: rest, raw: ' '.repeat(off) + rest };
+          const [v, n] = block(i, off); arr.push(v); i = n;
+        } else if (/^[|>]/.test(stripComment(rest))) { const [v, n] = blockScalar(stripComment(rest), i, ind); arr.push(v); i = n; }
+        else { const [v, n] = flowScalar(rest, i, ind); arr.push(v); i = n; }
+      }
+      if (i < lines.length && lines[i].ind > ind) throw new Error(`bad indentation at line ${i + 1}`);
+      return [arr, i];
+    }
+    const obj = {};
+    while ((i = skip(i)) < lines.length && lines[i].ind === ind) {
+      const m = keyRe.exec(lines[i].text);
+      if (!m) throw new Error(`cannot parse line ${i + 1}`);
+      let k = m[1]; if (/^["']/.test(k)) k = unquote(k);
+      const [v, n] = value(m[2], i, ind); obj[k] = v; i = n;
+    }
+    if (i < lines.length && lines[i].ind > ind) throw new Error(`bad indentation at line ${i + 1}`);
+    return [obj, i];
+  }
+  const start = skip(0);
+  if (start >= lines.length) return null;
+  const [doc, end] = block(start, lines[start].ind);
+  if (skip(end) < lines.length) throw new Error(`unparsed content at line ${skip(end) + 1}`);
+  return doc;
+}
+
+// name / description / instructions / skills[].file from a worker.yaml
+// (a YAML read when it parses, a line scan otherwise).
+function readWorkerInfo(yamlPath) {
+  const text = fs.readFileSync(yamlPath, 'utf8');
+  const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const truthy = (v) => !(v === null || v === undefined || v === false || v === 0 || v === ''
+    || (Array.isArray(v) && !v.length) || (isObj(v) && !Object.keys(v).length));
+  const or = (...vs) => { for (const v of vs) if (truthy(v)) return v; return vs[vs.length - 1]; };
+  const info = { name: null, description: null, instructions: null, skills: [] };
+  let doc = null;
+  try { doc = parseMiniYaml(text); } catch { doc = null; }
+  if (isObj(doc)) {
+    const w = isObj(doc.worker) ? doc.worker : {};
+    info.name = or(w.name, doc.name) ?? null;
+    info.description = or(w.description, doc.description) ?? null;
+    const ins = or(doc.instructions, w.instructions);
+    info.instructions = typeof ins === 'string' ? ins : null;
+    let sk = or(doc.skills, w.skills, []);
+    if (isObj(sk)) sk = or(sk.installed, sk.list, []);
+    for (const s of Array.isArray(sk) ? sk : []) if (isObj(s) && typeof s.file === 'string') info.skills.push(s.file);
+  } else {
+    for (const k of ['name', 'description']) {
+      const m = new RegExp(`^\\s+${k}:\\s*"?([^"\\n]*)"?\\s*$`, 'm').exec(text);
+      if (m) info[k] = m[1];
+    }
+    info.skills = [...text.matchAll(/^\s*-?\s*file:\s*"?([^"\n]+?)"?\s*$/gm)].map((m) => m[1]);
+  }
+  const dir = path.dirname(yamlPath);
+  info.skills = (info.skills || []).map((f) => (path.isAbsolute(f) ? f : path.join(dir, f)));
+  return info;
+}
+
+function section8Prompt(envelope) {
+  const wt = envelope.worktree;
+  const lines = [];
+  const yamlPath = findWorkerYaml(envelope.worker_id);
+  let info = null;
+  let workerNote = '';
+  if (yamlPath) {
+    try { info = readWorkerInfo(yamlPath); } catch (e) { workerNote = `(worker.yaml could not be parsed: ${errMsg(e)})`; }
+  } else {
+    workerNote = `(no worker.yaml found for "${envelope.worker_id}" under the core/workers or personal/workers roots)`;
+  }
+  lines.push(`# Pipeline phase: ${envelope.phase} of story ${envelope.story_id}`, '');
+  lines.push('Execute this phase now and run it to completion in this one turn. Do the work; do not propose a plan.', '');
+  lines.push('## Who you are', '');
+  lines.push(`You are the \`${envelope.worker_id}\` worker` + (info && info.name ? ` (${info.name})` : '') + '.');
+  if (info && info.description) lines.push(`Description: ${info.description}`);
+  if (yamlPath) lines.push(`Worker definition: ${yamlPath}`);
+  if (workerNote) lines.push(workerNote);
+  if (info && info.skills.length) {
+    lines.push('', 'Read these skill files before you start:');
+    for (const f of info.skills) lines.push(`- ${f}`);
+  }
+  if (info && info.instructions) lines.push('', 'Worker instructions:', '', info.instructions.trim());
+  lines.push('', '## The story', '');
+  lines.push(`- Story id: ${envelope.story_id}`);
+  if (envelope.project) lines.push(`- Project: ${envelope.project}`);
+  if (typeof envelope.story_title === 'string' && envelope.story_title) lines.push(`- Title: ${envelope.story_title}`);
+  lines.push(`- Phase: ${envelope.phase}`);
+  lines.push(`- Working directory (worktree): ${wt}`);
+  lines.push(`- Deadline: ${envelope.deadline}`);
+  if (typeof envelope.story_description === 'string' && envelope.story_description) {
+    lines.push('', 'Story description:', '', envelope.story_description);
+  }
+  lines.push('', '## Acceptance criteria (literal, 0-based index)', '');
+  (envelope.acceptance_criteria || []).forEach((c, i) => lines.push(`${i}. ${c}`));
+  if (Array.isArray(envelope.constraints) && envelope.constraints.length) {
+    lines.push('', '## Hard constraints for this run (never break these)', '');
+    for (const c of envelope.constraints) lines.push(`- ${c}`);
+  }
+  lines.push('', '## Incoming handoff', '');
+  lines.push(envelope.incoming_handoff
+    ? `Read the previous phase's handoff first: ${envelope.incoming_handoff}`
+    : 'None: this is the first phase of the story.');
+  lines.push('', '## How to work', '');
+  lines.push(`- Work only inside ${wt}.`);
+  lines.push('- Execute, do not plan. Run every quality gate (tests, lint, typecheck, build) in the FOREGROUND and wait for it; never background a gate.');
+  lines.push(`- Commit your work before you reply, always with an explicit anchor: \`git -C ${wt} ...\`. Report the commit shas.`);
+  lines.push('', '## Required reply', '');
+  lines.push(`Reply with ONLY one JSON object, no prose and no code fence, of schema \`${SECTION8_HANDOFF}\`:`, '');
+  lines.push('```');
+  lines.push(JSON.stringify({
+    schema: SECTION8_HANDOFF, story_id: envelope.story_id, phase: envelope.phase, worker_id: envelope.worker_id,
+    status: 'passed | failed | blocked', summary: 'what this phase did',
+    files_changed: ['paths changed'], commits: ['commit shas'],
+    back_pressure: { tests: 'pass|fail|skip', lint: 'pass|fail|skip', typecheck: 'pass|fail|skip', build: 'pass|fail|skip' },
+    context_for_next: 'what the next phase needs to know',
+    ac_evidence: [{ index: 0, met: true, evidence: 'test name, command output, or file that shows it', criterion: 'literal criterion text' }],
+    notes: 'optional free text',
+  }, null, 2));
+  lines.push('```', '');
+  lines.push('Include one `ac_evidence` entry per acceptance criterion this phase addressed, with the 0-based index and, '
+    + 'if given, the criterion text copied exactly. Use `met: true` only with concrete evidence. '
+    + 'Copy story_id, phase and worker_id exactly as above.');
+  return lines.join('\n');
+}
+
+function failedHandoff(envelope, engine, reason) {
+  return {
+    schema: SECTION8_HANDOFF,
+    story_id: String(envelope.story_id ?? ''), phase: String(envelope.phase ?? ''), worker_id: String(envelope.worker_id ?? ''),
+    status: 'failed', summary: `phase did not produce a valid handoff: ${reason}`,
+    files_changed: [], commits: [],
+    back_pressure: { tests: 'skip', lint: 'skip', typecheck: 'skip', build: 'skip' },
+    context_for_next: '', engine: String(engine || ''), notes: reason,
+  };
+}
+
+// Engine reply -> §8 handoff object, or a failed handoff with the reason. A
+// failed handoff from here means the engine call returned without a usable
+// handoff, so it carries exit_reason "engine_exited_early" for the driver.
+function section8Handoff(envelope, engine, record, tmpDir) {
+  const early = (env, eng, reason) => ({ ...failedHandoff(env, eng, reason), exit_reason: 'engine_exited_early' });
+  if (record.status !== 'ok') return early(envelope, engine, `engine error: ${record.error || record.status}`);
+  const text = typeof record.value === 'string' ? record.value : JSON.stringify(record.value ?? null);
+  const script = pipelineEnvelopeScript();
+  const raw = path.join(tmpDir, `.s8-reply-${process.pid}-${Date.now()}.txt`);
+  const norm = `${raw}.json`;
+  try {
+    fs.writeFileSync(raw, text);
+    const n = spawnSync('bash', [script, 'normalize', raw], { encoding: 'utf8' });
+    if (n.status !== 0) return early(envelope, engine, `reply did not normalize: ${(n.stderr || '').trim()}`);
+    fs.writeFileSync(norm, n.stdout);
+    const v = spawnSync('bash', [script, 'validate', '--kind', 'handoff', norm], { encoding: 'utf8' });
+    if (v.status !== 0) return early(envelope, engine, `reply is not a valid handoff: ${(v.stderr || '').trim().replace(/\n/g, '; ')}`);
+    const h = JSON.parse(n.stdout);
+    for (const k of ['story_id', 'phase', 'worker_id']) {
+      if (String(h[k]) !== String(envelope[k])) {
+        return early(envelope, engine, `reply ${k} ${JSON.stringify(h[k])} does not match the envelope's ${JSON.stringify(envelope[k])}`);
+      }
+    }
+    if (!h.engine && engine) h.engine = String(engine);
+    return h;
+  } catch (e) {
+    return early(envelope, engine, `handoff check failed: ${errMsg(e)}`);
+  } finally {
+    for (const f of [raw, norm]) { try { fs.unlinkSync(f); } catch { /* not written */ } }
+  }
+}
+
+function section8Engine(envelope) {
+  return envelope.engine || process.env.HQ_CONDUCT_ENGINE || process.env.HQ_WORKFLOW_ENGINE || 'codex';
+}
+
+// The run-shaped view of a §8 envelope: what agent() and the session code read.
+// `schema` is the §8 shape tag, not a JSON Schema for agent(): drop it so the
+// reply is taken as text and checked by pipeline-envelope.sh instead.
+function section8RunEnvelope(envelope) {
+  const { schema: _shapeTag, ...rest } = envelope;
+  return {
+    ...rest,
+    kind: 'phase',
+    engine: section8Engine(envelope),
+    tier: 'exec',
+    cd: envelope.worktree,
+    fresh: envelope.fresh_call === true,
+    label: `${envelope.story_id}-${envelope.phase}`,
+    prompt: section8Prompt(envelope),
+  };
+}
+
+async function runLoop(rt, cli = {}) {
+  const { state } = rt;
+  state.loop = true;
+  const noResume = Boolean(cli.noResume) || /^(1|true|yes|on)$/i.test(process.env.HQ_WORKFLOW_NO_RESUME || '');
+  const sessionsDir = path.join(state.runDir, 'sessions');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const inbox = path.join(state.runDir, 'inbox');
+  const dirs = {
+    pending: path.join(inbox, 'pending'),
+    active: path.join(inbox, 'active'),
+    claimed: path.join(inbox, 'claimed'),
+    results: path.join(inbox, 'results'),
+  };
+  for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true });
+
+  // The conduct-lane-inbox hook drains HQ_CONDUCT_RUN_DIR's pending/ on every
+  // tool call of an engine child. In loop mode that directory is this lane's
+  // work queue, so an inherited value would let the engine swallow envelopes
+  // queued behind the one it is running. Children never see it.
+  delete process.env.HQ_CONDUCT_RUN_DIR;
+
+  // An envelope left in active/ belongs to a lane that died mid-phase. Put it
+  // back at the head of the queue rather than lose it.
+  for (const name of fs.readdirSync(dirs.active)) {
+    if (name.startsWith('.')) continue;
+    try { fs.renameSync(path.join(dirs.active, name), path.join(dirs.pending, name)); } catch { /* best-effort */ }
+  }
+
+  const startedAt = new Date().toISOString();
+  writeJsonAtomic(path.join(state.runDir, 'loop.json'), {
+    pid: process.pid, started_at: startedAt, run_dir: state.runDir, poll_ms: LOOP_POLL_MS,
+    resume: !noResume,
+  });
+  rt.journal({ event: 'loop-start', pid: process.pid, pollMs: LOOP_POLL_MS });
+  rt.narr(`loop: waiting on ${dirs.pending}`);
+
+  let processed = 0;
+  for (;;) {
+    if (state.aborted) throw new Error('loop aborted by signal');
+    const next = pendingInArrivalOrder(dirs.pending)[0];
+    if (!next) {
+      await new Promise((resolve) => setTimeout(resolve, LOOP_POLL_MS));
+      continue;
+    }
+    const activeFile = path.join(dirs.active, next);
+    try {
+      fs.renameSync(path.join(dirs.pending, next), activeFile);
+    } catch {
+      continue; // taken by another consumer
+    }
+    const stem = next.replace(/\.[^.]*$/, '');
+    const phaseStarted = new Date().toISOString();
+    let envelope = null;
+    let record;
+    try {
+      envelope = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
+      if (!envelope || typeof envelope !== 'object') throw new Error('envelope is not a JSON object');
+    } catch (e) {
+      record = { status: 'error', error: `unreadable envelope: ${errMsg(e)}` };
+    }
+    // A §8 pipeline envelope runs as a phase whose prompt the lane builds; the
+    // original is kept for the handoff written to its result_path.
+    let section8 = null;
+    if (!record && isSection8Envelope(envelope)) {
+      section8 = envelope;
+      try {
+        envelope = section8RunEnvelope(section8);
+      } catch (e) {
+        envelope = { ...section8, kind: 'phase', engine: section8Engine(section8) };
+        record = { status: 'error', error: `could not build the phase prompt: ${errMsg(e)}` };
+      }
+    }
+    const kind = envelope && (envelope.kind || 'phase');
+    if (!record && kind === 'stop') {
+      record = { status: 'stopped' };
+    } else if (!record && kind !== 'phase') {
+      record = { status: 'error', error: `unknown envelope kind ${JSON.stringify(kind)}` };
+    } else if (!record) {
+      rt.journal({ event: 'loop-phase-start', envelope: next, id: envelope.id ?? null });
+      const stallsFile = path.join(state.runDir, 'stalls.json');
+      const stalls = readJsonOr(stallsFile, {});
+      const priorStall = stalls && typeof stalls === 'object' ? stalls[next] : null;
+      const deadlineSecs = phaseDeadlineSecs(envelope, priorStall);
+      let session = null;
+      try {
+        // A rerun after a stall is a fresh call: never resume the session the
+        // stalled call was in.
+        session = prepareStorySession(rt, sessionsDir, envelope, noResume || Boolean(priorStall));
+        if (session && priorStall) session.fresh_reason = 'stall-rerun';
+        const opts = {
+          engine: envelope.engine,
+          tier: envelope.tier || 'exec',
+          label: envelope.label || envelope.id || stem,
+        };
+        for (const k of ['model', 'effort', 'schema', 'cd', 'timeoutSecs', 'fastMode', 'extraArgs', 'phase']) {
+          if (envelope[k] !== undefined) opts[k] = envelope[k];
+        }
+        if (session) opts.session = session;
+        const STALL = Symbol('stall');
+        let timer = null;
+        const deadlineHit = new Promise((resolve) => { timer = setTimeout(() => resolve(STALL), Math.min(deadlineSecs * 1000, MAX_TIMER_MS)); });
+        const call = rt.agent(envelope.prompt, opts);
+        call.catch(() => { /* raced below; a stalled call's rejection is moot */ });
+        let first;
+        try {
+          first = await Promise.race([call, deadlineHit]);
+        } finally {
+          // A failed call rejects the race; the timer must still go, or it
+          // holds the event loop open after a stop envelope.
+          clearTimeout(timer);
+        }
+        if (first === STALL) {
+          handleStall(rt, {
+            envelope, name: next, activeFile, dirs, stalls, stallsFile, priorStall,
+            deadlineSecs, startedMs: Date.parse(phaseStarted), stem, section8,
+          });
+          return; // not reached: handleStall exits the process
+        }
+        const value = first;
+        record = { status: 'ok', value };
+      } catch (e) {
+        record = { status: 'error', error: errMsg(e) };
+      }
+      if (session) {
+        const own = storySessionFile(sessionsDir, session.story_id);
+        try {
+          if (record.status === 'ok' && session.session_id) {
+            writeJsonAtomic(own, {
+              story_id: session.story_id, engine: envelope.engine || 'codex',
+              session_id: session.session_id, updated_at: new Date().toISOString(),
+            });
+          } else if (fs.existsSync(own)) {
+            // A failed phase leaves no session worth resuming.
+            fs.unlinkSync(own);
+          }
+        } catch (e) {
+          rt.journal({ event: 'loop-session-record-failed', story_id: session.story_id, error: errMsg(e) });
+        }
+        record.session = {
+          story_id: session.story_id,
+          mode: session.mode || null,
+          session_id: session.session_id || null,
+          ...(session.fresh_reason ? { fresh_reason: session.fresh_reason } : {}),
+          ...(session.resumed_from ? { fallback: true, resumed_from: session.resumed_from, resume_error: session.resume_error } : {}),
+        };
+      }
+    }
+    // For a §8 envelope result_path takes the handoff; the run record stays in
+    // the lane's own results/.
+    const resultFile = !section8 && envelope && typeof envelope.result_path === 'string' && envelope.result_path
+      ? path.resolve(envelope.result_path)
+      : path.join(dirs.results, `${stem}.json`);
+    if (section8) {
+      const handoff = section8Handoff(section8, envelope.engine, record, dirs.results);
+      if (handoff.exit_reason === 'engine_exited_early') {
+        // The engine call returned before the phase had a handoff. Say so in the
+        // journal (pipeline-driver.sh reads it) instead of leaving the driver to
+        // wait out the phase deadline.
+        const elapsed_s = Math.max(0, Math.round((Date.now() - Date.parse(phaseStarted)) / 1000));
+        handoff.elapsed_s = elapsed_s;
+        rt.journal({
+          event: 'phase-exit', envelope: next, story_id: handoff.story_id, phase: handoff.phase,
+          worker_id: handoff.worker_id, lane: process.env.HQ_WORKFLOW_LANE || null,
+          reason: handoff.notes, exit_reason: 'engine_exited_early', elapsed_s,
+        });
+      }
+      const handoffFile = typeof section8.result_path === 'string' && section8.result_path
+        ? path.resolve(section8.result_path) : path.join(dirs.results, `${stem}.handoff.json`);
+      try {
+        writeJsonAtomic(handoffFile, handoff);
+      } catch (e) {
+        const fallback = path.join(dirs.results, `${stem}.handoff.json`);
+        rt.journal({ event: 'loop-handoff-write-failed', envelope: next, handoffFile, error: errMsg(e), fallback });
+        rt.narr(`loop: could not write handoff to ${handoffFile} (${errMsg(e)}); wrote ${fallback} instead`);
+        writeJsonAtomic(fallback, handoff);
+      }
+      record.handoff = { path: handoffFile, status: handoff.status };
+      rt.journal({ event: 'loop-handoff', envelope: next, story_id: handoff.story_id, phase: handoff.phase, status: handoff.status });
+    }
+    const resultBody = {
+      envelope: next,
+      id: envelope && envelope.id !== undefined ? envelope.id : null,
+      kind: kind || null,
+      pid: process.pid,
+      started_at: phaseStarted,
+      finished_at: new Date().toISOString(),
+      ...record,
+    };
+    // A bad result_path or a failed move must not kill the lane: a crash here
+    // would requeue the same envelope from active/ and crash again on restart.
+    try {
+      writeJsonAtomic(resultFile, resultBody);
+    } catch (e) {
+      const fallback = path.join(dirs.results, `${stem}.json`);
+      rt.journal({ event: 'loop-result-write-failed', envelope: next, resultFile, error: errMsg(e), fallback });
+      rt.narr(`loop: could not write result to ${resultFile} (${errMsg(e)}); wrote ${fallback} instead`);
+      writeJsonAtomic(fallback, { ...resultBody, result_path_error: errMsg(e) });
+    }
+    try {
+      fs.renameSync(activeFile, path.join(dirs.claimed, next));
+    } catch (e) {
+      rt.journal({ event: 'loop-claim-move-failed', envelope: next, error: errMsg(e) });
+      rt.narr(`loop: could not move ${next} to claimed/ (${errMsg(e)})`);
+      try { fs.unlinkSync(activeFile); } catch (e2) {
+        rt.journal({ event: 'loop-active-unlink-failed', envelope: next, error: errMsg(e2) });
+      }
+    }
+    processed++;
+    rt.journal({ event: 'loop-phase-done', envelope: next, status: record.status, resultFile });
+    if (record.status === 'stopped') break;
+  }
+
+  rt.journal({ event: 'loop-done', processed });
+  rt.narr(`loop: stop envelope received after ${processed} envelope(s) — exiting`);
+}
+
 async function main() {
   const cli = parseCli(process.argv.slice(2));
   const rt = await buildRuntime(cli);
@@ -1816,6 +2804,11 @@ async function main() {
       rt.narr(`received ${sig} — terminating ${rt.state.activeChildren.size} agent process(es)`);
       terminateAndExit(130);
     });
+  }
+
+  if (cli.loop) {
+    await runLoop(rt, cli);
+    return;
   }
 
   let workflowDepth = 0;

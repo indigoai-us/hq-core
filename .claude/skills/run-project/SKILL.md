@@ -1,8 +1,8 @@
 ---
 name: run-project
 description: "Execute a project's PRD stories as pooled background worker lanes (never more than CONDUCT_POOL_CAP, default 8) that survive compaction. Interactive mode runs in the parent and takes no pool slots."
-allowed-tools: Read, spawn_agent, wait_agent, Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/conduct-inbox.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Bash(bash core/scripts/hq-detach.sh:*), Bash(ps:*), Bash(grep:*), Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Write, AskUserQuestion, Task
-argument-hint: "{project} [--status] [--resume] [--dry-run] [--inline] [--interactive] [--ralph-mode] [--in-place] [--timeout N]"
+allowed-tools: Read, spawn_agent, wait_agent, Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/conduct-inbox.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Bash(bash core/scripts/hq-detach.sh:*), Bash(ps:*), Bash(grep:*), Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(sh core/scripts/pipeline-lane-rows.sh:*), Bash(bash core/scripts/pipeline-conductor.sh:*), Bash(bash core/scripts/pipeline-worker-table.sh:*), Bash(sh core/scripts/pipeline-driver.sh:*), Bash, Write, AskUserQuestion, Task, mcp__visualize__read_me, mcp__visualize__show_widget
+argument-hint: "{project} [--status] [--resume] [--dry-run] [--inline] [--interactive] [--ralph-mode] [--pipeline] [--in-place] [--timeout N]"
 ---
 
 # Run Project — Codex Router
@@ -18,6 +18,12 @@ pool, not by the number of stories — a 40-story PRD opens no more lanes than a
 Story coordinators claim `story:{worker-id}`; the phases inside them claim the
 bare worker id, so a story can never block on a lane it is holding itself.
 `--interactive` runs in the parent and claims none.
+
+**Pipeline mode (`--pipeline`) live children: one loop lane per confirmed
+worker-table row, plus the regression-gate lane.** That sum must not exceed
+`CONDUCT_POOL_CAP` (default 8); a run that would is refused before any lane
+starts (Step 3P). The pipeline driver that routes phases is a detached script,
+not a lane, and takes no pool slot.
 
 **User's input:** $ARGUMENTS
 
@@ -55,6 +61,7 @@ Extract from `$ARGUMENTS`:
 - `--inline` — the default: one detached lane per story, pooled (Step 3). The name is historical; it means *story-delegated*, as opposed to `--interactive`'s parent-driven editing. It has not meant "in the parent session" since stories became lanes.
 - `--interactive` or `--session-mode` — parent-driven Codex execution
 - `--ralph-mode` — the same pooled lane loop as default, run unattended: skip the preflight approval, auto-advance through every story without between-story pauses, and report once at the end
+- `--pipeline` — opt-in pipeline mode (Step 3P): one persistent loop-mode lane per worker for the whole run, plus a detached driver script (`core/scripts/pipeline-driver.sh`) that routes story phases through them. Without this flag nothing in Step 3P applies and the default coordinator path (Step 3) runs unchanged.
 - `--in-place` — (ralph) skip feature-branch pre-creation; work on the current checkout
 - `--timeout N` — (ralph) per-story wall-clock budget in minutes before a story is marked `blocked: TIMEOUT`. This is the waiter's `deadline` file (dispatch protocol §4-§5), not the runner's `timeoutSecs` — that one only warns and never kills, so it cannot bound anything on its own.
 - `--resume` continues from the next incomplete story (read from `state.json`)
@@ -397,6 +404,444 @@ On failure, surface the summary and ask whether to fix, adjust, stop, or switch 
 - Do not simulate `/execute-task` by spawning worker-phase agents from the parent. If the story worker cannot run `/execute-task`, pause and switch modes.
 - **Swarm only as far as the pool allows.** When incomplete stories are mutually independent (no dependency edges, no overlapping declared files) **and classify to different worker ids**, dispatch them concurrently — but only up to the concurrent-story limit above, and only on lanes `assign` actually granted. Independent stories that share a worker id serialize on that one lane. Validate each returned JSON, worker proof, and commit per story as replies arrive; run the regression gate after the batch. Stories with dependencies or file overlap still run sequentially. A second lane for a worker that already has one, or an extra review or QA agent beyond the story workers, still requires a high-risk trigger or explicit user opt-in after naming the cost.
 - Do not read raw test logs, full `*.output.json`, or long command output in the parent. Use compact JSON, strip `stdout_tail` / `stderr_tail`, or cap inspection with `tail -c`.
+
+## Step 3P — Pipeline Mode (`--pipeline`)
+
+Only with `--pipeline`. Without the flag, skip this whole step: the default
+path is the story coordinator lanes of Step 3, and nothing below changes it.
+
+In pipeline mode each worker gets one persistent `workflow-runner.mjs --loop`
+lane for the whole run. A detached driver, `core/scripts/pipeline-driver.sh`,
+owns the story queue: it calls `core/scripts/pipeline-conductor.sh` to route
+each phase of each story into those lanes through `conduct-pool.sh assign
+--envelope`, accepts each phase's handoff, and re-checks acceptance criteria.
+The driver makes no engine calls. The parent does not run story coordinators.
+Paths below are under `workspace/orchestrator/{project}/pipeline/`; `{state}`
+is its `state/` subdirectory.
+
+There is no conductor lane. A lane cannot keep a child process alive past its
+own engine call, so a routing loop started inside a lane dies when that call
+ends. The `pipeline-conductor` worker (`core/workers/public/dev-team/pipeline-conductor/`)
+stays as the written reference for the routing rules the driver follows; it is
+not launched, gets no worker-table row, and takes no pool slot.
+
+**3P.1 — Pre-flight first, unchanged.** Run Step 2.5 and the Step 3a preflight
+exactly as they run today, including their pauses. If preflight finds stale
+state (wrong branch, dirty tree, stale file anchors, missing auth, an unlocked
+design), pause and surface it the same way; launch no lane until it is
+resolved. Record `session_id` in `state.json` as Step 3 describes. Step 3's
+single engine question is replaced by the worker table below. When the
+preflight lane returns it is idle: `recycle --worker-id explorer` so it does
+not hold a pool slot for the rest of the run.
+
+**3P.2 — Worker sequences, worker table, confirm once.**
+
+A story's worker sequence (`worker_preference`, or the overlay below) is the
+full phase sequence for that story, in order: implementer first, then the
+reviewers and testers. The lanes are the union of every story's sequence.
+
+First put the preflight's sequences in run state. The Step 3a preflight
+explorer emits `ordered_stories[]` with a `worker_sequence` per story; save its
+JSON block as `pipeline/preflight-plan.json` and import it into the run's
+overlay (`{state}/overlay.json`; prd.json is not edited):
+
+```bash
+bash core/scripts/pipeline-conductor.sh classify --prd {prd.json} --state {state} --overlay pipeline/preflight-plan.json
+```
+
+An overlay entry wins over `worker_preference`, which wins over the keyword
+fallback. Correct one story without a heredoc:
+
+```bash
+bash core/scripts/pipeline-conductor.sh overlay set --state {state} --story {id} --sequence backend-dev,qa-tester
+bash core/scripts/pipeline-conductor.sh overlay show --state {state}
+```
+
+A story the run should not take (out of scope, waiting on someone) goes on the
+skip list instead of being deleted from prd.json:
+
+```bash
+bash core/scripts/pipeline-conductor.sh skip --state {state} --story {id} --prd {prd.json} --note "{why}"
+```
+
+Skipping a story that others depend on prints the dependents it strands and
+needs `--force`; `unskip --state {state} --story {id}` reverses it.
+
+Then propose the table from the same sequences:
+
+```bash
+bash core/scripts/pipeline-worker-table.sh {prd.json} --overlay {state}/overlay.json
+```
+
+It proposes one `row` for every worker any sequence names (architect and
+qa-tester included). Show every `row` (worker, engine, model, effort, status,
+stories), every `hint` (a story's model_hint) and every `unclassified` story.
+A worker with no `worker.yaml` is reported on stderr with the roots searched and
+the known ids; fix the sequence rather than answering its row. Then:
+
+- Every row with status `needs-answer` must be answered (engine and model)
+  before anything launches. Ask one question per flagged row (AskUserQuestion,
+  text fallback per `core/policies/hq-codex-decision-gate-fallback.md`). An
+  `unclassified` story needs an overlay entry (`overlay set`) or goes on the
+  skip list.
+- Do not add a `pipeline-conductor` row: it is not a lane.
+- A `model_hint` does not override a confirmed row: the lane's model wins, and
+  `--confirmed` prints each hint commented out as "hint ignored, table pins
+  <model>". A bare alias (`opus`, `sonnet`, `haiku`) is never passed to an
+  engine. To run a story on another model, change that lane's row.
+- Then confirm the whole table **once**, before the first dispatch. Until the
+  owner confirms and every flagged row is answered, no lane starts and the
+  driver does not start.
+
+Write the confirmed table (one `<worker> <engine> <model> [<effort>]` line per
+lane) to `pipeline/table.tsv` and check the run against it:
+
+```bash
+bash core/scripts/pipeline-conductor.sh classify --prd {prd.json} --state {state} --table pipeline/table.tsv
+```
+
+Without `--story` it checks every story that is not passing or skipped and
+writes no story state. It must exit 0 before launch. It exits 1 and lists each
+problem when a worker id has no `worker.yaml` (naming the nearest known id),
+when a story that declares code files has a sequence that starts with a
+verifier or reader (it suggests prepending an implementer or marking the story
+`"docs_only": true`), or when a sequence worker has no row in the table. Its
+`WARN` lines cover one-worker sequences (architect and qa phases will not run),
+model hints, and a story whose acceptance criteria or files need a later story
+that is not in its `dependsOn` (it prints the `dependsOn` line to use). Relay
+the warnings to the owner; they do not block launch.
+
+Turn the table into per-lane exports:
+
+```bash
+bash core/scripts/pipeline-worker-table.sh --confirmed pipeline/table.tsv --overlay {state}/overlay.json {prd.json} > pipeline/lanes.env
+```
+
+It exits 2 on an empty model or an engine other than `claude`/`codex`/`grok`;
+treat that as an unanswered row. Each lane block exports `HQ_CONDUCT_ENGINE`
+(the engine its phases run on) and that engine's model and effort pins.
+
+**3P.3 — Cap check: refuse rather than over-subscribe.** Count
+`lanes = worker rows + 1 (regression gate)`, where worker rows are the
+confirmed rows. The driver is not a lane and is not counted. If `lanes` is
+greater than `CONDUCT_POOL_CAP` (default 8), refuse to start and name the cap:
+
+> Refusing --pipeline: {rows} worker lanes + regression gate = {lanes} lanes,
+> over CONDUCT_POOL_CAP={cap}. Raise CONDUCT_POOL_CAP or run without
+> --pipeline.
+
+Launch nothing in that case. For example, 8 table rows at cap 8 is 9 lanes
+and is refused; 7 rows at cap 8 is 8 lanes and runs.
+
+**3P.4 — Approval holds.** Every dev-team implementation worker's worker.yaml
+sets `approval_required: true` (`context-manager` and `pipeline-conductor` do
+not), so the driver's `route` call holds each phase for those workers
+(`route` prints `HELD`, writes `{state}/decisions/<story>-<worker>.md`, exits
+10) until the parent releases it. After the table is confirmed, ask once
+whether to approve the confirmed workers for the whole run; for each approved
+worker run:
+
+```bash
+bash core/scripts/pipeline-conductor.sh release --state {state} --worker {worker}
+```
+
+A hold that was not pre-approved becomes a decision item (3P.6); release that
+story alone with `release --state {state} --story {story-id} --worker {worker}`.
+Release marks the decision `approved` and returns the held story to `queued`.
+
+The whole-run worker approval does not release a story that needs an explicit
+go. A story needs one when it carries `approval: "explicit"` (the canonical
+key; `needsApproval: true` is read as an alias), or when the conductor's
+release detector flags it: its declared files or acceptance criteria mention
+deploy, release, production, or merging to the base branch (the patterns are
+`RELEASE_PATTERNS` in `pipeline-conductor.sh`). Such a story is held
+`awaiting_go` before its first implementing phase, whatever the worker's
+`approval_required` says (a release story on `qa-tester` is held too), with
+`{state}/decisions/<story>-go.md`. `release` does not apply to it. After the
+owner says go:
+
+```bash
+bash core/scripts/pipeline-conductor.sh go --state {state} --story {story-id}
+```
+
+`resolve` and `park` work on an `awaiting_go` story. The driver keeps routing
+the rest, lists `awaiting_go` stories on its `TICK` lines in `driver.log` and in
+`report.md` `FINAL:`, and exits 21 naming them once nothing else can move.
+
+**3P.5a — Repos, worktrees and branches.** Each story's repo is resolved from
+its `repoPath`, then (when the PRD lists more than one repo) from the repo that
+owns the story's first declared file, then from `metadata.repoPath`. The repo
+list is `metadata.repos[]` (canonical: path strings or objects with `path`);
+`metadata.repoPaths[]` is read as an alias. A story whose repo has no worktree
+is held `blocked_needs_owner` with a decision item naming the repo; it is never
+routed to another repo's tree.
+
+Branch modes:
+
+- Default: one feature branch per repo for the run (`metadata.branchName`, else
+  `feature/{project}`). Every story of that repo commits on it in dependency
+  order, so a dependent story starts from its dependency's commits. One story
+  is in flight per repo branch at a time.
+- `--story-branches` (pass it to the driver): one branch and worktree per story
+  (`pipeline/{story-id}`), cut when the story first routes, from the branch of
+  the last verified story it depends on in the same repo (stacked), else from
+  the base. A story whose dependency branch is missing is held, not routed.
+
+Every cut starts from `origin/{baseBranch}` when that ref exists after a fetch,
+else from local `{baseBranch}`, never from the repo's HEAD (`metadata.baseBranch`,
+default `main`). The exact ref is printed as `CUT <branch> from <ref> <sha>`;
+when neither ref exists the cut fails with that message.
+
+Decide before launch (one choice for the run):
+
+| Stories | Worktrees | `PC_MAX_STORIES` |
+|---|---|---|
+| one repo, or dependent stories in each repo (the usual case) | `worktree --shared` once per repo, default branch mode | the number of repos; the conductor lowers a higher value to that and prints `MAX_STORIES` |
+| independent stories that should run side by side in one repo | `--story-branches` | the number of stories to run at once, within `CONDUCT_POOL_CAP` |
+| a repo that is not a git repo, or the owner wants one story at a time | serial: bare `--worktree {dir}` | 1 |
+
+Cut one worktree per repo before launch and pass each to the driver:
+
+```bash
+bash core/scripts/pipeline-conductor.sh worktree --state {state} --repo {repo} --shared --prd {prd.json}
+```
+
+The cut lands at `workspace/worktrees/{project}/{repo-name}/` under the HQ root
+(`{repo-name}-{story}` with `--story-branches`), in every mode, never beside
+the repo under `repos/`. A worktree must sit inside the HQ root for lanes to cd
+into it, and it must not sit under `repos/`: the core Write/Edit guard blocks
+editor-tool writes there, so a lane that edits with Write or Edit stalls as
+`blocked_needs_owner`. An explicit `--worktree {dir}` or
+`--worktree {repo}={dir}` (on `worktree`, `tick`, `classify` or the driver)
+that resolves under `repos/` is refused with exit 2 and a message saying why.
+Pass `--allow-repos-worktree` only when the owner wants that tree anyway; then
+every phase envelope routed into it carries one constraint line telling the
+worker to edit through the shell or `apply_patch`.
+
+**3P.5 — Launch: one loop lane per row, then the driver.** For each
+confirmed row, in its own shell, export only that row's block from
+`pipeline/lanes.env` (each lane has its own engine exports; never share one
+export set across lanes), then:
+
+```bash
+bash core/scripts/conduct-pool.sh assign --worker-id "{worker}" --task "{project} pipeline lane"
+# expect {"action":"spawn"}; exit 3 or 4 -> stop and surface, launch nothing
+# launch per .claude/skills/_shared/lane-dispatch-protocol.md §4, with the
+# runner in loop mode and no brief:
+node core/scripts/workflow-runner.mjs --loop --run-dir "{abs run dir}"
+bash core/scripts/conduct-pool.sh record --worker-id "{worker}" \
+  --subagent-id "{run id}" --status waiting --pid "{runner pid}" --run-dir "{abs run dir}"
+```
+
+Every lane carries `HQ_SESSION_ID` (the session recorded in `state.json`), so
+the driver's `conduct-pool.sh` calls and the parent's see one pool. Run-wide
+hard limits (no push, no deploy, branch rules) go one per line in
+`{state}/constraints.txt`; every phase envelope quotes them.
+
+Once every lane is recorded `waiting`, the parent launches the driver detached,
+with `HQ_SESSION_ID` exported, from the HQ root:
+
+```bash
+bash core/scripts/hq-detach.sh --logfile {state}/driver/detach.log -- \
+  sh core/scripts/pipeline-driver.sh --prd {prd.json} --state {state} \
+    --worktree {repo-a}={worktree-a} --worktree {repo-b}={worktree-b} \
+    --table pipeline/table.tsv
+```
+
+For a single-repo PRD the bare `--worktree {worktree}` form still works.
+`--table` makes the driver refuse to route a phase whose worker has no row
+(exit 27) instead of leaving the story in flight. Add
+`--story-branches` for the stacked mode in 3P.5a. Set `PC_MAX_STORIES` in the
+driver's environment as 3P.5a says.
+
+It refuses to start (exit 24) while another driver runs against the same
+`{state}`, so launching it twice is safe. The parent then arms one background
+waiter on it, with a tool timeout longer than the longest phase deadline:
+
+```bash
+until [ -f {state}/driver/exit ]; do sleep 30; done; cat {state}/driver/exit
+```
+
+The driver polls every 15 seconds (`--interval`). Each pass it accepts every
+handoff a lane wrote to `result_path`, runs `recheck` for finished stories,
+and ticks the conductor helper to route the next phase or start the next
+story. It appends one line per action to `{state}/driver/driver.log`. When it
+exits it writes `{state}/driver/exit` as `<code> <reason>`:
+
+| Code | Meaning | Parent action |
+|---|---|---|
+| 0 | every story finished (verified, failed after its one reroute, accepted as a partial draft, or parked); `report.md` has its `FINAL:` line | 3P.8 |
+| 2 | usage error | fix the command |
+| 20 | a regression gate is due | run the gate in the `regression-gate` slot (Step 3c), record `pipeline-conductor.sh gate result pass\|fail --state {state}` (add `--story {id} --note "..."` to a `fail` caused by one verified story: it reopens that story, see 3P.6), relaunch the driver |
+| 21 | a decision is needed: a story is held for approval; a phase returned `blocked`, a story has no worktree for its repo, or a story is `awaiting_go`, and nothing else can move; the gate failed; a phase returned `failed` `--max-phase-fails` times; or a phase's engine exited early twice (`engine_exited_early`, see below) (the reason names the status or `engine_exited_early` and the attempt count; the story is then held as `blocked_needs_owner` with `{state}/decisions/<story>-blocked-<phase>.md` carrying each failed handoff's text) | 3P.6: read the decision item, ask the owner once, run the matching command (`resolve --as retry --prd <prd>` re-reads the story's phases, so fix the sequence first with `overlay set` when the lane was wrong; the attempt count starts over), relaunch the driver |
+| 22 | an in-flight phase passed its deadline with no handoff | check the lane (`conduct-pool.sh list`, its `stalls.jsonl`), then relaunch the driver or stop the run |
+| 23 | the conductor helper printed something unexpected | read the last lines of `driver.log`, surface them, do not relaunch blindly |
+| 24 | another driver already runs against `{state}` | leave it; re-arm the waiter on it |
+| 25 | retired: the stall check now fires the stall event and exits 28 | - |
+| 26 | lane down: routing a phase got a pool answer other than an enqueue into a live loop lane (`spawn` or `resume` means that worker's loop lane is dead). The reason names the lane; the story stays `queued` and the pool claim is released | relaunch that worker's loop lane as 3P.5 launches one and record it `waiting`, then relaunch the driver; it routes the story normally |
+| 27 | no lane: a phase's worker has no row in `pipeline/table.tsv`; the reason names the worker and the story stays `queued` | add the row (ask the owner for its engine and model), launch that worker's loop lane as 3P.5 does, relaunch the driver |
+| 28 | stall event: for the whole `--stall-window` (default 600 seconds) every started lane is `waiting` with an empty queue while a story is in flight, or an in-flight phase's envelope sits in its lane's queue with nothing active. `{state}/events.jsonl` gets `{"event":"stall","stories":[...],"lanes":[...],"since":<iso>}` and `driver.log` a `STALL` line. The driver has no notification hook, so it writes the event and exits | read the event, check the named lanes (`lane.log`, `conduct-pool.sh list`), relaunch the driver once they are healthy, or stop the run. The same stall does not fire again after a restart; accepting any phase clears it |
+| 29 | stopped on request: the parent ran `pipeline-conductor.sh stop` (see "Stopping a run" below) | relaunch the driver when the owner wants to resume |
+| 130, 143 | interrupted or terminated; in-flight phases are marked `interrupted` first | relaunch the driver; it routes interrupted stories first |
+
+**Early engine exit.** When a loop lane's engine call for a phase returns
+without a usable handoff, the lane writes a failed handoff with
+`exit_reason: "engine_exited_early"` and a `phase-exit` event (reason, elapsed
+seconds) to its `journal.jsonl`. A handoff whose status is not `passed`,
+`failed` or `blocked` is not accepted; with a `phase-exit` event since the
+phase was routed it counts the same way. On the next tick the driver logs
+`EARLY_EXIT <story>/<phase> after <n>s` and accepts it as a failed phase, which
+routes the phase once more to the same lane. A second early exit of that phase
+holds the story for the owner (exit 21 naming `engine_exited_early`; the
+decision item carries the reason). A phase whose engine is still running keeps
+the deadline path (exit 22).
+
+**Pool hygiene at start.** The driver runs `conduct-pool.sh reconcile` once
+when it starts, so a finished one-shot lane (a regression gate) never holds its
+slot `running`. Lanes count against a machine-wide cap as well as the
+session's: `CONDUCT_MACHINE_CAP` (default 16, `0` disables) bounds running and
+claimed slots across every session pool on the machine, and `assign` refuses
+past it with exit 6 naming the count, the cap and the sessions holding the most.
+
+**Stopping a run.** Stop with
+`bash core/scripts/pipeline-conductor.sh stop --state {state} --note "{why}"`.
+With a live driver it writes `{state}/driver/stop.json` (a stop envelope,
+`{"kind":"stop"}`) and the driver exits 29 on its next pass; with no live
+driver it marks the stories itself. Every stop path (that command, SIGTERM,
+SIGINT, and a loop lane that exited on a stop envelope while a story was in
+flight on it) marks each `in_flight` story `interrupted` with the phase and
+time in `stories/<id>.json`, withdraws its envelope from the lane queue when no
+lane picked it up, and keeps a partial handoff as
+`handoffs/<id>-<phase>.interrupted.<n>.json`. A phase whose handoff already
+finished it is left for the next driver to accept. The relaunched driver routes
+interrupted stories first, before reopened ones, at the interrupted phase; the
+envelope carries `resumed_after_interrupt: true` and `prior_handoff` when a
+partial handoff exists. `TICK` lines in `driver.log` and the `FINAL:` line name
+interrupted stories until they are routed again.
+
+A handoff with status `failed` is routed again until it has failed
+`--max-phase-fails` times (default 2). A handoff with status `blocked` is never
+routed again: a rerun cannot help. The conductor holds that story as
+`blocked_needs_owner`, writes `{state}/decisions/<story>-blocked-<phase>.md`
+with the story, phase, lane and the worker's own blocker text, and the driver
+keeps routing every story that does not depend on it. A blocked story does not
+take a slot under `PC_MAX_STORIES`.
+
+Every relaunch uses the same command. The driver reads all of its state from
+`{state}`, so a relaunch resumes where the last one stopped and does not run a
+finished phase again.
+
+No step here starts a background shell loop inside a lane. The driver is the
+only loop, and it runs outside every lane.
+
+**3P.6 — Relay, do not drive.** While the run is live the parent:
+
+- Ends every turn in which a pipeline lane is live with the lane rows. Pull
+  them once with
+  `sh core/scripts/pipeline-lane-rows.sh --state {state} --session-id {session_id}`
+  (one JSON array: an item per loop lane in the session pool and one
+  `kind: "driver"` item). Call `mcp__visualize__read_me` with `["mockup"]`
+  once per session first, silently, then render `mcp__visualize__show_widget`
+  in HTML mode from the template `.claude/skills/conduct/lane-rows.html`: one
+  `.row` per worker lane plus one for the driver, the CSS untouched, flex rows,
+  never a grid or cards. Per lane row: the worker; the phase chip from
+  `phase_label`; the meta from `phase_elapsed_s`, `quiet_s` and
+  `inbox_pending`; a rough percentage from `phase_index` of `phase_count`
+  (`(phase_index - 1) / phase_count`, never 100% before the story is
+  verified); the story title in plain words; `last_line` in plain words; the PR
+  link when `pr` is set. Dot: green when the lane runs and is active; yellow
+  when it waits on an envelope, on the owner, or has been quiet 20 minutes or
+  more (`quiet_s` >= 1200); red when `pid_alive` is false on a lane that has
+  not exited, or the driver exited non-zero; blue on a lane that exited 0
+  (`exit` is `0`). The driver row carries the story counts (verified,
+  in_flight, queued, blocked, parked, skipped, interrupted, awaiting_go) and
+  its `last_line`. Then the one-line reply. Nothing the owner must decide goes
+  in a row: that is `/decision-queue`, after the rows. Zero live lanes means no
+  rows.
+- Relays the per-story report lines from `{state}/report.md` (one line per
+  finished story, one `FINAL:` line at the end). It does not report per
+  phase.
+- Surfaces decision items through the decision queue (`/decision-queue`), one
+  at a time: approval items in `{state}/decisions/` marked `status: pending`,
+  and lane items (stalled phases) in `workspace/sessions/<id>/decisions.jsonl`,
+  which `bash core/scripts/conduct-pool.sh decisions` prints (see the stalled
+  loop lanes part of `.claude/skills/_shared/pool-lane-protocol.md` §2). Apply
+  each answer with `pipeline-conductor.sh release`, or as the item's options
+  describe, then relaunch the driver.
+- On exit 21 for a blocked story (`decisions/<story>-blocked-<phase>.md`,
+  `status: pending`): read the decision item, ask the owner once and quote the
+  worker's blocker text from it, run the one command that matches the answer,
+  then relaunch the driver with the same command as before. None of these is
+  ever applied without the owner's answer.
+
+  | Owner's answer | Command |
+  |---|---|
+  | accept it as a partial draft; let dependents start | `bash core/scripts/pipeline-conductor.sh resolve --state {state} --story {id} --as accepted-partial --note "{owner's reason}"` |
+  | run the phase again with this answer | `bash core/scripts/pipeline-conductor.sh resolve --state {state} --story {id} --as retry --note "{owner's answer}"` |
+  | set it aside with everything that depends on it | `bash core/scripts/pipeline-conductor.sh park --state {state} --story {id} --note "{why}"` |
+  | bring a parked story back | `bash core/scripts/pipeline-conductor.sh unpark --state {state} --story {id}` |
+  | leave a story out of the run | `bash core/scripts/pipeline-conductor.sh skip --state {state} --story {id} --prd {prd.json} --note "{why}"` (add `--force` only after the owner accepts the stranded dependents it lists) |
+  | go for a story held `awaiting_go` | `bash core/scripts/pipeline-conductor.sh go --state {state} --story {id}` |
+
+  `accepted-partial` is a terminal state, separate from `verified`: it counts
+  as done for `dependsOn`, its report line and the `FINAL:` line list the
+  owner's note and the unmet acceptance criteria, and `passes` stays unset.
+  Do not write `passes: true` for it. `retry` routes the phase as a fresh call
+  with the owner's note in the envelope. `park` holds every story that depends
+  on the parked one, directly or not, as `parked_dependency`; the `FINAL:` line
+  lists parked stories and why. `park` prints `PARK_CLOSURE <id> <n>: <ids>`
+  before it acts; when it would park more than `PC_PARK_CONFIRM` (default 5)
+  stories it refuses until it is repeated with `--force`. Show the owner that
+  list and ask before adding `--force`. `unpark` prints what it releases. Park,
+  unpark, skip and unskip each add a line to `{state}/decisions.log`. Each command refuses a story in a state it
+  does not apply to (exit 1) and prints `ALREADY` when repeated.
+- On exit 20, if the gate fails because of one story the run already
+  verified (its own QA passed because the guard test lives outside its suite),
+  record the failure naming that story instead of a plain `fail`:
+  `bash core/scripts/pipeline-conductor.sh gate result fail --state {state} --story {id} --note "{what the gate found}"`.
+  The conductor reopens the story and sets the gate to `reopened`, which does
+  not stop routing; the relaunched driver routes that story first. The same
+  works after a plain `gate result fail` was already recorded. To send a
+  story back without a gate, run
+  `bash core/scripts/pipeline-conductor.sh reopen --state {state} --story {id} --note "{why}" [--from-phase {phase}]`.
+  Reopen applies to a `verified` or `accepted_partial` story. It queues the
+  story at `--from-phase` (default: the first phase whose worker is not a
+  reviewer or tester), archives that phase's and later handoffs as
+  `handoffs/<id>-<phase>.reopened.<n>.json`, starts the attempt count over,
+  puts the note in the next envelope (`reopen_note` and a constraint line),
+  and sets `passes` back to false in prd.json if it was true, saying so.
+  Stories that depend on it and are already verified are not reopened; the
+  `FINAL:` line lists them as "verified before {id} was reopened" for the
+  owner to decide. Once every reopened story verifies again the gate is due
+  (exit 20): run it and record `pass` or `fail` as usual. Reopen refuses
+  other states (exit 1) and prints `ALREADY` when repeated.
+- Records `passes: true` in prd.json for a story only after the report says it
+  is verified; the driver and the conductor helper never write `passes`.
+
+**3P.7 — After a parent compaction, recover from disk.** The run state lives
+in files, not in the parent's context. After a compaction or in a new session,
+rebuild it from `state.json` (`session_id`), `pipeline/table.tsv`,
+`{state}/stories/` (each story's phase and state), `{state}/report.md`,
+`{state}/decisions/`, `{state}/driver/` (`driver.pid` while it runs, `exit`
+once it stopped, `driver.log`), `workspace/sessions/<id>/decisions.jsonl`, and
+`conduct-pool.sh --session-id {session_id} list` for the live lanes. Do not
+relaunch a lane the pool lists as `waiting` or `running`. If `driver.pid`
+names a live process, re-arm the waiter; if `exit` is present, act on its code;
+if neither, relaunch the driver.
+
+**3P.8 — Run end: stop every lane.** When the driver exits 0 and `report.md`
+has its `FINAL:` line, send every worker lane a stop envelope
+(`{"kind":"stop"}`; the loop exits 0 once the phases queued ahead of it are
+done):
+
+```bash
+printf '{"kind":"stop"}\n' > pipeline/stop.json
+bash core/scripts/conduct-pool.sh assign --worker-id "{worker}" --envelope pipeline/stop.json
+```
+
+Once each lane has exited, `recycle --worker-id "{worker}"` its slot. The run
+is finished only when `conduct-pool.sh list` shows no `waiting` or `running`
+slot for it. Then continue with Step 6.
 
 ## Step 4 — Parent-Driven Interactive Codex Execution
 

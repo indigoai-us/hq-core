@@ -70,8 +70,10 @@ assert_empty "$out" "default_enabled false stays silent"
 write_core true
 out=$(CLAUDE_PROJECT_DIR="$TMP_ROOT" bash "$HOOK" <<<"$payload")
 assert_contains "$out" "<auto-conduct>" "enabled wrapper"
-assert_contains "$out" 'Run `/conduct` now' "enabled command has no engine argument"
-assert_contains "$out" "ask which engine to use" "instruction tells the assistant to ask"
+assert_contains "$out" "Triage each message" "enabled block carries the conductor core triage rule"
+assert_contains "$out" "intent-index.yaml" "enabled block points at the intent index"
+assert_not_contains "$out" "ask which engine" "no engine question at session start"
+assert_not_contains "$out" 'Run `/conduct` now' "no instruction to run /conduct before any task"
 assert_not_contains "$out" "/conduct codex" "no engine preset (codex)"
 assert_not_contains "$out" "/conduct claude" "no engine preset (claude)"
 [ ! -f "$SET_LOG" ] || fail "hook must not persist conduct_engine"
@@ -83,7 +85,7 @@ conduct:
   default_engine: grok
 YAML
 out=$(CLAUDE_PROJECT_DIR="$TMP_ROOT" bash "$HOOK" <<<"$payload")
-assert_contains "$out" 'Run `/conduct` now' "legacy default_engine key ignored"
+assert_contains "$out" "<auto-conduct>" "legacy default_engine key ignored"
 assert_not_contains "$out" "grok" "legacy default_engine value never surfaces"
 
 # 4. Personal settings override the shipped file.
@@ -118,5 +120,18 @@ assert_empty "$out" "compact source does not auto-conduct"
 rm -f "$TMP_ROOT/core/settings/orchestrator.yaml"
 out=$(CLAUDE_PROJECT_DIR="$TMP_ROOT" bash "$HOOK" <<<"$payload")
 assert_empty "$out" "missing settings file stays silent"
+
+
+# 8. With the conductor core doc present, the block between the inject markers
+#    is emitted verbatim and stays under the size budget.
+write_core true
+mkdir -p "$TMP_ROOT/.claude/skills/conduct"
+cp "$HQ_ROOT/.claude/skills/conduct/conductor-core.md" "$TMP_ROOT/.claude/skills/conduct/conductor-core.md"
+out=$(CLAUDE_PROJECT_DIR="$TMP_ROOT" bash "$HOOK" <<<"$payload")
+expected="$(awk '/<!-- inject:start -->/ { on = 1; next } /<!-- inject:end -->/ { on = 0 } on' "$TMP_ROOT/.claude/skills/conduct/conductor-core.md")"
+[ "$out" = "$expected" ] || fail "core doc inject block not emitted verbatim"
+bytes=$(printf '%s' "$out" | wc -c | tr -d ' ')
+[ "$bytes" -le 750 ] || fail "conductor core inject block is $bytes bytes; budget is 750"
+assert_not_contains "$out" "engine to use" "core doc never asks the engine question"
 
 echo "auto-conduct smoke: ok"

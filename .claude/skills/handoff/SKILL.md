@@ -29,7 +29,7 @@ CHANGESET_JSON
 bash core/scripts/handoff-knowledge-commit.sh --files-touched-json-file "$CHANGESET_TMP"
 ```
 
-Include only files this session intentionally changed. The helper commits only listed files inside personal/core knowledge repositories and leaves unrelated staged or dirty files untouched. It does not process company knowledge, which remains a plain synced directory.
+Include only files this session intentionally changed. List files, not folders: an entry with a trailing slash, an absolute path, or a `..` segment fails the whole changeset, and the helper prints the offending entries. The helper commits only listed files inside personal/core knowledge repositories and leaves unrelated staged or dirty files untouched. It does not process company knowledge, which remains a plain synced directory.
 
 ### 2. Collect learnings (do NOT invoke /learn)
 
@@ -57,7 +57,7 @@ companies they name — with `core/scripts/ontology-candidate.sh`, source ref
 
 ### 2.5 Close active session journal (if any)
 
-Spec: `core/knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, `/prd`, or `/plan`, close it now so its frontmatter records `status: closed` + a one-line summary.
+Spec: `core/knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, or `/prd`, close it now so its frontmatter records `status: closed` + a one-line summary.
 
 ```bash
 .claude/skills/_shared/journal.sh close "{project_dir}" "{one-line synthesis of session, ≤120 chars}"
@@ -178,6 +178,8 @@ For each applicable follow-up, use the first capability available in this order:
 3. **Last fallback:** otherwise, or when the visible dispatch returns an error or no completion proof, invoke the corresponding `Skill` tool **synchronously** in this parent after finalization.
 
 Treat a follow-up as applied only when its agent/task/Skill result confirms completion. A launched ID alone is not proof. Keep it as durably pending when all available routes fail or no route exists.
+
+**Company-scoped work stays in the parent.** A delegated child has no company binding, so the scope hook blocks it from every path under `companies/<co>/`. Run `/learn` for any item scoped `company:<co>`, and `/document-release` whenever the thread's `files_touched` has an entry under `companies/`, synchronously through the `Skill` tool in this bound parent instead of delegating. A child that reports it was blocked by the scope hook did not complete the work: treat that follow-up as unconfirmed and rerun it in the parent. Delegated children also run on the app's default subagent model, so open the files a child reports changing before you report them as applied.
 
 Use this prompt for each learnings follow-up when `{learnings_json}` contains any array item:
 

@@ -54,10 +54,11 @@ EOF
 
 # run_hook <hq_root> <cwd> <event> <prompt>
 run_hook() {
-  printf '{"hook_event_name":"%s","cwd":"%s","prompt":"%s"}' "$3" "$2" "$4" \
+  local sid="${5:-prec-test-$$-${RANDOM}}"
+  printf '{"hook_event_name":"%s","cwd":"%s","prompt":"%s","session_id":"%s"}' "$3" "$2" "$4" "$sid" \
     | HQ_ROOT="$1" \
-      CLAUDE_SESSION_ID="prec-test-$$-${RANDOM}" \
-      SESSION_ID="prec-test-$$-${RANDOM}" \
+      CLAUDE_SESSION_ID="$sid" \
+      SESSION_ID="$sid" \
       bash "$HOOK" 2>/dev/null || true
 }
 
@@ -95,6 +96,24 @@ echo "$OUT2" | grep -q "CORE_ONLY_MARKER" \
   || fail "case2: a core policy with NO company counterpart was dropped — the fix over-corrected. Output was:
 $OUT2"
 ok "non-colliding core policy still injects"
+
+# A cwd under A must still load policy for every company authorized by the
+# session capability, including B.
+mkdir -p "$ROOT/companies/beta/policies" "$ROOT/workspace/sessions/multi-policy" \
+  "$ROOT/core/scripts/lib" "$ROOT/.codex/hooks"
+cp "$HQ_SRC/core/scripts/lib/session-scope-capability.sh" "$ROOT/core/scripts/lib/"
+cp "$HQ_SRC/core/scripts/hqd-hook-flag-cache-lib.sh" "$ROOT/core/scripts/"
+printf '%s\n' 'process.stdout.write("true")' > "$ROOT/.codex/hooks/codex-explicit-path-flag.cjs"
+printf 'session_id: multi-policy\ncompany_slug: acme\ncompany_slugs: acme,beta\n' \
+  > "$ROOT/workspace/sessions/multi-policy/meta.yaml"
+printf '{"session_id":"multi-policy","company_slug":"acme","company_slugs":["acme","beta"]}\n' \
+  > "$ROOT/workspace/sessions/multi-policy/scope-capability.json"
+write_policy "$ROOT/companies/beta/policies/locked-b.md" \
+  "locked-b" "always" "[SessionStart]" "hard" "LOCKED_B_POLICY_MARKER."
+OUT_MULTI="$(run_hook "$ROOT" "$ROOT/companies/acme" "UserPromptSubmit" "anything" "multi-policy")"
+echo "$OUT_MULTI" | grep -q "LOCKED_B_POLICY_MARKER" \
+  || fail "session cwd under A omitted locked company B policy. Output was:\n$OUT_MULTI"
+ok "cwd under primary loads all capability-locked company policies"
 
 # ── Case 3: repo scope also outranks core, and company outranks repo ─────────
 ROOT2="$(mktemp -d)"; trap 'rm -rf "$ROOT" "$ROOT2"' EXIT

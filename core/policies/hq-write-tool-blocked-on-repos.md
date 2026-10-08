@@ -1,7 +1,7 @@
 ---
 id: hq-write-tool-blocked-on-repos
 title: "Write/Edit is blocked on repos/ paths — use a worktree for code"
-when: always
+when: write || edit || repos
 on: [SessionStart]
 enforcement: hard
 version: 6

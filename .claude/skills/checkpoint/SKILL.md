@@ -95,7 +95,7 @@ Save current work state as a thread to survive context loss.
    - Identify next steps
 
 5.5. **Close active session journal** (if any)
-   Spec: `core/knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, `/prd`, or `/plan`, close it now:
+   Spec: `core/knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, or `/prd`, close it now:
    ```bash
    .claude/skills/_shared/journal.sh close "{project_dir}" "{one-line synthesis, ≤120 chars}"
    ```

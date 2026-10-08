@@ -1,7 +1,7 @@
 ---
 id: hq-reference-files-with-full-path
 title: Reference Files with Full Paths
-when: always
+when: file || path
 on: [SessionStart]
 enforcement: soft
 version: 1

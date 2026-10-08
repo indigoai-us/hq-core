@@ -1,7 +1,7 @@
 ---
 id: decision-queue-one-at-a-time
 title: Present decisions one question at a time, never batched
-when: always
+when: decision || question || choose
 on: [SessionStart]
 enforcement: soft
 public: true
@@ -23,7 +23,7 @@ When there are multiple questions or decisions, present them as a **sequential q
 
 **Never** batch 2+ questions into a single `AskUserQuestion`, `request_user_input`, or equivalent call, even if the tool supports multiple questions per invocation.
 
-Applies to: `/brainstorm`, `/plan`, `/deep-plan`, `/architect`, `/diagnose`, `/run-project`, `/execute-task`, `/strategize`, `/review-plan`, and any other skill or ad-hoc moment where the model needs user input on multiple separable choices.
+Applies to: `/brainstorm`, `/prd`, `/deep-plan`, `/architect`, `/diagnose`, `/run-project`, `/execute-task`, `/strategize`, `/review-plan`, and any other skill or ad-hoc moment where the model needs user input on multiple separable choices.
 
 ## Examples
 

@@ -1,3 +1,3 @@
 interface:
-  display_name: "PRD"
-  short_description: "Plan a project and generate a PRD for execution."
+  display_name: "Plan (deprecated)"
+  short_description: "Deprecated alias that forwards to /prd."

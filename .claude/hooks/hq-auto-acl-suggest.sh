@@ -131,6 +131,16 @@ main() {
   }
 
   company="$(read_company_slug "$hq_root" "$session_id")" || exit 0
+  LOCKED_COMPANIES="$company"
+  if [ -f "$hq_root/core/scripts/lib/session-scope-capability.sh" ]; then
+    # shellcheck source=core/scripts/lib/session-scope-capability.sh
+    . "$hq_root/core/scripts/lib/session-scope-capability.sh" 2>/dev/null || true
+    if command -v session_scope_read_companies >/dev/null 2>&1; then
+      LOCKED_COMPANIES="$(session_scope_read_companies "$hq_root" "$session_id" 2>/dev/null || true)"
+    fi
+  fi
+  [ -n "$LOCKED_COMPANIES" ] || LOCKED_COMPANIES="$company"
+  LOCKED_COMPANIES="$(printf '%s\n' "$LOCKED_COMPANIES" | paste -sd, -)"
 
   # Slurp the payload-builder program (node) into a variable, then run with
   # `node -e` — no heredoc nested in the process substitution.
@@ -142,6 +152,7 @@ const crypto = require("crypto");
 
 const root = process.env.HQ_ROOT || "";
 const company = process.env.ACTIVE_COMPANY || "";
+const companySlugs = [...new Set(String(process.env.ACTIVE_COMPANIES || company).split(",").filter(Boolean))];
 const toolName = process.env.TOOL_NAME || "";
 const cwdValue = process.env.CWD_VALUE || "";
 const commandText = process.env.COMMAND_TEXT || "";
@@ -200,9 +211,10 @@ const isSensitive = (p) =>
 
 function isExcludedPath(p) {
   if (!p) return false;
-  if (p.startsWith("companies/" + company + "/settings/")) return true;
-  if (p.startsWith("companies/" + company + "/signals/")) return true;
-  if (p.startsWith("companies/" + company + "/sources/meetings/")) return true;
+  const pathCompany = (p.match(/^companies\/([a-z][a-z0-9_-]*)\//) || [])[1] || company;
+  if (p.startsWith("companies/" + pathCompany + "/settings/")) return true;
+  if (p.startsWith("companies/" + pathCompany + "/signals/")) return true;
+  if (p.startsWith("companies/" + pathCompany + "/sources/meetings/")) return true;
   return isSensitive(p);
 }
 
@@ -213,8 +225,8 @@ const isSecretsFlow = () =>
 const hasCapabilityUrl = () =>
   /(share-session|secrets-input)\/[A-Za-z0-9_-]+/.test(combined);
 
-function collectLocalPeople() {
-  const peopleRoot = path.join(root, "companies", company, "people");
+function collectLocalPeople(ownerCompany = company) {
+  const peopleRoot = path.join(root, "companies", ownerCompany, "people");
   let dirs;
   try { dirs = fs.readdirSync(peopleRoot).sort(); } catch (e) { return []; }
   const people = [];
@@ -237,13 +249,15 @@ function collectLocalPeople() {
 const sha256 = (s) => crypto.createHash("sha256").update(s, "utf8").digest("hex");
 
 function buildPathPayload(p, trigger) {
+  const pathCompany = (p.match(/^companies\/([a-z][a-z0-9_-]*)\//) || [])[1] || company;
+  if (!companySlugs.includes(pathCompany)) return null;
   let project = "";
   let artifactClass = "vault_data";
   const surface = "vault";
-  const delivMatch = p.match(new RegExp("^companies/" + company.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/projects/([A-Za-z0-9_-]+)/deliverables/(.+)$"));
+  const delivMatch = p.match(new RegExp("^companies/" + pathCompany + "/projects/([A-Za-z0-9_-]+)/deliverables/(.+)$"));
   if (delivMatch) {
     project = delivMatch[1];
-  } else if (p.startsWith("companies/" + company + "/data/") && p.length > ("companies/" + company + "/data/").length) {
+  } else if (p.startsWith("companies/" + pathCompany + "/data/") && p.length > ("companies/" + pathCompany + "/data/").length) {
     project = "";
   } else if (p.startsWith("workspace/threads/")) {
     artifactClass = combinedLower.includes("handoff") ? "handoff" : "checkpoint";
@@ -253,12 +267,12 @@ function buildPathPayload(p, trigger) {
     return null;
   }
 
-  const fingerprint = sha256(company + "|" + artifactClass + "|" + p);
-  const people = collectLocalPeople();
+  const fingerprint = sha256(pathCompany + "|" + artifactClass + "|" + p);
+  const people = collectLocalPeople(pathCompany);
   let candidateSources = ["owners", "participants", "recent collaborators"];
   if (people.length) candidateSources = ["local roster", "owners", "participants", "recent collaborators"];
   return {
-    company: company,
+    company: pathCompany,
     project: project,
     trigger: trigger,
     action_kind: "share-suggestion",
@@ -281,14 +295,27 @@ function buildPathPayload(p, trigger) {
   };
 }
 
+function deployCompanyForTrigger() {
+  const targets = [];
+  for (const value of [cwdValue, commandText]) {
+    const matches = value.matchAll(/companies\/([A-Za-z0-9_-]+)(?:\/|\b)/g);
+    for (const match of matches) if (companySlugs.includes(match[1])) targets.push(match[1]);
+  }
+  const unique = [...new Set(targets)];
+  if (unique.length === 1) return unique[0];
+  return unique.length === 0 && companySlugs.length === 1 ? companySlugs[0] : "";
+}
+
 function buildDeployPayload(appId, trigger) {
   if (!appId) return null;
-  const fingerprint = sha256(company + "|deployable|" + appId);
-  const people = collectLocalPeople();
+  const deployCompany = deployCompanyForTrigger();
+  if (!deployCompany) return null;
+  const fingerprint = sha256(deployCompany + "|deployable|" + appId);
+  const people = collectLocalPeople(deployCompany);
   let candidateSources = ["owners", "participants", "recent collaborators"];
   if (people.length) candidateSources = ["local roster", "owners", "participants", "recent collaborators"];
   return {
-    company: company,
+    company: deployCompany,
     project: "",
     trigger: trigger,
     action_kind: "share-suggestion",
@@ -317,10 +344,11 @@ let payload = null;
 
 if (["Write", "Edit", "MultiEdit"].includes(toolName)) {
   const candidate = normalizePath(filePath);
-  if (candidate && !isExcludedPath(candidate)) {
-    if (candidate.startsWith("companies/" + company + "/data/") && candidate.length > ("companies/" + company + "/data/").length) {
+  const pathCompany = (candidate.match(/^companies\/([a-z][a-z0-9_-]*)\//) || [])[1] || "";
+  if (candidate && companySlugs.includes(pathCompany) && !isExcludedPath(candidate)) {
+    if (candidate.startsWith("companies/" + pathCompany + "/data/") && candidate.length > ("companies/" + pathCompany + "/data/").length) {
       payload = buildPathPayload(candidate, toolName.toLowerCase());
-    } else if (new RegExp("^companies/" + company.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/projects/[A-Za-z0-9_-]+/deliverables/.").test(candidate)) {
+    } else if (candidate.startsWith("companies/" + pathCompany + "/projects/") && /\/deliverables\//.test(candidate)) {
       payload = buildPathPayload(candidate, toolName.toLowerCase());
     }
   }
@@ -335,7 +363,8 @@ if (["Write", "Edit", "MultiEdit"].includes(toolName)) {
   if (payload == null) {
     for (const candidate of extractPaths(combined)) {
       if (isExcludedPath(candidate)) continue;
-      if (candidate.startsWith("companies/") && !candidate.startsWith("companies/" + company + "/")) continue;
+      const pathCompany = (candidate.match(/^companies\/([a-z][a-z0-9_-]*)\//) || [])[1];
+      if (pathCompany && !companySlugs.includes(pathCompany)) continue;
       let trigger = "explicit-share";
       if (combinedLower.includes("run-project") && /(complete|completed|passed|success|done)/.test(combinedLower)) {
         trigger = "run-project-complete";
@@ -357,7 +386,7 @@ if (["Write", "Edit", "MultiEdit"].includes(toolName)) {
 if (!payload) process.exit(0);
 
 const artifactPath = (payload.artifact && payload.artifact.path) || "";
-if (artifactPath && artifactPath.startsWith("companies/") && !artifactPath.startsWith("companies/" + company + "/")) {
+if (artifactPath && artifactPath.startsWith("companies/") && !companySlugs.some((slug) => artifactPath.startsWith("companies/" + slug + "/"))) {
   process.exit(0);
 }
 
@@ -375,6 +404,7 @@ JS
   payload="$(
     HQ_ROOT="$hq_root" \
     ACTIVE_COMPANY="$company" \
+    ACTIVE_COMPANIES="${LOCKED_COMPANIES:-$company}" \
     TOOL_NAME="$tool_name" \
     CWD_VALUE="$cwd_value" \
     COMMAND_TEXT="$command_text" \

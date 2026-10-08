@@ -419,6 +419,11 @@ validate_request_json() {
     and (.contractVersion | is_int)
     and (.agentUid | type == "string" and length >= 1)
     and (.companySlug | type == "string" and length >= 1)
+    and ((has("companySlugs") | not) or (
+      (.companySlugs | type == "array" and length >= 1 and all(.[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")))
+      and (.companySlugs[0] == .companySlug)
+      and ((.companySlugs | unique | length) == (.companySlugs | length))
+    ))
     and (.channel | type == "string"
         and (["slack","telegram","email","dm","job","task"] | index(.)) != null)
     and (.convKey | type == "string" and length >= 1)
@@ -428,7 +433,7 @@ validate_request_json() {
     and (.sender | type == "object" and (.verified | type == "boolean"))
     and (
       (keys - [
-        "contractVersion","agentUid","companySlug","channel","convKey",
+        "contractVersion","agentUid","companySlug","companySlugs","channel","convKey",
         "messageText","provider","sender","rehydration",
         "rehydrationTurnCount","project","directMention","laneId"
       ] | length) == 0
@@ -520,10 +525,13 @@ main() {
 
   # Extract fields
   local contract_version agent_uid company_slug channel conv_key message_text provider lane_id
+  local company_slugs_json company_slugs_csv company_slug_item
   local project_field="" sender_verified="false" rehydration_block="" direct_mention="false"
   contract_version="$(jq -r '.contractVersion' "$req_file")"
   agent_uid="$(jq -r '.agentUid' "$req_file")"
   company_slug="$(jq -r '.companySlug' "$req_file")"
+  company_slugs_json="$(jq -c '.companySlugs // [.companySlug]' "$req_file")"
+  company_slugs_csv="$(jq -r '(.companySlugs // [.companySlug]) | join(",")' "$req_file")"
   channel="$(jq -r '.channel' "$req_file")"
   conv_key="$(jq -r '.convKey' "$req_file")"
   message_text="$(jq -r '.messageText' "$req_file")"
@@ -533,6 +541,7 @@ main() {
   project_field="$(jq -r '.project // empty' "$req_file")"
   # US-011: pass dispatch envelope to SessionStart as trusted spawn context.
   export HQ_SPAWN_COMPANY="$company_slug"
+  export HQ_SPAWN_COMPANIES="$company_slugs_csv"
   export HQ_SPAWN_PROJECT="${project_field:-}"
   # Optional task on the request (forward-compat); empty when absent.
   _spawn_task="$(jq -r '.task // .taskId // empty' "$req_file" 2>/dev/null || true)"
@@ -581,6 +590,14 @@ main() {
     fail 6 error "hq-agent-session: company refused: $company_slug"
   fi
   SESSION_COMPANY_DIR="$company_dir"
+  while IFS= read -r company_slug_item; do
+    [ "$company_slug_item" = "$company_slug" ] && continue
+    rc=0
+    session_resolve_company_dir "$root" "$company_slug_item" >/dev/null || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      fail 6 error "hq-agent-session: company refused in companySlugs"
+    fi
+  done < <(jq -r '.[]' <<< "$company_slugs_json")
 
   # US-408 / US-407: resolve project dir (fail closed on invalid slug)
   local project_dir
@@ -794,6 +811,7 @@ main() {
   # (indigo-hq-agent-dispatch-login-shell-strips-env); keep these on the
   # process environment — never rely on a login profile to re-inject them.
   export HQ_SPAWN_COMPANY="$company_slug"
+  export HQ_SPAWN_COMPANIES="$company_slugs_csv"
   export HQ_SPAWN_PROJECT="${project_field:-}"
   export HQ_SPAWN_TASK="${HQ_SPAWN_TASK:-}"
 

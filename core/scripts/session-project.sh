@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # session-project.sh - create or reuse a lightweight project folder for native sessions.
 #
-# This is intentionally thinner than /plan. It gives native Claude/Codex work a
+# This is intentionally thinner than /prd. It gives native Claude/Codex work a
 # durable project/prd.json target without forcing a full interview flow.
 
 set -uo pipefail
@@ -405,7 +405,7 @@ function loadOrCreatePrd(projectDir, title, scope, company, prompt, origin, repo
         files: [],
         labels: ["native-session"],
         dependsOn: [],
-        notes: "Created automatically from a native Claude/Codex session. Enrich with /prd or /plan if this becomes a structured project.",
+        notes: "Created automatically from a native Claude/Codex session. Enrich with /prd if this becomes a structured project.",
         model_hint: "",
       },
     ],
@@ -436,7 +436,7 @@ function writeReadme(projectDir, prd) {
     description + "\n\n" +
     "## Status\n\n" +
     "Native session project. This folder was created automatically so work " +
-    "done outside `/plan` and `/run-project` still has a durable home.\n\n" +
+    "done outside `/prd` and `/run-project` still has a durable home.\n\n" +
     "## Next\n\n" +
     "- Enrich `prd.json` if this becomes structured execution work.\n" +
     "- Keep session notes in `journal/` or `sessions/`.\n");

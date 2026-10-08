@@ -1,6 +1,6 @@
 ---
 name: subagent-fanout-budget
-when: always
+when: agent || subagent || spawn
 on: [SessionStart]
 description: Commands that spawn Task subagents must batch, pre-filter deterministically, or require user confirmation past a threshold
 enforcement: soft

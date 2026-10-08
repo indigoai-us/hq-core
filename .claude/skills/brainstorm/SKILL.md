@@ -115,52 +115,25 @@ Premise check:
 
 If verdict is WEAK: flag it and ask the user if they want to continue or reconsider.
 
-## Step 3: Interview (decision-queue grilling, one question AT A TIME)
+## Step 3: Interview (grilling engine, one question at a time)
 
-This is a **grilling** in the wayfinder sense (pattern: [mattpocock/skills](https://github.com/mattpocock/skills) wayfinder — see `.claude/skills/wayfinder/SKILL.md`): the agent asks, the human answers, one question per exchange, until the directional inputs are resolved. Never stand in for the human's side of the exchange.
+This is a grilling in the wayfinder sense: the agent asks, the human answers, one question per exchange. Never stand in for the human's side of the exchange.
 
-Walk the user through every missing directional input as a sequence of **separate `AskUserQuestion` calls** — one question per call, wait for the answer, update internal state, then ask the next. **Never batch multiple decisions into a single question** (violates `decision-queue-one-at-a-time`). **Never collapse the interview to a single combined question** — that is the inverse mistake: "one question at a time" means "one Q on screen at a time," not "one Q total."
+Run the grilling engine (`.claude/skills/grilling/SKILL.md`) with:
 
-**Skip any individual question whose answer is already clear** from args, board entry, prior turn, or Step 2 research. Otherwise ask every relevant question below, one at a time. Expect a real interview: 4–8 questions is normal; zero is rare and reserved for genuinely fully-specified inputs.
+- `question_set`: `.claude/skills/_shared/questions/brainstorm.md` (STARTUP and BUILDER sets as `depends_on` branches on the `Q-mode` fact)
+- `known_facts`: `Q-mode` from Step 0.5, `Q-company` from Step 0 or Step 1, and any question already answered by the args, the board entry, a prior turn, or Step 2 research
+- `mode`: `one-at-a-time` (one `AskUserQuestion` per question) unless the user passed `--rounds`
 
-For each question:
-1. Use `AskUserQuestion` with 2–4 concrete options (no free-text-only questions when a picker fits — see option-design guidance below)
-2. Wait for the answer
-3. Record it in your working notes
-4. Move to the next missing field
+Each question is its own `AskUserQuestion` call with 2 to 4 options pre-filled from Step 2 research. Mark the first option `(Recommended)` when research points to one answer. Never batch several decisions into one question, and never collapse the interview to a single question (`decision-queue-one-at-a-time`). If `Q-company` is still unresolved, ask it as a picker of plausible company slugs from `companies/manifest.yaml`.
 
-### STARTUP mode questions (ask each that is still unresolved, one at a time):
+If an answer opens a new decision (for example a constraint that changes the approach space), ask a follow-up the same way. The interview ends when no directional input is missing.
 
-1. **Which company?** (only if not anchored and not inferrable from context) — picker of plausible company slugs from `companies/manifest.yaml`
-2. **Demand Reality** — Who has this problem badly enough to hack a workaround today? Options: specific named person/team / a known segment we've talked to / hypothetical persona / unknown — need to validate
-3. **Status Quo** — What do they do right now? Options: nothing (problem ignored) / manual workaround / existing tool (which?) / unknown
-4. **Narrowest Wedge** — Smallest starting point that delivers real value to one person? Options: pre-generate 2–3 candidate wedges from the research and let the user pick, plus "none of these — describe"
-5. **Direction** — Speed to ship / Quality and durability / Exploration (prove hypothesis) / Cost minimization
-6. **Hard constraints?** — Options: none / timeline-driven / must-use-tech / avoid-tech / budget-ceiling (follow-up free-text only if a constraint type is picked)
-7. **Success signal** — What observable outcome would tell you this worked? Options drawn from the research (a metric, a named user's adoption, a replaced tool), plus "other — describe"
-
-### BUILDER mode questions (ask each that is still unresolved, one at a time):
-
-1. **Which company?** (only if not anchored and not inferrable from context)
-2. **Core problem framing** — only if the input description is <15 words or ambiguous. Offer 2–3 reframings of the user's request as picker options plus "none — describe"
-3. **Direction** — Speed / Quality / Exploration / Cost
-4. **Hard constraints?** — None / timeline / must-use-tech / avoid-tech / budget-ceiling
-5. **Integration surface** — Which existing system/seam does this touch first? Pre-fill options from Step 2 research (repos, workers, prior projects)
-6. **Success signal** — What observable outcome marks this done/working? Options drawn from research, plus "other — describe"
-
-### Option-design guidance
-
-- Always pre-fill 2–4 specific options drawn from Step 2 research. Do NOT ship a question with placeholder options like "yes / no / other" — the picker carries no value if the model didn't pre-think the choices.
-- Mark the first option `(Recommended)` if research clearly points to one answer.
-- The user can always type free-text via "Other," so the picker is a default, not a cage.
+Record every answer in brainstorm.md under `## Interview Answers` as `Q-id: answer` lines. The plan phase (Step 8) and `/prd` load these ids as `known_facts`.
 
 ### Interactive checkpoint after research (optional but encouraged)
 
 Before starting the interview, if Step 2 surfaced a strong prior-art hit (existing project, near-duplicate worker, dead-end policy), AskUserQuestion ONCE: "Proceed with new brainstorm / Extend existing {project} / Park — duplicate of {X}." This prevents redundant brainstorms.
-
-### Follow-the-thread rule
-
-If an answer opens a genuinely new decision (e.g. the user names a constraint that changes the approach space), add a follow-up question to the queue and ask it — one at a time, same mechanics. The interview ends when no directional input is missing, not when a fixed count is reached.
 
 ## Step 4: 3-Layer Landscape Research (stored to the project)
 
@@ -230,6 +203,12 @@ source_idea_id: {board ID or null}
 - {Missing info that blocks confident decision-making}
 - ...
 
+## Interview Answers
+
+Q-direction: {answer}
+Q-success: {answer}
+{one `Q-id: answer` line per Step 3 answer}
+
 ## Premise Check
 
 {Position on whether the core assumption holds. State verdict: STRONG / QUESTIONABLE / WEAK}
@@ -287,7 +266,7 @@ source_idea_id: {board ID or null}
 - [ ] {Other prerequisite}
 
 **Promotion path:**
-- Ready to build --> promote to a PRD with `/plan` (brainstorm.md pre-populates the interview)
+- Ready to build --> promote to a PRD with `/prd` (brainstorm.md pre-populates the interview)
 - Needs more research --> edit this file, revisit later
 - Not worth pursuing --> park as idea on the board
 ```
@@ -306,7 +285,7 @@ Read `companies/{co}/board.json`.
 
 **If started from existing board idea** (`source_idea_id` set):
 - Find that entry by ID
-- Update `status` --> `"exploring"`
+- Update `status` --> `"brainstormed"`
 - Add `brainstorm_path: "companies/{co}/projects/{slug}/brainstorm.md"`
 - Update `updated_at`
 
@@ -318,7 +297,7 @@ Read `companies/{co}/board.json`.
     "id": "{prefix}-proj-{NNN}",
     "title": "{concise title}",
     "description": "{user's description}",
-    "status": "exploring",
+    "status": "brainstormed",
     "scope": "company",
     "app": null,
     "initiative_id": null,
@@ -369,7 +348,7 @@ Where `{project_dir}` is `companies/{co}/projects/{slug}/` (or `personal/project
 
 - Creates `{project_dir}/journal/{ISO8601}-brainstorm.md` with frontmatter (`status: active`, `skill: brainstorm`, `summary: ""`)
 - Writes a session-scoped pointer at `.claude/state/active-journal.d/` so only this session's subsequent steps and autocapture hook append to this file
-- Stays open across `/prd`, `/deep-plan`, `/plan` handoffs — only `/handoff` and `/checkpoint` close it
+- Stays open across `/prd`, `/deep-plan` handoffs — only `/handoff` and `/checkpoint` close it
 
 After the helper returns, append a curated entry summarizing the brainstorm outcome (preferred approach, biggest risk, open questions) to the journal's `## Decisions` section. The autocapture hook will append a `## Auto-capture` line for any subsequent Agent / WebFetch / WebSearch / AskUserQuestion calls in this session.
 
@@ -414,13 +393,15 @@ Invoke the `project-summary` skill in **deck mode** on this brainstorm:
 `personal/projects/{slug}` and it falls back to a password gate). It reads `brainstorm.md`,
 renders a branded deck, deploys it company-gated via hq-deploy, and returns a live URL.
 
+**Runs once per session.** Run the deck deploy after the Step 7 gate, not before it. When the gate answer is `Stop here` or `Upgrade to deep-plan`, deploy the brainstorm deck as described here. When the gate answer is `Plan it now`, defer this deploy: the project summary deploy at the end of Step 8 covers the brainstorm and the PRD, and only that one link is reported.
+
 Rules for this step:
 - **Visualization only** — it reads `brainstorm.md` and writes no project files; this does not
   violate the "brainstorm.md + board.json are the only files written" rule (the deck is a
   deploy artifact under `workspace/`, not a project file).
 - **Non-fatal** — if the build or deploy fails (no HQ identity, offline, etc.), log a one-line
-  note and continue to Step 7. The brainstorm must never be blocked by the deck deploy.
-- Capture the returned URL (or `skipped — {reason}`) and surface it in Step 7.
+  note and continue. The brainstorm must never be blocked by the deck deploy.
+- Capture the returned URL (or `skipped — {reason}`, or `deferred to plan phase`) and surface it in the final summary.
 
 ## Step 7: Confirm & Reindex
 
@@ -435,34 +416,63 @@ Approaches:
   {C. Option C name — effort, if present}
 
 Recommendation: Option {X}
-
-Deck (live, members only): {deck_url}   (or: "skipped — {reason}")
-
-Next: promote to a PRD with `/plan`, edit brainstorm.md, or park on the board.
 ```
 
 Reindex: `qmd update 2>/dev/null || true`
 
+### Plan gate
+
+After the confirm, ask one `AskUserQuestion` with exactly three options, in this order:
+
+1. `Plan it now` — add `(Recommended)` when the brainstorm recommends a single approach
+2. `Upgrade to deep-plan`
+3. `Stop here`
+
+Handle the answer:
+
+- **Plan it now**: continue to Step 8 in this session.
+- **Upgrade to deep-plan**: run the Step 6.6 deck deploy, then print `Next: /deep-plan {co} {slug} (brainstorm: {brainstorm_path})` and stop. Do not write prd.json.
+- **Stop here**: run the Step 6.6 deck deploy, print the deck URL, and stop. Board status stays `brainstormed` (the Step 6 board entry is not advanced), and prd.json is not written.
+
+## Step 8: Plan Phase (only after the gate answers Plan it now)
+
+The plan phase is the only part of this skill that writes prd.json. It reuses the `/prd` interview and finalize steps so the user does not re-answer questions.
+
+1. **Interview.** Run the grilling engine with `question_set: .claude/skills/_shared/questions/prd.md`, `mode: one-at-a-time`, and `known_facts` loaded from the Phase B answers: every `Q-id: answer` line in brainstorm.md whose id exists in the PRD question set, plus answers the PRD set's `prefill:` hints take from brainstorm.md (Context, Recommendation, rejected approaches). Do not re-ask loaded ids as confirmations.
+2. **Generate.** Write `{project_dir}/prd.json` and `{project_dir}/README.md` following `/prd` Step 5 (`.claude/skills/prd/SKILL.md`), including `metadata.interview` from the engine count object. Run `bash core/scripts/prd-interview-check.sh {project_dir}/prd.json` and show any warning.
+3. **Finalize.** Follow `.claude/skills/_shared/prd-finalize.md` in order as caller `/prd`. Step 5.5 sets brainstorm.md frontmatter to `status: promoted` with `promoted_to: {project_dir}/prd.json`. Step 5.6 sets the board entry to `prd_created`. Step 5.7 runs Work Mesh registration, which is where policy `hq-work-mesh-prd-genesis` fires; do not skip it.
+4. **Deploy once.** Run the project summary deploy that policy `auto-deploy-project-summary-on-brainstorm-prd` requires for a finished PRD (`project-summary {co}/{slug}`). This one deploy covers the brainstorm and the PRD, because Step 6.6 was deferred. Report only this link.
+5. **Confirm.** Print the `/prd` Step 9 summary and stop. Do not start execution.
+
+## Phases
+
+| Phase | Steps | Files written |
+|-------|-------|---------------|
+| A (research) | 0 to 2, 4 | `{project_dir}/research/*.md` |
+| B (interview) | 3 | none; answers go into brainstorm.md in Phase C |
+| C (brainstorm) | 5 to 7 | `brainstorm.md`, `board.json`, journal |
+| Plan | 8 | `prd.json`, `README.md`, `board.json`, brainstorm.md frontmatter |
+
 ## Final step — auto-checkpoint <!-- AUTO-CHECKPOINT-ON-COMPLETION -->
 
-Once `brainstorm.md` is written and the summary printed, automatically save a lightweight checkpoint so the user can continue in a fresh session without a manual `/handoff`. This only **snapshots** continuity — it does **not** close the brainstorm (which stays open across `/prd` and `/plan`).
+Once the gate is answered and its branch has finished, automatically save a lightweight checkpoint so the user can continue in a fresh session without a manual `/handoff`. This only **snapshots** continuity — it does **not** close the brainstorm (which stays open across `/prd`).
 
-Write `workspace/threads/T-{UTC YYYYMMDD-HHMMSS}-auto-brainstorm-{slug}.json` with: `thread_id`, `version: 1`, `type: "auto-checkpoint"`, `created_at`, `updated_at`, `workspace_root`, `cwd`, `git: { branch, current_commit, dirty }`, `conversation_summary` (topic + recommended option, one sentence), `files_touched` (include the `brainstorm.md` path), `next_steps` (e.g. "promote to PRD with `/plan`, or refine `brainstorm.md`"), and `metadata: { title: "Auto: brainstorm {slug}", tags: ["auto-checkpoint", "brainstorm"], trigger: "brainstorm-complete" }`.
+Write `workspace/threads/T-{UTC YYYYMMDD-HHMMSS}-auto-brainstorm-{slug}.json` with: `thread_id`, `version: 1`, `type: "auto-checkpoint"`, `created_at`, `updated_at`, `workspace_root`, `cwd`, `git: { branch, current_commit, dirty }`, `conversation_summary` (topic + recommended option, one sentence), `files_touched` (include the `brainstorm.md` path, and `prd.json` and `README.md` when Step 8 ran), `phases` (a map from each touched file to the phase that produced it: `A`, `B`, `C`, or `plan`, as listed in the Phases table), `gate_answer` (`Plan it now`, `Upgrade to deep-plan`, or `Stop here`), `next_steps` (e.g. "promote to PRD with `/prd`, or refine `brainstorm.md`"), and `metadata: { title: "Auto: brainstorm {slug}", tags: ["auto-checkpoint", "brainstorm"], trigger: "brainstorm-complete" }`.
 
 Keep it cheap: do **not** rebuild INDEX, update `recent.md`, run `qmd update`, or write a legacy checkpoint. Then tell the user a fresh session can resume from this checkpoint (`/startwork`).
 
 ## Rules
 
 - **Scan HQ before asking anything** — research phase (Step 2) happens before the first question. Never ask for info findable in qmd, board.json, or policies
-- **One question AT A TIME, not one total** — every interview question is its own `AskUserQuestion` call (decision-queue style per `decision-queue-one-at-a-time`). Ask every unresolved field; skip any already clear from args/research. Never batch multiple decisions into a single combined question, and never collapse the full interview to a single question. 4–8 questions is a normal interview
+- **One question AT A TIME, not one total** — the gate and every interview question is its own `AskUserQuestion` call (decision-queue style per `decision-queue-one-at-a-time`). Ask every unresolved field; skip any already clear from args/research. Never batch multiple decisions into a single combined question, and never collapse the full interview to a single question. 4–8 questions is a normal interview
 - **2-3 approaches, no more** — present distinct options, not variations. If only one reasonable path exists, say so and explain why
 - **State a recommendation** — "it depends" without a stated override condition is not a recommendation
 - **No execution** — brainstorm.md is the output. Do NOT write code, scaffold repos, or modify any implementation files
-- **No prd.json** — this skill does NOT produce prd.json. That is the PRD skill's job
+- **Phases A through C never write prd.json; only the plan phase does, after the gate** — Step 8 runs only when the gate answers `Plan it now`
 - **No Linear sync** — brainstorms are pre-planning. Linear happens at PRD time
 - **No orchestrator registration** — brainstorms are not executable
 - **Research is stored, not ephemeral** — every substantive research pass writes a note under `{project_dir}/research/`, linked from brainstorm.md. Live web research is default-on for external-facing ideas; skip only for purely internal tooling on well-known platforms
-- **board.json + brainstorm.md + research/ notes are the only project files written** — plus the final auto-checkpoint thread under `workspace/threads/` (see "Final step — auto-checkpoint"). No implementation/target files are modified (knowledge pulse runs as a background agent and writes its own report independently)
+- **board.json + brainstorm.md + research/ notes are the only project files written in Phases A through C** (the plan phase adds prd.json and README.md) — plus the final auto-checkpoint thread under `workspace/threads/` (see "Final step — auto-checkpoint"). No implementation/target files are modified (knowledge pulse runs as a background agent and writes its own report independently)
 - **T-shirt effort, not story points** — sized by scope/risk, not calendar time: S (one seam), M (one subsystem), L (multiple seams + unknowns), XL (cross-cutting, hard-to-reverse). See policy `ai-velocity-time-sense`
 - **Company isolation enforced** — if anchored, scope all searches to that company. Never mix company knowledge in approaches
 - **brainstorm.md is human-editable** — the user may refine it after generation. The PRD skill reads whatever is in the file, not just what was machine-generated
@@ -471,6 +481,6 @@ Keep it cheap: do **not** rebuild INDEX, update `recent.md`, run `qmd update`, o
 
 ## See also
 
-- `/plan` — turn the chosen approach into a PRD
+- `/prd` — turn the chosen approach into a PRD
 - `/idea` — capture it on the board first
 - `/wayfinder` — when the effort is too big for one brainstorm and the destination is foggy; brainstorm is its grilling engine. Interview + stored-research pattern adapted from [mattpocock/skills](https://github.com/mattpocock/skills)

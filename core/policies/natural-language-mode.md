@@ -1,7 +1,7 @@
 ---
 id: natural-language-mode
 title: Natural Language Mode — infer intent, auto-route to the right HQ skill, confirm-then-run
-when: always
+when: skill || command || how
 on: [SessionStart]
 enforcement: soft
 version: 1
@@ -32,11 +32,11 @@ The goal is delight without losing power: everything just works, and the full de
 
 **Before executing any company / project / repo-scoped work, the session MUST be anchored on that company.** This is non-negotiable — it is the "core power" that delight must not erase: company-scoped policy enforcement and credential isolation.
 
-Why this needs explicit handling: the SessionStart trigger hook (`inject-policy-on-trigger.sh`) injects global on:[SessionStart] policies, but company-scoped policies, manifest infra, and handoff state are resolved **from cwd**. When the session starts at the **HQ root** (the common case) and routing sends work straight to a skill, those company-scoped policies, manifest infra, and handoff state are **never loaded** — there is no cwd signal and no `/startwork` ran. Routing that skips anchoring silently drops company policies and risks cross-company credential errors.
+Why this needs explicit handling: the SessionStart trigger hook (`inject-policy-on-trigger.sh`) injects global on:[SessionStart] policies, while company-scoped policies, manifest infra, and handoff state come from the session's locked company set or the explicit cwd/override rules. When work spans companies, add each intended company with `core/scripts/hq-session.sh add company <slug>` before reading its context. Work outside that set remains forbidden, and data or credentials must not be transferred between locked companies without the user's request.
 
 So when intent resolves to company/project/repo work, **silently anchor first** (no menu, no banner — this is `/startwork`'s context-gathering minus the interactive surface):
 
-1. **Bind the company.** Resolve from an explicit mention → cwd → repo's owning company in `companies/manifest.yaml` → bound session/handoff state → enabled device default (`bash core/scripts/resolve-company.sh --prompt "{full user input}"`). The device default is a final human-workstation fallback only: a bound session always wins over it, and disabled/`needsChoice` results are unset. If still ambiguous, ask one tight structured-picker question before proceeding.
+1. **Bind the company.** Resolve from an explicit mention → cwd → repo's owning company in `companies/manifest.yaml` → bound session/handoff state → enabled device default (`bash core/scripts/resolve-company.sh --prompt "{full user input}"`). The device default is a final human-workstation fallback only: a bound session always wins over it, and disabled/`needsChoice` results are unset. For intentional work across companies, add each company to the session lock with `core/scripts/hq-session.sh add company <slug>`. If still ambiguous, ask one tight structured-picker question before proceeding.
 2. **Load company-scoped policies.** Read the hard-enforcement policy files under `companies/{co}/policies/` (and the active repo's policy files under `repos/{scope}/{repo}/.claude/policies/`) directly so company + repo rules are in context. An HQ-root start has no cwd signal, so these are not loaded automatically.
 3. **Load infra context.** Read the company's `companies/manifest.yaml` entry — `services`, `aws_profile`, `dns_zones`, repos, workers — so credentials and isolation resolve correctly. Never guess or fall back to another company's creds (`credential-access-protocol`).
 4. **Read in-flight state.** Check `workspace/threads/handoff.json` (and the thread it references) for where work left off.
@@ -71,7 +71,7 @@ The high-frequency mappings. Group by work phase. Generalize from these — syno
 | User says (paraphrased) | Route |
 |---|---|
 | "I want to build X", "explore approaches", "I'm not sure how to…", "what are the tradeoffs" | `/brainstorm` |
-| "spec this out", "create a PRD", "plan this project", "let's plan {feature}" | `/plan` (or `/deep-plan` for large/strategic) |
+| "spec this out", "create a PRD", "plan this project", "let's plan {feature}" | `/prd` (or `/deep-plan` for large/strategic) |
 | "just capture this idea", "park this for later" | `/idea` |
 | "review this plan", "stress-test this PRD", "is this plan good enough" | `/review-plan` |
 
@@ -174,7 +174,7 @@ The test: if this session died right now, a fresh session reading `workspace/thr
 | Rule | Relationship |
 |---|---|
 | `natural-language-router.sh` (UserPromptSubmit, personal layer) | **Implements the first-touch nudge.** Fires once on the first non-slash prompt of a session; see Mechanism. |
-| `route-deep-plan-to-skill.sh` (UserPromptSubmit hook) | **Composes.** The hook still hard-pins `/deep-plan` on the literal token. Natural Language Mode adds the fuzzy-phrasing path ("plan this big initiative" → `/deep-plan` / `/plan`). |
+| `route-deep-plan-to-skill.sh` (UserPromptSubmit hook) | **Composes.** The hook still hard-pins `/deep-plan` on the literal token. Natural Language Mode adds the fuzzy-phrasing path ("plan this big initiative" → `/deep-plan` / `/prd`). |
 | `journal` / `auto-session-project` / auto-checkpoint hooks | **Implements mid-session durable memory.** This policy is the obligation; those are the mechanisms. See Mid-session: durable memory. |
 | `auto-startwork.sh` (SessionStart) | **Composes.** Single-company bootstrap still fires; this policy handles the in-session phrasing. |
 | `quiet-by-default-narration` | **Composes.** The route announcement is a substantive, surface-worthy line (the user must know which protocol is running). It is not progress chatter. |
@@ -208,7 +208,7 @@ User: "let's keep going on the thing from yesterday"
 
 User: "plan the new onboarding flow"
 > "Plan" could be a quick PRD or a full deep-plan. Which fits?
->   1. `/plan` — lightweight, batched interview
+>   1. `/prd` — one-question-at-a-time interview on the grilling engine
 >   2. `/deep-plan` — research subagents + 3-tier interview (large/strategic)
 
 **Explicit command — honored, not re-inferred**

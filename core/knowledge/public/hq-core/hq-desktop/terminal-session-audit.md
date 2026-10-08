@@ -159,7 +159,7 @@ interface TerminalSession {
 | `/learn` | system | Learning capture |
 | `/post-now` | social | Social posting |
 | `/pr` | project | Pull request creation |
-| `/plan` | project | PRD generation |
+| `/prd` | project | PRD generation |
 | `/preview-post` | social | Social preview |
 | `/remember` | system | Manual learning capture |
 | `/scheduleposts` | social | Schedule social posts |

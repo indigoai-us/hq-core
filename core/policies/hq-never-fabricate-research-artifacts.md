@@ -10,7 +10,7 @@ version: 1
 created: 2026-04-21
 updated: 2026-04-21
 source: user-correction
-learned_from: "/brainstorm research-persistence work: initial draft proposed /brainstorm write `codebase-scan.md` and `repo-analysis.md` to satisfy /plan's downstream expectations, but /brainstorm never runs those scanner agents. Writing fake artifacts would have silently misled /plan into skipping its real scanner phase on fabricated data."
+learned_from: "/brainstorm research-persistence work: initial draft proposed /brainstorm write `codebase-scan.md` and `repo-analysis.md` to satisfy /prd's downstream expectations, but /brainstorm never runs those scanner agents. Writing fake artifacts would have silently misled /prd into skipping its real scanner phase on fabricated data."
 ---
 
 ## Rule

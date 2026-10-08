@@ -98,22 +98,40 @@ if [ ! -d "$SEQ_DIR" ]; then
   mkdir -p -- "$SEQ_DIR" 2>/dev/null || true
   chmod 700 -- "$SEQ_DIR" 2>/dev/null || true
 fi
-SEQ_FILE="$SEQ_DIR/$SID"
-SEQ=0
-if [ -f "$SEQ_FILE" ]; then
-  SEQ="$(<"$SEQ_FILE")"
-  SEQ="${SEQ//[[:space:]]/}"
+COMPANIES=()
+META_LOCK_SET=""
+LOCK_META="$HQ_ROOT/workspace/sessions/$SID/meta.yaml"
+if [ -n "$COMPANY" ] && [ -r "$LOCK_META" ]; then
+  META_LOCK_SET="$(awk '$1 == "company_slugs:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/[[:space:]\"]/, ""); print; exit }' "$LOCK_META" 2>/dev/null || true)"
 fi
-case "$SEQ" in ""|*[!0-9]*) SEQ=0 ;; esac
-SEQ=$((SEQ + 1))
-printf '%s\n' "$SEQ" >"$SEQ_FILE"
-
-ENQ=(--kind session_start --session-id "$SID" --harness "$HARNESS" --adapter-version "$ADAPTER" --seq "$SEQ" --cwd "$CWD" --hq-root "$HQ_ROOT")
-[ -n "$RUNTIME" ] && ENQ+=(--runtime-version "$RUNTIME")
-[ -n "$COMPANY" ] && ENQ+=(--company-slug "$COMPANY")
-[ -n "$PROJECT" ] && ENQ+=(--project "$PROJECT")
-[ -n "$TASK" ] && ENQ+=(--task "$TASK")
-work_mesh_enqueue "${ENQ[@]}" || true
+# Legacy and singleton sessions keep the original one-company fast path. Only
+# consult the capability reader and flag client when metadata indicates a set
+# could contain more than one company; the capability remains authoritative.
+case "$META_LOCK_SET" in *,*) NEED_LOCK_SET=1 ;; *) NEED_LOCK_SET=0 ;; esac
+if [ "$NEED_LOCK_SET" = 1 ] && [ -f "$HQ_ROOT/workspace/sessions/$SID/scope-capability.json" ] && \
+   [ -f "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" ]; then
+  . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" 2>/dev/null || true
+  while IFS= read -r locked_company; do
+    [ -n "$locked_company" ] && [ "$locked_company" != personal ] && COMPANIES+=("$locked_company")
+  done < <(session_scope_read_companies "$HQ_ROOT" "$SID" 2>/dev/null || true)
+fi
+[ "${#COMPANIES[@]}" -gt 0 ] && COMPANY="${COMPANIES[0]}"
+[ "${#COMPANIES[@]}" -gt 0 ] || { [ -n "$COMPANY" ] && COMPANIES=("$COMPANY"); }
+if [ "${#COMPANIES[@]}" -eq 0 ]; then COMPANIES=(""); fi
+for company in "${COMPANIES[@]}"; do
+  SEQ_FILE="$SEQ_DIR/$SID"
+  SEQ=0
+  if [ -f "$SEQ_FILE" ]; then SEQ="$(<"$SEQ_FILE")"; SEQ="${SEQ//[[:space:]]/}"; fi
+  case "$SEQ" in ""|*[!0-9]*) SEQ=0 ;; esac
+  SEQ=$((SEQ + 1))
+  printf '%s\n' "$SEQ" >"$SEQ_FILE"
+  ENQ=(--kind session_start --session-id "$SID" --harness "$HARNESS" --adapter-version "$ADAPTER" --seq "$SEQ" --cwd "$CWD" --hq-root "$HQ_ROOT")
+  [ -n "$RUNTIME" ] && ENQ+=(--runtime-version "$RUNTIME")
+  [ -n "$company" ] && ENQ+=(--company-slug "$company")
+  [ -n "$PROJECT" ] && ENQ+=(--project "$PROJECT")
+  [ -n "$TASK" ] && ENQ+=(--task "$TASK")
+  work_mesh_enqueue "${ENQ[@]}" || true
+done
 
 # US-011: record live binding so mid-session organize can detect rebind.
 if [ -n "$PROJECT" ] && [ -f "$HQ_ROOT/core/scripts/lib/work-mesh-live-rebind.sh" ]; then

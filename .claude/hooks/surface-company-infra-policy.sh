@@ -51,6 +51,7 @@ HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.
 # every hook event, so with concurrent sessions it can name a different session
 # and surface the wrong company's policies into this one.
 CO=""
+CO_LIST=()
 SID="$(extract session_id)"
 if [ -z "$SID" ]; then
   # shellcheck source=../../core/scripts/lib/session-id.sh
@@ -62,11 +63,23 @@ if [ -n "$SID" ]; then
   if [ -f "$META" ]; then
     CO="$(sed -nE 's/^company_slug:[[:space:]]*"?([A-Za-z0-9_-]+)"?[[:space:]]*$/\1/p' "$META" | head -1)"
   fi
+  CAP="$HQ_ROOT/workspace/sessions/$SID/scope-capability.json"
+  if [ -f "$CAP" ] && [ -f "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" ]; then
+    . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh"
+    while IFS= read -r locked_company; do
+      [ -n "$locked_company" ] && CO_LIST+=("$locked_company")
+    done < <(session_scope_read_companies "$HQ_ROOT" "$SID" 2>/dev/null || true)
+  elif [ -n "$CO" ]; then
+    CO_LIST=("$CO")
+  fi
 fi
-[ -z "$CO" ] && exit 0   # no company bound — nothing company-specific to surface
+[ "${#CO_LIST[@]}" -gt 0 ] || exit 0   # no company bound — nothing company-specific to surface
+
+for CO in "${CO_LIST[@]}"; do
+  [ "$CO" = personal ] && continue
 
 POLDIR="$HQ_ROOT/companies/$CO/policies"
-[ -d "$POLDIR" ] || exit 0
+[ -d "$POLDIR" ] || continue
 
 # Pull the deploy/credential HARD policies straight from the company policy
 # files (the pre-built digest was retired). Emit one `- [hard] **slug**: rule`
@@ -83,7 +96,7 @@ LINES="$(awk '
   d>=2 && rsec && !rcap && NF { line=$0; gsub(/\*\*/,"",line); if(length(line)>160)line=substr(line,1,157)"..."; rule=line; rcap=1 }
   END { if(seen) flush() }
 ' "$POLDIR"/*.md 2>/dev/null | grep -Ei '\*\*[a-z0-9-]*(deploy|aws|cred|secret)[a-z0-9-]*\*\*' || true)"
-[ -z "$LINES" ] && exit 0
+[ -z "$LINES" ] && continue
 
 # Dedupe once per (session, company).
 DEDUPE_DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
@@ -91,7 +104,7 @@ mkdir -p "$DEDUPE_DIR" 2>/dev/null || true
 DEDUPE_FILE="$DEDUPE_DIR/${SID:-default}.txt"
 touch "$DEDUPE_FILE" 2>/dev/null || true
 STAMP="company-infra:$CO"
-grep -Fxq "$STAMP" "$DEDUPE_FILE" 2>/dev/null && exit 0
+grep -Fxq "$STAMP" "$DEDUPE_FILE" 2>/dev/null && continue
 printf '%s\n' "$STAMP" >> "$DEDUPE_FILE"
 
 printf '<company-policy-reminder co="%s">\n' "$CO"
@@ -101,5 +114,7 @@ printf '\n> Full text: `companies/%s/policies/{slug}.md`. For AWS/prod: credenti
 printf '> via `hq secrets exec` — agent sessions have NO local profile fallback; never use\n'
 printf '> another company'"'"'s profile, and on NoCredentials reach for the vault, do not give up.\n'
 printf '</company-policy-reminder>\n'
+
+done
 
 exit 0

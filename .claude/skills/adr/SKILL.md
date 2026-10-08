@@ -41,9 +41,9 @@ If **any** answer is no → DO NOT WRITE THE ADR. Offer alternatives:
 |---|---|
 | Easy to reverse | Skip — you'll just reverse it later |
 | Not surprising | Skip — nobody will wonder |
-| No real trade-off | Add to `CONTEXT.md` glossary instead, or skip |
+| No real trade-off | Add to `GLOSSARY.md` glossary instead, or skip |
 
-Re-prompt: "Skip ADR / Add to CONTEXT.md / Force-write anyway (rarely correct)". Only `Force-write` proceeds; record reasoning in the ADR body so the override is explicit.
+Re-prompt: "Skip ADR / Add to GLOSSARY.md / Force-write anyway (rarely correct)". Only `Force-write` proceeds; record reasoning in the ADR body so the override is explicit.
 
 ## Step 2 — Locate or create target directory
 
@@ -123,7 +123,7 @@ related: []                              # ADR numbers, optional
 
 ## Step 7 — Cross-link
 
-If new domain terms surfaced during the conversation, offer to update `CONTEXT.md` (in the same repo for `repo` scope; in `companies/{co}/knowledge/CONTEXT.md` for `hq` scope).
+If new domain terms surfaced during the conversation, offer to update `GLOSSARY.md` (in the same repo for `repo` scope; in `companies/{co}/knowledge/GLOSSARY.md` for `hq` scope).
 
 If this ADR supersedes an earlier one, update the older ADR's frontmatter to `status: superseded by ADR-NNNN` (after asking).
 
@@ -138,7 +138,7 @@ Print:
   Title: <title>
   Scope: repo | hq
   Optional sections: <Status / Considered Options / Consequences / none>
-  CONTEXT.md updated: yes / no
+  GLOSSARY.md updated: yes / no
   Supersedes: ADR-MMMM / none
 ```
 
@@ -155,7 +155,7 @@ Print:
 ## What does NOT qualify
 
 - Library choices that are easy to swap (date formatter, test runner version, lint rule preference)
-- Naming decisions ("we call this thing the X intake") → these go in `CONTEXT.md`, not an ADR
+- Naming decisions ("we call this thing the X intake") → these go in `GLOSSARY.md`, not an ADR
 - Implementation details that the code itself makes obvious
 - Decisions you're already going to revisit next sprint (use a TODO comment)
 - "We did the obvious thing" — there's nothing to record
@@ -163,6 +163,6 @@ Print:
 ## Cross-references
 
 - `/out-of-scope` — sibling skill for *rejected feature requests* (vs. this for *accepted technical decisions*).
-- `/brainstorm`, `/plan`, `/architect`, `/diagnose` — all hand off here when a decision warrants ADR.
+- `/brainstorm`, `/prd`, `/architect`, `/diagnose` — all hand off here when a decision warrants ADR.
 - HQ `/learn` — for cross-tenant knowledge capture (different from per-repo / per-company ADR).
 - Pattern source: `mattpocock/skills` `grill-with-docs/ADR-FORMAT.md`.

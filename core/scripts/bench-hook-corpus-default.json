@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "description": "Default HQ hook benchmark corpus. Generic plain-language first prompts with the routing hints the injected hook context should carry, plus trivial Bash tool calls that should match few or no policies. Operators keep their own real corpus in a project research folder and pass it with --corpus.",
+  "prompts": [
+    {
+      "id": "p1-project-memory",
+      "prompt": "what happened to the project where we were aging out old policies as part of the core upgrade",
+      "kind": "question",
+      "expect_hints": [
+        "search",
+        "project"
+      ],
+      "expect_no_blocks": [
+        "auto-conduct"
+      ]
+    },
+    {
+      "id": "p2-company-data",
+      "prompt": "check the stats on our deploys for the past 24 hours",
+      "kind": "lookup",
+      "expect_hints": [
+        "deploy"
+      ],
+      "expect_no_blocks": [
+        "auto-conduct"
+      ]
+    },
+    {
+      "id": "p3-startwork-slack",
+      "prompt": "/startwork acme summarize everything that happened in slack",
+      "kind": "command",
+      "expect_hints": [
+        "slack",
+        "integrations"
+      ],
+      "expect_no_blocks": []
+    },
+    {
+      "id": "p4-external-lookup",
+      "prompt": "get me links to all the posts about our product on x from the last week",
+      "kind": "external-lookup",
+      "expect_hints": [
+        "search",
+        "web"
+      ],
+      "expect_no_blocks": [
+        "auto-conduct"
+      ]
+    },
+    {
+      "id": "p5-teammate-secret",
+      "prompt": "from a teammate: could you run hq secrets generate-link --company acme ADS_ACCESS_TOKEN so I can write the ads token",
+      "kind": "pasted-request",
+      "expect_hints": [
+        "hq-secrets",
+        "secrets"
+      ],
+      "expect_no_blocks": [
+        "auto-conduct"
+      ]
+    },
+    {
+      "id": "p6-startwork-creative-deploy",
+      "prompt": "/startwork acme '/deploy an on brand investor pitch about our product'",
+      "kind": "creative-ops",
+      "expect_hints": [
+        "deploy",
+        "brand"
+      ],
+      "expect_no_blocks": []
+    },
+    {
+      "id": "p7-startwork-linear",
+      "prompt": "/startwork acme check linear for open issues on the site",
+      "kind": "startwork-followup",
+      "expect_hints": [
+        "integrations"
+      ],
+      "expect_no_blocks": []
+    },
+    {
+      "id": "p8-startwork-sources",
+      "prompt": "what sources do we have for this client, meetings and transcripts",
+      "kind": "startwork-followup",
+      "expect_hints": [
+        "search"
+      ],
+      "expect_no_blocks": [
+        "auto-conduct"
+      ]
+    },
+    {
+      "id": "p9-startwork-board",
+      "prompt": "what is on the board for this project and what is still queued",
+      "kind": "startwork-followup",
+      "expect_hints": [
+        "board"
+      ],
+      "expect_no_blocks": [
+        "auto-conduct"
+      ]
+    },
+    {
+      "id": "p10-startwork-workers",
+      "prompt": "which workers can do design work for this company",
+      "kind": "startwork-followup",
+      "expect_hints": [
+        "workers"
+      ],
+      "expect_no_blocks": [
+        "auto-conduct"
+      ]
+    },
+    {
+      "id": "p11-startwork-knowledge",
+      "prompt": "where is the brand knowledge for this company kept",
+      "kind": "startwork-followup",
+      "expect_hints": [
+        "search"
+      ],
+      "expect_no_blocks": [
+        "auto-conduct"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "id": "c1-ls",
+      "command": "ls .claude/hooks"
+    },
+    {
+      "id": "c2-git-status",
+      "command": "git status --short | head"
+    },
+    {
+      "id": "c3-cat",
+      "command": "cat core/core.yaml | head -20"
+    },
+    {
+      "id": "c4-grep",
+      "command": "grep -n hqVersion core/core.yaml"
+    },
+    {
+      "id": "c5-python",
+      "command": "python3 -c 'print(1+1)'"
+    }
+  ]
+}

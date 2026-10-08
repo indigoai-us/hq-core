@@ -68,6 +68,19 @@ printf '%s\n' 'ok   master-hook can publish its verified enabled decision withou
 [ "$(perl -e 'printf "%o", (stat($ARGV[0]))[2] & 07777' "$FLAG_CACHE")" = 600 ]
 printf '%s\n' 'ok   cache directory and file are user-only'
 
+# The multi-company guard shares the TTL cache but gets its own flag and
+# company-scoped file. A fresh true snapshot must avoid invoking Node.
+cat >"$TMP/multi-company-flag.cjs" <<'NODE'
+process.stdout.write(process.env.HQ_TEST_MULTI_FLAG || "false");
+NODE
+printf 'true %s\n' "$(now_seconds)" >"$HOME/.hq/hook-flag.multi-company-test.indigo"
+calls_before="$(wc -l <"$NODE_CALLS" | tr -d ' ')"
+hqd_hook_flag_enabled_for multi-company-test hooks.multi-company-session-lock \
+  "$TMP/multi-company-flag.cjs" "$TMP" indigo
+[ "$HQD_FLAG_ENABLED" = true ] || { echo 'not ok   cached multi-company flag value is used' >&2; exit 1; }
+[ "$(wc -l <"$NODE_CALLS" | tr -d ' ')" = "$calls_before" ] || { echo 'not ok   cached multi-company flag avoids Node' >&2; exit 1; }
+printf '%s\n' 'ok   fresh multi-company cache value is used without Node'
+
 # A fresh snapshot for one tenant must never satisfy another tenant's lookup.
 export HQ_COMPANY_UID=cmp_cache_a HQ_TEST_FLAG=true
 . "$HERE/hqd-hook-flag-cache-lib.sh"

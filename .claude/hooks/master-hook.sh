@@ -526,6 +526,7 @@ fi
 
 # --- Resolve active company via workspace/sessions/<session_id>/meta.yaml ---
 ACTIVE_COMPANY=""
+ACTIVE_COMPANIES=""
 if [ -n "$SESSION_ID" ]; then
   SESSIONS_DIR="$REPO_ROOT/workspace/sessions"
   SESSION_DIR="$SESSIONS_DIR/$SESSION_ID"
@@ -537,16 +538,26 @@ if [ -n "$SESSION_ID" ]; then
   fi
   printf '%s\n' "$SESSION_ID" > "$SESSIONS_DIR/.current"
   ACTIVE_COMPANY="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META_FILE")"
+  ACTIVE_COMPANIES="$ACTIVE_COMPANY"
 fi
 
 # A Task agent's company context belongs to its exact (session_id, agent_id)
 # tuple. Shared session metadata may have moved since this agent was bound; it
 # can initialize a new binding at SessionStart, but cannot replace one.
+if [ -f "$REPO_ROOT/core/scripts/lib/session-scope-capability.sh" ]; then
+  . "$REPO_ROOT/core/scripts/lib/session-scope-capability.sh" || ACTIVE_COMPANY=""
+  if [ -n "$SESSION_ID" ] && [ -f "$REPO_ROOT/workspace/sessions/$SESSION_ID/scope-capability.json" ]; then
+    ACTIVE_COMPANIES="$(session_scope_read_companies "$REPO_ROOT" "$SESSION_ID" 2>/dev/null | paste -sd, -)"
+    [ -n "$ACTIVE_COMPANIES" ] || ACTIVE_COMPANIES="$ACTIVE_COMPANY"
+  fi
+fi
 if [ -n "$SESSION_ID" ] && [ -n "$PAYLOAD_AGENT_ID" ]; then
   . "$REPO_ROOT/core/scripts/lib/session-scope-capability.sh" || ACTIVE_COMPANY=""
   if session_scope_identity_is_valid "$PAYLOAD_AGENT_ID"; then
     ACTIVE_COMPANY="$(session_scope_resolve_agent_company \
       "$REPO_ROOT" "$SESSION_ID" "$PAYLOAD_AGENT_ID" "$ACTIVE_COMPANY" "$EVENT")"
+    ACTIVE_COMPANIES="$(session_scope_resolve_agent_companies \
+      "$REPO_ROOT" "$SESSION_ID" "$PAYLOAD_AGENT_ID" "$ACTIVE_COMPANIES" "$EVENT" | paste -sd, -)"
   else
     ACTIVE_COMPANY=""
   fi
@@ -1017,7 +1028,7 @@ master_foreign_bind() {
       return 0
     fi
     if [ "$source" = "registry" ] && [ -n "$slug" ]; then
-      session_scope_mint "$REPO_ROOT" "$SESSION_ID" "$slug" "$PAYLOAD_AGENT_ID" || return 0
+      session_scope_mint_set "$REPO_ROOT" "$SESSION_ID" "${ACTIVE_COMPANIES:-$slug}" "$PAYLOAD_AGENT_ID" || return 0
       ACTIVE_COMPANY="$slug"
       context="This session started in a folder linked to HQ company ${slug}; this Task subagent is bound to ${slug}."
     else
@@ -1074,10 +1085,10 @@ master_bind_session_start_scope() {
   if [ -n "$PAYLOAD_AGENT_ID" ]; then
     session_scope_identity_is_valid "$PAYLOAD_AGENT_ID" || return 0
     [ -z "$(session_scope_read "$REPO_ROOT" "$SESSION_ID" "$PAYLOAD_AGENT_ID")" ] || return 0
-    session_scope_mint "$REPO_ROOT" "$SESSION_ID" "$ACTIVE_COMPANY" "$PAYLOAD_AGENT_ID" \
+    session_scope_mint_set "$REPO_ROOT" "$SESSION_ID" "${ACTIVE_COMPANIES:-$ACTIVE_COMPANY}" "$PAYLOAD_AGENT_ID" \
       || printf 'master-hook: WARNING could not bind Task subagent scope for session %s\n' "$SESSION_ID" >&2
   elif [ -z "$PAYLOAD_AGENT_TYPE" ]; then
-    session_scope_mint "$REPO_ROOT" "$SESSION_ID" "$ACTIVE_COMPANY" \
+    session_scope_mint_set "$REPO_ROOT" "$SESSION_ID" "${ACTIVE_COMPANIES:-$ACTIVE_COMPANY}" \
       || printf 'master-hook: WARNING could not bind main-thread scope for session %s\n' "$SESSION_ID" >&2
   fi
 }

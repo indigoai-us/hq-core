@@ -11,7 +11,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-SKILL="$ROOT/.claude/skills/conduct/SKILL.md"
+SKILL="$ROOT/.claude/skills/conduct/dispatch.md"   # Step 2 lives in the dispatch module (HP-14)
 
 PASS=0
 fail() { echo "FAIL: $*" >&2; exit 1; }

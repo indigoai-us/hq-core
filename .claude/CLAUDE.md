@@ -12,8 +12,11 @@ scaffolds, supervises, and syncs work across repos and companies.
   SCP, ACL, sync, deploy, invite, or secret flows when HQ has a command.
 - For repo coding, go straight to the target repo. Load HQ docs or company
   context only when the task needs it.
-- Keep company context isolated. Cross-company knowledge or credential use is a
-  category-1 bug.
+- Keep company context isolated. Knowledge or credential use outside the
+  session's locked company set is a category-1 bug. For intentional multi-company
+  work, add each company with `core/scripts/hq-session.sh add company <slug>`.
+  Never move one locked company's data or credentials into another company's
+  files, vault, or services unless the user asks for that transfer.
 - Convert vague work into observable done criteria before executing.
 
 ## Preferred HQ Paths

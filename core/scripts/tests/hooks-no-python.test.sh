@@ -174,12 +174,15 @@ printf '#!/bin/bash\nexit 9\n' > "$TMP/bin/python3"
 chmod +x "$TMP/bin/python3"
 BROKEN_PATH="$TMP/bin:$PATH"
 
-O="$(printf '{"hook_event_name":"SessionStart","session_id":"%s-ss","cwd":"%s"}' "$RUN" "$ROOT" \
+# HP-4 retired `when: always`, so SessionStart has no baseline set to inject.
+# Exercise the keyword-trigger injection path instead, with a prompt that a
+# shipped core policy (hq-deploy-reinforcement) matches.
+O="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s-kw","prompt":"deploy this to production","cwd":"%s"}' "$RUN" "$ROOT" \
   | PATH="$BROKEN_PATH" HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" 2>/dev/null)"
-if printf '%s' "$O" | grep -Fq '> Policy `'; then
-  ok "SessionStart injects baseline policies with broken python3"
+if printf '%s' "$O" | grep -Fq '> Policy `hq-deploy-reinforcement`'; then
+  ok "UserPromptSubmit injects keyword-triggered policy with broken python3"
 else
-  fail "SessionStart injects baseline policies with broken python3" "no reminder emitted"
+  fail "UserPromptSubmit injects keyword-triggered policy with broken python3" "no reminder emitted"
 fi
 HANDOFF_SID="${RUN}-handoff-$$"
 O2="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s","prompt":"/handoff please","cwd":"%s"}' "$HANDOFF_SID" "$ROOT" \

@@ -163,6 +163,41 @@ assert_contains "$out" 'restore-hook-settings.sh' \
   || fail "local master-hook shadow did not name the healer: $out"
 pass "local master-hook overlay fails with restore guidance"
 
+echo "[1d] per-hook hook-gate entries in settings.local.json that master-hook already dispatches are a fail"
+DUP="$TMP/local-dup"
+make_healthy_root "$DUP"
+# settings.json routes through master-hook.sh; the registry dispatches `inject-policy-on-trigger`.
+cat >"$DUP/.claude/settings.json" <<'JSON'
+{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" PostToolUse"}]}],"SessionStart":[{"hooks":[{"type":"command","command":"env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" SessionStart"}]}],"PreToolUse":[{"hooks":[{"type":"command","command":"env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" PreToolUse"}]}]}}
+JSON
+mkdir -p "$DUP/.claude/hooks"
+cat >"$DUP/.claude/hooks/hook-registry.json" <<'JSON'
+{"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"id":"inject-policy-on-trigger","script":".claude/hooks/inject-policy-on-trigger.sh"}]}]}}
+JSON
+# One duplicated id, one id the registry does not know (must not count).
+cat >"$DUP/.claude/settings.local.json" <<'JSON'
+{"permissions":{"allow":["Bash(ls:*)"]},"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" inject-policy-on-trigger \"$CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh\""},{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" some-local-only-hook \"$CLAUDE_PROJECT_DIR/.claude/hooks/some-local-only-hook.sh\""}]}]}}
+JSON
+out="$(run_expect 2 "$DUP")"
+assert_contains "$out" 're-registers 1 hook(s) that master-hook.sh already dispatches' \
+  || fail "duplicate local dispatch was not reported: $out"
+assert_contains "$out" 'restore-hook-settings.sh' \
+  || fail "duplicate local dispatch did not name the healer: $out"
+# Control: the same overlay with no registry overlap passes this check.
+NODUP="$TMP/local-nodup"
+make_healthy_root "$NODUP"
+cp "$DUP/.claude/settings.json" "$NODUP/.claude/settings.json"
+mkdir -p "$NODUP/.claude/hooks"
+cp "$DUP/.claude/hooks/hook-registry.json" "$NODUP/.claude/hooks/hook-registry.json"
+cat >"$NODUP/.claude/settings.local.json" <<'JSON'
+{"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" some-local-only-hook \"$CLAUDE_PROJECT_DIR/.claude/hooks/some-local-only-hook.sh\""}]}]}}
+JSON
+set +e
+out="$(PATH="$INLINE_STUB_BIN:$PATH" bash "$CHECKER" --root "$NODUP" 2>&1)"
+set -e
+case "$out" in *"re-registers"*) fail "non-overlapping local hook was counted as a duplicate: $out" ;; esac
+pass "duplicate per-hook overlay fails with restore guidance; non-overlapping overlay is not flagged"
+
 echo "[2] a missing settings file produces an actionable desktop/SDK repair"
 MISSING="$TMP/missing"
 mkdir -p "$MISSING/.claude"

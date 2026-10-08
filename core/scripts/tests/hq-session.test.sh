@@ -50,15 +50,30 @@ assert_eq() {
   [ "$1" = "$2" ] || fail "$3: expected '$2', got '$1'"
 }
 
+wait_for_workmesh_count() {
+  local expected="$1" count=0 attempt
+  for attempt in {1..40}; do
+    : "$attempt"
+    count="$(wc -l <"$TMP/workmesh-register.log" 2>/dev/null | tr -d ' ' || true)"
+    [ "$count" = "$expected" ] && return 0
+    sleep 0.05
+  done
+  fail "Work Mesh registration count: expected '$expected', got '$count'"
+}
+
 # Build a minimal HQ-shaped layout so the script's BASH_SOURCE-relative
 # REPO_ROOT computation has something real to resolve against.
-mkdir -p "$TMP/core/scripts/lib" "$TMP/workspace/sessions" "$TMP/companies/Acme" "$TMP/companies/Personal"
+mkdir -p "$TMP/core/scripts/lib" "$TMP/.codex/hooks" "$TMP/workspace/sessions" "$TMP/companies/Acme" "$TMP/companies/Personal" "$TMP/companies/indigo" "$TMP/companies/beta" "$TMP/companies/gamma"
+mkdir -p "$TMP/home/.hq"
 ln -s Acme "$TMP/companies/acme"
 cp "$SRC" "$TMP/core/scripts/hq-session.sh"
 cp "$LIB_SRC/session-scope-capability.sh" "$TMP/core/scripts/lib/"
 cp "$LIB_SRC/session-id.sh" "$TMP/core/scripts/lib/"
+cp "$(dirname "$LIB_SRC")/hqd-hook-flag-cache-lib.sh" "$TMP/core/scripts/"
+cp "$(dirname "$LIB_SRC")/../../.codex/hooks/codex-explicit-path-flag.cjs" "$TMP/.codex/hooks/"
 chmod +x "$TMP/core/scripts/hq-session.sh"
 HS="$TMP/core/scripts/hq-session.sh"
+export HOME="$TMP/home"
 
 # 1. No .current yet -> `current` prints empty, exits 0.
 out="$("$HS" current)"
@@ -109,6 +124,81 @@ TR_CALLS_FILE="$TMP/tr-calls" TR_REAL="$TR_REAL" PATH="$TMP/tr-count-bin:$PATH" 
   "$HS" --session-id sess-exact-tr set company_slug Acme >/dev/null
 [ ! -s "$TMP/tr-calls" ] || fail "exact hq-session bind called tr"
 pass "exact hq-session bind does not invoke case folding"
+
+# Flag OFF keeps the legacy singleton behavior and refuses expansion.
+"$HS" --session-id sess-lock-off set company_slug indigo >/dev/null
+rc=0
+"$HS" --session-id sess-lock-off add company beta >"$TMP/add-off.out" 2>"$TMP/add-off.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "add company should be refused with flag off"
+grep -q 'multi-company-session-lock is off' "$TMP/add-off.err" || fail "flag-off refusal did not explain the disabled flag"
+assert_eq "$("$HS" --session-id sess-lock-off get company_slugs)" "indigo" "flag-off lock remains primary only"
+pass "flag off refuses add company and retains singleton lock"
+
+mkdir -p "$TMP/multi-bin"
+cat >"$TMP/multi-bin/node" <<'NODE'
+#!/bin/sh
+printf 'true\n'
+NODE
+cat >"$TMP/multi-bin/nohup" <<'NOHUP'
+#!/bin/sh
+printf '%s\n' "$*" >>"$NOHUP_CALLS"
+NOHUP
+chmod +x "$TMP/multi-bin/node"
+chmod +x "$TMP/multi-bin/nohup"
+rm -f "$HOME/.hq/hook-flag.multi-company-session-lock.indigo"
+export NOHUP_CALLS="$TMP/workmesh-register.log"
+mkdir -p "$TMP/core/hooks/SessionStart"
+cat >"$TMP/core/hooks/SessionStart/35-work-mesh-session-start.sh" <<HOOK
+#!/bin/sh
+cat >>"$TMP/workmesh-register.log"
+HOOK
+chmod +x "$TMP/core/hooks/SessionStart/35-work-mesh-session-start.sh"
+"$HS" --session-id sess-multi set company_slug indigo >/dev/null
+PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-multi add company beta >/dev/null
+assert_eq "$("$HS" --session-id sess-multi get company_slugs)" "indigo,beta" "add appends company"
+assert_eq "$(jq -c '.company_slugs' "$TMP/workspace/sessions/sess-multi/scope-capability.json")" '["indigo","beta"]' "add mints ordered capability set"
+sed 's/^company_slugs: indigo,beta$/company_slugs: indigo,ghost/' \
+  "$TMP/workspace/sessions/sess-multi/meta.yaml" > "$TMP/sess-multi-stale-meta.yaml"
+mv "$TMP/sess-multi-stale-meta.yaml" "$TMP/workspace/sessions/sess-multi/meta.yaml"
+assert_eq "$("$HS" --session-id sess-multi get company_slugs)" "indigo,beta" "capability remains authoritative over stale metadata"
+wait_for_workmesh_count 1
+: >"$TMP/workmesh-register.log"
+"$HS" --session-id sess-multi set project old-project >/dev/null
+"$HS" --session-id sess-multi set task old-task >/dev/null
+PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-multi remove company indigo
+assert_eq "$("$HS" --session-id sess-multi get company_slug)" "beta" "removing primary promotes next company"
+assert_eq "$("$HS" --session-id sess-multi get company_slugs)" "beta" "remove updates lock set"
+assert_eq "$(grep '^company_slug:' "$TMP/workspace/sessions/sess-multi/meta.yaml" | tail -n 1 | awk '{print $2}')" "beta" "remove promotes primary in meta.yaml"
+assert_eq "$(jq -r '.company_slug' "$TMP/workspace/sessions/sess-multi/scope-capability.json")" "beta" "remove promotes primary in scope capability"
+assert_eq "$(jq -c '.company_slugs' "$TMP/workspace/sessions/sess-multi/scope-capability.json")" '["beta"]' "remove writes promoted lock set to capability"
+assert_eq "$("$HS" --session-id sess-multi get project)" "" "removing primary clears old project"
+assert_eq "$("$HS" --session-id sess-multi get task)" "" "removing primary clears old task"
+wait_for_workmesh_count 1
+rc=0
+PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-multi remove company beta >"$TMP/remove-last.out" 2>"$TMP/remove-last.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "removing the last company should be refused"
+pass "add and remove maintain ordered lock and protect last entry"
+
+# Two concurrent additions must serialize around the same session snapshot.
+"$HS" --session-id sess-concurrent set company_slug indigo >/dev/null
+mkdir -p "$TMP/workspace/sessions/sess-concurrent/.company-lock-set.lock"
+printf '%s\n' "$$" > "$TMP/workspace/sessions/sess-concurrent/.company-lock-set.lock/pid"
+PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-concurrent add company beta >/dev/null & blocked_add_pid=$!
+sleep 0.3
+kill -0 "$blocked_add_pid" 2>/dev/null || fail "company lock update did not wait for the per-session lock"
+rm -rf "$TMP/workspace/sessions/sess-concurrent/.company-lock-set.lock"
+wait "$blocked_add_pid"
+assert_eq "$("$HS" --session-id sess-concurrent get company_slugs)" "indigo,beta" "company update waits for existing session lock"
+"$HS" --session-id sess-concurrent remove company beta >/dev/null
+PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-concurrent add company beta >/dev/null & add_beta_pid=$!
+PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-concurrent add company gamma >/dev/null & add_gamma_pid=$!
+wait "$add_beta_pid"
+wait "$add_gamma_pid"
+concurrent_meta="$("$HS" --session-id sess-concurrent get company_slugs | tr ',' '\n' | sort | paste -sd, -)"
+concurrent_cap="$(jq -r '.company_slugs | sort | join(",")' "$TMP/workspace/sessions/sess-concurrent/scope-capability.json")"
+assert_eq "$concurrent_meta" "beta,gamma,indigo" "concurrent adds retain both lock updates"
+assert_eq "$concurrent_cap" "$concurrent_meta" "concurrent capability matches serialized metadata"
+pass "per-session company lock updates serialize concurrent adds"
 
 # A case alias must not be persisted as a company identity when only the
 # differently-cased real directory exists.

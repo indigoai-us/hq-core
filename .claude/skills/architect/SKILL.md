@@ -31,11 +31,12 @@ Key heuristics (full treatment in `/codebase-design`):
 
 ### Step 1 — Read the project's domain model + decisions
 
-- Read `<repo>/CONTEXT.md` if present (domain glossary)
+- Read `<repo>/GLOSSARY.md` if present (domain glossary)
+- Fallback (removed in hq-core 16.0.0): if `GLOSSARY.md` is absent and `CONTEXT.md` exists, read `CONTEXT.md` instead (and `CONTEXT-MAP.md` in place of `GLOSSARY-MAP.md`), and print one line suggesting `git mv CONTEXT.md GLOSSARY.md`.
 - Read `<repo>/docs/adr/` if present (architectural decisions)
 - Read `<repo>/.claude/policies/` for any soft architecture rules
 
-If `CONTEXT.md` exists, **always** use its vocabulary in candidate descriptions. ADRs record decisions the skill should not re-litigate; mark candidates that contradict an ADR with `_contradicts ADR-NNNN — but worth reopening because…_` and only when friction is real.
+If `GLOSSARY.md` exists, **always** use its vocabulary in candidate descriptions. ADRs record decisions the skill should not re-litigate; mark candidates that contradict an ADR with `_contradicts ADR-NNNN — but worth reopening because…_` and only when friction is real.
 
 ### Step 2 — Fan out exploration
 
@@ -64,7 +65,7 @@ Sum to a single rank. Present top 5–10.
 Output via numbered list, NOT `AskUserQuestion` first (the list is too long for a 4-option question — present then ask):
 
 ```markdown
-## Candidate N — <name in CONTEXT.md vocabulary>
+## Candidate N — <name in GLOSSARY.md vocabulary>
 
 **Files:** <file:line refs>
 **Problem:** <friction described in glossary terms>
@@ -93,8 +94,8 @@ For each picked candidate, drop into a one-question-at-a-time design conversatio
 
 **Side effects happen inline:**
 
-- Naming a deepened module after a concept not in `CONTEXT.md` → add the term lazily.
-- Sharpening a fuzzy term during the conversation → update `CONTEXT.md` right there.
+- Naming a deepened module after a concept not in `GLOSSARY.md` → add the term lazily.
+- Sharpening a fuzzy term during the conversation → update `GLOSSARY.md` right there.
 - User rejects with a load-bearing reason → offer `/adr`, framed as: _"Want me to record this as an ADR so future architecture passes don't re-suggest it?"_ Only offer for reasons future explorers would actually need; skip ephemeral or self-evident ones.
 
 **Do not write the refactor.** This skill produces the design and the case for it. Implementation goes through `/run-project` or `/tdd`.
@@ -107,7 +108,7 @@ Save to `workspace/reports/{slug}-architect.md`:
 # Architect: <repo> @ <path>
 
 **HEAD:** <sha>
-**CONTEXT.md present:** yes / no
+**GLOSSARY.md present:** yes / no
 **ADRs present:** <count>
 
 ## Candidates
@@ -131,7 +132,7 @@ Save to `workspace/reports/{slug}-architect.md`:
 |---|---|
 | Candidate explored, design crystallised | `/prd` (PRD with userStories[] for the refactor) or `/run-project` (if scope is small) |
 | Candidate rejected with load-bearing reason | `/adr` |
-| New domain term surfaced | already updated `CONTEXT.md` inline |
+| New domain term surfaced | already updated `GLOSSARY.md` inline |
 | Code change shouldn't proceed without test seam | hand off to `/tdd` |
 | Pre-PR review on changed files only | `/review --architect-pass` |
 
@@ -139,7 +140,7 @@ Save to `workspace/reports/{slug}-architect.md`:
 
 - **Never edit production code in this skill.** Candidates and design only.
 - **Never propose interfaces in Step 4** — wait for the user to pick before designing.
-- **Always use CONTEXT.md vocabulary for the domain.** Always use the architecture glossary for structure terms.
+- **Always use GLOSSARY.md vocabulary for the domain.** Always use the architecture glossary for structure terms.
 - **Don't list every theoretical refactor an ADR forbids.** Only surface ADR-contradicting candidates when the friction is real enough to warrant revisiting the decision.
 - **Two-adapter rule before declaring a seam.** A single adapter is a hypothetical seam, not a real one — don't recommend abstracting until at least two concrete users exist.
 

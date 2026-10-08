@@ -153,19 +153,19 @@ assert_empty "Glob skipped"    "$O"
 O="$(run_hook PreToolUse "$(printf '"tool_name":"Read","tool_input":{"file_path":"/x.png"},"cwd":"%s"' "$ROOT")")"
 assert_empty "Read skipped"    "$O"
 
-echo "== SessionStart baseline backfill (injected on ANY first event, then deduped) =="
-# A neutral event matching NO reactive trigger still backfills the always-on
-# SessionStart baseline on the FIRST event of a fresh session.
+echo "== no always-on baseline (HP-4: every policy is keyword-triggered) =="
+# Since HP-4 no core policy carries `when: always`, so a neutral first event
+# must NOT inject the former baseline slugs; they fire only on their keywords.
 BSID1="baseline-bash-$RUN"
 O="$(printf '{"hook_event_name":"PreToolUse","session_id":"%s","tool_name":"Bash","tool_input":{"command":"ls -la"},"cwd":"%s"}' "$BSID1" "$ROOT" | HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" 2>/dev/null)"
-assert_has "baseline on first Bash" "$O" decision-queue-one-at-a-time hq-audience-mode quiet-by-default-narration
-# Second neutral event in the SAME session: baseline already recorded -> nothing.
+assert_not "no baseline on first Bash" "$O" decision-queue-one-at-a-time hq-audience-mode quiet-by-default-narration
+# Second neutral event in the SAME session: still nothing.
 O2="$(printf '{"hook_event_name":"PreToolUse","session_id":"%s","tool_name":"Bash","tool_input":{"command":"echo hi"},"cwd":"%s"}' "$BSID1" "$ROOT" | HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" 2>/dev/null)"
 assert_empty "baseline deduped 2nd event" "$O2"
-# Same backfill when the first event of a fresh session is a neutral prompt.
+# Same when the first event of a fresh session is a neutral prompt.
 BSID2="baseline-prompt-$RUN"
 O="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s","prompt":"what does this function do?","cwd":"%s"}' "$BSID2" "$ROOT" | HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" 2>/dev/null)"
-assert_has "baseline on first prompt" "$O" decision-queue-one-at-a-time hq-audience-mode
+assert_not "no baseline on first prompt" "$O" decision-queue-one-at-a-time hq-audience-mode
 
 echo "== negative / neutral (baseline pre-warmed -> no reactive noise) =="
 # Pre-warm a session via SessionStart so the baseline is injected+recorded, then

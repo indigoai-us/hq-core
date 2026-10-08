@@ -10,7 +10,7 @@ argument-hint: "[company] {project} [--surface paper|html|figma] [--design-led]"
 The missing phase between planning and building. `/storyboard` sits in the chain:
 
 ```
-/brainstorm ──► /plan | /deep-plan ──► /storyboard ──► /run-project
+/brainstorm ──► /prd | /deep-plan ──► /storyboard ──► /run-project
      │                                      ▲  │
      └────────── /storyboard (design-led) ──┘  └─► writes deltas back into prd.json
 ```
@@ -24,7 +24,7 @@ Its job is **not** "make a mockup" — Paper MCP and designed HTML already do th
 ## When to Use
 
 - A PRD exists (`prd.json`) and you want to design its screens/flows and harden the spec before building.
-- A brainstorm exists but no PRD yet, and the project is UI-first — you want to explore visuals before `/plan` writes stories.
+- A brainstorm exists but no PRD yet, and the project is UI-first — you want to explore visuals before `/prd` writes stories.
 - The design process is surfacing changes to scope, screens, or data contracts and you want those captured in the PRD, not lost in chat.
 
 For raw canvas work with no PRD loop, use `/run paper-designer`. For production UI polish on already-built code, reach for a dedicated design-polish skill (the `impeccable` skill, where installed).
@@ -50,8 +50,8 @@ Inspect `{project_dir}`:
 | Found | Mode | Behavior |
 |---|---|---|
 | `prd.json` exists (and no `--design-led`) | **spec-led** (default) | Design the surfaces the PRD describes, then write deltas back into `prd.json` and lock design. |
-| only `brainstorm.md` exists (or `--design-led`) | **design-led** | Explore visuals from the brainstorm; produce `design/design.md` that `/plan` then consumes. No `prd.json` writeback (there's nothing to write to yet). |
-| neither exists | **short-circuit** | Tell the user: "No PRD or brainstorm found for `{slug}`. Run `/brainstorm {slug}` or `/plan {slug}` first, or give me a one-line description and I'll sketch from that." Stop unless they provide a description. |
+| only `brainstorm.md` exists (or `--design-led`) | **design-led** | Explore visuals from the brainstorm; produce `design/design.md` that `/prd` then consumes. No `prd.json` writeback (there's nothing to write to yet). |
+| neither exists | **short-circuit** | Tell the user: "No PRD or brainstorm found for `{slug}`. Run `/brainstorm {slug}` or `/prd {slug}` first, or give me a one-line description and I'll sketch from that." Stop unless they provide a description. |
 
 Announce the resolved mode and project in one plain line.
 
@@ -133,13 +133,13 @@ For each confirmed change, apply it to `prd.json`:
 - set `metadata.designRef` to the design artifact (`design/design.md`, plus Figma URL when used);
 - set `metadata.designLocked: true`.
 
-Then **regenerate `README.md` from the updated `prd.json`** (README is always derived from the PRD, never edited in reverse). In **design-led mode** there is no `prd.json` yet — skip the writeback; the deltas live in `design/design.md` for `/plan` to consume.
+Then **regenerate `README.md` from the updated `prd.json`** (README is always derived from the PRD, never edited in reverse). In **design-led mode** there is no `prd.json` yet — skip the writeback; the deltas live in `design/design.md` for `/prd` to consume.
 
 ## Step 7 — Write Artifacts
 
 Into `{project_dir}`:
 
-- **`design/design.md`** — full-prose design rationale (full prose, no shorthand — this is a file on disk): surface(s) used, palette, type scale, spacing system, the screen/flow list, key interactions, and the design decisions with their reasoning. In design-led mode, also list the proposed screens/stories so `/plan` can pre-fill from them.
+- **`design/design.md`** — full-prose design rationale (full prose, no shorthand — this is a file on disk): surface(s) used, palette, type scale, spacing system, the screen/flow list, key interactions, and the design decisions with their reasoning. In design-led mode, also list the proposed screens/stories so `/prd` can pre-fill from them.
 - **`design/mockups/`** — exported HTML and/or artboard screenshots; Figma links when that surface was used.
 - **Preview URL** — when the `html` surface was used, surface the `/deploy` link inline.
 - **Updated `prd.json` + regenerated `README.md`** (spec-led only).
@@ -158,7 +158,7 @@ Into `{project_dir}`:
 State the outcome in one or two plain lines and point to the next step:
 
 - **spec-led:** "Design's locked for **{slug}** — {N} changes folded into the PRD. Ready to build with `/run-project {slug}`." Include the preview URL if there is one.
-- **design-led:** "Design explored for **{slug}** — wrote `design/design.md`. Run `/plan {slug}` and it'll pre-fill from the design."
+- **design-led:** "Design explored for **{slug}** — wrote `design/design.md`. Run `/prd {slug}` and it'll pre-fill from the design."
 
 ## Codex Notes
 
@@ -169,7 +169,7 @@ State the outcome in one or two plain lines and point to the next step:
 
 ## Related
 
-- Upstream: [`/brainstorm`](../brainstorm/SKILL.md), [`/plan`](../plan/SKILL.md), `/deep-plan`
+- Upstream: [`/brainstorm`](../brainstorm/SKILL.md), [`/prd`](../prd/SKILL.md), `/deep-plan`
 - Downstream: `/run-project`, `/execute-task`
 - Design surfaces: `/run paper-designer`, `/deploy`, plus the `impeccable` and [`project-summary`](../project-summary/SKILL.md) skills
 - Delta discipline: [`/decision-queue`](../decision-queue/SKILL.md), [`/out-of-scope`](../out-of-scope/SKILL.md)

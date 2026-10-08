@@ -2,10 +2,10 @@
 # auto-conduct.sh — SessionStart hook that opens fresh sessions in /conduct mode.
 #
 # Reads the `conduct:` block of the orchestrator settings. When
-# `default_enabled: true`, the assistant is told to run `/conduct` as its first
-# action, so every task in the session is dispatched to detached worker lanes
-# and the parent stays free. There is deliberately no default engine: /conduct
-# asks the user which engine to use unless one is named in the argument.
+# `default_enabled: true`, the session gets the conductor core: the triage
+# rule (inline for answers, lookups, reads, short skills; a lane for real work)
+# and the pointer to the intent index. No engine is chosen here; /conduct
+# resolves it at first dispatch.
 #
 # Settings file (first one that exists wins):
 #   personal/settings/orchestrator.yaml   # per-machine override
@@ -75,10 +75,15 @@ case "$enabled" in
   *) exit 0 ;;
 esac
 
-cat <<'EOT'
+CORE="$HQ_ROOT/.claude/skills/conduct/conductor-core.md"
+if [ -f "$CORE" ]; then
+  # The always-on block lives in the conductor core doc between the inject
+  # markers (one source of truth; the rest of the doc is for the skill).
+  awk '/<!-- inject:start -->/ { on = 1; next } /<!-- inject:end -->/ { on = 0 } on' "$CORE"
+else
+  cat <<'EOT'
 <auto-conduct>
-Conduct mode is on by default for this HQ (orchestrator settings: conduct.default_enabled).
-Run `/conduct` now as the first session action, before any task work. If slash commands are unavailable in this runtime, execute the conduct skill with an empty argument instead. No engine is preset: unless the user has already named one, ask which engine to use (one AskUserQuestion, listing the installed engines) and persist the answer as the session's conduct_engine. Every task in this session is then dispatched to detached worker lanes; the parent session only briefs, routes, and reports.
-The user can leave the mode with `/conduct off`. Disable the default with `HQ_AUTO_CONDUCT=0`, `HQ_DISABLED_HOOKS=auto-conduct`, or `conduct.default_enabled: false` in personal/settings/orchestrator.yaml.
+Conduct mode is on (conduct.default_enabled). Triage each message: inline for answers, lookups, reads, status and one short skill; `/conduct <task>` for multi-file edits, builds, long-running or multi-repo work. The engine is chosen at first dispatch. Route by the intent index at core/settings/intent-index.yaml. Leave with `/conduct off`.
 </auto-conduct>
 EOT
+fi

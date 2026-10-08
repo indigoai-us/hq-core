@@ -41,15 +41,51 @@ exits 1 and claims nothing at all.
 bash core/scripts/conduct-pool.sh assign --worker-id "{lane-id}" --task "{short label}"
 ```
 
-A slot moves through four states, and the gap between the first two is where
+A slot moves through five states, and the gap between the first two is where
 `cancel` lives:
 
 | state | meaning |
 |---|---|
 | `claimed` | `assign` granted the lane; nothing is dispatched into it yet |
 | `running` | `record --status running` attached a sub-agent; work is live |
-| `idle` | `record --status idle` released it; the next `assign` resumes it |
+| `waiting` | a loop-mode lane whose process is alive and whose queue is empty |
+| `idle` | the lane's process is gone (`record --status idle`, or a loop lane whose pid died); the next `assign` resumes it |
 | `recycled` | retired; a tombstone kept for provenance, not counted against cap |
+
+`waiting` is live. It counts against `CONDUCT_POOL_CAP`, LRU recycling never
+picks it, and `recycle` refuses it without `--force`, exactly like `running`.
+
+### Loop-mode lanes and the enqueue-on-assign rule
+
+A lane started with `workflow-runner.mjs --loop` stays alive and takes phase
+envelopes from `<run-dir>/inbox/pending/`. Register it with its process and run
+directory once it is up:
+
+```bash
+bash core/scripts/conduct-pool.sh record --worker-id "{lane-id}" \
+  --subagent-id "{run id}" --status running --pid "{lane pid}" --run-dir "{abs run dir}"
+```
+
+Every `list` and `assign` then reconciles that slot against the process before
+it decides anything. A dead pid makes the slot `idle` and clears the pid; the
+queue in `pending/` is left as it is, for whatever resumes the lane. A live pid
+with nothing in `pending/` or `active/` is `waiting`; a live pid with work
+queued or in progress is `running`.
+
+To give a live loop lane its next phase, assign with the envelope:
+
+```bash
+bash core/scripts/conduct-pool.sh assign --worker-id "{lane-id}" --envelope "{phase.json}"
+```
+
+If the slot is `waiting` or `running` and loop-mode, `assign` copies the
+envelope into the lane's `pending/` (tmp file plus rename, the
+`conduct-inbox.sh send` naming) and answers `enqueue`. It never spawns: the live
+process picks the envelope up. Without `--envelope` it exits 4. An `idle` slot
+answers `resume` as before, and the caller relaunches the lane.
+
+`list` prints `pid` (null for a non-loop slot), `run_dir`, and `queue_depth`
+(the number of files in `pending/`) for every slot.
 
 Read both the JSON and the exit code:
 
@@ -58,11 +94,43 @@ Read both the JSON and the exit code:
 | `{"action":"spawn","worker_id":…}` | no live lane | dispatch cold (§5) |
 | `{"action":"resume","worker_id":…,"subagent_id":…}` | an idle lane exists | validate it (§3), then continue it (§5) |
 | `…,"recycled":"<other-id>"` | pool was full; the LRU idle slot was retired | dispatch cold; name the retired lane in the log |
-| exit 3 | pool at cap, every slot running | **wait.** Do not dispatch. See §2a before reaching for `recycle` — it will refuse a running lane |
-| exit 4 | this lane is already **running** | **wait.** Resuming would relaunch into a run directory a working process still owns |
+| exit 3 | pool at cap, every slot running or waiting | **wait.** Do not dispatch. See §2a before reaching for `recycle` — it will refuse a running lane |
+| `{"action":"enqueue","worker_id":…,"pid":N,"queued":…,"queue_depth":N}` | a live loop-mode lane took the envelope | nothing to dispatch; the lane runs it |
+| exit 4 | this lane is already **running** (or a live loop lane and no `--envelope` was given) | **wait**, or pass `--envelope` for a loop lane. Resuming would relaunch into a run directory a working process still owns |
 
 Exits 3 and 4 change nothing in the pool. Dispatching past them is exactly how a
 run exceeds `CONDUCT_POOL_CAP` (default 8) or clobbers a live lane.
+
+### Stalled loop lanes: one in-place restart, then a decision item
+
+Every phase a loop lane runs has a per-phase deadline: the envelope's
+`deadline_seconds` (relative), else its `deadline` (absolute ISO8601 UTC, the
+§8 pipeline envelope; its budget is fixed at first start), else
+`HQ_WORKFLOW_PHASE_DEADLINE_SECS`, else 3600 seconds. A phase still running at
+its deadline is stalled: the runner kills the engine call and appends a line to
+`<run-dir>/stalls.jsonl` (per-envelope counts in `<run-dir>/stalls.json`).
+
+- **First stall of an envelope: one in-place restart.** The envelope stays in
+  `active/`, the runner spawns a copy of itself with the same argv and run dir,
+  rewrites `<run-dir>/loop.json` with the new pid and exits 75. The copy puts
+  the envelope back at the head of `pending/` and reruns it as a fresh engine
+  call. On its next `list` or `assign`, `conduct-pool.sh` sees the recorded pid
+  dead and `loop.json` naming a live pid, and adopts the new pid: same slot,
+  same worker id, same queue. Do not re-record or recycle the slot.
+- **Second stall of the same envelope: no restart.** The envelope moves to
+  `inbox/stalled/`, its result file gets `status: "stalled"`, the lane exits 76,
+  and a decision item (`kind: "stalled-phase"`, with story, phase, lane,
+  attempts, deadline and the options rerun with a longer deadline / reroute /
+  drop) is appended to `<run-dir>/decisions.jsonl` (and to
+  `$HQ_PIPELINE_DECISIONS_FILE` when set). `pending/` is left as it was.
+- **The parent sees it through the pool.** Every `conduct-pool.sh list`,
+  `assign` and `decisions` forwards new items from each loop slot's
+  `<run-dir>/decisions.jsonl` to `workspace/sessions/<id>/decisions.jsonl`;
+  `conduct-pool.sh decisions` prints that file. The stalled slot goes `idle` by
+  the dead-pid rule with its queue kept; other lanes keep running.
+
+Surface a stalled-phase item to the user through the decision queue, one item
+at a time. Do not rerun the stalled envelope without an answer.
 
 ## 2a. Recycling is a pool operation, not a process one
 
@@ -138,8 +206,8 @@ different company or project than this work:
    this claim answered `spawn` or `resume` — a resume claim still carries the
    previous lane's `subagent_id`, and `cancel` keys on the status, not on that.
 2. Delete `{slot dir}/handoffs.jsonl` and write a fresh `owner.json`.
-   **Reinitialise — do not merely decline to read.** The appends in §6 are
-   unconditional, so a file left in place collects this owner's entries under
+   **Reinitialise — do not merely decline to read.**
+   The appends in §6 are unconditional, so a file left in place collects this owner's entries under
    the previous owner's stamp, and the original owner returns to find its own
    stamp matching with foreign phases inside it.
 3. Dispatch cold.

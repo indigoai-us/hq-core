@@ -1,7 +1,7 @@
 ---
 id: hq-no-mannered-prose
 title: No mannered prose — drop the literary register in all HQ output
-when: always
+when: write || message || reply || report || email || slack
 on: [SessionStart]
 enforcement: soft
 version: 1

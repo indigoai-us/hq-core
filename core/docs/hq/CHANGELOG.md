@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Rename the domain glossary from `CONTEXT.md` to `GLOSSARY.md` (and `CONTEXT-MAP.md` to `GLOSSARY-MAP.md`), matching upstream mattpocock/skills. `/tdd`, `/diagnose`, `/architect`, `/to-tickets`, `/wayfinder` and `/domain-modeling` read `GLOSSARY.md` and fall back to `CONTEXT.md` when it is absent. Rename yours with `git mv CONTEXT.md GLOSSARY.md` (and `git mv CONTEXT-MAP.md GLOSSARY-MAP.md` if you have one). The `CONTEXT.md` fallback is removed in hq-core 16.0.0.
+- Deprecate `/plan`. It is now a stub that prints one line and runs `/prd` with the same arguments. Skills, policies and docs now name `/prd` as the next step. The stub will be removed in hq-core 16.0.0.
 - Scope checks treat `cat` and `tee` heredoc bodies sent to output redirects as file content. They still check the redirect path and command substitutions in unquoted bodies.
 - Skip per-character heredoc scans when a line has no executable expansion markers; keep unresolved workspace and personal paths blocked by their literal paths; resolve only known assignments, loop values, and literal function arguments; and limit message-text exemptions to approved HQ/GitHub commands.
 - Scan bounded symlink entries below Grep and Glob roots and static prefixes before authorizing cross-company reads.

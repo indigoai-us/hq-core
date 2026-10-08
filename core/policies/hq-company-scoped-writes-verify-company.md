@@ -13,7 +13,7 @@ source: user-correction
 
 ## Rule
 
-Before writing any company-scoped file under `companies/{co}/` (a policy, knowledge entry, worker, or project artifact), you MUST resolve and confirm the target company explicitly:
+Before writing any company-scoped file under `companies/{co}/` (a policy, knowledge entry, worker, or project artifact), you MUST resolve and confirm the target company explicitly. It must belong to the session's locked company set; for intentional multi-company work, add it with `core/scripts/hq-session.sh add company <slug>` first:
 
 1. **Resolve the company** from the strongest available signal — current working directory (the **leaf** `companies/<slug>/` segment, not the first one in a nested path), project `prd.json` metadata, repo ownership via `companies/manifest.yaml`, worker path, or explicit user instruction.
 2. **Verify the resolved slug exists** in `companies/manifest.yaml`.

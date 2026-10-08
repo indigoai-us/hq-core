@@ -110,7 +110,7 @@ Central registry of all projects. Read by `get_orchestrator_state` Tauri command
 
 | State | Meaning | Visual | Transitions From | Transitions To |
 |-------|---------|--------|------------------|----------------|
-| `READY` | PRD exists, not started | Emerald badge, static | `/plan` creates | IN_PROGRESS |
+| `READY` | PRD exists, not started | Emerald badge, static | `/prd` creates | IN_PROGRESS |
 | `IN_PROGRESS` | Actively executing stories | Green badge, pulse animation | READY, PAUSED | PAUSED, BLOCKED, COMPLETED, FAILED |
 | `PAUSED` | Manually paused mid-execution | Yellow badge | IN_PROGRESS | IN_PROGRESS (via `--resume`) |
 | `BLOCKED` | Dependency or error blocking | Amber badge, pulse | IN_PROGRESS | IN_PROGRESS (when unblocked) |
@@ -122,7 +122,7 @@ Central registry of all projects. Read by `get_orchestrator_state` Tauri command
 **State transition diagram (simplified):**
 
 ```
-/plan creates → READY
+/prd creates → READY
                   ↓
             /run-project
                   ↓
@@ -255,13 +255,13 @@ Within eligible stories, `/run-project` selects the lowest `priority` number fir
 
 The Ralph loop is the core execution engine. Understanding its stages is critical for Desktop to show real-time progress.
 
-### 4.1 /plan (Project Creation)
+### 4.1 /prd (Project Creation)
 
 **Input:** Description of what to build
 **Process:** Discovery interview → PRD generation → orchestrator registration
 **Output:** `projects/{name}/plan.json` + entry in `state.json`
 
-**Desktop interaction:** Trigger via command palette or "New Project" button. Desktop cannot run `/plan` directly (it's a Claude Code command), but it can:
+**Desktop interaction:** Trigger via command palette or "New Project" button. Desktop cannot run `/prd` directly (it's a Claude Code command), but it can:
 - Detect new prd.json files via file watcher
 - Display newly registered projects immediately
 - Show project in READY state
@@ -550,11 +550,11 @@ Need to add:
 ## 9. Project Execution Flow Diagram
 
 ```
-User: /plan campaign-migration
+User: /prd campaign-migration
   │
   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ /plan                                                              │
+│ /prd                                                              │
 │  1. Discovery interview                                           │
 │  2. Generate projects/campaign-migration/plan.json                 │
 │  3. Register in workspace/orchestrator/state.json (state: READY)  │
