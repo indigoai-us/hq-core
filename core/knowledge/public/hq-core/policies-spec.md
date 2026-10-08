@@ -216,14 +216,22 @@ one-release rollback switch and restores both PreToolUse evaluation and the
 historical omitted-on default.
 
 `SessionStart` evaluates `when` against **static facts only** (`company`, `repo`,
-`shared_branch`) plus the reserved **`always`** token. Use `when: always` +
-`on: [SessionStart]` for advisory policies that should be introduced at the very
-start regardless of context. There is no longer a pre-built digest to dedup
-against, so **every** policy whose `on:` includes `SessionStart` and whose `when:`
-matches is injected unconditionally — hard and soft alike.
+`shared_branch`) plus the reserved **`always`** token. There is no longer a
+pre-built digest to dedup against, so **every** policy whose `on:` includes
+`SessionStart` and whose `when:` matches is injected unconditionally — hard and
+soft alike.
 
 **`always`** is a reserved token present in every fact set — `when: always`
-matches unconditionally. It is the canonical "no condition" expression.
+matches unconditionally. It is not a recommended trigger. Every core policy
+is keyword-triggered: the 14 policies that carried `when: always` rode along on
+every hook event and were the main reason the policy-reminder ceiling cut
+lower-ranked lines; they were moved to keyword triggers in HP-4 of
+hq-hook-perf (for example `read || file`, `decision || question || choose`,
+`write || message || reply || report || email || slack`, `catch || error ||
+try`). A "baseline" rule still has a moment when it applies; name the words
+that appear in that moment. Reserve `when: always` + `on: [SessionStart]` for
+an `enforcement: hard` rule with no nameable signal at all, and expect a
+reviewer to ask for the keyword.
 
 `AssistantIntent` is a **pseudo-event**, not a real Claude Code hook. It is
 evaluated wherever an AI-message look-back exists — during `PreToolUse` and

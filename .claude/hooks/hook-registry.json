@@ -25,6 +25,12 @@
               "drain",
               "PreToolUse"
             ]
+          },
+          {
+            "id": "policy-enforcement-gate",
+            "script": ".claude/hooks/policy-enforcement-gate.sh",
+            "timeout": 30,
+            "gated": true
           }
         ]
       },
@@ -643,6 +649,17 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "id": "policy-enforcement-gate",
+            "script": ".claude/hooks/policy-enforcement-gate.sh",
+            "timeout": 30,
+            "gated": true
+          }
+        ]
+      },
       {
         "matcher": "Read",
         "hooks": [

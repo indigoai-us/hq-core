@@ -125,6 +125,90 @@
           }
         ]
       }
+    ],
+    "StopCancelled": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${HOME}/.grok/hooks/hq-hq-bridge.sh",
+            "timeout": 120,
+            "env": {
+              "BASH_ENV": "/dev/null"
+            }
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${HOME}/.grok/hooks/hq-hq-bridge.sh",
+            "timeout": 120,
+            "env": {
+              "BASH_ENV": "/dev/null"
+            }
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${HOME}/.grok/hooks/hq-hq-bridge.sh",
+            "timeout": 120,
+            "env": {
+              "BASH_ENV": "/dev/null"
+            }
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${HOME}/.grok/hooks/hq-hq-bridge.sh",
+            "timeout": 120,
+            "env": {
+              "BASH_ENV": "/dev/null"
+            }
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${HOME}/.grok/hooks/hq-hq-bridge.sh",
+            "timeout": 120,
+            "env": {
+              "BASH_ENV": "/dev/null"
+            }
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${HOME}/.grok/hooks/hq-hq-bridge.sh",
+            "timeout": 120,
+            "env": {
+              "BASH_ENV": "/dev/null"
+            }
+          }
+        ]
+      }
     ]
   }
 }

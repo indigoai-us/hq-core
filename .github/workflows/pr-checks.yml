@@ -1442,6 +1442,8 @@ jobs:
         run: bash core/scripts/tests/lanes-hold-check-shim.test.sh
       - name: Grok minimum-version gate is correct without GNU sort
         run: bash core/scripts/tests/grok-min-version.test.sh
+      - name: Grok managed-hooks pin is reported by doctor (HP-21)
+        run: bash core/scripts/tests/grok-managed-hooks-pin.test.sh
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
       - name: tracked shell discovery regression test

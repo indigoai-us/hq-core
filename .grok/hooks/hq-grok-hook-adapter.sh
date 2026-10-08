@@ -26,9 +26,21 @@ export BASH_ENV=/dev/null
 # blocks only that tool call and the turn continues (stopReason "end_turn").
 # Evidence: workspace/reports/grok-hook-latency.md.
 #
+# 1.0.40 hook contract (HP-21): StopCancelled, StopFailure, PostToolUseFailure,
+# PermissionDenied, SubagentStart and PostCompact are observation-only events
+# (output ignored, exit ignored). The adapter accepts all six. The two stop
+# variants run the HQ Stop hooks with HQ_STOP_DECISION_DELIVERABLE=0 and emit
+# nothing; the other four fan out to settings.json under their own names.
+# SessionStart does not fire inside a subagent, so the company bind happens on
+# the subagent's first PreToolUse (payload field subagentType). A host whose
+# managed policy sets allow_managed_hooks_only loads none of this: doctor
+# reads `grok inspect` and reports it. Verified against the 1.0.40 user guide
+# (user-guide/10-hooks.md) and the 1.0.41 binary.
+#
 # Grok differs from Claude in four ways this adapter bridges. Each claim below
 # is checked against the hook reference embedded in the Grok binary
-# (`strings -n 20 <grok> | grep -n additionalContext`), verified for 1.0.34.
+# (`strings -n 20 <grok> | grep -n additionalContext`), verified for 1.0.34
+# and re-checked on 1.0.41.
 #   1. Payload shape: camelCase (toolName / toolInput / hookEventName /
 #      stopHookActive) plus Claude-compat snake_case. Tool names include Shell /
 #      StrReplace / Read / Write and the alias set run_terminal_command /
@@ -115,8 +127,26 @@ case "$EVENT" in
   session_end|SessionEnd) EVENT=SessionEnd ;;
   subagent_stop|SubagentStop) EVENT=SubagentStop ;;
   notification|Notification) EVENT=Notification ;;
+  # Grok 1.0.40+ hook contract (user-guide/10-hooks.md): a turn that ends
+  # without completing fires StopCancelled instead of Stop (Ctrl+C, a declined
+  # permission, --max-turns, no-progress), an API error fires StopFailure, a
+  # tool that failed to dispatch fires PostToolUseFailure, the permission
+  # system fires PermissionDenied, and subagents/compaction have their own
+  # start/end events. None of these can block; they are observed here so the
+  # HQ Stop-side side effects (checkpoint gate, conduct inbox) still run for a
+  # lane that hit its turn cap.
+  stop_cancelled|StopCancelled) EVENT=StopCancelled ;;
+  stop_failure|StopFailure) EVENT=StopFailure ;;
+  post_tool_use_failure|PostToolUseFailure) EVENT=PostToolUseFailure ;;
+  permission_denied|PermissionDenied) EVENT=PermissionDenied ;;
+  subagent_start|SubagentStart) EVENT=SubagentStart ;;
+  post_compact|PostCompact) EVENT=PostCompact ;;
   *) ;;
 esac
+
+# Dispatch trace for tests: every settings fan-out appends "<event> <tool>" to
+# this file when set. Off in production (unset).
+HQ_GROK_ADAPTER_TRACE="${HQ_GROK_ADAPTER_TRACE:-}"
 
 GTOOL="$(jget '.toolName // .tool_name // empty')"
 # If the runner omitted the event name but supplied a tool, treat as PreToolUse.
@@ -379,8 +409,15 @@ PARENT_SID="$(jget '.parent_session_id // .parentSessionId // empty')"
 # PreToolUse runs on every tool call.
 STOP_HOOK_ACTIVE=false
 STOP_REASON=""
+STOP_OUTCOME=""
 TRANSCRIPT_PATH=""
 LAST_ASSISTANT=""
+# subagentType rides on every event Grok fires inside a child session
+# (SessionStart does NOT fire there), so the adapter reads it on the events
+# where it changes behaviour: company binding on the first tool call, and the
+# stop family, where a nested agent's stop must not be mistaken for the
+# session's.
+SUBAGENT_TYPE=""
 case "$EVENT" in
   Stop|SubagentStop)
     STOP_HOOK_ACTIVE="$(jget '.stopHookActive // .stop_hook_active // empty')"
@@ -392,9 +429,25 @@ case "$EVENT" in
     # directly and reading it costs nothing.
     TRANSCRIPT_PATH="$(jget '.transcriptPath // .transcript_path // empty')"
     LAST_ASSISTANT="$(jget '.lastAssistantMessage // .last_assistant_message // empty')"
+    SUBAGENT_TYPE="$(jget '.subagentType // .subagent_type // empty')"
+    ;;
+  StopCancelled|StopFailure)
+    # Observation-only turn ends. `reason` is the classified cancel cause
+    # (user_interrupt, permission_rejected, permission_cancelled, max_turns,
+    # no_progress, unknown); StopFailure carries `error` instead. Neither can
+    # block, and there is no turn left to continue.
+    STOP_REASON="$(jget '.reason // .error // empty')"
+    [ "$EVENT" = StopCancelled ] && STOP_OUTCOME=cancelled || STOP_OUTCOME=failure
+    TRANSCRIPT_PATH="$(jget '.transcriptPath // .transcript_path // empty')"
+    LAST_ASSISTANT="$(jget '.lastAssistantMessage // .last_assistant_message // empty')"
+    SUBAGENT_TYPE="$(jget '.subagentType // .subagent_type // empty')"
     ;;
   SessionEnd)
     TRANSCRIPT_PATH="$(jget '.transcriptPath // .transcript_path // empty')"
+    SUBAGENT_TYPE="$(jget '.subagentType // .subagent_type // empty')"
+    ;;
+  PreToolUse|PostToolUse|SubagentStart)
+    SUBAGENT_TYPE="$(jget '.subagentType // .subagent_type // empty')"
     ;;
 esac
 
@@ -409,11 +462,18 @@ CLAUDE_JSON="$(jq -n \
   --arg prompt "$PROMPT" \
   --arg run_background "$RUN_IN_BACKGROUND" \
   --arg stop_active "$STOP_HOOK_ACTIVE" \
+  --arg stop_reason "$STOP_REASON" \
+  --arg stop_outcome "$STOP_OUTCOME" \
+  --arg subagent "$SUBAGENT_TYPE" \
   --arg transcript "$TRANSCRIPT_PATH" \
   --arg last_assistant "$LAST_ASSISTANT" \
   --argjson response "$TOOL_RESPONSE" \
   '{
-    hook_event_name: $event,
+    # Claude has no StopCancelled/StopFailure: HQ Stop hooks see them as a
+    # Stop whose stop_outcome says the turn did not complete, with the Grok
+    # reason alongside, so a hook that gates on reason == "end_turn" keeps
+    # its meaning and a hook that only records the turn end still runs.
+    hook_event_name: (if $stop_outcome != "" then "Stop" else $event end),
     tool_name: $t,
     cwd: $cwd,
     session_id: $sid,
@@ -428,6 +488,11 @@ CLAUDE_JSON="$(jq -n \
     + (if $response != null then {tool_response: $response} else {} end)
     + (if ($event == "Stop" or $event == "SubagentStop")
        then {stop_hook_active: ($stop_active == "true")} else {} end)
+    + (if $stop_outcome != ""
+       then {stop_hook_active: false, stop_outcome: $stop_outcome}
+            + (if $stop_reason != "" then {reason: $stop_reason} else {} end)
+       else {} end)
+    + (if $subagent != "" then {subagent_type: $subagent} else {} end)
     + (if $transcript != "" then {transcript_path: $transcript} else {} end)
     + (if $last_assistant != "" then {last_assistant_message: $last_assistant} else {} end)' 2>/dev/null)"
 
@@ -807,6 +872,7 @@ run_master() {
 # dispatch; see emit_stop_decision.
 dispatch_settings_hooks() {
   local event="$1" tools="$2" payload="$3" skip_master="${4:-}"
+  [ -n "$HQ_GROK_ADAPTER_TRACE" ] && printf '%s %s\n' "$event" "$tools" >>"$HQ_GROK_ADAPTER_TRACE" 2>/dev/null
   command -v hqad_iter_settings >/dev/null 2>&1 || return 0
   local tool kind a b rest key mode seen="|"
   for tool in $tools; do
@@ -845,7 +911,26 @@ dispatch_settings_hooks() {
   done
 }
 
+# Grok does not fire SessionStart inside a subagent session, so the company
+# auto-bind that run_session_start performs never happens there. Bind on the
+# child's first tool call instead, once: the meta.yaml check keeps this off the
+# per-call path after the first bind, and the parent session id lets the child
+# inherit the parent's company.
+bind_subagent_once() {
+  [ -n "$SUBAGENT_TYPE" ] || return 0
+  [ -n "$HQ_ROOT" ] && [ -n "$SID" ] || return 0
+  [ -f "$HQ_ROOT/workspace/sessions/$SID/meta.yaml" ] && return 0
+  # shellcheck source=../../core/scripts/lib/session-scope-capability.sh
+  . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" 2>/dev/null || true
+  # shellcheck source=../../core/scripts/lib/session-auto-bind.sh
+  . "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" 2>/dev/null || true
+  if command -v session_auto_bind_apply >/dev/null 2>&1; then
+    session_auto_bind_apply "$HQ_ROOT" "$SID" "$PARENT_SID" || true
+  fi
+}
+
 run_pre_tool_use() {
+  bind_subagent_once
   case "$CTOOL" in
     Bash)
       [ -n "$CMD" ] && block_sensitive_if_needed "$CMD"
@@ -1087,6 +1172,17 @@ run_precompact() {
   dispatch_settings_hooks "PreCompact" "ANY" "$CLAUDE_JSON"
 }
 
+# StopCancelled / StopFailure: the turn is over and cannot be held, so the HQ
+# Stop hooks run for their side effects only (the checkpoint gate records the
+# turn end, the conduct-inbox backstop drains what it can) with the decision
+# marked undeliverable, and no decision JSON is emitted. Without this, a lane
+# that ends on --max-turns or an interrupt never reached the Stop side at all.
+run_stop_observe() {
+  export HQ_STOP_DECISION_DELIVERABLE=0
+  work_mesh_live_dispatch Stop 70-work-mesh-turn-end.sh
+  dispatch_settings_hooks "Stop" "ANY" "$CLAUDE_JSON"
+}
+
 case "$EVENT" in
   SessionStart)     run_session_start ;;
   UserPromptSubmit) run_user_prompt_submit ;;
@@ -1097,6 +1193,15 @@ case "$EVENT" in
   # SubagentStop is a real gate in Grok (it fires inside the subagent with the
   # same decision control as Stop), so it goes through run_stop.
   SubagentStop)     run_stop ;;
+  StopCancelled|StopFailure) run_stop_observe ;;
+  # Observation-only events from the 1.0.40 contract. settings.json carries no
+  # registrations for them today; dispatching under their own names lets a
+  # company or pack hook register later without touching the adapter. Output
+  # is dropped and exit is ignored by Grok on all four.
+  PostToolUseFailure) dispatch_settings_hooks "PostToolUseFailure" "ANY" "$CLAUDE_JSON" ;;
+  PermissionDenied)   dispatch_settings_hooks "PermissionDenied" "ANY" "$CLAUDE_JSON" ;;
+  SubagentStart)      dispatch_settings_hooks "SubagentStart" "ANY" "$CLAUDE_JSON" ;;
+  PostCompact)        dispatch_settings_hooks "PostCompact" "ANY" "$CLAUDE_JSON" ;;
   # Grok supports these lifecycle events natively; settings.json registers the
   # master-hook company/personal/pack fan-out on each (SessionEnd has live
   # listeners). Side-effect only — output is dropped, exit ignored by Grok.

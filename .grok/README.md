@@ -74,6 +74,26 @@ turn continues.
 `core/scripts/codex-preflight.sh doctor` reports the installed version and
 warns when it is below the minimum.
 
+### Grok 1.0.40+ events (verified on 1.0.41)
+
+Grok 1.0.40 added six observation-only events. The adapter and the user bridge
+register all of them:
+
+| Event | What the adapter does |
+|---|---|
+| `StopCancelled` (reason: `user_interrupt`, `permission_rejected`, `permission_cancelled`, `max_turns`, `no_progress`, `unknown`) | Runs the HQ `Stop` hooks with `HQ_STOP_DECISION_DELIVERABLE=0` so the Stop-side ledgers (checkpoint gate, conduct inbox) still record the turn end. Emits no decision: the turn is already over. The hooks see `hook_event_name: Stop`, `stop_outcome: cancelled`, and the Grok `reason`. |
+| `StopFailure` | Same path, `stop_outcome: failure`, `reason` carries the error. |
+| `PostToolUseFailure`, `PermissionDenied`, `SubagentStart`, `PostCompact` | Fan out to `settings.json` registrations under their own names. Nothing is registered for them by default. |
+
+`SessionStart` does not fire inside a subagent. The adapter binds a subagent
+session to its parent's company on the first `PreToolUse` that carries
+`subagentType`, once, so company-scoped guards work inside subagents.
+
+A managed policy can set `allow_managed_hooks_only`. On such a host Grok loads
+neither the user bridge nor the project hooks and reports nothing. `doctor`
+runs `grok inspect` and prints `HOOKS DISABLED BY MANAGED POLICY` when the
+pin is set.
+
 ### Converge hook trust
 
 ```sh

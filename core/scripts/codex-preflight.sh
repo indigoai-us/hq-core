@@ -382,6 +382,16 @@ cmd_doctor() {
     else
       echo "  grok: ${gv:-installed}${gnum:+ (>= ${GROK_MIN_VERSION}, OK)}."
     fi
+    # Grok 1.0.40+ managed-policy pin. With allow_managed_hooks_only set
+    # (managed settings, not user-editable), Grok loads only managed hooks:
+    # the HQ user bridge and the project .grok/hooks are silently skipped,
+    # so every guard above reports "installed" while nothing enforces. The
+    # only visible signal is one line in `grok inspect`.
+    local ginspect
+    ginspect="$(cd "$root" && grok inspect 2>/dev/null || true)"
+    if printf '%s\n' "$ginspect" | grep -Fq "Hooks outside managed policy disabled"; then
+      echo "  grok: HOOKS DISABLED BY MANAGED POLICY — allow_managed_hooks_only is set; the HQ bridge and project hooks never load on this host. Ask whoever manages this machine's Grok policy to lift it or to register the HQ bridge as a managed hook." >&2
+    fi
   else
     echo "  grok: not installed."
   fi

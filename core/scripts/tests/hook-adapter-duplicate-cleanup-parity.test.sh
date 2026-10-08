@@ -16,8 +16,9 @@ make_root() {
   cp "$ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$root/.codex/hooks/"
   cp "$ROOT/.grok/hooks/hq-grok-hook-adapter.sh" "$root/.grok/hooks/"
   cp "$ROOT/.claude/hooks/hook-gate.sh" "$root/.claude/hooks/"
+  cp "$ROOT/.claude/hooks/policy-enforcement-gate.sh" "$root/.claude/hooks/"
   cp "$ROOT/core/scripts/hook-lib.sh" "$root/core/scripts/"
-  cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$root/core/scripts/lib/"
+  cp "${HQ_TEST_ADAPTER_CORE_LIB:-$ROOT/core/scripts/lib/hook-adapter-core.sh}" "$root/core/scripts/lib/hook-adapter-core.sh"
   cp "$ROOT/core/scripts/lib/trigger-fact-text.awk" "$root/core/scripts/lib/"
   cat > "$root/.claude/hooks/master-hook.sh" <<'SH'
 #!/usr/bin/env bash
@@ -40,6 +41,18 @@ JSON
   cat > "$root/.claude/settings.local.json" <<'JSON'
 {"env":{"LOCAL_KEEP":"yes"},"permissions":{"allow":["Bash(git status:*)"]},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/registry-alpha.sh\"","timeout":31},{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/registry-beta.sh\"","timeout":32}]}]}}
 JSON
+}
+
+fallback_registry() {
+  local root="$1" registry_mode="$2"
+  case "$registry_mode" in
+    missing) rm -f "$root/.claude/hooks/hook-registry.json" ;;
+    malformed) printf '%s\n' '{not json' > "$root/.claude/hooks/hook-registry.json" ;;
+  esac
+  HQ_ROOT="$root" bash -c '
+    . "$HQ_ROOT/core/scripts/lib/hook-adapter-core.sh"
+    hqad_iter_registry PreToolUse Bash "{}"
+  ' 2>/dev/null
 }
 
 run_adapter() {
@@ -75,6 +88,15 @@ for engine in jq node; do
   done
   pass "$engine: Codex and Grok settings.json hook id lists are unchanged after local cleanup"
 done
+
+fallback_root="$TMP/fallback-policy-gate"
+make_root "$fallback_root"
+for registry_mode in missing malformed; do
+  fallback="$(fallback_registry "$fallback_root" "$registry_mode")"
+  printf '%s\n' "$fallback" | awk -F '\t' '$1 == "gate" && $2 == "policy-enforcement-gate" {found=1} END {exit !found}' \
+    || fail "$registry_mode registry fallback omitted policy-enforcement-gate"
+done
+pass "Codex/Grok registry fallback retains policy enforcement with missing or malformed registry"
 
 [ "$FAIL" -eq 0 ] || exit 1
 echo 'PASS: adapter dispatch parity across local duplicate cleanup'

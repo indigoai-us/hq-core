@@ -62,3 +62,7 @@
 - path: "core/scripts/tests/resolve-company.test.sh"
   rules: [pii/phone]
   reason: "The 10-digit literal on the drain-timing assertion is one second expressed in nanoseconds, not a phone number."
+
+- path: "core/scripts/tests/inject-policy-always-inject.test.sh"
+  rules: [pii/phone]
+  reason: "The INT_MAX value is a synthetic stale-lock PID sentinel in a test, not a phone number or personal data."

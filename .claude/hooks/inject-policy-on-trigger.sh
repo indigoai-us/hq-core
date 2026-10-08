@@ -57,6 +57,69 @@ SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 HELPERS="${SCRIPT_DIR%/.claude/hooks}/core/scripts"
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
 
+# Use master-hook's shared profile/disabled-hook predicate so the scan and its
+# direct enforcement call are governed by the same gate registration state.
+if [ -f "$HQ_ROOT/.claude/hooks/hook-gate.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$HQ_ROOT/.claude/hooks/hook-gate.sh" --lib
+fi
+POLICY_ENFORCEMENT_GATE_ENABLED=0
+if [ -f "$HQ_ROOT/.claude/hooks/policy-enforcement-gate.sh" ] \
+  && command -v hq_hook_profile_allows >/dev/null 2>&1 \
+  && hq_hook_profile_allows policy-enforcement-gate; then
+  POLICY_ENFORCEMENT_GATE_ENABLED=1
+fi
+
+ACTIVE_ENFORCEMENT_LOCK=""
+ACTIVE_ENFORCEMENT_TOKEN=""
+ENFORCEMENT_LOCK_TTL_SECONDS=30
+cleanup_enforcement_lock() {
+  local current_token=""
+  [ -n "$ACTIVE_ENFORCEMENT_LOCK" ] || return 0
+  current_token="$(cat "$ACTIVE_ENFORCEMENT_LOCK/token" 2>/dev/null || true)"
+  if [ "$current_token" = "$ACTIVE_ENFORCEMENT_TOKEN" ]; then
+    rm -f "$ACTIVE_ENFORCEMENT_LOCK/pid" "$ACTIVE_ENFORCEMENT_LOCK/time" \
+      "$ACTIVE_ENFORCEMENT_LOCK/token" 2>/dev/null || true
+    rmdir "$ACTIVE_ENFORCEMENT_LOCK" 2>/dev/null || true
+  fi
+}
+
+reclaim_stale_enforcement_lock() {
+  local lock="$1" holder_pid="" holder_time="" holder_token="" current_pid="" \
+    current_time="" current_token="" now="" lock_mtime="" stale=0
+  [ -d "$lock" ] || return 0
+  holder_pid="$(cat "$lock/pid" 2>/dev/null || true)"
+  holder_time="$(cat "$lock/time" 2>/dev/null || true)"
+  holder_token="$(cat "$lock/token" 2>/dev/null || true)"
+  if [[ "$holder_pid" =~ ^[0-9]+$ ]] && (( holder_pid > 1 )) \
+     && ! kill -0 "$holder_pid" 2>/dev/null; then
+    stale=1
+  fi
+  now="$(date +%s 2>/dev/null || true)"
+  if [[ "$holder_time" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] \
+     && (( now >= holder_time && now - holder_time >= ENFORCEMENT_LOCK_TTL_SECONDS )); then
+    stale=1
+  elif [[ ! "$holder_time" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]]; then
+    lock_mtime="$(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || true)"
+    if [[ "$lock_mtime" =~ ^[0-9]+$ ]] \
+       && (( now >= lock_mtime && now - lock_mtime >= ENFORCEMENT_LOCK_TTL_SECONDS )); then
+      stale=1
+    fi
+  fi
+  [ "$stale" -eq 1 ] || return 1
+
+  # Re-read ownership before reclaiming so a newly acquired lock is not removed
+  # when another process released the observed stale directory during the check.
+  current_pid="$(cat "$lock/pid" 2>/dev/null || true)"
+  current_time="$(cat "$lock/time" 2>/dev/null || true)"
+  current_token="$(cat "$lock/token" 2>/dev/null || true)"
+  [ "$current_pid:$current_time:$current_token" = \
+    "$holder_pid:$holder_time:$holder_token" ] || return 1
+  rm -f "$lock/pid" "$lock/time" "$lock/token" 2>/dev/null || true
+  rmdir "$lock" 2>/dev/null
+}
+trap cleanup_enforcement_lock EXIT
+
 JQ="$(command -v jq || true)"
 
 # The timeout watchdog and master hook use this exact session-hash convention
@@ -165,7 +228,7 @@ fi
 # hooks are separate registry entries and remain unaffected. Grok does not
 # deliver PostToolUse context, so do not evaluate or ledger policy slugs there.
 if [ "$EVENT" = "PreToolUse" ] && [ "${HQ_POLICY_TOOL_EVENTS:-}" != "legacy" ]; then
-  exit 0
+  [ "$POLICY_ENFORCEMENT_GATE_ENABLED" -eq 1 ] || exit 0
 fi
 if [ "$EVENT" = "PostToolUse" ] && [ "${HQ_HARNESS:-}" = "grok" ]; then
   exit 0
@@ -1407,15 +1470,15 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         if (m<=2) { y--; m+=12 }
         return 365*y + int(y/4) - int(y/100) + int(y/400) + int((153*(m-3)+2)/5) + dd
       }
-      function staleness(   st,base,t,c) {
+      function staleness(   st,stale_days,t,c) {
         st=statx; gsub(/[^a-z]/,"",st)
         if (st=="retired" || st=="superseded") return 1000000
-        base=0
+        stale_days=0
         if (TODAY_D>0) {
-          if (id in lastret) { t=civil(lastret[id]); if (t>0 && TODAY_D>t) base=TODAY_D-t }
-          else { c=civil(crx); if (c>0 && TODAY_D>c) base=TODAY_D-c }
+          if (id in lastret) { t=civil(lastret[id]); if (t>0 && TODAY_D>t) stale_days=TODAY_D-t }
+          else { c=civil(crx); if (c>0 && TODAY_D>c) stale_days=TODAY_D-c }
         }
-        return base + (rwx ? 180 : 0)
+        return stale_days + (rwx ? 180 : 0)
       }
       # stale_exempt(): 1 keeps the row at its current position. Safety-critical
       # hard rules, gate policies, and inject: always policies are never reordered.
@@ -1615,8 +1678,6 @@ if [ "$EVENT" = "PreToolUse" ] && [ "$TOOL_NAME" = "Bash" ]; then
 fi
 
 # ── Emit + record ─────────────────────────────────────────────────────────
-[ -n "$MATCHES" ] || exit 0
-
 # US-406: machine-readable records for the agent-session entrypoint. No prose
 # wrapper, no interactive 16-cap (consumer applies HQ_SESSION_POLICY_MAX_*).
 if [ "${HQ_POLICY_EMIT:-}" = "tsv" ]; then
@@ -1790,6 +1851,90 @@ if [ -n "$WITHHELD_MATCHES" ]; then
       WITHHELD_NAMED=$((WITHHELD_NAMED + 1))
     fi
   done <<< "$WITHHELD_MATCHES"
+fi
+
+# Persist the final machine-readable match set for receipt-backed enforcement.
+# Prompt prose remains advisory; this TSV is the deterministic hand-off from
+# policy selection to the PreToolUse delivery gate.
+if [ -n "${SESSION_ID:-}" ] \
+   && { [ -n "$MATCHES" ] || [ "$EVENT" = "UserPromptSubmit" ]; } \
+   && [ "${HQ_POLICY_EMIT:-}" != "tsv" ]; then
+  ENFORCEMENT_DIR="$HQ_ROOT/workspace/orchestrator/policy-enforcement"
+  ENFORCEMENT_MATCHES="$ENFORCEMENT_DIR/${SESSION_ID}.policies.tsv"
+  mkdir -p "$ENFORCEMENT_DIR" 2>/dev/null || true
+  ENFORCEMENT_LOCK="${ENFORCEMENT_MATCHES}.lock"
+  ENFORCEMENT_ATTEMPTS=0
+  until mkdir "$ENFORCEMENT_LOCK" 2>/dev/null; do
+    reclaim_stale_enforcement_lock "$ENFORCEMENT_LOCK" || true
+    ENFORCEMENT_ATTEMPTS=$((ENFORCEMENT_ATTEMPTS + 1))
+    [ "$ENFORCEMENT_ATTEMPTS" -lt 100 ] || break
+    sleep 0.02
+  done
+  if [ "$ENFORCEMENT_ATTEMPTS" -lt 100 ]; then
+    ACTIVE_ENFORCEMENT_LOCK="$ENFORCEMENT_LOCK"
+    ACTIVE_ENFORCEMENT_TOKEN="$$-${RANDOM}-${RANDOM}-$(date +%s)"
+    printf '%s\n' "$$" > "$ENFORCEMENT_LOCK/pid"
+    printf '%s\n' "$(date +%s)" > "$ENFORCEMENT_LOCK/time"
+    printf '%s\n' "$ACTIVE_ENFORCEMENT_TOKEN" > "$ENFORCEMENT_LOCK/token"
+  fi
+  if [ "$ENFORCEMENT_ATTEMPTS" -ge 100 ]; then
+    if [ "$EVENT" = "PreToolUse" ] && [ "$TOOL_NAME" = "Bash" ] \
+       && printf '%s' "$ARG" | grep -Eqi '(^|[^[:alnum:]_])hq[[:space:]]+(cowork[[:space:]]+)?dm([^[:alnum:]_]|$)|chat\.postMessage|send-broadcast|slack\.com/api/chat\.postMessage|/broadcasts'; then
+      jq -nc '{decision:"block",reason:"POLICY ENFORCEMENT BLOCK: policy match state is busy and cannot be verified safely; retry the outbound action."}'
+      exit 2
+    fi
+  else
+    ACTIVE_ENFORCEMENT_LOCK="$ENFORCEMENT_LOCK"
+    if [ "$EVENT" = "UserPromptSubmit" ]; then
+      ENFORCEMENT_BASELINES="$(mktemp "$ENFORCEMENT_DIR/.baselines.XXXXXX")"
+      awk -F '\t' '$6 == "baseline"' "$ENFORCEMENT_MATCHES" 2>/dev/null > "$ENFORCEMENT_BASELINES" || true
+      mv "$ENFORCEMENT_BASELINES" "$ENFORCEMENT_MATCHES"
+    fi
+    ENFORCEMENT_TMP="$(mktemp "$ENFORCEMENT_DIR/.matches.XXXXXX")"
+    {
+      cat "$ENFORCEMENT_MATCHES" 2>/dev/null || true
+      printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt; do
+        [ -n "$slug" ] || continue
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule" "$kind"
+      done
+    } | awk -F '\t' '!seen[$1]++' > "$ENFORCEMENT_TMP"
+    mv "$ENFORCEMENT_TMP" "$ENFORCEMENT_MATCHES"
+    cleanup_enforcement_lock
+    ACTIVE_ENFORCEMENT_LOCK=""
+    ACTIVE_ENFORCEMENT_TOKEN=""
+  fi
+fi
+
+# The declaration/conflict gate runs after the finalized policy hand-off is
+# durable, avoiding a sibling-hook race on an empty match file.
+ENFORCEMENT_CONTEXT=""
+if [ "$EVENT" = "UserPromptSubmit" ] && [ "${HQ_POLICY_EMIT:-}" != "tsv" ] \
+   && [ "$POLICY_ENFORCEMENT_GATE_ENABLED" -eq 1 ]; then
+  ENFORCEMENT_OUTPUT="$(printf '%s' "$STDIN_JSON" | \
+    bash "$HQ_ROOT/.claude/hooks/policy-enforcement-gate.sh" UserPromptSubmit 2>/dev/null || true)"
+  ENFORCEMENT_CONTEXT="$(printf '%s' "$ENFORCEMENT_OUTPUT" | \
+    jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+fi
+
+# Bash policies may first match on the outbound command itself. Run the
+# enforcement gate only after that same-action match is durable.
+if [ "$EVENT" = "PreToolUse" ] && [ "$TOOL_NAME" = "Bash" ] \
+   && [ "${HQ_POLICY_EMIT:-}" != "tsv" ] \
+   && [ "$POLICY_ENFORCEMENT_GATE_ENABLED" -eq 1 ]; then
+  ENFORCEMENT_RC=0
+  ENFORCEMENT_OUTPUT="$(printf '%s' "$STDIN_JSON" | \
+    bash "$HQ_ROOT/.claude/hooks/policy-enforcement-gate.sh" PreToolUse 2>/dev/null)" || ENFORCEMENT_RC=$?
+  if [ "$ENFORCEMENT_RC" -eq 2 ]; then
+    printf '%s\n' "$ENFORCEMENT_OUTPUT"
+    exit 2
+  fi
+fi
+
+if [ -z "$MATCHES" ]; then
+  if [ -n "$ENFORCEMENT_CONTEXT" ]; then
+    printf '<policy-enforcement>\n%s\n</policy-enforcement>\n' "$ENFORCEMENT_CONTEXT"
+  fi
+  exit 0
 fi
 
 # Enforcement-tiered injection depth:
@@ -2049,6 +2194,9 @@ compact_reminder() {
 }
 
 OUT="$(emit_reminder)"
+if [ -n "$ENFORCEMENT_CONTEXT" ]; then
+  OUT="${OUT%</policy-reminder>*}<policy-enforcement>\n${ENFORCEMENT_CONTEXT}\n</policy-enforcement>\n</policy-reminder>"
+fi
 # Measure precisely what the final `printf '%s\n'` below will write; command
 # substitution strips emit_reminder's final newline.
 policy_value_bytes "$OUT"

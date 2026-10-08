@@ -354,7 +354,9 @@ for provider in codex grok; do
   assert_counts "$provider matching Bash prefilters" 4 2
 
   run_adapter "$provider" "$root" "$trigger_payload" 1 minimal
-  assert_counts "$provider minimal profile" 3 2
+  # Minimal must retain the injector paired with policy-enforcement-gate so
+  # enforcement sees the same selected policy rows as the normal profile.
+  assert_counts "$provider minimal profile" 4 2
 
   run_adapter "$provider" "$root" "$trigger_payload" 1 standard detect-secrets
   assert_counts "$provider disabled hook" 3 2

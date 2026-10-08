@@ -302,6 +302,103 @@ else
   PASS=$((PASS + 1))
 fi
 
+# --- HP-21: Grok 1.0.40+ hook contract ---------------------------------------
+
+# 14) StopCancelled (reason max_turns) is observe-only: the Stop-registered
+# hooks still run (so the Stop-side ledgers get written), but no decision is
+# emitted, because the turn is already over and nothing can hold it.
+TRACE="$(mktemp)"
+run_adapter '{"hookEventName":"StopCancelled","reason":"max_turns","cancelledBy":"system","lastAssistantMessage":"ran out of turns","cwd":"'"$ROOT"'","sessionId":"grok-hp21-cancel-'$$'"}'
+assert_exit "$ADAPTER_ST" 0 "StopCancelled exit 0"
+if [ -z "$ADAPTER_OUT" ]; then
+  echo "PASS: StopCancelled emits no decision"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: StopCancelled emitted output: $ADAPTER_OUT" >&2
+  FAIL=$((FAIL + 1))
+fi
+export HQ_GROK_ADAPTER_TRACE="$TRACE"
+run_adapter '{"hookEventName":"StopCancelled","reason":"max_turns","cwd":"'"$ROOT"'","sessionId":"grok-hp21-cancel-'$$'"}'
+unset HQ_GROK_ADAPTER_TRACE
+if grep -q '^Stop ANY$' "$TRACE"; then
+  echo "PASS: StopCancelled dispatches the Stop-registered hooks"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: StopCancelled did not dispatch Stop hooks (trace: $(tr '\n' ';' < "$TRACE"))" >&2
+  FAIL=$((FAIL + 1))
+fi
+rm -f "$TRACE"
+rm -rf "$ROOT/workspace/sessions/grok-hp21-cancel-$$"
+
+# 14b) StopFailure takes the same observe-only path.
+run_adapter '{"hookEventName":"StopFailure","error":"api_error","cwd":"'"$ROOT"'"}'
+assert_exit "$ADAPTER_ST" 0 "StopFailure exit 0"
+if [ -z "$ADAPTER_OUT" ]; then
+  echo "PASS: StopFailure emits no decision"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: StopFailure emitted output: $ADAPTER_OUT" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# 15) The four observation-only events are accepted (exit 0, no output) and
+# dispatched under their own names.
+for ev in PostToolUseFailure PermissionDenied SubagentStart PostCompact; do
+  TRACE="$(mktemp)"
+  export HQ_GROK_ADAPTER_TRACE="$TRACE"
+  run_adapter '{"hookEventName":"'"$ev"'","toolName":"Shell","cwd":"'"$ROOT"'"}'
+  unset HQ_GROK_ADAPTER_TRACE
+  assert_exit "$ADAPTER_ST" 0 "$ev exit 0"
+  if [ -z "$ADAPTER_OUT" ] && grep -q "^$ev ANY$" "$TRACE"; then
+    echo "PASS: $ev dispatched, no output"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: $ev (out: $ADAPTER_OUT; trace: $(tr '\n' ';' < "$TRACE"))" >&2
+    FAIL=$((FAIL + 1))
+  fi
+  rm -f "$TRACE"
+done
+
+# 16) Subagent sessions get no SessionStart, so the first PreToolUse that
+# carries subagentType binds the child to the parent's company.
+PARENT="grok-hp21-parent-$$"
+CHILD="grok-hp21-child-$$"
+mkdir -p "$ROOT/workspace/sessions/$PARENT"
+printf 'company_slug: personal\n' > "$ROOT/workspace/sessions/$PARENT/meta.yaml"
+run_adapter '{"hookEventName":"PreToolUse","toolName":"Shell","toolInput":{"command":"echo hi"},"cwd":"'"$ROOT"'","sessionId":"'"$CHILD"'","parentSessionId":"'"$PARENT"'","subagentType":"explorer"}'
+assert_exit "$ADAPTER_ST" 0 "subagent PreToolUse exit 0"
+if grep -q '^company_slug: *"\{0,1\}personal' "$ROOT/workspace/sessions/$CHILD/meta.yaml" 2>/dev/null; then
+  echo "PASS: subagent PreToolUse bound child to parent company"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: subagent PreToolUse did not bind child (meta: $(cat "$ROOT/workspace/sessions/$CHILD/meta.yaml" 2>/dev/null))" >&2
+  FAIL=$((FAIL + 1))
+fi
+# A plain (non-subagent) PreToolUse keeps today's behaviour: the session
+# skeleton may be written by other hooks, but no company is bound here.
+PLAIN="grok-hp21-plain-$$"
+run_adapter '{"hookEventName":"PreToolUse","toolName":"Shell","toolInput":{"command":"echo hi"},"cwd":"'"$ROOT"'","sessionId":"'"$PLAIN"'","parentSessionId":"'"$PARENT"'"}'
+if ! grep -q '^company_slug:' "$ROOT/workspace/sessions/$PLAIN/meta.yaml" 2>/dev/null; then
+  echo "PASS: non-subagent PreToolUse does not auto-bind a company"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: non-subagent PreToolUse bound a company: $(cat "$ROOT/workspace/sessions/$PLAIN/meta.yaml")" >&2
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$ROOT/workspace/sessions/$PARENT" "$ROOT/workspace/sessions/$CHILD" "$ROOT/workspace/sessions/$PLAIN"
+
+# 17) The user bridge registers every 1.0.40 event.
+BRIDGE_JSON="$ROOT/.grok/hooks/hq-grok-user-bridge.json"
+for ev in StopCancelled StopFailure PostToolUseFailure PermissionDenied SubagentStart PostCompact; do
+  if jq -e --arg ev "$ev" '.hooks[$ev][0].hooks[0].command | test("hq-hq-bridge.sh")' "$BRIDGE_JSON" >/dev/null 2>&1; then
+    echo "PASS: bridge registers $ev"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: bridge does not register $ev" >&2
+    FAIL=$((FAIL + 1))
+  fi
+done
+
 # Leave the checkout clean: remove the runtime hook-state dir if the test emptied
 # it (it is also gitignored, so residue never dirties a checkout regardless).
 rmdir "$STATE_DIR" 2>/dev/null || true
