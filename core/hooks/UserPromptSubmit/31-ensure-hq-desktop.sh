@@ -32,33 +32,19 @@
 #                                                Windows: announce the installer
 #                                                link (never runs an installer
 #                                                silently).
-#   * a meeting recording is in progress      -> NEVER quit or kill the app. The
-#                                                hook spawns nothing while the
-#                                                running app is recording, and
-#                                                the worker (which may have begun
-#                                                downloading before the recording
-#                                                started) waits for the recording
-#                                                to end, plus a settle grace for
-#                                                the SDK to finalise its upload,
-#                                                before quitting. If the recording
-#                                                outlasts the wait bound, the
-#                                                update is deferred to a later
-#                                                cooldown window and the installed
-#                                                app is left untouched.
-#                                                Signal: the app's own durable
-#                                                ledger of in-flight recordings,
+#   * a meeting recording is in progress      -> NEVER quit or kill the app.
+#                                                Two durable signals are honored:
+#                                                the shipped desktop app's
 #                                                ~/.hq/recordings-ledger.json
-#                                                (hq-desktop-app
-#                                                recordings_ledger.rs). An entry is
-#                                                written the moment a Recall
-#                                                recording starts and removed on a
-#                                                clean end, so a non-empty ledger
-#                                                while the app is running means
-#                                                "recording now". Quitting the app
-#                                                mid-recording cuts the recording
-#                                                off: the SDK never finalises the
-#                                                upload and the next launch logs
-#                                                `reconcile: IngestFailed`.
+#                                                (a non-empty ledger), and the
+#                                                fresh, live recording-active
+#                                                marker introduced by
+#                                                hq-desktop-app PR #1476. The
+#                                                ledger protects current shipped
+#                                                builds; the marker adds pid
+#                                                liveness and freshness for the
+#                                                new contract. Both only block
+#                                                while the app is running.
 #
 # "Latest" is the same public updater manifest the app itself consumes:
 #   https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.json
@@ -138,14 +124,11 @@ FETCH_TIMEOUT="${HQ_ENSURE_DESKTOP_FETCH_TIMEOUT:-8}"  # manifest bound (seconds
 OS_NAME="${HQ_ENSURE_DESKTOP_OS:-$(uname -s 2>/dev/null || echo unknown)}"
 ARCH_NAME="${HQ_ENSURE_DESKTOP_ARCH:-$(uname -m 2>/dev/null || echo unknown)}"
 USER_HOME="${HQ_ENSURE_DESKTOP_HOME:-${HOME:-}}"
-# Meeting-recording guard (see header). The wait bound is generous because a
-# recording is a live meeting: an hour-long call must never be cut off for an
-# update that can wait. The grace lets the Recall SDK finalise its upload after
-# the ledger entry clears on `recording:ended`.
 RECORDING_LEDGER="$USER_HOME/.hq/recordings-ledger.json"
-RECORDING_WAIT="${HQ_ENSURE_DESKTOP_RECORDING_WAIT:-10800}"   # max wait for a recording to end (3h)
-RECORDING_GRACE="${HQ_ENSURE_DESKTOP_RECORDING_GRACE:-120}"   # settle after the recording ends
-RECORDING_POLL="${HQ_ENSURE_DESKTOP_RECORDING_POLL:-15}"      # ledger poll interval while waiting
+RECORDING_MARKER="$USER_HOME/.hq/recording-active.json"
+RECORDING_WAIT="${HQ_ENSURE_DESKTOP_RECORDING_WAIT:-10800}"
+RECORDING_GRACE="${HQ_ENSURE_DESKTOP_RECORDING_GRACE:-120}"
+RECORDING_POLL="${HQ_ENSURE_DESKTOP_RECORDING_POLL:-15}"
 
 BUNDLE_ID="ai.indigo.hq-sync-menubar"
 APP_BUNDLE="HQ.app"
@@ -182,25 +165,6 @@ file_age_ok() { # file_age_ok <file> <max-age-seconds> -> 0 when the file is you
   now="$(date +%s 2>/dev/null || echo 0)"
   [ "$now" -gt 0 ] && [ "$((now - mtime))" -lt "$max" ]
 }
-
-# --- meeting-recording guard -----------------------------------------------
-# A recording is in progress when the app's in-flight recordings ledger holds
-# at least one entry. Entries are `windowId -> {recordingId, startedAt, ...}`,
-# so the literal key "recordingId" appears iff the map is non-empty; an empty
-# ledger is `{}`. Deliberately jq-free and fail-closed: a substring test cannot
-# misread a partially readable file as "no recording".
-recording_active() {
-  [ -f "$RECORDING_LEDGER" ] || return 1
-  grep -q '"recordingId"' "$RECORDING_LEDGER" 2>/dev/null
-}
-# Match the exact process NAME (`-x`), never the full command line (`-f`): a
-# shell, grep, or editor whose arguments merely mention "hq-sync-menubar" must
-# not be mistaken for the app.
-app_running() { have pgrep && pgrep -x "$PROCESS_NAME" >/dev/null 2>&1; }
-# A running app with a non-empty ledger is recording right now. A non-empty
-# ledger with NO running app is a stale entry from a crash (the next launch
-# reconciles it) and blocks nothing: there is no app to quit.
-recording_in_progress() { app_running && recording_active; }
 
 stop_watchdog() {
   local watchdog_pid="$1"
@@ -271,6 +235,64 @@ recorded_version() {
     semver_of "$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null | head -1)"
   fi
 }
+
+# The marker is the hq-desktop-app PR #1476 contract. Treat every parse or
+# liveness failure as stale: the legacy ledger below protects already-shipped
+# desktop builds until that marker is universally available.
+# Treat every parse or liveness failure as stale: a false positive would prevent
+# an otherwise safe update indefinitely, while a false negative is avoided by
+# requiring all three independent freshness signals below.
+marker_recording_active() {
+  local f="$RECORDING_MARKER" pid="" updated="" now updated_epoch age
+  [ -f "$f" ] || return 1
+
+  if have jq; then
+    pid="$(jq -r 'if ((.recordings | type) == "array" and (.recordings | length) > 0) then (.pid // empty) else empty end' "$f" 2>/dev/null)"
+    updated="$(jq -r 'if ((.recordings | type) == "array" and (.recordings | length) > 0) then (.updatedAt // empty) else empty end' "$f" 2>/dev/null)"
+  else
+    grep -Eq '"recordings"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{' "$f" 2>/dev/null || return 1
+    pid="$(grep -oE '"pid"[[:space:]]*:[[:space:]]*[0-9]+' "$f" 2>/dev/null | head -1 | grep -oE '[0-9]+')"
+    updated="$(grep -oE '"updatedAt"[[:space:]]*:[[:space:]]*"[^"]+"' "$f" 2>/dev/null | head -1 | sed -n 's/.*"\([^"]*\)"$/\1/p')"
+  fi
+
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+
+  # The writer uses UTC ISO-8601. Trim fractional seconds and normalize a
+  # zero UTC offset so both GNU date (Windows Git Bash/Linux CI) and BSD date
+  # (macOS) can parse the value. Non-zero offsets are deliberately rejected:
+  # the recording ledger contract is UTC only.
+  updated="$(printf '%s' "$updated" | sed -E 's/\.[0-9]+(Z|[+-][0-9][0-9]:[0-9][0-9])$/\1/')"
+  case "$updated" in
+    *+00:00) updated="${updated%+00:00}Z" ;;
+    *-00:00) updated="${updated%-00:00}Z" ;;
+    *[+-]??:??) return 1 ;;
+    *Z) ;;
+    *) return 1 ;;
+  esac
+  updated_epoch="$(date -u -d "$updated" +%s 2>/dev/null || date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$updated" +%s 2>/dev/null || echo 0)"
+  now="$(date -u +%s 2>/dev/null || echo 0)"
+  case "$updated_epoch:$now" in *[!0-9:]*|:*) return 1 ;; esac
+  age=$((now - updated_epoch))
+  [ "$age" -ge 0 ] && [ "$age" -le 300 ]
+}
+
+# The shipped desktop app maintains this durable in-flight ledger. Its entries
+# contain recordingId, so a literal substring is deliberately fail-closed and
+# jq-free: an unreadable or partial non-empty ledger must not cause a quit.
+ledger_recording_active() {
+  [ -f "$RECORDING_LEDGER" ] || return 1
+  grep -q '"recordingId"' "$RECORDING_LEDGER" 2>/dev/null
+}
+
+# Match the exact process NAME (-x), never the command line (-f).
+app_running() { have pgrep && pgrep -x "$PROCESS_NAME" >/dev/null 2>&1; }
+
+# Both the legacy ledger and new marker are live recording contracts. A stale
+# signal from a crashed app does not block an update because there is no app to
+# quit; the next desktop launch reconciles it.
+recording_active() { marker_recording_active || ledger_recording_active; }
+recording_in_progress() { app_running && recording_active; }
 
 # --- latest manifest (cached) ---------------------------------------------
 manifest_version() { # manifest_version <file>
@@ -367,17 +389,6 @@ $tail
 EOF
 }
 
-emit_deferred() { # $1=installed $2=latest
-  cat <<EOF
-<hq-desktop-update-deferred>
-The HQ desktop app on this machine is $1; the latest release is $2. HQ did NOT
-quit or restart it because a meeting recording was in progress, and the
-recording was still running when the wait bound expired. The installed app was
-left untouched; HQ will retry the update later. No action is needed.
-</hq-desktop-update-deferred>
-EOF
-}
-
 emit_available() { # $1=installed $2=latest $3=download-url $4=reason
   cat <<EOF
 <hq-desktop-update-available>
@@ -387,6 +398,17 @@ Download it here and install it over the current copy:
 
   $3
 </hq-desktop-update-available>
+EOF
+}
+
+emit_deferred() { # $1=installed $2=latest
+  cat <<EOF
+<hq-desktop-update-deferred>
+The HQ desktop app on this machine is $1; the latest release is $2. HQ did NOT
+quit or restart it because a meeting recording was in progress, and the
+recording was still running when the wait bound expired. The installed app was
+left untouched; HQ will retry the update later. No action is needed.
+</hq-desktop-update-deferred>
 EOF
 }
 
@@ -405,7 +427,10 @@ if [ "$MODE" = worker ]; then
   LATEST="$(manifest_version "$CACHE")"
   [ -n "$INSTALLED" ] && [ -n "$LATEST" ] || exit 0
   DOWNLOAD_URL="$(download_url_for "$CACHE")"
-  WORK="$STATE_DIR/work.$$"
+  # Keep a downloaded, verified bundle under this stable path when a recording
+  # begins during the download. The next worker verifies it again and swaps it
+  # without fetching the same release a second time.
+  WORK="$STATE_DIR/work"
 
   fail_update() { # $1=reason
     rm -rf "$WORK" 2>/dev/null || true
@@ -414,15 +439,15 @@ if [ "$MODE" = worker ]; then
     exit 0
   }
 
-  defer_update() { # $1=reason — leave the installed app untouched; keep the cooldown stamp
-    rm -rf "$WORK" 2>/dev/null || true
+  defer_update() { # $1=reason — retain the verified staged bundle for retry
+    rm -f "$STAMP" 2>/dev/null || true
     write_result deferred "$INSTALLED" "$LATEST" "$1" 0 "$DOWNLOAD_URL"
     echo "[$(date -u +%H:%M:%S)] deferred: $1"
     exit 0
   }
 
-  # Block until no meeting recording is in progress, then let the SDK settle.
-  # Returns 1 when the recording outlasts RECORDING_WAIT (the caller defers).
+  # A recording can begin while the detached worker downloads. Wait for it to
+  # end, then let Recall settle its upload before re-checking and quitting.
   wait_for_recording_to_end() {
     local waited=0 announced=0
     while recording_in_progress; do
@@ -432,8 +457,6 @@ if [ "$MODE" = worker ]; then
       fi
       [ "$waited" -lt "$RECORDING_WAIT" ] || return 1
       sleep "$RECORDING_POLL"; waited=$((waited + RECORDING_POLL))
-      # The recording just ended: give the SDK time to finalise its upload,
-      # then re-check (a new recording may have started meanwhile).
       if ! recording_in_progress; then
         echo "[$(date -u +%H:%M:%S)] recording ended; settling ${RECORDING_GRACE}s before quitting the app"
         sleep "$RECORDING_GRACE"; waited=$((waited + RECORDING_GRACE))
@@ -446,16 +469,31 @@ if [ "$MODE" = worker ]; then
   have curl || fail_update "curl is not available to download it"
   have tar  || fail_update "tar is not available to unpack it"
 
-  rm -rf "$WORK" 2>/dev/null; mkdir -p "$WORK" 2>/dev/null || fail_update "could not create a working directory"
-
-  curl -fsSL --max-time "$UPDATE_TIMEOUT" -o "$WORK/app.tar.gz" "$DOWNLOAD_URL" >/dev/null 2>&1 \
-    || fail_update "the download failed"
-  tar -xzf "$WORK/app.tar.gz" -C "$WORK" >/dev/null 2>&1 \
-    || fail_update "the download could not be unpacked"
-
-  NEW_APP="$(find "$WORK" -maxdepth 2 -type d -name '*.app' 2>/dev/null | head -1)"
-  [ -n "$NEW_APP" ] && [ -f "$NEW_APP/Contents/Info.plist" ] \
-    || fail_update "the download did not contain an app bundle"
+  NEW_APP=""
+  if [ -d "$WORK" ]; then
+    NEW_APP="$(find "$WORK" -maxdepth 2 -type d -name '*.app' 2>/dev/null | head -1)"
+  fi
+  # A deferred worker can leave a verified bundle here for a retry after a
+  # recording ends. Reuse it only for this exact release: the manifest may
+  # have advanced while the recording was in progress.
+  if [ -n "$NEW_APP" ] && [ -f "$NEW_APP/Contents/Info.plist" ]; then
+    if [ "$(bundle_identifier "$NEW_APP")" != "$BUNDLE_ID" ] \
+      || [ "$(bundle_version "$NEW_APP")" != "$LATEST" ]; then
+      rm -rf "$WORK" 2>/dev/null
+      NEW_APP=""
+    fi
+  fi
+  if [ -z "$NEW_APP" ] || [ ! -f "$NEW_APP/Contents/Info.plist" ]; then
+    rm -rf "$WORK" 2>/dev/null
+    mkdir -p "$WORK" 2>/dev/null || fail_update "could not create a working directory"
+    curl -fsSL --max-time "$UPDATE_TIMEOUT" -o "$WORK/app.tar.gz" "$DOWNLOAD_URL" >/dev/null 2>&1 \
+      || fail_update "the download failed"
+    tar -xzf "$WORK/app.tar.gz" -C "$WORK" >/dev/null 2>&1 \
+      || fail_update "the download could not be unpacked"
+    NEW_APP="$(find "$WORK" -maxdepth 2 -type d -name '*.app' 2>/dev/null | head -1)"
+    [ -n "$NEW_APP" ] && [ -f "$NEW_APP/Contents/Info.plist" ] \
+      || fail_update "the download did not contain an app bundle"
+  fi
 
   # Verify BEFORE touching the installed copy.
   [ "$(bundle_identifier "$NEW_APP")" = "$BUNDLE_ID" ] \
@@ -468,18 +506,20 @@ if [ "$MODE" = worker ]; then
       || fail_update "the downloaded app failed code-signature verification"
   fi
 
-  # NEVER quit (or kill) the app while it is recording a meeting: the Recall
-  # SDK upload is never finalised and the recording is lost. Wait for the
-  # recording to end; if it outlasts the bound, defer the whole update.
+  # NEVER quit or kill the app while it is recording. A deferred update keeps
+  # the verified $WORK bundle and clears the cooldown for the next prompt.
   wait_for_recording_to_end \
     || defer_update "a meeting recording was still in progress after waiting ${RECORDING_WAIT}s"
 
   # Quit the running app gracefully (its own updater does the same), then swap.
-  # The fallback kills by exact process name only (see app_running).
   WAS_RUNNING=0
   if app_running; then
     WAS_RUNNING=1
     if have osascript; then
+      # The recording can start after the bounded wait returns. Re-check at
+      # the termination boundary itself; do not send even a graceful quit once
+      # either recording contract becomes live.
+      recording_in_progress && defer_update "a meeting recording started before quitting the app"
       run_bounded 10 "osascript -e 'tell application id \"$BUNDLE_ID\" to quit'" || true
     fi
     i=0
@@ -487,6 +527,9 @@ if [ "$MODE" = worker ]; then
       sleep 1; i=$((i + 1))
     done
     if app_running; then
+      # A graceful quit can be ignored for several seconds. Check again before
+      # the force-kill fallback because a recording may have started meanwhile.
+      recording_in_progress && defer_update "a meeting recording started before force-killing the app"
       have pkill && pkill -x "$PROCESS_NAME" >/dev/null 2>&1
       sleep 2
     fi
@@ -530,9 +573,11 @@ if [ -f "$RESULT" ]; then
     R_REASON="$(result_get reason)"; R_RELAUNCHED="$(result_get relaunched)"; R_URL="$(result_get url)"
     rm -f "$CLAIM" 2>/dev/null || true
     case "$R_STATUS" in
-      updated)  emit_updated "$R_FROM" "$R_TO" "$R_RELAUNCHED"; exit 0 ;;
-      failed)   emit_available "$R_FROM" "$R_TO" "$R_URL" "$R_REASON"; exit 0 ;;
-      deferred) emit_deferred "$R_FROM" "$R_TO"; exit 0 ;;
+      updated) emit_updated "$R_FROM" "$R_TO" "$R_RELAUNCHED"; exit 0 ;;
+      failed)  emit_available "$R_FROM" "$R_TO" "$R_URL" "$R_REASON"; exit 0 ;;
+      # A deferred worker may have finished after the recording stopped. Claim
+      # its result, then continue so this same prompt can reuse its staged app.
+      deferred) : ;;
     esac
   fi
 fi
@@ -574,19 +619,22 @@ if version_at_least "$INSTALLED" "$LATEST"; then
   exit 0                                             # current -> silent
 fi
 
+# Do this before taking the lock or writing the cooldown stamp. A recording
+# must defer both macOS replacement and the Windows installer prompt without
+# making the next post-recording prompt wait through the normal cooldown.
+DOWNLOAD_URL="$(download_url_for "$CACHE")"
+if recording_in_progress; then
+  rm -f "$STAMP" 2>/dev/null || true
+  write_result deferred "$INSTALLED" "$LATEST" recording_active 0 "$DOWNLOAD_URL"
+  emit_deferred "$INSTALLED" "$LATEST"
+  exit 0
+fi
+
 # --- 4. cooldown: one attempt (and one announcement) per window -----------
 file_age_ok "$STAMP" "$COOLDOWN" && exit 0
-
-# --- 4b. a meeting recording is in progress -> silent; try a later prompt --
-# Nothing is spawned and no stamp is written, so the update simply waits for a
-# prompt that arrives after the recording has ended. The worker re-checks right
-# before quitting, for a recording that starts after this point.
-[ "$PLATFORM" = darwin ] && recording_in_progress && exit 0
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 mkdir "$LOCK_DIR" 2>/dev/null || exit 0             # a peer got there first
 : > "$STAMP" 2>/dev/null || true
-
-DOWNLOAD_URL="$(download_url_for "$CACHE")"
 
 # --- 5a. Windows: advise once per cooldown ---------------------------------
 if [ "$PLATFORM" = windows ]; then

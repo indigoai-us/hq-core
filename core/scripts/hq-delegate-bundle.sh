@@ -16,9 +16,16 @@
 # prompt) — schema documented in
 # core/knowledge/public/hq-core/delegation-bundle-spec.md.
 #
+# Source of truth is prd.json. When the project has no prd.json yet but has a
+# brainstorm.md (a brainstorm-stage project, policy
+# hq-brainstorm-leaves-handoffable-project-folder), brainstorm.md is the source
+# of truth: the dossier is brainstorm.md, research/**, and the newest journal
+# note; the brief says so and recommends /plan as the next step.
+#
 # Fails closed (non-zero, nothing written) when:
 #   - required arguments are missing
-#   - the project directory or its prd.json does not exist / parses invalid
+#   - the project directory does not exist, or it has neither prd.json nor
+#     brainstorm.md, or its prd.json parses invalid
 #   - the generated manifest or BRIEF matches a secret-detection pattern
 #
 # Env:
@@ -31,6 +38,8 @@ HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
 # shellcheck source=lib/secret-patterns.sh
 . "$SCRIPT_DIR/lib/secret-patterns.sh"
+# shellcheck source=lib/delegate-brainstorm.sh
+. "$SCRIPT_DIR/lib/delegate-brainstorm.sh"
 
 usage() {
   sed -n '3,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -70,10 +79,16 @@ case "$MODE" in transfer|share) ;; *) die "--mode must be transfer or share" ;; 
 case "$TO_KIND" in person|agent) ;; *) die "--to-kind must be person or agent" ;; esac
 
 PROJECT_DIR="$HQ_ROOT/companies/$COMPANY/projects/$PROJECT"
+PROJECT_REL="companies/$COMPANY/projects/$PROJECT"
 PRD="$PROJECT_DIR/prd.json"
-[ -d "$PROJECT_DIR" ] || die "project directory not found: companies/$COMPANY/projects/$PROJECT"
-[ -f "$PRD" ] || die "project has no prd.json: companies/$COMPANY/projects/$PROJECT/prd.json"
-jq -e . "$PRD" >/dev/null 2>&1 || die "prd.json is not valid JSON: $PRD"
+BRAINSTORM="$PROJECT_DIR/brainstorm.md"
+[ -d "$PROJECT_DIR" ] || die "project directory not found: $PROJECT_REL"
+STAGE="$(hq_delegate_project_stage "$PROJECT_DIR")"
+case "$STAGE" in
+  prd) jq -e . "$PRD" >/dev/null 2>&1 || die "prd.json is not valid JSON: $PRD" ;;
+  brainstorm) ;;
+  *) die "project has neither prd.json nor brainstorm.md: $PROJECT_REL (run /brainstorm or /plan first)" ;;
+esac
 
 # --- identity ----------------------------------------------------------------
 
@@ -104,8 +119,14 @@ PROJECT_PREFIX="projects/$PROJECT/"
 
 # knowledge entries from prd metadata: split into vault-grantable (under this
 # company), policies (under this company's policies/), and repo-based docs
-# (recorded for the brief, never granted as vault prefixes).
-KNOWLEDGE_JSON="$(jq -c '[.metadata.knowledge // [] | .[]]' "$PRD")"
+# (recorded for the brief, never granted as vault prefixes). A brainstorm-stage
+# project keeps its research inside the project folder, so there is nothing
+# outside the dossier prefix to grant.
+if [ "$STAGE" = prd ]; then
+  KNOWLEDGE_JSON="$(jq -c '[.metadata.knowledge // [] | .[]]' "$PRD")"
+else
+  KNOWLEDGE_JSON="[]"
+fi
 
 VAULT_READ_PREFIXES="$(printf '%s' "$KNOWLEDGE_JSON" | jq -r --arg co "$COMPANY" '
   [ .[]
@@ -142,7 +163,8 @@ printf '%s' "$VAULT_PREFIXES_JSON" | jq -e '
 
 # --- repo block (recorded here; verified/pushed by the US-004 step) ----------
 
-REPO_PATH="$(jq -r '.metadata.repoPath // empty' "$PRD")"
+REPO_PATH=""
+[ "$STAGE" = prd ] && REPO_PATH="$(jq -r '.metadata.repoPath // empty' "$PRD")"
 if [ -n "$REPO_PATH" ]; then
   REPO_JSON="$(jq -cn \
     --arg path "$REPO_PATH" \
@@ -156,12 +178,31 @@ fi
 
 # --- board id ----------------------------------------------------------------
 
+# A PRD project is matched by prd_path; a brainstorm-stage entry (status
+# exploring) carries brainstorm_path and a null prd_path.
 BOARD_ID="null"
 BOARD_FILE="$HQ_ROOT/companies/$COMPANY/board.json"
 if [ -f "$BOARD_FILE" ]; then
-  BOARD_ID="$(jq --arg prd "companies/$COMPANY/projects/$PROJECT/prd.json" \
-    '[.projects // [] | .[] | select(.prd_path == $prd) | .id] | first // null' \
+  BOARD_ID="$(jq --arg prd "$PROJECT_REL/prd.json" --arg bs "$PROJECT_REL/brainstorm.md" \
+    '[.projects // [] | .[] | select(.prd_path == $prd or .brainstorm_path == $bs) | .id] | first // null' \
     "$BOARD_FILE" 2>/dev/null || echo null)"
+fi
+
+# --- stage-specific project block ---------------------------------------------
+#
+# prdPath stays the PRD contract for every downstream helper; a brainstorm-stage
+# project sets it to null, names brainstorm.md as sourcePath, and lists the
+# dossier files (brainstorm.md, research/**, newest journal note) that the
+# publish step must ship.
+
+if [ "$STAGE" = prd ]; then
+  PROJECT_JSON="$(jq -cn --arg name "$PROJECT" --arg prd "$PROJECT_REL/prd.json" --argjson boardId "$BOARD_ID" \
+    '{name: $name, stage: "prd", prdPath: $prd, sourcePath: $prd, boardId: $boardId}')"
+else
+  DOSSIER_JSON="$(hq_brainstorm_dossier "$HQ_ROOT" "$PROJECT_REL" | jq -R . | jq -cs .)"
+  PROJECT_JSON="$(jq -cn --arg name "$PROJECT" --arg bs "$PROJECT_REL/brainstorm.md" \
+    --argjson boardId "$BOARD_ID" --argjson dossier "$DOSSIER_JSON" \
+    '{name: $name, stage: "brainstorm", prdPath: null, sourcePath: $bs, boardId: $boardId, dossier: $dossier}')"
 fi
 
 # --- checksums of the project dossier ----------------------------------------
@@ -176,8 +217,8 @@ CHECKSUMS_JSON="$(
 
 # --- build in a temp dir, scan, then move into place -------------------------
 
-STAGE="$(mktemp -d)"
-trap 'rm -rf "$STAGE"' EXIT
+STAGE_DIR="$(mktemp -d)"
+trap 'rm -rf "$STAGE_DIR"' EXIT
 
 jq -n \
   --arg id "$DELEGATION_ID" \
@@ -189,9 +230,7 @@ jq -n \
   --arg toPrincipal "$TO" \
   --arg toName "$TO_NAME" \
   --arg company "$COMPANY" \
-  --arg project "$PROJECT" \
-  --arg prdPath "companies/$COMPANY/projects/$PROJECT/prd.json" \
-  --argjson boardId "$BOARD_ID" \
+  --argjson project "$PROJECT_JSON" \
   --argjson vaultPrefixes "$VAULT_PREFIXES_JSON" \
   --argjson repo "$REPO_JSON" \
   --argjson knowledge "$MANIFEST_KNOWLEDGE" \
@@ -207,7 +246,7 @@ jq -n \
     to: {kind: $toKind, principal: $toPrincipal,
          displayName: (if $toName == "" then null else $toName end)},
     company: $company,
-    project: {name: $project, prdPath: $prdPath, boardId: $boardId},
+    project: $project,
     vaultPrefixes: $vaultPrefixes,
     repo: $repo,
     secrets: [],
@@ -215,10 +254,11 @@ jq -n \
     policies: $policies,
     checksums: $checksums,
     status: "building"
-  }' > "$STAGE/manifest.json"
+  }' > "$STAGE_DIR/manifest.json"
 
 # --- BRIEF.md — full prose for a reader who has never seen the project -------
 
+if [ "$STAGE" = prd ]; then
 DESCRIPTION="$(jq -r '.description // "No description recorded."' "$PRD")"
 GOAL="$(jq -r '.metadata.goal // empty' "$PRD")"
 TOTAL_STORIES="$(jq -r '[.userStories // [] | .[]] | length' "$PRD")"
@@ -278,19 +318,65 @@ TRAPS="$(jq -r '[.metadata.securityNotes // empty, (.metadata.executionConventio
   echo "## Where everything lives"
   echo
   echo "The full PRD (every story, acceptance criteria, and decision history) is at \`companies/$COMPANY/projects/$PROJECT/prd.json\`. The pickup prompt that accompanied this brief pulls every file you need on demand — you do not need to run a full sync."
-} > "$STAGE/BRIEF.md"
+} > "$STAGE_DIR/BRIEF.md"
+else
+  # Brainstorm stage: no stories, no PRD. The brief says so plainly and points
+  # the recipient at /plan.
+  SUMMARY="$(hq_brainstorm_summary "$BRAINSTORM")"
+  [ -n "$SUMMARY" ] || SUMMARY="No summary recorded in brainstorm.md."
+  RECOMMENDATION="$(hq_brainstorm_section "$BRAINSTORM" "Recommendation")"
+  UNKNOWNS="$(hq_brainstorm_section "$BRAINSTORM" "What We Don't Know")"
+  DOSSIER_LIST="$(printf '%s' "$PROJECT_JSON" | jq -r '.dossier[] | "- `" + . + "`"')"
+  {
+    echo "# Delegation brief — $PROJECT"
+    echo
+    echo "This brief describes the **$PROJECT** project in the **$COMPANY** company. Completed handoff steps are recorded in the manifest. Pull the files and acknowledge receipt; report any access error to the sender."
+    echo
+    echo "## What this project is"
+    echo
+    echo "$SUMMARY"
+    echo
+    echo "## Where things stand"
+    echo
+    echo "This project is at the brainstorm stage. There is no PRD yet and no stories have been written; the source of truth is \`$PROJECT_REL/brainstorm.md\`, with research notes and the latest session journal alongside it."
+    echo
+    if [ -n "$RECOMMENDATION" ]; then
+      echo "## Recommendation so far"
+      echo
+      echo "$RECOMMENDATION"
+      echo
+    fi
+    if [ -n "$UNKNOWNS" ]; then
+      echo "## Open questions"
+      echo
+      echo "$UNKNOWNS"
+      echo
+    fi
+    echo "## Recommended next step"
+    echo
+    echo "Run \`/plan $PROJECT\` to turn the brainstorm into a PRD with stories. Read brainstorm.md and the research notes first; the recommendation and open questions above come from them."
+    echo
+    echo "## Where everything lives"
+    echo
+    echo "The dossier for this handoff:"
+    echo
+    echo "$DOSSIER_LIST"
+    echo
+    echo "The pickup prompt that accompanied this brief pulls every file you need on demand — you do not need to run a full sync."
+  } > "$STAGE_DIR/BRIEF.md"
+fi
 
 # --- fail-closed secret scan -------------------------------------------------
 
-if ! hq_scan_secrets "$STAGE/manifest.json" "$STAGE/BRIEF.md"; then
+if ! hq_scan_secrets "$STAGE_DIR/manifest.json" "$STAGE_DIR/BRIEF.md"; then
   die "generated bundle matched a secret-detection pattern — nothing written (see stderr above)"
 fi
 
 # --- dry run: print the manifest, write nothing ------------------------------
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  cat "$STAGE/manifest.json"
-  rm -rf "$STAGE"
+  cat "$STAGE_DIR/manifest.json"
+  rm -rf "$STAGE_DIR"
   trap - EXIT
   echo "hq-delegate-bundle: dry run — nothing written" >&2
   exit 0
@@ -300,7 +386,7 @@ fi
 
 DEST="$HQ_ROOT/workspace/delegations/$DELEGATION_ID"
 mkdir -p "$(dirname "$DEST")"
-mv "$STAGE" "$DEST"
+mv "$STAGE_DIR" "$DEST"
 trap - EXIT
 
 echo "$DELEGATION_ID"

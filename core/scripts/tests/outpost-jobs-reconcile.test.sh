@@ -114,6 +114,7 @@ jq -nc '{job_id:"sentry-triage-mine",readiness:"pending_probe",updated_at:"2026-
 # idempotent paths. These stubs never invoke the host's systemctl binary.
 cat >"$BIN/systemctl-fail-enable" <<'STUB'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >>"${HQ_JOB_SYSTEMCTL_TEST_LOG:?}"
 if [[ "$*" == "--user daemon-reload" ]]; then
   exit 0
 fi
@@ -129,9 +130,19 @@ cat >"$BIN/systemctl-success" <<'STUB'
 printf '%s\n' "$*" >>"${HQ_JOB_SYSTEMCTL_TEST_LOG:?}"
 STUB
 chmod +x "$BIN/systemctl-success"
-
+cat >"$BIN/systemctl-no-user-bus" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${HQ_JOB_SYSTEMCTL_TEST_LOG:?}"
+if [[ "$*" == "--user show-environment" ]]; then
+  echo "Failed to connect to bus: No medium found" >&2
+  exit 37
+fi
+exit 0
+STUB
+chmod +x "$BIN/systemctl-no-user-bus"
 assert_enable_failure() {
   local label="$1" rc=0 summary_file="$HOME_DIR/.hq/jobs/reconcile/last-reconcile.json"
+  export HQ_JOB_SYSTEMCTL_TEST_LOG="$TMP/$label.systemctl.log"
   HQ_JOB_SYSTEMCTL="$BIN/systemctl-fail-enable" bash "$RECON" --hq-root "$HQ" --no-probe \
     >"$TMP/$label.out" 2>"$TMP/$label.err" || rc=$?
   [[ "$rc" -ne 0 ]] || fail "$label systemctl failure should make reconcile exit non-zero"
@@ -141,14 +152,14 @@ assert_enable_failure() {
     || fail "$label must not log the failed timer as armed"
   grep -Fq 'systemctl enable timer failed for job daily-inbox-digest exit=37: Failed to connect to bus: No medium found' \
     "$TMP/$label.err" || fail "$label must log the job id, exit code, and systemctl message"
+  grep -Fq 'not-scheduled job daily-inbox-digest reason=Failed to connect to bus: No medium found' \
+    "$TMP/$label.err" || fail "$label must report the timer as not-scheduled with the bus failure reason"
+  grep -Fqx -- '--user show-environment' "$HQ_JOB_SYSTEMCTL_TEST_LOG" \
+    || fail "$label must probe the user manager before trying to enable the timer"
   [ -f "$UNIT_DIR/hq-job-daily-inbox-digest.service" ] \
     && [ -f "$UNIT_DIR/hq-job-daily-inbox-digest.timer" ] \
     || fail "$label systemctl failure must leave the generated unit files in place"
 }
-
-# First call writes the unit files; the second call takes the no-op branch.
-assert_enable_failure "enable-failure-write"
-assert_enable_failure "enable-failure-noop"
 
 # A successful enable continues to count as armed on the no-op path.
 export HQ_JOB_SYSTEMCTL_TEST_LOG="$TMP/systemctl-success.log"
@@ -159,14 +170,50 @@ jq -e '.errors == 0 and .armed == 1' "$HOME_DIR/.hq/jobs/reconcile/last-reconcil
 grep -Fqx -- '--user enable --now hq-job-daily-inbox-digest.timer' "$HQ_JOB_SYSTEMCTL_TEST_LOG" \
   || fail "successful systemctl stub must receive the timer enable request"
 
-# An unavailable systemctl remains a non-error while preserving its diagnostic.
+# A missing systemctl binary cannot report the timer as armed.
+rc=0
 HQ_JOB_SYSTEMCTL="$TMP/systemctl-not-installed" bash "$RECON" --hq-root "$HQ" --no-probe \
-  >"$TMP/systemctl-unavailable.out" 2>"$TMP/systemctl-unavailable.err"
-jq -e '.errors == 0 and .armed == 1' "$HOME_DIR/.hq/jobs/reconcile/last-reconcile.json" >/dev/null \
-  || fail "an unavailable systemctl should retain the existing armed/no-error summary"
-grep -Fq 'systemctl not available — units written but not enabled (enable --now hq-job-daily-inbox-digest.timer)' \
+  >"$TMP/systemctl-unavailable.out" 2>"$TMP/systemctl-unavailable.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "an unavailable systemctl must make reconcile report a scheduling failure"
+jq -e '.errors == 1 and .armed == 0 and .skipped == 3' "$HOME_DIR/.hq/jobs/reconcile/last-reconcile.json" >/dev/null \
+  || fail "an unavailable systemctl must report the job as not-scheduled"
+grep -Fq 'not-scheduled job daily-inbox-digest' \
   "$TMP/systemctl-unavailable.err" \
-  || fail "an unavailable systemctl must retain its diagnostic: $(cat "$TMP/systemctl-unavailable.err")"
+  || fail "an unavailable systemctl must report the not-scheduled outcome: $(cat "$TMP/systemctl-unavailable.err")"
+grep -Fq 'systemctl command is unavailable' "$TMP/systemctl-unavailable.err" \
+  || fail "an unavailable systemctl must report its reason: $(cat "$TMP/systemctl-unavailable.err")"
+! grep -Fq 'armed daily-inbox-digest' "$TMP/systemctl-unavailable.err" \
+  || fail "an unavailable systemctl must not take the armed success path"
+[ -f "$UNIT_DIR/hq-job-daily-inbox-digest.service" ] \
+  && [ -f "$UNIT_DIR/hq-job-daily-inbox-digest.timer" ] \
+  || fail "an unavailable systemctl must leave the generated unit files written"
+
+# Start from an absent unit pair so failed-enable checks cover a write and then
+# an idempotent reconcile separately.
+rm -f "$UNIT_DIR/hq-job-daily-inbox-digest.service" "$UNIT_DIR/hq-job-daily-inbox-digest.timer"
+
+# A failed user-bus probe must also be not-scheduled on write and no-op paths.
+assert_enable_failure "enable-failure-write"
+assert_enable_failure "enable-failure-noop"
+
+# A missing user bus during the read-only manager probe must stop before enable.
+export HQ_JOB_SYSTEMCTL_TEST_LOG="$TMP/systemctl-no-user-bus.log"
+rc=0
+HQ_JOB_SYSTEMCTL="$BIN/systemctl-no-user-bus" bash "$RECON" --hq-root "$HQ" --no-probe \
+  >"$TMP/no-user-bus.out" 2>"$TMP/no-user-bus.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "a missing user bus must make reconcile report a scheduling failure"
+jq -e '.errors == 1 and .armed == 0 and .skipped == 3' \
+  "$HOME_DIR/.hq/jobs/reconcile/last-reconcile.json" >/dev/null \
+  || fail "a missing user bus must be not-scheduled, not armed: $(cat "$HOME_DIR/.hq/jobs/reconcile/last-reconcile.json")"
+grep -Fq 'not-scheduled job daily-inbox-digest reason=Failed to connect to bus: No medium found' \
+  "$TMP/no-user-bus.err" || fail "a missing user bus must report not-scheduled and its reason"
+grep -Fqx -- '--user show-environment' "$HQ_JOB_SYSTEMCTL_TEST_LOG" \
+  || fail "a missing user bus must fail during the manager probe"
+! grep -Fq -- '--user enable --now hq-job-daily-inbox-digest.timer' "$HQ_JOB_SYSTEMCTL_TEST_LOG" \
+  || fail "a failed manager probe must prevent timer enablement"
+[ -f "$UNIT_DIR/hq-job-daily-inbox-digest.service" ] \
+  && [ -f "$UNIT_DIR/hq-job-daily-inbox-digest.timer" ] \
+  || fail "a missing user bus must leave the generated unit files written"
 pass "systemctl failures are reported and successful enables remain armed"
 
 # 1) Ready personal job → units written with Persistent + RandomizedDelaySec + OnCalendar
@@ -179,14 +226,33 @@ set -e
 [ -f "$UNIT_DIR/hq-job-daily-inbox-digest.timer" ] || fail "timer unit missing"
 grep -q 'Persistent=true' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "Persistent=true missing"
 grep -q 'RandomizedDelaySec=45' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "RandomizedDelaySec missing"
-grep -q '^OnCalendar=.* America/New_York$' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" \
-  || fail "OnCalendar must end with the declared timezone"
-! grep -q '^Timezone=' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "invalid Timezone= directive must not be written"
-grep -q 'Mon..Fri' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "weekday OnCalendar expected for 1-5"
+# Characterization: guard the timezone rendering shipped in hq-core-staging#927.
+timer_calendar="$(awk '
+  /^\[Timer\]$/ { in_timer = 1; next }
+  /^\[/ { in_timer = 0 }
+  in_timer && /^OnCalendar=/ {
+    count++
+    value = substr($0, index($0, "=") + 1)
+  }
+  END {
+    if (count != 1) exit 1
+    print value
+  }
+' "$UNIT_DIR/hq-job-daily-inbox-digest.timer")" \
+  || fail "timer must contain exactly one OnCalendar directive in its Timer section"
+[ "$timer_calendar" = 'Mon..Fri *-*-* 09:00:00 America/New_York' ] \
+  || fail "#927 timezone characterization expected OnCalendar in America/New_York, got: $timer_calendar"
+! awk '
+  /^\[Timer\]$/ { in_timer = 1; next }
+  /^\[/ { in_timer = 0 }
+  in_timer && /^Timezone=/ { found = 1 }
+  END { exit !found }
+' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" \
+  || fail "#927 timezone characterization must not contain an unsupported Timezone= directive"
 grep -q 'hq-job-run.sh' "$UNIT_DIR/hq-job-daily-inbox-digest.service" || fail "service must ExecStart hq-job-run.sh"
 grep -Fq "ExecStart=$HQ/core/scripts/hq-job-run.sh" "$UNIT_DIR/hq-job-daily-inbox-digest.service" \
   || fail "service runner must use the selected HQ root"
-pass "ready personal job materializes service+timer"
+pass "ready personal job materializes service+timer, root path, and #927 timezone rendering"
 
 # A job without a declared timezone uses the generated OnCalendar expression unchanged.
 yq -i 'del(.timezone)' "$HQ/personal/jobs/digest.yaml"

@@ -89,7 +89,15 @@ run_hook() {
   local sid="$1" out="$2" emit_mode="${3:-}" prompt="${4:-cache fixture}"
   local facts="${5:-always}" transcript="${6:-}" status=0
   local intent_facts="${7:-$facts}"
+  # This suite's subject is the evaluation cache, and it controls the fact sets
+  # through a stub reached via DERIVE_SCRIPT, which only names the forwarder.
+  # HQ-HOOK-COST-001 added a faster path that runs the hq CLI's packaged
+  # companion directly; that path cannot be stubbed here. Pin this suite to the
+  # forwarder with the shipped kill switch so the fact sets stay deterministic.
+  # The paired-launch contract is asserted on the direct path by
+  # .claude/hooks/tests/inject-policy-fact-helper-no-cli-boot.test.sh.
   payload "$sid" "$prompt" "$transcript" | env HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" HQ_POLICY_COMPANY=acme \
+    HQ_POLICY_FACT_HELPER_DISABLE=1 \
     DERIVE_SCRIPT="$HQ_SRC/core/scripts/derive-trigger-facts.sh" \
     DERIVE_CALL_LOG="$TMPROOT/derive-calls.log" PATH="$TMPROOT/bin:$PATH" \
     HQ_TEST_EVENT_FACTS="$facts" HQ_TEST_INTENT_FACTS="$intent_facts" \

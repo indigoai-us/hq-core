@@ -9,11 +9,20 @@
 #      the delegationId is printed on stdout.
 #   2. Vault prefixes are bucket-relative folder form: every prefix ends in
 #      "/" and none starts with "companies/".
-#   3. Missing prd.json → non-zero exit, nothing written.
+#   3. Neither prd.json nor brainstorm.md → non-zero exit naming both files,
+#      nothing written.
 #   4. Secret-shaped content in the prd → non-zero exit, no new directory
 #      under workspace/delegations/.
 #   5. The shared secret-pattern lib stays a superset of the runtime hook's
 #      patterns (.claude/hooks/detect-secrets.sh) so the two cannot drift.
+#   6. A brainstorm-stage project (brainstorm.md + research/ + journal/, no
+#      prd.json) builds: stage "brainstorm", prdPath null, sourcePath =
+#      brainstorm.md, board id matched by brainstorm_path, dossier =
+#      brainstorm.md + research/** + newest journal note, repo null, no
+#      knowledge grants, and a brief that says brainstorm stage / no PRD yet /
+#      next step /plan. Secret-shaped brainstorm content still fails closed.
+#   7. The PRD path is unchanged: stage "prd", prdPath set, and no dossier
+#      list (the publish step keeps its PRD file set).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -138,15 +147,18 @@ done
 grep -q "US-002" "$BRIEF" || fail "BRIEF next steps must name the top incomplete story"
 grep -q "1 of 3 stories" "$BRIEF" || fail "BRIEF must state where things stand (1 of 3)"
 
-# --- 3. missing prd.json → non-zero, nothing written -------------------------
+# --- 3. neither prd.json nor brainstorm.md → non-zero, nothing written -------
 
-mkdir -p "$FIX/companies/acme/projects/empty"
+mkdir -p "$FIX/companies/acme/projects/empty/research"
+echo "a note without a brainstorm" > "$FIX/companies/acme/projects/empty/research/note.md"
 if HQ_ROOT="$FIX" bash "$BUILDER" build --company acme --project empty \
-  --to alice@acme.test >/dev/null 2>&1; then
-  fail "builder must exit non-zero when the project has no prd.json"
+  --to alice@acme.test >/dev/null 2>"$TMP/empty.err"; then
+  fail "builder must exit non-zero when the project has neither prd.json nor brainstorm.md"
 fi
+grep -q 'neither prd.json nor brainstorm.md' "$TMP/empty.err" \
+  || fail "refusal must name both accepted sources: $(cat "$TMP/empty.err")"
 [ -z "$(find "$FIX/workspace/delegations" -maxdepth 1 -name '*empty*' 2>/dev/null)" ] \
-  || fail "builder wrote a bundle for a project with no prd.json"
+  || fail "builder wrote a bundle for a project with neither source"
 
 # Missing --company is a usage error.
 if HQ_ROOT="$FIX" bash "$BUILDER" build --project widget --to a@b.c >/dev/null 2>&1; then
@@ -183,4 +195,99 @@ if [ -f "$HOOK" ]; then
   done
 fi
 
-echo "hq-delegate-bundle: ok (schema valid; prefixes folder-form + bucket-relative; fail-closed on missing prd and secret match; pattern lib superset of hook)"
+# --- 6. brainstorm-stage project builds from brainstorm.md -------------------
+
+BS="$FIX/companies/acme/projects/spark"
+mkdir -p "$BS/research/deep" "$BS/journal"
+cat > "$BS/brainstorm.md" <<'MD'
+---
+company: acme
+status: exploring
+promoted_to: null
+---
+
+# Spark
+
+> Light a spark in the widget line.
+
+## Context
+
+Why this exists.
+
+## What We Don't Know
+
+- Whether sparks need a permit.
+
+## Recommendation
+
+Option A, the small spark first.
+
+## Next Steps
+
+- Promote with /plan.
+MD
+echo "landscape" > "$BS/research/landscape.md"
+echo "deeper" > "$BS/research/deep/market.md"
+echo "older" > "$BS/journal/2026-08-01-0900-brainstorm-adhoc.md"
+echo "newest" > "$BS/journal/2026-08-02-0900-brainstorm-adhoc.md"
+jq '.projects += [{"id": "ac-proj-9", "title": "Spark", "status": "exploring", "prd_path": null, "brainstorm_path": "companies/acme/projects/spark/brainstorm.md"}]' \
+  "$FIX/companies/acme/board.json" > "$TMP/board" && mv "$TMP/board" "$FIX/companies/acme/board.json"
+
+OUT="$(HQ_ROOT="$FIX" bash "$BUILDER" build --company acme --project spark \
+  --to alice@acme.test --to-name "Alice" 2>"$TMP/stderr.log")" \
+  || fail "builder exited non-zero on a brainstorm-stage project: $(cat "$TMP/stderr.log")"
+BDID="$(printf '%s' "$OUT" | head -1)"
+case "$BDID" in dlg-*-spark) ;; *) fail "stdout is not a delegationId: '$OUT'" ;; esac
+BMANIFEST="$FIX/workspace/delegations/$BDID/manifest.json"
+BBRIEF="$FIX/workspace/delegations/$BDID/BRIEF.md"
+[ -f "$BMANIFEST" ] || fail "brainstorm manifest not written"
+[ -f "$BBRIEF" ] || fail "brainstorm BRIEF not written"
+
+jq -e '
+  .schemaVersion == 1 and
+  .project.name == "spark" and
+  .project.stage == "brainstorm" and
+  .project.prdPath == null and
+  .project.sourcePath == "companies/acme/projects/spark/brainstorm.md" and
+  .project.boardId == "ac-proj-9" and
+  .project.dossier == [
+    "companies/acme/projects/spark/brainstorm.md",
+    "companies/acme/projects/spark/research/deep/market.md",
+    "companies/acme/projects/spark/research/landscape.md",
+    "companies/acme/projects/spark/journal/2026-08-02-0900-brainstorm-adhoc.md"
+  ] and
+  .repo == null and
+  .knowledge == [] and
+  .policies == [] and
+  .vaultPrefixes == [{"prefix": "projects/spark/", "permission": "write", "reason": "project dossier"}] and
+  (.checksums | has("companies/acme/projects/spark/brainstorm.md")) and
+  (.checksums | has("companies/acme/projects/spark/research/landscape.md")) and
+  .status == "building"
+' "$BMANIFEST" >/dev/null || fail "brainstorm manifest does not match the v1 brainstorm-stage contract: $(cat "$BMANIFEST")"
+
+for needle in "brainstorm stage" "no PRD yet" "/plan spark" "Recommendation so far" "Option A, the small spark first." \
+  "Open questions" "Whether sparks need a permit." "companies/acme/projects/spark/research/landscape.md" \
+  "companies/acme/projects/spark/journal/2026-08-02-0900-brainstorm-adhoc.md" "Light a spark in the widget line."; do
+  grep -qF "$needle" "$BBRIEF" || fail "brainstorm BRIEF missing: $needle"
+done
+! grep -q 'stories are complete' "$BBRIEF" || fail "brainstorm BRIEF must not report a story count"
+! grep -q 'journal/2026-08-01-' "$BBRIEF" || fail "brainstorm BRIEF must list only the newest journal note"
+
+# secret-shaped brainstorm content → fail closed, no bundle
+LEAKY="$FIX/companies/acme/projects/leaky-spark"
+mkdir -p "$LEAKY"
+{ printf -- '---\nstatus: exploring\n---\n\n# Leaky\n\n> key is AKIA'; printf 'ABCDEFGHIJKLMNOP\n'; } > "$LEAKY/brainstorm.md"
+BEFORE_COUNT="$(find "$FIX/workspace/delegations" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')"
+if HQ_ROOT="$FIX" bash "$BUILDER" build --company acme --project leaky-spark \
+  --to alice@acme.test >/dev/null 2>&1; then
+  fail "builder must fail closed when brainstorm output matches a secret pattern"
+fi
+AFTER_COUNT="$(find "$FIX/workspace/delegations" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')"
+[ "$BEFORE_COUNT" = "$AFTER_COUNT" ] || fail "builder wrote a bundle despite a secret-pattern match in brainstorm.md"
+
+# --- 7. PRD path unchanged: stage prd, prdPath set, no dossier list ---------
+
+jq -e '.project.stage == "prd" and .project.prdPath == "companies/acme/projects/widget/prd.json" and .project.sourcePath == .project.prdPath and (.project | has("dossier") | not)' \
+  "$MANIFEST" >/dev/null || fail "PRD manifest must keep stage prd / prdPath and carry no dossier list: $(jq .project "$MANIFEST")"
+
+echo "hq-delegate-bundle: ok (schema valid; prefixes folder-form + bucket-relative; fail-closed on neither source and secret match; brainstorm stage builds from brainstorm.md with dossier + /plan brief; prd path unchanged; pattern lib superset of hook)"

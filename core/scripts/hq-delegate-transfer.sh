@@ -8,8 +8,12 @@
 #
 # Behavior (mode "transfer"; mode "share" skips every mutation):
 #   1. companies/<co>/board.json — the project's entry gets owner=<recipient>
-#      and a bumped updated_at; created (once) if absent
-#   2. prd.json metadata gains owner, delegatedFrom, delegatedAt
+#      and a bumped updated_at; created (once) if absent. A brainstorm-stage
+#      entry (status exploring, brainstorm_path set) is matched by
+#      brainstorm_path and keeps its status.
+#   2. prd.json metadata gains owner, delegatedFrom, delegatedAt; for a
+#      brainstorm-stage project the same three keys land in the
+#      brainstorm.md frontmatter (owner, delegated_from, delegated_at)
 #   3. work-mesh: `done` event closes the delegator's in-progress thread and
 #      broadcasts the reassignment; silently skipped when the helper is
 #      unavailable (local/offline installs) — the transfer still succeeds
@@ -31,6 +35,9 @@ HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
 usage() { sed -n '3,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die()   { echo "hq-delegate-transfer: $*" >&2; exit 1; }
+
+# shellcheck source=lib/delegate-brainstorm.sh
+. "$SCRIPT_DIR/lib/delegate-brainstorm.sh"
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 
@@ -68,12 +75,20 @@ jq -e '.status == "granted"' "$MANIFEST" >/dev/null || die "transfer requires co
 NOW="$(jq -r '.ownershipTransferredAt // empty' "$MANIFEST")"
 [ -n "$NOW" ] || NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 TODAY="$(date -u +%Y-%m-%d)"
-PRD_PATH="companies/$COMPANY/projects/$PROJECT/prd.json"
+STAGE="$(jq -r '.project.stage // "prd"' "$MANIFEST")"
+PROJECT_REL="companies/$COMPANY/projects/$PROJECT"
+PRD_PATH="$PROJECT_REL/prd.json"
 PRD_ABS="$HQ_ROOT/$PRD_PATH"
-PROJECT_DIR="$HQ_ROOT/companies/$COMPANY/projects/$PROJECT"
+BRAINSTORM_PATH="$PROJECT_REL/brainstorm.md"
+BRAINSTORM_ABS="$HQ_ROOT/$BRAINSTORM_PATH"
+PROJECT_DIR="$HQ_ROOT/$PROJECT_REL"
 BOARD="$HQ_ROOT/companies/$COMPANY/board.json"
 
-[ -f "$PRD_ABS" ] || die "prd not found: $PRD_PATH"
+case "$STAGE" in
+  prd)        [ -f "$PRD_ABS" ] || die "prd not found: $PRD_PATH" ;;
+  brainstorm) [ -f "$BRAINSTORM_ABS" ] || die "brainstorm.md not found: $BRAINSTORM_PATH" ;;
+  *)          die "manifest project.stage is '$STAGE' — expected prd or brainstorm" ;;
+esac
 
 # --- 1. board entry: update in place, create once if absent ------------------
 
@@ -83,47 +98,72 @@ else
   echo '{"projects": []}' > "$BOARD"
 fi
 
-TITLE="$(jq -r '.name // empty' "$PRD_ABS")"
-DESC="$(jq -r '.description // ""' "$PRD_ABS" | head -c 300)"
+if [ "$STAGE" = prd ]; then
+  TITLE="$(jq -r '.name // empty' "$PRD_ABS")"
+  DESC="$(jq -r '.description // ""' "$PRD_ABS" | head -c 300)"
+  MATCH_PRD="$PRD_PATH"
+  MATCH_BS=""
+  NEW_STATUS="in_progress"
+else
+  TITLE="$(hq_brainstorm_title "$BRAINSTORM_ABS")"
+  DESC="$(hq_brainstorm_summary "$BRAINSTORM_ABS" | head -c 300)"
+  MATCH_PRD=""
+  MATCH_BS="$BRAINSTORM_PATH"
+  NEW_STATUS="exploring"
+fi
+[ -n "$TITLE" ] || TITLE="$PROJECT"
 
+# An existing entry is matched by prd_path (PRD stage) or brainstorm_path
+# (brainstorm stage). The match is by path, so a brainstorm entry whose
+# prd_path is null still updates in place and keeps its status.
 TMP_BOARD="$(mktemp)"
 jq \
-  --arg prd "$PRD_PATH" \
+  --arg prd "$MATCH_PRD" \
+  --arg bs "$MATCH_BS" \
   --arg owner "$PRINCIPAL" \
   --arg now "$NOW" \
   --arg title "$TITLE" \
   --arg desc "$DESC" \
   --arg project "$PROJECT" \
+  --arg status "$NEW_STATUS" \
   '
-  if ([.projects // [] | .[] | select(.prd_path == $prd)] | length) > 0 then
+  def matches: ($prd != "" and .prd_path == $prd) or ($bs != "" and .brainstorm_path == $bs);
+  if ([.projects // [] | .[] | select(matches)] | length) > 0 then
     .projects = [.projects[] |
-      if .prd_path == $prd then .owner = $owner | .updated_at = $now else . end]
+      if matches then .owner = $owner | .updated_at = $now else . end]
   else
     .projects = (.projects // []) + [{
       id: ("proj-" + $project),
       title: $title,
       description: $desc,
-      status: "in_progress",
+      status: $status,
       owner: $owner,
-      prd_path: $prd,
+      prd_path: (if $prd == "" then null else $prd end),
       created_at: $now,
       updated_at: $now
-    }]
+    } + (if $bs == "" then {} else {brainstorm_path: $bs} end)]
   end
   | .updated_at = $now
   ' "$BOARD" > "$TMP_BOARD" && mv "$TMP_BOARD" "$BOARD"
 
-# --- 2. prd metadata ----------------------------------------------------------
+# --- 2. ownership on the source of truth -------------------------------------
+# PRD stage: prd.json metadata. Brainstorm stage: brainstorm.md frontmatter.
 
-TMP_PRD="$(mktemp)"
-jq \
-  --arg owner "$PRINCIPAL" \
-  --arg from "$FROM" \
-  --arg now "$NOW" \
-  '.metadata.owner = $owner
-   | .metadata.delegatedFrom = $from
-   | .metadata.delegatedAt = $now' \
-  "$PRD_ABS" > "$TMP_PRD" && mv "$TMP_PRD" "$PRD_ABS"
+if [ "$STAGE" = prd ]; then
+  TMP_PRD="$(mktemp)"
+  jq \
+    --arg owner "$PRINCIPAL" \
+    --arg from "$FROM" \
+    --arg now "$NOW" \
+    '.metadata.owner = $owner
+     | .metadata.delegatedFrom = $from
+     | .metadata.delegatedAt = $now' \
+    "$PRD_ABS" > "$TMP_PRD" && mv "$TMP_PRD" "$PRD_ABS"
+else
+  hq_brainstorm_frontmatter_set "$BRAINSTORM_ABS" owner "$PRINCIPAL"
+  hq_brainstorm_frontmatter_set "$BRAINSTORM_ABS" delegated_from "$FROM"
+  hq_brainstorm_frontmatter_set "$BRAINSTORM_ABS" delegated_at "$NOW"
+fi
 
 # --- 3. work mesh: close the delegator's thread, broadcast reassignment ------
 # Silently tolerated when unavailable (local/offline installs no-op).
@@ -162,7 +202,11 @@ if ! grep -qF "$DELEGATION_ID" "$JOURNAL_FILE"; then
     echo "- From: $FROM"
     echo "- To: $DISPLAY ($PRINCIPAL)"
     echo "- Transferred scope: $SCOPE"
-    echo "- Local board and PRD ownership updated; Work Mesh ownership is unconfirmed. Existing delegator access is unchanged."
+    if [ "$STAGE" = prd ]; then
+      echo "- Local board and PRD ownership updated; Work Mesh ownership is unconfirmed. Existing delegator access is unchanged."
+    else
+      echo "- Brainstorm-stage project (no PRD yet). Local board and brainstorm.md ownership updated; Work Mesh ownership is unconfirmed. Existing delegator access is unchanged."
+    fi
   } >> "$JOURNAL_FILE"
 fi
 
@@ -172,4 +216,8 @@ TMP_MANIFEST="$(mktemp)"
 jq --arg now "$NOW" '.ownershipTransferredAt = $now | .workMeshOwnership = "unconfirmed"' "$MANIFEST" > "$TMP_MANIFEST" \
   && mv "$TMP_MANIFEST" "$MANIFEST"
 
-echo "hq-delegate-transfer: ownership of '$PROJECT' transferred to $DISPLAY ($PRINCIPAL) — local board, PRD, and journal updated; Work Mesh ownership unconfirmed"
+if [ "$STAGE" = prd ]; then
+  echo "hq-delegate-transfer: ownership of '$PROJECT' transferred to $DISPLAY ($PRINCIPAL) — local board, PRD, and journal updated; Work Mesh ownership unconfirmed"
+else
+  echo "hq-delegate-transfer: ownership of '$PROJECT' (brainstorm stage) transferred to $DISPLAY ($PRINCIPAL) — local board, brainstorm.md, and journal updated; Work Mesh ownership unconfirmed"
+fi

@@ -161,9 +161,9 @@ if [ "${1:-}" = "--remediate" ]; then
           |
           (.results // [])[]
           | select(.family == "sync" and (.status == "FAIL" or .status == "WARN"))
-          | select(.checkId != "sync.update.core" or .status == "FAIL")
           | . as $row
-          | select((($row.checkId // "") | startswith("sync.journal.") | not) or $row.fix.autoFixable == true)
+          | select((($row.checkId // "") | startswith("sync.journal.") | not) or $row.fix.autoFixable != false)
+          | select(($row.checkId != "sync.manifest.personal" and $row.checkId != "sync.update.core") or $row.status == "FAIL" or $row.fix.autoFixable != false)
           | ($row.checkId // "") as $candidate_id
           | (if ($candidate_id | test("^sync\\.[A-Za-z0-9._-]{1,160}$"))
              then $candidate_id else "unknown" end) as $check_id
@@ -191,9 +191,11 @@ if [ "${1:-}" = "--remediate" ]; then
             for (const r of rows) {
               if (!r || r.family !== "sync") continue;
               if (r.status !== "FAIL" && r.status !== "WARN") continue;
-              if (r.checkId === "sync.update.core" && r.status === "WARN") continue;
-              if (typeof r.checkId === "string" && r.checkId.startsWith("sync.journal.")
-                && (!r.fix || r.fix.autoFixable !== true)) continue;
+              if (typeof r.checkId === "string"
+                && (r.checkId.startsWith("sync.journal.")
+                  || r.checkId === "sync.manifest.personal"
+                  || r.checkId === "sync.update.core")
+                && r.status !== "FAIL" && r.fix && r.fix.autoFixable === false) continue;
               const id = typeof r.checkId === "string" && /^sync\.[A-Za-z0-9._-]{1,160}$/.test(r.checkId)
                 ? r.checkId
                 : "unknown";

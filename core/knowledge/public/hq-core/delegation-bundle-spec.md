@@ -19,6 +19,12 @@ Builder: `core/scripts/hq-delegate-bundle.sh build --company <slug>
 --project <name> --to <principal> [--to-kind person|agent] [--to-name <name>]
 [--mode transfer|share]`. Prints the `delegationId` on stdout.
 
+The source of truth is `prd.json`. When the project has no `prd.json` yet but
+has `brainstorm.md` (a brainstorm-stage project, policy
+`hq-brainstorm-leaves-handoffable-project-folder`), the builder uses
+`brainstorm.md` instead; see "Project stages" below. A project with neither
+file is refused.
+
 ## Top-level fields
 
 | Field | Type | Meaning |
@@ -30,7 +36,7 @@ Builder: `core/scripts/hq-delegate-bundle.sh build --company <slug>
 | `from` | object | Sender identity from `hq whoami --json`; a missing or expired identity blocks bundle creation. |
 | `to` | object | `{kind, principal, displayName}` — `kind` is `person` or `agent`; `principal` is a **confirmed** email, `prs_…`, or `agt_…` (resolved by `hq-delegate-resolve.sh`, never a guessed name). |
 | `company` | string | Company slug. Delegation never crosses a company boundary. |
-| `project` | object | `{name, prdPath, boardId}` — `prdPath` is HQ-root-relative; `boardId` is the `companies/<co>/board.json` project id or `null`. |
+| `project` | object | `{name, stage, prdPath, sourcePath, boardId[, dossier]}` — `stage` is `"prd"` or `"brainstorm"`; `prdPath` is HQ-root-relative or `null` at brainstorm stage; `sourcePath` is the file the brief was built from; `boardId` is the `companies/<co>/board.json` project id or `null`; `dossier` (brainstorm stage only) lists the files the publish step ships. See "Project stages". |
 | `vaultPrefixes` | array | What gets granted — see below. |
 | `repo` | object \| `null` | Code handover state — see below. `null` when the project has no `metadata.repoPath`. |
 | `secrets` | array | Secret **names** (never values) the recipient is granted — filled by the US-005 step; `[]` until then, `{skipped: true}` recorded when `--no-secrets`. |
@@ -38,6 +44,18 @@ Builder: `core/scripts/hq-delegate-bundle.sh build --company <slug>
 | `policies` | array | HQ-root-relative policy paths referenced by the PRD. |
 | `checksums` | object | `{<HQ-root-relative path>: <sha256>}` for every file in the project dossier at freeze time (capped at 200 files). Lets the recipient verify integrity after pulling. |
 | `status` | string | Delegation state machine — see below. |
+
+## Project stages
+
+| Stage | Source of truth | `project` block | Brief and pickup prompt | Transfer | Publish snapshot |
+|---|---|---|---|---|---|
+| `prd` | `prd.json` | `prdPath` set, `sourcePath == prdPath`, no `dossier` | goal, story counts, next three stories | board entry matched by `prd_path`; owner in `prd.json` metadata | `prd.json`, `README.md`, `journal/delegations.md` |
+| `brainstorm` | `brainstorm.md` | `prdPath: null`, `sourcePath` = brainstorm.md, `dossier` = brainstorm.md + `research/**` + newest `journal/*.md` (excluding `delegations.md`) | summary from the brainstorm, "brainstorm stage, no PRD yet", recommendation and open questions, next step `/plan <project>` | board entry with `status: exploring` matched by `brainstorm_path`, status kept; `owner`, `delegated_from`, `delegated_at` written to the brainstorm.md frontmatter | every `dossier` path plus `journal/delegations.md` |
+
+A brainstorm-stage project has no `metadata.knowledge` or `metadata.repoPath`,
+so `knowledge`, `policies` are `[]` and `repo` is `null`; the research notes
+live inside the project folder and ride the dossier write grant. The secret and
+share-URL rules below apply to both stages unchanged.
 
 ## `vaultPrefixes[]` entries
 
@@ -94,7 +112,8 @@ even when the share response fails; unrelated or descendant grants cannot.
 
 After local transfer, verification publishes `delegation/<delegationId>/manifest.json`
 and `BRIEF.md` inside the project. `checksums` then describes the final PRD,
-README and delegation journal when present, plus the brief. The mutable local
+README and delegation journal when present (brainstorm stage: the `dossier`
+files and the delegation journal), plus the brief. The mutable local
 `publication` receipt records canonical read-back hashes, including the published
 manifest; the manifest does not hash itself. `recipientAccess` and
 `workMeshOwnership` remain `unconfirmed` until separately established.

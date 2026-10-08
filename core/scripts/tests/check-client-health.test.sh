@@ -240,7 +240,8 @@ cat > "$DOCTOR_REASON_CODES" <<JSON
     { "family": "sync", "status": "WARN", "checkId": "sync.journal.opted-company", "reasonCode": "stale-threshold", "clientHealthReasonCodesEnabled": true, "fix": { "autoFixable": true },
       "message": "private company prose must stay local" },
     { "family": "sync", "status": "FAIL", "checkId": "sync.manifest.personal", "reasonCode": "stale-threshold",
-      "clientHealthReasonCodesEnabled": true, "message": "private manifest prose $LEAK_PATH" },
+      "clientHealthReasonCodesEnabled": true, "fix": { "autoFixable": false },
+      "message": "private manifest prose $LEAK_PATH" },
     { "family": "sync", "status": "WARN", "checkId": "sync.journal.other-company", "reasonCode": "never-synced", "fix": { "autoFixable": true },
       "message": "private company prose must stay local" },
     { "family": "hooks", "status": "FAIL", "checkId": "hooks.private", "reasonCode": "never-synced" }
@@ -255,12 +256,27 @@ JSON
 
 DOCTOR_UPDATE_WARN="$TMP/doctor-update-warn.json"
 cat > "$DOCTOR_UPDATE_WARN" <<'JSON'
-{ "results": [ { "family": "sync", "status": "WARN", "checkId": "sync.update.core", "message": "A newer HQ Core release is available." } ] }
+{ "results": [ { "family": "sync", "status": "WARN", "checkId": "sync.update.core", "fix": { "autoFixable": false }, "message": "A newer HQ Core release is available." } ] }
 JSON
 
 DOCTOR_UPDATE_FAIL="$TMP/doctor-update-fail.json"
 cat > "$DOCTOR_UPDATE_FAIL" <<'JSON'
-{ "results": [ { "family": "sync", "status": "FAIL", "checkId": "sync.update.core", "message": "The installed HQ Core state is invalid." } ] }
+{ "results": [ { "family": "sync", "status": "FAIL", "checkId": "sync.update.core", "fix": {}, "message": "The installed HQ Core state is invalid." } ] }
+JSON
+
+DOCTOR_UPDATE_REPAIRABLE_WARN="$TMP/doctor-update-repairable-warn.json"
+cat > "$DOCTOR_UPDATE_REPAIRABLE_WARN" <<'JSON'
+{ "results": [ { "family": "sync", "status": "WARN", "checkId": "sync.update.core", "fix": { "autoFixable": true }, "message": "A repairable core sync issue remains." } ] }
+JSON
+
+DOCTOR_UPDATE_FIX_FIELD_ABSENT="$TMP/doctor-update-fix-field-absent.json"
+cat > "$DOCTOR_UPDATE_FIX_FIELD_ABSENT" <<'JSON'
+{ "results": [ { "family": "sync", "status": "WARN", "checkId": "sync.update.core", "fix": {}, "message": "The core update check could not classify the installed state." } ] }
+JSON
+
+DOCTOR_MANIFEST_FIX_ABSENT="$TMP/doctor-manifest-fix-absent.json"
+cat > "$DOCTOR_MANIFEST_FIX_ABSENT" <<'JSON'
+{ "results": [ { "family": "sync", "status": "WARN", "checkId": "sync.manifest.personal", "message": "The personal manifest is stale." } ] }
 JSON
 
 # run_hook <label-vars...> — invokes the hook in SessionStart mode against
@@ -443,6 +459,59 @@ run_remediate() {
   set -e
 }
 
+if [ -z "${HQ_TEST_CLIENT_HEALTH_ONLY:-}" ] || [ "${HQ_TEST_CLIENT_HEALTH_ONLY:-}" = "update-fix-field-absent" ]; then
+  for eng in $ENGINES; do
+    label="$eng"; [ "$eng" = "-" ] && label="default"
+    TEST_ROOT="$TMP/update-fix-field-absent-fail-$label"
+    build_root "$TEST_ROOT"
+    REM_STATE="$TMP/rem-update-fix-field-absent-fail-$label"
+    mkdir -p "$REM_STATE"
+    run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_UPDATE_FAIL"
+    [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+      && ok "sync.update.core FAIL with absent autoFixable is reported ($label)" \
+      || bad "sync.update.core FAIL with absent autoFixable is reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+    UPDATE_FAIL_BODY=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
+    grep -Fq -- "sync.update.core" <<<"$UPDATE_FAIL_BODY" \
+      && ok "sync.update.core FAIL with absent autoFixable reaches report body ($label)" \
+      || bad "sync.update.core FAIL with absent autoFixable reaches report body ($label)" "check id missing"
+
+    TEST_ROOT="$TMP/update-fix-field-absent-warn-$label"
+    build_root "$TEST_ROOT"
+    REM_STATE="$TMP/rem-update-fix-field-absent-warn-$label"
+    mkdir -p "$REM_STATE"
+    run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_UPDATE_FIX_FIELD_ABSENT"
+    [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+      && ok "sync.update.core WARN with absent autoFixable is reported ($label)" \
+      || bad "sync.update.core WARN with absent autoFixable is reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+    UPDATE_WARN_BODY=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
+    grep -Fq -- "sync.update.core" <<<"$UPDATE_WARN_BODY" \
+      && ok "sync.update.core WARN with absent autoFixable reaches report body ($label)" \
+      || bad "sync.update.core WARN with absent autoFixable reaches report body ($label)" "check id missing"
+  done
+fi
+
+if [ -z "${HQ_TEST_CLIENT_HEALTH_ONLY:-}" ] || [ "${HQ_TEST_CLIENT_HEALTH_ONLY:-}" = "manifest-no-fix-object" ]; then
+  for eng in $ENGINES; do
+    label="$eng"; [ "$eng" = "-" ] && label="default"
+    TEST_ROOT="$TMP/manifest-no-fix-object-$label"
+    build_root "$TEST_ROOT"
+    REM_STATE="$TMP/rem-manifest-no-fix-object-$label"
+    mkdir -p "$REM_STATE"
+    run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_MANIFEST_FIX_ABSENT"
+    [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+      && ok "sync.manifest.personal with no fix object is reported ($label)" \
+      || bad "sync.manifest.personal with no fix object is reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+    MANIFEST_BODY=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
+    grep -Fq -- "sync.manifest.personal" <<<"$MANIFEST_BODY" \
+      && ok "sync.manifest.personal with no fix object reaches report body ($label)" \
+      || bad "sync.manifest.personal with no fix object reaches report body ($label)" "check id missing"
+  done
+fi
+
+if [ -n "${HQ_TEST_CLIENT_HEALTH_ONLY:-}" ]; then
+  [ "$FAIL" = 0 ] && exit 0 || exit 1
+fi
+
 for eng in $ENGINES; do
   label="$eng"; [ "$eng" = "-" ] && label="default"
   RR="$TMP/rem-$label"
@@ -525,7 +594,7 @@ for eng in $ENGINES; do
     || bad "remediate($label) dedupes inside the 24h window" "refiled ${REFILED:-0}"
 done
 
-echo "== 7b. the ordinary sync.update.core WARN is not a defect report =="
+echo "== 7b. manual-only sync checks are not defect reports =="
 for eng in $ENGINES; do
   label="$eng"; [ "$eng" = "-" ] && label="default"
 
@@ -537,7 +606,7 @@ for eng in $ENGINES; do
   [ "$REM_RC" = 0 ] && ok "remediate($label) handles sync.update.core WARN" \
     || bad "remediate($label) handles sync.update.core WARN" "exit $REM_RC"
   [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
-    && ok "sync.update.core WARN alone files no client-health report ($label)" \
+    && ok "non-repairable sync.update.core WARN files no client-health report ($label)" \
     || bad "sync.update.core WARN alone files no client-health report ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
 
   FAIL_ROOT="$TMP/update-fail-$label"
@@ -545,12 +614,25 @@ for eng in $ENGINES; do
   REM_STATE="$TMP/rem-update-fail-$label"
   mkdir -p "$REM_STATE"
   run_remediate "$FAIL_ROOT" "$eng" "$DOCTOR_UPDATE_FAIL"
+  UPDATE_FAIL_BODY=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
   [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
     && ok "sync.update.core FAIL still files a client-health report ($label)" \
     || bad "sync.update.core FAIL still files a client-health report ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
-  grep -Fq "sync.update.core" "$REM_STATE/bug-bodies.txt" \
+  grep -Fq -- "sync.update.core" <<<"$UPDATE_FAIL_BODY" \
     && ok "sync.update.core FAIL remains in the report body ($label)" \
     || bad "sync.update.core FAIL remains in the report body ($label)" "check id missing"
+
+  REPAIRABLE_ROOT="$TMP/update-repairable-warn-$label"
+  build_root "$REPAIRABLE_ROOT"
+  REM_STATE="$TMP/rem-update-repairable-warn-$label"
+  mkdir -p "$REM_STATE"
+  run_remediate "$REPAIRABLE_ROOT" "$eng" "$DOCTOR_UPDATE_REPAIRABLE_WARN"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && ok "repairable sync.update.core WARN remains reportable ($label)" \
+    || bad "repairable sync.update.core WARN remains reportable ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  grep -Fq "sync.update.core" "$REM_STATE/bug-bodies.txt" \
+    && ok "repairable sync.update.core WARN reaches the report body ($label)" \
+    || bad "repairable sync.update.core WARN reaches the report body ($label)" "check id missing"
 done
 echo "== 7c. opted-in diagnostics carry only checkId: reasonCode pairs =="
 RDIAG="$TMP/rem-diagnostics"
@@ -575,9 +657,10 @@ fi
 grep -Fq "sync.journal.opted-company: stale-threshold" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
   && ok "opted-in report includes repairable journal reason code" \
   || bad "opted-in report includes repairable journal reason code" "missing checkId: reasonCode pair"
-grep -Fq "sync.manifest.personal: stale-threshold" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
-  && ok "opted-in report includes manifest reason code" \
-  || bad "opted-in report includes manifest reason code" "missing checkId: reasonCode pair"
+MANIFEST_FAIL_BODY=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
+grep -Fq -- "sync.manifest.personal: stale-threshold" <<<"$MANIFEST_FAIL_BODY" \
+  && ok "opted-in report keeps personal manifest FAIL reason code reportable" \
+  || bad "opted-in report keeps personal manifest FAIL reason code reportable" "missing checkId: reasonCode pair"
 grep -Fq "sync.journal.other-company" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
   && ok "non-opted-in company finding remains reportable" \
   || bad "non-opted-in company finding remains reportable" "bare check id missing"
